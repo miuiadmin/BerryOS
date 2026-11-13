@@ -8,9 +8,9 @@ use berry_gfx::color::{TextureDesc, TextureFormat};
 use berry_gfx::pass::{LoadOp, PassDescriptor, StoreOp};
 use berry_gfx::queue::Queue;
 use berry_ui::sdk::{
-    column, divider, icon, row, text, Button, Card, EmptyState, InteractionState, ListItem,
-    Msg, PanelProps, Props, RectProps, RectI, Scaffold, ScrollView, Switch, TextVariant, Theme,
-    Ui, UiError, ViewKind, ViewSpec, WidgetContext,
+    column, divider, icon, row, text, Button, Card, EmptyState, InteractionState, ListTile,
+    ListTileSpec, ListItem, Msg, PanelProps, Props, RectProps, RectI, Scaffold, ScrollView,
+    Switch, TextVariant, Theme, Ui, UiError, ViewKind, ViewSpec, WidgetContext,
 };
 
 #[test]
@@ -174,6 +174,79 @@ fn scaffold_core_widgets_layout_state_and_a11y() {
 
     item.set_selected(&mut ui, &context, true).unwrap();
     assert!(item.is_selected());
+}
+
+#[test]
+fn app_bar_back_is_real_48dp_touch_target() {
+    let mut ui = Ui::<32>::new(1080, 1920);
+    let context = ctx(1080, 1920);
+    let root = ui.root();
+    let scaffold = Scaffold::with_back(&mut ui, root, &context, b"Buttons", 103, 104).unwrap();
+    ui.layout();
+
+    assert_eq!(
+        ui.bounds(scaffold.app_bar.panel).unwrap(),
+        RectI::new(0, 0, 1080, 168),
+        "Product 56dp top bar"
+    );
+    let mut back = scaffold.app_bar.back.expect("navigation back");
+    assert_eq!(
+        ui.bounds(back.panel).unwrap(),
+        RectI::new(0, 12, 144, 144),
+        "48dp target centered in 56dp bar"
+    );
+    assert_eq!(
+        ui.bounds(scaffold.body).unwrap(),
+        RectI::new(0, 168, 1080, 1752)
+    );
+    assert_eq!(ui.node_at(1, 13), Some(back.panel));
+    assert!(ui.a11y_iter().any(|entry| {
+        entry.role == berry_ui::ROLE_BUTTON && entry.label.as_bytes() == b"Back"
+    }));
+
+    assert!(!back
+        .on_msg(
+            &mut ui,
+            &context,
+            &Msg::Press { node: back.panel, x: 1, y: 13 },
+        )
+        .unwrap());
+    assert!(back
+        .on_msg(&mut ui, &context, &Msg::Click { node: back.panel })
+        .unwrap());
+}
+
+#[test]
+fn list_tile_is_card_row_with_leading_media() {
+    let mut ui = Ui::<32>::new(1080, 1920);
+    let context = ctx(1080, 1920);
+    let root = ui.root();
+    let spec = ListTileSpec {
+        title: b"Buttons & states",
+        detail: Some(b"Press, focus, disable, count"),
+        leading_icon: 100,
+        trailing: b">",
+        selected: false,
+        width: 1056,
+    };
+    let mut tile = ListTile::new(&mut ui, root, &context, &spec).unwrap();
+    ui.layout();
+
+    assert_eq!(ui.bounds(tile.panel).unwrap(), RectI::new(0, 0, 1056, 144));
+    assert_eq!(ui.bounds(tile.leading).unwrap(), RectI::new(12, 48, 48, 48));
+    assert_eq!(ui.bounds(tile.title).unwrap().x, 84);
+    assert_eq!(ui.bounds(tile.trailing).unwrap().x, 1024);
+    assert!(ui.a11y_iter().any(|entry| {
+        entry.role == berry_ui::ROLE_LIST_ITEM
+            && entry.label.as_bytes() == b"Buttons & states"
+    }));
+    assert!(!tile
+        .on_msg(
+            &mut ui,
+            &context,
+            &Msg::Press { node: tile.title, x: 100, y: 20 },
+        )
+        .unwrap());
 }
 
 #[test]

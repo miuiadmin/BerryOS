@@ -57,13 +57,23 @@ berry-ui(guest-font-vmo)
 首屏展示 demo 入口与系统定位：
 
 ```text
-Scaffold + AppBar + ScrollView + Card
+Scaffold + AppBar + full-height ScrollView + Card
 primary hero Panel
 Display/Title/Body 层级文本
 主题色 chip row
-五个 ListItem 导航
+五个 ListTile 卡片目录行（leading icon + 双行文字 + trailing）
 Start tour Button
 Exit Button
+```
+
+D3 起所有详情页使用统一现代顶栏：
+
+```text
+56dp AppBar
+48dp IconButton 返回命中面
+72px 返回箭头（normal/active 两态）
+居中标题
+Press/Focus/Click 状态
 ```
 
 导航项：
@@ -191,8 +201,8 @@ normal boot 把 BERRYDEMO 放在桌面首行第四格，执行：
 
 ```text
 runtime BERRYDEMOLAYOUT = berrydemo_before + 5
-runtime BERRYDEMORENDER = berrydemo_before + 6
-runtime BERRYDEMOFRAME  = berrydemo_before + 6
+runtime BERRYDEMORENDER = berrydemo_before + 18
+runtime BERRYDEMOFRAME  = berrydemo_before + 18
 BERRYDEMOPAGE           = 4
 BERRYDEMOSWITCH         = 1
 BERRYDEMOHIT            = 6
@@ -222,11 +232,11 @@ BERRYDEMOEXIT ok
 ## §8 预算
 
 ```text
-BERRYDEMO.bap 156,728B
-rootfs.cpio 34,452,424B
+BERRYDEMO.bap 203,088B
+rootfs.cpio 34,498,752B
 rootfs0     33,554,432B
-rootfs1       897,992B
-总量余量   99,765,224B
+rootfs1       944,320B
+总量余量   99,718,896B
 ```
 
 rootfs0 仍钉在 32MiB 帽；BERRYDEMO.bap 实体位于 vol0，挤出后的增量落在 rootfs1。
@@ -239,6 +249,7 @@ icon residency 当前为 217,104 / 225,000 px，余量 7,896px，不足再装一
 
 ```text
 berrydemo no_std
+AppBar D3 / IconButton / ListTile host tests
 berry-manifest tests / no_std
 svcmgr none check
 launcher musl check
@@ -254,12 +265,13 @@ gui_guard / docs_guard / Curia strict
 git diff --check
 ```
 
-最终镜像：`out/berryos.img` SHA-256 = `0884441868b4162b1e21c507d2ca1831f71f760249bba79f3865f58fc31afe7d`（2026-11-13 Mac Emulator GPU1 复验）。
+最终镜像：`out/berryos.img` SHA-256 = `bf1690a581fbf2ab2cc448f2fe4e39353dc203822a03b8912c407a06755ea9da`（2026-11-13 AppBar D3 复验）。
 
 最终复跑结果：
 
 ```text
 berrydemo no_std                         PASS
+AppBar D3 / IconButton / ListTile tests  PASS
 berry-manifest tests / no_std            PASS
 svcmgr none check                        PASS
 launcher musl check                      PASS
@@ -279,6 +291,6 @@ smoke-image 字节对拍：
 
 ```text
 kfile = 4,773,744B
-init  = 34,452,424B
+init  = 34,498,752B
 与宿主精确同数
 ```

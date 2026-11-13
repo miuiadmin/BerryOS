@@ -27,7 +27,7 @@ pub use crate::text_input::{
     TextInputOutcome, TextInputState, TextSelection, TEXT_INPUT_MAX,
 };
 pub use crate::widgets::{
-    AppBar, Button, Card, EmptyState, ListDetail, ListDetailSpec, ListItem, Scaffold, ScrollView,
+    AppBar, Button, Card, EmptyState, IconButton, ListDetail, ListDetailSpec, ListTile, ListTileSpec, ListItem, Scaffold, ScrollView,
     Switch, TextVariant, TextField, TextFieldSpec,
     WidgetContext, column, divider, icon, row, text,
 };

@@ -1328,11 +1328,11 @@ def verify_normal_boot(
         "normal Berry Demo layout", log_path,
     )
     _require_exact_count(
-        text, "BERRYDEMORENDER ok seq=", berrydemo_before + 6,
+        text, "BERRYDEMORENDER ok seq=", berrydemo_before + 18,
         "normal Berry Demo render", log_path,
     )
     _require_exact_count(
-        text, MARK_BERRYDEMO_FRAME, berrydemo_before + 6,
+        text, MARK_BERRYDEMO_FRAME, berrydemo_before + 18,
         "normal Berry Demo", log_path,
     )
     _require_exact_count(text, MARK_BERRYDEMO_PAGE, 4, "normal Berry Demo pages", log_path)
@@ -3126,12 +3126,13 @@ def run_normal_boot(args) -> int:
             f"normal-demo: QMP 点击 Switch "
             f"({demo_switch_click[0]},{demo_switch_click[1]})"
         )
+        frames_before_switch = boot.log.text.count(MARK_BERRYDEMO_FRAME)
         boot.qmp.click(demo_switch_click[0], demo_switch_click[1], w, h)
         try:
             boot.log.wait_until(
                 boot.proc,
                 lambda t: MARK_BERRYDEMO_SWITCH in t
-                and t.count(MARK_BERRYDEMO_FRAME) > berrydemo_before + 2,
+                and t.count(MARK_BERRYDEMO_FRAME) >= frames_before_switch + 3,
                 f"{MARK_BERRYDEMO_SWITCH} + 重绘帧",
                 args.click_timeout,
                 "normal Berry Demo switch",
@@ -3145,6 +3146,7 @@ def run_normal_boot(args) -> int:
             ) from None
 
         demo_shot = run_dir / "berrydemo.ppm"
+        time.sleep(0.2)  # 等 QEMU console 消化刚完成的 partial present
         boot.qmp.screendump(demo_shot)
         assert_pixel_close(
             ppm_pixel(demo_shot, 540, 20), theme["primary"],
@@ -3157,8 +3159,8 @@ def run_normal_boot(args) -> int:
         assert_pixel_close(
             ppm_pixel(
                 demo_shot,
-                demo_switch_click[0],
-                demo_switch_click[1],
+                demo_switch[0] + 2,
+                demo_switch[1] + demo_switch[3] // 2,
             ),
             theme["selected"],
             "Berry Demo Switch Selected",
@@ -3177,6 +3179,11 @@ def run_normal_boot(args) -> int:
             BERRYDEMO_LAYOUT_RE, 1, "back", boot.log.text, snapshot_pos
         )
         demo_back_click = rect_center(demo_page_back)
+        assert (
+            demo_page_back[2] == 144
+            and demo_page_back[3] == 144
+            and 0 <= demo_page_back[1] < 168
+        ), f"D3 AppBar back rect 异常: {demo_page_back}"
         log(
             f"normal-demo: QMP 点击 Berry Demo Back "
             f"({demo_back_click[0]},{demo_back_click[1]})"
@@ -3225,6 +3232,7 @@ def run_normal_boot(args) -> int:
                 boot.log_path,
             ) from None
         system_shot = run_dir / "berrydemo-system.ppm"
+        time.sleep(0.2)
         boot.qmp.screendump(system_shot)
         assert_pixel_close(
             ppm_pixel(system_shot, 540, 20), theme["primary"],
@@ -3239,6 +3247,11 @@ def run_normal_boot(args) -> int:
             BERRYDEMO_LAYOUT_RE, 5, "back", boot.log.text, snapshot_pos
         )
         system_back_click = rect_center(system_back)
+        assert (
+            system_back[2] == 144
+            and system_back[3] == 144
+            and 0 <= system_back[1] < 168
+        ), f"D3 System AppBar back rect 异常: {system_back}"
         log(
             f"normal-demo: QMP 点击 System Back "
             f"({system_back_click[0]},{system_back_click[1]})"
@@ -4738,7 +4751,7 @@ def self_test(args) -> int:
 
         demo_boot = (
             f"{MARK_BERRYDEMO_UP}\n{MARK_BERRYDEMO_WIN}\n"
-            "BERRYDEMOLAYOUT ok page=0 back=12,72,1056,60 target=12,204,1056,60\n"
+            "BERRYDEMOLAYOUT ok page=0 back=12,1124,1056,60 target=12,308,1056,144 system=12,1058,1056,60\n"
             "BERRYDEMORENDER ok seq=1 cmds=24\n"
             f"{MARK_BERRYDEMO_FRAME}\n{MARK_BERRYDEMO_PROBE}\n"
             f"{MARK_BERRYDEMO_DESTROY}\n{MARK_BERRYDEMO_EXIT}\n"
@@ -4750,14 +4763,14 @@ def self_test(args) -> int:
             f"{MARK_BERRYDEMO_FRAME}\n"
             "BERRYDEMOHIT ok node=nav x=540 y=234\n"
             f"{MARK_BERRYDEMO_PAGE}1\n"
-            "BERRYDEMOLAYOUT ok page=1 back=12,528,1056,60 target=12,168,216,72\n"
+            "BERRYDEMOLAYOUT ok page=1 back=0,12,144,144 target=12,246,78,42\n"
             "BERRYDEMORENDER ok seq=2 cmds=28\n"
             f"{MARK_BERRYDEMO_FRAME}\n"
             "BERRYDEMOHIT ok node=switch x=120 y=204\n"
             f"{MARK_BERRYDEMO_SWITCH}\n"
             "BERRYDEMORENDER ok seq=3 cmds=28\n"
             f"{MARK_BERRYDEMO_FRAME}\n"
-            "BERRYDEMOHIT ok node=back x=540 y=558\n"
+            "BERRYDEMOHIT ok node=back x=71 y=83\n"
             f"{MARK_BERRYDEMO_PAGE}0\n"
             "BERRYDEMOLAYOUT ok page=0 back=12,900,1056,60 target=12,204,1056,60\n"
             "BERRYDEMORENDER ok seq=4 cmds=24\n"
@@ -4765,17 +4778,21 @@ def self_test(args) -> int:
             "BERRYDEMOHIT ok node=system-tour x=540 y=1050\n"
             "BERRYDEMOSYSTEM ok\n"
             f"{MARK_BERRYDEMO_PAGE}5\n"
-            "BERRYDEMOLAYOUT ok page=5 back=12,1610,1056,60\n"
+            "BERRYDEMOLAYOUT ok page=5 back=0,12,144,144\n"
             "BERRYDEMORENDER ok seq=5 cmds=34\n"
             f"{MARK_BERRYDEMO_FRAME}\n"
-            "BERRYDEMOHIT ok node=back x=540 y=1660\n"
+            "BERRYDEMOHIT ok node=back x=71 y=83\n"
             f"{MARK_BERRYDEMO_PAGE}0\n"
             "BERRYDEMOLAYOUT ok page=0 back=12,900,1056,60 target=12,204,1056,60\n"
             "BERRYDEMORENDER ok seq=6 cmds=24\n"
             f"{MARK_BERRYDEMO_FRAME}\n"
-            "BERRYDEMOHIT ok node=exit x=540 y=930\n"
+            "BERRYDEMOHIT ok node=exit x=540 y=1153\n"
             "BERRYDEMOBACK ok\n"
-            f"{MARK_BERRYDEMO_DESTROY}\n{MARK_BERRYDEMO_EXIT}\n"
+            + "".join(
+                f"BERRYDEMORENDER ok seq={seq} cmds=7\n{MARK_BERRYDEMO_FRAME}\n"
+                for seq in range(7, 19)
+            )
+            + f"{MARK_BERRYDEMO_DESTROY}\n{MARK_BERRYDEMO_EXIT}\n"
         )
 
         fake_n = (

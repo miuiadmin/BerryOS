@@ -631,6 +631,18 @@ spec = "docs/BerryUI-F4组件第一版-v1.1.md"
 breaking = []
 
 [[item]]
+id = "berry_ui::sdk::IconButton"
+kind = "type"
+module = "widgets"
+since = "D3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-AppBarD3-v1.0.md"
+breaking = []
+
+[[item]]
 id = "berry_ui::sdk::Button"
 kind = "type"
 module = "widgets"
@@ -688,6 +700,30 @@ capability = "none"
 owner = "berry-ui"
 stability = "stable"
 spec = "docs/BerryUI-L3TransposedContainerFlexListDetail-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ListTile"
+kind = "type"
+module = "widgets"
+since = "D3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-AppBarD3-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ListTileSpec"
+kind = "type"
+module = "widgets"
+since = "D3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-AppBarD3-v1.0.md"
 breaking = []
 
 [[item]]

@@ -18,8 +18,10 @@ use berry_room::{
 use berry_ui::hit::PtrEvent;
 use berry_ui::sdk::{
     Button, Card, EmptyState, FontSource, IconSource, InteractionState, ListDetail,
-    ListDetailSpec, ListItem, Msg, NodeId, RectI, Scaffold, ScrollView, Switch, TextVariant,
+    ListDetailSpec, ListItem, ListTile, ListTileSpec, Msg, NodeId, RectI, Scaffold, ScrollView,
+    Switch, TextVariant,
     TextField, TextFieldSpec, Theme, Ui, WidgetContext, column, divider, icon, row, text,
+    IconButton,
 };
 
 type Ui192 = Ui<192>;
@@ -91,6 +93,39 @@ static ICON_GRID: [u32; DEMO_ICON_PIXELS] = icon_pixels(0);
 static ICON_DOT: [u32; DEMO_ICON_PIXELS] = icon_pixels(1);
 static ICON_RING: [u32; DEMO_ICON_PIXELS] = icon_pixels(2);
 
+// 现代顶栏返回箭头：72×72 native（Product 24vp）。Normal/Active 成对
+// 供给；Argb 像素不按 fg 重染色，这是当前 IconSource 事实边界。
+const BACK_ICON_DIM: u32 = 72;
+const BACK_ICON_PIXELS: usize = (BACK_ICON_DIM * BACK_ICON_DIM) as usize;
+
+const fn back_icon_pixels(active: bool) -> [u32; BACK_ICON_PIXELS] {
+    let mut out = [0u32; BACK_ICON_PIXELS];
+    let mut i = 0usize;
+    while i < BACK_ICON_PIXELS {
+        let p = i as u32;
+        let x = p % BACK_ICON_DIM;
+        let y = p / BACK_ICON_DIM;
+        let center = (BACK_ICON_DIM / 2) as i32;
+        let dy = (y as i32 - center).abs();
+        let line_x = 21 + dy;
+        let on_line = y >= 10
+            && y < 62
+            && (x as i32 - line_x).abs() <= 4;
+        out[i] = if on_line {
+            if active { 0xFF00_00FF } else { 0xFFFF_FFFF }
+        } else {
+            0x0000_0000
+        };
+        i += 1;
+    }
+    out
+}
+
+static ICON_BACK: [u32; BACK_ICON_PIXELS] = back_icon_pixels(false);
+static ICON_BACK_ACTIVE: [u32; BACK_ICON_PIXELS] = back_icon_pixels(true);
+const ICON_BACK_ID: u16 = 103;
+const ICON_BACK_ACTIVE_ID: u16 = 104;
+
 struct DemoIconSource;
 static DEMO_ICONS: DemoIconSource = DemoIconSource;
 
@@ -98,6 +133,7 @@ impl IconSource for DemoIconSource {
     fn dims(&self, id: u16) -> Option<(u32, u32)> {
         match id {
             100 | 101 | 102 => Some((DEMO_ICON_DIM, DEMO_ICON_DIM)),
+            ICON_BACK_ID | ICON_BACK_ACTIVE_ID => Some((BACK_ICON_DIM, BACK_ICON_DIM)),
             _ => None,
         }
     }
@@ -107,6 +143,8 @@ impl IconSource for DemoIconSource {
             100 => Some(&ICON_GRID),
             101 => Some(&ICON_DOT),
             102 => Some(&ICON_RING),
+            ICON_BACK_ID => Some(&ICON_BACK),
+            ICON_BACK_ACTIVE_ID => Some(&ICON_BACK_ACTIVE),
             _ => None,
         }
     }
@@ -250,13 +288,13 @@ struct HomePage {
     scroll: ScrollView,
     back: Button,
     tour: Button,
-    nav: [Option<ListItem>; 5],
+    nav: [Option<ListTile>; 5],
 }
 
 struct WidgetsPage {
     root: NodeId,
     scroll: ScrollView,
-    back: Button,
+    back: IconButton,
     counter: Button,
     switch: Switch,
     disabled: Button,
@@ -266,14 +304,14 @@ struct WidgetsPage {
 struct InputPage {
     root: NodeId,
     scroll: ScrollView,
-    back: Button,
+    back: IconButton,
     fields: [TextField; 3],
 }
 
 struct ListPage {
     root: NodeId,
     scroll: ScrollView,
-    back: Button,
+    back: IconButton,
     detail: Option<ListDetail>,
     items: [Option<ListItem>; 4],
     clear: Option<Button>,
@@ -283,14 +321,14 @@ struct ListPage {
 struct ThemePage {
     root: NodeId,
     scroll: ScrollView,
-    back: Button,
+    back: IconButton,
     cycle: Button,
 }
 
 struct SystemPage {
     root: NodeId,
     scroll: ScrollView,
-    back: Button,
+    back: IconButton,
 }
 
 enum Page {
@@ -365,7 +403,12 @@ fn build_home(ui: &mut Ui192, ctx: &WidgetContext) -> HomePage {
     let scaffold = Scaffold::new(ui, root, ctx, page_title(PAGE_HOME))
         .unwrap_or_else(|_| berry_room::panic_exit(134));
     let (_, viewport_h) = ui.viewport();
-    let scroll = ScrollView::new(ui, scaffold.body, ctx, viewport_h / 4 * 3)
+    let scroll = ScrollView::new(
+        ui,
+        scaffold.body,
+        ctx,
+        viewport_h.saturating_sub(scaffold.app_bar.instance_height(ctx)),
+    )
         .unwrap_or_else(|_| berry_room::panic_exit(134));
     let card = Card::new(ui, scroll.content, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
     let stack = column(ui, card.panel, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
@@ -406,13 +449,39 @@ fn build_home(ui: &mut Ui192, ctx: &WidgetContext) -> HomePage {
         (b"Theme & density", b"Colors, spacing, radius, schemes"),
         (b"System & standards", b"Spawn, package, window, lifecycle"),
     ];
-    let first = ListItem::new(ui, stack, ctx, titles[0].0, Some(titles[0].1), true)
-        .unwrap_or_else(|_| berry_room::panic_exit(134));
+    let icons: [u16; 5] = [100, 101, 102, 100, 101];
+    let tile_width = ui.viewport().0.saturating_sub(24);
+    let first = ListTile::new(
+        ui,
+        stack,
+        ctx,
+        &ListTileSpec {
+            title: titles[0].0,
+            detail: Some(titles[0].1),
+            leading_icon: icons[0],
+            trailing: b">",
+            selected: false,
+            width: tile_width,
+        },
+    )
+    .unwrap_or_else(|_| berry_room::panic_exit(134));
     let mut nav = [Some(first); 5];
     for index in 1..5 {
         nav[index] = Some(
-            ListItem::new(ui, stack, ctx, titles[index].0, Some(titles[index].1), false)
-                .unwrap_or_else(|_| berry_room::panic_exit(134)),
+            ListTile::new(
+                ui,
+                stack,
+                ctx,
+                &ListTileSpec {
+                    title: titles[index].0,
+                    detail: Some(titles[index].1),
+                    leading_icon: icons[index],
+                    trailing: b">",
+                    selected: false,
+                    width: tile_width,
+                },
+            )
+            .unwrap_or_else(|_| berry_room::panic_exit(134)),
         );
     }
 
@@ -428,10 +497,19 @@ fn build_home(ui: &mut Ui192, ctx: &WidgetContext) -> HomePage {
 
 fn build_widgets(ui: &mut Ui192, ctx: &WidgetContext, clicks: u32, switch_on: bool) -> WidgetsPage {
     let root = ui.root();
-    let scaffold = Scaffold::new(ui, root, ctx, page_title(PAGE_WIDGETS))
+    let scaffold = Scaffold::with_back(ui, root, ctx, page_title(PAGE_WIDGETS), ICON_BACK_ID, ICON_BACK_ACTIVE_ID)
         .unwrap_or_else(|_| berry_room::panic_exit(134));
+    let app_back = scaffold
+        .app_bar
+        .back
+        .unwrap_or_else(|| berry_room::panic_exit(134));
     let (_, viewport_h) = ui.viewport();
-    let scroll = ScrollView::new(ui, scaffold.body, ctx, viewport_h / 4 * 3)
+    let scroll = ScrollView::new(
+        ui,
+        scaffold.body,
+        ctx,
+        viewport_h.saturating_sub(scaffold.app_bar.instance_height(ctx)),
+    )
         .unwrap_or_else(|_| berry_room::panic_exit(134));
     let card = Card::new(ui, scroll.content, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
     let stack = column(ui, card.panel, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
@@ -497,18 +575,24 @@ fn build_widgets(ui: &mut Ui192, ctx: &WidgetContext, clicks: u32, switch_on: bo
     icon(ui, icons, ctx, 101).unwrap_or_else(|_| berry_room::panic_exit(134));
     icon(ui, icons, ctx, 102).unwrap_or_else(|_| berry_room::panic_exit(134));
 
-    let back = Button::new(ui, stack, ctx, b"Back", InteractionState::Normal)
-        .unwrap_or_else(|_| berry_room::panic_exit(134));
-
-    WidgetsPage { root: scaffold.root, scroll, back, counter, switch, disabled, selected }
+    WidgetsPage { root: scaffold.root, scroll, back: app_back, counter, switch, disabled, selected }
 }
 
 fn build_input(ui: &mut Ui192, ctx: &WidgetContext) -> InputPage {
     let root = ui.root();
-    let scaffold = Scaffold::new(ui, root, ctx, page_title(PAGE_INPUT))
+    let scaffold = Scaffold::with_back(ui, root, ctx, page_title(PAGE_INPUT), ICON_BACK_ID, ICON_BACK_ACTIVE_ID)
         .unwrap_or_else(|_| berry_room::panic_exit(134));
+    let app_back = scaffold
+        .app_bar
+        .back
+        .unwrap_or_else(|| berry_room::panic_exit(134));
     let (_, viewport_h) = ui.viewport();
-    let scroll = ScrollView::new(ui, scaffold.body, ctx, viewport_h / 4 * 3)
+    let scroll = ScrollView::new(
+        ui,
+        scaffold.body,
+        ctx,
+        viewport_h.saturating_sub(scaffold.app_bar.instance_height(ctx)),
+    )
         .unwrap_or_else(|_| berry_room::panic_exit(134));
     let card = Card::new(ui, scroll.content, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
     let stack = column(ui, card.panel, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
@@ -539,18 +623,24 @@ fn build_input(ui: &mut Ui192, ctx: &WidgetContext) -> InputPage {
     }
     text(ui, stack, ctx, TextVariant::Body, b"Tap a field to focus its caret")
         .unwrap_or_else(|_| berry_room::panic_exit(134));
-    let back = Button::new(ui, stack, ctx, b"Back", InteractionState::Normal)
-        .unwrap_or_else(|_| berry_room::panic_exit(134));
-
-    InputPage { root: scaffold.root, scroll, back, fields }
+    InputPage { root: scaffold.root, scroll, back: app_back, fields }
 }
 
 fn build_list(ui: &mut Ui192, ctx: &WidgetContext, selected: u8, empty: bool) -> ListPage {
     let root = ui.root();
-    let scaffold = Scaffold::new(ui, root, ctx, page_title(PAGE_LIST))
+    let scaffold = Scaffold::with_back(ui, root, ctx, page_title(PAGE_LIST), ICON_BACK_ID, ICON_BACK_ACTIVE_ID)
         .unwrap_or_else(|_| berry_room::panic_exit(134));
+    let app_back = scaffold
+        .app_bar
+        .back
+        .unwrap_or_else(|| berry_room::panic_exit(134));
     let (_, viewport_h) = ui.viewport();
-    let scroll = ScrollView::new(ui, scaffold.body, ctx, viewport_h / 4 * 3)
+    let scroll = ScrollView::new(
+        ui,
+        scaffold.body,
+        ctx,
+        viewport_h.saturating_sub(scaffold.app_bar.instance_height(ctx)),
+    )
         .unwrap_or_else(|_| berry_room::panic_exit(134));
     let card = Card::new(ui, scroll.content, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
     let stack = column(ui, card.panel, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
@@ -560,12 +650,10 @@ fn build_list(ui: &mut Ui192, ctx: &WidgetContext, selected: u8, empty: bool) ->
             .unwrap_or_else(|_| berry_room::panic_exit(134));
         let restore = Button::new(ui, stack, ctx, b"Restore list", InteractionState::Normal)
             .unwrap_or_else(|_| berry_room::panic_exit(134));
-        let back = Button::new(ui, stack, ctx, b"Back", InteractionState::Normal)
-            .unwrap_or_else(|_| berry_room::panic_exit(134));
         return ListPage {
             root: scaffold.root,
             scroll,
-            back,
+            back: app_back,
             detail: None,
             items: [None; 4],
             clear: None,
@@ -608,13 +696,10 @@ fn build_list(ui: &mut Ui192, ctx: &WidgetContext, selected: u8, empty: bool) ->
     divider(ui, stack, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
     let clear = Button::new(ui, stack, ctx, b"Clear list", InteractionState::Normal)
         .unwrap_or_else(|_| berry_room::panic_exit(134));
-    let back = Button::new(ui, stack, ctx, b"Back", InteractionState::Normal)
-        .unwrap_or_else(|_| berry_room::panic_exit(134));
-
     ListPage {
         root: scaffold.root,
         scroll,
-        back,
+        back: app_back,
         detail: Some(detail),
         items,
         clear: Some(clear),
@@ -624,10 +709,19 @@ fn build_list(ui: &mut Ui192, ctx: &WidgetContext, selected: u8, empty: bool) ->
 
 fn build_theme(ui: &mut Ui192, ctx: &WidgetContext) -> ThemePage {
     let root = ui.root();
-    let scaffold = Scaffold::new(ui, root, ctx, page_title(PAGE_THEME))
+    let scaffold = Scaffold::with_back(ui, root, ctx, page_title(PAGE_THEME), ICON_BACK_ID, ICON_BACK_ACTIVE_ID)
         .unwrap_or_else(|_| berry_room::panic_exit(134));
+    let app_back = scaffold
+        .app_bar
+        .back
+        .unwrap_or_else(|| berry_room::panic_exit(134));
     let (_, viewport_h) = ui.viewport();
-    let scroll = ScrollView::new(ui, scaffold.body, ctx, viewport_h / 4 * 3)
+    let scroll = ScrollView::new(
+        ui,
+        scaffold.body,
+        ctx,
+        viewport_h.saturating_sub(scaffold.app_bar.instance_height(ctx)),
+    )
         .unwrap_or_else(|_| berry_room::panic_exit(134));
     let card = Card::new(ui, scroll.content, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
     let stack = column(ui, card.panel, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
@@ -672,18 +766,24 @@ fn build_theme(ui: &mut Ui192, ctx: &WidgetContext) -> ThemePage {
         .unwrap_or_else(|_| berry_room::panic_exit(134));
     text(ui, stack, ctx, TextVariant::Body, b"Light / dark / high contrast")
         .unwrap_or_else(|_| berry_room::panic_exit(134));
-    let back = Button::new(ui, stack, ctx, b"Back", InteractionState::Normal)
-        .unwrap_or_else(|_| berry_room::panic_exit(134));
-
-    ThemePage { root: scaffold.root, scroll, back, cycle }
+    ThemePage { root: scaffold.root, scroll, back: app_back, cycle }
 }
 
 fn build_system(ui: &mut Ui192, ctx: &WidgetContext, frame_seq: u32) -> SystemPage {
     let root = ui.root();
-    let scaffold = Scaffold::new(ui, root, ctx, page_title(PAGE_SYSTEM))
+    let scaffold = Scaffold::with_back(ui, root, ctx, page_title(PAGE_SYSTEM), ICON_BACK_ID, ICON_BACK_ACTIVE_ID)
         .unwrap_or_else(|_| berry_room::panic_exit(134));
+    let app_back = scaffold
+        .app_bar
+        .back
+        .unwrap_or_else(|| berry_room::panic_exit(134));
     let (_, viewport_h) = ui.viewport();
-    let scroll = ScrollView::new(ui, scaffold.body, ctx, viewport_h / 4 * 3)
+    let scroll = ScrollView::new(
+        ui,
+        scaffold.body,
+        ctx,
+        viewport_h.saturating_sub(scaffold.app_bar.instance_height(ctx)),
+    )
         .unwrap_or_else(|_| berry_room::panic_exit(134));
     let card = Card::new(ui, scroll.content, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
     let stack = column(ui, card.panel, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
@@ -732,10 +832,7 @@ fn build_system(ui: &mut Ui192, ctx: &WidgetContext, frame_seq: u32) -> SystemPa
     text(ui, stack, ctx, TextVariant::Body, &frame_label[..n])
         .unwrap_or_else(|_| berry_room::panic_exit(134));
 
-    let back = Button::new(ui, stack, ctx, b"Back", InteractionState::Normal)
-        .unwrap_or_else(|_| berry_room::panic_exit(134));
-
-    SystemPage { root: scaffold.root, scroll, back }
+    SystemPage { root: scaffold.root, scroll, back: app_back }
 }
 
 fn build_page(ui: &mut Ui192, ctx: &WidgetContext, kind: u8, clicks: u32, switch_on: bool, selected: u8, empty: bool, frame_seq: u32) -> Page {
@@ -935,6 +1032,13 @@ impl App {
 
     fn handle_message(&mut self, room: &mut AppRoom, message: &Msg, x: u32, y: u32) -> bool {
         let Msg::Click { node } = *message else {
+            // Press/Release/Focus/Drag 也必须进组件：顶栏返回键的按压态、
+            // 焦点 ring 与 ScrollView 跟手滚动都是真实 UI 状态，不是 Click
+            // 的附属品。无 damage 的消息零提交，保持停帧合同。
+            self.deliver_widget(message);
+            if self.ui.damage().union_px() != 0 {
+                self.render(room);
+            }
             return false;
         };
         let _ = self.deliver_widget(message);
@@ -953,18 +1057,16 @@ impl App {
                     hit_line.push(b"system-tour");
                     target_page = PAGE_SYSTEM;
                     action = 9;
-                } else if let Some(index) = page.nav.iter().flatten().position(|item| {
-                    item.panel == node
-                        || item.title == node
-                        || item.detail.is_some_and(|detail| detail == node)
-                }) {
+                } else if let Some(index) =
+                    page.nav.iter().flatten().position(|item| item.owns(node))
+                {
                     hit_line.push(b"nav");
                     target_page = (index as u8) + 1;
                     action = 2;
                 }
             }
             Page::Widgets(page) => {
-                if page.back.panel == node || page.back.label == node {
+                if page.back.panel == node || page.back.icon == node {
                     hit_line.push(b"back");
                     target_page = PAGE_HOME;
                     action = 2;
@@ -989,7 +1091,7 @@ impl App {
                 }
             }
             Page::Input(page) => {
-                if page.back.panel == node || page.back.label == node {
+                if page.back.panel == node || page.back.icon == node {
                     hit_line.push(b"back");
                     target_page = PAGE_HOME;
                     action = 2;
@@ -1007,7 +1109,7 @@ impl App {
                 }
             }
             Page::List(page) => {
-                if page.back.panel == node || page.back.label == node {
+                if page.back.panel == node || page.back.icon == node {
                     hit_line.push(b"back");
                     target_page = PAGE_HOME;
                     action = 2;
@@ -1034,7 +1136,7 @@ impl App {
                 }
             }
             Page::Theme(page) => {
-                if page.back.panel == node || page.back.label == node {
+                if page.back.panel == node || page.back.icon == node {
                     hit_line.push(b"back");
                     target_page = PAGE_HOME;
                     action = 2;
@@ -1045,7 +1147,7 @@ impl App {
                 }
             }
             Page::System(page) => {
-                if page.back.panel == node || page.back.label == node {
+                if page.back.panel == node || page.back.icon == node {
                     hit_line.push(b"back");
                     target_page = PAGE_HOME;
                     action = 2;

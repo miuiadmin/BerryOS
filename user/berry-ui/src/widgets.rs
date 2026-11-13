@@ -97,6 +97,22 @@ impl Scaffold {
     pub fn new<const N: usize>(
         ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, title: &[u8],
     ) -> Result<Self, UiError> {
+        Self::build(ui, parent, ctx, title, None)
+    }
+
+    /// 带真实导航返回按钮的页面骨架。按钮像素由 app 的 IconSource 供给；
+    /// 点击语义仍归 app（返回栈/退出由业务状态机持有）。
+    pub fn with_back<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, title: &[u8],
+        back_icon: u16, active_icon: u16,
+    ) -> Result<Self, UiError> {
+        Self::build(ui, parent, ctx, title, Some((back_icon, active_icon)))
+    }
+
+    fn build<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, title: &[u8],
+        back_icon: Option<(u16, u16)>,
+    ) -> Result<Self, UiError> {
         let root = add(
             ui,
             parent,
@@ -111,12 +127,9 @@ impl Scaffold {
                 }),
             },
         )?;
-        let app_bar = AppBar::new(ui, root, ctx, title)?;
-        let pad = ctx.spacing(SpacingToken::S);
-        let title_h = ctx.metrics.typography(TypographyToken::Title).cell_h() as u32;
-        let bar_h = title_h.saturating_add(pad.saturating_mul(2));
+        let app_bar = AppBar::build(ui, root, ctx, title, back_icon)?;
         let (_, viewport_h) = ui.viewport();
-        let body_h = viewport_h.saturating_sub(bar_h);
+        let body_h = viewport_h.saturating_sub(app_bar.instance_height(ctx));
         let body = add(
             ui,
             root,
@@ -135,34 +148,287 @@ impl Scaffold {
     }
 }
 
-/// AppBar：主题色标题栏。
+/// AppBar：legacy 标题栏，或 `with_back` 的现代导航栏。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AppBar {
     pub panel: NodeId,
     pub title: NodeId,
+    pub back: Option<IconButton>,
 }
 
 impl AppBar {
     pub fn new<const N: usize>(
         ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, title: &[u8],
     ) -> Result<Self, UiError> {
-        let pad = ctx.spacing(SpacingToken::S);
+        Self::build(ui, parent, ctx, title, None)
+    }
+
+    pub fn with_back<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, title: &[u8],
+        back_icon: u16, active_icon: u16,
+    ) -> Result<Self, UiError> {
+        Self::build(ui, parent, ctx, title, Some((back_icon, active_icon)))
+    }
+
+    /// 56dp 现代导航栏高度（Product @3x = 168px；Compact @2x = 112px）。
+    pub fn height(ctx: &WidgetContext) -> u32 {
+        ctx.metrics.effective_px(224)
+    }
+
+    fn build<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, title: &[u8],
+        back_icon: Option<(u16, u16)>,
+    ) -> Result<Self, UiError> {
+        // 无导航位：保留 F4 legacy 标题栏，既有 app/golden 零漂；现代
+        // 56dp 导航栏只由 with_back 显式启用。
+        if back_icon.is_none() {
+            let pad = ctx.spacing(SpacingToken::S);
+            let panel = add(
+                ui,
+                parent,
+                panel_spec(ctx.theme.colors.primary, None, None, pad, pad, 0),
+            )?;
+            let title_id = add(
+                ui,
+                panel,
+                text_spec(
+                    title,
+                    ctx.theme.colors.on_primary,
+                    ctx.metrics.typography(TypographyToken::Title),
+                )?,
+            )?;
+            ui.set_a11y(title_id, ROLE_TEXT, title)?;
+            return Ok(Self { panel, title: title_id, back: None });
+        }
+
+        let bar_h = Self::height(ctx);
         let panel = add(
             ui,
             parent,
-            panel_spec(ctx.theme.colors.primary, None, None, pad, pad, 0),
+            panel_spec(ctx.theme.colors.primary, None, Some(bar_h), 0, 0, 0),
         )?;
-        let title_id = add(
+        let (viewport_w, _) = ui.viewport();
+        let line = add(
             ui,
             panel,
+            ViewSpec {
+                kind: ViewKind::Row,
+                key: 0,
+                props: Props::Row(RowProps {
+                    gap: ctx.metrics.effective_px(16),
+                    w: Some(viewport_w),
+                    h: Some(bar_h),
+                    cross: CrossAlign::Center,
+                }),
+            },
+        )?;
+
+        let icons = back_icon.expect("checked above");
+        let back = Some(IconButton::new(
+            ui,
+            line,
+            ctx,
+            icons.0,
+            icons.1,
+            b"Back",
+            InteractionState::Normal,
+            true,
+        )?);
+        let leading_flex = add(
+            ui,
+            line,
+            panel_spec(ctx.theme.colors.primary, None, Some(bar_h), 0, 0, 0),
+        )?;
+        ui.set_flex(leading_flex, 1)?;
+        let title_id = add(
+            ui,
+            line,
             text_spec(
                 title,
                 ctx.theme.colors.on_primary,
                 ctx.metrics.typography(TypographyToken::Title),
             )?,
         )?;
+        let trailing_flex = add(
+            ui,
+            line,
+            panel_spec(ctx.theme.colors.primary, None, Some(bar_h), 0, 0, 0),
+        )?;
+        ui.set_flex(trailing_flex, 1)?;
+
         ui.set_a11y(title_id, ROLE_TEXT, title)?;
-        Ok(Self { panel, title: title_id })
+        Ok(Self { panel, title: title_id, back })
+    }
+
+    /// 本实例建成高度（legacy 与 with_back 两形态单源）。
+    pub fn instance_height(&self, ctx: &WidgetContext) -> u32 {
+        if self.back.is_some() {
+            Self::height(ctx)
+        } else {
+            let title_h = ctx.metrics.typography(TypographyToken::Title).cell_h() as u32;
+            title_h.saturating_add(ctx.spacing(SpacingToken::S).saturating_mul(2))
+        }
+    }
+}
+
+/// IconButton：顶栏/工具栏图标按钮。像素经 IconSource；本组件只负责
+/// 48dp 命中面、状态色、a11y/focus 与 Press/Click 识别。
+///
+/// `on_primary` 声明按钮位于 primary 表面：Normal 使用 primary/on_primary，
+/// Pressed/Focused 切 surface_variant/primary，形成现代系统按压反馈。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IconButton {
+    pub panel: NodeId,
+    pub icon: NodeId,
+    normal_icon: u16,
+    active_icon: u16,
+    base: InteractionState,
+    focused: bool,
+    on_primary: bool,
+}
+
+impl IconButton {
+    pub fn new<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, normal_icon: u16,
+        active_icon: u16, label: &[u8], base: InteractionState, on_primary: bool,
+    ) -> Result<Self, UiError> {
+        let target = ctx.metrics.effective_px(192);
+        let visual = ctx.metrics.effective_px(96);
+        let inset = target.saturating_sub(visual) / 2;
+        let (bg, fg) = Self::colors(ctx, base, false, on_primary);
+        let panel = add(ui, parent, panel_spec(bg, Some(target), Some(target), inset, 0, target / 2))?;
+        let icon_id_node = add(
+            ui,
+            panel,
+            ViewSpec {
+                kind: ViewKind::Icon,
+                key: 0,
+                props: Props::Icon(IconProps {
+                    id: normal_icon,
+                    fg,
+                    w: Some(visual),
+                    h: Some(visual),
+                }),
+            },
+        )?;
+        ui.set_a11y(panel, ROLE_BUTTON, label)?;
+        ui.set_focusable(panel, Some(panel), base != InteractionState::Disabled)?;
+        ui.set_sem(SemEntry::new(
+            panel,
+            SEM_ACTION_ACTIVATE,
+            if base == InteractionState::Disabled { SEM_STATE_DISABLED } else { 0 },
+            b"",
+            0,
+            0,
+            false,
+        )?)?;
+        Ok(Self {
+            panel,
+            icon: icon_id_node,
+            normal_icon,
+            active_icon,
+            base,
+            focused: false,
+            on_primary,
+        })
+    }
+
+    fn visual_state(&self) -> InteractionState {
+        if self.base == InteractionState::Disabled {
+            InteractionState::Disabled
+        } else if self.focused {
+            InteractionState::Focused
+        } else {
+            self.base
+        }
+    }
+
+    fn colors(
+        ctx: &WidgetContext, state: InteractionState, focused: bool, on_primary: bool,
+    ) -> (Color, Color) {
+        if !on_primary {
+            let visual = ctx.theme.state(state);
+            return (visual.background, visual.content);
+        }
+        match state {
+            InteractionState::Normal if focused => {
+                (ctx.theme.colors.surface_variant, ctx.theme.colors.text_primary)
+            }
+            InteractionState::Normal => (ctx.theme.colors.primary, ctx.theme.colors.on_primary),
+            InteractionState::Pressed => {
+                (ctx.theme.colors.surface_variant, ctx.theme.colors.primary)
+            }
+            InteractionState::Disabled => {
+                (ctx.theme.colors.surface_variant, ctx.theme.colors.text_secondary)
+            }
+            InteractionState::Selected | InteractionState::Focused => {
+                (ctx.theme.colors.surface_variant, ctx.theme.colors.primary)
+            }
+        }
+    }
+
+    fn apply<const N: usize>(
+        &self, ui: &mut Ui<N>, ctx: &WidgetContext, state: InteractionState,
+    ) -> Result<(), UiError> {
+        let (bg, fg) = Self::colors(ctx, state, self.focused, self.on_primary);
+        if let Some(props) = retained_props(ui, self.panel) {
+            if let Props::Panel(mut p) = props {
+                p.bg = bg;
+                ui.set_props(self.panel, Props::Panel(p))?;
+            }
+        }
+        if let Some(props) = retained_props(ui, self.icon) {
+            if let Props::Icon(mut p) = props {
+                p.id = match state {
+                    InteractionState::Normal => self.normal_icon,
+                    _ => self.active_icon,
+                };
+                p.fg = fg;
+                ui.set_props(self.icon, Props::Icon(p))?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn set_focused<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, focused: bool,
+    ) -> Result<(), UiError> {
+        self.focused = focused;
+        self.apply(ui, ctx, self.visual_state())
+    }
+
+    pub fn on_msg<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, msg: &Msg,
+    ) -> Result<bool, UiError> {
+        if self.base == InteractionState::Disabled {
+            return Ok(false);
+        }
+        let node = match msg {
+            Msg::Press { node, .. }
+            | Msg::Release { node, .. }
+            | Msg::Cancel { node }
+            | Msg::Click { node }
+            | Msg::FocusIn { node }
+            | Msg::FocusOut { node } => *node,
+            _ => return Ok(false),
+        };
+        if node != self.panel && node != self.icon {
+            return Ok(false);
+        }
+        match msg {
+            Msg::Press { .. } => self.apply(ui, ctx, InteractionState::Pressed)?,
+            Msg::Release { .. } | Msg::Cancel { .. } => {
+                self.apply(ui, ctx, self.visual_state())?
+            }
+            Msg::Click { .. } => {
+                self.apply(ui, ctx, self.visual_state())?;
+                return Ok(true);
+            }
+            Msg::FocusIn { .. } => self.set_focused(ui, ctx, true)?,
+            Msg::FocusOut { .. } => self.set_focused(ui, ctx, false)?,
+            _ => {}
+        }
+        Ok(false)
     }
 }
 
@@ -881,6 +1147,218 @@ impl ListItem {
     }
 }
 
+/// ListTile 构造规格（Plain Data；激活语义归 app）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ListTileSpec<'a> {
+    pub title: &'a [u8],
+    pub detail: Option<&'a [u8]>,
+    pub leading_icon: u16,
+    pub trailing: &'a [u8],
+    pub selected: bool,
+    pub width: u32,
+}
+
+/// ListTile：现代设置/目录行——卡片表面、leading icon、双行文字与 trailing
+/// 指示。48dp 最小行高、48dp 触摸面语义由 panel 承担；激活仍由 app 合成。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ListTile {
+    pub panel: NodeId,
+    pub title: NodeId,
+    pub detail: Option<NodeId>,
+    pub leading: NodeId,
+    pub trailing: NodeId,
+    selected: bool,
+    focused: bool,
+}
+
+impl ListTile {
+    pub fn new<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, spec: &ListTileSpec<'_>,
+    ) -> Result<Self, UiError> {
+        let height = ctx.metrics.effective_px(192);
+        let media = ctx.metrics.effective_px(96);
+        let media_pad = ctx.metrics.effective_px(16);
+        let state = ctx.theme.state(if spec.selected {
+            InteractionState::Selected
+        } else {
+            InteractionState::Normal
+        });
+        let panel = add(
+            ui,
+            parent,
+            panel_spec(
+                state.background,
+                Some(spec.width),
+                Some(height),
+                0,
+                0,
+                ctx.metrics.radius(RadiusToken::Medium),
+            ),
+        )?;
+        let row = add(
+            ui,
+            panel,
+            ViewSpec {
+                kind: ViewKind::Row,
+                key: 0,
+                props: Props::Row(RowProps {
+                    gap: ctx.metrics.effective_px(16),
+                    w: Some(spec.width),
+                    h: Some(height),
+                    cross: CrossAlign::Center,
+                }),
+            },
+        )?;
+        let leading_panel = add(
+            ui,
+            row,
+            panel_spec(
+                ctx.theme.colors.primary,
+                Some(media),
+                Some(media),
+                media_pad,
+                0,
+                media / 2,
+            ),
+        )?;
+        let leading = add(
+            ui,
+            leading_panel,
+            ViewSpec {
+                kind: ViewKind::Icon,
+                key: 0,
+                props: Props::Icon(IconProps {
+                    id: spec.leading_icon,
+                    fg: ctx.theme.colors.on_primary,
+                    w: Some(media.saturating_sub(media_pad.saturating_mul(2))),
+                    h: Some(media.saturating_sub(media_pad.saturating_mul(2))),
+                }),
+            },
+        )?;
+        let content = add(ui, row, panel_spec(state.background, None, None, 0, 0, 0))?;
+        ui.set_flex(content, 1)?;
+        let title = add(
+            ui,
+            content,
+            text_spec(spec.title, state.content, ctx.metrics.typography(TypographyToken::Body))?,
+        )?;
+        let detail = match spec.detail {
+            Some(bytes) => Some(add(
+                ui,
+                content,
+                text_spec(
+                    bytes,
+                    ctx.theme.colors.text_secondary,
+                    ctx.metrics.typography(TypographyToken::Body),
+                )?,
+            )?),
+            None => None,
+        };
+        let trailing = add(
+            ui,
+            row,
+            text_spec(
+                spec.trailing,
+                ctx.theme.colors.text_secondary,
+                ctx.metrics.typography(TypographyToken::Body),
+            )?,
+        )?;
+        ui.set_a11y(panel, ROLE_LIST_ITEM, spec.title)?;
+        ui.set_focusable(panel, Some(panel), true)?;
+        ui.set_sem(SemEntry::new(
+            panel,
+            SEM_ACTION_ACTIVATE,
+            if spec.selected { SEM_STATE_CHECKED } else { 0 },
+            b"",
+            0,
+            0,
+            false,
+        )?)?;
+        Ok(Self { panel, title, detail, leading, trailing, selected: spec.selected, focused: false })
+    }
+
+    pub fn owns(&self, node: NodeId) -> bool {
+        node == self.panel
+            || node == self.title
+            || self.detail == Some(node)
+            || node == self.leading
+            || node == self.trailing
+    }
+
+    fn visual_state(&self) -> InteractionState {
+        if self.focused {
+            InteractionState::Focused
+        } else if self.selected {
+            InteractionState::Selected
+        } else {
+            InteractionState::Normal
+        }
+    }
+
+    fn apply<const N: usize>(
+        &self, ui: &mut Ui<N>, ctx: &WidgetContext, state: InteractionState,
+    ) -> Result<(), UiError> {
+        let visual = ctx.theme.state(state);
+        if let Some(props) = retained_props(ui, self.panel) {
+            if let Props::Panel(mut p) = props {
+                p.bg = visual.background;
+                ui.set_props(self.panel, Props::Panel(p))?;
+            }
+        }
+        if let Some(props) = retained_props(ui, self.title) {
+            if let Props::Text(mut p) = props {
+                p.style.fg = visual.content;
+                ui.set_props(self.title, Props::Text(p))?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn set_selected<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, selected: bool,
+    ) -> Result<(), UiError> {
+        self.selected = selected;
+        if let Some(mut semantic) = ui.sem_of(self.panel) {
+            semantic.state = if selected { SEM_STATE_CHECKED } else { 0 };
+            ui.set_sem(semantic)?;
+        }
+        self.apply(ui, ctx, self.visual_state())
+    }
+
+    pub fn on_msg<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, msg: &Msg,
+    ) -> Result<bool, UiError> {
+        let node = match msg {
+            Msg::Press { node, .. }
+            | Msg::Release { node, .. }
+            | Msg::Cancel { node }
+            | Msg::FocusIn { node }
+            | Msg::FocusOut { node } => *node,
+            _ => return Ok(false),
+        };
+        if !self.owns(node) {
+            return Ok(false);
+        }
+        match msg {
+            Msg::Press { .. } => self.apply(ui, ctx, InteractionState::Pressed)?,
+            Msg::Release { .. } | Msg::Cancel { .. } => {
+                self.apply(ui, ctx, self.visual_state())?
+            }
+            Msg::FocusIn { .. } => {
+                self.focused = true;
+                self.apply(ui, ctx, InteractionState::Focused)?
+            }
+            Msg::FocusOut { .. } => {
+                self.focused = false;
+                self.apply(ui, ctx, self.visual_state())?
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+}
+
+/// Switch：双态开关。状态由 app 持有；`on_msg` 可在 Click 时翻转视觉态。
 /// Switch：双态开关。状态由 app 持有；`on_msg` 可在 Click 时翻转视觉态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Switch {

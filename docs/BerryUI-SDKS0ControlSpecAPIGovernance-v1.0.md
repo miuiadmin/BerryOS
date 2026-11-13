@@ -139,6 +139,7 @@ experimental 可以调整，但必须保持规格与账本同批更新
 | `berry_ui::sdk::FontSource` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::GridProps` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::HitDumpEntry` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
+| `berry_ui::sdk::IconButton` | type | D3 | in-tree | experimental | `docs/BerryUI-AppBarD3-v1.0.md` |
 | `berry_ui::sdk::IconProps` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::IconSource` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::ImageProps` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
@@ -150,6 +151,8 @@ experimental 可以调整，但必须保持规格与账本同批更新
 | `berry_ui::sdk::ListDetail` | type | L3 | in-tree | stable | `docs/BerryUI-L3TransposedContainerFlexListDetail-v1.0.md` |
 | `berry_ui::sdk::ListDetailSpec` | type | L3 | in-tree | stable | `docs/BerryUI-L3TransposedContainerFlexListDetail-v1.0.md` |
 | `berry_ui::sdk::ListItem` | type | F4 | in-tree | stable | `docs/BerryUI-F4组件第一版-v1.1.md` |
+| `berry_ui::sdk::ListTile` | type | D3 | in-tree | experimental | `docs/BerryUI-AppBarD3-v1.0.md` |
+| `berry_ui::sdk::ListTileSpec` | type | D3 | in-tree | experimental | `docs/BerryUI-AppBarD3-v1.0.md` |
 | `berry_ui::sdk::MonospaceTextMetrics` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::Msg` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::MsgBuf` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |

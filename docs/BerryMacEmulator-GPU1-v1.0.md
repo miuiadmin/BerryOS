@@ -92,7 +92,7 @@ SUBMIT 保留 credits ≤2、无 damage 不提交、FULL/K 互斥与 alias 生�
 
 ## §6 验证与实测
 
-2026-11-13 最终源码实测：
+2026-11-13 GPU1 终验源码实测：
 
 ```text
 VGPU ok                          1
@@ -116,7 +116,8 @@ FBW ok / FBSERVE ok / LAUNCH ok = 1 / 1 / 1
 KERNEL PANIC = 0
 ```
 
-最终产物：
+GPU1 基线产物（后续 AppBar D3 的最新镜像哈希归
+[BerryDemo-D1-v1.0.md](BerryDemo-D1-v1.0.md) 单源记录）：
 
 ```text
 out/berryos.img          sha256 0884441868b4162b1e21c507d2ca1831f71f760249bba79f3865f58fc31afe7d
