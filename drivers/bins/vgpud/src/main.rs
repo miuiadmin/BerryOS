@@ -1108,7 +1108,15 @@ impl PresentSrv {
             return false;
         };
         let bytes = (self.w as u64) * 4 * self.h as u64;
-        let Some(len) = usize::try_from(bytes).ok() else {
+        // 800×600 线性帧是 468.75 页；VMO 创建/commit 面必须整页，
+        // 渲染/resource 指纹仍用精确线性长度。
+        let Some(vmo_bytes) = bytes.checked_add(4095).map(|v| v & !4095) else {
+            return false;
+        };
+        let Some(len) = usize::try_from(vmo_bytes).ok() else {
+            return false;
+        };
+        let Some(frame_len) = usize::try_from(bytes).ok() else {
             return false;
         };
         if self.boot_vmo == 0 {
@@ -1116,9 +1124,9 @@ impl PresentSrv {
             let mut vmo = 0 as Handle;
             let mut va = 0x7900_0000usize;
             if hv == 0
-                || berry_vmo_create(bytes, 0, &mut vmo) != 0
+                || berry_vmo_create(vmo_bytes, 0, &mut vmo) != 0
                 || vmo == 0
-                || berry_vmo_commit(vmo, 0, bytes) != 0
+                || berry_vmo_commit(vmo, 0, vmo_bytes) != 0
                 || berry_vmar_map(
                     hv,
                     0,
@@ -1131,13 +1139,14 @@ impl PresentSrv {
                 || va != 0x7900_0000
             {
                 let _ = berry_handle_close(vmo);
+                println!("VGPUBOOT fail stage=map");
                 return false;
             }
             self.boot_vmo = vmo;
             self.boot_va = va;
         }
         let first = !self.boot_started;
-        let fb = unsafe { core::slice::from_raw_parts_mut(self.boot_va as *mut u8, len) };
+        let fb = unsafe { core::slice::from_raw_parts_mut(self.boot_va as *mut u8, frame_len) };
         let rendered = if self.boot_started {
             Renderer::restore(
                 fb,
@@ -1175,9 +1184,11 @@ impl PresentSrv {
             .unwrap_or(false)
         };
         if !rendered {
+            println!("VGPUBOOT fail stage=render");
             return false;
         }
         let Some(resource) = self.resource_for(self.boot_vmo, bytes) else {
+            println!("VGPUBOOT fail stage=backing");
             return false;
         };
         self.select_resource(resource);

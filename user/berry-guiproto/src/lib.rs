@@ -1076,7 +1076,7 @@ pub fn encode_present_req(out: &mut [u8], req: &PresentReq) -> Option<usize> {
     }
 }
 
-/// 解析 present 域请求：六 op 各自恰长执法（截断/尾随 = 野值拒）；rect
+/// 解析 present 域请求：七 op 各自恰长执法（截断/尾随 = 野值拒）；rect
 /// 数由帧长推导（越帽拒）/ flags·scene·mode·sticky 值域对称拒；保留位
 /// （off 1/2/3 等）恒不校验。
 pub fn parse_present_req(buf: &[u8]) -> Option<PresentReq> {

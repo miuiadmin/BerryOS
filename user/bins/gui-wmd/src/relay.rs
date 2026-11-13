@@ -5,7 +5,8 @@
 //! ST_BAD 拒线。
 //!
 //! **分发表执法**（R1 应修①，在 main.rs `on_wm` 入口）：present
-//! 1..=6 / hdi 0x40..=0x43 → 本模块；wm 0x60..=0x7F → 本地表；其余 op
+//! 1..=6 / hdi 0x40..=0x43 → 本模块；op 7 仅 wmd 自产 BootProgress，不接
+//! app 请求；wm 0x60..=0x7F → 本地表；其余 op
 //! （含 0x20/0x21 input 域错投）→ 1B ST_BAD。随行 handle 数与两域协议
 //! 定值不符 → ST_BAD + close（防坏客户端向中继塞 handle——send 即
 //! take，违规面必须先收下再关，不 close 即泄漏）。
@@ -25,6 +26,7 @@
 use super::table;
 use super::{close_all, now_ns, send_rep_handles, st_rep, trap};
 use berry_guiproto as gp;
+use core::sync::atomic::{AtomicBool, Ordering};
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_handle_close, berry_handle_duplicate,
     berry_object_wait_one, berry_vmo_commit, berry_vmo_create, berry_vmo_get_size,
@@ -35,6 +37,10 @@ use berry_sys::{
 /// 中继收侧 READABLE 帽（10s 量级——gfxdemo `RPC_CAP_NS` 同值；帽 ≥
 /// 客户端帽 = 客户端侧先超时降级，wmd trap 面只兜真死亡）。
 const RELAY_CAP_NS: u64 = 300 * 1_000_000_000;
+
+/// BOOT-P1：wmd 首个自产 SUBMIT 前只发一次 100% 系统进度；随后真实桌面
+/// 帧提交。ramfb 后端按 unsupported 烘焙线忽略，vgpu 后端渲染终态。
+static BOOT_PROGRESS_DONE: AtomicBool = AtomicBool::new(false);
 
 /// 期望随行数（`Some((min, max))` = 执法；`None` = 不执法——畸形帧透传
 /// 交 guifbd 拒（wmd 不做 present/hdi 域第二解析器，帧形校验单源）。
@@ -255,6 +261,31 @@ impl Compositor {
     }
 }
 
+fn boot_progress_complete_once(cli: Handle) {
+    if BOOT_PROGRESS_DONE.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let mut req = [0u8; 32];
+    let Some(n) = gp::encode_present_req(
+        &mut req,
+        &gp::PresentReq::BootProgress {
+            stage: gp::BOOT_STAGE_HANDOFF,
+            permille: gp::BOOT_PROGRESS_MAX,
+        },
+    ) else {
+        return;
+    };
+    let (rep, nb, _rhs, nh) = rpc_present(cli, &req[..n], &[]);
+    // guifbd 的 ST_UNSUPPORTED 是声明的忽略面；vgpu 非 OK 是显示控制链
+    // 死亡面，trap 保持 wmd fail-loud。
+    if nb == 1 && nh == 0 {
+        if rep[0] == gp::ST_OK || rep[0] == gp::ST_UNSUPPORTED {
+            return;
+        }
+    }
+    trap();
+}
+
 /// SUBMIT 专用合成中继：校验 surface owner → 拷入 wmd 全屏合成 VMO →
 /// guifbd 收到的永远是 surface_id=0 的 wmd 聚合帧。真实 token/credits 仍
 ///由 guifbd 产生，wmd 不合成 present 成功应答。
@@ -391,6 +422,7 @@ pub fn submit_composite(
         Some(n) => n,
         None => trap(),
     };
+    boot_progress_complete_once(cli);
     let (rep, nb, _rhs, nh) = rpc_present(cli, &req[..n], &[alias]);
     send_rep_handles(ch, &rep[..nb], &_rhs[..nh]);
 }

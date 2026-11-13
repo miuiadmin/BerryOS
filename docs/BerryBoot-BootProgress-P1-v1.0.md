@@ -142,10 +142,11 @@ vgpud ready
 → BootProgress 450
 → wmd spawn / inputd / launcher assembly 前推进 520 / 560 / 700
 → close duplicate before the first GUI client
+→ wmd sends Handoff permille=1000 immediately before its first real SUBMIT
 → wmd first SUBMIT replaces progress with desktop
 ```
 
-vgpud 渲染进度使用私有 VMO，映射在本进程 VMAR 后写入，再执行：
+vgpud 渲染进度使用私有 VMO，映射在本进程 VMAR 后写入。800×600 的线性帧是 468.75 页，VMO commit 面按 4KiB 向上取整；渲染与 resource 指纹仍使用精确线性长度。随后执行：
 
 ```text
 ATTACH_BACKING
@@ -166,6 +167,12 @@ VGPUBOOT ok stage=<stage> permille=<permille> rect=<WxH>@<Y>
 1080×180@1305
 ```
 
+GUI8 800×600 后续条带为：
+
+```text
+800×140@432
+```
+
 最终实测序列：
 
 ```text
@@ -173,10 +180,11 @@ stage=4 permille=450
 stage=4 permille=520
 stage=4 permille=560
 stage=5 permille=700
+stage=5 permille=1000
 LAUNCH ok
 ```
 
-显式 `device=vgpu0` 截图验证 70% 进度面与随后的桌面首帧；默认 QEMU console 与 vgpu0 逐字节一致。首帧后的条带 damage 把三次系统阶段更新的传输面从整面 8.3MiB 降到约 0.75MiB。
+显式 `device=vgpu0` 截图验证 70% 中间进度面、100% 终态序列与随后的桌面首帧；默认 QEMU console 与 vgpu0 逐字节一致。首帧后的条带 damage 把三次系统阶段更新的传输面从整面 8.3MiB 降到约 0.75MiB。
 
 ## §6 回归与守门
 
@@ -209,6 +217,7 @@ GUI8:
 BOOTPROG ok display 1080x1920
 VGPUBOOT ok ... permille=450
 VGPUBOOT ok ... permille=700
+VGPUBOOT ok ... permille=1000
 LAUNCH ok
 KERNEL PANIC = 0
 ```
@@ -218,7 +227,7 @@ KERNEL PANIC = 0
 ## §7 边界与后续
 
 - BerryBoot 0→100% 首屏在 ramfb/GOP 面；QEMU 默认主 console 在 vgpu 时，产品窗口在 vgpud ready 前仍可能短暂显示 vgpu 自验空白面。
-- vgpu 主显示滚动进度从 svcmgr/vgpud 接管后开始，当前覆盖 45%→70%，再由 wmd 首帧替换为桌面。
+- vgpu 主显示滚动进度从 svcmgr/vgpud 接管后开始，当前覆盖 45%→100%，再由 wmd 首帧替换为桌面。
 - `BootProgress` 是系统控制面，不是 BerryUI app API；SDK ledger 不新增 facade。
 - ramfb 后端收到 `BootProgress` 返回 `ST_UNSUPPORTED`，防止端点装配错位。
 - 后续 P2 需解决 QEMU Cocoa 单主 console 的宿主切换：ramfb 0% 首屏与 vgpu 桌面之间的无缝主显示切换需要设备壳/QMP 控制面协作，不能用第二像素真相源伪造。
