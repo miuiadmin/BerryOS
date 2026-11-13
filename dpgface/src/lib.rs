@@ -255,3 +255,8 @@ pub fn faulter_key_route(claim: Claim) -> FaulterKey {
         Claim::PoolFull => FaulterKey::Overflow,
     }
 }
+
+/// W3-Q73：pager 表批窗 ABI 装配纯面（0x24 入参判定律——n 门 /
+/// PagerWindow 16B 小端拼装 / delta 页对齐预检；kernel syscall.rs
+/// handler 壳消费，dpgface 主面同源延续零新 crate）。
+pub mod tblwin;
