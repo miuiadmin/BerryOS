@@ -162,7 +162,55 @@ fn draw_menu(buf: &mut [u32], width: u32, height: u32, current: &str) {
     }
 }
 
-fn draw_toolbar(buf: &mut [u32], width: u32, height: u32, armed: bool, hover: Option<usize>) {
+fn draw_touch_feedback(
+    buf: &mut [u32],
+    width: u32,
+    height: u32,
+    feedback: Option<((f64, f64), Instant)>,
+) {
+    let Some(((x, y), at)) = feedback else { return };
+    let elapsed = at.elapsed();
+    if elapsed >= Duration::from_millis(220) {
+        return;
+    }
+    let t = elapsed.as_millis() as f64 / 220.0;
+    let radius = 10.0 + t * 34.0;
+    let alpha = (1.0 - t).min(1.0) * 0.72;
+    let x0 = (x - radius).floor().max(0.0) as u32;
+    let x1 = (x + radius).ceil().min(width as f64 - 1.0) as u32;
+    let y0 = (y - radius).floor().max(0.0) as u32;
+    let y1 = (y + radius).ceil().min(height as f64 - 1.0) as u32;
+    for py in y0..=y1 {
+        for px in x0..=x1 {
+            let dx = px as f64 - x;
+            let dy = py as f64 - y;
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist > radius {
+                continue;
+            }
+            let coverage = ((radius - dist).clamp(0.0, 1.0) * alpha).clamp(0.0, 1.0);
+            let i = (py as usize * width as usize + px as usize) as usize;
+            if i >= buf.len() {
+                continue;
+            }
+            let src = buf[i];
+            let inv = 1.0 - coverage;
+            let channel = |v: u32| ((v as f64 * inv + 255.0 * coverage) as u32).min(255);
+            buf[i] = (channel((src >> 16) & 0xff) << 16)
+                | (channel((src >> 8) & 0xff) << 8)
+                | channel(src & 0xff);
+        }
+    }
+}
+
+fn draw_toolbar(
+    buf: &mut [u32],
+    width: u32,
+    height: u32,
+    armed: bool,
+    hover: Option<usize>,
+    pressed: Option<(usize, Duration)>,
+) {
     let bar_top = height.saturating_sub(TOOLBAR_H);
     let bar = 0x0018_1C20;
     for y in bar_top..height {
@@ -174,7 +222,9 @@ fn draw_toolbar(buf: &mut [u32], width: u32, height: u32, armed: bool, hover: Op
     }
     let by = bar_top + (TOOLBAR_H - TOOLBAR_BUTTON_H) / 2;
     for (i, (bx, bw)) in toolbar_buttons(width).iter().enumerate() {
-        let btn = if i == 6 && armed {
+        let btn = if pressed.is_some_and(|(index, elapsed)| index == i && elapsed < Duration::from_millis(180)) {
+            0x005D_6BEC
+        } else if i == 6 && armed {
             0x008B_2E2E
         } else if hover == Some(i) {
             0x003A_424A
@@ -426,6 +476,8 @@ struct App {
     quit: bool,
     power_armed: Option<Instant>,
     hover: Option<usize>,
+    pressed_tool: Option<(usize, Instant)>,
+    touch_feedback: Option<((f64, f64), Instant)>,
     menu_open: bool,
     image: Option<PathBuf>,
     accel: String,
@@ -462,6 +514,8 @@ impl App {
             quit: false,
             power_armed: None,
             hover: None,
+            pressed_tool: None,
+            touch_feedback: None,
             menu_open: false,
             image,
             accel,
@@ -505,12 +559,19 @@ impl App {
             return;
         };
         scale::render(frame, &fit, size.width, size.height, &mut buffer, 0x0010_1418);
+        draw_touch_feedback(
+            &mut buffer,
+            size.width,
+            size.height,
+            self.touch_feedback,
+        );
         draw_toolbar(
             &mut buffer,
             size.width,
             size.height,
             self.power_armed.is_some(),
             self.hover,
+            self.pressed_tool.map(|(i, t)| (i, t.elapsed())),
         );
         if !self.menu_open {
             if let Some(h) = self.hover {
@@ -533,6 +594,13 @@ impl App {
         if title != self.title {
             self.title = title;
             window.set_title(&self.title);
+        }
+    }
+
+    fn note_guest_press(&mut self, x: f64, y: f64, pressed: bool) {
+        if pressed {
+            self.touch_feedback = Some(((x, y), Instant::now()));
+            self.request_redraw();
         }
     }
 
@@ -664,6 +732,8 @@ impl App {
         let Some(i) = toolbar_hit(size.width, size.height, x, y) else {
             return y >= size.height.saturating_sub(TOOLBAR_H) as f64;
         };
+        self.pressed_tool = Some((i, Instant::now()));
+        self.request_redraw();
         if i != 6 {
             self.power_armed = None;
         }
@@ -878,6 +948,7 @@ impl ApplicationHandler for App {
                         }
                         self.mouse_down = true;
                         if let Some((x, y)) = self.cursor {
+                            self.note_guest_press(x, y, true);
                             self.pointer(x, y, 1);
                         }
                     }
@@ -893,7 +964,10 @@ impl ApplicationHandler for App {
                 let (x, y) = (t.location.x, t.location.y);
                 match t.phase {
                     TouchPhase::Started => {
-                        if !self.toolbar_click(x, y) {
+                        if self.toolbar_click(x, y) {
+                            // Toolbar input is host-owned; no guest touch event.
+                        } else {
+                            self.note_guest_press(x, y, true);
                             self.send_touch(x, y, true);
                         }
                     }
@@ -924,7 +998,19 @@ impl ApplicationHandler for App {
             event_loop.exit();
             return;
         }
-        if self.poll_frame() {
+        let tool_active = self
+            .pressed_tool
+            .is_some_and(|(_, at)| at.elapsed() < Duration::from_millis(180));
+        if !tool_active && self.pressed_tool.take().is_some() {
+            self.request_redraw();
+        }
+        let touch_active = self
+            .touch_feedback
+            .is_some_and(|(_, at)| at.elapsed() < Duration::from_millis(220));
+        if !touch_active && self.touch_feedback.take().is_some() {
+            self.request_redraw();
+        }
+        if self.poll_frame() || tool_active || touch_active {
             self.request_redraw();
         }
         event_loop.set_control_flow(ControlFlow::WaitUntil(
@@ -968,7 +1054,7 @@ mod toolbar_tests {
     fn hover_highlight_and_tooltip() {
         let (w, h) = (480usize, 1000usize);
         let mut buf = vec![0u32; w * h];
-        draw_toolbar(&mut buf, w as u32, h as u32, false, Some(0));
+        draw_toolbar(&mut buf, w as u32, h as u32, false, Some(0), None);
         let (bx, _) = toolbar_buttons(w as u32)[0];
         let by = h - TOOLBAR_H as usize + ((TOOLBAR_H - TOOLBAR_BUTTON_H) / 2) as usize;
         assert_eq!(buf[by * w + bx as usize], 0x003A_424A);
@@ -978,10 +1064,36 @@ mod toolbar_tests {
     }
 
     #[test]
+    fn pressed_toolbar_and_touch_feedback_are_immediately_visible() {
+        let (w, h) = (480usize, 1000usize);
+        let mut buf = vec![0u32; w * h];
+        draw_toolbar(
+            &mut buf,
+            w as u32,
+            h as u32,
+            false,
+            None,
+            Some((0, Duration::ZERO)),
+        );
+        let (bx, _) = toolbar_buttons(w as u32)[0];
+        let by = h - TOOLBAR_H as usize + ((TOOLBAR_H - TOOLBAR_BUTTON_H) / 2) as usize;
+        assert_eq!(buf[by * w + bx as usize], 0x005D_6BEC);
+
+        let mut touch = vec![0u32; w * h];
+        draw_touch_feedback(
+            &mut touch,
+            w as u32,
+            h as u32,
+            Some(((240.0, 500.0), Instant::now())),
+        );
+        assert_ne!(touch[500 * w + 240], 0, "click ripple center is visible");
+    }
+
+    #[test]
     fn draw_bar_and_text() {
         let (w, h) = (480usize, 1000usize);
         let mut buf = vec![0u32; w * h];
-        draw_toolbar(&mut buf, w as u32, h as u32, false, None);
+        draw_toolbar(&mut buf, w as u32, h as u32, false, None, None);
         let bar_top = h - TOOLBAR_H as usize;
         assert_eq!(buf[bar_top * w + 2], 0x0018_1C20);
         let (bx, bw) = toolbar_buttons(w as u32)[0];

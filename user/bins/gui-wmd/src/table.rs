@@ -848,8 +848,10 @@ impl WmTable {
         for &owner in owners[..n].iter() {
             changed |= self.set_owner_visibility(owner, owner == next);
         }
+        let focus_before = self.focus;
         self.focus_owner(next);
-        self.change_complete(changed || true);
+        let focus_changed = self.focus != focus_before;
+        self.change_complete(changed || focus_changed);
         Some(next)
     }
 

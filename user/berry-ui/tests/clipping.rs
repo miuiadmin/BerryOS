@@ -335,3 +335,45 @@ fn command_budget_never_leaves_dangling_clip() {
         )
         .is_ok());
 }
+
+#[test]
+fn sparse_offset_damage_keeps_separate_painted_leaves() {
+    let mut ui = Ui::<32>::new(200, 100);
+    let root = ui.root();
+    let port = ui
+        .add(
+            root,
+            ViewSpec {
+                kind: ViewKind::Clip,
+                key: 0,
+                props: Props::Clip(ClipProps { w: Some(200), h: Some(100) }),
+            },
+        )
+        .unwrap();
+    let track = ui
+        .add(
+            port,
+            ViewSpec {
+                kind: ViewKind::Row,
+                key: 0,
+                props: Props::Row(RowProps {
+                    gap: 60,
+                    w: Some(200),
+                    h: Some(100),
+                    cross: CrossAlign::Center,
+                }),
+            },
+        )
+        .unwrap();
+    let a = ui.add(track, rect(BLUE, Some(40), Some(20))).unwrap();
+    let b = ui.add(track, rect(GREEN, Some(40), Some(20))).unwrap();
+    ui.layout();
+    ui.drain_damage();
+
+    ui.set_offset_sparse(track, 10, 0).unwrap();
+    let damage = ui.damage();
+    assert!(!damage.full);
+    assert_eq!(damage.count, 2, "两个不相邻 painted leaf 不提升 FULL");
+    assert!(damage.union_px() < 20_000, "damage 必须显著小于 200×100 port");
+    assert_ne!(a, b);
+}

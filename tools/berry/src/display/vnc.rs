@@ -433,12 +433,38 @@ impl Reader {
         read_exact(stream, &mut data)?;
         let step = self.pf.bytes();
         let stride = self.frame.width as usize;
+        // QEMU's common console format is 32bpp with byte-wide channels. Keep
+        // the generic decoder for 8/16bpp, but avoid repeated format branching
+        // for every one of the ~2M product pixels.
+        let fast32 = self.pf.bpp == 32
+            && self.pf.rmax == 255
+            && self.pf.gmax == 255
+            && self.pf.bmax == 255;
         for row in 0..h as usize {
             let src = row * w as usize * step;
             let dst = (y as usize + row) * stride + x as usize;
-            for col in 0..w as usize {
-                let off = src + col * step;
-                self.frame.pixels[dst + col] = self.pf.pixel(&data[off..off + step]);
+            if fast32 {
+                for (col, chunk) in data[src..]
+                    .chunks_exact(4)
+                    .take(w as usize)
+                    .enumerate()
+                {
+                    let a = [chunk[0], chunk[1], chunk[2], chunk[3]];
+                    let v = if self.pf.big_endian {
+                        u32::from_be_bytes(a)
+                    } else {
+                        u32::from_le_bytes(a)
+                    };
+                    let r = ((v >> self.pf.rshift) & 0xff) as u32;
+                    let g = ((v >> self.pf.gshift) & 0xff) as u32;
+                    let b = ((v >> self.pf.bshift) & 0xff) as u32;
+                    self.frame.pixels[dst + col] = (r << 16) | (g << 8) | b;
+                }
+            } else {
+                for col in 0..w as usize {
+                    let off = src + col * step;
+                    self.frame.pixels[dst + col] = self.pf.pixel(&data[off..off + step]);
+                }
             }
         }
         Ok(())

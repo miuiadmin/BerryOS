@@ -82,18 +82,14 @@ mod guest {
     /// INPUT_POLL 阻塞服务帽：30s（< client 侧会话帽 90s——「服务帽 <
     /// client 帽」纪律；到点 ST_EAGAIN 而非自陷）。
     const POLL_BLOCK_CAP_NS: u64 = 30_000_000_000;
-    /// serve 空闲心跳 tick：100ms（超时 = 心跳非死线——回环顶重查 used 环
-    /// 后重臂续等；P6 A-3 echo 同款语义，段② 按消费节奏可调）。tick 同时是
-    /// **无消费窗口的设备层收割节奏**：eventq 预投 QSIZE=64 缓冲、QEMU
-    /// virtio_input_send 逐事件取描述符，耗尽即丢批尾——空闲期输入超过
-    /// 64 事件/tick 时尾部仍会被设备丢弃（press 送达而 release 丢弃可致
-    /// 泵接触态滞留，至下次真实接触/SYN_DROPPED 自愈）。Phase 0 = 64 深
-    /// 覆盖 GUI8 burst/人工形态并打丢事件证据；离散转移零丢的结构性根治
-    /// 仍是 v2 IRQ 面（§5.2-5 注）。
-    const SVC_TICK_NS: u64 = 100_000_000;
-    /// 交互活动期的设备收割节奏。GUI 桌面没有阻塞 inputd 的 legacy
-    /// INPUT_POLL 客户，若只靠 100ms 心跳，鼠标事件平均先等 50ms；活动后
-    /// 短窗改 2ms 轮询，静默 200ms 再回落空闲心跳（结构根治仍归 v2 IRQ）。
+    /// serve 空闲心跳 tick：16ms（超时 = 心跳非死线——回环顶重查 used 环
+    /// 后重臂续等）。tick 同时是 **无消费窗口的设备层收割节奏**。产品桌面
+    /// 的首次触摸/按键不能平均先等 50ms、最坏 100ms；16ms 对齐呈现帧期，
+    /// 让 press 反馈与首帧同量级。eventq 预投 QSIZE=64 缓冲，空闲期超过
+    /// 64 事件/tick 仍会丢批尾；离散转移零丢的结构性根治仍是 v2 IRQ 面。
+    const SVC_TICK_NS: u64 = 16_000_000;
+    /// 交互活动期的设备收割节奏。活动后短窗改 2ms 轮询，静默 200ms 再
+    /// 回落 16ms 心跳（结构根治仍归 v2 IRQ）。
     const INPUT_ACTIVE_TICK_NS: u64 = 2_000_000;
     const INPUT_ACTIVE_WINDOW_NS: u64 = 200_000_000;
     /// 应答 send EBUSY 重臂帽：10s（vnet 同档）。

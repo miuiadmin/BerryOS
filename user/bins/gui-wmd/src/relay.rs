@@ -38,9 +38,15 @@ use berry_sys::{
 /// 客户端帽 = 客户端侧先超时降级，wmd trap 面只兜真死亡）。
 const RELAY_CAP_NS: u64 = 300 * 1_000_000_000;
 
+/// wmd 单线程合成器的静态 bounce。64KiB 避免用户堆单次大分配，同时把
+/// 1080 宽整屏合成的 VMO syscall 从逐行数千次降到数十次。
+static mut COMPOSITE_BOUNCE: [u8; 64 * 1024] = [0; 64 * 1024];
+
 /// BOOT-P1：wmd 首个自产 SUBMIT 前只发一次 100% 系统进度；随后真实桌面
 /// 帧提交。ramfb 后端按 unsupported 烘焙线忽略，vgpu 后端渲染终态。
 static BOOT_PROGRESS_DONE: AtomicBool = AtomicBool::new(false);
+static BOOT_PROGRESS_FIRST_SUBMIT: AtomicBool = AtomicBool::new(false);
+static BOOT_PROGRESS_SYSTEM_UI: AtomicBool = AtomicBool::new(false);
 
 /// 期望随行数（`Some((min, max))` = 执法；`None` = 不执法——畸形帧透传
 /// 交 guifbd 拒（wmd 不做 present/hdi 域第二解析器，帧形校验单源）。
@@ -229,8 +235,9 @@ impl Compositor {
         {
             trap();
         }
+        // SAFETY: wmd is single-threaded and creates exactly one compositor.
         let bounce: &'static mut [u8] =
-            std::boxed::Box::leak(std::vec![0u8; 16384].into_boxed_slice());
+            unsafe { &mut *core::ptr::addr_of_mut!(COMPOSITE_BOUNCE) };
         Compositor { vmo, w, h, stride, bounce }
     }
 
@@ -243,35 +250,50 @@ impl Compositor {
             return true;
         };
         let row = clip.dst.w as usize * 4;
-        if row > self.bounce.len() {
-            return false;
+        if row == 0 || row > self.bounce.len() {
+            return row == 0;
         }
-        for row_index in 0..clip.dst.h {
-            let src_y = clip.src.y + row_index;
-            let dst_y = clip.dst.y + row_index;
-            let src_off = src_y as usize * src_stride + clip.src.x as usize * 4;
-            let dst_off = dst_y as usize * self.stride + clip.dst.x as usize * 4;
-            if berry_vmo_read(src, self.bounce.as_mut_ptr(), src_off as u64, row) != 0
-                || berry_vmo_write(self.vmo, self.bounce.as_ptr(), dst_off as u64, row) != 0
-            {
+        let rows_per_chunk = self.bounce.len() / row;
+        let mut row_index = 0usize;
+        while row_index < clip.dst.h as usize {
+            let rows = (clip.dst.h as usize - row_index).min(rows_per_chunk);
+            let len = rows * row;
+            let src_off = (clip.src.y as usize + row_index) * src_stride
+                + clip.src.x as usize * 4;
+            if berry_vmo_read(src, self.bounce.as_mut_ptr(), src_off as u64, len) != 0 {
                 return false;
             }
+            // Source rows use the window stride; destination rows use the
+            // full-screen stride. Bulk-read packed source rows, then write each
+            // destination row without crossing a screen row end.
+            for chunk_row in 0..rows {
+                let src_base = chunk_row * row;
+                let write_dst = (clip.dst.y as usize + row_index + chunk_row) * self.stride
+                    + clip.dst.x as usize * 4;
+                let bounce_ptr = unsafe { self.bounce.as_ptr().add(src_base) };
+                if berry_vmo_write(self.vmo, bounce_ptr, write_dst as u64, row) != 0 {
+                    return false;
+                }
+            }
+            row_index += rows;
         }
         true
     }
 }
 
-fn boot_progress_complete_once(cli: Handle) {
-    if BOOT_PROGRESS_DONE.swap(true, Ordering::AcqRel) {
+fn boot_progress_point_once(
+    once: &AtomicBool,
+    cli: Handle,
+    stage: u8,
+    permille: u16,
+) {
+    if once.swap(true, Ordering::AcqRel) {
         return;
     }
     let mut req = [0u8; 32];
     let Some(n) = gp::encode_present_req(
         &mut req,
-        &gp::PresentReq::BootProgress {
-            stage: gp::BOOT_STAGE_HANDOFF,
-            permille: gp::BOOT_PROGRESS_MAX,
-        },
+        &gp::PresentReq::BootProgress { stage, permille },
     ) else {
         return;
     };
@@ -284,6 +306,34 @@ fn boot_progress_complete_once(cli: Handle) {
         }
     }
     trap();
+}
+
+/// SYSTEM launcher 已通过 per-boot seed 建立权威系统 UI session。
+pub fn boot_progress_system_ui_once(cli: Handle) {
+    boot_progress_point_once(
+        &BOOT_PROGRESS_SYSTEM_UI,
+        cli,
+        gp::BOOT_STAGE_HANDOFF,
+        berry_bootprogress::M_SYSTEM_UI_CONNECTED,
+    );
+}
+
+fn boot_progress_first_submit_once(cli: Handle) {
+    boot_progress_point_once(
+        &BOOT_PROGRESS_FIRST_SUBMIT,
+        cli,
+        gp::BOOT_STAGE_HANDOFF,
+        berry_bootprogress::M_FIRST_REAL_SUBMIT,
+    );
+}
+
+fn boot_progress_complete_once(cli: Handle) {
+    boot_progress_point_once(
+        &BOOT_PROGRESS_DONE,
+        cli,
+        gp::BOOT_STAGE_HANDOFF,
+        berry_bootprogress::M_DESKTOP_HANDOFF,
+    );
 }
 
 /// SUBMIT 专用合成中继：校验 surface owner → 拷入 wmd 全屏合成 VMO →
@@ -349,6 +399,13 @@ pub fn submit_composite(
         let _ = berry_handle_close(src);
         st_rep(ch, gp::ST_BAD);
         return;
+    }
+
+    // 第一个通过几何/尺寸硬门的真实 SUBMIT 已到达：这是 boot surface 即将
+    // 被真实帧替换前的系统真值点，不表示像素已经呈现。
+    let system_surface = client_type == gp::WM_CLIENT_SYSTEM && surface_id == 0;
+    if system_surface {
+        boot_progress_first_submit_once(cli);
     }
 
     let full = flags & gp::SUBMIT_F_DAMAGE_FULL != 0;
@@ -422,7 +479,9 @@ pub fn submit_composite(
         Some(n) => n,
         None => trap(),
     };
-    boot_progress_complete_once(cli);
+    if system_surface {
+        boot_progress_complete_once(cli);
+    }
     let (rep, nb, _rhs, nh) = rpc_present(cli, &req[..n], &[alias]);
     send_rep_handles(ch, &rep[..nb], &_rhs[..nh]);
 }

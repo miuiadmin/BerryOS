@@ -19,6 +19,18 @@ use core::cmp::{max, min};
 
 pub const PERMILLE_MAX: u16 = 1000;
 
+/// System boot milestones visible on the product vgpu console. Every value is
+/// tied to a real producer state; no wall-clock interpolation is permitted.
+pub const M_VGPU_READY: u16 = 450;
+pub const M_PRESENT_BACKEND_READY: u16 = 500;
+pub const M_WMD_SPAWNED: u16 = 520;
+pub const M_INPUT_ARMED: u16 = 560;
+pub const M_INPUTD_SPAWNED: u16 = 620;
+pub const M_PROGRESS_CONTROL_HANDOFF: u16 = 700;
+pub const M_SYSTEM_UI_CONNECTED: u16 = 800;
+pub const M_FIRST_REAL_SUBMIT: u16 = 900;
+pub const M_DESKTOP_HANDOFF: u16 = PERMILLE_MAX;
+
 /// Real boot stages represented on the first-screen surface.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Stage {
@@ -321,6 +333,24 @@ const PERMILLE_CEILING: u16 = PERMILLE_MAX;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_milestones_are_strict_monotonic_truth_points() {
+        let milestones = [
+            M_VGPU_READY,
+            M_PRESENT_BACKEND_READY,
+            M_WMD_SPAWNED,
+            M_INPUT_ARMED,
+            M_INPUTD_SPAWNED,
+            M_PROGRESS_CONTROL_HANDOFF,
+            M_SYSTEM_UI_CONNECTED,
+            M_FIRST_REAL_SUBMIT,
+            M_DESKTOP_HANDOFF,
+        ];
+        assert_eq!(milestones.len(), 9);
+        assert!(milestones.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(*milestones.last().unwrap(), PERMILLE_MAX);
+    }
 
     #[test]
     fn span_maps_real_counters_and_fails_closed() {

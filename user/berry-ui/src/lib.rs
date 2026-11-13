@@ -1394,6 +1394,170 @@ impl<const N: usize> Ui<N> {
         Ok(())
     }
 
+    /// Sparse translate damage for scrolling layers: record painted-leaf old/new
+    /// bounds instead of promoting a transparent container subtree to a full
+    /// port repaint. SwipePager uses this path for follow-finger and snap.
+    pub fn set_offset_sparse(
+        &mut self,
+        node: NodeId,
+        ox: i32,
+        oy: i32,
+    ) -> Result<(), UiError> {
+        let idx = self.slot_of(node)? as usize;
+        let (old_ox, old_oy) = {
+            let n = self.nodes[idx].as_ref().ok_or(UiError::NodeBad)?;
+            (n.ox, n.oy)
+        };
+        let (dx, dy) = (ox.saturating_sub(old_ox), oy.saturating_sub(old_oy));
+        let old_clip = self.clip_chain(idx);
+        let mut sparse = damage::DamageSet::new();
+        Self::collect_sparse_offset(&self.nodes, idx, dx, dy, old_clip, &mut sparse, 0);
+        if let Some(n) = self.nodes[idx].as_mut() {
+            n.ox = ox;
+            n.oy = oy;
+            n.paint_dirty = true;
+        }
+        let new_clip = self.clip_chain(idx);
+        if new_clip != old_clip {
+            Self::collect_sparse_offset(&self.nodes, idx, dx, dy, new_clip, &mut sparse, 0);
+        }
+        if sparse.full {
+            self.damage.add_full();
+        } else {
+            for r in sparse.iter().copied() {
+                self.damage.add(r);
+            }
+        }
+        Ok(())
+    }
+
+    fn collect_sparse_offset(
+        nodes: &[Option<Node>],
+        slot: usize,
+        dx: i32,
+        dy: i32,
+        clip: damage::RectI,
+        out: &mut damage::DamageSet,
+        depth: usize,
+    ) {
+        if depth > nodes.len() {
+            return;
+        }
+        let Some(node) = nodes.get(slot).and_then(|n| n.as_ref()) else {
+            return;
+        };
+        if !node.alive {
+            return;
+        }
+        // A scrolling track has few page children but many painted leaves.
+        // Aggregate leaves per direct child before DamageSet's 8-rect cap;
+        // otherwise a normal launcher page can degrade to FULL and defeat the
+        // sparse path.
+        if depth == 0 {
+            let mut child = node.first_child;
+            let mut hops = 0usize;
+            while child != NONE {
+                hops += 1;
+                if hops > nodes.len() {
+                    return;
+                }
+                let next = match nodes.get(child as usize).and_then(|n| n.as_ref()) {
+                    Some(c) if c.alive => c.next_sib,
+                    _ => return,
+                };
+                if let Some(r) = Self::painted_subtree_rect(nodes, child as usize, 0) {
+                    let moved = damage::RectI::new(
+                        r.x.saturating_add(dx),
+                        r.y.saturating_add(dy),
+                        r.w,
+                        r.h,
+                    );
+                    let inside = r.envelope(&moved).intersect(&clip);
+                    out.add(inside.to_wire());
+                }
+                child = next;
+            }
+            return;
+        }
+        if matches!(
+            node.kind,
+            ViewKind::Rect
+                | ViewKind::Text
+                | ViewKind::Image
+                | ViewKind::Icon
+                | ViewKind::Circle
+                | ViewKind::Panel
+        ) {
+            if let Some(r) = anim::abs_rect(nodes, slot) {
+                let moved =
+                    damage::RectI::new(r.x.saturating_add(dx), r.y.saturating_add(dy), r.w, r.h);
+                let inside = r.envelope(&moved).intersect(&clip);
+                out.add(inside.to_wire());
+            }
+        }
+        let mut child = node.first_child;
+        let mut hops = 0usize;
+        while child != NONE {
+            hops += 1;
+            if hops > nodes.len() {
+                return;
+            }
+            let next = match nodes.get(child as usize).and_then(|n| n.as_ref()) {
+                Some(c) if c.alive => c.next_sib,
+                _ => return,
+            };
+            Self::collect_sparse_offset(nodes, child as usize, dx, dy, clip, out, depth + 1);
+            child = next;
+        }
+    }
+
+    fn painted_subtree_rect(
+        nodes: &[Option<Node>],
+        slot: usize,
+        depth: usize,
+    ) -> Option<damage::RectI> {
+        if depth > nodes.len() {
+            return None;
+        }
+        let node = nodes.get(slot).and_then(|n| n.as_ref())?;
+        if !node.alive {
+            return None;
+        }
+        let mut acc = if matches!(
+            node.kind,
+            ViewKind::Rect
+                | ViewKind::Text
+                | ViewKind::Image
+                | ViewKind::Icon
+                | ViewKind::Circle
+                | ViewKind::Panel
+        ) {
+            anim::abs_rect(nodes, slot)
+        } else {
+            None
+        };
+        let mut child = node.first_child;
+        let mut hops = 0usize;
+        while child != NONE {
+            hops += 1;
+            if hops > nodes.len() {
+                return acc;
+            }
+            let next = match nodes.get(child as usize).and_then(|n| n.as_ref()) {
+                Some(c) if c.alive => c.next_sib,
+                _ => return acc,
+            };
+            if let Some(r) = Self::painted_subtree_rect(nodes, child as usize, depth + 1) {
+                acc = Some(match acc {
+                    Some(old) => old.envelope(&r),
+                    None => r,
+                });
+            }
+            child = next;
+        }
+        acc
+    }
+
     /// offset 公开面（GUI-6 D31）：内部走 anim Transform 同路径——直写
     /// ox/oy 不重排 + 新旧**子树包络** damage（经 D17 clip helper 收口）
     /// ——SwipePager 跟手与 app 直控共用，无第三套 dirty 语义。
@@ -2071,6 +2235,25 @@ impl<const N: usize> Ui<N> {
         }
         self.press_map_n = entries.len();
         Ok(())
+    }
+
+    /// 保持 trigger 的 pressed 视觉，不经过输入事件。用于 launcher 在
+    /// Click 后进入真实的 launching 状态：DOWN/UP 可能同批到达并在同一帧
+    /// 抵消，本 API 让嵌入器显式持有反馈直到真实结果到达。
+    pub fn hold_press(&mut self, trigger: NodeId) {
+        self.press_react(Msg::Press { node: trigger, x: 0, y: 0 });
+    }
+
+    /// 显式释放 [`Ui::hold_press`] 建立的 pressed 视觉。未持有时为 no-op；
+    /// 与普通 Release 一样恢复首次持有时保存的背景。
+    pub fn release_press(&mut self, trigger: NodeId) {
+        self.press_react(Msg::Release { node: trigger, x: 0, y: 0 });
+    }
+
+    /// 请求下一帧全屏重绘。SYSTEM 嵌入器在 WM 权威可见性变化后使用，
+    /// 清除被隐藏 app 遗留在合成 VMO 中的旧像素。
+    pub fn invalidate_full(&mut self) {
+        self.damage.add_full();
     }
 
     /// pump 期 pressed 反应（D18）：Press → visual 换 [`PRESSED_BG`] 底

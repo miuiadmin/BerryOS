@@ -36,6 +36,7 @@
 use berry_gfx::font::{FontAtlas32x48, GlyphAtlas};
 use berry_guiproto as gp;
 use berry_libc::io::{wm_hdi_h, wm_present_h, wm_push_srv_h, wm_srv_h};
+use core::sync::atomic::{AtomicBool, Ordering};
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
     berry_object_wait_many, berry_object_wait_one,
@@ -485,6 +486,24 @@ impl WmSessions {
             // R1 正例：SYSTEM session 只有在 per-boot seed channel 验证
             // 通过后才会到达这里；自报 client_type 的路径已在前置分支拒绝。
             println!("WMSYSAUTH ok id={id}");
+            SYSTEM_UI_PROGRESS_READY.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// WM 权威可见性已变化时唤醒 SYSTEM 嵌入器并请求全屏重绘。事件使用
+    /// CANCEL + SYSTEM_INVALIDATE，不进入普通 hit/referee 语义。
+    fn invalidate_system_surface(&mut self) {
+        let Some(i) = self.system_slot() else {
+            return;
+        };
+        let mut ev = zero_event();
+        ev.flags = gp::PE_FL_SYNTHESIZED | gp::PE_FL_SYSTEM_INVALIDATE;
+        let sess = self.slots[i].as_mut().expect("system slot checked");
+        let sid = sess.id;
+        if sess.queue.push(ev) {
+            println!("WMNAVINVAL ok sid={sid}");
+        } else {
+            eprintln!("WMNAVINVAL drop sid={sid} dropped={}", sess.queue.dropped);
         }
     }
 
@@ -596,6 +615,7 @@ impl WmSessions {
             if ev.action != gp::KEY_ACTION_DOWN {
                 return;
             }
+            let version_before = table.version();
             let (name, owner) = if ev.code == gp::KEY_SYSTEM_BACK {
                 ("back", table.navigation_back())
             } else if ev.code == gp::KEY_SYSTEM_HOME {
@@ -605,6 +625,9 @@ impl WmSessions {
                 ("task", table.navigation_task())
             };
             println!("WMNAV ok {name} owner={}", owner.unwrap_or(0));
+            if table.version() != version_before {
+                self.invalidate_system_surface();
+            }
             return;
         }
         let Some((sid, window)) = table.focused() else {
@@ -793,6 +816,8 @@ impl table::WmIo for GuestTableIo {
         trap()
     }
 }
+
+static SYSTEM_UI_PROGRESS_READY: AtomicBool = AtomicBool::new(false);
 
 static GUEST_TABLE_IO: GuestTableIo = GuestTableIo;
 
@@ -1145,6 +1170,9 @@ pub fn run() {
         sessions.reap_dead(&mut table);
         if let Some((msg, hs)) = poll(wm_srv) {
             on_broker(&mut sessions, wm_srv, &msg.0[..msg.1], &hs.0[..hs.1]);
+            if SYSTEM_UI_PROGRESS_READY.swap(false, Ordering::Relaxed) {
+                relay::boot_progress_system_ui_once(present_cli);
+            }
             continue;
         }
         if let Some((msg, hs)) = poll(push_srv) {

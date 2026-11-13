@@ -30,6 +30,7 @@ berry-psproto = { path = "../../berry-psproto" }
 # GUI-4 段②：input 域 boot 自验（INPUT ok）——SUBSCRIBE 请求编码 + 1B
 # 状态应答收口的纯函数协议面（no_std 同链，netdproto 同型）。
 berry-guiproto = { path = "../../berry-guiproto" }
+berry-bootprogress = { path = "../../../bootloader/berryboot/berry-bootprogress" }
 # GUI-8 段②：app 域 RPC serve（launcher ↔ svcmgr：APP_LIST/APP_SPAWN 编
 # 解码——段① 落库纯函数 crate，本刀接消费侧；berry-manifest :26 体例）。
 berry-appproto = { path = "../../berry-appproto" }

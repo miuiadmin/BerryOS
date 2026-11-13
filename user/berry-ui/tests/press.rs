@@ -256,3 +256,36 @@ fn press_map_capacity_and_reject_faces() {
     assert_eq!(ui.drain_damage().count, 0, "未映射 trigger 的 Press 零 damage");
     let _ = msgs;
 }
+
+#[test]
+fn explicit_hold_survives_same_batch_release_and_invalidate_is_full() {
+    let mut ui = Ui::<16>::new(100, 100);
+    let a = one_rect(&mut ui);
+    ui.set_press_map(&[(a, a)]).unwrap();
+
+    // Simulate the launcher case: DOWN and UP can arrive in one INPUT_POLL
+    // batch, so the ordinary Press/Release pair cancels before a frame exists.
+    assert_eq!(
+        pump_one(&mut ui, berry_guiproto::PHASE_DOWN, 0, 10, 10, 1),
+        vec![Msg::Press { node: a, x: 10, y: 10 }]
+    );
+    assert_eq!(
+        pump_one(&mut ui, berry_guiproto::PHASE_UP, 0, 10, 10, 2),
+        vec![
+            Msg::Release { node: a, x: 10, y: 10 },
+            Msg::Click { node: a }
+        ]
+    );
+    ui.hold_press(a);
+    let (c, _) = sole_fill_color(&mut ui, 1000);
+    assert_eq!(c, C_PRESSED, "explicit hold survives after batch release");
+
+    ui.release_press(a);
+    let (c, _) = sole_fill_color(&mut ui, 2000);
+    assert_eq!(c, C_ORIG, "explicit release restores saved background");
+
+    ui.drain_damage();
+    ui.invalidate_full();
+    let damage = ui.drain_damage();
+    assert!(damage.full, "SYSTEM navigation invalidation must repaint all");
+}

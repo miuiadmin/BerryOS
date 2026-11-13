@@ -24,6 +24,7 @@ license = "Apache-2.0"
 [dependencies]
 berry-sys = { path = "../../berry-sys" }
 berry-guiproto = { path = "../../berry-guiproto" }
+berry-bootprogress = { path = "../../../bootloader/berryboot/berry-bootprogress" }
 
 # guest 面依赖按目标门控：host test 不链接 berry-libc（libc 同名符号会劫
 # libSystem write）与字形/CRT0 供给。

@@ -167,6 +167,8 @@ pub struct Desktop {
     pub slots: [[Slot; SLOTS_PER_PAGE]; PAGES],
     /// 常驻 dock 槽（PhoneSmartDock max=4；点击与网格同映射）。
     pub dock: [Slot; DOCK_SLOTS],
+    /// 系统启动反馈（空文本 = 隐藏；真实 APP_SPAWN 请求后显示）。
+    pub launch_toast: NodeId,
     /// a11y 当前挂载页（`u8::MAX` 哨兵 = 未挂——build 尾经 rehang(0) 初挂）。
     a11y_page: u8,
 }
@@ -595,7 +597,25 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
     }
     let dock: [Slot; DOCK_SLOTS] = dock.try_into().ok().expect("dock 恰四槽");
 
-    let mut d = Desktop { pager, slots, dock, a11y_page: u8::MAX };
+    // APP_SPAWN 是真实冷启动链；点击后先给系统级 Opening 状态，避免数秒
+    // 无反馈。节点置于 dock 上方，空文本时无视觉/命中意义。
+    let launch_toast = ui.add(
+        content,
+        text_spec(b"", TEXT_FG, if big { FontSize::S32x48 } else { FontSize::S16x32 })?,
+    )?;
+    ui.set_offset(
+        launch_toast,
+        0,
+        -((OH_DOCK_H * OH_DENSITY + 36) as i32),
+    )?;
+
+    let mut d = Desktop {
+        pager,
+        slots,
+        dock,
+        launch_toast,
+        a11y_page: u8::MAX,
+    };
     rehang_a11y(ui, &mut d, 0)?;
     Ok(d)
 }
@@ -616,6 +636,17 @@ pub fn rehang_a11y(ui: &mut UiMain, d: &mut Desktop, page: u8) -> Result<(), UiE
     }
     d.a11y_page = page;
     Ok(())
+}
+
+/// 显示/隐藏系统 Opening 反馈。文本变化走 BerryUI damage 语义；隐藏恢复
+/// 空文本，不改变布局结构。
+pub fn set_launch_toast(
+    ui: &mut UiMain,
+    desktop: &Desktop,
+    visible: bool,
+) -> Result<(), UiError> {
+    let bytes: &[u8] = if visible { b"Opening..." } else { b"" };
+    ui.set_text(desktop.launch_toast, bytes)
 }
 
 /// 为真实格位安装 press_map（label/icon 命中都把 label 换 pressed 底）。

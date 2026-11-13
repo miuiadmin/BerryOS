@@ -721,7 +721,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                             vgpu_boot_progress(
                                 vgpu_progress_cli,
                                 gp::BOOT_STAGE_PREPARE,
-                                450,
+                                berry_bootprogress::M_VGPU_READY,
                             );
                         } else {
                             // vgpud 已 park/自陷且服务端端在其表内；本侧关
@@ -891,7 +891,12 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                         vgpu_boot_progress(
                             vgpu_progress_cli,
                             gp::BOOT_STAGE_PREPARE,
-                            520,
+                            berry_bootprogress::M_PRESENT_BACKEND_READY,
+                        );
+                        vgpu_boot_progress(
+                            vgpu_progress_cli,
+                            gp::BOOT_STAGE_PREPARE,
+                            berry_bootprogress::M_WMD_SPAWNED,
                         );
                     }
                     // GUI-8 段②：dup 一枚 wm 客户端端落 WMD_CLI_DUP 留表
@@ -953,7 +958,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
         vgpu_boot_progress(
             vgpu_progress_cli,
             gp::BOOT_STAGE_PREPARE,
-            560,
+            berry_bootprogress::M_INPUT_ARMED,
         );
     }
     // ---- GUI-4 段②：gui-inputd 预拉（virtio-tablet/keyboard 输入服务）。
@@ -1014,6 +1019,13 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                 // `gui-inputd: up slot=… cal=…` 诊断行（ABS 域真值源）由
                 // inputd 自打。
                 INPUT_A.store(in_a, Ordering::Relaxed);
+                if vgpu_progress_cli != 0 {
+                    vgpu_boot_progress(
+                        vgpu_progress_cli,
+                        gp::BOOT_STAGE_PREPARE,
+                        berry_bootprogress::M_INPUTD_SPAWNED,
+                    );
+                }
                 // push_b 已被 take 迁入 inputd 表——static 清零防后续误用
                 // （fsmgr blk_cli 同款；已迁值不可 close）。
                 WMD_PUSH_B.store(0, Ordering::Relaxed);
@@ -1042,7 +1054,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
         vgpu_boot_progress(
             vgpu_progress_cli,
             gp::BOOT_STAGE_HANDOFF,
-            700,
+            berry_bootprogress::M_PROGRESS_CONTROL_HANDOFF,
         );
         if berry_handle_close(vgpu_progress_cli) != 0 {
             trap();

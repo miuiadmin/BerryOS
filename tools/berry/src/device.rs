@@ -240,6 +240,50 @@ impl Device {
         Ok(())
     }
 
+    /// Queue a down/up Linux key pulse on a worker thread. The winit UI thread
+    /// must not block for the inter-event service interval.
+    pub fn send_linux_key_pulse(&mut self, code: u16) -> Result<()> {
+        let qmp = self.qmp.clone();
+        std::thread::spawn(move || {
+            let result = (|| -> Result<()> {
+                {
+                    let mut q = qmp.lock().unwrap();
+                    q.execute(
+                        "input-send-event",
+                        serde_json::json!({
+                            "events": [{
+                                "type": "key",
+                                "data": {
+                                    "down": true,
+                                    "key": {"type": "number", "data": code}
+                                }
+                            }]
+                        }),
+                    )?;
+                }
+                std::thread::sleep(Duration::from_millis(80));
+                let mut q = qmp.lock().unwrap();
+                q.execute(
+                    "input-send-event",
+                    serde_json::json!({
+                        "events": [{
+                            "type": "key",
+                            "data": {
+                                "down": false,
+                                "key": {"type": "number", "data": code}
+                            }
+                        }]
+                    }),
+                )?;
+                Ok(())
+            })();
+            if let Err(e) = result {
+                eprintln!("navigation key failed: {e}");
+            }
+        });
+        Ok(())
+    }
+
     pub fn run_path(&self) -> &std::path::Path {
         self.run.path()
     }

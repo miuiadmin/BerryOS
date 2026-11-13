@@ -325,7 +325,7 @@ impl SwipePager {
     /// offset 直写 + 镜像同步（track 死亡（app 误 remove）→ 静默拒：
     /// set_props 同族防御面——后续 Msg 全 no-op，不 panic）。
     fn apply_ox<const N: usize>(&mut self, ui: &mut Ui<N>, ox: i32) {
-        if ui.set_offset(self.track, ox, 0).is_ok() {
+        if ui.set_offset_sparse(self.track, ox, 0).is_ok() {
             self.ox = ox;
         }
     }

@@ -126,17 +126,22 @@ permille 0..1000
 
 这不是 app 呈现请求，不携带 surface/buffer，也不进入 Berry Room SDK。普通 app 无法取得该控制端。
 
-产品链：
+产品链（九个真实里程碑，全部由状态谓词触发，禁止运行时墙钟插值）：
 
 ```text
-vgpud ready
-→ svcmgr duplicate present client（SEND|RECV）
-→ BootProgress 450
-→ wmd spawn / inputd / launcher assembly 前推进 520 / 560 / 700
-→ close duplicate before the first GUI client
-→ wmd sends Handoff permille=1000 immediately before its first real SUBMIT
-→ wmd first SUBMIT replaces progress with desktop
+vgpud ready                     → 450
+present backend ready           → 500
+wmd spawned                     → 520
+input arm reached               → 560
+inputd spawned                  → 620
+progress control handoff        → 700
+SYSTEM launcher WM_CONNECT      → 800
+first SYSTEM surface-0 SUBMIT   → 900
+desktop handoff                 → 1000
+→ wmd SYSTEM SUBMIT replaces progress with desktop
 ```
+
+900/1000 只属于 SYSTEM surface 0。GUI8 中 gfxdemo/普通 app 可以先提交，但不能消费“桌面交接”里程碑。
 
 vgpud 渲染进度使用私有 VMO，映射在本进程 VMAR 后写入。800×600 的线性帧是 468.75 页，VMO commit 面按 4KiB 向上取整；渲染与 resource 指纹仍使用精确线性长度。随后执行：
 
@@ -169,9 +174,13 @@ GUI8 800×600 后续条带为：
 
 ```text
 stage=4 permille=450
+stage=4 permille=500
 stage=4 permille=520
 stage=4 permille=560
+stage=4 permille=620
 stage=5 permille=700
+stage=5 permille=800
+stage=5 permille=900
 stage=5 permille=1000
 LAUNCH ok
 ```
@@ -207,9 +216,8 @@ GUI8:
 
 ```text
 BOOTPROG ok display 1080x1920
-VGPUBOOT ok ... permille=450
-VGPUBOOT ok ... permille=700
-VGPUBOOT ok ... permille=1000
+VGPUBOOT ok ... 450/500/520/560/620/700/800/900/1000 严格单调
+WMNAVINVAL ok sid=1（导航后 SYSTEM 全屏重绘）
 LAUNCH ok
 KERNEL PANIC = 0
 ```

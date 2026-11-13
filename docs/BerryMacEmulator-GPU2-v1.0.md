@@ -169,6 +169,20 @@ ramfb  boot 20.194s  launch 1.660s  back 1.233s  page 0.980s  switch 0.651s
 - BerryGFX raster 仍在 guest CPU；本规格不得宣称全 GPU raster。
 - ramfb 在部分小交互上仍更快；GPU2 的价值是系统显示契约和后续加速路径，不是伪造性能优势。
 
+### §7.1 Interaction P1（2026-11-13）
+
+本轮落地的是减载与反馈，不宣称 60fps 已解决：
+
+```text
+wmd copy:       源行 bulk-read + 目的行按全屏 stride 写
+host VNC:       32bpp byte-channel fast path
+BerryUI swipe:  sparse painted-leaf damage（按直接 page child 聚合）
+inputd:         空闲首 harvest 100ms → 16ms
+launcher:       Opening/pressed 反馈帧先于阻塞 APP_SPAWN
+```
+
+本机单核样本仍显示 vgpu 整窗 submit 约 90～163ms；`page/back` 墙钟受宿主负载与动作标记影响波动，不能拿单次值宣称优化终点。SMP 试跑（G2 内核、`-smp 2`）未改善 GUI 动作，暂不改变产品默认拓扑。结构性瓶颈仍是 plan P2 的呈现流水化与 shm-ring/宿主直呈现。
+
 ## §8 Mac 呈现路径设计
 
 当前路径：

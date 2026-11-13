@@ -80,7 +80,7 @@ Boot Progress 与 wmd 桌面 submit 共用同一用户可见显示面；`berry i
 | --- | --- | --- |
 | 截图 | **`berry screenshot`（已落）** / `shot`（临时设备） | 截图按钮 / `Cmd+S` |
 | 输入 | `berry input key/tap/swipe/text`（VNC attach，已落） | 客机触摸/键盘 |
-| 返回/桌面/多任务 | `berry input key f1/f2/f3` | BACK/HOME/TASK 大键（gui-wmd 系统导航） |
+| 返回/桌面/多任务 | `berry input key f1/f2/f3` | BACK/HOME/TASK 大键；pressed 态即时可见，gui-wmd 表变化唤醒 launcher 全屏重绘 |
 | 重启/关机 | **`berry power reboot/off`（C1a）** / `berry shortcut`（C2b） | BOOT/OFF 大键（C2a） |
 | 分辨率 | **`berry display set <profile> --restart`（C2c）** | **RES 菜单（C2d host / C2e attach）** |
 | 全屏 | — | `F` / `FULL` 按钮 |

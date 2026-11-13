@@ -257,6 +257,9 @@ pub const KEY_MOD_KNOWN: u8 =
 pub const PE_FL_RESAMPLED: u8 = 1 << 0;
 /// PointerEvent flags：合成事件（如 CANCEL）。
 pub const PE_FL_SYNTHESIZED: u8 = 1 << 1;
+/// PointerEvent flags：SYSTEM 导航改变了 WM 可见性，SYSTEM 嵌入器必须
+/// 全屏重绘以清除被隐藏 app 的旧像素。事件本体是 CANCEL，不参与命中。
+pub const PE_FL_SYSTEM_INVALIDATE: u8 = 1 << 2;
 
 /// 左键（位域）。
 pub const BUTTON_L: u8 = 1 << 0;
@@ -482,7 +485,7 @@ const fn phase_known(p: u8) -> bool {
 }
 
 const fn pe_flags_known(f: u8) -> bool {
-    f & !(PE_FL_RESAMPLED | PE_FL_SYNTHESIZED) == 0
+    f & !(PE_FL_RESAMPLED | PE_FL_SYNTHESIZED | PE_FL_SYSTEM_INVALIDATE) == 0
 }
 
 const fn buttons_known(b: u8) -> bool {

@@ -24,6 +24,13 @@ name = "berry-blkproto"
 version = "0.1.0"
 
 [[package]]
+name = "berry-bootprogress"
+version = "0.1.0"
+dependencies = [
+ "berry-fbcon",
+]
+
+[[package]]
 name = "berry-complete"
 version = "0.1.0"
 
@@ -189,6 +196,7 @@ version = "0.1.0"
 dependencies = [
  "berry-appproto",
  "berry-blkproto",
+ "berry-bootprogress",
  "berry-exec",
  "berry-guiproto",
  "berry-loader",

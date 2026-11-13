@@ -287,6 +287,10 @@ pub fn run(
     let mut launched = false; // LAUNCH ok 恰一次
     let mut spawn_ok: u32 = 0; // 真实 APP_SPAWN ok 回执计数（CLICK ok 恰一次）
     let mut last_spawn_click_ns: u64 = 0; // APP_SPAWN 去抖基线
+    let mut pending_spawn: Option<NodeId> = None; // 先呈 Opening，再阻塞 spawn RPC
+    let mut pending_spawn_frame = 0u64; // Opening 呈现序
+    let mut launching_node: Option<NodeId> = None; // 持续 pressed 视觉
+    let mut launch_toast_deadline = 0u64;
     let mut buf_id: u32 = 1; // SUBMIT buffer 代际（RELEASE echo 非断言面）
     let mut st = if product {
         // 产品桌面不跑 boot 期两轮合成 swipe：首帧后立即停在 page 0。
@@ -317,6 +321,17 @@ pub fn run(
     loop {
         let t_now = now();
 
+        if launch_toast_deadline != 0 && t_now >= launch_toast_deadline {
+            if let Some(node) = launching_node.take() {
+                ui.release_press(node);
+            }
+            if let Err(e) = desktop::set_launch_toast(ui, &desktop, false) {
+                fail(&format!("launch toast hide err={e:?}"));
+            }
+            launch_toast_deadline = 0;
+            ui.wake(t_now);
+        }
+
         // —— 段④ 真实输入：先收上一轮 INPUT_POLL 应答，再挂下一轮 poll。
         //    非阻塞排空（-EAGAIN = 事件尚未到，poll 仍在服务端阻塞）；事件
         //    逐条 push 进引擎，与合成注入共用 push_pointer 口。
@@ -341,8 +356,13 @@ pub fn run(
                             eprintln!("launcher: input events n={}", view.count());
                             input_logged = true;
                         }
+                        let mut system_invalidate = false;
                         for i in 0..view.count() {
                             if let Some(ev) = view.event(i) {
+                                if ev.flags & gp::PE_FL_SYSTEM_INVALIDATE != 0 {
+                                    system_invalidate = true;
+                                    continue;
+                                }
                                 let pe = PtrEvent::from_wire(
                                     ev.phase,
                                     ev.pointer_id,
@@ -356,6 +376,9 @@ pub fn run(
                                     eprintln!("launcher: input push err={e:?}");
                                 }
                             }
+                        }
+                        if system_invalidate {
+                            ui.invalidate_full();
                         }
                         ui.wake(now());
                     }
@@ -437,7 +460,20 @@ pub fn run(
                         continue;
                     }
                     last_spawn_click_ns = t_now;
-                    on_click(*node, &desktop, &mut spawn_ok, smoke)
+                    if !click_can_spawn(*node, &desktop) {
+                        continue;
+                    }
+                    // DOWN/UP 常同批到达，普通 pressed 会在同一泵内抵消。
+                    // 先持有 pressed + Opening，并在下一行呈现后才开始可能
+                    // 阻塞的 APP_SPAWN RPC，保证用户立即看到输入被接受。
+                    ui.hold_press(*node);
+                    if let Err(e) = desktop::set_launch_toast(ui, &desktop, true) {
+                        fail(&format!("launch toast show err={e:?}"));
+                    }
+                    launching_node = Some(*node);
+                    pending_spawn = Some(*node);
+                    pending_spawn_frame = presented + 1;
+                    launch_toast_deadline = t_now + LAUNCH_TOAST_NS;
                 }
                 _ => {
                     // pager.on_msg true = 翻页目标变更 → a11y 重挂当前页
@@ -576,6 +612,29 @@ pub fn run(
             }
         }
 
+        if let (Some(node), true) = (pending_spawn, launching_node.is_none()) {
+            // 无 launching_node 表示上一轮已失败清态；防御性丢弃悬挂请求。
+            let _ = node;
+            pending_spawn = None;
+        }
+        if pending_spawn.is_some() && presented >= pending_spawn_frame {
+            let node = pending_spawn.take().expect("pending spawn checked");
+            let accepted = on_click(node, &desktop, &mut spawn_ok, smoke);
+            if accepted {
+                // APP_SPAWN ack 只是“拉起受理”，Opening 继续覆盖冷启动；
+                // 真实 app 首帧会覆盖 launcher 面，后续首帧事件另接真值。
+                launch_toast_deadline = now() + LAUNCH_TOAST_NS;
+            } else {
+                if let Some(node) = launching_node.take() {
+                    ui.release_press(node);
+                }
+                if let Err(e) = desktop::set_launch_toast(ui, &desktop, false) {
+                    fail(&format!("launch toast hide err={e:?}"));
+                }
+                launch_toast_deadline = 0;
+            }
+        }
+
         // —— vote（S2 食谱：票面变化才发——省流；幂等面在服务端）。
         let ballot = ui.vote_hint();
         if last_vote != Some(ballot) {
@@ -665,7 +724,10 @@ pub fn run(
         //    RPC 非燃 CPU；wm READABLE = 段④ 输入事件未来口。TIMEDOUT =
         //    期限到正常醒——渲染下一拍 / Idle 空转睡回。）
         let nw = now();
-        let cap = nw + IDLE_CAP_NS;
+        let mut cap = nw + IDLE_CAP_NS;
+        if launch_toast_deadline != 0 {
+            cap = cap.min(launch_toast_deadline);
+        }
         let deadline = ui.next_wakeup().map_or(cap, |t| t.min(cap));
         let mut hs = [hw, 0 as Handle];
         let ss = [SIGNAL_READABLE, SIGNAL_READABLE];
@@ -785,6 +847,23 @@ fn inject_swipe(ui: &mut UiMain, base: u64) {
 
 /// APP_SPAWN 去抖：真实鼠标在冷启动反馈延迟内连点不应排出一串进程。
 const APP_SPAWN_DEBOUNCE_NS: u64 = 500_000_000;
+/// Opening 反馈最长保留时间。它只隐藏诊断，不宣布启动成功；真实成功由
+/// app 首帧覆盖，失败由 APP_SPAWN ack 立即清除。
+const LAUNCH_TOAST_NS: u64 = 8_000_000_000;
+
+/// 点击是否真的会走 APP_SPAWN（壁纸/空格/占位/冻结 app 通道均不显示假反馈）。
+fn click_can_spawn(node: NodeId, desktop: &Desktop) -> bool {
+    let Some(slot) = desktop
+        .slots
+        .iter()
+        .flatten()
+        .chain(desktop.dock.iter())
+        .find(|s| s.cell == node || s.label_node == node || s.icon == Some(node))
+    else {
+        return false;
+    };
+    slot.app.is_some() && app_cli_h() != 0
+}
 
 /// CLICK 面（修约 1 / 段④）：槽命中映射（cell/label/icon 三节点皆归本
 /// 格——最深叶命中面）→ 注册表条目 → `app_cli_h()==0`（冻结相 extras 恰
@@ -793,19 +872,25 @@ const APP_SPAWN_DEBOUNCE_NS: u64 = 500_000_000;
 /// n=1`（恰一次，`spawn_ok` 计数门——后续成功点击静默，避免重启/连点
 /// 制造重复标记）；失败回执维持 eprintln 诊断（spawn 是旁路动作，不打
 /// 断帧循环、不 fail、**不产标记**）。
-fn on_click(node: NodeId, desktop: &Desktop, spawn_ok: &mut u32, smoke: bool) {
-    let slot = desktop
+fn on_click(node: NodeId, desktop: &Desktop, spawn_ok: &mut u32, smoke: bool) -> bool {
+    let Some(slot) = desktop
         .slots
         .iter()
         .flatten()
         .chain(desktop.dock.iter())
-        .find(|s| s.cell == node || s.label_node == node || s.icon == Some(node));
-    let Some(slot) = slot else { return }; // 壁纸/状态栏/圆点/容器白区 = 无格
-    let Some(idx) = slot.app else { return }; // 占位/幽灵格不可 spawn
-    let Some(entry) = icons::registry().get(idx) else { return };
+        .find(|s| s.cell == node || s.label_node == node || s.icon == Some(node))
+    else {
+        return false;
+    };
+    let Some(idx) = slot.app else {
+        return false;
+    };
+    let Some(entry) = icons::registry().get(idx) else {
+        return false;
+    };
     let h = app_cli_h();
     if h == 0 {
-        return; // 冻结相：app 通道结构性缺席
+        return false;
     }
     let mut req = [0u8; 256];
     let mut rep = [0u8; 256];
@@ -820,15 +905,19 @@ fn on_click(node: NodeId, desktop: &Desktop, spawn_ok: &mut u32, smoke: bool) {
                 println!("CLICK ok n=1");
             }
             match ack {
-                Some((true, _)) => {}
+                Some((true, _)) => return true,
                 Some((false, err)) => eprintln!(
                     "launcher: spawn {} err={err}",
                     String::from_utf8_lossy(entry.id_bytes())
                 ),
                 None => eprintln!("launcher: spawn ack bad"),
             }
+            false
         }
-        None => eprintln!("launcher: spawn id bad"),
+        None => {
+            eprintln!("launcher: spawn id bad");
+            false
+        }
     }
 }
 
