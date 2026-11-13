@@ -676,6 +676,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
     // 端点装配层，不改 present 协议、不抬 handle 帽）。
     let mut vgpu_present_cli: Handle = 0;
     let mut vgpu_hdi_cli: Handle = 0;
+    let mut vgpu_progress_cli: Handle = 0;
     let gpuhdi_on = cpio_find(H_ROOTFS, b"gpuhdi.on").is_some();
     if !boot_probe || gpuhdi_on {
         if berry_vmo_get_size(H_MMIO, &mut msz) == 0 {
@@ -707,6 +708,21 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                         {
                             vgpu_present_cli = p_cli;
                             vgpu_hdi_cli = h_cli;
+                            // BOOT-P1：保留私有 dup 只到 launcher 装配前；
+                            // app/wmd 呈现请求仍走原 p_cli 单一读者。
+                            if berry_handle_duplicate(
+                                p_cli,
+                                RIGHT_SEND | RIGHT_RECV,
+                                &mut vgpu_progress_cli,
+                            ) != 0
+                            {
+                                trap();
+                            }
+                            vgpu_boot_progress(
+                                vgpu_progress_cli,
+                                gp::BOOT_STAGE_PREPARE,
+                                450,
+                            );
                         } else {
                             // vgpud 已 park/自陷且服务端端在其表内；本侧关
                             // 客户端端即呈现链无读者，下方回落 guifbd。
@@ -871,6 +887,13 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                     );
                     wm_cli = w_cli;
                     WMD_PUSH_B.store(push_cli, Ordering::Relaxed);
+                    if vgpu_progress_cli != 0 {
+                        vgpu_boot_progress(
+                            vgpu_progress_cli,
+                            gp::BOOT_STAGE_PREPARE,
+                            520,
+                        );
+                    }
                     // GUI-8 段②：dup 一枚 wm 客户端端落 WMD_CLI_DUP 留表
                     // （SEND|RECV 双权利——bsh fs_a 同口径）——**常驻 dup 源**
                     // （NET_A 先例）：launcher 装配（下方新位 arm / 监督一次
@@ -925,6 +948,13 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                 trap();
             }
         }
+    }
+    if vgpu_progress_cli != 0 {
+        vgpu_boot_progress(
+            vgpu_progress_cli,
+            gp::BOOT_STAGE_PREPARE,
+            560,
+        );
     }
     // ---- GUI-4 段②：gui-inputd 预拉（virtio-tablet/keyboard 输入服务）。
     // P3 起提前到 gfxdemo 之前：gfxdemo 双窗 click-to-focus 验收需要真实
@@ -1006,6 +1036,16 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                 WMD_PUSH_B.store(0, Ordering::Relaxed);
                 eco_skip(b"inputd spawn");
             }
+        }
+    }
+    if vgpu_progress_cli != 0 {
+        vgpu_boot_progress(
+            vgpu_progress_cli,
+            gp::BOOT_STAGE_HANDOFF,
+            700,
+        );
+        if berry_handle_close(vgpu_progress_cli) != 0 {
+            trap();
         }
     }
     // ---- GUI-2 段③：gfxdemo（首个 gfx 消费者）预拉——wmd/inputd 后。
@@ -4081,6 +4121,24 @@ fn gpu_hdi_rpc(
         return None;
     }
     Some((nb, nh))
+}
+
+/// BOOT-P1：把 svcmgr 已完成的真实服务阶段送到当前呈现后端。该 RPC 在
+/// gui-wmd 首帧前使用；调用方持有私有 p_cli dup，不与 app present 竞争。
+fn vgpu_boot_progress(h: Handle, stage: u8, permille: u16) -> bool {
+    let mut req = [0u8; 32];
+    let mut rep = [0u8; 32];
+    let mut rhs = [0 as Handle; 2];
+    let Some(n) = gp::encode_present_req(
+        &mut req,
+        &gp::PresentReq::BootProgress { stage, permille },
+    ) else {
+        return false;
+    };
+    let Some((nb, nh)) = gpu_hdi_rpc(h, &req[..n], &[], &mut rep, &mut rhs) else {
+        return false;
+    };
+    nb == 1 && nh == 0 && rep[0] == gp::ST_OK
 }
 
 /// vgpud HDI 四 op 真链自验：REG_VBLANK(1) → VBLANK_WAIT → PREPARE →

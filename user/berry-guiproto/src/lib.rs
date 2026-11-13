@@ -78,6 +78,19 @@ pub const OP_RELEASE: u8 = 4;
 pub const OP_VOTE: u8 = 5;
 /// present 域：显示电源模式（低功耗缝）。
 pub const OP_POWER_MODE: u8 = 6;
+/// BOOT-P1：系统启动进度控制帧（svcmgr → 显示后端）。它不是 app 呈现
+/// 请求，不携带 surface/buffer；值域与 berry-bootprogress Stage/permille
+/// 镜像，且只在 gui-wmd 首帧前允许使用。
+pub const OP_BOOT_PROGRESS: u8 = 7;
+/// BootProgress stage 判别值（与 berry-bootprogress::Stage 声明序镜像）。
+pub const BOOT_STAGE_DISPLAY: u8 = 0;
+pub const BOOT_STAGE_VERIFY: u8 = 1;
+pub const BOOT_STAGE_KERNEL: u8 = 2;
+pub const BOOT_STAGE_RAMDISK: u8 = 3;
+pub const BOOT_STAGE_PREPARE: u8 = 4;
+pub const BOOT_STAGE_HANDOFF: u8 = 5;
+/// 进度真值 0..=1000 permille。
+pub const BOOT_PROGRESS_MAX: u16 = 1000;
 /// input 域：订阅 + 投递模式声明。
 pub const OP_INPUT_SUBSCRIBE: u8 = 0x20;
 /// input 域：拉事件批（可阻塞：阻塞到至少 1 个完整事件）。
@@ -941,6 +954,8 @@ pub enum PresentReq {
     },
     /// POWER_MODE：显示电源模式。
     PowerMode { mode: u8 },
+    /// BOOT-P1：系统启动进度控制帧（服务端渲染真实系统阶段）。
+    BootProgress { stage: u8, permille: u16 },
 }
 
 /// 编码 present 域请求（None 契约：rect_count 越帽 / flags·scene·mode·
@@ -1044,6 +1059,20 @@ pub fn encode_present_req(out: &mut [u8], req: &PresentReq) -> Option<usize> {
             m[3] = 0;
             Some(4)
         }
+        PresentReq::BootProgress { stage, permille } => {
+            if *stage > BOOT_STAGE_HANDOFF || *permille > BOOT_PROGRESS_MAX {
+                return None;
+            }
+            let m = out.get_mut(..8)?;
+            m[0] = OP_BOOT_PROGRESS;
+            m[1] = *stage;
+            m[2] = 0;
+            m[3] = 0;
+            m[4..6].copy_from_slice(&permille.to_le_bytes());
+            m[6] = 0;
+            m[7] = 0;
+            Some(8)
+        }
     }
 }
 
@@ -1131,6 +1160,17 @@ pub fn parse_present_req(buf: &[u8]) -> Option<PresentReq> {
                 return None;
             }
             Some(PresentReq::PowerMode { mode })
+        }
+        OP_BOOT_PROGRESS => {
+            if buf.len() != 8 {
+                return None;
+            }
+            let stage = buf[1];
+            let permille = le16(buf, 4)?;
+            if stage > BOOT_STAGE_HANDOFF || permille > BOOT_PROGRESS_MAX {
+                return None;
+            }
+            Some(PresentReq::BootProgress { stage, permille })
         }
         _ => None,
     }
@@ -4158,6 +4198,28 @@ mod tests {
         let mut small = [0u8; 27];
         assert_eq!(encode_wm_snapshot_rep(&mut small, &snap), None);
     }
+    #[test]
+    fn present_boot_progress_roundtrip_and_value_faces() {
+        let mut buf = [0u8; 16];
+        let req = PresentReq::BootProgress {
+            stage: BOOT_STAGE_HANDOFF,
+            permille: BOOT_PROGRESS_MAX,
+        };
+        let n = encode_present_req(&mut buf, &req).unwrap();
+        assert_eq!(&buf[..n], &[OP_BOOT_PROGRESS, BOOT_STAGE_HANDOFF, 0, 0, 0xe8, 0x03, 0, 0][..]);
+        assert_eq!(parse_present_req(&buf[..n]), Some(req));
+        assert_eq!(encode_present_req(&mut buf, &PresentReq::BootProgress {
+            stage: BOOT_STAGE_HANDOFF + 1,
+            permille: 0,
+        }), None);
+        assert_eq!(encode_present_req(&mut buf, &PresentReq::BootProgress {
+            stage: 0,
+            permille: BOOT_PROGRESS_MAX + 1,
+        }), None);
+        assert_eq!(parse_present_req(&[OP_BOOT_PROGRESS, 0, 0, 0, 0xe9, 0x03, 0, 0]), None);
+        assert_eq!(parse_present_req(&[OP_BOOT_PROGRESS, 0, 0, 0, 0, 0]), None);
+    }
+
 
     #[test]
     fn wm_hit_test_groups() {

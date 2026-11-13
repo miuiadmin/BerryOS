@@ -80,6 +80,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # —— 被断言的 launcher 标记（段④ 合并后由 launcher println 单行打出）——
 MARK_BERRYBOOT = "BERRYBOOT ok"
+MARK_BOOT_PROGRESS = "BOOTPROG ok display 800x600"
 MARK_ROOTFS = "ROOTFS ok src=handoff"
 MARK_APP_COUNT = "APP ok n=10"
 MARK_APP_DEMO_UP = "app APPDEMO up"
@@ -2254,7 +2255,7 @@ def preflight(args) -> None:
 
 def _boot_base_markers() -> list[str]:
     return [
-        MARK_BERRYBOOT, MARK_ROOTFS, MARK_APP_COUNT,
+        MARK_BERRYBOOT, MARK_BOOT_PROGRESS, MARK_ROOTFS, MARK_APP_COUNT,
         MARK_WM_CONN1, MARK_WM_CONN2, MARK_WM_DENIED, MARK_WM_SURFACE_DENIED,
         MARK_WM_ORPHAN, MARK_WM_2FRAME, MARK_WM_DAMAGE_CLIP,
         MARK_WM_RAW_BUFFER_BAD, MARK_WM_CONFIG_SUBMIT_DENY,
@@ -4821,6 +4822,7 @@ def self_test(args) -> int:
         )
 
         fake_n = (
+            f"{MARK_BOOT_PROGRESS}\n"
             f"{MARK_WM_SYSTEM_AUTH} id=3\n"
             f"{MARK_WM_SYSTEM_CLIENT_DENIED}\n"
             f"{MARK_WM_SYSTEM_SEED_DENIED}\n"

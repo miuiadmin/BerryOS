@@ -6,7 +6,7 @@ Updated: 2026-11-13
 
 ## §1 产品裁决
 
-Mac Apple Silicon 产品入口仍是 `just desktop`，初始几何不变：
+Mac Apple Silicon 产品入口仍是 `just desktop`，初始几何不变（开机真实进度框架见 [BerryBoot-BootProgress-P1-v1.0.md](BerryBoot-BootProgress-P1-v1.0.md)）：
 
 ```text
 1080×1920@60

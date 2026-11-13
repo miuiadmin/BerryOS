@@ -52,7 +52,9 @@
 #      内容 ↔ BerryBoot 读数 ↔ 内核消费三方一致性，镜像打包断裂即 FAIL）；
 #   5. switches 金丝雀 ≥3 条严格递增（同 smoke.sh——冻而不死类 bug 的
 #      唯一探测器）；注入后复验（RX 中断破坏 IRQ 契约的死状是冻而非崩）；
-#   6. RX 注入相：FIFO stdin 逐字节注入 `rx\n` → RX ok（PL011 RX 中断 →
+#   6. BOOT-P1：`BOOTPROG ok display WxH` 恰一次（真实首屏 mode/进度
+#      初始化状态谓词；W/H 来自 fw_cfg display 请求或固件 GOP）；
+#   7. RX 注入相：FIFO stdin 逐字节注入 `rx\n` → RX ok（PL011 RX 中断 →
 #      console 任务 → token 面全链；bsh 可交互的自动代理——提示符本身无
 #      固定标记；C-4b 勘正：RX ok 实为内核 console 观察窗直打、不经 bsh
 #      ——EFI 路 bsh park 在 fat 段（C-2b 契约），注入命令不执行，此相
@@ -120,6 +122,8 @@ EFI_ERE=(
 # 内核接续恰一次面（src=handoff 是 handoff 路专属——fw_cfg 路打 src=fw_cfg
 # 串，混源即 FAIL）。
 CONT_MARKERS=("HANDOFF ok ver=1" "MMAP ok segs=" "ROOTFS ok src=handoff")
+# BOOT-P1：几何为变量（smoke-image 800×600 / GUI8 请求面 / 产品 1080×1920）。
+BOOTPROG_ERE='BOOTPROG ok display [0-9]+x[0-9]+'
 # 裸相 28（与 smoke.sh MARKERS 逐字同源——改那边同步这边，改漂移即两关卡
 # 各自失去「同内核零漂移」对照力；S-2 起 +BENCHXH ok 资源耗尽行为行；
 # G4-1 起 +DPG ok demand 闭环行——P2-3 补同步）。
@@ -347,7 +351,7 @@ QEMU_PID=$!
 # —— 阶段 1：全部标记到齐（EFI 十段 + 接续 3 + 裸相 28 + 生态 104 = 145）——
 # EFI 段/接续用 ERE 固定串混合面，统一进一个等待循环（到齐是状态谓词，
 # 阶段间无独立验收语义；缺失清单在超时 fail 文案里分组可见）。
-ALL_COUNT=$(( ${#EFI_FIXED[@]} + ${#EFI_ERE[@]} + ${#CONT_MARKERS[@]} + ${#KERNEL_MARKERS[@]} + ${#ECO_MARKERS[@]} ))
+ALL_COUNT=$(( ${#EFI_FIXED[@]} + ${#EFI_ERE[@]} + ${#CONT_MARKERS[@]} + ${#KERNEL_MARKERS[@]} + ${#ECO_MARKERS[@]} + 1 ))
 t0=$(date +%s)
 while :; do
   kill -0 "$QEMU_PID" 2>/dev/null \
@@ -356,7 +360,7 @@ while :; do
   for m in "${EFI_FIXED[@]}" "${CONT_MARKERS[@]}" "${KERNEL_MARKERS[@]}" "${ECO_MARKERS[@]}"; do
     assert_marker "$m" || missing="${missing:+$missing }$m"
   done
-  for e in "${EFI_ERE[@]}"; do
+  for e in "${EFI_ERE[@]}" "$BOOTPROG_ERE"; do
     grep -qE "$e" "$LOG" || missing="${missing:+$missing }ERE:$e"
   done
   [ -z "$missing" ] && break
@@ -364,7 +368,7 @@ while :; do
     && fail "标记 ${DEADLINE_BOOT}s 未到齐（实测全链 ~115s），缺：$missing"
   sleep 1
 done
-echo "smoke-image: 全标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 28 + 生态 104）"
+echo "smoke-image: 全标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + BOOT-P1 + 接续 + 裸相 28 + 生态 104）"
 
 # —— 阶段 2：恰一次（EFI 十段 + 接续——引导链重入探测）——
 for m in "${EFI_FIXED[@]}" "${CONT_MARKERS[@]}"; do
@@ -373,7 +377,8 @@ done
 for e in "${EFI_ERE[@]}"; do
   assert_once_re "$e"
 done
-echo "smoke-image: EFI 十段 + 接续恰一次到齐"
+assert_once_re "$BOOTPROG_ERE"
+echo "smoke-image: EFI 十段 + BOOT-P1 + 接续恰一次到齐"
 
 # —— 阶段 3：字节数对拍（盘内容 ↔ 引导链读数 ↔ 内核消费）——
 # 基线已在脚本入口快照（见上：与镜像打包同窗，免疫 QEMU 运行窗内共享

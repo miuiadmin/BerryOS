@@ -62,6 +62,7 @@ use berry_efi::{
     EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EFI_LOADED_IMAGE_PROTOCOL_GUID, EFI_LOADER_DATA,
     EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EFI_SUCCESS, EFI_SYSTEM_TABLE_SIGNATURE,
 };
+use berry_bootprogress::{Renderer, Stage};
 use core::ffi::c_void;
 use core::mem::{offset_of, size_of};
 
@@ -220,6 +221,328 @@ pub fn gop_stride_bytes(ppsl: u32, fmt: u32) -> Option<u32> {
     ppsl.checked_mul(4)
 }
 
+// ==================== BOOT-P1：真进度事实与 1080p 首屏 ====================
+//
+// BerryBoot 仍是进度的单一事实源之一：所有显示值都来自实际完成的
+// boot service 状态或已读字节数，不做墙钟动画。产品显示请求在装载器
+// 阶段直接写 `etc/ramfb`，使首屏就是请求几何（Mac 产品 = 1080×1920；
+// GUI8 = 800×600）。大于固件 GOP 缓冲的模式用 AllocatePages 钉新帧，
+// 该页进入 EfiLoaderData，终段 memmap 后内核自动 reserve。
+
+const FW_CFG_BASE: usize = 0x0902_0000;
+const FW_CFG_DATA: usize = FW_CFG_BASE;
+const FW_CFG_SELECTOR: usize = FW_CFG_BASE + 8;
+const FW_CFG_DMA: usize = FW_CFG_BASE + 0x10;
+const FW_CFG_FILE_DIR: u16 = 0x19;
+const DMA_CTRL_ERROR: u32 = 1;
+const DMA_CTRL_SELECT: u32 = 1 << 3;
+const DMA_CTRL_WRITE: u32 = 1 << 4;
+
+#[derive(Clone, Copy)]
+struct FwFile {
+    select: u16,
+    size: u32,
+}
+
+#[inline]
+unsafe fn mmio_read_u32(addr: usize) -> u32 {
+    core::ptr::read_volatile(addr as *const u32)
+}
+
+#[inline]
+unsafe fn mmio_write_u16(addr: usize, value: u16) {
+    core::ptr::write_volatile(addr as *mut u16, value);
+}
+
+#[inline]
+unsafe fn mmio_write_u64(addr: usize, value: u64) {
+    core::ptr::write_volatile(addr as *mut u64, value);
+}
+
+#[inline]
+unsafe fn fw_stream_le32() -> u32 {
+    mmio_read_u32(FW_CFG_DATA)
+}
+
+#[inline]
+unsafe fn fw_stream_be32() -> u32 {
+    fw_stream_le32().swap_bytes()
+}
+
+unsafe fn fw_find_file(name: &[u8]) -> Option<FwFile> {
+    if name.len() >= 56 {
+        return None;
+    }
+    mmio_write_u16(FW_CFG_SELECTOR, FW_CFG_FILE_DIR.to_be());
+    let count = fw_stream_be32();
+    if count > 1024 {
+        return None;
+    }
+    for _ in 0..count {
+        let size = fw_stream_be32();
+        let sel_rsv = fw_stream_be32();
+        let select = (sel_rsv >> 16) as u16;
+        let mut nbuf = [0u8; 56];
+        for chunk in nbuf.chunks_mut(4) {
+            let w = fw_stream_le32().to_le_bytes();
+            chunk.copy_from_slice(&w[..chunk.len()]);
+        }
+        let nul = nbuf.iter().position(|&c| c == 0)?;
+        if &nbuf[..nul] == name {
+            return Some(FwFile { select, size });
+        }
+    }
+    None
+}
+
+unsafe fn fw_read_file(entry: FwFile, out: &mut [u8]) -> bool {
+    if out.len() != entry.size as usize {
+        return false;
+    }
+    mmio_write_u16(FW_CFG_SELECTOR, entry.select.to_be());
+    for chunk in out.chunks_mut(4) {
+        let w = fw_stream_le32().to_le_bytes();
+        chunk.copy_from_slice(&w[..chunk.len()]);
+    }
+    true
+}
+
+#[inline]
+unsafe fn put_be32(p: *mut u8, v: u32) {
+    core::ptr::copy_nonoverlapping(v.to_be_bytes().as_ptr(), p, 4);
+}
+
+#[inline]
+unsafe fn put_be64(p: *mut u8, v: u64) {
+    core::ptr::copy_nonoverlapping(v.to_be_bytes().as_ptr(), p, 8);
+}
+
+#[inline]
+unsafe fn get_be32(p: *const u8) -> u32 {
+    let mut b = [0u8; 4];
+    core::ptr::copy_nonoverlapping(p, b.as_mut_ptr(), 4);
+    u32::from_be_bytes(b)
+}
+
+/// fw_cfg DMA 写。EFI 应用载入后静态缓冲的 VA=PA；描述符与 28B ramfb
+/// 配置同处一个 64B 对齐块，避免两次分配/两次 cache 面。
+unsafe fn fw_dma_write(select: u16, data_pa: u64, len: u32, desc_pa: u64) -> bool {
+    let base = desc_pa as *mut u8;
+    let ctrl = (u32::from(select) << 16) | DMA_CTRL_SELECT | DMA_CTRL_WRITE;
+    put_be32(base, ctrl);
+    put_be32(base.add(4), len);
+    put_be64(base.add(8), data_pa);
+    core::arch::asm!("dsb ish", options(nostack, preserves_flags));
+    mmio_write_u64(FW_CFG_DMA, desc_pa.to_be());
+    // QEMU 完成通常在数毫秒内；1e6 次轮询与内核 fw_cfg 面同量级。
+    for _ in 0..1_000_000 {
+        let v = get_be32(base);
+        if v & DMA_CTRL_ERROR != 0 {
+            return false;
+        }
+        if v == 0 {
+            return true;
+        }
+    }
+    false
+}
+
+unsafe fn ramfb_set(fb_pa: u64, width: u32, height: u32, stride: u32) -> bool {
+    let Some(entry) = fw_find_file(b"etc/ramfb") else {
+        return false;
+    };
+    if entry.size != 28 || width == 0 || height == 0 || stride == 0 {
+        return false;
+    }
+    // EFI 应用的加载地址/栈不能假定 VA=PA；目标帧缓冲本身已有确定 PA。
+    // descriptor @0 + 28B cfg @16 暂用帧首 64B，进度首帧随后整面覆写。
+    let base = fb_pa as *mut u8;
+    let cfg = base.add(16);
+    put_be64(cfg, fb_pa);
+    put_be32(cfg.add(8), 0x3432_5258); // DRM_FORMAT_XRGB8888 ('XR24')
+    put_be32(cfg.add(12), 0);
+    put_be32(cfg.add(16), width);
+    put_be32(cfg.add(20), height);
+    put_be32(cfg.add(24), stride);
+    let ok = fw_dma_write(entry.select, cfg as u64, 28, fb_pa);
+    ok
+}
+
+fn parse_display_request(bytes: &[u8]) -> Option<(u32, u32)> {
+    let end = bytes.iter().position(|&b| b == b'@').unwrap_or(bytes.len());
+    let body = &bytes[..end];
+    let x = body.iter().position(|&b| b == b'x')?;
+    let (w, h) = (&body[..x], &body[x + 1..]);
+    if w.is_empty() || h.is_empty() || w.len() > 4 || h.len() > 4 {
+        return None;
+    }
+    let mut wv = 0u32;
+    for &b in w {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        wv = wv.checked_mul(10)?.checked_add(u32::from(b - b'0'))?;
+    }
+    let mut hv = 0u32;
+    for &b in h {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        hv = hv.checked_mul(10)?.checked_add(u32::from(b - b'0'))?;
+    }
+    if wv == 0 || hv == 0 || wv > 4096 || hv > 4096 {
+        return None;
+    }
+    Some((wv, hv))
+}
+
+/// 进度运行时。`fb_len` 记录实际 owned surface；`allocated_*` 非零表示
+/// BerryBoot 为大于固件 GOP 的模式新钉了帧页，终段 dcache 必须一并刷。
+struct ProgressRuntime {
+    facts: GopFacts,
+    prev_permille: u16,
+    prev_stage: Stage,
+    started: bool,
+}
+
+impl ProgressRuntime {
+    fn new(facts: GopFacts) -> Self {
+        Self {
+            facts,
+            prev_permille: 0,
+            prev_stage: Stage::Display,
+            started: false,
+        }
+    }
+
+    /// 读取 `opt/berry/display` 并在装载器阶段完成首屏 mode-set。失败时
+    /// 保留原 GOP 几何，不伪造几何、不降级分辨率。
+    fn set_display(
+        &mut self,
+        bs: &berry_efi::EfiBootServices,
+        con_out: &berry_efi::EfiSimpleTextOutputProtocol,
+    ) -> bool {
+        if self.facts.fb_pa == 0 || self.facts.width == 0 || self.facts.height == 0 {
+            return false;
+        }
+        let request = unsafe {
+            fw_find_file(b"opt/berry/display").and_then(|entry| {
+                let mut buf = [0u8; 31];
+                if entry.size as usize <= buf.len() {
+                    fw_read_file(entry, &mut buf[..entry.size as usize]).then(|| {
+                        let len = entry.size as usize;
+                        parse_display_request(&buf[..len])
+                    })
+                } else {
+                    None
+                }
+                .flatten()
+            })
+        };
+        let (w, h) = match request {
+            Some(geometry) => geometry,
+            // 无请求时仍使用固件申报的原生 GOP 面——smoke-image 无 fw_cfg
+            // display 项，但真实进度首屏同样必须在场。
+            None => (self.facts.width, self.facts.height),
+        };
+        let Some(stride) = w.checked_mul(4) else { return false };
+        let Some(need_bytes) = (u64::from(stride)).checked_mul(u64::from(h)) else {
+            return false;
+        };
+        let need = need_bytes;
+        let cap = u64::from(self.facts.stride) * u64::from(self.facts.height);
+        let mut fb_pa = self.facts.fb_pa;
+        if need > cap {
+            let pages = ((need + 4095) / 4096) as usize;
+            let mut pa = 0u64;
+            let r = unsafe {
+                (bs.allocate_pages)(
+                    EFI_ALLOCATE_ANY_PAGES,
+                    EFI_LOADER_DATA,
+                    pages,
+                    &mut pa,
+                )
+            };
+            if r != EFI_SUCCESS || pa == 0 {
+                print_line(con_out, |l| l.push_str("BOOTPROG display alloc fail"));
+                return false;
+            }
+            fb_pa = pa;
+        }
+        if request.is_some() {
+            let ok = unsafe { ramfb_set(fb_pa, w, h, stride) };
+            if !ok {
+                print_line(con_out, |l| l.push_str("BOOTPROG display mode fail"));
+                return false;
+            }
+        }
+        self.facts = GopFacts {
+            fb_pa,
+            width: w,
+            height: h,
+            stride,
+            format: 1, // ramfb XR24 与 GOP BGRx 同内存序
+        };
+        print_line(con_out, |l| {
+            l.push_str("BOOTPROG ok display ");
+            l.push_u32_dec(w);
+            l.push(b"x");
+            l.push_u32_dec(h);
+        });
+        true
+    }
+
+    /// 用真实计数更新首屏。framebuffer 每次短借，进度状态留在 runtime，
+    /// 避免 EFI 静态镜像/帧缓冲生命周期互相嵌套。
+    fn set(&mut self, stage: Stage, permille: u16) -> bool {
+        if self.facts.fb_pa == 0 || self.facts.stride == 0 {
+            return false;
+        }
+        let Some(need) = (self.facts.stride as usize)
+            .checked_mul(self.facts.height as usize)
+        else {
+            return false;
+        };
+        let fb = unsafe {
+            core::slice::from_raw_parts_mut(self.facts.fb_pa as *mut u8, need)
+        };
+        if !self.started {
+            let Some(mut renderer) = Renderer::new(
+                fb,
+                self.facts.width as usize,
+                self.facts.height as usize,
+                self.facts.stride as usize,
+                self.facts.format,
+            ) else {
+                return false;
+            };
+            renderer.initialize(stage, permille);
+            self.prev_permille = permille;
+            self.prev_stage = stage;
+            self.started = true;
+            return true;
+        }
+        let Some(mut renderer) = Renderer::restore(
+            fb,
+            self.facts.width as usize,
+            self.facts.height as usize,
+            self.facts.stride as usize,
+            self.facts.format,
+            self.prev_permille,
+            self.prev_stage,
+        ) else {
+            return false;
+        };
+        let ok = renderer.update(stage, permille);
+        let (stage, permille) = renderer.prev_state();
+        self.prev_stage = stage;
+        if ok {
+            self.prev_permille = permille;
+        }
+        ok
+    }
+}
+
 /// 行 7（V-0b 刀 3）：段装载——`span()` 整窗一次
 /// AllocatePages(AllocateAddress) 认领（段间缝隙一并拿下：段可共享页/
 /// 有缝，逐段认领撞页冲突）→ 全窗清零（.bss + 缝隙确定性归零，对齐
@@ -239,6 +562,7 @@ fn load_kernel(
     bo: &berry_loader::BootElf,
     gop: &GopFacts,
     isegs: &[InitSeg],
+    progress: &mut ProgressRuntime,
 ) -> Option<u64> {
     let segs = bo.segments();
     // 整窗认领（AllocateAddress 对已占用页返错不覆盖——kbuf/固件数据若
@@ -266,14 +590,23 @@ fn load_kernel(
     for i in 0..((span_end - span_base) / 8) as usize {
         unsafe { zp.add(i).write(0) };
     }
-    // 逐段拷 filesz 字节（file_off/filesz 已过 boot_parse 界检）。
-    for s in segs {
+    // 逐段拷 filesz 字节（file_off/filesz 已过 boot_parse 界检）。按段完成
+    // 事实推进 Prepare 段；不做墙钟动画。
+    for (si, s) in segs.iter().enumerate() {
         unsafe {
             core::ptr::copy_nonoverlapping(
                 (kbuf as *const u8).add(s.file_off as usize),
                 s.paddr as *mut u8,
                 s.filesz as usize,
             );
+        }
+        if let Some(p) = berry_bootprogress::span(
+            820,
+            900,
+            (si + 1) as u64,
+            segs.len() as u64,
+        ) {
+            progress.set(Stage::Prepare, p);
         }
     }
     // 回读对拍：任一段字节差 = 诊断行（段号定位）+ 失败。
@@ -342,6 +675,7 @@ fn load_kernel(
         l.push_u32_dec(pages as u32);
         l.push_str(" ok");
     });
+    progress.set(Stage::Handoff, 900);
     Some(hpa)
 }
 
@@ -414,6 +748,7 @@ fn final_boot(
     hpa: u64,
     bo: &berry_loader::BootElf,
     isegs: &[InitSeg],
+    progress: &mut ProgressRuntime,
 ) {
     // CurrentEL 预检（EL 编码在位 [3:2]：EL1 → 0x4）。
     let el: u64;
@@ -425,6 +760,7 @@ fn final_boot(
         });
         return;
     }
+    progress.set(Stage::Handoff, 930);
     // watchdog 归零：EFI 默认 5 分钟看门狗会在内核长跑（smoke 类分钟级）
     // 中途重启整机——EBS 不豁免它，GRUB 同款显式关闭。
     let r_wd = unsafe { (bs.set_watchdog_timer)(0, 0, 0, core::ptr::null()) };
@@ -503,6 +839,8 @@ fn final_boot(
         (*h).memmap_desc_size = dsize as u32;
         (*h).memmap_desc_version = dver;
     }
+    // GetMemoryMap 状态事实已成立；EBS 窗内只直写 framebuffer，不碰协议。
+    progress.set(Stage::Handoff, 950);
     let mut ebs_done = false;
     for _att in 0..3u32 {
         // 环内常态路径零打印（PL011 MMIO 直写不动内存图、技术上不碍
@@ -557,6 +895,10 @@ fn final_boot(
         l.push_str(" ok");
     });
     uart_line(b"BERRYBOOT ok\r\n");
+    progress.set(Stage::Handoff, 1000);
+    // First-screen framebuffer is guest-visible memory; clean it with the
+    // handoff set before MMU/cache state changes.
+    dcache_clean(progress.facts.fb_pa, progress.facts.stride as u64 * u64::from(progress.facts.height));
     // DAIF 全屏蔽（D/A/I/F 四位——immediate = 直写该四位组）。
     unsafe { core::arch::asm!("msr daifset, #0xf") };
     // dcache 清刷：内核映像整窗 + handoff 页 + memmap 缓冲（全部
@@ -793,6 +1135,15 @@ pub extern "C" fn efi_main(
         });
     }
 
+    // BOOT-P1：先把请求几何提交给 ramfb，再创建 0 进度首屏。产品请求为
+    // 1080×1920 时这里分配并钉住完整 8.3MiB 帧，首屏几何不再先落 800×600。
+    let mut progress = ProgressRuntime::new(gop_facts);
+    if !bs.is_null() && unsafe { (*bs).hdr.signature } == EFI_BOOT_SERVICES_SIGNATURE {
+        progress.set_display(unsafe { &*bs }, con_out);
+    }
+    gop_facts = progress.facts;
+    progress.set(Stage::Display, 0);
+
     // 行 4–7：SFS 开卷四段——LoadedImage(image handle) → DeviceHandle
     // → SFS → OpenVolume → 根句柄（各段共用）→ 行 4 HELLO.TXT 对拍（刀 3
     // 原样）+ 行 5 KERNEL.ELF 整档读入（V-0b 刀 1）+ 行 6 引导视图解析
@@ -856,6 +1207,7 @@ pub extern "C" fn efi_main(
                                 l.push_u32_dec(n as u32);
                                 l.push_str("B match");
                             });
+                            progress.set(Stage::Verify, 30);
                         } else {
                             print_line(con_out, |l| {
                                 l.push_str("fs: mismatch read=");
@@ -912,7 +1264,10 @@ pub extern "C" fn efi_main(
                                     let mut got = 0usize;
                                     let mut r_rd = EFI_SUCCESS;
                                     while got < fsize {
-                                        let mut chunk = fsize - got;
+                                        // 1MiB 粒度让进度条随真实读取字节滚动；
+                                        // 粒度本身不制造进度，span 只看 got/fsize。
+                                        let want = core::cmp::min(1024 * 1024, fsize - got);
+                                        let mut chunk = want;
                                         r_rd = unsafe {
                                             (kfile_ref.read)(
                                                 kfile,
@@ -924,6 +1279,14 @@ pub extern "C" fn efi_main(
                                             break;
                                         }
                                         got += chunk;
+                                        if let Some(p) = berry_bootprogress::span(
+                                            30,
+                                            300,
+                                            got as u64,
+                                            fsize as u64,
+                                        ) {
+                                            progress.set(Stage::Kernel, p);
+                                        }
                                     }
                                     if r_rd == EFI_SUCCESS && got == fsize {
                                         print_line(con_out, |l| {
@@ -931,6 +1294,7 @@ pub extern "C" fn efi_main(
                                             l.push_u32_dec(fsize as u32);
                                             l.push_str("B ok");
                                         });
+                                        progress.set(Stage::Ramdisk, 300);
                                         let mut name16i = [0u16; 16];
                                         let iname =
                                             utf16_encode_bytes(b"INITRD.BIN", &mut name16i);
@@ -1034,7 +1398,9 @@ pub extern "C" fn efi_main(
                                                         let mut igot = 0usize;
                                                         let mut r_ird = EFI_SUCCESS;
                                                         while igot < read_amt {
-                                                            let mut ichunk = read_amt - igot;
+                                                            let want =
+                                                                core::cmp::min(1024 * 1024, read_amt - igot);
+                                                            let mut ichunk = want;
                                                             r_ird = unsafe {
                                                                 (ifile_ref.read)(
                                                                     ifile,
@@ -1047,6 +1413,17 @@ pub extern "C" fn efi_main(
                                                                 break;
                                                             }
                                                             igot += ichunk;
+                                                            let done = off + igot;
+                                                            if let Some(p) =
+                                                                berry_bootprogress::span(
+                                                                    300,
+                                                                    800,
+                                                                    done as u64,
+                                                                    isize_ as u64,
+                                                                )
+                                                            {
+                                                                progress.set(Stage::Ramdisk, p);
+                                                            }
                                                         }
                                                         if r_ird == EFI_SUCCESS && igot == read_amt {
                                                             isegs[iseg_n] = InitSeg {
@@ -1069,6 +1446,7 @@ pub extern "C" fn efi_main(
                                                         }
                                                     }
                                                     if seg_ok && off == isize_ {
+                                                        progress.set(Stage::Prepare, 800);
                                                         print_line(con_out, |l| {
                                                             l.push_str("init: ");
                                                             l.push_u32_dec(isize_ as u32);
@@ -1109,6 +1487,7 @@ pub extern "C" fn efi_main(
                                         match berry_loader::boot_parse(kelf, DRAM_BASE, DRAM_TOP)
                                         {
                                             Ok(bo) => {
+                                                progress.set(Stage::Prepare, 820);
                                                 print_line(con_out, |l| {
                                                     l.push_str("elf: segs=");
                                                     l.push_u32_dec(bo.segments().len() as u32);
@@ -1132,6 +1511,7 @@ pub extern "C" fn efi_main(
                                                     &bo,
                                                     &gop_facts,
                                                     &isegs[..iseg_n],
+                                                    &mut progress,
                                                 ) {
                                                     final_boot(
                                                         unsafe { &*bs },
@@ -1140,6 +1520,7 @@ pub extern "C" fn efi_main(
                                                         hpa,
                                                         &bo,
                                                         &isegs[..iseg_n],
+                                                        &mut progress,
                                                     );
                                                 }
                                             }

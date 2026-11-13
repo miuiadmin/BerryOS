@@ -519,6 +519,12 @@ impl<'a> Srv<'a> {
                 self.power_mode = mode; // PM 脉冲真落地挂 GUI-6+——记账面
                 st_rep(ch, gp::ST_OK);
             }
+            Some(gp::PresentReq::BootProgress { .. }) => {
+                // BOOT-P1 vgpu 控制面：ramfb 后端的进度首屏由 BerryBoot 直接
+                // 绘制；收到该 op 说明端点装配/测试拓扑错位，fail closed。
+                close_all(hs);
+                st_rep(ch, gp::ST_UNSUPPORTED);
+            }
             None => {
                 // 野帧（截断/尾随/未知 op）——坏客户端不得杀服务。
                 close_all(hs);

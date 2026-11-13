@@ -20,15 +20,17 @@
 //! 回落 guifbd/ramfb；验证 TCG 拓扑零新标记。
 
 use berry_exec::{VIRTIO_MMIO_SLOTS, VIRTIO_MMIO_STRIDE, VIRTIO_MMIO_VA};
+use berry_bootprogress::{Renderer, Stage};
 use berry_guiproto as gp;
-use berry_libc::io::{gift2_h, gift3_h};
+use berry_libc::io::{gift2_h, gift3_h, self_vmar_h};
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_event_create,
     berry_handle_close, berry_handle_duplicate, berry_object_signal, berry_object_wait_many,
     berry_object_wait_one, berry_thread_sleep, berry_vmo_commit, berry_vmo_create,
-    berry_vmo_get_phys, berry_vmo_get_size, berry_vmo_read, berry_vmo_write, Handle,
-    BERRY_ERR_AGAIN, BERRY_ERR_BUSY, BERRY_ERR_TIMEDOUT, CLOCK_MONOTONIC, RIGHT_READ,
-    RIGHT_SIGNAL, SIGNAL_READABLE, SIGNAL_WRITABLE,
+    berry_vmar_map, berry_vmo_get_phys, berry_vmo_get_size, berry_vmo_read,
+    berry_vmo_write, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BUSY, BERRY_ERR_TIMEDOUT,
+    CLOCK_MONOTONIC, RIGHT_READ, RIGHT_WRITE, RIGHT_SIGNAL, SIGNAL_READABLE,
+    SIGNAL_WRITABLE,
 };
 use berry_virtio as vio;
 
@@ -534,6 +536,11 @@ struct PresentSrv {
     vb_parked: bool,
     vb_park_ch: Handle,
     slots: [HdiSlot; HDI_SLOTS],
+    boot_vmo: Handle,
+    boot_va: usize,
+    boot_started: bool,
+    boot_stage: Stage,
+    boot_permille: u16,
 }
 
 impl PresentSrv {
@@ -1081,6 +1088,147 @@ impl PresentSrv {
         send_rep_handles(ch, &out[..n], &[fence]);
     }
 
+    fn boot_stage(raw: u8) -> Option<Stage> {
+        match raw {
+            gp::BOOT_STAGE_DISPLAY => Some(Stage::Display),
+            gp::BOOT_STAGE_VERIFY => Some(Stage::Verify),
+            gp::BOOT_STAGE_KERNEL => Some(Stage::Kernel),
+            gp::BOOT_STAGE_RAMDISK => Some(Stage::Ramdisk),
+            gp::BOOT_STAGE_PREPARE => Some(Stage::Prepare),
+            gp::BOOT_STAGE_HANDOFF => Some(Stage::Handoff),
+            _ => None,
+        }
+    }
+
+    /// BOOT-P1：把系统阶段真值渲染到 vgpu 专属 boot surface。该 surface
+    /// 不进入 app credits，不改变 present submit 语义；第一帧 wmd SUBMIT
+    /// 会自然切走 scanout。渲染 VMO 由 vgpud 私有，app 无能力接触。
+    fn boot_progress(&mut self, raw_stage: u8, permille: u16) -> bool {
+        let Some(stage) = Self::boot_stage(raw_stage) else {
+            return false;
+        };
+        let bytes = (self.w as u64) * 4 * self.h as u64;
+        let Some(len) = usize::try_from(bytes).ok() else {
+            return false;
+        };
+        if self.boot_vmo == 0 {
+            let hv = self_vmar_h();
+            let mut vmo = 0 as Handle;
+            let mut va = 0x7900_0000usize;
+            if hv == 0
+                || berry_vmo_create(bytes, 0, &mut vmo) != 0
+                || vmo == 0
+                || berry_vmo_commit(vmo, 0, bytes) != 0
+                || berry_vmar_map(
+                    hv,
+                    0,
+                    vmo,
+                    0,
+                    &mut va,
+                    len,
+                    RIGHT_READ | RIGHT_WRITE,
+                ) != 0
+                || va != 0x7900_0000
+            {
+                let _ = berry_handle_close(vmo);
+                return false;
+            }
+            self.boot_vmo = vmo;
+            self.boot_va = va;
+        }
+        let first = !self.boot_started;
+        let fb = unsafe { core::slice::from_raw_parts_mut(self.boot_va as *mut u8, len) };
+        let rendered = if self.boot_started {
+            Renderer::restore(
+                fb,
+                self.w as usize,
+                self.h as usize,
+                (self.w as usize) * 4,
+                1,
+                self.boot_permille,
+                self.boot_stage,
+            )
+            .map(|mut r| {
+                let ok = r.update(stage, permille);
+                let (stage, permille) = r.prev_state();
+                self.boot_stage = stage;
+                if ok {
+                    self.boot_permille = permille;
+                }
+                ok
+            })
+            .unwrap_or(false)
+        } else {
+            Renderer::new(
+                fb,
+                self.w as usize,
+                self.h as usize,
+                (self.w as usize) * 4,
+                1,
+            )
+            .map(|mut r| {
+                r.initialize(stage, permille);
+                self.boot_stage = stage;
+                self.boot_permille = permille;
+                true
+            })
+            .unwrap_or(false)
+        };
+        if !rendered {
+            return false;
+        }
+        let Some(resource) = self.resource_for(self.boot_vmo, bytes) else {
+            return false;
+        };
+        self.select_resource(resource);
+        // 首帧必须带 logo/整面背景；后续 renderer 只改 bar/percent/stage，
+        // 底部条带 transfer/flush 比 1080p 整面少约 6× 字节。
+        let rect = if first {
+            vio::gpu::GpuRect {
+                x: 0,
+                y: 0,
+                width: self.w,
+                height: self.h,
+            }
+        } else if let Some(l) = berry_bootprogress::layout(
+            self.w as usize,
+            self.h as usize,
+        ) {
+            let bottom = (l.stage_y + 16 * l.stage_scale).min(self.h as usize);
+            let y = l.bar_y.min(bottom);
+            vio::gpu::GpuRect {
+                x: 0,
+                y: y as u32,
+                width: self.w,
+                height: (bottom - y) as u32,
+            }
+        } else {
+            vio::gpu::GpuRect {
+                x: 0,
+                y: 0,
+                width: self.w,
+                height: self.h,
+            }
+        };
+        let off = u64::from(rect.y) * (self.w as u64 * 4);
+        ctrl_simple(&self.dma, self.regs, vio::gpu::GPU_TRANSFER_2D_SZ, |b| {
+            vio::gpu::put_transfer_to_host_2d(b, 0, resource, rect, off).is_some()
+        });
+        ctrl_simple(&self.dma, self.regs, vio::gpu::GPU_RESOURCE_FLUSH_SZ, |b| {
+            vio::gpu::put_resource_flush(b, 0, resource, rect).is_some()
+        });
+        println!(
+            "VGPUBOOT ok stage={} permille={} rect={}x{}@{}",
+            raw_stage,
+            permille,
+            rect.width,
+            rect.height,
+            rect.y
+        );
+        self.boot_started = true;
+        true
+    }
+
     fn handle_present(&mut self, ch: Handle, msg: &[u8], hs: &[Handle]) {
         match gp::parse_present_req(msg) {
             Some(gp::PresentReq::Getinfo) => {
@@ -1165,6 +1313,15 @@ impl PresentSrv {
                 close_all(hs);
                 st_rep(ch, gp::ST_OK);
             }
+            Some(gp::PresentReq::BootProgress { stage, permille }) => {
+                if !hs.is_empty() {
+                    close_all(hs);
+                    st_rep(ch, gp::ST_BAD);
+                    return;
+                }
+                let ok = self.boot_progress(stage, permille);
+                st_rep(ch, if ok { gp::ST_OK } else { gp::ST_BUSY });
+            }
             None => {
                 close_all(hs);
                 st_rep(ch, gp::ST_BAD);
@@ -1212,6 +1369,11 @@ fn serve_present(d: &Dma, regs: *mut u32, w: u32, h: u32) -> ! {
         vb_ev: 0,
         vb_parked: false,
         vb_park_ch: 0,
+        boot_vmo: 0,
+        boot_va: 0,
+        boot_started: false,
+        boot_stage: Stage::Display,
+        boot_permille: 0,
         slots: [HdiSlot {
             vmo: 0,
             resource: 0,

@@ -675,6 +675,8 @@ test-host:
     # + mkfat --selftest（--put 引导盘构造面：链回读/嵌套目录/负样本——此前
     # 只手跑，门禁化同 a-3 U4 纪律）。
     cargo test --manifest-path bootloader/berryboot/Cargo.toml -p berry-efi --target {{host}}
+    # BOOT-P1：0..1000 permille 布局/单调进度/真值 span host 纯函数面。
+    cargo test --manifest-path bootloader/berryboot/Cargo.toml -p berry-bootprogress --target {{host}}
     # V-0a 刀 3：berryboot app 单源共识——内嵌 HELLO.TXT 基准 ↔ 仓库 fixture
     # hello.txt 逐字节对拍（mkfat fixture 共识基准同族，改一侧忘同步即炸）。
     cargo test --manifest-path bootloader/berryboot/Cargo.toml -p berryboot --target {{host}}

@@ -16,4 +16,5 @@ berry-libc = { path = "../../../user/berry-libc" }
 berry-sys = { path = "../../../user/berry-sys" }
 berry-exec = { path = "../../../user/berry-exec" }
 berry-guiproto = { path = "../../../user/berry-guiproto" }
+berry-bootprogress = { path = "../../../bootloader/berryboot/berry-bootprogress" }
 berry-virtio = { path = "../../berry-virtio" }

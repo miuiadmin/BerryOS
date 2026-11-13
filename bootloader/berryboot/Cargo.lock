@@ -3,7 +3,18 @@
 version = 4
 
 [[package]]
+name = "berry-bootprogress"
+version = "0.1.0"
+dependencies = [
+ "berry-fbcon",
+]
+
+[[package]]
 name = "berry-efi"
+version = "0.1.0"
+
+[[package]]
+name = "berry-fbcon"
 version = "0.1.0"
 
 [[package]]
@@ -14,6 +25,7 @@ version = "0.1.0"
 name = "berryboot"
 version = "0.1.0"
 dependencies = [
+ "berry-bootprogress",
  "berry-efi",
  "berry-loader",
 ]
