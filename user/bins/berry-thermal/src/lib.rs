@@ -28,6 +28,9 @@
 //!    值不持有通道；对调度器 = 系统态叠加票（#42 只叠加）。
 //!    (b) 充电限流票 `charge_limit_ma`：P11 电流版 charge_current_limit，
 //!    berry-thermal 出票、chargerd 仲裁（#66 ⑤/#68；PM-14 §4.3）。
+//!    **票面单位 = mA = F1 终裁**（04 号复核 §6-3：单位统一 mA——#66
+//!    电流版为终态形态；berry-power `ChgArbiter` 已并轨 mA 域同款哨兵，
+//!    ADR #68 `limit_pct` 冻结形经设计容量桥兼容读写、协议升版改口）。
 //!    (c) thermal_level 发布 `thermal_level`：u8 四档（0 nominal/1 fair/
 //!    2 serious/3 critical）只读+订阅；温度只进遥测不进契约（#66 ④）。
 //! 4. **失败安全位**（#66 ③）：「热服务亡→帽保持」以输出保持函数
@@ -96,10 +99,14 @@ pub const LEVEL_FREQ_CAP_PCT: [u8; 4] =
     [FREQ_CAP_NONE_PCT, 70, 45, 25];
 
 /// 充电限流「无热侧约束」哨兵（min 组合下穿透：min(u32::MAX, x) = x）。
+/// berry-power 仲裁面 `CHG_LIMIT_UNLIMITED_MA` 同值同语义（F1 并轨锚——
+/// mA 终裁单位下双面共用一个哨兵语义；终态随 chargerd 契约立法收进
+/// berry-pwproto 单源）。
 pub const CHARGE_NO_CAP_MA: u32 = u32::MAX;
 
 /// 档→热侧充电限流（mA）【推断：OH 1500→1200→1000 实证同构 + critical 停充，
-/// 策略表可调】。P11 电流版票面，出票方 berry-thermal、chargerd 仲裁。
+/// 策略表可调】。P11 电流版票面（**单位 mA = F1 终裁**，04 号复核 §6-3），
+/// 出票方 berry-thermal、chargerd 仲裁（berry-power `ChgArbiter` mA 域对口）。
 pub const LEVEL_CHARGE_LIMIT_MA: [u32; 4] =
     [CHARGE_NO_CAP_MA, 1200, 1000, 0];
 
@@ -180,7 +187,9 @@ pub struct Verdict {
     /// 取 min（#66 ② 帽不新开通道，本引擎不出通道）。
     pub freq_cap_pct: u8,
     /// 输出② 充电限流票（mA，P11 电流版）= min(JEITA 档, 性能档)；哨兵
-    /// [`CHARGE_NO_CAP_MA`] = 无热侧约束（不出票）。
+    /// [`CHARGE_NO_CAP_MA`] = 无热侧约束（不出票）。**mA = F1 终裁单位**
+    /// （仲裁对口 = berry-power `ChgArbiter` mA 域；#68 `limit_pct` 冻结形
+    /// 经 berry-power 侧设计容量桥兼容读，协议升版携 mA 直传）。
     pub charge_limit_ma: u32,
     /// JEITA 温区档（0..=4，T1–T5）——审计/遥测件（温度只进遥测不进契约）。
     pub jeita_zone: u8,
@@ -807,5 +816,29 @@ mod tests {
         assert_eq!(level_charge_limit_ma(9), 0);
         assert_eq!(jeita_limit_ma(5), 0);
         assert_eq!(jeita_limit_ma(255), 0);
+    }
+
+    // ⑬ F1 出票面契约钉板：票面单位 = mA（04 号复核 §6-3 终裁——#66 电流版
+    // 终态形态）；哨兵与 berry-power `CHG_LIMIT_UNLIMITED_MA` 同值同语义
+    // （u32::MAX、min 穿透——mA 域并轨锚，防漂移值钉）。
+    #[test]
+    fn charge_ticket_face_is_ma_with_penetrating_sentinel() {
+        assert_eq!(CHARGE_NO_CAP_MA, u32::MAX); // 哨兵值钉（并轨双面同值）
+        // min 穿透：无热侧约束不收紧任何实际限值（JEITA NORMAL 1500 例）。
+        assert_eq!(CHARGE_NO_CAP_MA.min(jeita_limit_ma(JEITA_NORMAL)), 1500);
+        assert_eq!(CHARGE_NO_CAP_MA.min(level_charge_limit_ma(LEVEL_FAIR)), 1200);
+        // 出票面实值全在 mA 域（表值 + min 组合产物）。
+        let cases: [(u8, u32, u32); 5] = [
+            (JEITA_COLD, 0, 0),
+            (JEITA_COOL, 500, 500),
+            (JEITA_NORMAL, 1500, 1500),
+            (JEITA_WARM, 750, 750),
+            (JEITA_HOT, 0, 0),
+        ];
+        for (zone, jeita_ma, ticket_ma) in cases {
+            assert_eq!(jeita_limit_ma(zone), jeita_ma);
+            // nominal 性能档（哨兵）下票 = 纯 JEITA 管——mA 面直出无换算。
+            assert_eq!(jeita_ma.min(CHARGE_NO_CAP_MA), ticket_ma);
+        }
     }
 }

@@ -11,11 +11,17 @@
 //! 2. **输入面留窗**：驱动自报 trips 订阅（中断 trip 优先 + 轮询兜底，
 //!    ADR #66 ①）——tick 组装 = pwproto `ThermalSnapshot`（DEV_THERMAL）→
 //!    `Tick`（sensor_id 由通道端点位显式化）；电池温取电池驱动自报
-//!    （`BatterySnapshot::temp_mc` 同源）。
+//!    （`BatterySnapshot::temp_mc` 同源）。**F2 终裁（04 号复核 §6-4）：
+//!    sim 流按设备分端——`DEV_THERMAL` 帧归本服务**（Tick 组装订阅面；
+//!    `DEV_BATTERY` 归 simbattery、`DEV_MODEM` 归 berry-power 遥测——双
+//!    消费者分帧错乱的裁决答案；分端执法归通道拓扑接线刀）。
 //! 3. **输出① 频率帽请求留窗**：写面 = berry-power 内核聚合点取 min（帽不
 //!    新开通道，#66 ②）——聚合点未建（三大接缝之二本体缺位），本壳不写。
-//! 4. **输出② 充电限流票留窗**：P11 电流版票 IPC（chargerd 仲裁，#66 ⑤）——
-//!    chargerd 未建。
+//! 4. **输出② 充电限流票留窗**：P11 电流版票 IPC（chargerd 仲裁，#66 ⑤）
+//!    ——chargerd 未建。**票面 mA = F1 终裁单位**（04 号复核 §6-3）；线面
+//!    若持 #68 `limit_pct` 冻结形，经 berry-power 侧设计容量兼容桥
+//!    （`user/bins/berry-power/src/charge.rs` `pct_of_ma`/`ma_of_pct`）换算，
+//!    协议升版携 mA 直传（升版改口锚）。
 //! 5. **输出③ thermal_level 发布留窗**：只读+订阅两口（PM-15 §4 草案
 //!    `berry_thermal_level`/`berry_thermal_subscribe` 形，berry-sys 服务
 //!    客户端包装）。

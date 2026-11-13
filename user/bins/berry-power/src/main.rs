@@ -16,7 +16,12 @@
 //!   simbattery `recv_blocking`（`berry_channel_recv` 空 -EAGAIN →
 //!   `wait_one` READABLE 1h 长帽重臂——P6 A-3：服务端 wait 超时是心跳
 //!   不是死线）；ACK 回写 `send_retry` 同形（-EBUSY → wait WRITABLE
-//!   10s 帽）。骨架以合成帧流代源（`synth_wire`）。
+//!   10s 帽）。**F2 终裁（04 号复核 §6-4）：sim 流按设备分端——本服务
+//!   份额 = `DEV_MODEM` 遥测**（`DEV_BATTERY` 归 simbattery、
+//!   `DEV_THERMAL` 归 berry-thermal，不主张全流消费权——双消费者分帧
+//!   错乱的裁决答案；分端执法归通道拓扑接线刀）；真机相 battery 策略
+//!   输入 = 电池驱动自报经同一会话机（lib `session` 面）。骨架以合成帧
+//!   流代源（`synth_wire`——loopback 测试面，非 sim 流消费权主张）。
 //! - **窗 3（util 通道）**：CP-08 共享环/快照 VMO ABI（形态待裁——
 //!   PM-15 §4.1 六面零新 syscall 裁决在册）；schedutil 同构消费已就位
 //!   （lib `util` 面）。CP-08/CP-10 验收线的内核侧两断言（调度路径零
@@ -29,6 +34,9 @@
 //! - **窗 5（chargerd 契约位）**：ADR #68 `CHG_OP_VOTE_LIMIT{limit_pct,
 //!   reason:u8}` 的票持有/动态票主/断线自动撤票通道面 = chargerd 服务
 //!   本体（立法件无代码）；lib `ChgArbiter` = 它将消费的仲裁数学单源。
+//!   **F1 终裁（04 号复核 §6-3）：票面单位 = mA**（#66 电流版终态形态；
+//!   #68 pct 面 = 冻结快照，经设计容量桥兼容读写——lib `charge`
+//!   `pct_of_ma`/`ma_of_pct`/`vote_pct`，协议升版携 mA 时线面改口）。
 //! - **窗 6（记账消费闭环）**：内核唤醒记账（KC 面——`docs/内核唤醒记账
 //!   设计-v1.0.md`「实施随 berry-power 刀」）与挂起双钟 SLEPT（ADR #67
 //!   ②——维护窗判定/idle 世代/能耗归因口径）的消费闭环，挂 PM 线后续刀。
@@ -132,20 +140,29 @@ fn main() {
     core.ingest_util_window(0, 625_000, 625_000);
 
     // —— 外部输入面骨架：调度 hint 帽（#42 系统态叠加票词汇）与用户帽
-    // （设置面）各投一票——真实投递通道留窗（帽不新开通道，ADR #66 ②：
-    // 外源帽只经聚合点源席投递）。
+    // （设置面——#68 冻结形 pct 票，经 F1 桥兼容投递换 mA 落票；换算
+    // 单源字段 = 快照自带设计容量）各投一票——真实投递通道留窗（帽不
+    // 新开通道，ADR #66 ②：外源帽只经聚合点源席投递）。
+    let cap_uah = core.last_batt.map(|b| b.charge_full_uah).unwrap_or(4_800_000);
     let _ = core.caps.set(CAP_SRC_SCHEDHINT, Some(400_000));
-    let _ = core.votes.vote(CHG_SLOT_USER, 80, CHG_REASON_USER);
+    let _ = core.votes.vote_pct(CHG_SLOT_USER, 80, CHG_REASON_USER, cap_uah);
 
     let v = core.decide();
     let cap = match v.cap {
         Some(c) => format!("{}kHz@src{}", c.cap_khz, c.src),
         None => "none".to_string(),
     };
+    // F1 兼容读演示：mA 真相面 → #68 pct 冻结形线值（同容量换算桥）。
+    let compat_pct = v
+        .chg
+        .limit_pct(cap_uah)
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| "n/a".to_string());
     // 诊断行（非 smoke 标记——见模块注窗表尾注）。
     println!(
-        "berry-power: skeleton dry-run applied={} rejected={} acks={} cap={} chg={}%(r{}) freq req={}khz eff={}khz",
-        applied, rejected, acks, cap, v.chg.limit_pct, v.chg.reason, v.freq.req_khz, v.freq.eff_khz
+        "berry-power: skeleton dry-run applied={} rejected={} acks={} cap={} chg={}mA(r{};compat {}pct@{}uah) freq req={}khz eff={}khz",
+        applied, rejected, acks, cap, v.chg.limit_ma, v.chg.reason, compat_pct, cap_uah,
+        v.freq.req_khz, v.freq.eff_khz
     );
     // 骨架形态 = 单轮 dry-run 即退；常驻 wait 循环（recv 长帽重臂——窗 1/2
     // 真实形态）挂 svcmgr 挂接刀，本件不假常驻。

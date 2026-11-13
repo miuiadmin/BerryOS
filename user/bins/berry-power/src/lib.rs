@@ -15,9 +15,11 @@
 //!    berry-power 同一内核聚合点取 min = 唯一合法帽书写面；对调度器 =
 //!    系统态叠加票 #42 只叠加）。
 //! 2. [`charge`]——**充电限流票仲裁**：JEITA 票 + 低电票 + 用户帽 → min
-//!    （chargerd 契约位；ADR #68 `CHG_OP_VOTE_LIMIT{limit_pct,
-//!    reason:u8}` 最少者赢/断线自动撤票/chargerd 持有；JEITA 出票方 =
-//!    berry-thermal，ADR #66 ⑤）。
+//!    （chargerd 契约位；ADR #68 `CHG_OP_VOTE_LIMIT{limit_pct, reason:u8}`
+//!    最少者赢/断线自动撤票/chargerd 持有；JEITA 出票方 = berry-thermal，
+//!    ADR #66 ⑤）。**票面单位 = mA（F1 终裁，04 号复核 §6-3：#66 电流版
+//!    为终态形态；#68 pct 面 = 冻结快照，经设计容量桥兼容读写——
+//!    `charge::{pct_of_ma, ma_of_pct}`，升版改口）**。
 //! 3. [`util`]——**util EWMA 消费位**：输入口 + 衰减算式（折叠数学单源
 //!    `berry-emface::ewma_fold`，零第二实现）+ schedutil 同构
 //!    `f ≈ util × fmax / capacity`（CP-08 验收线原文）。
@@ -27,7 +29,7 @@
 //! [`PowerCore`] 把四件组装成可驱动的裁决机：sim 快照字节 → 会话/策略
 //! （battery 喂低电策略；thermal/modem 只进遥测——**本服务不养第二套热
 //! 表**，热帽/JEITA 票归 berry-thermal，ADR #66 边界）+ util 窗账 →
-//! [`PowerCore::decide`] 出统一裁决（帽/票/频率）。策略参数 = 
+//! [`PowerCore::decide`] 出统一裁决（帽/票/频率）。策略参数 =
 //! [`PolicyParams`]（推断标注见字段注）。
 //!
 //! 纯函数纪律（berry-pwproto/berry-emface 同款）：零分配、零 unsafe、
@@ -44,8 +46,9 @@ pub use berry_pwproto::{BatterySnapshot, Snapshot};
 
 pub use cap::{CapDecision, CapErr, FreqCapAgg, CAP_SOURCES, CAP_SRC_LOWBATT, CAP_SRC_SCHEDHINT, CAP_SRC_THERMAL};
 pub use charge::{
-    ChgArbiter, ChgDecision, ChgErr, CHG_LIMIT_UNLIMITED, CHG_REASON_JEITA, CHG_REASON_LOWBATT,
-    CHG_REASON_NONE, CHG_REASON_USER, CHG_SLOT_JEITA, CHG_SLOT_LOWBATT, CHG_SLOT_USER, CHG_SLOTS,
+    ma_of_pct, pct_of_ma, ChgArbiter, ChgDecision, ChgErr, CHG_LIMIT_UNLIMITED_MA,
+    CHG_LIMIT_UNLIMITED_PCT, CHG_REASON_JEITA, CHG_REASON_LOWBATT, CHG_REASON_NONE,
+    CHG_REASON_USER, CHG_SLOT_JEITA, CHG_SLOT_LOWBATT, CHG_SLOT_USER, CHG_SLOTS,
 };
 pub use session::{SessEvent, PwSession};
 pub use util::{schedutil_freq_khz, UtilTrack};
@@ -63,9 +66,10 @@ pub struct PolicyParams {
     /// 深亏电预充阈值：`capacity_pct ≤ 此值` → 低电票生效（锂电深亏
     /// 预充限流）。推断标注：10% 初值。
     pub precharge_pct: u8,
-    /// 深亏电预充票面（%）。推断标注：50 初值（≈0.5C 预充惯例的百分比
-    /// 近似——P11 电流版真机面，ADR #66 ⑤/#68 注）。
-    pub precharge_limit_pct: u8,
+    /// 深亏电预充票面（mA，F1 终裁单位）。推断标注：2400 初值 = 0.5C
+    /// 预充惯例（设计容量 sim 基准 4800 mAh 的 C 率换算——原 50% 快照值
+    /// 的 mA 终裁形；真机设计容量定标随策略表可调窗，ADR #68 ⑥）。
+    pub precharge_limit_ma: u32,
     /// 频率域顶（kHz）。推断标注：QEMU 期虚拟基准 1GHz（virt 无 DVFS
     /// 真表——真机 EM/OPP 随 CP-09/CP-18 落）。
     pub fmax_khz: u32,
@@ -81,7 +85,7 @@ impl PolicyParams {
             lowbatt_cap_pct: 15,
             lowbatt_cap_khz: 500_000,
             precharge_pct: 10,
-            precharge_limit_pct: 50,
+            precharge_limit_ma: 2_400,
             fmax_khz: 1_000_000,
             capacity: util::UTIL_FULL,
         }
@@ -219,7 +223,7 @@ impl PowerCore {
                 if b.capacity_pct <= self.policy.precharge_pct {
                     let _ = self.votes.vote(
                         CHG_SLOT_LOWBATT,
-                        self.policy.precharge_limit_pct,
+                        self.policy.precharge_limit_ma,
                         CHG_REASON_LOWBATT,
                     );
                 } else {
@@ -291,7 +295,7 @@ mod tests {
     }
 
     /// 低电策略主链：健康电池（77%）→ 无低电帽/无票；深亏电（8%）→
-    /// 低电帽 500kHz 生效 + 低电票 50% 生效（< 低电帽阈值 15 与预充阈值
+    /// 低电帽 500kHz 生效 + 低电票 2400mA 生效（< 低电帽阈值 15 与预充阈值
     /// 10 双触发）；回升（40%）→ 帽/票双撤。
     #[test]
     fn battery_policy_lifecycle() {
@@ -319,7 +323,7 @@ mod tests {
                 );
                 assert_eq!(
                     verdict.chg,
-                    ChgDecision { limit_pct: 50, reason: CHG_REASON_LOWBATT }
+                    ChgDecision { limit_ma: 2_400, reason: CHG_REASON_LOWBATT }
                 );
             }
             e => panic!("{e:?}"),
@@ -396,7 +400,7 @@ mod tests {
         core.ingest_util_sample(0, 1024).unwrap();
         let v = core.decide();
         assert_eq!(v.freq, FreqVerdict { req_khz: 0, eff_khz: 0 });
-        assert_eq!(v.chg.limit_pct, CHG_LIMIT_UNLIMITED);
+        assert_eq!(v.chg.limit_ma, CHG_LIMIT_UNLIMITED_MA);
     }
 
     /// 会话拒帧不触策略：STALE 重放帧（同 seq battery）与 BAD 帧后，低电

@@ -13,9 +13,16 @@
 //! `StreamDecoder`（魔数扫描），头合法帧收齐但语义拒（ver/值域）→
 //! [`ST_BAD`]——「没收到」（无 ACK）与「收到但拒」（BAD ACK）线上可分。
 //!
-//! 接受面：三设备全收（berry-power = PM 中枢——battery 喂策略面、
-//! thermal/modem 进遥测，见 [`crate::PowerCore`]）；seq 追踪 per-dev
-//! 独立（宿主注入端三设备各自单调，互不牵连——pwproto 头注 seq 语义）。
+//! 接受面（**F2 终裁：sim 流按设备分端**——04 号复核 §6-4/§7-F2 裁决）：
+//! 同一 UART1 字节流（task_simcon 转发）消费权按设备分流——`DEV_BATTERY`
+//! 归 simbattery（标记面，现状）、`DEV_THERMAL` 归 berry-thermal（Tick
+//! 组装订阅面）、`DEV_MODEM` 归 berry-power（遥测）——本服务在 sim 流上
+//! 的份额 = modem 遥测，**不主张全流消费权**（双消费者分帧错乱的裁决
+//! 答案；分端执法归通道拓扑接线刀）。会话机本身 = pwproto 通用消费面：
+//! 三设备帧均可解（真机相 battery 策略输入 = 电池驱动自报经同一会话机；
+//! host 测试/合成流喂全三设备 = loopback 面，非 sim 流消费权主张）；seq
+//! 追踪 per-dev 独立（宿主注入端三设备各自单调，互不牵连——pwproto 头注
+//! seq 语义）。
 //!
 //! **窗注释（真实通道）**：QEMU 期真线 = svcmgr 预拉 + fd0 帧通道
 //! （task_simcon 转发 UART1 字节流）+ gift ACK 回程端——形态照
