@@ -700,7 +700,10 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                 ) {
                     Ok(_child) => {
                         ps_reg(b"vgpud", psp::STATE_ALIVE, 0); // 常驻不 reap（vblk 同款）
-                        if vgpu_ready(p_cli) {
+                        if vgpu_ready(p_cli)
+                            && (cpio_find(H_ROOTFS, b"gpuhdi.on").is_none()
+                                || vgpu_hdi_selftest(h_cli, console))
+                        {
                             vgpu_present_cli = p_cli;
                             vgpu_hdi_cli = h_cli;
                         } else {
@@ -4038,7 +4041,147 @@ fn wait(h: Handle, signals: u64) {
     }
 }
 
-/// now = clock_read（失败自陷）。
+/// GPU2 诊断镜像专用 RPC（`gpuhdi.on` 在场才调用）。严格串行：send 可
+/// EBUSY 重试；3s 应答帽；返回 nb/nh，失败由调用方降级 guifbd。
+fn gpu_hdi_rpc(
+    h: Handle,
+    req: &[u8],
+    send_hs: &[Handle],
+    rep: &mut [u8; 32],
+    rhs: &mut [Handle; 2],
+) -> Option<(usize, usize)> {
+    let deadline = now() + 3_000_000_000;
+    loop {
+        let st = berry_channel_send(
+            h,
+            req.as_ptr(),
+            req.len(),
+            send_hs.as_ptr(),
+            send_hs.len(),
+        );
+        if st == 0 {
+            break;
+        }
+        if st != BERRY_ERR_BUSY {
+            return None;
+        }
+        let mut obs = 0u64;
+        if berry_object_wait_one(h, SIGNAL_WRITABLE, deadline, &mut obs) != 0 {
+            return None;
+        }
+    }
+    let mut obs = 0u64;
+    if berry_object_wait_one(h, SIGNAL_READABLE, deadline, &mut obs) != 0 {
+        return None;
+    }
+    let mut nb = rep.len();
+    let mut nh = rhs.len();
+    if berry_channel_recv(h, rep.as_mut_ptr(), &mut nb, rhs.as_mut_ptr(), &mut nh) != 0 {
+        return None;
+    }
+    Some((nb, nh))
+}
+
+/// vgpud HDI 四 op 真链自验：REG_VBLANK(1) → VBLANK_WAIT → PREPARE →
+/// COMMIT fence → REG_VBLANK(0)。只在 `gpuhdi.on` 诊断 rootfs 中启用；
+/// 产品/验证镜像零调用零标记。full-size VMO 是 PREPARE 几何门的真值。
+fn vgpu_hdi_selftest(h: Handle, console: Handle) -> bool {
+    const W: u32 = 1080;
+    const H: u32 = 1920;
+    const STRIDE: u32 = W * 4;
+    const LEN: u64 = STRIDE as u64 * H as u64;
+    const SIG: u64 = gp::HDI_USER_SIGNAL;
+
+    let mut req = [0u8; 32];
+    let mut rep = [0u8; 32];
+    let mut rhs = [0 as Handle; 2];
+    let mut ev = 0 as Handle;
+    if berry_event_create(0, &mut ev) != 0 || ev == 0 {
+        return false;
+    }
+    let n = gp::encode_reg_vblank_req(&mut req, 1);
+    let Some((nb, nh)) = gpu_hdi_rpc(h, &req[..n], &[ev], &mut rep, &mut rhs) else {
+        return false;
+    };
+    if nh != 0 || nb != 1 || rep[0] != gp::ST_OK {
+        return false;
+    }
+
+    let n = gp::encode_vblank_wait_req(&mut req);
+    let Some((nb, nh)) = gpu_hdi_rpc(h, &req[..n], &[], &mut rep, &mut rhs) else {
+        return false;
+    };
+    let Some(vb) = gp::parse_vblank_rep(&rep[..nb]) else {
+        return false;
+    };
+    if nh != 0 || vb.seq == 0 || vb.ts_ns == 0 {
+        return false;
+    }
+
+    let mut vmo = 0 as Handle;
+    let mut alias = 0 as Handle;
+    if berry_vmo_create(LEN, 0, &mut vmo) != 0
+        || vmo == 0
+        || berry_vmo_commit(vmo, 0, LEN) != 0
+        || berry_handle_duplicate(vmo, RIGHT_READ, &mut alias) != 0
+        || alias == 0
+    {
+        let _ = berry_handle_close(vmo);
+        let _ = berry_handle_close(alias);
+        return false;
+    }
+    let preq = gp::PrepareReq {
+        flags: 0,
+        width: W,
+        height: H,
+        stride: STRIDE,
+        format: gp::FMT_XRGB8888,
+    };
+    let n = gp::encode_prepare_req(&mut req, &preq);
+    let Some((nb, nh)) = gpu_hdi_rpc(h, &req[..n], &[alias], &mut rep, &mut rhs) else {
+        let _ = berry_handle_close(vmo);
+        return false;
+    };
+    let Some(slot) = gp::parse_prepare_rep(&rep[..nb]) else {
+        let _ = berry_handle_close(vmo);
+        return false;
+    };
+    if nh != 1 || rhs[0] == 0 {
+        for h in rhs[..nh].iter() {
+            let _ = berry_handle_close(*h);
+        }
+        let _ = berry_handle_close(vmo);
+        return false;
+    }
+    let fence = rhs[0];
+
+    let n = gp::encode_commit_req(&mut req, slot, 0);
+    let committed = match gpu_hdi_rpc(h, &req[..n], &[], &mut rep, &mut rhs) {
+        Some((nb, nh)) => nh == 0 && nb == 1 && rep[0] == gp::ST_OK,
+        None => false,
+    };
+    let mut observed = 0u64;
+    let signaled = committed
+        && berry_object_wait_one(fence, SIG, now() + 3_000_000_000, &mut observed) == 0
+        && observed & SIG != 0;
+    let _ = berry_handle_close(fence);
+    let _ = berry_handle_close(vmo);
+
+    // 关闭 vblank：协议宽收随行 event（无/1 均合法）；服务端收下即关。
+    let mut off = 0 as Handle;
+    let _ = berry_event_create(0, &mut off);
+    let n = gp::encode_reg_vblank_req(&mut req, 0);
+    let off_hs: &[Handle] = if off == 0 { &[] } else { &[off] };
+    let off_ok = match gpu_hdi_rpc(h, &req[..n], off_hs, &mut rep, &mut rhs) {
+        Some((nb, nh)) => nh == 0 && nb == 1 && rep[0] == gp::ST_OK,
+        None => false,
+    };
+    signaled && off_ok && {
+        send_retry(console, b"VGPUHDI ok vblank=1 fence=1\n".as_ptr(), 28);
+        true
+    }
+}
+
 /// 等待 vgpud 后端 ready（1B `V`）。设备缺席时 vgpud park，本等待到帽
 /// 即回落 guifbd；真实设备路径在启动毫秒级到达。
 fn vgpu_ready(h: Handle) -> bool {
@@ -4060,6 +4203,7 @@ fn vgpu_ready(h: Handle) -> bool {
     true
 }
 
+/// now = clock_read（失败自陷）。
 fn now() -> u64 {
     let mut t = 0u64;
     if berry_clock_read(CLOCK_MONOTONIC, &mut t) != 0 {

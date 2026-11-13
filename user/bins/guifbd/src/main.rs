@@ -84,7 +84,7 @@ const SEND_REARM_NS: u64 = 10 * 1_000_000_000;
 /// vblank event 信号位（用户半默认位——跨进程契约：客户端 REG_VBLANK 前
 /// 自建 event 并在同位等待；bsh/bench1 家族先例，不登记内核
 /// USER_SIGNAL_BITS——用户私有位无内核模板面）。
-const VBLANK_SIG: u64 = 1 << 32;
+const VBLANK_SIG: u64 = gp::HDI_USER_SIGNAL;
 /// token 环深（FRAME_CALLBACK 校验窗口——单客户端 v1 足够覆盖在途 8 帧）。
 const TOKEN_RING: usize = 8;
 /// 行弹舱帽（= ramfb stride 800×4；启动门执法——越帽说明几何非 ramfb

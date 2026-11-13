@@ -994,6 +994,20 @@ image: build build-boot
         --initrd rootfs.cpio \
         --size-mib 96
 
+# GPU2 诊断镜像：产品 rootfs + gpuhdi.on，只激活 vgpud HDI 四 op 自验。
+# 产品/验证正式镜像不含 marker；失败时 svcmgr 回落 guifbd/ramfb。
+gpu2-hdi-image: image
+    #!/bin/sh
+    set -e
+    python3 tools/cpio_filter.py rootfs-product.cpio rootfs-gpuhdi.cpio \
+        --add gpuhdi.on=tools/gpuhdi.on
+    python3 tools/mkimage.py out/berryos-gpuhdi.img \
+        --efi {{BOOT_EFI}} \
+        --hello {{BOOT_DIR}}/hello.txt \
+        --kernel {{KERNEL}} \
+        --initrd rootfs-gpuhdi.cpio \
+        --size-mib 96
+
 # 宿主设备壳（ADR #62）：tools/berry = host-only 独立 workspace。根 .cargo/config.toml
 # 把 build.target 锁成 aarch64-unknown-none，故必须显式 --target <host>；裸 cargo build
 # 会编到内核 target。Cargo.lock 随仓锁定 host 依赖（winit/softbuffer/clap/serde_json）。

@@ -341,6 +341,10 @@ pub const INPUT_KEY_EVENTS_MAX: usize = 15;
 /// PREPARE/COMMIT slot 数上限。
 pub const HDI_SLOTS_MAX: u8 = 2;
 
+/// HDI 用户半位 vblank/fence 信号位。fence 与 REG_VBLANK event 都在同一
+/// 位脉冲（clear+set），跨进程契约单源；勿在 guifbd/vgpud/测试客户端手写。
+pub const HDI_USER_SIGNAL: u64 = 1 << 32;
+
 /// present 域请求帧帽 = 24 + 16×8（SUBMIT 最坏）。
 pub const PRESENT_REQ_MAX: usize = 152;
 /// present 域应答帧帽（GETINFO 应答 24B）。
@@ -2512,6 +2516,8 @@ mod tests {
         assert_eq!(RESAMPLE_MIN_DELTA_MS, 2);
         assert_eq!(RESAMPLE_MAX_DELTA_MS, 20);
         assert_eq!(RESAMPLE_MAX_PREDICTION_MS, 8);
+        // HDI fence/vblank 用户半位单源（guifbd/vgpud/svcmgr 共同导入）。
+        assert_eq!(HDI_USER_SIGNAL, 1 << 32);
         assert_eq!((VER_PRESENT, VER_INPUT, VER_HDI), (1, 1, 1));
         // wm 域帽钉板（GUI-5 §7 Q5——wm const assert 的可见镜像）。
         assert_eq!(WM_WINDOWS_MAX, 15);

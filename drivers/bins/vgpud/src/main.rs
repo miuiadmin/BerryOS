@@ -23,10 +23,12 @@ use berry_exec::{VIRTIO_MMIO_SLOTS, VIRTIO_MMIO_STRIDE, VIRTIO_MMIO_VA};
 use berry_guiproto as gp;
 use berry_libc::io::{gift2_h, gift3_h};
 use berry_sys::{
-    berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
-    berry_object_wait_many, berry_object_wait_one, berry_thread_sleep, berry_vmo_commit,
-    berry_vmo_create, berry_vmo_get_phys, berry_vmo_get_size, berry_vmo_read, berry_vmo_write,
-    Handle, BERRY_ERR_AGAIN, BERRY_ERR_BUSY, CLOCK_MONOTONIC, SIGNAL_READABLE, SIGNAL_WRITABLE,
+    berry_channel_recv, berry_channel_send, berry_clock_read, berry_event_create,
+    berry_handle_close, berry_handle_duplicate, berry_object_signal, berry_object_wait_many,
+    berry_object_wait_one, berry_thread_sleep, berry_vmo_commit, berry_vmo_create,
+    berry_vmo_get_phys, berry_vmo_get_size, berry_vmo_read, berry_vmo_write, Handle,
+    BERRY_ERR_AGAIN, BERRY_ERR_BUSY, BERRY_ERR_TIMEDOUT, CLOCK_MONOTONIC, RIGHT_READ,
+    RIGHT_SIGNAL, SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
 use berry_virtio as vio;
 
@@ -39,8 +41,9 @@ const RING_PAGE: u64 = 0;
 const REQ_PAGE: u64 = 4096;
 const RESP_PAGE: u64 = 8192;
 const FRAME_VMO_LEN: u64 = 4096;
-const RESOURCE_ID: u32 = 1;
+const RESOURCE_IDS: [u32; 2] = [1, 2];
 const SCANOUT_ID: u32 = 0;
+const BACKING_POOL: usize = RESOURCE_IDS.len();
 const EXPECT_W: u32 = 1080;
 const EXPECT_H: u32 = 1920;
 const POLL_CAP_NS: u64 = 10_000_000_000;
@@ -91,39 +94,41 @@ fn main() {
             trap();
         });
 
-    ctrl_simple(&d, regs, vio::gpu::GPU_RESOURCE_CREATE_2D_SZ, |b| {
-        vio::gpu::put_resource_create_2d(
-            b,
-            0,
-            RESOURCE_ID,
-            vio::gpu::FORMAT_B8G8R8X8_UNORM,
-            EXPECT_W,
-            EXPECT_H,
-        )
-        .is_some()
-    });
+    for resource in RESOURCE_IDS {
+        ctrl_simple(&d, regs, vio::gpu::GPU_RESOURCE_CREATE_2D_SZ, |b| {
+            vio::gpu::put_resource_create_2d(
+                b,
+                0,
+                resource,
+                vio::gpu::FORMAT_B8G8R8X8_UNORM,
+                EXPECT_W,
+                EXPECT_H,
+            )
+            .is_some()
+        });
+    }
 
-    attach_frame(&d, regs, &frame);
+    attach_frame(&d, regs, &frame, RESOURCE_IDS[0]);
 
     let rect = vio::gpu::GpuRect { x: 0, y: 0, width: EXPECT_W, height: EXPECT_H };
     ctrl_simple(&d, regs, vio::gpu::GPU_SET_SCANOUT_SZ, |b| {
-        vio::gpu::put_set_scanout(b, 0, rect, SCANOUT_ID, RESOURCE_ID).is_some()
+        vio::gpu::put_set_scanout(b, 0, rect, SCANOUT_ID, RESOURCE_IDS[0]).is_some()
     });
 
     let probe = vio::gpu::GpuRect { x: 0, y: 0, width: 2, height: 2 };
     ctrl_simple(&d, regs, vio::gpu::GPU_TRANSFER_2D_SZ, |b| {
-        vio::gpu::put_transfer_to_host_2d(b, 0, RESOURCE_ID, probe, 0).is_some()
+        vio::gpu::put_transfer_to_host_2d(b, 0, RESOURCE_IDS[0], probe, 0).is_some()
     });
     ctrl_simple(&d, regs, vio::gpu::GPU_RESOURCE_FLUSH_SZ, |b| {
-        vio::gpu::put_resource_flush(b, 0, RESOURCE_ID, probe).is_some()
+        vio::gpu::put_resource_flush(b, 0, RESOURCE_IDS[0], probe).is_some()
     });
 
     println!(
-        "VGPU ok w={} h={} scanout={} resource={} slot={}",
+        "VGPU ok w={} h={} scanout={} resources={} slot={}",
         mode.rect.width,
         mode.rect.height,
         num_scanouts,
-        RESOURCE_ID,
+        BACKING_POOL,
         slot
     );
     let present = gift2_h();
@@ -312,11 +317,11 @@ fn get_display_info(d: &Dma, regs: *mut u32) -> vio::gpu::GpuDisplayInfo {
     parsed
 }
 
-fn attach_frame(d: &Dma, regs: *mut u32, frame: &Frame) {
+fn attach_frame(d: &Dma, regs: *mut u32, frame: &Frame, resource: u32) {
     // SAFETY: 单线程独占窗。
     let req: &mut [u8; 512] = unsafe { &mut *core::ptr::addr_of_mut!(REQ) };
     req.fill(0);
-    if vio::gpu::put_attach_backing(req, 0, RESOURCE_ID, 1).is_none()
+    if vio::gpu::put_attach_backing(req, 0, resource, 1).is_none()
         || vio::gpu::put_mem_entry(req, vio::gpu::GPU_BACKING_CMD_SZ as usize, frame.pa, 4096)
             .is_none()
     {
@@ -462,14 +467,34 @@ const TOKEN_RING: usize = 8;
 const CREDITS: usize = gp::CREDITS_MAX as usize;
 const IDLE_CAP_NS: u64 = 10_000_000_000;
 const SEND_REARM_NS: u64 = 10_000_000_000;
+const SOFT_VSYNC_NS: u64 = 16_666_666;
+const VBLANK_SIG: u64 = gp::HDI_USER_SIGNAL;
+const HDI_SLOTS: usize = gp::HDI_SLOTS_MAX as usize;
 const MAX_BACKING_PAGES: usize = 4096;
 const MAX_ENTRY_PAGES: usize = 16;
 
+#[derive(Clone, Copy)]
 struct Backing {
+    /// frame VMO READ 别名：钉住全部已 commit 页，防 PA 指纹被页复用
+    /// 假命中（内核 VMO 页在任一 handle 存活期不可回收/复用）。
+    _pin: Handle,
     /// entries VMO 只持生命周期；物理 PA 已进 descriptor。
     _entries_vmo: Handle,
+    resource: u32,
     first_pa: u64,
-    _pages: usize,
+    last_pa: u64,
+    stamp: u64,
+}
+
+#[derive(Clone, Copy)]
+struct HdiSlot {
+    vmo: Handle,
+    width: u32,
+    height: u32,
+    stride: u32,
+    fence: Handle,
+    commit_target: u64,
+    committed: bool,
 }
 
 struct PresentSrv {
@@ -482,7 +507,20 @@ struct PresentSrv {
     tokens: [(u32, u64); TOKEN_RING],
     held: [(u32, Handle); CREDITS],
     held_n: usize,
-    backing: Option<Backing>,
+    backings: [Option<Backing>; BACKING_POOL],
+    scanout_resource: u32,
+    perf_submits: u64,
+    perf_submit_ns: u64,
+    perf_reattaches: u64,
+    perf_jitter_ns: u64,
+    vb_seq: u32,
+    vb_next_ns: u64,
+    vb_scheduled: bool,
+    vb_armed: bool,
+    vb_ev: Handle,
+    vb_parked: bool,
+    vb_park_ch: Handle,
+    slots: [HdiSlot; HDI_SLOTS],
 }
 
 impl PresentSrv {
@@ -521,27 +559,74 @@ impl PresentSrv {
             return;
         }
 
-        // Backing 物理页只在首帧/换 VMO 时重建；同一 client frame VMO 的
-        // fresh alias 每帧到达，不重复 2025 次 get_phys/attach。
+        let submit_started = now();
+        // Backing 物理页池化：首/末物理页作为 frame VMO 身份指纹；同一
+        // VMO 的 fresh alias 命中池，不重复 2025 次 get_phys/attach。
+        let bytes = (self.w as u64) * 4 * self.h as u64;
         let mut first_pa = 0u64;
-        if berry_vmo_get_phys(hvmo, 0, &mut first_pa) != 0 {
+        let mut last_pa = 0u64;
+        if berry_vmo_get_phys(hvmo, 0, &mut first_pa) != 0
+            || berry_vmo_get_phys(hvmo, bytes.saturating_sub(1) & !0xFFF, &mut last_pa) != 0
+        {
             let _ = berry_handle_close(hvmo);
             st_rep(ch, gp::ST_BAD);
             return;
         }
-        if self.backing.as_ref().map(|b| b.first_pa) != Some(first_pa) {
-            // Phase 2 自验已给 resource 附过 4KiB 测试 backing；完整帧
-            // 换背前显式 DETACH，并回收旧 entries VMO。
-            ctrl_simple(
-                &self.dma,
-                self.regs,
-                vio::gpu::GPU_BACKING_CMD_SZ,
-                |b| vio::gpu::put_detach_backing(b, 0, RESOURCE_ID).is_some(),
-            );
-            if let Some(old) = self.backing.take() {
-                let _ = berry_handle_close(old._entries_vmo);
+        let next_stamp = u64::from(self.submit_seq.wrapping_add(1));
+        let hit = self
+            .backings
+            .iter()
+            .position(|b| {
+                b.as_ref()
+                    .is_some_and(|b| b.first_pa == first_pa && b.last_pa == last_pa)
+            });
+        let resource = match hit {
+            Some(i) => {
+                self.backings[i].as_mut().expect("hit checked").stamp = next_stamp;
+                self.backings[i].as_ref().expect("hit checked").resource
             }
-            self.attach_frame_backing(hvmo);
+            None => {
+                let target = self
+                    .backings
+                    .iter()
+                    .position(|b| b.is_none())
+                    .unwrap_or_else(|| {
+                        self.backings
+                            .iter()
+                            .enumerate()
+                            .min_by_key(|(_, b)| b.as_ref().map(|b| b.stamp).unwrap_or(0))
+                            .map(|(i, _)| i)
+                            .unwrap_or(0)
+                    });
+                let resource = RESOURCE_IDS[target];
+                // 启动自验可能已给 resource 1 附过 4KiB 测试 backing；
+                // 无论目标槽是否池化命中过，换背前都显式 DETACH。
+                ctrl_simple(
+                    &self.dma,
+                    self.regs,
+                    vio::gpu::GPU_BACKING_CMD_SZ,
+                    |b| vio::gpu::put_detach_backing(b, 0, resource).is_some(),
+                );
+                if let Some(old) = self.backings[target].take() {
+                    let _ = berry_handle_close(old._entries_vmo);
+                    let _ = berry_handle_close(old._pin);
+                }
+                self.perf_reattaches = self.perf_reattaches.saturating_add(1);
+                self.attach_frame_backing(hvmo, resource, next_stamp, first_pa, last_pa);
+                resource
+            }
+        };
+        if self.scanout_resource != resource {
+            let rect = vio::gpu::GpuRect {
+                x: 0,
+                y: 0,
+                width: self.w,
+                height: self.h,
+            };
+            ctrl_simple(&self.dma, self.regs, vio::gpu::GPU_SET_SCANOUT_SZ, |b| {
+                vio::gpu::put_set_scanout(b, 0, rect, SCANOUT_ID, resource).is_some()
+            });
+            self.scanout_resource = resource;
         }
 
         let fullrect = gp::Rect { x: 0, y: 0, w: self.w, h: self.h };
@@ -563,10 +648,10 @@ impl PresentSrv {
             };
             let off = (r.y as u64 * self.w as u64 + r.x as u64) * 4;
             ctrl_simple(&self.dma, self.regs, vio::gpu::GPU_TRANSFER_2D_SZ, |b| {
-                vio::gpu::put_transfer_to_host_2d(b, 0, RESOURCE_ID, rect, off).is_some()
+                vio::gpu::put_transfer_to_host_2d(b, 0, resource, rect, off).is_some()
             });
             ctrl_simple(&self.dma, self.regs, vio::gpu::GPU_RESOURCE_FLUSH_SZ, |b| {
-                vio::gpu::put_resource_flush(b, 0, RESOURCE_ID, rect).is_some()
+                vio::gpu::put_resource_flush(b, 0, resource, rect).is_some()
             });
         }
 
@@ -577,12 +662,33 @@ impl PresentSrv {
         self.tokens[token as usize % TOKEN_RING] = (token, t);
         self.held[self.held_n] = (buffer_id, hvmo);
         self.held_n += 1;
+        self.perf_submits = self.perf_submits.saturating_add(1);
+        self.perf_submit_ns = self
+            .perf_submit_ns
+            .saturating_add(now().saturating_sub(submit_started));
+        if self.perf_submits % 128 == 0 {
+            let avg_us = self.perf_submit_ns / (self.perf_submits * 1_000);
+            println!(
+                "VGPUPERF submits={} avg_us={} reattaches={} jitter_us={}",
+                self.perf_submits,
+                avg_us,
+                self.perf_reattaches,
+                self.perf_jitter_ns / 1_000
+            );
+        }
         let mut out = [0u8; 8];
         let n = gp::encode_submit_ack(&mut out, token);
         send_rep(ch, &out[..n]);
     }
 
-    fn attach_frame_backing(&mut self, hvmo: Handle) {
+    fn attach_frame_backing(
+        &mut self,
+        hvmo: Handle,
+        resource: u32,
+        stamp: u64,
+        first_pa: u64,
+        last_pa: u64,
+    ) {
         let bytes = self.w as u64 * 4 * self.h as u64;
         let pages = ((bytes + 4095) / 4096) as usize;
         if pages == 0 || pages > MAX_BACKING_PAGES {
@@ -596,11 +702,16 @@ impl PresentSrv {
         }
         let entries_len = (entry_pages * 4096) as u64;
         let mut entries_vmo = 0 as Handle;
+        let mut pin = 0 as Handle;
         if berry_vmo_create(entries_len, 0, &mut entries_vmo) != 0
             || entries_vmo == 0
             || berry_vmo_commit(entries_vmo, 0, entries_len) != 0
+            || berry_handle_duplicate(hvmo, RIGHT_READ, &mut pin) != 0
+            || pin == 0
         {
-            println!("vgpu: entries VMO failure");
+            let _ = berry_handle_close(entries_vmo);
+            let _ = berry_handle_close(pin);
+            println!("vgpu: entries/pin VMO failure");
             trap();
         }
 
@@ -608,15 +719,11 @@ impl PresentSrv {
         let page: &mut [u8; 4096] = unsafe { &mut *core::ptr::addr_of_mut!(ENTRY_PAGE) };
         let mut in_page = 0usize;
         let mut out_page = 0usize;
-        let mut first_pa = 0u64;
         for i in 0..pages {
             let mut pa = 0u64;
             if berry_vmo_get_phys(hvmo, (i as u64) * 4096, &mut pa) != 0 {
                 println!("vgpu: frame phys page={}", i);
                 trap();
-            }
-            if i == 0 {
-                first_pa = pa;
             }
             if vio::gpu::put_mem_entry(
                 page,
@@ -663,7 +770,7 @@ impl PresentSrv {
         }
         // SAFETY: 单线程独占窗。
         let req: &mut [u8; 512] = unsafe { &mut *core::ptr::addr_of_mut!(REQ) };
-        if vio::gpu::put_attach_backing(req, 0, RESOURCE_ID, pages as u32).is_none() {
+        if vio::gpu::put_attach_backing(req, 0, resource, pages as u32).is_none() {
             trap();
         }
         ctrl_chain(
@@ -672,7 +779,205 @@ impl PresentSrv {
             vio::gpu::GPU_BACKING_CMD_SZ,
             &pas[..entry_pages],
         );
-        self.backing = Some(Backing { _entries_vmo: entries_vmo, first_pa, _pages: pages });
+        let target = RESOURCE_IDS.iter().position(|&id| id == resource).unwrap_or(0);
+        self.backings[target] = Some(Backing {
+            _pin: pin,
+            _entries_vmo: entries_vmo,
+            resource,
+            first_pa,
+            last_pa,
+            stamp,
+        });
+    }
+
+    fn vsync_schedule(&mut self) {
+        if !self.vb_scheduled {
+            self.vb_next_ns = now() + SOFT_VSYNC_NS;
+            self.vb_scheduled = true;
+        }
+    }
+
+    fn tick_vsync(&mut self) {
+        if !self.vb_scheduled {
+            return;
+        }
+        let t = now();
+        if t < self.vb_next_ns {
+            return;
+        }
+        let point = self.vb_next_ns;
+        self.perf_jitter_ns = self.perf_jitter_ns.max(t.saturating_sub(point));
+        if self.vb_parked {
+            let rep = gp::VblankRep { seq: self.vb_seq.wrapping_add(1), ts_ns: point };
+            let mut out = [0u8; 16];
+            let n = gp::encode_vblank_rep(&mut out, &rep);
+            send_rep(self.vb_park_ch, &out[..n]);
+            self.vb_parked = false;
+            self.vb_park_ch = 0;
+        }
+        if self.vb_armed && self.vb_ev != 0 {
+            let _ = berry_object_signal(self.vb_ev, VBLANK_SIG, VBLANK_SIG);
+        }
+        // COMMIT fence 在本拍或 target 后的首拍释放：HDI 的呈现序与
+        // vblank 同源，不再是无时序的立即置位。target=0 = 下一拍。
+        for slot in &mut self.slots {
+            if slot.committed && slot.commit_target <= point {
+                if slot.fence != 0 {
+                    let _ = berry_object_signal(slot.fence, VBLANK_SIG, VBLANK_SIG);
+                }
+                slot.committed = false;
+            }
+        }
+        self.vb_seq = self.vb_seq.wrapping_add(1);
+        let mut next = point + SOFT_VSYNC_NS;
+        while next <= t {
+            next += SOFT_VSYNC_NS;
+        }
+        self.vb_next_ns = next;
+        if !self.vb_armed && !self.vb_parked {
+            self.vb_scheduled = false;
+        }
+    }
+
+    fn handle_hdi(&mut self, ch: Handle, msg: &[u8], hs: &[Handle]) {
+        match msg.first() {
+            Some(&gp::OP_REG_VBLANK) => match gp::parse_reg_vblank_req(msg) {
+                Some(1) => {
+                    if hs.len() != 1 {
+                        close_all(hs);
+                        st_rep(ch, gp::ST_BAD);
+                        return;
+                    }
+                    if self.vb_ev != 0 {
+                        let _ = berry_handle_close(self.vb_ev);
+                    }
+                    self.vb_ev = hs[0];
+                    self.vb_armed = true;
+                    self.vsync_schedule();
+                    st_rep(ch, gp::ST_OK);
+                }
+                Some(0) => {
+                    if self.vb_ev != 0 {
+                        let _ = berry_handle_close(self.vb_ev);
+                        self.vb_ev = 0;
+                    }
+                    close_all(hs);
+                    self.vb_armed = false;
+                    if !self.vb_parked {
+                        self.vb_scheduled = false;
+                    }
+                    st_rep(ch, gp::ST_OK);
+                }
+                _ => {
+                    close_all(hs);
+                    st_rep(ch, gp::ST_BAD);
+                }
+            },
+            Some(&gp::OP_VBLANK_WAIT) if gp::parse_vblank_wait_req(msg).is_some() => {
+                if !hs.is_empty() || self.vb_parked {
+                    close_all(hs);
+                    st_rep(ch, gp::ST_BUSY);
+                    return;
+                }
+                self.vb_parked = true;
+                self.vb_park_ch = ch;
+                self.vsync_schedule();
+            }
+            Some(&gp::OP_PREPARE) => match gp::parse_prepare_req(msg) {
+                Some(req) => self.prepare(ch, hs, req),
+                None => {
+                    close_all(hs);
+                    st_rep(ch, gp::ST_BAD);
+                }
+            },
+            Some(&gp::OP_COMMIT) => match gp::parse_commit_req(msg) {
+                Some((slot, target)) => {
+                    if !hs.is_empty() {
+                        close_all(hs);
+                        st_rep(ch, gp::ST_BAD);
+                        return;
+                    }
+                    if self.slots[slot as usize].vmo == 0 {
+                        st_rep(ch, gp::ST_NOENT);
+                        return;
+                    }
+                    self.slots[slot as usize].commit_target = target;
+                    self.slots[slot as usize].committed = true;
+                    self.vsync_schedule();
+                    st_rep(ch, gp::ST_OK);
+                }
+                None => {
+                    close_all(hs);
+                    st_rep(ch, gp::ST_BAD);
+                }
+            },
+            _ => {
+                close_all(hs);
+                st_rep(ch, gp::ST_BAD);
+            }
+        }
+    }
+
+    fn prepare(&mut self, ch: Handle, hs: &[Handle], req: gp::PrepareReq) {
+        if hs.len() != 1 || req.format != gp::FMT_XRGB8888 || req.width != self.w
+            || req.height != self.h || req.stride != self.w * 4
+        {
+            close_all(hs);
+            st_rep(ch, if hs.len() == 1 { gp::ST_UNSUPPORTED } else { gp::ST_BAD });
+            return;
+        }
+        let hvmo = hs[0];
+        let mut sz = 0u64;
+        if berry_vmo_get_size(hvmo, &mut sz) != 0
+            || sz < (req.stride as u64) * req.height as u64
+        {
+            let _ = berry_handle_close(hvmo);
+            st_rep(ch, gp::ST_BAD);
+            return;
+        }
+        let mut slot = self.slots.iter().position(|s| s.vmo == 0);
+        if slot.is_none() {
+            slot = self.slots.iter().position(|s| {
+                s.width == req.width && s.height == req.height && s.stride == req.stride
+            });
+            if let Some(i) = slot {
+                let old = &mut self.slots[i];
+                let _ = berry_handle_close(old.vmo);
+                let _ = berry_handle_close(old.fence);
+                old.vmo = 0;
+                old.fence = 0;
+            }
+        }
+        let Some(i) = slot else {
+            let _ = berry_handle_close(hvmo);
+            st_rep(ch, gp::ST_FULL);
+            return;
+        };
+        let mut fence = 0 as Handle;
+        let mut fence_signal = 0 as Handle;
+        if berry_event_create(0, &mut fence) != 0
+            || fence == 0
+            || berry_handle_duplicate(fence, RIGHT_SIGNAL, &mut fence_signal) != 0
+            || fence_signal == 0
+        {
+            let _ = berry_handle_close(hvmo);
+            let _ = berry_handle_close(fence);
+            let _ = berry_handle_close(fence_signal);
+            st_rep(ch, gp::ST_FULL);
+            return;
+        }
+        self.slots[i] = HdiSlot {
+            vmo: hvmo,
+            width: req.width,
+            height: req.height,
+            stride: req.stride,
+            fence: fence_signal,
+            commit_target: 0,
+            committed: false,
+        };
+        let mut out = [0u8; 4];
+        let n = gp::encode_prepare_rep(&mut out, i as u8);
+        send_rep_handles(ch, &out[..n], &[fence]);
     }
 
     fn handle_present(&mut self, ch: Handle, msg: &[u8], hs: &[Handle]) {
@@ -791,21 +1096,36 @@ fn serve_present(d: &Dma, regs: *mut u32, w: u32, h: u32) -> ! {
         tokens: [(0, 0); TOKEN_RING],
         held: [(0, 0); CREDITS],
         held_n: 0,
-        backing: None,
+        backings: [None; BACKING_POOL],
+        scanout_resource: RESOURCE_IDS[0],
+        perf_submits: 0,
+        perf_submit_ns: 0,
+        perf_reattaches: 0,
+        perf_jitter_ns: 0,
+        vb_seq: 0,
+        vb_next_ns: 0,
+        vb_scheduled: false,
+        vb_armed: false,
+        vb_ev: 0,
+        vb_parked: false,
+        vb_park_ch: 0,
+        slots: [HdiSlot {
+            vmo: 0,
+            width: 0,
+            height: 0,
+            stride: 0,
+            fence: 0,
+            commit_target: 0,
+            committed: false,
+        }; HDI_SLOTS],
     };
     let items = [present, hdi];
     let sigs = [SIGNAL_READABLE, SIGNAL_READABLE];
     let mut obs = [0u64; 2];
     let mut ready_idx = 0usize;
     loop {
-        let _ = berry_object_wait_many(
-            items.as_ptr(),
-            sigs.as_ptr(),
-            2,
-            now() + IDLE_CAP_NS,
-            &mut ready_idx,
-            obs.as_mut_ptr(),
-        );
+        srv.tick_vsync();
+        let mut handled = false;
         for (ch, is_present) in [(present, true), (hdi, false)] {
             let mut msg = [0u8; 256];
             let mut hs = [0 as Handle; 8];
@@ -827,14 +1147,31 @@ fn serve_present(d: &Dma, regs: *mut u32, w: u32, h: u32) -> ! {
             if is_present {
                 srv.handle_present(ch, &msg[..nb], &hs[..nh]);
             } else {
-                // Phase 3 产品主链不消费 hdi；保留通道并 loud 拒未知请求。
-                close_all(&hs[..nh]);
-                st_rep(ch, gp::ST_UNSUPPORTED);
+                srv.handle_hdi(ch, &msg[..nb], &hs[..nh]);
             }
+            handled = true;
+        }
+        if handled {
+            continue;
+        }
+        let t = now();
+        let mut deadline = t + IDLE_CAP_NS;
+        if srv.vb_scheduled && srv.vb_next_ns < deadline {
+            deadline = srv.vb_next_ns;
+        }
+        let st = berry_object_wait_many(
+            items.as_ptr(),
+            sigs.as_ptr(),
+            2,
+            deadline,
+            &mut ready_idx,
+            obs.as_mut_ptr(),
+        );
+        if st != 0 && st != BERRY_ERR_TIMEDOUT {
+            trap();
         }
     }
 }
-
 fn send_rep(h: Handle, rep: &[u8]) {
     loop {
         let st = berry_channel_send(h, rep.as_ptr(), rep.len(), core::ptr::null(), 0);

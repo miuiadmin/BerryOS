@@ -88,7 +88,7 @@ VOTE
 POWER_MODE
 ```
 
-SUBMIT 保留 credits ≤2、无 damage 不提交、FULL/K 互斥与 alias 生命周期；FRAME_CALLBACK 返回 `FRAME_PRESENTED`；RELEASE_WAIT 全量归还别名。hdi 通道当前对未知请求返回 `ST_UNSUPPORTED`；普通 BerryUI/Berry Room 应用不消费 hdi，真实 vblank/fence/COMMIT 排队归 GPU2。
+SUBMIT 保留 credits ≤2、无 damage 不提交、FULL/K 互斥与 alias 生命周期；FRAME_CALLBACK 返回 `FRAME_PRESENTED`；RELEASE_WAIT 全量归还别名。GPU2 起vgpud 提供 REG_VBLANK / VBLANK_WAIT / PREPARE / COMMIT，且 `gpuhdi.on` 诊断镜像覆盖 fence 真链；COMMIT 驱动像素呈现仍归后续 GPU2。
 
 ## §6 验证与实测
 
@@ -131,8 +131,9 @@ vgpud ELF                332,808B
 
 ## §7 已知边界
 
-- vgpud hdi 尚未实现 vblank event、PREPARE fence 和 COMMIT 排队。
+- vgpud 已有 vblank event、PREPARE fence 与 COMMIT 定时释放；COMMIT 尚未把 slot VMO 排队呈现。
 - soft↔vgpu 的机器像素共识尚未形成独立 CI gate；当前由 GUI8/ramfb 与产品 vgpu 显式截图双链证明。
-- frame backing 重建需要一次 2025 页 `vmo_get_phys`；同一 VMO 稳态已缓存，VMO 生命周期/池化归 GPU2。
+- frame backing 已用双 resource + first/last PA + READ pin 池化；COMMIT 呈现与更多并发槽归 GPU2。
 - cache maintain 仍是 vblk 同款 v1 缺口：QEMU/TCG/HVF 一致，真机 DMA API 另刀。
 - Mac shell shm-ring/Metal 呈现组合归 GPU2；Metal 不得成为第二客机像素真相源。
+- 现行执行拆解见 [../.agents/plans/2026-11-13-virtio-gpu-hdi-pool-calibration.md](../.agents/plans/2026-11-13-virtio-gpu-hdi-pool-calibration.md)。
