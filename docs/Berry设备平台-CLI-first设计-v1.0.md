@@ -154,6 +154,10 @@ berry shot --image out/berryos.img --profile phone \
   起 headless host。GUI 与 host 可同进程（v1），也可拆进程（C1 可选）。
 - **QEMU 是唯一外部引擎**；GPL 进程边界不变。
 - **数据面不经过 control.sock**：帧走 shared RAM/VNC；control 只传命令/事件/元数据。
+- **显示面选择是产品正确性**：display mode 带 `WxH` 即挂 vgpu0，session host 必须用
+  `VncSource` 活动 console。`RamSource` 只服务无 vgpu/ramfb 调试档；它读取的是
+  firmware/GOP 帧缓冲，vgpud/wmd 后续 submit 不会写回该地址，继续使用会把 100%
+  后的桌面误显示成停住的 Boot Progress。
 - **control.sock 是本机唯一控制入口**；QMP/串口是 host 内部实现。
 
 ### 5.2 组件职责

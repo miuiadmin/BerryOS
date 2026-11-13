@@ -132,7 +132,7 @@ fn read_version(path: &Path) -> String {
 
 
 /// Parse the display-mode prefix accepted by the guest kernel (`WxH[@Hz]`).
-fn render_geometry(mode: &str) -> Option<(u32, u32)> {
+pub(crate) fn render_geometry(mode: &str) -> Option<(u32, u32)> {
     let head = mode.split('@').next()?;
     let (w, h) = head.split_once('x')?;
     Some((w.parse().ok()?, h.parse().ok()?))

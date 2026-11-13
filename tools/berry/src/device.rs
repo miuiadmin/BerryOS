@@ -355,7 +355,13 @@ fn boot_runtime(
     let result = (|| {
         let qmp = connect_qmp(qmp_ep, Duration::from_secs(10))?;
         let qmp = Arc::new(Mutex::new(qmp));
-        let source: Box<dyn ScreenSource> = if let Some(info) = fb {
+        let source: Box<dyn ScreenSource> = if display_requests_vgpu(mode) {
+            // A product display mode instantiates the real virtio-gpu console.
+            // RamSource would keep reading the firmware/GOP framebuffer and miss
+            // the wmd SUBMIT that replaces Boot Progress with the desktop.
+            wait_endpoint(vnc, Duration::from_secs(5))?;
+            Box::new(VncSource::connect(vnc)?)
+        } else if let Some(info) = fb {
             let input = VncInput::connect(vnc)?;
             Box::new(RamSource::open(ram_path.unwrap_or(std::path::Path::new("")), info, input)?)
         } else {
@@ -373,6 +379,23 @@ fn boot_runtime(
             run_dir::write_state(run.path(), "failed");
             Err(e)
         }
+    }
+}
+
+fn display_requests_vgpu(mode: Option<&str>) -> bool {
+    mode.and_then(crate::qemu::render_geometry).is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::display_requests_vgpu;
+
+    #[test]
+    fn product_vgpu_mode_uses_vnc_active_console() {
+        assert!(display_requests_vgpu(Some("1080x1920@60")));
+        assert!(display_requests_vgpu(Some("800x600")));
+        assert!(!display_requests_vgpu(Some("bad")));
+        assert!(!display_requests_vgpu(None));
     }
 }
 

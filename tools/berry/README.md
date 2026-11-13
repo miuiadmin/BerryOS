@@ -10,8 +10,10 @@ CLI 是主接口；窗口按钮只是命令的按钮化，任何 UI 动作都应
 
 设计依据：`docs/Berry设备平台-CLI-first设计.md`（平台/CLI/控制面/快捷栏单一事实源）+
 `docs/berry设备壳设计草案.md`（显示/帧面/QEMU 子系统）+ ADR #62 追记。**QEMU 只是引擎子进程**：
-帧面走 QEMU `memory-backend-file,share=on` 的客机 RAM 镜（`RamSource`），输入走
-VNC 多客户端（`VncInput`），生命周期/复位走 QMP。窗口、截图、缩放都在宿主侧。
+非 vgpu 档的帧面走 QEMU `memory-backend-file,share=on` 客机 RAM 镜（`RamSource`）；
+产品 vgpu 档必须走 VNC 活动 console（`VncSource`），否则窗口会停在 ramfb/GOP 的
+Boot Progress 旧帧而错过 wmd 桌面 submit。输入走 VNC 多客户端（`VncInput`），生命
+周期/复位走 QMP。窗口、截图、缩放都在宿主侧。
 
 ## 构建
 
@@ -65,8 +67,9 @@ just berry-smoke                            # doctor + kernel marker + EFI shot
 `berry shot` 起一台**临时**设备：QEMU（`-display none -vnc`）→ 等串口标记 → 从 VNC 抓一帧 →
 写 PNG → 停设备。`berry screenshot` **不启动**新设备，直接 attach 正在跑的 shell（VNC 多客户端）
 抓一帧；这是 CLI/AI 对「当前界面」截图的主路径。`berry shell` 用 `-display none` + `memory-backend-file` 起同一套设备：
-串口 `FB ok 480x1000 … fb=0x…` 给出几何/PA，`RamSource` 直接读 `ram.bin`，窗口按
-19:9 等比缩放显示；VNC 只作输入通道（不请求帧），`berry input` 可与 shell 并存。
+非 vgpu 档：串口 `FB ok … fb=0x…` 给出几何/PA，`RamSource` 直接读 `ram.bin`，VNC
+只作输入通道。产品 vgpu 档：`ScreenSource` 必须是 `VncSource` 活动 console，让
+Boot Progress 与 wmd 桌面 submit 共用同一用户可见显示面；`berry input` 可与 shell 并存。
 
 ## CLI-first 控制面（现状）
 
