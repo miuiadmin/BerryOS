@@ -296,6 +296,7 @@ pub fn run(
         owner: 0,
         label: decimal_app_label(0),
     }; OWNER_LABELS_MAX];
+    let mut current_app_owner: Option<u16> = None;
     let mut recents_open = false;
     let mut recents_win: u16 = 0;
     let mut buf_id: u32 = 1; // SUBMIT buffer 代际（RELEASE echo 非断言面）
@@ -390,6 +391,7 @@ pub fn run(
                             }
                         }
                         if let Some(owner) = app_frame_owner {
+                            current_app_owner = Some(owner);
                             if let Some(node) = launching_node.take() {
                                 ui.release_press(node);
                             }
@@ -532,13 +534,20 @@ pub fn run(
             match m {
                 Msg::Click { node } => {
                     if recents_open {
-                        if let Some(index) = recents_card_index(*node, &desktop) {
-                            if let Some(owner) = desktop.recents_cards[index].owner {
-                                let _ = select_recent_owner(hw, owner);
-                            }
+                        let card_owner = recents_card_index(*node, &desktop)
+                            .and_then(|index| desktop.recents_cards[index].owner);
+                        if let Some(owner) = card_owner {
+                            current_app_owner = Some(owner);
                         }
+                        let selected_owner = card_owner.or(current_app_owner);
+                        // 先隐藏 SYSTEM overlay：WmTable 会在 SET 时重算 AVOID_SYS
+                        // 有效几何；随后 task_select/replay 才能看到非空 eff。
                         if recents_win != 0 {
                             let _ = set_recents_window_visible(hw, recents_win, false);
+                        }
+                        let mut restored_app = false;
+                        if let Some(owner) = selected_owner {
+                            restored_app = select_recent_owner(hw, owner);
                         }
                         if let Err(e) =
                             desktop::set_recents_visible(ui, &mut desktop, false, &[], 0)
@@ -546,8 +555,13 @@ pub fn run(
                             fail(&format!("recents hide err={e:?}"));
                         }
                         recents_open = false;
-                        // 保留 app 下层合成帧：丢掉 overlay 隐藏 damage，不重画 surface0。
-                        let _ = ui.drain_damage();
+                        if restored_app {
+                            // 保留 app 下层合成帧：丢掉 overlay 隐藏 damage，不重画 surface0。
+                            let _ = ui.drain_damage();
+                        } else {
+                            // owner 已退出/表拒绝：不能保留 overlay 旧像素，回桌面真值重绘。
+                            ui.invalidate_full();
+                        }
                         continue;
                     }
                     if t_now.saturating_sub(last_spawn_click_ns) < APP_SPAWN_DEBOUNCE_NS {

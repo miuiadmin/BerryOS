@@ -383,6 +383,11 @@ fn system_recents_lists_and_selects_app_owners() {
     let recents = t.recents_owners();
     assert_eq!(recents.count, 2);
     assert_eq!(&recents.owners[..recents.count], &[1, 2]);
+    let (owner_wins, owner_n) = t.owner_windows(1);
+    assert_eq!(owner_n, 1);
+    assert_eq!(owner_wins[0].id, a);
+    assert_eq!(owner_wins[0].raw, (0, 0, 100, 100));
+    assert_eq!(owner_wins[0].eff, (0, 0, 100, 100));
 
     assert_eq!(t.task_select(1), Some(1));
     assert_eq!(t.focused(), Some((1, a)));

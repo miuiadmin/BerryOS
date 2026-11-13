@@ -745,7 +745,7 @@ impl WmSessions {
     }
 
     /// poll-first 死亡探测：Process TERMINATED 即摘 session、清 owner 窗。
-    fn reap_dead(&mut self, table: &mut table::WmTable) {
+    fn reap_dead(&mut self, table: &mut table::WmTable, comp: &mut relay::Compositor) {
         let mut i = 0;
         while i < self.slots.len() {
             let Some(sess) = self.slots[i].as_ref() else {
@@ -771,6 +771,7 @@ impl WmSessions {
             // 通道应答快照；避免对将关 handle 的时序依赖。
             table.forget_parked(sess.ch);
             let wins = table.destroy_owned(sess.id);
+            comp.forget_owner_cache(sess.id);
             if self.input_lock.map(|l| l.session == sess.id).unwrap_or(false) {
                 self.input_lock = None;
             }
@@ -1037,6 +1038,7 @@ fn on_session(table: &mut table::WmTable, present_cli: Handle, hdi_cli: Handle,
                 owner,
                 client_type,
                 |owner, id| table.surface_geometry(owner, id),
+                |owner| table.owner_windows(owner),
                 comp,
                 msg,
                 hs,
@@ -1075,7 +1077,36 @@ fn on_session(table: &mut table::WmTable, present_cli: Handle, hdi_cli: Handle,
                 None => st_rep(ch, gp::ST_BAD),
             }
         }
+        Some(&gp::OP_WM_TASK_SELECT) => match gp::parse_wm_task_select_req(msg) {
+            Some(req) if sess.client_type == gp::WM_CLIENT_SYSTEM => {
+                if hs.is_empty() && table.task_select(req.owner).is_some() {
+                    let (windows, window_n) = table.owner_windows(req.owner);
+                    relay::replay_owner(present_cli, comp, req.owner, windows, window_n);
+                    st_rep(ch, gp::ST_OK);
+                } else {
+                    close_all(hs);
+                    st_rep(ch, gp::ST_DENIED);
+                }
+            }
+            Some(_) => {
+                close_all(hs);
+                st_rep(ch, gp::ST_DENIED)
+            }
+            None => {
+                close_all(hs);
+                st_rep(ch, gp::ST_BAD)
+            }
+        },
         Some(&op) if (gp::OP_WM_GETINFO..=0x7F).contains(&op) => {
+            // CREATE/SET 会先改有效遮挡几何；在表变更前捕获 fresh APP 的
+            // 真实可见像素，避免 Recents overlay 尚未 submit 时 eff 已变空。
+            if matches!(op, gp::OP_WM_CREATE | gp::OP_WM_SET)
+                && comp.fresh_owner().is_some_and(|fresh| fresh != sess.id)
+            {
+                let fresh = comp.fresh_owner().expect("checked");
+                let (windows, window_n) = table.owner_windows(fresh);
+                comp.capture_fresh_owner(windows, window_n);
+            }
             if msg.first() == Some(&gp::OP_WM_DESTROY) {
                 if let Some(id) = gp::parse_wm_destroy_req(msg) {
                     table.handle_wm(ch, sess.id, sess.client_type, msg, hs);
@@ -1200,7 +1231,7 @@ pub fn run() {
     // —— serve：broker/push/session 三族 poll-first；全 EAGAIN 才
     // wait_many（session 通道 READABLE，Process handle TERMINATED）。
     loop {
-        sessions.reap_dead(&mut table);
+        sessions.reap_dead(&mut table, &mut compositor);
         if let Some((msg, hs)) = poll(wm_srv) {
             on_broker(&mut sessions, wm_srv, &msg.0[..msg.1], &hs.0[..hs.1]);
             if SYSTEM_UI_PROGRESS_READY.swap(false, Ordering::Relaxed) {

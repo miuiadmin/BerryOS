@@ -98,6 +98,14 @@ fn clip_rect(c: (u32, u32, u32, u32), s: (u32, u32, u32, u32)) -> (u32, u32, u32
     best
 }
 
+/// owner APP 窗口的布局指纹（cache/replay 计划面；不含像素）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OwnerWindow {
+    pub id: u16,
+    pub raw: (u16, u16, u16, u16),
+    pub eff: (u16, u16, u16, u16),
+}
+
 /// RUN-K1 合成裁剪产物：目标全屏矩形与 surface raw-local 源子矩形。
 /// 两组坐标必须成对产生，禁止先裁 source 再平移到 destination。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -875,6 +883,30 @@ impl WmTable {
         let focus_changed = self.focus != focus_before;
         self.change_complete(changed || focus_changed);
         Some(next)
+    }
+
+    /// owner 的 APP 窗口几何快照（Recents frame cache/replay 的纯计划面）。
+    /// raw 变化代表 client buffer/stride 布局可能变化；eff 变化代表遮挡/
+    /// 可呈现域变化。两者都一致时，wmd 才允许重放缓存的真实帧。
+    pub fn owner_windows(&self, owner: u16) -> ([OwnerWindow; gp::WM_WINDOWS_MAX], usize) {
+        let mut out = [OwnerWindow {
+            id: 0,
+            raw: (0, 0, 0, 0),
+            eff: (0, 0, 0, 0),
+        }; gp::WM_WINDOWS_MAX];
+        let mut n = 0usize;
+        for win in self.wins.iter().take(self.count) {
+            if win.owner != owner || win.layer != gp::WM_LAYER_APP || n == out.len() {
+                continue;
+            }
+            out[n] = OwnerWindow {
+                id: win.id,
+                raw: win.req,
+                eff: win.eff,
+            };
+            n += 1;
+        }
+        (out, n)
     }
 
     /// SYSTEM Recents owner 列表（表序去重；包含隐藏 owner——隐藏正是

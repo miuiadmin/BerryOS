@@ -48,6 +48,10 @@ static BOOT_PROGRESS_DONE: AtomicBool = AtomicBool::new(false);
 static BOOT_PROGRESS_FIRST_SUBMIT: AtomicBool = AtomicBool::new(false);
 static BOOT_PROGRESS_SYSTEM_UI: AtomicBool = AtomicBool::new(false);
 
+/// Recents 可即时恢复的最近 APP owner 数。3 个 slot ≈ 23.7MiB@1080p；
+/// 超出走 LRU，未命中者保持今天的“等 app 自绘”真值行为。
+const OWNER_CACHE_SLOTS: usize = 3;
+
 /// 期望随行数（`Some((min, max))` = 执法；`None` = 不执法——畸形帧透传
 /// 交 guifbd 拒（wmd 不做 present/hdi 域第二解析器，帧形校验单源）。
 /// 定值：SUBMIT=恰 1（damage VMO）；PREPARE=恰 1（buffer VMO）；REG_
@@ -213,6 +217,14 @@ pub fn boot_getinfo(cli: Handle) -> gp::GetinfoRep {
 }
 
 
+struct OwnerFrameCacheSlot {
+    owner: u16,
+    vmo: Handle,
+    windows: [table::OwnerWindow; gp::WM_WINDOWS_MAX],
+    window_n: usize,
+    stamp: u64,
+}
+
 /// Phase 2 wmd 合成面：全屏 XRGB8888 VMO + 行弹舱。wmd 是 guifbd 唯一
 /// present client；每个 session SUBMIT 先按 owner 窗口拷入此 VMO，再以
 /// surface_id=0 聚合提交 guifbd。
@@ -221,7 +233,11 @@ pub struct Compositor {
     pub w: u32,
     pub h: u32,
     pub stride: usize,
+    bytes: u64,
     bounce: &'static mut [u8],
+    cache: [Option<OwnerFrameCacheSlot>; OWNER_CACHE_SLOTS],
+    cache_epoch: u64,
+    fresh_owner: Option<u16>,
 }
 
 impl Compositor {
@@ -238,7 +254,17 @@ impl Compositor {
         // SAFETY: wmd is single-threaded and creates exactly one compositor.
         let bounce: &'static mut [u8] =
             unsafe { &mut *core::ptr::addr_of_mut!(COMPOSITE_BOUNCE) };
-        Compositor { vmo, w, h, stride, bounce }
+        Compositor {
+            vmo,
+            w,
+            h,
+            stride,
+            bytes: len as u64,
+            bounce,
+            cache: [None, None, None],
+            cache_epoch: 0,
+            fresh_owner: None,
+        }
     }
 
     /// 拷一个已裁剪矩形。damage `r` 是 surface raw-local 坐标；窗口原点
@@ -278,6 +304,224 @@ impl Compositor {
             row_index += rows;
         }
         true
+    }
+
+    pub fn fresh_owner(&self) -> Option<u16> {
+        self.fresh_owner
+    }
+
+    fn tuple_rect(&self, r: (u16, u16, u16, u16)) -> gp::Rect {
+        let x0 = u32::from(r.0).min(self.w);
+        let y0 = u32::from(r.1).min(self.h);
+        let x1 = (u32::from(r.0) + u32::from(r.2)).min(self.w);
+        let y1 = (u32::from(r.1) + u32::from(r.3)).min(self.h);
+        gp::Rect {
+            x: x0,
+            y: y0,
+            w: x1.saturating_sub(x0),
+            h: y1.saturating_sub(y0),
+        }
+    }
+
+    fn copy_vmo_rect(&mut self, src: Handle, dst: Handle, rect: gp::Rect) -> bool {
+        if rect.w == 0 || rect.h == 0 {
+            return true;
+        }
+        let row = rect.w as usize * 4;
+        if row == 0 || row > self.bounce.len() {
+            return false;
+        }
+        let rows_per_chunk = self.bounce.len() / row;
+        let mut row_index = 0usize;
+        while row_index < rect.h as usize {
+            let rows = (rect.h as usize - row_index).min(rows_per_chunk);
+            let len = rows * row;
+            let off = (rect.y as usize + row_index) * self.stride + rect.x as usize * 4;
+            if berry_vmo_read(src, self.bounce.as_mut_ptr(), off as u64, len) != 0
+                || berry_vmo_write(dst, self.bounce.as_ptr(), off as u64, len) != 0
+            {
+                return false;
+            }
+            row_index += rows;
+        }
+        true
+    }
+
+    /// 在他人覆盖 composition 前保存 fresh APP owner 的真实可见像素。
+    pub fn capture_fresh_owner(
+        &mut self,
+        windows: [table::OwnerWindow; gp::WM_WINDOWS_MAX],
+        window_n: usize,
+    ) {
+        let Some(owner) = self.fresh_owner else { return };
+        if window_n == 0 {
+            return;
+        }
+        self.cache_epoch = self.cache_epoch.saturating_add(1);
+        let stamp = self.cache_epoch;
+        let existing = self
+            .cache
+            .iter()
+            .position(|s| s.as_ref().map(|s| s.owner) == Some(owner));
+        let target = existing.unwrap_or_else(|| {
+            self.cache
+                .iter()
+                .enumerate()
+                .min_by_key(|&(i, s)| (s.is_some(), s.as_ref().map(|s| s.stamp).unwrap_or(0), i))
+                .map(|(i, _)| i)
+                .unwrap_or(0)
+        });
+        if existing.is_none() {
+            if let Some(old) = self.cache[target].take() {
+                if berry_handle_close(old.vmo) != 0 {
+                    trap();
+                }
+            }
+        }
+        let mut cache_vmo = match existing {
+            Some(i) => self.cache[i].as_ref().expect("existing checked").vmo,
+            None => {
+                let mut vmo: Handle = 0;
+                if berry_vmo_create(self.bytes, 0, &mut vmo) != 0
+                    || vmo == 0
+                    || berry_vmo_commit(vmo, 0, self.bytes) != 0
+                {
+                    let _ = berry_handle_close(vmo);
+                    eprintln!("WMCACHE bad alloc owner={owner}");
+                    return;
+                }
+                vmo
+            }
+        };
+        let mut ok = true;
+        for win in windows.iter().take(window_n) {
+            let rect = self.tuple_rect(win.eff);
+            ok = ok && self.copy_vmo_rect(self.vmo, cache_vmo, rect);
+        }
+        if !ok {
+            eprintln!("WMCAPTURE bad owner={owner}");
+            if existing.is_none() {
+                let _ = berry_handle_close(cache_vmo);
+            }
+            self.cache[target] = None;
+            return;
+        }
+        if let Some(slot) = self.cache[target].as_ref() {
+            cache_vmo = slot.vmo;
+        }
+        self.cache[target] = Some(OwnerFrameCacheSlot {
+            owner,
+            vmo: cache_vmo,
+            windows,
+            window_n,
+            stamp,
+        });
+        println!("WMCAPTURE ok owner={owner} rects={window_n}");
+    }
+
+    fn windows_match(
+        cached: &[table::OwnerWindow; gp::WM_WINDOWS_MAX],
+        cached_n: usize,
+        current: &[table::OwnerWindow; gp::WM_WINDOWS_MAX],
+        current_n: usize,
+    ) -> bool {
+        cached_n == current_n
+            && cached[..cached_n]
+                .iter()
+                .zip(current[..current_n].iter())
+                .all(|(a, b)| a == b)
+    }
+
+    /// 把缓存真实帧写回 composition，返回 present damage 计划。
+    fn replay_owner_pixels(
+        &mut self,
+        owner: u16,
+        current: [table::OwnerWindow; gp::WM_WINDOWS_MAX],
+        current_n: usize,
+    ) -> Option<([gp::Rect; gp::DAMAGE_MAX], usize)> {
+        let index = match self.cache.iter().position(|s| {
+            s.as_ref().map(|s| s.owner) == Some(owner)
+                && Self::windows_match(
+                    &s.as_ref().expect("owner checked").windows,
+                    s.as_ref().expect("owner checked").window_n,
+                    &current,
+                    current_n,
+                )
+        }) {
+            Some(index) => index,
+            None => {
+                for slot in self.cache.iter().flatten().filter(|s| s.owner == owner) {
+                    eprintln!(
+                        "WMREPLAY stale owner={owner} cached_n={} raw={:?} eff={:?} current_n={} current_raw={:?} current_eff={:?}",
+                        slot.window_n,
+                        slot.windows[0].raw,
+                        slot.windows[0].eff,
+                        current_n,
+                        current.get(0).map(|w| w.raw),
+                        current.get(0).map(|w| w.eff)
+                    );
+                }
+                return None;
+            }
+        };
+        let (cache_vmo, windows, window_n) = {
+            let slot = self.cache[index].as_ref()?;
+            (slot.vmo, slot.windows, slot.window_n)
+        };
+        let mut rects = [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX];
+        let mut n = 0usize;
+        let mut envelope: Option<(u32, u32, u32, u32)> = None;
+        for win in windows.iter().take(window_n) {
+            let rect = self.tuple_rect(win.eff);
+            if rect.w == 0 || rect.h == 0 {
+                continue;
+            }
+            if !self.copy_vmo_rect(cache_vmo, self.vmo, rect) {
+                eprintln!("WMREPLAY bad owner={owner}");
+                return None;
+            }
+            if n < rects.len() {
+                rects[n] = rect;
+                n += 1;
+            } else {
+                let x0 = envelope.map(|e| e.0).unwrap_or(rect.x);
+                let y0 = envelope.map(|e| e.1).unwrap_or(rect.y);
+                let x1 = envelope
+                    .map(|e| e.0 + e.2)
+                    .unwrap_or(0)
+                    .max(rect.x + rect.w);
+                let y1 = envelope
+                    .map(|e| e.1 + e.3)
+                    .unwrap_or(0)
+                    .max(rect.y + rect.h);
+                envelope = Some((x0, y0, x1 - x0, y1 - y0));
+            }
+        }
+        if let Some((x, y, w, h)) = envelope {
+            rects[0] = gp::Rect { x, y, w, h };
+            n = 1;
+        }
+        Some((rects, n))
+    }
+
+    pub fn note_submit_owner(&mut self, owner: u16, client_type: u8) {
+        self.fresh_owner = (client_type == gp::WM_CLIENT_APP).then_some(owner);
+    }
+
+    pub fn clear_fresh_owner(&mut self) {
+        self.fresh_owner = None;
+    }
+
+    pub fn forget_owner_cache(&mut self, owner: u16) {
+        if let Some(slot) = self
+            .cache
+            .iter()
+            .position(|s| s.as_ref().map(|s| s.owner) == Some(owner))
+            .and_then(|i| self.cache[i].take())
+        {
+            let _ = berry_handle_close(slot.vmo);
+            println!("WMCACHEFREE ok owner={owner}");
+        }
     }
 }
 
@@ -345,6 +589,7 @@ pub fn submit_composite(
     owner: u16,
     client_type: u8,
     surface_geometry: impl Fn(u16, u16) -> Option<gp::authority::SurfaceGeometry>,
+    owner_windows: impl Fn(u16) -> ([table::OwnerWindow; gp::WM_WINDOWS_MAX], usize),
     comp: &mut Compositor,
     msg: &[u8],
     hs: &[Handle],
@@ -407,6 +652,16 @@ pub fn submit_composite(
     if system_surface {
         boot_progress_first_submit_once(cli);
     }
+
+    // 他人（SYSTEM overlay、桌面 surface 或另一个 APP）即将覆盖合成面；
+    // 先按 fresh owner 的有效窗口保存真实像素。缓存是 Recents 静态复显
+    // 的增强面，失败时走既有“等待 app 自绘”路径。
+    if comp.fresh_owner().is_some_and(|fresh| fresh != owner) {
+        let fresh = comp.fresh_owner().expect("checked");
+        let (windows, window_n) = owner_windows(fresh);
+        comp.capture_fresh_owner(windows, window_n);
+    }
+    comp.clear_fresh_owner();
 
     let full = flags & gp::SUBMIT_F_DAMAGE_FULL != 0;
     let mut out_rects = [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX];
@@ -484,7 +739,61 @@ pub fn submit_composite(
     }
     let (rep, nb, _rhs, nh) = rpc_present(cli, &req[..n], &[alias]);
     let ok = rep.first() == Some(&gp::ST_OK);
+    if ok {
+        comp.note_submit_owner(owner, client_type);
+    }
     send_rep_handles(ch, &rep[..nb], &_rhs[..nh]);
+    ok
+}
+
+/// Recents 选择隐藏 APP 后，wmd 用 owner 最近真实帧重放合成面。缓存命中
+/// 仅在窗口 raw/eff 指纹未变时生效；miss 或几何变化不伪造像素。
+pub fn replay_owner(
+    cli: Handle,
+    comp: &mut Compositor,
+    owner: u16,
+    windows: [table::OwnerWindow; gp::WM_WINDOWS_MAX],
+    window_n: usize,
+) -> bool {
+    let Some((rects, rect_n)) = comp.replay_owner_pixels(owner, windows, window_n) else {
+        println!("WMREPLAY miss owner={owner}");
+        return false;
+    };
+    if rect_n == 0 {
+        println!("WMREPLAY miss owner={owner} rects=0");
+        return false;
+    }
+    // wmd 自产提交不占客户端 credits；先排干 held，再提交，成功后立即
+    // RETURN-ALL，连续 task_select 不会第三次 ST_FULL。
+    boot_release_all(cli);
+    let mut alias: Handle = 0;
+    if berry_handle_duplicate(comp.vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
+        trap();
+    }
+    let creq = gp::PresentReq::Submit {
+        surface_id: 0,
+        buffer_id: 0x57444D43,
+        flags: 0,
+        rate_hint: 0,
+        target_present_ns: 0,
+        rects,
+        rect_count: rect_n,
+    };
+    let mut req = [0u8; 256];
+    let n = match gp::encode_present_req(&mut req, &creq) {
+        Some(n) => n,
+        None => trap(),
+    };
+    let (rep, _nb, _rhs, nh) = rpc_present(cli, &req[..n], &[alias]);
+    let ok = rep.first() == Some(&gp::ST_OK) && nh == 0;
+    if ok {
+        boot_release_all(cli);
+        comp.note_submit_owner(owner, gp::WM_CLIENT_APP);
+        println!("WMREPLAY ok owner={owner} rects={rect_n}");
+    } else {
+        comp.clear_fresh_owner();
+        eprintln!("WMREPLAY bad owner={owner} st={}", rep.first().copied().unwrap_or(0xff));
+    }
     ok
 }
 

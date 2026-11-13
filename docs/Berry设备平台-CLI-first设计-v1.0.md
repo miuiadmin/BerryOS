@@ -432,7 +432,7 @@ berry device stop --run "$RUN"
 - **540×1200 预览件已落（历史 C2 验收）**：GUI-8 全桌面 + 540 内核曾产
   `out/berry-desktop-540x1200.png`，证明 host 窗口/RES/profile 链可用。
 - **2026-11-13 起产品入口为 1080×1920 HVF + virtio-gpu**：`just desktop` 在 Apple Silicon 使用 berry 原生窗口与 72px 系统工具栏，QEMU 拓扑仍为 vgpud/virtio-gpu 主显示 + ramfb 回退（见 [BerryMacEmulator-GPU2-v1.0.md](BerryMacEmulator-GPU2-v1.0.md)）。
-- **System Nav C2i 已落**：工具栏前三位为 `BACK` / `HOME` / `TASK`，QMP key 脉冲在工作线程注入，gui-wmd 执行权威 BACK/HOME/TASK；BACK/HOME 的真实表版本变化经 `PE_FL_SYSTEM_INVALIDATE` 唤醒 SYSTEM launcher 并全屏重绘，清除被隐藏 app 的旧像素。TASK 打开 SYSTEM 层 Recents overlay：launcher 经 `OP_WM_RECENTS_GET` 读取 WmTable 权威 APP owner 卡，点卡经 `OP_WM_TASK_SELECT` 回到 gui-wmd 显示并聚焦选中 owner。产品入口带 `/tmp/berryos-desktop.lock` 单窗口守门，陈旧 pid lock 自动回收。
+- **System Nav C2i 已落**：工具栏前三位为 `BACK` / `HOME` / `TASK`，QMP key 脉冲在工作线程注入，gui-wmd 执行权威 BACK/HOME/TASK；BACK/HOME 的真实表版本变化经 `PE_FL_SYSTEM_INVALIDATE` 唤醒 SYSTEM launcher 并全屏重绘，清除被隐藏 app 的旧像素。TASK 打开 SYSTEM 层 Recents overlay：launcher 经 `OP_WM_RECENTS_GET` 读取 WmTable 权威 APP owner 卡，点卡/overlay 收起先隐藏 SYSTEM 窗再经 `OP_WM_TASK_SELECT` 回到 gui-wmd；wmd 按 `(id,raw,eff)` 指纹命中时重放该 owner 最近真实 submit 帧（LRU 3 cache），静态隐藏 APP 无残留 overlay。产品入口带 `/tmp/berryos-desktop.lock` 单窗口守门，陈旧 pid lock 自动回收。
 - **C2f 已落（交互）**：按钮 hover 高亮 + 顶部 tooltip；BACK/HOME/TASK/SHOT/RES/BOOT/OFF/FULL 点击即显 pressed 态，客机触摸/点击有宿主 ripple，反馈不等待 guest 冷启动。
 - **Interaction P1 已落**：launcher 点击先进入真实 Opening/pressed 状态并呈一帧，再执行可能阻塞的 `APP_SPAWN`；inputd 空闲首 harvest 100ms→16ms；失败 ack 立即清除反馈，成功不伪造“首帧已完成”。APP owner 第一个成功合成 frame 经 `PE_FL_SYSTEM_APP_FRAME(x=owner)` 回到 SYSTEM launcher，真实清除 Opening 并把 owner 绑定到 app 标签供 Recents 复用；成功路径不再依赖超时。
 - **C2g 已落**：`restart_profile` 改「先起新 host 再停旧 host」——新 host 失败则旧 host
