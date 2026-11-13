@@ -37,3 +37,9 @@ berry-fwcfgface = { path = "../../fwcfgface" }
 # 计数物理臂留壳）。
 # host 钉板在 wakeface；无依赖传染（纯 no_std lib）。
 berry-wakeface = { path = "../../wakeface" }
+# W3-Q83：UART 整数格式化族纯面单源（u64 十进制/固定 16 位小写 hex/
+# 8 位大写 hex/两位十进制/键值行与寄存器行装配）——本 crate uart.rs
+# put_dec·put_hex64、trap.rs put_kv·put_reg·dec2、psci.rs put_hex32_upper
+# 消费（asidface 迁 mmu.rs 面同款纪律；MMIO 发射面 uart_putc/uart_puts
+# 留壳）。host 钉板在 numface；无依赖传染（纯 no_std lib）。
+berry-numface = { path = "../../numface" }

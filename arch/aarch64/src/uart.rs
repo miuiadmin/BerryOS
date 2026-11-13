@@ -87,33 +87,22 @@ pub fn uart_puts(s: &[u8]) {
 }
 
 /// 以十六进制输出 u64（固定 16 位，无 `0x` 前缀）。供 trap dump / panic 格式化复用。
+///
+/// 装配律单源 berry-numface（W3-Q83）——本函数只留发射循环。
 pub fn uart_put_hex64(v: u64) {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut buf = [0u8; 16];
-    for i in 0..16 {
-        let shift = (15 - i) * 4;
-        buf[i] = DIGITS[((v >> shift) & 0xf) as usize];
-    }
+    let mut buf = [0u8; berry_numface::HEX64_DIGITS];
+    berry_numface::write_hex64_lower(v, &mut buf);
     uart_puts(&buf);
 }
 
 /// 以十进制输出 u64（无符号，无前导空格）。供 tick 计数等复用。
+///
+/// 装配律单源 berry-numface（W3-Q83）——本函数只留发射循环。
 pub fn uart_put_dec(v: u64) {
-    if v == 0 {
-        uart_putc(b'0');
-        return;
-    }
-    let mut buf = [0u8; 20];
-    let mut n = v;
-    let mut i = 0usize;
-    while n > 0 {
-        buf[i] = b'0' + (n % 10) as u8;
-        n /= 10;
-        i += 1;
-    }
-    while i > 0 {
-        i -= 1;
-        uart_putc(buf[i]);
+    let mut buf = [0u8; berry_numface::DEC64_MAX_DIGITS];
+    let n = berry_numface::write_dec_u64(v, &mut buf);
+    for &b in &buf[..n] {
+        uart_putc(b);
     }
 }
 
