@@ -53,11 +53,11 @@ SUBMIT_ACK
 damage 执行面按实际拷贝字节数择优：
 
 ```text
-rect 面积和 ≤ 包络面积 → 逐 rect transfer/flush
+rect 面积和 ≤ 包络面积 → ≤8 个 TRANSFER 一次发布/等待 → 单次并集 FLUSH
 包络面积 < rect 面积和 → 单包络 transfer/flush
 ```
 
-这保留了稀疏小损伤，又避免重叠 damage 被放大成多次整窗拷贝。控制队列等待先短自旋再 100µs 睡眠，不再为每个命令固定 1ms 睡眠。`VGPUPERF` 在 ACK 后输出累计均值、单次耗时、reattach 数和 vblank jitter，串口开销不进入 guest 可见提交延迟。
+这保留了稀疏小损伤，又避免重叠 damage 被放大成多次整窗拷贝。控制队列等待先短自旋再 100µs 睡眠，不再为每个命令固定 1ms 睡眠。`VGPUPERF` 在 ACK 后输出累计均值、单次耗时、reattach 数、vblank jitter 与 `rects/area/union`，串口开销不进入 guest 可见提交延迟。
 
 ## §4 HDI 四 op 契约
 
@@ -136,6 +136,8 @@ QMP screendump 显式 device=vgpu0
 
 ```text
 boot → LAUNCH
+等待 launcher boot 自测 VGPUPERF 静止
+真实 virtio-tablet 横滑 + 回滑复位（记录帧数/时长/submit）
 Berry Demo cold launch
 detail AppBar back
 Home → detail page transition
@@ -182,6 +184,20 @@ launcher:       Opening/pressed 反馈帧先于阻塞 APP_SPAWN
 ```
 
 本机单核样本仍显示 vgpu 整窗 submit 约 90～163ms；`page/back` 墙钟受宿主负载与动作标记影响波动，不能拿单次值宣称优化终点。SMP 试跑（G2 内核、`-smp 2`）未改善 GUI 动作，暂不改变产品默认拓扑。结构性瓶颈仍是 plan P2 的呈现流水化与 shm-ring/宿主直呈现。
+
+### §7.2 Interaction P2 地基（2026-11-14）
+
+本轮继续减载并把横滑变成可复现数据，但仍不宣称 60fps：
+
+```text
+BerryUI swipe:  Col→Grid→cells 页精确行带（DamageSet::add_exact，≤8）
+vgpud ctrlq:    ≤8 个 TRANSFER 一次发布/等待 + 单次并集 FLUSH
+launcher:       壁纸按视口预缩放进 committed VMO，失败回退 SmoothRgb565
+host VNC:       staging frame + shared FrameRef，按 damage 行同步，零整帧 clone
+calibration:    真实 launcher 横滑帧数/时长/submit + rects/area/union
+```
+
+2026-11-14 本机产品样本仍出现整窗 `area=2,073,600`、`last_us≈107k～175k`、launcher 横滑新帧数 1。结论是：guest 光栅/宿主解码减载正确，但 QEMU 2D 整窗 DMA transfer 仍是主导瓶颈。下一刀必须先验证 `SET_SCANOUT` 非零子矩形；可用则做显示服务内部宽 resource/host-side pan，不可用则转向双缓冲异步 present 流水线。
 
 ## §8 Mac 呈现路径设计
 

@@ -1425,10 +1425,75 @@ impl<const N: usize> Ui<N> {
             self.damage.add_full();
         } else {
             for r in sparse.iter().copied() {
-                self.damage.add(r);
+                self.damage.add_exact(r);
             }
         }
         Ok(())
+    }
+
+    /// Grid 页的稀疏平移 damage：按 Grid 直接子项的行位聚成 ≤8 条行带。
+    /// SwipePager 的页是 Col→Grid→cells；launcher 网格行间大空白保持不
+    /// 传输，避免两个可见页都退化成整页包络。非该形态回落 generic 包络。
+    fn add_sparse_grid_page_move(
+        nodes: &[Option<Node>],
+        page_slot: usize,
+        dx: i32,
+        clip: damage::RectI,
+        out: &mut damage::DamageSet,
+    ) -> bool {
+        let Some(page) = nodes.get(page_slot).and_then(|n| n.as_ref()) else {
+            return false;
+        };
+        if page.kind != ViewKind::Col {
+            return false;
+        }
+        let grid = page.first_child;
+        let Some(grid_node) = nodes.get(grid as usize).and_then(|n| n.as_ref()) else {
+            return false;
+        };
+        if grid == NONE || grid_node.kind != ViewKind::Grid {
+            return false;
+        }
+        let mut bands = [damage::RectI::new(0, 0, 0, 0); 8];
+        let mut band_n = 0usize;
+        let mut cell = grid_node.first_child;
+        let mut hops = 0usize;
+        while cell != NONE {
+            hops += 1;
+            if hops > nodes.len() {
+                return false;
+            }
+            let Some(cell_node) = nodes.get(cell as usize).and_then(|n| n.as_ref()) else {
+                return false;
+            };
+            let next = cell_node.next_sib;
+            let Some(r) = Self::painted_subtree_rect(nodes, cell as usize, 0) else {
+                cell = next;
+                continue;
+            };
+            let moved = damage::RectI::new(r.x.saturating_add(dx), r.y, r.w, r.h);
+            let inside = r.envelope(&moved).intersect(&clip);
+            if inside.is_empty() {
+                cell = next;
+                continue;
+            }
+            let bottom = inside.bottom();
+            if let Some(slot) = bands.iter().take(band_n).position(|band| {
+                (band.y - inside.y).abs() <= 2 && (band.bottom() - bottom).abs() <= 2
+            }) {
+                bands[slot] = bands[slot].envelope(&inside);
+            } else if band_n < bands.len() {
+                bands[band_n] = inside;
+                band_n += 1;
+            } else {
+                return false;
+            }
+            cell = next;
+        }
+        for band in bands.iter().take(band_n) {
+            out.add_exact(band.to_wire());
+        }
+        true
     }
 
     fn collect_sparse_offset(
@@ -1465,6 +1530,10 @@ impl<const N: usize> Ui<N> {
                     Some(c) if c.alive => c.next_sib,
                     _ => return,
                 };
+                if Self::add_sparse_grid_page_move(nodes, child as usize, dx, clip, out) {
+                    child = next;
+                    continue;
+                }
                 if let Some(r) = Self::painted_subtree_rect(nodes, child as usize, 0) {
                     let moved = damage::RectI::new(
                         r.x.saturating_add(dx),

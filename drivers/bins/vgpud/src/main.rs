@@ -38,10 +38,13 @@ use berry_virtio as vio;
 static CRT0_SEED: unsafe extern "C" fn() = berry_libc::berry_crt0_anchor;
 
 const QSIZE: u16 = 16;
-const DMA_LEN: u64 = 12_288;
+const DMA_LEN: u64 = 20_480;
 const RING_PAGE: u64 = 0;
 const REQ_PAGE: u64 = 4096;
 const RESP_PAGE: u64 = 8192;
+const BATCH_REQ_PAGE: u64 = 12_288;
+const BATCH_RESP_PAGE: u64 = 16_384;
+const BATCH_MAX: usize = 8;
 const FRAME_VMO_LEN: u64 = 4096;
 const RESOURCE_IDS: [u32; 3] = [1, 2, 3];
 const SCANOUT_ID: u32 = 0;
@@ -61,6 +64,8 @@ struct Dma {
     lay: vio::RingLayout,
     req_pa: u64,
     resp_pa: u64,
+    batch_req_pa: u64,
+    batch_resp_pa: u64,
 }
 
 fn main() {
@@ -234,9 +239,13 @@ fn setup_queue(regs: *mut u32) -> Dma {
     let mut ring_pa = 0u64;
     let mut req_pa = 0u64;
     let mut resp_pa = 0u64;
+    let mut batch_req_pa = 0u64;
+    let mut batch_resp_pa = 0u64;
     if berry_vmo_get_phys(vmo, RING_PAGE, &mut ring_pa) != 0
         || berry_vmo_get_phys(vmo, REQ_PAGE, &mut req_pa) != 0
         || berry_vmo_get_phys(vmo, RESP_PAGE, &mut resp_pa) != 0
+        || berry_vmo_get_phys(vmo, BATCH_REQ_PAGE, &mut batch_req_pa) != 0
+        || berry_vmo_get_phys(vmo, BATCH_RESP_PAGE, &mut batch_resp_pa) != 0
     {
         println!("vgpu: DMA phys failure");
         trap();
@@ -267,7 +276,14 @@ fn setup_queue(regs: *mut u32) -> Dma {
         println!("vgpu: Q_READY failure");
         trap();
     }
-    Dma { vmo, lay, req_pa, resp_pa }
+    Dma {
+        vmo,
+        lay,
+        req_pa,
+        resp_pa,
+        batch_req_pa,
+        batch_resp_pa,
+    }
 }
 
 struct Frame {
@@ -337,6 +353,67 @@ fn attach_frame(d: &Dma, regs: *mut u32, frame: &Frame, resource: u32) {
         regs,
         vio::gpu::GPU_BACKING_CMD_SZ as usize + vio::gpu::GPU_MEM_ENTRY_SZ,
     );
+}
+
+/// 批量发布 ≤8 条已写入 BATCH_REQ_PAGE 的控制命令，并一次 doorbell/wait。
+/// 每条命令仍独立 request→response 描述符链；响应按 512B 槽位落
+/// BATCH_RESP_PAGE。调用方必须已按 512B 槽写好 request。
+fn ctrl_batch_wait_nodata(d: &Dma, regs: *mut u32, n: usize) {
+    if n == 0 || n > BATCH_MAX || 2 * n > QSIZE as usize {
+        trap();
+    }
+    let ring: &mut [u8; 4096] = unsafe { &mut *core::ptr::addr_of_mut!(RING) };
+    let old = vio::get_u16(ring, d.lay.avail_off + 2).unwrap_or(0);
+    for i in 0..n {
+        let did = (i * 2) as u16;
+        let _ = vio::put_desc(
+            ring,
+            &d.lay,
+            did as usize,
+            d.batch_req_pa + (i as u64) * 512,
+            vio::gpu::GPU_TRANSFER_2D_SZ as u32,
+            vio::DESC_F_NEXT,
+            did + 1,
+        );
+        let _ = vio::put_desc(
+            ring,
+            &d.lay,
+            (did + 1) as usize,
+            d.batch_resp_pa + (i as u64) * 512,
+            vio::gpu::GPU_CTRL_HDR_SZ as u32,
+            vio::DESC_F_WRITE,
+            0,
+        );
+        if vio::publish(ring, &d.lay, did).is_none() {
+            trap();
+        }
+    }
+    if berry_vmo_write(d.vmo, ring.as_ptr(), RING_PAGE, 4096) != 0 {
+        trap();
+    }
+    unsafe { core::arch::asm!("dmb ish") };
+    wr(regs, vio::mmio::Q_NOTIFY, 0);
+    wait_used(d, old.wrapping_add(n as u16));
+    let resp: &[u8; 512] = unsafe { &*core::ptr::addr_of!(RESP) };
+    for i in 0..n {
+        if berry_vmo_read(
+            d.vmo,
+            resp.as_ptr() as *mut u8,
+            BATCH_RESP_PAGE + (i as u64) * 512,
+            vio::gpu::GPU_CTRL_HDR_SZ,
+        ) != 0
+        {
+            trap();
+        }
+        let Some(hdr) = vio::gpu::parse_ctrl_hdr(resp, 0) else {
+            println!("vgpu: malformed batch response");
+            trap();
+        };
+        if hdr.typ != vio::gpu::RESP_OK_NODATA {
+            println!("vgpu: batch response type={:#x}", hdr.typ);
+            trap();
+        }
+    }
 }
 
 fn ctrl_simple(
@@ -634,7 +711,8 @@ impl PresentSrv {
         } else {
             &clipped[..clipped_n]
         };
-        for r in plan {
+        let plan_n = plan.len();
+        for (i, r) in plan.iter().enumerate() {
             let rect = vio::gpu::GpuRect {
                 x: r.x,
                 y: r.y,
@@ -642,9 +720,37 @@ impl PresentSrv {
                 height: r.h,
             };
             let off = (r.y as u64 * self.w as u64 + r.x as u64) * 4;
-            ctrl_simple(&self.dma, self.regs, vio::gpu::GPU_TRANSFER_2D_SZ, |b| {
-                vio::gpu::put_transfer_to_host_2d(b, 0, resource, rect, off).is_some()
-            });
+            let req: &mut [u8; 512] = unsafe { &mut *core::ptr::addr_of_mut!(REQ) };
+            req[..vio::gpu::GPU_TRANSFER_2D_SZ].fill(0);
+            if vio::gpu::put_transfer_to_host_2d(req, 0, resource, rect, off).is_none() {
+                trap();
+            }
+            if berry_vmo_write(
+                self.dma.vmo,
+                req.as_ptr(),
+                BATCH_REQ_PAGE + (i as u64) * 512,
+                vio::gpu::GPU_TRANSFER_2D_SZ,
+            ) != 0
+            {
+                trap();
+            }
+        }
+        // 稀疏行带的多个 TRANSFER 一次发布/一次等待，再对并集做单次
+        // RESOURCE_FLUSH；旧逐 rect “传输+flush+wait” 把命令固定开销乘 K。
+        ctrl_batch_wait_nodata(&self.dma, self.regs, plan_n);
+        if plan_n != 0 {
+            let flush = gp::Rect {
+                x: ux0,
+                y: uy0,
+                w: ux1 - ux0,
+                h: uy1 - uy0,
+            };
+            let rect = vio::gpu::GpuRect {
+                x: flush.x,
+                y: flush.y,
+                width: flush.w,
+                height: flush.h,
+            };
             ctrl_simple(&self.dma, self.regs, vio::gpu::GPU_RESOURCE_FLUSH_SZ, |b| {
                 vio::gpu::put_resource_flush(b, 0, resource, rect).is_some()
             });
@@ -667,13 +773,21 @@ impl PresentSrv {
         // Telemetry 在 ACK 后打印：不把串口开销计入 guest 可见提交延迟；
         // Mac 标定短动作序列也需要样本，因此逐 SUBMIT 输出。
         let avg_us = self.perf_submit_ns / (self.perf_submits * 1_000);
+        let plan_area: u64 = plan
+            .iter()
+            .map(|r| u64::from(r.w) * u64::from(r.h))
+            .sum();
+        let union_area = u64::from(ux1 - ux0) * u64::from(uy1 - uy0);
         println!(
-            "VGPUPERF submits={} avg_us={} last_us={} reattaches={} jitter_us={}",
+            "VGPUPERF submits={} avg_us={} last_us={} reattaches={} jitter_us={} rects={} area={} union={}",
             self.perf_submits,
             avg_us,
             self.perf_last_ns / 1_000,
             self.perf_reattaches,
-            self.perf_jitter_ns / 1_000
+            self.perf_jitter_ns / 1_000,
+            plan_n,
+            plan_area,
+            union_area
         );
     }
 
@@ -1358,7 +1472,14 @@ fn serve_present(d: &Dma, regs: *mut u32, w: u32, h: u32) -> ! {
         berry_libc::park();
     }
     let mut srv = PresentSrv {
-        dma: Dma { vmo: d.vmo, lay: d.lay, req_pa: d.req_pa, resp_pa: d.resp_pa },
+        dma: Dma {
+            vmo: d.vmo,
+            lay: d.lay,
+            req_pa: d.req_pa,
+            resp_pa: d.resp_pa,
+            batch_req_pa: d.batch_req_pa,
+            batch_resp_pa: d.batch_resp_pa,
+        },
         regs,
         w,
         h,

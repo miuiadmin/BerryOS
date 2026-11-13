@@ -32,7 +32,11 @@ use std::sync::OnceLock;
 use berry_appproto as ap;
 use berry_gfx::icon::{decode, IconError};
 use berry_layout::ID_MAX;
-use berry_sys::Handle;
+use berry_libc::io::self_vmar_h;
+use berry_sys::{
+    berry_handle_close, berry_vmar_map, berry_vmo_commit, berry_vmo_create, Handle,
+    RIGHT_READ, RIGHT_WRITE,
+};
 use berry_ui::IconSource;
 
 use crate::{rpc_recv, rpc_send};
@@ -378,6 +382,146 @@ pub struct LauncherIcons;
 
 static ICONS: LauncherIcons = LauncherIcons;
 
+struct WallpaperCache {
+    w: u32,
+    h: u32,
+    px: &'static [u32],
+    _vmo: Handle,
+}
+
+const WALLPAPER_VA: usize = 0x5200_0000;
+
+static WALLPAPER_CACHE: OnceLock<WallpaperCache> = OnceLock::new();
+
+/// 把官方 RGB565 壁纸按当前视口一次性双线性预缩放成不透明 ARGB。
+/// Swipe 每帧 damage 包络结构性覆盖全宽；无缓存时同一 2.07M 像素
+/// 双线性采样会在每个动画帧重复执行。缓存是视觉等价换内存（约 8.3MiB@1080p）。
+pub fn prime_wallpaper(vp_w: u32, vp_h: u32) {
+    if WALLPAPER_CACHE.get().is_some() || vp_w == 0 || vp_h == 0 {
+        return;
+    }
+    let pixels = vp_w as usize * vp_h as usize;
+    let Some(len) = (pixels * 4).checked_add(0xfff).map(|v| v & !0xfff) else {
+        return;
+    };
+    let mut vmo: Handle = 0;
+    if berry_vmo_create(len as u64, 0, &mut vmo) != 0
+        || vmo == 0
+        || berry_vmo_commit(vmo, 0, len as u64) != 0
+    {
+        let _ = berry_handle_close(vmo);
+        return;
+    }
+    let hv = self_vmar_h();
+    let mut va = WALLPAPER_VA;
+    if hv == 0
+        || berry_vmar_map(hv, 0, vmo, 0, &mut va, len, RIGHT_READ | RIGHT_WRITE) != 0
+        || va != WALLPAPER_VA
+    {
+        let _ = berry_handle_close(vmo);
+        return;
+    }
+    // SAFETY: [WALLPAPER_VA, +len) 刚按页映射并 commit；launcher 终身持有
+    // vmo 与映射，px 只取前 w*h 像素，不含页尾。
+    let out: &mut [u32] = unsafe { core::slice::from_raw_parts_mut(va as *mut u32, pixels) };
+    smooth_wallpaper_into_argb(out, vp_w, vp_h);
+    let px: &'static [u32] = unsafe { core::slice::from_raw_parts(va as *const u32, pixels) };
+    let _ = WALLPAPER_CACHE.set(WallpaperCache {
+        w: vp_w,
+        h: vp_h,
+        px,
+        _vmo: vmo,
+    });
+}
+
+fn smooth_wallpaper_into_argb(out: &mut [u32], dw: u32, dh: u32) {
+    const MAX_W: usize = 1280;
+    const SW: u32 = wallpaper::WALLPAPER_W;
+    const SH: u32 = wallpaper::WALLPAPER_H;
+    if dw as usize > MAX_W || out.len() < dw as usize * dh as usize {
+        return;
+    }
+
+    let unpack = |v: u16| -> (u8, u8, u8) {
+        let r5 = u32::from((v >> 11) & 0x1F);
+        let g6 = u32::from((v >> 5) & 0x3F);
+        let b5 = u32::from(v & 0x1F);
+        (
+            ((r5 * 255 + 15) / 31) as u8,
+            ((g6 * 255 + 31) / 63) as u8,
+            ((b5 * 255 + 15) / 31) as u8,
+        )
+    };
+    let mut xs0 = [0u16; MAX_W];
+    let mut xs1 = [0u16; MAX_W];
+    let mut fxs = [0u8; MAX_W];
+    for i in 0..dw as usize {
+        let cx = ((2 * i as i64 + 1) * SW as i64 * 65536 / (2 * dw as i64)) - 32768;
+        let x0 = (cx / 65536).clamp(0, (SW - 1) as i64) as usize;
+        let x1 = (x0 + 1).min((SW - 1) as usize);
+        xs0[i] = x0 as u16;
+        xs1[i] = x1 as u16;
+        fxs[i] = ((cx - x0 as i64 * 65536).max(0) / 256) as u8;
+    }
+    let mut row0 = [(0u8, 0u8, 0u8); MAX_W];
+    let mut row1 = [(0u8, 0u8, 0u8); MAX_W];
+    let mut cached0 = usize::MAX;
+    let mut cached1 = usize::MAX;
+    for y in 0..dh as usize {
+        let cy = ((2 * y as i64 + 1) * SH as i64 * 65536 / (2 * dh as i64)) - 32768;
+        let y0 = (cy / 65536).clamp(0, (SH - 1) as i64) as usize;
+        let y1 = (y0 + 1).min((SH - 1) as usize);
+        let fy = ((cy - y0 as i64 * 65536).max(0) / 256) as u32;
+        if cached0 != y0 {
+            let base = y0 * SW as usize;
+            for i in 0..dw as usize {
+                row0[i] = horiz_rgb565(&wallpaper::WALLPAPER_PX, base, xs0[i], xs1[i], fxs[i], unpack);
+            }
+            cached0 = y0;
+        }
+        if cached1 != y1 {
+            if y1 == y0 {
+                row1 = row0;
+            } else {
+                let base = y1 * SW as usize;
+                for i in 0..dw as usize {
+                    row1[i] = horiz_rgb565(&wallpaper::WALLPAPER_PX, base, xs0[i], xs1[i], fxs[i], unpack);
+                }
+            }
+            cached1 = y1;
+        }
+        let inv_y = 256 - fy;
+        let dst_row = y * dw as usize;
+        for i in 0..dw as usize {
+            let (r0, g0, b0) = row0[i];
+            let (r1, g1, b1) = row1[i];
+            let r = (u32::from(r0) * inv_y + u32::from(r1) * fy) >> 8;
+            let g = (u32::from(g0) * inv_y + u32::from(g1) * fy) >> 8;
+            let b = (u32::from(b0) * inv_y + u32::from(b1) * fy) >> 8;
+            out[dst_row + i] = 0xFF00_0000 | (r << 16) | (g << 8) | b;
+        }
+    }
+}
+
+fn horiz_rgb565(
+    px: &[u16],
+    base: usize,
+    x0: u16,
+    x1: u16,
+    fx: u8,
+    unpack: impl Fn(u16) -> (u8, u8, u8),
+) -> (u8, u8, u8) {
+    let (r0, g0, b0) = unpack(px.get(base + x0 as usize).copied().unwrap_or(0));
+    let (r1, g1, b1) = unpack(px.get(base + x1 as usize).copied().unwrap_or(0));
+    let fx = u32::from(fx);
+    let inv = 256 - fx;
+    (
+        ((u32::from(r0) * inv + u32::from(r1) * fx) >> 8) as u8,
+        ((u32::from(g0) * inv + u32::from(g1) * fx) >> 8) as u8,
+        ((u32::from(b0) * inv + u32::from(b1) * fx) >> 8) as u8,
+    )
+}
+
 /// 供件引用（`&'static dyn`——供给槽生命周期面；unit static 即终身）。
 pub fn icon_source() -> &'static dyn IconSource {
     &ICONS
@@ -386,7 +530,7 @@ pub fn icon_source() -> &'static dyn IconSource {
 impl IconSource for LauncherIcons {
     fn dims(&self, id: u16) -> Option<(u32, u32)> {
         if id == WALLPAPER {
-            return Some(WALLPAPER_DIM);
+            return WALLPAPER_CACHE.get().map(|c| (c.w, c.h)).or(Some(WALLPAPER_DIM));
         }
         let faces = FACES.get().copied().unwrap_or(&[]);
         let f = faces.get(id as usize)?;
@@ -394,16 +538,35 @@ impl IconSource for LauncherIcons {
     }
 
     fn pixels(&self, id: u16) -> Option<&[u32]> {
+        if id == WALLPAPER {
+            return WALLPAPER_CACHE.get().map(|c| c.px);
+        }
         let faces = FACES.get().copied().unwrap_or(&[]);
         let f = faces.get(id as usize)?;
         Some(&f.px)
     }
 
     fn pixels_rgb565(&self, id: u16) -> Option<&[u16]> {
-        (id == WALLPAPER).then_some(&wallpaper::WALLPAPER_PX)
+        if id == WALLPAPER && WALLPAPER_CACHE.get().is_none() {
+            return Some(&wallpaper::WALLPAPER_PX);
+        }
+        None
     }
 
     fn smooth_scale(&self, _id: u16) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod wallpaper_tests {
+    use super::*;
+
+    #[test]
+    fn wallpaper_cache_is_opaque_and_viewport_sized() {
+        let mut px = vec![0; 8 * 7];
+        smooth_wallpaper_into_argb(&mut px, 8, 7);
+        assert_eq!(px.len(), 56);
+        assert!(px.iter().all(|p| p & 0xFF00_0000 == 0xFF00_0000));
     }
 }

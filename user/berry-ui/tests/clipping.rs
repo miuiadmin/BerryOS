@@ -9,7 +9,8 @@ use berry_gfx::pass::{LoadOp, PassDescriptor, StoreOp};
 use berry_gfx::queue::Queue;
 use berry_ui::damage::RectI;
 use berry_ui::desc::{
-    ClipProps, ColProps, NodeId, Props, RectProps, RowProps, ViewKind, ViewSpec,
+    ClipProps, ColProps, GridProps, NodeId, PadProps, Props, RectProps, RowProps,
+    ViewKind, ViewSpec,
 };
 use berry_ui::layout::CrossAlign;
 use berry_ui::{Ui, UiMain};
@@ -376,4 +377,47 @@ fn sparse_offset_damage_keeps_separate_painted_leaves() {
     assert_eq!(damage.count, 2, "两个不相邻 painted leaf 不提升 FULL");
     assert!(damage.union_px() < 20_000, "damage 必须显著小于 200×100 port");
     assert_ne!(a, b);
+}
+
+#[test]
+fn sparse_grid_offset_damage_keeps_row_bands() {
+    let mut ui = Ui::<64>::new(200, 100);
+    let root = ui.root();
+    let port = ui.add(root, ViewSpec {
+        kind: ViewKind::Clip,
+        key: 0,
+        props: Props::Clip(ClipProps { w: Some(200), h: Some(100) }),
+    }).unwrap();
+    let track = ui.add(port, ViewSpec {
+        kind: ViewKind::Row,
+        key: 0,
+        props: Props::Row(RowProps { gap: 0, w: Some(200), h: Some(100), cross: CrossAlign::Stretch }),
+    }).unwrap();
+    for _page in 0..2 {
+        let page = ui.add(track, ViewSpec {
+            kind: ViewKind::Col,
+            key: 0,
+            props: Props::Col(ColProps { gap: 0, w: Some(100), h: Some(100), cross: CrossAlign::Center }),
+        }).unwrap();
+        let grid = ui.add(page, ViewSpec {
+            kind: ViewKind::Grid,
+            key: 0,
+            props: Props::Grid(GridProps { cols: 2, rows: 2, gap: 20, cross: CrossAlign::Center, w: Some(100), h: Some(100) }),
+        }).unwrap();
+        for _cell in 0..4 {
+            let pad = ui.add(grid, ViewSpec {
+                kind: ViewKind::Pad,
+                key: 0,
+                props: Props::Pad(PadProps { all: 0 }),
+            }).unwrap();
+            ui.add(pad, rect(BLUE, Some(30), Some(15))).unwrap();
+        }
+    }
+    ui.layout();
+    ui.drain_damage();
+    ui.set_offset_sparse(track, 10, 0).unwrap();
+    let damage = ui.damage();
+    assert!(!damage.full, "Grid 行带不得退化为 FULL");
+    assert!(damage.count <= 4);
+    assert!(damage.union_px() < 12_000, "行间空白仍应保持不传输");
 }

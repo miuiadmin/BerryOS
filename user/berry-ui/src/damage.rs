@@ -306,6 +306,23 @@ impl DamageSet {
         self.count = 0;
     }
 
+    /// 精确追加（不试并）：专供 SwipePager Grid 行带。调用方已把行带数
+    /// 控制在 K 帽内；超帽仍保守 FULL。普通 damage 继续走 `add` 的
+    /// 1.25 浪费帽合并，避免碎片命令放大。
+    pub fn add_exact(&mut self, r: Rect) {
+        self.adds = self.adds.saturating_add(1);
+        if self.full || r.w == 0 || r.h == 0 {
+            return;
+        }
+        if (self.count as usize) < berry_guiproto::DAMAGE_MAX {
+            self.rects[self.count as usize] = r;
+            self.count += 1;
+            return;
+        }
+        self.full = true;
+        self.count = 0;
+    }
+
     /// FULL 直置（动画 Transform/大改面——全屏重绘语义）。
     pub fn add_full(&mut self) {
         self.full = true;

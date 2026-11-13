@@ -16,7 +16,7 @@ use winit::window::{Fullscreen, Window, WindowId};
 use crate::commands::{self, ScaleMode, ShellArgs};
 use crate::control;
 use crate::device::Device;
-use crate::display::frame::{Frame, InputEvent, ScreenSource};
+use crate::display::frame::{Frame, FrameRef, InputEvent, ScreenSource};
 use crate::display::vnc::VncSource;
 use crate::display::scale::{self, Fit};
 use crate::error::{BerryError, Result};
@@ -465,7 +465,7 @@ struct App {
     window: Option<Arc<Window>>,
     context: Option<Context<Arc<Window>>>,
     surface: Option<Surface<Arc<Window>, Arc<Window>>>,
-    last_frame: Option<Frame>,
+    last_frame: Option<FrameRef>,
     last_fit: Option<Fit>,
     cursor: Option<(f64, f64)>,
     mouse_down: bool,
@@ -545,6 +545,8 @@ impl App {
         let Some(frame) = self.last_frame.as_ref() else {
             return;
         };
+        let frame_guard = frame.lock().unwrap();
+        let frame: &Frame = &frame_guard;
         let integer = matches!(self.scale, ScaleMode::Integer(_));
         let guest_h = size.height.saturating_sub(TOOLBAR_H).max(1);
         let fit = scale::fit(frame.width, frame.height, size.width, guest_h, integer);
@@ -617,8 +619,12 @@ impl App {
                 return;
             }
         }
+        let (frame_w, frame_h) = {
+            let frame = frame.lock().unwrap();
+            (frame.width, frame.height)
+        };
         if let Some((x, y)) =
-            scale::window_to_guest(px as u32, py as u32, fit, frame.width, frame.height)
+            scale::window_to_guest(px as u32, py as u32, fit, frame_w, frame_h)
         {
             let _ = self
                 .session
@@ -838,8 +844,12 @@ impl App {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default();
         let name = format!("berry-shot-{}-{}.png", d.as_secs(), d.subsec_millis());
-        match crate::png::write_png(std::path::Path::new(&name), frame.width, frame.height, &frame.to_rgb()) {
-            Ok(()) => println!("screenshot: {name} ({}x{})", frame.width, frame.height),
+        let (frame_w, frame_h, rgb) = {
+            let frame = frame.lock().unwrap();
+            (frame.width, frame.height, frame.to_rgb())
+        };
+        match crate::png::write_png(std::path::Path::new(&name), frame_w, frame_h, &rgb) {
+            Ok(()) => println!("screenshot: {name} ({}x{})", frame_w, frame_h),
             Err(e) => eprintln!("screenshot failed: {e}"),
         }
     }

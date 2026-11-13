@@ -815,6 +815,7 @@ fn main() {
     // guest 栈 stack_pages=64 = 256KB（R5 仪器定谳，svcmgr 装配注释为
     // 单源——8 页下 main+0x1c 序言即穿保护页）栈置仍不稳：Box::leak
     // 堆置（桌面进程终身持有——常驻面无回收语义，leak 即分配）。
+    icons::prime_wallpaper(info.disp_w as u32, info.disp_h as u32);
     let ui: &'static mut UiMain =
         Box::leak(Box::new(UiMain::new(info.disp_w as u32, info.disp_h as u32)));
     ui.set_icon_source(icons::icon_source());

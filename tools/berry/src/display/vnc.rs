@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::display::frame::{Caps, Frame, InputEvent, ScreenSource, TransportKind};
+use crate::display::frame::{Caps, Frame, FrameRef, InputEvent, ScreenSource, TransportKind};
 use crate::error::{BerryError, Result};
 use crate::net::{Endpoint, Stream};
 
@@ -97,12 +97,13 @@ fn scale(v: u32, max: u32) -> u32 {
 }
 
 struct Reader {
-    slot: Arc<Mutex<Option<Frame>>>,
+    slot: Arc<Mutex<Option<FrameRef>>>,
     writer: Arc<Mutex<Stream>>,
     stop: Arc<AtomicBool>,
     error: Arc<Mutex<Option<String>>>,
     pf: PixelFormat,
-    frame: Frame,
+    stage: Frame,
+    shared: Arc<Mutex<Frame>>,
     seq: u64,
 }
 
@@ -169,7 +170,7 @@ fn handshake(stream: &mut Stream) -> Result<(u32, u32, PixelFormat)> {
 }
 
 pub struct VncSource {
-    slot: Arc<Mutex<Option<Frame>>>,
+    slot: Arc<Mutex<Option<FrameRef>>>,
     writer: Arc<Mutex<Stream>>,
     stop: Arc<AtomicBool>,
     error: Arc<Mutex<Option<String>>>,
@@ -200,13 +201,15 @@ impl VncSource {
         let slot = Arc::new(Mutex::new(None));
         let stop = Arc::new(AtomicBool::new(false));
         let error = Arc::new(Mutex::new(None));
+        let shared = Arc::new(Mutex::new(Frame::new(w, h)));
         let mut reader = Reader {
             slot: slot.clone(),
             writer: writer.clone(),
             stop: stop.clone(),
             error: error.clone(),
             pf,
-            frame: Frame::new(w, h),
+            stage: Frame::new(w, h),
+            shared,
             seq: 0,
         };
         let handle = std::thread::spawn(move || {
@@ -297,7 +300,7 @@ impl ScreenSource for VncSource {
         self.caps
     }
 
-    fn try_next_frame(&mut self) -> Option<Frame> {
+    fn try_next_frame(&mut self) -> Option<FrameRef> {
         self.slot.lock().unwrap().take()
     }
 
@@ -331,13 +334,8 @@ impl Reader {
                 0 => {
                     self.update(stream)?;
                     let mut w = self.writer.lock().unwrap();
-                    let req = request(
-                        1,
-                        0,
-                        0,
-                        self.frame.width,
-                        self.frame.height,
-                    );
+                    let (width, height) = (self.stage.width, self.stage.height);
+                    let req = request(1, 0, 0, width, height);
                     w.write_all(&req)?;
                     w.flush()?;
                 }
@@ -370,6 +368,7 @@ impl Reader {
     }
 
     fn update(&mut self, stream: &mut Stream) -> Result<()> {
+        let mut changed: Vec<(u32, u32, u32, u32)> = Vec::new();
         let mut hdr = [0u8; 3];
         read_exact(stream, &mut hdr)?;
         let n = u16::from_be_bytes([hdr[1], hdr[2]]) as usize;
@@ -385,12 +384,16 @@ impl Reader {
             let h = u16::from_be_bytes([r[6], r[7]]) as u32;
             let enc = i32::from_be_bytes([r[8], r[9], r[10], r[11]]);
             match enc {
-                0 => self.raw(stream, x, y, w, h)?,
+                0 => {
+                    Self::raw(&self.pf, &mut self.stage, stream, x, y, w, h)?;
+                    changed.push((x, y, w, h));
+                }
                 -223 => {
                     if w == 0 || h == 0 || w > MAX_DIM || h > MAX_DIM {
                         return Err(BerryError::protocol("VNC: bad DesktopSize"));
                     }
-                    self.frame.resize(w, h);
+                    self.stage.resize(w, h);
+                    changed.push((0, 0, w, h));
                 }
                 -239 => {
                     let px = w as u64 * h as u64 * self.pf.bytes() as u64;
@@ -409,37 +412,64 @@ impl Reader {
             }
         }
         self.seq += 1;
-        self.frame.seq = self.seq;
-        *self.slot.lock().unwrap() = Some(self.frame.clone());
+        self.stage.seq = self.seq;
+        // Reader 在 staging buffer 解码，窗口仍可绘制 shared 旧帧；这里只按
+        // VNC damage 行拷贝，避免 1080p 每帧整帧 clone/内存再分配。
+        {
+            let mut shared = self.shared.lock().unwrap();
+            shared.resize(self.stage.width, self.stage.height);
+            let stride = self.stage.width as usize;
+            for &(x, y, w, h) in &changed {
+                let (x, w) = (x as usize, w as usize);
+                let (y, h) = (y as usize, h as usize);
+                for row in 0..h {
+                    let src = (y + row) * stride + x;
+                    let dst = src;
+                    let end = src + w;
+                    shared.pixels[dst..end].copy_from_slice(&self.stage.pixels[src..end]);
+                }
+            }
+            shared.seq = self.seq;
+        }
+        let shared: FrameRef = self.shared.clone();
+        *self.slot.lock().unwrap() = Some(shared);
         Ok(())
     }
 
-    fn raw(&mut self, stream: &mut Stream, x: u32, y: u32, w: u32, h: u32) -> Result<()> {
+    fn raw(
+        pf: &PixelFormat,
+        frame: &mut Frame,
+        stream: &mut Stream,
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+    ) -> Result<()> {
         if w == 0 || h == 0 {
             return Ok(());
         }
-        if x + w > self.frame.width || y + h > self.frame.height {
+        if x + w > frame.width || y + h > frame.height {
             return Err(BerryError::protocol(format!(
                 "VNC: rect {x},{y} {w}x{h} outside {}x{}",
-                self.frame.width, self.frame.height
+                frame.width, frame.height
             )));
         }
         let px = w as u64 * h as u64;
         if px > MAX_PIXELS {
             return Err(BerryError::protocol("VNC: rect too large"));
         }
-        let bytes = px as usize * self.pf.bytes();
+        let bytes = px as usize * pf.bytes();
         let mut data = vec![0u8; bytes];
         read_exact(stream, &mut data)?;
-        let step = self.pf.bytes();
-        let stride = self.frame.width as usize;
+        let step = pf.bytes();
+        let stride = frame.width as usize;
         // QEMU's common console format is 32bpp with byte-wide channels. Keep
         // the generic decoder for 8/16bpp, but avoid repeated format branching
         // for every one of the ~2M product pixels.
-        let fast32 = self.pf.bpp == 32
-            && self.pf.rmax == 255
-            && self.pf.gmax == 255
-            && self.pf.bmax == 255;
+        let fast32 = pf.bpp == 32
+            && pf.rmax == 255
+            && pf.gmax == 255
+            && pf.bmax == 255;
         for row in 0..h as usize {
             let src = row * w as usize * step;
             let dst = (y as usize + row) * stride + x as usize;
@@ -450,20 +480,20 @@ impl Reader {
                     .enumerate()
                 {
                     let a = [chunk[0], chunk[1], chunk[2], chunk[3]];
-                    let v = if self.pf.big_endian {
+                    let v = if pf.big_endian {
                         u32::from_be_bytes(a)
                     } else {
                         u32::from_le_bytes(a)
                     };
-                    let r = ((v >> self.pf.rshift) & 0xff) as u32;
-                    let g = ((v >> self.pf.gshift) & 0xff) as u32;
-                    let b = ((v >> self.pf.bshift) & 0xff) as u32;
-                    self.frame.pixels[dst + col] = (r << 16) | (g << 8) | b;
+                    let r = ((v >> pf.rshift) & 0xff) as u32;
+                    let g = ((v >> pf.gshift) & 0xff) as u32;
+                    let b = ((v >> pf.bshift) & 0xff) as u32;
+                    frame.pixels[dst + col] = (r << 16) | (g << 8) | b;
                 }
             } else {
                 for col in 0..w as usize {
                     let off = src + col * step;
-                    self.frame.pixels[dst + col] = self.pf.pixel(&data[off..off + step]);
+                    frame.pixels[dst + col] = pf.pixel(&data[off..off + step]);
                 }
             }
         }

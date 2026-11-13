@@ -2,7 +2,7 @@
 """desktop-calib —— Mac 1080×1920 GPU/ramfb 双臂性能标定。
 
 同一产品镜像、同一数据盘、同一 QMP 动作，分别以 virtio-gpu 和 ramfb
-后端启动，记录 boot/cold-launch/back/page/switch 延迟与 VGPUPERF 尾行。
+后端启动，记录 boot/cold-launch/back/page/switch、launcher 真实横滑帧数/时长与 VGPUPERF 尾行。
 绝对延迟只写入本机报告，不做跨机器 CI 阈值。
 """
 from __future__ import annotations
@@ -29,6 +29,9 @@ class ArmResult:
     appbar_back_s: float
     page_transition_s: float
     switch_s: float
+    launcher_swipe_s: float | None
+    launcher_swipe_frames: int
+    launcher_swipe_submit_us: int
     vgpu_ok: bool
     vgpuhdi_marker: bool
     kernel_panic: bool
@@ -109,6 +112,92 @@ def quick_click(qmp, x: int, y: int, w: int, h: int) -> float:
     return time.monotonic()
 
 
+
+
+def quick_swipe(qmp, x0: int, y0: int, x1: int, y1: int, w: int, h: int) -> float:
+    """注入一次真实横滑；计时从首个 ABS 事件被 QMP 接收后开始。"""
+    def ax(x: int) -> int:
+        return max(0, min(32767, round(x * 32768 / w)))
+
+    def ay(y: int) -> int:
+        return max(0, min(32767, round(y * 32768 / h)))
+
+    start = time.monotonic()
+    qmp.execute("input-send-event", {"events": [
+        {"type": "abs", "data": {"axis": "x", "value": ax(x0)}},
+        {"type": "abs", "data": {"axis": "y", "value": ay(y0)}},
+    ]})
+    time.sleep(0.08)
+    qmp.execute("input-send-event", {"events": [
+        {"type": "btn", "data": {"down": True, "button": "left"}},
+        {"type": "abs", "data": {"axis": "x", "value": ax(x0)}},
+        {"type": "abs", "data": {"axis": "y", "value": ay(y0)}},
+    ]})
+    for i in range(1, 6):
+        frac = i / 5
+        x = round(x0 + (x1 - x0) * frac)
+        time.sleep(0.045)
+        qmp.execute("input-send-event", {"events": [
+            {"type": "abs", "data": {"axis": "x", "value": ax(x)}},
+            {"type": "abs", "data": {"axis": "y", "value": ay(y0)}},
+        ]})
+    time.sleep(0.08)
+    qmp.execute("input-send-event", {"events": [
+        {"type": "btn", "data": {"down": False, "button": "left"}},
+    ]})
+    return start
+
+
+def measure_vgpu_swipe(
+    serial: Path, proc: subprocess.Popen, qmp, before_count: int
+) -> tuple[float, int, int]:
+    """以 VGPUPERF 新行计数为真实呈现帧，静止 450ms 判定动画结束。"""
+    start = quick_swipe(qmp, 864, 700, 216, 700, 1080, 1920)
+    last_increase = start
+    last_count = before_count
+    last_submit_us = 0
+    quiesce = 0.45
+    deadline = start + 8.0
+    while time.monotonic() < deadline:
+        count = count_marker(serial, "VGPUPERF ")
+        now = time.monotonic()
+        if count > last_count:
+            last_count = count
+            last_increase = now
+            lines = [line[line.find("VGPUPERF "):].strip()
+                     for line in text_of(serial).splitlines()
+                     if "VGPUPERF " in line]
+            if lines:
+                field = next((x for x in lines[-1].split() if x.startswith("last_us=")), "")
+                last_submit_us = max(last_submit_us, int(field.removeprefix("last_us=") or 0))
+        if last_count > before_count and now - last_increase >= quiesce:
+            result = (
+                last_increase - start,
+                last_count - before_count,
+                last_submit_us,
+            )
+            # 校准动作后回滑到 page 0，后续 BerryDemo 坐标仍指向首格。
+            reset_before = last_count
+            quick_swipe(qmp, 216, 700, 864, 700, 1080, 1920)
+            reset_deadline = time.monotonic() + 5.0
+            reset_last_increase = time.monotonic()
+            reset_last_count = reset_before
+            while time.monotonic() < reset_deadline:
+                count = count_marker(serial, "VGPUPERF ")
+                now = time.monotonic()
+                if count > reset_last_count:
+                    reset_last_count = count
+                    reset_last_increase = now
+                if now - reset_last_increase >= quiesce:
+                    return result
+                time.sleep(0.02)
+            raise RuntimeError("vgpu reset swipe did not quiesce")
+        if proc.poll() is not None:
+            raise RuntimeError(f"QEMU exited rc={proc.returncode} during swipe")
+        time.sleep(0.02)
+    raise RuntimeError("vgpu swipe did not quiesce")
+
+
 def latest_layout(gui8, serial: Path):
     matches = list(gui8.BERRYDEMO_LAYOUT_RE.finditer(text_of(serial)))
     if not matches:
@@ -168,6 +257,17 @@ def run_arm(
         if vgpu:
             qmp.default_console = "vgpu0"
 
+        time.sleep(0.3)
+        if vgpu:
+            swipe_before = count_marker(serial, "VGPUPERF ")
+            launcher_swipe_s, launcher_swipe_frames, launcher_swipe_submit_us = (
+                measure_vgpu_swipe(serial, proc, qmp, swipe_before)
+            )
+        else:
+            launcher_swipe_s = None
+            launcher_swipe_frames = 0
+            launcher_swipe_submit_us = 0
+
         home_layouts_before = count_marker(serial, "BERRYDEMOLAYOUT ok page=0")
         start = quick_click(qmp, 412, 282, 1080, 1920)
         wait_new_marker(
@@ -220,6 +320,9 @@ def run_arm(
             appbar_back_s=round(back, 3),
             page_transition_s=round(page, 3),
             switch_s=round(switch, 3),
+            launcher_swipe_s=None if launcher_swipe_s is None else round(launcher_swipe_s, 3),
+            launcher_swipe_frames=launcher_swipe_frames,
+            launcher_swipe_submit_us=launcher_swipe_submit_us,
             vgpu_ok="VGPU ok " in serial_text,
             vgpuhdi_marker="VGPUHDI ok " in serial_text,
             kernel_panic="KERNEL PANIC" in serial_text,
@@ -269,13 +372,15 @@ def main() -> int:
         "# Mac desktop calibration\n\n"
         f"- image: `{args.image}`\n"
         f"- resolution: 1080×1920\n"
-        f"| backend | boot s | demo launch s | appbar back s | page s | switch s | VGPUHDI |\n"
-        f"|---|---:|---:|---:|---:|---:|---|\n"
+        f"| backend | boot s | demo launch s | appbar back s | page s | switch s | launcher swipe s | swipe frames | swipe submit µs | VGPUHDI |\n"
+        f"|---|---:|---:|---:|---:|---:|---:|---:|---:|---|\n"
         f"| {vgpu.backend} | {vgpu.boot_ready_s} | {vgpu.berrydemo_launch_s} | "
         f"{vgpu.appbar_back_s} | {vgpu.page_transition_s} | {vgpu.switch_s} | "
+        f"{vgpu.launcher_swipe_s if vgpu.launcher_swipe_s is not None else float('nan'):.3f} | "
+        f"{vgpu.launcher_swipe_frames} | {vgpu.launcher_swipe_submit_us} | "
         f"{vgpu.vgpuhdi_marker} |\n"
         f"| {ramfb.backend} | {ramfb.boot_ready_s} | {ramfb.berrydemo_launch_s} | "
-        f"{ramfb.appbar_back_s} | {ramfb.page_transition_s} | {ramfb.switch_s} | n/a |\n\n"
+        f"{ramfb.appbar_back_s} | {ramfb.page_transition_s} | {ramfb.switch_s} | n/a | n/a | n/a | n/a |\n\n"
         "```text\n" + "\n".join(vgpu.perf_lines) + "\n```\n",
         encoding="utf-8",
     )

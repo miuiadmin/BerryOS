@@ -252,7 +252,11 @@ pub fn shot(args: ShotArgs) -> Result<()> {
             .with_hint(format!("serial tail:\n{}", tail.tail_text(4000)))
     })?;
     let out = args.out.unwrap_or_else(|| PathBuf::from("shot.png"));
-    crate::png::write_png(&out, frame.width, frame.height, &frame.to_rgb())?;
+    let (frame_w, frame_h, rgb) = {
+        let frame = frame.lock().unwrap();
+        (frame.width, frame.height, frame.to_rgb())
+    };
+    crate::png::write_png(&out, frame_w, frame_h, &rgb)?;
     let mut qmp = QmpClient::connect(&qmp_ep).ok();
     stop_child(&mut child, qmp.as_mut());
     if args.keep {
@@ -261,10 +265,10 @@ pub fn shot(args: ShotArgs) -> Result<()> {
     if args.json {
         println!(
             "{}",
-            json!({"v":1,"t":"shot","path":out,"width":frame.width,"height":frame.height,"run":run.path()})
+            json!({"v":1,"t":"shot","path":out,"width":frame_w,"height":frame_h,"run":run.path()})
         );
     } else {
-        println!("shot: {} ({}x{})", out.display(), frame.width, frame.height);
+        println!("shot: {} ({}x{})", out.display(), frame_w, frame_h);
     }
     Ok(())
 }
@@ -311,14 +315,18 @@ pub fn screenshot(args: ScreenshotArgs) -> Result<()> {
         BerryError::protocol(format!("VNC: {err}"))
             .with_hint("is the device still running? try `berry device list`")
     })?;
-    crate::png::write_png(&out, frame.width, frame.height, &frame.to_rgb())?;
+    let (frame_w, frame_h, rgb) = {
+        let frame = frame.lock().unwrap();
+        (frame.width, frame.height, frame.to_rgb())
+    };
+    crate::png::write_png(&out, frame_w, frame_h, &rgb)?;
     if args.json {
         println!(
             "{}",
-            json!({"v":1,"t":"screenshot","path":out,"width":frame.width,"height":frame.height,"run":run})
+            json!({"v":1,"t":"screenshot","path":out,"width":frame_w,"height":frame_h,"run":run})
         );
     } else {
-        println!("screenshot: {} ({}x{})", out.display(), frame.width, frame.height);
+        println!("screenshot: {} ({}x{})", out.display(), frame_w, frame_h);
     }
     Ok(())
 }
@@ -556,7 +564,7 @@ pub fn record(
         let endpoint = vnc_endpoint(&run)?;
         let mut source = VncSource::connect(&endpoint)?;
         let mut raw_frames: Vec<Vec<u8>> = Vec::new();
-        let mut last: Option<crate::display::frame::Frame> = None;
+        let mut last: Option<crate::display::frame::FrameRef> = None;
         let mut dims = (0u32, 0u32);
         for i in 0..frames {
             let wait = if i == 0 {
@@ -565,12 +573,16 @@ pub fn record(
                 Duration::from_millis(interval_ms.max(50))
             };
             if let Some(f) = source.next_frame(wait) {
-                dims = (f.width, f.height);
+                {
+                    let guard = f.lock().unwrap();
+                    dims = (guard.width, guard.height);
+                }
                 last = Some(f);
             }
             let Some(f) = last.as_ref() else {
                 return Err(BerryError::device("record: no VNC frame"));
             };
+            let f = f.lock().unwrap();
             raw_frames.push(f.to_rgb());
             if i + 1 < frames {
                 std::thread::sleep(Duration::from_millis(interval_ms));

@@ -527,16 +527,20 @@ fn dispatch(
             let frame = source.next_frame(Duration::from_secs(10)).ok_or_else(|| {
                 BerryError::protocol("control screenshot: no VNC frame")
             })?;
-            crate::png::write_png(&out, frame.width, frame.height, &frame.to_rgb())?;
+            let (frame_w, frame_h, rgb) = {
+                let frame = frame.lock().unwrap();
+                (frame.width, frame.height, frame.to_rgb())
+            };
+            crate::png::write_png(&out, frame_w, frame_h, &rgb)?;
             let path_str = out.display().to_string();
             append_event(run, json!({
                 "v":1,"t":"screenshot","path":path_str,
-                "width":frame.width,"height":frame.height,"source":"vnc",
+                "width":frame_w,"height":frame_h,"source":"vnc",
             }));
             Ok(json!({
                 "path": path_str,
-                "width": frame.width,
-                "height": frame.height,
+                "width": frame_w,
+                "height": frame_h,
                 "source": "vnc",
             }))
         }
