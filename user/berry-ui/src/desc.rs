@@ -21,7 +21,10 @@
 //!           Check·Badge 5B / Radio·Sbar 9B / Step 20B / Seg 12B（u32 域
 //!           全 LE）；P0 尾四件（组件清单收尾批，tag 25..=28 add-only）：
 //!           Select 12B / Input 变长(6..=70) / Edit 变长(10..=74) /
-//!           Canvas 4B（u32 域全 LE）
+//!           Canvas 4B（u32 域全 LE）；P1 尾五件（组件清单 P1 kind 件
+//!           收尾批，tag 29..=33 add-only）：Tip 变长(2..=66) / Refresh
+//!           9B / SwipeItem 16B / DatePick 24B / TimePick 13B（u32 域
+//!           全 LE）
 //! ```
 //!
 //! - `child_count` 是**树形走查域**（不属于节点本体）：[`parse_node`] 只
@@ -75,6 +78,23 @@
 //!   枚举子域 input_kind 域外 UnknownProp、bool 子域 readonly 域外
 //!   UnknownProp、placeholder 超长 TextTooLong。渲染/布局/手势面同前
 //!   两批不实现（挂 Phase 2）。
+//! - P1 尾五件（组件清单 P1 kind 件收尾批，tag 29..=33 add-only）：
+//!   Refresh = 下拉刷新**容器**（可带子——包裹 List 等；AST/builder 面
+//!   可带子，命令面同前批容器边界）/ 四新叶 Tip（工具提示——label 同
+//!   Button 走内联 TextBuf）、SwipeItem（滑动操作项——reveal 两端各
+//!   0..=1000 permille）、DatePick（日期选择器）、TimePick（时间选择
+//!   器）入叶带子拒面。wire：Tip 变长 2..=66 = len u8 + text +
+//!   placement u8；Refresh 9B = refreshing u8 + offset·on_refresh 各
+//!   u32 LE；SwipeItem 16B = action_count·reveal_start·reveal_end·
+//!   on_action；DatePick 24B = year·month·day·min_year·max_year·
+//!   on_change；TimePick 13B = hour·minute·on_change 各 u32 LE +
+//!   use_24h u8。BadValue 拒面：Refresh offset 越千分域、SwipeItem
+//!   reveal 任一端越千分域、DatePick month 非 1..=12 / day 非 1..=31 /
+//!   min_year > max_year / year 越界、TimePick hour > 23 / minute > 59
+//!   （日历语义——day 不做月长感知，2 月 31 结构合法消费面钳）；枚举
+//!   子域 placement 域外 UnknownProp、bool 子域（refreshing/use_24h）
+//!   域外 UnknownProp、text 超长 TextTooLong。渲染/布局/手势面同前三
+//!   批不实现（挂 Phase 2）。
 //! - 块×kind 合法域（§8.2 表）：SIZE 容器通则 Col/Row/Grid 合法（Text/
 //!   Image/Icon 双源歧义拒——尺寸已在 props 定长域；Pad/Root 拒）；
 //!   ALIGN 仅 Col/Row；A11Y 全 kind 合法（落点 = Ui 侧 a11y 表，D12）。
@@ -83,7 +103,8 @@
 //! - 拒面全 loud（guiproto 同款纪律）：未知 kind / flags bit4+ / 截断 /
 //!   尾随字节 / 叶子带子（Rect/Text/Image/Icon/Button/Toggle/Slider/
 //!   Progress + P1 八叶 Spacer/Divider/Check/Radio/Step/Seg/Badge/Sbar
-//!   + P0 尾四叶 Select/Input/Edit/Canvas）/
+//!   + P0 尾四叶 Select/Input/Edit/Canvas + P1 尾四叶 Tip/SwipeItem/
+//!   DatePick/TimePick）/
 //!   Root 为子 / 文本超长 / 块×kind 失配 / Grid 零维·超格 /
 //!   组件值域越界，一律 `Err`。
 //!
@@ -103,7 +124,7 @@ use berry_gfx::font::FontSize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(pub(crate) u32);
 
-// ---------- 视图集（v1 六件 + GUI-6 段B 三新件 + Phase 1 组件七件 + P1 九件 + P0 尾四件——§3.2/§8） ----------
+// ---------- 视图集（v1 六件 + GUI-6 段B 三新件 + Phase 1 组件七件 + P1 九件 + P0 尾四件 + P1 尾五件——§3.2/§8） ----------
 
 /// 视图种类：`Root/Rect/Text`、容器 `Col/Row/Pad/Grid/Stack` 与新叶
 /// `Image/Icon`（叶子带子 = AST 拒面——Rect/Text/Image/Icon 四叶）。
@@ -115,6 +136,10 @@ pub struct NodeId(pub(crate) u32);
 /// 拒面同列——数据层先行，视觉/交互挂 Phase 2）。P0 尾四件（组件清单
 /// 收尾批，tag 25..=28 add-only）：四新叶 `Select/Input/Edit/Canvas`
 /// （叶带子拒面同列——数据层先行，输入焦点/绘制协议挂 Phase 2）。
+/// P1 尾五件（组件清单 P1 kind 件收尾批，tag 29..=33 add-only）：容器
+/// `Refresh`（下拉刷新——包裹 List 等）+ 四新叶 `Tip/SwipeItem/
+/// DatePick/TimePick`（叶带子拒面同列——数据层先行，视觉/交互挂
+/// Phase 2）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewKind {
     Root,
@@ -146,6 +171,11 @@ pub enum ViewKind {
     Input,
     Edit,
     Canvas,
+    Tip,
+    Refresh,
+    SwipeItem,
+    DatePick,
+    TimePick,
 }
 
 /// 矩形叶子属性：`None` = 尺寸随父（layout 分配）。
@@ -498,6 +528,96 @@ pub struct CanvasProps {
     pub paint_ops: u32,
 }
 
+// ---------- P1 尾五件（组件清单 P1 kind 件收尾批——数据结构层，渲染/布局/手势挂 Phase 2） ----------
+
+/// 工具提示方位（wire u8 0/1/2/3 = Top/Bottom/Start/End——Start/End
+/// 取布局走向语义：LTR 下即左/右）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TipPlacement {
+    Top,
+    Bottom,
+    Start,
+    End,
+}
+
+/// 工具提示叶属性（`text` 用内联 [`TextBuf`]（≤ `TEXT_INLINE`）——
+/// Button label 同款零 alloc Copy 值面纪律 + TLV 流自含。提示浮层/
+/// 定位面挂 Phase 2，数据层只载文本与方位）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TipProps {
+    /// 提示文本。
+    pub text: TextBuf,
+    /// 显示方位。
+    pub placement: TipPlacement,
+}
+
+/// 下拉刷新容器属性（包裹 List 等——子 = 被包裹内容；拉动手势与指示
+/// 器视觉挂 Phase 2）。`offset` = 0..=1000 permille（免 FP 同 Slider
+/// 纪律——拉动偏移对触发阈的比例）。wire refreshing u8 ∈ {0,1}，域外
+/// UnknownProp 拒。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RefreshProps {
+    /// 刷新中状态（指示器转圈/驻留——消费面 Phase 2）。
+    pub refreshing: bool,
+    /// 当前拉动偏移（0..=1000 permille，域外 BadValue 拒）。
+    pub offset: u32,
+    /// 事件 ID（hit 层派发——本批仅数据面）。
+    pub on_refresh: u32,
+}
+
+/// 滑动操作项叶属性（List 行的滑动操作载体——左右各可滑出多动作；
+/// 动作内容不进数据层，`action_count` 只记数（Select 选项计数面同律）。
+/// `reveal_*` 各 0..=1000 permille——起末端滑出量，两端独立无序（与
+/// Sbar thumb 的 start≤end 区间律不同源：两侧动作区各自展开）。
+/// BadValue 拒面：任一端 > 1000。零动作合法 = 纯行项（List 零项同律）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SwipeItemProps {
+    /// 滑出动作数（左/右合计）。
+    pub action_count: u32,
+    /// 起端已滑出量（0..=1000 permille）。
+    pub reveal_start: u32,
+    /// 末端已滑出量（0..=1000 permille）。
+    pub reveal_end: u32,
+    /// 动作事件 ID（hit 层派发——本批仅数据面）。
+    pub on_action: u32,
+}
+
+/// 日期选择器叶属性（滚轮/日历面板视觉挂 Phase 2）。**日历语义只做
+/// 结构域检**：month 1..=12、day 1..=31（不做月长感知——2 月 31 结构
+/// 合法，消费面钳）、min_year ≤ max_year、year ∈ [min_year, max_year]
+/// （min/max 为 0 时含 0——数据层不立法历法纪元）。BadValue 拒面（检
+/// 序即此序）：month 越域、day 越域、min_year > max_year、year 越界。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DatePickProps {
+    /// 当前选中年（∈ [min_year, max_year]）。
+    pub year: u32,
+    /// 月（1..=12）。
+    pub month: u32,
+    /// 日（1..=31）。
+    pub day: u32,
+    /// 年域下界。
+    pub min_year: u32,
+    /// 年域上界。
+    pub max_year: u32,
+    /// 事件 ID（hit 层派发——本批仅数据面）。
+    pub on_change: u32,
+}
+
+/// 时间选择器叶属性（滚轮视觉挂 Phase 2）。BadValue 拒面：hour > 23、
+/// minute > 59。wire use_24h u8 ∈ {0,1}，域外 UnknownProp 拒。12 小时
+/// 制下 hour 仍存 0..=23（上下午折叠是视觉面语义——消费面自换算）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimePickProps {
+    /// 时（0..=23）。
+    pub hour: u32,
+    /// 分（0..=59）。
+    pub minute: u32,
+    /// 24 小时制。
+    pub use_24h: bool,
+    /// 事件 ID（hit 层派发——本批仅数据面）。
+    pub on_change: u32,
+}
+
 /// 属性族（Plain Data，Copy——「声明即数据」的值面）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Props {
@@ -530,6 +650,11 @@ pub enum Props {
     Input(InputProps),
     Edit(EditProps),
     Canvas(CanvasProps),
+    Tip(TipProps),
+    Refresh(RefreshProps),
+    SwipeItem(SwipeItemProps),
+    DatePick(DatePickProps),
+    TimePick(TimePickProps),
 }
 
 /// builder 入口（入口①）的单节点描述：`key != 0` = 调和键（v1 仅随
@@ -692,7 +817,10 @@ pub enum AstError {
     /// 或 min > max 或 value 越界 [min,max]、Seg segment_count == 0 或
     /// active >= segment_count、Sbar thumb 任一端 > 1000 或
     /// thumb_start > thumb_end；P0 尾四件批追加——Select
-    /// option_count > 0 时 selected >= option_count。`got` = 违规值。
+    /// option_count > 0 时 selected >= option_count；P1 尾五件批追加
+    /// ——Refresh offset > 1000、SwipeItem reveal 任一端 > 1000、
+    /// DatePick month 非 1..=12 或 day 非 1..=31 或 min_year > max_year
+    /// 或 year 越界、TimePick hour > 23 或 minute > 59。`got` = 违规值。
     BadValue { kind: ViewKind, got: u32 },
 }
 
@@ -736,6 +864,13 @@ pub const KIND_SELECT: u8 = 25;
 pub const KIND_INPUT: u8 = 26;
 pub const KIND_EDIT: u8 = 27;
 pub const KIND_CANVAS: u8 = 28;
+/// P1 尾五件（组件清单 P1 kind 件收尾批，add-only 追加——旧流值域
+/// 0..=28 不受扰，29..=33 旧读端本就 UnknownKind 拒，无双义重编）。
+pub const KIND_TIP: u8 = 29;
+pub const KIND_REFRESH: u8 = 30;
+pub const KIND_SWIPE_ITEM: u8 = 31;
+pub const KIND_DATE_PICK: u8 = 32;
+pub const KIND_TIME_PICK: u8 = 33;
 
 /// Slider/Progress 的 permille 值域上界（0..=1000——清单草图 f32 0.0..=1.0
 /// 的整数替身；编解码双侧单源）。
@@ -802,6 +937,11 @@ fn kind_to_u8(k: ViewKind) -> u8 {
         ViewKind::Input => KIND_INPUT,
         ViewKind::Edit => KIND_EDIT,
         ViewKind::Canvas => KIND_CANVAS,
+        ViewKind::Tip => KIND_TIP,
+        ViewKind::Refresh => KIND_REFRESH,
+        ViewKind::SwipeItem => KIND_SWIPE_ITEM,
+        ViewKind::DatePick => KIND_DATE_PICK,
+        ViewKind::TimePick => KIND_TIME_PICK,
     }
 }
 
@@ -836,6 +976,11 @@ fn kind_from_u8(v: u8) -> Option<ViewKind> {
         KIND_INPUT => Some(ViewKind::Input),
         KIND_EDIT => Some(ViewKind::Edit),
         KIND_CANVAS => Some(ViewKind::Canvas),
+        KIND_TIP => Some(ViewKind::Tip),
+        KIND_REFRESH => Some(ViewKind::Refresh),
+        KIND_SWIPE_ITEM => Some(ViewKind::SwipeItem),
+        KIND_DATE_PICK => Some(ViewKind::DatePick),
+        KIND_TIME_PICK => Some(ViewKind::TimePick),
         _ => None,
     }
 }
@@ -975,6 +1120,27 @@ fn input_kind_from_u8(kind: ViewKind, v: u8) -> Result<InputKind, AstError> {
     }
 }
 
+/// TipPlacement → wire u8（0/1/2/3——编解码双侧单源）。
+fn tip_placement_to_u8(p: TipPlacement) -> u8 {
+    match p {
+        TipPlacement::Top => 0,
+        TipPlacement::Bottom => 1,
+        TipPlacement::Start => 2,
+        TipPlacement::End => 3,
+    }
+}
+
+/// wire u8 → TipPlacement（值域外 → UnknownProp——`kind` 入载荷供拒面定位）。
+fn tip_placement_from_u8(kind: ViewKind, v: u8) -> Result<TipPlacement, AstError> {
+    match v {
+        0 => Ok(TipPlacement::Top),
+        1 => Ok(TipPlacement::Bottom),
+        2 => Ok(TipPlacement::Start),
+        3 => Ok(TipPlacement::End),
+        _ => Err(AstError::UnknownProp { kind, got: v }),
+    }
+}
+
 /// 组件七件值域先验（builder begin 面——与 parse_props 流面同律，Grid
 /// 零维检同型先例；命令面 add() 在 lib.rs，Phase 1 未收编——见模块
 /// 注记）。kind×props 失配不在此检（既有非 Grid 面同状——流面
@@ -1052,6 +1218,47 @@ fn validate_p0_four(kind: ViewKind, props: &Props) -> Result<(), AstError> {
             if p.option_count > 0 && p.selected >= p.option_count =>
         {
             Err(AstError::BadValue { kind, got: p.selected })
+        }
+        _ => Ok(()),
+    }
+}
+
+/// P1 尾五件值域先验（builder begin 面——与 parse_props 流面同律，
+/// [`validate_phase1`]/[`validate_p1_nine`]/[`validate_p0_four`] 同型
+/// 第四批；检序与流面镜像：DatePick month → day → min>max → year 越界）。
+/// Tip 文本长度帽在 TextBuf 构造面（值面即拒 TextTooLong）、
+/// TipPlacement/refreshing/use_24h 枚举与 bool 子域在 wire 编解码面
+/// （域外 UnknownProp）——均不入此检。
+fn validate_p1_last_five(kind: ViewKind, props: &Props) -> Result<(), AstError> {
+    match (kind, props) {
+        (ViewKind::Refresh, Props::Refresh(p)) if p.offset > PERMILLE_MAX => {
+            Err(AstError::BadValue { kind, got: p.offset })
+        }
+        (ViewKind::SwipeItem, Props::SwipeItem(p)) if p.reveal_start > PERMILLE_MAX => {
+            Err(AstError::BadValue { kind, got: p.reveal_start })
+        }
+        (ViewKind::SwipeItem, Props::SwipeItem(p)) if p.reveal_end > PERMILLE_MAX => {
+            Err(AstError::BadValue { kind, got: p.reveal_end })
+        }
+        (ViewKind::DatePick, Props::DatePick(p)) if p.month == 0 || p.month > 12 => {
+            Err(AstError::BadValue { kind, got: p.month })
+        }
+        (ViewKind::DatePick, Props::DatePick(p)) if p.day == 0 || p.day > 31 => {
+            Err(AstError::BadValue { kind, got: p.day })
+        }
+        (ViewKind::DatePick, Props::DatePick(p)) if p.min_year > p.max_year => {
+            Err(AstError::BadValue { kind, got: p.min_year })
+        }
+        (ViewKind::DatePick, Props::DatePick(p))
+            if p.year < p.min_year || p.year > p.max_year =>
+        {
+            Err(AstError::BadValue { kind, got: p.year })
+        }
+        (ViewKind::TimePick, Props::TimePick(p)) if p.hour > 23 => {
+            Err(AstError::BadValue { kind, got: p.hour })
+        }
+        (ViewKind::TimePick, Props::TimePick(p)) if p.minute > 59 => {
+            Err(AstError::BadValue { kind, got: p.minute })
         }
         _ => Ok(()),
     }
@@ -1287,6 +1494,49 @@ pub(crate) fn encode_props(props: &Props, out: &mut [u8]) -> Result<usize, AstEr
         // Canvas 4B：paint_ops u32 LE（数据层只记数——op 流走绘制协议）
         Props::Canvas(p) => {
             c += put_u32le(&mut out[c..], p.paint_ops)?;
+        }
+        // Tip 变长 2..=66：len u8 + text + placement u8（Button label
+        // 同款内联文本律）
+        Props::Tip(p) => {
+            let bytes = p.text.as_bytes();
+            c += put_u8(&mut out[c..], bytes.len() as u8)?;
+            if out.len() < c + bytes.len() {
+                return Err(AstError::TooSmall { need: c + bytes.len(), got: out.len() });
+            }
+            out[c..c + bytes.len()].copy_from_slice(bytes);
+            c += bytes.len();
+            c += put_u8(&mut out[c..], tip_placement_to_u8(p.placement))?;
+        }
+        // Refresh 9B：refreshing u8 + offset·on_refresh 各 u32 LE
+        Props::Refresh(p) => {
+            c += put_u8(&mut out[c..], p.refreshing as u8)?;
+            c += put_u32le(&mut out[c..], p.offset)?;
+            c += put_u32le(&mut out[c..], p.on_refresh)?;
+        }
+        // SwipeItem 16B：action_count·reveal_start·reveal_end·on_action
+        // 各 u32 LE
+        Props::SwipeItem(p) => {
+            c += put_u32le(&mut out[c..], p.action_count)?;
+            c += put_u32le(&mut out[c..], p.reveal_start)?;
+            c += put_u32le(&mut out[c..], p.reveal_end)?;
+            c += put_u32le(&mut out[c..], p.on_action)?;
+        }
+        // DatePick 24B：year·month·day·min_year·max_year·on_change
+        // 各 u32 LE
+        Props::DatePick(p) => {
+            c += put_u32le(&mut out[c..], p.year)?;
+            c += put_u32le(&mut out[c..], p.month)?;
+            c += put_u32le(&mut out[c..], p.day)?;
+            c += put_u32le(&mut out[c..], p.min_year)?;
+            c += put_u32le(&mut out[c..], p.max_year)?;
+            c += put_u32le(&mut out[c..], p.on_change)?;
+        }
+        // TimePick 13B：hour·minute·on_change 各 u32 LE + use_24h u8
+        Props::TimePick(p) => {
+            c += put_u32le(&mut out[c..], p.hour)?;
+            c += put_u32le(&mut out[c..], p.minute)?;
+            c += put_u32le(&mut out[c..], p.on_change)?;
+            c += put_u8(&mut out[c..], p.use_24h as u8)?;
         }
     }
     Ok(c)
@@ -1675,6 +1925,116 @@ fn parse_props(kind: ViewKind, src: &[u8]) -> Result<(Props, usize), AstError> {
             need(4)?;
             Ok((Props::Canvas(CanvasProps { paint_ops: u32at(0) }), 4))
         }
+        // Tip 变长 2..=66：len(1) + text + placement(1)——超长
+        // TextTooLong、placement 域外 UnknownProp（截断优先于语义检，
+        // Button 同律）
+        ViewKind::Tip => {
+            need(1)?;
+            let tlen = src[0] as usize;
+            if tlen > crate::TEXT_INLINE {
+                return Err(AstError::TextTooLong { len: tlen });
+            }
+            need(2 + tlen)?;
+            let placement = tip_placement_from_u8(kind, src[1 + tlen])?;
+            let text = TextBuf::new(&src[1..1 + tlen])
+                .map_err(|_| AstError::TextTooLong { len: tlen })?;
+            Ok((Props::Tip(TipProps { text, placement }), 2 + tlen))
+        }
+        // Refresh 9B：refreshing ∈ {0,1}（域外 UnknownProp）+
+        // offset·on_refresh；offset 越千分域 → BadValue（截断优先——
+        // need(9) 先，检序与 validate_p1_last_five 镜像）
+        ViewKind::Refresh => {
+            need(9)?;
+            let refreshing = match src[0] {
+                0 => false,
+                1 => true,
+                v => return Err(AstError::UnknownProp { kind, got: v }),
+            };
+            let (offset, on_refresh) = (u32at(1), u32at(5));
+            if offset > PERMILLE_MAX {
+                return Err(AstError::BadValue { kind, got: offset });
+            }
+            Ok((
+                Props::Refresh(RefreshProps { refreshing, offset, on_refresh }),
+                9,
+            ))
+        }
+        // SwipeItem 16B：action_count·reveal_start·reveal_end·on_action
+        // 各 u32 LE；reveal 任一端越千分域 → BadValue（两端独立无序——
+        // 与 Sbar thumb 的 start≤end 区间律不同源）
+        ViewKind::SwipeItem => {
+            need(16)?;
+            let (action_count, reveal_start, reveal_end, on_action) =
+                (u32at(0), u32at(4), u32at(8), u32at(12));
+            if reveal_start > PERMILLE_MAX {
+                return Err(AstError::BadValue { kind, got: reveal_start });
+            }
+            if reveal_end > PERMILLE_MAX {
+                return Err(AstError::BadValue { kind, got: reveal_end });
+            }
+            Ok((
+                Props::SwipeItem(SwipeItemProps {
+                    action_count,
+                    reveal_start,
+                    reveal_end,
+                    on_action,
+                }),
+                16,
+            ))
+        }
+        // DatePick 24B：结构域检在定长域读完后（截断优先）；检序与
+        // validate_p1_last_five 镜像——month 越域 → day 越域 → min>max →
+        // year 越界（day 不做月长感知——2 月 31 结构合法消费面钳）
+        ViewKind::DatePick => {
+            need(24)?;
+            let (year, month, day, min_year, max_year, on_change) =
+                (u32at(0), u32at(4), u32at(8), u32at(12), u32at(16), u32at(20));
+            if month == 0 || month > 12 {
+                return Err(AstError::BadValue { kind, got: month });
+            }
+            if day == 0 || day > 31 {
+                return Err(AstError::BadValue { kind, got: day });
+            }
+            if min_year > max_year {
+                return Err(AstError::BadValue { kind, got: min_year });
+            }
+            if year < min_year || year > max_year {
+                return Err(AstError::BadValue { kind, got: year });
+            }
+            Ok((
+                Props::DatePick(DatePickProps {
+                    year,
+                    month,
+                    day,
+                    min_year,
+                    max_year,
+                    on_change,
+                }),
+                24,
+            ))
+        }
+        // TimePick 13B：hour·minute·on_change 各 u32 LE + use_24h ∈ {0,1}
+        //（域外 UnknownProp）；hour > 23 / minute > 59 → BadValue（检序
+        // 与 validate_p1_last_five 镜像）
+        ViewKind::TimePick => {
+            need(13)?;
+            let (hour, minute, on_change) = (u32at(0), u32at(4), u32at(8));
+            if hour > 23 {
+                return Err(AstError::BadValue { kind, got: hour });
+            }
+            if minute > 59 {
+                return Err(AstError::BadValue { kind, got: minute });
+            }
+            let use_24h = match src[12] {
+                0 => false,
+                1 => true,
+                v => return Err(AstError::UnknownProp { kind, got: v }),
+            };
+            Ok((
+                Props::TimePick(TimePickProps { hour, minute, use_24h, on_change }),
+                13,
+            ))
+        }
     }
 }
 
@@ -1979,7 +2339,8 @@ fn emit_node(
 /// a11y 块载荷按槽序写入，满帽 TooSmall loud；调用方随 reset 清表）。
 /// 成功后 `*root_out` = 根槽；尾随字节 / 叶带子（Rect/Text/Image/Icon/
 /// Button/Toggle/Slider/Progress + P1 八叶 + P0 尾四叶
-/// Select/Input/Edit/Canvas）/ Root 为子 / 流首非 Root /
+/// Select/Input/Edit/Canvas + P1 尾四叶 Tip/SwipeItem/DatePick/TimePick）/
+/// Root 为子 / 流首非 Root /
 /// Grid 零维·超格 全 loud 拒。
 pub(crate) fn apply_tree(
     src: &[u8],
@@ -2057,9 +2418,13 @@ fn build_node(
             | ViewKind::Input
             | ViewKind::Edit
             | ViewKind::Canvas
+            | ViewKind::Tip
+            | ViewKind::SwipeItem
+            | ViewKind::DatePick
+            | ViewKind::TimePick
     ) && cc > 0
     {
-        return Err(AstError::BadParent); // 叶子带子拒面（Image/Icon 入列——D24；组件叶同列——Phase 1 + P1 + P0 尾四批）
+        return Err(AstError::BadParent); // 叶子带子拒面（Image/Icon 入列——D24；组件叶同列——Phase 1 + P1 + P0 尾四 + P1 尾五批）
     }
     // Grid 适配检：cols×rows < 子数 → GridNotFit（超格不容忍静默截断；
     // 零维已在 parse_props 拒——此处 props 必带正维）
@@ -2148,7 +2513,8 @@ const BLK_ALIGN: u8 = 4;
 /// 由 end 回填（占位-补数——与 apply_tree 读位自洽）。首 begin 必须 Root、
 /// Root/叶（Rect/Text/Image/Icon/Button/Toggle/Slider/Progress + P1 八叶
 /// Spacer/Divider/Check/Radio/Step/Seg/Badge/Sbar + P0 尾四叶
-/// Select/Input/Edit/Canvas）下不可再
+/// Select/Input/Edit/Canvas + P1 尾四叶 Tip/SwipeItem/DatePick/TimePick）
+/// 下不可再
 /// begin（BadParent）；深度帽
 /// DESC_DEPTH_MAX、缓冲帽 DESC_MAX、子数帽 255——全 TooSmall loud。
 ///
@@ -2222,11 +2588,12 @@ impl DescBuilder {
             _ => (0, 0),
         };
         // 组件值域先验（builder 生产面与 parse 流面同律——validate_phase1
-        // + P1 批 validate_p1_nine + P0 尾四件批 validate_p0_four，Grid
-        // 双面先例）
+        // + P1 批 validate_p1_nine + P0 尾四件批 validate_p0_four + P1 尾
+        // 五件批 validate_p1_last_five，Grid 双面先例）
         validate_phase1(kind, props)?;
         validate_p1_nine(kind, props)?;
         validate_p0_four(kind, props)?;
+        validate_p1_last_five(kind, props)?;
         if self.depth > 0 {
             let parent_kind = self.frames[self.depth - 1].kind;
             if kind == ViewKind::Root {
@@ -2254,8 +2621,12 @@ impl DescBuilder {
                     | ViewKind::Input
                     | ViewKind::Edit
                     | ViewKind::Canvas
+                    | ViewKind::Tip
+                    | ViewKind::SwipeItem
+                    | ViewKind::DatePick
+                    | ViewKind::TimePick
             ) {
-                return Err(AstError::BadParent); // 叶子不带子（Image/Icon 入列——D24；组件叶同列——Phase 1 + P1 + P0 尾四批）
+                return Err(AstError::BadParent); // 叶子不带子（Image/Icon 入列——D24；组件叶同列——Phase 1 + P1 + P0 尾四 + P1 尾五批）
             }
             // Grid 父适配检：格满再开子 → GridNotFit（payload = 被拒子序号）
             if parent_kind == ViewKind::Grid {

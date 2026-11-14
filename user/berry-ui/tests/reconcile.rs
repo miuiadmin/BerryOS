@@ -221,10 +221,11 @@ fn rebuilt_tree_semantically_equivalent() {
 #[test]
 fn apply_reject_unknown_kind_and_flags() {
     let mut ui = Ui::<32>::new(100, 100);
-    // 未知 kind 字节（P0 尾四件后值域 0..=28：25..=28 = Select/Input/
-    // Edit/Canvas——add-only 追加，旧绊线 25 让位新域界 29）
+    // 未知 kind 字节（P1 尾五件后值域 0..=33：29..=33 = Tip/Refresh/
+    // SwipeItem/DatePick/TimePick——add-only 追加，旧绊线 29 让位新域
+    // 界 34）
     assert_eq!(ui.apply_desc(&[0x99, 0]), Err(AstError::UnknownKind { got: 0x99 }));
-    assert_eq!(ui.apply_desc(&[29, 0]), Err(AstError::UnknownKind { got: 29 }));
+    assert_eq!(ui.apply_desc(&[34, 0]), Err(AstError::UnknownKind { got: 34 }));
     // flags 未知位绊线（GUI-6 D5 改钉）：bit1/2/3 = SIZE/A11Y/ALIGN 合法化
     // 后，未知位域起点 = bit4（0x10 拒；0x80 拒保）；bit1 本体转
     // HAS_SIZE×Root 拒（§8.2 合法域表——UnknownProp 载 kind×块失配）。

@@ -347,7 +347,16 @@ fn intrinsic(
         | Props::Select(_)
         | Props::Input(_)
         | Props::Edit(_)
-        | Props::Canvas(_) => (0, 0),
+        | Props::Canvas(_)
+        // P1 尾五件（占位同前三批）：Tip 的内在应为文本度量 + 留白、
+        // Refresh 的内在应为子聚合（包裹容器）、SwipeItem/DatePick/
+        // TimePick 的内在应为行高/滚轮高——全挂 Phase 2 布局刀，本层
+        // 0×0 占位（`_` 臂全幅叠放与半聚合必失配——「不半实现」同源）。
+        | Props::Tip(_)
+        | Props::Refresh(_)
+        | Props::SwipeItem(_)
+        | Props::DatePick(_)
+        | Props::TimePick(_) => (0, 0),
     }
 }
 
@@ -498,7 +507,14 @@ fn final_size(n: &Node, avail_w: i32, avail_h: i32) -> (i32, i32) {
         | Props::Select(_)
         | Props::Input(_)
         | Props::Edit(_)
-        | Props::Canvas(_) => (avail_w, avail_h),
+        | Props::Canvas(_)
+        // P1 尾五件（占位同前三批）：随父填充；Refresh 的子分配由 `_`
+        // 臂天然合义（包裹容器 = Root 型全幅给子）；SIZE 块同拒。
+        | Props::Tip(_)
+        | Props::Refresh(_)
+        | Props::SwipeItem(_)
+        | Props::DatePick(_)
+        | Props::TimePick(_) => (avail_w, avail_h),
     }
 }
 
