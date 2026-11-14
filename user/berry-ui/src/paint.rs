@@ -109,6 +109,29 @@ pub(crate) fn paint<'a>(
     let mut rest: &'a mut [GlyphPos] = scratch;
 
     for d in dmgs[..n_dmgs].iter() {
+        // C2（raster 审计：横滑 17-20ms 主因）：多矩形 damage 帧为每个
+        // damage 矩形段加 PushClip{d}/PopClip 括号。无括号时每段命令
+        // 在 submit 期只被 pass dirty（= damage 包络）裁剪——跨全部矩
+        // 形可见的叶（全屏壁纸）每段各画一遍整包络 = 矩形数 × 包络；
+        // 有括号后每段只画自己的带 → Σ带。像素不变性：段内命令序与
+        // 几何零变化，cull 以 d 收口本就只发 d 相交叶——括号只是把
+        // submit 期裁剪从包络收紧到 d（不透明覆盖写 = 末写者胜，两径
+        // 同值）。单矩形段（含 FULL）不加括号——包络 == d，括号是
+        // 纯开销；命令预算容不下 Push+Pop 两槽时同样不括（该段回退
+        // 包络裁剪的旧行为——正确性同旧，仅慢）。
+        let clip_bracket = n_dmgs > 1 && enc.len() + 2 <= berry_gfx::cmd::MAX_CMDS;
+        if clip_bracket {
+            if enc
+                .push_clip(GfxRect::new(d.x, d.y, d.w, d.h))
+                .is_ok()
+            {
+                rep.cmds += 1;
+            }
+        }
+        // 括号已占一栈层：cull 走查的嵌套帽同步减一（Queue::submit 侧
+        // CLIP_STACK_MAX 执法恒不越——16 层 ViewKind::Clip 嵌套 + 括号
+        // 的 17 层会在 submit 期 loud 拒）。
+        let clip_floor = usize::from(clip_bracket);
         let mut covered: RectSet<COVERED_CAP> = RectSet::new();
         // C1：初始有效裁剪 = viewport（逆序发射时按 Push/Pop 恢复）。
         let mut clip_stack = [vp_rect; berry_gfx::queue::CLIP_STACK_MAX];
@@ -121,7 +144,7 @@ pub(crate) fn paint<'a>(
         let culled_before = rep.culled;
         cull_walk(
             nodes, root, 0, 0, d, vp_rect, &mut covered, &mut order, &mut bnds, &mut n_order,
-            &mut rep.culled, &mut overflow, 0, 0,
+            &mut rep.culled, &mut overflow, clip_floor, 0,
         );
         if overflow {
             // 病态巨树回退（>ORDER_CAP 可见叶子）：本 damage 矩形整段重走
@@ -133,14 +156,15 @@ pub(crate) fn paint<'a>(
             rep.culled = culled_before;
             emit_walk_all(
                 nodes, root, 0, 0, d, &vp_rect, vp_rect, icons, _fonts, tm, wrap,
-                &mut rest, enc, &mut rep, 0, 0, 0,
+                &mut rest, enc, &mut rep, clip_floor, clip_floor, 0,
             );
         } else {
             // 发射 = 收集序之逆（前序 = 画家算法背到前）。Clip 哨兵在
             // 逆序边界压/弹栈；当前有效 port 同步传给 drawn_px 统计。
             // 命令预算与 Clip 栈配平：每个已打开 Clip 都必须为 Pop 预留
-            // 一槽。若 Push 无法预留，则压入 suppress 栈跳过其整个子树；
-            // 叶子满帽只截尾，绝不产出 dangling Push。
+            // 一槽（clip_floor = damage 括号的那一槽）。若 Push 无法
+            // 预留，则压入 suppress 栈跳过其整个子树；叶子满帽只截尾，
+            // 绝不产出 dangling Push。
             let mut suppress_depth = 0usize;
             for k in (0..n_order).rev() {
                 match order[k] {
@@ -149,7 +173,7 @@ pub(crate) fn paint<'a>(
                             suppress_depth += 1;
                             continue;
                         }
-                        if enc.len() + clip_depth + 2 <= berry_gfx::cmd::MAX_CMDS {
+                        if enc.len() + clip_depth + clip_floor + 2 <= berry_gfx::cmd::MAX_CMDS {
                             let rect = bnds[k];
                             clip_stack[clip_depth] = current_clip;
                             clip_depth += 1;
@@ -186,7 +210,7 @@ pub(crate) fn paint<'a>(
                             rep.culled += 1;
                             continue;
                         }
-                        if enc.len() + clip_depth >= berry_gfx::cmd::MAX_CMDS {
+                        if enc.len() + clip_depth + clip_floor >= berry_gfx::cmd::MAX_CMDS {
                             // 命令帽截尾：绘制足迹仍按可见几何记账（与
                             // emit_node 录入失败不减 drawn_px 的旧契约一致）。
                             let visible = bnds[k].intersect(&vp_rect).intersect(&current_clip);
@@ -200,6 +224,13 @@ pub(crate) fn paint<'a>(
                         );
                     }
                 }
+            }
+        }
+        // damage 括号弹栈（Push 期已为 Pop 预算配平——上述两处帽检的
+        // clip_floor 即本槽；is_ok 防御面与 Push 同口径）。
+        if clip_bracket {
+            if enc.pop_clip().is_ok() {
+                rep.cmds += 1;
             }
         }
     }

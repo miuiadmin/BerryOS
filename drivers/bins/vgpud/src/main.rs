@@ -26,7 +26,8 @@ use berry_libc::io::{gift2_h, gift3_h, self_vmar_h};
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_event_create,
     berry_handle_close, berry_handle_duplicate, berry_object_signal, berry_object_wait_many,
-    berry_object_wait_one, berry_thread_sleep, berry_vmo_commit, berry_vmo_create,
+    berry_object_wait_one, berry_thread_sleep, berry_vmo_commit,
+    berry_vmo_create,
     berry_vmar_map, berry_vmo_get_phys, berry_vmo_get_size, berry_vmo_read,
     berry_vmo_write, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BUSY, BERRY_ERR_TIMEDOUT,
     CLOCK_MONOTONIC, RIGHT_READ, RIGHT_WRITE, RIGHT_SIGNAL, SIGNAL_READABLE,
@@ -49,9 +50,17 @@ const FRAME_VMO_LEN: u64 = 4096;
 const RESOURCE_IDS: [u32; 3] = [1, 2, 3];
 const SCANOUT_ID: u32 = 0;
 const BACKING_POOL: usize = RESOURCE_IDS.len();
+/// wait_used 单命令总超时：设备真卡死时的 fail-loud 上限（10s）。
 const POLL_CAP_NS: u64 = 10_000_000_000;
+/// 睡眠臂单步名义 100us；内核 10Hz slice 下实际被量化为 ~100ms/步，
+/// 只作病理兜底——正常命令绝不能落到此臂（60fps 审计 137ms DMA 成因）。
 const POLL_STEP_NS: u64 = 100_000;
-const POLL_SPIN_NS: u64 = 100_000;
+/// 自旋臂上限 2ms。依据：1080×1920 全幅 2.07MPix/8.3MB 实测 wire
+/// ~0.15ms；最坏批量 BATCH_MAX=8 条串行 ≈1.2ms；2ms ≈13× 单幅 wire，
+/// 覆盖 TCG 抖动。自旋每轮含 vmo_read+clock 两次 syscall（是 poll 不
+/// 是纯空转），故不升到数十 ms 级烧 CPU；超窗才入睡眠臂（≈100ms/步，
+/// 命中即在遥测里显形为异常长尾）。
+const POLL_SPIN_NS: u64 = 2_000_000;
 const RESET_CAP_NS: u64 = 1_000_000_000;
 
 static mut RING: [u8; 4096] = [0; 4096];
@@ -521,8 +530,10 @@ fn wait_used(d: &Dma, expect: u16) {
             println!("vgpu: ctrlq timeout idx={}", expect);
             trap();
         }
-        // QEMU 完成常见在数十微秒级：先短自旋避免每命令固定 1ms 睡眠；
-        // 超时仍进入 100us 睡眠臂，长尾不占满 CPU。
+        // 先在自旋臂内 poll 到完成：窗口必须罩住 1080p 全幅 DMA（实测
+        // wire ~0.15ms，依据见 POLL_SPIN_NS）。每轮 = vmo_read+clock 两次
+        // syscall，完成即返、不白等；只有真超窗（设备病理慢）才落睡眠臂
+        // ——那里被 10Hz slice 量化为 ~100ms/步，命中即遥测可见异常。
         if t < started + POLL_SPIN_NS {
             core::hint::spin_loop();
             continue;
@@ -816,13 +827,15 @@ impl PresentSrv {
         );
     }
 
+    /// 返回 (TRANSFER 批量等待耗时, FLUSH 等待耗时)，供 VGPUDMA 遥测
+    /// 拆分归因；submit 同步首帧路径不消费，忽略即可。
     fn transfer_and_flush(
         &mut self,
         resource: u32,
         rects: &[gp::Rect],
         rect_n: usize,
         flush: gp::Rect,
-    ) {
+    ) -> (u64, u64) {
         // Select only when this flip is about to transfer: an early SUBMIT must
         // not point scanout at a back resource before the older front flip runs.
         self.select_resource(resource);
@@ -849,10 +862,15 @@ impl PresentSrv {
                 trap();
             }
         }
+        let mut xfer_ns = 0u64;
         if rect_n != 0 {
+            let t0 = now();
             ctrl_batch_wait_nodata(&self.dma, self.regs, rect_n);
+            xfer_ns = now().saturating_sub(t0);
         }
+        let mut flush_ns = 0u64;
         if rect_n != 0 {
+            let t0 = now();
             let rect = vio::gpu::GpuRect {
                 x: flush.x,
                 y: flush.y,
@@ -862,7 +880,9 @@ impl PresentSrv {
             ctrl_simple(&self.dma, self.regs, vio::gpu::GPU_RESOURCE_FLUSH_SZ, |b| {
                 vio::gpu::put_resource_flush(b, 0, resource, rect).is_some()
             });
+            flush_ns = now().saturating_sub(t0);
         }
+        (xfer_ns, flush_ns)
     }
 
     fn pending_token(&self, token: u32) -> bool {
@@ -918,11 +938,18 @@ impl PresentSrv {
         };
         let flip = self.pending[index].take().expect("checked");
         let started = now();
-        self.transfer_and_flush(flip.resource, &flip.rects, flip.rect_n, flip.flush);
+        let (xfer_ns, flush_ns) =
+            self.transfer_and_flush(flip.resource, &flip.rects, flip.rect_n, flip.flush);
         let dma_elapsed = now().saturating_sub(started);
         self.perf_dma_ns = self.perf_dma_ns.saturating_add(dma_elapsed);
         self.perf_dma_last_ns = dma_elapsed;
-        println!("VGPUDMA ok token={} us={}", flip.token, dma_elapsed / 1_000);
+        println!(
+            "VGPUDMA ok token={} us={} xfer_us={} flush_us={}",
+            flip.token,
+            dma_elapsed / 1_000,
+            xfer_ns / 1_000,
+            flush_ns / 1_000
+        );
         let t = now();
         self.present_seq = self.present_seq.wrapping_add(1);
         self.tokens[flip.token as usize % TOKEN_RING] = (flip.token, t);

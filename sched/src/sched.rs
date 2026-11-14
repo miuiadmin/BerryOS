@@ -1880,12 +1880,9 @@ pub fn block_current(obj: usize, signals: u64, deadline_vct: u64) -> WakeReason 
             None => addr_of_mut!(IDLE_TASK),
         };
         // 被选者置 Running 已入 RQ 窗（IDLE 臂恒 Running 同值幂等退役）。
-        // 授片即重编（`调度器设计.md` §4.1 绝对截止时间纪律；同
-        // switch_away_forever：切去 idle 不 arm——idle_loop 自管 CNTV）。
+        // 授片记账先落；CNTV 重编必须在 SQ 窗闭后。
         if next_ptr != addr_of_mut!(IDLE_TASK) {
             (*next_ptr).slice_left = hal::timer::slice_cycles();
-            // SAFETY: IRQ 已屏蔽；写 CNTV 系统寄存器；EL1。
-            hal::timer::arm_slice();
         }
         // 4-3b：新睡眠者已入队、状态定型——PI 全图重推（写 pi/eff 字段，不碰
         // 链接；屏蔽窗内零分配）后才切走。
@@ -1896,6 +1893,20 @@ pub fn block_current(obj: usize, signals: u64, deadline_vct: u64) -> WakeReason 
         // 分支犯此序，本处即修。
         note_sleepq_changed();
         sq_unlock(sq_phys); // SQ 窗闭（CURRENT 翻转前——窗主上下文闭窗）
+        if next_ptr != addr_of_mut!(IDLE_TASK) {
+            // The just-blocked task's own deadline is already known without
+            // re-locking SLEEPQ. If it precedes the next 100ms slice, arm it
+            // exactly; this covers GUI 16.7ms frame waits and inputd's 1ms
+            // poll step while another service remains runnable.
+            let slice_end = hal::timer::cntvct() + hal::timer::slice_cycles();
+            if deadline_vct < slice_end {
+                // SAFETY: IRQ still masked; CNTV system registers are EL1.
+                hal::timer::arm_at(deadline_vct);
+            } else {
+                // SAFETY: IRQ still masked; CNTV system registers are EL1.
+                hal::timer::arm_slice();
+            }
+        }
         set_current(next_ptr);
         activate_if_changed(cur, next_ptr);
         note_switch(cur, next_ptr, SwitchKind::Block);
@@ -2383,23 +2394,28 @@ pub fn idle_loop() -> ! {
                 }
             }
         } else {
-            // 单核/未参与形态：零漂移（原样）。
+            // 单核/未参与形态：零漂移，但睡眠 deadline 精确武装。
             // Plan B：idle 是天然回收点（退出者已不可能在任何执行上下文）——
             // drop Task Box + 内核栈，纯释放零分配。
             reap_drain();
             // SAFETY: IRQ 已屏蔽；本核 runqueue/SLEEPQ 顺序访问。
-            let empty = unsafe { rq().is_empty() && sleepq().len.get() == 0 };
-            if empty {
-                // tickless：空闲不 arm、屏蔽 CNTV，wfi 睡。
-                // SAFETY: 写 CNTV_CTL；EL1。
-                unsafe { hal::timer::mask() };
+            let rq_empty = unsafe { rq().is_empty() };
+            if rq_empty {
+                match nearest_deadline() {
+                    // No runnable task but sleepers exist: arm the earliest
+                    // absolute deadline. A full 100ms slice here quantizes every
+                    // sub-slice wait (notably the 16.7ms GUI frame clock) to the
+                    // next scheduler tick.
+                    Some(d) => unsafe { hal::timer::arm_at(d) },
+                    // Deep idle: no runnable task and no sleeper.
+                    None => unsafe { hal::timer::mask() },
+                }
                 hal::smp::note_park_cpu(); // S-5a per-CPU park 统计（本核独占写）
-                hal::enable_irq(); // 允许 IRQ 唤醒 wfi（Step 4 无源 → 永睡 = 干净 halt）
+                hal::enable_irq(); // 允许 IRQ 唤醒 wfi
                 hal::wfi();
-                // 被唤醒（Step 5+）→ 回 loop 顶重检 runqueue。
+                // 被唤醒 → 回 loop 顶重检 runqueue / SLEEPQ。
             } else {
-                // 有活（runnable 或睡眠者）：武装一个时间片，让给 runnable 任务或
-                // 空 tick 扫超时（Step 6 起由 IRQ 驱动抢占）。
+                // Runnable work keeps periodic preemption; arm a full slice.
                 // SAFETY: 写 CNTV 系统寄存器；EL1。
                 unsafe { hal::timer::arm_slice() };
                 hal::enable_irq();

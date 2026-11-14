@@ -22,7 +22,7 @@ GPU1 已让 1080×1920 产品桌面经真实 virtio-gpu present 后端运行，�
 
 ## 结果
 
-现行规格与验收细节见 [BerryMacEmulator-GPU2-v1.2.md](../../docs/BerryMacEmulator-GPU2-v1.2.md)。本计划完成于 GPU2 1.0 时点，保留为历史执行记录；后续 Mac Metal/shm-ring 呈现另开计划。
+现行规格与验收细节见 [BerryMacEmulator-GPU2-v1.3.md](../../docs/BerryMacEmulator-GPU2-v1.3.md)。本计划完成于 GPU2 1.0 时点，保留为历史执行记录；后续 Mac Metal/shm-ring 呈现另开计划。
 
 ## 未完成事项
 

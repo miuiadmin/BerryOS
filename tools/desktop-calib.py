@@ -9,7 +9,15 @@ VGPUPERF 行 submits=N ↔ VGPUDMA token=N；perf_lines 取手势窗口本身而
 日志尾行。基线（submit 序号 + DMA token）在注入前用同一份 serial 快照采集。
 frames 不足/DMA 未排水只如实输出字段供上层 gate，不在此默认判死。
 绝对延迟只写入本机报告，不做跨机器 CI 阈值。
-"""
+
+横滑 move 间隔由 --swipe-step-ms 控制（默认 12ms，历史 45ms；move 数按
+~225ms 总跨度换算，仍逐 move 发真实 QMP 事件），为 60Hz 评估提供足够内
+容态。帧间隔口径 = host 首次观察到该 submit 的 VGPUPERF 行的时刻差，串
+口轮询量化 SWIPE_POLL_INTERVAL_S（历史 20ms 轮询无法分辨 16.7ms 帧距，
+报告以 obs_quantum_ms 显式标注）；不与 VGPUDMA 完成行、ACK 或行内
+dma_us/last_us 耗时字段混淆。另输出 median/p95/max frame gap、等效
+fps、240ms snap 理论/实际帧数与 1s 等效 fps；--fps-target（默认 60）
+只产出到期达标布尔 launcher_swipe_fps_target_met，不作失败条件。"""
 from __future__ import annotations
 
 import argparse
@@ -43,7 +51,18 @@ class ArmResult:
     launcher_swipe_dma_us_median: float
     launcher_swipe_first_frame_s: float | None
     launcher_swipe_dma_drained: bool
+    launcher_swipe_frame_gap_ms_median: float | None
+    launcher_swipe_frame_gap_ms_p95: float | None
+    launcher_swipe_frame_gap_ms_max: float | None
+    launcher_swipe_fps_equiv: float | None
+    launcher_swipe_snap240_theoretical_frames: float
+    launcher_swipe_snap240_actual_frames: int
+    launcher_swipe_fps_1s_equiv: float | None
+    launcher_swipe_fps_target_met: bool
     launcher_swipe_runs: list[dict]
+    swipe_step_ms: float
+    swipe_obs_quantum_ms: float
+    fps_target: float
     vgpu_ok: bool
     vgpuhdi_marker: bool
     kernel_panic: bool
@@ -99,6 +118,36 @@ def text_of(path: Path) -> str:
         return path.read_text(errors="ignore")
     except FileNotFoundError:
         return ""
+
+
+class SerialTail:
+    """增量尾读 QEMU serial 文件：只取新完成行，支撑高频轮询不重读全量。"""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._file = None
+        self._pending = b""
+
+    def read_new_lines(self) -> str:
+        """返回自上次调用以来的完整新行（\\n 连接；半行留待下次）。"""
+        if self._file is None:
+            try:
+                self._file = self._path.open("rb")
+            except FileNotFoundError:
+                return ""
+        data = self._file.read()
+        if not data:
+            return ""
+        self._pending += data
+        *lines, self._pending = self._pending.split(b"\n")
+        if not lines:
+            return ""
+        return b"\n".join(lines).decode("utf-8", errors="replace")
+
+    def close(self) -> None:
+        if self._file is not None:
+            self._file.close()
+            self._file = None
 
 
 @dataclass(frozen=True)
@@ -208,6 +257,53 @@ def median(values: list[float]) -> float:
     return (ordered[mid - 1] + ordered[mid]) / 2.0
 
 
+def percentile(values: list[float], q: float) -> float:
+    """线性插值分位（numpy 默认口径）；空表返回 0.0。"""
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    pos = q * (len(ordered) - 1)
+    lo = int(pos)
+    hi = min(lo + 1, len(ordered) - 1)
+    frac = pos - lo
+    return ordered[lo] + (ordered[hi] - ordered[lo]) * frac
+
+
+def snap_window_frames(arrivals_s: list[float], window_s: float) -> int:
+    """最优滑窗帧数：任意 [t, t+window_s] 内的 arrival 数（含窗口首帧）。
+
+    arrivals 需单调不减（轮询到达时刻天然满足）。对轮询量化不敏感：
+    同一 poll 内多帧共享同一时刻仍各计 1 帧，适合 60Hz 达标判读。
+    """
+    best = 0
+    lo = 0
+    for hi, t in enumerate(arrivals_s):
+        while t - arrivals_s[lo] > window_s:
+            lo += 1
+        count = hi - lo + 1
+        if count > best:
+            best = count
+    return best
+
+
+def snap240_theoretical_frames(fps_target: float) -> float:
+    """240ms snap 窗的理论帧数：60Hz → 14.4（窗口含首帧，理想排布 ≈15）。"""
+    return round(fps_target * SNAP_WINDOW_MS / 1000.0, 1)
+
+
+def fps_target_met(snap_actuals: list[int], fps_target: float) -> bool:
+    """达标布尔：各 run snap240 实际帧数的中位数 ≥ 理论值取整。
+
+    只作输出，不影响退出码；无 run 时 False。取整（而非 ceil）以吸收
+    ~1 帧的轮询量化损失：60Hz 理想 15/14.4→阈值 14，50Hz 恒 13 仍拒。
+    """
+    if not snap_actuals:
+        return False
+    return median(snap_actuals) >= round(fps_target * SNAP_WINDOW_MS / 1000.0)
+
+
 def quick_click(qmp, x: int, y: int, w: int, h: int) -> float:
     """三批稳定点击；计时从 UP 命令被 QMP 接收后开始，不含宿主固定睡眠。"""
     ax = max(0, min(32767, round(x * 32768 / w)))
@@ -242,38 +338,88 @@ def linux_key_pulse(qmp, code: int) -> None:
             time.sleep(0.12)
 
 
-def quick_swipe(qmp, x0: int, y0: int, x1: int, y1: int, w: int, h: int) -> float:
-    """注入一次真实横滑；计时从首个 ABS 事件被 QMP 接收后开始。"""
+# 横滑手势与帧率评估常量。历史口径 = 5 move × 45ms；--swipe-step-ms 只改
+# 密度不改总跨度（~225ms），45ms 步长仍精确还原 5 move 旧行为。
+SWIPE_GESTURE_SPAN_S = 0.225
+SWIPE_STEP_MS_DEFAULT = 12.0
+SNAP_WINDOW_MS = 240.0
+FPS_TARGET_DEFAULT = 60.0
+# 横滑窗口的串口轮询间隔：帧间隔（submit arrival 差）以它为量化粒度并
+# 写入 obs_quantum_ms。历史 20ms 无法分辨 16.7ms（60Hz）帧距，收紧到
+# 2ms 增量尾读；实际粒度还含 sleep 精度与读取耗时。
+SWIPE_POLL_INTERVAL_S = 0.002
+
+
+def swipe_move_count(step_s: float) -> int:
+    """步长 → move 数：总跨度 ≈225ms 恒定（45ms→5，12ms→19），下限 2。"""
+    return max(2, round(SWIPE_GESTURE_SPAN_S / step_s))
+
+
+@dataclass
+class SwipeInjection:
+    """Host injection timing truth for one real QMP swipe."""
+
+    start: float
+    qmp_ms: list[float]
+    interval_ms: list[float]
+    target_step_ms: float
+
+
+def quick_swipe(
+    qmp, x0: int, y0: int, x1: int, y1: int, w: int, h: int,
+    step_s: float = 0.045,
+) -> SwipeInjection:
+    """注入一次真实横滑；计时从首个 ABS 事件被 QMP 接收后开始。
+
+    逐 move 发真实 input-send-event（不合成、不批处理）。move 间隔 =
+    step_s 宿主 sleep + QMP 往返开销，非硬实时注入器；qmp_ms/interval_ms
+    保留宿主注入真实节奏，防止把注入器瓶颈误归因给 guest。
+    """
     def ax(x: int) -> int:
         return max(0, min(32767, round(x * 32768 / w)))
 
     def ay(y: int) -> int:
         return max(0, min(32767, round(y * 32768 / h)))
 
+    def send(events: list[dict], last_start: float | None = None) -> float:
+        t0 = time.monotonic()
+        qmp.execute("input-send-event", {"events": events})
+        t1 = time.monotonic()
+        if last_start is not None:
+            injection.interval_ms.append(round((t0 - last_start) * 1000.0, 3))
+        injection.qmp_ms.append(round((t1 - t0) * 1000.0, 3))
+        return t0
+
+    moves = swipe_move_count(step_s)
+    injection = SwipeInjection(
+        start=0.0, qmp_ms=[], interval_ms=[], target_step_ms=step_s * 1000.0
+    )
     start = time.monotonic()
-    qmp.execute("input-send-event", {"events": [
+    injection.start = start
+    _ = send([
         {"type": "abs", "data": {"axis": "x", "value": ax(x0)}},
         {"type": "abs", "data": {"axis": "y", "value": ay(y0)}},
-    ]})
+    ])
     time.sleep(0.08)
-    qmp.execute("input-send-event", {"events": [
+    _ = send([
         {"type": "btn", "data": {"down": True, "button": "left"}},
         {"type": "abs", "data": {"axis": "x", "value": ax(x0)}},
         {"type": "abs", "data": {"axis": "y", "value": ay(y0)}},
-    ]})
-    for i in range(1, 6):
-        frac = i / 5
+    ])
+    last_start = injection.start
+    for i in range(1, moves + 1):
+        frac = i / moves
         x = round(x0 + (x1 - x0) * frac)
-        time.sleep(0.045)
-        qmp.execute("input-send-event", {"events": [
+        time.sleep(step_s)
+        last_start = send([
             {"type": "abs", "data": {"axis": "x", "value": ax(x)}},
             {"type": "abs", "data": {"axis": "y", "value": ay(y0)}},
-        ]})
+        ], last_start)
     time.sleep(0.08)
-    qmp.execute("input-send-event", {"events": [
+    send([
         {"type": "btn", "data": {"down": False, "button": "left"}},
-    ]})
-    return start
+    ])
+    return injection
 
 
 @dataclass
@@ -282,6 +428,11 @@ class SwipeRun:
 
     duration_s: float
     first_frame_s: float
+    input_target_step_ms: float
+    input_qmp_ms_median: float
+    input_qmp_ms_p95: float
+    input_interval_ms_median: float
+    input_interval_ms_p95: float
     frames: int
     submit_from: int
     submit_to: int
@@ -304,6 +455,14 @@ class SwipeRun:
     dma_drained: bool
     dma_us_per_mpixel: float | None
     frame_gaps_ms: list[float]
+    frame_gap_ms_median: float | None
+    frame_gap_ms_p95: float | None
+    frame_gap_ms_max: float | None
+    fps_equiv: float | None
+    snap240_theoretical_frames: float
+    snap240_actual_frames: int
+    fps_1s_equiv: float | None
+    obs_quantum_ms: float
     quiesce_s: float
     quiesce_satisfied: bool
     perf_lines: list[str]
@@ -321,9 +480,10 @@ def build_swipe_run(
     frames: list[PerfFrame],
     dmas: list[DmaDone],
     arrivals: list[float],
-    start: float,
+    injection: SwipeInjection,
     quiesce_s: float,
     timed_out: bool,
+    fps_target: float = FPS_TARGET_DEFAULT,
 ) -> SwipeRun:
     dma_map = {d.token: d.us for d in dmas}
     submit_us = [f.last_us for f in frames]
@@ -337,9 +497,34 @@ def build_swipe_run(
     if dma_us_max > 0 and area_max > 0:
         per_mpixel = round(dma_us_max / (area_max / 1_000_000.0), 2)
     drained = bool(frames) and frames[-1].submits in dma_map
+    # 帧间隔口径：相邻两次 submit 的 VGPUPERF 行在 host 侧被首次观察到
+    # 的时刻差（poll 量化，见 obs_quantum_ms）；不用 VGPUDMA 完成时刻，
+    # 也不用行内 dma_us/last_us 耗时字段。
+    gaps_ms = [
+        round((b - a) * 1000.0, 1) for a, b in zip(arrivals, arrivals[1:])
+    ]
+    gap_median = round(median(gaps_ms), 1) if gaps_ms else None
+    gap_p95 = (
+        round(percentile(gaps_ms, 0.95), 1) if gaps_ms else None
+    )
+    gap_max = max(gaps_ms) if gaps_ms else None
+    snap_actual = snap_window_frames(arrivals, SNAP_WINDOW_MS / 1000.0)
     return SwipeRun(
-        duration_s=round((arrivals[-1] - start) if arrivals else 0.0, 3),
-        first_frame_s=round((arrivals[0] - start) if arrivals else 0.0, 3),
+        duration_s=round(
+            (arrivals[-1] - injection.start) if arrivals else 0.0, 3
+        ),
+        first_frame_s=round(
+            (arrivals[0] - injection.start) if arrivals else 0.0, 3
+        ),
+        input_target_step_ms=round(injection.target_step_ms, 3),
+        input_qmp_ms_median=round(median(injection.qmp_ms), 3)
+        if injection.qmp_ms else 0.0,
+        input_qmp_ms_p95=round(percentile(injection.qmp_ms, 0.95), 3)
+        if injection.qmp_ms else 0.0,
+        input_interval_ms_median=round(median(injection.interval_ms), 3)
+        if injection.interval_ms else 0.0,
+        input_interval_ms_p95=round(percentile(injection.interval_ms, 0.95), 3)
+        if injection.interval_ms else 0.0,
         frames=len(frames),
         submit_from=frames[0].submits if frames else 0,
         submit_to=frames[-1].submits if frames else 0,
@@ -361,9 +546,21 @@ def build_swipe_run(
         dma_missing_tokens=missing,
         dma_drained=drained,
         dma_us_per_mpixel=per_mpixel,
-        frame_gaps_ms=[
-            round((b - a) * 1000.0, 1) for a, b in zip(arrivals, arrivals[1:])
-        ],
+        frame_gaps_ms=gaps_ms,
+        frame_gap_ms_median=gap_median,
+        frame_gap_ms_p95=gap_p95,
+        frame_gap_ms_max=gap_max,
+        fps_equiv=(
+            round(1000.0 / gap_median, 1)
+            if gap_median is not None and gap_median > 0 else None
+        ),
+        snap240_theoretical_frames=snap240_theoretical_frames(fps_target),
+        snap240_actual_frames=snap_actual,
+        fps_1s_equiv=(
+            round(snap_actual * 1000.0 / SNAP_WINDOW_MS, 1)
+            if snap_actual >= 2 else None
+        ),
+        obs_quantum_ms=round(SWIPE_POLL_INTERVAL_S * 1000.0, 1),
         quiesce_s=round(quiesce_s, 3),
         quiesce_satisfied=bool(frames) and drained and not timed_out,
         perf_lines=[f.raw for f in frames],
@@ -398,53 +595,73 @@ def home_reset(serial: Path, proc: subprocess.Popen, qmp) -> None:
     raise RuntimeError("vgpu reset swipe did not quiesce")
 
 
-def measure_vgpu_swipe(serial: Path, proc: subprocess.Popen, qmp) -> SwipeRun:
+def measure_vgpu_swipe(
+    serial: Path, proc: subprocess.Popen, qmp,
+    step_s: float = 0.045,
+    fps_target: float = FPS_TARGET_DEFAULT,
+) -> SwipeRun:
     """注入一次真实横滑并按 submit 序号/token 精确归因窗口。
 
     基线（累计 submits 与已见最大 DMA token）在注入前用同一份 serial 快照
     采集（同刻，不再注入后补读 dma_before）；窗口 = 所有 submits>基线 的
     VGPUPERF 行与 token>基线 的 VGPUDMA 行，token==submits 一一对应。
-    frames 不足、超时或 DMA 未排水均不抛错，只落到字段供上层 gate。
+    帧到达时刻 = 各 VGPUPERF 行首次被 host 观察到的 poll 时刻，量化粒度
+    SWIPE_POLL_INTERVAL_S（写入 obs_quantum_ms）。frames 不足、超时或
+    DMA 未排水均不抛错，只落到字段供上层 gate。
     """
     base = snapshot_baseline(text_of(serial))
-    start = quick_swipe(qmp, 864, 700, 216, 700, 1080, 1920)
+    tail = SerialTail(serial)
+    tail.read_new_lines()  # 丢弃历史行，只看手势窗口内新出现的行
+    injection = quick_swipe(qmp, 864, 700, 216, 700, 1080, 1920, step_s)
+    start = injection.start
     frames: list[PerfFrame] = []
     arrivals: list[float] = []
     dmas: list[DmaDone] = []
     quiesce_need = SWIPE_QUIESCE_FLOOR_S
     timed_out = False
-    while True:
-        now = time.monotonic()
-        text = text_of(serial)
-        new_frames = [f for f in parse_perf_frames(text) if f.submits > base.submits]
-        new_dmas = [d for d in parse_dma_done(text) if d.token > base.token]
-        if len(new_frames) > len(frames):
-            arrivals.extend([now] * (len(new_frames) - len(frames)))
-            frames = new_frames
-        dmas = new_dmas
-        last_arrival = arrivals[-1] if arrivals else start
-        max_gap = max(
-            (b - a for a, b in zip(arrivals, arrivals[1:])), default=0.0
-        )
-        quiesce_need = min(
-            max(SWIPE_QUIESCE_FLOOR_S, 2.0 * max_gap), SWIPE_QUIESCE_CAP_S
-        )
-        dma_map = {d.token: d.us for d in dmas}
-        drained = bool(frames) and frames[-1].submits in dma_map
-        if frames and now - last_arrival >= quiesce_need:
-            if drained:
+    try:
+        while True:
+            now = time.monotonic()
+            chunk = tail.read_new_lines()
+            if chunk:
+                new_frames = [
+                    f for f in parse_perf_frames(chunk)
+                    if f.submits > base.submits
+                ]
+                if new_frames:
+                    arrivals.extend([now] * len(new_frames))
+                    frames.extend(new_frames)
+                dmas.extend(
+                    d for d in parse_dma_done(chunk) if d.token > base.token
+                )
+            last_arrival = arrivals[-1] if arrivals else start
+            max_gap = max(
+                (b - a for a, b in zip(arrivals, arrivals[1:])), default=0.0
+            )
+            quiesce_need = min(
+                max(SWIPE_QUIESCE_FLOOR_S, 2.0 * max_gap), SWIPE_QUIESCE_CAP_S
+            )
+            dma_map = {d.token: d.us for d in dmas}
+            drained = bool(frames) and frames[-1].submits in dma_map
+            if frames and now - last_arrival >= quiesce_need:
+                if drained:
+                    break
+                # 窗口内最后 submit 的 DMA 尚未完成：延后到排水硬帽再收窗，
+                # 收窗时保留 dma_drained=False 与缺失 token 清单。
+                if now - last_arrival >= quiesce_need + SWIPE_DMA_DRAIN_CAP_S:
+                    break
+            if now - start >= SWIPE_OVERALL_S:
+                timed_out = True
                 break
-            # 窗口内最后 submit 的 DMA 尚未完成：延后到排水硬帽再收窗，
-            # 收窗时保留 dma_drained=False 与缺失 token 清单。
-            if now - last_arrival >= quiesce_need + SWIPE_DMA_DRAIN_CAP_S:
-                break
-        if now - start >= SWIPE_OVERALL_S:
-            timed_out = True
-            break
-        if proc.poll() is not None:
-            raise RuntimeError(f"QEMU exited rc={proc.returncode} during swipe")
-        time.sleep(0.02)
-    run = build_swipe_run(frames, dmas, arrivals, start, quiesce_need, timed_out)
+            if proc.poll() is not None:
+                raise RuntimeError(f"QEMU exited rc={proc.returncode} during swipe")
+            time.sleep(SWIPE_POLL_INTERVAL_S)
+    finally:
+        tail.close()
+    run = build_swipe_run(
+        frames, dmas, arrivals, injection, quiesce_need, timed_out,
+        fps_target=fps_target,
+    )
     home_reset(serial, proc, qmp)
     return run
 
@@ -465,6 +682,8 @@ def rect_center(match, name: str) -> tuple[int, int]:
 def run_arm(
     gui8, label: str, vgpu: bool, image: Path, code: Path, run_dir: Path,
     swipe_repeat: int = 1,
+    swipe_step_ms: float = SWIPE_STEP_MS_DEFAULT,
+    fps_target: float = FPS_TARGET_DEFAULT,
 ) -> ArmResult:
     work = run_dir / label
     work.mkdir(parents=True)
@@ -514,7 +733,13 @@ def run_arm(
         time.sleep(5.0 if vgpu else 0.3)
         # 每次重复都在注入前重新取同刻基线；重复间由 measure 内部 HOME 复位。
         swipe_runs = (
-            [measure_vgpu_swipe(serial, proc, qmp) for _ in range(swipe_repeat)]
+            [
+                measure_vgpu_swipe(
+                    serial, proc, qmp,
+                    step_s=swipe_step_ms / 1000.0, fps_target=fps_target,
+                )
+                for _ in range(swipe_repeat)
+            ]
             if vgpu
             else []
         )
@@ -571,6 +796,13 @@ def run_arm(
         representative = min(
             swipe_runs, key=lambda r: abs(r.duration_s - med_duration)
         ) if swipe_runs else None
+        # 帧间隔 pacing 汇总：gap 统计只池化 run 内间隔（跨 run 边界是
+        # HOME 复位 + 静默，不构成帧距）；snap240/1s 等效 fps 取各 run 中
+        # 位数；达标布尔只作输出，不作失败条件。
+        pooled_gaps = [g for run in swipe_runs for g in run.frame_gaps_ms]
+        gap_med = round(median(pooled_gaps), 1) if pooled_gaps else None
+        snap_actuals = [run.snap240_actual_frames for run in swipe_runs]
+        med_snap = int(round(median(snap_actuals))) if snap_actuals else 0
         return ArmResult(
             backend="virtio-gpu" if vgpu else "ramfb",
             boot_ready_s=round(boot_ready, 3),
@@ -602,7 +834,33 @@ def run_arm(
             launcher_swipe_dma_drained=(
                 bool(swipe_runs) and all(r.dma_drained for r in swipe_runs)
             ),
+            launcher_swipe_frame_gap_ms_median=gap_med,
+            launcher_swipe_frame_gap_ms_p95=(
+                round(percentile(pooled_gaps, 0.95), 1)
+                if pooled_gaps else None
+            ),
+            launcher_swipe_frame_gap_ms_max=(
+                max(pooled_gaps) if pooled_gaps else None
+            ),
+            launcher_swipe_fps_equiv=(
+                round(1000.0 / gap_med, 1)
+                if gap_med is not None and gap_med > 0 else None
+            ),
+            launcher_swipe_snap240_theoretical_frames=(
+                snap240_theoretical_frames(fps_target)
+            ),
+            launcher_swipe_snap240_actual_frames=med_snap,
+            launcher_swipe_fps_1s_equiv=(
+                round(med_snap * 1000.0 / SNAP_WINDOW_MS, 1)
+                if med_snap >= 2 else None
+            ),
+            launcher_swipe_fps_target_met=fps_target_met(snap_actuals, fps_target),
             launcher_swipe_runs=[asdict(r) for r in swipe_runs],
+            swipe_step_ms=(swipe_step_ms if swipe_runs else 0.0),
+            swipe_obs_quantum_ms=(
+                round(SWIPE_POLL_INTERVAL_S * 1000.0, 1) if swipe_runs else 0.0
+            ),
+            fps_target=fps_target,
             vgpu_ok="VGPU ok " in serial_text,
             vgpuhdi_marker="VGPUHDI ok " in serial_text,
             kernel_panic="KERNEL PANIC" in serial_text,
@@ -628,9 +886,22 @@ def main() -> int:
     ap.add_argument("--keep-dir", type=Path, help="保留双臂 serial/QMP artifacts 的调试目录")
     ap.add_argument("--swipe-repeat", type=int, default=1,
                     help="launcher 横滑测量次数（默认 1）；>1 时输出中位数与最坏值")
+    ap.add_argument("--swipe-step-ms", type=float, default=SWIPE_STEP_MS_DEFAULT,
+                    help=f"launcher 横滑 move 间隔毫秒（默认 "
+                         f"{SWIPE_STEP_MS_DEFAULT:g}，历史 45）；move 数按 "
+                         f"~225ms 总跨度换算（45→5、12→19），仍逐 move 发"
+                         f"真实 QMP 事件")
+    ap.add_argument("--fps-target", type=float, default=FPS_TARGET_DEFAULT,
+                    help=f"帧率达标目标 fps（默认 {FPS_TARGET_DEFAULT:g}）；"
+                         f"只输出 launcher_swipe_fps_target_met 布尔，"
+                         f"不作为失败条件")
     args = ap.parse_args()
     if args.swipe_repeat < 1:
         ap.error("--swipe-repeat must be >= 1")
+    if args.swipe_step_ms <= 0:
+        ap.error("--swipe-step-ms must be > 0")
+    if args.fps_target <= 0:
+        ap.error("--fps-target must be > 0")
     if sys.platform != "darwin":
         print("desktop-calib: FAIL: Mac HVF only", file=sys.stderr)
         return 1
@@ -640,16 +911,22 @@ def main() -> int:
         run_dir.mkdir(parents=True, exist_ok=True)
         results = [
             run_arm(gui8, "vgpu", True, args.image, args.code, run_dir,
-                    swipe_repeat=args.swipe_repeat),
-            run_arm(gui8, "ramfb", False, args.image, args.code, run_dir),
+                    swipe_repeat=args.swipe_repeat,
+                    swipe_step_ms=args.swipe_step_ms,
+                    fps_target=args.fps_target),
+            run_arm(gui8, "ramfb", False, args.image, args.code, run_dir,
+                    fps_target=args.fps_target),
         ]
     else:
         with tempfile.TemporaryDirectory(prefix="berry-desktop-calib.") as tmp:
             run_dir = Path(tmp)
             results = [
                 run_arm(gui8, "vgpu", True, args.image, args.code, run_dir,
-                        swipe_repeat=args.swipe_repeat),
-                run_arm(gui8, "ramfb", False, args.image, args.code, run_dir),
+                        swipe_repeat=args.swipe_repeat,
+                        swipe_step_ms=args.swipe_step_ms,
+                        fps_target=args.fps_target),
+                run_arm(gui8, "ramfb", False, args.image, args.code, run_dir,
+                        fps_target=args.fps_target),
             ]
     args.out_json.parent.mkdir(parents=True, exist_ok=True)
     args.out_json.write_text(json.dumps([asdict(r) for r in results], indent=2) + "\n")
@@ -663,6 +940,18 @@ def main() -> int:
     md.append(f"- image: `{args.image}`")
     md.append("- resolution: 1080×1920")
     md.append(f"- swipe repeats: {args.swipe_repeat}")
+    md.append(
+        f"- swipe step: {args.swipe_step_ms:g} ms → "
+        f"{swipe_move_count(args.swipe_step_ms / 1000.0)} moves "
+        f"(span ≈{SWIPE_GESTURE_SPAN_S * 1000.0:g} ms, real QMP events)"
+    )
+    md.append(f"- fps target: {args.fps_target:g}")
+    md.append(
+        f"- serial observation quantum: "
+        f"{SWIPE_POLL_INTERVAL_S * 1000.0:g} ms "
+        f"(frame gaps resolve only ≥ this; the historical 20 ms poll could "
+        f"not resolve a 16.7 ms / 60 Hz frame gap)"
+    )
     md.append("")
     md.append(
         "| backend | boot s | demo launch s | appbar back s | page s | switch s "
@@ -712,11 +1001,54 @@ def main() -> int:
             f"dma_tokens_done={sorted(run['dma_us_by_token'])} "
             f"dma_missing={run['dma_missing_tokens']} "
             f"frame_gaps_ms={run['frame_gaps_ms']} "
+            f"gap_med/p95/max_ms={run['frame_gap_ms_median']}/"
+            f"{run['frame_gap_ms_p95']}/{run['frame_gap_ms_max']} "
+            f"snap240={run['snap240_actual_frames']}"
+            f"(theo {run['snap240_theoretical_frames']}) "
             f"quiesce_satisfied={run['quiesce_satisfied']}"
         )
         evidence.extend(run["perf_lines"])
     if not vgpu.launcher_swipe_runs:
         md.append("| (no swipe runs) | | | | | | | | | | | | | |")
+    md.append("")
+    md.append("## vgpu launcher 帧间隔 pacing（submit arrival 口径）\n")
+    md.append(
+        f"帧间隔 = 相邻 submit 的 VGPUPERF 行在 host 首次被观察到的时刻差"
+        f"（poll 量化 ~{vgpu.swipe_obs_quantum_ms:g} ms，旧 20 ms 轮询无法"
+        f"分辨 16.7 ms）；不用 VGPUDMA 完成时刻，也不用行内 dma_us/last_us"
+        f" 耗时字段。snap240 = 最优 240 ms 滑窗内帧数（含窗口首帧）；"
+        f"1s 等效 fps = snap240 实际帧数 × 1000/240。达标布尔"
+        f"`launcher_swipe_fps_target_met` 只作输出，不影响退出码。\n"
+    )
+    md.append(
+        "| run | frames | gap med ms | gap p95 ms | gap max ms | fps equiv "
+        "| snap240 act | snap240 theo | fps 1s equiv |"
+    )
+    md.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
+    for i, run in enumerate(vgpu.launcher_swipe_runs):
+        md.append(
+            f"| r{i} | {run['frames']} | {run['frame_gap_ms_median']} | "
+            f"{run['frame_gap_ms_p95']} | {run['frame_gap_ms_max']} | "
+            f"{run['fps_equiv']} | {run['snap240_actual_frames']} | "
+            f"{run['snap240_theoretical_frames']} | {run['fps_1s_equiv']} |"
+        )
+    if vgpu.launcher_swipe_runs:
+        md.append(
+            f"| **pooled/med** | — | "
+            f"{vgpu.launcher_swipe_frame_gap_ms_median} | "
+            f"{vgpu.launcher_swipe_frame_gap_ms_p95} | "
+            f"{vgpu.launcher_swipe_frame_gap_ms_max} | "
+            f"{vgpu.launcher_swipe_fps_equiv} | "
+            f"{vgpu.launcher_swipe_snap240_actual_frames} | "
+            f"{vgpu.launcher_swipe_snap240_theoretical_frames} | "
+            f"{vgpu.launcher_swipe_fps_1s_equiv} |"
+        )
+        md.append(
+            f"\nfps_target_met({vgpu.fps_target:g}) = "
+            f"{vgpu.launcher_swipe_fps_target_met}"
+        )
+    else:
+        md.append("| (no swipe runs) | | | | | | | | |")
     md.append("")
     md.append("```text")
     md.extend(evidence)
