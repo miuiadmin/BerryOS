@@ -244,10 +244,19 @@ static EFAULT_KEYS: [u8; EREQ_SLOTS] = [0; EREQ_SLOTS]; // faulter[i] 睡此（0
 static EOVERFLOW_KEY: u8 = 0; // 槽池满的 faulter 睡此（take 消费放槽即唤——convoy N>K 时 ≤N-K 有界，N≤K 恒空）
 static EPAGER_KEY: u8 = 0; // EL0 pager 睡此（0x21 无请求时；探针武装后唤醒）
 
+/// P2-3 pager 挂死看门狗时限（秒）。睡 [`EFAULT_KEYS`] 的 faulter 旧用
+/// `u64::MAX` 死限——pager 挂死（bug/panic/OOM）即永睡 SLEEPQ 不可恢复；
+/// 改 `cntvct() + cntfrq() * 本值` 有限限（CNTVCT 周期，CNTFRQ 运行时读
+/// 不硬编码——QEMU virt 62.5MHz 下 30s = 1.875e9 周期）。正常供给往返
+/// << 1s，30s 极宽裕零虚警；超时醒分诊见 [`probe_el0`] Timeout 臂。
+const PAGER_WATCHDOG_SECS: u64 = 30;
+
 /// EL0 fault 探针（hal 第二槽 `*_el0`；`exception_sync_el0` D-abort 臂）。
 /// 协议 = [`probe`] 的 EL0 镜像（两段式 + KL 窗 + fsc 滤同款）：武装 EL0
-/// 请求槽 + 唤 EL0 pager 键 + 睡 EL0 fault 键——唯一唤醒者 = 0x21 供给毕
-///（§5-⑤：pager 不再收货 = 永久阻塞，fail loud-on-hang）。EL0 异常
+/// 请求槽 + 唤 EL0 pager 键 + 睡 EL0 fault 键——常规唤醒者 = 0x21 供给毕
+///（§5-⑤）；P2-3 起睡限 = [`PAGER_WATCHDOG_SECS`] 看门狗（30s）——pager
+/// 挂死不再永久阻塞：超时醒重验页表叶分诊（页已在 → 重试；仍缺页 →
+/// 警告 + fault kill 失败隔离，详睡点注）。EL0 异常
 /// taken-to-higher-EL **自动**屏蔽 PSTATE.I（与 same-EL 臂的差异）——KL
 /// 窗仍取（SMP 与 0x21 供给窗的互斥面同 [`probe`]，P2-2①）。
 ///
@@ -369,10 +378,12 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
     depth_exit();
     // AM-2 等页停顿记时点②（EL0 槽键睡眠段——svcmgr 供给链的等页面）。
     let stall_t0 = hal::timer::cntvct();
+    // P2-3 挂死看门狗：死限 u64::MAX → 30s 有限限（`PAGER_WATCHDOG_SECS`
+    // 注）；超时醒走下方 Timeout 臂分诊（重验页表叶——竞败/代供/真挂死）。
     let r = berry_sched::block_current(
         &EFAULT_KEYS[slot] as *const u8 as usize,
         DPG_WAKE_BIT,
-        u64::MAX,
+        stall_t0.wrapping_add(hal::timer::cntfrq().saturating_mul(PAGER_WATCHDOG_SECS)),
     );
     let stall_now = hal::timer::cntvct();
     crate::telemetry::dpg_stall_note(stall_now.wrapping_sub(stall_t0));
@@ -380,13 +391,55 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
     crate::telemetry::dpg_stall_fold(stall_now);
     // 醒 = 活跃窗重开（收尾段计深度）。
     depth_enter();
-    hal::kern_lock::klock_exit();
+    // 醒因门（老 assert 语义保真扩 Timeout）：Pending 于续行点不可达
+    //（task.rs `WakeReason` 注）——仍见 = 唤醒面破损，fail loud。
     assert!(
-        matches!(r, berry_sched::WakeReason::Signaled),
-        "dpg probe_el0: 醒因非 Signaled（EL0 fault 键无超时/无他者——唤醒面破损）"
+        matches!(
+            r,
+            berry_sched::WakeReason::Signaled | berry_sched::WakeReason::Timeout
+        ),
+        "dpg probe_el0: 醒因非 Signaled/Timeout（EL0 fault 键无他者——唤醒面破损）"
     );
+    // P2-3 分诊：Timeout 非必挂死（signal 与到期同窗竞速先到先摘——
+    // `block_current` 契约「唤醒后必须重验条件」），KL 在身（block_current
+    // 续行重取）重验**页表叶**（而非槽位——他 faulter 同页代供时本槽仍
+    // armed 但页已在，槽位非充分判据；`supply_page` 幂等保叶查询即终判）：
+    // 叶在 → 页已供给（唤醒竞败 / 同页代供 / 区间重映射为 eager 叶）→
+    // true，eret 重试 load 指令即命中；仍缺页 → pager 30s 零进展 = 挂死
+    // 面：放槽 + 恒唤溢出 convoy（`el0_take_for` 消费放槽同款不变量——
+    // 弃页退场不漏占池）+ 警告 + false（fault kill 失败隔离）。
+    let ok = match r {
+        berry_sched::WakeReason::Signaled => true, // 0x21 供给毕定向唤——原路径零漂移
+        berry_sched::WakeReason::Timeout => {
+            let va = far & !(PAGE_SIZE - 1);
+            // KL 在身串行一切表写者（PT 恒嵌 KL 取放——vmar.rs `pt_lock`
+            // 注），无 copy 链 walk+store TOCTOU 面，免 PT 锁直读；root
+            // 窗内 fresh 重查（睡中注销 → None → 仍缺页同走挂死臂）。
+            let supplied = vmar::demand_root(asid).is_some_and(|root| {
+                // SAFETY: root = 本 KL 窗内 fresh 查得（窗内活）；只读
+                // l1_pa 字段，零解引用深度。
+                vmar::walk_leaf(unsafe { (*root).ttbr0_pa() }, va).is_some()
+            });
+            if supplied {
+                true
+            } else {
+                EREQ[slot].armed.store(false, Ordering::Release);
+                berry_sched::wake_matching(
+                    &EOVERFLOW_KEY as *const u8 as usize,
+                    DPG_WAKE_BIT,
+                );
+                hal::kern_lock::with_print_lock(|| {
+                    hal::uart_puts(b"dpg: pager watchdog fired\n");
+                });
+                false
+            }
+        }
+        // 醒因门已滤——不可达（matches! 全集穷尽外的防御臂）。
+        berry_sched::WakeReason::Pending => true,
+    };
+    hal::kern_lock::klock_exit();
     depth_exit();
-    true
+    ok
 }
 
 // ---- 0x21 面小件（syscall.rs `sys_pager_supply_pages` 用；键/槽私有，经
