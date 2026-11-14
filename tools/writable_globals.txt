@@ -26,7 +26,7 @@ arch/aarch64/src/smp.rs::SMP_SEC_REPORT	scheduler
 arch/aarch64/src/syscall.rs::SYSCALLS	boot
 arch/aarch64/src/timer.rs::FREQ	scheduler
 arch/aarch64/src/timer.rs::SLICE	scheduler
-arch/aarch64/src/timer.rs::SLICE_HZ_OVR	arch
+arch/aarch64/src/timer.rs::SLICE_HZ_OVR	scheduler
 arch/aarch64/src/uart.rs::RX_NOTIFY	arch
 arch/aarch64/src/uart.rs::RX_RING	arch
 arch/aarch64/src/uart.rs::UART1_NOTIFY	arch
@@ -56,9 +56,9 @@ kernel/src/mm.rs::FRAME_BMAPS	page-table
 kernel/src/mm.rs::FRAME_FREE	page-table
 kernel/src/mm.rs::FRAME_ORDER	page-table
 kernel/src/mm.rs::FRAME_SUMS	page-table
-kernel/src/process.rs::HT_DRAINQ	scheduler
-kernel/src/process.rs::HT_DRAINQ_LEN	scheduler
-kernel/src/process.rs::HT_DRAINQ_WARNED	scheduler
+kernel/src/process.rs::HT_DRAINQ	other
+kernel/src/process.rs::HT_DRAINQ_LEN	other
+kernel/src/process.rs::HT_DRAINQ_WARNED	other
 kernel/src/syscall.rs::BOOTSTRAP_HT	boot
 kernel/src/telemetry.rs::PRESSURE_OUTLET	telemetry
 kernel/src/telemetry.rs::SWITCH_RINGS	telemetry
