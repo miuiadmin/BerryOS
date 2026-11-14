@@ -2,16 +2,28 @@
 //!
 //! 与异常帧 [`crate::trap::TrapFrame`]（异常入口保存的完整 x0..x30 + ESR/ELR/...）
 //! 不同，本 [`TaskContext`] 存**协作者切换所需的 callee-saved**（x19..x30 + sp）+
-//! **FPSIMD 全量**（q0..q31 + FPCR/FPSR，GUI-0 起）——因为切换发生在已知的抢占
+//! **FPSIMD 面**（q0..q31 + FPCR/FPSR，GUI-0 起）——因为切换发生在已知的抢占
 //! 点（`yield` / IRQ 出口），其余整数寄存器由调用约定或 `TrapFrame` /
 //! `exception_irq` 的 save/load 管；FP 面则靠 **内核 SIMD-free 合同**守住「异常/
-//! 系统调用路径不碰 q 寄存器」——故 TrapFrame 不存 FP，全量保存在 switch 点即
+//! 系统调用路径不碰 q 寄存器」——故 TrapFrame 不存 FP，FP 保存在 switch 点即
 //! 完备。合同三层机制（GUI-0 实抓 compiler-builtins NEON memset + 本仓 O1 块拷贝
 //! 落 q 寄存器后立）：① `.cargo/config.toml` 目标限域 `-C target-feature=
 //! -fp-armv8,-neon`（本仓 crate 全 GPR codegen）；② `kernel/src/mem.rs` 整数版
 //! mem* + bcmp 覆写（挤掉 builtins 版——「哪些件今天恰好是 NEON」不进合同）；
 //! ③ ktest FP canary 每次开机执法（copy/zero/比较路径链到 SIMD 即 boot 期
 //! loud）。core fmt 链仍含 NEON 但仅 panic(=halt) 路径可达。
+//!
+//! **P3-5 lazy 分诊（X6 裁决书，推翻 S4「无条件全量」）**：no_std 内核代码不
+//! 生成 FP 指令（上述合同）→ 内核任务的 FP 寄存器残值是 don't-care，切换免
+//! 528B 拷贝；EL0 用户任务（可能用 FP 做 memcpy/浮点）与显式 FP 消费者（GUI
+//! 渲染）出生即 `fp_needed=true`。[`context_switch`] 按**双方**该位分诊：双
+//! false → [`switch_no_fp`] 快路径（只存取 GPR+SP+TPIDR，省 ~130cy）；任一
+//! true → [`switch_full`] 全量（现行为）。安全性论证：跳过保存只发生在「被
+//! 跳过的态本就无人认领」时——需要 FP 态的任务恒 true，任一侧在场即全量，
+//! 寄存器里属于 true 侧的态必被保存/恢复；false 侧（内核任务）由合同保证
+//! 永不读 FP 面，残值串味无受体。S4 的逃逸路径担忧（异常嵌套窗/内核 SIMD
+//! 借用/per-task CPACR 翻转）不适用于本形态：不改 CPACR、无陷阱、无脏位
+//! 翻转时序——只是把「谁需要 FP」静态化到出生档。
 //! 注：AAPCS 下 v8..v15 也是 callee-saved，但 `switch` 是裸 asm 跳转不是调用
 //! 边界——调用约定不约束它；即便按调用约定口径看，q0..q31 全量保存也已把
 //! v8..v15 子集一并覆盖，无需分层。
@@ -27,7 +39,8 @@ use core::arch::global_asm;
 /// 任务切换上下文（callee-saved 子集 + TLS 基址，`#[repr(C)]`，与下方 asm 偏移严格对应）。
 ///
 /// 布局：`x19..x29`（11×8=88）+ `lr`(x30)（8）+ `sp`（8）+ `tpidr`（8）+ FPSIMD 面
-/// `fp`（512，q0..q31）+ `fpcr`（8）+ `fpsr`（8）= **640** 字节（GUI-0）。`fp` 用
+/// `fp`（512，q0..q31）+ `fpcr`（8）+ `fpsr`（8）+ `fp_needed`（1，P3-5 追加到
+/// 末尾——既有字段零偏移漂移）+ 尾垫 7 = **656** 字节。`fp` 用
 /// `[u128; 32]` 使结构体自然 16 对齐——SCTLR.A=0（本仓形态）下 `stp q`/`ldp q`
 /// 对 Normal 内存非对齐访问架构上**合法**，此处的 16 对齐是纪律而非硬性要求：
 /// 消掉对齐边界的情形面 + 让「fp 数组偏移必 16 对齐」成为编译期可断言不变量
@@ -49,20 +62,26 @@ pub struct TaskContext {
     /// 首次 TLS 访问（首个 println 惰性初始化）距自设只有微秒级窗口）。内核任务
     /// 不用 TLS，随行携带的值无害；新任务出生 0（切断残留泄漏的根）。
     pub tpidr: u64,
-    /// q0..q31（FPSIMD 全量，GUI-0 起）。**无条件全量保存**——S4 裁决（GUI-10：
-    /// trap+lazy 的逃逸路径——异常嵌套窗口/内核 SIMD 借用/per-task CPACR 翻转——
-    /// 复杂度超预算，按 kill criteria 直取全量；FPEN 维持 0b11 不陷）。
+    /// q0..q31（FPSIMD 全量，GUI-0 起）。**P3-5 起按 [`TaskContext::fp_needed`]
+    /// 分诊保存/恢复**（X6 裁决书推翻 S4「无条件全量」——GUI-10 评估的 trap+lazy
+    /// 逃逸路径不适用：本形态无陷阱无脏位，只是把 FP 面归属静态化；FPEN 维持
+    /// 0b11 不陷）。全量路径（[`switch_full`]）的保存面由 ktest `FPING`/`FP ok`
+    /// 对拍执法；快路径跳过面由 ktest `TASK ok` canary 执法。
     /// 新任务出生全零 = 架构复位值（FPCR/FPSR 复位亦为 0）。
     pub fp: [u128; 32],
     /// FPCR（RMODE/FZ/DN/异常陷阱使能等控制位）——随任务保存恢复。
     pub fpcr: u64,
     /// FPSR（NZCV 标志 + 异常累积位）——随任务保存恢复。
     pub fpsr: u64,
+    /// FPSIMD lazy（P3-5 裁决 GO）：本上下文是否需要 FPSIMD 保存/恢复。
+    /// no_std 内核编译不产 FP 指令 → 内核任务恒 false（快路径免 528B 拷贝）。
+    /// EL0 用户任务或显式 FP 消费者（GUI）创建时置 true。
+    pub fp_needed: bool,
 }
 
 // 编译期校 TaskContext 与 asm 偏移一致（仿 trap.rs 的 TrapFrame 断言，防「asm/
 // #[repr(C)] 错位」风险 R1）。
-const _: () = assert!(core::mem::size_of::<TaskContext>() == 640);
+const _: () = assert!(core::mem::size_of::<TaskContext>() == 656);
 const _: () = assert!(core::mem::align_of::<TaskContext>() == 16);
 const _: () = assert!(core::mem::offset_of!(TaskContext, r) == 0);
 const _: () = assert!(core::mem::offset_of!(TaskContext, lr) == 88);
@@ -71,6 +90,7 @@ const _: () = assert!(core::mem::offset_of!(TaskContext, tpidr) == 104);
 const _: () = assert!(core::mem::offset_of!(TaskContext, fp) == 112);
 const _: () = assert!(core::mem::offset_of!(TaskContext, fpcr) == 624);
 const _: () = assert!(core::mem::offset_of!(TaskContext, fpsr) == 632);
+const _: () = assert!(core::mem::offset_of!(TaskContext, fp_needed) == 640);
 
 impl TaskContext {
     /// 零值（供静态未初始化上下文占位，如被首次 switch 覆盖的 idle / main）。
@@ -82,6 +102,7 @@ impl TaskContext {
         fp: [0; 32],
         fpcr: 0,
         fpsr: 0,
+        fp_needed: false,
     };
 
     /// 构造一个新内核线程的初始上下文。
@@ -90,6 +111,10 @@ impl TaskContext {
     /// `x0`、`blr` 调 `entry`。新任务**无需 TrapFrame**（未被中断过，不走
     /// `load_frame`/`eret`）——用 callee-saved 槽当参向量（标准 trick）：
     /// `x19=entry`、`x20=arg`、`x29=0(fp)`、`lr=trampoline`、`sp=kstack_top`。
+    ///
+    /// `fp_needed` 出生 `false`（P3-5）：内核 SIMD-free 合同下内核任务不产 FP
+    /// 指令，与同为 false 的对端切换走 [`switch_no_fp`] 快路径。显式用 FP 的
+    /// 内核代码（GUI 渲染）在构造后手动置 true。
     ///
     /// `kstack_top` 须 **16 字节对齐**（AArch64 ABI 硬要求，否则首切即 SP-align 异常
     /// EC=0x26——风险 R2）。
@@ -119,6 +144,9 @@ impl TaskContext {
     /// （向量 0x400/0x480）硬件强制 SPsel=1，落到的正是该栈，`save_frame_el0` 直接可用。
     ///
     /// `kstack_top`/`sp0_va` 均须 **16 字节对齐**（SP-align EC=0x26）。
+    ///
+    /// `fp_needed` 出生 `true`（P3-5）：EL0 用户态可能用 FP（memcpy/浮点运算），
+    /// 内核侧无法证明其不用 → 恒走 [`switch_full`] 全量路径保 FP 态。
     pub fn new_user(
         entry_va: usize,
         arg: usize,
@@ -133,6 +161,7 @@ impl TaskContext {
         ctx.r[2] = sp0_va as u64; // x21 = 用户 sp_el0
         ctx.lr = user_entry_trampoline as *const () as usize as u64; // x30 = trampoline
         ctx.sp = kstack_top as u64;
+        ctx.fp_needed = true; // P3-5：EL0 可能用 FP——出生即全量档
         ctx
     }
 }
@@ -144,11 +173,14 @@ global_asm!(
     // 编译器 codegen（Linux 内核 FP asm 文件与 C 分旗编译同构）。
     ".arch armv8-a+fp+simd",
     ".text",
-    ".globl switch",
-    ".type switch,%function",
-    "switch:",
-    // x0 = prev（存当前 callee-saved + sp），x1 = next（载入）。纯叶子：无 prologue、
-    // 不压自己的栈帧。x2 仅作 SP 中转（caller-saved，可自由 clobber）。
+    ".globl switch_full",
+    ".type switch_full,%function",
+    "switch_full:",
+    // x0 = prev（存当前 callee-saved + sp + FP 面），x1 = next（载入）。纯叶子：
+    // 无 prologue、不压自己的栈帧。x2 仅作 SP 中转（caller-saved，可自由 clobber）。
+    // P3-5 起本符号只承载「任一侧 fp_needed=true」的全量路径；双 false 走
+    // switch_no_fp（见下方）。GPR/SP/TPIDR 段与快路径逐指令相同（两路径唯一
+    // 分岔 = q0..q31+FPCR/FPSR 的存/取段）。
     "    stp x19, x20, [x0, #0]",
     "    stp x21, x22, [x0, #16]",
     "    stp x23, x24, [x0, #32]",
@@ -160,9 +192,9 @@ global_asm!(
     "    str x2,       [x0, #96]",   // sp
     "    mrs x2, tpidr_el0",
     "    str x2,       [x0, #104]",  // tpidr_el0（每任务 TLS 基址——先存 prev 再动寄存器）
-    // ---- FPSIMD 全量保存（GUI-0）：q0..q31 + FPCR/FPSR，无条件。
-    // ---- S4 裁决（GUI-10）：lazy 的逃逸路径复杂度超预算 → 全量；成本 ~70 指令/切换
-    // ---- （FAST 对拍 ΔRT ≪ TCG 噪声界）。内核 SIMD-free 合同保证异常路径不碰 q。
+    // ---- FPSIMD 全量保存（GUI-0）：q0..q31 + FPCR/FPSR。P3-5 起仅 FP 档任务
+    // ---- 在场时到达（分诊见 context_switch）；成本 ~70 指令，由「任一侧需要
+    // ---- FP 态」背书。内核 SIMD-free 合同保证异常路径不碰 q。
     "    stp q0,  q1,  [x0, #112]",
     "    stp q2,  q3,  [x0, #144]",
     "    stp q4,  q5,  [x0, #176]",
@@ -216,7 +248,44 @@ global_asm!(
     "    ldr x2,       [x1, #632]",
     "    msr fpsr, x2",
     "    ret",                       // 首切：跳 task_entry_trampoline；否则回新任务上次切出处
-    ".size switch, . - switch",
+    ".size switch_full, . - switch_full",
+);
+
+global_asm!(
+    ".text",
+    ".globl switch_no_fp",
+    ".type switch_no_fp,%function",
+    "switch_no_fp:",
+    // P3-5 快路径（X6 裁决书）：双方 fp_needed=false 的切换专用——只存/取
+    // GPR+SP+TPIDR，跳过 q0..q31+FPCR/FPSR 的 528B 拷贝（省 ~130cy）。本单元
+    // **不含任何 FP 指令**（无需 `.arch` 重开——快路径自身即守 SIMD-free 合同）；
+    // FP 寄存器原样跨切换保留（残值无人认领：false 档 = 内核任务，合同保证
+    // 不读 FP 面）。GPR/SP/TPIDR 段与 switch_full 逐指令相同——两路径唯一
+    // 分岔 = FP 段在/不在。x0/x1/x2 角色同 switch_full。
+    "    stp x19, x20, [x0, #0]",
+    "    stp x21, x22, [x0, #16]",
+    "    stp x23, x24, [x0, #32]",
+    "    stp x25, x26, [x0, #48]",
+    "    stp x27, x28, [x0, #64]",
+    "    str x29,      [x0, #80]",   // r[10]=x29（fp）
+    "    str x30,      [x0, #88]",   // lr
+    "    mov x2, sp",
+    "    str x2,       [x0, #96]",   // sp
+    "    mrs x2, tpidr_el0",
+    "    str x2,       [x0, #104]",  // tpidr_el0（每任务 TLS 基址——先存 prev 再动寄存器）
+    "    ldp x19, x20, [x1, #0]",
+    "    ldp x21, x22, [x1, #16]",
+    "    ldp x23, x24, [x1, #32]",
+    "    ldp x25, x26, [x1, #48]",
+    "    ldp x27, x28, [x1, #64]",
+    "    ldr x29,      [x1, #80]",
+    "    ldr x30,      [x1, #88]",   // 新 lr：首切时=trampoline
+    "    ldr x2,       [x1, #96]",
+    "    mov sp, x2",                // 切到新任务的内核栈
+    "    ldr x2,       [x1, #104]",
+    "    msr tpidr_el0, x2",         // 恢复新任务自己的 TLS 基址（新任务=0）
+    "    ret",                       // 首切：跳 task_entry_trampoline；否则回新任务上次切出处
+    ".size switch_no_fp, . - switch_no_fp",
 );
 
 global_asm!(
@@ -262,12 +331,20 @@ global_asm!(
 );
 
 extern "C" {
-    fn switch(prev: *mut TaskContext, next: *const TaskContext);
+    fn switch_full(prev: *mut TaskContext, next: *const TaskContext);
+    fn switch_no_fp(prev: *mut TaskContext, next: *const TaskContext);
     fn task_entry_trampoline();
     fn user_entry_trampoline();
 }
 
-/// 切换出去：把**当前** callee-saved+sp 存入 `*prev`，载入 `*next` 并 `ret` 进它。
+/// 切换出去：把**当前** callee-saved+sp（必要时含 FPSIMD 面）存入 `*prev`，
+/// 载入 `*next` 并 `ret` 进它。
+///
+/// P3-5 分诊（X6 裁决书）：双方 `fp_needed` 皆 false → [`switch_no_fp`] 快路径
+/// （跳过 q0..q31+FPCR/FPSR 的 528B 拷贝，省 ~130cy）；任一侧 true →
+/// [`switch_full`] 全量（现行为）。安全性：false 档 = 内核任务，SIMD-free 合同
+/// 保证其永不读 FP 面（寄存器残值串味无受体）；true 档（EL0 用户/显式 FP
+/// 消费者）任一侧在场即全量，其 FP 态必被保存/恢复。
 ///
 /// # Safety
 /// - 调用方保证 `PSTATE.I == 1`（IRQ 屏蔽）：IRQ 路径硬件自动屏蔽；协作路径须
@@ -275,8 +352,12 @@ extern "C" {
 /// - `prev`/`next` 须有效、可解引用、且不别名。
 #[inline]
 pub unsafe fn context_switch(prev: *mut TaskContext, next: *const TaskContext) {
-    // SAFETY：调用方合同（PSTATE.I==1、指针有效不别名）见上；switch 为 extern asm 桩。
-    unsafe { switch(prev, next) }
+    // SAFETY：调用方合同（PSTATE.I==1、指针有效不别名）见上；两 asm 桩同合同。
+    if !(*prev).fp_needed && !(*next).fp_needed {
+        unsafe { switch_no_fp(prev, next) } // 快路径——省 ~130cy
+    } else {
+        unsafe { switch_full(prev, next) } // 全量——保 FP 状态
+    }
 }
 
 /// 任务入口误返回的兜底（asm `bl` 调）。正常任务 `-> !`（loop 或 exit 原语），

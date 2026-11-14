@@ -2629,12 +2629,25 @@ extern "C" fn switch_ping_fn(_arg: usize) -> ! {
 /// Step 1 信号：构造 OTHER(`new_kernel` 指向 `switch_ping_fn`) → 从 MAIN 切到 OTHER
 /// → OTHER 打 `PING ` 切回 → 这里续行打 `TASK ok`。证 switch asm 存/取 callee-saved
 /// + sp、新任务首切经 trampoline 接线正确（风险 R1）。
+/// P3-5 起**快路径执法位**：两侧都是 `new_kernel` 出生的 fp_needed=false → 乒乓
+/// 走 `switch_no_fp`。FP canary 在位穿越乒乓后逐位不变 = 三面合一：①快路径 asm
+/// 不触 q 面；②分诊确实落快路径（误路由全量会载入 OTHER 出生零 FP 面 → canary
+/// 被清）；③GPR/sp/tpidr 保真（原 Step 1 面）。
 fn test_switch() {
     // SAFETY: DAIF 屏蔽（在 enable_irq 之前）；两 ctx 静态、不别名；栈顶 16 对齐。
     unsafe {
         let stack_top =
             (&raw const SWITCH_OTHER_STACK) as *const u8 as usize + core::mem::size_of::<TestStack4096>();
         SWITCH_CTX_OTHER = TaskContext::new_kernel(switch_ping_fn, 0, stack_top);
+        // P3-5 分诊面前置：内核构造点出生应 fp_needed=false（误置 true → 下方
+        // canary 断言仍会抓——这里给根因定位）。
+        assert!(
+            !(&*(&raw const SWITCH_CTX_OTHER)).fp_needed,
+            "TASK：new_kernel 出生应 fp_needed=false"
+        );
+        // canary 在位（借用 GUI-0 面 FP_PAT_MAIN/FP_SNAP + 装载/快照 helper——
+        // 同模块后置定义，Rust 项序无关）。
+        fp_canary_load((&raw const FP_PAT_MAIN).cast::<u128>());
         // 从当前（MAIN）切到 OTHER：当前 callee-saved+sp 落 SWITCH_CTX_MAIN，
         // 载 SWITCH_CTX_OTHER → 经 trampoline 进 switch_ping_fn。
         berry_hal_aarch64::task::context_switch(
@@ -2642,6 +2655,8 @@ fn test_switch() {
             &raw const SWITCH_CTX_OTHER,
         );
         // <- switch_ping_fn 切回 SWITCH_CTX_MAIN 时续行于此。
+        fp_canary_store((&raw mut FP_SNAP).cast::<u128>());
+        assert!(fp_snap_eq(&FP_PAT_MAIN), "TASK：快路径乒乓触碰/清掉了 q 面");
     }
     // G3-1a（草案 §8.C g3-1a）：per-CPU preempt_count 安全对——计数/嵌套/配平
     // 语义锁死。**回落位路径**（f4 M2 勘正）：ktest::run（main.rs:554）先于
@@ -2833,11 +2848,13 @@ extern "C" fn fp_ping_fn(_arg: usize) -> ! {
     berry_hal_aarch64::halt();
 }
 
-/// GUI-0：FPSIMD 上下文全量保存三面：
-/// ① 出生零态（new_kernel 出发于 ZERO，FP 面 = 架构复位值）；
+/// GUI-0：FPSIMD 上下文全量保存三面（P3-5 起兼 **`switch_full` 路径执法位**）：
+/// ① 出生零态（new_kernel 出发于 ZERO，FP 面 = 架构复位值 + fp_needed 分诊位
+///    默认档：内核 false / 用户 true 钉板）；
 /// ② 跨任务双向对拍（MAIN⇄OTHER 两跳乒乓——双方各装独立 q0..q7/q30/q31 +
 ///    FPCR/FPSR 图样，切回后 MAIN 寄存器面与 OTHER 保存面各自核验 = 跨任务
-///    SIMD 不串味）；
+///    SIMD 不串味；两侧显式置 fp_needed=true（GUI 渲染任务的同款声明路径）
+///    → 乒乓走 `switch_full`，下面核验才有对象——快路径面归 test_switch）；
 /// ③ 内核 copy/zero 路径 canary（**内核 SIMD-free 合同护栏**：Vmo commit 清零 +
 ///    write/read 拷贝跑在 canary 在位时——编译器漂移引入 NEON memset/memcpy 即
 ///    boot 期 loud）。
@@ -2857,6 +2874,15 @@ fn test_fp() {
             fresh.fp == [0u128; 32] && fresh.fpcr == 0 && fresh.fpsr == 0,
             "FP：新任务出生 FP 面非零"
         );
+        // ①-b P3-5 分诊位出生档：内核构造点 false（test_switch 已消费其快路径）；
+        // 用户构造点 true（EL0 可能用 FP——entry/sp0 只过 ctor 断言，不真切换）。
+        assert!(!fresh.fp_needed, "FP：new_kernel 出生应 fp_needed=false");
+        let uctx = TaskContext::new_user(0x4000_0000, 0, 0x8000_0000, stack_top);
+        assert!(uctx.fp_needed, "FP：new_user 出生应 fp_needed=true");
+        // P3-5：本测两侧都是显式 FP 消费者——手动置 true（GUI 渲染任务创建的
+        // 同款路径），两跳乒乓走 switch_full 全量路径，②面核验才有对象。
+        (*(&raw mut FP_CTX_MAIN)).fp_needed = true;
+        (*(&raw mut FP_CTX_OTHER)).fp_needed = true;
         let (fpcr0, fpsr0) = (fpcr_read(), fpsr_read()); // 记录现场值，测毕还原
         // 平台门（FP-FPSR 判例）：HVF/KVM 后端不保存 guest FPSR——写被
         // vmentry 吞，读回来是 host 副本；MAIN 恢复断言与 OTHER 保存面断言
