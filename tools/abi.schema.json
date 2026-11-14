@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BerryOS v1 错误码表与封闭值域（SDK 机器可读出口；tools/gen_abi.py 生成，勿手改）",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1.0"
+      ],
+      "description": "投影层版本：结构性变更才跳次版本。权威层 abi.toml 为永久超集（已发布值永不删/改义/复用）；弃用只发生在投影层。"
+    },
+    "berry_status": {
+      "type": "integer",
+      "enum": [
+        0,
+        -2,
+        -7,
+        -9,
+        -11,
+        -12,
+        -13,
+        -14,
+        -16,
+        -22,
+        -34,
+        -37,
+        -52,
+        -95,
+        -110
+      ],
+      "description": "syscall 返回码 wire 真值全集（berry_status_t=i32，posix-ish 负数）。逐码「名｜posix｜舱｜语义」：0=OK｜—｜—｜成功；-2=NOT_FOUND｜ENOENT｜actionable｜区间不存在；-7=E2BIG｜E2BIG｜protocol｜调度属性长度超界；-9=BAD_HANDLE｜EBADF｜protocol｜坏 handle / 类型不符 / 代号过期；-11=AGAIN｜EAGAIN｜actionable｜非阻塞操作当下无货可取；-12=NO_MEMORY｜ENOMEM｜actionable｜无空间；-13=ACCESS_DENIED｜EACCES｜actionable｜权限位不足；-14=FAULT｜EFAULT｜protocol｜用户缓冲不可访问；-16=BUSY｜EBUSY｜actionable｜资源占用；-22=INVALID_ARG｜EINVAL｜actionable｜参数非法；-34=OUT_OF_RANGE｜ERANGE｜actionable｜EOVERFLOW-style：offset/len 越出对象容量或区间管辖界；-37=BAD_STATE｜—｜actionable｜EBADSTATE：对象状态不满足；-52=DEAD｜—｜actionable｜代号作废：对象/服务已死；-95=NOT_SUPPORTED｜ENOTSUP｜actionable｜未知/未实现编号或能力；-110=TIMEDOUT｜ETIMEDOUT｜actionable｜阻塞等待到点未命中。"
+    },
+    "errno": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "稳定枚举名（C 侧 BERRY_ERR_<NAME>）"
+          },
+          "code": {
+            "type": "integer",
+            "description": "wire 真值"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "actionable",
+              "protocol"
+            ],
+            "description": "两舱：actionable=改参数/补能力可自纠；protocol=请求结构坏（编码/版本/路由），重试无意义"
+          },
+          "posix": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "POSIX 等价名；null=自有码或无映射"
+          },
+          "description": {
+            "type": "string",
+            "description": "语义全文（人读）"
+          }
+        },
+        "required": [
+          "name",
+          "code",
+          "scope",
+          "posix",
+          "description"
+        ],
+        "additionalProperties": false
+      },
+      "description": "错误码表行形——仅辖 code≠0 的 14 负码行（OK 不进本数组，0 只在 berry_status）；OS 侧校验器/遥测产表按此校验；逐行数据在 berry_status 逐码行。"
+    },
+    "intent": {
+      "type": "integer",
+      "enum": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "description": "berry_intent 六档，值=wire 真值 u8，越小档越高：0=unspecified（未声明 = XNU 式最高可用档（不设限；可被 manifest/分类器定档，pledge 豁免））；1=latency_critical（需 Job 级授权（manifest/特权；timer slack=0 exact；AI 屏蔽））；2=interactive（交互）；3=utility（推断缺省落点）；4=background（maintenance_eligible 门控）；5=maintenance（编码冻结、v1 不启用（用户裁决 2026-10-16））。0x06..0x0F 保留——内核拒绝 -22（EINVAL，见 berry_status）。"
+    },
+    "wakesrc": {
+      "type": "integer",
+      "enum": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        127
+      ],
+      "description": "内核唤醒记账源，值=wire 真值 u8，add-only（不改值/不改义/不复用）：0=NONE（哨兵：未接线语境（仅 CPU1 首任务切入前窗口可持有）；到达 on_wake = 绊网 panic（写点 L0 执法，负延迟同族））；1=KERNEL_BOOT（boot 期非 IRQ 语境（rust_main 直跑窗的 spawn/唤醒）；首任务切入后冻结——G1.5 断言其不再增长（无主-3 空类证明））；2=TIMER（CNTV PPI 27（tick 重编程与超时到期唤醒——expire_timeouts 路径））；3=UART_RX（PL011 SPI 33（控制台 RX 到达唤醒——rx_irq_notify 路径））；4=SGI_RESCHED（SGI 1（跨核重调度投递））；5=SGI_TLB（SGI 2（TLB shootdown 收端——无唤醒路径，只计到达））；6=IPC（任务语境基线：SVC/同步异常/内核任务（note_switch 切入即设）语境的一切 wake_matching 唤醒）；7=POWER_KEY（PL061 GPIO3 电源键（sim-S2 A4②：QEMU virt gpio-keys/poweroff，SPI 7=GIC INTID 39，QMP system_powerdown 脉冲）。v1 无主到达：只进 IRQ 级记账 + no_waiter 台账（unowned），恒无唤醒——永不进环（wake_src_valid 有意不含本源，到达-only 三号位与 NONE/UNKNOWN 同类；进环即 wake_check ⑤ 红））；127=UNKNOWN（未知 IRQ 号（GIC IAR 落未知臂）：只进 IRQ 级到达计数、永不进环；到达 on_wake = 写路径 bug → panic）。"
+    }
+  },
+  "required": [
+    "schema_version",
+    "berry_status",
+    "errno",
+    "intent",
+    "wakesrc"
+  ],
+  "additionalProperties": false
+}

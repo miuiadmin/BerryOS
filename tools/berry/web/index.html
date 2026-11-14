@@ -1,0 +1,60 @@
+<!doctype html>
+<!--
+  BerryOS browser desktop shell (own asset, Apache-2.0; see the LICENSE at
+  the repository root). Imports the vendored noVNC core under ./novnc/
+  (MPL-2.0, unmodified) and shares nothing with the vendored app layer.
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <title>BerryOS 桌面</title>
+  <link rel="stylesheet" href="berry.css">
+  <script type="module" src="berry.js"></script>
+</head>
+<body class="berry-disconnected">
+  <header id="berry-top">
+    <div id="berry-brand"><img id="berry-logo" src="berry-logo.svg" alt=""><span id="berry-brand-name">BerryOS</span><span id="berry-session"></span></div>
+    <div id="berry-status" aria-live="polite"><span id="berry-spin"></span><span id="berry-status-text">初始化中…</span></div>
+    <div id="berry-res" aria-label="resolution"></div>
+  </header>
+
+  <div id="berry-toolbar" role="toolbar" aria-label="会话工具">
+    <button id="berry-btn-fullscreen" type="button" title="全屏">全屏</button>
+    <button id="berry-btn-resize" type="button" title="缩放模式">缩放: 适配</button>
+    <button id="berry-btn-viewonly" type="button" title="只读模式" aria-pressed="false">只读</button>
+    <button id="berry-btn-kbd" type="button" title="软键盘" aria-pressed="false">键盘</button>
+    <button id="berry-btn-conn" type="button" title="断开或重连">断开</button>
+  </div>
+
+  <main id="berry-holder" tabindex="-1"><!-- RFB canvas mounts here --></main>
+
+  <input id="berry-kbd-input" type="text" autocomplete="off" autocapitalize="off"
+         autocorrect="off" spellcheck="false" aria-hidden="true" tabindex="-1">
+
+  <div id="berry-cred-dialog" hidden role="dialog" aria-modal="true" aria-labelledby="berry-cred-title">
+    <form id="berry-cred-form">
+      <h2 id="berry-cred-title">需要 VNC 口令</h2>
+      <p id="berry-cred-reason"></p>
+      <input id="berry-cred-pass" type="password" autocomplete="off" placeholder="VNC 口令"
+             autocapitalize="off" spellcheck="false">
+      <div class="berry-cred-actions">
+        <button id="berry-cred-cancel" type="button">取消</button>
+        <button id="berry-cred-submit" type="submit">连接</button>
+      </div>
+    </form>
+  </div>
+
+  <!--
+    Audible bell for the RFB bell event (own synthesized ding). The
+    preload="metadata" also keeps a media request pending at boot,
+    which under Chrome headless --virtual-time-budget lets the RFB
+    handshake's WebSocket messages pump (pending media pauses the
+    virtual clock; wave-9 probe). Real browsers are unaffected.
+  -->
+  <audio id="berry-bell" preload="metadata">
+    <source src="berry-bell.wav" type="audio/wav">
+  </audio>
+</body>
+</html>

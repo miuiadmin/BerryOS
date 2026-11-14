@@ -190,6 +190,8 @@ pub fn spawn_image(
     tablet: bool,
     display_mode: Option<&str>,
     ram_path: Option<&Path>,
+    ext_vnc: Option<&str>,
+    tls_creds: Option<&Path>,
 ) -> Result<Child> {
     let mut cmd = qemu.command();
     machine_args(&mut cmd, accel, memory_mib, serial, ram_path.map(|_| "mem"));
@@ -199,7 +201,24 @@ pub fn spawn_image(
             ram.display()
         ));
     }
-    cmd.arg("-vnc").arg(vnc.qemu_vnc());
+    // TLS/VeNCrypt (wave 2): x509 credentials object consumed by the external
+    // endpoint's `tls-creds=vnc-tls` option (probe p3 syntax; the dir holds
+    // ca-cert/server-cert/server-key pems). verify-peer=off: developer
+    // servers do not authenticate clients — authentication stays VNC auth.
+    if let Some(dir) = tls_creds {
+        cmd.arg("-object").arg(format!(
+            "tls-creds-x509,id=vnc-tls,dir={},endpoint=server,verify-peer=off",
+            dir.display()
+        ));
+    }
+    // External VNC endpoint first when present: QMP set_password only acts on
+    // the first declared server (id=default, probe f3), so the public TCP
+    // endpoint must precede the internal unix socket. The password itself is
+    // never part of argv — it is injected at runtime via QMP.
+    if let Some(ext) = ext_vnc {
+        cmd.arg("-vnc").arg(ext);
+    }
+    cmd.arg("-vnc").arg(vnc.qemu_vnc()?);
     cmd.arg("-qmp").arg(qmp.qemu_qmp());
     cmd.arg("-drive")
         .arg(format!(

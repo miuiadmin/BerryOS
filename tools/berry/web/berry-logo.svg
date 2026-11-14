@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18">
+  <!-- BerryOS brand mark (own asset, Apache-2.0; see repository LICENSE) -->
+  <circle cx="12" cy="14" r="7" fill="#7ab0ff"/>
+  <path d="M12 7c0-3 2-4 4-4-1 3-2 4-4 4z" fill="#a8cdff"/>
+  <path d="M12 7c0-3-2-4-4-4 1 3 2 4 4 4z" fill="#5a94e8"/>
+  <rect x="11" y="3" width="2" height="5" rx="1" fill="#4a7dc0"/>
+</svg>

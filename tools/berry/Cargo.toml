@@ -23,6 +23,22 @@ serde_json = "1.0"
 winit = "0.30"
 softbuffer = "0.4"
 miniz_oxide = "0.8"
+# VNC wave 5 TLS plane (VeNCrypt client / https page / wss termination).
+# Host tool only (this workspace never enters the guest image). Minimal
+# feature set per plan: ring backend, std, tls12; no aws-lc-rs, no logging.
+# rustls-pki-types is a direct dep because PEM loading + ServerName types
+# sit on the public path of this knife, not just transitively.
+# Licenses: rustls Apache-2.0 OR ISC OR MIT; ring Apache-2.0 AND ISC;
+# pki-types/webpki/once_cell/zeroize/cfg-if/getrandom/libc ISC or MIT or
+# Apache-2.0; sole exception subtle 2.6.1 = BSD-3-Clause (three-clause,
+# accepted by the wave-5 plan; no removal path from rustls 0.23).
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+rustls-pki-types = { version = "1", features = ["std"] }
+# VNC wave 10 terminal QR (Nayuki qrcodegen): single-file pure-Rust MIT
+# crate, zero transitive dependencies (Cargo.lock gains exactly one line),
+# no rust-version/edition declaration so MSRV risk is nil. Used only by
+# `berry vnc web --lan` pairing (host tool, never enters the guest).
+qrcodegen = "1.8"
 
 [profile.release]
 lto = true

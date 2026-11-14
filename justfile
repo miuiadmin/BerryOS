@@ -1392,6 +1392,105 @@ berry-smoke: berry-build
     "$BIN" run --marker "BerryOS boot" --timeout 30
     "$BIN" shot --image out/berryos.img --out out/berry-shot.png --timeout 120
 
+# P0 VNC 面冒烟（2026-11-13 VNC 三波沉淀）：对外端点 + ws 面起档，vnc status
+# 断言 uri/ws_uri，vnc check 口令三态（缺省读 vnc.pass / 对口令 / 错口令
+# 期望 rc=7）+ --ws 浏览器通路自检（ServerInit 深度，纯 CLI 不拉帧）。
+# 纯 CLI 链、自动端口（不与并行会话撞号）、run 全程显式
+# --run 并自收；本配方钉明文零回归，TLS/VeNCrypt 面由 berry-vnc-tls-smoke
+# 覆盖；页面/浏览器行为（noVNC 渲染）仍留手工验收。
+berry-vnc-smoke: berry-build
+    #!/bin/sh
+    set -e
+    test -f out/berryos.img || { echo "缺 out/berryos.img——先 just image"; exit 1; }
+    HOST=$(rustc -vV | sed -n 's/^host: //p')
+    BIN=tools/berry/cargo-target/$HOST/release/berry
+    PW=vncsmoke-right
+    RUN=$("$BIN" device start --profile phone --image out/berryos.img \
+        --vnc on --vnc-ws on --vnc-pass "$PW" --json \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin)["run"])')
+    echo "run: $RUN"
+    cleanup() {
+        "$BIN" device stop --run "$RUN" >/dev/null 2>&1 || true
+        "$BIN" device cleanup --run "$RUN" >/dev/null 2>&1 || true
+    }
+    trap cleanup EXIT INT TERM
+    "$BIN" vnc status --run "$RUN" --json | python3 -c 'import json,sys; v=json.load(sys.stdin); assert v["enabled"] is True, v; assert v["uri"].startswith("vnc://127.0.0.1:"), v; assert v["ws_uri"].startswith("ws://127.0.0.1:"), v; print("vnc status: uri + ws_uri ok")'
+    "$BIN" vnc check --run "$RUN" >/dev/null && echo "vnc check (default vnc.pass): ok"
+    "$BIN" vnc check --run "$RUN" --password "$PW" >/dev/null \
+        && echo "vnc check (--password right): ok"
+    "$BIN" vnc check --ws --run "$RUN" >/dev/null \
+        && echo "vnc check --ws (browser ws path, default vnc.pass): ok"
+    if "$BIN" vnc check --run "$RUN" --password wrong-vncsmoke-pw >/dev/null 2>&1; then
+        echo "vnc check: wrong password unexpectedly succeeded"; exit 1
+    else
+        RC=$?
+        [ "$RC" -eq 7 ] || { echo "vnc check wrong-pw rc=$RC (want 7)"; exit 1; }
+        echo "vnc check (wrong password): rc=7 auth failed"
+    fi
+    cleanup
+    trap - EXIT INT TERM
+
+# P0 VNC TLS 面冒烟（wave 5）：自签证书（mktemp 目录，私钥不进仓）→ TLS run
+# 起档（--vnc-tls + 口令 + ws）→ status 断言 tls.enabled/wss → vnc check 六路
+# （TCP：自动推目录/--ca 显式/--insecure 警告/错口令 rc=7，VeNCrypt+rustls
+# 全链；ws：wss 正路 + 错 CA 负例 rc=7——严格校验必须真拒绝）。
+# 纯 CLI 链、自动端口、run 全程显式 --run 并自收；https 页/wss 代理与 Chrome
+# 截图属 t7 手工验收面（需起浏览器），不在本配方。
+berry-vnc-tls-smoke: berry-build
+    #!/bin/sh
+    set -e
+    test -f out/berryos.img || { echo "缺 out/berryos.img——先 just image"; exit 1; }
+    HOST=$(rustc -vV | sed -n 's/^host: //p')
+    BIN=tools/berry/cargo-target/$HOST/release/berry
+    PW=vnctlsmoke-right
+    TD=$(mktemp -d "${TMPDIR:-/tmp}/berry-vnc-tls.XXXXXX")
+    cleanup() {
+        [ -n "$RUN" ] && "$BIN" device stop --run "$RUN" >/dev/null 2>&1 || true
+        [ -n "$RUN" ] && "$BIN" device cleanup --run "$RUN" >/dev/null 2>&1 || true
+        rm -rf "$TD"
+    }
+    trap cleanup EXIT INT TERM
+    "$BIN" vnc certs "$TD/certs" >/dev/null
+    echo "vnc certs: self-signed set generated in temp dir"
+    RUN=$("$BIN" device start --profile phone --image out/berryos.img \
+        --vnc on --vnc-ws on --vnc-tls "$TD/certs" --vnc-pass "$PW" --json \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin)["run"])')
+    echo "run: $RUN"
+    "$BIN" vnc status --run "$RUN" --json | python3 -c 'import json,sys; v=json.load(sys.stdin); assert v["enabled"] is True, v; t=v["tls"]; assert t["enabled"] is True, t; assert t["dir"], t; assert v["ws_uri"].startswith("wss://127.0.0.1:"), v; print("vnc status: tls.enabled + wss uri ok")'
+    "$BIN" vnc check --run "$RUN" >/dev/null \
+        && echo "vnc check (auto cert dir from run meta): ok"
+    "$BIN" vnc check --run "$RUN" --ca "$TD/certs" >/dev/null \
+        && echo "vnc check (--ca explicit): ok"
+    "$BIN" vnc check --ws --run "$RUN" >/dev/null \
+        && echo "vnc check --ws (wss, auto cert dir): ok"
+    "$BIN" vnc check --run "$RUN" --insecure 2>"$TD/stderr" >/dev/null \
+        && grep -q "warning: --insecure skips TLS certificate verification" "$TD/stderr" \
+        && echo "vnc check (--insecure): ok + warning"
+    if "$BIN" vnc check --run "$RUN" --password wrong-vnctlsmoke-pw >/dev/null 2>&1; then
+        echo "vnc check: wrong password unexpectedly succeeded"; exit 1
+    else
+        RC=$?
+        [ "$RC" -eq 7 ] || { echo "vnc check wrong-pw rc=$RC (want 7)"; exit 1; }
+        echo "vnc check (wrong password, TLS inner DES): rc=7 auth failed"
+    fi
+    "$BIN" vnc certs "$TD/other" >/dev/null
+    if "$BIN" vnc check --ws --run "$RUN" --ca "$TD/other" >/dev/null 2>&1; then
+        echo "vnc check --ws: wrong CA unexpectedly accepted"; exit 1
+    else
+        RC=$?
+        [ "$RC" -eq 7 ] || { echo "vnc check --ws wrong-CA rc=$RC (want 7)"; exit 1; }
+        echo "vnc check --ws (wss, wrong CA): rc=7 strict verification rejected"
+    fi
+    if "$BIN" vnc check --run "$RUN" --ca "$TD/certs" --insecure >/dev/null 2>&1; then
+        echo "vnc check: --ca + --insecure unexpectedly accepted"; exit 1
+    else
+        RC=$?
+        [ "$RC" -eq 2 ] || { echo "vnc check --ca+--insecure rc=$RC (want 2)"; exit 1; }
+        echo "vnc check (--ca + --insecure): rc=2 mutually exclusive"
+    fi
+    cleanup
+    trap - EXIT INT TERM
+
 # AAVMF 引导验收（V-0b 刀 3 起）：QEMU virt + edk2 固件（pflash 对）+ xhci
 # usb-storage 递盘。V-3 起盘 = out/berryos.img（just image 单口：MBR + 单
 # FAT16 分区 96MiB（A1-3b 起，C-2c 史 48MiB、V-3 史 24MiB）——EDK2 PartitionDxe+FatDxe

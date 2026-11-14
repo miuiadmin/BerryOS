@@ -439,6 +439,10 @@ struct App {
     accel: String,
     memory: Option<u32>,
     keep: bool,
+    /// 串口 tail（guest 旋转键 `ROTATE` 标记监听——restart_session 时重开）。
+    serial: Option<crate::run_dir::Tail>,
+    /// 旋转去抖：上一 ROTATE 已消费、重启后的新串口从零 tail。
+    rotating: bool,
 }
 
 impl App {
@@ -475,6 +479,8 @@ impl App {
             accel,
             memory,
             keep,
+            serial: None,
+            rotating: false,
         }
     }
 
@@ -787,6 +793,75 @@ impl App {
         }
     }
 
+    /// guest 旋转键：tail 串口找 `ROTATE` 标记（poll 帧间隙调用）。命中
+    /// → 翻转 profile 几何（1080x1920 ⇄ 1920x1080）重启会话——ramfb 几何
+    /// 是宿主 fw_cfg 注入面，guest 无法自转，重启是唯一真旋转。新串口
+    /// 从零 tail（防旧标记复读）。
+    fn poll_rotate(&mut self) {
+        if self.rotating {
+            return;
+        }
+        let run_path = match &self.session {
+            Session::Host(d) => d.run_path().to_path_buf(),
+            Session::Attach(a) => a.run.clone(),
+        };
+        if self.serial.is_none() {
+            self.serial = Some(crate::run_dir::Tail::open(&run_path.join("serial.log")));
+        }
+        let hit = self
+            .serial
+            .as_mut()
+            .is_some_and(|t| {
+                t.read_new();
+                t.contains("ROTATE")
+            });
+        if hit {
+            self.rotating = true;
+            // 翻转几何：临时构造翻转 profile（同 id——panel/render 宽高
+            // 对调），重启后窗口按新 panel 比例 letterbox。
+            let p = self.profile;
+            let flipped = crate::profile::Profile {
+                panel_w: p.panel_h,
+                panel_h: p.panel_w,
+                render_w: p.render_h,
+                render_h: p.render_w,
+                ..p
+            };
+            eprintln!("berry: rotate → {}x{}", flipped.render_w, flipped.render_h);
+            match &mut self.session {
+                Session::Host(dev) => {
+                    dev.stop();
+                    let image = self.image.clone();
+                    let accel = self.accel.clone();
+                    let memory = self.memory;
+                    let keep = self.keep;
+                    match Device::start(image, flipped, &accel, memory, None, keep, "shell") {
+                        Ok(dev) => {
+                            self.profile = flipped;
+                            self.session = Session::Host(dev);
+                            self.title = format!("BerryOS — {} (rotated)", self.profile.id);
+                            self.serial = None; // 新 run 从零 tail
+                            self.rotating = false;
+                            self.last_frame = None;
+                            if let Some(w) = &self.window {
+                                w.request_redraw();
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("berry: rotate restart failed: {e}");
+                            self.rotating = false;
+                        }
+                    }
+                }
+                Session::Attach(_) => {
+                    // attach 态旋转走 display set 面（restart_profile 通道）
+                    // ——v1 简化：仅 Host 态支持（shell 主路径）。
+                    self.rotating = false;
+                }
+            }
+        }
+    }
+
     fn send_touch(&mut self, x: f64, y: f64, pressed: bool) {
         self.pointer(x, y, if pressed { 1 } else { 0 });
     }
@@ -930,6 +1005,8 @@ impl ApplicationHandler for App {
         if self.poll_frame() {
             self.request_redraw();
         }
+        // guest 旋转键监听（串口 ROTATE 标记 → 换几何重启）。
+        self.poll_rotate();
         event_loop.set_control_flow(ControlFlow::WaitUntil(
             Instant::now() + Duration::from_millis(16),
         ));

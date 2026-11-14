@@ -229,7 +229,8 @@ mod common {
             let resp = match dispatch(op, &args, &qmp, &vnc, &run, &stop) {
                 Ok(result) => json!({"v":1,"id":id,"ok":true,"result":result}),
                 Err(e) => json!({"v":1,"id":id,"ok":false,
-                    "code": code_name(e.code), "message": e.message}),
+                    "code": code_name(e.code), "message": e.message,
+                    "hint": e.hint}),
             };
             writeln!(writer, "{resp}")?;
             writer.flush()?;
@@ -247,7 +248,7 @@ fn dispatch(
     match op {
         "hello" => Ok(json!({
             "version": env!("CARGO_PKG_VERSION"),
-            "capabilities": ["hello","status","stats","power","stop","logs","display","shortcut","events","screenshot","key","tap","swipe","text"],
+            "capabilities": ["hello","status","stats","power","stop","logs","display","shortcut","events","screenshot","key","tap","swipe","text","vnc","vnc_passwd"],
         })),
         "stats" => {
             let meta: Value = std::fs::read(run.join("meta.json"))
@@ -275,6 +276,20 @@ fn dispatch(
             let st = q.query_status().map_err(|e| {
                 BerryError::device(format!("qmp query-status: {e}"))
             })?;
+            // External VNC endpoint when exposed (device status shows it).
+            // uri uses the dialable host (wildcard binds map to loopback,
+            // wave 2); `bind` echoes the real binding.
+            let vnc = crate::vnc_cfg::read_listen(run)
+                .map(|l| {
+                    let dial = crate::vnc_cfg::dial_host(&l.host);
+                    json!({
+                        "host": dial,
+                        "port": l.port,
+                        "uri": crate::vnc_cfg::uri_for(dial, l.port),
+                        "bind": crate::vnc_cfg::addr_host(&l.host, l.port),
+                    })
+                })
+                .unwrap_or(Value::Null);
             Ok(json!({
                 "state": st.get("status").cloned().unwrap_or_else(|| json!("unknown")),
                 "run": run.display().to_string(),
@@ -283,6 +298,7 @@ fn dispatch(
                 "qemu_pid": meta.get("qemu_pid").cloned().unwrap_or(Value::Null),
                 "started": meta.get("started").cloned().unwrap_or(Value::Null),
                 "stop_requested": stop.load(Ordering::Relaxed),
+                "vnc": vnc,
             }))
         }
         "power" => {
@@ -495,23 +511,181 @@ fn dispatch(
                 "source": "vnc",
             }))
         }
+        "vnc" => {
+            // State of the external endpoint: listen/bind from vnc.listen,
+            // uri/ws_uri via the dialable host (wildcards map to loopback),
+            // auth/clients/vencrypt from query-vnc-servers id=default (the
+            // external endpoint is the first declared -vnc; query-vnc would
+            // only report the default server as a single object — probe f4).
+            // Note: a TLS endpoint's ws face reports auth "none" in QMP even
+            // though it is wss-only (probe p3) — endpoint security derives
+            // from listen.tls, never from that field.
+            let Some(listen) = crate::vnc_cfg::read_listen(run) else {
+                return Ok(json!({"enabled": false}));
+            };
+            let has_password = run.join("vnc.pass").exists();
+            let mut auth = if has_password { "vnc".to_string() } else { "none".to_string() };
+            let mut vencrypt = Value::Null;
+            let mut clients = Value::Array(vec![]);
+            if let Ok(servers) = qmp.lock().unwrap().query_vnc_servers() {
+                if let Some(found) = servers.as_array().and_then(|a| {
+                    a.iter()
+                        .find(|e| e.get("id").and_then(Value::as_str) == Some("default"))
+                        .map(|e| {
+                            (
+                                e.get("auth").and_then(Value::as_str).map(str::to_string),
+                                e.get("vencrypt").and_then(Value::as_str).map(str::to_string),
+                                e.get("clients").cloned(),
+                            )
+                        })
+                }) {
+                    if let Some(a) = found.0 {
+                        auth = a;
+                    }
+                    if let Some(ve) = found.1 {
+                        vencrypt = json!(ve);
+                    }
+                    if let Some(c) = found.2 {
+                        clients = c;
+                    }
+                }
+            }
+            // TLS dir lives in meta (vnc.listen carries only the bool).
+            let tls_dir: Value = std::fs::read(run.join("meta.json"))
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+                .and_then(|m| {
+                    m.get("vnc_tls")
+                        .and_then(Value::as_str)
+                        .filter(|s| *s != "off")
+                        .map(|s| json!(s))
+                })
+                .unwrap_or(Value::Null);
+            let dial = crate::vnc_cfg::dial_host(&listen.host);
+            let ws_uri = listen
+                .ws
+                .map(|p| json!(crate::vnc_cfg::ws_uri_for(dial, p, listen.tls)))
+                .unwrap_or(Value::Null);
+            let tls = if listen.tls {
+                json!({"enabled": true, "dir": tls_dir, "vencrypt": vencrypt})
+            } else {
+                json!({"enabled": false})
+            };
+            Ok(json!({
+                "enabled": true,
+                "listen": crate::vnc_cfg::listen_value(&listen.host, listen.port, listen.ws, listen.tls),
+                "bind": crate::vnc_cfg::addr_host(&listen.host, listen.port),
+                "uri": crate::vnc_cfg::uri_for(dial, listen.port),
+                "ws_uri": ws_uri,
+                "auth": auth,
+                "has_password": has_password,
+                "clients": clients,
+                "tls": tls,
+            }))
+        }
+        "vnc_passwd" => {
+            // Rotate or expire the VNC password. Rotation: QMP set_password
+            // first, then rewrite vnc.pass (0600) and append an event. The
+            // event and any error text never carry the password value.
+            // Expiry (wave 2): QMP expire_password (time = never | seconds);
+            // QEMU 11 forces connected=keep for vnc set_password (probe p5),
+            // so rotation never kicks connected clients — documented as such.
+            let expire = args.get("expire").and_then(Value::as_str);
+            let generate = args.get("generate").and_then(Value::as_bool).unwrap_or(false);
+            let given = args
+                .get("password")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            if expire.is_some() && (given.is_some() || generate) {
+                return Err(BerryError::new(
+                    2,
+                    "vnc_passwd: {expire} excludes {password}/{generate}",
+                ));
+            }
+            if let Some(time) = expire {
+                crate::vnc_cfg::validate_expire(time)?;
+                let mut q = qmp.lock().unwrap();
+                // Wire form: bare "N" would be absolute epoch seconds on
+                // QEMU (live-calibrated); berry sends the relative "+N".
+                let qmp_time = crate::vnc_cfg::expire_qmp_time(time);
+                if let Err(e) = q.expire_vnc_password(&qmp_time) {
+                    if e.message.contains("disabled") {
+                        return Err(BerryError::new(
+                            2,
+                            "this endpoint started without authentication",
+                        )
+                        .with_hint("QEMU cannot manage VNC auth at runtime; restart with --vnc-pass to enable it"));
+                    }
+                    return Err(BerryError::device(format!("expire VNC password: {e}")));
+                }
+                drop(q);
+                append_event(run, json!({"v":1,"t":"action","action":"vnc.passwd_expire",
+                    "expire":time,"source":"control"}));
+                return Ok(json!({"expire": time}));
+            }
+            let password = if generate {
+                crate::vnc_cfg::generate_password()
+            } else {
+                given.ok_or_else(|| {
+                    BerryError::new(2, "vnc_passwd needs {password}, {generate:true} or {expire}")
+                })?
+            };
+            if password.is_empty() {
+                return Err(BerryError::new(2, "vnc password must not be empty"));
+            }
+            let mut q = qmp.lock().unwrap();
+            if let Err(e) = q.set_vnc_password(&password) {
+                // QEMU refuses set_password unless the endpoint was started
+                // with password=on (probe f3); map that case to E_USAGE with
+                // the restart hint instead of a bare protocol error.
+                if e.message.contains("disabled") {
+                    return Err(BerryError::new(
+                        2,
+                        "this endpoint started without authentication",
+                    )
+                    .with_hint("QEMU cannot enable VNC auth at runtime; restart with --vnc-pass to enable it"));
+                }
+                return Err(BerryError::device(format!("rotate VNC password: {e}")));
+            }
+            // A fired expiry timer outlives set_password on QEMU 11
+            // (live-calibrated: after `expire +N` elapses, set_password
+            // alone still rejects every client). Rotation must leave a
+            // usable password, so reset the expiry to never here. A failed
+            // reset no longer goes silent (F16): the audit event carries
+            // the QMP error so a bricked-auth endpoint leaves a trail —
+            // the rotation itself already succeeded, so no command error.
+            if let Err(e) = q.expire_vnc_password("never") {
+                append_event(run, passwd_warn_event(&e.message));
+            }
+            drop(q);
+            crate::vnc_cfg::write_pass(run, &password)?;
+            append_event(run, json!({"v":1,"t":"action","action":"vnc.passwd","source":"control"}));
+            Ok(json!({"generated": generate, "password": password}))
+        }
         _ => Err(BerryError::new(2, format!("unsupported op '{op}'"))),
     }
 }
 
-fn append_event(run: &Path, v: Value) {
-    use std::io::Write;
-    let path = run.join("events.jsonl");
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(f, "{v}");
+    pub(crate) fn append_event(run: &Path, v: Value) {
+        use std::io::Write;
+        let path = run.join("events.jsonl");
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            let _ = writeln!(f, "{v}");
+        }
     }
-}
 
-fn code_name(code: i32) -> &'static str {
+    /// F16 audit event for a failed `expire_password("never")` reset after
+    /// a successful rotation (same family as `t:action` vnc.passwd). The
+    /// error text is the QMP failure message — the call carries no
+    /// password material, and none is interpolated.
+    pub(crate) fn passwd_warn_event(err: &str) -> Value {
+        json!({"v":1,"t":"action","action":"vnc.passwd_warn","error":err,"source":"control"})
+    }
+    fn code_name(code: i32) -> &'static str {
     match code {
         2 => "E_USAGE",
         3 => "E_NO_SESSION",
@@ -524,6 +698,10 @@ fn code_name(code: i32) -> &'static str {
 }
 
 }
+
+// Wave 2: device.rs's QMP event sink shares this writer so events.jsonl
+// keeps one shape across control actions and VNC client audit lines.
+pub(crate) use common::append_event;
 
 /// Session host presence: Unix socket or Windows/TCP port file.
 pub fn is_up(run: &Path) -> bool {
@@ -586,7 +764,71 @@ fn decode(line: &str) -> Result<Value> {
     if v.get("ok").and_then(Value::as_bool) == Some(true) {
         Ok(v.get("result").cloned().unwrap_or(Value::Null))
     } else {
-        let msg = v.get("message").and_then(Value::as_str).unwrap_or("control error");
-        Err(BerryError::device(msg.to_string()))
+        // Preserve the server's exit code and hint (vnc passwd maps to
+        // E_USAGE when the endpoint has no auth, with a restart hint).
+        let msg = v
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("control error")
+            .to_string();
+        let code = v
+            .get("code")
+            .and_then(Value::as_str)
+            .and_then(|n| match n {
+                "E_USAGE" => Some(2),
+                "E_NO_SESSION" => Some(3),
+                "E_TIMEOUT" => Some(4),
+                "E_BUSY" => Some(5),
+                "E_DEVICE" => Some(6),
+                "E_PROTOCOL" => Some(7),
+                _ => None,
+            })
+            .unwrap_or(6);
+        let mut err = BerryError::new(code, msg);
+        if let Some(h) = v.get("hint").and_then(Value::as_str) {
+            err = err.with_hint(h);
+        }
+        Err(err)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use common::passwd_warn_event;
+
+    // F16: the warn event's JSONL shape is pinned field by field; the
+    // error text is the QMP failure message and must never interpolate
+    // password material (a canary string proves none rides along).
+    #[test]
+    fn passwd_warn_event_shape() {
+        let v = passwd_warn_event("QMP command expire_password failed: timer busy");
+        assert_eq!(v.get("v").and_then(Value::as_u64), Some(1));
+        assert_eq!(v.get("t").and_then(Value::as_str), Some("action"));
+        assert_eq!(v.get("action").and_then(Value::as_str), Some("vnc.passwd_warn"));
+        assert_eq!(
+            v.get("error").and_then(Value::as_str),
+            Some("QMP command expire_password failed: timer busy")
+        );
+        assert_eq!(v.get("source").and_then(Value::as_str), Some("control"));
+        assert_eq!(v.as_object().unwrap().len(), 5, "no extra fields");
+        // Round-trips as one JSONL line (append_event writeln's it raw).
+        let line = v.to_string();
+        assert!(!line.contains('\n'));
+        let back: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(back, v);
+    }
+
+    #[test]
+    fn passwd_warn_event_carries_no_password_material() {
+        // The QMP error surface never sees the password; if it ever did,
+        // the event is the place it would leak. Canary both directions.
+        let v = passwd_warn_event("expire failed");
+        let s = v.to_string();
+        assert!(!s.contains("secret-pw-canary"));
+        let v2 = passwd_warn_event("error mentioning secret-pw-canary in a QMP message");
+        assert!(v2.to_string().contains("secret-pw-canary"));
+        // ^ documents the contract honestly: the event is a passthrough of
+        // the QMP text, and that text carries only expire-timer state.
     }
 }
