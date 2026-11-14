@@ -789,6 +789,11 @@ test-host:
     # gop 四非零门/fmt≤2 钉板，host 12 测；判定律单源，kernel handoff.rs
     # 判定段换消费，raw 解引用留壳）。
     cargo test -p berry-hofface --target {{host}}
+    # W3-Q84：berry-dmface（fw_cfg display 模式请求解析纯面——五门判定
+    # 链：size 域 (0,32]/UTF-8/trim NUL+ASCII 空白/@ 后缀截断/WxH u32
+    # 十进制域，host 6 测；parse_display_mode 单源，kernel main.rs
+    # display_mode_req 薄壳消费——fw_cfg find_file/read_to 物理臂留壳）。
+    cargo test -p berry-dmface --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-loader --target {{host}}
     # X-5 補：berry-winplan（demand 装载窗规划纯函数面——自 berry-exec 外迁
     # 的 plan_wins/cap 参数化；三色窗完备铺满 + congruent 门 (a')-(e') 各

@@ -36,7 +36,8 @@ members = [
     "vslotface",
     "wqmatch",
     "fwcfgface",
-    "wakeface",]
+    "wakeface",
+    "dmface",]
 resolver = "2"
 
 [workspace.package]
