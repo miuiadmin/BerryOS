@@ -119,3 +119,6 @@ smoke-wt-*/
 /.dsh-worktrees/
 /kernel/kernel/
 /.berry-review/
+
+# launcher 独立小工作区本机构建缓存（波0 基线收口补）
+/user/bins/berry-launcher/cargo-target/
