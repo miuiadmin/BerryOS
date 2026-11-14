@@ -185,18 +185,23 @@ jobs:
           #    repository/readme 字段 + README 本体在位）。
           for c in berry-sys berry-tls berry-netdproto berry-fsproto berry-mmap berry-signal berry-lifecycle berry-strmem berry-fsclient berry-libc; do
             m="$c/Cargo.toml"
-            grep -q '^version = "0.1.0"' "$m"      || { echo "::error file=$m::version 应为 0.1.0"; exit 1; }
+            grep -q '^version.workspace = true$' "$m" || { echo "::error file=$m::version 应为 version.workspace = true（迁移步骤 1 继承形）"; exit 1; }
             grep -q '^description = ' "$m"         || { echo "::error file=$m::缺 description"; exit 1; }
             grep -q '^license = "Apache-2.0"' "$m" || { echo "::error file=$m::license 应为 Apache-2.0"; exit 1; }
             grep -q '^repository = ' "$m"          || { echo "::error file=$m::缺 repository"; exit 1; }
             grep -q '^readme = "README.md"' "$m"   || { echo "::error file=$m::缺 readme 字段"; exit 1; }
             test -f "$c/README.md"                 || { echo "::error file=$m::README.md 缺席"; exit 1; }
           done
+          grep -q '^version = "0.2.0"$' Cargo.toml  || { echo "::error file=Cargo.toml::workspace 单源 version 应为 0.2.0"; exit 1; }
           # —— 硬门 2：内部依赖双写形恰一（path + version 同行；依赖行上方
-          #    注释不拦，行本体逐字节钉死）。
+          #    注释不拦，行本体逐字节钉死）。version 段取 user workspace
+          #    单源值动态对拍（段作用域 awk 防他段串号，ver-check.sh 同款）
+          #    ——双写形仍恰一执法，但不钉死具体版本值，升版零改守卫。
+          wsv=$(awk -F'"' '/^\[workspace\.package\]/{ws=1;next} /^\[/{ws=0} ws && /^version[[:space:]]*=/{print $2; exit}' Cargo.toml)
+          [ -n "$wsv" ] || { echo "::error file=Cargo.toml::user workspace 缺 [workspace.package] version（双写对拍无单源）"; exit 1; }
           dw() {  # dw <manifest> <dep>
-            grep -q "^$2 = { path = \"../$2\", version = \"0.1.0\" }$" "$1" \
-              || { echo "::error file=$1::依赖 $2 应为 { path = \"../$2\", version = \"0.1.0\" } 双写形"; exit 1; }
+            grep -q "^$2 = { path = \"../$2\", version = \"$wsv\" }$" "$1" \
+              || { echo "::error file=$1::依赖 $2 应为 { path = \"../$2\", version = \"$wsv\" } 双写形"; exit 1; }
           }
           dw berry-fsclient/Cargo.toml berry-sys
           dw berry-fsclient/Cargo.toml berry-fsproto
