@@ -13,7 +13,10 @@
 //! flags  := bit0 = has_key / bit1 = has_size / bit2 = has_a11y /
 //!           bit3 = has_align（bit4+ 未知 → UnknownFlags 拒）
 //! props  := kind 定长：Root 0B / Rect 11B / Text 变长(6..=9+len) /
-//!           Col·Row·Pad 4B / Image 10B / Icon 13B / Grid 7B（GUI-6 §8.1）
+//!           Col·Row·Pad 4B / Image 10B / Icon 13B / Grid 7B（GUI-6 §8.1）；
+//!           组件七件（Phase 1 清单，tag 9..=15 add-only）：Button 变长
+//!           (6..=70) / Toggle·Progress 5B / Slider 16B / Scroll·List 8B /
+//!           Tabs 12B（u32 域全 LE）
 //! ```
 //!
 //! - `child_count` 是**树形走查域**（不属于节点本体）：[`parse_node`] 只
@@ -29,14 +32,25 @@
 //!   len u8 + label ≤64B；align 块 1B = cross u8。**块在 ⟺ 有义**
 //!   （size 双 None / align 载 Stretch 缺省 = 非规范形拒——块存在性可
 //!   从 arena 状态推导，byte-exact roundtrip 的前提）。
+//! - 组件七件（Phase 1，`docs` 组件清单）：Button/Toggle/Slider/Progress
+//!   = 新叶（叶带子拒面与 Rect/Text/Image/Icon 同列）；Scroll/List/Tabs
+//!   = 容器（AST/builder 面可带子）。Button 变长 = len u8 + label +
+//!   style u8 + on_tap u32；Toggle 5B = checked u8 + on_change；Slider
+//!   16B = value·min·max·on_change（value 0..=1000 permille——免 FP，
+//!   f32 破 Eq/整数纪律）；Progress 5B = value + style；Scroll 8B =
+//!   content_height + offset_y；List 8B = item_count + item_height；
+//!   Tabs 12B = tab_count·active·on_switch。值域拒面 [`AstError::BadValue`]
+//!   （add-only）。渲染/布局/手势面 Phase 1 不实现（paint 走查无视觉、
+//!   layout 占位——Phase 2 接管）。
 //! - 块×kind 合法域（§8.2 表）：SIZE 容器通则 Col/Row/Grid 合法（Text/
 //!   Image/Icon 双源歧义拒——尺寸已在 props 定长域；Pad/Root 拒）；
 //!   ALIGN 仅 Col/Row；A11Y 全 kind 合法（落点 = Ui 侧 a11y 表，D12）。
 //! - 旧流（v1 六 kind、flags ∈ {0,1}）逐字节不变——bit1/2/3 立法对
 //!   不立块的流零扰动（GOLDEN_V1 守卫）。
 //! - 拒面全 loud（guiproto 同款纪律）：未知 kind / flags bit4+ / 截断 /
-//!   尾随字节 / 叶子带子（Rect/Text/Image/Icon）/ Root 为子 / 文本超长 /
-//!   块×kind 失配 / Grid 零维·超格，一律 `Err`。
+//!   尾随字节 / 叶子带子（Rect/Text/Image/Icon/Button/Toggle/Slider/
+//!   Progress）/ Root 为子 / 文本超长 / 块×kind 失配 / Grid 零维·超格 /
+//!   组件值域越界，一律 `Err`。
 //!
 //! # 内存纪律
 //!
@@ -54,10 +68,13 @@ use berry_gfx::font::FontSize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(pub(crate) u32);
 
-// ---------- 视图集（v1 六件 + GUI-6 段B 三新件——§3.2/§8） ----------
+// ---------- 视图集（v1 六件 + GUI-6 段B 三新件 + Phase 1 组件七件——§3.2/§8） ----------
 
 /// 视图种类：`Root/Rect/Text`、容器 `Col/Row/Pad/Grid` 与新叶
 /// `Image/Icon`（叶子带子 = AST 拒面——Rect/Text/Image/Icon 四叶）。
+/// Phase 1 组件七件（tag 9..=15 add-only）：新叶 `Button/Toggle/Slider/
+/// Progress`（叶带子拒面同列）+ 容器 `Scroll/List/Tabs`（可带子——
+/// 渲染/布局/手势面未实现，仅数据结构层）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewKind {
     Root,
@@ -69,6 +86,13 @@ pub enum ViewKind {
     Image,
     Icon,
     Grid,
+    Button,
+    Toggle,
+    Slider,
+    Progress,
+    Scroll,
+    List,
+    Tabs,
 }
 
 /// 矩形叶子属性：`None` = 尺寸随父（layout 分配）。
@@ -155,6 +179,95 @@ pub struct IconProps {
     pub h: Option<u32>,
 }
 
+// ---------- Phase 1 组件七件（数据结构层——渲染/布局/手势挂 Phase 2） ----------
+
+/// 按钮风格（wire u8 0/1/2 = Filled/Outlined/Text）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ButtonStyle {
+    Filled,
+    Outlined,
+    Text,
+}
+
+/// 按钮叶属性（Phase 1 清单裁决：独立 kind——a11y role 与 golden 对拍
+/// 锚；本质 = Rect 背景 + Text 标签 + hit 点击区的组合件，视觉合成挂
+/// Phase 2）。`label` 用内联 [`TextBuf`]（≤ `TEXT_INLINE`）而非
+/// `&'static str`——零 alloc Copy 值面纪律 + TLV 流自含（与 Text 同款）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ButtonProps {
+    pub label: TextBuf,
+    pub style: ButtonStyle,
+    /// 事件 ID（hit 层派发——Phase 1 仅数据面，不接线）。
+    pub on_tap: u32,
+}
+
+/// 开关叶属性（视觉 = 圆角轨道 + 圆形滑块；checked 切换位移动画复用
+/// anim——Phase 2）。wire checked u8 ∈ {0,1}，域外 UnknownProp 拒。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToggleProps {
+    pub checked: bool,
+    /// 事件 ID（hit 层派发——Phase 1 仅数据面）。
+    pub on_change: u32,
+}
+
+/// 滑块叶属性（视觉 = 轨道 + 填充 + 拖动圆点；拖动复用 hit 的 drag
+/// 事件——Phase 2）。`value` = 0..=1000 permille（清单草图 f32 的免 FP
+/// 替身——f32 破 Eq derive 与 crate 整数纪律）；语义值 = min +
+/// value×(max-min)/1000（消费面折算）。min > max = BadValue 拒。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SliderProps {
+    pub value: u32,
+    pub min: u32,
+    pub max: u32,
+    /// 事件 ID（hit 层派发——Phase 1 仅数据面）。
+    pub on_change: u32,
+}
+
+/// 进度风格（wire u8 0/1/2 = Linear/Circular/Indeterminate）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgressStyle {
+    Linear,
+    Circular,
+    Indeterminate,
+}
+
+/// 进度叶属性（`value` = 0..=1000 permille，域外 BadValue 拒）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProgressProps {
+    pub value: u32,
+    pub style: ProgressStyle,
+}
+
+/// 滚动容器属性（滚动 = 子内容 clipping + offset，手势复用 swipe——
+/// Phase 2）。`offset_y` > `content_height` = BadValue 拒（视口无关的
+/// 结构不变量；对视口的紧上界由消费面钳）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrollProps {
+    /// 内容总高（> 视口时滚动——视口高由布局语境定，不进 props）。
+    pub content_height: u32,
+    /// 当前滚动偏移。
+    pub offset_y: u32,
+}
+
+/// 列表容器属性（v1 全量渲染等高项——懒化等 layout v2，Phase 1 不做）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ListProps {
+    pub item_count: u32,
+    pub item_height: u32,
+}
+
+/// 页签容器属性（视觉 = 顶部指示条 + 底部内容区，滑动切换复用
+/// SwipePager——Phase 2）。子节点 = 内容区（AST/builder 面可带子；
+/// 命令面 add() 父位白名单未收编——BadParent）。零页 / active 越页 =
+/// BadValue 拒。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TabsProps {
+    pub tab_count: u32,
+    pub active: u32,
+    /// 事件 ID（hit 层派发——Phase 1 仅数据面）。
+    pub on_switch: u32,
+}
+
 /// 属性族（Plain Data，Copy——「声明即数据」的值面）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Props {
@@ -167,6 +280,13 @@ pub enum Props {
     Image(ImageProps),
     Icon(IconProps),
     Grid(GridProps),
+    Button(ButtonProps),
+    Toggle(ToggleProps),
+    Slider(SliderProps),
+    Progress(ProgressProps),
+    Scroll(ScrollProps),
+    List(ListProps),
+    Tabs(TabsProps),
 }
 
 /// builder 入口（入口①）的单节点描述：`key != 0` = 调和键（v1 仅随
@@ -322,6 +442,11 @@ pub enum AstError {
     /// Grid 拒面：cols×rows < children（超格不容忍静默截断/溢排）。
     /// `children` = 不适配时的子数（builder 面即被拒的第 n+1 子计数）。
     GridNotFit { cols: u8, rows: u8, children: u32 },
+    /// 组件七件值域拒面（Phase 1 add-only——`UnknownProp` 的 u32 载荷
+    /// 版：越界值超 u8 不堪载）：Slider value > 1000 或 min > max、
+    /// Progress value > 1000、Scroll offset_y > content_height、Tabs
+    /// tab_count == 0 或 active >= tab_count。`got` = 违规值。
+    BadValue { kind: ViewKind, got: u32 },
 }
 
 // ---------- TLV 格式常量（wire 值域——编解码双侧单源在此） ----------
@@ -338,6 +463,19 @@ pub const KIND_PAD: u8 = 5;
 pub const KIND_IMAGE: u8 = 6;
 pub const KIND_ICON: u8 = 7;
 pub const KIND_GRID: u8 = 8;
+/// Phase 1 组件七件（add-only 追加——旧流值域 0..=8 不受扰，9..=15
+/// 旧读端本就 UnknownKind 拒，无双义重编）。
+pub const KIND_BUTTON: u8 = 9;
+pub const KIND_TOGGLE: u8 = 10;
+pub const KIND_SLIDER: u8 = 11;
+pub const KIND_PROGRESS: u8 = 12;
+pub const KIND_SCROLL: u8 = 13;
+pub const KIND_LIST: u8 = 14;
+pub const KIND_TABS: u8 = 15;
+
+/// Slider/Progress 的 permille 值域上界（0..=1000——清单草图 f32 0.0..=1.0
+/// 的整数替身；编解码双侧单源）。
+pub const PERMILLE_MAX: u32 = 1000;
 
 /// flags bit0 = has_key（v1）。
 pub const FLAG_HAS_KEY: u8 = 1;
@@ -380,6 +518,13 @@ fn kind_to_u8(k: ViewKind) -> u8 {
         ViewKind::Image => KIND_IMAGE,
         ViewKind::Icon => KIND_ICON,
         ViewKind::Grid => KIND_GRID,
+        ViewKind::Button => KIND_BUTTON,
+        ViewKind::Toggle => KIND_TOGGLE,
+        ViewKind::Slider => KIND_SLIDER,
+        ViewKind::Progress => KIND_PROGRESS,
+        ViewKind::Scroll => KIND_SCROLL,
+        ViewKind::List => KIND_LIST,
+        ViewKind::Tabs => KIND_TABS,
     }
 }
 
@@ -394,6 +539,13 @@ fn kind_from_u8(v: u8) -> Option<ViewKind> {
         KIND_IMAGE => Some(ViewKind::Image),
         KIND_ICON => Some(ViewKind::Icon),
         KIND_GRID => Some(ViewKind::Grid),
+        KIND_BUTTON => Some(ViewKind::Button),
+        KIND_TOGGLE => Some(ViewKind::Toggle),
+        KIND_SLIDER => Some(ViewKind::Slider),
+        KIND_PROGRESS => Some(ViewKind::Progress),
+        KIND_SCROLL => Some(ViewKind::Scroll),
+        KIND_LIST => Some(ViewKind::List),
+        KIND_TABS => Some(ViewKind::Tabs),
         _ => None,
     }
 }
@@ -436,6 +588,72 @@ fn scale_from_u8(kind: ViewKind, v: u8) -> Result<FontSize, AstError> {
         2 => Ok(FontSize::S24x48),
         3 => Ok(FontSize::S32x48),
         _ => Err(AstError::UnknownProp { kind, got: v }),
+    }
+}
+
+/// ButtonStyle → wire u8（0/1/2——编解码双侧单源）。
+fn button_style_to_u8(s: ButtonStyle) -> u8 {
+    match s {
+        ButtonStyle::Filled => 0,
+        ButtonStyle::Outlined => 1,
+        ButtonStyle::Text => 2,
+    }
+}
+
+/// wire u8 → ButtonStyle（值域外 → UnknownProp——`kind` 入载荷供拒面定位）。
+fn button_style_from_u8(kind: ViewKind, v: u8) -> Result<ButtonStyle, AstError> {
+    match v {
+        0 => Ok(ButtonStyle::Filled),
+        1 => Ok(ButtonStyle::Outlined),
+        2 => Ok(ButtonStyle::Text),
+        _ => Err(AstError::UnknownProp { kind, got: v }),
+    }
+}
+
+/// ProgressStyle → wire u8（0/1/2——编解码双侧单源）。
+fn progress_style_to_u8(s: ProgressStyle) -> u8 {
+    match s {
+        ProgressStyle::Linear => 0,
+        ProgressStyle::Circular => 1,
+        ProgressStyle::Indeterminate => 2,
+    }
+}
+
+/// wire u8 → ProgressStyle（值域外 → UnknownProp）。
+fn progress_style_from_u8(kind: ViewKind, v: u8) -> Result<ProgressStyle, AstError> {
+    match v {
+        0 => Ok(ProgressStyle::Linear),
+        1 => Ok(ProgressStyle::Circular),
+        2 => Ok(ProgressStyle::Indeterminate),
+        _ => Err(AstError::UnknownProp { kind, got: v }),
+    }
+}
+
+/// 组件七件值域先验（builder begin 面——与 parse_props 流面同律，Grid
+/// 零维检同型先例；命令面 add() 在 lib.rs，Phase 1 未收编——见模块
+/// 注记）。kind×props 失配不在此检（既有非 Grid 面同状——流面
+/// parse_props 按 kind 定长读，结构性拒）。
+fn validate_phase1(kind: ViewKind, props: &Props) -> Result<(), AstError> {
+    match (kind, props) {
+        (ViewKind::Slider, Props::Slider(p)) if p.value > PERMILLE_MAX => {
+            Err(AstError::BadValue { kind, got: p.value })
+        }
+        (ViewKind::Slider, Props::Slider(p)) if p.min > p.max => {
+            Err(AstError::BadValue { kind, got: p.min })
+        }
+        (ViewKind::Progress, Props::Progress(p)) if p.value > PERMILLE_MAX => {
+            Err(AstError::BadValue { kind, got: p.value })
+        }
+        (ViewKind::Scroll, Props::Scroll(p)) if p.offset_y > p.content_height => {
+            Err(AstError::BadValue { kind, got: p.offset_y })
+        }
+        (ViewKind::Tabs, Props::Tabs(p)) if p.tab_count == 0 => {
+            Err(AstError::BadValue { kind, got: 0 })
+        }
+        (ViewKind::Tabs, Props::Tabs(p)) if p.active >= p.tab_count => {
+            Err(AstError::BadValue { kind, got: p.active })
+        }
+        _ => Ok(()),
     }
 }
 
@@ -537,6 +755,51 @@ pub(crate) fn encode_props(props: &Props, out: &mut [u8]) -> Result<usize, AstEr
             c += put_u8(&mut out[c..], p.rows)?;
             c += put_u32le(&mut out[c..], p.gap)?;
             c += put_u8(&mut out[c..], cross_to_u8(p.cross))?;
+        }
+        // Button 变长 6..=70：len u8 + label + style u8 + on_tap u32 LE
+        Props::Button(p) => {
+            let bytes = p.label.as_bytes();
+            c += put_u8(&mut out[c..], bytes.len() as u8)?;
+            if out.len() < c + bytes.len() {
+                return Err(AstError::TooSmall { need: c + bytes.len(), got: out.len() });
+            }
+            out[c..c + bytes.len()].copy_from_slice(bytes);
+            c += bytes.len();
+            c += put_u8(&mut out[c..], button_style_to_u8(p.style))?;
+            c += put_u32le(&mut out[c..], p.on_tap)?;
+        }
+        // Toggle 5B：checked u8 + on_change u32 LE
+        Props::Toggle(p) => {
+            c += put_u8(&mut out[c..], p.checked as u8)?;
+            c += put_u32le(&mut out[c..], p.on_change)?;
+        }
+        // Slider 16B：value·min·max·on_change 各 u32 LE
+        Props::Slider(p) => {
+            c += put_u32le(&mut out[c..], p.value)?;
+            c += put_u32le(&mut out[c..], p.min)?;
+            c += put_u32le(&mut out[c..], p.max)?;
+            c += put_u32le(&mut out[c..], p.on_change)?;
+        }
+        // Progress 5B：value u32 LE + style u8
+        Props::Progress(p) => {
+            c += put_u32le(&mut out[c..], p.value)?;
+            c += put_u8(&mut out[c..], progress_style_to_u8(p.style))?;
+        }
+        // Scroll 8B：content_height·offset_y 各 u32 LE
+        Props::Scroll(p) => {
+            c += put_u32le(&mut out[c..], p.content_height)?;
+            c += put_u32le(&mut out[c..], p.offset_y)?;
+        }
+        // List 8B：item_count·item_height 各 u32 LE
+        Props::List(p) => {
+            c += put_u32le(&mut out[c..], p.item_count)?;
+            c += put_u32le(&mut out[c..], p.item_height)?;
+        }
+        // Tabs 12B：tab_count·active·on_switch 各 u32 LE
+        Props::Tabs(p) => {
+            c += put_u32le(&mut out[c..], p.tab_count)?;
+            c += put_u32le(&mut out[c..], p.active)?;
+            c += put_u32le(&mut out[c..], p.on_switch)?;
         }
     }
     Ok(c)
@@ -673,6 +936,83 @@ fn parse_props(kind: ViewKind, src: &[u8]) -> Result<(Props, usize), AstError> {
                 }),
                 7,
             ))
+        }
+        // Button 变长 6..=70：len(1) + label + style(1) + on_tap(4)——
+        // 超长 TextTooLong、style 域外 UnknownProp（截断优先于语义检）
+        ViewKind::Button => {
+            need(1)?;
+            let llen = src[0] as usize;
+            if llen > crate::TEXT_INLINE {
+                return Err(AstError::TextTooLong { len: llen });
+            }
+            need(6 + llen)?;
+            let style = button_style_from_u8(kind, src[1 + llen])?;
+            let label = TextBuf::new(&src[1..1 + llen])
+                .map_err(|_| AstError::TextTooLong { len: llen })?;
+            Ok((
+                Props::Button(ButtonProps { label, style, on_tap: u32at(2 + llen) }),
+                6 + llen,
+            ))
+        }
+        // Toggle 5B：checked ∈ {0,1}（域外 UnknownProp）+ on_change
+        ViewKind::Toggle => {
+            need(5)?;
+            let checked = match src[0] {
+                0 => false,
+                1 => true,
+                v => return Err(AstError::UnknownProp { kind, got: v }),
+            };
+            Ok((Props::Toggle(ToggleProps { checked, on_change: u32at(1) }), 5))
+        }
+        // Slider 16B：值域检在定长域读完后（截断优先）；value > 1000 /
+        // min > max → BadValue（got = 违规值）
+        ViewKind::Slider => {
+            need(16)?;
+            let (value, min, max, on_change) = (u32at(0), u32at(4), u32at(8), u32at(12));
+            if value > PERMILLE_MAX {
+                return Err(AstError::BadValue { kind, got: value });
+            }
+            if min > max {
+                return Err(AstError::BadValue { kind, got: min });
+            }
+            Ok((Props::Slider(SliderProps { value, min, max, on_change }), 16))
+        }
+        // Progress 5B：value 值域 + style 域外拒
+        ViewKind::Progress => {
+            need(5)?;
+            let value = u32at(0);
+            if value > PERMILLE_MAX {
+                return Err(AstError::BadValue { kind, got: value });
+            }
+            let style = progress_style_from_u8(kind, src[4])?;
+            Ok((Props::Progress(ProgressProps { value, style }), 5))
+        }
+        // Scroll 8B：offset_y > content_height → BadValue（视口无关
+        // 结构不变量——对视口紧上界由消费面钳）
+        ViewKind::Scroll => {
+            need(8)?;
+            let (content_height, offset_y) = (u32at(0), u32at(4));
+            if offset_y > content_height {
+                return Err(AstError::BadValue { kind, got: offset_y });
+            }
+            Ok((Props::Scroll(ScrollProps { content_height, offset_y }), 8))
+        }
+        // List 8B：等高项计数 + 项高（v1 全量——零项合法 = 空表）
+        ViewKind::List => {
+            need(8)?;
+            Ok((Props::List(ListProps { item_count: u32at(0), item_height: u32at(4) }), 8))
+        }
+        // Tabs 12B：零页 / active 越页 → BadValue（got = 违规值）
+        ViewKind::Tabs => {
+            need(12)?;
+            let (tab_count, active, on_switch) = (u32at(0), u32at(4), u32at(8));
+            if tab_count == 0 {
+                return Err(AstError::BadValue { kind, got: 0 });
+            }
+            if active >= tab_count {
+                return Err(AstError::BadValue { kind, got: active });
+            }
+            Ok((Props::Tabs(TabsProps { tab_count, active, on_switch }), 12))
         }
     }
 }
@@ -976,8 +1316,9 @@ fn emit_node(
 /// AST 流重建整树进 arena（调用方先 reset；槽分配按前序游走确定性
 /// 0..N，超容 → `TooSmall`）。`a11y_out` = Ui 侧 a11y 表落点（D12——
 /// a11y 块载荷按槽序写入，满帽 TooSmall loud；调用方随 reset 清表）。
-/// 成功后 `*root_out` = 根槽；尾随字节 / 叶带子（Rect/Text/Image/Icon）
-/// / Root 为子 / 流首非 Root / Grid 零维·超格 全 loud 拒。
+/// 成功后 `*root_out` = 根槽；尾随字节 / 叶带子（Rect/Text/Image/Icon/
+/// Button/Toggle/Slider/Progress）/ Root 为子 / 流首非 Root / Grid 零
+/// 维·超格 全 loud 拒。
 pub(crate) fn apply_tree(
     src: &[u8],
     nodes: &mut [Option<crate::Node>],
@@ -1032,10 +1373,19 @@ fn build_node(
     // child_count（树形走查域——节点本体之后恰一字节）
     let cc = *src.get(*pos).ok_or(AstError::Truncated)? as usize;
     *pos += 1;
-    if matches!(spec.kind, ViewKind::Rect | ViewKind::Text | ViewKind::Image | ViewKind::Icon)
-        && cc > 0
+    if matches!(
+        spec.kind,
+        ViewKind::Rect
+            | ViewKind::Text
+            | ViewKind::Image
+            | ViewKind::Icon
+            | ViewKind::Button
+            | ViewKind::Toggle
+            | ViewKind::Slider
+            | ViewKind::Progress
+    ) && cc > 0
     {
-        return Err(AstError::BadParent); // 叶子带子拒面（Image/Icon 入列——D24）
+        return Err(AstError::BadParent); // 叶子带子拒面（Image/Icon 入列——D24；组件新叶同列——Phase 1）
     }
     // Grid 适配检：cols×rows < 子数 → GridNotFit（超格不容忍静默截断；
     // 零维已在 parse_props 拒——此处 props 必带正维）
@@ -1122,7 +1472,8 @@ const BLK_ALIGN: u8 = 4;
 
 /// AST 流构造器：`begin(kind, key, props)` … `end()` 嵌套描述树，child_count
 /// 由 end 回填（占位-补数——与 apply_tree 读位自洽）。首 begin 必须 Root、
-/// Root/叶（Rect/Text/Image/Icon）下不可再 begin（BadParent）；深度帽
+/// Root/叶（Rect/Text/Image/Icon/Button/Toggle/Slider/Progress）下不可再
+/// begin（BadParent）；深度帽
 /// DESC_DEPTH_MAX、缓冲帽 DESC_MAX、子数帽 255——全 TooSmall loud。
 ///
 /// GUI-6 §8 扩展块面（开层后、首子前链式落块——块序由阶段位图保证恒
@@ -1194,14 +1545,25 @@ impl DescBuilder {
             }
             _ => (0, 0),
         };
+        // 组件七件值域先验（builder 生产面与 parse 流面同律——validate_phase1）
+        validate_phase1(kind, props)?;
         if self.depth > 0 {
             let parent_kind = self.frames[self.depth - 1].kind;
             if kind == ViewKind::Root {
                 return Err(AstError::BadParent); // Root 不能为子
             }
-            if matches!(parent_kind, ViewKind::Rect | ViewKind::Text | ViewKind::Image | ViewKind::Icon)
-            {
-                return Err(AstError::BadParent); // 叶子不带子（Image/Icon 入列——D24）
+            if matches!(
+                parent_kind,
+                ViewKind::Rect
+                    | ViewKind::Text
+                    | ViewKind::Image
+                    | ViewKind::Icon
+                    | ViewKind::Button
+                    | ViewKind::Toggle
+                    | ViewKind::Slider
+                    | ViewKind::Progress
+            ) {
+                return Err(AstError::BadParent); // 叶子不带子（Image/Icon 入列——D24；组件新叶同列）
             }
             // Grid 父适配检：格满再开子 → GridNotFit（payload = 被拒子序号）
             if parent_kind == ViewKind::Grid {

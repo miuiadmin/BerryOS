@@ -314,6 +314,18 @@ fn intrinsic(
         }
         Props::Image(p) => icon_dims(icons, p.res, p.w, p.h),
         Props::Icon(p) => icon_dims(icons, p.id, p.w, p.h),
+        // 组件七件（Phase 1 占位）：数据结构层先行，内在语义（Button 标
+        // 签度量 / List count×item_h / Scroll content_h）挂 Phase 2 布局
+        // 刀——占位 0×0（容器子树仍各自递归测量，final_size 随父不塌陷
+        // 走查）。半实现（如 List 项高聚合）会与 place_children 的 Root
+        // 型全幅叠放失配产出中间态，不取。
+        Props::Button(_)
+        | Props::Toggle(_)
+        | Props::Slider(_)
+        | Props::Progress(_)
+        | Props::Scroll(_)
+        | Props::List(_)
+        | Props::Tabs(_) => (0, 0),
     }
 }
 
@@ -437,6 +449,17 @@ fn final_size(n: &Node, avail_w: i32, avail_h: i32) -> (i32, i32) {
             p.w.map(u32_to_i32_sat).unwrap_or(u32_to_i32_sat(n.meas_w)),
             p.h.map(u32_to_i32_sat).unwrap_or(u32_to_i32_sat(n.meas_h)),
         ),
+        // 组件七件（Phase 1 占位）：随父填充（Rect None 同形）——无内在
+        // 语义（meas = 0×0，见 intrinsic 注记）；place_children 走 `_` 臂
+        // Root 型全幅叠放，子树不断轨。定尺寸面（SIZE 块）§8.2 表未扩，
+        // 组件七件拒块——无双源。
+        Props::Button(_)
+        | Props::Toggle(_)
+        | Props::Slider(_)
+        | Props::Progress(_)
+        | Props::Scroll(_)
+        | Props::List(_)
+        | Props::Tabs(_) => (avail_w, avail_h),
     }
 }
 
