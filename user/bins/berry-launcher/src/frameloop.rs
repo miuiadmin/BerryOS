@@ -266,6 +266,7 @@ pub fn run(
     let mut presented: u64 = 0; // FRAME_CALLBACK 过链计数（自测基线）
     let mut launched = false; // LAUNCH ok 恰一次
     let mut spawn_ok: u32 = 0; // 真实 APP_SPAWN ok 回执计数（CLICK ok 恰一次）
+    let mut recents_app: Option<RecentsApp> = None; // 多任务键记忆（最近 spawn 成功的 app）
     let mut buf_id: u32 = 1; // SUBMIT buffer 代际（RELEASE echo 非断言面）
     let mut st = Selftest::WaitFirst;
     // 段④：真实输入（inputd INPUT_POLL 阻塞批拉；hi==0 = 冻结相静默）。
@@ -394,9 +395,16 @@ pub fn run(
         for m in msgs.iter() {
             match m {
                 Msg::Click { node } => {
-                    // 刀 D：导航三键先判（命中 = 消费，不落槽 spawn 面）。
-                    if !on_nav_click(*node, ui, &mut desktop, &mut power_armed, t_now) {
-                        on_click(*node, &desktop, &mut spawn_ok, smoke);
+                    // 五键导航先判（命中 = 消费，不落槽 spawn 面）。
+                    if !on_nav_click(
+                        *node,
+                        ui,
+                        &mut desktop,
+                        &mut power_armed,
+                        t_now,
+                        &mut recents_app,
+                    ) {
+                        on_click(*node, &desktop, &mut spawn_ok, smoke, &mut recents_app);
                     }
                 }
                 _ => {
@@ -766,6 +774,7 @@ fn on_nav_click(
     desktop: &mut Desktop,
     power_armed: &mut Option<u64>,
     t_now: u64,
+    recents: &mut Option<RecentsApp>,
 ) -> bool {
     let nav = desktop.nav;
     let snap_page = |ui: &mut UiMain, desktop: &mut Desktop, target: u8| {
@@ -780,11 +789,25 @@ fn on_nav_click(
             snap_page(ui, desktop, p - 1);
         }
         true
+    } else if node == nav.recents {
+        // 多任务 v1：重新拉起最近 spawn 的应用（真重拉非死键）；无历史
+        // = 静默无操作（桌面常驻义务）。整体取出再 spawn——避免 spawn
+        // RPC 窗内再借用 desktop。
+        if let Some(app) = recents.take() {
+            spawn_by_id(&app);
+        }
+        true
     } else if node == nav.home {
         let p = desktop.pager.page();
         if p != 0 {
             snap_page(ui, desktop, 0);
         }
+        true
+    } else if node == nav.rotate {
+        // 旋转 v1：打 `ROTATE` 串口标记——宿主 berry 窗口监听并换几何
+        // 重启（guest 无法自转 ramfb 几何——fw_cfg 是宿主注入面）。标记
+        // 字节精确（gui8-smoke 标记族同形）。
+        println!("ROTATE");
         true
     } else if node == nav.power {
         match *power_armed {
@@ -814,7 +837,49 @@ fn on_nav_click(
 /// n=1`（恰一次，`spawn_ok` 计数门——后续成功点击静默，避免重启/连点
 /// 制造重复标记）；失败回执维持 eprintln 诊断（spawn 是旁路动作，不打
 /// 断帧循环、不 fail、**不产标记**）。
-fn on_click(node: NodeId, desktop: &Desktop, spawn_ok: &mut u32, smoke: bool) {
+/// 多任务键记忆体：最近一次 spawn 成功的应用 id（二进制拷贝——注册表
+/// 条目生命周期不随帧循环，spawn 窗外安全）。
+pub struct RecentsApp {
+    pub id: [u8; 24],
+    pub id_len: u8,
+}
+
+/// 按 id spawn（on_click 与多任务键重拉共用）。回执记账返回 ok 与否。
+fn spawn_by_id_inner(id: &[u8], smoke: bool, spawn_ok: &mut u32) -> bool {
+    let h = app_cli_h();
+    if h == 0 {
+        return false; // 冻结相：app 通道结构性缺席
+    }
+    let mut req = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    match ap::encode_spawn_request(&mut req, id) {
+        Some(m) => {
+            let (n, _) = rpc(h, &req[..m], &[], &mut rep, &mut rhs);
+            let ack = ap::parse_spawn_ack(&rep, n);
+            if note_spawn_ack(smoke, spawn_ok, ack) {
+                // 标记（字节精确）：真实 APP_SPAWN ok 回执恰一次，且仅
+                // 冒烟模式（正常 boot 零 CLICK）。
+                println!("CLICK ok n=1");
+            }
+            matches!(ack, Some((true, _)))
+        }
+        None => {
+            eprintln!("launcher: spawn id bad");
+            false
+        }
+    }
+}
+
+/// 多任务键重拉入口（无 smoke 标记面——正常交互路径）。
+fn spawn_by_id(id: &RecentsApp) {
+    let mut n = 0u32;
+    if !spawn_by_id_inner(&id.id[..id.id_len as usize], false, &mut n) {
+        eprintln!("launcher: recents respawn failed");
+    }
+}
+
+fn on_click(node: NodeId, desktop: &Desktop, spawn_ok: &mut u32, smoke: bool, recents: &mut Option<RecentsApp>) {
     let slot = desktop
         .slots
         .iter()
@@ -824,32 +889,13 @@ fn on_click(node: NodeId, desktop: &Desktop, spawn_ok: &mut u32, smoke: bool) {
     let Some(slot) = slot else { return }; // 壁纸/状态栏/圆点/容器白区 = 无格
     let Some(idx) = slot.app else { return }; // 占位/幽灵格不可 spawn
     let Some(entry) = icons::registry().get(idx) else { return };
-    let h = app_cli_h();
-    if h == 0 {
-        return; // 冻结相：app 通道结构性缺席
-    }
-    let mut req = [0u8; 256];
-    let mut rep = [0u8; 256];
-    let mut rhs = [0 as Handle; 8];
-    match ap::encode_spawn_request(&mut req, entry.id_bytes()) {
-        Some(m) => {
-            let (n, _) = rpc(h, &req[..m], &[], &mut rep, &mut rhs);
-            let ack = ap::parse_spawn_ack(&rep, n);
-            if note_spawn_ack(smoke, spawn_ok, ack) {
-                // 标记（字节精确）：真实 APP_SPAWN ok 回执恰一次，且仅
-                // 冒烟模式（正常 boot 零 CLICK）。
-                println!("CLICK ok n=1");
-            }
-            match ack {
-                Some((true, _)) => {}
-                Some((false, err)) => eprintln!(
-                    "launcher: spawn {} err={err}",
-                    String::from_utf8_lossy(entry.id_bytes())
-                ),
-                None => eprintln!("launcher: spawn ack bad"),
-            }
-        }
-        None => eprintln!("launcher: spawn id bad"),
+    if spawn_by_id_inner(entry.id_bytes(), smoke, spawn_ok) {
+        // 多任务键记忆：spawn 成功才记账（失败不占 recents 槽）。
+        let mut id = [0u8; 24];
+        let src = entry.id_bytes();
+        let n = src.len().min(24);
+        id[..n].copy_from_slice(&src[..n]);
+        *recents = Some(RecentsApp { id, id_len: n as u8 });
     }
 }
 

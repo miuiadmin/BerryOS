@@ -138,16 +138,17 @@ const SIM_TAG: &[u8] = b"SIM";
 /// 时钟 UTC 角标（epoch 注入口径 = UTC；本地时区换算挂账波二）。
 const UTC_TAG: &[u8] = b"UTC";
 
-// —— 三键导航条（波一刀 D，审计 02 号 §6.1 M2）——
-/// 导航键命中区边长：big = 44vp×3px = 132；紧凑 = 44px（应用规范
-/// §3.2 触控目标硬指标下限——视觉 = 键块整体，命中区不缩）。
-const NAV_KEY_PX_BIG: u32 = 44 * OH_DENSITY;
+// —— 五键导航条（owner 2026-11-13 裁定：返回/多任务/桌面/旋转/关机，
+// 键加大）——
+/// 导航键命中区边长：big = 160px（owner「大点」——原 132px 加大）；
+/// 紧凑 = 44px（应用规范 §3.2 触控目标硬指标下限——视觉 = 键块整体，
+/// 命中区不缩）。
+const NAV_KEY_PX_BIG: u32 = 160;
 const NAV_KEY_PX: u32 = 44;
-/// 导航条高：big = OH_DOCK_BOTTOM×3 = 135（dock 底 sysUI 保留区恰容
-/// 132 键纵向居中）；紧凑 = 44。
-const NAV_BAR_H_BIG: u32 = OH_DOCK_BOTTOM * OH_DENSITY;
-/// 键间隔：big 64px（≈21vp，Android 三键同族间距）；紧凑 12px。
-const NAV_GAP_BIG: u32 = 64;
+/// 导航条高：big = 190（dock 底 sysUI 保留区 135 + 加高 55）；紧凑 = 44。
+const NAV_BAR_H_BIG: u32 = 190;
+/// 键间隔：big 48px；紧凑 12px。
+const NAV_GAP_BIG: u32 = 48;
 const NAV_GAP: u32 = 12;
 /// 关机二击确认窗（防误触——两次点击 3s 内才生效；过期回常态）。
 pub const POWER_ARM_WINDOW_NS: u64 = 3 * 1_000_000_000;
@@ -206,14 +207,19 @@ pub struct Desktop {
     a11y_page: u8,
 }
 
-/// 三键导航节点句柄（波一刀 D——frameloop 消费面）。
+/// 五键导航节点句柄（owner 2026-11-13——frameloop 消费面）。
 #[derive(Clone, Copy)]
 pub struct NavNodes {
     /// 返回键（v1 语义 = 翻页上一页，如实注：应用内返回随 wmd 系统键
     /// 语义刀 I2）。
     pub back: NodeId,
+    /// 多任务键（v1 语义 = 重新拉起最近 spawn 的应用——真重拉非死键）。
+    pub recents: NodeId,
     /// 桌面键（回首页 page 0；已在 = 无操作）。
     pub home: NodeId,
+    /// 旋转键（v1 语义 = 打 `ROTATE` 串口标记——宿主 berry 窗口监听
+    /// 并换几何重启；屏幕方向键）。
+    pub rotate: NodeId,
     /// 关机键（二击 3s 窗确认 → 内核 power_off 0x88 PSCI SYSTEM_OFF）。
     pub power: NodeId,
     /// 键命中区边长（px，建树档位定格——frameloop `set_power_face`
@@ -709,13 +715,13 @@ pub fn build(
     }
     let dock: [Slot; DOCK_SLOTS] = dock.try_into().ok().expect("dock 恰四槽");
 
-    // —— 三键导航条（波一刀 D）：content 列尾行——big 档恰落 OH_DOCK_BOTTOM
-    //    保留区（dock 底缘 → 屏底 135px）；键 = Icon 节点整体（Argb 深底
-    //    圆角块 + 白符号，icons::nav_face——fg 不消费）即命中区 ≥44px。
+    // —— 五键导航条（owner 2026-11-13：返回/多任务/桌面/旋转/关机）：
+    //    content 列尾行。键 = Icon 节点整体（Argb 深底圆角块 + 白符号，
+    //    icons::nav_face——fg 不消费）即命中区 big 160px。
     let nav_key = if big { NAV_KEY_PX_BIG } else { NAV_KEY_PX };
     let nav_gap = if big { NAV_GAP_BIG } else { NAV_GAP };
     let nav_h = if big { NAV_BAR_H_BIG } else { NAV_KEY_PX };
-    let nav_bar_w = nav_key * 3 + nav_gap * 2;
+    let nav_bar_w = nav_key * 5 + nav_gap * 4;
     let nav_bar = ui.add(
         content,
         ViewSpec {
@@ -747,7 +753,9 @@ pub fn build(
         Ok(n)
     };
     let back = nav_icon(icons::NAV_BACK, b"back")?;
+    let recents = nav_icon(icons::NAV_RECENTS, b"recents")?;
     let home = nav_icon(icons::NAV_HOME, b"home")?;
+    let rotate = nav_icon(icons::NAV_ROTATE, b"rotate screen")?;
     let power = nav_icon(icons::NAV_POWER, b"power off")?;
     drop(nav_icon);
 
@@ -756,7 +764,14 @@ pub fn build(
         slots,
         dock,
         clock: time_node,
-        nav: NavNodes { back, home, power, key_px: nav_key },
+        nav: NavNodes {
+            back,
+            recents,
+            home,
+            rotate,
+            power,
+            key_px: nav_key,
+        },
         page_nodes,
         a11y_page: u8::MAX,
     };

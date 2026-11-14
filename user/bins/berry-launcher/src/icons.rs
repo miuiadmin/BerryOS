@@ -67,6 +67,10 @@ pub const NAV_POWER: u16 = 9;
 /// 关机确认态面（二击 3s 窗 armed：同形换暗红警示底——frameloop
 /// set_props 换 id，运行期零重建）。
 pub const NAV_POWER_ARMED: u16 = 10;
+/// 多任务键面（v1 语义 = 重新拉起最近应用）。
+pub const NAV_RECENTS: u16 = 11;
+/// 旋转键面（v1 语义 = 通知宿主旋转——berry input 键位；键面常驻）。
+pub const NAV_ROTATE: u16 = 12;
 pub const DOCK0_DIM: (u32, u32) = (status_icons::DOCK0_W, status_icons::DOCK0_H);
 pub const DOCK1_DIM: (u32, u32) = (status_icons::DOCK1_W, status_icons::DOCK1_H);
 pub const DOCK2_DIM: (u32, u32) = (status_icons::DOCK2_W, status_icons::DOCK2_H);
@@ -77,8 +81,8 @@ pub const STATUS_WIFI_DIM: (u32, u32) = (status_icons::WIFI_W, status_icons::WIF
 pub const STATUS_BATTERY_DIM: (u32, u32) = (status_icons::BATTERY_W, status_icons::BATTERY_H);
 /// 导航面源边长（66px 源 → big 132 目标 2x ScaledArgb / 紧凑 44 缩采样）。
 pub const NAV_SRC_PX: u32 = 66;
-const BUILTIN_FACES: usize = 11;
-const _: () = assert!(BUILTIN_FACES == 11, "状态三 + dock 四 + 导航四面内建面钉板");
+const BUILTIN_FACES: usize = 13;
+const _: () = assert!(BUILTIN_FACES == 13, "状态三 + dock 四 + 导航六面内建面钉板");
 
 /// 无图标哨兵（icon 域外值——desktop 不建 Icon 节点）。
 pub const NO_ICON: u16 = u16::MAX;
@@ -207,6 +211,8 @@ fn status_faces() -> Vec<IconFace> {
         nav_face(NavGlyph::Home, NAV_BASE_BG),
         nav_face(NavGlyph::Power, NAV_BASE_BG),
         nav_face(NavGlyph::Power, NAV_ARMED_BG),
+        nav_face(NavGlyph::Recents, NAV_BASE_BG),
+        nav_face(NavGlyph::Rotate, NAV_BASE_BG),
     ]
 }
 
@@ -220,12 +226,15 @@ const NAV_ARMED_BG: u32 = 0xFF7A_1F1F;
 const NAV_GLYPH_FG: u32 = 0xFFF0_F0F4;
 
 /// 导航符号形（back = 左向实心三角；home = 圆环；power = 缺口圆环 +
-/// 顶部竖线——电源通用形）。
+/// 顶部竖线——电源通用形；recents = 双矩形叠层——多任务通用形；
+/// rotate = 带三角头的圆弧箭头——旋转通用形）。
 #[derive(Clone, Copy)]
 enum NavGlyph {
     Back,
     Home,
     Power,
+    Recents,
+    Rotate,
 }
 
 /// 单符号像素判定（(x,y) → 符号白？）。
@@ -267,6 +276,36 @@ fn nav_glyph_covers(g: NavGlyph, x: i32, y: i32) -> bool {
                 return true;
             }
             (x >= c - 4) && (x <= c + 4) && (y >= c - 25) && (y <= c - 7)
+        }
+        // 多任务形：两枚圆角矩形斜叠（后卡右上偏移 +9，前卡左下）——
+        // 现代多任务通用形。命中 = 任一卡内且不在两卡重叠角内。
+        NavGlyph::Recents => {
+            let in_rect = |x0: i32, y0: i32| {
+                x >= x0 && x < x0 + 24 && y >= y0 && y < y0 + 28
+            };
+            in_rect(c - 21, c - 14) || in_rect(c - 3, c - 14 + 9)
+        }
+        // 旋转形：3/4 圆弧（右下象限缺口）+ 弧末端三角箭头——屏幕旋转
+        // 通用形。弧心 (c, c) 外 r=20 内 r=12；缺口 = 与 +x 向夹角在
+        // -15°..75°（右下象限）不画；箭头三角顶点在弧右端 (c+16, c+12)
+        // 附近向右上指。
+        NavGlyph::Rotate => {
+            let dx = x - c;
+            let dy = y - c;
+            let d2 = dx * dx + dy * dy;
+            if (144..=400).contains(&d2) {
+                // 缺口：右下象限（dx>0 且 dy>0 且斜率不过陡）。
+                let steep = (dy.abs() as i64) * 10 > (dx.abs() as i64) * 27;
+                if dx > 0 && dy > 0 && !steep {
+                    return false;
+                }
+                return true;
+            }
+            // 箭头：弧右端 (c+16, c+12) 处的小实心三角（指向右上）。
+            // 顶点 (c+18, c-2)，底边竖直 x=c+7..c+11, y=c+2..c+12。
+            let ax = x - c;
+            let ay = y - c;
+            ax >= 7 && ax <= 18 && ay >= -2 && ay <= 12 && (ax - 7) >= (ay + 2) / 2
         }
     }
 }
