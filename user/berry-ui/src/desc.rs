@@ -19,7 +19,9 @@
 //!           Tabs 12B（u32 域全 LE）；P1 九件（组件清单多数集合批，
 //!           tag 16..=24 add-only）：Stack 1B / Spacer 4B / Divider 12B /
 //!           Check·Badge 5B / Radio·Sbar 9B / Step 20B / Seg 12B（u32 域
-//!           全 LE）
+//!           全 LE）；P0 尾四件（组件清单收尾批，tag 25..=28 add-only）：
+//!           Select 12B / Input 变长(6..=70) / Edit 变长(10..=74) /
+//!           Canvas 4B（u32 域全 LE）
 //! ```
 //!
 //! - `child_count` 是**树形走查域**（不属于节点本体）：[`parse_node`] 只
@@ -58,6 +60,21 @@
 //!   越段、Sbar thumb 越千分域/start>end；bool 子域（checked/selected/
 //!   show_dot）与枚举子域（align/orientation）域外 UnknownProp。渲染/
 //!   布局/手势面同 Phase 1 不实现（挂 Phase 2）。
+//! - P0 尾四件（组件清单收尾批，tag 25..=28 add-only）：Select = 下拉
+//!   选择器（选项计数面——选项内容不进数据层，展开面挂 Phase 2；Seg
+//!   叶化同族）/ Input = 单行输入（**实际文本内容不走 Props**——走输入
+//!   焦点协议 Phase 2 接线，数据层只载外观与约束）/ Edit = 多行编辑
+//!   （内容同 Input 不入 Props；max_lines=0 无限制）/ Canvas = 自绘面
+//!   （**叶子**——绘制内容不是子节点；op 流走绘制协议，props 只记
+//!   paint_ops 计数）。四件全叶（叶带子拒面同列）。wire：Select 12B =
+//!   option_count·selected·on_change；Input 变长 6..=70 = len u8 +
+//!   placeholder + max_len u32 + input_kind u8；Edit 变长 10..=74 =
+//!   同 Input 前缀 + max_lines u32 + readonly u8；Canvas 4B =
+//!   paint_ops。BadValue 拒面：Select selected 越项（option_count > 0
+//!   时——零项合法 = 空选择器，与 Tabs/Seg 零段拒不同律：空下拉有义）；
+//!   枚举子域 input_kind 域外 UnknownProp、bool 子域 readonly 域外
+//!   UnknownProp、placeholder 超长 TextTooLong。渲染/布局/手势面同前
+//!   两批不实现（挂 Phase 2）。
 //! - 块×kind 合法域（§8.2 表）：SIZE 容器通则 Col/Row/Grid 合法（Text/
 //!   Image/Icon 双源歧义拒——尺寸已在 props 定长域；Pad/Root 拒）；
 //!   ALIGN 仅 Col/Row；A11Y 全 kind 合法（落点 = Ui 侧 a11y 表，D12）。
@@ -65,7 +82,8 @@
 //!   不立块的流零扰动（GOLDEN_V1 守卫）。
 //! - 拒面全 loud（guiproto 同款纪律）：未知 kind / flags bit4+ / 截断 /
 //!   尾随字节 / 叶子带子（Rect/Text/Image/Icon/Button/Toggle/Slider/
-//!   Progress + P1 八叶 Spacer/Divider/Check/Radio/Step/Seg/Badge/Sbar）/
+//!   Progress + P1 八叶 Spacer/Divider/Check/Radio/Step/Seg/Badge/Sbar
+//!   + P0 尾四叶 Select/Input/Edit/Canvas）/
 //!   Root 为子 / 文本超长 / 块×kind 失配 / Grid 零维·超格 /
 //!   组件值域越界，一律 `Err`。
 //!
@@ -85,7 +103,7 @@ use berry_gfx::font::FontSize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(pub(crate) u32);
 
-// ---------- 视图集（v1 六件 + GUI-6 段B 三新件 + Phase 1 组件七件 + P1 九件——§3.2/§8） ----------
+// ---------- 视图集（v1 六件 + GUI-6 段B 三新件 + Phase 1 组件七件 + P1 九件 + P0 尾四件——§3.2/§8） ----------
 
 /// 视图种类：`Root/Rect/Text`、容器 `Col/Row/Pad/Grid/Stack` 与新叶
 /// `Image/Icon`（叶子带子 = AST 拒面——Rect/Text/Image/Icon 四叶）。
@@ -94,7 +112,9 @@ pub struct NodeId(pub(crate) u32);
 /// 渲染/布局/手势面未实现，仅数据结构层）。P1 九件（组件清单多数集合
 /// 批，tag 16..=24 add-only）：容器 `Stack`（叠层——子按 z 序全幅叠放）
 /// + 八新叶 `Spacer/Divider/Check/Radio/Step/Seg/Badge/Sbar`（叶带子
-/// 拒面同列——数据层先行，视觉/交互挂 Phase 2）。
+/// 拒面同列——数据层先行，视觉/交互挂 Phase 2）。P0 尾四件（组件清单
+/// 收尾批，tag 25..=28 add-only）：四新叶 `Select/Input/Edit/Canvas`
+/// （叶带子拒面同列——数据层先行，输入焦点/绘制协议挂 Phase 2）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewKind {
     Root,
@@ -122,6 +142,10 @@ pub enum ViewKind {
     Seg,
     Badge,
     Sbar,
+    Select,
+    Input,
+    Edit,
+    Canvas,
 }
 
 /// 矩形叶子属性：`None` = 尺寸随父（layout 分配）。
@@ -410,6 +434,70 @@ pub struct SbarProps {
     pub thumb_end: u32,
 }
 
+// ---------- P0 尾四件（组件清单收尾批——数据结构层，输入焦点/绘制协议挂 Phase 2） ----------
+
+/// 下拉选择器叶属性（选项集 = 计数面：选项内容不进数据层——展开面/
+/// 选项供给挂 Phase 2；Tabs 的内容区子面板与 Seg 的纯选择器之间取
+/// Seg 形：无子面板，纯选择器）。BadValue 拒面：`selected >=
+/// option_count`（option_count > 0 时）；option_count == 0 合法 = 空
+/// 选择器（与 Tabs/Seg 零段拒不同律——空下拉有义，selected 恒 0）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectProps {
+    /// 选项数。
+    pub option_count: u32,
+    /// 当前选中索引。
+    pub selected: u32,
+    /// 事件 ID（hit 层派发——本批仅数据面）。
+    pub on_change: u32,
+}
+
+/// 单行输入类型（wire u8 0/1/2 = Text/Number/Password——键盘面/掩码
+/// 面消费，Phase 2）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputKind {
+    Text,
+    Number,
+    Password,
+}
+
+/// 单行输入叶属性（**实际文本内容不走 Props**——走输入焦点协议
+/// （Phase 2 接线），数据层只描述外观和约束：占位文本 + 长度帽 +
+/// 输入类型）。`placeholder` 用内联 [`TextBuf`]（≤ `TEXT_INLINE`）
+/// ——Button label 同款零 alloc Copy 值面纪律 + TLV 流自含。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputProps {
+    /// 占位文本（空文本合法 = 无占位）。
+    pub placeholder: TextBuf,
+    /// 最大字符数（输入面执法挂 Phase 2——数据层只载约束）。
+    pub max_len: u32,
+    /// 输入类型（键盘面/掩码面消费——Phase 2）。
+    pub input_kind: InputKind,
+}
+
+/// 多行编辑叶属性（内容同 [`InputProps`] 不走 Props——输入焦点协议
+/// Phase 2 接线；`max_lines` = 0 无限制）。wire readonly u8 ∈ {0,1}，
+/// 域外 UnknownProp 拒。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditProps {
+    /// 占位文本。
+    pub placeholder: TextBuf,
+    /// 最大字符数。
+    pub max_len: u32,
+    /// 最大行数（0 = 无限制）。
+    pub max_lines: u32,
+    /// 只读位。
+    pub readonly: bool,
+}
+
+/// 自绘面叶属性（**叶子**——绘制内容不是子节点：`paint_ops` 只记
+/// 绘制操作计数，实际 op 流走绘制协议（Phase 2）；数据层单字段记数
+/// 供 damage/telemetry 预算面消费）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CanvasProps {
+    /// 绘制操作计数。
+    pub paint_ops: u32,
+}
+
 /// 属性族（Plain Data，Copy——「声明即数据」的值面）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Props {
@@ -438,6 +526,10 @@ pub enum Props {
     Seg(SegProps),
     Badge(BadgeProps),
     Sbar(SbarProps),
+    Select(SelectProps),
+    Input(InputProps),
+    Edit(EditProps),
+    Canvas(CanvasProps),
 }
 
 /// builder 入口（入口①）的单节点描述：`key != 0` = 调和键（v1 仅随
@@ -599,7 +691,8 @@ pub enum AstError {
     /// tab_count == 0 或 active >= tab_count；P1 批追加——Step step == 0
     /// 或 min > max 或 value 越界 [min,max]、Seg segment_count == 0 或
     /// active >= segment_count、Sbar thumb 任一端 > 1000 或
-    /// thumb_start > thumb_end。`got` = 违规值。
+    /// thumb_start > thumb_end；P0 尾四件批追加——Select
+    /// option_count > 0 时 selected >= option_count。`got` = 违规值。
     BadValue { kind: ViewKind, got: u32 },
 }
 
@@ -637,6 +730,12 @@ pub const KIND_STEP: u8 = 21;
 pub const KIND_SEG: u8 = 22;
 pub const KIND_BADGE: u8 = 23;
 pub const KIND_SBAR: u8 = 24;
+/// P0 尾四件（组件清单收尾批，add-only 追加——旧流值域 0..=24 不受
+/// 扰，25..=28 旧读端本就 UnknownKind 拒，无双义重编）。
+pub const KIND_SELECT: u8 = 25;
+pub const KIND_INPUT: u8 = 26;
+pub const KIND_EDIT: u8 = 27;
+pub const KIND_CANVAS: u8 = 28;
 
 /// Slider/Progress 的 permille 值域上界（0..=1000——清单草图 f32 0.0..=1.0
 /// 的整数替身；编解码双侧单源）。
@@ -699,6 +798,10 @@ fn kind_to_u8(k: ViewKind) -> u8 {
         ViewKind::Seg => KIND_SEG,
         ViewKind::Badge => KIND_BADGE,
         ViewKind::Sbar => KIND_SBAR,
+        ViewKind::Select => KIND_SELECT,
+        ViewKind::Input => KIND_INPUT,
+        ViewKind::Edit => KIND_EDIT,
+        ViewKind::Canvas => KIND_CANVAS,
     }
 }
 
@@ -729,6 +832,10 @@ fn kind_from_u8(v: u8) -> Option<ViewKind> {
         KIND_SEG => Some(ViewKind::Seg),
         KIND_BADGE => Some(ViewKind::Badge),
         KIND_SBAR => Some(ViewKind::Sbar),
+        KIND_SELECT => Some(ViewKind::Select),
+        KIND_INPUT => Some(ViewKind::Input),
+        KIND_EDIT => Some(ViewKind::Edit),
+        KIND_CANVAS => Some(ViewKind::Canvas),
         _ => None,
     }
 }
@@ -849,6 +956,25 @@ fn orientation_from_u8(kind: ViewKind, v: u8) -> Result<Orientation, AstError> {
     }
 }
 
+/// InputKind → wire u8（0/1/2——编解码双侧单源）。
+fn input_kind_to_u8(k: InputKind) -> u8 {
+    match k {
+        InputKind::Text => 0,
+        InputKind::Number => 1,
+        InputKind::Password => 2,
+    }
+}
+
+/// wire u8 → InputKind（值域外 → UnknownProp——`kind` 入载荷供拒面定位）。
+fn input_kind_from_u8(kind: ViewKind, v: u8) -> Result<InputKind, AstError> {
+    match v {
+        0 => Ok(InputKind::Text),
+        1 => Ok(InputKind::Number),
+        2 => Ok(InputKind::Password),
+        _ => Err(AstError::UnknownProp { kind, got: v }),
+    }
+}
+
 /// 组件七件值域先验（builder begin 面——与 parse_props 流面同律，Grid
 /// 零维检同型先例；命令面 add() 在 lib.rs，Phase 1 未收编——见模块
 /// 注记）。kind×props 失配不在此检（既有非 Grid 面同状——流面
@@ -909,6 +1035,23 @@ fn validate_p1_nine(kind: ViewKind, props: &Props) -> Result<(), AstError> {
         }
         (ViewKind::Sbar, Props::Sbar(p)) if p.thumb_start > p.thumb_end => {
             Err(AstError::BadValue { kind, got: p.thumb_start })
+        }
+        _ => Ok(()),
+    }
+}
+
+/// P0 尾四件值域先验（builder begin 面——与 parse_props 流面同律，
+/// [`validate_phase1`]/[`validate_p1_nine`] 同型第三批）：Select
+/// selected 越项（option_count > 0 时——零项合法 = 空选择器，不与
+/// Tabs/Seg 零段同律）。Input/Edit 的 placeholder 长度帽在 TextBuf
+/// 构造面（值面即拒 TextTooLong）、InputKind/readonly 枚举域在 wire
+/// 编解码面——均不入此检。
+fn validate_p0_four(kind: ViewKind, props: &Props) -> Result<(), AstError> {
+    match (kind, props) {
+        (ViewKind::Select, Props::Select(p))
+            if p.option_count > 0 && p.selected >= p.option_count =>
+        {
+            Err(AstError::BadValue { kind, got: p.selected })
         }
         _ => Ok(()),
     }
@@ -1107,6 +1250,43 @@ pub(crate) fn encode_props(props: &Props, out: &mut [u8]) -> Result<usize, AstEr
             c += put_u8(&mut out[c..], orientation_to_u8(p.orientation))?;
             c += put_u32le(&mut out[c..], p.thumb_start)?;
             c += put_u32le(&mut out[c..], p.thumb_end)?;
+        }
+        // Select 12B：option_count·selected·on_change 各 u32 LE
+        Props::Select(p) => {
+            c += put_u32le(&mut out[c..], p.option_count)?;
+            c += put_u32le(&mut out[c..], p.selected)?;
+            c += put_u32le(&mut out[c..], p.on_change)?;
+        }
+        // Input 变长 6..=70：len u8 + placeholder + max_len u32 LE +
+        // input_kind u8（内容不入流——输入焦点协议 Phase 2）
+        Props::Input(p) => {
+            let bytes = p.placeholder.as_bytes();
+            c += put_u8(&mut out[c..], bytes.len() as u8)?;
+            if out.len() < c + bytes.len() {
+                return Err(AstError::TooSmall { need: c + bytes.len(), got: out.len() });
+            }
+            out[c..c + bytes.len()].copy_from_slice(bytes);
+            c += bytes.len();
+            c += put_u32le(&mut out[c..], p.max_len)?;
+            c += put_u8(&mut out[c..], input_kind_to_u8(p.input_kind))?;
+        }
+        // Edit 变长 10..=74：len u8 + placeholder + max_len·max_lines
+        // 各 u32 LE + readonly u8
+        Props::Edit(p) => {
+            let bytes = p.placeholder.as_bytes();
+            c += put_u8(&mut out[c..], bytes.len() as u8)?;
+            if out.len() < c + bytes.len() {
+                return Err(AstError::TooSmall { need: c + bytes.len(), got: out.len() });
+            }
+            out[c..c + bytes.len()].copy_from_slice(bytes);
+            c += bytes.len();
+            c += put_u32le(&mut out[c..], p.max_len)?;
+            c += put_u32le(&mut out[c..], p.max_lines)?;
+            c += put_u8(&mut out[c..], p.readonly as u8)?;
+        }
+        // Canvas 4B：paint_ops u32 LE（数据层只记数——op 流走绘制协议）
+        Props::Canvas(p) => {
+            c += put_u32le(&mut out[c..], p.paint_ops)?;
         }
     }
     Ok(c)
@@ -1432,6 +1612,69 @@ fn parse_props(kind: ViewKind, src: &[u8]) -> Result<(Props, usize), AstError> {
                 9,
             ))
         }
+        // Select 12B：selected 越项 → BadValue（got = selected；零项
+        // 合法 = 空选择器——Tabs/Seg 零段拒不同律）
+        ViewKind::Select => {
+            need(12)?;
+            let (option_count, selected, on_change) = (u32at(0), u32at(4), u32at(8));
+            if option_count > 0 && selected >= option_count {
+                return Err(AstError::BadValue { kind, got: selected });
+            }
+            Ok((
+                Props::Select(SelectProps { option_count, selected, on_change }),
+                12,
+            ))
+        }
+        // Input 变长 6..=70：len(1) + placeholder + max_len(4) +
+        // input_kind(1)——超长 TextTooLong、input_kind 域外 UnknownProp
+        // （截断优先于语义检，Button 同律）
+        ViewKind::Input => {
+            need(1)?;
+            let plen = src[0] as usize;
+            if plen > crate::TEXT_INLINE {
+                return Err(AstError::TextTooLong { len: plen });
+            }
+            need(6 + plen)?;
+            let input_kind = input_kind_from_u8(kind, src[5 + plen])?;
+            let placeholder = TextBuf::new(&src[1..1 + plen])
+                .map_err(|_| AstError::TextTooLong { len: plen })?;
+            Ok((
+                Props::Input(InputProps { placeholder, max_len: u32at(1 + plen), input_kind }),
+                6 + plen,
+            ))
+        }
+        // Edit 变长 10..=74：len(1) + placeholder + max_len(4) +
+        // max_lines(4) + readonly(1)——readonly ∈ {0,1}（域外
+        // UnknownProp）；max_lines = 0 合法（无限制）
+        ViewKind::Edit => {
+            need(1)?;
+            let plen = src[0] as usize;
+            if plen > crate::TEXT_INLINE {
+                return Err(AstError::TextTooLong { len: plen });
+            }
+            need(10 + plen)?;
+            let readonly = match src[9 + plen] {
+                0 => false,
+                1 => true,
+                v => return Err(AstError::UnknownProp { kind, got: v }),
+            };
+            let placeholder = TextBuf::new(&src[1..1 + plen])
+                .map_err(|_| AstError::TextTooLong { len: plen })?;
+            Ok((
+                Props::Edit(EditProps {
+                    placeholder,
+                    max_len: u32at(1 + plen),
+                    max_lines: u32at(1 + plen + 4),
+                    readonly,
+                }),
+                10 + plen,
+            ))
+        }
+        // Canvas 4B：paint_ops u32 LE（op 流走绘制协议——数据层只记数）
+        ViewKind::Canvas => {
+            need(4)?;
+            Ok((Props::Canvas(CanvasProps { paint_ops: u32at(0) }), 4))
+        }
     }
 }
 
@@ -1735,7 +1978,8 @@ fn emit_node(
 /// 0..N，超容 → `TooSmall`）。`a11y_out` = Ui 侧 a11y 表落点（D12——
 /// a11y 块载荷按槽序写入，满帽 TooSmall loud；调用方随 reset 清表）。
 /// 成功后 `*root_out` = 根槽；尾随字节 / 叶带子（Rect/Text/Image/Icon/
-/// Button/Toggle/Slider/Progress + P1 八叶）/ Root 为子 / 流首非 Root /
+/// Button/Toggle/Slider/Progress + P1 八叶 + P0 尾四叶
+/// Select/Input/Edit/Canvas）/ Root 为子 / 流首非 Root /
 /// Grid 零维·超格 全 loud 拒。
 pub(crate) fn apply_tree(
     src: &[u8],
@@ -1809,9 +2053,13 @@ fn build_node(
             | ViewKind::Seg
             | ViewKind::Badge
             | ViewKind::Sbar
+            | ViewKind::Select
+            | ViewKind::Input
+            | ViewKind::Edit
+            | ViewKind::Canvas
     ) && cc > 0
     {
-        return Err(AstError::BadParent); // 叶子带子拒面（Image/Icon 入列——D24；组件叶同列——Phase 1 + P1 批）
+        return Err(AstError::BadParent); // 叶子带子拒面（Image/Icon 入列——D24；组件叶同列——Phase 1 + P1 + P0 尾四批）
     }
     // Grid 适配检：cols×rows < 子数 → GridNotFit（超格不容忍静默截断；
     // 零维已在 parse_props 拒——此处 props 必带正维）
@@ -1899,7 +2147,8 @@ const BLK_ALIGN: u8 = 4;
 /// AST 流构造器：`begin(kind, key, props)` … `end()` 嵌套描述树，child_count
 /// 由 end 回填（占位-补数——与 apply_tree 读位自洽）。首 begin 必须 Root、
 /// Root/叶（Rect/Text/Image/Icon/Button/Toggle/Slider/Progress + P1 八叶
-/// Spacer/Divider/Check/Radio/Step/Seg/Badge/Sbar）下不可再
+/// Spacer/Divider/Check/Radio/Step/Seg/Badge/Sbar + P0 尾四叶
+/// Select/Input/Edit/Canvas）下不可再
 /// begin（BadParent）；深度帽
 /// DESC_DEPTH_MAX、缓冲帽 DESC_MAX、子数帽 255——全 TooSmall loud。
 ///
@@ -1973,9 +2222,11 @@ impl DescBuilder {
             _ => (0, 0),
         };
         // 组件值域先验（builder 生产面与 parse 流面同律——validate_phase1
-        // + P1 批 validate_p1_nine，Grid 双面先例）
+        // + P1 批 validate_p1_nine + P0 尾四件批 validate_p0_four，Grid
+        // 双面先例）
         validate_phase1(kind, props)?;
         validate_p1_nine(kind, props)?;
+        validate_p0_four(kind, props)?;
         if self.depth > 0 {
             let parent_kind = self.frames[self.depth - 1].kind;
             if kind == ViewKind::Root {
@@ -1999,8 +2250,12 @@ impl DescBuilder {
                     | ViewKind::Seg
                     | ViewKind::Badge
                     | ViewKind::Sbar
+                    | ViewKind::Select
+                    | ViewKind::Input
+                    | ViewKind::Edit
+                    | ViewKind::Canvas
             ) {
-                return Err(AstError::BadParent); // 叶子不带子（Image/Icon 入列——D24；组件叶同列——Phase 1 + P1 批）
+                return Err(AstError::BadParent); // 叶子不带子（Image/Icon 入列——D24；组件叶同列——Phase 1 + P1 + P0 尾四批）
             }
             // Grid 父适配检：格满再开子 → GridNotFit（payload = 被拒子序号）
             if parent_kind == ViewKind::Grid {
