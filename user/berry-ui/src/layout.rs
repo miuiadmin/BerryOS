@@ -325,7 +325,20 @@ fn intrinsic(
         | Props::Progress(_)
         | Props::Scroll(_)
         | Props::List(_)
-        | Props::Tabs(_) => (0, 0),
+        | Props::Tabs(_)
+        // P1 九件（占位同组件七件）：Stack 叠层内在应为子聚合 max×max
+        // （z 序叠放）、Spacer 应吃剩余空间——全挂 Phase 2 布局刀，本层
+        // 0×0 占位（同上「不半实现」纪律：place_children 走 `_` 臂全幅
+        // 叠放，半聚合必与摆放失配）。
+        | Props::Stack(_)
+        | Props::Spacer(_)
+        | Props::Divider(_)
+        | Props::Check(_)
+        | Props::Radio(_)
+        | Props::Step(_)
+        | Props::Seg(_)
+        | Props::Badge(_)
+        | Props::Sbar(_) => (0, 0),
     }
 }
 
@@ -459,7 +472,18 @@ fn final_size(n: &Node, avail_w: i32, avail_h: i32) -> (i32, i32) {
         | Props::Progress(_)
         | Props::Scroll(_)
         | Props::List(_)
-        | Props::Tabs(_) => (avail_w, avail_h),
+        | Props::Tabs(_)
+        // P1 九件（占位同组件七件）：随父填充；Stack 的全幅叠放子分配
+        // 由 `_` 臂天然合义（z 序叠层 = Root 型全幅）。SIZE 块同拒。
+        | Props::Stack(_)
+        | Props::Spacer(_)
+        | Props::Divider(_)
+        | Props::Check(_)
+        | Props::Radio(_)
+        | Props::Step(_)
+        | Props::Seg(_)
+        | Props::Badge(_)
+        | Props::Sbar(_) => (avail_w, avail_h),
     }
 }
 

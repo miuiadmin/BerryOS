@@ -221,11 +221,11 @@ fn rebuilt_tree_semantically_equivalent() {
 #[test]
 fn apply_reject_unknown_kind_and_flags() {
     let mut ui = Ui::<32>::new(100, 100);
-    // 未知 kind 字节（Phase 1 组件七件后值域 0..=15：9..=15 = Button/
-    // Toggle/Slider/Progress/Scroll/List/Tabs——add-only 追加，旧绊线 9
-    // 让位新域界 16）
+    // 未知 kind 字节（P1 九件后值域 0..=24：16..=24 = Stack/Spacer/
+    // Divider/Check/Radio/Step/Seg/Badge/Sbar——add-only 追加，旧绊线 16
+    // 让位新域界 25）
     assert_eq!(ui.apply_desc(&[0x99, 0]), Err(AstError::UnknownKind { got: 0x99 }));
-    assert_eq!(ui.apply_desc(&[16, 0]), Err(AstError::UnknownKind { got: 16 }));
+    assert_eq!(ui.apply_desc(&[25, 0]), Err(AstError::UnknownKind { got: 25 }));
     // flags 未知位绊线（GUI-6 D5 改钉）：bit1/2/3 = SIZE/A11Y/ALIGN 合法化
     // 后，未知位域起点 = bit4（0x10 拒；0x80 拒保）；bit1 本体转
     // HAS_SIZE×Root 拒（§8.2 合法域表——UnknownProp 载 kind×块失配）。
