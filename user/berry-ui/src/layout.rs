@@ -356,7 +356,20 @@ fn intrinsic(
         | Props::Refresh(_)
         | Props::SwipeItem(_)
         | Props::DatePick(_)
-        | Props::TimePick(_) => (0, 0),
+        | Props::TimePick(_)
+        // P2 七件（占位同前四批）：Collapse 的内在应为标题 + 展开子聚合
+        // （收起态折叠）、Card 的内在应为子聚合 + 留白、Chip 应为标签
+        // 度量 + 胶囊留白、Fab 应为圆形/扩展标签度量、Gauge/Qr 应为
+        // 表盘/点阵方阵、DragReorder 应为手柄行高——全挂 Phase 2 布局
+        // 刀，本层 0×0 占位（`_` 臂全幅叠放与半聚合必失配——「不半实
+        // 现」同源）。
+        | Props::Collapse(_)
+        | Props::Chip(_)
+        | Props::Fab(_)
+        | Props::Card(_)
+        | Props::Gauge(_)
+        | Props::Qr(_)
+        | Props::DragReorder(_) => (0, 0),
     }
 }
 
@@ -514,7 +527,17 @@ fn final_size(n: &Node, avail_w: i32, avail_h: i32) -> (i32, i32) {
         | Props::Refresh(_)
         | Props::SwipeItem(_)
         | Props::DatePick(_)
-        | Props::TimePick(_) => (avail_w, avail_h),
+        | Props::TimePick(_)
+        // P2 七件（占位同前四批）：随父填充；Collapse/Card 的子分配由
+        // `_` 臂天然合义（包裹容器 = Root 型全幅给子）；SIZE 块同拒
+        //（§8.2 表未随本批扩——无双源）。
+        | Props::Collapse(_)
+        | Props::Chip(_)
+        | Props::Fab(_)
+        | Props::Card(_)
+        | Props::Gauge(_)
+        | Props::Qr(_)
+        | Props::DragReorder(_) => (avail_w, avail_h),
     }
 }
 

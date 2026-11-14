@@ -23,8 +23,10 @@
 //!           Select 12B / Input 变长(6..=70) / Edit 变长(10..=74) /
 //!           Canvas 4B（u32 域全 LE）；P1 尾五件（组件清单 P1 kind 件
 //!           收尾批，tag 29..=33 add-only）：Tip 变长(2..=66) / Refresh
-//!           9B / SwipeItem 16B / DatePick 24B / TimePick 13B（u32 域
-//!           全 LE）
+//!           9B / SwipeItem 16B / DatePick 24B / TimePick 13B；P2 七件
+//!           （借来件批，tag 34..=40 add-only）：Collapse 5B / Chip
+//!           变长(6..=70) / Fab 变长(9..=73) / Card 8B / Gauge 5B /
+//!           Qr 12B / DragReorder 12B（u32 域全 LE）
 //! ```
 //!
 //! - `child_count` 是**树形走查域**（不属于节点本体）：[`parse_node`] 只
@@ -95,6 +97,27 @@
 //!   子域 placement 域外 UnknownProp、bool 子域（refreshing/use_24h）
 //!   域外 UnknownProp、text 超长 TextTooLong。渲染/布局/手势面同前三
 //!   批不实现（挂 Phase 2）。
+//! - P2 七件（借来件批，tag 34..=40 add-only）：Collapse = 折叠组
+//!   **容器**（可带子——折叠内容；展开/收起动画复用 anim，挂 Phase 2）
+//!   / Card = 卡片**容器**（可带子——卡片内容；elevation 阴影与圆角
+//!   视觉挂 Phase 2）/ 五新叶 Chip（胶囊标签——本质 Button 变体但独立
+//!   kind 为 a11y role）、Fab（悬浮操作按钮——纯圆形 + elevation）、
+//!   Gauge（仪表盘——value 0..=1000 permille 免 FP 同 Slider 纪律）、
+//!   Qr（二维码——数据层只记 module_count 与双色，点阵生成挂 Phase 2）、
+//!   DragReorder（拖拽重排手柄）入叶带子拒面。wire：Collapse 5B =
+//!   expanded u8 + on_toggle u32 LE；Chip 变长 6..=70 = len u8 + label +
+//!   selected u8 + on_tap；Fab 变长 9..=73 = icon u32 LE + len u8 +
+//!   extended_label + on_tap（空标签 = 纯圆形）；Card 8B = elevation·
+//!   corner_radius 各 u32 LE；Gauge 5B = value u32 LE + style u8（0/1/2
+//!   = Ring/Bar/Arc）；Qr 12B = module_count·dark_color·light_color 各
+//!   u32 LE；DragReorder 12B = item_index·total_items·on_reorder 各
+//!   u32 LE。BadValue 拒面：Card elevation > 3、Gauge value > 1000、
+//!   Qr module_count 不在合法 QR 版本域 {21,25,29,...,177}（版本
+//!   1..=40 → 21+4×(v-1)）、DragReorder item_index >= total_items
+//!   （total_items > 0 时——零项合法 = 空表，Select 同律）；bool 子域
+//!   （expanded/selected）与枚举子域（gauge style）域外 UnknownProp、
+//!   文本超长 TextTooLong。渲染/布局/手势面同前四批不实现（挂
+//!   Phase 2）。
 //! - 块×kind 合法域（§8.2 表）：SIZE 容器通则 Col/Row/Grid 合法（Text/
 //!   Image/Icon 双源歧义拒——尺寸已在 props 定长域；Pad/Root 拒）；
 //!   ALIGN 仅 Col/Row；A11Y 全 kind 合法（落点 = Ui 侧 a11y 表，D12）。
@@ -104,7 +127,7 @@
 //!   尾随字节 / 叶子带子（Rect/Text/Image/Icon/Button/Toggle/Slider/
 //!   Progress + P1 八叶 Spacer/Divider/Check/Radio/Step/Seg/Badge/Sbar
 //!   + P0 尾四叶 Select/Input/Edit/Canvas + P1 尾四叶 Tip/SwipeItem/
-//!   DatePick/TimePick）/
+//!   DatePick/TimePick + P2 五叶 Chip/Fab/Gauge/Qr/DragReorder）/
 //!   Root 为子 / 文本超长 / 块×kind 失配 / Grid 零维·超格 /
 //!   组件值域越界，一律 `Err`。
 //!
@@ -124,7 +147,7 @@ use berry_gfx::font::FontSize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(pub(crate) u32);
 
-// ---------- 视图集（v1 六件 + GUI-6 段B 三新件 + Phase 1 组件七件 + P1 九件 + P0 尾四件 + P1 尾五件——§3.2/§8） ----------
+// ---------- 视图集（v1 六件 + GUI-6 段B 三新件 + Phase 1 组件七件 + P1 九件 + P0 尾四件 + P1 尾五件 + P2 七件——§3.2/§8） ----------
 
 /// 视图种类：`Root/Rect/Text`、容器 `Col/Row/Pad/Grid/Stack` 与新叶
 /// `Image/Icon`（叶子带子 = AST 拒面——Rect/Text/Image/Icon 四叶）。
@@ -139,7 +162,10 @@ pub struct NodeId(pub(crate) u32);
 /// P1 尾五件（组件清单 P1 kind 件收尾批，tag 29..=33 add-only）：容器
 /// `Refresh`（下拉刷新——包裹 List 等）+ 四新叶 `Tip/SwipeItem/
 /// DatePick/TimePick`（叶带子拒面同列——数据层先行，视觉/交互挂
-/// Phase 2）。
+/// Phase 2）。P2 七件（借来件批，tag 34..=40 add-only）：容器
+/// `Collapse`（折叠组——子 = 折叠内容）/ `Card`（卡片——子 = 卡片
+/// 内容）+ 五新叶 `Chip/Fab/Gauge/Qr/DragReorder`（叶带子拒面同列
+/// ——数据层先行，视觉/交互挂 Phase 2）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewKind {
     Root,
@@ -176,6 +202,13 @@ pub enum ViewKind {
     SwipeItem,
     DatePick,
     TimePick,
+    Collapse,
+    Chip,
+    Fab,
+    Card,
+    Gauge,
+    Qr,
+    DragReorder,
 }
 
 /// 矩形叶子属性：`None` = 尺寸随父（layout 分配）。
@@ -618,6 +651,103 @@ pub struct TimePickProps {
     pub on_change: u32,
 }
 
+// ---------- P2 七件（借来件批——数据结构层，渲染/布局/手势挂 Phase 2） ----------
+
+/// 折叠组容器属性（子 = 折叠内容；展开/收起动画复用 anim——Phase 2。
+/// 收起态的子内容裁剪也是视觉面语义，数据层只载开关位）。wire
+/// expanded u8 ∈ {0,1}，域外 UnknownProp 拒（Toggle 同律）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CollapseProps {
+    /// 展开状态（false = 收起）。
+    pub expanded: bool,
+    /// 事件 ID（hit 层派发——本批仅数据面）。
+    pub on_toggle: u32,
+}
+
+/// 胶囊标签叶属性（视觉 = 胶囊形背景 + Text + 选中态——本质 Button
+/// 变体，独立 kind 为 a11y role 锚；视觉合成挂 Phase 2）。`label` 用
+/// 内联 [`TextBuf`]（≤ `TEXT_INLINE`）——Button label 同款零 alloc
+/// Copy 值面纪律 + TLV 流自含。wire selected u8 ∈ {0,1}，域外
+/// UnknownProp 拒。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChipProps {
+    /// 标签文本。
+    pub label: TextBuf,
+    /// 选中态（选中底色/描边是视觉面——数据层只载位）。
+    pub selected: bool,
+    /// 事件 ID（hit 层派发——本批仅数据面）。
+    pub on_tap: u32,
+}
+
+/// 悬浮操作按钮叶属性（视觉 = 圆形按钮 + elevation——Phase 2）。
+/// `extended_label` 空 = 纯圆形；非空 = 扩展形态（圆形 + 侧标签）。
+/// `icon` = 图标资源 ID（供给走 D28 资源缝）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FabProps {
+    /// 图标资源 ID。
+    pub icon: u32,
+    /// 扩展标签（空 = 纯圆形）。
+    pub extended_label: TextBuf,
+    /// 事件 ID（hit 层派发——本批仅数据面）。
+    pub on_tap: u32,
+}
+
+/// 卡片容器属性（子 = 卡片内容；elevation 阴影层级与圆角视觉挂
+/// Phase 2，数据层只载几何参数）。BadValue 拒面：elevation > 3。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CardProps {
+    /// 阴影层级（0..=3）。
+    pub elevation: u32,
+    /// 圆角像素。
+    pub corner_radius: u32,
+}
+
+/// 仪表盘风格（wire u8 0/1/2 = Ring/Bar/Arc）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GaugeStyle {
+    Ring,
+    Bar,
+    Arc,
+}
+
+/// 仪表盘叶属性（`value` = 0..=1000 permille，域外 BadValue 拒——
+/// Slider/Progress 同款免 FP 纪律；环形/条形/弧形视觉挂 Phase 2）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GaugeProps {
+    /// 当前值（0..=1000 permille）。
+    pub value: u32,
+    /// 表盘风格。
+    pub style: GaugeStyle,
+}
+
+/// 二维码叶属性（数据层只记模块数与双色——点阵矩阵生成/定位图案
+/// 挂 Phase 2；颜色 = RGBA u32 打包，与 PRESSED_BG 同口径）。
+/// BadValue 拒面：module_count 不在合法 QR 版本域 {21,25,29,...,177}
+/// （版本 1..=40 → 21+4×(v-1)）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QrProps {
+    /// 模块数（QR 版本对应：21/25/29/.../177）。
+    pub module_count: u32,
+    /// 暗色模块 RGBA。
+    pub dark_color: u32,
+    /// 亮色模块 RGBA。
+    pub light_color: u32,
+}
+
+/// 拖拽重排手柄叶属性（List 行的重排载体；拖动手势与落位动画挂
+/// Phase 2）。BadValue 拒面：`item_index >= total_items`（total_items
+/// > 0 时）；total_items == 0 合法 = 空表（Select 零项同律——手柄在
+/// 空表上无操作位但有义）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DragReorderProps {
+    /// 手柄所辖项索引。
+    pub item_index: u32,
+    /// 列表总项数。
+    pub total_items: u32,
+    /// 事件 ID（hit 层派发——本批仅数据面）。
+    pub on_reorder: u32,
+}
+
 /// 属性族（Plain Data，Copy——「声明即数据」的值面）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Props {
@@ -655,6 +785,13 @@ pub enum Props {
     SwipeItem(SwipeItemProps),
     DatePick(DatePickProps),
     TimePick(TimePickProps),
+    Collapse(CollapseProps),
+    Chip(ChipProps),
+    Fab(FabProps),
+    Card(CardProps),
+    Gauge(GaugeProps),
+    Qr(QrProps),
+    DragReorder(DragReorderProps),
 }
 
 /// builder 入口（入口①）的单节点描述：`key != 0` = 调和键（v1 仅随
@@ -820,7 +957,10 @@ pub enum AstError {
     /// option_count > 0 时 selected >= option_count；P1 尾五件批追加
     /// ——Refresh offset > 1000、SwipeItem reveal 任一端 > 1000、
     /// DatePick month 非 1..=12 或 day 非 1..=31 或 min_year > max_year
-    /// 或 year 越界、TimePick hour > 23 或 minute > 59。`got` = 违规值。
+    /// 或 year 越界、TimePick hour > 23 或 minute > 59；P2 七件批追加
+    /// ——Card elevation > 3、Gauge value > 1000、Qr module_count 不在
+    /// {21,25,29,...,177}、DragReorder total_items > 0 时
+    /// item_index >= total_items。`got` = 违规值。
     BadValue { kind: ViewKind, got: u32 },
 }
 
@@ -871,10 +1011,32 @@ pub const KIND_REFRESH: u8 = 30;
 pub const KIND_SWIPE_ITEM: u8 = 31;
 pub const KIND_DATE_PICK: u8 = 32;
 pub const KIND_TIME_PICK: u8 = 33;
+/// P2 七件（借来件批，add-only 追加——旧流值域 0..=33 不受扰，34..=40
+/// 旧读端本就 UnknownKind 拒，无双义重编）。
+pub const KIND_COLLAPSE: u8 = 34;
+pub const KIND_CHIP: u8 = 35;
+pub const KIND_FAB: u8 = 36;
+pub const KIND_CARD: u8 = 37;
+pub const KIND_GAUGE: u8 = 38;
+pub const KIND_QR: u8 = 39;
+pub const KIND_DRAG_REORDER: u8 = 40;
 
 /// Slider/Progress 的 permille 值域上界（0..=1000——清单草图 f32 0.0..=1.0
 /// 的整数替身；编解码双侧单源）。
 pub const PERMILLE_MAX: u32 = 1000;
+
+/// Card 阴影层级上界（0..=3——Material 四档阴影；编解码双侧单源）。
+pub const CARD_ELEVATION_MAX: u32 = 3;
+
+/// Qr 模块数合法域边界（QR 版本 1..=40 → 21+4×(v-1)：{21,25,29,...,
+/// 177} 步长 4——编解码双侧单源；域内成员判定 [`qr_module_count_valid`]）。
+pub const QR_MODULE_MIN: u32 = 21;
+pub const QR_MODULE_MAX: u32 = 177;
+
+/// Qr 模块数合法域成员判定（21 ≤ m ≤ 177 且 (m-21) % 4 == 0）。
+fn qr_module_count_valid(m: u32) -> bool {
+    (QR_MODULE_MIN..=QR_MODULE_MAX).contains(&m) && (m - QR_MODULE_MIN) % 4 == 0
+}
 
 /// flags bit0 = has_key（v1）。
 pub const FLAG_HAS_KEY: u8 = 1;
@@ -942,6 +1104,13 @@ fn kind_to_u8(k: ViewKind) -> u8 {
         ViewKind::SwipeItem => KIND_SWIPE_ITEM,
         ViewKind::DatePick => KIND_DATE_PICK,
         ViewKind::TimePick => KIND_TIME_PICK,
+        ViewKind::Collapse => KIND_COLLAPSE,
+        ViewKind::Chip => KIND_CHIP,
+        ViewKind::Fab => KIND_FAB,
+        ViewKind::Card => KIND_CARD,
+        ViewKind::Gauge => KIND_GAUGE,
+        ViewKind::Qr => KIND_QR,
+        ViewKind::DragReorder => KIND_DRAG_REORDER,
     }
 }
 
@@ -981,6 +1150,13 @@ fn kind_from_u8(v: u8) -> Option<ViewKind> {
         KIND_SWIPE_ITEM => Some(ViewKind::SwipeItem),
         KIND_DATE_PICK => Some(ViewKind::DatePick),
         KIND_TIME_PICK => Some(ViewKind::TimePick),
+        KIND_COLLAPSE => Some(ViewKind::Collapse),
+        KIND_CHIP => Some(ViewKind::Chip),
+        KIND_FAB => Some(ViewKind::Fab),
+        KIND_CARD => Some(ViewKind::Card),
+        KIND_GAUGE => Some(ViewKind::Gauge),
+        KIND_QR => Some(ViewKind::Qr),
+        KIND_DRAG_REORDER => Some(ViewKind::DragReorder),
         _ => None,
     }
 }
@@ -1141,6 +1317,25 @@ fn tip_placement_from_u8(kind: ViewKind, v: u8) -> Result<TipPlacement, AstError
     }
 }
 
+/// GaugeStyle → wire u8（0/1/2 = Ring/Bar/Arc——编解码双侧单源）。
+fn gauge_style_to_u8(s: GaugeStyle) -> u8 {
+    match s {
+        GaugeStyle::Ring => 0,
+        GaugeStyle::Bar => 1,
+        GaugeStyle::Arc => 2,
+    }
+}
+
+/// wire u8 → GaugeStyle（值域外 → UnknownProp——`kind` 入载荷供拒面定位）。
+fn gauge_style_from_u8(kind: ViewKind, v: u8) -> Result<GaugeStyle, AstError> {
+    match v {
+        0 => Ok(GaugeStyle::Ring),
+        1 => Ok(GaugeStyle::Bar),
+        2 => Ok(GaugeStyle::Arc),
+        _ => Err(AstError::UnknownProp { kind, got: v }),
+    }
+}
+
 /// 组件七件值域先验（builder begin 面——与 parse_props 流面同律，Grid
 /// 零维检同型先例；命令面 add() 在 lib.rs，Phase 1 未收编——见模块
 /// 注记）。kind×props 失配不在此检（既有非 Grid 面同状——流面
@@ -1259,6 +1454,33 @@ fn validate_p1_last_five(kind: ViewKind, props: &Props) -> Result<(), AstError> 
         }
         (ViewKind::TimePick, Props::TimePick(p)) if p.minute > 59 => {
             Err(AstError::BadValue { kind, got: p.minute })
+        }
+        _ => Ok(()),
+    }
+}
+
+/// P2 七件值域先验（builder begin 面——与 parse_props 流面同律，
+/// [`validate_phase1`]/[`validate_p1_nine`]/[`validate_p0_four`]/
+/// [`validate_p1_last_five`] 同型第五批）：Card elevation > 3、
+/// Gauge value 越千分域、Qr module_count 不在合法 QR 版本域、
+/// DragReorder item_index 越项（total_items > 0 时）。Collapse/Chip/
+/// Fab 无 BadValue 面（expanded/selected bool 域与 Chip/Fab 文本长度
+/// 帽在 wire 编解码/TextBuf 构造面），不入此检。
+fn validate_p2_seven(kind: ViewKind, props: &Props) -> Result<(), AstError> {
+    match (kind, props) {
+        (ViewKind::Card, Props::Card(p)) if p.elevation > CARD_ELEVATION_MAX => {
+            Err(AstError::BadValue { kind, got: p.elevation })
+        }
+        (ViewKind::Gauge, Props::Gauge(p)) if p.value > PERMILLE_MAX => {
+            Err(AstError::BadValue { kind, got: p.value })
+        }
+        (ViewKind::Qr, Props::Qr(p)) if !qr_module_count_valid(p.module_count) => {
+            Err(AstError::BadValue { kind, got: p.module_count })
+        }
+        (ViewKind::DragReorder, Props::DragReorder(p))
+            if p.total_items > 0 && p.item_index >= p.total_items =>
+        {
+            Err(AstError::BadValue { kind, got: p.item_index })
         }
         _ => Ok(()),
     }
@@ -1537,6 +1759,59 @@ pub(crate) fn encode_props(props: &Props, out: &mut [u8]) -> Result<usize, AstEr
             c += put_u32le(&mut out[c..], p.minute)?;
             c += put_u32le(&mut out[c..], p.on_change)?;
             c += put_u8(&mut out[c..], p.use_24h as u8)?;
+        }
+        // Collapse 5B：expanded u8 + on_toggle u32 LE
+        Props::Collapse(p) => {
+            c += put_u8(&mut out[c..], p.expanded as u8)?;
+            c += put_u32le(&mut out[c..], p.on_toggle)?;
+        }
+        // Chip 变长 6..=70：len u8 + label + selected u8 + on_tap u32 LE
+        Props::Chip(p) => {
+            let bytes = p.label.as_bytes();
+            c += put_u8(&mut out[c..], bytes.len() as u8)?;
+            if out.len() < c + bytes.len() {
+                return Err(AstError::TooSmall { need: c + bytes.len(), got: out.len() });
+            }
+            out[c..c + bytes.len()].copy_from_slice(bytes);
+            c += bytes.len();
+            c += put_u8(&mut out[c..], p.selected as u8)?;
+            c += put_u32le(&mut out[c..], p.on_tap)?;
+        }
+        // Fab 变长 9..=73：icon u32 LE + len u8 + extended_label +
+        // on_tap u32 LE（空标签 = 纯圆形）
+        Props::Fab(p) => {
+            c += put_u32le(&mut out[c..], p.icon)?;
+            let bytes = p.extended_label.as_bytes();
+            c += put_u8(&mut out[c..], bytes.len() as u8)?;
+            if out.len() < c + bytes.len() {
+                return Err(AstError::TooSmall { need: c + bytes.len(), got: out.len() });
+            }
+            out[c..c + bytes.len()].copy_from_slice(bytes);
+            c += bytes.len();
+            c += put_u32le(&mut out[c..], p.on_tap)?;
+        }
+        // Card 8B：elevation·corner_radius 各 u32 LE
+        Props::Card(p) => {
+            c += put_u32le(&mut out[c..], p.elevation)?;
+            c += put_u32le(&mut out[c..], p.corner_radius)?;
+        }
+        // Gauge 5B：value u32 LE + style u8（Progress 同形）
+        Props::Gauge(p) => {
+            c += put_u32le(&mut out[c..], p.value)?;
+            c += put_u8(&mut out[c..], gauge_style_to_u8(p.style))?;
+        }
+        // Qr 12B：module_count·dark_color·light_color 各 u32 LE（点阵
+        // 生成挂 Phase 2——数据层只记参数）
+        Props::Qr(p) => {
+            c += put_u32le(&mut out[c..], p.module_count)?;
+            c += put_u32le(&mut out[c..], p.dark_color)?;
+            c += put_u32le(&mut out[c..], p.light_color)?;
+        }
+        // DragReorder 12B：item_index·total_items·on_reorder 各 u32 LE
+        Props::DragReorder(p) => {
+            c += put_u32le(&mut out[c..], p.item_index)?;
+            c += put_u32le(&mut out[c..], p.total_items)?;
+            c += put_u32le(&mut out[c..], p.on_reorder)?;
         }
     }
     Ok(c)
@@ -2035,6 +2310,101 @@ fn parse_props(kind: ViewKind, src: &[u8]) -> Result<(Props, usize), AstError> {
                 13,
             ))
         }
+        // Collapse 5B：expanded ∈ {0,1}（域外 UnknownProp）+ on_toggle
+        ViewKind::Collapse => {
+            need(5)?;
+            let expanded = match src[0] {
+                0 => false,
+                1 => true,
+                v => return Err(AstError::UnknownProp { kind, got: v }),
+            };
+            Ok((Props::Collapse(CollapseProps { expanded, on_toggle: u32at(1) }), 5))
+        }
+        // Chip 变长 6..=70：len(1) + label + selected(1) + on_tap(4)——
+        // 超长 TextTooLong、selected 域外 UnknownProp（截断优先于语义检，
+        // Button 同律）
+        ViewKind::Chip => {
+            need(1)?;
+            let llen = src[0] as usize;
+            if llen > crate::TEXT_INLINE {
+                return Err(AstError::TextTooLong { len: llen });
+            }
+            need(6 + llen)?;
+            let selected = match src[1 + llen] {
+                0 => false,
+                1 => true,
+                v => return Err(AstError::UnknownProp { kind, got: v }),
+            };
+            let label = TextBuf::new(&src[1..1 + llen])
+                .map_err(|_| AstError::TextTooLong { len: llen })?;
+            Ok((
+                Props::Chip(ChipProps { label, selected, on_tap: u32at(2 + llen) }),
+                6 + llen,
+            ))
+        }
+        // Fab 变长 9..=73：icon(4) + len(1) + extended_label + on_tap(4)
+        // ——超长 TextTooLong（截断优先于语义检，Button 同律；空标签 =
+        // 纯圆形合法）
+        ViewKind::Fab => {
+            need(5)?; // icon(4) + len(1) 先读 len 域
+            let llen = src[4] as usize;
+            if llen > crate::TEXT_INLINE {
+                return Err(AstError::TextTooLong { len: llen });
+            }
+            need(9 + llen)?;
+            let extended_label = TextBuf::new(&src[5..5 + llen])
+                .map_err(|_| AstError::TextTooLong { len: llen })?;
+            Ok((
+                Props::Fab(FabProps { icon: u32at(0), extended_label, on_tap: u32at(5 + llen) }),
+                9 + llen,
+            ))
+        }
+        // Card 8B：elevation 值域检在定长域读完后（截断优先）；
+        // elevation > 3 → BadValue（got = elevation）
+        ViewKind::Card => {
+            need(8)?;
+            let (elevation, corner_radius) = (u32at(0), u32at(4));
+            if elevation > CARD_ELEVATION_MAX {
+                return Err(AstError::BadValue { kind, got: elevation });
+            }
+            Ok((Props::Card(CardProps { elevation, corner_radius }), 8))
+        }
+        // Gauge 5B：value 值域 + style 域外拒（Progress 同律）
+        ViewKind::Gauge => {
+            need(5)?;
+            let value = u32at(0);
+            if value > PERMILLE_MAX {
+                return Err(AstError::BadValue { kind, got: value });
+            }
+            let style = gauge_style_from_u8(kind, src[4])?;
+            Ok((Props::Gauge(GaugeProps { value, style }), 5))
+        }
+        // Qr 12B：module_count 版本域检在定长域读完后（截断优先）；
+        // 不在 {21,25,29,...,177} → BadValue（got = module_count）
+        ViewKind::Qr => {
+            need(12)?;
+            let module_count = u32at(0);
+            if !qr_module_count_valid(module_count) {
+                return Err(AstError::BadValue { kind, got: module_count });
+            }
+            Ok((
+                Props::Qr(QrProps { module_count, dark_color: u32at(4), light_color: u32at(8) }),
+                12,
+            ))
+        }
+        // DragReorder 12B：item_index 越项 → BadValue（got = item_index；
+        // total_items == 0 合法 = 空表——Select 零项同律）
+        ViewKind::DragReorder => {
+            need(12)?;
+            let (item_index, total_items, on_reorder) = (u32at(0), u32at(4), u32at(8));
+            if total_items > 0 && item_index >= total_items {
+                return Err(AstError::BadValue { kind, got: item_index });
+            }
+            Ok((
+                Props::DragReorder(DragReorderProps { item_index, total_items, on_reorder }),
+                12,
+            ))
+        }
     }
 }
 
@@ -2339,7 +2709,8 @@ fn emit_node(
 /// a11y 块载荷按槽序写入，满帽 TooSmall loud；调用方随 reset 清表）。
 /// 成功后 `*root_out` = 根槽；尾随字节 / 叶带子（Rect/Text/Image/Icon/
 /// Button/Toggle/Slider/Progress + P1 八叶 + P0 尾四叶
-/// Select/Input/Edit/Canvas + P1 尾四叶 Tip/SwipeItem/DatePick/TimePick）/
+/// Select/Input/Edit/Canvas + P1 尾四叶 Tip/SwipeItem/DatePick/TimePick
+/// + P2 五叶 Chip/Fab/Gauge/Qr/DragReorder）/
 /// Root 为子 / 流首非 Root /
 /// Grid 零维·超格 全 loud 拒。
 pub(crate) fn apply_tree(
@@ -2422,9 +2793,14 @@ fn build_node(
             | ViewKind::SwipeItem
             | ViewKind::DatePick
             | ViewKind::TimePick
+            | ViewKind::Chip
+            | ViewKind::Fab
+            | ViewKind::Gauge
+            | ViewKind::Qr
+            | ViewKind::DragReorder
     ) && cc > 0
     {
-        return Err(AstError::BadParent); // 叶子带子拒面（Image/Icon 入列——D24；组件叶同列——Phase 1 + P1 + P0 尾四 + P1 尾五批）
+        return Err(AstError::BadParent); // 叶子带子拒面（Image/Icon 入列——D24；组件叶同列——Phase 1 + P1 + P0 尾四 + P1 尾五 + P2 借来件批）
     }
     // Grid 适配检：cols×rows < 子数 → GridNotFit（超格不容忍静默截断；
     // 零维已在 parse_props 拒——此处 props 必带正维）
@@ -2513,7 +2889,8 @@ const BLK_ALIGN: u8 = 4;
 /// 由 end 回填（占位-补数——与 apply_tree 读位自洽）。首 begin 必须 Root、
 /// Root/叶（Rect/Text/Image/Icon/Button/Toggle/Slider/Progress + P1 八叶
 /// Spacer/Divider/Check/Radio/Step/Seg/Badge/Sbar + P0 尾四叶
-/// Select/Input/Edit/Canvas + P1 尾四叶 Tip/SwipeItem/DatePick/TimePick）
+/// Select/Input/Edit/Canvas + P1 尾四叶 Tip/SwipeItem/DatePick/TimePick
+/// + P2 五叶 Chip/Fab/Gauge/Qr/DragReorder）
 /// 下不可再
 /// begin（BadParent）；深度帽
 /// DESC_DEPTH_MAX、缓冲帽 DESC_MAX、子数帽 255——全 TooSmall loud。
@@ -2589,11 +2966,13 @@ impl DescBuilder {
         };
         // 组件值域先验（builder 生产面与 parse 流面同律——validate_phase1
         // + P1 批 validate_p1_nine + P0 尾四件批 validate_p0_four + P1 尾
-        // 五件批 validate_p1_last_five，Grid 双面先例）
+        // 五件批 validate_p1_last_five + P2 借来件批 validate_p2_seven，
+        // Grid 双面先例）
         validate_phase1(kind, props)?;
         validate_p1_nine(kind, props)?;
         validate_p0_four(kind, props)?;
         validate_p1_last_five(kind, props)?;
+        validate_p2_seven(kind, props)?;
         if self.depth > 0 {
             let parent_kind = self.frames[self.depth - 1].kind;
             if kind == ViewKind::Root {
@@ -2625,8 +3004,13 @@ impl DescBuilder {
                     | ViewKind::SwipeItem
                     | ViewKind::DatePick
                     | ViewKind::TimePick
+                    | ViewKind::Chip
+                    | ViewKind::Fab
+                    | ViewKind::Gauge
+                    | ViewKind::Qr
+                    | ViewKind::DragReorder
             ) {
-                return Err(AstError::BadParent); // 叶子不带子（Image/Icon 入列——D24；组件叶同列——Phase 1 + P1 + P0 尾四 + P1 尾五批）
+                return Err(AstError::BadParent); // 叶子不带子（Image/Icon 入列——D24；组件叶同列——Phase 1 + P1 + P0 尾四 + P1 尾五 + P2 借来件批）
             }
             // Grid 父适配检：格满再开子 → GridNotFit（payload = 被拒子序号）
             if parent_kind == ViewKind::Grid {

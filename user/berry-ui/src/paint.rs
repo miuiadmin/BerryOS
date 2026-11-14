@@ -234,7 +234,8 @@ fn cull_walk(
     // 恒不计遮挡源）。组件七件（Phase 1）、P1 九件与 P0 尾四件无视觉
     // 面——与容器同列走查（子仍发射；组件自身渲染挂 Phase 2；
     // Stack = 叠层容器）。P1 尾五件同列（Refresh = 包裹容器，Tip 浮层
-    // 视觉挂 Phase 2）。
+    // 视觉挂 Phase 2）。P2 七件同列（Collapse/Card = 包裹容器，Chip/
+    // Fab/Gauge/Qr/DragReorder 视觉挂 Phase 2）。
     match n.kind {
         ViewKind::Rect | ViewKind::Text | ViewKind::Image | ViewKind::Icon => {}
         ViewKind::Root
@@ -266,7 +267,14 @@ fn cull_walk(
         | ViewKind::Refresh
         | ViewKind::SwipeItem
         | ViewKind::DatePick
-        | ViewKind::TimePick => return,
+        | ViewKind::TimePick
+        | ViewKind::Collapse
+        | ViewKind::Chip
+        | ViewKind::Fab
+        | ViewKind::Card
+        | ViewKind::Gauge
+        | ViewKind::Qr
+        | ViewKind::DragReorder => return,
     }
     let b = RectI::new(i64_to_i32_sat(bx), i64_to_i32_sat(by), n.w, n.h);
     let vis = b.intersect(d);
@@ -318,7 +326,8 @@ fn emit_walk_all<'a>(
     // 自身先（前序 = 画家算法背到前：先画者先发射）。容器无视觉内容不
     // 参与（Grid 同列）；Image/Icon = 可见叶同主路径发射（§4.3）。
     // 组件七件（Phase 1）、P1 九件与 P0 尾四件同容器列——无视觉面，
-    // 子仍走查（渲染挂 Phase 2）；P1 尾五件同列。
+    // 子仍走查（渲染挂 Phase 2）；P1 尾五件同列；P2 七件同列
+    //（Collapse/Card = 包裹容器）。
     match n.kind {
         ViewKind::Rect | ViewKind::Text | ViewKind::Image | ViewKind::Icon => {
             let b = RectI::new(i64_to_i32_sat(bx), i64_to_i32_sat(by), n.w, n.h);
@@ -357,7 +366,14 @@ fn emit_walk_all<'a>(
         | ViewKind::Refresh
         | ViewKind::SwipeItem
         | ViewKind::DatePick
-        | ViewKind::TimePick => {}
+        | ViewKind::TimePick
+        | ViewKind::Collapse
+        | ViewKind::Chip
+        | ViewKind::Fab
+        | ViewKind::Card
+        | ViewKind::Gauge
+        | ViewKind::Qr
+        | ViewKind::DragReorder => {}
     }
 
     // 子：头兄起流序（painter 序：后画者后访问 = 覆盖在前画者上）。
