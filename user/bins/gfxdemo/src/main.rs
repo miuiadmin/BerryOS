@@ -4,7 +4,8 @@
 //! **B 形态三件事的接线半边**（ADR #54「协议先定形、无消费者不接线」）：
 //! berry-gfx pass 形态 API soft 渲一帧（确定性 DisplayList：Clear 底色 +
 //! fill rect + glyph 串；Bgrx 与 ramfb 同源免转换）→ 匿名 VMO commit+map
-//! → present 域 SUBMIT（K=2 damage，随行 VMO READ 别名）→ guifbd
+//! → present 域 SUBMIT（K=2 damage——部分包络模式：下半屏包络 r≈500‰
+//! 见 [`PARTIAL_ENVELOPE`]；随行 VMO READ 别名）→ guifbd
 //! blit-at-SUBMIT 上屏 → FRAME_CALLBACK 回执 → RELEASE 归还即关 →
 //! VOTE/POWER_MODE 1B 回执 → hdi 域软 vsync mini 序（REG_VBLANK /
 //! VBLANK_WAIT / PREPARE / COMMIT），全断言过才打 `GFX ok`（smoke-image
@@ -46,7 +47,7 @@
 use berry_gfx::cmd::{CmdError, Color, CommandEncoder, GlyphPos, GlyphRun, Rect};
 use berry_gfx::color::{TextureDesc, TextureFormat};
 use berry_gfx::font::FontAtlas8x16;
-use berry_gfx::pass::PassDescriptor;
+use berry_gfx::pass::{LoadOp, PassDescriptor, StoreOp};
 use berry_gfx::queue::Queue;
 use berry_guiproto as gp;
 use berry_libc::io::{self_vmar_h, wm_cli_h};
@@ -66,6 +67,24 @@ static CRT0_SEED: unsafe extern "C" fn() = berry_libc::berry_crt0_anchor;
 /// RPC 收侧 READABLE 帽（fsclient `TIMEOUT_NS` 同值 10s——A6-a 形态：死法
 /// = FAIL loud 非挂死，smoke 侧标记缺失兜底）。
 const RPC_CAP_NS: u64 = 300 * 1_000_000_000;
+
+/// 部分包络模式（真 damage 帧源——18 号复核点名：现役链无 r<1000‰ 触发，
+/// 16 号实测首个 per-rect 帧包络 = 全帧 r=1000‰，v2 r 缩放收益无活体证据；
+/// 现役 damage 面定谳：damage 语义在 SUBMIT 侧（声明），绘制侧 berry-gfx
+/// pass 本有 dirty 面〔`PassDescriptor::dirty`，queue 屏障裁剪执法〕而本程
+/// 序此前未用——双整帧是消费者用法非协议限制）。true = 绘制面只 dirty 下
+/// 半屏（pass `dirty` 约束：Clear 与全部命令裁剪到区内，dirty 区外结构性
+/// 不可触碰）∧ SUBMIT rect 集同域（K=2 下半屏二分）——声明域 == 绘制域，
+/// boot 后首个 per-rect 帧令 guifbd `VGPU2 rect` 观测行（per-rect 首用一次
+/// 性）显 r≈500‰——β-1 增量粒度参考。false = 16 号基线形态（K=2 上下半
+/// 帧分区，并集 = 整帧 r=1000‰）——A/B 回放翻此重建。
+///
+/// 为什么是编译分支（按现役参数面形态选）：env 变量 = berry-libc 空表桩
+/// （environ NULL / getenv 恒空——子进程 env 传递 defer v2）；argv 面在席
+/// 但 boot 链预拉恒空参（svcmgr spawn `args: &[]`）——运行期参数在本程序
+/// 不可达（改 spawn 面出本轮范围）。缺省 true：VGPU2 rect 行是 guifbd 一次
+/// 性立法，首 per-rect 帧即定读数——标准 boot 即产真部分包络帧源。
+const PARTIAL_ENVELOPE: bool = true;
 
 /// 帧缓冲映射 VA：berry-mmap VA 窗 [0x5000_0000, 0x6000_0000) 内固定位
 /// （窗基 +16MiB）。本程序不走 libc mmap（raw 三连直取 VMO handle 面——
@@ -337,7 +356,21 @@ fn main() {
     }
 
     // —— berry-gfx soft 渲一帧（确定性图案：Clear 深蓝灰底 + 顶部红带 +
-    // 底部绿条 + 白字 "GFX" 深蓝衬底；dirty 无 = 整帧）。
+    // 底部绿条 + 白字 "GFX" 深蓝衬底）。部分包络模式：pass dirty = 下半
+    // 屏——Clear 与全部命令裁剪到区内（queue 屏障语义：dirty 区外结构性
+    // 不可触碰），顶部红带/顶部字形整条裁空、底部绿条落区内；基线形态：
+    // dirty 无 = 整帧。绘制域与下方 SUBMIT 声明域同域（真 damage：不产
+    // 声明外笔迹）。
+    let half = (h / 2) as u32;
+    let pass = if PARTIAL_ENVELOPE {
+        PassDescriptor::new(
+            LoadOp::Clear { r: 0x10, g: 0x18, b: 0x28 },
+            StoreOp::Store,
+            Some(Rect::new(0, half as i32, w as i32, (h - h / 2) as i32)),
+        )
+    } else {
+        PassDescriptor::clear(0x10, 0x18, 0x28)
+    };
     let desc = match TextureDesc::new(w, h, stride, TextureFormat::Rgbx) {
         Ok(d) => d,
         Err(e) => fail(&format!("texture desc {e:?}")),
@@ -375,13 +408,16 @@ fn main() {
         "glyph run",
     );
     let dl = enc.finish();
-    if let Err(e) = Queue::new().submit(&dl, fb, &desc, &PassDescriptor::clear(0x10, 0x18, 0x28)) {
+    if let Err(e) = Queue::new().submit(&dl, fb, &desc, &pass) {
         fail(&format!("render submit {e:?}"));
     }
 
-    // —— SUBMIT（K=2 damage rect：上下半帧分区，并集 = 整帧——服务端
-    // px() 抽样 7 点恒落并集内，§9 A5-b；flags=0 非 FULL =「K>0 或 FULL
-    // 二取一」立法的 K 侧）。随行 = 本 VMO 的 READ dup 别名：send 即 take
+    // —— SUBMIT（K=2 damage rect：部分包络模式 = 下半屏二分——K 面与基
+    // 线同形（批形状/reap 可比），包络 = 下半屏 r≈500‰（1080×1920 档
+    // env=1080x960+0+960）；基线形态 = 上下半帧分区，并集 = 整帧
+    // r=1000‰。服务端 px() 抽样 7 点恒落并集内，§9 A5-b；flags=0 非
+    // FULL =「K>0 或 FULL 二取一」立法的 K 侧）。随行 = 本 VMO 的 READ
+    // dup 别名：send 即 take
     // （A6-b）——原 vmo handle 留表，PREPARE 时再 dup 新别名。
     //（A6-b）；TRANSFER 保位——别名随 SUBMIT channel_send 迁出（send 随行
     // 预检执法；dup 只紧不松须显式保位）。
@@ -389,10 +425,16 @@ fn main() {
     if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias) != 0 || alias == 0 {
         fail("dup alias");
     }
-    let half = (h / 2) as u32;
     let mut rects = [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX];
-    rects[0] = gp::Rect { x: 0, y: 0, w: w as u32, h: half };
-    rects[1] = gp::Rect { x: 0, y: half, w: w as u32, h: h as u32 - half };
+    if PARTIAL_ENVELOPE {
+        let lower = h as u32 - half;
+        let q = lower / 2;
+        rects[0] = gp::Rect { x: 0, y: half, w: w as u32, h: q };
+        rects[1] = gp::Rect { x: 0, y: half + q, w: w as u32, h: lower - q };
+    } else {
+        rects[0] = gp::Rect { x: 0, y: 0, w: w as u32, h: half };
+        rects[1] = gp::Rect { x: 0, y: half, w: w as u32, h: h as u32 - half };
+    }
     let sreq = gp::PresentReq::Submit {
         surface_id: 0,
         buffer_id: 1,

@@ -1086,9 +1086,12 @@ sideload      = false
 [platform.boot]
 kernel = "KERNEL.ELF@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 # [platform.boot.params]           # ADR #42 启动参数表落点（Q2；override 语义——缺省归上游）
-# sched_slice_hz = 64              # 词表 v1 最小集：sched_slice_hz u32 [16,1024]
+# sched_slice_hz = 250             # 词表 u32 [16,1024]；desktop/interactive 档推荐 250
+#                                  #   （17 号实验：marker 链 9.47→4.48s/吞吐 +26%/QEMU CPU
+#                                  #   100→84%——10Hz 缺省 GUI 档错配；默认值改裁归 owner，
+#                                  #   样例只落推荐面。research/显示与加速体系设计/17 号 §4）
 # intent_default = "utility"       # 六档词表（ADR #58）；节非空 → 计划面产
-#                                 #   etc/boot-params.toml 条目（G5——内核启动序列读）
+#                                  #   etc/boot-params.toml 条目（G5——内核启动序列读）
 
 [platform.storage]
 image_size_mib      = 96          # 现役值（[48,1024]）
