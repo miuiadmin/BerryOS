@@ -597,11 +597,15 @@ impl Compositor {
         current: &[table::OwnerWindow; gp::WM_WINDOWS_MAX],
         current_n: usize,
     ) -> bool {
+        // Raw geometry identifies the app's submitted frame. Effective geometry
+        // may legitimately change when a temporary SYSTEM overlay (Recents)
+        // hides or restores the window; replay below uses the current effective
+        // region and therefore clips—not fabricates—those occlusion changes.
         cached_n == current_n
             && cached[..cached_n]
                 .iter()
                 .zip(current[..current_n].iter())
-                .all(|(a, b)| a == b)
+                .all(|(a, b)| a.raw == b.raw)
     }
 
     /// 把缓存真实帧写回 composition，返回 present damage 计划。
@@ -636,10 +640,11 @@ impl Compositor {
                 return None;
             }
         };
-        let (cache_vmo, windows, window_n) = {
+        let cache_vmo = {
             let slot = self.cache[index].as_ref()?;
-            (slot.vmo, slot.windows, slot.window_n)
+            slot.vmo
         };
+        let (windows, window_n) = (current, current_n);
         if !self.prepare_back_buffer(false) {
             eprintln!("WMREPLAY bad prepare owner={owner}");
             self.invalidate_back_buffer();
@@ -749,6 +754,7 @@ pub fn submit_composite(
     cli: Handle,
     owner: u16,
     client_type: u8,
+    app_body_active: bool,
     surface_geometry: impl Fn(u16, u16) -> Option<gp::authority::SurfaceGeometry>,
     owner_windows: impl Fn(u16) -> ([table::OwnerWindow; gp::WM_WINDOWS_MAX], usize),
     comp: &mut Compositor,
@@ -810,6 +816,14 @@ pub fn submit_composite(
     // 第一个通过几何/尺寸硬门的真实 SUBMIT 已到达：这是 boot surface 即将
     // 被真实帧替换前的系统真值点，不表示像素已经呈现。
     let system_surface = client_type == gp::WM_CLIENT_SYSTEM && surface_id == 0;
+    if system_surface && app_body_active {
+        // A focused visible APP owns the body. A stale desktop Opening/cleanup
+        // repaint must not cover it; reply BUSY without inventing a present
+        // token. HOME/BACK clears focus first, so the true desktop may repaint.
+        let _ = berry_handle_close(src);
+        st_rep(ch, gp::ST_BUSY);
+        return false;
+    }
     if system_surface {
         boot_progress_first_submit_once(cli);
     }

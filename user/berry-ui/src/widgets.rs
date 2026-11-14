@@ -100,6 +100,80 @@ impl Scaffold {
         Self::build(ui, parent, ctx, title, None)
     }
 
+    /// Light 56dp title-only shell with system insets (home/top-level pages).
+    pub fn new_light_safe<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, title: &[u8],
+        safe_top: u32, safe_bottom: u32,
+    ) -> Result<Self, UiError> {
+        let root = add(
+            ui,
+            parent,
+            ViewSpec {
+                kind: ViewKind::Col,
+                key: 0,
+                props: Props::Col(ColProps {
+                    gap: 0,
+                    w: None,
+                    h: None,
+                    cross: CrossAlign::Stretch,
+                }),
+            },
+        )?;
+        if safe_top != 0 {
+            add(
+                ui,
+                root,
+                ViewSpec {
+                    kind: ViewKind::Col,
+                    key: 0,
+                    props: Props::Col(ColProps {
+                        gap: 0,
+                        w: None,
+                        h: Some(safe_top),
+                        cross: CrossAlign::Stretch,
+                    }),
+                },
+            )?;
+        }
+        let app_bar = AppBar::light(ui, root, ctx, title)?;
+        let (_, viewport_h) = ui.viewport();
+        let body_h = viewport_h
+            .saturating_sub(safe_top)
+            .saturating_sub(app_bar.instance_height(ctx))
+            .saturating_sub(safe_bottom);
+        let body = add(
+            ui,
+            root,
+            ViewSpec {
+                kind: ViewKind::Col,
+                key: 0,
+                props: Props::Col(ColProps {
+                    gap: 0,
+                    w: None,
+                    h: Some(body_h),
+                    cross: CrossAlign::Stretch,
+                }),
+            },
+        )?;
+        if safe_bottom != 0 {
+            add(
+                ui,
+                root,
+                ViewSpec {
+                    kind: ViewKind::Col,
+                    key: 0,
+                    props: Props::Col(ColProps {
+                        gap: 0,
+                        w: None,
+                        h: Some(safe_bottom),
+                        cross: CrossAlign::Stretch,
+                    }),
+                },
+            )?;
+        }
+        Ok(Self { root, app_bar, body })
+    }
+
     /// 带真实导航返回按钮的页面骨架。按钮像素由 app 的 IconSource 供给；
     /// 点击语义仍归 app（返回栈/退出由业务状态机持有）。
     pub fn with_back<const N: usize>(
@@ -107,6 +181,90 @@ impl Scaffold {
         back_icon: u16, active_icon: u16,
     ) -> Result<Self, UiError> {
         Self::build(ui, parent, ctx, title, Some((back_icon, active_icon)))
+    }
+
+    /// OpenHarmony-style light navigation shell with explicit system insets.
+    ///
+    /// `safe_top` moves the app bar below a persistent system status bar;
+    /// `safe_bottom` reserves the system navigation/dock band. Both are raw
+    /// viewport pixels from Berry Room's occlusion snapshot.
+    pub fn with_back_safe<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, title: &[u8],
+        back_icon: u16, active_icon: u16, safe_top: u32, safe_bottom: u32,
+    ) -> Result<Self, UiError> {
+        let root = add(
+            ui,
+            parent,
+            ViewSpec {
+                kind: ViewKind::Col,
+                key: 0,
+                props: Props::Col(ColProps {
+                    gap: 0,
+                    w: None,
+                    h: None,
+                    cross: CrossAlign::Stretch,
+                }),
+            },
+        )?;
+        if safe_top != 0 {
+            add(
+                ui,
+                root,
+                ViewSpec {
+                    kind: ViewKind::Col,
+                    key: 0,
+                    props: Props::Col(ColProps {
+                        gap: 0,
+                        w: None,
+                        h: Some(safe_top),
+                        cross: CrossAlign::Stretch,
+                    }),
+                },
+            )?;
+        }
+        let app_bar = AppBar::build(
+            ui,
+            root,
+            ctx,
+            title,
+            Some((back_icon, active_icon)),
+        )?;
+        let (_, viewport_h) = ui.viewport();
+        let body_h = viewport_h
+            .saturating_sub(safe_top)
+            .saturating_sub(app_bar.instance_height(ctx))
+            .saturating_sub(safe_bottom);
+        let body = add(
+            ui,
+            root,
+            ViewSpec {
+                kind: ViewKind::Col,
+                key: 0,
+                props: Props::Col(ColProps {
+                    gap: 0,
+                    w: None,
+                    h: Some(body_h),
+                    cross: CrossAlign::Stretch,
+                }),
+            },
+        )?;
+        if safe_bottom != 0 {
+            add(
+                ui,
+                root,
+                ViewSpec {
+                    kind: ViewKind::Col,
+                    key: 0,
+                    props: Props::Col(ColProps {
+                        gap: 0,
+                        w: None,
+                        h: Some(safe_bottom),
+                        cross: CrossAlign::Stretch,
+                    }),
+                },
+            )?;
+        }
+        Ok(Self { root, app_bar, body })
     }
 
     fn build<const N: usize>(
@@ -154,6 +312,7 @@ pub struct AppBar {
     pub panel: NodeId,
     pub title: NodeId,
     pub back: Option<IconButton>,
+    modern: bool,
 }
 
 impl AppBar {
@@ -170,6 +329,56 @@ impl AppBar {
         Self::build(ui, parent, ctx, title, Some((back_icon, active_icon)))
     }
 
+    /// OH light 56dp title-only bar (top-level pages without a back stack).
+    pub fn light<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, title: &[u8],
+    ) -> Result<Self, UiError> {
+        let bar_h = Self::height(ctx);
+        let panel = add(
+            ui,
+            parent,
+            panel_spec(ctx.theme.colors.surface, None, Some(bar_h), 0, 0, 0),
+        )?;
+        let (viewport_w, _) = ui.viewport();
+        let line = add(
+            ui,
+            panel,
+            ViewSpec {
+                kind: ViewKind::Row,
+                key: 0,
+                props: Props::Row(RowProps {
+                    gap: 0,
+                    w: Some(viewport_w),
+                    h: Some(bar_h),
+                    cross: CrossAlign::Center,
+                }),
+            },
+        )?;
+        let leading = add(
+            ui,
+            line,
+            panel_spec(ctx.theme.colors.surface, None, Some(bar_h), 0, 0, 0),
+        )?;
+        ui.set_flex(leading, 1)?;
+        let title_id = add(
+            ui,
+            line,
+            text_spec(
+                title,
+                ctx.theme.colors.text_primary,
+                ctx.metrics.typography(TypographyToken::Title),
+            )?,
+        )?;
+        let trailing = add(
+            ui,
+            line,
+            panel_spec(ctx.theme.colors.surface, None, Some(bar_h), 0, 0, 0),
+        )?;
+        ui.set_flex(trailing, 1)?;
+        ui.set_a11y(title_id, ROLE_TEXT, title)?;
+        Ok(Self { panel, title: title_id, back: None, modern: true })
+    }
+
     /// 56dp 现代导航栏高度（Product @3x = 168px；Compact @2x = 112px）。
     pub fn height(ctx: &WidgetContext) -> u32 {
         ctx.metrics.effective_px(224)
@@ -180,7 +389,7 @@ impl AppBar {
         back_icon: Option<(u16, u16)>,
     ) -> Result<Self, UiError> {
         // 无导航位：保留 F4 legacy 标题栏，既有 app/golden 零漂；现代
-        // 56dp 导航栏只由 with_back 显式启用。
+        // 56dp 导航栏只由 with_back 显式启用，使用 OH light surface + text。
         if back_icon.is_none() {
             let pad = ctx.spacing(SpacingToken::S);
             let panel = add(
@@ -198,14 +407,14 @@ impl AppBar {
                 )?,
             )?;
             ui.set_a11y(title_id, ROLE_TEXT, title)?;
-            return Ok(Self { panel, title: title_id, back: None });
+            return Ok(Self { panel, title: title_id, back: None, modern: false });
         }
 
         let bar_h = Self::height(ctx);
         let panel = add(
             ui,
             parent,
-            panel_spec(ctx.theme.colors.primary, None, Some(bar_h), 0, 0, 0),
+            panel_spec(ctx.theme.colors.surface, None, Some(bar_h), 0, 0, 0),
         )?;
         let (viewport_w, _) = ui.viewport();
         let line = add(
@@ -232,12 +441,12 @@ impl AppBar {
             icons.1,
             b"Back",
             InteractionState::Normal,
-            true,
+            false,
         )?);
         let leading_flex = add(
             ui,
             line,
-            panel_spec(ctx.theme.colors.primary, None, Some(bar_h), 0, 0, 0),
+            panel_spec(ctx.theme.colors.surface, None, Some(bar_h), 0, 0, 0),
         )?;
         ui.set_flex(leading_flex, 1)?;
         let title_id = add(
@@ -245,24 +454,24 @@ impl AppBar {
             line,
             text_spec(
                 title,
-                ctx.theme.colors.on_primary,
+                ctx.theme.colors.text_primary,
                 ctx.metrics.typography(TypographyToken::Title),
             )?,
         )?;
         let trailing_flex = add(
             ui,
             line,
-            panel_spec(ctx.theme.colors.primary, None, Some(bar_h), 0, 0, 0),
+            panel_spec(ctx.theme.colors.surface, None, Some(bar_h), 0, 0, 0),
         )?;
         ui.set_flex(trailing_flex, 1)?;
 
         ui.set_a11y(title_id, ROLE_TEXT, title)?;
-        Ok(Self { panel, title: title_id, back })
+        Ok(Self { panel, title: title_id, back, modern: true })
     }
 
     /// 本实例建成高度（legacy 与 with_back 两形态单源）。
     pub fn instance_height(&self, ctx: &WidgetContext) -> u32 {
-        if self.back.is_some() {
+        if self.modern {
             Self::height(ctx)
         } else {
             let title_h = ctx.metrics.typography(TypographyToken::Title).cell_h() as u32;
@@ -1099,18 +1308,54 @@ impl ListItem {
         self.selected
     }
 
+    fn apply<const N: usize>(
+        &self, ui: &mut Ui<N>, ctx: &WidgetContext, state: InteractionState,
+    ) -> Result<(), UiError> {
+        let visual = ctx.theme.state(state);
+        if let Some(props) = retained_props(ui, self.panel) {
+            if let Props::Panel(mut p) = props {
+                p.bg = visual.background;
+                ui.set_props(self.panel, Props::Panel(p))?;
+            }
+        }
+        if let Some(props) = retained_props(ui, self.title) {
+            if let Props::Text(mut p) = props {
+                p.style.fg = visual.content;
+                ui.set_props(self.title, Props::Text(p))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn owns(&self, node: NodeId) -> bool {
+        node == self.panel || node == self.title || self.detail == Some(node)
+    }
+
     /// ListItem 只消费焦点视觉；激活语义由 app 合成 Click 自理。
     pub fn on_msg<const N: usize>(
         &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, msg: &Msg,
     ) -> Result<bool, UiError> {
         let node = match msg {
-            Msg::FocusIn { node } | Msg::FocusOut { node } => *node,
+            Msg::Press { node, .. }
+            | Msg::Release { node, .. }
+            | Msg::Cancel { node }
+            | Msg::Click { node }
+            | Msg::FocusIn { node }
+            | Msg::FocusOut { node } => *node,
             _ => return Ok(false),
         };
-        if node != self.panel && node != self.title {
+        if !self.owns(node) {
             return Ok(false);
         }
         match msg {
+            Msg::Press { .. } => self.apply(ui, ctx, InteractionState::Pressed)?,
+            Msg::Release { .. } | Msg::Cancel { .. } => {
+                self.apply(ui, ctx, self.visual_state())?
+            }
+            Msg::Click { .. } => {
+                self.apply(ui, ctx, self.visual_state())?;
+                return Ok(true);
+            }
             Msg::FocusIn { .. } => self.set_focused(ui, ctx, true)?,
             Msg::FocusOut { .. } => self.set_focused(ui, ctx, false)?,
             _ => {}

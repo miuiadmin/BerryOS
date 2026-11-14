@@ -3040,7 +3040,7 @@ def run_normal_boot(args) -> int:
                 )
             time.sleep(0.5)
         assert_pixel_close(
-            ppm_pixel(browser_shot, 540, 20), theme["primary"],
+            ppm_pixel(browser_shot, 540, 20), theme["surface"],
             "Browser AppBar", boot.log_path,
         )
         assert_pixel_close(
@@ -3175,7 +3175,7 @@ def run_normal_boot(args) -> int:
         time.sleep(0.2)  # 等 QEMU console 消化刚完成的 partial present
         boot.qmp.screendump(demo_shot)
         assert_pixel_close(
-            ppm_pixel(demo_shot, 540, 20), theme["primary"],
+            ppm_pixel(demo_shot, 540, 20), theme["surface"],
             "Berry Demo AppBar", boot.log_path,
         )
         assert_pixel_close(
@@ -3261,7 +3261,7 @@ def run_normal_boot(args) -> int:
         time.sleep(0.2)
         boot.qmp.screendump(system_shot)
         assert_pixel_close(
-            ppm_pixel(system_shot, 540, 20), theme["primary"],
+            ppm_pixel(system_shot, 540, 20), theme["surface"],
             "Berry Demo System AppBar", boot.log_path,
         )
         assert_color_count(
@@ -3395,7 +3395,7 @@ def run_normal_boot(args) -> int:
         # 像素反 mock：两个开关必须变 Berry Theme Selected 蓝，主题面同步对锚。
         shot = run_dir / "settings.ppm"
         boot.qmp.screendump(shot)
-        assert_pixel_close(ppm_pixel(shot, 540, 20), theme["primary"], "Settings AppBar", boot.log_path)
+        assert_pixel_close(ppm_pixel(shot, 540, 20), theme["surface"], "Settings AppBar", boot.log_path)
         assert_pixel_close(ppm_pixel(shot, 540, 600), theme["surface"], "Settings surface", boot.log_path)
         assert_pixel_close(
             ppm_pixel(shot, wlan_click[0], wlan_click[1]),
@@ -3492,7 +3492,7 @@ def run_normal_boot(args) -> int:
 
         files_shot = run_dir / "files.ppm"
         boot.qmp.screendump(files_shot)
-        assert_pixel_close(ppm_pixel(files_shot, 540, 20), theme["primary"], "Files AppBar", boot.log_path)
+        assert_pixel_close(ppm_pixel(files_shot, 540, 20), theme["surface"], "Files AppBar", boot.log_path)
         assert_pixel_close(ppm_pixel(files_shot, 540, 600), theme["surface"], "Files surface", boot.log_path)
         assert_color_count(
             files_shot, (20, 90, 900, 420), 128, "Files 系统 A8 文本", boot.log_path,
@@ -3598,7 +3598,7 @@ def run_normal_boot(args) -> int:
         photos_shot = run_dir / "photos.ppm"
         boot.qmp.screendump(photos_shot)
         assert_pixel_close(
-            ppm_pixel(photos_shot, 540, 20), theme["primary"],
+            ppm_pixel(photos_shot, 540, 20), theme["surface"],
             "Photos AppBar", boot.log_path,
         )
         # PATTERN.BIN 5000B 公式字节经 IconSource SmoothArgb 上屏。
@@ -3731,7 +3731,7 @@ def run_normal_boot(args) -> int:
         contacts_shot = run_dir / "contacts.ppm"
         boot.qmp.screendump(contacts_shot)
         assert_pixel_close(
-            ppm_pixel(contacts_shot, 540, 20), theme["primary"],
+            ppm_pixel(contacts_shot, 540, 20), theme["surface"],
             "Contacts AppBar", boot.log_path,
         )
         assert_pixel_close(

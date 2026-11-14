@@ -16,8 +16,9 @@ use berry_room::{
 };
 use berry_ui::hit::PtrEvent;
 use berry_ui::sdk::{
-    Button, Card, FontSource, InteractionState, ListItem, Msg, RectI, Scaffold, ScrollView,
-    Switch, TextVariant, Theme, Ui, WidgetContext, column, divider, row, text,
+    Card, FontSource, ListItem, Msg, NavigationIconSource, RectI, Scaffold, ScrollView, Switch,
+    TextVariant, Theme, Ui, WidgetContext, column, divider, row, text, NAV_ICON_BACK,
+    NAV_ICON_BACK_ACTIVE,
 };
 
 type Ui64 = Ui<64>;
@@ -34,9 +35,10 @@ struct App {
 
 struct Page {
     scroll: ScrollView,
-    back: Button,
+    back: berry_ui::sdk::IconButton,
     wlan: Switch,
     bluetooth: Switch,
+    rows: [Option<ListItem>; 4],
 }
 
 struct RoomFontSource;
@@ -47,6 +49,8 @@ impl FontSource for RoomFontSource {
         (scale == FontSize::S32x48).then_some(&SYSTEM_FONT_ATLAS)
     }
 }
+
+static NAVIGATION_ICONS: NavigationIconSource = NavigationIconSource;
 
 fn append_u32(out: &mut [u8], mut value: u32) -> usize {
     let mut digits = [0u8; 10];
@@ -137,16 +141,30 @@ fn fail(room: &AppRoom, what: &str) -> ! {
     room.exit(134)
 }
 
-fn build_page(ui: &mut Ui64, ctx: &WidgetContext) -> Page {
+fn build_page(ui: &mut Ui64, ctx: &WidgetContext, safe_top: u32, safe_bottom: u32) -> Page {
     let root = ui.root();
-    let scaffold = match Scaffold::new(ui, root, ctx, b"Settings") {
+    let scaffold = match Scaffold::with_back_safe(
+        ui,
+        root,
+        ctx,
+        b"Settings",
+        NAV_ICON_BACK,
+        NAV_ICON_BACK_ACTIVE,
+        safe_top,
+        safe_bottom,
+    ) {
         Ok(value) => value,
         Err(_) => berry_room::panic_exit(134),
     };
+    let back = match scaffold.app_bar.back {
+        Some(value) => value,
+        None => berry_room::panic_exit(134),
+    };
     let (_, viewport_h) = ui.viewport();
-    let title_h = ctx.metrics.typography(berry_ui::sdk::TypographyToken::Title).cell_h() as u32;
-    let bar_h = title_h.saturating_add(ctx.metrics.spacing(berry_ui::sdk::SpacingToken::S).saturating_mul(2));
-    let body_h = viewport_h.saturating_sub(bar_h);
+    let body_h = viewport_h
+        .saturating_sub(safe_top)
+        .saturating_sub(scaffold.app_bar.instance_height(ctx))
+        .saturating_sub(safe_bottom);
     let scroll = match ScrollView::new(ui, scaffold.body, ctx, body_h) {
         Ok(value) => value,
         Err(_) => berry_room::panic_exit(134),
@@ -160,10 +178,6 @@ fn build_page(ui: &mut Ui64, ctx: &WidgetContext) -> Page {
         Err(_) => berry_room::panic_exit(134),
     };
 
-    let back = match Button::new(ui, stack, ctx, b"Back", InteractionState::Normal) {
-        Ok(value) => value,
-        Err(_) => berry_room::panic_exit(134),
-    };
     let wlan_row = match row(ui, stack, ctx) {
         Ok(value) => value,
         Err(_) => berry_room::panic_exit(134),
@@ -199,14 +213,15 @@ fn build_page(ui: &mut Ui64, ctx: &WidgetContext) -> Page {
         (b"Battery", Some(&b"Usage and saver"[..])),
         (b"About phone", None),
     ];
-    for (title, detail) in rows {
-        match ListItem::new(ui, stack, ctx, title, *detail, false) {
-            Ok(_) => {}
+    let mut list_rows = [None; 4];
+    for (slot, (title, detail)) in list_rows.iter_mut().zip(rows) {
+        *slot = Some(match ListItem::new(ui, stack, ctx, title, *detail, false) {
+            Ok(value) => value,
             Err(_) => berry_room::panic_exit(134),
-        }
+        });
     }
 
-    Page { scroll, back, wlan, bluetooth }
+    Page { scroll, back, wlan, bluetooth, rows: list_rows }
 }
 
 impl App {
@@ -324,6 +339,11 @@ fn handle_messages(app: &mut App, room: &mut AppRoom, messages: &berry_ui::sdk::
         {
             back = true;
         }
+        for row in app.page.rows.iter_mut().flatten() {
+            let _ = row
+                .on_msg(&mut app.ui, &app.ctx, &message)
+                .unwrap_or_else(|_| berry_room::panic_exit(134));
+        }
         let wlan_hit = app
             .page
             .wlan
@@ -401,7 +421,11 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
     let mut ui = Ui64::new(width as u32, height as u32);
     let ctx = WidgetContext::for_ui(theme, &ui);
     ui.set_font_source(&ROOM_FONT_SOURCE);
-    let mut page = build_page(&mut ui, &ctx);
+    ui.set_icon_source(&NAVIGATION_ICONS);
+    let insets = room.occlusion().effective_padding();
+    let safe_bottom = u32::from(insets[3])
+        .max(ctx.metrics.effective_px(144));
+    let mut page = build_page(&mut ui, &ctx, u32::from(insets[1]), safe_bottom);
     ui.layout();
     page.scroll.sync_bounds(&mut ui).unwrap_or_else(|_| berry_room::panic_exit(134));
     let mut app = App {

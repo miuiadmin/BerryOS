@@ -40,6 +40,7 @@ pub mod layout;
 #[cfg(feature = "s7")]
 pub mod mask;
 pub mod metrics;
+pub mod navigation;
 pub mod paint;
 pub mod resample;
 pub mod sdk;

@@ -367,6 +367,90 @@ spec = "docs/BerryUI-F2核心盘点-v1.0.md"
 breaking = []
 
 [[item]]
+id = "berry_ui::sdk::NavigationIconSource"
+kind = "type"
+module = "navigation"
+since = "OH-SHELL"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/Berry设备平台-OpenHarmonyShell-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::NAV_ICON_BACK"
+kind = "const"
+module = "navigation"
+since = "OH-SHELL"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/Berry设备平台-OpenHarmonyShell-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::NAV_ICON_BACK_ACTIVE"
+kind = "const"
+module = "navigation"
+since = "OH-SHELL"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/Berry设备平台-OpenHarmonyShell-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::NAV_ICON_HOME"
+kind = "const"
+module = "navigation"
+since = "OH-SHELL"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/Berry设备平台-OpenHarmonyShell-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::NAV_ICON_HOME_ACTIVE"
+kind = "const"
+module = "navigation"
+since = "OH-SHELL"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/Berry设备平台-OpenHarmonyShell-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::NAV_ICON_TASK"
+kind = "const"
+module = "navigation"
+since = "OH-SHELL"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/Berry设备平台-OpenHarmonyShell-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::NAV_ICON_TASK_ACTIVE"
+kind = "const"
+module = "navigation"
+since = "OH-SHELL"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/Berry设备平台-OpenHarmonyShell-v1.0.md"
+breaking = []
+
+[[item]]
 id = "berry_ui::sdk::MonospaceTextMetrics"
 kind = "type"
 module = "metrics"

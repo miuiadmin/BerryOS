@@ -16,6 +16,10 @@ pub use crate::layout::{BoxConstraints, Constraints, CrossAlign, LayoutStat};
 pub use crate::metrics::{
     EmptyIconSource, FontSource, IconSource, MonospaceTextMetrics, TextMetrics,
 };
+pub use crate::navigation::{
+    NavigationIconSource, NAV_ICON_BACK, NAV_ICON_BACK_ACTIVE, NAV_ICON_HOME,
+    NAV_ICON_HOME_ACTIVE, NAV_ICON_TASK, NAV_ICON_TASK_ACTIVE,
+};
 pub use crate::theme::{
     contrast_meets, contrast_ratio_centi, resolve_color_scheme, ColorPair, ColorPairToken,
     ColorScheme, ColorSchemePreference, ContrastLevel, Density, InteractionState, RadiusToken,

@@ -79,6 +79,7 @@ use berry_sys::{
 use berry_ui::damage::DamageSet;
 use berry_ui::frame::VoteBallot;
 use berry_ui::hit::PtrEvent;
+use berry_ui::theme::Density;
 use berry_ui::{Msg, NodeId, UiMain};
 
 use crate::desktop::{self, Desktop, RECENTS_LABEL_MAX};
@@ -384,6 +385,11 @@ pub fn run(
                         }
                         let mut nav_action: Option<u32> = None;
                         let mut app_frame_owner: Option<u16> = None;
+                        let (vp_w, vp_h) = ui.viewport();
+                        let product_nav_h = match Density::for_viewport(vp_w, vp_h) {
+                            Density::Product => 108u32,
+                            Density::Compact => 0,
+                        };
                         for i in 0..view.count() {
                             if let Some(ev) = view.event(i) {
                                 if ev.flags & gp::PE_FL_SYSTEM_APP_FRAME != 0 {
@@ -392,6 +398,30 @@ pub fn run(
                                 }
                                 if ev.flags & gp::PE_FL_SYSTEM_INVALIDATE != 0 {
                                     nav_action = Some(ev.x);
+                                    continue;
+                                }
+                                // SYSTEM navigation reserve arrives in display
+                                // coordinates. Keep the press/release path for
+                                // visual feedback, but translate UP to the same
+                                // authoritative action as the host toolbar keys.
+                                if product_nav_h != 0
+                                    && ev.y >= vp_h.saturating_sub(product_nav_h)
+                                {
+                                    if ev.phase == gp::PHASE_UP {
+                                        nav_action = Some(if ev.x < vp_w / 3 {
+                                            gp::SYSTEM_NAV_ACTION_BACK
+                                        } else if ev.x < vp_w / 3 * 2 {
+                                            gp::SYSTEM_NAV_ACTION_HOME
+                                        } else {
+                                            gp::SYSTEM_NAV_ACTION_TASK
+                                        });
+                                        println!(
+                                            "SHELLNAV ok action={}",
+                                            nav_action.unwrap_or(0)
+                                        );
+                                    }
+                                    // The SYSTEM reserve is not desktop UI. Staging
+                                    // its UP would hit a just-opened Recents card.
                                     continue;
                                 }
                                 let pe = PtrEvent::from_wire(
@@ -424,6 +454,10 @@ pub fn run(
                             if let Some(label) = launching_label.take() {
                                 remember_owner_label(&mut owner_labels, owner, label);
                             }
+                            // The real APP now owns the visible body. Desktop
+                            // press/toast damage must not trigger a full surface0
+                            // repaint that would cover the just-composited app.
+                            let _ = ui.drain_damage();
                         }
                         match nav_action {
                             Some(gp::SYSTEM_NAV_ACTION_TASK) => {
@@ -474,6 +508,11 @@ pub fn run(
                                         fail(&format!("recents hide err={e:?}"));
                                     }
                                     recents_open = false;
+                                }
+                                if action == gp::SYSTEM_NAV_ACTION_BACK
+                                    || action == gp::SYSTEM_NAV_ACTION_HOME
+                                {
+                                    current_app_owner = None;
                                 }
                                 if action == gp::SYSTEM_NAV_ACTION_HOME {
                                     // HOME is the canonical desktop state: even if
@@ -677,7 +716,6 @@ pub fn run(
         {
             ui.wake(now());
         }
-
         // snap 动画步进（每迭代必调——snap 驱动面；返回值仅为「有吸附
         // 在推进」观察位，自测判据已不依赖——见 Settle1 注）。DMA 在途时
         // 一次 100ms 级 flip 会吞多个 16.7ms 拍；过拍时把本拍时间戳预
@@ -741,7 +779,29 @@ pub fn run(
                 rects,
                 rect_count: k,
             };
-            let token = submit_frame(hw, frame_vmos[frame_idx], &request);
+            let Some(token) = submit_frame(hw, frame_vmos[frame_idx], &request) else {
+                // wmd authority reports ST_BUSY while a focused visible APP owns
+                // the body. This desktop frame was not presented; finish any old
+                // Opening callback without inventing telemetry or a token.
+                if let Some(old_token) = front_token.take() {
+                    presented = complete_front_frame(
+                        hw,
+                        ui,
+                        old_token,
+                        front_seq,
+                        presented,
+                    );
+                    if !launched {
+                        println!("LAUNCH ok");
+                        launched = true;
+                    }
+                    if pending_spawn_ack == Some(old_token) {
+                        pending_spawn_ack = None;
+                        pending_spawn_ready = true;
+                    }
+                }
+                continue;
+            };
             ui.note_submitted();
 
             // Runtime frames stay in flight: the next SUBMIT is followed by the
@@ -794,8 +854,8 @@ pub fn run(
             let node = pending_spawn.take().expect("pending spawn checked");
             let accepted = on_click(node, &desktop, &mut spawn_ok, smoke);
             if accepted {
-                // APP_SPAWN ack 只是“拉起受理”，Opening 继续覆盖冷启动；
-                // 真实 app 首帧会覆盖 launcher 面，后续首帧事件另接真值。
+                // APP_SPAWN ack 只是“拉起受理”，Opening 帧已提交；其后
+                // surface0 不再全量重绘，等待真实 APP 首帧接管可视主体。
                 launch_toast_deadline = now() + LAUNCH_TOAST_NS;
             } else {
                 if let Some(node) = launching_node.take() {
@@ -1033,7 +1093,7 @@ fn release_present(hw: Handle) {
     }
 }
 
-fn submit_frame(hw: Handle, vmo: Handle, request: &gp::PresentReq) -> u32 {
+fn submit_frame(hw: Handle, vmo: Handle, request: &gp::PresentReq) -> Option<u32> {
     let mut req = [0u8; 256];
     let mut rep = [0u8; 256];
     let mut rhs = [0 as Handle; 8];
@@ -1045,7 +1105,12 @@ fn submit_frame(hw: Handle, vmo: Handle, request: &gp::PresentReq) -> u32 {
         let m = enc_req(gp::encode_present_req(&mut req, request));
         let (n, _) = rpc_submit(hw, &req[..m], &[alias], &mut rep, &mut rhs);
         if let Some(token) = gp::parse_submit_ack(&rep[..n]) {
-            return token;
+            return Some(token);
+        }
+        if rep.first() == Some(&gp::ST_BUSY) {
+            // Authoritative composition rejected this surface0 frame because a
+            // visible APP owns the body. No token or presented telemetry exists.
+            return None;
         }
         if rep.first() == Some(&gp::ST_FULL) {
             // Credits were occupied by in-flight frames. Drain after this

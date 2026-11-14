@@ -367,6 +367,20 @@ impl WmTable {
         Some((self.wins[i].owner, id))
     }
 
+    /// 可见全宽 APP 主体是否持有焦点。surface0 的桌面 repaint 不得覆盖它；
+    /// GUI8 右侧窄探测窗不是产品主体。HOME/BACK 隐藏 APP 会清焦，Recents
+    /// overlay 不清焦。
+    pub fn focused_app_owner(&self) -> Option<u16> {
+        let (owner, id) = self.focused()?;
+        let i = self.find(id)?;
+        let win = &self.wins[i];
+        (win.vis
+            && win.layer == gp::WM_LAYER_APP
+            && win.req.2 == self.disp_w
+            && win.eff.2 == self.disp_w)
+            .then_some(owner)
+    }
+
     /// P3 click-to-focus：pointer DOWN 命中真实可见窗时接焦。桌面 miss
     /// 不清焦（v1 无桌面窗对象，避免造 window=0 第二语义）；隐藏窗不参
     /// hit-test。变更后 bump，让 WM_TABLE_WAIT 消费者看到 focused flag。

@@ -604,7 +604,14 @@ impl WmSessions {
                 (lock.session, lock.window, origin)
             }
         };
-        if let Some((x, y)) = origin {
+        // SYSTEM shell windows use display-global pointer coordinates (the
+        // launcher owns status/navigation/recents semantics). APP windows keep
+        // raw window-local coordinates required by their fixed frame VMO.
+        let system_target = self
+            .system_slot()
+            .and_then(|i| self.slots[i].as_ref().map(|s| s.id))
+            .is_some_and(|system_sid| system_sid == sid);
+        if let Some((x, y)) = origin.filter(|_| !system_target) {
             Self::localize(&mut out, x, y);
         }
         let Some(i) = self.slot_index(sid) else {
@@ -1078,6 +1085,7 @@ fn on_session(table: &mut table::WmTable, present_cli: Handle, hdi_cli: Handle,
                 present_cli,
                 owner,
                 client_type,
+                table.focused_app_owner().is_some(),
                 |owner, id| table.surface_geometry(owner, id),
                 |owner| table.owner_windows(owner),
                 comp,

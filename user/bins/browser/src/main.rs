@@ -15,15 +15,15 @@ use berry_room::{
 };
 use berry_ui::hit::PtrEvent;
 use berry_ui::sdk::{
-    Button, Card, FontSource, InteractionState, Msg, RectI, Scaffold, ScrollView, TextVariant,
-    Theme, Ui, WidgetContext, column, text,
+    Card, FontSource, Msg, NavigationIconSource, RectI, Scaffold, ScrollView, TextVariant, Theme,
+    Ui, WidgetContext, column, text, NAV_ICON_BACK, NAV_ICON_BACK_ACTIVE,
 };
 
 type Ui64 = Ui<64>;
 
 struct Page {
     scroll: ScrollView,
-    back: Button,
+    back: berry_ui::sdk::IconButton,
 }
 
 struct App {
@@ -41,6 +41,8 @@ impl FontSource for RoomFontSource {
         (scale == FontSize::S32x48).then_some(&SYSTEM_FONT_ATLAS)
     }
 }
+
+static NAVIGATION_ICONS: NavigationIconSource = NavigationIconSource;
 
 fn append_u32(out: &mut [u8], mut value: u32) -> usize {
     let mut digits = [0u8; 10];
@@ -123,16 +125,24 @@ fn fail(room: &AppRoom, what: &str) -> ! {
     room.exit(134)
 }
 
-fn build_page(ui: &mut Ui64, ctx: &WidgetContext) -> Page {
+fn build_page(ui: &mut Ui64, ctx: &WidgetContext, safe_top: u32, safe_bottom: u32) -> Page {
     let root = ui.root();
-    let scaffold = match Scaffold::new(ui, root, ctx, b"Browser") {
+    let scaffold = match Scaffold::with_back_safe(
+        ui, root, ctx, b"Browser", NAV_ICON_BACK, NAV_ICON_BACK_ACTIVE, safe_top, safe_bottom,
+    ) {
         Ok(value) => value,
         Err(_) => berry_room::panic_exit(134),
     };
+    let back = match scaffold.app_bar.back {
+        Some(value) => value,
+        None => berry_room::panic_exit(134),
+    };
     let (_, viewport_h) = ui.viewport();
-    let title_h = ctx.metrics.typography(berry_ui::sdk::TypographyToken::Title).cell_h() as u32;
-    let bar = title_h.saturating_add(ctx.metrics.spacing(berry_ui::sdk::SpacingToken::S).saturating_mul(2));
-    let scroll = match ScrollView::new(ui, scaffold.body, ctx, viewport_h.saturating_sub(bar)) {
+    let body_h = viewport_h
+        .saturating_sub(safe_top)
+        .saturating_sub(scaffold.app_bar.instance_height(ctx))
+        .saturating_sub(safe_bottom);
+    let scroll = match ScrollView::new(ui, scaffold.body, ctx, body_h) {
         Ok(value) => value,
         Err(_) => berry_room::panic_exit(134),
     };
@@ -141,10 +151,6 @@ fn build_page(ui: &mut Ui64, ctx: &WidgetContext) -> Page {
         Err(_) => berry_room::panic_exit(134),
     };
     let stack = match column(ui, card.panel, ctx) {
-        Ok(value) => value,
-        Err(_) => berry_room::panic_exit(134),
-    };
-    let back = match Button::new(ui, stack, ctx, b"Back", InteractionState::Normal) {
         Ok(value) => value,
         Err(_) => berry_room::panic_exit(134),
     };
@@ -249,13 +255,19 @@ fn run_interactive(app: &mut App, room: &mut AppRoom) {
             }
             for slot in copied.iter().take(messages.len()) {
                 let Some(message) = *slot else { continue };
-                if matches!(message, Msg::Click { .. })
-                    && app
-                        .page
-                        .back
-                        .on_msg(&mut app.ui, &app.ctx, &message)
-                        .unwrap_or_else(|_| berry_room::panic_exit(134))
-                {
+                let back_clicked = app
+                    .page
+                    .back
+                    .on_msg(&mut app.ui, &app.ctx, &message)
+                    .unwrap_or_else(|_| berry_room::panic_exit(134));
+                if !matches!(message, Msg::Click { .. }) {
+                    if app.ui.damage().union_px() != 0 {
+                        app.render(room);
+                        room.print(b"BROWSERFRAME ok\n");
+                    }
+                    continue;
+                }
+                if back_clicked {
                     let mut line = Line::new(b"BROWSERHIT ok node=back x=");
                     line.push_u32(x);
                     line.push(b" y=");
@@ -293,7 +305,11 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
     let mut ui = Ui64::new(width as u32, height as u32);
     let ctx = WidgetContext::for_ui(theme, &ui);
     ui.set_font_source(&ROOM_FONT_SOURCE);
-    let page = build_page(&mut ui, &ctx);
+    ui.set_icon_source(&NAVIGATION_ICONS);
+    let insets = room.occlusion().effective_padding();
+    let safe_top = u32::from(insets[1]);
+    let safe_bottom = u32::from(insets[3]).max(ctx.metrics.effective_px(144));
+    let page = build_page(&mut ui, &ctx, safe_top, safe_bottom);
     let mut scroll = page.scroll;
     let mut app = App { ui, ctx, page, frame_seq: 0 };
     scroll.sync_bounds(&mut app.ui).unwrap_or_else(|_| berry_room::panic_exit(134));

@@ -17,8 +17,9 @@ use berry_room::{
 };
 use berry_ui::hit::PtrEvent;
 use berry_ui::sdk::{
-    Button, Card, FontSource, IconProps, InteractionState, Msg, Props, RectI, Scaffold,
-    ScrollView, TextVariant, Theme, Ui, ViewKind, ViewSpec, WidgetContext, column, text,
+    Button, Card, FontSource, IconProps, InteractionState, Msg, NavigationIconSource, Props,
+    RectI, Scaffold, ScrollView, TextVariant, Theme, Ui, ViewKind, ViewSpec, WidgetContext,
+    column, text, NAV_ICON_BACK, NAV_ICON_BACK_ACTIVE,
 };
 
 type Ui32 = Ui<32>;
@@ -28,14 +29,14 @@ const SRC_H: u32 = 100;
 
 struct GridPage {
     scroll: ScrollView,
-    back: Button,
+    back: berry_ui::sdk::IconButton,
     image: berry_ui::sdk::NodeId,
     open: Button,
 }
 
 struct ViewPage {
     scroll: ScrollView,
-    back: Button,
+    back: berry_ui::sdk::IconButton,
     image: berry_ui::sdk::NodeId,
 }
 
@@ -43,6 +44,8 @@ struct App {
     ui: Ui32,
     ctx: WidgetContext,
     mode: bool, // false=grid, true=view
+    safe_top: u32,
+    safe_bottom: u32,
     page: Page,
     frame_seq: u32,
 }
@@ -82,17 +85,25 @@ static PATTERN_ARGB: [u32; PATTERN_LEN] = pattern_argb();
 
 struct PatternSource;
 
+static NAVIGATION_ICONS: NavigationIconSource = NavigationIconSource;
+
 impl berry_ui::sdk::IconSource for PatternSource {
     fn dims(&self, id: u16) -> Option<(u32, u32)> {
+        if let Some(dims) = NAVIGATION_ICONS.dims(id) {
+            return Some(dims);
+        }
         (id == 1).then_some((SRC_W, SRC_H))
     }
 
     fn pixels(&self, id: u16) -> Option<&[u32]> {
+        if let Some(pixels) = NAVIGATION_ICONS.pixels(id) {
+            return Some(pixels);
+        }
         (id == 1).then_some(&PATTERN_ARGB)
     }
 
     fn smooth_scale(&self, id: u16) -> bool {
-        id == 1
+        id == 1 || NAVIGATION_ICONS.dims(id).is_some()
     }
 }
 
@@ -246,16 +257,24 @@ fn add_image<const N: usize>(
     }
 }
 
-fn build_grid(ui: &mut Ui32, ctx: &WidgetContext) -> GridPage {
+fn build_grid(ui: &mut Ui32, ctx: &WidgetContext, safe_top: u32, safe_bottom: u32) -> GridPage {
     let root = ui.root();
-    let scaffold = match Scaffold::new(ui, root, ctx, b"Photos") {
+    let scaffold = match Scaffold::with_back_safe(
+        ui, root, ctx, b"Photos", NAV_ICON_BACK, NAV_ICON_BACK_ACTIVE, safe_top, safe_bottom,
+    ) {
         Ok(value) => value,
         Err(_) => berry_room::panic_exit(134),
     };
+    let back = match scaffold.app_bar.back {
+        Some(value) => value,
+        None => berry_room::panic_exit(134),
+    };
     let (_, viewport_h) = ui.viewport();
-    let title_h = ctx.metrics.typography(berry_ui::sdk::TypographyToken::Title).cell_h() as u32;
-    let bar = title_h.saturating_add(ctx.metrics.spacing(berry_ui::sdk::SpacingToken::S).saturating_mul(2));
-    let scroll = match ScrollView::new(ui, scaffold.body, ctx, viewport_h.saturating_sub(bar)) {
+    let body_h = viewport_h
+        .saturating_sub(safe_top)
+        .saturating_sub(scaffold.app_bar.instance_height(ctx))
+        .saturating_sub(safe_bottom);
+    let scroll = match ScrollView::new(ui, scaffold.body, ctx, body_h) {
         Ok(value) => value,
         Err(_) => berry_room::panic_exit(134),
     };
@@ -264,10 +283,6 @@ fn build_grid(ui: &mut Ui32, ctx: &WidgetContext) -> GridPage {
         Err(_) => berry_room::panic_exit(134),
     };
     let stack = match column(ui, card.panel, ctx) {
-        Ok(value) => value,
-        Err(_) => berry_room::panic_exit(134),
-    };
-    let back = match Button::new(ui, stack, ctx, b"Back", InteractionState::Normal) {
         Ok(value) => value,
         Err(_) => berry_room::panic_exit(134),
     };
@@ -283,16 +298,24 @@ fn build_grid(ui: &mut Ui32, ctx: &WidgetContext) -> GridPage {
     GridPage { scroll, back, image, open }
 }
 
-fn build_view(ui: &mut Ui32, ctx: &WidgetContext) -> ViewPage {
+fn build_view(ui: &mut Ui32, ctx: &WidgetContext, safe_top: u32, safe_bottom: u32) -> ViewPage {
     let root = ui.root();
-    let scaffold = match Scaffold::new(ui, root, ctx, b"Photos") {
+    let scaffold = match Scaffold::with_back_safe(
+        ui, root, ctx, b"Photos", NAV_ICON_BACK, NAV_ICON_BACK_ACTIVE, safe_top, safe_bottom,
+    ) {
         Ok(value) => value,
         Err(_) => berry_room::panic_exit(134),
     };
+    let back = match scaffold.app_bar.back {
+        Some(value) => value,
+        None => berry_room::panic_exit(134),
+    };
     let (_, viewport_h) = ui.viewport();
-    let title_h = ctx.metrics.typography(berry_ui::sdk::TypographyToken::Title).cell_h() as u32;
-    let bar = title_h.saturating_add(ctx.metrics.spacing(berry_ui::sdk::SpacingToken::S).saturating_mul(2));
-    let scroll = match ScrollView::new(ui, scaffold.body, ctx, viewport_h.saturating_sub(bar)) {
+    let body_h = viewport_h
+        .saturating_sub(safe_top)
+        .saturating_sub(scaffold.app_bar.instance_height(ctx))
+        .saturating_sub(safe_bottom);
+    let scroll = match ScrollView::new(ui, scaffold.body, ctx, body_h) {
         Ok(value) => value,
         Err(_) => berry_room::panic_exit(134),
     };
@@ -301,10 +324,6 @@ fn build_view(ui: &mut Ui32, ctx: &WidgetContext) -> ViewPage {
         Err(_) => berry_room::panic_exit(134),
     };
     let stack = match column(ui, card.panel, ctx) {
-        Ok(value) => value,
-        Err(_) => berry_room::panic_exit(134),
-    };
-    let back = match Button::new(ui, stack, ctx, b"Back", InteractionState::Normal) {
         Ok(value) => value,
         Err(_) => berry_room::panic_exit(134),
     };
@@ -369,7 +388,9 @@ impl App {
         if self.ui.remove(root).is_err() {
             berry_room::panic_exit(134);
         }
-        self.page = Page::Grid(build_grid(&mut self.ui, &self.ctx));
+        self.page = Page::Grid(build_grid(
+            &mut self.ui, &self.ctx, self.safe_top, self.safe_bottom,
+        ));
         self.mode = false;
     }
 
@@ -378,7 +399,9 @@ impl App {
         if self.ui.remove(root).is_err() {
             berry_room::panic_exit(134);
         }
-        self.page = Page::View(build_view(&mut self.ui, &self.ctx));
+        self.page = Page::View(build_view(
+            &mut self.ui, &self.ctx, self.safe_top, self.safe_bottom,
+        ));
         self.mode = true;
     }
 
@@ -450,7 +473,17 @@ fn run_interactive(app: &mut App, room: &mut AppRoom) {
             }
             for slot in copied.iter().take(messages.len()) {
                 let Some(message) = *slot else { continue };
+                if let Page::Grid(page) = &mut app.page {
+                    let _ = page
+                        .open
+                        .on_msg(&mut app.ui, &app.ctx, &message)
+                        .unwrap_or_else(|_| berry_room::panic_exit(134));
+                }
                 if !matches!(message, Msg::Click { .. }) {
+                    if app.ui.damage().union_px() != 0 {
+                        app.render(room);
+                        room.print(b"PHOTOSFRAME ok\n");
+                    }
                     continue;
                 }
                 match &mut app.page {
@@ -532,12 +565,17 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
     ui.set_font_source(&ROOM_FONT_SOURCE);
     static PATTERN_SOURCE: PatternSource = PatternSource;
     ui.set_icon_source(&PATTERN_SOURCE);
-    let grid = build_grid(&mut ui, &ctx);
+    let insets = room.occlusion().effective_padding();
+    let safe_top = u32::from(insets[1]);
+    let safe_bottom = u32::from(insets[3]).max(ctx.metrics.effective_px(144));
+    let grid = build_grid(&mut ui, &ctx, safe_top, safe_bottom);
     let mut scroll = grid.scroll;
     let mut app = App {
         ui,
         ctx,
         mode: false,
+        safe_top,
+        safe_bottom,
         page: Page::Grid(grid),
         frame_seq: 0,
     };

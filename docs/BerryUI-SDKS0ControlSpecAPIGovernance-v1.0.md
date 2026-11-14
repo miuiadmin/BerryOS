@@ -156,6 +156,13 @@ experimental 可以调整，但必须保持规格与账本同批更新
 | `berry_ui::sdk::MonospaceTextMetrics` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::Msg` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::MsgBuf` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
+| `berry_ui::sdk::NAV_ICON_BACK` | const | OH-SHELL | in-tree | stable | `docs/Berry设备平台-OpenHarmonyShell-v1.0.md` |
+| `berry_ui::sdk::NAV_ICON_BACK_ACTIVE` | const | OH-SHELL | in-tree | stable | `docs/Berry设备平台-OpenHarmonyShell-v1.0.md` |
+| `berry_ui::sdk::NAV_ICON_HOME` | const | OH-SHELL | in-tree | stable | `docs/Berry设备平台-OpenHarmonyShell-v1.0.md` |
+| `berry_ui::sdk::NAV_ICON_HOME_ACTIVE` | const | OH-SHELL | in-tree | stable | `docs/Berry设备平台-OpenHarmonyShell-v1.0.md` |
+| `berry_ui::sdk::NAV_ICON_TASK` | const | OH-SHELL | in-tree | stable | `docs/Berry设备平台-OpenHarmonyShell-v1.0.md` |
+| `berry_ui::sdk::NAV_ICON_TASK_ACTIVE` | const | OH-SHELL | in-tree | stable | `docs/Berry设备平台-OpenHarmonyShell-v1.0.md` |
+| `berry_ui::sdk::NavigationIconSource` | type | OH-SHELL | in-tree | stable | `docs/Berry设备平台-OpenHarmonyShell-v1.0.md` |
 | `berry_ui::sdk::NodeId` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::PadProps` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::PanelProps` | type | F4 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |

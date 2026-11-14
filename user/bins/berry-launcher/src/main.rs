@@ -65,6 +65,7 @@ use berry_sys::{
     BERRY_ERR_AGAIN, BERRY_ERR_BUSY, CLOCK_MONOTONIC, RIGHT_DUPLICATE, RIGHT_READ,
     RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
+use berry_ui::theme::Density;
 use berry_ui::UiMain;
 
 // 链接种子（fsmgr/guifbd 同款）：rlib/LTO 按需保留——无引用则 berry-libc
@@ -355,6 +356,45 @@ fn wm_config_ack(ch: Handle, window_id: u16, serial: u32) -> u8 {
     }
 }
 
+/// 产品系统壳保留面：状态栏与底部导航是 SYSTEM 层真实窗口。普通 APP 的
+/// `AVOID_SYS` 窗因此得到权威 safe area；像素仍由 launcher surface0 供给。
+fn create_system_reserve(
+    hw: Handle, name: &[u8], x: u16, y: u16, w: u16, h: u16,
+) -> u16 {
+    let mut req = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let create = gp::WmCreateReq {
+        layer: gp::WM_LAYER_SYSTEM,
+        flags: 0,
+        parent: 0,
+        group: 0,
+        x,
+        y,
+        w,
+        h,
+    };
+    let m = match gp::encode_wm_create_req(&mut req, &create) {
+        Some(m) => m,
+        None => fail("system reserve encode"),
+    };
+    let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+    let id = match gp::parse_wm_create_ack(&rep[..n]) {
+        Some(id) if id != 0 => id,
+        _ => fail(&format!("system reserve {} ack st={}", String::from_utf8_lossy(name), rep[0])),
+    };
+    while let Some(event) = wm_config_poll(hw) {
+        if event.window_id != id || wm_config_ack(hw, id, event.serial) != gp::ST_OK {
+            fail("system reserve config");
+        }
+    }
+    println!(
+        "WMSYSRESERVE ok id={} {}x{}+{}+{}",
+        id, w, h, x, y
+    );
+    id
+}
+
 fn main() {
     // —— 降级门：wm 客户端端未交付（rootfs 相 wmd 随 fb 探测门不被拉起
     // → 本程序不被拉起；bsh 手跑无 extras）→ 一行诊断 + park（v0 骨架
@@ -406,6 +446,26 @@ fn main() {
         "LAUNCH v={} wmax={} {}x{} input={}",
         info.version_wm, info.windows_max, info.disp_w, info.disp_h, input_h()
     );
+
+    // Product topology owns persistent system bars. GUI8's compact validation
+    // topology intentionally stays unchanged; its occlusion tests create their
+    // own SYSTEM window.
+    let product_boot = product_mode_from_argv();
+    if product_boot {
+        let product_density =
+            Density::for_viewport(u32::from(info.disp_w), u32::from(info.disp_h));
+        let status_h = match product_density {
+            Density::Product => 117,
+            Density::Compact => 44,
+        };
+        let nav_h = match product_density {
+            Density::Product => 108,
+            Density::Compact => 48,
+        };
+        create_system_reserve(hw, b"status", 0, 0, info.disp_w, status_h);
+        let nav_y = info.disp_h.saturating_sub(nav_h);
+        create_system_reserve(hw, b"navigation", 0, nav_y, info.disp_w, nav_h);
+    }
 
     // Phase 4 全量 CJK A2 面 boot 实探：两个高频字都不在旧 16 字标签
     // 子集中，必须在客机完成 zlib 页解压 + A2 nibble 解包后才可能命中。

@@ -18,8 +18,8 @@ use berry_room::{
 };
 use berry_ui::hit::PtrEvent;
 use berry_ui::sdk::{
-    Button, Card, FontSource, InteractionState, Msg, RectI, Scaffold, ScrollView, TextVariant,
-    Theme, Ui, WidgetContext, column, text,
+    Card, FontSource, ListItem, Msg, NavigationIconSource, RectI, Scaffold, ScrollView,
+    TextVariant, Theme, Ui, WidgetContext, column, text, NAV_ICON_BACK, NAV_ICON_BACK_ACTIVE,
 };
 
 type Ui96 = Ui<96>;
@@ -47,13 +47,13 @@ struct FileData {
 
 struct ListPage {
     scroll: ScrollView,
-    back: Button,
-    open: [Option<Button>; MAX_ENTRIES],
+    back: berry_ui::sdk::IconButton,
+    open: [Option<ListItem>; MAX_ENTRIES],
 }
 
 struct DetailPage {
     scroll: ScrollView,
-    back: Button,
+    back: berry_ui::sdk::IconButton,
 }
 
 struct App {
@@ -63,6 +63,8 @@ struct App {
     count: usize,
     selected: usize,
     mode: bool, // false=list, true=detail
+    safe_top: u32,
+    safe_bottom: u32,
     page: Page,
     frame_seq: u32,
 }
@@ -80,6 +82,8 @@ impl FontSource for RoomFontSource {
         (scale == FontSize::S32x48).then_some(&SYSTEM_FONT_ATLAS)
     }
 }
+
+static NAVIGATION_ICONS: NavigationIconSource = NavigationIconSource;
 
 fn append_u32(out: &mut [u8], mut value: u32) -> usize {
     let mut digits = [0u8; 10];
@@ -215,16 +219,27 @@ fn load_file(room: &AppRoom, entry: &FileEntry) -> FileData {
     FileData { index: 0, size, bytes: out, len: off }
 }
 
-fn build_list(ui: &mut Ui96, ctx: &WidgetContext, entries: &[FileEntry; MAX_ENTRIES], count: usize) -> ListPage {
+fn build_list(
+    ui: &mut Ui96, ctx: &WidgetContext, entries: &[FileEntry; MAX_ENTRIES], count: usize,
+    safe_top: u32, safe_bottom: u32,
+) -> ListPage {
     let root = ui.root();
-    let scaffold = match Scaffold::new(ui, root, ctx, b"Files") {
+    let scaffold = match Scaffold::with_back_safe(
+        ui, root, ctx, b"Files", NAV_ICON_BACK, NAV_ICON_BACK_ACTIVE, safe_top, safe_bottom,
+    ) {
         Ok(value) => value,
         Err(_) => berry_room::panic_exit(134),
     };
+    let back = match scaffold.app_bar.back {
+        Some(value) => value,
+        None => berry_room::panic_exit(134),
+    };
     let (_, viewport_h) = ui.viewport();
-    let title_h = ctx.metrics.typography(berry_ui::sdk::TypographyToken::Title).cell_h() as u32;
-    let bar = title_h.saturating_add(ctx.metrics.spacing(berry_ui::sdk::SpacingToken::S).saturating_mul(2));
-    let scroll = match ScrollView::new(ui, scaffold.body, ctx, viewport_h.saturating_sub(bar)) {
+    let body_h = viewport_h
+        .saturating_sub(safe_top)
+        .saturating_sub(scaffold.app_bar.instance_height(ctx))
+        .saturating_sub(safe_bottom);
+    let scroll = match ScrollView::new(ui, scaffold.body, ctx, body_h) {
         Ok(value) => value,
         Err(_) => berry_room::panic_exit(134),
     };
@@ -236,13 +251,16 @@ fn build_list(ui: &mut Ui96, ctx: &WidgetContext, entries: &[FileEntry; MAX_ENTR
         Ok(value) => value,
         Err(_) => berry_room::panic_exit(134),
     };
-    let back = match Button::new(ui, stack, ctx, b"Back", InteractionState::Normal) {
-        Ok(value) => value,
-        Err(_) => berry_room::panic_exit(134),
-    };
     let mut open = [None; MAX_ENTRIES];
     for (slot, entry) in open.iter_mut().zip(entries.iter()).take(count) {
-        *slot = Some(match Button::new(ui, stack, ctx, entry.name(), InteractionState::Normal) {
+        *slot = Some(match ListItem::new(
+            ui,
+            stack,
+            ctx,
+            entry.name(),
+            Some(b"Open file"),
+            false,
+        ) {
             Ok(value) => value,
             Err(_) => berry_room::panic_exit(134),
         });
@@ -251,16 +269,27 @@ fn build_list(ui: &mut Ui96, ctx: &WidgetContext, entries: &[FileEntry; MAX_ENTR
     ListPage { scroll, back, open }
 }
 
-fn build_detail(ui: &mut Ui96, ctx: &WidgetContext, entry: &FileEntry, data: &FileData) -> DetailPage {
+fn build_detail(
+    ui: &mut Ui96, ctx: &WidgetContext, entry: &FileEntry, data: &FileData, safe_top: u32,
+    safe_bottom: u32,
+) -> DetailPage {
     let root = ui.root();
-    let scaffold = match Scaffold::new(ui, root, ctx, b"Files") {
+    let scaffold = match Scaffold::with_back_safe(
+        ui, root, ctx, b"Files", NAV_ICON_BACK, NAV_ICON_BACK_ACTIVE, safe_top, safe_bottom,
+    ) {
         Ok(value) => value,
         Err(_) => berry_room::panic_exit(134),
     };
+    let back = match scaffold.app_bar.back {
+        Some(value) => value,
+        None => berry_room::panic_exit(134),
+    };
     let (_, viewport_h) = ui.viewport();
-    let title_h = ctx.metrics.typography(berry_ui::sdk::TypographyToken::Title).cell_h() as u32;
-    let bar = title_h.saturating_add(ctx.metrics.spacing(berry_ui::sdk::SpacingToken::S).saturating_mul(2));
-    let scroll = match ScrollView::new(ui, scaffold.body, ctx, viewport_h.saturating_sub(bar)) {
+    let body_h = viewport_h
+        .saturating_sub(safe_top)
+        .saturating_sub(scaffold.app_bar.instance_height(ctx))
+        .saturating_sub(safe_bottom);
+    let scroll = match ScrollView::new(ui, scaffold.body, ctx, body_h) {
         Ok(value) => value,
         Err(_) => berry_room::panic_exit(134),
     };
@@ -290,10 +319,6 @@ fn build_detail(ui: &mut Ui96, ctx: &WidgetContext, entry: &FileEntry, data: &Fi
         Ok(_) => {}
         Err(_) => berry_room::panic_exit(134),
     }
-    let back = match Button::new(ui, stack, ctx, b"Back", InteractionState::Normal) {
-        Ok(value) => value,
-        Err(_) => berry_room::panic_exit(134),
-    };
     DetailPage { scroll, back }
 }
 
@@ -347,7 +372,9 @@ impl App {
         if self.ui.remove(root).is_err() {
             berry_room::panic_exit(134);
         }
-        self.page = Page::List(build_list(&mut self.ui, &self.ctx, &self.entries, self.count));
+        self.page = Page::List(build_list(
+            &mut self.ui, &self.ctx, &self.entries, self.count, self.safe_top, self.safe_bottom,
+        ));
         self.mode = false;
     }
 
@@ -356,7 +383,9 @@ impl App {
         if self.ui.remove(root).is_err() {
             berry_room::panic_exit(134);
         }
-        self.page = Page::Detail(build_detail(&mut self.ui, &self.ctx, &self.entries[data.index], data));
+        self.page = Page::Detail(build_detail(
+            &mut self.ui, &self.ctx, &self.entries[data.index], data, self.safe_top, self.safe_bottom,
+        ));
         self.mode = true;
     }
 
@@ -428,7 +457,18 @@ fn run_interactive(app: &mut App, room: &mut AppRoom) {
             }
             for slot in copied.iter().take(messages.len()) {
                 let Some(message) = *slot else { continue };
+                if let Page::List(page) = &mut app.page {
+                    for row in page.open.iter_mut().flatten() {
+                        let _ = row
+                            .on_msg(&mut app.ui, &app.ctx, &message)
+                            .unwrap_or_else(|_| berry_room::panic_exit(134));
+                    }
+                }
                 if !matches!(message, Msg::Click { .. }) {
+                    if app.ui.damage().union_px() != 0 {
+                        app.render(room);
+                        room.print(b"FILESFRAME ok\n");
+                    }
                     continue;
                 }
                 match &mut app.page {
@@ -524,7 +564,11 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
     let mut ui = Ui96::new(width as u32, height as u32);
     let ctx = WidgetContext::for_ui(theme, &ui);
     ui.set_font_source(&ROOM_FONT_SOURCE);
-    let list = build_list(&mut ui, &ctx, &entries, count);
+    ui.set_icon_source(&NAVIGATION_ICONS);
+    let insets = room.occlusion().effective_padding();
+    let safe_top = u32::from(insets[1]);
+    let safe_bottom = u32::from(insets[3]).max(ctx.metrics.effective_px(144));
+    let list = build_list(&mut ui, &ctx, &entries, count, safe_top, safe_bottom);
     let mut scroll = list.scroll;
     let mut app = App {
         ui,
@@ -533,6 +577,8 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
         count,
         selected,
         mode: false,
+        safe_top,
+        safe_bottom,
         page: Page::List(list),
         frame_seq: 0,
     };

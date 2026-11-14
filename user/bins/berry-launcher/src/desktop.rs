@@ -326,13 +326,15 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
     let status = ui.add(
         content,
         ViewSpec {
-            kind: ViewKind::Col,
+            kind: ViewKind::Panel,
             key: 0,
-            props: Props::Col(ColProps {
-                gap: 0,
+            props: Props::Panel(PanelProps {
+                bg: Color { r: 0, g: 0, b: 0 },
                 w: Some(vp_w),
                 h: Some(status_h),
-                cross: CrossAlign::Stretch,
+                padding: 0,
+                gap: 0,
+                radius: 0,
             }),
         },
     )?;

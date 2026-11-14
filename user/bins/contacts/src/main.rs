@@ -18,8 +18,9 @@ use berry_room::{
 };
 use berry_ui::hit::PtrEvent;
 use berry_ui::sdk::{
-    Button, Card, FontSource, InteractionState, Msg, RectI, Scaffold, ScrollView, TextVariant,
-    Theme, Ui, WidgetContext, column, text,
+    Button, Card, FontSource, InteractionState, ListItem, Msg, NavigationIconSource, RectI,
+    Scaffold, ScrollView, TextVariant, Theme, Ui, WidgetContext, column, text, NAV_ICON_BACK,
+    NAV_ICON_BACK_ACTIVE,
 };
 
 type Ui32 = Ui<32>;
@@ -54,13 +55,13 @@ impl Contact {
 
 struct ListPage {
     scroll: ScrollView,
-    back: Button,
-    rows: [Option<Button>; MAX_CONTACTS],
+    back: berry_ui::sdk::IconButton,
+    rows: [Option<ListItem>; MAX_CONTACTS],
 }
 
 struct DetailPage {
     scroll: ScrollView,
-    back: Button,
+    back: berry_ui::sdk::IconButton,
     favorite: Button,
 }
 
@@ -70,6 +71,8 @@ struct App {
     contacts: [Contact; MAX_CONTACTS],
     detail: usize,
     mode: bool,
+    safe_top: u32,
+    safe_bottom: u32,
     page: Page,
     frame_seq: u32,
 }
@@ -87,6 +90,8 @@ impl FontSource for RoomFontSource {
         (scale == FontSize::S32x48).then_some(&SYSTEM_FONT_ATLAS)
     }
 }
+
+static NAVIGATION_ICONS: NavigationIconSource = NavigationIconSource;
 
 fn append_u32(out: &mut [u8], mut value: u32) -> usize {
     let mut digits = [0u8; 10];
@@ -270,16 +275,27 @@ fn load_contacts(room: &AppRoom, out: &mut [Contact; MAX_CONTACTS]) -> (usize, u
     (parse_contacts(room, &data[..off], out), root_count, true)
 }
 
-fn build_list(ui: &mut Ui32, ctx: &WidgetContext, contacts: &[Contact; MAX_CONTACTS]) -> ListPage {
+fn build_list(
+    ui: &mut Ui32, ctx: &WidgetContext, contacts: &[Contact; MAX_CONTACTS], safe_top: u32,
+    safe_bottom: u32,
+) -> ListPage {
     let root = ui.root();
-    let scaffold = match Scaffold::new(ui, root, ctx, b"Contacts") {
+    let scaffold = match Scaffold::with_back_safe(
+        ui, root, ctx, b"Contacts", NAV_ICON_BACK, NAV_ICON_BACK_ACTIVE, safe_top, safe_bottom,
+    ) {
         Ok(value) => value,
         Err(_) => berry_room::panic_exit(134),
     };
+    let back = match scaffold.app_bar.back {
+        Some(value) => value,
+        None => berry_room::panic_exit(134),
+    };
     let (_, viewport_h) = ui.viewport();
-    let title_h = ctx.metrics.typography(berry_ui::sdk::TypographyToken::Title).cell_h() as u32;
-    let bar = title_h.saturating_add(ctx.metrics.spacing(berry_ui::sdk::SpacingToken::S).saturating_mul(2));
-    let scroll = match ScrollView::new(ui, scaffold.body, ctx, viewport_h.saturating_sub(bar)) {
+    let body_h = viewport_h
+        .saturating_sub(safe_top)
+        .saturating_sub(scaffold.app_bar.instance_height(ctx))
+        .saturating_sub(safe_bottom);
+    let scroll = match ScrollView::new(ui, scaffold.body, ctx, body_h) {
         Ok(value) => value,
         Err(_) => berry_room::panic_exit(134),
     };
@@ -291,21 +307,16 @@ fn build_list(ui: &mut Ui32, ctx: &WidgetContext, contacts: &[Contact; MAX_CONTA
         Ok(value) => value,
         Err(_) => berry_room::panic_exit(134),
     };
-    let back = match Button::new(ui, stack, ctx, b"Back", InteractionState::Normal) {
-        Ok(value) => value,
-        Err(_) => berry_room::panic_exit(134),
-    };
     let mut rows = [None; MAX_CONTACTS];
     for (slot, contact) in rows.iter_mut().zip(contacts.iter()) {
-        let mut label = [0u8; 27];
-        label[..contact.name_len].copy_from_slice(contact.name());
-        let mut len = contact.name_len;
-        if contact.favorite {
-            label[len] = b' ';
-            label[len + 1] = b'*';
-            len += 2;
-        }
-        *slot = Some(match Button::new(ui, stack, ctx, &label[..len], InteractionState::Normal) {
+        *slot = Some(match ListItem::new(
+            ui,
+            stack,
+            ctx,
+            contact.name(),
+            Some(contact.number()),
+            contact.favorite,
+        ) {
             Ok(value) => value,
             Err(_) => berry_room::panic_exit(134),
         });
@@ -315,16 +326,25 @@ fn build_list(ui: &mut Ui32, ctx: &WidgetContext, contacts: &[Contact; MAX_CONTA
 
 fn build_detail(
     ui: &mut Ui32, ctx: &WidgetContext, contacts: &[Contact; MAX_CONTACTS], detail: usize,
+    safe_top: u32, safe_bottom: u32,
 ) -> DetailPage {
     let root = ui.root();
-    let scaffold = match Scaffold::new(ui, root, ctx, b"Contacts") {
+    let scaffold = match Scaffold::with_back_safe(
+        ui, root, ctx, b"Contacts", NAV_ICON_BACK, NAV_ICON_BACK_ACTIVE, safe_top, safe_bottom,
+    ) {
         Ok(value) => value,
         Err(_) => berry_room::panic_exit(134),
     };
+    let back = match scaffold.app_bar.back {
+        Some(value) => value,
+        None => berry_room::panic_exit(134),
+    };
     let (_, viewport_h) = ui.viewport();
-    let title_h = ctx.metrics.typography(berry_ui::sdk::TypographyToken::Title).cell_h() as u32;
-    let bar = title_h.saturating_add(ctx.metrics.spacing(berry_ui::sdk::SpacingToken::S).saturating_mul(2));
-    let scroll = match ScrollView::new(ui, scaffold.body, ctx, viewport_h.saturating_sub(bar)) {
+    let body_h = viewport_h
+        .saturating_sub(safe_top)
+        .saturating_sub(scaffold.app_bar.instance_height(ctx))
+        .saturating_sub(safe_bottom);
+    let scroll = match ScrollView::new(ui, scaffold.body, ctx, body_h) {
         Ok(value) => value,
         Err(_) => berry_room::panic_exit(134),
     };
@@ -350,10 +370,6 @@ fn build_detail(
         InteractionState::Normal
     };
     let favorite = match Button::new(ui, stack, ctx, b"Favorite", favorite_state) {
-        Ok(value) => value,
-        Err(_) => berry_room::panic_exit(134),
-    };
-    let back = match Button::new(ui, stack, ctx, b"Back", InteractionState::Normal) {
         Ok(value) => value,
         Err(_) => berry_room::panic_exit(134),
     };
@@ -411,7 +427,9 @@ impl App {
         if self.ui.remove(root).is_err() {
             berry_room::panic_exit(134);
         }
-        self.page = Page::List(build_list(&mut self.ui, &self.ctx, &self.contacts));
+        self.page = Page::List(build_list(
+            &mut self.ui, &self.ctx, &self.contacts, self.safe_top, self.safe_bottom,
+        ));
         self.mode = false;
     }
 
@@ -421,7 +439,9 @@ impl App {
             berry_room::panic_exit(134);
         }
         self.detail = detail;
-        self.page = Page::Detail(build_detail(&mut self.ui, &self.ctx, &self.contacts, detail));
+        self.page = Page::Detail(build_detail(
+            &mut self.ui, &self.ctx, &self.contacts, detail, self.safe_top, self.safe_bottom,
+        ));
         self.mode = true;
     }
 
@@ -493,7 +513,26 @@ fn run_interactive(app: &mut App, room: &mut AppRoom) {
             }
             for slot in copied.iter().take(messages.len()) {
                 let Some(message) = *slot else { continue };
+                match &mut app.page {
+                    Page::List(page) => {
+                        for row in page.rows.iter_mut().flatten() {
+                            let _ = row
+                                .on_msg(&mut app.ui, &app.ctx, &message)
+                                .unwrap_or_else(|_| berry_room::panic_exit(134));
+                        }
+                    }
+                    Page::Detail(page) => {
+                        let _ = page
+                            .favorite
+                            .on_msg(&mut app.ui, &app.ctx, &message)
+                            .unwrap_or_else(|_| berry_room::panic_exit(134));
+                    }
+                }
                 if !matches!(message, Msg::Click { .. }) {
+                    if app.ui.damage().union_px() != 0 {
+                        app.render(room);
+                        room.print(b"CONTACTSFRAME ok\n");
+                    }
                     continue;
                 }
                 match &mut app.page {
@@ -596,7 +635,11 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
     let mut ui = Ui32::new(width as u32, height as u32);
     let ctx = WidgetContext::for_ui(theme, &ui);
     ui.set_font_source(&ROOM_FONT_SOURCE);
-    let list = build_list(&mut ui, &ctx, &contacts);
+    ui.set_icon_source(&NAVIGATION_ICONS);
+    let insets = room.occlusion().effective_padding();
+    let safe_top = u32::from(insets[1]);
+    let safe_bottom = u32::from(insets[3]).max(ctx.metrics.effective_px(144));
+    let list = build_list(&mut ui, &ctx, &contacts, safe_top, safe_bottom);
     let mut scroll = list.scroll;
     let mut app = App {
         ui,
@@ -604,6 +647,8 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
         contacts,
         detail: 0,
         mode: false,
+        safe_top,
+        safe_bottom,
         page: Page::List(list),
         frame_seq: 0,
     };

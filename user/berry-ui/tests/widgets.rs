@@ -3,13 +3,14 @@
 //! 只经 `berry_ui::sdk` 消费组件；组件不得暴露 WM/VMO/像素路径。所有
 //! 几何断言来自 layout dump/bounds，所有交互断言来自 Msg/NodeId。
 
-use berry_gfx::cmd::{Color, CommandEncoder, GlyphPos};
+use berry_gfx::cmd::{Cmd, Color, CommandEncoder, GlyphPos, ImageSrc};
 use berry_gfx::color::{TextureDesc, TextureFormat};
 use berry_gfx::pass::{LoadOp, PassDescriptor, StoreOp};
 use berry_gfx::queue::Queue;
 use berry_ui::sdk::{
     column, divider, icon, row, text, Button, Card, EmptyState, InteractionState, ListTile,
-    ListTileSpec, ListItem, Msg, PanelProps, Props, RectProps, RectI, Scaffold, ScrollView,
+    ListTileSpec, ListItem, Msg, NavigationIconSource, NAV_ICON_BACK, NAV_ICON_BACK_ACTIVE,
+    PanelProps, Props, RectProps, RectI, Scaffold, ScrollView,
     Switch, TextVariant, Theme, Ui, UiError, ViewKind, ViewSpec, WidgetContext,
 };
 
@@ -22,6 +23,8 @@ fn a11y_roles_forward_berry_session_vocabulary() {
     assert_eq!(berry_ui::ROLE_TOGGLE, berry_guiproto::surface::A11Y_ROLE_TOGGLE);
     assert_eq!(berry_ui::ROLE_LIST_ITEM, berry_guiproto::surface::A11Y_ROLE_LIST_ITEM);
 }
+
+static NAVIGATION_PAINT_SOURCE: NavigationIconSource = NavigationIconSource;
 
 fn ctx(w: u32, h: u32) -> WidgetContext {
     WidgetContext::for_viewport(Theme::light(), w, h)
@@ -157,6 +160,16 @@ fn scaffold_core_widgets_layout_state_and_a11y() {
         32,
         "ListItem detail = Body S16x32（guest S32 档同源）"
     );
+    assert!(!item
+        .on_msg(
+            &mut ui,
+            &context,
+            &Msg::Press { node: item.title, x: 1, y: 1 },
+        )
+        .unwrap());
+    assert!(item
+        .on_msg(&mut ui, &context, &Msg::Click { node: item.panel })
+        .unwrap());
     let click_layout = ui.layout();
     assert_eq!(click_layout.measured, 0, "Button 纯状态换色零重测");
     let mut disabled =
@@ -181,7 +194,16 @@ fn app_bar_back_is_real_48dp_touch_target() {
     let mut ui = Ui::<32>::new(1080, 1920);
     let context = ctx(1080, 1920);
     let root = ui.root();
-    let scaffold = Scaffold::with_back(&mut ui, root, &context, b"Buttons", 103, 104).unwrap();
+    ui.set_icon_source(&NAVIGATION_PAINT_SOURCE);
+    let scaffold = Scaffold::with_back(
+        &mut ui,
+        root,
+        &context,
+        b"Buttons",
+        NAV_ICON_BACK,
+        NAV_ICON_BACK_ACTIVE,
+    )
+    .unwrap();
     ui.layout();
 
     assert_eq!(
@@ -214,6 +236,74 @@ fn app_bar_back_is_real_48dp_touch_target() {
     assert!(back
         .on_msg(&mut ui, &context, &Msg::Click { node: back.panel })
         .unwrap());
+
+    ui.drain_damage();
+    ui.wake(0);
+    let mut scratch = [GlyphPos { ch: 0, x: 0, y: 0 }; 128];
+    let mut encoder = CommandEncoder::new();
+    ui.paint(&mut scratch, &mut encoder);
+    let commands = encoder.finish();
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            Cmd::DrawImage {
+                src: ImageSrc::Argb { w, h, px },
+                ..
+            } if *w == 72 && *h == 72 && px.len() == 72 * 72
+        )),
+        "AppBar back must paint the shared 72×72 navigation glyph"
+    );
+}
+
+#[test]
+fn safe_navigation_shell_reserves_product_system_bars() {
+    let mut ui = Ui::<64>::new(1080, 1920);
+    let context = ctx(1080, 1920);
+    let root = ui.root();
+    let scaffold = Scaffold::with_back_safe(
+        &mut ui,
+        root,
+        &context,
+        b"Settings",
+        103,
+        104,
+        117,
+        108,
+    )
+    .unwrap();
+    ui.layout();
+
+    assert_eq!(
+        ui.bounds(scaffold.app_bar.panel).unwrap(),
+        RectI::new(0, 117, 1080, 168),
+        "App bar begins below the 39vp status reserve"
+    );
+    assert_eq!(
+        ui.bounds(scaffold.body).unwrap(),
+        RectI::new(0, 285, 1080, 1527),
+        "Body ends at the 36vp navigation reserve"
+    );
+    assert!(scaffold.app_bar.back.is_some());
+
+    let mut light = Scaffold::new_light_safe(
+        &mut ui,
+        root,
+        &context,
+        b"Gallery",
+        117,
+        108,
+    )
+    .unwrap();
+    ui.layout();
+    assert_eq!(
+        ui.bounds(light.app_bar.panel).unwrap(),
+        RectI::new(0, 117, 1080, 168)
+    );
+    assert_eq!(
+        ui.bounds(light.body).unwrap(),
+        RectI::new(0, 285, 1080, 1527)
+    );
+    assert!(light.app_bar.back.is_none());
 }
 
 #[test]

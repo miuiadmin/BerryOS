@@ -501,6 +501,58 @@ fn smooth_wallpaper_into_argb(out: &mut [u32], dw: u32, dh: u32) {
             out[dst_row + i] = 0xFF00_0000 | (r << 16) | (g << 8) | b;
         }
     }
+
+    overlay_product_navigation(out, dw as usize, dh as usize);
+}
+
+/// 产品壁纸同帧烘焙底部系统导航条。系统壳像素来自 launcher surface0；
+/// 烘焙进缓存可避免为三枚静态 glyph 增加 512 节点桌面树。
+fn overlay_product_navigation(out: &mut [u32], dw: usize, dh: usize) {
+    if dw < 1000 || dh < 1800 {
+        return;
+    }
+    let y0 = dh - 108;
+    for y in y0..dh {
+        let row = y * dw;
+        for x in 0..dw {
+            out[row + x] = 0xFF00_0000;
+        }
+    }
+
+    let white = 0xFFFF_FFFF;
+    // BACK：72×72 几何箭头。
+    for y in 0..72usize {
+        for x in 0..72usize {
+            let dx = x as i32 - 18;
+            let dy = y as i32 - 36;
+            let stroke = (-dy - dx).abs() <= 5 || (dy - dx).abs() <= 5;
+            let tail = y >= 30 && y < 42 && x >= 18 && x < 54;
+            if stroke || tail {
+                out[(y0 + 8 + y) * dw + 144 + x] = white;
+            }
+        }
+    }
+    // HOME：圆环。
+    for y in 0..72usize {
+        for x in 0..72usize {
+            let dx = x as i32 - 36;
+            let dy = y as i32 - 36;
+            let d = dx * dx + dy * dy;
+            if (324..=576).contains(&d) {
+                out[(y0 + 8 + y) * dw + 504 + x] = white;
+            }
+        }
+    }
+    // TASK：方框。
+    for y in 0..72usize {
+        for x in 0..72usize {
+            let border = (x >= 18 && x < 54 && (y == 22 || y == 50))
+                || (y >= 22 && y < 50 && (x == 18 || x == 53));
+            if border {
+                out[(y0 + 8 + y) * dw + 864 + x] = white;
+            }
+        }
+    }
 }
 
 fn horiz_rgb565(
@@ -568,5 +620,26 @@ mod wallpaper_tests {
         smooth_wallpaper_into_argb(&mut px, 8, 7);
         assert_eq!(px.len(), 56);
         assert!(px.iter().all(|p| p & 0xFF00_0000 == 0xFF00_0000));
+    }
+
+    #[test]
+    fn product_wallpaper_bakes_navigation_reserve() {
+        let mut px = vec![0x1234_5678u32; 1080 * 1920];
+        smooth_wallpaper_into_argb(&mut px, 1080, 1920);
+        for y in [1812, 1860, 1919] {
+            for x in [0, 1079] {
+                assert_eq!(px[y as usize * 1080 + x], 0xFF00_0000, "nav band black at {x},{y}");
+            }
+        }
+        let glyph_pixels = |x0: usize| {
+            px[1812..1920]
+                .chunks(1080)
+                .flat_map(|row| row.iter().skip(x0).take(72))
+                .filter(|&&p| p == 0xFFFF_FFFF)
+                .count()
+        };
+        assert!(glyph_pixels(144) > 500, "back glyph baked");
+        assert!(glyph_pixels(504) > 200, "home glyph baked");
+        assert!(glyph_pixels(864) > 50, "task glyph baked");
     }
 }
