@@ -240,6 +240,13 @@ pub struct Compositor {
     cache: [Option<OwnerFrameCacheSlot>; OWNER_CACHE_SLOTS],
     cache_epoch: u64,
     fresh_owner: Option<u16>,
+    /// back buffer 相对 front 的陈旧域（屏幕坐标包络）。恒等于「back 落后
+    /// 于 front 的区域」：成功提交后 = 该次**实际写入域**（finish_submit
+    /// 唯一记账点）；前写路径（`use_scanout_buffer` 写 front）并入写入域。
+    /// 初始值/失效值 = 全屏（首提交 back 为零页；写失败后内容不可信）。
+    /// 上次 FULL（写入域恰为全屏）自然落回全屏继承——partial 提交不再
+    /// 整屏拷贝，SYSTEM/APP/replay 混合序列下像素仍逐域对齐 front。
+    back_stale: gp::Rect,
 }
 
 impl Compositor {
@@ -270,6 +277,7 @@ impl Compositor {
             cache: [None, None, None],
             cache_epoch: 0,
             fresh_owner: None,
+            back_stale: gp::Rect { x: 0, y: 0, w, h },
         }
     }
 
@@ -340,27 +348,123 @@ impl Compositor {
         self.vmos[self.scanout_idx]
     }
 
-    /// Partial (or window-local FULL) damage must inherit unchanged pixels
-    /// from the last submitted composition into the back buffer. Only a FULL
-    /// submit on the full-screen SYSTEM surface may skip that copy.
-    fn prepare_back_buffer(&mut self, front_covers_screen: bool) -> bool {
-        if front_covers_screen || self.compose_idx == self.scanout_idx {
+    /// 屏幕域裁剪（结果恒 ⊆ 屏幕；x0/y0 先 min，w/h 无下溢）。
+    fn clip_to_screen(&self, r: gp::Rect) -> gp::Rect {
+        let x0 = r.x.min(self.w);
+        let y0 = r.y.min(self.h);
+        let x1 = r.x.saturating_add(r.w).min(self.w);
+        let y1 = r.y.saturating_add(r.h).min(self.h);
+        gp::Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
+    }
+
+    /// 两屏幕域矩形并集包络（空矩形 = 中性元——「未写入」不放大继承域）。
+    fn union_screen_rect(a: gp::Rect, b: gp::Rect) -> gp::Rect {
+        let empty = |r: gp::Rect| r.w == 0 || r.h == 0;
+        if empty(a) {
+            return b;
+        }
+        if empty(b) {
+            return a;
+        }
+        let x0 = a.x.min(b.x);
+        let y0 = a.y.min(b.y);
+        let x1 = a.x.saturating_add(a.w).max(b.x.saturating_add(b.w));
+        let y1 = a.y.saturating_add(a.h).max(b.y.saturating_add(b.h));
+        gp::Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
+    }
+
+    /// 一批屏幕坐标矩形的实际写入域包络（越屏项由 finish_submit 裁剪）。
+    fn envelope(rects: &[gp::Rect]) -> gp::Rect {
+        let mut e = gp::Rect { x: 0, y: 0, w: 0, h: 0 };
+        for &r in rects {
+            e = Self::union_screen_rect(e, r);
+        }
+        e
+    }
+
+    /// back buffer 继承：只补 [`Self::back_stale`] 域——back 恰好只在上一
+    /// 次提交的实际写入域落后于 front，其余区域两缓冲逐像素相等。本提交
+    /// 将整屏覆盖（SYSTEM surface 0 的 FULL）时无需继承；`compose ==
+    /// scanout`（首提交 / 前写路径）本就写 front，同样无需继承。
+    fn prepare_back_buffer(&mut self, covers_screen: bool) -> bool {
+        if covers_screen || self.compose_idx == self.scanout_idx {
             return true;
+        }
+        if self.back_stale.w == 0 || self.back_stale.h == 0 {
+            return true; // 上次提交空写入域：back 已与 front 全等
         }
         let front = self.scanout_vmo();
         let back = self.active_vmo();
-        let rect = gp::Rect {
-            x: 0,
-            y: 0,
-            w: self.w,
-            h: self.h,
-        };
-        self.copy_vmo_rect(front, back, rect)
+        self.copy_vmo_rect(front, back, self.back_stale)
     }
 
-    fn finish_submit(&mut self) {
+    /// 唯一记账点：成功提交后按本次实际写入域（屏幕包络）更新 back 陈旧
+    /// 度。翻转路径（写 back 并换 scanout）：新 back = 旧 front，恰好只
+    /// 陈旧于本次写入域；前写路径（`use_scanout_buffer` 写 front）：back
+    /// 未动，陈旧度并入本次写入域。空写入域（FULL 但 visible 为空）= 本
+    /// 次提交未改像素，陈旧度归零/保持。失败路径禁入——走
+    /// [`Self::invalidate_back_buffer`]。
+    fn finish_submit(&mut self, written: gp::Rect) {
+        let written = self.clip_to_screen(written);
+        if self.compose_idx == self.scanout_idx {
+            self.back_stale = Self::union_screen_rect(self.back_stale, written);
+        } else {
+            self.back_stale = written;
+        }
         self.scanout_idx = self.compose_idx;
         self.compose_idx = 1 - self.compose_idx;
+    }
+
+    /// A full-screen HOME/boot redraw leaves the new back stale over the whole
+    /// screen. Mirror it immediately after replying: the copy overlaps the
+    /// queued front DMA and prevents the first post-HOME swipe from paying a
+    /// serial full-screen inheritance before its first banded frame.
+    fn back_stale_covers_screen(&self) -> bool {
+        self.back_stale.x == 0
+            && self.back_stale.y == 0
+            && self.back_stale.w == self.w
+            && self.back_stale.h == self.h
+    }
+
+    fn prefetch_back_after_full(&mut self) {
+        if self.prepare_back_buffer(false) {
+            self.back_stale = gp::Rect { x: 0, y: 0, w: 0, h: 0 };
+        } else {
+            self.invalidate_back_buffer();
+        }
+    }
+
+    /// Build the backend damage plan for a composition that has just been
+    /// written but not yet flipped. On the double-buffer path the host resource
+    /// also lacks the inherited `back_stale` pixels, so the submitted plan must
+    /// cover inheritance ∪ actual writes. The front-write path (APP windows)
+    /// submits only its actual writes.
+    fn submit_plan(
+        &self,
+        written: &[gp::Rect],
+        written_n: usize,
+    ) -> ([gp::Rect; gp::DAMAGE_MAX], usize) {
+        let mut out = [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX];
+        if self.compose_idx == self.scanout_idx {
+            let count = written_n.min(out.len());
+            for i in 0..count {
+                out[i] = written[i];
+            }
+            return (out, count);
+        }
+        let mut plan = self.back_stale;
+        for &rect in written.iter().take(written_n) {
+            plan = Self::union_screen_rect(plan, rect);
+        }
+        out[0] = plan;
+        (out, 1)
+    }
+
+    /// 失败保守面：prepare/拷贝部分落笔后放弃、或聚合提交被后端拒绝时，
+    /// back 的实际内容已偏离记账（写域超出 back_stale 记录），陈旧度回退
+    /// 全屏——下次继承整屏重拷，宁可多拷不静默取陈旧像素。
+    fn invalidate_back_buffer(&mut self) {
+        self.back_stale = gp::Rect { x: 0, y: 0, w: self.w, h: self.h };
     }
 
     /// APP/window submissions stay on the authoritative front buffer. The
@@ -530,11 +634,10 @@ impl Compositor {
         };
         if !self.prepare_back_buffer(false) {
             eprintln!("WMREPLAY bad prepare owner={owner}");
+            self.invalidate_back_buffer();
             return None;
         }
-        let mut rects = [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX];
-        let mut n = 0usize;
-        let mut envelope: Option<(u32, u32, u32, u32)> = None;
+        let mut written_env = gp::Rect { x: 0, y: 0, w: 0, h: 0 };
         for win in windows.iter().take(window_n) {
             let rect = self.tuple_rect(win.eff);
             if rect.w == 0 || rect.h == 0 {
@@ -542,30 +645,16 @@ impl Compositor {
             }
             if !self.copy_vmo_rect(cache_vmo, self.active_vmo(), rect) {
                 eprintln!("WMREPLAY bad owner={owner}");
+                self.invalidate_back_buffer();
                 return None;
             }
-            if n < rects.len() {
-                rects[n] = rect;
-                n += 1;
-            } else {
-                let x0 = envelope.map(|e| e.0).unwrap_or(rect.x);
-                let y0 = envelope.map(|e| e.1).unwrap_or(rect.y);
-                let x1 = envelope
-                    .map(|e| e.0 + e.2)
-                    .unwrap_or(0)
-                    .max(rect.x + rect.w);
-                let y1 = envelope
-                    .map(|e| e.1 + e.3)
-                    .unwrap_or(0)
-                    .max(rect.y + rect.h);
-                envelope = Some((x0, y0, x1 - x0, y1 - y0));
-            }
+            written_env = Self::union_screen_rect(written_env, rect);
         }
-        if let Some((x, y, w, h)) = envelope {
-            rects[0] = gp::Rect { x, y, w, h };
-            n = 1;
-        }
-        Some((rects, n))
+        // WM_WINDOWS_MAX exceeds DAMAGE_MAX. A monotonic envelope over every
+        // written window (plus inherited pixels in submit_plan) is conservative
+        // and cannot drop early windows the way per-slot overflow once did.
+        let (rects, rect_n) = self.submit_plan(core::slice::from_ref(&written_env), 1);
+        Some((rects, rect_n))
     }
 
     pub fn note_submit_owner(&mut self, owner: u16, client_type: u8) {
@@ -739,6 +828,7 @@ pub fn submit_composite(
     let mut out_n = 0usize;
     let mut out_flags = flags;
     if !comp.prepare_back_buffer(system_surface && full) {
+        comp.invalidate_back_buffer();
         let _ = berry_handle_close(src);
         st_rep(ch, gp::ST_BAD);
         return false;
@@ -749,6 +839,7 @@ pub fn submit_composite(
         // visible 本地矩形，避免读/写持久遮挡区。下游同样只转发这个
         // 已翻译可见矩形，禁止“窗口 FULL → 整屏 FULL”的放大。
         if !comp.copy_rect(src, src_stride, dst_xy, visible_local) {
+            comp.invalidate_back_buffer();
             let _ = berry_handle_close(src);
             st_rep(ch, gp::ST_BAD);
             return false;
@@ -786,10 +877,15 @@ pub fn submit_composite(
     };
     let _ = berry_handle_close(src);
     if !ok || (!full && out_n == 0) {
+        // 拷贝半途失败：目标缓冲（back 或前写路径的 front）内容已偏离
+        // 记账，回退全屏继承。前写路径同样失效——back 与被改 front 的
+        // 差异域已超出 back_stale 记录。
+        comp.invalidate_back_buffer();
         st_rep(ch, gp::ST_BAD);
         return false;
     }
 
+    let (submit_rects, submit_n) = comp.submit_plan(&out_rects, out_n);
     let mut alias: Handle = 0;
     if berry_handle_duplicate(comp.active_vmo(), RIGHT_READ, &mut alias) != 0 || alias == 0 {
         trap();
@@ -802,8 +898,8 @@ pub fn submit_composite(
         target_present_ns: u64::from_le_bytes(
             msg.get(16..24).unwrap_or(&[0; 8]).try_into().unwrap(),
         ),
-        rects: out_rects,
-        rect_count: out_n,
+        rects: submit_rects,
+        rect_count: submit_n,
     };
     let mut req = [0u8; 256];
     let n = match gp::encode_present_req(&mut req, &creq) {
@@ -816,10 +912,17 @@ pub fn submit_composite(
     let (rep, nb, _rhs, nh) = rpc_present(cli, &req[..n], &[alias]);
     let ok = rep.first() == Some(&gp::ST_OK);
     if ok {
-        comp.finish_submit();
+        comp.finish_submit(Compositor::envelope(&out_rects[..out_n]));
         comp.note_submit_owner(owner, client_type);
+    } else {
+        // 聚合提交被后端拒绝：back 已承载完整新合成但未翻转，与 front 的
+        // 差异域超出 back_stale 记录——回退全屏继承。
+        comp.invalidate_back_buffer();
     }
     send_rep_handles(ch, &rep[..nb], &_rhs[..nh]);
+    if ok && system_surface && comp.back_stale_covers_screen() {
+        comp.prefetch_back_after_full();
+    }
     ok
 }
 
@@ -865,11 +968,13 @@ pub fn replay_owner(
     let ok = rep.first() == Some(&gp::ST_OK) && nh == 0;
     if ok {
         boot_release_all(cli);
-        comp.finish_submit();
+        comp.finish_submit(Compositor::envelope(&rects[..rect_n]));
         comp.note_submit_owner(owner, gp::WM_CLIENT_APP);
         println!("WMREPLAY ok owner={owner} rects={rect_n}");
     } else {
         comp.clear_fresh_owner();
+        // 重放帧已写入 back 但未被后端接受：back 内容偏离记账，回退全屏。
+        comp.invalidate_back_buffer();
         eprintln!("WMREPLAY bad owner={owner} st={}", rep.first().copied().unwrap_or(0xff));
     }
     ok

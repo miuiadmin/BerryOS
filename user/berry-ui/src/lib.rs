@@ -1397,6 +1397,10 @@ impl<const N: usize> Ui<N> {
     /// Sparse translate damage for scrolling layers: record painted-leaf old/new
     /// bounds instead of promoting a transparent container subtree to a full
     /// port repaint. SwipePager uses this path for follow-finger and snap.
+    /// Bands write straight into `self.damage` via y±2 merging
+    /// (`DamageSet::add_row_band`) so two visible pages and repeated calls in
+    /// one frame (multiple MOVE msgs per pump batch) merge instead of
+    /// overflowing DAMAGE_MAX into FULL.
     pub fn set_offset_sparse(
         &mut self,
         node: NodeId,
@@ -1410,8 +1414,7 @@ impl<const N: usize> Ui<N> {
         };
         let (dx, dy) = (ox.saturating_sub(old_ox), oy.saturating_sub(old_oy));
         let old_clip = self.clip_chain(idx);
-        let mut sparse = damage::DamageSet::new();
-        Self::collect_sparse_offset(&self.nodes, idx, dx, dy, old_clip, &mut sparse, 0);
+        Self::collect_sparse_offset(&self.nodes, idx, dx, dy, old_clip, &mut self.damage, 0);
         if let Some(n) = self.nodes[idx].as_mut() {
             n.ox = ox;
             n.oy = oy;
@@ -1419,21 +1422,16 @@ impl<const N: usize> Ui<N> {
         }
         let new_clip = self.clip_chain(idx);
         if new_clip != old_clip {
-            Self::collect_sparse_offset(&self.nodes, idx, dx, dy, new_clip, &mut sparse, 0);
-        }
-        if sparse.full {
-            self.damage.add_full();
-        } else {
-            for r in sparse.iter().copied() {
-                self.damage.add_exact(r);
-            }
+            Self::collect_sparse_offset(&self.nodes, idx, dx, dy, new_clip, &mut self.damage, 0);
         }
         Ok(())
     }
 
-    /// Grid 页的稀疏平移 damage：按 Grid 直接子项的行位聚成 ≤8 条行带。
-    /// SwipePager 的页是 Col→Grid→cells；launcher 网格行间大空白保持不
-    /// 传输，避免两个可见页都退化成整页包络。非该形态回落 generic 包络。
+    /// Grid 页的稀疏平移 damage：Grid 直接子项按行带（y±2 合并）入
+    /// `out`（= 调用方 `self.damage`——跨页/跨调用同带并包络，见
+    /// `set_offset_sparse` 注）。SwipePager 的页是 Col→Grid→cells；
+    /// launcher 网格行间大空白保持不传输，避免两个可见页都退化成整页
+    /// 包络。非该形态回落 generic 包络。
     fn add_sparse_grid_page_move(
         nodes: &[Option<Node>],
         page_slot: usize,
@@ -1454,8 +1452,6 @@ impl<const N: usize> Ui<N> {
         if grid == NONE || grid_node.kind != ViewKind::Grid {
             return false;
         }
-        let mut bands = [damage::RectI::new(0, 0, 0, 0); 8];
-        let mut band_n = 0usize;
         let mut cell = grid_node.first_child;
         let mut hops = 0usize;
         while cell != NONE {
@@ -1477,21 +1473,11 @@ impl<const N: usize> Ui<N> {
                 cell = next;
                 continue;
             }
-            let bottom = inside.bottom();
-            if let Some(slot) = bands.iter().take(band_n).position(|band| {
-                (band.y - inside.y).abs() <= 2 && (band.bottom() - bottom).abs() <= 2
-            }) {
-                bands[slot] = bands[slot].envelope(&inside);
-            } else if band_n < bands.len() {
-                bands[band_n] = inside;
-                band_n += 1;
-            } else {
-                return false;
-            }
+            // 行带按 y±2 并入全集：同页同行 cell、跨页同带、同帧多次写
+            // 都合成一条；独立带数超 DAMAGE_MAX 时 add_row_band 落
+            // add_exact 帽 → 保守 FULL（不漏画方向）。
+            out.add_row_band(inside.to_wire());
             cell = next;
-        }
-        for band in bands.iter().take(band_n) {
-            out.add_exact(band.to_wire());
         }
         true
     }

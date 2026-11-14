@@ -332,6 +332,8 @@ pub fn run(
     let mut input_logged = false;
     let mut input_buf = [0u8; gp::INPUT_REP_MAX];
     let mut input_hs = [0 as Handle; 8];
+    let mut gesture_active = false;
+    let mut snap_settle_pending = false;
 
     // Phase 3 APP session 输入面：只验证 wmd owner/local 路由，不进桌面 UI。
     let mut route_ch = route_input;
@@ -480,7 +482,11 @@ pub fn run(
                             }
                             None => {}
                         }
-                        ui.wake(now());
+                        // 此处曾无条件 ui.wake(now())——事件刚 push 未 pump，
+                        // damage 集恒空 → wake 的「空集置 FULL」把随后的
+                        // pump/分发精确 damage（跟手行带/圆点差分）全吞成
+                        // 整帧重绘（审计修 ①）。wake 后置到消息分发之后
+                        // 且只在需要时——见 pump 段。
                     }
                     Some(Err(gp::ST_EAGAIN)) => {
                         if !input_logged {
@@ -609,6 +615,15 @@ pub fn run(
                     launch_toast_deadline = t_now + LAUNCH_TOAST_NS;
                 }
                 _ => {
+                    match m {
+                        Msg::DragStart { .. } | Msg::DragMove { .. } => {
+                            gesture_active = true;
+                        }
+                        Msg::DragEnd { .. } | Msg::Cancel { .. } => {
+                            gesture_active = false;
+                        }
+                        _ => {}
+                    }
                     // pager.on_msg true = 翻页目标变更 → a11y 重挂当前页
                     //（幂等；Err = 容量违例 fail 收口）。
                     if desktop.pager.on_msg(ui, m) {
@@ -631,17 +646,40 @@ pub fn run(
             real_swipe_frame = Some(presented);
         }
 
+        // —— 输入批 wake 后置（审计修 ①）：消息/pump 分发已把精确
+        //    damage 入集后才唤醒，且只在需要时——引擎已回 Idle 且本批
+        //    确有 damage（无 damage 的批 = 未命中/纯 DragStart，零帧零
+        //    提交）。非空集 wake 不置 FULL（wake 条件化 FULL 只填空
+        //    集），跟手行带/圆点差分保留到提交；Idle→Run 由本 wake 或
+        //    随后 render_frame 的 damage 信号自证，cadence 不断。boot
+        //    起振与 inject_swipe 的 wake 不经此（自测注入在 pump 后自
+        //    带 wake——见其注），两路径行为零扰动。——
+        if ui.frame_phase() == berry_ui::frame::FramePhase::Idle
+            && !ui.damage().is_empty()
+        {
+            ui.wake(now());
+        }
+
         // snap 动画步进（每迭代必调——snap 驱动面；返回值仅为「有吸附
         // 在推进」观察位，自测判据已不依赖——见 Settle1 注）。DMA 在途时
-        // 一次 100ms 级 flip 会吞多个 16.7ms 拍；过拍时额外推进一拍，
-        // 让下一帧承载更新的位移而不是重复旧位置。
+        // 一次 100ms 级 flip 会吞多个 16.7ms 拍；过拍时把本拍时间戳预
+        // 推进一拍后**单次** tick，让下一帧承载更新的位移（审计修 ④——
+        // 曾双 tick：同帧两次 apply_ox 重复 flush，且第二拍时间戳越过
+        // 真实 now，下一实拍 elapsed 回摆）。
         let overdue_flip = front_token.is_some()
             && ui.next_wakeup().is_some_and(|deadline| {
                 t_now.saturating_sub(deadline) >= VSYNC_NS
             });
-        let advancing = desktop.pager.tick(ui, t_now);
-        if advancing && overdue_flip {
-            desktop.pager.tick(ui, t_now.saturating_add(VSYNC_NS));
+        let tick_ns = if overdue_flip {
+            t_now.saturating_add(VSYNC_NS)
+        } else {
+            t_now
+        };
+        let pager_advancing = desktop.pager.tick(ui, tick_ns);
+        if pager_advancing {
+            snap_settle_pending = true;
+        } else if !gesture_active {
+            snap_settle_pending = false;
         }
 
         // —— 渲染（跳过帧不提交——damage 空集零 SUBMIT 零 RPC）——
@@ -839,9 +877,13 @@ pub fn run(
 
         // 动画/后续工作已停时，不能把最后一帧留在 pending 槽；在进入长睡
         // 前完成 FRAME_CALLBACK/RELEASE，让 UI phase、markers 和 credits
-        // 都回到真实静止态。
+        // 都回到真实静止态。跟手拖动与 snap 吸附期间故意保留一帧在途：
+        // 下一输入/下一 vsync 先 raster 再回调上一帧，DMA 才能与光栅重叠。
+        let keep_frame_in_flight = gesture_active || snap_settle_pending;
         if let Some(token) = front_token.take() {
-            if ui.frame_phase() == berry_ui::frame::FramePhase::Settle {
+            if ui.frame_phase() == berry_ui::frame::FramePhase::Settle
+                && !keep_frame_in_flight
+            {
                 presented = complete_front_frame(
                     hw,
                     ui,
@@ -880,6 +922,11 @@ pub fn run(
         //    期限到正常醒——渲染下一拍 / Idle 空转睡回。）
         let nw = now();
         let mut cap = nw + IDLE_CAP_NS;
+        if snap_settle_pending {
+            // Snap has no input edge to wake us; tick the pager at the product
+            // cadence while its previous frame remains intentionally in flight.
+            cap = cap.min(nw + VSYNC_NS);
+        }
         if launch_toast_deadline != 0 {
             cap = cap.min(launch_toast_deadline);
         }
@@ -981,7 +1028,10 @@ fn complete_front_frame(hw: Handle, ui: &mut UiMain, token: u32, engine_seq: u32
         fail(&format!("frame status={}", done.status));
     }
     ui.note_presented(engine_seq, now(), done.status, done.credits);
-    release_present(hw);
+    // vgpud reclaims a completed alias immediately. Do not issue RETURN-ALL
+    // here: draining all pending flips would also synchronously wait on the
+    // newer frame we intentionally left in flight. guifbd aliases are drained
+    // by submit_frame's ST_FULL recovery before their buffer is reused.
     presented + 1
 }
 

@@ -421,3 +421,94 @@ fn sparse_grid_offset_damage_keeps_row_bands() {
     assert!(damage.count <= 4);
     assert!(damage.union_px() < 12_000, "行间空白仍应保持不传输");
 }
+
+/// 两可见页 × 5 行（launcher 5×4 档行数）的 Grid 槽板：port 200×250 +
+/// track Row + 2 页 Col(100 宽) → Grid(1×5, gap 20) → Pad→Rect(80×30)。
+/// 行位两两差 54（> 合并阈 2）——跨页同带合并的确定性几何面。
+fn banded_two_page_grid() -> (Ui<32>, NodeId) {
+    let mut ui = Ui::<32>::new(200, 250);
+    let root = ui.root();
+    let port = ui.add(root, ViewSpec {
+        kind: ViewKind::Clip,
+        key: 0,
+        props: Props::Clip(ClipProps { w: Some(200), h: Some(250) }),
+    }).unwrap();
+    let track = ui.add(port, ViewSpec {
+        kind: ViewKind::Row,
+        key: 0,
+        props: Props::Row(RowProps { gap: 0, w: Some(200), h: Some(250), cross: CrossAlign::Stretch }),
+    }).unwrap();
+    for _page in 0..2 {
+        let page = ui.add(track, ViewSpec {
+            kind: ViewKind::Col,
+            key: 0,
+            props: Props::Col(ColProps { gap: 0, w: Some(100), h: Some(250), cross: CrossAlign::Center }),
+        }).unwrap();
+        let grid = ui.add(page, ViewSpec {
+            kind: ViewKind::Grid,
+            key: 0,
+            props: Props::Grid(GridProps { cols: 1, rows: 5, gap: 20, cross: CrossAlign::Center, w: Some(100), h: Some(250) }),
+        }).unwrap();
+        for _cell in 0..5 {
+            let pad = ui.add(grid, ViewSpec {
+                kind: ViewKind::Pad,
+                key: 0,
+                props: Props::Pad(PadProps { all: 0 }),
+            }).unwrap();
+            ui.add(pad, rect(BLUE, Some(80), Some(30))).unwrap();
+        }
+    }
+    ui.layout();
+    ui.drain_damage();
+    (ui, track)
+}
+
+/// 审计修 ②钉板：两页同带按 y±2 跨页合并成恰 5 条——修复前每页各自
+/// 成带 add_exact 直挂，第 9 条即破 DAMAGE_MAX=8 退 FULL（整帧重绘，
+/// 行间空白白传输）。
+#[test]
+fn sparse_grid_two_pages_five_rows_merge_cross_page() {
+    let (mut ui, track) = banded_two_page_grid();
+    ui.set_offset_sparse(track, 30, 0).unwrap();
+    let damage = ui.damage();
+    assert!(!damage.full, "两页×5 行不得破帽退 FULL");
+    assert_eq!(damage.count, 5, "跨页同带按 y±2 合并 = 恰 5 条行带（修复前 10 带破帽 FULL）");
+    // 合并后仍是 5 条独立带：y 两两差 > 2（同带判定阈）。
+    let mut ys: Vec<u32> = damage.iter().map(|r| r.y).collect();
+    ys.sort_unstable();
+    assert!(
+        ys.windows(2).all(|w| w[1] - w[0] > 2),
+        "带 y 两两差须超合并阈：{ys:?}"
+    );
+    // 行间空白保持不传输：5 带 ≤ 5×190×30 = 28500 « 200×250 = 50000。
+    assert!(damage.union_px() <= 28_500, "行间空白不传输，got {}", damage.union_px());
+    assert!(damage.union_px() < 50_000, "显著小于整帧");
+}
+
+/// 审计修 ②钉板：同帧批内多次 MOVE = 多次 set_offset_sparse 累计进同
+/// 一 damage 集（帧间不 drain）——y±2 合并后仍 5 带不破帽，且带集与
+/// 单跳总位移（0→55）逐字节等价（并集覆盖无洞）。
+#[test]
+fn sparse_grid_repeated_offset_same_frame_stays_banded() {
+    let (mut ui, track) = banded_two_page_grid();
+    // 批内两 MOVE（一次 pump 分发两条 DragMove → 两次写）。
+    ui.set_offset_sparse(track, 30, 0).unwrap();
+    ui.set_offset_sparse(track, 55, 0).unwrap();
+    let acc = ui.damage();
+    assert!(!acc.full, "同帧多次 offset 累计不得破帽退 FULL");
+    assert_eq!(acc.count, 5, "同带合并后仍恰 5 条");
+
+    // 单跳 0→55 的参照树：两带集排序后逐字段相等。
+    let (mut ui2, track2) = banded_two_page_grid();
+    ui2.set_offset_sparse(track2, 55, 0).unwrap();
+    let single = ui2.damage();
+    assert!(!single.full);
+    assert_eq!(single.count, 5);
+    let norm = |d: &berry_ui::damage::DamageSet| {
+        let mut v: Vec<(u32, u32, u32, u32)> =
+            d.iter().map(|r| (r.x, r.y, r.w, r.h)).collect();
+        v.sort_unstable();
+        v
+    };
+    assert_eq!(norm(acc), norm(single), "0→30→55 累计带集 == 0→55 单跳带集");
+}

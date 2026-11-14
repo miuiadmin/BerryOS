@@ -954,8 +954,9 @@ fn render_tile(va: usize, w: usize, h: usize, stride: usize,
 }
 
 /// 经 wmd 合成链提交一个窗口 tile：SUBMIT(surface=window) → FRAME_CALLBACK
-/// → RELEASE。返回 guifbd 真实 token；RELEASE 归还的是 wmd composition
-/// alias，客户端收下即关（本窗口 VMO 原值保留给 hdi PREPARE 复用）。
+/// → RELEASE。返回显示服务真实 token。vgpud 可能在 FRAME_CALLBACK 完成时
+/// 已自动回收 alias，此时 RELEASE 合法返回 count=0；guifbd 则可能归还
+/// wmd composition alias。客户端只要求 count 与随行 handle 恰等并全关。
 fn submit_tile(ch: Handle, vmo: Handle, _w: usize, _h: usize,
                surface_id: u32, buffer_id: u32) -> u32 {
     let mut alias: Handle = 0;
@@ -996,10 +997,12 @@ fn submit_tile(ch: Handle, vmo: Handle, _w: usize, _h: usize,
         Some(r) => r,
         None => fail(&format!("tile release bad st={}", rep[0])),
     };
-    if rel.count != 1 || nh != 1 {
+    if nh != rel.count {
         fail(&format!("tile release count={} nh={}", rel.count, nh));
     }
-    close_h(rhs[0]);
+    for h in &rhs[..nh] {
+        close_h(*h);
+    }
     token
 }
 

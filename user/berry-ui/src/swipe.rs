@@ -73,6 +73,9 @@ pub struct SwipePager {
     drag_x0: i32,
     /// 最近 DragMove x（DragEnd 无坐标位——位移判据用）。
     drag_last_x: i32,
+    /// 现行亮圆点下标（update_dots 的差分基——页不变零写、页变恰动
+    /// 前后两点，见方法注）。
+    dot_on: u8,
     snap: Option<Snap>,
 }
 
@@ -97,6 +100,7 @@ impl SwipePager {
             base_ox: 0,
             drag_x0: 0,
             drag_last_x: 0,
+            dot_on: 0,
             snap: None,
         }
     }
@@ -179,6 +183,7 @@ impl SwipePager {
             self.dots[i as usize] = Some(d);
         }
         self.ox = 0;
+        self.dot_on = 0; // 新 dot 组第 0 点亮（建树单源）——差分基同步
         self.attached = true;
         Ok(track)
     }
@@ -344,15 +349,28 @@ impl SwipePager {
     }
 
     /// 圆点直摆（paint-only props 变更——measured==0 面；死点静默跳过）。
+    /// 差分更新：页未变（回弹吸附/HOME 已在位）零写；页变恰动前后两点
+    /// （前亮转暗 + 新亮转亮）。整组重摆会让未变点也走 set_props 同界
+    /// 重绘入 damage——8 页时 8×16×16 白传输（审计修 ③）。
     fn update_dots<const N: usize>(&mut self, ui: &mut Ui<N>) {
-        for i in 0..self.page_count as usize {
-            let Some(d) = self.dots[i] else { continue };
-            let bg = if i == self.page as usize { DOT_ON } else { DOT_OFF };
+        if self.dot_on == self.page {
+            return;
+        }
+        let prev = self.dot_on as usize;
+        let cur = self.page as usize;
+        if let Some(d) = self.dots[prev] {
             let _ = ui.set_props(
                 d,
-                Props::Rect(RectProps { bg, w: Some(DOT_SIZE), h: None }),
+                Props::Rect(RectProps { bg: DOT_OFF, w: Some(DOT_SIZE), h: None }),
             );
         }
+        if let Some(d) = self.dots[cur] {
+            let _ = ui.set_props(
+                d,
+                Props::Rect(RectProps { bg: DOT_ON, w: Some(DOT_SIZE), h: None }),
+            );
+        }
+        self.dot_on = self.page;
     }
 
     /// 页域判定：点在全页带内（x ∈ [base, base+n×页宽)、y ∈ track 纵界

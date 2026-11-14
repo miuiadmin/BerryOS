@@ -2947,6 +2947,38 @@ mod tests {
     }
 
     #[test]
+    fn release_zero_count_and_reclaimed_credits_wire_pinned() {
+        // vgpud「flip 完成即回收」语义的 wire 契约钉板：常态 RELEASE 排干
+        // pending 后 held 已被自动回收干净，应答是 count=0 的 4B 恰形
+        // （零随行 handle）；客户端不得假设「每次提交必对应一次归还」。
+        let mut buf = [0u8; 8];
+        let n = encode_release_rep(&mut buf, &[]).unwrap();
+        assert_eq!(n, 4);
+        assert_eq!(&buf[..4], &[ST_OK, 0, 0, 0]); // 黄金字节：无尾随
+        let rep = parse_release_rep(&buf[..n]).unwrap();
+        assert_eq!(rep.count, 0);
+        // 1B 截断 / 8B 尾随仍双侧拒（恰长执法不因 count=0 放宽）。
+        assert_eq!(parse_release_rep(&buf[..1]), None);
+        let mut t8 = [0u8; 8];
+        t8[..4].copy_from_slice(&buf[..4]);
+        assert_eq!(parse_release_rep(&t8), None);
+
+        // FRAME_CALLBACK credits 域边界：完成即回收后服务端常报满额
+        // CREDITS_MAX；0（全在途）同合法——双侧往返钉死。
+        for credits in [0u8, CREDITS_MAX] {
+            let rep = FrameDoneRep {
+                status: FRAME_PRESENTED,
+                credits,
+                present_seq: 7,
+                presented_ns: 0x0102_0304_0506_0708,
+            };
+            let mut out = [0u8; FRAME_DONE_REP_LEN];
+            let n = encode_frame_done_rep(&mut out, &rep);
+            assert_eq!(parse_frame_done_rep(&out[..n]).unwrap(), rep);
+        }
+    }
+
+    #[test]
     #[allow(deprecated)] // 黄金字节沿退役 SCENE_DRAG(=2)——跨版本流钉板（值在 intent 域内合法）
     fn vote_roundtrip_domain_and_golden() {
         let req = PresentReq::Vote {

@@ -260,6 +260,53 @@ fn dot_highlight_follows_page_immediately() {
     );
 }
 
+/// 审计修 ③钉板：圆点 damage 差分——翻页裁定恰动前后两个变化点
+/// （前亮转暗 + 新亮转亮，各 16×16 = 恰 512px）；未变点不再入集
+///（修复前整组重摆，8 页时 8 点全 damage）；同页裁定（回弹）圆点
+/// 零变更零 damage。
+#[test]
+fn dot_damage_only_two_changed_dots() {
+    let (mut ui, mut pager, track) = pager3();
+
+    // DragStart：纯状态记录，零视觉变更。
+    assert!(drag_start(&mut pager, &mut ui, track, 50));
+    assert!(ui.drain_damage().is_empty(), "DragStart 零 damage");
+
+    // 翻页 0→1 裁定：恰两点入集（dot0 OFF + dot1 ON）。
+    assert!(drag_end(&mut pager, &mut ui, track, -600));
+    let d1 = ui.drain_damage();
+    assert!(!d1.full);
+    assert_eq!(d1.count, 2, "恰两个变化圆点（其余点未变不入集）");
+    assert_eq!(d1.union_px(), 2 * 16 * 16, "两枚 16×16 圆点（swipe.rs DOT_SIZE）");
+    assert_eq!(pager.page(), 1);
+
+    // 吸附收尾清场（空页零行带）后再翻 1→2：仍恰两点。
+    settle(&mut pager, &mut ui, 1_000_000_000);
+    assert!(ui.drain_damage().is_empty(), "空页吸附零行带 damage");
+    assert!(drag_start(&mut pager, &mut ui, track, 50));
+    assert!(ui.drain_damage().is_empty());
+    assert!(drag_end(&mut pager, &mut ui, track, -600));
+    let d2 = ui.drain_damage();
+    assert!(!d2.full);
+    assert_eq!(d2.count, 2, "第二翻仍恰两点");
+    assert_eq!(d2.union_px(), 2 * 16 * 16, "两枚 16×16 圆点");
+    assert_eq!(pager.page(), 2);
+
+    // 同页回弹（位移 < 40% 阈）：圆点零变更——begin_snap 只裁不定彩，
+    // 起拍前的 drag_end 零 damage。
+    settle(&mut pager, &mut ui, 2_000_000_000);
+    ui.drain_damage();
+    assert!(drag_start(&mut pager, &mut ui, track, 50));
+    ui.drain_damage();
+    assert!(drag_move(&mut pager, &mut ui, track, 30)); // dx=-20 回弹域
+    ui.drain_damage();
+    assert!(drag_end(&mut pager, &mut ui, track, 0));
+    assert!(
+        ui.drain_damage().is_empty(),
+        "同页裁定圆点零变更零 damage"
+    );
+}
+
 #[test]
 fn pager_node_budget_exact_and_launcher_margin() {
     // 节点精确账（C1 +Clip port）：8 页 pager 自建 = 19 节点

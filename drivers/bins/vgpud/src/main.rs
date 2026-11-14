@@ -590,6 +590,10 @@ struct HdiSlot {
 struct PendingFlip {
     token: u32,
     resource: u32,
+    /// 本 flip 在 held 表的关联 alias（submit 时随行收入的 buffer 只读
+    /// 别名）。flip 完成（DMA 终态）即无在途读者——pump_pending 里
+    /// close 掉并释放 credit；held 表因此恒等于「在途 pending flip 集」。
+    alias: Handle,
     rects: [gp::Rect; gp::DAMAGE_MAX],
     rect_n: usize,
     flush: gp::Rect,
@@ -603,6 +607,8 @@ struct PresentSrv {
     present_seq: u32,
     submit_seq: u32,
     tokens: [(u32, u64); TOKEN_RING],
+    /// 在途 flip 的 buffer alias 账（1:1 对应 pending 槽——flip 完成时
+    /// `reclaim_held` 自动回收，RELEASE 只兜剩余；count ∈ 0..CREDITS）。
     held: [(u32, Handle); CREDITS],
     held_n: usize,
     pending: [Option<PendingFlip>; CREDITS],
@@ -712,7 +718,17 @@ impl PresentSrv {
         } else {
             u64::from(ux1 - ux0) * u64::from(uy1 - uy0)
         };
-        let plan: &[gp::Rect] = if clipped_n != 0 && union_area < sum_area {
+        // Splitting saves bytes but multiplies fixed virtio-gpu command/QEMU
+        // scheduling cost. Model that cost as screen_area/12 equivalent pixels
+        // per extra rect (1080p field data: six ~0.45MPix bands could cost more
+        // than one 2.07MPix full-frame transfer). Prefer the union envelope
+        // once its byte saving is below that fixed-cost estimate.
+        let per_extra_rect_cost = u64::from(self.w) * u64::from(self.h) / 12;
+        let split_cost = sum_area.saturating_add(
+            per_extra_rect_cost.saturating_mul(clipped_n.saturating_sub(1) as u64),
+        );
+        let envelope_is_cheaper = clipped_n > 1 && union_area <= split_cost;
+        let plan: &[gp::Rect] = if clipped_n != 0 && (union_area < sum_area || envelope_is_cheaper) {
             clipped[1] = gp::Rect {
                 x: ux0,
                 y: uy0,
@@ -750,6 +766,11 @@ impl PresentSrv {
             self.present_seq = self.present_seq.wrapping_add(1);
             self.tokens[token as usize % TOKEN_RING] = (token, t);
             self.boot_submit_done = true;
+            // 同步完成面等价于「已完成的 pending flip」：DMA/token 已终态，
+            // alias 无在途读者——inline 回收（close，不入 held）。若把它
+            // 留进 held，将没有任何完成事件来回收它（无 PendingFlip 关联），
+            // credit 被 boot 帧永占到下一次 RELEASE——时序坑就此封死。
+            let _ = berry_handle_close(hvmo);
         } else {
             let Some(slot) = self.pending.iter_mut().find(|p| p.is_none()) else {
                 trap();
@@ -757,14 +778,14 @@ impl PresentSrv {
             *slot = Some(PendingFlip {
                 token,
                 resource,
+                alias: hvmo,
                 rects: plan_storage,
                 rect_n: plan_n,
                 flush,
             });
+            self.held[self.held_n] = (buffer_id, hvmo);
+            self.held_n += 1;
         }
-
-        self.held[self.held_n] = (buffer_id, hvmo);
-        self.held_n += 1;
         self.perf_submits = self.perf_submits.saturating_add(1);
         let submit_elapsed = now().saturating_sub(submit_started);
         self.perf_last_ns = submit_elapsed;
@@ -870,6 +891,21 @@ impl PresentSrv {
         send_rep(ch, &out[..n]);
     }
 
+    /// flip 完成回收：按 PendingFlip 关联的 alias 定位 held 槽，close 别名
+    /// 并释放 credit（swap-remove——RELEASE 只按剩余集合归还，无序依赖）。
+    /// 找不到关联槽 = 记账破缺，fail loud（不静默泄漏 credit/alias）。
+    fn reclaim_held(&mut self, alias: Handle) {
+        let Some(i) = self.held[..self.held_n]
+            .iter()
+            .position(|&(_, h)| h == alias)
+        else {
+            trap();
+        };
+        let _ = berry_handle_close(alias);
+        self.held_n -= 1;
+        self.held[i] = self.held[self.held_n];
+    }
+
     fn pump_pending(&mut self) -> bool {
         let Some(index) = self
             .pending
@@ -890,6 +926,10 @@ impl PresentSrv {
         let t = now();
         self.present_seq = self.present_seq.wrapping_add(1);
         self.tokens[flip.token as usize % TOKEN_RING] = (flip.token, t);
+        // 完成即回收（在 parked callback 应答**之前**）：alias close +
+        // credit 释放一步到位，FRAME_CALLBACK 的 credits 域因此报「回收
+        // 后」真值；后到 callback 走 tokens ring 即答，同样见真值。
+        self.reclaim_held(flip.alias);
         if let Some((park_token, ch)) = self.cb_park {
             if park_token == flip.token {
                 self.cb_park = None;
@@ -1549,7 +1589,10 @@ impl PresentSrv {
                     return;
                 }
                 // RELEASE is the recoverability boundary. If an async flip is
-                // still in flight, finish it before returning any alias.
+                // still in flight, finish it before returning any alias. Flip
+                // 完成已在 pump_pending 内自动回收（held 恒只剩在途项）；
+                // 此处归还**剩余** alias，count ∈ 0..CREDITS——常态排干后
+                // 为 0（合法形：客户端按 count 收，wmd/launcher 零假设）。
                 while self.pump_pending() {}
                 let k = self.held_n;
                 let mut ids = [0u32; gp::RELEASE_MAX];

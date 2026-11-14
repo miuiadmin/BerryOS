@@ -35,3 +35,4 @@ P2 之后 1080×1920 桌面横滑仍常表现为一帧跳动。`desktop-calib` �
 
 - [GUI P2 swipe groundwork](2026-11-14-gui-p2-swipe-groundwork.md) established the one-frame baseline and the rejected scanout-pan branch; this note implements the double-buffer/async-present branch it left open.
 - [Recents owner frame cache](2026-11-14-recents-owner-frame-cache.md) remains the owner-pixel truth source; this pipeline changes only which full composition VMO is submitted.
+- [GUI swipe precise damage and completion reclaim](2026-11-15-gui-swipe-precise-damage.md) removes the full-frame damage amplifiers and release drain that still limited this pipeline.
