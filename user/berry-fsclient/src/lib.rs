@@ -19,12 +19,13 @@
 //!   拼接、stat 整形、dirent 解码、ST_*→FsErr 映射——libc（刀 2）把这些
 //!   组装成 open/close/read/write/lseek/stat/opendir/readdir/chdir/getcwd。
 //! - **会话机**（`rpc` 模块，`cfg(not(test))`）：自 bsh 迁居的 fs_rpc 核心
-//!   （严格串行 RPC、任一收侧超时即毒化会话、90s commit / 10s 常规双帽、
-//!   EBUSY 阻塞重试形态）+ fd 面分片 op。协议面全按 berry-fsproto 单源
-//!   消费：v1 四 op（PUT/TRUNC/GET/LIST——GET/PUT 自带 off，客户端游标
-//!   = 服务端无会话）+ v2 五 op（LOOKUP/MKDIR/UNLINK/READDIR/STAT）原样
-//!   零改动；C-2 刀 2 新增 STATFS（卷级几何/空闲真值，无路径参——df/
-//!   statfs 桩的原料），协议 9→10 op。
+//!   （严格串行 RPC + P1-1 请求号 txid——每请求自增取号、应答按号匹配，
+//!   他者/迟到应答弃收不静默错配；任一收侧超时即毒化会话、90s commit /
+//!   10s 常规双帽、EBUSY 阻塞重试形态）+ fd 面分片 op。协议面全按
+//!   berry-fsproto 单源消费：v1 四 op（PUT/TRUNC/GET/LIST——GET/PUT 自带
+//!   off，客户端游标 = 服务端无会话）+ v2 五 op（LOOKUP/MKDIR/UNLINK/
+//!   READDIR/STAT）原样零改动；C-2 刀 2 新增 STATFS（卷级几何/空闲真值，
+//!   无路径参——df/statfs 桩的原料），协议 9→10 op。
 //!
 //! ## C-1 两裁决（随五刀拆解单批准）
 //!
