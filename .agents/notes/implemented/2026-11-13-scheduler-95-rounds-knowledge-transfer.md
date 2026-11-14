@@ -85,7 +85,7 @@ Status: implemented
 - **A/B 对照与回归归因纪律**：eager 271→51.7s、ZFOD 1277→975、copy_from_user 256 锁→1 锁（16 走查）都留对照数；回归两例对照——pick 22→26 归因键链初始化 +4cy（接受，换 O(K)），pick 19→22 归因证伪（PI 不在路径，TCG 噪声）。归因不了不接受，归因得了才取舍。
 - **结构性论证 > 表面修复，负空间也是产出**：P2-4 SMP 双窗穷举论证（5 读窗全在 PT 锁内 + 5 写点同锁 + last_page 窗局部 + 无锁外写者）裁定「不适用关闭」，省掉一次假修复（见 [P2-4 笔记](./2026-11-13-p24-smp-dual-window-not-applicable.md)）；tick→ns 溢出联立证明、PI 形 B 集合不相交不变式（block 先摘环后发钩 / wake 先入环后发钩）同族。
 - **微基准与端到端两面互证**：pick/freeze/billing cy 级验收（`tools/sched_baseline.json` git tracked）+ boot 秒级分解 + FAST 直切率 + dpg pg/s 四面——微基准看不见 wake O(N)（「微基准不测唤醒面」），端到端看不见 +4cy；91 轮基线刷新（pick 26→22、policy delta 66.6→50.0%）与 95 轮终验各跑一遍才算闭环。
-- **「零成本」宣称先测，静态审计过现役面复核闸**：AM「零额外成本」靠 fetch_add ≈0.2cyc 实测（<0.01% 量级）才敢落字（沿革一百九十一）；审计 agent 的 F2 发现经现役面复核定谳为旧面快照误判（沿革一百九十三）——静态审计产出一律过「现役面复核」闸再裁。
+- **「零成本」宣称先测，静态审计过现役面复核闸**：AM「零额外成本」靠 fetch_add ≈0.2cyc 实测（<0.01% 量级）才敢落字（沿革三百一十三）；审计 agent 的 F2 发现经现役面复核定谳为旧面快照误判（沿革三百一十五）——静态审计产出一律过「现役面复核」闸再裁。
 - **止血带与根治分刀、带退场条件**：eager（止血）与 0x24 批供（根治）正交共存；止血带写明退场条件并钉在笔记（D3），防止血固化为永久债。
 
 ### Handover——遗留事项（下一代会话指南）
@@ -95,7 +95,7 @@ Status: implemented
 - **P2-3 pager 挂死看门狗：兄弟 lane 在席实施中**——动手前 `git status` 看 `kernel/src/dpg.rs` 是否仍是他人改动面（本会话收尾时即 M 态）；P3-2 demand 挂死设防挂其后，超时阈值同源标定。
 - **P3-4~8 远期项**：P3-4 PI 形 C 设防（Event/WAIT_ANY 无 PI，形 B 框架已备）/ P3-5 FPSIMD lazy save（context_switch 135cy 大头）/ P3-6 SLEEPQ per-key 规模化（睡眠者百级+深水区）/ P3-7 1.0.0 三同步门 / P3-8 tools/berry 版本收编。
 - **基线漂移复测**：`tools/sched_baseline.json` pick=22（91 轮刷新）vs 95 轮终验实测 23cy——1cy 漂移未定谳；下一代会话开门先跑 `tools/sched_ci.py` 全量对拍再下性能结论。R3 延迟界数据（中断→任务 2000cy worst ≈1.3µs / IPC fastpath 6.6k worst / 形 A ≤800ms+ΣCS / 形 C 无界）是 v2 工业 RT 的前置基准，勿重复测量直接引用。
-- **idle 满核修窗五件**（沿革二百五十六调度轮三）：主根因 = guest 侧 boot 演示常驻面永不退出（task_a/task_b 内核忙循环），首刀 = 演示面 fw_cfg 门控（owner 域）；owner 调度彻底计划 12 死链留随迁窗。
+- **idle 满核修窗五件**（沿革三百二十七调度轮三）：主根因 = guest 侧 boot 演示常驻面永不退出（task_a/task_b 内核忙循环），首刀 = 演示面 fw_cfg 门控（owner 域）；owner 调度彻底计划 12 死链留随迁窗。
 
 ### Toolbox——六件分析工具使用指南
 
