@@ -85,4 +85,16 @@ LATSGI_CPU 静态+断言 / F4 界断言 / F11 Release-Acquire / F14 total()==0
 五跑内自洽即定态）。回执：icount 五份 + icount-prove + icount/off +
 trace-dual + lat + reject-trio + testhost（同目录 20261105-0930~0931 批）。
 
+## 16 号四漂移基线刷新（2026-11-15，prove 五跑 max_dev 0.000%）
+
+背景 = 16 号 §4.1 定标（2026-11-14）：基线（2026-11-05 f4 复验值 {0,82,37,165,1617,6937}）与现役树脱钩四项出 L2（alloc64k 37→82 / handle_evt 165→274 / commit1p 1617→1728 / rw4k 6937→6948）——L2 恒红，基线空闲可刷新（本条 = 刷新烘焙）。
+
+复现双证：①同 ELF 复现——11-14 02:01 构建内核（sha256 `10ff7ef0…`，banner `v0.2.0-197-g429675903-dirty`，即 16 号实测件）单跑 {0,82,82,274,1728,6948} 与 16 号双跑逐值同、BENCHWAKE 整行逐字节同（n=582 min=1193 … max=107587192 sig=563 tmo=19）——四漂移稳定复现坐实（回执 icount-20261115-012536-98750）；②现役树重建——kernel/ @ 96072f55（ktest.rs P3-5 面为唯一晚于旧 ELF 的源文件，11-14 14:30）重建 ELF（sha256 `b43f12d4…`，banner `96072f55-dirty`——本分支 git describe 回退 rev-parse 短哈希形）单跑 {0,37,82,274,1683,6948}（回执 icount-20261115-012548-8971）。
+
+新值归因：稳定三项（cntvct_pair 0 / handle_evt 274 / vmo_rw4k 6948）跨双 ELF 逐值同——五源锚（16 号 §4.3）再添两源；handle_evt +66.1% 归因承 16 号〔推断——sched 系提交（P2-1 sleepq per-key/P2-2 退出异步化等）候选，精确归因须 bisect 挂账〕，rw4k +0.16% 微量拷贝路径稳定项同判。布局三项重掷：alloc64k 37→82 = 4-2/4-3 轨道振荡族；alloc4k 82→37 与 commit1p 1728→1683（对旧 ELF 的差）= 重建 ELF 增量（ktest.rs 面 +2808B + ident 串形变）重掷布局骰，轨道域与 4-2 立档值 {37,…} 同族〔推断〕。
+
+烘焙与验证：prove 五跑 verdict=exact max_dev=0.000%（BENCHWAKE 五跑逐字节同 n=582 min=1188 … max=107605622；回执 icount-prove-20261115-015848-50319）→ ICOUNT_TOL=0.0 维持；`--icount --update` 立基 {0,37,82,274,1683,6948}（头注模板整文件重写，指针行存活 = m1 契约再验；回执 icount-20261115-015909-59107）；复验单跑 L2 对拍过（ICOUNT_TOL=0.0 六项全在界内，回执 icount-20261115-015933-59174）。构建可重现性双证：双 target 独立构建 PT_LOAD 五段 offset/va/filesz 逐段同、加载域内唯一差异 = git ident 数据串（同长度非执行面），第二 ELF 单跑逐值同含 BENCHWAKE 整行（icount-20261115-015907-58704）——同树重建落同值，基线对后续 cargo build 产物有效。
+
+环境注记：宿主多会话并发（在场 QEMU 2-5 pids 波动，串行守卫两轮 900s 等空超时后于窗口期完成全部轮次）；会话中 owner 并行提交 d8f2254e/87c06016（berry-ui 面——kernel/ 与全部路径依赖 crate 零改动，基线仍对现役 kernel 面有效；后续重建仅 ident 串随之变，同长度数据面零布局效应）。
+
 
