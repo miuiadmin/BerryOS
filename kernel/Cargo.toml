@@ -10,6 +10,9 @@ path = "src/main.rs"
 
 [dependencies]
 berry-hal-aarch64 = { path = "../arch/aarch64" }
+# boot splash verbose 形字形单源（user/berry-fbcon：no_std 纯函数 crate——
+# 8×16 自绘点阵，guifbd 同源共享；跨工作区 path 依赖 = 仓内先例）。
+berry-fbcon = { path = "../user/berry-fbcon" }
 berry-mm = { path = "../mm" }
 berry-sched = { path = "../sched" }
 # 调度深水区收官·任务②（M4 首批 band 激活，2026-11-16）：IntentBand 带表

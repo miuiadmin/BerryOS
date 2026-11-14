@@ -1084,28 +1084,37 @@ pub fn init() {
     // AM-2b 真链路自验（载形乙）：压力自验任务的自有 AS + 多页 demand 区间
     //（连续供给等待载体——复用同一 dpg_pager 供给链）+ 压力 Event 消费
     // handle（`am2b_pressure_ktest_handle` 插取 bootstrap 表——ktest 收场
-    // drain 后的 boot 稳定窗，此后无 drain 作废面；任务侧真 SVC 全链消费）。
+    // drain 后的 boot 稳定窗，此后无 drain 作役面；任务侧真 SVC 全链消费）。
     // 对象先泄漏后映射（Region.vmo 指针存对象地址——上方同款正序）。
-    let vmo_p: &'static mut Vmo =
-        alloc::boxed::Box::leak(alloc::boxed::Box::new(
-            Vmo::create_demand(PRESS_PAGES * PAGE_SIZE).expect("dpg: 建压力自验 demand VMO"),
-        ));
-    let asid_p = crate::aspace::alloc_asid();
-    let vmar_p: &'static mut Vmar =
-        alloc::boxed::Box::leak(alloc::boxed::Box::new(
-            Vmar::new_root(fa, asid_p).expect("dpg: 建压力自验 root Vmar"),
-        ));
-    vmar_p
-        .map_demand(vmo_p, PRESS_VA, 0, PRESS_PAGES * PAGE_SIZE, Perm::Rw)
-        .expect("dpg: 压力自验 map_demand");
-    vmar::register_demand_root(asid_p, core::ptr::from_mut(vmar_p))
-        .expect("dpg: 登记压力自验 demand root（满表即响雷）");
-    let h_press = crate::am2b_pressure_ktest_handle();
-    berry_sched::spawn_as(
-        dpg_press,
-        h_press as usize,
-        b"dpg_press",
-        vmar_p.ttbr0_pa(),
-        vmar_p.asid(),
-    );
+    //
+    // noktest 门（2026-11-13 判例）：dpg_press 校准断言（θ_p 占空比阈）按
+    // TCG 时序标定——HVF 5-6 倍速下供给停顿占比漂移，断言炸 → 任务域
+    // PANIC → faulter 链异常放大 → pager 误杀 → 供给断 fatal（实测三炸
+    // 同链）。ktest/bench 已进 noktest 门（main.rs 同款键）；本臂同收——
+    // 生产 boot 只保生产机制本体（dpg_pager/dpg_faulter），压力校准属
+    // 开发自检面。
+    if berry_hal_aarch64::fwcfg::find_file(crate::DPG_NOKTEST_PROBE_NAME).is_none() {
+        let vmo_p: &'static mut Vmo =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(
+                Vmo::create_demand(PRESS_PAGES * PAGE_SIZE).expect("dpg: 建压力自验 demand VMO"),
+            ));
+        let asid_p = crate::aspace::alloc_asid();
+        let vmar_p: &'static mut Vmar =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(
+                Vmar::new_root(fa, asid_p).expect("dpg: 建压力自验 root Vmar"),
+            ));
+        vmar_p
+            .map_demand(vmo_p, PRESS_VA, 0, PRESS_PAGES * PAGE_SIZE, Perm::Rw)
+            .expect("dpg: 压力自验 map_demand");
+        vmar::register_demand_root(asid_p, core::ptr::from_mut(vmar_p))
+            .expect("dpg: 登记压力自验 demand root（满表即响雷）");
+        let h_press = crate::am2b_pressure_ktest_handle();
+        berry_sched::spawn_as(
+            dpg_press,
+            h_press as usize,
+            b"dpg_press",
+            vmar_p.ttbr0_pa(),
+            vmar_p.asid(),
+        );
+    }
 }

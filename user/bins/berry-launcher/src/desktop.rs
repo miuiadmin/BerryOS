@@ -170,6 +170,8 @@ pub(crate) const ICON_FG: Color = Color { r: 230, g: 230, b: 235 };
 pub struct Slot {
     /// 格容器 Col（a11y ROLE_BUTTON 锚 + hit 容器）。
     pub cell: NodeId,
+    /// 按压视觉面（cell 下内衬 Rect——press_map 承载，刀 B）。
+    pub press_face: Option<NodeId>,
     /// label Text 节点（Click 命中可能是它——最深叶命中面）。
     pub label_node: NodeId,
     /// 图标节点（占位/无图标格 = None；命中映射同上）。
@@ -536,8 +538,20 @@ pub fn build(
                     props: Props::Pad(PadProps { all: item_pad }),
                 },
             )?;
-            let item = ui.add(
+            // 刀 B：按压视觉面——cell 下内衬 Rect（press_map 承载；
+            // Press 换底 PRESSED_BG 即时反馈，Release 还原）。初始 bg =
+            // 壁纸网格区近似色（青黑系——v1 Rect 无 alpha，近色伪装透明；
+            // 样式系统落地后迁出）。
+            let press_face = ui.add(
                 cell,
+                ViewSpec {
+                    kind: ViewKind::Rect,
+                    key: 0,
+                    props: Props::Rect(RectProps { w: None, h: None, bg: CELL_FACE_BG }),
+                },
+            )?;
+            let item = ui.add(
+                press_face,
                 ViewSpec {
                     kind: ViewKind::Col,
                     key: 0,
@@ -570,6 +584,7 @@ pub fn build(
             let label_node = ui.add(item, text_spec(pn.label, LABEL_FG, label_size)?)?;
             slots[p][s] = Some(Slot {
                 cell,
+                press_face: Some(press_face),
                 label_node,
                 icon: icon_node,
                 app: pn.app,
@@ -648,6 +663,7 @@ pub fn build(
         ui.set_a11y(icon_node, ROLE_BUTTON, label)?;
         dock.push(Slot {
             cell: icon_node,
+            press_face: None,
             label_node: icon_node,
             icon: None,
             app: entry_idx,
@@ -694,9 +710,23 @@ pub fn build(
             }),
         },
     )?;
-    let mut nav_icon = |id: u16, label: &[u8]| -> Result<NodeId, UiError> {
-        let n = ui.add(
+    // 刀 B：nav 键按压面——Rect 承载（Icon 叠顶；Press 换底即时反馈）。
+    // 返回 (icon 触发节点, Rect 视觉节点)——press_map 登记 (icon, rect)。
+    let mut nav_icon = |id: u16, label: &[u8]| -> Result<(NodeId, NodeId), UiError> {
+        let rect = ui.add(
             nav_bar,
+            ViewSpec {
+                kind: ViewKind::Rect,
+                key: 0,
+                props: Props::Rect(RectProps {
+                    w: Some(nav_key),
+                    h: Some(nav_key),
+                    bg: NAV_FACE_BG,
+                }),
+            },
+        )?;
+        let n = ui.add(
+            rect,
             ViewSpec {
                 kind: ViewKind::Icon,
                 key: 0,
@@ -709,7 +739,7 @@ pub fn build(
             },
         )?;
         ui.set_a11y(n, ROLE_BUTTON, label)?;
-        Ok(n)
+        Ok((n, rect))
     };
     let back = nav_icon(icons::NAV_BACK, b"back")?;
     let recents = nav_icon(icons::NAV_RECENTS, b"recents")?;
@@ -717,6 +747,22 @@ pub fn build(
     let rotate = nav_icon(icons::NAV_ROTATE, b"rotate screen")?;
     let power = nav_icon(icons::NAV_POWER, b"power off")?;
     drop(nav_icon);
+    // 刀 B：press_map 登记——当前页 20 格（cell → press_face）+ 5 nav 键
+    //（icon → rect face）。非当前页格也登记（翻页即时可用，树同寿）。
+    let mut pm: Vec<(NodeId, NodeId)> = Vec::new();
+    for page in slots.iter() {
+        for s in page.iter() {
+            if let Some(pf) = s.press_face {
+                pm.push((s.cell, pf));
+            }
+        }
+    }
+    pm.push((back, back_face));
+    pm.push((recents, recents_face));
+    pm.push((home, home_face));
+    pm.push((rotate, rotate_face));
+    pm.push((power, power_face));
+    ui.set_press_map(&pm)?;
 
     let mut d = Desktop {
         pager,
