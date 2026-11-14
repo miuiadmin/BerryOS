@@ -83,7 +83,7 @@ use berry_ui::{Msg, NodeId, UiMain};
 
 use crate::desktop::{self, Desktop, RECENTS_LABEL_MAX};
 use crate::icons;
-use crate::{close_h, enc_req, expect_ok, fail, now, rpc};
+use crate::{close_h, enc_req, expect_ok, fail, now, rpc, rpc_callback};
 
 /// 帧缓冲映射 VA（gfxdemo 同位：mmap VA 窗 [0x5000_0000,0x6000_0000) 内
 /// 固定位 +16MiB——与假想 first-fit 分配零交叠的防御位；页对齐）。
@@ -332,6 +332,8 @@ pub fn run(
     let mut input_logged = false;
     let mut input_buf = [0u8; gp::INPUT_REP_MAX];
     let mut input_hs = [0 as Handle; 8];
+    let mut staged_inputs: [Option<PtrEvent>; 32] = [None; 32];
+    let mut staged_input_len = 0usize;
     let mut gesture_active = false;
     let mut snap_settle_pending = false;
 
@@ -401,8 +403,12 @@ pub fn run(
                                     ev.buttons,
                                     ev.pressure,
                                 );
-                                if let Err(e) = ui.push_pointer(pe) {
-                                    eprintln!("launcher: input push err={e:?}");
+                                if !stage_pointer_event(
+                                    &mut staged_inputs,
+                                    &mut staged_input_len,
+                                    pe,
+                                ) {
+                                    eprintln!("launcher: staged input overflow");
                                 }
                             }
                         }
@@ -557,6 +563,18 @@ pub fn run(
         }
 
         // —— 输入泵 + Msg 分发（合成注入与真实输入同口）——
+        // A wire batch can carry three positions. Present them one per frame
+        // instead of collapsing all three into the final batch damage; staging
+        // preserves order and timestamps and creates no timer-interpolated
+        // frames.
+        if let Some(pe) = take_staged_pointer_event(
+            &mut staged_inputs,
+            &mut staged_input_len,
+        ) {
+            if let Err(e) = ui.push_pointer(pe) {
+                eprintln!("launcher: input push err={e:?}");
+            }
+        }
         let page_before_msgs = desktop.pager.page();
         let msgs = ui.pump_input(last_expected);
         for m in msgs.iter() {
@@ -947,6 +965,34 @@ pub fn run(
     }
 }
 
+fn stage_pointer_event(
+    queue: &mut [Option<PtrEvent>],
+    len: &mut usize,
+    event: PtrEvent,
+) -> bool {
+    if *len >= queue.len() {
+        return false;
+    }
+    queue[*len] = Some(event);
+    *len += 1;
+    true
+}
+
+fn take_staged_pointer_event(
+    queue: &mut [Option<PtrEvent>],
+    len: &mut usize,
+) -> Option<PtrEvent> {
+    if *len == 0 {
+        return None;
+    }
+    let event = queue[0].take();
+    for i in 1..*len {
+        queue[i - 1] = queue[i].take();
+    }
+    *len -= 1;
+    event
+}
+
 /// K 矩形并集包络（增量 pass 的 dirty 域）。engine damage 恒 viewport
 /// 裁剪——u32 界内值；i32 折 try_from 饱和防御（gfx Rect 值域）。
 fn damage_envelope(dmg: &DamageSet) -> GfxRect {
@@ -1019,7 +1065,7 @@ fn complete_front_frame(hw: Handle, ui: &mut UiMain, token: u32, engine_seq: u32
         &mut req,
         &gp::PresentReq::FrameCallback { frame_token: token },
     ));
-    let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+    let (n, _) = rpc_callback(hw, &req[..m], &mut rep, &mut rhs);
     let done = match gp::parse_frame_done_rep(&rep[..n]) {
         Some(d) => d,
         None => fail(&format!("frame done bad st={}", rep[0])),

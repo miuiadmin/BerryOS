@@ -44,7 +44,7 @@ pub use sched::{
     on_irq_tick, on_sgi_resched, park_recheck, preempt_checkpoint, preempt_checkpoint_hits, preempt_count, preempt_disable,
     preempt_enable, print_window_enter, print_window_exit,
     nearest_deadline, refresh_effective, reap_drain,
-    set_exit_hook, set_lb_match,
+    set_exit_hook, set_lb_match, set_reply_handoff, set_reply_handoff_proc,
     set_klock_ops, set_sleepq_hook, sq_lock, sq_unlock,
     set_switch_hook, set_wake_hook, sleepq_insert,
     sleepq_insertable, sleepq_unlink, spawn, spawn_as, spawn_intent, spawn_user, spawn_with,

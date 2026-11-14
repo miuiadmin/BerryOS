@@ -39,7 +39,7 @@ use berry_libc::io::{wm_hdi_h, wm_present_h, wm_push_srv_h, wm_srv_h};
 use core::sync::atomic::{AtomicBool, Ordering};
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
-    berry_object_wait_many, berry_object_wait_one,
+    berry_object_wait_many, berry_object_wait_one, berry_thread_yield,
     berry_vmo_commit, berry_vmo_create, berry_vmo_write, Handle, BERRY_ERR_AGAIN,
     BERRY_ERR_BUSY, BERRY_ERR_TIMEDOUT, CLOCK_MONOTONIC,
     SIGNAL_READABLE, SIGNAL_TERMINATED, SIGNAL_WRITABLE,
@@ -748,7 +748,7 @@ impl WmSessions {
             Some(m) => m,
             None => trap(),
         };
-        send_rep(ch, &rep[..m]);
+        send_handoff_rep(ch, &rep[..m]);
     }
 
     /// poll-first 死亡探测：Process TERMINATED 即摘 session、清 owner 窗。
@@ -908,6 +908,13 @@ pub(crate) fn send_rep_handles(h: Handle, rep: &[u8], hs: &[Handle]) {
     }
 }
 
+/// Cooperative reply handoff for a client that is known to be waiting on this
+/// response (FRAME_CALLBACK or INPUT_POLL). SUBMIT ACK stays ordinary so a
+/// producer cannot enqueue ahead of wmd's pending drain.
+pub(crate) fn send_handoff_rep(h: Handle, rep: &[u8]) {
+    send_rep(h, rep);
+    let _ = berry_thread_yield();
+}
 /// 1B 状态应答（非 OK 烘焙线 + DESTROY/SET 成功形）。
 pub(crate) fn st_rep(h: Handle, st: u8) {
     let mut out = [0u8; 1];

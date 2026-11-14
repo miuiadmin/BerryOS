@@ -88,9 +88,9 @@ mod guest {
     /// 让 press 反馈与首帧同量级。eventq 预投 QSIZE=64 缓冲，空闲期超过
     /// 64 事件/tick 仍会丢批尾；离散转移零丢的结构性根治仍是 v2 IRQ 面。
     const SVC_TICK_NS: u64 = 16_000_000;
-    /// 交互活动期的设备收割节奏。活动后短窗改 2ms 轮询，静默 200ms 再
+    /// 交互活动期的设备收割节奏。活动后短窗改 500µs 轮询，静默 200ms 再
     /// 回落 16ms 心跳（结构根治仍归 v2 IRQ）。
-    const INPUT_ACTIVE_TICK_NS: u64 = 2_000_000;
+    const INPUT_ACTIVE_TICK_NS: u64 = 500_000;
     const INPUT_ACTIVE_WINDOW_NS: u64 = 200_000_000;
     /// 应答 send EBUSY 重臂帽：10s（vnet 同档）。
     const SEND_REARM_NS: u64 = 10_000_000_000;

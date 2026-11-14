@@ -180,6 +180,12 @@ pub fn print_window_exit() {
 /// c-2b 起取放启用。单核形态（gate 恒关）`cpu_id()` 恒 0 →
 /// `[0]` 行为等价旧全局 RUNQUEUE（零漂移根基）。
 static mut PER_CPU_RQ: [Runqueue; 2] = [Runqueue::new(), Runqueue::new()];
+/// Opt-in reply handoff hint. A channel fast-path sender may record the single
+/// waiter it woke on that waiter's home CPU; a subsequent cooperative
+/// `thread_yield` by the same sender may select that exact task. The hint is
+/// per-CPU, consumed on the next yield, and never bypasses a higher-priority
+/// runnable task.
+static mut REPLY_HANDOFF: [*mut Task; 2] = [core::ptr::null_mut(); 2];
 /// CPU 拓扑（capacity 由 [`init`] 从 HAL `cpu_capacity()` 填——S-3b 真化；
 /// 单核默认 `[1024, 0]` 同构占位，QEMU virt 双核 1024/1024，真差异容量 =
 /// EAS 面 v2+）。
@@ -1005,6 +1011,79 @@ unsafe fn activate_if_changed(prev: *mut Task, next: *mut Task) {
 /// S-3b：pick 走本核队列（per-CPU 分诊 + eligible Running 排除单臂——
 /// PickFilter user_only 臂随放置纯度退役）；副核 pick None = 本核队无货 →
 /// 切回 park 探测环（**防御面**——生产不可达；park 三切点保舞蹈完备）。
+/// Record the sole waiter woken by a channel reply as this CPU's next
+/// cooperative-yield candidate. Called with IRQ masked by the IPC fast path.
+pub fn set_reply_handoff(task: NonNull<Task>) {
+    let cpu = hal::smp::cpu_id() as usize;
+    if cpu >= 2 {
+        return;
+    }
+    let task_ptr = task.as_ptr();
+    // SAFETY: IRQ masked; scheduler-owned task; home_cpu is stable.
+    if unsafe { (*task_ptr).home_cpu as usize } == cpu {
+        unsafe { REPLY_HANDOFF[cpu] = task_ptr };
+    }
+}
+
+/// Record the most recent receiver process of a channel as this CPU's next
+/// cooperative-yield candidate. Unlike [`set_reply_handoff`], the receiver need
+/// not currently be asleep; this covers a busy RPC server that already drained
+/// its endpoint and remains Ready. No scheduling decision occurs until the
+/// sender explicitly calls `thread_yield`.
+pub fn set_reply_handoff_proc(proc_tag: usize) {
+    if proc_tag == 0 {
+        return;
+    }
+    let cpu = hal::smp::cpu_id() as usize;
+    if cpu >= 2 {
+        return;
+    }
+    // SAFETY: IRQ masked; take this CPU's queue lock before walking the ring.
+    let phys = unsafe { rq_lock_of(cpu) };
+    let current = unsafe { current_task() };
+    let mut found = core::ptr::null_mut();
+    if let Some(head) = unsafe { rq_of(cpu) }.head() {
+        let mut cur = head;
+        loop {
+            let task = cur.as_ptr();
+            // SAFETY: scheduler-owned ring node; only fields are read here.
+            unsafe {
+                if (*task).proc_tag == proc_tag
+                    && (*task).home_cpu as usize == cpu
+                    && crate::class::eligible(current, task)
+                {
+                    found = task;
+                    break;
+                }
+                cur = (*task)
+                    .rq_next
+                    .get()
+                    .expect("on-ring task has next");
+            }
+            if cur == head {
+                break;
+            }
+        }
+    }
+    if !found.is_null() {
+        // SAFETY: per-CPU slot; IRQ masked and only this CPU accesses it.
+        unsafe { REPLY_HANDOFF[cpu] = found };
+    }
+    unsafe { rq_unlock_of(cpu, phys) };
+}
+
+/// Take this CPU's reply-handoff candidate (null if absent).
+fn take_reply_handoff() -> *mut Task {
+    let cpu = hal::smp::cpu_id() as usize;
+    if cpu >= 2 {
+        return core::ptr::null_mut();
+    }
+    // SAFETY: only this CPU accesses its slot while IRQ is masked.
+    let task = unsafe { REPLY_HANDOFF[cpu] };
+    unsafe { REPLY_HANDOFF[cpu] = core::ptr::null_mut() };
+    task
+}
+
 pub fn yield_now() {
     yield_now_impl(true);
 }
@@ -1022,12 +1101,22 @@ fn yield_now_impl(enable_irq_at_end: bool) {
     // SAFETY: IRQ 已屏蔽；CURRENT/本核 runqueue 顺序访问。
     unsafe {
         let prev = current_task();
+        let handoff = take_reply_handoff();
         // RQ 窗（c-2b）：出选 + 状态定形同窗——next 置 Running = 防对核偷取
         // 屏障（放锁前落定）；prev Ready 化同窗。切换舞蹈在窗外（窗内禁切换）。
         let phys = rq_lock();
-        let picked: Option<*mut Task> = RR
-            .pick_next_filtered(rq(), topo(), prev)
-            .map(|n| n as *mut Task);
+        let handoff_picked = if handoff.is_null() || handoff == prev {
+            false
+        } else {
+            let target = NonNull::new_unchecked(handoff);
+            rq().pick_handoff_filtered(target, prev)
+        };
+        let picked: Option<*mut Task> = if handoff_picked {
+            Some(handoff)
+        } else {
+            RR.pick_next_filtered(rq(), topo(), prev)
+                .map(|n| n as *mut Task)
+        };
         if let Some(next_ptr) = picked {
             if next_ptr != prev {
                 (*prev).state = TaskState::Ready;

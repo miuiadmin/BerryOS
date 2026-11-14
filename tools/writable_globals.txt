@@ -57,6 +57,7 @@ sched/src/sched.rs::IDLE_TASK	scheduler
 sched/src/sched.rs::KLOCK_OPS	scheduler
 sched/src/sched.rs::LB_MATCH	scheduler
 sched/src/sched.rs::PER_CPU_RQ	scheduler
+sched/src/sched.rs::REPLY_HANDOFF	scheduler
 sched/src/sched.rs::REAPQ	scheduler
 sched/src/sched.rs::REAPQ_LEN	scheduler
 sched/src/sched.rs::REAPQ_WARNED	scheduler

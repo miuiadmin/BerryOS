@@ -92,6 +92,10 @@ pub struct ChannelEnd {
     /// `channel_create` options bit0——置位端 recv **不结算 intent**（固定优先级
     /// server 逃生门）。对称建对 API 下「通道级」语义 = 两端同置、双向皆不传播。
     no_intent: bool,
+    /// 最近在本端执行 recv 的 Process tag（0 = 未知）。只作为协作 reply
+    /// handoff 的通道亲和提示：发送方自愿 yield 时调度器可优先选该进程的
+    /// Ready 任务；不参与唤醒语义、不改变公平优先级。
+    last_recv_proc: usize,
 }
 
 impl ChannelEnd {
@@ -104,7 +108,17 @@ impl ChannelEnd {
     pub fn try_unpaired(no_intent: bool) -> Option<Self> {
         let mut queue = Vec::new();
         queue.try_reserve_exact(CHAN_DEPTH).ok()?;
-        Some(Self { peer: None, queue, no_intent })
+        Some(Self { peer: None, queue, no_intent, last_recv_proc: 0 })
+    }
+
+    /// 记录最近 recv 方 Process tag（含空队探测——服务 poll-first 也建立亲和）。
+    pub fn record_last_recv(&mut self, proc_tag: usize) {
+        self.last_recv_proc = proc_tag;
+    }
+
+    /// 最近 recv 方 Process tag（0 = 未知）。
+    pub fn last_recv_proc(&self) -> usize {
+        self.last_recv_proc
     }
 
     /// opt-out 标志（recv 结算侧查询）。

@@ -26,8 +26,8 @@ use berry_libc::io::{gift2_h, gift3_h, self_vmar_h};
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_event_create,
     berry_handle_close, berry_handle_duplicate, berry_object_signal, berry_object_wait_many,
-    berry_object_wait_one, berry_thread_sleep, berry_vmo_commit,
-    berry_vmo_create,
+    berry_object_wait_one, berry_thread_sleep, berry_thread_yield,
+    berry_vmo_commit, berry_vmo_create,
     berry_vmar_map, berry_vmo_get_phys, berry_vmo_get_size, berry_vmo_read,
     berry_vmo_write, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BUSY, BERRY_ERR_TIMEDOUT,
     CLOCK_MONOTONIC, RIGHT_READ, RIGHT_WRITE, RIGHT_SIGNAL, SIGNAL_READABLE,
@@ -908,7 +908,7 @@ impl PresentSrv {
         };
         let mut out = [0u8; 16];
         let n = gp::encode_frame_done_rep(&mut out, &rep);
-        send_rep(ch, &out[..n]);
+        send_callback_rep(ch, &out[..n]);
     }
 
     /// flip 完成回收：按 PendingFlip 关联的 alias 定位 held 槽，close 别名
@@ -1605,7 +1605,7 @@ impl PresentSrv {
                         };
                         let mut out = [0u8; 16];
                         let n = gp::encode_frame_done_rep(&mut out, &rep);
-                        send_rep(ch, &out[..n]);
+                        send_callback_rep(ch, &out[..n]);
                     }
                 }
             }
@@ -1798,6 +1798,14 @@ fn send_rep(h: Handle, rep: &[u8]) {
         let mut obs = 0u64;
         let _ = berry_object_wait_one(h, SIGNAL_WRITABLE, now() + SEND_REARM_NS, &mut obs);
     }
+}
+
+/// FRAME_CALLBACK-only cooperative handoff. The channel fast path records the
+/// sole woken wmd relay; yielding here returns the completion without waiting
+/// for another fair round. Other replies (notably SUBMIT ACK) stay ordinary.
+fn send_callback_rep(h: Handle, rep: &[u8]) {
+    send_rep(h, rep);
+    let _ = berry_thread_yield();
 }
 
 fn send_rep_handles(h: Handle, rep: &[u8], hs: &[Handle]) {

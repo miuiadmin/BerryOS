@@ -2,7 +2,7 @@
 Type: standard
 Version: 1.2
 Status: superseded
-Superseded-by: [BerryMacEmulator-GPU2-v1.3.md](BerryMacEmulator-GPU2-v1.3.md)
+Superseded-by: [BerryMacEmulator-GPU2-v1.4.md](BerryMacEmulator-GPU2-v1.4.md)
 Updated: 2026-11-15
 
 ## §1 产品裁决

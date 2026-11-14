@@ -2321,6 +2321,7 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
     };
     // SAFETY: peer_ptr 互钉在活；队列有界（满检过——单核禁切无插队 g3-1c-2
     // 段守卫；双核结构锁窗）。
+    let peer_last_recv;
     unsafe {
         let Some(peer_end) = (*peer_ptr.as_ptr()).obj.as_channel_mut() else {
             // 上面刚解包过——不可达防御面（消息泄漏，安全向）。c-2a：若义务④
@@ -2330,6 +2331,7 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
             }
             return ERR_BAD_HANDLE as i64;
         };
+        peer_last_recv = peer_end.last_recv_proc();
         peer_end.push(msg);
     }
     drop(_span); // g3-1c-2 段终点（push 毕）：原子段收口配平
@@ -2342,6 +2344,7 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
             // SLEEPQ 上）。
             unsafe { berry_sched::fast_wake_locked(t) };
             berry_sched::sq_unlock(sq_phys);
+            berry_sched::set_reply_handoff(t);
             crate::telemetry::ipc_fast_hit();
             if berry_sched::try_preempt() {
                 crate::telemetry::ipc_direct_switch();
@@ -2355,6 +2358,9 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
             // `berry_sched::wake_matching` 文档），容量槽公平归放置/偷取面。
             crate::telemetry::ipc_fast_miss();
             berry_sched::wake_matching(peer_ptr.as_ptr() as usize, SIGNAL_READABLE);
+            // The receiver may be busy rather than asleep. Remember its process
+            // affinity for a subsequent explicit cooperative yield by this sender.
+            berry_sched::set_reply_handoff_proc(peer_last_recv);
         }
     }
     // 段出口检查点（g3-1c-2，f4 裁决 = wake 链尾非 push 直后）：拷贝窗内被
@@ -2420,6 +2426,7 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
         let Some(end) = (*self_ptr.as_ptr()).obj.as_channel_mut() else {
             return ERR_BAD_HANDLE as i64;
         };
+        end.record_last_recv(berry_sched::current_tag());
         match end.front() {
             Some(_) => end.pop(),
             None => return ERR_AGAIN as i64, // 非阻塞：空即返（阻塞等消息 = wait_one READABLE，4-2）

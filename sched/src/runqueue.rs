@@ -210,6 +210,55 @@ impl Runqueue {
         self.head.set(Some(next)); // 单元素环时 next==node，游标不变（保持指向它）
     }
 
+    /// Explicit reply-handoff selector.
+    ///
+    /// Returns true only when `target` is on this ring, eligible, and no other
+    /// eligible task has a strictly higher effective priority. On success the
+    /// ring cursor is advanced past `target`, exactly as a normal pick would.
+    /// This is an opt-in cooperative yield to a just-woken RPC peer; it must not
+    /// bypass a higher-priority runnable task.
+    ///
+    /// # Safety
+    /// IRQ masked; caller holds this queue's RQ lock; `target` is scheduler-owned.
+    pub(crate) unsafe fn pick_handoff_filtered(
+        &self,
+        target: NonNull<Task>,
+        my_cur: *mut Task,
+    ) -> bool {
+        let Some(head) = self.head.get() else {
+            return false;
+        };
+        let target_ptr = target.as_ptr();
+        if !crate::class::eligible(my_cur, target_ptr) {
+            return false;
+        }
+        let target_priority = (*target_ptr).prio_effective;
+        let mut found = false;
+        let mut cur = head;
+        loop {
+            let cur_ptr = cur.as_ptr();
+            if cur == target {
+                found = true;
+            } else if crate::class::eligible(my_cur, cur_ptr)
+                && (*cur_ptr).prio_effective > target_priority
+            {
+                return false;
+            }
+            cur = (*cur_ptr)
+                .rq_next
+                .get()
+                .expect("on-ring task has next");
+            if cur == head {
+                break;
+            }
+        }
+        if !found {
+            return false;
+        }
+        self.advance_past(target);
+        true
+    }
+
     /// 过滤版只读探峰（S-2b；S-3b 改形）：环上是否存在 `prio_effective` 严格
     /// 高于 `v` 的 **eligible** 任务（叠加 [`crate::class::eligible`] Running
     /// 排除门，至多一圈，不动游标、不做出选）。供 [`crate::sched::try_preempt`]

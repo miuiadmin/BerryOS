@@ -19,9 +19,10 @@
 //!
 //! **热路径零分配**：本模块无堆、无锁（G0 单核）。
 
-/// 时间片频率（每秒切片数）。10Hz → 每 100ms 一 tick（slice=6.25M cycles @62.5MHz）。
-/// 调小→切片长（切换少、开销低）；调大→更公平但切换多。Step 6 demo 以此驱动抢占。
-pub const SLICE_HZ: u64 = 10;
+/// 时间片频率（每秒切片数）。20Hz → 每 50ms 一 tick（slice=3.125M cycles
+/// @62.5MHz）。调小→切片长（切换少、开销低）；调大→更公平但切换多。Step 6
+/// demo 以此驱动抢占。
+pub const SLICE_HZ: u64 = 20;
 
 static mut FREQ: u64 = 0;
 static mut SLICE: u64 = 0;

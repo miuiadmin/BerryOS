@@ -24,7 +24,7 @@
 //! 启动期一次缓存例外（`boot_getinfo`）。
 
 use super::table;
-use super::{close_all, now_ns, send_rep_handles, st_rep, trap};
+use super::{close_all, now_ns, send_handoff_rep, send_rep_handles, st_rep, trap};
 use berry_guiproto as gp;
 use core::sync::atomic::{AtomicBool, Ordering};
 use berry_sys::{
@@ -81,6 +81,10 @@ fn expect_attach(msg: &[u8]) -> Option<(usize, usize)> {
 /// （gfxdemo :190-191 同形；wm 客户端面按 CHAN_MSG_MAX/CHAN_HND_MAX
 /// 全窗收——应答超窗 = kernel 侧拒发，本面防御性 trap）。
 pub fn relay(ch: Handle, cli: Handle, msg: &[u8], hs: &[Handle]) {
+    // Only a completed FRAME_CALLBACK may cooperatively hand CPU back to the
+    // waiting producer. SUBMIT ACK stays a normal reply: handing off there let
+    // producers enqueue another frame before wmd drained pending work.
+    let callback_reply = msg.first() == Some(&gp::OP_FRAME_CALLBACK);
     if let Some((lo, hi)) = expect_attach(msg) {
         if hs.len() < lo || hs.len() > hi {
             close_all(hs);
@@ -120,7 +124,11 @@ pub fn relay(ch: Handle, cli: Handle, msg: &[u8], hs: &[Handle]) {
             if nb == 0 {
                 trap(); // 空应答 = 协议破缺
             }
-            send_rep_handles(ch, &rep[..nb], &rhs[..nh]);
+            if callback_reply {
+                send_handoff_rep(ch, &rep[..nb]);
+            } else {
+                send_rep_handles(ch, &rep[..nb], &rhs[..nh]);
+            }
             return;
         }
         if s != BERRY_ERR_AGAIN {

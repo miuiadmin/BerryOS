@@ -60,7 +60,8 @@ use berry_libc::io::{app_cli_h, input_h, self_proc_h, self_vmar_h, wm_cli_h};
 use berry_sys::{
     berry_channel_create, berry_channel_recv, berry_channel_send, berry_clock_read,
     berry_handle_close, berry_handle_duplicate, berry_object_wait_one, berry_thread_sleep,
-    berry_vmar_map, berry_vmar_unmap, berry_vmo_commit, berry_vmo_create, Handle,
+    berry_thread_yield, berry_vmar_map, berry_vmar_unmap, berry_vmo_commit, berry_vmo_create,
+    Handle,
     BERRY_ERR_AGAIN, BERRY_ERR_BUSY, CLOCK_MONOTONIC, RIGHT_DUPLICATE, RIGHT_READ,
     RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
@@ -181,6 +182,21 @@ fn rpc(
     rhs: &mut [Handle; 8],
 ) -> (usize, usize) {
     rpc_send(ch, req, attach);
+    rpc_recv(ch, rep, rhs)
+}
+
+/// FRAME_CALLBACK request RPC with explicit reply handoff. The request itself
+/// wakes the wmd relay; yielding after send dispatches that relay without a
+/// fair-round delay. It is deliberately callback-only for the same pipeline
+/// reason as wmd/vgpud: SUBMIT ACK must not force another producer enqueue.
+fn rpc_callback(
+    ch: Handle,
+    req: &[u8],
+    rep: &mut [u8; 256],
+    rhs: &mut [Handle; 8],
+) -> (usize, usize) {
+    rpc_send(ch, req, &[]);
+    let _ = berry_thread_yield();
     rpc_recv(ch, rep, rhs)
 }
 
