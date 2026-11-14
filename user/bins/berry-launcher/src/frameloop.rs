@@ -88,6 +88,9 @@ use crate::{close_h, enc_req, expect_ok, fail, now, rpc};
 /// 帧缓冲映射 VA（gfxdemo 同位：mmap VA 窗 [0x5000_0000,0x6000_0000) 内
 /// 固定位 +16MiB——与假想 first-fit 分配零交叠的防御位；页对齐）。
 const FRAME_VA: usize = 0x5100_0000;
+/// 第二帧槽。`0x5200_0000` 已由 launcher 壁纸 ARGB cache 占用，因此第二
+/// 帧保持同一 VA 窗内的 +32MiB 防御位。
+const FRAME_VA_B: usize = 0x5300_0000;
 
 /// 默认 vsync 周期（60Hz；present GETINFO 无周期域——S2 食谱默认
 /// 16_666_666 phase 0）。
@@ -164,6 +167,7 @@ fn real_swipe_start_gate(
 
 /// 真实输入 swipe 标记的完成门：翻页裁定后必须再呈现一帧（presented >
 /// 记录基线），证明 wmd→guifbd 提交链已落，不只是内存状态翻页。
+#[cfg_attr(not(test), allow(dead_code))]
 fn real_swipe_done_gate(frame: Option<u64>, presented: u64) -> bool {
     matches!(frame, Some(pc) if presented > pc)
 }
@@ -238,8 +242,8 @@ pub fn run(
         close_h(*h);
     }
 
-    // —— 帧缓冲 VMO 三连（gfxdemo raw 形同源）：stride = w*4 tight
-    //    packing；len 页取整（vmar_map 页倍执法；尾页零无害）。
+    // —— 双帧缓冲 VMO（gfxdemo raw 形同源）：stride = w*4 tight packing；
+    //    len 页取整。front 可能在 virtio-gpu DMA 中， raster 永远写 back。
     let (w, h) = (pinfo.display_w as usize, pinfo.display_h as usize);
     let stride = w.checked_mul(4).unwrap_or_else(|| fail("stride overflow"));
     let frame_bytes = stride.checked_mul(h).unwrap_or_else(|| fail("frame overflow"));
@@ -247,30 +251,36 @@ pub fn run(
         .checked_add(0xFFF)
         .map(|v| v & !0xFFF)
         .unwrap_or_else(|| fail("page round overflow"));
-    let mut vmo: Handle = 0;
-    if berry_vmo_create(len as u64, 0, &mut vmo) != 0 || vmo == 0 {
-        fail("vmo create");
-    }
-    if berry_vmo_commit(vmo, 0, len as u64) != 0 {
-        fail("vmo commit");
-    }
+    let mut frame_vmos: [Handle; 2] = [0, 0];
+    let frame_vas = [FRAME_VA, FRAME_VA_B];
     let hv = self_vmar_h();
     if hv == 0 {
         fail("no self vmar gift");
     }
-    let mut va = FRAME_VA;
-    if berry_vmar_map(hv, 0, vmo, 0, &mut va, len, RIGHT_READ | RIGHT_WRITE) != 0
-        || va != FRAME_VA
-    {
-        fail("vmar map");
+    for (i, vmo) in frame_vmos.iter_mut().enumerate() {
+        if berry_vmo_create(len as u64, 0, vmo) != 0 || *vmo == 0 {
+            fail("vmo create");
+        }
+        if berry_vmo_commit(*vmo, 0, len as u64) != 0 {
+            fail("vmo commit");
+        }
+        let mut va = frame_vas[i];
+        if berry_vmar_map(hv, 0, *vmo, 0, &mut va, len, RIGHT_READ | RIGHT_WRITE) != 0
+            || va != frame_vas[i]
+        {
+            fail("vmar map");
+        }
     }
     let desc = match TextureDesc::new(w, h, stride, TextureFormat::Rgbx) {
         Ok(d) => d,
         Err(e) => fail(&format!("texture desc {e:?}")),
     };
-    // SAFETY: [FRAME_VA, FRAME_VA+len) 刚由 vmar_map 落位且整段已 commit
-    //（gfxdemo 同形）；run 永不返回——fb 终身持有。
-    let fb: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(va as *mut u8, len) };
+    // SAFETY: 两个映射均刚按页落位并 commit；run 永不返回，帧槽终身持有。
+    let frame_fbs: [&mut [u8]; 2] = [
+        unsafe { core::slice::from_raw_parts_mut(FRAME_VA as *mut u8, len) },
+        unsafe { core::slice::from_raw_parts_mut(FRAME_VA_B as *mut u8, len) },
+    ];
+    let mut frame_idx = 0usize;
 
     // —— glyph scratch 堆置（DisplayList 'a 钉调用方 scratch + 'static
     //    图集/像素面——paint.rs 头注契约；堆置免栈穿）。
@@ -288,7 +298,8 @@ pub fn run(
     let mut spawn_ok: u32 = 0; // 真实 APP_SPAWN ok 回执计数（CLICK ok 恰一次）
     let mut last_spawn_click_ns: u64 = 0; // APP_SPAWN 去抖基线
     let mut pending_spawn: Option<NodeId> = None; // 先呈 Opening，再阻塞 spawn RPC
-    let mut pending_spawn_frame = 0u64; // Opening 呈现序
+    let mut pending_spawn_ack: Option<u32> = None; // Opening frame token
+    let mut pending_spawn_ready = false;
     let mut launching_node: Option<NodeId> = None; // 持续 pressed 视觉
     let mut launch_toast_deadline = 0u64;
     let mut launching_label: Option<desktop::RecentsLabel> = None;
@@ -299,6 +310,8 @@ pub fn run(
     let mut current_app_owner: Option<u16> = None;
     let mut recents_open = false;
     let mut recents_win: u16 = 0;
+    let mut front_token: Option<u32> = None;
+    let mut front_seq: u32 = 0;
     let mut buf_id: u32 = 1; // SUBMIT buffer 代际（RELEASE echo 非断言面）
     let mut st = if product {
         // 产品桌面不跑 boot 期两轮合成 swipe：首帧后立即停在 page 0。
@@ -313,6 +326,7 @@ pub fn run(
     let mut snap_frame: Option<u64> = None;
     let mut click_ready = false;
     let mut real_swipe_frame: Option<u64> = None;
+    let mut real_swipe_ack: Option<u32> = None;
     let mut real_swipe_done = false;
     let mut input_pending = false;
     let mut input_logged = false;
@@ -437,7 +451,7 @@ pub fn run(
                                     }
                                 }
                             }
-                            Some(_) => {
+                            Some(action) => {
                                 if recents_win != 0 {
                                     let _ = set_recents_window_visible(hw, recents_win, false);
                                 }
@@ -452,6 +466,15 @@ pub fn run(
                                         fail(&format!("recents hide err={e:?}"));
                                     }
                                     recents_open = false;
+                                }
+                                if action == gp::SYSTEM_NAV_ACTION_HOME {
+                                    // HOME is the canonical desktop state: even if
+                                    // the user swiped to a later page, restore
+                                    // page 0 before the full repaint.
+                                    desktop.pager.snap_to(ui, 0);
+                                    if let Err(e) = desktop::rehang_a11y(ui, &mut desktop, 0) {
+                                        fail(&format!("home rehang a11y err={e:?}"));
+                                    }
                                 }
                                 ui.invalidate_full();
                             }
@@ -581,7 +604,8 @@ pub fn run(
                     }
                     launching_node = Some(*node);
                     pending_spawn = Some(*node);
-                    pending_spawn_frame = presented + 1;
+                    pending_spawn_ack = None;
+                    pending_spawn_ready = false;
                     launch_toast_deadline = t_now + LAUNCH_TOAST_NS;
                 }
                 _ => {
@@ -608,8 +632,17 @@ pub fn run(
         }
 
         // snap 动画步进（每迭代必调——snap 驱动面；返回值仅为「有吸附
-        // 在推进」观察位，自测判据已不依赖——见 Settle1 注）。
-        desktop.pager.tick(ui, t_now);
+        // 在推进」观察位，自测判据已不依赖——见 Settle1 注）。DMA 在途时
+        // 一次 100ms 级 flip 会吞多个 16.7ms 拍；过拍时额外推进一拍，
+        // 让下一帧承载更新的位移而不是重复旧位置。
+        let overdue_flip = front_token.is_some()
+            && ui.next_wakeup().is_some_and(|deadline| {
+                t_now.saturating_sub(deadline) >= VSYNC_NS
+            });
+        let advancing = desktop.pager.tick(ui, t_now);
+        if advancing && overdue_flip {
+            desktop.pager.tick(ui, t_now.saturating_add(VSYNC_NS));
+        }
 
         // —— 渲染（跳过帧不提交——damage 空集零 SUBMIT 零 RPC）——
         let mut enc = CommandEncoder::new();
@@ -627,15 +660,13 @@ pub fn run(
                 PassDescriptor::new(LoadOp::Load, StoreOp::Store, Some(damage_envelope(&dmg)))
             };
             let dl = enc.finish();
+            let fb: &mut [u8] = frame_fbs[frame_idx];
             if let Err(e) = Queue::new().submit(&dl, fb, &desc, &pass) {
                 fail(&format!("raster submit {e:?}"));
             }
+            let engine_seq = (ui.telemetry().frames() - 1) as u32;
 
             // SUBMIT：fresh READ dup 别名随行（send 即 take——原 vmo 留表）。
-            let mut alias: Handle = 0;
-            if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
-                fail("dup alias");
-            }
             let (flags, rects, k) = if full {
                 (
                     gp::SUBMIT_F_DAMAGE_FULL,
@@ -645,7 +676,7 @@ pub fn run(
             } else {
                 (0u8, dmg.rects, dmg.count as usize)
             };
-            let sreq = gp::PresentReq::Submit {
+            let request = gp::PresentReq::Submit {
                 surface_id: u32::from(if recents_open { recents_win } else { 0 }),
                 buffer_id: buf_id,
                 flags,
@@ -654,70 +685,47 @@ pub fn run(
                 rects,
                 rect_count: k,
             };
-            let m = enc_req(gp::encode_present_req(&mut req, &sreq));
-            let (n, _) = rpc(hw, &req[..m], &[alias], &mut rep, &mut rhs);
-            let token = match gp::parse_submit_ack(&rep[..n]) {
-                Some(t) => t,
-                None => fail(&format!("submit ack bad st={}", rep[0])),
-            };
+            let token = submit_frame(hw, frame_vmos[frame_idx], &request);
             ui.note_submitted();
 
-            // FRAME_CALLBACK：blit-at-SUBMIT 形下帧已呈现（token 校验即
-            // 答）——断 PRESENTED（DISCARDED = 呈现链破相 fail loud）。
-            let m = enc_req(gp::encode_present_req(
-                &mut req,
-                &gp::PresentReq::FrameCallback { frame_token: token },
-            ));
-            let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
-            let done = match gp::parse_frame_done_rep(&rep[..n]) {
-                Some(d) => d,
-                None => fail(&format!("frame done bad st={}", rep[0])),
-            };
-            if done.status != gp::FRAME_PRESENTED {
-                fail(&format!("frame status={}", done.status));
+            // Runtime frames stay in flight: the next SUBMIT is followed by the
+            // previous frame's callback. LAUNCH remains tied to completion, not
+            // to submit acceptance.
+            if let Some(old_token) = front_token {
+                presented = complete_front_frame(
+                    hw,
+                    ui,
+                    old_token,
+                    front_seq,
+                    presented,
+                );
+                if !launched {
+                    println!("LAUNCH ok");
+                    launched = true;
+                }
+                if pending_spawn_ack == Some(old_token) {
+                    pending_spawn_ack = None;
+                    pending_spawn_ready = true;
+                }
+                if real_swipe_ack == Some(old_token) {
+                    println!("SWIPE ok n=1");
+                    real_swipe_ack = None;
+                    real_swipe_frame = None;
+                    real_swipe_done = true;
+                }
             }
-            // seq = 本帧引擎序（render 后 telemetry 帧计数 -1 = last_seq）；
-            // credits 以服务端应答为真值重同步（S2 食谱）。
-            ui.note_presented(
-                (ui.telemetry().frames() - 1) as u32,
-                now(),
-                done.status,
-                done.credits,
-            );
-
-            // RELEASE（归还别名即关——在途 ≤1 结构性背压，见头注）。
-            // RETURN-ALL 语义：应答 = held 聚合表全量排空。并发 GUI app
-            // 提交/清账交错时 count 可为 0..=2；0 表示本帧别名已被其它
-            // session 清走。只要求 count 与随行 handle 恰等并全量关闭。
-            let m = enc_req(gp::encode_present_req(&mut req, &gp::PresentReq::ReleaseWait));
-            let (n, nh) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
-            let rel = match gp::parse_release_rep(&rep[..n]) {
-                Some(r) => r,
-                None => fail(&format!("release rep bad st={}", rep[0])),
-            };
-            if nh != rel.count {
-                fail(&format!("release count={} nh={}", rel.count, nh));
+            if pending_spawn.is_some() && pending_spawn_ack.is_none() {
+                pending_spawn_ack = Some(token);
             }
-            for h in &rhs[..nh] {
-                close_h(*h);
+            if real_swipe_frame.is_some() && real_swipe_ack.is_none() && !real_swipe_done {
+                real_swipe_ack = Some(token);
             }
-
-            presented += 1;
+            front_token = Some(token);
+            front_seq = engine_seq;
+            frame_idx = 1 - frame_idx;
             buf_id = buf_id.wrapping_add(1);
             if buf_id == 0 {
                 buf_id = 1;
-            }
-            if !real_swipe_done && real_swipe_done_gate(real_swipe_frame, presented) {
-                // 标记（字节精确）：真实 virtio-tablet 事件流翻页且完成帧
-                // 已经 wmd 中继提交；合成 PAGE 标记不消费本行。
-                println!("SWIPE ok n=1");
-                real_swipe_done = true;
-                real_swipe_frame = None;
-            }
-            if !launched {
-                // 标记（字节精确）：首帧呈现回执过链恰一次。
-                println!("LAUNCH ok");
-                launched = true;
             }
         }
 
@@ -726,7 +734,7 @@ pub fn run(
             let _ = node;
             pending_spawn = None;
         }
-        if pending_spawn.is_some() && presented >= pending_spawn_frame {
+        if pending_spawn.is_some() && pending_spawn_ready {
             let node = pending_spawn.take().expect("pending spawn checked");
             let accepted = on_click(node, &desktop, &mut spawn_ok, smoke);
             if accepted {
@@ -829,6 +837,43 @@ pub fn run(
             click_ready = true;
         }
 
+        // 动画/后续工作已停时，不能把最后一帧留在 pending 槽；在进入长睡
+        // 前完成 FRAME_CALLBACK/RELEASE，让 UI phase、markers 和 credits
+        // 都回到真实静止态。
+        if let Some(token) = front_token.take() {
+            if ui.frame_phase() == berry_ui::frame::FramePhase::Settle {
+                presented = complete_front_frame(
+                    hw,
+                    ui,
+                    token,
+                    front_seq,
+                    presented,
+                );
+                if !launched {
+                    // First real desktop frame has now reached PRESENTED.
+                    println!("LAUNCH ok");
+                    launched = true;
+                }
+                if pending_spawn_ack == Some(token) {
+                    pending_spawn_ack = None;
+                    pending_spawn_ready = true;
+                }
+                if real_swipe_ack == Some(token) {
+                    println!("SWIPE ok n=1");
+                    real_swipe_ack = None;
+                    real_swipe_frame = None;
+                    real_swipe_done = true;
+                }
+                if pending_spawn.is_some() && pending_spawn_ready {
+                    // Opening 是静态帧：Settle 排干后引擎会回 Idle。若在此
+                    // 长睡，APP_SPAWN 会等 2s 强降闹钟；立即回循环消费。
+                    continue;
+                }
+            } else {
+                front_token = Some(token);
+            }
+        }
+
         // —— 稳态等待（S1 判词：wait_many n=1 [wm READABLE] + deadline =
         //    min(next_wakeup, now+IDLE 帽)；Idle 相 = 睡满 10s 零渲染零
         //    RPC 非燃 CPU；wm READABLE = 段④ 输入事件未来口。TIMEDOUT =
@@ -875,6 +920,69 @@ fn damage_envelope(dmg: &DamageSet) -> GfxRect {
         i32::try_from(ew).unwrap_or(0).max(0),
         i32::try_from(eh).unwrap_or(0).max(0),
     )
+}
+
+fn release_present(hw: Handle) {
+    let mut req = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let m = enc_req(gp::encode_present_req(&mut req, &gp::PresentReq::ReleaseWait));
+    let (n, nh) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+    let rel = match gp::parse_release_rep(&rep[..n]) {
+        Some(r) => r,
+        None => fail(&format!("release rep bad st={}", rep[0])),
+    };
+    if nh != rel.count {
+        fail(&format!("release count={} nh={}", rel.count, nh));
+    }
+    for h in &rhs[..nh] {
+        close_h(*h);
+    }
+}
+
+fn submit_frame(hw: Handle, vmo: Handle, request: &gp::PresentReq) -> u32 {
+    let mut req = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    loop {
+        let mut alias: Handle = 0;
+        if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
+            fail("dup alias");
+        }
+        let m = enc_req(gp::encode_present_req(&mut req, request));
+        let (n, _) = rpc(hw, &req[..m], &[alias], &mut rep, &mut rhs);
+        if let Some(token) = gp::parse_submit_ack(&rep[..n]) {
+            return token;
+        }
+        if rep.first() == Some(&gp::ST_FULL) {
+            // Credits were occupied by in-flight frames. Drain after this
+            // frame's raster work, then submit the already-rendered back buffer.
+            release_present(hw);
+            continue;
+        }
+        fail(&format!("submit ack bad st={}", rep[0]));
+    }
+}
+
+fn complete_front_frame(hw: Handle, ui: &mut UiMain, token: u32, engine_seq: u32, presented: u64) -> u64 {
+    let mut req = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let m = enc_req(gp::encode_present_req(
+        &mut req,
+        &gp::PresentReq::FrameCallback { frame_token: token },
+    ));
+    let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+    let done = match gp::parse_frame_done_rep(&rep[..n]) {
+        Some(d) => d,
+        None => fail(&format!("frame done bad st={}", rep[0])),
+    };
+    if done.status != gp::FRAME_PRESENTED {
+        fail(&format!("frame status={}", done.status));
+    }
+    ui.note_presented(engine_seq, now(), done.status, done.credits);
+    release_present(hw);
+    presented + 1
 }
 
 /// 挂一轮 INPUT_POLL（段④）：inputd 阻塞批拉 ≤3 事件；-EBUSY = 通道满

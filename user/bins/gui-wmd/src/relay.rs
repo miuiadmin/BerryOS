@@ -229,7 +229,9 @@ struct OwnerFrameCacheSlot {
 /// present client；每个 session SUBMIT 先按 owner 窗口拷入此 VMO，再以
 /// surface_id=0 聚合提交 guifbd。
 pub struct Compositor {
-    pub vmo: Handle,
+    vmos: [Handle; 2],
+    compose_idx: usize,
+    scanout_idx: usize,
     pub w: u32,
     pub h: u32,
     pub stride: usize,
@@ -244,18 +246,22 @@ impl Compositor {
     pub fn new(w: u32, h: u32) -> Compositor {
         let stride = w as usize * 4;
         let len = ((stride * h as usize + 0xFFF) / 0x1000) * 0x1000;
-        let mut vmo: Handle = 0;
-        if berry_vmo_create(len as u64, 0, &mut vmo) != 0
-            || vmo == 0
-            || berry_vmo_commit(vmo, 0, len as u64) != 0
-        {
-            trap();
+        let mut vmos: [Handle; 2] = [0, 0];
+        for vmo in &mut vmos {
+            if berry_vmo_create(len as u64, 0, vmo) != 0
+                || *vmo == 0
+                || berry_vmo_commit(*vmo, 0, len as u64) != 0
+            {
+                trap();
+            }
         }
         // SAFETY: wmd is single-threaded and creates exactly one compositor.
         let bounce: &'static mut [u8] =
             unsafe { &mut *core::ptr::addr_of_mut!(COMPOSITE_BOUNCE) };
         Compositor {
-            vmo,
+            vmos,
+            compose_idx: 0,
+            scanout_idx: 0,
             w,
             h,
             stride,
@@ -289,16 +295,32 @@ impl Compositor {
             if berry_vmo_read(src, self.bounce.as_mut_ptr(), src_off as u64, len) != 0 {
                 return false;
             }
-            // Source rows use the window stride; destination rows use the
-            // full-screen stride. Bulk-read packed source rows, then write each
-            // destination row without crossing a screen row end.
-            for chunk_row in 0..rows {
-                let src_base = chunk_row * row;
-                let write_dst = (clip.dst.y as usize + row_index + chunk_row) * self.stride
-                    + clip.dst.x as usize * 4;
-                let bounce_ptr = unsafe { self.bounce.as_ptr().add(src_base) };
-                if berry_vmo_write(self.vmo, bounce_ptr, write_dst as u64, row) != 0 {
+            // Full-width rows have identical source/destination stride and are
+            // contiguous in both VMOs. One bulk write per bounce chunk replaces
+            // per-row writes (product surface 0: ~1920 -> ~128 syscalls).
+            if src_stride == self.stride
+                && clip.src.x == 0
+                && clip.dst.x == 0
+                && clip.dst.w == self.w
+            {
+                let write_dst = (clip.dst.y as usize + row_index) * self.stride;
+                let dst = self.active_vmo();
+                if berry_vmo_write(dst, self.bounce.as_ptr(), write_dst as u64, len) != 0 {
                     return false;
+                }
+            } else {
+                // Source rows use the window stride; destination rows use the
+                // full-screen stride. Bulk-read packed source rows, then write each
+                // destination row without crossing a screen row end.
+                for chunk_row in 0..rows {
+                    let src_base = chunk_row * row;
+                    let write_dst = (clip.dst.y as usize + row_index + chunk_row) * self.stride
+                        + clip.dst.x as usize * 4;
+                    let bounce_ptr = unsafe { self.bounce.as_ptr().add(src_base) };
+                    let dst = self.active_vmo();
+                    if berry_vmo_write(dst, bounce_ptr, write_dst as u64, row) != 0 {
+                        return false;
+                    }
                 }
             }
             row_index += rows;
@@ -308,6 +330,44 @@ impl Compositor {
 
     pub fn fresh_owner(&self) -> Option<u16> {
         self.fresh_owner
+    }
+
+    fn active_vmo(&self) -> Handle {
+        self.vmos[self.compose_idx]
+    }
+
+    fn scanout_vmo(&self) -> Handle {
+        self.vmos[self.scanout_idx]
+    }
+
+    /// Partial (or window-local FULL) damage must inherit unchanged pixels
+    /// from the last submitted composition into the back buffer. Only a FULL
+    /// submit on the full-screen SYSTEM surface may skip that copy.
+    fn prepare_back_buffer(&mut self, front_covers_screen: bool) -> bool {
+        if front_covers_screen || self.compose_idx == self.scanout_idx {
+            return true;
+        }
+        let front = self.scanout_vmo();
+        let back = self.active_vmo();
+        let rect = gp::Rect {
+            x: 0,
+            y: 0,
+            w: self.w,
+            h: self.h,
+        };
+        self.copy_vmo_rect(front, back, rect)
+    }
+
+    fn finish_submit(&mut self) {
+        self.scanout_idx = self.compose_idx;
+        self.compose_idx = 1 - self.compose_idx;
+    }
+
+    /// APP/window submissions stay on the authoritative front buffer. The
+    /// double-buffer fast path is reserved for full-screen SYSTEM composition;
+    /// draining present credits before each APP update keeps front writes safe.
+    fn use_scanout_buffer(&mut self) {
+        self.compose_idx = self.scanout_idx;
     }
 
     fn tuple_rect(&self, r: (u16, u16, u16, u16)) -> gp::Rect {
@@ -396,7 +456,7 @@ impl Compositor {
         let mut ok = true;
         for win in windows.iter().take(window_n) {
             let rect = self.tuple_rect(win.eff);
-            ok = ok && self.copy_vmo_rect(self.vmo, cache_vmo, rect);
+            ok = ok && self.copy_vmo_rect(self.scanout_vmo(), cache_vmo, rect);
         }
         if !ok {
             eprintln!("WMCAPTURE bad owner={owner}");
@@ -468,6 +528,10 @@ impl Compositor {
             let slot = self.cache[index].as_ref()?;
             (slot.vmo, slot.windows, slot.window_n)
         };
+        if !self.prepare_back_buffer(false) {
+            eprintln!("WMREPLAY bad prepare owner={owner}");
+            return None;
+        }
         let mut rects = [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX];
         let mut n = 0usize;
         let mut envelope: Option<(u32, u32, u32, u32)> = None;
@@ -476,7 +540,7 @@ impl Compositor {
             if rect.w == 0 || rect.h == 0 {
                 continue;
             }
-            if !self.copy_vmo_rect(cache_vmo, self.vmo, rect) {
+            if !self.copy_vmo_rect(cache_vmo, self.active_vmo(), rect) {
                 eprintln!("WMREPLAY bad owner={owner}");
                 return None;
             }
@@ -663,10 +727,22 @@ pub fn submit_composite(
     }
     comp.clear_fresh_owner();
 
+    if !system_surface {
+        // Window updates are not the swipe fast path. Drain any queued DMA and
+        // update the authoritative front buffer atomically with this submit.
+        boot_release_all(cli);
+        comp.use_scanout_buffer();
+    }
+
     let full = flags & gp::SUBMIT_F_DAMAGE_FULL != 0;
     let mut out_rects = [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX];
     let mut out_n = 0usize;
     let mut out_flags = flags;
+    if !comp.prepare_back_buffer(system_surface && full) {
+        let _ = berry_handle_close(src);
+        st_rep(ch, gp::ST_BAD);
+        return false;
+    }
     let ok = if full {
         out_n = 0;
         // FULL 也是 raw buffer-local 的整窗语义；实际拷贝前先收缩到
@@ -715,7 +791,7 @@ pub fn submit_composite(
     }
 
     let mut alias: Handle = 0;
-    if berry_handle_duplicate(comp.vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
+    if berry_handle_duplicate(comp.active_vmo(), RIGHT_READ, &mut alias) != 0 || alias == 0 {
         trap();
     }
     let creq = gp::PresentReq::Submit {
@@ -740,6 +816,7 @@ pub fn submit_composite(
     let (rep, nb, _rhs, nh) = rpc_present(cli, &req[..n], &[alias]);
     let ok = rep.first() == Some(&gp::ST_OK);
     if ok {
+        comp.finish_submit();
         comp.note_submit_owner(owner, client_type);
     }
     send_rep_handles(ch, &rep[..nb], &_rhs[..nh]);
@@ -767,7 +844,7 @@ pub fn replay_owner(
     // RETURN-ALL，连续 task_select 不会第三次 ST_FULL。
     boot_release_all(cli);
     let mut alias: Handle = 0;
-    if berry_handle_duplicate(comp.vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
+    if berry_handle_duplicate(comp.active_vmo(), RIGHT_READ, &mut alias) != 0 || alias == 0 {
         trap();
     }
     let creq = gp::PresentReq::Submit {
@@ -788,6 +865,7 @@ pub fn replay_owner(
     let ok = rep.first() == Some(&gp::ST_OK) && nh == 0;
     if ok {
         boot_release_all(cli);
+        comp.finish_submit();
         comp.note_submit_owner(owner, gp::WM_CLIENT_APP);
         println!("WMREPLAY ok owner={owner} rects={rect_n}");
     } else {

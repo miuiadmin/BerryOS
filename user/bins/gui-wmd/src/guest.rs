@@ -650,7 +650,14 @@ impl WmSessions {
                 ("task", gp::SYSTEM_NAV_ACTION_TASK, Some(owner))
             };
             println!("WMNAV ok {name} owner={}", owner.unwrap_or(0));
-            if table.version() != version_before || ev.code == gp::KEY_SYSTEM_TASK {
+            // HOME is the canonical desktop state even when no APP window was
+            // visible (for example the user swiped to desktop page 1). WmTable
+            // version intentionally stays unchanged in that no-op case, so the
+            // SYSTEM launcher still needs the action event to snap back to 0.
+            if table.version() != version_before
+                || ev.code == gp::KEY_SYSTEM_HOME
+                || ev.code == gp::KEY_SYSTEM_TASK
+            {
                 self.invalidate_system_surface(action);
             }
             return;

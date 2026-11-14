@@ -587,6 +587,14 @@ struct HdiSlot {
     committed: bool,
 }
 
+struct PendingFlip {
+    token: u32,
+    resource: u32,
+    rects: [gp::Rect; gp::DAMAGE_MAX],
+    rect_n: usize,
+    flush: gp::Rect,
+}
+
 struct PresentSrv {
     dma: Dma,
     regs: *mut u32,
@@ -597,12 +605,17 @@ struct PresentSrv {
     tokens: [(u32, u64); TOKEN_RING],
     held: [(u32, Handle); CREDITS],
     held_n: usize,
+    pending: [Option<PendingFlip>; CREDITS],
+    cb_park: Option<(u32, Handle)>,
+    boot_submit_done: bool,
     backings: [Option<Backing>; BACKING_POOL],
     scanout_resource: u32,
     pool_epoch: u64,
     perf_submits: u64,
     perf_submit_ns: u64,
     perf_last_ns: u64,
+    perf_dma_ns: u64,
+    perf_dma_last_ns: u64,
     perf_reattaches: u64,
     perf_jitter_ns: u64,
     vb_seq: u32,
@@ -663,7 +676,6 @@ impl PresentSrv {
             st_rep(ch, gp::ST_BAD);
             return;
         };
-        self.select_resource(resource);
 
         let fullrect = gp::Rect { x: 0, y: 0, w: self.w, h: self.h };
         let targets: &[gp::Rect] = if full {
@@ -712,7 +724,88 @@ impl PresentSrv {
             &clipped[..clipped_n]
         };
         let plan_n = plan.len();
-        for (i, r) in plan.iter().enumerate() {
+        let mut plan_storage = [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX];
+        plan_storage[..plan_n].copy_from_slice(plan);
+        let flush = gp::Rect {
+            x: ux0,
+            y: uy0,
+            w: ux1.saturating_sub(ux0),
+            h: uy1.saturating_sub(uy0),
+        };
+        let first_synchronous = !self.boot_submit_done
+            && self.pending.iter().flatten().next().is_none()
+            && self.held_n == 0;
+
+        self.submit_seq = self.submit_seq.wrapping_add(1);
+        let token = self.submit_seq;
+        if first_synchronous {
+            // Boot/first frame remains flush-at-ack: the boot milestone and the
+            // first visible desktop replacement must not race their own truth.
+            let dma_started = now();
+            self.transfer_and_flush(resource, &plan_storage[..plan_n], plan_n, flush);
+            let dma_elapsed = now().saturating_sub(dma_started);
+            self.perf_dma_ns = self.perf_dma_ns.saturating_add(dma_elapsed);
+            self.perf_dma_last_ns = dma_elapsed;
+            let t = now();
+            self.present_seq = self.present_seq.wrapping_add(1);
+            self.tokens[token as usize % TOKEN_RING] = (token, t);
+            self.boot_submit_done = true;
+        } else {
+            let Some(slot) = self.pending.iter_mut().find(|p| p.is_none()) else {
+                trap();
+            };
+            *slot = Some(PendingFlip {
+                token,
+                resource,
+                rects: plan_storage,
+                rect_n: plan_n,
+                flush,
+            });
+        }
+
+        self.held[self.held_n] = (buffer_id, hvmo);
+        self.held_n += 1;
+        self.perf_submits = self.perf_submits.saturating_add(1);
+        let submit_elapsed = now().saturating_sub(submit_started);
+        self.perf_last_ns = submit_elapsed;
+        self.perf_submit_ns = self.perf_submit_ns.saturating_add(submit_elapsed);
+        let mut out = [0u8; 8];
+        let n = gp::encode_submit_ack(&mut out, token);
+        send_rep(ch, &out[..n]);
+        // Telemetry 在 ACK 后打印：`last_us` 是入队/校验耗时；DMA 完成耗时
+        // 由 `dma_us` 在完成侧累计，二者不可再混成一个“呈现延迟”。
+        let avg_us = self.perf_submit_ns / (self.perf_submits * 1_000);
+        let plan_area: u64 = plan_storage
+            .iter()
+            .take(plan_n)
+            .map(|r| u64::from(r.w) * u64::from(r.h))
+            .sum();
+        let union_area = u64::from(flush.w) * u64::from(flush.h);
+        println!(
+            "VGPUPERF submits={} avg_us={} last_us={} dma_us={} reattaches={} jitter_us={} rects={} area={} union={}",
+            self.perf_submits,
+            avg_us,
+            self.perf_last_ns / 1_000,
+            self.perf_dma_last_ns / 1_000,
+            self.perf_reattaches,
+            self.perf_jitter_ns / 1_000,
+            plan_n,
+            plan_area,
+            union_area
+        );
+    }
+
+    fn transfer_and_flush(
+        &mut self,
+        resource: u32,
+        rects: &[gp::Rect],
+        rect_n: usize,
+        flush: gp::Rect,
+    ) {
+        // Select only when this flip is about to transfer: an early SUBMIT must
+        // not point scanout at a back resource before the older front flip runs.
+        self.select_resource(resource);
+        for (i, r) in rects.iter().take(rect_n).enumerate() {
             let rect = vio::gpu::GpuRect {
                 x: r.x,
                 y: r.y,
@@ -735,16 +828,10 @@ impl PresentSrv {
                 trap();
             }
         }
-        // 稀疏行带的多个 TRANSFER 一次发布/一次等待，再对并集做单次
-        // RESOURCE_FLUSH；旧逐 rect “传输+flush+wait” 把命令固定开销乘 K。
-        ctrl_batch_wait_nodata(&self.dma, self.regs, plan_n);
-        if plan_n != 0 {
-            let flush = gp::Rect {
-                x: ux0,
-                y: uy0,
-                w: ux1 - ux0,
-                h: uy1 - uy0,
-            };
+        if rect_n != 0 {
+            ctrl_batch_wait_nodata(&self.dma, self.regs, rect_n);
+        }
+        if rect_n != 0 {
             let rect = vio::gpu::GpuRect {
                 x: flush.x,
                 y: flush.y,
@@ -755,40 +842,61 @@ impl PresentSrv {
                 vio::gpu::put_resource_flush(b, 0, resource, rect).is_some()
             });
         }
+    }
 
+    fn pending_token(&self, token: u32) -> bool {
+        self.pending
+            .iter()
+            .flatten()
+            .any(|p| p.token == token)
+    }
+
+    fn send_parked_or_current_callback(&self, token: u32, ch: Handle) {
+        let Some(&(_, presented_ns)) = self
+            .tokens
+            .iter()
+            .find(|&&(t, _)| t == token && t != 0)
+        else {
+            trap();
+        };
+        let rep = gp::FrameDoneRep {
+            status: gp::FRAME_PRESENTED,
+            credits: (CREDITS - self.held_n) as u8,
+            present_seq: self.present_seq,
+            presented_ns,
+        };
+        let mut out = [0u8; 16];
+        let n = gp::encode_frame_done_rep(&mut out, &rep);
+        send_rep(ch, &out[..n]);
+    }
+
+    fn pump_pending(&mut self) -> bool {
+        let Some(index) = self
+            .pending
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| p.as_ref().map(|_| i))
+            .min_by_key(|&i| self.pending[i].as_ref().expect("checked").token)
+        else {
+            return false;
+        };
+        let flip = self.pending[index].take().expect("checked");
+        let started = now();
+        self.transfer_and_flush(flip.resource, &flip.rects, flip.rect_n, flip.flush);
+        let dma_elapsed = now().saturating_sub(started);
+        self.perf_dma_ns = self.perf_dma_ns.saturating_add(dma_elapsed);
+        self.perf_dma_last_ns = dma_elapsed;
+        println!("VGPUDMA ok token={} us={}", flip.token, dma_elapsed / 1_000);
         let t = now();
         self.present_seq = self.present_seq.wrapping_add(1);
-        self.submit_seq = self.submit_seq.wrapping_add(1);
-        let token = self.submit_seq;
-        self.tokens[token as usize % TOKEN_RING] = (token, t);
-        self.held[self.held_n] = (buffer_id, hvmo);
-        self.held_n += 1;
-        self.perf_submits = self.perf_submits.saturating_add(1);
-        let submit_elapsed = now().saturating_sub(submit_started);
-        self.perf_last_ns = submit_elapsed;
-        self.perf_submit_ns = self.perf_submit_ns.saturating_add(submit_elapsed);
-        let mut out = [0u8; 8];
-        let n = gp::encode_submit_ack(&mut out, token);
-        send_rep(ch, &out[..n]);
-        // Telemetry 在 ACK 后打印：不把串口开销计入 guest 可见提交延迟；
-        // Mac 标定短动作序列也需要样本，因此逐 SUBMIT 输出。
-        let avg_us = self.perf_submit_ns / (self.perf_submits * 1_000);
-        let plan_area: u64 = plan
-            .iter()
-            .map(|r| u64::from(r.w) * u64::from(r.h))
-            .sum();
-        let union_area = u64::from(ux1 - ux0) * u64::from(uy1 - uy0);
-        println!(
-            "VGPUPERF submits={} avg_us={} last_us={} reattaches={} jitter_us={} rects={} area={} union={}",
-            self.perf_submits,
-            avg_us,
-            self.perf_last_ns / 1_000,
-            self.perf_reattaches,
-            self.perf_jitter_ns / 1_000,
-            plan_n,
-            plan_area,
-            union_area
-        );
+        self.tokens[flip.token as usize % TOKEN_RING] = (flip.token, t);
+        if let Some((park_token, ch)) = self.cb_park {
+            if park_token == flip.token {
+                self.cb_park = None;
+                self.send_parked_or_current_callback(flip.token, ch);
+            }
+        }
+        true
     }
 
     /// frame VMO → virtio-gpu resource。命中池只刷新 LRU stamp；未中选
@@ -831,6 +939,17 @@ impl PresentSrv {
                     .unwrap_or(0)
             });
         let resource = RESOURCE_IDS[target];
+        // Never rebind a resource while a queued flip still references it. The
+        // stable product uses exactly pool-sized backings, but an HDI prepare
+        // can introduce pressure; drain that flip before DETACH/ATTACH.
+        if self
+            .pending
+            .iter()
+            .flatten()
+            .any(|flip| flip.resource == resource)
+        {
+            while self.pump_pending() {}
+        }
         let old = self.backings[target].take();
         let pool_empty = self.backings.iter().all(Option::is_none);
         // 只有两种状态需要 DETACH：池表中的旧 backing，或 resource 1 首
@@ -1392,6 +1511,17 @@ impl PresentSrv {
                     st_rep(ch, gp::ST_BAD);
                     return;
                 }
+                if self.pending_token(frame_token) {
+                    if self.cb_park.is_some() {
+                        // Present is a serial request/response channel. A second
+                        // parked callback would overwrite and strand the first;
+                        // fail loudly instead of violating that invariant.
+                        st_rep(ch, gp::ST_BUSY);
+                        return;
+                    }
+                    self.cb_park = Some((frame_token, ch));
+                    return;
+                }
                 let hit = self
                     .tokens
                     .iter()
@@ -1418,6 +1548,9 @@ impl PresentSrv {
                     st_rep(ch, gp::ST_BAD);
                     return;
                 }
+                // RELEASE is the recoverability boundary. If an async flip is
+                // still in flight, finish it before returning any alias.
+                while self.pump_pending() {}
                 let k = self.held_n;
                 let mut ids = [0u32; gp::RELEASE_MAX];
                 let mut hout = [0u32; gp::RELEASE_MAX];
@@ -1488,12 +1621,17 @@ fn serve_present(d: &Dma, regs: *mut u32, w: u32, h: u32) -> ! {
         tokens: [(0, 0); TOKEN_RING],
         held: [(0, 0); CREDITS],
         held_n: 0,
+        pending: [None, None],
+        cb_park: None,
+        boot_submit_done: false,
         backings: [None; BACKING_POOL],
         scanout_resource: RESOURCE_IDS[0],
         pool_epoch: 0,
         perf_submits: 0,
         perf_submit_ns: 0,
         perf_last_ns: 0,
+        perf_dma_ns: 0,
+        perf_dma_last_ns: 0,
         perf_reattaches: 0,
         perf_jitter_ns: 0,
         vb_seq: 0,
@@ -1552,6 +1690,12 @@ fn serve_present(d: &Dma, regs: *mut u32, w: u32, h: u32) -> ! {
             handled = true;
         }
         if handled {
+            continue;
+        }
+        // No queued request remains: run one queued DMA flip. A second SUBMIT
+        // already waiting on the present channel was handled above before this
+        // point, preserving the intended two-frame pipeline.
+        if srv.pump_pending() {
             continue;
         }
         let t = now();

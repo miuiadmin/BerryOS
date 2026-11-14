@@ -33,3 +33,4 @@ P1 之后用户仍会看到 1080×1920 桌面横滑一顿一顿。已有 `deskto
 ## Related
 
 - [GUI interaction quality P1](2026-11-13-gui-interaction-quality-phase1.md) established sparse damage, bulk copy, and VNC fast decode; this note adds direct launcher swipe measurement and the first P2 caching/batching layer.
+- [GUI double-buffered present pipeline](2026-11-14-gui-present-pipeline.md) implements the async branch chosen after the scanout probe was rejected and closes the one-frame boundary recorded here.

@@ -3,10 +3,10 @@ Type: standard
 Version: 1.0
 Status: superseded
 Updated: 2026-11-13
-Superseded-by: [BerryMacEmulator-GPU2-v1.0.md](BerryMacEmulator-GPU2-v1.0.md)
+Superseded-by: [BerryMacEmulator-GPU2-v1.1.md](BerryMacEmulator-GPU2-v1.1.md)
 
 > 定位：GPU1 基线规格；现行 HDI、backing 池、像素共识与性能定标由
-> [BerryMacEmulator-GPU2-v1.0.md](BerryMacEmulator-GPU2-v1.0.md) 接管。HVF/CPU、产品快启动、输入与 damage 基线见 [BerryMacEmulator-HVF1-v1.0.md](BerryMacEmulator-HVF1-v1.0.md)；本规格接管其显示路径现状。
+> [BerryMacEmulator-GPU2-v1.1.md](BerryMacEmulator-GPU2-v1.1.md) 接管。HVF/CPU、产品快启动、输入与 damage 基线见 [BerryMacEmulator-HVF1-v1.0.md](BerryMacEmulator-HVF1-v1.0.md)；本规格接管其显示路径现状。
 >
 > 相关决策：[架构决策.md](架构决策.md) ADR #50/#51/#90/#91；执行计划归档见 [2026-11-13-virtio-gpu-2d-mac-emulator.md](../.agents/plans/2026-11-13-virtio-gpu-2d-mac-emulator.md)。
 
