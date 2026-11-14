@@ -451,6 +451,150 @@ spec = "docs/Berry设备平台-OpenHarmonyShell-v1.0.md"
 breaking = []
 
 [[item]]
+id = "berry_ui::sdk::Checkbox"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Radio"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Slider"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ProgressIndicator"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::LoadingIndicator"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Tabs"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TabItemSpec"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TabBarStyle"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TABS_MAX"
+kind = "const"
+module = "widgets"
+since = "TRI-CONTROLS-1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Section"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Grid"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SafeInsets"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.0.md"
+breaking = []
+
+[[item]]
 id = "berry_ui::sdk::MonospaceTextMetrics"
 kind = "type"
 module = "metrics"

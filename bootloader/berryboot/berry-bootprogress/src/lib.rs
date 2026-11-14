@@ -31,6 +31,16 @@ pub const M_SYSTEM_UI_CONNECTED: u16 = 800;
 pub const M_FIRST_REAL_SUBMIT: u16 = 900;
 pub const M_DESKTOP_HANDOFF: u16 = PERMILLE_MAX;
 
+/// Presentation face selected by the boot mode; both consume the same truth.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Face {
+    Capsule,
+    VerboseText,
+}
+
+/// Maximum diagnostic lines retained by a verbose boot surface.
+pub const VERBOSE_LOG_MAX: usize = 10;
+
 /// Real boot stages represented on the first-screen surface.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Stage {
@@ -66,6 +76,44 @@ pub fn span(start: u16, end: u16, done: u64, total: u64) -> Option<u16> {
     let value = u32::from(start)
         .checked_add((width as u64 * done / total) as u32)?;
     Some(value as u16)
+}
+
+/// Smoothstep a real byte/segment counter into a permille interval.
+///
+/// The fraction comes only from `done/total`; wall clock is not an input. The
+/// Q16.16 cubic curve makes chunked file reads advance gently at both ends,
+/// while `span()`'s fail-closed and monotone properties are preserved.
+pub fn span_smooth(start: u16, end: u16, done: u64, total: u64) -> Option<u16> {
+    if end > PERMILLE_MAX || start > end || total == 0 || done > total {
+        return None;
+    }
+    let x = (done.checked_mul(65_536)? / total).min(65_536) as u64;
+    let x2 = (x * x) >> 16;
+    let x3 = (x2 * x) >> 16;
+    let numerator = 3 * x2 - 2 * x3;
+    let width = u32::from(end - start);
+    let value = u32::from(start).checked_add(
+        (u64::from(width) * numerator / 65_536) as u32,
+    )?;
+    Some(value as u16)
+}
+
+/// Presentation slew toward a truth target. At most eight permille move per
+/// 100 ms; a jump of at least 80 permille (or completion) snaps immediately.
+/// The result never regresses and never advances past the producer truth.
+pub fn slew(prev: u16, truth: u16, dt_ms: u32) -> u16 {
+    let prev = min(prev, PERMILLE_MAX);
+    let truth = min(truth, PERMILLE_MAX);
+    if truth <= prev {
+        return prev;
+    }
+    let delta = u32::from(truth - prev);
+    if truth == PERMILLE_MAX || delta >= 80 {
+        return truth;
+    }
+    let ticks = (dt_ms / 100).max(1);
+    let step = delta.min(ticks.saturating_mul(8)).max(1);
+    prev.saturating_add(u16::try_from(step).unwrap_or(PERMILLE_MAX - prev))
 }
 
 /// Layout used by both the initial paint and incremental updates.
@@ -142,6 +190,7 @@ pub struct Renderer<'a> {
     stride: usize,
     format: PixelFormat,
     layout: Layout,
+    face: Face,
     prev_permille: u16,
     prev_stage: Stage,
 }
@@ -187,6 +236,7 @@ impl<'a> Renderer<'a> {
             stride,
             format,
             layout,
+            face: Face::Capsule,
             prev_permille: PERMILLE_MAX,
             prev_stage: Stage::Display,
         })
@@ -281,17 +331,128 @@ impl<'a> Renderer<'a> {
         self.rect(0, 0, self.width, self.height, BG);
     }
 
+    fn integer_sqrt(value: usize) -> usize {
+        if value < 2 {
+            return value;
+        }
+        let mut x = value;
+        let mut y = (x + 1) / 2;
+        while y < x {
+            x = y;
+            y = (x + value / x) / 2;
+        }
+        x
+    }
+
+    fn capsule(&mut self, x: usize, y: usize, w: usize, h: usize, rgb: (u8, u8, u8)) {
+        if w == 0 || h == 0 {
+            return;
+        }
+        let radius = h / 2;
+        let left_cx = x + radius;
+        let right_cx = x + w - 1 - radius;
+        for yy in y..y.saturating_add(h) {
+            let dy = (yy as i32 - (y + radius) as i32).abs();
+            let squared = (radius as i32 * radius as i32 - dy * dy).max(0);
+            let chord = Self::integer_sqrt(squared as usize) + 1;
+            for xx in x..x.saturating_add(w) {
+                let on = if xx < left_cx {
+                    left_cx.saturating_sub(xx) < chord
+                } else if xx > right_cx {
+                    xx.saturating_sub(right_cx) < chord
+                } else {
+                    true
+                };
+                if on {
+                    self.put_px(xx, yy, rgb);
+                }
+            }
+        }
+    }
+
     fn bar(&mut self, permille: u16) {
         let l = self.layout;
-        self.rect(l.bar_x, l.bar_y, l.bar_w, l.bar_h, TRACK);
+        // Repaint the complete capsule bounding box. This clears rectangular
+        // corners and lets incremental updates remain exact without tracking
+        // the previous rounded-end geometry.
+        self.rect(
+            l.bar_x.saturating_sub(2),
+            l.bar_y.saturating_sub(2),
+            l.bar_w + 4,
+            l.bar_h + 4,
+            BG,
+        );
+        self.capsule(l.bar_x, l.bar_y, l.bar_w, l.bar_h, TRACK);
         let filled = if permille >= PERMILLE_MAX {
             l.bar_w
         } else {
             (usize::from(l.bar_w) * usize::from(permille)) / usize::from(PERMILLE_MAX)
         };
         if filled > 0 {
-            self.rect(l.bar_x, l.bar_y, filled, l.bar_h, ACCENT);
+            let filled = filled.max(l.bar_h).min(l.bar_w);
+            self.capsule(l.bar_x, l.bar_y, filled, l.bar_h, ACCENT);
         }
+    }
+
+    fn clipped_text(&mut self, text: &[u8], x: usize, y: usize, scale: usize) {
+        let cell_w = 8 * scale;
+        if y >= self.height || x >= self.width || scale == 0 {
+            return;
+        }
+        let cols = (self.width - x) / cell_w;
+        for (col, &b) in text.iter().take(cols).enumerate() {
+            self.glyph(b, x + col * (cell_w + scale), y, scale, FG, BG);
+        }
+    }
+
+    fn paint_verbose(&mut self, stage: Stage, permille: u16, logs: &[&[u8]]) {
+        self.clear();
+        let l = self.layout;
+        let scale = if self.height >= 1080 { 2 } else { 1 };
+        let label_y = l.bar_y.saturating_sub(16 * scale + 18);
+        self.clipped_text(stage.label().as_bytes(), l.bar_x, label_y, scale);
+
+        let log_y = l.bar_y.saturating_add(l.bar_h + 24);
+        let row_h = 16 * scale + 4;
+        let capacity = ((self.height - log_y) / row_h).min(VERBOSE_LOG_MAX);
+        let start = logs.len().saturating_sub(capacity);
+        for (row, line) in logs[start..].iter().enumerate() {
+            let y = log_y.saturating_add(row * row_h);
+            if y >= self.height {
+                break;
+            }
+            self.clipped_text(line, 24, y, scale);
+        }
+        self.bar(permille);
+    }
+
+    /// First paint for the verbose command-line face. Diagnostic lines are
+    /// presentation-only; `(stage, permille)` remains the sole progress truth.
+    pub fn initialize_verbose(
+        &mut self,
+        stage: Stage,
+        permille: u16,
+        logs: &[&[u8]],
+    ) {
+        self.face = Face::VerboseText;
+        let p = min(permille, PERMILLE_MAX);
+        self.paint_verbose(stage, p, logs);
+        self.prev_permille = p;
+        self.prev_stage = stage;
+    }
+
+    /// Incremental verbose update. The full visible face is small enough to
+    /// repaint atomically; progress still refuses regression.
+    pub fn update_verbose(&mut self, stage: Stage, permille: u16, logs: &[&[u8]]) -> bool {
+        self.face = Face::VerboseText;
+        let p = min(permille, PERMILLE_MAX);
+        if p < self.prev_permille {
+            return false;
+        }
+        self.paint_verbose(stage, p, logs);
+        self.prev_permille = p;
+        self.prev_stage = stage;
+        true
     }
 
     /// First paint: clear the surface, draw the white mark and exact current
@@ -314,21 +475,13 @@ impl<'a> Renderer<'a> {
             return false;
         }
         if p > self.prev_permille {
-            let l = self.layout;
-            let old = (usize::from(l.bar_w) * usize::from(self.prev_permille))
-                / usize::from(PERMILLE_MAX);
-            let new = (usize::from(l.bar_w) * usize::from(p)) / usize::from(PERMILLE_CEILING);
-            if new > old {
-                self.rect(l.bar_x + old, l.bar_y, new - old, l.bar_h, ACCENT);
-            }
+            self.bar(p);
         }
         self.prev_permille = p;
         self.prev_stage = stage;
         true
     }
 }
-
-const PERMILLE_CEILING: u16 = PERMILLE_MAX;
 
 #[cfg(test)]
 mod tests {
@@ -389,6 +542,67 @@ mod tests {
             1
         )
         .is_none());
+    }
+
+    #[test]
+    fn smooth_span_and_slew_are_truth_monotone() {
+        assert_eq!(span_smooth(30, 300, 0, 5), Some(30));
+        assert_eq!(span_smooth(30, 300, 5, 5), Some(300));
+        let mut prev = 0;
+        for done in 0..=16 {
+            let got = span_smooth(100, 200, done, 16).unwrap();
+            assert!(got >= prev);
+            prev = got;
+        }
+        assert_eq!(slew(100, 104, 100), 104);
+        assert_eq!(slew(100, 190, 100), 190);
+        assert_eq!(slew(500, 400, 100), 500);
+        assert_eq!(slew(900, 1000, 0), 1000);
+    }
+
+    #[test]
+    fn boot_bar_is_a_white_capsule_not_a_rectangle() {
+        let w = 480;
+        let h = 480;
+        let stride = w * 4;
+        let mut fb = vec![0u8; stride * h];
+        let l = layout(w, h).unwrap();
+        {
+            let mut r = Renderer::new(&mut fb, w, h, stride, FORMAT_RAW_XRGB).unwrap();
+            r.initialize(Stage::Kernel, 1000);
+        }
+        let px = |x: usize, y: usize| -> [u8; 3] {
+            let off = y * stride + x * 4;
+            [fb[off], fb[off + 1], fb[off + 2]]
+        };
+        assert_eq!(px(l.bar_x + 2, l.bar_y + l.bar_h / 2), [255, 255, 255]);
+        // The first pixel of the bounding row is outside the rounded end and
+        // must remain background even at 100%.
+        assert_eq!(px(l.bar_x, l.bar_y), [0, 0, 0]);
+        assert_eq!(px(l.bar_x, l.bar_y + l.bar_h - 1), [0, 0, 0]);
+    }
+
+    #[test]
+    fn verbose_face_paints_stage_and_last_diagnostics() {
+        let w = 800;
+        let h = 600;
+        let stride = w * 4;
+        let mut fb = vec![0u8; stride * h];
+        let l = layout(w, h).unwrap();
+        {
+            let mut r = Renderer::new(&mut fb, w, h, stride, FORMAT_RAW_XRGB).unwrap();
+            r.initialize_verbose(Stage::Kernel, 100, &[b"kernel: ok", b"driver: virtio-gpu"]);
+        }
+        let mut non_black = 0usize;
+        for y in 0..h {
+            for x in 0..w {
+                if fb[y * stride + x * 4..y * stride + x * 4 + 3] != [0, 0, 0] {
+                    non_black += 1;
+                }
+            }
+        }
+        assert!(non_black > 200, "verbose stage/logs/bar are visible");
+        assert!(l.bar_y > 0);
     }
 
     #[test]

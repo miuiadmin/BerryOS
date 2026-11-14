@@ -1,8 +1,10 @@
 # BerryBoot Boot Progress P1（真实 0→100% 首屏框架）
+
 Type: standard
 Version: 1.0
-Status: current
-Updated: 2026-11-13
+Status: superseded
+Superseded-by: [BerryBoot-BootProgress-P1-v1.1.md](BerryBoot-BootProgress-P1-v1.1.md)
+Updated: 2026-11-15
 
 ## §1 产品裁决
 

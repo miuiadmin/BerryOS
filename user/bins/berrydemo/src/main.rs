@@ -17,9 +17,10 @@ use berry_room::{
 };
 use berry_ui::hit::PtrEvent;
 use berry_ui::sdk::{
-    Button, Card, EmptyState, FontSource, IconSource, InteractionState, ListDetail,
-    ListDetailSpec, ListItem, ListTile, ListTileSpec, Msg, NodeId, RectI, Scaffold, ScrollView,
-    Switch, TextVariant,
+    Button, Card, Checkbox, EmptyState, FontSource, IconSource, InteractionState, ListDetail,
+    ListDetailSpec, ListItem, ListTile, ListTileSpec, LoadingIndicator, Msg, NodeId,
+    ProgressIndicator, Radio, RectI, Scaffold, ScrollView, Section, Slider,
+    Switch, TabBarStyle, TabItemSpec, Tabs, TextVariant,
     TextField, TextFieldSpec, Theme, Ui, WidgetContext, column, divider, icon, row, text,
     IconButton, NavigationIconSource, NAV_ICON_BACK, NAV_ICON_BACK_ACTIVE,
 };
@@ -254,6 +255,7 @@ fn color_chip<const N: usize>(
 struct HomePage {
     root: NodeId,
     scroll: ScrollView,
+    tabs: Tabs,
     back: Button,
     tour: Button,
     nav: [Option<ListTile>; 5],
@@ -262,16 +264,22 @@ struct HomePage {
 struct WidgetsPage {
     root: NodeId,
     scroll: ScrollView,
+    tabs: Tabs,
     back: IconButton,
     counter: Button,
     switch: Switch,
     disabled: Button,
     selected: ListItem,
+    checkbox: Checkbox,
+    radio: Radio,
+    slider: Slider,
+    loading: LoadingIndicator,
 }
 
 struct InputPage {
     root: NodeId,
     scroll: ScrollView,
+    tabs: Tabs,
     back: IconButton,
     fields: [TextField; 3],
 }
@@ -279,6 +287,7 @@ struct InputPage {
 struct ListPage {
     root: NodeId,
     scroll: ScrollView,
+    tabs: Tabs,
     back: IconButton,
     detail: Option<ListDetail>,
     items: [Option<ListItem>; 4],
@@ -289,6 +298,7 @@ struct ListPage {
 struct ThemePage {
     root: NodeId,
     scroll: ScrollView,
+    tabs: Tabs,
     back: IconButton,
     cycle: Button,
 }
@@ -296,6 +306,7 @@ struct ThemePage {
 struct SystemPage {
     root: NodeId,
     scroll: ScrollView,
+    tabs: Tabs,
     back: IconButton,
 }
 
@@ -341,6 +352,17 @@ impl Page {
             Self::System(page) => &mut page.scroll,
         }
     }
+
+    fn tabs_selected(&self) -> u8 {
+        match self {
+            Self::Home(page) => page.tabs.selected() as u8,
+            Self::Widgets(page) => page.tabs.selected() as u8,
+            Self::Input(page) => page.tabs.selected() as u8,
+            Self::List(page) => page.tabs.selected() as u8,
+            Self::Theme(page) => page.tabs.selected() as u8,
+            Self::System(page) => page.tabs.selected() as u8,
+        }
+    }
 }
 
 struct App {
@@ -355,6 +377,58 @@ struct App {
     frame_seq: u32,
     safe_top: u32,
     safe_bottom: u32,
+}
+
+const BOTTOM_TAB_ITEMS: [TabItemSpec; 6] = [
+    TabItemSpec { label: b"Home", icon: Some(100) },
+    TabItemSpec { label: b"Widgets", icon: Some(101) },
+    TabItemSpec { label: b"Inputs", icon: Some(102) },
+    TabItemSpec { label: b"Lists", icon: Some(100) },
+    TabItemSpec { label: b"Theme", icon: Some(101) },
+    TabItemSpec { label: b"System", icon: Some(102) },
+];
+
+fn bottom_tab_height(ctx: &WidgetContext) -> u32 {
+    ctx.metrics.effective_px(144)
+}
+
+fn build_bottom_tabs<const N: usize>(
+    ui: &mut Ui<N>,
+    parent: NodeId,
+    ctx: &WidgetContext,
+    kind: u8,
+) -> Tabs {
+    Tabs::new(
+        ui,
+        parent,
+        ctx,
+        TabBarStyle::Bottom,
+        &BOTTOM_TAB_ITEMS,
+        kind as usize,
+    )
+    .unwrap_or_else(|_| berry_room::panic_exit(134))
+}
+
+fn page_body(
+    ui: &mut Ui192,
+    scaffold_body: NodeId,
+    ctx: &WidgetContext,
+    viewport_h: u32,
+    safe_top: u32,
+    safe_bottom: u32,
+    app_bar_h: u32,
+    kind: u8,
+) -> (ScrollView, Tabs) {
+    let body = column(ui, scaffold_body, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
+    let scroll_h = viewport_h
+        .saturating_sub(safe_top)
+        .saturating_sub(app_bar_h)
+        .saturating_sub(safe_bottom)
+        .saturating_sub(bottom_tab_height(ctx));
+    let scroll = ScrollView::new(ui, body, ctx, scroll_h)
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
+    let tabs = build_bottom_tabs(ui, body, ctx, kind);
+    (scroll, tabs)
 }
 
 fn page_title(kind: u8) -> &'static [u8] {
@@ -382,16 +456,16 @@ fn build_home(
     )
     .unwrap_or_else(|_| berry_room::panic_exit(134));
     let (_, viewport_h) = ui.viewport();
-    let scroll = ScrollView::new(
+    let (scroll, tabs) = page_body(
         ui,
         scaffold.body,
         ctx,
-        viewport_h
-            .saturating_sub(safe_top)
-            .saturating_sub(scaffold.app_bar.instance_height(ctx))
-            .saturating_sub(safe_bottom),
-    )
-        .unwrap_or_else(|_| berry_room::panic_exit(134));
+        viewport_h,
+        safe_top,
+        safe_bottom,
+        scaffold.app_bar.instance_height(ctx),
+        PAGE_HOME,
+    );
     let card = Card::new(ui, scroll.content, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
     let stack = column(ui, card.panel, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
 
@@ -474,7 +548,7 @@ fn build_home(
     text(ui, stack, ctx, TextVariant::Body, b"BerryUI + Berry Room + Berry Design")
         .unwrap_or_else(|_| berry_room::panic_exit(134));
 
-    HomePage { root: scaffold.root, scroll, back, tour, nav }
+    HomePage { root: scaffold.root, scroll, tabs, back, tour, nav }
 }
 
 fn build_widgets(
@@ -498,16 +572,16 @@ fn build_widgets(
         .back
         .unwrap_or_else(|| berry_room::panic_exit(134));
     let (_, viewport_h) = ui.viewport();
-    let scroll = ScrollView::new(
+    let (scroll, tabs) = page_body(
         ui,
         scaffold.body,
         ctx,
-        viewport_h
-            .saturating_sub(safe_top)
-            .saturating_sub(scaffold.app_bar.instance_height(ctx))
-            .saturating_sub(safe_bottom),
-    )
-        .unwrap_or_else(|_| berry_room::panic_exit(134));
+        viewport_h,
+        safe_top,
+        safe_bottom,
+        scaffold.app_bar.instance_height(ctx),
+        PAGE_HOME,
+    );
     let card = Card::new(ui, scroll.content, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
     let stack = column(ui, card.panel, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
 
@@ -541,29 +615,27 @@ fn build_widgets(
     )
     .unwrap_or_else(|_| berry_room::panic_exit(134));
 
+    let selection_section = Section::new(ui, stack, ctx, b"Selection and value")
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
+    let selection_row = row(ui, selection_section.content, ctx)
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
+    let checkbox = Checkbox::new(ui, selection_row, ctx, false, false)
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
+    let radio = Radio::new(ui, selection_row, ctx, false, false, b"Berry radio")
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
+    let slider = Slider::new(ui, selection_section.content, ctx, 500, false, b"Brightness")
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
+    let loading = LoadingIndicator::new(ui, selection_section.content, ctx)
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
+    loading
+        .set_phase(ui, ctx, 1)
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
+
     divider(ui, stack, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
     text(ui, stack, ctx, TextVariant::Title, b"Progress")
         .unwrap_or_else(|_| berry_room::panic_exit(134));
-    let track = add_panel(
-        ui,
-        stack,
-        ctx.theme.colors.surface_variant,
-        None,
-        Some(ctx.metrics.spacing(berry_ui::sdk::SpacingToken::S)),
-        0,
-        0,
-        ctx.metrics.radius(berry_ui::sdk::RadiusToken::Small),
-    );
-    let progress_spec = berry_ui::sdk::ViewSpec {
-        kind: berry_ui::sdk::ViewKind::Rect,
-        key: 0,
-        props: berry_ui::sdk::Props::Rect(berry_ui::sdk::RectProps {
-            bg: ctx.theme.colors.success,
-            w: Some(640),
-            h: Some(ctx.metrics.spacing(berry_ui::sdk::SpacingToken::S)),
-        }),
-    };
-    ui.add(track, progress_spec).unwrap_or_else(|_| berry_room::panic_exit(134));
+    let _progress = ProgressIndicator::new(ui, stack, ctx, 984, 640)
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
     text(ui, stack, ctx, TextVariant::Body, b"64% demo progress")
         .unwrap_or_else(|_| berry_room::panic_exit(134));
 
@@ -572,7 +644,7 @@ fn build_widgets(
     icon(ui, icons, ctx, 101).unwrap_or_else(|_| berry_room::panic_exit(134));
     icon(ui, icons, ctx, 102).unwrap_or_else(|_| berry_room::panic_exit(134));
 
-    WidgetsPage { root: scaffold.root, scroll, back: app_back, counter, switch, disabled, selected }
+    WidgetsPage { root: scaffold.root, scroll, tabs, back: app_back, counter, switch, disabled, selected, checkbox, radio, slider, loading }
 }
 
 fn build_input(
@@ -595,16 +667,16 @@ fn build_input(
         .back
         .unwrap_or_else(|| berry_room::panic_exit(134));
     let (_, viewport_h) = ui.viewport();
-    let scroll = ScrollView::new(
+    let (scroll, tabs) = page_body(
         ui,
         scaffold.body,
         ctx,
-        viewport_h
-            .saturating_sub(safe_top)
-            .saturating_sub(scaffold.app_bar.instance_height(ctx))
-            .saturating_sub(safe_bottom),
-    )
-        .unwrap_or_else(|_| berry_room::panic_exit(134));
+        viewport_h,
+        safe_top,
+        safe_bottom,
+        scaffold.app_bar.instance_height(ctx),
+        PAGE_HOME,
+    );
     let card = Card::new(ui, scroll.content, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
     let stack = column(ui, card.panel, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
 
@@ -634,7 +706,7 @@ fn build_input(
     }
     text(ui, stack, ctx, TextVariant::Body, b"Tap a field to focus its caret")
         .unwrap_or_else(|_| berry_room::panic_exit(134));
-    InputPage { root: scaffold.root, scroll, back: app_back, fields }
+    InputPage { root: scaffold.root, scroll, tabs, back: app_back, fields }
 }
 
 fn build_list(
@@ -658,16 +730,16 @@ fn build_list(
         .back
         .unwrap_or_else(|| berry_room::panic_exit(134));
     let (_, viewport_h) = ui.viewport();
-    let scroll = ScrollView::new(
+    let (scroll, tabs) = page_body(
         ui,
         scaffold.body,
         ctx,
-        viewport_h
-            .saturating_sub(safe_top)
-            .saturating_sub(scaffold.app_bar.instance_height(ctx))
-            .saturating_sub(safe_bottom),
-    )
-        .unwrap_or_else(|_| berry_room::panic_exit(134));
+        viewport_h,
+        safe_top,
+        safe_bottom,
+        scaffold.app_bar.instance_height(ctx),
+        PAGE_HOME,
+    );
     let card = Card::new(ui, scroll.content, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
     let stack = column(ui, card.panel, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
 
@@ -679,6 +751,7 @@ fn build_list(
         return ListPage {
             root: scaffold.root,
             scroll,
+            tabs,
             back: app_back,
             detail: None,
             items: [None; 4],
@@ -725,6 +798,7 @@ fn build_list(
     ListPage {
         root: scaffold.root,
         scroll,
+        tabs,
         back: app_back,
         detail: Some(detail),
         items,
@@ -753,16 +827,16 @@ fn build_theme(
         .back
         .unwrap_or_else(|| berry_room::panic_exit(134));
     let (_, viewport_h) = ui.viewport();
-    let scroll = ScrollView::new(
+    let (scroll, tabs) = page_body(
         ui,
         scaffold.body,
         ctx,
-        viewport_h
-            .saturating_sub(safe_top)
-            .saturating_sub(scaffold.app_bar.instance_height(ctx))
-            .saturating_sub(safe_bottom),
-    )
-        .unwrap_or_else(|_| berry_room::panic_exit(134));
+        viewport_h,
+        safe_top,
+        safe_bottom,
+        scaffold.app_bar.instance_height(ctx),
+        PAGE_HOME,
+    );
     let card = Card::new(ui, scroll.content, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
     let stack = column(ui, card.panel, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
 
@@ -806,7 +880,7 @@ fn build_theme(
         .unwrap_or_else(|_| berry_room::panic_exit(134));
     text(ui, stack, ctx, TextVariant::Body, b"Light / dark / high contrast")
         .unwrap_or_else(|_| berry_room::panic_exit(134));
-    ThemePage { root: scaffold.root, scroll, back: app_back, cycle }
+    ThemePage { root: scaffold.root, scroll, tabs, back: app_back, cycle }
 }
 
 fn build_system(
@@ -829,16 +903,16 @@ fn build_system(
         .back
         .unwrap_or_else(|| berry_room::panic_exit(134));
     let (_, viewport_h) = ui.viewport();
-    let scroll = ScrollView::new(
+    let (scroll, tabs) = page_body(
         ui,
         scaffold.body,
         ctx,
-        viewport_h
-            .saturating_sub(safe_top)
-            .saturating_sub(scaffold.app_bar.instance_height(ctx))
-            .saturating_sub(safe_bottom),
-    )
-        .unwrap_or_else(|_| berry_room::panic_exit(134));
+        viewport_h,
+        safe_top,
+        safe_bottom,
+        scaffold.app_bar.instance_height(ctx),
+        PAGE_HOME,
+    );
     let card = Card::new(ui, scroll.content, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
     let stack = column(ui, card.panel, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
 
@@ -886,7 +960,7 @@ fn build_system(
     text(ui, stack, ctx, TextVariant::Body, &frame_label[..n])
         .unwrap_or_else(|_| berry_room::panic_exit(134));
 
-    SystemPage { root: scaffold.root, scroll, back: app_back }
+    SystemPage { root: scaffold.root, scroll, tabs, back: app_back }
 }
 
 fn build_page(
@@ -941,6 +1015,11 @@ fn empty_event() -> PointerEvent {
 
 impl App {
     fn render(&mut self, room: &mut AppRoom) {
+        if let Page::Widgets(page) = &mut self.page {
+            let _ = page
+                .loading
+                .set_phase(&mut self.ui, &self.ctx, self.frame_seq as u8);
+        }
         let mut scratch = [GlyphPos { ch: 0, x: 0, y: 0 }; 192];
         let mut encoder = CommandEncoder::new();
         self.ui.wake(0);
@@ -969,21 +1048,33 @@ impl App {
     fn print_layout(&self, room: &AppRoom) {
         let mut line = Line::new(b"BERRYDEMOLAYOUT ok page=");
         line.push_u32(self.page.kind() as u32);
-        let (back, extra, system) = match &self.page {
+        let (back, extra, system, tab) = match &self.page {
             Page::Home(page) => (
                 page.back.panel,
                 page.nav[0].as_ref().map(|item| item.panel),
                 Some(page.tour.panel),
+                page.tabs.panel,
             ),
-            Page::Widgets(page) => (page.back.panel, Some(page.switch.panel), None),
-            Page::Input(page) => (page.back.panel, Some(page.fields[0].panel), None),
+            Page::Widgets(page) => (
+                page.back.panel,
+                Some(page.switch.panel),
+                None,
+                page.tabs.panel,
+            ),
+            Page::Input(page) => (
+                page.back.panel,
+                Some(page.fields[0].panel),
+                None,
+                page.tabs.panel,
+            ),
             Page::List(page) => (
                 page.back.panel,
                 page.detail.as_ref().map(|detail| detail.row),
                 None,
+                page.tabs.panel,
             ),
-            Page::Theme(page) => (page.back.panel, Some(page.cycle.panel), None),
-            Page::System(page) => (page.back.panel, None, None),
+            Page::Theme(page) => (page.back.panel, Some(page.cycle.panel), None, page.tabs.panel),
+            Page::System(page) => (page.back.panel, None, None, page.tabs.panel),
         };
         line.push(b" back=");
         line.rect(self.ui.bounds(back).unwrap_or_else(|_| berry_room::panic_exit(134)));
@@ -995,6 +1086,8 @@ impl App {
             line.push(b" system=");
             line.rect(self.ui.bounds(node).unwrap_or_else(|_| berry_room::panic_exit(134)));
         }
+        line.push(b" tab=");
+        line.rect(self.ui.bounds(tab).unwrap_or_else(|_| berry_room::panic_exit(134)));
         line.push(b"\n");
         line.print(room);
     }
@@ -1033,6 +1126,33 @@ impl App {
 
     fn deliver_widget(&mut self, message: &Msg) -> bool {
         let mut handled = false;
+        let tab_handled = match &mut self.page {
+            Page::Home(page) => page
+                .tabs
+                .on_msg(&mut self.ui, &self.ctx, message)
+                .unwrap_or_else(|_| berry_room::panic_exit(134)),
+            Page::Widgets(page) => page
+                .tabs
+                .on_msg(&mut self.ui, &self.ctx, message)
+                .unwrap_or_else(|_| berry_room::panic_exit(134)),
+            Page::Input(page) => page
+                .tabs
+                .on_msg(&mut self.ui, &self.ctx, message)
+                .unwrap_or_else(|_| berry_room::panic_exit(134)),
+            Page::List(page) => page
+                .tabs
+                .on_msg(&mut self.ui, &self.ctx, message)
+                .unwrap_or_else(|_| berry_room::panic_exit(134)),
+            Page::Theme(page) => page
+                .tabs
+                .on_msg(&mut self.ui, &self.ctx, message)
+                .unwrap_or_else(|_| berry_room::panic_exit(134)),
+            Page::System(page) => page
+                .tabs
+                .on_msg(&mut self.ui, &self.ctx, message)
+                .unwrap_or_else(|_| berry_room::panic_exit(134)),
+        };
+        handled |= tab_handled;
         match &mut self.page {
             Page::Home(page) => {
                 handled |= page.back.on_msg(&mut self.ui, &self.ctx, message)
@@ -1054,6 +1174,14 @@ impl App {
                 handled |= page.switch.on_msg(&mut self.ui, &self.ctx, message)
                     .unwrap_or_else(|_| berry_room::panic_exit(134));
                 handled |= page.selected.on_msg(&mut self.ui, &self.ctx, message)
+                    .unwrap_or_else(|_| berry_room::panic_exit(134));
+                handled |= page.checkbox.on_msg(&mut self.ui, &self.ctx, message)
+                    .unwrap_or_else(|_| berry_room::panic_exit(134));
+                handled |= page.radio.on_msg(&mut self.ui, &self.ctx, message)
+                    .unwrap_or_else(|_| berry_room::panic_exit(134));
+                let _ = page
+                    .slider
+                    .on_msg(&mut self.ui, &self.ctx, message)
                     .unwrap_or_else(|_| berry_room::panic_exit(134));
             }
             Page::Input(page) => {
@@ -1116,6 +1244,12 @@ impl App {
         let mut action: u8 = 0;
         let mut focused_field: u32 = 0;
         let mut target_page = self.page.kind();
+        let tab_target = self.page.tabs_selected();
+        if tab_target != target_page && tab_target <= PAGE_SYSTEM {
+            hit_line.push(b"tab");
+            target_page = tab_target;
+            action = 2;
+        }
 
         match &mut self.page {
             Page::Home(page) => {
@@ -1157,6 +1291,12 @@ impl App {
                     hit_line.push(b"switch");
                     self.switch_on = page.switch.is_checked();
                     action = 4;
+                } else if page.radio.panel == node || page.radio.dot == node {
+                    hit_line.push(b"radio");
+                    page.radio
+                        .set_checked(&mut self.ui, &self.ctx, true)
+                        .unwrap_or_else(|_| berry_room::panic_exit(134));
+                    action = 10;
                 }
             }
             Page::Input(page) => {

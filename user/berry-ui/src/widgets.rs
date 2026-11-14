@@ -6,8 +6,8 @@
 //! Msg 识别辅助，不承载业务回调。
 
 use crate::desc::{
-    CircleProps, ClipProps, ColProps, IconProps, Msg, NodeId, PanelProps, Props, RectProps, RowProps,
-    TextBuf, TextProps, TextStyle, ViewKind, ViewSpec,
+    CircleProps, ClipProps, ColProps, GridProps, IconProps, Msg, NodeId, PanelProps, Props,
+    RectProps, RowProps, TextBuf, TextProps, TextStyle, ViewKind, ViewSpec,
 };
 use crate::layout::CrossAlign;
 use crate::text_input::{TextInputKind, TextInputState};
@@ -1813,6 +1813,831 @@ impl Switch {
             _ => {}
         }
         Ok(false)
+    }
+}
+
+/// 三方共性选择控件：Checkbox。状态由 app 持有，Click 只翻转视觉与语义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Checkbox {
+    pub panel: NodeId,
+    pub mark: NodeId,
+    checked: bool,
+    disabled: bool,
+    pressed: bool,
+    focused: bool,
+}
+
+impl Checkbox {
+    pub fn new<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, checked: bool,
+        disabled: bool,
+    ) -> Result<Self, UiError> {
+        let size = ctx.spacing(SpacingToken::L);
+        let panel_w = ctx.spacing(SpacingToken::Xl).saturating_mul(2);
+        let panel = add(
+            ui,
+            parent,
+            panel_spec(
+                ctx.theme.colors.surface,
+                Some(panel_w),
+                Some(panel_w),
+                (panel_w.saturating_sub(size)) / 2,
+                0,
+                ctx.metrics.radius(RadiusToken::Small),
+            ),
+        )?;
+        let visual = Self::visual(ctx, checked, disabled, false, false);
+        let mark = add(
+            ui,
+            panel,
+            ViewSpec {
+                kind: ViewKind::Rect,
+                key: 0,
+                props: Props::Rect(RectProps {
+                    bg: if checked { visual.content } else { visual.border },
+                    w: Some(size),
+                    h: Some(size),
+                }),
+            },
+        )?;
+        let label: &[u8] = if checked { b"checked" } else { b"unchecked" };
+        ui.set_a11y(panel, ROLE_TOGGLE, label)?;
+        ui.set_focusable(panel, Some(panel), !disabled)?;
+        ui.set_sem(SemEntry::new(
+            panel,
+            SEM_ACTION_ACTIVATE,
+            (if checked { SEM_STATE_CHECKED } else { 0 })
+                | (if disabled { SEM_STATE_DISABLED } else { 0 }),
+            label,
+            0,
+            0,
+            false,
+        )?)?;
+        Ok(Self {
+            panel,
+            mark,
+            checked,
+            disabled,
+            pressed: false,
+            focused: false,
+        })
+    }
+
+    fn visual(
+        ctx: &WidgetContext, checked: bool, disabled: bool, pressed: bool, focused: bool,
+    ) -> crate::theme::StateColors {
+        let state = if disabled {
+            InteractionState::Disabled
+        } else if pressed {
+            InteractionState::Pressed
+        } else if focused {
+            InteractionState::Focused
+        } else if checked {
+            InteractionState::Selected
+        } else {
+            InteractionState::Normal
+        };
+        ctx.theme.state(state)
+    }
+
+    fn apply<const N: usize>(&self, ui: &mut Ui<N>, ctx: &WidgetContext) -> Result<(), UiError> {
+        let visual = Self::visual(ctx, self.checked, self.disabled, self.pressed, self.focused);
+        if let Some(props) = retained_props(ui, self.panel) {
+            if let Props::Panel(mut p) = props {
+                p.bg = if self.disabled || self.checked {
+                    visual.background
+                } else {
+                    ctx.theme.colors.surface_variant
+                };
+                ui.set_props(self.panel, Props::Panel(p))?;
+            }
+        }
+        if let Some(props) = retained_props(ui, self.mark) {
+            if let Props::Rect(mut p) = props {
+                p.bg = if self.checked { visual.content } else { visual.border };
+                ui.set_props(self.mark, Props::Rect(p))?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn set_checked<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, checked: bool,
+    ) -> Result<(), UiError> {
+        self.checked = checked;
+        ui.set_a11y(
+            self.panel,
+            ROLE_TOGGLE,
+            if checked { b"checked" } else { b"unchecked" },
+        )?;
+        if let Some(mut semantic) = ui.sem_of(self.panel) {
+            semantic.state = (if checked { SEM_STATE_CHECKED } else { 0 })
+                | (if self.disabled { SEM_STATE_DISABLED } else { 0 });
+            ui.set_sem(semantic)?;
+        }
+        self.apply(ui, ctx)
+    }
+
+    pub fn is_checked(&self) -> bool {
+        self.checked
+    }
+
+    pub fn on_msg<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, msg: &Msg,
+    ) -> Result<bool, UiError> {
+        let node = match msg {
+            Msg::Press { node, .. }
+            | Msg::Release { node, .. }
+            | Msg::Cancel { node }
+            | Msg::Click { node }
+            | Msg::FocusIn { node }
+            | Msg::FocusOut { node } => *node,
+            _ => return Ok(false),
+        };
+        if node != self.panel || self.disabled {
+            return Ok(false);
+        }
+        match msg {
+            Msg::Press { .. } => {
+                self.pressed = true;
+                self.apply(ui, ctx)?;
+            }
+            Msg::Release { .. } | Msg::Cancel { .. } => {
+                self.pressed = false;
+                self.apply(ui, ctx)?;
+            }
+            Msg::Click { .. } => {
+                self.pressed = false;
+                self.set_checked(ui, ctx, !self.checked)?;
+                return Ok(true);
+            }
+            Msg::FocusIn { .. } => {
+                self.focused = true;
+                self.apply(ui, ctx)?;
+            }
+            Msg::FocusOut { .. } => {
+                self.focused = false;
+                self.apply(ui, ctx)?;
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+}
+
+/// 三方共性选择控件：单选圆点。单选组状态归 app；本控件只呈现一个选项。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Radio {
+    pub panel: NodeId,
+    pub dot: NodeId,
+    checked: bool,
+    disabled: bool,
+    pressed: bool,
+    focused: bool,
+}
+
+impl Radio {
+    pub fn new<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, checked: bool,
+        disabled: bool, label: &[u8],
+    ) -> Result<Self, UiError> {
+        let outer = ctx.spacing(SpacingToken::L);
+        let dot = outer.saturating_sub(ctx.spacing(SpacingToken::S)).max(1);
+        let panel = add(
+            ui,
+            parent,
+            panel_spec(ctx.theme.colors.surface, Some(outer), Some(outer), 0, 0, outer / 2),
+        )?;
+        let state = if disabled {
+            InteractionState::Disabled
+        } else if checked {
+            InteractionState::Selected
+        } else {
+            InteractionState::Normal
+        };
+        let visual = ctx.theme.state(state);
+        let dot_id = add(
+            ui,
+            panel,
+            ViewSpec {
+                kind: ViewKind::Circle,
+                key: 0,
+                props: Props::Circle(CircleProps {
+                    bg: if checked { visual.content } else { visual.background },
+                    w: Some(dot),
+                    h: Some(dot),
+                }),
+            },
+        )?;
+        ui.set_a11y(panel, ROLE_BUTTON, label)?;
+        ui.set_focusable(panel, Some(panel), !disabled)?;
+        Ok(Self {
+            panel,
+            dot: dot_id,
+            checked,
+            disabled,
+            pressed: false,
+            focused: false,
+        })
+    }
+
+    fn visual(
+        &self,
+        ctx: &WidgetContext,
+    ) -> crate::theme::StateColors {
+        let state = if self.disabled {
+            InteractionState::Disabled
+        } else if self.pressed {
+            InteractionState::Pressed
+        } else if self.focused {
+            InteractionState::Focused
+        } else if self.checked {
+            InteractionState::Selected
+        } else {
+            InteractionState::Normal
+        };
+        ctx.theme.state(state)
+    }
+
+    fn apply<const N: usize>(&self, ui: &mut Ui<N>, ctx: &WidgetContext) -> Result<(), UiError> {
+        let visual = self.visual(ctx);
+        if let Some(props) = retained_props(ui, self.panel) {
+            if let Props::Panel(mut p) = props {
+                p.bg = visual.background;
+                ui.set_props(self.panel, Props::Panel(p))?;
+            }
+        }
+        if let Some(props) = retained_props(ui, self.dot) {
+            if let Props::Circle(mut p) = props {
+                p.bg = if self.checked { visual.content } else { visual.background };
+                ui.set_props(self.dot, Props::Circle(p))?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn set_checked<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, checked: bool,
+    ) -> Result<(), UiError> {
+        self.checked = checked;
+        self.apply(ui, ctx)
+    }
+
+    pub fn is_checked(&self) -> bool {
+        self.checked
+    }
+
+    pub fn on_msg<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, msg: &Msg,
+    ) -> Result<bool, UiError> {
+        let node = match msg {
+            Msg::Press { node, .. }
+            | Msg::Release { node, .. }
+            | Msg::Cancel { node }
+            | Msg::Click { node }
+            | Msg::FocusIn { node }
+            | Msg::FocusOut { node } => *node,
+            _ => return Ok(false),
+        };
+        if node != self.panel && node != self.dot {
+            return Ok(false);
+        }
+        if self.disabled {
+            return Ok(false);
+        }
+        match msg {
+            Msg::Press { .. } => {
+                self.pressed = true;
+                self.apply(ui, ctx)?;
+            }
+            Msg::Release { .. } | Msg::Cancel { .. } => {
+                self.pressed = false;
+                self.apply(ui, ctx)?;
+            }
+            Msg::Click { .. } => {
+                self.pressed = false;
+                self.set_checked(ui, ctx, true)?;
+                return Ok(true);
+            }
+            Msg::FocusIn { .. } => {
+                self.focused = true;
+                self.apply(ui, ctx)?;
+            }
+            Msg::FocusOut { .. } => {
+                self.focused = false;
+                self.apply(ui, ctx)?;
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+}
+
+/// 三方共性值调节控件：Slider。`permille` 为 0..=1000 的 Plain Data 值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Slider {
+    pub panel: NodeId,
+    pub track: NodeId,
+    pub spacer: NodeId,
+    pub thumb: NodeId,
+    permille: u16,
+    disabled: bool,
+}
+
+impl Slider {
+    const PERMILLE_MAX: u16 = 1000;
+
+    pub fn new<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, permille: u16,
+        disabled: bool, label: &[u8],
+    ) -> Result<Self, UiError> {
+        let track_w = ctx.metrics.effective_px(288);
+        let track_h = ctx.metrics.effective_px(8).max(2);
+        let thumb = ctx.spacing(SpacingToken::M);
+        let panel_h = thumb.saturating_add(ctx.spacing(SpacingToken::Xs).saturating_mul(2));
+        let panel = add(
+            ui,
+            parent,
+            panel_spec(
+                if disabled { ctx.theme.state(InteractionState::Disabled).background } else { ctx.theme.colors.surface },
+                Some(track_w),
+                Some(panel_h),
+                0,
+                0,
+                panel_h / 2,
+            ),
+        )?;
+        let track = add(
+            ui,
+            panel,
+            ViewSpec {
+                kind: ViewKind::Row,
+                key: 0,
+                props: Props::Row(RowProps {
+                    gap: 0,
+                    w: Some(track_w),
+                    h: Some(track_h),
+                    cross: CrossAlign::Center,
+                }),
+            },
+        )?;
+        let p = permille.min(Self::PERMILLE_MAX);
+        let leading = (u32::from(p) * track_w.saturating_sub(thumb)) / 1000;
+        let spacer = add(
+            ui,
+            track,
+            ViewSpec {
+                kind: ViewKind::Rect,
+                key: 0,
+                props: Props::Rect(RectProps { bg: ctx.theme.colors.surface, w: Some(leading), h: Some(1) }),
+            },
+        )?;
+        let thumb_id = add(
+            ui,
+            track,
+            ViewSpec {
+                kind: ViewKind::Circle,
+                key: 0,
+                props: Props::Circle(CircleProps {
+                    bg: if disabled { ctx.theme.colors.text_secondary } else { ctx.theme.colors.primary },
+                    w: Some(thumb),
+                    h: Some(thumb),
+                }),
+            },
+        )?;
+        ui.set_a11y(panel, ROLE_BUTTON, label)?;
+        ui.set_focusable(panel, Some(panel), !disabled)?;
+        Ok(Self { panel, track, spacer, thumb: thumb_id, permille: p, disabled })
+    }
+
+    pub fn permille(&self) -> u16 { self.permille }
+
+    pub fn set_permille<const N: usize>(
+        &mut self, ui: &mut Ui<N>, _ctx: &WidgetContext, permille: u16,
+    ) -> Result<(), UiError> {
+        self.permille = permille.min(Self::PERMILLE_MAX);
+        let Some(bounds) = ui.bounds(self.track).ok() else { return Err(UiError::NodeBad) };
+        let Some(props) = retained_props(ui, self.thumb) else { return Err(UiError::NodeBad) };
+        let Props::Circle(circle) = props else { return Err(UiError::NodeBad) };
+        let thumb_w = circle.w.unwrap_or(0);
+        let leading = (u32::from(self.permille)
+            * (bounds.w as u32).saturating_sub(thumb_w))
+            / 1000;
+        if let Some(props) = retained_props(ui, self.spacer) {
+            if let Props::Rect(mut p) = props {
+                p.w = Some(leading);
+                ui.set_props(self.spacer, Props::Rect(p))?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn on_msg<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, msg: &Msg,
+    ) -> Result<(), UiError> {
+        if self.disabled { return Ok(()) }
+        let (node, x) = match msg {
+            Msg::Click { node } | Msg::Press { node, .. } | Msg::Release { node, .. } => (*node, None),
+            Msg::DragMove { node, x, .. } | Msg::DragStart { node, x, .. } => (*node, Some(*x)),
+            _ => return Ok(()),
+        };
+        if node != self.panel && node != self.track && node != self.spacer && node != self.thumb {
+            return Ok(());
+        }
+        if let Some(x) = x {
+            if let Some(bounds) = ui.bounds(self.track).ok() {
+                let x = (x as i64 - bounds.x as i64).clamp(0, bounds.w as i64) as u32;
+                let value = if bounds.w == 0 { 0 } else { x * 1000 / bounds.w as u32 };
+                self.set_permille(ui, ctx, value as u16)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 三方共性进度指示：定量线性进度。值归 app，组件只应用像素状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProgressIndicator {
+    pub panel: NodeId,
+    pub track: NodeId,
+    pub fill: NodeId,
+}
+
+impl ProgressIndicator {
+    pub fn new<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, width: u32,
+        permille: u16,
+    ) -> Result<Self, UiError> {
+        if width == 0 { return Err(UiError::NodeBad) }
+        let height = ctx.metrics.effective_px(12).max(4);
+        let panel = add(ui, parent, panel_spec(ctx.theme.colors.surface, Some(width), Some(height), 0, 0, height / 2))?;
+        let track = add(
+            ui,
+            panel,
+            ViewSpec {
+                kind: ViewKind::Row,
+                key: 0,
+                props: Props::Row(RowProps { gap: 0, w: Some(width), h: Some(height), cross: CrossAlign::Stretch }),
+            },
+        )?;
+        let fill_w = ((width as u64 * u64::from(permille.min(1000)) + 999) / 1000) as u32;
+        let fill = add(
+            ui,
+            track,
+            ViewSpec {
+                kind: ViewKind::Rect,
+                key: 0,
+                props: Props::Rect(RectProps { bg: ctx.theme.colors.primary, w: Some(fill_w.min(width)), h: Some(height) }),
+            },
+        )?;
+        add(
+            ui,
+            track,
+            ViewSpec {
+                kind: ViewKind::Rect,
+                key: 0,
+                props: Props::Rect(RectProps { bg: ctx.theme.colors.surface_variant, w: Some(width.saturating_sub(fill_w.min(width))), h: Some(height) }),
+            },
+        )?;
+        Ok(Self { panel, track, fill })
+    }
+
+    pub fn set_permille<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, permille: u16,
+    ) -> Result<(), UiError> {
+        let p = permille.min(1000);
+        let Some(bounds) = ui.bounds(self.track).ok() else { return Err(UiError::NodeBad) };
+        let fill = ((u64::from(bounds.w as u32) * u64::from(p) + 999) / 1000) as u32;
+        if let Some(props) = retained_props(ui, self.fill) {
+            if let Props::Rect(mut r) = props {
+                r.w = Some(fill.min(bounds.w as u32));
+                ui.set_props(self.fill, Props::Rect(r))?;
+            }
+        }
+        let _ = ctx;
+        Ok(())
+    }
+}
+
+/// 三方共性不定进度：三枚相位点。动画 tick 归 app；本组件提供纯相位应用。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoadingIndicator {
+    pub panel: NodeId,
+    dots: [NodeId; 3],
+}
+
+impl LoadingIndicator {
+    pub fn new<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext,
+    ) -> Result<Self, UiError> {
+        let dot = ctx.spacing(SpacingToken::S).max(4);
+        let gap = ctx.spacing(SpacingToken::Xs);
+        let width = dot.saturating_mul(3).saturating_add(gap.saturating_mul(2));
+        let panel = add(ui, parent, panel_spec(ctx.theme.colors.surface, Some(width), Some(dot), 0, gap, 0))?;
+        let mut dots = [panel; 3];
+        for slot in dots.iter_mut() {
+            *slot = add(
+                ui,
+                panel,
+                ViewSpec {
+                    kind: ViewKind::Circle,
+                    key: 0,
+                    props: Props::Circle(CircleProps { bg: ctx.theme.colors.outline, w: Some(dot), h: Some(dot) }),
+                },
+            )?;
+        }
+        Ok(Self { panel, dots })
+    }
+
+    pub fn set_phase<const N: usize>(
+        &self, ui: &mut Ui<N>, ctx: &WidgetContext, phase: u8,
+    ) -> Result<(), UiError> {
+        for (index, &dot) in self.dots.iter().enumerate() {
+            let active = u8::try_from(index).ok() == Some(phase % 3);
+            let bg = if active { ctx.theme.colors.primary } else { ctx.theme.colors.outline };
+            if let Some(props) = retained_props(ui, dot) {
+                if let Props::Circle(mut p) = props {
+                    p.bg = bg;
+                    ui.set_props(dot, Props::Circle(p))?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Tab/BottomNav 共用条目。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TabItemSpec {
+    pub label: &'static [u8],
+    pub icon: Option<u16>,
+}
+
+pub const TABS_MAX: usize = 6;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabBarStyle { Top, Bottom }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TabHandle {
+    panel: NodeId,
+    icon: Option<NodeId>,
+    label: NodeId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Tabs {
+    pub panel: NodeId,
+    items: [TabHandle; TABS_MAX],
+    count: usize,
+    selected: usize,
+    pressed: Option<usize>,
+    focused: Option<usize>,
+}
+
+impl Tabs {
+    pub fn new<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, style: TabBarStyle,
+        items: &[TabItemSpec], selected: usize,
+    ) -> Result<Self, UiError> {
+        if items.is_empty() || items.len() > TABS_MAX || selected >= items.len() {
+            return Err(UiError::NodeBad);
+        }
+        let (vp_w, _) = ui.viewport();
+        let height = match style {
+            TabBarStyle::Top => ctx.metrics.effective_px(96),
+            TabBarStyle::Bottom => ctx.metrics.effective_px(144),
+        };
+        let panel = add(ui, parent, panel_spec(ctx.theme.colors.surface, Some(vp_w), Some(height), 0, 0, 0))?;
+        let row = add(
+            ui,
+            panel,
+            ViewSpec {
+                kind: ViewKind::Row,
+                key: 0,
+                props: Props::Row(RowProps { gap: 0, w: Some(vp_w), h: Some(height), cross: CrossAlign::Center }),
+            },
+        )?;
+        let cell = vp_w / items.len() as u32;
+        let mut handles = [{ let n = NodeId(0); (n, None, n) }; TABS_MAX];
+        for (index, item) in items.iter().enumerate() {
+            let state = if index == selected {
+                ctx.theme.state(InteractionState::Selected)
+            } else {
+                ctx.theme.state(InteractionState::Normal)
+            };
+            let tab = add(
+                ui,
+                row,
+                panel_spec(state.background, Some(cell), Some(height), 0, 0, 0),
+            )?;
+            let mut icon_node = None;
+            if let Some(icon) = item.icon {
+                icon_node = Some(
+                    add(
+                        ui,
+                        tab,
+                        ViewSpec {
+                            kind: ViewKind::Icon,
+                            key: 0,
+                            props: Props::Icon(crate::desc::IconProps { id: icon, fg: state.content, w: Some(ctx.metrics.effective_px(48)), h: Some(ctx.metrics.effective_px(48)) }),
+                        },
+                    )?,
+                );
+            }
+            let label = add(ui, tab, text_spec(item.label, state.content, ctx.metrics.typography(TypographyToken::Caption))?)?;
+            ui.set_a11y(tab, ROLE_BUTTON, item.label)?;
+            ui.set_focusable(tab, Some(tab), true)?;
+            handles[index] = (tab, icon_node, label);
+        }
+        Ok(Self {
+            panel,
+            items: handles.map(|(panel, icon, label)| TabHandle { panel, icon, label }),
+            count: items.len(),
+            selected,
+            pressed: None,
+            focused: None,
+        })
+    }
+
+    pub fn selected(&self) -> usize { self.selected }
+
+    pub fn item_panel(&self, index: usize) -> Result<NodeId, UiError> {
+        self.items.get(index).map(|item| item.panel).ok_or(UiError::NodeBad)
+    }
+
+    fn state_for(&self, index: usize) -> InteractionState {
+        if self.pressed == Some(index) {
+            InteractionState::Pressed
+        } else if self.focused == Some(index) {
+            InteractionState::Focused
+        } else if index == self.selected {
+            InteractionState::Selected
+        } else {
+            InteractionState::Normal
+        }
+    }
+
+    fn apply_item<const N: usize>(
+        &self, ui: &mut Ui<N>, ctx: &WidgetContext, index: usize,
+    ) -> Result<(), UiError> {
+        let visual = ctx.theme.state(self.state_for(index));
+        let item = self.items.get(index).ok_or(UiError::NodeBad)?;
+        if let Some(props) = retained_props(ui, item.panel) {
+            if let Props::Panel(mut p) = props {
+                p.bg = visual.background;
+                ui.set_props(item.panel, Props::Panel(p))?;
+            }
+        }
+        if let Some(icon) = item.icon {
+            if let Some(props) = retained_props(ui, icon) {
+                if let Props::Icon(mut p) = props {
+                    p.fg = visual.content;
+                    ui.set_props(icon, Props::Icon(p))?;
+                }
+            }
+        }
+        if let Some(props) = retained_props(ui, item.label) {
+            if let Props::Text(mut p) = props {
+                p.style.fg = visual.content;
+                ui.set_props(item.label, Props::Text(p))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn index_of(&self, node: NodeId) -> Option<usize> {
+        self.items.iter().take(self.count).position(|item| {
+            node == item.panel
+                || node == item.label
+                || item.icon.is_some_and(|icon| node == icon)
+        })
+    }
+
+    pub fn set_selected<const N: usize>(
+        &mut self, ui: &mut Ui<N>, _ctx: &WidgetContext, selected: usize,
+    ) -> Result<(), UiError> {
+        if selected >= self.count {
+            return Err(UiError::NodeBad);
+        }
+        self.selected = selected;
+        for index in 0..self.count {
+            self.apply_item(ui, _ctx, index)?;
+        }
+        Ok(())
+    }
+
+    pub fn on_msg<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, msg: &Msg,
+    ) -> Result<bool, UiError> {
+        let node = match msg {
+            Msg::Press { node, .. }
+            | Msg::Release { node, .. }
+            | Msg::Cancel { node }
+            | Msg::Click { node }
+            | Msg::FocusIn { node }
+            | Msg::FocusOut { node } => *node,
+            _ => return Ok(false),
+        };
+        let Some(index) = self.index_of(node) else {
+            return Ok(false);
+        };
+        match msg {
+            Msg::Press { .. } => {
+                self.pressed = Some(index);
+                self.apply_item(ui, ctx, index)?;
+            }
+            Msg::Release { .. } | Msg::Cancel { .. } => {
+                self.pressed = None;
+                self.apply_item(ui, ctx, index)?;
+            }
+            Msg::Click { .. } => {
+                self.pressed = None;
+                self.set_selected(ui, ctx, index)?;
+                return Ok(true);
+            }
+            Msg::FocusIn { .. } => {
+                self.focused = Some(index);
+                self.apply_item(ui, ctx, index)?;
+            }
+            Msg::FocusOut { .. } => {
+                self.focused = None;
+                self.apply_item(ui, ctx, index)?;
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+}
+
+
+/// 分组列表容器：标题 + 内容。三端 List Section/Form Section 的共同语义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Section {
+    pub panel: NodeId,
+    pub header: NodeId,
+    pub content: NodeId,
+}
+
+impl Section {
+    pub fn new<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, title: &[u8],
+    ) -> Result<Self, UiError> {
+        let pad = ctx.spacing(SpacingToken::M);
+        let panel = add(ui, parent, panel_spec(ctx.theme.colors.surface, None, None, pad, ctx.spacing(SpacingToken::S), ctx.metrics.radius(RadiusToken::Medium)))?;
+        let header = add(ui, panel, text_spec(title, ctx.theme.colors.text_secondary, ctx.metrics.typography(TypographyToken::Caption))?)?;
+        let content = add(
+            ui,
+            panel,
+            ViewSpec {
+                kind: ViewKind::Col,
+                key: 0,
+                props: Props::Col(ColProps { gap: ctx.spacing(SpacingToken::Xs), w: None, h: None, cross: CrossAlign::Stretch }),
+            },
+        )?;
+        Ok(Self { panel, header, content })
+    }
+}
+
+/// Berry 断点与 safe area 的 Plain Data 汇聚。来源必须仍归 Berry Room；
+/// 本结构只消除 Scaffold/应用侧的散参数口径。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SafeInsets {
+    pub left: u32,
+    pub top: u32,
+    pub right: u32,
+    pub bottom: u32,
+    pub ime: u32,
+}
+
+/// 现有 GridProps 的薄包装：构造时执法非零行列，返回 content 供 app 摆格。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Grid {
+    pub content: NodeId,
+}
+
+impl Grid {
+    pub fn new<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, cols: u8, rows: u8, gap: u32,
+    ) -> Result<Self, UiError> {
+        if cols == 0 || rows == 0 { return Err(UiError::NodeBad) }
+        let content = add(
+            ui,
+            parent,
+            ViewSpec {
+                kind: ViewKind::Grid,
+                key: 0,
+                props: Props::Grid(GridProps {
+                    cols,
+                    rows,
+                    gap,
+                    cross: CrossAlign::Center,
+                    w: None,
+                    h: None,
+                }),
+            },
+        )?;
+        Ok(Self { content })
     }
 }
 

@@ -93,3 +93,4 @@ Curia strict / docs_guard
 - 不在 app 内伪造状态栏、底部导航或 safe area。
 - 不用宿主截图、timer 动画或插值补系统壳状态。
 - 不把 SYSTEM 保留窗当作 app 可见内容区；其像素与输入语义归 launcher。
+- 应用内底栏是 BerryUI `Tabs` 的 app 内容，位于 safe_bottom 之上；它不替代 SYSTEM BACK/HOME/TASK 三键，也不得请求系统栏能力。Berry Demo 六页已持久使用该底栏。

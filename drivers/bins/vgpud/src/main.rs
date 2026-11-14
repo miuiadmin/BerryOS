@@ -1511,8 +1511,9 @@ impl PresentSrv {
             self.w as usize,
             self.h as usize,
         ) {
-            let bottom = (l.bar_y + l.bar_h).min(self.h as usize);
-            let y = l.bar_y.min(bottom);
+            let top = l.bar_y.saturating_sub(2);
+            let bottom = (l.bar_y + l.bar_h + 2).min(self.h as usize);
+            let y = top.min(bottom);
             vio::gpu::GpuRect {
                 x: 0,
                 y: y as u32,

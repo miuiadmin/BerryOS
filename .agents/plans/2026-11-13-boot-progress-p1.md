@@ -1,7 +1,7 @@
 # BerryBoot Boot Progress P1
 Type: plan
 Status: done
-Updated: 2026-11-13
+Updated: 2026-11-15
 
 一句话说明：为 1080×1920 Mac 模拟器建立真实 0→100% 启动进度框架，并在 BerryBoot ramfb 首屏与 vgpud 主显示之间传递系统阶段真值。
 
@@ -20,7 +20,7 @@ Updated: 2026-11-13
 
 ## 结果
 
-现行规格见 [BerryBoot-BootProgress-P1-v1.0.md](../../docs/BerryBoot-BootProgress-P1-v1.0.md)。产品实测已有 1080×1920 0%、滚动中与 100% ramfb 首屏，以及 vgpu 70% 进度与 LAUNCH 后桌面替换。
+现行规格见 [BerryBoot-BootProgress-P1-v1.1.md](../../docs/BerryBoot-BootProgress-P1-v1.1.md)。产品实测已有 1080×1920 0%、滚动中与满进度 ramfb 首屏，以及 vgpu 70% 进度与 LAUNCH 后桌面替换。
 
 ## 未完成事项
 

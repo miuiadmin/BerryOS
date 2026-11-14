@@ -264,6 +264,14 @@ pub fn spawn_image(
         cmd.arg("-fw_cfg")
             .arg(format!("name=opt/berry/display,string={mode}"));
     }
+    // Optional boot presentation mode. `verbose` is the Linux/macOS-style
+    // command-line boot face; absence keeps the BerryOS capsule animation.
+    if let Ok(mode) = std::env::var("BERRY_BOOTMODE") {
+        if mode.eq_ignore_ascii_case("verbose") || mode.eq_ignore_ascii_case("graphical") {
+            cmd.arg("-fw_cfg")
+                .arg(format!("name=opt/berry/bootmode,string={mode}"));
+        }
+    }
     log_stdio(&mut cmd, log)?;
     cmd.spawn().map_err(|e| {
         BerryError::device(format!("spawn qemu: {e}")).with_hint("check BERRY_QEMU / PATH")

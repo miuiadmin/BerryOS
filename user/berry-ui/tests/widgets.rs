@@ -10,7 +10,8 @@ use berry_gfx::queue::Queue;
 use berry_ui::sdk::{
     column, divider, icon, row, text, Button, Card, EmptyState, InteractionState, ListTile,
     ListTileSpec, ListItem, Msg, NavigationIconSource, NAV_ICON_BACK, NAV_ICON_BACK_ACTIVE,
-    PanelProps, Props, RectProps, RectI, Scaffold, ScrollView,
+    Checkbox, Grid, LoadingIndicator, ProgressIndicator, Radio, Section, Slider, TabBarStyle,
+    TabItemSpec, Tabs, PanelProps, Props, RectProps, RectI, Scaffold, ScrollView,
     Switch, TextVariant, Theme, Ui, UiError, ViewKind, ViewSpec, WidgetContext,
 };
 
@@ -253,6 +254,118 @@ fn app_bar_back_is_real_48dp_touch_target() {
         )),
         "AppBar back must paint the shared 72×72 navigation glyph"
     );
+}
+
+#[test]
+fn tri_platform_selection_progress_and_tab_controls() {
+    let mut ui = Ui::<256>::new(1080, 1920);
+    let context = ctx(1080, 1920);
+    let root = ui.root();
+
+    let mut checkbox = Checkbox::new(&mut ui, root, &context, false, false).unwrap();
+    ui.layout();
+    let checkbox_bounds = ui.bounds(checkbox.panel).unwrap();
+    assert!(checkbox_bounds.w >= 48 && checkbox_bounds.w <= 72);
+    assert!(!checkbox.on_msg(
+        &mut ui,
+        &context,
+        &Msg::Press { node: checkbox.panel, x: 1, y: 1 }
+    ).unwrap());
+    assert!(!checkbox.on_msg(
+        &mut ui,
+        &context,
+        &Msg::Release { node: checkbox.panel, x: 1, y: 1 }
+    ).unwrap());
+    assert!(checkbox.on_msg(
+        &mut ui,
+        &context,
+        &Msg::Click { node: checkbox.panel }
+    ).unwrap());
+    assert!(checkbox.is_checked());
+
+    let mut radio = Radio::new(&mut ui, root, &context, true, false, b"Berry").unwrap();
+    ui.layout();
+    assert!(radio.is_checked());
+    assert!(ui.bounds(radio.dot).unwrap().w > 0);
+    assert!(radio
+        .on_msg(
+            &mut ui,
+            &context,
+            &Msg::Press { node: radio.panel, x: 1, y: 1 },
+        )
+        .is_ok());
+
+    let mut slider = Slider::new(&mut ui, root, &context, 0, false, b"Brightness").unwrap();
+    ui.layout();
+    assert_eq!(slider.permille(), 0);
+    slider
+        .set_permille(&mut ui, &context, 500)
+        .unwrap();
+    ui.layout();
+    let track = ui.bounds(slider.track).unwrap();
+    let thumb = ui.bounds(slider.thumb).unwrap();
+    assert_eq!(track.w, 216);
+    assert!(thumb.x >= track.x && thumb.x <= track.x + track.w);
+
+    let mut progress = ProgressIndicator::new(&mut ui, root, &context, 300, 250).unwrap();
+    ui.layout();
+    assert_eq!(ui.bounds(progress.fill).unwrap().w, 75);
+
+    let loading = LoadingIndicator::new(&mut ui, root, &context).unwrap();
+    loading.set_phase(&mut ui, &context, 1).unwrap();
+    ui.layout();
+    let loading_bounds = ui.bounds(loading.panel).unwrap();
+    assert!(loading_bounds.w >= 24 && loading_bounds.w <= 72);
+
+    let items = [
+        TabItemSpec { label: b"Home", icon: None },
+        TabItemSpec { label: b"Apps", icon: None },
+        TabItemSpec { label: b"Settings", icon: None },
+    ];
+    let mut tabs = Tabs::new(
+        &mut ui,
+        root,
+        &context,
+        TabBarStyle::Bottom,
+        &items,
+        0,
+    )
+    .unwrap();
+    ui.layout();
+    assert_eq!(tabs.selected(), 0);
+    for index in 0..items.len() {
+        let bounds = ui.bounds(tabs.item_panel(index).unwrap()).unwrap();
+        assert_eq!(bounds.w, 360, "tab {index} cell width");
+        assert_eq!(bounds.x, 360 * index as i32, "tab {index} x");
+    }
+    let second_tab = tabs.item_panel(1).unwrap();
+    assert!(!tabs
+        .on_msg(
+            &mut ui,
+            &context,
+            &Msg::Press { node: second_tab, x: 540, y: 1740 },
+        )
+        .unwrap());
+    assert!(!tabs
+        .on_msg(
+            &mut ui,
+            &context,
+            &Msg::Release { node: second_tab, x: 540, y: 1740 },
+        )
+        .unwrap());
+    assert!(tabs
+        .on_msg(&mut ui, &context, &Msg::Click { node: second_tab })
+        .unwrap());
+    assert_eq!(tabs.selected(), 1);
+
+    let section = Section::new(&mut ui, root, &context, b"Network").unwrap();
+    ui.layout();
+    assert!(ui.bounds(section.header).unwrap().h > 0);
+    assert!(ui.bounds(section.content).unwrap().h >= 0);
+
+    assert!(Grid::new(&mut ui, root, 0, 2, 4).is_err());
+    let grid = Grid::new(&mut ui, root, 3, 2, 4).unwrap();
+    assert!(ui.bounds(grid.content).unwrap().w >= 0);
 }
 
 #[test]
