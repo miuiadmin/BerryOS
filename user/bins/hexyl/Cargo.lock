@@ -60,7 +60,7 @@ checksum = "c042108f3ed77fd83760a5fd79b53be043192bb3b9dba91d8c574c0ada7850c8"
 
 [[package]]
 name = "berry-fsclient"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "berry-fsproto",
  "berry-netdproto",
@@ -69,11 +69,11 @@ dependencies = [
 
 [[package]]
 name = "berry-fsproto"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "berry-libc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "berry-fsclient",
  "berry-lifecycle",
@@ -87,31 +87,31 @@ dependencies = [
 
 [[package]]
 name = "berry-lifecycle"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "berry-mmap"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "berry-netdproto"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "berry-signal"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "berry-strmem"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "berry-sys"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "berry-tls"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "bitflags"
