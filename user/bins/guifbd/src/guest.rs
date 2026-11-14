@@ -74,11 +74,20 @@
 //!    → CREATE_2D → ATTACH_BACKING → SET_SCANOUT——纯面提交序钉板）；资源
 //!    backing = **fb 窗同一物理段**（RamDxe AllocatePages 连续 DRAM——
 //!    blit/蜂格/Fbcon 写路径零改动，ramfb 与 vgpu 双设备同屏一致）；
-//!    帧提交 = 全帧 TRANSFER_TO_HOST_2D + RESOURCE_FLUSH（v1 全帧起步，
-//!    per-rect 同构 Linux `virtgpu_plane.c` 挂 v2——如实注）；传输 =
-//!    berry-virtio split ring + INDIRECT 描述符（QEMU 侧 `indirect_desc`
+//!    传输 = berry-virtio split ring + INDIRECT 描述符（QEMU 侧 `indirect_desc`
 //!    默认 on，S1 §2.1）——控制队列命令/响应同步对（QEMU 2D 全命令即答，
 //!    used ring 收割即背压，02 号 §3.1）。
+//! 4. **v2（per-rect flush + 异步发车——12 号 §4.3 排刀）**：帧提交从
+//!    「全帧对 × cmd_sync 同步等」升格为 [`Vgpu::submit_frame`] 批形——
+//!    SUBMIT damage 矩形集（wire 已在席，v1 收到即弃的接线收口）裁剪后
+//!    逐矩形 TRANSFER_TO_HOST_2D（offset = y×stride+x×4）+ 单 FLUSH 包络
+//!    （协议 FLUSH 恰一矩形、无 N-rect 数组形——Linux `virtgpu_plane.c`
+//!    包络同构；合并挂 v3）；全帧形保留为回退路径（console 路 Fbcon 零
+//!    脏区上报/init 首推/SUBMIT FULL）。发车/回执拆分：发车 = publish
+//!    全批 + 单次门铃不等回执；回执 = [`Vgpu::reap`] 下帧发车前收（2-deep
+//!    ——上帧设备处理与本帧 CPU 工作重叠；FLUSH 头置 FLAG_FENCE，QEMU 2D
+//!    即答路径回执回显 fence_id 作批身份正向锚）。ramfb 红线零漂移：全部
+//!    改动在 vgpu 分支内。
 
 use berry_exec::{FB_VA, VIRTIO_MMIO_SLOTS, VIRTIO_MMIO_STRIDE, VIRTIO_MMIO_VA};
 use berry_fbcon::font::{self, GLYPH_H};
@@ -98,9 +107,14 @@ use berry_sys::{
 use berry_gpuproto as vgp;
 use berry_virtio as vio;
 use guifbd::{
-    attach_entry, backend_from_handoff, chain_put, frame_flush_cmds, Backend, ChainEnt, CHAIN_MAX,
-    CMD_OFF, DMA_BUF_OFF, DMA_RING_OFF, IND_OFF, RESP_CAP, RESP_OFF,
+    attach_entry, backend_from_handoff, batch_resps_ok, chain_put, frame_flush_batch,
+    rects_clip_into, Backend, ChainEnt, CHAIN_MAX, ACMD_OFF, ACMD_SZ, AIND_OFF, ARESP_OFF, CMD_OFF,
+    DMA_BUF_OFF, DMA_RING_OFF, FLUSH_RECT_MAX, FRAME_CMD_MAX, IND_OFF, RESP_CAP, RESP_OFF,
 };
+
+/// 批矩形帽互钉：lib 批形状常量 = wire damage 帽（两 crate 均冻结——值
+/// 漂移即编译炸响，防线在编译期非运行期）。
+const _: () = assert!(gp::DAMAGE_MAX == FLUSH_RECT_MAX);
 
 // 链接种子（fsmgr 同款）：rlib/LTO 按需保留——无引用则 berry-libc 的 crt0
 // （含 `_start`）不进链接；`#[used]` 防死码消除。
@@ -444,9 +458,10 @@ impl<'a> Srv<'a> {
         let s = String::from_utf8_lossy(&msg[..nb]);
         if !self.gui {
             self.con.put_str(&s, CON_FG, CON_BG);
-            // B1-b：vgpu 帧提交钩子（全帧 v1——ramfb 相 None 恒短路零开销）。
+            // B1-b：vgpu 帧提交钩子（v2 全帧异步——console 路 Fbcon 零脏区
+            // 上报保持全帧形；ramfb 相 None 恒短路零开销）。
             if let Some(v) = self.vgpu.as_mut() {
-                v.flush_full();
+                v.submit_full();
             }
         }
         // FULL 纯记账：每条消息语义 = 一次 submit(FULL) 走同一呈现谱系
@@ -651,10 +666,12 @@ impl<'a> Srv<'a> {
                 }
             }
         }
-        // B1-b：vgpu 帧提交钩子——blit 落 fb 后、抽样前（设备侧上传与 px()
-        // 抽样对拍独立；ramfb 相 None 恒短路零开销）。
+        // B1-b/v2：vgpu 帧提交钩子——blit 落 fb 后、抽样前（设备侧上传与
+        // px() 抽样对拍独立；v2 per-rect：SUBMIT 矩形集直通设备上传——
+        // v1 收到矩形但 flush_full 丢弃的接线收口。ramfb 相 None 恒短路
+        // 零开销）。
         if let Some(v) = self.vgpu.as_mut() {
-            v.flush_full();
+            v.submit_frame(full, rects, rect_count);
         }
         // ② 抽样对拍（交叉核验强于复算期望——§7-⑤）：SAMPLE_N 点全落
         // damage 并集内（第 i 点取 rects[i%K]——A5-b），px() 读回 vs
@@ -904,6 +921,15 @@ static mut VIO_CMD: [u8; 64] = [0; 64];
 static mut VIO_RESP: [u8; RESP_CAP] = [0; RESP_CAP];
 /// 间接描述符表暂存（CHAIN_MAX×16B）。
 static mut VIO_IND: [u8; CHAIN_MAX * vio::DESC_SZ] = [0; CHAIN_MAX * vio::DESC_SZ];
+/// v2 批命令暂存（FRAME_CMD_MAX×ACMD_SZ——编帧在 statics，落 DMA 前的
+/// staging；与设备处理上帧重叠 = 2-deep 流水的 CPU 半）。
+static mut VIO_ACMD: [u8; FRAME_CMD_MAX * ACMD_SZ] = [0; FRAME_CMD_MAX * ACMD_SZ];
+/// v2 批间接表暂存（每命令 2 entry × 16B）。
+static mut VIO_AIND: [u8; FRAME_CMD_MAX * 2 * vio::DESC_SZ] =
+    [0; FRAME_CMD_MAX * 2 * vio::DESC_SZ];
+/// v2 回执桶读回暂存（每命令 24B）。
+static mut VIO_ARESP: [u8; FRAME_CMD_MAX * vgp::RESP_OK_NODATA_SZ] =
+    [0; FRAME_CMD_MAX * vgp::RESP_OK_NODATA_SZ];
 
 /// 占用槽寄存器基（u32 字指针——偏移一律 `/4` 进字单位，vblk 同款）。
 fn vio_regs(slot: usize) -> *mut u32 {
@@ -1042,6 +1068,20 @@ struct Vgpu {
     /// 停刷位：一次提交通道失败即置——fb 窗同段 ramfb 扫描保屏活（坏设备
     /// 不得杀呈现链），后续提交短路。
     dead: bool,
+    /// v2 异步面：已发布命令总数（自由运行 u16，与 used.idx 同口径环绕
+    /// 对齐——reap 的期望值源）。init 四命令经 cmd_sync 逐条抬入。
+    published: u16,
+    /// 在途批命令数（0 = 闲——reap 短路；发车前必先收上一批 = DMA 缓冲
+    /// 复用的正确性序）。
+    pending: u16,
+    /// 在途批 fence id（FLUSH 回执回显对拍锚——0 = 无在途）。
+    pending_fence: u64,
+    /// fence 单调源（1 起）。
+    fence_seq: u64,
+    /// v2 一次性串口观测位：per-rect 首批发车 / async 首次回收（证据面零
+    /// 常态噪声——per-frame 打点会经 console 管道自激成环，立法禁入）。
+    log_rects: bool,
+    log_reap: bool,
 }
 
 impl Vgpu {
@@ -1080,6 +1120,9 @@ impl Vgpu {
             vio::publish(ring, &self.dma.lay, 0)?;
             old.wrapping_add(1)
         };
+        // v2 记账：单命令发布入总数（reap 的 used.idx 对齐期望——cmd_sync
+        // 自身仍同步等完，pending 恒不加）。
+        self.published = self.published.wrapping_add(1);
         if berry_vmo_write(self.dma.vmo, ring.as_ptr(), DMA_RING_OFF, 4096) != 0 {
             return None;
         }
@@ -1131,29 +1174,237 @@ impl Vgpu {
         vgp::parse_resp(&resp[..full])
     }
 
-    /// 帧提交对（全帧 v1——lib `frame_flush_cmds` 提交序钉板：TRANSFER 先
-    /// FLUSH 后）。一次通道失败 → 单行诊断 + 停刷（`dead`——fb 窗同段
-    /// ramfb 扫描保屏活，服务不死）。
-    fn flush_full(&mut self) {
+    /// v2 停刷出口（通道死——单行诊断 + dead；fb 窗同段 ramfb 扫描保屏活，
+    /// 服务不死，v1 `dead` 语义延承）。返回 false 供发车路径短路。
+    fn die(&mut self, why: &str) -> bool {
+        self.dead = true;
+        self.pending = 0; // 停刷后不再回收（缓冲不再复用）
+        eprintln!("guifbd: vgpu 提交通道停刷（{}）", why);
+        false
+    }
+
+    /// v2 回收（发车/回执拆分的回执半——「响应桶延迟消费」）：等 used.idx
+    /// 追平 published（10s 帽 1ms 步进，v1 cmd_sync 同参）→ 中断 ACK →
+    /// 响应桶单次读回（pending×24B）→ 逐命令 OK + 末命令（FLUSH）fence
+    /// 回显校验。QEMU 2D 控制队列 BH 单轮吃全批（`virtio_gpu_handle_ctrl`
+    /// while-pop），发车到回执 = 一个 BH 往返——**正常态下帧间 CPU 工作
+    /// （blit/编帧/应答）已把等待摊薄到零**（12 号 §4.3 爆点的拆法）。
+    /// fence 机制定谳：QEMU 2D 即答路径不挂起（fence 位只回显 fence_id 进
+    /// 回执——`virtio_gpu_ctrl_response`），即发即收、无第二时间轴。
+    fn reap(&mut self) -> bool {
+        if self.pending == 0 {
+            return true; // 闲态短路（init 后首帧/停刷后）
+        }
+        let t0 = now_ns();
+        let mut now = 0u64;
+        if berry_clock_read(CLOCK_MONOTONIC, &mut now) != 0 {
+            return self.die("v2 clock");
+        }
+        let deadline = now + VIO_POLL_CAP_NS;
+        loop {
+            let mut u = [0u8; 2];
+            if berry_vmo_read(
+                self.dma.vmo,
+                u.as_mut_ptr(),
+                DMA_RING_OFF + self.dma.lay.used_off as u64 + 2,
+                2,
+            ) != 0
+            {
+                return self.die("v2 used 读回");
+            }
+            if u16::from_le_bytes(u) == self.published {
+                break;
+            }
+            if berry_clock_read(CLOCK_MONOTONIC, &mut now) != 0 || now >= deadline {
+                return self.die("v2 reap 超时");
+            }
+            if berry_thread_sleep(now + VIO_POLL_STEP_NS) != 0 {
+                return self.die("v2 reap sleep");
+            }
+        }
+        // 整洁面：中断状态确认（poll 模型 ACK 清之——vblk/v1 同款；批单次）。
+        let isr = vio_rd(self.regs, vio::mmio::INT_STATUS);
+        if isr != 0 {
+            vio_wr(self.regs, vio::mmio::INT_ACK, isr);
+        }
+        // 响应桶延迟消费：单次读回 + 逐命令校验（错误族/缺 fence 回显 → 停刷）。
+        let n = self.pending as usize;
+        // SAFETY: 单线程独占窗（模块头 statics 注）。
+        let resp: &mut [u8; FRAME_CMD_MAX * vgp::RESP_OK_NODATA_SZ] =
+            unsafe { &mut *core::ptr::addr_of_mut!(VIO_ARESP) };
+        if berry_vmo_read(
+            self.dma.vmo,
+            resp.as_mut_ptr(),
+            DMA_BUF_OFF + ARESP_OFF,
+            n * vgp::RESP_OK_NODATA_SZ,
+        ) != 0
+        {
+            return self.die("v2 回执桶读回");
+        }
+        if !batch_resps_ok(&resp[..], n, self.pending_fence) {
+            return self.die("v2 回执校验");
+        }
+        // 一次性观测行：async 首次回收的实等时长（爆点拆除效果的直接读数
+        // ——正常态 ≈0：设备在帧间已完成）。
+        if !self.log_reap {
+            self.log_reap = true;
+            let wait = now_ns().wrapping_sub(t0);
+            println!("VGPU2 reap ns={} k={}", wait, n);
+        }
+        self.pending = 0;
+        true
+    }
+
+    /// v2 帧提交（per-rect + 异步发车——12 号 §4.3 模型）：
+    ///
+    /// - **矩形集**：full → 单全帧矩形（v1 等形回退路径——SUBMIT FULL/
+    ///   console/init 首推共用；console 路 Fbcon 光标私有零脏区上报，v2
+    ///   保持全帧形但获异步化收益——真 console per-rect 挂 v3，前置 =
+    ///   berry-fbcon 脏区面）；K>0 → K×TRANSFER（逐矩形，offset =
+    ///   y×stride+x×4）+ 1×FLUSH（包络——协议 FLUSH 单矩形无 N-rect 数组
+    ///   形，Linux `virtgpu_plane.c` 包络同构；合并挂 v3）。
+    /// - **发车不等回执**：编帧（statics）→ 回收上帧 → 构链落 DMA →
+    ///   publish 全批 → **单次门铃** → 返回。CPU 编帧与设备处理上帧重叠
+    ///   （2-deep：上一帧回执在本帧发车前收——爆点拆出单帧外）。
+    /// - **背压定谳（如实注）**：单帧在途 ≤ FRAME_CMD_MAX=9 ≤ qsize=16，
+    ///   发车前必先 reap——virtqueue 满**结构不可达**，无需同步退化档；
+    ///   更深流水线（多帧在途+缓冲池+信用记账）挂 v3。
+    /// - 全矩形界外（裁剪空集）= blit 零写入 → 零提交（「无 damage 不
+    ///   提交」的设备侧同构执法）。
+    fn submit_frame(&mut self, full: bool, rects: &[gp::Rect], rect_count: usize) {
         if self.dead {
             return;
         }
-        let mut seq = [0u8; 128];
-        let Some((n_t, n_f)) = frame_flush_cmds(&mut seq, self.w, self.h, VIO_RES) else {
-            self.dead = true;
-            eprintln!("guifbd: vgpu flush 编帧失败");
+        // ① gp→vgp 矩形换面（full = 单全帧矩形）。
+        let mut vr = [vgp::Rect::new(0, 0, 0, 0); FLUSH_RECT_MAX];
+        let n_src = if full {
+            vr[0] = vgp::Rect::new(0, 0, self.w, self.h);
+            1
+        } else {
+            let k = rect_count.min(FLUSH_RECT_MAX);
+            for i in 0..k {
+                vr[i] = vgp::Rect::new(rects[i].x, rects[i].y, rects[i].w, rects[i].h);
+            }
+            k
+        };
+        // ② 裁剪 + 包络（guest blit 路同构交域语义）。
+        let mut cl = [vgp::Rect::new(0, 0, 0, 0); FLUSH_RECT_MAX];
+        let Some((kept, env)) = rects_clip_into(&mut cl, &vr[..n_src], self.w, self.h) else {
+            self.die("v2 裁剪超容"); // 理论不可达（wire 帽 ≤ DAMAGE_MAX 互钉）
             return;
         };
-        // SAFETY: 单线程独占窗（模块头 statics 注）。
-        let cmd: &mut [u8; 64] = unsafe { &mut *core::ptr::addr_of_mut!(VIO_CMD) };
-        cmd[..n_t].copy_from_slice(&seq[..n_t]);
-        let ok_t = matches!(self.cmd_sync(n_t), Some(vgp::Resp::OkNodata(_)));
-        cmd[..n_f].copy_from_slice(&seq[n_t..n_t + n_f]);
-        let ok_f = matches!(self.cmd_sync(n_f), Some(vgp::Resp::OkNodata(_)));
-        if !ok_t || !ok_f {
-            self.dead = true;
-            eprintln!("guifbd: vgpu 提交通道停刷（t={} f={}）", ok_t, ok_f);
+        if kept == 0 {
+            return; // 全界外：blit 零写入——无 damage 不提交
         }
+        // ③ 编帧批（statics——与设备处理上帧重叠）。
+        let fence = self.fence_seq.wrapping_add(1);
+        // SAFETY: 单线程独占窗（模块头 statics 注）。
+        let cmds: &mut [u8; FRAME_CMD_MAX * ACMD_SZ] =
+            unsafe { &mut *core::ptr::addr_of_mut!(VIO_ACMD) };
+        let Some(n) = frame_flush_batch(cmds, VIO_RES, self.w, self.h, &cl[..kept], &env, fence)
+        else {
+            self.die("v2 批编帧");
+            return;
+        };
+        // ④ 回收上帧回执（发车前——DMA 缓冲复用的正确性序）。
+        if !self.reap() {
+            return;
+        }
+        // ⑤ 构链：每命令间接链 [cmd_i | resp_i]（resp 24B 设备写槽 = 桶位）。
+        let ind: &mut [u8; FRAME_CMD_MAX * 2 * vio::DESC_SZ] =
+            unsafe { &mut *core::ptr::addr_of_mut!(VIO_AIND) };
+        for i in 0..n {
+            // 槽 i < n-1 = TRANSFER（56B）；末槽 = FLUSH（48B）。
+            let cmd_len = if i + 1 < n {
+                vgp::CMD_TRANSFER_TO_HOST_2D_SZ
+            } else {
+                vgp::CMD_RESOURCE_FLUSH_SZ
+            };
+            let ents = [
+                ChainEnt {
+                    addr: self.dma.buf_pa + ACMD_OFF + (i as u64) * ACMD_SZ as u64,
+                    len: cmd_len as u32,
+                    write: false,
+                },
+                ChainEnt {
+                    addr: self.dma.buf_pa + ARESP_OFF + (i as u64) * vgp::RESP_OK_NODATA_SZ as u64,
+                    len: vgp::RESP_OK_NODATA_SZ as u32,
+                    write: true,
+                },
+            ];
+            if chain_put(&mut ind[i * 2 * vio::DESC_SZ..(i + 1) * 2 * vio::DESC_SZ], &ents)
+                .is_none()
+            {
+                self.die("v2 构链");
+                return;
+            }
+        }
+        // ⑥ 落 DMA（两写——v1 每命令三写 × n 命令 → 批恒两写）。
+        if berry_vmo_write(
+            self.dma.vmo,
+            cmds.as_ptr(),
+            DMA_BUF_OFF + ACMD_OFF,
+            n * ACMD_SZ,
+        ) != 0
+            || berry_vmo_write(
+                self.dma.vmo,
+                ind.as_ptr(),
+                DMA_BUF_OFF + AIND_OFF,
+                n * 2 * vio::DESC_SZ,
+            ) != 0
+        {
+            self.die("v2 DMA 写");
+            return;
+        }
+        // ⑦ ring：desc[i] = INDIRECT 头（指本命令表）→ publish 全批 → 整
+        // ring 页单写 → dmb → **单次门铃**（QEMU ctrl BH 一轮吃全批）。
+        let ring: &mut [u8; 4096] = unsafe { &mut *core::ptr::addr_of_mut!(VIO_RING) };
+        for i in 0..n {
+            if vio::put_desc(
+                ring,
+                &self.dma.lay,
+                i,
+                self.dma.buf_pa + AIND_OFF + (i as u64) * (2 * vio::DESC_SZ) as u64,
+                (2 * vio::DESC_SZ) as u32,
+                vio::DESC_F_INDIRECT,
+                0,
+            )
+            .is_none()
+                || vio::publish(ring, &self.dma.lay, i as u16).is_none()
+            {
+                self.die("v2 ring 构表");
+                return;
+            }
+        }
+        self.published = self.published.wrapping_add(n as u16);
+        if berry_vmo_write(self.dma.vmo, ring.as_ptr(), DMA_RING_OFF, 4096) != 0 {
+            self.die("v2 ring 写");
+            return;
+        }
+        // SAFETY: 纯屏障指令（vblk/v1 同款——Normal 写 → Device 门铃写排序）。
+        unsafe { core::arch::asm!("dmb ish") };
+        vio_wr(self.regs, vio::mmio::Q_NOTIFY, VIO_CTRLQ);
+        self.pending = n as u16;
+        self.pending_fence = fence;
+        self.fence_seq = fence;
+        // 一次性观测行：per-rect 首用（K + 包络脏区率 r‰——12 号 §4 r 模型
+        // 的串口读数源；per-frame 打点自激成环，立法一次性）。
+        if !full && !self.log_rects {
+            self.log_rects = true;
+            let env_area = env.width as u64 * env.height as u64;
+            let full_area = self.w as u64 * self.h as u64;
+            let permille = env_area * 1000 / full_area.max(1);
+            println!(
+                "VGPU2 rect k={} env={}x{}+{}+{} r={}\u{2030}",
+                kept, env.width, env.height, env.x, env.y, permille
+            );
+        }
+    }
+
+    /// v2 全帧形入口（console 路 / init 首推 / SUBMIT FULL——v1 `flush_full`
+    /// 的异步化等形）。
+    fn submit_full(&mut self) {
+        self.submit_frame(true, &[], 0);
     }
 }
 
@@ -1190,7 +1441,19 @@ fn vio_init(w: usize, h: usize, stride: usize, fmt_raw: u32, fb_pa: u64) -> Opti
         vio::mmio::STATUS,
         vio::ST_ACKNOWLEDGE | vio::ST_DRIVER | vio::ST_FEATURES_OK | vio::ST_DRIVER_OK,
     );
-    let mut v = Vgpu { regs, dma, w: w as u32, h: h as u32, dead: false };
+    let mut v = Vgpu {
+        regs,
+        dma,
+        w: w as u32,
+        h: h as u32,
+        dead: false,
+        published: 0,
+        pending: 0,
+        pending_fence: 0,
+        fence_seq: 0,
+        log_rects: false,
+        log_reap: false,
+    };
     let cmd: &mut [u8; 64] = unsafe { &mut *core::ptr::addr_of_mut!(VIO_CMD) };
     // ① GET_DISPLAY_INFO（带载荷响应——传输往返首验；pmode[0] 只记日志
     // 不执法：v1 几何随 fbinfo（GOP 基线同款），分辨率动态面挂 v2）。
@@ -1353,7 +1616,7 @@ pub(crate) fn main() {
     // 即首推一帧（自验三步的屏面上 gpu console）。
     let vgpu = match backend {
         Backend::Vgpu => vio_init(w, h, stride, fmt_raw, fb_pa as u64).map(|mut v| {
-            v.flush_full();
+            v.submit_full();
             v
         }),
         Backend::Ramfb => None,
