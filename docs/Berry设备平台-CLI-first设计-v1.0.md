@@ -1,8 +1,14 @@
 # Berry 设备平台（CLI-first）设计
 
-> 版本：**1.0**（v1.0）｜2026-11-06
+> 版本：**1.6**（v1.6）｜2026-11-14
 
 > 【状态】2026-11-04 立稿；ADR #62 追记。**本文 = 产品形态 / CLI / 控制面 / 窗口快捷栏 / 刀序的单一事实源。**
+> 【v1.1】2026-11-13：VNC 桌面全套已落——`berry vnc` 四动词、`--vnc/--vnc-ws/--vnc-pass` 三入口旗标、控制面 `vnc`/`vnc_passwd` op（§7/§8/§13/§14/§15 同步）。
+> 【v1.2】2026-11-13：VNC 成熟化第二波已落——noVNC 网页桌面（`vnc web`/`vnc certs`）、TLS/VeNCrypt（`--vnc-tls`）、客户端连接事件审计、口令到期（§7/§8/§13/§14/§15 同步）。
+> 【v1.3】2026-11-13：VNC 分发收尾已落——三平台包内 web 资产与许可随包（§12）、`vnc web --max-conns` 连接上限（§8/§14 同步）。
+> 【v1.4】2026-11-14：VNC 彻底完善已落——`vnc check` 过 VeNCrypt（rustls TLS 客户端，`--ca`/`--insecure`）、`vnc web` TLS run 自动 https 页 + wss 终止代理（§8）；P2 三修（passwd_warn 审计事件/连接 30s 总预算/vncpass 孤儿清扫）（§8/§13）；Linux 分发链实机产物（§12/§14/§15 同步）。
+> 【v1.5】2026-11-14：VNC 六波收尾已落——第三方许可通知单源 `packaging/THIRD-PARTY-NOTICES.txt` 三平台随包（§12）、`vnc check --ws` 浏览器通路自检（§8）、`--tls` 明文 run https 页分支修复（§8/§13/§14/§15 同步）。
+> 【v1.6】2026-11-14：VNC 第九波已落——`vnc web` 默认页换 BerryOS 自有壳页（自动重连/工具栏/移动端）+ `--open`（§8/§14 同步）。
 > 【关系】`berry设备壳设计草案-v1.0.md` 降为**显示/帧面/QEMU/客机侧子系统**；两文冲突时以本文为准。
 > 【一句话】一个 `berry` 二进制，三种角色：CLI client / GUI client / session host；
 > CLI 是主接口，GUI 是同一控制面的客户端，QEMU 只是引擎子进程。
@@ -246,6 +252,7 @@ Created → Starting → Running ⇄ Paused → Rebooting/Stopping → Exited
 - Windows / `BERRY_CONTROL_TCP=1`：`127.0.0.1:<port>` + 随机 token；写
   `control.port`/`control.token`（token 0600）；每个请求带 token，服务端校验。
 - 默认只接受本机；不开公网；C3 远程必须显式 `--listen` + token/证书。
+- 对外 VNC 端点（`--vnc`，TCP/ws，v1.1）不属控制面：只是 RFB 数据面，`control.sock`/token 不随 VNC 暴露。
 
 ### 7.2 帧格式
 
@@ -292,6 +299,8 @@ NDJSON：一行一个 JSON 对象。
 | `logs` | `tail?` | `lines` | 串口尾 |
 | `stats` | — | `state/profile/memory_mib/qemu_pid/started` | 会话统计 |
 | `events` | `tail?` | `lines` | events.jsonl 尾 |
+| `vnc` | — | `enabled,listen,uri,ws_uri,auth,has_password,clients`；v1.2 增 `bind`（回显真实绑定地址，uri/ws_uri 改用可拨地址）与 `tls`（`{enabled,dir,vencrypt}`，取 QMP `query-vnc-servers`） | 对外 VNC 端点状态（v1.1）；未暴露 `enabled:false`；clients 走 QMP `query-vnc-servers` |
+| `vnc_passwd` | `password` 或 `generate:true`；v1.2 增 `expire:<seconds\|never>`（与 `password`/`generate` 互斥） | `generated,password`；v1.2 expire 形态回 `expire` 原串 | 轮换/到期口令（v1.1/v1.2）；QMP `set_password`/`expire_password` 注入，需端点启动即认证；事件不记口令值；轮换不断开已连客户端（QEMU vnc 强制 keep），到期策略 QMP 不可查、不进 status |
 | `stop` | — | — | 结束 session |
 
 ### 7.4 错误码
@@ -318,14 +327,14 @@ NDJSON：一行一个 JSON 对象。
 berry [--json] [--verbose] <command>     # --run 是会话类子命令参数，非全局
 
 device
-  start [--image] [--profile] [--foreground] [--memory] [--accel] [--display-mode] [--keep] [--restart-on-crash] [--json]
+  start [--image] [--profile] [--foreground] [--memory] [--accel] [--display-mode] [--keep] [--restart-on-crash] [--vnc <spec>] [--vnc-ws <on|off|port>] [--vnc-pass <pw>] [--vnc-tls <dir>] [--json]
   list [--json]
   status [--run] [--json]
   stop [--run] [--json]
   restart [--run] [--json]
   cleanup [--run] [--all] [--json]
 
-shell [--attach <id>] [--profile] [--scale] [--timeout]
+shell [--attach <id>] [--profile] [--scale] [--timeout] [--vnc <spec>] [--vnc-ws <on|off|port>] [--vnc-pass <pw>] [--vnc-tls <dir>]
 run [--kernel|--image] [--marker] [--timeout]
 
 screenshot [--run] [--out] [--settle-ms] [--json]
@@ -342,8 +351,16 @@ display list|set <profile|WxH> [--restart] [--run] [--json]
 
 shortcut screenshot|resolution|reboot|power [--run] [--json]
 
+vnc status [--run] [--json]           # 对外端点：listen/uri/bind/tls/auth/clients
+vnc passwd [--run] [--set <pw>|--generate|--expire <seconds|never>]   # 轮换/到期口令（默认 generate；需启动即认证）
+vnc check [--run] [--password <pw>] [--ca <dir>] [--insecure]   # 完整 RFB 自检：认证握手 + 取一帧（缺省读 vnc.pass；TLS 端点过 VeNCrypt——证书目录缺省从 run 推得，--ca 覆盖，--insecure 跳校验且与 --ca 互斥）
+vnc check --ws [--run] [--password <pw>] [--ca <dir>] [--insecure]   # 浏览器通路自检：ws/wss Upgrade + RFB 握手到 ServerInit（报尺寸与 auth；TLS run 的 ws 口自动按 wss 拨）
+vnc open [--run]                      # macOS 调 open vnc://…；其他平台打印 URI 与指引
+vnc web [--run] [--port N] [--max-conns N] [--tls <dir>] [--open]   # 本地服务 BerryOS 自有网页桌面壳页（默认自动挑口、127.0.0.1、前台阻塞；并发页连接上限默认 16，超限 503；TLS run 自动 https 页 + wss 终止代理，--tls 显式指定证书目录；--open macOS 打印后自动开浏览器——URL 剥口令 fragment）
+vnc certs <dir>                       # 生成自签 x509 证书集（openssl 子进程，出 SHA256 指纹）
+
 logs [--run] [-f] [--tail N] [--json]
-events [--run] [--json]
+events [--run] [--tail N] [-f] [--filter <substr>] [--json]
 record [--run] --out <dir> --frames N --interval-ms MS [--apng file] [--json]
 play <file.json> [--run] [--json]     # 步骤：screenshot/tap/key/text/swipe/wait/power/display/expect
 stats [--run] [--json]
@@ -361,6 +378,14 @@ version
 **C1g 已落 host 自动重启**：`device start --restart-on-crash`，QEMU 异常退出后在
 同一 run/control 路径原地重启（rebooting→running；CLI 重连；attach 窗口在 control
 恢复后自动重连 VNC；旧 control/VNC 短断）。C1g 剩余：Windows 实机验证/打包。
+**VNC 桌面全套已落（v1.1）**：`--vnc <off|on|<port>|<host>:<port>>` 布到 `device start`/`host`（隐藏命令）/`shell` 三入口（env `BERRY_VNC` 兜底）；对外端点是 QEMU 第二个 `-vnc` TCP 服务，与内部 `vnc.sock` 并存（内部面零改动），`--vnc-ws` 开 websocket（noVNC 通路）、`--vnc-pass` 显式口令；环回绑定默认无口令，非环回强制口令（默认自动生成随机 8 字符，run 目录 `vnc.pass` 0600，无免口令逃生门）；口令经 QMP `set_password` 注入，不进 argv/日志；重启链（restart/`--restart-on-crash`/`display set --restart`）保持同端口同口令。任何标准 VNC 客户端（macOS 屏幕共享、TigerVNC、RealVNC、noVNC）可直连看画面、发输入。
+**VNC 成熟化第二波已落（v1.2）**：`--vnc-tls <dir>`（三入口，env `BERRY_VNC_TLS` 兜底）加 TLS/VeNCrypt x509（与口令组合 = x509-vnc；`vnc certs` 经 openssl 子进程出自签证书集）；`vnc web` 本地服务 vendored noVNC 页面，URL 带 `path=<ws_uri>` 让浏览器直连 QEMU ws 端口（berry 不代理 RFB 字节，口令走 URL fragment 不出浏览器）；QMP 事件泵把 VNC_CONNECTED/INITIALIZED/DISCONNECTED 落 `events.jsonl`（`events --filter vnc.` 可过滤）；`vnc passwd --expire <seconds|never>` 到期口令（轮换不断开已连客户端——QEMU 强制 keep）；健壮性：`0.0.0.0`/`::` 绑定时 uri 用可拨地址 + `bind` 回显真实绑定，自动端口撞竞态换口重试一次、固定端口响亮报错。
+**VNC 分发收尾已落（v1.3）**：三平台包内 web 资产与许可文件随包（.app `Contents/Resources/web/`、AppDir `usr/share/berry/web/`、Windows 包根 `web/`——双击态 `vnc web` 零仓库依赖）；`vnc web --max-conns N` 限页面服务并发连接（默认 16、值域 1..=1024、非法退出码 2；超限 503 拒绝不崩、名额回收，绑定仍仅 127.0.0.1）。
+**VNC 彻底完善已落（v1.4）**：`vnc check` TLS 路径（VeNCrypt 状态机 + rustls：明文 RFB → security type 19 → VeNCrypt 0.2 → 子类型 X509Vnc 261 优先/X509None 260 兜底 → TLS 握手 → TLS 内 DES/None 认证；证书目录缺省从 run meta 推得、`--ca` 显式覆盖、`--insecure` 显式逃生门且与 `--ca` 互斥，明文端点静默忽略二者）；`vnc web` 对 TLS run 自动起 https 页（rustls 服务端）+ 本地 wss 终止代理（两侧 TLS 终止后纯字节管道连 QEMU ws——berry 代理 RFB 字节的唯一场景，动机 = Chrome 对 QEMU gnutls 恒发客户端证书请求的 wss 直连静默弃连；明文 run 仍零代理），URL 形态 `host+port+encrypt=true+path=(空)+resize=off`（noVNC 1.7.0 的 `path=<wss URL>` 形态不成立）；P2 三修——`vnc passwd` 轮换后 expire 复位失败落 `vnc.passwd_warn` 审计事件（错误摘要不含口令材料）、页面服务每连接 30s 总预算（慢滴客户端超时断开释放槽；wss 代理长连接不受此限）、`vncpass-*` 一次性口令文件写前清扫 1h 龄孤儿；Linux 分发链实机产物（musl 静态 ELF/AppDir/tarball/AppImage + 容器冒烟，Windows 交叉产物容器构建，见 §12）。
+
+**VNC 六波收尾已落（v1.5）**：`vnc check --ws` 浏览器通路自检——对 run 的 websocket 端点完成 std 手写 RFC 6455 Upgrade 握手（`Sec-WebSocket-Accept` SHA-1 复核）与 masked 帧编解码（client 帧必 mask，QEMU close 1002 硬执法；server 帧按字节流读），复用 TCP 路径同一 `handshake_auth` 状态机走到 ServerInit 报尺寸与 auth（深度与 noVNC 报「已连接」一致，不拉帧；判据用 RFB 语义而非 `vnc.connected` 事件——后者 TCP accept 即发）；TLS run 的 ws 口自动按 wss 拨（rustls 包住后帧层同一，RFB 内无 VeNCrypt 层），证书目录/`--ca`/`--insecure` 语义与 TCP TLS 路径共用同一配置函数。`vnc web --tls <dir>` 施于明文 run 的 https 页分支修复：原 `path=ws://…` 形态失败根因是 vendored noVNC 1.7.0 `app/ui.js` 对 `path=` 形态无条件强改 scheme 为 wss（绝对 `ws://` URL 同改，Chrome 随即对明文口做 TLS 握手即死）——非混合内容拦截；改 host/port/`encrypt=false&path=`（在场空值）形态后 Chrome loopback 豁免实测 3/3 命中；`vnc web` 明文模式文本输出加一行 `check --ws` hint。第三方许可通知单源化见 §12。
+
+**VNC 网页桌面产品化已落（v1.6）**：`vnc web` 默认页从裸 vendored noVNC 升级为本仓自有 Apache-2.0 壳页（`web/index.html`+`berry.js`+`berry.css`，仅 import vendored `novnc/core/` 三模块、零 CDN/零新依赖）——状态栏（品牌/会话名/连接态含加密标注/分辨率）+ 工具栏五键（全屏/缩放三态/只读/软键盘/断开-重连）+ 断线自动重连（指数退避 1s 起帽 30s、秒级倒计时；口令错终止转错误态弹窗重输）+ 唤醒锁（connected 申请、可见性恢复重申请、缺失静默降级）+ 深色主题与 ≤700px 移动紧凑档；URL 三形态（明文 `path=`、`--tls` 明文 run `host/port/encrypt=false`、TLS run `host/port/encrypt=true`）由新页自消费，`#password=` fragment 读后即抹（仅内存、不进 localStorage/日志），`resize`/`view_only=1` 给初值；原 noVNC 页保留为 `/novnc/vnc.html` 逃生门（vendored 零改动），裸 `/vnc.html` 旧形态退役 404。`--open`：macOS 打印 URL 后 `open`（剥口令 fragment，口令不进一次性 argv），非 macOS/失败打指引行不视为错，JSON 增 `"opened"` 键。QR 砍项：服务端与 QEMU ws 均 loopback，手机扫码是死路；重启条件=LAN 绑定模式立项。
 
 ### 8.2 语义
 
@@ -527,6 +552,9 @@ enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
 | Linux | AppImage + `.desktop` | `Terminal=false`；QEMU 由发行版/包提供 |
 
 - **单二进制**；镜像/固件/QEMU 走 Runtime Pack 或外部安装。
+- 许可随包（v1.3）：vendored noVNC web 资产连同 `NOTICE.md` 与上游 `novnc/LICENSE.txt`/`AUTHORS`/`vendor/pako/LICENSE` 完整进包（.app `Contents/Resources/web/`、AppDir `usr/share/berry/web/`、Windows 包根 `web/`），包内 `vnc web` 零仓库依赖。
+- 第三方许可通知单源（v1.5）：静态链入 berry 二进制的组件（rustls 系 6 项 + subtle BSD-3-Clause 点名 + noVNC 指向 `web/NOTICE.md` 的指引）登记在 `tools/berry/packaging/THIRD-PARTY-NOTICES.txt` 单一事实源，三平台脚本从单源拷贝——Linux AppDir `usr/share/berry/`、macOS `.app` `Contents/Resources/`、Windows 包根（berry.exe 旁），tarball/zip 整目录打包自动随行；改内容只改单源，三平台产物与单源的 sha256 同一性由打包冒烟对拍验收，`check-appdir.sh` 查在场与关键行。
+- Linux/Windows 分发链实机化（v1.4）：Linux `build-linux-binary.sh`（aarch64 musl 静态 ELF，host 工具侧）→ `build-appdir.sh` → `check-appdir.sh`（0 fail 门）→ `build-tarball.sh` 全链产物落 `out/`；docker 可用时追加 AppImage 与 Windows 交叉包（PE32+ 双 exe + 目录包/zip）；容器冒烟（alpine + qemu 真机架）实测通过——上限是容器，裸机安装/桌面集成/真机 Windows 未验。
 - `BERRY_HOME`：`~/.berry` / `%LOCALAPPDATA%\BerryOS`；run dir 0700。
 - 版本：`berry --version`、manifest 哈希、QEMU 版本进 `meta.json`。
 - 不进主仓：QEMU 二进制、GPL 代码；Runtime Pack 单独分发。
@@ -542,6 +570,8 @@ enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
 | CLI 参数注入 | argv 数组直传；不拼 shell |
 | token 泄漏 | 不进 argv/日志；文件 0600；可轮换 |
 | 远程滥用 | v1 不监听公网；C3 显式 opt-in + TLS/token |
+| 对外 VNC 暴露（`--vnc`，v1.1） | 非环回绑定强制口令（默认自动生成随机 8 字符，`vnc.pass` 0600；环回默认无口令，`--vnc-pass` 显式开）；口令经 QMP `set_password` 注入，不进 argv/日志/错误信息；经典 DES 认证强度有限，仅开发/内网，公网不在支持范围；控制面（control.sock/token）不随 VNC 暴露 |
+| 对外 VNC 通道加密（`--vnc-tls`，v1.2/v1.4） | VeNCrypt x509（QEMU `tls-creds-x509`，端到端到客户端，与口令组合为 x509-vnc）；证书集经 `berry vnc certs` 用 openssl 子进程自签生成（私钥 0600，指纹回显），证书目录不是秘密可进 argv；`vnc check` 内置 rustls TLS 客户端过 VeNCrypt（v1.4）——证书校验默认严格（按证书目录 `ca-cert.pem` 验链 + SAN），`--insecure` 是显式逃生门（stderr 一次性警告：连接对中间人开放），错 CA 响亮报 `UnknownIssuer`（rc=7）；TLS run 的网页桌面经 berry https 页 + wss 终止代理（rustls 两侧终止后纯字节管道，berry 代理 RFB 字节的唯一场景）；RealVNC 与 macOS 屏幕共享无 VeNCrypt 能力，GUI 验证用 TigerVNC |
 | 截图/输入越权 | 只操作本机 session；无全局设备发现 |
 
 ---
@@ -567,6 +597,12 @@ enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
 | **C2g（已落）** | 先起新 host 再停旧（失败旧 host 不动）；旧 run 按 keep 清理；tooltip 保持 | 新 host 失败不伤旧；keep=false 旧 run 删除 |
 | **C2h（已落）** | attach 新 host 失败保留旧 host；VNC 重连失败按旧 profile 回滚重连；stale 提示 cleanup | 失败不丢旧会话；rollback 可恢复 |
 | **C2i（下一刀）** | 快捷键提示扩展；Windows 实机验证 | 交互/平台收口 |
+| **VNC（已落，v1.1）** | 对外 VNC 暴露：QEMU 第二个 `-vnc` TCP 服务 + `--vnc-ws` websocket + 口令策略（非环回强制）；`berry vnc status/passwd/check/open`；控制面 `vnc`/`vnc_passwd` op | `berry vnc check` 完整 RFB 自检取帧 1080×1920；noVNC ws 通路（HTTP 101 + RFB 3.8）；杀 QEMU 重生同端口同口令；冒烟产物 `out/vnc-smoke-desktop.png` |
+| **VNC 成熟化（已落，v1.2）** | noVNC 网页桌面（`vnc web`，vendored 1.7.0 静态页直连 QEMU ws，无代理）+ `vnc certs`（openssl 自签证书集）；TLS/VeNCrypt（`--vnc-tls`，与口令组合 x509-vnc）；连接事件审计（events.jsonl 三事件 + `events --filter`）；口令到期（`passwd --expire`）；端口竞态重试与可拨 uri/bind 回显 | Chrome headless 截图与客机帧缓冲调色板同构（`out/vnc-w2-novnc-browser.png`）；TLS 1.3 + 链验证 + TLS 内 DES（STARTTLS 探针）；RealVNC 真客户端完整三事件生命周期（`out/vnc-w2-realvnc-frame.png`）；`cargo test` 55 绿 |
+| **VNC 分发（已落，v1.3）** | 三平台打包带 web 资产 + 许可随包（.app Resources/AppDir `usr/share/berry/web`/Windows 包根，`rm -rf`+`cp -R` 幂等）；`vnc web --max-conns` 连接上限（默认 16、超限 503 不崩、名额回收） | 打包态端到端：`.app` 二进制零仓库依赖起机 desktop 档，`vnc web` 资产根解析到包内 `Resources/web`（三重实证），Chrome 截图与桌面调色板同构（`out/vnc-w3-packaged-browser.png`）；`--max-conns` 503/回收/rc=2 实证；58 单测绿 |
+| **VNC 彻底完善（已落，v1.4）** | `vnc check` TLS 路径（VeNCrypt 状态机 + rustls，`--ca`/`--insecure`，not-supported 短路删除）；`vnc web` TLS run 自动 https 页 + wss 终止代理（`--tls`）；P2 三修（passwd_warn 审计事件/页面连接 30s 总预算/vncpass 孤儿 1h 清扫）；Linux 分发链实机产物（musl ELF/AppDir/tarball/AppImage + 容器冒烟，Windows 交叉产物容器构建） | `vnc check` TLS 三路 rc=0（自动推目录/`--ca`/`--insecure`+警告）、错 CA rc=7 `UnknownIssuer`、`--ca`+`--insecure` 互斥 rc=2、明文端点零回归；Chrome headless（`--ignore-certificate-errors`）DOM「已连接（已加密）到QEMU」+ 截图画布像素与 `berry screenshot` 地面真值逐项吻合（`out/vnc-w5-tls-browser.png`）；慢滴客户端占槽 30s 整断开、新客 200；陈旧孤儿清/新件保；AppDir 33 检 0 fail；83 单测绿 + `just berry-vnc-tls-smoke` |
+| **VNC 六波收尾（已落，v1.5）** | 第三方许可通知单源 `packaging/THIRD-PARTY-NOTICES.txt` 三平台随包（Linux AppDir/macOS .app/Windows 包根，`check-appdir.sh` 在场+关键行门）；`vnc check --ws` 浏览器通路自检（std 手写 ws 帧层 + `handshake_auth` 复用，wss 复用 rustls）；`vnc web --tls` 明文 run 分支修复（host/port/`encrypt=false` 形态，ui.js scheme 强改怪癖绕开）；`vnc web` 明文模式 hint 行 | 明文 run `check --ws` rc=0 报 `ws://` uri + 480x1000 + `auth vnc`、错口令 rc=7、无 ws 口 rc=3、`--ca`+`--insecure` rc=2；TLS run wss 三路 rc=0（自动推目录/`--ca`/`--insecure`+警告）；TCP 路径输出零回归（两支 just 冒烟绿）；`--tls` 明文分支 Chrome headless DOM「已连接（未加密）到QEMU」3/3 + 截图 `out/vnc-w6-tls-plaintext-run.png`；三平台包内通知 sha256 与单源同一；96 单测绿 |
+| **VNC 网页桌面产品化（已落，v1.6）** | `vnc web` 默认页换 BerryOS 自有壳页（`web/index.html`+`berry.js`+`berry.css`，仅 import vendored `novnc/core/` 三模块；状态栏/工具栏五键/自动重连指数退避/唤醒锁/深色/≤700px 移动档；`#password=` fragment 读后即抹；URL 三形态自消费）；`web.rs` 双树路由（`/` 自有页、`/novnc/` 逃生门、双哨兵）；`--open`（macOS `open` 剥 fragment、JSON `opened` 键、他平台指引不误报）；QR 砍项（loopback 死路，重启条件=LAN 绑定立项） | 三形态 Chrome headless `berry-connected` 全过（含 `--ignore-certificate-errors` 两形态）；逃生门 `/novnc/vnc.html` 直访回归；断流重启终态回连 + 死端点重连态倒计时；390x844 紧凑档两向断言 + 截图 `out/vnc-w9-*`；口令 run 去 fragment 凭据弹窗兜底；100 单测绿 + `just berry-build`/三冒烟/check-appdir 0 fail |
 | **C3（部分已落）** | `record`/`play`/`stats` 已落；`--wait`、时间轴回放、多设备未落 | 一条脚本完成「起→看→点→看→重启→关」；回放可复现 |
 | **C4** | Runtime Pack；远程（显式）；录屏；插件后端 | 无 QEMU 机器可一键装 pack；远端 TLS/token；录屏可回放 |
 
@@ -585,8 +621,12 @@ enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
 | 无 `list/status/stop` | RunStore + control | **C1a/C1b 已落**（shell/headless） |
 | 无 `power/display` | QMP broker + profile 重启 | **power C1a 已落**；display set --restart C2c 已落；RES C2d |
 | 只有键盘快捷键 | 原生快捷栏 + action 表 | **C2a 已落**（4 键）；**C2b 已落**（确认/shortcut/events/display 记录）；C2c 补 RES/应用 |
+| 桌面只有 berry 自己能看能点 | 任何标准 VNC 客户端直连（macOS 屏幕共享/TigerVNC/RealVNC/noVNC） | **VNC 已落（v1.1）**：`--vnc` 对外端点 + `berry vnc` 四动词；内部面与控制面不随暴露 |
+| 看桌面要先装 VNC 客户端 | 浏览器零安装直连（noVNC 网页桌面） | **v1.2 已落**：`vnc web` 发带参页面，浏览器直连 QEMU ws 端口，berry 不代理；**v1.6 产品化**：默认页换自有壳页（状态栏/工具栏五键/自动重连/移动端），vendored 页留 `/novnc/vnc.html` 逃生门，`--open` macOS 自动开浏览器 |
+| VNC 通道明文（DES 仅认证） | TLS/VeNCrypt 加密 + 认证组合 | **v1.2 已落**：`--vnc-tls`（x509-vnc）+ `vnc certs` 证书生成；**v1.4 补全**：`vnc check` 过 VeNCrypt（rustls，默认严格校验 + `--insecure` 逃生门），TLS run 网页桌面 https 页 + wss 代理可用 |
+| 客户端来去无审计 | 连接事件流可过滤 | **v1.2 已落**：QMP 事件泵落 `events.jsonl`（三事件含 client/server 字段），`events --filter vnc.` |
 | 无事件流 | `events.jsonl` + 订阅 | C1/C2 |
-| macOS `.app` | 三平台包 | Windows/Linux 后续 |
+| macOS `.app` | 三平台包 | **Linux 实机产物已落（v1.4）**：musl 静态 ELF/AppDir/tarball/AppImage + 容器冒烟；Windows 交叉产物已构建（PE32+ 双 exe），真机验证待；**三平台许可通知单源随包已落（v1.5）**：`packaging/THIRD-PARTY-NOTICES.txt` 一处改、三平台包内 sha256 同一 |
 
 ---
 
