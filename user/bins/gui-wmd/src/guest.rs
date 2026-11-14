@@ -65,9 +65,10 @@ const WMD_IDLE_CAP_NS: u64 = 10 * 1_000_000_000;
 const FONT_GLYPH_BYTES: usize = 32 * 48;
 const FONT_VMO_LEN: usize = 0x24000;
 
-/// MOVE 低延迟帽：保留 4 条离散 MOVE（含合并承载条），足够速度环，
-/// 同时避免连续鼠标采样把 16 深队列排成回放动画。
-const MOVE_QUEUE_LATENCY_MAX: usize = 4;
+/// MOVE 低延迟帽：v1 曾在 4 条后合并，防止下游把积压 MOVE 当回放动画。
+/// 60Hz 目标下 launcher 已按真实样本逐帧呈现；队列满前保留全部离散 MOVE，
+/// 只在真正溢出时才把旧真实采样并入 history（仍不合成新位置）。
+const MOVE_QUEUE_LATENCY_MAX: usize = 16;
 
 /// Phase 3 per-session 输入环（16 深；溢出 loud 计数，不覆盖旧事件）。
 struct InputQueue {
@@ -751,6 +752,32 @@ impl WmSessions {
         send_handoff_rep(ch, &rep[..m]);
     }
 
+    /// INPUT_ROUTE deposits can queue while the producer already has an
+    /// INPUT_POLL armed. Flush that armed poll immediately instead of letting a
+    /// continuous push stream defer every session to a later serve pass.
+    fn flush_armed_input_polls(&mut self) {
+        for i in 0..self.slots.len() {
+            let Some(sess) = self.slots[i].as_ref() else {
+                continue;
+            };
+            let input_ch = sess.input;
+            let Some((msg, _hs)) = poll(input_ch) else {
+                continue;
+            };
+            if msg.0.first() == Some(&gp::OP_INPUT_KEY_POLL) {
+                match gp::parse_input_key_poll_req(&msg.0[..msg.1]) {
+                    Some(max) => self.poll_keys(input_ch, max),
+                    None => st_rep(input_ch, gp::ST_BAD),
+                }
+            } else {
+                match gp::parse_input_poll_req(&msg.0[..msg.1]) {
+                    Some(max) => self.poll_input(input_ch, max),
+                    None => st_rep(input_ch, gp::ST_BAD),
+                }
+            }
+        }
+    }
+
     /// poll-first 死亡探测：Process TERMINATED 即摘 session、清 owner 窗。
     fn reap_dead(&mut self, table: &mut table::WmTable, comp: &mut relay::Compositor) {
         let mut i = 0;
@@ -1159,6 +1186,7 @@ fn on_push(
                         sessions.route(table, &ev);
                     }
                 }
+                sessions.flush_armed_input_polls();
             }
             None => st_rep(ch, gp::ST_BAD),
         }

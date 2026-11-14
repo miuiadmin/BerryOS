@@ -927,7 +927,14 @@ pub fn submit_composite(
         // 差异域超出 back_stale 记录——回退全屏继承。
         comp.invalidate_back_buffer();
     }
-    send_rep_handles(ch, &rep[..nb], &_rhs[..nh]);
+    if system_surface && nh == 0 {
+        // The system desktop producer is waiting on this ACK and has another
+        // real sampled position staged. Return directly to it; APP submits stay
+        // ordinary replies so app render loops cannot self-flood wmd.
+        send_handoff_rep(ch, &rep[..nb]);
+    } else {
+        send_rep_handles(ch, &rep[..nb], &_rhs[..nh]);
+    }
     if ok && system_surface && comp.back_stale_covers_screen() {
         comp.prefetch_back_after_full();
     }

@@ -83,7 +83,7 @@ use berry_ui::{Msg, NodeId, UiMain};
 
 use crate::desktop::{self, Desktop, RECENTS_LABEL_MAX};
 use crate::icons;
-use crate::{close_h, enc_req, expect_ok, fail, now, rpc, rpc_callback};
+use crate::{close_h, enc_req, expect_ok, fail, now, rpc, rpc_callback, rpc_submit};
 
 /// 帧缓冲映射 VA（gfxdemo 同位：mmap VA 窗 [0x5000_0000,0x6000_0000) 内
 /// 固定位 +16MiB——与假想 first-fit 分配零交叠的防御位；页对齐）。
@@ -1043,7 +1043,7 @@ fn submit_frame(hw: Handle, vmo: Handle, request: &gp::PresentReq) -> u32 {
             fail("dup alias");
         }
         let m = enc_req(gp::encode_present_req(&mut req, request));
-        let (n, _) = rpc(hw, &req[..m], &[alias], &mut rep, &mut rhs);
+        let (n, _) = rpc_submit(hw, &req[..m], &[alias], &mut rep, &mut rhs);
         if let Some(token) = gp::parse_submit_ack(&rep[..n]) {
             return token;
         }

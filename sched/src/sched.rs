@@ -2251,9 +2251,11 @@ pub fn try_preempt() -> bool {
 ///
 /// # Safety
 /// IRQ 屏蔽窗内（on_irq_tick 调用）。
-unsafe fn expire_timeouts() {
+unsafe fn expire_timeouts() -> bool {
     let now = hal::timer::cntvct();
     let phys = sq_lock(); // SQ 窗开
+    let mut woke = false;
+    let urgent_threshold = hal::timer::cntfrq().saturating_mul(5) / 1_000;
     loop {
         let Some(h) = sleepq().head.get() else { break };
         if (*h.as_ptr()).wait_deadline > now {
@@ -2261,14 +2263,23 @@ unsafe fn expire_timeouts() {
         }
         // 摘头 → Timeout → 入 runqueue（enqueue 置 Ready）。
         let t = h.as_ptr();
+        let urgent = (*t)
+            .wait_deadline
+            .saturating_sub((*t).wait_since)
+            >= urgent_threshold;
         sleepq().unlink(h);
         (*t).wakeup.set(WakeReason::Timeout);
         enqueue_with_kick(&mut *t, (*t).home_cpu as usize);
         note_wake(t, WakeReason::Timeout);
+        // Sub-millisecond polling hearts (notably inputd's active tick) must
+        // not cut a frame RPC in half merely because they timed out. Reserve
+        // immediate re-evaluation for frame-scale deadlines (>=5ms).
+        woke = woke || urgent;
     }
     // 4-3b：超时摘队也改变睡眠者集合（纯 sleep 者超时离队 → 冻结其 boost）。
     unsafe { note_sleepq_changed() };
     sq_unlock(phys); // SQ 窗闭
+    woke
 }
 
 // ---- PI 图推导支撑原语（4-3b；消费者 = `kernel/src/pi.rs`，图语义在那侧）----
@@ -2672,9 +2683,10 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
     // S-2b 诊断面：per-CPU tick 计数（两核都计——PAR absent 时区分「副核
     // tick 死」vs「tick 活但派发不出」）。
     hal::smp::note_tick();
-    // 4-0：先扫 SLEEPQ 超时（到期者置 Timeout 入 runqueue——本 tick 后续的
-    // pick 即可能选中它们；头未到期早停，空队近零开销）。
-    expire_timeouts();
+    // 4-0：先扫 SLEEPQ 超时（到期者置 Timeout 入 runqueue）。若本 IRQ 正是
+    // 为某个绝对 deadline 武装的，唤醒后必须立刻重算出选：否则 500µs 输入
+    // tick / 16.7ms 帧 tick 只入队，实际派发仍被剩余 50ms 公平片量化。
+    let deadline_wake = expire_timeouts();
     let cur = current_task();
     // S-2b PAR 金丝雀采样（草案 §5.2 D1）：EL0 tick 纪事钉板 / 非 EL0 清钉。
     // is_el0 判据 = ttbr0 != 0（有地址空间的任务 = EL0 用户进程；内核任务/
@@ -2703,7 +2715,7 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
         return;
     }
     RR.tick(&mut *cur, rq()); // 策略部分：减 slice_left（饱和到 0）
-    if (*cur).slice_left == 0 {
+    if (*cur).slice_left == 0 || (deadline_wake && preempt_count() == 0) {
         // G3-1c-1（console 写域解蔽）：禁切窗内 slice 燃尽——本次 tick 不切。
         // 诉求分档承接（errata m2 勘正）：出窗检查点只兑现**严格更高 eff**
         // 的直切诉求（try_preempt 判定）；slice 燃尽 = 同 eff 轮转诉求，

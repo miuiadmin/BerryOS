@@ -1157,8 +1157,18 @@ mod guest {
             // GUI8 burst 相据此既可断言基线，也可抓 eventq/pump 溢出。
             if push != 0 {
                 route_wmd(d, regs, pump, push);
+                // A single harvest can contain a whole pointer burst while each
+                // INPUT_ROUTE wire frame carries at most three events. Drain to
+                // empty in this turn (EBUSY naturally waits for wmd) instead of
+                // leaving the remainder to a later polling heartbeat.
+                while pump.pending() != 0 {
+                    route_wmd(d, regs, pump, push);
+                }
                 if let Some(k) = keyboard.as_deref_mut() {
                     route_keys_wmd(k, push);
+                    while k.pump.pending() != 0 {
+                        route_keys_wmd(k, push);
+                    }
                 }
             }
             if let Some(k) = keyboard.as_deref() {

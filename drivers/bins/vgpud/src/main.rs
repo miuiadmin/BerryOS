@@ -804,6 +804,10 @@ impl PresentSrv {
         let mut out = [0u8; 8];
         let n = gp::encode_submit_ack(&mut out, token);
         send_rep(ch, &out[..n]);
+        // Start this flip before telemetry formatting: after ACK, wmd/launcher
+        // can immediately request the next frame and starve a deferred pump for
+        // hundreds of milliseconds during catch-up.
+        let _ = self.pump_pending();
         // Telemetry 在 ACK 后打印：`last_us` 是入队/校验耗时；DMA 完成耗时
         // 由 `dma_us` 在完成侧累计，二者不可再混成一个“呈现延迟”。
         let avg_us = self.perf_submit_ns / (self.perf_submits * 1_000);

@@ -200,6 +200,20 @@ fn rpc_callback(
     rpc_recv(ch, rep, rhs)
 }
 
+/// SUBMIT request RPC with cooperative dispatch to wmd. The reply itself is
+/// still governed by wmd (system ACK may hand back; APP ACK never does here).
+fn rpc_submit(
+    ch: Handle,
+    req: &[u8],
+    attach: &[Handle],
+    rep: &mut [u8; 256],
+    rhs: &mut [Handle; 8],
+) -> (usize, usize) {
+    rpc_send(ch, req, attach);
+    let _ = berry_thread_yield();
+    rpc_recv(ch, rep, rhs)
+}
+
 /// 1B 状态应答单趟收口（VOTE 烘焙线：一切非 OK 应答恒 1B 不带数据；
 /// gfxdemo `expect_ok` 同形——fail 收口 = eprintln + park）。
 fn expect_ok(
