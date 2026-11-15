@@ -85,7 +85,7 @@ Settings、Contacts、Files、Photos、Browser 与 Berry Demo 均遵守系统壳
 - Large AppBar 是静态几何：普通 56dp 操作行 + Title + 可选 Body 副标题 + trailing actions；滚动折叠、enterAlways 与过渡动画不做。Contacts 列表页已迁移为 “Contacts / 4 contacts”。
 - PullRefresh 只接受纵向 ScrollView；指示器阈值即自身高度。拖动位移按 1/2 阻尼并封顶两倍阈值；Release armed 才 Triggered。Files 集成用真实 FS 重读作为刷新完成，不用 sleep 伪造 busy 时长。
 - TextArea 的换行真相只有一份：app `TextInputState` 字节。渲染域视觉行由 `text_wrap::plan` 派生，显式 U+000A 不计宽、不出字形；编辑域逻辑行/粘滞列由 `text_input` 纯 helper 派生。TextField 拒绝 `Multiline` 构造档。
-- TextArea v1 用最多三段 Rect 表示跨行 selection（头行、中带、尾行）；短中间行的行尾空白可能被中带覆盖，这是视觉近似，不改变文本状态。点击定位 caret、拖拽选择、IME multiline 直入、光标闪烁与富文本显式后置。BerryDemo Inputs 页已消费 TextArea，页面 SEM 预算为 8/8。
+- TextArea v1 用最多三段 Rect 表示跨行 selection（头行、中带、尾行）；短中间行的行尾空白可能被中带覆盖，这是视觉近似，不改变文本状态。点击定位 caret、拖拽选择、IME multiline 直入、光标闪烁与富文本显式后置。BerryDemo Inputs 页已消费 TextArea，页面 SEM 预算为 8/8；该页用 Retained Surface 增加 Keyboard 输入类，QMP 真键链已覆盖 Enter 换行、字符插入、空格、Backspace 与 Up 粘滞列。
 - NavStack 是纯 route 状态机；页面树、返回业务与 Route→UI 映射仍归 app。
 - TextFieldSlots 的 label/message 不额外占 a11y/SEM；panel 仍是唯一焦点与语义锚。Error 只换 danger token 与消息类别，不在 P0 wire 伪造新状态位。
 - 按压缩放、swipe actions 与 P2 件仍未完成；TextArea v1 与 Refresher v1 已完成，TextArea 的点击定位、拖拽选择与 IME 直入继续后置。

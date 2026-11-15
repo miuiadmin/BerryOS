@@ -12,8 +12,9 @@
 use berry_gfx::cmd::{Color, CommandEncoder, GlyphPos};
 use berry_gfx::font::FontSize;
 use berry_room::{
-    AppRoom, INPUT_EVENTS_MAX, INPUT_SAMPLES_MAX, PointerEvent, RoomConfig, Sample,
-    SYSTEM_FONT_ATLAS,
+    AppRoom, INPUT_EVENTS_MAX, INPUT_KEY_EVENTS_MAX, INPUT_SAMPLES_MAX, KeyEvent, PointerEvent,
+    RoomConfig, Sample, SurfaceModeKind, SurfaceRequest, SYSTEM_FONT_ATLAS,
+    SURFACE_A11Y_TREE, SURFACE_IME_DISABLED, SURFACE_INPUT_KEYBOARD, SURFACE_INPUT_TOUCH,
 };
 use berry_ui::hit::PtrEvent;
 use berry_ui::sdk::{
@@ -25,7 +26,7 @@ use berry_ui::sdk::{
     TextFieldSlotsSpec,
     TextFieldSpec, Theme, Ui, WidgetContext, column, FieldMessage, FieldMessageKind,
     divider, icon, row, text, Badge, Chip, ChipKind, IconButton, NavigationIconSource,
-    ScrollViewAxis,
+    ScrollViewAxis, KeyRoute, TextInputKeyOp, TextInputKind, key_route,
     NAV_ICON_BACK, NAV_ICON_BACK_ACTIVE, TextInputState,
 };
 
@@ -391,6 +392,7 @@ struct App {
     switch_on: bool,
     selected_item: u8,
     list_empty: bool,
+    ta_edits: u32,
     frame_seq: u32,
     safe_top: u32,
     safe_bottom: u32,
@@ -1723,8 +1725,73 @@ impl App {
     }
 }
 
+impl App {
+    fn handle_key(&mut self, room: &mut AppRoom, event: &KeyEvent) {
+        let (mut area, mut state) = match &self.page {
+            Page::Input(page) => (page.area, page.area_state),
+            _ => return,
+        };
+        if self.ui.focus_node() != Some(area.panel) {
+            return;
+        }
+        let Ok(code) = u8::try_from(event.code) else {
+            return;
+        };
+        let route = key_route(
+            code,
+            event.action,
+            event.modifiers,
+            TextInputKind::Multiline,
+            true,
+        );
+        let KeyRoute::Text(TextInputKeyOp::Edit(edit)) = route else {
+            // Tab still belongs to C1 focus navigation. This demo keeps the
+            // TextArea as the only keyboard-editable node, so UP/None/Focus
+            // are intentionally non-mutating here.
+            return;
+        };
+        let outcome = state.apply_edit(edit);
+        if outcome.rejected {
+            return;
+        }
+        if outcome.changed || outcome.selection_changed {
+            area.sync(&mut self.ui, &self.ctx, &state)
+                .unwrap_or_else(|_| berry_room::panic_exit(134));
+            if let Page::Input(page) = &mut self.page {
+                page.area = area;
+                page.area_state = state;
+            }
+            self.ta_edits = self.ta_edits.saturating_add(1);
+            let (line, col) =
+                berry_ui::text_input::line_col_of(state.value().as_bytes(), state.caret_cp());
+            let mut marker = Line::new(b"BERRYDEMOTEXTEDIT ok n=");
+            marker.push_u32(self.ta_edits);
+            marker.push(b" lines=");
+            marker.push_u32(u32::from(berry_ui::text_input::line_count(
+                state.value().as_bytes(),
+            )));
+            marker.push(b" caret=");
+            marker.push_u32(u32::from(line));
+            marker.push(b",");
+            marker.push_u32(u32::from(col));
+            marker.push(b" bytes=");
+            marker.push_u32(state.value().len as u32);
+            marker.push(b"\n");
+            marker.print(room);
+            self.render(room);
+        }
+    }
+}
+
 fn run_interactive(app: &mut App, room: &mut AppRoom) {
     let mut events = [empty_event(); INPUT_EVENTS_MAX];
+    let mut keys = [KeyEvent {
+        timestamp_ns: 0,
+        code: 0,
+        action: 0,
+        modifiers: 0,
+        device_id: 0,
+    }; INPUT_KEY_EVENTS_MAX];
     loop {
         let count = match room.poll_input(&mut events) {
             Ok(count) => count,
@@ -1749,6 +1816,13 @@ fn run_interactive(app: &mut App, room: &mut AppRoom) {
                     return;
                 }
             }
+        }
+        let key_count = match room.poll_keys(&mut keys) {
+            Ok(count) => count,
+            Err(error) => fail(room, error.as_str()),
+        };
+        for event in keys.iter().take(key_count) {
+            app.handle_key(room, event);
         }
     }
 }
@@ -1779,6 +1853,22 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
     let insets = room.occlusion().effective_padding();
     let safe_top = u32::from(insets[1]);
     let safe_bottom = u32::from(insets[3]).max(ctx.metrics.effective_px(144));
+    // Retained remains the ordinary app surface; this only adds Keyboard to
+    // the input contract. Safe insets are snapshotted first because a surface
+    // grant replaces Room's cached occlusion with the granted values.
+    let grant = match room.configure_surface(SurfaceRequest {
+        mode: SurfaceModeKind::Retained,
+        input_classes: SURFACE_INPUT_TOUCH | SURFACE_INPUT_KEYBOARD,
+        ime_mode: SURFACE_IME_DISABLED,
+        a11y_mode: SURFACE_A11Y_TREE,
+    }) {
+        Ok(value) => value,
+        Err(error) => fail(&room, error.as_str()),
+    };
+    if grant.input_classes & SURFACE_INPUT_KEYBOARD == 0 {
+        fail(&room, "keyboard grant");
+    }
+    room.print(b"BERRYDEMOSURFACE ok keys=1\n");
     let page = build_page(
         &mut ui,
         &ctx,
@@ -1800,6 +1890,7 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
         switch_on: false,
         selected_item: 0,
         list_empty: false,
+        ta_edits: 0,
         frame_seq: 0,
         safe_top,
         safe_bottom,
