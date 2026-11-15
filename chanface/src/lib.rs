@@ -39,6 +39,15 @@
 
 #![cfg_attr(not(test), no_std)]
 
+// W3-Q49：冻结面配对判与队列序守卫（mark/clear 资格 + push/pop/push_front
+// 不变量）——owner 以 id 代（NonNull 纯投影，物理 retain/release 留壳
+// kernel），与既有容量门（W3-Q9）同 crate 分模块（hdlface lifecycle 同款）。
+mod freeze;
+
+pub use freeze::{
+    clear_frozen_ok, frozen_pair_sound, mark_frozen_ok, pop_ok, push_front_ok, push_ok,
+};
+
 // ---- 界常量（单源：自 kernel/src/channel.rs 迁此，kernel re-export；
 // 改值 = ABI 事故，host test 字面值钉板先红）----
 
