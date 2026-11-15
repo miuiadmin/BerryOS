@@ -326,6 +326,175 @@ pub fn sanitize(
     }
 }
 
+// ---- M4 IntentBand 带参数表（ADR #42 第二段骨架——调度优化终窗 2026-11-15）----
+//
+// **定位**：class_fair 按 intent 实例化 ×4 带（ADR #42 第二段 / `调度器
+// 设计-v1.2.md` §3.8 / `调点调度-v1.2.md` §7）的**带参数行**——纯数据 +
+// 纯函数（host 可测），与 IntentProfile 同键域（intent u8 = 带键，§11
+// 「band 不加 attr 字段——intent 即带键」）。骨架级：只定形状与缺省基线，
+// **不带间选择器、无预算记账、无热路径消费**（M4 入场券——v1 遥测实证 +
+// loadgen + 尾延迟断言——未过前 band 执法不并线；`band.rs` 同款纪律）。
+//
+// **数值纪律**（ADR #42：「数字进启动配置参数表不写死」）：本表 = 骨架
+// 缺省基线，全部数值为**推断值【推】**——推断锚 = [`WATCH_PROFILE_TABLE`]
+// （权重包络列同源）+ 现役单带 quantum 锚（`SLICE_HZ = 10` → 100ms，
+// `arch/aarch64/src/timer.rs`）+ 各档 timer_slack 量级；M4 并线时真数字
+// 经启动配置参数表覆盖（同 `sched_slice_hz` 先例）。
+
+/// M4 带参数行：class_fair 实例化一份带所需的全部可调轴。
+///
+/// 权重轴 = 带内 EEVDF 权重区间（`low..=high`，与 IntentProfile 的
+/// weight_floor/ceiling 同数值域 1..1024——AI ④ 类动作的带内包络即本区间，
+/// 单一强度轴）；quantum = 本带时间片目标；latency_target = 本带唤醒→出选
+/// 的目标延迟（deadline-server 式兜底的服务 SLO——`调点调度-v1.2.md` §7）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IntentBand {
+    /// 带内权重区间下界（≥1；推断锚 = 同档 IntentProfile.weight_floor）。
+    pub low_weight: u32,
+    /// 带内权重区间上界（≤1024；推断锚 = 同档 weight_ceiling）。
+    pub high_weight: u32,
+    /// 本带时间片目标（纳秒；越小 = 切换越频繁、响应越快、开销越高）。
+    pub quantum_ns: u64,
+    /// 本带目标调度延迟（纳秒；唤醒→出选的 SLO，越小越紧）。
+    pub latency_target_ns: u64,
+}
+
+/// 带表行数 = IntentProfile 行数（六档全行——同键域完整化纪律：含
+/// 0x00 UNSPECIFIED 保守行与 0x05 MAINTENANCE 冻结行，运行期启用面在
+/// [`band_enabled`] 收口）。
+pub const INTENT_BAND_ROWS: usize = INTENT_PROFILE_ROWS;
+
+// ---- 值域常量（band_row_valid 执法界）----
+
+/// quantum 下界（1ms——再小则切换开销淹没收益；【推】量级界非语义界）。
+pub const BAND_QUANTUM_MIN_NS: u64 = 1_000_000;
+/// quantum 上界（200ms——现役单带 100ms 的 2x 头寸；【推】）。
+pub const BAND_QUANTUM_MAX_NS: u64 = 200_000_000;
+/// latency_target 下界（1ms——LC 档非退化最小值；【推】）。
+pub const BAND_LATENCY_MIN_NS: u64 = 1_000_000;
+/// latency_target 上界（2s——maintenance 档 1s 的 2x 头寸；【推】）。
+pub const BAND_LATENCY_MAX_NS: u64 = 2_000_000_000;
+/// 现役单带 quantum 锚：1/`SLICE_HZ`（=10）= 100ms——0x00 保守行与「回退
+/// = 现役行为」的零漂移缺省（M4 前/未入带任务的实际片长即此值）。
+pub const BAND_QUANTUM_DEFAULT_NS: u64 = 100_000_000;
+
+/// **M4 带参数缺省表**（六档全行；×4 现役集 = 0x01–0x04，见 [`band_enabled`]）。
+///
+/// 数值全部为推断值【推】，锚三件：权重 = [`WATCH_PROFILE_TABLE`] 同档
+/// 包络（带权重与 AI 夹紧包络同轴同源——强度不双写）；quantum = 5/10/20/
+/// 40/80ms 递增阶梯（顶 = LC 最小片，底 = maintenance 最大片；interactive
+/// 10ms = 其 timer_slack 10ms 同量级）；latency_target = 各档 timer_slack
+/// 量级推（LC 1ms 最小非退化 / interactive 8ms 略低于其 slack / utility
+/// 50ms = SLACK_INTERACTIVE_DEFAULT / bg 250ms = slack 500ms 取半 /
+/// maintenance 1s = slack 10s 取 1/10）。
+pub const INTENT_BAND_TABLE: [IntentBand; INTENT_BAND_ROWS] = [
+    // [0] 0x00 UNSPECIFIED——保守行：包络全开（1..1024 不收窄）、quantum/
+    // latency = 现役单带锚（不借出任何带优势——「未声明」≠「声明了高档」，
+    // 与 WATCH_PROFILE_TABLE[0] 同保守方向；本档无专带实例）。
+    IntentBand {
+        low_weight: 1,
+        high_weight: 1024,
+        quantum_ns: BAND_QUANTUM_DEFAULT_NS,
+        latency_target_ns: BAND_QUANTUM_DEFAULT_NS,
+    },
+    // [1] 0x01 LATENCY_CRITICAL——×4 之首：最高权重包络（512..1024）、
+    // 最小 quantum（5ms）/最紧 latency_target（1ms；slack=0 exact 的带内
+    // 对应——SLO 不可为 0，取最小非退化值）。【推】
+    IntentBand {
+        low_weight: 512,
+        high_weight: 1024,
+        quantum_ns: 5_000_000,
+        latency_target_ns: 1_000_000,
+    },
+    // [2] 0x02 INTERACTIVE——交互带：256..1024、quantum 10ms（= 本档
+    // timer_slack 同量级）、latency_target 8ms（略低于 slack——交互可感知
+    // 界 ~10ms 内留裕量）。【推】
+    IntentBand {
+        low_weight: 256,
+        high_weight: 1024,
+        quantum_ns: 10_000_000,
+        latency_target_ns: 8_000_000,
+    },
+    // [3] 0x03 UTILITY——推断缺省档：64..512、quantum 20ms、
+    // latency_target 50ms（= SLACK_INTERACTIVE_DEFAULT_NS 同值锚）。【推】
+    IntentBand {
+        low_weight: 64,
+        high_weight: 512,
+        quantum_ns: 20_000_000,
+        latency_target_ns: 50_000_000,
+    },
+    // [4] 0x04 BACKGROUND——后台带：1..64、quantum 40ms、latency_target
+    // 250ms（本档 slack 500ms 取半）。【推】
+    IntentBand {
+        low_weight: 1,
+        high_weight: 64,
+        quantum_ns: 40_000_000,
+        latency_target_ns: 250_000_000,
+    },
+    // [5] 0x05 MAINTENANCE——编码冻结不启用（用户裁决 2026-10-16）：保守
+    // 行先落（与 WATCH_PROFILE_TABLE[5] 同纪律——查表键完整化）；参数
+    // 阶梯最低端锚点（最大 quantum 80ms / 最低权重 1..16 / 最松 SLO 1s）。
+    // 【推】
+    IntentBand {
+        low_weight: 1,
+        high_weight: 16,
+        quantum_ns: 80_000_000,
+        latency_target_ns: 1_000_000_000,
+    },
+];
+
+/// 单带行自洽执法（表数据下界）：值域（权重 1..1024 / quantum / latency
+/// 各自界内）+ 包络序（low ≤ high）+ 正性（quantum/latency ≥ 1ns——0 无
+/// 语义）。运行期新表（M4 启动配置覆盖路径）先过本判据——违表拒装。
+pub fn band_row_valid(b: &IntentBand) -> bool {
+    b.low_weight >= WEIGHT_FLOOR_MIN
+        && b.high_weight <= WEIGHT_CEILING_MAX
+        && b.low_weight <= b.high_weight
+        && b.quantum_ns >= BAND_QUANTUM_MIN_NS
+        && b.quantum_ns <= BAND_QUANTUM_MAX_NS
+        && b.latency_target_ns >= BAND_LATENCY_MIN_NS
+        && b.latency_target_ns <= BAND_LATENCY_MAX_NS
+}
+
+/// 整表执法：六行全过 [`band_row_valid`] 才可装（长度由类型钉死）。
+pub fn band_table_valid(t: &[IntentBand]) -> bool {
+    t.len() == INTENT_BAND_ROWS && t.iter().all(band_row_valid)
+}
+
+/// **×4 现役带集判**（ADR #42 第二段：0x01 latency_critical / 0x02
+/// interactive / 0x03 utility / 0x04 background；0x05 MAINTENANCE 编码
+/// 冻结不启用；0x00 UNSPECIFIED 无专带——XNU 式顶档待角色表/分类器定档，
+/// 不缺省借带优势）。class_fair 实例化工厂（`class_fair_intent`）与
+/// policy band 选择位（`policy.rs`）的词汇门同源此处。
+pub const fn band_enabled(code: u8) -> bool {
+    matches!(code, 0x01..=0x04)
+}
+
+/// **带 id ↔ intent 档映射**（§11 带键 = intent：v1 恒等映射——band id
+/// 就是 intent 编码值，结构与 `band.rs::band_member`（intent_effective ==
+/// band）同口径）。独立函数位 = 未来非恒等映射（带词汇与 intent 词表解耦
+/// 的 v3+ 演进）只改此处，消费面（工厂/策略位）零改动。保留域与非现役档
+/// → None。
+pub const fn band_id_of_intent(code: u8) -> Option<u8> {
+    if band_enabled(code) {
+        Some(code)
+    } else {
+        None
+    }
+}
+
+/// 查表主入口：intent u8 → 该档 [`IntentBand`]（仅 ×4 现役集；0x00/0x05/
+/// 保留域 → None——与 [`lookup`] 的「野键回落保守行」不同形：带行只在
+/// **可实例化**时给出，None 即「无带」，消费方（`class_fair_intent`）回落
+/// 现役单带 Fair——缺省行为零漂移）。
+pub fn band_of_intent(code: u8) -> Option<IntentBand> {
+    let i = intent_index(code)?;
+    if !band_enabled(code) {
+        return None;
+    }
+    Some(INTENT_BAND_TABLE[i])
+}
+
 // ---- 宿主单元测试（`#![cfg_attr(not(test), no_std)]` 面；QEMU ktest 面
 // 由 kernel 侧消费时另行钉板，本面覆盖纯函数全部分支）----
 
@@ -554,5 +723,152 @@ mod tests {
         assert!(t[3].uclamp_max >= t[4].uclamp_max);
         assert!(t[4].uclamp_max >= t[5].uclamp_max);
         assert_eq!(t[5].uclamp_max, 256);
+    }
+
+    // ---- M4 IntentBand 带参数表（骨架）----
+
+    /// 缺省表整表合法（band_table_valid 自洽）。
+    #[test]
+    fn band_table_builtin_valid() {
+        assert!(band_table_valid(&INTENT_BAND_TABLE));
+    }
+
+    /// 推断锚钉板：带权重包络与 WATCH_PROFILE_TABLE 同档包络逐行同源
+    /// （0x01–0x05——「带权重与 AI 夹紧包络同轴」的机器执法，改一侧忘
+    /// 同步即红）。0x00 例外：带行保守全开 1..1024，恰与 profile[0] 同值
+    /// ——一并断言（六行全对齐）。
+    #[test]
+    fn band_weights_mirror_profile_envelope() {
+        for i in 0..INTENT_BAND_ROWS {
+            assert_eq!(
+                INTENT_BAND_TABLE[i].low_weight,
+                WATCH_PROFILE_TABLE[i].weight_floor,
+                "档 {} low_weight 须 = profile.weight_floor",
+                i
+            );
+            assert_eq!(
+                INTENT_BAND_TABLE[i].high_weight,
+                WATCH_PROFILE_TABLE[i].weight_ceiling,
+                "档 {} high_weight 须 = profile.weight_ceiling",
+                i
+            );
+        }
+    }
+
+    /// 参数阶梯单调：声明档区间（0x01–0x05）quantum 与 latency_target 均
+    /// 随档位号**严格递增**（越小档越高 → 片更短、SLO 更紧）；极值锚 =
+    /// LC（最小 quantum 5ms / 最紧 1ms）与 maintenance（最大 80ms / 最松
+    /// 1s——冻结行同为阶梯最低端）。
+    #[test]
+    fn band_quantum_latency_ladder() {
+        let t = &INTENT_BAND_TABLE;
+        for i in 2..t.len() {
+            assert!(
+                t[i - 1].quantum_ns < t[i].quantum_ns,
+                "档 {} → {} quantum 须严格递增",
+                i - 1,
+                i
+            );
+            assert!(
+                t[i - 1].latency_target_ns < t[i].latency_target_ns,
+                "档 {} → {} latency_target 须严格递增",
+                i - 1,
+                i
+            );
+        }
+        assert_eq!(t[1].quantum_ns, 5_000_000);
+        assert_eq!(t[1].latency_target_ns, BAND_LATENCY_MIN_NS);
+        assert_eq!(t[5].quantum_ns, 80_000_000);
+        assert_eq!(t[5].latency_target_ns, 1_000_000_000);
+    }
+
+    /// 0x00 保守行：包络全开不收窄、quantum/latency = 现役单带锚
+    /// （1/SLICE_HZ = 100ms——「回退 = 现役行为」零漂移缺省）。
+    #[test]
+    fn band_unspecified_conservative_row() {
+        let r = &INTENT_BAND_TABLE[0];
+        assert_eq!(r.low_weight, WEIGHT_FLOOR_MIN);
+        assert_eq!(r.high_weight, WEIGHT_CEILING_MAX);
+        assert_eq!(r.quantum_ns, BAND_QUANTUM_DEFAULT_NS);
+        assert_eq!(r.latency_target_ns, BAND_QUANTUM_DEFAULT_NS);
+    }
+
+    /// ×4 现役集判：恰 0x01–0x04 四档 true；0x00（无专带）、0x05（编码
+    /// 冻结不启用）、0x06 起保留域全 false。
+    #[test]
+    fn band_enabled_is_active_four() {
+        for code in [LATENCY_CRITICAL, INTERACTIVE, UTILITY, BACKGROUND] {
+            assert!(band_enabled(code), "档 {:#x} 须现役", code);
+        }
+        for code in [UNSPECIFIED, MAINTENANCE, 0x06, 0x0F, 0x42, 0xFF] {
+            assert!(!band_enabled(code), "档 {:#x} 须不现役", code);
+        }
+    }
+
+    /// 查表 + 现役集门：0x01–0x04 → Some(同档表行)；0x00/0x05/保留域 →
+    /// None（无带——消费方回落现役单带，与 lookup 的回落保守行不同形）。
+    #[test]
+    fn band_of_intent_maps_and_gates() {
+        for (code, idx) in
+            [(LATENCY_CRITICAL, 1usize), (INTERACTIVE, 2), (UTILITY, 3), (BACKGROUND, 4)]
+        {
+            assert_eq!(band_of_intent(code), Some(INTENT_BAND_TABLE[idx]));
+        }
+        for code in [UNSPECIFIED, MAINTENANCE, 0x06, 0x42, 0xFF] {
+            assert_eq!(band_of_intent(code), None, "档 {:#x} 须无带", code);
+        }
+    }
+
+    /// 带 id ↔ intent 档恒等映射（§11 带键 = intent）：现役集 Some(自值)、
+    /// 其余 None——与 band_enabled 同域（未来非恒等映射只改此函数）。
+    #[test]
+    fn band_id_identity_mapping() {
+        for code in 0x00u8..=0xFF {
+            assert_eq!(
+                band_id_of_intent(code),
+                if band_enabled(code) { Some(code) } else { None },
+                "档 {:#x} 恒等映射破缺",
+                code
+            );
+        }
+    }
+
+    /// band_row_valid 负面：包络倒挂 / 权重越界 / quantum·latency 越界
+    /// 逐列拒。
+    #[test]
+    fn band_row_valid_rejects() {
+        let good = INTENT_BAND_TABLE[2];
+        assert!(band_row_valid(&good));
+        let mut bad = good;
+        bad.low_weight = bad.high_weight + 1; // 包络倒挂
+        assert!(!band_row_valid(&bad));
+        let mut bad = good;
+        bad.high_weight = WEIGHT_CEILING_MAX + 1; // 权重越上界
+        assert!(!band_row_valid(&bad));
+        let mut bad = good;
+        bad.low_weight = 0; // 越下界
+        assert!(!band_row_valid(&bad));
+        let mut bad = good;
+        bad.quantum_ns = BAND_QUANTUM_MIN_NS - 1; // quantum 越下界
+        assert!(!band_row_valid(&bad));
+        let mut bad = good;
+        bad.quantum_ns = BAND_QUANTUM_MAX_NS + 1; // quantum 越上界
+        assert!(!band_row_valid(&bad));
+        let mut bad = good;
+        bad.latency_target_ns = BAND_LATENCY_MIN_NS - 1; // latency 越下界
+        assert!(!band_row_valid(&bad));
+        let mut bad = good;
+        bad.latency_target_ns = BAND_LATENCY_MAX_NS + 1; // latency 越上界
+        assert!(!band_row_valid(&bad));
+    }
+
+    /// band_table_valid 负面：长度错 / 单行坏整表拒。
+    #[test]
+    fn band_table_valid_rejects() {
+        assert!(!band_table_valid(&[]));
+        assert!(!band_table_valid(&INTENT_BAND_TABLE[..5]));
+        let mut t = INTENT_BAND_TABLE;
+        t[3].quantum_ns = 0;
+        assert!(!band_table_valid(&t));
     }
 }

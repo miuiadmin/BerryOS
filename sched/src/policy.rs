@@ -48,7 +48,7 @@ use core::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, AtomicU8, Orde
 // 窗满拒收/打包往返 13 测）；此处 re-export 后零第二实现，本文件只剩
 // 存储机械（SNAPS/SHD 三槽双槽区 + 原子发布/hazard-lite/写者锁）。----
 pub use berry_polface::{
-    bucket_of, epp_pack, epp_unpack, lookup_slot_idx, InsertOut, KEY_EMPTY,
+    bucket_of, epp_pack, epp_unpack, lookup_slot_idx, InsertOut, BAND_SEL_NONE, KEY_EMPTY,
     BUCKETS, EPP_HAS, EPP_VAL, PROBE_MAX, Slot, TBL_MAX, WEIGHT_MAX,
 };
 
@@ -261,10 +261,20 @@ fn lookup_o1(snap: &Snap, key: u64) -> Option<&SnapSlot> {
 /// 探测窗内首个空槽写入；重复键 first-wins；窗满拒收。消费侧按
 /// [`InsertOut`] 三态入账（越包络夹取/窗满拒收的原子计数归本模块——纯面
 /// 无存储）。返回是否真插入。
+///
+/// M4 band 选择位（ADR #42 第二段骨架）：v1 [`Directive`] 无 band 字段
+/// （kernel 侧 `PolicyEntryABI._rsv` 非 0 一律 -EINVAL，v1 ABI 不透传）
+/// ——写路恒 [`BAND_SEL_NONE`]（无意见）；band 位真值写入随 v3
+/// `policy_bind` 协议开（届时扩 Directive/ABI 镜像，Snap 槽位已预留——
+/// `Slot::band` @ 偏移 14，16B 布局不变）。带 id ↔ intent 档映射单源
+/// `berry_iprofile::band_id_of_intent`（带键 = intent：×4 现役集
+/// 0x01..=0x04）。**ADR #21 带内纪律**：band/intent 不入 AI 动作空间——
+/// v3 写者的授权面（product 配置/manifest 通道，非策略服务动作）随协议
+/// 立法再定，本刀只落数据位。
 fn snap_insert(snap: &mut Snap, key: u64, d: &Directive) -> bool {
     // 判定与写入单源；计数按三态分支（与旧内联实现逐语义对齐）。
     let out = berry_polface::insert_slot(
-        &mut snap.slots, key, d.weight, d.placement, d.epp,
+        &mut snap.slots, key, d.weight, d.placement, BAND_SEL_NONE, d.epp,
     );
     match out {
         InsertOut::Inserted { weight } => {
@@ -461,6 +471,32 @@ pub fn placement_hint(task_key: u64) -> u8 {
     match lookup_o1(snap, task_key) {
         Some(s) => s.placement,
         None => 0, // 未命中/哨兵键（0 保留，lookup 早退）：无意见
+    }
+}
+
+/// 该 key 当前绑定的 band 选择位读出口（M4 骨架——ADR #42 第二段「策略
+/// 注入表 band 选择位」的读侧）：读活跃快照 O(1) 查表透传 [`SnapSlot::
+/// band`]。词汇：**0 = 无意见**（[`BAND_SEL_NONE`]——未绑/空表/未命中/
+/// 哨兵键）、0x01..=0x04 = ×4 现役带 id（= intent 档编码，映射单源
+/// `berry_iprofile::band_id_of_intent`；0x05 冻结不启用）。
+///
+/// **纯预留位**：v1 写路（[`snap_insert`]）恒 [`BAND_SEL_NONE`]——本读
+/// 出口恒 0，与接口缺席等价；v3 `policy_bind` 协议开 band 位真值写入后
+/// 本函数即消费面（task→band 赋值的策略覆盖通道，`class.rs::
+/// class_fair_intent` 注释窗同批）。ADR #21 带内纪律：band/intent 不入
+/// AI 动作空间——v3 写者授权面随协议立法定（product 配置/manifest 通道）。
+/// 读纪律同 [`placement_hint`]（active_snap 静态区指针 + 已发布槽不可变
+/// + 屏蔽窗读写互斥——读窗内快照稳定）。
+pub fn band_of(task_key: u64) -> u8 {
+    // SAFETY: 读纪律同 apply/weight_of（active_snap 静态区指针 + 已发布槽
+    // 不可变 + 单核屏蔽窗读写互斥——读窗内快照稳定）。
+    let snap: &Snap = unsafe { &*active_snap() };
+    if snap.count == 0 {
+        return BAND_SEL_NONE; // 未绑（哨兵）/空表：无意见
+    }
+    match lookup_o1(snap, task_key) {
+        Some(s) => s.band,
+        None => BAND_SEL_NONE, // 未命中/哨兵键：无意见
     }
 }
 

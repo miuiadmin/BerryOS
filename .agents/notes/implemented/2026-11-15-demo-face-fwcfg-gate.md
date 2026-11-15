@@ -13,6 +13,7 @@ fw_cfg 具名键 `opt/berry/demo-face`(noktest 先例同形,极性同向):absent
 
 ## Residual discovered
 **门关后 desktop OFF 仍 99.9%——残余 = svcmgr 域演示链(talker 'd' 洪流 + echo 'v' 环)**:svcmgr `_start` 无条件拉起 echo/talker/echo2(user/bins/svcmgr/src/main.rs :365-384),talker 稳态 = 无帽节流忙环(user/bins/talker/src/main.rs :52-58);desktop OFF 稳态串口纯 'd' 流、HMP PC 采样 8 样本 7 落 EL0 用户文本(0x1214/0x1220)零落内核忙环——残余全在 EL0 svcmgr 链。svcmgr 不读任何 fw_cfg/bootparams,无现成门可注(本刀纪律 svcmgr 不动)。06 号 §3.1「服务 wait 面全体阻塞形」对 svcmgr 稳态环不成立(app 形 park 的只是 wait_many 尾,环体 echo 往返无条件每圈跑)。**idle→~0% 的完整闭合需要 svcmgr 侧演示门(owner 域后续刀)**;bare 形 OFF 实测 49.2%(v+d 双环残余,同源)。
+→ **后半刀已闭合(2026-11-15 同日)**:[svcmgr idle 后半刀](2026-11-15-svcmgr-demo-face-idle-闭合.md)——x1 env 通道递门+bare OFF 实测 0.22% user;另唤醒两个同族结构缺口(单核 idle 停泊缺/yield 账本 IDLE 灌水)一并收口。
 
 ## Alternatives considered
 门极性反转(在位才出演示——否:smoke/run 全相零漂移被破坏,06 号 §4-1 明裁产品/桌面档默认缺席);watchdog 不随门(否:舰队缺席即超时 panic,OFF 态 boot 崩);waker2 保留(否:waiter 信号无对端,4-1 验收司机随对同门才语义完整)。

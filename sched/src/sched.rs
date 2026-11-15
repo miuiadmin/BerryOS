@@ -869,8 +869,18 @@ pub fn spawn_user(entry_va: usize, arg: usize, sp0_va: usize, name: &'static [u8
     // 折 -ENOMEM（3b3 H2——原 Task 装配内嵌 vec!/Box::new，OOM 直接 abort）。
     // 返回的任务指针 boot 手搭场景不消费（无 Process 钉住——UserProcess 裸表
     // 形态），丢弃即可。
-    try_spawn_user(entry_va, arg, sp0_va, name, ttbr0, asid, proc_tag, 0, 0, false)
+    try_spawn_user(entry_va, arg, 0, sp0_va, name, ttbr0, asid, proc_tag, 0, 0, false)
         .expect("spawn_user：用户任务装配（boot 可信语境）");
+}
+
+/// 同 [`spawn_user`] 但入口带第二参（x1 = boot env 旗标面——06 号修窗件 1
+/// 后半：内核 boot 期消费的 fw_cfg 键值随 spawn 递 EL0 服务，零新 ABI/
+/// 零句柄槽位重排；现役消费者 = svcmgr demo-face 门）。旗标位定义归内核
+/// crate（[`crate`] 边界外——语义层 `USER_ENV_*` 常量镜像）。
+pub fn spawn_user_env(entry_va: usize, arg: usize, env: usize, sp0_va: usize,
+                      name: &'static [u8], ttbr0: usize, asid: u16, proc_tag: usize) {
+    try_spawn_user(entry_va, arg, env, sp0_va, name, ttbr0, asid, proc_tag, 0, 0, false)
+        .expect("spawn_user_env：用户任务装配（boot 可信语境）");
 }
 
 /// 同 [`spawn_user`] 但 try 化（3b3 审查 H2）：16KiB 栈 / TCB 装箱任一 OOM 返
@@ -881,10 +891,10 @@ pub fn spawn_user(entry_va: usize, arg: usize, sp0_va: usize, name: &'static [u8
 /// Plan B v0.5：返回新任务的裸指针（usize 不透明值——语义层写入 `pinned`
 /// 钉住字段；crate 边界纪律同 `proc_tag`）。任务已入 runqueue，指针即
 /// `&'static mut Task` 的地址（Box::leak）。
-pub fn try_prepare_user(entry_va: usize, arg: usize, sp0_va: usize, name: &'static [u8],
-                         ttbr0: usize, asid: u16, proc_tag: usize,
+pub fn try_prepare_user(entry_va: usize, arg: usize, arg1: usize, sp0_va: usize,
+                         name: &'static [u8], ttbr0: usize, asid: u16, proc_tag: usize,
                          pinned: usize, thread_key: usize, spread: bool) -> Option<usize> {
-    let task = Task::try_new_user_with_as(entry_va, arg, sp0_va, name, ttbr0, asid, proc_tag)?;
+    let task = Task::try_new_user_with_as(entry_va, arg, arg1, sp0_va, name, ttbr0, asid, proc_tag)?;
     // SAFETY: CURRENT 已由 init 设好；allocator 已就绪；IRQ 屏蔽态。
     let task: &'static mut Task = alloc::boxed::Box::leak(task);
     // F-E1 / S-6 SMP：pinned/thread_key/spread 在 enqueue 前写入。SMP 下
@@ -909,11 +919,11 @@ pub unsafe fn enqueue_prepared_user(task_ptr: usize) {
     unsafe { enqueue_with_kick(&mut *task, cpu) };
 }
 
-pub fn try_spawn_user(entry_va: usize, arg: usize, sp0_va: usize, name: &'static [u8],
-                      ttbr0: usize, asid: u16, proc_tag: usize,
+pub fn try_spawn_user(entry_va: usize, arg: usize, arg1: usize, sp0_va: usize,
+                      name: &'static [u8], ttbr0: usize, asid: u16, proc_tag: usize,
                       pinned: usize, thread_key: usize, spread: bool) -> Option<usize> {
     let task_ptr = try_prepare_user(
-        entry_va, arg, sp0_va, name, ttbr0, asid, proc_tag,
+        entry_va, arg, arg1, sp0_va, name, ttbr0, asid, proc_tag,
         pinned, thread_key, spread,
     )?;
     // SAFETY: prepare 返回尚未入环；本 wrapper 无调用侧额外簿记。
@@ -1098,6 +1108,13 @@ pub fn thaw_by_pinned(pinned: usize) {
 /// 同 [`spawn`]，但带声明档（4-3c intent 验收：借入/拒借的档位差源）。
 /// `intent` 直落 `intent_declared`/`intent_effective` 双字段——boot 可信语境
 /// 一步到位；非法值（编码域外）直接 panic（同 `new_kernel` 系 expect 政策）。
+///
+/// **M4 集成面预留窗（ADR #42 第二段，本刀不实装）**：task→band 赋值在此
+/// 接——elf spawn 时 manifest intent 档（`berry-manifest::Intent`）→
+/// `berry_iprofile::band_id_of_intent`（带 id ↔ intent 档映射单源，×4 现役
+/// 集 0x01..=0x04）→ `class::class_fair_intent` 建带实例入 ×N 带实例表；
+/// 策略覆盖通道 = `policy::band_of`（band 选择位，v3 `policy_bind` 写路）。
+/// 详见 `class.rs` M4 带实例化骨架段注。
 pub fn spawn_intent(entry: extern "C" fn(usize) -> !, arg: usize, name: &'static [u8],
                     intent: u8) {
     assert!(crate::intent::intent_valid(intent), "spawn_intent：编码域外");
@@ -1242,7 +1259,20 @@ fn yield_now_impl(enable_irq_at_end: bool) {
                 // 双任务环 avg<max 恒有零操作区），让出者本轮垫底（POSIX
                 // sched_yield 对齐）。冻结（HELD_FROZEN）与 deadline 任务路径
                 // 不受影响——只动 vruntime，S5 手动 vdeadline 不碰。
-                RR.yield_slice_return(&mut *prev, rq());
+                //
+                // Σvruntime 账本防线（06 号修窗件 1 后半实抓）：抬值同步账本
+                // 的前提 = 让出者**在环**（`yield_slice_return` 调用契约注）。
+                // IDLE 永不在环——单核 idle_loop「有活」支恒经本臂从 IDLE
+                // 让出，旧代码无条件抬值 = 账本灌水（ledger 独加、walk 不含
+                // 环外者）——忙环时代 idle 长期不入此臂（ rq 恒非空直转）+
+                // 演示面清空后旧代码退化为空环 yield（head None 零操作）双
+                // 重掩盖；idle 停泊补（rq 空睡者停泊→醒即入环→「有活」支
+                // yield）使每醒一灌，OFF 态实测 1.38M 漂移被百切换对账金丝雀
+                // 响亮捕获。在环才抬（`rq_prev` Some = 在环——link 置 Some/
+                // unlink 清 None 的结构不变式，幂等早退同判据）。
+                if (*prev).rq_prev.get().is_some() {
+                    RR.yield_slice_return(&mut *prev, rq());
+                }
                 (*next_ptr).state = TaskState::Running;
             }
         }
@@ -3138,23 +3168,38 @@ pub fn idle_loop() -> ! {
                 }
             }
         } else {
-            // 单核/未参与形态：零漂移（原样）。
+            // 单核/未参与形态：零漂移（原样）——唯 06 号修窗件 1 后半补
+            // 「rq 空 + 睡者在席」支：旧判据 `rq 空 && SLEEPQ 空` 才停泊，
+            // 睡者存在（任意服务的定时睡——pager 50ms/svcmgr 空闲帽 10s/
+            // simbattery 1h）即永走 arm_slice+yield 热旋支（忙环时代被结构性
+            // 掩盖的缺口——演示面清空后 OFF 态实抓：vCPU 99.6% 旋在
+            // reap_drain→kern_acquire+arm_slice 环，串口静默零切换）。修法 =
+            // SMP 分支（:3134-3155）同形下放：rq 空即停泊，SLEEPQ 最近
+            // deadline oneshot 武装（arm_at）——过期即醒由 on_irq_tick 承接，
+            // 尽空深 park（mask）原样；rq 非空支 arm_slice+yield 逐字原样。
             // Plan B：idle 是天然回收点（退出者已不可能在任何执行上下文）——
             // drop Task Box + 内核栈，纯释放零分配。
             reap_drain();
             // SAFETY: IRQ 已屏蔽；本核 runqueue/SLEEPQ 顺序访问。
-            let empty = unsafe { rq().is_empty() && sleepq().len.get() == 0 };
-            if empty {
-                // tickless：空闲不 arm、屏蔽 CNTV，wfi 睡。
-                // SAFETY: 写 CNTV_CTL；EL1。
-                unsafe { hal::timer::mask() };
+            if unsafe { rq().is_empty() } {
+                match nearest_deadline() {
+                    // SAFETY: 本核 CVAL 编程到绝对 deadline（过期即醒——
+                    // on_irq_tick expire 承接，醒即环顶重检派发到期者）。
+                    Some(d) => unsafe { hal::timer::arm_at(d) },
+                    // tickless：全空（无 runnable 无睡者）不 arm、屏蔽 CNTV，
+                    // wfi 睡（原「empty」支逐字原样——Step 4 无源 → 永睡 =
+                    // 干净 halt）。
+                    // SAFETY: 写 CNTV_CTL；EL1。
+                    None => unsafe { hal::timer::mask() },
+                }
                 hal::smp::note_park_cpu(); // S-5a per-CPU park 统计（本核独占写）
-                hal::enable_irq(); // 允许 IRQ 唤醒 wfi（Step 4 无源 → 永睡 = 干净 halt）
+                hal::enable_irq(); // 允许 IRQ 唤醒 wfi
                 hal::wfi();
-                // 被唤醒（Step 5+）→ 回 loop 顶重检 runqueue。
+                // 被唤醒（到期/事件，handler 已在醒点服务）→ 回 loop 顶重检
+                // runqueue（环顶 disable_irq 续承屏蔽）。
             } else {
-                // 有活（runnable 或睡眠者）：武装一个时间片，让给 runnable 任务或
-                // 空 tick 扫超时（Step 6 起由 IRQ 驱动抢占）。
+                // 有活（runnable 在队）：武装一个时间片，让给 runnable 任务或
+                // 空 tick 扫超时（Step 6 起由 IRQ 驱动抢占）——原样。
                 // SAFETY: 写 CNTV 系统寄存器；EL1。
                 unsafe { hal::timer::arm_slice() };
                 hal::enable_irq();

@@ -1663,9 +1663,20 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
 
     // D3（G-eco-b）：svcmgr 是首个多页镜像（编译产物内嵌 echo/talker 平像），
     // data/stack 上移——sp 从 `stack_top` 取，不读单页常量。
-    berry_sched::spawn_user(user::USER_CODE_VA, h_cu_svcmgr as usize, up_svcmgr.stack_top,
-                          b"user_svcmgr", up_svcmgr.ttbr0_pa, up_svcmgr.asid,
-                          ht_svcmgr as *mut HandleTable as usize);
+    // 06 号修窗件 1 后半：demo-face 门值经 x1 env 旗标随 spawn 递 svcmgr
+    //（[`USER_ENV_DEMO_OFF`]——门关时 svcmgr 侧 talker/echo/echo2 演示链
+    // 与 'v' 稳态环让位，06 号 §4-1 idle→~0% 的 svcmgr 半边闭合；ON 态
+    // env=0 逐字零漂移）。
+    berry_sched::spawn_user_env(
+        user::USER_CODE_VA,
+        h_cu_svcmgr as usize,
+        if demo_face { 0 } else { USER_ENV_DEMO_OFF },
+        up_svcmgr.stack_top,
+        b"user_svcmgr",
+        up_svcmgr.ttbr0_pa,
+        up_svcmgr.asid,
+        ht_svcmgr as *mut HandleTable as usize,
+    );
     // X-3c-1：svcmgr pager 任务（exec demand 装载收货面）——共享同
     // ttbr0/asid/句柄表：寄存表即 svcmgr .bss 静态（PAGER_REQS），零 IPC。
     // 入口/栈顶 = svcmgr link-user.ld 钉位（.pager_entry@0x28000 /
@@ -4343,6 +4354,16 @@ const NOKTEST_PROBE_NAME: &str = "opt/berry/noktest";
 /// NOKTEST_PROBE_NAME 同款「两侧对读维护」纪律——宿主注入口 = berry CLI
 /// fw_cfg 面（display/rtc 同形；justfile `demo=off` 直跑传递）。
 const DEMO_FACE_PROBE_NAME: &str = "opt/berry/demo-face";
+
+/// svcmgr 入口 env 旗标位（06 号修窗件 1 后半：spawn_user_env x1 通道——
+/// 内核 fw_cfg 门值递 svcmgr 的最小侵入通道。裁决：a) 句柄表新插槽位 =
+/// 裸相/rootfs 相槽值漂移（相位序定值 1-9 全占），重排两侧硬编码面 ×100
+/// 不可行；b) sysver VMO 扩字段 = fb GOP 相位专属（裸相缺席）+ 编译期常量
+/// 页像破「零运行时取数」设计；c) 新 syscall = ABI 号位预算消耗（42/45）
+/// 且单 bool 面过重；d) x1 = 落 env gift 语义（spawn 期注入、零新 ABI、
+/// 全相位恒在）——采 d。**两侧对读维护**：svcmgr 侧 USER_ENV_DEMO_OFF
+/// 同值镜像（RT_PROBE_NAME 同款纪律）。
+const USER_ENV_DEMO_OFF: usize = 1 << 0;
 
 /// 读演示面门（[`display_mode_req`] 同款读法：find_file → read_to → trim）。
 /// fail-open：缺席/空/超长/读失败/非 "off"|"clean" 值一律 true（现状零漂移

@@ -1666,6 +1666,7 @@ extern "C" fn sys_thread_start(tf: &mut TrapFrame) -> i64 {
     let task_ptr = match berry_sched::try_prepare_user(
         entry as usize,
         arg as usize,
+        0, // x1 env 旗标：EL0 拉起的线程无 boot env 面（spawn_user_env 专属）
         sp as usize,
         b"user_thread",
         proc.ttbr0_pa,
@@ -1787,6 +1788,7 @@ extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
     let task_ptr = match berry_sched::try_prepare_user(
         entry as usize,
         child_x0,
+        0, // x1 env 旗标：EL0 拉起的进程无 boot env 面（spawn_user_env 专属）
         sp as usize,
         b"user_child",
         proc.ttbr0_pa,

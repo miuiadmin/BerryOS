@@ -137,8 +137,11 @@ impl TaskContext {
     ///
     /// 首次 `switch` 进它时：`ret` 跳 [`user_entry_trampoline`]，后者设
     /// `ELR_EL1 = entry_va`、`SPSR_EL1 = EL0t`（0——DAIF 全解蔽，用户态可被 timer
-    /// 抢占）、`SP_EL0 = sp0_va`、`x0 = arg`，`eret` 降到 EL0 跳用户入口。参向量
-    /// 同 [`TaskContext::new_kernel`] trick：`x19=entry_va`、`x20=arg`、`x21=sp0_va`。
+    /// 抢占）、`SP_EL0 = sp0_va`、`x0 = arg`、`x1 = arg1`，`eret` 降到 EL0 跳用户
+    /// 入口。参向量同 [`TaskContext::new_kernel`] trick：`x19=entry_va`、
+    /// `x20=arg`、`x21=sp0_va`、`x22=arg1`（06 号修窗件 1 后半：x1 = boot env
+    /// 旗标面——`arg1` 经 r[3] 递入，trampoline `mov x1, x22` 落位；既有
+    /// 单参消费者〔EL0 process_start 等〕恒 0，零漂移）。
     ///
     /// EL0 运行期间 SP_EL1 恒留本任务内核栈（eret 前的栈位）——用户态异常/IRQ 入口
     /// （向量 0x400/0x480）硬件强制 SPsel=1，落到的正是该栈，`save_frame_el0` 直接可用。
@@ -150,6 +153,7 @@ impl TaskContext {
     pub fn new_user(
         entry_va: usize,
         arg: usize,
+        arg1: usize,
         sp0_va: usize,
         kstack_top: usize,
     ) -> TaskContext {
@@ -159,6 +163,7 @@ impl TaskContext {
         ctx.r[0] = entry_va as u64; // x19 = 用户入口 VA
         ctx.r[1] = arg as u64; // x20 = arg
         ctx.r[2] = sp0_va as u64; // x21 = 用户 sp_el0
+        ctx.r[3] = arg1 as u64; // x22 = arg1（env 旗标——06 号修窗件 1 后半）
         ctx.lr = user_entry_trampoline as *const () as usize as u64; // x30 = trampoline
         ctx.sp = kstack_top as u64;
         ctx.fp_needed = true; // P3-5：EL0 可能用 FP——出生即全量档
@@ -312,7 +317,8 @@ global_asm!(
     ".globl user_entry_trampoline",
     ".type user_entry_trampoline,%function",
     "user_entry_trampoline:",
-    // 首次 switch 进新用户任务：x19=entry_va、x20=arg、x21=sp0_va（new_user 设）。
+    // 首次 switch 进新用户任务：x19=entry_va、x20=arg、x21=sp0_va、x22=arg1
+    //（new_user 设；arg1 = boot env 旗标，trampoline 落 x1——06 号修窗件 1 后半）。
     // **全程不解蔽 IRQ**（run9 定谳）：switch 合同保证入口 PSTATE.I=1，EL0 的
     // DAIF 由 SPSR_EL1=0 给出——eret 落地即解蔽可抢占（向量 0x480），EL1 侧
     // 无需也不得提前 daifclr。旧序先 daifclr 再写 ELR/SPSR，`msr elr_el1` 与
@@ -323,6 +329,7 @@ global_asm!(
     // 即刻吃 IRQ 近确定性命中；判例详雷册 §A）。屏蔽态写 ELR/SPSR 后 eret
     // 原子落地，窗口消灭。
     "    mov x0, x20",           // 用户入口第一参（eret 不动 GP 寄存器）
+    "    mov x1, x22",           // 用户入口第二参（boot env 旗标——06 号修窗件 1 后半；单参消费者恒 0）
     "    msr sp_el0, x21",       // 用户栈顶
     "    msr elr_el1, x19",      // 用户入口 PC
     "    msr spsr_el1, xzr",     // EL0t、DAIF 全解蔽

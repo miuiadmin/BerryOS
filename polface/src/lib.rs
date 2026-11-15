@@ -72,6 +72,15 @@ pub const KEY_EMPTY: u64 = 0;
 pub const EPP_HAS: u8 = 1 << 0;
 pub const EPP_VAL: u8 = 1 << 1;
 
+/// [`Slot::band`] 的「无意见」值（M4 band 选择位——ADR #42 第二段骨架，
+/// 2026-11-15）：0 = 不选带（缺省，与 placement 的 0 词汇同形）；有效域 =
+/// ×4 现役带 id 0x01..=0x04（带键 = intent 编码，`berry-iprofile::
+/// band_enabled`/`band_id_of_intent` 单源；0x05 冻结、0x00 无专带）。
+/// **纯数据位**：本 crate 只存取不执法——词汇执法与写路径随 v3
+/// `policy_bind` 协议落（v1 内核 ABI `PolicyEntryABI._rsv` 仍整 16 位保留
+/// 且非零拒收，布局兼容不破：band 落偏移 14 = 旧 `_rsv` 低字节）。
+pub const BAND_SEL_NONE: u8 = 0;
+
 /// 桶数须为 2 的幂（探测用 `& (BUCKETS-1)` 回绕 + 散列取高 log2 位）。
 const _: () = assert!(BUCKETS.is_power_of_two());
 
@@ -88,8 +97,17 @@ pub struct Slot {
     pub placement: u8,
     /// bit0 = has_epp，bit1 = epp_val（见 [`EPP_HAS`]/[`EPP_VAL`]）。
     pub epp_flags: u8,
-    pub _rsv: u16,
+    /// band 选择位（偏移 14；见 [`BAND_SEL_NONE`]——M4 骨架预留，v1 写
+    /// 路恒 0）。
+    pub band: u8,
+    /// 保留（偏移 15；v3 协议扩位继续自此处取字节——band 取走旧 `_rsv`
+    /// 低字节后余一字节）。
+    pub _rsv: u8,
 }
+
+/// 槽尺寸钉板：band 位自旧 `_rsv: u16` 取低字节，16B 布局与既有
+/// `PolicyEntryABI` 镜像（kernel syscall.rs）保持兼容——扩位不扩槽。
+const _: () = assert!(core::mem::size_of::<Slot>() == 16);
 
 impl Slot {
     /// 空槽（const 语境可用的全零字面量）。
@@ -98,6 +116,7 @@ impl Slot {
         weight: 0,
         placement: 0,
         epp_flags: 0,
+        band: BAND_SEL_NONE,
         _rsv: 0,
     };
 }
@@ -167,12 +186,14 @@ pub enum InsertOut {
 
 /// 快照插槽原语（切片形）：探测窗内首个空槽写入；重复键 first-wins；窗满
 /// 拒收。消费侧按 [`InsertOut`] 三态入账（REJECT_PROBE_FULL/CLAMP_WEIGHT
-/// 归 sched 原子账——纯面无存储）。
+/// 归 sched 原子账——纯面无存储）。band 选择位原样透存（词汇执法不在本面
+/// ——v1 写路恒 [`BAND_SEL_NONE`]，v3 `policy_bind` 协议开写真值）。
 pub fn insert_slot(
     slots: &mut [Slot],
     key: u64,
     weight: i32,
     placement: u8,
+    band: u8,
     epp: Option<EppHint>,
 ) -> InsertOut {
     let mut idx = bucket_of(key);
@@ -187,6 +208,7 @@ pub fn insert_slot(
             let clamped = weight.clamp(-WEIGHT_MAX, WEIGHT_MAX);
             slot.weight = clamped;
             slot.placement = placement;
+            slot.band = band;
             slot.epp_flags = epp_pack(epp);
             return InsertOut::Inserted { weight: clamped };
         }
@@ -201,9 +223,10 @@ pub fn snap_insert(
     key: u64,
     weight: i32,
     placement: u8,
+    band: u8,
     epp: Option<EppHint>,
 ) -> InsertOut {
-    insert_slot(&mut t.slots, key, weight, placement, epp)
+    insert_slot(&mut t.slots, key, weight, placement, band, epp)
 }
 
 /// EPP 两位打包律：`None` → 0 / `Some(Efficiency)` → [`EPP_HAS`] /
@@ -354,7 +377,7 @@ mod tests {
         ];
         for &(k, b) in sat {
             assert_eq!(bucket_of(k), b, "饱和窗键桶号漂移：key {k}");
-            assert!(matches!(snap_insert(&mut t, k, 0, 0, None), InsertOut::Inserted { .. }));
+            assert!(matches!(snap_insert(&mut t, k, 0, 0, BAND_SEL_NONE, None), InsertOut::Inserted { .. }));
         }
         for &(k, _) in sat {
             let got = lookup_o1(&t, k).expect("已插键查表缺席");
@@ -373,7 +396,7 @@ mod tests {
         let fill: &[(u64, usize)] = &[(237, 121), (93, 122), (182, 123), (38, 124), (127, 125)];
         for &(k, b) in fill {
             assert_eq!(bucket_of(k), b, "早退向量键桶号漂移：key {k}");
-            assert!(matches!(snap_insert(&mut t, k, 0, 0, None), InsertOut::Inserted { .. }));
+            assert!(matches!(snap_insert(&mut t, k, 0, 0, BAND_SEL_NONE, None), InsertOut::Inserted { .. }));
         }
         assert_eq!(bucket_of(1313), 122);
         assert_eq!(lookup_o1(&t, 1313), None, "1313 须槽 126 空槽早退缺席");
@@ -392,9 +415,9 @@ mod tests {
         assert_eq!(bucket_of(233), 0);
         assert_eq!(bucket_of(144), 255);
         assert_eq!(bucket_of(377), 255);
-        assert!(matches!(snap_insert(&mut t, 233, 0, 0, None), InsertOut::Inserted { .. }));
-        assert!(matches!(snap_insert(&mut t, 144, 0, 0, None), InsertOut::Inserted { .. }));
-        assert!(matches!(snap_insert(&mut t, 377, 0, 0, None), InsertOut::Inserted { .. }));
+        assert!(matches!(snap_insert(&mut t, 233, 0, 0, BAND_SEL_NONE, None), InsertOut::Inserted { .. }));
+        assert!(matches!(snap_insert(&mut t, 144, 0, 0, BAND_SEL_NONE, None), InsertOut::Inserted { .. }));
+        assert!(matches!(snap_insert(&mut t, 377, 0, 0, BAND_SEL_NONE, None), InsertOut::Inserted { .. }));
         assert_eq!(t.slots[0].key, 233);
         assert_eq!(t.slots[255].key, 144);
         assert_eq!(t.slots[1].key, 377, "B 须回绕落槽 1（序列 255→0→1）");
@@ -410,8 +433,8 @@ mod tests {
     #[test]
     fn insert_first_wins() {
         let mut t = Slots::empty();
-        assert_eq!(inserted(snap_insert(&mut t, 7, 5, 0, None)), 5);
-        assert_eq!(snap_insert(&mut t, 7, 99, 0, None), InsertOut::Duplicate);
+        assert_eq!(inserted(snap_insert(&mut t, 7, 5, 0, BAND_SEL_NONE, None)), 5);
+        assert_eq!(snap_insert(&mut t, 7, 99, 0, BAND_SEL_NONE, None), InsertOut::Duplicate);
         let got = lookup_o1(&t, 7).unwrap();
         assert_eq!(got.weight, 5, "first-wins：重复插入不得覆写首值");
     }
@@ -422,9 +445,9 @@ mod tests {
     fn insert_probe_full_reject() {
         let mut t = Slots::empty();
         for &k in &[112u64, 201, 57, 146, 2, 91, 324, 36] {
-            assert!(matches!(snap_insert(&mut t, k, 0, 0, None), InsertOut::Inserted { .. }));
+            assert!(matches!(snap_insert(&mut t, k, 0, 0, BAND_SEL_NONE, None), InsertOut::Inserted { .. }));
         }
-        assert_eq!(snap_insert(&mut t, 345, 0, 0, None), InsertOut::ProbeFull);
+        assert_eq!(snap_insert(&mut t, 345, 0, 0, BAND_SEL_NONE, None), InsertOut::ProbeFull);
         assert_eq!(lookup_o1(&t, 345), None, "拒收键不可查");
     }
 
@@ -433,11 +456,11 @@ mod tests {
     #[test]
     fn insert_clamp_at_build() {
         let mut t = Slots::empty();
-        assert_eq!(inserted(snap_insert(&mut t, 11, 100, 0, None)), 64);
-        assert_eq!(inserted(snap_insert(&mut t, 12, -100, 0, None)), -64);
-        assert_eq!(inserted(snap_insert(&mut t, 13, 64, 0, None)), 64);
-        assert_eq!(inserted(snap_insert(&mut t, 14, -64, 0, None)), -64);
-        assert_eq!(inserted(snap_insert(&mut t, 15, 0, 0, None)), 0);
+        assert_eq!(inserted(snap_insert(&mut t, 11, 100, 0, BAND_SEL_NONE, None)), 64);
+        assert_eq!(inserted(snap_insert(&mut t, 12, -100, 0, BAND_SEL_NONE, None)), -64);
+        assert_eq!(inserted(snap_insert(&mut t, 13, 64, 0, BAND_SEL_NONE, None)), 64);
+        assert_eq!(inserted(snap_insert(&mut t, 14, -64, 0, BAND_SEL_NONE, None)), -64);
+        assert_eq!(inserted(snap_insert(&mut t, 15, 0, 0, BAND_SEL_NONE, None)), 0);
         assert_eq!(lookup_o1(&t, 11).unwrap().weight, 64);
     }
 
@@ -457,6 +480,40 @@ mod tests {
         assert_eq!(epp_unpack(0b100), None);
         assert_eq!(epp_unpack(EPP_VAL), None);
         assert_eq!(epp_unpack(EPP_HAS | 0b100), Some(Efficiency));
+    }
+
+    // ---- M4：band 选择位（ADR #42 第二段骨架——纯数据位钉板）----
+
+    /// band 位插入→查表持久化（透存律：插入给什么查表读什么——词汇执法
+    /// 不在纯面）；未给（[`BAND_SEL_NONE`]）与既有插入路径缺省恒 0；空槽
+    /// [`Slot::EMPTY`] band 位 0。
+    #[test]
+    fn band_byte_persists_through_insert_lookup() {
+        let mut t = Slots::empty();
+        assert!(matches!(
+            snap_insert(&mut t, 42, 0, 0, 0x02, None),
+            InsertOut::Inserted { .. }
+        ));
+        assert_eq!(lookup_o1(&t, 42).unwrap().band, 0x02);
+        // 缺省位 = 无意见。
+        assert!(matches!(
+            snap_insert(&mut t, 43, 0, 0, BAND_SEL_NONE, None),
+            InsertOut::Inserted { .. }
+        ));
+        assert_eq!(lookup_o1(&t, 43).unwrap().band, BAND_SEL_NONE);
+        // 全字节域透存（词汇门在 iprofile band_enabled——v3 写路才执法，
+        // 本面不拒任何字节）。
+        for b in [0x00u8, 0x01, 0x04, 0x05, 0xFF] {
+            let mut t = Slots::empty();
+            assert!(matches!(
+                snap_insert(&mut t, 7, 0, 0, b, Some(EppHint::Perf)),
+                InsertOut::Inserted { .. }
+            ));
+            assert_eq!(lookup_o1(&t, 7).unwrap().band, b);
+            // 其余位不受 band 位沾染（同槽共存的既有轴零扰动）。
+            assert_eq!(lookup_o1(&t, 7).unwrap().epp_flags, EPP_HAS | EPP_VAL);
+        }
+        assert_eq!(Slot::EMPTY.band, BAND_SEL_NONE);
     }
 
     // ---- V5：SchedAttr 位选律 ----

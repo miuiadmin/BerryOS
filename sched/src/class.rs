@@ -469,3 +469,92 @@ impl Fair {
         }
     }
 }
+
+// ---- M4 带实例化骨架（ADR #42 第二段——class_fair 按 intent 实例化 ×4 带；
+// 调度优化终窗 2026-11-15，骨架级：构造面先落、行为差异化凭 M4 入场券入场）----
+//
+// 立法约束（ADR #42 / 重议触发器表「class_fair 单实例 → ×N 带实例」条）：
+// - **只许按 intent 实例化同一 `SchedClass` trait、禁改签名**——本段零
+//   trait 改动、零既有签名改动；现役单带 [`Fair`] 原样保留（`RoundRobin`
+//   别名与全部既有调用点零漂移）。
+// - ×4 现役带集 = 0x01 LC / 0x02 interactive / 0x03 utility / 0x04
+//   background；0x05 MAINTENANCE 编码冻结不启用、0x00 UNSPECIFIED 无专带
+//   （XNU 式顶档待定档）——词汇单源 `berry_iprofile::band_enabled`。
+// - **入场券未过前 band 执法不并线**（v1 遥测实证 + loadgen + 尾延迟断言
+//   + 空闲核金丝雀；`调点调度-v1.2.md` §7）——故 [`FairBand`] 的 trait
+//   行为与 [`Fair`] **逐位一致**（全方法委托 unit `Fair`）：本刀只立
+//   「带参数可构造」的实例化面，带间严格序/每带预算包络/deadline-server
+//   兜底/事件驱动记账全不实装（`band.rs` 预算包络骨架与执法开关分立的
+//   同款纪律）。
+// - 数值不写死：[`IntentBand`] 表 = 骨架缺省基线（推断值，锚 = 手表表
+//   权重包络 + 现役 SLICE_HZ quantum 锚——见 `berry-iprofile` 表注）；
+//   M4 真数字经启动配置参数表覆盖（ADR #42「数字进启动配置不写死」）。
+
+use berry_iprofile::IntentBand;
+
+/// class_fair 的**参数化带实例**（M4 骨架）：与 [`Fair`] 同一 fair 语义
+/// （带内 EEVDF），携带 id + 一份 [`IntentBand`] 带参数。trait 方法全数
+/// 委托现役 unit `Fair`——**行为零漂移**（入场券未过，带差异化行为不
+/// 实装）；带参数此刻只落字段，M4 并线时成为 weight/quantum/
+/// latency_target 的消费源。
+///
+/// 构造走 [`class_fair_intent`] 工厂（按 intent 档建带）或 [`FairBand::new`]
+/// （显式带参数——M4 启动配置覆盖路径的入口形状）。
+#[derive(Debug, Clone, Copy)]
+pub struct FairBand {
+    /// 带 id = intent 档编码（带键 = intent，§11；工厂路径恒 ×4 现役集
+    /// 0x01..=0x04——`band_of_intent` 门保证；`new` 显式路径的域执法归
+    /// 调用方〔启动配置面，band_id_of_intent 判〕）。
+    pub band_id: u8,
+    /// 本带参数（骨架位：字段落位 + host 可测面 `berry-iprofile`；热路径
+    /// 消费随 M4 并线）。
+    pub band: IntentBand,
+}
+
+impl FairBand {
+    /// 显式带参数构造（M4 启动配置覆盖路径入口形状——数字进启动配置，
+    /// 不写死；band_id 域执法归调用方）。
+    pub const fn new(band_id: u8, band: IntentBand) -> FairBand {
+        FairBand { band_id, band }
+    }
+}
+
+/// **class_fair_intent 工厂**：按 intent 档建 [`FairBand`] 带实例——查
+/// `berry_iprofile::band_of_intent`（×4 现役集 0x01..=0x04 → 该档带参数行；
+/// 0x00/0x05/保留域 → `None` = 无带，调用方回落现役单带 [`Fair`]，缺省
+/// 行为零漂移）。
+///
+/// **集成面预留窗（M4 并线时接，本刀不实装）**：task→band 赋值——elf
+/// spawn 时读 manifest intent 档（`berry-manifest::Intent` 六档词表）→
+/// `berry_iprofile::band_id_of_intent`（带 id ↔ intent 档映射单源）→ 查
+/// 本工厂得带实例 → 入 per-CPU/全域 ×N 带实例表（带间严格序经既有
+/// `priority() -> i32` 映射——trait 签名零改动）；策略覆盖通道 =
+/// `policy::band_of`（band 选择位，v3 `policy_bind` 写路）。spawn 侧现役
+/// 接线点 = `sched.rs::spawn_intent`（intent 双字段直落处——该处注释窗
+/// 同批）。
+pub fn class_fair_intent(intent: u8) -> Option<FairBand> {
+    berry_iprofile::band_of_intent(intent).map(|band| FairBand::new(intent, band))
+}
+
+/// 带实例的 trait 面：全方法委托现役 unit [`Fair`]（同一实现的第二实例形
+/// ——「同一 trait ×N 实例」的最小落体；行为逐位等价，等 M4 入场券后再
+/// 分化）。`priority()` 现返 0 与 `Fair` 同值——带间严格序映射到既有
+/// `priority() -> i32` 是 M4 并线面的第一步（届时按带 id 差异化，签名
+/// 不动）。
+impl SchedClass for FairBand {
+    fn enqueue(&self, t: &mut Task, rq: &mut Runqueue) {
+        Fair.enqueue(t, rq)
+    }
+    fn dequeue(&self, t: &mut Task, rq: &mut Runqueue) {
+        Fair.dequeue(t, rq)
+    }
+    fn pick_next(&self, rq: &Runqueue, topo: &Topo) -> Option<&mut Task> {
+        Fair.pick_next(rq, topo)
+    }
+    fn tick(&self, t: &mut Task, rq: &mut Runqueue) {
+        Fair.tick(t, rq)
+    }
+    fn priority(&self) -> i32 {
+        Fair.priority()
+    }
+}
