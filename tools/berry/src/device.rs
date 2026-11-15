@@ -70,8 +70,7 @@ impl Device {
         let resolved_vnc = vnc_cfg::resolve(vnc)?;
         let run = RunDir::create(label, keep)?;
         run_dir::write_state(run.path(), "starting");
-        let vars = run.file("vars.fd");
-        qemu::create_vars(&vars, 64)?;
+        let vars = qemu::vars_store(run.path(), 64)?;
         let serial = run.file("serial.log");
         let log = run.file("qemu.log");
         let ram_path = run.file("ram.bin");

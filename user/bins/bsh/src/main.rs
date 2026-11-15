@@ -360,6 +360,55 @@ fn main() {
     interactive(&mut vars, &mut status);
 }
 
+/// M2 第 9 步：BSHRC.CFG 装载——FAT 卷根 8.3 名 `KEY=VALUE` 行注入 shell
+/// vars（同名尾置覆盖 = `assignment_of`/`get_var` rev 找最新语义同源；
+/// `#` 注释行跳过）。静默纪律：fs 礼物缺席/文件缺席/坏行/读失败一律
+/// 零输出零致命——boot 自验链的 bsh 输出是 smoke 逐行契约，rc 装载不
+/// 得多行；交互者用 `echo $KEY` 自验生效。受载帽 = 8KiB 总量/64 行/
+/// 键 32B——超帽截断续走（不致命）。
+fn rc_load(vars: &mut Vec<(String, String)>) {
+    if fs_h() == 0 {
+        return; // 无 fs 礼物装配（裸相）：零 RPC。
+    }
+    const RC_PATH: &[u8] = b"BSHRC.CFG\0";
+    // SAFETY: RC_PATH NUL 结尾字面量；fd 按 libc 契约使用。
+    let fd = unsafe { open(RC_PATH.as_ptr() as *const _, O_RDONLY) };
+    if fd < 0 {
+        return; // 缺席常态（首 boot）或 I/O 面：静默。
+    }
+    let mut data: Vec<u8> = Vec::new();
+    let mut buf = [0u8; 256];
+    loop {
+        let n = read(fd, buf.as_mut_ptr() as *mut _, buf.len());
+        if n <= 0 {
+            break;
+        }
+        data.extend_from_slice(&buf[..n as usize]);
+        if data.len() > 8192 {
+            break; // 总量帽：截断续走。
+        }
+    }
+    close(fd);
+    let mut lines = 0;
+    for line in data.split(|&b| b == b'\n') {
+        if lines >= 64 {
+            break;
+        }
+        if line.is_empty() || line.first() == Some(&b'#') || line.len() > 128 {
+            continue;
+        }
+        if let Some(eq) = line.iter().position(|&b| b == b'=') {
+            if eq == 0 || eq > 32 {
+                continue; // 空键/超长键：坏行跳过。
+            }
+            let name = String::from_utf8_lossy(&line[..eq]).into_owned();
+            let value = String::from_utf8_lossy(&line[eq + 1..]).into_owned();
+            vars.push((name, value));
+            lines += 1;
+        }
+    }
+}
+
 /// 交互循环（化妆面）：**C-4 起行编辑归 bsh**（console 逐字节透传，
 /// echo/退格/历史召回/Tab 补全全在本端——editor.rs）。逐字节 read +
 /// Editor::feed；行定稿走 run_line。空读（fd0 的 10s 帽超时 EOF 化）
@@ -369,6 +418,9 @@ fn main() {
 /// selftest 哑终端驱动面）与常规链尾路径共用同一台机器；`vars`/`status`
 /// 由调用方持有（`$?` 跨链尾→交互语义零漂移）。恒不返回（无限循环）。
 fn interactive(vars: &mut Vec<(String, String)>, status: &mut i32) -> ! {
+    // M2 第 9 步：BSHRC.CFG 装载（静默——见 rc_load 头注；常规链尾与
+    // --no-selftest 两路径同机生效）。
+    rc_load(vars);
     let stdin = std::io::stdin();
     let mut sin = stdin.lock();
     let mut out = std::io::stdout();

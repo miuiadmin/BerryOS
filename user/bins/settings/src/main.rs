@@ -27,7 +27,8 @@
 //!   FRAME_CALLBACK → RELEASE 严格内联串行（在途 ≤1 结构性背压，
 //!   launcher frameloop 同食谱）+ vote 票面变化才发。
 //! - 输入：input_h() INPUT_POLL 批拉（≤3 事件/轮）→ 逐条 `push_pointer`
-//!   → `pump_input`（手势 referee + widget_react 同拍）→ `take_events`。
+//!   → `pump_input_at(now)`（C′ 新鲜目标重采样 + 手势 referee +
+//!   widget_react 同拍 + A′ 内建 pump→wake 时序）→ `take_events`。
 //!   无 input 礼物（hi==0）= 静态页常驻（零输入零 RPC）。
 //!
 //! **波 4 已知缺口（侦察 §二「GUI 通道授权缺位」）**：svcmgr `app_launch`
@@ -67,7 +68,7 @@ use berry_ui::{
     ROLE_TEXT, ROLE_TOGGLE,
 };
 
-mod theme_io;
+mod settings_io;
 
 // 链接种子（fsmgr/guifbd/berry-launcher 同款）：rlib/LTO 按需保留——无引用
 // 则 berry-libc 的 crt0（含 `_start`）不进链接；`#[used]` 防死码消除。
@@ -136,9 +137,6 @@ const EV_BT: u32 = 2;
 const EV_BRIGHT: u32 = 3;
 const EV_SYNC: u32 = 4;
 const EV_THEME: u32 = 5;
-
-/// 亮度初值（permille；值域 0..=1000——desc.rs SliderProps 契约）。
-const BRIGHT_INIT: u32 = 800;
 
 /// 诊断 + park 收口（launcher `fail` 同形——app 常驻不被 reap，退出码无
 /// 消费者；崩溃监督归 svcmgr app_supervise 域，本进程不自救）。
@@ -258,8 +256,14 @@ fn box_spec(w: u32, h: u32) -> ViewSpec {
 struct Page {
     /// 亮度百分值 Text（Slider on_change 驱动换字）。
     bright_value: NodeId,
+    /// Wi-Fi 开关 Toggle 本体（EV_WIFI 事件源比对锚）。
+    wifi_toggle: NodeId,
+    /// Bluetooth 开关 Toggle 本体（EV_BT 事件源比对锚）。
+    bt_toggle: NodeId,
     /// 亮度 Slider 本体（事件源比对锚）。
     bright_slider: NodeId,
+    /// 自动同步 Check 本体（EV_SYNC 事件源比对锚）。
+    sync_check: NodeId,
     /// 暗色开关 Toggle 本体（EV_THEME 事件源比对锚）。
     theme_toggle: NodeId,
     /// chrome 文本（标题 + 各行标签 + 亮度值）：(节点, TextProps 模板,
@@ -275,14 +279,14 @@ fn reg_chrome(p: &mut Vec<(NodeId, TextProps, u8)>, id: NodeId, tp: TextProps, f
 
 /// 建设置页树：根 Col → 顶留白 → 内容 Col（标题 + 分隔线 + 五行）。
 /// 每行 = Row[定宽标签列, 定宽推位, 组件]（右侧对齐——组件 x 恒定，值
-/// 文本换宽不抖动）。`dark` = 启动档（theme_io 装载值——暗色开关初
-/// 始 checked 与 chrome 取档同源）。Err = 容量/文本域违例 → 调用方
-/// fail 收口。
-fn build(ui: &mut UiMain, dark: bool) -> Result<Page, UiError> {
+/// 文本换宽不抖动）。`st` = 启动配置态（settings_io 装载值——五组件
+/// checked/value 初值与 chrome 取档一源）。Err = 容量/文本域违例 →
+/// 调用方 fail 收口。
+fn build(ui: &mut UiMain, st: &settings_io::State) -> Result<Page, UiError> {
     // chrome 文本登记册（标题 + 各行标签 + 亮度值——换档臂消费面；
     // 末尾一次性组 Page）。
     let mut texts: Vec<(NodeId, TextProps, u8)> = Vec::new();
-    let (_, tfg, vfg) = chrome(if dark { Theme::Dark } else { Theme::Light });
+    let (_, tfg, vfg) = chrome(if st.dark { Theme::Dark } else { Theme::Light });
     let (vp_w, vp_h) = ui.viewport();
     // 档位判别同 launcher desktop.rs：OH phone 1080×1920 走 big 档
     //（24vp×3 padding），800×600 调试档紧凑。
@@ -415,15 +419,15 @@ fn build(ui: &mut UiMain, dark: bool) -> Result<Page, UiError> {
         tfg,
     )?;
     reg_chrome(&mut texts, wifi_label, wifi_tp, 0);
-    let wifi = ui.add(
+    let wifi_toggle = ui.add(
         r,
         ViewSpec {
             kind: ViewKind::Toggle,
             key: 0,
-            props: Props::Toggle(ToggleProps { checked: true, on_change: EV_WIFI }),
+            props: Props::Toggle(ToggleProps { checked: st.wifi, on_change: EV_WIFI }),
         },
     )?;
-    ui.set_a11y(wifi, ROLE_TOGGLE, b"wifi toggle")?;
+    ui.set_a11y(wifi_toggle, ROLE_TOGGLE, b"wifi toggle")?;
 
     // — Bluetooth 开关 —
     let (r, bt_label, bt_tp) = row(
@@ -439,15 +443,15 @@ fn build(ui: &mut UiMain, dark: bool) -> Result<Page, UiError> {
         tfg,
     )?;
     reg_chrome(&mut texts, bt_label, bt_tp, 0);
-    let bt = ui.add(
+    let bt_toggle = ui.add(
         r,
         ViewSpec {
             kind: ViewKind::Toggle,
             key: 0,
-            props: Props::Toggle(ToggleProps { checked: false, on_change: EV_BT }),
+            props: Props::Toggle(ToggleProps { checked: st.bt, on_change: EV_BT }),
         },
     )?;
-    ui.set_a11y(bt, ROLE_TOGGLE, b"bluetooth toggle")?;
+    ui.set_a11y(bt_toggle, ROLE_TOGGLE, b"bluetooth toggle")?;
 
     // — 亮度（标签 + 推位 + 值 Text + Slider 四子三缝：拖动跟值 →
     //   on_change → 帧循环 set_text 百分值。值文本入定宽列——数字变宽
@@ -478,7 +482,9 @@ fn build(ui: &mut UiMain, dark: bool) -> Result<Page, UiError> {
             }),
         },
     )?;
-    let (vspec_v, vtp) = text_tp(b"80%", vfg, value_size)?;
+    // 亮度初值文本随装载值（st.bright 换算百分数——非默认档不显示 80%）。
+    let binit = pct_bytes(st.bright);
+    let (vspec_v, vtp) = text_tp(&binit[..pct_len(st.bright)], vfg, value_size)?;
     let bright_value = ui.add(vc, vspec_v)?;
     reg_chrome(&mut texts, bright_value, vtp, 1);
     ui.set_a11y(bright_value, ROLE_TEXT, b"brightness percent")?;
@@ -488,9 +494,9 @@ fn build(ui: &mut UiMain, dark: bool) -> Result<Page, UiError> {
             kind: ViewKind::Slider,
             key: 0,
             props: Props::Slider(SliderProps {
-                value: BRIGHT_INIT,
+                value: st.bright,
                 min: 0,
-                max: 1000,
+                max: settings_io::BRIGHT_MAX,
                 on_change: EV_BRIGHT,
             }),
         },
@@ -511,15 +517,15 @@ fn build(ui: &mut UiMain, dark: bool) -> Result<Page, UiError> {
         tfg,
     )?;
     reg_chrome(&mut texts, sync_label, sync_tp, 0);
-    let sync = ui.add(
+    let sync_check = ui.add(
         r,
         ViewSpec {
             kind: ViewKind::Check,
             key: 0,
-            props: Props::Check(CheckProps { checked: false, on_change: EV_SYNC }),
+            props: Props::Check(CheckProps { checked: st.sync, on_change: EV_SYNC }),
         },
     )?;
-    ui.set_a11y(sync, ROLE_TOGGLE, b"auto-sync check")?;
+    ui.set_a11y(sync_check, ROLE_TOGGLE, b"auto-sync check")?;
 
     // — 暗色开关（维八暗色刀：Toggle 消费 pattern/theme 冻结名——切换
     //   = set_theme_mode 即时生效 + theme_io 落盘；checked 初值 = 启动
@@ -542,13 +548,13 @@ fn build(ui: &mut UiMain, dark: bool) -> Result<Page, UiError> {
         ViewSpec {
             kind: ViewKind::Toggle,
             key: 0,
-            props: Props::Toggle(ToggleProps { checked: dark, on_change: EV_THEME }),
+            props: Props::Toggle(ToggleProps { checked: st.dark, on_change: EV_THEME }),
         },
     )?;
 
     ui.set_a11y(theme_toggle, ROLE_TOGGLE, b"dark theme toggle")?;
 
-    Ok(Page { bright_value, bright_slider, theme_toggle, texts })
+    Ok(Page { bright_value, wifi_toggle, bt_toggle, bright_slider, sync_check, theme_toggle, texts })
 }
 
 /// permille（0..=1000）→ 百分值字节串（≤4B：`100%` 最长档）。
@@ -622,11 +628,13 @@ fn main() {
     static TEXT_METRICS: ProportionalTextMetrics = ProportionalTextMetrics;
     ui.set_text_metrics(&TEXT_METRICS);
 
-    // —— 主题档装载（theme_io 三约束：缺席默认 Light/坏件回默认自愈/
-    //    fs 礼物缺席零 RPC）——建树取同源初值（Toggle checked 与 chrome
-    //    取档一源）。
-    let mode0 = theme_io::load();
-    let page = match build(ui, mode0 == Theme::Dark) {
+    // —— 配置档装载（settings_io 三约束：缺席默认不预写/坏件回默认自愈
+    //    /fs 礼物缺席零 RPC；旧 SETTINGS.JSN dark 键自动迁移——M2 第 8
+    //    步五键版）——建树取同源初值（Toggle/Slider checked/value 与
+    //    chrome 取档一源）。
+    let st0 = settings_io::load();
+    let mode0 = settings_io::theme_of(&st0);
+    let page = match build(ui, &st0) {
         Ok(p) => p,
         Err(e) => fail(&format!("page build err={e:?}")),
     };
@@ -635,14 +643,14 @@ fn main() {
     ui.set_theme_mode(mode0);
 
     // —— 帧循环（常驻义务——永不返回）。
-    run(hw, input_h(), ui, page, mode0);
+    run(hw, input_h(), ui, page, st0);
 }
 
 /// 帧循环 + 输入 + 事件消费（launcher frameloop 食谱的 app 最小形：无
 /// pager/自测/spawn 面；widget 交互 = 引擎 widget_react，app 只消费事件
-/// 换值文本/换主题档）。`mode0` = 启动主题档（theme_io 装载值——run 内
-/// 换档臂的比对基线）。
-fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, page: Page, mode0: Theme) -> ! {
+/// 换值文本/换主题档/落盘）。`st0` = 启动配置态（settings_io 装载值
+/// ——run 内五键缓存与落盘的比对基线）。
+fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, page: Page, st0: settings_io::State) -> ! {
     // —— present GETINFO（wmd 中继同端）：能力面轻断言 + 几何一致性
     //    （建树真值 = wm GETINFO；present 权威——失配 fail loud）。
     let mut req = [0u8; 256];
@@ -730,12 +738,11 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, page: Page, mode0: Th
     ui.set_vsync(VSYNC_NS, 0);
     ui.wake(now());
 
-    let mut last_expected: u64 = 0; // pump 重采样 target（上帧 expected 轨）
     let mut last_vote: Option<berry_ui::frame::VoteBallot> = None; // 票面变化才发
     let mut presented: u64 = 0; // FRAME_CALLBACK 过链计数（首帧诊断门）
     let mut buf_id: u32 = 1; // SUBMIT buffer 代际
-    let mut bright_v: u32 = BRIGHT_INIT; // 值缓存（值同跳过 set_text——零脏帧）
-    let mut mode = mode0; // 主题档运行态（EV_THEME 换档臂的比对基线）
+    let mut st = st0; // 五键运行态缓存（事件臂比对基线；变更统一落盘）
+    let mut mode = settings_io::theme_of(&st); // 主题档运行态（EV_THEME 换档臂的比对基线）
     let mut clear = chrome(mode).0; // 整帧清屏底（换档臂双档换）
     let mut hi = hi_in; // input 端（失效面置 0——静态页续活）
     let mut input_pending = false; // INPUT_POLL 在途
@@ -748,6 +755,8 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, page: Page, mode0: Th
         // —— 真实输入（launcher 段④ 同形）：先收上一轮 INPUT_POLL 应答，
         //    再挂下一轮 poll；事件逐条 push 进引擎（widget_react 在
         //    pump_input 期同拍消费——Toggle 翻转/Slider 跟值落 props）。
+        //    此处不 wake——A′（触摸响应设计 v1.0）：起振后置到 pump
+        //    之后（pump_input_at 内建），首触精确脏区不被 FULL 兜底吞。
         if hi != 0 && input_pending {
             let mut nb = input_buf.len();
             let mut nh = input_hs.len();
@@ -781,7 +790,6 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, page: Page, mode0: Th
                                 }
                             }
                         }
-                        ui.wake(now());
                     }
                     Some(Err(gp::ST_EAGAIN)) => {} // 无事件常态
                     Some(Err(st)) => eprintln!("settings: input poll st={st}"),
@@ -804,34 +812,70 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, page: Page, mode0: Th
         }
 
         // —— 输入泵（referee + 重采样 + widget_react——引擎单口）。
-        //    手势 Msg 本页无消费者（无翻页/拖滚动容器）：读取即弃；
-        //    组件事件经 take_events 走 app 面。
-        let _ = ui.pump_input(last_expected);
+        //    C′：pump_input_at 从 t_now 推下一拍做重采样目标（上一帧
+        //    expected 轨退役）；A′：有事件才内建 wake（press/widget
+        //    精确脏区先落 damage）。手势 Msg 本页无消费者（无翻页/拖
+        //    滚动容器）：读取即弃；组件事件经 take_events 走 app 面。
+        let _ = ui.pump_input_at(t_now);
 
-        // —— 组件事件消费：Toggle/Check = 引擎内已翻转（视觉已脏，读取
-        //    即记账）；Brightness Slider on_change → 百分值 Text 换字
-        //    （值同跳过——零冗余脏帧）；暗色开关 on_change → 换档即时
-        //    生效（set_theme_mode FULL damage + chrome 双档换 + 落盘）。
+        // —— 组件事件消费：Toggle/Check = 引擎内已翻转（视觉已脏）；
+        //    五键全量归集（M2 第 8 步——wifi/bt/sync 此前读取即弃），
+        //    批后统一一次落盘（一批多事件不多次写盘）。Brightness
+        //    Slider on_change → 百分值 Text 换字（值同跳过——零冗余脏帧）；
+        //    暗色开关 on_change → 换档即时生效（set_theme_mode FULL damage
+        //    + chrome 双档换）。
         let evs = ui.take_events();
         let mut new_bright: Option<u32> = None;
+        let mut new_wifi: Option<bool> = None;
+        let mut new_bt: Option<bool> = None;
+        let mut new_sync: Option<bool> = None;
         let mut new_theme: Option<bool> = None;
         for ev in evs.iter() {
+            // Toggle/Check on_change value = 翻转后 checked 0/1（widget_
+            // react 契约）。
+            if ev.node == page.wifi_toggle && ev.event == EV_WIFI {
+                new_wifi = Some(ev.value != 0);
+            }
+            if ev.node == page.bt_toggle && ev.event == EV_BT {
+                new_bt = Some(ev.value != 0);
+            }
             if ev.node == page.bright_slider && ev.event == EV_BRIGHT {
                 new_bright = Some(ev.value);
             }
+            if ev.node == page.sync_check && ev.event == EV_SYNC {
+                new_sync = Some(ev.value != 0);
+            }
             if ev.node == page.theme_toggle && ev.event == EV_THEME {
-                // Toggle on_change value = 翻转后 checked 0/1（widget_
-                // react 契约）。
                 new_theme = Some(ev.value != 0);
             }
         }
+        let mut dirty = false;
+        if let Some(v) = new_wifi {
+            if v != st.wifi {
+                st.wifi = v;
+                dirty = true;
+            }
+        }
+        if let Some(v) = new_bt {
+            if v != st.bt {
+                st.bt = v;
+                dirty = true;
+            }
+        }
+        if let Some(v) = new_sync {
+            if v != st.sync {
+                st.sync = v;
+                dirty = true;
+            }
+        }
         if let Some(v) = new_bright {
-            if v != bright_v {
+            if v != st.bright {
                 let b = pct_bytes(v);
                 if let Err(e) = ui.set_text(page.bright_value, &b[..pct_len(v)]) {
                     fail(&format!("brightness set_text err={e:?}"));
                 }
-                bright_v = v;
+                st.bright = v;
+                dirty = true;
                 ui.wake(now());
             }
         }
@@ -839,6 +883,8 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, page: Page, mode0: Th
             let m = if dark { Theme::Dark } else { Theme::Light };
             if m != mode {
                 mode = m;
+                st.dark = dark;
+                dirty = true;
                 // ①引擎面：色板随档换 + FULL damage（全帧重画）。
                 ui.set_theme_mode(m);
                 // ②app chrome 面：clear 底双档换 + 全部 chrome 文本按
@@ -852,17 +898,18 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, page: Page, mode0: Th
                         eprintln!("settings: theme set_props err={e:?}");
                     }
                 }
-                // ③持久化：SETTINGS.JSN 单簇覆写（失败非致命——内存档
-                //    位照用；fs 缺席装配 = 内存态开关，theme_io 头注）。
-                theme_io::save(m);
                 ui.wake(now());
             }
+        }
+        // ③持久化：SETTINGS.CFG 单簇覆写（失败非致命——内存态照用；fs
+        //    缺席装配 = 内存态开关，settings_io 头注）。
+        if dirty {
+            settings_io::save(&st);
         }
 
         // —— 渲染（damage 空集零提交——跳过帧零 RPC）。
         let mut enc = CommandEncoder::new();
         let out = ui.render_frame(t_now, scratch, &mut enc);
-        last_expected = out.expected_present_ns;
         if out.drew {
             let dmg = out.damage;
             // K>0 xor FULL 立法兜底：count==0 非空集视同整帧。
