@@ -314,16 +314,27 @@ fn intrinsic(
         }
         Props::Image(p) => icon_dims(icons, p.res, p.w, p.h),
         Props::Icon(p) => icon_dims(icons, p.id, p.w, p.h),
-        // 组件七件（Phase 1 占位）：数据结构层先行，内在语义（Button 标
-        // 签度量 / List count×item_h / Scroll content_h）挂 Phase 2 布局
-        // 刀——占位 0×0（容器子树仍各自递归测量，final_size 随父不塌陷
-        // 走查）。半实现（如 List 项高聚合）会与 place_children 的 Root
-        // 型全幅叠放失配产出中间态，不取。
-        Props::Button(_)
-        | Props::Toggle(_)
-        | Props::Slider(_)
-        | Props::Progress(_)
-        | Props::Scroll(_)
+        // 组件七件的 Phase 2 首批（Button/Toggle/Slider/Progress——本刀）：
+        // 内在型叶（Text 同列），固定值起步（几何常量单源 crate::——
+        // lib.rs「组件四件 v1 几何常量」块）。Button 宽 = 标签字节长 ×
+        // 8（S8x16 档 cell_w——与 paint 渲染推进同值）+ 32 水平留白、下
+        // 限 64、恒高 48（触摸最小可点区）；Toggle 52×32 标准开关；
+        // Slider 200×44 最小可拖区；Progress 200×8 线性进度条。
+        Props::Button(p) => {
+            let w = (p.label.len as u64 * crate::BUTTON_CHAR_W as u64)
+                .saturating_add(crate::BUTTON_PAD_X as u64)
+                .max(crate::BUTTON_MIN_W as u64);
+            (u64_to_u32_sat(w), crate::BUTTON_H)
+        }
+        Props::Toggle(_) => (crate::TOGGLE_W, crate::TOGGLE_H),
+        Props::Slider(_) => (crate::SLIDER_W, crate::SLIDER_H),
+        Props::Progress(_) => (crate::PROGRESS_W, crate::PROGRESS_H),
+        // 组件七件余三件（Phase 1 占位保持）：内在语义（List count×
+        // item_h / Scroll content_h / Tabs 行高）挂后续布局刀——占位
+        // 0×0（容器子树仍各自递归测量，final_size 随父不塌陷走查）。
+        // 半实现（如 List 项高聚合）会与 place_children 的 Root 型全幅
+        // 叠放失配产出中间态，不取。
+        Props::Scroll(_)
         | Props::List(_)
         | Props::Tabs(_)
         // P1 九件（占位同组件七件）：Stack 叠层内在应为子聚合 max×max
@@ -493,15 +504,21 @@ fn final_size(n: &Node, avail_w: i32, avail_h: i32) -> (i32, i32) {
             p.w.map(u32_to_i32_sat).unwrap_or(u32_to_i32_sat(n.meas_w)),
             p.h.map(u32_to_i32_sat).unwrap_or(u32_to_i32_sat(n.meas_h)),
         ),
-        // 组件七件（Phase 1 占位）：随父填充（Rect None 同形）——无内在
-        // 语义（meas = 0×0，见 intrinsic 注记）；place_children 走 `_` 臂
-        // Root 型全幅叠放，子树不断轨。定尺寸面（SIZE 块）§8.2 表未扩，
-        // 组件七件拒块——无双源。
+        // 组件四件（Phase 2 首批）：内在型叶（Text 同列——恒内在
+        // meas_w/h，**不吃 avail**，§4.1 豁免行同律；十字轴拉伸只及随父
+        // 型子）。内在值单源 = intrinsic 四臂（固定几何起步）；定尺寸面
+        // （SIZE 块）§8.2 表未扩，组件拒块——无双源。
         Props::Button(_)
         | Props::Toggle(_)
         | Props::Slider(_)
-        | Props::Progress(_)
-        | Props::Scroll(_)
+        | Props::Progress(_) => (
+            u32_to_i32_sat(n.meas_w),
+            u32_to_i32_sat(n.meas_h),
+        ),
+        // 组件七件余三件 + P1 九件（占位同前）：随父填充；Stack 的全幅
+        // 叠放子分配由 `_` 臂天然合义（z 序叠层 = Root 型全幅）。SIZE 块
+        // 同拒。
+        Props::Scroll(_)
         | Props::List(_)
         | Props::Tabs(_)
         // P1 九件（占位同组件七件）：随父填充；Stack 的全幅叠放子分配

@@ -10,6 +10,11 @@
 //!   `draw_glyph_run`（`style.bg` 衬底透传，None = 透明底——§6
 //!   TextStyle 字段语义优先）；Image/Icon → `draw_image`（§4.3——
 //!   Argb 像素经 D28 icons 槽，blit = 源内在尺寸 v1 无缩放）。
+//! - **组件四件**（Button/Toggle/Slider/Progress——Phase 2 首批）：入
+//!   可见叶列，固定色板 + 已有原语组合发射（「组件四件 v1 固定色板」
+//!   块）——Button 底/描边 + 居中标签、Toggle 胶囊轨 + 滑块、Slider
+//!   轨 + 填充 + 拖动圆、Progress 轨 + 填充条；不透明度不可证（描边/
+//!   透明底有洞）——恒不计遮挡源（与 Text 同列保守正确）。
 //! - **尾部必录 `Present{damage 包络}`**（soft no-op 也录——FULL →
 //!   viewport、空集 → 零矩形）。
 //! - overdraw_x256 = drawn_px×256/vp 面素（发射足迹 ∩ viewport；u128
@@ -22,14 +27,47 @@
 //!   槽防御以 nodes.len() 为帽。
 
 use crate::damage::{i64_to_i32_sat, DamageSet, RectI, RectSet};
-use crate::desc::{Props, ViewKind};
+use crate::desc::{ButtonStyle, Props, ViewKind};
 use crate::metrics::IconSource;
 use crate::Node;
 use berry_gfx::cmd::{Color, CommandEncoder, GlyphPos, GlyphRun, ImageSrc, Rect as GfxRect};
+use berry_gfx::font::FontSize;
 
 /// 槽索引空哨兵（§6 Node 注：NONE = u32::MAX——hit.rs 同值，本模块自
 /// 带防跨模块未定名依赖）。
 const NONE: u32 = u32::MAX;
+
+// ---------- 组件四件 v1 固定色板（Phase 2 首批——渲染起步面） ----------
+//
+// v1 无样式系统：固定色值起步（文档化豁免——同 lib.rs `PRESSED_BG`
+// 先例；主题系统落地后由此块迁出）。pub 供 golden 测试值级对拍。
+
+/// 主色：Filled 按钮底 / Toggle 开轨 / Slider 填充与拖动圆 / Progress
+/// 填充。
+pub const ACCENT: Color = Color { r: 0x19, g: 0x76, b: 0xD2 };
+/// Toggle 关轨灰。
+pub const TRACK_OFF: Color = Color { r: 0x9E, g: 0x9E, b: 0x9E };
+/// Slider/Progress 底轨浅灰。
+pub const TRACK_DIM: Color = Color { r: 0xBD, g: 0xBD, b: 0xBD };
+/// Toggle/Slider 滑块白（拖动圆兼）。
+pub const KNOB: Color = Color { r: 0xFF, g: 0xFF, b: 0xFF };
+/// Outlined 按钮描边灰。
+pub const OUTLINE: Color = Color { r: 0x66, g: 0x66, b: 0x66 };
+/// Filled 按钮标签白（ACCENT 底上）。
+pub const ON_ACCENT: Color = Color { r: 0xFF, g: 0xFF, b: 0xFF };
+/// Outlined/Text 按钮标签深色。
+pub const ON_SURFACE: Color = Color { r: 0x21, g: 0x21, b: 0x21 };
+/// 按钮标签字号档（S8x16——cell 8×16；`crate::BUTTON_CHAR_W` 与
+/// cell_w() 同值，布局测量/渲染推进单源）。
+const BUTTON_LABEL_FONT: FontSize = FontSize::S8x16;
+/// 按钮标签字高（= S8x16 cell_h——居中摆位用）。
+const BUTTON_LABEL_H: i64 = 16;
+/// Outlined 按钮描边厚度（四边 fill_rect 组合）。
+const BUTTON_BORDER: i32 = 2;
+/// Toggle 滑块边距（轨道内滑块四周留白）。
+const TOGGLE_KNOB_MARGIN: i32 = 4;
+/// Slider 轨道线厚。
+const SLIDER_TRACK_H: i32 = 4;
 
 /// 遮挡覆盖集容量（damage 矩形 ≤ 8 的两倍余量；溢出保守少记覆盖 →
 /// 多画不少画，见 RectSet 类型注）。
@@ -231,22 +269,26 @@ fn cull_walk(
 
     // 自身（子树最底 = 最后画）。容器无视觉内容不参与（Grid 同列——
     // 子格各自发射）；Image/Icon = 可见叶（§4.3——Text 同列走查，
-    // 恒不计遮挡源）。组件七件（Phase 1）、P1 九件与 P0 尾四件无视觉
-    // 面——与容器同列走查（子仍发射；组件自身渲染挂 Phase 2；
-    // Stack = 叠层容器）。P1 尾五件同列（Refresh = 包裹容器，Tip 浮层
-    // 视觉挂 Phase 2）。P2 七件同列（Collapse/Card = 包裹容器，Chip/
-    // Fab/Gauge/Qr/DragReorder 视觉挂 Phase 2）。
+    // 恒不计遮挡源）。组件四件（Button/Toggle/Slider/Progress——
+    // Phase 2 首批）入可见叶列（各自 emit_node 合成视觉）；不透明度
+    // 不可证（Outlined 有洞 / Text 式无底）——与 Text 同列**恒不计
+    // 遮挡源**（保守正确）。余组件件无视觉面——与容器同列走查（子
+    // 仍发射；渲染挂后续刀；Stack = 叠层容器；Refresh/Collapse/
+    // Card = 包裹容器）。
     match n.kind {
-        ViewKind::Rect | ViewKind::Text | ViewKind::Image | ViewKind::Icon => {}
+        ViewKind::Rect
+        | ViewKind::Text
+        | ViewKind::Image
+        | ViewKind::Icon
+        | ViewKind::Button
+        | ViewKind::Toggle
+        | ViewKind::Slider
+        | ViewKind::Progress => {}
         ViewKind::Root
         | ViewKind::Col
         | ViewKind::Row
         | ViewKind::Pad
         | ViewKind::Grid
-        | ViewKind::Button
-        | ViewKind::Toggle
-        | ViewKind::Slider
-        | ViewKind::Progress
         | ViewKind::Scroll
         | ViewKind::List
         | ViewKind::Tabs
@@ -283,7 +325,7 @@ fn cull_walk(
         return;
     }
     if n.kind == ViewKind::Rect {
-        covered.add(vis); // 实心不透明才计遮挡源（Text 蜂格有洞不计；Image/Icon 恒不计遮挡源——§4.3）
+        covered.add(vis); // 实心不透明才计遮挡源（Text 蜂格有洞、Image/Icon 与组件四件恒不计——§4.3 + 组件不透明度不可证，保守正确）
     }
     if *n_order < ORDER_CAP {
         order[*n_order] = slot;
@@ -325,11 +367,17 @@ fn emit_walk_all<'a>(
 
     // 自身先（前序 = 画家算法背到前：先画者先发射）。容器无视觉内容不
     // 参与（Grid 同列）；Image/Icon = 可见叶同主路径发射（§4.3）。
-    // 组件七件（Phase 1）、P1 九件与 P0 尾四件同容器列——无视觉面，
-    // 子仍走查（渲染挂 Phase 2）；P1 尾五件同列；P2 七件同列
-    //（Collapse/Card = 包裹容器）。
+    // 组件四件（Phase 2 首批）入可见叶列（emit_node 合成视觉）；余组
+    // 件件同容器列——无视觉面，子仍走查（渲染挂后续刀）。
     match n.kind {
-        ViewKind::Rect | ViewKind::Text | ViewKind::Image | ViewKind::Icon => {
+        ViewKind::Rect
+        | ViewKind::Text
+        | ViewKind::Image
+        | ViewKind::Icon
+        | ViewKind::Button
+        | ViewKind::Toggle
+        | ViewKind::Slider
+        | ViewKind::Progress => {
             let b = RectI::new(i64_to_i32_sat(bx), i64_to_i32_sat(by), n.w, n.h);
             if b.intersect(d).is_empty() {
                 rep.culled += 1; // damage 外叶子
@@ -342,10 +390,6 @@ fn emit_walk_all<'a>(
         | ViewKind::Row
         | ViewKind::Pad
         | ViewKind::Grid
-        | ViewKind::Button
-        | ViewKind::Toggle
-        | ViewKind::Slider
-        | ViewKind::Progress
         | ViewKind::Scroll
         | ViewKind::List
         | ViewKind::Tabs
@@ -461,10 +505,165 @@ fn emit_node<'a>(
                 }
             }
         }
-        // Root/Col/Row/Pad/Grid：无视觉内容（子树各自发射）
+        // 组件四件（Phase 2 首批——固定色板 + 已有原语组合，见模块头
+        // 色板块）：Button = 底/描边 + 居中标签；Toggle = 胶囊轨道 +
+        // 滑块；Slider = 轨道线 + 填充 + 拖动圆；Progress = 轨道 +
+        // 填充条（style Circular/Indeterminate v1 统一线性渲染——圆/
+        // 动画面挂后续刀，数据已随 props 携载）。
+        Props::Button(p) => {
+            match p.style {
+                ButtonStyle::Filled => {
+                    fill(enc, b.x, b.y, b.w, b.h, ACCENT, rep);
+                    emit_button_label(p, ON_ACCENT, b, rest, enc, rep);
+                }
+                ButtonStyle::Outlined => {
+                    // 描边 = 四 fill_rect 组合（v1 无 stroke 原语——「已有
+                    // 原语组合」纪律）；底不填（Color 无 alpha——Outlined
+                    // 语义 = 透应用底，实心 surface 会盖住背景）。
+                    let t = BUTTON_BORDER.min(b.w / 2).min(b.h / 2).max(1);
+                    fill(enc, b.x, b.y, b.w, t, OUTLINE, rep);
+                    fill(enc, b.x, b.y + b.h - t, b.w, t, OUTLINE, rep);
+                    fill(enc, b.x, b.y + t, t, b.h - 2 * t, OUTLINE, rep);
+                    fill(enc, b.x + b.w - t, b.y + t, t, b.h - 2 * t, OUTLINE, rep);
+                    emit_button_label(p, ON_SURFACE, b, rest, enc, rep);
+                }
+                ButtonStyle::Text => {
+                    emit_button_label(p, ON_SURFACE, b, rest, enc, rep);
+                }
+            }
+        }
+        Props::Toggle(p) => {
+            let track = if p.checked { ACCENT } else { TRACK_OFF };
+            capsule_h(enc, b.x, b.y, b.w, b.h, track, rep);
+            let d = (b.h - 2 * TOGGLE_KNOB_MARGIN).max(0); // 滑块边长（32 高 → 24）
+            let kx = if p.checked {
+                b.x + b.w - TOGGLE_KNOB_MARGIN - d
+            } else {
+                b.x + TOGGLE_KNOB_MARGIN
+            };
+            oct3(enc, kx, b.y + TOGGLE_KNOB_MARGIN, d, KNOB, rep);
+        }
+        Props::Slider(p) => {
+            let yc = b.y + b.h / 2;
+            let ty = yc - SLIDER_TRACK_H / 2;
+            fill(enc, b.x, ty, b.w, SLIDER_TRACK_H, TRACK_DIM, rep);
+            // 拖动圆行程 = [x+inset, x+w−inset]（inset = 圆半径——与
+            // lib.rs slider_permille_at 命中映射同式单源
+            // crate::SLIDER_KNOB_D/2）；填充至圆心。
+            let inset = (crate::SLIDER_KNOB_D / 2) as i32;
+            let usable = (b.w as i64 - 2 * inset as i64).max(1);
+            let frac = p.value.min(crate::PERMILLE_MAX) as i64 * usable
+                / crate::PERMILLE_MAX as i64;
+            let thumb_cx = b.x as i64 + inset as i64 + frac;
+            let fill_w = i64_to_i32_sat(thumb_cx - b.x as i64);
+            fill(enc, b.x, ty, fill_w, SLIDER_TRACK_H, ACCENT, rep);
+            let kd = crate::SLIDER_KNOB_D as i32;
+            oct3(
+                enc,
+                i64_to_i32_sat(thumb_cx) - kd / 2,
+                yc - kd / 2,
+                kd,
+                KNOB,
+                rep,
+            );
+        }
+        Props::Progress(p) => {
+            fill(enc, b.x, b.y, b.w, b.h, TRACK_DIM, rep);
+            let fw = p.value.min(crate::PERMILLE_MAX) as i64 * b.w as i64
+                / crate::PERMILLE_MAX as i64;
+            fill(enc, b.x, b.y, i64_to_i32_sat(fw), b.h, ACCENT, rep);
+        }
+        // Root/Col/Row/Pad/Grid + 余组件件：无视觉内容（子树各自发射）
         _ => {}
     }
     rep.drawn_px = rep.drawn_px.saturating_add(b.intersect(vp_rect).area());
+}
+
+// ---------- 组件四件发射共核（原语组合小工具） ----------
+
+/// fill_rect 收口：零面积跳过 + cmds 计数（CmdError::Full 静默停录同
+/// 既有臂——满帽不炸）。
+fn fill(
+    enc: &mut CommandEncoder,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    c: Color,
+    rep: &mut PaintReport,
+) {
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    if enc.fill_rect(GfxRect::new(x, y, w, h), c).is_ok() {
+        rep.cmds += 1;
+    }
+}
+
+/// 八角近似圆（v1 无圆原语——「不发明新绘制指令」纪律的三 fill_rect
+/// 组合：上/下条内缩 d/4 厚 d/3、中条满宽）。Toggle 滑块 / Slider 拖
+/// 动圆共用。
+fn oct3(enc: &mut CommandEncoder, x: i32, y: i32, d: i32, c: Color, rep: &mut PaintReport) {
+    if d <= 0 {
+        return;
+    }
+    let inset = d / 4;
+    let edge = d / 3;
+    fill(enc, x + inset, y, d - 2 * inset, edge, c, rep);
+    fill(enc, x, y + edge, d, d - 2 * edge, c, rep);
+    fill(enc, x + inset, y + d - edge, d - 2 * inset, edge, c, rep);
+}
+
+/// 胶囊近似（横向圆角轨道——Toggle 专用；左右端帽纵向内缩 h/4、宽
+/// h/3，中段满高）。
+fn capsule_h(
+    enc: &mut CommandEncoder,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    c: Color,
+    rep: &mut PaintReport,
+) {
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    let cap = h / 3;
+    let inset = h / 4;
+    fill(enc, x, y + inset, cap, h - 2 * inset, c, rep);
+    fill(enc, x + cap, y, w - 2 * cap, h, c, rep);
+    fill(enc, x + w - cap, y + inset, cap, h - 2 * inset, c, rep);
+}
+
+/// 按钮标签发射（ButtonProps 无样式面——fg 随按钮风格定、bg 恒透明；
+/// S8x16 档 + 节点界内双轴居中；与 Text 臂同走 glyph run scratch 切分
+/// ——余量不足截断尾部字形同 §7 用例义务）。
+fn emit_button_label<'a>(
+    p: &crate::desc::ButtonProps,
+    fg: Color,
+    b: &RectI,
+    rest: &mut &'a mut [GlyphPos],
+    enc: &mut CommandEncoder<'a>,
+    rep: &mut PaintReport,
+) {
+    let take = (p.label.len as usize).min(rest.len());
+    if take == 0 {
+        return;
+    }
+    let Some(piece) = take_scratch(rest, take) else { return };
+    let atlas = BUTTON_LABEL_FONT.atlas();
+    let text_w = p.label.len as i64 * crate::BUTTON_CHAR_W as i64;
+    let mut x = b.x as i64 + (b.w as i64 - text_w).max(0) / 2;
+    let y = i64_to_i32_sat(b.y as i64 + (b.h as i64 - BUTTON_LABEL_H).max(0) / 2);
+    for i in 0..take {
+        piece[i] = GlyphPos { ch: p.label.bytes[i], x: i64_to_i32_sat(x), y };
+        x += atlas.advance(p.label.bytes[i]) as i64;
+    }
+    let glyphs: &'a [GlyphPos] = piece;
+    let run = GlyphRun { atlas, glyphs, fg, bg: None };
+    if enc.draw_glyph_run(run).is_ok() {
+        rep.cmds += 1;
+    }
 }
 
 /// Image/Icon 叶发射共核（§4.3）：`pixels(id)` 借用 → Argb/ScaledArgb
