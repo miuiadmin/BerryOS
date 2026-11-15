@@ -542,10 +542,15 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
         Err(_) => berry_room::panic_exit(134),
     };
     room.print(b"PHOTOS up\n");
-    let (width, height) = match room.open_window() {
+    // Photos is the product's media immersive surface: it explicitly asks
+    // Berry Room for a full-display window. The SYSTEM launcher remains the
+    // owner of status/navigation reserves and hides them only after wmd reports
+    // this app's first successfully composited frame.
+    let (width, height) = match room.open_window_immersive() {
         Ok(size) => size,
         Err(error) => fail(&room, error.as_str()),
     };
+    room.print(b"PHOTOSIMMERSIVE ok\n");
     room.print(b"PHOTOSWIN ok\n");
 
     let (root_count, remote) = load_pattern(&room);
@@ -567,7 +572,7 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
     ui.set_icon_source(&PATTERN_SOURCE);
     let insets = room.occlusion().effective_padding();
     let safe_top = u32::from(insets[1]);
-    let safe_bottom = u32::from(insets[3]).max(ctx.metrics.effective_px(144));
+    let safe_bottom = u32::from(insets[3]);
     let grid = build_grid(&mut ui, &ctx, safe_top, safe_bottom);
     let mut scroll = grid.scroll;
     let mut app = App {

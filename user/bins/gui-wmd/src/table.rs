@@ -381,6 +381,20 @@ impl WmTable {
             .then_some(owner)
     }
 
+    /// A visible full-display APP created without AVOID_SYS is an immersive
+    /// product body. This is diagnostic truth for the SYSTEM launcher; it does
+    /// not mutate visibility or reserve ownership here.
+    pub fn owner_is_immersive(&self, owner: u16) -> bool {
+        self.wins.iter().take(self.count).any(|win| {
+            win.owner == owner
+                && win.vis
+                && win.layer == gp::WM_LAYER_APP
+                && !win.avoid_sys
+                && win.req.2 == self.disp_w
+                && win.req.3 == self.disp_h
+        })
+    }
+
     /// P3 click-to-focus：pointer DOWN 命中真实可见窗时接焦。桌面 miss
     /// 不清焦（v1 无桌面窗对象，避免造 window=0 第二语义）；隐藏窗不参
     /// hit-test。变更后 bump，让 WM_TABLE_WAIT 消费者看到 focused flag。

@@ -1,6 +1,7 @@
 Type: standard
 Version: 1.0.0
-Status: current
+Status: superseded
+Superseded-by: [Berry设备平台-OpenHarmonyShell-v1.1.md](Berry设备平台-OpenHarmonyShell-v1.1.md)
 Updated: 2026-11-15
 
 # Berry 设备平台 OpenHarmony 式系统壳

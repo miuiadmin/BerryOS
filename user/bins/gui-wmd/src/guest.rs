@@ -514,16 +514,19 @@ impl WmSessions {
 
     /// APP owner 第一个成功合成 frame 已到达；用于 SYSTEM launcher 清除真实
     /// Opening 状态。x 携带 owner id，事件本体不参与普通 hit/referee。
-    fn notify_system_app_frame(&mut self, owner: u16) {
+    fn notify_system_app_frame(&mut self, owner: u16, immersive: bool) {
         let Some(i) = self.system_slot() else {
             return;
         };
         let mut ev = zero_event();
         ev.flags = gp::PE_FL_SYNTHESIZED | gp::PE_FL_SYSTEM_APP_FRAME;
         ev.x = u32::from(owner);
+        // y is unused by this synthesized event; carry the immersive request
+        // so the reserve owner (launcher) can hide/show its own SYSTEM windows.
+        ev.y = u32::from(immersive);
         let sess = self.slots[i].as_mut().expect("system slot checked");
         if sess.queue.push(ev) {
-            println!("WMAPPFRAME ok owner={owner}");
+            println!("WMAPPFRAME ok owner={owner} immersive={}", u32::from(immersive));
         } else {
             eprintln!("WMAPPFRAME drop owner={owner} dropped={}", sess.queue.dropped);
         }
@@ -808,6 +811,8 @@ impl WmSessions {
                 trap();
             }
             let sess = self.slots[i].take().expect("checked slot");
+            let was_immersive_app = sess.client_type == gp::WM_CLIENT_APP
+                && table.owner_is_immersive(sess.id);
             // 先丢 parking 位，再 destroy_owned：后者会 bump 并可能向 parked
             // 通道应答快照；避免对将关 handle 的时序依赖。
             table.forget_parked(sess.ch);
@@ -815,6 +820,11 @@ impl WmSessions {
             comp.forget_owner_cache(sess.id);
             if self.input_lock.map(|l| l.session == sess.id).unwrap_or(false) {
                 self.input_lock = None;
+            }
+            if was_immersive_app {
+                // An immersive APP dying is the authority-side equivalent of
+                // HOME for system reserves: ask the owning launcher to restore.
+                self.invalidate_system_surface(gp::SYSTEM_NAV_ACTION_HOME);
             }
             println!("WMDEAD ok id={} wins={}", sess.id, wins);
             if berry_handle_close(sess.ch) != 0
@@ -886,6 +896,8 @@ impl table::WmIo for GuestTableIo {
 
 static SYSTEM_UI_PROGRESS_READY: AtomicBool = AtomicBool::new(false);
 static SYSTEM_APP_FRAME_OWNER: core::sync::atomic::AtomicU16 = core::sync::atomic::AtomicU16::new(0);
+static SYSTEM_APP_FRAME_IMMERSIVE: AtomicBool = AtomicBool::new(false);
+static SYSTEM_IMMERSIVE_RELEASED: AtomicBool = AtomicBool::new(false);
 
 static GUEST_TABLE_IO: GuestTableIo = GuestTableIo;
 
@@ -1098,6 +1110,8 @@ fn on_session(table: &mut table::WmTable, present_cli: Handle, hdi_cli: Handle,
             {
                 sess.frame_notified = true;
                 SYSTEM_APP_FRAME_OWNER.store(owner, Ordering::Relaxed);
+                SYSTEM_APP_FRAME_IMMERSIVE
+                    .store(table.owner_is_immersive(owner), Ordering::Relaxed);
             }
         }
         Some(&op) if (gp::OP_GETINFO..=gp::OP_POWER_MODE).contains(&op) => {
@@ -1158,8 +1172,13 @@ fn on_session(table: &mut table::WmTable, present_cli: Handle, hdi_cli: Handle,
             }
             if msg.first() == Some(&gp::OP_WM_DESTROY) {
                 if let Some(id) = gp::parse_wm_destroy_req(msg) {
+                    let was_immersive = sess.client_type == gp::WM_CLIENT_APP
+                        && table.owner_is_immersive(sess.id);
                     table.handle_wm(ch, sess.id, sess.client_type, msg, hs);
                     sess.clear_surface_mode(id);
+                    if was_immersive {
+                        SYSTEM_IMMERSIVE_RELEASED.store(true, Ordering::Relaxed);
+                    }
                     return;
                 }
             }
@@ -1331,7 +1350,11 @@ pub fn run() {
                     );
                     let frame_owner = SYSTEM_APP_FRAME_OWNER.swap(0, Ordering::Relaxed);
                     if frame_owner != 0 {
-                        sessions.notify_system_app_frame(frame_owner);
+                        let immersive = SYSTEM_APP_FRAME_IMMERSIVE.swap(false, Ordering::Relaxed);
+                        sessions.notify_system_app_frame(frame_owner, immersive);
+                    }
+                    if SYSTEM_IMMERSIVE_RELEASED.swap(false, Ordering::Relaxed) {
+                        sessions.invalidate_system_surface(gp::SYSTEM_NAV_ACTION_HOME);
                     }
                 }
                 handled = true;

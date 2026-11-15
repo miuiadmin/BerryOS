@@ -375,7 +375,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/Berry设备平台-OpenHarmonyShell-v1.0.md"
+spec = "docs/Berry设备平台-OpenHarmonyShell-v1.1.md"
 breaking = []
 
 [[item]]
@@ -387,7 +387,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/Berry设备平台-OpenHarmonyShell-v1.0.md"
+spec = "docs/Berry设备平台-OpenHarmonyShell-v1.1.md"
 breaking = []
 
 [[item]]
@@ -399,7 +399,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/Berry设备平台-OpenHarmonyShell-v1.0.md"
+spec = "docs/Berry设备平台-OpenHarmonyShell-v1.1.md"
 breaking = []
 
 [[item]]
@@ -411,7 +411,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/Berry设备平台-OpenHarmonyShell-v1.0.md"
+spec = "docs/Berry设备平台-OpenHarmonyShell-v1.1.md"
 breaking = []
 
 [[item]]
@@ -423,7 +423,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/Berry设备平台-OpenHarmonyShell-v1.0.md"
+spec = "docs/Berry设备平台-OpenHarmonyShell-v1.1.md"
 breaking = []
 
 [[item]]
@@ -435,7 +435,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/Berry设备平台-OpenHarmonyShell-v1.0.md"
+spec = "docs/Berry设备平台-OpenHarmonyShell-v1.1.md"
 breaking = []
 
 [[item]]
@@ -447,7 +447,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/Berry设备平台-OpenHarmonyShell-v1.0.md"
+spec = "docs/Berry设备平台-OpenHarmonyShell-v1.1.md"
 breaking = []
 
 [[item]]

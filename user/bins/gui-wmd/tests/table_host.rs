@@ -235,6 +235,49 @@ fn host_matrix_pins_avoid_sys_occlusion_geometry() {
 }
 
 #[test]
+fn full_display_app_without_avoid_sys_is_immersive_truth() {
+    let _serial = TEST_LOCK.lock().unwrap();
+    let mut t = table();
+    let system = create(
+        &mut t,
+        1,
+        gp::WM_CLIENT_SYSTEM,
+        gp::WM_LAYER_SYSTEM,
+        0,
+        0,
+        0,
+        800,
+        24,
+    );
+    let normal = create(
+        &mut t,
+        2,
+        gp::WM_CLIENT_APP,
+        gp::WM_LAYER_APP,
+        gp::WM_CREATE_F_AVOID_SYS,
+        0,
+        0,
+        800,
+        600,
+    );
+    let immersive = create(
+        &mut t,
+        3,
+        gp::WM_CLIENT_APP,
+        gp::WM_LAYER_APP,
+        0,
+        0,
+        0,
+        800,
+        600,
+    );
+    assert!(t.owner_is_immersive(3));
+    assert!(!t.owner_is_immersive(2));
+    assert!(!t.owner_is_immersive(1));
+    let _ = (system, normal, immersive);
+}
+
+#[test]
 fn host_matrix_pins_table_wait_snapshot_and_forget_parked() {
     let _serial = TEST_LOCK.lock().unwrap();
     let mut t = table();

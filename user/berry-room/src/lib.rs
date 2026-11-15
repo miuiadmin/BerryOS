@@ -712,8 +712,18 @@ impl AppRoom {
         }
     }
 
-    /// 创建全屏窗口并映射局部 frame VMO。返回 `(width, height)`。
+    /// 创建默认全屏窗口：避开持久系统状态栏/导航保留区。
     pub fn open_window(&mut self) -> RoomResult<(usize, usize)> {
+        self.open_window_with_flags(gp::WM_CREATE_F_AVOID_SYS)
+    }
+
+    /// 创建沉浸全屏窗口：显式请求隐藏持久系统保留区。普通 app 仍只获
+    /// Berry Room 授权面，不取得 present/HDI/SYSTEM 能力。
+    pub fn open_window_immersive(&mut self) -> RoomResult<(usize, usize)> {
+        self.open_window_with_flags(0)
+    }
+
+    fn open_window_with_flags(&mut self, create_flags: u8) -> RoomResult<(usize, usize)> {
         if self.opened {
             return Err(RoomError::Window);
         }
@@ -725,7 +735,7 @@ impl AppRoom {
         let info = gp::parse_wm_getinfo_rep(&reply[..n]).ok_or(RoomError::Decode)?;
         let create = gp::WmCreateReq {
             layer: gp::WM_LAYER_APP,
-            flags: gp::WM_CREATE_F_AVOID_SYS,
+            flags: create_flags,
             parent: 0,
             group: 0,
             x: 0,

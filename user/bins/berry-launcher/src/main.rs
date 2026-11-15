@@ -451,6 +451,7 @@ fn main() {
     // topology intentionally stays unchanged; its occlusion tests create their
     // own SYSTEM window.
     let product_boot = product_mode_from_argv();
+    let mut system_reserves = None;
     if product_boot {
         let product_density =
             Density::for_viewport(u32::from(info.disp_w), u32::from(info.disp_h));
@@ -462,9 +463,11 @@ fn main() {
             Density::Product => 108,
             Density::Compact => 48,
         };
-        create_system_reserve(hw, b"status", 0, 0, info.disp_w, status_h);
+        let status = create_system_reserve(hw, b"status", 0, 0, info.disp_w, status_h);
         let nav_y = info.disp_h.saturating_sub(nav_h);
-        create_system_reserve(hw, b"navigation", 0, nav_y, info.disp_w, nav_h);
+        let navigation =
+            create_system_reserve(hw, b"navigation", 0, nav_y, info.disp_w, nav_h);
+        system_reserves = Some((status, navigation));
     }
 
     // Phase 4 全量 CJK A2 面 boot 实探：两个高频字都不在旧 16 字标签
@@ -929,5 +932,6 @@ fn main() {
         desktop,
         smoke,
         product_mode_from_argv(),
+        system_reserves,
     );
 }
