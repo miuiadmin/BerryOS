@@ -738,19 +738,29 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         bench::run();
     }
 
+    // 06 号修窗件 1（idle 满核主根因闭合）：演示面 fw_cfg 门——`opt/berry/
+    // demo-face` absent/"on" = 演示面在（现状零漂移；EFI 无键路径天然缺席 =
+    // 全演示）；"off"/"clean" = task_a/task_b 忙环 + boot EL0 演示舰队 +
+    // 其验收 watchdog 不出（runqueue 清空 → idle_loop tickless park → wfi，
+    // QEMU vCPU 真睡——06 号 §4-1 修窗预期 idle CPU → ~0%）。极性同
+    // noktest「机制不是自律」；值面 fail-open（畸形值一律按 on——注入错
+    // 不静默砍演示面，display 畸形降级 None 同族）。
+    let demo_face = demo_face_on();
+    if !demo_face {
+        // storm 门族惯例（LATSGI gate on 同款）：行在 ⟺ 门态可 grep 判别；
+        // on/缺席侧零行 = boot 相逐行零漂移。
+        berry_hal_aarch64::uart_puts(b"DEMO gate off\n");
+    }
+
     // Phase 2a Step 5：IRQ 派发钩子 + timer 管线（规律 tick，**不从 IRQ 调 switch**）。
     // SAFETY: EL1、启动单线程、仅一次：缓存 CNTFRQ/算 SLICE（不武装）。
     unsafe { berry_hal_aarch64::timer::init() };
 
     // 2b-2：两忙循环任务各挂一个私有地址空间——timer 抢占切任务 = 切 TTBR0/ASID
     // （switch 路径真 churn），任务体每次打印节流点自证私有页内容（隔离金丝雀）。
-    // `Box::leak`：AS 须与任务同寿（v1 任务不退出）。
-    let as_a: &'static aspace::MiniAspace = alloc::boxed::Box::leak(alloc::boxed::Box::new(
-        aspace::MiniAspace::new(mm::frames(), aspace::alloc_asid(), TASK_A_MAGIC),
-    ));
-    let as_b: &'static aspace::MiniAspace = alloc::boxed::Box::leak(alloc::boxed::Box::new(
-        aspace::MiniAspace::new(mm::frames(), aspace::alloc_asid(), TASK_B_MAGIC),
-    ));
+    // `Box::leak`：AS 须与任务同寿（v1 任务不退出）。06 号修窗件 1（demo-face
+    // 门）：task_a/b 随门让位——AS 创建下移进 spawn 门内（门关不建不占
+    // ASID；sched::init 后 alloc_asid/frames = dpg::init 同款先例）。
 
     // S-2 前置件 2（S-2b 前移至 sched::init 前）：主核自钉 per-CPU 块
     //（TPIDR_EL1 ← SMP_CPU0）——LAST_VCT per-CPU 记账（A11）+ CURRENT per-CPU
@@ -792,20 +802,32 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // 4-3b PI：注册 SLEEPQ 变更钩子（block 睡下后 / wake 摘队后全图重推；
     // 与 telemetry 同位——均须在首个切换前）。
     pi::init();
-    berry_sched::spawn_as_spread(
-        task_a,
-        TASK_A_MAGIC as usize,
-        b"task_a",
-        as_a.ttbr0_pa,
-        as_a.asid,
-    );
-    berry_sched::spawn_as_spread(
-        task_b,
-        TASK_B_MAGIC as usize,
-        b"task_b",
-        as_b.ttbr0_pa,
-        as_b.asid,
-    );
+    // 06 号修窗件 1：task_a/task_b 忙环是「idle 窗实为满载窗」的主税源
+    //（06 号 §2.2 PC 采样 task_a+0x5c ×6 直落）——demo-face 门关时两忙环
+    // 不 spawn，runqueue 清空后 idle_loop 走 tickless park（mask +
+    // masked-wfi），vCPU 真睡。缺席 = 现状零漂移（smoke/boot 相逐行不动）。
+    if demo_face {
+        let as_a: &'static aspace::MiniAspace = alloc::boxed::Box::leak(alloc::boxed::Box::new(
+            aspace::MiniAspace::new(mm::frames(), aspace::alloc_asid(), TASK_A_MAGIC),
+        ));
+        let as_b: &'static aspace::MiniAspace = alloc::boxed::Box::leak(alloc::boxed::Box::new(
+            aspace::MiniAspace::new(mm::frames(), aspace::alloc_asid(), TASK_B_MAGIC),
+        ));
+        berry_sched::spawn_as_spread(
+            task_a,
+            TASK_A_MAGIC as usize,
+            b"task_a",
+            as_a.ttbr0_pa,
+            as_a.asid,
+        );
+        berry_sched::spawn_as_spread(
+            task_b,
+            TASK_B_MAGIC as usize,
+            b"task_b",
+            as_b.ttbr0_pa,
+            as_b.asid,
+        );
+    }
 
     // G4-1：demand paging 内核机制自喂闭环（内核任务 faulter/pager 对——无
     // EL0 pager、无 0x21；marker `DPG ok` = smoke 裸相第 28 标记）。
@@ -830,32 +852,23 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         berry_sched::spawn_with(task_bench_rwake, 0, b"rwake", 8);
     }
 
-    // 2b-4（§5.1 第 5 步收官）：首批 EL0 用户进程 + G1.5 隔离关卡。good 打 'u'
-    // （syscall 往返在 EL0 生效的活证）；rogue_ptr 野指针自作死 → 只死自己
-    // （user_fault_exit）；abuser 坏 handle 滥用 → **-EBADF 存活**（3-1 撤
-    // 「畸形号杀」政策：syscall 层错误一律错误码自理）。watchdog 断言后打关卡标记。
-    let mut up_good =
-        user::UserProcess::build(mm::frames(), user::user_good_code(), user::USER_MAGIC);
-    let up_rogue_ptr =
-        user::UserProcess::build(mm::frames(), user::user_rogue_ptr_code(), user::USER_MAGIC);
-    let up_abuser =
-        user::UserProcess::build(mm::frames(), user::user_abuser_code(), user::USER_MAGIC);
-    let up_spawner =
-        user::UserProcess::build(mm::frames(), user::user_spawner_code(), user::USER_MAGIC);
+    // 舰队/服务段通道与表原语统一引入（原舰队段内三处就地 use 收编提前——
+    // 06 号修窗件 1 起 demo-face 门把舰队段整段让位，console/pi/intent/fa/
+    // svcmgr/ai 等保留段仍消费这些名字，import 属函数作用域非门内物）。
+    use crate::channel::ChannelEnd;
+    use handle::{
+        HandleTable, KernelObj, ObjType, RIGHT_DUPLICATE, RIGHT_MANAGE, RIGHT_MAP, RIGHT_RECV,
+        RIGHT_SEND, RIGHT_SIGNAL, RIGHT_TRANSFER,
+    };
 
-    // 3-4a：per-process 表拆分——每个 boot 手搭用户进程一张 leak 常驻表
-    //（任务 tag 指向它，EL0 syscall 派发到自己的表；v1 无进程退出，表同寿）。
-    use handle::{HandleTable, KernelObj, RIGHT_DUPLICATE, RIGHT_MANAGE, RIGHT_MAP};
-    let ht_good: &'static mut HandleTable = alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
-    let ht_rogue: &'static mut HandleTable = alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
-    let ht_abuser: &'static mut HandleTable = alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
-    let ht_spawner: &'static mut HandleTable = alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
-    let (tag_good, tag_rogue, tag_abuser, tag_spawner) = (
-        ht_good as *mut HandleTable as usize,
-        ht_rogue as *mut HandleTable as usize,
-        ht_abuser as *mut HandleTable as usize,
-        ht_spawner as *mut HandleTable as usize,
-    );
+    // 2b-4（§5.1 第 5 步收官）：首批 EL0 用户进程 + G1.5 隔离关卡（good 打
+    // 'u'——syscall 往返在 EL0 生效的活证；rogue_ptr 野指针自作死只死自己
+    //〔user_fault_exit〕；abuser 坏 handle 滥用 → **-EBADF 存活**——3-1 撤
+    // 「畸形号杀」政策：syscall 层错误一律错误码自理）。**06 号修窗件 1：本段
+    // 的 build/表/插入/spawn 连同 watchdog 整体挂 demo-face 门，移至下方
+    // console 服务段之后的单一门内块**（good/abuser/spawner/waiter/pinger/
+    // ponger 是稳态打字永不退的 EL0 演示舰——06 号 §0-1 主根因第 2 支；
+    // 门关时 runqueue 清空才可达 tickless idle）。
 
     // 4-5a：console 服务通道——**首个服务循环**（v1 留内核任务形态：用户态无
     // MMIO 映射，输出须经内核代劳，ADR「启动关键暂留内核」；4-5b svcmgr 落地
@@ -994,43 +1007,74 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         *core::ptr::addr_of_mut!(BSH_IN_H) = h_end_k2;
     }
 
-    // 3-2：good 的 root Vmar 进**它自己的表** = 首能力（能力模型 §5「第一个
-    // 能力从哪来」——用户拿自己的地址空间根，MAP|MANAGE|DUPLICATE）。handle
-    // 作 spawn arg → 入口 x0 → good 的 3-2 验收链经真 syscall map 读写自己的
-    // VMO（全链落在 good 自己的表里——per-process 拆分后其余进程看不见）。
-    let good_vmar = up_good.vmar.take().expect("main: good vmar");
-    let good_vmar_h = ht_good
-        .insert(KernelObj::Vmar(good_vmar), RIGHT_MAP | RIGHT_MANAGE | RIGHT_DUPLICATE)
-        .expect("main: 插 root Vmar 进 good 表");
-    // 4-5a：console 发端 append 进 good 表（vmar 后首插 = 槽 2/代号 1）——
-    // good 模板硬编码依赖，boot 断言即防线（漂移 → boot 期炸响）。
-    let h_cu_good = ht_good
-        .insert_ref(pu, handle::RIGHT_SEND | handle::RIGHT_TRANSFER)
-        .expect("main: console 发端进 good 表");
-    assert_eq!(h_cu_good, 0x0001_0002, "main: good 表 console 须槽 2/代号 1（模板硬编码）");
+    // ---- 06 号修窗件 1：EL0 演示舰队单一门内块（demo-face）----
+    // 门内 = 上方 2b-4 段移入的 build/表 + 本段插入/spawn + watchdog：
+    // good 'u'/abuser 'S'/spawner-pong 'C''s'（稳态打字永不退）+ rogue_ptr
+    // （G1.5 验收样本，即死但属舰队故事面）+ watchdog（G1.5 验收看门狗——
+    // 断言舰队金丝雀活性〔console 排水/switches 增长、rogue_ptr 被杀〕，
+    // 舰队缺席则 2000 轮忙等后 panic，结构性依赖舰队故随舰同门）。
+    // waiter 'W'/pinger 'P'/ponger 'p' 见下方各自门内块。
+    if demo_face {
+        let mut up_good =
+            user::UserProcess::build(mm::frames(), user::user_good_code(), user::USER_MAGIC);
+        let up_rogue_ptr =
+            user::UserProcess::build(mm::frames(), user::user_rogue_ptr_code(), user::USER_MAGIC);
+        let up_abuser =
+            user::UserProcess::build(mm::frames(), user::user_abuser_code(), user::USER_MAGIC);
+        let up_spawner =
+            user::UserProcess::build(mm::frames(), user::user_spawner_code(), user::USER_MAGIC);
 
-    // 4-5a：abuser/spawner 的 console 发端 = 各表**首插**（0x0001_0001）——入口
-    // x0 改传之（原 0；两模板自带 handle 都在运行期创建，首插槽位无既有依赖）。
-    // spawner 位补 DUPLICATE（P3-1 dup 执法：模板 dup(console, SEND|TRANSFER)
-    // 转赠子进程须源持 DUP；abuser 模板不 dup，保持最小授能不带位）。
-    let h_cu_abuser = ht_abuser
-        .insert_ref(pu, handle::RIGHT_SEND | handle::RIGHT_TRANSFER)
-        .expect("main: console 发端进 abuser 表");
-    let h_cu_spawner = ht_spawner
-        .insert_ref(pu, handle::RIGHT_SEND | handle::RIGHT_TRANSFER | handle::RIGHT_DUPLICATE)
-        .expect("main: console 发端进 spawner 表");
-    berry_sched::spawn_user(user::USER_CODE_VA, good_vmar_h as usize, user::USER_STACK_TOP,
-                          b"user_good", up_good.ttbr0_pa, up_good.asid, tag_good);
-    berry_sched::spawn_user(user::USER_CODE_VA, 0, user::USER_STACK_TOP,
-                          b"user_rogue_ptr", up_rogue_ptr.ttbr0_pa, up_rogue_ptr.asid, tag_rogue);
-    berry_sched::spawn_user(user::USER_CODE_VA, h_cu_abuser as usize, user::USER_STACK_TOP,
-                          b"user_abuser", up_abuser.ttbr0_pa, up_abuser.asid, tag_abuser);
-    // 3-3/3-4 验收：spawner 经真 syscall 创建第二个进程；process_start 的
-    // bootstrap 迁移把「礼物 VMO」handle 送进子进程表（子入口 x0 收到后读出
-    // 魔数自证——跨进程能力流动，见 user.rs spawner 模板注释）。
-    berry_sched::spawn_user(user::USER_CODE_VA, h_cu_spawner as usize, user::USER_STACK_TOP,
-                          b"user_spawner", up_spawner.ttbr0_pa, up_spawner.asid, tag_spawner);
-    berry_sched::spawn(user::watchdog, 0, b"watchdog");
+        // 3-4a：per-process 表拆分——每个 boot 手搭用户进程一张 leak 常驻表
+        //（任务 tag 指向它，EL0 syscall 派发到自己的表；v1 无进程退出，表同寿）。
+        let ht_good: &'static mut HandleTable = alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        let ht_rogue: &'static mut HandleTable = alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        let ht_abuser: &'static mut HandleTable = alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        let ht_spawner: &'static mut HandleTable = alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        let (tag_good, tag_rogue, tag_abuser, tag_spawner) = (
+            ht_good as *mut HandleTable as usize,
+            ht_rogue as *mut HandleTable as usize,
+            ht_abuser as *mut HandleTable as usize,
+            ht_spawner as *mut HandleTable as usize,
+        );
+
+        // 3-2：good 的 root Vmar 进**它自己的表** = 首能力（能力模型 §5「第一个
+        // 能力从哪来」——用户拿自己的地址空间根，MAP|MANAGE|DUPLICATE）。handle
+        // 作 spawn arg → 入口 x0 → good 的 3-2 验收链经真 syscall map 读写自己的
+        // VMO（全链落在 good 自己的表里——per-process 拆分后其余进程看不见）。
+        let good_vmar = up_good.vmar.take().expect("main: good vmar");
+        let good_vmar_h = ht_good
+            .insert(KernelObj::Vmar(good_vmar), RIGHT_MAP | RIGHT_MANAGE | RIGHT_DUPLICATE)
+            .expect("main: 插 root Vmar 进 good 表");
+        // 4-5a：console 发端 append 进 good 表（vmar 后首插 = 槽 2/代号 1）——
+        // good 模板硬编码依赖，boot 断言即防线（漂移 → boot 期炸响）。
+        let h_cu_good = ht_good
+            .insert_ref(pu, handle::RIGHT_SEND | handle::RIGHT_TRANSFER)
+            .expect("main: console 发端进 good 表");
+        assert_eq!(h_cu_good, 0x0001_0002, "main: good 表 console 须槽 2/代号 1（模板硬编码）");
+
+        // 4-5a：abuser/spawner 的 console 发端 = 各表**首插**（0x0001_0001）——入口
+        // x0 改传之（原 0；两模板自带 handle 都在运行期创建，首插槽位无既有依赖）。
+        // spawner 位补 DUPLICATE（P3-1 dup 执法：模板 dup(console, SEND|TRANSFER)
+        // 转赠子进程须源持 DUP；abuser 模板不 dup，保持最小授能不带位）。
+        let h_cu_abuser = ht_abuser
+            .insert_ref(pu, handle::RIGHT_SEND | handle::RIGHT_TRANSFER)
+            .expect("main: console 发端进 abuser 表");
+        let h_cu_spawner = ht_spawner
+            .insert_ref(pu, handle::RIGHT_SEND | handle::RIGHT_TRANSFER | handle::RIGHT_DUPLICATE)
+            .expect("main: console 发端进 spawner 表");
+        berry_sched::spawn_user(user::USER_CODE_VA, good_vmar_h as usize, user::USER_STACK_TOP,
+                              b"user_good", up_good.ttbr0_pa, up_good.asid, tag_good);
+        berry_sched::spawn_user(user::USER_CODE_VA, 0, user::USER_STACK_TOP,
+                              b"user_rogue_ptr", up_rogue_ptr.ttbr0_pa, up_rogue_ptr.asid, tag_rogue);
+        berry_sched::spawn_user(user::USER_CODE_VA, h_cu_abuser as usize, user::USER_STACK_TOP,
+                              b"user_abuser", up_abuser.ttbr0_pa, up_abuser.asid, tag_abuser);
+        // 3-3/3-4 验收：spawner 经真 syscall 创建第二个进程；process_start 的
+        // bootstrap 迁移把「礼物 VMO」handle 送进子进程表（子入口 x0 收到后读出
+        // 魔数自证——跨进程能力流动，见 user.rs spawner 模板注释）。
+        berry_sched::spawn_user(user::USER_CODE_VA, h_cu_spawner as usize, user::USER_STACK_TOP,
+                              b"user_spawner", up_spawner.ttbr0_pa, up_spawner.asid, tag_spawner);
+        berry_sched::spawn(user::watchdog, 0, b"watchdog");
+    }
     // 4-0 验收（`IPC设计.md` Phase 4 拆步表）：sleeper/waker 对打——超时自醒
     // （'T'）+ 条件唤醒（'K'）双路径全绿打 `BLOCK ok`（smoke 第 14 标记）。
     // ktest 在 sched::init 前跑不能睡，睡眠面只能走 boot spawn 活证。
@@ -1042,90 +1086,96 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // signal 唤醒）+ waker2（内核任务）经真 SVC signal 内核侧表 handle。
     // 同一 Event **双表挂同一 ObjRef**（insert_ref）——signal 侧与 wait 侧各
     // 持自己表的 handle（能力跨表互通的活证，匹配键 = ObjRef 地址）。
-    let up_waiter =
-        user::UserProcess::build(mm::frames(), user::user_waiter_code(), user::USER_MAGIC);
-    let ht_waiter: &'static mut HandleTable =
-        alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
-    use handle::{ObjType, RIGHT_SIGNAL};
-    let h_ev_kernel = syscall::bootstrap_table()
-        .insert(KernelObj::Event(event::Event::new()), RIGHT_SIGNAL)
-        .expect("main: Event 进内核侧表");
-    let (ev_ptr, _) = syscall::bootstrap_table()
-        .get_raw(h_ev_kernel, ObjType::Event, 0)
-        .expect("main: 取 Event ObjRef");
-    let h_ev_waiter = ht_waiter
-        .insert_ref(ev_ptr, RIGHT_SIGNAL)
-        .expect("main: Event 进 waiter 表（同一 ObjRef）");
-    // 4-5a：console 发端 append（Event 后首插 = 槽 2/代号 1）——waiter 模板硬编码。
-    let h_cu_waiter = ht_waiter
-        .insert_ref(pu, handle::RIGHT_SEND | handle::RIGHT_TRANSFER)
-        .expect("main: console 发端进 waiter 表");
-    assert_eq!(h_cu_waiter, 0x0001_0002, "main: waiter 表 console 须槽 2/代号 1（模板硬编码）");
-    berry_sched::spawn_user(user::USER_CODE_VA, h_ev_waiter as usize, user::USER_STACK_TOP,
-                          b"user_waiter", up_waiter.ttbr0_pa, up_waiter.asid,
-                          ht_waiter as *mut HandleTable as usize);
-    berry_sched::spawn(task_waker2, h_ev_kernel as usize, b"waker2");
+    // 06 号修窗件 1：waiter 'W' 是 EL0 演示舰常驻打字员（稳态三路全过仍
+    // 循环打 'W' 永不退）——挂 demo-face 门；waker2 是本验收的司机（信号
+    // 无对端即验收失去意义），与其 Event 同门让位。
+    if demo_face {
+        let up_waiter =
+            user::UserProcess::build(mm::frames(), user::user_waiter_code(), user::USER_MAGIC);
+        let ht_waiter: &'static mut HandleTable =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        let h_ev_kernel = syscall::bootstrap_table()
+            .insert(KernelObj::Event(event::Event::new()), RIGHT_SIGNAL)
+            .expect("main: Event 进内核侧表");
+        let (ev_ptr, _) = syscall::bootstrap_table()
+            .get_raw(h_ev_kernel, ObjType::Event, 0)
+            .expect("main: 取 Event ObjRef");
+        let h_ev_waiter = ht_waiter
+            .insert_ref(ev_ptr, RIGHT_SIGNAL)
+            .expect("main: Event 进 waiter 表（同一 ObjRef）");
+        // 4-5a：console 发端 append（Event 后首插 = 槽 2/代号 1）——waiter 模板硬编码。
+        let h_cu_waiter = ht_waiter
+            .insert_ref(pu, handle::RIGHT_SEND | handle::RIGHT_TRANSFER)
+            .expect("main: console 发端进 waiter 表");
+        assert_eq!(h_cu_waiter, 0x0001_0002, "main: waiter 表 console 须槽 2/代号 1（模板硬编码）");
+        berry_sched::spawn_user(user::USER_CODE_VA, h_ev_waiter as usize, user::USER_STACK_TOP,
+                              b"user_waiter", up_waiter.ttbr0_pa, up_waiter.asid,
+                              ht_waiter as *mut HandleTable as usize);
+        berry_sched::spawn(task_waker2, h_ev_kernel as usize, b"waker2");
+    }
 
     // 4-2 验收（`IPC设计.md` Phase 4 拆步表 4-2）：pinger/ponger 两 EL0 进程经
     // channel 阻塞链对打——pinger（endA：RIGHT_SEND）send 灌到 -EBUSY →
     // wait_one(WRITABLE) 阻塞 → ponger（endB：RIGHT_RECV）recv 腾位唤醒 →
     // 补发成功打 `CHAIN ok`（smoke 第 16 标记）。两端各进**对方进程的表**
     //（`channel_create` 建对语义的 boot 手搭版：两表 insert + `pair` 互钉）。
-    let up_pinger =
-        user::UserProcess::build(mm::frames(), user::user_pinger_code(), user::USER_MAGIC);
-    let up_ponger =
-        user::UserProcess::build(mm::frames(), user::user_ponger_code(), user::USER_MAGIC);
-    let ht_pinger: &'static mut HandleTable =
-        alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
-    let ht_ponger: &'static mut HandleTable =
-        alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
-    use crate::channel::ChannelEnd;
-    use handle::{RIGHT_RECV, RIGHT_SEND, RIGHT_TRANSFER};
-    let h_end_a = ht_pinger
-        .insert(
-            KernelObj::Channel(ChannelEnd::try_unpaired(false).expect("main: 建 endA")),
-            RIGHT_SEND,
-        )
-        .expect("main: endA 进 pinger 表");
-    // 4-5a：console 发端 append（endA 后首插 = 槽 2/代号 1）——pinger 模板硬编码。
-    let h_cu_pinger = ht_pinger
-        .insert_ref(pu, RIGHT_SEND | RIGHT_TRANSFER)
-        .expect("main: console 发端进 pinger 表");
-    assert_eq!(h_cu_pinger, 0x0001_0002, "main: pinger 表 console 须槽 2/代号 1（模板硬编码）");
-    let h_end_b = ht_ponger
-        .insert(
-            KernelObj::Channel(ChannelEnd::try_unpaired(false).expect("main: 建 endB")),
-            RIGHT_RECV,
-        )
-        .expect("main: endB 进 ponger 表");
-    let (pa, pb) = (
-        ht_pinger.get_raw(h_end_a, ObjType::Channel, 0).expect("main: 取 endA ObjRef").0,
-        ht_ponger.get_raw(h_end_b, ObjType::Channel, 0).expect("main: 取 endB ObjRef").0,
-    );
-    // SAFETY: 两端刚 insert + get_raw 过（在表、类型 Channel）——pair 完成互钉。
-    unsafe { ChannelEnd::pair(pa, pb) };
-    // 4-2b：哑 Event 进 ponger 表——wait_many 稳态等待的对照项（只入数组、
-    // 永不 signal；等 1<<32 位 = 永不命中）。boot 直插定值断言：ponger 模板把
-    // 该 handle 硬编为 0x0001_0002（表内第 2 插 = 槽 2/代号 1）——表序有变须同步
-    // 模板（断言即防线，错值 → wait_many -EBADF → ponger 自陷被杀 → MANY 缺失）。
-    let h_evt_ponger = ht_ponger
-        .insert(KernelObj::Event(crate::event::Event::new()), RIGHT_SIGNAL)
-        .expect("main: 哑 Event 进 ponger 表");
-    assert_eq!(
-        h_evt_ponger, 0x0001_0002,
-        "main: ponger 表哑 Event 须为槽 2/代号 1（ponger 模板硬编码依赖）"
-    );
-    // 4-5a：console 发端 append（endB + 哑 Event 后 = 槽 3/代号 1）——ponger 模板硬编码。
-    let h_cu_ponger = ht_ponger
-        .insert_ref(pu, RIGHT_SEND | RIGHT_TRANSFER)
-        .expect("main: console 发端进 ponger 表");
-    assert_eq!(h_cu_ponger, 0x0001_0003, "main: ponger 表 console 须槽 3/代号 1（模板硬编码）");
-    berry_sched::spawn_user(user::USER_CODE_VA, h_end_a as usize, user::USER_STACK_TOP,
-                          b"user_pinger", up_pinger.ttbr0_pa, up_pinger.asid,
-                          ht_pinger as *mut HandleTable as usize);
-    berry_sched::spawn_user(user::USER_CODE_VA, h_end_b as usize, user::USER_STACK_TOP,
-                          b"user_ponger", up_ponger.ttbr0_pa, up_ponger.asid,
-                          ht_ponger as *mut HandleTable as usize);
+    // 06 号修窗件 1：pinger 'P'/ponger 'p' 验收毕进稳态节流对打环（永不退）
+    // ——EL0 演示舰成员，挂 demo-face 门（表/通道对/哑 Event 同让）。
+    if demo_face {
+        let up_pinger =
+            user::UserProcess::build(mm::frames(), user::user_pinger_code(), user::USER_MAGIC);
+        let up_ponger =
+            user::UserProcess::build(mm::frames(), user::user_ponger_code(), user::USER_MAGIC);
+        let ht_pinger: &'static mut HandleTable =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        let ht_ponger: &'static mut HandleTable =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        let h_end_a = ht_pinger
+            .insert(
+                KernelObj::Channel(ChannelEnd::try_unpaired(false).expect("main: 建 endA")),
+                RIGHT_SEND,
+            )
+            .expect("main: endA 进 pinger 表");
+        // 4-5a：console 发端 append（endA 后首插 = 槽 2/代号 1）——pinger 模板硬编码。
+        let h_cu_pinger = ht_pinger
+            .insert_ref(pu, RIGHT_SEND | RIGHT_TRANSFER)
+            .expect("main: console 发端进 pinger 表");
+        assert_eq!(h_cu_pinger, 0x0001_0002, "main: pinger 表 console 须槽 2/代号 1（模板硬编码）");
+        let h_end_b = ht_ponger
+            .insert(
+                KernelObj::Channel(ChannelEnd::try_unpaired(false).expect("main: 建 endB")),
+                RIGHT_RECV,
+            )
+            .expect("main: endB 进 ponger 表");
+        let (pa, pb) = (
+            ht_pinger.get_raw(h_end_a, ObjType::Channel, 0).expect("main: 取 endA ObjRef").0,
+            ht_ponger.get_raw(h_end_b, ObjType::Channel, 0).expect("main: 取 endB ObjRef").0,
+        );
+        // SAFETY: 两端刚 insert + get_raw 过（在表、类型 Channel）——pair 完成互钉。
+        unsafe { ChannelEnd::pair(pa, pb) };
+        // 4-2b：哑 Event 进 ponger 表——wait_many 稳态等待的对照项（只入数组、
+        // 永不 signal；等 1<<32 位 = 永不命中）。boot 直插定值断言：ponger 模板把
+        // 该 handle 硬编为 0x0001_0002（表内第 2 插 = 槽 2/代号 1）——表序有变须同步
+        // 模板（断言即防线，错值 → wait_many -EBADF → ponger 自陷被杀 → MANY 缺失）。
+        let h_evt_ponger = ht_ponger
+            .insert(KernelObj::Event(crate::event::Event::new()), RIGHT_SIGNAL)
+            .expect("main: 哑 Event 进 ponger 表");
+        assert_eq!(
+            h_evt_ponger, 0x0001_0002,
+            "main: ponger 表哑 Event 须为槽 2/代号 1（ponger 模板硬编码依赖）"
+        );
+        // 4-5a：console 发端 append（endB + 哑 Event 后 = 槽 3/代号 1）——ponger 模板硬编码。
+        let h_cu_ponger = ht_ponger
+            .insert_ref(pu, RIGHT_SEND | RIGHT_TRANSFER)
+            .expect("main: console 发端进 ponger 表");
+        assert_eq!(h_cu_ponger, 0x0001_0003, "main: ponger 表 console 须槽 3/代号 1（模板硬编码）");
+        berry_sched::spawn_user(user::USER_CODE_VA, h_end_a as usize, user::USER_STACK_TOP,
+                              b"user_pinger", up_pinger.ttbr0_pa, up_pinger.asid,
+                              ht_pinger as *mut HandleTable as usize);
+        berry_sched::spawn_user(user::USER_CODE_VA, h_end_b as usize, user::USER_STACK_TOP,
+                              b"user_ponger", up_ponger.ttbr0_pa, up_ponger.asid,
+                              ht_ponger as *mut HandleTable as usize);
+    }
 
     // 4-3b 验收（`IPC设计.md` Phase 4 拆步表 4-3 前半）：PI 捐赠三任务链——
     // pi_client（prio 32，donor）send 灌满后 wait WRITABLE 阻塞；pi_server
@@ -1618,10 +1668,12 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                           ht_svcmgr as *mut HandleTable as usize);
     // X-3c-1：svcmgr pager 任务（exec demand 装载收货面）——共享同
     // ttbr0/asid/句柄表：寄存表即 svcmgr .bss 静态（PAGER_REQS），零 IPC。
-    // 入口/栈顶 = svcmgr link-user.ld 钉位（.pager_entry@0x1E000 /
-    // .pager_stack 顶 0x20000——**同值双改**）；x0=0（pager 无 console 面，
-    // 入口不读参数）。boot 即在（svcmgr _start 装钩子前空转小睡，无害）。
-    berry_sched::spawn_user(0x1E_000, 0, 0x20_000, b"user_svcmgr_pager",
+    // 入口/栈顶 = svcmgr link-user.ld 钉位（.pager_entry@0x28000 /
+    // .pager_stack 顶 0x29000——**同值双改**；CP-08 扩容自 0x1E000/
+    // 0x20000 上移，D3 帽 160KiB = user.rs `USER_CODE_MAX` 同步）；
+    // x0=0（pager 无 console 面，入口不读参数）。boot 即在（svcmgr
+    // _start 装钩子前空转小睡，无害）。
+    berry_sched::spawn_user(0x28_000, 0, 0x29_000, b"user_svcmgr_pager",
                           up_svcmgr.ttbr0_pa, up_svcmgr.asid,
                           ht_svcmgr as *mut HandleTable as usize);
 
@@ -2227,6 +2279,8 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     berry_hal_aarch64::enable_irq();
     berry_sched::yield_now(); // idle(main) 让出 → task_a；timer 每 slice 抢占切到 task_b → A/B 交替。
     // 不可达（忙循环任务不退出）；防御兜底：若被切回则进 tickless idle。
+    // 06 号修窗件 1：demo-face 门关时 task_a/b 不在——idle_loop 即常态归途
+    //（runqueue 清空 → tickless park → wfi，QEMU vCPU 真睡）。
     berry_sched::idle_loop();
 }
 
@@ -4280,6 +4334,36 @@ const RWAKE_PROBE_NAME: &str = "opt/berry/rwake";
 /// 专递 `-fw_cfg name=opt/berry/noktest,string=1`；RT/SOAK_PROBE_NAME 同款
 /// 「两侧对读维护」纪律，极性反转：缺席 = 默认全跑 = smoke 零漂移）。
 const NOKTEST_PROBE_NAME: &str = "opt/berry/noktest";
+
+/// 演示面门的 fw_cfg 具名项名（06 号修窗件 1——idle 满核主根因闭合：
+/// task_a/task_b 忙环 + boot EL0 演示舰队〔good/rogue/abuser/spawner/
+/// waiter/pinger/ponger〕+ 验收 watchdog 挂此门）。值语义：absent/"on" =
+/// 演示面在（现状零漂移；EFI 无键路径天然缺席 = 全演示）；"off"/"clean" =
+/// 演示面关（产品/桌面档——runqueue 清空 → tickless park → wfi）。
+/// NOKTEST_PROBE_NAME 同款「两侧对读维护」纪律——宿主注入口 = berry CLI
+/// fw_cfg 面（display/rtc 同形；justfile `demo=off` 直跑传递）。
+const DEMO_FACE_PROBE_NAME: &str = "opt/berry/demo-face";
+
+/// 读演示面门（[`display_mode_req`] 同款读法：find_file → read_to → trim）。
+/// fail-open：缺席/空/超长/读失败/非 "off"|"clean" 值一律 true（现状零漂移
+/// ——门键注入错误不静默砍演示面；display 畸形降级 None 同族纪律）。
+fn demo_face_on() -> bool {
+    use berry_hal_aarch64::fwcfg;
+    let e = match fwcfg::find_file(DEMO_FACE_PROBE_NAME) {
+        Some(e) => e,
+        None => return true,
+    };
+    if e.size == 0 || e.size > 32 {
+        return true;
+    }
+    let mut buf = [0u8; 32];
+    if !fwcfg::read_to(&e, &mut buf[..e.size as usize]) {
+        return true;
+    }
+    let s = core::str::from_utf8(&buf[..e.size as usize]).unwrap_or("");
+    let s = s.trim_matches(|c: char| c == '\0' || c.is_ascii_whitespace());
+    !matches!(s, "off" | "clean")
+}
 
 /// rwake 样本轮数（任务书定值 64；间隔 = CNTFRQ/100 ≈ 10ms）。`BENCHRWAKE
 /// n=` 收割面与此镜像（n = record_wake_lat 实收非零样本数 ≤ 64——lat==0

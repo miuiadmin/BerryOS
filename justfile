@@ -23,6 +23,13 @@ KERNEL_RELEASE := `bash tools/paths.sh kernel-release`
 MACH   := "-machine virt -cpu cortex-a72 -m 128M -nographic"
 QEMU   := "qemu-system-aarch64"
 
+# 演示面门透传（06 号修窗件 1）：`just DEMO=off run` = 注入 fw_cfg
+# `opt/berry/demo-face,string=off`——task_a/task_b 忙环 + boot EL0 演示舰队
+# + 验收 watchdog 不出（runqueue 清空 → tickless park → wfi）。缺席/on =
+# 现状全演示（smoke/boot 相逐行零漂移）。宿主真通道 = berry CLI fw_cfg 面
+# （display/rtc 同形，owner 域）；本变量是仓库侧直跑便门。
+DEMO := ""
+
 default: run
 
 # G-eco 编译侧：用户程序 → flat binary（草案 D6）。builtin aarch64-unknown-none
@@ -32,8 +39,10 @@ default: run
 # echo/talker/thrchild/dpgp 平像进 user/userbins/，pass 2 svcmgr 才 include_bytes!
 # 内嵌（单遍 workspace 无编排保证，鸡生蛋只能拆两刀）。--max 墙：子程序
 # 4096（2 页映射 [0x1000,0x3000) 里首页装镜像、次页是栈——越页即吃栈）；
-# svcmgr 131072 = UserProcess::build 的 D3 帽（A7-4 段② 64→128KiB 同步抬
-# ——libc 信号面并入后平像 69.6KB 超 64KiB 旧帽）；T-1 thrchild 16384（4 页墙
+# svcmgr 163840 = UserProcess::build 的 D3 帽（A7-4 段② 64→128KiB 同步抬
+# ——libc 信号面并入后平像 69.6KB 超 64KiB 旧帽；CP-08 再抬 128→160KiB——
+# PM 预拉 arm 落段 + pager 钉位 0x1E000→0x28000 同值双改，平像恰满帽零
+# 余量 by design）；T-1 thrchild 16384（4 页墙
 # ——t2 栈 2048B 内嵌 .bss 与代码共页，平像恰 1 页；镜像最大 4 页时 svcmgr
 # 映射窗 [0x1000,0x7000) 的主栈区仍余 2 页）；G4-2 dpgp 8192（2 页墙——零
 # 句柄受验子像 1 页）。内核侧产物 kernel/src/userbins/
@@ -79,7 +88,7 @@ build-user:
         ../kernel/src/userbins/abuser.bin --max 4096
     python3 ../tools/elf2flat.py \
         cargo-target/aarch64-unknown-none/release/svcmgr \
-        ../kernel/src/userbins/svcmgr.bin --max 131072
+        ../kernel/src/userbins/svcmgr.bin --max 163840
     # G-eco-d：std 面——stdhello（musl target + berry-libc shim + berry-ld
     # 剥 musl crt；-zmax-page-size=4096 压 PT_LOAD 间隙，G-eco-a 同款教训）。
     # d-3c：hexyl（上游 main.rs 逐字 + 生态依赖树全量——D4 路线①最终验证）。
@@ -264,13 +273,13 @@ build-user:
     # 引擎 + 自检/park 壳）。bin 面经 wired 门链 berry-libc shim
     # （println/park 原语——04 号 F4 缺注随本刀收口；berry-thermal
     # Cargo.toml 门注同款：host cargo test 相整跳 bin，纯核全在 lib）。
-    # **消费端留窗（svcmgr 预拉 arm 未挂）**：svcmgr 平像已满载——
-    # HEAD .bss 终点 0x1dff0 距内核钉位 .pager_entry@0x1e000 仅 0x10 余量
-    # （kernel/src/main.rs:1621 同值双改 + 128KiB D3 帽 kernel/src/
-    # user.rs:85），预拉 arm 最小面 ~0x1a0 装不进（链接期 loud 炸响实证
-    # ——link-user.ld 头注「fail loud 二道几何钉」设计使然）；rootfs 条目
-    # 主走查未知名算术跳过 = 零消费零行为变化（a-1 先例），svcmgr 扩容
-    # （帽抬升/瘦身，kernel 面）后挂 arm 补消费。
+    # **消费端已挂（CP-08 闭合刀）**：svcmgr 预拉 arm 落段（vnet 后
+    # 预拉位，拉起成功打 `eco: berry-power up`/`eco: berry-thermal up`
+    # 观测行）——原几何阻断已解除：D3 帽 128→160KiB + pager 钉位
+    # 0x1E000→0x28000 同值双改（kernel/src/user.rs USER_CODE_MAX +
+    # main.rs X-3c-1 + link-user.ld；阻断实证 = 调度彻底计划 10 号
+    # §2.5——旧 .bss 终点 0x1dff0 距旧钉仅 0x10，arm 最小面 ~0x1a0
+    # 装不进，链接期 loud 炸响）。通道端点 gift/账本面随分端执法刀。
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/berry-power/Cargo.toml --features wired \
         --target aarch64-unknown-linux-musl
@@ -428,8 +437,9 @@ check: docs-guard writable-globals abi-check build-user
     cargo check
 
 # 默认机型 virt + -kernel ELF：QEMU 直加载，起始 EL1。期望输出: 1BerryOS boot
+# DEMO=off 时多一行 DEMO gate off（门态自证）+ 舰队/忙环零输出。
 run: build
-    {{QEMU}} {{MACH}} -kernel {{KERNEL}}
+    {{QEMU}} {{MACH}} {{ if DEMO == "" { "" } else { "-fw_cfg name=opt/berry/demo-face,string=" + DEMO } }} -kernel {{KERNEL}}
 
 # virtualization=on：强制起始 EL2，测 boot.asm 的 EL2→EL1 eret 降级。期望输出: 21BerryOS boot
 run-el2: build
