@@ -3792,26 +3792,48 @@ impl Grid {
     }
 }
 
-/// ScrollView：纵向偏移容器。Panel 背景与 Clip port 分层：内容可溢出
+/// ScrollView 轴向。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollViewAxis {
+    Vertical,
+    Horizontal,
+}
+
+/// ScrollView：纵向/横向偏移容器。Panel 背景与 Clip port 分层：内容可溢出
 /// 布局界，但 paint/hit 都被 Clip 到 viewport 内。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScrollView {
     pub panel: NodeId,
     pub port: NodeId,
     pub content: NodeId,
+    axis: ScrollViewAxis,
     offset: i32,
     max_offset: i32,
-    last_y: Option<i32>,
+    last_position: Option<i32>,
 }
 
 impl ScrollView {
     pub fn new<const N: usize>(
         ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, viewport_h: u32,
     ) -> Result<Self, UiError> {
+        Self::new_axis(ui, parent, ctx, viewport_h, ScrollViewAxis::Vertical)
+    }
+
+    pub fn new_axis<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, viewport_len: u32,
+        axis: ScrollViewAxis,
+    ) -> Result<Self, UiError> {
+        if viewport_len == 0 {
+            return Err(UiError::NodeBad);
+        }
+        let (panel_w, panel_h, clip_w, clip_h) = match axis {
+            ScrollViewAxis::Vertical => (None, Some(viewport_len), None, Some(viewport_len)),
+            ScrollViewAxis::Horizontal => (Some(viewport_len), None, Some(viewport_len), None),
+        };
         let panel = add(
             ui,
             parent,
-            panel_spec(ctx.theme.colors.surface, None, Some(viewport_h), 0, 0, 0),
+            panel_spec(ctx.theme.colors.surface, panel_w, panel_h, 0, 0, 0),
         )?;
         let port = add(
             ui,
@@ -3819,31 +3841,62 @@ impl ScrollView {
             ViewSpec {
                 kind: ViewKind::Clip,
                 key: 0,
-                props: Props::Clip(ClipProps { w: None, h: Some(viewport_h) }),
+                props: Props::Clip(ClipProps { w: clip_w, h: clip_h }),
             },
         )?;
-        let content = add(
-            ui,
+        let content = match axis {
+            ScrollViewAxis::Vertical => add(
+                ui,
+                port,
+                ViewSpec {
+                    kind: ViewKind::Col,
+                    key: 0,
+                    props: Props::Col(ColProps {
+                        gap: ctx.spacing(SpacingToken::S),
+                        w: None,
+                        h: None,
+                        cross: CrossAlign::Stretch,
+                    }),
+                },
+            )?,
+            ScrollViewAxis::Horizontal => add(
+                ui,
+                port,
+                ViewSpec {
+                    kind: ViewKind::Row,
+                    key: 0,
+                    props: Props::Row(RowProps {
+                        gap: ctx.spacing(SpacingToken::S),
+                        w: None,
+                        h: None,
+                        cross: CrossAlign::Center,
+                    }),
+                },
+            )?,
+        };
+        Ok(Self {
+            panel,
             port,
-            ViewSpec {
-                kind: ViewKind::Col,
-                key: 0,
-                props: Props::Col(ColProps {
-                    gap: ctx.spacing(SpacingToken::S),
-                    w: None,
-                    h: None,
-                    cross: CrossAlign::Stretch,
-                }),
-            },
-        )?;
-        Ok(Self { panel, port, content, offset: 0, max_offset: 0, last_y: None })
+            content,
+            axis,
+            offset: 0,
+            max_offset: 0,
+            last_position: None,
+        })
+    }
+
+    pub fn axis(&self) -> ScrollViewAxis {
+        self.axis
     }
 
     pub fn sync_bounds<const N: usize>(&mut self, ui: &mut Ui<N>) -> Result<(), UiError> {
         ui.layout();
         let view = ui.bounds(self.panel)?;
         let content = ui.bounds(self.content)?;
-        self.max_offset = (content.h - view.h).max(0);
+        self.max_offset = match self.axis {
+            ScrollViewAxis::Vertical => (content.h - view.h).max(0),
+            ScrollViewAxis::Horizontal => (content.w - view.w).max(0),
+        };
         self.clamp(ui)
     }
 
@@ -3855,7 +3908,10 @@ impl ScrollView {
     }
 
     fn clamp<const N: usize>(&self, ui: &mut Ui<N>) -> Result<(), UiError> {
-        ui.set_offset(self.content, 0, -self.offset)
+        match self.axis {
+            ScrollViewAxis::Vertical => ui.set_offset(self.content, 0, -self.offset),
+            ScrollViewAxis::Horizontal => ui.set_offset(self.content, -self.offset, 0),
+        }
     }
 
     pub fn offset(&self) -> i32 {
@@ -3865,13 +3921,17 @@ impl ScrollView {
     pub fn on_msg<const N: usize>(
         &mut self, ui: &mut Ui<N>, msg: &Msg,
     ) -> Result<bool, UiError> {
-        let (node, y) = match msg {
-            Msg::DragStart { node, y, .. } | Msg::DragMove { node, y, .. } => {
-                (*node, crate::hit::u32_to_i32_sat(*y))
+        let (node, position) = match msg {
+            Msg::DragStart { node, x, y, .. } | Msg::DragMove { node, x, y, .. } => {
+                let value = match self.axis {
+                    ScrollViewAxis::Vertical => *y,
+                    ScrollViewAxis::Horizontal => *x,
+                };
+                (*node, crate::hit::u32_to_i32_sat(value))
             }
             Msg::DragEnd { node, .. } => {
                 if *node == self.panel || *node == self.port || *node == self.content {
-                    self.last_y = None;
+                    self.last_position = None;
                     return Ok(true);
                 }
                 return Ok(false);
@@ -3881,14 +3941,11 @@ impl ScrollView {
         if node != self.panel && node != self.port && node != self.content {
             return Ok(false);
         }
-        match self.last_y {
-            Some(old) => {
-                let delta = old.saturating_sub(y);
-                self.scroll_by(ui, delta)?;
-            }
-            None => {}
+        if let Some(old) = self.last_position {
+            let delta = old.saturating_sub(position);
+            self.scroll_by(ui, delta)?;
         }
-        self.last_y = Some(y);
+        self.last_position = Some(position);
         Ok(true)
     }
 }

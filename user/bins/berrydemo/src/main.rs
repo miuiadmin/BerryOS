@@ -23,6 +23,7 @@ use berry_ui::sdk::{
     SegmentedControl, SegmentedItemSpec, Slider, Stepper, Switch, TabBarStyle, TabItemSpec,
     Tabs, TextPicker, TextVariant, TextField, TextFieldSpec, Theme, Ui, WidgetContext, column,
     divider, icon, row, text, Badge, Chip, ChipKind, IconButton, NavigationIconSource,
+    ScrollViewAxis,
     NAV_ICON_BACK, NAV_ICON_BACK_ACTIVE, TextInputState,
 };
 
@@ -277,6 +278,7 @@ struct WidgetsPage {
     loading: LoadingIndicator,
     filter: Chip,
     badge: Badge,
+    icon_strip: ScrollView,
 }
 
 struct InputPage {
@@ -668,12 +670,39 @@ fn build_widgets(
     text(ui, stack, ctx, TextVariant::Body, b"64% demo progress")
         .unwrap_or_else(|_| berry_room::panic_exit(134));
 
-    let icons = row(ui, stack, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
-    icon(ui, icons, ctx, 100).unwrap_or_else(|_| berry_room::panic_exit(134));
-    icon(ui, icons, ctx, 101).unwrap_or_else(|_| berry_room::panic_exit(134));
-    icon(ui, icons, ctx, 102).unwrap_or_else(|_| berry_room::panic_exit(134));
+    let mut icon_strip = ScrollView::new_axis(
+        ui,
+        stack,
+        ctx,
+        ctx.metrics.effective_px(1280),
+        ScrollViewAxis::Horizontal,
+    )
+    .unwrap_or_else(|_| berry_room::panic_exit(134));
+    for icon_id in [100, 101, 102] {
+        icon(ui, icon_strip.content, ctx, icon_id)
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+    }
+    icon_strip
+        .sync_bounds(ui)
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
 
-    WidgetsPage { root: scaffold.root, scroll, tabs, back: app_back, counter, switch, disabled, selected, checkbox, radio, slider, loading, filter, badge }
+    WidgetsPage {
+        root: scaffold.root,
+        scroll,
+        tabs,
+        back: app_back,
+        counter,
+        switch,
+        disabled,
+        selected,
+        checkbox,
+        radio,
+        slider,
+        loading,
+        filter,
+        badge,
+        icon_strip,
+    }
 }
 
 fn build_input(
@@ -1111,7 +1140,7 @@ impl App {
             Page::Widgets(page) => (
                 page.back.panel,
                 Some(page.switch.panel),
-                Some(page.badge.panel),
+                Some(page.icon_strip.panel),
                 page.tabs.panel,
                 Some(page.filter.panel),
             ),
@@ -1144,6 +1173,10 @@ impl App {
                 Some(page.stepper.increment.panel),
             ),
         };
+        let badge_count = match &self.page {
+            Page::Widgets(page) => page.badge.count(),
+            _ => 0,
+        };
         line.push(b" back=");
         line.rect(self.ui.bounds(back).unwrap_or_else(|_| berry_room::panic_exit(134)));
         if let Some(node) = extra {
@@ -1160,6 +1193,8 @@ impl App {
         line.push_u32(self.ui.a11y_iter().count() as u32);
         line.push(b" sem=");
         line.push_u32(self.ui.sem_iter().count() as u32);
+        line.push(b" badge=");
+        line.push_u32(badge_count);
         if let Some(node) = p1 {
             line.push(b" p1=");
             line.rect(self.ui.bounds(node).unwrap_or_else(|_| berry_room::panic_exit(134)));
@@ -1260,6 +1295,8 @@ impl App {
                 let _ = page
                     .slider
                     .on_msg(&mut self.ui, &self.ctx, message)
+                    .unwrap_or_else(|_| berry_room::panic_exit(134));
+                handled |= page.icon_strip.on_msg(&mut self.ui, message)
                     .unwrap_or_else(|_| berry_room::panic_exit(134));
             }
             Page::Input(page) => {

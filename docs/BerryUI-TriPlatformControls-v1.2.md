@@ -1,6 +1,7 @@
 Type: standard
 Version: 1.2.0
-Status: current
+Status: superseded
+Superseded-by: [BerryUI-TriPlatformControls-v1.3.md](BerryUI-TriPlatformControls-v1.3.md)
 Updated: 2026-11-15
 
 # BerryUI 三方共性控件、浮层与 P1 基础件

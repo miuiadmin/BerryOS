@@ -13,7 +13,7 @@ use berry_ui::sdk::{
     AlertDialog, Badge, Checkbox, Chip, ChipKind, DialogAction, Grid, LoadingIndicator, Menu,
     MenuItemSpec, ProgressIndicator, Radio, SearchField, Section, SegmentedControl,
     SegmentedItemSpec, Sheet, Slider, Stepper, TabBarStyle, TabItemSpec, Tabs, TextPicker, Toast,
-    PanelProps, Props, RectProps, RectI, Scaffold, ScrollView,
+    PanelProps, Props, RectProps, RectI, Scaffold, ScrollView, ScrollViewAxis,
     Switch, TextVariant, Theme, Ui, UiError, ViewKind, ViewSpec, WidgetContext,
 };
 
@@ -541,6 +541,70 @@ fn p1_selection_chips_badges_pickers_and_search_controls() {
             &Msg::Click { node: search.clear.panel },
         )
         .unwrap());
+}
+
+#[test]
+fn horizontal_scroll_view_clips_and_tracks_x_axis() {
+    let context = ctx(500, 400);
+    let mut ui = Ui::<64>::new(500, 400);
+    let root = ui.root();
+    let mut scroll = ScrollView::new_axis(
+        &mut ui,
+        root,
+        &context,
+        300,
+        ScrollViewAxis::Horizontal,
+    )
+    .unwrap();
+    for index in 0..4 {
+        ui.add(
+            scroll.content,
+            rect(
+                Color {
+                    r: 20 + index as u8 * 8,
+                    g: 40,
+                    b: 60,
+                },
+                Some(120),
+                Some(80),
+            ),
+        )
+        .unwrap();
+    }
+    scroll.sync_bounds(&mut ui).unwrap();
+    assert_eq!(scroll.axis(), ScrollViewAxis::Horizontal);
+    scroll.scroll_by(&mut ui, 100).unwrap();
+    assert_eq!(scroll.offset(), 100);
+    assert_eq!(ui.bounds(scroll.content).unwrap().x, -100);
+
+    assert!(scroll
+        .on_msg(
+            &mut ui,
+            &Msg::DragStart {
+                node: scroll.port,
+                axis: berry_ui::sdk::Axis::X,
+                x: 400,
+                y: 20,
+            },
+        )
+        .unwrap());
+    assert!(scroll
+        .on_msg(
+            &mut ui,
+            &Msg::DragMove {
+                node: scroll.port,
+                x: 300,
+                y: 20,
+                resampled: false,
+            },
+        )
+        .unwrap());
+    assert_eq!(scroll.offset(), 192, "4 tiles + gaps - 300px viewport");
+    assert_eq!(ui.bounds(scroll.content).unwrap().x, -192);
+    assert!(scroll
+        .on_msg(&mut ui, &Msg::DragEnd { node: scroll.port, vx: 0, vy: 0 })
+        .unwrap());
+    assert_eq!(scroll.offset(), 192);
 }
 
 #[test]

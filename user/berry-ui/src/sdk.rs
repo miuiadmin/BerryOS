@@ -34,7 +34,7 @@ pub use crate::widgets::{
     AlertDialog, AppBar, Badge, Button, Card, Checkbox, Chip, ChipKind, DialogAction,
     EmptyState, Grid, IconButton, ListDetail, ListDetailSpec, ListTile, ListTileSpec, ListItem,
     LoadingIndicator, Menu, MenuItemSpec, OverlaySurface, ProgressIndicator, Radio, SafeInsets,
-    Scaffold, ScrollView, SearchField, Section, SegmentedControl, SegmentedItemSpec, Sheet,
+    Scaffold, ScrollView, ScrollViewAxis, SearchField, Section, SegmentedControl, SegmentedItemSpec, Sheet,
     Slider, Stepper, Switch, TabBarStyle, TabItemSpec, Tabs, TextPicker, TextVariant, TextField,
     TextFieldSpec, Toast, WidgetContext, column, divider, icon, row, text, SEGMENTED_MAX,
     TABS_MAX, TEXT_PICKER_MAX,
