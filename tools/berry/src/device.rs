@@ -69,6 +69,10 @@ impl Device {
         // after QEMU spawns.
         let resolved_vnc = vnc_cfg::resolve(vnc)?;
         let mut run = RunDir::create(label, keep)?;
+        // 取舍注记（三轮审计 C3）：下方 pre-spawn 早退（vars/listen/pass/
+        // meta 写的 ?）不 keep_fail——彼时 QEMU 未起，目录仅 meta/vars
+        // 半成品，保留价值低于失败保留的信噪比；QEMU 起后的失败保留走
+        // boot_with_retry 终态 keep_fail。
         run_dir::write_state(run.path(), "starting");
         let vars = qemu::vars_store(run.path(), 64)?;
         let serial = run.file("serial.log");
@@ -512,13 +516,27 @@ fn boot_with_retry(
         return first;
     };
     e.rebuild_auto_ports();
-    vnc_cfg::write_listen(run.path(), &e.host, e.port, e.ws_port, e.tls_dir.is_some())?;
+    // 三轮审计补：重试准备段（写 listen/meta）两个早退出口同属失败终态
+    // ——`?` 直传会让 RunDir::drop 按非 keep 焚掉首轮失败现场（boot_
+    // runtime 已产的 serial.log/qemu.log），keep_fail 对齐全 Err 出口。
+    if let Err(e) = vnc_cfg::write_listen(
+        run.path(),
+        &e.host,
+        e.port,
+        e.ws_port,
+        e.tls_dir.is_some(),
+    ) {
+        run.keep_fail();
+        return Err(e);
+    }
     let meta_path = run.file("meta.json");
     if let Ok(b) = std::fs::read(&meta_path) {
         if let Ok(mut meta) = serde_json::from_slice::<serde_json::Value>(&b) {
             meta["vnc_listen"] =
                 vnc_cfg::listen_value(&e.host, e.port, e.ws_port, e.tls_dir.is_some());
-            let _ = std::fs::write(&meta_path, serde_json::to_vec_pretty(&meta)?);
+            if let Ok(vec) = serde_json::to_vec_pretty(&meta) {
+                let _ = std::fs::write(&meta_path, vec);
+            }
         }
     }
     // Fresh log so a second failure shows the retry's own tail, not the

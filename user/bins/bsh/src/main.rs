@@ -398,7 +398,9 @@ fn rc_load(vars: &mut Vec<(String, String)>) {
             continue;
         }
         // CRLF 行尾的回车剥除（宿主侧生成工具可能带 CRLF——值尾回车
-        // 入表即污染 echo 展示；LF-only 契约下为无操作零成本）。
+        // 入表即污染 echo 展示；LF-only 契约下为无操作零成本）。剥除在
+        // 行帽检查之后：CRLF 行内容帽实为 127B+CR（LF 行 128B）——微变
+        // 如实钉板。
         let line = match line.strip_suffix(b"\r") {
             Some(stripped) => stripped,
             None => line,

@@ -141,6 +141,8 @@ pub fn run(args: RunArgs) -> Result<()> {
             json!({"v":1,"t":"run.start","run":run.path(),"kernel":kernel,"accel":accel.as_arg(),"memory_mib":memory})
         );
     }
+    // 取舍注记（三轮审计 C3）：spawn 失败的 ? 早退不 keep_fail——目录
+    // 仅 meta.json 半成品；QEMU 起后的失败保留见下方 keep_fail 各臂。
     let mut child = qemu::spawn_kernel(&qemu, &kernel, &serial, &log, accel, memory)?;
     let mut tail = Tail::open(&serial);
     let deadline = Instant::now() + args.timeout;
@@ -1148,6 +1150,44 @@ fn cleanup_one(run: &Path) -> Result<u64> {
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_else(|| json!({}));
     let qemu_pid = meta.get("qemu_pid").and_then(|v| v.as_u64()).unwrap_or(0);
+    if qemu_pid == 0 {
+        // 三轮审计（C3）：run/shot 类目录（qemu_pid 只有 device 路径写）
+        // 在 find_run 两级回落下可被无参 cleanup 选中——其 QEMU 无 VNC/
+        // control 端点，上面的在跑检查与下面的杀 QEMU 都够不到它，直删
+        // = 抽走在跑 berry 会话的 serial.log 并孤儿化其 QEMU。meta 的
+        // pid 是 berry 进程 pid（RunDir::create 恒写）：活着 = 活会话拒删；
+        // 已死 = 失败保留的孤儿目录，正是清理出口要清的正面目标。
+        let berry_pid = meta.get("pid").and_then(|v| v.as_u64()).unwrap_or(0);
+        #[cfg(unix)]
+        {
+            // 探活用 /bin/kill -0（macOS 无 /proc——/proc 探活只在 Linux
+            // 成立，首轮实抓）；同 uid 下进程在 = exit 0。
+            let alive = berry_pid != 0
+                && std::process::Command::new("kill")
+                    .arg("-0")
+                    .arg(berry_pid.to_string())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false);
+            if berry_pid == 0 || alive {
+                return Err(BerryError::device(format!(
+                    "run {} belongs to a live berry session (pid {berry_pid}); stop it before cleanup",
+                    run.display()
+                )));
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            if berry_pid != 0 {
+                return Err(BerryError::device(format!(
+                    "run {} has no qemu_pid and pid liveness cannot be probed on this platform; verify manually",
+                    run.display()
+                )));
+            }
+        }
+    }
     if qemu_pid != 0 {
         #[cfg(unix)]
         {

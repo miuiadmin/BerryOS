@@ -388,7 +388,10 @@ jobs:
         run: |
           mkdir -p ci-fail-logs
           cp -r out/logs ci-fail-logs/ 2>/dev/null || true
-          cp /tmp/berryos-* ci-fail-logs/ 2>/dev/null || true
+          # 三轮审计补 -r：/tmp/berryos-* 含目录形现场（smoke 的 QMP_DIR、
+          # smoke-image 的 RUN_DIR 均 mktemp -d）——无 -r 时 cp 报 omitting
+          # directory 且被吞，目录现场静默漏收。
+          cp -r /tmp/berryos-* ci-fail-logs/ 2>/dev/null || true
           ls -la ci-fail-logs/ || true
       - name: 上传失败串口日志 artifact
         if: failure()
