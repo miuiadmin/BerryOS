@@ -910,6 +910,24 @@ gui8-smoke-normal:
     fi
     exec python3 tools/gui8-smoke.py "$@"
 
+# 产品壳 e2e（非 CI 常态门；本机 HVF + virtio-gpu）：从 out/berryos-desktop.img
+# 真实启动产品桌面，覆盖 BootProgress m=1..11、白色胶囊像素、BerryDemo 首帧、
+# TASK/Recents/恢复、HOME，以及 Settings→TASK→frame-cache replay。
+# PRODUCT_E2E_SUITE=recents|frame-cache|all；PRODUCT_E2E_KEEP=1 保留工作目录；
+# PRODUCT_E2E_REBUILD=1 强制重建镜像。旧 out/verify-*.py 为一次性来源，已收编。
+product-e2e:
+    #!/bin/sh
+    set -eu
+    if [ ! -f out/berryos-desktop.img ] || [ "${PRODUCT_E2E_REBUILD:-0}" = 1 ]; then
+        just image
+    fi
+    set -- --suite "${PRODUCT_E2E_SUITE:-all}" --image out/berryos-desktop.img \
+        --code "{{AAVMF_CODE}}"
+    if [ "${PRODUCT_E2E_KEEP:-0}" = 1 ]; then
+        set -- "$@" --keep
+    fi
+    exec python3 tools/product-e2e.py "$@"
+
 # ---------- V-0a BerryBoot（EFI 骨架；VM 草案 §V-0，AAVMF 引导链）----------
 # 独立小工作区（同 x86_64 模式——根 workspace 不含本目录；构建必须显式
 # --target，根 .cargo/config.toml 锁的 build.target 跨 workspace 边界仍命中）。
