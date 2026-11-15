@@ -37,6 +37,7 @@ idle/park 三臂零改（idle_loop 单核与 SMP 分支、secondary_main park �
 
 ## Related
 
+- [2026-11-15-刀A应用槽合流与计数锁数](2026-11-15-刀A应用槽合流与计数锁数.md)——本刀两产物（sched/src/oneshot.rs + sched/host/oneshot_law_test.rs）原提交漏 add，刀 A 自终结者支线 2e775c12b blob 恢复（律测 7/7 复绿）
 - [2026-11-15-svcmgr-demo-face-idle-闭合](2026-11-15-svcmgr-demo-face-idle-闭合.md)——idle 侧 arm_at 停泊补（本刀补忙核侧，同一精确唤醒面的两半）
 - [docs/调度器设计-v1.2](../../../docs/调度器设计-v1.2.md) §4.1 绝对截止时间重编程纪律
 - [research/调度深度调研/02-实时性](../../../research/调度深度调研/02-实时性.md) §1.3/§⑥——缺口定位与本刀挂账
