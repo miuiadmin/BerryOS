@@ -836,6 +836,15 @@ mod tests {
         assert_eq!(boot_pick(&lb[..n2], &snap), 3);
         let n3 = line_encode(&rec(6, 1, b"a"), 2, &mut lb).unwrap();
         assert_eq!(boot_pick(&lb[..n3], &snap), 3);
+        // 判别例（轮 2 审计 [16]）：全等行在**旧** boot 组 = 不构成续号命中
+        //——内容匹配只对最新 boot 组生效（假设实现若扫全组，本例会误续
+        // max_boot=2 而非开新组 3；旧组同内容崩溃不得把本 boot 并进旧组）。
+        let mut old_ledger = Vec::new();
+        let no = line_encode(&rec(5, 1, b"a"), 1, &mut lb).unwrap();
+        old_ledger.extend_from_slice(&lb[..no]);
+        let nz = line_encode(&rec(9, 1, b"z"), 2, &mut lb).unwrap();
+        old_ledger.extend_from_slice(&lb[..nz]);
+        assert_eq!(boot_pick(&old_ledger, &snap), 3);
         // 哨兵（kind=0）不参与命中。
         let sent = snap_of(&[Rec { kind: 0, seq: 5, ..Rec::EMPTY }], 5);
         assert_eq!(boot_pick(&ledger, &sent), 3);

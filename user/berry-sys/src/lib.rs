@@ -381,6 +381,7 @@ pub extern "C" fn berry_process_get_exit_code(process: Handle, code: *mut i32) -
 /// copy-out（12B 头 {ver,total,stored} + 104B/条按 seq 升序）。cap==0 = 尺寸
 /// 查询（`*out_len` = 所需字节）；快照非消费——记录永驻至槽位轮转，seq 去重
 /// 归调用方自持。无 right 门（诊断几何面）。
+#[no_mangle]
 pub extern "C" fn berry_cbox_drain(buf: *mut u8, cap: u32, out_len: *mut u32) -> Status {
     unsafe { sys(nr::CBOX_DRAIN, buf as usize, cap as usize, out_len as usize, 0, 0, 0) }
 }

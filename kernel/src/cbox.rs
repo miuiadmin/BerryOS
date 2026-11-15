@@ -99,6 +99,9 @@ const REC_ZERO: CboxRec = CboxRec {
     x21: 0,
 };
 
+/// ktest 灌净表面（[REC_ZERO] 本体私有——仅测试借形，非 ABI）。
+pub(crate) const REC_ZERO_FOR_KTEST: CboxRec = REC_ZERO;
+
 // SAFETY 契约：写侧仅异常上下文（EL0 臂 IRQ 自动屏蔽 / EL1 臂 same-EL 不自动
 // 屏蔽——seq 原子分槽 + stamp seqlock 自身抢占安全）；读侧 syscall 上下文
 // （无锁快照——stamp 复读兜底）。写读皆 volatile（Rust 抽象机数据竞争面
@@ -113,7 +116,12 @@ static CBOX_NEXT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32:
 /// # Safety
 /// 同步异常上下文；本函数零分配零锁零 uart（异常纪律）。
 pub unsafe extern "C" fn on_fault(kind: u8, tf: *const TrapFrame) {
-    let seq = CBOX_NEXT.fetch_add(1, Ordering::Relaxed) + 1;
+    // saturating 非 +：第 2^32 次 fault 起 fetch_add 回绕（fetch_add 自身回绕
+    // 不 panic），朴素 +1 在 dev 剖面（overflow-checks 开）= 异常上下文内算术
+    // panic。饱和后序恒 u32::MAX：账本 (boot, seq) 去重面停收新行——单 boot
+    // 2^32 次故障的极远期形态，挂账接受（design.md 边界节），也保住「0 保留」
+    // 契约（回绕落 0 会撞哨兵/去重游标语义）。
+    let seq = CBOX_NEXT.fetch_add(1, Ordering::Relaxed).saturating_add(1);
     let slot = ((seq as usize - 1) % SLOTS) as usize;
     let tf = &*tf;
     let mut name = [0u8; 16];
@@ -221,4 +229,26 @@ pub fn drain_with(total: u32, emit: &mut dyn FnMut(&[u8])) {
             )
         });
     }
+}
+
+/// ktest 排液窗数学面的污染隔离（快存/恢复——黑匣子是生产面，ktest 用例
+/// 不得留痕：灌进的测试记录若留存，battery 窗会照实落账）。返回 (写序, 表)。
+pub(crate) fn ktest_save() -> (u32, [CboxRec; SLOTS]) {
+    let tbl: &[CboxRec; SLOTS] = unsafe { &*addr_of!(CBOX_TBL) };
+    // SAFETY: 读侧 ktest 上下文（无并发写——ktest 在首个用户任务前单线程跑）。
+    let mut saved = [REC_ZERO; SLOTS];
+    for i in 0..SLOTS {
+        saved[i] = unsafe { core::ptr::read_volatile(&tbl[i]) };
+    }
+    (CBOX_NEXT.load(Ordering::Acquire), saved)
+}
+
+/// 快存恢复（[`ktest_save`] 的逆）。SAFETY 契约同其——ktest 单线程窗口。
+pub(crate) fn ktest_restore(next: u32, saved: [CboxRec; SLOTS]) {
+    let tbl: &mut [CboxRec; SLOTS] = unsafe { &mut *addr_of_mut!(CBOX_TBL) };
+    for i in 0..SLOTS {
+        // SAFETY: 写侧 ktest 单线程（无读者——排液只在 syscall/ktest 上下文）。
+        unsafe { core::ptr::write_volatile(&mut tbl[i], saved[i]) };
+    }
+    CBOX_NEXT.store(next, Ordering::Release);
 }

@@ -68,7 +68,8 @@ use berry_guiproto as gp;
 // 编解码——段① 落库，本刀接 serve 消费侧）。
 use berry_appproto as appp;
 // A-8b：vnet 常驻服务 client 端保活槽（单线程 svcmgr，Relaxed 足够）。
-use core::sync::atomic::{AtomicU32, Ordering};
+// AtomicU64 = LAUNCHER_INIT_UNTIL（gen-2 init 窗闸，now() 纳秒宽）。
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// echo 服务镜像（G-eco-b 编译产物；echo1/echo2 共用同一份字节——asm 同款）。
 const ECHO_BIN: &[u8] = include_bytes!("../../../userbins/echo.bin");
@@ -464,6 +465,24 @@ static mut CBOX_OUT: [u8; cbox::LEDGER_MAX] = [0; cbox::LEDGER_MAX];
 static mut CBOX_DRAIN: [u8; cbox::DRAIN_MAX] = [0; cbox::DRAIN_MAX];
 static mut CBOX_BOOT: u32 = 0;
 static mut CBOX_SEQ: u32 = 0;
+
+/// cbox 轮 2 审计 [5]：gen-2 launcher 重启 init 窗截止（MONOTONIC 时刻，
+/// 0 = 无窗）。重启装配 Ok 后 gen-2 立即重入 init（icons APP_LIST →
+/// layout 装载 → cbox init_flush），持自有 fs dup 发 RPC；app_supervise
+/// 的 sole 门（表空 = 无并发 fs client）**看不见这个 init**——窗内最后活
+/// app 死亡走死亡排液的话，`cbox_drain_stale(FS_A)` 会把 gen-2 在途应答
+/// 当陈旧帧吃掉（fsproto 单应答队列共享面——一切 fs client 是同一端点
+/// 的 dup）。窗内抑制死亡排液的 fs 写面（`cbox rec` eco 面照发，记录留
+/// 内核 RAM 表延后下个安全窗——与多 app 形同语义）。无 init-done 信号
+/// 可依，时间界是唯一可执法面；帽值见 [`LAUNCHER_INIT_CAP_NS`]。launcher
+/// 死亡时清零——此后队列里的在途应答就是死者孤儿，drain_stale 吃它们
+/// 正是本义。boot 形不设窗：装配先于稳态 loop（app_supervise 首轮时
+/// gen-1 init 早已完成），结构上无交叠。
+static LAUNCHER_INIT_UNTIL: AtomicU64 = AtomicU64::new(0);
+
+/// init 窗帽：10s = init 现实毫秒级面 + 两个数量级余量；到点自动失效
+///（判据 `now() < deadline`，过期值无需显式清）。
+const LAUNCHER_INIT_CAP_NS: u64 = 10 * 1_000_000_000;
 
 /// 稳态空闲并等帽（guifbd `IDLE_CAP_NS` 同值同义——合法空闲非死线，到点
 /// 重臂续等；真断链面 = recv 非 -EAGAIN 错码照 trap）。
@@ -4088,6 +4107,32 @@ fn cbox_write_ledger(h: Handle, len: usize) -> Result<(), i64> {
     Ok(())
 }
 
+/// 写失败后的撤销性回写（尽力面，轮 2 审计 [1]/[6]）：把 CBOX_IN[0..len]
+/// （= 写前读入的旧账）回灌 staging + `TRUNC(len)` 提交。因果：fsproto
+/// staging 是**服务全局单槽**（`fat.rs` stage_put 跨名自动提交语义）——
+/// 写失败留在槽里的部分新账若不撤，后续任何异名 FAT 写（rootfs 形 bsh
+/// `FATW put_file("RW.TXT")` 同 boot 现实存在）会把残留当 CBOX.LOG 自动
+/// 提交 = 旧账被部分写入顶替（毁账，且 handle_get staging-first 读影同
+/// 步污染）。回写 0..len + commit(len) 一次清三面：staging 槽、盘上真值、
+/// 读影。回写自身失败 = 尽力面（瞬态错误风暴形），残留语义回到「下次同窗
+/// 同名全量重写自愈」挂账原位——回写只多试一次，不递归补偿。
+fn cbox_restore_ledger(h: Handle, len: usize) -> Result<(), i64> {
+    // SAFETY: CBOX_IN 单线程独占；调用点在 cbox_write_ledger 失败后——
+    // merge 只读借用 CBOX_IN，此刻其内容仍是写前旧账（CBOX_OUT 才是
+    // 合并产物落点，两者不相覆写）。
+    let inn: &[u8] = unsafe {
+        core::slice::from_raw_parts(core::ptr::addr_of!(CBOX_IN) as *const u8, len)
+    };
+    let mut off = 0usize;
+    while off < len {
+        let end = (off + fsc::CHUNK).min(len);
+        fsc::put_chunk(h, CBOX_PATH, off as u32, &inn[off..end]).map_err(|e| e.code() as i64)?;
+        off = end;
+    }
+    fsc::commit(h, CBOX_PATH, len as u32).map_err(|e| e.code() as i64)?;
+    Ok(())
+}
+
 /// 陈旧应答排空（死亡面前置）：死者若死在 RPC 中途（send 后 wait 前/超时
 /// 后迟归），队列可能残留其应答帧——先收干净再发自己的请求，防首个 recv
 /// 吃到死者的帧（fsproto 无请求号，recv 无法辨别归属）。随行 handle 全量
@@ -4164,7 +4209,17 @@ fn cbox_flush(h: Handle, stale: bool) -> Result<usize, u8> {
     if appended == 0 {
         return Ok(lines); // 幂等重入（已落/无新记录）——零重写
     }
-    cbox_write_ledger(h, n).map_err(|_| 4)?;
+    if let Err(e) = cbox_write_ledger(h, n) {
+        // 写失败 → 撤销性回写（[1]/[6]，见 cbox_restore_ledger 头注）——
+        // **仅限 commit 点前**的失败（PUT/TRUNC 段）：staging 残留部分新账
+        // 必须当场撤，跨名 FAT 写会自动提交残留 = 毁旧账。-997 = 读回失配：
+        // 新账**已提交**（盘上真值已是新内容），回写旧账 = 撤销已提交数据
+        //（错向修复）——不回，loud eco 行交调用方，账本以盘上真值为准。
+        if e != -997 {
+            let _ = cbox_restore_ledger(h, old_len);
+        }
+        return Err(4);
+    }
     Ok(lines)
 }
 
@@ -4217,6 +4272,14 @@ fn cbox_death_flush(console: Handle, sole: bool) {
     }
     let fsa = FS_A.load(Ordering::Relaxed);
     if fsa == 0 {
+        return;
+    }
+    // gen-2 init 窗抑制（[5]，见 LAUNCHER_INIT_UNTIL 头注）：窗内 launcher
+    // 正持自有 fs dup 发 init RPC，此刻经 FS_A 排液/写账 = 单应答队列上
+    // 双活跃客户交叠（stale 排空会误吃 gen-2 在途应答）。`cbox rec` eco
+    // 面已在上方照发——记录留 RAM 表延后下个安全窗，(boot, seq) 去重保
+    // 不重不漏。
+    if now() < LAUNCHER_INIT_UNTIL.load(Ordering::Relaxed) {
         return;
     }
     if cbox_flush(fsa, true).is_err() {
@@ -5463,6 +5526,9 @@ fn launcher_supervise(console: Handle) {
         trap();
     }
     LAUNCHER_LIVE.store(0, Ordering::Relaxed);
+    // init 窗随死亡收口（[5]）：此后队列里的在途 fs 应答 = 死者孤儿，
+    // drain_stale 吃它们正是本义（窗已无保护对象）。
+    LAUNCHER_INIT_UNTIL.store(0, Ordering::Relaxed);
     if LAUNCHER_RESTARTED.swap(1, Ordering::Relaxed) == 0 {
         let mut fs_dup: Handle = 0;
         // R1 判别器 v2 同门（boot arm 同款）：冻结相 BLK_OK=0 → 重启装配
@@ -5485,6 +5551,14 @@ fn launcher_supervise(console: Handle) {
                 trap();
             }
             eco_line(console, b"launcher restart");
+        } else {
+            // gen-2 init 窗开闸（[5]，见 LAUNCHER_INIT_UNTIL 头注）：gen-2
+            // 自此刻起持 fs dup 重入 init，死亡排液面让窗（帽 10s 到点自
+            // 失效——init-done 无信号，时间界唯一可执法面）。
+            LAUNCHER_INIT_UNTIL.store(
+                now() + LAUNCHER_INIT_CAP_NS,
+                Ordering::Relaxed,
+            );
         }
     }
 }

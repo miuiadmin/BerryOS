@@ -209,11 +209,13 @@ pub fn task_name(r: &Rec) -> String {
     String::from_utf8_lossy(&r.name[..end]).into_owned()
 }
 
-fn kind_str(kind: u8) -> &'static str {
+fn kind_str(kind: u8) -> String {
     match kind {
-        KIND_EL0 => "el0",
-        KIND_EL1 => "el1",
-        _ => "?",
+        KIND_EL0 => "el0".into(),
+        KIND_EL1 => "el1".into(),
+        // 未识 kind（腐账/未来 ver）：`k<N>` 保数值可见（旧 `?` 丢信息——
+        // 轮 2 审计）。
+        n => format!("k{n}"),
     }
 }
 
@@ -227,7 +229,7 @@ pub enum SymHit {
 /// 内核内嵌 blob 任务的加载基址（`kernel/src/user.rs` 模板统一 @0x1000）。
 const USER_BLOB_BASE: u64 = 0x1000;
 
-/// 符号源解析结果（四态如实话——无 --elf-dir / 有目录无 ELF / 直查 /
+/// 符号源解析结果（如实话多态——无 --elf-dir / 有目录无 ELF / 直查 /
 /// 重定基，外加 userbins 首选与无锚点两分支；Err 保留给加载真失败
 /// ——strip 双空报错带 hint 如实冒泡）。
 pub enum SymSrc {
@@ -235,6 +237,13 @@ pub enum SymSrc {
     NoDir,
     /// `--elf-dir` 给定，userbins 与内核 ELF 候选全缺（构建产物不在位）。
     NoElf,
+    /// 任务名含路径段（'/'、'\\'、`.`、`..`）——账本名域 [0x21,0x7f) 含
+    /// '/'，join 绝对段整替基路径、`..` 上翻（轮 2 审计：--elf-dir 逃逸）。
+    BadName,
+    /// 内核派生常量名（`user_child`/`user_thread`——kernel/src/syscall.rs
+    /// 对无名单的监督任务统一记此名）：无 userbins 件、无 `__user_` 锚点
+    /// ——结构性不可符号化（运行期才知道真身；身份面 v2 挂账），如实立态。
+    Derived,
     /// userbins release 件直查。
     UserBins(Vec<Sym>),
     /// 内核 ELF 直查（内核名任务）。
@@ -249,6 +258,11 @@ pub enum SymSrc {
 /// `__user_<名>` 锚点重定基；内核名直查）。
 fn resolve_syms(task: &str, elf_dir: Option<&Path>) -> Result<SymSrc> {
     let Some(dir) = elf_dir else { return Ok(SymSrc::NoDir) };
+    // 路径段先验拒（join 前门——SymSrc::BadName 头注）：账本任务名来自
+    // 崩溃记录 name 域，不受 CLI 参数校验保护。
+    if task.contains('/') || task.contains('\\') || task == "." || task == ".." {
+        return Ok(SymSrc::BadName);
+    }
     // ① userbins：`<dir>/user/cargo-target/.../release/<task>`（现实全 strip
     //    ——load_symbols 双空会带指路 hint 报错，如实冒泡）。
     let user_elf = dir
@@ -258,13 +272,22 @@ fn resolve_syms(task: &str, elf_dir: Option<&Path>) -> Result<SymSrc> {
         let syms = symbolize::load_symbols(&std::fs::read(&user_elf)?)?;
         return Ok(SymSrc::UserBins(syms));
     }
-    // ② 内核 ELF：worktree 本地 debug → 全局 target dir（just build 实际落
-    //    位——smoke.sh berryos_kernel() 同解析序）→ release 变体。
+    // ② 派生常量名（内核无名单监督任务的统一记名）：在内核 ELF 候选序前
+    //    立态——它们既无 userbins 件也无 `__user_` 锚点，走锚点查找只会
+    //    拿「无锚点」误导文案（拼写漂移义 ≠ 结构性不可符号化义）。
+    if task == "user_child" || task == "user_thread" {
+        return Ok(SymSrc::Derived);
+    }
+    // ③ 内核 ELF：worktree 本地 debug → 全局 target dir（just build 实际落
+    //    位——smoke.sh berryos_kernel() 同解析序）→ 两处 release 变体
+    //    （轮 2 审计：全局 release 件此前不在候选链，release-only 构建面
+    //    会误报 NoElf）。
     let mut kernel = None;
     for cand in [
         dir.join("cargo-target/aarch64-unknown-none/debug/berry-kernel"),
         home_target().join("aarch64-unknown-none/debug/berry-kernel"),
         dir.join("cargo-target/aarch64-unknown-none/release/berry-kernel"),
+        home_target().join("aarch64-unknown-none/release/berry-kernel"),
     ] {
         if cand.is_file() {
             kernel = Some(cand);
@@ -276,7 +299,7 @@ fn resolve_syms(task: &str, elf_dir: Option<&Path>) -> Result<SymSrc> {
     if !task.starts_with("user_") {
         return Ok(SymSrc::Kernel(syms));
     }
-    // ③ `user_<名>` 内嵌 blob：`__user_<名>` 锚点（无锚点 = 独立态——
+    // ④ `user_<名>` 内嵌 blob：`__user_<名>` 锚点（无锚点 = 独立态——
     //    blob 任务 pc 是任务空间地址，直查内核表必错位，不静默降级）。
     let anchor = format!("__{task}");
     let base = syms.iter().find(|s| s.name == anchor).map(|a| a.value);
@@ -301,6 +324,14 @@ pub fn symbolize_fp(fp: &Fp, elf_dir: Option<&Path>) -> SymHit {
         Ok(SymSrc::NoElf) => SymHit::None(
             "--elf-dir 内无 ELF（userbins release 件与内核 cargo-target \
              debug/~/.cargo-target/release 候选皆缺）"
+                .into(),
+        ),
+        Ok(SymSrc::BadName) => {
+            SymHit::None("任务名含路径段（拒拼 --elf-dir——账本名域不可信）".into())
+        }
+        Ok(SymSrc::Derived) => SymHit::None(
+            "派生任务名（user_child/user_thread——内核对无名单监督任务的统一\
+             记名，运行期才知真身；身份面 v2 挂账）"
                 .into(),
         ),
         Ok(SymSrc::UserBins(syms)) => match symbolize::nearest(&syms, fp.pc) {
@@ -636,5 +667,159 @@ mod tests {
             other => panic!("期望 None，得 {other:?}"),
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 轮 2 审计 [17]/路径逃逸/派生态：NoElf / UserBins / BadName / Derived
+    /// 四态如实立态。NoElf 面需 HOME 也无产物——临时改 HOME（测试二进制内
+    /// 唯一触 home_target 的用例：rebase 测试走候选① 恒不达全局位，无竞态）。
+    #[test]
+    fn source_states_noelf_userbins_badname_derived() {
+        use crate::symbolize::testutil::build_elf;
+        let dir = std::env::temp_dir().join(format!(
+            "berry-cbox-test-states-{}",
+            std::process::id()
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let home = dir.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        // NoElf：elf_dir 与 HOME 双空。
+        let old_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", &home);
+        let fp = |task: &str, pc: u64| Fp {
+            kind: KIND_EL0,
+            task: task.into(),
+            pc,
+            lr: 0,
+        };
+        match symbolize_fp(&fp("sched", 0x1000), Some(&dir)) {
+            SymHit::None(why) => assert!(why.contains("无 ELF"), "{why}"),
+            other => panic!("期望 NoElf，得 {other:?}"),
+        }
+        match old_home {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+
+        // BadName：账本任务名带路径段（join 前拒——--elf-dir 逃逸面；名字
+        // 来自崩溃记录非 CLI 校验域，'/'、`..` 皆拒）。
+        match symbolize_fp(&fp("../evil", 0x1000), Some(&dir)) {
+            SymHit::None(why) => assert!(why.contains("路径段"), "{why}"),
+            other => panic!("期望 BadName，得 {other:?}"),
+        }
+        match symbolize_fp(&fp("a/b", 0x1000), Some(&dir)) {
+            SymHit::None(why) => assert!(why.contains("路径段"), "{why}"),
+            other => panic!("期望 BadName，得 {other:?}"),
+        }
+
+        // Derived：内核派生常量名（user_child/user_thread——无名单监督任务
+        // 的统一记名）——结构性不可符号化态，不冒充锚点漂移（NoAnchor 义）。
+        // 先放内核 ELF（否则 NoElf 先到）：Derived 立态在内核候选之后。
+        let kdir = dir.join("cargo-target/aarch64-unknown-none/debug");
+        std::fs::create_dir_all(&kdir).unwrap();
+        std::fs::write(kdir.join("berry-kernel"), build_elf(&[("kern", 0x4000)])).unwrap();
+        match symbolize_fp(&fp("user_child", 0x1004), Some(&dir)) {
+            SymHit::None(why) => assert!(why.contains("派生"), "{why}"),
+            other => panic!("期望 Derived，得 {other:?}"),
+        }
+
+        // UserBins：真 userbins 件在位 = 直查命中（Derived/内核序皆让位——
+        // 文件在 = 有名单有符号）。
+        let udir = dir.join("user/cargo-target/aarch64-unknown-none/release");
+        std::fs::create_dir_all(&udir).unwrap();
+        std::fs::write(udir.join("user_child"), build_elf(&[("uc_main", 0x1000)])).unwrap();
+        match symbolize_fp(&fp("user_child", 0x1004), Some(&dir)) {
+            SymHit::Hit { name, off, src } => {
+                assert_eq!((name.as_str(), off, src), ("uc_main", 4, "userbins ELF"));
+            }
+            other => panic!("期望 UserBins Hit，得 {other:?}"),
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 轮 2 审计 [18]：人类面报告——拒行头注、次数降序、并列按指纹序
+    ///（kind/task/pc/lr——BTreeMap 键序即确定性并列序）、未识 kind 渲
+    /// `k<N>` 保数值可见。
+    #[test]
+    fn report_human_order_rejected_and_unknown_kind() {
+        // fpA ×3（最多）；fpB/fpC 各 ×2（并列——按 task 字典序）；kind=7
+        // 野值 ×1（渲染 k7）。
+        let recs = vec![
+            (1u32, rec(1, KIND_EL0, "zzz_task", 0x1004, 0x10)),
+            (1u32, rec(2, KIND_EL0, "zzz_task", 0x1004, 0x10)),
+            (1u32, rec(3, KIND_EL0, "zzz_task", 0x1004, 0x10)),
+            (2u32, rec(4, KIND_EL1, "aaa_task", 0x2000, 0x20)),
+            (3u32, rec(5, KIND_EL1, "aaa_task", 0x2000, 0x20)),
+            (2u32, rec(6, KIND_EL1, "bbb_task", 0x2000, 0x20)),
+            (3u32, rec(7, KIND_EL1, "bbb_task", 0x2000, 0x20)),
+            (1u32, rec(8, 7, "wild_kind", 0x3000, 0x30)),
+        ];
+        let s = report_human(&recs, 2, Path::new("/disk.img"), None);
+        let lines: Vec<&str> = s.split('\n').collect();
+        assert_eq!(lines.len(), 5, "{s}");
+        assert!(lines[0].contains("8 条记录 / 4 个指纹（拒 2 坏行）"), "{}", lines[0]);
+        assert!(lines[0].contains("/disk.img"), "{}", lines[0]);
+        // 次数降序：×3 首行；并列 ×2 按 kind/el1、task 字典序 aaa < bbb。
+        assert!(lines[1].contains("×3 el0 zzz_task"), "{}", lines[1]);
+        assert!(lines[1].contains("boot 1..1"), "{}", lines[1]);
+        assert!(lines[2].contains("×2 el1 aaa_task"), "{}", lines[2]);
+        assert!(lines[2].contains("boot 2..3"), "{}", lines[2]);
+        assert!(lines[3].contains("×2 el1 bbb_task"), "{}", lines[3]);
+        // 野 kind：k7 数值可见（非 `?` 丢信息）。
+        assert!(lines[4].contains("×1 k7 wild_kind"), "{}", lines[4]);
+        // 无 --elf-dir：如实的跳过注记。
+        assert!(lines[1].contains("无符号"), "{}", lines[1]);
+    }
+
+    /// 轮 2 审计 [20]：跳数帽边界（`d.len()/clus_bytes + 2`）。截短盘面使
+    /// 帽小而可数（FAT 表在数据区前——截短只缩 d.len() 不缩 FAT 覆盖，两
+    /// 量脱钩才能构造恰界）：链长**恰 cap**（尾 EOC）不误报 Loop（walk
+    /// hops=cap 出环判，收口 Torn——size 野值读不满）；尾簇改指回首簇 =
+    /// cap+1 环 → 帽触发 Loop。
+    #[test]
+    fn loop_cap_boundary() {
+        let mut d = mkfat_disk(&big_ledger());
+        let vol = 16 * 512;
+        let bps = u16le(&d, vol + 11) as usize;
+        let spc = d[vol + 13] as usize;
+        let rsvd = u16le(&d, vol + 14) as usize;
+        let nfats = d[vol + 16] as usize;
+        let spf = u16le(&d, vol + 22) as usize;
+        let fat_off = vol + rsvd * bps;
+        let root_off = vol + (rsvd + nfats * spf) * bps;
+        let data_off = root_off + u16le(&d, vol + 17) as usize * 32;
+        let clus_bytes = spc * bps;
+        assert!(d.len() > data_off + 2 * clus_bytes, "mkfat 盘须容得下截短点");
+        d.truncate(data_off + 2 * clus_bytes);
+        let cap = d.len() / clus_bytes + 2;
+        // FAT12 逐项写（闭包捕 `d` 会与后续 `&d` 读互斥——就地 fn）。
+        fn fat_set(d: &mut [u8], fat_off: usize, n: usize, m: u16) {
+            let o = fat_off + n + n / 2;
+            let v = u16le(d, o);
+            let w = if n & 1 == 1 {
+                (v & 0x000F) | (m << 4)
+            } else {
+                (v & 0xF000) | m
+            };
+            d[o..o + 2].copy_from_slice(&w.to_le_bytes());
+        }
+        // 根项 [1]（[0]=卷标）：首簇 2 + size 野值（16MB）——读面永不满足，
+        // 链走到 EOC 或帽。
+        let ent = root_off + 32;
+        d[ent + 26..ent + 28].copy_from_slice(&2u16.to_le_bytes());
+        d[ent + 28..ent + 32].copy_from_slice(&0x1000_000u32.to_le_bytes());
+        // 链 2→3→…→cap+1（恰 cap 簇），尾指 EOC。
+        for c in 2..=cap {
+            fat_set(&mut d, fat_off, c, (c + 1) as u16);
+        }
+        fat_set(&mut d, fat_off, cap + 1, 0xFFF); // EOC
+        match read_root_file(&d, "CBOX.LOG") {
+            Err(FatErr::Torn { .. }) => {}
+            other => panic!("恰 cap 长链期望 Torn（非 Loop），得 {other:?}"),
+        }
+        // 尾簇改指回 2 = cap+1 簇环 → 帽触发 Loop。
+        fat_set(&mut d, fat_off, cap + 1, 2);
+        assert!(matches!(read_root_file(&d, "CBOX.LOG"), Err(FatErr::Loop)));
     }
 }

@@ -59,6 +59,19 @@ pub fn init_flush() {
         return; // 幂等（battery 已落/无新记录）——零重写零打印
     }
     if let Err(e) = put_file(&out[..st.len]) {
+        // 写失败 → 撤销性回写（轮 2 审计 [1]/[6]，与 svcmgr
+        // `cbox_restore_ledger` 同构）：staging 是 fsmgr 服务全局单槽（跨名
+        // 写自动提交残留），部分新账留在槽里 = 后续任何异名 FAT 写会把残
+        // 缓当 CBOX.LOG 提交、旧账被顶替。回写旧内容经第二个 fd 全量重写 +
+        // close（= TRUNC commit）一次清 staging 槽/盘真值/读影三面；首个
+        // fd 维持不 close（close 会 TRUNC 提交其游标处的部分写入——泄漏
+        // 有界，每会话 ≤2）。边界：close 自身失败（TRUNC 已达/应答丢失二
+        // 义）后回写 = 极小概率撤销已提交新账——记录仍在内核 RAM 表，下窗
+        // 同 (boot, seq) 补落（boot 维度假分裂与 boot_pick 挂账同族，零数据
+        // 丢失）。回写失败 = 尽力面，残留语义回「同名全量重写自愈」挂账原位。
+        if put_file(&old).is_err() {
+            eprintln!("launcher: cbox restore errno={e}");
+        }
         eprintln!("launcher: cbox write errno={e}");
         return;
     }
@@ -109,10 +122,9 @@ fn read_file() -> Result<Vec<u8>, i32> {
 /// 的分岔在**失败路径**：libc close 对可写 fd 恒发 TRUNC(游标)——中途失败
 /// 后 close = 把部分写入提交成账本、毁掉盘上旧账，违反设计稿「中断 = 旧账
 /// 原样保命」（design.md 持久化节写策略）。故写失败**不 close**（fd 泄漏
-/// 有界：init 落账一次性，每 launcher 会话至多一个）；服务端 staging 槽
-/// 残留部分缓冲——后续同名全量重写（svcmgr 两窗 0..len + TRUNC(len)）自愈，
-/// 跨名 FAT 写会先自动 commit 旧槽（v1 无 init 后 FAT 写者，design.md
-/// 挂账）。正常路径 close 出错 = commit 失败面，errno 透传。
+/// 有界：init 落账一次性）；staging 残留由调用方 [`init_flush`] 的撤销性
+/// 回写当场清理（跨名 FAT 写自动提交残留的毁账面——轮 2 审计 [1]/[6]）。
+/// 正常路径 close 出错 = commit 失败面，errno 透传。
 fn put_file(data: &[u8]) -> Result<(), i32> {
     // SAFETY: PATH NUL 结尾；fd 按 libc 契约使用。
     let fd = unsafe { open(PATH.as_ptr() as *const _, O_WRONLY | O_CREAT) };

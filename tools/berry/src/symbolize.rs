@@ -68,10 +68,17 @@ pub fn load_symbols(elf: &[u8]) -> Result<Vec<Sym>> {
     let shentsize = rd.u16(0x3a)? as usize;
     let shnum_raw = rd.u16(0x3c)? as usize;
     // 节头：name u32 / type u32 / flags u64 / off u64 / size u64 / link u32。
+    // 野 shoff/shentsize 的加乘溢出面全走 checked（Err 出不 panic——轮 2
+    // 审计 [U1]：朴素 `+` 在 dev 剖面 panic、release 回绕出「错位成功读」
+    // 形——shoff=u64::MAX 时 o+4 回绕 3 恰好落在 ELF 头内）。
+    let shof = |o: usize, d: usize| -> Result<usize> {
+        o.checked_add(d).ok_or_else(|| bad("节表偏移溢出"))
+    };
     let sh = |i: usize| -> Result<(u32, u64, usize, usize, u32)> {
-        let o = shoff + i * shentsize;
-        Ok((rd.u32(o + 4)?, rd.u64(o + 8)?, rd.u64(o + 0x18)? as usize,
-            rd.u64(o + 0x20)? as usize, rd.u32(o + 0x28)?))
+        let o = shof(shoff, i.checked_mul(shentsize).ok_or_else(|| bad("节表偏移溢出"))?)?;
+        Ok((rd.u32(shof(o, 4)?)?, rd.u64(shof(o, 8)?)?,
+            rd.u64(shof(o, 0x18)?)? as usize,
+            rd.u64(shof(o, 0x20)?)? as usize, rd.u32(shof(o, 0x28)?)?))
     };
     // shnum==0 = 扩展节计数（≥ 0xff00 节形态）：真节数在 sh[0].sh_size——
     // 夹到文件长/shentsize 帽（野值防巨分配）。
@@ -128,8 +135,15 @@ fn parse_symtab(
 ) -> Option<Vec<Sym>> {
     let strtab = elf.get(str_off..str_off.checked_add(str_size)?)?;
     let mut syms = Vec::new();
-    for pos in (off..off.checked_add(size)?).step_by(24) {
+    // 轮 2 审计 [U1]：迭代帽 = 节内**完整** 24B 项（`pos + 24 <= end`）——
+    // sh_size 非 24 倍数时步进 range 会多访一个跨界残项（旧 step_by 形把
+    // strtab 首字节当 symtab 项读——name_off 野值可致整表作废或幻影符号）。
+    // 节内完整项越出文件（截断件）仍 None（`?`）= 换下一候选表，语义不变。
+    let end = off.checked_add(size)?;
+    let mut pos = off;
+    while pos + 24 <= end {
         let e = elf.get(pos..pos + 24)?;
+        pos += 24; // 读毕即进——下方 continue 滤路径不落步进（for/step_by 迁移面）
         let name_off = u32::from_le_bytes([e[0], e[1], e[2], e[3]]) as usize;
         let shndx = u16::from_le_bytes([e[6], e[7]]) as usize;
         let value = u64::from_le_bytes([
@@ -267,6 +281,42 @@ mod tests {
     #[test]
     fn not_an_elf_rejected() {
         assert!(load_symbols(b"MZ......").is_err());
+    }
+
+    /// 轮 2 审计 [U1]：野几何三面全走 Err/夹取，不 panic 不幻读。
+    #[test]
+    fn wild_section_geometry_never_panics() {
+        let d = build_elf(&[("fn", 0x1000)]);
+        let shoff = u64::from_le_bytes(d[0x28..0x30].try_into().unwrap()) as usize;
+        let entsz = 64usize;
+        // ① shoff = u64::MAX：o+4 朴素加法回绕 3 = 「错位成功读」形（读到
+        //    ELF 头内字节当节字段）——checked 路必须 Err。
+        let mut w = d.clone();
+        w[0x28..0x30].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(load_symbols(&w).is_err());
+        // ② 扩展计数 + sh[0].sh_size 野值（u64::MAX）：夹到 文件长/shentsize
+        //    帽 = 挡 `vec![false; shnum]` 巨分配的第一道闸；夹后仍越真节表
+        //    （帽不感知 shoff 偏移，本件帽 7 > 真表 5）→ 节读越界 Err 收口
+        //    （非 panic/幻读——两道防线各司其职）。
+        let mut w = d.clone();
+        w[shoff + 0x20..shoff + 0x28].copy_from_slice(&u64::MAX.to_le_bytes());
+        w[0x3c..0x3e].copy_from_slice(&0u16.to_le_bytes());
+        assert!(load_symbols(&w).is_err());
+        // ③ e_shnum 野大值（0xFFFF）+ 短文件：节表读越界 → Err（非越界读）。
+        let mut w = d.clone();
+        w[0x3c..0x3e].copy_from_slice(&0xFFFFu16.to_le_bytes());
+        assert!(load_symbols(&w).is_err());
+        // ④ symtab sh_size 非 24 倍数（+8 = 尾巴跨界残项）：strtab 首字节
+        //    曾被当 symtab 项读（name_off 野值 → `?` 整表作废）——新帽只收
+        //    完整项，符号照常解析。
+        let o2 = shoff + 2 * entsz;
+        let mut sz = u64::from_le_bytes(d[o2 + 0x20..o2 + 0x28].try_into().unwrap());
+        sz += 8;
+        let mut w = d.clone();
+        w[o2 + 0x20..o2 + 0x28].copy_from_slice(&sz.to_le_bytes());
+        let syms = load_symbols(&w).unwrap();
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "fn");
     }
 
     #[test]
