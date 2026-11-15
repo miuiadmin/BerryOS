@@ -70,7 +70,7 @@ pub(crate) fn text_spec(bytes: &[u8], fg: Color, scale: berry_gfx::font::FontSiz
     })
 }
 
-fn panel_spec(
+pub(crate) fn panel_spec(
     bg: Color, w: Option<u32>, h: Option<u32>, padding: u32, gap: u32, radius: u32,
 ) -> ViewSpec {
     ViewSpec {
@@ -1054,7 +1054,7 @@ impl TextField {
         ctx: &WidgetContext,
         spec: TextFieldSpec,
     ) -> Result<Self, UiError> {
-        if spec.width == 0 {
+        if spec.width == 0 || spec.kind == TextInputKind::Multiline {
             return Err(UiError::NodeBad);
         }
         let pad = ctx.spacing(SpacingToken::Xs);

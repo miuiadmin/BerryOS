@@ -6,6 +6,7 @@
 //! ```text
 //! U+0020 后可断
 //! CJK 区间码点后可断
+//! U+000A 显式换行：行终于 `\n` 前（`\n` 不计宽、不进行切片、不出字形）
 //! 无合法断点且下一码点溢出行宽时紧急断前一个可容纳码点
 //! 首码点自身超宽时独立成行（不丢字）
 //! 空文本零行
@@ -103,6 +104,19 @@ pub fn plan(text: &[u8], scale: u8, max_w: u32, tm: &dyn TextMetrics) -> WrapPla
         while cursor < text.len() {
             let (cp, step) = utf8::next(&text[cursor..]).unwrap_or((utf8::REPLACEMENT, 1));
             let end = cursor.saturating_add(step.max(1)).min(text.len());
+            if cp == 0x0A {
+                // Hard newline closes this line before measuring it. Spaces
+                // before `\n` are trailing spaces; spaces after it are kept as
+                // intentional indentation on the next line.
+                let mut line_end = cursor;
+                while line_end > start && text[line_end - 1] == b' ' {
+                    line_end -= 1;
+                }
+                out.ends[line_index] = line_end as u8;
+                start = end;
+                overflow = true;
+                break;
+            }
             let width = tm.measure(&text[start..end], scale).0;
             if width <= max_w {
                 fit_end = end;

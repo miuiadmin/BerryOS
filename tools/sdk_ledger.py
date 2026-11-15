@@ -33,7 +33,7 @@ class LedgerError(Exception):
 
 
 MODULES = {
-    "desc", "diagnostic", "gesture", "layout", "metrics", "navigation", "nav_stack", "pull_refresh", "swipe",
+    "desc", "diagnostic", "gesture", "layout", "metrics", "navigation", "nav_stack", "pull_refresh", "swipe", "text_area",
     "theme", "text_input", "sem", "widgets", "crate", "sdk",
 }
 

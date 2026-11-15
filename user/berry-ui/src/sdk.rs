@@ -46,6 +46,7 @@ pub use crate::widgets::{
 pub use crate::swipe::{
     SwipePager, DOT_OFF, DOT_ON, FLIP_VEL_PX_S, SNAP_DUR_NS, SWIPE_PAGES_MAX,
 };
+pub use crate::text_area::{TextArea, TextAreaSpec, TEXT_AREA_LINES_MAX};
 pub use crate::pull_refresh::{
     PullRefresh, PullRefreshEvent, PullRefreshPhase, PullRefreshSpec, PULL_REFRESH_DRAG_DIV,
     PULL_REFRESH_PHASE_NS, PULL_REFRESH_SETTLE_NS,

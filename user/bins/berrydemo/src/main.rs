@@ -21,7 +21,8 @@ use berry_ui::sdk::{
     ListDetailSpec, ListItem, ListTile, ListTileSpec, LoadingIndicator, Msg, NodeId,
     ProgressIndicator, Radio, RectI, Scaffold, ScrollView, SearchField, Section,
     SegmentedControl, SegmentedItemSpec, Slider, Stepper, Switch, TabBarStyle, TabItemSpec,
-    Tabs, TextPicker, TextVariant, TextField, TextFieldSlots, TextFieldSlotsSpec,
+    Tabs, TextPicker, TextVariant, TextArea, TextAreaSpec, TextField, TextFieldSlots,
+    TextFieldSlotsSpec,
     TextFieldSpec, Theme, Ui, WidgetContext, column, FieldMessage, FieldMessageKind,
     divider, icon, row, text, Badge, Chip, ChipKind, IconButton, NavigationIconSource,
     ScrollViewAxis,
@@ -290,6 +291,8 @@ struct InputPage {
     fields: [TextField; 3],
     labelled: TextFieldSlots,
     labelled_error: bool,
+    area: TextArea,
+    area_state: TextInputState,
     search: SearchField,
     search_state: TextInputState,
 }
@@ -785,9 +788,24 @@ fn build_input(
         )
         .unwrap_or_else(|_| berry_room::panic_exit(134));
     }
+    text(ui, stack, ctx, TextVariant::Body, b"Multiline")
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
+    let mut area = TextArea::new(
+        ui,
+        stack,
+        ctx,
+        TextAreaSpec { width, lines: 3 },
+    )
+    .unwrap_or_else(|_| berry_room::panic_exit(134));
+    let area_state = TextInputState::new(b"Berry notes\nline two")
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
+    area.sync(ui, ctx, &area_state)
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
     text(ui, stack, ctx, TextVariant::Body, b"Tap a field to focus its caret")
         .unwrap_or_else(|_| berry_room::panic_exit(134));
     InputPage {
+        area,
+        area_state,
         root: scaffold.root,
         scroll,
         tabs,
@@ -1235,6 +1253,10 @@ impl App {
             line.push(b" p1=");
             line.rect(self.ui.bounds(node).unwrap_or_else(|_| berry_room::panic_exit(134)));
         }
+        if let Page::Input(page) = &self.page {
+            line.push(b" ta=");
+            line.rect(self.ui.bounds(page.area.panel).unwrap_or_else(|_| berry_room::panic_exit(134)));
+        }
         line.push(b"\n");
         line.print(room);
     }
@@ -1343,6 +1365,8 @@ impl App {
                         .unwrap_or_else(|_| berry_room::panic_exit(134));
                 }
                 handled |= page.labelled.on_msg(&mut self.ui, &self.ctx, message)
+                    .unwrap_or_else(|_| berry_room::panic_exit(134));
+                handled |= page.area.on_msg(&mut self.ui, &self.ctx, message)
                     .unwrap_or_else(|_| berry_room::panic_exit(134));
                 handled |= page.search.on_msg(&mut self.ui, &self.ctx, message)
                     .unwrap_or_else(|_| berry_room::panic_exit(134));
@@ -1514,6 +1538,21 @@ impl App {
                         .sync(&mut self.ui, &self.ctx, &page.search_state)
                         .unwrap_or_else(|_| berry_room::panic_exit(134));
                     action = 16;
+                } else if page.area.owns(node) {
+                    hit_line.push(b"textarea");
+                    let mut area = page.area;
+                    let area_state = page.area_state;
+                    let messages = area.request_focus(&mut self.ui, &self.ctx)
+                        .unwrap_or_else(|_| berry_room::panic_exit(134));
+                    page.area = area;
+                    for focus in messages.iter() {
+                        let _ = area.on_msg(&mut self.ui, &self.ctx, &focus);
+                    }
+                    area.sync(&mut self.ui, &self.ctx, &area_state)
+                        .unwrap_or_else(|_| berry_room::panic_exit(134));
+                    page.area = area;
+                    focused_field = 4;
+                    action = 22;
                 } else if let Some(index) = page.fields.iter().position(|field| field.owns(node)) {
                     hit_line.push(b"field");
                     let mut field = page.fields[index];

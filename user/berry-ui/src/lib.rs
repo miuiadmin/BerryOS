@@ -42,6 +42,7 @@ pub mod mask;
 pub mod metrics;
 pub mod navigation;
 pub mod pull_refresh;
+pub mod text_area;
 pub mod nav_stack;
 pub mod gesture;
 pub mod paint;
@@ -2435,6 +2436,10 @@ impl<const N: usize> Ui<N> {
             i += 1;
         }
         self.damage.add_full();
+    }
+
+    pub(crate) fn text_metrics(&self) -> &'static dyn TextMetrics {
+        self.tm
     }
 
     /// 图标/图片资源供件换装（默认 [`EmptyIconSource`]——dims 恒 None）。

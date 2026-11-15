@@ -28,13 +28,14 @@ pub const TEXT_INPUT_MAX: usize = crate::TEXT_INLINE;
 
 /// P0 composition purpose 的 app 侧输入档。
 ///
-/// v1 只开放单行 Text/Number/Password。`Multiline` 是 P0 purpose 的保留
-/// 值，不作为 TextField 构造档；TextArea 属后续独立规格。
+/// Text/Number/Password 是单行 TextField 构造档；`Multiline` 是 TextArea
+/// 专用编辑档，`TextField::new` loud 拒绝该档。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextInputKind {
     Text,
     Number,
     Password,
+    Multiline,
 }
 
 impl TextInputKind {
@@ -44,10 +45,11 @@ impl TextInputKind {
             Self::Text => IME_PURPOSE_TEXT,
             Self::Number => IME_PURPOSE_NUMBER,
             Self::Password => IME_PURPOSE_PASSWORD,
+            Self::Multiline => IME_PURPOSE_MULTILINE,
         }
     }
 
-    /// P0 保留 multiline purpose 的只读 accessor；v1 无 TextField 消费者。
+    /// P0 multiline purpose 的只读 accessor；TextArea 使用该编辑档。
     pub const IME_PURPOSE_MULTILINE: u8 = IME_PURPOSE_MULTILINE;
 }
 
@@ -105,6 +107,10 @@ pub enum TextInputEdit {
     Right { extend: bool },
     Home { extend: bool },
     End { extend: bool },
+    LineUp { extend: bool },
+    LineDown { extend: bool },
+    LineHome { extend: bool },
+    LineEnd { extend: bool },
     SelectAll,
 }
 
@@ -123,6 +129,7 @@ pub enum TextInputKeyOp {
 pub struct TextInputState {
     value: TextBuf,
     selection: TextSelection,
+    vcol: u16,
 }
 
 impl TextInputState {
@@ -132,7 +139,8 @@ impl TextInputState {
         }
         let value = TextBuf::new(bytes)?;
         let caret = utf8::count(value.as_bytes()) as u16;
-        Ok(Self { value, selection: TextSelection::new(caret) })
+        let vcol = line_col_of(value.as_bytes(), caret).1;
+        Ok(Self { value, selection: TextSelection::new(caret), vcol })
     }
 
     pub fn value(&self) -> &TextBuf {
@@ -169,6 +177,7 @@ impl TextInputState {
         let caret = utf8::count(value.as_bytes()) as u16;
         self.value = value;
         self.selection = TextSelection::new(caret);
+        self.vcol = line_col_of(self.value.as_bytes(), caret).1;
         Ok(TextInputOutcome {
             changed: old.value != self.value,
             selection_changed: old.selection != self.selection,
@@ -179,6 +188,7 @@ impl TextInputState {
     pub fn select_all(&mut self) -> TextInputOutcome {
         let old = self.selection;
         self.selection = TextSelection { anchor_cp: 0, caret_cp: self.len_cp() };
+        self.vcol = line_col_of(self.value.as_bytes(), self.selection.caret_cp).1;
         if old == self.selection {
             TextInputOutcome::default()
         } else {
@@ -203,6 +213,7 @@ impl TextInputState {
                 if !extend {
                     self.selection.anchor_cp = 0;
                 }
+                self.vcol = 0;
                 Self::selection_outcome(old, self.selection)
             }
             TextInputEdit::End { extend } => {
@@ -212,8 +223,13 @@ impl TextInputState {
                 if !extend {
                     self.selection.anchor_cp = end;
                 }
+                self.vcol = line_col_of(self.value.as_bytes(), end).1;
                 Self::selection_outcome(old, self.selection)
             }
+            TextInputEdit::LineUp { extend } => self.move_line(-1, extend),
+            TextInputEdit::LineDown { extend } => self.move_line(1, extend),
+            TextInputEdit::LineHome { extend } => self.move_line_edge(false, extend),
+            TextInputEdit::LineEnd { extend } => self.move_line_edge(true, extend),
             TextInputEdit::SelectAll => self.select_all(),
         }
     }
@@ -265,6 +281,43 @@ impl TextInputState {
         Ok((TextBuf::new(&prefix[..pi])?, TextBuf::new(&suffix[..si])?))
     }
 
+    fn move_line(&mut self, delta: i8, extend: bool) -> TextInputOutcome {
+        let bytes = self.value.as_bytes();
+        let (line, _) = line_col_of(bytes, self.selection.caret_cp);
+        let target = if delta < 0 {
+            line.checked_sub(delta.unsigned_abs() as u16)
+        } else {
+            Some(line.saturating_add(delta as u16))
+        };
+        let Some(target) = target else {
+            return TextInputOutcome::rejected();
+        };
+        if target >= line_count(bytes) {
+            return TextInputOutcome::rejected();
+        }
+        let caret = cp_at_line_col(bytes, target, self.vcol);
+        let old = self.selection;
+        self.selection.caret_cp = caret;
+        if !extend {
+            self.selection.anchor_cp = caret;
+        }
+        Self::selection_outcome(old, self.selection)
+    }
+
+    fn move_line_edge(&mut self, end: bool, extend: bool) -> TextInputOutcome {
+        let bytes = self.value.as_bytes();
+        let (line, _) = line_col_of(bytes, self.selection.caret_cp);
+        let (start, line_end) = line_span(bytes, line);
+        let caret = if end { line_end } else { start };
+        let old = self.selection;
+        self.selection.caret_cp = caret;
+        if !extend {
+            self.selection.anchor_cp = caret;
+        }
+        self.vcol = caret.saturating_sub(start);
+        Self::selection_outcome(old, self.selection)
+    }
+
     fn insert_char(&mut self, ch: char) -> TextInputOutcome {
         let mut buf = [0u8; 4];
         let bytes = ch.encode_utf8(&mut buf).as_bytes();
@@ -281,6 +334,7 @@ impl TextInputState {
         self.value.len = new_len as u8;
         let caret = start_cp + utf8::count(bytes) as u16;
         self.selection = TextSelection::new(caret);
+        self.vcol = line_col_of(self.value.as_bytes(), caret).1;
         TextInputOutcome { changed: true, selection_changed: true, ..TextInputOutcome::default() }
     }
 
@@ -295,6 +349,7 @@ impl TextInputState {
         self.value.bytes[start..start + tail_len].copy_from_slice(&tail[..tail_len]);
         self.value.len = (start + tail_len) as u8;
         self.selection = TextSelection::new(start_cp);
+        self.vcol = line_col_of(self.value.as_bytes(), start_cp).1;
         Some(TextInputOutcome { changed: true, selection_changed: true, ..TextInputOutcome::default() })
     }
 
@@ -331,6 +386,7 @@ impl TextInputState {
         if !extend {
             self.selection.anchor_cp = target;
         }
+        self.vcol = line_col_of(self.value.as_bytes(), target).1;
         Self::selection_outcome(old, self.selection)
     }
 
@@ -383,7 +439,29 @@ pub fn text_key_intent(
         return None;
     }
     if code == 28 && (action == KEY_ACTION_DOWN || action == KEY_ACTION_REPEAT) {
-        return Some(TextInputKeyOp::Submit);
+        return Some(if kind == TextInputKind::Multiline {
+            TextInputKeyOp::Edit(TextInputEdit::Insert('\n'))
+        } else {
+            TextInputKeyOp::Submit
+        });
+    }
+    if kind == TextInputKind::Multiline {
+        if action == KEY_ACTION_DOWN || action == KEY_ACTION_REPEAT {
+            let extend = modifiers & KEY_MOD_SHIFT != 0;
+            match code {
+                103 => return Some(TextInputKeyOp::Edit(TextInputEdit::LineUp { extend })),
+                108 => return Some(TextInputKeyOp::Edit(TextInputEdit::LineDown { extend })),
+                _ => {}
+            }
+        }
+        if action == KEY_ACTION_DOWN {
+            let extend = modifiers & KEY_MOD_SHIFT != 0;
+            match code {
+                102 => return Some(TextInputKeyOp::Edit(TextInputEdit::LineHome { extend })),
+                107 => return Some(TextInputKeyOp::Edit(TextInputEdit::LineEnd { extend })),
+                _ => {}
+            }
+        }
     }
     let extend = modifiers & KEY_MOD_SHIFT != 0;
     let edit = match code {
@@ -411,7 +489,7 @@ pub fn text_key_intent(
 
 fn char_allowed(kind: TextInputKind, ch: char) -> bool {
     match kind {
-        TextInputKind::Text | TextInputKind::Password => true,
+        TextInputKind::Text | TextInputKind::Password | TextInputKind::Multiline => true,
         TextInputKind::Number => ch.is_ascii_digit(),
     }
 }
@@ -453,6 +531,68 @@ fn printable_for_key(code: u8, shift: bool) -> Option<char> {
         .iter()
         .find(|(key, _)| *key == code)
         .map(|(_, ch)| *ch)
+}
+
+pub fn line_count(value: &[u8]) -> u16 {
+    let mut lines = 1u16;
+    let mut i = 0usize;
+    while i < value.len() {
+        let (cp, step) = next(&value[i..]).unwrap_or((utf8::REPLACEMENT, 1));
+        if cp == 0x0A {
+            lines = lines.saturating_add(1);
+        }
+        i += step.max(1);
+    }
+    lines
+}
+
+pub fn line_span(value: &[u8], line: u16) -> (u16, u16) {
+    let mut current = 0u16;
+    let mut start = 0u16;
+    let mut cp = 0u16;
+    let mut i = 0usize;
+    while i < value.len() {
+        let (decoded, step) = next(&value[i..]).unwrap_or((utf8::REPLACEMENT, 1));
+        if decoded == 0x0A {
+            if current == line {
+                return (start, cp);
+            }
+            current += 1;
+            start = cp + 1;
+        }
+        cp += 1;
+        i += step.max(1);
+    }
+    let last = line_count(value).saturating_sub(1);
+    if line >= last {
+        (start, cp)
+    } else {
+        (start, start)
+    }
+}
+
+pub fn line_col_of(value: &[u8], caret_cp: u16) -> (u16, u16) {
+    let len = utf8::count(value) as u16;
+    let caret = caret_cp.min(len);
+    let mut line = 0u16;
+    let mut line_start = 0u16;
+    let mut cp = 0u16;
+    let mut i = 0usize;
+    while i < value.len() && cp < caret {
+        let (decoded, step) = next(&value[i..]).unwrap_or((utf8::REPLACEMENT, 1));
+        if decoded == 0x0A {
+            line += 1;
+            line_start = cp + 1;
+        }
+        cp += 1;
+        i += step.max(1);
+    }
+    (line, caret.saturating_sub(line_start))
+}
+
+pub fn cp_at_line_col(value: &[u8], line: u16, col: u16) -> u16 {
+    let (start, end) = line_span(value, line);
+    start.saturating_add(col.min(end.saturating_sub(start)))
 }
 
 /// R2 `insets::Ime` 消费面：由 field 屏幕底边、viewport 高与 IME bottom

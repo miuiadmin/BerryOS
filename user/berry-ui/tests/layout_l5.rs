@@ -362,3 +362,74 @@ fn grid_projection_uses_one_track_not_full_grid_content_width() {
     assert_eq!(ui.bounds(other).unwrap(), RectI::new(52, 0, 48, 16));
     assert_eq!(ui.text_wrap_iter().next().unwrap().last_max_w, 48);
 }
+
+#[test]
+fn wrap_plan_treats_lf_as_explicit_line_boundary() {
+    let mono = MonospaceTextMetrics;
+    let hard = plan(b"AA\nBB", 0, u32::MAX, &mono);
+    assert_eq!(hard.len(), 2);
+    assert_eq!(hard.line(0, b"AA\nBB"), b"AA");
+    assert_eq!(hard.line(1, b"AA\nBB"), b"BB");
+    assert_eq!(measure_plan(b"AA\nBB", 0, &hard, &mono), (16, 32));
+
+    let mixed = plan(b"AAAA\nB", 0, 16, &mono);
+    assert_eq!(mixed.len(), 3);
+    assert_eq!(mixed.line(0, b"AAAA\nB"), b"AA");
+    assert_eq!(mixed.line(1, b"AAAA\nB"), b"AA");
+    assert_eq!(mixed.line(2, b"AAAA\nB"), b"B");
+
+    let empties = plan(b"A\n\nB", 0, u32::MAX, &mono);
+    assert_eq!(empties.len(), 3);
+    assert_eq!(empties.line(1, b"A\n\nB"), b"");
+    assert_eq!(measure_plan(b"A\n\nB", 0, &empties, &mono), (8, 48));
+
+    let trailing = plan(b"ABC\n", 0, u32::MAX, &mono);
+    assert_eq!(trailing.len(), 1);
+    assert_eq!(trailing.line(0, b"ABC\n"), b"ABC");
+}
+
+#[test]
+fn wrap_plan_hard_newline_preserves_indent_and_capacity() {
+    let mono = MonospaceTextMetrics;
+    let indented = plan(b"AAA \n B", 0, u32::MAX, &mono);
+    assert_eq!(indented.line(0, b"AAA \n B"), b"AAA");
+    assert_eq!(indented.line(1, b"AAA \n B"), b" B");
+    assert_eq!(measure_plan(b"AAA \n B", 0, &indented, &mono), (24, 32));
+
+    let mut worst = [0u8; 64];
+    worst.fill(b'\n');
+    let worst_plan = plan(&worst, 0, u32::MAX, &mono);
+    assert_eq!(worst_plan.len(), 64);
+    assert_eq!(measure_plan(&worst, 0, &worst_plan, &mono), (0, 1024));
+}
+
+#[test]
+fn wrapped_text_paint_skips_lf_glyph_and_advances_y() {
+    let mut ui = Ui::<16>::new(64, 64);
+    let root = ui.root();
+    let node = ui.add(root, text_spec(b"AB\nCD", FontSize::S8x16)).unwrap();
+    ui.set_text_wrap(node, true).unwrap();
+    ui.layout();
+    assert_eq!(ui.bounds(node).unwrap(), RectI::new(0, 0, 16, 32));
+
+    let mut glyphs = [GlyphPos { ch: 0, x: 0, y: 0 }; 16];
+    let mut encoder = CommandEncoder::new();
+    ui.paint(&mut glyphs, &mut encoder);
+    let list = encoder.finish();
+    let mut seen = Vec::new();
+    for command in list.iter() {
+        if let Cmd::DrawGlyphRun { run, .. } = command {
+            seen.extend(run.glyphs.iter().map(|glyph| (glyph.ch, glyph.x, glyph.y)));
+        }
+    }
+    assert_eq!(
+        seen,
+        vec![
+            (u32::from(b'A'), 0, 0),
+            (u32::from(b'B'), 8, 0),
+            (u32::from(b'C'), 0, 16),
+            (u32::from(b'D'), 8, 16),
+        ]
+    );
+    assert!(!seen.iter().any(|(ch, _, _)| *ch == u32::from(b'\n')));
+}
