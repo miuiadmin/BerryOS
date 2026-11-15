@@ -268,6 +268,7 @@ struct HomePage {
 
 struct WidgetsPage {
     root: NodeId,
+    card: Card,
     scroll: ScrollView,
     tabs: Tabs,
     back: IconButton,
@@ -697,6 +698,7 @@ fn build_widgets(
 
     WidgetsPage {
         root: scaffold.root,
+        card,
         scroll,
         tabs,
         back: app_back,
@@ -1336,6 +1338,10 @@ impl App {
                 }
             }
             Page::Widgets(page) => {
+                let _ = page
+                    .card
+                    .on_msg(&mut self.ui, &self.ctx, message)
+                    .unwrap_or_else(|_| berry_room::panic_exit(134));
                 handled |= page.back.on_msg(&mut self.ui, &self.ctx, message)
                     .unwrap_or_else(|_| berry_room::panic_exit(134));
                 handled |= page.counter.on_msg(&mut self.ui, &self.ctx, message)

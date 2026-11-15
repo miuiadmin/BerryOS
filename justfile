@@ -912,7 +912,7 @@ gui8-smoke-normal:
 
 # 产品壳 e2e（非 CI 常态门；本机 HVF + virtio-gpu）：从 out/berryos-desktop.img
 # 真实启动产品桌面，覆盖 BootProgress m=1..11、白色胶囊像素、BerryDemo 首帧、
-# TASK/Recents/恢复、HOME，以及 Settings→TASK→frame-cache replay。
+# TASK/Recents/恢复、HOME，Settings→TASK→frame-cache replay，以及 Dock按压真实启动。
 # PRODUCT_E2E_SUITE=recents|frame-cache|all；PRODUCT_E2E_KEEP=1 保留工作目录；
 # PRODUCT_E2E_REBUILD=1 强制重建镜像。旧 out/verify-*.py 为一次性来源，已收编。
 product-e2e:

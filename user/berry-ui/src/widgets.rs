@@ -933,10 +933,11 @@ impl IconButton {
     }
 }
 
-/// Card：表面容器。调用方直接向 `panel` 添加内容。
+/// Card：可按压表面容器。调用方直接向 `panel` 添加内容。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Card {
     pub panel: NodeId,
+    pressed: bool,
 }
 
 impl Card {
@@ -949,7 +950,58 @@ impl Card {
             parent,
             panel_spec(ctx.theme.colors.surface, None, None, pad, ctx.spacing(SpacingToken::S), ctx.metrics.radius(RadiusToken::Medium)),
         )?;
-        Ok(Self { panel })
+        Ok(Self { panel, pressed: false })
+    }
+
+    pub fn is_pressed(&self) -> bool {
+        self.pressed
+    }
+
+    /// Apply card press feedback without changing its layout footprint. This
+    /// is a token-colored background plus a 2dp paint offset; width and
+    /// height stay immutable so siblings and nested content never relayout.
+    pub fn set_pressed<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, pressed: bool,
+    ) -> Result<(), UiError> {
+        self.pressed = pressed;
+        let visual = ctx.theme.state(if pressed {
+            InteractionState::Pressed
+        } else {
+            InteractionState::Normal
+        });
+        if let Some(props) = retained_props(ui, self.panel) {
+            if let Props::Panel(mut panel) = props {
+                panel.bg = visual.background;
+                ui.set_props(self.panel, Props::Panel(panel))?;
+            }
+        }
+        let nudge = if pressed {
+            i32::try_from(ctx.metrics.effective_px(8)).unwrap_or(2)
+        } else {
+            0
+        };
+        ui.set_offset(self.panel, 0, nudge)?;
+        ui.layout();
+        Ok(())
+    }
+
+    /// Card is a container, not the business action owner. It only consumes
+    /// direct Press/Release/Cancel visuals on its surface; Click activation
+    /// remains the app's decision.
+    pub fn on_msg<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, msg: &Msg,
+    ) -> Result<bool, UiError> {
+        let pressed = match msg {
+            Msg::Press { node, .. }
+            | Msg::Release { node, .. }
+            | Msg::Cancel { node }
+            | Msg::Click { node } if *node == self.panel => {
+                matches!(msg, Msg::Press { .. })
+            }
+            _ => return Ok(false),
+        };
+        self.set_pressed(ui, ctx, pressed)?;
+        Ok(false)
     }
 }
 

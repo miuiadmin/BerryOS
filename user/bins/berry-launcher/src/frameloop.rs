@@ -642,6 +642,28 @@ pub fn run(
         let page_before_msgs = desktop.pager.page();
         let msgs = ui.pump_input(last_expected);
         for m in msgs.iter() {
+            // Persistent-shell press feedback is separate from press_map:
+            // Dock icons are Argb leaves and Recents cards are composite
+            // Panels. Both use a paint-only offset/card token change.
+            let shell_pressed = match m {
+                Msg::Press { node, .. } => Some((*node, true)),
+                Msg::Release { node, .. }
+                | Msg::Cancel { node }
+                | Msg::Click { node } => Some((*node, false)),
+                _ => None,
+            };
+            if let Some((node, pressed)) = shell_pressed {
+                match desktop::set_surface_press(ui, &mut desktop, node, pressed) {
+                    Ok(desktop::SurfacePress::Dock { index }) => {
+                        println!("SHELLPRESS ok surface=dock index={index} pressed={pressed}");
+                    }
+                    Ok(desktop::SurfacePress::Recents { index }) => {
+                        println!("SHELLPRESS ok surface=recents index={index} pressed={pressed}");
+                    }
+                    Ok(desktop::SurfacePress::None) => {}
+                    Err(e) => fail(&format!("shell press err={e:?}")),
+                }
+            }
             match m {
                 Msg::Click { node } => {
                     if recents_open {

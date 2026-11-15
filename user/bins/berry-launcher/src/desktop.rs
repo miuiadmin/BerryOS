@@ -149,6 +149,8 @@ const RECENTS_CARD_BG: Color = Color { r: 36, g: 44, b: 54 };
 const RECENTS_MUTED: Color = Color { r: 170, g: 180, b: 190 };
 pub const RECENTS_MAX: usize = 4;
 pub const RECENTS_LABEL_MAX: usize = 64;
+const RECENTS_CARD_PRESSED_BG: Color = Color { r: 48, g: 58, b: 70 };
+const PRESS_NUDGE_PX: i32 = 2;
 
 /// 一格桌面的建树产物（W2 帧循环消费面）。
 #[derive(Clone, Copy)]
@@ -170,6 +172,8 @@ pub struct RecentsCard {
     pub panel: NodeId,
     pub label: NodeId,
     pub owner: Option<u16>,
+    base: PanelProps,
+    pressed: bool,
 }
 
 /// Recents 文本载荷（定长拷贝，避免 frameloop 持注册表引用）。
@@ -697,19 +701,20 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
     ui.set_a11y(recents_empty, ROLE_TEXT, b"No recent apps")?;
     let mut recents_cards = Vec::with_capacity(RECENTS_MAX);
     for _ in 0..RECENTS_MAX {
+        let base = PanelProps {
+            bg: RECENTS_CARD_BG,
+            w: Some(recents_w),
+            h: Some(if big { 180 } else { 96 }),
+            padding: if big { 28 } else { 14 },
+            gap: 12,
+            radius: if big { 24 } else { 12 },
+        };
         let panel = ui.add(
             recents_panel,
             ViewSpec {
                 kind: ViewKind::Panel,
                 key: 0,
-                props: Props::Panel(PanelProps {
-                    bg: RECENTS_CARD_BG,
-                    w: Some(recents_w),
-                    h: Some(if big { 180 } else { 96 }),
-                    padding: if big { 28 } else { 14 },
-                    gap: 12,
-                    radius: if big { 24 } else { 12 },
-                }),
+                props: Props::Panel(base),
             },
         )?;
         let label = ui.add(
@@ -721,7 +726,13 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
             )?,
         )?;
         ui.set_a11y(panel, ROLE_BUTTON, b"Recent task")?;
-        recents_cards.push(RecentsCard { panel, label, owner: None });
+        recents_cards.push(RecentsCard {
+            panel,
+            label,
+            owner: None,
+            base,
+            pressed: false,
+        });
     }
     let recents_cards: [RecentsCard; RECENTS_MAX] =
         recents_cards.try_into().ok().expect("recents 恰四卡");
@@ -831,6 +842,49 @@ pub fn set_launch_toast(
 ) -> Result<(), UiError> {
     let bytes: &[u8] = if visible { b"Opening..." } else { b"" };
     ui.set_text(desktop.launch_toast, bytes)
+}
+
+/// Which persistent shell surface consumed a press-state message.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SurfacePress {
+    None,
+    Dock { index: usize },
+    Recents { index: usize },
+}
+
+/// Apply paint-only press feedback to surfaces that cannot use press_map.
+///
+/// Dock icons are single Argb Icon leaves (press_map visuals are limited to
+/// Rect/Text), and Recents cards are composite Panels. Both get a deterministic
+/// 2px offset; Recents also changes its Panel token-derived background. No
+/// width/height changes, so neither the dock row nor sibling cards relayout.
+pub fn set_surface_press(
+    ui: &mut UiMain, desktop: &mut Desktop, node: NodeId, pressed: bool,
+) -> Result<SurfacePress, UiError> {
+    let nudge = if pressed { PRESS_NUDGE_PX } else { 0 };
+    for (index, slot) in desktop.dock.iter().enumerate() {
+        if node == slot.cell || node == slot.label_node {
+            ui.set_offset(slot.cell, 0, nudge)?;
+            return Ok(SurfacePress::Dock { index });
+        }
+    }
+    for (index, card) in desktop.recents_cards.iter_mut().enumerate() {
+        if node == card.panel || node == card.label {
+            if card.pressed != pressed {
+                card.pressed = pressed;
+                let mut props = card.base;
+                props.bg = if pressed {
+                    RECENTS_CARD_PRESSED_BG
+                } else {
+                    RECENTS_CARD_BG
+                };
+                ui.set_props(card.panel, Props::Panel(props))?;
+            }
+            ui.set_offset(card.panel, 0, nudge)?;
+            return Ok(SurfacePress::Recents { index });
+        }
+    }
+    Ok(SurfacePress::None)
 }
 
 /// 为真实格位安装 press_map（label/icon 命中都把 label 换 pressed 底）。

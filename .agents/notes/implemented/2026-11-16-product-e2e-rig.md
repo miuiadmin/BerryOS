@@ -8,7 +8,7 @@ Status: implemented
 
 ## Decision
 
-新增 `tools/product-e2e.py` 与 `just product-e2e`，把 Recents 与 owner frame-cache 两条产品链收编为可审查、可复跑脚本。脚本从仓库相对路径装载 `tools/gui8-smoke.py` 的 QMP helper，保留真实 HVF + virtio-gpu + Berry Room + 1080×1920@60 拓扑，去掉了本机绝对路径，并支持 `--suite recents|frame-cache|all`、`--image`、`--work-dir`、`--code`、`--qemu`、`--timeout`、`--keep`。
+新增 `tools/product-e2e.py` 与 `just product-e2e`，把 Recents、owner frame-cache 与 shell-press 三条产品链收编为可审查、可复跑脚本。脚本从仓库相对路径装载 `tools/gui8-smoke.py` 的 QMP helper，保留真实 HVF + virtio-gpu + Berry Room + 1080×1920@60 拓扑，去掉了本机绝对路径，并支持 `--suite recents|frame-cache|shell-press|all`、`--image`、`--work-dir`、`--code`、`--qemu`、`--timeout`、`--keep`。
 
 产品链除原有像素与串行标记断言外，新增产品 BootProgress `m=1..11` 严格顺序断言与 `VGPUBOOT fail` 拒绝。这样“胶囊进度真值链”与“完成后切桌面”成为可指名的机器验收，而不是只数 `BOOT100`。`just product-e2e` 默认重建缺失的 `out/berryos-desktop.img` 并依次运行两套；`PRODUCT_E2E_SUITE`、`PRODUCT_E2E_KEEP`、`PRODUCT_E2E_REBUILD` 提供本机开关。
 

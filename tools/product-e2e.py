@@ -94,6 +94,12 @@ class ProductRig:
         if self.work.exists() and not self.keep:
             shutil.rmtree(self.work)
         self.work.mkdir(parents=True, exist_ok=True)
+        # `--keep` preserves old screenshots for inspection, but live QEMU
+        # endpoints must never be reused: reading an old serial.log before the
+        # new QEMU truncates it can satisfy a marker from the previous run.
+        (self.work / "serial.log").unlink(missing_ok=True)
+        (self.work / "qmp.sock").unlink(missing_ok=True)
+        (self.work / "qemu.log").unlink(missing_ok=True)
         self.vars_fd = self.work / "vars.fd"
         self.vars_fd.write_bytes(b"\xff" * (64 << 20))
         self.data = self.work / "data.img"
@@ -318,7 +324,26 @@ class ProductRig:
 
 def wait_boot_and_desktop(rig: ProductRig) -> tuple[pathlib.Path, pathlib.Path]:
     rig.wait("VGPUBOOT ok stage=5 permille=700", 240)
+    # The serial marker follows the resource flush, but QEMU's screendump arm
+    # can still capture the prior scanout under host contention. Retry until
+    # the presented 70% face is observable instead of turning latency into a
+    # false regression.
     progress = rig.shot("progress-70")
+    progress_deadline = time.monotonic() + 5.0
+    while True:
+        histogram = rig.hist(progress)
+        if (
+            histogram[(0, 0, 0)] > 2_000_000
+            and histogram[(255, 255, 255)] > 10_000
+        ):
+            break
+        if time.monotonic() >= progress_deadline:
+            raise ProductE2EError(
+                f"70% progress face not presented: black={histogram[(0, 0, 0)]} "
+                f"white={histogram[(255, 255, 255)]}, screenshot={progress}"
+            )
+        time.sleep(0.2)
+        progress = rig.shot("progress-70")
     rig.wait("VGPUBOOT ok stage=5 permille=1000", 180)
     rig.wait("LAUNCH ok", 180)
     rig.verify_product_milestones()
@@ -391,6 +416,8 @@ def run_recents(rig: ProductRig) -> None:
             "RECENTS": "WMRECENTS ok id=",
             "TASKSEL": "WMTASKSEL ok owner=2",
             "HOME": "SHELLNAV ok action=2",
+            "RECENTS_PRESS_ON": "SHELLPRESS ok surface=recents index=0 pressed=true",
+            "RECENTS_PRESS_OFF": "SHELLPRESS ok surface=recents index=0 pressed=false",
             "PANIC": "KERNEL PANIC",
         }.items()
     }
@@ -406,6 +433,8 @@ def run_recents(rig: ProductRig) -> None:
         "RECENTS": 1,
         "TASKSEL": 1,
         "HOME": 1,
+        "RECENTS_PRESS_ON": 1,
+        "RECENTS_PRESS_OFF": 2,
         "PANIC": 0,
     }
     if markers != expected:
@@ -498,11 +527,73 @@ def run_frame_cache(rig: ProductRig) -> None:
     print("FRAME-CACHE PASS")
 
 
+def run_shell_press(rig: ProductRig) -> None:
+    """Pin the persistent dock's paint-only press feedback and real launch."""
+    wait_boot_and_desktop(rig)
+    client = rig.connect()
+    time.sleep(0.3)
+    baseline = rig.shot("dock-baseline")
+
+    # Product constants from desktop.rs: dock row y=1551, slot 0 is 251px
+    # wide. Center (125,1668) hits the Contacts dock face.
+    client.pointer_down(125, 1668, WIDTH, HEIGHT)
+    rig.wait("SHELLPRESS ok surface=dock index=0 pressed=true", 30)
+    pressed = rig.shot("dock-pressed")
+    deadline = time.monotonic() + 5.0
+    while True:
+        # The Argb dock face shifts by 2px. Compare exact pixels rather than
+        # color histograms, whose counts are unchanged by translation.
+        before = ProductRig.pixels(baseline)
+        after = ProductRig.pixels(pressed)
+        differences = 0
+        for y in range(1450, 1800):
+            row = y * WIDTH * 3
+            for x in range(0, 300):
+                index = row + x * 3
+                if before[index : index + 3] != after[index : index + 3]:
+                    differences += 1
+        if differences > 100:
+            break
+        if time.monotonic() >= deadline:
+            raise ProductE2EError(
+                f"dock press produced no visible pixel shift: diff={differences}, "
+                f"screenshot={pressed}"
+            )
+        time.sleep(0.2)
+        pressed = rig.shot("dock-pressed")
+
+    client.pointer_up()
+    rig.wait("SHELLPRESS ok surface=dock index=0 pressed=false", 30)
+    rig.wait("CONTACTS up", 180)
+    rig.wait("CONTACTSFRAME ok", 180)
+    rig.key(60)
+    rig.wait("WMNAV ok home owner=1", 120)
+
+    text = rig.text()
+    checks = {
+        "press_on": text.count(
+            "SHELLPRESS ok surface=dock index=0 pressed=true"
+        ) == 1,
+        "press_off": text.count(
+            "SHELLPRESS ok surface=dock index=0 pressed=false"
+        ) == 2,
+        "contacts_launched": "CONTACTS up" in text,
+        "home_restored": "WMNAV ok home owner=1" in text,
+        "panic": "KERNEL PANIC" not in text,
+        "visible_shift": differences > 100,
+    }
+    print("SHELL_PRESS_CHECKS", json.dumps(checks, sort_keys=True))
+    print("SHELL_PRESS_PIXEL_DIFF", differences)
+    if not all(checks.values()):
+        raise ProductE2EError(f"shell press checks failed: {checks}")
+    print("SHELL-PRESS PASS")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--suite",
-        choices=("recents", "frame-cache", "all"),
+        choices=("recents", "frame-cache", "shell-press", "all"),
         default="all",
         help="product suite to run (default: all)",
     )
@@ -537,7 +628,7 @@ def main() -> int:
     args.code = args.code.resolve()
     suites: Iterable[str]
     if args.suite == "all":
-        suites = ("recents", "frame-cache")
+        suites = ("recents", "frame-cache", "shell-press")
     else:
         suites = (args.suite,)
     args.work_dir.mkdir(parents=True, exist_ok=True)
@@ -554,8 +645,10 @@ def main() -> int:
         ) as rig:
             if suite == "recents":
                 run_recents(rig)
-            else:
+            elif suite == "frame-cache":
                 run_frame_cache(rig)
+            else:
+                run_shell_press(rig)
     print("PRODUCT E2E PASS")
     return 0
 
