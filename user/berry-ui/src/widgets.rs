@@ -175,6 +175,90 @@ impl Scaffold {
         Ok(Self { root, app_bar, body })
     }
 
+    /// Large-title scaffold with explicit system insets. This is the static
+    /// variant: no scrolling collapse or animation is implied.
+    pub fn large_with_back_safe<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, title: &[u8],
+        subtitle: &[u8], back_icon: u16, active_icon: u16, safe_top: u32,
+        safe_bottom: u32,
+    ) -> Result<Self, UiError> {
+        let root = add(
+            ui,
+            parent,
+            ViewSpec {
+                kind: ViewKind::Col,
+                key: 0,
+                props: Props::Col(ColProps {
+                    gap: 0,
+                    w: None,
+                    h: None,
+                    cross: CrossAlign::Stretch,
+                }),
+            },
+        )?;
+        if safe_top != 0 {
+            add(
+                ui,
+                root,
+                ViewSpec {
+                    kind: ViewKind::Col,
+                    key: 0,
+                    props: Props::Col(ColProps {
+                        gap: 0,
+                        w: None,
+                        h: Some(safe_top),
+                        cross: CrossAlign::Stretch,
+                    }),
+                },
+            )?;
+        }
+        let has_subtitle = !subtitle.is_empty();
+        let app_bar = AppBar::large(
+            ui,
+            root,
+            ctx,
+            title,
+            (has_subtitle).then_some(subtitle),
+            Some((back_icon, active_icon)),
+        )?;
+        let (_, viewport_h) = ui.viewport();
+        let body_h = viewport_h
+            .saturating_sub(safe_top)
+            .saturating_sub(app_bar.instance_height(ctx))
+            .saturating_sub(safe_bottom);
+        let body = add(
+            ui,
+            root,
+            ViewSpec {
+                kind: ViewKind::Col,
+                key: 0,
+                props: Props::Col(ColProps {
+                    gap: 0,
+                    w: None,
+                    h: Some(body_h),
+                    cross: CrossAlign::Stretch,
+                }),
+            },
+        )?;
+        if safe_bottom != 0 {
+            add(
+                ui,
+                root,
+                ViewSpec {
+                    kind: ViewKind::Col,
+                    key: 0,
+                    props: Props::Col(ColProps {
+                        gap: 0,
+                        w: None,
+                        h: Some(safe_bottom),
+                        cross: CrossAlign::Stretch,
+                    }),
+                },
+            )?;
+        }
+        Ok(Self { root, app_bar, body })
+    }
+
     /// 带真实导航返回按钮的页面骨架。按钮像素由 app 的 IconSource 供给；
     /// 点击语义仍归 app（返回栈/退出由业务状态机持有）。
     pub fn with_back<const N: usize>(
@@ -312,11 +396,13 @@ impl Scaffold {
 pub struct AppBar {
     pub panel: NodeId,
     pub title: NodeId,
+    pub subtitle: Option<NodeId>,
     pub back: Option<IconButton>,
     /// Trailing action container. Modern light/back bars expose a real Row;
     /// legacy bars alias the panel for API compatibility.
     pub actions: NodeId,
     modern: bool,
+    large: bool,
 }
 
 impl AppBar {
@@ -324,6 +410,153 @@ impl AppBar {
         ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, title: &[u8],
     ) -> Result<Self, UiError> {
         Self::build(ui, parent, ctx, title, None)
+    }
+
+    /// Static Large AppBar: a normal 56dp action row plus a large title and
+    /// optional subtitle below it. Scrolling collapse/enterAlways animation is
+    /// intentionally not implemented; an app can replace the bar on its own
+    /// navigation-state change.
+    pub fn large<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, title: &[u8],
+        subtitle: Option<&[u8]>, back_icon: Option<(u16, u16)>,
+    ) -> Result<Self, UiError> {
+        let action_h = Self::height(ctx);
+        let total_h = Self::expanded_height(ctx, subtitle.is_some());
+        let panel = add(
+            ui,
+            parent,
+            panel_spec(ctx.theme.colors.surface, None, Some(total_h), 0, 0, 0),
+        )?;
+        let action_row = add(
+            ui,
+            panel,
+            ViewSpec {
+                kind: ViewKind::Row,
+                key: 0,
+                props: Props::Row(RowProps {
+                    gap: ctx.metrics.effective_px(16),
+                    w: None,
+                    h: Some(action_h),
+                    cross: CrossAlign::Center,
+                }),
+            },
+        )?;
+        let back = match back_icon {
+            Some((normal, active)) => Some(IconButton::new(
+                ui,
+                action_row,
+                ctx,
+                normal,
+                active,
+                b"Back",
+                InteractionState::Normal,
+                false,
+            )?),
+            None => None,
+        };
+        let leading = add(
+            ui,
+            action_row,
+            panel_spec(ctx.theme.colors.surface, None, Some(action_h), 0, 0, 0),
+        )?;
+        ui.set_flex(leading, 1)?;
+        let actions = add(
+            ui,
+            action_row,
+            ViewSpec {
+                kind: ViewKind::Row,
+                key: 0,
+                props: Props::Row(RowProps {
+                    gap: ctx.spacing(SpacingToken::Xs),
+                    w: None,
+                    h: Some(action_h),
+                    cross: CrossAlign::Center,
+                }),
+            },
+        )?;
+        let content = add(
+            ui,
+            panel,
+            ViewSpec {
+                kind: ViewKind::Col,
+                key: 0,
+                props: Props::Col(ColProps {
+                    gap: ctx.spacing(SpacingToken::Xs),
+                    w: None,
+                    h: None,
+                    cross: CrossAlign::Stretch,
+                }),
+            },
+        )?;
+        let pad = ctx.spacing(SpacingToken::S);
+        let title_node = add(
+            ui,
+            content,
+            text_spec(
+                title,
+                ctx.theme.colors.text_primary,
+                ctx.metrics.typography(TypographyToken::Title),
+            )?,
+        )?;
+        ui.set_a11y(title_node, ROLE_TEXT, title)?;
+        let subtitle_node = match subtitle.filter(|bytes| !bytes.is_empty()) {
+            Some(bytes) => Some(add(
+                ui,
+                content,
+                text_spec(
+                    bytes,
+                    ctx.theme.colors.text_secondary,
+                    ctx.metrics.typography(TypographyToken::Body),
+                )?,
+            )?),
+            None => None,
+        };
+        if let Some(node) = subtitle_node {
+            ui.set_a11y(node, ROLE_TEXT, subtitle.unwrap_or(b""))?;
+        }
+        // The content column's measured height derives from text; give it an
+        // explicit reserved area and vertical padding so the outer panel's
+        // total height is stable and symmetric.
+        ui.set_offset(
+            content,
+            0,
+            i32::try_from(pad).unwrap_or(i32::MAX),
+        )?;
+        let content_h = total_h.saturating_sub(action_h);
+        if let Some(props) = retained_props(ui, content) {
+            if let Props::Col(mut props) = props {
+                props.h = Some(content_h.saturating_sub(pad.saturating_mul(2)));
+                ui.set_props(content, Props::Col(props))?;
+            }
+        }
+        Ok(Self {
+            panel,
+            title: title_node,
+            subtitle: subtitle_node,
+            back,
+            actions,
+            modern: true,
+            large: true,
+        })
+    }
+
+    /// Static expanded height. `has_subtitle` keeps geometry deterministic
+    /// before any node is created.
+    pub fn expanded_height(ctx: &WidgetContext, has_subtitle: bool) -> u32 {
+        let action = Self::height(ctx);
+        let title = ctx.metrics.typography(TypographyToken::Title).cell_h() as u32;
+        let subtitle = ctx.metrics.typography(TypographyToken::Body).cell_h() as u32;
+        let pad = ctx.spacing(SpacingToken::S).saturating_mul(2);
+        let gap = if has_subtitle {
+            ctx.spacing(SpacingToken::Xs)
+        } else {
+            0
+        };
+        action
+            .saturating_add(title)
+            .saturating_add(if has_subtitle { subtitle } else { 0 })
+            .saturating_add(gap)
+            .saturating_add(pad)
     }
 
     pub fn with_back<const N: usize>(
@@ -394,7 +627,15 @@ impl AppBar {
             },
         )?;
         ui.set_a11y(title_id, ROLE_TEXT, title)?;
-        Ok(Self { panel, title: title_id, back: None, actions, modern: true })
+        Ok(Self {
+            panel,
+            title: title_id,
+            subtitle: None,
+            back: None,
+            actions,
+            modern: true,
+            large: false,
+        })
     }
 
     /// 56dp 现代导航栏高度（Product @3x = 168px；Compact @2x = 112px）。
@@ -428,9 +669,11 @@ impl AppBar {
             return Ok(Self {
                 panel,
                 title: title_id,
+                subtitle: None,
                 back: None,
                 actions: panel,
                 modern: false,
+                large: false,
             });
         }
 
@@ -504,11 +747,22 @@ impl AppBar {
         )?;
 
         ui.set_a11y(title_id, ROLE_TEXT, title)?;
-        Ok(Self { panel, title: title_id, back, actions, modern: true })
+        Ok(Self {
+            panel,
+            title: title_id,
+            subtitle: None,
+            back,
+            actions,
+            modern: true,
+            large: false,
+        })
     }
 
     /// 本实例建成高度（legacy 与 with_back 两形态单源）。
     pub fn instance_height(&self, ctx: &WidgetContext) -> u32 {
+        if self.large {
+            return Self::expanded_height(ctx, self.subtitle.is_some());
+        }
         if self.modern {
             Self::height(ctx)
         } else {

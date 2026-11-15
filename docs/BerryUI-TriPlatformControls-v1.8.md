@@ -45,6 +45,7 @@ Updated: 2026-11-15
 | `NavStack` / `NavEvent` / `NAV_STACK_MAX` | 非空纯路由栈状态机 | 只管 route 与事件，不持 NodeId、不建导航容器 |
 | `LongPressGesture` / `LongPressOutcome` / `LONG_PRESS_NS` | 长按纯手势 helper | app 帧循环注入唯一 now_ns；触发后尾随 Click 恰抑制一次 |
 | `ContextMenu` / `ContextMenuOutcome` | 全屏 scrim + 锚定菜单 | 外部点击/Cancel 关闭；条目选择返回索引 |
+| AppBar `large` / `expanded_height` / Scaffold `large_with_back_safe` | 56dp 操作行 + 大标题 + 可选副标题 | 静态几何；不做滚动折叠或动画 |
 
 所有构造函数保持 `&mut Ui<N>` + Plain Data + NodeId 句柄；组件不接触 Berry Room、WM、VMO、present 或业务回调。
 
@@ -79,6 +80,7 @@ Settings、Contacts、Files、Photos、Browser 与 Berry Demo 均遵守系统壳
 - LongPressGesture 不读 wall-clock；Msg 无时戳，起拍锚定 Press 后首次 tick。ContextMenu 触发手势归 app，组件只负责浮层与选择/关闭。
 - Berry Room 提供 app 可见 `now_ns()` 单调时钟。Files 长按用它锚定 DOWN 并在 UP 定谳；该 API 不授 WM/present/HDI/SYSTEM 能力，也不把时钟藏进控件。
 - Files 列表行真实消费 LongPress + ContextMenu：长按行弹出 Open/Properties，Properties 留在列表，Open 进入详情；尾随 Click 被抑制，普通短点击仍直接打开。
+- Large AppBar 是静态几何：普通 56dp 操作行 + Title + 可选 Body 副标题 + trailing actions；滚动折叠、enterAlways 与过渡动画不做。Contacts 列表页已迁移为 “Contacts / 4 contacts”。
 - NavStack 是纯 route 状态机；页面树、返回业务与 Route→UI 映射仍归 app。
 - TextFieldSlots 的 label/message 不额外占 a11y/SEM；panel 仍是唯一焦点与语义锚。Error 只换 danger token 与消息类别，不在 P0 wire 伪造新状态位。
 - TextArea、Refresher 与按压缩放仍未完成。

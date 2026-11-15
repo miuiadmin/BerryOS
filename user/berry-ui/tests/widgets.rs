@@ -613,6 +613,59 @@ fn horizontal_scroll_view_clips_and_tracks_x_axis() {
 }
 
 #[test]
+fn large_app_bar_static_geometry_reserves_system_bars() {
+    let context = ctx(1080, 1920);
+    let mut ui = Ui::<96>::new(1080, 1920);
+    let root = ui.root();
+    let bar = AppBar::large(
+        &mut ui,
+        root,
+        &context,
+        b"Contacts",
+        Some(b"42 contacts"),
+        Some((NAV_ICON_BACK, NAV_ICON_BACK_ACTIVE)),
+    )
+    .unwrap();
+    ui.layout();
+    let expected = AppBar::expanded_height(&context, true);
+    let panel = ui.bounds(bar.panel).unwrap();
+    assert_eq!(panel, RectI::new(0, 0, 1080, i32::try_from(expected).unwrap()));
+    assert!(bar.subtitle.is_some());
+    assert!(bar.back.is_some());
+    let actions = ui.bounds(bar.actions).unwrap();
+    assert_eq!(actions.h, i32::try_from(AppBar::height(&context)).unwrap());
+    let title = ui.bounds(bar.title).unwrap();
+    assert!(title.y >= actions.y + actions.h);
+    let subtitle = ui.bounds(bar.subtitle.unwrap()).unwrap();
+    assert!(subtitle.y >= title.y + title.h);
+    assert_eq!(bar.instance_height(&context), expected);
+
+    let mut ui = Ui::<96>::new(1080, 1920);
+    let root = ui.root();
+    let scaffold = Scaffold::large_with_back_safe(
+        &mut ui,
+        root,
+        &context,
+        b"Contacts",
+        b"All contacts",
+        NAV_ICON_BACK,
+        NAV_ICON_BACK_ACTIVE,
+        117,
+        108,
+    )
+    .unwrap();
+    ui.layout();
+    let bar_height = scaffold.app_bar.instance_height(&context);
+    let body = ui.bounds(scaffold.body).unwrap();
+    assert_eq!(body.h, i32::try_from(1920 - 117 - bar_height - 108).unwrap());
+    assert_eq!(
+        ui.bounds(scaffold.app_bar.panel).unwrap().y,
+        117
+    );
+    assert!(body.y >= i32::try_from(117 + bar_height).unwrap());
+}
+
+#[test]
 fn workflow_p0_quick_wins_are_real_sdk_apis() {
     let context = ctx(800, 600);
     let mut ui = Ui::<96>::new(800, 600);

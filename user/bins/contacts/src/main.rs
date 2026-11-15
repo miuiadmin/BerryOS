@@ -280,8 +280,9 @@ fn build_list(
     safe_bottom: u32,
 ) -> ListPage {
     let root = ui.root();
-    let scaffold = match Scaffold::with_back_safe(
-        ui, root, ctx, b"Contacts", NAV_ICON_BACK, NAV_ICON_BACK_ACTIVE, safe_top, safe_bottom,
+    let scaffold = match Scaffold::large_with_back_safe(
+        ui, root, ctx, b"Contacts", b"4 contacts", NAV_ICON_BACK,
+        NAV_ICON_BACK_ACTIVE, safe_top, safe_bottom,
     ) {
         Ok(value) => value,
         Err(_) => berry_room::panic_exit(134),
