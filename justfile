@@ -1148,6 +1148,24 @@ test-host:
     # 更新 TIER1_FLOOR_LIVE/冻结件（ADR #84 兼容面演进显式化，非误红）。
     # 改 bcts-run.sh / markers.sh 标记面 / bcts@*.toml 冻结件必跑。
     {{BASH}} tools/bcts-run.sh --selftest
+    # W1 接线（2026-11-13 run 43306506456 实证；base 重写剥落重放）：dns-stub
+    # 门禁自检——CI netns 内 SLIRP DNS 转发死路的 UDP:53 应答器（bsh EPL⑤
+    # getaddrinfo park → rootfs 相 RPC 族 12 标记全灭 600s FAIL）。协议腿
+    # （A/NXDOMAIN/压缩指针/畸形包）+ live UDP 闭环 13 腿；改 dns-stub.py
+    # 或 bcts wrap 必跑。
+    python3 tools/dns-stub.py --selftest
+    # W1 接线（#257 后继件；base 重写剥落重放）：bcts-parkprobe 门禁自检
+    # ——berryos-smoke.* 串口日志 park 签名分类器（dns_park/churn_starve/
+    # net_live/clean_boot 四分支钉板 + unreadable 负样本）；bcts 失败路径
+    # 自动消费（ci.yml bcts 步），签名库漂移即红。改 bcts-parkprobe.py
+    # 或 bcts 失败取证面必跑。
+    python3 tools/bcts-parkprobe.py --selftest
+    # W1 接线（#290 REJECT 修面；base 重写剥落重放）：bcts-hostfwdprobe
+    # 门禁自检——CI netns 内 SLIRP hostfwd 入向段预检（腿 A ns loopback/
+    # 18080 回显环境锚 + 腿 B QEMU -S 冻结态 18081-83 connect 探活）；
+    # netdev 单源对拍/argv/回显环回/poll 收敛/恒拒面/定谳行钉板 6 腿零
+    # QEMU。改 bcts-hostfwdprobe.py 或 smoke.sh hostfwd 面必跑。
+    python3 tools/bcts-hostfwdprobe.py --selftest
     # W1 接线（同轮·shvarcheck 自检本体）：--check 面（tools/*.sh 花括号
     # 守卫）已挂 test-host 首位，但 selftest 钉板（吞名 7 形 + 免疫 6 形
     # + 修复口径）零接线——check 的检测逻辑自身改坏（吞名形漏检/免疫形
