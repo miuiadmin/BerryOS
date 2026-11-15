@@ -2,8 +2,8 @@
 
 Type: spec
 Status: active
-Updated: 2026-11-15
-Version: 0.5.0
+Updated: 2026-11-16
+Version: 0.5.1
 
 一句话说明：cbox 是 BerryOS 的崩溃记录体系——内核异常路径写 RAM 崩溃记录表（黑匣子），用户态监督者经 syscall 排液落盘 FAT 账本（`CBOX.LOG`），宿主 `berry` 工具读账本做指纹聚合与符号化定位。对标华为 AGC / Android tombstone 的「采集 → 持久化 → 符号化 → 聚合 → 定界 → 报告」流水线，按单机无云端形态裁剪：后台等价物 = 宿主侧 berry 子命令。
 
@@ -64,6 +64,7 @@ Version: 0.5.0
 - **窗一 battery（svcmgr）**：fsmgr spawn Ok 后、vnet 预拉前——fs 端点集刚建，vnet/launcher/app 全未起，svcmgr 机械唯一 fs client。门 = `fs_client != 0`。期望 n≥1：boot 期 rogue 自验件（`user_n_ptr` 族）确定性 fault 早于本窗（vblk 自验 RPC 往返前）。成功打 `CBOX ok n=<账本现存行数>`（车辆面在册标记）；失败 eco 降级行 `cbox bat`。RAM-only 形（EFI 冒烟路——无 virtio）fsmgr 照起、账本落 RAM 树、标记照发；盘面真值验收走主路（见验证节）。
 - **窗二 死亡面（svcmgr app_supervise）**：TERMINATED 命中后排液——新 seq 在册恒打 eco 行 `cbox rec`（serial 面包屑，与 fs 无关）；fs 落盘只在**死者是最后一个活 app**（post-take APP_CHILDREN 表空 = 无并发 fs client；launcher 在 app 相位结构上不写 fs——layout RMW 只在 init 期，guifbd/wmd 零 fs 面）门后，经 FS_A 会话 + `cbox_drain_stale` 预排空（死者 mid-RPC 残留应答先 recv 至 EAGAIN、随行 handle 关净丢弃，不 trap）。多 app 并存时不写——活者可能正处 fs RPC 中途，宁缺勿毁；记录留内核 RAM 表延后到下个安全窗。写失败 eco 行 `cbox w`。**gen-2 init 窗闸**（轮 2 审计补）：launcher 监督重启后 gen-2 立即重入 init（icons/layout/cbox_io 全 fs 面）发 RPC——sole 门对此盲（它只看 APP_CHILDREN）；此时窗二排液的 `cbox_drain_stale` 会把 gen-2 在途应答当残留吃掉（回混毁会话）。闸 = `LAUNCHER_INIT_UNTIL`（assemble 成功即 `now()+10s` 帽、launcher 死亡即清零）：窗内死亡面不落盘（记录留 RAM 表，`cbox rec` eco 行照发），窗过期即恢复。时间闸是 v1 唯一可实现面（协议无 init-done 信号）；boot 形态结构性不需要（assemble 先于稳态环）。根治 = launcher 独立 fs 会话（见挂账）。
 - **窗三 launcher init（berry-launcher）**：layout 装载后自持 fs 会话（extras fs dup，libc 单 fd 严格串行——layout_io 同纪律）排液落账一次——catch launcher 自身上一会话崩溃（监督重启后 init 重入）与 battery 后新入账 fault。冻结相（`fs_h()==0`）结构性零 RPC 直退；失败非致命照进桌面（诊断小写 `launcher: cbox` 前缀，不产 `CBOX ok` 子串）。
+- **gui8 冒烟相三窗全冻结**（2026-11-16 补）：`GUI8.SMK` 哨兵（载荷 `BERRYOS-GUI8-SMOKE-V1\n` 精确匹配，与 launcher `layout_io::smoke_mode` 同一哨兵——wire 契约常量双读者）在席时 cbox 一切 fs 落账窗直退——窗一/窗二经 svcmgr `cbox_flush` 顶上门（`cbox_smoke_freeze`，battery/死亡面共用收口点；battery 标记面变 `CBOX ok n=0` = fixture 世界空账本真值；死亡面 stale 排空在门前照走），窗三 launcher `if !smoke { init_flush() }`。根因：ktest 每 boot 必记一条 rogue kill（on_fault 钩，故意杀非真崩溃），boot B 排液必有新账必重写，撞 gui8「跨 boot 读路径零重写」盘哈希不变量（实证：launcher 门先行后仍红，boot B 串口 `CBOX ok n=2` = 窗一重写；`berry crash-log` 解出 CBOX.LOG 2 条 = boot 1..2 各一条 `user_rogue_ptr`）；fixture 世界冻结语义与 layout_io 冒烟支路同族，常态 boot 落账面不变。
 
 三窗同账本互恰 = `(boot, seq)` 去重（键在账本行内，跨写者各自持见闻——非单游标）+ boot id 内容匹配续号，无跨写者协调面。boot id 规则（`cbox::boot_pick`）：账本空 → 1；**最新（max_boot）boot 组里**有一行解析 Rec 与快照某记录全等（同 seq）→ 复用 max_boot（同 boot 幂等重入）；否则 max_boot + 1——内容匹配只对最新组生效（旧组全等行不构成续号：上上 boot 的同内容崩溃不得把本 boot 并进旧组）。
 

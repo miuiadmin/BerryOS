@@ -4155,6 +4155,26 @@ fn cbox_drain_stale(h: Handle) {
     }
 }
 
+/// gui8 冒烟相冻结门（与 berry-launcher `layout_io::smoke_mode` 同一哨兵
+/// `GUI8.SMK` / 载荷 `BERRYOS-GUI8-SMOKE-V1\n`——wire 契约常量双读者，
+/// 单源在 gui8-smoke 夹具）：在席 = fixture 世界，cbox 一切 fs 落账窗
+///（battery/死亡面，经 [`cbox_flush`] 收口）冻结——ktest 每 boot 必记
+/// rogue kill，boot B 排液必有新账必重写，撞 gui8「跨 boot 读路径零重写」
+/// 盘哈希不变量（2026-11-16 实证：窗一 boot B `CBOX ok n=2` 重写
+/// CBOX.LOG；launcher 窗三同批已门）。Noent/错载荷 = false（fail
+/// closed——常态 boot 落账面零变化）。定长门 + 全量比对：长于/短于魔数
+/// 的文件必不匹配（launcher smoke_mode 同款精确匹配语义；本侧 get_chunk
+/// 定容 256B——len==22 且字节全等才真）。
+fn cbox_smoke_freeze(h: Handle) -> bool {
+    const PATH: &[u8] = b"GUI8.SMK";
+    const MAGIC: &[u8] = b"BERRYOS-GUI8-SMOKE-V1\n";
+    let mut buf = [0u8; fsc::RPC_BUF];
+    match fsc::get_chunk(h, PATH, 0, &mut buf) {
+        Ok((len, _)) if len == MAGIC.len() => buf[..len] == *MAGIC,
+        _ => false,
+    }
+}
+
 /// 落账全链（battery/死亡面共用）：排液 → 读账 → boot id（首次
 /// [`cbox::boot_pick`] 内容匹配定终身、后续续用——与 launcher init 落账
 /// 三写者同 boot 幂等）→ merge 去重 → 需要时写盘对拍。`Ok(账本现存行
@@ -4167,6 +4187,12 @@ fn cbox_flush(h: Handle, stale: bool) -> Result<usize, u8> {
     }
     if stale {
         cbox_drain_stale(h);
+    }
+    // gui8 冒烟相冻结（[`cbox_smoke_freeze`] 头注）：零排液零落账，
+    // `Ok(0)` = 空账本语义（battery 标记面 = `CBOX ok n=0`——fixture 世界
+    // 真值：零落账）。stale 排空在门前照走——会话卫生态不随冻结退化。
+    if cbox_smoke_freeze(h) {
+        return Ok(0);
     }
     let snap = cbox_drain_snap()?;
     let old_len = cbox_read_ledger(h).map_err(|_| 3)?;

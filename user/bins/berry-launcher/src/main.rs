@@ -247,7 +247,14 @@ fn main() {
     // cbox 刀 2：init 落账（第三窗——排液一次 + CBOX.LOG 读-改-写；catch
     // launcher 上一会话崩溃与 battery 后新入账 fault，与 svcmgr 两窗
     // (boot,seq) 去重幂等互恰；失败非致命照进桌面，见 cbox_io 头注）。
-    cbox_io::init_flush();
+    // 冒烟相（gui8 fixture）冻结落账：ktest 每 boot 必记一条 rogue kill
+    //（on_fault 钩，故意杀非真崩溃）——boot B 排液必有新账必重写，撞
+    // gui8「跨 boot 读路径零重写」盘哈希不变量（2026-11-16 实证：CBOX.LOG
+    // 2 条 = boot 1..2 各一条 user_rogue_ptr）。fixture 世界冻结语义与
+    // layout_io 冒烟支路同族；真机/常态 boot 落账面不变。
+    if !smoke {
+        cbox_io::init_flush();
+    }
     // Ui<512> arena ≈ 75KB+（Node 144B×512 + 走查/序/快照缓冲侧表）——
     // guest 栈 stack_pages=64 = 256KB（R5 仪器定谳，svcmgr 装配注释为
     // 单源——8 页下 main+0x1c 序言即穿保护页）栈置仍不稳：Box::leak
