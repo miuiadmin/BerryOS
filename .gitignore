@@ -2,6 +2,10 @@
 
 # kernel/ 仓内默认 target（取证时代仓内直跑残留，正式构建走共享 ~/.cargo-target）
 /kernel/target/
+
+# 刀 A 隔离 target（任务指定 CARGO_TARGET_DIR=.target-a——直跑 cargo 面
+# check/test 隔离，不与 justfile 各工作区 target 互染）
+/.target-a/
 **/*.rs.bk
 
 # G-eco initrd 镜像（编译侧产物，不入库）——A1-3b 起含 --split 编号卷
