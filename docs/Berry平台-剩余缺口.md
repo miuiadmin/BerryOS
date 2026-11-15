@@ -39,8 +39,8 @@
 ## 已实测基线（不要再回退）
 
 - host **15 单测**；`docs_guard` PASS；`git diff --check` 空。
-- `out/BerryOS.app` 镜像哈希与 `out/berryos.img` 一致（2026-11-14 实测）；`out/BerryOS-Desktop.app` 已于 2026-11-14 随 TPN 单源化重打包（`BERRY_IMAGE=out/berryos-portrait.img`/`BERRY_BUNDLE_ID=dev.berryos.shell.desktop`：内档 `THIRD-PARTY-NOTICES.txt` sha256 与单源同一、镜像哈希与 portrait.img 一致、berry 二进制为当日新构后 ad-hoc 签名形态，`codesign -v` 过）。
-- `out/BerryOS.AppDir`：基线时（2026-11-05 建盘、当日检查器）25 ok / 1 warning / 0 fail；2026-11-13 VNC 第三波给 `check-appdir.sh` 加了 web 资产 FAIL 级检查，口径随之收紧（现行 20 项），盘上存量 AppDir 实测 16 ok / 1 warning / 3 fail（`usr/share/berry`、`usr/share/berry/web`、`web/novnc/vnc.html` 三项缺）——存量 AppDir 需 `build-appdir.sh` 重建后才能再过检。
+- `out/BerryOS-Desktop.app` 已于 2026-11-15 随 wave10 TPN 单源加行（qrcodegen）重打包（`BERRY_IMAGE=out/berryos-portrait.img`/`BERRY_BUNDLE_ID=dev.berryos.shell.desktop`）：内档 `THIRD-PARTY-NOTICES.txt` sha256 4cf7879f…与单源同一，镜像哈希与 portrait.img 一致，berry 二进制与 web 资产为当日新构（含 F44 无口令 run 电力键凭据面），`codesign -v` 过，均 2026-11-15 实测时点；同批重建的 `out/BerryOS-aarch64.AppImage` 内档 TPN 经容器 unsquashfs 直检同为 4cf7879f…。
+- `out/BerryOS.AppDir`（host 检查档）：2026-11-15 重建后实跑 39 ok / 1 warning / 0 fail——warning 为 berry 系 host Mach-O 而非 Linux ELF，检查档预期形态；Linux 发货档 `out/BerryOS.AppDir-linux` 同日重建实跑 40 ok / 0 warning / 0 fail（wave9 自有壳页+wave11 TPN qrcodegen 钉行的现行检查器口径全过），内档 TPN 与单源同一。
 - 256MiB `MMAP ok`；540×1200/800×1280 `FBW`；host 自动重启；power off 5s；APNG；play expect。
 
 ## 下一步建议顺序
