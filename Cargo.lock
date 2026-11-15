@@ -47,6 +47,7 @@ version = "0.2.0"
 dependencies = [
  "berry-fwcfgface",
  "berry-lkface",
+ "berry-psface",
  "berry-trapface",
 ]
 
@@ -129,6 +130,13 @@ name = "berry-polface"
 version = "0.2.0"
 dependencies = [
  "berry-iprofile",
+]
+
+[[package]]
+name = "berry-psface"
+version = "0.2.0"
+dependencies = [
+ "berry-psface",
 ]
 
 [[package]]

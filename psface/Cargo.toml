@@ -1,0 +1,13 @@
+[package]
+name = "berry-psface"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+
+[lib]
+name = "berry_psface"
+path = "src/lib.rs"
+
+# host 钉板（integration 同 crate 内嵌 mod tests 形态——pgface 先例同款）。
+[dev-dependencies]
+berry-psface = { path = "." }
