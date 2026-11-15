@@ -1077,6 +1077,167 @@ impl TextField {
     }
 }
 
+/// TextField 的 label / supporting / error 槽位规格。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextFieldSlotsSpec<'a> {
+    pub field: TextFieldSpec,
+    pub label: Option<&'a [u8]>,
+    pub supporting: Option<&'a [u8]>,
+}
+
+/// 槽位下方消息类别。error 是视觉/可读性状态，业务校验归 app。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldMessageKind {
+    Supporting,
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FieldMessage<'a> {
+    pub kind: FieldMessageKind,
+    pub text: &'a [u8],
+}
+
+/// TextFieldSlots：不改变既有 TextField，外裹 label、field 与消息行。
+///
+/// label/message 是静态可读文本，不额外占用 a11y/SEM；panel 仍是唯一
+/// 焦点与语义锚。Click 请求焦点仍由 app 显式调用 request_focus。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextFieldSlots {
+    pub root: NodeId,
+    pub label: Option<NodeId>,
+    pub field: TextField,
+    pub message: NodeId,
+    message_kind: FieldMessageKind,
+}
+
+impl TextFieldSlots {
+    pub fn new<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext,
+        spec: TextFieldSlotsSpec<'_>,
+    ) -> Result<Self, UiError> {
+        if spec.field.width == 0 {
+            return Err(UiError::NodeBad);
+        }
+        let root = add(
+            ui,
+            parent,
+            ViewSpec {
+                kind: ViewKind::Col,
+                key: 0,
+                props: Props::Col(ColProps {
+                    gap: ctx.spacing(SpacingToken::Xs),
+                    w: Some(spec.field.width),
+                    h: None,
+                    cross: CrossAlign::Stretch,
+                }),
+            },
+        )?;
+        let label = match spec.label.filter(|bytes| !bytes.is_empty()) {
+            Some(bytes) => Some(add(
+                ui,
+                root,
+                text_spec(
+                    bytes,
+                    ctx.theme.colors.text_secondary,
+                    ctx.metrics.typography(TypographyToken::Body),
+                )?,
+            )?),
+            None => None,
+        };
+        let field = TextField::new(ui, root, ctx, spec.field)?;
+        let message = add(
+            ui,
+            root,
+            text_spec(
+                b"",
+                ctx.theme.colors.text_secondary,
+                ctx.metrics.typography(TypographyToken::Body),
+            )?,
+        )?;
+        let mut slots = Self {
+            root,
+            label,
+            field,
+            message,
+            message_kind: FieldMessageKind::Supporting,
+        };
+        if let Some(text) = spec.supporting.filter(|bytes| !bytes.is_empty()) {
+            slots.set_message(
+                ui,
+                ctx,
+                Some(FieldMessage {
+                    kind: FieldMessageKind::Supporting,
+                    text,
+                }),
+            )?;
+        }
+        Ok(slots)
+    }
+
+    pub fn message_kind(&self) -> FieldMessageKind {
+        self.message_kind
+    }
+
+    pub fn set_message<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, message: Option<FieldMessage<'_>>,
+    ) -> Result<(), UiError> {
+        let (text, fg, kind) = match message {
+            Some(message) => (
+                message.text,
+                if message.kind == FieldMessageKind::Error {
+                    ctx.theme.colors.danger
+                } else {
+                    ctx.theme.colors.text_secondary
+                },
+                message.kind,
+            ),
+            None => (
+                b"" as &[u8],
+                ctx.theme.colors.text_secondary,
+                FieldMessageKind::Supporting,
+            ),
+        };
+        self.message_kind = kind;
+        ui.set_text(self.message, text)?;
+        if let Some(props) = retained_props(ui, self.message) {
+            if let Props::Text(mut props) = props {
+                props.style.fg = fg;
+                ui.set_props(self.message, Props::Text(props))?;
+            }
+        }
+        if let Some(label) = self.label {
+            if let Some(props) = retained_props(ui, label) {
+                if let Props::Text(mut props) = props {
+                    props.style.fg = if kind == FieldMessageKind::Error {
+                        ctx.theme.colors.danger
+                    } else {
+                        ctx.theme.colors.text_secondary
+                    };
+                    ui.set_props(label, Props::Text(props))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn owns(&self, node: NodeId) -> bool {
+        self.field.owns(node) || node == self.root || self.label == Some(node) || node == self.message
+    }
+
+    pub fn request_focus<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext,
+    ) -> Result<crate::desc::MsgBuf, UiError> {
+        self.field.request_focus(ui, ctx)
+    }
+
+    pub fn on_msg<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, msg: &Msg,
+    ) -> Result<bool, UiError> {
+        self.field.on_msg(ui, ctx, msg)
+    }
+}
+
 /// Icon 组件：主题前景与密度尺寸；像素仍经 IconSource 单源供给。
 pub fn icon<const N: usize>(
     ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, id: u16,

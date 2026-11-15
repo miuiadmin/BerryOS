@@ -21,7 +21,8 @@ use berry_ui::sdk::{
     ListDetailSpec, ListItem, ListTile, ListTileSpec, LoadingIndicator, Msg, NodeId,
     ProgressIndicator, Radio, RectI, Scaffold, ScrollView, SearchField, Section,
     SegmentedControl, SegmentedItemSpec, Slider, Stepper, Switch, TabBarStyle, TabItemSpec,
-    Tabs, TextPicker, TextVariant, TextField, TextFieldSpec, Theme, Ui, WidgetContext, column,
+    Tabs, TextPicker, TextVariant, TextField, TextFieldSlots, TextFieldSlotsSpec,
+    TextFieldSpec, Theme, Ui, WidgetContext, column, FieldMessage, FieldMessageKind,
     divider, icon, row, text, Badge, Chip, ChipKind, IconButton, NavigationIconSource,
     ScrollViewAxis,
     NAV_ICON_BACK, NAV_ICON_BACK_ACTIVE, TextInputState,
@@ -287,6 +288,8 @@ struct InputPage {
     tabs: Tabs,
     back: IconButton,
     fields: [TextField; 3],
+    labelled: TextFieldSlots,
+    labelled_error: bool,
     search: SearchField,
     search_state: TextInputState,
 }
@@ -750,6 +753,17 @@ fn build_input(
         .field
         .sync(ui, ctx, &search_state)
         .unwrap_or_else(|_| berry_room::panic_exit(134));
+    let labelled = TextFieldSlots::new(
+        ui,
+        stack,
+        ctx,
+        TextFieldSlotsSpec {
+            field: TextFieldSpec { kind: berry_ui::sdk::TextInputKind::Text, width },
+            label: Some(b"User name"),
+            supporting: Some(b"3-32 characters"),
+        },
+    )
+    .unwrap_or_else(|_| berry_room::panic_exit(134));
     text(ui, stack, ctx, TextVariant::Body, b"Plain text")
         .unwrap_or_else(|_| berry_room::panic_exit(134));
     let kinds: [(berry_ui::sdk::TextInputKind, &[u8]); 3] = [
@@ -773,7 +787,17 @@ fn build_input(
     }
     text(ui, stack, ctx, TextVariant::Body, b"Tap a field to focus its caret")
         .unwrap_or_else(|_| berry_room::panic_exit(134));
-    InputPage { root: scaffold.root, scroll, tabs, back: app_back, fields, search, search_state }
+    InputPage {
+        root: scaffold.root,
+        scroll,
+        tabs,
+        back: app_back,
+        fields,
+        labelled,
+        labelled_error: false,
+        search,
+        search_state,
+    }
 }
 
 fn build_list(
@@ -1159,7 +1183,7 @@ impl App {
             Page::Input(page) => (
                 page.back.panel,
                 Some(page.fields[0].panel),
-                None,
+                Some(page.labelled.root),
                 page.tabs.panel,
                 Some(page.search.clear.panel),
             ),
@@ -1318,6 +1342,8 @@ impl App {
                     handled |= field.on_msg(&mut self.ui, &self.ctx, message)
                         .unwrap_or_else(|_| berry_room::panic_exit(134));
                 }
+                handled |= page.labelled.on_msg(&mut self.ui, &self.ctx, message)
+                    .unwrap_or_else(|_| berry_room::panic_exit(134));
                 handled |= page.search.on_msg(&mut self.ui, &self.ctx, message)
                     .unwrap_or_else(|_| berry_room::panic_exit(134));
             }
@@ -1444,6 +1470,30 @@ impl App {
                     hit_line.push(b"back");
                     target_page = PAGE_HOME;
                     action = 2;
+                } else if page.labelled.owns(node) {
+                    hit_line.push(b"labelled-field");
+                    let was_error = page.labelled_error;
+                    let mut labelled = page.labelled;
+                    let messages = labelled.request_focus(&mut self.ui, &self.ctx)
+                        .unwrap_or_else(|_| berry_room::panic_exit(134));
+                    for focus in messages.iter() {
+                        let _ = labelled.on_msg(&mut self.ui, &self.ctx, &focus);
+                    }
+                    let message = if was_error {
+                        None
+                    } else {
+                        Some(FieldMessage {
+                            kind: FieldMessageKind::Error,
+                            text: b"Name required",
+                        })
+                    };
+                    labelled
+                        .set_message(&mut self.ui, &self.ctx, message)
+                        .unwrap_or_else(|_| berry_room::panic_exit(134));
+                    page.labelled = labelled;
+                    page.labelled_error = !was_error;
+                    focused_field = 3;
+                    action = 21;
                 } else if page.search.field.owns(node) {
                     hit_line.push(b"search-field");
                     let mut field = page.search.field;

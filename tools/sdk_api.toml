@@ -459,7 +459,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -471,7 +471,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -483,7 +483,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -495,7 +495,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -507,7 +507,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -519,7 +519,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -531,7 +531,55 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TextFieldSlots"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-8"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TextFieldSlotsSpec"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-8"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::FieldMessage"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-8"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::FieldMessageKind"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-8"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -543,7 +591,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -555,7 +603,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -567,7 +615,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -579,7 +627,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -591,7 +639,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -603,7 +651,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -615,7 +663,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -627,7 +675,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -639,7 +687,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -651,7 +699,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -663,7 +711,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -675,7 +723,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -687,7 +735,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -699,7 +747,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -711,7 +759,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -723,7 +771,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -735,7 +783,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -747,7 +795,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -759,7 +807,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -771,7 +819,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -783,7 +831,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -795,7 +843,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -807,7 +855,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -819,7 +867,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -831,7 +879,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -843,7 +891,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -855,7 +903,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -867,7 +915,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -879,7 +927,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -891,7 +939,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -903,7 +951,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -915,7 +963,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -927,7 +975,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -939,7 +987,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -951,7 +999,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -963,7 +1011,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -975,7 +1023,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -987,7 +1035,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -999,7 +1047,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -1011,7 +1059,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -1023,7 +1071,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -1035,7 +1083,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -1047,7 +1095,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -1059,7 +1107,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -1071,7 +1119,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -1083,7 +1131,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
@@ -1095,7 +1143,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.6.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]

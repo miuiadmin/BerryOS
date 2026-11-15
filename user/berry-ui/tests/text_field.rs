@@ -1,7 +1,8 @@
 //! GUI-T1 TextField Foundation host tests：TextState/UTF-8 selection、
 //! key route 优先级、组合控件几何/damage/focus 与 AST 零漂。
 
-use berry_gfx::cmd::{CommandEncoder, GlyphPos};
+use berry_gfx::cmd::{Cmd, Color, CommandEncoder, GlyphPos};
+use berry_gfx::font::{FontSize, GlyphAtlas};
 use berry_guiproto::surface::{
     IME_PURPOSE_NUMBER, IME_PURPOSE_PASSWORD, IME_PURPOSE_TEXT,
 };
@@ -11,12 +12,21 @@ use berry_guiproto::{
 use berry_ui::desc::{FocusDir, Msg};
 use berry_ui::sdk::{
     key_route, text_key_intent, KeyRoute, TextInputEdit, TextInputKeyOp, TextInputKind,
-    TextInputState, TextField, TextFieldSpec, Theme, WidgetContext,
+    TextInputState, TextField, TextFieldSlots, TextFieldSlotsSpec, TextFieldSpec, Theme,
+    WidgetContext, FieldMessage, FieldMessageKind,
 };
 use berry_ui::{Ui, UiError};
 
 fn ctx(w: u32, h: u32) -> WidgetContext {
     WidgetContext::for_viewport(Theme::light(), w, h)
+}
+
+
+struct StaticFontSource;
+impl berry_ui::sdk::FontSource for StaticFontSource {
+    fn atlas(&self, scale: FontSize) -> Option<&'static dyn GlyphAtlas> {
+        Some(scale.atlas())
+    }
 }
 
 fn field(ui: &mut Ui<96>, parent: berry_ui::NodeId, width: u32) -> TextField {
@@ -378,4 +388,62 @@ fn drain_damage(ui: &mut Ui<96>) {
     let mut encoder = CommandEncoder::new();
     let _ = ui.render_frame(0, &mut scratch, &mut encoder);
     let _ = encoder.finish();
+}
+
+
+#[test]
+fn text_field_slots_add_label_and_error_without_new_semantic_anchors() {
+    let context = ctx(1080, 1920);
+    let mut ui = Ui::<96>::new(1080, 1920);
+    let root = ui.root();
+    let mut slots = TextFieldSlots::new(
+        &mut ui,
+        root,
+        &context,
+        TextFieldSlotsSpec {
+            field: TextFieldSpec { kind: TextInputKind::Text, width: 480 },
+            label: Some(b"User name"),
+            supporting: Some(b"3-32 characters"),
+        },
+    )
+    .unwrap();
+    ui.layout();
+
+    let label = ui.bounds(slots.label.unwrap()).unwrap();
+    let field = ui.bounds(slots.field.panel).unwrap();
+    let message = ui.bounds(slots.message).unwrap();
+    assert_eq!(ui.bounds(slots.root).unwrap().w, 480);
+    assert!(label.y + label.h <= field.y);
+    assert!(message.y >= field.y + field.h);
+    assert_eq!(slots.message_kind(), FieldMessageKind::Supporting);
+    assert_eq!(ui.a11y_iter().filter(|entry| entry.node == slots.field.panel).count(), 1);
+    assert_eq!(ui.sem_iter().count(), 1);
+
+    slots
+        .set_message(
+            &mut ui,
+            &context,
+            Some(FieldMessage {
+                kind: FieldMessageKind::Error,
+                text: b"Name required",
+            }),
+        )
+        .unwrap();
+    ui.layout();
+    assert_eq!(slots.message_kind(), FieldMessageKind::Error);
+
+    ui.set_font_source(&StaticFontSource);
+    ui.wake(0);
+    let mut scratch = [GlyphPos { ch: 0, x: 0, y: 0 }; 96];
+    let mut encoder = CommandEncoder::new();
+    ui.paint(&mut scratch, &mut encoder);
+    let list = encoder.finish();
+    let danger = Color { r: 208, g: 47, b: 61 };
+    assert!(list.iter().any(|cmd| match cmd {
+        Cmd::DrawGlyphRun { run, .. } => run.fg == danger,
+        _ => false,
+    }));
+
+    slots.set_message(&mut ui, &context, None).unwrap();
+    assert_eq!(slots.message_kind(), FieldMessageKind::Supporting);
 }

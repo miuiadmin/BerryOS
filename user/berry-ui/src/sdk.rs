@@ -32,12 +32,13 @@ pub use crate::text_input::{
 };
 pub use crate::widgets::{
     AlertDialog, AppBar, Badge, Button, ButtonEmphasis, Card, Checkbox, Chip, ChipKind,
-    ContextMenu, ContextMenuOutcome, DatePicker, DatePickerValue, DialogAction, EmptyState, Grid,
-    IconButton, ListDetail,
+    ContextMenu, ContextMenuOutcome, DatePicker, DatePickerValue, DialogAction, EmptyState,
+    FieldMessage, FieldMessageKind, Grid, IconButton, ListDetail,
     ListDetailSpec, ListTile, ListTileSpec, ListItem, LoadingIndicator, Menu, MenuItemSpec,
     OverlaySurface, ProgressIndicator, Radio, SafeInsets, Scaffold, ScrollView, ScrollViewAxis,
     SearchField, Section, SegmentedControl, SegmentedItemSpec, Sheet, Slider, Stepper, Switch,
-    TabBarStyle, TabItemSpec, Tabs, TextPicker, TextVariant, TextField, TextFieldSpec,
+    TabBarStyle, TabItemSpec, Tabs, TextPicker, TextVariant, TextField, TextFieldSlots,
+    TextFieldSlotsSpec, TextFieldSpec,
     TimePicker, TimePickerValue, Toast, WidgetContext, column, days_in_month, divider, icon,
     image, row, text, DATE_PICKER_YEAR_MAX, DATE_PICKER_YEAR_MIN, SEGMENTED_MAX, TABS_MAX,
     TEXT_PICKER_MAX,
