@@ -56,7 +56,7 @@ pub mod utf8;
 
 // 扁平面 re-export：门面签名里不限定模块路径的名字（§6 用法对齐）。
 pub use desc::{AstError, Axis, Msg, MsgBuf, NodeId, Props, TextBuf, ViewKind, ViewSpec};
-pub use sem::{a11y_region_roundtrip, SemEntry, SEM_ACTION_ACTIVATE, SEM_ACTION_ADJUST, SEM_ACTION_FOCUS, SEM_ACTION_TEXT_EDIT, SEM_LABEL_MAX, SEM_MAX, SEM_STATE_CHECKED, SEM_STATE_DISABLED};
+pub use sem::{a11y_region_roundtrip, SemEntry, SEM_ACTION_ACTIVATE, SEM_ACTION_ADJUST, SEM_ACTION_FOCUS, SEM_ACTION_TEXT_EDIT, SEM_LABEL_MAX, SEM_MAX, SEM_STATE_CHECKED, SEM_STATE_DISABLED, SEM_STATE_SELECTED};
 pub use metrics::{EmptyIconSource, IconSource, MonospaceTextMetrics, TextMetrics};
 
 use berry_gfx::cmd::{Color, CommandEncoder, GlyphPos};

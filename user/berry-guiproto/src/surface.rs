@@ -641,13 +641,16 @@ pub const A11Y_STATE_VISIBLE: u8 = 1 << 0;
 pub const A11Y_STATE_FOCUSED: u8 = 1 << 1;
 /// a11y 状态：禁用。
 pub const A11Y_STATE_DISABLED: u8 = 1 << 2;
-/// a11y 状态：选中/勾选。
+/// a11y 状态：双态控件勾选（Checkbox/Switch）。
 pub const A11Y_STATE_CHECKED: u8 = 1 << 3;
+/// a11y 状态：单选/分段/芯片等当前选中项。
+pub const A11Y_STATE_SELECTED: u8 = 1 << 4;
 /// a11y 已定义状态全集。
 pub const A11Y_STATE_KNOWN: u8 = A11Y_STATE_VISIBLE
     | A11Y_STATE_FOCUSED
     | A11Y_STATE_DISABLED
-    | A11Y_STATE_CHECKED;
+    | A11Y_STATE_CHECKED
+    | A11Y_STATE_SELECTED;
 
 /// 扁平语义记录。Tree/Hybrid 由 retained 树导出；Regions/Immersive 由
 /// 应用/引擎显式申报。坐标是 surface-local 逻辑像素，经 scale 换算到物理。

@@ -16,8 +16,9 @@ use crate::theme::{
     TypographyToken,
 };
 use crate::{
-    SemEntry, Ui, UiError, SEM_ACTION_ACTIVATE, SEM_ACTION_TEXT_EDIT, SEM_STATE_CHECKED,
-    SEM_STATE_DISABLED, ROLE_BUTTON, ROLE_LIST_ITEM, ROLE_TEXT, ROLE_TOGGLE,
+    SemEntry, Ui, UiError, SEM_ACTION_ACTIVATE, SEM_ACTION_ADJUST, SEM_ACTION_TEXT_EDIT,
+    SEM_STATE_CHECKED, SEM_STATE_DISABLED, SEM_STATE_SELECTED, ROLE_BUTTON, ROLE_LIST_ITEM,
+    ROLE_TEXT, ROLE_TOGGLE,
 };
 use berry_gfx::cmd::Color;
 
@@ -2570,6 +2571,781 @@ impl Tabs {
     }
 }
 
+
+/// SegmentedControl 条目。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SegmentedItemSpec {
+    pub label: &'static [u8],
+    pub disabled: bool,
+}
+
+pub const SEGMENTED_MAX: usize = 4;
+
+/// 三方共性分段选择。单选状态归组件视觉、业务含义归 app。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SegmentedControl {
+    pub panel: NodeId,
+    items: [(NodeId, NodeId); SEGMENTED_MAX],
+    disabled: [bool; SEGMENTED_MAX],
+    count: usize,
+    selected: usize,
+    pressed: Option<usize>,
+    focused: Option<usize>,
+}
+
+impl SegmentedControl {
+    pub fn new<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, items: &[SegmentedItemSpec],
+        selected: usize,
+    ) -> Result<Self, UiError> {
+        if items.is_empty() || items.len() > SEGMENTED_MAX || selected >= items.len() {
+            return Err(UiError::NodeBad);
+        }
+        let (vp_w, _) = ui.viewport();
+        let width = ctx.metrics.effective_px(360).min(vp_w);
+        let height = ctx.metrics.effective_px(48);
+        let panel = add(
+            ui,
+            parent,
+            panel_spec(ctx.theme.colors.surface_variant, Some(width), Some(height), 0, 0, 0),
+        )?;
+        let row = add(
+            ui,
+            panel,
+            ViewSpec {
+                kind: ViewKind::Row,
+                key: 0,
+                props: Props::Row(RowProps {
+                    gap: 0,
+                    w: Some(width),
+                    h: Some(height),
+                    cross: CrossAlign::Stretch,
+                }),
+            },
+        )?;
+        let cell = width / items.len() as u32;
+        let mut handles = [(NodeId(0), NodeId(0)); SEGMENTED_MAX];
+        let mut disabled = [false; SEGMENTED_MAX];
+        for (index, item) in items.iter().enumerate() {
+            disabled[index] = item.disabled;
+            let state = if item.disabled {
+                InteractionState::Disabled
+            } else if index == selected {
+                InteractionState::Selected
+            } else {
+                InteractionState::Normal
+            };
+            let visual = ctx.theme.state(state);
+            let cell_panel = add(
+                ui,
+                row,
+                panel_spec(visual.background, Some(cell), Some(height), 0, 0, 0),
+            )?;
+            let label = add(
+                ui,
+                cell_panel,
+                text_spec(item.label, visual.content, ctx.metrics.typography(TypographyToken::Body))?,
+            )?;
+            ui.set_a11y(cell_panel, ROLE_BUTTON, item.label)?;
+            ui.set_focusable(cell_panel, Some(cell_panel), !item.disabled)?;
+            ui.set_sem(SemEntry::new(
+                cell_panel,
+                SEM_ACTION_ACTIVATE,
+                (if item.disabled { SEM_STATE_DISABLED } else { 0 })
+                    | (if index == selected { SEM_STATE_SELECTED } else { 0 }),
+                item.label,
+                0,
+                0,
+                false,
+            )?)?;
+            handles[index] = (cell_panel, label);
+        }
+        Ok(Self {
+            panel,
+            items: handles,
+            disabled,
+            count: items.len(),
+            selected,
+            pressed: None,
+            focused: None,
+        })
+    }
+
+    pub fn selected(&self) -> usize {
+        self.selected
+    }
+
+    pub fn item_panel(&self, index: usize) -> Result<NodeId, UiError> {
+        self.items.get(index).map(|item| item.0).ok_or(UiError::NodeBad)
+    }
+
+    pub fn owns(&self, node: NodeId) -> bool {
+        self.items
+            .iter()
+            .take(self.count)
+            .any(|(panel, label)| node == *panel || node == *label)
+    }
+
+    fn state_for(&self, index: usize) -> InteractionState {
+        if self.disabled[index] {
+            InteractionState::Disabled
+        } else if self.pressed == Some(index) {
+            InteractionState::Pressed
+        } else if self.focused == Some(index) {
+            InteractionState::Focused
+        } else if index == self.selected {
+            InteractionState::Selected
+        } else {
+            InteractionState::Normal
+        }
+    }
+
+    fn apply_item<const N: usize>(
+        &self, ui: &mut Ui<N>, ctx: &WidgetContext, index: usize,
+    ) -> Result<(), UiError> {
+        let visual = ctx.theme.state(self.state_for(index));
+        let (panel, label) = self.items.get(index).ok_or(UiError::NodeBad)?;
+        if let Some(props) = retained_props(ui, *panel) {
+            if let Props::Panel(mut p) = props {
+                p.bg = visual.background;
+                ui.set_props(*panel, Props::Panel(p))?;
+            }
+        }
+        if let Some(props) = retained_props(ui, *label) {
+            if let Props::Text(mut p) = props {
+                p.style.fg = visual.content;
+                ui.set_props(*label, Props::Text(p))?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn set_selected<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, selected: usize,
+    ) -> Result<(), UiError> {
+        if selected >= self.count || self.disabled[selected] {
+            return Err(UiError::NodeBad);
+        }
+        self.selected = selected;
+        for index in 0..self.count {
+            self.apply_item(ui, ctx, index)?;
+            if let Some(mut semantic) = ui.sem_of(self.items[index].0) {
+                semantic.state = (if self.disabled[index] { SEM_STATE_DISABLED } else { 0 })
+                    | (if index == selected { SEM_STATE_SELECTED } else { 0 });
+                ui.set_sem(semantic)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn on_msg<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, msg: &Msg,
+    ) -> Result<bool, UiError> {
+        let node = match msg {
+            Msg::Press { node, .. }
+            | Msg::Release { node, .. }
+            | Msg::Cancel { node }
+            | Msg::Click { node }
+            | Msg::FocusIn { node }
+            | Msg::FocusOut { node } => *node,
+            _ => return Ok(false),
+        };
+        let Some(index) = self
+            .items
+            .iter()
+            .take(self.count)
+            .position(|(panel, label)| node == *panel || node == *label)
+        else {
+            return Ok(false);
+        };
+        match msg {
+            Msg::Press { .. } => {
+                self.pressed = Some(index);
+                self.apply_item(ui, ctx, index)?;
+            }
+            Msg::Release { .. } | Msg::Cancel { .. } => {
+                self.pressed = None;
+                self.apply_item(ui, ctx, index)?;
+            }
+            Msg::Click { .. } => {
+                self.pressed = None;
+                if self.disabled[index] {
+                    return Ok(false);
+                }
+                self.set_selected(ui, ctx, index)?;
+                return Ok(true);
+            }
+            Msg::FocusIn { .. } => {
+                self.focused = Some(index);
+                self.apply_item(ui, ctx, index)?;
+            }
+            Msg::FocusOut { .. } => {
+                self.focused = None;
+                self.apply_item(ui, ctx, index)?;
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+}
+
+fn signed_decimal_bytes(value: i32) -> ([u8; 16], usize) {
+    let negative = value < 0;
+    let mut magnitude = value.unsigned_abs();
+    let mut out = [0u8; 16];
+    let mut len = 0usize;
+    if magnitude == 0 {
+        out[0] = b'0';
+        return (out, 1);
+    }
+    while magnitude != 0 && len < out.len() {
+        out[len] = b'0' + (magnitude % 10) as u8;
+        magnitude /= 10;
+        len += 1;
+    }
+    if negative && len < out.len() {
+        out[len] = b'-';
+        len += 1;
+    }
+    out[..len].reverse();
+    (out, len)
+}
+
+/// 三方共性步进器。值区间由 app 明示；越界输入被夹取，不产生第二真相。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stepper {
+    pub panel: NodeId,
+    pub decrement: Button,
+    pub increment: Button,
+    pub value_label: NodeId,
+    value: i32,
+    min: i32,
+    max: i32,
+}
+
+impl Stepper {
+    pub fn new<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, value: i32, min: i32, max: i32,
+    ) -> Result<Self, UiError> {
+        if min > max {
+            return Err(UiError::NodeBad);
+        }
+        let initial = value.clamp(min, max);
+        let panel = add(
+            ui,
+            parent,
+            panel_spec(ctx.theme.colors.surface, None, None, ctx.spacing(SpacingToken::Xs), 0, 0),
+        )?;
+        let line = add(
+            ui,
+            panel,
+            ViewSpec {
+                kind: ViewKind::Row,
+                key: 0,
+                props: Props::Row(RowProps {
+                    gap: ctx.spacing(SpacingToken::Xs),
+                    w: None,
+                    h: None,
+                    cross: CrossAlign::Center,
+                }),
+            },
+        )?;
+        let decrement = Button::new(ui, line, ctx, b"-", InteractionState::Normal)?;
+        let (bytes, len) = signed_decimal_bytes(initial);
+        let value_label = add(
+            ui,
+            line,
+            text_spec(
+                &bytes[..len],
+                ctx.theme.colors.text_primary,
+                ctx.metrics.typography(TypographyToken::Body),
+            )?,
+        )?;
+        let increment = Button::new(ui, line, ctx, b"+", InteractionState::Normal)?;
+        ui.set_a11y(panel, ROLE_TEXT, b"Stepper")?;
+        ui.set_sem(SemEntry::new(
+            panel,
+            SEM_ACTION_ADJUST,
+            0,
+            &bytes[..len],
+            0,
+            0,
+            true,
+        )?)?;
+        Ok(Self {
+            panel,
+            decrement,
+            increment,
+            value_label,
+            value: initial,
+            min,
+            max,
+        })
+    }
+
+    pub fn value(&self) -> i32 {
+        self.value
+    }
+
+    pub fn set_value<const N: usize>(
+        &mut self, ui: &mut Ui<N>, _ctx: &WidgetContext, value: i32,
+    ) -> Result<(), UiError> {
+        let clamped = value.clamp(self.min, self.max);
+        self.value = clamped;
+        let (bytes, len) = signed_decimal_bytes(clamped);
+        ui.set_text(self.value_label, &bytes[..len])?;
+        if let Some(mut semantic) = ui.sem_of(self.panel) {
+            semantic.value = TextBuf::new(&bytes[..len])?;
+            ui.set_sem(semantic)?;
+        }
+        Ok(())
+    }
+
+    pub fn on_msg<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, msg: &Msg,
+    ) -> Result<bool, UiError> {
+        if self.decrement.on_msg(ui, ctx, msg)? {
+            self.set_value(ui, ctx, self.value.saturating_sub(1))?;
+            return Ok(true);
+        }
+        if self.increment.on_msg(ui, ctx, msg)? {
+            self.set_value(ui, ctx, self.value.saturating_add(1))?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+}
+
+/// 芯片类别：Assist 只触发动作；Filter 维护选中态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChipKind {
+    Assist,
+    Filter,
+}
+
+/// 三方共性芯片。紧凑令牌动作/过滤，不承载业务回调。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Chip {
+    pub panel: NodeId,
+    pub label: NodeId,
+    kind: ChipKind,
+    selected: bool,
+    pressed: bool,
+    focused: bool,
+}
+
+impl Chip {
+    pub fn new<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, label: &[u8], kind: ChipKind,
+        selected: bool,
+    ) -> Result<Self, UiError> {
+        let height = ctx.metrics.effective_px(48);
+        let state = if selected {
+            InteractionState::Selected
+        } else {
+            InteractionState::Normal
+        };
+        let visual = ctx.theme.state(state);
+        let panel = add(
+            ui,
+            parent,
+            panel_spec(
+                visual.background,
+                None,
+                Some(height),
+                ctx.spacing(SpacingToken::S),
+                0,
+                height / 2,
+            ),
+        )?;
+        let label_node = add(
+            ui,
+            panel,
+            text_spec(label, visual.content, ctx.metrics.typography(TypographyToken::Body))?,
+        )?;
+        ui.set_a11y(panel, ROLE_BUTTON, label)?;
+        ui.set_focusable(panel, Some(panel), true)?;
+        ui.set_sem(SemEntry::new(
+            panel,
+            SEM_ACTION_ACTIVATE,
+            if selected { SEM_STATE_SELECTED } else { 0 },
+            label,
+            0,
+            0,
+            false,
+        )?)?;
+        Ok(Self {
+            panel,
+            label: label_node,
+            kind,
+            selected,
+            pressed: false,
+            focused: false,
+        })
+    }
+
+    pub fn selected(&self) -> bool {
+        self.selected
+    }
+
+    fn state(&self) -> InteractionState {
+        if self.pressed {
+            InteractionState::Pressed
+        } else if self.focused {
+            InteractionState::Focused
+        } else if self.selected {
+            InteractionState::Selected
+        } else {
+            InteractionState::Normal
+        }
+    }
+
+    fn apply<const N: usize>(&self, ui: &mut Ui<N>, ctx: &WidgetContext) -> Result<(), UiError> {
+        let visual = ctx.theme.state(self.state());
+        if let Some(props) = retained_props(ui, self.panel) {
+            if let Props::Panel(mut p) = props {
+                p.bg = visual.background;
+                ui.set_props(self.panel, Props::Panel(p))?;
+            }
+        }
+        if let Some(props) = retained_props(ui, self.label) {
+            if let Props::Text(mut p) = props {
+                p.style.fg = visual.content;
+                ui.set_props(self.label, Props::Text(p))?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn set_selected<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, selected: bool,
+    ) -> Result<(), UiError> {
+        self.selected = selected;
+        if let Some(mut semantic) = ui.sem_of(self.panel) {
+            semantic.state = if selected { SEM_STATE_SELECTED } else { 0 };
+            ui.set_sem(semantic)?;
+        }
+        self.apply(ui, ctx)
+    }
+
+    pub fn on_msg<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, msg: &Msg,
+    ) -> Result<bool, UiError> {
+        let node = match msg {
+            Msg::Press { node, .. }
+            | Msg::Release { node, .. }
+            | Msg::Cancel { node }
+            | Msg::Click { node }
+            | Msg::FocusIn { node }
+            | Msg::FocusOut { node } => *node,
+            _ => return Ok(false),
+        };
+        if node != self.panel && node != self.label {
+            return Ok(false);
+        }
+        match msg {
+            Msg::Press { .. } => {
+                self.pressed = true;
+                self.apply(ui, ctx)?;
+            }
+            Msg::Release { .. } | Msg::Cancel { .. } => {
+                self.pressed = false;
+                self.apply(ui, ctx)?;
+            }
+            Msg::Click { .. } => {
+                self.pressed = false;
+                if self.kind == ChipKind::Filter {
+                    self.set_selected(ui, ctx, !self.selected)?;
+                } else {
+                    self.apply(ui, ctx)?;
+                }
+                return Ok(true);
+            }
+            Msg::FocusIn { .. } => {
+                self.focused = true;
+                self.apply(ui, ctx)?;
+            }
+            Msg::FocusOut { .. } => {
+                self.focused = false;
+                self.apply(ui, ctx)?;
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+}
+
+/// 三方共性计数/圆点徽标。宿主负责把它作为兄弟节点偏移到目标锚点。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Badge {
+    pub panel: NodeId,
+    pub label: Option<NodeId>,
+    count: u32,
+}
+
+impl Badge {
+    pub fn new<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, count: u32, x: i32, y: i32,
+    ) -> Result<Self, UiError> {
+        let shown = count.min(999);
+        if shown == 0 {
+            let dot = ctx.metrics.effective_px(12);
+            let panel = add(
+                ui,
+                parent,
+                ViewSpec {
+                    kind: ViewKind::Circle,
+                    key: 0,
+                    props: Props::Circle(CircleProps {
+                        bg: ctx.theme.colors.danger,
+                        w: Some(dot),
+                        h: Some(dot),
+                    }),
+                },
+            )?;
+            ui.set_a11y(panel, ROLE_TEXT, b"0")?;
+            ui.set_offset(panel, x, y)?;
+            return Ok(Self {
+                panel,
+                label: None,
+                count,
+            });
+        }
+        let height = ctx.metrics.effective_px(24);
+        let width = if shown < 10 {
+            height
+        } else {
+            ctx.metrics.effective_px(36)
+        };
+        let panel = add(
+            ui,
+            parent,
+            panel_spec(ctx.theme.colors.danger, Some(width), Some(height), 0, 0, height / 2),
+        )?;
+        let (bytes, len) = signed_decimal_bytes(shown as i32);
+        let label = add(
+            ui,
+            panel,
+            text_spec(
+                &bytes[..len],
+                ctx.theme.colors.on_primary,
+                ctx.metrics.typography(TypographyToken::Caption),
+            )?,
+        )?;
+        ui.set_a11y(panel, ROLE_TEXT, &bytes[..len])?;
+        ui.set_offset(panel, x, y)?;
+        Ok(Self {
+            panel,
+            label: Some(label),
+            count,
+        })
+    }
+
+    pub fn count(&self) -> u32 {
+        self.count
+    }
+}
+
+pub const TEXT_PICKER_MAX: usize = 4;
+
+/// 紧凑 TextPicker：上一项/文本/下一项的确定性选择器。
+///
+/// 不实现滚轮动画或惯性；这是 Plain Data 语义与 SEM_ACTION_ADJUST 的第一层。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextPicker {
+    pub panel: NodeId,
+    pub previous: Button,
+    pub value_label: NodeId,
+    pub next: Button,
+    options: [&'static [u8]; TEXT_PICKER_MAX],
+    count: usize,
+    selected: usize,
+}
+
+impl TextPicker {
+    pub fn new<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext,
+        options: &[&'static [u8]], selected: usize,
+    ) -> Result<Self, UiError> {
+        if options.is_empty() || options.len() > TEXT_PICKER_MAX || selected >= options.len() {
+            return Err(UiError::NodeBad);
+        }
+        let (vp_w, _) = ui.viewport();
+        let width = ctx.metrics.effective_px(480).min(vp_w);
+        let panel = add(
+            ui,
+            parent,
+            panel_spec(ctx.theme.colors.surface, Some(width), None, ctx.spacing(SpacingToken::Xs), 0, 0),
+        )?;
+        let line = add(
+            ui,
+            panel,
+            ViewSpec {
+                kind: ViewKind::Row,
+                key: 0,
+                props: Props::Row(RowProps {
+                    gap: ctx.spacing(SpacingToken::Xs),
+                    w: Some(width),
+                    h: None,
+                    cross: CrossAlign::Center,
+                }),
+            },
+        )?;
+        let previous = Button::new(ui, line, ctx, b"<", InteractionState::Normal)?;
+        let value_label = add(
+            ui,
+            line,
+            text_spec(
+                options[selected],
+                ctx.theme.colors.text_primary,
+                ctx.metrics.typography(TypographyToken::Body),
+            )?,
+        )?;
+        let next = Button::new(ui, line, ctx, b">", InteractionState::Normal)?;
+        ui.set_a11y(panel, ROLE_TEXT, options[selected])?;
+        ui.set_sem(SemEntry::new(
+            panel,
+            SEM_ACTION_ADJUST,
+            SEM_STATE_SELECTED,
+            options[selected],
+            0,
+            0,
+            true,
+        )?)?;
+        let mut stored = [b"" as &[u8]; TEXT_PICKER_MAX];
+        stored[..options.len()].copy_from_slice(options);
+        Ok(Self {
+            panel,
+            previous,
+            value_label,
+            next,
+            options: stored,
+            count: options.len(),
+            selected,
+        })
+    }
+
+    pub fn selected(&self) -> usize {
+        self.selected
+    }
+
+    pub fn set_selected<const N: usize>(
+        &mut self, ui: &mut Ui<N>, _ctx: &WidgetContext, selected: usize,
+    ) -> Result<(), UiError> {
+        if selected >= self.count {
+            return Err(UiError::NodeBad);
+        }
+        self.selected = selected;
+        ui.set_text(self.value_label, self.options[selected])?;
+        ui.set_a11y(self.panel, ROLE_TEXT, self.options[selected])?;
+        if let Some(mut semantic) = ui.sem_of(self.panel) {
+            semantic.value = TextBuf::new(self.options[selected])?;
+            ui.set_sem(semantic)?;
+        }
+        Ok(())
+    }
+
+    pub fn on_msg<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, msg: &Msg,
+    ) -> Result<bool, UiError> {
+        if self.previous.on_msg(ui, ctx, msg)? {
+            let target = self.selected.saturating_sub(1);
+            self.set_selected(ui, ctx, target)?;
+            return Ok(true);
+        }
+        if self.next.on_msg(ui, ctx, msg)? {
+            let target = (self.selected + 1).min(self.count - 1);
+            self.set_selected(ui, ctx, target)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+}
+
+/// SearchField：前置搜索 icon、TextField、后置清除按钮的组合件。
+///
+/// 查询文本与 selection 仍归 app 的 TextInputState；清除 Click 只返回激活。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchField {
+    pub panel: NodeId,
+    pub field: TextField,
+    pub clear: IconButton,
+}
+
+impl SearchField {
+    pub fn new<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, width: u32, search_icon: u16,
+        clear_icon: u16,
+    ) -> Result<Self, UiError> {
+        let leading_target = ctx.metrics.effective_px(48);
+        let clear_target = ctx.metrics.effective_px(192);
+        let icon_visual = ctx.metrics.effective_px(24);
+        let gaps = ctx.spacing(SpacingToken::Xs).saturating_mul(2);
+        if width <= leading_target + clear_target + gaps {
+            return Err(UiError::NodeBad);
+        }
+        let panel = add(
+            ui,
+            parent,
+            ViewSpec {
+                kind: ViewKind::Row,
+                key: 0,
+                props: Props::Row(RowProps {
+                    gap: ctx.spacing(SpacingToken::Xs),
+                    w: Some(width),
+                    h: None,
+                    cross: CrossAlign::Center,
+                }),
+            },
+        )?;
+        add(
+            ui,
+            panel,
+            ViewSpec {
+                kind: ViewKind::Icon,
+                key: 0,
+                props: Props::Icon(IconProps {
+                    id: search_icon,
+                    fg: ctx.theme.colors.text_secondary,
+                    w: Some(icon_visual),
+                    h: Some(icon_visual),
+                }),
+            },
+        )?;
+        let field_width = width
+            .saturating_sub(leading_target + clear_target + gaps);
+        let field = TextField::new(
+            ui,
+            panel,
+            ctx,
+            TextFieldSpec {
+                kind: TextInputKind::Text,
+                width: field_width,
+            },
+        )?;
+        let clear = IconButton::new(
+            ui,
+            panel,
+            ctx,
+            clear_icon,
+            clear_icon,
+            b"Clear",
+            InteractionState::Normal,
+            false,
+        )?;
+        Ok(Self {
+            panel,
+            field,
+            clear,
+        })
+    }
+
+    pub fn on_msg<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, msg: &Msg,
+    ) -> Result<bool, UiError> {
+        self.clear.on_msg(ui, ctx, msg)
+    }
+}
 
 /// 顶层浮层宿主：full-screen scrim + 可偏移 content。
 ///

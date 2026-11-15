@@ -2,13 +2,15 @@
 //! focus 派生、生命周期与 AST 零漂。
 
 use berry_guiproto::surface::{
-    A11Y_ACTION_FOCUS, A11Y_STATE_CHECKED, A11Y_STATE_FOCUSED, A11Y_STATE_VISIBLE,
+    A11Y_ACTION_FOCUS, A11Y_STATE_CHECKED, A11Y_STATE_FOCUSED, A11Y_STATE_SELECTED,
+    A11Y_STATE_VISIBLE,
 };
 use berry_ui::desc::{PanelProps, ViewKind, ViewSpec};
 use berry_ui::sdk::{
     A11yRegion, Button, InteractionState, SemEntry, TextInputEdit, TextInputKind,
-    TextInputState, TextField, TextFieldSpec, WidgetContext, SEM_ACTION_ACTIVATE,
-    SEM_ACTION_FOCUS, SEM_ACTION_TEXT_EDIT, SEM_MAX, SEM_STATE_CHECKED, SEM_STATE_DISABLED,
+    SegmentedControl, SegmentedItemSpec, TextInputState, TextField, TextFieldSpec,
+    WidgetContext, SEM_ACTION_ACTIVATE, SEM_ACTION_FOCUS, SEM_ACTION_TEXT_EDIT, SEM_MAX,
+    SEM_STATE_CHECKED, SEM_STATE_DISABLED, SEM_STATE_SELECTED,
 };
 use berry_ui::{NodeId, Ui, UiError, ROLE_BUTTON, ROLE_LIST_ITEM, ROLE_TEXT};
 
@@ -191,17 +193,27 @@ fn snapshot_derives_focus_and_semantic_overlay_wins() {
     ui.set_sem(entry).unwrap();
     ui.set_focusable(node, Some(node), true).unwrap();
     ui.focus_set(node).unwrap();
+    let selected_node = panel(&mut ui, root, 30, 20);
+    let mut selected_entry = semantic(&mut ui, selected_node, ROLE_BUTTON, b"current");
+    selected_entry.state = SEM_STATE_SELECTED;
+    ui.set_sem(selected_entry).unwrap();
     ui.layout();
 
-    let mut regions = [zero_region(); 2];
+    let mut regions = [zero_region(); 3];
     let count = ui.sem_snapshot_into(&mut regions).unwrap();
-    assert_eq!(count, 1);
+    assert_eq!(count, 2);
     assert_eq!(regions[0].role, ROLE_BUTTON);
     assert_eq!(regions[0].actions, SEM_ACTION_ACTIVATE | A11Y_ACTION_FOCUS);
     assert_eq!(
         regions[0].state,
         A11Y_STATE_VISIBLE | A11Y_STATE_FOCUSED | A11Y_STATE_CHECKED
     );
+    assert_eq!(regions[1].label[..7], *b"current");
+    assert_eq!(
+        regions[1].state,
+        A11Y_STATE_VISIBLE | A11Y_STATE_SELECTED
+    );
+    assert!(regions[..count].iter().all(berry_ui::sdk::a11y_region_roundtrip));
 }
 
 #[test]
@@ -251,6 +263,20 @@ fn widgets_sync_semantic_state_value_and_range() {
     assert_eq!(ui.sem_of(item.panel).unwrap().state, 0);
     item.set_selected(&mut ui, &ctx, true).unwrap();
     assert_eq!(ui.sem_of(item.panel).unwrap().state, SEM_STATE_CHECKED);
+
+    let segment_items = [
+        SegmentedItemSpec { label: b"One", disabled: false },
+        SegmentedItemSpec { label: b"Two", disabled: false },
+    ];
+    let segments = SegmentedControl::new(&mut ui, root, &ctx, &segment_items, 0).unwrap();
+    assert_eq!(
+        ui.sem_of(segments.item_panel(0).unwrap()).unwrap().state,
+        SEM_STATE_SELECTED
+    );
+    assert_eq!(
+        ui.sem_of(segments.item_panel(1).unwrap()).unwrap().state,
+        0
+    );
 
     let mut switch = berry_ui::sdk::Switch::new(&mut ui, root, &ctx, false, false).unwrap();
     assert_eq!(ui.sem_of(switch.panel).unwrap().state, 0);

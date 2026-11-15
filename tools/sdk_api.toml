@@ -459,7 +459,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.1.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.2.md"
 breaking = []
 
 [[item]]
@@ -471,7 +471,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.1.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.2.md"
 breaking = []
 
 [[item]]
@@ -483,7 +483,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.1.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.2.md"
 breaking = []
 
 [[item]]
@@ -495,7 +495,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.1.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.2.md"
 breaking = []
 
 [[item]]
@@ -507,7 +507,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.1.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.2.md"
 breaking = []
 
 [[item]]
@@ -519,7 +519,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.1.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.2.md"
 breaking = []
 
 [[item]]
@@ -531,7 +531,139 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-TriPlatformControls-v1.1.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.2.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Badge"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.2.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Chip"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.2.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ChipKind"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.2.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SearchField"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.2.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SegmentedControl"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.2.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SegmentedItemSpec"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.2.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Stepper"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.2.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TextPicker"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.2.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SEGMENTED_MAX"
+kind = "const"
+module = "widgets"
+since = "TRI-CONTROLS-3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.2.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TEXT_PICKER_MAX"
+kind = "const"
+module = "widgets"
+since = "TRI-CONTROLS-3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.2.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SEM_STATE_SELECTED"
+kind = "const"
+module = "sem"
+since = "TRI-CONTROLS-3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.2.md"
 breaking = []
 
 [[item]]

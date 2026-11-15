@@ -1,6 +1,6 @@
 # BerryUI SEM-A1 Semantic Tree Sidecar
 
-> 版本：**1.0**｜2026-11-12
+> 版本：**1.0**｜2026-11-12｜状态：**superseded**｜取代：[BerryUI-SEMA1SemanticTreeSidecar-v1.1.md](BerryUI-SEMA1SemanticTreeSidecar-v1.1.md)
 >
 > 定位：SEM-A1 现行实施规格。执行序权威 = [GUI框架地基路线-v1.20.md](GUI框架地基路线-v1.20.md)；上游词表 = [BerrySession-P0SurfaceMode协议-v1.0.md](BerrySession-P0SurfaceMode协议-v1.0.md) §6；焦点权威 = [BerryUI-C1ComponentFocusNavigation-v1.0.md](BerryUI-C1ComponentFocusNavigation-v1.0.md)；文本来源 = [BerryUI-GUIT1TextFieldFoundationBeforeIME-v1.0.md](BerryUI-GUIT1TextFieldFoundationBeforeIME-v1.0.md)；研究依据 = [../research/GUI-15-官方SDK与UI架构一手源深研-2026-11.md](../research/GUI-15-官方SDK与UI架构一手源深研-2026-11.md)。
 >

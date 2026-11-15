@@ -10,8 +10,9 @@ use berry_gfx::queue::Queue;
 use berry_ui::sdk::{
     column, divider, icon, row, text, Button, Card, EmptyState, InteractionState, ListTile,
     ListTileSpec, ListItem, Msg, NavigationIconSource, NAV_ICON_BACK, NAV_ICON_BACK_ACTIVE,
-    AlertDialog, Checkbox, DialogAction, Grid, LoadingIndicator, Menu, MenuItemSpec,
-    ProgressIndicator, Radio, Section, Sheet, Slider, TabBarStyle, TabItemSpec, Tabs, Toast,
+    AlertDialog, Badge, Checkbox, Chip, ChipKind, DialogAction, Grid, LoadingIndicator, Menu,
+    MenuItemSpec, ProgressIndicator, Radio, SearchField, Section, SegmentedControl,
+    SegmentedItemSpec, Sheet, Slider, Stepper, TabBarStyle, TabItemSpec, Tabs, TextPicker, Toast,
     PanelProps, Props, RectProps, RectI, Scaffold, ScrollView,
     Switch, TextVariant, Theme, Ui, UiError, ViewKind, ViewSpec, WidgetContext,
 };
@@ -418,6 +419,128 @@ fn safe_navigation_shell_reserves_product_system_bars() {
         RectI::new(0, 285, 1080, 1527)
     );
     assert!(light.app_bar.back.is_none());
+}
+
+#[test]
+fn p1_selection_chips_badges_pickers_and_search_controls() {
+    let context = ctx(1080, 1920);
+
+    let mut ui = Ui::<96>::new(1080, 1920);
+    let root = ui.root();
+    let segments = [
+        SegmentedItemSpec { label: b"One", disabled: false },
+        SegmentedItemSpec { label: b"Two", disabled: false },
+    ];
+    let mut segmented =
+        SegmentedControl::new(&mut ui, root, &context, &segments, 0).unwrap();
+    ui.layout();
+    assert_eq!(ui.bounds(segmented.panel).unwrap().w, 270);
+    assert_eq!(ui.bounds(segmented.item_panel(0).unwrap()).unwrap().w, 135);
+    assert_eq!(
+        ui.sem_of(segmented.item_panel(0).unwrap()).unwrap().state,
+        berry_ui::SEM_STATE_SELECTED
+    );
+    let second = segmented.item_panel(1).unwrap();
+    assert!(!segmented
+        .on_msg(
+            &mut ui,
+            &context,
+            &Msg::Press { node: second, x: 270, y: 24 },
+        )
+        .unwrap());
+    assert!(!segmented
+        .on_msg(
+            &mut ui,
+            &context,
+            &Msg::Release { node: second, x: 270, y: 24 },
+        )
+        .unwrap());
+    assert!(segmented
+        .on_msg(&mut ui, &context, &Msg::Click { node: second })
+        .unwrap());
+    assert_eq!(segmented.selected(), 1);
+
+    let mut ui = Ui::<96>::new(1080, 1920);
+    let root = ui.root();
+    let mut stepper = Stepper::new(&mut ui, root, &context, 2, 0, 5).unwrap();
+    ui.layout();
+    assert_eq!(stepper.value(), 2);
+    assert!(stepper
+        .on_msg(
+            &mut ui,
+            &context,
+            &Msg::Click { node: stepper.decrement.panel },
+        )
+        .unwrap());
+    assert_eq!(stepper.value(), 1);
+    assert!(stepper
+        .on_msg(
+            &mut ui,
+            &context,
+            &Msg::Click { node: stepper.increment.panel },
+        )
+        .unwrap());
+    assert_eq!(stepper.value(), 2);
+    stepper.set_value(&mut ui, &context, 99).unwrap();
+    assert_eq!(stepper.value(), 5);
+
+    let mut ui = Ui::<96>::new(1080, 1920);
+    let root = ui.root();
+    let mut chip = Chip::new(&mut ui, root, &context, b"Filter", ChipKind::Filter, false).unwrap();
+    ui.layout();
+    assert!(!chip.selected());
+    assert!(chip
+        .on_msg(&mut ui, &context, &Msg::Click { node: chip.panel })
+        .unwrap());
+    assert!(chip.selected());
+
+    let mut ui = Ui::<96>::new(1080, 1920);
+    let root = ui.root();
+    let badge = Badge::new(&mut ui, root, &context, 12, 20, 30).unwrap();
+    let dot = Badge::new(&mut ui, root, &context, 0, 100, 30).unwrap();
+    ui.layout();
+    let bounds = ui.bounds(badge.panel).unwrap();
+    assert_eq!((bounds.x, bounds.y, bounds.w, bounds.h), (20, 30, 27, 18));
+    assert_eq!(ui.bounds(dot.panel).unwrap().w, 9);
+
+    let mut ui = Ui::<96>::new(1080, 1920);
+    let root = ui.root();
+    let options: [&'static [u8]; 3] = [b"Small", b"Medium", b"Large"];
+    let mut picker = TextPicker::new(&mut ui, root, &context, &options, 0).unwrap();
+    ui.layout();
+    assert_eq!(ui.bounds(picker.panel).unwrap().w, 360);
+    assert!(picker
+        .on_msg(
+            &mut ui,
+            &context,
+            &Msg::Click { node: picker.next.panel },
+        )
+        .unwrap());
+    assert_eq!(picker.selected(), 1);
+    assert!(picker
+        .on_msg(
+            &mut ui,
+            &context,
+            &Msg::Click { node: picker.previous.panel },
+        )
+        .unwrap());
+    assert_eq!(picker.selected(), 0);
+
+    let mut ui = Ui::<96>::new(1080, 1920);
+    let root = ui.root();
+    let mut search = SearchField::new(&mut ui, root, &context, 540, 100, 101).unwrap();
+    ui.layout();
+    let field_bounds = ui.bounds(search.field.panel).unwrap();
+    let clear_bounds = ui.bounds(search.clear.panel).unwrap();
+    assert!(field_bounds.w > 0);
+    assert!(field_bounds.w + clear_bounds.w <= 540);
+    assert!(search
+        .on_msg(
+            &mut ui,
+            &context,
+            &Msg::Click { node: search.clear.panel },
+        )
+        .unwrap());
 }
 
 #[test]

@@ -31,18 +31,20 @@ pub use crate::text_input::{
     TextInputOutcome, TextInputState, TextSelection, TEXT_INPUT_MAX,
 };
 pub use crate::widgets::{
-    AlertDialog, AppBar, Button, Card, Checkbox, DialogAction, EmptyState, Grid, IconButton,
-    ListDetail, ListDetailSpec, ListTile, ListTileSpec, ListItem, LoadingIndicator, Menu,
-    MenuItemSpec, OverlaySurface, ProgressIndicator, Radio, SafeInsets, Scaffold, ScrollView,
-    Section, Sheet, Slider, Switch, TabBarStyle, TabItemSpec, Tabs, TextVariant, TextField,
-    TextFieldSpec, Toast, WidgetContext, column, divider, icon, row, text, TABS_MAX,
+    AlertDialog, AppBar, Badge, Button, Card, Checkbox, Chip, ChipKind, DialogAction,
+    EmptyState, Grid, IconButton, ListDetail, ListDetailSpec, ListTile, ListTileSpec, ListItem,
+    LoadingIndicator, Menu, MenuItemSpec, OverlaySurface, ProgressIndicator, Radio, SafeInsets,
+    Scaffold, ScrollView, SearchField, Section, SegmentedControl, SegmentedItemSpec, Sheet,
+    Slider, Stepper, Switch, TabBarStyle, TabItemSpec, Tabs, TextPicker, TextVariant, TextField,
+    TextFieldSpec, Toast, WidgetContext, column, divider, icon, row, text, SEGMENTED_MAX,
+    TABS_MAX, TEXT_PICKER_MAX,
 };
 pub use crate::{
     a11y_region_roundtrip, FlexBasis, FlexEntry, FlexSpec, FocusEntry, ReapplyStat, SemEntry,
     SETTLE_DERIVE_MAX,
     TextWrapEntry, TEXT_WRAP_MAX, Ui, KEYED_DEPTH_MAX, UiError, UiMain, SEM_ACTION_ACTIVATE,
     SEM_ACTION_ADJUST, SEM_ACTION_FOCUS, SEM_ACTION_TEXT_EDIT, SEM_LABEL_MAX, SEM_MAX,
-    SEM_STATE_CHECKED, SEM_STATE_DISABLED,
+    SEM_STATE_CHECKED, SEM_STATE_DISABLED, SEM_STATE_SELECTED,
 };
 pub use berry_guiproto::surface::A11yRegion;
 

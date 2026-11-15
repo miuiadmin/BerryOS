@@ -19,10 +19,11 @@ use berry_ui::hit::PtrEvent;
 use berry_ui::sdk::{
     Button, Card, Checkbox, EmptyState, FontSource, IconSource, InteractionState, ListDetail,
     ListDetailSpec, ListItem, ListTile, ListTileSpec, LoadingIndicator, Msg, NodeId,
-    ProgressIndicator, Radio, RectI, Scaffold, ScrollView, Section, Slider,
-    Switch, TabBarStyle, TabItemSpec, Tabs, TextVariant,
-    TextField, TextFieldSpec, Theme, Ui, WidgetContext, column, divider, icon, row, text,
-    IconButton, NavigationIconSource, NAV_ICON_BACK, NAV_ICON_BACK_ACTIVE,
+    ProgressIndicator, Radio, RectI, Scaffold, ScrollView, SearchField, Section,
+    SegmentedControl, SegmentedItemSpec, Slider, Stepper, Switch, TabBarStyle, TabItemSpec,
+    Tabs, TextPicker, TextVariant, TextField, TextFieldSpec, Theme, Ui, WidgetContext, column,
+    divider, icon, row, text, Badge, Chip, ChipKind, IconButton, NavigationIconSource,
+    NAV_ICON_BACK, NAV_ICON_BACK_ACTIVE, TextInputState,
 };
 
 type Ui192 = Ui<192>;
@@ -274,6 +275,8 @@ struct WidgetsPage {
     radio: Radio,
     slider: Slider,
     loading: LoadingIndicator,
+    filter: Chip,
+    badge: Badge,
 }
 
 struct InputPage {
@@ -282,6 +285,8 @@ struct InputPage {
     tabs: Tabs,
     back: IconButton,
     fields: [TextField; 3],
+    search: SearchField,
+    search_state: TextInputState,
 }
 
 struct ListPage {
@@ -291,6 +296,7 @@ struct ListPage {
     back: IconButton,
     detail: Option<ListDetail>,
     items: [Option<ListItem>; 4],
+    segments: SegmentedControl,
     clear: Option<Button>,
     restore: Option<Button>,
 }
@@ -301,6 +307,7 @@ struct ThemePage {
     tabs: Tabs,
     back: IconButton,
     cycle: Button,
+    picker: TextPicker,
 }
 
 struct SystemPage {
@@ -308,6 +315,7 @@ struct SystemPage {
     scroll: ScrollView,
     tabs: Tabs,
     back: IconButton,
+    stepper: Stepper,
 }
 
 enum Page {
@@ -615,6 +623,27 @@ fn build_widgets(
     )
     .unwrap_or_else(|_| berry_room::panic_exit(134));
 
+    let token_row = row(ui, stack, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
+    let filter = Chip::new(
+        ui,
+        token_row,
+        ctx,
+        b"Live filter",
+        ChipKind::Filter,
+        false,
+    )
+    .unwrap_or_else(|_| berry_room::panic_exit(134));
+    let badge = Badge::new(
+        ui,
+        token_row,
+        ctx,
+        3,
+        ctx.metrics.effective_px(240) as i32,
+        0,
+    )
+    .unwrap_or_else(|_| berry_room::panic_exit(134));
+    let _ = badge;
+
     let selection_section = Section::new(ui, stack, ctx, b"Selection and value")
         .unwrap_or_else(|_| berry_room::panic_exit(134));
     let selection_row = row(ui, selection_section.content, ctx)
@@ -644,7 +673,7 @@ fn build_widgets(
     icon(ui, icons, ctx, 101).unwrap_or_else(|_| berry_room::panic_exit(134));
     icon(ui, icons, ctx, 102).unwrap_or_else(|_| berry_room::panic_exit(134));
 
-    WidgetsPage { root: scaffold.root, scroll, tabs, back: app_back, counter, switch, disabled, selected, checkbox, radio, slider, loading }
+    WidgetsPage { root: scaffold.root, scroll, tabs, back: app_back, counter, switch, disabled, selected, checkbox, radio, slider, loading, filter, badge }
 }
 
 fn build_input(
@@ -683,6 +712,14 @@ fn build_input(
     text(ui, stack, ctx, TextVariant::Title, b"Text fields")
         .unwrap_or_else(|_| berry_room::panic_exit(134));
     let width = (ui.viewport().0.saturating_sub(120)).min(960);
+    let mut search = SearchField::new(ui, stack, ctx, width, 100, 102)
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
+    let search_state = TextInputState::new(b"Berry")
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
+    search
+        .field
+        .sync(ui, ctx, &search_state)
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
     text(ui, stack, ctx, TextVariant::Body, b"Plain text")
         .unwrap_or_else(|_| berry_room::panic_exit(134));
     let kinds: [(berry_ui::sdk::TextInputKind, &[u8]); 3] = [
@@ -706,7 +743,7 @@ fn build_input(
     }
     text(ui, stack, ctx, TextVariant::Body, b"Tap a field to focus its caret")
         .unwrap_or_else(|_| berry_room::panic_exit(134));
-    InputPage { root: scaffold.root, scroll, tabs, back: app_back, fields }
+    InputPage { root: scaffold.root, scroll, tabs, back: app_back, fields, search, search_state }
 }
 
 fn build_list(
@@ -743,6 +780,13 @@ fn build_list(
     let card = Card::new(ui, scroll.content, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
     let stack = column(ui, card.panel, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
 
+    let segment_items = [
+        SegmentedItemSpec { label: b"All", disabled: false },
+        SegmentedItemSpec { label: b"Recent", disabled: false },
+    ];
+    let segments = SegmentedControl::new(ui, stack, ctx, &segment_items, 0)
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
+
     if empty {
         EmptyState::new(ui, stack, ctx, 102, b"No items", b"Restore the demo list")
             .unwrap_or_else(|_| berry_room::panic_exit(134));
@@ -755,6 +799,7 @@ fn build_list(
             back: app_back,
             detail: None,
             items: [None; 4],
+            segments,
             clear: None,
             restore: Some(restore),
         };
@@ -802,6 +847,7 @@ fn build_list(
         back: app_back,
         detail: Some(detail),
         items,
+        segments,
         clear: Some(clear),
         restore: None,
     }
@@ -876,11 +922,14 @@ fn build_theme(
     icon(ui, icons, ctx, 100).unwrap_or_else(|_| berry_room::panic_exit(134));
     icon(ui, icons, ctx, 102).unwrap_or_else(|_| berry_room::panic_exit(134));
 
+    let picker_options: [&'static [u8]; 3] = [b"Compact", b"Medium", b"Comfortable"];
+    let picker = TextPicker::new(ui, stack, ctx, &picker_options, 1)
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
     let cycle = Button::new(ui, stack, ctx, b"Cycle scheme", InteractionState::Selected)
         .unwrap_or_else(|_| berry_room::panic_exit(134));
     text(ui, stack, ctx, TextVariant::Body, b"Light / dark / high contrast")
         .unwrap_or_else(|_| berry_room::panic_exit(134));
-    ThemePage { root: scaffold.root, scroll, tabs, back: app_back, cycle }
+    ThemePage { root: scaffold.root, scroll, tabs, back: app_back, cycle, picker }
 }
 
 fn build_system(
@@ -948,6 +997,9 @@ fn build_system(
             .unwrap_or_else(|_| berry_room::panic_exit(134));
     }
 
+    let stepper = Stepper::new(ui, stack, ctx, 2, 0, 5)
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
+
     let icons = row(ui, stack, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
     icon(ui, icons, ctx, 100).unwrap_or_else(|_| berry_room::panic_exit(134));
     icon(ui, icons, ctx, 101).unwrap_or_else(|_| berry_room::panic_exit(134));
@@ -960,7 +1012,7 @@ fn build_system(
     text(ui, stack, ctx, TextVariant::Body, &frame_label[..n])
         .unwrap_or_else(|_| berry_room::panic_exit(134));
 
-    SystemPage { root: scaffold.root, scroll, tabs, back: app_back }
+    SystemPage { root: scaffold.root, scroll, tabs, back: app_back, stepper }
 }
 
 fn build_page(
@@ -1048,33 +1100,49 @@ impl App {
     fn print_layout(&self, room: &AppRoom) {
         let mut line = Line::new(b"BERRYDEMOLAYOUT ok page=");
         line.push_u32(self.page.kind() as u32);
-        let (back, extra, system, tab) = match &self.page {
+        let (back, extra, system, tab, p1) = match &self.page {
             Page::Home(page) => (
                 page.back.panel,
                 page.nav[0].as_ref().map(|item| item.panel),
                 Some(page.tour.panel),
                 page.tabs.panel,
+                None,
             ),
             Page::Widgets(page) => (
                 page.back.panel,
                 Some(page.switch.panel),
-                None,
+                Some(page.badge.panel),
                 page.tabs.panel,
+                Some(page.filter.panel),
             ),
             Page::Input(page) => (
                 page.back.panel,
                 Some(page.fields[0].panel),
                 None,
                 page.tabs.panel,
+                Some(page.search.clear.panel),
             ),
             Page::List(page) => (
                 page.back.panel,
                 page.detail.as_ref().map(|detail| detail.row),
                 None,
                 page.tabs.panel,
+                page.segments.item_panel(1).ok(),
             ),
-            Page::Theme(page) => (page.back.panel, Some(page.cycle.panel), None, page.tabs.panel),
-            Page::System(page) => (page.back.panel, None, None, page.tabs.panel),
+            Page::Theme(page) => (
+                page.back.panel,
+                Some(page.cycle.panel),
+                None,
+                page.tabs.panel,
+                Some(page.picker.next.panel),
+            ),
+            Page::System(page) => (
+                page.back.panel,
+                None,
+                None,
+                page.tabs.panel,
+                Some(page.stepper.increment.panel),
+            ),
         };
         line.push(b" back=");
         line.rect(self.ui.bounds(back).unwrap_or_else(|_| berry_room::panic_exit(134)));
@@ -1088,6 +1156,14 @@ impl App {
         }
         line.push(b" tab=");
         line.rect(self.ui.bounds(tab).unwrap_or_else(|_| berry_room::panic_exit(134)));
+        line.push(b" a11y=");
+        line.push_u32(self.ui.a11y_iter().count() as u32);
+        line.push(b" sem=");
+        line.push_u32(self.ui.sem_iter().count() as u32);
+        if let Some(node) = p1 {
+            line.push(b" p1=");
+            line.rect(self.ui.bounds(node).unwrap_or_else(|_| berry_room::panic_exit(134)));
+        }
         line.push(b"\n");
         line.print(room);
     }
@@ -1179,6 +1255,8 @@ impl App {
                     .unwrap_or_else(|_| berry_room::panic_exit(134));
                 handled |= page.radio.on_msg(&mut self.ui, &self.ctx, message)
                     .unwrap_or_else(|_| berry_room::panic_exit(134));
+                handled |= page.filter.on_msg(&mut self.ui, &self.ctx, message)
+                    .unwrap_or_else(|_| berry_room::panic_exit(134));
                 let _ = page
                     .slider
                     .on_msg(&mut self.ui, &self.ctx, message)
@@ -1191,9 +1269,13 @@ impl App {
                     handled |= field.on_msg(&mut self.ui, &self.ctx, message)
                         .unwrap_or_else(|_| berry_room::panic_exit(134));
                 }
+                handled |= page.search.on_msg(&mut self.ui, &self.ctx, message)
+                    .unwrap_or_else(|_| berry_room::panic_exit(134));
             }
             Page::List(page) => {
                 handled |= page.back.on_msg(&mut self.ui, &self.ctx, message)
+                    .unwrap_or_else(|_| berry_room::panic_exit(134));
+                handled |= page.segments.on_msg(&mut self.ui, &self.ctx, message)
                     .unwrap_or_else(|_| berry_room::panic_exit(134));
                 if let Some(button) = page.restore.as_mut() {
                     handled |= button.on_msg(&mut self.ui, &self.ctx, message)
@@ -1213,9 +1295,13 @@ impl App {
                     .unwrap_or_else(|_| berry_room::panic_exit(134));
                 handled |= page.cycle.on_msg(&mut self.ui, &self.ctx, message)
                     .unwrap_or_else(|_| berry_room::panic_exit(134));
+                handled |= page.picker.on_msg(&mut self.ui, &self.ctx, message)
+                    .unwrap_or_else(|_| berry_room::panic_exit(134));
             }
             Page::System(page) => {
                 handled |= page.back.on_msg(&mut self.ui, &self.ctx, message)
+                    .unwrap_or_else(|_| berry_room::panic_exit(134));
+                handled |= page.stepper.on_msg(&mut self.ui, &self.ctx, message)
                     .unwrap_or_else(|_| berry_room::panic_exit(134));
             }
         }
@@ -1297,6 +1383,9 @@ impl App {
                         .set_checked(&mut self.ui, &self.ctx, true)
                         .unwrap_or_else(|_| berry_room::panic_exit(134));
                     action = 10;
+                } else if page.filter.panel == node || page.filter.label == node {
+                    hit_line.push(b"chip");
+                    action = 14;
                 }
             }
             Page::Input(page) => {
@@ -1304,6 +1393,26 @@ impl App {
                     hit_line.push(b"back");
                     target_page = PAGE_HOME;
                     action = 2;
+                } else if page.search.field.owns(node) {
+                    hit_line.push(b"search-field");
+                    let mut field = page.search.field;
+                    let messages = field.request_focus(&mut self.ui, &self.ctx)
+                        .unwrap_or_else(|_| berry_room::panic_exit(134));
+                    page.search.field = field;
+                    for focus in messages.iter() {
+                        let _ = self.deliver_widget(&focus);
+                    }
+                    focused_field = u32::MAX;
+                    action = 15;
+                } else if node == page.search.clear.panel || node == page.search.clear.icon {
+                    hit_line.push(b"search-clear");
+                    page.search_state = TextInputState::new(b"")
+                        .unwrap_or_else(|_| berry_room::panic_exit(134));
+                    page.search
+                        .field
+                        .sync(&mut self.ui, &self.ctx, &page.search_state)
+                        .unwrap_or_else(|_| berry_room::panic_exit(134));
+                    action = 16;
                 } else if let Some(index) = page.fields.iter().position(|field| field.owns(node)) {
                     hit_line.push(b"field");
                     let mut field = page.fields[index];
@@ -1322,6 +1431,9 @@ impl App {
                     hit_line.push(b"back");
                     target_page = PAGE_HOME;
                     action = 2;
+                } else if page.segments.owns(node) {
+                    hit_line.push(b"segment");
+                    action = 17;
                 } else if let Some(button) = page.restore.as_ref() {
                     if button.panel == node || button.label == node {
                         hit_line.push(b"restore");
@@ -1349,6 +1461,13 @@ impl App {
                     hit_line.push(b"back");
                     target_page = PAGE_HOME;
                     action = 2;
+                } else if node == page.picker.previous.panel
+                    || node == page.picker.previous.label
+                    || node == page.picker.next.panel
+                    || node == page.picker.next.label
+                {
+                    hit_line.push(b"picker");
+                    action = 18;
                 } else if page.cycle.panel == node || page.cycle.label == node {
                     hit_line.push(b"theme");
                     self.theme_index = (self.theme_index + 1) % 3;
@@ -1360,6 +1479,13 @@ impl App {
                     hit_line.push(b"back");
                     target_page = PAGE_HOME;
                     action = 2;
+                } else if node == page.stepper.decrement.panel
+                    || node == page.stepper.decrement.label
+                    || node == page.stepper.increment.panel
+                    || node == page.stepper.increment.label
+                {
+                    hit_line.push(b"stepper");
+                    action = 19;
                 }
             }
         }
@@ -1446,7 +1572,10 @@ impl App {
                 self.replace_page(room, PAGE_SYSTEM);
                 false
             }
-            _ => false,
+            _ => {
+                self.render(room);
+                false
+            }
         }
     }
 }

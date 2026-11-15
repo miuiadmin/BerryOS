@@ -8,7 +8,8 @@ use crate::desc::{NodeId, TextBuf};
 use crate::text_input::TextSelection;
 use berry_guiproto::surface::{
     A11Y_ACTION_ACTIVATE, A11Y_ACTION_ADJUST, A11Y_ACTION_FOCUS, A11Y_ACTION_KNOWN,
-    A11Y_ACTION_TEXT_EDIT, A11Y_LABEL_MAX, A11Y_STATE_CHECKED, A11Y_STATE_DISABLED, A11yRegion,
+    A11Y_ACTION_TEXT_EDIT, A11Y_LABEL_MAX, A11Y_STATE_CHECKED, A11Y_STATE_DISABLED,
+    A11Y_STATE_SELECTED, A11yRegion,
 };
 
 /// 语义 overlay 容量。每页交互控件 v1 帽 8；UITEST page0 实际 5 项
@@ -25,6 +26,7 @@ pub const SEM_ACTION_ADJUST: u8 = A11Y_ACTION_ADJUST;
 pub const SEM_ACTION_TEXT_EDIT: u8 = A11Y_ACTION_TEXT_EDIT;
 pub const SEM_STATE_DISABLED: u8 = A11Y_STATE_DISABLED;
 pub const SEM_STATE_CHECKED: u8 = A11Y_STATE_CHECKED;
+pub const SEM_STATE_SELECTED: u8 = A11Y_STATE_SELECTED;
 
 /// runtime-only 语义 overlay。必须挂在已登记 legacy a11y 的节点上；
 /// role/label 不重复存储。FOCUS action / VISIBLE / FOCUSED 全部派生。
@@ -54,7 +56,7 @@ impl SemEntry {
     ) -> Result<Self, crate::UiError> {
         if actions & !A11Y_ACTION_KNOWN != 0
             || actions & SEM_ACTION_FOCUS != 0
-            || state & !(SEM_STATE_DISABLED | SEM_STATE_CHECKED) != 0
+            || state & !(SEM_STATE_DISABLED | SEM_STATE_CHECKED | SEM_STATE_SELECTED) != 0
             || anchor_cp > caret_cp
             || !crate::text_input::is_valid_utf8(value)
         {
@@ -84,7 +86,7 @@ impl SemEntry {
         let value_len = self.value.len as usize;
         if self.actions & !A11Y_ACTION_KNOWN != 0
             || self.actions & SEM_ACTION_FOCUS != 0
-            || self.state & !(SEM_STATE_DISABLED | SEM_STATE_CHECKED) != 0
+            || self.state & !(SEM_STATE_DISABLED | SEM_STATE_CHECKED | SEM_STATE_SELECTED) != 0
             || value_len > crate::TEXT_INLINE
             || self.value.bytes[value_len..].iter().any(|&byte| byte != 0)
             || !crate::text_input::is_valid_utf8(self.value.as_bytes())
