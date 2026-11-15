@@ -451,6 +451,90 @@ spec = "docs/Berry设备平台-OpenHarmonyShell-v1.0.md"
 breaking = []
 
 [[item]]
+id = "berry_ui::sdk::AlertDialog"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.1.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::DialogAction"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.1.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::OverlaySurface"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.1.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Toast"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.1.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Menu"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.1.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::MenuItemSpec"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.1.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Sheet"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.1.md"
+breaking = []
+
+[[item]]
 id = "berry_ui::sdk::Checkbox"
 kind = "type"
 module = "widgets"

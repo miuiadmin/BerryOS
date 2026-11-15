@@ -580,7 +580,7 @@ fn build_widgets(
         safe_top,
         safe_bottom,
         scaffold.app_bar.instance_height(ctx),
-        PAGE_HOME,
+        PAGE_WIDGETS,
     );
     let card = Card::new(ui, scroll.content, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
     let stack = column(ui, card.panel, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
@@ -675,7 +675,7 @@ fn build_input(
         safe_top,
         safe_bottom,
         scaffold.app_bar.instance_height(ctx),
-        PAGE_HOME,
+        PAGE_INPUT,
     );
     let card = Card::new(ui, scroll.content, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
     let stack = column(ui, card.panel, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
@@ -738,7 +738,7 @@ fn build_list(
         safe_top,
         safe_bottom,
         scaffold.app_bar.instance_height(ctx),
-        PAGE_HOME,
+        PAGE_LIST,
     );
     let card = Card::new(ui, scroll.content, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
     let stack = column(ui, card.panel, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
@@ -835,7 +835,7 @@ fn build_theme(
         safe_top,
         safe_bottom,
         scaffold.app_bar.instance_height(ctx),
-        PAGE_HOME,
+        PAGE_THEME,
     );
     let card = Card::new(ui, scroll.content, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
     let stack = column(ui, card.panel, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
@@ -911,7 +911,7 @@ fn build_system(
         safe_top,
         safe_bottom,
         scaffold.app_bar.instance_height(ctx),
-        PAGE_HOME,
+        PAGE_SYSTEM,
     );
     let card = Card::new(ui, scroll.content, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
     let stack = column(ui, card.panel, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));

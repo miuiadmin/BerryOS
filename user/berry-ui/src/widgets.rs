@@ -2571,6 +2571,381 @@ impl Tabs {
 }
 
 
+/// 顶层浮层宿主：full-screen scrim + 可偏移 content。
+///
+/// `parent` 必须是 Ui root。Root 的每个直接子树都拿全 viewport 且兄弟后画
+/// 者在上，因此不引入第二布局/命中引擎即可获得真实 z-order；dismiss 通过
+/// remove 整棵浮层完成。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OverlaySurface {
+    pub root: NodeId,
+    pub content: NodeId,
+}
+
+impl OverlaySurface {
+    pub fn new_centered<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, content_w: u32,
+        content_h: u32,
+    ) -> Result<Self, UiError> {
+        if content_w == 0 || content_h == 0 {
+            return Err(UiError::NodeBad);
+        }
+        let (vp_w, vp_h) = ui.viewport();
+        let root = add(
+            ui,
+            parent,
+            panel_spec(
+                ctx.theme.colors.text_primary,
+                Some(vp_w),
+                Some(vp_h),
+                0,
+                0,
+                0,
+            ),
+        )?;
+        let content = add(
+            ui,
+            root,
+            panel_spec(
+                ctx.theme.colors.surface,
+                Some(content_w.min(vp_w)),
+                Some(content_h.min(vp_h)),
+                ctx.spacing(SpacingToken::L),
+                ctx.spacing(SpacingToken::S),
+                ctx.metrics.radius(RadiusToken::Large),
+            ),
+        )?;
+        let x = ((vp_w.saturating_sub(content_w)) / 2) as i32;
+        let y = ((vp_h.saturating_sub(content_h)) / 2) as i32;
+        ui.set_offset(content, x, y)?;
+        Ok(Self { root, content })
+    }
+
+    pub fn dismiss<const N: usize>(&self, ui: &mut Ui<N>) -> Result<(), UiError> {
+        ui.remove(self.root)
+    }
+}
+
+/// AlertDialog 动作结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialogAction {
+    None,
+    Confirm,
+    Cancel,
+}
+
+/// 三方共性模态：标题、正文、确认/取消动作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AlertDialog {
+    pub surface: OverlaySurface,
+    pub confirm: Button,
+    pub cancel: Option<Button>,
+}
+
+impl AlertDialog {
+    pub fn new<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, title: &[u8],
+        body: &[u8], confirm_label: &[u8], cancel_label: Option<&[u8]>,
+    ) -> Result<Self, UiError> {
+        let (vp_w, _) = ui.viewport();
+        let width = vp_w.min(ctx.metrics.effective_px(640)).max(ctx.metrics.effective_px(320));
+        let height = ctx.metrics.effective_px(320);
+        let surface = OverlaySurface::new_centered(ui, parent, ctx, width, height)?;
+        text(ui, surface.content, ctx, TextVariant::Title, title)?;
+        text(ui, surface.content, ctx, TextVariant::Body, body)?;
+        let actions = row(ui, surface.content, ctx)?;
+        let confirm = Button::new(ui, actions, ctx, confirm_label, InteractionState::Selected)?;
+        let cancel = match cancel_label {
+            Some(label) => Some(Button::new(ui, actions, ctx, label, InteractionState::Normal)?),
+            None => None,
+        };
+        ui.set_a11y(surface.root, ROLE_BUTTON, b"Dialog")?;
+        Ok(Self { surface, confirm, cancel })
+    }
+
+    pub fn dismiss<const N: usize>(&self, ui: &mut Ui<N>) -> Result<(), UiError> {
+        self.surface.dismiss(ui)
+    }
+
+    pub fn on_msg<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, msg: &Msg,
+    ) -> Result<DialogAction, UiError> {
+        if self.confirm.on_msg(ui, ctx, msg)? {
+            return Ok(DialogAction::Confirm);
+        }
+        if let Some(cancel) = self.cancel.as_mut() {
+            if cancel.on_msg(ui, ctx, msg)? {
+                return Ok(DialogAction::Cancel);
+            }
+        }
+        if let Msg::Click { node } = *msg {
+            if node == self.surface.root {
+                return Ok(DialogAction::Cancel);
+            }
+        }
+        Ok(DialogAction::None)
+    }
+}
+
+/// Toast / Snackbar：非阻塞短消息。显示时长与 dismiss 时机归 app。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Toast {
+    pub root: NodeId,
+    pub label: NodeId,
+    pub action: Option<Button>,
+}
+
+impl Toast {
+    pub fn new<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, message: &[u8],
+        action_label: Option<&[u8]>,
+    ) -> Result<Self, UiError> {
+        let (vp_w, vp_h) = ui.viewport();
+        let width = vp_w.min(ctx.metrics.effective_px(720)).max(ctx.metrics.effective_px(320));
+        let height = ctx.metrics.effective_px(96);
+        let root = add(
+            ui,
+            parent,
+            panel_spec(
+                ctx.theme.colors.text_primary,
+                Some(width),
+                Some(height),
+                ctx.spacing(SpacingToken::M),
+                ctx.spacing(SpacingToken::S),
+                ctx.metrics.radius(RadiusToken::Medium),
+            ),
+        )?;
+        let line = row(ui, root, ctx)?;
+        let label = text(ui, line, ctx, TextVariant::Body, message)?;
+        let action = match action_label {
+            Some(bytes) => Some(Button::new(ui, line, ctx, bytes, InteractionState::Normal)?),
+            None => None,
+        };
+        let x = ((vp_w.saturating_sub(width)) / 2) as i32;
+        let y = (vp_h.saturating_sub(height).saturating_sub(ctx.metrics.effective_px(192))) as i32;
+        ui.set_offset(root, x, y)?;
+        ui.set_a11y(root, ROLE_TEXT, message)?;
+        Ok(Self { root, label, action })
+    }
+
+    pub fn dismiss<const N: usize>(&self, ui: &mut Ui<N>) -> Result<(), UiError> {
+        ui.remove(self.root)
+    }
+
+    pub fn on_msg<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, msg: &Msg,
+    ) -> Result<bool, UiError> {
+        if let Some(action) = self.action.as_mut() {
+            if action.on_msg(ui, ctx, msg)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}
+
+/// Dropdown Menu 条目。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MenuItemSpec {
+    pub label: &'static [u8],
+    pub dangerous: bool,
+}
+
+/// 锚定浮层菜单。命中只覆盖菜单本身；外部点击由 app 关闭。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Menu {
+    pub root: NodeId,
+    items: [(NodeId, NodeId); 6],
+    dangerous: [bool; 6],
+    count: usize,
+    pressed: Option<usize>,
+}
+
+impl Menu {
+    pub fn new<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, x: i32, y: i32,
+        items: &[MenuItemSpec],
+    ) -> Result<Self, UiError> {
+        if items.is_empty() || items.len() > 6 {
+            return Err(UiError::NodeBad);
+        }
+        let (vp_w, _) = ui.viewport();
+        let width = vp_w.min(ctx.metrics.effective_px(360)).max(ctx.metrics.effective_px(220));
+        let height = ctx.metrics.effective_px(72).saturating_mul(items.len() as u32);
+        let root = add(
+            ui,
+            parent,
+            panel_spec(
+                ctx.theme.colors.surface,
+                Some(width),
+                Some(height),
+                ctx.spacing(SpacingToken::Xs),
+                ctx.spacing(SpacingToken::Xs),
+                ctx.metrics.radius(RadiusToken::Medium),
+            ),
+        )?;
+        let mut handles = [(NodeId(0), NodeId(0)); 6];
+        let mut dangerous = [false; 6];
+        for (index, item) in items.iter().enumerate() {
+            dangerous[index] = item.dangerous;
+            let fg = if item.dangerous {
+                ctx.theme.colors.danger
+            } else {
+                ctx.theme.colors.text_primary
+            };
+            let row_id = add(
+                ui,
+                root,
+                panel_spec(ctx.theme.colors.surface, None, Some(ctx.metrics.effective_px(72)), ctx.spacing(SpacingToken::S), 0, ctx.metrics.radius(RadiusToken::Small)),
+            )?;
+            let label = text(ui, row_id, ctx, TextVariant::Body, item.label)?;
+            if let Some(props) = retained_props(ui, label) {
+                if let Props::Text(mut p) = props {
+                    p.style.fg = fg;
+                    ui.set_props(label, Props::Text(p))?;
+                }
+            }
+            ui.set_a11y(row_id, ROLE_BUTTON, item.label)?;
+            ui.set_focusable(row_id, Some(row_id), true)?;
+            handles[index] = (row_id, label);
+        }
+        ui.set_offset(root, x, y)?;
+        Ok(Self { root, items: handles, dangerous, count: items.len(), pressed: None })
+    }
+
+    pub fn dismiss<const N: usize>(&self, ui: &mut Ui<N>) -> Result<(), UiError> {
+        ui.remove(self.root)
+    }
+
+    pub fn item_panel(&self, index: usize) -> Result<NodeId, UiError> {
+        self.items.get(index).map(|(panel, _)| *panel).ok_or(UiError::NodeBad)
+    }
+
+    fn state_for(&self, index: usize) -> InteractionState {
+        if self.pressed == Some(index) {
+            InteractionState::Pressed
+        } else {
+            InteractionState::Normal
+        }
+    }
+
+    fn apply_item<const N: usize>(
+        &self, ui: &mut Ui<N>, ctx: &WidgetContext, index: usize, dangerous: bool,
+    ) -> Result<(), UiError> {
+        let Some((panel, label)) = self.items.get(index) else {
+            return Err(UiError::NodeBad);
+        };
+        let visual = ctx.theme.state(self.state_for(index));
+        let fg = if dangerous {
+            ctx.theme.colors.danger
+        } else {
+            visual.content
+        };
+        if let Some(props) = retained_props(ui, *panel) {
+            if let Props::Panel(mut p) = props {
+                p.bg = visual.background;
+                ui.set_props(*panel, Props::Panel(p))?;
+            }
+        }
+        if let Some(props) = retained_props(ui, *label) {
+            if let Props::Text(mut p) = props {
+                p.style.fg = fg;
+                ui.set_props(*label, Props::Text(p))?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn on_msg<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, msg: &Msg,
+    ) -> Result<Option<usize>, UiError> {
+        let node = match msg {
+            Msg::Press { node, .. }
+            | Msg::Release { node, .. }
+            | Msg::Cancel { node }
+            | Msg::Click { node } => *node,
+            _ => return Ok(None),
+        };
+        let Some(index) = self
+            .items
+            .iter()
+            .take(self.count)
+            .position(|(panel, label)| node == *panel || node == *label)
+        else {
+            return Ok(None);
+        };
+        let dangerous = self.dangerous[index];
+        match msg {
+            Msg::Press { .. } => {
+                self.pressed = Some(index);
+                self.apply_item(ui, ctx, index, dangerous)?;
+            }
+            Msg::Release { .. } | Msg::Cancel { .. } => {
+                self.pressed = None;
+                self.apply_item(ui, ctx, index, dangerous)?;
+            }
+            Msg::Click { .. } => {
+                self.pressed = None;
+                self.apply_item(ui, ctx, index, dangerous)?;
+                return Ok(Some(index));
+            }
+            _ => {}
+        }
+        Ok(None)
+    }
+}
+
+
+/// 底部 Sheet。detent 高度由 app 给出；dismiss 归 app 状态机。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sheet {
+    pub root: NodeId,
+    pub content: NodeId,
+}
+
+impl Sheet {
+    pub fn new<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, height: u32,
+    ) -> Result<Self, UiError> {
+        let (vp_w, vp_h) = ui.viewport();
+        if height == 0 || height > vp_h {
+            return Err(UiError::NodeBad);
+        }
+        let root = add(
+            ui,
+            parent,
+            panel_spec(
+                ctx.theme.colors.surface,
+                Some(vp_w),
+                Some(height),
+                ctx.spacing(SpacingToken::M),
+                ctx.spacing(SpacingToken::S),
+                ctx.metrics.radius(RadiusToken::Large),
+            ),
+        )?;
+        let content = add(
+            ui,
+            root,
+            ViewSpec {
+                kind: ViewKind::Col,
+                key: 0,
+                props: Props::Col(ColProps {
+                    gap: ctx.spacing(SpacingToken::S),
+                    w: None,
+                    h: None,
+                    cross: CrossAlign::Stretch,
+                }),
+            },
+        )?;
+        ui.set_offset(root, 0, (vp_h.saturating_sub(height)) as i32)?;
+        Ok(Self { root, content })
+    }
+
+    pub fn dismiss<const N: usize>(&self, ui: &mut Ui<N>) -> Result<(), UiError> {
+        ui.remove(self.root)
+    }
+}
+
 /// 分组列表容器：标题 + 内容。三端 List Section/Form Section 的共同语义。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Section {

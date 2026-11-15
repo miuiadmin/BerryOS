@@ -12,6 +12,8 @@ Status: implemented
 
 Berry Demo 六个页面持久使用 `Tabs::Bottom`，真实 Click 在 Home/Widgets/Inputs/Lists/Theme/System 间切换；Widgets 页消费 Checkbox、Radio、Slider、ProgressIndicator 与 LoadingIndicator。系统 BACK/HOME/TASK 三键保留在 SYSTEM 底部保留区，应用底栏位于 safe_bottom 之上。
 
+第二段补上浮层族：`OverlaySurface` 以 Ui root 后画兄弟作为唯一 z-order 事实，新增 `AlertDialog`、`Toast`、`Menu` 与 `Sheet`。Dialog/Toast 动作复用 Button 按压态，Menu 条目有 pressed/危险色状态；浮层颜色走 theme token，不新增第二色源。应用内 modal 生命周期接入暂不冒充完成：实验证明在同一 BerryDemo 页内直接挂 Dialog 会撞 a11y 32 侧表帽，正确方案是后续把 Dialog 作为独立模态页交换 a11y/节点生命周期。
+
 ## Alternatives considered
 
 - 继续只保留 Button/Switch/TextField：三方基础件缺口无法靠 app 手写补齐，拒绝。
@@ -22,7 +24,7 @@ Berry Demo 六个页面持久使用 `Tabs::Bottom`，真实 Click 在 Home/Widge
 
 ## Consequences
 
-BerryUI host 全套、产品 Recents/frame-cache e2e、GUI8 vgpu `--only-a`、smoke-image 147/147、gui-wmd/berry-guiproto/tools-berry host、SDK ledger 131 项与 `just check` 通过。SDK facade 从 119 项扩到 131 项；后续 P1/P2 控件仍以三方矩阵为准，不能宣称三方全部控件已完成。
+BerryUI host 全套、产品 Recents/frame-cache e2e、GUI8 vgpu `--only-a`、smoke-image 147/147、gui-wmd/berry-guiproto/tools-berry host、SDK ledger 138 项与 `just check` 通过。SDK facade 从 119 项扩到 138 项；后续 P1/P2 控件仍以三方矩阵为准，不能宣称三方全部控件已完成。
 
 ## Related
 

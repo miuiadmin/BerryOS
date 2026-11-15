@@ -10,8 +10,9 @@ use berry_gfx::queue::Queue;
 use berry_ui::sdk::{
     column, divider, icon, row, text, Button, Card, EmptyState, InteractionState, ListTile,
     ListTileSpec, ListItem, Msg, NavigationIconSource, NAV_ICON_BACK, NAV_ICON_BACK_ACTIVE,
-    Checkbox, Grid, LoadingIndicator, ProgressIndicator, Radio, Section, Slider, TabBarStyle,
-    TabItemSpec, Tabs, PanelProps, Props, RectProps, RectI, Scaffold, ScrollView,
+    AlertDialog, Checkbox, DialogAction, Grid, LoadingIndicator, Menu, MenuItemSpec,
+    ProgressIndicator, Radio, Section, Sheet, Slider, TabBarStyle, TabItemSpec, Tabs, Toast,
+    PanelProps, Props, RectProps, RectI, Scaffold, ScrollView,
     Switch, TextVariant, Theme, Ui, UiError, ViewKind, ViewSpec, WidgetContext,
 };
 
@@ -417,6 +418,107 @@ fn safe_navigation_shell_reserves_product_system_bars() {
         RectI::new(0, 285, 1080, 1527)
     );
     assert!(light.app_bar.back.is_none());
+}
+
+#[test]
+fn overlay_components_have_real_z_order_and_actions() {
+    let mut ui = Ui::<256>::new(1080, 1920);
+    let context = ctx(1080, 1920);
+    let root = ui.root();
+
+    let mut dialog = AlertDialog::new(
+        &mut ui,
+        root,
+        &context,
+        b"Delete item",
+        b"This action cannot be undone.",
+        b"Delete",
+        Some(b"Cancel"),
+    )
+    .unwrap();
+    ui.layout();
+    let bounds = ui.bounds(dialog.surface.content).unwrap();
+    assert_eq!(bounds.x, (1080 - bounds.w) / 2);
+    assert_eq!(bounds.y, (1920 - bounds.h) / 2);
+    assert_eq!(
+        dialog
+            .on_msg(
+                &mut ui,
+                &context,
+                &Msg::Click { node: dialog.confirm.panel },
+            )
+            .unwrap(),
+        DialogAction::Confirm
+    );
+    dialog.dismiss(&mut ui).unwrap();
+    ui.layout();
+
+    let mut toast = Toast::new(&mut ui, root, &context, b"Saved", Some(b"Undo")).unwrap();
+    ui.layout();
+    let toast_bounds = ui.bounds(toast.root).unwrap();
+    assert_eq!(toast_bounds.x, (1080 - toast_bounds.w) / 2);
+    assert!(toast_bounds.y > 1500 && toast_bounds.y < 1920);
+    assert!(toast
+        .on_msg(
+            &mut ui,
+            &context,
+            &Msg::Click { node: toast.action.unwrap().panel },
+        )
+        .unwrap());
+    toast.dismiss(&mut ui).unwrap();
+    ui.layout();
+
+    let items = [
+        MenuItemSpec { label: b"Rename", dangerous: false },
+        MenuItemSpec { label: b"Delete", dangerous: true },
+    ];
+    let mut menu = Menu::new(&mut ui, root, &context, 120, 320, &items).unwrap();
+    ui.layout();
+    assert_eq!(ui.bounds(menu.root).unwrap().x, 120);
+    assert_eq!(
+        menu.on_msg(
+            &mut ui,
+            &context,
+            &Msg::Click { node: menu.root },
+        )
+        .unwrap(),
+        None
+    );
+    let second_item = menu.item_panel(1).unwrap();
+    assert_eq!(
+        menu.on_msg(
+            &mut ui,
+            &context,
+            &Msg::Press { node: second_item, x: 150, y: 350 },
+        )
+        .unwrap(),
+        None
+    );
+    assert_eq!(
+        menu.on_msg(
+            &mut ui,
+            &context,
+            &Msg::Release { node: second_item, x: 150, y: 350 },
+        )
+        .unwrap(),
+        None
+    );
+    assert_eq!(
+        menu.on_msg(
+            &mut ui,
+            &context,
+            &Msg::Click { node: second_item },
+        )
+        .unwrap(),
+        Some(1)
+    );
+    menu.dismiss(&mut ui).unwrap();
+
+    let sheet = Sheet::new(&mut ui, root, &context, 600).unwrap();
+    ui.layout();
+    let sheet_bounds = ui.bounds(sheet.root).unwrap();
+    assert_eq!((sheet_bounds.x, sheet_bounds.y, sheet_bounds.h), (0, 1320, 600));
+    sheet.dismiss(&mut ui).unwrap();
 }
 
 #[test]

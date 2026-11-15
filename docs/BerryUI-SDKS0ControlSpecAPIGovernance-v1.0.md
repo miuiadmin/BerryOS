@@ -112,6 +112,7 @@ experimental 可以调整，但必须保持规格与账本同批更新
 | API | kind | since | channel | stability | spec |
 |---|---|---|---|---|---|
 | `berry_ui::sdk::A11yRegion` | type | SEM-A1 | in-tree | experimental | `docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md` |
+| `berry_ui::sdk::AlertDialog` | type | TRI-CONTROLS-2 | in-tree | stable | `docs/BerryUI-TriPlatformControls-v1.1.md` |
 | `berry_ui::sdk::AppBar` | type | F4 | in-tree | stable | `docs/BerryUI-F4组件第一版-v1.1.md` |
 | `berry_ui::sdk::Axis` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::BoxConstraints` | type | LAYOUT-L4 | in-tree | experimental | `docs/BerryUI-LAYOUTL4BoxConstraintsIntrinsicBoundary-v1.0.md` |
@@ -129,6 +130,7 @@ experimental 可以调整，但必须保持规格与账本同批更新
 | `berry_ui::sdk::ContrastLevel` | type | DESIGN-D2 | in-tree | experimental | `docs/BerryDesign-D2TokenPairContract-v1.0.md` |
 | `berry_ui::sdk::CrossAlign` | type | L1 | in-tree | stable | `docs/BerryUI-L1LocalConstraintsAdaptiveSlot-v1.0.md` |
 | `berry_ui::sdk::Density` | type | F3 | in-tree | stable | `docs/BerryDesign-F3主题与基元-v1.0.md` |
+| `berry_ui::sdk::DialogAction` | type | TRI-CONTROLS-2 | in-tree | stable | `docs/BerryUI-TriPlatformControls-v1.1.md` |
 | `berry_ui::sdk::EmptyIconSource` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::EmptyState` | type | F4 | in-tree | stable | `docs/BerryUI-F4组件第一版-v1.1.md` |
 | `berry_ui::sdk::FlexBasis` | type | LAYOUT-L6a | in-tree | experimental | `docs/BerryUI-LAYOUTL6aFlexSpecAlgebra-v1.0.md` |
@@ -156,6 +158,8 @@ experimental 可以调整，但必须保持规格与账本同批更新
 | `berry_ui::sdk::ListTile` | type | D3 | in-tree | experimental | `docs/BerryUI-AppBarD3-v1.0.md` |
 | `berry_ui::sdk::ListTileSpec` | type | D3 | in-tree | experimental | `docs/BerryUI-AppBarD3-v1.0.md` |
 | `berry_ui::sdk::LoadingIndicator` | type | TRI-CONTROLS-1 | in-tree | stable | `docs/BerryUI-TriPlatformControls-v1.0.md` |
+| `berry_ui::sdk::Menu` | type | TRI-CONTROLS-2 | in-tree | stable | `docs/BerryUI-TriPlatformControls-v1.1.md` |
+| `berry_ui::sdk::MenuItemSpec` | type | TRI-CONTROLS-2 | in-tree | stable | `docs/BerryUI-TriPlatformControls-v1.1.md` |
 | `berry_ui::sdk::MonospaceTextMetrics` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::Msg` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::MsgBuf` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
@@ -167,6 +171,7 @@ experimental 可以调整，但必须保持规格与账本同批更新
 | `berry_ui::sdk::NAV_ICON_TASK_ACTIVE` | const | OH-SHELL | in-tree | stable | `docs/Berry设备平台-OpenHarmonyShell-v1.0.md` |
 | `berry_ui::sdk::NavigationIconSource` | type | OH-SHELL | in-tree | stable | `docs/Berry设备平台-OpenHarmonyShell-v1.0.md` |
 | `berry_ui::sdk::NodeId` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
+| `berry_ui::sdk::OverlaySurface` | type | TRI-CONTROLS-2 | in-tree | stable | `docs/BerryUI-TriPlatformControls-v1.1.md` |
 | `berry_ui::sdk::PadProps` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::PanelProps` | type | F4 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::ProgressIndicator` | type | TRI-CONTROLS-1 | in-tree | stable | `docs/BerryUI-TriPlatformControls-v1.0.md` |
@@ -191,6 +196,7 @@ experimental 可以调整，但必须保持规格与账本同批更新
 | `berry_ui::sdk::ScrollView` | type | F4 | in-tree | stable | `docs/BerryUI-F4组件第一版-v1.1.md` |
 | `berry_ui::sdk::Section` | type | TRI-CONTROLS-1 | in-tree | stable | `docs/BerryUI-TriPlatformControls-v1.0.md` |
 | `berry_ui::sdk::SemEntry` | type | SEM-A1 | in-tree | experimental | `docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md` |
+| `berry_ui::sdk::Sheet` | type | TRI-CONTROLS-2 | in-tree | stable | `docs/BerryUI-TriPlatformControls-v1.1.md` |
 | `berry_ui::sdk::Slider` | type | TRI-CONTROLS-1 | in-tree | stable | `docs/BerryUI-TriPlatformControls-v1.0.md` |
 | `berry_ui::sdk::SlotVariant` | type | L1 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::SpacingToken` | type | F3 | in-tree | stable | `docs/BerryDesign-F3主题与基元-v1.0.md` |
@@ -221,6 +227,7 @@ experimental 可以调整，但必须保持规格与账本同批更新
 | `berry_ui::sdk::Theme` | type | F3 | in-tree | stable | `docs/BerryDesign-D2TokenPairContract-v1.0.md` |
 | `berry_ui::sdk::ThemeColors` | type | F3 | in-tree | stable | `docs/BerryDesign-F3主题与基元-v1.0.md` |
 | `berry_ui::sdk::ThemeMetrics` | type | F3 | in-tree | stable | `docs/BerryDesign-F3主题与基元-v1.0.md` |
+| `berry_ui::sdk::Toast` | type | TRI-CONTROLS-2 | in-tree | stable | `docs/BerryUI-TriPlatformControls-v1.1.md` |
 | `berry_ui::sdk::TypographyToken` | type | F3 | in-tree | stable | `docs/BerryDesign-F3主题与基元-v1.0.md` |
 | `berry_ui::sdk::Ui` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
 | `berry_ui::sdk::UiError` | type | F2 | in-tree | stable | `docs/BerryUI-F2核心盘点-v1.0.md` |
