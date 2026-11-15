@@ -4,7 +4,7 @@
 # 是否升第六跑）。零 -kernel / 零 fw_cfg：AAVMF 固件 + out/berryos.img 挂盘
 # （qemu-xhci + usb-storage）启动——「盘自己把自己拉起来」的全链自动验收。
 #
-# 断言面（ EFI 十段/接续形态源自 V-3 收官 run；生态 39 = 对抗审查保留日志
+# 断言面（ EFI 十段/接续形态源自 V-3 收官 run；生态 41 = 对抗审查保留日志
 # 标记普查实证面（B-1 起 +B1 ok n=4；C-2c 挂账刀起 +U4 ok——深坑六件执行
 # 面八步；C-4 起 +TAB ok——编辑器九步 + 真源两钉，零 fs 盘面 EFI 路可达；
 # T-1 起 +THR ok——进程内多线程消费面，thrchild 镜像内嵌 svcmgr 零
@@ -39,9 +39,10 @@
 #   3. 裸相 32 标记（与 smoke.sh 同一清单——内核行为零漂移的证据；B-0 起
 #      + BENCH ok n=6 微基准/churn 金丝雀关卡行；R-0 起 + BENCHWAKE n=
 #      唤醒延迟直方图形状行；S-2 起 + BENCHXH ok 资源耗尽/恢复六面行）+ EFI 路
-#      生态 39 标记（rootfs hello / ECO / STD 双 / FILE / HEXYL / BSH /
+#      生态 41 标记（rootfs hello / ECO / STD 双 / FILE / HEXYL / BSH /
 #      EXIT / APP / APPUI / PIPE / FS / U1 / U2 / U3 / B1 / U4 / TAB / INT /
-#      POLL / PS / BC / THR / DPGP / DPGS / DPGN / MMP / CLK / SIG / FBW / FBSERVE /
+#      POLL / PS / BC / THR / DPGP / DPGS / DPGN / MMP / CLK / SIG / CLI /
+#      TERM / FBW / FBSERVE /
 #      GFX 双 / WM /
 #      LAUNCH 双（GUI-8 段③ 起 EFI 专属——launcher 首帧 LAUNCH ok + 合成
 #      swipe 两轮翻页 PAGE ok n=2，冻结相自测面）
@@ -185,7 +186,7 @@ CONT_MARKERS=("HANDOFF ok ver=" "MMAP ok segs=" "ROOTFS ok src=handoff")
 # sim-S3 起 +PSCI susp=0（EFI 路探测行带原因后缀——子串可 grep）+
 # PWRDEG ok d=1（ktest 在 EFI 路照跑，两行都在））。
 KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "FP ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=6" "BENCHWAKE n=" "G1.5 ok" "WAKESRC acct=" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok" "DPG ok" "FRZCYC ok r=2" "PSCI susp=0" "PWRDEG ok d=1")
-# EFI 路生态 39（对抗审查保留日志逐标记普查实证——健康 boot 各恰一次为
+# EFI 路生态 41（对抗审查保留日志逐标记普查实证——健康 boot 各恰一次为
 # 日志观察面，本脚本断言为 grep -cF 存在性 ≥1；除
 # WM ok 与 LAUNCH 双（GUI-5/GUI-8 起 EFI 专属）外与 smoke.sh rootfs 相断言
 # canon 同面，EFI
@@ -309,7 +310,20 @@ KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL o
 # 无 \n 可与上帧 art 行尾残字拼成 `veco: …`——grep 用无前缀子串）不进
 # canon。裸 grep -qF 足够——"LAUNCH ok"/"PAGE ok n="
 # 与现役 34 枚互非子串（LAUNCH/PAGE 词头独有）。
-ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=" "APPUI ok n=" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok" "TAB ok" "INT ok" "POLL ok" "PS ok n=" "BC ok" "THR ok" "DPGP ok" "DPGS ok n=4" "DPGN ok n=4" "FROZEN ok n=1" "WAKE ok n=1" "TOMB ok n=1" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "FBW ok" "FBSERVE ok" "GFX ok" "GFXF ok n=" "WM ok" "LAUNCH ok" "PAGE ok n=")
+# 命令行体验刀 起 +CLI ok n= / +TERM ok n=2（bsh cli_selftest 六步——
+# clear 11B 对拍/uname 前缀/uptime 数值域/sleep 1s 时钟差分/type 三分支
+# /history 环回读；term_selftest 两步——spawn 子 bsh（--no-selftest 跳链
+# 直进交互循环 + stdin_feed 喂两命令 + fs_gifts 四元）私有 stdout 收齐
+# 提示符 ×2/回显/两结果行（哑终端管道契约——GUI 终端应用地基）→
+# terminate(130)+reap 130 收口。CLI 前缀式 n=（步数单源在 bsh，FS ok n=
+# 同款）。零 fs 盘面（render_cmd 直调 + cpio 查档 + usleep 补桩 + spawn
+# 通用装配非盘面）= EFI 路可达，链位置 sig 后 fat 族前（A 系契约位，
+# smoke.sh rootfs 相同步面——EFI 亦打即链位前移的动因：设计稿原案链尾
+# M3DEMO 后与「EFI 路可打」互斥，fat park 挡断链尾，落位 A 系契约位）；
+# 无拓扑降级门，失败即 park loud。裸 grep -qF 足够——"CLI ok"与
+# "CLK ok"位 3 I≠K 互非子串（正反两向）、"TERM ok"词头 T-E-R-M 现役
+# 唯一（FROZEN/FRZCYC 不含；markers.sh 注互指）。
+ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=" "APPUI ok n=" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok" "TAB ok" "INT ok" "POLL ok" "PS ok n=" "BC ok" "THR ok" "DPGP ok" "DPGS ok n=4" "DPGN ok n=4" "FROZEN ok n=1" "WAKE ok n=1" "TOMB ok n=1" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "CLI ok n=" "TERM ok n=2" "FBW ok" "FBSERVE ok" "GFX ok" "GFXF ok n=" "WM ok" "LAUNCH ok" "PAGE ok n=")
 
 LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")
 RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")
@@ -405,14 +419,14 @@ echo "smoke-image: QEMU 启动（AAVMF + ${IMAGE}——零 -kernel / 零 fw_cfg�
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-# —— 阶段 1：全部标记到齐（EFI 十段 + 接续 3 + 裸相 32 + 生态 39 = 84）——
+# —— 阶段 1：全部标记到齐（EFI 十段 + 接续 3 + 裸相 32 + 生态 41 = 86）——
 # EFI 段/接续用 ERE 固定串混合面，统一进一个等待循环（到齐是状态谓词，
 # 阶段间无独立验收语义；缺失清单在超时 fail 文案里分组可见）。
 # —— 分相断言集（CI 分层用）：SMOKE_PHASES=boot 时只验引导面——
 # EFI 十段 + 接续 3 + 裸相 32 = 45 标记（引导链完整验收面，慢 runner
-# TCG 可达——run 42624077761 实证到齐）；生态 39 服务链 wall-clock 慢机
+# TCG 可达——run 42624077761 实证到齐）；生态 41 服务链 wall-clock 慢机
 # 跑不完（同 run 实证 360s 帽缺 HE XYL/BSH/APP 族），只进全链相。
-# 未设或非 boot = 原 84 全面行为不变。
+# 未设或非 boot = 原 86 全面行为不变。
 if [ "${SMOKE_PHASES:-all}" = "boot" ]; then
   P1_MARKERS=("${EFI_FIXED[@]}" "${CONT_MARKERS[@]}" "${KERNEL_MARKERS[@]}")
   ALL_COUNT=$(( ${#EFI_FIXED[@]} + ${#EFI_ERE[@]} + ${#CONT_MARKERS[@]} + ${#KERNEL_MARKERS[@]} ))
@@ -453,11 +467,11 @@ grep -m1 'BerryOS boot' "$LOG" | grep -Eq 'BerryOS boot [0-9]+\.[0-9]+\.[0-9]+ \
 grep -m1 'BerryOS boot' "$LOG" | grep -q 'nogit' \
   && fail "boot banner ident 为 nogit：nogit 标识产物不得对外发布/进发布链（版本管理标准 §6——无归因能力的构建仅限本地调试）；实得：$(grep -m1 'BerryOS boot' "$LOG")"
 if [ "${SMOKE_PHASES:-all}" = "boot" ]; then
-  echo "smoke-image: 引导面标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 32 + banner 形态 + ident 非 nogit；SMOKE_PHASES=boot 分层 CI 轻面，生态 39 + VER 哨兵 + RX + sim 面留快机全链）"
+  echo "smoke-image: 引导面标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 32 + banner 形态 + ident 非 nogit；SMOKE_PHASES=boot 分层 CI 轻面，生态 41 + VER 哨兵 + RX + sim 面留快机全链）"
   cleanup 2>/dev/null || true
   exit 0
 fi
-echo "smoke-image: 全标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 32 + 生态 39)"
+echo "smoke-image: 全标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 32 + 生态 41)"
 
 # —— VER 哨兵执法（版本管理标准 §1 构建标识轨道；审计洞①「哨兵哑火」闭环）——
 # EFI 相是 `eco: VER` 行唯一实现场：svcmgr ver_check 门 = H_FB 在席（fb
@@ -558,4 +572,4 @@ n_bat=$(grep -acF 'SIMBAT' "$LOG" || true)
 [ "$n_bat" -eq 0 ] \
   || fail "EFI 路 SIMBAT ${n_bat} 行（应 0——门闭相注入面泄漏/静默跳过漂移？）"
 
-echo "smoke-image: PASS（EFI 十段恰一次 + 接续 src=handoff + 裸相 32 + banner 形态 + ident 非 nogit + 生态 39 + VER 哨兵 ok 在席/mix 零席 + 字节对拍 + 金丝雀严格递增 + RX 注入后活性复验 + sim 面零计数）"
+echo "smoke-image: PASS（EFI 十段恰一次 + 接续 src=handoff + 裸相 32 + banner 形态 + ident 非 nogit + 生态 41 + VER 哨兵 ok 在席/mix 零席 + 字节对拍 + 金丝雀严格递增 + RX 注入后活性复验 + sim 面零计数）"

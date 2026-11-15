@@ -64,7 +64,9 @@
 //! 进 [`TYPEAHEAD`] 缓存，交互循环先于 stdin 消化——不丢键。
 //!
 //! v1 内建：help / echo / env / run / exit / cat / ls / mkdir / rm / cd / pwd / inputpoll（GUI-4 段② input 域 POLL 消费端）
-//!（Plan B v0.5：`exit` 经 std::process::exit
+//! + 命令行体验刀六件：clear / uname / uptime / sleep / type / history
+//!（单源 [`BUILTINS`]；`--no-selftest` argv 旗 = 子 bsh 跳链直进交互循环
+//!——term_selftest 哑终端驱动面）。（Plan B v0.5：`exit` 经 std::process::exit
 //! → libc `exit` → 0x33 真退出）。`run` 后 `reap()` 完整回收子进程（Plan B
 //! 前「每次 run 泄漏一个 park 中的子进程」的旧常态退役）。
 //!
@@ -193,6 +195,16 @@ fn typeahead_pop() -> Option<u8> {
 }
 
 fn main() {
+    // —— P5 v0：变量/状态壳（`&&` 自验与交互循环共享——`$?` 跨行语义）。
+    let mut vars: Vec<(String, String)> = Vec::new();
+    let mut status: i32 = 0;
+    // —— 命令行体验刀：`--no-selftest` = 跳过 boot 自验链直进交互循环——
+    //    term_selftest 子 bsh 的哑终端驱动面（子 bsh 重跑全链 = 分钟级阻塞
+    //    + term 链无界递归，见 term_selftest 头注；管道契约只验交互面）。
+    //    svcmgr 常规拉起零参零漂移；args 经 spawn argv 面（uu clap 同链）。
+    if std::env::args().skip(1).any(|a| a == "--no-selftest") {
+        interactive(&mut vars, &mut status);
+    }
     // —— 自驱自验：内部 `run hexyl`，全链（cpio 查询 → 流式拉起 → feeder →
     //    私有 stdout 收齐）即交互 `run` 的同一台机器——自验过 = 交互面可信。
     //    输出绑 `hexyl_out` 留用：fs 自验的 2156B 多片写入样本（P6 A-1）。
@@ -215,9 +227,6 @@ fn main() {
         berry_libc::park();
     };
     println!("BSH ok");
-    // —— P5 v0：变量/状态壳（`&&` 自验与交互循环共享——`$?` 跨行语义）。
-    let mut vars: Vec<(String, String)> = Vec::new();
-    let mut status: i32 = 0;
     and_selftest(&mut vars, &mut status);
     pipe_selftest();
     fs_selftest(&hexyl_out);
@@ -317,6 +326,19 @@ fn main() {
     //    gift spawn），排 fat 族前（EFI 路无盘亦打 SIG）；无拓扑降级门
     //    （失败即 park loud）。
     sig_selftest();
+    // —— 命令行体验刀：六内建行为面自验（`CLI ok n=6` = rootfs 相第 55
+    //    标记）。链序契约同 U2/MMP/CLK/SIG——零 fs 盘面（render_cmd 直调
+    //    + cpio 查档 + usleep 补桩，无盘面），排 fat 族之前（EFI 路无盘
+    //    亦打 CLI——smoke-image ECO canon 同面）；无拓扑降级门（失败即
+    //    park loud）。
+    cli_selftest();
+    // —— 命令行体验刀：哑终端管道契约钉板（`TERM ok n=2` = rootfs 相第
+    //    56 标记）——spawn 子 bsh（--no-selftest + stdin_feed + fs_gifts
+    //    四元）私有 stdout 收齐提示符/回显/结果混流，再 terminate 收口。
+    //    链序契约同 CLI——零 fs 盘面（fs_gifts 是 spawn 通用装配非盘面；
+    //    u4 先例同款排 fat 族前），EFI 路无盘亦打 TERM；无拓扑降级门
+    //    （失败即 park loud）。
+    term_selftest();
     fat_selftest();
     fatw_selftest();
     // —— C-2 刀 2：df + statfs 真值自验（`DF ok` = rootfs 相第 29 标记；
@@ -335,12 +357,18 @@ fn main() {
     //    （`-> !` 挡断其后自验）→ M3DEMO 结构性不打（smoke-image ECO
     //    canon 零变化，DF 同款契约）。
     m3demo_selftest(&mut vars, &mut status);
+    interactive(&mut vars, &mut status);
+}
 
-    // —— 交互循环（化妆面）：**C-4 起行编辑归 bsh**（console 逐字节透传，
-    //    echo/退格/历史召回/Tab 补全全在本端——editor.rs）。逐字节 read +
-    //    Editor::feed；行定稿走 run_line。空读（fd0 的 10s 帽超时 EOF 化）
-    //    = 噪声 → 静默续读，prompt 不重刷（rootfs 相无人敲键盘也不刷屏；
-    //    真交互者敲行即得响应——与 read_line 时代零漂移）。
+/// 交互循环（化妆面）：**C-4 起行编辑归 bsh**（console 逐字节透传，
+/// echo/退格/历史召回/Tab 补全全在本端——editor.rs）。逐字节 read +
+/// Editor::feed；行定稿走 run_line。空读（fd0 的 10s 帽超时 EOF 化）
+/// = 噪声 → 静默续读，prompt 不重刷（rootfs 相无人敲键盘也不刷屏；
+/// 真交互者敲行即得响应——与 read_line 时代零漂移）。
+/// 命令行体验刀起从 main 尾抽出成函数：`--no-selftest` 子 bsh（term_
+/// selftest 哑终端驱动面）与常规链尾路径共用同一台机器；`vars`/`status`
+/// 由调用方持有（`$?` 跨链尾→交互语义零漂移）。恒不返回（无限循环）。
+fn interactive(vars: &mut Vec<(String, String)>, status: &mut i32) -> ! {
     let stdin = std::io::stdin();
     let mut sin = stdin.lock();
     let mut out = std::io::stdout();
@@ -378,7 +406,7 @@ fn main() {
             editor::Flow::Line(line) => {
                 out.write_all(b"\n").unwrap(); // Enter 回显（归调用方契约）
                 let s = String::from_utf8_lossy(&line).into_owned();
-                run_line(s.trim_end_matches(['\n', '\r']), &mut vars, &mut status, &mut out);
+                run_line(s.trim_end_matches(['\n', '\r']), vars, status, &mut out, ed.history());
                 prompt_pending = true;
             }
             editor::Flow::Interrupt(echo) => {
@@ -402,12 +430,10 @@ struct RealSrc;
 
 impl editor::TabSource for RealSrc {
     fn commands(&mut self, out: &mut Vec<Vec<u8>>) {
-        const BUILTINS: [&[u8]; 12] = [
-            b"help", b"exit", b"env", b"echo", b"run", b"cat", b"ls", b"mkdir", b"rm",
-            b"cd", b"pwd", b"inputpoll",
-        ];
+        // 命令行体验刀：候选表指向 BUILTINS 单源（原 12 项硬编码同名单
+        // 零漂移升 18 项——type/help 与此处三消费同表，不长第二来源）。
         for b in BUILTINS {
-            out.push(b.to_vec());
+            out.push(b.as_bytes().to_vec());
         }
         let h = rootfs_h();
         if h != 0 {
@@ -3207,9 +3233,9 @@ fn sig_selftest() {
 /// ③ `RC=$?` → RC=="42"（`$?` 展开 = 上一步真码）。
 fn and_selftest(vars: &mut Vec<(String, String)>, status: &mut i32) {
     let mut out = std::io::stdout();
-    run_line("X=1 && Y=2", vars, status, &mut out);
-    run_line("run fail && Z=99", vars, status, &mut out);
-    run_line("RC=$?", vars, status, &mut out);
+    run_line("X=1 && Y=2", vars, status, &mut out, &[]);
+    run_line("run fail && Z=99", vars, status, &mut out, &[]);
+    run_line("RC=$?", vars, status, &mut out, &[]);
     let get = |n: &str| get_var(vars, n).map(|s| s.to_string());
     if *status != 0
         || get("X").as_deref() != Some("1")
@@ -3290,12 +3316,20 @@ fn expand(s: &str, vars: &[(String, String)], status: i32) -> String {
 /// 高——各 part 进 [`exec_one`] 后再分派处理管道；**每 part 执行时才展开
 /// 变量**（`A=1 && echo $A` 的求值序）。`$?` 跨 part/跨行共享（`status`
 /// 由调用方持有）。空 part = 无操作（status 0——v1 不做语法错误面）。
-fn run_line(line: &str, vars: &mut Vec<(String, String)>, status: &mut i32, out: &mut std::io::Stdout) {
+/// `hist` = editor 历史环只读透传（`history` 内建查询面——命令行体验刀；
+/// 自验/管道调用方传 `&[]`，管道子 bsh 无交互历史恒空）。
+fn run_line(
+    line: &str,
+    vars: &mut Vec<(String, String)>,
+    status: &mut i32,
+    out: &mut std::io::Stdout,
+    hist: &[Vec<u8>],
+) {
     for part in line.split("&&") {
         if part.trim().is_empty() {
             continue;
         }
-        *status = exec_one(part, vars, status, out);
+        *status = exec_one(part, vars, status, out, hist);
         if *status != 0 {
             return; // 短路：后续 part 不求值（含其中的赋值/展开）
         }
@@ -3307,7 +3341,13 @@ fn run_line(line: &str, vars: &mut Vec<(String, String)>, status: &mut i32, out:
 /// 重定向检测（原始文本，P6 A-1）→ 展开（用**进入时**的 `$?`）→ 分派
 /// （render_cmd）。返回段状态码：0 成功 / 2 usage / 126 spawn failed /
 /// 127 not found / run|pipe = 子进程真码（reap Err → 1）。
-fn exec_one(part: &str, vars: &mut Vec<(String, String)>, status: &mut i32, out: &mut std::io::Stdout) -> i32 {
+fn exec_one(
+    part: &str,
+    vars: &mut Vec<(String, String)>,
+    status: &mut i32,
+    out: &mut std::io::Stdout,
+    hist: &[Vec<u8>],
+) -> i32 {
     let raw = part.trim();
     if raw.is_empty() {
         return 0;
@@ -3330,21 +3370,37 @@ fn exec_one(part: &str, vars: &mut Vec<(String, String)>, status: &mut i32, out:
     // ——`b > c` 段含空格 → usage，v1 面文档化）。`>>` 追加与多点 `>` 被
     // 计数 >1 自然排除为 usage（`a >> b`/`a > b > c`）。
     if raw.contains('>') {
-        return do_redirect(raw, vars, *status, out);
+        return do_redirect(raw, vars, *status, out, hist);
     }
-    let (data, code) = render_cmd(raw, vars, *status, out);
+    let (data, code) = render_cmd(raw, vars, *status, out, hist);
     out.write_all(&data).unwrap();
     out.flush().unwrap();
     code
 }
+
+/// 内建名单单源（命令行体验刀：render_cmd if-else 链的隐式知识升 const）
+/// ——三消费同表：`type` 内建身份查询 / RealSrc Tab 命令位候选 / help
+/// 文案（人工同步，cli_selftest ⓪④ 断言钉住名单不漂）。分发序本身仍
+/// 是 render_cmd 的 if-else（行为面独立——名单只答「是不是内建」）。
+const BUILTINS: &[&str] = &[
+    "help", "exit", "env", "echo", "run", "cat", "ls", "mkdir", "rm", "cd", "pwd",
+    "inputpoll", "clear", "uname", "uptime", "sleep", "type", "history",
+];
 
 /// 内建/外部命令统一渲染（P6 A-1 起 `>` 重定向与直出共道）：返回
 /// (数据字节, 状态码)。**诊断/usage/not-found/警告打 `out`**（stderr 语义
 /// ——不随 `>` 进文件），数据面字节交调用方定向（直出 = 打 stdout；
 /// 重定向 = put_file 入文件）。`exit` 不重定向照常执行（v1：先于写文件——
 /// POSIX 的 open-before-exec 面随 v2）。词边界纪律：`run `/`echo `/`cat `
-/// 带空格才算命令 + 参数（`runfoo` = 未知命令 127）。
-fn render_cmd(cmd_s: &str, vars: &[(String, String)], status: i32, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
+/// （`runfoo` = 未知命令 127）。`hist` = editor 历史环只读透传（`history`
+/// 内建——命令行体验刀）。
+fn render_cmd(
+    cmd_s: &str,
+    vars: &[(String, String)],
+    status: i32,
+    out: &mut std::io::Stdout,
+    hist: &[Vec<u8>],
+) -> (Vec<u8>, i32) {
     let cmd = expand(cmd_s, vars, status);
     if cmd.is_empty() {
         return (Vec::new(), 0);
@@ -3352,13 +3408,19 @@ fn render_cmd(cmd_s: &str, vars: &[(String, String)], status: i32, out: &mut std
     if cmd == "help" {
         writeln!(
             out,
-            "bsh 内建：help | echo <text> | env | run <name> | cat <file> | ls | ls <dir> | mkdir <dir> | rm <path> | cd <dir> | pwd | inputpoll | A | B（rootfs 管道）"
+            "bsh 内建：help | echo <text> | env | run <name> | cat <file> | ls | ls <dir> | mkdir <dir> | rm <path> | cd <dir> | pwd | inputpoll"
         )
         .unwrap();
-        // A60：192B 控制台原子消息帽——单行装不下全清单，拆两条各 ≤192B。
+        // A60：192B 控制台原子消息帽——单行装不下全清单，逐条拆行各 ≤192B
+        //（命令行体验刀 12→18 内建后再拆第三行，同帽纪律）。
         writeln!(
             out,
-            "…续：| A && B | A > file | exit | 裸名 = bin/<name> 派发（C-2a uu 家族）"
+            "…续：| clear | uname | uptime | sleep <s> | type <name> | history | A | B（rootfs 管道）| A && B | A > file | exit"
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "……续：| 裸名 = bin/<name> 派发（C-2a uu 家族）"
         )
         .unwrap();
         (Vec::new(), 0)
@@ -3434,6 +3496,66 @@ fn render_cmd(cmd_s: &str, vars: &[(String, String)], status: i32, out: &mut std
     } else if cmd == "inputpoll" {
         // GUI-4 段②：input 域 POLL 消费端（无参内建——RPC + 真值断言面）。
         inputpoll_output(out)
+    } else if cmd == "clear" {
+        // 命令行体验刀：ANSI 清屏 + 光标归位（11B）——消费面 = 哑终端/宿主
+        // 终端模拟器；serial.log 里转义字节无害。
+        (b"\x1b[2J\x1b[H".to_vec(), 0)
+    } else if let Some(_rest) = cmd.strip_prefix("clear ") {
+        // 无参命令带参照打（幂等面，不拒）——参数忽略，清屏序列照发。
+        (b"\x1b[2J\x1b[H".to_vec(), 0)
+    } else if cmd == "uname" {
+        // 单行身份。版本源 = libc uname（`.berryver` 烙印 semver，ADR #83
+        // 查询面单源）——bsh 不自拼 crate 版本（升版即漂的第二源）。fields
+        // 私有 → mirror 结构 + extern 真身（A7-4 sigaction 镜像钉板同手法；
+        // 链接序：berry-libc rlib 先于 -lc，符号恒解析到真身——见文件头
+        // extern 块注释）。
+        let mut u = UtsnameMirror {
+            fields: [[0; 65]; 6],
+        };
+        // SAFETY: u 可写、按 musl utsname 契约（6×65B）传递；返回值按
+        // POSIX 检（非 0 = 失败）。
+        if unsafe { uname(&mut u) } != 0 {
+            writeln!(out, "bsh: uname: {}", errno_text(errno())).unwrap();
+            (Vec::new(), 1)
+        } else {
+            (format!(
+                "{} {} {}\n",
+                u.str(0),
+                u.str(4),
+                u.str(2) // sysname machine release（musl utsname 字段序）
+            )
+            .into_bytes(), 0)
+        }
+    } else if let Some(_rest) = cmd.strip_prefix("uname ") {
+        writeln!(out, "usage: uname").unwrap();
+        (Vec::new(), 2)
+    } else if cmd == "uptime" {
+        // A7-2 语义 boot 起算：CLOCK_MONOTONIC 纳秒换算秒。
+        let mut t = 0u64;
+        if berry_clock_read(CLOCK_MONOTONIC, &mut t) != 0 {
+            writeln!(out, "bsh: uptime: clock read failed").unwrap();
+            (Vec::new(), 1)
+        } else {
+            (format!("up {}s\n", t / 1_000_000_000).into_bytes(), 0)
+        }
+    } else if let Some(_rest) = cmd.strip_prefix("uptime ") {
+        writeln!(out, "usage: uptime").unwrap();
+        (Vec::new(), 2)
+    } else if cmd == "sleep" {
+        writeln!(out, "usage: sleep <s>（0..=60 整秒）").unwrap();
+        (Vec::new(), 2)
+    } else if let Some(rest) = cmd.strip_prefix("sleep ") {
+        sleep_output(rest.trim(), out)
+    } else if cmd == "type" {
+        writeln!(out, "usage: type <name>").unwrap();
+        (Vec::new(), 2)
+    } else if let Some(rest) = cmd.strip_prefix("type ") {
+        type_output(rest.trim(), out)
+    } else if cmd == "history" {
+        history_output(hist)
+    } else if let Some(_rest) = cmd.strip_prefix("history ") {
+        writeln!(out, "usage: history").unwrap();
+        (Vec::new(), 2)
     } else {
         // C-2a：裸名 PATH 派发（内建优先零漂移——到这 = 非内建）：首词查
         // bin/<name>，命中即拉起、余词作 argv[1..]（uu 家族非内建成员
@@ -3558,6 +3680,30 @@ fn run_output(name: &str, args: &[&str], out: &mut std::io::Stdout) -> (Vec<u8>,
 
 /// errno 读（TLS 直读——失败返回后**立即**取，中间不夹其它可能写 errno
 /// 的调用；诊断/状态码两用）。
+/// musl `struct utsname` 镜像（6 × 65B——libc sys.rs 的 `Utsname` fields 私有
+/// 读不到，镜像钉板手法 = A7-4 sigaction 同先例）。字段序：sysname/nodename/
+/// release/version/machine/domainname。
+#[repr(C)]
+struct UtsnameMirror {
+    fields: [[u8; 65]; 6],
+}
+
+impl UtsnameMirror {
+    /// NUL 终止字段读 &str（截到首个 0；非 UTF-8 脏字节回空串不 panic——
+    /// 身份行渲染面，宁缺毋乱）。
+    fn str(&self, i: usize) -> &str {
+        let f = &self.fields[i];
+        let len = f.iter().position(|&c| c == 0).unwrap_or(f.len());
+        core::str::from_utf8(&f[..len]).unwrap_or("")
+    }
+}
+
+extern "C" {
+    /// libc 真身（`berry_libc::sys::uname`）——链接序担保解析到 shim 而非
+    /// musl 残档（文件头 extern 块注释同纪律）；指针 ABI 层面镜像即兼容。
+    fn uname(u: *mut UtsnameMirror) -> i32;
+}
+
 fn errno() -> i32 {
     // SAFETY: __errno_location 返回本线程 TLS errno 槽（libc 契约）。
     unsafe { *berry_libc::sys::__errno_location() }
@@ -3789,6 +3935,7 @@ fn do_redirect(
     vars: &[(String, String)],
     status: i32,
     out: &mut std::io::Stdout,
+    hist: &[Vec<u8>],
 ) -> i32 {
     let Some((cmd_s, file_s)) = split_redirect(raw) else {
         writeln!(out, "usage: <command> > <file>").unwrap();
@@ -3797,7 +3944,7 @@ fn do_redirect(
     if expand(cmd_s, vars, status).is_empty() {
         return 0; // v1：空命令不建文件（`> f` 裸重定向——文档化面）
     }
-    let (data, code) = render_cmd(cmd_s, vars, status, out);
+    let (data, code) = render_cmd(cmd_s, vars, status, out, hist);
     out.flush().unwrap(); // 诊断先落（stderr 语义——数据进文件）
     if fs_h() == 0 {
         // NoFs 预检（libc 无 gift 面会把 open 降级 ENOENT——文本漂移，故
@@ -3814,6 +3961,64 @@ fn do_redirect(
             errno_code(e)
         }
     }
+}
+
+/// `sleep <s>`（命令行体验刀，契约 1）：阻塞 `<s>` 秒——100ms 步进 usleep
+/// 环（A7-4 pause 同形；berry-libc 无长睡原语）。v1 不可打断（无异步信号
+/// 抢占面，诚实文档化）。拒面（均 usage 2）：缺失 / 非数字 / 负数 / 超
+/// 60s 帽（防 smoke 挂死）。返回 (空数据, 0)。
+fn sleep_output(spec: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
+    let bad = |out: &mut std::io::Stdout| {
+        writeln!(out, "usage: sleep <s>（0..=60 整秒）").unwrap();
+        (Vec::new(), 2)
+    };
+    let Ok(n) = spec.parse::<i64>() else {
+        return bad(out);
+    };
+    if !(0..=60).contains(&n) {
+        return bad(out);
+    }
+    extern "C" {
+        // A7-2 补桩真身（#[no_mangle]，clk 本地声明同款链接期解析）。
+        fn usleep(usec: u32) -> i32;
+    }
+    // 100ms 步进环：60s 上帽 = 600 步有界循环。
+    let mut remain = n * 10;
+    while remain > 0 {
+        // SAFETY: 纯 libc 调用，无指针面。
+        unsafe { usleep(100_000) };
+        remain -= 1;
+    }
+    (Vec::new(), 0)
+}
+
+/// `type <name>`（命令行体验刀，契约 1）：首词身份三档——BUILTINS 表命中
+/// → `is a shell builtin`；rootfs bin/ 命中（cpio 查档）→ `is /bin/<name>`
+///；余 `not found`（诊断打 out，码 1——v1 定 1，POSIX 对齐面从简如实记，
+/// 非 127：127 是「命令执行派发」的 not found，type 是查询面自有码）。
+fn type_output(name: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
+    if BUILTINS.contains(&name) {
+        (format!("{} is a shell builtin\n", name).into_bytes(), 0)
+    } else if cpio_find(rootfs_h(), format!("bin/{}", name).as_bytes()).is_some() {
+        (format!("{} is /bin/{}\n", name, name).into_bytes(), 0)
+    } else {
+        writeln!(out, "{} not found", name).unwrap();
+        (Vec::new(), 1)
+    }
+}
+
+/// `history`（命令行体验刀，契约 1）：回显 editor 历史环——newest-first
+/// 存储序即渲染序，逐行 `N  cmd`（N 从 1 = newest）。管道/子 bsh 无交互
+/// 历史恒空（诚实——editor 历史属本进程交互面，经 [`run_line`] 只读透传）。
+fn history_output(hist: &[Vec<u8>]) -> (Vec<u8>, i32) {
+    let mut d = Vec::new();
+    for (i, line) in hist.iter().enumerate() {
+        d.extend_from_slice((i + 1).to_string().as_bytes());
+        d.extend_from_slice(b"  ");
+        d.extend_from_slice(line);
+        d.push(b'\n');
+    }
+    (d, 0)
 }
 
 /// `cat <path>`：get_file 全量 → 数据字节（fs 错误 → 诊断打 out + errno
@@ -4477,7 +4682,7 @@ fn m3demo_selftest(vars: &mut Vec<(String, String)>, status: &mut i32) {
     }
     *status = 1; // $? ← grep -q 真码（rc 已上验，run_line 展开消费它）
     let mut out = std::io::stdout();
-    run_line("echo x$?y > T3.TXT", vars, status, &mut out);
+    run_line("echo x$?y > T3.TXT", vars, status, &mut out, &[]);
     match get_file("T3.TXT") {
         Ok(d) if d == b"x1y\n" => {}
         r => m3_fail(
@@ -4512,6 +4717,270 @@ fn pwd_is(want: &str) -> bool {
     }
     let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
     &buf[..len] == want.as_bytes()
+}
+
+/// 子串在场判定（term_selftest 断言用——hay/needle 均非空）。
+fn has_sub(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w == needle)
+}
+
+/// 子串计数（term_selftest 提示符 ×2 断言用）。
+fn count_sub(hay: &[u8], needle: &[u8]) -> usize {
+    hay.windows(needle.len()).filter(|w| *w == needle).count()
+}
+
+/// 命令行体验刀（`CLI ok n=6` = rootfs 相第 55 标记，本刀契约 2）：六内建
+/// 行为面自验——render_cmd 直调（与交互/重定向同一渲染面；诊断/usage 打
+/// 真 stdout = stderr 语义）。六步全过才打；败 eprintln + park（标记缺失
+/// → smoke FAIL 兜底）：
+/// ⓪ clear——`\x1b[2J\x1b[H` 11B 逐字节精确对拍 + 带参照打幂等面；
+/// ① uname——`BerryOS aarch64 ` 前缀 + 非空版本单行（libc `.berryver` 单源）+ 带参拒；
+/// ② uptime——`up <N>s` 数值域（数字段非空）+ 带参拒；
+/// ③ sleep——`sleep 1` 前后 CLOCK_MONOTONIC 差分 ∈ [1s,30s]（TCG 宽带，
+/// clk ③ 同口径）+ 拒面四连（缺失/非数字/负数/超 60s 帽）+ `sleep 0` 域内
+/// 放行；
+/// ④ type——三分支（内建档/bin 档（bin/hello 在册，int_selftest 同款
+///    依赖）/not-found 档 = 码 1 + 空数据）+ 缺参拒 + BUILTINS 单源六新
+///    内建全在册（help 文案/Tab 候选同表防漂）；
+/// ⑤ history——两条目环回读 `N  cmd` 逐字节对拍 + 空环空输出（管道子
+///    bsh 恒空语义）+ 带参拒。
+fn cli_selftest() {
+    fn render(cmd: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
+        render_cmd(cmd, &[], 0, out, &[])
+    }
+    let mut fails: Vec<&str> = Vec::new();
+    let mut out = std::io::stdout();
+
+    // ⓪ clear：11B 清屏序列精确对拍；带参照打（幂等面，不拒）。
+    let (d, c) = render("clear", &mut out);
+    if c != 0 || d.as_slice() != b"\x1b[2J\x1b[H".as_slice() {
+        fails.push("⓪ clear 非 11B 清屏序列");
+    }
+    let (d, c) = render("clear x", &mut out);
+    if c != 0 || d.as_slice() != b"\x1b[2J\x1b[H".as_slice() {
+        fails.push("⓪ clear 带参照打非幂等面");
+    }
+
+    // ① uname：前缀 + 非空版本单行；带参拒。
+    let (d, c) = render("uname", &mut out);
+    let pre = b"BerryOS aarch64 ";
+    let ok = c == 0 && d.starts_with(pre) && d.ends_with(b"\n") && d.len() > pre.len() + 1;
+    if !ok {
+        fails.push("① uname 形态破缺（前缀/单行）");
+    }
+    if render("uname x", &mut out).1 != 2 {
+        fails.push("① uname 带参未拒");
+    }
+
+    // ② uptime：`up <N>s` 数值域；带参拒。
+    let (d, c) = render("uptime", &mut out);
+    let s = String::from_utf8_lossy(&d);
+    let ok = c == 0
+        && s.starts_with("up ")
+        && s.ends_with("s\n")
+        && s.len() > 5
+        && s[3..s.len() - 2].bytes().all(|b| b.is_ascii_digit());
+    if !ok {
+        fails.push("② uptime 数值域破缺（up <N>s）");
+    }
+    if render("uptime x", &mut out).1 != 2 {
+        fails.push("② uptime 带参未拒");
+    }
+
+    // ③ sleep：1s 时钟差分（TCG 宽带）+ 拒面四连 + 域内 0 放行。
+    let t0 = now();
+    let (_, c) = render("sleep 1", &mut out);
+    let dt = now() - t0;
+    if c != 0 || !(1_000_000_000..=30_000_000_000).contains(&dt) {
+        fails.push("③ sleep 1s 时钟差分破缺");
+    }
+    for bad in ["sleep", "sleep x", "sleep -1", "sleep 61"] {
+        if render(bad, &mut out).1 != 2 {
+            fails.push("③ sleep 拒面失守（缺失/非数字/负数/超帽）");
+        }
+    }
+    if render("sleep 0", &mut out).1 != 0 {
+        fails.push("③ sleep 0 域内被拒");
+    }
+
+    // ④ type：三分支逐字节对拍 + 缺参拒 + BUILTINS 单源钉板。
+    let (d, c) = render("type echo", &mut out);
+    if c != 0 || d.as_slice() != b"echo is a shell builtin\n".as_slice() {
+        fails.push("④ type 内建档破缺");
+    }
+    let (d, c) = render("type hello", &mut out);
+    if c != 0 || d.as_slice() != b"hello is /bin/hello\n".as_slice() {
+        fails.push("④ type bin/ 档破缺");
+    }
+    let (d, c) = render("type hellq", &mut out);
+    if c != 1 || !d.is_empty() {
+        fails.push("④ type not-found 档破缺（码 1 + 空数据）");
+    }
+    if render("type", &mut out).1 != 2 {
+        fails.push("④ type 缺参未拒");
+    }
+    for b in ["clear", "uname", "uptime", "sleep", "type", "history"] {
+        if !BUILTINS.contains(&b) {
+            fails.push("④ BUILTINS 单源缺新内建");
+        }
+    }
+
+    // ⑤ history：两条目环回读 + 空环空输出 + 带参拒。
+    let hist: Vec<Vec<u8>> = vec![b"one".to_vec(), b"two".to_vec()];
+    let (d, c) = render_cmd("history", &[], 0, &mut out, &hist);
+    if c != 0 || d.as_slice() != b"1  one\n2  two\n".as_slice() {
+        fails.push("⑤ history 环回读形态破缺（N  cmd）");
+    }
+    let (d, c) = render_cmd("history", &[], 0, &mut out, &[]);
+    if c != 0 || !d.is_empty() {
+        fails.push("⑤ history 空环非空输出");
+    }
+    if render("history x", &mut out).1 != 2 {
+        fails.push("⑤ history 带参未拒");
+    }
+
+    if !fails.is_empty() {
+        eprintln!("bsh: cli selftest bad: {:?}", fails);
+        berry_libc::park();
+    }
+    println!("CLI ok n=6");
+}
+
+/// 命令行体验刀（`TERM ok n=2` = rootfs 相第 56 标记，本刀契约 2）——哑
+/// 终端管道契约钉板：bsh spawn 子 bsh——`stdin_feed` 喂
+/// `echo berryterm\nuname\n`、stdout = 私有对端、extra_gifts = fs_gifts
+/// 同参（run_capture_fs 三元组先例）。两步全过才打；败 eprintln + park：
+/// ⓪ 管道驱动——私有对端收齐：`bsh> ` 提示符在场 ×2 + 命令回显行 +
+///    `berryterm` 结果行 + `BerryOS aarch64` 结果行（提示符/回显/结果
+///    混流同一 stdout 字节流——哑终端契约逐项钉板）；收集 =
+///    [`term_collect`] 四断言齐即收的早退谓词环。
+/// ① EOF 收口——feeder 泵 data 尽 + 零长 EOF 后子 bsh 主循环空读续读
+///    不退（恒驻）→ terminate(130)（process_terminate 0x3B，C-4b 先例）
+///    + reap 真码 130 收口；「恒驻不暴走」由收集环活动帽担保。
+/// **子 bsh 必须 `--no-selftest`**：不带旗的子 bsh 先跑全量自验链（TCG
+/// 分钟级——收集帽内结构性红），且其自身 term_selftest 再 spawn 子 bsh
+/// = 无界递归；跳链直进交互循环（与常规链尾同一台机器——interactive()
+/// 单源），管道契约只验交互面。stack_pages = 16：svcmgr 拉起 bsh 现值
+/// 先例（全自验链都在 16 页内跑，交互循环更浅；int ③ 的 hello 1 页口径
+/// 不适用于 musl std 大程序）。
+fn term_selftest() {
+    let mut fails: Vec<&str> = Vec::new();
+    let full = b"bin/bsh";
+    let Some((data_off, data_len)) = cpio_find(rootfs_h(), full) else {
+        eprintln!("bsh: term selftest: bin/bsh not found");
+        berry_libc::park();
+    };
+    // fs_gifts 四元同参（run_capture_fs 先例）：spawn 成功则两 dup 随 env
+    // send 全被 take（零泄漏）；spawn Err 早退点全在 env send 前 = 未
+    // take，调用方显式补关双 dup（fs_gifts 头注契约）。
+    let (rootfs_dup, fs_dup) = match fs_gifts() {
+        Some(g) => g,
+        None => {
+            eprintln!("bsh: term selftest: fs gift dup failed");
+            berry_libc::park();
+        }
+    };
+    let (out_s, out_c) = channel_pair();
+    let args: [&[u8]; 1] = [b"--no-selftest"];
+    let spec = SpawnSpec {
+        name: full,
+        data_off,
+        data_len,
+        stdout: out_c,
+        stack_pages: 16,
+        stdin_feed: Some(b"echo berryterm\nuname\n"),
+        stdin_handle: None,
+        args: &args,
+        extra_gifts: &[rootfs_dup, fs_dup],
+        mmio_vmo: None,
+        mmio_va: 0,
+        intent: 0,
+        force_eager: false,
+    };
+    let child = match spawn_rootfs_elf(rootfs_h(), &spec) {
+        Ok(c) => c,
+        Err(_) => {
+            let _ = berry_handle_close(rootfs_dup);
+            let _ = berry_handle_close(fs_dup);
+            let _ = berry_handle_close(out_c);
+            let _ = berry_handle_close(out_s);
+            eprintln!("bsh: term selftest: bsh spawn failed");
+            berry_libc::park();
+        }
+    };
+    let data = term_collect(out_s);
+    // ⓪ 断言：提示符 ×2 + 回显行 + 两结果行（混流同一 stdout 字节流）。
+    if count_sub(&data, b"bsh> ") < 2 {
+        fails.push("⓪ 提示符在场 <2");
+    }
+    if !has_sub(&data, b"echo berryterm") {
+        fails.push("⓪ 命令回显行缺席");
+    }
+    // 独立行判据（前导 \n 消回声歧义）：回显行「…echo berryterm\n」的尾
+    // 段不含独立 berryterm 行——本断言只能被真结果行满足。
+    if !has_sub(&data, b"\nberryterm\n") {
+        fails.push("⓪ berryterm 结果行缺席");
+    }
+    if !has_sub(&data, b"BerryOS aarch64") {
+        fails.push("⓪ uname 结果行缺席");
+    }
+    // ① EOF 收口：子 bsh 恒驻（feeder EOF 后空读续读不退）——terminate
+    // 非 0 = 已退（哑终端契约破）；reap 真码 130（POSIX 128+SIGINT 惯例）。
+    if berry_process_terminate(child.hp, 130) != 0 {
+        fails.push("① terminate(130) != 0（子 bsh EOF 后已退？）");
+    }
+    match child.reap() {
+        Ok(130) => {}
+        Ok(_) => fails.push("① reap 真码 != 130"),
+        Err(()) => fails.push("① reap 失败"),
+    }
+    if berry_handle_close(out_c) != 0 || berry_handle_close(out_s) != 0 {
+        berry_libc::park(); // 关不掉 = 泄漏面，loud 死（run_output 同款）
+    }
+    if !fails.is_empty() {
+        eprintln!("bsh: term selftest bad: {:?}", fails);
+        berry_libc::park();
+    }
+    println!("TERM ok n=2");
+}
+
+/// [`term_selftest`] 的收集环：四断言齐即收（早退谓词）——recv/wait 原语
+/// 与 [`collect`] 同款（活动帽 TIMEOUT_NS 收包刷新、EOF/非 EAGAIN 错误/
+/// 活动帽尽即收场），差异仅谓词命中即返、不熬静默尾：哑终端契约字节到
+/// 齐即收（子 bsh 恒驻无 EOF——等帽 = 白熬 10s，链尾增量 <5s 兑现）。
+fn term_collect(h: Handle) -> Vec<u8> {
+    let mut data: Vec<u8> = Vec::new();
+    let mut msg = [0u8; 256];
+    while !term_ready(&data) {
+        let mut nb = msg.len();
+        let mut nh = 0usize;
+        let s = berry_channel_recv(h, msg.as_mut_ptr(), &mut nb, core::ptr::null_mut(), &mut nh);
+        if s == 0 {
+            if nb == 0 {
+                break; // EOF：子退出（异常面——⓪ 断言自然红）
+            }
+            let keep = nb.min(COLLECT_MAX.saturating_sub(data.len()));
+            data.extend_from_slice(&msg[..keep]);
+            continue;
+        }
+        if s != BERRY_ERR_AGAIN {
+            break; // 对端异常（collect 同款收场）
+        }
+        let mut obs = 0u64;
+        if berry_object_wait_one(h, SIGNAL_READABLE, now() + TIMEOUT_NS, &mut obs) != 0 {
+            break; // 活动帽尽（断链面——⓪ 断言自然红）
+        }
+    }
+    data
+}
+
+/// 早退谓词：⓪ 四断言的物证全在席（提示符 ×2/回显行/两结果行——第二
+/// 提示符在第一结果行之后，谓词必经两命令全链）。
+fn term_ready(d: &[u8]) -> bool {
+    count_sub(d, b"bsh> ") >= 2
+        && has_sub(d, b"echo berryterm")
+        && has_sub(d, b"\nberryterm\n")
+        && has_sub(d, b"BerryOS aarch64")
 }
 
 /// `A | B | …` 交互面（v1：各段裸名——无参数无 `/`，参数面随 v2 argv 展开）。
@@ -4878,8 +5347,8 @@ fn u2_selftest(vars: &mut Vec<(String, String)>, status: &mut i32) {
     // 步 5：&& 链真码传播（and_selftest 同款——run_line 内部驱动 + 变量表
     // 断言；true/false 零输出零警告 = 零串口噪声）。
     let mut out = std::io::stdout();
-    run_line("run true && A=1", vars, status, &mut out);
-    run_line("run false && B=1", vars, status, &mut out);
+    run_line("run true && A=1", vars, status, &mut out, &[]);
+    run_line("run false && B=1", vars, status, &mut out, &[]);
     let get = |n: &str| get_var(vars, n).map(|s| s.to_string());
     if *status != 1 || get("A").as_deref() != Some("1") || get("B").is_some() {
         eprintln!(

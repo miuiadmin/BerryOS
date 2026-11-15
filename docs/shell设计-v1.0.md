@@ -57,6 +57,19 @@ berry> ls | grep boot
 
 `cd` 改的是 shell 自己进程的状态，`type`/`exit`/环境变量赋值同理——这些必须是 shell 内建。判据一句话：**改 shell 自己状态的，进 shell；干活的，独立程序**。
 
+内建名单单源 `const BUILTINS`（`type` 身份查询、Tab 补全候选、help 文案三处消费同表）。既有十二件（help/exit/env/echo/run/cat/ls/mkdir/rm/cd/pwd/inputpoll）之外，命令行体验刀（2026-11-15）补齐六件：
+
+| 命令 | 行为 |
+|------|------|
+| `clear` | 输出 ANSI 清屏+光标归位序列（11B），消费面 = 宿主终端模拟器；带参照打幂等（参数忽略照发） |
+| `uname` | 单行 `BerryOS aarch64 <版本>`（版本源 = libc `uname` 的 `.berryver` 烙印 semver，ADR #83 查询面单源）；带参拒 |
+| `uptime` | 单行 `up <N>s`（CLOCK_MONOTONIC 秒，boot 起算）；带参拒 |
+| `sleep <s>` | 阻塞 `<s>` 秒（100ms 步进 usleep 环，v1 无长睡原语；不可打断——无异步信号抢占面）；缺失/非数字/负数/超 60s 帽均 usage 2 |
+| `type <name>` | 首词身份三档：内建表命中 `is a shell builtin`、rootfs 命中 `is /bin/<name>`、`not found`（码 1） |
+| `history` | 回显 editor 历史环（8×96B newest-first）逐行 `N  cmd`；管道子 bsh 无交互历史恒空 |
+
+六件行为面由 bsh `cli_selftest` 自验钉板（`CLI ok n=6`，rootfs 相标记——六步：clear 11B 逐字节对拍/uname 前缀/uptime 数值域/sleep 1s 时钟差分/type 三分支/history 环回读）。
+
 ### 2.4 串口行编辑
 
 P5 第一刀 = PL011 **RX 中断**（`开发体验.md` §3 既定前置），其上是自写 mini-readline：退格 / 上下键历史 / Tab 补全（命令名 + 路径）。不引 ncurses，串口 raw 模式够用。
@@ -64,6 +77,12 @@ P5 第一刀 = PL011 **RX 中断**（`开发体验.md` §3 既定前置），其
 **归属裁定与兑现（C-4，2026-10-28）**：原留档「Tab 补全 defer v2——补全需 rootfs 知识」经 C-4 **提前兑现且不破微内核纪律**——console（内核）无 rootfs/fs 知识，行编辑归属整体迁 bsh：console 退化为逐字节透传，echo/退格/历史/Ctrl-U/Tab 补全全部在 bsh `editor.rs`（std 版 mini-readline，语义逐字对齐内核时代形态）。Tab 候选源 = bsh 自持能力：内建命令表 ∪ rootfs `bin/`（cpio 枚举）+ libc 目录视图（`opendir`/`readdir`）——**内核零新面**。切分/匹配/三态消费（Unique 补全/Ambiguous 公共增量+列示/None 静默）收敛在 `user/berry-complete` 纯函数 crate（host 10 测）。**C-4r 吸收环（同日回归修复）**：逐字节透传首版的转发吸收面只有「通道 8 深 + 1B pending」≈ 4.5s 打字流——bsh 忙窗（如 `run fail` 的 spawn+reap 数秒，TCG 宿主高载更长）内后续字节被覆盖丢弃，且 `rx_pop_all` 突发多字节只存活末字节（smoke RX 相段 d 三行零间歇注入实录两连败，f42t 缺失）；修法 = console 侧 128B 字节级 FIFO 环（纯缓冲、零行/编辑语义——归属裁定不破），环满丢新计数 `fdrop=`，bsh-stdin WRITABLE 项仅环非空时入列（A-2 恒满足项纪律保持），复刻四段全过（f42t 落串口 + fdrop=0 全程）。
 
 **Ctrl-C 杀链（C-4b，2026-10-28）**：editor 喂 0x03 → 清行 + 游标回 live（不入历史）→ `Flow::Interrupt("^C\n")`——feed 循环期（无前台子进程）= 作废当前行 + prompt 重显；前台期由 `collect_fg` 收键处理（两路径互斥不重入）。ESC 序列状态机两态（esc=1 已见 ESC / esc=2 CSI 参数区）中收 0x03 = **复位状态机后落下**直达 Interrupt（不吞字节——真终端的 CSI 中断语义）；交互杀真面 = smoke RX 相 g 段注入（`run hello` 前台 + 0x03 → terminate 130 → typeahead 回放 `echo i$?t` 断言 `i130t`，展开造内容防回声）。
+
+### 2.5 管道驱动契约（终端同源面）
+
+bsh 交互循环天然管道化：从 fd0 逐字节读、经 editor 状态机、全部输出走 fd1——不依赖任何终端专属原语。因此 `SpawnSpec.stdin_feed`（feeder 泵喂字节）加 `stdout` 私有对端（channel 收集）即构成「任意程序以哑终端形态驱动 bsh」的完整契约：提示符 `bsh> `、命令回显行与命令结果行混流同一 stdout 字节流，驱动方收流即得全部终端语义。契约由 bsh `term_selftest` 自验钉板（`TERM ok n=2`，rootfs 相标记）：spawn 子 bsh（`--no-selftest` 跳过自验链直进交互循环）喂两命令，私有 stdout 收齐提示符 ×2/回显行/两结果行后 terminate(130) 收口。
+
+GUI 终端应用（berry-term）与键盘链的五件挂账（QEMU 键盘设备与 inputd 解码分支、inputd 多订阅者焦点路由、.bap GUI 授能与 APP_SLOTS 扩容、宿主 `berry console` 串口直连、berry-term 本体）显式移交波3——明细见[命令行体验刀实施设计](../.agents/plans/2026-11-15-命令行体验刀实施设计.md)契约 4，本节管道契约即 berry-term 的地基。
 
 ## 3. 命令三梯队
 
