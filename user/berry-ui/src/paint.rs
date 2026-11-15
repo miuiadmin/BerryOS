@@ -29,6 +29,16 @@
 //!   表单件；批 F（末刀）追加 Gauge 粗条 + 百分值文本、Qr 三角定位
 //!   方块 + 确定性数据图案（占位）、DragReorder 三杠手柄——41 kind
 //!   渲染面全收口。
+//! - **波 2 移植件 XA 三面**（ui-wave2 对账第 1/2/3 项——详见
+//!   `PORT-XA.md`）：①真圆角档（opt-in，[`set_true_corners`]）——
+//!   Toggle 轨/Chip 底/Card 阴影+卡面走 `Cmd::FillRectRounded` 行 LUT
+//!   （默认档保持 v1 直角/胶囊近似——既有 golden 钉板零漂移）；②
+//!   disabled 档——[`PressedVis`] 扩三态查表（normal/pressed/
+//!   disabled，disabled 优先），首批消费 Button/Toggle/Check/Radio/
+//!   Seg（色值 theme.rs 单源）；③clip 面——Scroll/List kind 即登记
+//!   开裁剪（eff 有效窗 + MARK 段标记 + berry-gfx 裁剪栈回放——溢出
+//!   内容不再画出视口侵入后续区；泛化 per-slot 侧表挂 lib.rs 面后
+//!   续刀）。
 //! - **尾部必录 `Present{damage 包络}`**（soft no-op 也录——FULL →
 //!   viewport、空集 → 零矩形）。
 //! - overdraw_x256 = drawn_px×256/vp 面素（发射足迹 ∩ viewport；u128
@@ -46,10 +56,16 @@ use crate::metrics::IconSource;
 use crate::Node;
 use berry_gfx::cmd::{Color, CommandEncoder, GlyphPos, GlyphRun, ImageSrc, Rect as GfxRect};
 use berry_gfx::font::FontSize;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 /// 槽索引空哨兵（§6 Node 注：NONE = u32::MAX——hit.rs 同值，本模块自
 /// 带防跨模块未定名依赖）。
 const NONE: u32 = u32::MAX;
+
+/// clip 段标记哨兵（波 2 横向原语④）：`order` 流内嵌 PUSH/POP 段标
+/// （与槽值/NONE 不撞——槽 < MAX_NODES=512 ≪ u32::MAX−2）。
+const MARK_POP: u32 = u32::MAX - 1;
+const MARK_PUSH: u32 = u32::MAX - 2;
 
 // ---------- 组件 v1 固定色板（Phase 2 两批——渲染起步面） ----------
 //
@@ -127,22 +143,76 @@ pub const PICK_BG: Color = Color { r: 0xFF, g: 0xFF, b: 0xFF };
 pub const PICK_BORDER: Color = Color { r: 0x66, g: 0x66, b: 0x66 };
 /// pressed 视觉活动集（波2 批 A：press_map active 条目的 visual 槽值
 /// 快照——emit 期查表换暗色底；容量 = PRESS_MAP_MAX 同源上界，调用方
-/// 保证不超）。
+/// 保证不超）。波 2 移植件 XA 扩 disabled 档：三态查表
+/// normal/pressed/disabled（[`NodeVisState`]——disabled 优先于
+/// pressed，禁用件不表达按压反馈；写侧 set_disabled 挂 lib.rs 面后
+/// 续刀，本面只立查表机制）。
 pub struct PressedVis {
     pub slots: [u32; 32],
     pub n: usize,
+    /// disabled 槽集（空集 = 全 normal——`Ui::pressed_snapshot` 现行写
+    /// 法只填 slots/n，本字段缺省零值即常态）。
+    pub disabled: [u32; 32],
+    pub n_disabled: usize,
+}
+
+/// 组件视觉三态（波 2 移植件 XA：PressedVis 查表机制的 disabled 档
+/// 扩展——源实现 NodeState 验收三态的 paint 消费面）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeVisState {
+    Normal,
+    Pressed,
+    Disabled,
 }
 
 impl PressedVis {
     /// 空集。
     pub fn empty() -> Self {
-        PressedVis { slots: [0; 32], n: 0 }
+        PressedVis { slots: [0; 32], n: 0, disabled: [0; 32], n_disabled: 0 }
     }
 
     /// slot 是否在活动集（线性查——n ≤ PRESS_MAP_MAX 小表）。
     pub fn contains(&self, slot: u32) -> bool {
         self.slots[..self.n].contains(&slot)
     }
+
+    /// slot 是否在禁用集（线性查——同 contains 小表纪律）。
+    pub fn is_disabled(&self, slot: u32) -> bool {
+        self.disabled[..self.n_disabled].contains(&slot)
+    }
+
+    /// slot 三态查表（disabled > pressed > normal——禁用锁死优先，
+    /// 源实现消息机 Disabled 锁死语义的 paint 面同律）。
+    pub fn state(&self, slot: u32) -> NodeVisState {
+        if self.is_disabled(slot) {
+            NodeVisState::Disabled
+        } else if self.contains(slot) {
+            NodeVisState::Pressed
+        } else {
+            NodeVisState::Normal
+        }
+    }
+}
+
+// ---------- 真圆角渲染档（波 2 移植件 XA——横向原语③ 消费开关） ----------
+//
+// 主树 v1 近似（直角 fill / capsule_h 胶囊三 fill）为**默认档**——既有
+// golden 钉板面（widgets 族逐值对拍）零漂移；真圆角档 opt-in：Toggle 轨 /
+// Chip 底 / Card 阴影+卡面走 `Cmd::FillRectRounded` 行 LUT（berry-gfx
+// 波 2 横向原语③）。进程级开关 = 无 lib.rs 样式侧表的最小消费面
+// （per-node radius 数据面挂样式系统后续刀；画廊波/宿主翻档消费）。
+
+/// 真圆角档开关（默认 false = v1 近似；core AtomicBool——no_std 可用）。
+static TRUE_CORNERS: AtomicBool = AtomicBool::new(false);
+
+/// 切换真圆角渲染档（宿主/测试面；返回先前值便于消费方还原）。
+pub fn set_true_corners(on: bool) -> bool {
+    TRUE_CORNERS.swap(on, Ordering::Relaxed)
+}
+
+/// 真圆角档当前值。
+pub fn true_corners() -> bool {
+    TRUE_CORNERS.load(Ordering::Relaxed)
 }
 
 /// 输入内容快照（批 D：lib 侧表 → paint 消费面；槽值 keyed）。
@@ -293,9 +363,27 @@ pub(crate) fn paint<'a>(
             rep.culled = culled_before;
             emit_walk_all(nodes, root, 0, 0, d, &vp_rect, icons, pressed, focus_slot, texts, &mut rest, enc, &mut rep, 0);
         } else {
-            // 发射 = 收集序之逆（前序 = 画家算法背到前）
+            // 发射 = 收集序之逆（前序 = 画家算法背到前）；MARK_PUSH/POP
+            // 在逆序流里读作「PUSH 子树 POP」（收集序注见 cull_walk——
+            // 波 2 横向原语④ clip 段标记）。
             for k in (0..n_order).rev() {
-                emit_node(nodes, order[k], &bnds[k], &vp_rect, icons, pressed, focus_slot, texts, &mut rest, enc, &mut rep);
+                match order[k] {
+                    MARK_PUSH => {
+                        // clip 段开：界取 bnds 槽（收集期与标记同槽落位）。
+                        let r = bnds[k];
+                        if enc.push_clip(GfxRect::new(r.x, r.y, r.w, r.h)).is_ok() {
+                            rep.cmds += 1;
+                        }
+                    }
+                    MARK_POP => {
+                        if enc.pop_clip().is_ok() {
+                            rep.cmds += 1;
+                        }
+                    }
+                    slot => {
+                        emit_node(nodes, slot, &bnds[k], &vp_rect, icons, pressed, focus_slot, texts, &mut rest, enc, &mut rep);
+                    }
+                }
             }
         }
     }
@@ -343,6 +431,13 @@ fn take_scratch<'a>(rest: &mut &'a mut [GlyphPos], n: usize) -> Option<&'a mut [
 /// 入发射序（槽 + 视觉界快照免重算）；Rect 叶子界∩damage 计遮挡源。
 /// `overflow` = 发射序缓冲满帽哨兵（调用方切回退走查——本走查的收集
 /// 产物在溢出面被整段弃用）。
+///
+/// 波 2 移植件 XA 扩两面：①`d` 参语义扩为**有效窗 eff**（= damage ∩
+/// 祖先 clip 界——叶子可见区按 eff 判，Scroll/List 子树溢出部分整剪）；
+/// ②clip 节点子树段以 MARK_POP/`子树`/MARK_PUSH(界) 序入流——发射取
+/// 逆恰成 `PUSH 子树 POP` 嵌套段（berry-gfx 裁剪栈回放）。clip 开关 =
+/// kind 即登记（Scroll/List——「登记即开」的最小内嵌形态；泛化
+/// per-slot 侧表挂 lib.rs 面后续刀）。
 #[allow(clippy::too_many_arguments)]
 fn cull_walk(
     nodes: &[Option<Node>],
@@ -368,39 +463,65 @@ fn cull_walk(
     let bx = ex + n.x as i64 + n.ox as i64;
     let by = ey + n.y as i64 + n.oy as i64;
 
+    // clip 子窗：空窗 → 子树整剪（不复发不标段）。
+    let clip_here = matches!(n.kind, ViewKind::Scroll | ViewKind::List);
+    let child_eff = if clip_here { d.intersect(&RectI::new(i64_to_i32_sat(bx), i64_to_i32_sat(by), n.w, n.h)) } else { *d };
+    let mark_clip = clip_here && !child_eff.is_empty();
+
     // 子先：沿 next_sib 走到链尾再 prev_sib 回走（尾兄先 = 后画者先看）。
+    // clip 段开标记先入流（收集序 POP 前置——发射逆序读作 PUSH 首位；
+    // 标记溢出 = 段界破缺 → overflow 切回退走查）。
     // 收起态 Collapse：子不发射（第三批三面同守卫——layout 不摆位 +
     // paint 不发射 + hit 不命中；陈旧 bounds 一致跳过）。
-    let kids_live = !matches!(&n.props, Props::Collapse(cp) if !cp.expanded);
-    let mut tail = if kids_live { n.first_child } else { NONE };
-    let mut guard = 0usize;
-    while tail != NONE {
-        guard += 1;
-        if guard > nodes.len() {
-            return; // next_sib 环防御
-        }
-        match nodes.get(tail as usize) {
-            Some(Some(c)) if c.alive => {
-                if c.next_sib == NONE {
-                    break;
-                }
-                tail = c.next_sib;
-            }
-            _ => return,
+    if mark_clip {
+        if *n_order < ORDER_CAP {
+            order[*n_order] = MARK_POP;
+            bnds[*n_order] = RectI::new(0, 0, 0, 0);
+            *n_order += 1;
+        } else {
+            *overflow = true;
         }
     }
-    let mut sib = tail;
-    let mut back = 0usize;
-    while sib != NONE {
-        back += 1;
-        if back > nodes.len() {
-            return; // prev_sib 环防御
+    let kids_live = !matches!(&n.props, Props::Collapse(cp) if !cp.expanded);
+    if !(clip_here && child_eff.is_empty()) {
+        let mut tail = if kids_live { n.first_child } else { NONE };
+        let mut guard = 0usize;
+        while tail != NONE {
+            guard += 1;
+            if guard > nodes.len() {
+                return; // next_sib 环防御
+            }
+            match nodes.get(tail as usize) {
+                Some(Some(c)) if c.alive => {
+                    if c.next_sib == NONE {
+                        break;
+                    }
+                    tail = c.next_sib;
+                }
+                _ => return,
+            }
         }
-        cull_walk(nodes, sib, bx, by, d, covered, order, bnds, n_order, culled, overflow, hops + 1);
-        match nodes.get(sib as usize) {
-            Some(Some(c)) if c.alive => sib = c.prev_sib,
-            _ => return,
+        let mut sib = tail;
+        let mut back = 0usize;
+        while sib != NONE {
+            back += 1;
+            if back > nodes.len() {
+                return; // prev_sib 环防御
+            }
+            cull_walk(nodes, sib, bx, by, &child_eff, covered, order, bnds, n_order, culled, overflow, hops + 1);
+            match nodes.get(sib as usize) {
+                Some(Some(c)) if c.alive => sib = c.prev_sib,
+                _ => return,
+            }
         }
+    }
+    // clip 段闭标记尾入流（发射逆序读作 POP 末位；界携 child_eff）。
+    if mark_clip && *n_order < ORDER_CAP {
+        order[*n_order] = MARK_PUSH;
+        bnds[*n_order] = child_eff;
+        *n_order += 1;
+    } else if mark_clip {
+        *overflow = true; // 标记溢出 = 段界破缺——整段弃用切回退走查
     }
 
     // 自身（子树最底 = 最后画）。容器无视觉内容不参与（Grid 同列——
@@ -480,6 +601,9 @@ fn cull_walk(
 /// 射**——无遮挡剔除、无序缓冲（画家序由走查序自证：先访问者先画、
 /// 后访问者覆盖 = 与主路径前序发射同序）。damage 外叶子计 culled（与
 /// 主路径语义一致）；环/死槽防御同主路径以 nodes.len() 为帽。
+///
+/// 波 2 移植件 XA：`d` 参语义同主路径扩为 eff 有效窗 + clip 段直接
+/// Push/Pop 包夹（前序天然正确序；空窗跳整段——cull_walk 注同律）。
 #[allow(clippy::too_many_arguments)]
 fn emit_walk_all<'a>(
     nodes: &[Option<Node>],
@@ -506,6 +630,9 @@ fn emit_walk_all<'a>(
     }
     let bx = ex + n.x as i64 + n.ox as i64;
     let by = ey + n.y as i64 + n.oy as i64;
+    let b = RectI::new(i64_to_i32_sat(bx), i64_to_i32_sat(by), n.w, n.h);
+    let clip_here = matches!(n.kind, ViewKind::Scroll | ViewKind::List);
+    let child_eff = if clip_here { d.intersect(&b) } else { *d };
 
     // 自身先（前序 = 画家算法背到前：先画者先发射）。容器无视觉内容不
     // 参与（Grid 同列）；Image/Icon = 可见叶同主路径发射（§4.3）。
@@ -546,7 +673,6 @@ fn emit_walk_all<'a>(
         | ViewKind::Gauge
         | ViewKind::Qr
         | ViewKind::DragReorder => {
-            let b = RectI::new(i64_to_i32_sat(bx), i64_to_i32_sat(by), n.w, n.h);
             if b.intersect(d).is_empty() {
                 rep.culled += 1; // damage 外叶子
             } else {
@@ -566,20 +692,34 @@ fn emit_walk_all<'a>(
 
     // 子：头兄起流序（painter 序：后画者后访问 = 覆盖在前画者上）。
     // 收起态 Collapse：子不发射（主路径 kids_live 同守卫）。
-    let kids_live = !matches!(&n.props, Props::Collapse(cp) if !cp.expanded);
-    let mut c = if kids_live { n.first_child } else { NONE };
-    let mut guard = 0usize;
-    while c != NONE {
-        guard += 1;
-        if guard > nodes.len() {
-            return; // 子链环防御
+    // 波 2 移植件 XA：clip 段直接包夹（前序正确序；空窗跳整段）。
+    let clip_open = clip_here && !child_eff.is_empty();
+    if clip_open {
+        if enc.push_clip(GfxRect::new(child_eff.x, child_eff.y, child_eff.w, child_eff.h)).is_ok() {
+            rep.cmds += 1;
         }
-        match nodes.get(c as usize) {
-            Some(Some(ch)) if ch.alive => {
-                emit_walk_all(nodes, c, bx, by, d, vp_rect, icons, pressed, focus_slot, texts, rest, enc, rep, hops + 1);
-                c = ch.next_sib;
+    }
+    if !clip_here || !child_eff.is_empty() {
+        let kids_live = !matches!(&n.props, Props::Collapse(cp) if !cp.expanded);
+        let mut c = if kids_live { n.first_child } else { NONE };
+        let mut guard = 0usize;
+        while c != NONE {
+            guard += 1;
+            if guard > nodes.len() {
+                return; // 子链环防御
             }
-            _ => return, // 链上死槽 = 树结构异常，防御放弃余段
+            match nodes.get(c as usize) {
+                Some(Some(ch)) if ch.alive => {
+                    emit_walk_all(nodes, c, bx, by, &child_eff, vp_rect, icons, pressed, focus_slot, texts, rest, enc, rep, hops + 1);
+                    c = ch.next_sib;
+                }
+                _ => return, // 链上死槽 = 树结构异常，防御放弃余段
+            }
+        }
+    }
+    if clip_open {
+        if enc.pop_clip().is_ok() {
+            rep.cmds += 1;
         }
     }
 }
@@ -666,9 +806,18 @@ fn emit_node<'a>(
         Props::Button(p) => {
             match p.style {
                 ButtonStyle::Filled => {
-                    let bg = if pressed.contains(slot) { ACCENT_PRESSED } else { ACCENT };
+                    // 波 2 移植件 XA 三态查表：disabled > pressed > normal
+                    // （禁用锁死优先——禁用件不表达按压反馈；色值 theme
+                    // 单源，ACCENT_PRESSED 先例同律）。
+                    let (bg, fg) = match pressed.state(slot) {
+                        NodeVisState::Disabled => {
+                            (crate::theme::BG_DISABLED, crate::theme::FG_DISABLED)
+                        }
+                        NodeVisState::Pressed => (ACCENT_PRESSED, ON_ACCENT),
+                        NodeVisState::Normal => (ACCENT, ON_ACCENT),
+                    };
                     fill(enc, b.x, b.y, b.w, b.h, bg, rep);
-                    emit_widget_text(p.label.as_bytes(), b.x, b.w, b.y, b.h, ON_ACCENT, rest, enc, rep);
+                    emit_widget_text(p.label.as_bytes(), b.x, b.w, b.y, b.h, fg, rest, enc, rep);
                 }
                 ButtonStyle::Outlined => {
                     // 描边 = 四 fill_rect 组合（v1 无 stroke 原语——「已有
@@ -687,8 +836,23 @@ fn emit_node<'a>(
             }
         }
         Props::Toggle(p) => {
-            let track = if p.checked { ACCENT } else { TRACK_OFF };
-            capsule_h(enc, b.x, b.y, b.w, b.h, track, rep);
+            // 波 2 移植件 XA：disabled 档轨道换禁用灰（三态查表——
+            // 禁用优先于 checked 表色）；真圆角档轨走 FillRectRounded
+            // (r=h/2) 真胶囊（raster 侧钳 min(w,h)/2 同义），v1 capsule_h
+            // 三 fill 近似为默认档（既有 golden 钉板零漂移）。滑块圆
+            // 保持 oct3 近似（弧族原语面 = 波 3+，非本原语射程）。
+            let track = if pressed.is_disabled(slot) {
+                crate::theme::BG_DISABLED
+            } else if p.checked {
+                ACCENT
+            } else {
+                TRACK_OFF
+            };
+            if true_corners() {
+                fill_rounded(enc, b.x, b.y, b.w, b.h, (b.h.max(0) as u32) / 2, track, rep);
+            } else {
+                capsule_h(enc, b.x, b.y, b.w, b.h, track, rep);
+            }
             let d = (b.h - 2 * TOGGLE_KNOB_MARGIN).max(0); // 滑块边长（32 高 → 24）
             let kx = if p.checked {
                 b.x + b.w - TOGGLE_KNOB_MARGIN - d
@@ -729,9 +893,17 @@ fn emit_node<'a>(
         }
         // Check：方框描边（Outlined 按钮同形四 fill_rect）+ 选中态双
         // fill_rect 勾（短臂下角块 + 长臂上行条——24×24 定格比例，内
-        // 在恒 24 时无缩放面）。
+        // 在恒 24 时无缩放面）。波 2 移植件 XA：disabled 档框/勾换禁用
+        // 弱化灰（theme 单源）。
         Props::Check(p) => {
-            let bc = if p.checked { ACCENT } else { OUTLINE };
+            let disabled = pressed.is_disabled(slot);
+            let bc = if disabled {
+                crate::theme::FG_DISABLED
+            } else if p.checked {
+                ACCENT
+            } else {
+                OUTLINE
+            };
             let t = CHECK_BORDER.min(b.w / 2).min(b.h / 2).max(1);
             fill(enc, b.x, b.y, b.w, t, bc, rep);
             fill(enc, b.x, b.y + b.h - t, b.w, t, bc, rep);
@@ -740,23 +912,33 @@ fn emit_node<'a>(
             if p.checked {
                 // 勾形两片：短臂（左下角块）+ 长臂（上行竖条），交叠
                 // 成勾角。
-                fill(enc, b.x + 5, b.y + 12, 4, 4, ACCENT, rep);
-                fill(enc, b.x + 8, b.y + 6, 3, 9, ACCENT, rep);
+                let mark = if disabled { crate::theme::FG_DISABLED } else { ACCENT };
+                fill(enc, b.x + 5, b.y + 12, 4, 4, mark, rep);
+                fill(enc, b.x + 8, b.y + 6, 3, 9, mark, rep);
             }
         }
         // Radio：八片环近似（四直段 + 四角块——八角同族；选中态内圆
-        // = oct3 半径减半，与 Toggle 滑块同核）。
+        // = oct3 半径减半，与 Toggle 滑块同核）。波 2 移植件 XA：
+        // disabled 档环/内圆换禁用弱化灰。
         Props::Radio(p) => {
-            let rc = if p.selected { ACCENT } else { OUTLINE };
+            let disabled = pressed.is_disabled(slot);
+            let rc = if disabled {
+                crate::theme::FG_DISABLED
+            } else if p.selected {
+                ACCENT
+            } else {
+                OUTLINE
+            };
             let d = b.w.min(b.h);
             let ox = b.x + (b.w - d) / 2;
             let oy = b.y + (b.h - d) / 2;
             ring8(enc, ox, oy, d, rc, rep);
             if p.selected {
+                let ic = if disabled { crate::theme::FG_DISABLED } else { ACCENT };
                 let di = d / 2;
                 let ix = b.x + (b.w - di) / 2;
                 let iy = b.y + (b.h - di) / 2;
-                oct3(enc, ix, iy, di, ACCENT, rep);
+                oct3(enc, ix, iy, di, ic, rep);
             }
         }
         // Step：三段 = 底 + 两道分隔线 + 三组字形（左 '-'、中值（十
@@ -773,20 +955,26 @@ fn emit_node<'a>(
             emit_widget_text(b"+", b.x + b.w - z, z, b.y, b.h, ON_SURFACE, rest, enc, rep);
         }
         // Seg：等分底 + active 段 ACCENT 高亮 + 段间分隔线（active 后
-        // 发——高亮段两界分隔线恒可见）。
+        // 发——高亮段两界分隔线恒可见）。波 2 移植件 XA：disabled 档
+        // active 段换禁用底灰（ TRACK_DIM 底上 washed 观感）。
         Props::Seg(p) => {
             fill(enc, b.x, b.y, b.w, b.h, TRACK_DIM, rep);
             let cnt = p.segment_count.max(1) as i64;
             let sw = b.w as i64 / cnt;
             if sw > 0 {
                 let ax = b.x as i64 + sw * p.active.min(p.segment_count) as i64;
+                let active_c = if pressed.is_disabled(slot) {
+                    crate::theme::BG_DISABLED
+                } else {
+                    ACCENT
+                };
                 fill(
                     enc,
                     i64_to_i32_sat(ax),
                     b.y,
                     i64_to_i32_sat(sw),
                     b.h,
-                    ACCENT,
+                    active_c,
                     rep,
                 );
                 let mut i = 1i64;
@@ -906,12 +1094,16 @@ fn emit_node<'a>(
         // 组件第三批五件：Tip = 实色衬底（v1 无 alpha 的半透明近似）+
         // 文本；Collapse = header 带 + 箭头指示（展开朝下 / 收起朝右
         //——三带三角形逼近；子先画盖其上，收起态子被走查守卫跳过）；
-        // Chip = 直角胶囊底（v1 无圆角原语——「fill_rect 近似」纪律）
-        // + 居中标签 + 选中态色变；Fab = 八角圆形 ACCENT 底 + 图标位
+        // Chip = 胶囊底 + 居中标签 + 选中态色变——波 2 移植件 XA：真
+        // 圆角档底走 FillRectRounded(r=OH_RADIUS_PX 8vp @3x；raster 侧
+        // 钳 min(w,h)/2，32 高自然折胶囊)，v1 直角 fill 为默认档（既有
+        // golden 钉板零漂移）；Fab = 八角圆形 ACCENT 底 + 图标位
         //（v1 文本 '+' 占位——icon 资源面挂 D28 接线刀）+ 扩展标签带；
         // Card = 双 fill_rect 阴影（整界阴影色 + 面底右下内缩 off =
-        // elevation×2px——视觉足迹恒在界内，damage 正确性优先；圆角
-        // v1 直角，corner_radius 数据携载）。
+        // elevation×2px——视觉足迹恒在界内，damage 正确性优先）——
+        // 波 2 移植件 XA：真圆角档消费 p.corner_radius（TLV 数据已在
+        // 流里跑）——阴影条与卡面同半径圆角（角区阴影随面收口，足迹
+        // 仍在界内），v1 直角为默认档。
         Props::Tip(p) => {
             fill(enc, b.x, b.y, b.w, b.h, TIP_BG, rep);
             emit_widget_text(p.text.as_bytes(), b.x, b.w, b.y, b.h, ON_ACCENT, rest, enc, rep);
@@ -946,7 +1138,7 @@ fn emit_node<'a>(
             } else {
                 (TRACK_DIM, ON_SURFACE)
             };
-            fill(enc, b.x, b.y, b.w, b.h, bgc, rep);
+            fill_rounded(enc, b.x, b.y, b.w, b.h, crate::theme::OH_RADIUS_PX, bgc, rep);
             emit_widget_text(p.label.as_bytes(), b.x, b.w, b.y, b.h, fg, rest, enc, rep);
         }
         Props::Fab(p) => {
@@ -980,10 +1172,10 @@ fn emit_node<'a>(
                 p.elevation.saturating_mul(CARD_SHADOW_STEP as u32),
             );
             if off > 0 {
-                fill(enc, b.x, b.y, b.w, b.h, CARD_SHADOW, rep);
-                fill(enc, b.x, b.y, b.w - off, b.h - off, CARD_BG, rep);
+                fill_rounded(enc, b.x, b.y, b.w, b.h, p.corner_radius, CARD_SHADOW, rep);
+                fill_rounded(enc, b.x, b.y, b.w - off, b.h - off, p.corner_radius, CARD_BG, rep);
             } else {
-                fill(enc, b.x, b.y, b.w, b.h, CARD_BG, rep);
+                fill_rounded(enc, b.x, b.y, b.w, b.h, p.corner_radius, CARD_BG, rep);
             }
         }
         // 波2 批 C（Select）：下拉选择器 = 白底框（描边四边组合——
@@ -1252,6 +1444,33 @@ fn fill(
     }
 }
 
+/// 圆角填充收口（波 2 移植件 XA——真圆角档消费面）：开档且 radius > 0
+/// → `fill_rect_rounded`（raster 行 LUT；半径钳 min(w,h)/2 在 raster 侧
+/// 单源）；否则回落 [`fill`] 同义直角（默认档零漂移）。零面积跳过 +
+/// cmds 计数同律。
+fn fill_rounded(
+    enc: &mut CommandEncoder,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    radius_px: u32,
+    c: Color,
+    rep: &mut PaintReport,
+) {
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    let ok = if true_corners() && radius_px > 0 {
+        enc.fill_rect_rounded(GfxRect::new(x, y, w, h), radius_px, c)
+    } else {
+        enc.fill_rect(GfxRect::new(x, y, w, h), c)
+    };
+    if ok.is_ok() {
+        rep.cmds += 1;
+    }
+}
+
 /// 八角近似圆（v1 无圆原语——「不发明新绘制指令」纪律的三 fill_rect
 /// 组合：上/下条内缩 d/4 厚 d/3、中条满宽）。Toggle 滑块 / Slider 拖
 /// 动圆 / Radio 选中内圆共用。
@@ -1455,5 +1674,439 @@ fn emit_image<'a>(
                 );
             }
         }
+    }
+}
+
+// ---------- 波 2 移植件 XA 单测（文件内联——不占 tests/ 面） ----------
+//
+// 覆盖三面：①真圆角档 Toggle/Chip/Card 发射与像素（含默认档零漂移锚）；
+//②disabled 三态查表首批五 kind（Button/Toggle/Check/Radio/Seg）；③
+// Scroll/List clip 溢出裁剪（eff 窗 + 裁剪栈回放）。树走查直建 Node 面
+//（pub(crate) 字段全 pub——paint 入口免经 lib.rs 门面，disabled 写侧表
+// 未落地前的机制级验收）。
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::desc::{
+        ButtonProps, CardProps, CheckProps, ChipProps, ListProps, RadioProps, RectProps,
+        ScrollProps, SegProps, TextBuf, ToggleProps,
+    };
+    use crate::metrics::EmptyIconSource;
+    use berry_gfx::cmd::{Cmd, DisplayList};
+    use berry_gfx::color::{TextureDesc, TextureFormat};
+    use berry_gfx::pass::PassDescriptor;
+    use berry_gfx::queue::Queue;
+
+    /// 全局档位锁（TRUE_CORNERS 进程级开关——测线程串行化；档位还原
+    /// 守卫 Drop 兜底 panic 安全）。
+    static CORNER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// 档位还原守卫：构造时记住旧值，Drop 时还原（含 panic 展开路径）。
+    struct CornerRestore(bool);
+    impl Drop for CornerRestore {
+        fn drop(&mut self) {
+            set_true_corners(self.0);
+        }
+    }
+
+    /// 命令摘要（生命周期解耦——`Cmd` 借用调用方 scratch，摘要有值化）。
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Sum {
+        Fill(i32, i32, i32, i32, u32),
+        Rounded(i32, i32, i32, i32, u32, u32),
+        PushClip(i32, i32, i32, i32),
+        PopClip,
+        Other,
+    }
+
+    /// Color → Rgbx u32（回放面 pack 同式——断言与像素读数同域对拍）。
+    fn packed(c: Color) -> u32 {
+        (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32
+    }
+
+    fn summary(dl: &DisplayList<'_>) -> Vec<Sum> {
+        dl.iter()
+            .map(|c| match c {
+                Cmd::FillRect { rect, paint } => {
+                    Sum::Fill(rect.x, rect.y, rect.w, rect.h, packed(paint.color))
+                }
+                Cmd::FillRectRounded { rect, radius, paint } => {
+                    Sum::Rounded(rect.x, rect.y, rect.w, rect.h, *radius, packed(paint.color))
+                }
+                Cmd::PushClip { rect } => Sum::PushClip(rect.x, rect.y, rect.w, rect.h),
+                Cmd::PopClip => Sum::PopClip,
+                _ => Sum::Other,
+            })
+            .collect()
+    }
+
+    /// 最小节点（paint 走查只读几何/亲缘/props 面——其余字段缺省）。
+    fn mk_node(kind: ViewKind, props: Props, x: i32, y: i32, w: i32, h: i32) -> Node {
+        Node {
+            gen: 0,
+            alive: true,
+            kind,
+            key: 0,
+            props,
+            parent: NONE,
+            first_child: NONE,
+            next_sib: NONE,
+            prev_sib: NONE,
+            x,
+            y,
+            w,
+            h,
+            meas_w: 0,
+            meas_h: 0,
+            layout_dirty: false,
+            paint_dirty: false,
+            ox: 0,
+            oy: 0,
+        }
+    }
+
+    /// root（槽 0）+ 子链（槽 1..，头兄起 next_sib 顺序——layout 产物模拟）。
+    fn root_with_children(children: Vec<Node>) -> Vec<Option<Node>> {
+        let mut root = mk_node(ViewKind::Root, Props::Root, 0, 0, 240, 300);
+        root.first_child = if children.is_empty() { NONE } else { 1 };
+        let mut nodes = vec![Some(root)];
+        let n = children.len() as u32;
+        for (i, mut c) in children.into_iter().enumerate() {
+            let slot = 1 + i as u32;
+            c.parent = 0;
+            c.prev_sib = if slot == 1 { NONE } else { slot - 1 };
+            c.next_sib = if slot == n { NONE } else { slot + 1 };
+            nodes.push(Some(c));
+        }
+        nodes
+    }
+
+    /// 给 parent 挂头子（测试树单子容器——链首插入即可），返子槽。
+    fn attach(nodes: &mut Vec<Option<Node>>, parent: u32, child: Node) -> u32 {
+        let slot = nodes.len() as u32;
+        let mut child = child;
+        child.parent = parent;
+        nodes[parent as usize].as_mut().unwrap().first_child = slot;
+        nodes.push(Some(child));
+        slot
+    }
+
+    const FB_STRIDE: usize = 240 * 4;
+
+    /// FULL damage 走查 + soft 回放（Load 保 0x11 哨兵——未写像素可辨）。
+    fn render(nodes: &[Option<Node>], pressed: &PressedVis) -> (Vec<Sum>, Vec<u8>, usize) {
+        let mut scr = [GlyphPos { ch: 0, x: 0, y: 0 }; 64];
+        let mut enc = CommandEncoder::new();
+        let icons = EmptyIconSource;
+        let rep = paint(
+            nodes,
+            0,
+            (240, 300),
+            &DamageSet { full: true, ..DamageSet::new() },
+            &mut scr,
+            &mut enc,
+            &icons,
+            pressed,
+            NONE,
+            &InputTexts::empty(),
+        );
+        let dl = enc.finish();
+        let d = TextureDesc::new(240, 300, FB_STRIDE, TextureFormat::Rgbx).unwrap();
+        let mut fb = vec![0x11u8; d.need_bytes()];
+        Queue::new().submit(&dl, &mut fb, &d, &PassDescriptor::load()).unwrap();
+        (summary(&dl), fb, rep.cmds)
+    }
+
+    fn px(fb: &[u8], x: usize, y: usize) -> u32 {
+        let o = y * FB_STRIDE + x * 4;
+        u32::from_le_bytes(fb[o..o + 4].try_into().unwrap())
+    }
+
+    /// 三件常备树：Toggle 52×32（unchecked）/ Chip 40×32（未选）/
+    /// Card 30×20（elevation 2、corner_radius 8）。
+    fn corner_scene() -> Vec<Option<Node>> {
+        root_with_children(vec![
+            mk_node(
+                ViewKind::Toggle,
+                Props::Toggle(ToggleProps { checked: false, on_change: 0 }),
+                0,
+                0,
+                52,
+                32,
+            ),
+            mk_node(
+                ViewKind::Chip,
+                Props::Chip(ChipProps {
+                    label: TextBuf::new(b"T").unwrap(),
+                    selected: false,
+                    on_tap: 0,
+                }),
+                60,
+                0,
+                40,
+                32,
+            ),
+            mk_node(
+                ViewKind::Card,
+                Props::Card(CardProps { elevation: 2, corner_radius: 8 }),
+                0,
+                50,
+                30,
+                20,
+            ),
+        ])
+    }
+
+    // —— ① 默认档零漂移锚：无 FillRectRounded 命令；Toggle 轨 =
+    //    capsule_h 三 fill（widgets.rs golden 同形几何）；Chip/Card 直角 ——
+    #[test]
+    fn xa_legacy_default_no_rounded_cmds() {
+        let _lock = CORNER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _restore = CornerRestore(set_true_corners(false));
+        let (sum, _, _) = render(&corner_scene(), &PressedVis::empty());
+        assert!(
+            !sum.iter().any(|s| matches!(s, Sum::Rounded(..))),
+            "默认档零 FillRectRounded：{sum:?}"
+        );
+        // Toggle 胶囊三 fill（cap=10、inset=8——52×32 手算）。
+        assert!(sum.contains(&Sum::Fill(0, 8, 10, 16, packed(TRACK_OFF))), "{sum:?}");
+        assert!(sum.contains(&Sum::Fill(10, 0, 32, 32, packed(TRACK_OFF))), "{sum:?}");
+        assert!(sum.contains(&Sum::Fill(42, 8, 10, 16, packed(TRACK_OFF))), "{sum:?}");
+        // Chip 直角 / Card 直角双 fill（corner_radius 数据在默认档不消费）。
+        assert!(sum.contains(&Sum::Fill(60, 0, 40, 32, packed(TRACK_DIM))), "{sum:?}");
+        assert!(sum.contains(&Sum::Fill(0, 50, 30, 20, packed(CARD_SHADOW))), "{sum:?}");
+        assert!(sum.contains(&Sum::Fill(0, 50, 26, 16, packed(CARD_BG))), "{sum:?}");
+    }
+
+    // —— ①' 真圆角档：Toggle r=h/2 真胶囊 / Chip r=8vp@3x / Card 消费
+    //     corner_radius——命令面 + 像素面（角区不写、中段照铺）——
+    #[test]
+    fn xa_true_corners_rounded_toggle_chip_card() {
+        let _lock = CORNER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _restore = CornerRestore(set_true_corners(true));
+        let (sum, fb, _) = render(&corner_scene(), &PressedVis::empty());
+        // 命令面：radius 原值入命令（Chip 24 由 raster 侧钳 min(w,h)/2）。
+        assert!(
+            sum.contains(&Sum::Rounded(0, 0, 52, 32, 16, packed(TRACK_OFF))),
+            "Toggle 真胶囊 r=h/2：{sum:?}"
+        );
+        assert!(
+            sum.contains(&Sum::Rounded(60, 0, 40, 32, 24, packed(TRACK_DIM))),
+            "Chip r=8vp@3x：{sum:?}"
+        );
+        assert!(sum.contains(&Sum::Rounded(0, 50, 30, 20, 8, packed(CARD_SHADOW))), "{sum:?}");
+        assert!(sum.contains(&Sum::Rounded(0, 50, 26, 16, 8, packed(CARD_BG))), "{sum:?}");
+        assert!(!sum.iter().any(|s| matches!(s, Sum::Fill(0, 8, 10, 16, _))), "capsule_h 退场");
+        // 像素面：Toggle r=16 行 0 内缩 16 → 角 (0,0) 不写（哨兵）、
+        // (26,0) 轨色；Chip 钳 16 同律；Card 角 sentinel、面心 CARD_BG、
+        // 阴影下缘带（y=68 ∈ 阴影不 ∈ 面）。
+        assert_eq!(px(&fb, 0, 0), 0x1111_1111, "Toggle 角区不写");
+        assert_eq!(px(&fb, 26, 0), packed(TRACK_OFF), "Toggle 顶行中段照铺");
+        assert_eq!(px(&fb, 60, 0), 0x1111_1111, "Chip 角区不写");
+        assert_eq!(px(&fb, 80, 16), packed(TRACK_DIM), "Chip 中心照铺");
+        assert_eq!(px(&fb, 0, 50), 0x1111_1111, "Card 角区不写");
+        assert_eq!(px(&fb, 13, 58), packed(CARD_BG), "Card 面心");
+        assert_eq!(px(&fb, 10, 68), packed(CARD_SHADOW), "Card 阴影下缘带");
+    }
+
+    // —— ② disabled 三态首批五 kind + disabled 优先于 pressed ——
+    #[test]
+    fn xa_disabled_three_state_first_batch() {
+        let _lock = CORNER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _restore = CornerRestore(set_true_corners(false));
+        let nodes = root_with_children(vec![
+            // slot1：Button disabled（BG_DISABLED 底 + FG_DISABLED 标签）。
+            mk_node(
+                ViewKind::Button,
+                Props::Button(ButtonProps {
+                    label: TextBuf::new(b"OK").unwrap(),
+                    style: ButtonStyle::Filled,
+                    on_tap: 0,
+                }),
+                0,
+                0,
+                64,
+                48,
+            ),
+            // slot2：Toggle unchecked disabled（轨换 BG_DISABLED）。
+            mk_node(
+                ViewKind::Toggle,
+                Props::Toggle(ToggleProps { checked: false, on_change: 0 }),
+                0,
+                48,
+                52,
+                32,
+            ),
+            // slot3：Check checked disabled（框/勾 FG_DISABLED）。
+            mk_node(
+                ViewKind::Check,
+                Props::Check(CheckProps { checked: true, on_change: 0 }),
+                0,
+                80,
+                24,
+                24,
+            ),
+            // slot4：Radio selected disabled（环/内圆 FG_DISABLED）。
+            mk_node(
+                ViewKind::Radio,
+                Props::Radio(RadioProps { selected: true, group: 0, on_change: 0 }),
+                40,
+                80,
+                24,
+                24,
+            ),
+            // slot5：Seg active=1 disabled（active 段 BG_DISABLED）。
+            mk_node(
+                ViewKind::Seg,
+                Props::Seg(SegProps { segment_count: 3, active: 1, on_change: 0 }),
+                0,
+                104,
+                90,
+                32,
+            ),
+            // slot6：Button 仅 pressed（ACCENT_PRESSED 对照——三态完备）。
+            mk_node(
+                ViewKind::Button,
+                Props::Button(ButtonProps {
+                    label: TextBuf::new(b"Go").unwrap(),
+                    style: ButtonStyle::Filled,
+                    on_tap: 0,
+                }),
+                0,
+                136,
+                64,
+                48,
+            ),
+            // slot7：Button normal（ACCENT 对照）。
+            mk_node(
+                ViewKind::Button,
+                Props::Button(ButtonProps {
+                    label: TextBuf::new(b"No").unwrap(),
+                    style: ButtonStyle::Filled,
+                    on_tap: 0,
+                }),
+                0,
+                184,
+                64,
+                48,
+            ),
+        ]);
+        let mut pv = PressedVis::empty();
+        pv.slots[0] = 6; // pressed：slot6
+        pv.n = 1;
+        pv.disabled = [1, 2, 3, 4, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        pv.n_disabled = 5;
+        // 查表机制值级：三态分派 + disabled 优先于 pressed。
+        assert_eq!(pv.state(1), NodeVisState::Disabled);
+        assert_eq!(pv.state(6), NodeVisState::Pressed);
+        assert_eq!(pv.state(7), NodeVisState::Normal);
+        let mut both = PressedVis::empty();
+        both.slots[0] = 1;
+        both.n = 1;
+        both.disabled[0] = 1;
+        both.n_disabled = 1;
+        assert_eq!(both.state(1), NodeVisState::Disabled, "禁用锁死优先于按压");
+        // 像素面：五 kind 禁用观感 + 两对照。
+        let (_, fb, _) = render(&nodes, &pv);
+        assert_eq!(px(&fb, 32, 24), packed(crate::theme::BG_DISABLED), "Button 禁用底");
+        assert_eq!(px(&fb, 1, 64), packed(crate::theme::BG_DISABLED), "Toggle 禁用轨（左帽区——避开滑块）");
+        assert_eq!(px(&fb, 0, 90), packed(crate::theme::FG_DISABLED), "Check 禁用框");
+        assert_eq!(px(&fb, 46, 81), packed(crate::theme::FG_DISABLED), "Radio 禁用环");
+        assert_eq!(px(&fb, 50, 92), packed(crate::theme::FG_DISABLED), "Radio 禁用内圆");
+        assert_eq!(px(&fb, 45, 120), packed(crate::theme::BG_DISABLED), "Seg 禁用 active 段");
+        assert_eq!(px(&fb, 5, 120), packed(TRACK_DIM), "Seg 底轨不变");
+        assert_eq!(px(&fb, 32, 160), packed(ACCENT_PRESSED), "pressed 对照暗化底");
+        assert_eq!(px(&fb, 32, 208), packed(ACCENT), "normal 对照主色底");
+    }
+
+    // —— ③ Scroll/List clip：溢出子裁到容器界（像素级）+ PushClip/PopClip
+    //    段标记 + 段外妹妹不受影响（painter 序）——
+    #[test]
+    fn xa_scroll_list_clip_overflow() {
+        // Scroll 视口 100×100 + 溢出子（上下皆越界 300 高）+ 界下妹妹。
+        let mut nodes = root_with_children(vec![
+            mk_node(
+                ViewKind::Scroll,
+                Props::Scroll(ScrollProps { content_height: 300, offset_y: 50 }),
+                0,
+                0,
+                100,
+                100,
+            ),
+            mk_node(
+                ViewKind::Rect,
+                Props::Rect(RectProps {
+                    bg: Color { r: 4, g: 5, b: 6 },
+                    w: None,
+                    h: None,
+                }),
+                0,
+                120,
+                40,
+                40,
+            ),
+        ]);
+        attach(
+            &mut nodes,
+            1,
+            mk_node(
+                ViewKind::Rect,
+                Props::Rect(RectProps {
+                    bg: Color { r: 1, g: 2, b: 3 },
+                    w: None,
+                    h: None,
+                }),
+                0,
+                -50,
+                100,
+                300,
+            ),
+        );
+        let (sum, fb, cmds) = render(&nodes, &PressedVis::empty());
+        // 命令面：clip 段标记（界 = Scroll 视口）。
+        assert!(sum.contains(&Sum::PushClip(0, 0, 100, 100)), "{sum:?}");
+        assert!(sum.contains(&Sum::PopClip), "{sum:?}");
+        // 子 fill 原几何入命令（裁剪在回放面——记录/回放分离纪律）。
+        assert!(sum.contains(&Sum::Fill(0, -50, 100, 300, 0x0001_0203)), "{sum:?}");
+        // push + child + pop + sibling + present。
+        assert_eq!(cmds, 5, "{sum:?}");
+        // 像素面：窗内照画、窗外哨兵（溢出不再侵入后续区）、妹妹照常。
+        assert_eq!(px(&fb, 50, 0), 0x0001_0203, "窗顶照画");
+        assert_eq!(px(&fb, 50, 99), 0x0001_0203, "窗底行照画");
+        assert_eq!(px(&fb, 50, 100), 0x1111_1111, "窗外（原溢出区）不写");
+        assert_eq!(px(&fb, 50, 249), 0x1111_1111, "深溢出区不写");
+        assert_eq!(px(&fb, 10, 140), 0x0004_0506, "段外妹妹不受 clip 影响");
+
+        // List 同律：kind 即登记开裁剪。
+        let mut nodes = root_with_children(vec![mk_node(
+            ViewKind::List,
+            Props::List(ListProps { item_count: 10, item_height: 48 }),
+            0,
+            0,
+            240,
+            100,
+        )]);
+        attach(
+            &mut nodes,
+            1,
+            mk_node(
+                ViewKind::Rect,
+                Props::Rect(RectProps {
+                    bg: Color { r: 7, g: 8, b: 9 },
+                    w: None,
+                    h: None,
+                }),
+                0,
+                0,
+                240,
+                120,
+            ),
+        );
+        let (sum, fb, cmds) = render(&nodes, &PressedVis::empty());
+        assert!(sum.contains(&Sum::PushClip(0, 0, 240, 100)), "{sum:?}");
+        assert_eq!(px(&fb, 10, 99), 0x0007_0809, "List 窗内照画");
+        assert_eq!(px(&fb, 10, 100), 0x1111_1111, "List 窗外不写");
+        assert_eq!(cmds, 4, "push + child + pop + present");
     }
 }

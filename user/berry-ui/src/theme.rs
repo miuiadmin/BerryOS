@@ -36,6 +36,11 @@ pub const FONT_SECONDARY: Color = Color { r: 0x66, g: 0x66, b: 0x66 };
 pub const WARNING: Color = Color { r: 0xE8, g: 0x40, b: 0x26 };
 /// 成功绿（OH check 系）。
 pub const SUCCESS: Color = Color { r: 0x0F, g: 0xB5, b: 0x6B };
+/// 禁用态组件底（OH disabled 组件面灰——pattern.rs `ItemState::Disabled`
+/// 五态表同值 0xF2F2F2；语义 token 归属本表，彼处为数据层值面）。
+pub const BG_DISABLED: Color = Color { r: 0xF2, g: 0xF2, b: 0xF2 };
+/// 禁用态前景/细件弱化灰（38% 灰系——主树既有弱化灰同值族，文档化近似）。
+pub const FG_DISABLED: Color = Color { r: 0x9E, g: 0x9E, b: 0x9E };
 
 // ---------- dark 档（同语义名镜像） ----------
 
@@ -53,6 +58,20 @@ pub const FONT_PRIMARY_DARK: Color = Color { r: 0xE6, g: 0xE6, b: 0xE6 };
 pub const FONT_SECONDARY_DARK: Color = Color { r: 0x99, g: 0x99, b: 0x99 };
 /// 警示红 dark。
 pub const WARNING_DARK: Color = Color { r: 0xF5, g: 0x6C, b: 0x5B };
+/// 禁用态组件底 dark（dark 档镜像——消费面 `BG_DISABLED` 同语义名取值）。
+pub const BG_DISABLED_DARK: Color = Color { r: 0x2A, g: 0x2A, b: 0x2C };
+/// 禁用态前景 dark。
+pub const FG_DISABLED_DARK: Color = Color { r: 0x5E, g: 0x5E, b: 0x63 };
+
+// ---------- OH 圆角 token（波 2 横向原语③ 消费面——add-only） ----------
+
+/// OH 通用件圆角 8vp（卡片/Chip/页签/分段族默认——与移植源 theme 同名
+/// token 同值；Button 大半径 20vp/小件 14vp 挂样式系统后续刀）。
+pub const OH_RADIUS_VP: u32 = 8;
+/// 通用件圆角 px 单源（8vp @3x = 24px——paint 圆角消费面直取本值；
+/// @3x 密度折算的几何单源在 pattern.rs `DENSITY`，px 值此处直录避免
+/// theme→pattern 反向依赖，一致性由本文件测试对拍钉板）。
+pub const OH_RADIUS_PX: u32 = 24;
 
 /// 主题档（两套预混单源枚举——消费面 `pick` 单点取值）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,5 +143,24 @@ mod tests {
     fn brand_pressed_distinct_light() {
         let t = Tokens::pick(Theme::Light);
         assert_ne!(t.brand, t.brand_pressed);
+    }
+
+    /// 禁用档 token 完备性（波 2 移植件 XA）：light/dark 各自成对镜像、
+    /// 与常态度可区分（禁用观感 = 与正常面不同即达意——值非 wire 契约）。
+    #[test]
+    fn disabled_tokens_paired_and_distinct() {
+        assert_ne!(BG_DISABLED, BG_COMP, "light 禁用底 ≠ 组件面底");
+        assert_ne!(FG_DISABLED, FONT_PRIMARY, "light 禁用前景 ≠ 主文本");
+        assert_ne!(BG_DISABLED_DARK, BG_COMP_DARK, "dark 禁用底 ≠ 组件面底");
+        assert_ne!(FG_DISABLED_DARK, FONT_PRIMARY_DARK, "dark 禁用前景 ≠ 主文本");
+        assert_ne!(BG_DISABLED, BG_DISABLED_DARK, "双档镜像各自取值");
+    }
+
+    /// 圆角 token px 折算钉板：8vp @3x = 24px（与 pattern.rs `DENSITY`
+    /// 几何单源对拍——theme 不反向依赖，一致性在此执法）。
+    #[test]
+    fn radius_token_px_pinned() {
+        assert_eq!(OH_RADIUS_VP, 8);
+        assert_eq!(OH_RADIUS_PX, OH_RADIUS_VP * crate::pattern::DENSITY);
     }
 }
