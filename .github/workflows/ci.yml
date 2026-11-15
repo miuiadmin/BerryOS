@@ -342,7 +342,7 @@ jobs:
       # + 注入段，帽内余量 ~3x。
       - name: img-boot 冒烟（M-G1 gate）
         # 分层 CI：img-boot 同款 boot 轻面（PR #43）——EFI 十段+接续+裸相 32
-        # 45 标记慢机可达（服务器实测绿），生态 39 服务链留快机。
+        # 45 标记慢机可达（服务器实测绿），生态 41 服务链留快机。
         env:
           SMOKE_PHASES: boot
           # 自托管 Linux：非 root 下 Linuxbrew QEMU 沙箱拒读 prefix 外路径
@@ -380,8 +380,8 @@ jobs:
 
   # ---------- BCTS v0 全量回放挂 CI（ADR #84；BCTS 设计稿 v1.1 §4.2 五步） ----------
   # 独立关卡不并入 smoke job（规则/07 独立关卡纪律）：smoke job = 分层 CI 轻面
-  # （SMOKE_PHASES=boot 32 标记）；本 job = 八跑全相 + 88 标记对账 + abi-check
-  # host 门禁（bcts-run.sh 步③④——bcts-run.sh:53 TIER1_FLOOR_LIVE=88 下限在册）。
+  # （SMOKE_PHASES=boot 32 标记）；本 job = 八跑全相 + 90 标记对账 + abi-check
+  # host 门禁（bcts-run.sh 步③④——bcts-run.sh:53 TIER1_FLOOR_LIVE=90 下限在册）。
   # needs: smoke 而非并行——concurrency ci-serial 只序列化 run 间不序列化 run 内
   # job，同机双 runner 并行 QEMU 分抢 8 核 = TCG 互拖假红根因（上方 concurrency
   # 注同源），且 smoke 红不耗全相回放带宽。build 前置走 just bcts 配方自带
@@ -411,7 +411,7 @@ jobs:
       # echod/hostfwd 18080-83，与宿主常驻容器结构性冲突。结果包落
       # /tmp 随机目录（bcts-run.sh mktemp）；红面拷进工作区留 artifact，
       # 绿面不留（verdict 恒 PASS 无对账价值）。
-      - name: BCTS 全量回放（八跑全相 + 88 标记对账 + abi-check host 门禁）
+      - name: BCTS 全量回放（八跑全相 + 90 标记对账 + abi-check host 门禁）
         id: bcts
         run: |
           rc=0

@@ -96,9 +96,10 @@ REPO=$(pwd)
 source "$SCRIPT_DIR/paths.sh"
 
 FROZEN_HOME="$SCRIPT_DIR/bcts/frozen"
-# 活树自检态守卫下限（Tier 1 在册值 88 = 裸相 32 + rootfs 54 + RX 2，设计稿
-# §3.2；活树态无工件可携 floor，取在册常量——冻结态不用此值）。
-TIER1_FLOOR_LIVE=88
+# 活树自检态守卫下限（Tier 1 在册值 90 = 裸相 32 + rootfs 56 + RX 2，设计稿
+# §3.2；活树态无工件可携 floor，取在册常量——冻结态不用此值。命令行体验刀
+# 88→90 随刀滚新，冻结件 bcts@1 同批）。
+TIER1_FLOOR_LIVE=90
 # 镜像腿（--image，G3）bare 相守卫下限：现役在册 32 = markers.sh MARKERS
 # 裸相值（smoke-image.sh KERNEL_MARKERS 同面——EFI 路结构性可达全集）。
 # bare 相 = add-only 面（marker 删除即破冻，设计稿 §4.1），只增不减——
@@ -801,14 +802,20 @@ if [ "$SELFTEST" = 1 ]; then
     fi
   }
 
-  # 现役工件清点（发布后只读、add-only——发布多件则逐件过检）。
+  # 现役工件清点（发布后只读、add-only——发布多件则逐件过检）。schema 腿期望串
+  # 按件动态生成（pr 取文件名、floor/n_markers 取工件自声明——bcts@1 起多件
+  # 并存，写死首冻件数字 = 对新件恒红；bcts@0 时代为单件字面钉板）。
   arts=$(ls "$FROZEN_HOME"/bcts@*.toml 2>/dev/null) || true
   [ -n "$arts" ] || { echo "bcts: FAIL: $FROZEN_HOME 无 bcts@*.toml 冻结件" >&2; exit 1; }
   for a in $arts; do
+    a_pr=$(basename "$a"); a_pr=${a_pr#bcts@}; a_pr=${a_pr%.toml}
+    a_floor=$(sed -n 's/^tier1_floor = //p' "$a")
+    a_cnt=$(grep -c '^expect = ' "$a")
     leg "工件 schema 自校验（$(basename "$a")，含空集守卫+文件名自证）" 0 \
-      "parse_frozen '$a' | grep -q $'^META\\t0\\t88\\t88\\t1\\t'"
+      "parse_frozen '$a' | grep -q \$'^META\\\\t${a_pr}\\\\t${a_floor}\\\\t${a_cnt}\\\\t1\\\\t'"
   done
-  ART=$(printf '%s\n' $arts | head -1)
+  # 「最新工件」= pr 数值最大（sort -n 数值序取尾；字符串序 @10 < @9 坑）。
+  ART=$(printf '%s\n' $arts | sort -t@ -k2 -n | tail -1)
 
   # 拒面合成腿（逐型；临时件名守 bcts@0.toml 自证形，失配腿除外）。
   BAD=$(mktemp -d "${TMPDIR:-/tmp}/berryos-bcts-selftest.XXXXXX")
@@ -831,7 +838,7 @@ if [ "$SELFTEST" = 1 ]; then
   live_bare=$(grep -c $'^MARK\tbare\t' "$WORK/live.tsv")
   live_rootfs=$(grep -c $'^MARK\trootfs\t' "$WORK/live.tsv")
   live_rx=$(grep -c $'^MARK\trx\t' "$WORK/live.tsv")
-  if [ "$live_n" -ge "$TIER1_FLOOR_LIVE" ] && [ "$live_bare" -eq 32 ] && [ "$live_rootfs" -eq 54 ] && [ "$live_rx" -eq 2 ]; then
+  if [ "$live_n" -ge "$TIER1_FLOOR_LIVE" ] && [ "$live_bare" -eq 32 ] && [ "$live_rootfs" -eq 56 ] && [ "$live_rx" -eq 2 ]; then
     echo "bcts: selftest 腿绿：活树清单合成（${live_n} 件 = 裸相 ${live_bare} + rootfs ${live_rootfs} + RX ${live_rx}，≥ 下限 ${TIER1_FLOOR_LIVE}）"
   else
     echo "bcts: selftest 腿红：活树计数漂移（bare=${live_bare} rootfs=${live_rootfs} rx=${live_rx}）" >&2
@@ -843,7 +850,7 @@ if [ "$SELFTEST" = 1 ]; then
   parse_frozen "$ART" | grep $'^MARK\t' | cut -f4 > "$WORK/frozen-expects"
   grep $'^MARK\t' "$WORK/live.tsv" | cut -f4 > "$WORK/live-expects"
   if cmp -s "$WORK/frozen-expects" "$WORK/live-expects"; then
-    echo "bcts: selftest 腿绿：冻结件 ↔ markers.sh 单源快照全等（88 件）"
+    echo "bcts: selftest 腿绿：冻结件 ↔ markers.sh 单源快照全等（90 件）"
   else
     echo "bcts: selftest 腿红：冻结件与活树标记集漂移（$(diff "$WORK/frozen-expects" "$WORK/live-expects" | head -4 | tr '\n' ' ')）" >&2
     fail_legs=$((fail_legs+1))
