@@ -18,6 +18,7 @@ mod abi_gen;
 mod aspace;
 mod bench; // B-0：内核微基准 + churn 泄漏金丝雀（docs/基准与压力测试设计.md）
 mod channel;
+mod cbox; // 黑匣子崩溃记录表（plans/cbox/design.md——异常 fatal 路 RAM 镜像 + 排液）
 mod dtb;
 mod dpg; // G4-1：demand paging 内核机制自喂闭环（docs/G4按需调页实施设计草案.md）
 mod event;
@@ -1633,6 +1634,8 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     berry_hal_aarch64::set_irq_dispatch(berry_sched::on_irq_tick);
     berry_hal_aarch64::set_sgi_dispatch(berry_sched::on_sgi_resched);
     berry_hal_aarch64::set_user_fault_exit(berry_sched::user_fault_exit);
+    // cbox 黑匣子镜像槽（同上 boot 单线程窗注册；fatal 路在杀链/halt 前回调）。
+    berry_hal_aarch64::set_cbox_hook(cbox::on_fault);
     // G3-1b 落点①接线：syscall 返回边界检查点（SVC 派发尾空探；sched 侧
     // 自带 irqsave 包络）。零行为变更步——注册与否不改变现役行为（探峰恒空），
     // g3-1c 域解蔽后承重。

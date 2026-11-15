@@ -377,6 +377,14 @@ pub extern "C" fn berry_process_get_exit_code(process: Handle, code: *mut i32) -
     unsafe { sys(nr::PROCESS_GET_EXIT_CODE, process as usize, code as usize, 0, 0, 0, 0) }
 }
 
+/// 0x42（cbox 刀 1，`plans/cbox/design.md`）：黑匣子崩溃记录排液——全量快照
+/// copy-out（12B 头 {ver,total,stored} + 104B/条按 seq 升序）。cap==0 = 尺寸
+/// 查询（`*out_len` = 所需字节）；快照非消费——记录永驻至槽位轮转，seq 去重
+/// 归调用方自持。无 right 门（诊断几何面）。
+pub extern "C" fn berry_cbox_drain(buf: *mut u8, cap: u32, out_len: *mut u32) -> Status {
+    unsafe { sys(nr::CBOX_DRAIN, buf as usize, cap as usize, out_len as usize, 0, 0, 0) }
+}
+
 /// 0x3B（C-4b）：外部终止进程（kill/Ctrl-C 内核原语）。`code` 落为该进程
 /// 退出码（父侧收割同 process_exit 面：wait TERMINATED → get_exit_code）。
 /// 门控 Process MANAGE；自杀 -EBADSTATE（退自己走 berry_process_exit）；

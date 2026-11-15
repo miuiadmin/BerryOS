@@ -73,6 +73,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | 0x3F | `thread_yield` | 主动让出当前时间片；无 handle，等价内核 yield_now；无可跑任务立即返回 0 | 1.1 |
 | **异常** ||||
 | 0x41 | `thread_create_exception_channel` | 用户态异常上报通道 | v2 |
+| 0x42 | `cbox_drain` | 黑匣子崩溃记录排液：`buf/cap` 收全量快照（12B 头 {ver,total,stored} + 存量记录按 seq 升序、104B/条），`*out_len` 出参字节数。cap==0 = 尺寸查询（返 0）；cap 不足 → -ENOMEM 不部分写。快照非消费——记录永驻至槽位轮转，排液方自持 seq 去重。 | v1 |
 | **IPC / event / futex** ||||
 | 0x51 | `channel_create` | 建端点对 | v1 |
 | 0x52 | `channel_send` | 发消息 + handle 迁移 | v1 |
@@ -433,7 +434,7 @@ berry_status_t berry_event_create(uint32_t options, berry_handle_t *out);
 berry_status_t berry_clock_read(uint32_t clock_id, berry_time_t *out);
 ```
 
-**v1 计数 = 35**（handle/object 6 + VMO/Vmar 11（含 0x1A `vmo_get_size`，G-eco；0x1B `vmo_get_phys`，P6）+ 进程线程 9（含 0x3A `process_get_exit_code`，P5；0x3B `process_terminate`，C-4b）+ channel/event 4 + clock 1 + pager 1（0x21 `pager_supply_pages`，G4-2 v2 号激活——阻塞收货首形，demand VMO 供给）+ 安全/证明预留 1（0x85 `berry_attest`，SEC-01 件 11——在册未实现恒 `-ENOTSUP`）+ 信号 2（0x86 `signal_send` / 0x87 `signal_take`，A7-4 门 C 裁定 A add-only——已实现））——真语义 34 已逐刀 add-only 扩出「~26」预算带（0x35/0x1A/0x1B/0x3A/0x3B/0x86/0x87/0x21），另 1 号为预留位。`object_get_info / futex / timer / 设备 / namespace` 留到 v2/v3（pager 首号已入 v1；0x22 `pager_op_range` 仍 v3）。
+**v1 计数 = 36**（handle/object 6 + VMO/Vmar 11（含 0x1A `vmo_get_size`，G-eco；0x1B `vmo_get_phys`，P6）+ 进程线程 9（含 0x3A `process_get_exit_code`，P5；0x3B `process_terminate`，C-4b）+ channel/event 4 + clock 1 + pager 1（0x21 `pager_supply_pages`，G4-2 v2 号激活——阻塞收货首形，demand VMO 供给）+ 安全/证明预留 1（0x85 `berry_attest`，SEC-01 件 11——在册未实现恒 `-ENOTSUP`）+ 信号 2（0x86 `signal_send` / 0x87 `signal_take`，A7-4 门 C 裁定 A add-only——已实现）+ 黑匣子 1（0x42 `cbox_drain`，cbox 刀 1——异常 fatal 路径 RAM 记录表的排液口，`plans/cbox/design.md`））——真语义 35 已逐刀 add-only 扩出「~26」预算带（0x35/0x1A/0x1B/0x3A/0x3B/0x86/0x87/0x21/0x42），另 1 号为预留位。`object_get_info / futex / timer / 设备 / namespace` 留到 v2/v3（pager 首号已入 v1；0x22 `pager_op_range` 仍 v3）。
 
 ### 8.4 Rust FFI 镜像（`user/berry-sys`，raw 绑定）
 

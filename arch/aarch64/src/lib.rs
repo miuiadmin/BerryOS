@@ -211,6 +211,33 @@ pub unsafe fn user_fault_exit() -> Option<UserFaultExit> {
     USER_FAULT_EXIT
 }
 
+// ---- 崩溃记录钩子（HAL→内核 cbox，函数指针槽反转；同上避循环依赖）----
+//
+// cbox 黑匣子（`kernel/src/cbox.rs` / `.agents/plans/cbox/design.md`）：同步异常
+// fatal 路径（EL0 kill 链 / EL1 halt 前）经此槽把故障帧镜像进内核 RAM 记录表。
+// HAL 只传 (kind, &TrapFrame)；表、序号与排液语义全在内核侧。
+
+/// 崩溃记录回调类型：kind 1 = EL0 sync（用户任务 fault）、2 = EL1 sync（内核
+/// fault）；同步异常上下文调用（PSTATE.I=1）——实现侧须零分配零锁零 uart。
+pub type CboxHook = unsafe extern "C" fn(u8, *const crate::trap::TrapFrame);
+
+static mut CBOX_HOOK: Option<CboxHook> = None;
+
+/// 注册崩溃记录钩子。须在**首个用户任务被调度之前**调用一次。
+pub fn set_cbox_hook(f: CboxHook) {
+    // SAFETY: 启动单线程、DAIF 屏蔽；无并发 IRQ、无竞态。
+    unsafe { CBOX_HOOK = Some(f) };
+}
+
+/// 取已注册的崩溃记录钩子（trap.rs fatal 路用）。未注册时返回 `None`（早期
+/// boot fault 静默跳过——表未接线，与 kill 槽未装兜底语义同族）。
+///
+/// # Safety
+/// 读 `static mut`。同步异常上下文调用；boot 后槽恒定只读。
+pub unsafe fn cbox_hook() -> Option<CboxHook> {
+    CBOX_HOOK
+}
+
 // ---- G4-1 按需调页故障探针槽（HAL→内核 mm，同上反转模式）----
 //
 // D-abort（current-EL 0x25 / lower-EL 0x24）在杀链**之前**先问此槽：

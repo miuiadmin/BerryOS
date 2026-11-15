@@ -30,29 +30,30 @@ Version: 0.1.0
 4     kind      1     1 = EL0 sync（用户任务 fault，G1.5 杀）；2 = EL1 sync（内核 fault，halt 前）
 5     ver       1     记录格式版本 = 1
 6     rsvd      2     零填充
-8     seq       4     全局单调写序（排液方去重游标）
-12    vct       8     crash 时刻 CNTVCT 原始周期
-20    name      16    任务名 NUL 填充（CURRENT 缺席的早期 boot fault = "(boot)"）
-28    pc        8     ELR
-36    far       8     FAR_EL1
-44    esr       8     ESR_EL1
-52    lr        8     x30（回溯真实调用点——WTDIE 定谳实证的主字段）
-60    sp        8     SP
-68    x19       8     } callee-saved 三元组
-76    x20       8     } （WTDIE 案 x19=sig / x20=h / x21=e 的取证先例）
-84    x21       8     }
-----  总计      92
+8     seq       4     全局单调写序（1 起；0 保留——排液方去重游标）
+12    stamp     4     槽代序 seqlock：偶 = 稳态 / 奇 = 写入中——排液见奇或复读变值以 magic=0 哨兵记录跳过
+16    vct       8     crash 时刻 CNTVCT 原始周期
+24    name      16    任务名 NUL 填充（CURRENT 空态的早期 boot fault = "(boot)"）
+40    pc        8     ELR
+48    far       8     FAR_EL1
+56    esr       8     ESR_EL1
+64    lr        8     x30（回溯真实调用点——WTDIE 定谳实证的主字段）
+72    sp        8     SP
+80    x19       8     } callee-saved 三元组
+88    x20       8     } （WTDIE 案 x19=sig / x20=h / x21=e 的取证先例）
+96    x21       8     }
+----  总计      104
 ```
 
-寄存器全集仍走串口 dump（`dump_hdr`），账本只收定位必需的紧凑集——符号化要 pc+lr，诊断要 far/esr，先例取证要 x19–x21。后续加字段 = ver 递增 + 尾部追加，禁中插。
+偏移由内核 `cbox.rs` const assert 钉板（TrapFrame 同款纪律），本表与其同源。寄存器全集仍走串口 dump（`dump_hdr`），账本只收定位必需的紧凑集——符号化要 pc+lr，诊断要 far/esr，先例取证要 x19–x21。后续加字段 = ver 递增 + 尾部追加，禁中插。
 
 ### 黑匣子写入约束（异常上下文纪律）
 
-写入点：`exception_sync_el0`（dump 之前）与 `exception_sync`（EL1，halt 之前）两处。上下文 PSTATE.I=1（IRQ 屏蔽）——**零分配、零锁、零 uart**：槽位分配用 `AtomicU32::fetch_add`（NCPUS=2 双核可同时 fault，各自拿各自槽，last-writer-wins 可接受）；字段纯 store。BRK recover 路不写（非崩溃面）。
+写入点：`exception_sync_el0`（dump 之前）与 `exception_sync`（EL1，halt 之前）两处。上下文 PSTATE.I=1（IRQ 屏蔽）——**零分配、零锁、零 uart**：槽位分配用 `AtomicU32::fetch_add`（NCPUS=2 双核可同时 fault，各自拿各自槽，last-writer-wins 可接受）；字段纯 store；撕裂防护 = 每槽 `stamp` 轻量 seqlock（写者先抬奇、写域、Release fence 后落偶；读者 stamp 复读夹 Acquire，不稳以 magic=0 哨兵告知跳过）。BRK recover 路不写（非崩溃面）。
 
 ### ABI 面（0x42 cbox_drain）
 
-- `berry_cbox_drain(buf: *mut u8, cap: u32, out_len: *mut u32) -> i64`：全量快照 copy-out（表头 12B {ver, total_ever, stored} 顺排 + 存量记录按 seq 升序）；`cap` 不足 → `-ENOMEM`（不部分写）；出参 `out_len` = 实拷字节数。经 `copy_to_user` 界检（syscall.rs :230 既有件），caller_el1 同门。无 right 门（诊断几何面——`process_get_exit_code` need=0 惯例）。
+- `berry_cbox_drain(buf: *mut u8, cap: u32, out_len: *mut u32) -> i64`：全量快照 copy-out（表头 12B {ver, total_ever, stored} 顺排 + 存量记录按 seq 升序）；`cap == 0` = 尺寸查询（`*out_len` = 所需字节，返 0）；`cap` 不足 → `-ENOMEM`（不部分写）；出参 `out_len` = 实拷字节数。经 `copy_to_user` 界检（syscall.rs :230 既有件），caller_el1 同门。无 right 门（诊断几何面——`process_get_exit_code` need=0 惯例）。
 - 入册：`tools/abi.toml` 异常组 0x42（0x41 thread_create_exception_channel v2 预留位隔壁），stage = "v1"、implemented = true → `just abi-gen` 再生四产物（kernel/berry-sys abi_gen.rs + ABI 文档 §4/§8.2 + abi.syz）。原型层手写双镜像（berry-sys `lib.rs`）同批。
 - 语义边界：排液是**快照非消费**——记录永驻至槽位轮转；排液方自持 last_seq 去重。同 boot 多次排液幂等。
 

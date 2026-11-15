@@ -77,7 +77,8 @@ use core::ptr::NonNull;
 #[allow(unused_imports)]
 pub use crate::abi_gen::{
     CHAN_OPT_NO_INTENT, NR_CHANNEL_CREATE, NR_CHANNEL_RECV, NR_CHANNEL_SEND, NR_CLOCK_READ,
-    NR_EVENT_CREATE, NR_HANDLE_CLOSE, NR_HANDLE_DUPLICATE, NR_HANDLE_REPLACE, NR_OBJECT_SIGNAL,
+    NR_CBOX_DRAIN, NR_EVENT_CREATE, NR_HANDLE_CLOSE, NR_HANDLE_DUPLICATE, NR_HANDLE_REPLACE,
+    NR_OBJECT_SIGNAL,
     NR_OBJECT_WAIT_MANY, NR_OBJECT_WAIT_ONE, NR_PAGER_SUPPLY_PAGES, NR_PROCESS_CREATE,
     NR_PROCESS_EXIT, NR_PROCESS_GET_EXIT_CODE, NR_PROCESS_START, NR_PROCESS_SUSPEND,
     NR_SCHED_GETATTR, NR_SCHED_SETATTR, NR_THREAD_YIELD,
@@ -1472,6 +1473,51 @@ extern "C" fn sys_process_get_exit_code(tf: &mut TrapFrame) -> i64 {
         return ERR_AGAIN as i64; // poll 语义：先 wait TERMINATED 再查
     }
     match copy_out_u32(el1, out, p.exit_code as u32) {
+        Ok(()) => 0,
+        Err(e) => e as i64,
+    }
+}
+
+/// `cbox_drain(buf, cap, *out_len)`（0x42，cbox 刀 1）：黑匣子崩溃记录表全量
+/// 快照 copy-out——12B 头 {ver,total,stored} + 存量 104B 记录按 seq 升序。
+/// cap==0 = 尺寸查询（`*out_len` = 所需字节，返 0）；cap 不足 → -ENOMEM 不
+/// 部分写；出参预清 fail-fast（`process_get_exit_code` 同款）。无 right 门
+/// （诊断几何面——need=0 惯例）；零结构锁（纯静态读 + copy-out，NONE 类）。
+extern "C" fn sys_cbox_drain(tf: &mut TrapFrame) -> i64 {
+    let (buf, cap, out) = (tf.regs[1], tf.regs[2] as u32, tf.regs[3]);
+    let el1 = caller_is_el1(tf);
+    if let Err(e) = copy_out_u32(el1, out, 0) {
+        return e as i64;
+    }
+    // 两遍快照：先尺寸后拷贝。seq 窗口以 total 首读锚定，但遍间若有新崩溃
+    // 写入，第二遍可能更长——拷贝循环按 cap 硬界兜底（理论不可达，防御面）。
+    let mut need = 0usize;
+    crate::cbox::drain_with(&mut |s| need += s.len());
+    if cap == 0 {
+        return match copy_out_u32(el1, out, need as u32) {
+            Ok(()) => 0,
+            Err(e) => e as i64,
+        };
+    }
+    if (cap as usize) < need {
+        return ERR_NO_MEMORY as i64;
+    }
+    let mut off = 0usize;
+    let mut err = 0i32;
+    crate::cbox::drain_with(&mut |s| {
+        if err != 0 || off + s.len() > cap as usize {
+            err = ERR_NO_MEMORY;
+            return;
+        }
+        match copy_to_user(el1, buf + off as u64, s) {
+            Ok(()) => off += s.len(),
+            Err(e) => err = e,
+        }
+    });
+    if err != 0 {
+        return err as i64;
+    }
+    match copy_out_u32(el1, out, off as u32) {
         Ok(()) => 0,
         Err(e) => e as i64,
     }
@@ -3011,10 +3057,12 @@ pub fn install() {
     // 降档 SQ_RQ 无表档（`nearest_deadline` KL-only 读面收口 SQ——SLEEPQ
     // 全触面纯 SQ 串行，该号免 KL；死锁论证见常量注）。
     use berry_hal_aarch64::kern_lock::{
-        SVC_CLASS_ALL, SVC_CLASS_RQ_TABLE, SVC_CLASS_SQ_RQ, SVC_CLASS_SQ_RQ_TABLE,
+        SVC_CLASS_ALL, SVC_CLASS_NONE, SVC_CLASS_RQ_TABLE, SVC_CLASS_SQ_RQ, SVC_CLASS_SQ_RQ_TABLE,
         SVC_CLASS_TABLE,
     };
     berry_sched::set_exit_hook(task_exit_hook);
+    // cbox 刀 1：黑匣子排液（0x42）——纯静态读 + copy-out，零结构锁（NONE）。
+    reg(NR_CBOX_DRAIN, sys_cbox_drain, SVC_CLASS_NONE);
     // —— SQ+RQ+TABLE（0x2E）：wait/send 族（wake→enqueue 双结构窗 + 表）——
     reg(NR_HANDLE_CLOSE, sys_handle_close, SVC_CLASS_SQ_RQ_TABLE);
     reg(NR_HANDLE_DUPLICATE, sys_handle_duplicate, SVC_CLASS_TABLE);
