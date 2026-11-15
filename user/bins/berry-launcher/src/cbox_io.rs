@@ -104,10 +104,15 @@ fn read_file() -> Result<Vec<u8>, i32> {
     Ok(data)
 }
 
-/// 全量写（layout_io `put_file` 形态）：open(O_WRONLY|O_CREAT) → write
-/// 循环 → **close 即 commit**（TRUNC(游标)；中途写失败仍 close——部分
-/// 数据照旧提交，POSIX close 恒消费，bsh 文档化取舍同款）。旧长于新时
-/// 残留被 TRUNC 截断。
+/// 全量写（`layout_io put_file` 变体——账本面一处分岔）：open(O_WRONLY|
+/// O_CREAT) → write 循环 → **close 即 commit**（TRUNC(游标)）。与 layout_io
+/// 的分岔在**失败路径**：libc close 对可写 fd 恒发 TRUNC(游标)——中途失败
+/// 后 close = 把部分写入提交成账本、毁掉盘上旧账，违反设计稿「中断 = 旧账
+/// 原样保命」（design.md 持久化节写策略）。故写失败**不 close**（fd 泄漏
+/// 有界：init 落账一次性，每 launcher 会话至多一个）；服务端 staging 槽
+/// 残留部分缓冲——后续同名全量重写（svcmgr 两窗 0..len + TRUNC(len)）自愈，
+/// 跨名 FAT 写会先自动 commit 旧槽（v1 无 init 后 FAT 写者，design.md
+/// 挂账）。正常路径 close 出错 = commit 失败面，errno 透传。
 fn put_file(data: &[u8]) -> Result<(), i32> {
     // SAFETY: PATH NUL 结尾；fd 按 libc 契约使用。
     let fd = unsafe { open(PATH.as_ptr() as *const _, O_WRONLY | O_CREAT) };
@@ -119,13 +124,10 @@ fn put_file(data: &[u8]) -> Result<(), i32> {
         // write 安全 fn（io.rs——内部按 192B 分片 PUT）；部分写按返回量续写。
         let n = write(fd, data[off..].as_ptr() as *const _, data.len() - off);
         if n < 0 {
-            let e = get_errno();
-            close(fd); // 部分 commit（文档化取舍）
-            return Err(e);
+            return Err(get_errno()); // 不 close——close=TRUNC 提交部分写入毁旧账
         }
         if n == 0 {
-            close(fd);
-            return Err(EIO); // 零写非 EOF = 协议破缺面
+            return Err(EIO); // 零写非 EOF = 协议破缺面；同上不 close
         }
         off += n as usize;
     }

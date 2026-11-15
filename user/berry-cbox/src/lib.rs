@@ -234,15 +234,19 @@ fn kind_word(kind: u8, out: &mut [u8]) -> Option<usize> {
 }
 
 /// 任务名可见形：NUL 前可见段，非打印字节替 `?`；空名防御回 `(boot)`
-/// （内核写侧保证非空——此为编码侧兜底，保行恒可解析）。
+/// （内核写侧保证非空——此为编码侧兜底，保行恒可解析）。**可编码域 =
+/// 1..=15 个 [0x21,0x7f) 字节**：空格（0x20）是行内字段界（Rd::word 停靠
+/// 点）——可见段含空格编出的行解析必拒；满 16 字节无 NUL 同样编不回。
+/// 两者都替 `?` / 截到 15——编码面任何产物 parse 必收（round-trip 单向
+/// 契约的编码侧半边）。
 fn name_visible(name: &[u8; 16]) -> [u8; 16] {
     let mut out = [0u8; 16];
     let mut n = 0;
     for &b in name.iter() {
-        if b == 0 {
+        if b == 0 || n == 15 {
             break;
         }
-        out[n] = if (0x20..0x7f).contains(&b) { b } else { b'?' };
+        out[n] = if (0x21..0x7f).contains(&b) { b } else { b'?' };
         n += 1;
     }
     if n == 0 {
@@ -385,8 +389,9 @@ fn parse_kind(w: &[u8]) -> Option<u8> {
 }
 
 /// 账本行解析 → `(boot, Rec)`。严格字段序（见 [`line_encode`]）；行内不含
-/// `\n`（调用方按行切好传入）。name 行内形须 1..=15 个可见字节（与 16B
-/// NUL 填充字段互逆；超长 = 编不出也读不回，拒）。
+/// `\n`（调用方按行切好传入）。name 行内形 1..=15 个 [0x21,0x7f) 字节
+/// （`name_visible` 可编码域；内核写侧 min(15) 留 NUL——编码产物必过本
+/// 解析，round-trip 互逆成立）。
 pub fn line_parse(line: &[u8]) -> Option<(u32, Rec)> {
     let mut r = Rd { buf: line, p: 0 };
     r.lit(b"CBOX v1 seq=")?;
@@ -691,6 +696,27 @@ mod tests {
         assert_eq!(back2, k);
         k.kind = 0; // 哨兵不可编码消费——但 encode 本身有定义（防御）
         let _ = line_encode(&k, 1, &mut out).unwrap();
+    }
+
+    #[test]
+    fn line_encode_name_domain_guards() {
+        let mut out = [0u8; LINE_MAX];
+        // 满 16 字节名（无 NUL）：可见段截到 15——编出的行必可解析回。
+        let r = rec(9, KIND_EL0, b"aaaaaaaaaaaaaaaa");
+        let n = line_encode(&r, 1, &mut out).unwrap();
+        let (_, back) = line_parse(&out[..n]).unwrap();
+        assert_eq!(&back.name[..15], b"aaaaaaaaaaaaaaa");
+        assert_eq!(back.name[15], 0);
+        // 含空格名：空格是行内字段界——替 `?` 保行可解析（不丢记录）。
+        let mut sp = rec(10, KIND_EL0, b"ab cd");
+        let n2 = line_encode(&sp, 1, &mut out).unwrap();
+        let (_, back2) = line_parse(&out[..n2]).unwrap();
+        assert_eq!(&back2.name[..5], b"ab?cd");
+        sp.name = [0u8; 16]; // 控制字节同替 `?`
+        sp.name[..3].copy_from_slice(&[b'a', 0x01, b'b']);
+        let n3 = line_encode(&sp, 1, &mut out).unwrap();
+        let (_, back3) = line_parse(&out[..n3]).unwrap();
+        assert_eq!(&back3.name[..3], b"a?b");
     }
 
     #[test]

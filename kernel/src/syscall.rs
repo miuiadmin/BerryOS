@@ -1481,18 +1481,24 @@ extern "C" fn sys_process_get_exit_code(tf: &mut TrapFrame) -> i64 {
 /// `cbox_drain(buf, cap, *out_len)`（0x42，cbox 刀 1）：黑匣子崩溃记录表全量
 /// 快照 copy-out——12B 头 {ver,total,stored} + 存量 104B 记录按 seq 升序。
 /// cap==0 = 尺寸查询（`*out_len` = 所需字节，返 0）；cap 不足 → -ENOMEM 不
-/// 部分写；出参预清 fail-fast（`process_get_exit_code` 同款）。无 right 门
-/// （诊断几何面——need=0 惯例）；零结构锁（纯静态读 + copy-out，NONE 类）。
+/// 部分写；cap 高 32 位非零 = -EINVAL（u64 截断成假小帽会绕尺寸契约）；出参
+/// 预清 fail-fast（`process_get_exit_code` 同款）。无 right 门（诊断几何面
+/// ——need=0 惯例）；结构面零锁但走 SVC_CLASS_TABLE 在册（svc_enter 取锁
+/// 纪律同全体 syscall，`cbox.rs` 表读写自身无锁——seqlock 快照）。
 extern "C" fn sys_cbox_drain(tf: &mut TrapFrame) -> i64 {
-    let (buf, cap, out) = (tf.regs[1], tf.regs[2] as u32, tf.regs[3]);
+    let (buf, cap_raw, out) = (tf.regs[1], tf.regs[2], tf.regs[3]);
+    let Ok(cap) = u32::try_from(cap_raw) else {
+        return ERR_INVALID_ARG as i64;
+    };
     let el1 = caller_is_el1(tf);
     if let Err(e) = copy_out_u32(el1, out, 0) {
         return e as i64;
     }
-    // 两遍快照：先尺寸后拷贝。seq 窗口以 total 首读锚定，但遍间若有新崩溃
-    // 写入，第二遍可能更长——拷贝循环按 cap 硬界兜底（理论不可达，防御面）。
+    // 两遍快照（先尺寸后拷贝）共一锚：drain_total 取一次贯穿两遍——遍间新
+    // 崩溃不进窗口，两遍等长；拷贝回的越界分支纯防御（同锚下结构性不可达）。
+    let total = crate::cbox::drain_total();
     let mut need = 0usize;
-    crate::cbox::drain_with(&mut |s| need += s.len());
+    crate::cbox::drain_with(total, &mut |s| need += s.len());
     if cap == 0 {
         return match copy_out_u32(el1, out, need as u32) {
             Ok(()) => 0,
@@ -1504,7 +1510,7 @@ extern "C" fn sys_cbox_drain(tf: &mut TrapFrame) -> i64 {
     }
     let mut off = 0usize;
     let mut err = 0i32;
-    crate::cbox::drain_with(&mut |s| {
+    crate::cbox::drain_with(total, &mut |s| {
         if err != 0 || off + s.len() > cap as usize {
             err = ERR_NO_MEMORY;
             return;

@@ -7,10 +7,13 @@
 //! 账本存在理由，`.agents/notes/implemented/2026-11-15-svcmgr-wtdie-selftrap-forensics.md`
 //! 可复用取证节）。
 //!
-//! 写入纪律（异常上下文，PSTATE.I=1）：**零分配、零锁、零 uart**——槽位经
+//! 写入纪律（异常上下文）：**零分配、零锁、零 uart**——槽位经
 //! `CBOX_NEXT.fetch_add` 分配（NCPUS=2 双核可同时 fault，各自拿槽）；撕裂防护
 //! 用每槽 `stamp` 轻量 seqlock（奇 = 写入中：写者先抬奇、写域、再落偶 Release；
-//! 读者见奇或复读变值 = 以 magic=0 哨兵记录告知排液方跳过）。
+//! 读者见奇或复读变值 = 以 magic=0 哨兵记录告知排液方跳过）。IRQ 屏蔽面
+//! 分臂如实：EL0 臂 taken-from-EL0 自动 PSTATE.I=1；EL1 臂 same-EL 异常
+//! **不**自动屏蔽（trap.rs 0x25 臂同注）——但 seqlock + 原子分槽本身抢占
+//! 安全（IRQ 只延迟写入；读者见不稳即跳），无需额外屏蔽。
 //!
 //! 排液语义 = **快照非消费**：记录永驻至槽位轮转；排液方自持 last_seq 去重。
 
@@ -96,8 +99,10 @@ const REC_ZERO: CboxRec = CboxRec {
     x21: 0,
 };
 
-// SAFETY 契约：写侧仅异常上下文（PSTATE.I=1；seq 原子分槽 + stamp seqlock）；
-// 读侧 syscall 上下文（无锁快照——stamp 复读兜底）。
+// SAFETY 契约：写侧仅异常上下文（EL0 臂 IRQ 自动屏蔽 / EL1 臂 same-EL 不自动
+// 屏蔽——seq 原子分槽 + stamp seqlock 自身抢占安全）；读侧 syscall 上下文
+// （无锁快照——stamp 复读兜底）。写读皆 volatile（Rust 抽象机数据竞争面
+// ——plain load 并发 write_volatile 是 UB，volatile 配对才是规范化读）。
 static mut CBOX_TBL: [CboxRec; SLOTS] = [REC_ZERO; SLOTS];
 /// 全局单调写序（既是 seq 源也是槽分配器；0 = 未写过）。
 static CBOX_NEXT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
@@ -106,7 +111,7 @@ static CBOX_NEXT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32:
 /// `berry_hal_aarch64::trap::{KIND_EL0, KIND_EL1}`。
 ///
 /// # Safety
-/// 同步异常上下文（PSTATE.I=1）；本函数零分配零锁零 uart（异常纪律）。
+/// 同步异常上下文；本函数零分配零锁零 uart（异常纪律）。
 pub unsafe extern "C" fn on_fault(kind: u8, tf: *const TrapFrame) {
     let seq = CBOX_NEXT.fetch_add(1, Ordering::Relaxed) + 1;
     let slot = ((seq as usize - 1) % SLOTS) as usize;
@@ -114,7 +119,9 @@ pub unsafe extern "C" fn on_fault(kind: u8, tf: *const TrapFrame) {
     let mut name = [0u8; 16];
     match berry_sched::current_task_name() {
         Some(n) => {
-            let n = &n[..n.len().min(16)];
+            // min(15) 非 16：name 定长 16B NUL 填充——满 16 字节任务名必留
+            // 至少一个 NUL（账本行编解码 1..=15 可见字节互逆契约的单侧源）。
+            let n = &n[..n.len().min(15)];
             name[..n.len()].copy_from_slice(n);
         }
         None => name[..6].copy_from_slice(b"(boot)"),
@@ -159,11 +166,19 @@ pub unsafe extern "C" fn on_fault(kind: u8, tf: *const TrapFrame) {
     unsafe { core::ptr::write_volatile(&mut r.stamp, odd.wrapping_add(1)) };
 }
 
-/// 排液：`emit` 依序收字节片（头 12B + 存量记录按 seq 升序；每片独立完整，
-/// 拷贝语义由 emit 方定）。两遍调用（先尺寸后拷贝）结果一致性由 total 快照
-/// 保证——第二遍多出的新记录不进本快照（seq 窗口以首读 total 锚定）。
-pub fn drain_with(emit: &mut dyn FnMut(&[u8])) {
-    let total = CBOX_NEXT.load(Ordering::Acquire);
+/// 排液锚：快照窗口上界（`CBOX_NEXT` 快照点）。syscall 两遍排液（先尺寸后
+/// 拷贝）**必须传同一锚**——遍间新崩溃写入不改窗口，两遍等长（12B 头 +
+/// stored×104B；槽内容不稳只换哨兵记录不变长）。
+pub fn drain_total() -> u32 {
+    CBOX_NEXT.load(Ordering::Acquire)
+}
+
+/// 排液：`emit` 依序收字节片（头 12B + `1..=total` 存量记录按 seq 升序；每片
+/// 独立完整，拷贝语义由 emit 方定）。`total` 锚由调用方取一次贯穿两遍（见
+/// [`drain_total`]）——锚越界（大于当前 CBOX_NEXT，防御面）按当前值夹取。
+pub fn drain_with(total: u32, emit: &mut dyn FnMut(&[u8])) {
+    let now = CBOX_NEXT.load(Ordering::Acquire);
+    let total = total.min(now);
     let stored = total.min(SLOTS as u32);
     let hdr = CboxHdr {
         ver: REC_VER as u32,
@@ -186,7 +201,10 @@ pub fn drain_with(emit: &mut dyn FnMut(&[u8])) {
         // SAFETY: 定宽对齐 u32 单标读。
         let s0 = unsafe { core::ptr::read_volatile(&tbl[slot].stamp) };
         core::sync::atomic::fence(Ordering::Acquire);
-        let mut rec = tbl[slot];
+        // SAFETY: 域读 volatile——与写侧 write_volatile 配对（plain load 并发
+        // 写是 Rust 抽象机数据竞争 UB；104B 定宽 repr(C) 整体读，撕裂由
+        // stamp 复读检测）。
+        let mut rec = unsafe { core::ptr::read_volatile(&tbl[slot]) };
         core::sync::atomic::fence(Ordering::Acquire);
         // SAFETY: 同上单标读。
         let s1 = unsafe { core::ptr::read_volatile(&tbl[slot].stamp) };

@@ -46,7 +46,11 @@ fn bad(msg: &str) -> BerryError {
     BerryError::internal(format!("symbolize: {msg}"))
 }
 
-/// 加载全部具名符号（symtab 优先，strip 件回落 dynsym）。
+/// 加载全部具名符号（symtab 优先，strip 件回落 dynsym）——两层滤：
+/// ① **SHF_ALLOC 装载节**（`.debug_*` 的 `$d`/`$x` 映射标实测 265 个、
+/// st_value 低位域会污染最近符号命中）；② **`$` 前缀名**（AArch64 映射标
+/// ——`.text` 内也有合法装载节 `$x`/`$d` 标指令/数据边界，真内核 ELF
+/// 实测滤不净；它们永不为人类答案）。
 ///
 /// 双表皆空 = 报错指路构建产物位（spec 刀 3 语义——不静默返回空表）。
 pub fn load_symbols(elf: &[u8]) -> Result<Vec<Sym>> {
@@ -62,22 +66,37 @@ pub fn load_symbols(elf: &[u8]) -> Result<Vec<Sym>> {
         return Err(bad("无节表（无法定位 symtab）"));
     }
     let shentsize = rd.u16(0x3a)? as usize;
-    let shnum = rd.u16(0x3c)? as usize;
-    // 节头：name u32 / type u32 / addr u64 / off u64 / size u64 / link u32。
-    let sh = |i: usize| -> Result<(u32, usize, usize, usize, u32)> {
+    let shnum_raw = rd.u16(0x3c)? as usize;
+    // 节头：name u32 / type u32 / flags u64 / off u64 / size u64 / link u32。
+    let sh = |i: usize| -> Result<(u32, u64, usize, usize, u32)> {
         let o = shoff + i * shentsize;
-        Ok((rd.u32(o)?, rd.u32(o + 4)? as usize, rd.u64(o + 0x18)? as usize,
+        Ok((rd.u32(o + 4)?, rd.u64(o + 8)?, rd.u64(o + 0x18)? as usize,
             rd.u64(o + 0x20)? as usize, rd.u32(o + 0x28)?))
     };
+    // shnum==0 = 扩展节计数（≥ 0xff00 节形态）：真节数在 sh[0].sh_size——
+    // 夹到文件长/shentsize 帽（野值防巨分配）。
+    let shcap = elf.len() / shentsize.max(1);
+    let shnum = if shnum_raw == 0 {
+        let (_, _, _, size, _) = sh(0)?;
+        size.min(shcap)
+    } else {
+        shnum_raw
+    };
+    // 每节 SHF_ALLOC（0x2）位表：符号按 st_shndx 查节装载性。
+    let mut alloc = vec![false; shnum];
+    for i in 0..shnum {
+        let (_, flags, _, _, _) = sh(i)?;
+        alloc[i] = flags & 0x2 != 0;
+    }
     for want in [2usize, 11usize] {
         // SHT_SYMTAB → SHT_DYNSYM 回落序
         for i in 0..shnum {
-            let (_name, typ, off, size, link) = sh(i)?;
-            if typ != want || size == 0 {
+            let (typ, _flags, off, size, link) = sh(i)?;
+            if typ != want as u32 || size == 0 {
                 continue;
             }
             let (_, _, str_off, str_size, _) = sh(link as usize)?;
-            if let Some(syms) = parse_symtab(elf, off, size, str_off, str_size) {
+            if let Some(syms) = parse_symtab(elf, off, size, str_off, str_size, &alloc) {
                 if !syms.is_empty() {
                     return Ok(syms);
                 }
@@ -96,30 +115,37 @@ pub fn load_symbols(elf: &[u8]) -> Result<Vec<Sym>> {
     })
 }
 
-/// 单表解析：24B Elf64_Sym 流 + 关联 strtab；无效表返回 None（试下一候选）。
+/// 单表解析：24B Elf64_Sym 流 + 关联 strtab；`alloc` 节装载位表滤
+/// `st_shndx`（SHN_UNDEF/特殊索引/非装载节全弃）。无效表返回 None（试下一
+/// 候选）。
 fn parse_symtab(
     elf: &[u8],
     off: usize,
     size: usize,
     str_off: usize,
     str_size: usize,
+    alloc: &[bool],
 ) -> Option<Vec<Sym>> {
     let strtab = elf.get(str_off..str_off.checked_add(str_size)?)?;
     let mut syms = Vec::new();
     for pos in (off..off.checked_add(size)?).step_by(24) {
         let e = elf.get(pos..pos + 24)?;
         let name_off = u32::from_le_bytes([e[0], e[1], e[2], e[3]]) as usize;
+        let shndx = u16::from_le_bytes([e[6], e[7]]) as usize;
         let value = u64::from_le_bytes([
             e[8], e[9], e[10], e[11], e[12], e[13], e[14], e[15],
         ]);
         if value == 0 || name_off == 0 {
             continue;
         }
+        if !matches!(alloc.get(shndx), Some(true)) {
+            continue; // 非装载节（.debug_* 的 $d/$x）或特殊索引
+        }
         let rest = strtab.get(name_off..)?;
         let end = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
         let name = String::from_utf8_lossy(&rest[..end]).into_owned();
-        if name.is_empty() {
-            continue;
+        if name.is_empty() || name.starts_with('$') {
+            continue; // 空名 / AArch64 映射标（$x/$d——真内核 ELF 装载节内也有）
         }
         syms.push(Sym { name, value });
     }
@@ -138,12 +164,15 @@ pub fn nearest<'a>(syms: &'a [Sym], pc: u64) -> Option<(&'a Sym, u64)> {
     Some((s, pc - s.value))
 }
 
+/// 合成 ELF 测试件构造（crashlog 测试共享——`testutil::build_elf`）。
+/// 布局：节表 = [空, .text(SHF_ALLOC), .symtab, .strtab, .debug_line(非
+/// ALLOC)]；符号 shndx=1（.text 装载节）。**恒附一枚 `$d` 污染标**
+/// （shndx=4 非装载节、st_value 低位）——每次 load_symbols 都在钉
+/// SHF_ALLOC 滤（真内核 ELF 实测 .debug_* 映射标污染形态）。
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 合成最小 ELF64：节表 = [空, .symtab, .strtab]（真实布局字段序）。
-    fn build_elf(syms: &[(&str, u64)]) -> Vec<u8> {
+pub(crate) mod testutil {
+    /// 合成最小 ELF64（真实布局字段序；`syms` shndx=1 进 .text）。
+    pub fn build_elf(syms: &[(&str, u64)]) -> Vec<u8> {
         let mut strtab = vec![0u8];
         let mut name_off = Vec::new();
         for (n, _) in syms {
@@ -151,15 +180,26 @@ mod tests {
             strtab.extend_from_slice(n.as_bytes());
             strtab.push(0);
         }
+        // 污染标两枚：`$d` @ 低位、非装载节（钉名字滤 + 装载滤）；
+        // `debug_marker` 非装载节无 `$` 名（单独钉 SHF_ALLOC 滤）。
+        let poll_off = strtab.len();
+        strtab.extend_from_slice(b"$d\0");
+        let dm_off = strtab.len();
+        strtab.extend_from_slice(b"debug_marker\0");
         let mut symtab = Vec::new();
-        for (i, (_, v)) in syms.iter().enumerate() {
-            symtab.extend_from_slice(&(name_off[i] as u32).to_le_bytes());
+        let mut emit_sym = |name: usize, v: u64, shndx: u16| {
+            symtab.extend_from_slice(&(name as u32).to_le_bytes());
             symtab.push(0x12); // info：STB_GLOBAL|STT_FUNC
             symtab.push(0); // other
-            symtab.extend_from_slice(&0u16.to_le_bytes()); // shndx
+            symtab.extend_from_slice(&shndx.to_le_bytes());
             symtab.extend_from_slice(&v.to_le_bytes());
             symtab.extend_from_slice(&0x10u64.to_le_bytes()); // size
+        };
+        for (i, (_, v)) in syms.iter().enumerate() {
+            emit_sym(name_off[i], *v, 1); // .text 装载节
         }
+        emit_sym(poll_off, 0x500, 4); // .debug_line 非装载节
+        emit_sym(dm_off, 0x600, 4); // 同上（名字不带 $）
         let ehsz = 0x40;
         let sym_off = ehsz;
         let sym_sz = symtab.len();
@@ -167,7 +207,7 @@ mod tests {
         let str_sz = strtab.len();
         let shoff = (str_off + str_sz + 15) & !15;
         let shentsize = 64;
-        let shnum = 3;
+        let shnum = 5;
         let mut d = vec![0u8; shoff + shnum * shentsize];
         d[..4].copy_from_slice(b"\x7fELF");
         d[4] = 2; // ELF64
@@ -179,17 +219,26 @@ mod tests {
         d[0x3e..0x40].copy_from_slice(&0u16.to_le_bytes()); // shstrndx=0
         d[sym_off..str_off].copy_from_slice(&symtab);
         d[str_off..str_off + str_sz].copy_from_slice(&strtab);
-        let mut sh = |i: usize, typ: u32, off: usize, size: usize, link: u32| {
+        let mut sh = |i: usize, typ: u32, flags: u64, off: usize, size: usize, link: u32| {
             let o = shoff + i * shentsize;
             d[o + 4..o + 8].copy_from_slice(&typ.to_le_bytes());
+            d[o + 8..o + 0x10].copy_from_slice(&flags.to_le_bytes());
             d[o + 0x18..o + 0x20].copy_from_slice(&(off as u64).to_le_bytes());
             d[o + 0x20..o + 0x28].copy_from_slice(&(size as u64).to_le_bytes());
             d[o + 0x28..o + 0x2c].copy_from_slice(&link.to_le_bytes());
         };
-        sh(1, 2, sym_off, sym_sz, 2); // SHT_SYMTAB → strtab=节2
-        sh(2, 3, str_off, str_sz, 0); // SHT_STRTAB
+        sh(1, 1, 0x2, ehsz, 0x100, 0); // .text：PROGBITS + SHF_ALLOC
+        sh(2, 2, 0, sym_off, sym_sz, 3); // SHT_SYMTAB → strtab=节3
+        sh(3, 3, 0, str_off, str_sz, 0); // SHT_STRTAB
+        sh(4, 1, 0, ehsz, 0x40, 0); // .debug_line：PROGBITS 无 ALLOC
         d
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::symbolize::testutil::build_elf;
 
     #[test]
     fn nearest_exact_inside_and_miss() {
@@ -199,19 +248,69 @@ mod tests {
         assert_eq!((s.name.as_str(), off), ("mmm", 0));
         let (s, off) = nearest(&syms, 0x2abc).unwrap();
         assert_eq!((s.name.as_str(), off), ("mmm", 0xabc));
-        assert!(nearest(&syms, 0xfff).is_none()); // 首符号之前
+        // 首装载符号之前 = None（$d@0x500 污染标被 SHF_ALLOC 滤——不在域内
+        // 抢「最近」）。
+        assert!(nearest(&syms, 0xfff).is_none());
+        assert!(!syms.iter().any(|s| s.name == "$d"));
     }
 
     #[test]
     fn stripped_elf_errors_with_hint() {
-        let elf = build_elf(&[]); // symtab 空 → 双空路径
-        let err = load_symbols(&elf).unwrap_err();
-        assert!(err.hint.as_deref().unwrap_or("").contains("berry-kernel"));
+        // symtab 只剩被滤的污染标 → 等效双空路径。
+        let elf = build_elf(&[]);
+        assert!(load_symbols(&elf).unwrap_err().hint
+            .as_deref()
+            .unwrap_or("")
+            .contains("berry-kernel"));
     }
 
     #[test]
     fn not_an_elf_rejected() {
         assert!(load_symbols(b"MZ......").is_err());
+    }
+
+    #[test]
+    fn extended_shnum_eligible() {
+        // shnum==0 扩展节计数：真节数在 sh[0].sh_size（≥ 0xff00 节形态）。
+        let mut d = build_elf(&[("fn", 0x1000)]);
+        let shoff = u64::from_le_bytes(
+            d[0x28..0x30].try_into().unwrap(),
+        ) as usize;
+        let shentsize = u16::from_le_bytes(d[0x3a..0x3c].try_into().unwrap()) as usize;
+        let real: u64 = 5;
+        d[shoff + 0x20..shoff + 0x28].copy_from_slice(&real.to_le_bytes()); // sh[0].sh_size
+        d[0x3c..0x3e].copy_from_slice(&0u16.to_le_bytes()); // e_shnum = 0
+        let syms = load_symbols(&d).unwrap();
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "fn");
+        assert_eq!(shentsize, 64);
+    }
+
+    #[test]
+    fn dynsym_fallback() {
+        // symtab 废（改 SHT_STRTAB）→ SHT_DYNSYM 回落：节4 改 DYNSYM 指向
+        // 追加的 symtab 字节拷贝（真符号 shndx=1 装载；$d shndx=4 非装载
+        // ——回落路上滤同生效）。
+        let mut d = build_elf(&[("aaa", 0x1000), ("mmm", 0x2000)]);
+        let shoff =
+            u64::from_le_bytes(d[0x28..0x30].try_into().unwrap()) as usize;
+        let entsz = 64usize;
+        let o2 = shoff + 2 * entsz;
+        let sym_sz =
+            u64::from_le_bytes(d[o2 + 0x20..o2 + 0x28].try_into().unwrap()) as usize;
+        let sym_off = 0x40usize;
+        d[o2 + 4..o2 + 8].copy_from_slice(&3u32.to_le_bytes()); // 废 symtab
+        let content = d[sym_off..sym_off + sym_sz].to_vec();
+        let dyn_off = d.len();
+        d.extend_from_slice(&content);
+        let o4 = shoff + 4 * entsz;
+        d[o4 + 4..o4 + 8].copy_from_slice(&11u32.to_le_bytes()); // SHT_DYNSYM
+        d[o4 + 0x18..o4 + 0x20].copy_from_slice(&(dyn_off as u64).to_le_bytes());
+        d[o4 + 0x20..o4 + 0x28].copy_from_slice(&(sym_sz as u64).to_le_bytes());
+        d[o4 + 0x28..o4 + 0x2c].copy_from_slice(&3u32.to_le_bytes()); // link=strtab
+        let syms = load_symbols(&d).unwrap();
+        assert!(syms.iter().any(|s| s.name == "mmm"));
+        assert!(!syms.iter().any(|s| s.name == "$d"));
     }
 
     /// 真产物对拍（opt-in）：环境变量 `BERRY_SYMBOLIZE_TEST_ELF` 指向任一
@@ -226,5 +325,7 @@ mod tests {
         let syms = load_symbols(&d).unwrap();
         assert!(!syms.is_empty());
         assert!(syms.iter().any(|s| s.name.contains("kernel")));
+        // 映射标不进域：非装载节 265 个 + 装载节内 .text $x/$d 边界标。
+        assert!(!syms.iter().any(|s| s.name.starts_with('$')));
     }
 }

@@ -4137,11 +4137,13 @@ fn cbox_flush(h: Handle, stale: bool) -> Result<usize, u8> {
         CBOX_BOOT
     };
     // CBOX_SEQ 记账（rec eco 面新 seq 门）——记录已见即记，与写盘成败无关
-    //（serial 面 = 面包屑不是账本）。
+    //（serial 面 = 面包屑不是账本）。kind!=0 滤哨兵（排液见不稳槽的
+    // magic=0 占位——seq 同号但不代表真记录见闻，死亡面 cbox_death_flush
+    // 同滤）。
     // SAFETY: CBOX_SEQ 单线程独占。
     unsafe {
         for r in snap.recs() {
-            if r.seq > CBOX_SEQ {
+            if r.kind != 0 && r.seq > CBOX_SEQ {
                 CBOX_SEQ = r.seq;
             }
         }

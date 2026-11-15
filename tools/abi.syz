@@ -165,7 +165,7 @@ thread_yield(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x41 thread_create_exception_channel（v2·已实现）——用户态异常上报通道
 thread_create_exception_channel(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x42 cbox_drain（v1）——黑匣子崩溃记录排液：`buf/cap` 收全量快照（12B 头 {ver,total,stored} + 存量记录按 seq 升序、104B/条），`*out_len` 出参字节数。cap==0 = 尺寸查询（返 0）；cap 不足 → -ENOMEM 不部分写。快照非消费——记录永驻至槽位轮转，排液方自持 seq 去重。
-#   note: cbox 刀 1（`plans/cbox/design.md`）：异常 fatal 路径（EL0 kill 链 / EL1 halt 前）RAM 记录表的用户态排液口。无 right 门（诊断几何面——`process_get_exit_code` need=0 惯例）；零结构锁（纯静态读 + copy-out）。
+#   note: cbox 刀 1（`plans/cbox/design.md`）：异常 fatal 路径（EL0 kill 链 / EL1 halt 前）RAM 记录表的用户态排液口。无 right 门（诊断几何面——`process_get_exit_code` need=0 惯例）；表读写面零结构锁（seqlock 快照），syscall 整体走 SVC_CLASS_TABLE 在册取锁（同全体 syscall）。
 cbox_drain(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **IPC / event / futex**

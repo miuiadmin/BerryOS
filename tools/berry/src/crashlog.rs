@@ -49,12 +49,17 @@ fn u32le(d: &[u8], o: usize) -> u32 {
     u32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]])
 }
 
+/// BPB 健全性（fatcat.py 同款校验面 + spc 域）：510 引导签名 / bps 合法 /
+/// nfats∈{1,2} / rents>0 / spf>0 / **spc 非零 2 的幂**（spc=0 → clus_bytes=0
+/// → 除零；构造盘实测复现 panic——FatErr 契约禁 panic）。
 fn bpb_ok(d: &[u8], off: usize) -> bool {
+    let spc = *d.get(off + 13).unwrap_or(&0);
     d.get(off + 510..off + 512) == Some(b"\x55\xaa")
         && matches!(u16le(d, off + 11), 512 | 1024 | 2048 | 4096)
         && matches!(d[off + 16], 1 | 2)
         && u16le(d, off + 17) > 0
         && u16le(d, off + 22) > 0
+        && spc.is_power_of_two()
 }
 
 /// 根文件直读（只借用整盘字节；`name` 8.3 大写）。
@@ -73,6 +78,10 @@ pub fn read_root_file(d: &[u8], name: &str) -> std::result::Result<Vec<u8>, FatE
     let root_off = vol + (rsvd + nfats * spf) * bps;
     let data_off = root_off + rents * 32;
     let clus_bytes = spc * bps;
+    // bpb_ok 已验 spc 非零——防御面双保险（几何乘零 = 后续除零）。
+    if clus_bytes == 0 {
+        return Err(FatErr::NoVolume);
+    }
 
     let mut ent: Option<(usize, usize)> = None; // (first_clus, size)
     for i in 0..rents {
@@ -103,7 +112,10 @@ pub fn read_root_file(d: &[u8], name: &str) -> std::result::Result<Vec<u8>, FatE
 
     let fat12 = |n: usize| -> Option<u32> {
         let o = fat_off + n + n / 2;
-        let v = u16le(d, o);
+        // FAT 表项越界（坏簇号把偏移推出盘尾）= None → Torn——u16le 直接
+        // 下标在构造盘上实测 panic（FatErr 契约禁 panic）。
+        let b = d.get(o..o + 2)?;
+        let v = u16::from_le_bytes([b[0], b[1]]);
         Some(if n & 1 == 1 { v >> 4 } else { v & 0x0FFF } as u32)
     };
     let mut out = Vec::with_capacity(size.min(d.len()));
@@ -135,13 +147,22 @@ pub fn read_root_file(d: &[u8], name: &str) -> std::result::Result<Vec<u8>, FatE
     Ok(out)
 }
 
-/// 账本解析：一行一记录（`berry-cbox` 单源；空行/尾残行跳过——账本可能以
-/// 无换行收尾）。
-pub fn parse_ledger(buf: &[u8]) -> Vec<(u32, Rec)> {
-    buf.split(|&b| b == b'\n')
-        .filter(|l| !l.is_empty())
-        .filter_map(berry_cbox::line_parse)
-        .collect()
+/// 账本解析：一行一记录（`berry-cbox` 单源；空行跳过——账本可能以换行
+/// 收尾）。返回 `(记录, 拒行数)`——非空行解析失败计入拒行（坏行/残尾如实
+/// 上报，不静默丢：全毁形态 `非空 && 零记录` 由 CLI 判非零退出）。
+pub fn parse_ledger(buf: &[u8]) -> (Vec<(u32, Rec)>, usize) {
+    let mut recs = Vec::new();
+    let mut rejected = 0usize;
+    for l in buf.split(|&b| b == b'\n') {
+        if l.is_empty() {
+            continue;
+        }
+        match berry_cbox::line_parse(l) {
+            Some(r) => recs.push(r),
+            None => rejected += 1,
+        }
+    }
+    (recs, rejected)
 }
 
 /// 指纹聚合键（`(kind, task, pc, lr)`——spec 冻结）。
@@ -197,6 +218,7 @@ fn kind_str(kind: u8) -> &'static str {
 }
 
 /// 符号解析结果（报告行用）。
+#[derive(Debug)]
 pub enum SymHit {
     None(String),                         // 无符号源（如实注，不造假）
     Hit { name: String, off: u64, src: &'static str },
@@ -205,9 +227,28 @@ pub enum SymHit {
 /// 内核内嵌 blob 任务的加载基址（`kernel/src/user.rs` 模板统一 @0x1000）。
 const USER_BLOB_BASE: u64 = 0x1000;
 
-/// 任务 → ELF 候选（返回首个存在者；`user_<名>` 族内核 blob 重定基）。
-fn resolve_syms(task: &str, elf_dir: Option<&Path>) -> Result<Option<(PathBuf, Vec<Sym>, Option<u64>)>> {
-    let Some(dir) = elf_dir else { return Ok(None) };
+/// 符号源解析结果（四态如实话——无 --elf-dir / 有目录无 ELF / 直查 /
+/// 重定基，外加 userbins 首选与无锚点两分支；Err 保留给加载真失败
+/// ——strip 双空报错带 hint 如实冒泡）。
+pub enum SymSrc {
+    /// 未给 `--elf-dir`（跳过符号化）。
+    NoDir,
+    /// `--elf-dir` 给定，userbins 与内核 ELF 候选全缺（构建产物不在位）。
+    NoElf,
+    /// userbins release 件直查。
+    UserBins(Vec<Sym>),
+    /// 内核 ELF 直查（内核名任务）。
+    Kernel(Vec<Sym>),
+    /// `user_<名>` 内嵌 blob：`__user_<名>` 锚点重定基。
+    Blob { syms: Vec<Sym>, base: u64 },
+    /// `user_<名>` 在内核 ELF 无 `__user_<名>` 锚点（拼写/构建漂移）。
+    NoAnchor,
+}
+
+/// 任务 → 符号源（`user_<名>` 族先试 userbins release 件，回落内核 ELF
+/// `__user_<名>` 锚点重定基；内核名直查）。
+fn resolve_syms(task: &str, elf_dir: Option<&Path>) -> Result<SymSrc> {
+    let Some(dir) = elf_dir else { return Ok(SymSrc::NoDir) };
     // ① userbins：`<dir>/user/cargo-target/.../release/<task>`（现实全 strip
     //    ——load_symbols 双空会带指路 hint 报错，如实冒泡）。
     let user_elf = dir
@@ -215,7 +256,7 @@ fn resolve_syms(task: &str, elf_dir: Option<&Path>) -> Result<Option<(PathBuf, V
         .join(task);
     if user_elf.is_file() {
         let syms = symbolize::load_symbols(&std::fs::read(&user_elf)?)?;
-        return Ok(Some((user_elf, syms, None)));
+        return Ok(SymSrc::UserBins(syms));
     }
     // ② 内核 ELF：worktree 本地 debug → 全局 target dir（just build 实际落
     //    位——smoke.sh berryos_kernel() 同解析序）→ release 变体。
@@ -230,15 +271,19 @@ fn resolve_syms(task: &str, elf_dir: Option<&Path>) -> Result<Option<(PathBuf, V
             break;
         }
     }
-    let Some(kpath) = kernel else { return Ok(None) };
+    let Some(kpath) = kernel else { return Ok(SymSrc::NoElf) };
     let syms = symbolize::load_symbols(&std::fs::read(&kpath)?)?;
     if !task.starts_with("user_") {
-        return Ok(Some((kpath, syms, None)));
+        return Ok(SymSrc::Kernel(syms));
     }
-    // ③ `user_<名>` 内嵌 blob：`__user_<名>` 锚点（无锚点 = 无符号源）。
+    // ③ `user_<名>` 内嵌 blob：`__user_<名>` 锚点（无锚点 = 独立态——
+    //    blob 任务 pc 是任务空间地址，直查内核表必错位，不静默降级）。
     let anchor = format!("__{task}");
-    let base = syms.iter().find(|s| s.name == anchor).map(|s| s.value);
-    Ok(Some((kpath, syms, base)))
+    let base = syms.iter().find(|s| s.name == anchor).map(|a| a.value);
+    match base {
+        Some(base) => Ok(SymSrc::Blob { syms, base }),
+        None => Ok(SymSrc::NoAnchor),
+    }
 }
 
 fn home_target() -> PathBuf {
@@ -252,8 +297,21 @@ fn home_target() -> PathBuf {
 pub fn symbolize_fp(fp: &Fp, elf_dir: Option<&Path>) -> SymHit {
     match resolve_syms(&fp.task, elf_dir) {
         Err(e) => SymHit::None(e.message),
-        Ok(None) => SymHit::None("无 --elf-dir（跳过符号化）".into()),
-        Ok(Some((_, syms, None))) => match symbolize::nearest(&syms, fp.pc) {
+        Ok(SymSrc::NoDir) => SymHit::None("无 --elf-dir（跳过符号化）".into()),
+        Ok(SymSrc::NoElf) => SymHit::None(
+            "--elf-dir 内无 ELF（userbins release 件与内核 cargo-target \
+             debug/~/.cargo-target/release 候选皆缺）"
+                .into(),
+        ),
+        Ok(SymSrc::UserBins(syms)) => match symbolize::nearest(&syms, fp.pc) {
+            Some((s, off)) => SymHit::Hit {
+                name: s.name.clone(),
+                off,
+                src: "userbins ELF",
+            },
+            None => SymHit::None("pc 早于首符号".into()),
+        },
+        Ok(SymSrc::Kernel(syms)) => match symbolize::nearest(&syms, fp.pc) {
             Some((s, off)) => SymHit::Hit {
                 name: s.name.clone(),
                 off,
@@ -261,7 +319,7 @@ pub fn symbolize_fp(fp: &Fp, elf_dir: Option<&Path>) -> SymHit {
             },
             None => SymHit::None("pc 早于首符号".into()),
         },
-        Ok(Some((_, syms, Some(base)))) => {
+        Ok(SymSrc::Blob { syms, base }) => {
             let Some(pc_k) = fp.pc.checked_sub(USER_BLOB_BASE) else {
                 return SymHit::None("pc < blob 基址 0x1000".into());
             };
@@ -277,17 +335,31 @@ pub fn symbolize_fp(fp: &Fp, elf_dir: Option<&Path>) -> SymHit {
                 None => SymHit::None("重定基 pc 早于首符号".into()),
             }
         }
+        Ok(SymSrc::NoAnchor) => {
+            SymHit::None("user_ 任务在内核 ELF 无 __user_ 锚点".into())
+        }
     }
 }
 
 /// 人类可读报告（一行一指纹，按 次数 降序、并列按指纹序——确定性输出）。
-pub fn report_human(recs: &[(u32, Rec)], disk: &Path, elf_dir: Option<&Path>) -> String {
+/// `rejected > 0` 头行注记（坏行如实上报不静默丢）。
+pub fn report_human(
+    recs: &[(u32, Rec)],
+    rejected: usize,
+    disk: &Path,
+    elf_dir: Option<&Path>,
+) -> String {
     let fps = aggregate(recs);
     let mut lines = vec![format!(
-        "cbox crash-log: {} CBOX.LOG {} 条记录 / {} 个指纹",
+        "cbox crash-log: {} CBOX.LOG {} 条记录 / {} 个指纹{}",
         disk.display(),
         recs.len(),
-        fps.len()
+        fps.len(),
+        if rejected > 0 {
+            format!("（拒 {rejected} 坏行）")
+        } else {
+            String::new()
+        }
     )];
     let mut order: Vec<_> = fps.iter().collect();
     order.sort_by(|a, b| b.1.count.cmp(&a.1.count).then(a.0.cmp(b.0)));
@@ -367,7 +439,9 @@ mod tests {
 
     fn two_line_ledger() -> Vec<u8> {
         let mut buf = Vec::new();
-        let mut line = [0u8; 256];
+        // LINE_MAX 单源（berry-cbox 契约帽；256 硬编码在真行 245B 逼近下
+        // 是隐形截断面）。
+        let mut line = [0u8; berry_cbox::LINE_MAX];
         for (boot, r) in [
             (1u32, rec(1, KIND_EL0, "user_rogue_ptr", 0x1004, 0x4000990c)),
             (2u32, rec(1, KIND_EL0, "user_rogue_ptr", 0x1004, 0x4000990c)),
@@ -390,13 +464,17 @@ mod tests {
             read_root_file(&d, "NOPE.TXT"),
             Err(FatErr::NoEnt(_))
         ));
+        // 裸卷形态（mkfat --put 原始产物，vol@LBA0）：LBA0 直发现路径。
+        let bare = &d[16 * 512..];
+        assert_eq!(read_root_file(bare, "CBOX.LOG").unwrap(), got);
     }
 
     #[test]
     fn parse_and_aggregate_roundtrip() {
         let d = mkfat_disk(&two_line_ledger());
-        let recs = parse_ledger(&read_root_file(&d, "CBOX.LOG").unwrap());
+        let (recs, rejected) = parse_ledger(&read_root_file(&d, "CBOX.LOG").unwrap());
         assert_eq!(recs.len(), 2);
+        assert_eq!(rejected, 0);
         let fps = aggregate(&recs);
         assert_eq!(fps.len(), 1);
         let (fp, st) = fps.iter().next().unwrap();
@@ -406,8 +484,11 @@ mod tests {
         let r = &recs[0].1;
         assert_eq!(r.pc, 0x1004);
         assert_eq!(r.far, 0x4000_0000);
-        // 合成负例：坏行被拒不误读（解析严格单源）。
+        // 合成负例：坏行被拒不误读（解析严格单源；拒行计数如实）。
         assert!(berry_cbox::line_parse(b"CBOX v1 seq=x kind=el0").is_none());
+        let (rs, rj) = parse_ledger(b"CBOX v1 seq=x kind=el0\nCBOX v1 seq=y\n\n");
+        assert!(rs.is_empty());
+        assert_eq!(rj, 2);
     }
 
     #[test]
@@ -439,10 +520,10 @@ mod tests {
         }
     }
 
-    /// 跨簇账本（30 行 ≈ 7.5KB = 4 簇）——torn 测试用。
+    /// 跨簇账本（30 行 ≈ 7.5KB = 4 簇）——torn/cycle 测试用。
     fn big_ledger() -> Vec<u8> {
         let mut buf = Vec::new();
-        let mut line = [0u8; 256];
+        let mut line = [0u8; berry_cbox::LINE_MAX];
         for seq in 0..30u32 {
             let r = rec(seq, KIND_EL0, "user_rogue_ptr", 0x1004, 0x4000990c);
             let n = berry_cbox::line_encode(&r, 1, &mut line).unwrap();
@@ -450,5 +531,110 @@ mod tests {
             buf.push(b'\n');
         }
         buf
+    }
+
+    /// 几何参数（bps/rsvd/nfats/spf/根目录偏移/FAT 偏移）——torn/cycle
+    /// 测试的盘面定位用。
+    fn geom(d: &[u8]) -> (usize, usize, usize) {
+        let vol = 16 * 512;
+        let bps = u16le(d, vol + 11) as usize;
+        let rsvd = u16le(d, vol + 14) as usize;
+        let nfats = d[vol + 16] as usize;
+        let spf = u16le(d, vol + 22) as usize;
+        let root_off = vol + (rsvd + nfats * spf) * bps;
+        (bps, root_off, vol + rsvd * bps)
+    }
+
+    #[test]
+    fn fat_cycle_detected() {
+        // 簇链环的**可检形态**：目录项 size 野值（大于全盘容量）+ FAT 环
+        //（3→2）——out 永远凑不满 size，hops 帽触发 Loop。环 + 诚实 size
+        // 反而不可检（簇数据反复追加直至 size 满足——数据错但读面无感，
+        // 与单簇撕裂不可见同族的 FAT 元数据盲区）。
+        let mut d = mkfat_disk(&big_ledger());
+        let (_, root_off, fat_off) = geom(&d);
+        let first = u16le(&d, root_off + 1 * 32 + 26) as usize; // [0]=卷标
+        assert_eq!(first, 2, "mkfat 首数据簇约定");
+        let fo3 = fat_off + 3 + 3 / 2; // FAT12 奇簇项 = 高 12 位
+        d[fo3] = (d[fo3] & 0x0F) | 0x20; // 项 3 ← 2（环）
+        d[fo3 + 1] = 0;
+        let wild = 0x1000_000u32; // 16MB > 任意 mkfat 测试盘
+        d[root_off + 1 * 32 + 28..root_off + 1 * 32 + 32]
+            .copy_from_slice(&wild.to_le_bytes());
+        assert!(matches!(read_root_file(&d, "CBOX.LOG"), Err(FatErr::Loop)));
+    }
+
+    #[test]
+    fn corrupted_disk_never_panics() {
+        // 构造盘负例族（审计复现形态）：spc=0 → NoVolume（非除零 panic）；
+        // 目录项首簇野值 → Torn/Loop（非 FAT 下标越界 panic）。
+        let mut d = mkfat_disk(&big_ledger());
+        let vol = 16 * 512;
+        d[vol + 13] = 0; // spc=0
+        assert!(matches!(read_root_file(&d, "CBOX.LOG"), Err(FatErr::NoVolume)));
+
+        let mut d = mkfat_disk(&big_ledger());
+        let (_, root_off, _) = geom(&d);
+        let wild = 0x0FE0u16; // 合法数据簇区间内的野簇号
+        d[root_off + 1 * 32 + 26..root_off + 1 * 32 + 28]
+            .copy_from_slice(&wild.to_le_bytes());
+        assert!(matches!(
+            read_root_file(&d, "CBOX.LOG"),
+            Err(FatErr::Torn { .. }) | Err(FatErr::Loop)
+        ));
+    }
+
+    #[test]
+    fn rebase_math_and_source_states() {
+        // 合成内核 ELF 进 tempdir（候选①worktree debug 位）钉四态：
+        // blob 重定基命中 / 内核名直查 / 无锚点 / 无 --elf-dir。
+        use crate::symbolize::testutil::build_elf;
+        let dir = std::env::temp_dir().join(format!(
+            "berry-cbox-test-resolve-{}",
+            std::process::id()
+        ));
+        let kdir = dir.join("cargo-target/aarch64-unknown-none/debug");
+        std::fs::create_dir_all(&kdir).unwrap();
+        std::fs::write(
+            kdir.join("berry-kernel"),
+            build_elf(&[
+                ("__user_rogue", 0x4000_0000),
+                ("kern_main", 0x4000_2000),
+            ]),
+        )
+        .unwrap();
+        // blob 重定基：pc 0x1004 − 0x1000 + 0x4000_0000 → __user_rogue+0x4。
+        let fp = Fp {
+            kind: KIND_EL0,
+            task: "user_rogue".into(),
+            pc: 0x1004,
+            lr: 0,
+        };
+        match symbolize_fp(&fp, Some(&dir)) {
+            SymHit::Hit { name, off, src } => {
+                assert_eq!((name.as_str(), off, src), ("__user_rogue", 4, "内核 blob 重定基"));
+            }
+            other => panic!("期望 Hit，得 {other:?}"),
+        }
+        // 内核名直查。
+        let fpk = Fp { task: "sched".into(), pc: 0x4000_2100, ..fp };
+        match symbolize_fp(&fpk, Some(&dir)) {
+            SymHit::Hit { name, src, .. } => {
+                assert_eq!((name.as_str(), src), ("kern_main", "内核 ELF"));
+            }
+            other => panic!("期望 Hit，得 {other:?}"),
+        }
+        // 无锚点：user_ghost 无 __user_ghost。
+        let fpg = Fp { task: "user_ghost".into(), pc: 0x1004, ..fp };
+        match symbolize_fp(&fpg, Some(&dir)) {
+            SymHit::None(why) => assert!(why.contains("锚点"), "{why}"),
+            other => panic!("期望 None，得 {other:?}"),
+        }
+        // 无 --elf-dir。
+        match symbolize_fp(&fp, None) {
+            SymHit::None(why) => assert!(why.contains("--elf-dir"), "{why}"),
+            other => panic!("期望 None，得 {other:?}"),
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

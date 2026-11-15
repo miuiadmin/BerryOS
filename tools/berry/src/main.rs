@@ -596,10 +596,15 @@ fn dispatch(cli: Cli) -> Result<()> {
             json: cli.json,
         }),
         Some(Cmd::Symbolize(c)) => {
-            let pc = u64::from_str_radix(c.pc.trim_start_matches("0x"), 16)
-                .map_err(|e| {
-                    BerryError::internal(format!("symbolize: --pc 非十六进制：{e}"))
-                })?;
+            // 单次剥 0x/0X 前缀（trim_start_matches 会把 "0x0x10" 剥成 "10"）。
+            let digits = c
+                .pc
+                .strip_prefix("0x")
+                .or_else(|| c.pc.strip_prefix("0X"))
+                .unwrap_or(&c.pc);
+            let pc = u64::from_str_radix(digits, 16).map_err(|e| {
+                BerryError::internal(format!("symbolize: --pc 非十六进制：{e}"))
+            })?;
             let elf = std::fs::read(&c.elf).map_err(|e| {
                 BerryError::internal(format!("symbolize: 读 {}: {e}", c.elf.display()))
             })?;
@@ -635,8 +640,20 @@ fn dispatch(cli: Cli) -> Result<()> {
             let buf = berry::crashlog::read_root_file(&disk, "CBOX.LOG").map_err(
                 |e| BerryError::internal(format!("crash-log: {}", e.message())),
             )?;
-            let recs = berry::crashlog::parse_ledger(&buf);
+            let (recs, rejected) = berry::crashlog::parse_ledger(&buf);
+            // 全毁形态：账本非空而零行可解析——与「干净空账本/健康」不可
+            // 同形（exit 0），非零退出如实报。
+            if !buf.is_empty() && recs.is_empty() {
+                return Err(BerryError::internal(
+                    "crash-log: 账本非空但零行可解析（全毁形态——盘面/账本\
+                     撕裂超出 FAT 链检范围）",
+                ));
+            }
             if cli.json {
+                if rejected > 0 {
+                    // JSON 面：human 诊断走 stderr（--json 契约）。
+                    eprintln!("crash-log: 拒 {rejected} 坏行（如实注记）");
+                }
                 for (fp, st) in berry::crashlog::aggregate(&recs) {
                     let sym = match berry::crashlog::symbolize_fp(&fp, c.elf_dir.as_deref()) {
                         berry::crashlog::SymHit::Hit { name, off, src } => {
@@ -659,7 +676,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                 println!(
                     "{}",
                     berry::crashlog::report_human(
-                        &recs, &c.disk, c.elf_dir.as_deref()
+                        &recs, rejected, &c.disk, c.elf_dir.as_deref()
                     )
                 );
             }
