@@ -418,7 +418,7 @@ fn build_bottom_tabs<const N: usize>(
     ctx: &WidgetContext,
     kind: u8,
 ) -> Tabs {
-    Tabs::new(
+    let mut tabs = Tabs::new(
         ui,
         parent,
         ctx,
@@ -426,7 +426,12 @@ fn build_bottom_tabs<const N: usize>(
         &BOTTOM_TAB_ITEMS,
         kind as usize,
     )
-    .unwrap_or_else(|_| berry_room::panic_exit(134))
+    .unwrap_or_else(|_| berry_room::panic_exit(134));
+    // Inputs owns a persistent demo count. The badge is visual-only: no new
+    // a11y/SEM anchor is attached and its hit remains part of the owning tab.
+    tabs.set_badge(ui, ctx, 2, 3)
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
+    tabs
 }
 
 fn page_body(
@@ -1110,6 +1115,28 @@ impl App {
         room.print(b"BERRYDEMOFRAME ok\n");
     }
 
+    fn page_tabs_badge(&self) -> u32 {
+        match &self.page {
+            Page::Home(page) => page.tabs.badge(2).unwrap_or(0),
+            Page::Widgets(page) => page.tabs.badge(2).unwrap_or(0),
+            Page::Input(page) => page.tabs.badge(2).unwrap_or(0),
+            Page::List(page) => page.tabs.badge(2).unwrap_or(0),
+            Page::Theme(page) => page.tabs.badge(2).unwrap_or(0),
+            Page::System(page) => page.tabs.badge(2).unwrap_or(0),
+        }
+    }
+
+    fn page_tabs_badge_panel(&self) -> Option<berry_ui::NodeId> {
+        match &self.page {
+            Page::Home(page) => page.tabs.badge_panel(2),
+            Page::Widgets(page) => page.tabs.badge_panel(2),
+            Page::Input(page) => page.tabs.badge_panel(2),
+            Page::List(page) => page.tabs.badge_panel(2),
+            Page::Theme(page) => page.tabs.badge_panel(2),
+            Page::System(page) => page.tabs.badge_panel(2),
+        }
+    }
+
     fn print_layout(&self, room: &AppRoom) {
         let mut line = Line::new(b"BERRYDEMOLAYOUT ok page=");
         line.push_u32(self.page.kind() as u32);
@@ -1179,6 +1206,13 @@ impl App {
         line.push_u32(self.ui.sem_iter().count() as u32);
         line.push(b" badge=");
         line.push_u32(badge_count);
+        let tab_badge = self.page_tabs_badge();
+        line.push(b" tabbadge=");
+        line.push_u32(tab_badge);
+        if let Some(node) = self.page_tabs_badge_panel() {
+            line.push(b" tbadge=");
+            line.rect(self.ui.bounds(node).unwrap_or_else(|_| berry_room::panic_exit(134)));
+        }
         if let Some(node) = p1 {
             line.push(b" p1=");
             line.rect(self.ui.bounds(node).unwrap_or_else(|_| berry_room::panic_exit(134)));

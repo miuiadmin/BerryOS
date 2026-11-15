@@ -367,6 +367,14 @@ def run_recents(rig: ProductRig) -> None:
     time.sleep(0.5)
     app = rig.shot("app-first-frame")
 
+    # Exercise the standard app bottom slot and its visual-only Inputs badge.
+    # With six cells the third cell center is x=450; the slot is y=1704..1812.
+    rig.tap(450, 1764)
+    rig.wait("BERRYDEMOPAGE ok page=2", 120)
+    rig.wait("BERRYDEMOLAYOUT ok page=2", 120)
+    if " tabbadge=3 tbadge=" not in rig.text():
+        raise ProductE2EError("Inputs tab badge absent from product layout")
+
     # The persistent bottom SYSTEM reserve maps right third to TASK, left to
     # BACK, and middle to HOME. Use the same reserve end to end.
     rig.tap(900, 1870)

@@ -373,6 +373,71 @@ fn tri_platform_selection_progress_and_tab_controls() {
 }
 
 #[test]
+fn tabs_badge_is_visual_only_and_hit_transparent() {
+    let context = ctx(1080, 1920);
+    let mut ui = Ui::<64>::new(1080, 1920);
+    let root = ui.root();
+    let items = [
+        TabItemSpec { label: b"Home", icon: None },
+        TabItemSpec { label: b"Apps", icon: None },
+        TabItemSpec { label: b"System", icon: None },
+    ];
+    let mut tabs = Tabs::new(
+        &mut ui,
+        root,
+        &context,
+        TabBarStyle::Bottom,
+        &items,
+        0,
+    )
+    .unwrap();
+    ui.layout();
+    let a11y_before = ui.a11y_iter().count();
+    let sem_before = ui.sem_iter().count();
+    tabs.set_badge(&mut ui, &context, 2, 3).unwrap();
+    ui.layout();
+    assert_eq!(tabs.badge(2).unwrap(), 3);
+    let badge = tabs.badge_panel(2).expect("badge visual exists");
+    let tab = ui.bounds(tabs.item_panel(2).unwrap()).unwrap();
+    let badge_bounds = ui.bounds(badge).unwrap();
+    assert_eq!(badge_bounds.w, 18);
+    assert_eq!(badge_bounds.h, 18);
+    assert!(badge_bounds.x >= tab.x);
+    assert!(badge_bounds.x + badge_bounds.w <= tab.x + tab.w);
+    assert!(badge_bounds.y >= tab.y);
+    assert!(badge_bounds.y + badge_bounds.h <= tab.y + tab.h);
+    let hit = ui
+        .node_at(
+            (badge_bounds.x + badge_bounds.w / 2) as u32,
+            (badge_bounds.y + badge_bounds.h / 2) as u32,
+        )
+        .expect("badge hit target exists");
+    assert!(tabs.on_msg(&mut ui, &context, &Msg::Click { node: hit }).unwrap());
+    assert_eq!(tabs.selected(), 2, "every badge child hit belongs to its tab");
+    assert_eq!(ui.a11y_iter().count(), a11y_before);
+    assert_eq!(ui.sem_iter().count(), sem_before);
+
+    assert!(tabs.on_msg(&mut ui, &context, &Msg::Click { node: badge }).unwrap());
+    assert_eq!(tabs.selected(), 2, "badge hit belongs to its tab");
+
+    tabs.set_badge(&mut ui, &context, 2, 1200).unwrap();
+    ui.layout();
+    assert_eq!(tabs.badge(2).unwrap(), 1200, "app value is not clamped");
+    let wide = ui.bounds(tabs.badge_panel(2).unwrap()).unwrap();
+    assert_eq!(wide.w, 27);
+
+    tabs.set_badge(&mut ui, &context, 2, 0).unwrap();
+    ui.layout();
+    assert_eq!(tabs.badge(2).unwrap(), 0);
+    assert_eq!(tabs.badge_panel(2), None);
+    assert_eq!(ui.a11y_iter().count(), a11y_before);
+    assert_eq!(
+        tabs.set_badge(&mut ui, &context, items.len(), 1),
+        Err(UiError::NodeBad)
+    );
+}
+
+#[test]
 fn safe_navigation_shell_reserves_product_system_bars() {
     let mut ui = Ui::<64>::new(1080, 1920);
     let context = ctx(1080, 1920);

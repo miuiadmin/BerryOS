@@ -2968,12 +2968,16 @@ struct TabHandle {
     panel: NodeId,
     icon: Option<NodeId>,
     label: NodeId,
+    badge: Option<NodeId>,
+    badge_label: Option<NodeId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tabs {
     pub panel: NodeId,
     items: [TabHandle; TABS_MAX],
+    counts: [u32; TABS_MAX],
+    cell_w: u32,
     count: usize,
     selected: usize,
     pressed: Option<usize>,
@@ -3004,7 +3008,10 @@ impl Tabs {
             },
         )?;
         let cell = vp_w / items.len() as u32;
-        let mut handles = [{ let n = NodeId(0); (n, None, n) }; TABS_MAX];
+        let mut handles = [{
+            let n = NodeId(0);
+            (n, None, n, None, None)
+        }; TABS_MAX];
         for (index, item) in items.iter().enumerate() {
             let state = if index == selected {
                 ctx.theme.state(InteractionState::Selected)
@@ -3033,11 +3040,19 @@ impl Tabs {
             let label = add(ui, tab, text_spec(item.label, state.content, ctx.metrics.typography(TypographyToken::Caption))?)?;
             ui.set_a11y(tab, ROLE_BUTTON, item.label)?;
             ui.set_focusable(tab, Some(tab), true)?;
-            handles[index] = (tab, icon_node, label);
+            handles[index] = (tab, icon_node, label, None, None);
         }
         Ok(Self {
             panel,
-            items: handles.map(|(panel, icon, label)| TabHandle { panel, icon, label }),
+            items: handles.map(|(panel, icon, label, badge, badge_label)| TabHandle {
+                panel,
+                icon,
+                label,
+                badge,
+                badge_label,
+            }),
+            counts: [0; TABS_MAX],
+            cell_w: cell,
             count: items.len(),
             selected,
             pressed: None,
@@ -3049,6 +3064,63 @@ impl Tabs {
 
     pub fn item_panel(&self, index: usize) -> Result<NodeId, UiError> {
         self.items.get(index).map(|item| item.panel).ok_or(UiError::NodeBad)
+    }
+
+    /// Current badge count. Zero means no badge is attached.
+    pub fn badge(&self, index: usize) -> Result<u32, UiError> {
+        self.counts.get(index).copied().ok_or(UiError::NodeBad)
+    }
+
+    /// Badge visual node, if present. The badge is hit-transparent and does
+    /// not add an a11y/SEM anchor; the owning tab remains the single anchor.
+    pub fn badge_panel(&self, index: usize) -> Option<NodeId> {
+        self.items.get(index).and_then(|item| item.badge)
+    }
+
+    /// Set or remove a tab count badge. Zero removes it; values above 999 are
+    /// displayed as 999 while the app-facing count keeps its true value.
+    pub fn set_badge<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, index: usize, count: u32,
+    ) -> Result<(), UiError> {
+        if index >= self.count {
+            return Err(UiError::NodeBad);
+        }
+        self.items[index].badge_label = None;
+        if let Some(old) = self.items[index].badge.take() {
+            ui.remove(old)?;
+        }
+        self.counts[index] = count;
+        if count == 0 {
+            return Ok(());
+        }
+        let shown = count.min(999);
+        let height = ctx.metrics.effective_px(24);
+        let width = if shown < 10 {
+            height
+        } else {
+            ctx.metrics.effective_px(36)
+        };
+        let panel = add(
+            ui,
+            self.items[index].panel,
+            panel_spec(ctx.theme.colors.danger, Some(width), Some(height), 0, 0, height / 2),
+        )?;
+        let (bytes, len) = signed_decimal_bytes(shown as i32);
+        let label = add(
+            ui,
+            panel,
+            text_spec(
+                &bytes[..len],
+                ctx.theme.colors.on_primary,
+                ctx.metrics.typography(TypographyToken::Caption),
+            )?,
+        )?;
+        let pad = ctx.spacing(SpacingToken::Xs);
+        let x = self.cell_w.saturating_sub(width).saturating_sub(pad);
+        ui.set_offset(panel, x as i32, pad as i32)?;
+        self.items[index].badge = Some(panel);
+        self.items[index].badge_label = Some(label);
+        Ok(())
     }
 
     fn state_for(&self, index: usize) -> InteractionState {
@@ -3096,6 +3168,8 @@ impl Tabs {
             node == item.panel
                 || node == item.label
                 || item.icon.is_some_and(|icon| node == icon)
+                || item.badge.is_some_and(|badge| node == badge)
+                || item.badge_label.is_some_and(|badge_label| node == badge_label)
         })
     }
 
