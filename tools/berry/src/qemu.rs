@@ -270,7 +270,12 @@ pub fn spawn_image(
     // 声明序 = console 绑定序：QEMU 的 VNC 面向先声明的图形设备，gpu 须
     // 先于 ramfb（09 号 §4 实证定谳：ramfb 在前则 VNC 面恒黑帧）；ramfb
     // 保留为后备（guifbd 分派零改）。
-    cmd.arg("-device").arg("virtio-gpu-device");
+    // BERRY_NO_VGPU=1：跳过 virtio-gpu 仅挂 ramfb——ramfb 单后端客机构建
+    // （如 knife6 系镜像）在此形态下 VNC 才面向 ramfb；gpu 双后端客机不
+    // 要设（会失去加速相）。诊断/演示开关，缺省零漂移。
+    if std::env::var_os("BERRY_NO_VGPU").is_none() {
+        cmd.arg("-device").arg("virtio-gpu-device");
+    }
     cmd.arg("-device").arg("ramfb");
     // M2 第 12 步：fw_cfg 具名键注入单源化——键集与条件只在 fwcfg_plan
     // 一处定义，spawn_image（真注入）与 doctor（静态推演）同源消费；全景
@@ -476,4 +481,47 @@ pub fn wait_for_path(path: &Path, timeout: Duration) -> Result<()> {
         "timed out waiting for {}",
         path.display()
     )))
+}
+
+// ---- 四轮审计（D4）：fwcfg_plan 条件矩阵护栏——spawn_image（真注入）与
+// ---- doctor（静态推演）双消费同源，键集改动两处同漂，此前零护栏。
+#[cfg(test)]
+mod fwcfg_plan_tests {
+    use super::*;
+
+    #[test]
+    fn plan_conditional_matrix() {
+        // TCG + 无 display 档：display/accel 双条件缺席（conditional=true），
+        // noktest 恒注（conditional=false），rtc 依系统时间（只断言结构）。
+        let v = fwcfg_plan(None, Accel::Tcg);
+        assert_eq!(v[0].0, "opt/berry/display");
+        assert_eq!(v[0].1, None);
+        assert!(v[0].2);
+        assert_eq!(v[1].0, "opt/berry/accel");
+        assert_eq!(v[1].1, None);
+        assert!(v[1].2);
+        assert_eq!(v[2].0, "opt/berry/noktest");
+        assert_eq!(v[2].1.as_deref(), Some("1"));
+        assert!(!v[2].2);
+        assert_eq!(v[3].0, "opt/berry/rtc");
+        assert!(v[3].2);
+        assert_eq!(v.len(), 4);
+    }
+
+    #[test]
+    fn plan_accel_and_display_values() {
+        // 硬件加速档：accel 注值。
+        let v = fwcfg_plan(None, Accel::Hvf);
+        assert_eq!(v[1].1.as_deref(), Some("hvf"));
+        let v = fwcfg_plan(None, Accel::Kvm);
+        assert_eq!(v[1].1.as_deref(), Some("kvm"));
+        // display 给档：注 profile 几何串原样。
+        let v = fwcfg_plan(Some("480x1000@60"), Accel::Tcg);
+        assert_eq!(v[0].1.as_deref(), Some("480x1000@60"));
+        // rtc 在时间可读环境下总有值（epoch 秒，数值域粗校验）。
+        if let Some(rtc) = v[3].1.as_deref() {
+            let secs: u64 = rtc.parse().unwrap();
+            assert!(secs > 1_700_000_000);
+        }
+    }
 }

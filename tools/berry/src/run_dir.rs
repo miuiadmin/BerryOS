@@ -212,3 +212,51 @@ pub fn wait_for_file(path: &Path, timeout: Duration) -> Result<()> {
         path.display()
     )))
 }
+
+// ---- 四轮审计（D4）：RunDir/index 生命周期护栏——write_all 整行格式与
+// ---- create/drop 两行契约此前零护栏（writeln! 并发交错是三轮实抓回归面）。
+// ---- env（BERRY_HOME）是进程级全局：两测试经 ENV_LOCK 串行防竞争。
+#[cfg(test)]
+mod run_dir_tests {
+    use super::*;
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn index_lifecycle_two_lines() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let tmp = std::env::temp_dir().join(format!("berry-run-test-{}", std::process::id()));
+        std::env::set_var("BERRY_HOME", &tmp);
+        std::fs::remove_dir_all(&tmp).ok();
+        {
+            let mut run = RunDir::create("t", false).unwrap();
+            run.keep();
+        } // Drop：先记 run.end（kept=true）再按 keep 免删
+        let idx = std::fs::read_to_string(tmp.join("run").join("index.jsonl")).unwrap();
+        let lines: Vec<&str> = idx.lines().collect();
+        assert_eq!(lines.len(), 2, "index 两行契约: {idx}");
+        assert!(lines[0].contains("\"t\":\"run.start\""));
+        assert!(lines[0].contains("\"label\":\"t\""));
+        assert!(lines[1].contains("\"t\":\"run.end\""));
+        assert!(lines[1].contains("\"kept\":true"));
+        assert!(idx.ends_with('\n'), "单行整写含尾换行");
+        std::env::remove_var("BERRY_HOME");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn drop_without_keep_removes_dir() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let tmp = std::env::temp_dir().join(format!("berry-run-test2-{}", std::process::id()));
+        std::env::set_var("BERRY_HOME", &tmp);
+        std::fs::remove_dir_all(&tmp).ok();
+        let path;
+        {
+            let run = RunDir::create("t2", false).unwrap();
+            path = run.path().to_path_buf();
+        }
+        assert!(!path.exists(), "非 keep 的 Drop 删目录");
+        std::env::remove_var("BERRY_HOME");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+}

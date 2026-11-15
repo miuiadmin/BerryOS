@@ -17,6 +17,10 @@ VNC 多客户端（`VncInput`），生命周期/复位走 QMP。窗口、截图�
 
 ```bash
 just berry-build          # host 独立 workspace，显式 --target <host>
+# 注：裸 cargo test 需带 --target <host> 且本机 ~/.cargo/config.toml 的
+# target-dir 指 ~/.cargo-target 时，cargo/rustc 子进程对该目录 .d 写会
+# EPERM（shell 可写 rustc 被拒——四轮审计实抓）——跑测试换
+# CARGO_TARGET_DIR=/tmp/berry-test cargo test --release --target <host>。
 just berry doctor         # QEMU / 固件 / 镜像 / accel / fw_cfg 键注入报告（--json 含 fwcfg 数组）
 ```
 
