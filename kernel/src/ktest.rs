@@ -115,6 +115,14 @@ pub fn run() {
     // util EWMA）端到端（末位新号纪律——ktest done 前；sched::init 前跑，
     // par 门恒关 = 只测决策面，place() 路由面归 SMP 相）。
     test_eas_place();
+    // 阶段五第 16 步：0x84 telemetry_open klog 快照翻真——真号行为静默盖
+    //（末位新号纪律，ktest done 前；定义在 test_sysver 后）。
+    test_telemetry_open();
+    // CP-06 首份 A/B 数据（06 号综合定谳 §1.7-③「首份真实 A/B 报告未动」
+    // 证据面刀，2026-11-16）：A/B 负载生成器——timer_slack × band 四组对比
+    // （末位新号纪律——ktest done 前；sched::init 前跑，睡眠/调度/timer 全
+    // 走 ktest 手驱真机械面；BANDM4/HDRWAKE/test_band 三先例合体）。
+    test_loadgen();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
@@ -5836,6 +5844,48 @@ fn test_sysver() {
     berry_hal_aarch64::uart_puts(b"SYSVER ok\n");
 }
 
+/// 阶段五第 16 步：0x84 telemetry_open 翻真（klog 快照首域）——真号行为
+/// 断言（原在册未实现恒 -ENOTSUP 的 v3 号随翻真改验真语义）。**静默盖**
+/// （test_bootparams 先例：fail = panic 停机冒烟自然红，零输出行保 boot 相
+/// 逐行零漂移——smoke 契约面零新行）。EL1 svc4 全链：快照非空 + boot 横幅
+/// 在环（ktest 点累计串流 ≈1KB ≪ 16KiB 环，无追尾淘汰）+ 行结构（含换行、
+/// 全 ASCII 可印域）+ op 域外 / len 边界负例。
+fn test_telemetry_open() {
+    // 快照缓冲（EL1 内核地址——copy_out 走高半直映分支；test_syscall OUT 同款）。
+    static mut SNAP: [u8; 4096] = [0; 4096];
+    const SNAP_CAP: u64 = 4096;
+
+    // 正例：op=0 klog 快照，4096B 帽（bsh dmesg 同尺度）。
+    // SAFETY: svc 同步异常；SNAP 为本函数私有静态（ktest 单核窗），
+    // len 走 SNAP_CAP 常量（static mut 字段读不进安全面）。
+    let n = svc4(0x84, 0, &raw mut SNAP as u64, SNAP_CAP);
+    assert!(n > 0 && n as u64 <= SNAP_CAP, "TELEMETRY：klog 快照须 0 < n ≤ 帽（n={}）", n);
+    // SAFETY: n ≤ 4096 上面断言已钉；slice_from_raw_parts 显式成片（免隐式
+    // autoref 拒绝 lint）。
+    let snap: &[u8] = unsafe {
+        &*core::ptr::slice_from_raw_parts(core::ptr::addr_of!(SNAP) as *const u8, n as usize)
+    };
+    assert!(snap.contains(&b'\n'), "TELEMETRY：klog 快照须含换行（串流行镜像）");
+    assert!(
+        snap.windows(b"BerryOS boot".len()).any(|w| w == b"BerryOS boot"),
+        "TELEMETRY：klog 快照须含 boot 横幅（ktest 点环未追尾）"
+    );
+    assert!(
+        snap.iter().all(|&b| b == b'\n' || (0x20..0x7f).contains(&b)),
+        "TELEMETRY：klog 快照须 ASCII 可印域（boot 串流无二进制面）"
+    );
+
+    // 负例一：op 域外 → -ENOTSUP（SwitchRec/WakeRec 读口后续波次预留位）。
+    assert_eq!(svc4(0x84, 99, &raw mut SNAP as u64, 4), -95, "TELEMETRY：op 域外须 -ENOTSUP");
+    // 负例二：len=0 / 超单读帽 → -EINVAL。
+    assert_eq!(svc4(0x84, 0, &raw mut SNAP as u64, 0), -22, "TELEMETRY：len=0 须 -EINVAL");
+    assert_eq!(
+        svc4(0x84, 0, &raw mut SNAP as u64, 16 * 1024 + 1),
+        -22,
+        "TELEMETRY：len 超单读帽须 -EINVAL"
+    );
+}
+
 /// G5（§1.6-补）：boot-params 消费端纯函数面——newc 定址查找 / TOML 子集
 /// 解析 / intent_default 装配注入三面（`kernel/src/bootparams.rs`）。静默
 /// 执法（fail = panic 停机冒烟自然红——G3-1a f4 先例，零输出行保 boot 相
@@ -8744,5 +8794,625 @@ fn test_eas_place() {
     }
 
     berry_hal_aarch64::uart_puts(b"EAS ok\n");
+}
+
+
+// ---- CP-06 首份 A/B 数据（06 号综合定谳 §1.7-③「首份真实 A/B 报告未动」
+// 证据面刀，2026-11-16）：ktest 形态负载生成器 ----
+//
+// 06 号终判「下一程的瓶颈不在机制在证据与消费」——本测产出证据：受控
+// spawn 三类工作负载（interactive/utility/burst 各 4 任务），驱动「睡眠 →
+// 到期唤醒 → 入环 → 首切 → CPU burst」循环，四组 A/B（timer_slack
+// 0/10ms × band off/on）各跑同一负载，串口出 p50/p99 延迟与吞吐对比行。
+//
+// **ktest 纪律（sched::init/timer::init 前、单核、IRQ 屏蔽窗）——三先例合体**：
+// - spawn 面 = 真 `spawn_intent`（BANDM4 M4F 先例：真 PER_CPU_RQ 在席验证
+//   后 `rq_unlink_kt` 摘出，任务体永不执行）；
+// - 运行环 = 本地 `Runqueue`（test_band/FAIR-K 先例——真 RQ 无 pick 出口），
+//   enqueue/pick/tick/dequeue 全走真 class 机械（`class_of_task` per-task
+//   分派 + `Fair::pick_next_filtered` 队级扫描〔eligible 过滤 → band 限流
+//   真生效〕+ `Fair::tick` 真记账〔LAST_VCT 回落位——ktest 窗合法〕）；
+// - 睡眠面 = 真 SLEEPQ（`sleepq_insert`/`sleepq_unlink`，test_fast/RING3
+//   先例）+ 真 CP-11 顺延律 `timer_slack_defer`（block_current 入队点同款
+//   ——入队点一次落定）+ 真 oneshot 面（`tighten_deadline` 收紧律 +
+//   `arm_at` 绝对编程——到期检出为忙等形态〔ktest 不可真睡，HDRWAKE 同款
+//   简化；真 IRQ 口径归 rwake 族 boot spawn 面〕）；
+// - band 面 = 真 `configure`/`consume`/`period_check`/`throttle_all`/
+//   `unthrottle_all`（test_band 先例——事件驱动记账，ktest 手驱消费点；
+//   M4 并线前热路径本无执法点，手驱 = 入场券证据面的可用形态）。
+//
+// **测量口径**：每任务每轮 lat = 首切时刻 − 请求唤醒时刻（入睡前**未顺延**
+// 的 deadline）。分量：slack 顺延（确定性——utility +10ms、交互零牺牲）、
+// 到期检出粒度（≤1 sub-unit，忙等口径）、入环排队（EEVDF 出选序）、band
+// 限流等待（utility 越额期，仅 A2/A4）。burst 任务无睡眠面，只计吞吐
+// （sub-unit 完成数）。sub-unit = 250µs（可打断粒度近似——组间同口径，
+// A/B 差异不由此 knob 引入）。
+
+/// CP-06 A/B 组配置：slack（纳秒，CP-11 第三键同域）× band（interactive/
+/// utility 两带包络开关——「band=on(interactive/utility 差异化)」）。
+struct LgGroup {
+    tag: &'static [u8],
+    slack_ns: u64,
+    band: bool,
+}
+
+/// 单任务驱动器账本（Task 字段不含 harness 数据——平行数组记账）。
+struct LgSlot {
+    t: *mut berry_sched::Task,
+    /// 0=interactive 1=utility 2=burst。
+    kind: u8,
+    /// 本轮 burst 剩余（周期数）。
+    burst_left: u64,
+    /// 已完成轮数（interactive/utility）。
+    rounds: u32,
+    /// burst 型吞吐：完成 sub-unit 数。
+    units: u64,
+    sleeping: bool,
+    /// 在环待首切（唤醒后首 pick 记账一次）。
+    woken: bool,
+    /// 请求唤醒时刻（未顺延——lat 锚点）。
+    due: u64,
+    /// 本组实跑 CPU 周期累计（吞吐/对账面）。
+    ran: u64,
+    lat: alloc::vec::Vec<u64>,
+}
+
+/// CP-06 首份 A/B 数据：负载生成器 + 四组对比 + 串口汇总行。
+fn test_loadgen() {
+    use berry_hal_aarch64::timer::{arm_at, cval, cntfrq, cntvct, mask, ticks_to_ns};
+    use berry_sched::{
+        class_of_task, consume, configure, cpu_util, for_each_runnable, period_check,
+        pi_rq_lock, pi_rq_unlock, set_timer_slack_ns, sleepq_insert,
+        sleepq_unlink, throttle_all, timer_slack_defer, timer_slack_ns,
+        tighten_deadline, unthrottle_all, util_reset, Fair, Runqueue, SchedClass, Task,
+        Topo, UTIL_NR_CPU, INTENT_BACKGROUND, INTENT_INTERACTIVE, INTENT_UTILITY,
+    };
+
+    /// 占位入口（负载任务永不执行——驱动器同步代跑；halt 兜底，同 M4F）。
+    extern "C" fn lg_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    // —— 负载形状（任务书口径；时间全经 CNTFRQ 运行换算不写死）——
+    /// 每类任务数 N=4。
+    const N_EACH: usize = 4;
+    /// interactive/utility 每组轮数（burst 恒跑至组尾）。
+    const ROUNDS: u32 = 6;
+    /// sub-unit：可打断粒度 = 到期检出 / 再 pick 粒度。
+    const UNIT_NS: u64 = 250_000;
+    /// interactive：短 burst 100µs。
+    const IA_BURST_NS: u64 = 100_000;
+    /// interactive：睡 10ms。
+    const IA_SLEEP_NS: u64 = 10_000_000;
+    /// utility：长 burst 10ms。
+    const UT_BURST_NS: u64 = 10_000_000;
+    /// utility：睡 1ms。
+    const UT_SLEEP_NS: u64 = 1_000_000;
+    /// A3/A4 timer_slack（任务书口径 10ms）。
+    const SLACK_NS: u64 = 10_000_000;
+    /// 组安全墙（fail loud——驱动器死循环防线）。
+    const GROUP_CAP_NS: u64 = 2_000_000_000;
+    // band 包络（A2/A4；quota/period 纳秒 → 周期数运行换算）：interactive
+    // 宽裕（组总额 4×6×100µs=2.4ms 恒不越 → 「交互零牺牲」数据面）；
+    // utility 紧（组总额 240ms；**期内**占有率 ≈0.49〔首跑实测 ranUT/wall
+    // = 240/485〕→ 配额须 < 占有率×期长才期内越线——40ms/60ms 期不越
+    // 〔翻期清账〕，20ms/60ms 期中必越 → 限流差异化效果）。
+    const IA_QUOTA_NS: u64 = 20_000_000;
+    const UT_QUOTA_NS: u64 = 20_000_000;
+    const BAND_PERIOD_NS: u64 = 60_000_000;
+
+    const IA_NAMES: [&[u8]; N_EACH] = [b"lgIA0", b"lgIA1", b"lgIA2", b"lgIA3"];
+    const UT_NAMES: [&[u8]; N_EACH] = [b"lgUT0", b"lgUT1", b"lgUT2", b"lgUT3"];
+    const BK_NAMES: [&[u8]; N_EACH] = [b"lgBK0", b"lgBK1", b"lgBK2", b"lgBK3"];
+
+    /// ns → CNTVCT 周期（截尾——timer_slack_defer 同口径）。
+    fn ns2cyc(ns: u64, freq: u64) -> u64 {
+        ns.saturating_mul(freq) / 1_000_000_000
+    }
+
+    /// 周期 → µs（串口报告口径）。
+    fn cyc2us(cyc: u64) -> u64 {
+        ticks_to_ns(cyc) / 1_000
+    }
+
+    /// nearest-rank 分位（permille 千分位；v 非空契约归调用方）。
+    fn pctl(v: &mut alloc::vec::Vec<u64>, permille: u64) -> u64 {
+        v.sort_unstable();
+        let n = v.len();
+        let rank = ((permille as usize * n + 999) / 1000).clamp(1, n);
+        v[rank - 1]
+    }
+
+    /// 受控 spawn（任务书签名 spawn_loadgen(pattern, count, burst_ns)）：真
+    /// `spawn_intent` ×count 入真 PER_CPU_RQ（现役带打 `[band]` 串口行——
+    /// intent→band→带参数可见面）→ M4F 式走查验证在席 → `rq_unlink_kt`
+    /// 全摘（真 RQ 零残留）。返回任务指针（调用方驱动器接管；burst 形状
+    /// 由 pattern 常量在 LgSlot 侧单点落定，burst_ns 参数留口径对齐）。
+    fn loadgen_spawn(pattern: u8, count: usize, _burst_ns: u64) -> alloc::vec::Vec<*mut Task> {
+        let (names, intent): (&[&[u8]; N_EACH], u8) = match pattern {
+            0 => (&IA_NAMES, INTENT_INTERACTIVE),
+            1 => (&UT_NAMES, INTENT_UTILITY),
+            _ => (&BK_NAMES, INTENT_BACKGROUND),
+        };
+        assert!(count <= names.len(), "LOADGEN：count 超名表");
+        for n in &names[..count] {
+            berry_sched::spawn_intent(lg_dummy, 0, n, intent);
+        }
+        let mut ptrs: alloc::vec::Vec<*mut Task> = alloc::vec::Vec::new();
+        let phys = berry_sched::pi_rq_lock();
+        berry_sched::for_each_runnable(|t| {
+            if t.name.len() >= 2 && &t.name[..2] == b"lg" {
+                ptrs.push(t as *mut Task);
+            }
+        });
+        berry_sched::pi_rq_unlock(phys);
+        assert_eq!(
+            ptrs.len(),
+            count,
+            "LOADGEN：LG-0 spawn 面 pattern={} 须真入 PER_CPU_RQ 各恰一枚",
+            pattern
+        );
+        for p in &ptrs {
+            // SAFETY: p 来自锁窗走查（spawn_intent Box::leak 产物，地址稳定）。
+            berry_sched::rq_unlink_kt(unsafe { &mut **p });
+        }
+        ptrs
+    }
+
+    // —— LG-0. 受控 spawn：三类 × N_EACH，真 spawn → 真 RQ 在席 → 摘出 ——
+    let freq = cntfrq();
+    assert!(freq > 0, "LOADGEN：CNTFRQ 须非零");
+    let ia_ptrs = loadgen_spawn(0, N_EACH, IA_BURST_NS);
+    let ut_ptrs = loadgen_spawn(1, N_EACH, UT_BURST_NS);
+    let bk_ptrs = loadgen_spawn(2, N_EACH, UNIT_NS);
+
+    // LG-0b. 顺延律锚点（纯函数面，确定性——test_timer_slack 静默面的
+    //        A/B 锚定版）：utility +10ms 截尾；interactive/零 slack 恒等。
+    let d0 = cntvct();
+    let defer_cyc = ns2cyc(SLACK_NS, freq);
+    assert_eq!(
+        timer_slack_defer(INTENT_UTILITY, d0, SLACK_NS, freq),
+        d0 + defer_cyc,
+        "LOADGEN：LG-0b utility 顺延须 +10ms（截尾律）"
+    );
+    assert_eq!(
+        timer_slack_defer(INTENT_INTERACTIVE, d0, SLACK_NS, freq),
+        d0,
+        "LOADGEN：LG-0b interactive 须零顺延（交互零牺牲）"
+    );
+    assert_eq!(
+        timer_slack_defer(INTENT_UTILITY, d0, 0, freq),
+        d0,
+        "LOADGEN：LG-0b 零 slack 恒等（A1/A2 基线锚）"
+    );
+
+    // 驱动器槽位（12 任务跨组复用——Task/栈零增额）。
+    let mut slots: alloc::vec::Vec<LgSlot> = alloc::vec::Vec::new();
+    for (kind, ptrs) in [(0u8, ia_ptrs), (1u8, ut_ptrs), (2u8, bk_ptrs)] {
+        for p in ptrs {
+            slots.push(LgSlot {
+                t: p,
+                kind,
+                burst_left: 0,
+                rounds: 0,
+                units: 0,
+                sleeping: false,
+                woken: false,
+                due: 0,
+                ran: 0,
+                lat: alloc::vec::Vec::new(),
+            });
+        }
+    }
+
+    /// 单组产出（串口行 + 汇总行数据源）。
+    struct LgOut {
+        ia_p50: u64,
+        ia_p99: u64,
+        ut_p50: u64,
+        ut_p99: u64,
+        burst_units: u64,
+        wall_cyc: u64,
+        oneshot_cyc: u64,
+        thr_ut: u32,
+        thr_ia: u32,
+        /// 各型实跑 CPU 周期（spin 实测累计——吞吐/对账面）。
+        ran_ia: u64,
+        ran_ut: u64,
+        ran_bk: u64,
+    }
+
+    /// 跑一组：同负载（12 任务 × 同形状）× 组配置（slack × band）。
+    /// 名字解析走外层 fn 的 use（嵌套项共享外层导入作用域）。
+    fn run_group(g: &LgGroup, slots: &mut [LgSlot]) -> LgOut {
+        fn ns2cyc_local(ns: u64, freq: u64) -> u64 {
+            ns.saturating_mul(freq) / 1_000_000_000
+        }
+        let freq = cntfrq();
+        let unit_cyc = ns2cyc_local(UNIT_NS, freq);
+        let ia_burst = ns2cyc_local(IA_BURST_NS, freq);
+        let ut_burst = ns2cyc_local(UT_BURST_NS, freq);
+        let ia_sleep = ns2cyc_local(IA_SLEEP_NS, freq);
+        let ut_sleep = ns2cyc_local(UT_SLEEP_NS, freq);
+        let defer_cyc = ns2cyc_local(SLACK_NS, freq);
+
+        // 1) 组配置：timer_slack（真全局面）+ band 包络（真 configure）。
+        set_timer_slack_ns(g.slack_ns);
+        let now0 = cntvct();
+        if g.band {
+            assert!(
+                configure(INTENT_INTERACTIVE, ns2cyc_local(IA_QUOTA_NS, freq),
+                          ns2cyc_local(BAND_PERIOD_NS, freq), now0),
+                "LOADGEN：{} 组 interactive 带武装须受理", lg_tag_str(g)
+            );
+            assert!(
+                configure(INTENT_UTILITY, ns2cyc_local(UT_QUOTA_NS, freq),
+                          ns2cyc_local(BAND_PERIOD_NS, freq), now0),
+                "LOADGEN：{} 组 utility 带武装须受理", lg_tag_str(g)
+            );
+        } else {
+            assert!(!berry_sched::band_on(INTENT_INTERACTIVE),
+                    "LOADGEN：{} 组前置 interactive 带须关", lg_tag_str(g));
+            assert!(!berry_sched::band_on(INTENT_UTILITY),
+                    "LOADGEN：{} 组前置 utility 带须关", lg_tag_str(g));
+        }
+
+        // 2) 任务复位 + 本地环入环（真 class 分派 enqueue——vruntime lift /
+        //    VD 重臂 / link_back 全真）。LAST_VCT 先打底（首子单元 delta
+        //    口径——空环 tick：off-ring 无账本写入）。
+        let mut rq = Runqueue::new();
+        let topo = Topo::single();
+        // SAFETY: 槽位指针来自 spawn_intent Box::leak，地址稳定。
+        Fair.tick(unsafe { &mut *slots[0].t }, &mut rq);
+        for s in slots.iter_mut() {
+            // SAFETY: 同上；off-ring 直改 EEVDF 字段（复位面——账本只在
+            // link/unlink/tick 三账点动，off-ring 写零漂移）。
+            let t = unsafe { &mut *s.t };
+            t.vruntime = 0;
+            t.vdeadline = 0;
+            t.slice_left = 0;
+            t.held_locks = 0;
+            s.rounds = 0;
+            s.units = 0;
+            s.ran = 0;
+            s.sleeping = false;
+            s.woken = false;
+            s.lat.clear();
+            s.burst_left = match s.kind {
+                0 => ia_burst,
+                1 => ut_burst,
+                _ => unit_cyc,
+            };
+            class_of_task(t).enqueue(t, &mut rq);
+        }
+
+        // 3) 驱动主环：到期唤醒 → band 翻期 → pick → 首切记账 → 跑一个
+        //    sub-unit → 真记账 → band 记账 → 轮次结算。
+        let cap = now0 + ns2cyc_local(GROUP_CAP_NS, freq);
+        let (mut thr_ut, mut thr_ia, mut unthr) = (0u32, 0u32, 0u32);
+        loop {
+            let now = cntvct();
+            assert!(now < cap, "LOADGEN：{} 组超安全墙（驱动器疑似失速）", lg_tag_str(g));
+            // (1) 到期唤醒（expire_timeouts 的忙等形态：批扫睡者——含
+            //     slack 顺延后的到期判定，SLEEPQ 升序队头语义等价）。
+            for s in slots.iter_mut() {
+                if !s.sleeping {
+                    continue;
+                }
+                // SAFETY: 同上。
+                let t = unsafe { &mut *s.t };
+                if t.wait_deadline <= now {
+                    sleepq_unlink(t);
+                    s.sleeping = false;
+                    s.woken = true;
+                    class_of_task(t).enqueue(t, &mut rq);
+                }
+            }
+            // (2) band 周期翻转（事件驱动——消费点顺带，零额外定时器）。
+            if g.band {
+                for b in [INTENT_INTERACTIVE, INTENT_UTILITY] {
+                    if period_check(b, cntvct()) {
+                        let n = unthrottle_all(b, &rq);
+                        if n > 0 {
+                            unthr += 1;
+                        }
+                    }
+                }
+            }
+            // (3) pick（真机械：eligible 过滤——band 限流者不出选）。
+            let picked: Option<*mut Task> =
+                Fair.pick_next_filtered(&rq, &topo, core::ptr::null_mut())
+                    .map(|n| n as *mut Task);
+            let Some(next_ptr) = picked else {
+                // 环空（burst 恒在环 → 理论不可达；防御推进一个 unit）。
+                let tgt = cntvct() + unit_cyc;
+                while cntvct() < tgt {
+                    core::hint::spin_loop();
+                }
+                continue;
+            };
+            // SAFETY: pick 产物（在环、调度器拥有）。
+            let next = unsafe { &mut *next_ptr };
+            // (4) 首切记账：lat = 首切 − 请求唤醒时刻（含顺延/检出/排队/
+            //     限流全分量）。
+            let idx = slots
+                .iter()
+                .position(|s| core::ptr::eq(s.t, next_ptr))
+                .expect("LOADGEN：出选者须在槽位表");
+            let s = &mut slots[idx];
+            if s.woken {
+                s.lat.push(cntvct().saturating_sub(s.due));
+                s.woken = false;
+            }
+            // (5) 授片 + 跑一个 sub-unit（授片 = block_current 同款授予面；
+            //     SLICE pre-init=0 → 授 grant 周期数，ktest 手驱口径）。
+            let grant = if s.kind == 2 {
+                unit_cyc
+            } else {
+                s.burst_left.min(unit_cyc)
+            };
+            next.slice_left = grant;
+            let run_start = cntvct();
+            let run_end = run_start + grant;
+            while cntvct() < run_end {
+                core::hint::spin_loop();
+            }
+            let delta = cntvct() - run_start;
+            s.ran += delta;
+            // (6) 真记账（Fair::tick：LAST_VCT 增量 → slice/vruntime/Σvruntime
+            //     账本——EEVDF 出选序由此真分化）。
+            Fair.tick(next, &mut rq);
+            // (7) band 记账（consume 越线 → throttle_all 环执法——真 API）。
+            if g.band && s.kind <= 1 {
+                let b = if s.kind == 0 { INTENT_INTERACTIVE } else { INTENT_UTILITY };
+                if consume(b, delta) {
+                    throttle_all(b, &rq);
+                    if s.kind == 0 {
+                        thr_ia += 1;
+                    } else {
+                        thr_ut += 1;
+                    }
+                }
+            }
+            // (8) 轮次结算：burst 型计吞吐恒在环；interactive/utility 耗尽
+            //     burst → 睡眠腿（真顺延律——入队点一次落定）或完成出环。
+            if s.kind == 2 {
+                s.units += 1;
+                s.burst_left = unit_cyc;
+            } else {
+                s.burst_left = s.burst_left.saturating_sub(delta);
+                if s.burst_left == 0 {
+                    s.rounds += 1;
+                    // SAFETY: 同上。
+                    let t = unsafe { &mut *s.t };
+                    class_of_task(t).dequeue(t, &mut rq); // 出环（Exited 标签瞬态——驱动器语境，再入环即覆写）
+                    if s.rounds < ROUNDS {
+                        // 下一轮 burst 重臂（本轮已耗尽——不重臂则醒后
+                        // grant=min(0,unit)=0 零长轮：负载塌缩成每任务
+                        // 一真轮 + ROUNDS-1 空转轮〔首跑实测 ranUT=40ms
+                        // = 恰 4×1 真轮，正是此塌缩的指纹〕）。
+                        s.burst_left = if s.kind == 0 { ia_burst } else { ut_burst };
+                        let due = cntvct()
+                            + if s.kind == 0 { ia_sleep } else { ut_sleep };
+                        let deferred =
+                            timer_slack_defer(t.intent_effective, due, g.slack_ns, freq);
+                        t.wait_obj = 0;
+                        t.wait_signals = 0;
+                        t.wait_deadline = deferred;
+                        s.due = due;
+                        s.sleeping = true;
+                        sleepq_insert(t);
+                    }
+                }
+            }
+            // (9) 组完判：interactive/utility 全部 ROUNDS 完成。
+            if slots.iter().all(|s| s.kind == 2 || s.rounds >= ROUNDS) {
+                break;
+            }
+        }
+        let wall = cntvct() - now0;
+
+        // 4) band 收口（test_band 纪律：先 unthrottle 清环上位再 configure(0)）
+        //    + burst 出环 + 环/队复核对账。
+        for b in [INTENT_INTERACTIVE, INTENT_UTILITY] {
+            if berry_sched::band_on(b) {
+                unthrottle_all(b, &rq);
+                assert!(!configure(b, 0, 0, 0), "LOADGEN：{} 组带收口须关", lg_tag_str(g));
+            }
+        }
+        for s in slots.iter_mut() {
+            if s.kind == 2 {
+                // SAFETY: 同上。
+                let t = unsafe { &mut *s.t };
+                class_of_task(t).dequeue(t, &mut rq);
+            }
+        }
+        assert_eq!(rq.len(), 0, "LOADGEN：{} 组收口环须空", lg_tag_str(g));
+        assert!(
+            slots.iter().all(|s| !s.sleeping),
+            "LOADGEN：{} 组收口 SLEEPQ 须空",
+            lg_tag_str(g)
+        );
+        assert_eq!(timer_slack_ns(), g.slack_ns, "LOADGEN：{} 组 slack 须未被扰动", lg_tag_str(g));
+        set_timer_slack_ns(0);
+
+        // 5) oneshot 精度探针：真收紧律 + 真 arm_at 编程，忙等检出（ktest
+        //    不可真睡——HDRWAKE 同款；真 IRQ 口径归 rwake 族 boot spawn 面）。
+        let ms_cyc = ns2cyc_local(1_000_000, freq);
+        let mut oneshot = [0u64; 3];
+        for o in oneshot.iter_mut() {
+            let now = cntvct();
+            let target = now + ms_cyc;
+            // SAFETY: 写 CNTV 系统寄存器；EL1、IRQ 屏蔽窗。
+            unsafe { arm_at(now + ms_cyc * 10) }; // 片终点状远臂（arm_slice 形）
+            let d = tighten_deadline(Some(target), cval())
+                .expect("LOADGEN：收紧律须 Some（更早截止在席）");
+            assert_eq!(d, target, "LOADGEN：收紧律须收紧到最近截止（不推迟）");
+            // SAFETY: 同上。
+            unsafe { arm_at(d) };
+            while cntvct() < d {
+                core::hint::spin_loop();
+            }
+            *o = cntvct() - d;
+        }
+        oneshot.sort_unstable();
+        let oneshot_med = oneshot[1];
+
+        // 6) 统计 + 断言（结构面确定性；差分面按组口径）。
+        let mut ia_all: alloc::vec::Vec<u64> = alloc::vec::Vec::new();
+        let mut ut_all: alloc::vec::Vec<u64> = alloc::vec::Vec::new();
+        let mut burst_units = 0u64;
+        let (mut ran_ia, mut ran_ut, mut ran_bk) = (0u64, 0u64, 0u64);
+        for s in slots.iter() {
+            match s.kind {
+                0 => {
+                    ia_all.extend_from_slice(&s.lat);
+                    ran_ia += s.ran;
+                }
+                1 => {
+                    ut_all.extend_from_slice(&s.lat);
+                    ran_ut += s.ran;
+                }
+                _ => {
+                    burst_units += s.units;
+                    ran_bk += s.ran;
+                }
+            }
+        }
+        // 样本数口径：首轮无前置睡眠（spawn 即在环）→ 每任务 ROUNDS-1 次
+        // 唤醒（第 2..ROUNDS 轮首切各一）。
+        assert_eq!(ia_all.len() as u32, N_EACH as u32 * (ROUNDS - 1),
+                   "LOADGEN：{} 组 interactive 样本数须满", lg_tag_str(g));
+        assert_eq!(ut_all.len() as u32, N_EACH as u32 * (ROUNDS - 1),
+                   "LOADGEN：{} 组 utility 样本数须满", lg_tag_str(g));
+        let ia_p50 = pctl(&mut ia_all, 500);
+        let ia_p99 = pctl(&mut ia_all, 990);
+        let ut_p50 = pctl(&mut ut_all, 500);
+        let ut_p99 = pctl(&mut ut_all, 990);
+        assert!(ia_all.iter().all(|l| *l >= 1) && ut_all.iter().all(|l| *l >= 1),
+                "LOADGEN：{} 组 lat 值域须 ≥1 tick", lg_tag_str(g));
+        assert!(ia_p50 <= ia_p99 && ut_p50 <= ut_p99,
+                "LOADGEN：{} 组分位序须单调", lg_tag_str(g));
+        // 差分断言：slack>0 → utility p50 ≥ 顺延量（数学下界：检出时刻 ≥
+        // 顺延后 deadline = due + defer）；交互恒零顺延（p50 上界）；band on
+        // → utility 必限流（配额 < 组总额）、interactive 恒不越额。
+        let bound5ms = ns2cyc_local(5_000_000, freq);
+        let bound70ms = ns2cyc_local(70_000_000, freq);
+        if g.slack_ns > 0 {
+            assert!(ut_p50 >= defer_cyc,
+                    "LOADGEN：{} 组 slack 顺延须体现 utility p50（{} < {}）",
+                    lg_tag_str(g), ut_p50, defer_cyc);
+            assert!(ut_p50 <= defer_cyc + bound70ms,
+                    "LOADGEN：{} 组 utility p50 须 ≤ 顺延+限流期上界", lg_tag_str(g));
+        } else {
+            assert!(ut_p50 <= if g.band { bound70ms } else { bound5ms },
+                    "LOADGEN：{} 组 utility p50 须在无顺延上界内", lg_tag_str(g));
+        }
+        assert!(ia_p50 <= bound5ms,
+                "LOADGEN：{} 组 interactive p50 须 ≤5ms（零顺延+零限流）", lg_tag_str(g));
+        if g.band {
+            assert!(thr_ut >= 1, "LOADGEN：{} 组 utility 配额须越线（差异化效果）", lg_tag_str(g));
+            assert!(thr_ia == 0, "LOADGEN：{} 组 interactive 配额须不越线（零牺牲）", lg_tag_str(g));
+            assert!(unthr >= 1, "LOADGEN：{} 组限流须被翻期解除（进度面）", lg_tag_str(g));
+        } else {
+            assert!(thr_ut == 0 && thr_ia == 0,
+                    "LOADGEN：{} 组 band 关态须零执法", lg_tag_str(g));
+        }
+
+        LgOut { ia_p50, ia_p99, ut_p50, ut_p99, burst_units, wall_cyc: wall,
+                oneshot_cyc: oneshot_med, thr_ut, thr_ia, ran_ia, ran_ut, ran_bk }
+    }
+
+    /// 组名 &str 投影（断言消息用——uart 行仍用原 tag 字节）。
+    fn lg_tag_str(g: &LgGroup) -> &str {
+        core::str::from_utf8(g.tag).unwrap_or("?")
+    }
+
+    // —— 四组 A/B（任务书口径）：A1 基线 / A2 band / A3 slack / A4 双开 ——
+    let groups = [
+        LgGroup { tag: b"A1", slack_ns: 0, band: false },
+        LgGroup { tag: b"A2", slack_ns: 0, band: true },
+        LgGroup { tag: b"A3", slack_ns: SLACK_NS, band: false },
+        LgGroup { tag: b"A4", slack_ns: SLACK_NS, band: true },
+    ];
+    berry_hal_aarch64::uart_puts(b"KTEST LOADGEN fmt lat=us wall=ms burst=units oneshot=us\n");
+    let mut outs: alloc::vec::Vec<LgOut> = alloc::vec::Vec::new();
+    for g in &groups {
+        let o = run_group(g, &mut slots);
+        berry_hal_aarch64::uart_puts(b"KTEST LOADGEN ");
+        berry_hal_aarch64::uart_puts(g.tag);
+        berry_hal_aarch64::uart_puts(b" slack=");
+        berry_hal_aarch64::uart_put_dec(g.slack_ns / 1_000_000);
+        berry_hal_aarch64::uart_puts(b"ms band=");
+        berry_hal_aarch64::uart_puts(if g.band { b"on" } else { b"off" });
+        berry_hal_aarch64::uart_puts(b" interactive p50=");
+        berry_hal_aarch64::uart_put_dec(cyc2us(o.ia_p50));
+        berry_hal_aarch64::uart_puts(b" p99=");
+        berry_hal_aarch64::uart_put_dec(cyc2us(o.ia_p99));
+        berry_hal_aarch64::uart_puts(b" utility p50=");
+        berry_hal_aarch64::uart_put_dec(cyc2us(o.ut_p50));
+        berry_hal_aarch64::uart_puts(b" p99=");
+        berry_hal_aarch64::uart_put_dec(cyc2us(o.ut_p99));
+        berry_hal_aarch64::uart_puts(b" burst=");
+        berry_hal_aarch64::uart_put_dec(o.burst_units);
+        berry_hal_aarch64::uart_puts(b" wall=");
+        berry_hal_aarch64::uart_put_dec(cyc2us(o.wall_cyc) / 1000);
+        berry_hal_aarch64::uart_puts(b" oneshot=");
+        berry_hal_aarch64::uart_put_dec(cyc2us(o.oneshot_cyc));
+        berry_hal_aarch64::uart_puts(b" thr=");
+        berry_hal_aarch64::uart_put_dec((o.thr_ia + o.thr_ut) as u64);
+        berry_hal_aarch64::uart_puts(b" ranIA=");
+        berry_hal_aarch64::uart_put_dec(cyc2us(o.ran_ia) / 1000);
+        berry_hal_aarch64::uart_puts(b"ms ranUT=");
+        berry_hal_aarch64::uart_put_dec(cyc2us(o.ran_ut) / 1000);
+        berry_hal_aarch64::uart_puts(b"ms ranBK=");
+        berry_hal_aarch64::uart_put_dec(cyc2us(o.ran_bk) / 1000);
+        berry_hal_aarch64::uart_puts(b"ms freq=");
+        berry_hal_aarch64::uart_put_dec(freq);
+        berry_hal_aarch64::uart_puts(b"\n");
+        outs.push(o);
+    }
+
+    // —— 数据汇总行（A/B 对比四联——CP-06 报告的数据面）——
+    /// cmp 行：label + 取值闭包（延迟行 µs 换算，burst 行原值）。
+    fn cmp_row(label: &[u8], outs: &[LgOut], get: fn(&LgOut) -> u64, to_us: bool) {
+        let tags: [&[u8]; 4] = [b"A1", b"A2", b"A3", b"A4"];
+        berry_hal_aarch64::uart_puts(b"KTEST LOADGEN cmp ");
+        berry_hal_aarch64::uart_puts(label);
+        for (tag, o) in tags.into_iter().zip(outs.iter()) {
+            berry_hal_aarch64::uart_puts(b" ");
+            berry_hal_aarch64::uart_puts(tag);
+            berry_hal_aarch64::uart_puts(b"=");
+            let v = get(o);
+            berry_hal_aarch64::uart_put_dec(if to_us { cyc2us(v) } else { v });
+        }
+        berry_hal_aarch64::uart_puts(b"\n");
+    }
+    cmp_row(b"interactive_p50_us", &outs, |o| o.ia_p50, true);
+    cmp_row(b"interactive_p99_us", &outs, |o| o.ia_p99, true);
+    cmp_row(b"utility_p50_us", &outs, |o| o.ut_p50, true);
+    cmp_row(b"utility_p99_us", &outs, |o| o.ut_p99, true);
+    cmp_row(b"burst_units", &outs, |o| o.burst_units, false);
+
+    // —— 收口：util EWMA 清零（EC 同款）+ CNTV 掩蔽（探针遗留电平杀灭
+    //    ——后续 boot timer::init/arm_slice 自愈覆盖）+ 真 RQ 零残留复核 ——
+    for c in 0..UTIL_NR_CPU {
+        util_reset(c);
+        assert_eq!(cpu_util(c), 0, "LOADGEN：收口 util 须回未启态（CPU{c}）");
+    }
+    // SAFETY: 写 CNTV_CTL（IMASK）；EL1。
+    unsafe { mask() };
+    let mut residual = 0usize;
+    let phys = pi_rq_lock();
+    for_each_runnable(|t| {
+        if t.name.len() >= 2 && &t.name[..2] == b"lg" {
+            residual += 1;
+        }
+    });
+    pi_rq_unlock(phys);
+    assert_eq!(residual, 0, "LOADGEN：收口真 PER_CPU_RQ 须零残留");
+    assert_eq!(timer_slack_ns(), 0, "LOADGEN：收口 timer_slack 须归零");
+
+    berry_hal_aarch64::uart_puts(b"LOADGEN ok\n");
 }
 

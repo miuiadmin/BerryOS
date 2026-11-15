@@ -25,6 +25,7 @@ mod event;
 mod handle;
 mod handoff; // V-0b 刀 3：BerryBoot 交接协议双镜像（const assert 执法，消费随刀 4 起）
 mod heap;
+mod klog; // 阶段五第 14 步：klog! 宏（[ns][I|W|E] 整行单 PRINT_LOCK 窗发射）
 mod ktest;
 mod mem; // GUI-0：本仓 mem* 整数版覆写（内核 SIMD-free 合同 builtins 半边）
 mod mm;
@@ -776,6 +777,41 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         // storm 门族惯例（LATSGI gate on 同款）：行在 ⟺ 门态可 grep 判别；
         // on/缺席侧零行 = boot 相逐行零漂移。
         berry_hal_aarch64::uart_puts(b"DEMO gate off\n");
+    }
+
+    // CP-06（docs/调度彻底计划-v1.2.md §4.1·首份 A/B 数据面）：loadgen 配置
+    // 早读——须在 timer::init 前（set_slice_hz 契约：boot 单线程、init 前写、
+    // init 消费换算 SLICE）。值语法 `s=<ns>;b=<0|1>`（**分号**分隔——QEMU -fw_cfg 的 string 值以逗号切参；s = timer slack 纳秒
+    // 〔0=off〕；b = intent→band 分派臂 1 / 无 intent 基线臂 0）；坏值打
+    // 诊断行整门跳过（fail loud——不跑半配置）。rootfs bootparams 同窗已
+    // 生效（timer_slack/sched_slice_hz 两键）——本块后置 = 探针值覆盖产品值
+    //（boot 单线程零竞态；四臂全走本通道 = 同源注入）。
+    if let Some(e) = berry_hal_aarch64::fwcfg::find_file(LOADGEN_PROBE_NAME) {
+        let mut buf = [0u8; 48];
+        let n = e.size as usize;
+        if n > 0 && n <= buf.len() && berry_hal_aarch64::fwcfg::read_to(&e, &mut buf[..n]) {
+            match lg_parse_cfg(&buf[..n]) {
+                Some((slack, band)) => {
+                    LG_SLACK_NS.store(slack, core::sync::atomic::Ordering::Relaxed);
+                    LG_BAND_ARM.store(band, core::sync::atomic::Ordering::Relaxed);
+                    LG_ARMED.store(true, core::sync::atomic::Ordering::Relaxed);
+                    // G5 官方覆盖面（与 bootparams `sched_slice_hz` 同一
+                    // setter）：100Hz 测量档换唤醒量化分辨率——缺省 10Hz 的
+                    // 100ms 粒度（v1 唤醒粒度恒 1 slice，rt_probe 首跑实录）
+                    // 会把 30ms 级 slack 信号整吃进量化窗。四臂同值可比。
+                    // SAFETY: boot 单线程、init 前（set_slice_hz 契约）。
+                    unsafe { berry_hal_aarch64::timer::set_slice_hz(LG_SLICE_HZ) };
+                    // slack 落 sched 全局（bootparams 第三键同 sink；消费点
+                    // = block_current 入队 LATE-only 顺延）。
+                    berry_sched::set_timer_slack_ns(slack);
+                }
+                None => {
+                    berry_hal_aarch64::uart_puts(b"LOADGEN: bad cfg (want s=<ns>;b=<0|1>)\n");
+                }
+            }
+        } else {
+            berry_hal_aarch64::uart_puts(b"LOADGEN: cfg read fail\n");
+        }
     }
 
     // Phase 2a Step 5：IRQ 派发钩子 + timer 管线（规律 tick，**不从 IRQ 调 switch**）。
@@ -1823,6 +1859,71 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         // 0..24 之间任务）唤醒测量与 24 恒等。
         berry_sched::spawn_with_tag(task_rt_probe, p_rt.as_ptr() as usize, b"rt_probe", 8,
                                     ht_rt as *mut HandleTable as usize);
+    }
+
+    // ---- CP-06（docs/调度彻底计划-v1.2.md §4.1·首份 A/B 数据面）：loadgen
+    //      门控 spawn（配置早读在 timer::init 前；探针体在 task_rt_probe 后）----
+    // 三类受控工作负载（interactive/utility/burst：N 任务 × M ms 级 CPU
+    // burst）+ 每任务唤醒→运行延迟采样；报告消费面 =
+    // research/调度彻底计划/13-首份AB报告-loadgen.md。门控同 rt 块形：
+    // fw_cfg `opt/berry/loadgen` 在位才 spawn（LG_ARMED = 早读解析成功的
+    // 自证），缺席 = run/smoke 零扰动，EFI 路天然缺席；位置约束同 rt 块：
+    // sched::init 后 + boot DAIF 屏蔽窗内（enable_irq 前）。
+    if LG_ARMED.load(core::sync::atomic::Ordering::Relaxed) {
+        let band = LG_BAND_ARM.load(core::sync::atomic::Ordering::Relaxed);
+        let ht_lg: &'static mut HandleTable =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        // 家族表：master + 4 sleeper 各一枚哑 Event（纯用户位等待 → PI 零
+        // 受捐 + 私有表零跨表错捐面；burst 无等待面不配）。永不 signal——
+        // 唯一醒因 Timeout（rt 块同形）。
+        let mut evs = [0usize; 5];
+        for (i, slot) in evs.iter_mut().enumerate() {
+            let h = ht_lg
+                .insert(KernelObj::Event(crate::event::Event::new()), handle::RIGHT_SIGNAL)
+                .expect("main: loadgen 哑 Event 进表");
+            let p = ht_lg
+                .get_raw(h, ObjType::Event, 0)
+                .expect("main: 取 loadgen ObjRef")
+                .0;
+            *slot = p.as_ptr() as usize;
+            if i > 0 {
+                LG_SLEEP_EV[i - 1].store(*slot, core::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        // master prio 8（rt_probe 同档：全体常驻之上、瞬态 boot bench 对
+        // 之下）；载荷全 prio 0——「被延迟本身就是待测的调度延迟」（§10）。
+        berry_sched::spawn_with_tag(task_lg_master, evs[0], b"lg_master", 8,
+                                    ht_lg as *mut HandleTable as usize);
+        // b 臂分派：b=1 = spawn_intent（intent→band 分派面——现役带
+        // interactive/utility，[band] 行自证）；b=0 = plain spawn（缺省
+        // UNSPECIFIED：无带、无 slack 资格——两臂同代码路径，差只在 intent
+        // 声明面，A/B 可归因）。
+        if band {
+            berry_sched::spawn_intent(task_lg_slp, 0, b"lg_ia0",
+                                      berry_sched::INTENT_INTERACTIVE);
+            berry_sched::spawn_intent(task_lg_slp, 1, b"lg_ia1",
+                                      berry_sched::INTENT_INTERACTIVE);
+            berry_sched::spawn_intent(task_lg_slp, 2, b"lg_ut0",
+                                      berry_sched::INTENT_UTILITY);
+            berry_sched::spawn_intent(task_lg_slp, 3, b"lg_ut1",
+                                      berry_sched::INTENT_UTILITY);
+        } else {
+            berry_sched::spawn(task_lg_slp, 0, b"lg_ia0");
+            berry_sched::spawn(task_lg_slp, 1, b"lg_ia1");
+            berry_sched::spawn(task_lg_slp, 2, b"lg_ut0");
+            berry_sched::spawn(task_lg_slp, 3, b"lg_ut1");
+        }
+        // 过载源两臂同形（UNSPECIFIED——b 臂语义差只在 sleeper 的 intent 面）。
+        berry_sched::spawn(task_lg_bu, 0, b"lg_bu0");
+        berry_sched::spawn(task_lg_bu, 0, b"lg_bu1");
+        // 门控自证行（SOAK gate on 同款）：行在 ⟺ 载荷已 spawn + 配置生效。
+        berry_hal_aarch64::uart_puts(b"LOADGEN gate on s=");
+        berry_hal_aarch64::uart_put_dec(LG_SLACK_NS.load(core::sync::atomic::Ordering::Relaxed));
+        berry_hal_aarch64::uart_puts(b" b=");
+        berry_hal_aarch64::uart_put_dec(if band { 1 } else { 0 });
+        berry_hal_aarch64::uart_puts(b" slice_hz=");
+        berry_hal_aarch64::uart_put_dec(LG_SLICE_HZ);
+        berry_hal_aarch64::uart_puts(b"\n");
     }
 
     // ---- G3-4（docs/G3全抢占实施设计草案.md §4）：bench-lat IPC 路门控 spawn ----
@@ -3907,6 +4008,7 @@ const USER_SIGNAL_BITS: &[(u64, &str)] = &[
     (1 << 49, "latsgi 位签名（G3-4b bench-lat SGI 路——EL0 sleeper wait_one 位签名门 + 内核 waker Event 置位跨核唤醒）"),
     (1 << 50, "lat 触发 Event 内部位（G3-5 候选① C 形常驻再触发——soakmon 拍后 signal+wake_matching；Event 落内核私有表不经 ABI object_signal 面，登记 = 防撞/去重面〔f4 F8 补〕）"),
     (1 << 51, "dpg 握手位（G4-1 demand 闭环——裸键族共用一位：内核 fault/pager/done 三键 + EL0 键化族 EFAULT×32〔X-5 扩池 8→32〕/EOVERFLOW/EPAGER〔G4-2 起、B-1 池化〕共 37 键；不经 Event 对象，登记 = 防撞/去重面）"),
+    (1 << 52, "loadgen 哑 Event（CP-06 A/B 负载生成器——master/sleeper 轮询块与周期睡，永不置位，仅超时醒）"),
 ];
 // 编译期执法：登记表不得重复位（挑位前查表 + 本断言 = 双保险）。
 const _: () = {
@@ -4371,6 +4473,247 @@ extern "C" fn task_rt_probe(arg: usize) -> ! {
         berry_hal_aarch64::uart_puts(b"\n");
     });
     berry_sched::exit_current()
+}
+
+// ---- CP-06（docs/调度彻底计划-v1.2.md §4.1·首份 A/B 数据面）：loadgen ——
+//      A/B 负载生成器探针体（boot 门控 spawn 块见 rt 块后；配置早读块见
+//      timer::init 前；报告 = research/调度彻底计划/13-首份AB报告-loadgen.md）----
+
+/// loadgen 的 fw_cfg 具名项名（门控键——A/B 收割专递
+/// `-fw_cfg name=opt/berry/loadgen,string=s=<ns>;b=<0|1>`；RT_PROBE_NAME
+/// 同款「两侧对读维护」纪律）。独立键、不与 rt/rwake 同 boot 混发（bench
+/// 单通道纪律——同 prio 8 探针并跑互相加噪）。
+const LOADGEN_PROBE_NAME: &str = "opt/berry/loadgen";
+
+/// loadgen 哑 Event 的用户位（占用登记见 [`USER_SIGNAL_BITS`]——RT_EV_BIT
+/// 的续位）。永不置位：唯一醒因 Timeout。
+const LG_EV_BIT: u64 = 1 << 52;
+
+/// 测量档 slice 频率（G5 官方覆盖面 [`berry_hal_aarch64::timer::set_slice_hz`]
+/// ——产品通道 = bootparams `sched_slice_hz`，探针通道 = fw_cfg 早读直调
+/// 同一 setter，init 前单线程契约两侧同守）。缺省 10Hz（100ms 片）的唤醒
+/// 量化窗（v1 粒度恒 1 slice——rt_probe 首跑实录）会把 30ms 级 slack 信号
+/// 整吃掉；100Hz/10ms 换测量分辨率，四臂同值 = A/B 内部可比。
+const LG_SLICE_HZ: u64 = 100;
+
+// —— 工作负载形状（「每类 N 任务 × M ms 级 CPU burst」；窗口对齐 ~1.92s
+//    vct：ia 48×40ms = ut 32×60ms）——
+/// interactive：N=2 × 48 轮，40ms 周期（4 slice）+ 3ms burst——高频短醒。
+const LG_IA_N: usize = 2;
+const LG_IA_ROUNDS: usize = 48;
+const LG_IA_PERIOD_MS: u64 = 40;
+const LG_IA_BURST_MS: u64 = 3;
+/// utility：N=2 × 32 轮，60ms 周期（6 slice）+ 8ms burst——低频长 burst。
+const LG_UT_N: usize = 2;
+const LG_UT_ROUNDS: usize = 32;
+const LG_UT_PERIOD_MS: u64 = 60;
+const LG_UT_BURST_MS: u64 = 8;
+/// burst：N=2 连续 5ms 自旋单元到 END——过载源（单核饱和，竞争面常驻）。
+const LG_BU_N: usize = 2;
+const LG_BU_UNIT_MS: u64 = 5;
+/// 样本槽帽（两类共用；实用量 96/64 之上留余量）。原子槽写免 static mut
+/// 面（policy.rs ACTIVE/HAZARD 同款纪律——原子内部可变性免入
+/// tools/writable_globals.txt）。
+const LG_CAP: usize = 128;
+
+/// A/B 配置（boot 早窗解析 fw_cfg 值落地；spawn 块与任务体读此）。
+static LG_SLACK_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static LG_BAND_ARM: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static LG_ARMED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// 采样面：写方 = 本类 sleeper（游标 fetch_add 单赢家槽写，Relaxed 纯计数
+/// 不通信）；读方 = master（全部 sleeper exit 后——活跃计数 Release 写 /
+/// Acquire 读对序发布，读在序之后必见全量槽）。
+static LG_IA_CURSOR: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static LG_IA_SAMPLES: [core::sync::atomic::AtomicU64; LG_CAP] =
+    [const { core::sync::atomic::AtomicU64::new(0) }; LG_CAP];
+static LG_IA_DONE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static LG_UT_CURSOR: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static LG_UT_SAMPLES: [core::sync::atomic::AtomicU64; LG_CAP] =
+    [const { core::sync::atomic::AtomicU64::new(0) }; LG_CAP];
+static LG_UT_DONE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static LG_BU_DONE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+/// burst 吞吐面：完成 5ms 自旋单元计数（窗口归一在 master 侧）。
+static LG_BU_UNITS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// 过载源收工旗（master 在 sleepers 全收后置——Release 发布）。
+static LG_END: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// sleeper 等待键静态传递槽（spawn arg 已满走静态槽——RX_EV_H 同款惯例；
+/// boot 写入先于一切任务）。下标 = sleeper 槽位（0/1=ia，2/3=ut）。
+static LG_SLEEP_EV: [core::sync::atomic::AtomicUsize; 4] =
+    [const { core::sync::atomic::AtomicUsize::new(0) }; 4];
+
+/// ms → CNTVCT 周期换算（cntfrq 现读；62.5MHz 下 1ms = 62500 周期）。
+fn lg_ms_cycles(ms: u64) -> u64 {
+    ms * berry_hal_aarch64::timer::cntfrq() / 1000
+}
+
+/// 解析 loadgen 配置值 `s=<u64>,b=<0|1>`（fw_cfg string 字节；严格拒面）。
+fn lg_parse_cfg(b: &[u8]) -> Option<(u64, bool)> {
+    let s = core::str::from_utf8(b).ok()?.trim_end();
+    let (a, c) = s.split_once(';')?;
+    let band = match c.strip_prefix("b=")? {
+        "0" => false,
+        "1" => true,
+        _ => return None,
+    };
+    Some((a.strip_prefix("s=")?.parse().ok()?, band))
+}
+
+/// loadgen sleeper 载荷（ia/ut 共体）：arg = 槽位（0/1=ia、2/3=ut）。每轮 =
+/// 睡到绝对周期锚（oversleep = 唤醒→运行延迟样本：tick 粒度 + 排队 +
+/// 〔slack 臂〕LATE-only 顺延）→ M ms CPU burst → 锚推进（漏周期再锚，
+/// rt_probe 同律）。b 臂的 intent 在 spawn 侧落（spawn_intent / plain
+/// spawn）；slack 在 block_current 内核面按 intent 生效——任务体零配置
+/// 分支（两臂同一代码路径 = A/B 可归因）。
+extern "C" fn task_lg_slp(arg: usize) -> ! {
+    use berry_sched::{block_current, exit_current, WakeReason};
+    let (rounds, period, burst, done, cursor, samples) = if arg >= 2 {
+        (
+            LG_UT_ROUNDS,
+            lg_ms_cycles(LG_UT_PERIOD_MS),
+            lg_ms_cycles(LG_UT_BURST_MS),
+            &LG_UT_DONE,
+            &LG_UT_CURSOR,
+            &LG_UT_SAMPLES,
+        )
+    } else {
+        (
+            LG_IA_ROUNDS,
+            lg_ms_cycles(LG_IA_PERIOD_MS),
+            lg_ms_cycles(LG_IA_BURST_MS),
+            &LG_IA_DONE,
+            &LG_IA_CURSOR,
+            &LG_IA_SAMPLES,
+        )
+    };
+    let ev = LG_SLEEP_EV[arg].load(core::sync::atomic::Ordering::Relaxed);
+    let mut deadline = berry_hal_aarch64::timer::cntvct() + period; // 档首锚
+    for _ in 0..rounds {
+        berry_hal_aarch64::kern_lock::klock_enter();
+        let r = block_current(ev, LG_EV_BIT, deadline);
+        // rt_probe 顺序例外同款：醒后先读 wake_vct、后 klock_exit。
+        let wake_vct = berry_hal_aarch64::timer::cntvct();
+        berry_hal_aarch64::kern_lock::klock_exit();
+        assert!(r == WakeReason::Timeout, "lg_slp: 醒因非 Timeout（哑 Event 永不置位）");
+        // 样本 = 唤醒→运行延迟（saturating 口径同 test_hdr_wake——死码防御）。
+        let lat = wake_vct.saturating_sub(deadline);
+        let slot = cursor.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        if slot < samples.len() {
+            samples[slot].store(lat, core::sync::atomic::Ordering::Relaxed);
+        }
+        // CPU burst：M ms 受控自旋（本周期的工作量；片内可被 tick 抢占）。
+        let burst_end = berry_hal_aarch64::timer::cntvct() + burst;
+        while berry_hal_aarch64::timer::cntvct() < burst_end {
+            core::hint::spin_loop();
+        }
+        // 绝对锚推进 + 漏周期再锚（cyclictest overrun 形——rt_probe 取舍实录）。
+        deadline = if lat >= period { wake_vct + period } else { deadline + period };
+    }
+    done.fetch_add(1, core::sync::atomic::Ordering::Release);
+    exit_current()
+}
+
+/// loadgen burst 载荷：连续 5ms 自旋单元到 END（过载源——竞争面常驻，
+/// 单核饱和；吞吐面 = 完成单元数，窗口归一在 master）。
+extern "C" fn task_lg_bu(_arg: usize) -> ! {
+    use berry_sched::exit_current;
+    let unit = lg_ms_cycles(LG_BU_UNIT_MS);
+    while !LG_END.load(core::sync::atomic::Ordering::Acquire) {
+        let e = berry_hal_aarch64::timer::cntvct() + unit;
+        while berry_hal_aarch64::timer::cntvct() < e {
+            core::hint::spin_loop();
+        }
+        LG_BU_UNITS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    }
+    LG_BU_DONE.fetch_add(1, core::sync::atomic::Ordering::Release);
+    exit_current()
+}
+
+/// 分位统计（最近秩 ceil(p·n/100)，rt_probe 同形；拷贝排序面 1KB 栈）。
+struct LgStats {
+    min: u64,
+    p50: u64,
+    p99: u64,
+    max: u64,
+}
+fn lg_stats(samples: &[core::sync::atomic::AtomicU64; LG_CAP], n: usize) -> LgStats {
+    let mut v = [0u64; LG_CAP];
+    let n = n.min(LG_CAP);
+    for i in 0..n {
+        v[i] = samples[i].load(core::sync::atomic::Ordering::Relaxed);
+    }
+    v[..n].sort_unstable();
+    let rank = |p: u64| ((p * n as u64 + 99) / 100).saturating_sub(1) as usize;
+    LgStats { min: v[0], p50: v[rank(50)], p99: v[rank(99)], max: v[n - 1] }
+}
+
+/// loadgen master：等 sleeper 全收（阶段 1）→ END 收 burst（阶段 2）→
+/// 分位收割 + 机器可读行（阶段 3）→ 退（REAPQ 单条流量，rt_probe 同款）。
+/// 20ms 轮询块让 CPU 给载荷；哑 Event 唯一醒因 Timeout，返回值不判——
+/// 轮询谓词在计数。
+extern "C" fn task_lg_master(arg: usize) -> ! {
+    use berry_sched::{block_current, exit_current};
+    let t0 = berry_hal_aarch64::timer::cntvct();
+    while LG_IA_DONE.load(core::sync::atomic::Ordering::Acquire) < LG_IA_N
+        || LG_UT_DONE.load(core::sync::atomic::Ordering::Acquire) < LG_UT_N
+    {
+        let dl = berry_hal_aarch64::timer::cntvct() + lg_ms_cycles(20);
+        berry_hal_aarch64::kern_lock::klock_enter();
+        block_current(arg, LG_EV_BIT, dl);
+        berry_hal_aarch64::kern_lock::klock_exit();
+    }
+    LG_END.store(true, core::sync::atomic::Ordering::Release);
+    while LG_BU_DONE.load(core::sync::atomic::Ordering::Acquire) < LG_BU_N {
+        let dl = berry_hal_aarch64::timer::cntvct() + lg_ms_cycles(20);
+        berry_hal_aarch64::kern_lock::klock_enter();
+        block_current(arg, LG_EV_BIT, dl);
+        berry_hal_aarch64::kern_lock::klock_exit();
+    }
+    let t1 = berry_hal_aarch64::timer::cntvct();
+    // 收割：n = 类任务数 × 轮数（96/64；p99 = 最近秩——n<100 时与 max 重合
+    // 是样本量的诚实上界，勿为观感改次大值，rt_probe 同注）。
+    let ia_n = (LG_IA_N * LG_IA_ROUNDS).min(LG_CAP);
+    let ut_n = (LG_UT_N * LG_UT_ROUNDS).min(LG_CAP);
+    let ia = lg_stats(&LG_IA_SAMPLES, ia_n);
+    let ut = lg_stats(&LG_UT_SAMPLES, ut_n);
+    let units = LG_BU_UNITS.load(core::sync::atomic::Ordering::Relaxed);
+    let span = t1.saturating_sub(t0);
+    let span_ms = span / (berry_hal_aarch64::timer::cntfrq() / 1000);
+    let units_per_s = if span_ms > 0 { units * 1000 / span_ms } else { 0 };
+    // 行 ≤192B 包络（G43 拼行——PRINT_LOCK 整条消息原子，BENCHRT 同款）。
+    berry_hal_aarch64::kern_lock::with_print_lock(|| {
+        berry_hal_aarch64::uart_puts(b"LG ia min=");
+        berry_hal_aarch64::uart_put_dec(ia.min);
+        berry_hal_aarch64::uart_puts(b" p50=");
+        berry_hal_aarch64::uart_put_dec(ia.p50);
+        berry_hal_aarch64::uart_puts(b" p99=");
+        berry_hal_aarch64::uart_put_dec(ia.p99);
+        berry_hal_aarch64::uart_puts(b" max=");
+        berry_hal_aarch64::uart_put_dec(ia.max);
+        berry_hal_aarch64::uart_puts(b" n=");
+        berry_hal_aarch64::uart_put_dec(ia_n as u64);
+        berry_hal_aarch64::uart_puts(b"\n");
+        berry_hal_aarch64::uart_puts(b"LG ut min=");
+        berry_hal_aarch64::uart_put_dec(ut.min);
+        berry_hal_aarch64::uart_puts(b" p50=");
+        berry_hal_aarch64::uart_put_dec(ut.p50);
+        berry_hal_aarch64::uart_puts(b" p99=");
+        berry_hal_aarch64::uart_put_dec(ut.p99);
+        berry_hal_aarch64::uart_puts(b" max=");
+        berry_hal_aarch64::uart_put_dec(ut.max);
+        berry_hal_aarch64::uart_puts(b" n=");
+        berry_hal_aarch64::uart_put_dec(ut_n as u64);
+        berry_hal_aarch64::uart_puts(b"\n");
+        berry_hal_aarch64::uart_puts(b"LG bu units=");
+        berry_hal_aarch64::uart_put_dec(units);
+        berry_hal_aarch64::uart_puts(b" span_ms=");
+        berry_hal_aarch64::uart_put_dec(span_ms);
+        berry_hal_aarch64::uart_puts(b" units_per_s=");
+        berry_hal_aarch64::uart_put_dec(units_per_s);
+        berry_hal_aarch64::uart_puts(b"\n");
+        berry_hal_aarch64::uart_puts(b"LOADGEN ok\n");
+    });
+    exit_current()
 }
 
 // ---- 方案 B：rwake 真 sleep/wake 唤醒基准（HDR 第二个真实消费者；boot 门控

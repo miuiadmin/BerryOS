@@ -349,9 +349,10 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
                 // 四绿档 + face-1 复建档实证）。KL→PRINT（rank 7 最内）锁序合法；非标记
                 // 不入数组）。X-5 K=32 后现役拓扑 N≤15 < K → 零发（历史档
                 // 存照，观测面保留）。
-                hal::kern_lock::with_print_lock(|| {
-                    hal::uart_puts(b"DPG ovfl\n");
-                });
+                // 阶段五第 14 步首迁点（klog 宏）：形态 = `[ns][W] DPG ovfl`
+                // （行首加前缀，观测面 grep 子串契约不变）；KL→PRINT 单向
+                // 锁序不变（宏内 with_print_lock）。
+                crate::klog!(Warn, "DPG ovfl");
                 // 出深再睡（shape (a)：睡眠不计）。
                 depth_exit();
                 // AM-2 等页停顿记时点③（池满 convoy 等待段——同入停顿台账）。
@@ -428,9 +429,9 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
                     &EOVERFLOW_KEY as *const u8 as usize,
                     DPG_WAKE_BIT,
                 );
-                hal::kern_lock::with_print_lock(|| {
-                    hal::uart_puts(b"dpg: pager watchdog fired\n");
-                });
+                // 阶段五第 14 步首迁点（klog 宏）：形态 = `[ns][I] dpg:
+                // pager watchdog fired`（行首加前缀，无 smoke 契约引用）。
+                crate::klog!(Info, "dpg: pager watchdog fired");
                 false
             }
         }
