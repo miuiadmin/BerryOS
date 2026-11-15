@@ -246,10 +246,10 @@ pub fn spawn_image(
     let data_disk = std::env::var_os("BERRY_DATA_DISK")
         .map(std::path::PathBuf::from)
         .map(|p| std::fs::canonicalize(&p).unwrap_or(p));
-    if tablet || data_disk.is_some() {
-        // virtio-mmio 默认 legacy；inputd 只认 VERSION_1（GUI-4 判例）。
-        cmd.arg("-global").arg("virtio-mmio.force-legacy=false");
-    }
+    // virtio-mmio 默认 legacy；guest 驱动族只认 VERSION_1（inputd GUI-4
+    // 判例；guifbd vgpu 扫描遇占用槽 ver≠2 即弃 gpu 落 ramfb——05 号 §5.4
+    // 实测）。gpu 恒挂（见下）后此项不再随 tablet/数据盘条件化。
+    cmd.arg("-global").arg("virtio-mmio.force-legacy=false");
     if let Some(path) = data_disk {
         cmd.arg("-drive")
             .arg(format!(
@@ -261,6 +261,16 @@ pub fn spawn_image(
     if tablet {
         cmd.arg("-device").arg("virtio-tablet-device");
     }
+    // virtio-gpu 恒挂：guifbd 双后端的 vgpu 相设备面（svcmgr 映第二窗成功
+    // 发 'w' → guifbd 扫窗起 vgpu；无 gpu 相发 'n' 落 ramfb，缺省安全——
+    // 09 号 §1-1）。只用全名 virtio-gpu-device（mmio 传输形）；`virtio-gpu`
+    // 是 PCI 别名陷阱（05 号 §5.1）。force-legacy 不是该设备的属性（QEMU
+    // 11.0.3 实测 `Property 'virtio-gpu-device.force-legacy' not found`），
+    // 传输层 legacy 由上面的 -global 关掉（05 号 §1.2 定谳形态）。
+    // 声明序 = console 绑定序：QEMU 的 VNC 面向先声明的图形设备，gpu 须
+    // 先于 ramfb（09 号 §4 实证定谳：ramfb 在前则 VNC 面恒黑帧）；ramfb
+    // 保留为后备（guifbd 分派零改）。
+    cmd.arg("-device").arg("virtio-gpu-device");
     cmd.arg("-device").arg("ramfb");
     if let Some(mode) = display_mode {
         cmd.arg("-fw_cfg")

@@ -62,7 +62,7 @@ pub extern "C" fn _start(env: Handle) -> ! {
     // -EBADF 即门失守（返 0 = 门缺席）或门形态漂移，均 loud）。
     let mut packed: u64 = 0;
     let mut self_key: u64 = 0;
-    if berry_policy_status(&mut packed, &mut self_key) != BERRY_ERR_BAD_HANDLE {
+    if berry_policy_status(0, &mut packed, &mut self_key) != BERRY_ERR_BAD_HANDLE {
         putline(console, FAIL_STATUS);
         berry_process_exit(1);
     }
