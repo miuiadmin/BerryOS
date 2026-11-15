@@ -1082,6 +1082,15 @@ test-host:
     # shvarcheck.py 检测逻辑必跑。
     python3 tools/shvarcheck.py --selftest
 
+# 忙核 arm-to-nearest-deadline（oneshot 收紧律）host 钉板：律单源
+# sched/src/oneshot.rs（sched crate 本体 no_std + HAL 依赖不编 host），
+# 面板 sched/host/oneshot_law_test.rs 经 #[path] mod 同源编译——
+# cargo test -p berry-sched 走不通（lib 先于 tests 编译即败于 HAL），
+# 故 rustc --test 直跑单文件。改收紧律 / sched.rs 两消费臂必跑。
+test-oneshot:
+    rustc --test sched/host/oneshot_law_test.rs -o target-cargo/oneshot_law_test
+    target-cargo/oneshot_law_test
+
 # 内核体积基线报告（12号报告 §10.1：体积讨论从 day-one 有数据）。
 # 零依赖 python3 解析 ELF：文件量 / PT_LOAD 镜像与静态内存 / alloc 段明细。
 # 只报数不设门禁——阈值等基线稳定后再定（Tock 192KB 教训）。

@@ -261,6 +261,13 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     }
     berry_hal_aarch64::uart_puts(b"KVA ok\n");
 
+    // 北极星审计修（2026-11-15）：TTBR0 ASID 位域环回探针——MMU 已开、boot
+    // 单线程 DAIF 屏蔽窗、先于任何任务地址空间激活（首个 activate_aspace 在
+    // 调度器首切）。位域不环回（QEMU HVF 形）⇒ P0-3 免失效激活档整档退化
+    // 全量档（按号 TLB 语义不可依托——详见 HAL `mmu::ASID_TLB_UNTRUSTED`）。
+    // SAFETY: 上行合同（单线程窗 + MMU 开 + 首激活前）恰为本点位。
+    unsafe { berry_hal_aarch64::probe_asid_field_roundtrip() };
+
     // V-1a：入口首参分流——EFI 路命中即打标记（**EFI 路专属**，smoke 的
     // -kernel 五跑不见此行）；未中 → None，既有 DTB/fw_cfg 路零扰动。
     // 插点在 KVA ok 之后：probe 经高半直映读 handoff 页，别名已自证。

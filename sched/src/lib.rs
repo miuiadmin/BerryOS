@@ -22,6 +22,7 @@ pub mod class;
 pub mod em;
 pub mod hdr;
 pub mod intent;
+pub mod oneshot;
 pub mod policy;
 pub mod runqueue;
 pub mod sched;
@@ -49,6 +50,7 @@ pub use intent::{
     INTENT_INTERACTIVE, INTENT_LATENCY_CRITICAL, INTENT_MAINTENANCE, INTENT_UNSPECIFIED,
     INTENT_UTILITY,
 };
+pub use oneshot::tighten_deadline;
 pub use runqueue::{linkable, Runqueue, Topo};
 pub use util::{
     any_overutilized, cpu_util, overutilized, util_accumulate, util_reset, util_tick_window,

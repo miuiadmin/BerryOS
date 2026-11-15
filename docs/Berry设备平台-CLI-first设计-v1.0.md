@@ -9,7 +9,7 @@
 > 【v1.4】2026-11-14：VNC 彻底完善已落——`vnc check` 过 VeNCrypt（rustls TLS 客户端，`--ca`/`--insecure`）、`vnc web` TLS run 自动 https 页 + wss 终止代理（§8）；P2 三修（passwd_warn 审计事件/连接 30s 总预算/vncpass 孤儿清扫）（§8/§13）；Linux 分发链实机产物（§12/§14/§15 同步）。
 > 【v1.5】2026-11-14：VNC 六波收尾已落——第三方许可通知单源 `packaging/THIRD-PARTY-NOTICES.txt` 三平台随包（§12）、`vnc check --ws` 浏览器通路自检（§8）、`--tls` 明文 run https 页分支修复（§8/§13/§14/§15 同步）。
 > 【v1.6】2026-11-14：VNC 第九波已落——`vnc web` 默认页换 BerryOS 自有壳页（自动重连/工具栏/移动端）+ `--open`（§8/§14 同步）。
-> 【v1.7】2026-11-15：VNC 第十波已落——`vnc web --lan` 单口 LAN 远程桌面（页面与 `/ws` ws 代理同口绑 0.0.0.0 + 终端 QR 配对，`--host`/`--qr`/`--no-qr`）+ 壳页底栏设备面板（导航键注入/截图/经 `POST /api/power/<action>` 的重启与关机，口令门）（§8/§13/§14 同步）。
+> 【v1.7】2026-11-15：VNC 第十波已落——`vnc web --lan` 单口 LAN 远程桌面（页面与 `/ws` ws 代理同口绑 0.0.0.0 + 终端 QR 配对，`--host`/`--qr`/`--no-qr`）+ 壳页底栏设备面板（导航键代点客机导航条/截图/经 `POST /api/power/<action>` 的重启与关机，口令门）（§8/§13/§14 同步）；同日续：GUI 家族 noktest 注入落地（生产 boot 跳 ktest，`run`/`shot` 冒烟路径不注）与 §10.1 Profile 表语义勘误（「已验证」= 验证登记非分配上限，补 desktop 行——11-15 容量回归误判判例入会审文档）。
 > 【v1.8】2026-11-15：VNC 第十一波已落——TLS run 的 `--lan` 形态（http 页 + `/ws` 代理上游腿 rustls wss，`--ca`/`--insecure` 证书语义）、LAUNCH_STICKY 直参化退役（CLI 零变化）、窗口工具栏 WEB 键（§8/§13/§14 同步）。
 > 【关系】`berry设备壳设计草案-v1.0.md` 降为**显示/帧面/QEMU/客机侧子系统**；两文冲突时以本文为准。
 > 【一句话】一个 `berry` 二进制，三种角色：CLI client / GUI client / session host；
@@ -515,8 +515,11 @@ enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
 | `default` | 800×600 | 兼容/CI |
 | `phone` | 480×1000 | 已落（恰好用满 800×600 GOP 缓冲） |
 | `phone16` | 480×854 | 可用 |
-| `phone20` | 540×1200 | **可用**：buddy 4MB 连续 fb + ramfb 重编程 |
-| `tablet` | 800×1280 | **可用**：buddy 4MB 连续块 + ramfb 重编程 |
+| `phone20` | 540×1200 | **已验证**：defer+buddy 连续 fb + ramfb 重编程 |
+| `tablet` | 800×1280 | **已验证**：defer+buddy 连续 fb + ramfb 重编程 |
+| `desktop` | 1080×1920 | 已落（`just desktop`；fb 8.3MB 同走 defer+buddy 路，2026-11-15 曾因客机 a11y 容量回归恒黑、修复在 [wip/boot-events-knife6]——见 [.agents/research/2026-11-15-1080p恒黑根因会审.md](../.agents/research/2026-11-15-1080p恒黑根因会审.md)） |
+
+> 「已验证/可用」是**验证登记**不是分配能力上限：超 GOP 缓冲（1.92MB）的档全走同一条 defer+buddy 路（按需 2^n 连续页，`MAX_ORDER=13`=32MiB）。勿再从本表推断「分配器帽」——2026-11-15 的误判判例已入会审文档。
 
 ### 10.2 `display set`
 

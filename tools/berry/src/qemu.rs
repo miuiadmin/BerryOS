@@ -274,6 +274,12 @@ pub fn spawn_image(
         cmd.arg("-fw_cfg")
             .arg(format!("name=opt/berry/accel,string={}", accel.as_arg()));
     }
+    // GUI 家族默认注入 noktest（体验大改造六波 owner 裁决 2026-11-15）：
+    // berry 的 device-host/shell 都是 GUI 启动形态——生产 boot 跳过开发
+    // 工具 ktest/bench（内核按 `opt/berry/noktest` 具名键判，P0-4 极性：
+    // 缺席才跑）。ktest 仍是 `berry run`/`just smoke` 冒烟路径的本分，
+    // 那条路（run/shot 的独立 spawn 点）不注此键。
+    cmd.arg("-fw_cfg").arg("name=opt/berry/noktest,string=1");
     // 波一刀 B（状态栏可信化）：宿主当下 epoch 秒注入（fw_cfg 具名 string，
     // display 先例同形）——内核 boot 期消费（kernel/src/rtc.rs）供
     // CLOCK_REALTIME。UTC 口径（本地时区换算挂账波二）；读取失败 = 不注
