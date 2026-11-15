@@ -466,6 +466,9 @@ pub struct Ui<const N: usize> {
     move_hist: [Sample; INPUT_BUF_MAX], // 活跃 MOVE 滑窗（重采样消费）
     hist_len: usize,
     anims: [Option<anim::Anim>; ANIM_MAX],
+    /// 弹簧表（维三最小刀）：与 anims 平行的第二动画面——SpringProp
+    /// 定点弹簧；定容零分配，帽/错位与 anims 同源（满 = AnimFull）。
+    springs: [Option<anim::SpringProp>; ANIM_MAX],
     phase: frame::FramePhase,
     last_work_ns: u64,
     last_now_ns: u64, // next_wakeup 的「当前时刻」锚（引擎无钟——最近帧时刻）
@@ -647,6 +650,7 @@ impl<const N: usize> Ui<N> {
             move_hist: [Sample { ts_ns: 0, x: 0, y: 0 }; INPUT_BUF_MAX],
             hist_len: 0,
             anims: [None; ANIM_MAX],
+            springs: [None; ANIM_MAX],
             phase: frame::FramePhase::Idle,
             last_work_ns: 0,
             last_now_ns: 0,
@@ -1093,6 +1097,16 @@ impl<const N: usize> Ui<N> {
             if let Some(a) = self.anims[i] {
                 if self.slot_of(a.node).is_err() {
                     self.anims[i] = None;
+                }
+            }
+            i += 1;
+        }
+        // 随行弹簧同清理（同判据同纪律——remove 后无悬挂双面一体）。
+        let mut i = 0usize;
+        while i < ANIM_MAX {
+            if let Some(sp) = self.springs[i] {
+                if self.slot_of(sp.node).is_err() {
+                    self.springs[i] = None;
                 }
             }
             i += 1;
@@ -2243,16 +2257,34 @@ impl<const N: usize> Ui<N> {
         Err(UiError::AnimFull)
     }
 
+    /// 弹簧入表（维三最小刀）：与 `anim_add` 同帽同错——表满
+    /// `AnimFull` loud；推进 = `render_frame` 内 `anim::spring_tick`
+    /// （与 anim tick 同帧同时钟）。
+    pub fn spring_add(&mut self, sp: anim::SpringProp) -> Result<(), UiError> {
+        let mut i = 0usize;
+        while i < ANIM_MAX {
+            if self.springs[i].is_none() {
+                self.springs[i] = Some(sp);
+                return Ok(());
+            }
+            i += 1;
+        }
+        Err(UiError::AnimFull)
+    }
+
     pub fn anim_clear(&mut self) {
         let mut i = 0usize;
         while i < ANIM_MAX {
             self.anims[i] = None;
+            self.springs[i] = None; // 弹簧同撤（「全撤」口径——两面一体）
             i += 1;
         }
     }
 
     pub fn anim_active(&self) -> bool {
-        self.anims.iter().any(|a| a.is_some())
+        // 两表任一在飞 = 动画占用帧（弹簧在飞不得落 Idle——同 anims
+        // 语义；空表零动静，现状路径逐字保持）。
+        self.anims.iter().any(|a| a.is_some()) || self.springs.iter().any(|s| s.is_some())
     }
 
     // —— 帧循环 ——
@@ -2311,6 +2343,28 @@ impl<const N: usize> Ui<N> {
             self.vp_w,
             self.vp_h,
         );
+        // 弹簧推进（维三最小刀）：与 anim tick 同帧同时钟、同一 apply
+        // 落点；空表零动静（现状 golden 路径零漂移）。
+        #[cfg(feature = "s7")]
+        let spring_on = anim::spring_tick(
+            &mut self.springs,
+            &mut self.nodes,
+            &mut self.damage,
+            now_ns,
+            self.vp_w,
+            self.vp_h,
+            &mut staging,
+        );
+        #[cfg(not(feature = "s7"))]
+        let spring_on = anim::spring_tick(
+            &mut self.springs,
+            &mut self.nodes,
+            &mut self.damage,
+            now_ns,
+            self.vp_w,
+            self.vp_h,
+        );
+        let anim_on = anim_on || spring_on;
         #[cfg(feature = "s7")]
         for k in 0..staging.n {
             let (slot, m) = staging.items[k];

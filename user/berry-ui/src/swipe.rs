@@ -10,15 +10,19 @@
 //!   路径免 relayout）；橡皮筋 ×0.5（首/末页越界侧 excess/2）。
 //! - **翻页判据**（松手）：速度 |vx| ≥500px/s 按速度向翻一页；否则位移
 //!   >40% 页宽按位移向；否则回弹吸附。吸附 = QuadOut 240ms（§7.2
-//!   `anim::interp` 单源 Q16.16 定点）。
+//!   `anim::interp` 单源 Q16.16 定点）——**可配置**（[`SnapMode`]）：
+//!   默认 QuadOut 零变化；`VelocitySpring` 档松手速度非零时切
+//!   `SpringProp` 定点弹簧并以松手速度入参（维三最小刀第二刀——
+//!   速度环 96ms 窗终跳值直入）。
 //! - **时钟**：Msg 无时戳位——吸附推进走 `tick(ui, now_ns)`（帧循环调；
 //!   起拍 = 首次 tick 的 now_ns，绕开引擎 anim 表的 start_ns 缺时钟缝）
-//!   ——§6 冻结四方法外的最小补面。
+//!   ——§6 冻结四方法外的最小补面（QuadOut 与 Spring 同式：首步 dt=0
+//!   持初值起拍）。
 //! - **圆点指示器**：自管节点组；页裁定（含吸附途中）即直摆高亮
 //!   （`on_msg` 返 true 语义）——paint-only props，measured==0 面。
 //! - 零 panic / 零分配 / 无浮点：offset 全 i32、判据阈值 i32 整数算术。
 
-use crate::anim::{self, Easing};
+use crate::anim::{self, AnimProp, Easing, SpringPreset, SpringProp};
 use crate::desc::{Axis, ColProps, Msg, NodeId, Props, RectProps, RowProps, ViewKind, ViewSpec};
 use crate::layout::CrossAlign;
 use crate::{Ui, UiError};
@@ -26,7 +30,8 @@ use crate::{Ui, UiError};
 /// 页数帽（§6 冻结）：`new` 有效域 1..=8，超 = loud。
 pub const SWIPE_PAGES_MAX: u8 = 8;
 
-/// 吸附动画时长（§7.4：QuadOut 240ms）。
+/// 吸附动画时长（§7.4：QuadOut 240ms——QuadOut 档时长，Spring 档无
+/// 定长、双阈值收敛自决）。
 pub const SNAP_DUR_NS: u64 = 240_000_000;
 
 /// 翻页速度阈（§7.4：|v| ≥ 500px/s 按速度向翻页）。
@@ -41,12 +46,29 @@ pub const DOT_ON: berry_gfx::cmd::Color = berry_gfx::cmd::Color { r: 255, g: 255
 /// 非当前页圆点暗色（灰）。
 pub const DOT_OFF: berry_gfx::cmd::Color = berry_gfx::cmd::Color { r: 128, g: 128, b: 128 };
 
-/// 吸附态（一次至多一条）：`start_ns = None` = 未起拍（首次 tick 定）。
-/// 目标页在 `begin_snap` 即裁定进 `self.page`/圆点——此处只余轨迹簿记。
-struct Snap {
-    from: i32,
-    to: i32,
-    start_ns: Option<u64>,
+/// 松手吸附档（可配置——默认 [`SnapMode::QuadOut`] 行为零变化）：
+/// - `QuadOut` = 既有固定 QuadOut 240ms 定长时间线（默认档——velocity
+///   不参与，历史钉板逐字保持）。
+/// - `VelocitySpring` = 松手速度**非零**时切 [`SpringProp`] 定点弹簧、
+///   以松手速度入参（速度续接主干——OH springMotion / iOS
+///   interpolatingSpring 等价物；预设 Smooth = 近临界无过冲档）；速度
+///   为零（含 Cancel）回落 QuadOut。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapMode {
+    QuadOut,
+    VelocitySpring,
+}
+
+/// 吸附态（一次至多一条）：QuadOut 定长时间线（起拍 = 首次 tick）或
+/// SpringProp 弹簧（自持积分态）。目标页在 `begin_snap` 即裁定进
+/// `self.page`/圆点——此处只余轨迹簿记。
+enum Snap {
+    QuadOut {
+        from: i32,
+        to: i32,
+        start_ns: Option<u64>,
+    },
+    Spring(SpringProp),
 }
 
 /// 分页控制器（§6 冻结状态私有——「page 状态 + 动画簿记」）。
@@ -71,7 +93,10 @@ pub struct SwipePager {
     drag_x0: i32,
     /// 最近 DragMove x（DragEnd 无坐标位——位移判据用）。
     drag_last_x: i32,
+    /// 吸附态（一次至多一条）。
     snap: Option<Snap>,
+    /// 松手吸附档（默认 [`SnapMode::QuadOut`]——行为零变化）。
+    snap_mode: SnapMode,
 }
 
 impl SwipePager {
@@ -96,7 +121,14 @@ impl SwipePager {
             drag_x0: 0,
             drag_last_x: 0,
             snap: None,
+            snap_mode: SnapMode::QuadOut,
         }
+    }
+
+    /// 松手吸附档配置（默认 QuadOut——零变化；改档只影响后续松手，
+    /// 在飞吸附不打断）。
+    pub fn set_snap_mode(&mut self, mode: SnapMode) {
+        self.snap_mode = mode;
     }
 
     /// 建树挂接（§6 冻结）：parent 下建页行 + 圆点行；页宽 = 当前
@@ -259,42 +291,53 @@ impl SwipePager {
                 } else {
                     self.page
                 };
-                self.begin_snap(ui, target);
+                self.begin_snap(ui, target, *vx);
                 true
             }
             Msg::Cancel { .. } => {
                 if !self.dragging {
                     return false;
                 }
-                // 取消 = 回弹吸附当前页（无翻页裁定）。
+                // 取消 = 回弹吸附当前页（无翻页裁定、无速度面——QuadOut）。
                 self.dragging = false;
-                self.begin_snap(ui, self.page);
+                self.begin_snap(ui, self.page, 0);
                 true
             }
             Msg::Press { .. } | Msg::Release { .. } | Msg::Click { .. } => false,
         }
     }
 
-    /// 吸附推进（帧循环调；无吸附 → false 零开销）。起拍 = 首次 tick 的
-    /// now_ns（Msg 无时戳位——§7.4 时钟缝的 tick 补面）；完成帧应用精确
-    /// `to` 终点（与 anim::tick 完成语义同式）。
+    /// 吸附推进（帧循环调；无吸附 → false 零开销）。QuadOut 起拍 =
+    /// 首次 tick 的 now_ns（Msg 无时戳位——§7.4 时钟缝的 tick 补面）；
+    /// Spring 首步 dt=0 持初值（同式起拍）；完成帧应用精确 `to` 终点
+    /// （QuadOut 定长到期 / Spring 双阈值收敛吸附——与 anim::tick 完成
+    /// 语义同式）。
     pub fn tick<const N: usize>(&mut self, ui: &mut Ui<N>, now_ns: u64) -> bool {
-        let Some(s) = &mut self.snap else { return false };
-        let start = match s.start_ns {
-            Some(t) => t,
-            None => {
-                s.start_ns = Some(now_ns);
-                now_ns
+        let (v, done) = match &mut self.snap {
+            None => return false,
+            Some(Snap::QuadOut { from, to, start_ns }) => {
+                let start = match *start_ns {
+                    Some(t) => t,
+                    None => {
+                        *start_ns = Some(now_ns);
+                        now_ns
+                    }
+                };
+                let elapsed = now_ns.saturating_sub(start);
+                if elapsed >= SNAP_DUR_NS {
+                    (*to, true)
+                } else {
+                    (anim::interp(Easing::QuadOut, *from, *to, elapsed, SNAP_DUR_NS), false)
+                }
+            }
+            Some(Snap::Spring(sp)) => {
+                let v = sp.step(now_ns);
+                (v, sp.done())
             }
         };
-        let elapsed = now_ns.saturating_sub(start);
-        if elapsed >= SNAP_DUR_NS {
-            let to = s.to;
-            self.apply_ox(ui, to);
+        if done {
             self.snap = None;
-            return true;
         }
-        let v = anim::interp(Easing::QuadOut, s.from, s.to, elapsed, SNAP_DUR_NS);
         self.apply_ox(ui, v);
         true
     }
@@ -320,8 +363,11 @@ impl SwipePager {
     }
 
     /// 吸附启动：页即时裁定（page()/圆点不等动画——「on_msg 返 true 时
-    /// pager 直摆」）；零位移免动画直接落位。
-    fn begin_snap<const N: usize>(&mut self, ui: &mut Ui<N>, target_page: u8) {
+    /// pager 直摆」）；零位移免动画直接落位。档位选择（[`SnapMode`]）：
+    /// 默认 QuadOut（velocity 不参与——历史行为零变化）；VelocitySpring
+    /// 且松手速度非零 → SpringProp 以松手速度入参（重定目标/抓回中断
+    /// 由位置-速度续接天然承接）。
+    fn begin_snap<const N: usize>(&mut self, ui: &mut Ui<N>, target_page: u8, vx: i32) {
         self.page = target_page;
         self.update_dots(ui);
         let to = self.page_ofs(target_page);
@@ -329,7 +375,20 @@ impl SwipePager {
             self.snap = None; // 已在位（零位移松手）：免动画
             return;
         }
-        self.snap = Some(Snap { from: self.ox, to, start_ns: None });
+        self.snap = Some(match self.snap_mode {
+            SnapMode::QuadOut => Snap::QuadOut { from: self.ox, to, start_ns: None },
+            SnapMode::VelocitySpring if vx != 0 => Snap::Spring(SpringProp::new(
+                self.track,
+                AnimProp::OffsetX,
+                self.ox,
+                to,
+                vx,
+                SpringPreset::Smooth, // 近临界档——OH springMotion 翻页气质
+            )),
+            SnapMode::VelocitySpring => {
+                Snap::QuadOut { from: self.ox, to, start_ns: None } // 零速回落
+            }
+        });
     }
 
     /// 圆点直摆（paint-only props 变更——measured==0 面；死点静默跳过）。

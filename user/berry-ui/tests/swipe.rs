@@ -9,7 +9,7 @@
 
 use berry_gfx::cmd::{Cmd, Color, CommandEncoder, GlyphPos};
 use berry_ui::desc::{Axis, Msg, Props, RectProps, ViewSpec};
-use berry_ui::swipe::{SwipePager, DOT_OFF, DOT_ON, FLIP_VEL_PX_S, SNAP_DUR_NS, SWIPE_PAGES_MAX};
+use berry_ui::swipe::{SnapMode, SwipePager, DOT_OFF, DOT_ON, FLIP_VEL_PX_S, SNAP_DUR_NS, SWIPE_PAGES_MAX};
 use berry_ui::{Ui, UiError, ViewKind};
 
 fn rect_spec(w: u32, h: u32) -> ViewSpec {
@@ -294,4 +294,94 @@ fn pager_node_budget_exact_and_launcher_margin() {
         used += 1;
     }
     assert_eq!(used, 512, "pager(8 页)+24 内容叶 = 43 节点，余 469 格宿主树预算");
+}
+
+// —— 维三最小刀第二刀：松手吸附可配置（默认 QuadOut 零变化）——
+
+/// 帧步（弹簧子步同源——每 tick 恰一子步）。
+const SPRING_FRAME_NS: u64 = 16_000_000;
+
+/// 松手至 ox=-30（drag 50→20）、速度翻页至页 1（吸附 -30 → -100）。
+fn release_to_page1(pager: &mut SwipePager, ui: &mut Ui<64>, track: berry_ui::NodeId, vx: i32) {
+    assert!(drag_start(pager, ui, track, 50));
+    assert!(drag_move(pager, ui, track, 20));
+    assert!(drag_end(pager, ui, track, vx));
+    assert_eq!(pager.page(), 1, "速度向翻页即时裁定");
+}
+
+#[test]
+fn snap_default_quadout_zero_change() {
+    // 默认档行为零变化：velocity 非零（-600）仍走 QuadOut 240ms 定长
+    // 时间线——起拍持 from、中点值级（Q16.16 定点 interp 单源钉板：
+    // t=0.5 → eased=49152 → (-70·49152)>>16 = -53 → -83）、精确终点、
+    // 到期即毕再 tick 零开销。
+    let (mut ui, mut pager, track) = pager3();
+    release_to_page1(&mut pager, &mut ui, track, -600);
+    let t0 = 1_000u64;
+    assert!(pager.tick(&mut ui, t0), "吸附起拍帧");
+    assert_eq!(page0_x(&ui, &pager), -30, "t=0 持 from（起拍位）");
+    assert!(pager.tick(&mut ui, t0 + SNAP_DUR_NS / 2));
+    assert_eq!(page0_x(&ui, &pager), -83, "QuadOut 中点钉板（velocity 不参与默认档）");
+    assert!(pager.tick(&mut ui, t0 + SNAP_DUR_NS), "完成帧");
+    assert_eq!(page0_x(&ui, &pager), -100, "QuadOut 240ms 终点精确");
+    assert!(!pager.tick(&mut ui, t0 + SNAP_DUR_NS + 1), "吸附毕再 tick 零开销");
+}
+
+#[test]
+fn snap_velocity_spring_optin_monotonic_converges() {
+    // VelocitySpring 档：松手速度直入 SpringProp（Smooth 近临界——无
+    // 过冲单调收敛）；起拍 dt=0 持 from、240ms 仍在途（QuadOut 定长
+    // 语义退役）、全程单调段、终点精确吸附。
+    let (mut ui, mut pager, track) = pager3();
+    pager.set_snap_mode(SnapMode::VelocitySpring);
+    release_to_page1(&mut pager, &mut ui, track, -600);
+    let t0 = 1_000u64;
+    assert!(pager.tick(&mut ui, t0), "弹簧起拍帧");
+    assert_eq!(page0_x(&ui, &pager), -30, "dt=0 持初值起拍");
+
+    // 240ms：仍在途且未到终点（弹簧无定长——收敛自决）
+    assert!(pager.tick(&mut ui, t0 + SNAP_DUR_NS), "弹簧在飞");
+    let x240 = page0_x(&ui, &pager);
+    assert!(x240 > -100 && x240 < -30, "240ms 未到终点（x={x240}）");
+
+    // 续推至收敛：整数采样单调非升（初速向目标 + 临界阻尼）
+    let mut now = t0 + SNAP_DUR_NS + SPRING_FRAME_NS;
+    let mut prev = x240;
+    while pager.tick(&mut ui, now) {
+        let x = page0_x(&ui, &pager);
+        assert!(x <= prev, "弹簧单调段（{prev} → {x}）");
+        prev = x;
+        now += SPRING_FRAME_NS;
+    }
+    assert_eq!(page0_x(&ui, &pager), -100, "双阈值收敛吸附精确终点");
+}
+
+#[test]
+fn snap_velocity_spring_zero_velocity_falls_back() {
+    // VelocitySpring 档速度为零（vx=0 松手 / Cancel 无速度面）→ 回落
+    // QuadOut 定长语义（到期即毕、终点精确）。vx=0 走位移判据翻页
+    //（drag 50→5：dx=-45 > 40% 阈）。
+    let (mut ui, mut pager, track) = pager3();
+    pager.set_snap_mode(SnapMode::VelocitySpring);
+    assert!(drag_start(&mut pager, &mut ui, track, 50));
+    assert!(drag_move(&mut pager, &mut ui, track, 5));
+    assert!(drag_end(&mut pager, &mut ui, track, 0));
+    assert_eq!(pager.page(), 1, "位移判据翻页（速度零不参与）");
+    let t0 = 1_000u64;
+    assert!(pager.tick(&mut ui, t0));
+    assert!(pager.tick(&mut ui, t0 + SNAP_DUR_NS), "QuadOut 回落完成帧");
+    assert_eq!(page0_x(&ui, &pager), -100);
+    assert!(!pager.tick(&mut ui, t0 + SNAP_DUR_NS + 1));
+
+    // Cancel 同回落（无速度位——QuadOut 回弹）
+    let (mut ui, mut pager, track) = pager3();
+    pager.set_snap_mode(SnapMode::VelocitySpring);
+    assert!(drag_start(&mut pager, &mut ui, track, 50));
+    assert!(drag_move(&mut pager, &mut ui, track, 5));
+    assert!(pager.on_msg(&mut ui, &Msg::Cancel { node: track }));
+    let t0 = 5_000_000u64;
+    assert!(pager.tick(&mut ui, t0));
+    assert!(pager.tick(&mut ui, t0 + SNAP_DUR_NS));
+    assert_eq!(page0_x(&ui, &pager), 0, "Cancel 回弹当前页");
+    assert!(!pager.tick(&mut ui, t0 + SNAP_DUR_NS + 1));
 }
