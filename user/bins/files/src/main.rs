@@ -13,17 +13,27 @@ use berry_fsclient::{
 use berry_gfx::cmd::{CommandEncoder, GlyphPos};
 use berry_gfx::font::FontSize;
 use berry_room::{
-    AppRoom, INPUT_EVENTS_MAX, INPUT_SAMPLES_MAX, PointerEvent, RoomConfig, Sample,
+    AppRoom, INPUT_EVENTS_MAX, INPUT_SAMPLES_MAX, PHASE_UP, PointerEvent, RoomConfig, Sample,
     SYSTEM_FONT_ATLAS,
 };
 use berry_ui::hit::PtrEvent;
 use berry_ui::sdk::{
-    Card, FontSource, ListItem, Msg, NavigationIconSource, RectI, Scaffold, ScrollView,
-    TextVariant, Theme, Ui, WidgetContext, column, text, NAV_ICON_BACK, NAV_ICON_BACK_ACTIVE,
+    Card, ContextMenu, ContextMenuOutcome, FontSource, ListItem, LongPressGesture,
+    LongPressOutcome, MenuItemSpec, Msg, NavigationIconSource, RectI, Scaffold, ScrollView,
+    TextVariant, Theme, Ui, WidgetContext, column, text, LONG_PRESS_NS, NAV_ICON_BACK,
+    NAV_ICON_BACK_ACTIVE,
 };
 
 type Ui96 = Ui<96>;
 const MAX_ENTRIES: usize = 8;
+const MENU_ITEMS: [MenuItemSpec; 2] = [
+    MenuItemSpec { label: b"Open", dangerous: false },
+    MenuItemSpec { label: b"Properties", dangerous: false },
+];
+
+fn row_owned(item: &ListItem, node: berry_ui::NodeId) -> bool {
+    node == item.panel || node == item.title || item.detail == Some(node)
+}
 
 struct FileEntry {
     name: [u8; NAME_MAX],
@@ -323,6 +333,30 @@ fn build_detail(
 }
 
 impl App {
+    fn menu_row_for(&self, node: berry_ui::NodeId) -> Option<usize> {
+        let Page::List(page) = &self.page else { return None };
+        page.open
+            .iter()
+            .position(|row| row.as_ref().is_some_and(|row| row_owned(row, node)))
+    }
+
+    fn open_detail(&mut self, room: &mut AppRoom, index: usize) {
+        let mut data = load_file(room, &self.entries[index]);
+        data.index = index;
+        room.print(b"FILESOPEN ok\n");
+        let mut line = Line::new(b"FILESSTAT ok size=");
+        line.push_u32(data.size);
+        line.push(b"\n");
+        line.print(room);
+        let mut line = Line::new(b"FILESREAD ok n=");
+        line.push_u32(data.len as u32);
+        line.push(b"\n");
+        line.print(room);
+        self.selected = index;
+        self.replace_detail(&data);
+        self.rebuild_and_render(room);
+    }
+
     fn render(&mut self, room: &mut AppRoom) {
         let mut scratch = [GlyphPos { ch: 0, x: 0, y: 0 }; 160];
         let mut encoder = CommandEncoder::new();
@@ -438,6 +472,9 @@ fn empty_event() -> PointerEvent {
 
 fn run_interactive(app: &mut App, room: &mut AppRoom) {
     let mut events = [empty_event(); INPUT_EVENTS_MAX];
+    let mut long_press = LongPressGesture::new(LONG_PRESS_NS);
+    let mut menu: Option<ContextMenu> = None;
+    let mut menu_row = 0usize;
     loop {
         let count = match room.poll_input(&mut events) {
             Ok(count) => count,
@@ -445,6 +482,23 @@ fn run_interactive(app: &mut App, room: &mut AppRoom) {
         };
         for event in events.iter_mut().take(count) {
             let (x, y) = (event.x, event.y);
+            let phase = event.phase;
+            let mut pending_menu = None;
+            // UP 先用 Berry Room 单调时钟定谳长按，再泵出 Release/Click；
+            // Fired 后尾随 Click 由 gesture 抑制，原列表行不会误进详情。
+            if phase == PHASE_UP {
+                if let LongPressOutcome::Fired { node, x: ax, y: ay } =
+                    long_press.tick(room.now_ns())
+                {
+                    if let Some(index) = app.menu_row_for(node) {
+                        pending_menu = Some((
+                            index,
+                            i32::try_from(ax).unwrap_or(i32::MAX),
+                            i32::try_from(ay).unwrap_or(i32::MAX),
+                        ));
+                    }
+                }
+            }
             if app.ui.push_pointer(pointer_event(event)).is_err() {
                 fail(room, "input buffer");
             }
@@ -457,6 +511,47 @@ fn run_interactive(app: &mut App, room: &mut AppRoom) {
             }
             for slot in copied.iter().take(messages.len()) {
                 let Some(message) = *slot else { continue };
+                let gesture_outcome = long_press.on_msg(&message);
+                if let Some(context_menu) = menu.as_mut() {
+                    match context_menu
+                        .on_msg(&mut app.ui, &app.ctx, &message)
+                        .unwrap_or_else(|_| berry_room::panic_exit(134))
+                    {
+                        ContextMenuOutcome::Selected(index) => {
+                            menu = None;
+                            long_press.reset();
+                            let mut line = Line::new(b"FILESMENUSEL ok i=");
+                            line.push_u32(index as u32);
+                            line.push(b"\n");
+                            line.print(room);
+                            if index == 0 && menu_row < app.count {
+                                app.open_detail(room, menu_row);
+                            } else {
+                                let mut line = Line::new(b"FILESPROP ok i=");
+                                line.push_u32(menu_row as u32);
+                                line.push(b"\n");
+                                line.print(room);
+                            }
+                            continue;
+                        }
+                        ContextMenuOutcome::Dismissed => {
+                            menu = None;
+                            long_press.reset();
+                            room.print(b"FILESMENUCLOSE ok\n");
+                            if app.ui.damage().union_px() != 0 {
+                                app.render(room);
+                                room.print(b"FILESFRAME ok\n");
+                            }
+                            continue;
+                        }
+                        ContextMenuOutcome::None => {}
+                    }
+                    if app.ui.damage().union_px() != 0 {
+                        app.render(room);
+                        room.print(b"FILESFRAME ok\n");
+                    }
+                    continue;
+                }
                 if let Page::List(page) = &mut app.page {
                     for row in page.open.iter_mut().flatten() {
                         let _ = row
@@ -469,6 +564,9 @@ fn run_interactive(app: &mut App, room: &mut AppRoom) {
                         app.render(room);
                         room.print(b"FILESFRAME ok\n");
                     }
+                    continue;
+                }
+                if matches!(gesture_outcome, LongPressOutcome::ClickSuppressed { .. }) {
                     continue;
                 }
                 match &mut app.page {
@@ -493,20 +591,7 @@ fn run_interactive(app: &mut App, room: &mut AppRoom) {
                                 .on_msg(&mut app.ui, &app.ctx, &message)
                                 .unwrap_or_else(|_| berry_room::panic_exit(134))
                             {
-                                let mut data = load_file(room, &app.entries[index]);
-                                data.index = index;
-                                room.print(b"FILESOPEN ok\n");
-                                let mut line = Line::new(b"FILESSTAT ok size=");
-                                line.push_u32(data.size);
-                                line.push(b"\n");
-                                line.print(room);
-                                let mut line = Line::new(b"FILESREAD ok n=");
-                                line.push_u32(data.len as u32);
-                                line.push(b"\n");
-                                line.print(room);
-                                app.selected = index;
-                                app.replace_detail(&data);
-                                app.rebuild_and_render(room);
+                                app.open_detail(room, index);
                                 break;
                             }
                         }
@@ -524,6 +609,45 @@ fn run_interactive(app: &mut App, room: &mut AppRoom) {
                             line.push(b"\n");
                             line.print(room);
                         }
+                    }
+                }
+            }
+            if phase != PHASE_UP {
+                if let LongPressOutcome::Fired { node, x: ax, y: ay } =
+                    long_press.tick(room.now_ns())
+                {
+                    if let Some(index) = app.menu_row_for(node) {
+                        pending_menu = Some((
+                            index,
+                            i32::try_from(ax).unwrap_or(i32::MAX),
+                            i32::try_from(ay).unwrap_or(i32::MAX),
+                        ));
+                    }
+                }
+            }
+            if let Some((index, ax, ay)) = pending_menu {
+                if menu.is_none() {
+                    if let Ok(value) =
+                        ContextMenu::new(&mut app.ui, &app.ctx, ax, ay, &MENU_ITEMS)
+                    {
+                        menu = Some(value);
+                        menu_row = index;
+                        app.ui.layout();
+                        let mut line = Line::new(b"FILESMENU ok i=");
+                        line.push_u32(index as u32);
+                        line.push(b" item0=");
+                        if let Some(context_menu) = menu.as_ref() {
+                            if let Ok(item) = context_menu.menu.item_panel(0) {
+                                line.rect(
+                                    app.ui.bounds(item)
+                                        .unwrap_or_else(|_| berry_room::panic_exit(134)),
+                                );
+                            }
+                        }
+                        line.push(b"\n");
+                        line.print(room);
+                        app.render(room);
+                        room.print(b"FILESFRAME ok\n");
                     }
                 }
             }

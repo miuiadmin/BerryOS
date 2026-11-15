@@ -461,6 +461,12 @@ fn occlusion_from_bounds(
 }
 
 impl AppRoom {
+    /// App-visible monotonic clock. Gesture helpers need an explicit time
+    /// source; this does not grant WM, present, HDI, or SYSTEM capability.
+    pub fn now_ns(&self) -> u64 {
+        now_ns()
+    }
+
     /// 解析 env、建立 WM/input session、接收并映射 wmd 私有字形 VMO。
     pub fn connect(env_ch: Handle, config: RoomConfig) -> RoomResult<Self> {
         let env = RoomEnv::read(env_ch, config)?;
