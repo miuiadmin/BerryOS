@@ -310,7 +310,7 @@ KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL o
 # 无 \n 可与上帧 art 行尾残字拼成 `veco: …`——grep 用无前缀子串）不进
 # canon。裸 grep -qF 足够——"LAUNCH ok"/"PAGE ok n="
 # 与现役 34 枚互非子串（LAUNCH/PAGE 词头独有）。
-# 命令行体验刀 起 +CLI ok n= / +TERM ok n=2（bsh cli_selftest 六步——
+# 命令行体验刀 起 +CLI ok n= / +TERM ok n=（bsh cli_selftest 六步——
 # clear 11B 对拍/uname 前缀/uptime 数值域/sleep 1s 时钟差分/type 三分支
 # /history 环回读；term_selftest 两步——spawn 子 bsh（--no-selftest 跳链
 # 直进交互循环 + stdin_feed 喂两命令 + fs_gifts 四元）私有 stdout 收齐
@@ -323,7 +323,7 @@ KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL o
 # 无拓扑降级门，失败即 park loud。裸 grep -qF 足够——"CLI ok"与
 # "CLK ok"位 3 I≠K 互非子串（正反两向）、"TERM ok"词头 T-E-R-M 现役
 # 唯一（FROZEN/FRZCYC 不含；markers.sh 注互指）。
-ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=" "APPUI ok n=" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok" "TAB ok" "INT ok" "POLL ok" "PS ok n=" "BC ok" "THR ok" "DPGP ok" "DPGS ok n=4" "DPGN ok n=4" "FROZEN ok n=1" "WAKE ok n=1" "TOMB ok n=1" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "CLI ok n=" "TERM ok n=2" "FBW ok" "FBSERVE ok" "GFX ok" "GFXF ok n=" "WM ok" "LAUNCH ok" "PAGE ok n=")
+ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=" "APPUI ok n=" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok" "TAB ok" "INT ok" "POLL ok" "PS ok n=" "BC ok" "THR ok" "DPGP ok" "DPGS ok n=4" "DPGN ok n=4" "FROZEN ok n=1" "WAKE ok n=1" "TOMB ok n=1" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "CLI ok n=" "TERM ok n=" "FBW ok" "FBSERVE ok" "GFX ok" "GFXF ok n=" "WM ok" "LAUNCH ok" "PAGE ok n=")
 
 LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")
 RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")

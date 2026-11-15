@@ -57,18 +57,18 @@ berry> ls | grep boot
 
 `cd` 改的是 shell 自己进程的状态，`type`/`exit`/环境变量赋值同理——这些必须是 shell 内建。判据一句话：**改 shell 自己状态的，进 shell；干活的，独立程序**。
 
-内建名单单源 `const BUILTINS`（`type` 身份查询、Tab 补全候选、help 文案三处消费同表）。既有十二件（help/exit/env/echo/run/cat/ls/mkdir/rm/cd/pwd/inputpoll）之外，命令行体验刀（2026-11-15）补齐六件：
+内建名单单源 `const BUILTINS`（`type` 身份查询与 Tab 补全候选两处消费同表；help 文案由 `HELP_LINES` 承载并经 cli_selftest 逐名互钉断言执法）。既有十二件（help/exit/env/echo/run/cat/ls/mkdir/rm/cd/pwd/inputpoll）之外，命令行体验刀（2026-11-15）补齐六件：
 
 | 命令 | 行为 |
 |------|------|
-| `clear` | 输出 ANSI 清屏+光标归位序列（11B），消费面 = 宿主终端模拟器；带参照打幂等（参数忽略照发） |
+| `clear` | 输出 ANSI 清屏+光标归位序列（7B），消费面 = 宿主终端模拟器；带参照打幂等（参数忽略照发） |
 | `uname` | 单行 `BerryOS aarch64 <版本>`（版本源 = libc `uname` 的 `.berryver` 烙印 semver，ADR #83 查询面单源）；带参拒 |
 | `uptime` | 单行 `up <N>s`（CLOCK_MONOTONIC 秒，boot 起算）；带参拒 |
 | `sleep <s>` | 阻塞 `<s>` 秒（100ms 步进 usleep 环，v1 无长睡原语；不可打断——无异步信号抢占面）；缺失/非数字/负数/超 60s 帽均 usage 2 |
-| `type <name>` | 首词身份三档：内建表命中 `is a shell builtin`、rootfs 命中 `is /bin/<name>`、`not found`（码 1） |
-| `history` | 回显 editor 历史环（8×96B newest-first）逐行 `N  cmd`；管道子 bsh 无交互历史恒空 |
+| `type <name>` | 身份三档：内建表命中 `is a shell builtin`、rootfs 命中 `is /bin/<name>`、`not found`（码 1）；v1 单名字面（多词整串作一名，不分词） |
+| `history` | 回显 editor 历史环（8×256B newest-first，编号随会话重排）逐行 `N  cmd`；历史属交互循环 editor 状态，非交互调用方空环 |
 
-六件行为面由 bsh `cli_selftest` 自验钉板（`CLI ok n=6`，rootfs 相标记——六步：clear 11B 逐字节对拍/uname 前缀/uptime 数值域/sleep 1s 时钟差分/type 三分支/history 环回读）。
+六件行为面由 bsh `cli_selftest` 自验钉板（`CLI ok n=6`，rootfs 相标记——六步：clear 7B 逐字节对拍/uname 前缀/uptime 数值域/sleep 1s 时钟差分 + 0/60 双闭边界/type 三分支 + help↔BUILTINS 互钉/history 环回读）。
 
 ### 2.4 串口行编辑
 
@@ -111,6 +111,7 @@ BusyBox 的"单二进制多命令"只作思路参考（GPLv2，不搬代码）�
 | P5 v0 | bsh：内建命令 + `run` 外部程序 + 环境变量 + `&&`（**已落地 2026-10**：环境变量 = shell 局部 vars + `$NAME`/`$?` 展开 + `env` 内建（子进程 env 传递 defer v2——argv 块无 env 面，`export` 随之）；`&&` = 切行短路 + 每段执行时展开（`A=1 && echo $A` 求值序）；状态码 sh 惯例 0/2/126/127/子真码——真码源 = **0x3A `process_get_exit_code`（P5 扩号，ABI 单源管线首次真实扩号 28→29）**，`ChildHandles::reap` 改 `Result<i32>`；`fail`（exit 42）= rootfs 确定性非零源；自验 = and_selftest 三步断言 + smoke `EXIT ok` 强化 code==0） | 串口跑 `run hello`（`开发体验.md` §3 场景成真；bsh `&&` 自验内嵌 `run fail` 真码 42） |
 | P5 v0.5 | channel 管道 `\|`（已落地 2026-10：`PIPE ok` = rootfs 相第 10 标记，bsh 三跑对拍自验）；重定向 `>` 依赖 FS（/svc/fs），随 P6 | `hexyl \| hexyl` 端到端 |
 | P6 | uutils 文件命令全家 + berryctl/powertop/trace 三件套 + `>` 重定向（A-1 最小面已落地 2026-10：fsmgr RAM-fs 服务 + berry-fsproto 协议 + bsh `>`/cat/ls，`FS ok n=` = rootfs 相第 11 标记；**2026-10-23 注：P6 已收官，uutils 全家与 berryctl/powertop/trace 三件套未随 P6 落地——滑移 M-VM（M-G3「CLI 可用」站，C-2 拆步，见 `VM里程碑设计草案-v1.0.md`）**） | `berryctl --json` 遥测可读 |
+| P6 后·命令行体验刀（2026-11-15） | 六内建（clear/uname/uptime/sleep/type/history，§2.3）+ 哑终端管道契约钉板（§2.5，`TERM ok n=2`）+ `--no-selftest` 子 bsh 直进交互面 | `CLI ok n=6` / `TERM ok n=2`（rootfs 相第 55/56 标记，EFI 路亦打） |
 | 远期 | 更丰富脚本语法；受限 fork（v3+ 探索）后评估更多 POSIX 面 | — |
 
 ## 6. 与既有文档的挂钩
