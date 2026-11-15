@@ -81,9 +81,11 @@ pub const TLBS_DATA_VA: usize = 0x4800_0000;
 pub const STORM_DATA_VA: usize = 0x4900_0000;
 
 /// 代码镜像帽（D3；A7-4 段② 64→128KiB——svcmgr 平像贴墙后 SDK-1b 型
-/// doc 漂移越页，C-2c 容量同步先例抬墙）：flat binary 约定输入的体积上限
-/// ——防调用方手滑把整段 ELF 塞进来（elf2flat.py `--max 131072` 同值执法）。
-pub const USER_CODE_MAX: usize = 128 * PAGE_SIZE;
+/// doc 漂移越页，C-2c 容量同步先例抬墙；CP-08 再抬 128→160KiB——svcmgr
+/// PM 预拉 arm 落段 + pager 钉位 0x1E000→0x28000 同值双改，几何证据 =
+/// 调度彻底计划 10 号 §2.5）：flat binary 约定输入的体积上限
+/// ——防调用方手滑把整段 ELF 塞进来（elf2flat.py `--max 163840` 同值执法）。
+pub const USER_CODE_MAX: usize = 160 * PAGE_SIZE;
 
 /// 数据页 canary（非零——good 的「页内容正确」自检依据）。
 pub const USER_MAGIC: u64 = 0x00C0_FFEe_E000_0E10;
@@ -1762,10 +1764,11 @@ impl UserProcess {
     /// （`0x1000 + code_len` / 再上一页）——单页程序布局与 2b-4 起逐位相同
     /// （data@0x2000、stack@[0x3000,0x4000)），asm 模板的硬编槽位零扰动；
     /// 多页（svcmgr 编译镜像，内嵌双子程序平像）由 `stack_top` 交给调用方。
-    /// 帽 128KiB（`USER_CODE_MAX`，A7-4 段② 64→128KiB 同步抬）：防调用方手滑
-    /// 传整段 ELF——flat 才是约定输入（elf2flat.py `--max` 同值执法）。
+    /// 帽 160KiB（`USER_CODE_MAX`，A7-4 段② 64→128KiB 同步抬；CP-08
+    /// 128→160KiB——PM 预拉 arm 扩容）：防调用方手滑传整段 ELF——flat
+    /// 才是约定输入（elf2flat.py `--max` 同值执法）。
     pub fn build(fa: &mut FrameAllocator, code: &[u8], data_magic: u64) -> Self {
-        assert!(code.len() <= USER_CODE_MAX, "用户代码镜像超 128KiB 帽（flat 才是约定输入）");
+        assert!(code.len() <= USER_CODE_MAX, "用户代码镜像超 160KiB 帽（flat 才是约定输入）");
         assert!(code.len() % 4 == 0, "用户代码模板须 4 字节对齐长度");
         let code_pages = (code.len() + PAGE_SIZE - 1) / PAGE_SIZE;
         let code_len = code_pages * PAGE_SIZE;

@@ -33,19 +33,24 @@ SECTIONS {
         __bss_end = .;
     }
     /* X-3c-3：pager 任务入口/栈钉位（内核 boot 直拉第二裸任务共享本映像
-       ——kernel/src/main.rs X-3c-1 同值双改：入口 0x1E000 / 栈顶 0x20000；
-       dpgp `dpgi_entry` 同款 idiom）。栈区 [入口段尾, 0x20000) NOLOAD
+       ——kernel/src/main.rs X-3c-1 同值双改：入口 0x28000 / 栈顶 0x29000；
+       dpgp `dpgi_entry` 同款 idiom）。栈区 [入口段尾, 0x29000) NOLOAD
        （elf2flat memsz 尾零垫覆盖——.bss 同机制，UserProcess::build 整
-       映像 RW 映射即含栈页）。text+bss 长过 0x1E000 = 位置计数器回退 →
-       链接失败（fail loud 二道几何钉：128KiB --max 帽之前先炸）。段名
-       pager_entry 不匹配 .text.* 通配 = 不会被首段吞并。 */
-    . = 0x1E000;
+       映像 RW 映射即含栈页）。text+bss 长过 0x28000 = 位置计数器回退 →
+       链接失败（fail loud 二道几何钉：160KiB --max 帽之前先炸）。段名
+       pager_entry 不匹配 .text.* 通配 = 不会被首段吞并。
+       CP-08 扩容（调度彻底计划 10 号 §2.5 几何阻断解除）：旧钉 0x1E000
+       时 .bss 终点 0x1dff0 余量仅 0x10，PM 预拉 arm（~0x1a0+）装不进
+       ——帽 128→160KiB（kernel/src/user.rs USER_CODE_MAX 同值）+ 钉位
+       上移后 arm 落段。平像 total 恰满帽（0x28000 = --max 163840）＝
+       零余量 by design：pager 段再长先撞链接钉（loud 先于帽炸）。 */
+    . = 0x28000;
     .pager_entry : {
         KEEP(*(pager_entry))
     }
     . = ALIGN(16);
     .pager_stack (NOLOAD) : {
-        . = 0x20000;
+        . = 0x29000;
     }
     /DISCARD/ : { *(.comment) *(.note*) *(.eh_frame*) }
 }
