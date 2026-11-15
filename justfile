@@ -741,6 +741,14 @@ test-host:
     # 特判+flags=0 回默认钉板，host 14 测；常量族与判定律单源，sched
     # policy.rs / kernel process.rs 机械壳 re-export 消费）。
     cargo test -p berry-polface --target {{host}}
+    # W3-Q72：berry-psface（PSCI 版本门/探测路由门/FEATURES 侦察纯面——
+    # version 编码域 major/minor 16+16 拆装往返/最小有效值门〔≥1.0 且非
+    # 0xFFFFFFFF——SMCCC -1 截断律〕/探测路由三形〔EFI 门→非 EL1 门→EL1
+    # 探测，门住形零 HVC〕/FEATURES 三档现实表〔0 过 -1 拒〕/SYSTEM_OFF
+    # conduit 活证判〔0.2 起强制函数不查 FEATURES〕钉板，host 9 测；
+    # 判定律单源，HAL psci.rs probe/能力门 re-export 消费〔HVC asm 臂/
+    # 诊断行/原子缓存留壳〕）。
+    cargo test -p berry-psface --target {{host}}
     # W3-Q22：berry-safeck（berry_sched_attr 结构解码+校验纯函数面——
     # size 门/尾零前向兼容律/version 门/reserved0·未知 flags/weight·
     # intent·policy·freeze_clock 域门/policy=3↔BUDGET 联动/RESERVE 与

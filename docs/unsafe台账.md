@@ -46,10 +46,10 @@
 | mm/ | 7 | 2230 | 4 | 0.18% |
 | sched/ | 14 | 7277 | 1646 | 22.62% |
 | ipc/ | 0 | 0 | 0 | — |
-| arch/ | 22 | 7187 | 1044 | 14.53% |
-| **合计** | 69 | 45932 | 4769 | **10.38%** |
+| arch/ | 22 | 7190 | 1044 | 14.52% |
+| **合计** | 69 | 45935 | 4769 | **10.38%** |
 
-- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 36674，unsafe 非空行 4075，密度 11.11%（生产面口径）
+- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 36677，unsafe 非空行 4075，密度 11.11%（生产面口径）
 - 分类计数：页表 63 | 上下文切换 33 | MMIO 159 | 分配器 13 | 硬件原子 0 | 其它 747
 - 类型计数：block 873 | fn 138 | impl 2 | extern 2（另有类型签名位提及 14 处——只计不登记，防双计）
 - 对标：Android ~4%（unsafe 行占 Rust 总行比，Google 2025-11）；本表为跨度非空行口径（偏高估），见 §一
@@ -170,8 +170,8 @@
 | arch/aarch64/src/pl061.rs | 64 | block | MMIO | unsafe { *core::ptr::addr_of_mut!(PL061_NOTIFY) = Some(f) }; } / |
 | arch/aarch64/src/pl061.rs | 72 | block | MMIO | unsafe { if mmio::read(PL061 + GPIO_MIS) & PIN_MASK == 0 { retur |
 | arch/aarch64/src/pl061.rs | 94 | fn | MMIO | unsafe fn pl061_init() { mmio::write(PL061 + GPIO_ICR, PIN_MASK) |
-| arch/aarch64/src/psci.rs | 53 | block | 其它 | unsafe { (&raw const BOOT_EL).read_volatile() } } /// 模块本地 HVC 调 |
-| arch/aarch64/src/psci.rs | 65 | block | MMIO | unsafe { asm!( "hvc #0", inout("x0") fnid => ret, inout("x1") x1 |
+| arch/aarch64/src/psci.rs | 50 | block | 其它 | unsafe { (&raw const BOOT_EL).read_volatile() } } /// 模块本地 HVC 调 |
+| arch/aarch64/src/psci.rs | 62 | block | MMIO | unsafe { asm!( "hvc #0", inout("x0") fnid => ret, inout("x1") x1 |
 | arch/aarch64/src/smp.rs | 231 | block | MMIO | unsafe { asm!("mrs {}, mpidr_el1", out(reg) mpidr); let p: *mut |
 | arch/aarch64/src/smp.rs | 248 | block | MMIO | unsafe { asm!("mrs {}, tpidr_el1", out(reg) base) }; if base == |
 | arch/aarch64/src/smp.rs | 254 | block | MMIO | unsafe { core::ptr::addr_of_mut!((*(base as *mut SmpCpu)).last_v |

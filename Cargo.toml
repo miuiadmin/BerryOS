@@ -20,6 +20,7 @@ members = [
     "mm",
     "piface",
     "polface",
+    "psface",
     "rootface",
     "ringface",
     "safeck",
