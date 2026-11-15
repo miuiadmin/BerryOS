@@ -20,7 +20,7 @@ Updated: 2026-11-15
 
 ## 结果
 
-现行规格见 [BerryBoot-BootProgress-P1-v1.1.md](../../docs/BerryBoot-BootProgress-P1-v1.1.md)。产品实测已有 1080×1920 0%、滚动中与满进度 ramfb 首屏，以及 vgpu 70% 进度与 LAUNCH 后桌面替换。
+现行规格见 [BerryBoot-BootProgress-P1-v1.2.md](../../docs/BerryBoot-BootProgress-P1-v1.2.md)。产品实测已有 1080×1920 0%、滚动中与满进度 ramfb 首屏，以及 vgpu 70% 进度与 LAUNCH 后桌面替换。
 
 ## 未完成事项
 

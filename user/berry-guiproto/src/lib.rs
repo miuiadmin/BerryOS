@@ -91,6 +91,39 @@ pub const BOOT_STAGE_PREPARE: u8 = 4;
 pub const BOOT_STAGE_HANDOFF: u8 = 5;
 /// 进度真值 0..=1000 permille。
 pub const BOOT_PROGRESS_MAX: u16 = 1000;
+/// BootProgress milestone 判别值（与 berry-bootprogress::Milestone 镜像）。
+pub const BOOT_M_VGPU_READY: u8 = 1;
+pub const BOOT_M_PRESENT_BACKEND_READY: u8 = 2;
+pub const BOOT_M_WMD_SPAWNED: u8 = 3;
+pub const BOOT_M_INPUT_ARMED: u8 = 4;
+pub const BOOT_M_INPUTD_SPAWNED: u8 = 5;
+pub const BOOT_M_FSMGR_SPAWNED: u8 = 6;
+pub const BOOT_M_VNET_SPAWNED: u8 = 7;
+pub const BOOT_M_PROGRESS_CONTROL_HANDOFF: u8 = 8;
+pub const BOOT_M_SYSTEM_UI_CONNECTED: u8 = 9;
+pub const BOOT_M_FIRST_REAL_SUBMIT: u8 = 10;
+pub const BOOT_M_DESKTOP_HANDOFF: u8 = 11;
+pub const BOOT_M_MAX: u8 = 11;
+
+/// Stable milestone table mirrored from berry-bootprogress. Runtime code in
+/// this no_std protocol crate cannot depend on the loader-side truth crate;
+/// host tests cross-check the two tables byte-for-byte.
+pub const fn boot_milestone_triple(id: u8) -> Option<(u8, u16)> {
+    match id {
+        BOOT_M_VGPU_READY => Some((BOOT_STAGE_PREPARE, 450)),
+        BOOT_M_PRESENT_BACKEND_READY => Some((BOOT_STAGE_PREPARE, 500)),
+        BOOT_M_WMD_SPAWNED => Some((BOOT_STAGE_PREPARE, 520)),
+        BOOT_M_INPUT_ARMED => Some((BOOT_STAGE_PREPARE, 560)),
+        BOOT_M_INPUTD_SPAWNED => Some((BOOT_STAGE_PREPARE, 620)),
+        BOOT_M_FSMGR_SPAWNED => Some((BOOT_STAGE_PREPARE, 650)),
+        BOOT_M_VNET_SPAWNED => Some((BOOT_STAGE_PREPARE, 680)),
+        BOOT_M_PROGRESS_CONTROL_HANDOFF => Some((BOOT_STAGE_HANDOFF, 700)),
+        BOOT_M_SYSTEM_UI_CONNECTED => Some((BOOT_STAGE_HANDOFF, 800)),
+        BOOT_M_FIRST_REAL_SUBMIT => Some((BOOT_STAGE_HANDOFF, 900)),
+        BOOT_M_DESKTOP_HANDOFF => Some((BOOT_STAGE_HANDOFF, 1000)),
+        _ => None,
+    }
+}
 /// input 域：订阅 + 投递模式声明。
 pub const OP_INPUT_SUBSCRIBE: u8 = 0x20;
 /// input 域：拉事件批（可阻塞：阻塞到至少 1 个完整事件）。
@@ -977,7 +1010,17 @@ pub enum PresentReq {
     /// POWER_MODE：显示电源模式。
     PowerMode { mode: u8 },
     /// BOOT-P1：系统启动进度控制帧（服务端渲染真实系统阶段）。
-    BootProgress { stage: u8, permille: u16 },
+    BootProgress { stage: u8, permille: u16, milestone: u8 },
+}
+
+impl PresentReq {
+    /// Construct the canonical BootProgress frame for a milestone id. This is
+    /// the only producer entry point; callers must not hand-assemble the
+    /// stage/permille/milestone triple.
+    pub fn milestone(id: u8) -> Option<Self> {
+        let (stage, permille) = boot_milestone_triple(id)?;
+        Some(Self::BootProgress { stage, permille, milestone: id })
+    }
 }
 
 /// 编码 present 域请求（None 契约：rect_count 越帽 / flags·scene·mode·
@@ -1081,14 +1124,19 @@ pub fn encode_present_req(out: &mut [u8], req: &PresentReq) -> Option<usize> {
             m[3] = 0;
             Some(4)
         }
-        PresentReq::BootProgress { stage, permille } => {
-            if *stage > BOOT_STAGE_HANDOFF || *permille > BOOT_PROGRESS_MAX {
+        PresentReq::BootProgress { stage, permille, milestone } => {
+            if *stage > BOOT_STAGE_HANDOFF
+                || *permille > BOOT_PROGRESS_MAX
+                || *milestone > BOOT_M_MAX
+                || (*milestone != 0
+                    && boot_milestone_triple(*milestone) != Some((*stage, *permille)))
+            {
                 return None;
             }
             let m = out.get_mut(..8)?;
             m[0] = OP_BOOT_PROGRESS;
             m[1] = *stage;
-            m[2] = 0;
+            m[2] = *milestone;
             m[3] = 0;
             m[4..6].copy_from_slice(&permille.to_le_bytes());
             m[6] = 0;
@@ -1189,10 +1237,16 @@ pub fn parse_present_req(buf: &[u8]) -> Option<PresentReq> {
             }
             let stage = buf[1];
             let permille = le16(buf, 4)?;
-            if stage > BOOT_STAGE_HANDOFF || permille > BOOT_PROGRESS_MAX {
+            let milestone = buf[2];
+            if stage > BOOT_STAGE_HANDOFF
+                || permille > BOOT_PROGRESS_MAX
+                || milestone > BOOT_M_MAX
+                || (milestone != 0
+                    && boot_milestone_triple(milestone) != Some((stage, permille)))
+            {
                 return None;
             }
-            Some(PresentReq::BootProgress { stage, permille })
+            Some(PresentReq::BootProgress { stage, permille, milestone })
         }
         _ => None,
     }
@@ -4355,23 +4409,86 @@ mod tests {
     #[test]
     fn present_boot_progress_roundtrip_and_value_faces() {
         let mut buf = [0u8; 16];
-        let req = PresentReq::BootProgress {
-            stage: BOOT_STAGE_HANDOFF,
-            permille: BOOT_PROGRESS_MAX,
-        };
+        let req = PresentReq::milestone(BOOT_M_DESKTOP_HANDOFF).unwrap();
         let n = encode_present_req(&mut buf, &req).unwrap();
-        assert_eq!(&buf[..n], &[OP_BOOT_PROGRESS, BOOT_STAGE_HANDOFF, 0, 0, 0xe8, 0x03, 0, 0][..]);
+        assert_eq!(
+            &buf[..n],
+            &[OP_BOOT_PROGRESS, BOOT_STAGE_HANDOFF, BOOT_M_DESKTOP_HANDOFF, 0, 0xe8, 0x03, 0, 0][..]
+        );
         assert_eq!(parse_present_req(&buf[..n]), Some(req));
-        assert_eq!(encode_present_req(&mut buf, &PresentReq::BootProgress {
-            stage: BOOT_STAGE_HANDOFF + 1,
-            permille: 0,
-        }), None);
-        assert_eq!(encode_present_req(&mut buf, &PresentReq::BootProgress {
-            stage: 0,
-            permille: BOOT_PROGRESS_MAX + 1,
-        }), None);
-        assert_eq!(parse_present_req(&[OP_BOOT_PROGRESS, 0, 0, 0, 0xe9, 0x03, 0, 0]), None);
+        assert_eq!(
+            encode_present_req(&mut buf, &PresentReq::BootProgress {
+                stage: BOOT_STAGE_HANDOFF + 1,
+                permille: 0,
+                milestone: 0,
+            }),
+            None
+        );
+        assert_eq!(
+            encode_present_req(&mut buf, &PresentReq::BootProgress {
+                stage: 0,
+                permille: BOOT_PROGRESS_MAX + 1,
+                milestone: 0,
+            }),
+            None
+        );
+        assert_eq!(
+            encode_present_req(&mut buf, &PresentReq::BootProgress {
+                stage: 0,
+                permille: 0,
+                milestone: BOOT_M_MAX + 1,
+            }),
+            None
+        );
+        assert_eq!(
+            encode_present_req(&mut buf, &PresentReq::BootProgress {
+                stage: BOOT_STAGE_PREPARE,
+                permille: BOOT_PROGRESS_MAX,
+                milestone: BOOT_M_DESKTOP_HANDOFF,
+            }),
+            None
+        );
+        assert_eq!(
+            parse_present_req(&[
+                OP_BOOT_PROGRESS,
+                BOOT_STAGE_PREPARE,
+                BOOT_M_DESKTOP_HANDOFF,
+                0,
+                0xe8,
+                0x03,
+                0,
+                0
+            ]),
+            None
+        );
+        assert_eq!(
+            parse_present_req(&[OP_BOOT_PROGRESS, 0, BOOT_M_MAX + 1, 0, 0, 0, 0, 0]),
+            None
+        );
+        // Reserved bytes 3/6/7 remain forward-compatible and are not rejected.
+        assert_eq!(
+            parse_present_req(&[OP_BOOT_PROGRESS, 0, 0, 9, 0, 0, 9, 9]),
+            Some(PresentReq::BootProgress {
+                stage: 0,
+                permille: 0,
+                milestone: 0,
+            })
+        );
         assert_eq!(parse_present_req(&[OP_BOOT_PROGRESS, 0, 0, 0, 0, 0]), None);
+    }
+
+    #[test]
+    fn boot_milestone_table_matches_bootprogress_truth() {
+        for id in 1..=BOOT_M_MAX {
+            let wire = boot_milestone_triple(id).unwrap();
+            let truth = berry_bootprogress::Milestone::from_id(id).unwrap();
+            assert_eq!(u16::from(wire.0), u16::from(truth.stage() as u8));
+            assert_eq!(wire.1, truth.permille());
+        }
+        assert_eq!(
+            berry_bootprogress::Milestone::from_id(BOOT_M_MAX + 1),
+            None
+        );
     }
 
 

@@ -215,6 +215,27 @@ fn display_mode_req() -> Option<(u32, u32)> {
     Some((w.parse().ok()?, h.parse().ok()?))
 }
 
+/// Boot presentation face request. This mirrors BerryBoot's fw_cfg parser;
+/// absent, malformed, or unreadable means the default graphical capsule.
+fn bootmode_verbose_req() -> bool {
+    use berry_hal_aarch64::fwcfg;
+    let Some(e) = fwcfg::find_file("opt/berry/bootmode") else {
+        return false;
+    };
+    if e.size == 0 || e.size > 16 {
+        return false;
+    }
+    let mut buf = [0u8; 16];
+    if !fwcfg::read_to(&e, &mut buf[..e.size as usize]) {
+        return false;
+    }
+    let body = buf[..e.size as usize]
+        .split(|&b| b == 0 || b == b'\n' || b == b'\r')
+        .next()
+        .unwrap_or(&[]);
+    body.eq_ignore_ascii_case(b"verbose")
+}
+
 /// 内核 Rust 入口（由 HAL boot asm 的 `br rust_main` 调用——2b-1 起高半入口）。
 /// C-ABI 约定（ADR #18），符号名与 asm 精确匹配；首参 = 入口 x0（boot asm 的
 /// x19 抢救）——**双语义**（V-1a 分流）：EFI 路 = BerryHandoff PA（BerryBoot
@@ -248,6 +269,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // GUI P2：ramfb 手机档成功时置 1——随 fbinfo 第 6 域交 guifbd，
     // GUI 模式 console 只走串口/记账，不上屏盖桌面。
     let mut gui_mode = false;
+    let boot_face_verbose = bootmode_verbose_req();
     // 540×1200 等超出固件 GOP 缓冲的档：boot 先记 pending，mm::init 后从
     // buddy 取连续块、重编程 ramfb；失败回退固件几何。
     let mut pending_mode: Option<(u32, u32)> = None;
@@ -1308,15 +1330,17 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                         h_fb, 0x0001_0005,
                         "main: svcmgr 表 fb VMO 须第 5 插 0x0001_0005（编译侧硬编码）"
                     );
-                    // 几何 info VMO：48B = fb_pa/w/h/stride/fmt/gui 六域 u64 LE
-                    //（一页 VMO，create+commit+write 三连——rootfs VMO 同款）。
-                    let mut info = [0u8; 48];
+                    // 几何 info VMO：56B = fb_pa/w/h/stride/fmt/gui/bootface
+                    // 七域 u64 LE（一页 VMO；第 7 域仅 vgpud 消费，旧读者
+                    // 只读前 48B，add-only）。
+                    let mut info = [0u8; 56];
                     info[0..8].copy_from_slice(&fb_pa.to_le_bytes());
                     info[8..16].copy_from_slice(&(w as u64).to_le_bytes());
                     info[16..24].copy_from_slice(&(h as u64).to_le_bytes());
                     info[24..32].copy_from_slice(&(stride as u64).to_le_bytes());
                     info[32..40].copy_from_slice(&(fmt as u64).to_le_bytes());
                     info[40..48].copy_from_slice(&(gui_mode as u64).to_le_bytes());
+                    info[48..56].copy_from_slice(&(boot_face_verbose as u64).to_le_bytes());
                     let mut ivmo =
                         vmo::Vmo::create(4096).expect("main: fbinfo Vmo create");
                     ivmo.commit(mm::frames(), 0, 4096)

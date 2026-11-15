@@ -681,6 +681,19 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
     if !boot_probe || gpuhdi_on {
         if berry_vmo_get_size(H_MMIO, &mut msz) == 0 {
             if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/vgpud") {
+                let mut face_bytes = [0u8; 8];
+                let verbose_face = berry_vmo_read(
+                    H_FBINFO,
+                    face_bytes.as_mut_ptr(),
+                    48,
+                    face_bytes.len(),
+                ) == 0
+                    && u64::from_le_bytes(face_bytes) == 1;
+                let vgpu_args: &[&[u8]] = if verbose_face {
+                    &[b"--boot-face=verbose"]
+                } else {
+                    &[]
+                };
                 let (p_cli, p_srv) = channel_pair();
                 let (h_cli, h_srv) = channel_pair();
                 match spawn_rootfs_elf(
@@ -693,7 +706,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                         stack_pages: 16,
                         stdin_feed: Some(&[]),
                         stdin_handle: None,
-                        args: &[],
+                        args: vgpu_args,
                         extra_gifts: &[p_srv, h_srv],
                         mmio_vmo: Some(H_MMIO),
                         mmio_va: VIRTIO_MMIO_VA,
@@ -718,11 +731,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                             {
                                 trap();
                             }
-                            vgpu_boot_progress(
-                                vgpu_progress_cli,
-                                gp::BOOT_STAGE_PREPARE,
-                                berry_bootprogress::M_VGPU_READY,
-                            );
+                            vgpu_boot_progress(vgpu_progress_cli, gp::BOOT_M_VGPU_READY);
                         } else {
                             // vgpud 已 park/自陷且服务端端在其表内；本侧关
                             // 客户端端即呈现链无读者，下方回落 guifbd。
@@ -888,16 +897,8 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                     wm_cli = w_cli;
                     WMD_PUSH_B.store(push_cli, Ordering::Relaxed);
                     if vgpu_progress_cli != 0 {
-                        vgpu_boot_progress(
-                            vgpu_progress_cli,
-                            gp::BOOT_STAGE_PREPARE,
-                            berry_bootprogress::M_PRESENT_BACKEND_READY,
-                        );
-                        vgpu_boot_progress(
-                            vgpu_progress_cli,
-                            gp::BOOT_STAGE_PREPARE,
-                            berry_bootprogress::M_WMD_SPAWNED,
-                        );
+                        vgpu_boot_progress(vgpu_progress_cli, gp::BOOT_M_PRESENT_BACKEND_READY);
+                        vgpu_boot_progress(vgpu_progress_cli, gp::BOOT_M_WMD_SPAWNED);
                     }
                     // GUI-8 段②：dup 一枚 wm 客户端端落 WMD_CLI_DUP 留表
                     // （SEND|RECV 双权利——bsh fs_a 同口径）——**常驻 dup 源**
@@ -955,11 +956,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
         }
     }
     if vgpu_progress_cli != 0 {
-        vgpu_boot_progress(
-            vgpu_progress_cli,
-            gp::BOOT_STAGE_PREPARE,
-            berry_bootprogress::M_INPUT_ARMED,
-        );
+        vgpu_boot_progress(vgpu_progress_cli, gp::BOOT_M_INPUT_ARMED);
     }
     // ---- GUI-4 段②：gui-inputd 预拉（virtio-tablet/keyboard 输入服务）。
     // P3 起提前到 gfxdemo 之前：gfxdemo 双窗 click-to-focus 验收需要真实
@@ -1020,11 +1017,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                 // inputd 自打。
                 INPUT_A.store(in_a, Ordering::Relaxed);
                 if vgpu_progress_cli != 0 {
-                    vgpu_boot_progress(
-                        vgpu_progress_cli,
-                        gp::BOOT_STAGE_PREPARE,
-                        berry_bootprogress::M_INPUTD_SPAWNED,
-                    );
+                    vgpu_boot_progress(vgpu_progress_cli, gp::BOOT_M_INPUTD_SPAWNED);
                 }
                 // push_b 已被 take 迁入 inputd 表——static 清零防后续误用
                 // （fsmgr blk_cli 同款；已迁值不可 close）。
@@ -1050,15 +1043,12 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
             }
         }
     }
-    if vgpu_progress_cli != 0 {
-        vgpu_boot_progress(
-            vgpu_progress_cli,
-            gp::BOOT_STAGE_HANDOFF,
-            berry_bootprogress::M_PROGRESS_CONTROL_HANDOFF,
-        );
-        if berry_handle_close(vgpu_progress_cli) != 0 {
-            trap();
-        }
+    // Probe topology intentionally hands the private progress dup to wmd
+    // before gfxdemo: gfxdemo is the first real SUBMIT consumer and would
+    // otherwise share one present reply queue with this dup alias. Product
+    // topology has no gfxdemo consumer and keeps the dup through fsmgr/vnet.
+    if boot_probe {
+        vgpu_progress_handoff(&mut vgpu_progress_cli);
     }
     // ---- GUI-2 段③：gfxdemo（首个 gfx 消费者）预拉——wmd/inputd 后。
     // 门 = wmd spawn Ok（wm_cli != 0——客户端端仅 Ok 路落值，兼作标志）
@@ -1198,6 +1188,9 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
         ) {
             Ok(_) => {
                 ps_reg(b"fsmgr", psp::STATE_ALIVE, 0); // 拉起即常驻（FAT 降级不影响活性）
+                if vgpu_progress_cli != 0 {
+                    vgpu_boot_progress(vgpu_progress_cli, gp::BOOT_M_FSMGR_SPAWNED);
+                }
                 fs_a_h = fs_a;
                 fs_client = fs_dup;
                 // blk_cli 已被 take 迁移（旧值必 -EBADF，勿关）——清零防
@@ -1259,6 +1252,9 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
         ) {
             Ok(_child) => {
                 ps_reg(b"vnet", psp::STATE_ALIVE, 0); // 拉起即常驻（自验门成败都活——serve 常驻）
+                if vgpu_progress_cli != 0 {
+                    vgpu_boot_progress(vgpu_progress_cli, gp::BOOT_M_VNET_SPAWNED);
+                }
                 // 常驻不 reap。`NET ok` 标记仍由 vnet 自打（自验在 serve()
                 // 前，rootfs 相第 17 标记零扰动）；DNS ok（A-8c）起本端
                 // 转 client 消费。
@@ -1318,6 +1314,13 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
     // 纪律注记：让位后 launcher = fs 唯一桌面读者（布局写在桌面态、app
     // 活时结构性无布局编辑——裁决四-b 相位互斥）；冻结相 launcher 零 fs
     // 零 app（[wm] park 形，bsh 全自验照跑）。
+    // Product topology closes the dup after fsmgr/vnet (m=6/m=7) but before
+    // launcher can trigger wmd's m=9/present traffic. This is the single
+    // handoff point; the probe-only early handoff above is the documented
+    // exception required by gfxdemo's first real SUBMIT.
+    if !boot_probe {
+        vgpu_progress_handoff(&mut vgpu_progress_cli);
+    }
     if WMD_CLI_DUP.load(Ordering::Relaxed) != 0 {
         // R1 判别器 v2：交互相（BLK_OK≠0 数据盘在位）才让位 fs；冻结相 0
         // 直传 = [wm] 截断形（assemble 前缀截断纪律自处）。rootfs 形
@@ -4135,15 +4138,31 @@ fn gpu_hdi_rpc(
     Some((nb, nh))
 }
 
+/// Send the 700 permille control handoff, then close svcmgr's private dup.
+/// Setting the caller's handle to zero is the single-shot/lifecycle discipline.
+fn vgpu_progress_handoff(cli: &mut Handle) {
+    if *cli == 0 {
+        return;
+    }
+    vgpu_boot_progress(*cli, gp::BOOT_M_PROGRESS_CONTROL_HANDOFF);
+    if berry_handle_close(*cli) != 0 {
+        trap();
+    }
+    *cli = 0;
+}
+
 /// BOOT-P1：把 svcmgr 已完成的真实服务阶段送到当前呈现后端。该 RPC 在
 /// gui-wmd 首帧前使用；调用方持有私有 p_cli dup，不与 app present 竞争。
-fn vgpu_boot_progress(h: Handle, stage: u8, permille: u16) -> bool {
+fn vgpu_boot_progress(h: Handle, milestone: u8) -> bool {
     let mut req = [0u8; 32];
     let mut rep = [0u8; 32];
     let mut rhs = [0 as Handle; 2];
     let Some(n) = gp::encode_present_req(
         &mut req,
-        &gp::PresentReq::BootProgress { stage, permille },
+        &match gp::PresentReq::milestone(milestone) {
+            Some(request) => request,
+            None => return false,
+        },
     ) else {
         return false;
     };

@@ -691,19 +691,17 @@ impl Compositor {
     }
 }
 
-fn boot_progress_point_once(
-    once: &AtomicBool,
-    cli: Handle,
-    stage: u8,
-    permille: u16,
-) {
+fn boot_progress_point_once(once: &AtomicBool, cli: Handle, milestone: u8) {
     if once.swap(true, Ordering::AcqRel) {
         return;
     }
     let mut req = [0u8; 32];
     let Some(n) = gp::encode_present_req(
         &mut req,
-        &gp::PresentReq::BootProgress { stage, permille },
+        &match gp::PresentReq::milestone(milestone) {
+            Some(request) => request,
+            None => return,
+        },
     ) else {
         return;
     };
@@ -723,8 +721,7 @@ pub fn boot_progress_system_ui_once(cli: Handle) {
     boot_progress_point_once(
         &BOOT_PROGRESS_SYSTEM_UI,
         cli,
-        gp::BOOT_STAGE_HANDOFF,
-        berry_bootprogress::M_SYSTEM_UI_CONNECTED,
+        gp::BOOT_M_SYSTEM_UI_CONNECTED,
     );
 }
 
@@ -732,8 +729,7 @@ fn boot_progress_first_submit_once(cli: Handle) {
     boot_progress_point_once(
         &BOOT_PROGRESS_FIRST_SUBMIT,
         cli,
-        gp::BOOT_STAGE_HANDOFF,
-        berry_bootprogress::M_FIRST_REAL_SUBMIT,
+        gp::BOOT_M_FIRST_REAL_SUBMIT,
     );
 }
 
@@ -741,8 +737,7 @@ fn boot_progress_complete_once(cli: Handle) {
     boot_progress_point_once(
         &BOOT_PROGRESS_DONE,
         cli,
-        gp::BOOT_STAGE_HANDOFF,
-        berry_bootprogress::M_DESKTOP_HANDOFF,
+        gp::BOOT_M_DESKTOP_HANDOFF,
     );
 }
 

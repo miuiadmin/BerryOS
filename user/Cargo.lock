@@ -83,6 +83,7 @@ dependencies = [
 name = "berry-guiproto"
 version = "0.1.0"
 dependencies = [
+ "berry-bootprogress",
  "berry-manifest",
 ]
 
@@ -196,7 +197,6 @@ version = "0.1.0"
 dependencies = [
  "berry-appproto",
  "berry-blkproto",
- "berry-bootprogress",
  "berry-exec",
  "berry-guiproto",
  "berry-loader",

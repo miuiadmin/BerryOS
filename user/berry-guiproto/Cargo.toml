@@ -22,3 +22,6 @@ license = "Apache-2.0"
 # CHAN_OPT_NO_INTENT），且其常量层 = abi.toml 生成面（syscall ABI），
 # 调度词表手写进彼 = 破其单源纪律。
 berry-manifest = { path = "../berry-manifest" }
+
+[dev-dependencies]
+berry-bootprogress = { path = "../../bootloader/berryboot/berry-bootprogress" }

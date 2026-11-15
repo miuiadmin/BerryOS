@@ -2305,10 +2305,30 @@ def _wait_boot_batch(boot: Boot, timeout: float) -> None:
             timeout, boot.log_path,
         )
     boot.wait_markers([MARK_APP_DEMO_UP], timeout)
+    _verify_vgpu_boot_milestones(boot)
     _verify_r1_authority(boot.log.text, f"boot batch {boot.phase}", boot.log_path)
     if boot.phase != "normal":
         _verify_r2_occlusion(boot.log.text, f"boot batch {boot.phase}", boot.log_path)
         _verify_r3_config(boot.log.text, f"boot batch {boot.phase}", boot.log_path)
+
+def _verify_vgpu_boot_milestones(boot: Boot) -> None:
+    """Pin the real BootProgress milestone chain for the selected topology."""
+    if not getattr(boot.args, "vgpu", False):
+        return
+    text = boot.log.text
+    got = [
+        int(match)
+        for match in re.findall(r"VGPUBOOT ok [^\n]*? m=([0-9]+)", text)
+    ]
+    # The probe topology hands the progress dup to wmd before gfxdemo's first
+    # real SUBMIT, so fsmgr/vnet (6/7) are intentionally absent there.
+    expected = list(range(1, 12)) if boot.args.normal_boot else [1, 2, 3, 4, 5, 8]
+    if got != expected or "VGPUBOOT fail" in text:
+        raise SmokeError(
+            f"boot {boot.phase} VGPUBOOT milestone chain={got} expected={expected}",
+            boot.log_path,
+        )
+
 
 def _verify_r2_occlusion(text: str, phase: str, log_path: Path | None = None) -> None:
     """R2 Occlusion Contract：真实 SYSTEM 遮挡 + raw/visible 双几何证据。"""

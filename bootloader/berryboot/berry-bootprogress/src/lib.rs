@@ -26,10 +26,135 @@ pub const M_PRESENT_BACKEND_READY: u16 = 500;
 pub const M_WMD_SPAWNED: u16 = 520;
 pub const M_INPUT_ARMED: u16 = 560;
 pub const M_INPUTD_SPAWNED: u16 = 620;
+/// Truth is "svcmgr successfully spawned fsmgr"; eager FAT initialization may
+/// still be running. This is deliberately not a readiness claim.
+pub const M_FSMGR_SPAWNED: u16 = 650;
+/// Truth is "svcmgr successfully spawned vnet"; the driver self-test may still
+/// be running. This is deliberately not a readiness claim.
+pub const M_VNET_SPAWNED: u16 = 680;
 pub const M_PROGRESS_CONTROL_HANDOFF: u16 = 700;
 pub const M_SYSTEM_UI_CONNECTED: u16 = 800;
 pub const M_FIRST_REAL_SUBMIT: u16 = 900;
 pub const M_DESKTOP_HANDOFF: u16 = PERMILLE_MAX;
+
+/// Wire discriminator for a system milestone. Zero means "absent" and remains
+/// valid for legacy BootProgress frames; 1..=[`BOOT_M_MAX`] is a stable enum
+/// id rather than a new op or wire version.
+pub const BOOT_M_MAX: u8 = 11;
+
+/// A real system-boot truth point. Progress and stage are derived from one
+/// table so producers cannot hand-assemble inconsistent triples.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Milestone {
+    VgpuReady,
+    PresentBackendReady,
+    WmdSpawned,
+    InputArmed,
+    InputdSpawned,
+    FsmgrSpawned,
+    VnetSpawned,
+    ProgressControlHandoff,
+    SystemUiConnected,
+    FirstRealSubmit,
+    DesktopHandoff,
+}
+
+impl Milestone {
+    pub const ALL: [Self; 11] = [
+        Self::VgpuReady,
+        Self::PresentBackendReady,
+        Self::WmdSpawned,
+        Self::InputArmed,
+        Self::InputdSpawned,
+        Self::FsmgrSpawned,
+        Self::VnetSpawned,
+        Self::ProgressControlHandoff,
+        Self::SystemUiConnected,
+        Self::FirstRealSubmit,
+        Self::DesktopHandoff,
+    ];
+
+    pub const fn id(self) -> u8 {
+        match self {
+            Self::VgpuReady => 1,
+            Self::PresentBackendReady => 2,
+            Self::WmdSpawned => 3,
+            Self::InputArmed => 4,
+            Self::InputdSpawned => 5,
+            Self::FsmgrSpawned => 6,
+            Self::VnetSpawned => 7,
+            Self::ProgressControlHandoff => 8,
+            Self::SystemUiConnected => 9,
+            Self::FirstRealSubmit => 10,
+            Self::DesktopHandoff => 11,
+        }
+    }
+
+    pub const fn from_id(id: u8) -> Option<Self> {
+        match id {
+            1 => Some(Self::VgpuReady),
+            2 => Some(Self::PresentBackendReady),
+            3 => Some(Self::WmdSpawned),
+            4 => Some(Self::InputArmed),
+            5 => Some(Self::InputdSpawned),
+            6 => Some(Self::FsmgrSpawned),
+            7 => Some(Self::VnetSpawned),
+            8 => Some(Self::ProgressControlHandoff),
+            9 => Some(Self::SystemUiConnected),
+            10 => Some(Self::FirstRealSubmit),
+            11 => Some(Self::DesktopHandoff),
+            _ => None,
+        }
+    }
+
+    pub const fn permille(self) -> u16 {
+        match self {
+            Self::VgpuReady => M_VGPU_READY,
+            Self::PresentBackendReady => M_PRESENT_BACKEND_READY,
+            Self::WmdSpawned => M_WMD_SPAWNED,
+            Self::InputArmed => M_INPUT_ARMED,
+            Self::InputdSpawned => M_INPUTD_SPAWNED,
+            Self::FsmgrSpawned => M_FSMGR_SPAWNED,
+            Self::VnetSpawned => M_VNET_SPAWNED,
+            Self::ProgressControlHandoff => M_PROGRESS_CONTROL_HANDOFF,
+            Self::SystemUiConnected => M_SYSTEM_UI_CONNECTED,
+            Self::FirstRealSubmit => M_FIRST_REAL_SUBMIT,
+            Self::DesktopHandoff => M_DESKTOP_HANDOFF,
+        }
+    }
+
+    pub const fn stage(self) -> Stage {
+        match self {
+            Self::VgpuReady
+            | Self::PresentBackendReady
+            | Self::WmdSpawned
+            | Self::InputArmed
+            | Self::InputdSpawned
+            | Self::FsmgrSpawned
+            | Self::VnetSpawned => Stage::Prepare,
+            Self::ProgressControlHandoff
+            | Self::SystemUiConnected
+            | Self::FirstRealSubmit
+            | Self::DesktopHandoff => Stage::Handoff,
+        }
+    }
+
+    pub const fn log_line(self) -> &'static [u8] {
+        match self {
+            Self::VgpuReady => b"vgpu: display ready",
+            Self::PresentBackendReady => b"gpu: present backend ready",
+            Self::WmdSpawned => b"wm: compositor spawned",
+            Self::InputArmed => b"input: service armed",
+            Self::InputdSpawned => b"input: virtio service spawned",
+            Self::FsmgrSpawned => b"fs: service spawned",
+            Self::VnetSpawned => b"net: service spawned",
+            Self::ProgressControlHandoff => b"boot: progress handoff",
+            Self::SystemUiConnected => b"shell: system ui connected",
+            Self::FirstRealSubmit => b"shell: first frame submitted",
+            Self::DesktopHandoff => b"desktop: ready",
+        }
+    }
+}
 
 /// Presentation face selected by the boot mode; both consume the same truth.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -38,8 +163,9 @@ pub enum Face {
     VerboseText,
 }
 
-/// Maximum diagnostic lines retained by a verbose boot surface.
-pub const VERBOSE_LOG_MAX: usize = 10;
+/// Maximum diagnostic lines retained by a verbose boot surface. The ring is
+/// large enough for every system milestone plus one spare loader diagnostic.
+pub const VERBOSE_LOG_MAX: usize = 12;
 
 /// Real boot stages represented on the first-screen surface.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -495,14 +621,34 @@ mod tests {
             M_WMD_SPAWNED,
             M_INPUT_ARMED,
             M_INPUTD_SPAWNED,
+            M_FSMGR_SPAWNED,
+            M_VNET_SPAWNED,
             M_PROGRESS_CONTROL_HANDOFF,
             M_SYSTEM_UI_CONNECTED,
             M_FIRST_REAL_SUBMIT,
             M_DESKTOP_HANDOFF,
         ];
-        assert_eq!(milestones.len(), 9);
+        assert_eq!(milestones.len(), 11);
         assert!(milestones.windows(2).all(|pair| pair[0] < pair[1]));
         assert_eq!(*milestones.last().unwrap(), PERMILLE_MAX);
+    }
+
+    #[test]
+    fn milestone_table_is_total_and_wire_stable() {
+        assert_eq!(Milestone::ALL.len(), usize::from(BOOT_M_MAX));
+        for (index, milestone) in Milestone::ALL.iter().enumerate() {
+            let id = u8::try_from(index + 1).unwrap();
+            assert_eq!(milestone.id(), id);
+            assert_eq!(Milestone::from_id(id), Some(*milestone));
+            assert!(milestone.permille() <= PERMILLE_MAX);
+            let line = milestone.log_line();
+            assert!(!line.is_empty() && line.len() <= 40);
+            assert!(line.iter().all(|b| b.is_ascii()));
+        }
+        assert_eq!(Milestone::from_id(0), None);
+        assert_eq!(Milestone::from_id(BOOT_M_MAX + 1), None);
+        assert!(Milestone::ALL.windows(2).all(|pair| pair[0].permille() < pair[1].permille()));
+        assert!(VERBOSE_LOG_MAX >= Milestone::ALL.len());
     }
 
     #[test]
@@ -603,6 +749,30 @@ mod tests {
         }
         assert!(non_black > 200, "verbose stage/logs/bar are visible");
         assert!(l.bar_y > 0);
+    }
+
+    #[test]
+    fn verbose_system_milestone_lines_render_in_both_geometries() {
+        let lines: [&[u8]; 11] = Milestone::ALL.map(|milestone| milestone.log_line());
+        for (w, h) in [(1080, 1920), (800, 600)] {
+            let stride = w * 4;
+            let mut fb = vec![0u8; stride * h];
+            {
+                let mut renderer =
+                    Renderer::new(&mut fb, w, h, stride, FORMAT_RAW_XRGB).unwrap();
+                renderer.initialize_verbose(Stage::Prepare, M_VGPU_READY, &lines);
+                assert!(renderer.update_verbose(
+                    Stage::Handoff,
+                    PERMILLE_MAX,
+                    &lines
+                ));
+            }
+            let non_black = fb
+                .chunks_exact(4)
+                .filter(|px| px[..3] != [0, 0, 0])
+                .count();
+            assert!(non_black > 500, "{w}x{h} verbose system face is visible");
+        }
     }
 
     #[test]

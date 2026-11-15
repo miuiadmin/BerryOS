@@ -823,7 +823,8 @@ impl<'a> Srv<'a> {
 }
 
 fn main() {
-    // 几何 info VMO（boot 48B 六域 u64 LE：fb_pa/w/h/stride/fmt/gui）。
+    // 几何 info VMO 现为 56B 七域（第 7 域 bootface 仅 vgpud 消费）；
+    // guifbd 保持 add-only 旧读面，只取前 48B 六域。
     let h: Handle = gift2_h();
     if h == 0 {
         // svcmgr 探测门后恒随行 info——理论不可达；eprintln loud 兜底。

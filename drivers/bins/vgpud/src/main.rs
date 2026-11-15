@@ -20,7 +20,7 @@
 //! 回落 guifbd/ramfb；验证 TCG 拓扑零新标记。
 
 use berry_exec::{VIRTIO_MMIO_SLOTS, VIRTIO_MMIO_STRIDE, VIRTIO_MMIO_VA};
-use berry_bootprogress::{Renderer, Stage};
+use berry_bootprogress::{Face, Milestone, Renderer, Stage, VERBOSE_LOG_MAX};
 use berry_guiproto as gp;
 use berry_libc::io::{gift2_h, gift3_h, self_vmar_h};
 use berry_sys::{
@@ -154,7 +154,12 @@ fn main() {
     if present != 0 {
         send_rep(present, b"V");
     }
-    serve_present(&d, regs, mode_w, mode_h);
+    let face = if std::env::args().any(|arg| arg == "--boot-face=verbose") {
+        Face::VerboseText
+    } else {
+        Face::Capsule
+    };
+    serve_present(&d, regs, mode_w, mode_h, face);
 }
 
 fn find_device() -> Option<usize> {
@@ -648,6 +653,10 @@ struct PresentSrv {
     boot_started: bool,
     boot_stage: Stage,
     boot_permille: u16,
+    boot_face: Face,
+    boot_milestones: [bool; gp::BOOT_M_MAX as usize + 1],
+    boot_logs: [&'static [u8]; VERBOSE_LOG_MAX],
+    boot_log_n: usize,
 }
 
 impl PresentSrv {
@@ -1407,10 +1416,39 @@ impl PresentSrv {
     /// BOOT-P1：把系统阶段真值渲染到 vgpu 专属 boot surface。该 surface
     /// 不进入 app credits，不改变 present submit 语义；第一帧 wmd SUBMIT
     /// 会自然切走 scanout。渲染 VMO 由 vgpud 私有，app 无能力接触。
-    fn boot_progress(&mut self, raw_stage: u8, permille: u16) -> bool {
+    fn boot_progress(&mut self, raw_stage: u8, permille: u16, milestone: u8) -> bool {
         let Some(stage) = Self::boot_stage(raw_stage) else {
             return false;
         };
+        // Milestone 0 is the legacy absent form. Recover its id from the
+        // permille truth table so old producers remain valid.
+        let truth = if milestone == 0 {
+            Milestone::ALL.iter().copied().find(|m| m.permille() == permille)
+        } else {
+            Milestone::from_id(milestone)
+        };
+        let Some(truth) = truth else {
+            println!(
+                "VGPUBOOT fail stage=milestone kind=unknown id={} permille={}",
+                milestone, permille
+            );
+            return false;
+        };
+        if stage != truth.stage() || permille != truth.permille() {
+            println!(
+                "VGPUBOOT fail stage=milestone kind=triple id={} stage={} permille={}",
+                milestone, raw_stage, permille
+            );
+            return false;
+        }
+        let id = truth.id() as usize;
+        if id >= self.boot_milestones.len() || self.boot_milestones[id] {
+            println!(
+                "VGPUBOOT fail stage=milestone kind=dup id={} permille={}",
+                milestone, permille
+            );
+            return false;
+        }
         let bytes = (self.w as u64) * 4 * self.h as u64;
         // 800×600 线性帧是 468.75 页；VMO 创建/commit 面必须整页，
         // 渲染/resource 指纹仍用精确线性长度。
@@ -1449,6 +1487,17 @@ impl PresentSrv {
             self.boot_vmo = vmo;
             self.boot_va = va;
         }
+        // Build the prospective log view without consuming the milestone. A
+        // map/render/backing/flush failure must leave the id retryable and
+        // must not leak a ghost diagnostic into a later frame.
+        let mut logs = self.boot_logs;
+        let mut log_n = self.boot_log_n;
+        if log_n == logs.len() {
+            logs.copy_within(1.., 0);
+            log_n -= 1;
+        }
+        logs[log_n] = truth.log_line();
+        log_n += 1;
         let first = !self.boot_started;
         let fb = unsafe { core::slice::from_raw_parts_mut(self.boot_va as *mut u8, frame_len) };
         let rendered = if self.boot_started {
@@ -1463,7 +1512,11 @@ impl PresentSrv {
                 self.boot_stage,
             )
             .map(|mut r| {
-                let ok = r.update(stage, permille);
+                let ok = if self.boot_face == Face::VerboseText {
+                    r.update_verbose(stage, permille, &logs[..log_n])
+                } else {
+                    r.update(stage, permille)
+                };
                 let (stage, permille) = r.prev_state();
                 self.boot_stage = stage;
                 if ok {
@@ -1482,7 +1535,11 @@ impl PresentSrv {
                 0,
             )
             .map(|mut r| {
-                r.initialize(stage, permille);
+                if self.boot_face == Face::VerboseText {
+                    r.initialize_verbose(stage, permille, &logs[..log_n]);
+                } else {
+                    r.initialize(stage, permille);
+                }
                 self.boot_stage = stage;
                 self.boot_permille = permille;
                 true
@@ -1500,7 +1557,7 @@ impl PresentSrv {
         self.select_resource(resource);
         // 首帧必须带 logo/整面背景；后续 renderer 只改 bar/percent/stage，
         // 底部条带 transfer/flush 比 1080p 整面少约 6× 字节。
-        let rect = if first {
+        let rect = if first || self.boot_face == Face::VerboseText {
             vio::gpu::GpuRect {
                 x: 0,
                 y: 0,
@@ -1535,14 +1592,30 @@ impl PresentSrv {
         ctrl_simple(&self.dma, self.regs, vio::gpu::GPU_RESOURCE_FLUSH_SZ, |b| {
             vio::gpu::put_resource_flush(b, 0, resource, rect).is_some()
         });
-        println!(
-            "VGPUBOOT ok stage={} permille={} rect={}x{}@{}",
-            raw_stage,
-            permille,
-            rect.width,
-            rect.height,
-            rect.y
-        );
+        self.boot_milestones[id] = true;
+        self.boot_logs = logs;
+        self.boot_log_n = log_n;
+        if self.boot_face == Face::VerboseText {
+            println!(
+                "VGPUBOOT ok stage={} permille={} rect={}x{}@{} m={} face=v",
+                raw_stage,
+                permille,
+                rect.width,
+                rect.height,
+                rect.y,
+                truth.id()
+            );
+        } else {
+            println!(
+                "VGPUBOOT ok stage={} permille={} rect={}x{}@{} m={}",
+                raw_stage,
+                permille,
+                rect.width,
+                rect.height,
+                rect.y,
+                truth.id()
+            );
+        }
         self.boot_started = true;
         true
     }
@@ -1648,13 +1721,20 @@ impl PresentSrv {
                 close_all(hs);
                 st_rep(ch, gp::ST_OK);
             }
-            Some(gp::PresentReq::BootProgress { stage, permille }) => {
+            Some(gp::PresentReq::BootProgress { stage, permille, milestone }) => {
                 if !hs.is_empty() {
                     close_all(hs);
                     st_rep(ch, gp::ST_BAD);
                     return;
                 }
-                let ok = self.boot_progress(stage, permille);
+                if self.boot_submit_done {
+                    // A real frame owns scanout. A late or replayed system
+                    // milestone is acknowledged as idempotent no-op rather
+                    // than treated as a display-control failure.
+                    st_rep(ch, gp::ST_OK);
+                    return;
+                }
+                let ok = self.boot_progress(stage, permille, milestone);
                 st_rep(ch, if ok { gp::ST_OK } else { gp::ST_BUSY });
             }
             None => {
@@ -1673,7 +1753,7 @@ fn clip(r: &gp::Rect, w: u32, h: u32) -> gp::Rect {
     gp::Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
 }
 
-fn serve_present(d: &Dma, regs: *mut u32, w: u32, h: u32) -> ! {
+fn serve_present(d: &Dma, regs: *mut u32, w: u32, h: u32, face: Face) -> ! {
     let present = gift2_h();
     let hdi = gift3_h();
     if present == 0 || hdi == 0 {
@@ -1721,6 +1801,10 @@ fn serve_present(d: &Dma, regs: *mut u32, w: u32, h: u32) -> ! {
         boot_started: false,
         boot_stage: Stage::Display,
         boot_permille: 0,
+        boot_face: face,
+        boot_milestones: [false; gp::BOOT_M_MAX as usize + 1],
+        boot_logs: [b""; VERBOSE_LOG_MAX],
+        boot_log_n: 0,
         slots: [HdiSlot {
             vmo: 0,
             resource: 0,
