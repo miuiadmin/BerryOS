@@ -95,8 +95,8 @@ impl Drop for RunDir {
 /// M2 第 10 步：~/.berry/run/index.jsonl 历史索引（O_APPEND + 单次
 /// write_all 整行——O_APPEND 只保证单次 write(2) 原子，writeln! 对未缓冲
 /// File 是多次 write，两进程并发时行会字符级交错〔审计实抓〕；宿主崩溃
-/// 必漏 end 行——消费方枚举以扫目录兜底，索引只是加速与留痕，不是权威
-/// 清单）。
+/// 必漏 end 行——消费方枚举以扫目录兜底；索引当前纯留痕（零读方，清
+/// 理/历史查询消费留待后续刀），不是权威清单）。
 fn append_index(line: &serde_json::Value) {
     let path = home().join("run").join("index.jsonl");
     if let Ok(mut f) = std::fs::OpenOptions::new()
