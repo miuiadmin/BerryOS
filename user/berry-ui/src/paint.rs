@@ -18,7 +18,13 @@
 //!   内圆、Step 三段底 + 加减号/值字形、Seg 等分底 + active 高亮 +
 //!   分隔线、Divider 单 fill_rect 带 inset；不透明度不可证（描边/
 //!   透明底有洞）——恒不计遮挡源（与 Text 同列保守正确）。Stack/
-//!   Spacer 无视觉面（容器/占位——子与邻件各自发射）。
+//!   Spacer 无视觉面（容器/占位——子与邻件各自发射）。批 A 追加
+//!   Tabs 条区/Sbar 轨 + thumb/Badge 红底角标；第三批追加（本刀）
+//!   ——显示三件 Tip 实色衬底 + 文本 / Badge·Sbar 见批 A；组合四件
+//!   Collapse header 带 + 箭头（收起态子被走查守卫跳过——三面同
+//!   守卫）、Chip 直角胶囊底 + 标签 + 选中色变、Fab 八角圆底 + '+'
+//!   占位图标 + 扩展标签带、Card 双 fill_rect 阴影 + 卡面（Collapse/
+//!   Card = 视觉容器：子先画盖其上）。
 //! - **尾部必录 `Present{damage 包络}`**（soft no-op 也录——FULL →
 //!   viewport、空集 → 零矩形）。
 //! - overdraw_x256 = drawn_px×256/vp 面素（发射足迹 ∩ viewport；u128
@@ -31,7 +37,7 @@
 //!   槽防御以 nodes.len() 为帽。
 
 use crate::damage::{i64_to_i32_sat, DamageSet, RectI, RectSet};
-use crate::desc::{ButtonStyle, Props, ViewKind};
+use crate::desc::{ButtonStyle, Orientation, Props, ViewKind};
 use crate::metrics::IconSource;
 use crate::Node;
 use berry_gfx::cmd::{Color, CommandEncoder, GlyphPos, GlyphRun, ImageSrc, Rect as GfxRect};
@@ -73,6 +79,58 @@ const BUTTON_BORDER: i32 = 2;
 const TOGGLE_KNOB_MARGIN: i32 = 4;
 /// Slider 轨道线厚。
 const SLIDER_TRACK_H: i32 = 4;
+/// Tabs 指示条厚度（页签行底缘）。
+const TABS_INDICATOR_H: i32 = 3;
+/// Tabs 页签底色。
+pub const TABS_BG: Color = Color { r: 0xF1, g: 0xF1, b: 0xF1 };
+/// Tabs 指示条色（ACCENT 同源）。
+pub const TABS_INDICATOR: Color = Color { r: 0x19, g: 0x76, b: 0xD2 };
+/// Sbar 轨道色（细弱通道）。
+pub const SBAR_TRACK: Color = Color { r: 0xE0, g: 0xE0, b: 0xE0 };
+/// Sbar 滑块色。
+pub const SBAR_THUMB: Color = Color { r: 0x9E, g: 0x9E, b: 0x9E };
+/// Sbar 滑块细边（横竖向最小厚度 4）。
+const SBAR_MIN_THICK: i32 = 4;
+/// Badge 红底（数字胶囊与圆点共用——OH 语义色警示红系）。
+pub const BADGE_BG: Color = Color { r: 0xD9, g: 0x2B, b: 0x2B };
+/// Badge 数字前景（红底白字）。
+pub const ON_BADGE: Color = Color { r: 0xFF, g: 0xFF, b: 0xFF };
+/// pressed 视觉活动集（波2 批 A：press_map active 条目的 visual 槽值
+/// 快照——emit 期查表换暗色底；容量 = PRESS_MAP_MAX 同源上界，调用方
+/// 保证不超）。
+pub struct PressedVis {
+    pub slots: [u32; 32],
+    pub n: usize,
+}
+
+impl PressedVis {
+    /// 空集。
+    pub fn empty() -> Self {
+        PressedVis { slots: [0; 32], n: 0 }
+    }
+
+    /// slot 是否在活动集（线性查——n ≤ PRESS_MAP_MAX 小表）。
+    pub fn contains(&self, slot: u32) -> bool {
+        self.slots[..self.n].contains(&slot)
+    }
+}
+/// Button 压下态底色（ACCENT 暗化 20%——0x19/0x76/0xD2 × 0.8 取整）。
+pub const ACCENT_PRESSED: Color = Color { r: 0x14, g: 0x5E, b: 0xA8 };
+/// Tip 衬底（第三批——v1 无 alpha 通道，半透明黑底的实色近似；主题
+/// 化后迁出）。
+pub const TIP_BG: Color = Color { r: 0x40, g: 0x40, b: 0x40 };
+/// Card 面底色（第三批——白卡面；KNOB 同值异名，语义面单列）。
+pub const CARD_BG: Color = Color { r: 0xFF, g: 0xFF, b: 0xFF };
+/// Card 阴影条色（第三批——elevation 档位偏移的双 fill_rect 模拟）。
+pub const CARD_SHADOW: Color = Color { r: 0xAA, g: 0xAA, b: 0xAA };
+/// Card 每档阴影偏移（px/档——elevation 0..=3 → 条宽 0/2/4/6）。
+const CARD_SHADOW_STEP: i32 = 2;
+/// Collapse 箭头边长（12×12——三带三角形逼近，随 header 高收缩）。
+const COLLAPSE_ARROW: i32 = 12;
+/// Collapse 箭头带数（三带：横带递减 = 朝下 / 竖带递减 = 朝右）。
+const COLLAPSE_ARROW_BANDS: i32 = 3;
+/// Collapse 箭头左缘留白（header 内 x 偏移）。
+const COLLAPSE_ARROW_X: i32 = 8;
 /// Check 方框描边厚（四边 fill_rect 组合——Outlined 按钮同形）。
 const CHECK_BORDER: i32 = 2;
 /// Step 两侧加减号区带宽（节点宽 120 的两翼 36；中段值区 = 余 48）。
@@ -116,6 +174,7 @@ pub(crate) fn paint<'a>(
     scratch: &'a mut [GlyphPos],
     enc: &mut CommandEncoder<'a>,
     icons: &'a dyn IconSource,
+    pressed: &PressedVis,
 ) -> PaintReport {
     let mut rep =
         PaintReport { cmds: 0, drawn_px: 0, culled: 0, overdraw_x256: 0 };
@@ -171,11 +230,11 @@ pub(crate) fn paint<'a>(
             // （N ≤ MAX_NODES=512 < ORDER_CAP/2）结构性不达此面——防御
             // 路径不设竞速断言，仅 offscreen 回归测试钉板行为。
             rep.culled = culled_before;
-            emit_walk_all(nodes, root, 0, 0, d, &vp_rect, icons, &mut rest, enc, &mut rep, 0);
+            emit_walk_all(nodes, root, 0, 0, d, &vp_rect, icons, pressed, &mut rest, enc, &mut rep, 0);
         } else {
             // 发射 = 收集序之逆（前序 = 画家算法背到前）
             for k in (0..n_order).rev() {
-                emit_node(nodes, order[k], &bnds[k], &vp_rect, icons, &mut rest, enc, &mut rep);
+                emit_node(nodes, order[k], &bnds[k], &vp_rect, icons, pressed, &mut rest, enc, &mut rep);
             }
         }
     }
@@ -248,8 +307,11 @@ fn cull_walk(
     let bx = ex + n.x as i64 + n.ox as i64;
     let by = ey + n.y as i64 + n.oy as i64;
 
-    // 子先：沿 next_sib 走到链尾再 prev_sib 回走（尾兄先 = 后画者先看）
-    let mut tail = n.first_child;
+    // 子先：沿 next_sib 走到链尾再 prev_sib 回走（尾兄先 = 后画者先看）。
+    // 收起态 Collapse：子不发射（第三批三面同守卫——layout 不摆位 +
+    // paint 不发射 + hit 不命中；陈旧 bounds 一致跳过）。
+    let kids_live = !matches!(&n.props, Props::Collapse(cp) if !cp.expanded);
+    let mut tail = if kids_live { n.first_child } else { NONE };
     let mut guard = 0usize;
     while tail != NONE {
         guard += 1;
@@ -282,11 +344,12 @@ fn cull_walk(
 
     // 自身（子树最底 = 最后画）。容器无视觉内容不参与（Grid 同列——
     // 子格各自发射）；Image/Icon = 可见叶（§4.3——Text 同列走查，
-    // 恒不计遮挡源）。组件件（Phase 2 两批）入可见叶列（各自
+    // 恒不计遮挡源）。组件件（Phase 2 三批）入可见叶列（各自
     // emit_node 合成视觉）；不透明度不可证（Outlined 有洞 / Text 式
-    // 无底）——与 Text 同列**恒不计遮挡源**（保守正确）。余组件件
-    // 无视觉面——与容器同列走查（子仍发射；渲染挂后续刀；Stack =
-    // 叠层容器、Spacer = 纯占位；Refresh/Collapse/Card = 包裹容器）。
+    // 无底）——与 Text 同列**恒不计遮挡源**（保守正确）。Collapse/
+    // Card = 视觉容器（header 带/卡面自发射，子先画盖其上）。余组
+    // 件件无视觉面——与容器同列走查（子仍发射；渲染挂后续刀；Stack =
+    // 叠层容器、Spacer = 纯占位；Refresh = 包裹容器）。
     match n.kind {
         ViewKind::Rect
         | ViewKind::Text
@@ -300,7 +363,15 @@ fn cull_walk(
         | ViewKind::Radio
         | ViewKind::Step
         | ViewKind::Seg
-        | ViewKind::Divider => {}
+        | ViewKind::Divider
+        | ViewKind::Tabs
+        | ViewKind::Sbar
+        | ViewKind::Badge
+        | ViewKind::Tip
+        | ViewKind::Collapse
+        | ViewKind::Chip
+        | ViewKind::Fab
+        | ViewKind::Card => {}
         ViewKind::Root
         | ViewKind::Col
         | ViewKind::Row
@@ -308,24 +379,16 @@ fn cull_walk(
         | ViewKind::Grid
         | ViewKind::Scroll
         | ViewKind::List
-        | ViewKind::Tabs
         | ViewKind::Stack
         | ViewKind::Spacer
-        | ViewKind::Badge
-        | ViewKind::Sbar
         | ViewKind::Select
         | ViewKind::Input
         | ViewKind::Edit
         | ViewKind::Canvas
-        | ViewKind::Tip
         | ViewKind::Refresh
         | ViewKind::SwipeItem
         | ViewKind::DatePick
         | ViewKind::TimePick
-        | ViewKind::Collapse
-        | ViewKind::Chip
-        | ViewKind::Fab
-        | ViewKind::Card
         | ViewKind::Gauge
         | ViewKind::Qr
         | ViewKind::DragReorder => return,
@@ -362,6 +425,7 @@ fn emit_walk_all<'a>(
     d: &RectI,
     vp_rect: &RectI,
     icons: &'a dyn IconSource,
+    pressed: &PressedVis,
     rest: &mut &'a mut [GlyphPos],
     enc: &mut CommandEncoder<'a>,
     rep: &mut PaintReport,
@@ -379,7 +443,7 @@ fn emit_walk_all<'a>(
 
     // 自身先（前序 = 画家算法背到前：先画者先发射）。容器无视觉内容不
     // 参与（Grid 同列）；Image/Icon = 可见叶同主路径发射（§4.3）。
-    // 组件件（Phase 2 两批）入可见叶列（emit_node 合成视觉）；余组
+    // 组件件（Phase 2 三批）入可见叶列（emit_node 合成视觉）；余组
     // 件件同容器列——无视觉面，子仍走查（渲染挂后续刀）。
     match n.kind {
         ViewKind::Rect
@@ -394,12 +458,20 @@ fn emit_walk_all<'a>(
         | ViewKind::Radio
         | ViewKind::Step
         | ViewKind::Seg
-        | ViewKind::Divider => {
+        | ViewKind::Divider
+        | ViewKind::Tabs
+        | ViewKind::Sbar
+        | ViewKind::Badge
+        | ViewKind::Tip
+        | ViewKind::Collapse
+        | ViewKind::Chip
+        | ViewKind::Fab
+        | ViewKind::Card => {
             let b = RectI::new(i64_to_i32_sat(bx), i64_to_i32_sat(by), n.w, n.h);
             if b.intersect(d).is_empty() {
                 rep.culled += 1; // damage 外叶子
             } else {
-                emit_node(nodes, slot, &b, vp_rect, icons, rest, enc, rep);
+                emit_node(nodes, slot, &b, vp_rect, icons, pressed, rest, enc, rep);
             }
         }
         ViewKind::Root
@@ -409,31 +481,25 @@ fn emit_walk_all<'a>(
         | ViewKind::Grid
         | ViewKind::Scroll
         | ViewKind::List
-        | ViewKind::Tabs
         | ViewKind::Stack
         | ViewKind::Spacer
-        | ViewKind::Badge
-        | ViewKind::Sbar
         | ViewKind::Select
         | ViewKind::Input
         | ViewKind::Edit
         | ViewKind::Canvas
-        | ViewKind::Tip
         | ViewKind::Refresh
         | ViewKind::SwipeItem
         | ViewKind::DatePick
         | ViewKind::TimePick
-        | ViewKind::Collapse
-        | ViewKind::Chip
-        | ViewKind::Fab
-        | ViewKind::Card
         | ViewKind::Gauge
         | ViewKind::Qr
         | ViewKind::DragReorder => {}
     }
 
     // 子：头兄起流序（painter 序：后画者后访问 = 覆盖在前画者上）。
-    let mut c = n.first_child;
+    // 收起态 Collapse：子不发射（主路径 kids_live 同守卫）。
+    let kids_live = !matches!(&n.props, Props::Collapse(cp) if !cp.expanded);
+    let mut c = if kids_live { n.first_child } else { NONE };
     let mut guard = 0usize;
     while c != NONE {
         guard += 1;
@@ -442,7 +508,7 @@ fn emit_walk_all<'a>(
         }
         match nodes.get(c as usize) {
             Some(Some(ch)) if ch.alive => {
-                emit_walk_all(nodes, c, bx, by, d, vp_rect, icons, rest, enc, rep, hops + 1);
+                emit_walk_all(nodes, c, bx, by, d, vp_rect, icons, pressed, rest, enc, rep, hops + 1);
                 c = ch.next_sib;
             }
             _ => return, // 链上死槽 = 树结构异常，防御放弃余段
@@ -463,6 +529,7 @@ fn emit_node<'a>(
     b: &RectI,
     vp_rect: &RectI,
     icons: &'a dyn IconSource,
+    pressed: &PressedVis,
     rest: &mut &'a mut [GlyphPos],
     enc: &mut CommandEncoder<'a>,
     rep: &mut PaintReport,
@@ -529,7 +596,8 @@ fn emit_node<'a>(
         Props::Button(p) => {
             match p.style {
                 ButtonStyle::Filled => {
-                    fill(enc, b.x, b.y, b.w, b.h, ACCENT, rep);
+                    let bg = if pressed.contains(slot) { ACCENT_PRESSED } else { ACCENT };
+                    fill(enc, b.x, b.y, b.w, b.h, bg, rep);
                     emit_widget_text(p.label.as_bytes(), b.x, b.w, b.y, b.h, ON_ACCENT, rest, enc, rep);
                 }
                 ButtonStyle::Outlined => {
@@ -675,6 +743,178 @@ fn emit_node<'a>(
             let x = b.x.saturating_add(is);
             let w = b.w.saturating_sub(is).saturating_sub(ie);
             fill(enc, x, b.y, w, b.h, OUTLINE, rep);
+        }
+        // 波2 批 A（Tabs/Sbar/Badge）：Tabs = 页签条底 + active 段指示
+        // 条 + 段间分隔线（视觉 = 自身条区，内容区子各自发射）；Sbar =
+        // 细轨 + thumb 区间（permille 两端）；Badge = 红底数字胶囊（≤99
+        // 直显两位档，>99 显 99+）或纯圆点（show_dot）。
+        Props::Tabs(p) => {
+            fill(enc, b.x, b.y, b.w, b.h, TABS_BG, rep);
+            // 段宽 = w/tab_count（下取整）；active 段底缘指示条。
+            let n_tabs = p.tab_count.max(1) as i64;
+            let seg_w = b.w as i64 / n_tabs;
+            let ax = b.x as i64 + seg_w * (p.active.min(p.tab_count.saturating_sub(1)) as i64);
+            fill(
+                enc,
+                i64_to_i32_sat(ax),
+                b.y + b.h - TABS_INDICATOR_H,
+                i64_to_i32_sat(seg_w),
+                TABS_INDICATOR_H,
+                TABS_INDICATOR,
+                rep,
+            );
+            // 段间分隔线（tab_count−1 条竖线，OUTLINE）。
+            for k in 1..n_tabs {
+                let dx = b.x as i64 + seg_w * k;
+                fill(
+                    enc,
+                    i64_to_i32_sat(dx),
+                    b.y,
+                    SEG_DIV_W,
+                    b.h,
+                    OUTLINE,
+                    rep,
+                );
+            }
+        }
+        Props::Sbar(p) => {
+            // 细轨全长 + thumb 区间（permille 两端）：Vertical → 竖轨
+            //（thumb 纵向区间）；Horizontal → 横轨（镜像）。
+            let st = p.thumb_start.min(crate::PERMILLE_MAX) as i64;
+            let en = p.thumb_end.min(crate::PERMILLE_MAX) as i64;
+            let span = en.saturating_sub(st);
+            match p.orientation {
+                Orientation::Vertical => {
+                    fill(enc, b.x, b.y, b.w, b.h, SBAR_TRACK, rep);
+                    let ty = b.y as i64 + b.h as i64 * st / crate::PERMILLE_MAX as i64;
+                    let th = b.h as i64 * span / crate::PERMILLE_MAX as i64;
+                    fill(
+                        enc,
+                        b.x,
+                        i64_to_i32_sat(ty),
+                        b.w.max(SBAR_MIN_THICK),
+                        i64_to_i32_sat(th),
+                        SBAR_THUMB,
+                        rep,
+                    );
+                }
+                Orientation::Horizontal => {
+                    fill(enc, b.x, b.y, b.w, b.h, SBAR_TRACK, rep);
+                    let tx = b.x as i64 + b.w as i64 * st / crate::PERMILLE_MAX as i64;
+                    let tw = b.w as i64 * span / crate::PERMILLE_MAX as i64;
+                    fill(
+                        enc,
+                        i64_to_i32_sat(tx),
+                        b.y,
+                        i64_to_i32_sat(tw),
+                        b.h.max(SBAR_MIN_THICK),
+                        SBAR_THUMB,
+                        rep,
+                    );
+                }
+            }
+        }
+        Props::Badge(p) => {
+            // 圆点模式：八角小圆点（红）；count=0 隐藏（内在 0×0 → b
+            // 空绘自然短路）。
+            if p.show_dot {
+                oct3(enc, b.x, b.y, b.w, BADGE_BG, rep);
+            } else if p.count > 0 {
+                // 数字角标：红底 + 白字（>99 显 99+ 三字节封顶档；≤99
+                // 走 fmt_u32 十进制——Step 值字形同核）。
+                fill(enc, b.x, b.y, b.w, b.h, BADGE_BG, rep);
+                let mut buf = [0u8; 10];
+                let n = if p.count > 99 {
+                    buf[..3].copy_from_slice(b"99+");
+                    3
+                } else {
+                    fmt_u32(p.count, &mut buf)
+                };
+                emit_widget_text(&buf[..n], b.x, b.w, b.y, b.h, ON_BADGE, rest, enc, rep);
+            }
+        }
+        // 组件第三批五件：Tip = 实色衬底（v1 无 alpha 的半透明近似）+
+        // 文本；Collapse = header 带 + 箭头指示（展开朝下 / 收起朝右
+        //——三带三角形逼近；子先画盖其上，收起态子被走查守卫跳过）；
+        // Chip = 直角胶囊底（v1 无圆角原语——「fill_rect 近似」纪律）
+        // + 居中标签 + 选中态色变；Fab = 八角圆形 ACCENT 底 + 图标位
+        //（v1 文本 '+' 占位——icon 资源面挂 D28 接线刀）+ 扩展标签带；
+        // Card = 双 fill_rect 阴影（整界阴影色 + 面底右下内缩 off =
+        // elevation×2px——视觉足迹恒在界内，damage 正确性优先；圆角
+        // v1 直角，corner_radius 数据携载）。
+        Props::Tip(p) => {
+            fill(enc, b.x, b.y, b.w, b.h, TIP_BG, rep);
+            emit_widget_text(p.text.as_bytes(), b.x, b.w, b.y, b.h, ON_ACCENT, rest, enc, rep);
+        }
+        Props::Collapse(p) => {
+            let hh = crate::damage::u32_to_i32_sat(crate::COLLAPSE_HEADER_H)
+                .min(b.h)
+                .max(0);
+            fill(enc, b.x, b.y, b.w, hh, TRACK_DIM, rep);
+            let a = COLLAPSE_ARROW.min(hh); // 极矮界防御：箭头随 header 高收缩
+            if a > 0 {
+                let t = a / COLLAPSE_ARROW_BANDS; // 带厚（12 → 4）
+                let s = a / (2 * COLLAPSE_ARROW_BANDS); // 每带内缩步（12 → 2）
+                let ax = b.x + COLLAPSE_ARROW_X;
+                let ay = b.y + (hh - a) / 2;
+                let mut i = 0;
+                while i < COLLAPSE_ARROW_BANDS {
+                    if p.expanded {
+                        // 朝下：三横带顶宽底窄
+                        fill(enc, ax + s * i, ay + t * i, a - 2 * s * i, t, ON_SURFACE, rep);
+                    } else {
+                        // 朝右：三竖带左高右矮
+                        fill(enc, ax + t * i, ay + s * i, t, a - 2 * s * i, ON_SURFACE, rep);
+                    }
+                    i += 1;
+                }
+            }
+        }
+        Props::Chip(p) => {
+            let (bgc, fg) = if p.selected {
+                (ACCENT, ON_ACCENT)
+            } else {
+                (TRACK_DIM, ON_SURFACE)
+            };
+            fill(enc, b.x, b.y, b.w, b.h, bgc, rep);
+            emit_widget_text(p.label.as_bytes(), b.x, b.w, b.y, b.h, fg, rest, enc, rep);
+        }
+        Props::Fab(p) => {
+            let d = crate::damage::u32_to_i32_sat(crate::FAB_D)
+                .min(b.w)
+                .min(b.h)
+                .max(0);
+            oct3(enc, b.x, b.y, d, ACCENT, rep);
+            if d > 0 {
+                emit_widget_text(b"+", b.x, d, b.y, b.h, ON_ACCENT, rest, enc, rep);
+            }
+            if !p.extended_label.is_empty() {
+                let gap = crate::damage::u32_to_i32_sat(crate::FAB_LABEL_GAP);
+                let zx = b.x.saturating_add(d).saturating_add(gap);
+                let zw = b.w.saturating_sub(d).saturating_sub(gap);
+                emit_widget_text(
+                    p.extended_label.as_bytes(),
+                    zx,
+                    zw,
+                    b.y,
+                    b.h,
+                    ON_ACCENT,
+                    rest,
+                    enc,
+                    rep,
+                );
+            }
+        }
+        Props::Card(p) => {
+            let off = crate::damage::u32_to_i32_sat(
+                p.elevation.saturating_mul(CARD_SHADOW_STEP as u32),
+            );
+            if off > 0 {
+                fill(enc, b.x, b.y, b.w, b.h, CARD_SHADOW, rep);
+                fill(enc, b.x, b.y, b.w - off, b.h - off, CARD_BG, rep);
+            } else {
+                fill(enc, b.x, b.y, b.w, b.h, CARD_BG, rep);
+            }
         }
         // Root/Col/Row/Pad/Grid + 余组件件：无视觉内容（子树各自发射）
         _ => {}

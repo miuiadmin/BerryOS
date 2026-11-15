@@ -610,7 +610,9 @@ fn p2_add_face_smoke() {
     let n2 = ui2.encode_desc(&mut out2).unwrap();
     assert_eq!(&out[..n], &out2[..n2], "add 面产物与 AST 面产物同流");
 
-    // 新容器父位拒（lib.rs 容器白名单未收编——前批已知边界钉现行为）
+    // 第三批后 Collapse 已收编容器白名单（place_children Collapse 臂
+    // 接线）——前批「父位拒」边界钉随白名单推进翻为收编正例；Card 同
+    // 批收编（`_` 臂全幅给子），一并钉。
     let mut ui = Ui::<8>::new(10, 10);
     let root = ui.root();
     let cpse = ui
@@ -623,12 +625,24 @@ fn p2_add_face_smoke() {
             },
         )
         .unwrap();
-    assert_eq!(
-        ui.add(
-            cpse,
-            ViewSpec { kind: ViewKind::Rect, key: 0, props: Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None }) }
-        ),
-        Err(berry_ui::UiError::BadParent),
-        "Collapse 父位拒（白名单未收编——Phase 2 接线面）"
-    );
+    ui.add(
+        cpse,
+        ViewSpec { kind: ViewKind::Rect, key: 0, props: Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None }) },
+    )
+    .expect("Collapse 父位收编（第三批容器接线——子 = 折叠内容）");
+    let card = ui
+        .add(
+            root,
+            ViewSpec {
+                kind: ViewKind::Card,
+                key: 0,
+                props: Props::Card(CardProps { elevation: 1, corner_radius: 0 }),
+            },
+        )
+        .unwrap();
+    ui.add(
+        card,
+        ViewSpec { kind: ViewKind::Rect, key: 0, props: Props::Rect(RectProps { bg: bg(4, 5, 6), w: None, h: None }) },
+    )
+    .expect("Card 父位收编（`_` 臂全幅给子——子 = 卡片内容）");
 }
