@@ -87,9 +87,11 @@ fn select_layout_and_paint_golden() {
     assert!(f.contains(&(184, 20, 8, 2, SELECT_FG)), "箭头行 1：{f:?}");
     assert!(f.contains(&(186, 22, 4, 2, SELECT_FG)), "箭头行 2：{f:?}");
     assert!(f.contains(&(187, 24, 2, 2, SELECT_FG)), "箭头行 3：{f:?}");
-    // 选中索引 1 → 显示 "2"（1 起）。
+    // 选中索引 1 → 显示 "2"（1 起；文本区带（b.x+4, w−20）内居中 →
+    // x = 4+(180−8)/2 = 90。批 C 出生 golden 误钉左对齐 x=6——批 F
+    // 收口套件全绿时修正为渲染真值）。
     let g = glyphs(&dl);
-    assert!(g.contains(&(b'2', 6, 16)), "索引 1 → '2'：{g:?}");
+    assert!(g.contains(&(b'2', 90, 16)), "索引 1 → '2'：{g:?}");
 }
 
 // ---------- ② 点击循环 + 命令面 ----------
@@ -123,7 +125,7 @@ fn select_click_cycles_and_set_props() {
     ui.set_props(sel, Props::Select(SelectProps { option_count: 3, selected: 2, on_change: 6 }))
         .unwrap();
     let dl = paint_full(&mut ui);
-    assert!(glyphs(&dl).contains(&(b'3', 6, 16)), "selected=2 → '3'");
+    assert!(glyphs(&dl).contains(&(b'3', 90, 16)), "selected=2 → '3'（区带居中 x=90）");
     // 拒面：selected ≥ option_count。
     assert_eq!(
         ui.set_props(sel, Props::Select(SelectProps { option_count: 3, selected: 3, on_change: 6 })),

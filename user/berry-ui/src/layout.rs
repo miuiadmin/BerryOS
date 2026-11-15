@@ -483,16 +483,19 @@ fn intrinsic(
             (w, h)
         }
         // P0 尾（批 C/D 已迁出单列——此组清空防 unreachable）
-        // P1 尾（占位保持）：SwipeItem 内在应为行高——挂后续布局刀，
-        // 本层 0×0 占位（批 E 视觉已接线；Refresh/DatePick/TimePick 已
-        // 上表单列迁出）。
-        | Props::SwipeItem(_)
-        // P2 余三件（占位同前五批）：Gauge/Qr 应为表盘/点阵方阵、
-        // DragReorder 应为手柄行高——全挂 Phase 2 布局刀，本层 0×0 占
-        // 位（`_` 臂全幅叠放与半聚合必失配——「不半实现」同源）。
-        | Props::Gauge(_)
-        | Props::Qr(_)
-        | Props::DragReorder(_) => (0, 0),
+        // 批 F（末刀三件）：Gauge = 表盘方格 64×64（值条 + 值文本两带）；
+        // Qr = module_count×4 点阵方阵（u64 累计防大版本溢出——21 模块
+        // = 84×84、177 模块 = 708×708）；DragReorder = 手柄列 24×36。
+        Props::Gauge(_) => (crate::GAUGE_D, crate::GAUGE_D),
+        Props::Qr(p) => {
+            let s = (p.module_count as u64).saturating_mul(crate::QR_MODULE_PX as u64);
+            (u64_to_u32_sat(s), u64_to_u32_sat(s))
+        }
+        Props::DragReorder(_) => (crate::DRAG_W, crate::DRAG_H),
+        // P1 尾（占位保持——末件）：SwipeItem 内在应为行高，挂后续布
+        // 局刀，本层 0×0 占位（批 E 视觉已接线；随父填充由 final_size
+        // 占位臂合义）。
+        Props::SwipeItem(_) => (0, 0),
     }
 }
 
@@ -672,10 +675,12 @@ fn final_size(n: &Node, avail_w: i32, avail_h: i32) -> (i32, i32) {
         // 前四批）：随父填充；Card 的子分配由 `_` 臂天然合义（包裹容器
         // = Root 型全幅给子——intrinsic 已上表取子 max）；SIZE 块同拒
         //（§8.2 表未随本批扩——无双源）。
-        | Props::Card(_)
-        | Props::Gauge(_)
+        | Props::Card(_) => (avail_w, avail_h),
+        // 批 F（末刀）：Gauge/Qr/DragReorder 迁内在型叶（Text 同列——
+        // 恒内在不吃 avail；内在单源 = intrinsic 各臂，SIZE 块同拒）。
+        Props::Gauge(_)
         | Props::Qr(_)
-        | Props::DragReorder(_) => (avail_w, avail_h),
+        | Props::DragReorder(_) => (u32_to_i32_sat(n.meas_w), u32_to_i32_sat(n.meas_h)),
     }
 }
 

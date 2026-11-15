@@ -190,6 +190,14 @@ pub(crate) const CHIP_PAD_X: u32 = 16;
 pub(crate) const FAB_D: u32 = 56;
 /// Fab 扩展标签与圆的间隙。
 pub(crate) const FAB_LABEL_GAP: u32 = 8;
+/// Gauge 固定内在边长（批 F：表盘方格——值条 + 值文本两带）。
+pub(crate) const GAUGE_D: u32 = 64;
+/// Qr 每模块像素边长（批 F：21 模块 → 84×84；内在 = module_count × 此值）。
+pub(crate) const QR_MODULE_PX: u32 = 4;
+/// DragReorder 固定内在宽（批 F：拖拽手柄列）。
+pub(crate) const DRAG_W: u32 = 24;
+/// DragReorder 固定内在高（= 行高 36 档）。
+pub(crate) const DRAG_H: u32 = 36;
 
 /// arena 运行期树深帽（GUI-6 D29）：add() 执法（超深 → NodeBad loud）
 /// ——递归面（measure/place/cull/emit）未迭代化，深链 × ~200B/帧穿
@@ -356,6 +364,13 @@ fn widget_value_ok(p: &Props) -> bool {
                 && d.year <= d.max_year
         }
         Props::TimePick(t) => t.hour <= 23 && t.minute <= 59,
+        // 批 F（末刀三件）：Gauge value 越千分域、Qr module_count 不在
+        // QR 版本域 {21,25,29,...,177}、DragReorder item_index 越项
+        //（total_items > 0 时；total_items == 0 空表合法——Select 零项
+        // 同律）。AST BadValue 面同律。
+        Props::Gauge(g) => g.value <= PERMILLE_MAX,
+        Props::Qr(q) => desc::qr_module_count_valid(q.module_count),
+        Props::DragReorder(d) => d.total_items == 0 || d.item_index < d.total_items,
         _ => true,
     }
 }
@@ -599,6 +614,12 @@ fn props_geom_equal(a: &Props, b: &Props) -> bool {
             x.extended_label.as_bytes() == y.extended_label.as_bytes()
         }
         (Props::Card(_), Props::Card(_)) => true,
+        // 批 F：Gauge/DragReorder 内在恒定（几何常量单源）——value/
+        // style/item_index/total_items 全纯绘面；Qr module_count 入几何
+        //（内在 = module_count×4 方阵）——dark/light 双色纯绘。
+        (Props::Gauge(_), Props::Gauge(_)) => true,
+        (Props::Qr(x), Props::Qr(y)) => x.module_count == y.module_count,
+        (Props::DragReorder(_), Props::DragReorder(_)) => true,
         _ => false, // 变体切换按几何变处理（保守重排）
     }
 }
@@ -1193,6 +1214,12 @@ impl<const N: usize> Ui<N> {
                 | Some((ViewKind::Chip, Props::Chip(_)))
                 | Some((ViewKind::Fab, Props::Fab(_)))
                 | Some((ViewKind::Card, Props::Card(_)))
+                // 批 F（末刀）：Gauge/Qr/DragReorder 开口（value/style、
+                // module_count/双色、item_index/total_items 面）——全
+                // 41 kind 命令面收口，无未开口件残余。
+                | Some((ViewKind::Gauge, Props::Gauge(_)))
+                | Some((ViewKind::Qr, Props::Qr(_)))
+                | Some((ViewKind::DragReorder, Props::DragReorder(_)))
         );
         if !kind_ok {
             return Err(UiError::NodeBad);
@@ -1794,6 +1821,9 @@ impl<const N: usize> Ui<N> {
     ///   ——无状态件）；
     /// - DragStart/DragMove 落 **Slider** → 跳跟/跟手按压横坐标（行程
     ///   映射 [`Self::slider_permille_at`]，值变才写才派发 on_change）；
+    /// - DragStart/DragMove 落 **DragReorder** → 派发 on_reorder（批 F；
+    ///   value = 拖拽纵坐标 wire 原值——v1 记录 drag 位置，落位/交换语
+    ///   义挂波3/波4 消费面）；
     /// - Release 落 **Step** → 击点横坐标定半区（左半减/右半加 step，
     ///   clamp min/max）+ 值变才派发 on_change（Slider 同形）；
     /// - Release 落 **Seg** → 击点横坐标折段索引 + 值变（≠ active）
@@ -1961,21 +1991,33 @@ impl<const N: usize> Ui<N> {
                     _ => {}
                 }
             }
-            Msg::DragStart { node, x, .. } | Msg::DragMove { node, x, .. } => {
+            Msg::DragStart { node, x, y, .. } | Msg::DragMove { node, x, y, .. } => {
                 let idx = match self.slot_of(node) {
                     Ok(i) => i as usize,
                     Err(_) => return,
                 };
-                if let Some(Props::Slider(p)) = self.nodes[idx].as_ref().map(|n| n.props) {
-                    let v = self.slider_permille_at(idx, x);
-                    if v == p.value {
-                        return; // 值未变：零操作（不重排不派发）
+                match self.nodes[idx].as_ref().map(|n| n.props) {
+                    Some(Props::Slider(p)) => {
+                        let v = self.slider_permille_at(idx, x);
+                        if v == p.value {
+                            return; // 值未变：零操作（不重排不派发）
+                        }
+                        let on_change = p.on_change;
+                        let np = Props::Slider(desc::SliderProps { value: v, ..p });
+                        if self.set_props(node, np).is_ok() {
+                            self.fire_widget_event(node, on_change, v);
+                        }
                     }
-                    let on_change = p.on_change;
-                    let np = Props::Slider(desc::SliderProps { value: v, ..p });
-                    if self.set_props(node, np).is_ok() {
-                        self.fire_widget_event(node, on_change, v);
+                    // 批 F：DragReorder 拖拽记录——on_reorder(value = 拖拽
+                    // 纵坐标 wire 原值)逐样本派发；无 props 写面（item_
+                    // index 不随手势变——落位裁决在 app，重排挂消费面）。
+                    Some(Props::DragReorder(p)) => {
+                        if p.total_items == 0 {
+                            return; // 空表手柄：零操作（Select 零项同律）
+                        }
+                        self.fire_widget_event(node, p.on_reorder, y);
                     }
+                    _ => {}
                 }
             }
             Msg::Press { .. } | Msg::DragEnd { .. } | Msg::Cancel { .. } => {}

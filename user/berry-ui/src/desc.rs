@@ -1034,7 +1034,9 @@ pub const QR_MODULE_MIN: u32 = 21;
 pub const QR_MODULE_MAX: u32 = 177;
 
 /// Qr 模块数合法域成员判定（21 ≤ m ≤ 177 且 (m-21) % 4 == 0）。
-fn qr_module_count_valid(m: u32) -> bool {
+/// pub(crate)：lib.rs 命令面值域执法（widget_value_ok）同律共用——
+/// AST/builder/命令面三口单源。
+pub(crate) fn qr_module_count_valid(m: u32) -> bool {
     (QR_MODULE_MIN..=QR_MODULE_MAX).contains(&m) && (m - QR_MODULE_MIN) % 4 == 0
 }
 

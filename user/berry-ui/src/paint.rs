@@ -24,7 +24,11 @@
 //!   Collapse header 带 + 箭头（收起态子被走查守卫跳过——三面同
 //!   守卫）、Chip 直角胶囊底 + 标签 + 选中色变、Fab 八角圆底 + '+'
 //!   占位图标 + 扩展标签带、Card 双 fill_rect 阴影 + 卡面（Collapse/
-//!   Card = 视觉容器：子先画盖其上）。
+//!   Card = 视觉容器：子先画盖其上）。批 C/D/E 追加 Select 下拉框 /
+//!   Input·Edit·Canvas 输入面 / Refresh·SwipeItem·DatePick·TimePick
+//!   表单件；批 F（末刀）追加 Gauge 粗条 + 百分值文本、Qr 三角定位
+//!   方块 + 确定性数据图案（占位）、DragReorder 三杠手柄——41 kind
+//!   渲染面全收口。
 //! - **尾部必录 `Present{damage 包络}`**（soft no-op 也录——FULL →
 //!   viewport、空集 → 零矩形）。
 //! - overdraw_x256 = drawn_px×256/vp 面素（发射足迹 ∩ viewport；u128
@@ -188,6 +192,12 @@ const STEP_ZONE_W: i32 = 36;
 const STEP_DIV_W: i32 = 2;
 /// Seg 段间分隔线宽。
 const SEG_DIV_W: i32 = 2;
+/// Gauge 值条厚（批 F：64×64 表盘上带粗条——Progress 8px 轨的两倍）。
+const GAUGE_BAR_H: i32 = 16;
+/// DragReorder 短杠长（批 F：≡ 手柄三杠，24 宽内居中）。
+const DRAG_BAR_W: i32 = 12;
+/// DragReorder 短杠厚（= 杠间间隙——36 高内 5×bh=10 占位居中）。
+const DRAG_BAR_H: i32 = 2;
 
 /// 遮挡覆盖集容量（damage 矩形 ≤ 8 的两倍余量；溢出保守少记覆盖 →
 /// 多画不少画，见 RectSet 类型注）。
@@ -395,12 +405,13 @@ fn cull_walk(
 
     // 自身（子树最底 = 最后画）。容器无视觉内容不参与（Grid 同列——
     // 子格各自发射）；Image/Icon = 可见叶（§4.3——Text 同列走查，
-    // 恒不计遮挡源）。组件件（Phase 2 三批）入可见叶列（各自
-    // emit_node 合成视觉）；不透明度不可证（Outlined 有洞 / Text 式
-    // 无底）——与 Text 同列**恒不计遮挡源**（保守正确）。Collapse/
-    // Card = 视觉容器（header 带/卡面自发射，子先画盖其上）。余组
-    // 件件无视觉面——与容器同列走查（子仍发射；渲染挂后续刀；Stack =
-    // 叠层容器、Spacer = 纯占位；Refresh = 包裹容器）。
+    // 恒不计遮挡源）。组件件（Phase 2 三批 + 波2 批 C/D/E/F）入可见
+    // 叶列（各自 emit_node 合成视觉）；不透明度不可证（Outlined 有
+    // 洞 / Text 式无底）——与 Text 同列**恒不计遮挡源**（保守正确）。
+    // Collapse/Card = 视觉容器（header 带/卡面自发射，子先画盖其
+    // 上）。纯容器余员（Root/Col/Row/Pad/Grid/Scroll/List/Stack/
+    // Spacer）无自身视觉面——子仍各自发射；批 F 后 41 kind 全渲染，
+    // 无「渲染挂后续刀」残余。
     match n.kind {
         ViewKind::Rect
         | ViewKind::Text
@@ -430,7 +441,12 @@ fn cull_walk(
         | ViewKind::Refresh
         | ViewKind::SwipeItem
         | ViewKind::DatePick
-        | ViewKind::TimePick => {}
+        | ViewKind::TimePick
+        // 批 F（末刀三件）：Gauge/Qr/DragReorder 入可见叶列——41 kind
+        // 渲染面收口（return 分支仅剩纯容器）。
+        | ViewKind::Gauge
+        | ViewKind::Qr
+        | ViewKind::DragReorder => {}
         ViewKind::Root
         | ViewKind::Col
         | ViewKind::Row
@@ -439,10 +455,7 @@ fn cull_walk(
         | ViewKind::Scroll
         | ViewKind::List
         | ViewKind::Stack
-        | ViewKind::Spacer
-        | ViewKind::Gauge
-        | ViewKind::Qr
-        | ViewKind::DragReorder => return,
+        | ViewKind::Spacer => return,
     }
     let b = RectI::new(i64_to_i32_sat(bx), i64_to_i32_sat(by), n.w, n.h);
     let vis = b.intersect(d);
@@ -527,7 +540,12 @@ fn emit_walk_all<'a>(
         | ViewKind::Refresh
         | ViewKind::SwipeItem
         | ViewKind::DatePick
-        | ViewKind::TimePick => {
+        | ViewKind::TimePick
+        // 批 F（末刀三件）：Gauge/Qr/DragReorder 入发射列（cull_walk
+        // 可见叶列同源——回退走查路径同律收口）。
+        | ViewKind::Gauge
+        | ViewKind::Qr
+        | ViewKind::DragReorder => {
             let b = RectI::new(i64_to_i32_sat(bx), i64_to_i32_sat(by), n.w, n.h);
             if b.intersect(d).is_empty() {
                 rep.culled += 1; // damage 外叶子
@@ -543,10 +561,7 @@ fn emit_walk_all<'a>(
         | ViewKind::Scroll
         | ViewKind::List
         | ViewKind::Stack
-        | ViewKind::Spacer
-        | ViewKind::Gauge
-        | ViewKind::Qr
-        | ViewKind::DragReorder => {}
+        | ViewKind::Spacer => {}
     }
 
     // 子：头兄起流序（painter 序：后画者后访问 = 覆盖在前画者上）。
@@ -1140,7 +1155,77 @@ fn emit_node<'a>(
             buf[4] = b'0' + (p.minute % 10) as u8;
             emit_widget_text(&buf, b.x, b.w, b.y, b.h, SELECT_FG, rest, enc, rep);
         }
-        // Root/Col/Row/Pad/Grid + 余组件件：无视觉内容（子树各自发射）
+        // 批 F（末刀三件）：
+        // - Gauge = v1 简化粗水平条（原设计环形仪表 ring8 底环 + 部分
+        //   弧——弧原语 v1 缺席，与 Progress 同律统一条形；style Ring/
+        //   Bar/Arc 数据携载、v1 同渲染）：上带 TRACK_OFF 底轨 + ACCENT
+        //   填充（×value/1000），下带值文本（permille 折百分整数 + '%'
+        //   ——免 FP；750‰ → "75%"）。
+        // - Qr = v1 视觉占位：三角落定位方块（TL/TR/BL 各 7×7 模块的
+        //   方框套方框——外环暗/中环亮/3×3 暗心）+ 数据区确定性伪随机
+        //   图案（module_count 作种子整数散列——同帧同图可对拍；真 QR
+        //   编码挂后续刀）。全底亮色 1 fill + 暗模块逐格 4×4 fill；大
+        //   版本 cmds 满帽（MAX_CMDS=256）停录不炸——文档化降级。
+        // - DragReorder = 三条水平短杠（≡ 手柄）：三 fill_rect（12×2
+        //   短杠、杠厚即间距——24×36 定格内 y+13/17/21）。
+        Props::Gauge(p) => {
+            let bar_h = GAUGE_BAR_H.min(b.h / 2).max(0); // 极矮界防御：条带不过半高
+            if bar_h > 0 {
+                let ty = b.y + (b.h / 2 - bar_h) / 2; // 上带内居中（64 高 → y+8）
+                fill(enc, b.x, ty, b.w, bar_h, TRACK_OFF, rep);
+                let fw = p.value.min(crate::PERMILLE_MAX) as i64 * b.w as i64
+                    / crate::PERMILLE_MAX as i64;
+                fill(enc, b.x, ty, i64_to_i32_sat(fw), bar_h, ACCENT, rep);
+            }
+            // 值文本：下带（节点下半区）双轴居中——value/10 折百分。
+            let mut buf = [0u8; 10];
+            let n = fmt_u32(p.value.min(crate::PERMILLE_MAX) / 10, &mut buf);
+            buf[n] = b'%';
+            emit_widget_text(
+                &buf[..n + 1],
+                b.x,
+                b.w,
+                b.y + b.h / 2,
+                b.h - b.h / 2,
+                ON_SURFACE,
+                rest,
+                enc,
+                rep,
+            );
+        }
+        Props::Qr(p) => {
+            let light = crate::unpack_color(p.light_color);
+            let dark = crate::unpack_color(p.dark_color);
+            fill(enc, b.x, b.y, b.w, b.h, light, rep);
+            let px = crate::QR_MODULE_PX as i32;
+            let m = b.w.min(b.h) / px; // 节点界折模块数（内在型叶恒 = module_count）
+            let mut r = 0i32;
+            while r < m {
+                let mut c = 0i32;
+                while c < m {
+                    if qr_module_dark(m, r, c) {
+                        fill(enc, b.x + c * px, b.y + r * px, px, px, dark, rep);
+                    }
+                    c += 1;
+                }
+                r += 1;
+            }
+        }
+        Props::DragReorder(_) => {
+            let bw = DRAG_BAR_W.min(b.w).max(0);
+            // 杠厚即间隙：3 杠 + 2 隙 = 5×bh 不越界（36 高 → bh=2、y+13 起）。
+            let bh = DRAG_BAR_H.min(b.h / 5).max(0);
+            if bw > 0 && bh > 0 {
+                let x = b.x + (b.w - bw) / 2;
+                let y0 = b.y + (b.h - 5 * bh) / 2;
+                let mut i = 0;
+                while i < 3 {
+                    fill(enc, x, y0 + 2 * bh * i, bw, bh, ON_SURFACE, rep);
+                    i += 1;
+                }
+            }
+        }
+        // Root/Col/Row/Pad/Grid + 余容器：无视觉内容（子树各自发射）
         _ => {}
     }
     rep.drawn_px = rep.drawn_px.saturating_add(b.intersect(vp_rect).area());
@@ -1255,6 +1340,46 @@ fn emit_widget_text<'a>(
     let run = GlyphRun { atlas, glyphs, fg, bg: None };
     if enc.draw_glyph_run(run).is_ok() {
         rep.cmds += 1;
+    }
+}
+
+/// QR 定位方块域判定（v1 占位图案——TL/TR/BL 三角落各 7×7 模块）：
+/// 返回 Some(方块局部坐标)（原点 = 方块左上）；None = 数据区。域面
+/// 不足（m < 7）无方块——值域执法保证 m ≥ 21，此为防御面。
+fn qr_finder_local(m: i32, r: i32, c: i32) -> Option<(i32, i32)> {
+    const F: i32 = 7;
+    if m < F {
+        return None;
+    }
+    let off = m - F;
+    if r < F && c < F {
+        Some((r, c)) // TL
+    } else if r < F && c >= off {
+        Some((r, c - off)) // TR
+    } else if r >= off && c < F {
+        Some((r - off, c)) // BL
+    } else {
+        None
+    }
+}
+
+/// QR 模块明暗裁决（v1 确定性占位——真 QR 编码接入后整体退役）：
+/// 定位方块内 = 方框套方框（切比雪夫半径 3 外环暗 / 2 中环亮 / ≤1
+/// 3×3 暗心）；数据区 = module_count 作种子的整数散列（wrapping 乘
+/// + 位移搅打——免 FP/免分配，同模块跨帧恒等可 golden 对拍），< 40%
+/// 判暗。
+fn qr_module_dark(m: i32, r: i32, c: i32) -> bool {
+    if let Some((lr, lc)) = qr_finder_local(m, r, c) {
+        let cheb = (lr - 3).abs().max((lc - 3).abs());
+        cheb == 3 || cheb <= 1
+    } else {
+        let mut h = (m as u32).wrapping_mul(0x9E37_79B1)
+            ^ (r as u32).wrapping_mul(0x85EB_CA6B)
+            ^ (c as u32).wrapping_mul(0xC2B2_AE35);
+        h ^= h >> 13;
+        h = h.wrapping_mul(0x27D4_EB2F);
+        h ^= h >> 16;
+        h % 100 < 40
     }
 }
 
