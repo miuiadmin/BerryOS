@@ -18,6 +18,10 @@ name = "berry-blkproto"
 version = "0.1.0"
 
 [[package]]
+name = "berry-cbox"
+version = "0.1.0"
+
+[[package]]
 name = "berry-complete"
 version = "0.1.0"
 
@@ -166,7 +170,9 @@ version = "0.1.0"
 dependencies = [
  "berry-appproto",
  "berry-blkproto",
+ "berry-cbox",
  "berry-exec",
+ "berry-fsclient",
  "berry-guiproto",
  "berry-loader",
  "berry-manifest",

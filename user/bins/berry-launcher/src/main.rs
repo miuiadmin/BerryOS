@@ -49,6 +49,7 @@
 //! 监督重启可合法重打，smoke 侧一律 grep -qF 存在性断言，禁升恰一次。
 //! **正常交互 boot 仍可点击 spawn，但不打 CLICK / click ready 任一行。**
 
+mod cbox_io;
 mod desktop;
 mod frameloop;
 mod icons;
@@ -243,6 +244,10 @@ fn main() {
     // 布局装载（冻结相 fs_h()==0 → 默认布局直返零 RPC；三约束自愈面
     // 见 layout_io 头注）。
     let layout = layout_io::load(icons::registry(), smoke);
+    // cbox 刀 2：init 落账（第三窗——排液一次 + CBOX.LOG 读-改-写；catch
+    // launcher 上一会话崩溃与 battery 后新入账 fault，与 svcmgr 两窗
+    // (boot,seq) 去重幂等互恰；失败非致命照进桌面，见 cbox_io 头注）。
+    cbox_io::init_flush();
     // Ui<512> arena ≈ 75KB+（Node 144B×512 + 走查/序/快照缓冲侧表）——
     // guest 栈 stack_pages=64 = 256KB（R5 仪器定谳，svcmgr 装配注释为
     // 单源——8 页下 main+0x1c 序言即穿保护页）栈置仍不稳：Box::leak

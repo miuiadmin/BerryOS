@@ -3057,12 +3057,15 @@ pub fn install() {
     // 降档 SQ_RQ 无表档（`nearest_deadline` KL-only 读面收口 SQ——SLEEPQ
     // 全触面纯 SQ 串行，该号免 KL；死锁论证见常量注）。
     use berry_hal_aarch64::kern_lock::{
-        SVC_CLASS_ALL, SVC_CLASS_NONE, SVC_CLASS_RQ_TABLE, SVC_CLASS_SQ_RQ, SVC_CLASS_SQ_RQ_TABLE,
+        SVC_CLASS_ALL, SVC_CLASS_RQ_TABLE, SVC_CLASS_SQ_RQ, SVC_CLASS_SQ_RQ_TABLE,
         SVC_CLASS_TABLE,
     };
     berry_sched::set_exit_hook(task_exit_hook);
-    // cbox 刀 1：黑匣子排液（0x42）——纯静态读 + copy-out，零结构锁（NONE）。
-    reg(NR_CBOX_DRAIN, sys_cbox_drain, SVC_CLASS_NONE);
+    // cbox 刀 1：黑匣子排液（0x42）——静态表读零锁，但出参 copy_out 链经
+    // walk_leaf 无锁走查本进程页表 = §A113 读者面（0x61/0x87 同链同判）——
+    // 升 TABLE 持 KL 与页表写者互斥，NONE 实装号归零不变量（刀 1 初判 NONE
+    // 为漏审，刀 2 回改）。
+    reg(NR_CBOX_DRAIN, sys_cbox_drain, SVC_CLASS_TABLE);
     // —— SQ+RQ+TABLE（0x2E）：wait/send 族（wake→enqueue 双结构窗 + 表）——
     reg(NR_HANDLE_CLOSE, sys_handle_close, SVC_CLASS_SQ_RQ_TABLE);
     reg(NR_HANDLE_DUPLICATE, sys_handle_duplicate, SVC_CLASS_TABLE);

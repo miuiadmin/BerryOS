@@ -25,6 +25,9 @@ berry-libc = { path = "../../berry-libc" }
 berry-sys = { path = "../../berry-sys" }
 berry-guiproto = { path = "../../berry-guiproto" }
 berry-ui = { path = "../../berry-ui" }
+# cbox 刀 2：黑匣子账本纯核（排液快照解码/行编解码/合并轮转 + 跨写者
+# boot id 续号——svcmgr/宿主 berry crash-log 同引单源）。
+berry-cbox = { path = "../../berry-cbox" }
 berry-gfx = { path = "../../berry-gfx" }
 berry-layout = { path = "../../berry-layout" }
 berry-appproto = { path = "../../berry-appproto" }
