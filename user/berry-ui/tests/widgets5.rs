@@ -12,7 +12,7 @@ use berry_gfx::cmd::{Cmd, Color, CommandEncoder, DisplayList, GlyphPos};
 use berry_guiproto::{PHASE_DOWN, PHASE_UP};
 use berry_ui::desc::{EditProps, InputKind, InputProps, Props};
 use berry_ui::hit::PtrEvent;
-use berry_ui::paint::{
+use berry_ui::theme::{
     CANVAS_BG, INPUT_BG, INPUT_BORDER, INPUT_FOCUS_RING, INPUT_PLACEHOLDER, SELECT_FG,
 };
 use berry_ui::{Ui, UiError, ViewKind, ViewSpec};

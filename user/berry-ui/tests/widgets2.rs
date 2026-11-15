@@ -25,7 +25,7 @@ use berry_ui::desc::{
 };
 use berry_ui::hit::PtrEvent;
 use berry_ui::layout::CrossAlign;
-use berry_ui::paint::{ACCENT, ON_SURFACE, OUTLINE, TRACK_DIM};
+use berry_ui::theme::{ACCENT, ON_SURFACE, OUTLINE, TRACK_DIM};
 use berry_ui::{NodeId, Ui, UiError, ViewKind, ViewSpec};
 
 /// 交互四件场景：Root → Col(gap 0, Stretch){Check 未勾 on_change=21,

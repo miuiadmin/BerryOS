@@ -459,6 +459,9 @@ pub struct Ui<const N: usize> {
     root_slot: u32,
     vp_w: u32,
     vp_h: u32,
+    /// 主题档运行态（维八暗色刀）：paint 双档取色单源——
+    /// [`Ui::set_theme_mode`] 换档并置 FULL damage（`set_viewport` 同形）。
+    theme: theme::Theme,
     damage: damage::DamageSet,
     input_buf: [Option<hit::PtrEvent>; INPUT_BUF_MAX],
     input_n: usize,
@@ -643,6 +646,7 @@ impl<const N: usize> Ui<N> {
             root_slot: NONE,
             vp_w: viewport_w,
             vp_h: viewport_h,
+            theme: theme::Theme::Light, // 默认 light 档（旧行为零漂移）
             damage: damage::DamageSet::new(),
             input_buf: [None; INPUT_BUF_MAX],
             input_n: 0,
@@ -883,6 +887,23 @@ impl<const N: usize> Ui<N> {
 
     pub fn viewport(&self) -> (u32, u32) {
         (self.vp_w, self.vp_h)
+    }
+
+    // —— 主题档（维八暗色刀——paint 双档取色的运行态单源） ——
+
+    /// 换主题档：色板随档换 → 全帧重画（FULL damage，`set_viewport`
+    /// 同形）；幂等（同档重设零脏帧）。即时生效语义 = 调用方随后
+    /// `wake` + 渲染一帧即换肤（settings 暗色开关消费面）。
+    pub fn set_theme_mode(&mut self, mode: theme::Theme) {
+        if self.theme != mode {
+            self.theme = mode;
+            self.damage.add_full();
+        }
+    }
+
+    /// 当前主题档。
+    pub fn theme_mode(&self) -> theme::Theme {
+        self.theme
     }
 
     // —— 树构造（builder 入口①） ——
@@ -2143,6 +2164,7 @@ impl<const N: usize> Ui<N> {
             &self.pressed_snapshot(),
             self.focus_slot(),
             &self.input_texts_snapshot(),
+            &theme::Tokens::pick(self.theme), // 双档取色（维八暗色刀）
         )
     }
 
@@ -2393,6 +2415,7 @@ impl<const N: usize> Ui<N> {
                 &self.pressed_snapshot(),
                 self.focus_slot(),
                 &self.input_texts_snapshot(),
+                &theme::Tokens::pick(self.theme), // 双档取色（维八暗色刀）
             )
         } else {
             paint::PaintReport { cmds: 0, drawn_px: 0, culled: 0, overdraw_x256: 0 }

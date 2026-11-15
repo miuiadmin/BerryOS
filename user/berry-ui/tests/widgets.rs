@@ -25,7 +25,7 @@ use berry_ui::desc::{
 };
 use berry_ui::hit::PtrEvent;
 use berry_ui::layout::CrossAlign;
-use berry_ui::paint::{ACCENT, KNOB, ON_ACCENT, TRACK_DIM, TRACK_OFF};
+use berry_ui::theme::{ACCENT, KNOB, ON_ACCENT, TRACK_DIM, TRACK_OFF};
 use berry_ui::{NodeId, TextBuf, Ui, UiError, ViewKind, ViewSpec};
 
 /// 四件套场景：Root → Col(gap 0, Stretch){Button "OK" Filled on_tap=7,

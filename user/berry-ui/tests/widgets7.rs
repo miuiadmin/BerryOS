@@ -15,7 +15,7 @@ use berry_gfx::cmd::{Cmd, Color, CommandEncoder, DisplayList, GlyphPos};
 use berry_guiproto::{PHASE_DOWN, PHASE_MOVE};
 use berry_ui::desc::{DragReorderProps, GaugeProps, GaugeStyle, Props, QrProps};
 use berry_ui::hit::PtrEvent;
-use berry_ui::paint::{ACCENT, ON_SURFACE, TRACK_OFF};
+use berry_ui::theme::{ACCENT, ON_SURFACE, TRACK_OFF};
 use berry_ui::{Ui, UiError, ViewKind, ViewSpec};
 
 fn paint_full(ui: &mut Ui<64>) -> DisplayList<'static> {

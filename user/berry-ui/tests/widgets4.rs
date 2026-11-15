@@ -12,7 +12,7 @@ use berry_gfx::cmd::{Cmd, Color, CommandEncoder, DisplayList, GlyphPos};
 use berry_guiproto::{PHASE_DOWN, PHASE_UP};
 use berry_ui::desc::{Props, SelectProps};
 use berry_ui::hit::PtrEvent;
-use berry_ui::paint::{SELECT_BG, SELECT_BORDER, SELECT_FG};
+use berry_ui::theme::{SELECT_BG, SELECT_BORDER, SELECT_FG};
 use berry_ui::{Ui, UiError, ViewKind, ViewSpec};
 
 fn paint_full(ui: &mut Ui<64>) -> DisplayList<'static> {

@@ -7,6 +7,10 @@ intent = "utility"
 
 [capabilities]
 console = false
+# 维八暗色刀：暗色开关跨 boot 持久化（SETTINGS.JSN——launcher
+# LAYOUT.JSN 的 fs 词先例同形；fsmgr 端经 app_launch fs 词授能，
+# fs_h() 消费）。
+fs = ["rootfs"]
 
 [runtime]
 stack_pages = 64

@@ -60,7 +60,7 @@ use berry_ui::desc::{
 use berry_ui::hit::PtrEvent;
 use berry_ui::layout::CrossAlign;
 use berry_ui::metrics::IconSource;
-use berry_ui::paint::{
+use berry_ui::theme::{
     ACCENT, CARD_BG, CARD_SHADOW, KNOB, ON_ACCENT, OUTLINE, TABS_BG, TABS_INDICATOR, TRACK_DIM,
     TRACK_OFF,
 };
