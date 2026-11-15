@@ -72,6 +72,10 @@ pub const OP_RELEASE: u8 = 4;
 pub const OP_VOTE: u8 = 5;
 /// present 域：显示电源模式（低功耗缝）。
 pub const OP_POWER_MODE: u8 = 6;
+/// present 域：输入脉冲（刀3 A6 触摸加速触发面——4B 无参、ST_OK 应答；
+/// 任何持 present 端的观察者可发：v1 = 客户端输入环，inputd 直连挂
+/// extras 抬帽刀）。add-only：7 前此号空缺。
+pub const OP_INPUT_PULSE: u8 = 7;
 /// input 域：订阅 + 投递模式声明。
 pub const OP_INPUT_SUBSCRIBE: u8 = 0x20;
 /// input 域：拉事件批（可阻塞：阻塞到至少 1 个完整事件）。
@@ -674,6 +678,9 @@ pub enum PresentReq {
     },
     /// POWER_MODE：显示电源模式。
     PowerMode { mode: u8 },
+    /// INPUT_PULSE：输入活动脉冲（刀3 A6——无参，ST_OK 应答；触发仲裁器
+    /// boost 窗，非投票面）。
+    InputPulse,
 }
 
 /// 编码 present 域请求（None 契约：rect_count 越帽 / flags·scene·mode·
@@ -777,6 +784,14 @@ pub fn encode_present_req(out: &mut [u8], req: &PresentReq) -> Option<usize> {
             m[3] = 0;
             Some(4)
         }
+        PresentReq::InputPulse => {
+            let m = out.get_mut(..4)?;
+            m[0] = OP_INPUT_PULSE;
+            m[1] = 0;
+            m[2] = 0;
+            m[3] = 0;
+            Some(4)
+        }
     }
 }
 
@@ -864,6 +879,12 @@ pub fn parse_present_req(buf: &[u8]) -> Option<PresentReq> {
                 return None;
             }
             Some(PresentReq::PowerMode { mode })
+        }
+        OP_INPUT_PULSE => {
+            if buf.len() != 4 {
+                return None;
+            }
+            Some(PresentReq::InputPulse)
         }
         _ => None,
     }
@@ -1906,6 +1927,456 @@ pub mod softpanel {
     }
 }
 
+// ---------- arbiter 域（刀3 §6：票簿 + A 规则裁决——纯核，guifbd 活面接线）----------
+//
+// 设计照 softpanel 同款：裁决状态机纯核（时钟一律入参注入——host 可测、
+// 零墙依赖），活设备面（RPC 钩 / 证据行 / 调度执行）在 guifbd。v1 单客户
+// 户端单票槽（§6.4 多客户端合并刀前不动——A2/A4 已按集合语义书写，扩容
+// 点 = `Ballot` 槽换切片 + 优先级取 max）。
+//
+// 规范锚（刷新率体系规范 v1.0 §6.3）：A1 票生命周期（v1 简化 = 单槽替换 +
+// 断连清空——「随下一张票失效」在单槽下即替换语义；sticky 的跨内容存活
+// 是多内容面，v1 无内容概念）；A2 全局区间 + 无解安全档；A3 候选集（Tiered
+// 产品档 ∩ G，测试档仅 DET 测试模式可入；FreeRange 连续区间）；A4 选档；
+// A5 迟滞非对称（升 2 拍 / 降驻留 1s，DIM 降一档）；A6 触摸加速（500ms 窗
+// 立即升）；A7 静止停帧（票/damage/armed 三条件——guifbd 零唤醒不变量
+// 的法定化身）；A9 切档执行（决策 → softpanel 控制面）；A11 平台兜底。
+//
+// **A11 无票缺省 = boot 档（平台 fw_cfg 表达）而非硬编 60**：`display=@30`
+// 是平台明示档，无票时裁决回 boot 档（缺省 boot 即 60——两读一致）；硬编
+// 60 会与刀1 的 @30 boot 语义自相残杀。Unspecified 票（无偏好贡献）同路。
+
+pub mod arbiter {
+    use super::softpanel::{self, PanelCfg};
+    use super::Intent;
+
+    // Intent 判别值（crate 根单源转发 berry-manifest——cast 定值防手抄，
+    // 比较位/匹配位两用）。
+    const I_UNSPEC: u8 = Intent::Unspecified as u8;
+    const I_LATENCY: u8 = Intent::LatencyCritical as u8;
+    const I_INTERACTIVE: u8 = Intent::Interactive as u8;
+    const I_UTILITY: u8 = Intent::Utility as u8;
+    const I_BG: u8 = Intent::Background as u8;
+
+    /// A2 平台底线（Hz）。
+    pub const PLATFORM_FLOOR_HZ: u16 = 30;
+    /// A5 降档驻留判据窗（ns）。
+    pub const T_DOWN_DWELL_NS: u64 = 1_000_000_000;
+    /// A6 触摸加速窗（ns）。
+    pub const T_TOUCH_BOOST_NS: u64 = 500_000_000;
+    /// A5 升档确认拍数（连续 2 拍）。
+    pub const UP_CONFIRM_TICKS: u8 = 2;
+    /// A6 boost 目标基准档（Hz）。
+    pub const BOOST_HZ: u16 = 120;
+    /// A2 无解安全档（Hz；Tiered 表内产品档）。
+    pub const SAFE_HZ: u16 = 60;
+
+    /// 票面值形（wire `PresentReq::Vote` 五域转递；intent = berry_intent
+    /// 判别值 0x00..=0x05）。
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Ballot {
+        pub sticky: bool,
+        pub intent: u8,
+        pub min_hz: u16,
+        pub max_hz: u16,
+        pub preferred_hz: u16,
+    }
+
+    /// 决策源（证据行与测试判别；Down 提交恒记 Dwell——A5 规则面）。
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Src {
+        Vote,
+        Dwell,
+        Boost,
+        Dim,
+        Platform,
+        Fallback,
+    }
+
+    /// 裁决输出。guifbd 执行面：`Switch` → `panel.request_refresh(hz)` +
+    /// 证据行（在飞切档被拒 → [`Arbiter::on_switch_rejected`] 回滚重裁）；
+    /// `StopFrame` / `Resume` → A7 证据行（调度面归 guifbd 零唤醒基线）。
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Decision {
+        Stay,
+        Switch { hz: u16, src: Src },
+        StopFrame,
+        Resume,
+    }
+
+    /// 评估时机（A5 判据的拍/事件/时钟三分——升档 streak 只随**拍**积累）。
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Kind {
+        /// 软面板拍点后（streak 递增）。
+        Tick,
+        /// serve 环时钟醒（只推进降档驻留与 boost 到期——不积 streak）。
+        Time,
+        /// 状态变更事件（票/脉冲/PM——不积 streak；A6 起臂拍走 BoostArm）。
+        Event,
+        /// A6 脉冲起臂（立即升——绕过 streak，规范「立即」）。
+        BoostArm,
+    }
+
+    /// 仲裁器纯核。
+    pub struct Arbiter {
+        model: u8,
+        /// DET 测试模式 → 测试档可入候选（A3——仅测试拓扑）。
+        det_test: bool,
+        dim: bool,
+        /// A11 无票缺省档 = boot 档。
+        no_vote_hz: u16,
+        cur_hz: u16,
+        ballot: Option<Ballot>,
+        // —— A5 迟滞 ——
+        up_target: Option<u16>,
+        up_streak: u8,
+        down: Option<(u16, u64)>,
+        // —— A6 ——
+        boost_until: u64,
+        // —— A7 ——
+        stopped: bool,
+        /// A2 无解记号（证据/遥测代理——读侧消费即清）。
+        warn_no_g: bool,
+    }
+
+    impl Arbiter {
+        /// 由面板配置 + boot 档构造（boot 档 = A11 无票缺省）。
+        pub fn new(cfg: &PanelCfg, boot_hz: u16) -> Arbiter {
+            Arbiter {
+                model: cfg.model,
+                det_test: cfg.mode == softpanel::MODE_DETERMINISTIC,
+                dim: false,
+                no_vote_hz: boot_hz,
+                cur_hz: boot_hz,
+                ballot: None,
+                up_target: None,
+                up_streak: 0,
+                down: None,
+                boost_until: 0,
+                stopped: false,
+                warn_no_g: false,
+            }
+        }
+
+        pub fn hz(&self) -> u16 {
+            self.cur_hz
+        }
+
+        pub fn stopped(&self) -> bool {
+            self.stopped
+        }
+
+        /// A6 boost 窗内在席（guifbd 静默汇拢面——boost 窗内禁停帧）。
+        pub fn boost_active(&self, now: u64) -> bool {
+            self.boost_until != 0 && now < self.boost_until
+        }
+
+        /// A2 无解告警消费（读即清——证据行单发）。
+        pub fn take_warn_no_g(&mut self) -> bool {
+            let w = self.warn_no_g;
+            self.warn_no_g = false;
+            w
+        }
+
+        /// A1：新票入槽（单槽替换）+ 即时裁决。
+        pub fn on_vote(&mut self, now: u64, quiet: bool, b: Ballot) -> Decision {
+            self.ballot = Some(b);
+            self.evaluate(now, quiet, Kind::Event)
+        }
+
+        /// A1：断连撤票（sticky 同撤——断连即撤无差别）+ 重仲裁。
+        pub fn on_disconnect(&mut self, now: u64, quiet: bool) -> Decision {
+            self.ballot = None;
+            self.evaluate(now, quiet, Kind::Event)
+        }
+
+        /// A5 DIM 偏好：POWER_DIM 置位 = 整体偏好降一档。
+        pub fn on_power_mode(&mut self, now: u64, quiet: bool, mode: u8) -> Decision {
+            self.dim = mode == super::POWER_DIM;
+            self.evaluate(now, quiet, Kind::Event)
+        }
+
+        /// A6：输入脉冲——起臂 boost 窗 + 立即裁决（BoostArm 绕 streak）。
+        /// 脉冲即活动：停帧态先破停（Resume 证据由调用方经 [`Arbiter::on_activity`]
+        /// 先行取走——guifbd 接线序 = on_activity → on_input_pulse）。
+        pub fn on_input_pulse(&mut self, now: u64, quiet: bool) -> Decision {
+            self.stopped = false;
+            self.boost_until = now + T_TOUCH_BOOST_NS;
+            self.evaluate(now, quiet, Kind::BoostArm)
+        }
+
+        /// A7：活动破除（damage / armed / parked——停帧→恢复；运行期活动
+        /// 无裁决输出）。
+        pub fn on_activity(&mut self, now: u64) -> Decision {
+            if self.stopped {
+                self.stopped = false;
+                return Decision::Resume;
+            }
+            let _ = now;
+            Decision::Stay
+        }
+
+        /// 拍点后评估（A5 streak 积累 + 停帧入判）。
+        pub fn on_tick(&mut self, now: u64, quiet: bool) -> Decision {
+            self.evaluate(now, quiet, Kind::Tick)
+        }
+
+        /// serve 环时钟醒（降档驻留 / boost 到期推进——Kind::Time）。
+        pub fn on_time(&mut self, now: u64, quiet: bool) -> Decision {
+            self.evaluate(now, quiet, Kind::Time)
+        }
+
+        /// 切档请求被拒（softpanel 在飞窗/同档）后回滚重裁：`actual` = 面板
+        /// 现档（下一轮评估按真值重走迟滞——升路 streak 清零重数，降路驻留
+        /// 保守侧重计时：commit 已清 down，被拒即等同降档意图重发起点）。
+        pub fn on_switch_rejected(&mut self, actual_hz: u16) {
+            self.cur_hz = actual_hz;
+            self.up_target = None;
+            self.up_streak = 0;
+        }
+
+        /// 下一醒时刻（serve deadline 的 min 臂候选）：降档驻留到点 / boost
+        /// 窗到点（到期回落的降档驻留须重新计时）；停帧态零醒（A7）。
+        pub fn next_wake(&self, now: u64) -> Option<u64> {
+            if self.stopped {
+                return None;
+            }
+            let mut w = None;
+            if let Some((_, t0)) = self.down {
+                let d = t0 + T_DOWN_DWELL_NS;
+                if d > now {
+                    w = Some(d);
+                }
+            }
+            if self.boost_until > now && self.boost_until > w.unwrap_or(0) {
+                w = Some(self.boost_until);
+            }
+            w
+        }
+
+        // —— 内部 ——
+
+        /// A7 停帧资格：无票或全票 ∈ {Background, Unspecified} 且静默
+        ///（armed/parked/damage 由调用方 quiet 布尔汇拢——damage 破除走
+        /// on_activity 的 Resume 面，此判不重复计活动）。
+        fn stop_eligible(&self, quiet: bool) -> bool {
+            if !quiet {
+                return false;
+            }
+            match self.ballot {
+                None => true,
+                Some(b) => b.intent == I_BG || b.intent == I_UNSPEC,
+            }
+        }
+
+        fn evaluate(&mut self, now: u64, quiet: bool, kind: Kind) -> Decision {
+            // A7 先于迟滞：停帧即静默（判据缓存清空）。
+            if self.stop_eligible(quiet) {
+                self.up_target = None;
+                self.up_streak = 0;
+                self.down = None;
+                if !self.stopped {
+                    self.stopped = true;
+                    return Decision::StopFrame;
+                }
+                return Decision::Stay;
+            }
+            if self.stopped {
+                // 条件破除（票偏好化 / 活动到）——恢复当前档（档位不动）。
+                self.stopped = false;
+                // 递归一次走正常裁决（事件本身可能同时携升档判据）。
+                return Decision::Resume;
+            }
+            let (target, src) = self.target(now);
+            if src == Src::Fallback {
+                self.warn_no_g = true;
+            }
+            if target == self.cur_hz {
+                self.up_target = None;
+                self.up_streak = 0;
+                self.down = None;
+                return Decision::Stay;
+            }
+            if target > self.cur_hz {
+                self.down = None;
+                if self.up_target != Some(target) {
+                    self.up_target = Some(target);
+                    self.up_streak = 0;
+                }
+                match kind {
+                    Kind::BoostArm => return self.commit(target, src),
+                    Kind::Tick => self.up_streak += 1,
+                    Kind::Time | Kind::Event => {}
+                }
+                if self.up_streak >= UP_CONFIRM_TICKS {
+                    return self.commit(target, src);
+                }
+                return Decision::Stay;
+            }
+            // 降档：驻留判据（A5——目标变更重计时）。
+            self.up_target = None;
+            self.up_streak = 0;
+            match self.down {
+                Some((hz, t0)) if hz == target => {
+                    if now.saturating_sub(t0) >= T_DOWN_DWELL_NS {
+                        return self.commit(target, Src::Dwell);
+                    }
+                }
+                _ => self.down = Some((target, now)),
+            }
+            Decision::Stay
+        }
+
+        fn commit(&mut self, hz: u16, src: Src) -> Decision {
+            self.cur_hz = hz;
+            self.up_target = None;
+            self.up_streak = 0;
+            self.down = None;
+            Decision::Switch { hz, src }
+        }
+
+        /// 目标档（A2 → A6 → A4 链）。
+        fn target(&self, now: u64) -> (u16, Src) {
+            let (gmin, gmax, solvable) = self.g_range();
+            if !solvable {
+                // A2 无解：安全档 60（Tiered 表内产品档；FreeRange 直值）
+                // + 告警记号——禁空转不裁决。
+                return (self.safe_hz(), Src::Fallback);
+            }
+            // A6 boost 窗内：min(BOOST_HZ, G_max)，立即语义由 BoostArm 承担。
+            if self.boost_active(now) {
+                let b = BOOST_HZ.min(gmax);
+                return (self.select(b, gmin, gmax), Src::Boost);
+            }
+            match self.ballot {
+                Some(b) if b.intent != I_UNSPEC => {
+                    let mut pref = if b.preferred_hz != 0 {
+                        b.preferred_hz
+                    } else {
+                        intent_default(b.intent)
+                    };
+                    if self.dim {
+                        pref = dim_down(pref);
+                        let r = self.select(pref, gmin, gmax);
+                        return (r, Src::Dim);
+                    }
+                    (self.select(pref, gmin, gmax), Src::Vote)
+                }
+                // 无票/Unspecified 票（无偏好贡献）：A11 boot 档过 select——
+                // Unspecified 票的 min/max 仍是 A2 约束（约束≠偏好）。
+                _ => (self.select(self.no_vote_hz, gmin, gmax), Src::Platform),
+            }
+        }
+
+        /// A2 全局区间：`[max(票 min ∪ {平台底线}), min(票 max ∪ {面板 max})]`；
+        /// 票域 0 = 不设界。返回 (gmin, gmax, 可解)。
+        fn g_range(&self) -> (u16, u16, bool) {
+            let panel_max = if self.model == super::RATE_MODEL_FREERANGE {
+                softpanel::FREERANGE_MAX_HZ
+            } else {
+                panel_tier_max()
+            };
+            let mut gmin = PLATFORM_FLOOR_HZ;
+            let mut gmax = panel_max;
+            if let Some(b) = self.ballot {
+                if b.min_hz != 0 {
+                    gmin = gmin.max(b.min_hz);
+                }
+                if b.max_hz != 0 {
+                    gmax = gmax.min(b.max_hz);
+                }
+            }
+            (gmin, gmax, gmin <= gmax)
+        }
+
+        /// A4 选档（Tiered 查表 / FreeRange 连续钳制）。
+        fn select(&self, pref: u16, gmin: u16, gmax: u16) -> u16 {
+            if self.model == super::RATE_MODEL_FREERANGE {
+                // 连续区间直取 + 越界最近侧钳制（粒度对齐归 softpanel）。
+                return pref.clamp(
+                    gmin.max(softpanel::FREERANGE_MIN_HZ),
+                    gmax.min(softpanel::FREERANGE_MAX_HZ),
+                );
+            }
+            // Tiered：候选 = 档位表内合法族 ∩ G（测试档仅 DET 测试模式）。
+            let mut best: Option<u16> = None; // pref 命中或 ≥ pref 最小
+            let mut top: Option<u16> = None; // 候选最高档
+            for t in softpanel::TIERS.iter() {
+                if !self.tier_admissible(t) {
+                    continue;
+                }
+                if t.hz < gmin || t.hz > gmax {
+                    continue;
+                }
+                top = Some(top.map_or(t.hz, |m: u16| m.max(t.hz)));
+                if t.hz >= pref && best.map_or(true, |b: u16| t.hz < b) {
+                    best = Some(t.hz);
+                }
+            }
+            match best.or(top) {
+                Some(hz) => hz,
+                // 候选空（G 排空合法族）→ A2 安全档路径兜底（理论经 solvable
+                // 预过滤后仍可达：G 全落在测试档带上且非 DET）。
+                None => self.safe_hz(),
+            }
+        }
+
+        fn tier_admissible(&self, t: &softpanel::TierDef) -> bool {
+            match t.class {
+                super::PANEL_CLASS_PRODUCT => true,
+                super::PANEL_CLASS_TEST => self.det_test,
+                _ => false, // LTPO 档 v1 不入候选（AOD 组合拳归刀7）
+            }
+        }
+
+        fn safe_hz(&self) -> u16 {
+            if self.model == super::RATE_MODEL_FREERANGE {
+                return SAFE_HZ.clamp(
+                    softpanel::FREERANGE_MIN_HZ,
+                    softpanel::FREERANGE_MAX_HZ,
+                );
+            }
+            SAFE_HZ
+        }
+    }
+
+    /// Tiered 面板宣告上限（档位表最大 hz——含测试族；A2 的「面板 max_hz」）。
+    fn panel_tier_max() -> u16 {
+        let mut m = 0u16;
+        for t in softpanel::TIERS.iter() {
+            m = m.max(t.hz);
+        }
+        m
+    }
+
+    /// §6.2 法定表：preferred_hz 缺省（0）时按 Intent 映射。
+    fn intent_default(intent: u8) -> u16 {
+        match intent {
+            I_LATENCY => panel_tier_max(),
+            I_INTERACTIVE => 120,
+            I_UTILITY => SAFE_HZ,
+            // Maintenance / Background → 30（Background 另有停帧候选路 A7）。
+            _ => PLATFORM_FLOOR_HZ,
+        }
+    }
+
+    /// A5 DIM 降一档：偏好降到严格次低产品档（Tiered 阶梯 notion 对
+    /// FreeRange 同样适用——「档」的共享语义）；已最低则不动。
+    fn dim_down(pref: u16) -> u16 {
+        let mut below = 0u16;
+        for t in softpanel::TIERS.iter() {
+            if t.class == super::PANEL_CLASS_PRODUCT && t.hz < pref && t.hz > below {
+                below = t.hz;
+            }
+        }
+        if below != 0 {
+            below
+        } else {
+            pref
+        }
+    }
+}
+
 // ---------- wm 域（GUI-5：gui-wmd 窗口守护——权威窗口表 + 命中分发）----------
 //
 // 十组编解码对：GETINFO req/rep、CREATE req/ack、DESTROY req、SET req、
@@ -2661,8 +3132,8 @@ mod tests {
         let mut fl = buf;
         fl[12] = 0x80;
         assert_eq!(parse_present_req(&fl[..n]), None);
-        // 未知 op / 空。
-        assert_eq!(parse_present_req(&[0x07, 0, 0, 0]), None);
+        // 未知 op（0x1F——远离 present 1..=7 与 input 0x20+ 两域分配）。
+        assert_eq!(parse_present_req(&[0x1F, 0, 0, 0]), None);
         assert_eq!(parse_present_req(&[]), None);
     }
 
@@ -4357,5 +4828,504 @@ mod tests {
         let hidden = WmEntry { id: 8, flags: 0, ..high };
         assert_eq!(wm_hit_test(&[hidden, low], 400, 300), Some(1));
         assert_eq!(wm_hit_test(&[hidden], 400, 300), None);
+    }
+
+    // ---------- 刀3 仲裁器决策表（规范 §6.3 A1-A11——每条一正一负 + 组合钉板）----------
+    use super::arbiter::*;
+
+    /// Tiered/FREE boot 档仲裁器（`hz` = boot 档）。
+    fn ar_boot(hz: u16) -> Arbiter {
+        Arbiter::new(&softpanel::PanelCfg::DEFAULT, hz)
+    }
+    /// DET 模式（det_test = true——A3 测试档准入）。
+    fn ar_det(hz: u16) -> Arbiter {
+        Arbiter::new(
+            &softpanel::PanelCfg {
+                mode: softpanel::MODE_DETERMINISTIC,
+                ..softpanel::PanelCfg::DEFAULT
+            },
+            hz,
+        )
+    }
+    /// FreeRange 模型。
+    fn ar_free(hz: u16) -> Arbiter {
+        Arbiter::new(
+            &softpanel::PanelCfg {
+                model: RATE_MODEL_FREERANGE,
+                ..softpanel::PanelCfg::DEFAULT
+            },
+            hz,
+        )
+    }
+    /// 票样本（intent 判别值 × min/max/preferred）。
+    fn bal(intent: u8, min: u16, max: u16, pref: u16) -> Ballot {
+        Ballot { sticky: false, intent, min_hz: min, max_hz: max, preferred_hz: pref }
+    }
+    /// 测试时钟：60Hz 拍距。
+    const T: u64 = 16_666_667;
+
+    #[test]
+    fn arb_wire_input_pulse() {
+        // 0x07 4B 无参面：编解码往返 + 截断/尾随/op 错位拒。
+        assert_eq!(OP_INPUT_PULSE, 7);
+        let mut buf = [0u8; 8];
+        let n = encode_present_req(&mut buf, &PresentReq::InputPulse).unwrap();
+        assert_eq!(n, 4);
+        assert_eq!(&buf[..4], &[OP_INPUT_PULSE, 0, 0, 0]);
+        assert_eq!(parse_present_req(&buf[..4]), Some(PresentReq::InputPulse));
+        assert_eq!(parse_present_req(&buf[..5]), None, "尾随字节拒");
+        assert_eq!(parse_present_req(&[0x08, 0, 0, 0]), None, "op 错位拒");
+        // out 不足 None（无参面同款 None 契约）。
+        assert_eq!(encode_present_req(&mut buf[..3], &PresentReq::InputPulse), None);
+    }
+
+    #[test]
+    fn arb_pins() {
+        // 决策常量钉板（规范 §6.3 A5/A6/A2）。
+        assert_eq!(PLATFORM_FLOOR_HZ, 30);
+        assert_eq!(T_DOWN_DWELL_NS, 1_000_000_000);
+        assert_eq!(T_TOUCH_BOOST_NS, 500_000_000);
+        assert_eq!(UP_CONFIRM_TICKS, 2);
+        assert_eq!(BOOST_HZ, 120);
+        assert_eq!(SAFE_HZ, 60);
+        // LTPO 档（1/10Hz）结构性出局：平台底线 30 > 全部 LTPO 档位——
+        // class 过滤之外 G 区间先排空。
+        let ltpo_max = softpanel::TIERS
+            .iter()
+            .filter(|t| t.class == PANEL_CLASS_LTPO)
+            .map(|t| t.hz)
+            .max()
+            .unwrap();
+        assert!(PLATFORM_FLOOR_HZ > ltpo_max);
+        // 初态。
+        let mut a = ar_boot(60);
+        assert_eq!(a.hz(), 60);
+        assert!(!a.stopped());
+        assert!(!a.take_warn_no_g());
+    }
+
+    #[test]
+    fn arb_a11_platform_is_boot_tier() {
+        // A11 正面：无票缺省 = boot 档（@30 平台表达）而非硬编 60——boost
+        // 抬 120 后回落到 30。
+        let mut a = ar_boot(30);
+        assert_eq!(a.on_input_pulse(0, false), Decision::Switch { hz: 120, src: Src::Boost });
+        // boost 窗（500ms）内维持；过期后降档驻留起算。
+        assert_eq!(a.on_time(600_000_000, false), Decision::Stay);
+        assert_eq!(a.next_wake(600_000_000), Some(1_600_000_000));
+        assert_eq!(
+            a.on_time(1_600_000_000, false),
+            Decision::Switch { hz: 30, src: Src::Dwell },
+            "回落 boot 30 而非硬编 60"
+        );
+        assert_eq!(a.hz(), 30);
+        assert_eq!(a.next_wake(1_600_000_000), None);
+        // 无票且目标==当前：Stay（不空转切档）。
+        let mut b = ar_boot(60);
+        assert_eq!(b.on_time(0, false), Decision::Stay);
+    }
+
+    #[test]
+    fn arb_a2_range_floor_and_constraints() {
+        // G = [max(30, min), min(480, max)] ∩ 档位表：pref 120 min 90 max 200
+        // → 唯一候选 120（60 在 gmin 之下出局）。
+        let mut a = ar_boot(60);
+        assert_eq!(
+            a.on_vote(0, false, bal(Intent::Interactive as u8, 90, 200, 120)),
+            Decision::Stay
+        );
+        assert_eq!(a.on_tick(T, false), Decision::Stay);
+        assert_eq!(
+            a.on_tick(2 * T, false),
+            Decision::Switch { hz: 120, src: Src::Vote }
+        );
+        // 平台底线钳制：pref 5 → 最低产品档 30（禁穿地板）。
+        let mut f = ar_boot(60);
+        f.on_vote(0, false, bal(Intent::Interactive as u8, 0, 0, 5));
+        assert_eq!(f.on_time(T_DOWN_DWELL_NS, false), Decision::Switch { hz: 30, src: Src::Dwell });
+        // Unspecified 票的 max 约束仍生效（约束≠偏好——Platform 臂过 select）。
+        let mut u = ar_boot(120);
+        u.on_vote(0, false, bal(Intent::Unspecified as u8, 0, 60, 0));
+        assert_eq!(u.on_time(T, false), Decision::Stay, "驻留起算");
+        assert_eq!(
+            u.on_time(T + T_DOWN_DWELL_NS, false),
+            Decision::Switch { hz: 60, src: Src::Dwell },
+            "boot 120 被 Unspecified max=60 约束压回 60"
+        );
+    }
+
+    #[test]
+    fn arb_a2_no_solution_fallback() {
+        // 正面：min > max 无解 → 安全档 60 + Fallback 源 + 告警记号（读即清）。
+        let mut a = ar_boot(30);
+        a.on_vote(0, false, bal(Intent::Interactive as u8, 480, 30, 0));
+        assert_eq!(a.on_tick(T, false), Decision::Stay);
+        assert_eq!(
+            a.on_tick(2 * T, false),
+            Decision::Switch { hz: 60, src: Src::Fallback }
+        );
+        assert!(a.take_warn_no_g(), "A2 无解告警到席");
+        assert!(!a.take_warn_no_g(), "读即清");
+        // 负面：可解区间不走 Fallback。
+        let mut b = ar_boot(30);
+        b.on_vote(0, false, bal(Intent::Interactive as u8, 30, 120, 0));
+        b.on_tick(T, false);
+        assert_eq!(b.on_tick(2 * T, false), Decision::Switch { hz: 120, src: Src::Vote });
+        assert!(!b.take_warn_no_g());
+    }
+
+    #[test]
+    fn arb_a3_candidate_classes() {
+        // 正面（DET 准入）：G=[100,200] 测试档 165/180 仅 DET 测试模式入候选
+        // ——pref 170 → 180。
+        let mut d = ar_det(60);
+        d.on_vote(0, false, bal(Intent::Interactive as u8, 100, 200, 170));
+        assert_eq!(d.on_tick(T, false), Decision::Stay);
+        assert_eq!(
+            d.on_tick(2 * T, false),
+            Decision::Switch { hz: 180, src: Src::Vote }
+        );
+        // 负面（FREE 排斥）：同票在 FREE 模式 → 唯一产品候选 120（170 无
+        // ≥pref 候选 → 顶档兜底）。
+        let mut f = ar_boot(60);
+        f.on_vote(0, false, bal(Intent::Interactive as u8, 100, 200, 170));
+        assert_eq!(f.on_tick(T, false), Decision::Stay);
+        assert_eq!(
+            f.on_tick(2 * T, false),
+            Decision::Switch { hz: 120, src: Src::Vote }
+        );
+    }
+
+    #[test]
+    fn arb_a4_intent_defaults_six_values() {
+        // §6.2 法定表六值钉板（pref=0 走 Intent 映射；升 2 拍/降驻留路径各验）。
+        // Unspecified → 无偏好贡献 → Platform boot 档（== cur → Stay）。
+        let mut u = ar_boot(60);
+        assert_eq!(u.on_vote(0, false, bal(Intent::Unspecified as u8, 0, 0, 0)), Decision::Stay);
+        // LatencyCritical → 面板顶档 480。
+        let mut l = ar_boot(60);
+        l.on_vote(0, false, bal(Intent::LatencyCritical as u8, 0, 0, 0));
+        assert_eq!(l.on_tick(T, false), Decision::Stay);
+        assert_eq!(
+            l.on_tick(2 * T, false),
+            Decision::Switch { hz: 480, src: Src::Vote }
+        );
+        // Interactive → 120。
+        let mut i = ar_boot(60);
+        i.on_vote(0, false, bal(Intent::Interactive as u8, 0, 0, 0));
+        assert_eq!(i.on_tick(T, false), Decision::Stay);
+        assert_eq!(
+            i.on_tick(2 * T, false),
+            Decision::Switch { hz: 120, src: Src::Vote }
+        );
+        // Utility → 60（== cur → Stay 负面）。
+        let mut ut = ar_boot(60);
+        assert_eq!(ut.on_vote(0, false, bal(Intent::Utility as u8, 0, 0, 0)), Decision::Stay);
+        // Maintenance → 30（降档驻留）。
+        let mut m = ar_boot(60);
+        m.on_vote(0, false, bal(Intent::Maintenance as u8, 0, 0, 0));
+        assert_eq!(m.on_time(T_DOWN_DWELL_NS, false), Decision::Switch { hz: 30, src: Src::Dwell });
+        // Background → 30（非静默面同 Maintenance；静默面走 A7）。
+        let mut bg = ar_boot(60);
+        bg.on_vote(0, false, bal(Intent::Background as u8, 0, 0, 0));
+        assert_eq!(bg.on_time(T_DOWN_DWELL_NS, false), Decision::Switch { hz: 30, src: Src::Dwell });
+        // preferred_hz 非零覆盖 Intent 缺省：Interactive + pref 240 → 240。
+        let mut p = ar_boot(60);
+        p.on_vote(0, false, bal(Intent::Interactive as u8, 0, 0, 240));
+        p.on_tick(T, false);
+        assert_eq!(p.on_tick(2 * T, false), Decision::Switch { hz: 240, src: Src::Vote });
+    }
+
+    #[test]
+    fn arb_a4_freerange_continuous() {
+        // 连续区间直取：pref 144 非 Tiered 档位也直落。
+        let mut a = ar_free(60);
+        a.on_vote(0, false, bal(Intent::Interactive as u8, 0, 0, 144));
+        assert_eq!(a.on_tick(T, false), Decision::Stay);
+        assert_eq!(
+            a.on_tick(2 * T, false),
+            Decision::Switch { hz: 144, src: Src::Vote }
+        );
+        // 越界最近侧钳制：600 → 480（面板 max）。
+        let mut hi = ar_free(60);
+        hi.on_vote(0, false, bal(Intent::Interactive as u8, 0, 0, 600));
+        hi.on_tick(T, false);
+        assert_eq!(hi.on_tick(2 * T, false), Decision::Switch { hz: 480, src: Src::Vote });
+        // 票域钳制：pref 50 ∈ [100,200] → 100（钳后高于 cur 60 → 升路 2 拍）。
+        let mut cl = ar_free(60);
+        cl.on_vote(0, false, bal(Intent::Interactive as u8, 100, 200, 50));
+        assert_eq!(cl.on_tick(T, false), Decision::Stay);
+        assert_eq!(cl.on_tick(2 * T, false), Decision::Switch { hz: 100, src: Src::Vote });
+        // FreeRange 无候选空集问题：G=[300,400] pref 50 → 连续钳 300（非安全档）。
+        let mut fb = ar_free(60);
+        fb.on_vote(0, false, bal(Intent::Interactive as u8, 300, 400, 50));
+        assert_eq!(fb.on_tick(T, false), Decision::Stay);
+        assert_eq!(fb.on_tick(2 * T, false), Decision::Switch { hz: 300, src: Src::Vote });
+    }
+
+    #[test]
+    fn arb_a5_up_two_tick_streak() {
+        // 正面：连续 2 拍确认（票/第一拍均不切）。
+        let mut a = ar_boot(60);
+        a.on_vote(0, false, bal(Intent::Interactive as u8, 0, 0, 120));
+        assert_eq!(a.on_tick(T, false), Decision::Stay, "第 1 拍不切");
+        assert_eq!(a.on_tick(2 * T, false), Decision::Switch { hz: 120, src: Src::Vote });
+        // 负面①：事件不积 streak——连续重复投票零拍切不了。
+        let mut e = ar_boot(60);
+        for _ in 0..5 {
+            assert_eq!(
+                e.on_vote(0, false, bal(Intent::Interactive as u8, 0, 0, 120)),
+                Decision::Stay
+            );
+        }
+        // 负面②：目标回 cur 清 streak——重投后须满 2 拍（防 1 拍泄漏切档）。
+        let mut r = ar_boot(60);
+        r.on_vote(0, false, bal(Intent::Interactive as u8, 0, 0, 120));
+        r.on_tick(T, false); // streak 1
+        assert_eq!(r.on_vote(2 * T, false, bal(Intent::Utility as u8, 0, 0, 0)), Decision::Stay); // target 60==cur → 清
+        r.on_vote(3 * T, false, bal(Intent::Interactive as u8, 0, 0, 120));
+        assert_eq!(r.on_tick(4 * T, false), Decision::Stay, "清后第 1 拍不切");
+        assert_eq!(r.on_tick(5 * T, false), Decision::Switch { hz: 120, src: Src::Vote });
+        // 负面③：目标变更重置 streak——pref 换 240 后重新数 2 拍。
+        let mut c = ar_boot(60);
+        c.on_vote(0, false, bal(Intent::Interactive as u8, 0, 0, 120));
+        c.on_tick(T, false); // streak 1 @120
+        c.on_vote(2 * T, false, bal(Intent::Interactive as u8, 0, 0, 240)); // 目标变更
+        assert_eq!(c.on_tick(3 * T, false), Decision::Stay, "变更后第 1 拍不切");
+        assert_eq!(c.on_tick(4 * T, false), Decision::Switch { hz: 240, src: Src::Vote });
+    }
+
+    #[test]
+    fn arb_a5_down_dwell_semantics() {
+        // 正面：1s 驻留满才切（999ms 不切 / 1000ms 切）。
+        let mut a = ar_boot(60);
+        a.on_vote(0, false, bal(Intent::Maintenance as u8, 0, 0, 0));
+        assert_eq!(a.on_time(999_999_999, false), Decision::Stay);
+        assert_eq!(a.on_time(1_000_000_000, false), Decision::Switch { hz: 30, src: Src::Dwell });
+        // 同目标驻留保序：中途同目标事件不重计时（t0 不动）。
+        let mut s = ar_boot(60);
+        s.on_vote(0, false, bal(Intent::Maintenance as u8, 0, 0, 0));
+        s.on_vote(500_000_000, false, bal(Intent::Maintenance as u8, 0, 0, 30)); // pref 显式 30 同目标
+        assert_eq!(s.on_time(999_999_999, false), Decision::Stay);
+        assert_eq!(s.on_time(1_000_000_000, false), Decision::Switch { hz: 30, src: Src::Dwell });
+        // 目标离开清驻留：重降须重新满 1s（t0 重锚）。
+        let mut d = ar_boot(60);
+        d.on_vote(0, false, bal(Intent::Maintenance as u8, 0, 0, 0)); // down(30, 0)
+        d.on_vote(400_000_000, false, bal(Intent::Utility as u8, 0, 0, 0)); // target 60==cur → 清
+        d.on_vote(500_000_000, false, bal(Intent::Maintenance as u8, 0, 0, 0)); // 重锚 down(30, 500ms)
+        assert_eq!(d.on_time(1_200_000_000, false), Decision::Stay, "700ms < 1s");
+        assert_eq!(d.on_time(1_500_000_000, false), Decision::Switch { hz: 30, src: Src::Dwell });
+        // next_wake 透视：驻留臂到点。
+        let mut w = ar_boot(60);
+        w.on_vote(1_000_000_000, false, bal(Intent::Maintenance as u8, 0, 0, 0));
+        assert_eq!(w.next_wake(1_000_000_000), Some(2_000_000_000));
+    }
+
+    #[test]
+    fn arb_a5_dim_one_tier_down() {
+        // 正面（Dim 源上行）：boot 30 + Interactive → dim 降一档 60 → 升路携 Dim。
+        let mut a = ar_boot(30);
+        a.on_vote(0, false, bal(Intent::Interactive as u8, 0, 0, 120));
+        assert_eq!(a.on_power_mode(T, false, POWER_DIM), Decision::Stay, "事件不积 streak");
+        assert_eq!(a.on_tick(2 * T, false), Decision::Stay);
+        assert_eq!(a.on_tick(3 * T, false), Decision::Switch { hz: 60, src: Src::Dim });
+        // 正面（降路）：120 + DIM → 60 走驻留（降路提交源恒 Dwell）。
+        let mut d = ar_boot(60);
+        d.on_vote(0, false, bal(Intent::Interactive as u8, 0, 0, 120));
+        d.on_tick(T, false);
+        d.on_tick(2 * T, false); // 120 到位
+        assert_eq!(d.on_power_mode(3 * T, false, POWER_DIM), Decision::Stay);
+        assert_eq!(
+            d.on_time(3 * T + T_DOWN_DWELL_NS, false),
+            Decision::Switch { hz: 60, src: Src::Dwell }
+        );
+        // 负面：已最低不动（30 无更低产品档）。
+        let mut f = ar_boot(30);
+        f.on_vote(0, false, bal(Intent::Maintenance as u8, 0, 0, 0)); // target 30 == cur
+        assert_eq!(f.on_power_mode(T, false, POWER_DIM), Decision::Stay);
+        // 负面：DIM 不动无票 Platform 档（偏好修饰词——无偏好可降）。
+        let mut n = ar_boot(60);
+        assert_eq!(n.on_power_mode(0, false, POWER_DIM), Decision::Stay);
+        // 恢复：PM NORMAL 清 dim → 目标回 120 == cur → 降档驻留被清、1s 后
+        // 也不切（DIM 降档意图整体撤销）。
+        let mut r = ar_boot(60);
+        r.on_vote(0, false, bal(Intent::Interactive as u8, 0, 0, 120));
+        r.on_tick(T, false);
+        r.on_tick(2 * T, false); // 120
+        r.on_power_mode(3 * T, false, POWER_DIM); // dim → down(60, 3T) 起
+        assert_eq!(r.on_power_mode(4 * T, false, POWER_NORMAL), Decision::Stay);
+        assert_eq!(r.on_time(4 * T + T_DOWN_DWELL_NS, false), Decision::Stay, "NORMAL 撤销降档意图");
+        assert_eq!(r.hz(), 120);
+    }
+
+    #[test]
+    fn arb_a6_boost_window() {
+        // 正面：立即升（绕 streak——零拍切 120）。
+        let mut a = ar_boot(60);
+        assert_eq!(a.on_input_pulse(0, false), Decision::Switch { hz: 120, src: Src::Boost });
+        assert_eq!(a.hz(), 120);
+        // 窗内维持：400ms 重臂延窗，700ms 仍在窗（不落降）。
+        assert_eq!(a.on_input_pulse(400_000_000, false), Decision::Stay, "已 120 维持");
+        assert_eq!(a.on_time(700_000_000, false), Decision::Stay, "延窗内不降");
+        // 过窗回落：900ms 过期（boost_until=900ms）→ 驻留起算 → 1.9s 切 60。
+        assert_eq!(a.on_time(900_000_000, false), Decision::Stay);
+        assert_eq!(
+            a.on_time(1_900_000_000, false),
+            Decision::Switch { hz: 60, src: Src::Dwell }
+        );
+        // G 上限：Tiered max=90 → boost 目标量化到 60（== cur → 无升可走）。
+        let mut t = ar_boot(60);
+        t.on_vote(0, false, bal(Intent::Interactive as u8, 0, 90, 0));
+        assert_eq!(t.on_input_pulse(T, false), Decision::Stay, "90 无档可量化——停在 60");
+        // FreeRange max=90 → 连续 90 直取。
+        let mut f = ar_free(60);
+        f.on_vote(0, false, bal(Intent::Interactive as u8, 0, 90, 0));
+        assert_eq!(f.on_input_pulse(T, false), Decision::Switch { hz: 90, src: Src::Boost });
+        // 停帧态脉冲 = 活动：直接脉冲破停 + boost（Resume 证据归调用方 on_activity 序）。
+        let mut s = ar_boot(60);
+        assert_eq!(s.on_tick(0, true), Decision::StopFrame);
+        assert_eq!(s.on_input_pulse(T, false), Decision::Switch { hz: 120, src: Src::Boost });
+    }
+
+    #[test]
+    fn arb_a7_stop_and_resume() {
+        // 正面：无票 + 静默 → 停帧（幂等）+ 零醒。
+        let mut a = ar_boot(60);
+        assert_eq!(a.on_tick(0, true), Decision::StopFrame);
+        assert!(a.stopped());
+        assert_eq!(a.next_wake(0), None);
+        assert_eq!(a.on_tick(T, true), Decision::Stay, "已停保持");
+        assert_eq!(a.on_time(2 * T, true), Decision::Stay, "停帧零醒（on_time 无动作）");
+        // 负面①：非静默（armed/parked/damage）不停。
+        let mut b = ar_boot(60);
+        assert_eq!(b.on_tick(0, false), Decision::Stay);
+        assert!(!b.stopped());
+        // 负面②：非资格 intent 不停（Interactive）。
+        let mut i = ar_boot(60);
+        i.on_vote(0, true, bal(Intent::Interactive as u8, 0, 0, 0));
+        assert_eq!(i.on_tick(T, true), Decision::Stay);
+        assert!(!i.stopped());
+        // 正面②：Unspecified / Background 静默停（评估含 A7 前置——投票当拍
+        // 即停，后继拍 Stay 幂等）。
+        let mut u = ar_boot(60);
+        assert_eq!(u.on_vote(0, true, bal(Intent::Unspecified as u8, 0, 0, 0)), Decision::StopFrame);
+        assert!(u.stopped());
+        assert_eq!(u.on_tick(T, true), Decision::Stay);
+        let mut bg = ar_boot(60);
+        assert_eq!(bg.on_vote(0, true, bal(Intent::Background as u8, 0, 0, 0)), Decision::StopFrame);
+        assert!(bg.stopped());
+        // A7 先于迟滞：驻留中的票面静默化 → 停帧清驻留，恢复后重锚满窗
+        //（Background 资格票——Maintenance 要 30Hz 不入停帧集）。
+        let mut h = ar_boot(60);
+        h.on_vote(0, false, bal(Intent::Background as u8, 0, 0, 0)); // down(30, 0)
+        assert_eq!(h.on_tick(2_000_000_000, true), Decision::StopFrame, "静默即停（驻留 2s 已满也先停）");
+        assert_eq!(h.on_activity(2_000_000_000), Decision::Resume);
+        assert_eq!(h.on_time(2_500_000_000, false), Decision::Stay, "恢复后重锚 500ms < 1s");
+        assert_eq!(h.on_time(3_500_000_000, false), Decision::Switch { hz: 30, src: Src::Dwell });
+        // 活动恢复：Resume 一次，后续活动 Stay。
+        let mut r = ar_boot(60);
+        r.on_tick(0, true); // stop
+        assert_eq!(r.on_activity(T), Decision::Resume);
+        assert_eq!(r.on_activity(2 * T), Decision::Stay);
+        // 票面破坏停帧：停帧态投 Interactive 票 → Resume（单决策面——升档判据
+        // 随后继拍积累）。
+        let mut v = ar_boot(60);
+        v.on_tick(0, true); // stop
+        assert_eq!(
+            v.on_vote(T, true, bal(Intent::Interactive as u8, 0, 0, 0)),
+            Decision::Resume
+        );
+        assert_eq!(v.hz(), 60, "恢复不改档");
+        assert_eq!(v.on_tick(2 * T, true), Decision::Stay);
+        assert_eq!(v.on_tick(3 * T, true), Decision::Switch { hz: 120, src: Src::Vote });
+    }
+
+    #[test]
+    fn arb_a1_ballot_lifecycle() {
+        // 单槽替换：后票全量代前票（Utility → Interactive pref 240）。
+        let mut a = ar_boot(60);
+        a.on_vote(0, false, bal(Intent::Utility as u8, 0, 0, 0)); // target 60 == cur
+        a.on_vote(T, false, bal(Intent::Interactive as u8, 0, 0, 240));
+        assert_eq!(a.on_tick(2 * T, false), Decision::Stay);
+        assert_eq!(a.on_tick(3 * T, false), Decision::Switch { hz: 240, src: Src::Vote });
+        // 断连撤票：回落 Platform boot 档（驻留路径）。
+        assert_eq!(a.on_disconnect(4 * T, false), Decision::Stay);
+        assert_eq!(
+            a.on_time(4 * T + T_DOWN_DWELL_NS, false),
+            Decision::Switch { hz: 60, src: Src::Dwell }
+        );
+        // sticky v1 同撤：断连清票无差别（多内容面归 §6.4 刀）。
+        let mut s = ar_boot(60);
+        s.on_vote(0, false, Ballot { sticky: true, ..bal(Intent::Interactive as u8, 0, 0, 120) });
+        s.on_tick(T, false);
+        s.on_tick(2 * T, false); // 120
+        assert_eq!(s.on_disconnect(3 * T, false), Decision::Stay);
+        assert_eq!(
+            s.on_time(3 * T + T_DOWN_DWELL_NS, false),
+            Decision::Switch { hz: 60, src: Src::Dwell },
+            "sticky 票断连同撤"
+        );
+    }
+
+    #[test]
+    fn arb_a9_switch_rejected_rollback() {
+        // 升路被拒：回滚真值档 + 清 streak → 重新满 2 拍再发。
+        let mut a = ar_boot(60);
+        a.on_vote(0, false, bal(Intent::Interactive as u8, 0, 0, 120));
+        a.on_tick(T, false);
+        assert_eq!(a.on_tick(2 * T, false), Decision::Switch { hz: 120, src: Src::Vote });
+        a.on_switch_rejected(60); // guifbd：在飞窗拒 → 面板真值 60
+        assert_eq!(a.hz(), 60);
+        assert_eq!(a.on_tick(3 * T, false), Decision::Stay, "streak 已清");
+        assert_eq!(a.on_tick(4 * T, false), Decision::Switch { hz: 120, src: Src::Vote });
+        // 降路被拒：重走满窗驻留（commit 已清 down——保守侧重计时）。
+        let mut d = ar_boot(60);
+        d.on_vote(0, false, bal(Intent::Maintenance as u8, 0, 0, 0));
+        assert_eq!(d.on_time(T_DOWN_DWELL_NS, false), Decision::Switch { hz: 30, src: Src::Dwell });
+        d.on_switch_rejected(60);
+        assert_eq!(
+            d.on_time(T_DOWN_DWELL_NS + 100_000_000, false),
+            Decision::Stay,
+            "被拒重锚 100ms < 1s"
+        );
+        assert_eq!(
+            d.on_time(1_100_000_000 + T_DOWN_DWELL_NS, false),
+            Decision::Switch { hz: 30, src: Src::Dwell },
+            "重锚（1.1s）满窗再发"
+        );
+    }
+
+    #[test]
+    fn arb_t4_switch_smoothness_stack() {
+        // T4 叠层门：SoftPanel + Arbiter 全链——单次升档、seq 连续零丢、ACK
+        // 一致、仲裁乐观档与面板生效档收敛（guifbd 同款执行序）。
+        let cfg = softpanel::PanelCfg::DEFAULT;
+        let mut panel = softpanel::SoftPanel::new(cfg, 60);
+        let mut arb = Arbiter::new(&cfg, 60);
+        let mut now = 0u64;
+        let mut last_seq = 0u64;
+        let mut switches = 0u64;
+        arb.on_vote(now, false, bal(Intent::Interactive as u8, 0, 0, 120));
+        for _ in 0..12 {
+            if let Some(rep) = panel.on_point(now) {
+                assert_eq!(rep.seq, last_seq + 1, "无故障零丢弃——seq 连续");
+                last_seq = rep.seq;
+            }
+            if let Decision::Switch { hz, .. } = arb.on_tick(now, false) {
+                if panel.request_refresh(hz).is_none() {
+                    arb.on_switch_rejected(panel.hz());
+                } else {
+                    switches += 1;
+                }
+            }
+            now += panel.period_ns();
+        }
+        assert_eq!(switches, 1, "单次升档（无抖动重复切）");
+        assert_eq!(panel.hz(), 120, "面板生效 120");
+        assert_eq!(arb.hz(), 120, "仲裁乐观档与面板收敛");
+        let ack = panel.last_ack().unwrap();
+        assert_eq!(ack.new_refresh_ns as u64, 8_333_333, "ACK 周期 = 120Hz");
+        assert_eq!(ack.effective_ns, 3 * T, "生效拍 = 受理后第 2 拍标称点");
+        assert_eq!(last_seq, 12, "12 拍全投递（T4 丢 vblank = 0 ≤ 1）");
     }
 }

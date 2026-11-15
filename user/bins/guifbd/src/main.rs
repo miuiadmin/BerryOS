@@ -213,6 +213,18 @@ fn close_all(hs: &[Handle]) {
     }
 }
 
+/// 刀3 决策源证据行标（小写——串口可 grep 面）。
+fn arb_src_label(s: gp::arbiter::Src) -> &'static str {
+    match s {
+        gp::arbiter::Src::Vote => "vote",
+        gp::arbiter::Src::Dwell => "dwell",
+        gp::arbiter::Src::Boost => "boost",
+        gp::arbiter::Src::Dim => "dim",
+        gp::arbiter::Src::Platform => "platform",
+        gp::arbiter::Src::Fallback => "fallback",
+    }
+}
+
 /// hdi PREPARE 槽（记账面——v1 COMMIT 不触碰 VMO 内容，别名只存不读）。
 #[derive(Clone, Copy)]
 struct Slot {
@@ -241,10 +253,9 @@ struct Srv<'a> {
     /// 在途别名表（credits = len；RELEASE 全量归还清零）。
     held: [(u32, Handle); CREDITS],
     held_n: usize,
-    /// VOTE 票面（记账不仲裁——§0 不做面）。
-    vote: (u8, u8, u16, u16, u16),
-    /// POWER_MODE 最近值（同上）。
-    power_mode: u8,
+    /// 刀3 仲裁器（§6：票簿 + A 规则裁决纯核——panel 是执行面，arb 是决
+    /// 策面；VOTE/POWER_MODE 旧记账字段收编于此）。
+    arb: gp::arbiter::Arbiter,
     // —— hdi 域（软 vsync）——
     /// 软面板拍点状态机（刀2 §5：FREE 零扰动 / DET 虚拟钟 / 故障旋钮；
     /// hz·period·模式·点序单源在此——旧 panel_hz/panel_period_ns/vb_seq
@@ -287,8 +298,10 @@ impl<'a> Srv<'a> {
         boot_hz: u16,
     ) -> Self {
         // 语义层校验/回退先走（loud 诊断行在 boot_panel_tier），SoftPanel
-        // 构造内自查表落周期——period 首值不外传。
+        // 构造内自查表落周期——period 首值不外传；仲裁器同 boot 档起（A11
+        // 无票缺省 = 平台表达档）。
         let (hz, _) = boot_panel_tier(&cfg, boot_hz);
+        let arb = gp::arbiter::Arbiter::new(&cfg, hz);
         Srv {
             con,
             w,
@@ -299,8 +312,7 @@ impl<'a> Srv<'a> {
             tokens: [(0, 0); TOKEN_RING],
             held: [(0, 0); CREDITS],
             held_n: 0,
-            vote: (0, 0, 0, 0, 0),
-            power_mode: 0,
+            arb,
             panel: gp::softpanel::SoftPanel::new(cfg, hz),
             vb_next_ns: 0,
             vb_scheduled: false,
@@ -376,6 +388,10 @@ impl<'a> Srv<'a> {
             }
         }
         self.vb_next_ns = next;
+        // 刀3 拍后裁决（A5 streak 随拍积；armed/parked 双空的末拍 =
+        // quiet=true → A7 停帧判拍；boost 窗内禁停——quiet 汇拢面）。
+        let d = self.arb.on_tick(point, self.quiet_now(point));
+        self.arb_exec(d);
         if !self.vb_armed && !self.vb_parked {
             self.vb_scheduled = false;
         }
@@ -395,10 +411,55 @@ impl<'a> Srv<'a> {
             st_rep(ch, gp::ST_BUSY);
             return;
         }
+        // 刀3 A7：等拍即活动——停帧破除（Resume 证据）先于入座排点。
+        let d = self.arb.on_activity(now_ns());
+        self.arb_exec(d);
         self.vb_parked = true;
         self.vb_park_ch = ch;
         self.vb_park_timing = timing;
         self.vsync_schedule();
+    }
+
+    /// A7 静默判定（armed/parked/boost 窗三汇拢；SUBMIT/pulse 的活动破除
+    /// 走 on_activity 直达面，不入此布尔）。
+    fn quiet_now(&self, now: u64) -> bool {
+        !self.vb_armed && !self.vb_parked && !self.arb.boost_active(now)
+    }
+
+    /// 决策执行面（刀3 A9）：Switch → 软面板切档受理（拒 → 回滚重裁）+
+    /// 排点驱动在飞 2 帧窗；StopFrame/Resume → A7 证据行（调度语义即零
+    /// 唤醒基线：撤点 = 不排点；Resume 不自排点——活动源（armed/park 排
+    /// 点 / pulse 的 Switch 排点）各持排点权）。证据行无 ` ok` 形态（smoke
+    /// 标记互撞纪律）。
+    fn arb_exec(&mut self, d: gp::arbiter::Decision) {
+        if self.arb.take_warn_no_g() {
+            println!("PANELARB nog");
+        }
+        match d {
+            gp::arbiter::Decision::Stay => {}
+            gp::arbiter::Decision::Switch { hz, src } => {
+                if self.panel.request_refresh(hz).is_none() {
+                    self.arb.on_switch_rejected(self.panel.hz());
+                } else {
+                    self.vsync_schedule(); // 在飞 2 帧窗须拍驱动（armed/parked 可双空）
+                    println!("PANELARB sw hz={} src={}", hz, arb_src_label(src));
+                }
+            }
+            gp::arbiter::Decision::StopFrame => println!("PANELARB stop"),
+            gp::arbiter::Decision::Resume => println!("PANELARB resume"),
+        }
+    }
+
+    /// serve 时钟醒检查（回环顶）：仲裁 next_wake 到点 → on_time 无拍评
+    /// 估（降档驻留 / boost 到期推进——停帧态恒 None 零醒）。
+    fn arb_on_time(&mut self) {
+        let now = now_ns();
+        if let Some(w) = self.arb.next_wake(now) {
+            if now >= w {
+                let d = self.arb.on_time(now, self.quiet_now(now));
+                self.arb_exec(d);
+            }
+        }
     }
 
     /// present 域轮询（一路至多一条：严格串行 RPC；返回是否处理过消息）。
@@ -587,8 +648,21 @@ impl<'a> Srv<'a> {
                     st_rep(ch, gp::ST_BAD);
                     return;
                 }
-                // 票面收下即回执（仲裁策略挂 GUI-6+——§0 不做面）。
-                self.vote = (sticky, scene, min_hz, max_hz, preferred_hz);
+                // 刀3 §6：票入仲裁器（A1 入槽替换 + 即时裁决——事件不积
+                // streak，升档随拍确认）。
+                let now = now_ns();
+                let d = self.arb.on_vote(
+                    now,
+                    self.quiet_now(now),
+                    gp::arbiter::Ballot {
+                        sticky: sticky != 0,
+                        intent: scene,
+                        min_hz,
+                        max_hz,
+                        preferred_hz,
+                    },
+                );
+                self.arb_exec(d);
                 st_rep(ch, gp::ST_OK);
             }
             Some(gp::PresentReq::PowerMode { mode }) => {
@@ -597,7 +671,26 @@ impl<'a> Srv<'a> {
                     st_rep(ch, gp::ST_BAD);
                     return;
                 }
-                self.power_mode = mode; // PM 脉冲真落地挂 GUI-6+——记账面
+                // 刀3 A5：POWER_DIM 置位 = 偏好降一档（仲裁器 dim 位）。
+                let now = now_ns();
+                let d = self.arb.on_power_mode(now, self.quiet_now(now), mode);
+                self.arb_exec(d);
+                st_rep(ch, gp::ST_OK);
+            }
+            Some(gp::PresentReq::InputPulse) => {
+                if !hs.is_empty() {
+                    close_all(hs);
+                    st_rep(ch, gp::ST_BAD);
+                    return;
+                }
+                // 刀3 A6：脉冲即活动（停帧破除取证）→ boost 起臂立即升
+                //（绕 streak）。任何持 present 端的观察者可发——v1 = 客户
+                // 端输入环，inputd 直连挂 extras 抬帽刀。
+                let now = now_ns();
+                let d = self.arb.on_activity(now);
+                self.arb_exec(d);
+                let d = self.arb.on_input_pulse(now, false);
+                self.arb_exec(d);
                 st_rep(ch, gp::ST_OK);
             }
             None => {
@@ -718,6 +811,10 @@ impl<'a> Srv<'a> {
             }
         }
         // ③ 记账：谱系抬高 + token 入环 + 别名入 held。
+        // 刀3 A7：damage 即活动——停帧破除取证（blit-at-SUBMIT 已同步上
+        // 屏，Resume 不自排点——零唤醒基线不破）。
+        let d = self.arb.on_activity(now_ns());
+        self.arb_exec(d);
         self.present_seq = self.present_seq.wrapping_add(1);
         self.submit_seq = self.submit_seq.wrapping_add(1);
         let token = self.submit_seq;
@@ -753,6 +850,9 @@ impl<'a> Srv<'a> {
                     }
                     self.vb_ev = hs[0];
                     self.vb_armed = true;
+                    // 刀3 A7：vsync 需求即活动——停帧破除取证先于排点。
+                    let d = self.arb.on_activity(now_ns());
+                    self.arb_exec(d);
                     self.vsync_schedule();
                     st_rep(ch, gp::ST_OK);
                 }
@@ -768,6 +868,11 @@ impl<'a> Srv<'a> {
                     self.vb_armed = false;
                     if !self.vb_parked {
                         self.vb_scheduled = false; // 双空撤点（零唤醒回位）
+                        // 刀3 A7：撤点即静默判拍（此后无拍——on_time 面评估；
+                        // 停帧证据行在席）。
+                        let now = now_ns();
+                        let d = self.arb.on_time(now, self.quiet_now(now));
+                        self.arb_exec(d);
                     }
                     st_rep(ch, gp::ST_OK);
                 }
@@ -1102,6 +1207,7 @@ fn main() {
     // 零唤醒不变量：无未决请求 = 无主动 send（IDLE 面结构先行）。
     loop {
         srv.tick_vsync();
+        srv.arb_on_time(); // 仲裁时钟醒（降档驻留 / boost 到期——无拍推进面）
         if srv.poll_present(hpresent) {
             continue;
         }
@@ -1115,6 +1221,12 @@ fn main() {
         let mut deadline = t + IDLE_CAP_NS;
         if srv.vb_scheduled && srv.vb_next_ns < deadline {
             deadline = srv.vb_next_ns;
+        }
+        // 刀3 仲裁醒臂（A5 驻留到点 / A6 窗到期；停帧态 None 零醒）。
+        if let Some(w) = srv.arb.next_wake(t) {
+            if w < deadline {
+                deadline = w;
+            }
         }
         let hs = [hpresent, hhdi, hpipe];
         let sigs = [SIGNAL_READABLE, SIGNAL_READABLE, SIGNAL_READABLE];

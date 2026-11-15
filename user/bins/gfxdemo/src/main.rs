@@ -10,13 +10,16 @@
 //! VBLANK_WAIT / PREPARE / COMMIT），全断言过才打 `GFX ok`（smoke-image
 //! EFI 相 ECO 标记）。服务端真值 `GFXF ok n=` 由 guifbd 打——两标记分立
 //! = 故障定位面（GFXF 缺 = 服务端 blit/抽样/记账炸；GFXF 在而 GFX 缺 =
-//! 客户端 RPC 链炸）。
+//! 客户端 RPC 链炸）。刀3 起序中插仲裁活证三段（INPUT_PULSE boost /
+//! Maintenance 降档驻留 / Background 停帧恢复——`gfx: arb1/arb2` 客户端
+//! 断言 + `PANELARB` 服务端串口证据行）。
 //!
 //! **端点拓扑**（GUI-5 §2/§7 Q12）：svcmgr 在 wmd 预拉段 channel_pair()
 //! 接线，wm 客户端端随本程序 env extras 直递（5/8：console/stdin/
 //! self_proc/self_vmar/wm_cli——libc `wm_cli_h()` 读 GIFT_H[0]）。三域
-//! **同端混流**：wm 0x60..=0x65 wmd 本地权威处理；present 1..=6 与 hdi
-//! 0x40..=0x43 经 wmd 分发表透传 guifbd（中继不改 op 编码——本程序断言
+//! **同端混流**：wm 0x60..=0x65 wmd 本地权威处理；present 1..=7（0x07
+//! INPUT_PULSE 刀3 入域）与 hdi 0x40..=0x45 经 wmd 分发表透传 guifbd（中
+//! 继不改 op 编码——本程序断言
 //! 面零变化，仅 rpc 首参换端；guifbd 零改动）。rootfs 相 wmd 随 fb 探测
 //! 门不被拉起 → 本程序不被拉起；bsh 手跑 `wm_cli_h()==0` → 一行降级
 //! 诊断 + exit(0)（netd 双门先例同款——非错误面，`gfx: wm absent` 永不
@@ -188,6 +191,46 @@ fn expect_ok(
         Some(st) => fail(&format!("{what} st={st}")),
         None => fail(&format!("{what} rep bad len={n}")),
     }
+}
+
+/// PANEL_CAPS 单趟——current_hz 现值（刀3 仲裁活证面复用：boost/降档后
+/// 断言软面板已切）。
+fn caps_cur_hz(hw: Handle) -> u16 {
+    let mut req = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let m = gp::encode_panel_caps_req(&mut req);
+    let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+    match gp::parse_panel_caps_rep(&rep[..n]) {
+        Some(c) => c.current_hz,
+        None => fail(&format!("panel caps bad st={}", rep[0])),
+    }
+}
+
+/// VBLANK_WAIT 单趟——等一个拍点（返回 seq；刀3 切档生效窗 = request 后
+/// 拍点过 2 个：softpanel pending 2 帧递减、`left<=1` 提交）。
+fn vb_point(hw: Handle) -> u64 {
+    let mut req = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let m = gp::encode_vblank_wait_req(&mut req);
+    let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+    match gp::parse_vblank_rep(&rep[..n]) {
+        Some(v) => v.seq as u64,
+        None => fail(&format!("vblank rep bad st={}", rep[0])),
+    }
+}
+
+/// 单调窗睡眠：永不置位的 event 上 wait 到点 = 纯超时睡眠（A5 驻留窗
+/// 计时——输入通道不用，严格串行 RPC 面不沾通道信号语义）。
+fn sleep_ns(ns: u64) {
+    let mut ev: Handle = 0;
+    if berry_event_create(0, &mut ev) != 0 || ev == 0 {
+        fail("event create sleep");
+    }
+    let mut obs = 0u64;
+    let _ = berry_object_wait_one(ev, SIGNAL_READABLE, now() + ns, &mut obs);
+    let _ = berry_handle_close(ev);
 }
 
 fn main() {
@@ -530,6 +573,128 @@ fn main() {
         "gfx: vb3 seq={} ts={} refresh={}",
         vbt.seq, vbt.ts_ns, vbt.refresh_ns
     );
+
+    // —— 刀3 仲裁活证面三段：A6 boost → A5 降档驻留 → A7 停帧/恢复。
+    // 前置清场（PowerMode/VOTE 已从「只记账」转仲裁输入——刀3 起是活语义）：
+    // POWER_NORMAL 清前序 DIM 档 + VOTE Unspecified 换中性票（前序
+    // Interactive max=60 票会把 boost 目标帽进 G=[30,60]——A2 全局区间
+    // 票面 max 参与）。服务端证据行 = `PANELARB sw/stop/resume`（串口面，
+    // guifbd 仲裁执行处打出）。
+    let m = enc_req(gp::encode_present_req(
+        &mut req,
+        &gp::PresentReq::PowerMode { mode: gp::POWER_NORMAL },
+    ));
+    expect_ok(hw, &req[..m], &[], &mut rep, &mut rhs, "power normal");
+    let m = enc_req(gp::encode_present_req(
+        &mut req,
+        &gp::PresentReq::Vote {
+            sticky: 0,
+            scene: gp::Intent::Unspecified as u8,
+            min_hz: 0,
+            max_hz: 0,
+            preferred_hz: 0,
+        },
+    ));
+    expect_ok(hw, &req[..m], &[], &mut rep, &mut rhs, "vote neutral");
+
+    // (a) A6 触摸加速：脉冲 → 服务端即时 `sw hz=120 src=boost`；拍点过
+    // 2 个 = 生效窗提交 → caps 断言 120。
+    let m = enc_req(gp::encode_present_req(&mut req, &gp::PresentReq::InputPulse));
+    expect_ok(hw, &req[..m], &[], &mut rep, &mut rhs, "input pulse");
+    let _ = vb_point(hw);
+    let _ = vb_point(hw);
+    let hz1 = caps_cur_hz(hw);
+    if hz1 != 120 {
+        fail(&format!("arb1 hz={hz1} expect=120"));
+    }
+    println!("gfx: arb1 hz={hz1}");
+    // boost 窗尾让净（500ms 帽 + 100ms 裕）——否则 (b) 的降档驻留锚点被
+    // boost 目标期顶住（A5 同向换目标即重锚），时序测算失据。
+    sleep_ns(600_000_000);
+
+    // (b) A5 降档驻留：Maintenance 票 pref=30 → 服务端 1s 驻留（客户端睡
+    // 1.5s 盖帽 TCG 抖动）→ 拍点过 3 个（驻留到期拍 + 2 帧生效窗）→ caps
+    // 断言 30。
+    let m = enc_req(gp::encode_present_req(
+        &mut req,
+        &gp::PresentReq::Vote {
+            sticky: 0,
+            scene: gp::Intent::Maintenance as u8,
+            min_hz: 0,
+            max_hz: 0,
+            preferred_hz: 30,
+        },
+    ));
+    expect_ok(hw, &req[..m], &[], &mut rep, &mut rhs, "vote maintenance");
+    sleep_ns(1_500_000_000);
+    let _ = vb_point(hw);
+    let _ = vb_point(hw);
+    let _ = vb_point(hw);
+    let hz2 = caps_cur_hz(hw);
+    if hz2 != 30 {
+        fail(&format!("arb2 hz={hz2} expect=30"));
+    }
+    println!("gfx: arb2 hz={hz2}");
+
+    // (c) A7 静止停帧/恢复：Background 资格票 → REG_VBLANK(0) 撤点
+    //（armed/parked 双空 + 票面 BG = 停帧资格 → 服务端 `PANELARB stop`
+    // 行；关闭形宽收 0/1 attach）→ 重臂（ev3 新事件——前序 ev 已迁服务
+    // 端，本表值 stale）→ on_activity 恢复（`PANELARB resume` 行）。
+    let m = enc_req(gp::encode_present_req(
+        &mut req,
+        &gp::PresentReq::Vote {
+            sticky: 0,
+            scene: gp::Intent::Background as u8,
+            min_hz: 0,
+            max_hz: 0,
+            preferred_hz: 0,
+        },
+    ));
+    expect_ok(hw, &req[..m], &[], &mut rep, &mut rhs, "vote background");
+    let m = gp::encode_reg_vblank_req(&mut req, 0);
+    expect_ok(hw, &req[..m], &[], &mut rep, &mut rhs, "reg vblank arb off");
+    let mut ev3: Handle = 0;
+    if berry_event_create(0, &mut ev3) != 0 || ev3 == 0 {
+        fail("event create 3");
+    }
+    let m = gp::encode_reg_vblank_req(&mut req, 1);
+    expect_ok(hw, &req[..m], &[ev3], &mut rep, &mut rhs, "reg vblank arb on");
+
+    // (d) A5 升档连击：Interactive 票 max=120 pref=120 → 上行 2 拍 streak
+    //（升档无驻留——TCG 时序鲁棒）→ 生效窗 2 拍 → caps 断言 120（验收面
+    // 「VOTE 120 票 → current_hz 120」）。收尾回中性票（Unspecified 停帧
+    // 资格在列——尾序 REG_VBLANK(0) 撤点仍可停帧）。
+    let m = enc_req(gp::encode_present_req(
+        &mut req,
+        &gp::PresentReq::Vote {
+            sticky: 0,
+            scene: gp::Intent::Interactive as u8,
+            min_hz: 0,
+            max_hz: 120,
+            preferred_hz: 120,
+        },
+    ));
+    expect_ok(hw, &req[..m], &[], &mut rep, &mut rhs, "vote up");
+    let _ = vb_point(hw);
+    let _ = vb_point(hw);
+    let _ = vb_point(hw);
+    let _ = vb_point(hw);
+    let hz3 = caps_cur_hz(hw);
+    if hz3 != 120 {
+        fail(&format!("arb3 hz={hz3} expect=120"));
+    }
+    println!("gfx: arb3 hz={hz3}");
+    let m = enc_req(gp::encode_present_req(
+        &mut req,
+        &gp::PresentReq::Vote {
+            sticky: 0,
+            scene: gp::Intent::Unspecified as u8,
+            min_hz: 0,
+            max_hz: 0,
+            preferred_hz: 0,
+        },
+    ));
+    expect_ok(hw, &req[..m], &[], &mut rep, &mut rhs, "vote neutral 2");
 
     let mut alias2: Handle = 0;
     if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias2) != 0 || alias2 == 0 {

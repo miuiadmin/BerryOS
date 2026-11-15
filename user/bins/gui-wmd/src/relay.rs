@@ -5,7 +5,7 @@
 //! ST_BAD 拒线。
 //!
 //! **分发表执法**（R1 应修①，在 main.rs `on_wm` 入口）：present
-//! 1..=6 / hdi 0x40..=0x44 → 本模块；wm 0x60..=0x7F → 本地表；其余 op
+//! 1..=7（0x07 INPUT_PULSE 刀3 入域）/ hdi 0x40..=0x45 → 本模块；wm 0x60..=0x7F → 本地表；其余 op
 //! （含 0x20/0x21 input 域错投）→ 1B ST_BAD。随行 handle 数与两域协议
 //! 定值不符 → ST_BAD + close（防坏客户端向中继塞 handle——send 即
 //! take，违规面必须先收下再关，不 close 即泄漏）。
@@ -47,7 +47,7 @@ fn expect_attach(msg: &[u8]) -> Option<(usize, usize)> {
             _ => None,
         },
         Some(&op)
-            if (gp::OP_GETINFO..=gp::OP_POWER_MODE).contains(&op)
+            if (gp::OP_GETINFO..=gp::OP_INPUT_PULSE).contains(&op)
                 || (gp::OP_VBLANK_WAIT..=gp::OP_VBLANK_TIMING).contains(&op) =>
         {
             Some((0, 0))
