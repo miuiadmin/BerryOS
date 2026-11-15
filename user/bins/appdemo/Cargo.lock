@@ -6,16 +6,10 @@ version = 4
 name = "appdemo"
 version = "0.2.0"
 dependencies = [
- "berry-gfx",
  "berry-guiproto",
  "berry-libc",
  "berry-sys",
- "berry-ui",
 ]
-
-[[package]]
-name = "berry-fbcon"
-version = "0.2.0"
 
 [[package]]
 name = "berry-fsclient"
@@ -29,13 +23,6 @@ dependencies = [
 [[package]]
 name = "berry-fsproto"
 version = "0.2.0"
-
-[[package]]
-name = "berry-gfx"
-version = "0.2.0"
-dependencies = [
- "berry-fbcon",
-]
 
 [[package]]
 name = "berry-guiproto"
@@ -89,11 +76,3 @@ version = "0.2.0"
 [[package]]
 name = "berry-tls"
 version = "0.2.0"
-
-[[package]]
-name = "berry-ui"
-version = "0.2.0"
-dependencies = [
- "berry-gfx",
- "berry-guiproto",
-]

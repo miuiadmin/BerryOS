@@ -340,3 +340,205 @@ pub fn add_switch(
     ui.set_offset(k, knob_off as i32, 0)?;
     Ok(holder)
 }
+
+// —— AppShell（刀 4）：应用页脚手架——TopBar 返回键+标题 / 内容槽 /
+//    可选 TabBar 底栏（三家并集 E 组落地：TopAppBar=NavigationBar=Navigation
+//    → TopBar；Tab Bar=NavigationBar(M3)=Tabs(OH) → TabBar）——
+
+/// TopBar 高 56vp（OH Navigation Mini 模式 = M3 TopAppBar 同值合体）。
+pub const TOPBAR_H_VP: u32 = 56;
+/// BerryOS 标准图标 id 约定表（供件侧 IconSource 按 id 绘制）：
+/// 1 = back 箭头（TopBar 返回键）。应用自有图标从 0x100 起自编。
+pub const ICON_ID_BACK: u16 = 1;
+/// 返回键图标位 24vp（M3/OH 图标标准尺寸）。
+pub const ICON_VP: u32 = 24;
+/// TopBar 标题字号（OH body1 16fp 档）。
+pub const TITLE_SCALE: FontSize = FontSize::S16x32;
+
+/// AppShell 布局产物句柄。
+pub struct AppShell {
+    /// 根容器（挂应用窗）。
+    pub root: crate::NodeId,
+    /// 内容槽（应用自体内容挂点——位于 TopBar 下、TabBar 上）。
+    pub content: crate::NodeId,
+    /// 返回键触发节点（press_map/Click 消费）。
+    pub back: crate::NodeId,
+    /// 标题文本节点（set_text 可换）。
+    pub title: crate::NodeId,
+    /// TabBar 页签触发节点组（无 TabBar = count 0；帽 5——iOS TabBar
+    /// 官方建议 3-5 页签）。
+    pub tabs: [crate::NodeId; 5],
+    /// 页签实数。
+    pub tab_count: usize,
+}
+
+/// 装配 AppShell：Col(根) → [TopBar(Row: back + 标题 + 右槽), 内容 Pad,
+/// TabBar(Row: N 页签)]。`tab_labels` 空 = 无底栏（纯 TopBar 页）。
+/// 按压反馈：back 与每页签登记 press_map 面由调用方收表（shell 不自持
+/// ——press_map 是 Ui 单表，应用自汇总，壳只给 face 节点）。
+pub fn add_app_shell(
+    ui: &mut crate::UiMain,
+    parent: crate::NodeId,
+    density: u32,
+    title: &[u8],
+    tab_labels: &[&[u8]],
+) -> Result<AppShell, crate::UiError> {
+    use crate::desc::{ColProps, PadProps, RowProps, TextProps, TextStyle, IconProps};
+    use crate::layout::CrossAlign;
+    let root = ui.add(
+        parent,
+        ViewSpec {
+            kind: ViewKind::Col,
+            key: 0,
+            props: Props::Col(ColProps { gap: 0, w: None, h: None, cross: CrossAlign::Stretch }),
+        },
+    )?;
+    // —— TopBar：白底行 + 返回键（icon）+ 标题左对齐 + 弹性空 ——
+
+    let topbar = ui.add(
+        root,
+        ViewSpec {
+            kind: ViewKind::Pad,
+            key: 0,
+            props: Props::Pad(PadProps { all: 4 * density }),
+        },
+    )?;
+    let bar_bg = ui.add(
+        topbar,
+        ViewSpec {
+            kind: ViewKind::Rect,
+            key: 0,
+            props: Props::Rect(RectProps { bg: CARD_BG, w: None, h: Some(TOPBAR_H_VP * density), radius: 0 }),
+        },
+    )?;
+    let bar_row = ui.add(
+        topbar,
+        ViewSpec {
+            kind: ViewKind::Row,
+            key: 0,
+            props: Props::Row(RowProps {
+                gap: 12 * density,
+                w: None,
+                h: Some(TOPBAR_H_VP * density),
+                cross: CrossAlign::Center,
+            }),
+        },
+    )?;
+    // 返回键：Pad 叠加容器 {Rect 按压面, Icon 箭头}——同 launcher nav 键
+    // 结构（Rect 是叶子不容子——BadParent 判例 2026-11-15）。
+    let back_holder = ui.add(
+        bar_row,
+        ViewSpec {
+            kind: ViewKind::Pad,
+            key: 0,
+            props: Props::Pad(PadProps { all: 0 }),
+        },
+    )?;
+    let back_face = ui.add(
+        back_holder,
+        ViewSpec {
+            kind: ViewKind::Rect,
+            key: 0,
+            props: Props::Rect(RectProps {
+                bg: CARD_BG,
+                w: Some(ICON_VP * density),
+                h: Some(ICON_VP * density),
+                radius: (8 * density) as u16,
+            }),
+        },
+    )?;
+    let back = ui.add(
+        back_holder,
+        ViewSpec {
+            kind: ViewKind::Icon,
+            key: 0,
+            props: Props::Icon(IconProps {
+                // 标准图标 id（BerryOS 约定表）：1=back 箭头——供件侧
+                //（IconSource 实现）按 id 绘制；launcher 侧映射 NAV_BACK。
+                id: ICON_ID_BACK,
+                fg: TEXT_PRIMARY,
+                w: Some(ICON_VP * density),
+                h: Some(ICON_VP * density),
+            }),
+        },
+    )?;
+    let title_node = ui.add(bar_row, text_spec_title(title, density)?)?;
+    // —— 内容槽：TopBar 下满宽 ——
+
+    let content = ui.add(
+        root,
+        ViewSpec {
+            kind: ViewKind::Pad,
+            key: 0,
+            props: Props::Pad(PadProps { all: 0 }),
+        },
+    )?;
+    // —— TabBar（可选）：BottomTabs 48vp + 页签 Icon+文（v1 文本页签）——
+
+    let mut tabs = [crate::NodeId(0); 5];
+    let mut tab_count = 0usize;
+    if !tab_labels.is_empty() {
+        let tabbar = ui.add(
+            root,
+            ViewSpec {
+                kind: ViewKind::Row,
+                key: 0,
+                props: Props::Row(RowProps {
+                    gap: 0,
+                    w: None,
+                    h: Some(TABS_VP * density),
+                    cross: CrossAlign::Center,
+                }),
+            },
+        )?;
+        let _bar_bg2 = ui.add(
+            tabbar,
+            ViewSpec {
+                kind: ViewKind::Rect,
+                key: 0,
+                props: Props::Rect(RectProps { bg: CARD_BG, w: None, h: Some(TABS_VP * density), radius: 0 }),
+            },
+        )?;
+        for (ti, label) in tab_labels.iter().enumerate().take(5) {
+            let t = ui.add(
+                tabbar,
+                ViewSpec {
+                    kind: ViewKind::Col,
+                    key: 0,
+                    props: Props::Col(ColProps {
+                        gap: 2 * density,
+                        w: None,
+                        h: None,
+                        cross: CrossAlign::Center,
+                    }),
+                },
+            )?;
+            let tf = ui.add(
+                t,
+                ViewSpec {
+                    kind: ViewKind::Text,
+                    key: 0,
+                    props: Props::Text(TextProps {
+                        style: TextStyle { fg: TEXT_PRIMARY, bg: None, scale: FontSize::S8x16 },
+                        text: TextBuf::new(label)?,
+                    }),
+                },
+            )?;
+            tabs[ti] = tf;
+            tab_count += 1;
+        }
+    }
+    let _ = (bar_bg, back_face);
+    Ok(AppShell { root, content, back, title: title_node, tabs, tab_count })
+}
+
+fn text_spec_title(text: &[u8], _density: u32) -> Result<ViewSpec, crate::UiError> {
+    Ok(ViewSpec {
+        kind: ViewKind::Text,
+        key: 0,
+        props: Props::Text(TextProps {
+            style: TextStyle { fg: TEXT_PRIMARY, bg: None, scale: TITLE_SCALE },
+            text: TextBuf::new(text)?,
+        }),
+    })
+}

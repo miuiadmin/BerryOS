@@ -226,3 +226,21 @@ fn progress_spec_capsule_pair() {
         _ => panic!(),
     }
 }
+
+#[test]
+fn app_shell_topbar_back_title_tabs_tree() {
+    use berry_ui::components::{add_app_shell, TABS_VP, TOPBAR_H_VP, ICON_ID_BACK};
+    let mut ui = mk_ui();
+    let root = ui.root();
+    let shell = add_app_shell(&mut ui, root, 1, b"Settings", &[b"General", b"About"]).unwrap();
+    assert_eq!(shell.tab_count, 2);
+    ui.layout();
+    // back 键 kind = Icon 且 a11y 可挂。
+    assert_eq!(ui.kind_of(shell.back).unwrap(), berry_ui::ViewKind::Icon);
+    // 标题在。
+    let _ = ui.bounds(shell.title).unwrap();
+    // content 空 Pad 布局高 0 合理——验证 TabBar 首页签 bounds 有效。
+    let t0 = ui.bounds(shell.tabs[0]).unwrap();
+    assert!(t0.w > 0, "页签有测量宽 {t0:?}");
+    let _ = (TABS_VP, TOPBAR_H_VP, ICON_ID_BACK);
+}
