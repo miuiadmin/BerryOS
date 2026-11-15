@@ -21,10 +21,18 @@
 //!
 //! **serve 两路 poll-first**：wm_srv→push_srv 确定性轮询（一路至多一条：
 //! 两客户端面各自严格串行 RPC），全 EAGAIN 才 `berry_object_wait_many`
-//! n=2 并等；deadline = now+10s **进调用本身**（guifbd 三路 serve 同款
+//! 并等；deadline = now+10s **进调用本身**（guifbd 三路 serve 同款
 //! ——醒来后补查不够）；到点 = 合法空闲重臂续等（真断链面 = recv 非
 //! -EAGAIN 错码照 trap）。每轮 poll 前重置 nb/nh 容量（recv 出参 in-out，
 //! 漏重置 = 恒 -EINVAL 死循环）。
+//!
+//! **波3 批A serve 扩面（设计稿 §3——零新增线程）**：pending back 单槽
+//! 三查进循环——①属主端 BACK_ACK 收割（`table.back_evt` 至多一路，挂进
+//! 轮询序与等待集，n ≤ 3 ≤ wait_many 帽 16）②`table.back_tick(now)` 到期
+//! 检查（兜底 DESTROY 走 remove 既有链）③等待集 deadline 与 back 到期线
+//! 取近（500ms 兜底不被 10s 空闲帽拖迟）。属主事件通道是 gift 端单向
+//! 通知面（非 RPC 请求）——严格串行 RPC 结构不变，下述新鲜度注记的
+//! 「第二 wm RPC 客户端」门不因批A 触发。
 //!
 //! **新鲜度结构注记（§7 Q10）**：单 wm 客户端串行下中继期间表不可能变 =
 //! 零新鲜度损失——serve 单线程，中继透传（present/hdi RPC）阻塞期间不可
@@ -216,8 +224,9 @@ fn main() {
     println!("gui-wmd: up");
 
     // —— serve 两路 poll-first：wm_srv→push_srv 确定性轮询；全 EAGAIN
-    // 才 wait_many n=2 并等（deadline 进调用本身）。命中/到点皆回环顶
-    // 两路重询（poll-first 无丢唤醒）。
+    // 才 wait_many 并等（deadline 进调用本身）。命中/到点皆回环顶
+    // 两路重询（poll-first 无丢唤醒）。波3 批A：pending back 三查插在
+    // 两常驻路之后（ACK 收割 → 到期检查），等待集按需挂第三路。
     loop {
         if let Some((msg, hs)) = poll(wm_srv) {
             on_wm(&mut table, present_cli, hdi_cli, wm_srv, &msg.0[..msg.1], &hs.0[..hs.1]);
@@ -227,15 +236,38 @@ fn main() {
             on_push(&mut table, push_srv, &msg.0[..msg.1], &hs.0[..hs.1]);
             continue;
         }
-        let hs = [wm_srv, push_srv];
-        let sigs = [SIGNAL_READABLE, SIGNAL_READABLE];
+        // 波3 批A ①：pending back 的属主端 BACK_ACK 收割（随行 handle 违
+        // 规面即收即关——属主→wmd 方向零随行契约）。
+        if let Some(evt) = table.back_evt() {
+            if let Some((msg, hs)) = poll(evt) {
+                table.back_ack(&msg.0[..msg.1]);
+                close_all(&hs.0[..hs.1]);
+                continue;
+            }
+        }
+        // 波3 批A ②：兜底到期检查（表未变 → remove(目标窗)——refocus 走
+        // 既有链；空转 pending=None 即返，零成本）。
+        table.back_tick(now_ns());
+        // 波3 批A ③：等待集按需挂 pending 属主端（n ≤ 3）；deadline 与
+        // back 到期线取近。
+        let mut hs = [wm_srv, push_srv, 0 as Handle];
+        let sigs = [SIGNAL_READABLE, SIGNAL_READABLE, SIGNAL_READABLE];
+        let mut n = 2usize;
+        let mut deadline = now_ns() + WMD_IDLE_CAP_NS;
+        if let Some(evt) = table.back_evt() {
+            hs[2] = evt;
+            n = 3;
+            if let Some(d) = table.back_deadline() {
+                deadline = deadline.min(d);
+            }
+        }
         let mut idx = 0usize;
         let mut obs = 0u64;
         let s = berry_object_wait_many(
             hs.as_ptr(),
             sigs.as_ptr(),
-            2,
-            now_ns() + WMD_IDLE_CAP_NS,
+            n,
+            deadline,
             &mut idx,
             &mut obs,
         );

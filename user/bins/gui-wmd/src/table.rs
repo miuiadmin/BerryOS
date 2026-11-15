@@ -22,10 +22,40 @@
 //!
 //! 错误码面：id/parent 无效 ST_NOENT、表满 ST_FULL、野值已在 wire 层拒
 //! （guiproto parse 域执法——本表不做第二解析器）。
+//!
+//! **波3 批A 四件（设计稿 §3 wmd 配套立法，全部 add-only）**：
+//! - **属主事件通道**：CREATE 时建 channel 对（`berry_channel_create`
+//!   musl 形态原语——gui-wmd 是 musl 链独立小工作区，与 svcmgr 的 no_std
+//!   平像不同途），wmd 留一端记入表项 `evt`（0 = 无通道——建联失败/未来
+//!   门控面），另一端随 8B ack **随行 handle gift**（帧字节零变化，旧客户
+//!   端不解析随行 handle 零破坏——gfxdemo 8 槽收窗闲置）；DESTROY 关联
+//!   关闭 wmd 端（**对端死检测不做——v1 语义**，kernel channel.rs 诚实
+//!   缺口：客户端余端随其进程关闭回收，孤儿对互钉泄漏为安全方向已接受）。
+//! - **OP_WM_BACK 分派**（0x67，波2 冻结 wire——现答 1B ST_OK=已受理）：
+//!   焦点窗有通道 = 非阻塞投 WM_EVENT_BACK(wid) + 起 500ms 单槽软定时；
+//!   无通道（旧式客户端目标窗）= **直接 DESTROY**（返回语义正确性优先，
+//!   设计稿 §3：无响应应用也得退出）。
+//! - **500ms 单槽兜底**：同一时刻至多一个 pending back；超时未收 BACK_ACK
+//!   且表未变（version 仍 = 起臂值）→ 兜底 DESTROY(目标窗)（refocus 复用
+//!   `refocus_after_removal`：表序最末可见窗接焦）；定时器形态 = serve
+//!   循环内 deadline 检查（main.rs `back_tick` 喂入——零新增线程）；表变
+//!   （version 递增）即失锚解除（R3 优雅退出路径的窗已自毁，强 DESTROY
+//!   失语义）；BACK_ACK 经属主端上行收割即解除。
+//! - **表变更广播**：每次 version 递增点（`bump`——CREATE/DESTROY/SET 全
+//!   走此口）向全体有通道属主非阻塞 send WM_EVENT_TABLE(ver)，**满即丢**
+//!   （-EBUSY 忽略）——通知尽力而为，真值恒经 TABLE_GET 快照。
+//! - **TABLE_WAIT 冻结**（设计稿 §9 立规矩）：零新增驻留者——多客户端下
+//!   单车位「后到覆盖」退化乒乓自旋，表跟随一律走事件广播 + TABLE_GET。
 
-use crate::{close_all, now_ns, send_rep, st_rep, trap};
+use crate::{close_all, now_ns, send_rep, send_rep_handles, st_rep, trap};
 use berry_guiproto as gp;
-use berry_sys::Handle;
+use berry_sys::{
+    berry_channel_create, berry_channel_recv, berry_channel_send, berry_handle_close, Handle,
+};
+
+/// 返回键兜底软定时：500ms（设计稿 §3 R2——超时未收 BACK_ACK 且表未变
+/// → wmd 兜底 DESTROY(焦点窗) → refocus 回桌面）。
+const WM_BACK_TIMEOUT_NS: u64 = 500 * 1_000_000;
 
 /// 内部窗口项：申请几何（推导源）+ 有效几何（wire 回显面）分域携带——
 /// 表项只回显有效几何，重推导需要申请值在案。
@@ -42,6 +72,21 @@ struct Win {
     z: u8,
     vis: bool,
     avoid_sys: bool,
+    /// 沉浸位（WM_CREATE_F_IMMERSIVE——快照 WM_WIN_F_IMMERSIVE 镜像，波3 批A）。
+    immersive: bool,
+    /// 输入法声明位（CREATE 旗/SET mask 落点——快照 WM_WIN_F_IME_WANTED
+    /// 镜像，softimed 显隐依据，波3 批A）。
+    ime_wanted: bool,
+    /// 属主事件通道 wmd 端（0 = 无通道——建联失败/未来门控面，波3 批A）。
+    evt: Handle,
+}
+
+/// pending back 单槽（波3 批A——同一时刻至多一个）：目标窗 + 起臂版本
+/// （表未变判据）+ 到期线。
+struct PendingBack {
+    wid: u16,
+    version_at_arm: u32,
+    deadline_ns: u64,
 }
 
 /// 单矩形裁剪：C 减 S（半开矩形），保形取四条剩余带面积最大者（并列取
@@ -84,6 +129,8 @@ pub struct WmTable {
     next_id: u16,
     /// 单车位 TABLE_WAIT（应答通道 + 其 last_seen）。
     parked: Option<(Handle, u32)>,
+    /// pending back 单槽（波3 批A——至多一个，后到覆盖先到）。
+    pending_back: Option<PendingBack>,
     disp_w: u16,
     disp_h: u16,
 }
@@ -103,6 +150,9 @@ impl WmTable {
             z: 0,
             vis: false,
             avoid_sys: false,
+            immersive: false,
+            ime_wanted: false,
+            evt: 0,
         };
         WmTable {
             wins: [blank; gp::WM_WINDOWS_MAX],
@@ -111,6 +161,7 @@ impl WmTable {
             version: ((epoch as u32) << 24) | 1,
             next_id: 0,
             parked: None,
+            pending_back: None,
             disp_w,
             disp_h,
         }
@@ -122,8 +173,28 @@ impl WmTable {
         let counter = (self.version & 0x00FF_FFFF) + 1;
         let counter = if counter > 0x00FF_FFFF { 1 } else { counter };
         self.version = (self.version & 0xFF00_0000) | counter;
+        // 波3 批A：表变解除 pending back（设计稿 §3 R2「无表变更才兜底」
+        // ——表序已变（常见 = R3 优雅退出自毁窗），强 DESTROY 失锚）。
+        if self
+            .pending_back
+            .as_ref()
+            .is_some_and(|p| p.version_at_arm != self.version)
+        {
+            self.pending_back = None;
+        }
         if let Some((ch, _)) = self.parked.take() {
             self.send_snapshot(ch);
+        }
+        // 波3 批A：表变更广播——全体有通道属主非阻塞 send WM_EVENT_TABLE
+        // (ver)，满即丢（-EBUSY 忽略；余错同丢——通知面尽力而为恒不
+        // trap，真值恒经 TABLE_GET，设计稿 §3）。
+        let mut out = [0u8; gp::WM_EVENT_TABLE_LEN];
+        let n = gp::encode_wm_event_table(&mut out, self.version);
+        for i in 0..self.count {
+            let evt = self.wins[i].evt;
+            if evt != 0 {
+                let _ = berry_channel_send(evt, out.as_ptr(), n, core::ptr::null(), 0);
+            }
         }
     }
 
@@ -149,6 +220,13 @@ impl WmTable {
             }
             if self.focus == Some(win.id) {
                 flags |= gp::WM_WIN_F_FOCUSED;
+            }
+            // 波3 批A：沉浸/IME 镜像位（CREATE 旗/SET mask 落点的快照回显）。
+            if win.immersive {
+                flags |= gp::WM_WIN_F_IMMERSIVE;
+            }
+            if win.ime_wanted {
+                flags |= gp::WM_WIN_F_IME_WANTED;
             }
             entries[i] = gp::WmEntry {
                 id: win.id,
@@ -250,7 +328,8 @@ impl WmTable {
 
     /// WM_CREATE：parent≠0 须在册（ST_NOENT）；表满 ST_FULL；新窗默认
     /// 可见 + 接焦（CREATE 无 vis 域——显隐走 SET_F_VIS）；AVOID_SYS 旗
-    /// 驱动有效几何避让。应答 8B ack(window_id)。
+    /// 驱动有效几何避让。应答 8B ack(window_id)——波3 批A 起随行 gift
+    /// 属主事件通道端（帧字节零变化，仅随行 handle 增一）。
     fn create(&mut self, ch: Handle, req: gp::WmCreateReq) {
         if req.parent != 0 && self.find(req.parent).is_none() {
             st_rep(ch, gp::ST_NOENT);
@@ -261,6 +340,16 @@ impl WmTable {
             return;
         }
         let id = self.alloc_id();
+        // 波3 批A：属主事件通道——CREATE 恒建 channel 对（两端出生即全权
+        // SEND|RECV|DUPLICATE，任务书「SEND 端」为口语：客户端端可收事件
+        // 亦可回 BACK_ACK）；wmd 留 end0 记入表项，end1 随 ack gift。建联
+        // 失败 = evt=0 落表（无通道窗：BACK 投递走直接 DESTROY 臂）。
+        let mut evt = 0 as Handle;
+        let mut gift = 0 as Handle;
+        if berry_channel_create(0, &mut evt, &mut gift) != 0 {
+            evt = 0;
+            gift = 0;
+        }
         let geom = (req.x, req.y, req.w, req.h);
         self.wins[self.count] = Win {
             id,
@@ -272,6 +361,9 @@ impl WmTable {
             z: 0,
             vis: true,
             avoid_sys: req.flags & gp::WM_CREATE_F_AVOID_SYS != 0,
+            immersive: req.flags & gp::WM_CREATE_F_IMMERSIVE != 0,
+            ime_wanted: req.flags & gp::WM_CREATE_F_IME_WANTED != 0,
+            evt,
         };
         self.count += 1;
         self.focus = Some(id);
@@ -279,16 +371,30 @@ impl WmTable {
         self.bump();
         let mut out = [0u8; 8]; // = WM_CREATE_ACK_LEN（guiproto 私有——本地定容）
         let n = gp::encode_wm_create_ack(&mut out, id);
-        send_rep(ch, &out[..n]);
+        if gift != 0 {
+            send_rep_handles(ch, &out[..n], &[gift]);
+        } else {
+            send_rep(ch, &out[..n]);
+        }
     }
 
-    /// WM_DESTROY：摘窗（表序移除保建序——hit-test 平局表序语义）；持
-    /// 焦点则归还；系统窗摘除 = 解除避让（recompute）。
-    fn destroy(&mut self, ch: Handle, id: u16) {
+    /// 摘窗核心（WM_DESTROY 与波3 批A back 兜底共用）：属主通道关联关闭
+    /// → pending back 目标被摘即解除 → 表序移除保建序（hit-test 平局表序
+    /// 语义）→ 持焦点则归还 → 系统窗摘除 = 解除避让（recompute）→ bump
+    /// （广播/parked）。应答由调用方出。
+    fn remove(&mut self, id: u16) -> bool {
         let Some(i) = self.find(id) else {
-            st_rep(ch, gp::ST_NOENT);
-            return;
+            return false;
         };
+        // 波3 批A：DESTROY 关联关闭属主事件通道 wmd 端（对端死检测不做
+        // ——v1 语义：客户端余端随其进程关闭回收；R3 优雅退出序「窗
+        // DESTROY 后 BACK_ACK」落本臂时 ACK 入孤儿队列，无害吸收）。
+        if self.wins[i].evt != 0 {
+            let _ = berry_handle_close(self.wins[i].evt);
+        }
+        if self.pending_back.as_ref().is_some_and(|p| p.wid == id) {
+            self.pending_back = None;
+        }
         for j in i..self.count - 1 {
             self.wins[j] = self.wins[j + 1];
         }
@@ -298,7 +404,16 @@ impl WmTable {
         }
         self.recompute();
         self.bump();
-        st_rep(ch, gp::ST_OK);
+        true
+    }
+
+    /// WM_DESTROY：摘窗（核心见 [`remove`]）。
+    fn destroy(&mut self, ch: Handle, id: u16) {
+        if self.remove(id) {
+            st_rep(ch, gp::ST_OK);
+        } else {
+            st_rep(ch, gp::ST_NOENT);
+        }
     }
 
     /// WM_SET：masked-out 槽位不动（「编什么收什么」——wire 层不清零，
@@ -320,6 +435,12 @@ impl WmTable {
                 self.refocus_after_removal();
             }
         }
+        // 波3 批A：ime_wanted 布尔槽——槽值 = vis 字节复用（guiproto
+        // WM_SET_F_IME_WANTED 常量注：SET 定长 20B 无预留槽可认领，单值
+        // 域 0/1 双槽复用，帧字节面零变化）。
+        if req.mask & gp::WM_SET_F_IME_WANTED != 0 {
+            self.wins[i].ime_wanted = req.vis == gp::WM_VIS_SHOW;
+        }
         if req.mask & gp::WM_SET_F_Z != 0 {
             self.wins[i].z = req.z;
         }
@@ -336,6 +457,10 @@ impl WmTable {
     /// WM_TABLE_WAIT：version≠last_seen 立即答（≠非 >——纪元回退角由
     /// inputd 超龄重探测兜底，Q11-③，不依赖「必>」）；同 version 则 park
     /// 单车位（后到覆盖不排队——位移者现答现快照防悬挂）。
+    ///
+    /// **TABLE_WAIT 冻结（波3 批A 立法，设计稿 §9）**：零新增驻留者——多
+    /// 客户端下单车位「后到覆盖」退化为乒乓自旋；表跟随一律走属主事件
+    /// 通道 WM_EVENT_TABLE 广播 + TABLE_GET 真值（本表 `bump`）。
     pub fn wait(&mut self, ch: Handle, last_seen: u32) {
         if self.version != last_seen {
             self.send_snapshot(ch);
@@ -347,8 +472,106 @@ impl WmTable {
         self.parked = Some((ch, last_seen));
     }
 
-    /// wm 域分发（wm_srv 面）：六 op 之外（0x66..=0x7F 未定形）1B
-    /// ST_BAD；wm 域六 op **零随行 handle**——非空即拒面 close。
+    // —— 波3 批A：OP_WM_BACK 分派 + 500ms 单槽兜底（设计稿 §3 R2） ——
+
+    /// OP_WM_BACK（波2 冻结 wire 0x67 无参——wmd 查表路由）：TABLE 态取
+    /// 焦点窗（快照 WM_WIN_F_FOCUSED 同源）；有属主通道 = 非阻塞投
+    /// WM_EVENT_BACK(wid) + 起臂单槽软定时；无通道（旧式客户端目标窗/
+    /// 建联失败窗）= **直接 DESTROY**（返回语义正确性优先——设计稿 §3：
+    /// 无响应应用也得退出）。应答恒 1B ST_OK（已受理——目标窗处理与兜底
+    /// 是服务端异步面，wire 不回传）。事件投递满/失败不重试：500ms 兜底
+    /// 盖住（语义不悬空）。
+    fn op_back(&mut self, ch: Handle) {
+        let Some(wid) = self.focus else {
+            // 无焦点窗 = 无路由目标（空操作受理——诚实面：BACK 无「必达
+            // 目标」契约，R1 桌面态由 launcher 本地即答不经本 op）。
+            st_rep(ch, gp::ST_OK);
+            return;
+        };
+        let Some(i) = self.find(wid) else {
+            st_rep(ch, gp::ST_OK); // 防御：focus 在册由本表不变量保证
+            return;
+        };
+        let evt = self.wins[i].evt;
+        if evt == 0 {
+            self.remove(wid);
+            st_rep(ch, gp::ST_OK);
+            return;
+        }
+        let mut out = [0u8; gp::WM_EVENT_BACK_LEN];
+        let n = gp::encode_wm_event_back(&mut out, wid);
+        let _ = berry_channel_send(evt, out.as_ptr(), n, core::ptr::null(), 0);
+        self.arm_back(wid, evt);
+        st_rep(ch, gp::ST_OK);
+    }
+
+    /// 起臂单槽 back 兜底：同一时刻至多一个 pending——**后到覆盖先到**
+    /// （返回键可重按：最新 back 为活面；旧 pending 的事件已投、其迟到
+    /// BACK_ACK 无归因域——覆盖即弃，v1 诚实语义）。起臂前先排空属主端
+    /// 陈旧 BACK_ACK（陈货必弃——防旧回执误解除新臂）。
+    fn arm_back(&mut self, wid: u16, evt: Handle) {
+        loop {
+            let mut b = [0u8; gp::WM_EVENT_BACK_LEN]; // 8B 窗：BACK_ACK 1B 恒容
+            let mut hout = [0 as Handle; 8];
+            let mut nb = b.len();
+            let mut nh = hout.len();
+            let s = berry_channel_recv(evt, b.as_mut_ptr(), &mut nb, hout.as_mut_ptr(), &mut nh);
+            if s != 0 {
+                break; // -EAGAIN = 排空；余错防御性同断（收割面恒在 serve 轮询）
+            }
+            close_all(&hout[..nh]); // 属主→wmd 方向零随行契约——违规面即收即关
+        }
+        self.pending_back = Some(PendingBack {
+            wid,
+            version_at_arm: self.version,
+            deadline_ns: now_ns() + WM_BACK_TIMEOUT_NS,
+        });
+    }
+
+    /// BACK_ACK 收割（serve 循环 poll 属主端喂入）：1B 回程帧解除兜底；
+    /// 畸形帧忽略（pending 保持——兜底定时仍盖住）。
+    pub fn back_ack(&mut self, msg: &[u8]) {
+        if gp::parse_back_ack(msg).is_some() {
+            self.pending_back = None;
+        }
+    }
+
+    /// 兜底到期检查（serve 循环逐轮喂 now——零新增线程）：到期未收
+    /// BACK_ACK 且表未变（version 仍 = 起臂值）→ 兜底 DESTROY(目标窗)
+    /// （remove 核心：refocus = 表序最末可见窗接焦，`refocus_after_
+    /// removal` 既有链）；表已变 = 失锚解除（bump 内已摘——本臂双保险）。
+    /// 服务端自发动作无应答面。到期线是 serve 单线程语义下的**最早检查
+    /// 点**——中继阻塞（RELAY_CAP 帽内）顺延触发，v1 接受（新鲜度注记
+    /// 同类结构限制）。
+    pub fn back_tick(&mut self, now: u64) {
+        let Some(p) = self.pending_back.as_ref() else {
+            return;
+        };
+        if now < p.deadline_ns {
+            return;
+        }
+        let (wid, armed_at) = (p.wid, p.version_at_arm);
+        self.pending_back = None;
+        if self.version == armed_at {
+            self.remove(wid);
+        }
+    }
+
+    /// pending back 的属主端（serve 轮询/等待集挂接——单槽至多一路）；
+    /// 目标窗在册才有收割面（version 守卫下恒在册——防御 None）。
+    pub fn back_evt(&self) -> Option<Handle> {
+        let p = self.pending_back.as_ref()?;
+        self.find(p.wid).map(|i| self.wins[i].evt).filter(|&h| h != 0)
+    }
+
+    /// pending back 到期线（等待集 deadline 取近用）。
+    pub fn back_deadline(&self) -> Option<u64> {
+        self.pending_back.as_ref().map(|p| p.deadline_ns)
+    }
+
+    /// wm 域分发（wm_srv 面）：GETINFO/CREATE/DESTROY/SET/TABLE_GET/
+    /// TABLE_WAIT 六 op + BACK（波3 批A 接线）之外（0x66 FOCUS 等未定形）
+    /// 1B ST_BAD；wm 域请求**零随行 handle**——非空即拒面 close。
     pub fn handle_wm(&mut self, ch: Handle, msg: &[u8], hs: &[Handle]) {
         if !hs.is_empty() {
             close_all(hs);
@@ -376,6 +599,9 @@ impl WmTable {
                 Some(last_seen) => self.wait(ch, last_seen),
                 None => st_rep(ch, gp::ST_BAD),
             },
+            // 波3 批A：BACK 分派（焦点切换 FOCUS 0x66 仍 ST_BAD——波3 后续
+            // 批接线面，本刀不预接）。
+            Some(&gp::OP_WM_BACK) if gp::parse_wm_back_req(msg).is_some() => self.op_back(ch),
             _ => st_rep(ch, gp::ST_BAD),
         }
     }
