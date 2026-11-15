@@ -1,6 +1,6 @@
 //! util EWMA 消费位 —— 调度器产信号、本面消费（lib 核面 ③）。
 //!
-//! 接缝语境（docs/调度彻底计划-v1.0.md 裁九 + CP-08 验收线）：调度器只产
+//! 接缝语境（docs/调度彻底计划-v1.2.md 裁九 + CP-08 验收线）：调度器只产
 //! 信号（sched/src/util.rs per-CPU EWMA——「窗口内运行时间/窗长」的指数
 //! 平滑，0..=1024 尺度与 `Topo::capacity`/EM capacity 同尺度）、绝不写
 //! 频率；频率裁决单点归 PM 服务 berry-power——本面即消费侧最小件。

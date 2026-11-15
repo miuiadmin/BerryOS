@@ -1,6 +1,6 @@
 //! berry-em —— EM 表第一张 + EAS 能量比较律最简形（CP-09 前置·host 纯面）。
 //!
-//! **任务锚**：调度彻底计划 CP-09（docs/调度彻底计划-v1.0.md:105——「EAS
+//! **任务锚**：调度彻底计划 CP-09（docs/调度彻底计划-v1.2.md:105——「EAS
 //! 选核算法 compute_energy/FEuC …能量比较单源 host 钉板」；:70 裁四「判定
 //! 律先 host 钉板后进内核」）。现状两源：EM **形状**已单源 berry-emface
 //! （W3-Q14——emface/src/lib.rs:1-35，sched/src/em.rs:32 re-export 消费），

@@ -26,4 +26,4 @@ berry-power(频率帽聚合/充电限流票 mA 域)、berry-thermal(step_wise+�
 
 ## Related
 
-[PM 双服务骨架](./2026-11-13-pm-dual-service-skeleton.md)与[F1/F2 终裁](./2026-11-13-f1-f2-charge-unit-ma-and-sim-stream-split.md)(重叠互链:两笔记立件与单位并轨,本件证其联合面);[EM 能量面 berry-em](./2026-11-13-em-energy-face-berry-em.md)、[timer slack 面](./2026-11-13-timer-slack-face.md)(重叠互链:各自判定律单源,本件是消费侧联合);[04 号复核](../../../research/调度彻底计划/04-PM双服务骨架复核.md) §6 接线窗清单(桥 1 归其第 2 件);ADR #66/#68([架构决策](../../../docs/架构决策.md) 决策总表 :74/:76);[调度彻底计划](../../../docs/调度彻底计划-v1.0.md) CP-08(:99)/CP-09(:105)/CP-10(:106)。
+[PM 双服务骨架](./2026-11-13-pm-dual-service-skeleton.md)与[F1/F2 终裁](./2026-11-13-f1-f2-charge-unit-ma-and-sim-stream-split.md)(重叠互链:两笔记立件与单位并轨,本件证其联合面);[EM 能量面 berry-em](./2026-11-13-em-energy-face-berry-em.md)、[timer slack 面](./2026-11-13-timer-slack-face.md)(重叠互链:各自判定律单源,本件是消费侧联合);[04 号复核](../../../research/调度彻底计划/04-PM双服务骨架复核.md) §6 接线窗清单(桥 1 归其第 2 件);ADR #66/#68([架构决策](../../../docs/架构决策.md) 决策总表 :74/:76);[调度彻底计划](../../../docs/调度彻底计划-v1.2.md) CP-08(:99)/CP-09(:105)/CP-10(:106)。

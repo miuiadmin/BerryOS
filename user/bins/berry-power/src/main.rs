@@ -1,6 +1,6 @@
 //! berry-power —— bin 壳（main 循环骨架）。
 //!
-//! 本件 = 调度彻底计划裁九落件（docs/调度彻底计划-v1.0.md §3 裁九/
+//! 本件 = 调度彻底计划裁九落件（docs/调度彻底计划-v1.2.md §3 裁九/
 //! §4.1 CP-08）：berry-power 服务本体的循环骨架。四件纯面（帽聚合点/
 //! 充电限流票仲裁/util EWMA 消费位/pwproto 帧会话机）全在 lib（host 单测
 //! 全盖，`cargo test -p berry-power`）；bin 只组装主循环形态。

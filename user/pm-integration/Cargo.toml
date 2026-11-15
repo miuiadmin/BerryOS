@@ -11,7 +11,7 @@ edition = "2021"
 # berry-em（EM 表/EAS 选核能量律）+ berry-slackface（timer slack 聚合）四件
 # 各自独立测试全绿（31+13+8+12）但从未联合；本件以只读 path 依赖把四件按
 # ADR #66/#68（docs/架构决策.md:74/:76）与调度彻底计划 CP-08 段
-# （docs/调度彻底计划-v1.0.md:99）的数据流接成三个端到端场景（热降频全链/
+# （docs/调度彻底计划-v1.2.md:99）的数据流接成三个端到端场景（热降频全链/
 # slack+EM 联合/充电票+关机边界），验证「上游出→下游收」跨 crate 正确性。
 #
 # 形态：四 crate 同族独立小工作区（空 [workspace] escape 根/父 workspace，

@@ -30,7 +30,7 @@ use berry_sys::{
     berry_object_wait_one,
     berry_pager_supply_mapped, berry_pager_supply_mapped_table, berry_pager_supply_pages,
     berry_process_create, berry_process_get_exit_code, berry_process_start,
-    berry_process_suspend,
+    berry_process_suspend, berry_sched_getattr,
     berry_process_terminate, berry_thread_create, berry_thread_sleep, berry_thread_start,
     berry_vmar_map, berry_vmar_unmap, berry_vmo_commit, berry_vmo_create, berry_vmo_get_size,
     berry_vmo_read, berry_vmo_write, Handle, PagerWindow, BERRY_ERR_ACCESS_DENIED,
@@ -6083,8 +6083,11 @@ fn app_launch(
         bap_off,
     );
     // 能力面：console=false 才建私有对（spawn 内 dup RIGHT_SEND 交付 spawn
-    // 侧端，原值留本表作收集端）。stack_pages 按 manifest；intent v1 解析
-    // 面记录、调度零消费（消费点随 v2 EEVDF，ADR #42 两段式）。
+    // 侧端，原值留本表作收集端）。stack_pages 按 manifest；intent 亦按
+    // manifest——Intent M4 透传（ADR #42 两段式第二段的首个消费面）：
+    // SpawnSpec.intent 经 berry-exec sched_setattr(0x3C) 落位 Thread
+    // 覆盖位，process_start 处消费进 Task 的 intent_declared/effective
+    // （调度消费随 M4 带实例化；v1 侧值已进内核可查）。
     let mut out_s: Handle = 0;
     let stdout: Handle = if man.console {
         console
@@ -6256,7 +6259,10 @@ fn app_launch(
             extra_gifts: gifts,
             mmio_vmo: None,
             mmio_va: 0,
-            intent: 0,
+            // Intent M4：manifest 声明值透传（六档 u8 判别值镜像
+            // sched/src/intent.rs——berry-manifest Intent 形状钉子）。
+            // 0 = 零漂（berry-exec 该值才发 setattr）。
+            intent: man.intent as u8,
             force_eager: false,
         },
     ) {
@@ -6294,6 +6300,24 @@ fn app_launch(
             if ledger {
                 ps_reg(id, psp::STATE_ALIVE, 0);
             }
+            // Intent M4 透传验证面：经 sched_getattr 从内核读回子线程
+            // effective intent（merge(Process 默认, Thread 覆盖)——与
+            // process_start 消费进 Task.intent_declared/effective 的是同一
+            // 份值）→ eco 观测行 `it XX`（十六进制档位）。内核侧状态读回
+            // 非自回声——行值 ≠ manifest 声明即断链。ht 恒持 INSPECT
+            // （thread_create 出生授位），getattr 失败 = 链断 trap（A-3
+            // 口径；family 诊断族非标记——不 gate smoke）。
+            let mut ra = berry_sys::SchedAttr {
+                size: core::mem::size_of::<berry_sys::SchedAttr>() as u32,
+                ..berry_sys::SchedAttr::default()
+            };
+            if berry_sched_getattr(child.ht, &mut ra) != 0 {
+                trap();
+            }
+            let mut hx = [0u8; 8];
+            p3_hex8(&mut hx, ra.intent as u64);
+            let it_line = [b'i', b't', b' ', hx[6], hx[7]];
+            eco_app(console, id, &it_line);
             // M-C γ-分：收口尾不在此兑现——原值打包随三元返（boot 批同步
             // 消费 / SPAWN 形入 APP_CHILDREN 异步）。id 拷贝 owned（tail
             // 存活越出本帧，&id 借用撑不过——AppSlot 同款 [u8; ID_MAX]

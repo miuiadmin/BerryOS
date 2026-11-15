@@ -20,4 +20,4 @@ CP-09 开刀时能量比较律已 host 钉板（裁四「判定律先 host 钉�
 
 ## Related
 
-[调度彻底计划](../../../docs/调度彻底计划-v1.0.md) §4.2 CP-09/§3 裁四；[PM 双服务骨架](2026-11-13-pm-dual-service-skeleton.md)（重叠互链——同批 PM 侧，berry-power 同款 path 依赖消费 emface 先例）；Linux 对照 docs.kernel.org/scheduler/sched-energy.html + docs.kernel.org/power/energy-model.html（2026-11 取证）。
+[调度彻底计划](../../../docs/调度彻底计划-v1.2.md) §4.2 CP-09/§3 裁四；[PM 双服务骨架](2026-11-13-pm-dual-service-skeleton.md)（重叠互链——同批 PM 侧，berry-power 同款 path 依赖消费 emface 先例）；Linux 对照 docs.kernel.org/scheduler/sched-energy.html + docs.kernel.org/power/energy-model.html（2026-11 取证）。

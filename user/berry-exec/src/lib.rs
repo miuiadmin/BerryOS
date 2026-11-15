@@ -30,11 +30,12 @@
 use berry_sys::{
     berry_channel_create, berry_channel_send, berry_clock_read, berry_handle_close,
     berry_handle_duplicate, berry_object_wait_one, berry_process_create,
-    berry_process_get_exit_code, berry_process_start, berry_thread_create, berry_vmar_map,
-    berry_vmar_unmap, berry_vmo_commit, berry_vmo_create, berry_vmo_get_size, berry_vmo_read,
-    berry_vmo_write, Handle, BERRY_ERR_BAD_HANDLE, BERRY_ERR_BUSY, BERRY_ERR_NO_MEMORY,
-    CLOCK_MONOTONIC, RIGHT_DUPLICATE, RIGHT_MANAGE, RIGHT_MAP, RIGHT_READ, RIGHT_SEND,
-    RIGHT_TRANSFER, RIGHT_WRITE, SIGNAL_TERMINATED, SIGNAL_WRITABLE, VMO_OPT_DEMAND,
+    berry_process_get_exit_code, berry_process_start, berry_sched_setattr, berry_thread_create,
+    berry_vmar_map, berry_vmar_unmap, berry_vmo_commit, berry_vmo_create, berry_vmo_get_size,
+    berry_vmo_read, berry_vmo_write, Handle, SchedAttr, BERRY_ERR_BAD_HANDLE, BERRY_ERR_BUSY,
+    BERRY_ERR_NO_MEMORY, CLOCK_MONOTONIC, RIGHT_DUPLICATE, RIGHT_MANAGE, RIGHT_MAP, RIGHT_READ,
+    RIGHT_SEND, RIGHT_TRANSFER, RIGHT_WRITE, SIGNAL_TERMINATED, SIGNAL_WRITABLE,
+    SCHED_FLAG_INTENT, VMO_OPT_DEMAND,
 };
 // X-5 窗规划纯面（`plan_wins`/`WinPlan`/`WinKind`）自本 crate 外迁
 // berry-winplan（host 可测——原处内嵌 FFI 是不可测根因），此处单源引回。
@@ -366,11 +367,15 @@ pub struct SpawnSpec<'a> {
     /// [`VIRTIO_MMIO_VA`]、fb 窗用 [`FB_VA`]——同字段面第二消费者）。
     /// `mmio_vmo == None` 时无效（填 0 即可）。Some 且 0 = 配置错，trap。
     pub mmio_va: u64,
-    /// berry_intent（ADR #42 两段式；GUI-8 §4 段① SDK 透传口②）：随
-    /// `berry_thread_create` options 低 8 位透传（berry-sys 同口径注释）。
-    /// **默认 0 = 现行为零漂**。dormant：v1 内核只收 options==0，非 0 落
-    /// -EINVAL 走本 crate syscall 面自陷纪律 trap()——消费面保持 0，内核
-    /// 收 intent 后（ADR #42 v2 段）此口自然激活。
+    /// berry_intent（ADR #42 两段式；GUI-8 §4 段① SDK 透传口②）：Intent
+    /// M4 起激活——非 0 时在 thread_create 后、process_start 前经
+    /// `berry_sched_setattr`（0x3C）落位 Thread 覆盖位（thread_create 出生
+    /// 授 SET_POLICY），start 处 SchedAttr::merge 消费进 Task 的
+    /// intent_declared/effective。**0 = 现行为零漂**（既有构造点全 0，零新
+    /// syscall）。值域 = 六档冻结词表 0x00..=0x05（单源 `sched/src/
+    /// intent.rs`；userland 镜像 `berry-manifest::Intent`——消费侧 svcmgr
+    /// app_launch 以 `man.intent as u8` 填入）。berry-libc pthread 口①
+    /// （thread_create options 位）仍 dormant——内核 options 面从未开放。
     pub intent: u8,
     /// X-5 常驻豁免：true = 跳过 demand 规划直走 eager。恢复 X-3c-3 让位
     /// 闸的隔离不变式「dpg 窗内无外来在册 demand 窗」——长命常驻子
@@ -687,11 +692,29 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
         }
     }
     let mut ht = 0 as Handle;
-    // options = spec intent 低 8 位透传（ADR #42 占位口②；berry-libc attr 面
-    // 同口径）。v1 内核只收 0——非 0（dormant 调用面）-EINVAL 走自陷纪律
-    // （词表与激活时序见 `SpawnSpec::intent`）。
-    if berry_thread_create(hp, intent as u32, &mut ht) != 0 || ht == 0 {
+    // thread_create options 恒 0（内核 sys_thread_create 契约面只收 0——
+    // options≠0 即 -EINVAL；原「options 低 8 位透传」占位口②从未被内核
+    // 激活，调度 1.1 落的是 sched_setattr(0x3C) 面）。spec intent 改走
+    // sched_setattr 活面（Intent M4 透传激活，ADR #42）：thread_create
+    // 出生授 Thread SET_POLICY；Thread 覆盖位在 process_start 经
+    // SchedAttr::merge 消费进 Task 的 intent_declared/effective
+    // （apply_sched_attr_to_task）——start 前落位即随任务装配钉进 TCB。
+    if berry_thread_create(hp, 0, &mut ht) != 0 || ht == 0 {
         trap();
+    }
+    // intent≠0 才发 setattr（0 = 现行为零漂——既有 22 构造点全 intent:0，
+    // 零新 syscall）。失败 = syscall 面链断，自陷纪律同上。
+    if intent != 0 {
+        let attr = SchedAttr {
+            size: core::mem::size_of::<SchedAttr>() as u32,
+            version: 1,
+            flags: SCHED_FLAG_INTENT,
+            intent,
+            ..SchedAttr::default()
+        };
+        if berry_sched_setattr(ht, &attr) != 0 {
+            trap();
+        }
     }
     // —— env 块（start 前压队，确定性先行）：argv = argv0\0[+arg\0]；handles
     //    按位 [stdout 端别名, (stdin 端), (self_proc/self_vmar), (extra_gift…)]

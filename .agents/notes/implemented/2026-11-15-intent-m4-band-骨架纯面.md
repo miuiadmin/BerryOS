@@ -30,4 +30,4 @@ ADR #42 第二段（M4/v3）立法「class_fair 按 intent 实例化 ×4 带 + �
 - 风险:推断数值非实测（ADR 遥测条款的本意就是 M4 表来自生产 A/B 非拍脑袋）;入场券证据始终不满足则单实例 + 查表键即终态（ADR #42 原文）——届时 `FairBand`/工厂为沉睡面,与 `band.rs` 预算骨架同命运,不是债务。
 
 ## Related
-[demo-face fw_cfg 门控](2026-11-15-demo-face-fwcfg-gate.md)（同窗①号刀的上轮 kernel 面——其 Residual 节所述 svcmgr 半边与本刀同排程）;`docs/架构决策.md` ADR #42/#21/#64;`docs/调点调度-v1.2.md` §7;`research/调度彻底计划/03-彻底计划骨架-刀序里程碑验证体系-v1.0.md` CP-12（M4 正刀的入场券判定与断言面）。
+[demo-face fw_cfg 门控](2026-11-15-demo-face-fwcfg-gate.md)（同窗①号刀的上轮 kernel 面——其 Residual 节所述 svcmgr 半边与本刀同排程）;[Intent M4 svcmgr 透传首件](2026-11-15-intent-m4-svcmgr透传首件.md)（预留窗④ 的上游数据源——manifest intent 已流进内核 Task 双字段，开窗即得真值）;`docs/架构决策.md` ADR #42/#21/#64;`docs/调点调度-v1.2.md` §7;`research/调度彻底计划/03-彻底计划骨架-刀序里程碑验证体系-v1.0.md` CP-12（M4 正刀的入场券判定与断言面）。
