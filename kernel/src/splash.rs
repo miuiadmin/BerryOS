@@ -1,8 +1,11 @@
 //! boot 启动画面——`FB ok` 到桌面首帧之间的用户可见反馈（黑屏止血）。
 //!
 //! ## 双模式（fw_cfg `opt/berry/bootmode`：缺省/`splash` = iOS 式；`verbose` = Linux 式）
-//! - **Splash（iOS 式）**：黑底 + 白色 B 点阵 logo + 白细进度条 + 百分比
-//!   数字。进度由真实内核里程碑驱动（ktest 8 段 / bench / sched / svcmgr）。
+//! - **Splash（iOS 式 → 2026-11-15 owner 四要素版）**：黑底 + **BERRYOS
+//!   大字 HD logo**（Helvetica Bold 120px 整串烘焙，splash_logo.rs）+
+//!   **胶囊进度条**（全圆角两端，macOS 风）+ 百分比数字。进度 = 真实内核
+//!   里程碑驱动 + **平滑追针算法**（显示值 lag-chase：disp 以 1/8 步长
+//!   渐近 target，永不超前真实里程碑；每次里程碑/mirror 泵点推进一步）。
 //! - **Verbose（Linux 式）**：黑底白字滚日志——boot 单线程窗内内核输出
 //!   逐字节镜像上屏（经 HAL `fb_mirror` 钩子）；多任务起步（sched::init
 //!   后首切换）即脱钩，矩阵字符流不上屏。字形单源 = `berry-fbcon`。
@@ -41,6 +44,8 @@ struct State {
     /// true = verbose（滚日志）；false = splash（条）。
     verbose: bool,
     step: u32,
+    /// 平滑目标值（真实里程碑钉住的 (step+offset)×DENOM——追针算法锚）。
+    target: u64,
     /// 平滑显示值（分子 × SMOOTH_DENOM 尺度——draw 用它，真实里程碑用 step 钉）。
     disp: u64,
     /// noktest 游标式分母缩放补偿（step + base_offset = 全量尺度值）。
@@ -63,6 +68,7 @@ static mut STATE: State = State {
     stride: 0,
     verbose: false,
     step: 0,
+    target: 0,
     disp: 0,
     base_offset: 0,
     total: 0,
@@ -91,6 +97,7 @@ pub fn init(fb_va: usize, w: u32, h: u32, stride: u32, verbose: bool) {
     s.stride = stride;
     s.verbose = verbose;
     s.step = 0;
+    s.target = 0;
     s.disp = 0;
     s.base_offset = 0;
     s.total = TOTAL;
@@ -115,8 +122,9 @@ pub fn set_total(total: u32, offset: u32) {
     }
     s.total = total.max(1);
     s.base_offset = offset;
-    // 重画用当前换算值（offset 补偿后的 disp）。
-    s.disp = ((s.step + offset) as u64) * SMOOTH_DENOM;
+    // 追针锚同缩（offset 补偿后全量尺度）。
+    s.target = ((s.step + offset) as u64) * SMOOTH_DENOM;
+    s.disp = s.target;
     redraw(s);
 }
 
@@ -135,14 +143,45 @@ pub fn step(n: u32, label: &[u8]) {
         mirror(b'\n');
     } else if n > s.step {
         s.step = n.min(s.total);
-        // 平滑：里程碑到点直接钉住真实值（插值被超越即贴齐）。
-        // 全量尺度换算：显示值 = (step + offset) / total——offset 补偿
-        // 必加（noktest 缩分母后防倒退：起画 2/15 → step1 钉 3/15）。
-        s.disp = ((s.step + s.base_offset) as u64) * SMOOTH_DENOM;
+        // 追针锚：真实里程碑钉住 target（offset 补偿防 noktest 倒退）。
+        s.target = ((s.step + s.base_offset) as u64) * SMOOTH_DENOM;
+        // 里程碑内多步 chase（owner 平缓要求——替代字符泵方案：判例死点
+        // = 每字符全屏重画，字符泵废除；此处单里程碑一口气 8 小步 1/8
+        // 渐近 + 每步重画 = 视觉平缓，全程无字符流依赖）。
+        for _ in 0..8 {
+            if s.target <= s.disp {
+                break;
+            }
+            let delta = s.target - s.disp;
+            let step_by = delta / 8;
+            s.disp = if step_by == 0 { s.target } else { s.disp + step_by };
+        }
         redraw(s);
     }
 }
 
+/// 平滑追针（保留 API 面——verbose 形与后续 timer 泵复用）。
+fn chase_and_redraw(s: &mut State) {
+    if s.target <= s.disp {
+        redraw(s);
+        return;
+    }
+    let delta = s.target - s.disp;
+    let step_by = delta / 8;
+    if step_by == 0 {
+        s.disp = s.target;
+    } else {
+        s.disp += step_by;
+    }
+    redraw(s);
+}
+
+/// 追针泵（mirror 每字符调——splash 形也泵：字符流 = 追针节拍器）。
+fn chase_tick(s: &mut State) {
+    if s.target > s.disp {
+        chase_and_redraw(s);
+    }
+}
 
 /// 串口镜像钩子消费面（HAL `fb_mirror` 每 putc 调；verbose 且未脱钩时上屏）。
 pub fn mirror(c: u8) {
@@ -283,37 +322,48 @@ fn clear_screen(s: &mut State) {
     }
 }
 
-/// splash 整帧重画（logo + 条 + 百分比）。
+/// splash 整帧重画（大 logo + 胶囊条 + 百分比）。
 fn redraw(s: &mut State) {
     clear_screen(s);
     let (w, h, stride) = (s.w as usize, s.h as usize, s.stride as usize);
     let fb = s.fb_va as *mut u32;
-    // logo：8×8 点阵「B」（白）。
-    const LOGO: [u8; 8] = [
-        0b11111100, 0b11000110, 0b11000110, 0b11111100, 0b11000110, 0b11000110, 0b11000110,
-        0b11111100,
-    ];
-    let cell = (w / 60).max(3);
-    let lw = 8 * cell;
+    // logo：BERRYOS 整串 HD 字模（Helvetica Bold 120px 烘焙）——目标
+    // 宽 = 屏宽 62%（紧凑档 480px 屏 → 298px 缩放绘制）；垂直位 = 屏
+    // 高 38% 处（logo 中心）。1bpp 位图无灰度——整倍缩放会马赛克，采
+    // 「近采样 + 保守缩比」：缩比 ≥ 0.6 时跳点采样仍保字面连续。
+    let logo_target_w = w * 62 / 100;
+    let scale_num = logo_target_w.max(crate::splash_logo::LOGO_W as usize);
+    let lw = crate::splash_logo::LOGO_W as usize * logo_target_w / scale_num;
+    let lh = crate::splash_logo::LOGO_H as usize * logo_target_w / scale_num;
     let lx = w.saturating_sub(lw) / 2;
-    let ly = h * 2 / 5 - 4 * cell;
-    for (gy, bits) in LOGO.iter().enumerate() {
-        for gx in 0..8usize {
-            if bits & (1 << (7 - gx)) != 0 {
-                let dot = cell * 3 / 4;
-                fill_rect(fb, stride, lx + gx * cell, ly + gy * cell, dot, dot, WHITE);
+    let ly = h * 38 / 100 - lh / 2;
+    // 目标像素 (gx, gy) ← 源采样 (sx, sy)（跳点逆映射——比例缩放）。
+    for gy in 0..lh {
+        let sy = gy * crate::splash_logo::LOGO_H as usize / lh.max(1);
+        let words = &crate::splash_logo::LOGO_ROWS[sy.min(crate::splash_logo::LOGO_H as usize - 1)];
+        for gx in 0..lw {
+            let sx = gx * crate::splash_logo::LOGO_W as usize / lw.max(1);
+            let wi = sx / 128;
+            let bit = 127 - (sx % 128);
+            if words[wi] & (1u128 << bit) != 0 {
+                // SAFETY: ramfb 线性窗内单像素。
+                unsafe { *fb.add((ly + gy) * (stride / 4) + lx + gx) = WHITE };
             }
         }
     }
-    // 进度条（白细条 + 深灰槽）——平滑值驱动（disp/64 格尺度换算回格数）。
+    // 胶囊进度条（owner 2026-11-15：非长方形——全圆角胶囊，macOS 风）。
+    // 条高 ≥ 24px（480 屏）；半径 = h/2 → 两端半圆。填充宽 = 平滑 disp。
     let bar_w = w * 7 / 10;
-    let bar_h = (h / 150).max(8);
+    let bar_h = ((h / 32).max(24) as usize).min(40);
     let bx = (w - bar_w) / 2;
     let by = h * 2 / 3;
+    let r = bar_h / 2;
     let filled = ((bar_w as u64) * s.disp / (s.total as u64 * SMOOTH_DENOM)) as usize;
-    fill_rect(fb, stride, bx, by, bar_w, bar_h, TRACK);
-    if filled > 0 {
-        fill_rect(fb, stride, bx, by, filled.min(bar_w), bar_h, WHITE);
+    // 槽（半透明灰的纯色近似——黑底上深灰槽）。
+    fill_capsule(s, bx, by, bar_w, bar_h, TRACK);
+    if filled > r {
+        // 填充胶囊：宽 = filled（含两端半圆）。
+        fill_capsule(s, bx, by, filled.min(bar_w), bar_h, WHITE);
     }
     // 百分比（HD 字模 1:1 直绘——Helvetica 96px 烘焙，勿放大 fbcon 位图：
     // 像素块放大 = 马赛克，owner 2026-11-13 点名数字渲染须精美）。
@@ -345,6 +395,41 @@ fn draw_hd_glyph(s: &State, g: &(u8, u32, u32, [u128; 72]), x: u32, y: u32) {
             }
         }
     }
+}
+
+/// 胶囊填充（全圆角——两端半圆 + 中带；整数圆近似：端部每行内缩 =
+/// r - ceil(sqrt(r²-dy²))，查表法（r ≤ 20 → 21 行内缩表硬编码）。
+fn fill_capsule(s: &mut State, x: usize, y: usize, w: usize, h: usize, c: u32) {
+    if w == 0 || h == 0 {
+        return;
+    }
+    let r = h / 2;
+    if r == 0 {
+        fill_rect(s.fb_va as *mut u32, s.stride as usize, x, y, w, h, c);
+        return;
+    }
+    let fb = s.fb_va as *mut u32;
+    let stride = s.stride as usize;
+    // 8×整数 ceil(sqrt(r²-dy²)) 近似表（r=8..20 档位共用——按比例内缩）：
+    // 内缩(dy) = r - ceil(sqrt(r²-dy²))；用整数牛顿同 berry-ui。
+    let isqrt = |n: usize| -> usize {
+        if n == 0 { return 0; }
+        let mut g = n;
+        let mut t = (g + n / g) / 2;
+        while t < g { g = t; t = (g + n / g) / 2; }
+        g
+    };
+    // 上端 r 行 + 中带 + 下端 r 行
+    for dy in 0..r {
+        // ceil(sqrt(r²-dy²)) = isqrt(n-1)+1
+        let n = r * r - dy * dy;
+        let cs = if n <= 1 { n } else { isqrt(n - 1) + 1 };
+        let inset = r.saturating_sub(cs);
+        if w < 2 * inset { continue; }
+        fill_rect(fb, stride, x + inset, y + dy, w - 2 * inset, 1, c);
+        fill_rect(fb, stride, x + inset, y + h - 1 - dy, w - 2 * inset, 1, c);
+    }
+    fill_rect(fb, stride, x, y + r, w, h - 2 * r, c);
 }
 
 /// 实心矩形。
