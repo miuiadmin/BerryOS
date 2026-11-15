@@ -20,6 +20,37 @@ pub struct FrameAllocator<'a> {
     buddy: BuddyAllocator<'a>,
 }
 
+/// 区间 `[pa, pa+len)` 与帧窗 `[base_pa, top_pa)` 的交（纯投影，host 钉板）。
+///
+/// 三律单源（[`FrameAllocator::reserve`]/[`FrameAllocator::release`] 共用）：
+/// - **saturating 防回卷**：`pa + len` 溢出饱和，敌意巨长不得回卷成巨窗；
+/// - **双侧 clamp**：`lo = max(pa, base)`、`hi = min(end, top)`——越窗腿
+///   截断到窗内；
+/// - **页取整宁多勿少**：首 PFN 向下取整（floor——含 lo 的整页保留）、
+///   末 PFN 向上取整（ceil——含 hi 残尾的整页保留）。漏保护半页 =
+///   数据腐化，多保护邻页只是浪费。
+///
+/// 零交（区间在窗外 / 恰触窗缘）→ `None`（调用方返 0 页不动 buddy）。
+/// 返回**绝对 PFN** 半开区间 `[first, last)`（调用方再平移到区域内下标）。
+pub fn clip_to_window(
+    pa: usize,
+    len: usize,
+    base_pa: usize,
+    top_pa: usize,
+) -> Option<(usize, usize)> {
+    // checked：敌意/畸形区间不得回卷成巨窗。
+    let end = pa.saturating_add(len);
+    let lo = pa.max(base_pa);
+    let hi = end.min(top_pa);
+    if lo >= hi {
+        return None;
+    }
+    // 尾页向上取整（ceil），首页向下取整（floor）——宁多勿少（见模块注）。
+    let first = lo >> PAGE_SHIFT;
+    let last = (hi + PAGE_SHIFT_MASK) >> PAGE_SHIFT; // 半开区间末页号（ceil）
+    Some((first, last))
+}
+
 impl<'a> FrameAllocator<'a> {
     /// 构造并把 `[base_pa, top_pa)` **整窗**初始化为空闲（构造后立即用
     /// [`reserve`](Self::reserve) 剔除占用区——先构造后 reserve，不预留）。
@@ -66,16 +97,11 @@ impl<'a> FrameAllocator<'a> {
     pub fn reserve(&mut self, pa: usize, len: usize) -> usize {
         let base = self.base_pfn << PAGE_SHIFT;
         let top = (self.base_pfn + self.npages) << PAGE_SHIFT;
-        // checked：敌意/畸形区间不得回卷成巨窗。
-        let end = pa.saturating_add(len);
-        let lo = pa.max(base);
-        let hi = end.min(top);
-        if lo >= hi {
+        // 三律（saturating 防回卷/双侧 clamp/页取整宁多勿少）单源
+        // clip_to_window（host 钉板）。
+        let Some((first, last)) = clip_to_window(pa, len, base, top) else {
             return 0;
-        }
-        // 尾页向上取整（ceil），首页已有 4KiB 对齐保证则不取整也不亏。
-        let first = lo >> PAGE_SHIFT;
-        let last = (hi + PAGE_SHIFT_MASK) >> PAGE_SHIFT; // 半开区间末页号（ceil）
+        };
         let n = last - first;
         self.buddy.reserve_range(first - self.base_pfn, last - self.base_pfn);
         n
@@ -91,15 +117,10 @@ impl<'a> FrameAllocator<'a> {
     pub fn release(&mut self, pa: usize, len: usize) -> usize {
         let base = self.base_pfn << PAGE_SHIFT;
         let top = (self.base_pfn + self.npages) << PAGE_SHIFT;
-        // checked：与 reserve 同款防回卷。
-        let end = pa.saturating_add(len);
-        let lo = pa.max(base);
-        let hi = end.min(top);
-        if lo >= hi {
+        // 三律同 reserve 单源 clip_to_window（host 钉板）。
+        let Some((first, last)) = clip_to_window(pa, len, base, top) else {
             return 0;
-        }
-        let first = lo >> PAGE_SHIFT;
-        let last = (hi + PAGE_SHIFT_MASK) >> PAGE_SHIFT;
+        };
         self.buddy
             .release_range(first - self.base_pfn, last - self.base_pfn)
     }
@@ -230,5 +251,122 @@ mod tests {
         fa.free(b, 2).unwrap();
         fa.free(c, 0).unwrap();
         assert_eq!(fa.allocated_pages(), 0, "全释放归零（泄漏金丝雀判据）");
+    }
+
+    // ---- W3-Q42：clip_to_window 三律钉板（reserve/release 区间算术单源）----
+
+    const CB: usize = 0x4000_0000; // 窗基（4KiB 对齐；PFN = 0x40000）
+    const CN: usize = 64; // 窗页数
+    const CT: usize = CB + CN * KIB4;
+    const BP: usize = CB >> 12; // base_pfn——期望值以「BP + 相对页号」表达
+
+    #[test]
+    fn clip_interior_full_and_partial_pages() {
+        // 窗内整页区间 = 原样直通；两缘残尾各占一页（floor 首 + ceil 末）。
+        let (f0, l0) = clip_to_window(CB + 3 * KIB4, 5 * KIB4, CB, CT).unwrap();
+        assert_eq!((f0, l0), (BP + 3, BP + 8), "整页区间直通");
+        // 首 1 字节残尾（页 2 只含末字节）+ 末 1 字节残尾（页 6 只含首字节）。
+        let (f1, l1) = clip_to_window(CB + 3 * KIB4 - 1, 3 * KIB4 + 2, CB, CT).unwrap();
+        assert_eq!((f1, l1), (BP + 2, BP + 7), "floor/ceil 宁多勿少");
+        // 单字节区间 = 恰 1 页。
+        let (f2, l2) = clip_to_window(CB + 9 * KIB4 + 100, 1, CB, CT).unwrap();
+        assert_eq!((f2, l2), (BP + 9, BP + 10));
+        // 零长 = 零交（空区间 [pa, pa)）。
+        assert_eq!(clip_to_window(CB + KIB4, 0, CB, CT), None);
+    }
+
+    #[test]
+    fn clip_window_edges_and_outside() {
+        // 六缘态：恰全窗 / 恰触底 / 恰触顶 / 窗下全外 / 窗上全外 / 跨全窗。
+        assert_eq!(
+            clip_to_window(CB, CN * KIB4, CB, CT).unwrap(),
+            (BP, BP + CN),
+            "恰全窗"
+        );
+        assert_eq!(clip_to_window(0, CB, CB, CT), None, "窗下全外（恰触底缘）");
+        assert_eq!(clip_to_window(CT, KIB4, CB, CT), None, "恰触顶缘零交");
+        assert_eq!(clip_to_window(CT + KIB4, KIB4, CB, CT), None, "窗上全外");
+        assert_eq!(
+            clip_to_window(CB - KIB4, 2 * KIB4, CB, CT).unwrap(),
+            (BP, BP + 1),
+            "跨底缘截到窗内 1 页"
+        );
+        assert_eq!(
+            clip_to_window(CT - KIB4, 3 * KIB4, CB, CT).unwrap(),
+            (BP + CN - 1, BP + CN),
+            "跨顶缘截到窗内 1 页"
+        );
+        // len=usize::MAX 全吞：饱和不回卷，clamp 到全窗。
+        assert_eq!(
+            clip_to_window(0, usize::MAX, CB, CT).unwrap(),
+            (BP, BP + CN),
+            "敌意巨长 saturating 不回卷"
+        );
+    }
+
+    #[test]
+    fn clip_floor_boundary_not_off_by_one() {
+        // 首页取整判据的恰界钉板：lo 恰在页界（floor 无亏）vs 退 1 字节
+        //（floor 进位吃进上一页）——「宁多勿少」两侧的精确语义。
+        let (f, l) = clip_to_window(CB + 7 * KIB4, KIB4, CB, CT).unwrap();
+        assert_eq!((f, l), (BP + 7, BP + 8), "lo 恰页界——floor 不亏不占");
+        let (f, l) = clip_to_window(CB + 7 * KIB4 - 1, 2, CB, CT).unwrap();
+        assert_eq!((f, l), (BP + 6, BP + 8), "跨页界 2 字节——两侧各吃 1 页");
+        // hi 恰页界（ceil 无亏）vs 退 1 字节（ceil 进位吃进该页）。
+        let (f, l) = clip_to_window(CB + 7 * KIB4, KIB4 - 1, CB, CT).unwrap();
+        assert_eq!((f, l), (BP + 7, BP + 8), "hi 恰页界差 1 字节——ceil 吃满 1 页");
+    }
+
+    #[test]
+    fn clip_windows_shape_irregular_base() {
+        // 非零窗基的 PFN 语义：返回**绝对** PFN（含 base_pfn 平移）——
+        // 与 reserve 消费点的平移一致性端到端（对拍既有
+        // reserve_translates_pfn_and_clamps 的中段用例）。
+        let base = 0x1000_0000; // PFN 0x10000
+        let base_pfn = base >> 12;
+        let top = base + 64 * KIB4;
+        let (f, l) = clip_to_window(base + 8 * KIB4, 12 * KIB4 + 2, base, top).unwrap();
+        assert_eq!((f, l), (base_pfn + 8, base_pfn + 21), "中段 13 页（ceil 尾）");
+        // FrameAllocator 消费端到端：同区间 reserve 后可分配页 = 64 - 13。
+        let (ff, o, bm, sm) = backing(64);
+        let mut fa = FrameAllocator::new(base, top, ff, o, bm, sm);
+        assert_eq!(fa.reserve(base + 8 * KIB4, 12 * KIB4 + 2), 13);
+        let mut got = Vec::new();
+        while let Ok(p) = fa.alloc() {
+            got.push(p);
+        }
+        assert_eq!(got.len(), 64 - 13);
+        for p in &got {
+            let idx = p - base_pfn;
+            assert!(idx < 8 || idx >= 21, "保留页 {idx} 被分配");
+        }
+    }
+
+    #[test]
+    fn clip_reserve_release_round_trip_conservation() {
+        // pair 往返守恒：任意（含残尾/越窗腿）区间 reserve 后同区间 release，
+        // 归还页数 == 首次保留页数，全窗复可分配；再 release 幂等 0。
+        let base = 0x2000_0000;
+        let top = base + 32 * KIB4;
+        for (pa, len) in [
+            (base + 5 * KIB4 + 3, 7 * KIB4 - 8), // 残尾两侧
+            (base - KIB4, 3 * KIB4),             // 跨底缘
+            (top - 2 * KIB4, 9 * KIB4),          // 跨顶缘
+            (base, 32 * KIB4),                   // 恰全窗
+            (base + 31 * KIB4 + 1, 1),           // 单字节尾页
+        ] {
+            let (ff, o, bm, sm) = backing(32);
+            let mut fa = FrameAllocator::new(base, top, ff, o, bm, sm);
+            let n = fa.reserve(pa, len);
+            assert!(n >= 1, "({pa:#x},{len:#x}) 应有非零交");
+            let r = fa.release(pa, len);
+            assert_eq!(r, n, "往返守恒 n={n}");
+            assert_eq!(fa.release(pa, len), 0, "幂等");
+            let mut got = Vec::new();
+            while let Ok(p) = fa.alloc() {
+                got.push(p);
+            }
+            assert_eq!(got.len(), 32, "回收后整窗全可分配");
+        }
     }
 }
