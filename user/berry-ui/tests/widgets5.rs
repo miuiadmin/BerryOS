@@ -96,7 +96,7 @@ fn input_focus_ring_placeholder_and_caret() {
     let dl = paint_full(&mut ui);
     let f = fills(&dl);
     assert!(f.contains(&(0, 0, 200, 2, INPUT_FOCUS_RING)), "焦点环顶：{f:?}");
-    assert!(f.contains(&(6, 14, 2, 16, INPUT_FOCUS_RING)), "caret 竖线：{f:?}");
+    assert!(f.contains(&(6, 16, 2, 16, INPUT_FOCUS_RING)), "caret 竖线（居中同式 +16）：{f:?}");
     // placeholder 让位 caret 同帧（空内容 placeholder 仍显——视觉共存 v1）。
     ui.set_focus(None).unwrap();
     let dl = paint_full(&mut ui);
@@ -115,7 +115,7 @@ fn input_text_upsert_mask_and_limits() {
     let g = glyphs(&dl);
     assert!(g.contains(&(b'h', 92, 16)) && g.contains(&(b'i', 100, 16)), "内容前景（区带居中）：{g:?}");
     let f = fills(&dl);
-    assert!(f.contains(&(22, 14, 2, 16, INPUT_FOCUS_RING)), "caret 随文本尾：{f:?}");
+    assert!(f.contains(&(22, 16, 2, 16, INPUT_FOCUS_RING)), "caret 随文本尾（居中同式 +16）：{f:?}");
     // upsert 覆写。
     ui.set_input_text(inp, b"hey").unwrap();
     assert_eq!(ui.input_text(inp), Some(&b"hey"[..]));
@@ -234,4 +234,58 @@ fn input_click_sets_focus() {
         )
         .unwrap();
     assert_eq!(ui.set_focus(Some(btn)), Err(UiError::NodeBad), "Button 置焦拒");
+}
+
+// ---------- ⑤ remove 状态清面（B2：input_bufs/focus 随子树清） ----------
+
+#[test]
+fn remove_clears_input_bufs_and_focus() {
+    let (mut ui, inp) = input_scene();
+    // 双条目 + 双焦点位：inp（焦点 + 内容）与兄弟 inp2（仅内容）——
+    // 删 inp 后侧表/焦点须清、兄弟条目不受牵连。
+    let root = ui.root();
+    let inp2 = ui
+        .add(
+            root,
+            ViewSpec {
+                kind: ViewKind::Input,
+                key: 0,
+                props: Props::Input(InputProps {
+                    placeholder: berry_ui::TextBuf::new(b"two").unwrap(),
+                    max_len: 8,
+                    input_kind: InputKind::Text,
+                }),
+            },
+        )
+        .unwrap();
+    ui.set_input_text(inp, b"one").unwrap();
+    ui.set_input_text(inp2, b"two").unwrap();
+    ui.set_focus(Some(inp)).unwrap();
+    assert_eq!(ui.input_text(inp), Some(&b"one"[..]));
+    assert_eq!(ui.focus(), Some(inp));
+    ui.remove(inp).unwrap();
+    assert_eq!(ui.input_text(inp), None, "被删子树条目随删（无悬挂）");
+    assert_eq!(ui.focus(), None, "焦点指向被删子树 → 置 None");
+    assert_eq!(ui.input_text(inp2), Some(&b"two"[..]), "兄弟条目不受牵连");
+    // 槽位复用防串读：同槽新节点（gen 已推进）不继承旧内容。
+    let again = ui
+        .add(
+            root,
+            ViewSpec {
+                kind: ViewKind::Input,
+                key: 0,
+                props: Props::Input(InputProps {
+                    placeholder: berry_ui::TextBuf::new(b"new").unwrap(),
+                    max_len: 8,
+                    input_kind: InputKind::Text,
+                }),
+            },
+        )
+        .unwrap();
+    assert_eq!(ui.input_text(again), None, "复用槽不串读旧内容");
+    // 焦点环视觉随子树界 damage 收口（remove 后 paint 正常出帧）。
+    ui.layout();
+    let dl = paint_full(&mut ui);
+    assert!(fills(&dl).contains(&(0, 0, 200, 2, INPUT_BORDER)), "inp2 无焦灰框仍在");
+    let _ = inp2;
 }

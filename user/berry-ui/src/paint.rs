@@ -822,16 +822,33 @@ fn emit_node<'a>(
                 ButtonStyle::Outlined => {
                     // 描边 = 四 fill_rect 组合（v1 无 stroke 原语——「已有
                     // 原语组合」纪律）；底不填（Color 无 alpha——Outlined
-                    // 语义 = 透应用底，实心 surface 会盖住背景）。
+                    // 语义 = 透应用底，实心 surface 会盖住背景）。三态查
+                    // 表（Filled 同律 disabled > pressed > normal）：
+                    // disabled 描边/标签换禁用灰；pressed 描边换 ACCENT
+                    // 暗档（无底面可暗化——描边即反馈面）。
+                    let (bc, fg) = match pressed.state(slot) {
+                        NodeVisState::Disabled => {
+                            (crate::theme::FG_DISABLED, crate::theme::FG_DISABLED)
+                        }
+                        NodeVisState::Pressed => (ACCENT_PRESSED, ON_SURFACE),
+                        NodeVisState::Normal => (OUTLINE, ON_SURFACE),
+                    };
                     let t = BUTTON_BORDER.min(b.w / 2).min(b.h / 2).max(1);
-                    fill(enc, b.x, b.y, b.w, t, OUTLINE, rep);
-                    fill(enc, b.x, b.y + b.h - t, b.w, t, OUTLINE, rep);
-                    fill(enc, b.x, b.y + t, t, b.h - 2 * t, OUTLINE, rep);
-                    fill(enc, b.x + b.w - t, b.y + t, t, b.h - 2 * t, OUTLINE, rep);
-                    emit_widget_text(p.label.as_bytes(), b.x, b.w, b.y, b.h, ON_SURFACE, rest, enc, rep);
+                    fill(enc, b.x, b.y, b.w, t, bc, rep);
+                    fill(enc, b.x, b.y + b.h - t, b.w, t, bc, rep);
+                    fill(enc, b.x, b.y + t, t, b.h - 2 * t, bc, rep);
+                    fill(enc, b.x + b.w - t, b.y + t, t, b.h - 2 * t, bc, rep);
+                    emit_widget_text(p.label.as_bytes(), b.x, b.w, b.y, b.h, fg, rest, enc, rep);
                 }
                 ButtonStyle::Text => {
-                    emit_widget_text(p.label.as_bytes(), b.x, b.w, b.y, b.h, ON_SURFACE, rest, enc, rep);
+                    // 三态查表同律：disabled 标签换禁用灰；pressed 标签换
+                    // ACCENT 暗档（无底无描边——标签即反馈面）。
+                    let fg = match pressed.state(slot) {
+                        NodeVisState::Disabled => crate::theme::FG_DISABLED,
+                        NodeVisState::Pressed => ACCENT_PRESSED,
+                        NodeVisState::Normal => ON_SURFACE,
+                    };
+                    emit_widget_text(p.label.as_bytes(), b.x, b.w, b.y, b.h, fg, rest, enc, rep);
                 }
             }
         }
@@ -962,7 +979,16 @@ fn emit_node<'a>(
             let cnt = p.segment_count.max(1) as i64;
             let sw = b.w as i64 / cnt;
             if sw > 0 {
-                let ax = b.x as i64 + sw * p.active.min(p.segment_count) as i64;
+                // 末段宽吃整数余数（b.w − sw×(cnt−1)）——整除时与 sw 同
+                // 值零漂移；非整除时末段补齐右缘（原先恒 sw 会在末段
+                // 右留 1..cnt−1 px 缺口）。
+                let act = p.active.min(p.segment_count) as i64;
+                let aw = if act == cnt - 1 {
+                    b.w as i64 - sw * (cnt - 1)
+                } else {
+                    sw
+                };
+                let ax = b.x as i64 + sw * act;
                 let active_c = if pressed.is_disabled(slot) {
                     crate::theme::BG_DISABLED
                 } else {
@@ -972,7 +998,7 @@ fn emit_node<'a>(
                     enc,
                     i64_to_i32_sat(ax),
                     b.y,
-                    i64_to_i32_sat(sw),
+                    i64_to_i32_sat(aw),
                     b.h,
                     active_c,
                     rep,
@@ -1008,15 +1034,23 @@ fn emit_node<'a>(
         // 直显两位档，>99 显 99+）或纯圆点（show_dot）。
         Props::Tabs(p) => {
             fill(enc, b.x, b.y, b.w, b.h, TABS_BG, rep);
-            // 段宽 = w/tab_count（下取整）；active 段底缘指示条。
+            // 段宽 = w/tab_count（下取整）；active 段底缘指示条。末段宽
+            // 吃整数余数（Seg 同式——b.w − seg_w×(n−1)，整除零漂移、非
+            // 整除补齐右缘）。
             let n_tabs = p.tab_count.max(1) as i64;
             let seg_w = b.w as i64 / n_tabs;
-            let ax = b.x as i64 + seg_w * (p.active.min(p.tab_count.saturating_sub(1)) as i64);
+            let act = p.active.min(p.tab_count.saturating_sub(1)) as i64;
+            let ind_w = if act == n_tabs - 1 {
+                b.w as i64 - seg_w * (n_tabs - 1)
+            } else {
+                seg_w
+            };
+            let ax = b.x as i64 + seg_w * act;
             fill(
                 enc,
                 i64_to_i32_sat(ax),
                 b.y + b.h - TABS_INDICATOR_H,
-                i64_to_i32_sat(seg_w),
+                i64_to_i32_sat(ind_w),
                 TABS_INDICATOR_H,
                 TABS_INDICATOR,
                 rep,
@@ -1253,7 +1287,10 @@ fn emit_node<'a>(
             }
             if focused {
                 let cx = b.x + 6 + (text.len() as i32 * 8).min(b.w - 16);
-                fill(enc, cx, b.y + 14, INPUT_CARET_W, 16, INPUT_FOCUS_RING, rep);
+                // 与文本居中同式（emit_widget_text：(h−16)/2——48 高即
+                // +16；原硬编 +14 对文本偏 2px）。
+                let cy = b.y + (b.h - 16).max(0) / 2;
+                fill(enc, cx, cy, INPUT_CARET_W, 16, INPUT_FOCUS_RING, rep);
             }
         }
         Props::Edit(p) => {
@@ -1276,9 +1313,11 @@ fn emit_node<'a>(
                 emit_widget_text(etext, b.x + 6, b.w - 12, b.y, 40, SELECT_FG, rest, enc, rep);
             }
             if focus_slot == slot {
-                let cy = b.y + 2 + ((etext.len() / 24) as i32).min(1) * 20;
+                // 首行 caret 与文本带居中同式（文本发射带 h=40 → (40−16)/2
+                // = +12；原 +2/+8 组合对文本偏 2px）；次行步进 20 保持。
+                let cy = b.y + (40 - 16) / 2 + ((etext.len() / 24) as i32).min(1) * 20;
                 let cx = b.x + 6 + ((etext.len() % 24) as i32 * 8).min(b.w - 16);
-                fill(enc, cx, cy + 8, INPUT_CARET_W, 16, INPUT_FOCUS_RING, rep);
+                fill(enc, cx, cy, INPUT_CARET_W, 16, INPUT_FOCUS_RING, rep);
             }
         }
         Props::Canvas(_) => {

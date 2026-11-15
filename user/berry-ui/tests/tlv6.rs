@@ -571,7 +571,8 @@ fn p1f_add_face_smoke() {
     let n2 = ui2.encode_desc(&mut out2).unwrap();
     assert_eq!(&out[..n], &out2[..n2], "add 面产物与 AST 面产物同流");
 
-    // 新容器父位拒（lib.rs 容器白名单未收编——前批已知边界钉现行为）
+    // Refresh 容器父位收编（B1 白名单补漏——desc.rs AST/builder 面本就
+    // 按容器受理，add 面同律；回归钉板）
     let mut ui = Ui::<8>::new(10, 10);
     let root = ui.root();
     let rf = ui
@@ -584,12 +585,12 @@ fn p1f_add_face_smoke() {
             },
         )
         .unwrap();
-    assert_eq!(
+    assert!(
         ui.add(
             rf,
             ViewSpec { kind: ViewKind::Rect, key: 0, props: Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None }) }
-        ),
-        Err(berry_ui::UiError::BadParent),
-        "Refresh 父位拒（白名单未收编——Phase 2 接线面）"
+        )
+        .is_ok(),
+        "Refresh 父位收（容器白名单补漏）"
     );
 }

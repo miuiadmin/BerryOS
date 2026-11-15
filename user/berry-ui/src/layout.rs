@@ -333,9 +333,12 @@ fn intrinsic(
         // 48 + 子聚合 max（子 = 内容区面板）；Sbar/Badge = 固定内在叶
         //（Badge count=0 且无圆点 = 隐藏 → 0×0 空绘）；Scroll/List =
         // 容器（Scroll = 子聚合宽 × content_height；List = 子聚合宽 ×
-        // item_count×item_h——等高项 v1）。
+        // item_count×item_h——等高项 v1）。Tabs 子高取 **max** 不取 Σ
+        //（place 面 z 叠放——Stack 同形；Σ 是批 A 半成品错源，多面板
+        // 各异高时会虚高内容区）。
         Props::Tabs(_) => {
-            let (cw, ch, _) = child_agg(nodes, n.first_child, true);
+            let (cw, _, _) = child_agg(nodes, n.first_child, true); // 宽取子 max
+            let (_, ch, _) = child_agg(nodes, n.first_child, false); // 高取子 max（z 叠放）
             (
                 u64_to_u32_sat(cw.max(crate::TABS_MIN_W as u64)),
                 u64_to_u32_sat(ch.saturating_add(crate::TABS_BAR_H as u64)),
@@ -968,6 +971,27 @@ fn place_children(
                     recomputed, old_abs, vp, damage, placed, hops + 1,
                 );
                 cursor += ch_h as i64;
+                cur = next;
+            }
+        }
+        Props::List(p) => {
+            // 波2 批 A 补账：List = 等高行容器——行序子 y = i×item_height
+            //、x=0 宽吃满、行槽高 = item_height（批 A 半成品落 `_` 兜臂
+            //全叠 (0,0)；内在 item_count×item_height 已单源，摆位同源）。
+            let ih = u32_to_i32_sat(p.item_height) as i64;
+            let mut i: i64 = 0;
+            let mut cur = first;
+            let mut guard = 0usize;
+            while cur != u32::MAX && guard <= nodes.len() {
+                guard += 1;
+                let Some(c) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else { break };
+                let next = c.next_sib;
+                place(
+                    nodes, cur, ncx, ncy, 0, i64_to_i32_sat(i.saturating_mul(ih)), w,
+                    i64_to_i32_sat(ih), force_kids,
+                    recomputed, old_abs, vp, damage, placed, hops + 1,
+                );
+                i += 1;
                 cur = next;
             }
         }

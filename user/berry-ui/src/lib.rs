@@ -927,11 +927,13 @@ impl<const N: usize> Ui<N> {
             // 批 A：Tabs（内容区面板子）/Scroll（滚动视口子）/List（行
             // 子）入列——place_children 各自臂已落；第三批：Collapse
             //（折叠内容子——place_children Collapse 臂）/Card（卡片内容
-            // 子——`_` 臂全幅给子）入列）。
+            // 子——`_` 臂全幅给子）入列；批 E 补漏：Refresh（包裹内容子
+            // ——desc.rs AST/builder 面本就按容器受理，此处白名单漏收是
+            // 两面漂移，tlv6「Refresh = 容器正例对照」同源）。
             Some(ViewKind::Root) | Some(ViewKind::Col) | Some(ViewKind::Row) | Some(ViewKind::Pad)
             | Some(ViewKind::Grid) | Some(ViewKind::Stack) | Some(ViewKind::Tabs)
             | Some(ViewKind::Scroll) | Some(ViewKind::List) | Some(ViewKind::Collapse)
-            | Some(ViewKind::Card) => {}
+            | Some(ViewKind::Card) | Some(ViewKind::Refresh) => {}
             // 叶带子显式列名（Rect/Text 原有 + Image/Icon 新叶 + 组件七
             // 件第二批的六叶——desc.rs AST 面「叶带子拒面」同律）：容器位
             // 传叶子 → BadParent。Grid 格满/零维先验在 Root-子检后（段C
@@ -1111,6 +1113,35 @@ impl<const N: usize> Ui<N> {
                 self.a11y[k] = None;
             }
             k += 1;
+        }
+        // 批 D 侧表同律随子树清（状态泄漏修复）：input_bufs 条目槽位命
+        // 中被删子树 → 剔除（紧凑表就地压实——set_input_text 追加写法
+        // 的不变量是 [..n] 无洞；槽位匹配同 a11y——旧 gen 残项/复用槽
+        // 两清皆正确，否则槽位复用后 input_text 串读新节点内容）；focus
+        // 指向被删子树 → 置 None（悬空 id 无还原义——clear() 整清同源；
+        // 焦点环视觉已随子树界 damage 收口）。
+        let mut w = 0usize;
+        let mut r = 0usize;
+        while r < self.input_buf_n {
+            let hit = match self.input_bufs[r] {
+                Some((id, _)) => list[..cnt].contains(&(id.0 & 0xFFFF)),
+                None => false, // 防御：紧凑不变量破洞原样保位
+            };
+            if !hit {
+                self.input_bufs[w] = self.input_bufs[r];
+                w += 1;
+            }
+            r += 1;
+        }
+        while w < self.input_buf_n {
+            self.input_bufs[w] = None;
+            w += 1;
+        }
+        self.input_buf_n = w;
+        if let Some(f) = self.focus {
+            if list[..cnt].contains(&(f.0 & 0xFFFF)) {
+                self.focus = None;
+            }
         }
         Ok(())
     }
