@@ -1117,7 +1117,7 @@ test-host:
     # 扫描只扫 *.py，bcts-run.sh --selftest 自称 8/8 绿但从未接线：
     # 有 selftest 零自动执法 = parse_frozen 校验逻辑改坏无机器咬合，
     # 冻结件 ↔ markers.sh 单源漂移无人咬。注意两腿义务：活树计数
-    # 32/54/2 钉板 + 冻结快照全等腿——加标记的 PR 会红到此门，须随刀
+    # 32/56/3 钉板 + 冻结快照全等腿——加标记的 PR 会红到此门，须随刀
     # 更新 TIER1_FLOOR_LIVE/冻结件（ADR #84 兼容面演进显式化，非误红）。
     # 改 bcts-run.sh / markers.sh 标记面 / bcts@*.toml 冻结件必跑。
     {{BASH}} tools/bcts-run.sh --selftest
