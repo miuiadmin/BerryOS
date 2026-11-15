@@ -4179,6 +4179,17 @@ pub struct Menu {
 }
 
 impl Menu {
+    pub fn anchored_size(
+        ctx: &WidgetContext, count: usize,
+    ) -> Result<(u32, u32), UiError> {
+        if count == 0 || count > 6 {
+            return Err(UiError::NodeBad);
+        }
+        let width = ctx.metrics.effective_px(360);
+        let height = ctx.metrics.effective_px(72).saturating_mul(count as u32);
+        Ok((width, height))
+    }
+
     pub fn new<const N: usize>(
         ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, x: i32, y: i32,
         items: &[MenuItemSpec],
@@ -4312,6 +4323,73 @@ impl Menu {
     }
 }
 
+
+/// ContextMenu 结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextMenuOutcome {
+    None,
+    Selected(usize),
+    Dismissed,
+}
+
+/// 长按/右键上下文菜单：全屏 scrim + 锚定 Menu。
+///
+/// scrim 与 Dialog 一样挂 Ui root 后画兄弟，点击外部返回 Dismissed。
+/// 触发手势由 app 的 LongPressGesture 或输入设备决定；本组件不合成事件。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextMenu {
+    pub scrim: NodeId,
+    pub menu: Menu,
+}
+
+impl ContextMenu {
+    pub fn new<const N: usize>(
+        ui: &mut Ui<N>, ctx: &WidgetContext, anchor_x: i32, anchor_y: i32,
+        items: &[MenuItemSpec],
+    ) -> Result<Self, UiError> {
+        let (vp_w, vp_h) = ui.viewport();
+        let (nominal_w, menu_h) = Menu::anchored_size(ctx, items.len())?;
+        let menu_w = nominal_w.min(vp_w);
+        let margin = ctx.metrics.effective_px(16) as i32;
+        let max_x = (vp_w.saturating_sub(menu_w).saturating_sub(margin as u32)).max(0) as i32;
+        let max_y = (vp_h.saturating_sub(menu_h).saturating_sub(margin as u32)).max(0) as i32;
+        let x = anchor_x.clamp(margin, max_x.max(margin));
+        let y = anchor_y.clamp(margin, max_y.max(margin));
+        let overlay_root = ui.root();
+        let scrim = add(
+            ui,
+            overlay_root,
+            panel_spec(ctx.theme.colors.text_primary, Some(vp_w), Some(vp_h), 0, 0, 0),
+        )?;
+        let menu = Menu::new(ui, scrim, ctx, x, y, items)?;
+        ui.set_a11y(scrim, ROLE_BUTTON, b"Context menu")?;
+        Ok(Self { scrim, menu })
+    }
+
+    pub fn dismiss<const N: usize>(&self, ui: &mut Ui<N>) -> Result<(), UiError> {
+        ui.remove(self.scrim)
+    }
+
+    pub fn on_msg<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, msg: &Msg,
+    ) -> Result<ContextMenuOutcome, UiError> {
+        if let Some(index) = self.menu.on_msg(ui, ctx, msg)? {
+            self.dismiss(ui)?;
+            return Ok(ContextMenuOutcome::Selected(index));
+        }
+        match msg {
+            Msg::Click { node } if *node == self.scrim => {
+                self.dismiss(ui)?;
+                Ok(ContextMenuOutcome::Dismissed)
+            }
+            Msg::Cancel { .. } => {
+                self.dismiss(ui)?;
+                Ok(ContextMenuOutcome::Dismissed)
+            }
+            _ => Ok(ContextMenuOutcome::None),
+        }
+    }
+}
 
 /// 底部 Sheet。detent 高度由 app 给出；dismiss 归 app 状态机。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

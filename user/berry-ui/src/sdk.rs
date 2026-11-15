@@ -32,7 +32,8 @@ pub use crate::text_input::{
 };
 pub use crate::widgets::{
     AlertDialog, AppBar, Badge, Button, ButtonEmphasis, Card, Checkbox, Chip, ChipKind,
-    DatePicker, DatePickerValue, DialogAction, EmptyState, Grid, IconButton, ListDetail,
+    ContextMenu, ContextMenuOutcome, DatePicker, DatePickerValue, DialogAction, EmptyState, Grid,
+    IconButton, ListDetail,
     ListDetailSpec, ListTile, ListTileSpec, ListItem, LoadingIndicator, Menu, MenuItemSpec,
     OverlaySurface, ProgressIndicator, Radio, SafeInsets, Scaffold, ScrollView, ScrollViewAxis,
     SearchField, Section, SegmentedControl, SegmentedItemSpec, Sheet, Slider, Stepper, Switch,
@@ -44,6 +45,8 @@ pub use crate::widgets::{
 pub use crate::swipe::{
     SwipePager, DOT_OFF, DOT_ON, FLIP_VEL_PX_S, SNAP_DUR_NS, SWIPE_PAGES_MAX,
 };
+pub use crate::nav_stack::{NavEvent, NavStack, NAV_STACK_MAX};
+pub use crate::gesture::{LongPressGesture, LongPressOutcome, LONG_PRESS_NS};
 pub use crate::{
     a11y_region_roundtrip, FlexBasis, FlexEntry, FlexSpec, FocusEntry, ReapplyStat, SemEntry,
     SETTLE_DERIVE_MAX,
