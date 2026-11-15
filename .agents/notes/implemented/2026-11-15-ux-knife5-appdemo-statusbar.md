@@ -23,6 +23,11 @@ Status: implemented
 - EFI GUI run：`APP ok n=2`（拉起+reap 0）+ `APPUI ok n=1`（[ui] 元数据面）+ launcher 双窗无 `syswin ack bad` + clock 正常——**除 appdemo UI 行缺席待定谳外全绿**。
 - appdemo UI 行缺席的终判挂低负载复跑（诊断镜像已提交 7a33c8268）。
 
+## 终判补录（2026-11-15 晚，五轮二分）
+
+「appdemo UI 行缺席」非 appdemo 因素——二分定谳：shot16（launcher **坏版** fail-exit，无帧循环）批全绿含 `app APPDEMO up/fs ok`；shot17-21（launcher **好版** 96389e1ad，帧循环常驻）稳定挂死在 bsh 批 HEXYL 后 fs_selftest 段（HVF 同挂，非 TCG 慢速）。结论：**双窗修复把 launcher 从 fail-exit 救活，暴露了帧循环×bsh 批的结构竞速**（既有债非本刀回归），转 issue #343（内核调度域）。诊断加固已回滚（d357a2160 复原 aac09a31a 全 UI 形态）。方法论教训：**boot 批死点定位先看 launcher 好/坏形态**——坏 launcher 的「全绿」是帧循环缺席的假绿（GUI 面没跑），好 launcher 的挂死才是真信号。
+
+
 ## Related
 
 - [2026-11-15-ux-knife5-wm-grant.md](2026-11-15-ux-knife5-wm-grant.md)（首段）
