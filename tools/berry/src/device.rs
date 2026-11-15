@@ -31,6 +31,10 @@ pub struct Device {
     accel: qemu::Accel,
     memory_mib: u32,
     mode: Option<String>,
+    /// 缺省数据盘解析键（data_disk_plan 按 profile 命名盘挂
+    /// home()/data/<id>.img）：restart_in_place 重生 QEMU 时须用同一
+    /// profile 的盘。
+    profile_id: String,
     restart_on_crash: bool,
     child: std::process::Child,
     qmp: Arc<Mutex<QmpClient>>,
@@ -141,6 +145,7 @@ impl Device {
             mem,
             true,
             mode.as_deref(),
+            profile.id,
             Some(&ram_path),
             &mut run,
             stop_flag.clone(),
@@ -160,6 +165,7 @@ impl Device {
             accel,
             memory_mib: mem,
             mode,
+            profile_id: profile.id.to_string(),
             restart_on_crash: false,
             child,
             qmp,
@@ -222,6 +228,7 @@ impl Device {
             self.memory_mib,
             true,
             self.mode.as_deref(),
+            &self.profile_id,
             Some(&self.ram_path),
             &mut self.run,
             self.stop_flag.clone(),
@@ -351,6 +358,7 @@ fn boot_runtime(
     mem: u32,
     tablet: bool,
     mode: Option<&str>,
+    profile_id: &str,
     ram_path: Option<&std::path::Path>,
     run: &mut RunDir,
     stop_flag: Arc<std::sync::atomic::AtomicBool>,
@@ -367,9 +375,8 @@ fn boot_runtime(
     };
     let tls_creds = ext.and_then(|e| e.tls_dir.as_deref());
     let mut child = qemu::spawn_image(
-        qemu, image, firmware, vars, serial, log, vnc, qmp_ep, accel, mem, tablet, mode, ram_path,
-        ext_arg.as_deref(),
-        tls_creds,
+        qemu, image, firmware, vars, serial, log, vnc, qmp_ep, accel, mem, tablet, mode,
+        profile_id, ram_path, ext_arg.as_deref(), tls_creds,
     )?;
     let meta_path = run.file("meta.json");
     let mut meta: serde_json::Value = std::fs::read(&meta_path)
@@ -489,6 +496,7 @@ fn boot_with_retry(
     mem: u32,
     tablet: bool,
     mode: Option<&str>,
+    profile_id: &str,
     ram_path: Option<&std::path::Path>,
     run: &mut RunDir,
     stop_flag: Arc<std::sync::atomic::AtomicBool>,
@@ -500,8 +508,8 @@ fn boot_with_retry(
     Option<ControlServer>,
 )> {
     let first = boot_runtime(
-        qemu, image, firmware, vars, serial, log, vnc, qmp_ep, accel, mem, tablet, mode, ram_path,
-        run, stop_flag.clone(), ext.as_ref(),
+        qemu, image, firmware, vars, serial, log, vnc, qmp_ep, accel, mem, tablet, mode,
+        profile_id, ram_path, run, stop_flag.clone(), ext.as_ref(),
     );
     if first.is_ok() {
         return first;
@@ -543,8 +551,8 @@ fn boot_with_retry(
     // first attempt's.
     let _ = std::fs::File::create(log);
     let second = boot_runtime(
-        qemu, image, firmware, vars, serial, log, vnc, qmp_ep, accel, mem, tablet, mode, ram_path,
-        run, stop_flag, ext.as_ref(),
+        qemu, image, firmware, vars, serial, log, vnc, qmp_ep, accel, mem, tablet, mode,
+        profile_id, ram_path, run, stop_flag, ext.as_ref(),
     );
     if second.is_err() {
         run.keep_fail();

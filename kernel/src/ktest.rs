@@ -5866,10 +5866,10 @@ fn test_telemetry_open() {
         &*core::ptr::slice_from_raw_parts(core::ptr::addr_of!(SNAP) as *const u8, n as usize)
     };
     assert!(snap.contains(&b'\n'), "TELEMETRY：klog 快照须含换行（串流行镜像）");
-    assert!(
-        snap.windows(b"BerryOS boot".len()).any(|w| w == b"BerryOS boot"),
-        "TELEMETRY：klog 快照须含 boot 横幅（ktest 点环未追尾）"
-    );
+    // 横幅断言移除（实施轮实抓）：它假设「ktest 点环未追尾」只在裸跑形态
+    // 成立——rootfs 形态稳态矩阵灌环横幅必被追尾，4KiB 尾窗恒无横幅、
+    // 断言必炸 smoke 主面。镜像正确性改由 bsh dmesg e2e（rootfs 相实跑）
+    // 承担运行时验证；此处保 ABI 契约面（非空/换行/ASCII/op/len 负例）。
     assert!(
         snap.iter().all(|&b| b == b'\n' || (0x20..0x7f).contains(&b)),
         "TELEMETRY：klog 快照须 ASCII 可印域（boot 串流无二进制面）"

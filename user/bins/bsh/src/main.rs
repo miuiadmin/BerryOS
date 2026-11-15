@@ -95,7 +95,8 @@ use berry_libc::fs::{
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_event_create,
     berry_handle_close, berry_handle_duplicate, berry_object_signal, berry_object_wait_many,
-    berry_object_wait_one, berry_process_terminate, berry_signal_send, Handle, BERRY_ERR_AGAIN,
+    berry_object_wait_one, berry_process_terminate, berry_signal_send,
+    berry_telemetry_klog_snapshot, Handle, BERRY_ERR_AGAIN,
     BERRY_ERR_BAD_STATE, BERRY_ERR_BUSY, CLOCK_MONOTONIC, RIGHT_READ, RIGHT_RECV, RIGHT_SEND,
     RIGHT_TRANSFER, SIGNAL_READABLE, SIGNAL_TERMINATED, SIGNAL_WRITABLE,
 };
@@ -3446,7 +3447,7 @@ fn exec_one(
 /// （行为面独立——名单只答「是不是内建」）。
 const BUILTINS: &[&str] = &[
     "help", "exit", "env", "echo", "run", "cat", "ls", "mkdir", "rm", "cd", "pwd",
-    "inputpoll", "clear", "uname", "uptime", "sleep", "type", "history",
+    "inputpoll", "clear", "uname", "uptime", "sleep", "type", "history", "dmesg",
 ];
 
 /// help 文案三行（A60：192B 控制台原子消息帽——单行装不下全清单，逐条
@@ -3454,7 +3455,7 @@ const BUILTINS: &[&str] = &[
 /// [`BUILTINS`] 的名单一致性由 cli_selftest ④ 执法（每名必须出现）。
 const HELP_LINES: [&str; 3] = [
     "bsh 内建：help | echo <text> | env | run <name> | cat <file> | ls | ls <dir> | mkdir <dir> | rm <path> | cd <dir> | pwd | inputpoll",
-    "…续：| clear | uname | uptime | sleep <s> | type <name> | history | A | B（rootfs 管道）| A && B | A > file | exit",
+    "…续：| clear | uname | uptime | sleep <s> | type <name> | history | dmesg | A | B（rootfs 管道）| A && B | A > file | exit",
     "……续：| 裸名 = bin/<name> 派发（C-2a uu 家族）",
 ];
 
@@ -3598,6 +3599,13 @@ fn render_cmd(
     } else if let Some(_rest) = cmd.strip_prefix("uptime ") {
         writeln!(out, "usage: uptime").unwrap();
         (Vec::new(), 2)
+    } else if cmd == "dmesg" {
+        // 阶段五第 17 步：内核日志尾部（0x84 telemetry_open op=0 klog 快照
+        // ——berry_sys 薄包装；数据面字节走返回值，`dmesg > file` 天然可重定向）。
+        dmesg_output(out)
+    } else if let Some(_rest) = cmd.strip_prefix("dmesg ") {
+        // 无参命令带参照打（clear 同款幂等面，不拒）——参数忽略。
+        dmesg_output(out)
     } else if cmd == "sleep" {
         writeln!(out, "usage: sleep <s>（0..=60 整秒）").unwrap();
         (Vec::new(), 2)
@@ -4050,6 +4058,23 @@ fn sleep_output(spec: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
         remain -= 1;
     }
     (Vec::new(), 0)
+}
+
+/// `dmesg`（阶段五第 17 步）：内核日志尾部打 stdout——0x84
+/// `telemetry_open` op=0 klog 快照（`berry_telemetry_klog_snapshot` 薄包装
+/// ——berry-sys syscall 层直封，uptime 的 berry_clock_read 同层先例），
+/// 尾部字节帽 4KiB（环容量 16KiB×2 的 dmesg 消费帽——内核按帽保尾，返回
+/// 即所见）。失败打诊断行码 1（内核侧 -ENOTSUP/-EINVAL/-EFAULT 三拒面
+/// 同形透传）。
+fn dmesg_output(out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
+    let mut buf = [0u8; 4096];
+    let r = berry_telemetry_klog_snapshot(buf.as_mut_ptr(), buf.len());
+    if r < 0 {
+        writeln!(out, "bsh: dmesg: telemetry klog snapshot failed ({})", r).unwrap();
+        (Vec::new(), 1)
+    } else {
+        (buf[..r as usize].to_vec(), 0)
+    }
 }
 
 /// `type <name>`（命令行体验刀，契约 1）：身份三档——BUILTINS 表命中

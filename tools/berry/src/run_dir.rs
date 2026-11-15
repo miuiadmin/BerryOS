@@ -215,12 +215,16 @@ pub fn wait_for_file(path: &Path, timeout: Duration) -> Result<()> {
 
 // ---- 四轮审计（D4）：RunDir/index 生命周期护栏——write_all 整行格式与
 // ---- create/drop 两行契约此前零护栏（writeln! 并发交错是三轮实抓回归面）。
-// ---- env（BERRY_HOME）是进程级全局：两测试经 ENV_LOCK 串行防竞争。
+// ---- env（BERRY_HOME）是进程级全局：跨模块的 env 触碰测试（本文件与
+// ---- commands.rs find_run / qemu.rs vars_store·data_disk）共用此锁串行。
+/// 测试串行锁：所有改 BERRY_HOME / BERRY_VARS_PERSIST / BERRY_DATA_DISK
+/// 的测试经此锁互斥（cargo test 同二进制多线程跑，env 是进程级全局）。
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod run_dir_tests {
     use super::*;
-
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn index_lifecycle_two_lines() {

@@ -69,8 +69,12 @@ const UART_ICR_STICKY: u32 = UART_ICR_ALL & !(UART_IMSC_RXIM); // RXIC 与 RXIM 
 
 /// 输出一个字节到 UART0（2b-2 起走高半直映别名——低半身份已退役，PA 直写必 fault；
 /// boot asm 早期打印不走这里，是 asm 里直写 PA）。
+/// 阶段五第 16 步起每字节先入本核 klog 环（`klog_ring::put`——串口镜像，
+/// 无锁 fetch_add，任何上下文含 panic 绕锁面皆可调；boot asm 三字符标记
+/// 在环外是已知口径，见 klog_ring 模块头）。
 #[inline]
 pub fn uart_putc(c: u8) {
+    crate::klog_ring::put(c);
     // unsafe 收敛在此：MMIO 写。
     unsafe { mmio::write(UART, c as u32) };
 }
