@@ -28,7 +28,10 @@
 //! 本核 [`HAZARD`] 位发布在读槽号并验证 ACTIVE 未翻转，写者 [`publish`]
 //! 扫描避让），他核在用槽不被覆写；读窗串行（现状屏蔽窗/KL）形态下两核
 //! hazard 收敛同槽、阻塞集 ≤2 恒有空闲——单核/现状与旧固定轮转等价
-//! （锁恒立即获取，零行为变化）。
+//! （锁恒立即获取，零行为变化）。**shadow 谱系同律**（调度终窗第一刀闭合
+//! SMP-01 §5.1 缺口）：[`SHD_GATE`]（hazard-lite 验证环 + 避让扫描——协议
+//! 判定律单源 `berry_polface::HazardGate`，host 线程竞争钉板在 polface
+//! 测试面）。
 //!
 //! 语义映射的边界（写者是受信内核侧，拒收面在此收口）：
 //! - **key == 0 保留**：空槽哨兵键，注入条目带 0 键直接丢弃（`proc_tag = 0`
@@ -41,16 +44,20 @@
 
 use crate::task::{EppHint, Task};
 use berry_hal_aarch64 as hal;
-use core::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use core::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 // ---- 判定面单源（W3-Q20）：常量族与查表/插槽/EPP 打包数学已迁
 // `berry-polface`（host 可测钉板——散列锚点/探测窗不变式/first-wins/
 // 窗满拒收/打包往返 13 测）；此处 re-export 后零第二实现，本文件只剩
-// 存储机械（SNAPS/SHD 三槽双槽区 + 原子发布/hazard-lite/写者锁）。----
+// 存储机械（SNAPS/SHD 三槽区 + 原子发布/hazard-lite/写者锁——换表
+// 并发协议判定律亦单源在 polface：HazardGate，shadow 侧消费）。----
 pub use berry_polface::{
     bucket_of, epp_pack, epp_unpack, lookup_slot_idx, InsertOut, BAND_SEL_NONE, KEY_EMPTY,
     BUCKETS, EPP_HAS, EPP_VAL, PROBE_MAX, Slot, TBL_MAX, WEIGHT_MAX,
 };
+// 换表槽门（shadow 谱系三件套②半边——协议判定律单源 polface，host 竞争
+// 钉板在彼侧测试面；本文件机械壳消费）。
+use berry_polface::HazardGate;
 
 /// [`ACTIVE`] 的哨兵值：三槽 0..=2 之外的 3 = OFF/回退态（指向 [`EMPTY_SNAP`]）。
 const SENTINEL_EMPTY: u32 = 3;
@@ -505,66 +512,70 @@ pub fn band_of(task_key: u64) -> u8 {
 // 双轨道隔离的**结构性**保证（约束①：快路径零改动）：[`ACTIVE`] 的值域只有
 // 0..=2/哨兵——经 [`active_snap`] 永远只达 [`SNAPS`]/[`EMPTY_SNAP`]，shadow
 // 槽对快路径**不可达**（非口头约定，是地址空间上无别名）。shadow 侧写纪律
-// 同 [`SNAPS`]（约束②）：只写非活跃槽 + 翻转 [`SHD_WHERE`] 发布——翻转位
-// 自 SMP 安全三件套①（原子化）起为 AtomicU8（写侧「槽写 +
-// fence(Release) + store(Release)」/ 读侧 Acquire），槽数据仍裸写；
-// 写者互斥自三件套③起由 [`POLICY_LOCK`] 串行化（bind_gen_shadow/
-// promote 写/读 shadow 槽全程持锁）；hazard-lite 槽回收（②）active 三槽
-// 侧已落 HAZARD、shadow 双槽侧未覆盖——shadow 读（shadow_gen/对账）与
-// shadow 换表的跨核并发仍靠现状串行，留后续刀。双槽
-// （而非三槽）即足——shadow 无快路径读者，翻转后旧槽只剩写者自己会再碰
-// （约束③的拷贝源/目的地都在写者手里）。
+// 同 [`SNAPS`]（约束②）：只写**非活跃且无 hazard**槽再翻转发布——三件套②
+// hazard-lite 槽回收的 shadow 半边（调度终窗第一刀闭合 SMP-01 §5.1 缺口：
+// 旧双槽 XOR 翻转无避让面，写者背靠背两次换表可覆写他核读者刚进入的槽
+// ——撕裂窗；协议判定律单源 `berry_polface::HazardGate`，[`SHD_GATE`]
+// 持协调位，本文件只留槽存储与裸指针 SAFETY）；写者互斥自三件套③起由
+// [`POLICY_LOCK`] 串行化（bind_gen_shadow/promote 写/读 shadow 槽全程持
+// 锁）。三槽（同 [`SNAPS`] 几何——「活跃 1 + hazard 收敛 ≤2」恒有空闲）。
 //
 // **divergence 对账**（计数器/判定见文件尾「Shadow divergence 对账」节）：
 // [`apply`] 每调一次，shadow 谱系非空即对同一 key 双表各算一份决策、只读
 // 对比**只计数**（shadow 差异永不应用——只算不用原则的观测面延伸）；轨道
 // 切换（promote/demote）自动清零，对账期与轨道绑定。
 
-/// shadow 双槽轮转区：写者写 `SHD[SHD_WHERE ^ 1]`（非活跃槽）→ 翻转
-/// [`SHD_WHERE`] 发布。`static mut` 纪律同 [`SNAPS`]（`&raw mut` 取裸指针，
-/// 不立引用——E0596）。
-static mut SHD: [Snap; 2] = [const { Snap::empty() }; 2];
-/// 当前活 shadow 槽号（0/1）。写者翻转本位 = shadow 侧发布。SMP 安全
-/// 三件套①（原子化）：AtomicU8——写侧「先写槽 + fence(Release) +
-/// store(Release)」、读侧 load(Acquire)，见新槽号必见新槽内容；单核
-/// Acquire/Release 无重排面 = 行为零变化。③写者锁已落（写者入口
-/// [`POLICY_LOCK`] 串行化——见文件头锁注）；②hazard-lite 槽回收 shadow
-/// 侧未覆盖（active 侧见 HAZARD）——shadow 槽数据的跨核读写仍靠现状
-/// 串行，留后续刀。
-static SHD_WHERE: AtomicU8 = AtomicU8::new(0);
+/// shadow 三槽轮转区：写者经 [`SHD_GATE`] `pick_write` 选**非活跃且无
+/// hazard**槽写入 → `publish` 翻转发布。`static mut` 纪律同 [`SNAPS`]
+/// （`&raw mut` 取裸指针，不立引用——E0596）。
+static mut SHD: [Snap; 3] = [const { Snap::empty() }; 3];
+/// shadow 侧换表槽门（活跃槽号 + 每核 hazard 位——三件套② shadow 半
+/// 边）：读者（shadow_snap/shadow_gen/对账）`reader_enter` 发布在读槽号
+/// 并复读验证未翻转（[`active_snap`] 同款验证环），写者（bind_gen_shadow）
+/// `pick_write` 避让「活跃 ∪ hazard」——协议判定律与 host 线程竞争钉板
+/// 单源在 `berry-polface`（HazardGate；本处机械壳消费即唯一事实源）。
+static SHD_GATE: HazardGate<3, HAZARD_CPUS> = HazardGate::new();
 
-/// shadow 活槽裸指针（读窗纪律同 [`active_snap`]：静态区槽位、'static 生存期
-/// ——解引用读窗的 SAFETY 在调用点挂）。
+/// shadow 活槽裸指针（读窗纪律同 [`active_snap`]：hazard-lite 验证环——
+/// 读活跃槽号 → 发布本核 hazard → 复读验证未翻转，翻了换新槽号重发再验
+/// （单写者下静默期必至，环有限步收敛）；静态区槽位、'static 生存期——
+/// 解引用读窗的 SAFETY 在调用点挂）。
 fn shadow_snap() -> *const Snap {
-    // Acquire 读 = 与 bind_gen_shadow 的「槽写 + fence(Release) +
-    // store(Release)」发布序配对：见新槽号即见新槽内容（三件套①）。
-    // `& 1` 收口防越界（冗余防线，槽号 < 2 编译期可证）。
-    let slot = SHD_WHERE.load(Ordering::Acquire) & 1;
+    // 拓扑外防御收敛（同 active_snap 口径）：cpu_id 只应 0..=1。
+    let cpu = hal::smp::cpu_id().min(HAZARD_CPUS - 1);
+    let slot = SHD_GATE.reader_enter(cpu);
     // SAFETY: `static mut` 取 `&raw const` 裸指针（不立引用——E0133 解除的
-    // 就是这一层）。
-    unsafe { &raw const SHD[slot as usize] }
+    // 就是这一层）；hazard 已发布并验证（②）——本读窗内该槽不被写者
+    // 复用。`_` 收口防越界（gate 值域 0..=2，冗余防线同旧 `& 1`）。
+    unsafe {
+        match slot {
+            0 => &raw const SHD[0],
+            1 => &raw const SHD[1],
+            2 => &raw const SHD[2],
+            _ => &raw const SHD[0],
+        }
+    }
 }
 
 /// shadow 侧 gen 观察（双轨道遥测/对账）：从未绑定 → 0（[`Snap::empty`]
-/// 基底），已绑 → 最后一次 [`bind_gen_shadow`] 受理的 gen。读窗纪律同
-/// [`self_gen_now`]（单核屏蔽窗读写互斥——读窗内稳定）。
+/// 基底），已绑 → 最后一次 [`bind_gen_shadow`] 受理的 gen。
 pub fn shadow_gen() -> u64 {
     // SAFETY: 指针源自 shadow_snap（静态区槽位，'static 生存期）；已发布
-    // shadow 槽内容不可变（写者只写非活跃槽）+ 单核屏蔽窗读写互斥——本读
-    // 窗内快照稳定（读纪律同 self_gen_now，仅多读一个 gen 字段）。
+    // shadow 槽内容不可变（写者只写非活跃且无 hazard 槽）+ 本核 hazard 已
+    // 发布并验证（②）——本读窗内该槽不被写者复用，快照稳定。
     unsafe { (*shadow_snap()).gen }
 }
 
 /// 绑 shadow 表（COMMIT + SHADOW flag 语义——双轨道写侧）：校验 +
 /// [`build_snap`]（gen 须**严格大于** shadow 侧当前 gen——陈旧拒收同
 /// [`bind_gen`] 语义，但比照对象换 **shadow 谱系**，与 active 侧 gen 无关）
-/// → 写非活跃 shadow 槽 → 翻转 [`SHD_WHERE`]。**ACTIVE 不动**：shadow 只算
-/// 不用，决策路径（apply/weight_of）零感知（约束①）。
+/// → 避让选非活跃且无 hazard 槽写入 → 翻转 [`SHD_GATE`] 发布。**ACTIVE
+/// 不动**：shadow 只算不用，决策路径（apply/weight_of）零感知（约束①）。
 ///
 /// 返回：true = shadow 表已换；false = 陈旧拒收（shadow 谱系未动）。写者
-/// 入口（③）：shadow gen 检查 + 写槽 + 翻转 [`SHD_WHERE`] 同在
-/// [`POLICY_LOCK`] 窗内——检查与发布原子，与他核 promote 读 shadow 槽
-/// 互斥（promote 同持本锁，见锁序注）。
+/// 入口（③）：shadow gen 检查 + 写槽 + 翻转同在 [`POLICY_LOCK`] 窗内——
+/// 检查与发布原子，与他核 promote 读 shadow 槽互斥（promote 同持本锁，
+/// 见锁序注）。
 pub fn bind_gen_shadow(tbl: &[Entry], gen: u64) -> bool {
     policy_lock(); // shadow gen 检查 + 写槽 + 翻转的复合临界区（③）
     if gen <= shadow_gen() {
@@ -572,20 +583,20 @@ pub fn bind_gen_shadow(tbl: &[Entry], gen: u64) -> bool {
         return false; // 陈旧拒收：shadow 世代必须严格递增（同 bind_gen 语义）
     }
     let snap = build_snap(tbl, gen);
-    // 写者读自身上次发布值选非活跃槽（锁内写者自见，Relaxed 足够）。
-    let next = SHD_WHERE.load(Ordering::Relaxed) ^ 1;
-    // SAFETY: POLICY_LOCK 独占写者（③）写**非活跃** shadow 槽——shadow
-    // 无快路径读者（ACTIVE 不指向 SHD）、锁内写者自身此窗不读该槽，写窗内
-    // 无别名引用；static 存储期 = 整个程序运行期，ptr::write 不越界（槽号
-    // < 2 编译期可证）。
+    // 避让扫描（②，律单源 HazardGate）：选非活跃且无 hazard 槽——他核
+    // 在窗读者（shadow_snap/shadow_gen/对账）的槽不被覆写（SMP-01 §5.1
+    // 撕裂窗闭合）；满覆盖 = 协议违约当场响（同 publish 的 expect 执法）。
+    let next = SHD_GATE.pick_write();
+    // SAFETY: POLICY_LOCK 独占写者（③）写**非活跃且无 hazard** shadow 槽
+    // ——pick_write 避让扫描已让过在窗读者，写窗内无别名引用；static
+    // 存储期 = 整个程序运行期，ptr::write 不越界（槽号 < 3 编译期可证）。
     unsafe {
         core::ptr::write(&raw mut SHD[next as usize], snap);
     }
-    // 发布序（三件套①）：槽写在前、fence(Release) 定序、Release store 翻转
-    // 在后——读者（shadow_snap 的 Acquire load）见新槽号必见新槽内容。
-    // 单核 Release = 普通 u8 写，零行为变化。
-    fence(Ordering::Release);
-    SHD_WHERE.store(next, Ordering::Release);
+    // 发布序（三件套①+②）：槽写在前、fence(Release) 定序、Release 翻转
+    // 在后——读者（shadow_snap 验证环的 Acquire 载入）见新槽号必见新槽
+    // 内容。单核 Release = 普通 u8 写，零行为变化。
+    SHD_GATE.publish(next);
     policy_unlock();
     true
 }
@@ -607,7 +618,8 @@ pub fn promote() -> bool {
     policy_lock(); // shadow 读 + 拷贝 + publish 的复合临界区（③）
     let src = shadow_snap();
     // SAFETY: 指针源自 shadow_snap（静态区槽位，'static 生存期）；③写者锁
-    // 窗内独占——读窗内 shadow 槽稳定。ptr::read 按值拷出（4112B 受控
+    // 窗内独占——读窗内 shadow 槽稳定（shadow_snap 的验证环在此锁窗内首验
+    // 即过——活跃位无并发翻转面）。ptr::read 按值拷出（4112B 受控
     // 拷贝），源槽内容保留在 shadow 谱系（demote 后可再次 promote 复转正）。
     unsafe {
         if (*src).gen == 0 {
@@ -700,8 +712,8 @@ pub fn reject_stats() -> RejectStats {
 /// 快路径零感知——约束①在对账侧的兑现）。
 fn shadow_reconcile(task: &Task) {
     // SAFETY: 指针源自 shadow_snap（静态区槽位，'static 生存期）；已发布
-    // shadow 槽内容不可变（写者只写非活跃槽）+ 单核屏蔽窗读写互斥——本读
-    // 窗内快照稳定（读纪律同 shadow_gen）。
+    // shadow 槽内容不可变（写者只写非活跃且无 hazard 槽）+ 本核 hazard 已
+    // 发布并验证（②）——本读窗内该槽不被写者复用，快照稳定。
     let shd: &Snap = unsafe { &*shadow_snap() };
     if shd.gen == 0 {
         return; // shadow 谱系空：一次 gen 读 + 分支即返（不进对账）

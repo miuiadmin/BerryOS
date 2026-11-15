@@ -10,3 +10,5 @@
 | 04 | `04-业界最新对照-2024-2026.md` | Linux 6.x-7.x EEVDF 效果/Android 15-16 EAS/Ziron libsched/QNX 8.x APS/Rust 调度器/AI 学习型/形式化验证（28 一手源） |
 | 05 | `05-功耗-性能权衡.md` | tickless/idle/slack/PM/频率帽全谱 + DVFS 协同 + EAS 就绪 + 功耗度量 + 深度 idle |
 | 06 | `06-综合定谳-v1.0.md` | 六面 Top-3 收敛→CP 影响 + 差距矩阵（领先项单列） + 计划升版 v1.0→v1.2 + 最紧迫三刀 + 五维终局判断 |
+| 07 | `07-syscall屏蔽窗表.md` | 42 号全 syscall icount 定量+屏蔽窗交叉+R3 双态修正(FPSIMD lazy 后现役)——中断上界论证空白收口 |
+| 08 | `08-三刀复核.md` | 三刀独立复核:shadow 竞争 18 测(50 万+读零撕裂)/δ 塌缩 33×/42 号全表——全过 |

@@ -28,11 +28,19 @@
 //!   process.rs 单源迁此，kernel re-export——ABI §7.2 位词汇表）+ 默认∪
 //!   覆盖位选律 [`SchedAttr::merge`]（FREEZE_READY 只可能来自 Thread 覆盖
 //!   ——over 未置位即从 out 清除的特判）。
+//! - [`HazardGate`]:多槽换表 hazard-lite 并发协议律（读者验证环/写者
+//!   避让扫描/发布定序——调度终窗第一刀新增，sched policy.rs shadow 谱系
+//!   消费；host 线程竞争钉板在测试面）。
 //!
-//! 与冻结面的关系：SNAPS/SHD `static mut` 三槽/双槽区 + HAZARD/ACTIVE/
-//! POLICY_LOCK 原子机械 + promote 4KiB 受控拷贝留 sched（纪律不变）——
-//! 本面只钉「表怎么散列/怎么探测/怎么插/属性怎么合」的数定律，不钉存储
-//! 机械。EppHint 单源在 berry-iprofile（W3-Q1），本 crate 消费不二写。
+//! 与冻结面的关系：SNAPS/SHD `static mut` 槽静态区 + POLICY_LOCK + promote
+//! 4KiB 受控拷贝留 sched（纪律不变）——本面钉「表怎么散列/怎么探测/怎么
+//! 插/属性怎么合」的数定律，不钉槽存储。**换表并发协议律例外单源在此**
+//! （调度终窗第一刀，SMP-01 §5.1）：[`HazardGate`]（读者 hazard 验证环 +
+//! 写者避让扫描 + 发布定序——shadow 侧撕裂窗闭合件）协议判定律单源在
+//! 本面、host 线程竞争可测（sched 依赖 HAL 只 aarch64 可编——先例族
+//! W3-Q20 同款「抽离即唯一事实源」纪律）；槽数据静态区与裸指针 SAFETY
+//! 仍留消费侧。EppHint 单源在 berry-iprofile（W3-Q1），本 crate 消费不
+//! 二写。
 //!
 //! **测试向量钉板纪律**：散列锚点值（如 key 1 → 158、key 2 → 60）是把
 //! `0x9E3779B97F4A7C15` 乘移律冻结进测试——改散列常量/移位量而不改锚点
@@ -47,6 +55,8 @@
 #![cfg_attr(not(test), no_std)]
 
 use berry_iprofile::EppHint;
+// 换表槽门协议面（HazardGate）——core 原子族，no_std/host 双可编。
+use core::sync::atomic::{fence, AtomicU8, Ordering};
 
 // ---------------------------------------------------------------------------
 // 常量族（单源迁此——sched policy.rs / kernel process.rs re-export）
@@ -311,6 +321,131 @@ impl SchedAttr {
             out.flags &= !SA_FLAG_FREEZE_READY;
         }
         out
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 换表槽门 hazard-lite 协议面（调度终窗第一刀——SMP-01 §5.1 shadow 缺口闭合）
+// ---------------------------------------------------------------------------
+
+/// hazard 位「未在读」哨兵：0xFF，远离槽号值域（0..=2）——写者扫描视同
+/// 「该核未在读」。
+const GATE_NONE: u8 = 0xFF;
+
+/// 多槽 RCU 式换表的**并发协议判定律**单源（读者验证环 + 写者避让扫描 +
+/// 发布定序）——槽存储本身留消费侧（`sched/src/policy.rs` 的 SNAPS/SHD
+/// 静态区），本结构只持协调状态（活跃槽号 + 每核 hazard 位），全部公共
+/// 方法零 `unsafe`（裸指针/槽解引用的 SAFETY 由消费侧挂——静态区纪律
+/// 不越 crate 边界）。
+///
+/// **读者协议** [`HazardGate::reader_enter`]（hazard-lite 验证环，模板 =
+/// policy.rs `active_snap` 先例）：load(Acquire) 活跃槽 → hazard[cpu]
+/// store(Release) 发布在读槽号 → fence(Acquire) → 复读验证活跃槽未在
+/// 发布窗内翻转；翻了 = 发布迟到（写者背靠背换表可回收该槽——撕裂窗
+/// 现场），换新槽号重发再验。单（串行）写者下活跃位静默期必至，环有限
+/// 步收敛。
+///
+/// **写者协议** [`HazardGate::pick_write`] + [`HazardGate::publish`]（避让
+/// 扫描，模板 = policy.rs `publish` 先例）：扫描跳过①当前活跃槽（新读者
+/// 持续进入）②各核 hazard 位（读者出窗不清的简化下含最近用——陈旧位只
+/// 让写者多避让一拍，不损正确性）；满覆盖即 panic 响（wedge 优于静默
+/// 跨核腐坏——协议违约当场抓住）。写者须**串行**（消费侧 POLICY_LOCK
+/// 持锁窗内调用）——避让判定与槽写入无 CAS 防线。`SLOTS=3`/`CPUS=2`
+/// 形态下「活跃 1 + hazard 收敛 ≤2」恒有空闲（读窗串行形态两核 hazard
+/// 收敛同槽——policy.rs 三件套②同款论证）。
+///
+/// **定序配对**（撕裂窗闭合的根）：读者先发 hazard 后读槽数据、写者先
+/// 读 hazard 后写槽——hazard 位 store(Release)/load(Acquire) 与两侧
+/// fence 使在窗读者的槽永不被写者选中复用；发布侧「槽写完 →
+/// fence(Release) → active.store(Release)」与读者 Acquire 载入配对——
+/// 见新槽号必见新槽内容。
+///
+/// 消费侧：sched policy.rs shadow 谱系（SHD 三槽区 + SHD_GATE）——
+/// SMP-01 §5.1「shadow 侧 hazard 未覆盖」缺口的机制闭合件。
+pub struct HazardGate<const SLOTS: usize, const CPUS: usize> {
+    /// 当前活跃槽号（0..SLOTS）。发布序见类型注；读取 Acquire。
+    active: AtomicU8,
+    /// 每核在读槽号发布位（读者 store(Release)、写者 load(Acquire)）。
+    hazard: [AtomicU8; CPUS],
+}
+
+impl<const SLOTS: usize, const CPUS: usize> HazardGate<SLOTS, CPUS> {
+    /// 全新门：活跃槽 0、各核 hazard 空。
+    pub const fn new() -> Self {
+        assert!(SLOTS <= 255, "HazardGate 槽号值域 u8");
+        HazardGate {
+            active: AtomicU8::new(0),
+            hazard: [const { AtomicU8::new(GATE_NONE) }; CPUS],
+        }
+    }
+
+    /// 读者进窗（hazard-lite 验证环）：发布本核在读槽号并验证活跃槽未在
+    /// 发布窗内翻转，返回可安全解引用的活跃槽号——**调用侧持此槽号读槽
+    /// 数据的整个窗内，串行写者的 [`HazardGate::pick_write`] 恒避让本槽**。
+    /// `cpu` 的拓扑外防御收敛在此收口（超界核号钳到最后一位）。
+    pub fn reader_enter(&self, cpu: usize) -> u8 {
+        let c = cpu.min(CPUS - 1);
+        let mut idx = self.active.load(Ordering::Acquire);
+        loop {
+            // 发布：本核在读 idx（值域即槽号——写者扫描直接比对）。
+            self.hazard[c].store(idx, Ordering::Release);
+            fence(Ordering::Acquire); // 发布先于验证读/数据读
+            // 验证：hazard 生效前活跃槽未翻转。翻转 ⇒ 换当前槽号重发；
+            // 串行写者下活跃位静默期必至，环有限步收敛。
+            let recheck = self.active.load(Ordering::Acquire);
+            if recheck == idx {
+                return idx;
+            }
+            idx = recheck;
+        }
+    }
+
+    /// 写者选槽（避让扫描）：返回非活跃且无 hazard 的槽号。**须在写者
+    /// 串行锁窗内调用**（消费侧 POLICY_LOCK）；满覆盖 = 协议违约，当场
+    /// panic 响（同 policy.rs `publish` 的 expect 执法）。
+    pub fn pick_write(&self) -> u8 {
+        let active = self.active.load(Ordering::Relaxed); // 锁内单写者自见
+        for i in 0..SLOTS as u8 {
+            if i == active {
+                continue; // 活跃槽：新读者持续进入，不可覆写
+            }
+            let mut in_use = false;
+            for h in &self.hazard {
+                if h.load(Ordering::Acquire) == i {
+                    in_use = true; // 他核在用（不清简化下含最近用）
+                    break;
+                }
+            }
+            if !in_use {
+                return i;
+            }
+        }
+        panic!("HazardGate 满覆盖：活跃+hazard 阻塞全部槽 = 协议违约");
+    }
+
+    /// 写者发布：**槽数据写完后**调用——fence(Release) 定序 + 活跃位翻转
+    /// （Release）。与 [`HazardGate::reader_enter`] 的 Acquire 载入配对：
+    /// 见新槽号必见新槽内容。
+    pub fn publish(&self, w: u8) {
+        fence(Ordering::Release);
+        self.active.store(w, Ordering::Release);
+    }
+
+    /// 测试观察口：各核 hazard 位快照（Relaxed——诊断面，无同步语义；
+    /// 竞争测试的「轮制新鲜度」自旋判据）。
+    #[cfg(test)]
+    pub fn hazard_probe(&self) -> [u8; CPUS] {
+        let mut out = [0u8; CPUS];
+        for (i, h) in self.hazard.iter().enumerate() {
+            out[i] = h.load(Ordering::Relaxed);
+        }
+        out
+    }
+
+    /// 测试观察口：当前活跃槽号（Relaxed——诊断面）。
+    #[cfg(test)]
+    pub fn active_probe(&self) -> u8 {
+        self.active.load(Ordering::Relaxed)
     }
 }
 
@@ -589,5 +724,285 @@ mod tests {
         let eff = SchedAttr::merge(base, over);
         assert_eq!(eff.flags, SA_FLAG_WEIGHT | SA_FLAG_INTENT | SA_FLAG_POLICY);
         assert_eq!((eff.weight, eff.intent, eff.policy), (100, 4, 3));
+    }
+
+    // ---- 换表槽门协议面：确定性律 + 背靠背双写竞争钉板 ----
+
+    use std::hint::black_box;
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
+    use std::sync::Mutex;
+
+    /// V6-a：确定性协议律——reader_enter 恒返当前活跃槽；pick_write 避让
+    /// 活跃槽**与**各核 hazard 位（含读者出窗后的陈旧位——「不清简化」的
+    /// 避让面）；满覆盖 panic 响（should_panic 子测试）。
+    #[test]
+    fn hazard_gate_avoidance_law() {
+        let g: HazardGate<3, 2> = HazardGate::new();
+        // 初始：活跃槽 0；两核读者进窗恒 0（hazard 双双落 0）。
+        assert_eq!(g.reader_enter(0), 0);
+        assert_eq!(g.reader_enter(1), 0);
+        // 写者：活跃 0 + hz{0,0} → 首个空闲 = 1。
+        assert_eq!(g.pick_write(), 1);
+        g.publish(1);
+        assert_eq!(g.reader_enter(0), 1, "翻转后读者须见新槽");
+        // 写者：活跃 1 + hz{1, 0}——cpu1 的陈旧位 0 被避让 → 只剩 2。
+        assert_eq!(g.pick_write(), 2, "须避让 cpu1 陈旧 hazard 位 0");
+        g.publish(2);
+        assert_eq!(g.reader_enter(1), 2);
+        // 写者：活跃 2 + hz{1, 2}——槽 0 已无人读 → 回收 0。
+        assert_eq!(g.pick_write(), 0);
+        g.publish(0);
+        assert_eq!(g.reader_enter(0), 0);
+        // 拓扑外防御收敛：超界核号钳到最后一位，不 panic。
+        assert_eq!(g.reader_enter(99), 0, "cpu 越界须钳位收口");
+    }
+
+    /// V6-b：满覆盖 canary——活跃 + 两核 hazard 三槽全阻塞时写者当场响
+    /// （wedge 优于静默腐坏——policy.rs `publish` expect 执法同款）。
+    #[test]
+    #[should_panic(expected = "HazardGate 满覆盖")]
+    fn hazard_gate_full_block_canary() {
+        let g: HazardGate<3, 2> = HazardGate::new();
+        assert_eq!(g.reader_enter(0), 0); // hz0 = 0
+        assert_eq!(g.pick_write(), 1);
+        g.publish(1);
+        assert_eq!(g.reader_enter(1), 1); // hz1 = 1
+        assert_eq!(g.pick_write(), 2); // 避让 {0,1}
+        g.publish(2); // 活跃 2 + hz{0,1} = 三槽全阻塞
+        let _ = g.pick_write(); // 须 panic 响
+    }
+
+    /// 竞争载荷几何（与 sched policy.rs SHD 消费面同形）：三槽 + 两核
+    /// hazard；槽载荷 = 128×u64 全行同 tag（tag = 发布世代）——撕裂 =
+    /// 同一读窗内出现两种 tag；tag 回退 = 读到被回收复写的陈旧槽。
+    const R_SLOTS: usize = 3;
+    const R_CPUS: usize = 2;
+    const R_LEN: usize = 128;
+    /// 轮数：每轮一对背靠背换表（两写者互抢串行锁各写一表）。
+    const R_ROUNDS: usize = 3000;
+
+    /// V6-c：**修复协议**下的背靠背双写竞争——两写者（Mutex 串行 =
+    /// POLICY_LOCK 同形契约）+ 两读者（全程紧循环、轮间无阻塞），断言
+    /// 零撕裂 + tag 单调不回退（「要么旧表要么新表」的强形式：读者按
+    /// 发布序见整表）。
+    ///
+    /// **轮制新鲜度**（满覆盖 canary 不响的构造性保证——纯速度竞争下
+    /// 读者 hazard 陈旧可跨两世代、三槽满覆盖可达〔首轮 V6-c 实测〕，
+    /// 协议 canary 前置「读窗串行形态两核 hazard 收敛同槽」须由测试侧
+    /// 兑现）：每轮放行前主线程自旋等两读者 hazard 均收敛到当前活跃槽
+    /// ——此后 W1 阻塞集 = {活跃}（必空两槽）、W2 阻塞集 ⊆ {旧活跃,
+    /// 新活跃}（必空一槽），**背靠背两写恒有空闲槽**；轮内读者自由竞速
+    /// 穿过撕裂窗（负对照 V6-d 证载荷灵敏度）。
+    #[test]
+    fn hazard_swap_no_tear_backtoback_writers() {
+        static GATE: HazardGate<R_SLOTS, R_CPUS> = HazardGate::new();
+        // 槽存储（消费侧 static mut SHD 的测试同形；raw 指针纪律同内核）。
+        static mut ROWS: [[u64; R_LEN]; R_SLOTS] = [[0; R_LEN]; R_SLOTS];
+        static STOP: AtomicBool = AtomicBool::new(false);
+        static TAG: AtomicU64 = AtomicU64::new(2);
+        static TORN: AtomicUsize = AtomicUsize::new(0);
+        static REGRESS: AtomicUsize = AtomicUsize::new(0);
+        static SERIAL: Mutex<()> = Mutex::new(());
+
+        // SAFETY(测试侧)：写者只写 pick_write 避让后的槽（协议保证在窗
+        // 读者的槽恒被避让——这正是被测定理）；读者只读 reader_enter
+        // 验证后的槽。单测原生跑（非 MIRI）——协议破防时数据竞争即
+        // 撕裂观测面本身。
+        unsafe {
+            let init: *mut [u64; R_LEN] = &raw mut ROWS[0];
+            for j in 0..R_LEN {
+                (*init)[j] = 1; // 初始活跃槽 = tag 1（GATE 活跃位初值 0）
+            }
+        }
+
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let go_rx = std::sync::Arc::new(std::sync::Mutex::new(go_rx));
+        let done_tx = std::sync::Arc::new(std::sync::Mutex::new(done_tx));
+        let readers: Vec<_> = (0..R_CPUS)
+            .map(|cpu| {
+                std::thread::spawn(move || {
+                    let (mut last, mut transitions, mut reads) = (0u64, 0u64, 0u64);
+                    while !STOP.load(Ordering::Relaxed) {
+                        let idx = GATE.reader_enter(cpu);
+                        // SAFETY：idx 源自验证环——本读窗内该槽不被写者
+                        // 复用（hazard 已发布 + pick_write 避让）。
+                        let row: *const [u64; R_LEN] = unsafe { &raw const ROWS[idx as usize] };
+                        let first = unsafe { black_box((*row)[0]) };
+                        let mut torn_at: Option<(usize, u64)> = None;
+                        for j in 0..R_LEN {
+                            let v = unsafe { black_box((*row)[j]) };
+                            if v != first && torn_at.is_none() {
+                                torn_at = Some((j, v));
+                            }
+                        }
+                        if let Some((j, v)) = torn_at {
+                            // 撕裂：同窗两种 tag——修复协议下不可达。
+                            eprintln!("TEAR @cpu{cpu} slot{idx}[{j}]: {first} vs {v}");
+                            TORN.fetch_add(1, Ordering::Relaxed);
+                        }
+                        assert_ne!(first, 0, "读到未发布槽（tag 0）——协议破防");
+                        if first < last {
+                            // tag 回退：读到被复写回收的陈旧槽。
+                            eprintln!("REGRESS @cpu{cpu}: {first} < {last}");
+                            REGRESS.fetch_add(1, Ordering::Relaxed);
+                        }
+                        if first != last {
+                            transitions += 1;
+                            last = first;
+                        }
+                        reads += 1;
+                        if TORN.load(Ordering::Relaxed) > 0
+                            || REGRESS.load(Ordering::Relaxed) > 0
+                        {
+                            break; // 已捕违约——及早收卷
+                        }
+                    }
+                    (reads, transitions)
+                })
+            })
+            .collect();
+        let writers: Vec<_> = (0..2)
+            .map(|_| {
+                let go = go_rx.clone();
+                let done = done_tx.clone();
+                std::thread::spawn(move || {
+                    // 每信号恰一换：两写者互抢串行锁 = 轮内背靠背对
+                    // （谁先谁后随机——并发入口、串行临界区）。
+                    while go.lock().unwrap().recv().is_ok() {
+                        let _ser = SERIAL.lock().unwrap(); // POLICY_LOCK 同形
+                        let tag = TAG.fetch_add(1, Ordering::Relaxed);
+                        let w = GATE.pick_write();
+                        // SAFETY：w 避让活跃 ∪ hazard——在窗读者不在该槽。
+                        let dst: *mut [u64; R_LEN] = unsafe { &raw mut ROWS[w as usize] };
+                        for j in 0..R_LEN {
+                            unsafe { (*dst)[j] = tag };
+                        }
+                        GATE.publish(w);
+                        drop(_ser);
+                        let _ = done.lock().unwrap().send(());
+                    }
+                })
+            })
+            .collect();
+        // 主循环：每轮等 hazard 新鲜（两读者位 == 当前活跃槽）→ 放两写
+        // → 收双报。新鲜自旋上限 5s——读者饿死即响（不静默挂）。
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        for _ in 0..R_ROUNDS {
+            loop {
+                let hz = GATE.hazard_probe();
+                let act = GATE.active_probe();
+                if hz[0] == act && hz[1] == act {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "hazard 新鲜度等待超时——读者饿死？hz={hz:?} act={act}"
+                );
+            }
+            let _ = go_tx.send(());
+            let _ = go_tx.send(());
+            let _ = done_rx.recv();
+            let _ = done_rx.recv();
+        }
+        drop(go_tx);
+        STOP.store(true, Ordering::Release);
+        let mut total_reads = 0u64;
+        let mut total_trans = 0u64;
+        for rd in readers {
+            let (reads, transitions) = rd.join().expect("读者线程异常");
+            assert!(reads > 1000, "读者循环强度不足（{reads} 读）——竞争面存疑");
+            assert!(transitions >= 1, "读者未观察到换表——撕裂窗未被穿过");
+            total_reads += reads;
+            total_trans += transitions;
+        }
+        for wr in writers {
+            wr.join().expect("写者线程异常（canary/协议违约）");
+        }
+        assert_eq!(TORN.load(Ordering::Relaxed), 0, "撕裂读出现——验证环失守");
+        assert_eq!(REGRESS.load(Ordering::Relaxed), 0, "tag 回退——槽回收复写陈读者");
+        assert_eq!(TAG.load(Ordering::Relaxed), 2 + 2 * R_ROUNDS as u64, "写者换表计数");
+        eprintln!("no-tear: {total_reads} 读 / {total_trans} 次换表观察，零撕裂零回退");
+    }
+
+    /// V6-d：**负对照**——修复前 shadow 协议形态（双槽 XOR 翻转，无
+    /// hazard 避让、无验证环 = policy.rs 旧 shadow_snap/bind_gen_shadow），
+    /// 同载荷下**必须**捕到撕裂：证明 V6-c 的绿是协议在承压，不是竞争
+    /// 载荷强度不足（测的是缺口不是协议——SMP-01 §5.1 行动项原文）。
+    /// 原生跑（非 MIRI）：双槽无避让下读者/写者对同行槽的真实数据竞争
+    /// 正是被观测的撕裂窗本体。
+    #[test]
+    fn shadow_pristine_protocol_tears_under_same_load() {
+        static WHERE: AtomicU8 = AtomicU8::new(0);
+        static mut ROWS: [[u64; R_LEN]; 2] = [[0; R_LEN]; 2];
+        static RUN: AtomicBool = AtomicBool::new(false);
+        static TAG: AtomicU64 = AtomicU64::new(2);
+        static TORN: AtomicUsize = AtomicUsize::new(0);
+        static SERIAL: Mutex<()> = Mutex::new(());
+
+        unsafe {
+            let init: *mut [u64; R_LEN] = &raw mut ROWS[0];
+            for j in 0..R_LEN {
+                (*init)[j] = 1;
+            }
+        }
+
+        RUN.store(true, Ordering::Release);
+        let readers: Vec<_> = (0..2)
+            .map(|cpu| {
+                std::thread::spawn(move || {
+                    // cpu 只作标记（旧协议读者无 hazard 发布位）。
+                    let _ = cpu;
+                    while RUN.load(Ordering::Relaxed) {
+                        // 旧 shadow_snap：Acquire 读槽号即解引用——无验证环。
+                        let idx = WHERE.load(Ordering::Acquire) & 1;
+                        let row: *const [u64; R_LEN] = unsafe { &raw const ROWS[idx as usize] };
+                        let first = unsafe { black_box((*row)[0]) };
+                        let mut torn_at: Option<(usize, u64)> = None;
+                        for j in 0..R_LEN {
+                            let v = unsafe { black_box((*row)[j]) };
+                            if v != first && torn_at.is_none() {
+                                torn_at = Some((j, v));
+                            }
+                        }
+                        if let Some((j, v)) = torn_at {
+                            eprintln!("NEG-TEAR slot{idx}[{j}]: {first} vs {v}");
+                            TORN.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                })
+            })
+            .collect();
+        let writers: Vec<_> = (0..2)
+            .map(|_| {
+                std::thread::spawn(move || {
+                    for _ in 0..4000 {
+                        let _ser = SERIAL.lock().unwrap();
+                        let tag = TAG.fetch_add(1, Ordering::Relaxed);
+                        // 旧 bind_gen_shadow：固定写非活跃槽再翻转——背靠背
+                        // 第二写即覆写读者刚经旧槽号进入的槽（撕裂窗）。
+                        let next = WHERE.load(Ordering::Relaxed) ^ 1;
+                        let dst: *mut [u64; R_LEN] = unsafe { &raw mut ROWS[next as usize] };
+                        for j in 0..R_LEN {
+                            unsafe { (*dst)[j] = tag };
+                        }
+                        fence(Ordering::Release);
+                        WHERE.store(next, Ordering::Release);
+                    }
+                })
+            })
+            .collect();
+        for wr in writers {
+            wr.join().expect("负对照写者线程异常");
+        }
+        RUN.store(false, Ordering::Release);
+        for rd in readers {
+            rd.join().expect("负对照读者线程异常");
+        }
+        assert!(
+            TORN.load(Ordering::Relaxed) > 0,
+            "负对照未捕到撕裂——竞争载荷强度不足，V6-c 的绿不作数"
+        );
+        eprintln!("neg-ctrl: 捕到 {} 次撕裂（载荷灵敏度实证）", TORN.load(Ordering::Relaxed));
     }
 }
