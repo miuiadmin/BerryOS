@@ -6,7 +6,9 @@
 # 器的解析约束；今虽无计数器，加标记仍守此约束防回归）。
 # 消费方：smoke.sh 裸相 32 + rootfs 相 56；smoke-smp.sh 各相同双数组；
 # smoke-image.sh KERNEL_MARKERS 硬拷贝（G4-1 三镜 P2-3 补列——改 MARKERS
-# 须连 smoke-image.sh 同步，第三消费方漏同步即静默失覆盖）。
+# 须连 smoke-image.sh 同步，第三消费方漏同步即静默失覆盖）；bcts-run.sh
+# 活树自检态经本文件合成清单并做计数守卫（第四消费方——加标记须连
+# TIER1_FLOOR_LIVE 与冻结件滚新，justfile test-host 义务行在册）。
 
 # 裸相 32 标记（boot 全链；G4-1 起 +DPG ok——demand 闭环自证；刀1 起
 # +WAKESRC——per-source 唤醒记账 G1.5 单行，尾随 G1.5 ok；sim-S2 A2 起
@@ -27,7 +29,7 @@ MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TAS
 # 同对 + gui8-smoke.py MARK_APP_N9 + smoke.sh/smoke-smp.sh deferred 名单 +
 # justfile spec 清单；破 10 先扩 APP_SLOTS 与 svcmgr 单数字位断言。
 ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" \
-  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "LSN ok n=7" "TCPS ok echo=" "APP ok n=9" "APPUI ok n=8" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "TAB ok" "INT ok" "POLL ok" "EVS ok n=2" "SKT ok n=3" "EPL ok n=8" "NETS ok n=2" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "PS ok n=" "BC ok" "M3DEMO ok n=5" "THR ok" "FRZ ok n=2" "DPGP ok" "INPUT ok" "DPGS ok n=4" "DPGN ok n=4" "FROZEN ok n=1" "WAKE ok n=1" "TOMB ok n=1" "CLI ok n=" "TERM ok n=2")
+  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "LSN ok n=7" "TCPS ok echo=" "APP ok n=9" "APPUI ok n=8" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "TAB ok" "INT ok" "POLL ok" "EVS ok n=2" "SKT ok n=3" "EPL ok n=8" "NETS ok n=2" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "PS ok n=" "BC ok" "M3DEMO ok n=5" "THR ok" "FRZ ok n=2" "DPGP ok" "INPUT ok" "DPGS ok n=4" "DPGN ok n=4" "FROZEN ok n=1" "WAKE ok n=1" "TOMB ok n=1" "CLI ok n=" "TERM ok n=")
 # app-1 段 a-1 +FROZEN ok n=1（51→52）：freeze-first 自验——tomb_selftest 通道
 # 判据（UP → suspend → 8s 零收 → thaw → RESUMED 全过才打）。与 T-1 的
 # 「FRZ ok n=2」互非子串（F-R-O-Z-E-N 插元音），canon 机查已复核（对抗审查 L2）。
@@ -41,7 +43,7 @@ ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" 
 #（与 FROZEN/TOMB 独立判互不连坐——发射序居两者之间）。canon：对全表
 # grep -F 互查过（WAKESRC acct=/BENCHWAKE n= 均不含本串——'WAKE ok'
 # 词中空格独有；本串亦非任何现役标记子串）。
-# 命令行体验刀 +CLI ok n=/+TERM ok n=2（54→56）：CLI = bsh cli_selftest
+# 命令行体验刀 +CLI ok n=/+TERM ok n=（54→56，均前缀式——步数单源在 bsh）：CLI = bsh cli_selftest
 # 六步（clear 11B 对拍/uname 前缀/uptime 数值域/sleep 1s 时钟差分/type
 # 三分支/history 环回读）；TERM = bsh term_selftest 两步（spawn 子 bsh
 # stdin_feed 驱动私有 stdout 收齐提示符×2/回显/两结果行 → terminate 130

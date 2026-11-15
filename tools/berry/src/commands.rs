@@ -169,15 +169,25 @@ pub fn run(args: RunArgs) -> Result<()> {
         if let Some(status) = child.try_wait()? {
             let text = tail.tail_text(4000);
             stop_child(&mut child, None);
+            // M1 失败现场保留：marker 面下 qemu 先退 = 未达 marker 必失败；
+            // 无 marker 面（交互 run）仅异常退出算失败——正常退出不保留。
+            if !status.success() || !args.marker.is_empty() {
+                run.keep();
+            }
+            let marker_note = if args.marker.is_empty() {
+                String::new()
+            } else {
+                format!(" before marker '{}'", args.marker)
+            };
             return Err(BerryError::device(format!(
-                "qemu exited ({status}) before marker '{}'",
-                args.marker
+                "qemu exited ({status}){marker_note}"
             ))
             .with_hint(format!("serial tail:\n{text}")));
         }
         if Instant::now() >= deadline {
             let text = tail.tail_text(4000);
             stop_child(&mut child, None);
+            run.keep();
             return Err(BerryError::timeout(format!(
                 "timed out after {}s waiting for '{}'",
                 args.timeout.as_secs(),
@@ -233,8 +243,20 @@ pub fn shot(args: ShotArgs) -> Result<()> {
         None,
         None,
     )?;
-    wait_endpoint(&vnc, Duration::from_secs(10))?;
-    let mut source = VncSource::connect(&vnc)?;
+    // M1 失败现场保留：shot 的成功判据是拿到帧——以下任一失败路径
+    //（端点不起 / VNC 连不上 / qemu 先退 / 超时 / 取帧失败 / png 落盘
+    // 失败）自动 keep run 目录，成功才默认删。
+    if let Err(e) = wait_endpoint(&vnc, Duration::from_secs(10)) {
+        run.keep();
+        return Err(e);
+    }
+    let mut source = match VncSource::connect(&vnc) {
+        Ok(s) => s,
+        Err(e) => {
+            run.keep();
+            return Err(e);
+        }
+    };
     let mut tail = Tail::open(&serial);
     let deadline = Instant::now() + args.timeout;
     if let Some(marker) = &args.marker {
@@ -245,6 +267,7 @@ pub fn shot(args: ShotArgs) -> Result<()> {
             }
             if let Some(status) = child.try_wait()? {
                 stop_child(&mut child, None);
+                run.keep();
                 return Err(BerryError::device(format!(
                     "qemu exited ({status}) before marker '{marker}'"
                 ))
@@ -252,6 +275,7 @@ pub fn shot(args: ShotArgs) -> Result<()> {
             }
             if Instant::now() >= deadline {
                 stop_child(&mut child, None);
+                run.keep();
                 return Err(BerryError::timeout(format!(
                     "timed out waiting for marker '{marker}'"
                 ))
@@ -263,13 +287,20 @@ pub fn shot(args: ShotArgs) -> Result<()> {
     if !args.delay.is_zero() {
         std::thread::sleep(args.delay);
     }
-    let frame = source.next_frame(Duration::from_secs(10)).ok_or_else(|| {
-        let err = source.error().unwrap_or_else(|| "no frame".to_string());
-        BerryError::protocol(format!("VNC: {err}"))
-            .with_hint(format!("serial tail:\n{}", tail.tail_text(4000)))
-    })?;
+    let frame = match source.next_frame(Duration::from_secs(10)) {
+        Some(f) => f,
+        None => {
+            let err = source.error().unwrap_or_else(|| "no frame".to_string());
+            run.keep();
+            return Err(BerryError::protocol(format!("VNC: {err}"))
+                .with_hint(format!("serial tail:\n{}", tail.tail_text(4000))));
+        }
+    };
     let out = args.out.unwrap_or_else(|| PathBuf::from("shot.png"));
-    crate::png::write_png(&out, frame.width, frame.height, &frame.to_rgb())?;
+    if let Err(e) = crate::png::write_png(&out, frame.width, frame.height, &frame.to_rgb()) {
+        run.keep();
+        return Err(e);
+    }
     let mut qmp = QmpClient::connect(&qmp_ep).ok();
     stop_child(&mut child, qmp.as_mut());
     if args.keep {

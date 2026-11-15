@@ -96,9 +96,10 @@ REPO=$(pwd)
 source "$SCRIPT_DIR/paths.sh"
 
 FROZEN_HOME="$SCRIPT_DIR/bcts/frozen"
-# 活树自检态守卫下限（Tier 1 在册值 88 = 裸相 32 + rootfs 54 + RX 2，设计稿
-# §3.2；活树态无工件可携 floor，取在册常量——冻结态不用此值）。
-TIER1_FLOOR_LIVE=88
+# 活树自检态守卫下限（Tier 1 在册值 90 = 裸相 32 + rootfs 56 + RX 2，设计稿
+# §3.2；活树态无工件可携 floor，取在册常量——冻结态不用此值。命令行体验刀
+# 88→90 随刀滚新，冻结件 bcts@1 同批）。
+TIER1_FLOOR_LIVE=90
 # 镜像腿（--image，G3）bare 相守卫下限：现役在册 32 = markers.sh MARKERS
 # 裸相值（smoke-image.sh KERNEL_MARKERS 同面——EFI 路结构性可达全集）。
 # bare 相 = add-only 面（marker 删除即破冻，设计稿 §4.1），只增不减——
@@ -801,14 +802,20 @@ if [ "$SELFTEST" = 1 ]; then
     fi
   }
 
-  # 现役工件清点（发布后只读、add-only——发布多件则逐件过检）。
+  # 现役工件清点（发布后只读、add-only——发布多件则逐件过检）。schema 腿期望串
+  # 按件动态生成（pr 取文件名、floor/n_markers 取工件自声明——bcts@1 起多件
+  # 并存，写死首冻件数字 = 对新件恒红；bcts@0 时代为单件字面钉板）。
   arts=$(ls "$FROZEN_HOME"/bcts@*.toml 2>/dev/null) || true
   [ -n "$arts" ] || { echo "bcts: FAIL: $FROZEN_HOME 无 bcts@*.toml 冻结件" >&2; exit 1; }
   for a in $arts; do
+    a_pr=$(basename "$a"); a_pr=${a_pr#bcts@}; a_pr=${a_pr%.toml}
+    a_floor=$(sed -n 's/^tier1_floor = //p' "$a")
+    a_cnt=$(grep -c '^expect = ' "$a")
     leg "工件 schema 自校验（$(basename "$a")，含空集守卫+文件名自证）" 0 \
-      "parse_frozen '$a' | grep -q $'^META\\t0\\t88\\t88\\t1\\t'"
+      "parse_frozen '$a' | grep -q \$'^META\\\\t${a_pr}\\\\t${a_floor}\\\\t${a_cnt}\\\\t1\\\\t'"
   done
-  ART=$(printf '%s\n' $arts | head -1)
+  # 「最新工件」= pr 数值最大（sort -n 数值序取尾；字符串序 @10 < @9 坑）。
+  ART=$(printf '%s\n' $arts | sort -t@ -k2 -n | tail -1)
 
   # 拒面合成腿（逐型；临时件名守 bcts@0.toml 自证形，失配腿除外）。
   BAD=$(mktemp -d "${TMPDIR:-/tmp}/berryos-bcts-selftest.XXXXXX")
@@ -831,7 +838,7 @@ if [ "$SELFTEST" = 1 ]; then
   live_bare=$(grep -c $'^MARK\tbare\t' "$WORK/live.tsv")
   live_rootfs=$(grep -c $'^MARK\trootfs\t' "$WORK/live.tsv")
   live_rx=$(grep -c $'^MARK\trx\t' "$WORK/live.tsv")
-  if [ "$live_n" -ge "$TIER1_FLOOR_LIVE" ] && [ "$live_bare" -eq 32 ] && [ "$live_rootfs" -eq 54 ] && [ "$live_rx" -eq 2 ]; then
+  if [ "$live_n" -ge "$TIER1_FLOOR_LIVE" ] && [ "$live_bare" -eq 32 ] && [ "$live_rootfs" -eq 56 ] && [ "$live_rx" -eq 2 ]; then
     echo "bcts: selftest 腿绿：活树清单合成（${live_n} 件 = 裸相 ${live_bare} + rootfs ${live_rootfs} + RX ${live_rx}，≥ 下限 ${TIER1_FLOOR_LIVE}）"
   else
     echo "bcts: selftest 腿红：活树计数漂移（bare=${live_bare} rootfs=${live_rootfs} rx=${live_rx}）" >&2
@@ -843,7 +850,7 @@ if [ "$SELFTEST" = 1 ]; then
   parse_frozen "$ART" | grep $'^MARK\t' | cut -f4 > "$WORK/frozen-expects"
   grep $'^MARK\t' "$WORK/live.tsv" | cut -f4 > "$WORK/live-expects"
   if cmp -s "$WORK/frozen-expects" "$WORK/live-expects"; then
-    echo "bcts: selftest 腿绿：冻结件 ↔ markers.sh 单源快照全等（88 件）"
+    echo "bcts: selftest 腿绿：冻结件 ↔ markers.sh 单源快照全等（90 件）"
   else
     echo "bcts: selftest 腿红：冻结件与活树标记集漂移（$(diff "$WORK/frozen-expects" "$WORK/live-expects" | head -4 | tr '\n' ' ')）" >&2
     fail_legs=$((fail_legs+1))
@@ -852,20 +859,30 @@ if [ "$SELFTEST" = 1 ]; then
   # ---------- Tier 2 腿（bcts-t2 工件 schema + 拒面 + 静态对账真跑 + 咬合） ----------
   arts2=$(ls "$FROZEN_HOME"/bcts-t2@*.toml 2>/dev/null) || true
   [ -n "$arts2" ] || { echo "bcts: FAIL: $FROZEN_HOME 无 bcts-t2@*.toml 冻结件" >&2; exit 1; }
+  # schema 腿期望串按件动态生成（pr 取文件名、floor/合同数/用例数取工件自
+  # 声明——bcts-t2@1 起多件并存，写死首冻件数字 = 对新件恒红；T1 腿同款）。
   for a in $arts2; do
+    t2a_pr=$(basename "$a"); t2a_pr=${t2a_pr#bcts-t2@}; t2a_pr=${t2a_pr%.toml}
+    t2a_floor=$(sed -n 's/^tier2_floor = //p' "$a")
+    t2a_ctr=$(grep -c '^\[\[contract\]\]' "$a")
+    t2a_cnt=$(grep -c '^\[\[contract\.case\]\]' "$a")
     leg "T2 工件 schema 自校验（$(basename "$a")，含空集守卫+逐 op 覆盖+文件名自证）" 0 \
-      "parse_t2_frozen '$a' | grep -q $'^META\\t0\\t31\\t2\\t31\\t'"
+      "parse_t2_frozen '$a' | grep -q \$'^META\\\\t${t2a_pr}\\\\t${t2a_floor}\\\\t${t2a_ctr}\\\\t${t2a_cnt}\\\\t'"
   done
-  ART2=$(printf '%s\n' $arts2 | head -1)
+  # 「最新工件」= pr 数值最大（T1 ART 同款，sort -n 数值序取尾；字符串序
+  # @10 < @9 坑）——对账真跑/咬合/拒面腿全走最新件；临时件名随件 pr（咬合
+  # 腿须 parse 全过才轮到对账红，名不符会截胡成 rc=2 拒面）。
+  ART2=$(printf '%s\n' $arts2 | sort -t@ -k2 -n | tail -1)
+  a2_pr=$(basename "$ART2"); a2_pr=${a2_pr#bcts-t2@}; a2_pr=${a2_pr%.toml}
 
-  # T2 拒面合成腿（逐型；临时件名守 bcts-t2@0.toml 自证形，失配腿除外）。
+  # T2 拒面合成腿（逐型；临时件名随件 pr 守自证形，失配腿除外）。
   BAD2=$(mktemp -d "${TMPDIR:-/tmp}/berryos-bcts-t2-selftest.XXXXXX")
-  sed 's/^schema = 1$/schema = 1\nextra_key = 1/' "$ART2" > "$BAD2/bcts-t2@0.toml"
-  leg "T2 顶层未知键硬拒" 2 "parse_t2_frozen '$BAD2/bcts-t2@0.toml'"
-  t2_mut_drop_case "$ART2" hdi-prepare-neg-slotcap > "$BAD2/bcts-t2@0.toml"
-  leg "T2 空集守卫（30 行 < tier2_floor 31 拒跑）" 2 "parse_t2_frozen '$BAD2/bcts-t2@0.toml'"
-  sed 's/^class = "seq"$/class = "bogus"/' "$ART2" > "$BAD2/bcts-t2@0.toml"
-  leg "T2 class 值域外拒（bogus 非五类）" 2 "parse_t2_frozen '$BAD2/bcts-t2@0.toml'"
+  sed 's/^schema = 1$/schema = 1\nextra_key = 1/' "$ART2" > "$BAD2/bcts-t2@${a2_pr}.toml"
+  leg "T2 顶层未知键硬拒" 2 "parse_t2_frozen '$BAD2/bcts-t2@${a2_pr}.toml'"
+  t2_mut_drop_case "$ART2" hdi-prepare-neg-slotcap > "$BAD2/bcts-t2@${a2_pr}.toml"
+  leg "T2 空集守卫（30 行 < tier2_floor 31 拒跑）" 2 "parse_t2_frozen '$BAD2/bcts-t2@${a2_pr}.toml'"
+  sed 's/^class = "seq"$/class = "bogus"/' "$ART2" > "$BAD2/bcts-t2@${a2_pr}.toml"
+  leg "T2 class 值域外拒（bogus 非五类）" 2 "parse_t2_frozen '$BAD2/bcts-t2@${a2_pr}.toml'"
   cp "$ART2" "$BAD2/bcts-t2@7.toml"
   leg "T2 文件名↔platform_revision 失配拒（冗余自证）" 2 "parse_t2_frozen '$BAD2/bcts-t2@7.toml'"
   rm -rf "$BAD2"
@@ -874,31 +891,32 @@ if [ "$SELFTEST" = 1 ]; then
   # + 清单回显面。
   leg "T2 静态对账真跑（两实例：berry-fsproto/berry-guiproto op 全集 ⊇ 合同②件表）" 0 "t2_run '$ART2'"
   BAD3=$(mktemp -d "${TMPDIR:-/tmp}/berryos-bcts-t2-bite.XXXXXX")
-  t2_mut_rename_op "$ART2" PUT PUTX > "$BAD3/bcts-t2@0.toml"
-  leg "T2 对账咬合（合同 op 改名 PUT→PUTX → crate 差集必红）" 1 "t2_run '$BAD3/bcts-t2@0.toml'"
+  t2_mut_rename_op "$ART2" PUT PUTX > "$BAD3/bcts-t2@${a2_pr}.toml"
+  leg "T2 对账咬合（合同 op 改名 PUT→PUTX → crate 差集必红）" 1 "t2_run '$BAD3/bcts-t2@${a2_pr}.toml'"
   rm -rf "$BAD3"
   leg "T2 --dry 清单回显（含两合同 suite id）" 0 "t2_dry '$ART2' | grep -q 'bcts-l1-hdi-v1'"
 
   # ---------- --image 腿（G3：参数面/拒面/版本声称位对账；零 QEMU——dry 不 boot） ----------
   # 合成镜像腿工件：dummy 镜像（在席性即可——dry 零 QEMU 零固件）+ 合成
   # manifest v1（PR 对账面专用，单条目；PR 列 10 零垫与真件同形——bcts 镜像
-  # 腿只消费 PR 列，sha/size 列填合法形占位）。frozen 态锚腿用合成
-  # bcts@1.toml（真件 pr=0 是 V9 预埋值，与现役镜像 PR=1 异版——首件 pr=1
-  # 冻结件随下次发版落，本腿以合成件钉死 frozen 锚代码路径）。
+  # 腿只消费 PR 列，sha/size 列填合法形占位）。frozen 态锚腿 = 最新 T1 件
+  # $ART 拷入随件 pr 的临时件名（bcts@1 pr=1 已在档——BCTS 冻结件 pr=1
+  # 签发后真件直用；名随件 pr 防 @2 起内容/名不符截胡 parse）。
   IMGBAD=$(mktemp -d "${TMPDIR:-/tmp}/berryos-bcts-img-selftest.XXXXXX")
   img_manifest() {  # $1=PR $2=目录 [$3=manifest 名（缺省 manifest.txt）]
     printf 'berryos-manifest v1 format_frozen=2026-11-10 entries=01\nitem path=/KERNEL.ELF sha256=%064d size=000000000001 rollback_index=00000000000000000000 platform_revision=%010d\n' 0 "$1" > "$2/${3:-manifest.txt}"
   }
   LV=$(abi_level) || { echo "bcts: FAIL: abi_level 读失败（--image 腿前置）" >&2; exit 1; }
+  art_pr=$(basename "$ART"); art_pr=${art_pr#bcts@}; art_pr=${art_pr%.toml}
   for d in ok-live ok-frozen miss-live miss-frozen nomanifest ok-alt; do
     mkdir -p "$IMGBAD/$d"
     : > "$IMGBAD/$d/std.img"
   done
   img_manifest "$LV" "$IMGBAD/ok-live"
   img_manifest 9 "$IMGBAD/miss-live"
-  sed 's/^platform_revision = 0$/platform_revision = 1/' "$ART" > "$IMGBAD/bcts@1.toml"
-  img_manifest 1 "$IMGBAD/ok-frozen"
-  img_manifest 2 "$IMGBAD/miss-frozen"
+  cp "$ART" "$IMGBAD/bcts@${art_pr}.toml"
+  img_manifest "$art_pr" "$IMGBAD/ok-frozen"
+  img_manifest $((art_pr + 1)) "$IMGBAD/miss-frozen"
   # ok-alt = G8 联动腿：仅非缺省名（acme-rich.manifest.txt）在席、缺省
   # manifest.txt 缺席——证 --manifest-name 真被消费（无静默回落缺省名）。
   img_manifest "$LV" "$IMGBAD/ok-alt" "acme-rich.manifest.txt"
@@ -912,10 +930,10 @@ if [ "$SELFTEST" = 1 ]; then
     "\"$SCRIPT_DIR/bcts-run.sh\" --image '$IMGBAD/ok-live/std.img' --dry | grep -q '镜像腿 = EFI 镜像流'"
   leg "版本声称位对账拒面（manifest PR=9 ≠ live 锚 loud 拒）" 1 \
     "\"$SCRIPT_DIR/bcts-run.sh\" --image '$IMGBAD/miss-live/std.img' --dry"
-  leg "版本声称位对账 frozen 态过面（合成 bcts@1.toml：manifest PR=1 == 冻结件 pr）" 0 \
-    "BCTS_FROZEN='$IMGBAD/bcts@1.toml' \"$SCRIPT_DIR/bcts-run.sh\" --image '$IMGBAD/ok-frozen/std.img' --dry | grep -q '版本声称位对账 ok'"
-  leg "版本声称位对账 frozen 态拒面（manifest PR=2 ≠ 冻结件 pr=1）" 1 \
-    "BCTS_FROZEN='$IMGBAD/bcts@1.toml' \"$SCRIPT_DIR/bcts-run.sh\" --image '$IMGBAD/miss-frozen/std.img' --dry"
+  leg "版本声称位对账 frozen 态过面（最新 T1 件 bcts@${art_pr}.toml：manifest PR=${art_pr} == 冻结件 pr）" 0 \
+    "BCTS_FROZEN='$IMGBAD/bcts@${art_pr}.toml' \"$SCRIPT_DIR/bcts-run.sh\" --image '$IMGBAD/ok-frozen/std.img' --dry | grep -q '版本声称位对账 ok'"
+  leg "版本声称位对账 frozen 态拒面（manifest PR=$((art_pr + 1)) ≠ 冻结件 pr=${art_pr}）" 1 \
+    "BCTS_FROZEN='$IMGBAD/bcts@${art_pr}.toml' \"$SCRIPT_DIR/bcts-run.sh\" --image '$IMGBAD/miss-frozen/std.img' --dry"
   # ---------- --manifest-name 腿（G8×G3 联动，44 号 §4-4 清偿；零 QEMU——dry） ----------
   leg "--manifest-name 缺值拒（参数面）" 2 \
     "\"$SCRIPT_DIR/bcts-run.sh\" --manifest-name"

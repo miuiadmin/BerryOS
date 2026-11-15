@@ -431,7 +431,8 @@ struct RealSrc;
 impl editor::TabSource for RealSrc {
     fn commands(&mut self, out: &mut Vec<Vec<u8>>) {
         // 命令行体验刀：候选表指向 BUILTINS 单源（原 12 项硬编码同名单
-        // 零漂移升 18 项——type/help 与此处三消费同表，不长第二来源）。
+        // 零漂移升 18 项——type 与此处两消费同表；help 文案经 cli_selftest
+        // ④ 互钉断言执法，不长无执法的第二来源）。
         for b in BUILTINS {
             out.push(b.as_bytes().to_vec());
         }
@@ -3317,7 +3318,7 @@ fn expand(s: &str, vars: &[(String, String)], status: i32) -> String {
 /// 变量**（`A=1 && echo $A` 的求值序）。`$?` 跨 part/跨行共享（`status`
 /// 由调用方持有）。空 part = 无操作（status 0——v1 不做语法错误面）。
 /// `hist` = editor 历史环只读透传（`history` 内建查询面——命令行体验刀；
-/// 自验/管道调用方传 `&[]`，管道子 bsh 无交互历史恒空）。
+/// 自验/管道调用方传 `&[]`——历史属交互循环的 editor 状态，非交互调用方无环）。
 fn run_line(
     line: &str,
     vars: &mut Vec<(String, String)>,
@@ -3379,12 +3380,22 @@ fn exec_one(
 }
 
 /// 内建名单单源（命令行体验刀：render_cmd if-else 链的隐式知识升 const）
-/// ——三消费同表：`type` 内建身份查询 / RealSrc Tab 命令位候选 / help
-/// 文案（人工同步，cli_selftest ⓪④ 断言钉住名单不漂）。分发序本身仍
-/// 是 render_cmd 的 if-else（行为面独立——名单只答「是不是内建」）。
+/// ——两消费同表：`type` 内建身份查询 / RealSrc Tab 命令位候选。help 文案
+/// 由 [`HELP_LINES`] 承载，cli_selftest ④ 断言「BUILTINS 每名 ∈ HELP_LINES」
+/// 执法（名单或文案单边漂移即红）。分发序本身仍是 render_cmd 的 if-else
+/// （行为面独立——名单只答「是不是内建」）。
 const BUILTINS: &[&str] = &[
     "help", "exit", "env", "echo", "run", "cat", "ls", "mkdir", "rm", "cd", "pwd",
     "inputpoll", "clear", "uname", "uptime", "sleep", "type", "history",
+];
+
+/// help 文案三行（A60：192B 控制台原子消息帽——单行装不下全清单，逐条
+/// 拆行各 ≤192B；命令行体验刀 12→18 内建后再拆第三行，同帽纪律）。与
+/// [`BUILTINS`] 的名单一致性由 cli_selftest ④ 执法（每名必须出现）。
+const HELP_LINES: [&str; 3] = [
+    "bsh 内建：help | echo <text> | env | run <name> | cat <file> | ls | ls <dir> | mkdir <dir> | rm <path> | cd <dir> | pwd | inputpoll",
+    "…续：| clear | uname | uptime | sleep <s> | type <name> | history | A | B（rootfs 管道）| A && B | A > file | exit",
+    "……续：| 裸名 = bin/<name> 派发（C-2a uu 家族）",
 ];
 
 /// 内建/外部命令统一渲染（P6 A-1 起 `>` 重定向与直出共道）：返回
@@ -3406,23 +3417,9 @@ fn render_cmd(
         return (Vec::new(), 0);
     }
     if cmd == "help" {
-        writeln!(
-            out,
-            "bsh 内建：help | echo <text> | env | run <name> | cat <file> | ls | ls <dir> | mkdir <dir> | rm <path> | cd <dir> | pwd | inputpoll"
-        )
-        .unwrap();
-        // A60：192B 控制台原子消息帽——单行装不下全清单，逐条拆行各 ≤192B
-        //（命令行体验刀 12→18 内建后再拆第三行，同帽纪律）。
-        writeln!(
-            out,
-            "…续：| clear | uname | uptime | sleep <s> | type <name> | history | A | B（rootfs 管道）| A && B | A > file | exit"
-        )
-        .unwrap();
-        writeln!(
-            out,
-            "……续：| 裸名 = bin/<name> 派发（C-2a uu 家族）"
-        )
-        .unwrap();
+        for line in HELP_LINES {
+            writeln!(out, "{line}").unwrap();
+        }
         (Vec::new(), 0)
     } else if cmd == "exit" {
         out.flush().unwrap();
@@ -3497,8 +3494,8 @@ fn render_cmd(
         // GUI-4 段②：input 域 POLL 消费端（无参内建——RPC + 真值断言面）。
         inputpoll_output(out)
     } else if cmd == "clear" {
-        // 命令行体验刀：ANSI 清屏 + 光标归位（11B）——消费面 = 哑终端/宿主
-        // 终端模拟器；serial.log 里转义字节无害。
+        // 命令行体验刀：ANSI 清屏 + 光标归位（7B：ESC[2J + ESC[H）——消费
+        // 面 = 哑终端/宿主终端模拟器；serial.log 里转义字节无害。
         (b"\x1b[2J\x1b[H".to_vec(), 0)
     } else if let Some(_rest) = cmd.strip_prefix("clear ") {
         // 无参命令带参照打（幂等面，不拒）——参数忽略，清屏序列照发。
@@ -3507,8 +3504,8 @@ fn render_cmd(
         // 单行身份。版本源 = libc uname（`.berryver` 烙印 semver，ADR #83
         // 查询面单源）——bsh 不自拼 crate 版本（升版即漂的第二源）。fields
         // 私有 → mirror 结构 + extern 真身（A7-4 sigaction 镜像钉板同手法；
-        // 链接序：berry-libc rlib 先于 -lc，符号恒解析到真身——见文件头
-        // extern 块注释）。
+        // 符号唯一提供者 = berry-libc rlib——berry-ld 剥 -lc 零 musl 字节，
+        // 见下方 extern 块注释）。
         let mut u = UtsnameMirror {
             fields: [[0; 65]; 6],
         };
@@ -3678,8 +3675,6 @@ fn run_output(name: &str, args: &[&str], out: &mut std::io::Stdout) -> (Vec<u8>,
 // berry-libc 文件面（fd 3+ 客户端游标 + close 即 commit 两裁决，RPC/
 // 会话机在 berry-fsclient/libc——会话毒化/双帽语义在那侧逐字保真）——
 
-/// errno 读（TLS 直读——失败返回后**立即**取，中间不夹其它可能写 errno
-/// 的调用；诊断/状态码两用）。
 /// musl `struct utsname` 镜像（6 × 65B——libc sys.rs 的 `Utsname` fields 私有
 /// 读不到，镜像钉板手法 = A7-4 sigaction 同先例）。字段序：sysname/nodename/
 /// release/version/machine/domainname。
@@ -3699,11 +3694,14 @@ impl UtsnameMirror {
 }
 
 extern "C" {
-    /// libc 真身（`berry_libc::sys::uname`）——链接序担保解析到 shim 而非
-    /// musl 残档（文件头 extern 块注释同纪律）；指针 ABI 层面镜像即兼容。
+    /// libc 真身（`berry_libc::sys::uname`）——符号唯一提供者 = berry-libc
+    /// rlib（berry-ld 对 musl 链整段剥 `-lc`、零 musl 字节，符号无第二来
+    /// 源——mmap extern 块（:2258 起）同纪律）；指针 ABI 层面镜像即兼容。
     fn uname(u: *mut UtsnameMirror) -> i32;
 }
 
+/// errno 读（TLS 直读——失败返回后**立即**取，中间不夹其它可能写 errno
+/// 的调用；诊断/状态码两用）。
 fn errno() -> i32 {
     // SAFETY: __errno_location 返回本线程 TLS errno 槽（libc 契约）。
     unsafe { *berry_libc::sys::__errno_location() }
@@ -3968,6 +3966,8 @@ fn do_redirect(
 /// 抢占面，诚实文档化）。拒面（均 usage 2）：缺失 / 非数字 / 负数 / 超
 /// 60s 帽（防 smoke 挂死）。返回 (空数据, 0)。
 fn sleep_output(spec: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
+    // v1 记面：i64 FromStr 接受前导 '+'（`sleep +5` 睡 5s）与前导零——
+    // 非数字/负数/小数/超 60 帽均拒，唯 '+' 形随 parse 放行（记面不隐式）。
     let bad = |out: &mut std::io::Stdout| {
         writeln!(out, "usage: sleep <s>（0..=60 整秒）").unwrap();
         (Vec::new(), 2)
@@ -3992,10 +3992,13 @@ fn sleep_output(spec: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
     (Vec::new(), 0)
 }
 
-/// `type <name>`（命令行体验刀，契约 1）：首词身份三档——BUILTINS 表命中
-/// → `is a shell builtin`；rootfs bin/ 命中（cpio 查档）→ `is /bin/<name>`
-///；余 `not found`（诊断打 out，码 1——v1 定 1，POSIX 对齐面从简如实记，
-/// 非 127：127 是「命令执行派发」的 not found，type 是查询面自有码）。
+/// `type <name>`（命令行体验刀，契约 1）：身份三档——BUILTINS 表命中
+/// → `is a shell builtin`；rootfs `bin/<name>` 命中（cpio 查档）→
+/// `is /bin/<name>`；余 `not found`（诊断打 out，码 1——v1 定 1，POSIX
+/// 对齐面从简如实记，非 127：127 是「命令执行派发」的 not found，type
+/// 是查询面自有码）。v1 单名字面：多词（`type echo ls`）与含 `/` 的名
+/// 字整串作一名查询（落 not-found 档），不按 POSIX 逐操作数分词——记
+/// 面不隐式。
 fn type_output(name: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
     if BUILTINS.contains(&name) {
         (format!("{} is a shell builtin\n", name).into_bytes(), 0)
@@ -4008,8 +4011,9 @@ fn type_output(name: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
 }
 
 /// `history`（命令行体验刀，契约 1）：回显 editor 历史环——newest-first
-/// 存储序即渲染序，逐行 `N  cmd`（N 从 1 = newest）。管道/子 bsh 无交互
-/// 历史恒空（诚实——editor 历史属本进程交互面，经 [`run_line`] 只读透传）。
+/// 存储序即渲染序，逐行 `N  cmd`（N 从 1 = newest，编号随会话重排）。
+/// editor 历史属本进程交互循环状态，经 [`run_line`] 只读透传（非交互
+/// 调用方传 `&[]` = 空环）。
 fn history_output(hist: &[Vec<u8>]) -> (Vec<u8>, i32) {
     let mut d = Vec::new();
     for (i, line) in hist.iter().enumerate() {
@@ -4733,17 +4737,17 @@ fn count_sub(hay: &[u8], needle: &[u8]) -> usize {
 /// 行为面自验——render_cmd 直调（与交互/重定向同一渲染面；诊断/usage 打
 /// 真 stdout = stderr 语义）。六步全过才打；败 eprintln + park（标记缺失
 /// → smoke FAIL 兜底）：
-/// ⓪ clear——`\x1b[2J\x1b[H` 11B 逐字节精确对拍 + 带参照打幂等面；
+/// ⓪ clear——`\x1b[2J\x1b[H` 7B 逐字节精确对拍 + 带参照打幂等面；
 /// ① uname——`BerryOS aarch64 ` 前缀 + 非空版本单行（libc `.berryver` 单源）+ 带参拒；
 /// ② uptime——`up <N>s` 数值域（数字段非空）+ 带参拒；
 /// ③ sleep——`sleep 1` 前后 CLOCK_MONOTONIC 差分 ∈ [1s,30s]（TCG 宽带，
-/// clk ③ 同口径）+ 拒面四连（缺失/非数字/负数/超 60s 帽）+ `sleep 0` 域内
-/// 放行；
+/// clk ③ 同口径）+ 拒面四连（缺失/非数字/负数/超 60s 帽）+ `sleep 0`/`sleep 60`
+/// 域内双闭边界放行；
 /// ④ type——三分支（内建档/bin 档（bin/hello 在册，int_selftest 同款
 ///    依赖）/not-found 档 = 码 1 + 空数据）+ 缺参拒 + BUILTINS 单源六新
-///    内建全在册（help 文案/Tab 候选同表防漂）；
+///    内建全在册 + help 文案 ↔ BUILTINS 逐名互钉；
 /// ⑤ history——两条目环回读 `N  cmd` 逐字节对拍 + 空环空输出（管道子
-///    bsh 恒空语义）+ 带参拒。
+///    调用方空环面）+ 带参拒。
 fn cli_selftest() {
     fn render(cmd: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
         render_cmd(cmd, &[], 0, out, &[])
@@ -4751,10 +4755,10 @@ fn cli_selftest() {
     let mut fails: Vec<&str> = Vec::new();
     let mut out = std::io::stdout();
 
-    // ⓪ clear：11B 清屏序列精确对拍；带参照打（幂等面，不拒）。
+    // ⓪ clear：7B 清屏序列精确对拍；带参照打（幂等面，不拒）。
     let (d, c) = render("clear", &mut out);
     if c != 0 || d.as_slice() != b"\x1b[2J\x1b[H".as_slice() {
-        fails.push("⓪ clear 非 11B 清屏序列");
+        fails.push("⓪ clear 非 7B 清屏序列");
     }
     let (d, c) = render("clear x", &mut out);
     if c != 0 || d.as_slice() != b"\x1b[2J\x1b[H".as_slice() {
@@ -4802,6 +4806,9 @@ fn cli_selftest() {
     if render("sleep 0", &mut out).1 != 0 {
         fails.push("③ sleep 0 域内被拒");
     }
+    if render("sleep 60", &mut out).1 != 0 {
+        fails.push("③ sleep 60 域内被拒（帽区间 0..=60 闭边界）");
+    }
 
     // ④ type：三分支逐字节对拍 + 缺参拒 + BUILTINS 单源钉板。
     let (d, c) = render("type echo", &mut out);
@@ -4822,6 +4829,14 @@ fn cli_selftest() {
     for b in ["clear", "uname", "uptime", "sleep", "type", "history"] {
         if !BUILTINS.contains(&b) {
             fails.push("④ BUILTINS 单源缺新内建");
+        }
+    }
+    // help 文案 ↔ BUILTINS 名单互钉：每名必须出现在 HELP_LINES（名单或
+    // 文案单边漂移即红——「人工同步」面的机器执法）。
+    let help_all: String = HELP_LINES.concat();
+    for b in BUILTINS {
+        if !help_all.contains(b) {
+            fails.push("④ help 文案缺内建名（与 BUILTINS 漂移）");
         }
     }
 

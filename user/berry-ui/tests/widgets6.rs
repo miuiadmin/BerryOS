@@ -9,7 +9,7 @@
 
 use berry_gfx::cmd::{Cmd, Color, CommandEncoder, DisplayList, GlyphPos};
 use berry_ui::desc::{DatePickProps, Props, RefreshProps, SwipeItemProps, TimePickProps};
-use berry_ui::paint::{PICK_BG, PICK_BORDER, REFRESH_BAR, SELECT_FG, SWIPE_ACTION_BG};
+use berry_ui::theme::{PICK_BG, PICK_BORDER, REFRESH_BAR, SELECT_FG, SWIPE_ACTION_BG};
 use berry_ui::{Ui, UiError, ViewKind, ViewSpec};
 
 fn paint_full(ui: &mut Ui<64>) -> DisplayList<'static> {

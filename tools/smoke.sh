@@ -50,7 +50,7 @@
 #      APP ok n=/APPUI ok n=/
 #      DIR ok n=/U1 ok/U2 ok/U3 ok/B1 ok n=4/DF ok/U4 ok/TAB ok/INT ok/POLL ok/
 #      EVS ok n=2/SKT ok n=3/EPL ok n=8/NETS ok n=2/MMP ok n=9/CLK ok n=6/
-#      SIG ok n=6/CLI ok n=/TERM ok n=2/PS ok n=/BC ok/
+#      SIG ok n=6/CLI ok n=/TERM ok n=/PS ok n=/BC ok/
 #      M3DEMO ok n=5/THR ok/INPUT ok 在列 = bsh 已进交互读循环/virtio 探测与块设备 IO/块设备服务
 #      消费链/FAT 只读底座与**落盘写**/网络往返与网络服务/TCP 客户端与 TCP
 #      服务/TCP 服务端监听面（A2-2 段③ hostfwd 环回自连自验）/.bap 应用拉起
@@ -284,6 +284,10 @@ QMP_DIR=""
 QMP_SOCK=""
 
 cleanup() {
+  # M1 失败必留：trap 传脚本退出码——非零（任一相失败/断言红）时串口与
+  # 辅助日志一律保留（与人记得设 SMOKE_KEEP_LOG=1 的旧行为并存，成功流
+  # 行为不变仍删）。
+  rc=${1:-0}
   if [ -n "$QEMU_PID" ] && kill -0 "$QEMU_PID" 2>/dev/null; then
     kill "$QEMU_PID" 2>/dev/null
     wait "$QEMU_PID" 2>/dev/null
@@ -310,7 +314,7 @@ cleanup() {
     kill "$SKT_PID" 2>/dev/null
     wait "$SKT_PID" 2>/dev/null
   fi
-  if [ -n "${SMOKE_KEEP_LOG:-}" ]; then
+  if [ -n "${SMOKE_KEEP_LOG:-}" ] || [ "$rc" -ne 0 ]; then
     for lg in "${LOGS[@]}"; do
       echo "smoke: 串口日志保留：$lg" >&2
     done
@@ -332,7 +336,7 @@ cleanup() {
     rm -rf "$SMOKE_LOCK"
   fi
 }
-trap cleanup EXIT
+trap 'cleanup $?' EXIT
 
 # 自托管互斥：echod/hostfwd 端口 18080-83 与本地开发、其他 smoke 会话
 # （runner CI 与并行验证同机）结构性冲突——EADDRINUSE 假红。mkdir 原子锁
@@ -934,7 +938,7 @@ QEMU_PID=$!
 # spawn = 零 fs 盘面，链位置 clk 后 fat 族前（A 系契约位，EFI 路无盘亦打
 # SIG）；无拓扑降级门，失败即 park loud。"SIG ok" 与现役标记两两互非子串
 # （现役无 `XSIG ok` 形态在册——前邻特例不需要）。
-# 命令行体验刀：+ CLI ok n= / + TERM ok n=2——bsh 六内建（clear/uname/
+# 命令行体验刀：+ CLI ok n= / + TERM ok n=——bsh 六内建（clear/uname/
 # uptime/sleep/type/history）行为面 + 哑终端管道契约钉板（CLI 六步：
 # ⓪clear `\x1b[2J\x1b[H` 11B 逐字节对拍+带参照打幂等 ①uname 前缀+
 # 带参拒 ②uptime `up <N>s` 数值域+带参拒 ③sleep 1s 时钟差分 [1s,30s]

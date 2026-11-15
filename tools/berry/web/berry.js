@@ -649,7 +649,6 @@ btnReboot.addEventListener('click', () => {
 });
 
 // Power off mirrors the window OFF key: a second tap within 3s confirms.
-const btnOff = document.getElementById('berry-deck-off');
 let offArmTimer = null;
 btnOff.addEventListener('click', () => {
   if (offArmTimer) {

@@ -1,0 +1,524 @@
+# BCTS Tier 2 冻结用例集（L1 wire 契约 conformance；发布后只读；作废走台账 add-only）。
+# bcts-t2@1 滚新件（全面遗漏审计 C 线 §2.2「冻结件代次断档」修——裁=签发
+# bcts@1 双件）：唯一变面 = platform_revision 0→1。PR≡level 三方联动
+# （tools/abi.toml [platform].level 现值 1，mkimage manifest 单源取 level），
+# pr=0 冻结件对 PR=1 镜像在 frozen+--image 认证形（BCTS 设计 §5.2 OEM
+# 提交形）经 img_pr_check 版本声称位对账必拒——结构性红，非实现缺陷。
+# 31 用例/两合同逐行同 bcts-t2@0，内容零变更；frozen_at 对齐同代 T1 件
+# bcts@1（a2f9ff888 命令行体验刀冻结点——pr=1 双件一代）；abi_snapshot_hash
+# 随该点 abi.toml 现值重钉。bcts-t2@0 保留在档（台账 add-only，回放旧
+# 工件仍可用）。
+# 溯源：BCTS 设计 v1.1 §一/§3.2（Tier 2 = L1 槽位合同四件套之④ conformance 用例集；
+# 测试包名 _api$N 版本尾缀 = v1 起——v0 无 harness 包面，测试件即用例清单，§2.4-4）。
+# 合同 v1 全文 = docs/产品配置层与槽位合同设计-v1.1.md §2.4（svc-fs，:233-273）/
+# §2.5（drv-display-backend，:275-319）/§2.6（共性钉子，:321-331）——本件逐行机械
+# 提取，不发挥；合同②③所指 crate 行段（berry-fsproto/src/lib.rs:70-88 op 常量段、
+# :91-103 ST 六值域；berry-guiproto/src/lib.rs:80-86 hdi 四 op、:319-325 VER_* 域；
+# 首实现 guifbd ramfb 软 vsync 退化形）为合同事实基座，同源引证。
+# tier2_floor = 用例行总数下限（空集守卫；本件口径 = fs 22 + hdi 9 = 31）；另执法
+# 每合同逐 op ≥1 正例 ≥1 负例（parse 侧机器守卫）。
+# 回放语义（v0 如实记）：动态 wire 回放随槽位开放（Q8 四件套全绿才开）——v0 消费
+# 面 = 清单回显（--dry）+ 静态对账（实现侧协议 crate op 全集 ⊇ 合同②件 op 表；
+# 差集 = 开放缺口如实报，不硬绿）。语义合同③件时序/失败注入/掉电位档面 = deferred
+# （映射表 status 标记），动态回放落地时转 frozen 行为零改动迁入。
+# ①能力清单件不进本工件（授能链执法点 = svcmgr gift / devmgr v2，合同 §2.6）。
+schema = 1
+suite = "bcts"
+tier = 2
+platform_revision = 1
+frozen_at = "a2f9ff888fa365d8c5c62673d080fb15501a7d35"
+abi_snapshot = "tools/abi.toml"
+abi_snapshot_hash = "sha256:d47c0177b1f4667b68780c2b462f7066fa3f5a0c157da436be358c409244b5c8"
+tier2_floor = 31
+contract_doc = "docs/产品配置层与槽位合同设计-v1.1.md"
+
+# ============ 实例一：svc-fs（fsmgr 位）合同 v1（§2.4） ============
+
+[[contract]]
+id = "svc-fs"
+title = "文件系统服务（fsmgr 位）"
+interface = "berry-fsproto"
+interface_src = "user/berry-fsproto/src/lib.rs"
+ver_min = 1
+consumers = ["bsh", "berry-fsclient", "appd(v2)", "launcher"]
+suite_id = "bcts-l1-fsproto-v1"
+# 合同④件 suite cases 骨架（§2.4 [slot.svc-fs.conformance] 原文照录）：
+#   wire 行已映射 = roundtrip-all-10-ops / illegal-op-reject / cap-enforcement；
+#   deferred（动态/组装期面）= blk-absent-degrade / power-atomicity-level。
+suite_cases = [
+  "roundtrip-all-10-ops",
+  "illegal-op-reject",
+  "cap-enforcement",
+  "blk-absent-degrade",
+  "power-atomicity-level",
+]
+
+# —— ②件 wire op 表（10 op 全实现，一个不可少；§2.4 [slot.svc-fs.ops] +
+#    合同所指 fsproto:70-88 布局）——
+[[contract.op]]
+num = 1
+name = "PUT"
+wire = "req [op][nlen][path][off u32][dlen u8][data ≤CHUNK] → rep 1B st"
+[[contract.op]]
+num = 2
+name = "TRUNC"
+wire = "req [op][nlen][path][size u32]（size=0 兼 create）→ rep 1B st"
+[[contract.op]]
+num = 3
+name = "GET"
+wire = "req [op][nlen][path][off u32] → rep [st=0][off u32][dlen u8][more u8][data ≤CHUNK]"
+[[contract.op]]
+num = 4
+name = "LIST"
+wire = "req 恰 1B → rep [st=0][dlen u8][names 空白连接]"
+[[contract.op]]
+num = 5
+name = "LOOKUP"
+wire = "req [op][nlen][path] 恰好 → rep 1B st"
+[[contract.op]]
+num = 6
+name = "MKDIR"
+wire = "req [op][nlen][path] 恰好 → rep 1B st"
+[[contract.op]]
+num = 7
+name = "UNLINK"
+wire = "req [op][nlen][path] 恰好 → rep 1B st"
+[[contract.op]]
+num = 8
+name = "READDIR"
+wire = "req [op][nlen][path] 恰好 → rep [st=0][dlen u8][names NUL 连接]（LIST 同形）"
+[[contract.op]]
+num = 9
+name = "STAT"
+wire = "req [op][nlen][path] 恰好 → rep [st=0][type u8][size u32] 恰 6B"
+[[contract.op]]
+num = 10
+name = "STATFS"
+wire = "req 恰 1B → rep [st=0][total u32][spc u32][cluster_count u32][free_clusters u32][sector_sz u32] 恰 21B"
+
+# —— ④件用例行（10 op × 正/负 + 帽补列；class = 设计稿 §3.2 注 a 五类：
+#    seq=合法 op 序列 / reject=非法 op 拒绝 / version=版本协商 / error=错误域 /
+#    timeout=超时失败隔离；group = suite_cases id 或 ③条款键）——
+[[contract.case]]
+id = "fs-put-pos"
+op = 1
+kind = "pos"
+class = "seq"
+input = "合法路径（段 ≤NAME_MAX=48）+ off u32 + 片 ≤CHUNK=192"
+expect = "rep 1B st=ST_OK"
+group = "roundtrip-all-10-ops"
+[[contract.case]]
+id = "fs-put-neg-chunk"
+op = 1
+kind = "neg"
+class = "reject"
+input = "片 dlen > CHUNK=192（wire 帽越界帧）"
+expect = "rep st=ST_BAD"
+group = "cap-enforcement"
+[[contract.case]]
+id = "fs-put-neg-full"
+op = 1
+kind = "neg"
+class = "error"
+input = "off+片长 > FILE_SIZE_MAX=16KiB（服务端帽）"
+expect = "rep st=ST_FULL（帽尽）"
+group = "cap-enforcement"
+[[contract.case]]
+id = "fs-trunc-pos"
+op = 2
+kind = "pos"
+class = "seq"
+input = "合法路径 + size u32（size=0 = create 面）"
+expect = "rep 1B st=ST_OK"
+group = "roundtrip-all-10-ops"
+[[contract.case]]
+id = "fs-trunc-neg"
+op = 2
+kind = "neg"
+class = "reject"
+input = "空路径（nlen=0——写面拒空，根不可写）"
+expect = "rep st=ST_BAD"
+group = "mount_semantics"
+[[contract.case]]
+id = "fs-get-pos"
+op = 3
+kind = "pos"
+class = "seq"
+input = "存在文件路径 + off u32"
+expect = "rep [st=0][off][dlen][more][data ≤CHUNK]；more 链循环拼全量"
+group = "roundtrip-all-10-ops"
+[[contract.case]]
+id = "fs-get-neg"
+op = 3
+kind = "neg"
+class = "error"
+input = "不存在路径"
+expect = "rep st=ST_NOENT"
+group = "error_domain"
+[[contract.case]]
+id = "fs-list-pos"
+op = 4
+kind = "pos"
+class = "seq"
+input = "恰 1 字节（无参）"
+expect = "rep [st=0][dlen u8][names 空白连接]"
+group = "roundtrip-all-10-ops"
+[[contract.case]]
+id = "fs-list-neg"
+op = 4
+kind = "neg"
+class = "reject"
+input = "帧 >1 字节（尾随野值）"
+expect = "rep st=ST_BAD"
+group = "illegal-op-reject"
+[[contract.case]]
+id = "fs-lookup-pos"
+op = 5
+kind = "pos"
+class = "seq"
+input = "合法路径；空路径（nlen=0）= 根寻址白名单"
+expect = "rep 1B st=ST_OK（根恒存在）"
+group = "roundtrip-all-10-ops"
+[[contract.case]]
+id = "fs-lookup-neg"
+op = 5
+kind = "neg"
+class = "error"
+input = "不存在路径"
+expect = "rep st=ST_NOENT"
+group = "error_domain"
+[[contract.case]]
+id = "fs-mkdir-pos"
+op = 6
+kind = "pos"
+class = "seq"
+input = "父目录存在的新路径"
+expect = "rep 1B st=ST_OK"
+group = "roundtrip-all-10-ops"
+[[contract.case]]
+id = "fs-mkdir-neg"
+op = 6
+kind = "neg"
+class = "error"
+input = "目标已存在（文件或目录同拒）"
+expect = "rep st=ST_EXISTS"
+group = "error_domain"
+[[contract.case]]
+id = "fs-unlink-pos"
+op = 7
+kind = "pos"
+class = "seq"
+input = "存在的文件或空目录路径"
+expect = "rep 1B st=ST_OK"
+group = "roundtrip-all-10-ops"
+[[contract.case]]
+id = "fs-unlink-neg"
+op = 7
+kind = "neg"
+class = "error"
+input = "非空目录"
+expect = "rep st=ST_NOEMPTY"
+group = "error_domain"
+[[contract.case]]
+id = "fs-readdir-pos"
+op = 8
+kind = "pos"
+class = "seq"
+input = "存在目录路径；空路径 = 根（overlay 并合全景）"
+expect = "rep [st=0][dlen u8][names NUL 连接]"
+group = "roundtrip-all-10-ops"
+[[contract.case]]
+id = "fs-readdir-neg"
+op = 8
+kind = "neg"
+class = "error"
+input = "不存在路径"
+expect = "rep st=ST_NOENT"
+group = "error_domain"
+[[contract.case]]
+id = "fs-stat-pos"
+op = 9
+kind = "pos"
+class = "seq"
+input = "存在文件/目录路径"
+expect = "rep [st=0][type u8][size u32] 恰 6B"
+group = "roundtrip-all-10-ops"
+[[contract.case]]
+id = "fs-stat-neg"
+op = 9
+kind = "neg"
+class = "error"
+input = "不存在路径"
+expect = "rep st=ST_NOENT"
+group = "error_domain"
+[[contract.case]]
+id = "fs-statfs-pos"
+op = 10
+kind = "pos"
+class = "seq"
+input = "恰 1 字节（无路径参，卷级）"
+expect = "rep [st=0] 五 u32 恰 21B——五字段为真值非估计"
+group = "roundtrip-all-10-ops"
+[[contract.case]]
+id = "fs-statfs-neg"
+op = 10
+kind = "neg"
+class = "reject"
+input = "帧 >1 字节（尾随野值，LIST 同门）"
+expect = "rep st=ST_BAD"
+group = "illegal-op-reject"
+[[contract.case]]
+id = "fs-op-unknown"
+op = 11
+kind = "neg"
+class = "reject"
+input = "op=11（未分配号；L1 add-only 自 11 起预留新 op）"
+expect = "rep st=ST_BAD（未知 op 拒）"
+group = "illegal-op-reject"
+
+# —— ③件语义合同条款 → 用例映射表（§2.4 [slot.svc-fs.semantics] 逐条款；
+#    facet 归类 / status：frozen = 已映射冻结 wire 行，deferred = 动态回放或
+#    组装期执法面（v0 无 wire 行，如实标）——
+[[contract.semantics]]
+clause = "rpc_model"
+value = "strict-serial"
+facet = "串行模型"
+cases = [
+  "fs-put-pos",
+  "fs-trunc-pos",
+  "fs-get-pos",
+  "fs-list-pos",
+  "fs-lookup-pos",
+  "fs-mkdir-pos",
+  "fs-unlink-pos",
+  "fs-readdir-pos",
+  "fs-stat-pos",
+  "fs-statfs-pos",
+]
+status = "frozen"
+note = "一请求一应答、队列深 1、无乱序死锁面——全部 wire 用例的执行时序前提（roundtrip 十正例按串行序执法）"
+[[contract.semantics]]
+clause = "error_domain"
+value = "ST_OK=0..ST_EXISTS=5（fsproto:91-103）"
+facet = "错误码"
+cases = [
+  "fs-get-neg",
+  "fs-lookup-neg",
+  "fs-mkdir-neg",
+  "fs-unlink-neg",
+  "fs-readdir-neg",
+  "fs-stat-neg",
+  "fs-put-neg-full",
+  "fs-put-neg-chunk",
+  "fs-list-neg",
+  "fs-statfs-neg",
+  "fs-op-unknown",
+]
+status = "frozen"
+note = "六值域负例全覆盖：NOENT/FULL/BAD/NOEMPTY/EXISTS（OK 由十正例承）——语义拒绝（NOENT/EXISTS/NOEMPTY/FULL）与畸形请求（BAD）分立不混谈"
+[[contract.semantics]]
+clause = "caps_frozen"
+value = "CHUNK=192/NAME_MAX=48/PATH_MAX=128/PATH_DEPTH_MAX=8/FILE_SIZE_MAX=16KiB/FILE_COUNT_MAX=9"
+facet = "帽执法"
+cases = ["fs-put-neg-chunk", "fs-put-neg-full"]
+status = "frozen"
+note = "帽=合同下限，替换实现不得收窄（可抬上限）；执法点=协议 crate 断言（§2.6）+ wire 拒面；v0 冻结 CHUNK/FILE_SIZE_MAX 两顶，NAME_MAX/PATH_MAX/PATH_DEPTH_MAX/FILE_COUNT_MAX 四顶行随动态回放补列"
+[[contract.semantics]]
+clause = "mount_semantics"
+value = "single-volume"
+facet = "挂载语义"
+cases = ["fs-trunc-neg", "fs-lookup-pos", "fs-readdir-pos"]
+status = "frozen"
+note = "单卷挂载 + 根不可写（读面三 op 白名单空路径=根寻址）；多卷=v2 提案接 namespace v3"
+[[contract.semantics]]
+clause = "statfs_honest"
+value = "true"
+facet = "诚实义务"
+cases = ["fs-statfs-pos"]
+status = "frozen"
+note = "卷级几何真值义务（21B 应答五字段为真值非估计）；无卷面（盘缺席/未挂）= ST_NOENT（首实现现役拒面）"
+[[contract.semantics]]
+clause = "power_atomicity"
+value = "declared-level"
+facet = "档位声明"
+cases = ["power-atomicity-level"]
+status = "deferred"
+note = "p0=none（FAT12 现役）/p1=metadata（掉电后卷必可挂载）/p2=data（已应答写存活）；实现自声明、不得低于镜像清单 min_power_atomicity（组装期执法，零运行时成本）；conformance 须含声明-实测对拍 + 专项掉电测试（重认证）——组装期/掉电面，v0 无 wire 行"
+[[contract.semantics]]
+clause = "failure_isolation"
+value = "degrade-not-halt"
+facet = "失败隔离"
+cases = ["blk-absent-degrade"]
+status = "deferred"
+note = "服务崩 → 消费者端点 DEAD → 降级（fs 缺席 = bsh 三元 gift「fs not available」不死 shell）；blk_endpoint 缺席 = RAM-only 降级；失败注入用例（§2.6 执法点）——动态回放随槽位开放"
+
+# ============ 实例二：drv-display-backend（HDI 位）合同 v1（§2.5） ============
+
+[[contract]]
+id = "drv-display-backend"
+title = "显示驱动后端（HDI 位）"
+interface = "berry-guiproto/hdi"
+interface_src = "user/berry-guiproto/src/lib.rs"
+ver_min = 1
+consumers = ["guifbd(合成器)", "gui-wmd(中继,ADR #61)"]
+suite_id = "bcts-l1-hdi-v1"
+# 合同④件 suite cases 骨架（§2.5 [slot.drv-display-backend.conformance] 原文
+# 照录）——五 id 全部映射 wire 行（时序/像素格式协商正负例）。
+suite_cases = [
+  "reg-vblank-edge-signal",
+  "vblank-wait-seq-monotonic",
+  "prepare-slot-cap",
+  "prepare-format-unsupported",
+  "commit-atomic-present",
+]
+
+# —— ②件 wire op 表（4 op 全实现；§2.5 [slot.drv-display-backend.ops] 原文）——
+[[contract.op]]
+num = 0x40
+name = "REG_VBLANK"
+wire = "req 4B + 1 Event handle → rep 1B"
+[[contract.op]]
+num = 0x41
+name = "VBLANK_WAIT"
+wire = "req 4B（阻塞）→ rep 16B [st][r][seq u32][ts_ns u64]"
+[[contract.op]]
+num = 0x42
+name = "PREPARE"
+wire = "req 20B + 1 buffer VMO → rep 4B [st][slot u8]（slot<2）"
+[[contract.op]]
+num = 0x43
+name = "COMMIT"
+wire = "req 12B [slot][r][target_ns u64] → rep 1B"
+
+# —— ④件用例行（4 op × 时序/像素格式协商正负例）——
+[[contract.case]]
+id = "hdi-reg-vblank-pos"
+op = 0x40
+kind = "pos"
+class = "seq"
+input = "req 恰 4B（使能形）+ 随行恰 1 Event handle"
+expect = "rep 1B st=ST_OK；Event 每 vsync 沿 signal 恰一次"
+group = "reg-vblank-edge-signal"
+[[contract.case]]
+id = "hdi-reg-vblank-neg"
+op = 0x40
+kind = "neg"
+class = "timeout"
+input = "注册后无 vsync 到来窗（等待窗 = 自声明周期上界）"
+expect = "零 signal（零唤醒不变量——虚假 signal = 违例）"
+group = "reg-vblank-edge-signal"
+[[contract.case]]
+id = "hdi-vblank-wait-pos"
+op = 0x41
+kind = "pos"
+class = "seq"
+input = "req 恰 4B（阻塞至下一 vsync）"
+expect = "rep 16B [st=0][r][seq u32][ts_ns u64]；seq 严格单调增、每 vsync 恰 +1"
+group = "vblank-wait-seq-monotonic"
+[[contract.case]]
+id = "hdi-vblank-wait-neg"
+op = 0x41
+kind = "neg"
+class = "timeout"
+input = "连续应答序列验 ts_ns（滞后追赶场景：服务端积压后跳过已过点）"
+expect = "ts_ns = 名义 vsync 点——不得伪造未来时刻、不补偿积压（违例判负）"
+group = "vblank-wait-seq-monotonic"
+[[contract.case]]
+id = "hdi-prepare-pos"
+op = 0x42
+kind = "pos"
+class = "seq"
+input = "req 恰 20B + 随行恰 1 buffer VMO；format = XRGB8888 值（fmt=1 基线，合同必须至少支持）"
+expect = "rep 4B st=ST_OK + slot u8 <2"
+group = "prepare-slot-cap"
+[[contract.case]]
+id = "hdi-prepare-neg-format"
+op = 0x42
+kind = "neg"
+class = "error"
+input = "req 20B，format 值不在协商集（携带值非位域）"
+expect = "rep st=ST_UNSUPPORTED"
+group = "prepare-format-unsupported"
+[[contract.case]]
+id = "hdi-prepare-neg-slotcap"
+op = 0x42
+kind = "neg"
+class = "error"
+input = "两槽占用且几何异 → 第 3 buffer PREPARE（HDI_SLOTS_MAX=2 帽尽）"
+expect = "rep st=ST_FULL（槽帽尽拒，随行 VMO 退还）"
+group = "prepare-slot-cap"
+[[contract.case]]
+id = "hdi-commit-pos"
+op = 0x43
+kind = "pos"
+class = "seq"
+input = "req 恰 12B [slot<2][target_ns u64]（0=尽快）；已 PREPARE 槽"
+expect = "rep 1B st=ST_OK；原子换帧（真后端）或整帧拷贝（软后端）——tear-free"
+group = "commit-atomic-present"
+[[contract.case]]
+id = "hdi-commit-neg"
+op = 0x43
+kind = "neg"
+class = "reject"
+input = "req 12B slot ≥ HDI_SLOTS_MAX=2（越帽野值帧）"
+expect = "rep 1B st=ST_BAD（越帽帧拒）"
+
+# —— ③件语义合同条款 → 用例映射表（§2.5 [slot.drv-display-backend.semantics]
+#    逐条款；三条不变量（seq 单调/ts 诚实/沿信号）任何频率实现合法——钉诚实
+#    不钉频率（§2.5 钉「诚实」理由段）——
+[[contract.semantics]]
+clause = "vsync_cadence"
+value = "declared"
+facet = "档位声明"
+cases = ["hdi-vblank-wait-pos"]
+status = "frozen"
+note = "周期自声明（合同义务不是「必须 60Hz」——59.94/90/120Hz 真面板合法；首实现 ramfb 软 vsync SOFT_VSYNC_NS=16_666_666≈60Hz）；按声明值验，扩充零合同变更"
+[[contract.semantics]]
+clause = "seq_monotonic"
+value = "true"
+facet = "时延"
+cases = ["hdi-vblank-wait-pos"]
+status = "frozen"
+note = "① seq 严格单调增，每 vsync 恰 +1"
+[[contract.semantics]]
+clause = "ts_honest"
+value = "true"
+facet = "时延"
+cases = ["hdi-vblank-wait-neg"]
+status = "frozen"
+note = "② ts_ns=名义 vsync 点（滞后追赶跳过已过点，不补偿积压——不得伪造未来时刻）"
+[[contract.semantics]]
+clause = "signal_on_vsync"
+value = "edge"
+facet = "时延"
+cases = ["hdi-reg-vblank-pos", "hdi-reg-vblank-neg"]
+status = "frozen"
+note = "③ Event 每 vsync 沿 signal 一次；无 vsync 不虚假 signal（零唤醒不变量）"
+[[contract.semantics]]
+clause = "format_negotiation"
+value = "getinfo-bits + prepare-value"
+facet = "协商"
+cases = ["hdi-prepare-pos", "hdi-prepare-neg-format"]
+status = "frozen"
+note = "协商在 present 域 GETINFO format_bits 位域（hdi 合同外）；hdi PREPARE 携带值非位域，不在协商集 → ST_UNSUPPORTED；后端必须至少支持 XRGB8888（ramfb fmt=1 基线），其余格式可选声明（扩充零合同变更）"
+[[contract.semantics]]
+clause = "prepare_lifecycle"
+value = "server-exclusive"
+facet = "生命周期"
+cases = ["hdi-commit-pos"]
+status = "frozen"
+note = "PREPARE→COMMIT 间 buffer 采样权归服务端"
+[[contract.semantics]]
+clause = "tear_free"
+value = "required"
+facet = "呈现原子"
+cases = ["hdi-commit-pos"]
+status = "frozen"
+note = "COMMIT 原子换帧（真后端）或整帧拷贝（软后端）"
+[[contract.semantics]]
+clause = "failure_isolation"
+value = "degrade-not-halt"
+facet = "失败隔离"
+cases = []
+status = "deferred"
+note = "后端崩 → DEAD 降级，不得打穿内核（ADR #12/#46）；失败注入用例（§2.6 执法点）——动态回放随槽位开放"

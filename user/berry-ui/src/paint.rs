@@ -11,8 +11,10 @@
 //!   TextStyle 字段语义优先）；Image/Icon → `draw_image`（§4.3——
 //!   Argb 像素经 D28 icons 槽，blit = 源内在尺寸 v1 无缩放）。
 //! - **组件件**（Phase 2 两批：Button/Toggle/Slider/Progress 首批 +
-//!   Check/Radio/Step/Seg/Divider 第二批）：入可见叶列，固定色板 +
-//!   已有原语组合发射（「组件 v1 固定色板」块）——Button 底/描边 +
+//!   Check/Radio/Step/Seg/Divider 第二批）：入可见叶列，**主题 token
+//!   取色**（维八暗色刀：原「组件 v1 固定色板」整块迁 theme.rs
+//!   `WidgetColors`——`tokens` 入参按档取，light 档同值零漂移；豁免
+//!   清单见下方色板迁出注）+ 已有原语组合发射——Button 底/描边 +
 //!   居中标签、Toggle 胶囊轨 + 滑块、Slider 轨 + 填充 + 拖动圆、
 //!   Progress 轨 + 填充条、Check 方框 + 双矩形勾、Radio 八片环 +
 //!   内圆、Step 三段底 + 加减号/值字形、Seg 等分底 + active 高亮 +
@@ -67,27 +69,22 @@ const NONE: u32 = u32::MAX;
 const MARK_POP: u32 = u32::MAX - 1;
 const MARK_PUSH: u32 = u32::MAX - 2;
 
-// ---------- 组件 v1 固定色板（Phase 2 两批——渲染起步面） ----------
+// ---------- 组件 v1 色板（维八暗色刀：固定色板已整块迁 theme.rs） ----------
 //
-// v1 无样式系统：固定色值起步（文档化豁免——同 lib.rs `PRESSED_BG`
-// 先例；主题系统落地后由此块迁出）。pub 供 golden 测试值级对拍。
+// 迁移台账：原「组件 v1 固定色板」29 色（Phase 2 起步面的过渡豁免）
+// 已逐色迁 `theme.rs` 组件色板组（`WidgetColors`——light 档同值迁移
+// golden 零漂移，dark 档逐色给对应值；迁移点对照旧值见 theme.rs 各
+// 常量 doc）。本文件自此**零固定色**：所有组件取色走 `paint` 的
+// `tokens: &theme::Tokens` 入参（`tokens.w.*` 组件面 / `tokens.*`
+// 语义面）。
+//
+// 豁免清单（豁免数只减不能增——tests/dark.rs `paint_fixed_palette_
+// exempt_gate` grep 门钉板；新增固定色必须先在 theme.rs 立双档 token；
+// 每项豁免在**使用点**以半角方括号 paint-exempt 标记登记）：
+// 1. emit_node Image 臂的黑色哨兵实参——Image 像素即色（ARGB 经 D28
+//    icons 槽），`fg` 形参对该臂是死实参非视觉色，无 token 语义可挂
+//    （Icon 臂的 p.fg 是 props 数据面，非本文件色）。
 
-/// 主色：Filled 按钮底 / Toggle 开轨 / Slider 填充与拖动圆 / Progress
-/// 填充 / Check 选中框与勾 / Radio 选中环与内圆 / Seg active 段。
-pub const ACCENT: Color = Color { r: 0x19, g: 0x76, b: 0xD2 };
-/// Toggle 关轨灰。
-pub const TRACK_OFF: Color = Color { r: 0x9E, g: 0x9E, b: 0x9E };
-/// Slider/Progress 底轨浅灰；Step/Seg 底。
-pub const TRACK_DIM: Color = Color { r: 0xBD, g: 0xBD, b: 0xBD };
-/// Toggle/Slider 滑块白（拖动圆兼）。
-pub const KNOB: Color = Color { r: 0xFF, g: 0xFF, b: 0xFF };
-/// Outlined 按钮描边灰；Check/Radio 未选框环；Step/Seg 分隔线；
-/// Divider 线体。
-pub const OUTLINE: Color = Color { r: 0x66, g: 0x66, b: 0x66 };
-/// Filled 按钮标签白（ACCENT 底上）。
-pub const ON_ACCENT: Color = Color { r: 0xFF, g: 0xFF, b: 0xFF };
-/// Outlined/Text 按钮标签深色；Step 值/加减号前景（TRACK_DIM 底上）。
-pub const ON_SURFACE: Color = Color { r: 0x21, g: 0x21, b: 0x21 };
 /// 按钮标签字号档（S8x16——cell 8×16；`crate::BUTTON_CHAR_W` 与
 /// cell_w() 同值，布局测量/渲染推进单源）。Step 值/加减号同档共用。
 const BUTTON_LABEL_FONT: FontSize = FontSize::S8x16;
@@ -101,46 +98,10 @@ const TOGGLE_KNOB_MARGIN: i32 = 4;
 const SLIDER_TRACK_H: i32 = 4;
 /// Tabs 指示条厚度（页签行底缘）。
 const TABS_INDICATOR_H: i32 = 3;
-/// Tabs 页签底色。
-pub const TABS_BG: Color = Color { r: 0xF1, g: 0xF1, b: 0xF1 };
-/// Tabs 指示条色（ACCENT 同源）。
-pub const TABS_INDICATOR: Color = Color { r: 0x19, g: 0x76, b: 0xD2 };
-/// Sbar 轨道色（细弱通道）。
-pub const SBAR_TRACK: Color = Color { r: 0xE0, g: 0xE0, b: 0xE0 };
-/// Sbar 滑块色。
-pub const SBAR_THUMB: Color = Color { r: 0x9E, g: 0x9E, b: 0x9E };
 /// Sbar 滑块细边（横竖向最小厚度 4）。
 const SBAR_MIN_THICK: i32 = 4;
-/// Badge 红底（数字胶囊与圆点共用——OH 语义色警示红系）。
-pub const BADGE_BG: Color = Color { r: 0xD9, g: 0x2B, b: 0x2B };
-/// Badge 数字前景（红底白字）。
-pub const ON_BADGE: Color = Color { r: 0xFF, g: 0xFF, b: 0xFF };
-/// Select 框底（下拉选择器——组件面白）。
-pub const SELECT_BG: Color = Color { r: 0xFF, g: 0xFF, b: 0xFF };
-/// Select 框边（OUTLINE 同系）。
-pub const SELECT_BORDER: Color = Color { r: 0x66, g: 0x66, b: 0x66 };
-/// Select 箭头/索引前景。
-pub const SELECT_FG: Color = Color { r: 0x21, g: 0x21, b: 0x21 };
-/// Input/Edit 框底（输入面白）。
-pub const INPUT_BG: Color = Color { r: 0xFF, g: 0xFF, b: 0xFF };
-/// Input/Edit 无焦框边灰。
-pub const INPUT_BORDER: Color = Color { r: 0x66, g: 0x66, b: 0x66 };
-/// Input/Edit 焦点环色（ACCENT 同源——置焦框边）。
-pub const INPUT_FOCUS_RING: Color = Color { r: 0x19, g: 0x76, b: 0xD2 };
-/// Input/Edit placeholder 前景（弱化灰）。
-pub const INPUT_PLACEHOLDER: Color = Color { r: 0x9E, g: 0x9E, b: 0x9E };
 /// Input caret 竖线宽。
 const INPUT_CARET_W: i32 = 2;
-/// Canvas 自绘面底（占位棋盘格浅色）。
-pub const CANVAS_BG: Color = Color { r: 0xEE, g: 0xEE, b: 0xEE };
-/// Refresh 指示条色（ACCENT 同源）。
-pub const REFRESH_BAR: Color = Color { r: 0x19, g: 0x76, b: 0xD2 };
-/// SwipeItem 动作缘带底（警示红系——BadGE 同源）。
-pub const SWIPE_ACTION_BG: Color = Color { r: 0xD9, g: 0x2B, b: 0x2B };
-/// DatePick/TimePick 框底。
-pub const PICK_BG: Color = Color { r: 0xFF, g: 0xFF, b: 0xFF };
-/// DatePick/TimePick 框边。
-pub const PICK_BORDER: Color = Color { r: 0x66, g: 0x66, b: 0x66 };
 /// pressed 视觉活动集（波2 批 A：press_map active 条目的 visual 槽值
 /// 快照——emit 期查表换暗色底；容量 = PRESS_MAP_MAX 同源上界，调用方
 /// 保证不超）。波 2 移植件 XA 扩 disabled 档：三态查表
@@ -237,15 +198,8 @@ impl InputTexts {
         &[]
     }
 }
-/// Button 压下态底色（ACCENT 暗化 20%——0x19/0x76/0xD2 × 0.8 取整）。
-pub const ACCENT_PRESSED: Color = Color { r: 0x14, g: 0x5E, b: 0xA8 };
-/// Tip 衬底（第三批——v1 无 alpha 通道，半透明黑底的实色近似；主题
-/// 化后迁出）。
-pub const TIP_BG: Color = Color { r: 0x40, g: 0x40, b: 0x40 };
-/// Card 面底色（第三批——白卡面；KNOB 同值异名，语义面单列）。
-pub const CARD_BG: Color = Color { r: 0xFF, g: 0xFF, b: 0xFF };
-/// Card 阴影条色（第三批——elevation 档位偏移的双 fill_rect 模拟）。
-pub const CARD_SHADOW: Color = Color { r: 0xAA, g: 0xAA, b: 0xAA };
+/// Button 压下态底色已迁 theme.rs `tokens.w.accent_pressed`（tokens.w 取——
+/// 20% 遮罩律双档对应）。
 /// Card 每档阴影偏移（px/档——elevation 0..=3 → 条宽 0/2/4/6）。
 const CARD_SHADOW_STEP: i32 = 2;
 /// Collapse 箭头边长（12×12——三带三角形逼近，随 header 高收缩）。
@@ -306,6 +260,7 @@ pub(crate) fn paint<'a>(
     pressed: &PressedVis,
     focus_slot: u32,
     texts: &InputTexts,
+    tokens: &crate::theme::Tokens,
 ) -> PaintReport {
     let mut rep =
         PaintReport { cmds: 0, drawn_px: 0, culled: 0, overdraw_x256: 0 };
@@ -361,7 +316,7 @@ pub(crate) fn paint<'a>(
             // （N ≤ MAX_NODES=512 < ORDER_CAP/2）结构性不达此面——防御
             // 路径不设竞速断言，仅 offscreen 回归测试钉板行为。
             rep.culled = culled_before;
-            emit_walk_all(nodes, root, 0, 0, d, &vp_rect, icons, pressed, focus_slot, texts, &mut rest, enc, &mut rep, 0);
+            emit_walk_all(nodes, root, 0, 0, d, &vp_rect, icons, pressed, focus_slot, texts, tokens, &mut rest, enc, &mut rep, 0);
         } else {
             // 发射 = 收集序之逆（前序 = 画家算法背到前）；MARK_PUSH/POP
             // 在逆序流里读作「PUSH 子树 POP」（收集序注见 cull_walk——
@@ -381,7 +336,7 @@ pub(crate) fn paint<'a>(
                         }
                     }
                     slot => {
-                        emit_node(nodes, slot, &bnds[k], &vp_rect, icons, pressed, focus_slot, texts, &mut rest, enc, &mut rep);
+                        emit_node(nodes, slot, &bnds[k], &vp_rect, icons, pressed, focus_slot, texts, tokens, &mut rest, enc, &mut rep);
                     }
                 }
             }
@@ -616,6 +571,7 @@ fn emit_walk_all<'a>(
     pressed: &PressedVis,
     focus_slot: u32,
     texts: &InputTexts,
+    tokens: &crate::theme::Tokens,
     rest: &mut &'a mut [GlyphPos],
     enc: &mut CommandEncoder<'a>,
     rep: &mut PaintReport,
@@ -676,7 +632,7 @@ fn emit_walk_all<'a>(
             if b.intersect(d).is_empty() {
                 rep.culled += 1; // damage 外叶子
             } else {
-                emit_node(nodes, slot, &b, vp_rect, icons, pressed, focus_slot, texts, rest, enc, rep);
+                emit_node(nodes, slot, &b, vp_rect, icons, pressed, focus_slot, texts, tokens, rest, enc, rep);
             }
         }
         ViewKind::Root
@@ -710,7 +666,7 @@ fn emit_walk_all<'a>(
             }
             match nodes.get(c as usize) {
                 Some(Some(ch)) if ch.alive => {
-                    emit_walk_all(nodes, c, bx, by, &child_eff, vp_rect, icons, pressed, focus_slot, texts, rest, enc, rep, hops + 1);
+                    emit_walk_all(nodes, c, bx, by, &child_eff, vp_rect, icons, pressed, focus_slot, texts, tokens, rest, enc, rep, hops + 1);
                     c = ch.next_sib;
                 }
                 _ => return, // 链上死槽 = 树结构异常，防御放弃余段
@@ -740,6 +696,7 @@ fn emit_node<'a>(
     pressed: &PressedVis,
     focus_slot: u32,
     texts: &InputTexts,
+    tokens: &crate::theme::Tokens,
     rest: &mut &'a mut [GlyphPos],
     enc: &mut CommandEncoder<'a>,
     rep: &mut PaintReport,
@@ -752,6 +709,8 @@ fn emit_node<'a>(
             }
         }
         Props::Image(p) => {
+            // [paint-exempt] 黑色哨兵实参：Image 像素即色（ARGB 经 D28
+            // icons 槽），fg 形参对此臂是死实参非视觉色（豁免清单 #1）。
             emit_image(
                 icons, p.res, Color { r: 0, g: 0, b: 0 }, p.w, p.h, b.x, b.y, enc, rep,
             );
@@ -808,13 +767,13 @@ fn emit_node<'a>(
                 ButtonStyle::Filled => {
                     // 波 2 移植件 XA 三态查表：disabled > pressed > normal
                     // （禁用锁死优先——禁用件不表达按压反馈；色值 theme
-                    // 单源，ACCENT_PRESSED 先例同律）。
+                    // 单源，tokens.w.accent_pressed 先例同律）。
                     let (bg, fg) = match pressed.state(slot) {
                         NodeVisState::Disabled => {
-                            (crate::theme::BG_DISABLED, crate::theme::FG_DISABLED)
+                            (tokens.bg_disabled, tokens.fg_disabled)
                         }
-                        NodeVisState::Pressed => (ACCENT_PRESSED, ON_ACCENT),
-                        NodeVisState::Normal => (ACCENT, ON_ACCENT),
+                        NodeVisState::Pressed => (tokens.w.accent_pressed, tokens.w.on_accent),
+                        NodeVisState::Normal => (tokens.w.accent, tokens.w.on_accent),
                     };
                     fill(enc, b.x, b.y, b.w, b.h, bg, rep);
                     emit_widget_text(p.label.as_bytes(), b.x, b.w, b.y, b.h, fg, rest, enc, rep);
@@ -824,14 +783,14 @@ fn emit_node<'a>(
                     // 原语组合」纪律）；底不填（Color 无 alpha——Outlined
                     // 语义 = 透应用底，实心 surface 会盖住背景）。三态查
                     // 表（Filled 同律 disabled > pressed > normal）：
-                    // disabled 描边/标签换禁用灰；pressed 描边换 ACCENT
+                    // disabled 描边/标签换禁用灰；pressed 描边换 tokens.w.accent
                     // 暗档（无底面可暗化——描边即反馈面）。
                     let (bc, fg) = match pressed.state(slot) {
                         NodeVisState::Disabled => {
-                            (crate::theme::FG_DISABLED, crate::theme::FG_DISABLED)
+                            (tokens.fg_disabled, tokens.fg_disabled)
                         }
-                        NodeVisState::Pressed => (ACCENT_PRESSED, ON_SURFACE),
-                        NodeVisState::Normal => (OUTLINE, ON_SURFACE),
+                        NodeVisState::Pressed => (tokens.w.accent_pressed, tokens.w.on_surface),
+                        NodeVisState::Normal => (tokens.w.outline, tokens.w.on_surface),
                     };
                     let t = BUTTON_BORDER.min(b.w / 2).min(b.h / 2).max(1);
                     fill(enc, b.x, b.y, b.w, t, bc, rep);
@@ -842,11 +801,11 @@ fn emit_node<'a>(
                 }
                 ButtonStyle::Text => {
                     // 三态查表同律：disabled 标签换禁用灰；pressed 标签换
-                    // ACCENT 暗档（无底无描边——标签即反馈面）。
+                    // tokens.w.accent 暗档（无底无描边——标签即反馈面）。
                     let fg = match pressed.state(slot) {
-                        NodeVisState::Disabled => crate::theme::FG_DISABLED,
-                        NodeVisState::Pressed => ACCENT_PRESSED,
-                        NodeVisState::Normal => ON_SURFACE,
+                        NodeVisState::Disabled => tokens.fg_disabled,
+                        NodeVisState::Pressed => tokens.w.accent_pressed,
+                        NodeVisState::Normal => tokens.w.on_surface,
                     };
                     emit_widget_text(p.label.as_bytes(), b.x, b.w, b.y, b.h, fg, rest, enc, rep);
                 }
@@ -859,11 +818,11 @@ fn emit_node<'a>(
             // 三 fill 近似为默认档（既有 golden 钉板零漂移）。滑块圆
             // 保持 oct3 近似（弧族原语面 = 波 3+，非本原语射程）。
             let track = if pressed.is_disabled(slot) {
-                crate::theme::BG_DISABLED
+                tokens.bg_disabled
             } else if p.checked {
-                ACCENT
+                tokens.w.accent
             } else {
-                TRACK_OFF
+                tokens.w.track_off
             };
             if true_corners() {
                 fill_rounded(enc, b.x, b.y, b.w, b.h, (b.h.max(0) as u32) / 2, track, rep);
@@ -876,12 +835,12 @@ fn emit_node<'a>(
             } else {
                 b.x + TOGGLE_KNOB_MARGIN
             };
-            oct3(enc, kx, b.y + TOGGLE_KNOB_MARGIN, d, KNOB, rep);
+            oct3(enc, kx, b.y + TOGGLE_KNOB_MARGIN, d, tokens.w.knob, rep);
         }
         Props::Slider(p) => {
             let yc = b.y + b.h / 2;
             let ty = yc - SLIDER_TRACK_H / 2;
-            fill(enc, b.x, ty, b.w, SLIDER_TRACK_H, TRACK_DIM, rep);
+            fill(enc, b.x, ty, b.w, SLIDER_TRACK_H, tokens.w.track_dim, rep);
             // 拖动圆行程 = [x+inset, x+w−inset]（inset = 圆半径——与
             // lib.rs slider_permille_at 命中映射同式单源
             // crate::SLIDER_KNOB_D/2）；填充至圆心。
@@ -891,22 +850,22 @@ fn emit_node<'a>(
                 / crate::PERMILLE_MAX as i64;
             let thumb_cx = b.x as i64 + inset as i64 + frac;
             let fill_w = i64_to_i32_sat(thumb_cx - b.x as i64);
-            fill(enc, b.x, ty, fill_w, SLIDER_TRACK_H, ACCENT, rep);
+            fill(enc, b.x, ty, fill_w, SLIDER_TRACK_H, tokens.w.accent, rep);
             let kd = crate::SLIDER_KNOB_D as i32;
             oct3(
                 enc,
                 i64_to_i32_sat(thumb_cx) - kd / 2,
                 yc - kd / 2,
                 kd,
-                KNOB,
+                tokens.w.knob,
                 rep,
             );
         }
         Props::Progress(p) => {
-            fill(enc, b.x, b.y, b.w, b.h, TRACK_DIM, rep);
+            fill(enc, b.x, b.y, b.w, b.h, tokens.w.track_dim, rep);
             let fw = p.value.min(crate::PERMILLE_MAX) as i64 * b.w as i64
                 / crate::PERMILLE_MAX as i64;
-            fill(enc, b.x, b.y, i64_to_i32_sat(fw), b.h, ACCENT, rep);
+            fill(enc, b.x, b.y, i64_to_i32_sat(fw), b.h, tokens.w.accent, rep);
         }
         // Check：方框描边（Outlined 按钮同形四 fill_rect）+ 选中态双
         // fill_rect 勾（短臂下角块 + 长臂上行条——24×24 定格比例，内
@@ -915,11 +874,11 @@ fn emit_node<'a>(
         Props::Check(p) => {
             let disabled = pressed.is_disabled(slot);
             let bc = if disabled {
-                crate::theme::FG_DISABLED
+                tokens.fg_disabled
             } else if p.checked {
-                ACCENT
+                tokens.w.accent
             } else {
-                OUTLINE
+                tokens.w.outline
             };
             let t = CHECK_BORDER.min(b.w / 2).min(b.h / 2).max(1);
             fill(enc, b.x, b.y, b.w, t, bc, rep);
@@ -929,7 +888,7 @@ fn emit_node<'a>(
             if p.checked {
                 // 勾形两片：短臂（左下角块）+ 长臂（上行竖条），交叠
                 // 成勾角。
-                let mark = if disabled { crate::theme::FG_DISABLED } else { ACCENT };
+                let mark = if disabled { tokens.fg_disabled } else { tokens.w.accent };
                 fill(enc, b.x + 5, b.y + 12, 4, 4, mark, rep);
                 fill(enc, b.x + 8, b.y + 6, 3, 9, mark, rep);
             }
@@ -940,18 +899,18 @@ fn emit_node<'a>(
         Props::Radio(p) => {
             let disabled = pressed.is_disabled(slot);
             let rc = if disabled {
-                crate::theme::FG_DISABLED
+                tokens.fg_disabled
             } else if p.selected {
-                ACCENT
+                tokens.w.accent
             } else {
-                OUTLINE
+                tokens.w.outline
             };
             let d = b.w.min(b.h);
             let ox = b.x + (b.w - d) / 2;
             let oy = b.y + (b.h - d) / 2;
             ring8(enc, ox, oy, d, rc, rep);
             if p.selected {
-                let ic = if disabled { crate::theme::FG_DISABLED } else { ACCENT };
+                let ic = if disabled { tokens.fg_disabled } else { tokens.w.accent };
                 let di = d / 2;
                 let ix = b.x + (b.w - di) / 2;
                 let iy = b.y + (b.h - di) / 2;
@@ -961,21 +920,21 @@ fn emit_node<'a>(
         // Step：三段 = 底 + 两道分隔线 + 三组字形（左 '-'、中值（十
         // 进制 u32）、右 '+'——S8x16 同档，区带内双轴居中）。
         Props::Step(p) => {
-            fill(enc, b.x, b.y, b.w, b.h, TRACK_DIM, rep);
+            fill(enc, b.x, b.y, b.w, b.h, tokens.w.track_dim, rep);
             let z = STEP_ZONE_W.min(b.w / 2).max(0);
-            fill(enc, b.x + z - STEP_DIV_W, b.y, STEP_DIV_W, b.h, OUTLINE, rep);
-            fill(enc, b.x + b.w - z, b.y, STEP_DIV_W, b.h, OUTLINE, rep);
-            emit_widget_text(b"-", b.x, z, b.y, b.h, ON_SURFACE, rest, enc, rep);
+            fill(enc, b.x + z - STEP_DIV_W, b.y, STEP_DIV_W, b.h, tokens.w.outline, rep);
+            fill(enc, b.x + b.w - z, b.y, STEP_DIV_W, b.h, tokens.w.outline, rep);
+            emit_widget_text(b"-", b.x, z, b.y, b.h, tokens.w.on_surface, rest, enc, rep);
             let mut buf = [0u8; 10];
             let n = fmt_u32(p.value, &mut buf);
-            emit_widget_text(&buf[..n], b.x + z, b.w - 2 * z, b.y, b.h, ON_SURFACE, rest, enc, rep);
-            emit_widget_text(b"+", b.x + b.w - z, z, b.y, b.h, ON_SURFACE, rest, enc, rep);
+            emit_widget_text(&buf[..n], b.x + z, b.w - 2 * z, b.y, b.h, tokens.w.on_surface, rest, enc, rep);
+            emit_widget_text(b"+", b.x + b.w - z, z, b.y, b.h, tokens.w.on_surface, rest, enc, rep);
         }
-        // Seg：等分底 + active 段 ACCENT 高亮 + 段间分隔线（active 后
+        // Seg：等分底 + active 段 tokens.w.accent 高亮 + 段间分隔线（active 后
         // 发——高亮段两界分隔线恒可见）。波 2 移植件 XA：disabled 档
-        // active 段换禁用底灰（ TRACK_DIM 底上 washed 观感）。
+        // active 段换禁用底灰（ tokens.w.track_dim 底上 washed 观感）。
         Props::Seg(p) => {
-            fill(enc, b.x, b.y, b.w, b.h, TRACK_DIM, rep);
+            fill(enc, b.x, b.y, b.w, b.h, tokens.w.track_dim, rep);
             let cnt = p.segment_count.max(1) as i64;
             let sw = b.w as i64 / cnt;
             if sw > 0 {
@@ -990,9 +949,9 @@ fn emit_node<'a>(
                 };
                 let ax = b.x as i64 + sw * act;
                 let active_c = if pressed.is_disabled(slot) {
-                    crate::theme::BG_DISABLED
+                    tokens.bg_disabled
                 } else {
-                    ACCENT
+                    tokens.w.accent
                 };
                 fill(
                     enc,
@@ -1012,7 +971,7 @@ fn emit_node<'a>(
                         b.y,
                         SEG_DIV_W,
                         b.h,
-                        OUTLINE,
+                        tokens.w.outline,
                         rep,
                     );
                     i += 1;
@@ -1026,14 +985,14 @@ fn emit_node<'a>(
             let ie = crate::damage::u32_to_i32_sat(p.inset_end);
             let x = b.x.saturating_add(is);
             let w = b.w.saturating_sub(is).saturating_sub(ie);
-            fill(enc, x, b.y, w, b.h, OUTLINE, rep);
+            fill(enc, x, b.y, w, b.h, tokens.w.outline, rep);
         }
         // 波2 批 A（Tabs/Sbar/Badge）：Tabs = 页签条底 + active 段指示
         // 条 + 段间分隔线（视觉 = 自身条区，内容区子各自发射）；Sbar =
         // 细轨 + thumb 区间（permille 两端）；Badge = 红底数字胶囊（≤99
         // 直显两位档，>99 显 99+）或纯圆点（show_dot）。
         Props::Tabs(p) => {
-            fill(enc, b.x, b.y, b.w, b.h, TABS_BG, rep);
+            fill(enc, b.x, b.y, b.w, b.h, tokens.w.tabs_bg, rep);
             // 段宽 = w/tab_count（下取整）；active 段底缘指示条。末段宽
             // 吃整数余数（Seg 同式——b.w − seg_w×(n−1)，整除零漂移、非
             // 整除补齐右缘）。
@@ -1052,10 +1011,10 @@ fn emit_node<'a>(
                 b.y + b.h - TABS_INDICATOR_H,
                 i64_to_i32_sat(ind_w),
                 TABS_INDICATOR_H,
-                TABS_INDICATOR,
+                tokens.w.tabs_indicator,
                 rep,
             );
-            // 段间分隔线（tab_count−1 条竖线，OUTLINE）。
+            // 段间分隔线（tab_count−1 条竖线，tokens.w.outline）。
             for k in 1..n_tabs {
                 let dx = b.x as i64 + seg_w * k;
                 fill(
@@ -1064,7 +1023,7 @@ fn emit_node<'a>(
                     b.y,
                     SEG_DIV_W,
                     b.h,
-                    OUTLINE,
+                    tokens.w.outline,
                     rep,
                 );
             }
@@ -1077,7 +1036,7 @@ fn emit_node<'a>(
             let span = en.saturating_sub(st);
             match p.orientation {
                 Orientation::Vertical => {
-                    fill(enc, b.x, b.y, b.w, b.h, SBAR_TRACK, rep);
+                    fill(enc, b.x, b.y, b.w, b.h, tokens.w.sbar_track, rep);
                     let ty = b.y as i64 + b.h as i64 * st / crate::PERMILLE_MAX as i64;
                     let th = b.h as i64 * span / crate::PERMILLE_MAX as i64;
                     fill(
@@ -1086,12 +1045,12 @@ fn emit_node<'a>(
                         i64_to_i32_sat(ty),
                         b.w.max(SBAR_MIN_THICK),
                         i64_to_i32_sat(th),
-                        SBAR_THUMB,
+                        tokens.w.sbar_thumb,
                         rep,
                     );
                 }
                 Orientation::Horizontal => {
-                    fill(enc, b.x, b.y, b.w, b.h, SBAR_TRACK, rep);
+                    fill(enc, b.x, b.y, b.w, b.h, tokens.w.sbar_track, rep);
                     let tx = b.x as i64 + b.w as i64 * st / crate::PERMILLE_MAX as i64;
                     let tw = b.w as i64 * span / crate::PERMILLE_MAX as i64;
                     fill(
@@ -1100,7 +1059,7 @@ fn emit_node<'a>(
                         b.y,
                         i64_to_i32_sat(tw),
                         b.h.max(SBAR_MIN_THICK),
-                        SBAR_THUMB,
+                        tokens.w.sbar_thumb,
                         rep,
                     );
                 }
@@ -1110,11 +1069,11 @@ fn emit_node<'a>(
             // 圆点模式：八角小圆点（红）；count=0 隐藏（内在 0×0 → b
             // 空绘自然短路）。
             if p.show_dot {
-                oct3(enc, b.x, b.y, b.w, BADGE_BG, rep);
+                oct3(enc, b.x, b.y, b.w, tokens.w.badge_bg, rep);
             } else if p.count > 0 {
                 // 数字角标：红底 + 白字（>99 显 99+ 三字节封顶档；≤99
                 // 走 fmt_u32 十进制——Step 值字形同核）。
-                fill(enc, b.x, b.y, b.w, b.h, BADGE_BG, rep);
+                fill(enc, b.x, b.y, b.w, b.h, tokens.w.badge_bg, rep);
                 let mut buf = [0u8; 10];
                 let n = if p.count > 99 {
                     buf[..3].copy_from_slice(b"99+");
@@ -1122,7 +1081,7 @@ fn emit_node<'a>(
                 } else {
                     fmt_u32(p.count, &mut buf)
                 };
-                emit_widget_text(&buf[..n], b.x, b.w, b.y, b.h, ON_BADGE, rest, enc, rep);
+                emit_widget_text(&buf[..n], b.x, b.w, b.y, b.h, tokens.w.on_badge, rest, enc, rep);
             }
         }
         // 组件第三批五件：Tip = 实色衬底（v1 无 alpha 的半透明近似）+
@@ -1131,7 +1090,7 @@ fn emit_node<'a>(
         // Chip = 胶囊底 + 居中标签 + 选中态色变——波 2 移植件 XA：真
         // 圆角档底走 FillRectRounded(r=OH_RADIUS_PX 8vp @3x；raster 侧
         // 钳 min(w,h)/2，32 高自然折胶囊)，v1 直角 fill 为默认档（既有
-        // golden 钉板零漂移）；Fab = 八角圆形 ACCENT 底 + 图标位
+        // golden 钉板零漂移）；Fab = 八角圆形 tokens.w.accent 底 + 图标位
         //（v1 文本 '+' 占位——icon 资源面挂 D28 接线刀）+ 扩展标签带；
         // Card = 双 fill_rect 阴影（整界阴影色 + 面底右下内缩 off =
         // elevation×2px——视觉足迹恒在界内，damage 正确性优先）——
@@ -1139,14 +1098,14 @@ fn emit_node<'a>(
         // 流里跑）——阴影条与卡面同半径圆角（角区阴影随面收口，足迹
         // 仍在界内），v1 直角为默认档。
         Props::Tip(p) => {
-            fill(enc, b.x, b.y, b.w, b.h, TIP_BG, rep);
-            emit_widget_text(p.text.as_bytes(), b.x, b.w, b.y, b.h, ON_ACCENT, rest, enc, rep);
+            fill(enc, b.x, b.y, b.w, b.h, tokens.w.tip_bg, rep);
+            emit_widget_text(p.text.as_bytes(), b.x, b.w, b.y, b.h, tokens.w.on_accent, rest, enc, rep);
         }
         Props::Collapse(p) => {
             let hh = crate::damage::u32_to_i32_sat(crate::COLLAPSE_HEADER_H)
                 .min(b.h)
                 .max(0);
-            fill(enc, b.x, b.y, b.w, hh, TRACK_DIM, rep);
+            fill(enc, b.x, b.y, b.w, hh, tokens.w.track_dim, rep);
             let a = COLLAPSE_ARROW.min(hh); // 极矮界防御：箭头随 header 高收缩
             if a > 0 {
                 let t = a / COLLAPSE_ARROW_BANDS; // 带厚（12 → 4）
@@ -1157,10 +1116,10 @@ fn emit_node<'a>(
                 while i < COLLAPSE_ARROW_BANDS {
                     if p.expanded {
                         // 朝下：三横带顶宽底窄
-                        fill(enc, ax + s * i, ay + t * i, a - 2 * s * i, t, ON_SURFACE, rep);
+                        fill(enc, ax + s * i, ay + t * i, a - 2 * s * i, t, tokens.w.on_surface, rep);
                     } else {
                         // 朝右：三竖带左高右矮
-                        fill(enc, ax + t * i, ay + s * i, t, a - 2 * s * i, ON_SURFACE, rep);
+                        fill(enc, ax + t * i, ay + s * i, t, a - 2 * s * i, tokens.w.on_surface, rep);
                     }
                     i += 1;
                 }
@@ -1168,9 +1127,9 @@ fn emit_node<'a>(
         }
         Props::Chip(p) => {
             let (bgc, fg) = if p.selected {
-                (ACCENT, ON_ACCENT)
+                (tokens.w.accent, tokens.w.on_accent)
             } else {
-                (TRACK_DIM, ON_SURFACE)
+                (tokens.w.track_dim, tokens.w.on_surface)
             };
             fill_rounded(enc, b.x, b.y, b.w, b.h, crate::theme::OH_RADIUS_PX, bgc, rep);
             emit_widget_text(p.label.as_bytes(), b.x, b.w, b.y, b.h, fg, rest, enc, rep);
@@ -1180,9 +1139,9 @@ fn emit_node<'a>(
                 .min(b.w)
                 .min(b.h)
                 .max(0);
-            oct3(enc, b.x, b.y, d, ACCENT, rep);
+            oct3(enc, b.x, b.y, d, tokens.w.accent, rep);
             if d > 0 {
-                emit_widget_text(b"+", b.x, d, b.y, b.h, ON_ACCENT, rest, enc, rep);
+                emit_widget_text(b"+", b.x, d, b.y, b.h, tokens.w.on_accent, rest, enc, rep);
             }
             if !p.extended_label.is_empty() {
                 let gap = crate::damage::u32_to_i32_sat(crate::FAB_LABEL_GAP);
@@ -1194,7 +1153,7 @@ fn emit_node<'a>(
                     zw,
                     b.y,
                     b.h,
-                    ON_ACCENT,
+                    tokens.w.on_accent,
                     rest,
                     enc,
                     rep,
@@ -1206,10 +1165,10 @@ fn emit_node<'a>(
                 p.elevation.saturating_mul(CARD_SHADOW_STEP as u32),
             );
             if off > 0 {
-                fill_rounded(enc, b.x, b.y, b.w, b.h, p.corner_radius, CARD_SHADOW, rep);
-                fill_rounded(enc, b.x, b.y, b.w - off, b.h - off, p.corner_radius, CARD_BG, rep);
+                fill_rounded(enc, b.x, b.y, b.w, b.h, p.corner_radius, tokens.w.card_shadow, rep);
+                fill_rounded(enc, b.x, b.y, b.w - off, b.h - off, p.corner_radius, tokens.w.card_bg, rep);
             } else {
-                fill_rounded(enc, b.x, b.y, b.w, b.h, p.corner_radius, CARD_BG, rep);
+                fill_rounded(enc, b.x, b.y, b.w, b.h, p.corner_radius, tokens.w.card_bg, rep);
             }
         }
         // 波2 批 C（Select）：下拉选择器 = 白底框（描边四边组合——
@@ -1217,19 +1176,19 @@ fn emit_node<'a>(
         //（选项文本不进数据层——Seg 同律计数面；数字为索引值级可对拍）。
         Props::Select(p) => {
             let t = BUTTON_BORDER.min(b.w / 2).min(b.h / 2).max(1);
-            fill(enc, b.x, b.y, b.w, t, SELECT_BORDER, rep);
-            fill(enc, b.x, b.y + b.h - t, b.w, t, SELECT_BORDER, rep);
-            fill(enc, b.x, b.y + t, t, b.h - 2 * t, SELECT_BORDER, rep);
-            fill(enc, b.x + b.w - t, b.y + t, t, b.h - 2 * t, SELECT_BORDER, rep);
+            fill(enc, b.x, b.y, b.w, t, tokens.w.select_border, rep);
+            fill(enc, b.x, b.y + b.h - t, b.w, t, tokens.w.select_border, rep);
+            fill(enc, b.x, b.y + t, t, b.h - 2 * t, tokens.w.select_border, rep);
+            fill(enc, b.x + b.w - t, b.y + t, t, b.h - 2 * t, tokens.w.select_border, rep);
             if b.w > 2 * t && b.h > 2 * t {
-                fill(enc, b.x + t, b.y + t, b.w - 2 * t, b.h - 2 * t, SELECT_BG, rep);
+                fill(enc, b.x + t, b.y + t, b.w - 2 * t, b.h - 2 * t, tokens.w.select_bg, rep);
             }
             // 箭头 v：右端 16px 区带内三行递缩（fill 组合近似）。
             let ax = b.x + b.w - 16;
             let cy = b.y + b.h / 2;
-            fill(enc, ax, cy - 4, 8, 2, SELECT_FG, rep);
-            fill(enc, ax + 2, cy - 2, 4, 2, SELECT_FG, rep);
-            fill(enc, ax + 3, cy, 2, 2, SELECT_FG, rep);
+            fill(enc, ax, cy - 4, 8, 2, tokens.w.select_fg, rep);
+            fill(enc, ax + 2, cy - 2, 4, 2, tokens.w.select_fg, rep);
+            fill(enc, ax + 3, cy, 2, 2, tokens.w.select_fg, rep);
             // 选中索引数字（1 起——人类序；0 = 空选择器/未选）。
             if p.selected > 0 || p.option_count > 0 {
                 let idx1 = p.selected.saturating_add(1); // 1 起显示
@@ -1245,23 +1204,23 @@ fn emit_node<'a>(
                     buf[0] = b'0' + idx1 as u8;
                     1
                 };
-                emit_widget_text(&buf[..n], b.x + 4, b.w - 20, b.y, b.h, SELECT_FG, rest, enc, rep);
+                emit_widget_text(&buf[..n], b.x + 4, b.w - 20, b.y, b.h, tokens.w.select_fg, rest, enc, rep);
             }
         }
-        // 波2 批 D（Input/Edit/Canvas）：Input = 白底框（焦点 = ACCENT
+        // 波2 批 D（Input/Edit/Canvas）：Input = 白底框（焦点 = tokens.w.accent
         // 环）/内容或 placeholder/caret（有焦且内容未满时尾置 2×16 竖
         // 线——内容经 lib 侧表传入无从查，v1 caret 恒随内容尾近似 =
         // max(8, len×8) 位；Edit = 多行版（Canvas 同底框无 caret）；
         // Canvas = 浅底占位面（自绘协议挂后续刀——paint_ops 计数面）。
         Props::Input(p) => {
-            let ring = if focus_slot == slot { INPUT_FOCUS_RING } else { INPUT_BORDER };
+            let ring = if focus_slot == slot { tokens.w.input_focus_ring } else { tokens.w.input_border };
             let t = BUTTON_BORDER.min(b.w / 2).min(b.h / 2).max(1);
             fill(enc, b.x, b.y, b.w, t, ring, rep);
             fill(enc, b.x, b.y + b.h - t, b.w, t, ring, rep);
             fill(enc, b.x, b.y + t, t, b.h - 2 * t, ring, rep);
             fill(enc, b.x + b.w - t, b.y + t, t, b.h - 2 * t, ring, rep);
             if b.w > 2 * t && b.h > 2 * t {
-                fill(enc, b.x + t, b.y + t, b.w - 2 * t, b.h - 2 * t, INPUT_BG, rep);
+                fill(enc, b.x + t, b.y + t, b.w - 2 * t, b.h - 2 * t, tokens.w.input_bg, rep);
             }
             let focused = focus_slot == slot;
             let text: &[u8] = texts.text_of(slot);
@@ -1269,7 +1228,7 @@ fn emit_node<'a>(
                 if !p.placeholder.is_empty() {
                     emit_widget_text(
                         p.placeholder.as_bytes(),
-                        b.x + 6, b.w - 12, b.y, b.h, INPUT_PLACEHOLDER, rest, enc, rep,
+                        b.x + 6, b.w - 12, b.y, b.h, tokens.w.input_placeholder, rest, enc, rep,
                     );
                 }
             } else {
@@ -1278,11 +1237,11 @@ fn emit_node<'a>(
                     _ => 0,
                 };
                 if fg == 0 {
-                    emit_widget_text(text, b.x + 6, b.w - 12, b.y, b.h, SELECT_FG, rest, enc, rep);
+                    emit_widget_text(text, b.x + 6, b.w - 12, b.y, b.h, tokens.w.select_fg, rest, enc, rep);
                 } else {
                     let mask = [fg; 32];
                     let n = text.len().min(32);
-                    emit_widget_text(&mask[..n], b.x + 6, b.w - 12, b.y, b.h, SELECT_FG, rest, enc, rep);
+                    emit_widget_text(&mask[..n], b.x + 6, b.w - 12, b.y, b.h, tokens.w.select_fg, rest, enc, rep);
                 }
             }
             if focused {
@@ -1290,38 +1249,38 @@ fn emit_node<'a>(
                 // 与文本居中同式（emit_widget_text：(h−16)/2——48 高即
                 // +16；原硬编 +14 对文本偏 2px）。
                 let cy = b.y + (b.h - 16).max(0) / 2;
-                fill(enc, cx, cy, INPUT_CARET_W, 16, INPUT_FOCUS_RING, rep);
+                fill(enc, cx, cy, INPUT_CARET_W, 16, tokens.w.input_focus_ring, rep);
             }
         }
         Props::Edit(p) => {
-            let ring = if focus_slot == slot { INPUT_FOCUS_RING } else { INPUT_BORDER };
+            let ring = if focus_slot == slot { tokens.w.input_focus_ring } else { tokens.w.input_border };
             let t = BUTTON_BORDER.min(b.w / 2).min(b.h / 2).max(1);
             fill(enc, b.x, b.y, b.w, t, ring, rep);
             fill(enc, b.x, b.y + b.h - t, b.w, t, ring, rep);
             fill(enc, b.x, b.y + t, t, b.h - 2 * t, ring, rep);
             fill(enc, b.x + b.w - t, b.y + t, t, b.h - 2 * t, ring, rep);
             if b.w > 2 * t && b.h > 2 * t {
-                fill(enc, b.x + t, b.y + t, b.w - 2 * t, b.h - 2 * t, INPUT_BG, rep);
+                fill(enc, b.x + t, b.y + t, b.w - 2 * t, b.h - 2 * t, tokens.w.input_bg, rep);
             }
             let etext = texts.text_of(slot);
             if etext.is_empty() && !p.placeholder.is_empty() {
                 emit_widget_text(
                     p.placeholder.as_bytes(),
-                    b.x + 6, b.w - 12, b.y, 40, INPUT_PLACEHOLDER, rest, enc, rep,
+                    b.x + 6, b.w - 12, b.y, 40, tokens.w.input_placeholder, rest, enc, rep,
                 );
             } else if !etext.is_empty() {
-                emit_widget_text(etext, b.x + 6, b.w - 12, b.y, 40, SELECT_FG, rest, enc, rep);
+                emit_widget_text(etext, b.x + 6, b.w - 12, b.y, 40, tokens.w.select_fg, rest, enc, rep);
             }
             if focus_slot == slot {
                 // 首行 caret 与文本带居中同式（文本发射带 h=40 → (40−16)/2
                 // = +12；原 +2/+8 组合对文本偏 2px）；次行步进 20 保持。
                 let cy = b.y + (40 - 16) / 2 + ((etext.len() / 24) as i32).min(1) * 20;
                 let cx = b.x + 6 + ((etext.len() % 24) as i32 * 8).min(b.w - 16);
-                fill(enc, cx, cy, INPUT_CARET_W, 16, INPUT_FOCUS_RING, rep);
+                fill(enc, cx, cy, INPUT_CARET_W, 16, tokens.w.input_focus_ring, rep);
             }
         }
         Props::Canvas(_) => {
-            fill(enc, b.x, b.y, b.w, b.h, CANVAS_BG, rep);
+            fill(enc, b.x, b.y, b.w, b.h, tokens.w.canvas_bg, rep);
         }
         // 波2 批 E（Refresh/SwipeItem/DatePick/TimePick）：Refresh = 包裹
         // 容器 + 顶缘拉动指示条（offset permille → 帽 32px 高比例；子仍
@@ -1332,7 +1291,7 @@ fn emit_node<'a>(
             let h = (b.h.min(32) as i64 * p.offset.min(crate::PERMILLE_MAX) as i64
                 / crate::PERMILLE_MAX as i64) as i32;
             if h > 0 {
-                fill(enc, b.x, b.y, b.w, h, REFRESH_BAR, rep);
+                fill(enc, b.x, b.y, b.w, h, tokens.w.refresh_bar, rep);
             }
         }
         Props::SwipeItem(p) => {
@@ -1341,20 +1300,20 @@ fn emit_node<'a>(
             let we = (b.w.min(96) as i64 * p.reveal_end.min(crate::PERMILLE_MAX) as i64
                 / crate::PERMILLE_MAX as i64) as i32;
             if ws > 0 {
-                fill(enc, b.x, b.y, ws, b.h, SWIPE_ACTION_BG, rep);
+                fill(enc, b.x, b.y, ws, b.h, tokens.w.swipe_action_bg, rep);
             }
             if we > 0 {
-                fill(enc, b.x + b.w - we, b.y, we, b.h, SWIPE_ACTION_BG, rep);
+                fill(enc, b.x + b.w - we, b.y, we, b.h, tokens.w.swipe_action_bg, rep);
             }
         }
         Props::DatePick(p) => {
             let t = BUTTON_BORDER.max(1);
-            fill(enc, b.x, b.y, b.w, t, PICK_BORDER, rep);
-            fill(enc, b.x, b.y + b.h - t, b.w, t, PICK_BORDER, rep);
-            fill(enc, b.x, b.y + t, t, b.h - 2 * t, PICK_BORDER, rep);
-            fill(enc, b.x + b.w - t, b.y + t, t, b.h - 2 * t, PICK_BORDER, rep);
+            fill(enc, b.x, b.y, b.w, t, tokens.w.pick_border, rep);
+            fill(enc, b.x, b.y + b.h - t, b.w, t, tokens.w.pick_border, rep);
+            fill(enc, b.x, b.y + t, t, b.h - 2 * t, tokens.w.pick_border, rep);
+            fill(enc, b.x + b.w - t, b.y + t, t, b.h - 2 * t, tokens.w.pick_border, rep);
             if b.w > 2 * t && b.h > 2 * t {
-                fill(enc, b.x + t, b.y + t, b.w - 2 * t, b.h - 2 * t, PICK_BG, rep);
+                fill(enc, b.x + t, b.y + t, b.w - 2 * t, b.h - 2 * t, tokens.w.pick_bg, rep);
             }
             // YYYY-MM-DD 十字节定长（u32 四位 + 月日两位零垫）。
             let mut buf = [b'-'; 10];
@@ -1367,16 +1326,16 @@ fn emit_node<'a>(
             buf[6] = b'0' + (p.month % 10) as u8;
             buf[8] = b'0' + (p.day / 10) as u8;
             buf[9] = b'0' + (p.day % 10) as u8;
-            emit_widget_text(&buf, b.x, b.w, b.y, b.h, SELECT_FG, rest, enc, rep);
+            emit_widget_text(&buf, b.x, b.w, b.y, b.h, tokens.w.select_fg, rest, enc, rep);
         }
         Props::TimePick(p) => {
             let t = BUTTON_BORDER.max(1);
-            fill(enc, b.x, b.y, b.w, t, PICK_BORDER, rep);
-            fill(enc, b.x, b.y + b.h - t, b.w, t, PICK_BORDER, rep);
-            fill(enc, b.x, b.y + t, t, b.h - 2 * t, PICK_BORDER, rep);
-            fill(enc, b.x + b.w - t, b.y + t, t, b.h - 2 * t, PICK_BORDER, rep);
+            fill(enc, b.x, b.y, b.w, t, tokens.w.pick_border, rep);
+            fill(enc, b.x, b.y + b.h - t, b.w, t, tokens.w.pick_border, rep);
+            fill(enc, b.x, b.y + t, t, b.h - 2 * t, tokens.w.pick_border, rep);
+            fill(enc, b.x + b.w - t, b.y + t, t, b.h - 2 * t, tokens.w.pick_border, rep);
             if b.w > 2 * t && b.h > 2 * t {
-                fill(enc, b.x + t, b.y + t, b.w - 2 * t, b.h - 2 * t, PICK_BG, rep);
+                fill(enc, b.x + t, b.y + t, b.w - 2 * t, b.h - 2 * t, tokens.w.pick_bg, rep);
             }
             // HH:MM 五字节（24 小时制原值；12 折算消费面）。
             let mut buf = [b':'; 5];
@@ -1384,12 +1343,12 @@ fn emit_node<'a>(
             buf[1] = b'0' + (p.hour % 10) as u8;
             buf[3] = b'0' + (p.minute / 10) as u8;
             buf[4] = b'0' + (p.minute % 10) as u8;
-            emit_widget_text(&buf, b.x, b.w, b.y, b.h, SELECT_FG, rest, enc, rep);
+            emit_widget_text(&buf, b.x, b.w, b.y, b.h, tokens.w.select_fg, rest, enc, rep);
         }
         // 批 F（末刀三件）：
         // - Gauge = v1 简化粗水平条（原设计环形仪表 ring8 底环 + 部分
         //   弧——弧原语 v1 缺席，与 Progress 同律统一条形；style Ring/
-        //   Bar/Arc 数据携载、v1 同渲染）：上带 TRACK_OFF 底轨 + ACCENT
+        //   Bar/Arc 数据携载、v1 同渲染）：上带 tokens.w.track_off 底轨 + tokens.w.accent
         //   填充（×value/1000），下带值文本（permille 折百分整数 + '%'
         //   ——免 FP；750‰ → "75%"）。
         // - Qr = v1 视觉占位：三角落定位方块（TL/TR/BL 各 7×7 模块的
@@ -1403,10 +1362,10 @@ fn emit_node<'a>(
             let bar_h = GAUGE_BAR_H.min(b.h / 2).max(0); // 极矮界防御：条带不过半高
             if bar_h > 0 {
                 let ty = b.y + (b.h / 2 - bar_h) / 2; // 上带内居中（64 高 → y+8）
-                fill(enc, b.x, ty, b.w, bar_h, TRACK_OFF, rep);
+                fill(enc, b.x, ty, b.w, bar_h, tokens.w.track_off, rep);
                 let fw = p.value.min(crate::PERMILLE_MAX) as i64 * b.w as i64
                     / crate::PERMILLE_MAX as i64;
-                fill(enc, b.x, ty, i64_to_i32_sat(fw), bar_h, ACCENT, rep);
+                fill(enc, b.x, ty, i64_to_i32_sat(fw), bar_h, tokens.w.accent, rep);
             }
             // 值文本：下带（节点下半区）双轴居中——value/10 折百分。
             let mut buf = [0u8; 10];
@@ -1418,7 +1377,7 @@ fn emit_node<'a>(
                 b.w,
                 b.y + b.h / 2,
                 b.h - b.h / 2,
-                ON_SURFACE,
+                tokens.w.on_surface,
                 rest,
                 enc,
                 rep,
@@ -1451,7 +1410,7 @@ fn emit_node<'a>(
                 let y0 = b.y + (b.h - 5 * bh) / 2;
                 let mut i = 0;
                 while i < 3 {
-                    fill(enc, x, y0 + 2 * bh * i, bw, bh, ON_SURFACE, rep);
+                    fill(enc, x, y0 + 2 * bh * i, bw, bh, tokens.w.on_surface, rep);
                     i += 1;
                 }
             }
@@ -1849,6 +1808,9 @@ mod tests {
             pressed,
             NONE,
             &InputTexts::empty(),
+            // 内联测试面恒 light 档（旧固定色板行为的值级钉板——迁移后
+            // light 档同值，本面即零漂移自证）。
+            &crate::theme::Tokens::pick(crate::theme::Theme::Light),
         );
         let dl = enc.finish();
         let d = TextureDesc::new(240, 300, FB_STRIDE, TextureFormat::Rgbx).unwrap();
@@ -1899,23 +1861,31 @@ mod tests {
 
     // —— ① 默认档零漂移锚：无 FillRectRounded 命令；Toggle 轨 =
     //    capsule_h 三 fill（widgets.rs golden 同形几何）；Chip/Card 直角 ——
+
+    /// 测试面 light 档 token 组（旧固定色板行为的值级钉板——迁移后
+    /// light 档同值，本面即零漂移自证）。
+    fn tokens() -> crate::theme::Tokens {
+        crate::theme::Tokens::pick(crate::theme::Theme::Light)
+    }
+
     #[test]
     fn xa_legacy_default_no_rounded_cmds() {
         let _lock = CORNER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _restore = CornerRestore(set_true_corners(false));
+        let tokens = tokens();
         let (sum, _, _) = render(&corner_scene(), &PressedVis::empty());
         assert!(
             !sum.iter().any(|s| matches!(s, Sum::Rounded(..))),
             "默认档零 FillRectRounded：{sum:?}"
         );
         // Toggle 胶囊三 fill（cap=10、inset=8——52×32 手算）。
-        assert!(sum.contains(&Sum::Fill(0, 8, 10, 16, packed(TRACK_OFF))), "{sum:?}");
-        assert!(sum.contains(&Sum::Fill(10, 0, 32, 32, packed(TRACK_OFF))), "{sum:?}");
-        assert!(sum.contains(&Sum::Fill(42, 8, 10, 16, packed(TRACK_OFF))), "{sum:?}");
+        assert!(sum.contains(&Sum::Fill(0, 8, 10, 16, packed(tokens.w.track_off))), "{sum:?}");
+        assert!(sum.contains(&Sum::Fill(10, 0, 32, 32, packed(tokens.w.track_off))), "{sum:?}");
+        assert!(sum.contains(&Sum::Fill(42, 8, 10, 16, packed(tokens.w.track_off))), "{sum:?}");
         // Chip 直角 / Card 直角双 fill（corner_radius 数据在默认档不消费）。
-        assert!(sum.contains(&Sum::Fill(60, 0, 40, 32, packed(TRACK_DIM))), "{sum:?}");
-        assert!(sum.contains(&Sum::Fill(0, 50, 30, 20, packed(CARD_SHADOW))), "{sum:?}");
-        assert!(sum.contains(&Sum::Fill(0, 50, 26, 16, packed(CARD_BG))), "{sum:?}");
+        assert!(sum.contains(&Sum::Fill(60, 0, 40, 32, packed(tokens.w.track_dim))), "{sum:?}");
+        assert!(sum.contains(&Sum::Fill(0, 50, 30, 20, packed(tokens.w.card_shadow))), "{sum:?}");
+        assert!(sum.contains(&Sum::Fill(0, 50, 26, 16, packed(tokens.w.card_bg))), "{sum:?}");
     }
 
     // —— ①' 真圆角档：Toggle r=h/2 真胶囊 / Chip r=8vp@3x / Card 消费
@@ -1924,29 +1894,30 @@ mod tests {
     fn xa_true_corners_rounded_toggle_chip_card() {
         let _lock = CORNER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _restore = CornerRestore(set_true_corners(true));
+        let tokens = tokens();
         let (sum, fb, _) = render(&corner_scene(), &PressedVis::empty());
         // 命令面：radius 原值入命令（Chip 24 由 raster 侧钳 min(w,h)/2）。
         assert!(
-            sum.contains(&Sum::Rounded(0, 0, 52, 32, 16, packed(TRACK_OFF))),
+            sum.contains(&Sum::Rounded(0, 0, 52, 32, 16, packed(tokens.w.track_off))),
             "Toggle 真胶囊 r=h/2：{sum:?}"
         );
         assert!(
-            sum.contains(&Sum::Rounded(60, 0, 40, 32, 24, packed(TRACK_DIM))),
+            sum.contains(&Sum::Rounded(60, 0, 40, 32, 24, packed(tokens.w.track_dim))),
             "Chip r=8vp@3x：{sum:?}"
         );
-        assert!(sum.contains(&Sum::Rounded(0, 50, 30, 20, 8, packed(CARD_SHADOW))), "{sum:?}");
-        assert!(sum.contains(&Sum::Rounded(0, 50, 26, 16, 8, packed(CARD_BG))), "{sum:?}");
+        assert!(sum.contains(&Sum::Rounded(0, 50, 30, 20, 8, packed(tokens.w.card_shadow))), "{sum:?}");
+        assert!(sum.contains(&Sum::Rounded(0, 50, 26, 16, 8, packed(tokens.w.card_bg))), "{sum:?}");
         assert!(!sum.iter().any(|s| matches!(s, Sum::Fill(0, 8, 10, 16, _))), "capsule_h 退场");
         // 像素面：Toggle r=16 行 0 内缩 16 → 角 (0,0) 不写（哨兵）、
-        // (26,0) 轨色；Chip 钳 16 同律；Card 角 sentinel、面心 CARD_BG、
+        // (26,0) 轨色；Chip 钳 16 同律；Card 角 sentinel、面心 tokens.w.card_bg、
         // 阴影下缘带（y=68 ∈ 阴影不 ∈ 面）。
         assert_eq!(px(&fb, 0, 0), 0x1111_1111, "Toggle 角区不写");
-        assert_eq!(px(&fb, 26, 0), packed(TRACK_OFF), "Toggle 顶行中段照铺");
+        assert_eq!(px(&fb, 26, 0), packed(tokens.w.track_off), "Toggle 顶行中段照铺");
         assert_eq!(px(&fb, 60, 0), 0x1111_1111, "Chip 角区不写");
-        assert_eq!(px(&fb, 80, 16), packed(TRACK_DIM), "Chip 中心照铺");
+        assert_eq!(px(&fb, 80, 16), packed(tokens.w.track_dim), "Chip 中心照铺");
         assert_eq!(px(&fb, 0, 50), 0x1111_1111, "Card 角区不写");
-        assert_eq!(px(&fb, 13, 58), packed(CARD_BG), "Card 面心");
-        assert_eq!(px(&fb, 10, 68), packed(CARD_SHADOW), "Card 阴影下缘带");
+        assert_eq!(px(&fb, 13, 58), packed(tokens.w.card_bg), "Card 面心");
+        assert_eq!(px(&fb, 10, 68), packed(tokens.w.card_shadow), "Card 阴影下缘带");
     }
 
     // —— ② disabled 三态首批五 kind + disabled 优先于 pressed ——
@@ -1954,6 +1925,7 @@ mod tests {
     fn xa_disabled_three_state_first_batch() {
         let _lock = CORNER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _restore = CornerRestore(set_true_corners(false));
+        let tokens = tokens();
         let nodes = root_with_children(vec![
             // slot1：Button disabled（BG_DISABLED 底 + FG_DISABLED 标签）。
             mk_node(
@@ -2004,7 +1976,7 @@ mod tests {
                 90,
                 32,
             ),
-            // slot6：Button 仅 pressed（ACCENT_PRESSED 对照——三态完备）。
+            // slot6：Button 仅 pressed（tokens.w.accent_pressed 对照——三态完备）。
             mk_node(
                 ViewKind::Button,
                 Props::Button(ButtonProps {
@@ -2017,7 +1989,7 @@ mod tests {
                 64,
                 48,
             ),
-            // slot7：Button normal（ACCENT 对照）。
+            // slot7：Button normal（tokens.w.accent 对照）。
             mk_node(
                 ViewKind::Button,
                 Props::Button(ButtonProps {
@@ -2048,15 +2020,15 @@ mod tests {
         assert_eq!(both.state(1), NodeVisState::Disabled, "禁用锁死优先于按压");
         // 像素面：五 kind 禁用观感 + 两对照。
         let (_, fb, _) = render(&nodes, &pv);
-        assert_eq!(px(&fb, 32, 24), packed(crate::theme::BG_DISABLED), "Button 禁用底");
-        assert_eq!(px(&fb, 1, 64), packed(crate::theme::BG_DISABLED), "Toggle 禁用轨（左帽区——避开滑块）");
-        assert_eq!(px(&fb, 0, 90), packed(crate::theme::FG_DISABLED), "Check 禁用框");
-        assert_eq!(px(&fb, 46, 81), packed(crate::theme::FG_DISABLED), "Radio 禁用环");
-        assert_eq!(px(&fb, 50, 92), packed(crate::theme::FG_DISABLED), "Radio 禁用内圆");
-        assert_eq!(px(&fb, 45, 120), packed(crate::theme::BG_DISABLED), "Seg 禁用 active 段");
-        assert_eq!(px(&fb, 5, 120), packed(TRACK_DIM), "Seg 底轨不变");
-        assert_eq!(px(&fb, 32, 160), packed(ACCENT_PRESSED), "pressed 对照暗化底");
-        assert_eq!(px(&fb, 32, 208), packed(ACCENT), "normal 对照主色底");
+        assert_eq!(px(&fb, 32, 24), packed(tokens.bg_disabled), "Button 禁用底");
+        assert_eq!(px(&fb, 1, 64), packed(tokens.bg_disabled), "Toggle 禁用轨（左帽区——避开滑块）");
+        assert_eq!(px(&fb, 0, 90), packed(tokens.fg_disabled), "Check 禁用框");
+        assert_eq!(px(&fb, 46, 81), packed(tokens.fg_disabled), "Radio 禁用环");
+        assert_eq!(px(&fb, 50, 92), packed(tokens.fg_disabled), "Radio 禁用内圆");
+        assert_eq!(px(&fb, 45, 120), packed(tokens.bg_disabled), "Seg 禁用 active 段");
+        assert_eq!(px(&fb, 5, 120), packed(tokens.w.track_dim), "Seg 底轨不变");
+        assert_eq!(px(&fb, 32, 160), packed(tokens.w.accent_pressed), "pressed 对照暗化底");
+        assert_eq!(px(&fb, 32, 208), packed(tokens.w.accent), "normal 对照主色底");
     }
 
     // —— ③ Scroll/List clip：溢出子裁到容器界（像素级）+ PushClip/PopClip

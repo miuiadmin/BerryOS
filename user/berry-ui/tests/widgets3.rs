@@ -23,7 +23,7 @@ use berry_ui::desc::{
 };
 use berry_ui::hit::PtrEvent;
 use berry_ui::layout::CrossAlign;
-use berry_ui::paint::{ACCENT, ACCENT_PRESSED, BADGE_BG, SBAR_THUMB, SBAR_TRACK, TABS_BG, TABS_INDICATOR};
+use berry_ui::theme::{ACCENT, ACCENT_PRESSED, BADGE_BG, SBAR_THUMB, SBAR_TRACK, TABS_BG, TABS_INDICATOR};
 use berry_ui::{NodeId, Ui, UiError, ViewKind, ViewSpec};
 
 /// FULL 帧（widgets.rs 同形标准造法）。
@@ -112,7 +112,7 @@ fn tabs_layout_and_paint_golden() {
     // active=0 段指示条：x=0 宽 100 厚 3 底缘。
     assert!(f.contains(&(0, 145, 100, 3, TABS_INDICATOR)), "指示条段 0：{f:?}");
     // 段间分隔线：x=100 竖线。
-    assert!(f.contains(&(100, 0, 2, 148, berry_ui::paint::OUTLINE)), "分隔线：{f:?}");
+    assert!(f.contains(&(100, 0, 2, 148, berry_ui::theme::OUTLINE)), "分隔线：{f:?}");
 }
 
 // ---------- ② Tabs 点击切页 ----------
@@ -439,7 +439,7 @@ use berry_ui::desc::{
     CardProps, ChipProps, CollapseProps, FabProps, Msg, TextProps, TextStyle, TipPlacement,
     TipProps,
 };
-use berry_ui::paint::{CARD_BG, CARD_SHADOW, ON_ACCENT, ON_BADGE, ON_SURFACE, TIP_BG, TRACK_DIM};
+use berry_ui::theme::{CARD_BG, CARD_SHADOW, ON_ACCENT, ON_BADGE, ON_SURFACE, TIP_BG, TRACK_DIM};
 
 /// 单事件 pump（Msg 面携出——不劫持断言用；pump_one 同形）。
 fn pump_msgs(ui: &mut Ui<64>, phase: u8, x: u32, y: u32, ts: u64) -> Vec<Msg> {

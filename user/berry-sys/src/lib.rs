@@ -564,8 +564,11 @@ const POLICY_BIND_NR: usize = 0x83;
 /// 合法——「接口在位、表空」）；内核 copy_from_user 整表拷入（无 TOCTOU）后
 /// 逐条转换提交。`gen` = 世代数，**陈旧拒收**：gen ≤ 活跃世代 → -EAGAIN
 /// （写者重放/乱序到达的旧表不得覆盖新表；活跃快照未动，调用方对账 gen 后
-/// 携新 gen 重试）。v1 无 handle 需求（系统全局单通道；SET_POLICY 门控随
-/// S6-c Job 对象落地）——`auth` 预留不消费，`rsv` 须 0（非 0 → -EINVAL）。
+/// 携新 gen 重试）。门控（arch-r2 起 2026-11-11，全 op 面）：`auth` = 持
+/// `RIGHT_MANAGE` 权的 Process handle——内核三门控（在表 / 类型 Process /
+/// 权利 MANAGE）在 op 分派之前，坏值/类型不符（含 auth=0 裸调）→ -EBADF、
+/// 缺 MANAGE → -EACCES（对象不消费，纯资格面；持权者通常是 svcmgr/初始化
+/// 服务）。`rsv` 须 0（非 0 → -EINVAL）。
 #[no_mangle]
 pub extern "C" fn berry_policy_bind(
     auth: Handle,
@@ -588,9 +591,11 @@ pub extern "C" fn berry_policy_bind(
     }
 }
 
-/// `berry_policy_status(packed, self_key)`（0x83 op=2，S6-e STATUS 面）：
-/// 双谱系世代 + 调用者自身策略键一次读全（写者对账/遥测）。`auth` 预留
-/// 不消费（v1 全局单通道）；p4 保留恒 0（非 0 → -EINVAL，options 纪律）。
+/// `berry_policy_status(auth, packed, self_key)`（0x83 op=2，S6-e STATUS 面）：
+/// 双谱系世代 + 调用者自身策略键一次读全（写者对账/遥测）。门控同
+/// [`berry_policy_bind`]（arch-r2 起，全 op 面）：`auth` = 持 `RIGHT_MANAGE`
+/// 权的 Process handle，auth=0 裸调 → -EBADF（读面也在门后，出参不被写）；
+/// p4 保留恒 0（非 0 → -EINVAL，options 纪律）。
 ///
 /// `packed`（u64 出参，**必填**——内核无条件写出，NULL → -EFAULT）：
 /// bit 0-31 = active gen、bit 32-63 = shadow gen（各截低 32 位）——内核
@@ -606,11 +611,11 @@ pub extern "C" fn berry_policy_bind(
 /// ktest DV-5 钉板、宿主 `tools/policy_ab_eval.py` 消费）；本 wrapper 尚
 /// 未暴露（恒传 0 = NULL 跳过），用户态 A/B 评估器落地时扩参。
 #[no_mangle]
-pub extern "C" fn berry_policy_status(packed: *mut u64, self_key: *mut u64) -> Status {
+pub extern "C" fn berry_policy_status(auth: Handle, packed: *mut u64, self_key: *mut u64) -> Status {
     unsafe {
         sys(
             POLICY_BIND_NR,
-            0, // auth：v1 全局单通道预留（同 berry_policy_bind 不消费）
+            auth as usize,
             POLICY_OP_STATUS as usize,
             packed as usize,
             self_key as usize,
