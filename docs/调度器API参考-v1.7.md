@@ -1,7 +1,7 @@
 # 调度器 API 参考
 
-> 版本：v1.6（2026-11-13 升版：P2-2 退出异步化〔9791a99〕新增 `set_reap_post_hook` 单 fn（sched.rs 78→79）——`reap_drain` 尾钩子槽，kernel 侧 pending ht-drain 队列的异步排水入口，合计 143→144；v1.5：PI 形 B 修复〔42a794e0〕新增 `pi_rq_lock`/`pi_rq_unlock`/`for_each_runnable`/`rq_insert_kt`/`rq_unlink_kt` 五 fn（sched.rs 73→78）+ G5 bootparams〔345739e1〕新增 `set_intent_default`/`intent_default` 双 fn（intent.rs 2→4），合计 136→143；v1.4：daa5ef7e perf(pi) 全图重推门控新增 `pi_recompute_needed`/`pi_boost_recount` 双计数闸门 fn，sched.rs 71→73、合计 134→136；v1.3：W3-Q16 HDR 形状与分位数学外迁随迁——`bucket_of`/`bucket_upper`/`Hdr`/`CpuHdr` 等 12 项转 re-export 单源 `berry_hdrface`，hdr.rs 20→8 机械壳，计数 146→134；v1.2：W3-Q13 `intent_valid` 外迁随迁 147→146）｜ 对象：`sched/` crate（`berry-sched`，12 文件）｜ 审计口径：**144 个 `pub fn`**（含 `pub const fn` / `pub unsafe fn`，逐文件机提 + 人工核对 + sched/ 12 文件全量复核；初估 132 为低估）
-> 事实源 = 源码 doc 注释首行（提取时点 2026-11-08，2026-11-11 增量对拍至 daa5ef7e，2026-11-13 增量对拍至 f44c2ba8/HEAD）；本文是影抄不是立法——签名冲突时以 `sched/src/` 为准并回改本文。
+> 版本：v1.7（2026-11-15 升版：调度终窗 idle 闭合+M4 骨架〔01cd881b〕——`spawn_user_env` 新 fn〔sched.rs 79→80，boot env 旗标面 x1 递 EL0 服务〕+ `try_prepare_user`/`try_spawn_user` 签名扩 `arg1` 参 + `band_of`〔policy.rs 15→16，band 选择位读出口——v1 恒 `BAND_SEL_NONE` 纯预留〕+ `FairBand::new`/`class_fair_intent`〔class.rs 2→4，Intent M4 带实例工厂〕，合计 144→148、const 3→4；v1.6：P2-2 退出异步化〔9791a99〕新增 `set_reap_post_hook` 单 fn（sched.rs 78→79）——`reap_drain` 尾钩子槽，kernel 侧 pending ht-drain 队列的异步排水入口，合计 143→144；v1.5：PI 形 B 修复〔42a794e0〕新增 `pi_rq_lock`/`pi_rq_unlock`/`for_each_runnable`/`rq_insert_kt`/`rq_unlink_kt` 五 fn（sched.rs 73→78）+ G5 bootparams〔345739e1〕新增 `set_intent_default`/`intent_default` 双 fn（intent.rs 2→4），合计 136→143；v1.4：daa5ef7e perf(pi) 全图重推门控新增 `pi_recompute_needed`/`pi_boost_recount` 双计数闸门 fn，sched.rs 71→73、合计 134→136；v1.3：W3-Q16 HDR 形状与分位数学外迁随迁——`bucket_of`/`bucket_upper`/`Hdr`/`CpuHdr` 等 12 项转 re-export 单源 `berry_hdrface`，hdr.rs 20→8 机械壳，计数 146→134；v1.2：W3-Q13 `intent_valid` 外迁随迁 147→146）｜ 对象：`sched/` crate（`berry-sched`，12 文件）｜ 审计口径：**148 个 `pub fn`**（含 `pub const fn` / `pub unsafe fn`，逐文件机提 + 人工核对 + sched/ 12 文件全量复核；初估 132 为低估）
+> 事实源 = 源码 doc 注释首行（提取时点 2026-11-08，2026-11-11 增量对拍至 daa5ef7e，2026-11-13 增量对拍至 f44c2ba8/HEAD，2026-11-15 增量对拍至 01cd881b/HEAD）；本文是影抄不是立法——签名冲突时以 `sched/src/` 为准并回改本文。
 
 ## 使用方法
 
@@ -71,14 +71,17 @@ EEVDF+EDF 混合调度核：spawn 家族、freeze/thaw、抢占控制、SLEEPQ �
 ### `spawn_user(entry_va: usize, arg: usize, sp0_va: usize, name: &'static [u8], ttbr0: usize, asid: u16, proc_tag: usize)`
 > sched | 生成一个用户线程（2b-4 首个 EL0）：内核栈 + `new_user` 上下文。
 
-### `try_prepare_user(entry_va: usize, arg: usize, sp0_va: usize, name: &'static [u8], ttbr0: usize, asid: u16, proc_tag: usize, pinned: usize, thread_key: usize, spread: bool) -> Option<usize>`
-> sched | 同 `spawn_user` 但 try 化（3b3 审查 H2）：栈/TCB 任一 OOM 返 None。
+### `spawn_user_env(entry_va: usize, arg: usize, env: usize, sp0_va: usize, name: &'static [u8], ttbr0: usize, asid: u16, proc_tag: usize)`
+> sched | 同 `spawn_user` 但入口带第二参（x1 = boot env 旗标面——06 号修窗件 1 后半：内核 boot 期消费的 fw_cfg 键值随 spawn 递 EL0 服务，零新 ABI/零句柄槽位重排；现役消费者 = svcmgr demo-face 门）。旗标位定义归内核 crate（语义层 `USER_ENV_*` 常量镜像）。
+
+### `try_prepare_user(entry_va: usize, arg: usize, arg1: usize, sp0_va: usize, name: &'static [u8], ttbr0: usize, asid: u16, proc_tag: usize, pinned: usize, thread_key: usize, spread: bool) -> Option<usize>`
+> sched | 同 `spawn_user` 但 try 化（3b3 审查 H2）：栈/TCB 任一 OOM 返 None（v1.7：签名扩 `arg1` 第二参——`spawn_user_env` 同批）。
 
 ### `enqueue_prepared_user(task_ptr: usize)` `unsafe`
 > sched | 把 `try_prepare_user` 产出的已初始化任务入环（调用侧须完成一切登记）。
 
-### `try_spawn_user(entry_va: usize, arg: usize, sp0_va: usize, name: &'static [u8], ttbr0: usize, asid: u16, proc_tag: usize, pinned: usize, thread_key: usize, spread: bool) -> Option<usize>`
-> sched | try 面 spawn_user 全流程（无 doc；prepare + enqueue 合一）。
+### `try_spawn_user(entry_va: usize, arg: usize, arg1: usize, sp0_va: usize, name: &'static [u8], ttbr0: usize, asid: u16, proc_tag: usize, pinned: usize, thread_key: usize, spread: bool) -> Option<usize>`
+> sched | try 面 spawn_user 全流程（无 doc；prepare + enqueue 合一；v1.7：签名扩 `arg1` 第二参）。
 
 ### `current_tag() -> usize`
 > sched | 当前任务的进程标签（3-4a per-process handle 表派发用）。
@@ -260,6 +263,12 @@ EEVDF+EDF 混合调度核：spawn 家族、freeze/thaw、抢占控制、SLEEPQ �
 ### `pick_next_filtered(&self, rq: &Runqueue, _topo: &Topo, my_cur: *mut Task) -> Option<&mut Task>`（`Fair` 固有方法）
 > class | 过滤版出选（S-2b inherent 方法——trait 冻结不动）；带内无 eligible 时取最小键。
 
+### `FairBand::new(band_id: u8, band: IntentBand) -> FairBand` `const`
+> class | 显式带参数构造（M4 启动配置覆盖路径入口形状——数字进启动配置，不写死；band_id 域执法归调用方）。
+
+### `class_fair_intent(intent: u8) -> Option<FairBand>`
+> class | **class_fair_intent 工厂**：按 intent 档建 `FairBand` 带实例——查 `berry_iprofile::band_of_intent`（×4 现役集 0x01..=0x04 → 该档带参数行；0x00/0x05/保留域 → `None` = 无带，调用方回落现役单带 `Fair`，缺省行为零漂移）。M4 集成面预留窗：spawn 侧接线点 = `sched.rs::spawn_intent`；策略覆盖通道 = `policy::band_of`（v1.7 同批）。`FairBand` 的 trait 面全方法委托现役 unit `Fair`（行为逐位等价，等 M4 入场券后再分化）。
+
 **`SchedClass` trait 方法面**（class.rs，签名冻结——一字不改）：
 
 | 方法 | 签名 | 语义 |
@@ -302,6 +311,9 @@ EEVDF+EDF 混合调度核：spawn 家族、freeze/thaw、抢占控制、SLEEPQ �
 
 ### `placement_hint(task_key: u64) -> u8`
 > policy | 该 key 当前绑定的放置偏置（动作空间①：`调点调度-v1.3` §6 placement）。
+
+### `band_of(task_key: u64) -> u8`
+> policy | band 选择位读出口（v1 纯预留：写路 `snap_insert` 恒 `BAND_SEL_NONE`，与接口缺席等价；v3 `policy_bind` 开 band 位真值写入后即 task→band 赋值的策略覆盖通道，消费面 `class.rs::class_fair_intent` 同批。ADR #21 带内纪律：band/intent 不入 AI 动作空间）。读纪律同 `placement_hint`。
 
 ### `promote() -> bool`
 > policy | shadow → enforced 原子转正（PROMOTE）：读当前 shadow 活槽 → 一次 ~4KiB 拷贝换轨。
@@ -598,8 +610,8 @@ intent（u8）第一类输入：六档词汇表（ADR #58）+ send/recv 两侧�
 
 | 文件 | pub fn | 归组 |
 |------|--------|------|
-| sched.rs | 79 | 一、调度核心 |
-| policy.rs | 15 | 二、策略服务 |
+| sched.rs | 80 | 一、调度核心 |
+| policy.rs | 16 | 二、策略服务 |
 | band.rs | 7 | 三、层级预算 |
 | em.rs + util.rs | 6 + 7 | 四、EAS 能效 |
 | hdr.rs | 8（+`pub use` re-export 族：`bucket_of`/`bucket_upper`/`rank_of`/`Hdr`·`CpuHdr` 全方法单源 `berry_hdrface`） | 五、测量 |
@@ -607,6 +619,6 @@ intent（u8）第一类输入：六档词汇表（ADR #58）+ send/recv 两侧�
 | runqueue.rs | 7 | 七、环形队列 |
 | intent.rs | 4（+`pub use` re-export 族：`intent_valid` 单源 `berry_intface`；G5 前 2） | 八、intent |
 | spin.rs | 4 | 附 |
-| class.rs | 2（+trait 5 法） | 一、调度核心 |
+| class.rs | 4（+trait 5 法） | 一、调度核心 |
 | lib.rs | 0（`pub use` 根） | — |
-| **合计** | **144** | ｜ 含 `unsafe` 8、`const` 3、`extern "C"` 4（v1.6：P2-2 退出异步化 +1 fn〔`set_reap_post_hook`，safe 非 const〕后 144——v1.5 的 143 为退出异步化前时点；v1.5：PI 形 B〔42a794e0〕+5 fn + G5 intent 缺省档〔345739e1〕+2 fn 后 143——v1.4 的 136 为形 B/G5 前时点，新增 7 fn 全 safe 非 const；v1.4：daa5ef7e perf(pi) 全图重推门控 +2 fn 后 136——v1.3 的 134 为门控前时点；v1.3：W3-Q16 hdrface 外迁后 134——v1.2 的 146 为外迁前时点，const 6→3 = `bucket_upper`/`Hdr::new`/`CpuHdr::new` 三 const 随迁；v1.2：W3-Q13 `intent_valid` 外迁 re-export 后 146，v1.1 的 147 为外迁前时点；const 6 系 v1.1 勘误，v1.0 笔误 5 不回传；W3-Q6 起含 `intent_settle_current_ext`） |
+| **合计** | **148** | ｜ 含 `unsafe` 8、`const` 4、`extern "C"` 4（v1.7：调度终窗〔01cd881b〕+4 fn 后 148——`spawn_user_env`〔sched.rs，safe〕/`band_of`〔policy.rs，safe〕/`FairBand::new`〔class.rs，const——const 3→4〕/`class_fair_intent`〔class.rs，safe〕+ `try_prepare_user`/`try_spawn_user` 签名扩 `arg1` 参净计数不变；v1.6 的 144 为终窗前时点；v1.6：P2-2 退出异步化 +1 fn〔`set_reap_post_hook`，safe 非 const〕后 144——v1.5 的 143 为退出异步化前时点；v1.5：PI 形 B〔42a794e0〕+5 fn + G5 intent 缺省档〔345739e1〕+2 fn 后 143——v1.4 的 136 为形 B/G5 前时点，新增 7 fn 全 safe 非 const；v1.4：daa5ef7e perf(pi) 全图重推门控 +2 fn 后 136——v1.3 的 134 为门控前时点；v1.3：W3-Q16 hdrface 外迁后 134——v1.2 的 146 为外迁前时点，const 6→3 = `bucket_upper`/`Hdr::new`/`CpuHdr::new` 三 const 随迁；v1.2：W3-Q13 `intent_valid` 外迁 re-export 后 146，v1.1 的 147 为外迁前时点；const 6 系 v1.1 勘误，v1.0 笔误 5 不回传；W3-Q6 起含 `intent_settle_current_ext`） |
