@@ -199,7 +199,10 @@ fn fwcfg_rootfs_multivol() -> Option<RootfsBuf> {
 
 /// GUI P2：从 fw_cfg `opt/berry/display` 读 `WxH[@Hz]`；缺席/畸形 = None。
 /// 只接受 ASCII 十进制；字符串项可能带 NUL/空白，统一 trim 后再拆。
-fn display_mode_req() -> Option<(u32, u32)> {
+/// 刀1（刷新率体系规范 §4-1）：@Hz 率域不再丢弃——语法层校验 1..=1000，
+/// 非法 loud 回退 60 + `DISP hz fail` 诊断行（语义层档位归属校验归
+/// guifbd 软面板——档位表单源，内核不自造集合）。
+fn display_mode_req() -> Option<(u32, u32, u16)> {
     use berry_hal_aarch64::fwcfg;
     let e = fwcfg::find_file("opt/berry/display")?;
     if e.size == 0 || e.size > 32 {
@@ -211,9 +214,22 @@ fn display_mode_req() -> Option<(u32, u32)> {
     }
     let s = core::str::from_utf8(&buf[..e.size as usize]).ok()?;
     let s = s.trim_matches(|c: char| c == '\0' || c.is_ascii_whitespace());
-    let s = s.split('@').next()?;
+    let (s, hz_s) = match s.split_once('@') {
+        Some((g, h)) => (g, Some(h)),
+        None => (s, None),
+    };
     let (w, h) = s.split_once('x')?;
-    Some((w.parse().ok()?, h.parse().ok()?))
+    let hz: u16 = match hz_s {
+        None => 60,
+        Some(t) => match t.parse::<u16>() {
+            Ok(v) if (1..=1000).contains(&v) => v,
+            _ => {
+                berry_hal_aarch64::uart_puts(b"DISP hz fail\n");
+                60
+            }
+        },
+    };
+    Some((w.parse().ok()?, h.parse().ok()?, hz))
 }
 
 /// 内核 Rust 入口（由 HAL boot asm 的 `br rust_main` 调用——2b-1 起高半入口）。
@@ -249,9 +265,13 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // GUI P2：ramfb 手机档成功时置 1——随 fbinfo 第 6 域交 guifbd，
     // GUI 模式 console 只走串口/记账，不上屏盖桌面。
     let mut gui_mode = false;
+    // 刀1（刷新率体系规范 §4-2）：@Hz 率域随 fbinfo 第 7 域交 guifbd 软面板
+    //（ramfb_set 成功时才落值——几何回退则率域同回退 60；缺省 60）。
+    let mut gui_hz: u16 = 60;
     // 540×1200 等超出固件 GOP 缓冲的档：boot 先记 pending，mm::init 后从
-    // buddy 取连续块、重编程 ramfb；失败回退固件几何。
-    let mut pending_mode: Option<(u32, u32)> = None;
+    // buddy 取连续块、重编程 ramfb；失败回退固件几何（hz 随行——defer 期
+    // 率域先记，成败落值在重编程点）。
+    let mut pending_mode: Option<(u32, u32, u16)> = None;
     let print_fb = |g: (u64, u32, u32, u32, u32)| {
         berry_hal_aarch64::uart_puts(b"FB ok ");
         berry_hal_aarch64::uart_put_dec(g.1 as u64);
@@ -280,7 +300,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
             // 的 RAM 镜（宿主共享 RAM 面）。缺席 = 原 800×600 零扰动。
             let (mut gw, mut gh, mut gs) = (g.width, g.height, g.stride);
             let mut need_alloc = false;
-            if let Some((w, h)) = display_mode_req() {
+            if let Some((w, h, hz)) = display_mode_req() {
                 let stride = w.saturating_mul(4);
                 let cap = (g.stride as u64) * (g.height as u64);
                 let need = (stride as u64) * (h as u64);
@@ -292,21 +312,26 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                         gh = h;
                         gs = stride;
                         gui_mode = true;
+                        gui_hz = hz;
                         berry_hal_aarch64::uart_puts(b"DISP ok ");
                         berry_hal_aarch64::uart_put_dec(gw as u64);
                         berry_hal_aarch64::uart_puts(b"x");
                         berry_hal_aarch64::uart_put_dec(gh as u64);
+                        berry_hal_aarch64::uart_puts(b"@");
+                        berry_hal_aarch64::uart_put_dec(hz as u64);
                         berry_hal_aarch64::uart_puts(b"\n");
                     } else {
                         berry_hal_aarch64::uart_puts(b"DISP fail\n");
                     }
                 } else {
-                    pending_mode = Some((w, h));
+                    pending_mode = Some((w, h, hz));
                     need_alloc = true;
                     berry_hal_aarch64::uart_puts(b"DISP defer ");
                     berry_hal_aarch64::uart_put_dec(w as u64);
                     berry_hal_aarch64::uart_puts(b"x");
                     berry_hal_aarch64::uart_put_dec(h as u64);
+                    berry_hal_aarch64::uart_puts(b"@");
+                    berry_hal_aarch64::uart_put_dec(hz as u64);
                     berry_hal_aarch64::uart_puts(b"\n");
                 }
             }
@@ -329,7 +354,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
 
     // GUI P2：超出 GOP 缓冲的模式（如 540×1200）在 buddy 就绪后取连续块，
     // 重编程 ramfb；失败回退固件几何并补 FB ok（host 只等这一行）。
-    if let Some((w, h)) = pending_mode {
+    if let Some((w, h, hz)) = pending_mode {
         let stride = w.saturating_mul(4);
         let bytes = (stride as u64) * (h as u64);
         let pages = ((bytes + 0xFFF) / 0x1000) as usize;
@@ -341,11 +366,14 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                 let fmt = gop_saved.map(|g| g.4).unwrap_or(1);
                 gop_saved = Some((pa, w, h, stride, fmt));
                 gui_mode = true;
+                gui_hz = hz;
                 done = true;
                 berry_hal_aarch64::uart_puts(b"DISP ok ");
                 berry_hal_aarch64::uart_put_dec(w as u64);
                 berry_hal_aarch64::uart_puts(b"x");
                 berry_hal_aarch64::uart_put_dec(h as u64);
+                berry_hal_aarch64::uart_puts(b"@");
+                berry_hal_aarch64::uart_put_dec(hz as u64);
                 berry_hal_aarch64::uart_puts(b"\n");
                 print_fb((pa, w, h, stride, fmt));
             } else {
@@ -1321,15 +1349,19 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                         h_fb, 0x0001_0005,
                         "main: svcmgr 表 fb VMO 须第 5 插 0x0001_0005（编译侧硬编码）"
                     );
-                    // 几何 info VMO：48B = fb_pa/w/h/stride/fmt/gui 六域 u64 LE
-                    //（一页 VMO，create+commit+write 三连——rootfs VMO 同款）。
-                    let mut info = [0u8; 48];
+                    // 几何 info VMO：56B = fb_pa/w/h/stride/fmt/gui/refresh_hz
+                    // 七域 u64 LE（一页 VMO，create+commit+write 三连——
+                    // rootfs VMO 同款；第 7 域 = 刀1 率通路尾插，add-only
+                    // 不重排——旧 guifbd 只读前 48B 无扰动，新 guifbd 读
+                    // 旧内核零页 = 0 → 回退 60）。
+                    let mut info = [0u8; 56];
                     info[0..8].copy_from_slice(&fb_pa.to_le_bytes());
                     info[8..16].copy_from_slice(&(w as u64).to_le_bytes());
                     info[16..24].copy_from_slice(&(h as u64).to_le_bytes());
                     info[24..32].copy_from_slice(&(stride as u64).to_le_bytes());
                     info[32..40].copy_from_slice(&(fmt as u64).to_le_bytes());
                     info[40..48].copy_from_slice(&(gui_mode as u64).to_le_bytes());
+                    info[48..56].copy_from_slice(&(gui_hz as u64).to_le_bytes());
                     let mut ivmo =
                         vmo::Vmo::create(4096).expect("main: fbinfo Vmo create");
                     ivmo.commit(mm::frames(), 0, 4096)

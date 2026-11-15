@@ -1,6 +1,6 @@
 //! gui-wmd —— GUI-5（ADR #61）窗口管理守护：呈现（guifbd）/窗口策略
 //! （本服务）分离。guifbd 零改动；gfxdemo 改连 wm 域（同 op 换端——
-//! present/hdi 六+四 op 经本服务透传中继，wm 六 op 本地权威处理）；
+//! present/hdi 六+五 op 经本服务透传中继，wm 六 op 本地权威处理）；
 //! inputd 追加推送端收窗口表快照（WM_TABLE_WAIT 阻塞应答形）。
 //!
 //! **boot 授能链**：EFI 相 svcmgr guifbd arm Ok 后 wmd arm 预拉本服务
@@ -134,7 +134,7 @@ pub(crate) fn trap() -> ! {
 }
 
 /// wm_srv 帧分发（§3 #6 分发表执法）：present 1..=6 → present_cli 透传；
-/// hdi 0x40..=0x43 → hdi_cli 透传；wm 0x60..=0x7F → 本地表处理（六 op
+/// hdi 0x40..=0x44 → hdi_cli 透传；wm 0x60..=0x7F → 本地表处理（六 op
 /// 之外 0x66..=0x7F 未定形 → 1B ST_BAD）；**其余一切 op（含 0x20/0x21
 /// input 域错投）→ 1B ST_BAD + close 随行**。
 fn on_wm(table: &mut table::WmTable, present_cli: Handle, hdi_cli: Handle, ch: Handle,
@@ -143,7 +143,7 @@ fn on_wm(table: &mut table::WmTable, present_cli: Handle, hdi_cli: Handle, ch: H
         Some(&op) if (gp::OP_GETINFO..=gp::OP_POWER_MODE).contains(&op) => {
             relay::relay(ch, present_cli, msg, hs);
         }
-        Some(&op) if (gp::OP_REG_VBLANK..=gp::OP_COMMIT).contains(&op) => {
+        Some(&op) if (gp::OP_REG_VBLANK..=gp::OP_PANEL_CAPS).contains(&op) => {
             relay::relay(ch, hdi_cli, msg, hs);
         }
         Some(&op) if (gp::OP_WM_GETINFO..=0x7F).contains(&op) => {

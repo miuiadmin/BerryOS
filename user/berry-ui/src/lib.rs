@@ -152,9 +152,13 @@ const _: () = assert!(
 const _: () = assert!(layout::CAP == 2 * MAX_NODES, "layout::CAP = 2*MAX_NODES（D10 单源）");
 const _: () = assert!(paint::ORDER_CAP == 2 * MAX_NODES, "paint::ORDER_CAP = 2*MAX_NODES（D10 单源）");
 
-/// 默认软 vsync 周期（≈60Hz）——`set_vsync` 前的 rate_hint/expected 轨
-/// 兜底值（协商倒数注入前的确定值，embedder 可覆写）。
-const DEFAULT_VSYNC_PERIOD_NS: u64 = 16_666_666;
+/// 回退缺省 vsync 周期（60Hz 档表值）——**仅无服务端信息时**的兜底
+///（`set_vsync` 前的 rate_hint/expected 轨确定值）。周期真值单源在
+/// guifbd 软面板档位表（刷新率体系规范 §3.4/§4-5——R1 率通路单源）；
+/// embedder 应在连接后以 PANEL_CAPS 应答注入 `set_vsync`，本值只服务
+/// 注入前的过渡帧与旧服务端（launcher 刀1 起已注入；值 = 表内 60Hz 档
+/// 16_666_667，与旧 16_666_666 差 1ns 无感知迁移）。
+const DEFAULT_VSYNC_PERIOD_NS: u64 = 16_666_667;
 
 /// 槽索引空值（§3.1——`u32::MAX`；pub(crate) 供各子模组树走查共用）。
 pub(crate) const NONE: u32 = u32::MAX;

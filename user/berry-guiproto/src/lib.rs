@@ -84,6 +84,9 @@ pub const OP_VBLANK_WAIT: u8 = 0x41;
 pub const OP_PREPARE: u8 = 0x42;
 /// hdi 域：提交槽到目标时刻。
 pub const OP_COMMIT: u8 = 0x43;
+/// hdi 域：面板能力宣告（刷新率档位表 + 率域模型 + 当前档——刷新率体系
+/// 规范 §4-4；hdi 域下一空位，Q2 裁弃先例 = 不塞 present GETINFO 保留位）。
+pub const OP_PANEL_CAPS: u8 = 0x44;
 /// wm 域：能力/版本/窗口帽协商（GUI-5；wm 域自带版本面——塞 present
 /// GetinfoRep 保留位 = 协议面变更，Q2 裁弃）。
 pub const OP_WM_GETINFO: u8 = 0x60;
@@ -262,6 +265,8 @@ pub const INPUT_SAMPLES_MAX: usize = 4;
 pub const INPUT_EVENTS_MAX: usize = 3;
 /// PREPARE/COMMIT slot 数上限。
 pub const HDI_SLOTS_MAX: u8 = 2;
+/// PANEL_CAPS 档位表条目数上限（全表 9 档 + 余量）。
+pub const PANEL_TIERS_MAX: usize = 16;
 
 /// present 域请求帧帽 = 24 + 16×8（SUBMIT 最坏）。
 pub const PRESENT_REQ_MAX: usize = 152;
@@ -273,8 +278,14 @@ pub const INPUT_EVT_MAX_LEN: usize = 80;
 pub const INPUT_REP_MAX: usize = 244;
 /// hdi 域请求帧帽（PREPARE 请求 20B）。
 pub const HDI_REQ_MAX: usize = 20;
-/// hdi 域应答帧帽（VBLANK_WAIT 应答 16B）。
+/// hdi 域应答帧帽（VBLANK_WAIT 应答 16B；PANEL_CAPS 变长应答独帽见下）。
 pub const HDI_REP_MAX: usize = 16;
+/// PANEL_CAPS 应答头定长（§4-4 头布局）。
+pub const PANEL_CAPS_REP_HEAD: usize = 32;
+/// PANEL_CAPS 档位条目长（8B）。
+pub const PANEL_TIER_LEN: usize = 8;
+/// PANEL_CAPS 应答帧帽 = 32 + 8×16（≤ CHAN_MSG_MAX 256——relay 256 窗直过）。
+pub const PANEL_CAPS_REP_MAX: usize = PANEL_CAPS_REP_HEAD + PANEL_TIER_LEN * PANEL_TIERS_MAX;
 /// wm 域窗口表上限（快照 = 12B 头 + 15×16B 表项 = [`WM_REP_MAX`] 单帧
 /// 顶格；帽按快照单帧 ≤ CHAN_MSG_MAX 硬约束定，GUI-8 launcher 桌面形态复核）。
 pub const WM_WINDOWS_MAX: usize = 15;
@@ -311,8 +322,8 @@ pub const RESAMPLE_MAX_PREDICTION_MS: u64 = 8;
 pub const VER_PRESENT: u8 = 1;
 /// input 域版本。
 pub const VER_INPUT: u8 = 1;
-/// hdi 域版本。
-pub const VER_HDI: u8 = 1;
+/// hdi 域版本（v2 = 刀1 增 OP_PANEL_CAPS 面板能力宣告——刷新率体系规范 §4-4）。
+pub const VER_HDI: u8 = 2;
 /// wm 域版本（GUI-5 定形刀在册——ADR #50：per-interface version 随定形刀必落）。
 pub const VER_WM: u8 = 1;
 
@@ -1378,6 +1389,157 @@ pub fn parse_commit_req(buf: &[u8]) -> Option<(u8, u64)> {
     Some((slot, le64(buf, 4)?))
 }
 
+/// 率域模型二类（规范 §3.2）：Tiered = 离散档位表；FreeRange = 连续区间。
+pub const RATE_MODEL_TIERED: u8 = 0;
+pub const RATE_MODEL_FREERANGE: u8 = 1;
+
+/// PANEL_CAPS flags 位（规范 §4-4）：per_frame = FreeRange 逐帧变节拍
+///（§7-P6）；hold = 面板内容自保持（停帧物理前提）；self_refresh = PSR；
+/// beat_owner = 节拍归属面板（panel-driven，v3 硬件 TE 位）。
+pub const PANEL_FLAG_PER_FRAME: u8 = 1 << 0;
+pub const PANEL_FLAG_HOLD: u8 = 1 << 1;
+pub const PANEL_FLAG_SELF_REFRESH: u8 = 1 << 2;
+pub const PANEL_FLAG_BEAT_OWNER: u8 = 1 << 3;
+
+/// 档位 class（规范 §3.1 族列）：产品 / 测试（非测试模式禁选）/ LTPO。
+pub const PANEL_CLASS_PRODUCT: u8 = 0;
+pub const PANEL_CLASS_TEST: u8 = 1;
+pub const PANEL_CLASS_LTPO: u8 = 2;
+
+/// vrr 三态（DRM vrr_capable 形状）。
+pub const PANEL_VRR_NONE: u8 = 0;
+pub const PANEL_VRR_CAPABLE: u8 = 1;
+pub const PANEL_VRR_SUPPORTED_OFF: u8 = 2;
+
+/// 编码 PANEL_CAPS 请求（恰 4B 无参 `[op][r][r16]`，VBLANK_WAIT 同形）。
+pub fn encode_panel_caps_req(out: &mut [u8]) -> usize {
+    assert!(out.len() >= 4, "guiproto: panel caps buf 不足");
+    out[0] = OP_PANEL_CAPS;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 0;
+    4
+}
+
+/// 解析 PANEL_CAPS 请求：恰 4B + op 位（无参；保留域恒不校验）。
+pub fn parse_panel_caps_req(buf: &[u8]) -> Option<()> {
+    if buf.len() != 4 || buf[0] != OP_PANEL_CAPS {
+        return None;
+    }
+    Some(())
+}
+
+/// 档位表条目（8B wire `[hz u16][class u8][r u8][period_ns u32]`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PanelTier {
+    pub hz: u16,
+    /// PANEL_CLASS_*（0=产品 1=测试 2=LTPO——规范 §3.1）。
+    pub class: u8,
+    /// 周期 ns = 档位表单源值（规范 §3.4：round(1e9/hz)）。
+    pub period_ns: u32,
+}
+
+/// PANEL_CAPS 应答体（变长 = 32B 头 + 8B×n_tiers；解析面执法长度恰等）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PanelCapsRep {
+    /// 应答格式版本（v1 = 1）。
+    pub version: u8,
+    /// RATE_MODEL_*（0=Tiered 1=FreeRange——规范 §3.2 二类）。
+    pub rate_model: u8,
+    /// PANEL_FLAG_* 位或。
+    pub flags: u8,
+    /// Tiered = 档位表首尾；FreeRange = 区间边界。
+    pub min_hz: u16,
+    pub max_hz: u16,
+    /// 连续域粒度（Tiered 恒 0 = 无意义；FreeRange 默认 1Hz）。
+    pub granularity_hz: u16,
+    /// PANEL_VRR_* 三态（缺属性 = 缺支持 ≠ 支持但关闭）。
+    pub vrr: u8,
+    pub current_hz: u16,
+    pub current_period_ns: u32,
+    /// 当前相位 ns（v1 恒 0——FREE 自由钟起点即相位零）。
+    pub current_phase_ns: u32,
+    /// 档位表定长槽 + n_tiers 计数（帽 [`PANEL_TIERS_MAX`]）。
+    pub tiers: [PanelTier; PANEL_TIERS_MAX],
+    pub n_tiers: u8,
+}
+
+/// 编码 PANEL_CAPS 应答（32B 头 + 8B×n_tiers；buf 不足 / 档位越帽 =
+/// 调用方错，assert）。头布局：`[st][ver][model][flags][n][vrr][r×2]
+/// [min u16][max u16][gran u16][r16][cur_hz u16][r16][cur_period u32]
+/// [cur_phase u32][r u32]`。
+pub fn encode_panel_caps_rep(out: &mut [u8], rep: &PanelCapsRep) -> usize {
+    let n = rep.n_tiers as usize;
+    assert!(n <= PANEL_TIERS_MAX, "guiproto: panel tiers 越帽");
+    let len = PANEL_CAPS_REP_HEAD + PANEL_TIER_LEN * n;
+    assert!(out.len() >= len, "guiproto: panel caps rep buf 不足");
+    out[0] = ST_OK;
+    out[1] = rep.version;
+    out[2] = rep.rate_model;
+    out[3] = rep.flags;
+    out[4] = rep.n_tiers;
+    out[5] = rep.vrr;
+    out[6] = 0;
+    out[7] = 0;
+    out[8..10].copy_from_slice(&rep.min_hz.to_le_bytes());
+    out[10..12].copy_from_slice(&rep.max_hz.to_le_bytes());
+    out[12..14].copy_from_slice(&rep.granularity_hz.to_le_bytes());
+    out[14] = 0;
+    out[15] = 0;
+    out[16..18].copy_from_slice(&rep.current_hz.to_le_bytes());
+    out[18] = 0;
+    out[19] = 0;
+    out[20..24].copy_from_slice(&rep.current_period_ns.to_le_bytes());
+    out[24..28].copy_from_slice(&rep.current_phase_ns.to_le_bytes());
+    out[28] = 0;
+    out[29] = 0;
+    out[30] = 0;
+    out[31] = 0;
+    for (i, t) in rep.tiers[..n].iter().enumerate() {
+        let o = PANEL_CAPS_REP_HEAD + i * PANEL_TIER_LEN;
+        out[o..o + 2].copy_from_slice(&t.hz.to_le_bytes());
+        out[o + 2] = t.class;
+        out[o + 3] = 0;
+        out[o + 4..o + 8].copy_from_slice(&t.period_ns.to_le_bytes());
+    }
+    len
+}
+
+/// 解析 PANEL_CAPS 应答：st=ST_OK + 长度恰 = 头 + 8B×n + n ≤ 帽
+///（尾随拒）；model/flags/vrr 前向不校验（未知值透传——add-only 纪律）。
+pub fn parse_panel_caps_rep(buf: &[u8]) -> Option<PanelCapsRep> {
+    if buf.len() < PANEL_CAPS_REP_HEAD || buf[0] != ST_OK {
+        return None;
+    }
+    let n = buf[4] as usize;
+    if n > PANEL_TIERS_MAX || buf.len() != PANEL_CAPS_REP_HEAD + PANEL_TIER_LEN * n {
+        return None;
+    }
+    let mut tiers = [PanelTier { hz: 0, class: 0, period_ns: 0 }; PANEL_TIERS_MAX];
+    for (i, t) in tiers[..n].iter_mut().enumerate() {
+        let o = PANEL_CAPS_REP_HEAD + i * PANEL_TIER_LEN;
+        *t = PanelTier {
+            hz: le16(buf, o)?,
+            class: buf[o + 2],
+            period_ns: le32(buf, o + 4)?,
+        };
+    }
+    Some(PanelCapsRep {
+        version: buf[1],
+        rate_model: buf[2],
+        flags: buf[3],
+        min_hz: le16(buf, 8)?,
+        max_hz: le16(buf, 10)?,
+        granularity_hz: le16(buf, 12)?,
+        vrr: buf[5],
+        current_hz: le16(buf, 16)?,
+        current_period_ns: le32(buf, 20)?,
+        current_phase_ns: le32(buf, 24)?,
+        tiers,
+        n_tiers: buf[4],
+    })
+}
+
 // ---------- wm 域（GUI-5：gui-wmd 窗口守护——权威窗口表 + 命中分发）----------
 //
 // 十组编解码对：GETINFO req/rep、CREATE req/ack、DESTROY req、SET req、
@@ -1954,7 +2116,8 @@ mod tests {
         assert_eq!(RESAMPLE_MIN_DELTA_MS, 2);
         assert_eq!(RESAMPLE_MAX_DELTA_MS, 20);
         assert_eq!(RESAMPLE_MAX_PREDICTION_MS, 8);
-        assert_eq!((VER_PRESENT, VER_INPUT, VER_HDI), (1, 1, 1));
+        // 域版本钉板（hdi v2 = 刀1 OP_PANEL_CAPS——刷新率体系规范 §4-4）。
+        assert_eq!((VER_PRESENT, VER_INPUT, VER_HDI), (1, 1, 2));
         // wm 域帽钉板（GUI-5 §7 Q5——wm const assert 的可见镜像）。
         assert_eq!(WM_WINDOWS_MAX, 15);
         assert_eq!(WM_REQ_MAX, 20);
@@ -2803,6 +2966,83 @@ mod tests {
         tail[..12].copy_from_slice(&buf);
         assert_eq!(parse_commit_req(&tail), None);
         assert_eq!(parse_commit_req(&[OP_PREPARE, 0, 0, 0]), None);
+    }
+
+    #[test]
+    fn panel_caps_req_domain() {
+        let mut buf = [0u8; 8];
+        let n = encode_panel_caps_req(&mut buf);
+        assert_eq!(n, 4);
+        assert_eq!(parse_panel_caps_req(&buf[..n]), Some(()));
+        // 截断 / 尾随 / 错 op。
+        assert_eq!(parse_panel_caps_req(&buf[..3]), None);
+        assert_eq!(parse_panel_caps_req(&[OP_PANEL_CAPS, 0, 0, 0, 0]), None);
+        assert_eq!(parse_panel_caps_req(&[OP_COMMIT, 0, 0, 0]), None);
+    }
+
+    #[test]
+    fn panel_caps_rep_roundtrip_and_rejects() {
+        // Tiered 全表 9 档（规范 §3.1——period_ns = round(1e9/hz) 单源值）。
+        let src = [
+            (30u16, PANEL_CLASS_PRODUCT, 33_333_333u32),
+            (60, PANEL_CLASS_PRODUCT, 16_666_667),
+            (120, PANEL_CLASS_PRODUCT, 8_333_333),
+            (240, PANEL_CLASS_PRODUCT, 4_166_667),
+            (480, PANEL_CLASS_PRODUCT, 2_083_333),
+            (165, PANEL_CLASS_TEST, 6_060_606),
+            (180, PANEL_CLASS_TEST, 5_555_556),
+            (1, PANEL_CLASS_LTPO, 1_000_000_000),
+            (10, PANEL_CLASS_LTPO, 100_000_000),
+        ];
+        let mut tiers = [PanelTier { hz: 0, class: 0, period_ns: 0 }; PANEL_TIERS_MAX];
+        for (i, &(hz, class, p)) in src.iter().enumerate() {
+            tiers[i] = PanelTier { hz, class, period_ns: p };
+        }
+        let rep = PanelCapsRep {
+            version: 1,
+            rate_model: RATE_MODEL_TIERED,
+            flags: 0,
+            min_hz: 1,
+            max_hz: 480,
+            granularity_hz: 0,
+            vrr: PANEL_VRR_NONE,
+            current_hz: 30,
+            current_period_ns: 33_333_333,
+            current_phase_ns: 0,
+            tiers,
+            n_tiers: src.len() as u8,
+        };
+        let mut buf = [0u8; PANEL_CAPS_REP_MAX];
+        let n = encode_panel_caps_rep(&mut buf, &rep);
+        assert_eq!(n, PANEL_CAPS_REP_HEAD + PANEL_TIER_LEN * 9);
+        assert_eq!(parse_panel_caps_rep(&buf[..n]), Some(rep));
+        // FreeRange 形（空档位表 = 头恰 32B；per_frame + vrr capable；
+        // tiers 槽清零——n_tiers 外的槽位解析面恒零，比对同形）。
+        let mut fr = rep;
+        fr.rate_model = RATE_MODEL_FREERANGE;
+        fr.flags = PANEL_FLAG_PER_FRAME | PANEL_FLAG_SELF_REFRESH;
+        fr.granularity_hz = 1;
+        fr.vrr = PANEL_VRR_CAPABLE;
+        fr.n_tiers = 0;
+        fr.tiers = [PanelTier { hz: 0, class: 0, period_ns: 0 }; PANEL_TIERS_MAX];
+        let nf = encode_panel_caps_rep(&mut buf, &fr);
+        assert_eq!(nf, PANEL_CAPS_REP_HEAD);
+        assert_eq!(parse_panel_caps_rep(&buf[..nf]), Some(fr));
+        // st 坏 / n 与长度不符 / n 越帽 / 截断每切点 / 尾随。
+        let mut bad = [0u8; PANEL_CAPS_REP_MAX + 1];
+        bad[..n].copy_from_slice(&buf[..n]);
+        bad[0] = ST_NOENT;
+        assert_eq!(parse_panel_caps_rep(&bad[..n]), None);
+        bad[0] = ST_OK;
+        bad[4] = 8; // n=8 ≠ 实际 9 → 长度错拒
+        assert_eq!(parse_panel_caps_rep(&bad[..n]), None);
+        bad[4] = PANEL_TIERS_MAX as u8 + 1; // 越帽（长度同时不符双拒）
+        assert_eq!(parse_panel_caps_rep(&bad[..PANEL_CAPS_REP_MAX]), None);
+        bad[4] = 9;
+        for cut in 0..n {
+            assert_eq!(parse_panel_caps_rep(&bad[..cut]), None, "截断 @{cut} 应拒");
+        }
+        assert_eq!(parse_panel_caps_rep(&bad[..n + 1]), None);
     }
 
     // ===== 5. 前向兼容锚：保留位解析侧恒不校验 =====

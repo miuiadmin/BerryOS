@@ -41,10 +41,12 @@
 //! 留异步后端刀，永不判弃即合规）；credits = 在途未 RELEASE 别名数 ≤2
 //! （满 → ST_FULL 1B 烘焙线）；「无 damage 不提交」两条 ST_BAD 立法
 //! （K>0∧FULL 同设 / K=0∧无 FULL）；**一切拒收面 close 已随行迁入的
-//! handle**（send 即 take，不 close 即泄漏）。hdi 四 op 退化形：
-//! REG_VBLANK 存 event、VBLANK_WAIT park 到软 vsync 点（SOFT_VSYNC_NS
+//! handle**（send 即 take，不 close 即泄漏）。hdi 五 op 退化形：
+//! REG_VBLANK 存 event、VBLANK_WAIT park 到软 vsync 点（周期查
+//! `mod panel` 档位表——刀1 率通路，旧 SOFT_VSYNC_NS 私常量废除
 //! 合成 ts_ns；已 parked 再来 = ST_BUSY）、PREPARE 槽记账 + 空置 fence、
-//! COMMIT 记账——deadline 到点 = 应答 parked + 信号 event（`1<<32` 用户
+//! COMMIT 记账、PANEL_CAPS 应答档位表与当前档——deadline 到点 = 应答
+//! parked + 信号 event（`1<<32` 用户
 //! 半位——客户端同位等待契约，bsh/bench1 家族默认）。console 路**恒同步
 //! 直写**不变（FULL 纯记账：console_full_n++ + 共享 present_seq 谱系，
 //! 不占 credits 不发 token——误入 vsync 排队呈现 = 文本路 +16.67ms/
@@ -74,8 +76,41 @@ static CRT0_SEED: unsafe extern "C" fn() = berry_libc::berry_crt0_anchor;
 
 // —— 段③ 常量（软 vsync / serve 帽 / 信号位 / 定容帽）——
 
-/// 软 vsync 周期（≈60Hz——ramfb 无真实 vsync，服务端合成时基）。
-const SOFT_VSYNC_NS: u64 = 16_666_666;
+/// 软面板档位表——**全仓周期单源**（刷新率体系规范 §3.4）：period_ns =
+/// round(1e9/hz)，一切 Hz→周期换算查此表，表外禁自算（两件各算各的
+/// 舍入漂移 = 相位劈叉）。class：0=产品 1=测试 2=LTPO（规范 §3.1；
+/// 刀2 起软面板模块为家，本表随迁）。ramfb 无真实 vsync，服务端合成
+/// 时基的周期即查此表（旧 `SOFT_VSYNC_NS` 私常量废除）。
+mod panel {
+    use berry_guiproto as gp;
+
+    /// (hz, period_ns, class)——与规范 §3.1 表逐行钉板（host 侧
+    /// guiproto panel_caps_rep 测试同值镜像）。
+    pub const TIERS: [(u16, u64, u8); 9] = [
+        (30, 33_333_333, gp::PANEL_CLASS_PRODUCT),
+        (60, 16_666_667, gp::PANEL_CLASS_PRODUCT),
+        (120, 8_333_333, gp::PANEL_CLASS_PRODUCT),
+        (240, 4_166_667, gp::PANEL_CLASS_PRODUCT),
+        (480, 2_083_333, gp::PANEL_CLASS_PRODUCT),
+        (165, 6_060_606, gp::PANEL_CLASS_TEST),
+        (180, 5_555_556, gp::PANEL_CLASS_TEST),
+        (1, 1_000_000_000, gp::PANEL_CLASS_LTPO),
+        (10, 100_000_000, gp::PANEL_CLASS_LTPO),
+    ];
+
+    /// boot 率域解析：表内档 → 直取；表外/0 → loud 回退 60 + 诊断行
+    ///（规范 §4-1 语义层校验——值域 = 档位表全集，内核只做语法层）。
+    /// 0 = 旧内核 48B VMO 零页域（add-only 兼容读）→ 同回退 60。
+    pub fn resolve(boot_hz: u16) -> (u16, u64) {
+        for &(hz, p, _) in TIERS.iter() {
+            if hz == boot_hz {
+                return (hz, p);
+            }
+        }
+        eprintln!("guifbd: panel hz={} not in tiers, fallback 60", boot_hz);
+        (60, 16_666_667)
+    }
+}
 /// serve 空闲并等帽：wait_many deadline 外层上界（合法空闲非死线——到点
 /// 重臂续等；真断链面 = recv 非 -EAGAIN 错码，照 trap）。
 const IDLE_CAP_NS: u64 = 10 * 1_000_000_000;
@@ -226,6 +261,10 @@ struct Srv<'a> {
     power_mode: u8,
     // —— hdi 域（软 vsync）——
     vb_seq: u32,
+    /// 软面板当前档（hz + 周期查表单源——`mod panel`；boot 率域经
+    /// `panel::resolve` 语义层校验落值，旧 `SOFT_VSYNC_NS` 私常量废除）。
+    panel_hz: u16,
+    panel_period_ns: u64,
     /// 下次软 vsync 点（`vb_scheduled` 时有效）。
     vb_next_ns: u64,
     /// 有点在案（REG_VBLANK 使能 ∧/∨ VBLANK_WAIT parked——wait_many
@@ -249,7 +288,8 @@ struct Srv<'a> {
 }
 
 impl<'a> Srv<'a> {
-    fn new(con: Fbcon<'a>, w: usize, h: usize, stride: usize, gui: bool) -> Self {
+    fn new(con: Fbcon<'a>, w: usize, h: usize, stride: usize, gui: bool, boot_hz: u16) -> Self {
+        let (panel_hz, panel_period_ns) = panel::resolve(boot_hz);
         Srv {
             con,
             w,
@@ -263,6 +303,8 @@ impl<'a> Srv<'a> {
             vote: (0, 0, 0, 0, 0),
             power_mode: 0,
             vb_seq: 0,
+            panel_hz,
+            panel_period_ns,
             vb_next_ns: 0,
             vb_scheduled: false,
             vb_armed: false,
@@ -281,7 +323,7 @@ impl<'a> Srv<'a> {
     /// 软 vsync 排点（无点在案时；REG_VBLANK 使能 / VBLANK_WAIT park 共用）。
     fn vsync_schedule(&mut self) {
         if !self.vb_scheduled {
-            self.vb_next_ns = now_ns() + SOFT_VSYNC_NS;
+            self.vb_next_ns = now_ns() + self.panel_period_ns;
             self.vb_scheduled = true;
         }
     }
@@ -311,9 +353,9 @@ impl<'a> Srv<'a> {
             let _ = berry_object_signal(self.vb_ev, VBLANK_SIG, VBLANK_SIG);
         }
         self.vb_seq = self.vb_seq.wrapping_add(1);
-        let mut next = point + SOFT_VSYNC_NS;
+        let mut next = point + self.panel_period_ns;
         while next <= t {
-            next += SOFT_VSYNC_NS;
+            next += self.panel_period_ns;
         }
         self.vb_next_ns = next;
         if !self.vb_armed && !self.vb_parked {
@@ -417,14 +459,15 @@ impl<'a> Srv<'a> {
                     st_rep(ch, gp::ST_BAD);
                     return;
                 }
-                // ver 1/1/1（wire 域版本——非本服务覆盖面）；格式面 v1
+                // ver 1/1/2（wire 域版本——非本服务覆盖面；hdi v2 = 刀1
+                // OP_PANEL_CAPS——刷新率体系规范 §4-4）；格式面 v1
                 // 单格式：32bpp RGBX 族（ramfb Bgrx=1，Rgbx 同族）→
                 // FMT_XRGB8888 位——R/B 通道序 v1 wire 不建模（gfxdemo
                 // 同源 Bgrx 构造，直拷零转换）；max_credits = 帽真值。
                 let rep = gp::GetinfoRep {
                     version_present: 1,
                     version_input: 1,
-                    version_hdi: 1,
+                    version_hdi: gp::VER_HDI,
                     format_bits: gp::FMT_XRGB8888,
                     display_w: self.w as u32,
                     display_h: self.h as u32,
@@ -747,6 +790,49 @@ impl<'a> Srv<'a> {
                     }
                 }
             }
+            // 刀1 率通路（§4-4）：面板能力宣告——档位表全量（Tiered 形态；
+            // FreeRange 宣告归刀2 软面板件）+ 当前档（boot 率域经
+            // panel::resolve 落值）。无随行 handle、无副作用。
+            Some(&gp::OP_PANEL_CAPS) if gp::parse_panel_caps_req(msg).is_some() => {
+                if !hs.is_empty() {
+                    close_all(hs);
+                    st_rep(ch, gp::ST_BAD);
+                    return;
+                }
+                let mut tiers = [gp::PanelTier { hz: 0, class: 0, period_ns: 0 };
+                    gp::PANEL_TIERS_MAX];
+                for (i, &(hz, p, class)) in panel::TIERS.iter().enumerate() {
+                    tiers[i] = gp::PanelTier {
+                        hz,
+                        class,
+                        period_ns: p as u32,
+                    };
+                }
+                // min/max = 档位表首尾语义（§4-4）——TIERS 声明序非升序
+                //（产品→测试→LTPO），min/max 取全表极值。
+                let (mut min_hz, mut max_hz) = (u16::MAX, 0u16);
+                for &(hz, _, _) in panel::TIERS.iter() {
+                    min_hz = min_hz.min(hz);
+                    max_hz = max_hz.max(hz);
+                }
+                let rep = gp::PanelCapsRep {
+                    version: 1,
+                    rate_model: gp::RATE_MODEL_TIERED,
+                    flags: 0,
+                    min_hz,
+                    max_hz,
+                    granularity_hz: 0,
+                    vrr: gp::PANEL_VRR_NONE,
+                    current_hz: self.panel_hz,
+                    current_period_ns: self.panel_period_ns as u32,
+                    current_phase_ns: 0,
+                    tiers,
+                    n_tiers: panel::TIERS.len() as u8,
+                };
+                let mut out = [0u8; gp::PANEL_CAPS_REP_MAX];
+                let n = gp::encode_panel_caps_rep(&mut out, &rep);
+                send_rep(ch, &out[..n]);
+            }
             _ => {
                 close_all(hs);
                 st_rep(ch, gp::ST_BAD);
@@ -817,14 +903,15 @@ impl<'a> Srv<'a> {
 }
 
 fn main() {
-    // 几何 info VMO（boot 48B 六域 u64 LE：fb_pa/w/h/stride/fmt/gui）。
+    // 几何 info VMO（boot 56B 七域 u64 LE：fb_pa/w/h/stride/fmt/gui/
+    // refresh_hz——第 7 域 = 刀1 率通路尾插）。
     let h: Handle = gift2_h();
     if h == 0 {
         // svcmgr 探测门后恒随行 info——理论不可达；eprintln loud 兜底。
         eprintln!("guifbd: no fbinfo gift");
         berry_libc::park();
     }
-    let mut info = [0u8; 48];
+    let mut info = [0u8; 56];
     if berry_vmo_read(h, info.as_mut_ptr(), 0, info.len()) != 0 {
         eprintln!("guifbd: fbinfo read failed");
         berry_libc::park();
@@ -836,6 +923,9 @@ fn main() {
     let fmt_raw = (rd(4) as u64 & 0xFFFF_FFFF) as u32;
     // 第 6 域 = GUI 模式（旧内核只写 40B → 该域读 0 = 兼容旧行为）。
     let gui = rd(5) != 0;
+    // 第 7 域 = 刷新率（旧内核 48B → 零页域读 0；语义层校验/回退在
+    // `panel::resolve`——0 与表外值同路 loud 回退 60，规范 §4-1/§4-2）。
+    let boot_hz = rd(6) as u16;
     // QEMU ramfb fmt=1 = DRM_FORMAT_XRGB8888（LE 内存 B,G,R,X）。本仓
     // `PixelFormat::Rgbx.pack` 才落该字节序；历史 `Bgrx` 映射把 R/B 互换，
     // 桌面蓝灰显示成土棕（截图实证）。只改显示契约映射。
@@ -929,7 +1019,7 @@ fn main() {
         eprintln!("guifbd: no fb pipe gift");
         berry_libc::park();
     }
-    let mut srv = Srv::new(con, w, h, stride, gui);
+    let mut srv = Srv::new(con, w, h, stride, gui, boot_hz);
     // —— 三路 serve：present→hdi→console 确定性轮询；全 EAGAIN 才
     // wait_many n=3 并等。deadline = min(下次软 vsync 点, now+10s) **进
     // 调用本身**（A1-a——醒来后补查不够：parked 最长迟答 10s 且 smoke
