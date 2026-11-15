@@ -1,0 +1,44 @@
+[package]
+name = "contacts"
+# L-SYS 0.2.0：字面版本不走 workspace 继承（musl 链独立小工作区，版本治理
+# 规则/14；user/bins 同批同值——settings/appstub/gfxdemo/berry-launcher 同款）。
+# 升版 = 逐 crate 手同步。
+version = "0.2.0"
+edition = "2021"
+# 波 4 第三件（.agents/plans/2026-11-15-波4预制应用翻新实施设计.md §2.3；
+# worktree 根 W4-RECON.md §四 Contacts 行）：CONTACTS 真 GUI 应用——
+# appstub 秒退壳的翻新。v1 面态数据四件：列表（ListItem 头像位+姓名+
+# 号码）→ 详情 NavHost push/pop、Call → 「Calling...」瞬态行（appshell
+# Toast 的 v1 降解）、Star 收藏过滤（Seg All/Starred）、拨号无 modem 仅
+# UI 反馈（诚实边界）。数据 v1 内置静态 10 条（CONTACTS.JSN 持久化挂
+# appshell::conf 落地后——3b 依赖，见 W4-IMPL-CONTACTS.md 差异清单）。
+#
+# 链与形态 = settings 垂直切片镜像（9035af061 先例；berry-launcher 同源
+# 食谱）：独立小工作区（空 [workspace] escape user 根）+ musl target +
+# berry-libc shim + berry-ld 链（构建行 = justfile APPTOMB 段 RUSTFLAGS
+# 形，接线归波 4 打包批——本 crate 不动 justfile）。与任务书草签
+# Cargo.toml 的三处偏差沿用 settings 先例裁定（字面 version / +berry-libc
+# / +berry-guiproto，详见 settings/Cargo.toml 注记）。
+#
+# 组件面消费 berry-ui pattern.rs 27 公开面位的首批真实消费者之一
+#（W4-RECON §二）：list_item/seg/app_bar/stack/spacer/NavHost/ItemState
+# 五态表；卡片/条目/按压三面零手拼（主树等价面 = pattern 配方 + theme
+# token + ItemState 预混表，theme 样式族移植后随迁——W4-RECON §二末段
+# 裁定「用 ItemState 面」）。
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+berry-sys = { path = "../../berry-sys" }
+berry-guiproto = { path = "../../berry-guiproto" }
+berry-ui = { path = "../../berry-ui" }
+berry-gfx = { path = "../../berry-gfx" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
