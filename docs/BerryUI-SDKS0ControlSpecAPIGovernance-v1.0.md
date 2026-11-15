@@ -224,7 +224,7 @@ experimental 可以调整，但必须保持规格与账本同批更新
 | `berry_ui::sdk::SNAP_DUR_NS` | const | TRI-CONTROLS-5 | in-tree | stable | `docs/BerryUI-TriPlatformControls-v1.7.md` |
 | `berry_ui::sdk::SWIPE_PAGES_MAX` | const | TRI-CONTROLS-5 | in-tree | stable | `docs/BerryUI-TriPlatformControls-v1.7.md` |
 | `berry_ui::sdk::SafeInsets` | type | TRI-CONTROLS-1 | in-tree | stable | `docs/BerryUI-TriPlatformControls-v1.7.md` |
-| `berry_ui::sdk::Scaffold` | type | F4 | in-tree | stable | `docs/BerryUI-F4组件第一版-v1.1.md` |
+| `berry_ui::sdk::Scaffold` | type | F4 | in-tree | stable | `docs/BerryUI-TriPlatformControls-v1.12.md` |
 | `berry_ui::sdk::ScrollView` | type | F4 | in-tree | stable | `docs/BerryUI-F4组件第一版-v1.1.md` |
 | `berry_ui::sdk::ScrollViewAxis` | type | TRI-CONTROLS-4 | in-tree | stable | `docs/BerryUI-TriPlatformControls-v1.7.md` |
 | `berry_ui::sdk::SearchField` | type | TRI-CONTROLS-3 | in-tree | stable | `docs/BerryUI-TriPlatformControls-v1.7.md` |

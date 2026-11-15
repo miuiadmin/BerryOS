@@ -1647,7 +1647,7 @@ channel = "in-tree"
 capability = "none"
 owner = "berry-ui"
 stability = "stable"
-spec = "docs/BerryUI-F4组件第一版-v1.1.md"
+spec = "docs/BerryUI-TriPlatformControls-v1.12.md"
 breaking = []
 
 [[item]]

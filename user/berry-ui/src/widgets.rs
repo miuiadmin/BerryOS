@@ -86,12 +86,16 @@ fn add<const N: usize>(
     ui.add(parent, spec)
 }
 
-/// Scaffold： AppBar + 可滚动/可放置内容的页面骨架。
+/// Scaffold： AppBar + body + 可选 bottom 栏槽的页面骨架。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Scaffold {
     pub root: NodeId,
     pub app_bar: AppBar,
     pub body: NodeId,
+    /// Fixed-height slot above `safe_bottom`. The app owns its content and
+    /// selected state; Scaffold owns only safe-area geometry.
+    pub bottom: Option<NodeId>,
+    body_h: u32,
 }
 
 impl Scaffold {
@@ -106,73 +110,21 @@ impl Scaffold {
         ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, title: &[u8],
         safe_top: u32, safe_bottom: u32,
     ) -> Result<Self, UiError> {
-        let root = add(
-            ui,
-            parent,
-            ViewSpec {
-                kind: ViewKind::Col,
-                key: 0,
-                props: Props::Col(ColProps {
-                    gap: 0,
-                    w: None,
-                    h: None,
-                    cross: CrossAlign::Stretch,
-                }),
-            },
-        )?;
-        if safe_top != 0 {
-            add(
-                ui,
-                root,
-                ViewSpec {
-                    kind: ViewKind::Col,
-                    key: 0,
-                    props: Props::Col(ColProps {
-                        gap: 0,
-                        w: None,
-                        h: Some(safe_top),
-                        cross: CrossAlign::Stretch,
-                    }),
-                },
-            )?;
-        }
-        let app_bar = AppBar::light(ui, root, ctx, title)?;
-        let (_, viewport_h) = ui.viewport();
-        let body_h = viewport_h
-            .saturating_sub(safe_top)
-            .saturating_sub(app_bar.instance_height(ctx))
-            .saturating_sub(safe_bottom);
-        let body = add(
-            ui,
-            root,
-            ViewSpec {
-                kind: ViewKind::Col,
-                key: 0,
-                props: Props::Col(ColProps {
-                    gap: 0,
-                    w: None,
-                    h: Some(body_h),
-                    cross: CrossAlign::Stretch,
-                }),
-            },
-        )?;
-        if safe_bottom != 0 {
-            add(
-                ui,
-                root,
-                ViewSpec {
-                    kind: ViewKind::Col,
-                    key: 0,
-                    props: Props::Col(ColProps {
-                        gap: 0,
-                        w: None,
-                        h: Some(safe_bottom),
-                        cross: CrossAlign::Stretch,
-                    }),
-                },
-            )?;
-        }
-        Ok(Self { root, app_bar, body })
+        Self::safe_shell(
+            ui, parent, ctx, title, None, None, false, None, safe_top,
+            safe_bottom,
+        )
+    }
+
+    /// Light title-only shell with a fixed-height bottom bar slot.
+    pub fn new_light_bottom_safe<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, title: &[u8],
+        bottom_h: u32, safe_top: u32, safe_bottom: u32,
+    ) -> Result<Self, UiError> {
+        Self::safe_shell(
+            ui, parent, ctx, title, None, None, false, Some(bottom_h),
+            safe_top, safe_bottom,
+        )
     }
 
     /// Large-title scaffold with explicit system insets. This is the static
@@ -182,81 +134,10 @@ impl Scaffold {
         subtitle: &[u8], back_icon: u16, active_icon: u16, safe_top: u32,
         safe_bottom: u32,
     ) -> Result<Self, UiError> {
-        let root = add(
-            ui,
-            parent,
-            ViewSpec {
-                kind: ViewKind::Col,
-                key: 0,
-                props: Props::Col(ColProps {
-                    gap: 0,
-                    w: None,
-                    h: None,
-                    cross: CrossAlign::Stretch,
-                }),
-            },
-        )?;
-        if safe_top != 0 {
-            add(
-                ui,
-                root,
-                ViewSpec {
-                    kind: ViewKind::Col,
-                    key: 0,
-                    props: Props::Col(ColProps {
-                        gap: 0,
-                        w: None,
-                        h: Some(safe_top),
-                        cross: CrossAlign::Stretch,
-                    }),
-                },
-            )?;
-        }
-        let has_subtitle = !subtitle.is_empty();
-        let app_bar = AppBar::large(
-            ui,
-            root,
-            ctx,
-            title,
-            (has_subtitle).then_some(subtitle),
-            Some((back_icon, active_icon)),
-        )?;
-        let (_, viewport_h) = ui.viewport();
-        let body_h = viewport_h
-            .saturating_sub(safe_top)
-            .saturating_sub(app_bar.instance_height(ctx))
-            .saturating_sub(safe_bottom);
-        let body = add(
-            ui,
-            root,
-            ViewSpec {
-                kind: ViewKind::Col,
-                key: 0,
-                props: Props::Col(ColProps {
-                    gap: 0,
-                    w: None,
-                    h: Some(body_h),
-                    cross: CrossAlign::Stretch,
-                }),
-            },
-        )?;
-        if safe_bottom != 0 {
-            add(
-                ui,
-                root,
-                ViewSpec {
-                    kind: ViewKind::Col,
-                    key: 0,
-                    props: Props::Col(ColProps {
-                        gap: 0,
-                        w: None,
-                        h: Some(safe_bottom),
-                        cross: CrossAlign::Stretch,
-                    }),
-                },
-            )?;
-        }
-        Ok(Self { root, app_bar, body })
+        Self::safe_shell(
+            ui, parent, ctx, title, Some(subtitle),
+            Some((back_icon, active_icon)), true, None, safe_top, safe_bottom,
+        )
     }
 
     /// 带真实导航返回按钮的页面骨架。按钮像素由 app 的 IconSource 供给；
@@ -277,6 +158,39 @@ impl Scaffold {
         ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, title: &[u8],
         back_icon: u16, active_icon: u16, safe_top: u32, safe_bottom: u32,
     ) -> Result<Self, UiError> {
+        Self::safe_shell(
+            ui, parent, ctx, title, None, Some((back_icon, active_icon)),
+            false, None, safe_top, safe_bottom,
+        )
+    }
+
+    /// Modern back shell with a fixed-height bottom bar slot above the system
+    /// navigation reserve. `bottom_h` must not be folded into `safe_bottom`.
+    pub fn with_back_bottom_safe<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, title: &[u8],
+        back_icon: u16, active_icon: u16, bottom_h: u32, safe_top: u32,
+        safe_bottom: u32,
+    ) -> Result<Self, UiError> {
+        Self::safe_shell(
+            ui, parent, ctx, title, None, Some((back_icon, active_icon)),
+            false, Some(bottom_h), safe_top, safe_bottom,
+        )
+    }
+
+    /// Body height frozen at construction. A viewport resize requires a full
+    /// page rebuild; this is not a second layout truth.
+    pub const fn body_height(&self) -> u32 {
+        self.body_h
+    }
+
+    fn safe_shell<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, title: &[u8],
+        subtitle: Option<&[u8]>, back_icon: Option<(u16, u16)>, large: bool,
+        bottom_h: Option<u32>, safe_top: u32, safe_bottom: u32,
+    ) -> Result<Self, UiError> {
+        if bottom_h == Some(0) {
+            return Err(UiError::NodeBad);
+        }
         let root = add(
             ui,
             parent,
@@ -307,17 +221,18 @@ impl Scaffold {
                 },
             )?;
         }
-        let app_bar = AppBar::build(
-            ui,
-            root,
-            ctx,
-            title,
-            Some((back_icon, active_icon)),
-        )?;
+        let app_bar = if large {
+            AppBar::large(ui, root, ctx, title, subtitle, back_icon)?
+        } else if let Some((back_icon, active_icon)) = back_icon {
+            AppBar::build(ui, root, ctx, title, Some((back_icon, active_icon)))?
+        } else {
+            AppBar::light(ui, root, ctx, title)?
+        };
         let (_, viewport_h) = ui.viewport();
         let body_h = viewport_h
             .saturating_sub(safe_top)
             .saturating_sub(app_bar.instance_height(ctx))
+            .saturating_sub(bottom_h.unwrap_or(0))
             .saturating_sub(safe_bottom);
         let body = add(
             ui,
@@ -333,6 +248,23 @@ impl Scaffold {
                 }),
             },
         )?;
+        let bottom = match bottom_h {
+            Some(height) => Some(add(
+                ui,
+                root,
+                ViewSpec {
+                    kind: ViewKind::Col,
+                    key: 0,
+                    props: Props::Col(ColProps {
+                        gap: 0,
+                        w: None,
+                        h: Some(height),
+                        cross: CrossAlign::Stretch,
+                    }),
+                },
+            )?),
+            None => None,
+        };
         if safe_bottom != 0 {
             add(
                 ui,
@@ -349,7 +281,7 @@ impl Scaffold {
                 },
             )?;
         }
-        Ok(Self { root, app_bar, body })
+        Ok(Self { root, app_bar, body, bottom, body_h })
     }
 
     fn build<const N: usize>(
@@ -387,7 +319,7 @@ impl Scaffold {
                 }),
             },
         )?;
-        Ok(Self { root, app_bar, body })
+        Ok(Self { root, app_bar, body, bottom: None, body_h })
     }
 }
 

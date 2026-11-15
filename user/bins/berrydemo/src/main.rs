@@ -431,24 +431,44 @@ fn build_bottom_tabs<const N: usize>(
 
 fn page_body(
     ui: &mut Ui192,
-    scaffold_body: NodeId,
     ctx: &WidgetContext,
-    viewport_h: u32,
+    kind: u8,
     safe_top: u32,
     safe_bottom: u32,
-    app_bar_h: u32,
-    kind: u8,
-) -> (ScrollView, Tabs) {
-    let body = column(ui, scaffold_body, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
-    let scroll_h = viewport_h
-        .saturating_sub(safe_top)
-        .saturating_sub(app_bar_h)
-        .saturating_sub(safe_bottom)
-        .saturating_sub(bottom_tab_height(ctx));
-    let scroll = ScrollView::new(ui, body, ctx, scroll_h)
+) -> (Scaffold, ScrollView, Tabs) {
+    let root = ui.root();
+    let bottom_h = bottom_tab_height(ctx);
+    let scaffold = if kind == PAGE_HOME {
+        Scaffold::new_light_bottom_safe(
+            ui,
+            root,
+            ctx,
+            page_title(kind),
+            bottom_h,
+            safe_top,
+            safe_bottom,
+        )
+    } else {
+        Scaffold::with_back_bottom_safe(
+            ui,
+            root,
+            ctx,
+            page_title(kind),
+            NAV_ICON_BACK,
+            NAV_ICON_BACK_ACTIVE,
+            bottom_h,
+            safe_top,
+            safe_bottom,
+        )
+    }
+    .unwrap_or_else(|_| berry_room::panic_exit(134));
+    let scroll = ScrollView::new(ui, scaffold.body, ctx, scaffold.body_height())
         .unwrap_or_else(|_| berry_room::panic_exit(134));
-    let tabs = build_bottom_tabs(ui, body, ctx, kind);
-    (scroll, tabs)
+    let bottom = scaffold
+        .bottom
+        .unwrap_or_else(|| berry_room::panic_exit(134));
+    let tabs = build_bottom_tabs(ui, bottom, ctx, kind);
+    (scaffold, scroll, tabs)
 }
 
 fn page_title(kind: u8) -> &'static [u8] {
@@ -465,26 +485,12 @@ fn page_title(kind: u8) -> &'static [u8] {
 fn build_home(
     ui: &mut Ui192, ctx: &WidgetContext, safe_top: u32, safe_bottom: u32,
 ) -> HomePage {
-    let root = ui.root();
-    let scaffold = Scaffold::new_light_safe(
+    let (scaffold, scroll, tabs) = page_body(
         ui,
-        root,
         ctx,
-        page_title(PAGE_HOME),
-        safe_top,
-        safe_bottom,
-    )
-    .unwrap_or_else(|_| berry_room::panic_exit(134));
-    let (_, viewport_h) = ui.viewport();
-    let (scroll, tabs) = page_body(
-        ui,
-        scaffold.body,
-        ctx,
-        viewport_h,
-        safe_top,
-        safe_bottom,
-        scaffold.app_bar.instance_height(ctx),
         PAGE_HOME,
+        safe_top,
+        safe_bottom,
     );
     let card = Card::new(ui, scroll.content, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
     let stack = column(ui, card.panel, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
@@ -575,33 +581,17 @@ fn build_widgets(
     ui: &mut Ui192, ctx: &WidgetContext, clicks: u32, switch_on: bool, safe_top: u32,
     safe_bottom: u32,
 ) -> WidgetsPage {
-    let root = ui.root();
-    let scaffold = Scaffold::with_back_safe(
+    let (scaffold, scroll, tabs) = page_body(
         ui,
-        root,
         ctx,
-        page_title(PAGE_WIDGETS),
-        NAV_ICON_BACK,
-        NAV_ICON_BACK_ACTIVE,
+        PAGE_WIDGETS,
         safe_top,
         safe_bottom,
-    )
-        .unwrap_or_else(|_| berry_room::panic_exit(134));
+    );
     let app_back = scaffold
         .app_bar
         .back
         .unwrap_or_else(|| berry_room::panic_exit(134));
-    let (_, viewport_h) = ui.viewport();
-    let (scroll, tabs) = page_body(
-        ui,
-        scaffold.body,
-        ctx,
-        viewport_h,
-        safe_top,
-        safe_bottom,
-        scaffold.app_bar.instance_height(ctx),
-        PAGE_WIDGETS,
-    );
     let card = Card::new(ui, scroll.content, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
     let stack = column(ui, card.panel, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
 
@@ -719,33 +709,17 @@ fn build_widgets(
 fn build_input(
     ui: &mut Ui192, ctx: &WidgetContext, safe_top: u32, safe_bottom: u32,
 ) -> InputPage {
-    let root = ui.root();
-    let scaffold = Scaffold::with_back_safe(
+    let (scaffold, scroll, tabs) = page_body(
         ui,
-        root,
         ctx,
-        page_title(PAGE_INPUT),
-        NAV_ICON_BACK,
-        NAV_ICON_BACK_ACTIVE,
+        PAGE_INPUT,
         safe_top,
         safe_bottom,
-    )
-        .unwrap_or_else(|_| berry_room::panic_exit(134));
+    );
     let app_back = scaffold
         .app_bar
         .back
         .unwrap_or_else(|| berry_room::panic_exit(134));
-    let (_, viewport_h) = ui.viewport();
-    let (scroll, tabs) = page_body(
-        ui,
-        scaffold.body,
-        ctx,
-        viewport_h,
-        safe_top,
-        safe_bottom,
-        scaffold.app_bar.instance_height(ctx),
-        PAGE_INPUT,
-    );
     let card = Card::new(ui, scroll.content, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
     let stack = column(ui, card.panel, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
 
@@ -826,33 +800,17 @@ fn build_list(
     ui: &mut Ui192, ctx: &WidgetContext, selected: u8, empty: bool, safe_top: u32,
     safe_bottom: u32,
 ) -> ListPage {
-    let root = ui.root();
-    let scaffold = Scaffold::with_back_safe(
+    let (scaffold, scroll, tabs) = page_body(
         ui,
-        root,
         ctx,
-        page_title(PAGE_LIST),
-        NAV_ICON_BACK,
-        NAV_ICON_BACK_ACTIVE,
+        PAGE_LIST,
         safe_top,
         safe_bottom,
-    )
-        .unwrap_or_else(|_| berry_room::panic_exit(134));
+    );
     let app_back = scaffold
         .app_bar
         .back
         .unwrap_or_else(|| berry_room::panic_exit(134));
-    let (_, viewport_h) = ui.viewport();
-    let (scroll, tabs) = page_body(
-        ui,
-        scaffold.body,
-        ctx,
-        viewport_h,
-        safe_top,
-        safe_bottom,
-        scaffold.app_bar.instance_height(ctx),
-        PAGE_LIST,
-    );
     let card = Card::new(ui, scroll.content, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
     let stack = column(ui, card.panel, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
 
@@ -932,18 +890,13 @@ fn build_list(
 fn build_theme(
     ui: &mut Ui192, ctx: &WidgetContext, safe_top: u32, safe_bottom: u32,
 ) -> ThemePage {
-    let root = ui.root();
-    let scaffold = Scaffold::with_back_safe(
+    let (scaffold, scroll, tabs) = page_body(
         ui,
-        root,
         ctx,
-        page_title(PAGE_THEME),
-        NAV_ICON_BACK,
-        NAV_ICON_BACK_ACTIVE,
+        PAGE_THEME,
         safe_top,
         safe_bottom,
-    )
-        .unwrap_or_else(|_| berry_room::panic_exit(134));
+    );
     let app_back = scaffold
         .app_bar
         .back
@@ -959,17 +912,6 @@ fn build_theme(
         false,
     )
     .unwrap_or_else(|_| berry_room::panic_exit(134));
-    let (_, viewport_h) = ui.viewport();
-    let (scroll, tabs) = page_body(
-        ui,
-        scaffold.body,
-        ctx,
-        viewport_h,
-        safe_top,
-        safe_bottom,
-        scaffold.app_bar.instance_height(ctx),
-        PAGE_THEME,
-    );
     let card = Card::new(ui, scroll.content, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
     let stack = column(ui, card.panel, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
 
@@ -1022,33 +964,17 @@ fn build_theme(
 fn build_system(
     ui: &mut Ui192, ctx: &WidgetContext, frame_seq: u32, safe_top: u32, safe_bottom: u32,
 ) -> SystemPage {
-    let root = ui.root();
-    let scaffold = Scaffold::with_back_safe(
+    let (scaffold, scroll, tabs) = page_body(
         ui,
-        root,
         ctx,
-        page_title(PAGE_SYSTEM),
-        NAV_ICON_BACK,
-        NAV_ICON_BACK_ACTIVE,
+        PAGE_SYSTEM,
         safe_top,
         safe_bottom,
-    )
-        .unwrap_or_else(|_| berry_room::panic_exit(134));
+    );
     let app_back = scaffold
         .app_bar
         .back
         .unwrap_or_else(|| berry_room::panic_exit(134));
-    let (_, viewport_h) = ui.viewport();
-    let (scroll, tabs) = page_body(
-        ui,
-        scaffold.body,
-        ctx,
-        viewport_h,
-        safe_top,
-        safe_bottom,
-        scaffold.app_bar.instance_height(ctx),
-        PAGE_SYSTEM,
-    );
     let card = Card::new(ui, scroll.content, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
     let stack = column(ui, card.panel, ctx).unwrap_or_else(|_| berry_room::panic_exit(134));
 

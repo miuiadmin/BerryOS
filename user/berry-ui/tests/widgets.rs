@@ -424,6 +424,130 @@ fn safe_navigation_shell_reserves_product_system_bars() {
 }
 
 #[test]
+fn scaffold_bottom_slot_pins_product_geometry_and_rejects_zero() {
+    let mut ui = Ui::<96>::new(1080, 1920);
+    let context = ctx(1080, 1920);
+    let root = ui.root();
+    let bottom_h = context.metrics.effective_px(144);
+    let scaffold = Scaffold::with_back_bottom_safe(
+        &mut ui,
+        root,
+        &context,
+        b"Inputs",
+        103,
+        104,
+        bottom_h,
+        117,
+        108,
+    )
+    .unwrap();
+    ui.layout();
+    assert_eq!(
+        ui.bounds(scaffold.app_bar.panel).unwrap(),
+        RectI::new(0, 117, 1080, 168)
+    );
+    assert_eq!(
+        ui.bounds(scaffold.body).unwrap(),
+        RectI::new(0, 285, 1080, 1419)
+    );
+    assert_eq!(scaffold.body_height(), 1419);
+    let bottom_node = scaffold.bottom.expect("bottom slot is built");
+    assert_eq!(
+        ui.bounds(bottom_node).unwrap(),
+        RectI::new(0, 1704, 1080, 108),
+        "bottom slot ends exactly at the system navigation reserve"
+    );
+    assert!(scaffold.app_bar.back.is_some());
+
+    let items = [
+        TabItemSpec { label: b"Home", icon: None },
+        TabItemSpec { label: b"Apps", icon: None },
+        TabItemSpec { label: b"System", icon: None },
+    ];
+    let tabs = Tabs::new(
+        &mut ui,
+        bottom_node,
+        &context,
+        TabBarStyle::Bottom,
+        &items,
+        0,
+    )
+    .unwrap();
+    let scroll = ScrollView::new(
+        &mut ui,
+        scaffold.body,
+        &context,
+        scaffold.body_height(),
+    )
+    .unwrap();
+    ui.layout();
+    assert_eq!(ui.bounds(tabs.panel).unwrap(), ui.bounds(bottom_node).unwrap());
+    assert_eq!(ui.bounds(scroll.panel).unwrap(), ui.bounds(scaffold.body).unwrap());
+
+    let light = Scaffold::new_light_bottom_safe(
+        &mut ui,
+        root,
+        &context,
+        b"Gallery",
+        bottom_h,
+        117,
+        108,
+    )
+    .unwrap();
+    ui.layout();
+    assert_eq!(
+        ui.bounds(light.bottom.unwrap()).unwrap(),
+        RectI::new(0, 1704, 1080, 108)
+    );
+    assert!(light.app_bar.back.is_none());
+
+    assert_eq!(
+        Scaffold::with_back_bottom_safe(
+            &mut ui,
+            root,
+            &context,
+            b"Bad",
+            103,
+            104,
+            0,
+            117,
+            108
+        ),
+        Err(UiError::NodeBad)
+    );
+    assert_eq!(
+        Scaffold::new_light_bottom_safe(
+            &mut ui,
+            root,
+            &context,
+            b"Bad",
+            0,
+            117,
+            108
+        ),
+        Err(UiError::NodeBad)
+    );
+
+    // Oversized insets saturate to zero instead of panicking or underflowing.
+    let mut compact = Ui::<32>::new(800, 600);
+    let compact_context = ctx(800, 600);
+    let compact_root = compact.root();
+    let saturated = Scaffold::new_light_bottom_safe(
+        &mut compact,
+        compact_root,
+        &compact_context,
+        b"Saturated",
+        80,
+        500,
+        400,
+    )
+    .unwrap();
+    compact.layout();
+    assert_eq!(saturated.body_height(), 0);
+    assert!(saturated.bottom.is_some());
+}
+
+#[test]
 fn p1_selection_chips_badges_pickers_and_search_controls() {
     let context = ctx(1080, 1920);
 
