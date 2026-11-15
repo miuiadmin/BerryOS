@@ -113,6 +113,14 @@ pub const INPUT_PLACEHOLDER: Color = Color { r: 0x9E, g: 0x9E, b: 0x9E };
 const INPUT_CARET_W: i32 = 2;
 /// Canvas 自绘面底（占位棋盘格浅色）。
 pub const CANVAS_BG: Color = Color { r: 0xEE, g: 0xEE, b: 0xEE };
+/// Refresh 指示条色（ACCENT 同源）。
+pub const REFRESH_BAR: Color = Color { r: 0x19, g: 0x76, b: 0xD2 };
+/// SwipeItem 动作缘带底（警示红系——BadGE 同源）。
+pub const SWIPE_ACTION_BG: Color = Color { r: 0xD9, g: 0x2B, b: 0x2B };
+/// DatePick/TimePick 框底。
+pub const PICK_BG: Color = Color { r: 0xFF, g: 0xFF, b: 0xFF };
+/// DatePick/TimePick 框边。
+pub const PICK_BORDER: Color = Color { r: 0x66, g: 0x66, b: 0x66 };
 /// pressed 视觉活动集（波2 批 A：press_map active 条目的 visual 槽值
 /// 快照——emit 期查表换暗色底；容量 = PRESS_MAP_MAX 同源上界，调用方
 /// 保证不超）。
@@ -418,7 +426,11 @@ fn cull_walk(
         | ViewKind::Select
         | ViewKind::Input
         | ViewKind::Edit
-        | ViewKind::Canvas => {}
+        | ViewKind::Canvas
+        | ViewKind::Refresh
+        | ViewKind::SwipeItem
+        | ViewKind::DatePick
+        | ViewKind::TimePick => {}
         ViewKind::Root
         | ViewKind::Col
         | ViewKind::Row
@@ -428,14 +440,6 @@ fn cull_walk(
         | ViewKind::List
         | ViewKind::Stack
         | ViewKind::Spacer
-        | ViewKind::Select
-        | ViewKind::Input
-        | ViewKind::Edit
-        | ViewKind::Canvas
-        | ViewKind::Refresh
-        | ViewKind::SwipeItem
-        | ViewKind::DatePick
-        | ViewKind::TimePick
         | ViewKind::Gauge
         | ViewKind::Qr
         | ViewKind::DragReorder => return,
@@ -519,7 +523,11 @@ fn emit_walk_all<'a>(
         | ViewKind::Select
         | ViewKind::Input
         | ViewKind::Edit
-        | ViewKind::Canvas => {
+        | ViewKind::Canvas
+        | ViewKind::Refresh
+        | ViewKind::SwipeItem
+        | ViewKind::DatePick
+        | ViewKind::TimePick => {
             let b = RectI::new(i64_to_i32_sat(bx), i64_to_i32_sat(by), n.w, n.h);
             if b.intersect(d).is_empty() {
                 rep.culled += 1; // damage 外叶子
@@ -536,14 +544,6 @@ fn emit_walk_all<'a>(
         | ViewKind::List
         | ViewKind::Stack
         | ViewKind::Spacer
-        | ViewKind::Select
-        | ViewKind::Input
-        | ViewKind::Edit
-        | ViewKind::Canvas
-        | ViewKind::Refresh
-        | ViewKind::SwipeItem
-        | ViewKind::DatePick
-        | ViewKind::TimePick
         | ViewKind::Gauge
         | ViewKind::Qr
         | ViewKind::DragReorder => {}
@@ -1076,6 +1076,69 @@ fn emit_node<'a>(
         }
         Props::Canvas(_) => {
             fill(enc, b.x, b.y, b.w, b.h, CANVAS_BG, rep);
+        }
+        // 波2 批 E（Refresh/SwipeItem/DatePick/TimePick）：Refresh = 包裹
+        // 容器 + 顶缘拉动指示条（offset permille → 帽 32px 高比例；子仍
+        // 各自发射）；SwipeItem = 行项 + 两端动作缘带（reveal permille →
+        // 24px 帽宽比例）；DatePick/TimePick = 白底框 + 数字显示（YYYY-
+        // MM-DD / HH:MM——ASCII；滚轮交互挂波3/波4 消费面）。
+        Props::Refresh(p) => {
+            let h = (b.h.min(32) as i64 * p.offset.min(crate::PERMILLE_MAX) as i64
+                / crate::PERMILLE_MAX as i64) as i32;
+            if h > 0 {
+                fill(enc, b.x, b.y, b.w, h, REFRESH_BAR, rep);
+            }
+        }
+        Props::SwipeItem(p) => {
+            let ws = (b.w.min(96) as i64 * p.reveal_start.min(crate::PERMILLE_MAX) as i64
+                / crate::PERMILLE_MAX as i64) as i32;
+            let we = (b.w.min(96) as i64 * p.reveal_end.min(crate::PERMILLE_MAX) as i64
+                / crate::PERMILLE_MAX as i64) as i32;
+            if ws > 0 {
+                fill(enc, b.x, b.y, ws, b.h, SWIPE_ACTION_BG, rep);
+            }
+            if we > 0 {
+                fill(enc, b.x + b.w - we, b.y, we, b.h, SWIPE_ACTION_BG, rep);
+            }
+        }
+        Props::DatePick(p) => {
+            let t = BUTTON_BORDER.max(1);
+            fill(enc, b.x, b.y, b.w, t, PICK_BORDER, rep);
+            fill(enc, b.x, b.y + b.h - t, b.w, t, PICK_BORDER, rep);
+            fill(enc, b.x, b.y + t, t, b.h - 2 * t, PICK_BORDER, rep);
+            fill(enc, b.x + b.w - t, b.y + t, t, b.h - 2 * t, PICK_BORDER, rep);
+            if b.w > 2 * t && b.h > 2 * t {
+                fill(enc, b.x + t, b.y + t, b.w - 2 * t, b.h - 2 * t, PICK_BG, rep);
+            }
+            // YYYY-MM-DD 十字节定长（u32 四位 + 月日两位零垫）。
+            let mut buf = [b'-'; 10];
+            let y = p.year;
+            buf[0] = b'0' + (y / 1000) as u8;
+            buf[1] = b'0' + (y / 100 % 10) as u8;
+            buf[2] = b'0' + (y / 10 % 10) as u8;
+            buf[3] = b'0' + (y % 10) as u8;
+            buf[5] = b'0' + (p.month / 10) as u8;
+            buf[6] = b'0' + (p.month % 10) as u8;
+            buf[8] = b'0' + (p.day / 10) as u8;
+            buf[9] = b'0' + (p.day % 10) as u8;
+            emit_widget_text(&buf, b.x, b.w, b.y, b.h, SELECT_FG, rest, enc, rep);
+        }
+        Props::TimePick(p) => {
+            let t = BUTTON_BORDER.max(1);
+            fill(enc, b.x, b.y, b.w, t, PICK_BORDER, rep);
+            fill(enc, b.x, b.y + b.h - t, b.w, t, PICK_BORDER, rep);
+            fill(enc, b.x, b.y + t, t, b.h - 2 * t, PICK_BORDER, rep);
+            fill(enc, b.x + b.w - t, b.y + t, t, b.h - 2 * t, PICK_BORDER, rep);
+            if b.w > 2 * t && b.h > 2 * t {
+                fill(enc, b.x + t, b.y + t, b.w - 2 * t, b.h - 2 * t, PICK_BG, rep);
+            }
+            // HH:MM 五字节（24 小时制原值；12 折算消费面）。
+            let mut buf = [b':'; 5];
+            buf[0] = b'0' + (p.hour / 10) as u8;
+            buf[1] = b'0' + (p.hour % 10) as u8;
+            buf[3] = b'0' + (p.minute / 10) as u8;
+            buf[4] = b'0' + (p.minute % 10) as u8;
+            emit_widget_text(&buf, b.x, b.w, b.y, b.h, SELECT_FG, rest, enc, rep);
         }
         // Root/Col/Row/Pad/Grid + 余组件件：无视觉内容（子树各自发射）
         _ => {}

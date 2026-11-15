@@ -455,33 +455,33 @@ fn set_props_updates_all_four_and_rejects_bad_values() {
         Err(UiError::NodeBad),
         "add 面 permille 域同律拒"
     );
-    // 未开口组件（Refresh——批 E 待接线件）set_props 仍拒——防半落
-    // 状态。（Scroll 批 A、Select 批 C、Input/Edit/Canvas 批 D 已开口
-    // 迁出本哨位。）
-    let rf = ui
+    // 未开口组件（DragReorder——P2 末位待接线件）set_props 仍拒——
+    // 防半落状态。（Scroll 批 A、Select 批 C、Input/Edit/Canvas 批 D、
+    // Refresh/SwipeItem/DatePick/TimePick 批 E 已开口迁出本哨位。）
+    let dr = ui
         .add(
             root,
             ViewSpec {
-                kind: ViewKind::Refresh,
+                kind: ViewKind::DragReorder,
                 key: 0,
-                props: Props::Refresh(berry_ui::desc::RefreshProps {
-                    refreshing: false,
-                    offset: 0,
-                    on_refresh: 0,
+                props: Props::DragReorder(berry_ui::desc::DragReorderProps {
+                    item_index: 0,
+                    total_items: 4,
+                    on_reorder: 0,
                 }),
             },
         )
         .unwrap();
     assert_eq!(
         ui.set_props(
-            rf,
-            Props::Refresh(berry_ui::desc::RefreshProps {
-                refreshing: true,
-                offset: 0,
-                on_refresh: 0,
+            dr,
+            Props::DragReorder(berry_ui::desc::DragReorderProps {
+                item_index: 1,
+                total_items: 4,
+                on_reorder: 0,
             })
         ),
         Err(UiError::NodeBad),
-        "Refresh 未开口——set_props 拒（批 E 接线前防半落）"
+        "DragReorder 未开口——set_props 拒（后续刀接线前防半落）"
     );
 }

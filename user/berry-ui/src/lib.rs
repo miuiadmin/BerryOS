@@ -342,6 +342,20 @@ fn widget_value_ok(p: &Props) -> bool {
         // 波2 批 C：Select 选中索引域（option_count == 0 空选择器合法
         // ——selected 恒 0）。
         Props::Select(sl) => sl.option_count == 0 || sl.selected < sl.option_count,
+        // 波2 批 E：Refresh offset / SwipeItem reveal 两端 permille 域、
+        // DatePick 月日域（AST BadValue 同律）、TimePick 时分域。
+        Props::Refresh(r) => r.offset <= PERMILLE_MAX,
+        Props::SwipeItem(w) => {
+            w.reveal_start <= PERMILLE_MAX && w.reveal_end <= PERMILLE_MAX
+        }
+        Props::DatePick(d) => {
+            (1..=12).contains(&d.month)
+                && (1..=31).contains(&d.day)
+                && d.min_year <= d.max_year
+                && d.year >= d.min_year
+                && d.year <= d.max_year
+        }
+        Props::TimePick(t) => t.hour <= 23 && t.minute <= 59,
         _ => true,
     }
 }
@@ -1166,6 +1180,12 @@ impl<const N: usize> Ui<N> {
                 | Some((ViewKind::Input, Props::Input(_)))
                 | Some((ViewKind::Edit, Props::Edit(_)))
                 | Some((ViewKind::Canvas, Props::Canvas(_)))
+                // 波2 批 E：Refresh/SwipeItem/DatePick/TimePick 开口
+                //（offset/reveal/日期时间面——滚轮/手势消费挂波3/4）。
+                | Some((ViewKind::Refresh, Props::Refresh(_)))
+                | Some((ViewKind::SwipeItem, Props::SwipeItem(_)))
+                | Some((ViewKind::DatePick, Props::DatePick(_)))
+                | Some((ViewKind::TimePick, Props::TimePick(_)))
                 // 组件第三批（Tip/Collapse/Chip/Fab/Card 开口）：文本/
                 // expanded/selected/扩展标签/elevation·corner_radius 面。
                 | Some((ViewKind::Tip, Props::Tip(_)))

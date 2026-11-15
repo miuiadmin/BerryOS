@@ -372,6 +372,14 @@ fn intrinsic(
         Props::Input(_) => (crate::INPUT_W, crate::INPUT_H),
         Props::Edit(_) => (crate::EDIT_W, crate::EDIT_H),
         Props::Canvas(_) => (crate::CANVAS_D, crate::CANVAS_D),
+        // 波2 批 E：DatePick/TimePick 固定内在（日期 96×48 / 时间 64×48
+        // ——数字定宽显示）；Refresh/SwipeItem = 容器（内在随子聚合）。
+        Props::Refresh(_) => {
+            let (cw, ch, _) = child_agg(nodes, n.first_child, true);
+            (u64_to_u32_sat(cw), u64_to_u32_sat(ch))
+        }
+        Props::DatePick(_) => (96, 48),
+        Props::TimePick(_) => (64, 48),
         Props::Scroll(p) => {
             let (cw, _, _) = child_agg(nodes, n.first_child, true);
             (u64_to_u32_sat(cw), p.content_height)
@@ -474,22 +482,11 @@ fn intrinsic(
             }
             (w, h)
         }
-        // P0 尾四件（占位同前两批）：Select/Input/Edit 的内在应为度量
-        // 面语义（选项行高/单行文本高/max_lines 聚合）、Canvas 随绘制
-        // 协议定——全挂 Phase 2 布局刀，本层 0×0 占位（place_children
-        // 走 `_` 臂全幅叠放，半实现必与摆放失配——「不半实现」纪律
-        // 同源）。
-        | Props::Input(_)
-        | Props::Edit(_)
-        | Props::Canvas(_)
-        // P1 尾五件（占位同前三批）：Refresh 的内在应为子聚合（包裹容
-        // 器）、SwipeItem/DatePick/TimePick 的内在应为行高/滚轮高——
-        // 全挂 Phase 2 布局刀，本层 0×0 占位（`_` 臂全幅叠放与半聚合
-        // 必失配——「不半实现」同源）。
-        | Props::Refresh(_)
+        // P0 尾（批 C/D 已迁出单列——此组清空防 unreachable）
+        // P1 尾（占位保持）：SwipeItem 内在应为行高——挂后续布局刀，
+        // 本层 0×0 占位（批 E 视觉已接线；Refresh/DatePick/TimePick 已
+        // 上表单列迁出）。
         | Props::SwipeItem(_)
-        | Props::DatePick(_)
-        | Props::TimePick(_)
         // P2 余三件（占位同前五批）：Gauge/Qr 应为表盘/点阵方阵、
         // DragReorder 应为手柄行高——全挂 Phase 2 布局刀，本层 0×0 占
         // 位（`_` 臂全幅叠放与半聚合必失配——「不半实现」同源）。
@@ -652,7 +649,9 @@ fn final_size(n: &Node, avail_w: i32, avail_h: i32) -> (i32, i32) {
         | Props::Select(_)
         | Props::Input(_)
         | Props::Edit(_)
-        | Props::Canvas(_) => (u32_to_i32_sat(n.meas_w), u32_to_i32_sat(n.meas_h)),
+        | Props::Canvas(_)
+        | Props::DatePick(_)
+        | Props::TimePick(_) => (u32_to_i32_sat(n.meas_w), u32_to_i32_sat(n.meas_h)),
         // Collapse = 纵向容器（Col 同形）：十字轴吃 avail、主轴内在
         //（收起折叠至 header 高——expanded 几何位单源 intrinsic）。
         Props::Collapse(_) => (avail_w, u32_to_i32_sat(n.meas_h)),
@@ -669,11 +668,10 @@ fn final_size(n: &Node, avail_w: i32, avail_h: i32) -> (i32, i32) {
         // 臂天然合义（包裹容器 = Root 型全幅给子）；SIZE 块同拒。
         | Props::Refresh(_)
         | Props::SwipeItem(_)
-        | Props::DatePick(_)
-        | Props::TimePick(_)
-        // P2 余件（占位同前四批）：随父填充；Card 的子分配由 `_` 臂天
-        // 然合义（包裹容器 = Root 型全幅给子——intrinsic 已上表取子
-        // max）；SIZE 块同拒（§8.2 表未随本批扩——无双源）。
+        // 批 E：DatePick/TimePick 迁内在型叶（上表）；P2 余件（占位同
+        // 前四批）：随父填充；Card 的子分配由 `_` 臂天然合义（包裹容器
+        // = Root 型全幅给子——intrinsic 已上表取子 max）；SIZE 块同拒
+        //（§8.2 表未随本批扩——无双源）。
         | Props::Card(_)
         | Props::Gauge(_)
         | Props::Qr(_)
