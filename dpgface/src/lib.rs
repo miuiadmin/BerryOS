@@ -255,3 +255,8 @@ pub fn faulter_key_route(claim: Claim) -> FaulterKey {
         Claim::PoolFull => FaulterKey::Overflow,
     }
 }
+
+/// W3-Q59：dpg P0-1 fastpath 唤醒直切判序纯面（P0-1 线1d 消费面——
+/// `dpg_pager` 供给毕唤 faulter 点的 `try_preempt` 直切资格 + 供给
+/// 临界段收口序 host 钉板；sched 物理臂/RQ 锁窗/切换舞蹈留壳）。
+pub mod fastpath;
