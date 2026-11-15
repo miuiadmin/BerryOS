@@ -455,26 +455,32 @@ fn set_props_updates_all_four_and_rejects_bad_values() {
         Err(UiError::NodeBad),
         "add 面 permille 域同律拒"
     );
-    // 未开口组件（Scroll）set_props 仍拒——防半落状态。
-    let sc = ui
+    // 未开口组件（Select——数据层先行件）set_props 仍拒——防半落状态。
+    //（Scroll 批 A 已开口迁出本哨位；代表件改选 P0 尾四件。）
+    let sel = ui
         .add(
             root,
             ViewSpec {
-                kind: ViewKind::Scroll,
+                kind: ViewKind::Select,
                 key: 0,
-                props: Props::Scroll(berry_ui::desc::ScrollProps {
-                    content_height: 100,
-                    offset_y: 0,
+                props: Props::Select(berry_ui::desc::SelectProps {
+                    option_count: 2,
+                    selected: 0,
+                    on_change: 0,
                 }),
             },
         )
         .unwrap();
     assert_eq!(
         ui.set_props(
-            sc,
-            Props::Scroll(berry_ui::desc::ScrollProps { content_height: 200, offset_y: 0 })
+            sel,
+            Props::Select(berry_ui::desc::SelectProps {
+                option_count: 2,
+                selected: 1,
+                on_change: 0,
+            })
         ),
         Err(UiError::NodeBad),
-        "Scroll 未开口——set_props 拒"
+        "Select 未开口——set_props 拒（渲染/交互未接线）"
     );
 }
