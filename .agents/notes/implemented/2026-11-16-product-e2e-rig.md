@@ -21,7 +21,7 @@ Status: implemented
 
 ## Consequences
 
-`PRODUCT_E2E_KEEP=1 just product-e2e` 已在真实产品镜像上通过：Recents 六项像素检查、frame-cache 七项像素检查、两条链的精确标记、产品 m=1..11 里程碑链和 `KERNEL PANIC=0` 全绿。旧 `out/verify-recents.py` 与 `out/verify-frame-cache.py` 仍可作为历史产物，但不再是验收来源。
+`PRODUCT_E2E_KEEP=1 just product-e2e` 已在真实产品镜像上通过：Recents 六项像素检查与 Inputs Tab badge 命中、frame-cache 七项像素检查、shell-press Dock 按压/真实启动链、三条 suite 的精确标记、产品 m=1..11 里程碑链和 `KERNEL PANIC=0` 全绿。旧 `out/verify-recents.py` 与 `out/verify-frame-cache.py` 仍可作为历史产物，但不再是验收来源。
 
 这条收编不改变产品行为，不改变 1080×1920@60、HVF、virtio-gpu、Berry Room、present wire 或 soft↔vgpu 共识。Photos 沉浸恢复、Files 长按/刷新、TextArea 真键、Contacts Large AppBar、verbose system 面等专项 rig 仍未入库，需后续按同一模式继续收编。
 
