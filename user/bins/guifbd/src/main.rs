@@ -76,39 +76,25 @@ static CRT0_SEED: unsafe extern "C" fn() = berry_libc::berry_crt0_anchor;
 
 // —— 段③ 常量（软 vsync / serve 帽 / 信号位 / 定容帽）——
 
-/// 软面板档位表——**全仓周期单源**（刷新率体系规范 §3.4）：period_ns =
-/// round(1e9/hz)，一切 Hz→周期换算查此表，表外禁自算（两件各算各的
-/// 舍入漂移 = 相位劈叉）。class：0=产品 1=测试 2=LTPO（规范 §3.1；
-/// 刀2 起软面板模块为家，本表随迁）。ramfb 无真实 vsync，服务端合成
-/// 时基的周期即查此表（旧 `SOFT_VSYNC_NS` 私常量废除）。
-mod panel {
-    use berry_guiproto as gp;
-
-    /// (hz, period_ns, class)——与规范 §3.1 表逐行钉板（host 侧
-    /// guiproto panel_caps_rep 测试同值镜像）。
-    pub const TIERS: [(u16, u64, u8); 9] = [
-        (30, 33_333_333, gp::PANEL_CLASS_PRODUCT),
-        (60, 16_666_667, gp::PANEL_CLASS_PRODUCT),
-        (120, 8_333_333, gp::PANEL_CLASS_PRODUCT),
-        (240, 4_166_667, gp::PANEL_CLASS_PRODUCT),
-        (480, 2_083_333, gp::PANEL_CLASS_PRODUCT),
-        (165, 6_060_606, gp::PANEL_CLASS_TEST),
-        (180, 5_555_556, gp::PANEL_CLASS_TEST),
-        (1, 1_000_000_000, gp::PANEL_CLASS_LTPO),
-        (10, 100_000_000, gp::PANEL_CLASS_LTPO),
-    ];
-
-    /// boot 率域解析：表内档 → 直取；表外/0 → loud 回退 60 + 诊断行
-    ///（规范 §4-1 语义层校验——值域 = 档位表全集，内核只做语法层）。
-    /// 0 = 旧内核 48B VMO 零页域（add-only 兼容读）→ 同回退 60。
-    pub fn resolve(boot_hz: u16) -> (u16, u64) {
-        for &(hz, p, _) in TIERS.iter() {
-            if hz == boot_hz {
-                return (hz, p);
-            }
+/// boot 率域解析（活设备半件——刷新率体系规范 §13「按概念迁移不按文件
+/// 形态」）：档位周期表单源已迁 `gp::softpanel::TIERS`（刀2，host 可测
+/// 纯核），本侧只留**语义层校验落值 + loud 回退**：Tiered 表内直取，
+/// 表外/0 回退 60 + 诊断行（规范 §4-1；旧内核 48B 零页域同路回退）；
+/// FreeRange 钳 1..=480 后单点换算（0 同归 60——缺省语义不分模型）。
+fn boot_panel_tier(cfg: &gp::softpanel::PanelCfg, boot_hz: u16) -> (u16, u64) {
+    let hz0 = if boot_hz == 0 { 60 } else { boot_hz };
+    match cfg.model {
+        gp::RATE_MODEL_FREERANGE => {
+            let q = gp::softpanel::freerange_quantize(hz0);
+            (q, gp::softpanel::period_of(q))
         }
-        eprintln!("guifbd: panel hz={} not in tiers, fallback 60", boot_hz);
-        (60, 16_666_667)
+        _ => match gp::softpanel::resolve(hz0) {
+            Some((hz, p)) => (hz, p),
+            None => {
+                eprintln!("guifbd: panel hz={} not in tiers, fallback 60", hz0);
+                (60, gp::softpanel::period_of(60))
+            }
+        },
     }
 }
 /// serve 空闲并等帽：wait_many deadline 外层上界（合法空闲非死线——到点
@@ -260,15 +246,15 @@ struct Srv<'a> {
     /// POWER_MODE 最近值（同上）。
     power_mode: u8,
     // —— hdi 域（软 vsync）——
-    vb_seq: u32,
-    /// 软面板当前档（hz + 周期查表单源——`mod panel`；boot 率域经
-    /// `panel::resolve` 语义层校验落值，旧 `SOFT_VSYNC_NS` 私常量废除）。
-    panel_hz: u16,
-    panel_period_ns: u64,
-    /// 下次软 vsync 点（`vb_scheduled` 时有效）。
+    /// 软面板拍点状态机（刀2 §5：FREE 零扰动 / DET 虚拟钟 / 故障旋钮；
+    /// hz·period·模式·点序单源在此——旧 panel_hz/panel_period_ns/vb_seq
+    /// 三字段收编）。
+    panel: gp::softpanel::SoftPanel,
+    /// 下次软 vsync 点（`vb_scheduled` 时有效；调度面值——DET 态上报
+    /// ts 走虚拟钟，此值只管 serve 环何时醒）。
     vb_next_ns: u64,
-    /// 有点在案（REG_VBLANK 使能 ∧/∨ VBLANK_WAIT parked——wait_many
-    /// deadline 的 min 臂来源）。
+    /// 有点在案（REG_VBLANK 使能 ∧/∨ parked wait——wait_many deadline
+    /// 的 min 臂来源）。
     vb_scheduled: bool,
     vb_armed: bool,
     /// REG_VBLANK 存量 event（0 = 无）。
@@ -276,6 +262,9 @@ struct Srv<'a> {
     vb_parked: bool,
     /// parked VBLANK_WAIT 的应答通道。
     vb_park_ch: Handle,
+    /// parked 形态：false = VBLANK_WAIT 16B（GOLDEN 钉板面）/ true =
+    /// OP_VBLANK_TIMING 24B 三元组（刀2 事件面——两 op 共用单车位）。
+    vb_park_timing: bool,
     slots: [Slot; SLOTS],
     // —— 标记 / console 记账 ——
     served: bool,
@@ -288,8 +277,18 @@ struct Srv<'a> {
 }
 
 impl<'a> Srv<'a> {
-    fn new(con: Fbcon<'a>, w: usize, h: usize, stride: usize, gui: bool, boot_hz: u16) -> Self {
-        let (panel_hz, panel_period_ns) = panel::resolve(boot_hz);
+    fn new(
+        con: Fbcon<'a>,
+        w: usize,
+        h: usize,
+        stride: usize,
+        gui: bool,
+        cfg: gp::softpanel::PanelCfg,
+        boot_hz: u16,
+    ) -> Self {
+        // 语义层校验/回退先走（loud 诊断行在 boot_panel_tier），SoftPanel
+        // 构造内自查表落周期——period 首值不外传。
+        let (hz, _) = boot_panel_tier(&cfg, boot_hz);
         Srv {
             con,
             w,
@@ -302,15 +301,14 @@ impl<'a> Srv<'a> {
             held_n: 0,
             vote: (0, 0, 0, 0, 0),
             power_mode: 0,
-            vb_seq: 0,
-            panel_hz,
-            panel_period_ns,
+            panel: gp::softpanel::SoftPanel::new(cfg, hz),
             vb_next_ns: 0,
             vb_scheduled: false,
             vb_armed: false,
             vb_ev: 0,
             vb_parked: false,
             vb_park_ch: 0,
+            vb_park_timing: false,
             slots: [Slot { vmo: 0, w: 0, h: 0, stride: 0, commit_target: 0 }; SLOTS],
             served: false,
             gfxf: false,
@@ -320,17 +318,21 @@ impl<'a> Srv<'a> {
         }
     }
 
-    /// 软 vsync 排点（无点在案时；REG_VBLANK 使能 / VBLANK_WAIT park 共用）。
+    /// 软 vsync 排点（无点在案时；REG_VBLANK 使能 / parked wait 共用）。
     fn vsync_schedule(&mut self) {
         if !self.vb_scheduled {
-            self.vb_next_ns = now_ns() + self.panel_period_ns;
+            self.vb_next_ns = now_ns() + self.panel.period_ns();
             self.vb_scheduled = true;
         }
     }
 
-    /// 软 vsync 到点检查（每轮回环顶）：到点 → 应答 parked VBLANK_WAIT +
-    /// 信号 REG_VBLANK event，seq 抬高、点推进（滞后追赶跳过已过点——
-    /// 不补偿积压 vsync）；armed∧parked 双空后撤点（零唤醒不变量回位）。
+    /// 软 vsync 到点检查（每轮回环顶）：拍点过软面板裁决（刀2 §5 事件面）
+    /// ——投递点应答 parked wait（16B/24B 按停车形态）+ 信号 REG_VBLANK
+    /// event；丢帧 = 不投递（parked 留座、不信号——面板拍点在、seq 消耗，
+    /// 客户端见跳号 = 诚实丢帧信号）。FREE 态名义点追赶跳过已过点（不
+    /// 补偿积压 vsync，跳过点不耗 seq——现状不变量）；DET 态每醒恰一点
+    ///（虚拟钟墙钟无关，追赶会引墙钟依赖破 T2 回放）。armed∧parked 双空
+    /// 后撤点（零唤醒不变量回位）。
     fn tick_vsync(&mut self) {
         if !self.vb_scheduled {
             return;
@@ -339,28 +341,64 @@ impl<'a> Srv<'a> {
         if t < self.vb_next_ns {
             return;
         }
-        let point = self.vb_next_ns; // 名义点 = 合成 ts_ns（clock 口径）
-        if self.vb_parked {
-            let mut out = [0u8; 16];
-            let rep = gp::VblankRep { seq: self.vb_seq.wrapping_add(1), ts_ns: point };
-            let n = gp::encode_vblank_rep(&mut out, &rep);
-            send_rep(self.vb_park_ch, &out[..n]);
-            self.vb_parked = false;
+        let point = self.vb_next_ns; // 名义点 = FREE 合成 ts（clock 口径）
+        if let Some(tick) = self.panel.on_point(point) {
+            if self.vb_parked {
+                // 停车形态分应答：16B GOLDEN 面（VBLANK_WAIT）/ 24B 三元组
+                //（OP_VBLANK_TIMING）——同一拍点同一载荷两形。
+                let mut out = [0u8; 24];
+                let n = if self.vb_park_timing {
+                    gp::encode_vblank_timing_rep(&mut out, &tick)
+                } else {
+                    gp::encode_vblank_rep(
+                        &mut out,
+                        &gp::VblankRep { seq: tick.seq as u32, ts_ns: tick.ts_ns },
+                    )
+                };
+                send_rep(self.vb_park_ch, &out[..n]);
+                self.vb_parked = false;
+            }
+            if self.vb_armed {
+                // 持有客户端 event 的迁移别名（SIGNAL 权随行）——脉冲形
+                // clear+set 同位：周期信号每点重置可观察。
+                let _ = berry_object_signal(self.vb_ev, VBLANK_SIG, VBLANK_SIG);
+            }
         }
-        if self.vb_armed {
-            // 持有客户端 event 的迁移别名（SIGNAL 权随行）——脉冲形
-            // clear+set 同位：周期信号每点重置可观察。
-            let _ = berry_object_signal(self.vb_ev, VBLANK_SIG, VBLANK_SIG);
-        }
-        self.vb_seq = self.vb_seq.wrapping_add(1);
-        let mut next = point + self.panel_period_ns;
-        while next <= t {
-            next += self.panel_period_ns;
+        let p = self.panel.period_ns();
+        let mut next = if self.panel.catchup() {
+            point + p
+        } else {
+            t + p
+        };
+        if self.panel.catchup() {
+            while next <= t {
+                next += p;
+            }
         }
         self.vb_next_ns = next;
         if !self.vb_armed && !self.vb_parked {
             self.vb_scheduled = false;
         }
+    }
+
+    /// parked wait 入座（VBLANK_WAIT / OP_VBLANK_TIMING 共用单车位）：
+    /// 随行 handle 拒面、已停 ST_BUSY（A3-d③）、无即刻应答——tick_vsync
+    /// 到点按 `timing` 分 16B/24B 应答（deadline min 臂保证最迟一个空闲
+    /// 帽内到点）。
+    fn park_vblank(&mut self, ch: Handle, hs: &[Handle], timing: bool) {
+        if !hs.is_empty() {
+            close_all(hs);
+            st_rep(ch, gp::ST_BAD);
+            return;
+        }
+        if self.vb_parked {
+            st_rep(ch, gp::ST_BUSY);
+            return;
+        }
+        self.vb_parked = true;
+        self.vb_park_ch = ch;
+        self.vb_park_timing = timing;
+        self.vsync_schedule();
     }
 
     /// present 域轮询（一路至多一条：严格串行 RPC；返回是否处理过消息）。
@@ -739,22 +777,12 @@ impl<'a> Srv<'a> {
                 }
             },
             Some(&gp::OP_VBLANK_WAIT) if gp::parse_vblank_wait_req(msg).is_some() => {
-                if !hs.is_empty() {
-                    close_all(hs);
-                    st_rep(ch, gp::ST_BAD);
-                    return;
-                }
-                // 单车位：已 parked 再来 = ST_BUSY（A3-d③——严格串行 RPC
-                // 下属客户端违约面）。
-                if self.vb_parked {
-                    st_rep(ch, gp::ST_BUSY);
-                    return;
-                }
-                // park 到软 vsync 点——**无即刻应答**（tick_vsync 到点
-                // 应答；deadline min 臂保证最迟一个空闲帽内到点）。
-                self.vb_parked = true;
-                self.vb_park_ch = ch;
-                self.vsync_schedule();
+                self.park_vblank(ch, hs, false);
+            }
+            // 刀2 事件面（§4-4）：等拍点三元组——VBLANK_WAIT 同车位同纪律，
+            // 应答 24B 三元组（16B GOLDEN 面不动）。
+            Some(&gp::OP_VBLANK_TIMING) if gp::parse_vblank_timing_req(msg).is_some() => {
+                self.park_vblank(ch, hs, true);
             }
             Some(&gp::OP_PREPARE) => match gp::parse_prepare_req(msg) {
                 Some(req) => self.prepare(ch, hs, req),
@@ -790,44 +818,73 @@ impl<'a> Srv<'a> {
                     }
                 }
             }
-            // 刀1 率通路（§4-4）：面板能力宣告——档位表全量（Tiered 形态；
-            // FreeRange 宣告归刀2 软面板件）+ 当前档（boot 率域经
-            // panel::resolve 落值）。无随行 handle、无副作用。
+            // 面板能力宣告（§4-4）：Tiered = 档位表全量（class + 首启阶段
+            // 入行——v2 形；min/max 取全表极值，声明序非升序）/ FreeRange
+            // = 空档位表 + 区间 {1..=480, gran 1, per_frame, vrr capable}
+            //（§3.2 仿真宣告）。当前档两态同报。无随行 handle、无副作用。
             Some(&gp::OP_PANEL_CAPS) if gp::parse_panel_caps_req(msg).is_some() => {
                 if !hs.is_empty() {
                     close_all(hs);
                     st_rep(ch, gp::ST_BAD);
                     return;
                 }
-                let mut tiers = [gp::PanelTier { hz: 0, class: 0, period_ns: 0 };
-                    gp::PANEL_TIERS_MAX];
-                for (i, &(hz, p, class)) in panel::TIERS.iter().enumerate() {
-                    tiers[i] = gp::PanelTier {
-                        hz,
-                        class,
-                        period_ns: p as u32,
-                    };
-                }
-                // min/max = 档位表首尾语义（§4-4）——TIERS 声明序非升序
-                //（产品→测试→LTPO），min/max 取全表极值。
-                let (mut min_hz, mut max_hz) = (u16::MAX, 0u16);
-                for &(hz, _, _) in panel::TIERS.iter() {
-                    min_hz = min_hz.min(hz);
-                    max_hz = max_hz.max(hz);
-                }
-                let rep = gp::PanelCapsRep {
-                    version: 1,
-                    rate_model: gp::RATE_MODEL_TIERED,
-                    flags: 0,
-                    min_hz,
-                    max_hz,
-                    granularity_hz: 0,
-                    vrr: gp::PANEL_VRR_NONE,
-                    current_hz: self.panel_hz,
-                    current_period_ns: self.panel_period_ns as u32,
-                    current_phase_ns: 0,
-                    tiers,
-                    n_tiers: panel::TIERS.len() as u8,
+                let rep = match self.panel.cfg().model {
+                    gp::RATE_MODEL_FREERANGE => gp::PanelCapsRep {
+                        version: 2,
+                        rate_model: gp::RATE_MODEL_FREERANGE,
+                        flags: gp::PANEL_FLAG_PER_FRAME,
+                        min_hz: gp::softpanel::FREERANGE_MIN_HZ,
+                        max_hz: gp::softpanel::FREERANGE_MAX_HZ,
+                        granularity_hz: gp::softpanel::FREERANGE_GRAN_HZ,
+                        vrr: gp::PANEL_VRR_CAPABLE,
+                        current_hz: self.panel.hz(),
+                        current_period_ns: self.panel.period_ns() as u32,
+                        current_phase_ns: 0,
+                        tiers: [gp::PanelTier {
+                            hz: 0,
+                            class: 0,
+                            stage: 0,
+                            period_ns: 0,
+                        }; gp::PANEL_TIERS_MAX],
+                        n_tiers: 0,
+                    },
+                    _ => {
+                        let mut tiers = [gp::PanelTier {
+                            hz: 0,
+                            class: 0,
+                            stage: 0,
+                            period_ns: 0,
+                        }; gp::PANEL_TIERS_MAX];
+                        for (i, t) in gp::softpanel::TIERS.iter().enumerate() {
+                            tiers[i] = gp::PanelTier {
+                                hz: t.hz,
+                                class: t.class,
+                                stage: t.stage,
+                                period_ns: t.period_ns as u32,
+                            };
+                        }
+                        // min/max = 档位表首尾语义（§4-4）——TIERS 声明序
+                        // 非升序（产品→测试→LTPO），取全表极值。
+                        let (mut min_hz, mut max_hz) = (u16::MAX, 0u16);
+                        for t in gp::softpanel::TIERS.iter() {
+                            min_hz = min_hz.min(t.hz);
+                            max_hz = max_hz.max(t.hz);
+                        }
+                        gp::PanelCapsRep {
+                            version: 2,
+                            rate_model: gp::RATE_MODEL_TIERED,
+                            flags: 0,
+                            min_hz,
+                            max_hz,
+                            granularity_hz: 0,
+                            vrr: gp::PANEL_VRR_NONE,
+                            current_hz: self.panel.hz(),
+                            current_period_ns: self.panel.period_ns() as u32,
+                            current_phase_ns: 0,
+                            tiers,
+                            n_tiers: gp::softpanel::TIERS.len() as u8,
+                        }
+                    }
                 };
                 let mut out = [0u8; gp::PANEL_CAPS_REP_MAX];
                 let n = gp::encode_panel_caps_rep(&mut out, &rep);
@@ -903,15 +960,15 @@ impl<'a> Srv<'a> {
 }
 
 fn main() {
-    // 几何 info VMO（boot 56B 七域 u64 LE：fb_pa/w/h/stride/fmt/gui/
-    // refresh_hz——第 7 域 = 刀1 率通路尾插）。
+    // 几何 info VMO（boot 72B 九域 u64 LE：fb_pa/w/h/stride/fmt/gui/
+    // refresh_hz + 软面板 cfg 两域——第 8/9 域 = 刀2 尾插）。
     let h: Handle = gift2_h();
     if h == 0 {
         // svcmgr 探测门后恒随行 info——理论不可达；eprintln loud 兜底。
         eprintln!("guifbd: no fbinfo gift");
         berry_libc::park();
     }
-    let mut info = [0u8; 56];
+    let mut info = [0u8; 72];
     if berry_vmo_read(h, info.as_mut_ptr(), 0, info.len()) != 0 {
         eprintln!("guifbd: fbinfo read failed");
         berry_libc::park();
@@ -924,8 +981,26 @@ fn main() {
     // 第 6 域 = GUI 模式（旧内核只写 40B → 该域读 0 = 兼容旧行为）。
     let gui = rd(5) != 0;
     // 第 7 域 = 刷新率（旧内核 48B → 零页域读 0；语义层校验/回退在
-    // `panel::resolve`——0 与表外值同路 loud 回退 60，规范 §4-1/§4-2）。
+    // `boot_panel_tier`——0 与表外值同路 loud 回退 60，规范 §4-1/§4-2）。
     let boot_hz = rd(6) as u16;
+    // 第 8/9 域 = 软面板 cfg（旧内核 56B → 零页域读 0 = 缺省 Tiered/
+    // FREE/无故障——add-only 尾插兼容读；位布局单源 guiproto
+    // `softpanel::PanelCfg::from_domains`，kernel 打包手镜像对拍钉板）。
+    let rdu = |i: usize| u64::from_le_bytes(info[i * 8..i * 8 + 8].try_into().unwrap());
+    let panel_cfg = gp::softpanel::PanelCfg::from_domains(rdu(7), rdu(8));
+    if panel_cfg != gp::softpanel::PanelCfg::DEFAULT {
+        // 非缺省旋钮到位的证据行（宿主探针取证面；kernel 侧另有
+        // `PANEL cfg` 前导行）。
+        eprintln!(
+            "guifbd: panel cfg model={} mode={} seed={} drop={} jit={} sw={}",
+            panel_cfg.model,
+            panel_cfg.mode,
+            panel_cfg.seed,
+            panel_cfg.drop_permille,
+            panel_cfg.jitter_ns,
+            panel_cfg.sw_drop
+        );
+    }
     // QEMU ramfb fmt=1 = DRM_FORMAT_XRGB8888（LE 内存 B,G,R,X）。本仓
     // `PixelFormat::Rgbx.pack` 才落该字节序；历史 `Bgrx` 映射把 R/B 互换，
     // 桌面蓝灰显示成土棕（截图实证）。只改显示契约映射。
@@ -1019,7 +1094,7 @@ fn main() {
         eprintln!("guifbd: no fb pipe gift");
         berry_libc::park();
     }
-    let mut srv = Srv::new(con, w, h, stride, gui, boot_hz);
+    let mut srv = Srv::new(con, w, h, stride, gui, panel_cfg, boot_hz);
     // —— 三路 serve：present→hdi→console 确定性轮询；全 EAGAIN 才
     // wait_many n=3 并等。deadline = min(下次软 vsync 点, now+10s) **进
     // 调用本身**（A1-a——醒来后补查不够：parked 最长迟答 10s 且 smoke

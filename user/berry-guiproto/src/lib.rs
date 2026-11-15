@@ -87,6 +87,11 @@ pub const OP_COMMIT: u8 = 0x43;
 /// hdi 域：面板能力宣告（刷新率档位表 + 率域模型 + 当前档——刷新率体系
 /// 规范 §4-4；hdi 域下一空位，Q2 裁弃先例 = 不塞 present GETINFO 保留位）。
 pub const OP_PANEL_CAPS: u8 = 0x44;
+/// hdi 域：等下一次 vblank 并取拍点三元组 `{seq u64, ts_ns u64,
+/// refresh_ns u32}`（刷新率体系规范 §4-4 事件面；刀2）。VBLANK_WAIT 的
+/// 16B 应答是 GOLDEN 钉板面（ADR #60 ⑥ add-only）——三元组走本新 op
+/// 24B 应答，16B 形永不动。
+pub const OP_VBLANK_TIMING: u8 = 0x45;
 /// wm 域：能力/版本/窗口帽协商（GUI-5；wm 域自带版本面——塞 present
 /// GetinfoRep 保留位 = 协议面变更，Q2 裁弃）。
 pub const OP_WM_GETINFO: u8 = 0x60;
@@ -322,8 +327,9 @@ pub const RESAMPLE_MAX_PREDICTION_MS: u64 = 8;
 pub const VER_PRESENT: u8 = 1;
 /// input 域版本。
 pub const VER_INPUT: u8 = 1;
-/// hdi 域版本（v2 = 刀1 增 OP_PANEL_CAPS 面板能力宣告——刷新率体系规范 §4-4）。
-pub const VER_HDI: u8 = 2;
+/// hdi 域版本（v2 = 刀1 增 OP_PANEL_CAPS；v3 = 刀2 增 OP_VBLANK_TIMING
+/// 事件三元组 + PANEL_CAPS v2 档位行 stage 字节——刷新率体系规范 §4-4）。
+pub const VER_HDI: u8 = 3;
 /// wm 域版本（GUI-5 定形刀在册——ADR #50：per-interface version 随定形刀必落）。
 pub const VER_WM: u8 = 1;
 
@@ -341,6 +347,8 @@ const RELEASE_REP_HEAD: usize = 4;
 const VOTE_REQ_LEN: usize = 12;
 /// VBLANK_WAIT 应答恰长 16B。
 const VBLANK_REP_LEN: usize = 16;
+/// VBLANK_TIMING 应答恰长 24B（事件面三元组——规范 §4-4）。
+const VBLANK_TIMING_REP_LEN: usize = 24;
 /// PREPARE 请求恰长 20B。
 const PREPARE_REQ_LEN: usize = 20;
 /// COMMIT 请求恰长 12B。
@@ -1429,12 +1437,15 @@ pub fn parse_panel_caps_req(buf: &[u8]) -> Option<()> {
     Some(())
 }
 
-/// 档位表条目（8B wire `[hz u16][class u8][r u8][period_ns u32]`）。
+/// 档位表条目（8B wire `[hz u16][class u8][stage u8][period_ns u32]`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PanelTier {
     pub hz: u16,
     /// PANEL_CLASS_*（0=产品 1=测试 2=LTPO——规范 §3.1）。
     pub class: u8,
+    /// softpanel::STAGE_* 首启阶段（规范 §3.1 阶段列；v2 起在册——v1 应答
+    /// 此位恒 0，解析面前向透传）。
+    pub stage: u8,
     /// 周期 ns = 档位表单源值（规范 §3.4：round(1e9/hz)）。
     pub period_ns: u32,
 }
@@ -1499,7 +1510,7 @@ pub fn encode_panel_caps_rep(out: &mut [u8], rep: &PanelCapsRep) -> usize {
         let o = PANEL_CAPS_REP_HEAD + i * PANEL_TIER_LEN;
         out[o..o + 2].copy_from_slice(&t.hz.to_le_bytes());
         out[o + 2] = t.class;
-        out[o + 3] = 0;
+        out[o + 3] = t.stage;
         out[o + 4..o + 8].copy_from_slice(&t.period_ns.to_le_bytes());
     }
     len
@@ -1515,12 +1526,13 @@ pub fn parse_panel_caps_rep(buf: &[u8]) -> Option<PanelCapsRep> {
     if n > PANEL_TIERS_MAX || buf.len() != PANEL_CAPS_REP_HEAD + PANEL_TIER_LEN * n {
         return None;
     }
-    let mut tiers = [PanelTier { hz: 0, class: 0, period_ns: 0 }; PANEL_TIERS_MAX];
+    let mut tiers = [PanelTier { hz: 0, class: 0, stage: 0, period_ns: 0 }; PANEL_TIERS_MAX];
     for (i, t) in tiers[..n].iter_mut().enumerate() {
         let o = PANEL_CAPS_REP_HEAD + i * PANEL_TIER_LEN;
         *t = PanelTier {
             hz: le16(buf, o)?,
             class: buf[o + 2],
+            stage: buf[o + 3],
             period_ns: le32(buf, o + 4)?,
         };
     }
@@ -1538,6 +1550,360 @@ pub fn parse_panel_caps_rep(buf: &[u8]) -> Option<PanelCapsRep> {
         tiers,
         n_tiers: buf[4],
     })
+}
+
+// ---------- OP_VBLANK_TIMING：vblank 拍点三元组（刷新率体系规范 §4-4 事件面）----------
+
+/// 编码 VBLANK_TIMING 请求（恰 4B 无参 `[op][r][r16]`，VBLANK_WAIT 同形）。
+pub fn encode_vblank_timing_req(out: &mut [u8]) -> usize {
+    assert!(out.len() >= 4, "guiproto: vblank timing buf 不足");
+    out[0] = OP_VBLANK_TIMING;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 0;
+    4
+}
+
+/// 解析 VBLANK_TIMING 请求：恰 4B + op 位（无参；保留域恒不校验）。
+pub fn parse_vblank_timing_req(buf: &[u8]) -> Option<()> {
+    if buf.len() != 4 || buf[0] != OP_VBLANK_TIMING {
+        return None;
+    }
+    Some(())
+}
+
+/// VBLANK_TIMING 应答（阻塞应答 24B：`[st=0][r][r16][seq u64][ts_ns u64]
+/// [refresh_ns u32]`——事件面三元组；VblankRep 16B 是 GOLDEN 钉板面，
+/// 三元组不入彼帧）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VblankTimingRep {
+    /// vblank 序号（软面板全点序；丢弃点消耗序号——客户端见跳号 = 诚实
+    /// 丢帧信号）。
+    pub seq: u64,
+    /// vblank 时刻 ns（FREE = 标称点；DET = 虚拟钟精确步进）。
+    pub ts_ns: u64,
+    /// 本拍刷新周期 ns（切档生效拍起报新周期）。
+    pub refresh_ns: u32,
+}
+
+/// 编码 VBLANK_TIMING 应答（恰 24B；buf 不足 = 调用方错，assert）。
+pub fn encode_vblank_timing_rep(out: &mut [u8], rep: &VblankTimingRep) -> usize {
+    assert!(out.len() >= VBLANK_TIMING_REP_LEN, "guiproto: vblank timing rep buf 不足");
+    out[0] = ST_OK;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 0;
+    out[4..12].copy_from_slice(&rep.seq.to_le_bytes());
+    out[12..20].copy_from_slice(&rep.ts_ns.to_le_bytes());
+    out[20..24].copy_from_slice(&rep.refresh_ns.to_le_bytes());
+    VBLANK_TIMING_REP_LEN
+}
+
+/// 解析 VBLANK_TIMING 应答：恰 24B + st=ST_OK。
+pub fn parse_vblank_timing_rep(buf: &[u8]) -> Option<VblankTimingRep> {
+    if buf.len() != VBLANK_TIMING_REP_LEN || buf[0] != ST_OK {
+        return None;
+    }
+    Some(VblankTimingRep {
+        seq: le64(buf, 4)?,
+        ts_ns: le64(buf, 12)?,
+        refresh_ns: le32(buf, 20)?,
+    })
+}
+
+/// 软面板纯核（刷新率体系规范 §5 四接口的能力/事件/控制/故障注入面的
+/// 可宿测部分）：档位周期表单源（§3.4——表的家自 guifbd `mod panel`
+/// 迁入，规范 §13「按概念迁移不按文件形态」；活设备半件留 guifbd 调用
+/// 侧）+ boot 配置域解包 + 拍点状态机（FREE 零扰动 / DET 虚拟钟 / 故障
+/// 旋钮全确定）。控制面 wire 化（切档 op）在刀3 仲裁器——本模块先立
+/// 内部面 + host 回放门。
+pub mod softpanel {
+    use super::{PANEL_CLASS_LTPO, PANEL_CLASS_PRODUCT, PANEL_CLASS_TEST, RATE_MODEL_FREERANGE};
+
+    /// 首启阶段（规范 §3.1 阶段列）：档位表随分期解锁。
+    pub const STAGE_V1: u8 = 1;
+    pub const STAGE_V2: u8 = 2;
+    pub const STAGE_V3: u8 = 3;
+
+    /// 档位表条目（单源；wire 面 [`super::PanelTier`] 由 guifbd 装配）。
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct TierDef {
+        pub hz: u16,
+        /// 周期 ns = round(1e9/hz)。
+        pub period_ns: u64,
+        /// PANEL_CLASS_*（测试档非测试模式禁选归刀3 仲裁器过滤——面板边
+        /// 只验档位成员制）。
+        pub class: u8,
+        /// STAGE_*。
+        pub stage: u8,
+    }
+
+    /// 档位周期表单源（规范 §3.1 全表：产品 5 + 测试 2 + LTPO 2）。
+    pub const TIERS: [TierDef; 9] = [
+        TierDef { hz: 30, period_ns: 33_333_333, class: PANEL_CLASS_PRODUCT, stage: STAGE_V1 },
+        TierDef { hz: 60, period_ns: 16_666_667, class: PANEL_CLASS_PRODUCT, stage: STAGE_V1 },
+        TierDef { hz: 120, period_ns: 8_333_333, class: PANEL_CLASS_PRODUCT, stage: STAGE_V1 },
+        TierDef { hz: 240, period_ns: 4_166_667, class: PANEL_CLASS_PRODUCT, stage: STAGE_V2 },
+        TierDef { hz: 480, period_ns: 2_083_333, class: PANEL_CLASS_PRODUCT, stage: STAGE_V2 },
+        TierDef { hz: 165, period_ns: 6_060_606, class: PANEL_CLASS_TEST, stage: STAGE_V2 },
+        TierDef { hz: 180, period_ns: 5_555_556, class: PANEL_CLASS_TEST, stage: STAGE_V2 },
+        TierDef { hz: 1, period_ns: 1_000_000_000, class: PANEL_CLASS_LTPO, stage: STAGE_V3 },
+        TierDef { hz: 10, period_ns: 100_000_000, class: PANEL_CLASS_LTPO, stage: STAGE_V3 },
+    ];
+
+    /// Tiered 档位成员校验（表外 → None = 调用方 loud 回退面）。
+    pub fn resolve(hz: u16) -> Option<(u16, u64)> {
+        TIERS.iter().find(|t| t.hz == hz).map(|t| (t.hz, t.period_ns))
+    }
+
+    /// 周期单点换算（§3.4 唯一换算点）：表内直取；表外半取整
+    /// `round(1e9/hz)`——FreeRange 任意 hz 与表外请求共用。hz=0 → 0
+    ///（退化值；调用方档位门在先）。
+    pub fn period_of(hz: u16) -> u64 {
+        match resolve(hz) {
+            Some((_, p)) => p,
+            None if hz > 0 => (1_000_000_000 + hz as u64 / 2) / hz as u64,
+            None => 0,
+        }
+    }
+
+    /// FreeRange 仿真宣告区间（§3.2：1..=480Hz 连续）。
+    pub const FREERANGE_MIN_HZ: u16 = 1;
+    pub const FREERANGE_MAX_HZ: u16 = 480;
+    /// 连续域粒度（默认 1Hz——量化即钳制；粒度面留位给未来非 1 面板）。
+    pub const FREERANGE_GRAN_HZ: u16 = 1;
+
+    /// FreeRange 请求量化：钳区间 + 粒度取整。
+    pub fn freerange_quantize(hz: u16) -> u16 {
+        let hz = hz.max(FREERANGE_MIN_HZ).min(FREERANGE_MAX_HZ);
+        hz - hz % FREERANGE_GRAN_HZ
+    }
+
+    /// 控制面模式（§5；boot 固定，运行期不切换）。
+    pub const MODE_FREE: u8 = 0;
+    /// 宿主锁（刀3 仲裁器立法后接入；刀2 预留在册不生效）。
+    pub const MODE_HOST_LOCK: u8 = 1;
+    /// 确定性钟：t0 由 seed 派生、ts = t0 + k·period 精确步进，墙钟无关
+    ///（§10 T2 回放门——同输入序列 → 位元相等 (seq, ts_ns)）。DET 态关
+    /// 追赶（每醒恰一点）：追赶计数依赖墙钟滞后量，会破回放。
+    pub const MODE_DETERMINISTIC: u8 = 2;
+
+    /// boot info VMO 尾插域 7/8 的解包形（§5 配置面）。零域 = 缺省
+    /// Tiered/FREE/无故障（旧内核 zero 尾 → 缺省态，add-only 尾插纪律）。
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct PanelCfg {
+        /// RATE_MODEL_*。
+        pub model: u8,
+        /// MODE_*。
+        pub mode: u8,
+        /// DET 钟基派生 + LCG 种子（FREE 态仅作后者）。
+        pub seed: u32,
+        /// 丢帧率千分比（0..=1000；0 = 无丢帧）。
+        pub drop_permille: u16,
+        /// 拍点 ts 抖动幅度 ns（仅扰上报 ts，不扰调度与钟基）。
+        pub jitter_ns: u32,
+        /// 切档生效拍起丢弃帧数（面板重配伪影）。
+        pub sw_drop: u8,
+    }
+
+    impl PanelCfg {
+        /// 缺省（零域）形。
+        pub const DEFAULT: PanelCfg = PanelCfg {
+            model: super::RATE_MODEL_TIERED,
+            mode: MODE_FREE,
+            seed: 0,
+            drop_permille: 0,
+            jitter_ns: 0,
+            sw_drop: 0,
+        };
+
+        /// 解包 LE u64 域对（布局见 [`PanelCfg::pack_domains`]——kernel 打包
+        /// 手镜像，host 对拍钉板）。
+        pub fn from_domains(d7: u64, d8: u64) -> PanelCfg {
+            PanelCfg {
+                model: (d7 & 0xFF) as u8,
+                mode: ((d7 >> 8) & 0xFF) as u8,
+                seed: (d7 >> 16) as u32,
+                drop_permille: (d8 & 0xFFFF) as u16,
+                jitter_ns: ((d8 >> 16) & 0xFFFF_FFFF) as u32,
+                sw_drop: ((d8 >> 48) & 0xFF) as u8,
+            }
+        }
+
+        /// 打包 LE u64 域对：域 7 = `[model u8][mode u8][seed u32][r u16]`；
+        /// 域 8 = `[drop_pm u16][jitter_ns u32][sw_drop u8][r u8]`。
+        pub fn pack_domains(&self) -> (u64, u64) {
+            let d7 = (self.model as u64)
+                | ((self.mode as u64) << 8)
+                | ((self.seed as u64) << 16);
+            let d8 = (self.drop_permille as u64)
+                | ((self.jitter_ns as u64) << 16)
+                | ((self.sw_drop as u64) << 48);
+            (d7, d8)
+        }
+    }
+
+    /// 故障裁决 LCG（Knuth MMIX 常数；seed 派生初态）。
+    fn lcg_step(x: &mut u64) -> u64 {
+        *x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *x >> 33
+    }
+
+    /// 软面板拍点状态机。FREE 无故障态 = 现状零扰动面（ts 直通标称点）；
+    /// DET 态虚拟钟墙钟无关；故障旋钮（丢帧/抖动/切档丢帧）LCG 裁决全确定。
+    pub struct SoftPanel {
+        cfg: PanelCfg,
+        hz: u16,
+        period_ns: u64,
+        /// 全点序（丢弃点也消耗——面板拍点存在、事件未投递）。
+        seq: u64,
+        /// DET 虚拟钟：ts = det_base + det_k·period（切档生效拍重锚）。
+        det_base_ns: u64,
+        det_k: u64,
+        /// LCG 状态。
+        rng: u64,
+        /// 在途切档 (新 hz, 新周期, 距生效帧数)。
+        pending: Option<(u16, u64, u32)>,
+        /// 切档生效拍起待丢帧数。
+        sw_drop_left: u8,
+        /// 最近一次切档生效 ACK（无切档 = None）。
+        last_ack: Option<SwitchAck>,
+    }
+
+    /// 切档 ACK（§5 控制面；生效拍拍出）。
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct SwitchAck {
+        /// 生效拍 ts（抖动前标称值——抖动是量测噪声不入钟基）。
+        pub effective_ns: u64,
+        /// 生效后周期。
+        pub new_refresh_ns: u32,
+    }
+
+    impl SoftPanel {
+        /// 由 boot 配置 + 初始档构造（初始档解析归调用方——Tiered 表外
+        /// loud 回退是 guifbd 活设备面）。
+        pub fn new(cfg: PanelCfg, hz: u16) -> SoftPanel {
+            SoftPanel {
+                cfg,
+                hz,
+                period_ns: period_of(hz),
+                seq: 0,
+                det_base_ns: 1_000_000_000 + cfg.seed as u64 * 6_700_417,
+                det_k: 0,
+                rng: 0x9E37_79B9_7F4A_7C15 ^ (cfg.seed as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9),
+                pending: None,
+                sw_drop_left: 0,
+                last_ack: None,
+            }
+        }
+
+        pub fn hz(&self) -> u16 {
+            self.hz
+        }
+
+        pub fn period_ns(&self) -> u64 {
+            self.period_ns
+        }
+
+        pub fn mode(&self) -> u8 {
+            self.cfg.mode
+        }
+
+        /// boot 配置透出（PANEL_CAPS 模型分形等消费面）。
+        pub fn cfg(&self) -> PanelCfg {
+            self.cfg
+        }
+
+        /// 最近切档 ACK（刀3 仲裁器查询面）。
+        pub fn last_ack(&self) -> Option<SwitchAck> {
+            self.last_ack
+        }
+
+        /// FREE 族追赶在席（DET 关——见 MODE_DETERMINISTIC 注）。
+        pub fn catchup(&self) -> bool {
+            self.cfg.mode != MODE_DETERMINISTIC
+        }
+
+        /// 切档请求（§5 控制面，受理排 2 帧生效窗）：Tiered = 档位表成员
+        /// 制（class 过滤归刀3 仲裁器）；FreeRange = 钳制量化。零档/同档/
+        /// 在途重复/表外 → None（拒）。
+        pub fn request_refresh(&mut self, hz: u16) -> Option<()> {
+            if hz == 0 || self.pending.is_some() {
+                return None;
+            }
+            let (hz, p) = match self.cfg.model {
+                RATE_MODEL_FREERANGE => {
+                    let q = freerange_quantize(hz);
+                    (q, period_of(q))
+                }
+                _ => resolve(hz)?,
+            };
+            if p == 0 || p == self.period_ns {
+                return None;
+            }
+            self.pending = Some((hz, p, 2));
+            Some(())
+        }
+
+        /// 拍点裁决：`free_nominal_ns` = FREE 态标称点（调用方调度面值；
+        /// DET 态忽略）。返回 None = 本拍丢弃（seq 仍消耗）。
+        pub fn on_point(&mut self, free_nominal_ns: u64) -> Option<super::VblankTimingRep> {
+            self.seq = self.seq.wrapping_add(1);
+            // ts：FREE = 标称点直通；DET = 虚拟钟精确步进。
+            let nominal = if self.cfg.mode == MODE_DETERMINISTIC {
+                let t = self.det_base_ns.wrapping_add(self.det_k.wrapping_mul(self.period_ns));
+                self.det_k = self.det_k.wrapping_add(1);
+                t
+            } else {
+                free_nominal_ns
+            };
+            // 抖动旋钮：仅扰上报 ts（绘制顺序固定——jitter 抽签恒先于丢帧
+            // 抽签，两旋钮并存时序列仍确定）。
+            let mut ts = nominal;
+            if self.cfg.jitter_ns > 0 {
+                let j = self.cfg.jitter_ns as u64;
+                let d = (lcg_step(&mut self.rng) % (2 * j + 1)) as i64 - j as i64;
+                ts = ts.wrapping_add(d as u64);
+            }
+            // 切档生效窗：受理后第 2 拍 = 生效拍（ts 按旧钟出、refresh 自
+            // 本拍报新周期、DET 钟基重锚）。
+            if let Some((hz, p, left)) = self.pending {
+                if left <= 1 {
+                    self.pending = None;
+                    self.hz = hz;
+                    self.period_ns = p;
+                    self.last_ack = Some(SwitchAck {
+                        effective_ns: nominal,
+                        new_refresh_ns: p as u32,
+                    });
+                    if self.cfg.sw_drop > 0 {
+                        self.sw_drop_left = self.cfg.sw_drop;
+                    }
+                    if self.cfg.mode == MODE_DETERMINISTIC {
+                        self.det_base_ns = nominal;
+                        self.det_k = 1;
+                    }
+                } else {
+                    self.pending = Some((hz, p, left - 1));
+                }
+            }
+            // 丢帧裁决：切档丢帧优先，常丢帧 LCG 千分比。
+            if self.sw_drop_left > 0 {
+                self.sw_drop_left -= 1;
+                return None;
+            }
+            if self.cfg.drop_permille > 0
+                && lcg_step(&mut self.rng) % 1000 < self.cfg.drop_permille as u64
+            {
+                return None;
+            }
+            Some(super::VblankTimingRep {
+                seq: self.seq,
+                ts_ns: ts,
+                refresh_ns: self.period_ns as u32,
+            })
+        }
+    }
 }
 
 // ---------- wm 域（GUI-5：gui-wmd 窗口守护——权威窗口表 + 命中分发）----------
@@ -2116,8 +2482,8 @@ mod tests {
         assert_eq!(RESAMPLE_MIN_DELTA_MS, 2);
         assert_eq!(RESAMPLE_MAX_DELTA_MS, 20);
         assert_eq!(RESAMPLE_MAX_PREDICTION_MS, 8);
-        // 域版本钉板（hdi v2 = 刀1 OP_PANEL_CAPS——刷新率体系规范 §4-4）。
-        assert_eq!((VER_PRESENT, VER_INPUT, VER_HDI), (1, 1, 2));
+        // 域版本钉板（hdi v3 = 刀2 OP_VBLANK_TIMING + PANEL_CAPS v2 stage）。
+        assert_eq!((VER_PRESENT, VER_INPUT, VER_HDI), (1, 1, 3));
         // wm 域帽钉板（GUI-5 §7 Q5——wm const assert 的可见镜像）。
         assert_eq!(WM_WINDOWS_MAX, 15);
         assert_eq!(WM_REQ_MAX, 20);
@@ -2982,24 +3348,25 @@ mod tests {
 
     #[test]
     fn panel_caps_rep_roundtrip_and_rejects() {
-        // Tiered 全表 9 档（规范 §3.1——period_ns = round(1e9/hz) 单源值）。
+        // Tiered 全表 9 档（规范 §3.1——period_ns = round(1e9/hz) 单源值；
+        // stage 自 softpanel::TIERS 单源镜像——v2 应答形）。
         let src = [
-            (30u16, PANEL_CLASS_PRODUCT, 33_333_333u32),
-            (60, PANEL_CLASS_PRODUCT, 16_666_667),
-            (120, PANEL_CLASS_PRODUCT, 8_333_333),
-            (240, PANEL_CLASS_PRODUCT, 4_166_667),
-            (480, PANEL_CLASS_PRODUCT, 2_083_333),
-            (165, PANEL_CLASS_TEST, 6_060_606),
-            (180, PANEL_CLASS_TEST, 5_555_556),
-            (1, PANEL_CLASS_LTPO, 1_000_000_000),
-            (10, PANEL_CLASS_LTPO, 100_000_000),
+            (30u16, PANEL_CLASS_PRODUCT, softpanel::STAGE_V1, 33_333_333u32),
+            (60, PANEL_CLASS_PRODUCT, softpanel::STAGE_V1, 16_666_667),
+            (120, PANEL_CLASS_PRODUCT, softpanel::STAGE_V1, 8_333_333),
+            (240, PANEL_CLASS_PRODUCT, softpanel::STAGE_V2, 4_166_667),
+            (480, PANEL_CLASS_PRODUCT, softpanel::STAGE_V2, 2_083_333),
+            (165, PANEL_CLASS_TEST, softpanel::STAGE_V2, 6_060_606),
+            (180, PANEL_CLASS_TEST, softpanel::STAGE_V2, 5_555_556),
+            (1, PANEL_CLASS_LTPO, softpanel::STAGE_V3, 1_000_000_000),
+            (10, PANEL_CLASS_LTPO, softpanel::STAGE_V3, 100_000_000),
         ];
-        let mut tiers = [PanelTier { hz: 0, class: 0, period_ns: 0 }; PANEL_TIERS_MAX];
-        for (i, &(hz, class, p)) in src.iter().enumerate() {
-            tiers[i] = PanelTier { hz, class, period_ns: p };
+        let mut tiers = [PanelTier { hz: 0, class: 0, stage: 0, period_ns: 0 }; PANEL_TIERS_MAX];
+        for (i, &(hz, class, stage, p)) in src.iter().enumerate() {
+            tiers[i] = PanelTier { hz, class, stage, period_ns: p };
         }
         let rep = PanelCapsRep {
-            version: 1,
+            version: 2,
             rate_model: RATE_MODEL_TIERED,
             flags: 0,
             min_hz: 1,
@@ -3016,6 +3383,8 @@ mod tests {
         let n = encode_panel_caps_rep(&mut buf, &rep);
         assert_eq!(n, PANEL_CAPS_REP_HEAD + PANEL_TIER_LEN * 9);
         assert_eq!(parse_panel_caps_rep(&buf[..n]), Some(rep));
+        // 档位行第 4 字节 = stage（v1 此位恒 0，v2 起在册）。
+        assert_eq!(buf[PANEL_CAPS_REP_HEAD + 3], softpanel::STAGE_V1);
         // FreeRange 形（空档位表 = 头恰 32B；per_frame + vrr capable；
         // tiers 槽清零——n_tiers 外的槽位解析面恒零，比对同形）。
         let mut fr = rep;
@@ -3024,7 +3393,7 @@ mod tests {
         fr.granularity_hz = 1;
         fr.vrr = PANEL_VRR_CAPABLE;
         fr.n_tiers = 0;
-        fr.tiers = [PanelTier { hz: 0, class: 0, period_ns: 0 }; PANEL_TIERS_MAX];
+        fr.tiers = [PanelTier { hz: 0, class: 0, stage: 0, period_ns: 0 }; PANEL_TIERS_MAX];
         let nf = encode_panel_caps_rep(&mut buf, &fr);
         assert_eq!(nf, PANEL_CAPS_REP_HEAD);
         assert_eq!(parse_panel_caps_rep(&buf[..nf]), Some(fr));
@@ -3043,6 +3412,221 @@ mod tests {
             assert_eq!(parse_panel_caps_rep(&bad[..cut]), None, "截断 @{cut} 应拒");
         }
         assert_eq!(parse_panel_caps_rep(&bad[..n + 1]), None);
+    }
+
+    #[test]
+    fn vblank_timing_req_rep_codecs() {
+        // 请求恰 4B 无参（VBLANK_WAIT 同形、op 位别）。
+        let mut buf = [0u8; 32];
+        let n = encode_vblank_timing_req(&mut buf);
+        assert_eq!(n, 4);
+        assert_eq!(&buf[..n], &[OP_VBLANK_TIMING, 0, 0, 0][..]);
+        assert_eq!(parse_vblank_timing_req(&buf[..n]), Some(()));
+        assert_eq!(parse_vblank_timing_req(&buf[..3]), None);
+        assert_eq!(parse_vblank_timing_req(&[OP_VBLANK_TIMING, 0, 0, 0, 0]), None);
+        assert_eq!(parse_vblank_timing_req(&[OP_VBLANK_WAIT, 0, 0, 0]), None);
+        // 应答 24B 三元组往返 + 域取相异值（C-2a 钉板要钉全）。
+        let rep = VblankTimingRep { seq: 0x0102_0304_0506_0708, ts_ns: 0x1111_2222_3333_4444, refresh_ns: 8_333_333 };
+        let n = encode_vblank_timing_rep(&mut buf, &rep);
+        assert_eq!(n, 24);
+        assert_eq!(parse_vblank_timing_rep(&buf[..n]), Some(rep));
+        // 16B GOLDEN 面不混帧：VBLANK_WAIT 解析拒 24B、TIMING 解析拒 16B。
+        let mut vb = [0u8; VBLANK_REP_LEN];
+        let nvb = encode_vblank_rep(&mut vb, &VblankRep { seq: 7, ts_ns: 99 });
+        assert_eq!(parse_vblank_timing_rep(&vb[..nvb]), None);
+        assert_eq!(parse_vblank_rep(&buf[..n]), None);
+        // st 坏 / 截断每切点 / 尾随。
+        assert_eq!(parse_vblank_timing_rep(&{ let mut b = buf; b[0] = ST_NOENT; b }[..n]), None);
+        for cut in 0..n {
+            assert_eq!(parse_vblank_timing_rep(&buf[..cut]), None, "截断 @{cut} 应拒");
+        }
+        assert_eq!(parse_vblank_timing_rep(&buf[..n + 1]), None);
+    }
+
+    // ===== softpanel 纯核（刷新率体系规范 §5；§10 T2 回放门）=====
+
+    #[test]
+    fn softpanel_tier_table_single_source() {
+        // §3.1 全表钉板：(hz, period_ns, class, stage)。
+        assert_eq!(softpanel::TIERS.len(), 9);
+        let expect = [
+            (30u16, 33_333_333u64, PANEL_CLASS_PRODUCT, softpanel::STAGE_V1),
+            (60, 16_666_667, PANEL_CLASS_PRODUCT, softpanel::STAGE_V1),
+            (120, 8_333_333, PANEL_CLASS_PRODUCT, softpanel::STAGE_V1),
+            (240, 4_166_667, PANEL_CLASS_PRODUCT, softpanel::STAGE_V2),
+            (480, 2_083_333, PANEL_CLASS_PRODUCT, softpanel::STAGE_V2),
+            (165, 6_060_606, PANEL_CLASS_TEST, softpanel::STAGE_V2),
+            (180, 5_555_556, PANEL_CLASS_TEST, softpanel::STAGE_V2),
+            (1, 1_000_000_000, PANEL_CLASS_LTPO, softpanel::STAGE_V3),
+            (10, 100_000_000, PANEL_CLASS_LTPO, softpanel::STAGE_V3),
+        ];
+        for (t, e) in softpanel::TIERS.iter().zip(expect) {
+            assert_eq!((t.hz, t.period_ns, t.class, t.stage), e);
+        }
+    }
+
+    #[test]
+    fn softpanel_period_of_and_quantize() {
+        assert_eq!(softpanel::resolve(60), Some((60, 16_666_667)));
+        assert_eq!(softpanel::resolve(77), None);
+        // 表内直取 / 表外半取整单点换算（§3.4 唯一换算点）。
+        assert_eq!(softpanel::period_of(30), 33_333_333);
+        assert_eq!(softpanel::period_of(77), 12_987_013);
+        assert_eq!(softpanel::period_of(50), 20_000_000);
+        assert_eq!(softpanel::period_of(1), 1_000_000_000);
+        assert_eq!(softpanel::period_of(0), 0);
+        // FreeRange 钳制（粒度 1 → 钳制即量化）。
+        assert_eq!(softpanel::freerange_quantize(0), 1);
+        assert_eq!(softpanel::freerange_quantize(300), 300);
+        assert_eq!(softpanel::freerange_quantize(500), 480);
+    }
+
+    #[test]
+    fn softpanel_domain_pack_roundtrip() {
+        // 零域 = 缺省（旧内核 zero 尾 → Tiered/FREE/无故障）。
+        assert_eq!(softpanel::PanelCfg::from_domains(0, 0), softpanel::PanelCfg::DEFAULT);
+        // 全字段往返 + 位布局钉板（kernel 打包手镜像对拍面）。
+        let cfg = softpanel::PanelCfg {
+            model: RATE_MODEL_FREERANGE,
+            mode: softpanel::MODE_DETERMINISTIC,
+            seed: 0xDEAD_BEEF,
+            drop_permille: 137,
+            jitter_ns: 250_000,
+            sw_drop: 2,
+        };
+        let (d7, d8) = cfg.pack_domains();
+        // 域 7 = [model u8][mode u8][seed u32][r u16]。
+        assert_eq!(d7 & 0xFF, RATE_MODEL_FREERANGE as u64);
+        assert_eq!((d7 >> 8) & 0xFF, softpanel::MODE_DETERMINISTIC as u64);
+        assert_eq!((d7 >> 16) as u32, 0xDEAD_BEEF);
+        assert_eq!(d7 >> 48, 0);
+        // 域 8 = [drop_pm u16][jitter_ns u32][sw_drop u8][r u8]。
+        assert_eq!(d8 & 0xFFFF, 137);
+        assert_eq!((d8 >> 16) as u32, 250_000);
+        assert_eq!((d8 >> 48) & 0xFF, 2);
+        assert_eq!(d8 >> 56, 0);
+        assert_eq!(softpanel::PanelCfg::from_domains(d7, d8), cfg);
+    }
+
+    #[test]
+    fn softpanel_free_passthrough_zero_disturbance() {
+        // FREE 无故障 = 现状零改动面：ts 直通标称点、seq 自 1 连续、
+        // refresh = 当前档周期、追赶在席。
+        let mut p = softpanel::SoftPanel::new(softpanel::PanelCfg::DEFAULT, 60);
+        assert!(p.catchup());
+        let mut nominal = 10_000_000_000u64;
+        for i in 1..=3u64 {
+            let t = p.on_point(nominal).unwrap();
+            assert_eq!((t.seq, t.ts_ns, t.refresh_ns), (i, nominal, 16_666_667));
+            nominal += 16_666_667;
+        }
+    }
+
+    #[test]
+    fn softpanel_det_replay() {
+        // T2 回放门：DET 同 seed → 位元相等 (seq, ts_ns, refresh_ns)，
+        // 与墙钟输入序列完全无关。
+        let run = |seed: u32, walls: &[u64]| -> Vec<(u64, u64, u32)> {
+            let cfg = softpanel::PanelCfg { mode: softpanel::MODE_DETERMINISTIC, seed, ..softpanel::PanelCfg::DEFAULT };
+            let mut p = softpanel::SoftPanel::new(cfg, 60);
+            walls
+                .iter()
+                .map(|&w| {
+                    let t = p.on_point(w).unwrap();
+                    (t.seq, t.ts_ns, t.refresh_ns)
+                })
+                .collect()
+        };
+        let a = run(42, &[0, 5, 999, 123_456]);
+        let b = run(42, &[7_777_777, 3, 80, 1_000_000_000]);
+        assert_eq!(a, b, "同 seed 异墙钟 → 必位元相等");
+        // 序列钉板：t0 = 1e9 + seed·6700417、间距恰一周期。
+        assert_eq!(a[0].1, 1_000_000_000u64 + 42 * 6_700_417);
+        assert!(a.windows(2).all(|w| w[1].1 - w[0].1 == 16_666_667));
+        // 异 seed → 异钟基（非巧合等序）。
+        assert_ne!(run(43, &[0])[0].1, a[0].1);
+        // DET 关追赶。
+        let p = softpanel::SoftPanel::new(
+            softpanel::PanelCfg { mode: softpanel::MODE_DETERMINISTIC, ..softpanel::PanelCfg::DEFAULT },
+            60,
+        );
+        assert!(!p.catchup());
+    }
+
+    #[test]
+    fn softpanel_switch_two_frame_window() {
+        // 受理 → 第 1 拍旧节拍、第 2 拍 = 生效拍（ts 旧钟、refresh 新周期、
+        // ACK 出席）、第 3 拍起新节拍。
+        let mut p = softpanel::SoftPanel::new(softpanel::PanelCfg::DEFAULT, 60);
+        assert_eq!(p.request_refresh(120), Some(()));
+        let t1 = p.on_point(10_000_000_000).unwrap();
+        assert_eq!((t1.refresh_ns, p.hz()), (16_666_667, 60));
+        assert_eq!(p.last_ack(), None);
+        let t2 = p.on_point(10_016_666_667).unwrap();
+        assert_eq!(t2.refresh_ns, 8_333_333);
+        let ack = p.last_ack().unwrap();
+        assert_eq!((ack.effective_ns, ack.new_refresh_ns), (t2.ts_ns, 8_333_333));
+        let t3 = p.on_point(10_033_333_334).unwrap();
+        assert_eq!(t3.refresh_ns, 8_333_333);
+        // Tiered 表外拒（档位成员制）；零档/同档/在途重复拒。
+        let mut q = softpanel::SoftPanel::new(softpanel::PanelCfg::DEFAULT, 60);
+        assert_eq!(q.request_refresh(77), None);
+        assert_eq!(q.request_refresh(0), None);
+        assert_eq!(q.request_refresh(60), None);
+        assert_eq!(q.request_refresh(120), Some(()));
+        assert_eq!(q.request_refresh(30), None, "在途重复请求应拒");
+        // FreeRange：表外受理（钳制量化——500 → 480）。
+        let mut f = softpanel::SoftPanel::new(
+            softpanel::PanelCfg { model: RATE_MODEL_FREERANGE, ..softpanel::PanelCfg::DEFAULT },
+            60,
+        );
+        assert_eq!(f.request_refresh(500), Some(()));
+        f.on_point(1).unwrap();
+        let t = f.on_point(2).unwrap();
+        assert_eq!((t.refresh_ns, f.hz()), (2_083_333, 480));
+    }
+
+    #[test]
+    fn softpanel_fault_knobs() {
+        // drop=1000‰ → 全丢（seq 仍消耗——面板拍点在、事件不投递）。
+        let cfg = softpanel::PanelCfg { drop_permille: 1000, ..softpanel::PanelCfg::DEFAULT };
+        let mut p = softpanel::SoftPanel::new(cfg, 60);
+        for i in 1..=3u64 {
+            let t = p.on_point(i);
+            assert_eq!(t, None);
+        }
+        // drop 后投递面 seq 单调且见跳号（诚实丢帧信号）。
+        let cfg = softpanel::PanelCfg { drop_permille: 500, seed: 7, ..softpanel::PanelCfg::DEFAULT };
+        let mut p = softpanel::SoftPanel::new(cfg, 60);
+        let seqs: Vec<u64> = (0..200u64).filter_map(|i| p.on_point(i).map(|t| t.seq)).collect();
+        assert!(!seqs.is_empty() && seqs.windows(2).all(|w| w[1] > w[0]));
+        assert!(seqs.len() < 200, "drop=500‰ 200 拍全过 = LCG 未生效");
+        assert!(seqs.windows(2).any(|w| w[1] - w[0] > 1), "无跳号 = 丢帧未耗 seq");
+        // jitter：|ts - nominal| ≤ 幅度；同输入序列 → 位元相等。
+        let cfg = softpanel::PanelCfg { jitter_ns: 1000, seed: 9, ..softpanel::PanelCfg::DEFAULT };
+        let mut p = softpanel::SoftPanel::new(cfg, 60);
+        let mut snaps = Vec::new();
+        for i in 0..50u64 {
+            let nom = 1_000_000_000 + i * 16_666_667;
+            let t = p.on_point(nom).unwrap();
+            let delta = (t.ts_ns as i64 - nom as i64).abs();
+            assert!(delta <= 1000, "jitter 越幅 @{i}: {delta}");
+            snaps.push(t);
+        }
+        let mut p2 = softpanel::SoftPanel::new(cfg, 60);
+        for (i, s) in snaps.iter().enumerate() {
+            let nom = 1_000_000_000 + i as u64 * 16_666_667;
+            assert_eq!(p2.on_point(nom).unwrap(), *s, "jitter 序列不确定 @{i}");
+        }
+        // sw_drop：切档生效拍起丢 N 拍，恢复后 seq 连续于全点序。
+        let cfg = softpanel::PanelCfg { sw_drop: 2, ..softpanel::PanelCfg::DEFAULT };
+        let mut p = softpanel::SoftPanel::new(cfg, 60);
+        p.request_refresh(120).unwrap();
+        p.on_point(1).unwrap(); // 旧节拍拍
+        assert!(p.on_point(2).is_none()); // 生效拍丢 1/2
+        assert!(p.on_point(3).is_none()); // 丢 2/2
+        let t = p.on_point(4).unwrap(); // 恢复投递（新节拍）
+        assert_eq!((t.seq, t.refresh_ns), (4, 8_333_333));
     }
 
     // ===== 5. 前向兼容锚：保留位解析侧恒不校验 =====

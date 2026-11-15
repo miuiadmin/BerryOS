@@ -143,7 +143,7 @@ fn on_wm(table: &mut table::WmTable, present_cli: Handle, hdi_cli: Handle, ch: H
         Some(&op) if (gp::OP_GETINFO..=gp::OP_POWER_MODE).contains(&op) => {
             relay::relay(ch, present_cli, msg, hs);
         }
-        Some(&op) if (gp::OP_REG_VBLANK..=gp::OP_PANEL_CAPS).contains(&op) => {
+        Some(&op) if (gp::OP_REG_VBLANK..=gp::OP_VBLANK_TIMING).contains(&op) => {
             relay::relay(ch, hdi_cli, msg, hs);
         }
         Some(&op) if (gp::OP_WM_GETINFO..=0x7F).contains(&op) => {

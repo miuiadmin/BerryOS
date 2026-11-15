@@ -48,7 +48,7 @@ fn expect_attach(msg: &[u8]) -> Option<(usize, usize)> {
         },
         Some(&op)
             if (gp::OP_GETINFO..=gp::OP_POWER_MODE).contains(&op)
-                || (gp::OP_VBLANK_WAIT..=gp::OP_PANEL_CAPS).contains(&op) =>
+                || (gp::OP_VBLANK_WAIT..=gp::OP_VBLANK_TIMING).contains(&op) =>
         {
             Some((0, 0))
         }

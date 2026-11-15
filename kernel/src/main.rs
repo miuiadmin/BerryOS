@@ -232,6 +232,121 @@ fn display_mode_req() -> Option<(u32, u32, u16)> {
     Some((w.parse().ok()?, h.parse().ok()?, hz))
 }
 
+/// fw_cfg 字符串项读入 + trim（display_mode_req 同款纪律：NUL/空白剥壳），
+/// 交闭包消费（无分配、无拷回——&str 借用不外逸）。缺席/空/超 32B/
+/// 非 UTF-8 = None。
+fn fwcfg_trimmed<R>(name: &str, f: impl FnOnce(&str) -> R) -> Option<R> {
+    use berry_hal_aarch64::fwcfg;
+    let e = fwcfg::find_file(name)?;
+    if e.size == 0 || e.size > 32 {
+        return None;
+    }
+    let mut buf = [0u8; 32];
+    if !fwcfg::read_to(&e, &mut buf[..e.size as usize]) {
+        return None;
+    }
+    let s = core::str::from_utf8(&buf[..e.size as usize]).ok()?;
+    Some(f(s.trim_matches(|c: char| c == '\0' || c.is_ascii_whitespace())))
+}
+
+/// 刀2（刷新率体系规范 §5 配置面）：fw_cfg 软面板三旋钮 → boot VMO 尾插
+/// 域 7/8 LE u64 对（位布局 = guiproto `softpanel::PanelCfg::pack_domains`
+/// 手镜像，host 对拍钉板——内核不依赖用户态 crate）：
+/// `opt/berry/panel-model` = `tiered|freerange`（缺省 tiered）、
+/// `opt/berry/panel-mode` = `free|det|det:SEED`（缺省 free；HOST_LOCK 在册
+/// 未接线——刀3 仲裁器，本刀不收）、`opt/berry/panel-fault` =
+/// `D,J,S` 十进制 CSV（丢帧千分比 0..=1000 / 抖动 ns / 切档丢帧 0..=16）。
+/// 非法值 loud 回退缺省 + `PANEL … fail` 诊断行（DISP hz fail 同款）；
+/// 零域 = 缺省态（旧 guifbd 只读前 56B 无扰动，add-only 尾插纪律）。
+/// 任一旋钮非缺省时打 `PANEL cfg …` 证据行（宿主探针取证面）。
+fn panel_cfg_req() -> (u64, u64) {
+    use berry_hal_aarch64::uart_puts;
+    // model：0=Tiered 1=FreeRange。
+    let (mut model, mut model_name) = (0u64, b"tiered".as_slice());
+    if let Some(m) = fwcfg_trimmed("opt/berry/panel-model", |s| match s {
+        "tiered" => 0u64,
+        "freerange" => 1,
+        _ => {
+            uart_puts(b"PANEL model fail\n");
+            0
+        }
+    }) {
+        model = m;
+        if m == 1 {
+            model_name = b"freerange";
+        }
+    }
+    // mode：0=FREE 2=DET（+seed）；det:SEED 形收种子，SEED 非法整旋钮回退。
+    let (mut mode, mut seed) = (0u64, 0u64);
+    let mut mode_name = b"free".as_slice();
+    if let Some((m, sd)) = fwcfg_trimmed("opt/berry/panel-mode", |s| match s {
+        "free" => (0u64, 0u64),
+        "det" => (2, 0),
+        s if s.starts_with("det:") => match s[4..].parse::<u32>() {
+            Ok(v) => (2, v as u64),
+            Err(_) => {
+                uart_puts(b"PANEL mode fail\n");
+                (0, 0)
+            }
+        },
+        _ => {
+            uart_puts(b"PANEL mode fail\n");
+            (0, 0)
+        }
+    }) {
+        mode = m;
+        seed = sd;
+        if m == 2 {
+            mode_name = b"det";
+        }
+    }
+    // fault：D,J,S 严格三字段（多余字段/越界/非数字 = 整旋钮回退零）。
+    let (mut drop_pm, mut jitter, mut sw) = (0u64, 0u64, 0u64);
+    let mut fault_seen = false;
+    if let Some(vals) = fwcfg_trimmed("opt/berry/panel-fault", |s| {
+        let mut parts = s.split(',');
+        let (a, b, c, tail) =
+            (parts.next(), parts.next(), parts.next(), parts.next());
+        if let (Some(a), Some(b), Some(c), None) = (a, b, c, tail) {
+            if let (Ok(d), Ok(j), Ok(w)) =
+                (a.parse::<u16>(), b.parse::<u32>(), c.parse::<u8>())
+            {
+                if d <= 1000 && w <= 16 {
+                    return (d as u64, j as u64, w as u64);
+                }
+            }
+        }
+        uart_puts(b"PANEL fault fail\n");
+        (0, 0, 0)
+    }) {
+        fault_seen = true;
+        (drop_pm, jitter, sw) = vals;
+    }
+    // 证据行：任一非缺省才打（探针取证面；无 `ok` 形态——不撞在册标记）。
+    let d7 = model | (mode << 8) | (seed << 16);
+    let d8 = drop_pm | (jitter << 16) | (sw << 48);
+    if d7 != 0 || d8 != 0 {
+        uart_puts(b"PANEL cfg model=");
+        uart_puts(model_name);
+        uart_puts(b" mode=");
+        uart_puts(mode_name);
+        if mode == 2 {
+            uart_puts(b" seed=");
+            berry_hal_aarch64::uart_put_dec(seed);
+        }
+        if fault_seen && (drop_pm != 0 || jitter != 0 || sw != 0) {
+            uart_puts(b" drop=");
+            berry_hal_aarch64::uart_put_dec(drop_pm);
+            uart_puts(b" jit=");
+            berry_hal_aarch64::uart_put_dec(jitter);
+            uart_puts(b" sw=");
+            berry_hal_aarch64::uart_put_dec(sw);
+        }
+        uart_puts(b"\n");
+    }
+    (d7, d8)
+}
+
 /// 内核 Rust 入口（由 HAL boot asm 的 `br rust_main` 调用——2b-1 起高半入口）。
 /// C-ABI 约定（ADR #18），符号名与 asm 精确匹配；首参 = 入口 x0（boot asm 的
 /// x19 抢救）——**双语义**（V-1a 分流）：EFI 路 = BerryHandoff PA（BerryBoot
@@ -1349,12 +1464,16 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                         h_fb, 0x0001_0005,
                         "main: svcmgr 表 fb VMO 须第 5 插 0x0001_0005（编译侧硬编码）"
                     );
-                    // 几何 info VMO：56B = fb_pa/w/h/stride/fmt/gui/refresh_hz
-                    // 七域 u64 LE（一页 VMO，create+commit+write 三连——
-                    // rootfs VMO 同款；第 7 域 = 刀1 率通路尾插，add-only
-                    // 不重排——旧 guifbd 只读前 48B 无扰动，新 guifbd 读
-                    // 旧内核零页 = 0 → 回退 60）。
-                    let mut info = [0u8; 56];
+                    // 几何 info VMO：72B = fb_pa/w/h/stride/fmt/gui/refresh_hz
+                    // + 软面板 cfg 两域 = 九域 u64 LE（一页 VMO，create+
+                    // commit+write 三连——rootfs VMO 同款；第 7 域 = 刀1
+                    // 率通路尾插、第 8/9 域 = 刀2 软面板 cfg（model/mode/
+                    // seed + 故障旋钮，位布局 = guiproto
+                    // `softpanel::PanelCfg::pack_domains` 手镜像），add-only
+                    // 不重排——旧 guifbd 只读前 56B 无扰动，新 guifbd 读
+                    // 旧内核零页 = 0 → 缺省态）。
+                    let (panel_d7, panel_d8) = panel_cfg_req();
+                    let mut info = [0u8; 72];
                     info[0..8].copy_from_slice(&fb_pa.to_le_bytes());
                     info[8..16].copy_from_slice(&(w as u64).to_le_bytes());
                     info[16..24].copy_from_slice(&(h as u64).to_le_bytes());
@@ -1362,6 +1481,8 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                     info[32..40].copy_from_slice(&(fmt as u64).to_le_bytes());
                     info[40..48].copy_from_slice(&(gui_mode as u64).to_le_bytes());
                     info[48..56].copy_from_slice(&(gui_hz as u64).to_le_bytes());
+                    info[56..64].copy_from_slice(&panel_d7.to_le_bytes());
+                    info[64..72].copy_from_slice(&panel_d8.to_le_bytes());
                     let mut ivmo =
                         vmo::Vmo::create(4096).expect("main: fbinfo Vmo create");
                     ivmo.commit(mm::frames(), 0, 4096)

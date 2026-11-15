@@ -480,6 +480,57 @@ fn main() {
         fail(&format!("vblank seq={} ts={}", vb.seq, vb.ts_ns));
     }
 
+    // —— 刀2 消费面：PANEL_CAPS 断言（n 帽内 / min≤cur≤max / 当前周期 =
+    // softpanel 周期单源换算——Tiered 查表值与 FreeRange 单点换算同路）
+    // + VBLANK_TIMING 三元组（事件面：refresh 与 caps 当前档一致）。
+    // `gfx:` 前缀小写诊断行——DET 相同 seed 双 boot 逐字节同（T2 guest 证面）。
+    let m = gp::encode_panel_caps_req(&mut req);
+    let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+    let caps = match gp::parse_panel_caps_rep(&rep[..n]) {
+        Some(c) => c,
+        None => fail(&format!("panel caps bad st={}", rep[0])),
+    };
+    if caps.version < 1
+        || caps.n_tiers as usize > gp::PANEL_TIERS_MAX
+        || !(caps.min_hz <= caps.current_hz && caps.current_hz <= caps.max_hz)
+    {
+        fail(&format!(
+            "caps bad ver={} n={} {}..={} cur={}",
+            caps.version, caps.n_tiers, caps.min_hz, caps.max_hz, caps.current_hz
+        ));
+    }
+    if caps.current_hz == 0
+        || caps.current_period_ns as u64 != gp::softpanel::period_of(caps.current_hz)
+    {
+        fail(&format!(
+            "caps period hz={} ns={} expect={}",
+            caps.current_hz,
+            caps.current_period_ns,
+            gp::softpanel::period_of(caps.current_hz)
+        ));
+    }
+    println!(
+        "gfx: caps model={} n={} cur={}",
+        caps.rate_model, caps.n_tiers, caps.current_hz
+    );
+
+    let m = gp::encode_vblank_timing_req(&mut req);
+    let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+    let vbt = match gp::parse_vblank_timing_rep(&rep[..n]) {
+        Some(t) => t,
+        None => fail(&format!("vblank timing bad st={}", rep[0])),
+    };
+    if vbt.seq < 1 || vbt.ts_ns == 0 || vbt.refresh_ns != caps.current_period_ns {
+        fail(&format!(
+            "vbt seq={} ts={} refresh={} (caps ns={})",
+            vbt.seq, vbt.ts_ns, vbt.refresh_ns, caps.current_period_ns
+        ));
+    }
+    println!(
+        "gfx: vb3 seq={} ts={} refresh={}",
+        vbt.seq, vbt.ts_ns, vbt.refresh_ns
+    );
+
     let mut alias2: Handle = 0;
     if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias2) != 0 || alias2 == 0 {
         fail("dup alias2");
