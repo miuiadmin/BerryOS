@@ -24,21 +24,21 @@
 | 4 | Col/Row | kind | ✅ 已在位 |
 | 5 | Grid | kind | ✅ 已在位 |
 | 6 | Pager (SwipePager) | kind+控制器 | ✅ 已在位 |
-| 7 | Button（含 icon 槽） | kind | 🆕 |
-| 8 | Toggle | kind | 🆕 |
-| 9 | Slider | kind | 🆕 |
-| 10 | Progress（linear/circular） | kind | 🆕 |
-| 11 | Select | kind | 🆕 |
-| 12 | Input（单行） | kind | 🆕（依赖输入焦点协议） |
-| 13 | Edit（多行） | kind | 🆕 |
-| 14 | Scroll | kind | 🆕 |
-| 15 | List（懒列表） | kind | 🆕 |
-| 16 | Tabs | kind | 🆕 |
-| 17 | Dialog | 服务件 overlay | 🆕 |
-| 18 | Menu（含 Context） | 服务件 overlay | 🆕 |
-| 19 | AppBar | 模式件 | 🆕 |
-| 20 | Nav 页面栈 | 模式件 | 🆕 |
-| + | Canvas 自绘 | kind | 🆕 |
+| 7 | Button（含 icon 槽） | kind | ✅ 已在位 |
+| 8 | Toggle | kind | ✅ 已在位 |
+| 9 | Slider | kind | ✅ 已在位 |
+| 10 | Progress（linear/circular） | kind | ✅ 已在位 |
+| 11 | Select | kind | ✅ 已在位 |
+| 12 | Input（单行） | kind | ✅ 已在位 |
+| 13 | Edit（多行） | kind | ✅ 已在位 |
+| 14 | Scroll | kind | ✅ 已在位 |
+| 15 | List（懒列表） | kind | ✅ 已在位 |
+| 16 | Tabs | kind | ✅ 已在位 |
+| 17 | Dialog | 服务件 overlay | ✅ 已在位 |
+| 18 | Menu（含 Context） | 服务件 overlay | ✅ 已在位 |
+| 19 | AppBar | 模式件 | ✅ 已在位 |
+| 20 | Nav 页面栈 | 模式件 | ✅ 已在位 |
+| + | Canvas 自绘 | kind | ✅ 已在位 |
 
 ## 三、P1 多数集合（≥3 系统）——25 组件
 
@@ -90,3 +90,4 @@ berry-ui 的定容资源是**账目**，不是无限供给；任何往桌面树/
 3. **失败必须显眼**：建树/挂载路径的 `fail()`/Err 输出带可 grep 前缀（如 `!! LAUNCH FATAL`）——11-15 判例里 fail 行混自测噪声流肉眼必漏，放大成「串口全绿但恒黑」的误判。
 4. **对照测试同批构建**：分辨率/档位对照必须同镜像同批产物——跨批次对照制造了「480/800 正常、1080 黑」的分辨率假象（真因与分辨率无关）。
 5. **账目护栏进 CI（建议）**：a11y/arena/press_map 账目以静态断言或单测数钉住——树增长先红测，不再红屏。
+6. **多会话同笔资产合并后过语法门（2026-11-15 续判例）**：berry.js 等被多会话先后编辑的资产，合并后必须 `node --check`（JS）或对应语法门跑一次——当晚 F44 机能并入时残留重复 `const btnOff` 声明，整页 SyntaxError 静默黑在「初始化中」，资产在位/最新都不代表能跑。
