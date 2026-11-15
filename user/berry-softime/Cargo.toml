@@ -1,0 +1,18 @@
+# berry-softime —— softimed 软键盘引擎 v1（刀 C/波 3 件：QWERTY-lite ASCII）
+#
+# 六波总纲步骤 4「softimed（SERVICE 底窗 QWERTY-lite ASCII，显隐=焦点窗
+# ime_wanted，按键经 OP_INPUT_INJECT 与真实输入同一事件面）」的引擎半件：
+# 键位模型 + 按键→DEV_TEXT/DEV_KEYBOARD 注入载荷编码（走 berry-guiproto
+# codec 单源）+ 显隐状态机。**SERVICE 底窗本体随波 3 分支并主接线**
+# （前置 = 主树已提交面 wm_layer_known 尚拒 layer=2——C-RECON §一）；
+# 届时 softimed bin 挂本引擎 + 渲染面，此 crate 零改动吸收。
+# 形态照 berry-layout 家族：cfg_attr(not(test), no_std) + host 测试。
+[package]
+name = "berry-softime"
+version.workspace = true
+edition = "2021"
+description = "BerryOS soft IME engine v1: QWERTY-lite ASCII key model + OP_INPUT_INJECT payload codec + face state"
+license = "Apache-2.0"
+
+[dependencies]
+berry-guiproto = { path = "../berry-guiproto" }

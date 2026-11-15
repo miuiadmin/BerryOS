@@ -45,7 +45,7 @@
 #      C-4b 起七段、GUI-4 段② 起八段（+h QMP 注入往返）、sim-S1 M3 起
 #      +serial1 battery 快照四流（OK×2/BAD/STALE，ACK 宿主逐字节对拍））：
 #      三拉 QEMU 带 -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），
-#      88 基础标记 + RX 专属 SIMBAT/PWRKEY（boot 32 + rootfs 56——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
+#      88 基础标记 + RX 专属 SIMBAT/BATT/PWRKEY（boot 32 + rootfs 56——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
 #      FATW ok/NET ok ping=/DNS ok addr=/TCP ok echo=/LSN ok n=7/TCPS ok echo=/
 #      APP ok n=/APPUI ok n=/
 #      DIR ok n=/U1 ok/U2 ok/U3 ok/B1 ok n=4/DF ok/U4 ok/TAB ok/INT ok/POLL ok/
@@ -1204,6 +1204,10 @@ while :; do
     && [ "$n_sim" -eq 2 ] && break
   [ $(( $(date +%s) - t4 )) -gt 60 ] && fail \
     "SIMBAT 60s 未达正形（须恰 seq=1/seq=2 两行，实得 ${n_sim} 行——查 siminj ACK 与 task_simcon）"
+  # 刀 C 发布面：每个被接受的电池帧随行发布真值标记（pct/state——launcher
+  # 消费通道随波 3 接线，此标记 = 真值在场的机器门）。
+  grep -aqF 'BATT ok pct=' "$LOG" \
+    || fail "BATT ok pct= 未随 SIMBAT 出现（刀 C 发布面断裂——查 simbattery print_batt）"
   sleep 1
 done
 # sim-S2 A4②（PM-16 §4.2）：PM 微相——QMP system_powerdown 注入 PL061 GPIO3

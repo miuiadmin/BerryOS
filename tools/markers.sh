@@ -50,7 +50,7 @@ ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" 
 # 无注入 client，不并入 ROOTFS_MARKERS——否则 rootfs 相标记门恒假红）。
 # 消费点 = smoke.sh RX 相 sim 段（对拍 sweep，防死单源）；PWRKEY = sim-S2
 # A4② PM 微相（QMP system_powerdown 注入 PL061 无主 IRQ）。
-RX_MARKERS=("SIMBAT ok seq=" "PWRKEY unowned n=")
+RX_MARKERS=("SIMBAT ok seq=" "BATT ok pct=" "PWRKEY unowned n=")
 
 # 防假绿兜底：单源被误清空 = 轮询零等待恒过——非空断言 loud 拒（P6 A-5
 # 「基准重产义务要有机器守卫」族精神沿袭）。

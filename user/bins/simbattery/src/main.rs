@@ -68,6 +68,13 @@ fn main() {
                     send_ack(ack, f.dev, f.seq, st);
                     if st == ST_OK {
                         print_ok(f.seq);
+                        // 刀 C 发布面：真值快照随帧解码发布（串口标记形态——
+                        // launcher/系统状态栏消费通道（svcmgr channel 礼物
+                        // 对）设计在 C-IMPL §三挂账，随波 3 launcher 重写
+                        // 同批接线；本标记即「真值在场」的可观测证据）。
+                        if let berry_pwproto::Snapshot::Battery(b) = f.snap {
+                            print_batt(b.capacity_pct, b.status);
+                        }
                     }
                 }
                 // 头合法帧收齐但语义拒（ver/值域）：显式 BAD——「没收到」
@@ -148,6 +155,40 @@ fn print_ok(seq: u16) {
         line[i] = digits[nd];
         i += 1;
     }
+    line[i] = b'\n';
+    i += 1;
+    console_write(&line[..i]);
+}
+
+/// 刀 C 发布面标记：`BATT ok pct=N state=S\n`（整行一条 channel 消息——
+/// print_ok 同形；与 SIMBAT 标记互非子串，gui8-smoke 可选挂）。state =
+/// pwproto status 四态（0/1/2/3——值域执法已在 decode 侧）。
+fn print_batt(pct: u8, state: u8) {
+    const PREFIX: &[u8] = b"BATT ok pct="; // 12B
+    let mut line = [0u8; PREFIX.len() + 3 + 8 + 1]; // pct ≤3 位 + " state=S" + '\n'
+    line[..PREFIX.len()].copy_from_slice(PREFIX);
+    let mut i = PREFIX.len();
+    let mut digits = [0u8; 3];
+    let mut nd = 0usize;
+    let mut v = pct as u32;
+    loop {
+        digits[nd] = b'0' + (v % 10) as u8;
+        nd += 1;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    while nd > 0 {
+        nd -= 1;
+        line[i] = digits[nd];
+        i += 1;
+    }
+    const SUFFIX: &[u8] = b" state=";
+    line[i..i + SUFFIX.len()].copy_from_slice(SUFFIX);
+    i += SUFFIX.len();
+    line[i] = b'0' + state;
+    i += 1;
     line[i] = b'\n';
     i += 1;
     console_write(&line[..i]);
