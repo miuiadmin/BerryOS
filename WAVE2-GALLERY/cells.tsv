@@ -1,0 +1,44 @@
+name	label	w	h	fnv1a64
+kind_button	Button Filled/Outlined/Text	460	170	7da323b93cb7317a
+kind_button_states	Button N/P/D (P=press hold; D=path-1 pending)	460	200	64db856aed3b07a1
+kind_toggle	Toggle off/on	460	150	db31e96be233ba2a
+kind_slider	Slider 60%	460	140	1a74f0304f0c6dbd
+kind_progress	Progress 0/40/90 + Indet + Circular (v1 linear)	460	260	99bcfc2ea43538d2
+kind_tabs	Tabs 3 pages active=1 (strip + sibling content)	460	410	a6c827c5f37db73e
+kind_sbar	Sbar H 20-50% + V 10-60%	460	300	d7d5e42f6dc6f36d
+kind_scroll	Scroll offset=200 (clip=path-1, root-mounted)	460	300	2ec3b91393b9c125
+kind_list	List 4 rows h=72	460	380	3c0ef7c879957de5
+kind_check	Check off/on	460	150	278b5642bc9812be
+kind_radio	Radio group 7 off/on	460	150	c694be6ee8cea5b2
+kind_seg	Seg 3 active=1	460	140	38a188adb438ed65
+kind_badge	Badge 5 / 99+ / dot	460	150	9271b63f948a2396
+kind_divider	Divider h + insets	460	190	402098e8c612870a
+kind_spacer	Spacer flex=1 (v1 0x0)	460	160	945e2ba34a5b9c8a
+kind_stack	Stack z = child order	460	210	de3c446edc32b455
+kind_step	Step 2/8 (- value +)	460	140	3804f6dcb9c826e6
+kind_select	Select collapsed (3/4)	460	150	6de6195f69ce7888
+kind_input	Input placeholder + focused caret	460	220	f6e0b83b15a85b21
+kind_edit	Edit 200x96 (v1 single run)	460	240	95a720941ffbc112
+kind_canvas	Canvas 200x200 static face	460	250	d06ef53af02c0b25
+kind_tip	Tip bubble	460	180	cde97a00751db9ac
+kind_refresh	Refresh pull bar 60% (no-child face, root-mounted)	460	120	a35fda372c5a80bd
+kind_swipeitem	SwipeItem reveal 25%/50% (root-mounted)	460	200	70daa50f501a34a5
+kind_datepick	DatePick 2026-11-15	460	150	c6335a8da789e470
+kind_timepick	TimePick 09:05 / 13:45 (v1 raw)	460	150	18c1e721f6ba276b
+kind_collapse	Collapse open/closed	460	300	ce0b3704d9e819aa
+kind_chip	Chip on/off (v1 square)	460	150	a4abeec93830b25d
+kind_fab	Fab circle + extended	460	160	dd9faa3c5a36d0a5
+kind_card	Card elev=2 r=24 (v1 square)	460	290	dff78874d47d35ad
+kind_gauge	Gauge 75% / 30% (v1 bar face)	460	220	9db32e13b00969f5
+kind_qr	Qr module_count=21 (v1 pattern)	460	190	cca026b494e06be5
+kind_dragreorder	DragReorder handles 3 rows	460	250	e7857b9f66eadd15
+kind_image	Image res=9 (ARGB host source)	460	170	90d2a30474935a32
+kind_icon	Icon 16x16 glyphs (host premix)	460	170	fcf9c80302fd4391
+kind_grid	Grid 3x2 gap=8	460	240	f8aec51d796d3f52
+kind_text	Text scale ladder	460	260	2ab86b2d5c70dce9
+kind_rect	Rect swatches = theme light tokens	460	160	e1bd11d439fe16e2
+kind_layout	Root/Col/Row/Pad anchor	460	240	7ebae4bd3fa1c155
+pat_topbar	pattern TopBar 56vp = 168px @3x	460	280	aa9fb801f49dce37
+pat_bottomtabs	pattern BottomTabs 48vp = 144px active=0	460	280	516ad0dd5d6ce1c4
+pat_listitem_5state	pattern ItemState 5-state rows LISTITEM_H	460	900	64d6e985951d9d95
+pat_navstack	pattern NavStack push x3 (top key 3)	460	340	99cd64f3abedebb8

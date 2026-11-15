@@ -122,3 +122,6 @@ smoke-wt-*/
 
 # launcher 独立小工作区本机构建缓存（波0 基线收口补）
 /user/bins/berry-launcher/cargo-target/
+
+# 波 2 画廊 PPM 中间产物（gallery2 测试再生——PNG/cells.tsv 入仓，ppm/ 不进提交）
+/WAVE2-GALLERY/ppm/
