@@ -18,7 +18,7 @@ VNC 八波已收官（工作树态，未 commit；单测 98 绿、四门全绿�
 - **f4（QR 裁决线索）**：自写最小 QR 约 300-450 行（v6 起多块交织，中 correctness 风险）；vendored 候选 qrcode-generator 1.4.4（MIT 单文件纯 ES5 UMD，非 ESM）；关键事实——`web.rs` serve 硬绑 127.0.0.1 且 QEMU VNC 亦 loopback，手机扫出的 QR 打开的是手机自己的 loopback，QR 价值兑现的前置是 LAN 绑定模式（不存在）。
 - **f5（树与检查面）**：`web/` 现为 NOTICE.md + novnc/（全树共 128 文件约 1.5MB）；`web.rs` serve 硬接 `root/novnc` 前缀且 `/`→`vnc.html`、`find_web_root` 哨兵 `novnc/vnc.html`；自有新页放 web 根需改路由（允许面），塞进 novnc/ 则混入 vendored MPL 树（违红线）；`mime_for` 已覆盖 html/js/mjs/css/json/png/svg（`.webmanifest` 缺——本波不引 manifest 则无需补）；`check-appdir.sh` web 五件检查与 TPN 的 web/NOTICE.md 指针均以 novnc/vnc.html 为锚；NOTICE 现为单「## noVNC」节，可加自有资产节；沿革日期族现最大节号三百二十九（已复核尾部），三百三十现不存在——落笔时须实时重数。
 
-冻结面声明：`window.rs`/`profile.rs` 仍为并行会话未提交 M 态，`main.rs` 仅许动 VNC 布线区（`VncWebCmd` 与 dispatch），`arch/`/`kernel/`/`sched/`/`user/`/`.agents/research/`（含[提交拆分清单](../research/2026-11-14-vnc提交拆分清单.md)——本波新增件的提交归属由用户按清单自行归列，本刀不碰该文件）零触碰。
+冻结面声明：`window.rs`/`profile.rs` 仍为并行会话未提交 M 态，`main.rs` 仅许动 VNC 布线区（`VncWebCmd` 与 dispatch），`arch/`/`kernel/`/`sched/`/`user/`/`.agents/research/`（含当时的提交拆分清单——已由[落账清单](../research/2026-11-15-vnc落账清单.md)取代，本波新增件的提交归属由用户按清单自行归列，本刀不碰该文件）零触碰。
 
 ## 契约
 
