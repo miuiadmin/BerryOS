@@ -535,6 +535,90 @@ spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
 breaking = []
 
 [[item]]
+id = "berry_ui::sdk::PullRefresh"
+kind = "type"
+module = "pull_refresh"
+since = "TRI-CONTROLS-9"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.9.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::PullRefreshSpec"
+kind = "type"
+module = "pull_refresh"
+since = "TRI-CONTROLS-9"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.9.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::PullRefreshPhase"
+kind = "type"
+module = "pull_refresh"
+since = "TRI-CONTROLS-9"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.9.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::PullRefreshEvent"
+kind = "type"
+module = "pull_refresh"
+since = "TRI-CONTROLS-9"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.9.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::PULL_REFRESH_SETTLE_NS"
+kind = "const"
+module = "pull_refresh"
+since = "TRI-CONTROLS-9"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.9.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::PULL_REFRESH_PHASE_NS"
+kind = "const"
+module = "pull_refresh"
+since = "TRI-CONTROLS-9"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.9.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::PULL_REFRESH_DRAG_DIV"
+kind = "const"
+module = "pull_refresh"
+since = "TRI-CONTROLS-9"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.9.md"
+breaking = []
+
+[[item]]
 id = "berry_ui::sdk::TextFieldSlots"
 kind = "type"
 module = "widgets"

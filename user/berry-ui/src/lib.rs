@@ -41,6 +41,7 @@ pub mod layout;
 pub mod mask;
 pub mod metrics;
 pub mod navigation;
+pub mod pull_refresh;
 pub mod nav_stack;
 pub mod gesture;
 pub mod paint;

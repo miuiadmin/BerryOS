@@ -59,7 +59,7 @@ pub enum TextVariant {
     Caption,
 }
 
-fn text_spec(bytes: &[u8], fg: Color, scale: berry_gfx::font::FontSize) -> Result<ViewSpec, UiError> {
+pub(crate) fn text_spec(bytes: &[u8], fg: Color, scale: berry_gfx::font::FontSize) -> Result<ViewSpec, UiError> {
     Ok(ViewSpec {
         kind: ViewKind::Text,
         key: 0,
@@ -1752,7 +1752,7 @@ impl Button {
     }
 }
 
-fn retained_props<const N: usize>(ui: &Ui<N>, node: NodeId) -> Option<Props> {
+pub(crate) fn retained_props<const N: usize>(ui: &Ui<N>, node: NodeId) -> Option<Props> {
     let slot = (node.0 & 0xFFFF) as usize;
     let gen = (node.0 >> 16) as u16;
     ui.nodes

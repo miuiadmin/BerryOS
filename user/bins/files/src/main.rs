@@ -19,7 +19,8 @@ use berry_room::{
 use berry_ui::hit::PtrEvent;
 use berry_ui::sdk::{
     Card, ContextMenu, ContextMenuOutcome, FontSource, ListItem, LongPressGesture,
-    LongPressOutcome, MenuItemSpec, Msg, NavigationIconSource, RectI, Scaffold, ScrollView,
+    LongPressOutcome, MenuItemSpec, Msg, NavigationIconSource, PullRefresh, PullRefreshEvent,
+    PullRefreshSpec, RectI, Scaffold, ScrollView,
     TextVariant, Theme, Ui, WidgetContext, column, text, LONG_PRESS_NS, NAV_ICON_BACK,
     NAV_ICON_BACK_ACTIVE,
 };
@@ -57,6 +58,7 @@ struct FileData {
 
 struct ListPage {
     scroll: ScrollView,
+    refresh: PullRefresh,
     back: berry_ui::sdk::IconButton,
     open: [Option<ListItem>; MAX_ENTRIES],
 }
@@ -276,7 +278,14 @@ fn build_list(
         });
     }
     let _ = count;
-    ListPage { scroll, back, open }
+    let refresh = PullRefresh::attach(ui, &scroll, ctx, &PullRefreshSpec::default())
+        .unwrap_or_else(|_| berry_room::panic_exit(134));
+    ListPage {
+        scroll,
+        refresh,
+        back,
+        open,
+    }
 }
 
 fn build_detail(
@@ -433,10 +442,29 @@ impl App {
 
     fn rebuild_and_render(&mut self, room: &mut AppRoom) {
         self.sync_scroll();
+        if let Page::List(page) = &mut self.page {
+            let scroll = page.scroll;
+            page.refresh
+                .sync(&mut self.ui, &scroll)
+                .unwrap_or_else(|_| berry_room::panic_exit(134));
+        }
         self.ui.layout();
         self.print_layout(room);
         self.render(room);
         room.print(b"FILESFRAME ok\n");
+    }
+
+    fn refresh_entries(&mut self, room: &mut AppRoom) {
+        let (entries, count, _) = load_entries(room);
+        self.entries = entries;
+        self.count = count;
+        let mut line = Line::new(b"FILESREFRESH ok n=");
+        line.push_u32(count as u32);
+        line.push(b"\n");
+        line.print(room);
+        self.replace_list();
+        self.rebuild_and_render(room);
+        room.print(b"FILESREFRESHDONE ok\n");
     }
 }
 
@@ -475,11 +503,23 @@ fn run_interactive(app: &mut App, room: &mut AppRoom) {
     let mut long_press = LongPressGesture::new(LONG_PRESS_NS);
     let mut menu: Option<ContextMenu> = None;
     let mut menu_row = 0usize;
+    let mut pending_refresh = false;
+    let mut refresh_armed_reported = false;
     loop {
         let count = match room.poll_input(&mut events) {
             Ok(count) => count,
             Err(error) => fail(room, error.as_str()),
         };
+        if let Page::List(page) = &mut app.page {
+            let advanced = page
+                .refresh
+                .tick(&mut app.ui, &app.ctx, room.now_ns())
+                .unwrap_or_else(|_| berry_room::panic_exit(134));
+            if advanced && app.ui.damage().union_px() != 0 {
+                app.render(room);
+                room.print(b"FILESFRAME ok\n");
+            }
+        }
         for event in events.iter_mut().take(count) {
             let (x, y) = (event.x, event.y);
             let phase = event.phase;
@@ -553,6 +593,30 @@ fn run_interactive(app: &mut App, room: &mut AppRoom) {
                     continue;
                 }
                 if let Page::List(page) = &mut app.page {
+                    let scroll = page.scroll;
+                    let refresh_event = page
+                        .refresh
+                        .on_msg(&mut app.ui, &app.ctx, &scroll, &message)
+                        .unwrap_or_else(|_| berry_room::panic_exit(134));
+                    match refresh_event {
+                        PullRefreshEvent::PullChanged { armed: true, pull_px } => {
+                            if !refresh_armed_reported {
+                                refresh_armed_reported = true;
+                                let mut line = Line::new(b"FILESARMED ok px=");
+                                line.push_u32(pull_px);
+                                line.push(b"\n");
+                                line.print(room);
+                            }
+                        }
+                        PullRefreshEvent::PullChanged { armed: false, .. } => {
+                            refresh_armed_reported = false;
+                        }
+                        PullRefreshEvent::Triggered => {
+                            pending_refresh = true;
+                            refresh_armed_reported = false;
+                        }
+                        PullRefreshEvent::None => {}
+                    }
                     for row in page.open.iter_mut().flatten() {
                         let _ = row
                             .on_msg(&mut app.ui, &app.ctx, &message)
@@ -651,6 +715,10 @@ fn run_interactive(app: &mut App, room: &mut AppRoom) {
                     }
                 }
             }
+            if pending_refresh && menu.is_none() {
+                pending_refresh = false;
+                app.refresh_entries(room);
+            }
         }
     }
 }
@@ -707,6 +775,12 @@ pub extern "C" fn _start(env_ch: u32) -> ! {
         frame_seq: 0,
     };
     scroll.sync_bounds(&mut app.ui).unwrap_or_else(|_| berry_room::panic_exit(134));
+    if let Page::List(page) = &mut app.page {
+        let page_scroll = page.scroll;
+        page.refresh
+            .sync(&mut app.ui, &page_scroll)
+            .unwrap_or_else(|_| berry_room::panic_exit(134));
+    }
     app.ui.layout();
     app.print_layout(&room);
     app.render(&mut room);

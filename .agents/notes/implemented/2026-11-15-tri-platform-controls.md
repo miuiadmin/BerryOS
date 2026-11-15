@@ -8,7 +8,7 @@ Status: implemented
 
 ## Decision
 
-依据 [BerryUI-三方控件体系对照-2026-11-v1.0.md](../../../research/BerryUI-三方控件体系对照-2026-11-v1.0.md) 与 [BerryUI-TriPlatformControls-v1.8.md](../../../docs/BerryUI-TriPlatformControls-v1.8.md)，新增 `Checkbox`、`Radio`、`Slider`、`ProgressIndicator`、`LoadingIndicator`、`Tabs`、`Section`、`Grid` 与 `SafeInsets`。全部保持 Plain Data + `&mut Ui<N>` + NodeId，不新增布局/光栅/焦点算法；状态归 app，组件只应用视觉与语义。Tabs 支持 Top/Bottom 两档，最多 6 项，panel/icon/text 都是同一激活面。
+依据 [BerryUI-三方控件体系对照-2026-11-v1.0.md](../../../research/BerryUI-三方控件体系对照-2026-11-v1.0.md) 与 [BerryUI-TriPlatformControls-v1.9.md](../../../docs/BerryUI-TriPlatformControls-v1.9.md)，新增 `Checkbox`、`Radio`、`Slider`、`ProgressIndicator`、`LoadingIndicator`、`Tabs`、`Section`、`Grid` 与 `SafeInsets`。全部保持 Plain Data + `&mut Ui<N>` + NodeId，不新增布局/光栅/焦点算法；状态归 app，组件只应用视觉与语义。Tabs 支持 Top/Bottom 两档，最多 6 项，panel/icon/text 都是同一激活面。
 
 Berry Demo 六个页面持久使用 `Tabs::Bottom`，真实 Click 在 Home/Widgets/Inputs/Lists/Theme/System 间切换；Widgets 页消费 Checkbox、Radio、Slider、ProgressIndicator 与 LoadingIndicator。系统 BACK/HOME/TASK 三键保留在 SYSTEM 底部保留区，应用底栏位于 safe_bottom 之上。
 
