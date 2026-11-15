@@ -10,11 +10,12 @@ use berry_gfx::queue::Queue;
 use berry_ui::sdk::{
     column, divider, icon, row, text, Button, Card, EmptyState, InteractionState, ListTile,
     ListTileSpec, ListItem, Msg, NavigationIconSource, NAV_ICON_BACK, NAV_ICON_BACK_ACTIVE,
-    AlertDialog, Badge, Checkbox, Chip, ChipKind, DialogAction, Grid, LoadingIndicator, Menu,
+    AlertDialog, AppBar, Badge, ButtonEmphasis, Checkbox, Chip, ChipKind, DialogAction, Grid,
+    IconButton, LoadingIndicator, Menu,
     MenuItemSpec, ProgressIndicator, Radio, SearchField, Section, SegmentedControl,
     SegmentedItemSpec, Sheet, Slider, Stepper, TabBarStyle, TabItemSpec, Tabs, TextPicker, Toast,
-    PanelProps, Props, RectProps, RectI, Scaffold, ScrollView, ScrollViewAxis,
-    Switch, TextVariant, Theme, Ui, UiError, ViewKind, ViewSpec, WidgetContext,
+    PanelProps, Props, RectProps, RectI, Scaffold, ScrollView, ScrollViewAxis, SwipePager,
+    Switch, TextVariant, Theme, Ui, UiError, ViewKind, ViewSpec, WidgetContext, image,
 };
 
 #[test]
@@ -573,6 +574,8 @@ fn horizontal_scroll_view_clips_and_tracks_x_axis() {
     }
     scroll.sync_bounds(&mut ui).unwrap();
     assert_eq!(scroll.axis(), ScrollViewAxis::Horizontal);
+    assert_eq!(scroll.max_offset(), 192);
+    assert!(!scroll.near_edge(20));
     scroll.scroll_by(&mut ui, 100).unwrap();
     assert_eq!(scroll.offset(), 100);
     assert_eq!(ui.bounds(scroll.content).unwrap().x, -100);
@@ -605,6 +608,117 @@ fn horizontal_scroll_view_clips_and_tracks_x_axis() {
         .on_msg(&mut ui, &Msg::DragEnd { node: scroll.port, vx: 0, vy: 0 })
         .unwrap());
     assert_eq!(scroll.offset(), 192);
+    assert!(scroll.near_edge(20));
+}
+
+#[test]
+fn workflow_p0_quick_wins_are_real_sdk_apis() {
+    let context = ctx(800, 600);
+    let mut ui = Ui::<96>::new(800, 600);
+    let root = ui.root();
+
+    let bar = AppBar::light(&mut ui, root, &context, b"Gallery").unwrap();
+    let action = IconButton::new(
+        &mut ui,
+        bar.actions,
+        &context,
+        100,
+        101,
+        b"More",
+        InteractionState::Normal,
+        false,
+    )
+    .unwrap();
+    ui.layout();
+    let bar_bounds = ui.bounds(bar.panel).unwrap();
+    let action_bounds = ui.bounds(action.panel).unwrap();
+    assert!(action_bounds.x > bar_bounds.x + bar_bounds.w / 2);
+    assert!(action_bounds.x < bar_bounds.x + bar_bounds.w);
+
+    let image = image(&mut ui, root, 12, Some(160), Some(90), b"Pattern").unwrap();
+    ui.layout();
+    assert_eq!(ui.bounds(image).unwrap(), RectI::new(0, 0, 160, 90));
+    assert!(ui.a11y_iter().any(|entry| entry.label.as_bytes() == b"Pattern"));
+
+    let emphasis_colors = |emphasis| {
+        let mut ui = Ui::<16>::new(240, 100);
+        let root = ui.root();
+        let button = berry_ui::sdk::Button::with_emphasis(
+            &mut ui,
+            root,
+            &context,
+            b"OK",
+            InteractionState::Normal,
+            emphasis,
+        )
+        .unwrap();
+        ui.layout();
+        ui.wake(0);
+        let mut scratch = [GlyphPos { ch: 0, x: 0, y: 0 }; 16];
+        let mut encoder = CommandEncoder::new();
+        ui.paint(&mut scratch, &mut encoder);
+        let list = encoder.finish();
+        let _ = button;
+        list.iter()
+            .filter_map(|cmd| match cmd {
+                Cmd::FillRect { paint, .. }
+                | Cmd::FillRoundRect { paint, .. }
+                | Cmd::FillCircle { paint, .. } => Some(paint.color),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let primary = Color { r: 0, g: 116, b: 224 };
+    let tonal = Color { r: 233, g: 237, b: 243 };
+    assert!(emphasis_colors(ButtonEmphasis::High).contains(&primary));
+    assert!(emphasis_colors(ButtonEmphasis::Medium).contains(&tonal));
+    let low = emphasis_colors(ButtonEmphasis::Low);
+    assert!(!low.contains(&primary));
+    assert!(!low.contains(&tonal));
+
+    let mut slider = Slider::new(
+        &mut ui,
+        root,
+        &context,
+        500,
+        false,
+        b"Brightness",
+    )
+    .unwrap();
+    ui.layout();
+    let semantic = ui.sem_of(slider.panel).unwrap();
+    assert_eq!(semantic.actions, berry_ui::SEM_ACTION_ADJUST);
+    assert_eq!(semantic.value.as_bytes(), b"500");
+    let track = ui.bounds(slider.track).unwrap();
+    let x = u32::try_from(track.x + track.w * 3 / 4).unwrap_or(0);
+    slider
+        .on_msg(
+            &mut ui,
+            &context,
+            &Msg::Press { node: slider.panel, x, y: 20 },
+        )
+        .unwrap();
+    assert_eq!(slider.permille(), 750);
+    assert_eq!(ui.sem_of(slider.panel).unwrap().value.as_bytes(), b"750");
+
+    let mut pager = SwipePager::new(2);
+    let _track = pager.attach(&mut ui, root).unwrap();
+    assert!(pager.page_node(0).is_some());
+    assert!(pager.page_node(1).is_some());
+
+    let mut item = ListItem::new(
+        &mut ui,
+        root,
+        &context,
+        b"Selected",
+        None,
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        ui.sem_of(item.panel).unwrap().state,
+        berry_ui::SEM_STATE_SELECTED
+    );
 }
 
 #[test]

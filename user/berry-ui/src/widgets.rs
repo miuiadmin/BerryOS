@@ -313,6 +313,9 @@ pub struct AppBar {
     pub panel: NodeId,
     pub title: NodeId,
     pub back: Option<IconButton>,
+    /// Trailing action container. Modern light/back bars expose a real Row;
+    /// legacy bars alias the panel for API compatibility.
+    pub actions: NodeId,
     modern: bool,
 }
 
@@ -376,8 +379,22 @@ impl AppBar {
             panel_spec(ctx.theme.colors.surface, None, Some(bar_h), 0, 0, 0),
         )?;
         ui.set_flex(trailing, 1)?;
+        let actions = add(
+            ui,
+            trailing,
+            ViewSpec {
+                kind: ViewKind::Row,
+                key: 0,
+                props: Props::Row(RowProps {
+                    gap: ctx.spacing(SpacingToken::Xs),
+                    w: None,
+                    h: Some(bar_h),
+                    cross: CrossAlign::Center,
+                }),
+            },
+        )?;
         ui.set_a11y(title_id, ROLE_TEXT, title)?;
-        Ok(Self { panel, title: title_id, back: None, modern: true })
+        Ok(Self { panel, title: title_id, back: None, actions, modern: true })
     }
 
     /// 56dp 现代导航栏高度（Product @3x = 168px；Compact @2x = 112px）。
@@ -408,7 +425,13 @@ impl AppBar {
                 )?,
             )?;
             ui.set_a11y(title_id, ROLE_TEXT, title)?;
-            return Ok(Self { panel, title: title_id, back: None, modern: false });
+            return Ok(Self {
+                panel,
+                title: title_id,
+                back: None,
+                actions: panel,
+                modern: false,
+            });
         }
 
         let bar_h = Self::height(ctx);
@@ -465,9 +488,23 @@ impl AppBar {
             panel_spec(ctx.theme.colors.surface, None, Some(bar_h), 0, 0, 0),
         )?;
         ui.set_flex(trailing_flex, 1)?;
+        let actions = add(
+            ui,
+            trailing_flex,
+            ViewSpec {
+                kind: ViewKind::Row,
+                key: 0,
+                props: Props::Row(RowProps {
+                    gap: ctx.spacing(SpacingToken::Xs),
+                    w: None,
+                    h: Some(bar_h),
+                    cross: CrossAlign::Center,
+                }),
+            },
+        )?;
 
         ui.set_a11y(title_id, ROLE_TEXT, title)?;
-        Ok(Self { panel, title: title_id, back, modern: true })
+        Ok(Self { panel, title: title_id, back, actions, modern: true })
     }
 
     /// 本实例建成高度（legacy 与 with_back 两形态单源）。
@@ -1061,6 +1098,25 @@ pub fn icon<const N: usize>(
     )
 }
 
+/// 静态位图叶子。像素供给仍走唯一 Icon/Image 资源缝；w/h 为 None 时
+/// 表示由源资源尺寸与父约束推导。标签进 a11y，图片内容不进语义 value。
+pub fn image<const N: usize>(
+    ui: &mut Ui<N>, parent: NodeId, res: u16, w: Option<u32>, h: Option<u32>,
+    label: &[u8],
+) -> Result<NodeId, UiError> {
+    let node = add(
+        ui,
+        parent,
+        ViewSpec {
+            kind: ViewKind::Image,
+            key: 0,
+            props: Props::Image(crate::desc::ImageProps { res, w, h }),
+        },
+    )?;
+    ui.set_a11y(node, crate::ROLE_IMAGE, label)?;
+    Ok(node)
+}
+
 /// Divider：细线。
 pub fn divider<const N: usize>(
     ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext,
@@ -1080,12 +1136,23 @@ pub fn divider<const N: usize>(
     )
 }
 
+/// Button 的三方共性强调档。`Standard` 保持 BerryUI 原状态色；High 对齐
+/// filled/prominent，Medium 对齐 tonal/tinted，Low 对齐 plain/text。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ButtonEmphasis {
+    Standard,
+    High,
+    Medium,
+    Low,
+}
+
 /// Button：状态视觉 + a11y + Press/Click 识别。业务动作由 app 处理。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Button {
     pub panel: NodeId,
     pub label: NodeId,
     base: InteractionState,
+    emphasis: ButtonEmphasis,
     focused: bool,
 }
 
@@ -1094,13 +1161,20 @@ impl Button {
         ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, label: &[u8],
         base: InteractionState,
     ) -> Result<Self, UiError> {
+        Self::with_emphasis(ui, parent, ctx, label, base, ButtonEmphasis::Standard)
+    }
+
+    pub fn with_emphasis<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, label: &[u8],
+        base: InteractionState, emphasis: ButtonEmphasis,
+    ) -> Result<Self, UiError> {
         let pad = ctx.spacing(SpacingToken::S);
-        let state = ctx.theme.state(base);
-        let panel = add(ui, parent, panel_spec(state.background, None, None, pad, 0, ctx.metrics.radius(RadiusToken::Small)))?;
+        let (background, foreground) = Self::palette(ctx, base, emphasis);
+        let panel = add(ui, parent, panel_spec(background, None, None, pad, 0, ctx.metrics.radius(RadiusToken::Small)))?;
         let text_id = add(
             ui,
             panel,
-            text_spec(label, state.content, ctx.metrics.typography(TypographyToken::Body))?,
+            text_spec(label, foreground, ctx.metrics.typography(TypographyToken::Body))?,
         )?;
         ui.set_a11y(panel, ROLE_BUTTON, label)?;
         ui.set_focusable(panel, Some(panel), base != InteractionState::Disabled)?;
@@ -1113,7 +1187,13 @@ impl Button {
             0,
             false,
         )?)?;
-        Ok(Self { panel, label: text_id, base, focused: false })
+        Ok(Self {
+            panel,
+            label: text_id,
+            base,
+            emphasis,
+            focused: false,
+        })
     }
 
     fn visual_state(&self) -> InteractionState {
@@ -1126,19 +1206,67 @@ impl Button {
         }
     }
 
+    fn colors(
+        &self, ctx: &WidgetContext, state: InteractionState,
+    ) -> (berry_gfx::cmd::Color, berry_gfx::cmd::Color) {
+        Self::palette(ctx, state, self.emphasis)
+    }
+
+    fn palette(
+        ctx: &WidgetContext, state: InteractionState, emphasis: ButtonEmphasis,
+    ) -> (berry_gfx::cmd::Color, berry_gfx::cmd::Color) {
+        if emphasis == ButtonEmphasis::Standard || state == InteractionState::Disabled {
+            let visual = ctx.theme.state(state);
+            return (visual.background, visual.content);
+        }
+        match emphasis {
+            ButtonEmphasis::High => match state {
+                InteractionState::Normal => (ctx.theme.colors.primary, ctx.theme.colors.on_primary),
+                InteractionState::Pressed
+                | InteractionState::Focused
+                | InteractionState::Selected => {
+                    let visual = ctx.theme.state(InteractionState::Pressed);
+                    (visual.background, ctx.theme.colors.primary)
+                }
+                InteractionState::Disabled => {
+                    let visual = ctx.theme.state(state);
+                    (visual.background, visual.content)
+                }
+            },
+            ButtonEmphasis::Medium => match state {
+                InteractionState::Pressed => {
+                    let visual = ctx.theme.state(state);
+                    (visual.background, ctx.theme.colors.primary)
+                }
+                _ => (ctx.theme.colors.surface_variant, ctx.theme.colors.primary),
+            },
+            ButtonEmphasis::Low => match state {
+                InteractionState::Pressed => {
+                    let visual = ctx.theme.state(state);
+                    (visual.background, visual.content)
+                }
+                _ => (ctx.theme.colors.surface, ctx.theme.colors.text_primary),
+            },
+            ButtonEmphasis::Standard => {
+                let visual = ctx.theme.state(state);
+                (visual.background, visual.content)
+            }
+        }
+    }
+
     fn apply<const N: usize>(
         &self, ui: &mut Ui<N>, ctx: &WidgetContext, state: InteractionState,
     ) -> Result<(), UiError> {
-        let visual = ctx.theme.state(state);
+        let (background, foreground) = self.colors(ctx, state);
         if let Some(props) = retained_props(ui, self.panel) {
             if let Props::Panel(mut p) = props {
-                p.bg = visual.background;
+                p.bg = background;
                 ui.set_props(self.panel, Props::Panel(p))?;
             }
         }
         if let Some(props) = retained_props(ui, self.label) {
             if let Props::Text(mut p) = props {
-                p.style.fg = visual.content;
+                p.style.fg = foreground;
                 ui.set_props(self.label, Props::Text(p))?;
             }
         }
@@ -1258,7 +1386,7 @@ impl ListItem {
         ui.set_sem(SemEntry::new(
             panel,
             SEM_ACTION_ACTIVATE,
-            if selected { SEM_STATE_CHECKED } else { 0 },
+            if selected { SEM_STATE_SELECTED } else { 0 },
             b"",
             0,
             0,
@@ -1286,7 +1414,7 @@ impl ListItem {
     ) -> Result<(), UiError> {
         self.selected = selected;
         if let Some(mut semantic) = ui.sem_of(self.panel) {
-            semantic.state = if selected { SEM_STATE_CHECKED } else { 0 };
+            semantic.state = if selected { SEM_STATE_SELECTED } else { 0 };
             ui.set_sem(semantic)?;
         }
         let state = ctx.theme.state(self.visual_state());
@@ -1514,7 +1642,7 @@ impl ListTile {
         ui.set_sem(SemEntry::new(
             panel,
             SEM_ACTION_ACTIVATE,
-            if spec.selected { SEM_STATE_CHECKED } else { 0 },
+            if spec.selected { SEM_STATE_SELECTED } else { 0 },
             b"",
             0,
             0,
@@ -1565,7 +1693,7 @@ impl ListTile {
     ) -> Result<(), UiError> {
         self.selected = selected;
         if let Some(mut semantic) = ui.sem_of(self.panel) {
-            semantic.state = if selected { SEM_STATE_CHECKED } else { 0 };
+            semantic.state = if selected { SEM_STATE_SELECTED } else { 0 };
             ui.set_sem(semantic)?;
         }
         self.apply(ui, ctx, self.visual_state())
@@ -2143,6 +2271,7 @@ pub struct Slider {
     pub thumb: NodeId,
     permille: u16,
     disabled: bool,
+    focused: bool,
 }
 
 impl Slider {
@@ -2208,7 +2337,25 @@ impl Slider {
         )?;
         ui.set_a11y(panel, ROLE_BUTTON, label)?;
         ui.set_focusable(panel, Some(panel), !disabled)?;
-        Ok(Self { panel, track, spacer, thumb: thumb_id, permille: p, disabled })
+        let (value, len) = signed_decimal_bytes(i32::from(p));
+        ui.set_sem(SemEntry::new(
+            panel,
+            SEM_ACTION_ADJUST,
+            if disabled { SEM_STATE_DISABLED } else { 0 },
+            &value[..len],
+            0,
+            0,
+            false,
+        )?)?;
+        Ok(Self {
+            panel,
+            track,
+            spacer,
+            thumb: thumb_id,
+            permille: p,
+            disabled,
+            focused: false,
+        })
     }
 
     pub fn permille(&self) -> u16 { self.permille }
@@ -2230,6 +2377,30 @@ impl Slider {
                 ui.set_props(self.spacer, Props::Rect(p))?;
             }
         }
+        if let Some(mut semantic) = ui.sem_of(self.panel) {
+            let (bytes, len) = signed_decimal_bytes(i32::from(self.permille));
+            semantic.value = TextBuf::new(&bytes[..len])?;
+            ui.set_sem(semantic)?;
+        }
+        Ok(())
+    }
+
+    fn apply_focus<const N: usize>(
+        &self, ui: &mut Ui<N>, ctx: &WidgetContext,
+    ) -> Result<(), UiError> {
+        let fg = if self.disabled {
+            ctx.theme.colors.text_secondary
+        } else if self.focused {
+            ctx.theme.state(InteractionState::Focused).content
+        } else {
+            ctx.theme.colors.primary
+        };
+        if let Some(props) = retained_props(ui, self.thumb) {
+            if let Props::Circle(mut p) = props {
+                p.bg = fg;
+                ui.set_props(self.thumb, Props::Circle(p))?;
+            }
+        }
         Ok(())
     }
 
@@ -2238,8 +2409,11 @@ impl Slider {
     ) -> Result<(), UiError> {
         if self.disabled { return Ok(()) }
         let (node, x) = match msg {
-            Msg::Click { node } | Msg::Press { node, .. } | Msg::Release { node, .. } => (*node, None),
-            Msg::DragMove { node, x, .. } | Msg::DragStart { node, x, .. } => (*node, Some(*x)),
+            Msg::Click { node } | Msg::Release { node, .. } => (*node, None),
+            Msg::Press { node, x, .. }
+            | Msg::DragMove { node, x, .. }
+            | Msg::DragStart { node, x, .. } => (*node, Some(*x)),
+            Msg::FocusIn { node } | Msg::FocusOut { node } => (*node, None),
             _ => return Ok(()),
         };
         if node != self.panel && node != self.track && node != self.spacer && node != self.thumb {
@@ -2247,10 +2421,21 @@ impl Slider {
         }
         if let Some(x) = x {
             if let Some(bounds) = ui.bounds(self.track).ok() {
-                let x = (x as i64 - bounds.x as i64).clamp(0, bounds.w as i64) as u32;
+                let x = (i64::from(x) - i64::from(bounds.x)).clamp(0, i64::from(bounds.w)) as u32;
                 let value = if bounds.w == 0 { 0 } else { x * 1000 / bounds.w as u32 };
                 self.set_permille(ui, ctx, value as u16)?;
             }
+        }
+        match msg {
+            Msg::FocusIn { .. } => {
+                self.focused = true;
+                self.apply_focus(ui, ctx)?;
+            }
+            Msg::FocusOut { .. } => {
+                self.focused = false;
+                self.apply_focus(ui, ctx)?;
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -3430,9 +3615,23 @@ impl AlertDialog {
         text(ui, surface.content, ctx, TextVariant::Title, title)?;
         text(ui, surface.content, ctx, TextVariant::Body, body)?;
         let actions = row(ui, surface.content, ctx)?;
-        let confirm = Button::new(ui, actions, ctx, confirm_label, InteractionState::Selected)?;
+        let confirm = Button::with_emphasis(
+            ui,
+            actions,
+            ctx,
+            confirm_label,
+            InteractionState::Normal,
+            ButtonEmphasis::High,
+        )?;
         let cancel = match cancel_label {
-            Some(label) => Some(Button::new(ui, actions, ctx, label, InteractionState::Normal)?),
+            Some(label) => Some(Button::with_emphasis(
+                ui,
+                actions,
+                ctx,
+                label,
+                InteractionState::Normal,
+                ButtonEmphasis::Medium,
+            )?),
             None => None,
         };
         ui.set_a11y(surface.root, ROLE_BUTTON, b"Dialog")?;
@@ -3916,6 +4115,21 @@ impl ScrollView {
 
     pub fn offset(&self) -> i32 {
         self.offset
+    }
+
+    /// Content extent minus viewport extent; negative is never stored.
+    pub fn max_offset(&self) -> i32 {
+        self.max_offset
+    }
+
+    /// Deterministic load-more/scroll-end predicate. Threshold is explicit;
+    /// no wall clock and no callback are introduced.
+    pub fn near_edge(&self, threshold_px: u32) -> bool {
+        if threshold_px == 0 {
+            return self.max_offset == 0;
+        }
+        let distance = self.max_offset.saturating_sub(self.offset).max(0);
+        u32::try_from(distance).unwrap_or(u32::MAX) <= threshold_px
     }
 
     pub fn on_msg<const N: usize>(

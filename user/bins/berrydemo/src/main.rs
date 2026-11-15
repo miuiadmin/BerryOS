@@ -308,6 +308,7 @@ struct ThemePage {
     scroll: ScrollView,
     tabs: Tabs,
     back: IconButton,
+    info: IconButton,
     cycle: Button,
     picker: TextPicker,
 }
@@ -901,6 +902,17 @@ fn build_theme(
         .app_bar
         .back
         .unwrap_or_else(|| berry_room::panic_exit(134));
+    let info = IconButton::new(
+        ui,
+        scaffold.app_bar.actions,
+        ctx,
+        102,
+        102,
+        b"Theme info",
+        InteractionState::Normal,
+        false,
+    )
+    .unwrap_or_else(|_| berry_room::panic_exit(134));
     let (_, viewport_h) = ui.viewport();
     let (scroll, tabs) = page_body(
         ui,
@@ -958,7 +970,7 @@ fn build_theme(
         .unwrap_or_else(|_| berry_room::panic_exit(134));
     text(ui, stack, ctx, TextVariant::Body, b"Light / dark / high contrast")
         .unwrap_or_else(|_| berry_room::panic_exit(134));
-    ThemePage { root: scaffold.root, scroll, tabs, back: app_back, cycle, picker }
+    ThemePage { root: scaffold.root, scroll, tabs, back: app_back, info, cycle, picker }
 }
 
 fn build_system(
@@ -1161,7 +1173,7 @@ impl App {
             Page::Theme(page) => (
                 page.back.panel,
                 Some(page.cycle.panel),
-                None,
+                Some(page.info.panel),
                 page.tabs.panel,
                 Some(page.picker.next.panel),
             ),
@@ -1332,6 +1344,8 @@ impl App {
                     .unwrap_or_else(|_| berry_room::panic_exit(134));
                 handled |= page.cycle.on_msg(&mut self.ui, &self.ctx, message)
                     .unwrap_or_else(|_| berry_room::panic_exit(134));
+                handled |= page.info.on_msg(&mut self.ui, &self.ctx, message)
+                    .unwrap_or_else(|_| berry_room::panic_exit(134));
                 handled |= page.picker.on_msg(&mut self.ui, &self.ctx, message)
                     .unwrap_or_else(|_| berry_room::panic_exit(134));
             }
@@ -1498,6 +1512,9 @@ impl App {
                     hit_line.push(b"back");
                     target_page = PAGE_HOME;
                     action = 2;
+                } else if node == page.info.panel || node == page.info.icon {
+                    hit_line.push(b"info");
+                    action = 20;
                 } else if node == page.picker.previous.panel
                     || node == page.picker.previous.label
                     || node == page.picker.next.panel

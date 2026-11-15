@@ -31,13 +31,16 @@ pub use crate::text_input::{
     TextInputOutcome, TextInputState, TextSelection, TEXT_INPUT_MAX,
 };
 pub use crate::widgets::{
-    AlertDialog, AppBar, Badge, Button, Card, Checkbox, Chip, ChipKind, DialogAction,
-    EmptyState, Grid, IconButton, ListDetail, ListDetailSpec, ListTile, ListTileSpec, ListItem,
-    LoadingIndicator, Menu, MenuItemSpec, OverlaySurface, ProgressIndicator, Radio, SafeInsets,
-    Scaffold, ScrollView, ScrollViewAxis, SearchField, Section, SegmentedControl, SegmentedItemSpec, Sheet,
-    Slider, Stepper, Switch, TabBarStyle, TabItemSpec, Tabs, TextPicker, TextVariant, TextField,
-    TextFieldSpec, Toast, WidgetContext, column, divider, icon, row, text, SEGMENTED_MAX,
-    TABS_MAX, TEXT_PICKER_MAX,
+    AlertDialog, AppBar, Badge, Button, ButtonEmphasis, Card, Checkbox, Chip, ChipKind,
+    DialogAction, EmptyState, Grid, IconButton, ListDetail, ListDetailSpec, ListTile,
+    ListTileSpec, ListItem, LoadingIndicator, Menu, MenuItemSpec, OverlaySurface,
+    ProgressIndicator, Radio, SafeInsets, Scaffold, ScrollView, ScrollViewAxis, SearchField,
+    Section, SegmentedControl, SegmentedItemSpec, Sheet, Slider, Stepper, Switch, TabBarStyle,
+    TabItemSpec, Tabs, TextPicker, TextVariant, TextField, TextFieldSpec, Toast, WidgetContext,
+    column, divider, icon, image, row, text, SEGMENTED_MAX, TABS_MAX, TEXT_PICKER_MAX,
+};
+pub use crate::swipe::{
+    SwipePager, DOT_OFF, DOT_ON, FLIP_VEL_PX_S, SNAP_DUR_NS, SWIPE_PAGES_MAX,
 };
 pub use crate::{
     a11y_region_roundtrip, FlexBasis, FlexEntry, FlexSpec, FocusEntry, ReapplyStat, SemEntry,

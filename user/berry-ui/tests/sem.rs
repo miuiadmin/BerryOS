@@ -262,7 +262,7 @@ fn widgets_sync_semantic_state_value_and_range() {
     let mut item = berry_ui::sdk::ListItem::new(&mut ui, root, &ctx, b"Item", None, false).unwrap();
     assert_eq!(ui.sem_of(item.panel).unwrap().state, 0);
     item.set_selected(&mut ui, &ctx, true).unwrap();
-    assert_eq!(ui.sem_of(item.panel).unwrap().state, SEM_STATE_CHECKED);
+    assert_eq!(ui.sem_of(item.panel).unwrap().state, SEM_STATE_SELECTED);
 
     let segment_items = [
         SegmentedItemSpec { label: b"One", disabled: false },
