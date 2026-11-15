@@ -405,8 +405,9 @@ enum VncAction {
     Check(VncCheckCmd),
     /// Open the endpoint in the platform VNC viewer (macOS).
     Open(VncOpenCmd),
-    /// Serve the vendored noVNC page for browser access (plaintext runs
-    /// proxy nothing; --tls on a TLS run adds a local wss proxy).
+    /// Serve the BerryOS shell page for browser access (vendored noVNC
+    /// kept at /novnc/ as the escape hatch; plaintext runs proxy
+    /// nothing; --tls on a TLS run adds a local wss proxy).
     Web(VncWebCmd),
     /// Generate a self-signed x509 cert set for --vnc-tls (openssl).
     Certs(VncCertCmd),
@@ -464,8 +465,9 @@ struct VncOpenCmd {
 struct VncWebCmd {
     #[arg(long)]
     run: Option<String>,
-    /// Port for the local page server (default: pick a free one).
-    #[arg(long)]
+    /// Port for the local page server (default: pick a free one; 0 is
+    /// refused — the URL/QR would advertise a dead :0 link).
+    #[arg(long, value_parser = berry::web::parse_web_port)]
     port: Option<u16>,
     /// Max concurrent page connections (1..=1024, default 16).
     #[arg(
@@ -485,8 +487,8 @@ struct VncWebCmd {
     /// password on the run; QR on by default).
     #[arg(long)]
     lan: bool,
-    /// Override the LAN address printed into the URL/QR (implies --lan
-    /// context; bare IPv6 gets bracketed automatically).
+    /// Override the LAN address printed into the URL/QR (requires
+    /// --lan; bare IPv6 gets bracketed automatically).
     #[arg(long, value_name = "ADDR")]
     host: Option<String>,
     /// Render the pairing QR in the terminal (default with --lan).
@@ -495,6 +497,18 @@ struct VncWebCmd {
     /// Skip the pairing QR even in --lan mode.
     #[arg(long)]
     no_qr: bool,
+    /// Certificate dir overriding the upstream trust source when --lan
+    /// serves a TLS run (default: the run's --vnc-tls directory; the
+    /// page itself stays http — only the berry->QEMU upstream leg speaks
+    /// wss). Requires --lan; excludes --insecure; silently ignored on
+    /// plaintext runs.
+    #[arg(long, value_name = "DIR")]
+    ca: Option<PathBuf>,
+    /// Skip the upstream wss certificate verification when --lan serves
+    /// a TLS run (escape hatch; prints a warning). Requires --lan;
+    /// excludes --ca.
+    #[arg(long)]
+    insecure: bool,
     /// Open the printed URL in the default browser before serving
     /// (macOS: `open` without the password fragment; other platforms
     /// print a manual hint instead — never an error).
@@ -809,13 +823,26 @@ fn dispatch(cli: Cli) -> Result<()> {
                     )
                     .with_hint("pass exactly one (default: on with --lan)"));
                 }
+                // Wave 11 TLS×LAN trust flags: --ca/--insecure shape the
+                // /ws proxy's upstream rustls client on TLS runs; they
+                // only mean something under --lan (loopback TLS runs
+                // serve their own https form), and naming both trust
+                // sources at once is a contradiction.
+                if s.ca.is_some() && s.insecure {
+                    return Err(berry::error::BerryError::new(
+                        2,
+                        "--ca and --insecure are mutually exclusive".to_string(),
+                    ));
+                }
+                if !s.lan && (s.ca.is_some() || s.insecure) {
+                    return Err(berry::error::BerryError::new(
+                        2,
+                        "--ca/--insecure require --lan".to_string(),
+                    )
+                    .with_hint("上游 wss 信任源只在 --lan 模式有意义（环回 TLS run 走自带 https 形态）"));
+                }
                 if let Some(h) = s.host.as_deref() {
-                    if let Err(e) = berry::lan::validate_host(h) {
-                        return Err(berry::error::BerryError::new(
-                            2,
-                            format!("--host {h:?}: {e}"),
-                        ));
-                    }
+                    berry::lan::validate_host_override(h)?;
                 }
                 commands::vnc_web(
                     s.run.as_deref(),
@@ -830,6 +857,8 @@ fn dispatch(cli: Cli) -> Result<()> {
                         _ => None,
                     },
                     s.open,
+                    s.ca.as_deref(),
+                    s.insecure,
                     cli.json,
                 )
             }

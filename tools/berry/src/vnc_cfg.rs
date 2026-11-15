@@ -16,7 +16,6 @@
 //! there is deliberately no "non-loopback without password" escape hatch).
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use crate::error::{BerryError, Result};
 
@@ -544,13 +543,16 @@ fn read_pass_file(p: &Path) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
-// Process-level launch override (shell entry without touching window.rs)
+// Launch flags (direct parameter, wave 11)
 // ---------------------------------------------------------------------------
 
-/// Flags captured from the CLI entry points. `window.rs` is frozen by a
-/// parallel session and calls `Device::start` with positional args only, so
-/// the shell/host/device entries set this global instead of extending the
-/// `Device::start` signature.
+/// VNC flags captured at the CLI entry points. Wave 1 routed these
+/// through a process-level global because `window.rs` was frozen and
+/// called `Device::start` with positional args only; wave 11 (the file
+/// unfrozen) made `Launch` a direct `Device::start` parameter — shell
+/// hands it to `window::run`, which keeps it on the `App` so the
+/// in-place restarts (RES menu, ROTATE) re-pass the same flags
+/// explicitly instead of inheriting a sticky global.
 #[derive(Clone, Debug, Default)]
 pub struct Launch {
     pub spec: Option<String>,
@@ -558,25 +560,6 @@ pub struct Launch {
     pub pass: Option<String>,
     pub pass_file: Option<PathBuf>,
     pub tls: Option<String>,
-}
-
-static LAUNCH: Mutex<Option<Launch>> = Mutex::new(None);
-/// Copy of the last `set_launch` value: same-process `Device::start` calls
-/// after the first one (e.g. the shell window's in-place profile restart)
-/// still inherit the original VNC flags.
-static LAUNCH_STICKY: Mutex<Option<Launch>> = Mutex::new(None);
-
-pub fn set_launch(l: Launch) {
-    *LAUNCH_STICKY.lock().unwrap() = Some(l.clone());
-    *LAUNCH.lock().unwrap() = Some(l);
-}
-
-pub fn take_launch() -> Option<Launch> {
-    LAUNCH.lock().unwrap().take()
-}
-
-pub fn sticky_launch() -> Option<Launch> {
-    LAUNCH_STICKY.lock().unwrap().clone()
 }
 
 /// What `Device::start` resolved: the raw spec string (for meta.json) and the
@@ -587,13 +570,13 @@ pub struct Resolved {
     pub exposed: Option<Exposed>,
 }
 
-/// Resolution order: explicit flags (`set_launch`, consumed once, then the
-/// same-process sticky copy) > `BERRY_VNC` env (spec only) > off. The env
-/// only fills the spec — ws/pass flags still come from the explicit launch;
-/// `BERRY_VNC_TLS` fills the TLS dir the same way (usable even when the spec
-/// itself came from a flag).
-pub fn resolve_launch() -> Result<Resolved> {
-    let mut launch = take_launch().or_else(sticky_launch);
+/// Resolution order: the passed-in launch flags (wave 11: a direct
+/// `Device::start` parameter) > `BERRY_VNC` env (spec only) > off. The
+/// env only fills the spec — ws/pass flags still come from the explicit
+/// launch; `BERRY_VNC_TLS` fills the TLS dir the same way (usable even
+/// when the spec itself came from a flag).
+pub fn resolve(vnc: Launch) -> Result<Resolved> {
+    let mut launch = Some(vnc);
     if launch.as_ref().and_then(|l| l.spec.as_deref()).is_none() {
         if let Ok(spec) = std::env::var("BERRY_VNC") {
             launch
@@ -620,7 +603,7 @@ pub fn resolve_launch() -> Result<Resolved> {
 
 /// Flag-or-env precedence (pure half of the effective-value merge): the CLI
 /// flag wins, the env only fills a missing flag — exactly the order
-/// `resolve_launch` applies at launch time.
+/// `resolve` applies at launch time.
 fn merge_flag_env<'a>(flag: Option<&'a str>, env: Option<&'a str>) -> Option<&'a str> {
     flag.or(env)
 }
@@ -629,7 +612,7 @@ fn merge_flag_env<'a>(flag: Option<&'a str>, env: Option<&'a str>) -> Option<&'a
 /// before a host child is spawned (whose stderr is discarded in background
 /// mode and would otherwise surface as "host exited before announcing run").
 /// Inputs are the *effective* values: a missing flag falls back to
-/// `BERRY_VNC`/`BERRY_VNC_TLS` like `resolve_launch`, so an env typo fails
+/// `BERRY_VNC`/`BERRY_VNC_TLS` like `resolve`, so an env typo fails
 /// here too, and `--vnc-ws`/`--vnc-tls` are judged against an env-provided
 /// endpoint instead of being wrongly rejected.
 pub fn validate_flags(spec: Option<&str>, ws: Option<&str>, tls: Option<&str>) -> Result<()> {
@@ -964,7 +947,7 @@ mod tests {
         );
         // Auto flags: "on"/"on" is auto on both sides.
         let spec = spec_of("on");
-        let mut ext = Exposed::build(&spec, &ws_of("on"), None, Some(tmp.to_str().unwrap()))
+        let ext = Exposed::build(&spec, &ws_of("on"), None, Some(tmp.to_str().unwrap()))
             .unwrap();
         assert!(ext.port_auto);
         assert!(ext.ws_auto);
@@ -1126,7 +1109,7 @@ mod tests {
         assert_eq!(vf(Some("5899"), None, None).unwrap_err().code, 2);
         assert_eq!(vf(Some("on"), Some("70000"), None).unwrap_err().code, 2);
         // An env-provided spec counts as an exposed endpoint for ws/tls
-        // (F01: the merge mirrors resolve_launch, so `BERRY_VNC=on … --vnc-ws
+        // (F01: the merge mirrors resolve, so `BERRY_VNC=on … --vnc-ws
         // on` must pre-check clean, not be wrongly rejected).
         assert!(vf(Some("on"), Some("on"), None).is_ok());
         let e = vf(Some("off"), Some("on"), None).unwrap_err();
@@ -1136,7 +1119,7 @@ mod tests {
     #[test]
     fn effective_value_merge() {
         // Flag wins over env; env only fills a missing flag — the exact
-        // precedence resolve_launch applies (validate_flags reuses this).
+        // precedence resolve applies (validate_flags reuses this).
         assert_eq!(merge_flag_env(Some("on"), Some("zzz")), Some("on"));
         assert_eq!(merge_flag_env(Some("off"), Some("on")), Some("off"));
         assert_eq!(merge_flag_env(None, Some("zzz")), Some("zzz"));
@@ -1150,6 +1133,74 @@ mod tests {
                 .message,
             "bad --vnc spec 'zzz-not-a-spec'"
         );
+    }
+
+    /// U52 (wave 11): the direct-parameter `resolve` over an explicit
+    /// `Launch` — the pure field-by-field half. The env-merge half stays
+    /// pinned by `effective_value_merge`; the `Launch::default()` row is
+    /// guarded against a dev machine exporting BERRY_VNC/BERRY_VNC_TLS
+    /// (the same discipline as `flag_precheck` above).
+    #[test]
+    fn resolve_direct_parameter_matrix() {
+        if std::env::var("BERRY_VNC").is_ok() || std::env::var("BERRY_VNC_TLS").is_ok() {
+            return; // ambient env would fill the defaults below
+        }
+        // Default launch = off triple.
+        let r = resolve(Launch::default()).unwrap();
+        assert_eq!(r.spec_str, "off");
+        assert_eq!(r.ws_str, "off");
+        assert!(r.exposed.is_none());
+        // Field-by-field: spec/ws/tls strings land in Resolved; the pass
+        // file is read one-shot (gone afterwards); tls needs a valid dir.
+        let tmp = std::env::temp_dir().join(format!("berry-resolve-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        for name in ["ca-cert.pem", "server-cert.pem", "server-key.pem"] {
+            std::fs::write(tmp.join(name), b"x").unwrap();
+        }
+        let pf = tmp.join("vncpass-resolve");
+        std::fs::write(&pf, b"secret123\n").unwrap();
+        let r = resolve(Launch {
+            spec: Some("127.0.0.1:5971".into()),
+            ws: Some("6001".into()),
+            pass: None,
+            pass_file: Some(pf.clone()),
+            tls: Some(tmp.to_str().unwrap().into()),
+        })
+        .unwrap();
+        assert_eq!(r.spec_str, "127.0.0.1:5971");
+        assert_eq!(r.ws_str, "6001");
+        let ext = r.exposed.expect("exposed endpoint");
+        assert_eq!(ext.host, "127.0.0.1");
+        assert_eq!(ext.port, 5971);
+        assert_eq!(ext.ws_port, Some(6001));
+        assert_eq!(ext.password.as_deref(), Some("secret123"));
+        assert_eq!(ext.tls_dir.as_deref(), Some(tmp.as_path()));
+        assert!(!pf.exists(), "one-shot pass file consumed on read");
+        // Explicit pass wins over the file; no ws/tls flags -> none.
+        let pf2 = tmp.join("vncpass-resolve2");
+        std::fs::write(&pf2, b"from-file\n").unwrap();
+        let r = resolve(Launch {
+            spec: Some("on".into()),
+            ws: None,
+            pass: Some("explicit".into()),
+            pass_file: Some(pf2),
+            tls: None,
+        })
+        .unwrap();
+        let ext = r.exposed.expect("exposed endpoint");
+        assert_eq!(ext.password.as_deref(), Some("explicit"));
+        assert!(ext.ws_port.is_none(), "ws off unless flagged");
+        assert!(ext.tls_dir.is_none(), "tls off unless flagged");
+        // Same error surface as the sticky era: ws/tls without an
+        // exposed endpoint stays E_USAGE.
+        let e = match resolve(Launch { ws: Some("on".into()), ..Launch::default() }) {
+            Err(e) => e,
+            Ok(_) => panic!("ws without an exposed endpoint must be E_USAGE"),
+        };
+        assert_eq!(e.code, 2);
+        assert!(e.message.contains("--vnc-ws"));
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     // ------------------------------------------------------------------

@@ -355,6 +355,11 @@ if check_file "$TPN" "third-party notices" 0; then
     else
         fail "third-party notices miss the web/NOTICE.md pointer for noVNC"
     fi
+    if grep -q '^qrcodegen 1.8' "$TPN"; then
+        pass "third-party notices register qrcodegen 1.8"
+    else
+        fail "third-party notices miss the qrcodegen 1.8 entry"
+    fi
 fi
 
 DESKTOP=$APP/usr/share/applications/berry.desktop

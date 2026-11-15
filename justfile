@@ -1491,6 +1491,7 @@ berry-vnc-tls-smoke: berry-build
     PW=vnctlsmoke-right
     TD=$(mktemp -d "${TMPDIR:-/tmp}/berry-vnc-tls.XXXXXX")
     cleanup() {
+        [ -n "${WEBPID:-}" ] && kill "$WEBPID" >/dev/null 2>&1 || true
         [ -n "$RUN" ] && "$BIN" device stop --run "$RUN" >/dev/null 2>&1 || true
         [ -n "$RUN" ] && "$BIN" device cleanup --run "$RUN" >/dev/null 2>&1 || true
         rm -rf "$TD"
@@ -1534,6 +1535,139 @@ berry-vnc-tls-smoke: berry-build
         [ "$RC" -eq 2 ] || { echo "vnc check --ca+--insecure rc=$RC (want 2)"; exit 1; }
         echo "vnc check (--ca + --insecure): rc=2 mutually exclusive"
     fi
+    # F50 尾行（wave 11 TLS×LAN）：同一 TLS run 上 `--lan` 后台起服，断言
+    # JSON lan.bind=0.0.0.0 与 lan.upstream=wss（复用活 run，零额外 QEMU；
+    # page 口随机，serve 进程自收）。
+    "$BIN" vnc web --run "$RUN" --lan --json >"$TD/lan.json" 2>/dev/null &
+    WEBPID=$!
+    i=0
+    while [ $i -lt 50 ] && ! grep -q '"lan"' "$TD/lan.json" 2>/dev/null; do
+        i=$((i+1)); sleep 0.1
+    done
+    kill "$WEBPID" >/dev/null 2>&1 || true
+    wait "$WEBPID" >/dev/null 2>&1 || true
+    python3 -c 'import json; v=json.load(open("'"$TD"'/lan.json")); l=v["lan"]; assert l["bind"]=="0.0.0.0", l; assert l["upstream"]=="wss", l; print("vnc web --lan (TLS run): bind 0.0.0.0 + upstream wss ok")'
+    cleanup
+    trap - EXIT INT TERM
+
+# P0 VNC LAN 面冒烟（wave10/11 沉淀，F50 补）：rc=2 拒面三路（无口令 run ×
+# --lan / --qr 无 --lan / --lan × --tls 互斥——纯 CLI 秒级）→ 口令档 run 文本
+# 模式后台起服：首行 URL 解析端口、curl 环回得 200（0.0.0.0 绑定收环回）、
+# /ws 无 Upgrade 得 404、QR 块字符在场且 QR 行不含口令、POST /api/power 无
+# X-Berry-Pass 得 403 → 内联 python3 裸 TCP ws Upgrade 过单口代理断言 101 +
+# RFB banner（单测全是合成上游——这里是合并版代理 × 活 QEMU 的唯一自动化
+# 位）→ --json 二次起服断言 lan.bind=0.0.0.0 与 lan.upstream=ws。隔离
+# BERRY_HOME 自起自收；run 全程显式 --run；口令样串只落 /tmp 捕获件不进仓。
+berry-vnc-lan-smoke: berry-build
+    #!/bin/sh
+    set -e
+    test -f out/berryos.img || { echo "缺 out/berryos.img——先 just image"; exit 1; }
+    HOST=$(rustc -vV | sed -n 's/^host: //p')
+    BIN=tools/berry/cargo-target/$HOST/release/berry
+    PW=vnclansmoke-right
+    # 隔离 home 钉 /tmp（不用 $TMPDIR）：run 目录下的 unix 套接字路径超过
+    # macOS sun_path 104 字符上限时 host 子进程起不来（/var/folders 基座
+    # 实测 rc=6「host exited before announcing run」）。
+    export BERRY_HOME=$(mktemp -d /tmp/berry-vnc-lan-home.XXXXXX)
+    TD=$(mktemp -d "${TMPDIR:-/tmp}/berry-vnc-lan.XXXXXX")
+    RUN=
+    RUN2=
+    cleanup() {
+        [ -n "${WEBPID:-}" ] && kill "$WEBPID" >/dev/null 2>&1 || true
+        for r in "$RUN" "$RUN2"; do
+            [ -n "$r" ] && "$BIN" device stop --run "$r" >/dev/null 2>&1 || true
+            [ -n "$r" ] && "$BIN" device cleanup --run "$r" >/dev/null 2>&1 || true
+        done
+        rm -rf "$TD" "$BERRY_HOME"
+    }
+    trap cleanup EXIT INT TERM
+    # 拒面 1：无口令 run × --lan（准入矩阵行 4；--vnc-ws on 供 read_listen 过）。
+    RUN2=$("$BIN" device start --profile phone --image out/berryos.img \
+        --vnc on --vnc-ws on --json \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin)["run"])')
+    if "$BIN" vnc web --run "$RUN2" --lan >/dev/null 2>&1; then
+        echo "vnc web --lan: passwordless run unexpectedly accepted"; exit 1
+    else
+        RC=$?
+        [ "$RC" -eq 2 ] || { echo "passwordless --lan rc=$RC (want 2)"; exit 1; }
+        echo "vnc web --lan (passwordless run): rc=2 refused"
+    fi
+    "$BIN" device stop --run "$RUN2" >/dev/null 2>&1 || true
+    "$BIN" device cleanup --run "$RUN2" >/dev/null 2>&1 || true
+    RUN2=
+    # 口令档 run 承载其余两面与起服断言。
+    RUN=$("$BIN" device start --profile phone --image out/berryos.img \
+        --vnc on --vnc-ws on --vnc-pass "$PW" --json \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin)["run"])')
+    echo "run: $RUN"
+    # 拒面 2/3：--qr 无 --lan（arg 门）/ --lan × --tls 互斥（准入矩阵行 3）。
+    if "$BIN" vnc web --run "$RUN" --qr >/dev/null 2>&1; then
+        echo "vnc web --qr without --lan unexpectedly accepted"; exit 1
+    else
+        RC=$?
+        [ "$RC" -eq 2 ] || { echo "--qr without --lan rc=$RC (want 2)"; exit 1; }
+        echo "vnc web --qr (no --lan): rc=2 usage gate"
+    fi
+    if "$BIN" vnc web --run "$RUN" --lan --tls "$TD/certs" >/dev/null 2>&1; then
+        echo "vnc web --lan --tls unexpectedly accepted"; exit 1
+    else
+        RC=$?
+        [ "$RC" -eq 2 ] || { echo "--lan --tls rc=$RC (want 2)"; exit 1; }
+        echo "vnc web --lan --tls: rc=2 mutually exclusive"
+    fi
+    # 文本模式起服（--host 127.0.0.1 钉死 URL 主机面，端口缺省自动捡空口）。
+    "$BIN" vnc web --run "$RUN" --lan --host 127.0.0.1 >"$TD/lan.txt" 2>"$TD/lan.err" &
+    WEBPID=$!
+    i=0
+    while [ $i -lt 50 ] && ! head -1 "$TD/lan.txt" 2>/dev/null | grep -q '^http://'; do
+        i=$((i+1)); sleep 0.1
+    done
+    URL=$(head -1 "$TD/lan.txt")
+    PORT=$(printf '%s\n' "$URL" | sed -n 's|^http://127\.0\.0\.1:\([0-9][0-9]*\)/.*$|\1|p')
+    [ -n "$PORT" ] || { echo "vnc web --lan: no URL in output"; cat "$TD/lan.txt" "$TD/lan.err"; exit 1; }
+    echo "vnc web --lan: serving, page port $PORT"
+    CODE=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/")
+    [ "$CODE" = "200" ] || { echo "GET / rc=$CODE (want 200)"; exit 1; }
+    CODE=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/ws")
+    [ "$CODE" = "404" ] || { echo "GET /ws without Upgrade rc=$CODE (want 404)"; exit 1; }
+    CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$PORT/api/power/reboot")
+    [ "$CODE" = "403" ] || { echo "POST /api/power without X-Berry-Pass rc=$CODE (want 403)"; exit 1; }
+    grep -q '[█▀▄]' "$TD/lan.txt" || { echo "QR block missing from --lan text output"; exit 1; }
+    if grep '[█▀▄]' "$TD/lan.txt" | grep -q "$PW"; then
+        echo "QR lines leak the password"; exit 1
+    fi
+    echo "vnc web --lan: page 200 / ws 404 / api 403 / QR present + password-free"
+    # 单口 /ws 代理 × 活 QEMU：裸 TCP Upgrade → 101 + RFB banner（真上游，
+    # 非单测合成面）。
+    python3 - "$PORT" <<'PY'
+    import socket, sys
+    port = int(sys.argv[1])
+    s = socket.create_connection(("127.0.0.1", port), timeout=10)
+    s.sendall(b"GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")
+    buf = b""
+    while b"RFB " not in buf:
+        chunk = s.recv(4096)
+        if not chunk:
+            sys.exit(f"EOF before RFB banner: {buf[:120]!r}")
+        buf += chunk
+    assert buf.startswith(b"HTTP/1.1 101"), buf[:80]
+    line = buf[buf.index(b"RFB "):].split(b"\n")[0].decode()
+    print(f"ws proxy through live QEMU: 101 + {line}")
+    PY
+    kill "$WEBPID" >/dev/null 2>&1 || true
+    wait "$WEBPID" >/dev/null 2>&1 || true
+    WEBPID=
+    # --json 二次起服：lan.bind=0.0.0.0 与 lan.upstream=ws（明文 run 面）。
+    "$BIN" vnc web --run "$RUN" --lan --host 127.0.0.1 --json >"$TD/lan.json" 2>/dev/null &
+    WEBPID=$!
+    i=0
+    while [ $i -lt 50 ] && ! grep -q '"lan"' "$TD/lan.json" 2>/dev/null; do
+        i=$((i+1)); sleep 0.1
+    done
+    kill "$WEBPID" >/dev/null 2>&1 || true
+    wait "$WEBPID" >/dev/null 2>&1 || true
+    WEBPID=
+    python3 -c 'import json; v=json.load(open("'"$TD"'/lan.json")); l=v["lan"]; assert l["bind"]=="0.0.0.0", l; assert l["upstream"]=="ws", l; assert v["url"].startswith("http://127.0.0.1:"), v["url"]; print("vnc web --lan --json: bind 0.0.0.0 + upstream ws ok")'
     cleanup
     trap - EXIT INT TERM
 

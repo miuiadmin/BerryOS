@@ -28,7 +28,8 @@
 #berry-toolbar button,
 #berry-cred-form,
 #berry-cred-pass,
-.berry-cred-actions button {
+.berry-cred-actions button,
+#berry-deck button {
   box-sizing: border-box;
 }
 
@@ -292,3 +293,76 @@ body.berry-compact #berry-toolbar button {
   font-size: 12px;
 }
 
+
+/* ---- device deck (bottom bar, thumb reach on phones) ---- */
+
+#berry-deck {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 12px calc(6px + env(safe-area-inset-bottom, 0px));
+  background: var(--berry-panel);
+  border-top: 1px solid var(--berry-border);
+  flex: 0 0 auto;
+}
+
+#berry-deck button {
+  min-width: 56px;
+  padding: 10px 12px;
+  border: 1px solid var(--berry-border);
+  border-radius: 10px;
+  background: #262b35;
+  color: var(--berry-text);
+  font-size: 14px;
+  line-height: 1.2;
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+#berry-deck button:active {
+  background: #313947;
+}
+
+/* F44: power keys without a page credential (no #password=/#apikey=
+   fragment — QR or --open arrivals) can only ever 403, so berry.js
+   disables them; dimmed and inert instead of failing on tap. */
+#berry-deck button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Armed power-off: red confirm state (second tap within 3s fires). */
+#berry-deck .berry-armed {
+  background: #46231f;
+  border-color: var(--berry-err);
+  color: var(--berry-err);
+}
+
+/* Transient action feedback (重启中…/已重启/…). */
+#berry-deck .berry-flash {
+  border-color: var(--berry-accent);
+}
+
+#berry-deck #berry-deck-off {
+  color: var(--berry-err);
+}
+
+#berry-deck-sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 4px;
+  background: var(--berry-border);
+}
+
+body.berry-compact #berry-deck {
+  gap: 4px;
+  padding: 4px 8px calc(4px + env(safe-area-inset-bottom, 0px));
+}
+
+body.berry-compact #berry-deck button {
+  min-width: 44px;
+  padding: 9px 8px;
+  font-size: 13px;
+}

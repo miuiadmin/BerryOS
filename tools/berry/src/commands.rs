@@ -343,18 +343,19 @@ pub fn screenshot(args: ScreenshotArgs) -> Result<()> {
 pub fn shell(args: ShellArgs) -> Result<()> {
     // Fail fast with the real spec error before the window opens.
     vnc_cfg::validate_flags(args.vnc_spec.as_deref(), args.vnc_ws.as_deref(), args.vnc_tls.as_deref())?;
-    // window.rs is frozen by a parallel session and calls Device::start with
-    // positional args only; hand the VNC flags over via the process-level
-    // launch override instead (BERRY_VNC env remains the fallback below it).
-    vnc_cfg::set_launch(vnc_cfg::Launch {
+    // Wave 11: the VNC flags travel as a direct parameter into
+    // window::run -> Device::start (the wave-1 process-level launch
+    // override retired; BERRY_VNC env remains the fallback inside
+    // vnc_cfg::resolve).
+    let vnc = vnc_cfg::Launch {
         spec: args.vnc_spec.clone(),
         ws: args.vnc_ws.clone(),
         pass: args.vnc_pass.clone(),
         pass_file: None,
         tls: args.vnc_tls.clone(),
-    });
+    };
     vnc_cfg::maybe_security_note(args.vnc_spec.as_deref());
-    crate::window::run(args)
+    crate::window::run(args, vnc)
 }
 
 pub fn input(args: InputArgs) -> Result<()> {
@@ -449,13 +450,13 @@ pub fn host(args: HostArgs) -> Result<()> {
     let profile = profile::get(&args.profile)?;
     // Fail fast with the real spec error instead of a bare exit.
     vnc_cfg::validate_flags(args.vnc_spec.as_deref(), args.vnc_ws.as_deref(), args.vnc_tls.as_deref())?;
-    vnc_cfg::set_launch(vnc_cfg::Launch {
+    let vnc = vnc_cfg::Launch {
         spec: args.vnc_spec.clone(),
         ws: args.vnc_ws.clone(),
         pass: args.vnc_pass.clone(),
         pass_file: args.vnc_pass_file.clone(),
         tls: args.vnc_tls.clone(),
-    });
+    };
     let mut device = crate::device::Device::start(
         args.image,
         profile,
@@ -464,6 +465,7 @@ pub fn host(args: HostArgs) -> Result<()> {
         args.display_mode,
         args.keep,
         "host",
+        vnc,
     )?;
     if let Some(ext) = device.vnc_exposed() {
         vnc_cfg::print_security_note(ext);
@@ -1694,22 +1696,28 @@ pub fn vnc_open(run: Option<&str>, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// `berry vnc web [--run <id>] [--port N] [--max-conns N] [--tls <dir>]
-/// [--open]`: serve the web desktop over loopback and print a URL. The
-/// default page is the own BerryOS shell (`index.html` + `berry.js` +
-/// `berry.css`, wave 9); the vendored noVNC page stays reachable at
-/// `/novnc/vnc.html` as the raw escape hatch. Default (plaintext run,
-/// no --tls): plain http page whose `path=` points the browser straight
-/// at QEMU's websocket port — berry never proxies RFB. TLS runs (or an
-/// explicit `--tls <dir>`) are the documented exception (wave 5): the
-/// page is served over https and, for TLS endpoints, a local wss proxy
-/// terminates both TLS sides, because Chrome cannot dial QEMU's wss
-/// directly (ERR_SSL_CLIENT_AUTH_CERT_NEEDED, probe p3). With `--open`
-/// the printed URL is additionally handed to the platform browser on
-/// macOS (`open`, fragment stripped — the password never enters the
-/// one-shot argv); elsewhere or on failure a hint line points at the
-/// URL instead, never an error. Foreground and blocking, like
-/// `berry events --follow`.
+/// `berry vnc web [--run <id>] [--port N] [--max-conns N]
+/// [--lan [--host <addr>] [--qr | --no-qr] [--ca <dir> | --insecure]]
+/// [--open] [--json] [--tls <dir>]`: serve the web desktop over loopback
+/// and print a URL. The default page is the own BerryOS shell
+/// (`index.html` + `berry.js` + `berry.css`, wave 9); the vendored noVNC
+/// page stays reachable at `/novnc/vnc.html` as the raw escape hatch.
+/// Default (plaintext run, no --tls): plain http page whose `path=`
+/// points the browser straight at QEMU's websocket port — berry never
+/// proxies RFB. TLS runs (or an explicit `--tls <dir>`) are the
+/// documented exception (wave 5): the page is served over https and,
+/// for TLS endpoints, a local wss proxy terminates both TLS sides,
+/// because Chrome cannot dial QEMU's wss directly
+/// (ERR_SSL_CLIENT_AUTH_CERT_NEEDED, probe p3). `--lan` on a TLS run
+/// (wave 11) is the second exception: the page stays plain http on
+/// 0.0.0.0 and only the `/ws` proxy's upstream leg gains a
+/// strict-verified rustls client to QEMU's loopback wss (`--ca`
+/// overrides the trust dir, `--insecure` skips verification after a
+/// warning). With `--open` the printed URL is additionally handed to
+/// the platform browser on macOS (`open`, fragment stripped — the
+/// password never enters the one-shot argv); elsewhere or on failure a
+/// hint line points at the URL instead, never an error. Foreground and
+/// blocking, like `berry events --follow`.
 pub fn vnc_web(
     run: Option<&str>,
     port: Option<u16>,
@@ -1719,6 +1727,8 @@ pub fn vnc_web(
     host: Option<&str>,
     qr: Option<bool>,
     open: bool,
+    ca: Option<&Path>,
+    insecure: bool,
     json: bool,
 ) -> Result<()> {
     let run = find_run(run)?;
@@ -1738,17 +1748,17 @@ pub fn vnc_web(
     let dial = vnc_cfg::dial_host(&listen.host);
     let password = vnc_cfg::read_pass(&run);
 
-    // Wave 10: `--lan` admission (the security matrix, contract 7) —
-    // TLS runs and --tls are hard rc=2 refusals, and a passwordless
-    // plaintext run never reaches the LAN binding.
-    if let crate::lan::Admission::Reject(reason) = crate::lan::lan_admission(
+    // Wave 10 admission (the security matrix, contract 7) — a
+    // passwordless run never reaches the LAN binding and `--tls` stays
+    // mutually exclusive with `--lan`; TLS runs are admitted since wave
+    // 11 (the upstream leg gains rustls below).
+    if let crate::lan::LanAdmission::Reject { msg, hint } = crate::lan::lan_admission(
         lan,
-        listen.tls,
+        &listen,
         tls.is_some(),
         password.is_some(),
-        vnc_cfg::is_loopback(&listen.host),
     ) {
-        return Err(crate::lan::admission_error(reason));
+        return Err(BerryError::new(2, msg).with_hint(&hint));
     }
     // The LAN host for URL/QR: explicit --host verbatim (validated at
     // arg parse), else the platform probe; the fallback keeps serving
@@ -1768,10 +1778,19 @@ pub fn vnc_web(
     };
 
     // Control API for the deck's power keys: every mode serves it on the
-    // page origin; the run's VNC password gates it whenever one exists.
+    // page origin. F44: a passwordless (loopback-only) run must not skip
+    // the credential gate — ctl.pass=None skips it entirely and a bare
+    // POST (no custom header) is a CORS simple request any website can
+    // fire at loopback. So a passwordless serve mints a random API token
+    // (the same /dev/urandom generator as VNC passwords) and the gate
+    // demands it in X-Berry-Pass; the page URL delivers it in #apikey=,
+    // the same read-once fragment channel as #password= (QR and --open
+    // strip the fragment, so neither surface carries it). Runs with a
+    // password keep today's behavior byte for byte: password == token.
+    let api_token = password.is_none().then(vnc_cfg::generate_password);
     let ctl = Some(std::sync::Arc::new(crate::web::CtlApi {
         run: run.clone(),
-        pass: password.clone(),
+        pass: password.clone().or(api_token.clone()),
     }));
 
     // `--open` (wave 9): hand the URL to the platform browser before the
@@ -1798,6 +1817,91 @@ pub fn vnc_web(
             }
         }
     };
+
+    // Wave 11 TLS×LAN: the single-port LAN shape now also serves TLS
+    // runs — the page stays plain http on 0.0.0.0 and only the `/ws`
+    // proxy's upstream leg gains a strict-verified rustls client to
+    // QEMU's loopback wss (the wave-10 restart condition: "rustls
+    // client terminates the upstream + http page"). The `--lan`
+    // decision diverges before the tls_dir plane below; explicit `--tls`
+    // stays refused by admission above. URL/QR and the text output are
+    // byte-identical to a plaintext `--lan`; only the JSON `lan` object
+    // grows `upstream` (ws vs wss).
+    if lan {
+        let upstream_tls = if listen.tls {
+            let cfg = check_tls_client_config(&run, ca, insecure)?;
+            let name = crate::tls::server_name(dial)?;
+            let dir = ca
+                .map(Path::to_path_buf)
+                .or_else(|| run_tls_dir(&run))
+                .unwrap_or_default();
+            Some(crate::web::LanTlsUpstream { cfg, name, dir })
+        } else {
+            // Plaintext upstream: --ca/--insecure are silently ignored
+            // (F17) — there is no TLS leg to configure.
+            None
+        };
+        if let Some(lan_host) = lan_host {
+            let qr_on = qr.unwrap_or(true);
+            let url = crate::web::build_page_url_lan(&lan_host, port, password.as_deref(), api_token.as_deref());
+            let warn_extra = !vnc_cfg::is_loopback(&listen.host);
+            if json {
+                let opened = open_browser(&url);
+                println!(
+                    "{}",
+                    json!({"v":1,"t":"vnc.web","run":run,"url":url,"port":port,
+                        "max_conns":max_conns,"opened":opened,
+                        "lan":{"bind":"0.0.0.0","host":lan_host,"qr":qr_on,
+                            "upstream":crate::web::lan_upstream_kind(upstream_tls.is_some())},
+                        "root":root.display().to_string()})
+                );
+            } else {
+                println!("{url}");
+                println!(
+                    "serving {} on 0.0.0.0:{port} (LAN 模式：页面与 ws 代理同口, max {max_conns} connections, Ctrl-C to stop)",
+                    root.display()
+                );
+                println!(
+                    "note: LAN 暴露——明文 http 页 + 经典 VNC 认证(DES)是弱防线, 仅在可信 Wi-Fi 内使用; 建议重启时显式 --vnc-pass"
+                );
+                if warn_extra {
+                    println!(
+                        "warning: QEMU ws 端点自身已绑 {} 直接对外, berry 代理不是唯一 LAN 入口",
+                        listen.host
+                    );
+                }
+                if qr_on {
+                    match crate::qr::render_qr(crate::web::strip_fragment(&url)) {
+                        Some(block) => println!("{block}"),
+                        None => eprintln!(
+                            "berry: warning: QR 编码失败（URL 过长），已跳过渲染"
+                        ),
+                    }
+                }
+                println!(
+                    "hint: 手机扫码打开页面, 口令在页面弹窗中手动输入（口令 = 上方 URL 的 #password= 段）"
+                );
+                // F52: --lan text mode honors --open like every other
+                // form (JSON branch above, both loopback branches below)
+                // — browser or hint line, never a silent drop.
+                open_hint(open_browser(&url));
+            }
+            std::io::stdout().flush().ok();
+            let upstream = crate::web::LanUpstream {
+                dial: vnc_cfg::addr_host(dial, ws_port),
+                tls: upstream_tls,
+            };
+            return crate::web::serve(
+                &root,
+                port,
+                max_conns,
+                None,
+                "0.0.0.0",
+                Some(upstream),
+                ctl,
+            );
+        }
+    }
 
     // TLS plane: explicit --tls dir (validated), else the TLS run's meta
     // directory. A TLS run with neither is a usage error, not a warning.
@@ -1850,7 +1954,7 @@ pub fn vnc_web(
                     );
                 });
                 proxy_port = Some(pp);
-                crate::web::build_page_url_tls(port, "127.0.0.1", pp, password.as_deref())
+                crate::web::build_page_url_tls(port, "127.0.0.1", pp, password.as_deref(), api_token.as_deref())
             } else {
                 // --tls on a plaintext run: https page, browser dials the
                 // plain ws endpoint directly via host/port/encrypt=false
@@ -1864,7 +1968,7 @@ pub fn vnc_web(
                         "berry: warning: https page + plain ws to non-loopback {dial} may be blocked as mixed content by the browser"
                     );
                 }
-                crate::web::build_page_url_https(port, dial, ws_port, password.as_deref())
+                crate::web::build_page_url_https(port, dial, ws_port, password.as_deref(), api_token.as_deref())
             };
             if json {
                 let opened = open_browser(&url);
@@ -1893,68 +1997,15 @@ pub fn vnc_web(
             crate::web::serve(&root, port, max_conns, Some(server_cfg), "127.0.0.1", None, ctl)
         }
         None => {
-            // Wave 10 single-port LAN shape: berry is the only LAN entry
-            // (pages + /ws proxy on one 0.0.0.0 port); admission already
-            // rejected TLS/--tls/passwordless combinations above.
-            if let Some(lan_host) = lan_host {
-                let qr_on = qr.unwrap_or(true);
-                let url = crate::web::build_page_url_lan(&lan_host, port, password.as_deref());
-                let warn_extra = !vnc_cfg::is_loopback(&listen.host);
-                if json {
-                    let opened = open_browser(&url);
-                    println!(
-                        "{}",
-                        json!({"v":1,"t":"vnc.web","run":run,"url":url,"port":port,
-                            "max_conns":max_conns,"opened":opened,
-                            "lan":{"bind":"0.0.0.0","host":lan_host,"qr":qr_on},
-                            "root":root.display().to_string()})
-                    );
-                } else {
-                    println!("{url}");
-                    println!(
-                        "serving {} on 0.0.0.0:{port} (LAN 模式：页面与 ws 代理同口, max {max_conns} connections, Ctrl-C to stop)",
-                        root.display()
-                    );
-                    println!(
-                        "note: LAN 暴露——明文 http 页 + 经典 VNC 认证(DES)是弱防线, 仅在可信 Wi-Fi 内使用; 建议重启时显式 --vnc-pass"
-                    );
-                    if warn_extra {
-                        println!(
-                            "warning: QEMU ws 端点自身已绑 {} 直接对外, berry 代理不是唯一 LAN 入口",
-                            listen.host
-                        );
-                    }
-                    if qr_on {
-                        match crate::qr::render_qr(crate::web::strip_fragment(&url)) {
-                            Some(block) => println!("{block}"),
-                            None => eprintln!(
-                                "berry: warning: QR 编码失败（URL 过长），已跳过渲染"
-                            ),
-                        }
-                    }
-                    println!(
-                        "hint: 手机扫码打开页面, 口令在页面弹窗中手动输入（口令 = 上方 URL 的 #password= 段）"
-                    );
-                }
-                std::io::stdout().flush().ok();
-                let upstream = crate::web::LanUpstream { dial: vnc_cfg::addr_host(dial, ws_port) };
-                return crate::web::serve(
-                    &root,
-                    port,
-                    max_conns,
-                    None,
-                    "0.0.0.0",
-                    Some(upstream),
-                    ctl,
-                );
-            }
-            // Plaintext run, no --tls: behavior identical to wave 3.
+            // --lan already returned above (wave 11 hoisted its branch
+            // before this plane); what remains is the plaintext run,
+            // no --tls: behavior identical to wave 3.
             let ws_uri = vnc_cfg::ws_uri_for(dial, ws_port, listen.tls);
             // The password rides in the URL fragment: it never leaves the
             // browser (no server sees it) and this stdout line is the
             // user-facing surface, the same trust level as
             // `vnc passwd --generate`'s echo.
-            let url = crate::web::build_page_url(port, &ws_uri, password.as_deref());
+            let url = crate::web::build_page_url(port, &ws_uri, password.as_deref(), api_token.as_deref());
             if json {
                 let opened = open_browser(&url);
                 println!(

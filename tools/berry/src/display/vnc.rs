@@ -995,7 +995,7 @@ mod tests {
     }
 
     fn connect_to(port: u16) -> Stream {
-        let mut raw = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let raw = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         raw.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         Stream::Tcp(raw)
     }

@@ -186,30 +186,28 @@ pub enum LanAdmission {
     Allow { warn_extra: bool },
 }
 
-/// The security matrix (plan contract 7):
+/// The security matrix (plan contract 7; wave 11 admits TLS runs):
 ///
 /// - no `--lan` -> loopback, unchanged;
-/// - TLS run -> reject (QEMU's ws endpoint is loopback wss-only; a
-///   plaintext pipe has no upstream to relay into);
 /// - explicit `--tls` -> reject (mutually exclusive with `--lan`);
-/// - plaintext run without a password -> reject (LAN binding is a
-///   non-loopback exposure; wave-1 policy: no open RFB on the LAN);
-/// - plaintext + password -> allow, with the extra exposure warning
-///   when the run bind is non-loopback.
+/// - run without a password -> reject (LAN binding is a non-loopback
+///   exposure; wave-1 policy: no open RFB on the LAN — TLS runs
+///   included, their page leg is still plaintext http);
+/// - everything else -> allow (TLS runs since wave 11: the page stays
+///   http and the `/ws` proxy's upstream leg speaks rustls wss; the
+///   command layer picks the upstream form), with the extra exposure
+///   warning when the run bind is non-loopback.
 pub fn lan_admission(lan: bool, listen: &ListenInfo, tls_flag: bool, has_pass: bool) -> LanAdmission {
     if !lan {
         return LanAdmission::Loopback;
     }
-    if listen.tls {
-        return LanAdmission::Reject {
-            msg: "--lan needs a plaintext run; this run's VNC endpoint is TLS".to_string(),
-            hint: "restart without --vnc-tls to use --lan (TLS runs: use the existing https dual-port loopback mode)".to_string(),
-        };
-    }
     if tls_flag {
         return LanAdmission::Reject {
             msg: "--lan and --tls are mutually exclusive".to_string(),
-            hint: "--lan is the LAN form of plaintext runs; for TLS use the loopback https mode".to_string(),
+            // F53: flag-level mutex only — the https-page form is what
+            // --tls names; TLS runs themselves take --lan directly
+            // since wave 11 (only the proxy's upstream leg speaks wss).
+            hint: "the explicit --tls flag is the loopback https-page form; a TLS run uses --lan directly since wave 11 (only the /ws proxy's upstream leg speaks wss)".to_string(),
         };
     }
     if !has_pass {
@@ -306,12 +304,21 @@ mod tests {
         for l in [&loop_listen, &wide_listen, &tls_listen] {
             assert_eq!(lan_admission(false, l, true, false), LanAdmission::Loopback);
         }
-        // Row 2: TLS run + --lan -> reject with the restart hint.
-        match lan_admission(true, &tls_listen, false, true) {
-            LanAdmission::Reject { hint, .. } => {
-                assert!(hint.contains("--vnc-tls"), "hint: {hint}");
+        // Row 2 (wave 11): TLS run + password + --lan -> allow — the
+        // page stays http and the /ws proxy's upstream leg speaks wss
+        // (warn_extra follows the bind, exactly like plaintext rows).
+        assert_eq!(
+            lan_admission(true, &tls_listen, false, true),
+            LanAdmission::Allow { warn_extra: false }
+        );
+        // Row 2b: TLS run without a password stays refused (the LAN leg
+        // is plaintext http; the password is the only gate).
+        match lan_admission(true, &tls_listen, false, false) {
+            LanAdmission::Reject { msg, hint } => {
+                assert!(msg.contains("passwordless"), "msg: {msg}");
+                assert!(hint.contains("--vnc-pass"), "hint: {hint}");
             }
-            other => panic!("TLS run must reject, got {other:?}"),
+            other => panic!("passwordless --lan must reject, got {other:?}"),
         }
         // Row 3: --tls flag + --lan -> reject with the mutex hint.
         match lan_admission(true, &loop_listen, true, true) {

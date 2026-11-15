@@ -22,18 +22,20 @@ use crate::display::scale::{self, Fit};
 use crate::error::{BerryError, Result};
 use crate::input;
 use crate::profile::Profile;
+use crate::vnc_cfg;
 
 const TOOLBAR_H: u32 = 48;
-const TOOLBAR_LABELS: [&str; 5] = ["SHOT", "RES", "BOOT", "OFF", "FULL"];
-const TOOLBAR_TIPS: [&str; 5] = ["SCREENSHOT", "PROFILE", "REBOOT", "POWER", "FULLSCREEN"];
+const TOOLBAR_LABELS: [&str; 6] = ["SHOT", "RES", "BOOT", "OFF", "FULL", "WEB"];
+const TOOLBAR_TIPS: [&str; 6] =
+    ["SCREENSHOT", "PROFILE", "REBOOT", "POWER", "FULLSCREEN", "BROWSER"];
 
-fn toolbar_buttons(width: u32) -> [(u32, u32); 5] {
+fn toolbar_buttons(width: u32) -> [(u32, u32); 6] {
     let bw = 60u32;
     let gap = 6u32;
-    let total = 5 * bw + 4 * gap;
+    let total = 6 * bw + 5 * gap;
     let mut x = width.saturating_sub(total + 8);
-    let mut out = [(0, 0); 5];
-    for i in 0..5 {
+    let mut out = [(0, 0); 6];
+    for i in 0..6 {
         out[i] = (x, bw);
         x += bw + gap;
     }
@@ -242,7 +244,7 @@ fn default_window_size(
     (w, h)
 }
 
-pub fn run(args: ShellArgs) -> Result<()> {
+pub fn run(args: ShellArgs, vnc: vnc_cfg::Launch) -> Result<()> {
     let profile = crate::profile::get(&args.profile)?;
     let image = args.image.clone();
     let accel = args.accel.clone();
@@ -275,19 +277,25 @@ pub fn run(args: ShellArgs) -> Result<()> {
             args.display_mode,
             args.keep,
             "shell",
+            vnc.clone(),
         )?)
     };
     let event_loop = EventLoop::new()
         .map_err(|e| BerryError::device(format!("event loop: {e}")))?;
     event_loop.set_control_flow(ControlFlow::Wait);
-    let mut app = App::new(session, profile, args.scale, image, accel, memory, keep);
+    let mut app = App::new(session, profile, args.scale, image, accel, memory, keep, vnc);
     if !args.timeout.is_zero() {
         app.deadline = Some(Instant::now() + args.timeout);
     }
-    event_loop
+    let rc = event_loop
         .run_app(&mut app)
-        .map_err(|e| BerryError::device(format!("window: {e}")))?;
+        .map_err(|e| BerryError::device(format!("window: {e}")));
+    // F51: an event-loop error must not leak the session or the WEB
+    // child (`Device` has Drop, `Child` does not) — same teardown as
+    // the clean exit, then propagate.
     app.session.stop();
+    app.stop_web();
+    rc?;
     Ok(())
 }
 
@@ -439,6 +447,14 @@ struct App {
     accel: String,
     memory: Option<u32>,
     keep: bool,
+    /// VNC 旗标（wave 11 直参化）：shell 入口经 `window::run` 传入，
+    /// RES 菜单/ROTATE 的同进程重启显式重传（原 LAUNCH_STICKY 隐式
+    /// 继承退役）。
+    vnc: vnc_cfg::Launch,
+    /// WEB 键起的 `berry vnc web --open` 后台子进程句柄（wave 11）：
+    /// 存活期间二连点幂等拒；会话重启（run 目录更换）与应用退出时
+    /// kill——新 run 需要重新点键取新端点。
+    web_child: Option<std::process::Child>,
     /// 串口 tail（guest 旋转键 `ROTATE` 标记监听——restart_session 时重开）。
     serial: Option<crate::run_dir::Tail>,
     /// 旋转去抖：上一 ROTATE 已消费、重启后的新串口从零 tail。
@@ -455,6 +471,7 @@ impl App {
         accel: String,
         memory: Option<u32>,
         keep: bool,
+        vnc: vnc_cfg::Launch,
     ) -> Self {
         Self {
             session,
@@ -479,6 +496,8 @@ impl App {
             accel,
             memory,
             keep,
+            vnc,
+            web_child: None,
             serial: None,
             rotating: false,
         }
@@ -585,6 +604,9 @@ impl App {
         match &mut self.session {
             Session::Host(dev) => {
                 dev.stop();
+                // The web child serves the old run id; the new run gets a
+                // fresh WEB click (idempotence guard dies with the child).
+                self.stop_web();
                 match Device::start(
                     self.image.clone(),
                     p,
@@ -593,6 +615,7 @@ impl App {
                     None,
                     self.keep,
                     "shell",
+                    self.vnc.clone(),
                 ) {
                     Ok(dev) => self.session = Session::Host(dev),
                     Err(e) => {
@@ -606,37 +629,47 @@ impl App {
                 let old_profile = self.profile.id;
                 let mut applied = p;
                 match crate::commands::restart_profile(&a.run, p.id) {
-                    Ok(new_run) => match connect_vnc(&new_run) {
-                        Ok(src) => {
-                            a.run = new_run;
-                            a.source = src;
-                            a.dead = false;
-                            a.last_poll = Instant::now();
-                            a.last_reconnect = Instant::now();
-                            a.down_since = None;
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "resolution reattach failed: {e}; rolling back to {old_profile}"
-                            );
-                            match crate::commands::restart_profile(&new_run, old_profile)
-                                .and_then(|r| connect_vnc(&r).map(|src| (r, src)))
-                            {
-                                Ok((run, src)) => {
-                                    a.run = run;
-                                    a.source = src;
-                                    a.dead = false;
-                                    a.last_poll = Instant::now();
-                                    applied = self.profile;
-                                }
-                                Err(e2) => {
-                                    eprintln!("resolution rollback failed: {e2}");
-                                    self.quit = true;
-                                    return;
+                    Ok(new_run) => {
+                        // F43: restart_profile retired the old run id —
+                        // kill the WEB child serving it (the Host-branch
+                        // stop_web discipline: the stale child would 502
+                        // into the dead run until a fresh WEB click).
+                        // Field-level form: `a` stays borrowed for the
+                        // swap below, so stop_web(&mut self) cannot be
+                        // called here.
+                        Self::stop_web_child(&mut self.web_child);
+                        match connect_vnc(&new_run) {
+                            Ok(src) => {
+                                a.run = new_run;
+                                a.source = src;
+                                a.dead = false;
+                                a.last_poll = Instant::now();
+                                a.last_reconnect = Instant::now();
+                                a.down_since = None;
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "resolution reattach failed: {e}; rolling back to {old_profile}"
+                                );
+                                match crate::commands::restart_profile(&new_run, old_profile)
+                                    .and_then(|r| connect_vnc(&r).map(|src| (r, src)))
+                                {
+                                    Ok((run, src)) => {
+                                        a.run = run;
+                                        a.source = src;
+                                        a.dead = false;
+                                        a.last_poll = Instant::now();
+                                        applied = self.profile;
+                                    }
+                                    Err(e2) => {
+                                        eprintln!("resolution rollback failed: {e2}");
+                                        self.quit = true;
+                                        return;
+                                    }
                                 }
                             }
                         }
-                    },
+                    }
                     Err(e) => {
                         // New-first: the old host is still alive on failure.
                         eprintln!("resolution restart failed: {e}; old host kept");
@@ -706,10 +739,64 @@ impl App {
                     Some(Fullscreen::Borderless(None))
                 });
             }
+            5 => self.open_web(),
             _ => {}
         }
         self.request_redraw();
         true
+    }
+
+    /// WEB 键（wave 11）：后台子进程 `berry vnc web --open`——明文 run
+    /// 打印环回 ws URL 并交平台浏览器，TLS run 自动落既有 https 双口
+    /// 环回形态（`--open` 的 macOS `open` 剥 fragment 先例，口令不进
+    /// 子进程 argv）。argv 显式带 `--run` 钉住本窗口会话的 run——多活
+    /// run 时 find_run(None) 取最新 VNC run，未必是本会话（attach 态
+    /// 尤甚，F62(d)）。存活期间二连点幂等拒；失败有声不致命。
+    fn open_web(&mut self) {
+        let alive = self
+            .web_child
+            .as_mut()
+            .is_some_and(|c| c.try_wait().map(|s| s.is_none()).unwrap_or(false));
+        if alive {
+            println!("web: already serving (close the berry vnc web process to restart)");
+            return;
+        }
+        let exe = match std::env::current_exe() {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("web: cannot resolve berry executable ({e}); trying PATH");
+                std::path::PathBuf::from("berry")
+            }
+        };
+        let run = match &self.session {
+            Session::Host(d) => d.run_path().to_path_buf(),
+            Session::Attach(a) => a.run.clone(),
+        };
+        match std::process::Command::new(&exe)
+            .args(["vnc", "web", "--run"])
+            .arg(&run)
+            .arg("--open")
+            .spawn()
+        {
+            Ok(c) => self.web_child = Some(c),
+            Err(e) => eprintln!("web: failed to start berry vnc web: {e}"),
+        }
+    }
+
+    /// Kill a live WEB child, if any. Field-level form so the Attach
+    /// restart path (F43) can retire the child while `self.session`
+    /// stays mutably borrowed by the match around it.
+    fn stop_web_child(child: &mut Option<std::process::Child>) {
+        if let Some(mut c) = child.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+
+    /// Kill the WEB child (session restart changes the run id — the old
+    /// server points at a dead run; app exit must not leak it either).
+    fn stop_web(&mut self) {
+        Self::stop_web_child(&mut self.web_child);
     }
 
     fn key(&mut self, event: &winit::event::KeyEvent, pressed: bool) -> bool {
@@ -831,11 +918,13 @@ impl App {
             match &mut self.session {
                 Session::Host(dev) => {
                     dev.stop();
+                    self.stop_web();
                     let image = self.image.clone();
                     let accel = self.accel.clone();
                     let memory = self.memory;
                     let keep = self.keep;
-                    match Device::start(image, flipped, &accel, memory, None, keep, "shell") {
+                    let vnc = self.vnc.clone();
+                    match Device::start(image, flipped, &accel, memory, None, keep, "shell", vnc) {
                         Ok(dev) => {
                             self.profile = flipped;
                             self.session = Session::Host(dev);
@@ -1026,6 +1115,40 @@ mod toolbar_tests {
             assert_eq!(toolbar_hit(w, h, x, y), Some(i), "button {i}");
         }
         assert_eq!(toolbar_hit(w, h, 10.0, 500.0), None);
+    }
+
+    /// U56 (wave 11): six toolbar buttons — total width 6*bw+5*gap,
+    /// right-anchored with the 8px margin, contiguous non-overlapping
+    /// slots, and the label/tip arrays keep pace with the geometry.
+    #[test]
+    fn six_button_layout_and_arrays() {
+        let (w, h) = (480u32, 1000u32);
+        let (bw, gap) = (60u32, 6u32);
+        let btns = toolbar_buttons(w);
+        assert_eq!(btns.len(), TOOLBAR_LABELS.len());
+        assert_eq!(btns.len(), TOOLBAR_TIPS.len());
+        assert_eq!(btns[0].0, w - (6 * bw + 5 * gap) - 8, "right-anchored");
+        for i in 0..btns.len() {
+            assert_eq!(btns[i].1, bw);
+            if i > 0 {
+                assert_eq!(btns[i].0, btns[i - 1].0 + bw + gap, "contiguous slot {i}");
+            }
+        }
+        for i in 0..6 {
+            let x = (btns[i].0 + bw / 2) as f64;
+            let y = (h - TOOLBAR_H + 24) as f64;
+            assert_eq!(toolbar_hit(w, h, x, y), Some(i), "button {i}");
+        }
+        // The sixth key is the wave-11 WEB key.
+        assert_eq!(TOOLBAR_LABELS[5], "WEB");
+        assert_eq!(TOOLBAR_TIPS[5], "BROWSER");
+        // A narrow window still yields six non-overlapping slots
+        // (saturating anchor; geometry degenerates gracefully).
+        let narrow = toolbar_buttons(300);
+        assert_eq!(narrow.len(), 6);
+        for pair in narrow.windows(2) {
+            assert!(pair[1].0 + 60 > pair[0].0, "slots stay ordered");
+        }
     }
 
     #[test]

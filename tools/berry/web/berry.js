@@ -51,13 +51,35 @@ const bellAudio = document.getElementById('berry-bell');
 // Parameter parsing (load-time only; reconnects reuse these values)
 // ------------------------------------------------------------------
 
-// Password fragment: read, wipe, keep in memory for silent retries.
+// Password fragment: read, wipe, keep in memory for silent retries —
+// and mirror into sessionStorage so a plain page refresh (fragment now
+// gone from the address bar) reconnects without retyping. sessionStorage
+// (not localStorage): per-tab, wiped when the tab closes — the same
+// trust tier as the in-memory copy as far as the phone is concerned.
+// The #apikey= fragment (F44) is a random per-serve token for
+// passwordless runs — same read-once channel, same mirror, but it only
+// ever authorizes the deck's power keys (X-Berry-Pass), never VNC.
 let password = null;
+let apiKey = null;
 if (location.hash.startsWith('#')) {
   const frag = new URLSearchParams(location.hash.slice(1));
   const pw = frag.get('password');
-  if (pw) password = pw;
+  const key = frag.get('apikey');
+  if (pw) {
+    password = pw;
+    try { sessionStorage.setItem('berry-pass', pw); } catch { /* private mode */ }
+  }
+  if (key) {
+    apiKey = key;
+    try { sessionStorage.setItem('berry-apikey', key); } catch { /* private mode */ }
+  }
   history.replaceState(null, '', location.pathname + location.search);
+}
+if (!password) {
+  try { password = sessionStorage.getItem('berry-pass'); } catch { /* ignore */ }
+}
+if (!apiKey) {
+  try { apiKey = sessionStorage.getItem('berry-apikey'); } catch { /* ignore */ }
 }
 
 const params = new URLSearchParams(location.search);
@@ -277,6 +299,7 @@ function onCredentialsRequired() {
 function onSecurityFailure() {
   authFailed = true;
   password = null; // the cache is invalidated
+  updatePowerKeys();
   stopReconnectCycle();
   setState('berry-error', '连接失败：口令被拒绝');
   showCredDialog('口令被拒绝，请重新输入');
@@ -302,7 +325,9 @@ credForm.addEventListener('submit', (e) => {
     return;
   }
   password = pw;
+  try { sessionStorage.setItem('berry-pass', pw); } catch { /* private mode */ }
   hideCredDialog();
+  updatePowerKeys();
   if (rfbWaitingCreds && rfb) {
     rfb.sendCredentials({ password });
   } else {
@@ -463,6 +488,192 @@ btnConn.addEventListener('click', () => {
   } else {
     attemptConnect(); // immediate attempt, backoff counter reset
   }
+});
+
+// ------------------------------------------------------------------
+// Device deck (bottom bar): nav keys tap the GUEST's own five-key
+// navigation bar (back/recents/home/rotate, launcher-rendered at the
+// screen bottom) through synthesized pointer events — real guest
+// semantics over the public canvas event surface, no key codes. Plus
+// canvas screenshot, guest power over the berry control API, and a
+// fullscreen mirror.
+// ------------------------------------------------------------------
+
+// Guest nav-bar geometry (launcher desktop.rs): big mode when the guest
+// is >=600 wide AND >=1800 tall (160px keys, 48px gaps, 190px bar);
+// compact otherwise (44/12/44). The bar is centered horizontally and
+// bottom-anchored; key order is back/recents/home/rotate/power.
+function navGeom() {
+  const canvas = holder.querySelector('canvas');
+  if (!canvas || !canvas.width || !canvas.height) return null;
+  const W = canvas.width;
+  const H = canvas.height;
+  const big = W >= 600 && H >= 1800;
+  const key = big ? 160 : 44;
+  const gap = big ? 48 : 12;
+  const barH = big ? 190 : 44;
+  const barW = key * 5 + gap * 4;
+  const margin = (W - barW) / 2;
+  const cy = H - barH / 2;
+  const cx = (i) => margin + i * (key + gap) + key / 2;
+  return {
+    back: [cx(0), cy],
+    recents: [cx(1), cy],
+    home: [cx(2), cy],
+    rotate: [cx(3), cy],
+  };
+}
+
+// Tap a guest pixel: synthesize mousedown/mouseup on the canvas at the
+// proportional CSS position. noVNC's canvas handlers turn that into the
+// same VNC pointer event a finger would produce.
+function guestTap(gx, gy) {
+  const canvas = holder.querySelector('canvas');
+  if (!rfb || !canvas || !canvas.width) return false;
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) return false;
+  const sx = rect.left + (gx / canvas.width) * rect.width;
+  const sy = rect.top + (gy / canvas.height) * rect.height;
+  const base = {
+    clientX: sx,
+    clientY: sy,
+    bubbles: true,
+    cancelable: true,
+    view: window,
+    button: 0,
+  };
+  canvas.dispatchEvent(new MouseEvent('mousedown', { ...base, buttons: 1 }));
+  canvas.dispatchEvent(new MouseEvent('mouseup', { ...base, buttons: 0 }));
+  canvas.dispatchEvent(new MouseEvent('click', { ...base, buttons: 0 }));
+  return true;
+}
+
+const DECK_KEYS = [
+  ['berry-key-back', 'back'],
+  ['berry-key-task', 'recents'],
+  ['berry-key-home', 'home'],
+  ['berry-key-rotate', 'rotate'],
+];
+for (const [id, which] of DECK_KEYS) {
+  const btn = document.getElementById(id);
+  btn.addEventListener('click', () => {
+    const geom = navGeom();
+    if (!geom || !guestTap(geom[which][0], geom[which][1])) {
+      flash(btn, '未连接');
+    }
+  });
+}
+
+// Transient button feedback; every deck button remembers its label.
+for (const b of document.querySelectorAll('#berry-deck button')) {
+  b.dataset.label = b.textContent;
+}
+
+function flash(btn, text, ms = 1600) {
+  btn.textContent = text;
+  btn.classList.add('berry-flash');
+  setTimeout(() => {
+    btn.textContent = btn.dataset.label;
+    btn.classList.remove('berry-flash');
+  }, ms);
+}
+
+// Screenshot: capture exactly what the canvas shows, download a PNG
+// (on a phone that saves straight into the photo/download surface).
+const btnShot = document.getElementById('berry-deck-shot');
+btnShot.addEventListener('click', () => {
+  const canvas = holder.querySelector('canvas');
+  if (!canvas || !canvas.width) {
+    flash(btnShot, '无画面');
+    return;
+  }
+  canvas.toBlob((blob) => {
+    if (!blob) {
+      flash(btnShot, '失败');
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `berry-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }, 'image/png');
+});
+
+// Power actions ride the berry control API on the page origin
+// (POST /api/power/<action>, empty body). The credential — the VNC
+// password from the URL fragment or the credential dialog, or the
+// per-serve #apikey= token on a passwordless run (F44) — travels in
+// X-Berry-Pass; berry rejects anything that does not match, so a
+// cross-site POST without the fragment credential dies at the gate.
+async function powerAction(action) {
+  const resp = await fetch(`/api/power/${action}`, {
+    method: 'POST',
+    headers: { 'X-Berry-Pass': password || apiKey || '' },
+  });
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    if (resp.status === 403) {
+      throw new Error(password || apiKey
+        ? '口令被拒'
+        : '本页无凭据(需完整 URL 的 #password= 或 #apikey= 段;--open 打开时该段被剥除)');
+    }
+    throw new Error(body.error || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}
+
+const btnReboot = document.getElementById('berry-deck-reboot');
+
+// F44: without a credential (no password, no #apikey= token — e.g. the
+// page arrived via --open or a QR code, both of which strip the
+// fragment) the power keys can only ever 403, so they render disabled
+// with an explanatory title instead of failing on tap. Re-evaluated
+// whenever the credential cache changes (cred dialog, auth failure).
+function updatePowerKeys() {
+  const ok = !!(password || apiKey);
+  btnReboot.disabled = !ok;
+  btnOff.disabled = !ok;
+  btnReboot.title = ok ? '重启客机' : '重启客机（本页缺 #password=/#apikey= 凭据段）';
+  btnOff.title = ok ? '关机客机（三秒内再点一次确认）' : '关机客机（本页缺 #password=/#apikey= 凭据段）';
+}
+const btnOff = document.getElementById('berry-deck-off');
+updatePowerKeys();
+
+btnReboot.addEventListener('click', () => {
+  flash(btnReboot, '重启中…', 4000);
+  powerAction('reboot')
+    .then(() => flash(btnReboot, '已重启'))
+    .catch((e) => flash(btnReboot, e.message));
+});
+
+// Power off mirrors the window OFF key: a second tap within 3s confirms.
+const btnOff = document.getElementById('berry-deck-off');
+let offArmTimer = null;
+btnOff.addEventListener('click', () => {
+  if (offArmTimer) {
+    clearTimeout(offArmTimer);
+    offArmTimer = null;
+    btnOff.classList.remove('berry-armed');
+    flash(btnOff, '关机中…', 4000);
+    powerAction('off')
+      .then(() => flash(btnOff, '已关机'))
+      .catch((e) => flash(btnOff, e.message));
+    return;
+  }
+  btnOff.classList.add('berry-armed');
+  btnOff.textContent = '确认?';
+  offArmTimer = setTimeout(() => {
+    offArmTimer = null;
+    btnOff.classList.remove('berry-armed');
+    btnOff.textContent = btnOff.dataset.label;
+  }, 3000);
+});
+
+// Deck fullscreen mirrors the toolbar key.
+document.getElementById('berry-deck-full').addEventListener('click', () => {
+  btnFull.click();
 });
 
 // ------------------------------------------------------------------

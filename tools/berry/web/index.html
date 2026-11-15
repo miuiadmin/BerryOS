@@ -30,6 +30,27 @@
 
   <main id="berry-holder" tabindex="-1"><!-- RFB canvas mounts here --></main>
 
+  <!--
+    Device deck (bottom bar, thumb reach on phones). The four nav keys
+    TAP THE GUEST'S OWN five-key navigation bar (back/recents/home/
+    rotate rendered by the launcher at the bottom of the screen) through
+    synthesized pointer events — real guest semantics, no key codes.
+    Plus canvas screenshot (PNG download), guest power control over the
+    berry control API (credential-gated: the run's VNC password or its
+    per-serve #apikey= token), fullscreen.
+  -->
+  <footer id="berry-deck" role="toolbar" aria-label="设备控制">
+    <button id="berry-key-back" type="button" title="返回（点客机导航条返回键）">返回</button>
+    <button id="berry-key-task" type="button" title="多任务（点客机导航条多任务键）">多任务</button>
+    <button id="berry-key-home" type="button" title="主页（点客机导航条桌面键）">主页</button>
+    <button id="berry-key-rotate" type="button" title="旋转（点客机导航条旋转键）">旋转</button>
+    <span id="berry-deck-sep" aria-hidden="true"></span>
+    <button id="berry-deck-shot" type="button" title="截取当前画面并保存 PNG">截图</button>
+    <button id="berry-deck-reboot" type="button" title="重启客机">重启</button>
+    <button id="berry-deck-off" type="button" title="关机客机（三秒内再点一次确认）">关机</button>
+    <button id="berry-deck-full" type="button" title="切换全屏">全屏</button>
+  </footer>
+
   <input id="berry-kbd-input" type="text" autocomplete="off" autocapitalize="off"
          autocorrect="off" spellcheck="false" aria-hidden="true" tabindex="-1">
 

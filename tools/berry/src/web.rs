@@ -161,14 +161,23 @@ pub(crate) fn pct_encode(s: &str) -> String {
 
 /// `http://127.0.0.1:<port>/?autoconnect=true&path=<ws uri>&resize=scale`
 /// plus `#password=<pw>` when a password is known (fragment never leaves the
-/// browser; without one noVNC prompts in-page — probe p6).
-pub fn build_page_url(web_port: u16, ws_uri: &str, password: Option<&str>) -> String {
+/// browser; without one noVNC prompts in-page — probe p6). A passwordless
+/// serve carries its random API token as `#apikey=` instead (F44): the same
+/// read-once fragment channel, never both fragments at once.
+pub fn build_page_url(
+    web_port: u16,
+    ws_uri: &str,
+    password: Option<&str>,
+    apikey: Option<&str>,
+) -> String {
     let mut url = format!(
         "http://127.0.0.1:{web_port}/?autoconnect=true&path={}&resize=scale",
         pct_encode(ws_uri)
     );
     if let Some(pw) = password {
         url.push_str(&format!("#password={}", pct_encode(pw)));
+    } else if let Some(k) = apikey {
+        url.push_str(&format!("#apikey={}", pct_encode(k)));
     }
     url
 }
@@ -190,6 +199,7 @@ pub fn build_page_url_https(
     host: &str,
     ws_port: u16,
     password: Option<&str>,
+    apikey: Option<&str>,
 ) -> String {
     let mut url = format!(
         "https://127.0.0.1:{page_port}/?autoconnect=true&host={}&port={ws_port}&encrypt=false&path=&resize=scale",
@@ -197,6 +207,8 @@ pub fn build_page_url_https(
     );
     if let Some(pw) = password {
         url.push_str(&format!("#password={}", pct_encode(pw)));
+    } else if let Some(k) = apikey {
+        url.push_str(&format!("#apikey={}", pct_encode(k)));
     }
     url
 }
@@ -215,6 +227,7 @@ pub fn build_page_url_tls(
     host: &str,
     proxy_port: u16,
     password: Option<&str>,
+    apikey: Option<&str>,
 ) -> String {
     let mut url = format!(
         "https://127.0.0.1:{page_port}/?autoconnect=true&host={}&port={proxy_port}&encrypt=true&path=&resize=off",
@@ -222,28 +235,8 @@ pub fn build_page_url_tls(
     );
     if let Some(pw) = password {
         url.push_str(&format!("#password={}", pct_encode(pw)));
-    }
-    url
-}
-
-/// LAN page URL (wave 10, `vnc web --lan`): plaintext http page on the
-/// LAN address whose `path=` points at the SAME port's `/ws` route —
-/// berry is the single LAN entrance, the browser dials the page and
-/// the proxied ws through one port. The own shell consumes the absolute
-/// `ws://` `path=` verbatim (`new URL().href` keeps the path), no
-/// browser-side change. Bare IPv6 hosts get brackets via the shared
-/// `addr_host` semantics; the fragment rides exactly like the other
-/// builders (and `--qr` content is this URL with the fragment
-/// stripped).
-pub fn build_page_url_lan(lan_host: &str, web_port: u16, password: Option<&str>) -> String {
-    let ws_uri = format!("ws://{}/ws", crate::vnc_cfg::addr_host(lan_host, web_port));
-    let mut url = format!(
-        "http://{}/?autoconnect=true&path={}&resize=scale",
-        crate::vnc_cfg::addr_host(lan_host, web_port),
-        pct_encode(&ws_uri)
-    );
-    if let Some(pw) = password {
-        url.push_str(&format!("#password={}", pct_encode(pw)));
+    } else if let Some(k) = apikey {
+        url.push_str(&format!("#apikey={}", pct_encode(k)));
     }
     url
 }
@@ -252,9 +245,15 @@ pub fn build_page_url_lan(lan_host: &str, web_port: u16, password: Option<&str>)
 /// one `0.0.0.0` port; `path=` carries the same-origin `/ws` route that
 /// the server proxies to QEMU's loopback ws port. berry.js consumes the
 /// `path=` form verbatim (`new URL().href` keeps the `/ws` path), so
-/// the browser side is unchanged. Password fragment semantics are
-/// byte-identical to the other three builders.
-pub fn build_page_url_lan(lan_host: &str, web_port: u16, password: Option<&str>) -> String {
+/// the browser side is unchanged. Fragment semantics are byte-identical
+/// to the other three builders: `#password=` for password runs,
+/// `#apikey=` for the passwordless token (never both).
+pub fn build_page_url_lan(
+    lan_host: &str,
+    web_port: u16,
+    password: Option<&str>,
+    apikey: Option<&str>,
+) -> String {
     let hostport = crate::vnc_cfg::addr_host(lan_host, web_port);
     let ws_uri = format!("ws://{hostport}/ws");
     let mut url = format!(
@@ -263,6 +262,8 @@ pub fn build_page_url_lan(lan_host: &str, web_port: u16, password: Option<&str>)
     );
     if let Some(pw) = password {
         url.push_str(&format!("#password={}", pct_encode(pw)));
+    } else if let Some(k) = apikey {
+        url.push_str(&format!("#apikey={}", pct_encode(k)));
     }
     url
 }
@@ -292,6 +293,11 @@ pub(crate) fn strip_fragment(url: &str) -> &str {
 enum ProxyConn {
     Server(rustls::ServerConnection),
     Client(rustls::ClientConnection),
+    /// TLS×LAN browser leg (wave 11): this side carries no TLS, so
+    /// "deframed" bytes are the chunk itself and sends go straight to
+    /// the socket — intercepted in `ProxyEndpoint::deframe`/`send` so
+    /// the pump machinery stays shared with the wss proxy.
+    Plain,
 }
 
 impl ProxyConn {
@@ -313,6 +319,7 @@ impl ProxyConn {
             let n = match self {
                 ProxyConn::Server(c) => c.read_tls(&mut cur)?,
                 ProxyConn::Client(c) => c.read_tls(&mut cur)?,
+                ProxyConn::Plain => break, // unreachable: deframe intercepts
             };
             if n == 0 {
                 break;
@@ -325,6 +332,7 @@ impl ProxyConn {
         let r = match self {
             ProxyConn::Server(c) => c.process_new_packets(),
             ProxyConn::Client(c) => c.process_new_packets(),
+            ProxyConn::Plain => return Ok(()), // unreachable: deframe intercepts
         };
         r.map(|_| ()).map_err(|e| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, format!("tls: {e}"))
@@ -342,6 +350,7 @@ impl ProxyConn {
             let res = match self {
                 ProxyConn::Server(c) => c.reader().read(&mut tmp),
                 ProxyConn::Client(c) => c.reader().read(&mut tmp),
+                ProxyConn::Plain => return Ok(()), // unreachable: deframe intercepts
             };
             match res {
                 Ok(0) => return Ok(()),
@@ -362,6 +371,7 @@ impl ProxyConn {
         match self {
             ProxyConn::Server(c) => c.writer().write_all(plain),
             ProxyConn::Client(c) => c.writer().write_all(plain),
+            ProxyConn::Plain => Ok(()), // unreachable: send intercepts
         }
     }
 
@@ -369,6 +379,7 @@ impl ProxyConn {
         match self {
             ProxyConn::Server(c) => c.wants_write(),
             ProxyConn::Client(c) => c.wants_write(),
+            ProxyConn::Plain => false,
         }
     }
 
@@ -376,6 +387,7 @@ impl ProxyConn {
         match self {
             ProxyConn::Server(c) => c.write_tls(w),
             ProxyConn::Client(c) => c.write_tls(w),
+            ProxyConn::Plain => Ok(0), // unreachable: wants_write is false
         }
     }
 }
@@ -394,9 +406,14 @@ impl ProxyEndpoint {
     /// Feed raw socket bytes in, get decrypted plaintext out. Also
     /// flushes anything the session wants to send (post-handshake
     /// records like NewSessionTicket or KeyUpdate acks). Short lock: the
-    /// blocking socket read happened before this call.
+    /// blocking socket read happened before this call. The Plain leg
+    /// (TLS×LAN browser side) is intercepted: its "deframed" bytes are
+    /// the chunk itself.
     fn deframe(&self, chunk: &[u8]) -> std::io::Result<Vec<u8>> {
         let mut c = self.conn.lock().unwrap();
+        if let ProxyConn::Plain = &*c {
+            return Ok(chunk.to_vec());
+        }
         c.feed(chunk)?;
         c.process()?;
         self.flush_locked(&mut c)?;
@@ -406,12 +423,18 @@ impl ProxyEndpoint {
     }
 
     /// Deliver plaintext into the session and push the resulting TLS
-    /// records to the socket.
+    /// records to the socket. The Plain leg writes the bytes to the
+    /// socket verbatim (no session to queue into).
     fn send(&self, plain: &[u8]) -> std::io::Result<()> {
         if plain.is_empty() {
             return Ok(());
         }
         let mut c = self.conn.lock().unwrap();
+        if let ProxyConn::Plain = &*c {
+            let mut w = self.wr.lock().unwrap();
+            w.write_all(plain)?;
+            return w.flush();
+        }
         c.queue_plain(plain)?;
         self.flush_locked(&mut c)
     }
@@ -601,173 +624,6 @@ fn proxy_conn(
 }
 
 // ---------------------------------------------------------------------------
-// LAN single-port ws proxy (wave 10, --lan): /ws Upgrade -> plaintext
-// byte pipe toward QEMU's loopback ws port
-// ---------------------------------------------------------------------------
-
-/// Upstream dial target for the LAN `/ws` proxy: QEMU's loopback
-/// websocket port as a `host:port` string (host from
-/// `vnc_cfg::dial_host` of the run's bind — the proxy, not QEMU, is
-/// what the LAN sees).
-#[derive(Clone, Debug)]
-pub struct LanUpstream {
-    pub addr: String,
-}
-
-/// Connect budget for the upstream dial (the `vnc check` 10s discipline).
-const LAN_UPSTREAM_CONNECT: Duration = Duration::from_secs(10);
-
-/// Does the raw request head carry a websocket Upgrade? Header names
-/// are case-insensitive; the `Upgrade` value must equal `websocket`
-/// (case-insensitive token per RFC 6455 §4.1) and a non-empty
-/// `Sec-WebSocket-Key` must be present — both together distinguish a
-/// real browser ws dial from a plain GET of a path that happens to be
-/// `/ws`. Pure, byte-oriented.
-pub(crate) fn head_has_upgrade(raw: &[u8]) -> bool {
-    let text = String::from_utf8_lossy(raw);
-    let mut upgrade = false;
-    let mut key = false;
-    for line in text.lines().skip(1) {
-        let line = line.trim_end_matches('\r');
-        let Some((name, value)) = line.split_once(':') else { continue };
-        let name = name.trim().to_ascii_lowercase();
-        let value = value.trim();
-        match name.as_str() {
-            "upgrade" => {
-                // Comma-separated token list is legal; browsers send one.
-                upgrade = value
-                    .split(',')
-                    .any(|t| t.trim().eq_ignore_ascii_case("websocket"));
-            }
-            "sec-websocket-key" => key = !value.is_empty(),
-            _ => {}
-        }
-        if upgrade && key {
-            return true;
-        }
-    }
-    false
-}
-
-/// Rewrite the ws upgrade request head for the LAN proxy: the request
-/// line's target is spliced out and replaced by `/` — QEMU's ws
-/// endpoint accepts only the root path (probe f3: `/ws` and `/foo`
-/// both 404) — while every other byte (headers, CRLFs, the final blank
-/// line, odd-but-legal spacing) passes through verbatim; the head is
-/// never re-serialized. Malformed (no newline, no second space, empty
-/// version) -> None, the caller drops the connection.
-pub(crate) fn rewrite_ws_request_head(raw: &[u8]) -> Option<Vec<u8>> {
-    let nl = raw.iter().position(|&b| b == b'\n')?;
-    let mut line = &raw[..nl];
-    if line.last() == Some(&b'\r') {
-        line = &line[..line.len() - 1];
-    }
-    let sp1 = line.iter().position(|&b| b == b' ')?;
-    let sp2 = sp1 + 1 + line[sp1 + 1..].iter().position(|&b| b == b' ')?;
-    if sp2 + 1 >= line.len() {
-        return None; // no version token after the target
-    }
-    let mut out = Vec::with_capacity(raw.len());
-    out.extend_from_slice(&line[..=sp1]); // method + first space
-    out.push(b'/'); // the replacement target
-    out.extend_from_slice(&line[sp2..]); // second space + version
-    out.extend_from_slice(&raw[nl..]); // CRLF + all remaining head bytes
-    Some(out)
-}
-
-/// Dial the upstream within the connect budget. The address is always a
-/// literal `host:port` built from `dial_host`, so it parses to one
-/// socket address (multi-A names cannot occur).
-fn dial_upstream(addr: &str) -> std::io::Result<TcpStream> {
-    let sa: std::net::SocketAddr = addr
-        .parse()
-        .map_err(|_| std::io::Error::other(format!("lan proxy upstream address '{addr}'")))?;
-    TcpStream::connect_timeout(&sa, LAN_UPSTREAM_CONNECT)
-}
-
-/// One direction of the plain byte pipe: raw bytes `rd` -> `wr`; any
-/// EOF or error ends the direction and shuts BOTH proxied sockets
-/// down, which unblocks the sibling thread (the `pump_direction`
-/// teardown discipline without the TLS layer).
-fn pump_plain(mut rd: TcpStream, mut wr: TcpStream, shutdown: Arc<Vec<TcpStream>>) {
-    let mut buf = [0u8; 16 * 1024];
-    loop {
-        match rd.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                if wr.write_all(&buf[..n]).is_err() {
-                    break;
-                }
-            }
-            Err(_) => break,
-        }
-    }
-    for s in shutdown.iter() {
-        let _ = s.shutdown(std::net::Shutdown::Both);
-    }
-}
-
-/// The LAN ws byte pipe (wave 10): dial QEMU's loopback ws port, send
-/// the rewritten upgrade head (target -> `/`; QEMU only accepts the
-/// root path) plus any bytes the head reader had buffered past it,
-/// then relay both directions until either side hangs up. The data
-/// plane follows OS semantics — no timeouts, a desktop session may
-/// live for hours (so this branch is exempt from CONN_BUDGET, which
-/// exists to starve slow-drip attacks in the HTTP head phase).
-/// Upstream establishment failures are voiced on stderr (the F30
-/// discipline: the page keeps loading while every ws connection dies
-/// wordlessly otherwise); after establishment, relay errors stay
-/// silent — a peer hangup is the normal end of a session.
-fn proxy_lan_ws(
-    browser: TcpStream,
-    raw_head: &[u8],
-    leftover: Vec<u8>,
-    upstream: &LanUpstream,
-) -> std::io::Result<()> {
-    let Some(head) = rewrite_ws_request_head(raw_head) else {
-        return Ok(()); // malformed head: drop, the browser retries
-    };
-    let up = match dial_upstream(&upstream.addr) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!(
-                "berry: vnc web: lan proxy upstream {} failed: {e}",
-                upstream.addr
-            );
-            return Ok(());
-        }
-    };
-    let _ = browser.set_read_timeout(None);
-    let _ = browser.set_write_timeout(None);
-    let _ = up.set_read_timeout(None);
-    let _ = up.set_write_timeout(None);
-    {
-        let mut first = up.try_clone()?;
-        first.write_all(&head)?;
-        if !leftover.is_empty() {
-            first.write_all(&leftover)?;
-        }
-        first.flush()?;
-    }
-    let b_rd = browser.try_clone()?;
-    let b_wr = browser.try_clone()?;
-    let q_rd = up.try_clone()?;
-    let q_wr = up.try_clone()?;
-    let shutdown: Arc<Vec<TcpStream>> = Arc::new(vec![browser, up]);
-    let t1 = {
-        let sd = shutdown.clone();
-        std::thread::spawn(move || pump_plain(b_rd, q_wr, sd))
-    };
-    let t2 = {
-        let sd = shutdown.clone();
-        std::thread::spawn(move || pump_plain(q_rd, b_wr, sd))
-    };
-    let _ = t1.join();
-    let _ = t2.join();
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
 // Connection admission (wave 3): one thread per connection needs a cap
 // ---------------------------------------------------------------------------
 
@@ -789,6 +645,21 @@ pub fn parse_max_conns(raw: &str) -> std::result::Result<usize, String> {
         Err(_) => Err(format!(
             "must be a number between 1 and {MAX_CONNS_CEILING}, got '{raw}'"
         )),
+    }
+}
+
+/// `--port` value parser (the `--max-conns` precedent): port 0 would
+/// bind an OS-assigned ephemeral port while the URL/QR keep advertising
+/// `:0` — a dead link — so it is refused up front with the auto-pick
+/// alternative spelled out (F61).
+pub fn parse_web_port(raw: &str) -> std::result::Result<u16, String> {
+    match raw.parse::<u16>() {
+        Ok(0) => Err(
+            "0 is not a servable port: the OS would assign a random one while the URL/QR keep printing :0; omit --port to auto-pick a free one"
+                .to_string(),
+        ),
+        Ok(p) => Ok(p),
+        Err(_) => Err(format!("must be a TCP port number (1..=65535), got '{raw}'")),
     }
 }
 
@@ -819,18 +690,49 @@ impl Drop for ConnSlot {
 }
 
 /// Upstream dial address (`127.0.0.1:<ws port>`) for the single-port LAN
-/// proxy (`--lan`): browser ws upgrade → plaintext byte pipe → QEMU's
-/// loopback ws port. QEMU never binds the LAN; berry is the only entry.
+/// proxy (`--lan`): browser ws upgrade → byte pipe → QEMU's loopback ws
+/// port. QEMU never binds the LAN; berry is the only entry. `tls` is
+/// set on TLS runs (wave 11): the pipe's upstream leg wraps rustls
+/// around QEMU's loopback wss while the browser leg stays the same
+/// plaintext pipe — the http page shape is unchanged.
 #[derive(Clone, Debug)]
 pub struct LanUpstream {
     pub dial: String,
+    pub tls: Option<LanTlsUpstream>,
+}
+
+/// The TLS upstream leg of `--lan` on a TLS run (wave 11): the rustls
+/// client config (strict CA verification by default; `--insecure`
+/// swaps an accept-all config at the command layer, after its warning)
+/// plus the verification name for the loopback dial. `dir` rides along
+/// only for the upstream-failure diagnostic (F30: a bad CA would
+/// otherwise kill every `/ws` connection wordlessly while the page
+/// keeps loading).
+#[derive(Clone, Debug)]
+pub struct LanTlsUpstream {
+    pub cfg: std::sync::Arc<rustls::ClientConfig>,
+    pub name: rustls::pki_types::ServerName<'static>,
+    pub dir: std::path::PathBuf,
+}
+
+/// JSON/reporting label for the LAN `/ws` proxy upstream leg: `wss` on
+/// TLS runs (the rustls client to QEMU's loopback wss), `ws` on
+/// plaintext runs. The page itself stays http either way, so this is
+/// the only TLS detail the `--lan` output carries.
+pub fn lan_upstream_kind(upstream_tls: bool) -> &'static str {
+    if upstream_tls {
+        "wss"
+    } else {
+        "ws"
+    }
 }
 
 /// Control-API state for the deck's power keys (`POST /api/power/<action>`):
-/// the run to steer plus its VNC password. When the run carries a password
-/// (mandatory on `--lan`) the endpoint demands it in `X-Berry-Pass`, so the
-/// control surface is exactly as strong as the run's own auth; passwordless
-/// (loopback-only) runs skip the gate.
+/// the run to steer plus its gate credential — the run's own VNC password
+/// when it has one, else the random per-serve token minted by `vnc_web`
+/// (F44), so the endpoint always demands a match in `X-Berry-Pass` and the
+/// control surface is exactly as strong as the run's own auth. A `pass` of
+/// `None` (gate skipped) exists only in tests; `vnc_web` never builds one.
 pub struct CtlApi {
     pub run: PathBuf,
     pub pass: Option<String>,
@@ -846,6 +748,7 @@ pub(crate) struct ServeCtx {
 }
 
 /// Static-only context (tests; also the pre-wave-10 shape).
+#[cfg(test)]
 pub(crate) fn serve_ctx(root: &Path) -> ServeCtx {
     ServeCtx { root: root.to_path_buf(), lan: None, ctl: None }
 }
@@ -945,7 +848,8 @@ fn handle_conn<S: Read + Write>(stream: &mut S, ctx: &ServeCtx) -> std::io::Resu
 
 /// Plain-TCP request handling: `handle_conn_budget` plus the single-port
 /// LAN `/ws` proxy branch (needs the raw socket for the byte pipe; the
-/// TLS plane never coexists with `--lan`, contract 6).
+/// page-TLS plane never coexists with `--lan` — wave 11 TLS×LAN keeps
+/// the page http and puts TLS only on the proxy's upstream leg).
 fn handle_conn_plain(stream: &mut TcpStream, ctx: &ServeCtx) -> std::io::Result<()> {
     let deadline = Instant::now() + CONN_BUDGET;
     let head = {
@@ -973,7 +877,13 @@ fn handle_conn_plain(stream: &mut TcpStream, ctx: &ServeCtx) -> std::io::Result<
             && sanitize_path(&target).as_deref() == Some("ws")
             && head_has_ws_upgrade(&raw)
         {
-            return proxy_ws_plain(stream, raw, &up.dial);
+            return match up.tls.as_ref() {
+                // TLS runs (wave 11): the upstream leg speaks wss — the
+                // rustls client lives inside the pipe; the browser leg
+                // stays wave 10's plaintext byte pipe.
+                Some(_) => proxy_ws_tls(stream, raw, up),
+                None => proxy_ws_plain(stream, raw, &up.dial),
+            };
         }
     }
     respond_request(stream, &method, &target, &raw, ctx)
@@ -1043,17 +953,22 @@ fn respond_request<S: Read + Write>(
     };
     let path = base.join(&rel);
     // Defense in depth: the resolved file must stay under its base tree.
+    // head_only follows the request method (HEAD), never the status —
+    // a 404 with a non-empty body and head_only=true promises
+    // Content-Length bytes it never sends (curl: partial file, exit 18;
+    // found by the berry-vnc-lan-smoke /ws probe).
+    let head_only = method == "HEAD";
     let canon = match std::fs::canonicalize(&path) {
         Ok(p) => p,
-        Err(_) => return write_simple(stream, 404, true, b"not found\n"),
+        Err(_) => return write_simple(stream, 404, head_only, b"not found\n"),
     };
     let base_canon = std::fs::canonicalize(&base).unwrap_or(base);
     if !canon.starts_with(&base_canon) {
-        return write_simple(stream, 400, false, b"bad path\n");
+        return write_simple(stream, 400, head_only, b"bad path\n");
     }
     let body = match std::fs::read(&canon) {
         Ok(b) => b,
-        Err(_) => return write_simple(stream, 404, true, b"not found\n"),
+        Err(_) => return write_simple(stream, 404, head_only, b"not found\n"),
     };
     let mime = mime_for(&rel);
     let resp = format!(
@@ -1092,7 +1007,10 @@ fn api_power<S: Read + Write>(
     if !host_header_ok(raw) {
         return write_json(stream, 403, &json!({"ok": false, "error": "bad host"}));
     }
-    // Password gate: exactly as strong as the run's own VNC auth.
+    // Credential gate: the run's own VNC password or, for a passwordless
+    // run, its random per-serve token (F44) — either way X-Berry-Pass
+    // must match, so a cross-site drive-by POST without the fragment
+    // credential dies here.
     if let Some(expect) = &ctl.pass {
         let ok = header_value(raw, "x-berry-pass")
             .map(|g| ct_eq(g.as_bytes(), expect.as_bytes()))
@@ -1189,7 +1107,7 @@ fn reason_phrase(code: u16) -> &'static str {
 }
 
 // ---------------------------------------------------------------------------
-// LAN /ws byte-pipe proxy (wave 10, plaintext runs only)
+// LAN /ws byte-pipe proxy (wave 10; wave 11 adds the TLS upstream leg)
 // ---------------------------------------------------------------------------
 
 /// Route activation: `Upgrade: websocket` (case-insensitive name, value
@@ -1241,8 +1159,13 @@ pub(crate) fn rewrite_ws_request_head(raw: &[u8]) -> Option<Vec<u8>> {
 /// The plaintext byte pipe: dial QEMU's loopback ws port (10s connect
 /// budget, `vnc check` discipline; failures are audible — F30 precedent),
 /// send the rewritten head, then pump both directions with OS semantics
-/// until either side EOFs, and tear both down. Exempt from CONN_BUDGET
-/// structurally: this function never returns to a deadline check.
+/// until either side EOFs. Teardown follows the `pump_direction`
+/// discipline (F42): both sockets are cloned into a shared shutdown vec
+/// and whichever direction ends first shuts both down before the join —
+/// a join-then-shutdown order would park forever on the sibling's
+/// blocked read, leaking the thread, the slot, and the QEMU ws
+/// connection. Exempt from CONN_BUDGET structurally: this function
+/// never returns to a deadline check.
 fn proxy_ws_plain(browser: &mut TcpStream, raw: Vec<u8>, dial: &str) -> std::io::Result<()> {
     use std::net::ToSocketAddrs;
     let fail = |msg: std::string::String| {
@@ -1275,8 +1198,15 @@ fn proxy_ws_plain(browser: &mut TcpStream, raw: Vec<u8>, dial: &str) -> std::io:
     browser.set_write_timeout(None).ok();
     up.set_read_timeout(None).ok();
     up.set_write_timeout(None).ok();
+    // Shared teardown (F42): clones in this vec share the underlying
+    // sockets, so a Both shutdown from either direction unblocks the
+    // sibling's parked read — shutdown first, join second, never the
+    // reverse.
+    let shutdown: Arc<Vec<TcpStream>> =
+        Arc::new(vec![browser.try_clone()?, up.try_clone()?]);
     let mut b_rd = browser.try_clone()?;
     let mut u_wr = up.try_clone()?;
+    let pump_shutdown = Arc::clone(&shutdown);
     let pump_in = std::thread::spawn(move || {
         let mut buf = [0u8; 8192];
         loop {
@@ -1288,6 +1218,9 @@ fn proxy_ws_plain(browser: &mut TcpStream, raw: Vec<u8>, dial: &str) -> std::io:
                     }
                 }
             }
+        }
+        for s in pump_shutdown.iter() {
+            let _ = s.shutdown(Shutdown::Both);
         }
     });
     let mut buf = [0u8; 8192];
@@ -1301,9 +1234,109 @@ fn proxy_ws_plain(browser: &mut TcpStream, raw: Vec<u8>, dial: &str) -> std::io:
             }
         }
     }
+    for s in shutdown.iter() {
+        let _ = s.shutdown(Shutdown::Both);
+    }
     let _ = pump_in.join();
-    let _ = browser.shutdown(Shutdown::Both);
-    let _ = up.shutdown(Shutdown::Both);
+    Ok(())
+}
+
+/// The TLS-upstream byte pipe (wave 11 TLS×LAN): dial QEMU's loopback
+/// wss port and drive a strict-verified rustls client handshake (the
+/// same ring as `vnc check --ws`), send the rewritten head through TLS,
+/// then pump plaintext-browser ↔ TLS-upstream through the shared
+/// `ProxyEndpoint` machinery (browser leg `Plain`, upstream leg
+/// `Client`). Teardown semantics match `proxy_ws_plain`: OS timeouts
+/// off, either side's EOF shuts both down, exempt from CONN_BUDGET
+/// structurally. Establishment failures are audible (F30) and drop the
+/// browser connection — never a silent stall.
+fn proxy_ws_tls(browser: &mut TcpStream, raw: Vec<u8>, up: &LanUpstream) -> std::io::Result<()> {
+    use std::net::ToSocketAddrs;
+    let Some(tls) = up.tls.as_ref() else {
+        // Defensive: the /ws dispatch only routes TLS upstreams here.
+        return proxy_ws_plain(browser, raw, &up.dial);
+    };
+    let fail = |msg: &str| {
+        eprintln!(
+            "berry: vnc web: lan /ws proxy upstream {} failed (cert dir {}): {msg}",
+            up.dial,
+            tls.dir.display()
+        );
+    };
+    let addr = match up.dial.to_socket_addrs() {
+        Ok(mut it) => it.next(),
+        Err(_) => None,
+    };
+    let Some(addr) = addr else {
+        fail("cannot resolve upstream");
+        return Ok(());
+    };
+    let sock = match TcpStream::connect_timeout(&addr, Duration::from_secs(10)) {
+        Ok(s) => s,
+        Err(e) => {
+            fail(&e.to_string());
+            return Ok(());
+        }
+    };
+    if let Err(e) = sock
+        .set_read_timeout(Some(TLS_HANDSHAKE_TIMEOUT))
+        .and_then(|_| sock.set_write_timeout(Some(TLS_HANDSHAKE_TIMEOUT)))
+    {
+        fail(&e.to_string());
+        return Ok(());
+    }
+    let conn = match rustls::ClientConnection::new(tls.cfg.clone(), tls.name.clone()) {
+        Ok(c) => c,
+        Err(e) => {
+            fail(&format!("tls client setup: {e}"));
+            return Ok(());
+        }
+    };
+    let mut tls_up = rustls::StreamOwned::new(conn, sock);
+    while tls_up.conn.is_handshaking() {
+        if let Err(e) = tls_up.conn.complete_io(&mut tls_up.sock) {
+            fail(&e.to_string());
+            return Ok(());
+        }
+    }
+    let Some(head) = rewrite_ws_request_head(&raw) else {
+        return Ok(()); // malformed request line: drop the connection
+    };
+    if let Err(e) = tls_up.write_all(&head).and_then(|_| tls_up.flush()) {
+        fail(&e.to_string());
+        return Ok(());
+    }
+    // Data plane: OS semantics — a desktop session may stay up for hours.
+    browser.set_read_timeout(None).ok();
+    browser.set_write_timeout(None).ok();
+    let (q_conn, q_sock) = tls_up.into_parts();
+    q_sock.set_read_timeout(None).ok();
+    q_sock.set_write_timeout(None).ok();
+    let b_rd = browser.try_clone()?;
+    let b_wr = browser.try_clone()?;
+    let q_rd = q_sock.try_clone()?;
+    let q_wr = q_sock.try_clone()?;
+    let shutdown: Arc<Vec<TcpStream>> = Arc::new(vec![browser.try_clone()?, q_sock]);
+    let ep_b = Arc::new(ProxyEndpoint {
+        conn: std::sync::Mutex::new(ProxyConn::Plain),
+        wr: std::sync::Mutex::new(b_wr),
+    });
+    let ep_q = Arc::new(ProxyEndpoint {
+        conn: std::sync::Mutex::new(ProxyConn::Client(q_conn)),
+        wr: std::sync::Mutex::new(q_wr),
+    });
+    let t1 = {
+        let sd = shutdown.clone();
+        let (a, b) = (ep_b.clone(), ep_q.clone());
+        std::thread::spawn(move || pump_direction(b_rd, a, b, sd))
+    };
+    let t2 = {
+        let sd = shutdown.clone();
+        let (a, b) = (ep_q.clone(), ep_b.clone());
+        std::thread::spawn(move || pump_direction(q_rd, a, b, sd))
+    };
+    let _ = t1.join();
+    let _ = t2.join();
     Ok(())
 }
 
@@ -1488,7 +1521,7 @@ mod tests {
     fn page_url_construction() {
         // No password: no fragment. Wave 9: only the page path segment
         // changed (/vnc.html -> /); query params and ordering are frozen.
-        let url = build_page_url(8123, "ws://127.0.0.1:6001", None);
+        let url = build_page_url(8123, "ws://127.0.0.1:6001", None, None);
         assert_eq!(
             url,
             "http://127.0.0.1:8123/?autoconnect=true&path=ws%3A%2F%2F127.0.0.1%3A6001&resize=scale"
@@ -1499,13 +1532,43 @@ mod tests {
             "http://127.0.0.1:8123/vnc.html?autoconnect=true&path=ws%3A%2F%2F127.0.0.1%3A6001&resize=scale"
         );
         // With a password: fragment carries it (never sent to a server).
-        let url = build_page_url(8123, "wss://[::1]:6001", Some("ab12CDef"));
+        let url = build_page_url(8123, "wss://[::1]:6001", Some("ab12CDef"), None);
         assert!(url.starts_with("http://127.0.0.1:8123/?autoconnect=true&path="));
         assert!(url.contains("path=wss%3A%2F%2F%5B%3A%3A1%5D%3A6001"));
         assert!(url.ends_with("#password=ab12CDef"));
         // Odd characters in a user password get percent-encoded.
-        let url = build_page_url(8123, "ws://127.0.0.1:6001", Some("a b&c#d"));
+        let url = build_page_url(8123, "ws://127.0.0.1:6001", Some("a b&c#d"), None);
         assert!(url.ends_with("#password=a%20b%26c%23d"));
+    }
+
+    /// F44: a passwordless serve carries its random API token in the
+    /// fragment (`#apikey=`) — same read-once channel as `#password=`,
+    /// byte-identical rules across all four builders, never both
+    /// fragments at once, and a real password always wins.
+    #[test]
+    fn page_url_apikey_fragment() {
+        let tok = "t0k3nAbC";
+        let frag = format!("#apikey={tok}");
+        let url = build_page_url(8123, "ws://127.0.0.1:6001", None, Some(tok));
+        assert!(url.ends_with(&frag), "{url}");
+        assert!(!url.contains("password"), "{url}");
+        let url = build_page_url_https(8443, "127.0.0.1", 6001, None, Some(tok));
+        assert!(url.ends_with(&frag), "{url}");
+        let url = build_page_url_tls(8443, "127.0.0.1", 9100, None, Some(tok));
+        assert!(url.ends_with(&frag), "{url}");
+        let url = build_page_url_lan("192.168.1.105", 8123, None, Some(tok));
+        assert!(url.ends_with(&frag), "{url}");
+        // Password present: the token never rides along.
+        let url = build_page_url(8123, "ws://127.0.0.1:6001", Some("ab12"), Some(tok));
+        assert!(url.ends_with("#password=ab12"), "{url}");
+        assert!(!url.contains("apikey"), "{url}");
+        // Token characters percent-encode exactly like passwords.
+        let url = build_page_url(8123, "ws://127.0.0.1:6001", None, Some("a b&c#d"));
+        assert!(url.ends_with("#apikey=a%20b%26c%23d"), "{url}");
+        // Neither credential: bare URL (vnc_web never builds this shape
+        // anymore — the gate credential is always one of the two).
+        let url = build_page_url(8123, "ws://127.0.0.1:6001", None, None);
+        assert!(!url.contains('#'), "{url}");
     }
 
     #[test]
@@ -1598,6 +1661,21 @@ mod tests {
             let err = parse_max_conns(raw).unwrap_err();
             assert!(err.contains("1"), "raw={raw:?} err={err}");
             assert!(err.contains("1024"), "raw={raw:?} err={err}");
+        }
+    }
+
+    /// F61: `--port 0` is refused (the URL/QR would advertise a dead
+    /// `:0` link while the OS binds a random port); legal ports and the
+    /// non-numeric / out-of-range shapes round-trip or reject.
+    #[test]
+    fn web_port_parsing() {
+        assert_eq!(parse_web_port("1"), Ok(1));
+        assert_eq!(parse_web_port("18700"), Ok(18700));
+        assert_eq!(parse_web_port("65535"), Ok(65535));
+        let err = parse_web_port("0").unwrap_err();
+        assert!(err.contains("omit --port"), "err={err}");
+        for raw in ["65536", "-1", "abc", "", "1.5", " 8"] {
+            assert!(parse_web_port(raw).is_err(), "raw={raw:?}");
         }
     }
 
@@ -1725,18 +1803,37 @@ mod tests {
     #[test]
     fn lan_page_url_construction() {
         assert_eq!(
-            build_page_url_lan("192.168.1.105", 8123, None),
+            build_page_url_lan("192.168.1.105", 8123, None, None),
             "http://192.168.1.105:8123/?autoconnect=true&path=ws%3A%2F%2F192.168.1.105%3A8123%2Fws&resize=scale"
         );
         assert_eq!(
-            build_page_url_lan("192.168.1.105", 8123, Some("ab12")),
+            build_page_url_lan("192.168.1.105", 8123, Some("ab12"), None),
             "http://192.168.1.105:8123/?autoconnect=true&path=ws%3A%2F%2F192.168.1.105%3A8123%2Fws&resize=scale#password=ab12"
         );
         // Existing builders regress-pinned (wave-10 contract 4).
         assert_eq!(
-            build_page_url(8123, "ws://127.0.0.1:54005", None),
+            build_page_url(8123, "ws://127.0.0.1:54005", None, None),
             "http://127.0.0.1:8123/?autoconnect=true&path=ws%3A%2F%2F127.0.0.1%3A54005&resize=scale"
         );
+    }
+
+    /// U54 (wave 11 TLS×LAN): the upstream-form label and the URL shape
+    /// invariance — a TLS run's `--lan` page URL is byte-identical to a
+    /// plaintext run's (http page, `path=ws://…/ws`); the TLS detail
+    /// rides only in the JSON `lan.upstream` label.
+    #[test]
+    fn lan_upstream_kind_and_url_shape_invariance() {
+        assert_eq!(lan_upstream_kind(true), "wss");
+        assert_eq!(lan_upstream_kind(false), "ws");
+        // The URL builder takes no TLS input at all: whatever the run's
+        // listen.tls is, the page is http and the browser dials ws://
+        // (berry's proxy carries the TLS upstream leg, not the page).
+        let url = build_page_url_lan("192.168.1.105", 8123, Some("ab12"), None);
+        assert!(url.starts_with("http://192.168.1.105:8123/"));
+        assert!(url.contains("path=ws%3A%2F%2F192.168.1.105%3A8123%2Fws"));
+        assert!(!url.contains("wss"), "browser leg stays ws: {url}");
+        assert!(!url.contains("https"), "page stays http: {url}");
+        assert!(url.ends_with("#password=ab12"), "fragment discipline unchanged");
     }
 
     /// U50: `/ws` route detection and the request-line rewrite.
@@ -1758,10 +1855,9 @@ mod tests {
         let raw = b"GET /ws HTTP/1.1\r\nHost: h\r\nX-Odd: va\x01lue\r\nUpgrade: websocket\r\nSec-WebSocket-Key: k\r\n\r\n";
         let out = rewrite_ws_request_head(raw).unwrap();
         assert_eq!(
-            &out[..raw.len() - 2],
-            b"GET / HTTP/1.1\r\nHost: h\r\nX-Odd: va\x01lue\r\nUpgrade: websocket\r\nSec-WebSocket-Key: k\r\n"
+            out,
+            b"GET / HTTP/1.1\r\nHost: h\r\nX-Odd: va\x01lue\r\nUpgrade: websocket\r\nSec-WebSocket-Key: k\r\n\r\n".to_vec()
         );
-        assert_eq!(&out[raw.len() - 2..], b"\r\n");
         // Query variants rewrite away with the target.
         let q = rewrite_ws_request_head(b"GET /ws?a=b HTTP/1.1\r\n\r\n").unwrap();
         assert!(q.starts_with(b"GET / HTTP/1.1\r\n\r\n"));
@@ -1784,9 +1880,15 @@ mod tests {
         let up_port = up_l.local_addr().unwrap().port();
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen_t = Arc::clone(&seen);
+        // Set once the upstream's echo loop ends — the F42/F55 teardown
+        // assertion: a browser-side drop must tear the upstream leg down
+        // (EOF on QEMU's socket), not just end berry's browser read.
+        let up_eof = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let up_eof_t = Arc::clone(&up_eof);
         std::thread::spawn(move || {
             for mut sock in up_l.incoming().flatten() {
                 let seen_t = Arc::clone(&seen_t);
+                let up_eof_t = Arc::clone(&up_eof_t);
                 std::thread::spawn(move || {
                     let mut buf = [0u8; 8192];
                     let mut head = Vec::new();
@@ -1822,6 +1924,7 @@ mod tests {
                             }
                         }
                     }
+                    up_eof_t.store(true, std::sync::atomic::Ordering::Release);
                 });
             }
         });
@@ -1833,7 +1936,7 @@ mod tests {
         std::fs::write(tmp.join("novnc").join("vnc.html"), b"<html>noVNC</html>").unwrap();
         let ctx = Arc::new(ServeCtx {
             root: tmp.clone(),
-            lan: Some(LanUpstream { dial: format!("127.0.0.1:{up_port}") }),
+            lan: Some(LanUpstream { dial: format!("127.0.0.1:{up_port}"), tls: None }),
             ctl: None,
         });
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1848,9 +1951,18 @@ mod tests {
             b"GET /ws HTTP/1.1\r\nHost: 192.168.1.105\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
         )
         .unwrap();
+        // F63: loop until the banner lands — the 101 head and the RFB
+        // banner may legally arrive in separate TCP segments, so a
+        // single read must not pin both at once.
+        let mut got = Vec::new();
         let mut buf = [0u8; 512];
-        let n = s.read(&mut buf).unwrap();
-        let got = &buf[..n];
+        while !got.ends_with(b"RFB 003.008\n") {
+            let n = s
+                .read(&mut buf)
+                .unwrap_or_else(|e| panic!("read 101/banner: {e} (got {:?})", got));
+            assert!(n > 0, "EOF before the banner (got {:?})", got);
+            got.extend_from_slice(&buf[..n]);
+        }
         assert!(got.starts_with(b"HTTP/1.1 101"));
         assert!(got.ends_with(b"RFB 003.008\n"), "banner relayed: {got:?}");
         for payload in ["client-frame-1", "x"] {
@@ -1869,17 +1981,80 @@ mod tests {
         assert!(buf.starts_with("HTTP/1.1 404"));
 
         drop(s);
+        // F42/F55 regression net: the browser-side drop must tear the
+        // upstream leg down too — the proxy's shared-shutdown discipline
+        // (either direction's end shuts both sockets) makes the upstream
+        // see EOF; without it the pump thread and slot would leak and
+        // this poll would time out.
+        let eof_deadline = Instant::now() + Duration::from_secs(3);
+        while !up_eof.load(std::sync::atomic::Ordering::Acquire) {
+            assert!(
+                Instant::now() < eof_deadline,
+                "browser drop did not tear the upstream leg down within 3s"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
         let deadline = Instant::now() + Duration::from_secs(3);
         while Instant::now() < deadline {
             let first = seen.lock().unwrap().clone();
             if !first.is_empty() {
-                assert_eq!(first, b"GET / HTTP/1.1\r\n".to_vec());
+                // The upstream splits the head on \n: its first segment
+                // is the rewritten request line minus the newline.
+                assert_eq!(first, b"GET / HTTP/1.1\r".to_vec());
                 break;
             }
             std::thread::sleep(Duration::from_millis(20));
         }
         let first = seen.lock().unwrap().clone();
-        assert_eq!(first, b"GET / HTTP/1.1\r\n".to_vec(), "upstream saw the rewritten target");
+        assert_eq!(first, b"GET / HTTP/1.1\r".to_vec(), "upstream saw the rewritten target");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// F54: the plaintext proxy's establishment-failure arms (resolve
+    /// fail / connect refused / upstream write fail) must drop the
+    /// browser connection — an audible stderr line, then EOF, never a
+    /// silent stall. The TLS side pins the same contract via
+    /// `lan_ws_tls_upstream_wrong_ca_tears_down`; this is the plaintext
+    /// dual against a refused loopback port.
+    #[test]
+    fn lan_ws_proxy_connect_failure_tears_down() {
+        use std::io::Read;
+        // An unlistened loopback port: bind :0, read the port, drop the
+        // listener — connects get an immediate ECONNREFUSED.
+        let probe = TcpListener::bind("127.0.0.1:0").unwrap();
+        let dead_port = probe.local_addr().unwrap().port();
+        drop(probe);
+        let tmp = std::env::temp_dir().join(format!("berry-web-lanfail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("novnc")).unwrap();
+        std::fs::write(tmp.join("index.html"), b"<html>BerryOS</html>").unwrap();
+        std::fs::write(tmp.join("novnc").join("vnc.html"), b"<html>noVNC</html>").unwrap();
+        let ctx = Arc::new(ServeCtx {
+            root: tmp.clone(),
+            lan: Some(LanUpstream { dial: format!("127.0.0.1:{dead_port}"), tls: None }),
+            ctl: None,
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || serve_listener(listener, 4, None, ctx));
+        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        s.write_all(
+            b"GET /ws HTTP/1.1\r\nHost: 192.168.1.105\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        )
+        .unwrap();
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 256];
+        // EOF (Ok(0)) is the pass; an Err means the 5s read timeout
+        // fired — the connection stalled instead of being dropped.
+        loop {
+            match s.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                Err(e) => panic!("proxy stalled on upstream failure: {e}"),
+            }
+        }
+        assert!(buf.is_empty(), "no bytes should precede the drop: {buf:?}");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -1990,14 +2165,31 @@ mod tests {
         let (head, _) = get("/novnc/core/rfb.js", "GET");
         assert!(head.contains("Content-Type: text/javascript; charset=utf-8"));
         // Bare legacy /vnc.html: own-tree literal, no file there -> 404.
-        let (head, _) = get("/vnc.html", "GET");
+        // The 404 must deliver the promised Content-Length bytes on GET —
+        // the head_only-by-status regression (CL promised, body never
+        // sent; curl reports partial file) surfaced by the lan smoke's
+        // /ws probe.
+        let (head, body) = get("/vnc.html", "GET");
         assert!(head.starts_with("HTTP/1.1 404"));
+        let len: usize = head
+            .lines()
+            .find_map(|l| l.strip_prefix("Content-Length: "))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(len, body.len(), "404 GET body must match Content-Length");
         // Method and traversal semantics are unchanged.
         let (head, body) = get("/", "HEAD");
         assert!(head.starts_with("HTTP/1.1 200 OK"));
         assert!(body.is_empty());
-        let (head, _) = get("/nope.js", "GET");
+        let (head, body) = get("/nope.js", "GET");
         assert!(head.starts_with("HTTP/1.1 404"));
+        assert_eq!(body.len(), 10, "404 GET body: {:?}", body);
+        // HEAD keeps the would-be length and sends no body (RFC entity
+        // semantics, same as the 200 path).
+        let (head, body) = get("/nope.js", "HEAD");
+        assert!(head.starts_with("HTTP/1.1 404"));
+        assert!(body.is_empty());
         let (head, _) = get("/../etc/passwd", "GET");
         assert!(head.starts_with("HTTP/1.1 400"));
         let (head, _) = get("/novnc/../../etc/passwd", "GET");
@@ -2085,18 +2277,18 @@ mod tests {
         // host/port/encrypt=false form — noVNC 1.7.0 rewrites `path=`
         // schemes to wss on https pages unconditionally (probe f2).
         // `path=` PRESENT and empty, `resize=scale` like the http page.
-        let url = build_page_url_https(8443, "127.0.0.1", 6001, None);
+        let url = build_page_url_https(8443, "127.0.0.1", 6001, None, None);
         assert_eq!(
             url,
             "https://127.0.0.1:8443/?autoconnect=true&host=127.0.0.1&port=6001&encrypt=false&path=&resize=scale"
         );
         // Password rides the fragment, percent-encoded like the others.
-        let url = build_page_url_https(8443, "127.0.0.1", 6001, Some("ab12CDef"));
+        let url = build_page_url_https(8443, "127.0.0.1", 6001, Some("ab12CDef"), None);
         assert!(url.ends_with("#password=ab12CDef"));
-        let url = build_page_url_https(8443, "127.0.0.1", 6001, Some("a b&c#d"));
+        let url = build_page_url_https(8443, "127.0.0.1", 6001, Some("a b&c#d"), None);
         assert!(url.ends_with("#password=a%20b%26c%23d"));
         // The host parameter is percent-encoded (bracketed IPv6).
-        let url = build_page_url_https(8443, "[::1]", 6001, None);
+        let url = build_page_url_https(8443, "[::1]", 6001, None, None);
         assert!(url.contains("host=%5B%3A%3A1%5D&port=6001&encrypt=false"));
         // No `path=ws://` form may come back (the f2 failure mode).
         assert!(!url.contains("path=ws"));
@@ -2107,23 +2299,23 @@ mod tests {
         // No password: exact query string, no fragment. `path=` must be
         // PRESENT and empty: noVNC 1.7.0 defaults an absent path to
         // "websockify", which QEMU's root-only ws endpoint 404s (probe p3).
-        let url = build_page_url_tls(8443, "127.0.0.1", 9100, None);
+        let url = build_page_url_tls(8443, "127.0.0.1", 9100, None, None);
         assert_eq!(
             url,
             "https://127.0.0.1:8443/?autoconnect=true&host=127.0.0.1&port=9100&encrypt=true&path=&resize=off"
         );
         // Password rides the fragment, percent-encoded like the plain URL.
-        let url = build_page_url_tls(8443, "127.0.0.1", 9100, Some("ab12CDef"));
+        let url = build_page_url_tls(8443, "127.0.0.1", 9100, Some("ab12CDef"), None);
         assert!(url.ends_with("#password=ab12CDef"));
-        let url = build_page_url_tls(8443, "127.0.0.1", 9100, Some("a b&c#d"));
+        let url = build_page_url_tls(8443, "127.0.0.1", 9100, Some("a b&c#d"), None);
         assert!(url.ends_with("#password=a%20b%26c%23d"));
         // The host parameter is percent-encoded too (bracketed IPv6 etc).
-        let url = build_page_url_tls(8443, "[::1]", 9100, None);
+        let url = build_page_url_tls(8443, "[::1]", 9100, None, None);
         assert!(url.contains("host=%5B%3A%3A1%5D"));
         // The plaintext URL form is unchanged (no regression, U32 second
         // half pinned by page_url_construction above).
         assert_eq!(
-            build_page_url(8123, "ws://127.0.0.1:6001", None),
+            build_page_url(8123, "ws://127.0.0.1:6001", None, None),
             "http://127.0.0.1:8123/?autoconnect=true&path=ws%3A%2F%2F127.0.0.1%3A6001&resize=scale"
         );
     }
@@ -2142,16 +2334,17 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let root = tmp.clone();
+        let ctx = Arc::new(serve_ctx(&root));
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                let root = root.clone();
+                let ctx = Arc::clone(&ctx);
                 std::thread::spawn(move || {
                     let mut s = stream;
                     // Short per-read timeout so the budget deadline is
                     // checked while the head is dripping (mirrors the
                     // 5s arming the real serve loop does).
                     let _ = s.set_read_timeout(Some(Duration::from_millis(200)));
-                    let _ = handle_conn_budget(&mut s, &root, Duration::from_secs(1));
+                    let _ = handle_conn_budget(&mut s, &ctx, Duration::from_secs(1));
                 });
             }
         });
@@ -2344,5 +2537,217 @@ mod tests {
         // (EOF shutdown propagation); the threads wind up on their own.
         drop(tls);
         std::thread::sleep(Duration::from_millis(200));
+    }
+
+    /// U55 (wave 11 TLS×LAN): the `/ws` proxy with a TLS upstream —
+    /// plain-browser GET /ws → rustls client → TLS upstream, end to
+    /// end through the real serve loop. The upstream asserts the
+    /// rewritten request head (target `/`, other headers verbatim),
+    /// answers 101, then echoes: every payload must round-trip
+    /// byte-exact in both directions. A wrong-CA client config must
+    /// fail the upstream handshake audibly (the eprintln is code-
+    /// inspected) and tear the browser connection down instead of
+    /// stalling it.
+    #[test]
+    fn lan_ws_tls_upstream_end_to_end() {
+        use std::io::{Read, Write};
+        let dir = crate::tls::test_support::certs_dir().to_path_buf();
+        let up_cfg = match crate::tls::load_server_config(&dir) {
+            Ok(c) => c,
+            Err(_) => return, // no openssl in this environment
+        };
+        // Upstream "QEMU wss": accept TLS, assert the rewritten head,
+        // answer 101, then echo whatever arrives.
+        let up_l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let up_port = up_l.local_addr().unwrap().port();
+        let head_seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = head_seen.clone();
+        std::thread::spawn(move || {
+            for sock in up_l.incoming().flatten() {
+                let cfg = up_cfg.clone();
+                let seen = seen.clone();
+                std::thread::spawn(move || {
+                    let Ok(mut s) = accept_tls(sock, &cfg) else { return };
+                    // Read the request head, assert the rewrite.
+                    let mut head = Vec::new();
+                    let mut b = [0u8; 1];
+                    while !head.ends_with(b"\r\n\r\n") {
+                        match s.read(&mut b) {
+                            Ok(0) | Err(_) => return,
+                            Ok(_) => head.push(b[0]),
+                        }
+                        assert!(head.len() < 8192, "runaway head");
+                    }
+                    *seen.lock().unwrap() = head.clone();
+                    let text = String::from_utf8_lossy(&head).to_string();
+                    assert!(
+                        text.starts_with("GET / HTTP/1.1\r\n"),
+                        "request line must be rewritten to '/': {text:?}"
+                    );
+                    assert!(text.contains("Host: qemu-upstream"), "Host preserved: {text:?}");
+                    assert!(text.to_lowercase().contains("sec-websocket-key"), "key preserved");
+                    let resp = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: fixed\r\n\r\n";
+                    if s.write_all(resp.as_bytes()).and_then(|_| s.flush()).is_err() {
+                        return;
+                    }
+                    s.sock.set_read_timeout(None).ok();
+                    s.sock.set_write_timeout(None).ok();
+                    let mut buf = [0u8; 8192];
+                    loop {
+                        match s.read(&mut buf) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                if s.write_all(&buf[..n]).is_err() || s.flush().is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        // The page server with the TLS LAN upstream.
+        let client_cfg = crate::tls::load_client_config(&dir).unwrap();
+        let name = crate::tls::server_name("127.0.0.1").unwrap();
+        let lan_up = LanUpstream {
+            dial: format!("127.0.0.1:{up_port}"),
+            tls: Some(LanTlsUpstream { cfg: client_cfg, name, dir: dir.clone() }),
+        };
+        let tmp = std::env::temp_dir().join(format!("berry-lan-tls-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("index.html"), b"<html>BerryOS</html>").unwrap();
+        let root = tmp.clone();
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            serve_listener(
+                l,
+                4,
+                None,
+                std::sync::Arc::new(ServeCtx {
+                    root,
+                    lan: Some(lan_up),
+                    ctl: None,
+                }),
+            )
+        });
+
+        // Browser leg: plain TCP, ws upgrade on /ws (the same head a
+        // real browser sends at berry.js's path= URL).
+        let mut b = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        b.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        b.write_all(
+            b"GET /ws HTTP/1.1\r\nHost: qemu-upstream\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        )
+        .unwrap();
+        b.flush().unwrap();
+        let mut resp = Vec::new();
+        let mut byte = [0u8; 1];
+        while !resp.ends_with(b"\r\n\r\n") {
+            match b.read(&mut byte) {
+                Ok(0) => panic!("connection closed before the 101"),
+                Ok(_) => resp.push(byte[0]),
+                Err(e) => panic!("read 101: {e}"),
+            }
+        }
+        let text = String::from_utf8_lossy(&resp).to_string();
+        assert!(text.starts_with("HTTP/1.1 101"), "upstream 101 relaying: {text}");
+        // Byte-exact echo through the whole chain, both directions.
+        for payload in ["hello wss upstream", "second chunk with more bytes", "x"] {
+            let payload = payload.as_bytes();
+            b.write_all(payload).unwrap();
+            b.flush().unwrap();
+            let mut back = vec![0u8; payload.len()];
+            b.read_exact(&mut back).unwrap();
+            assert_eq!(&back, payload, "echo must be byte-exact");
+        }
+        // The upstream really saw the rewritten head (not /ws).
+        let seen = head_seen.lock().unwrap().clone();
+        assert!(seen.starts_with(b"GET / HTTP/1.1\r\n"));
+        drop(b);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// U55 negative (wave 11): a wrong-CA upstream client cannot
+    /// handshake — the browser connection is torn down (EOF, never a
+    /// 101, never a stall) while the failure stays audible on stderr
+    /// (the eprintln is code-inspected, not captured).
+    #[test]
+    fn lan_ws_tls_upstream_wrong_ca_tears_down() {
+        use std::io::{Read, Write};
+        let dir = crate::tls::test_support::certs_dir().to_path_buf();
+        let up_cfg = match crate::tls::load_server_config(&dir) {
+            Ok(c) => c,
+            Err(_) => return, // no openssl in this environment
+        };
+        let up_l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let up_port = up_l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for sock in up_l.incoming().flatten() {
+                let cfg = up_cfg.clone();
+                std::thread::spawn(move || {
+                    // Even a perfect echo server never gets past the
+                    // handshake with a wrong-CA client.
+                    if let Ok(mut s) = accept_tls(sock, &cfg) {
+                        let mut buf = [0u8; 8192];
+                        loop {
+                            match s.read(&mut buf) {
+                                Ok(0) | Err(_) => break,
+                                Ok(n) => {
+                                    if s.write_all(&buf[..n]).is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        // The client trusts a DIFFERENT CA (test_support's other set).
+        let other = crate::tls::test_support::other_ca_dir().to_path_buf();
+        let client_cfg = match crate::tls::load_client_config(&other) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let name = crate::tls::server_name("127.0.0.1").unwrap();
+        let lan_up = LanUpstream {
+            dial: format!("127.0.0.1:{up_port}"),
+            tls: Some(LanTlsUpstream { cfg: client_cfg, name, dir: other }),
+        };
+        let tmp = std::env::temp_dir().join(format!("berry-lan-tls-neg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("index.html"), b"<html>BerryOS</html>").unwrap();
+        let root = tmp.clone();
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            serve_listener(
+                l,
+                4,
+                None,
+                std::sync::Arc::new(ServeCtx {
+                    root,
+                    lan: Some(lan_up),
+                    ctl: None,
+                }),
+            )
+        });
+        let mut b = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        b.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        b.write_all(
+            b"GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        )
+        .unwrap();
+        b.flush().unwrap();
+        let mut buf = [0u8; 256];
+        match b.read(&mut buf) {
+            Ok(0) => {} // clean teardown: exactly the expectation
+            Ok(n) => panic!("no relayed bytes expected on a failed handshake, got {} bytes", n),
+            Err(e) => panic!("a failed handshake must close, not error: {e}"),
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

@@ -46,6 +46,7 @@ pub struct Device {
     vnc_ext: Option<vnc_cfg::Exposed>,
 }
 impl Device {
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         image: Option<std::path::PathBuf>,
         profile: Profile,
@@ -54,16 +55,19 @@ impl Device {
         display_mode: Option<String>,
         keep: bool,
         label: &str,
+        vnc: vnc_cfg::Launch,
     ) -> Result<Self> {
         let qemu = Qemu::discover()?;
         let image = qemu::resolve_image(image)?;
         let firmware = qemu::firmware()?;
         let accel = qemu::choose_accel(accel, false)?;
         let mem = memory.unwrap_or(profile.memory_mib);
-        // VNC exposure resolution (flag/global > BERRY_VNC env > off) happens
-        // before the run dir exists so artifacts land with it; invalid specs
-        // fail fast here with E_USAGE instead of after QEMU spawns.
-        let resolved_vnc = vnc_cfg::resolve_launch()?;
+        // VNC exposure resolution (passed-in flags > BERRY_VNC env > off,
+        // wave 11: a direct parameter, formerly the process-level launch
+        // override) happens before the run dir exists so artifacts land
+        // with it; invalid specs fail fast here with E_USAGE instead of
+        // after QEMU spawns.
+        let resolved_vnc = vnc_cfg::resolve(vnc)?;
         let run = RunDir::create(label, keep)?;
         run_dir::write_state(run.path(), "starting");
         let vars = run.file("vars.fd");
