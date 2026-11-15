@@ -1580,7 +1580,11 @@ stack_pages = 16
         assert_eq!(m.version, "0.1.0");
         assert_eq!(m.entry, "bin/appdemo");
         assert!(m.console);
-        assert_eq!(m.stack_pages, STACK_PAGES_DEFAULT); // 省 [runtime]
+        // 波 4 §2.8 重钉：appdemo 42 行秒退件升格控件画廊常驻演示——真
+        // GUI 链 UiMain 构造中间体落栈（settings 8 页穿页先例）→ [runtime]
+        // 显式 stack_pages = 64（settings 同值）。钉板随 fixture 真值走
+        //（ba288f7 重钉先例同款）。
+        assert_eq!(m.stack_pages, 64);
         assert_eq!(m.intent, Intent::Utility);
         // SDK-1a（§6.1 新 manifest = F1+F2 组合）：三值齐备 0.1.0 +
         // fs=rootfs；net/security 缺席 None（§7.1 断言扩）。
@@ -1610,7 +1614,9 @@ stack_pages = 16
         // 齐用——mkapp 编码链 + appd 枚举标记的消费面对象）。
         let u = m.ui.expect("appdemo ui");
         assert_eq!(u.icon, Some("icons/icon.byi"));
-        assert_eq!(u.label, Some("APPDEMO"));
+        // 波 4 §2.8 重钉：label APPDEMO→Gallery（设计稿明令；桌面名与
+        // app id 分离的活证——APP_LIST label 域承载，id 断言面不受扰）。
+        assert_eq!(u.label, Some("Gallery"));
         assert_eq!(u.views, Some("views/main.bui"));
     }
 

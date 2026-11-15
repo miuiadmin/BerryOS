@@ -5,18 +5,27 @@ name = "appdemo"
 version = "0.2.0"
 edition = "2021"
 
-# app-0 demo 双 app 之一（`docs/app-0实施设计草案.md` §4）：manifest
-# `console = true` + 省 [runtime]（stack_pages 缺省 8 路径）——能力授予面
-# 的活证。stdhello 同链独立小工作区：musl target 与主工作区 none 全家
-# 互不渗漏。打一行 `app APPDEMO up` 后 exit(0) 真退出，appd（svcmgr arm）
-# reap 收 0；包经 tools/mkapp.py 产 .bap 进 rootfs.cpio（构建期接线
-# 见 justfile build-user）。
+# 波 4 §2.8：app-0 demo 秒退自验件（42 行）升格为控件画廊常驻演示——
+# berry-ui pattern.rs 模式件 + 引擎核心 ViewKind 的活体验收场（格子
+# 清单口径对齐 user/berry-ui/tests/gallery2.rs）。console/fs 自证面
+# 原序保留（`app APPDEMO up` / `app APPDEMO fs ok 23`），随后常驻帧
+# 循环永不退出（settings 垂直切片先例形态——wm 门控 + park 降级）。
+#
+# 链与形态 = settings/berry-launcher 镜像：独立小工作区（空 [workspace]
+# escape user 根）、musl target + berry-libc shim + berry-ld 链（构建行
+# 见 justfile build-user :301-312 APPDEMO 段）。deps 五件 = settings
+# 同批（含三偏差裁定：字面 version / +berry-libc crt0 与 env 块消费 /
+# +berry-guiproto wire 编解码——berry-ui 只引类型不 re-export 收发面）。
 license = "Apache-2.0"
 
 [workspace]
 
 [dependencies]
 berry-libc = { path = "../../berry-libc" }
+berry-sys = { path = "../../berry-sys" }
+berry-guiproto = { path = "../../berry-guiproto" }
+berry-ui = { path = "../../berry-ui" }
+berry-gfx = { path = "../../berry-gfx" }
 
 [profile.release]
 opt-level = "z"

@@ -1011,13 +1011,19 @@ done
 rootfs_list=$(printf '%s + ' "${ROOTFS_MARKERS[@]}"); rootfs_list=${rootfs_list% + }
 echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（${rootfs_list}）"
 
-# app-0 a-2 证据层：APPDEMO（console=true）子自证输出——谓词 `APP ok n=`
-# 证明「全部槽拉起 + reap 真码 0」，本行证明 console 能力面真把 stdout
-# 接到了串口（reap 0 而输出丢失 = 能力面静默断，谓词层抓不到）。小写
-# `app ` 前缀与全部大写标记面互非子串（与谓词分立的两层——HEXYL ok 的
-# 「私有通道收齐 + 基准对拍才打」同款分层思想）。
-grep -q 'app APPDEMO up' "$LOG" \
-  || fail "app APPDEMO up 缺失（console=true 能力面断——appdemo 未见自证输出；查 eco: app 行）"
+# app-0 a-2 证据层（波 4 裁决 B 随动重裁）：原断 `app APPDEMO up`（boot 批
+# 拉起 console=true app 的串口自证）——波 4 六应用 + appdemo 画廊均为常驻
+# park 形 GUI app，boot 批改「[ui] 入册不拉起」（svcmgr 裁决 B，W4-RECON
+# §1.7 铁律：常驻形由 boot 批拉起 = app_reap_tail 永等 = `APP ok` 缺失）。
+# rootfs 相新证据 = 逐 [ui] 槽 `app <id> gui deferred` 记账行（svcmgr 打，
+# 8 槽全在 = 入册面完整；任一缺席已由 `APP ok n=` 谓词兜底 FAIL，此处逐
+# 行断 = 失败可归因到具体 app）。console=true 的串口能力面证据随迁 GUI
+# 形（gui8-smoke 点击 spawn 的 `app APPDEMO up`/`fs ok` 行——launcher
+# SPAWN 路径 console 同接线）。
+for id in APPDEMO SETTINGS FILES PHOTOS CAMERA CONTACTS MMS BROWSER; do
+  grep -q "app $id gui deferred" "$LOG" \
+    || fail "app $id gui deferred 缺失（裁决 B 入册记账——boot 批未见 [ui] 槽入册；查 eco: app 行）"
+done
 # A2-3：guest EVS ok 已在标记面到齐——收本相 client 对拍结果（30s 帽只盖
 # 透传余量；compare 与 guest 打标几乎同时）。
 evs_client_wait "rootfs 相"

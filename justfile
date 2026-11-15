@@ -165,8 +165,10 @@ build-user:
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/appquiet/Cargo.toml \
         --target aarch64-unknown-linux-musl
-    # GUI-8 视觉补全：appstub 共用静默壳（零 argv0 断言/console=false/0 退出）
-    # 复制成 8 个占位 app 的 bin/<name>；真 app 内容后续替换。
+    # GUI-8 视觉补全残留：appstub 共用静默壳（零 argv0 断言/console=false/
+    # 0 退出）。波 4 先行批后仅 SETTINGS 一槽仍消费（crate 在册未接线——
+    # 翻新归后续批）；FILES/PHOTOS/CAMERA/CONTACTS/MMS/BROWSER 六槽已换
+    # 真 crate（下段）。
     CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/appstub/Cargo.toml \
         --target aarch64-unknown-none
     # C-2a：uutils coreutils 批（VM 草案 §C-2a）——家族 workspace bins/uu/
@@ -325,16 +327,45 @@ build-user:
     cp bins/apptomb/manifest.toml userbins/app-stage/APPTOMB/
     cp cargo-target/aarch64-unknown-linux-musl/release/apptomb userbins/app-stage/APPTOMB/bin/
     python3 ../tools/mkapp.py userbins/app/APPTOMB.bap userbins/app-stage/APPTOMB
-    # GUI-8 视觉补全：7 个占位 app（图标/入口填充；内容未实现）。
-    for spec in SETTINGS:settings FILES:files PHOTOS:photos CAMERA:camera CONTACTS:contacts MMS:messages BROWSER:browser; do
-        id=${spec%%:*}; bin=${spec##*:}
+    # 波 4 先行批（W4-RECON §5.4 改动点 1）：六应用 crate 接线——appstub
+    # 秒退壳退役，APPTOMB :315-327 食谱（musl + berry-ld 绝对路径 RUSTFLAGS
+    # → staging → mkapp 五道门禁）。资产单源 = crate 内 icons/views
+    # （contacts 批资产留 appstub——其 crate 无资产目录，W4-IMPL-CONTACTS
+    # §1.1 口径，if 兜底两形）。常驻 park 形入镜像的前置 = svcmgr 裁决 B
+    # （boot 批 [ui] 入册不拉起 + `app <id> gui deferred` 行——W4-RECON
+    # §1.7 铁律），同批已落；smoke APP/APPUI 计数零漂（n=9/n=8 仍打，
+    # 语义随裁决 B 两支化），PS 行数随 appdemo 不再 boot 拉起而 -1（前缀
+    # 断言面零扰动）——W4-VERIFY.md 落账。
+    for c in files photos camera contacts messages browser; do
+        CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+            cargo build --release --manifest-path "bins/$c/Cargo.toml" \
+            --target aarch64-unknown-linux-musl
+    done
+    for spec in FILES:files PHOTOS:photos CAMERA:camera CONTACTS:contacts MMS:messages BROWSER:browser; do
+        id=${spec%%:*}; c=${spec##*:}
         mkdir -p "userbins/app-stage/$id/bin"
-        cp "bins/appstub/apps/$id/manifest.toml" "userbins/app-stage/$id/"
-        cp cargo-target/aarch64-unknown-none/release/appstub "userbins/app-stage/$id/bin/$bin"
-        cp -R "bins/appstub/apps/$id/icons" "userbins/app-stage/$id/"
-        cp -R "bins/appstub/apps/$id/views" "userbins/app-stage/$id/"
+        cp "bins/$c/manifest.toml" "userbins/app-stage/$id/"
+        cp "cargo-target/aarch64-unknown-linux-musl/release/$c" "userbins/app-stage/$id/bin/"
+        if [ -d "bins/$c/icons" ]; then
+            cp -R "bins/$c/icons" "userbins/app-stage/$id/"
+        else
+            cp -R "bins/appstub/apps/$id/icons" "userbins/app-stage/$id/"
+        fi
+        if [ -d "bins/$c/views" ]; then
+            cp -R "bins/$c/views" "userbins/app-stage/$id/"
+        else
+            cp -R "bins/appstub/apps/$id/views" "userbins/app-stage/$id/"
+        fi
         python3 ../tools/mkapp.py "userbins/app/$id.bap" "userbins/app-stage/$id"
     done
+    # SETTINGS：GUI-8 唯一残留 stub 槽（crate 9035af061 在册，本批不接线
+    # ——七路报告面外；接线批随裁决 B 已清障）。
+    mkdir -p userbins/app-stage/SETTINGS/bin
+    cp bins/appstub/apps/SETTINGS/manifest.toml userbins/app-stage/SETTINGS/
+    cp cargo-target/aarch64-unknown-none/release/appstub userbins/app-stage/SETTINGS/bin/settings
+    cp -R bins/appstub/apps/SETTINGS/icons userbins/app-stage/SETTINGS/
+    cp -R bins/appstub/apps/SETTINGS/views userbins/app-stage/SETTINGS/
+    python3 ../tools/mkapp.py userbins/app/SETTINGS.bap userbins/app-stage/SETTINGS
     # G-eco-c/d + app-0：rootfs.cpio（hello + stdhello + hexyl + bsh + fail + bench1 + fsmgr + vprobe + vblk + vnet ELF 本体——装载走
     # svcmgr 流式 cpio/ELF 链，非 include_bytes 内嵌；产物在仓库根 =
     # `run-rootfs` 既有约定；条目按名排序 = 确定性输出。app-0 起加

@@ -2140,10 +2140,15 @@ fn run_rootfs_child(console: Handle) {
     // ---- app-0 a-2：.bap 启动批（收集槽全量拉起；`APP ok n=` = rootfs
     // 相第 21 标记）——确定性状态谓词：每槽 bap_scan → manifest parse →
     // 双守卫 → 拉起 → EOF/reap 真码 0，全过才打（任一降级 = 标记缺失 =
-    // smoke FAIL；裸跑 app_n==0 零扰动）。SDK-1a §1.2：批块先于 bsh 拉起
-    // （appd fs 授能传 fs_a_h——此刻仍持，app 批窗口 app 为 fs_a 队列唯一
-    // 活动客户端：app_launch 对 console=true 阻塞 reap、console=false
-    // collect_eof+reap，任一时刻至多一个 app 存活发 fs RPC）。
+    // smoke FAIL；裸跑 app_n==0 零扰动）。**裁决 B（波 4）后谓词两支**：
+    // 非 [ui] 槽 = 拉起 ∧ 退出真码 0（原形）；[ui] 槽 = 入册 + gui
+    // deferred 记账（拉起权归 launcher——常驻 park 形由 boot 批拉起 =
+    // app_reap_tail 永等，W4-RECON §1.7 铁律）。deferred 槽计入 ok
+    // （n=9 仍打——语义 = 拉起子集 ∧ deferred 子集全过）。SDK-1a §1.2：
+    // 批块先于 bsh 拉起（appd fs 授能传 fs_a_h——此刻仍持，app 批窗口
+    // app 为 fs_a 队列唯一活动客户端：app_launch 对 console=true 阻塞
+    // reap、console=false collect_eof+reap，任一时刻至多一个 app 存活
+    // 发 fs RPC）。
     if app_n > 0 {
         let mut ok = 0usize;
         // GUI-7：ui 面独立谓词（与拉起成败解耦——失败隔离两方向：ui 元数据
@@ -2165,6 +2170,7 @@ fn run_rootfs_child(console: Handle) {
             let (launched, uface, tail) = app_launch(
                 console,
                 fs_a_h,
+                true, // 裁决 B：boot 批 [ui] app 入册不拉起（头注/W4-RECON §1.7）
                 &apps[i].id[..apps[i].id_len],
                 apps[i].bap_off,
                 apps[i].bap_len,
@@ -5255,6 +5261,23 @@ fn eco_app(console: Handle, id: &[u8], why: &[u8]) {
     send_retry(console, line.as_ptr(), n + 1);
 }
 
+/// 裁决 B（波 4 W4-RECON §1.7 铁律）：boot 批对 [ui] app「入册不拉起」
+/// 的可见记账行（正常路径非降级——eco 族是坏消息面，本行独走小写
+/// `app ` 前缀与 appdemo 自证行同族）。与 `app APPDEMO up` 互非子串
+///（`gui deferred` 中段不可混叠）、无 " ok" 形不与标记面相撞。
+fn app_gui_deferred(console: Handle, id: &[u8]) {
+    let mut line = [0u8; 64];
+    line[..4].copy_from_slice(b"app ");
+    let mut n = 4;
+    let id = &id[..id.len().min(24)];
+    line[n..n + id.len()].copy_from_slice(id);
+    n += id.len();
+    line[n..n + 13].copy_from_slice(b" gui deferred");
+    n += 13;
+    line[n] = b'\n';
+    send_retry(console, line.as_ptr(), n + 1);
+}
+
 /// app EOF 收集帽：60s。worst 路径 = 子 main 全程 + EOF 排队（demo app
 /// 毫秒级；30s = 断链/卡死兜底——超帽 `no EOF` 降级行，reap 兜底收口）。
 const APP_EOF_CAP: u64 = 60 * 1_000_000_000;
@@ -5987,9 +6010,18 @@ fn p3_sig_guard(console: Handle, id: &[u8], bap_off: u64, bap_len: u64, step: &m
 /// RPC 形把尾入 `APP_CHILDREN` 子表，稳态 loop 探活后异步兑现（回执
 /// 即刻——GUI app 分钟级活期不冻 echo/监督）。拉起成败 = spawn 面
 /// 谓词（退出真码归收口尾，不进本值）。
+///
+/// 裁决 B（波 4 W4-RECON §1.7）：`defer_gui=true`（boot 批专用形）对
+/// [ui] app 在全部装载守卫与 [ui] 资产验证毕后**不拉起**——入册
+/// （APP_SLOTS_TBL 收集槽已定局）+ `app <id> gui deferred` 记账行 +
+/// 返回真（计入 `APP ok` 谓词的 deferred 槽）；拉起权移交 launcher
+/// 点击（SPAWN RPC 形，本函数 defer_gui=false 路径）。理由：常驻
+/// park 形 GUI app 由 boot 批拉起 = app_reap_tail 的 EOF/reap 等待
+/// 永悬（rootfs 形 wm 缺席 park / GUI 形常驻帧循环两形皆然）。
 fn app_launch(
     console: Handle,
     fs_a: Handle,
+    defer_gui: bool,
     id: &[u8],
     bap_off: u64,
     bap_len: u64,
@@ -6082,6 +6114,18 @@ fn app_launch(
         &views[..sc.views_n],
         bap_off,
     );
+    // —— 裁决 B 裁决点（波 4 W4-RECON §1.7/§5.4 接线序）：boot 批形对
+    //    [ui] app 入册不拉起。置位于 ui_face 后 = [ui] 资产验证
+    //    （`APPUI ok` 谓词数据源）与全部装载守卫（type/id/entry/compat/
+    //    net + 调用侧验签）照走，仅 spawn 面让渡给 launcher。门 =
+    //    [ui] 词（现行最近似 GUI 判别位——裁决 A `ui=["wm","input"]`
+    //    能力词落地时本门随批换轨）。返回真 = deferred 槽计入
+    //    `APP ok`（裁决 B 落后 n=9 语义 =「拉起子集 ∧ deferred 子集
+    //    全过」，W4-RECON §1.7「仍打 9」）。
+    if defer_gui && man.ui.is_some() {
+        app_gui_deferred(console, id);
+        return (true, uface, None);
+    }
     // 能力面：console=false 才建私有对（spawn 内 dup RIGHT_SEND 交付 spawn
     // 侧端，原值留本表作收集端）。stack_pages 按 manifest；intent 亦按
     // manifest——Intent M4 透传（ADR #42 两段式第二段的首个消费面）：
@@ -7493,6 +7537,7 @@ fn app_serve_spawn(console: Handle, svc: Handle, id: &[u8]) {
             let (_, _, tail) = app_launch(
                 console,
                 FS_A.load(Ordering::Relaxed),
+                false, // SPAWN RPC 形：launcher 点击拉起，裁决 B deferral 不适用
                 id,
                 off,
                 len,

@@ -433,9 +433,14 @@ smp_assertions "相 2"
 # vmo 行须非降级形态（=none 即 seam 断：内核没把 rootfs 包进 VMO）。
 grep -q 'ROOTFS vmo=none' "$LOG" \
   && fail "ROOTFS vmo=none（rootfs 在但 VMO 交付缺席——入机侧 seam 断）"
-# app-0 a-2 证据层：APPDEMO（console=true）子自证输出（能力面断言随迁）。
-grep -q 'app APPDEMO up' "$LOG" \
-  || fail "app APPDEMO up 缺失（console=true 能力面断——appdemo 未见自证输出；查 eco: app 行）"
+# app-0 a-2 证据层（波 4 裁决 B 随动重裁，smoke.sh 同款）：boot 批 [ui]
+# app 入册不拉起——逐槽断 `app <id> gui deferred` 记账行（原
+# `app APPDEMO up` boot 批拉起面退役；console=true 串口证据随迁 GUI 形
+# gui8-smoke 点击 spawn）。
+for id in APPDEMO SETTINGS FILES PHOTOS CAMERA CONTACTS MMS BROWSER; do
+  grep -q "app $id gui deferred" "$LOG" \
+    || fail "app $id gui deferred 缺失（裁决 B 入册记账——boot 批未见 [ui] 槽入册；查 eco: app 行）"
+done
 
 evs_client_wait "rootfs 相"
 skt_client_wait "rootfs 相"
