@@ -48,6 +48,57 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 cd "$SCRIPT_DIR/.."
 source "$SCRIPT_DIR/paths.sh"
 
+# ---------- --selftest（零 QEMU；前置拒面钉板——端口/盘面/对端之前） ----------
+# sync-public 同款合成腿风格：脚本副本 + paths.sh 入 sandbox（ROOT 恒沙箱——
+# 真仓 rootfs.cpio 在席会把腿推进到造盘/对端面，绝不触真仓零端口）。腿全部
+# 落在确定性前置出口（分钟数校验 = 本件独有面）。改拒面必跑（挂 test-host）。
+if [ "${1:-}" = "--selftest" ]; then
+  SELF=$(mktemp -d "${TMPDIR:-/tmp}/berryos-soakg3-selftest.XXXXXX")
+  cleanup() { rm -rf "${SELF}"; }
+  trap cleanup EXIT
+  mkdir -p "${SELF}/root/tools"
+  cp "${BASH_SOURCE[0]}" "${SELF}/root/tools/soak-g3.sh"
+  cp "$SCRIPT_DIR/paths.sh" "${SELF}/root/tools/paths.sh"
+  S="${SELF}/root/tools/soak-g3.sh"
+
+  legs=0; fails=0
+  leg() {  # leg <名> <期望rc> <锚:stdout|stderr|-> <pattern> <cmd…>
+    local name="$1" want="$2" face="$3" pat="$4"; shift 4
+    local rc=0
+    ( "$@" ) >"${SELF}/out.log" 2>&1 || rc=$?
+    legs=$((legs+1))
+    local why=""
+    [ "$rc" = "$want" ] || why="rc 期望 ${want} 实得 ${rc}"
+    if [ -z "$why" ] && [ "$face" != "-" ] && ! grep -qF "$pat" "${SELF}/out.log"; then
+      why="输出缺锚「${pat}」"
+    fi
+    if [ -n "$why" ]; then
+      fails=$((fails+1)); echo "soak-g3 selftest 腿红：${name}（${why}）" >&2
+      tail -4 "${SELF}/out.log" >&2
+    else
+      echo "soak-g3 selftest 腿绿：${name}"
+    fi
+  }
+  printf 'LOCKDEP selftest ok\n' > "${SELF}/k-good"
+  printf 'no markers here\n' > "${SELF}/k-nomark"
+
+  leg "用法红（无参）" 2 stderr "用法" bash "$S"
+  leg "缺文件红" 2 stderr "用法" bash "$S" "${SELF}/no-such-elf"
+  leg "marker 缺席红（default 面直拒）" 2 stderr "镜像非 lockdep feature 面" \
+    bash "$S" "${SELF}/k-nomark"
+  leg "分钟数非数字红" 1 stderr "分钟数须为正整数" bash "$S" "${SELF}/k-good" abc
+  leg "分钟数 1 拒（平凡无鉴别力）" 1 stderr "须 ≥2" bash "$S" "${SELF}/k-good" 1
+  leg "QEMU 缺件红（沙箱无 qemu——盘/对端面前置）" 1 stderr "找不到" \
+    env QEMU="${SELF}/no-qemu" bash "$S" "${SELF}/k-good" 5
+
+  if [ "$fails" -ne 0 ]; then
+    echo "soak-g3: selftest FAIL（${fails}/${legs} 腿红）" >&2
+    exit 1
+  fi
+  echo "soak-g3: selftest ok（拒面 ${legs} 腿——零 QEMU 零端口零真仓副作用）"
+  exit 0
+fi
+
 KERNEL="${1:-}"
 MINUTES="${2:-60}"
 if [ -z "$KERNEL" ] || [ ! -f "$KERNEL" ]; then

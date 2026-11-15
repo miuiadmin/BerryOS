@@ -1102,6 +1102,26 @@ test-host:
     # 全仓扫描）分层——同 gen_abi --check/--selftest 双面纪律。改
     # shvarcheck.py 检测逻辑必跑。
     python3 tools/shvarcheck.py --selftest
+    # W1 接线（独立冒烟族零接线判例同族）：smoke-lockdep / smoke-dpgsoak /
+    # soak-g3 三件独立关卡脚本 selftest 挂载——前置拒面（用法/缺件/marker
+    # 串/分钟数/QEMU 缺件）+ lockdep 假 QEMU 相 1 判定引擎（计数/行序红绿
+    # 两向），零真 QEMU 零端口零真仓副作用（脚本副本沙箱）。此前有
+    # selftest 零自动执法 = 拒面或相 1 判定面改坏无机器咬合。改三件脚本
+    # 前置拒面或判定面必跑。
+    {{BASH}} tools/smoke-lockdep.sh --selftest
+    {{BASH}} tools/smoke-dpgsoak.sh --selftest
+    {{BASH}} tools/soak-g3.sh --selftest
+    # W1 接线（D-审计 §4.3「从未跑过」面）：guifbd lib 单测 13 测
+    # （B1-b/c vgpu 后端纯面——后端分派/INDIRECT 链/ATTACH 段/提交序）入
+    # host 台账。独立小工作区（空 [workspace] escape），berry-libc
+    # 按 target_os=linux 门控故 host 编译零 libc shim 连接；此前仅
+    # B1-b 落地时手动跑过，无 just/CI 接线 = 改坏无机器咬合。
+    cargo test --manifest-path user/bins/guifbd/Cargo.toml --target {{host}}
+    # W1 接线（D-审计 §4.2 尾「无 just/CI 接线」面）：tools/berry 设备壳
+    # host 单测 121 测（VNC/VeNCrypt/DES/QR/网页壳状态机等纯面——README
+    # §测试原只记手动咒语）入 host 台账。独立小工作区，host 纯面零
+    # 交叉编译；此前手动 cargo test 从未接线 = 面改坏无机器咬合。
+    cargo test --manifest-path tools/berry/Cargo.toml --target {{host}}
 
 # 忙核 arm-to-nearest-deadline（oneshot 收紧律）host 钉板：律单源
 # sched/src/oneshot.rs（sched crate 本体 no_std + HAL 依赖不编 host），
