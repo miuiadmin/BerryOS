@@ -218,3 +218,125 @@ pub fn add_list_item(
     let _ = st;
     Ok(card)
 }
+
+// —— 刀 4 增补（三家并集矩阵 C/D/F 组首批）：Button / Switch / 线性加载条 ——
+
+/// OH/M3 主按钮高 40vp（M3 FilledButton 40dp 同值——三家合体归并点）。
+pub const BUTTON_H_VP: u32 = 40;
+/// OH 强调色 #007DFF（浅色）——按钮/选中态共用。
+pub const ACCENT: Color = Color { r: 0x00, g: 0x7D, b: 0xFF };
+/// 按钮白字。
+pub const ON_ACCENT: Color = Color { r: 0xFF, g: 0xFF, b: 0xFF };
+/// 开关轨道宽 52vp（OH Switch 52×28vp 官方值）。
+pub const SWITCH_W_VP: u32 = 52;
+/// 开关轨道高 28vp。
+pub const SWITCH_H_VP: u32 = 28;
+/// 开关滑块直径 24vp（28 轨 - 2×2 边距）。
+pub const SWITCH_KNOB_VP: u32 = 24;
+
+/// 主按钮（三家并集：M3 FilledButton / iOS Button / OH Button 归并）：
+/// 强调色底 + 白字 + 20vp 圆角（OH 按钮圆角 token）。`pressed` 态 =
+/// 20% 黑预混强调底（press_map 消费面同卡）。
+pub fn button_spec(density: u32, label: &[u8], pressed: bool) -> Result<(ViewSpec, ViewSpec), crate::UiError> {
+    let bg = if pressed { card_pressed_bg(ACCENT) } else { ACCENT };
+    let face = ViewSpec {
+        kind: ViewKind::Rect,
+        key: 0,
+        props: Props::Rect(RectProps {
+            bg,
+            w: None,
+            h: Some(BUTTON_H_VP * density),
+            radius: (20 * density) as u16,
+        }),
+    };
+    let text = ViewSpec {
+        kind: ViewKind::Text,
+        key: 0,
+        props: Props::Text(TextProps {
+            style: TextStyle { fg: ON_ACCENT, bg: None, scale: FontSize::S16x32 },
+            text: TextBuf::new(label)?,
+        }),
+    };
+    Ok((face, text))
+}
+
+/// 开关（三家并集：M3 Switch / iOS SwitchToggle / OH ToggleSwitch）：
+/// 轨道胶囊（52×28vp）+ 滑块圆（24vp）。`on` 态轨道 = 强调色、滑块右置；
+/// off 态轨道 = 次背景灰、滑块左置。返回 (轨道, 滑块)——挂 Pad 叠加容器。
+pub fn switch_spec(density: u32, on: bool) -> (ViewSpec, ViewSpec) {
+    let track_bg = if on { ACCENT } else { DIVIDER };
+    let track = ViewSpec {
+        kind: ViewKind::Rect,
+        key: 0,
+        props: Props::Rect(RectProps {
+            bg: track_bg,
+            w: Some(SWITCH_W_VP * density),
+            h: Some(SWITCH_H_VP * density),
+            radius: u16::MAX, // 胶囊——paint 侧 r = min(w,h)/2 截断
+        }),
+    };
+    let knob = ViewSpec {
+        kind: ViewKind::Rect,
+        key: 0,
+        props: Props::Rect(RectProps {
+            bg: CARD_BG,
+            w: Some(SWITCH_KNOB_VP * density),
+            h: Some(SWITCH_KNOB_VP * density),
+            radius: u16::MAX, // 圆
+        }),
+    };
+    (track, knob)
+}
+
+/// 线性加载条（三家并集：M3 LinearProgressIndicator / iOS ProgressView /
+/// OH LoadingProgress）：底槽 + 填充胶囊（f32 比例 0..=1）。
+pub fn progress_spec(density: u32, ratio: f32) -> (ViewSpec, ViewSpec) {
+    let r = ratio.clamp(0.0, 1.0);
+    let h = 8 * density;
+    let track = ViewSpec {
+        kind: ViewKind::Rect,
+        key: 0,
+        props: Props::Rect(RectProps {
+            bg: DIVIDER,
+            w: None,
+            h: Some(h),
+            radius: u16::MAX,
+        }),
+    };
+    let filled = ViewSpec {
+        kind: ViewKind::Rect,
+        key: 0,
+        props: Props::Rect(RectProps {
+            bg: ACCENT,
+            w: Some((r * 100.0) as u32 * density), // 调用方按容器宽折算——v1 定宽形
+            h: Some(h),
+            radius: u16::MAX,
+        }),
+    };
+    (track, filled)
+}
+
+/// 开关完整装配（叠加容器 + 轨道 + 滑块）——返回容器（a11y 锚点）。
+pub fn add_switch(
+    ui: &mut crate::UiMain,
+    parent: crate::NodeId,
+    density: u32,
+    on: bool,
+) -> Result<crate::NodeId, crate::UiError> {
+    use crate::desc::PadProps;
+    let holder = ui.add(
+        parent,
+        ViewSpec {
+            kind: ViewKind::Pad,
+            key: 0,
+            props: Props::Pad(PadProps { all: 2 * density }),
+        },
+    )?;
+    let (track, knob) = switch_spec(density, on);
+    let _track = ui.add(holder, track)?;
+    // 滑块定位：on 右置（x 偏移 = 轨宽-球径-边距）；off 左置（0）。
+    let knob_off = if on { (SWITCH_W_VP - SWITCH_KNOB_VP) * density } else { 0 };
+    let k = ui.add(holder, knob)?;
+    ui.set_offset(k, knob_off as i32, 0)?;
+    Ok(holder)
+}

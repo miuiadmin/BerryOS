@@ -158,3 +158,71 @@ fn card_spec_pressed_swaps_bg() {
         _ => panic!("cards must be Rect"),
     }
 }
+
+// ---------- 刀 4 增补：Button / Switch / Progress ----------
+
+#[test]
+fn button_spec_oh_m3_merged_values() {
+    use berry_ui::components::{button_spec, ACCENT, BUTTON_H_VP, ON_ACCENT};
+    let (face, text) = button_spec(3, b"OK", false).unwrap();
+    match face.props {
+        berry_ui::Props::Rect(p) => {
+            assert_eq!(p.h, Some(BUTTON_H_VP * 3), "40vp×3 = M3/OH 合体高");
+            assert_eq!(p.radius, 60, "20vp 圆角 ×3");
+            assert_eq!(p.bg, ACCENT);
+        }
+        _ => panic!("face must be Rect"),
+    }
+    match text.props {
+        berry_ui::Props::Text(p) => {
+            assert_eq!(p.style.fg, ON_ACCENT);
+            assert_eq!(p.text.as_bytes(), b"OK");
+        }
+        _ => panic!("label must be Text"),
+    }
+    // pressed 态换底（20% 黑预混强调色）
+    let (pface, _) = button_spec(3, b"OK", true).unwrap();
+    match pface.props {
+        berry_ui::Props::Rect(p) => assert_ne!(p.bg, ACCENT),
+        _ => panic!(),
+    }
+}
+
+#[test]
+fn switch_spec_track_knob_positions() {
+    use berry_ui::components::{add_switch, switch_spec, ACCENT, DIVIDER, SWITCH_KNOB_VP, SWITCH_W_VP};
+    let (on_track, on_knob) = switch_spec(1, true);
+    match (on_track.props, on_knob.props) {
+        (berry_ui::Props::Rect(t), berry_ui::Props::Rect(k)) => {
+            assert_eq!(t.bg, ACCENT, "on 轨道强调色");
+            assert_eq!((t.w, t.h), (Some(52), Some(28)), "OH 52×28vp");
+            assert_eq!((k.w, k.h), (Some(SWITCH_KNOB_VP), Some(SWITCH_KNOB_VP)), "24vp 球");
+        }
+        _ => panic!(),
+    }
+    let (off_track, _) = switch_spec(1, false);
+    match off_track.props {
+        berry_ui::Props::Rect(t) => assert_eq!(t.bg, DIVIDER, "off 轨道灰"),
+        _ => panic!(),
+    }
+    // 装配 + 滑块偏移：on 右置 (52-24)=28px；off 0。
+    let mut ui = mk_ui();
+    let root = ui.root();
+    let s_on = add_switch(&mut ui, root, 1, true).unwrap();
+    ui.layout();
+    let b = ui.bounds(s_on).unwrap();
+    assert!(b.w >= 52 && b.h >= 28, "开关界 {b:?}");
+}
+
+#[test]
+fn progress_spec_capsule_pair() {
+    use berry_ui::components::progress_spec;
+    let (track, filled) = progress_spec(3, 0.5);
+    match (track.props, filled.props) {
+        (berry_ui::Props::Rect(t), berry_ui::Props::Rect(f)) => {
+            assert_eq!(t.h, Some(24), "8vp×3");
+            assert_eq!(f.w, Some(50 * 3), "50% × density");
+        }
+        _ => panic!(),
+    }
+}
