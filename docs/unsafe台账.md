@@ -46,12 +46,12 @@
 | mm/ | 7 | 2230 | 4 | 0.18% |
 | sched/ | 14 | 7209 | 1640 | 22.75% |
 | ipc/ | 0 | 0 | 0 | — |
-| arch/ | 22 | 7199 | 1058 | 14.70% |
-| **合计** | 69 | 45486 | 4772 | **10.49%** |
+| arch/ | 22 | 7187 | 1044 | 14.53% |
+| **合计** | 69 | 45474 | 4758 | **10.46%** |
 
-- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 36535，unsafe 非空行 4083，密度 11.18%（生产面口径）
-- 分类计数：页表 63 | 上下文切换 33 | MMIO 158 | 分配器 13 | 硬件原子 0 | 其它 742
-- 类型计数：block 867 | fn 138 | impl 2 | extern 2（另有类型签名位提及 14 处——只计不登记，防双计）
+- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 36523，unsafe 非空行 4069，密度 11.14%（生产面口径）
+- 分类计数：页表 63 | 上下文切换 33 | MMIO 159 | 分配器 13 | 硬件原子 0 | 其它 742
+- 类型计数：block 868 | fn 138 | impl 2 | extern 2（另有类型签名位提及 14 处——只计不登记，防双计）
 - 对标：Android ~4%（unsafe 行占 Rust 总行比，Google 2025-11）；本表为跨度非空行口径（偏高估），见 §一
 <!-- UNSAFE-AUDIT:SUMMARY:END -->
 
@@ -63,15 +63,16 @@
 | arch/aarch64/src/fwcfg.rs | 57 | block | MMIO | unsafe { mmio::write_u16(SELECTOR, FW_CFG_SIGNATURE.to_be()); mm |
 | arch/aarch64/src/fwcfg.rs | 64 | fn | MMIO | unsafe fn stream_le32() -> u32 { mmio::read(DATA) } /// 顺序读一个 BE |
 | arch/aarch64/src/fwcfg.rs | 69 | fn | MMIO | unsafe fn stream_be32() -> u32 { stream_le32().swap_bytes() } // |
-| arch/aarch64/src/fwcfg.rs | 86 | block | MMIO | unsafe { mmio::write_u16(SELECTOR, FW_CFG_FILE_DIR.to_be()); let |
-| arch/aarch64/src/fwcfg.rs | 119 | block | MMIO | unsafe { mmio::write_u16(SELECTOR, entry.select.to_be()); for ch |
-| arch/aarch64/src/fwcfg.rs | 146 | block | MMIO | unsafe { mmio::write_u16(SELECTOR, entry.select.to_be()) }; Some |
-| arch/aarch64/src/fwcfg.rs | 169 | block | MMIO | unsafe { for chunk in buf[..want as usize].chunks_mut(4) { let w |
-| arch/aarch64/src/fwcfg.rs | 207 | fn | MMIO | unsafe fn put_be32(p: *mut u8, v: u32) { core::ptr::copy_nonover |
-| arch/aarch64/src/fwcfg.rs | 212 | fn | MMIO | unsafe fn put_be64(p: *mut u8, v: u64) { core::ptr::copy_nonover |
-| arch/aarch64/src/fwcfg.rs | 217 | fn | MMIO | unsafe fn get_be32(p: *const u8) -> u32 { let mut b = [0u8; 4]; |
-| arch/aarch64/src/fwcfg.rs | 225 | fn | MMIO | unsafe fn dma_write(select: u16, data_pa: u64, len: u32) -> bool |
-| arch/aarch64/src/fwcfg.rs | 263 | block | MMIO | unsafe { let base = core::ptr::addr_of_mut!(RAMFB_CFG.0) as *mut |
+| arch/aarch64/src/fwcfg.rs | 88 | block | MMIO | unsafe { mmio::write_u16(SELECTOR, FW_CFG_FILE_DIR.to_be()); let |
+| arch/aarch64/src/fwcfg.rs | 102 | block | MMIO | unsafe { stream_le32() }) } } /// 把 `entry` 的文件内容整读进 `buf`（`buf. |
+| arch/aarch64/src/fwcfg.rs | 115 | block | MMIO | unsafe { mmio::write_u16(SELECTOR, entry.select.to_be()); for ch |
+| arch/aarch64/src/fwcfg.rs | 140 | block | MMIO | unsafe { mmio::write_u16(SELECTOR, entry.select.to_be()) }; Some |
+| arch/aarch64/src/fwcfg.rs | 157 | block | MMIO | unsafe { for chunk in buf[..want].chunks_mut(4) { let w = stream |
+| arch/aarch64/src/fwcfg.rs | 195 | fn | MMIO | unsafe fn put_be32(p: *mut u8, v: u32) { core::ptr::copy_nonover |
+| arch/aarch64/src/fwcfg.rs | 200 | fn | MMIO | unsafe fn put_be64(p: *mut u8, v: u64) { core::ptr::copy_nonover |
+| arch/aarch64/src/fwcfg.rs | 205 | fn | MMIO | unsafe fn get_be32(p: *const u8) -> u32 { let mut b = [0u8; 4]; |
+| arch/aarch64/src/fwcfg.rs | 213 | fn | MMIO | unsafe fn dma_write(select: u16, data_pa: u64, len: u32) -> bool |
+| arch/aarch64/src/fwcfg.rs | 251 | block | MMIO | unsafe { let base = core::ptr::addr_of_mut!(RAMFB_CFG.0) as *mut |
 | arch/aarch64/src/gic.rs | 88 | fn | MMIO | unsafe fn init() { // ---- distributor：先关，再清状态 ---- mmio::write( |
 | arch/aarch64/src/gic.rs | 122 | block | MMIO | unsafe { let en = mmio::read(GICD + GICD_ISENABLER0) & (1 << IRQ |
 | arch/aarch64/src/gic.rs | 135 | block | MMIO | unsafe { mmio::read(GICC + GICC_IAR) & 0x3ff } } /// 写 EOIR 结束（必 |

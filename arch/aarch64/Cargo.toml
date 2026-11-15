@@ -24,3 +24,8 @@ berry-lkface = { path = "../../lkface" }
 # 本 crate trap.rs 消费（分类面 re-export；exception_sync 物理臂留壳）。
 # host 钉板在 trapface；无依赖传染（纯 no_std lib）。
 berry-trapface = { path = "../../trapface" }
+# W3-Q86：fw_cfg 判定面纯函数单源（目录行走 count 帽/名 55 帽/无 NUL 项
+# 跳过 + SeqState 顺序读 4 字节粒度推进律 + ramfb_cfg_ok 28B·三非零域门）
+# ——本 crate fwcfg.rs 消费（判定面 re-export；MMIO/DMA 物理臂留壳）。
+# host 钉板在 fwcfgface；无依赖传染（纯 no_std lib）。
+berry-fwcfgface = { path = "../../fwcfgface" }
