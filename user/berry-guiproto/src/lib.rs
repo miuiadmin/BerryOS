@@ -97,6 +97,30 @@ pub const OP_WM_SET: u8 = 0x63;
 pub const OP_WM_TABLE_GET: u8 = 0x64;
 /// wm 域：等表变更快照（阻塞应答——携 last_seen 版本号，表已新立即答）。
 pub const OP_WM_TABLE_WAIT: u8 = 0x65;
+// ---------- 波2 输入焦点协议（六波方案步骤 3——add-only 扩面） ----------
+//
+// guiproto add-only 纪律：只增常量与新编解码函数，不动任何既有 op 的
+// 字节面；服务端执法（wmd/guifbd 侧）挂波3 接线。
+
+/// wm 域：焦点请求（客户端 → wmd：申请/让出焦点。payload `[op][win][r16]`）。
+pub const OP_WM_FOCUS: u8 = 0x66;
+/// wm 域：返回键路由（导航窗 → wmd：路由到焦点窗；payload `[op][r24]`）。
+pub const OP_WM_BACK: u8 = 0x67;
+/// input 域：授权注入（softime/测试 → gui-inputd：以真实输入同一事件面
+/// 注入键盘/文本事件；payload `[op][dev_kind][key/text...]`）。授权面
+/// （谁可注入）执法在 inputd 服务端。
+pub const OP_INPUT_INJECT: u8 = 0x22;
+
+/// 窗口层：服务层（软键盘 softime 等——压 SYSTEM 之上、独立合成带）。
+pub const WM_LAYER_SERVICE: u8 = 2;
+
+/// input 域设备类（PointerEvent.device_id 高位带——v1 device_id = 0 恒
+/// 触屏；键盘/文本注入事件的 dev_kind 字节值域）：触摸屏。
+pub const DEV_POINTER: u8 = 0;
+/// 键盘（key 事件：code = ASCII 可打印字节或控制键）。
+pub const DEV_KEYBOARD: u8 = 1;
+/// 文本提交（IME 提交面——payload = ASCII 字节串）。
+pub const DEV_TEXT: u8 = 2;
 
 // ---------- wm 域值域（GUI-5；钦定位域未知位双侧拒）----------
 
@@ -1867,6 +1891,89 @@ pub fn wm_hit_test(entries: &[WmEntry], x: u32, y: u32) -> Option<u16> {
     best.map(|e| e.id)
 }
 
+// ---------- 波2 输入焦点协议编解码（add-only——见 OP_WM_FOCUS 块注） ----------
+
+/// WM_FOCUS 请求帧长（`[op][win u16][r16]`）。
+pub const WM_FOCUS_REQ_LEN: usize = 8;
+/// WM_FOCUS 请求帧帽（= 请求帧长——帽一致性族同形）。
+pub const WM_FOCUS_REQ_MAX: usize = WM_FOCUS_REQ_LEN;
+/// WM_BACK 请求帧长（`[op][r24]`）。
+pub const WM_BACK_REQ_LEN: usize = 8;
+/// WM_BACK 请求帧帽。
+pub const WM_BACK_REQ_MAX: usize = WM_BACK_REQ_LEN;
+/// INPUT_INJECT 帧长基（`[op][dev_kind]` + 载荷 ≤ 24 字节 + 尾 r16）。
+pub const INPUT_INJECT_REQ_MAX: usize = 28;
+
+/// 编码 WM_FOCUS 请求：`win` = 目标窗 id（0 = 让出焦点——本窗失焦不动
+/// 他窗）。buf 不足 = 调用方错 assert（域内既有编码器同律）。
+pub fn encode_wm_focus_req(out: &mut [u8], win: u16) -> usize {
+    assert!(out.len() >= WM_FOCUS_REQ_LEN, "guiproto: wm focus buf 不足");
+    out[0] = OP_WM_FOCUS;
+    out[1..3].copy_from_slice(&win.to_le_bytes());
+    out[3] = 0;
+    out[4..8].copy_from_slice(&[0; 4]);
+    WM_FOCUS_REQ_LEN
+}
+
+/// 解析 WM_FOCUS 请求：恰 8B + op → win（任意 u16 合法）。
+pub fn parse_wm_focus_req(buf: &[u8]) -> Option<u16> {
+    if buf.len() != WM_FOCUS_REQ_LEN || buf[0] != OP_WM_FOCUS {
+        return None;
+    }
+    Some(u16::from_le_bytes([buf[1], buf[2]]))
+}
+
+/// 编码 WM_BACK 请求（无参——导航键触发，wmd 查表路由到焦点窗）。
+pub fn encode_wm_back_req(out: &mut [u8]) -> usize {
+    assert!(out.len() >= WM_BACK_REQ_LEN, "guiproto: wm back buf 不足");
+    out[0] = OP_WM_BACK;
+    out[1..8].fill(0);
+    WM_BACK_REQ_LEN
+}
+
+/// 解析 WM_BACK 请求：恰 8B + op → true。
+pub fn parse_wm_back_req(buf: &[u8]) -> Option<()> {
+    if buf.len() != WM_BACK_REQ_LEN || buf[0] != OP_WM_BACK {
+        return None;
+    }
+    Some(())
+}
+
+/// 编码 INPUT_INJECT 请求：`dev_kind` ∈ {DEV_POINTER, DEV_KEYBOARD,
+/// DEV_TEXT}；`payload` ≤ 24B（键盘 = 1B key code；文本 = ASCII 串）。
+/// 野 dev_kind / 载荷越帽 / buf 不足 → None（调用方可构造面——assert
+/// 面仅 buf 不足）。
+pub fn encode_input_inject_req(
+    out: &mut [u8],
+    dev_kind: u8,
+    payload: &[u8],
+) -> Option<usize> {
+    if payload.len() > 24 {
+        return None;
+    }
+    let total = 2 + payload.len() + 2;
+    if out.len() < total {
+        return None;
+    }
+    out[0] = OP_INPUT_INJECT;
+    out[1] = dev_kind;
+    out[2..2 + payload.len()].copy_from_slice(payload);
+    out[total - 2..total].fill(0);
+    Some(total)
+}
+
+/// 解析 INPUT_INJECT 请求：op + dev_kind ∈ 三值域 → (dev_kind, payload)。
+pub fn parse_input_inject_req<'a>(buf: &'a [u8]) -> Option<(u8, &'a [u8])> {
+    if buf.len() < 4 || buf[0] != OP_INPUT_INJECT {
+        return None;
+    }
+    let dk = buf[1];
+    if dk > DEV_TEXT {
+        return None;
+    }
+    Some((dk, &buf[2..buf.len() - 2]))
+}
+
 // ---------- 帽一致性 const assert（§3.1/§8.1-5；改帽必炸）----------
 
 const _: () = assert!(PRESENT_REQ_MAX == 24 + 16 * DAMAGE_MAX);
@@ -3567,5 +3674,50 @@ mod tests {
         let hidden = WmEntry { id: 8, flags: 0, ..high };
         assert_eq!(wm_hit_test(&[hidden, low], 400, 300), Some(1));
         assert_eq!(wm_hit_test(&[hidden], 400, 300), None);
+    }
+
+    // —— 波2 输入焦点协议（add-only）：FOCUS/BACK/INJECT 往返 + 拒面 ——
+
+    #[test]
+    fn wm_focus_back_roundtrip_and_rejects() {
+        let mut buf = [0u8; 32];
+        let n = encode_wm_focus_req(&mut buf, 0x0304);
+        assert_eq!(&buf[..n], &[OP_WM_FOCUS, 0x04, 0x03, 0, 0, 0, 0, 0][..]);
+        assert_eq!(parse_wm_focus_req(&buf[..n]), Some(0x0304));
+        // 让出（win=0）合法。
+        let n = encode_wm_focus_req(&mut buf, 0);
+        assert_eq!(parse_wm_focus_req(&buf[..n]), Some(0));
+        // 拒面：长度不符 / 错 op。
+        assert_eq!(parse_wm_focus_req(&buf[..n - 1]), None);
+        assert_eq!(parse_wm_focus_req(&[OP_WM_BACK, 0, 0, 0, 0, 0, 0, 0]), None);
+        // BACK。
+        let n = encode_wm_back_req(&mut buf);
+        assert_eq!(&buf[..n], &[OP_WM_BACK, 0, 0, 0, 0, 0, 0, 0][..]);
+        assert_eq!(parse_wm_back_req(&buf[..n]), Some(()));
+        assert_eq!(parse_wm_back_req(&buf[..n + 1]), None);
+        // 新 op 不与既有 wm 带冲突（互斥带内新值——add-only 不改旧值）。
+        assert_ne!(OP_WM_FOCUS, OP_WM_BACK);
+        assert!(OP_WM_FOCUS > OP_WM_TABLE_WAIT && OP_WM_BACK > OP_WM_TABLE_WAIT);
+    }
+
+    #[test]
+    fn input_inject_roundtrip_and_rejects() {
+        let mut buf = [0u8; 64];
+        // 键盘单键。
+        let n = encode_input_inject_req(&mut buf, DEV_KEYBOARD, &[b'a']).unwrap();
+        assert_eq!(parse_input_inject_req(&buf[..n]), Some((DEV_KEYBOARD, &[b'a'][..])));
+        // 文本串。
+        let n = encode_input_inject_req(&mut buf, DEV_TEXT, b"hello").unwrap();
+        assert_eq!(parse_input_inject_req(&buf[..n]), Some((DEV_TEXT, &b"hello"[..])));
+        // 拒面：载荷越帽（25B）/ buf 不足 / 野 dev_kind。
+        assert_eq!(encode_input_inject_req(&mut buf, DEV_TEXT, &[0u8; 25]), None);
+        let mut tiny = [0u8; 3];
+        assert_eq!(encode_input_inject_req(&mut tiny, DEV_KEYBOARD, &[b'a']), None);
+        let n = encode_input_inject_req(&mut buf, DEV_TEXT, b"xy").unwrap();
+        let mut bad = buf[..n].to_vec();
+        bad[1] = DEV_TEXT + 1;
+        assert_eq!(parse_input_inject_req(&bad), None, "野 dev_kind 拒");
+        assert_eq!(parse_input_inject_req(&[OP_INPUT_POLL, 0, 0, 0]), None, "错 op 拒");
+        assert_eq!(WM_LAYER_SERVICE, 2, "服务层值域在 SYSTEM 之上");
     }
 }
