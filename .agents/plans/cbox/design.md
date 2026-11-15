@@ -3,7 +3,7 @@
 Type: spec
 Status: active
 Updated: 2026-11-15
-Version: 0.2.0
+Version: 0.3.0
 
 一句话说明：cbox 是 BerryOS 的崩溃记录体系——内核异常路径写 RAM 崩溃记录表（黑匣子），用户态监督者经 syscall 排液落盘 FAT 账本（`CBOX.LOG`），宿主 `berry` 工具读账本做指纹聚合与符号化定位。对标华为 AGC / Android tombstone 的「采集 → 持久化 → 符号化 → 聚合 → 定界 → 报告」流水线，按单机无云端形态裁剪：后台等价物 = 宿主侧 berry 子命令。
 
@@ -72,8 +72,8 @@ Version: 0.2.0
 
 ### 工具面（berry CLI）
 
-- `berry symbolize --pc 0x… --elf <路径>`：ELF64 symtab 最近符号（≤ pc 最大 st_value；strip 件回落 dynsym，双空 = 报错指路构建产物位）。零新依赖——手写 ELF 头/节表/symtab 解析（~150 行）。
-- `berry crash-log --disk <镜像>`：FAT12 只读直读（BPB → 根目录 → 簇链；数据盘几何与 smoke 造盘同源）→ 解析 `CBOX.LOG` → 按 `(kind, task, pc, lr)` 指纹聚合 → 报告：每指纹次数 / 首末 boot id / 任务名 → 符号化（`--elf-dir` 给定时映射 `user_<名>` → `user/cargo-target/aarch64-unknown-none/release/<名>`，内核名 → 内核 ELF）。退出码：有记录 0；镜像/账本不可读非零。
+- `berry symbolize --pc 0x… --elf <路径>`：ELF64 symtab 最近符号（≤ pc 最大 st_value；strip 件回落 dynsym，双空 = 报错指路构建产物位）。零新依赖——手写 ELF 头/节表/symtab 解析。符号源现实（刀 3 定谳）：内核 ELF（berry-ld 链但保留 symtab）可直接查；userbins release 件被全 strip（仅余 .shstrtab）——双空如实报错指路，不静默造假（userbins 符号面挂构建改造，见挂账）。
+- `berry crash-log --disk <镜像>`：FAT12 只读直读（卷面发现：LBA0 非法 BPB 则落 LBA16——主路印章区形态；根目录 → 簇链）→ 解析 `CBOX.LOG` → 按 `(kind, task, pc, lr)` 指纹聚合 → 报告：每指纹次数 / 首末 boot id / 任务名 → 符号化。符号解析（`--elf-dir` 给定时）：`user_<名>` 族先试 userbins release 件（现实全 strip → 双空报错冒泡），回落内核 ELF `__user_<名>` 锚点重定基（任务空间基址 `USER_CODE_VA = 0x1000`：pc − 0x1000 + 锚点 vma）；内核名直查。内核 ELF 解析序 = worktree 本地 debug → 全局 `~/.cargo-target` → release（`tools/paths.sh berryos_kernel()` 同源序）。退出码：有记录 0；镜像/账本不可读非零。**链断 = 账本撕裂**（目录项在而簇链不足 size——掉电/中断形态）→ 如实报错非零退出，不静默截断。
 - 任务名 → ELF 定界即「责任定界」的 BerryOS 形态：加载基址全系统固定（`USER_CODE_VA` 族），pc 归属由任务名单值判定，无需华为式 so 路径扫描。
 
 ### 分期刀谱
@@ -89,11 +89,13 @@ Version: 0.2.0
 
 - 刀 1：`cargo check -p berry-kernel --target aarch64-unknown-none` 零新告警；`just abi-check` 逐字节绿。
 - 刀 2：`SMOKE_KEEP_LOG=1 just smoke-image`——串口 `CBOX ok n=` 到席 + 与 rogue `EXCEPTION` 行数对账（EFI 路 = RAM 树落账面）；FAT 盘面真值 = 主路 `just smoke` 后 disk.img 根 `CBOX.LOG` 宿主侧字节直检。
-- 刀 3：test-host 单测（ELF 解析对真产物、FAT12 对造盘脚本产物、聚合对合成账本）；端到端配方 = 跑一辆含 rogue 的车 → `berry crash-log --disk` → 输出含 `user_n_ptr` 符号名。
+- 刀 3：test-host 单测（symbolize 合成 ELF 钉板 + 真产物 opt-in 对拍、FAT12 对真 mkfat 产物、聚合对合成账本）；端到端配方 = 跑一辆含 rogue 的车 → `berry crash-log --disk <盘> --elf-dir <仓根>` → 输出含 `__user_<名>+<偏移>（内核 blob 重定基）`。
 - 回归：`just test-host` 全绿；`just smoke` 全绿（环境碰撞窗现实下按 `gate-contention-five-forms` 判读三步处置，全绿补跑挂合并前——先例纪律）。
 
 ## 边界与挂账
 
+- userbins 符号面：release 件被全 strip（仅余 .shstrtab）——`crash-log --elf-dir` 对 userbins 名现状必然走内核 blob 重定基兜底（`user_<名>` 族内嵌 blob 的 pc 本就归于内核 ELF 符号空间，兜底即正解）；非 blob 型 userbins 真符号 = 构建改造保留 symtab（或符号侧产物），按需挂后续。
+- 单簇件撕裂不可见：FAT 元数据撕（首簇项释放）对 ≤1 簇文件读面无感——读满首簇即止不走链（B4 掉电竞技场 735B 实测形态即此，数据无损）；撕链可检性以 `size > 簇容量` 为界，跨簇链断才报 Torn。
 - 内核 panic / svcmgr 自死两大「黑匣子随机同毁」面挂刀 4（见分期表 DEFERRED 行）——v1 账本覆盖面 = 监督链可观察的用户任务崩溃（rogue 自验件 + launcher/app 监督面 + guifbd 类常驻任务 fault），恰是 wtdie 案「launcher 停摆连坐链」一类的取证主需求面。
 - 多 app 稳态死亡面不落盘（窗二 sole 门未开——活者 fs RPC 交叠风险）：记录留内核 RAM 表延后到下个 sole 死亡/窗三/下 boot battery；稳态即时落账挂多 app 会话串行化（v2 候选）。
 - 窗二 stale 应答复余窗：死者 mid-RPC 应答可能恰在 `cbox_drain_stale` 排空后才入队（服务端处理中）——与 bsh「唯一读者」纪律同类（既有系统性纪律，本刀不加重）；窗一/窗三不经此面。

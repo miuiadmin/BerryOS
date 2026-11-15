@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod control;
+pub mod crashlog;
 pub mod device;
 pub mod display;
 pub mod doctor;
@@ -11,4 +12,5 @@ pub mod profile;
 pub mod qemu;
 pub mod qmp;
 pub mod run_dir;
+pub mod symbolize;
 pub mod window;

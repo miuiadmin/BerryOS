@@ -79,8 +79,32 @@ enum Cmd {
     Swipe(SwipeCmd),
     /// Top-level text alias for `input text`.
     Text(TextCmd),
+    /// Symbolize a PC against an ELF symtab (cbox knife 3).
+    Symbolize(SymbolizeCmd),
+    /// Aggregate the on-disk CBOX.LOG crash ledger (cbox knife 3).
+    CrashLog(CrashLogCmd),
     /// Print version.
     Version,
+}
+
+#[derive(Parser, Debug)]
+struct SymbolizeCmd {
+    /// PC to resolve (hex, 0x-prefixed or bare).
+    #[arg(long)]
+    pc: String,
+    /// Path to the ELF with a symtab.
+    #[arg(long)]
+    elf: PathBuf,
+}
+
+#[derive(Parser, Debug)]
+struct CrashLogCmd {
+    /// Disk image with a FAT12 volume (mkfat geometry or direct-BPB).
+    #[arg(long)]
+    disk: PathBuf,
+    /// Repo root for ELF resolution (userbins → kernel fallback).
+    #[arg(long)]
+    elf_dir: Option<PathBuf>,
 }
 
 #[derive(Parser, Debug)]
@@ -571,6 +595,76 @@ fn dispatch(cli: Cli) -> Result<()> {
             action: InputAction::Text(c.text),
             json: cli.json,
         }),
+        Some(Cmd::Symbolize(c)) => {
+            let pc = u64::from_str_radix(c.pc.trim_start_matches("0x"), 16)
+                .map_err(|e| {
+                    BerryError::internal(format!("symbolize: --pc 非十六进制：{e}"))
+                })?;
+            let elf = std::fs::read(&c.elf).map_err(|e| {
+                BerryError::internal(format!("symbolize: 读 {}: {e}", c.elf.display()))
+            })?;
+            let syms = berry::symbolize::load_symbols(&elf)?;
+            match berry::symbolize::nearest(&syms, pc) {
+                Some((s, off)) => {
+                    if cli.json {
+                        println!(
+                            "{}",
+                            serde_json::json!({"v": 1, "t": "symbolize",
+                                "pc": format!("0x{pc:x}"),
+                                "symbol": s.name, "off": off,
+                                "value": format!("0x{:x}", s.value)})
+                        );
+                    } else {
+                        println!("0x{pc:x} = {}+0x{off:x}（st_value 0x{:x}）",
+                                 s.name, s.value);
+                    }
+                    Ok(())
+                }
+                None => Err(BerryError::internal(format!(
+                    "symbolize: 0x{pc:x} 早于首符号（表内最小 st_value 0x{:x}）",
+                    syms[0].value
+                ))),
+            }
+        }
+        Some(Cmd::CrashLog(c)) => {
+            let disk = std::fs::read(&c.disk).map_err(|e| {
+                BerryError::internal(format!(
+                    "crash-log: 读 {}: {e}", c.disk.display()
+                ))
+            })?;
+            let buf = berry::crashlog::read_root_file(&disk, "CBOX.LOG").map_err(
+                |e| BerryError::internal(format!("crash-log: {}", e.message())),
+            )?;
+            let recs = berry::crashlog::parse_ledger(&buf);
+            if cli.json {
+                for (fp, st) in berry::crashlog::aggregate(&recs) {
+                    let sym = match berry::crashlog::symbolize_fp(&fp, c.elf_dir.as_deref()) {
+                        berry::crashlog::SymHit::Hit { name, off, src } => {
+                            serde_json::json!({"name": name, "off": off, "src": src})
+                        }
+                        berry::crashlog::SymHit::None(why) => {
+                            serde_json::json!({"none": why})
+                        }
+                    };
+                    println!(
+                        "{}",
+                        serde_json::json!({"v": 1, "t": "crash-fp",
+                            "count": st.count, "boot_first": st.boot_first,
+                            "boot_last": st.boot_last, "kind": fp.kind,
+                            "task": fp.task, "pc": format!("0x{:x}", fp.pc),
+                            "lr": format!("0x{:x}", fp.lr), "sym": sym})
+                    );
+                }
+            } else {
+                println!(
+                    "{}",
+                    berry::crashlog::report_human(
+                        &recs, &c.disk, c.elf_dir.as_deref()
+                    )
+                );
+            }
+            Ok(())
+        }
         Some(Cmd::Version) => {
             commands::version(cli.json);
             Ok(())
