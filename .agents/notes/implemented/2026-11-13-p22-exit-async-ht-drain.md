@@ -35,4 +35,4 @@ Status: implemented
 - 退出切换窗只剩 O(1) 簿记（mark_exited + wake + push）；churn 密集负载的调度延迟尖峰削除；REAPQ 排水点新增 ht-drain 半场（同点双队列）。方案权衡与验收依据见路线图 [P2-2](../../../docs/系统优化路线图-v1.0.md) §3。
 - 语义漂移面 = 「Process Drop/表释放的观测时刻」从退出点滞后到下一 CPU0 排水点：`PROCESS_LIVE`、帧水位、`ht` 槽位回收（进程表 slot 回收在 drain 后的约束由此维持）都随 flush 迟到。依赖「退出即释放」的观测者（若有）须先经一次 idle/yield——收割链（wait 阻塞）天然满足。
 - 承重事实，动其一须复审本设计：① 退出钩子三调用路恒 KL 在身（trap.rs fault kill 链 `svc_enter` 若降档，`defer_ht_drain` 的互斥论证失效——需补显式锁或断言）；② `Vmar::Drop`/`Vmo::Drop` 零 wake 面（新增「Drop 唤醒等待者」语义则迟到 drain 改变等待者可见序）；③ REAP 排水点仍在 CPU0（`yield_now` 尾 CPU0 门 + idle_loop CPU0 专属）。
-- Related: [P2-1 per-key 唤醒链](2026-11-12-sleepq-per-key-wake-chain.md)（同轮规模化护航件）；[P2-4 SMP 双窗裁定](2026-11-13-p24-smp-dual-window-not-applicable.md)（其 Consequences ② 由本笔记「不引入表帧回收」收口）。
+- Related: [P2-1 per-key 唤醒链](../../../docs/阶段沿革.md)（同轮规模化护航件——沿革 P2-1 条；笔记本体随 2026-11-13 base 重整出库）；[P2-4 SMP 双窗裁定](2026-11-13-p24-smp-dual-window-not-applicable.md)（其 Consequences ② 由本笔记「不引入表帧回收」收口）。

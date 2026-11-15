@@ -80,8 +80,8 @@ berryos/
 ├── sched/              Rust no_std：调度器 / 线程 / 上下文切换
 ├── ipc/                Rust no_std：消息传递 / 共享内存 / 信号量（占位）
 ├── arch/               Rust：HAL + 内联汇编（aarch64/ 现役 + x86_64/ 最小集）
-├── wqmatch/ iprofile/ vmoledger/ piface/ chanface/ evface/ hdlface/ itally/ telface/ sliceface/ ringface/ intface/ emface/ hofface/ hdrface/ vslotface/ dtbface/ bandface/ polface/ safeck/ utrace/ dpgface/ frzface/
-│                       Rust no_std 纯函数面 crate 族（W3-Q1..Q27 外迁族，2026-11-10..11 入库：判定律/编码律/映射表自内核与 sched 源外迁，零 unsafe + host 钉板测试；safeck = sa_parse 结构解码校验〔kernel/syscall.rs 外迁〕、utrace = util EWMA 窗口机盒纯面镜像钉板〔sched/util.rs 原子壳保持现状〕，均随 #148 2026-11-11 入库；dpgface = dpg EL0 槽池认领制判定律〔kernel/dpg.rs 外迁，W3-Q24 随 #155 2026-11-11 入库〕；frzface = sched 冻结面纯函数外迁〔W3-Q27 随 #169 2026-11-11 入库〕；调度器 API 面引用 → `docs/调度器API参考-v1.7.md`）
+├── wqmatch/ iprofile/ vmoledger/ piface/ chanface/ evface/ hdlface/ itally/ telface/ sliceface/ ringface/ intface/ emface/ hofface/ hdrface/ vslotface/ dtbface/ bandface/ polface/ safeck/ utrace/ dpgface/ frzface/ lkface/ trapface/ heapface/
+│                       Rust no_std 纯函数面 crate 族（W3-Q1..Q39 外迁族，2026-11-10..15 入库：判定律/编码律/映射表自内核与 sched 源外迁，零 unsafe + host 钉板测试；safeck = sa_parse 结构解码校验〔kernel/syscall.rs 外迁〕、utrace = util EWMA 窗口机盒纯面镜像钉板〔sched/util.rs 原子壳保持现状〕，均随 #148 2026-11-11 入库；dpgface = dpg EL0 槽池认领制判定律〔kernel/dpg.rs 外迁，W3-Q24 随 #155 2026-11-11 入库〕；frzface = sched 冻结面纯函数外迁〔W3-Q27 随 #169 2026-11-11 入库〕；lkface = lockdep 检查面三检判序〔arch/aarch64/lockdep.rs 外迁，W3-Q36 随 #222 2026-11-14 入库，附 mm/ramtop〕；trapface = AArch64 异常分类面〔arch/aarch64/trap.rs 外迁，W3-Q37 随 #223 2026-11-14 入库〕；heapface = heap 分配路由算术面〔kernel/src/heap.rs size-class/order 算术段外迁，route/dealloc_route 对称路由律 + PAGE_SIZE 双源 const assert 钉 berry-mm 漂移，W3-Q39 随 #301 2026-11-15 入库〕；调度器 API 面引用 → `docs/调度器API参考-v1.7.md`）
 ├── bootloader/         Rust：BerryBoot EFI 引导
 ├── drivers/            Rust：用户态驱动独立工作区（berry-virtio 框架；真机驱动批次直接进 bins/<名>/）
 ├── fs/                 Rust：VFS / 具体 FS（用户态服务，占位）

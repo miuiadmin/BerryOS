@@ -195,7 +195,7 @@ pub fn probe(x0: usize) -> Option<&'static BerryHandoff> {
 /// - 每段：pa 4KiB 对齐（AllocatePages 出品）+ len>0 + 段区落
 ///   [RAM_BASE, RAM_TOP)（checked 防回卷）。
 /// 任一不过 → `None`（调用方整源降级为「无 rootfs」存活，boot 期无 panic
-/// 纪律）。Σlen 总量帽不在本面（消费侧 [`crate::ROOTFS_TOTAL_MAX`] 口径）。
+/// 纪律）。Σlen 总量帽不在本面（消费侧 [`berry_rootface::TOTAL_MAX`] 口径）。
 /// boot 期只读面——与 `probe` 同一生命周期（BerryBoot 写完才 br entry）。
 pub fn init_segs<'a>(h: &'a BerryHandoff, hpa: usize) -> Option<&'a [InitSeg]> {
     // 判定律单源 berry-hofface::init_segs_gate（W3-Q15——count 帽/同页

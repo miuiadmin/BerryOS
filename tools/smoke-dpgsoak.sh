@@ -42,6 +42,54 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# ---------- --selftest（零 QEMU；前置拒面钉板——mkfat/对端三件套之前） ----------
+# sync-public 同款合成腿风格：脚本副本入 sandbox（ROOT 恒沙箱——真仓
+# rootfs.cpio 在席会把腿推进到变体卷手术/端口让场/对端面，绝不触真仓零
+# 端口）。腿全部落在确定性前置出口。改拒面必跑（挂 just test-host）。
+if [ "${1:-}" = "--selftest" ]; then
+  SELF=$(mktemp -d "${TMPDIR:-/tmp}/berryos-dpgsoak-selftest.XXXXXX")
+  cleanup() { rm -rf "${SELF}"; }
+  trap cleanup EXIT
+  mkdir -p "${SELF}/root/tools"
+  cp "${BASH_SOURCE[0]}" "${SELF}/root/tools/smoke-dpgsoak.sh"
+  S="${SELF}/root/tools/smoke-dpgsoak.sh"
+
+  legs=0; fails=0
+  leg() {  # leg <名> <期望rc> <锚:stdout|stderr|-> <pattern> <cmd…>
+    local name="$1" want="$2" face="$3" pat="$4"; shift 4
+    local rc=0
+    ( "$@" ) >"${SELF}/out.log" 2>&1 || rc=$?
+    legs=$((legs+1))
+    local why=""
+    [ "$rc" = "$want" ] || why="rc 期望 ${want} 实得 ${rc}"
+    if [ -z "$why" ] && [ "$face" != "-" ] && ! grep -qF "$pat" "${SELF}/out.log"; then
+      why="输出缺锚「${pat}」"
+    fi
+    if [ -n "$why" ]; then
+      fails=$((fails+1)); echo "smoke-dpgsoak selftest 腿红：${name}（${why}）" >&2
+      tail -4 "${SELF}/out.log" >&2
+    else
+      echo "smoke-dpgsoak selftest 腿绿：${name}"
+    fi
+  }
+  printf 'DPGF ok n=15\n' > "${SELF}/k-good"
+  printf 'no markers here\n' > "${SELF}/k-nomark"
+
+  leg "用法红（无参）" 2 stderr "用法" bash "$S"
+  leg "缺文件红" 2 stderr "用法" bash "$S" "${SELF}/no-such-elf"
+  leg "marker 缺席红（陈旧 userbins 直拒）" 2 stderr "镜像缺 DPGF ok n=15" \
+    bash "$S" "${SELF}/k-nomark"
+  leg "rootfs 卷缺席红（沙箱 loud 快败——变体手术/端口面前置）" 1 stderr "缺 rootfs 卷" \
+    bash "$S" "${SELF}/k-good"
+
+  if [ "$fails" -ne 0 ]; then
+    echo "smoke-dpgsoak: selftest FAIL（${fails}/${legs} 腿红）" >&2
+    exit 1
+  fi
+  echo "smoke-dpgsoak: selftest ok（拒面 ${legs} 腿——零 QEMU 零端口零真仓副作用）"
+  exit 0
+fi
+
 KERNEL="${1:-}"
 if [ -z "$KERNEL" ] || [ ! -f "$KERNEL" ]; then
   echo "smoke-dpgsoak: 用法：$0 <内核 ELF>（just build 出）" >&2

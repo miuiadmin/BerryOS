@@ -20,6 +20,12 @@ use core::arch::global_asm;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::{halt, uart_put_hex64, uart_puts};
 
+// W3-Q37：异常分类面纯函数单源 berry-trapface（host 钉板）——re-export
+// 保持全树调用面零变化（EC_* 词表常量/ec_of 位域提取/far_relevant
+// FAR 归类判/ec_name 定名表单源在此；exception_sync/exception_sync_el0
+// 物理分流臂留壳本文件）。
+pub use berry_trapface::{classify, ec_name, ec_of, far_relevant};
+
 /// 期望故障槽（2b-2 低半退役正向断言）：非 0 = 期望下一次 current-EL **D-abort**
 /// 的 FAR。命中 → 恢复（ELR+=4，4 字节 ldr/str 假设）并清槽；未 arm 或 FAR 不符 →
 /// 原 fatal 路径。调用方读回 [`fault_armed`] 判「确实 fault 了」（槽被消费 = 异常真
@@ -331,20 +337,20 @@ pub unsafe fn init() {
 /// 由异常向量 asm 以 `x0 = &mut TrapFrame` 调用；C-ABI。
 #[no_mangle]
 pub extern "C" fn exception_sync(tf: &mut TrapFrame) {
-    let ec = ((tf.esr >> 26) & 0x3f) as u32;
+    let ec = ec_of(tf.esr);
     match ec {
-        0x15 => {
+        berry_trapface::EC_SVC => {
             // SVC：派发，ret 写回 x0，eret 续行（无 dump）。
             crate::syscall::dispatch(tf);
             return;
         }
-        0x3c => {
+        berry_trapface::EC_BRK => {
             dump(tf, ec);
             uart_puts(b"  -> BRK recover: ELR+=4, eret\n");
             tf.elr = tf.elr.wrapping_add(4);
             return;
         }
-        0x25 => {
+        berry_trapface::EC_DABORT_CURRENT => {
             // G4-1：D-abort(current-EL) 先问 demand 探针（期望故障槽**之前**
             // ——demand 是架构路径，ktest 期望槽是测试机制；两 FAR 域不交）。
             // 探针命中 → 槽内已走 pager 协议（阻塞/供给/唤醒），eret 重试
@@ -394,9 +400,9 @@ pub extern "C" fn exception_sync(tf: &mut TrapFrame) {
 /// 由异常向量 asm 以 `x0 = &mut TrapFrame` 调用；C-ABI。
 #[no_mangle]
 pub extern "C" fn exception_sync_el0(tf: &mut TrapFrame) {
-    let ec = ((tf.esr >> 26) & 0x3f) as u32;
+    let ec = ec_of(tf.esr);
     match ec {
-        0x15 => {
+        berry_trapface::EC_SVC => {
             // 未知/未实现号 → -ENOTSUP 存活（3-1 政策；滥用面如坏 handle → -EBADF）。
             crate::syscall::dispatch(tf);
             return; // 一切 SVC 正常往返（含错误码）
@@ -406,9 +412,10 @@ pub extern "C" fn exception_sync_el0(tf: &mut TrapFrame) {
             // 恢复零锁零打印；ELR+=4 = AArch64 定长约定，payload 端 str 合同）。
             // 仅 data abort（EC=0x24）查 FAR——canary 触发面全为 str/ldr 数据
             // 访问；其余 EC（I-abort/BRK/对齐…）FAR 为保留值，查 = 幻影吞面
-            // （对抗审查 R4 收紧）。未武装面（生产 boot 恒 far=0）零命中 =
-            // 原杀链不变量保持。
-            if ec == 0x24 && canary_consume(tf.far as usize) {
+            // （对抗审查 R4 收紧——W3-Q37 起判据单源 far_relevant（§11.5.2
+            // 有效面）之外再收窄到 D-abort 单值门）。未武装面（生产 boot
+            // 恒 far=0）零命中 = 原杀链不变量保持。
+            if ec == berry_trapface::EC_DABORT_LOWER && canary_consume(tf.far as usize) {
                 tf.elr = tf.elr.wrapping_add(4);
                 return;
             }
@@ -423,7 +430,7 @@ pub extern "C" fn exception_sync_el0(tf: &mut TrapFrame) {
             // 0b00101 同值），I-abort FAR = 取指 VA 有效可查；探针内滤
             // fsc 4..=7 语义两态同形。
             // SAFETY: 同步异常上下文；槽 boot 屏蔽窗注册。
-            if (ec == 0x24 || ec == 0x20)
+            if (ec == berry_trapface::EC_DABORT_LOWER || ec == berry_trapface::EC_IABORT_LOWER)
                 && unsafe { crate::demand_fault_probe_el0(tf.esr as usize, tf.far as usize) }
             {
                 return; // 槽内已完成 pager 协议——eret 重试
@@ -679,24 +686,6 @@ unsafe fn read_esr_elr() -> (u64, u64) {
     core::arch::asm!("mrs {0}, esr_el1", out(reg) esr, options(nostack, preserves_flags));
     core::arch::asm!("mrs {0}, elr_el1", out(reg) elr, options(nostack, preserves_flags));
     (esr, elr)
-}
-
-fn ec_name(ec: u32) -> &'static [u8] {
-    match ec {
-        0x00 => b"Unknown",
-        0x07 => b"FP/SIMD-trap",
-        0x0d => b"FP/trap",
-        0x15 => b"SVC",
-        0x20 => b"I-abort(lower)",
-        0x21 => b"I-abort(current)",
-        0x22 => b"PC-align",
-        0x24 => b"D-abort(lower)",
-        0x25 => b"D-abort(current)",
-        0x26 => b"SP-align",
-        0x2f => b"SError",
-        0x3c => b"BRK",
-        _ => b"other",
-    }
 }
 
 fn put_kv(k: &[u8], v: u64) {

@@ -50,7 +50,7 @@ static mut ROOTFS: Option<RootfsBuf> = None;
 /// rootfs 源缓冲形态。handoff/dtb 路**零拷贝借片**——源已页钉 DRAM
 /// （BerryBoot AllocatePages 的 EfiLoaderData / boot 保留区），EBS 后内核
 /// 即 owner，整档 to_vec 是纯浪费；fw_cfg 路 fw_cfg 无 RAM 副本，必须整读
-/// 进堆（冷启 RAM 完整，ROOTFS_MAX 帽内单块可达）。不统一 to_vec 的硬理由：
+/// 进堆（冷启 RAM 完整，`berry_rootface::MAX_VOL` 帽内单块可达）。不统一 to_vec 的硬理由：
 /// 内核堆大对象 = 单块连续 buddy 块（heap.rs 整页路径），21.3MiB rootfs 在
 /// EFI 路的固件碎块 + blob 自占 20.4MiB 地形下结构性拿不到 order-13 对齐
 /// 块（C-2c smoke-image 实踩 boot panic）；借片 + VMO 逐页 commit 两路皆
@@ -90,14 +90,14 @@ impl RootfsBuf {
 /// 分配 abort 是 boot 期可触发 panic，超限降级为「无 rootfs」存活）。
 /// A1-3b 起语义拆分（帽分家，容量工程前置-A1 §3.1）：本帽 = **单卷帽**
 /// （fw_cfg 单具名文件/单暂存块面，mkcpio `--split 32` 产链契约）；
-/// 多卷总量另见 [`ROOTFS_TOTAL_MAX`]。
-const ROOTFS_MAX: usize = 32 << 20;
+/// 多卷总量另见 [`berry_rootface::TOTAL_MAX`]。
+/// W3-Q85 起常量单源在 `berry_rootface::MAX_VOL`（host 可测纯面——四判定门
+/// 表驱动钉板）；此处 re-export 维持既有引用路径零改动。
 
 /// fw_cfg 多卷**总量帽**（A1-3b）——拼装终点单一 VMO，须 ≤ A1-2 的
 /// `VMO_MAX_SIZE`（128MiB，syscall.rs）同口径；Σ 超帽 = 产链违约，拒收
-/// 降级（boot 期无 panic 纪律）。
-const ROOTFS_TOTAL_MAX: usize = 128 << 20;
-
+/// 降级（boot 期无 panic 纪律）。W3-Q85 起判定与常量单源
+/// `berry_rootface::TOTAL_MAX`（本文件不再持有本地绑定）。
 /// fw_cfg 多卷逐 chunk 拼装的堆暂存块（A1-3b）——4MiB = order 10 单块，
 /// 冷启/常态地形均稳定可得（C-2c 实证 13.8MiB order 12 冷启可达，本块更
 /// 低一档）；**堆峰 = 单 chunk 非全 blob**（40MB+ = order 15 > MAX_ORDER 13
@@ -155,8 +155,8 @@ fn rootfs_bytes_to_vmo(bytes: &[u8]) -> vmo::Vmo {
 /// 地形免疫——A1-1 地形墙的装载侧执法）；VMO 逐页 commit 物理不连续无碍
 /// （A1-2 帽 128MiB 内）。
 ///
-/// 两帽执法（§3.1 帽分家）：单卷 ≤ [`ROOTFS_MAX`]（产链契约）、Σ ≤
-/// [`ROOTFS_TOTAL_MAX`]。rootfs0 缺席 → `None`（调用方回落旧名单单卷整读，
+/// 两帽执法（§3.1 帽分家）：单卷 ≤ [`berry_rootface::MAX_VOL`]（产链契约）、Σ ≤
+/// [`berry_rootface::TOTAL_MAX`]。rootfs0 缺席 → `None`（调用方回落旧名单单卷整读，
 /// [`ROOTFS_NAME`] 原路）；卷在位但帽越/空卷/拼装对账不符 → 也 `None`
 /// （整源降级为「无 rootfs」存活，boot 期无 panic 纪律）。
 fn fwcfg_rootfs_multivol() -> Option<RootfsBuf> {
@@ -168,14 +168,13 @@ fn fwcfg_rootfs_multivol() -> Option<RootfsBuf> {
     for i in 0..fwcfg::ROOTFS_VOLS {
         let Some(e) = fwcfg::rootfs_volume(i) else { break };
         let sz = e.size as usize;
-        // 单卷帽（含空卷拒）：mkcpio --split 32 产链契约，越帽 = 违约拒收。
-        if sz == 0 || sz > ROOTFS_MAX {
-            return None;
-        }
-        // 总量帽 + 溢出守卫（Σ 超帽 = 递送面违约，与单卷帽同降级语义）。
-        total = total.checked_add(sz)?;
-        if total > ROOTFS_TOTAL_MAX {
-            return None;
+        // 单卷帽 + 总量帽 + 溢出守卫（mkcpio --split 32 产链契约；Σ 超帽 =
+        // 递送面违约，与单卷帽同降级语义）——判定律单源
+        // `berry_rootface::vol_admit`（W3-Q85 host 钉板：判序/恰帽/溢出/
+        // Σ 域全表）。
+        match berry_rootface::vol_admit(sz, total) {
+            berry_rootface::VolOutcome::Admit(t) => total = t,
+            berry_rootface::VolOutcome::Reject => return None,
         }
         vols.push(e);
     }
@@ -202,8 +201,9 @@ fn fwcfg_rootfs_multivol() -> Option<RootfsBuf> {
         }
     }
     // 对账：实拼字节 == Σ 卷 size（SeqRead 项尾守卫的调用侧执法——差值
-    // 即拼装错位，整源降级不裸奔半截 blob）。
-    if off != total {
+    // 即拼装错位，整源降级不裸奔半截 blob）——谓词单源
+    // `berry_rootface::assembly_matches`（W3-Q85）。
+    if !berry_rootface::assembly_matches(off, total) {
         return None;
     }
     Some(RootfsBuf::Assembled(vmo, total))
@@ -478,14 +478,17 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                     berry_hal_aarch64::uart_puts(b"rootfs: isegs=0\n");
                     return None;
                 }
-                // Σ 总量帽（与 fw_cfg 多卷路同口径——A1-1 帽分家执法点）。
+                // Σ 总量帽（与 fw_cfg 多卷路同口径——A1-1 帽分家执法点）；
+                // 判定律单源 `berry_rootface::segs_total_step`（W3-Q85）。
                 let mut total: usize = 0;
                 for s in segs {
-                    total = total.checked_add(s.len as usize)?;
-                    if total > ROOTFS_TOTAL_MAX {
-                        berry_hal_aarch64::uart_puts(b"rootfs: isegs=cap\n");
-                        return None;
-                    }
+                    total = match berry_rootface::segs_total_step(total, s.len as usize) {
+                        Some(t) => t,
+                        None => {
+                            berry_hal_aarch64::uart_puts(b"rootfs: isegs=cap\n");
+                            return None;
+                        }
+                    };
                 }
                 if segs.len() == 1 {
                     // 单段零拷贝借片：与 v0 同纪律（源已在 DRAM，EfiLoaderData
@@ -547,22 +550,25 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                         mm::frames().release(s.pa as usize, len);
                         off += len;
                     }
-                    // 对账（拼装完整性——同 fw_cfg 路纪律）。
-                    if off != total {
+                    // 对账（拼装完整性——同 fw_cfg 路纪律；谓词单源
+                    // `berry_rootface::assembly_matches`，W3-Q85）。
+                    if !berry_rootface::assembly_matches(off, total) {
                         berry_hal_aarch64::uart_puts(b"rootfs: vmo=off\n");
                         return None;
                     }
                     Some((b"handoff" as &[u8], RootfsBuf::Assembled(vmo, total)))
                 }
             } else {
-                // v0：init_blob_* 单 blob 原路（旧装载器兼容面）。
+                // v0：init_blob_* 单 blob 原路（旧装载器兼容面）。域门判定律
+                // 单源 `berry_rootface::blob_span_ok`（W3-Q85：零拒/帽拒/
+                // 窗下界/回卷四查判序 host 钉板）。
                 let (pa, len) = (h.init_blob_pa, h.init_blob_len);
-                if pa == 0 || len == 0 || len > ROOTFS_MAX as u64 {
-                    return None;
-                }
-                if pa < berry_hal_aarch64::RAM_BASE as u64
-                    || pa.checked_add(len)? > berry_hal_aarch64::RAM_TOP as u64
-                {
+                if !berry_rootface::blob_span_ok(
+                    pa,
+                    len,
+                    berry_hal_aarch64::RAM_BASE as u64,
+                    berry_hal_aarch64::RAM_TOP as u64,
+                ) {
                     return None;
                 }
                 // SAFETY: 界检已过（整段在 DRAM 窗内）——高半直映 L2 全覆盖，
@@ -602,7 +608,12 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
             let size = entry.size as usize;
             // no-panic：与 vmo_create 32MiB 同口径——巨 blob 分配 abort 是
             // boot 期可触发 panic，超限/空文件一律降级为「无 rootfs」存活。
-            if size == 0 || size > ROOTFS_MAX {
+            // 域门单源 `berry_rootface::vol_admit(size, 0)`（空卷拒/单卷帽
+            // 两判与多卷发现门同律；Σ=0 无溢出/总量帽面——W3-Q85）。
+            if !matches!(
+                berry_rootface::vol_admit(size, 0),
+                berry_rootface::VolOutcome::Admit(_)
+            ) {
                 return None;
             }
             let mut buf = alloc::vec![0u8; size];

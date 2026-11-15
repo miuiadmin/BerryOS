@@ -1,0 +1,19 @@
+[package]
+name = "berry-heapface"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+description = "BerryOS slab heap size-class/order arithmetic pure-function plane (host-testable)"
+
+[lib]
+name = "berry_heapface"
+path = "src/lib.rs"
+
+[dependencies]
+# W3-Q39：heap 分配路由算术纯面——size-class 2 的幂取整律（class_index：
+# 首个 ≥ eff 的 class，超 MAX_CLASS 走整页）+ align 修正（eff = max(size,
+# align)）+ slab 切页几何（nslots = PAGE_SIZE/class 恰整除无浪费）+ 整页
+# 路径 ceil 除法与 buddy 阶最小性（order_for：2^order ≥ npages 的最小阶，
+# 浪费 < npages 摊还界）+ alloc/dealloc 对称路由律钉板，host 表驱动钉板；
+# kernel heap.rs 算术段换单源（侵入式 freelist push/pop 与帧源物理臂留壳）。
+# 零外部依赖。

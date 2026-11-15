@@ -12,3 +12,15 @@ path = "src/lib.rs"
 # G3-3 lockdep：默认关——钩子全 #[cfg] 编译消除，release/CI 主面零成本；
 # 开 = `cargo build --features lockdep` 出检测镜像（模块常驻、检测器激活）。
 lockdep = []
+
+[dependencies]
+# W3-Q36：lockdep 检查面纯函数单源（rank 七类全序表 + check_acquire 三检
+# 判序/check_release 两臂/check_irq_exit 配平判 + CLASS_*/DEPTH_MAX 常量）
+# ——本 crate lockdep.rs 消费（检查面 re-export；链槽寻址/记账/violation
+# 物理臂留壳）。host 钉板在 lkface；无依赖传染（纯 no_std lib）。
+berry-lkface = { path = "../../lkface" }
+# W3-Q37：异常分类面纯函数单源（ESR EC 域提取 ec_of + 十三类词表
+# classify + FAR 归类判 far_relevant + 定名表 ec_name + EC_* 常量）——
+# 本 crate trap.rs 消费（分类面 re-export；exception_sync 物理臂留壳）。
+# host 钉板在 trapface；无依赖传染（纯 no_std lib）。
+berry-trapface = { path = "../../trapface" }

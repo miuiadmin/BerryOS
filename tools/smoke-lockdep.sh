@@ -43,6 +43,79 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# ---------- --selftest（零真 QEMU；前置拒面 + 假 QEMU 相 1 判定引擎钉板） ----------
+# bcts-run/sync-public 同款合成腿风格：脚本副本入 sandbox（ROOT 恒沙箱——
+# 真仓 rootfs.cpio 在席会把腿推进到造盘/起对端，绝不触真仓）。假 QEMU 腿
+# 用 QEMU env 覆盖（上方钩子）把 marker 流喂进相 1 等待环，钉计数/行序
+# 断言引擎的红绿两向。改前置拒面或相 1 判定面必跑（挂 just test-host）。
+if [ "${1:-}" = "--selftest" ]; then
+  SELF=$(mktemp -d "${TMPDIR:-/tmp}/berryos-lockdep-selftest.XXXXXX")
+  cleanup() { rm -rf "${SELF}"; }
+  trap cleanup EXIT
+  mkdir -p "${SELF}/root/tools"
+  cp "${BASH_SOURCE[0]}" "${SELF}/root/tools/smoke-lockdep.sh"
+  S="${SELF}/root/tools/smoke-lockdep.sh"
+
+  legs=0; fails=0
+  leg() {  # leg <名> <期望rc> <额外断言grep:stdout|stderr|-> <pattern> <cmd…>
+    local name="$1" want="$2" face="$3" pat="$4"; shift 4
+    local rc=0
+    ( "$@" ) >"${SELF}/out.log" 2>&1 || rc=$?
+    legs=$((legs+1))
+    local why=""
+    [ "$rc" = "$want" ] || why="rc 期望 ${want} 实得 ${rc}"
+    if [ -z "$why" ] && [ "$face" != "-" ] && ! grep -qF "$pat" "${SELF}/out.log"; then
+      why="输出缺锚「${pat}」"
+    fi
+    if [ -n "$why" ]; then
+      fails=$((fails+1)); echo "smoke-lockdep selftest 腿红：${name}（${why}）" >&2
+      tail -4 "${SELF}/out.log" >&2
+    else
+      echo "smoke-lockdep selftest 腿绿：${name}"
+    fi
+  }
+  # 假 QEMU：$1 = marker 流脚本片段（由腿注入到沙箱 fake-qemu.sh）。
+  fake_qemu() {  # fake_qemu <文件名> <行…>——生成打印给定行后退出的假 QEMU
+    local fq="${SELF}/$1"; shift
+    { echo '#!/usr/bin/env bash'
+      for ln in "$@"; do echo "printf '%s\\n' '$ln'"; done
+      echo 'exit 0'
+    } > "$fq"
+    chmod +x "$fq"
+  }
+  # 合成内核「ELF」：拒面/绿面判定只用 strings 扫 marker 串——纯文本即可。
+  printf 'LOCKDEP selftest ok\nDPGN ok n=4\nDPG ok\n' > "${SELF}/k-good"
+  printf 'no markers here\n' > "${SELF}/k-nomark"
+
+  # —— 前置拒面（确定性，真脚本零副作用出口）——
+  leg "用法红（无参）" 2 stderr "用法" bash "$S"
+  leg "缺文件红" 2 stderr "用法" bash "$S" "${SELF}/no-such-elf"
+  leg "marker 缺席红（default 面直拒）" 2 stderr "镜像非 lockdep feature 面" \
+    bash "$S" "${SELF}/k-nomark"
+  # —— 假 QEMU 相 1 判定引擎（沙箱 rootfs.cpio 缺席 = 相 2 前置有序终态）——
+  fake_qemu fq-green 'LOCKDEP selftest ok' 'DPG ok'
+  leg "相 1 绿引擎（ok 恰 1 + DPG 行序对 → 相 1 PASS）" 1 stdout "相 1 PASS" \
+    env QEMU="${SELF}/fq-green" bash "$S" "${SELF}/k-good"
+  leg "相 2 前置有序红（沙箱缺 rootfs.cpio loud 快败）" 1 stderr "缺 rootfs.cpio" \
+    env QEMU="${SELF}/fq-green" bash "$S" "${SELF}/k-good"
+  fake_qemu fq-fail 'LOCKDEP selftest FAIL'
+  leg "FAIL 标记红分支（六阳性臂翻车形态）" 1 stderr "计数 0" \
+    env QEMU="${SELF}/fq-fail" bash "$S" "${SELF}/k-good"
+  fake_qemu fq-double 'LOCKDEP selftest ok' 'LOCKDEP selftest ok' 'DPG ok'
+  leg "ok 重复红分支（期望恰 1）" 1 stderr "计数 2" \
+    env QEMU="${SELF}/fq-double" bash "$S" "${SELF}/k-good"
+  fake_qemu fq-order 'DPG ok' 'LOCKDEP selftest ok'
+  leg "DPG 行序红分支（先于 selftest ok 即咬）" 1 stderr "行序断言" \
+    env QEMU="${SELF}/fq-order" bash "$S" "${SELF}/k-good"
+
+  if [ "$fails" -ne 0 ]; then
+    echo "smoke-lockdep: selftest FAIL（${fails}/${legs} 腿红）" >&2
+    exit 1
+  fi
+  echo "smoke-lockdep: selftest ok（拒面 3 + 假 QEMU 判定引擎 5 = ${legs} 腿）"
+  exit 0
+fi
+
 KERNEL="${1:-}"
 if [ -z "$KERNEL" ] || [ ! -f "$KERNEL" ]; then
   echo "smoke-lockdep: 用法：$0 <内核 ELF>（feature 面——cargo build --features lockdep 出）" >&2
@@ -62,8 +135,10 @@ if ! strings "$KERNEL" | grep -q 'DPGN ok n=4'; then
   exit 2
 fi
 
+# QEMU env 覆盖（soak-g3 同款先例）：默认不变；--selftest 用假 QEMU 钉
+# 判定引擎出口（零真 QEMU 秒级）。
 PATH="$HOME/.cargo/bin:$PATH"
-QEMU="qemu-system-aarch64"
+QEMU="${QEMU:-qemu-system-aarch64}"
 MACH="-machine virt -cpu cortex-a72 -m 128M -nographic"
 
 LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-lockdep.XXXXXX")
