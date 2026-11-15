@@ -8,7 +8,7 @@
 //! 承载不变式（plan Bug 2）：`switch` 永不在 `PSTATE.I=0`（中断解蔽）时到达——
 //! `yield_now`/`exit_current` 均先 `disable_irq` 再切。
 
-use crate::class::{Fair, SchedClass};
+use crate::class::{class_of_task, Fair, SchedClass, TaskClass};
 use crate::runqueue::{Runqueue, Topo};
 use crate::spin::SpinLock;
 use crate::task::{
@@ -17,7 +17,7 @@ use crate::task::{
 use berry_hal_aarch64 as hal;
 use core::cell::Cell;
 use core::ptr::{addr_of, addr_of_mut, NonNull};
-use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 /// IRQ tick 计数（`on_irq_tick` 自增）。金丝雀：长跑中持续增长 = timer/EOIR 管线健康
 /// （rearm 对、无 EOIR 饿死——plan R4/R5）；停增即管线坏。
@@ -231,7 +231,9 @@ static mut PER_CPU_RQ: [Runqueue; 2] = [Runqueue::new(), Runqueue::new()];
 /// 单核默认 `[1024, 0]` 同构占位，QEMU virt 双核 1024/1024，真差异容量 =
 /// EAS 面 v2+）。
 static mut TOPO: Topo = Topo::single();
-/// 调度类（round-robin，G0/G1 默认）。
+/// 调度类（round-robin，G0/G1 默认）。M4 集成面起 = **队列级**消费位
+/// （`pick_next_filtered` 三调用点——混合带同环出选的扫描面，不经
+/// per-task 分派）+ [`class_of_task`] 分派的回落臂（unit Fair 本体）。
 static RR: Fair = Fair;
 
 /// idle / 初始任务 = `rust_main` 的活上下文（boot 栈 `__stack_top`）。**不分配栈**
@@ -743,15 +745,22 @@ pub fn topo_smp_online() {
 /// （服务/IPC 公民）路由上快核后以即时派发垄断共享通道槽（唤醒序/上限
 /// 均救不了派发延迟差：快核 µs vs 本核轮转 ms——排障三连实证），v1 只铺
 /// thread_start 的同进程计算线程（并行收益面）；b-2 偷取迁移再放开；
-/// ⑤可铺核任务本核优先 + 深度失衡 K=2：本核队列长 ≥ 对核 + 2 → 改道对核
-///   （「4-burst 第 3 个直接路由」语义；len 读 = AtomicUsize 免锁读——
-///   c-2b slice 3 Q3 收口：C20 后表锁语境合法无逆序边，K=2 启发式容忍
-///   跨核近似值）。
+/// ⑤可铺核任务放置判据两路：**EAS 首接**（06 号评估终判管道②——
+///   placement hint 有意见时 [`eas_place`] 能量感知选核先行，机会主义：
+///   overutil/EM 无据/放不下 → None 回退下案；无意见 = 不进 EAS 面，
+///   下案原样零漂移）＋**本核优先 + 深度失衡 K=2**：本核队列长 ≥ 对核
+///   + 2 → 改道对核（「4-burst 第 3 个直接路由」语义；len 读 =
+///   AtomicUsize 免锁读——c-2b slice 3 Q3 收口：C20 后表锁语境合法无
+///   逆序边，K=2 启发式容忍跨核近似值）。
 /// 只在 spawn 调（新放语义）；wake/expire 再入队回 home 不改道（防 sleeper
 /// 被唤醒方弹核）；b-2 偷取迁移时随迁改写 home。
 fn place(task: &Task) -> usize {
     if task.ttbr0 == 0 || task.pinned == 0 || !task.spread || !hal::smp::par_enabled() {
         return 0;
+    }
+    // EAS 首接（管道②）：hint 有意见 → 能量感知选核；None → 现役 K=2 原样。
+    if let Some(cpu) = eas_place(task.proc_tag as u64) {
+        return cpu;
     }
     let me = hal::smp::cpu_id();
     let other = 1 - me;
@@ -760,6 +769,102 @@ fn place(task: &Task) -> usize {
     //（环面操作仍须 RQ 锁窗）。
     let (mine, theirs) = unsafe { (rq_of(me).len(), rq_of(other).len()) };
     if mine >= theirs + 2 { other } else { me }
+}
+
+// ---- EAS 选核首接（06 号评估终判「水通管道」②：berry-em → place 放置消费）----
+//
+// 断点闭合：`policy::placement_hint`（动作空间①读出口）此前有产无消
+// （01 号实测「placement hint 产」）——本节把它接进 berry-em `eas_pick_cpu`
+// 两段选核（每域最高 spare capacity 候选 ∪ prev，最小能量边际胜出），
+// 决策落 [`place`] 的放置路由。**hint 是 EAS 消费面第一入口**：policy 表
+// 对该 key 无放置意见（0）→ 不进 EAS 面，spawn 维持 K=2 启发式——LB 金丝雀
+// （smoke-smp 相 3 `c0==0` 结构性路由形态）零漂移；对称 QEMU 表下无 hint
+// 的能量选核平局粘 prev（Linux EAS 不支持对称拓扑，berry-em 头注⑥），
+// 直替 K=2 会把 4-burst 全钉本核——hint 门是机制与门禁双正确的形态。
+// overutil 回退（Linux EAS 永远机会主义）：任一候选域成员核 util 超域顶
+// 容量 80% → None 让位 K=2 负载均衡（`policy::placement_hint` 门控同律，
+// 本面在快照 utils 上再判一次 = 与选核同一份数据，无 TOCTOU）。
+
+/// 新任务 util 估计（spawn 放置面）：spawn 时刻任务无运行历史（v1 无
+/// per-task PELT/util_est 记账面），EAS 选核的 task_util 取保守固定估计
+/// 1/8 满格——非零使对称 QEMU 表下能量判据非退化（OPP 档界打包可判，
+/// est=0 时加任务边际恒平局退化为纯 prev 偏好）；真值随 per-task util
+/// 记账落地替换（调点调度 v1.3 §6 后续件）。
+const SPAWN_UTIL_EST: u32 = 128;
+
+/// EAS 选核决策自证行一次性门（首次真决策打一行选核日志 = SMP 双核面
+/// 「选核决策日志」证据面；par 门内才打 = ktest/单核零输出漂移。Relaxed
+/// 纯统计门，无同步角色）。
+static EAS_LOG_ONCE: AtomicBool = AtomicBool::new(false);
+
+/// EAS 放置决策（**纯决策面**——输入全注入，ktest 钉板对象）：
+/// placement hint → berry-em `eas_pick_cpu` 的组合律。判序：
+/// ①hint 词汇执法：0（无意见）/越域值 → None 不进 EAS 面（词汇
+/// {1=偏 little, 2=偏 big} 在此消费面收口——policy.rs「词汇执法随 SMP
+/// 真消费面定」的兑现位）；②overutil 系统级门控（`eas_pick_cpu` 头注
+/// 「调用侧」义务——任一候选域任一成员核 util 超域顶容量 80% → None，
+/// 判定律单源 `berry_emface::overutil_judgment`）；③hint → prev_cpu 映射
+/// （1→CPU0 / 2→CPU1）——hint 经 prev 入座享 `eas_pick_cpu` 平局保护
+/// （「只在严格更省时迁移」= 偏好而非钉死，能量严格更省仍可越 hint）；
+/// ④`eas_pick_cpu` 两段选核（EM 无据 / task_util 超域顶容量放不下 →
+/// None 同回退——spawn 容量检查的决策面形态）。
+pub fn eas_pick_place(
+    domains: &[crate::em::EmDomain],
+    utils: &[u32],
+    hint: u8,
+    task_util: u32,
+) -> Option<usize> {
+    use berry_emface::{em_max_capacity_of, overutil_judgment};
+    // ① 词汇执法 + 无意见短路（不进 EAS 面 = place() 现役启发式零漂移）。
+    let prev = match hint {
+        1 => 0usize, // 偏 little
+        2 => 1,      // 偏 big
+        _ => return None, // 0 无意见 / 越域值
+    };
+    // ② overutil 门：候选域成员核逐判（快照 utils——与 ④ 同一份数据）。
+    for d in domains.iter().filter(|d| d.npoints > 0) {
+        let cap = em_max_capacity_of(d);
+        for (cpu, &u) in utils.iter().enumerate() {
+            if cpu < 32 && d.cpu_mask & (1u32 << cpu) != 0 && overutil_judgment(u, cap) {
+                return None; // 饱和回退：放置比较失真，让位负载均衡（Linux 同律）
+            }
+        }
+    }
+    // ④ 两段选核（③的 prev 已定；空域/放不下由 eas_pick_cpu 内部除名）。
+    berry_em::eas_pick_cpu(domains, utils, task_util, prev)
+}
+
+/// EAS 放置（**现役面收集** + 决策——[`place`] 的 SMP 消费面，ktest 直调
+/// 面；par 门在 place() 不在此，决策面独立可测）。三源真值：EM 域表
+/// （[`crate::em::em_domain`]——boot `em_register_qemu_virt` 注册）、
+/// per-CPU util EWMA（[`crate::util::cpu_util`]——PM 频率信号同源读面）、
+/// policy placement hint（[`crate::policy::placement_hint`]——overutil
+/// 门控在彼，本面快照再判）。hint 无意见/overutil/EM 无据/放不下 →
+/// None（place() 回退现役 K=2 启发式）。
+pub fn eas_place(task_key: u64) -> Option<usize> {
+    let hint = crate::policy::placement_hint(task_key);
+    let mut domains = [crate::em::EmDomain::EMPTY; crate::em::EM_DOMAINS_MAX];
+    let mut n = 0;
+    for i in 0..crate::em::EM_DOMAINS_MAX {
+        if let Some(d) = crate::em::em_domain(i) {
+            domains[n] = d;
+            n += 1;
+        }
+    }
+    let utils = [crate::util::cpu_util(0), crate::util::cpu_util(1)];
+    let cpu = eas_pick_place(&domains[..n], &utils, hint, SPAWN_UTIL_EST)?;
+    // 选核决策自证行（一次）：raw UART 直写同 spin_bark 先例（spawn 屏蔽
+    // 窗内单行）；par 门内才打——ktest 直调/单核 boot 零输出漂移。
+    if hal::smp::par_enabled() && !EAS_LOG_ONCE.swap(true, Ordering::Relaxed) {
+        hal::uart_puts(b"EAS pick cpu=");
+        hal::uart_put_dec(cpu as u64);
+        hal::uart_puts(b" u=");
+        hal::uart_put_dec(utils[0] as u64);
+        hal::uart_puts(b"/");
+        hal::uart_put_dec(utils[1] as u64);
+        hal::uart_puts(b"\n");
+    }
+    Some(cpu)
 }
 
 /// 入队 + 跨核唤醒戳（义务⑧回归——S-3a 判词降级件，发送条件就此成立：
@@ -777,7 +882,12 @@ unsafe fn enqueue_with_kick(task: &mut Task, cpu: usize) {
     // expire）= SQ>队列 正序嵌套；spawn 面 = 纯 RQ 窗）。SGI 戳留窗外
     //（MMIO 非阻塞、不触环——窗最小化）。
     let phys = rq_lock_of(cpu);
-    RR.enqueue(task, rq_of(cpu));
+    // M4 集成面收口（06 号 §5 水通管道·任务①）：class 赋值面——按
+    // `intent_effective` 分派带实例（现役集 0x02/0x03 → FairBand，其余
+    // unit Fair；`class_of_task` 单源）。spawn 与唤醒（wake_one_inner）
+    // 共用本点，动态派生零缓存（FairBand 全委托 Fair——行为零漂移）。
+    let cls = class_of_task(task);
+    cls.enqueue(task, rq_of(cpu));
     rq_unlock_of(cpu, phys);
     if cpu != hal::smp::cpu_id() && hal::smp::par_enabled() {
         // SAFETY: 写 GICD_SGIR（EL1）；List 位图 = 路由目标核。
@@ -1109,13 +1219,11 @@ pub fn thaw_by_pinned(pinned: usize) {
 /// `intent` 直落 `intent_declared`/`intent_effective` 双字段——boot 可信语境
 /// 一步到位；非法值（编码域外）直接 panic（同 `new_kernel` 系 expect 政策）。
 ///
-/// **M4 集成面预留窗（ADR #42 第二段，本刀不实装）**：task→band 赋值在此
-/// 接——elf spawn 时 manifest intent 档（`berry-manifest::Intent`）→
-/// `berry_iprofile::band_id_of_intent`（带 id ↔ intent 档映射单源，首批
-/// 现役集 = 0x02/0x03——`band_enabled` 单源）→ `class::class_fair_intent`
-/// 建带实例入 ×N 带实例表；
-/// 策略覆盖通道 = `policy::band_of`（band 选择位，v3 `policy_bind` 写路）。
-/// 详见 `class.rs` M4 带实例化骨架段注。
+/// **M4 集成面（06 号 §5「水通管道」任务①收口，2026-11-16）**：task→band
+/// 赋值在此闭合——intent 双落后 [`enqueue_with_kick`] 经 [`class_of_task`]
+/// 按带分派（现役集 0x02/0x03 → [`crate::class::FairBand`] 带实例〔表行
+/// quantum/权重包络〕+ boot 串口 `[band]` 行；其余档 unit Fair 零漂移）。
+/// 策略覆盖通道 = `policy::band_of`（v3 `policy_bind` 写路）仍归 v3。
 pub fn spawn_intent(entry: extern "C" fn(usize) -> !, arg: usize, name: &'static [u8],
                     intent: u8) {
     assert!(crate::intent::intent_valid(intent), "spawn_intent：编码域外");
@@ -1124,6 +1232,22 @@ pub fn spawn_intent(entry: extern "C" fn(usize) -> !, arg: usize, name: &'static
         alloc::boxed::Box::leak(Task::new_kernel_with_as(entry, arg, name, 0, 0));
     task.intent_declared = intent;
     task.intent_effective = intent;
+    // M4 链路闭合可见面（06 号 §5 任务③）：现役带 spawn 打一行 boot 串口
+    // ——intent→band→带参数（quantum/权重包络）经本行可见（QEMU 证据面）。
+    // boot 可信语境（DAIF 屏蔽）直写 uart，同 boot 打印纪律。
+    if let TaskClass::Band(fb) = class_of_task(task) {
+        hal::uart_puts(b"[band] ");
+        hal::uart_puts(name);
+        hal::uart_puts(b" intent=");
+        hal::uart_put_dec(intent as u64);
+        hal::uart_puts(b" q_ns=");
+        hal::uart_put_dec(fb.band.quantum_ns);
+        hal::uart_puts(b" w=");
+        hal::uart_put_dec(fb.band.low_weight as u64);
+        hal::uart_puts(b"..");
+        hal::uart_put_dec(fb.band.high_weight as u64);
+        hal::uart_puts(b"\n");
+    }
     unsafe {
         enqueue_with_kick(task, place(task));
     }
@@ -1272,7 +1396,9 @@ fn yield_now_impl(enable_irq_at_end: bool) {
                 // 响亮捕获。在环才抬（`rq_prev` Some = 在环——link 置 Some/
                 // unlink 清 None 的结构不变式，幂等早退同判据）。
                 if (*prev).rq_prev.get().is_some() {
-                    RR.yield_slice_return(&mut *prev, rq());
+                    // M4：yield 片归还同经 class 赋值面（per-task 分派）。
+                    let cls = class_of_task(&*prev);
+                    cls.yield_slice_return(&mut *prev, rq());
                 }
                 (*next_ptr).state = TaskState::Running;
             }
@@ -1430,7 +1556,9 @@ unsafe fn switch_away_forever_with(code: i32) -> ! {
     // 落形）。EXIT_HOOK 留窗前（钩子可 wake_matching 入队 = 同核环同锁重
     // 入，绝不入窗）。
     let phys = rq_lock();
-    RR.dequeue(&mut *cur, rq());
+    // M4：退出摘环同经 class 赋值面（per-task 分派）。
+    let cls = class_of_task(&*cur);
+    cls.dequeue(&mut *cur, rq());
     reapq_push(cur);
     // S-2b：pick 走本核过滤器——副核环上无可见货（pinned!=0 全无）时不落
     // IDLE fallthrough（IDLE_TASK 是 CPU0 boot 上下文，副核不得切入）而切回
@@ -1725,7 +1853,9 @@ pub unsafe fn kill_all_tasks_by_pinned(
             if let Some(c) = hit {
                 let t = c.as_ptr();
                 let tk = (*t).thread_key;
-                RR.dequeue(&mut *t, rq()); // unlink（幂等）+ 置 Exited
+                // M4：按 pinned 杀出队同经 class 赋值面（per-task 分派）。
+                let cls = class_of_task(&*t);
+                cls.dequeue(&mut *t, rq()); // unlink（幂等）+ 置 Exited
                 rq_unlock(phys);
                 assert_exit_hook_windows_closed();
                 if let Some(hook) = EXIT_HOOK {
@@ -3485,7 +3615,10 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
     // SGI 回执忙等等路径持 RQ 锁跨核等待，tick（IRQ 上下文）取锁 = 与
     // 对核「持锁等本核」成环——实测双核对 spin（RQ0/RQ1 锁地址对
     // 0x...a68/0x...ab0，7.7K 切换即 wedge）。
-    RR.tick(&mut *cur, rq()); // 策略部分：减 slice_left + vruntime/账本（RMW）入账
+    // M4：tick 记账同经 class 赋值面（per-task 分派；FairBand 委托 Fair
+    // ——行为与旧 RR.tick 逐位一致）。
+    let cls = class_of_task(&*cur);
+    cls.tick(&mut *cur, rq()); // 策略部分：减 slice_left + vruntime/账本（RMW）入账
     if (*cur).slice_left == 0 {
         // G3-1c-1（console 写域解蔽）：禁切窗内 slice 燃尽——本次 tick 不切。
         // 诉求分档承接（errata m2 勘正）：出窗检查点只兑现**严格更高 eff**
@@ -3908,7 +4041,9 @@ unsafe fn try_steal_one() -> Option<*mut Task> {
     // 调用侧 dispatch 随即置 Running——与出选派发同序。
     // —— 本核窗（再取本地）：与前远端窗不重叠（只持远端——绝不双持）。
     let phys = rq_lock_of(me);
-    RR.enqueue(&mut *p, rq_of(me));
+    // M4：偷取重入环同经 class 赋值面（与 spawn/唤醒同款分派）。
+    let cls = class_of_task(&*p);
+    cls.enqueue(&mut *p, rq_of(me));
     rq_unlock_of(me, phys);
     // 偷取事件全局计数（st1 诊断面——`LB ok` 行诊断字段，不做断言）。
     LB_STEALS.fetch_add(1, Ordering::Relaxed);

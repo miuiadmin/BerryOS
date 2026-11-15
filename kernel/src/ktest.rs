@@ -108,6 +108,13 @@ pub fn run() {
     // class_fair_intent 参数差异断言（末位新号纪律——ktest done 前；
     // sched::init 前跑；BAND 族定义体在 test_band 后）。
     test_band_m4();
+    // 06 号评估终判「水通管道」②（2026-11-16）：EAS 选核首接——
+    // berry-em eas_pick_cpu → sched place() 放置消费。policy placement
+    // hint（动作空间①读出口）此前有产无消，本测钉「hint→能量选核→放置
+    // 决策」链两端：纯决策面注入钉板 + 现役面三源（policy 表 × EM 表 ×
+    // util EWMA）端到端（末位新号纪律——ktest done 前；sched::init 前跑，
+    // par 门恒关 = 只测决策面，place() 路由面归 SMP 相）。
+    test_eas_place();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
@@ -7320,23 +7327,29 @@ fn test_band() {
 /// 首个真调度差异化面。五段：**现役集 / 工厂门 / 参数差异 / 表源执法 /
 /// 同 runqueue 共存**。
 ///
-/// **不做面（如实注）**：task→band 赋值（spawn 时 manifest intent→band
-/// 选择）需 svcmgr/kernel spawn 面协同，归后续刀；band 位消费（v3
-/// `policy_bind` 写路）归 v3——见 `class.rs::class_fair_intent` 集成面
-/// 预留窗注。trait 行为面（enqueue/pick/tick）仍全委托 unit Fair（M4
-/// 并线前行为零漂移纪律）——故「两带任务不同 quantum/权重」在**带参数
-/// 轴**断言（热路径 per-band quantum/权重执法 = M4 并线面，本刀不实装）；
-/// 同 runqueue 段验证两带任务共存与出选完整性。
+/// **集成面（06 号 §5「水通管道」任务①收口，2026-11-16）**：task→band
+/// 赋值已接——`class_of_task`（class 赋值面单源）按 `intent_effective`
+/// 分派，`sched.rs` 调度原语六点消费（spawn/wake 入队、偷取重入环、
+/// tick、dequeue×2、yield）+ `spawn_intent` 串口 `[band]` 行；M4F 段在
+/// **spawn 面**端到端断言（真 spawn_intent → 真 PER_CPU_RQ 在席 → 两带
+/// 参数分化）。band 位消费（v3 `policy_bind` 写路）仍归 v3。trait 行为
+/// 面（enqueue/pick/tick）仍全委托 unit Fair（M4 并线前行为零漂移
+/// 纪律）——故「两带任务不同 quantum/权重」在**带参数轴**断言（热路径
+/// per-band quantum/权重执法 = M4 并线面，本刀不实装）；同 runqueue 段
+/// 验证两带任务共存与出选完整性。
 ///
-/// ktest 纪律（sched::init 前跑、单核）：本地 Runqueue 手搭（不动全局
-/// RUNQUEUE——同 test_band）；任务体 leak 不回收（ktest 语境同 spawn
-/// 政策——v1 无 reap）。
+/// ktest 纪律（sched::init 前跑、单核）：M4A–E 本地 Runqueue 手搭（不动
+/// 全局 RUNQUEUE——同 test_band）；M4F 真 spawn_intent 入真 PER_CPU_RQ
+/// （F8 try_spawn_user 先例——断言后 `rq_unlink_kt` 即摘，不留 RQ 残留；
+/// m4_dummy 永不执行）；任务体 leak 不回收（ktest 语境同 spawn 政策，
+/// v1 无 reap）。
 fn test_band_m4() {
     use berry_iprofile::{band_enabled, INTENT_BAND_TABLE};
     use berry_sched::{
-        class_fair_intent, FairBand, Runqueue, SchedClass, Task, Topo, INTENT_BACKGROUND,
-        INTENT_INTERACTIVE, INTENT_LATENCY_CRITICAL, INTENT_MAINTENANCE, INTENT_UNSPECIFIED,
-        INTENT_UTILITY,
+        class_fair_intent, class_of_task, for_each_runnable, pi_rq_lock, pi_rq_unlock,
+        rq_unlink_kt, spawn_intent, FairBand, Runqueue, SchedClass, Task, TaskClass, Topo,
+        INTENT_BACKGROUND, INTENT_INTERACTIVE, INTENT_LATENCY_CRITICAL, INTENT_MAINTENANCE,
+        INTENT_UNSPECIFIED, INTENT_UTILITY,
     };
 
     /// 占位入口（手搭带成员永不执行；halt 兜底——同 test_band）。
@@ -7455,6 +7468,66 @@ fn test_band_m4() {
         n1,
         n2
     );
+
+    // —— M4F. spawn 面端到端（06 号 §5「水通管道」任务①——链路最后一环）：
+    //         真 `spawn_intent` 路径（intent 双落 → `class_of_task` 分派 →
+    //         `enqueue_with_kick` 入真 PER_CPU_RQ）：interactive + utility
+    //         两任务各得带实例且参数分化（quantum/权重包络）、background
+    //         对照（首批外）回落 unit Fair；真 RQ 在席证明
+    //         （`for_each_runnable` 走查——pi_rq_lock 窗）后 `rq_unlink_kt`
+    //         清场（F8 先例——断言后即摘，不留 RQ 残留）。——
+    spawn_intent(m4_dummy, 0, b"m4spIA", INTENT_INTERACTIVE);
+    spawn_intent(m4_dummy, 0, b"m4spUT", INTENT_UTILITY);
+    spawn_intent(m4_dummy, 0, b"m4spBG", INTENT_BACKGROUND);
+    let mut seen = [0usize; 3];
+    let mut cls = [None, None, None];
+    let mut ptrs = [0usize; 3];
+    let phys = pi_rq_lock();
+    for_each_runnable(|t| {
+        // 走查契约：只读字段 + 纯派生（class_of_task 无副作用）；裸指针
+        // 存址供窗外清场 unlink（锁窗内不出/入环）。
+        let i = if t.name == b"m4spIA".as_slice() {
+            0
+        } else if t.name == b"m4spUT".as_slice() {
+            1
+        } else if t.name == b"m4spBG".as_slice() {
+            2
+        } else {
+            return;
+        };
+        seen[i] += 1;
+        cls[i] = Some(class_of_task(t));
+        ptrs[i] = t as *mut Task as usize;
+    });
+    pi_rq_unlock(phys);
+    assert_eq!(seen, [1, 1, 1], "BANDM4：spawn 面三任务须真入 PER_CPU_RQ（各恰一枚）");
+    let (cia, cut, cbg) = (cls[0], cls[1], cls[2]);
+    assert_eq!(
+        cia,
+        Some(TaskClass::Band(ib)),
+        "BANDM4：spawn 面 interactive 须得带实例（工厂同参）"
+    );
+    assert_eq!(
+        cut,
+        Some(TaskClass::Band(ub)),
+        "BANDM4：spawn 面 utility 须得带实例（工厂同参）"
+    );
+    assert_eq!(
+        cbg,
+        Some(TaskClass::Unit),
+        "BANDM4：spawn 面 background（首批外）须回落 unit Fair"
+    );
+    let (bia, but) = (cia.unwrap().band().unwrap(), cut.unwrap().band().unwrap());
+    assert_ne!(bia.quantum_ns, but.quantum_ns, "BANDM4：spawn 面两带任务 quantum 须不同");
+    assert!(
+        bia.low_weight > but.low_weight && bia.high_weight > but.high_weight,
+        "BANDM4：spawn 面 interactive 权重包络须整体更高"
+    );
+    for p in ptrs {
+        // SAFETY: p 来自锁窗走查（spawn_intent 的 Box::leak 产物，地址
+        // 稳定）；此刻在真 PER_CPU_RQ 环上（seen 断言已证）。
+        rq_unlink_kt(unsafe { &mut *(p as *mut Task) });
+    }
 
     berry_hal_aarch64::uart_puts(b"BANDM4 ok n=2\n");
 }
@@ -8552,5 +8625,124 @@ fn test_scheduler_integration() {
     }
 
     berry_hal_aarch64::uart_puts(b"INTEG-K ok\n");
+}
+
+/// 06 号评估终判「水通管道」②：EAS 选核首接（berry-em `eas_pick_cpu` →
+/// `sched::place` 放置消费）——「管道建成早于水」的通水件：placement hint
+/// （`policy` 动作空间①）经 `eas_pick_place`/`eas_place` 接进 berry-em
+/// 两段选核，决策回流 place() 放置路由。两面三段：
+///
+/// - **EA 纯决策面**（`eas_pick_place` 输入全注入）：EA-1 容量不拟合
+///   （task_util 超域顶 → 放不下除名 = spawn 容量检查的决策面形态）；
+///   EA-2 overutil 快照门（任一候选域成员核超 80% → 回退）；
+///   EA-3 hint 词汇执法（0 无意见 / 3 越域 → 不进 EAS 面）；
+///   EA-4/5 hint 平局保护（对称平局粘 hint 核——「偏好非钉死」的保底半边）；
+///   EA-6/7 OPP 档界判据（加 hint 核跨档、加对核保档 → 严格更省越 hint
+///   ——「只在严格更省时迁移」的越权半边）。
+/// - **EB 现役面收集**（`eas_place` 三源端到端）：EB-0 未绑 policy 表 →
+///   None（place() 回退 K=2——LB 金丝雀零漂移的机器断言）；EB-1 绑
+///   hint 表 + EM 注册 + util 清零 → Some(hint 核)；EB-2 util 泵越阈 →
+///   None（overutil 让位）。
+/// - **EC 收口**：unbind + util 全槽清零 + EM 幂等重注册回 QEMU 默认
+///   （OU/EM 族同款，ktest 瞬态不外泄）。
+///
+/// 数值锚同 berry-em host 测 `pick_cpu_laws`（QEMU 双核表 400/750/1024
+/// 档界、est=128：底景 [350,0] 加 CPU0 跨档 Δ5185 vs CPU1 保档 Δ1600）。
+fn test_eas_place() {
+    use berry_sched::policy::{self, Directive, Entry};
+    use berry_sched::{
+        cpu_util, eas_pick_place, eas_place, em_domain, em_register_qemu_virt,
+        util_accumulate, util_reset, util_tick_window, util_window_vct, EmDomain,
+        EWMA_ALPHA_SHIFT, UTIL_NR_CPU,
+    };
+
+    // 前置清场（OU 族同款）：EM 幂等重注册 = test_em 收口同表；util 全槽
+    // 清零；policy 回哨兵（前序测试世代解耦）。
+    assert!(em_register_qemu_virt(), "EA：QEMU 默认 EM 表注册须受理");
+    let dom = em_domain(0).expect("EA：域 0 拷出须 Some（QEMU 双核表）");
+    policy::unbind();
+    for c in 0..UTIL_NR_CPU {
+        util_reset(c);
+    }
+
+    // —— EA：纯决策面（eas_pick_place——输入全注入）。
+    // EA-1 容量不拟合：task_util 2000 超域顶容量 1024 → 全候选除名 None
+    //      （spawn 容量检查：放不下不硬塞，place() 回退现役启发式）。
+    assert_eq!(
+        eas_pick_place(&[dom], &[100, 100], 1, 2000),
+        None,
+        "EA-1：task_util 超域顶须 None（放不下除名）"
+    );
+    // EA-2 overutil 快照门：utils [900,100]（900 > 1024×80%=819.2）→ None
+    //      （hint=1 有意见也回退——EAS 永远机会主义）。
+    assert_eq!(
+        eas_pick_place(&[dom], &[900, 100], 1, 128),
+        None,
+        "EA-2：候选域成员核超阈须 None（饱和让位负载均衡）"
+    );
+    // EA-3 hint 词汇执法：0（无意见）/ 3（越域）→ 不进 EAS 面。
+    assert_eq!(eas_pick_place(&[dom], &[100, 100], 0, 128), None,
+               "EA-3：hint 0 无意见须 None（不进 EAS 面）");
+    assert_eq!(eas_pick_place(&[dom], &[100, 100], 3, 128), None,
+               "EA-3：hint 越域值须 None（词汇执法在消费面收口）");
+    // EM 无据（空域）→ None（接口缺席等价——EM-0 族同语义）。
+    assert_eq!(eas_pick_place(&[EmDomain::EMPTY; 2], &[100, 100], 1, 128), None,
+               "EA-3：EM 无据须 None（回退 place() 现役启发式）");
+    // EA-4/5 hint 平局保护：utils [100,100] 对称平局（加任一核 max/sum 同）
+    //      → prev（hint 核）胜——「偏好非钉死」的保底半边。
+    assert_eq!(eas_pick_place(&[dom], &[100, 100], 2, 128), Some(1),
+               "EA-4：平局须粘 hint=2 核（CPU1 prev 先入座）");
+    assert_eq!(eas_pick_place(&[dom], &[100, 100], 1, 128), Some(0),
+               "EA-5：平局须粘 hint=1 核（CPU0 prev 先入座）");
+    // EA-6/7 OPP 档界判据（est=128）：底景 [350,0]——加 CPU0（hint 核）max
+    //      478 跨档 opp1（Δ=9560−4375=5185）、加 CPU1 max 350 保档 opp0
+    //      （Δ=5975−4375=1600）→ 严格更省越 hint 到 CPU1（镜像同构）。
+    assert_eq!(eas_pick_place(&[dom], &[350, 0], 1, 128), Some(1),
+               "EA-6：对核保档严格更省须越 hint（Δ1600 < Δ5185）");
+    assert_eq!(eas_pick_place(&[dom], &[0, 350], 2, 128), Some(0),
+               "EA-7：镜像底景须对称越 hint 到 CPU0");
+
+    // —— EB：现役面收集（eas_place——policy 表 × EM 表 × util EWMA 三源）。
+    // 合成时间轴参数（OU 族 fold 同款）：step 下 accum=k×u → util_raw=u。
+    let k = util_window_vct() / 1024 + 1;
+    let step = k * 1024;
+    /// 折一窗：util_raw = u 精确进 EWMA（t 单调推进）。
+    fn fold(cpu: usize, u: u32, t: &mut u64, k: u64, step: u64) {
+        util_accumulate(cpu, k * u as u64);
+        *t += step;
+        util_tick_window(cpu, *t);
+    }
+
+    // EB-0：未绑 policy 表（无意见）→ None——place() 回退 K=2（LB 金丝雀
+    //      路由形态零漂移的机器断言：无 hint 的 spawn 结构性不进 EAS 面）。
+    assert_eq!(eas_place(7), None, "EB-0：未绑表须 None（无意见不进 EAS 面）");
+    // EB-1：绑 hint 表（key 7 偏 big）+ util 全零 → Some(1)（hint 平局保护
+    //      经现役三源端到端可达）。
+    static PLACE: [Entry; 1] =
+        [Entry { task_key: 7, directive: Directive { placement: 2, weight: 0, epp: None } }];
+    assert!(policy::bind_gen(&PLACE, policy::gen() + 1), "EB-1：hint 表 bind_gen 须受理");
+    assert_eq!(policy::placement_hint(7), 2, "EB-1：键 7 须透传 hint=2（偏 big）");
+    assert_eq!(eas_place(7), Some(1), "EB-1：三源收集 + 选核须落 CPU1（hint 核）");
+    assert_eq!(eas_place(9), None, "EB-1：未命中键须 None（无意见回退）");
+    // EB-2：CPU0 泵越阈（EWMA 真折叠 >819）→ overutil 让位 → None。
+    let mut t0 = 1_000_000u64;
+    util_tick_window(0, t0); // 开首窗
+    let mut e0 = 0u32;
+    while e0 <= 819 {
+        fold(0, 1024, &mut t0, k, step);
+        e0 += (1024 - e0) >> EWMA_ALPHA_SHIFT;
+    }
+    assert!(cpu_util(0) > 819, "EB-2：泵后 CPU0 须越阈（{}）", cpu_util(0));
+    assert_eq!(eas_place(7), None, "EB-2：overutil 态须 None（饱和让位负载均衡）");
+
+    // —— EC 收口：unbind + util 全槽清零（OU/EM 族同款——ktest 瞬态不外泄；
+    //      EM 表域 0 即 QEMU 默认，无需换注）。
+    policy::unbind();
+    for c in 0..UTIL_NR_CPU {
+        util_reset(c);
+        assert_eq!(cpu_util(c), 0, "EC：收口须回未启态（CPU{c}）");
+    }
+
+    berry_hal_aarch64::uart_puts(b"EAS ok\n");
 }
 

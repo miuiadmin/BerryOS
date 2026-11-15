@@ -40,6 +40,11 @@ berry-intface = { path = "../intface" }
 # 翻窗三态/折叠律/overutil 阈值律——host 可测钉板）。EmPoint/EmDomain
 # 形状与判定律单源在此，本 crate em.rs/util.rs 机械壳 re-export 消费。
 berry-emface = { path = "../emface" }
+# 06 号评估终判管道②首接（CP-09 接线窗提前件）：EAS 选核能量律纯面
+# （eas_pick_cpu 两段选核/energy_diff 打分/QEMU 表镜像——host 8 测钉板）。
+# 本 crate place() 消费即唯一事实源；独立小工作区 path 依赖（berry-power
+# 消费 emface 同例），no_std 纯整数面 aarch64-unknown-none 可编。
+berry-em = { path = "../user/berry-em" }
 # W3-Q19：band 预算数学纯函数面（首越线单赢家/翻期追赶环/CAS 防双翻
 # 入环门/配置三态/带成员豁免判——host 可测钉板）。BandBudget/BAND_SLOTS
 # 与判定律单源在此，本 crate band.rs 机械壳 re-export 消费。
