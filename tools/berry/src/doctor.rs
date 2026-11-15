@@ -17,6 +17,10 @@ pub struct Report {
     pub image: Option<PathBuf>,
     pub kernel: Option<PathBuf>,
     pub home: PathBuf,
+    /// M2 第 12 步：spawn_image 将注入的 fw_cfg 键静态推演（name /
+    /// injected / conditional——conditional=true 的缺席是条件性缺席，不是
+    /// 该注未注；推演面 default 档，profile 档下 display 会翻真）。
+    pub fwcfg: Vec<(String, bool, bool)>,
 }
 
 pub fn collect() -> Report {
@@ -26,6 +30,14 @@ pub fn collect() -> Report {
         Ok(a) => a.as_arg().to_string(),
         Err(_) => "unknown".to_string(),
     };
+    let fwcfg = qemu::choose_accel("auto", false)
+        .map(|a| {
+            qemu::fwcfg_plan(None, a)
+                .into_iter()
+                .map(|(name, value, cond)| (name.to_string(), value.is_some(), cond))
+                .collect()
+        })
+        .unwrap_or_default();
     let firmware = qemu::firmware().ok();
     let image = qemu::resolve_image(None).ok();
     let kernel = qemu::resolve_kernel(None).ok();
@@ -38,6 +50,7 @@ pub fn collect() -> Report {
         image,
         kernel,
         home: crate::run_dir::home(),
+        fwcfg,
     }
 }
 
@@ -60,6 +73,9 @@ impl Report {
                 "kernel": self.kernel,
                 "home": self.home,
                 "profiles": PROFILES.iter().map(|p| p.id).collect::<Vec<_>>(),
+                "fwcfg": self.fwcfg.iter().map(|(name, injected, cond)| {
+                    json!({"name": name, "injected": injected, "conditional": cond})
+                }).collect::<Vec<_>>(),
                 "ok": self.ok(),
             });
             println!("{v}");
@@ -87,6 +103,15 @@ impl Report {
                 "profiles  : {}",
                 PROFILES.iter().map(|p| p.id).collect::<Vec<_>>().join(", ")
             );
+            let fw = self
+                .fwcfg
+                .iter()
+                .map(|(name, injected, cond)| {
+                    format!("{name}{}", if *injected { "" } else if *cond { "(-)" } else { "(MISSING)" })
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            println!("fwcfg     : {fw}  [(-)=条件性缺席]", );
         }
     }
 }

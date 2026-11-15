@@ -1485,11 +1485,20 @@ desktop: berry-build
     [ -f "$IMG" ] || IMG=out/berryos.img
     [ -f "$IMG" ] || IMG=out/berryos-desktop.img
     test -f "$IMG" || { echo "缺 out/berryos.img（先 just image）或 out/berryos-desktop.img"; exit 1; }
-    python3 tools/mkfat.py out/gui-data.img
-    printf 'BERRYOSVBLK!' | dd of=out/gui-data.img conv=notrunc status=none
+    # M2 第 4 步：数据盘复用制——设备壳 profile 路径的持久盘一次造、跨
+    # 启动复用（berry 挂载侧本就非 snapshot 只挂不造；此前每次 mkfat 重造
+    # 是持久性被吃掉的唯一根因）。BERRY_HOME 覆写与 berry CLI home() 语义
+    # 对齐；smoke/CI 路径不经本 recipe，确定性面零扰动。
+    BERRY_ROOT="${BERRY_HOME:-$HOME/.berry}"
+    DATA="$BERRY_ROOT/data/desktop.img"
+    mkdir -p "$BERRY_ROOT/data"
+    if [ ! -f "$DATA" ]; then
+        python3 tools/mkfat.py "$DATA"
+        printf 'BERRYOSVBLK!' | dd of="$DATA" conv=notrunc status=none
+    fi
     HOST=$(rustc -vV | sed -n 's/^host: //p')
     # display fw_cfg 是 gui 位真值源：不传则 guifbd console 不静音、桌面被日志盖。
-    BERRY_DATA_DISK=out/gui-data.img exec tools/berry/cargo-target/$HOST/release/berry shell --image "$IMG" --profile desktop --memory 256
+    BERRY_DATA_DISK="$DATA" exec tools/berry/cargo-target/$HOST/release/berry shell --image "$IMG" --profile desktop --memory 256
 
 # P0 宿主面冒烟：doctor + 内核 marker + EFI 截图（不建窗口；TCG 确定性）。
 berry-smoke: berry-build

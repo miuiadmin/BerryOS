@@ -2180,6 +2180,10 @@ impl<const N: usize> Ui<N> {
         Ok(())
     }
 
+    /// 输入泵裸面：`expected_present_ns` = 调用方**显式给定**的重采样
+    /// 目标轨（host 测试确定性缝——合成场景手工钉 target 值级断言）。
+    /// 生产消费面（embedder 帧循环）一律走 [`Self::pump_input_at`]——
+    /// C′ 目标新鲜推导 + A′ pump→wake 内建时序，本面不自动起振。
     pub fn pump_input(&mut self, expected_present_ns: u64) -> desc::MsgBuf {
         // 帧头：referee + 重采样 + 消费（P7 输入同拍）。
         let mut out = desc::MsgBuf::new();
@@ -2256,6 +2260,31 @@ impl<const N: usize> Ui<N> {
             i += 1;
         }
         self.input_n = 0;
+        out
+    }
+
+    /// 触摸响应设计 v1.0 **C′ + A′**：以**当前时刻**推导重采样目标的
+    /// 输入泵——生产消费面（embedder 帧循环）唯一入口。
+    ///
+    /// - **C′ 目标新鲜（规则 15 铁律 5）**：`expected =
+    ///   next_vsync_tick(now)`（与 render_frame 内部自算 expected 同式
+    ///   同拍——pump 与 render 同迭代 µs 级相邻，含沿不欠拍语义同源
+    ///   frame.rs），再经 [`resample::target_from_expected`] 单源减
+    ///   `RESAMPLE_LATENCY_MS`。**禁止消费方传入上一帧 expected**——
+    ///   稳态陈旧一个 period、idle 长睡后是远古值：跨度帽 >20ms 直接
+    ///   拒采、外推帽失义，拖跟预测整体静默失效。
+    /// - **A′ 内建时序（规则 15 铁律 3）**：pump 先行（press_react/
+    ///   widget_react 标精确 damage）→ **有输入事件才 wake**（damage
+    ///   非空保矩形，空集才兜底 FULL）——消费方不可能把 wake 排到
+    ///   pump 之前放大首触 damage。零事件泵不 wake（Idle 稳态睡事件
+    ///   的非燃 CPU 契约不破）。
+    pub fn pump_input_at(&mut self, now_ns: u64) -> desc::MsgBuf {
+        let expected = frame::next_vsync_tick(now_ns, self.vsync_period_ns, self.vsync_phase_ns);
+        let had_input = self.input_n > 0;
+        let out = self.pump_input(expected);
+        if had_input {
+            self.wake(now_ns);
+        }
         out
     }
 
@@ -2499,6 +2528,14 @@ impl<const N: usize> Ui<N> {
         )
     }
 
+    /// Idle→Run 起振（立即渲不欠拍）+ 起振遥测。
+    ///
+    /// **damage 契约（触摸响应设计 v1.0 A′/规则 15 铁律 3）**：输入驱动
+    /// 的 wake **不放大 damage**——调用序必须让 press_react/widget_react
+    /// 先标出精确矩形再 wake（生产面 = [`Self::pump_input_at`] 内建
+    /// pump→wake 时序；手工起振面同样先 pump 后 wake）。已有脏区时保
+    /// 既有矩形集，**确无任何 damage 才兜底 FULL**（「不欠拍」节奏契约
+    /// ——点壁纸等无视觉变化面仍出一帧，起振遥测口径不漂）。
     pub fn wake(&mut self, now_ns: u64) {
         // IDLE→Run 立即渲不欠拍 + 起振遥测。
         if self.phase == frame::FramePhase::Idle {

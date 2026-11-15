@@ -272,36 +272,53 @@ pub fn spawn_image(
     // 保留为后备（guifbd 分派零改）。
     cmd.arg("-device").arg("virtio-gpu-device");
     cmd.arg("-device").arg("ramfb");
-    if let Some(mode) = display_mode {
-        cmd.arg("-fw_cfg")
-            .arg(format!("name=opt/berry/display,string={mode}"));
-    }
-    // 平台自识键（FP-FPSR 判例 2026-11-13）：硬件加速档告知 guest 加速器
-    // 类型。QEMU HVF 后端不保存/恢复 guest FPSR（vmentry 用 host 副本覆盖
-    // ——msr fpsr 被吞，实测 11.0.3）；KVM 同族风险。TCG 完整仿真不注。
-    // guest ktest 据此跳过 FPSR 恢复/保存断言（FPCR/q 断言保留）。
-    if accel != Accel::Tcg {
-        cmd.arg("-fw_cfg")
-            .arg(format!("name=opt/berry/accel,string={}", accel.as_arg()));
-    }
-    // GUI 家族默认注入 noktest（体验大改造六波 owner 裁决 2026-11-15）：
-    // berry 的 device-host/shell 都是 GUI 启动形态——生产 boot 跳过开发
-    // 工具 ktest/bench（内核按 `opt/berry/noktest` 具名键判，P0-4 极性：
-    // 缺席才跑）。ktest 仍是 `berry run`/`just smoke` 冒烟路径的本分，
-    // 那条路（run/shot 的独立 spawn 点）不注此键。
-    cmd.arg("-fw_cfg").arg("name=opt/berry/noktest,string=1");
-    // 波一刀 B（状态栏可信化）：宿主当下 epoch 秒注入（fw_cfg 具名 string，
-    // display 先例同形）——内核 boot 期消费（kernel/src/rtc.rs）供
-    // CLOCK_REALTIME。UTC 口径（本地时区换算挂账波二）；读取失败 = 不注
-    // 入，内核面降级 -ENOTSUP（launcher 静态占位钟）。
-    if let Ok(epoch) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        cmd.arg("-fw_cfg")
-            .arg(format!("name=opt/berry/rtc,string={}", epoch.as_secs()));
+    // M2 第 12 步：fw_cfg 具名键注入单源化——键集与条件只在 fwcfg_plan
+    // 一处定义，spawn_image（真注入）与 doctor（静态推演）同源消费；全景
+    // 登记在 tools/fwcfg-keys.toml（bash tools/fwcfg-check.sh 对拍）。
+    for (name, value, _cond) in fwcfg_plan(display_mode, accel) {
+        if let Some(v) = value {
+            cmd.arg("-fw_cfg").arg(format!("name={name},string={v}"));
+        }
     }
     log_stdio(&mut cmd, log)?;
     cmd.spawn().map_err(|e| {
         BerryError::device(format!("spawn qemu: {e}")).with_hint("check BERRY_QEMU / PATH")
     })
+}
+
+/// M2 第 12 步：spawn_image 将注入的 fw_cfg 具名键单源推演（doctor 静态
+/// 消费不 spawn，守 no-side-effects）。三元组 =（键名, 值, 条件性）：值
+/// None = 按当前环境不注入；conditional = true 的键缺席是条件性缺席（依
+/// profile 档 / accel 类型 / 系统时间），不是该注未注。
+///
+/// 键语义（全景见 tools/fwcfg-keys.toml）：
+/// - display：profile 几何（WxH@Hz；缺席 = 固件 GOP 800×600 零漂移）。
+/// - accel：平台自识键（FP-FPSR 判例 2026-11-13）——QEMU HVF 后端不保存
+///   /恢复 guest FPSR（vmentry 用 host 副本覆盖，实测 11.0.3；KVM 同族
+///   风险），硬件加速档告知 guest 跳过对应 ktest 断言；TCG 完整仿真不注。
+/// - noktest：GUI 家族恒注（体验大改造六波 owner 裁决 2026-11-15）——
+///   生产 boot 跳过 ktest/bench；`berry run` / `just smoke` 冒烟路走
+///   spawn_kernel 独立 spawn 点，不注此键（本函数只覆盖 spawn_image 面）。
+/// - rtc：宿主当下 epoch 秒（波一刀 B 状态栏可信化；UTC 口径，读取失败
+///   = 不注入，内核面降级 -ENOTSUP 静态占位钟）。
+pub fn fwcfg_plan(
+    display_mode: Option<&str>,
+    accel: Accel,
+) -> Vec<(&'static str, Option<String>, bool)> {
+    let rtc = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs().to_string())
+        .ok();
+    vec![
+        ("opt/berry/display", display_mode.map(|m| m.to_string()), true),
+        (
+            "opt/berry/accel",
+            (accel != Accel::Tcg).then(|| accel.as_arg().to_string()),
+            true,
+        ),
+        ("opt/berry/noktest", Some("1".to_string()), false),
+        ("opt/berry/rtc", rtc, true),
+    ]
 }
 
 /// App-bundle / runtime-pack resource roots: executable dir, the macOS
@@ -367,6 +384,24 @@ pub fn create_vars(path: &Path, mib: u64) -> Result<()> {
     }
     f.flush()?;
     Ok(())
+}
+
+/// M2 第 5 步：vars.fd 可选持久（默认关）。blank 重造是「确定性干净启动」
+/// 的设计前提（上方注释），跨 run 继承 UEFI 脏状态只作为特性开关：
+/// `BERRY_VARS_PERSIST=<path>` 设了——文件在即复用，不在则造 blank 到该
+/// 持久位（下次复用）；未设——维持 one-per-run blank（现状零漂移）。
+/// 持久件须放 home() 层，勿放 run 目录内（Drop 会连带删）。
+pub fn vars_store(run: &Path, mib: u64) -> Result<PathBuf> {
+    if let Ok(persist) = std::env::var("BERRY_VARS_PERSIST") {
+        let p = PathBuf::from(persist);
+        if !p.is_file() {
+            create_vars(&p, mib)?;
+        }
+        return Ok(p);
+    }
+    let run_vars = run.join("vars.fd");
+    create_vars(&run_vars, mib)?;
+    Ok(run_vars)
 }
 
 pub fn resolve_kernel(explicit: Option<PathBuf>) -> Result<PathBuf> {
