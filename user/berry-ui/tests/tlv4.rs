@@ -484,7 +484,8 @@ fn p1_add_face_smoke() {
         Err(berry_ui::UiError::BadParent),
         "Check 叶父位拒"
     );
-    // Stack 容器命令面父位同拒（容器白名单未收编——Phase 1 容器同款边界）
+    // Stack 容器命令面父位收编（Phase 2 第二批——叠层容器入 add 白名
+    // 单；子经 place_children `_` 臂全幅叠放）。
     let mut ui = Ui::<8>::new(10, 10);
     let root = ui.root();
     let st = ui
@@ -498,12 +499,12 @@ fn p1_add_face_smoke() {
         )
         .unwrap();
     let _ = st;
-    assert_eq!(
+    assert!(
         ui.add(
             st,
             ViewSpec { kind: ViewKind::Rect, key: 0, props: Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None }) }
-        ),
-        Err(berry_ui::UiError::BadParent),
-        "Stack 命令面父位拒（白名单未收编——Phase 2 接线面）"
+        )
+        .is_ok(),
+        "Stack 命令面父位收编（Phase 2 第二批接线）"
     );
 }

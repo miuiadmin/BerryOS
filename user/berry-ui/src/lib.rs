@@ -15,15 +15,17 @@
 //! 域，对齐条 19）。**embedder = GUI-5 留位**（guest 侧 gui-wm/gfxdemo
 //! 接驳挂账不在本刀；host 侧 embedder = tests/ 离屏 [u8] 纹理对拍）。
 //!
-//! # 组件四件（Phase 2 首批——Button/Toggle/Slider/Progress）
+//! # 组件件（Phase 2——Button/Toggle/Slider/Progress 首批 + Check/Radio/Step/Seg/Stack/Spacer/Divider 第二批）
 //!
 //! 从数据壳接通四面：渲染（paint 固定色板 + 已有原语组合）、布局（固
-//! 定内在——「组件四件 v1 几何常量」块单源）、交互（pump 期
-//! `widget_react`：Button 派 on_tap / Toggle 翻转 + on_change / Slider
-//! 拖跟 + on_change——产物经 `Ui::take_events` 值面携出；ADR #52
+//! 定内在——「组件 v1 几何常量」块单源）、交互（pump 期
+//! `widget_react`：Button 派 on_tap / Toggle·Check 翻转 + on_change /
+//! Slider 拖跟 + on_change / Radio 置位 + on_change / Step·Seg 击点
+//! 分段 + on_change——产物经 `Ui::take_events` 值面携出；ADR #52
 //! Msg-only 零闭包不动、desc.rs 冻结不加 Msg 变体）、命令面（add/
-//! set_props 开口 + permille 值域先验）。固定值起步（主题/样式系统落
-//! 地后迁出）。
+//! set_props 开口 + 值域先验）。固定值起步（主题/样式系统落地后迁
+//! 出）。布局三件无交互：Stack = 子聚合 max 叠层容器（`_` 臂全幅叠
+//! 放）、Spacer = 0×0 占位吃满 avail、Divider = 厚度线随父宽。
 //!
 //! # 纪律铁律（§0）
 //!
@@ -116,6 +118,29 @@ pub(crate) const PROGRESS_H: u32 = 8;
 /// Slider/Progress value 上域（desc.rs SliderProps/ProgressProps 契约
 /// 「0..=1000 permille」的命令面执法值——AST/builder 面 BadValue 同律）。
 pub(crate) const PERMILLE_MAX: u32 = 1000;
+
+// ---------- 组件七件 v1 几何常量（Phase 2 第二批——Check/Radio/Step/Seg + Stack/Spacer/Divider） ----------
+//
+// 同首批块纪律：布局 intrinsic（layout.rs）与渲染分段（paint.rs）/命中
+// 分段（本文件 widget_react）的单源；固定值起步（主题/样式系统落地后
+// 迁出——文档化豁免同 PRESSED_BG 先例）。
+
+/// Check 固定内在宽（标准复选方框）。
+pub(crate) const CHECK_W: u32 = 24;
+/// Check 固定内在高。
+pub(crate) const CHECK_H: u32 = 24;
+/// Radio 固定内在宽（标准单选圆）。
+pub(crate) const RADIO_W: u32 = 24;
+/// Radio 固定内在高。
+pub(crate) const RADIO_H: u32 = 24;
+/// Step 固定内在宽（左减号 + 值 + 右加号三段）。
+pub(crate) const STEP_W: u32 = 120;
+/// Step 固定内在高。
+pub(crate) const STEP_H: u32 = 36;
+/// Seg 单段宽（段数 = segment_count）。
+pub(crate) const SEG_SEG_W: u32 = 80;
+/// Seg 固定内在高。
+pub(crate) const SEG_H: u32 = 36;
 
 /// arena 运行期树深帽（GUI-6 D29）：add() 执法（超深 → NodeBad loud）
 /// ——递归面（measure/place/cull/emit）未迭代化，深链 × ~200B/帧穿
@@ -238,14 +263,20 @@ fn unpack_color(v: u32) -> Color {
     Color { r: (v >> 16) as u8, g: (v >> 8) as u8, b: v as u8 }
 }
 
-/// 组件四件值域先验（Phase 2 首批）：Slider value ≤ 1000 且
-/// min ≤ max、Progress value ≤ 1000——desc.rs props 契约（BadValue 域）
-/// 的命令面执法（add/set_props 两口共用；AST/builder 面已同律拒）。
-/// UiError 族冻结——违者 NodeBad loud（Grid 零维先验同形兼任）。
+/// 组件值域先验（Phase 2 两批）：Slider value ≤ 1000 且 min ≤ max、
+/// Progress value ≤ 1000、Step step>0 且 min ≤ max 且 value ∈ [min,max]、
+/// Seg segment_count>0 且 active < segment_count——desc.rs props 契约
+/// （BadValue 域）的命令面执法（add/set_props 两口共用；AST/builder 面
+/// 已同律拒）。UiError 族冻结——违者 NodeBad loud（Grid 零维先验同形
+/// 兼任）。
 fn widget_value_ok(p: &Props) -> bool {
     match p {
         Props::Slider(s) => s.value <= PERMILLE_MAX && s.min <= s.max,
         Props::Progress(v) => v.value <= PERMILLE_MAX,
+        Props::Step(s) => {
+            s.step > 0 && s.min <= s.max && s.value >= s.min && s.value <= s.max
+        }
+        Props::Seg(s) => s.segment_count > 0 && s.active < s.segment_count,
         _ => true,
     }
 }
@@ -425,6 +456,16 @@ fn props_geom_equal(a: &Props, b: &Props) -> bool {
         (Props::Toggle(_), Props::Toggle(_)) => true, // checked 纯绘、on_change 纯事件——全不比
         (Props::Slider(_), Props::Slider(_)) => true, // value/min/max 纯绘/纯语义——全不比
         (Props::Progress(_), Props::Progress(_)) => true, // value/style 纯绘——全不比
+        // 组件七件（Phase 2 第二批）：Check/Radio/Step 内在恒定尺寸
+        //（几何常量单源）——checked/selected/group/value/min/max/step
+        // 全纯绘/纯语义面；Seg 段数入几何（段数变 → 内在宽变）、active/
+        // on_change 不比；Divider 厚度入几何（内在高）、inset 两端纯绘
+        //（分隔线长随父——起点/终点留白不动布局）。
+        (Props::Check(_), Props::Check(_)) => true,
+        (Props::Radio(_), Props::Radio(_)) => true,
+        (Props::Step(_), Props::Step(_)) => true,
+        (Props::Seg(x), Props::Seg(y)) => x.segment_count == y.segment_count,
+        (Props::Divider(x), Props::Divider(y)) => x.thickness == y.thickness,
         _ => false, // 变体切换按几何变处理（保守重排）
     }
 }
@@ -722,13 +763,22 @@ impl<const N: usize> Ui<N> {
     pub fn add(&mut self, parent: NodeId, spec: desc::ViewSpec) -> Result<NodeId, UiError> {
         let pidx = self.slot_of(parent)?;
         match self.nodes[pidx].as_ref().map(|n| n.kind) {
+            // 容器白名单（Grid 入列——D24；Stack 入列——Phase 2 第二批：
+            // 叠层容器，子经 place_children `_` 臂 Root 型全幅叠放）。
             Some(ViewKind::Root) | Some(ViewKind::Col) | Some(ViewKind::Row) | Some(ViewKind::Pad)
-            | Some(ViewKind::Grid) => {} // 容器白名单（Grid 入列——D24）
-            // 叶四件显式列名（Rect/Text 原有 + Image/Icon 新叶）：容器位
+            | Some(ViewKind::Grid) | Some(ViewKind::Stack) => {}
+            // 叶带子显式列名（Rect/Text 原有 + Image/Icon 新叶 + 组件七
+            // 件第二批的六叶——desc.rs AST 面「叶带子拒面」同律）：容器位
             // 传叶子 → BadParent。Grid 格满/零维先验在 Root-子检后（段C
             // 已落——AST/builder/add/set_props 三面同律齐）。
             Some(ViewKind::Rect) | Some(ViewKind::Text) | Some(ViewKind::Image)
-            | Some(ViewKind::Icon) => return Err(UiError::BadParent),
+            | Some(ViewKind::Icon)
+            | Some(ViewKind::Spacer)
+            | Some(ViewKind::Divider)
+            | Some(ViewKind::Check)
+            | Some(ViewKind::Radio)
+            | Some(ViewKind::Step)
+            | Some(ViewKind::Seg) => return Err(UiError::BadParent),
             _ => return Err(UiError::BadParent), // 死槽防御
         }
         if spec.kind == ViewKind::Root {
@@ -741,8 +791,9 @@ impl<const N: usize> Ui<N> {
                 return Err(UiError::NodeBad);
             }
         }
-        // 组件四件值域先验（Phase 2 首批）：Slider/Progress permille 域
-        // ——AST/builder 面 BadValue 同律，命令面 add/set_props 两口齐。
+        // 组件值域先验（Phase 2 两批）：Slider/Progress permille 域、
+        // Step 刻度域、Seg 段域——AST/builder 面 BadValue 同律，命令面
+        // add/set_props 两口齐。
         if !widget_value_ok(&spec.props) {
             return Err(UiError::NodeBad);
         }
@@ -949,13 +1000,19 @@ impl<const N: usize> Ui<N> {
                 | Some((ViewKind::Image, Props::Image(_)))
                 | Some((ViewKind::Icon, Props::Icon(_)))
                 | Some((ViewKind::Grid, Props::Grid(_)))
-                // 组件四件（Phase 2 首批——命令面开口）：props 可经
-                // set_props 更新（label/checked/value 面）；余组件件
-                // 仍拒（渲染/交互未接线——防半落状态）。
+                // 组件件（Phase 2 两批——命令面开口）：props 可经
+                // set_props 更新（label/checked/value/active/thickness
+                // 面）；Stack/Spacer 仍拒（align/flex 未消费——防半落
+                // 状态），余组件件同拒（渲染/交互未接线）。
                 | Some((ViewKind::Button, Props::Button(_)))
                 | Some((ViewKind::Toggle, Props::Toggle(_)))
                 | Some((ViewKind::Slider, Props::Slider(_)))
                 | Some((ViewKind::Progress, Props::Progress(_)))
+                | Some((ViewKind::Check, Props::Check(_)))
+                | Some((ViewKind::Radio, Props::Radio(_)))
+                | Some((ViewKind::Step, Props::Step(_)))
+                | Some((ViewKind::Seg, Props::Seg(_)))
+                | Some((ViewKind::Divider, Props::Divider(_)))
         );
         if !kind_ok {
             return Err(UiError::NodeBad);
@@ -984,8 +1041,9 @@ impl<const N: usize> Ui<N> {
                 return Err(UiError::NodeBad);
             }
         }
-        // 组件四件值域先验（Phase 2 首批）：Slider/Progress permille 域
-        // ——add 面同律（widget_value_ok 单源）；违者 NodeBad loud。
+        // 组件值域先验（Phase 2 两批）：Slider/Progress permille 域、
+        // Step 刻度域、Seg 段域——add 面同律（widget_value_ok 单源）；
+        // 违者 NodeBad loud。
         if !widget_value_ok(&props) {
             return Err(UiError::NodeBad);
         }
@@ -1353,14 +1411,27 @@ impl<const N: usize> Ui<N> {
         (rel * PERMILLE_MAX as i64 / usable) as u32
     }
 
-    /// 组件四件交互反应（pump_input 期逐 Msg 即时消费——D18 press_react
-    /// 同形同拍，Msg: Copy 副本出借不持 buf 引用）：
+    /// 组件交互反应（Phase 2 两批——pump_input 期逐 Msg 即时消费——
+    /// D18 press_react 同形同拍，Msg: Copy 副本出借不持 buf 引用）：
     /// - Click 落 **Button** → 派发 on_tap（value=0）；
     /// - Click 落 **Toggle** → 翻转 checked（经 set_props 单漏斗——
     ///   damage/dirty 同帧生效，视觉滑块随下次 paint 换位）+ 派发
     ///   on_change（value = 翻转后 0/1）；
+    /// - Click 落 **Check** → 翻转 checked + 派发 on_change（Toggle
+    ///   同形，value = 翻转后 0/1）；
+    /// - Click 落 **Radio** → 置 selected + 派发 on_change（value 恒
+    ///   1 置位语义；组互斥执法在 app 面——group 仅数据携载）；
     /// - DragStart/DragMove 落 **Slider** → 跳跟/跟手按压横坐标（行程
-    ///   映射 [`Self::slider_permille_at`]，值变才写才派发 on_change）。
+    ///   映射 [`Self::slider_permille_at`]，值变才写才派发 on_change）；
+    /// - Release 落 **Step** → 击点横坐标定半区（左半减/右半加 step，
+    ///   clamp min/max）+ 值变才派发 on_change（Slider 同形）；
+    /// - Release 落 **Seg** → 击点横坐标折段索引 + 值变（≠ active）
+    ///   才写才派发 on_change。
+    ///
+    /// Step/Seg 挂 **Release** 臂而非 Click：分段命中需要击点坐标，
+    /// 而 `Msg::Click` 无坐标面（desc.rs 冻结不加字段）——Release 与
+    /// Click 在非拖 up 路径同拍成对双发且携 x/y，坐标消费面挂此臂零
+    /// 新面。
     ///
     /// 零闭包（ADR #52）：表驱动直查无回调；**不劫持 Msg 面**——
     /// Click/Drag 原样交 app（app 亦可自管状态双消费，幂等面文档化）。
@@ -1384,6 +1455,73 @@ impl<const N: usize> Ui<N> {
                             self.fire_widget_event(node, on_change, checked as u32);
                         }
                     }
+                    Some(Props::Check(p)) => {
+                        let checked = !p.checked;
+                        let on_change = p.on_change;
+                        let np = Props::Check(desc::CheckProps { checked, on_change });
+                        if self.set_props(node, np).is_ok() {
+                            self.fire_widget_event(node, on_change, checked as u32);
+                        }
+                    }
+                    Some(Props::Radio(p)) => {
+                        let on_change = p.on_change;
+                        let np = Props::Radio(desc::RadioProps {
+                            selected: true,
+                            group: p.group,
+                            on_change,
+                        });
+                        // 恒派发（置位语义）：已选再击仍是合法 on_change
+                        // ——组互斥的「选谁」裁决在 app。
+                        if self.set_props(node, np).is_ok() {
+                            self.fire_widget_event(node, on_change, 1);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Msg::Release { node, x, .. } => {
+                let idx = match self.slot_of(node) {
+                    Ok(i) => i as usize,
+                    Err(_) => return,
+                };
+                match self.nodes[idx].as_ref().map(|n| n.props) {
+                    Some(Props::Step(p)) => {
+                        let r = self.abs_rect_of(idx);
+                        // 半区判据 = 击点与节点水平中线（i64 中间量同
+                        // slider_permille_at 纪律）。
+                        let left = (x as i64) < r.x as i64 + r.w as i64 / 2;
+                        let nv = if left {
+                            p.value.saturating_sub(p.step).max(p.min)
+                        } else {
+                            p.value.saturating_add(p.step).min(p.max)
+                        };
+                        if nv == p.value {
+                            return; // clamp 贴边：值未变零操作（Slider 同形）
+                        }
+                        let on_change = p.on_change;
+                        let np = Props::Step(desc::StepProps { value: nv, ..p });
+                        if self.set_props(node, np).is_ok() {
+                            self.fire_widget_event(node, on_change, nv);
+                        }
+                    }
+                    Some(Props::Seg(p)) => {
+                        let r = self.abs_rect_of(idx);
+                        let cnt = p.segment_count as i64;
+                        // 段宽 = w/段数（整除向下）；段索引 = 相对横坐标
+                        // 折段 + 越界钳尾段（sw=0 防御折 0 段——widget_
+                        // value_ok 保证 count>0，w=0 布局前面）。
+                        let sw = (r.w as i64 / cnt).max(1);
+                        let rel = (x as i64 - r.x as i64).max(0);
+                        let seg = (rel / sw).min(cnt - 1) as u32;
+                        if seg == p.active {
+                            return; // 值未变：零操作（Slider 同形）
+                        }
+                        let on_change = p.on_change;
+                        let np = Props::Seg(desc::SegProps { active: seg, ..p });
+                        if self.set_props(node, np).is_ok() {
+                            self.fire_widget_event(node, on_change, seg);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1404,8 +1542,7 @@ impl<const N: usize> Ui<N> {
                     }
                 }
             }
-            Msg::Press { .. } | Msg::Release { .. } | Msg::DragEnd { .. }
-            | Msg::Cancel { .. } => {}
+            Msg::Press { .. } | Msg::DragEnd { .. } | Msg::Cancel { .. } => {}
         }
     }
 
@@ -1554,10 +1691,11 @@ impl<const N: usize> Ui<N> {
                         *resampled = true;
                     }
                 }
-                // D18 pressed 短路径 + 组件四件交互反应（Phase 2 首批）：
+                // D18 pressed 短路径 + 组件交互反应（Phase 2 两批）：
                 // 本事件产出的 Msg 即时消费（Press 换底 / Release·Cancel
-                // 还原；Button on_tap / Toggle 翻转 / Slider 跳跟——走现
-                // 状 set_props 语义同帧生效，主线零依赖 B 面 mask）。
+                // 还原；Button on_tap / Toggle·Check 翻转 / Radio 置位 /
+                // Slider 跳跟 / Step·Seg 击点分段——走现状 set_props 语
+                // 义同帧生效，主线零依赖 B 面 mask）。
                 let mut k = n_before;
                 while k < out.len() {
                     if let Some(m) = out.at(k) {

@@ -329,6 +329,42 @@ fn intrinsic(
         Props::Toggle(_) => (crate::TOGGLE_W, crate::TOGGLE_H),
         Props::Slider(_) => (crate::SLIDER_W, crate::SLIDER_H),
         Props::Progress(_) => (crate::PROGRESS_W, crate::PROGRESS_H),
+        // 组件七件第二批之交互四件（Check/Radio/Step/Seg——本刀）：内
+        // 在型叶（首批四件同列），固定值起步（几何常量单源 crate::——
+        // lib.rs「组件七件 v1 几何常量」块）。Check/Radio 24×24 标准
+        // 可点方框/圆、Step 120×36 三段（左减号+值+右加号）、Seg =
+        // 段数×80 宽 36 高（u64 累计防段数×段宽溢出）。
+        Props::Check(_) => (crate::CHECK_W, crate::CHECK_H),
+        Props::Radio(_) => (crate::RADIO_W, crate::RADIO_H),
+        Props::Step(_) => (crate::STEP_W, crate::STEP_H),
+        Props::Seg(p) => {
+            let w = p.segment_count as u64 * crate::SEG_SEG_W as u64;
+            (u64_to_u32_sat(w), crate::SEG_H)
+        }
+        // 组件七件第二批之布局三件（Stack/Spacer/Divider——本刀）：
+        // Stack = 子聚合 **max×max**（z 序叠层——与 Col/Row 的 Σ 聚合
+        // 不同源：子全幅叠放时容器内在取最大子尺寸）；Spacer = 0×0 最
+        // 小占位（flex 权重分配挂后续布局刀——final_size 吃满 avail 已
+        // 合义）；Divider = 宽 0 高 thickness（宽随父——final_size 臂）。
+        Props::Stack(_) => {
+            let (mut w, mut h) = (0u32, 0u32);
+            let mut cur = n.first_child;
+            let mut guard = 0usize;
+            while cur != u32::MAX && guard <= nodes.len() {
+                guard += 1;
+                let Some(c) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else { break };
+                if !c.alive {
+                    break;
+                }
+                let next = c.next_sib;
+                w = w.max(c.meas_w);
+                h = h.max(c.meas_h);
+                cur = next;
+            }
+            (w, h)
+        }
+        Props::Spacer(_) => (0, 0),
+        Props::Divider(p) => (0, p.thickness),
         // 组件七件余三件（Phase 1 占位保持）：内在语义（List count×
         // item_h / Scroll content_h / Tabs 行高）挂后续布局刀——占位
         // 0×0（容器子树仍各自递归测量，final_size 随父不塌陷走查）。
@@ -337,17 +373,10 @@ fn intrinsic(
         Props::Scroll(_)
         | Props::List(_)
         | Props::Tabs(_)
-        // P1 九件（占位同组件七件）：Stack 叠层内在应为子聚合 max×max
-        // （z 序叠放）、Spacer 应吃剩余空间——全挂 Phase 2 布局刀，本层
-        // 0×0 占位（同上「不半实现」纪律：place_children 走 `_` 臂全幅
-        // 叠放，半聚合必与摆放失配）。
-        | Props::Stack(_)
-        | Props::Spacer(_)
-        | Props::Divider(_)
-        | Props::Check(_)
-        | Props::Radio(_)
-        | Props::Step(_)
-        | Props::Seg(_)
+        // P1 九件余件（占位同组件七件）：Badge/Sbar 的内在应为角标/
+        // 滚动条几何——全挂 Phase 2 布局刀，本层 0×0 占位（同上「不
+        // 半实现」纪律：place_children 走 `_` 臂全幅叠放，半聚合必与
+        // 摆放失配）。
         | Props::Badge(_)
         | Props::Sbar(_)
         // P0 尾四件（占位同前两批）：Select/Input/Edit 的内在应为度量
@@ -504,32 +533,34 @@ fn final_size(n: &Node, avail_w: i32, avail_h: i32) -> (i32, i32) {
             p.w.map(u32_to_i32_sat).unwrap_or(u32_to_i32_sat(n.meas_w)),
             p.h.map(u32_to_i32_sat).unwrap_or(u32_to_i32_sat(n.meas_h)),
         ),
-        // 组件四件（Phase 2 首批）：内在型叶（Text 同列——恒内在
-        // meas_w/h，**不吃 avail**，§4.1 豁免行同律；十字轴拉伸只及随父
-        // 型子）。内在值单源 = intrinsic 四臂（固定几何起步）；定尺寸面
-        // （SIZE 块）§8.2 表未扩，组件拒块——无双源。
+        // 组件件（Phase 2 两批）：交互八件 = 内在型叶（Text 同列——恒
+        // 内在 meas_w/h，**不吃 avail**，§4.1 豁免行同律；十字轴拉伸只
+        // 及随父型子）。内在值单源 = intrinsic 各臂（固定几何起步）；
+        // 定尺寸面（SIZE 块）§8.2 表未扩，组件拒块——无双源。
         Props::Button(_)
         | Props::Toggle(_)
         | Props::Slider(_)
-        | Props::Progress(_) => (
-            u32_to_i32_sat(n.meas_w),
-            u32_to_i32_sat(n.meas_h),
-        ),
-        // 组件七件余三件 + P1 九件（占位同前）：随父填充；Stack 的全幅
-        // 叠放子分配由 `_` 臂天然合义（z 序叠层 = Root 型全幅）。SIZE 块
-        // 同拒。
-        Props::Scroll(_)
-        | Props::List(_)
-        | Props::Tabs(_)
-        // P1 九件（占位同组件七件）：随父填充；Stack 的全幅叠放子分配
-        // 由 `_` 臂天然合义（z 序叠层 = Root 型全幅）。SIZE 块同拒。
-        | Props::Stack(_)
-        | Props::Spacer(_)
-        | Props::Divider(_)
+        | Props::Progress(_)
         | Props::Check(_)
         | Props::Radio(_)
         | Props::Step(_)
-        | Props::Seg(_)
+        | Props::Seg(_) => (
+            u32_to_i32_sat(n.meas_w),
+            u32_to_i32_sat(n.meas_h),
+        ),
+        // Divider = 横线半随父型：高恒内在（thickness），宽吃 avail
+        //（随父——Col/Row/Stack 里随容器宽拉通，intrinsic 宽 0 不占聚
+        // 合）。
+        Props::Divider(_) => (avail_w, u32_to_i32_sat(n.meas_h)),
+        // 组件件占位余员（占位同前）：随父填充；Stack 的全幅叠放子分
+        // 配由 `_` 臂天然合义（z 序叠层 = Root 型全幅）；Spacer 吃满
+        // avail（flex 权重分配挂后续布局刀）。SIZE 块同拒。
+        Props::Scroll(_)
+        | Props::List(_)
+        | Props::Tabs(_)
+        // P1 九件余件（占位同前）：随父填充。SIZE 块同拒。
+        | Props::Stack(_)
+        | Props::Spacer(_)
         | Props::Badge(_)
         | Props::Sbar(_)
         // P0 尾四件（占位同前两批）：随父填充；SIZE 块同拒（§8.2 表
@@ -779,8 +810,11 @@ fn place_children(
                 cur = next;
             }
         }
-        // Root（及其余不可达——Rect/Text/Image/Icon 已在叶卫拦下）：viewport
-        // 整给——子各自 (0,0) 起满幅
+        // Root/Stack（及其余不可达——Rect/Text/Image/Icon 已在叶卫拦
+        // 下）：分配面整给——子各自 (0,0) 起满幅。对 Stack 即叠层语义
+        // 本义：全子同位叠放（前序子在下、后序子盖上 = z 序），内在型
+        // 子（Text/组件叶）保内在尺寸钉 (0,0)、随父型子（Rect w/h
+        // None/Spacer）吃满——**下划线臂对叠层天然合义**（本刀确认）。
         _ => {
             let mut cur = first;
             let mut guard = 0usize;

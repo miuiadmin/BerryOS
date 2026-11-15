@@ -10,11 +10,15 @@
 //!   `draw_glyph_run`（`style.bg` 衬底透传，None = 透明底——§6
 //!   TextStyle 字段语义优先）；Image/Icon → `draw_image`（§4.3——
 //!   Argb 像素经 D28 icons 槽，blit = 源内在尺寸 v1 无缩放）。
-//! - **组件四件**（Button/Toggle/Slider/Progress——Phase 2 首批）：入
-//!   可见叶列，固定色板 + 已有原语组合发射（「组件四件 v1 固定色板」
-//!   块）——Button 底/描边 + 居中标签、Toggle 胶囊轨 + 滑块、Slider
-//!   轨 + 填充 + 拖动圆、Progress 轨 + 填充条；不透明度不可证（描边/
-//!   透明底有洞）——恒不计遮挡源（与 Text 同列保守正确）。
+//! - **组件件**（Phase 2 两批：Button/Toggle/Slider/Progress 首批 +
+//!   Check/Radio/Step/Seg/Divider 第二批）：入可见叶列，固定色板 +
+//!   已有原语组合发射（「组件 v1 固定色板」块）——Button 底/描边 +
+//!   居中标签、Toggle 胶囊轨 + 滑块、Slider 轨 + 填充 + 拖动圆、
+//!   Progress 轨 + 填充条、Check 方框 + 双矩形勾、Radio 八片环 +
+//!   内圆、Step 三段底 + 加减号/值字形、Seg 等分底 + active 高亮 +
+//!   分隔线、Divider 单 fill_rect 带 inset；不透明度不可证（描边/
+//!   透明底有洞）——恒不计遮挡源（与 Text 同列保守正确）。Stack/
+//!   Spacer 无视觉面（容器/占位——子与邻件各自发射）。
 //! - **尾部必录 `Present{damage 包络}`**（soft no-op 也录——FULL →
 //!   viewport、空集 → 零矩形）。
 //! - overdraw_x256 = drawn_px×256/vp 面素（发射足迹 ∩ viewport；u128
@@ -37,28 +41,29 @@ use berry_gfx::font::FontSize;
 /// 带防跨模块未定名依赖）。
 const NONE: u32 = u32::MAX;
 
-// ---------- 组件四件 v1 固定色板（Phase 2 首批——渲染起步面） ----------
+// ---------- 组件 v1 固定色板（Phase 2 两批——渲染起步面） ----------
 //
 // v1 无样式系统：固定色值起步（文档化豁免——同 lib.rs `PRESSED_BG`
 // 先例；主题系统落地后由此块迁出）。pub 供 golden 测试值级对拍。
 
 /// 主色：Filled 按钮底 / Toggle 开轨 / Slider 填充与拖动圆 / Progress
-/// 填充。
+/// 填充 / Check 选中框与勾 / Radio 选中环与内圆 / Seg active 段。
 pub const ACCENT: Color = Color { r: 0x19, g: 0x76, b: 0xD2 };
 /// Toggle 关轨灰。
 pub const TRACK_OFF: Color = Color { r: 0x9E, g: 0x9E, b: 0x9E };
-/// Slider/Progress 底轨浅灰。
+/// Slider/Progress 底轨浅灰；Step/Seg 底。
 pub const TRACK_DIM: Color = Color { r: 0xBD, g: 0xBD, b: 0xBD };
 /// Toggle/Slider 滑块白（拖动圆兼）。
 pub const KNOB: Color = Color { r: 0xFF, g: 0xFF, b: 0xFF };
-/// Outlined 按钮描边灰。
+/// Outlined 按钮描边灰；Check/Radio 未选框环；Step/Seg 分隔线；
+/// Divider 线体。
 pub const OUTLINE: Color = Color { r: 0x66, g: 0x66, b: 0x66 };
 /// Filled 按钮标签白（ACCENT 底上）。
 pub const ON_ACCENT: Color = Color { r: 0xFF, g: 0xFF, b: 0xFF };
-/// Outlined/Text 按钮标签深色。
+/// Outlined/Text 按钮标签深色；Step 值/加减号前景（TRACK_DIM 底上）。
 pub const ON_SURFACE: Color = Color { r: 0x21, g: 0x21, b: 0x21 };
 /// 按钮标签字号档（S8x16——cell 8×16；`crate::BUTTON_CHAR_W` 与
-/// cell_w() 同值，布局测量/渲染推进单源）。
+/// cell_w() 同值，布局测量/渲染推进单源）。Step 值/加减号同档共用。
 const BUTTON_LABEL_FONT: FontSize = FontSize::S8x16;
 /// 按钮标签字高（= S8x16 cell_h——居中摆位用）。
 const BUTTON_LABEL_H: i64 = 16;
@@ -68,6 +73,14 @@ const BUTTON_BORDER: i32 = 2;
 const TOGGLE_KNOB_MARGIN: i32 = 4;
 /// Slider 轨道线厚。
 const SLIDER_TRACK_H: i32 = 4;
+/// Check 方框描边厚（四边 fill_rect 组合——Outlined 按钮同形）。
+const CHECK_BORDER: i32 = 2;
+/// Step 两侧加减号区带宽（节点宽 120 的两翼 36；中段值区 = 余 48）。
+const STEP_ZONE_W: i32 = 36;
+/// Step 区带分隔线宽。
+const STEP_DIV_W: i32 = 2;
+/// Seg 段间分隔线宽。
+const SEG_DIV_W: i32 = 2;
 
 /// 遮挡覆盖集容量（damage 矩形 ≤ 8 的两倍余量；溢出保守少记覆盖 →
 /// 多画不少画，见 RectSet 类型注）。
@@ -269,12 +282,11 @@ fn cull_walk(
 
     // 自身（子树最底 = 最后画）。容器无视觉内容不参与（Grid 同列——
     // 子格各自发射）；Image/Icon = 可见叶（§4.3——Text 同列走查，
-    // 恒不计遮挡源）。组件四件（Button/Toggle/Slider/Progress——
-    // Phase 2 首批）入可见叶列（各自 emit_node 合成视觉）；不透明度
-    // 不可证（Outlined 有洞 / Text 式无底）——与 Text 同列**恒不计
-    // 遮挡源**（保守正确）。余组件件无视觉面——与容器同列走查（子
-    // 仍发射；渲染挂后续刀；Stack = 叠层容器；Refresh/Collapse/
-    // Card = 包裹容器）。
+    // 恒不计遮挡源）。组件件（Phase 2 两批）入可见叶列（各自
+    // emit_node 合成视觉）；不透明度不可证（Outlined 有洞 / Text 式
+    // 无底）——与 Text 同列**恒不计遮挡源**（保守正确）。余组件件
+    // 无视觉面——与容器同列走查（子仍发射；渲染挂后续刀；Stack =
+    // 叠层容器、Spacer = 纯占位；Refresh/Collapse/Card = 包裹容器）。
     match n.kind {
         ViewKind::Rect
         | ViewKind::Text
@@ -283,7 +295,12 @@ fn cull_walk(
         | ViewKind::Button
         | ViewKind::Toggle
         | ViewKind::Slider
-        | ViewKind::Progress => {}
+        | ViewKind::Progress
+        | ViewKind::Check
+        | ViewKind::Radio
+        | ViewKind::Step
+        | ViewKind::Seg
+        | ViewKind::Divider => {}
         ViewKind::Root
         | ViewKind::Col
         | ViewKind::Row
@@ -294,11 +311,6 @@ fn cull_walk(
         | ViewKind::Tabs
         | ViewKind::Stack
         | ViewKind::Spacer
-        | ViewKind::Divider
-        | ViewKind::Check
-        | ViewKind::Radio
-        | ViewKind::Step
-        | ViewKind::Seg
         | ViewKind::Badge
         | ViewKind::Sbar
         | ViewKind::Select
@@ -367,7 +379,7 @@ fn emit_walk_all<'a>(
 
     // 自身先（前序 = 画家算法背到前：先画者先发射）。容器无视觉内容不
     // 参与（Grid 同列）；Image/Icon = 可见叶同主路径发射（§4.3）。
-    // 组件四件（Phase 2 首批）入可见叶列（emit_node 合成视觉）；余组
+    // 组件件（Phase 2 两批）入可见叶列（emit_node 合成视觉）；余组
     // 件件同容器列——无视觉面，子仍走查（渲染挂后续刀）。
     match n.kind {
         ViewKind::Rect
@@ -377,7 +389,12 @@ fn emit_walk_all<'a>(
         | ViewKind::Button
         | ViewKind::Toggle
         | ViewKind::Slider
-        | ViewKind::Progress => {
+        | ViewKind::Progress
+        | ViewKind::Check
+        | ViewKind::Radio
+        | ViewKind::Step
+        | ViewKind::Seg
+        | ViewKind::Divider => {
             let b = RectI::new(i64_to_i32_sat(bx), i64_to_i32_sat(by), n.w, n.h);
             if b.intersect(d).is_empty() {
                 rep.culled += 1; // damage 外叶子
@@ -395,11 +412,6 @@ fn emit_walk_all<'a>(
         | ViewKind::Tabs
         | ViewKind::Stack
         | ViewKind::Spacer
-        | ViewKind::Divider
-        | ViewKind::Check
-        | ViewKind::Radio
-        | ViewKind::Step
-        | ViewKind::Seg
         | ViewKind::Badge
         | ViewKind::Sbar
         | ViewKind::Select
@@ -505,16 +517,20 @@ fn emit_node<'a>(
                 }
             }
         }
-        // 组件四件（Phase 2 首批——固定色板 + 已有原语组合，见模块头
+        // 组件件（Phase 2 两批——固定色板 + 已有原语组合，见模块头
         // 色板块）：Button = 底/描边 + 居中标签；Toggle = 胶囊轨道 +
         // 滑块；Slider = 轨道线 + 填充 + 拖动圆；Progress = 轨道 +
         // 填充条（style Circular/Indeterminate v1 统一线性渲染——圆/
-        // 动画面挂后续刀，数据已随 props 携载）。
+        // 动画面挂后续刀，数据已随 props 携载）；Check = 方框描边 +
+        // 选中双矩形勾；Radio = 八片环 + 选中内圆；Step = 三段底 +
+        // 加减号/值字形（S8x16 同档）；Seg = 等分底 + active 高亮 +
+        // 段间分隔线；Divider = 单 fill_rect 带 inset（走向随容器主轴
+        // ——v1 恒横线，纵线面挂后续刀）。
         Props::Button(p) => {
             match p.style {
                 ButtonStyle::Filled => {
                     fill(enc, b.x, b.y, b.w, b.h, ACCENT, rep);
-                    emit_button_label(p, ON_ACCENT, b, rest, enc, rep);
+                    emit_widget_text(p.label.as_bytes(), b.x, b.w, b.y, b.h, ON_ACCENT, rest, enc, rep);
                 }
                 ButtonStyle::Outlined => {
                     // 描边 = 四 fill_rect 组合（v1 无 stroke 原语——「已有
@@ -525,10 +541,10 @@ fn emit_node<'a>(
                     fill(enc, b.x, b.y + b.h - t, b.w, t, OUTLINE, rep);
                     fill(enc, b.x, b.y + t, t, b.h - 2 * t, OUTLINE, rep);
                     fill(enc, b.x + b.w - t, b.y + t, t, b.h - 2 * t, OUTLINE, rep);
-                    emit_button_label(p, ON_SURFACE, b, rest, enc, rep);
+                    emit_widget_text(p.label.as_bytes(), b.x, b.w, b.y, b.h, ON_SURFACE, rest, enc, rep);
                 }
                 ButtonStyle::Text => {
-                    emit_button_label(p, ON_SURFACE, b, rest, enc, rep);
+                    emit_widget_text(p.label.as_bytes(), b.x, b.w, b.y, b.h, ON_SURFACE, rest, enc, rep);
                 }
             }
         }
@@ -573,13 +589,100 @@ fn emit_node<'a>(
                 / crate::PERMILLE_MAX as i64;
             fill(enc, b.x, b.y, i64_to_i32_sat(fw), b.h, ACCENT, rep);
         }
+        // Check：方框描边（Outlined 按钮同形四 fill_rect）+ 选中态双
+        // fill_rect 勾（短臂下角块 + 长臂上行条——24×24 定格比例，内
+        // 在恒 24 时无缩放面）。
+        Props::Check(p) => {
+            let bc = if p.checked { ACCENT } else { OUTLINE };
+            let t = CHECK_BORDER.min(b.w / 2).min(b.h / 2).max(1);
+            fill(enc, b.x, b.y, b.w, t, bc, rep);
+            fill(enc, b.x, b.y + b.h - t, b.w, t, bc, rep);
+            fill(enc, b.x, b.y + t, t, b.h - 2 * t, bc, rep);
+            fill(enc, b.x + b.w - t, b.y + t, t, b.h - 2 * t, bc, rep);
+            if p.checked {
+                // 勾形两片：短臂（左下角块）+ 长臂（上行竖条），交叠
+                // 成勾角。
+                fill(enc, b.x + 5, b.y + 12, 4, 4, ACCENT, rep);
+                fill(enc, b.x + 8, b.y + 6, 3, 9, ACCENT, rep);
+            }
+        }
+        // Radio：八片环近似（四直段 + 四角块——八角同族；选中态内圆
+        // = oct3 半径减半，与 Toggle 滑块同核）。
+        Props::Radio(p) => {
+            let rc = if p.selected { ACCENT } else { OUTLINE };
+            let d = b.w.min(b.h);
+            let ox = b.x + (b.w - d) / 2;
+            let oy = b.y + (b.h - d) / 2;
+            ring8(enc, ox, oy, d, rc, rep);
+            if p.selected {
+                let di = d / 2;
+                let ix = b.x + (b.w - di) / 2;
+                let iy = b.y + (b.h - di) / 2;
+                oct3(enc, ix, iy, di, ACCENT, rep);
+            }
+        }
+        // Step：三段 = 底 + 两道分隔线 + 三组字形（左 '-'、中值（十
+        // 进制 u32）、右 '+'——S8x16 同档，区带内双轴居中）。
+        Props::Step(p) => {
+            fill(enc, b.x, b.y, b.w, b.h, TRACK_DIM, rep);
+            let z = STEP_ZONE_W.min(b.w / 2).max(0);
+            fill(enc, b.x + z - STEP_DIV_W, b.y, STEP_DIV_W, b.h, OUTLINE, rep);
+            fill(enc, b.x + b.w - z, b.y, STEP_DIV_W, b.h, OUTLINE, rep);
+            emit_widget_text(b"-", b.x, z, b.y, b.h, ON_SURFACE, rest, enc, rep);
+            let mut buf = [0u8; 10];
+            let n = fmt_u32(p.value, &mut buf);
+            emit_widget_text(&buf[..n], b.x + z, b.w - 2 * z, b.y, b.h, ON_SURFACE, rest, enc, rep);
+            emit_widget_text(b"+", b.x + b.w - z, z, b.y, b.h, ON_SURFACE, rest, enc, rep);
+        }
+        // Seg：等分底 + active 段 ACCENT 高亮 + 段间分隔线（active 后
+        // 发——高亮段两界分隔线恒可见）。
+        Props::Seg(p) => {
+            fill(enc, b.x, b.y, b.w, b.h, TRACK_DIM, rep);
+            let cnt = p.segment_count.max(1) as i64;
+            let sw = b.w as i64 / cnt;
+            if sw > 0 {
+                let ax = b.x as i64 + sw * p.active.min(p.segment_count) as i64;
+                fill(
+                    enc,
+                    i64_to_i32_sat(ax),
+                    b.y,
+                    i64_to_i32_sat(sw),
+                    b.h,
+                    ACCENT,
+                    rep,
+                );
+                let mut i = 1i64;
+                while i < cnt {
+                    let sx = b.x as i64 + sw * i;
+                    fill(
+                        enc,
+                        i64_to_i32_sat(sx - SEG_DIV_W as i64 / 2),
+                        b.y,
+                        SEG_DIV_W,
+                        b.h,
+                        OUTLINE,
+                        rep,
+                    );
+                    i += 1;
+                }
+            }
+        }
+        // Divider：单 fill_rect 带 inset（thickness 已入节点高——final_
+        // size 臂；宽随父）。inset 和 > 宽 = 零面积空绘（fill 卫跳过）。
+        Props::Divider(p) => {
+            let is = crate::damage::u32_to_i32_sat(p.inset_start);
+            let ie = crate::damage::u32_to_i32_sat(p.inset_end);
+            let x = b.x.saturating_add(is);
+            let w = b.w.saturating_sub(is).saturating_sub(ie);
+            fill(enc, x, b.y, w, b.h, OUTLINE, rep);
+        }
         // Root/Col/Row/Pad/Grid + 余组件件：无视觉内容（子树各自发射）
         _ => {}
     }
     rep.drawn_px = rep.drawn_px.saturating_add(b.intersect(vp_rect).area());
 }
 
-// ---------- 组件四件发射共核（原语组合小工具） ----------
+// ---------- 组件件发射共核（原语组合小工具） ----------
 
 /// fill_rect 收口：零面积跳过 + cmds 计数（CmdError::Full 静默停录同
 /// 既有臂——满帽不炸）。
@@ -602,7 +705,7 @@ fn fill(
 
 /// 八角近似圆（v1 无圆原语——「不发明新绘制指令」纪律的三 fill_rect
 /// 组合：上/下条内缩 d/4 厚 d/3、中条满宽）。Toggle 滑块 / Slider 拖
-/// 动圆共用。
+/// 动圆 / Radio 选中内圆共用。
 fn oct3(enc: &mut CommandEncoder, x: i32, y: i32, d: i32, c: Color, rep: &mut PaintReport) {
     if d <= 0 {
         return;
@@ -612,6 +715,27 @@ fn oct3(enc: &mut CommandEncoder, x: i32, y: i32, d: i32, c: Color, rep: &mut Pa
     fill(enc, x + inset, y, d - 2 * inset, edge, c, rep);
     fill(enc, x, y + edge, d, d - 2 * edge, c, rep);
     fill(enc, x + inset, y + d - edge, d - 2 * inset, edge, c, rep);
+}
+
+/// 八片近似环（Radio 圆环——「不发明新绘制指令」纪律的八 fill_rect
+/// 组合：上下/左右四直段 + 四角块斜切；直段内缩 s、环厚 t = d/8、角
+/// 块 t×t 钉角内侧，段块相邻交叠连线）。比例随 d 推导（24 → t=3、
+/// s=4、角块偏移 2）。
+fn ring8(enc: &mut CommandEncoder, x: i32, y: i32, d: i32, c: Color, rep: &mut PaintReport) {
+    if d <= 2 {
+        return;
+    }
+    let t = (d / 8).max(1);
+    let s = (d / 6).max(t + 1);
+    let off = s - t + 1;
+    fill(enc, x + s, y, d - 2 * s, t, c, rep);
+    fill(enc, x + s, y + d - t, d - 2 * s, t, c, rep);
+    fill(enc, x, y + s, t, d - 2 * s, c, rep);
+    fill(enc, x + d - t, y + s, t, d - 2 * s, c, rep);
+    fill(enc, x + off, y + off, t, t, c, rep);
+    fill(enc, x + d - off - t, y + off, t, t, c, rep);
+    fill(enc, x + off, y + d - off - t, t, t, c, rep);
+    fill(enc, x + d - off - t, y + d - off - t, t, t, c, rep);
 }
 
 /// 胶囊近似（横向圆角轨道——Toggle 专用；左右端帽纵向内缩 h/4、宽
@@ -635,35 +759,58 @@ fn capsule_h(
     fill(enc, x + w - cap, y + inset, cap, h - 2 * inset, c, rep);
 }
 
-/// 按钮标签发射（ButtonProps 无样式面——fg 随按钮风格定、bg 恒透明；
-/// S8x16 档 + 节点界内双轴居中；与 Text 臂同走 glyph run scratch 切分
-/// ——余量不足截断尾部字形同 §7 用例义务）。
-fn emit_button_label<'a>(
-    p: &crate::desc::ButtonProps,
+/// 组件件字形发射共核（Button 标签 / Step 三段字形共用）：S8x16 档 +
+/// 给定区带内水平居中、节点纵界内垂直居中；与 Text 臂同走 glyph run
+/// scratch 切分——余量不足截断尾部字形同 §7 用例义务。fg 随调用方定、
+/// bg 恒透明。
+fn emit_widget_text<'a>(
+    bytes: &[u8],
+    x0: i32,
+    zone_w: i32,
+    y0: i32,
+    h: i32,
     fg: Color,
-    b: &RectI,
     rest: &mut &'a mut [GlyphPos],
     enc: &mut CommandEncoder<'a>,
     rep: &mut PaintReport,
 ) {
-    let take = (p.label.len as usize).min(rest.len());
+    let take = bytes.len().min(rest.len());
     if take == 0 {
         return;
     }
     let Some(piece) = take_scratch(rest, take) else { return };
     let atlas = BUTTON_LABEL_FONT.atlas();
-    let text_w = p.label.len as i64 * crate::BUTTON_CHAR_W as i64;
-    let mut x = b.x as i64 + (b.w as i64 - text_w).max(0) / 2;
-    let y = i64_to_i32_sat(b.y as i64 + (b.h as i64 - BUTTON_LABEL_H).max(0) / 2);
+    let text_w = bytes.len() as i64 * crate::BUTTON_CHAR_W as i64;
+    let mut x = x0 as i64 + (zone_w as i64 - text_w).max(0) / 2;
+    let y = i64_to_i32_sat(y0 as i64 + (h as i64 - BUTTON_LABEL_H).max(0) / 2);
     for i in 0..take {
-        piece[i] = GlyphPos { ch: p.label.bytes[i], x: i64_to_i32_sat(x), y };
-        x += atlas.advance(p.label.bytes[i]) as i64;
+        piece[i] = GlyphPos { ch: bytes[i], x: i64_to_i32_sat(x), y };
+        x += atlas.advance(bytes[i]) as i64;
     }
     let glyphs: &'a [GlyphPos] = piece;
     let run = GlyphRun { atlas, glyphs, fg, bg: None };
     if enc.draw_glyph_run(run).is_ok() {
         rep.cmds += 1;
     }
+}
+
+/// u32 十进制 ASCII 化（no_std 无 itoa——Step 值字形专用；返字节数
+/// ≤ 10，低位在后翻转写出）。
+fn fmt_u32(mut v: u32, out: &mut [u8; 10]) -> usize {
+    let mut tmp = [0u8; 10];
+    let mut n = 0usize;
+    loop {
+        tmp[n] = b'0' + (v % 10) as u8;
+        n += 1;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    for i in 0..n {
+        out[i] = tmp[n - 1 - i];
+    }
+    n
 }
 
 /// Image/Icon 叶发射共核（§4.3）：`pixels(id)` 借用 → Argb/ScaledArgb
