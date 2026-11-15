@@ -261,6 +261,9 @@ pub struct NavNodes {
     pub rotate: NodeId,
     /// 关机键（二击 3s 窗确认 → 内核 power_off 0x88 PSCI SYSTEM_OFF）。
     pub power: NodeId,
+    /// 五键 (触发 Icon, 按压面 Rect) 对——press_map 刷新面（rehang 同步
+    /// 重建表用；刀 B NodeFull 修复后与当前页格共表 ≤28 帽）。
+    pub faces: [(NodeId, NodeId); 5],
     /// 键命中区边长（px，建树档位定格——frameloop `set_power_face`
     /// 换 id 时 set_props 须携同 w/h，防回落源内在尺寸）。
     pub key_px: u32,
@@ -355,8 +358,8 @@ pub fn build(
             props: Props::Rect(RectProps {
                 bg: scene::status_scrim(),
                 w: Some(vp_w),
-                h: Some(status_h),
-            }),
+                h: Some(status_h), radius: 0,
+}),
         },
     )?;
 
@@ -542,16 +545,20 @@ pub fn build(
             // Press 换底 PRESSED_BG 即时反馈，Release 还原）。初始 bg =
             // 壁纸网格区近似色（青黑系——v1 Rect 无 alpha，近色伪装透明；
             // 样式系统落地后迁出）。
+            // 刀 B 结构修正（BadParent 修复 2026-11-15）：Rect 是叶子不
+            // 容子——原 item Col 挂 press_face 下必炸（boot 实证 BadParent
+            // park）。改 cell(Pad) 双子叠加：Pad 对所有子同位 (inset,inset)
+            // 全幅分配 = 叠加语义。Rect 先插 = 底层；Col 后插 = 盖上。
             let press_face = ui.add(
                 cell,
                 ViewSpec {
                     kind: ViewKind::Rect,
                     key: 0,
-                    props: Props::Rect(RectProps { w: None, h: None, bg: CELL_FACE_BG }),
+                    props: Props::Rect(RectProps { w: None, h: None, bg: CELL_FACE_BG, radius: 0 }),
                 },
             )?;
             let item = ui.add(
-                press_face,
+                cell,
                 ViewSpec {
                     kind: ViewKind::Col,
                     key: 0,
@@ -712,9 +719,23 @@ pub fn build(
     )?;
     // 刀 B：nav 键按压面——Rect 承载（Icon 叠顶；Press 换底即时反馈）。
     // 返回 (icon 触发节点, Rect 视觉节点)——press_map 登记 (icon, rect)。
+    // 刀 B 结构修正（BadParent 修复 2026-11-15）：Rect 是叶子（add 白名单
+    // 只许容器为父）——原「Icon 叠 Rect」嵌套必炸 BadParent（boot 实证：
+    // launcher: desktop build err=BadParent 后 park）。改 Pad 承载双子
+    // 叠加：Pad(键位) → {Rect(底色块), Icon(符号)}——Pad 对所有子同位
+    // 全幅分配 = 叠加语义；Rect 先插 = 底，Icon 后插 = 盖上。press_map
+    // 登记 (icon, rect)——Rect 即按压换底面。
     let mut nav_icon = |id: u16, label: &[u8]| -> Result<(NodeId, NodeId), UiError> {
-        let rect = ui.add(
+        let cell = ui.add(
             nav_bar,
+            ViewSpec {
+                kind: ViewKind::Pad,
+                key: 0,
+                props: Props::Pad(PadProps { all: 0 }),
+            },
+        )?;
+        let rect = ui.add(
+            cell,
             ViewSpec {
                 kind: ViewKind::Rect,
                 key: 0,
@@ -722,11 +743,12 @@ pub fn build(
                     w: Some(nav_key),
                     h: Some(nav_key),
                     bg: NAV_FACE_BG,
+                    radius: 0,
                 }),
             },
         )?;
         let n = ui.add(
-            rect,
+            cell,
             ViewSpec {
                 kind: ViewKind::Icon,
                 key: 0,
@@ -747,14 +769,15 @@ pub fn build(
     let rotate = nav_icon(icons::NAV_ROTATE, b"rotate screen")?;
     let power = nav_icon(icons::NAV_POWER, b"power off")?;
     drop(nav_icon);
-    // 刀 B：press_map 登记——当前页 20 格（cell → press_face）+ 5 nav 键
-    //（icon → rect face）。非当前页格也登记（翻页即时可用，树同寿）。
+    // 刀 B：press_map 登记——**当前页**（页 0——build 时 snap 基线）20 格
+    // （cell → press_face）+ 5 nav 键（icon → rect face）= 25 对 <
+    // PRESS_MAP_MAX=28 帽。非当前页格不预登（曾全 4 页登记 85 对炸
+    // NodeFull——boot 实证 2026-11-15）；翻页重登记归 frameloop（pager
+    // rehang 后按新当前页刷新表）。
     let mut pm: Vec<(NodeId, NodeId)> = Vec::new();
-    for page in slots.iter() {
-        for s in page.iter() {
-            if let Some(pf) = s.press_face {
-                pm.push((s.cell, pf));
-            }
+    for s in slots[0].iter() {
+        if let Some(pf) = s.press_face {
+            pm.push((s.cell, pf));
         }
     }
     pm.push((back, back_face));
@@ -775,6 +798,13 @@ pub fn build(
             home,
             rotate,
             power,
+            faces: [
+                (back, back_face),
+                (recents, recents_face),
+                (home, home_face),
+                (rotate, rotate_face),
+                (power, power_face),
+            ],
             key_px: nav_key,
         },
         page_nodes,
@@ -1027,6 +1057,19 @@ pub fn rehang_a11y(ui: &mut UiMain, d: &mut Desktop, page: u8) -> Result<(), UiE
         ui.set_a11y(s.cell, ROLE_BUTTON, s.label_buf.as_bytes())?;
         mounted += 1;
     }
+    // 刀 B 补面（NodeFull 修复 2026-11-15）：press_map 同步刷新——旧页格
+    // 出表、新页 20 格 + 5 nav 键入表（恒 25 对 < PRESS_MAP_MAX=28 帽）。
+    // nav 键对子在建树时由 build 收集进 d.nav_faces——表刷新保持完整。
+    let mut pm: Vec<(NodeId, NodeId)> = Vec::new();
+    for s in &d.slots[page as usize] {
+        if let Some(pf) = s.press_face {
+            pm.push((s.cell, pf));
+        }
+    }
+    for (trig, vis) in d.nav.faces.iter() {
+        pm.push((*trig, *vis));
+    }
+    ui.set_press_map(&pm)?;
     d.a11y_page = page;
     Ok(())
 }

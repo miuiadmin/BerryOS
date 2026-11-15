@@ -362,7 +362,7 @@ fn ui_damage_clipped_to_viewport() {
             ViewSpec {
                 kind: ViewKind::Rect,
                 key: 0,
-                props: Props::Rect(RectProps {
+                props: Props::Rect(RectProps { radius: 0,
                     bg: Color { r: 1, g: 2, b: 3 },
                     w: Some(100),
                     h: Some(16),

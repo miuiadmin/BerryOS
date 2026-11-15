@@ -30,6 +30,7 @@
 #![cfg_attr(not(test), no_std)]
 
 pub mod anim;
+pub mod components;
 pub mod damage;
 pub mod dep;
 pub mod desc;

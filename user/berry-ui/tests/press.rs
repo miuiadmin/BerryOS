@@ -21,7 +21,7 @@ fn rect_spec(c: Color, w: u32, h: u32) -> ViewSpec {
     ViewSpec {
         kind: ViewKind::Rect,
         key: 0,
-        props: Props::Rect(RectProps { bg: c, w: Some(w), h: Some(h) }),
+        props: Props::Rect(RectProps { radius: 0, bg: c, w: Some(w), h: Some(h) }),
     }
 }
 
@@ -206,22 +206,22 @@ fn trigger_visual_distinct_nodes() {
 
 #[test]
 fn press_map_capacity_and_reject_faces() {
-    let mut ui = Ui::<36>::new(100, 100);
+    let mut ui = Ui::<40>::new(100, 100);
     let root = ui.root();
     let mut ids = Vec::new();
-    for _ in 0..29 {
+    for _ in 0..32 {
         ids.push(ui.add(root, rect_spec(C_ORIG, 5, 5)).unwrap());
     }
     ui.layout();
     ui.drain_damage();
 
-    // 帽 28（波2 批 A 扩 16→28：launcher 建树尾全量登记）：恰 28 对过；
-    // 第 29 对 → NodeFull loud（D30——冻结 UiError 族无侧表变体，
-    // NodeFull 兼任「Ui 容量域满」）
+    // 帽 28（刀 B 扩容 16→28——桌面 20 格 + 5 导航键 + 裕量）：恰 28 对
+    // 过；第 29 对 → NodeFull loud（D30——冻结 UiError 族无侧表变体，
+    // NodeFull 兼任「Ui 容量域满」）。
     let twenty_eight: Vec<(NodeId, NodeId)> = ids[..28].iter().map(|&id| (id, id)).collect();
     assert!(ui.set_press_map(&twenty_eight).is_ok());
-    let twenty_nine: Vec<(NodeId, NodeId)> = ids.iter().map(|&id| (id, id)).collect();
-    assert_eq!(ui.set_press_map(&twenty_nine), Err(UiError::NodeFull), "29 对 > PRESS_MAP_MAX=28");
+    let overflow: Vec<(NodeId, NodeId)> = ids.iter().map(|&id| (id, id)).collect();
+    assert_eq!(ui.set_press_map(&overflow), Err(UiError::NodeFull), "32 对 > PRESS_MAP_MAX=28");
 
     // 死节点（悬空 id）→ NodeBad（活性先验——trigger 与 visual 同律）
     ui.remove(ids[0]).unwrap();

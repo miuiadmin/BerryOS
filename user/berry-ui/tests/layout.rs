@@ -28,7 +28,7 @@ fn rect(w: Option<u32>, h: Option<u32>) -> ViewSpec {
     ViewSpec {
         kind: ViewKind::Rect,
         key: 0,
-        props: Props::Rect(RectProps { bg: bg(1, 2, 3), w, h }),
+        props: Props::Rect(RectProps { radius: 0, bg: bg(1, 2, 3), w, h }),
     }
 }
 
@@ -206,7 +206,7 @@ fn measure_cache_color_change_zero_remeasure() {
     ui.drain_damage();
 
     // 纯着色变（w/h 同）：paint 脏、0 重测
-    ui.set_props(a, Props::Rect(RectProps { bg: bg(7, 7, 7), w: Some(20), h: Some(10) }))
+    ui.set_props(a, Props::Rect(RectProps { radius: 0, bg: bg(7, 7, 7), w: Some(20), h: Some(10) }))
         .unwrap();
     assert_eq!(ui.layout(), LayoutStat { measured: 0, placed: 0 }, "改色面全缓存命中");
     let d = ui.drain_damage();

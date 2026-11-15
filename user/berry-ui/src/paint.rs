@@ -704,8 +704,75 @@ fn emit_node<'a>(
     let Some(n) = nodes.get(slot as usize).and_then(|o| o.as_ref()) else { return };
     match &n.props {
         Props::Rect(p) => {
-            if enc.fill_rect(GfxRect::new(b.x, b.y, b.w, b.h), p.bg).is_ok() {
-                rep.cmds += 1;
+            // 刀 3：radius>0 = 圆角带状分解（中带整宽 + 上下 r 行逐行
+            // 内缩；无反走样——整数像素硬边同 v1 直角美学）。命令耗 = r
+            // 每行 1 条 + 中带 1 条（r=4 → 5 条；MAX_CMDS=256 帽内小卡
+            // 片面）。radius=0 单条 fill_rect = 旧形态零漂移。no_std 无
+            // libm——整数牛顿 isqrt（ceil 形 = isqrt(n-1)+1）零浮点。
+            let r = p.radius.min((b.w.min(b.h) / 2) as u16) as i32;
+            if r <= 0 {
+                if enc.fill_rect(GfxRect::new(b.x, b.y, b.w, b.h), p.bg).is_ok() {
+                    rep.cmds += 1;
+                }
+            } else {
+                // isqrt(n)（n ≥ 0）：牛顿迭代整数收敛（初值 n 保证递减到
+                // 解——经典不变式 g > n/g ⇒ g 递减且不穿根）。
+                let isqrt = |n: i32| -> i32 {
+                    if n <= 0 {
+                        return 0;
+                    }
+                    let mut g = n;
+                    let mut t = (g + n / g) / 2;
+                    while t < g {
+                        g = t;
+                        t = (g + n / g) / 2;
+                    }
+                    g
+                };
+                // dx(row) = r - ceil(sqrt(r² - dy²))；dy ∈ [0, r-1]。
+                let corner_dx = |r: i32, dy: i32| -> i32 {
+                    let n = r * r - dy * dy;
+                    // ceil(sqrt(n)) = isqrt(n-1)+1（n ≥ 1）
+                    let cs = if n <= 1 { n } else { isqrt(n - 1) + 1 };
+                    r - cs
+                };
+                let mut ok = 0usize;
+                for row in 0..r {
+                    let dy = r - 1 - row;
+                    let dx = corner_dx(r, dy).max(1);
+                    if dx <= 0 || b.w - 2 * dx <= 0 {
+                        continue;
+                    }
+                    if enc
+                        .fill_rect(GfxRect::new(b.x + dx, b.y + row, b.w - 2 * dx, 1), p.bg)
+                        .is_ok()
+                    {
+                        ok += 1;
+                    }
+                }
+                if enc
+                    .fill_rect(GfxRect::new(b.x, b.y + r, b.w, b.h - 2 * r), p.bg)
+                    .is_ok()
+                {
+                    ok += 1;
+                }
+                for row in 0..r {
+                    let dy = r - 1 - row;
+                    let dx = corner_dx(r, dy).max(1);
+                    if dx <= 0 || b.w - 2 * dx <= 0 {
+                        continue;
+                    }
+                    if enc
+                        .fill_rect(
+                            GfxRect::new(b.x + dx, b.y + b.h - r + row, b.w - 2 * dx, 1),
+                            p.bg,
+                        )
+                        .is_ok()
+                    {
+                        ok += 1;
+                    }
+                }
+                rep.cmds += ok;
             }
         }
         Props::Image(p) => {
