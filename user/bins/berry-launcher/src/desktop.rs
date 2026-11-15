@@ -126,6 +126,12 @@ const DOCK_SLOTS: usize = 4;
 /// launcher 扩 LIST（页 Grid 容器）。
 pub(crate) const ROLE_LIST: u8 = 6;
 
+/// 桌面格按压面初始底色（刀 B）：OH 壁纸网格区深青黑近似（伪装透明）。
+const CELL_FACE_BG: Color = Color { r: 0x04, g: 0x2E, b: 0x33 };
+/// 导航键按压面初始底色（刀 B）：导航区深青黑近似（伪装透明）。
+const NAV_FACE_BG: Color = Color { r: 0x03, g: 0x24, b: 0x28 };
+
+
 /// 波3-件⑤：桌面页有主格的 a11y 挂载帽（预算 = A11Y_MAX 32 − 底座 16
 ///（状态栏 4 + dock 4 + 五键 5 + tab 三页位 3）− 页容器 1；满注册表
 /// 20 格超帽时行主序截断——帽内诚实收口面）。
@@ -763,11 +769,11 @@ pub fn build(
         ui.set_a11y(n, ROLE_BUTTON, label)?;
         Ok((n, rect))
     };
-    let back = nav_icon(icons::NAV_BACK, b"back")?;
-    let recents = nav_icon(icons::NAV_RECENTS, b"recents")?;
-    let home = nav_icon(icons::NAV_HOME, b"home")?;
-    let rotate = nav_icon(icons::NAV_ROTATE, b"rotate screen")?;
-    let power = nav_icon(icons::NAV_POWER, b"power off")?;
+    let (back, back_face) = nav_icon(icons::NAV_BACK, b"back")?;
+    let (recents, recents_face) = nav_icon(icons::NAV_RECENTS, b"recents")?;
+    let (home, home_face) = nav_icon(icons::NAV_HOME, b"home")?;
+    let (rotate, rotate_face) = nav_icon(icons::NAV_ROTATE, b"rotate screen")?;
+    let (power, power_face) = nav_icon(icons::NAV_POWER, b"power off")?;
     drop(nav_icon);
     // 刀 B：press_map 登记——**当前页**（页 0——build 时 snap 基线）20 格
     // （cell → press_face）+ 5 nav 键（icon → rect face）= 25 对 <

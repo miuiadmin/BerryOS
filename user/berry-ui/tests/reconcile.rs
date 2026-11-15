@@ -34,7 +34,7 @@ fn build_rich_tree(ui: &mut Ui<32>) {
     ui.add(col, ViewSpec {
         kind: ViewKind::Rect,
         key: 0,
-        props: Props::Rect(RectProps { radius: 0, bg: bg(1, 2, 3), w: Some(20), h: None }),
+        props: Props::Rect(RectProps { bg: bg(1, 2, 3), w: Some(20), h: None, radius: 0 }),
     })
     .unwrap();
     ui.add(col, ViewSpec {
@@ -64,7 +64,7 @@ fn build_rich_tree(ui: &mut Ui<32>) {
     ui.add(pad, ViewSpec {
         kind: ViewKind::Rect,
         key: 0,
-        props: Props::Rect(RectProps { radius: 0, bg: bg(7, 8, 9), w: None, h: None }),
+        props: Props::Rect(RectProps { bg: bg(7, 8, 9), w: None, h: None, radius: 0 }),
     })
     .unwrap();
 }
@@ -73,7 +73,7 @@ fn rich_tree_oracle_bytes() -> Vec<u8> {
     let mut b = DescBuilder::new();
     b.begin(ViewKind::Root, 0, &Props::Root).unwrap();
     b.begin(ViewKind::Col, 7, &Props::Col(ColProps { gap: 4, w: None, h: None, cross: berry_ui::layout::CrossAlign::Stretch })).unwrap();
-    b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { radius: 0, bg: bg(1, 2, 3), w: Some(20), h: None }))
+    b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(1, 2, 3), w: Some(20), h: None, radius: 0 }))
         .unwrap();
     b.end().unwrap();
     b.begin(ViewKind::Text, 0, &Props::Text(TextProps {
@@ -91,7 +91,7 @@ fn rich_tree_oracle_bytes() -> Vec<u8> {
     b.end().unwrap();
     b.begin(ViewKind::Row, 0, &Props::Row(RowProps { gap: 0, w: None, h: None, cross: berry_ui::layout::CrossAlign::Stretch })).unwrap();
     b.begin(ViewKind::Pad, 0, &Props::Pad(PadProps { all: 3 })).unwrap();
-    b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { radius: 0, bg: bg(7, 8, 9), w: None, h: None }))
+    b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(7, 8, 9), w: None, h: None, radius: 0 }))
         .unwrap();
     b.end().unwrap();
     b.end().unwrap();
@@ -172,7 +172,7 @@ fn rebuilt_tree_semantically_equivalent() {
     ui1.add(col, ViewSpec {
         kind: ViewKind::Rect,
         key: 0,
-        props: Props::Rect(RectProps { radius: 0, bg: bg(1, 2, 3), w: Some(20), h: Some(20) }),
+        props: Props::Rect(RectProps { bg: bg(1, 2, 3), w: Some(20), h: Some(20), radius: 0 }),
     })
     .unwrap();
     ui1.add(col, ViewSpec {
@@ -190,13 +190,13 @@ fn rebuilt_tree_semantically_equivalent() {
     ui1.add(row, ViewSpec {
         kind: ViewKind::Rect,
         key: 0,
-        props: Props::Rect(RectProps { radius: 0, bg: bg(4, 5, 6), w: Some(10), h: Some(10) }),
+        props: Props::Rect(RectProps { bg: bg(4, 5, 6), w: Some(10), h: Some(10), radius: 0 }),
     })
     .unwrap();
     ui1.add(row, ViewSpec {
         kind: ViewKind::Rect,
         key: 0,
-        props: Props::Rect(RectProps { radius: 0, bg: bg(7, 8, 9), w: Some(10), h: Some(10) }),
+        props: Props::Rect(RectProps { bg: bg(7, 8, 9), w: Some(10), h: Some(10), radius: 0 }),
     })
     .unwrap();
 
@@ -225,12 +225,13 @@ fn apply_reject_unknown_kind_and_flags() {
     // Fab/Card/Gauge/Qr/DragReorder——add-only 追加，旧绊线 34 让位新域
     // 界 41）
     assert_eq!(ui.apply_desc(&[0x99, 0]), Err(AstError::UnknownKind { got: 0x99 }));
-    assert_eq!(ui.apply_desc(&[9, 0]), Err(AstError::UnknownKind { got: 9 }));
-    // flags 未知位绊线（GUI-6 D5 改钉 → 刀 3 再迁）：bit1/2/3/4 =
-    // SIZE/A11Y/ALIGN/RADIUS 合法化后，未知位域起点 = bit5（0x20 拒；
-    // 0x80 拒保）；bit1 本体转 HAS_SIZE×Root 拒（§8.2 合法域表——
-    // UnknownProp 载 kind×块失配）；bit4 转 HAS_RADIUS×Root 拒（同表）。
-    assert_eq!(ui.apply_desc(&[KIND_ROOT, 0x10]), Err(AstError::UnknownProp { kind: ViewKind::Root, got: 0x10 }), "bit4 合法化后 0x10 不再落 UnknownFlags——HAS_RADIUS×Root 由合法域表拒");
+    assert_eq!(ui.apply_desc(&[41, 0]), Err(AstError::UnknownKind { got: 41 }));
+    // flags 未知位绊线（GUI-6 D5 改钉）：bit1/2/3 = SIZE/A11Y/ALIGN 合法化
+    // 后，未知位域起点 = bit4（0x10 拒；0x80 拒保）；bit1 本体转
+    // HAS_SIZE×Root 拒（§8.2 合法域表——UnknownProp 载 kind×块失配）。
+    // 刀 3 后 bit4 = HAS_RADIUS 合法位（radius 扩展块）——0x10 落合法域
+    // 拒面（Root 无 radius 块 → UnknownProp）；未知位绊线起点迁 bit5（0x20）。
+    assert_eq!(ui.apply_desc(&[KIND_ROOT, 0x10]), Err(AstError::UnknownProp { kind: ViewKind::Root, got: 0x10 }));
     assert_eq!(ui.apply_desc(&[KIND_ROOT, 0x20]), Err(AstError::UnknownFlags { got: 0x20 }));
     assert_eq!(ui.apply_desc(&[KIND_ROOT, 0x80]), Err(AstError::UnknownFlags { got: 0x80 }));
     assert_eq!(
@@ -345,7 +346,7 @@ fn capacity_rejects_encode_and_apply() {
     ui.add(root, ViewSpec {
         kind: ViewKind::Rect,
         key: 0,
-        props: Props::Rect(RectProps { radius: 0, bg: bg(1, 2, 3), w: Some(20), h: Some(10) }),
+        props: Props::Rect(RectProps { bg: bg(1, 2, 3), w: Some(20), h: Some(10), radius: 0 }),
     })
     .unwrap();
     let mut out = [0u8; 14];
@@ -370,7 +371,7 @@ fn desc_builder_reject_faces() {
     // 流首必须 Root
     let mut b = DescBuilder::new();
     assert_eq!(
-        b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { radius: 0, bg: bg(1, 2, 3), w: None, h: None })),
+        b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None, radius: 0 })),
         Err(AstError::BadParent)
     );
     // Root 不能为子
@@ -380,7 +381,7 @@ fn desc_builder_reject_faces() {
     // 未闭叶下 begin（当前层 = Rect 叶）→ BadParent
     let mut b = DescBuilder::new();
     b.begin(ViewKind::Root, 0, &Props::Root).unwrap();
-    b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { radius: 0, bg: bg(1, 2, 3), w: None, h: None }))
+    b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None, radius: 0 }))
         .unwrap();
     assert_eq!(
         b.begin(ViewKind::Col, 0, &Props::Col(ColProps { gap: 0, w: None, h: None, cross: berry_ui::layout::CrossAlign::Stretch })),
@@ -413,11 +414,11 @@ fn desc_builder_child_cap_255_retry_stable() {
     let mut b = DescBuilder::new();
     b.begin(ViewKind::Root, 0, &Props::Root).unwrap();
     for _ in 0..255 {
-        b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { radius: 0, bg: bg(1, 2, 3), w: None, h: None }))
+        b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None, radius: 0 }))
             .unwrap();
         b.end().unwrap();
     }
-    b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { radius: 0, bg: bg(4, 5, 6), w: None, h: None }))
+    b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(4, 5, 6), w: None, h: None, radius: 0 }))
         .unwrap();
     assert_eq!(b.end(), Err(AstError::TooSmall { need: 256, got: 255 }));
     assert_eq!(b.end(), Err(AstError::TooSmall { need: 256, got: 255 }), "拒绝零半执行——重试同错");

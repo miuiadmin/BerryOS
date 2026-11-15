@@ -204,18 +204,18 @@
 | arch/aarch64/src/smp.rs | 544 | block | MMIO | unsafe { let s0 = (&raw const SMP_CPU0.sw_cnt).read_volatile(); |
 | arch/aarch64/src/smp.rs | 558 | block | MMIO | unsafe { asm!("mrs {}, tpidr_el1", out(reg) base) }; if base == |
 | arch/aarch64/src/smp.rs | 563 | block | MMIO | unsafe { let my = base as *mut SmpCpu; (*my).disp_cnt = (*my).di |
-| arch/aarch64/src/smp.rs | 724 | block | MMIO | unsafe { (&raw const BOOT_EL).read_volatile() } } fn cntvct() -> |
-| arch/aarch64/src/smp.rs | 730 | block | MMIO | unsafe { asm!("mrs {}, cntvct_el0", out(reg) v) }; v } fn cntfrq |
-| arch/aarch64/src/smp.rs | 737 | block | MMIO | unsafe { asm!("mrs {}, cntfrq_el0", out(reg) v) }; v } /// 状态谓词轮 |
-| arch/aarch64/src/smp.rs | 780 | block | MMIO | unsafe { (&raw const __smp_sec_entry).read_volatile() } as usize |
-| arch/aarch64/src/smp.rs | 787 | block | MMIO | unsafe { asm!( "hvc #0", inout("x0") 0xC400_0003u64 => ret, // P |
-| arch/aarch64/src/smp.rs | 813 | block | MMIO | unsafe { (&raw const SMP_SEC_REPORT).read_volatile() }; uart_put |
-| arch/aarch64/src/smp.rs | 827 | block | MMIO | unsafe { (&raw const SMP_SEC_REPORT).read_volatile() }; uart_put |
-| arch/aarch64/src/smp.rs | 857 | block | MMIO | unsafe { asm!("dsb sy", "sev") }; if !wait_secs(5, \|\| SMP_HB2.lo |
-| arch/aarch64/src/smp.rs | 871 | block | MMIO | unsafe { crate::gic::send_sgi(crate::gic::SGI_RESCHEDULE, crate: |
-| arch/aarch64/src/smp.rs | 891 | block | MMIO | unsafe { crate::gic::send_sgi(crate::gic::SGI_RESCHEDULE, crate: |
-| arch/aarch64/src/smp.rs | 906 | block | MMIO | unsafe { crate::gic::send_sgi(crate::gic::SGI_RESCHEDULE, crate: |
-| arch/aarch64/src/smp.rs | 928 | block | MMIO | unsafe { crate::gic::send_sgi(crate::gic::SGI_RESCHEDULE, crate: |
+| arch/aarch64/src/smp.rs | 735 | block | MMIO | unsafe { (&raw const BOOT_EL).read_volatile() } } fn cntvct() -> |
+| arch/aarch64/src/smp.rs | 741 | block | MMIO | unsafe { asm!("mrs {}, cntvct_el0", out(reg) v) }; v } fn cntfrq |
+| arch/aarch64/src/smp.rs | 748 | block | MMIO | unsafe { asm!("mrs {}, cntfrq_el0", out(reg) v) }; v } /// 状态谓词轮 |
+| arch/aarch64/src/smp.rs | 791 | block | MMIO | unsafe { (&raw const __smp_sec_entry).read_volatile() } as usize |
+| arch/aarch64/src/smp.rs | 798 | block | MMIO | unsafe { asm!( "hvc #0", inout("x0") 0xC400_0003u64 => ret, // P |
+| arch/aarch64/src/smp.rs | 824 | block | MMIO | unsafe { (&raw const SMP_SEC_REPORT).read_volatile() }; uart_put |
+| arch/aarch64/src/smp.rs | 838 | block | MMIO | unsafe { (&raw const SMP_SEC_REPORT).read_volatile() }; uart_put |
+| arch/aarch64/src/smp.rs | 868 | block | MMIO | unsafe { asm!("dsb sy", "sev") }; if !wait_secs(5, \|\| SMP_HB2.lo |
+| arch/aarch64/src/smp.rs | 882 | block | MMIO | unsafe { crate::gic::send_sgi(crate::gic::SGI_RESCHEDULE, crate: |
+| arch/aarch64/src/smp.rs | 902 | block | MMIO | unsafe { crate::gic::send_sgi(crate::gic::SGI_RESCHEDULE, crate: |
+| arch/aarch64/src/smp.rs | 917 | block | MMIO | unsafe { crate::gic::send_sgi(crate::gic::SGI_RESCHEDULE, crate: |
+| arch/aarch64/src/smp.rs | 939 | block | MMIO | unsafe { crate::gic::send_sgi(crate::gic::SGI_RESCHEDULE, crate: |
 | arch/aarch64/src/syscall.rs | 45 | block | 其它 | unsafe { (*(&raw mut SYSCALLS))[nr] = (h, class) }; } /// 派发入口（` |
 | arch/aarch64/src/syscall.rs | 61 | block | 其它 | unsafe { *(&raw const SYSCALLS).cast::<(Handler, u8)>().add(nr) |
 | arch/aarch64/src/syscall.rs | 83 | block | 其它 | unsafe { crate::SVC_EXIT_CHECKPOINT } { checkpoint(); } tf.regs[ |
@@ -251,21 +251,22 @@
 | arch/aarch64/src/trap.rs | 634 | block | 上下文切换 | unsafe { crate::sgi_dispatch() } { // SAFETY: f 是 C-ABI fn 指针；tf |
 | arch/aarch64/src/trap.rs | 636 | block | 上下文切换 | unsafe { f(tf) }; } } SGI_TLB_US => { // S-4 4-1：TLB shootdown 收 |
 | arch/aarch64/src/trap.rs | 683 | fn | 上下文切换 | unsafe fn read_esr_elr() -> (u64, u64) { let esr: u64; let elr: |
-| arch/aarch64/src/uart.rs | 79 | block | MMIO | unsafe { mmio::write(UART, c as u32) }; } /// 输出一段字节串。 pub fn ua |
-| arch/aarch64/src/uart.rs | 136 | block | MMIO | unsafe { let mut spin: u32 = 0; while mmio::read(UART + UART_FR) |
-| arch/aarch64/src/uart.rs | 182 | block | MMIO | unsafe { *core::ptr::addr_of_mut!(RX_NOTIFY) = Some(f) }; } /// |
-| arch/aarch64/src/uart.rs | 188 | block | MMIO | unsafe { mmio::read(UART + UART_FR) & UART_FR_RXFE == 0 } } /// |
-| arch/aarch64/src/uart.rs | 194 | block | MMIO | unsafe { mmio::read(UART + UART_DR) as u8 } } /// 环满丢字节数（console |
-| arch/aarch64/src/uart.rs | 200 | block | MMIO | unsafe { (*core::ptr::addr_of!(RX_RING)).lost } } /// RX IRQ han |
-| arch/aarch64/src/uart.rs | 211 | block | MMIO | unsafe { while mmio::read(UART + UART_FR) & UART_FR_RXFE == 0 { |
-| arch/aarch64/src/uart.rs | 242 | block | MMIO | unsafe { let r = &mut *core::ptr::addr_of_mut!(RX_RING); let mut |
-| arch/aarch64/src/uart.rs | 261 | fn | MMIO | unsafe fn rx_init() { // 同掩 RXIC（UART_ICR_STICKY）：boot 期已落 FIFO |
-| arch/aarch64/src/uart.rs | 303 | block | MMIO | unsafe { *core::ptr::addr_of_mut!(UART1_NOTIFY) = Some(f) }; } / |
-| arch/aarch64/src/uart.rs | 309 | block | MMIO | unsafe { (*core::ptr::addr_of!(UART1_RING)).lost } } /// UART1 R |
-| arch/aarch64/src/uart.rs | 318 | block | MMIO | unsafe { while mmio::read(UART1 + UART_FR) & UART_FR_RXFE == 0 { |
-| arch/aarch64/src/uart.rs | 343 | block | MMIO | unsafe { let r = &mut *core::ptr::addr_of_mut!(UART1_RING); let |
-| arch/aarch64/src/uart.rs | 362 | block | MMIO | unsafe { let mut spin: u32 = 0; while mmio::read(UART1 + UART_FR |
-| arch/aarch64/src/uart.rs | 387 | fn | MMIO | unsafe fn uart1_init() { mmio::write(UART1 + UART_ICR, UART_ICR_ |
+| arch/aarch64/src/uart.rs | 80 | block | MMIO | unsafe { mmio::write(UART, c as u32) } // 镜像钩子（boot verbose——spl |
+| arch/aarch64/src/uart.rs | 84 | block | MMIO | unsafe { (*cbp)(c) }; } } /// framebuffer 镜像回调（kernel splash 注册； |
+| arch/aarch64/src/uart.rs | 147 | block | MMIO | unsafe { let mut spin: u32 = 0; while mmio::read(UART + UART_FR) |
+| arch/aarch64/src/uart.rs | 193 | block | MMIO | unsafe { *core::ptr::addr_of_mut!(RX_NOTIFY) = Some(f) }; } /// |
+| arch/aarch64/src/uart.rs | 199 | block | MMIO | unsafe { mmio::read(UART + UART_FR) & UART_FR_RXFE == 0 } } /// |
+| arch/aarch64/src/uart.rs | 205 | block | MMIO | unsafe { mmio::read(UART + UART_DR) as u8 } } /// 环满丢字节数（console |
+| arch/aarch64/src/uart.rs | 211 | block | MMIO | unsafe { (*core::ptr::addr_of!(RX_RING)).lost } } /// RX IRQ han |
+| arch/aarch64/src/uart.rs | 222 | block | MMIO | unsafe { while mmio::read(UART + UART_FR) & UART_FR_RXFE == 0 { |
+| arch/aarch64/src/uart.rs | 253 | block | MMIO | unsafe { let r = &mut *core::ptr::addr_of_mut!(RX_RING); let mut |
+| arch/aarch64/src/uart.rs | 272 | fn | MMIO | unsafe fn rx_init() { // 同掩 RXIC（UART_ICR_STICKY）：boot 期已落 FIFO |
+| arch/aarch64/src/uart.rs | 314 | block | MMIO | unsafe { *core::ptr::addr_of_mut!(UART1_NOTIFY) = Some(f) }; } / |
+| arch/aarch64/src/uart.rs | 320 | block | MMIO | unsafe { (*core::ptr::addr_of!(UART1_RING)).lost } } /// UART1 R |
+| arch/aarch64/src/uart.rs | 329 | block | MMIO | unsafe { while mmio::read(UART1 + UART_FR) & UART_FR_RXFE == 0 { |
+| arch/aarch64/src/uart.rs | 354 | block | MMIO | unsafe { let r = &mut *core::ptr::addr_of_mut!(UART1_RING); let |
+| arch/aarch64/src/uart.rs | 373 | block | MMIO | unsafe { let mut spin: u32 = 0; while mmio::read(UART1 + UART_FR |
+| arch/aarch64/src/uart.rs | 398 | fn | MMIO | unsafe fn uart1_init() { mmio::write(UART1 + UART_ICR, UART_ICR_ |
 | arch/x86_64/src/main.rs | 393 | fn | MMIO | unsafe fn outb(port: u16, val: u8) { asm!("out %al, %dx", in("al |
 | arch/x86_64/src/main.rs | 397 | fn | MMIO | unsafe fn inb(port: u16) -> u8 { let ret: u8; asm!("in %dx, %al" |
 | arch/x86_64/src/main.rs | 404 | block | MMIO | unsafe { outb(COM1 + 1, 0x00); // 关串口中断（串口无 IRQ 面：IRQ4 双重掩闭——设备级 |
@@ -759,6 +760,23 @@
 | kernel/src/process.rs | 318 | block | 其它 | unsafe { let mut n = 0; while HT_DRAINQ_LEN > 0 && n < HT_DRAINQ |
 | kernel/src/process.rs | 375 | fn | 其它 | unsafe fn new(proc_ref: NonNull<ObjRef>) -> Self { (*proc_ref.as |
 | kernel/src/process.rs | 390 | block | 其它 | unsafe { ObjRef::release(self.proc) }; } } |
+| kernel/src/splash.rs | 90 | block | 其它 | unsafe { &mut *core::ptr::addr_of_mut!(STATE) }; if fb_va == 0 \| |
+| kernel/src/splash.rs | 119 | block | 其它 | unsafe { &mut *core::ptr::addr_of_mut!(STATE) }; if s.fb_va == 0 |
+| kernel/src/splash.rs | 134 | block | 其它 | unsafe { &mut *core::ptr::addr_of_mut!(STATE) }; if s.total == 0 |
+| kernel/src/splash.rs | 189 | block | 其它 | unsafe { &mut *core::ptr::addr_of_mut!(STATE) }; if !s.verbose \| |
+| kernel/src/splash.rs | 213 | block | 其它 | unsafe { &mut *core::ptr::addr_of_mut!(STATE) }; s.detached = tr |
+| kernel/src/splash.rs | 268 | block | 其它 | unsafe { fb.add((y0 + dy) * w32 + x0) }; let seg = unsafe { core |
+| kernel/src/splash.rs | 269 | block | 其它 | unsafe { core::slice::from_raw_parts_mut(base, 8) }; for px in s |
+| kernel/src/splash.rs | 279 | block | 其它 | unsafe { *fb.add((y0 + dy) * w32 + x0 + dx) = WHITE }; } } } } } |
+| kernel/src/splash.rs | 294 | block | 其它 | unsafe { let src = fb.add((y + 16) * w32); let dst = fb.add(y * |
+| kernel/src/splash.rs | 302 | block | 其它 | unsafe { fb.add(yy * w32) }; let row = unsafe { core::slice::fro |
+| kernel/src/splash.rs | 303 | block | 其它 | unsafe { core::slice::from_raw_parts_mut(base, w) }; for px in r |
+| kernel/src/splash.rs | 317 | block | 其它 | unsafe { fb.add(y * w32) }; let row = unsafe { core::slice::from |
+| kernel/src/splash.rs | 318 | block | 其它 | unsafe { core::slice::from_raw_parts_mut(base, w) }; for px in r |
+| kernel/src/splash.rs | 350 | block | 其它 | unsafe { *fb.add((ly + gy) * (stride / 4) + lx + gx) = WHITE }; |
+| kernel/src/splash.rs | 394 | block | 其它 | unsafe { *fb.add((y as usize + dy) * (stride / 4) + x as usize + |
+| kernel/src/splash.rs | 439 | block | 其它 | unsafe { fb.add(yy * (stride / 4) + x) }; let row = unsafe { cor |
+| kernel/src/splash.rs | 440 | block | 其它 | unsafe { core::slice::from_raw_parts_mut(base, w) }; for px in r |
 | kernel/src/suspend.rs | 43 | block | 其它 | unsafe { (*p.as_ptr()).obj.as_process().map(\|pr\| pr.freeze_depth |
 | kernel/src/suspend.rs | 46 | block | 其它 | unsafe { (*t.as_ptr()).obj.as_thread_mut().map(\|th\| th.freeze_de |
 | kernel/src/suspend.rs | 55 | block | 其它 | unsafe { let r = &mut *ptr.as_ptr(); match &mut r.obj { crate::h |

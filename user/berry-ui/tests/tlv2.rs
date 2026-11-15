@@ -58,10 +58,10 @@ fn v2_oracle_bytes() -> Vec<u8> {
         &GridProps { cols: 3, rows: 2, gap: 1, cross: CrossAlign::Stretch, w: None, h: None },
     )
     .unwrap();
-    b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { radius: 0, bg: bg(1, 2, 3), w: None, h: None }))
+    b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None, radius: 0 }))
         .unwrap();
     b.end().unwrap();
-    b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { radius: 0, bg: bg(4, 5, 6), w: Some(5), h: None }))
+    b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(4, 5, 6), w: Some(5), h: None, radius: 0 }))
         .unwrap();
     b.end().unwrap();
     b.end().unwrap(); // Grid
@@ -264,7 +264,7 @@ fn a11y_block_any_kind_truncation_and_cap() {
     let mut b = DescBuilder::new();
     b.begin(ViewKind::Root, 0, &Props::Root).unwrap();
     for _ in 0..(A11Y_MAX + 1) {
-        b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { radius: 0, bg: bg(1, 2, 3), w: None, h: None }))
+        b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None, radius: 0 }))
             .unwrap();
         b.a11y(1, b"x").unwrap();
         b.end().unwrap();
@@ -317,11 +317,11 @@ fn grid_not_fit_rejects_both_faces() {
     b.begin(ViewKind::Root, 0, &Props::Root).unwrap();
     b.begin_grid(0, &GridProps { cols: 1, rows: 1, gap: 0, cross: CrossAlign::Stretch, w: None, h: None })
         .unwrap();
-    b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { radius: 0, bg: bg(1, 2, 3), w: None, h: None }))
+    b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None, radius: 0 }))
         .unwrap();
     b.end().unwrap();
     assert_eq!(
-        b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { radius: 0, bg: bg(4, 5, 6), w: None, h: None })),
+        b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(4, 5, 6), w: None, h: None, radius: 0 })),
         Err(AstError::GridNotFit { cols: 1, rows: 1, children: 2 })
     );
     // 恰满合法：3x2 格第 6 子过、第 7 子拒（边界对拍）
@@ -330,12 +330,12 @@ fn grid_not_fit_rejects_both_faces() {
     b.begin_grid(0, &GridProps { cols: 3, rows: 2, gap: 0, cross: CrossAlign::Stretch, w: None, h: None })
         .unwrap();
     for _ in 0..6 {
-        b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { radius: 0, bg: bg(1, 2, 3), w: None, h: None }))
+        b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None, radius: 0 }))
             .unwrap();
         b.end().unwrap();
     }
     assert_eq!(
-        b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { radius: 0, bg: bg(1, 2, 3), w: None, h: None })),
+        b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None, radius: 0 })),
         Err(AstError::GridNotFit { cols: 3, rows: 2, children: 7 })
     );
 }
@@ -359,7 +359,7 @@ fn grid_wire_truncation_and_leaf_children() {
     b.begin(ViewKind::Root, 0, &Props::Root).unwrap();
     b.begin_image(0, &ImageProps { res: 9, w: None, h: None }).unwrap();
     assert_eq!(
-        b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { radius: 0, bg: bg(1, 2, 3), w: None, h: None })),
+        b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None, radius: 0 })),
         Err(AstError::BadParent)
     );
     // add 面：Image 父位传子 → UiError::BadParent
@@ -369,7 +369,7 @@ fn grid_wire_truncation_and_leaf_children() {
         .add(root, ViewSpec { kind: ViewKind::Image, key: 0, props: Props::Image(ImageProps { res: 1, w: None, h: None }) })
         .unwrap();
     assert_eq!(
-        ui.add(img, ViewSpec { kind: ViewKind::Rect, key: 0, props: Props::Rect(RectProps { radius: 0, bg: bg(1, 2, 3), w: None, h: None }) }),
+        ui.add(img, ViewSpec { kind: ViewKind::Rect, key: 0, props: Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None, radius: 0 }) }),
         Err(berry_ui::UiError::BadParent)
     );
 }
@@ -458,7 +458,7 @@ fn builder_block_order_dup_and_stage_rejects() {
     b.begin(ViewKind::Root, 0, &Props::Root).unwrap();
     b.begin(ViewKind::Col, 0, &Props::Col(ColProps { gap: 0, w: None, h: None, cross: CrossAlign::Stretch }))
         .unwrap();
-    b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { radius: 0, bg: bg(1, 2, 3), w: None, h: None }))
+    b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None, radius: 0 }))
         .unwrap();
     b.end().unwrap();
     assert_eq!(b.a11y(1, b"x"), Err(AstError::BadParent), "已闭子后块不落");
@@ -471,7 +471,7 @@ fn builder_block_order_dup_and_stage_rejects() {
     b.size(None, Some(9)).unwrap();
     b.a11y(1, b"ok").unwrap();
     b.align(CrossAlign::Start).unwrap();
-    b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { radius: 0, bg: bg(1, 2, 3), w: None, h: None }))
+    b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None, radius: 0 }))
         .unwrap();
     b.end().unwrap();
     b.end().unwrap();
@@ -487,7 +487,7 @@ fn builder_block_order_dup_and_stage_rejects() {
 fn builder_block_legality_and_payload_rejects() {
     // kind×块拒（builder 生产面 = §8.2 表 minus Rect 折入面）：Rect/Text/
     // Image/Icon/Pad 的 size 全拒；Grid/Text/Rect/Image/Icon/Pad 的 align 拒
-    let rect = Props::Rect(RectProps { radius: 0, bg: bg(1, 2, 3), w: None, h: None });
+    let rect = Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None, radius: 0 });
     let text = Props::Text(berry_ui::TextBuf::new(b"h").map(|t| berry_ui::desc::TextProps {
         style: berry_ui::desc::TextStyle { fg: bg(1, 1, 1), bg: None, scale: berry_gfx::font::FontSize::S8x16 },
         text: t,
@@ -545,7 +545,7 @@ fn builder_block_legality_and_payload_rejects() {
         b.begin(
             ViewKind::Grid,
             0,
-            &Props::Rect(RectProps { radius: 0, bg: bg(1, 2, 3), w: None, h: None })
+            &Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None, radius: 0 })
         ),
         Err(AstError::UnknownProp { kind: ViewKind::Grid, got: KIND_GRID })
     );

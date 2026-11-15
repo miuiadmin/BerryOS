@@ -22,7 +22,7 @@ fn rect_spec(w: u32, h: u32) -> ViewSpec {
     ViewSpec {
         kind: ViewKind::Rect,
         key: 0,
-        props: Props::Rect(RectProps { radius: 0, bg: bg(1, 2, 3), w: Some(w), h: Some(h) }),
+        props: Props::Rect(RectProps { bg: bg(1, 2, 3), w: Some(w), h: Some(h), radius: 0 }),
     }
 }
 
@@ -191,7 +191,7 @@ fn set_props_kind_mismatch_loud_state_preserved() {
     assert_eq!(ui.bounds(a).unwrap(), RectI::new(0, 0, 10, 10), "几何未被触碰");
 
     // 同 kind 同几何改色：Ok + damage = 旧界（状态完好、合法路照常）
-    ui.set_props(a, Props::Rect(RectProps { radius: 0, bg: bg(9, 9, 9), w: Some(10), h: Some(10) }))
+    ui.set_props(a, Props::Rect(RectProps { bg: bg(9, 9, 9), w: Some(10), h: Some(10), radius: 0 }))
         .unwrap();
     let d = ui.drain_damage();
     assert!(!d.full);

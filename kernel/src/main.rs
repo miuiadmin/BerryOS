@@ -32,6 +32,9 @@ mod mm;
 mod pi;
 mod process;
 mod rtc; // 波一刀 B：壁钟注入面（fw_cfg opt/berry/rtc → CLOCK_REALTIME）
+mod splash; // boot splash：FB ok → 桌面首帧的进度可视（黑屏止血）
+mod splash_pct; // splash 百分比 HD 字模（自动生成勿手编——tools/gen_splash_pct.py）
+mod splash_logo; // splash BERRYOS 大字 logo HD 字模（tools/gen_splash_logo.py）
 mod suspend; // 1.1/S3-a：冻结令牌对象（process_suspend handler 配对）
 mod syscall;
 mod sysver; // VER：版本身份 VMO（运行时查询面——boot 编译期成像 + 第 9 插只读交付）
@@ -296,6 +299,9 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // 在 rootfs/virtio 插表段；handoff @下文 move 进 mm::init 前取走，
     // `efi_boot` 同款先例）。
     let mut gop_saved: Option<(u64, u32, u32, u32, u32)> = None;
+    // fbinfo 第 6 域编码（刀 6 双模式）：0 = 非 GUI；1 = GUI+splash；
+    // 2 = GUI+verbose（guifbd 据此决定自检后清屏与否）。
+    let mut gui_mode_val: u64 = 0;
     // GUI P2：ramfb 手机档成功时置 1——随 fbinfo 第 6 域交 guifbd，
     // GUI 模式 console 只走串口/记账，不上屏盖桌面。
     let mut gui_mode = false;
@@ -449,6 +455,65 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                 print_fb(g);
             }
         }
+    }
+
+    // boot splash（黑屏止血）：FB ok 后立即持有绘制面——ktest/bench/服务
+    // 启动全程进度可视。模式 = fw_cfg `opt/berry/bootmode`（splash 缺省 /
+    // verbose = Linux 式滚日志——uart 镜像上屏）。仅 fmt=1（XRGB8888）。
+    {
+        let verbose = berry_hal_aarch64::fwcfg::find_file("opt/berry/bootmode")
+            .map(|e| {
+                let mut buf = [0u8; 16];
+                let n = e.size as usize;
+                if n <= buf.len() && berry_hal_aarch64::fwcfg::read_to(&e, &mut buf[..n]) {
+                    &buf[..n] == b"verbose"
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false);
+        if gui_mode {
+            if let Some((fb_pa, w, h, stride, fmt)) = gop_saved {
+                if fmt == 1 {
+                    splash::init(phys_to_virt(fb_pa as usize), w, h, stride, verbose);
+                    // 刀 A：noktest 生产形态游标分母（ktest 8 格 + bench 1 格
+                    // 缺席 → 15 格制；offset 2 = 早期 KVA/MMU/FB 预备格视觉
+                    // 补偿——这些格在 splash::init 前已发生，起画即 2/15）。
+                    if berry_hal_aarch64::fwcfg::find_file(NOKTEST_PROBE_NAME).is_some() {
+                        splash::set_total(splash::TOTAL_NOKTEST, 2);
+                    }
+                    // 刀 A：splash 平滑推进泵注册（uart 每字符一泵——服务起立
+                    // 期串口输出频繁 = 天然节拍器；smooth_tick 自带 8ms 节流）。
+                    // 泵延后武装（判例：noktest 形态 boot 早期 ROOTFS 段
+                    // 每字符泵 → 死锁——二分定谳泵是死点）。timer::init 后
+                    // 才注册：时钟已可信，且 ktest 全量形态本不需要泵
+                    //（ktest 自打格），泵只服务服务起立期。2026-11-15
+                    // 四要素版维持仅 verbose 注册（splash 形不挂字符泵——
+                    // 判例的死点 = 每字符全屏重画；splash 平滑改里程碑内
+                    // 多步 chase，见 splash.rs step）。
+                    if verbose {
+                        // 镜像钩子注册：uart 字节流 → splash verbose 滚屏。
+                        static MIRROR: fn(u8) = splash::mirror;
+                        berry_hal_aarch64::uart::FB_MIRROR.store(
+                            MIRROR as *mut fn(u8),
+                            core::sync::atomic::Ordering::Relaxed,
+                        );
+                        // 首行锚：内核接管显示（EFI 残屏之上）。
+                        berry_hal_aarch64::uart_puts(b"\n[berry] kernel console\n");
+                    }
+                }
+            }
+        }
+        // fbinfo 第 6 域编码：0 = 非 GUI；1 = GUI+splash；2 = GUI+verbose。
+        gui_mode_val = if gui_mode {
+            if verbose {
+                splash::FBINFO_GUI_VERBOSE
+            } else {
+                splash::FBINFO_GUI_SPLASH
+            }
+        } else {
+            0
+        };
     }
 
     // G-eco 入机侧第一刀：rootfs（initrd 角色）装载，三源按序——
@@ -1611,6 +1676,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                     info[16..24].copy_from_slice(&(h as u64).to_le_bytes());
                     info[24..32].copy_from_slice(&(stride as u64).to_le_bytes());
                     info[32..40].copy_from_slice(&(fmt as u64).to_le_bytes());
+                    info[40..48].copy_from_slice(&(gui_mode_val as u64).to_le_bytes());
                     info[40..48].copy_from_slice(&(gui_mode as u64).to_le_bytes());
                     let mut ivmo =
                         vmo::Vmo::create(4096).expect("main: fbinfo Vmo create");
@@ -4739,6 +4805,7 @@ const RWAKE_PROBE_NAME: &str = "opt/berry/rwake";
 /// 专递 `-fw_cfg name=opt/berry/noktest,string=1`；RT/SOAK_PROBE_NAME 同款
 /// 「两侧对读维护」纪律，极性反转：缺席 = 默认全跑 = smoke 零漂移）。
 const NOKTEST_PROBE_NAME: &str = "opt/berry/noktest";
+pub(crate) const DPG_NOKTEST_PROBE_NAME: &str = NOKTEST_PROBE_NAME;
 
 /// 演示面门的 fw_cfg 具名项名（06 号修窗件 1——idle 满核主根因闭合：
 /// task_a/task_b 忙环 + boot EL0 演示舰队〔good/rogue/abuser/spawner/

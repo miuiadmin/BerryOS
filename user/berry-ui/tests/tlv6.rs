@@ -102,7 +102,7 @@ fn v6_oracle_bytes() -> Vec<u8> {
     .unwrap();
     b.end().unwrap();
     b.end().unwrap(); // Col
-    b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(9, 8, 7), w: None, h: None }))
+    b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(9, 8, 7), w: None, h: None, radius: 0 }))
         .unwrap();
     b.end().unwrap();
     b.end().unwrap(); // Root
@@ -521,7 +521,7 @@ fn p1f_leaf_children_reject_both_faces_and_size_block() {
     )
     .unwrap();
     assert_eq!(
-        b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None })),
+        b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None, radius: 0 })),
         Err(AstError::BadParent)
     );
     // SIZE 块×新 kind 拒（§8.2 合法域表未扩——合法域检在长检前）
@@ -588,7 +588,7 @@ fn p1f_add_face_smoke() {
     assert!(
         ui.add(
             rf,
-            ViewSpec { kind: ViewKind::Rect, key: 0, props: Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None }) }
+            ViewSpec { kind: ViewKind::Rect, key: 0, props: Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None, radius: 0 }) }
         )
         .is_ok(),
         "Refresh 父位收（容器白名单补漏）"

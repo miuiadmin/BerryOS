@@ -169,8 +169,7 @@ fn main() {
             Some(m) => m,
             None => fail("syswin enc"),
         };
-        rpc_send(hw, &req[..m], &[]);
-        let (n, _) = rpc_recv(hw, &mut rep, &mut rhs);
+        let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
         // 切片执法：parse 面按实长验（整缓冲 256B 恒拒——ACK_LEN 协议门）。
         match gp::parse_wm_create_ack(&rep[..n]) {
             Some(id) if id != 0 => {}
@@ -192,8 +191,7 @@ fn main() {
             Some(m) => m,
             None => fail("deskwin enc"),
         };
-        rpc_send(hw, &req[..m], &[]);
-        let (n, _) = rpc_recv(hw, &mut rep, &mut rhs);
+        let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
         match gp::parse_wm_create_ack(&rep[..n]) {
             Some(id) if id != 0 => {}
             _ => fail(&format!("deskwin ack bad st={}", rep[0])),

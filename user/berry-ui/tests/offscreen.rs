@@ -43,7 +43,7 @@ fn rect_spec(bg: Color, w: Option<u32>, h: Option<u32>) -> ViewSpec {
     ViewSpec {
         kind: ViewKind::Rect,
         key: 0,
-        props: Props::Rect(RectProps { radius: 0, bg, w, h }),
+        props: Props::Rect(RectProps { bg, w, h, radius: 0 }),
     }
 }
 
@@ -251,7 +251,7 @@ fn incremental_damage_exact_node_bounds() {
     assert!(drained.full, "空集 wake 置 FULL 经 drain 原样取出");
 
     // 同几何改色：damage 恰 = 节点旧界（单矩形、非 FULL）
-    ui.set_props(r1, Props::Rect(RectProps { radius: 0, bg: C3, w: Some(64), h: Some(16) }))
+    ui.set_props(r1, Props::Rect(RectProps { bg: C3, w: Some(64), h: Some(16), radius: 0 }))
         .unwrap();
     let d = ui.damage();
     assert!(!d.full);

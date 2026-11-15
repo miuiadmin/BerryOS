@@ -71,7 +71,7 @@ fn overlay_stack<const N: usize>(ui: &mut Ui<N>, parent: NodeId, align: StackAli
 
 fn scrim_layer<const N: usize>(ui: &mut Ui<N>, parent: NodeId, t: &Tokens) -> Result<NodeId, UiError> {
     // 全幅（w/h None = 随父分配——Rect 聚合语义）。
-    ui.add(parent, vspec(ViewKind::Rect, Props::Rect(RectProps { bg: scrim(t), w: None, h: None })))
+    ui.add(parent, vspec(ViewKind::Rect, Props::Rect(RectProps { bg: scrim(t), w: None, h: None, radius: 0 })))
 }
 
 fn panel<const N: usize>(ui: &mut Ui<N>, parent: NodeId, w: u32) -> Result<NodeId, UiError> {
