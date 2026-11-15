@@ -52,6 +52,7 @@ dependencies = [
  "berry-emface",
  "berry-libc",
  "berry-pwproto",
+ "berry-sys",
 ]
 
 [[package]]

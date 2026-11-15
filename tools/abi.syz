@@ -63,7 +63,7 @@ type berry_time uint64
 #   BERRY_ERR_OUT_OF_RANGE = -34
 #   BERRY_ERR_FAULT = -14
 
-# ---- syscall 入口（§4 编号表全量在册；v1 38 号、已实现 37；
+# ---- syscall 入口（§4 编号表全量在册；v1 39 号、已实现 38；
 #      a1..a6 ↔ ARM64 SVC x1..x6 全宽占位参——参数面待 §8.3 原型层（v2 挂账）补）----
 
 # **handle / 通用对象**
@@ -180,6 +180,21 @@ process_suspend(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x3F thread_yield（1.1·已实现）——主动让出当前时间片；无 handle，等价内核 yield_now；无可跑任务立即返回 0
 #   note: S1 收口：SVC 面 direct yield_now（含切换锁舞蹈）已落。
 thread_yield(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+
+# **调度遥测**（调度彻底计划 CP-08——util 信号通道首环，OQ-8 通道形态首裁）
+# 0x40 sched_util_snapshot（v1）——per-CPU util EWMA 快照读（0..=1024——与 Topo::capacity/EM capacity 同尺度；sched/src/util.rs 生产侧唯一读出口 cpu_util 的用户态面）。入参 util（u32 LE 数组出参）+ count（槽位数）；count < 内核核数 → -EINVAL，≥ 则只写实数槽、余槽不动；返回 >0 = 实写槽位数（恰 = 内核 UTIL_NR_CPU，调用方以此探核数），负 = errno。零 handle 零权利位（系统级遥测读面——统计信号非对象内容；单用户仿真系统无能力框架）。拉模式（pull）——消费方轮询节奏自定，频率裁决单点归 PM 服务
+#   note: CP-08 util 通道首环（docs/调度彻底计划-v1.2.md:100 验收线「berry-power 消费
+#   util 信号（schedutil 同构 f≈util×fmax/capacity）」的内核侧产出面）+ OQ-8
+#   （:217）通道形态首裁：快照 syscall pull 形态先行——共享环 push 形态随 CP-10
+#   通道窗叠加（add-only 不互斥）。加号依据：零 VMO 共享先例（telemetry_open
+#   0x84 环面 stage=v3 未启，建环面远超首环体量）；add-only 加号先例 0x86/0x87/
+#   0x88；PM-15 §4.1「六面零新 syscall」辖 SDK 服务 op 面，不辖内核→服务数据通道
+#   （util 生产侧 v1.3 立法时已内定「PM 读面」，sched/src/util.rs:94-96）。生产侧
+#   零新累积——Fair::tick 记账在役（class.rs util_accumulate/util_tick_window），
+#   本号只读不写。锁类 SVC_CLASS_TABLE（copy_out 链走查调用方页表——§A113 读者
+#   面，同 0x61/0x87）；EWMA 槽 Relaxed 原子读（统计信号无序角色）。消费端 =
+#   berry-power UtilTrack::ingest_snapshot（折叠数学单源 berry-emface）。
+sched_util_snapshot(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **异常**
 # 0x41 thread_create_exception_channel（v2·已实现）——用户态异常上报通道

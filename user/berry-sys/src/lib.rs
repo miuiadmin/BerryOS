@@ -499,6 +499,21 @@ pub extern "C" fn berry_thread_yield() -> Status {
     unsafe { sys(nr::THREAD_YIELD, 0, 0, 0, 0, 0, 0) }
 }
 
+/// CP-08 util 通道首环（0x40，OQ-8 通道形态首裁快照 pull 先行）：per-CPU
+/// util EWMA 快照读。`util` = u32 LE 数组出参（0..=1024——与调度器
+/// capacity/EM capacity 同尺度；生产侧 = 内核 `sched/src/util.rs` 唯一读出口
+/// `cpu_util`），`count` = 槽位数。**返回 >0 = 实写槽位数**（恰 = 内核核数
+/// `UTIL_NR_CPU`——调用方可以此探核数；count-wins 口径同
+/// `pager_supply_mapped_table`），count < 核数 → -EINVAL，坏指针 →
+/// -EFAULT。零 handle 零权利位（系统级遥测读面——统计信号非对象内容）。
+///
+/// 消费先例 = berry-power（快照→`UtilTrack::ingest_snapshot` 逐核折叠；
+/// EWMA 折叠数学单源 berry-emface）。
+#[no_mangle]
+pub extern "C" fn berry_sched_util_snapshot(util: *mut u32, count: usize) -> Status {
+    unsafe { sys(nr::SCHED_UTIL_SNAPSHOT, util as usize, count, 0, 0, 0, 0) }
+}
+
 // —— 策略注入（0x83：机制在内核、策略可插拔的带内接口——表形面（COMMIT/
 // SHADOW_COMMIT）+ STATUS 面逐 op 包装）——
 

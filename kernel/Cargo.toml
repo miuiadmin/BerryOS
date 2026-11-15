@@ -12,6 +12,11 @@ path = "src/main.rs"
 berry-hal-aarch64 = { path = "../arch/aarch64" }
 berry-mm = { path = "../mm" }
 berry-sched = { path = "../sched" }
+# 调度深水区收官·任务②（M4 首批 band 激活，2026-11-16）：IntentBand 带表
+# 与现役集判单源 berry-iprofile——ktest `BANDM4` 断言「FairBand::new 参数
+# 从表读取」需直名表本体（经 sched 的 transitive 面不可 use，Cargo 直依赖
+# 惯例同 berry-wqmatch）。
+berry-iprofile = { path = "../iprofile" }
 berry-vmoledger = { path = "../vmoledger" }
 # W3-Q5：PI 纯函数面单源（donor_edge 资格判 + PI_MAX_HOPS 轮帽）——本
 # crate 消费，pi.rs 保留锁窗/反查机械。

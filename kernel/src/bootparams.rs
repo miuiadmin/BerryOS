@@ -16,6 +16,10 @@
 //!    通道且时序倒挂——slice_hz 须在 timer::init 前定。
 //! 5. 两键 v1 均内核侧可生效（无需降记「仅 intent_default 生效」）：
 //!    sched_slice_hz → timer 换算注入；intent_default → Task 装配注入。
+//!    CP-11（§3.8 机制面·2026-11-15）词表 v1 扩第三键 `timer_slack`：
+//!    u32 纳秒、缺省 0 = 无松弛（现役零漂移）→ sched 全局
+//!    `set_timer_slack_ns`（`block_current` 入队点 LATE-only 消费——
+//!    intent >= UTILITY 档顺延、交互档恒等；判定律单源 slackface）。
 //!
 //! **消费契约 v1**：文件缺席（含空 params 不投放的工具侧合同）= 正常
 //! 缺省态**零输出**（与 §1.6-补投放面「缺省零扰动」配套——件缺打诊断
@@ -28,11 +32,11 @@
 //! 内核跑 v2 镜像的向前兼容面——工具侧未知键硬拒是产线执法，两侧
 //! 宽严分工非漂移）。
 //!
-//! eco 打点：`bootparams slice_hz=N slice=CYC intent=WORD`（QEMU 可观测
-//! ——只打在位键；slice = 单源算式 [`berry_hal_aarch64::timer::
-//! slice_cycles_for_hz`] 的换算直证）。诊断行 `bootparams: <cause>`
-//!（首错一条，ASCII）。ktest 纯函数面 = `ktest.rs test_bootparams`
-//!（静默执法——G3-1a f4 先例）。
+//! eco 打点：`bootparams slice_hz=N slice=CYC intent=WORD timer_slack=NS`
+//! （QEMU 可观测——只打在位键；slice = 单源算式 [`berry_hal_aarch64::timer::
+//! slice_cycles_for_hz`] 的换算直证；timer_slack = 纳秒原值）。诊断行
+//! `bootparams: <cause>`（首错一条，ASCII）。ktest 纯函数面 =
+//! `ktest.rs test_bootparams`（静默执法——G3-1a f4 先例）。
 
 use berry_hal_aarch64 as hal;
 
@@ -57,8 +61,10 @@ const HDR: usize = 110;
 /// 条目名长帽（含 NUL；目标名 20B，归档内条目名最宽 ~30B——防御面）。
 const NAME_MAX: usize = 300;
 
-/// 词表 v1 两键的值域（`tools/berry_assemble.py` BOOT_PARAMS_SPEC 单源
-/// 对读：sched_slice_hz u32 ∈ [16,1024]）。
+/// 词表 v1 三键的值域（`tools/berry_assemble.py` BOOT_PARAMS_SPEC 单源
+/// 对读：sched_slice_hz u32 ∈ [16,1024]；timer_slack u32 ∈ [0,999_999_999]
+/// ——纳秒，上界 = `parse_u32` 九位帽（≤999999999），全域 < slackface
+/// `SLACK_MAINTENANCE_NS`(10s) 帽，词表域内核侧零再裁）。
 const SLICE_HZ_MIN: u32 = 16;
 const SLICE_HZ_MAX: u32 = 1024;
 
@@ -104,11 +110,13 @@ impl Src<'_> {
     }
 }
 
-/// 解析产物（全 owned——坏键回 None + 首错诊断；两键独立应用）。
+/// 解析产物（全 owned——坏键回 None + 首错诊断；三键独立应用）。
 #[derive(Debug, PartialEq, Eq)]
 pub struct Outcome {
     pub slice_hz: Option<u32>,
     pub intent: Option<u8>,
+    /// CP-11 第三键：系统缺省 timer slack（纳秒）。
+    pub timer_slack: Option<u32>,
     /// 首错诊断（ASCII 静态串——eco 诊断行载荷；None = 干净）。
     pub diag: Option<&'static str>,
 }
@@ -119,11 +127,11 @@ pub struct Outcome {
 pub fn scan(src: &Src<'_>) -> Option<Outcome> {
     let (off, len) = find(src, NAME)?;
     if len == 0 || len > FILE_MAX {
-        return Some(Outcome { slice_hz: None, intent: None, diag: Some("size") });
+        return Some(Outcome { slice_hz: None, intent: None, timer_slack: None, diag: Some("size") });
     }
     let mut content = alloc::vec![0u8; len];
     if !src.read_at(off, &mut content) {
-        return Some(Outcome { slice_hz: None, intent: None, diag: Some("read") });
+        return Some(Outcome { slice_hz: None, intent: None, timer_slack: None, diag: Some("read") });
     }
     Some(parse(&content))
 }
@@ -207,7 +215,7 @@ fn hex_field(h: &[u8; HDR], i: usize) -> Option<u64> {
 /// 字典序——§1.6-补投放面；容忍空行/`#` 注释/两侧空白）。重复键后者胜
 /// （TOML 语义本应拒重复——最小解析器不执法，投放面键序确定性已杜绝）。
 pub(crate) fn parse(c: &[u8]) -> Outcome {
-    let mut out = Outcome { slice_hz: None, intent: None, diag: None };
+    let mut out = Outcome { slice_hz: None, intent: None, timer_slack: None, diag: None };
     let mut schema: Option<u32> = None;
     let mut lines = 0;
     for line in c.split(|&b| b == b'\n') {
@@ -244,13 +252,20 @@ pub(crate) fn parse(c: &[u8]) -> Outcome {
                 Some(code) => out.intent = Some(code),
                 None => out.diag = out.diag.or(Some("intent")),
             },
+            // CP-11 第三键：u32 纳秒全收（域 [0,999_999_999] = parse_u32
+            // 九位帽自然执法——越九位 None 落「range」诊断，与词表上界
+            // 999_999_999 恰合，零再裁面）。
+            b"timer_slack" => match parse_u32(val) {
+                Some(v) => out.timer_slack = Some(v),
+                None => out.diag = out.diag.or(Some("range")),
+            },
             _ => out.diag = out.diag.or(Some("key")),
         }
     }
     // schema 头 ≠ 1（缺失/坏值/未来版本）= 未知格式全段弃（§1.6-4 弃段
     // 用缺省；防 v2 语义被 v1 内核误用）——已拾键清空、诊断改 schema。
     if schema != Some(1) {
-        return Outcome { slice_hz: None, intent: None, diag: Some("schema") };
+        return Outcome { slice_hz: None, intent: None, timer_slack: None, diag: Some("schema") };
     }
     out
 }
@@ -273,14 +288,20 @@ fn trim(s: &[u8]) -> &[u8] {
 }
 
 /// 十进制 u32（纯数字、≤9 位防溢；无符号/无引号/无下划线——投放面
-/// 序列化器只产此形）。
+/// 序列化器只产此形）。**纯数字执法**（b'0'..=b'9' 闭域）：原
+/// `checked_sub(b'0')` 只拦 <'0' 下溢、字母串可走私为巨值（"abc"→5451）
+/// ——两键时代由各键值域兜住的隐式合同，CP-11 timer_slack 全 u32 域键
+/// 落地时暴露（ktest 实测钉板），显式化为解析面执法。
 fn parse_u32(s: &[u8]) -> Option<u32> {
     if s.is_empty() || s.len() > 9 {
         return None;
     }
     let mut v: u32 = 0;
     for &c in s {
-        let d = c.checked_sub(b'0')?;
+        let d = match c {
+            b'0'..=b'9' => c - b'0',
+            _ => return None,
+        };
         v = v * 10 + d as u32;
     }
     Some(v)
@@ -302,7 +323,8 @@ fn intent_code(val: &[u8]) -> Option<u8> {
 ///
 /// 注入点时序：`timer::set_slice_hz` 须在 `timer::init`（main.rs :737）前
 /// ——SLICE 换算基准即改；`sched::set_intent_default` 须在首个 spawn
-/// （:789 起）前——新任务装配即带。两处本函数调用点均满足。
+/// （:789 起）前——新任务装配即带；`set_timer_slack_ns` 只须在首个
+/// `block_current` 前。三处本函数调用点均满足。
 pub fn apply_and_report(o: &Outcome) {
     if let Some(hz) = o.slice_hz {
         // SAFETY: boot 单线程、timer::init 之前（唯一调用点）。
@@ -311,8 +333,13 @@ pub fn apply_and_report(o: &Outcome) {
     if let Some(code) = o.intent {
         berry_sched::set_intent_default(code);
     }
-    // 全段弃（schema 拒面：两键皆空）只打诊断行——eco 行只在有在位键时打。
-    if o.slice_hz.is_some() || o.intent.is_some() {
+    // CP-11：timer_slack → sched 全局（消费点 = block_current 入队——
+    // 首个睡眠者之前生效即足，本点远早于首 spawn，时序恒满足）。
+    if let Some(ns) = o.timer_slack {
+        berry_sched::set_timer_slack_ns(ns as u64);
+    }
+    // 全段弃（schema 拒面：三键皆空）只打诊断行——eco 行只在有在位键时打。
+    if o.slice_hz.is_some() || o.intent.is_some() || o.timer_slack.is_some() {
         hal::uart_puts(b"bootparams");
         if let Some(hz) = o.slice_hz {
             hal::uart_puts(b" slice_hz=");
@@ -329,6 +356,12 @@ pub fn apply_and_report(o: &Outcome) {
             } else {
                 hal::uart_put_dec(code as u64);
             }
+        }
+        if let Some(ns) = o.timer_slack {
+            // 纳秒原值直打（换算截尾律单源 berry_sched::timer_slack_defer
+            //——eco 不做第二换算面）。
+            hal::uart_puts(b" timer_slack=");
+            hal::uart_put_dec(ns as u64);
         }
         hal::uart_puts(b"\n");
     }

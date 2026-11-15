@@ -1111,8 +1111,9 @@ pub fn thaw_by_pinned(pinned: usize) {
 ///
 /// **M4 集成面预留窗（ADR #42 第二段，本刀不实装）**：task→band 赋值在此
 /// 接——elf spawn 时 manifest intent 档（`berry-manifest::Intent`）→
-/// `berry_iprofile::band_id_of_intent`（带 id ↔ intent 档映射单源，×4 现役
-/// 集 0x01..=0x04）→ `class::class_fair_intent` 建带实例入 ×N 带实例表；
+/// `berry_iprofile::band_id_of_intent`（带 id ↔ intent 档映射单源，首批
+/// 现役集 = 0x02/0x03——`band_enabled` 单源）→ `class::class_fair_intent`
+/// 建带实例入 ×N 带实例表；
 /// 策略覆盖通道 = `policy::band_of`（band 选择位，v3 `policy_bind` 写路）。
 /// 详见 `class.rs` M4 带实例化骨架段注。
 pub fn spawn_intent(entry: extern "C" fn(usize) -> !, arg: usize, name: &'static [u8],
@@ -2426,6 +2427,19 @@ pub fn block_current(obj: usize, signals: u64, deadline_vct: u64) -> WakeReason 
         //（下方两路 klock_release_switch 前）——终态「结构锁窗内禁切换」
         // 前瞻。过渡态 KL 全量在手 ⇒ 本窗恒零争用（SLEEPQ_LOCK 注释）。
         let sq_phys = sq_lock();
+        // CP-11（§3.8 机制面）：有限 deadline 按 intent 档 LATE-only 顺延
+        //——intent >= UTILITY 的睡眠者到期时间 +timer_slack（聚合窗内可
+        // 延迟；expire_timeouts 头扫自然把窗内到期者一pass 摘尽 = 批量
+        // 唤醒的机制面）。交互/未声明/LC 档恒等（slackface L2——交互零
+        // 牺牲零漂移）。顺延在**入队点一次落定**：下游三臂（idle park 的
+        // arm_at / 忙核授片处的 tighten_deadline / on_irq_tick 的 expire
+        // 扫描）全读 SLEEPQ 队头 `wait_deadline`——零改动继承顺延值。
+        let deadline_vct = crate::intent::timer_slack_defer(
+            (*cur).intent_effective,
+            deadline_vct,
+            crate::intent::timer_slack_ns(),
+            hal::timer::cntfrq(),
+        );
         // 填等待描述（唤醒方 wake_matching 的匹配依据）+ 入睡时刻戳（唤醒
         // 遥测环记 block→wake 延迟——`wait_since` 与 deadline 同窗填，无竞态）。
         (*cur).wait_obj = obj;

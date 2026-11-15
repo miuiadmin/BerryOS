@@ -6,7 +6,7 @@
 //! HAL 不依赖内核 crate）。**3-1 政策**（撤 2b-4「EL0 畸形号杀」）：未知/未实现
 //! 编号一律 `-ENOTSUP` 存活、绝不 panic；错误由用户态自理。
 //!
-//! v1 37 号编号全部在册（`abi_gen` 单源生成、经 `pub use` 转发——`tools/abi.toml`）；**36 号已实现（唯 0x85 `berry_attest` 预留位恒 `-ENOTSUP`——T-1 后在册真语义全实现 + A7-4 信号两号 + G4-2 0x21 pager 首形 + G4-4 X-3b 0x23 恒等选源 + X-6 刀① 0x24 批供表批）**——
+//! v1 39 号编号全部在册（`abi_gen` 单源生成、经 `pub use` 转发——`tools/abi.toml`）；**38 号已实现（唯 0x85 `berry_attest` 预留位恒 `-ENOTSUP`——T-1 后在册真语义全实现 + A7-4 信号两号 + G4-2 0x21 pager 首形 + G4-4 X-3b 0x23 恒等选源 + X-6 刀① 0x24 批供表批 + 桌面UX刀D 0x88 power_off + CP-08 0x40 util 快照读）**——
 //! handle 三操作 + clock_read（3-1）+ VMO/Vmar 十一号（3-2 + G-eco get_size +
 //! P6 get_phys 用户态 DMA 面）+
 //! process_create/start/exit + process_get_exit_code（P5——`&&` 真退出码源）+
@@ -82,7 +82,7 @@ pub use crate::abi_gen::{
     NR_OBJECT_WAIT_MANY, NR_OBJECT_WAIT_ONE, NR_PAGER_SUPPLY_MAPPED, NR_PAGER_SUPPLY_MAPPED_TABLE,
     NR_PAGER_SUPPLY_PAGES, NR_PROCESS_CREATE,
     NR_PROCESS_EXIT, NR_PROCESS_GET_EXIT_CODE, NR_PROCESS_START, NR_PROCESS_SUSPEND,
-    NR_SCHED_GETATTR, NR_SCHED_SETATTR, NR_THREAD_YIELD,
+    NR_SCHED_GETATTR, NR_SCHED_SETATTR, NR_SCHED_UTIL_SNAPSHOT, NR_THREAD_YIELD,
     NR_PROCESS_TERMINATE,
     NR_POWER_OFF, NR_SIGNAL_SEND, NR_SIGNAL_TAKE, NR_THREAD_CREATE, NR_THREAD_EXIT,
     NR_THREAD_SLEEP,
@@ -2546,6 +2546,39 @@ extern "C" fn sys_thread_yield(_tf: &mut TrapFrame) -> i64 {
     0
 }
 
+/// `berry_sched_util_snapshot(*util, count)`（0x40，CP-08 util 通道首环——
+/// OQ-8 通道形态首裁快照 pull 先行）：per-CPU util EWMA 快照读 = 生产侧
+/// 唯一读出口 `berry_sched::cpu_util` 的用户态面（0..=1024，与
+/// `Topo::capacity`/EM capacity 同尺度；PM 服务 schedutil 同构
+/// `f ≈ util × fmax / capacity` 的输入源——**频率裁决单点归 PM**，本号只读
+/// 不写、调度路径零频率写点）。生产侧零新累积：`Fair::tick` 记账在役
+/// （`class.rs` 的 `util_accumulate`/`util_tick_window`）。
+///
+/// 契约：`count < UTIL_NR_CPU` → -EINVAL；≥ 则只写实数槽（余槽不动），
+/// 返回 >0 = 实写槽位数（恰 = 内核 `UTIL_NR_CPU`——调用方可以此探核数，
+/// count-wins 口径同 0x24 批供表）；copy_out 失败 → -EFAULT 单发整段
+/// 拷贝无半写面。零 handle 零权利位（系统级遥测读面——统计信号非对象
+/// 内容，gen_abi `NO_GATE_SYSCALLS` 在册豁免）。
+///
+/// 锁类 TABLE（仅 KL）：EWMA 槽 Relaxed 原子读（统计信号无序角色，同
+/// `sched.rs::IRQ_TICKS` 先例）零共享串行面；copy_out 链走查调用方页表
+/// = §A113 读者面（同 0x61 clock_read/0x87 signal_take 升档论证）。
+extern "C" fn sys_sched_util_snapshot(tf: &mut TrapFrame) -> i64 {
+    let (ptr, count) = (tf.regs[1], tf.regs[2]);
+    if count < berry_sched::UTIL_NR_CPU as u64 {
+        return ERR_INVALID_ARG as i64;
+    }
+    let el1 = caller_is_el1(tf);
+    let mut raw = [0u8; berry_sched::UTIL_NR_CPU * 4];
+    for (c, slot) in raw.chunks_exact_mut(4).enumerate() {
+        slot.copy_from_slice(&berry_sched::cpu_util(c).to_le_bytes());
+    }
+    match copy_to_user(el1, ptr, &raw) {
+        Ok(()) => berry_sched::UTIL_NR_CPU as i64,
+        Err(e) => e as i64,
+    }
+}
+
 /// `berry_signal_send(h_process, sig)`（0x86，A7-4 段②）：向进程 pending
 /// 集位置位（幂等 = POSIX 标准信号合并语义）。`h=0` → 当前进程（raise 面，
 /// 零 handle 需求）；`h≠0` 门控 Process **MANAGE**（同 terminate 权利面）。
@@ -3900,7 +3933,9 @@ extern "C" fn sys_object_wait_many(tf: &mut TrapFrame) -> i64 {
 /// signal_send(0x86)/signal_take(0x87) = 33 号；G4-2 加
 /// pager_supply_pages(0x21，v2 号激活) = 34 号；G4-4 X-3b 加
 /// pager_supply_mapped(0x23，门 C 裁 A add-only——恒等选源挂派发) = 35 号；
-/// X-6 刀① 加 pager_supply_mapped_table(0x24) = 36 号已实现；v1 在册 37 号
+/// X-6 刀① 加 pager_supply_mapped_table(0x24) = 36 号已实现；桌面UX刀D 加
+/// power_off(0x88) = 37 号；CP-08 加 sched_util_snapshot(0x40，util 快照读
+/// ——OQ-8 首环，add-only) = 38 号已实现；v1 在册 39 号
 /// （唯 0x85 `berry_attest` 预留未实现）**；
 /// **S6-b 加 policy_bind(0x83，v3 号提前实现最小 COMMIT 面——v1 号面之外
 /// 首个真注册的 v3 号，ABI §4 在册同名单源）**。
@@ -3989,6 +4024,9 @@ pub fn install() {
     reg(NR_SCHED_GETATTR, sys_sched_getattr, SVC_CLASS_TABLE);
     // —— RQ+TABLE：yield（pick/requeue + 切换舞蹈；表位保守对称）——
     reg(NR_THREAD_YIELD, sys_thread_yield, SVC_CLASS_RQ_TABLE);
+    // —— TABLE：CP-08 util 快照读（0x40——EWMA 槽 Relaxed 原子读零共享
+    //    面；copy_out 链走查调用方页表 = §A113 读者面，同 0x61/0x87）。
+    reg(NR_SCHED_UTIL_SNAPSHOT, sys_sched_util_snapshot, SVC_CLASS_TABLE);
     reg(NR_CHANNEL_CREATE, sys_channel_create, SVC_CLASS_ALL);
     // —— SQ+RQ+TABLE：send/recv（fastpath sq_phys 外提已备，slice 2a）——
     reg(NR_CHANNEL_SEND, sys_channel_send, SVC_CLASS_SQ_RQ_TABLE);

@@ -326,14 +326,16 @@ pub fn sanitize(
     }
 }
 
-// ---- M4 IntentBand 带参数表（ADR #42 第二段骨架——调度优化终窗 2026-11-15）----
+// ---- M4 IntentBand 带参数表（ADR #42 第二段；调度优化终窗 2026-11-15 骨架
+// 落，2026-11-16 首批 band 激活——interactive+utility 两带现役）----
 //
-// **定位**：class_fair 按 intent 实例化 ×4 带（ADR #42 第二段 / `调度器
+// **定位**：class_fair 按 intent 实例化带实例（ADR #42 第二段 / `调度器
 // 设计-v1.2.md` §3.8 / `调点调度-v1.2.md` §7）的**带参数行**——纯数据 +
 // 纯函数（host 可测），与 IntentProfile 同键域（intent u8 = 带键，§11
-// 「band 不加 attr 字段——intent 即带键」）。骨架级：只定形状与缺省基线，
-// **不带间选择器、无预算记账、无热路径消费**（M4 入场券——v1 遥测实证 +
-// loadgen + 尾延迟断言——未过前 band 执法不并线；`band.rs` 同款纪律）。
+// 「band 不加 attr 字段——intent 即带键」）。首批激活面：现役集收窄见
+// [`band_enabled`]（×2——保守激活）；**不带间选择器、无预算记账、无热
+// 路径消费**（M4 入场券——v1 遥测实证 + loadgen + 尾延迟断言——未过前
+// band 执法不并线；`band.rs` 同款纪律）。
 //
 // **数值纪律**（ADR #42：「数字进启动配置参数表不写死」）：本表 = 骨架
 // 缺省基线，全部数值为**推断值【推】**——推断锚 = [`WATCH_PROFILE_TABLE`]
@@ -378,7 +380,7 @@ pub const BAND_LATENCY_MAX_NS: u64 = 2_000_000_000;
 /// = 现役行为」的零漂移缺省（M4 前/未入带任务的实际片长即此值）。
 pub const BAND_QUANTUM_DEFAULT_NS: u64 = 100_000_000;
 
-/// **M4 带参数缺省表**（六档全行；×4 现役集 = 0x01–0x04，见 [`band_enabled`]）。
+/// **M4 带参数缺省表**（六档全行；首批现役集 = 0x02–0x03，见 [`band_enabled`]）。
 ///
 /// 数值全部为推断值【推】，锚三件：权重 = [`WATCH_PROFILE_TABLE`] 同档
 /// 包络（带权重与 AI 夹紧包络同轴同源——强度不双写）；quantum = 5/10/20/
@@ -397,7 +399,8 @@ pub const INTENT_BAND_TABLE: [IntentBand; INTENT_BAND_ROWS] = [
         quantum_ns: BAND_QUANTUM_DEFAULT_NS,
         latency_target_ns: BAND_QUANTUM_DEFAULT_NS,
     },
-    // [1] 0x01 LATENCY_CRITICAL——×4 之首：最高权重包络（512..1024）、
+    // [1] 0x01 LATENCY_CRITICAL——阶梯之首（首批激活范围外——行随表在，
+    // 启用门在 [`band_enabled`]）：最高权重包络（512..1024）、
     // 最小 quantum（5ms）/最紧 latency_target（1ms；slack=0 exact 的带内
     // 对应——SLO 不可为 0，取最小非退化值）。【推】
     IntentBand {
@@ -461,13 +464,17 @@ pub fn band_table_valid(t: &[IntentBand]) -> bool {
     t.len() == INTENT_BAND_ROWS && t.iter().all(band_row_valid)
 }
 
-/// **×4 现役带集判**（ADR #42 第二段：0x01 latency_critical / 0x02
-/// interactive / 0x03 utility / 0x04 background；0x05 MAINTENANCE 编码
-/// 冻结不启用；0x00 UNSPECIFIED 无专带——XNU 式顶档待角色表/分类器定档，
-/// 不缺省借带优势）。class_fair 实例化工厂（`class_fair_intent`）与
-/// policy band 选择位（`policy.rs`）的词汇门同源此处。
+/// **首批现役带集判**（ADR #42 第二段；M4 首批激活——调度深水区收官
+/// 2026-11-16）：恰 0x02 interactive / 0x03 utility 两带 true——最小可验
+/// 对（两带参数差异可断言，ktest `BANDM4`）。其余四带 false = 入场券
+/// 纪律的**保守激活**：0x01 LC / 0x04 BACKGROUND 首批外（随入场券逐批
+/// 开——×4 全集是 M4 终态非首批形态）；0x05 MAINTENANCE 编码冻结不启用
+/// （用户裁决 2026-10-16）；0x00 UNSPECIFIED 无专带——XNU 式顶档待角色
+/// 表/分类器定档，不缺省借带优势。class_fair 实例化工厂
+/// （`class_fair_intent`）与 policy band 选择位（`policy.rs`）的词汇门
+/// 同源此处。
 pub const fn band_enabled(code: u8) -> bool {
-    matches!(code, 0x01..=0x04)
+    matches!(code, 0x02 | 0x03)
 }
 
 /// **带 id ↔ intent 档映射**（§11 带键 = intent：v1 恒等映射——band id
@@ -483,8 +490,9 @@ pub const fn band_id_of_intent(code: u8) -> Option<u8> {
     }
 }
 
-/// 查表主入口：intent u8 → 该档 [`IntentBand`]（仅 ×4 现役集；0x00/0x05/
-/// 保留域 → None——与 [`lookup`] 的「野键回落保守行」不同形：带行只在
+/// 查表主入口：intent u8 → 该档 [`IntentBand`]（仅现役集——首批 = 0x02
+/// interactive / 0x03 utility；首批外档（0x00/0x01/0x04/0x05）/保留域 →
+/// None——与 [`lookup`] 的「野键回落保守行」不同形：带行只在
 /// **可实例化**时给出，None 即「无带」，消费方（`class_fair_intent`）回落
 /// 现役单带 Fair——缺省行为零漂移）。
 pub fn band_of_intent(code: u8) -> Option<IntentBand> {
@@ -793,29 +801,46 @@ mod tests {
         assert_eq!(r.latency_target_ns, BAND_QUANTUM_DEFAULT_NS);
     }
 
-    /// ×4 现役集判：恰 0x01–0x04 四档 true；0x00（无专带）、0x05（编码
-    /// 冻结不启用）、0x06 起保留域全 false。
+    /// 首批现役集判（M4 激活）：恰 0x02/0x03 两档 true（interactive +
+    /// utility 最小可验对）；0x00（无专带）、0x01/0x04（首批外——入场券
+    /// 逐批）、0x05（编码冻结不启用）、0x06 起保留域全 false。
     #[test]
-    fn band_enabled_is_active_four() {
-        for code in [LATENCY_CRITICAL, INTERACTIVE, UTILITY, BACKGROUND] {
-            assert!(band_enabled(code), "档 {:#x} 须现役", code);
+    fn band_enabled_is_first_batch_two() {
+        for code in [INTERACTIVE, UTILITY] {
+            assert!(band_enabled(code), "档 {:#x} 须现役（首批）", code);
         }
-        for code in [UNSPECIFIED, MAINTENANCE, 0x06, 0x0F, 0x42, 0xFF] {
-            assert!(!band_enabled(code), "档 {:#x} 须不现役", code);
+        for code in [
+            UNSPECIFIED,
+            LATENCY_CRITICAL,
+            BACKGROUND,
+            MAINTENANCE,
+            0x06,
+            0x0F,
+            0x42,
+            0xFF,
+        ] {
+            assert!(!band_enabled(code), "档 {:#x} 须不现役（首批外）", code);
         }
     }
 
-    /// 查表 + 现役集门：0x01–0x04 → Some(同档表行)；0x00/0x05/保留域 →
-    /// None（无带——消费方回落现役单带，与 lookup 的回落保守行不同形）。
+    /// 查表 + 现役集门：首批 0x02/0x03 → Some(同档表行)；首批外档
+    /// （0x00/0x01/0x04/0x05）/保留域 → None（无带——消费方回落现役
+    /// 单带，与 lookup 的回落保守行不同形）。
     #[test]
     fn band_of_intent_maps_and_gates() {
-        for (code, idx) in
-            [(LATENCY_CRITICAL, 1usize), (INTERACTIVE, 2), (UTILITY, 3), (BACKGROUND, 4)]
-        {
+        for (code, idx) in [(INTERACTIVE, 2usize), (UTILITY, 3)] {
             assert_eq!(band_of_intent(code), Some(INTENT_BAND_TABLE[idx]));
         }
-        for code in [UNSPECIFIED, MAINTENANCE, 0x06, 0x42, 0xFF] {
-            assert_eq!(band_of_intent(code), None, "档 {:#x} 须无带", code);
+        for code in [
+            UNSPECIFIED,
+            LATENCY_CRITICAL,
+            BACKGROUND,
+            MAINTENANCE,
+            0x06,
+            0x42,
+            0xFF,
+        ] {
+            assert_eq!(band_of_intent(code), None, "档 {:#x} 须无带（首批外）", code);
         }
     }
 

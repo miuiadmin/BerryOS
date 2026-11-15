@@ -21,9 +21,13 @@
 //!
 //! **参数推断标注**：α=1/8、窗 10ms（`UTIL_WINDOW_HZ = 100`）为 emface
 //! 现役值（生产侧同款）；消费侧读出节奏（10-100ms 慢循环级，裁十债二
-//! 注入形态语境）与窗折叠节奏的相位差**未定**——随 CP-08 共享环/快照
-//! VMO 通道 ABI 裁（通道形态本身待裁：PM-15 §4.1 六面零新 syscall 裁决
-//! 在册）。真机 fmax/capacity/OPP 表随 CP-09/CP-18 落。
+//! 注入形态语境）与窗折叠节奏的相位差**未定**。**通道形态首环已裁**
+//! （CP-08 OQ-8：快照 syscall `sched_util_snapshot` 0x40——pull 模式，
+//! PM-15 §4.1 零新号裁决辖 SDK 服务 op 面、不辖内核→服务数据通道；
+//! 共享环 push 形态随 CP-10 通道窗叠加，add-only 不互斥）——
+//! [`UtilTrack::ingest_snapshot`] 即其载荷面；消费侧对快照的再折叠 =
+//! 消费侧二次平滑（生产侧已是同源 EWMA），节奏自定随读出循环落。
+//! 真机 fmax/capacity/OPP 表随 CP-09/CP-18 落。
 
 use berry_emface::ewma_fold;
 
@@ -67,6 +71,21 @@ impl UtilTrack {
             return None;
         }
         self.ingest_window(cpu, util as u64, UTIL_FULL as u64)
+    }
+
+    /// 全核快照输入口（CP-08 首环通道载荷面——内核 `sched_util_snapshot`
+    /// 0x40 号产出的 per-CPU u32 数组逐核投 [`ingest_sample`]）。坏载荷
+    /// 拒面**全或无**：长度 ≠ `UTIL_NR_CPU`（通道载荷定长——两端同源
+    /// 常量，长度错 = 契约违例）或任一核样本 >1024 → `None` 且状态
+    /// 零改动（不半折——通道载荷与单核样本同律）。
+    pub fn ingest_snapshot(&mut self, util: &[u32]) -> Option<()> {
+        if util.len() != UTIL_NR_CPU || util.iter().any(|&u| u > UTIL_FULL) {
+            return None;
+        }
+        for (cpu, &u) in util.iter().enumerate() {
+            self.ingest_sample(cpu, u);
+        }
+        Some(())
     }
 
     /// 某核当前 EWMA（读面宽容：越界 → 0——sched 生产侧 `cpu_util` 同口径；
@@ -183,6 +202,42 @@ mod tests {
             assert_eq!(ra, rb, "x={x}");
             assert_eq!(a.est(0), b.est(0), "x={x}");
         }
+    }
+
+    /// 快照输入口（CP-08 首环载荷面 loopback 扩展）：通道路径 ≡ 逐核
+    /// 单核路径（同初值下 `ingest_snapshot([a,b])` 与逐核 `ingest_sample`
+    /// 逐位一致——快照面不长第二套折叠的构造性钉板）；坏载荷全或无
+    /// （长度错/任一核越界 → None 且状态零改动）。
+    #[test]
+    fn snapshot_ingest_loopback_and_rejects() {
+        // 等价主形：两轨同初值，一轨走快照、一轨逐核 sample，逐位一致。
+        let mut s = UtilTrack::new();
+        let mut p = UtilTrack::new();
+        for t in [&mut s, &mut p] {
+            t.ingest_sample(0, 300); // 铺非零初值再验（非平凡折叠）
+            t.ingest_sample(1, 100);
+        }
+        assert_eq!(s.ingest_snapshot(&[1024, 0]), Some(()));
+        p.ingest_sample(0, 1024);
+        p.ingest_sample(1, 0);
+        assert_eq!((s.est(0), s.est(1)), (p.est(0), p.est(1)),
+            "快照路 ≡ 单核路（CP-08 首环载荷面）");
+        assert_eq!(s.max_est(), p.max_est());
+        // 多轮等价（EWMA 连续折叠下两轨不漂）。
+        for (k, snap) in [[512u32, 512], [0, 1024], [777, 3]].iter().enumerate() {
+            assert_eq!(s.ingest_snapshot(snap), Some(()), "轮 {k}");
+            p.ingest_sample(0, snap[0]);
+            p.ingest_sample(1, snap[1]);
+        }
+        assert_eq!((s.est(0), s.est(1)), (p.est(0), p.est(1)), "多轮不漂");
+        // 坏载荷全或无：长度错（0/1/3）或任一核 >1024 → None 且零改动。
+        let before = (s.est(0), s.est(1));
+        assert_eq!(s.ingest_snapshot(&[]), None, "空载荷");
+        assert_eq!(s.ingest_snapshot(&[512]), None, "缺核");
+        assert_eq!(s.ingest_snapshot(&[512, 512, 512]), None, "超长");
+        assert_eq!(s.ingest_snapshot(&[512, UTIL_FULL + 1]), None, "越界核");
+        assert_eq!(s.ingest_snapshot(&[u32::MAX, 0]), None, "wild 越界核");
+        assert_eq!((s.est(0), s.est(1)), before, "拒面零改动（全或无）");
     }
 
     /// 坏输入拒面：cpu 越界（UTIL_NR_CPU/255）、elapsed=0（除零前置）、

@@ -30,16 +30,18 @@ level = 1             # 初值 1 = 首个冻结面起点（v1 37 号在册面）
 
 [meta]
 stage = "v1"
-nr_total = 38        # v1 在册号数（生成器校验 = 下方 stage="v1" 行数；含 0x85
+nr_total = 39        # v1 在册号数（生成器校验 = 下方 stage="v1" 行数；含 0x85
                      # berry_attest 在册未实现预留位——SEC-01 件 11；含 0x86/0x87
                      # 信号面——A7-4 门 C 裁定 A add-only 加号；含 0x23
                      # pager_supply_mapped——G4-4 门 C 裁 A add-only 加号；含 0x24
                      # pager_supply_mapped_table——X-6 刀① 批供表批加号；含
-                     # 0x88 power_off——桌面UX刀D add-only 加号）
-implemented = 37     # 已实现（T-1 后在册真语义全实现 + A7-4 段②信号两号翻真 +
+                     # 0x88 power_off——桌面UX刀D add-only 加号；含 0x40
+                     # sched_util_snapshot——CP-08 util 通道首环 add-only 加号）
+implemented = 38     # 已实现（T-1 后在册真语义全实现 + A7-4 段②信号两号翻真 +
                      # G4-2 0x21 pager_supply_pages v2 号激活 + G4-4 X-3b
                      # 0x23 pager_supply_mapped 挂派发翻真 + X-6 刀①
-                     # 0x24 pager_supply_mapped_table 挂派发；
+                     # 0x24 pager_supply_mapped_table 挂派发 + CP-08
+                     # 0x40 sched_util_snapshot 快照读面；
                      # 唯 0x85 berry_attest 预留位恒 -ENOTSUP——与未知号同形，
                      # ABI §8.0 永不 panic 执法）
 nr_ceiling = 45      # syscall 号面帽上界（ADR #11「~30–45」上限端）。生成器执法
@@ -587,6 +589,26 @@ desc = '主动让出当前时间片；无 handle，等价内核 yield_now；无�
 stage = "1.1"
 implemented = true
 note = 'S1 收口：SVC 面 direct yield_now（含切换锁舞蹈）已落。'
+
+[[group]]
+title = "**调度遥测**（调度彻底计划 CP-08——util 信号通道首环，OQ-8 通道形态首裁）"
+[[group.syscall]]
+num = 0x40
+name = "sched_util_snapshot"
+desc = 'per-CPU util EWMA 快照读（0..=1024——与 Topo::capacity/EM capacity 同尺度；sched/src/util.rs 生产侧唯一读出口 cpu_util 的用户态面）。入参 util（u32 LE 数组出参）+ count（槽位数）；count < 内核核数 → -EINVAL，≥ 则只写实数槽、余槽不动；返回 >0 = 实写槽位数（恰 = 内核 UTIL_NR_CPU，调用方以此探核数），负 = errno。零 handle 零权利位（系统级遥测读面——统计信号非对象内容；单用户仿真系统无能力框架）。拉模式（pull）——消费方轮询节奏自定，频率裁决单点归 PM 服务'
+stage = "v1"
+implemented = true
+note = '''CP-08 util 通道首环（docs/调度彻底计划-v1.2.md:100 验收线「berry-power 消费
+util 信号（schedutil 同构 f≈util×fmax/capacity）」的内核侧产出面）+ OQ-8
+（:217）通道形态首裁：快照 syscall pull 形态先行——共享环 push 形态随 CP-10
+通道窗叠加（add-only 不互斥）。加号依据：零 VMO 共享先例（telemetry_open
+0x84 环面 stage=v3 未启，建环面远超首环体量）；add-only 加号先例 0x86/0x87/
+0x88；PM-15 §4.1「六面零新 syscall」辖 SDK 服务 op 面，不辖内核→服务数据通道
+（util 生产侧 v1.3 立法时已内定「PM 读面」，sched/src/util.rs:94-96）。生产侧
+零新累积——Fair::tick 记账在役（class.rs util_accumulate/util_tick_window），
+本号只读不写。锁类 SVC_CLASS_TABLE（copy_out 链走查调用方页表——§A113 读者
+面，同 0x61/0x87）；EWMA 槽 Relaxed 原子读（统计信号无序角色）。消费端 =
+berry-power UtilTrack::ingest_snapshot（折叠数学单源 berry-emface）。'''
 
 [[group]]
 title = "**异常**"

@@ -43,7 +43,7 @@ v0 范围（最小可用，不做镜像全产线）——对照九步（设计�
   - 步① 清单校验：product 键子集（预装集/品牌资源路径/默认应用）全量执法；
     platform 键 v0 只做存在性 + 枚举轻校验（深合同执法随 #83 落册后的工具升版）。
     `[platform.boot.params]` 词表执法（Q2：键 ⊆ 启动参数词表、未知键硬拒——
-    词表 v1 最小集 = sched_slice_hz/intent_default，§1.6）。
+    词表 v1 = sched_slice_hz/intent_default/timer_slack 三键，§1.6+CP-11）。
   - 步② 白名单校验·V15 半（收编注记：曾于实施轮二实装、rebase 事故冲掉后
     重放，源 = 21 号 §5 结构记录）：`[product.apps.priv_grants]`
     {app_id → [能力键]} 全量执法——app_id 对账 preset 预装集（白名单只授
@@ -100,7 +100,7 @@ v0 范围（最小可用，不做镜像全产线）——对照九步（设计�
     etc/boot-params.toml 条目（etc/locale.toml 投放先例同款「投放面最小」
     ——条目名+内容定形进计划；**--emit 模式 = 最小产件面**：同清单复验后
     实写 <out-dir>/etc/boot-params.toml，格式 = schema=1 头 + 键值对，
-    词表 v1 两键直映 BOOT_PARAMS_SPEC，读者 = 内核 bootparams 消费端
+    词表 v1 三键直映 BOOT_PARAMS_SPEC，读者 = 内核 bootparams 消费端
     〔kernel/src/bootparams.rs，TOML 子集：u32 裸值 / intent 带引号〕
     ——镜像全产线步⑥（locale 等余投放件 + just 配方接线）仍归 V13
     后续刀）。消费设计 = 设计文档 §1.6-补（内核启动序列早期 cpio 查找 →
@@ -165,12 +165,18 @@ INTENTS = (                                # ADR #58 六档词表（mkapp INTENT
 )
 PARAMS_MAX = 32        # params 子表条目帽（§1.6-4 解析面定界：INITRD 段 count 帽 32）
 
-# [platform.boot.params] 词表 v1 最小集（§1.6-3；词表本体 add-only、未知键硬拒——
+# [platform.boot.params] 词表 v1（§1.6-3；词表本体 add-only、未知键硬拒——
 # Q2。restricted/locked 档行随 PM/thermal 域刀增补——v1 词表内无 locked 行，
-# locked 键「出现即拒」由未知键拒面先行覆盖）。
+# locked 键「出现即拒」由未知键拒面先行覆盖）。CP-11（2026-11-15）词表 v1
+# 扩第三键 timer_slack（§3.8 机制面——policy 三元组 (slice, intent_default,
+# timer_slack) 补全；slackface PolicyTriple 同形）。
 BOOT_PARAMS_SPEC = {
     "sched_slice_hz": ("u32", (16, 1024)),  # free 档（缺省归上游编译期常量）
     "intent_default": ("intent", None),     # free 档（六档词表；缺省 utility）
+    "timer_slack": ("u32", (0, 999_999_999)),  # free 档（ns；缺省 0=无松弛——
+    #   上界 = 内核 parse_u32 九位帽对读，全域 < slackface SLACK_MAINTENANCE_NS
+    #   10s 帽；读者 = sched 全局 set_timer_slack_ns → block_current LATE-only
+    #   顺延（intent >= UTILITY 档 +slack、交互档恒等））
 }
 
 # V15 特权白名单能力键闭集（priv_grants 值域——步②）。对账锚两源同集：
@@ -236,7 +242,7 @@ TRUST_PK_ENTRY = "etc/trust-pk"   # 装载守卫锚归档名（svcmgr cpio_find 
 # G5：boot.params 序列化投放归档名——[platform.boot.params] 非空 → 计划面
 # etc/boot-params.toml 条目（etc/locale.toml 投放先例同款「投放面最小」：
 # 条目名+内容定形进计划，生成件归全产线步⑥）。文件格式 v1 = schema=1 头
-# + 键值对（词表 v1 两键直映 BOOT_PARAMS_SPEC；键序 = 字典序——确定性
+# + 键值对（词表 v1 三键直映 BOOT_PARAMS_SPEC；键序 = 字典序——确定性
 # 纪律，同输入同计划行）；空 params = 不投放（缺省零扰动）。
 # 读者 = 内核启动序列早期 cpio 查找（消费设计 = 设计文档 §1.6-补；
 # sched_slice_hz 换算 slice_cycles / intent_default 新任务缺省 intent
@@ -959,7 +965,8 @@ def build_plan(prod: Product, items: list, n_base: int, pr: int, level: int,
             f"schema=1 头 + 键值对、键序 = 字典序；override 语义——缺省归"
             f"上游〔§1.6〕；产件面 = --emit 模式（最小产件，非全产线）；"
             f"读者 = 内核启动序列早期 cpio 查找〔§1.6-补：sched_slice_hz"
-            f" 换算 slice_cycles / intent_default 新任务缺省 intent——消费端"
+            f" 换算 slice_cycles / intent_default 新任务缺省 intent / "
+            f"timer_slack 系统缺省松弛（CP-11）——消费端"
             f" 已落〔kernel/src/bootparams.rs〕〕）")
     if prod.locale:
         kv = " ".join(f"{k}={prod.locale[k]!r}" for k in sorted(prod.locale))
@@ -1092,6 +1099,9 @@ kernel = "KERNEL.ELF@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495
 #                                  #   样例只落推荐面。research/显示与加速体系设计/17 号 §4）
 # intent_default = "utility"       # 六档词表（ADR #58）；节非空 → 计划面产
 #                                  #   etc/boot-params.toml 条目（G5——内核启动序列读）
+# timer_slack = 50000000           # 词表 v1 扩第三键（CP-11）：u32 ns [0,999999999]
+#                                  #   系统缺省 timer slack——非交互档（utility 及以下）
+#                                  #   到期顺延上界、交互档恒等；缺省 0 = 无松弛零漂移
 
 [platform.storage]
 image_size_mib      = 96          # 现役值（[48,1024]）
@@ -1375,6 +1385,8 @@ def selftest() -> int:
              KERNEL_LINE + PARAMS_BLOCK + "sched_slice_hz = 15", "sched_slice_hz"),
             ("params intent 六档外", KERNEL_LINE,
              KERNEL_LINE + PARAMS_BLOCK + 'intent_default = "turbo"', "六档词表"),
+            ("params timer_slack 域外（CP-11）", KERNEL_LINE,
+             KERNEL_LINE + PARAMS_BLOCK + "timer_slack = 1000000000", "timer_slack"),
             ("storage 缺键", 'min_power_atomicity = "p0"', "", "必填缺失"),
             ("image_size_mib 域外", "image_size_mib      = 96",
              "image_size_mib      = 47", "image_size_mib"),
@@ -1679,6 +1691,21 @@ def selftest() -> int:
         leg(prod.params == {} and not any(BOOT_PARAMS_ENTRY in ln
                                           for ln in plan),
             "空 params 零投放（缺省向后兼容）")
+        # CP-11（词表 v1 扩第三键 timer_slack）：正例 load + 序列化黄金字节
+        #（u32 裸数字形——与 sched_slice_hz 同形；G5-3 数据源钉板）。
+        PARAMS_OK3 = (SELFTEST_PRODUCT + "\n\n[platform.boot.params]\n"
+                      "timer_slack = 50000000\n")
+        try:
+            p3 = load_product(write_prod(PARAMS_OK3, "g5-3.toml"))
+            leg(p3.params == {"timer_slack": 50000000},
+                "load params 第三键 timer_slack（词表 v1 扩——CP-11 机制面"
+                "数据源；域 [0,999999999]）")
+            leg(serialize_boot_params(p3)
+                == b"schema = 1\ntimer_slack = 50000000\n",
+                "serialize 第三键黄金字节（u32 裸值——内核 TOML 子集合同"
+                "对读；0 缺省语义 = 不投放/投放 0 值均合法）")
+        except Reject as e:
+            leg(False, f"CP-11 正例被拒（词表漂移）：{e}")
         # G5 产件面（--emit）：序列化黄金字节（内核 bootparams parse 合同：
         # schema=1 头 + 键值对、字典序、u32 裸值/intent 带引号）+ do_emit
         # 实写/空 params 零产件——产品链最后一毫米的自检钉。

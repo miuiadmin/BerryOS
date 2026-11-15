@@ -22,7 +22,7 @@
 
 use crate::task::Task;
 use berry_intface::IntentState;
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 
 // ---- 编码冻结 + 三道帽（单源 = berry-intface；此处 re-export 供
 // kernel/ktest 既有消费面零改动）----
@@ -52,6 +52,54 @@ pub fn set_intent_default(code: u8) {
 /// 读新任务缺省 intent（`Task` 装配点消费——task.rs `try_assemble`）。
 pub fn intent_default() -> u8 {
     INTENT_DEFAULT.load(Ordering::Relaxed)
+}
+
+// ---- CP-11（§3.8 机制面·2026-11-15）：timer_slack——系统缺省 timer slack ----
+
+/// 系统缺省 timer slack（纳秒；boot-params 第三键 `timer_slack`——
+/// kernel/src/bootparams.rs 消费注入，slackface `PolicyTriple.timer_slack_ns`
+/// 的内核全局存）。缺省 0 = 无松弛 = 现役行为零漂移（空 params 镜像逐位
+/// 不变——`INTENT_DEFAULT` 同款合同）。原子 Relaxed：boot 单写者 + 之后
+/// `block_current` 多核只读（免 unsafe 面——`INTENT_DEFAULT` 同款纪律）。
+static TIMER_SLACK_NS: AtomicU64 = AtomicU64::new(0);
+
+/// 设置系统缺省 timer slack（boot 早期；值域 [0, 999_999_999] 执法归
+/// bootparams 词表——本面信任调用方）。
+pub fn set_timer_slack_ns(ns: u64) {
+    TIMER_SLACK_NS.store(ns, Ordering::Relaxed);
+}
+
+/// 读系统缺省 timer slack（`block_current` 消费点）。
+pub fn timer_slack_ns() -> u64 {
+    TIMER_SLACK_NS.load(Ordering::Relaxed)
+}
+
+/// timer slack 的 LATE-only 顺延判定律（纯函数；判定律单源在
+/// `user/berry-slackface`——L1 late-only / L2 最紧不越两律的内核消费面，
+/// 聚合分桶不在此重实现）。
+///
+/// 语义：`intent` 档 **>= UTILITY**（`INTENT_UTILITY..=INTENT_MAINTENANCE`
+/// 三档——UTILITY/BACKGROUND/MAINTENANCE）才顺延；**交互零牺牲**（§3.8
+/// :156——INTERACTIVE/LATENCY_CRITICAL 不加，slackface L2 的推论）+ 未声明
+/// 零漂移（UNSPECIFIED 不加——「未声明不是声明了低档」，保存量任务
+/// BLOCK/INTENT/G1.5 时序逐位不变）；保留域（0x06..）保守回 exact。
+/// 数学面：零 slack / 异常频率 / 无限等哨兵（`u64::MAX`）恒等；否则 ns→tick
+/// **截尾**换算（floor——实际顺延恒 ≤ 声明 slack，LATE-only 永不提前），
+/// 顶域夹 `u64::MAX - 1`（不回绕、不撞无限等哨兵）。
+pub fn timer_slack_defer(intent: u8, deadline_vct: u64, slack_ns: u64, freq: u64) -> u64 {
+    if slack_ns == 0 || freq == 0 || deadline_vct == u64::MAX {
+        return deadline_vct;
+    }
+    if !(INTENT_UTILITY..=INTENT_MAINTENANCE).contains(&intent) {
+        return deadline_vct;
+    }
+    let delta = slack_ns as u128 * freq as u128 / 1_000_000_000;
+    if delta == 0 {
+        return deadline_vct;
+    }
+    let deferred = deadline_vct as u128 + delta;
+    let cap = (u64::MAX - 1) as u128;
+    deferred.min(cap) as u64
 }
 
 /// `Task` intent 五字段 → 纯值域投影（W3-Q13：判定律只读这五个数）。

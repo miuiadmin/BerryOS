@@ -824,12 +824,13 @@ test-host:
     # PM-16 §4.1 契约冻结）。
     cargo test --manifest-path user/Cargo.toml -p berry-pwproto --target {{host}}
     # CP-08 接线刀（04 号复核 F3/§6-13 收口）：PM 四 crate host 测试行——
-    # berry-power(31)/berry-thermal(13)/berry-em(8)/berry-slackface(12)
+    # berry-power(32)/berry-thermal(13)/berry-em(8)/berry-slackface(12)
     # 全是独立小工作区（空 [workspace] escape 根/父 workspace，不入
     # user/Cargo.toml members），--manifest-path 直指 crate（berry-ksproto
     # 先例形态）。berry-power/berry-thermal bin 挂 wired required-features
     # 门（musl 产线面——build-user PM 段开 --features wired 落链；host
-    # 测试相整跳 bin，聚合/仲裁纯核全在 lib）。
+    # 测试相整跳 bin，聚合/仲裁纯核全在 lib）。berry-power 32 = 31 +
+    # CP-08 刀③ util 快照载荷面 1 测（ingest_snapshot loopback/拒面）。
     cargo test --manifest-path user/bins/berry-power/Cargo.toml --target {{host}}
     cargo test --manifest-path user/bins/berry-thermal/Cargo.toml --target {{host}}
     cargo test --manifest-path user/berry-em/Cargo.toml --target {{host}}

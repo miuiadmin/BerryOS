@@ -30,11 +30,16 @@
 //!   错乱的裁决答案；分端执法归通道拓扑接线刀）；真机相 battery 策略
 //!   输入 = 电池驱动自报经同一会话机（lib `session` 面）。骨架以合成帧
 //!   流代源（`synth_wire`——loopback 测试面，非 sim 流消费权主张）。
-//! - **窗 3（util 通道）**：CP-08 共享环/快照 VMO ABI（形态待裁——
-//!   PM-15 §4.1 六面零新 syscall 裁决在册）；schedutil 同构消费已就位
-//!   （lib `util` 面）。CP-08/CP-10 验收线的内核侧两断言（调度路径零
-//!   频率写点 / PM 崩溃内核保频继续跑）归 kernel/sched 面（owner 占用，
-//!   本刀零碰）。
+//! - **窗 3（util 通道）**：**首环已闭合**（CP-08 刀③）——OQ-8 通道形态
+//!   首裁 = 快照 syscall `sched_util_snapshot` 0x40（pull 模式；PM-15
+//!   §4.1 零新号裁决辖 SDK 服务 op 面、不辖内核→服务数据通道；共享环
+//!   push 形态随 CP-10 通道窗叠加，add-only 不互斥）。本 bin 起机自检
+//!   即走真实快照读（`berry_sched_util_snapshot` → lib
+//!   `ingest_util_snapshot` 逐核折叠；失败回落合成窗账——下方 dry-run）；
+//!   schedutil 同构消费在 lib `util` 面。**剩余留窗**：常驻循环的周期
+//!   轮询面（当前仅自检单读——随窗 2 recv 循环同刀）。CP-08/CP-10 验收
+//!   线的内核侧两断言（调度路径零频率写点 / PM 崩溃内核保频继续跑）归
+//!   kernel/sched 面断言刀。
 //! - **窗 4（内核聚合点写面）**：ADR #66 ②——频率帽汇入 berry-power 同
 //!   一内核聚合点取 min = **唯一合法帽书写面**（帽不新开通道；本服务
 //!   `FreqCapAgg::aggregate` 是其纯函数形态）。真实写通道（对内核
@@ -56,6 +61,8 @@
 use berry_power::{
     CoreEvent, PolicyParams, PowerCore, CAP_SRC_SCHEDHINT, CHG_REASON_USER, CHG_SLOT_USER,
 };
+use berry_power::util::UTIL_NR_CPU;
+use berry_sys::berry_sched_util_snapshot;
 use berry_pwproto::{
     encode_ack, encode_battery, encode_modem, encode_thermal, BatterySnapshot, ModemSnapshot,
     ThermalSensor, ThermalSnapshot, ThermalTrip, ACK_LEN, ST_OK, THERMAL_SENSORS_MAX,
@@ -143,9 +150,20 @@ fn main() {
         }
     }
 
-    // —— util 输入口骨架（窗 3 真实通道 = CP-08 环/快照 VMO ABI）：一窗
-    // 满忙账（accum == elapsed → util_raw = 1024 → EWMA 128）。
-    core.ingest_util_window(0, 625_000, 625_000);
+    // —— util 输入首环（窗 3 通道形态已裁：快照 syscall `sched_util_snapshot`
+    //    0x40 pull——CP-08 OQ-8 首环）：真实快照优先（内核 per-CPU EWMA
+    //    直读——`berry_sched_util_snapshot` + `ingest_util_snapshot` 逐核
+    //    折叠），失败回落合成窗账（loopback 代源——一窗满忙 accum ==
+    //    elapsed → util_raw = 1024 → EWMA 128；旧相内核/通道未通时自检
+    //    不空转，boot 探测回退先例同 0x24 表批）。
+    let mut util_src = "synth";
+    let mut snap = [0u32; UTIL_NR_CPU];
+    let rc = berry_sched_util_snapshot(snap.as_mut_ptr(), snap.len());
+    if rc > 0 && core.ingest_util_snapshot(&snap).is_some() {
+        util_src = "k";
+    } else {
+        core.ingest_util_window(0, 625_000, 625_000);
+    }
 
     // —— 外部输入面骨架：调度 hint 帽（#42 系统态叠加票词汇）与用户帽
     // （设置面——#68 冻结形 pct 票，经 F1 桥兼容投递换 mA 落票；换算
@@ -166,10 +184,13 @@ fn main() {
         .limit_pct(cap_uah)
         .map(|p| p.to_string())
         .unwrap_or_else(|| "n/a".to_string());
-    // 诊断行（非 smoke 标记——见模块注窗表尾注）。
+    // 诊断行（非 smoke 标记——见模块注窗表尾注）。util 面：@k = 内核快照
+    // 真值（CP-08 首环闭合——syscall 读 → ingest 折叠 → max_est 进频率
+    // 裁决），@synth = 合成回落（loopback 代源）。
+    let util_max = core.util.max_est();
     println!(
-        "berry-power: skeleton dry-run applied={} rejected={} acks={} cap={} chg={}mA(r{};compat {}pct@{}uah) freq req={}khz eff={}khz",
-        applied, rejected, acks, cap, v.chg.limit_ma, v.chg.reason, compat_pct, cap_uah,
+        "berry-power: skeleton dry-run applied={} rejected={} acks={} util={}@{} cap={} chg={}mA(r{};compat {}pct@{}uah) freq req={}khz eff={}khz",
+        applied, rejected, acks, util_max, util_src, cap, v.chg.limit_ma, v.chg.reason, compat_pct, cap_uah,
         v.freq.req_khz, v.freq.eff_khz
     );
     // CP-08 装配形态：自检（上方 dry-run = 引擎活面单轮走通）后 park 常驻

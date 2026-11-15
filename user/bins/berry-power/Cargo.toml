@@ -38,9 +38,11 @@ test = false
 required-features = ["wired"]
 
 [features]
-# wired = bin 壳接上 berry-libc（println/park 家族原语）；host 测试不需要
-# （04 号复核 F4「bin 无 berry-libc shim」缺注随本刀收口）。
-wired = ["dep:berry-libc"]
+# wired = bin 壳接上 berry-libc（println/park 家族原语）+ berry-sys（CP-08
+# util 通道首环——sched_util_snapshot 0x40 快照读）；host 测试不需要
+# （04 号复核 F4「bin 无 berry-libc shim」缺注随前刀收口；berry-sys 同门
+# ——host 测试相纯核全在 lib，零 EL0 面零 syscall 依赖）。
+wired = ["dep:berry-libc", "dep:berry-sys"]
 
 [dependencies]
 # 契约单源：sim 三设备快照协议（帧/ACK/流式解码——ADR #68 ③ SDK 面零新
@@ -51,6 +53,10 @@ berry-pwproto = { path = "../../berry-pwproto" }
 berry-emface = { path = "../../../emface" }
 # bin 壳（optional，wired 门）：console 诊断行 + park 常驻原语。
 berry-libc = { path = "../../berry-libc", optional = true }
+# util 通道首环（optional，wired 门）：sched_util_snapshot 0x40 快照读
+# wrapper——内核 per-CPU EWMA → 本服务消费（CP-08 刀③；simbattery 同款
+# berry-sys 依赖先例）。
+berry-sys = { path = "../../berry-sys", optional = true }
 
 [profile.release]
 opt-level = "z"

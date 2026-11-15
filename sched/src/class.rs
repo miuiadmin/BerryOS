@@ -434,16 +434,20 @@ impl Fair {
     }
 }
 
-// ---- M4 带实例化骨架（ADR #42 第二段——class_fair 按 intent 实例化 ×4 带；
-// 调度优化终窗 2026-11-15，骨架级：构造面先落、行为差异化凭 M4 入场券入场）----
+// ---- M4 带实例化（ADR #42 第二段——class_fair 按 intent 实例化带实例；
+// 调度优化终窗 2026-11-15 骨架落，2026-11-16 首批 band 激活——两带现役、
+// 参数差异生效；trait 行为差异化仍凭 M4 入场券入场）----
 //
 // 立法约束（ADR #42 / 重议触发器表「class_fair 单实例 → ×N 带实例」条）：
 // - **只许按 intent 实例化同一 `SchedClass` trait、禁改签名**——本段零
 //   trait 改动、零既有签名改动；现役单带 [`Fair`] 原样保留（`RoundRobin`
 //   别名与全部既有调用点零漂移）。
-// - ×4 现役带集 = 0x01 LC / 0x02 interactive / 0x03 utility / 0x04
-//   background；0x05 MAINTENANCE 编码冻结不启用、0x00 UNSPECIFIED 无专带
-//   （XNU 式顶档待定档）——词汇单源 `berry_iprofile::band_enabled`。
+// - 首批现役带集 = 0x02 interactive / 0x03 utility（M4 首批激活——最小
+//   可验对：两带 quantum/权重包络/latency_target 参数差异经
+//   [`class_fair_intent`] 工厂生效，ktest `BANDM4` 断言）；0x01 LC /
+//   0x04 background 首批外、0x05 MAINTENANCE 编码冻结不启用、0x00
+//   UNSPECIFIED 无专带（XNU 式顶档待定档）——词汇单源
+//   `berry_iprofile::band_enabled`（×4 全集随入场券逐批开）。
 // - **入场券未过前 band 执法不并线**（v1 遥测实证 + loadgen + 尾延迟断言
 //   + 空闲核金丝雀；`调点调度-v1.2.md` §7）——故 [`FairBand`] 的 trait
 //   行为与 [`Fair`] **逐位一致**（全方法委托 unit `Fair`）：本刀只立
@@ -466,8 +470,8 @@ use berry_iprofile::IntentBand;
 /// （显式带参数——M4 启动配置覆盖路径的入口形状）。
 #[derive(Debug, Clone, Copy)]
 pub struct FairBand {
-    /// 带 id = intent 档编码（带键 = intent，§11；工厂路径恒 ×4 现役集
-    /// 0x01..=0x04——`band_of_intent` 门保证；`new` 显式路径的域执法归
+    /// 带 id = intent 档编码（带键 = intent，§11；工厂路径恒现役集——
+    /// 首批 = 0x02/0x03，`band_of_intent` 门保证；`new` 显式路径的域执法归
     /// 调用方〔启动配置面，band_id_of_intent 判〕）。
     pub band_id: u8,
     /// 本带参数（骨架位：字段落位 + host 可测面 `berry-iprofile`；热路径
@@ -484,9 +488,9 @@ impl FairBand {
 }
 
 /// **class_fair_intent 工厂**：按 intent 档建 [`FairBand`] 带实例——查
-/// `berry_iprofile::band_of_intent`（×4 现役集 0x01..=0x04 → 该档带参数行；
-/// 0x00/0x05/保留域 → `None` = 无带，调用方回落现役单带 [`Fair`]，缺省
-/// 行为零漂移）。
+/// `berry_iprofile::band_of_intent`（首批现役集 0x02/0x03 → 该档带参数
+/// 行；首批外档/保留域 → `None` = 无带，调用方回落现役单带 [`Fair`]，
+/// 缺省行为零漂移）。
 ///
 /// **集成面预留窗（M4 并线时接，本刀不实装）**：task→band 赋值——elf
 /// spawn 时读 manifest intent 档（`berry-manifest::Intent` 六档词表）→

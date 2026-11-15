@@ -3,8 +3,8 @@
 //! 守卫 = `just abi-check`（`tools/gen_abi.py --check`，挂 build/smoke 前置）。
 //! 与内核侧 `kernel/src/abi_gen.rs` 同源生成（两端 u32/u64 类型约定见
 //! `tools/gen_abi.py` 头注——那是 ABI 决策不是漂移）。
-//! 预算四元组（生成器执法，ADR #11 帽）：nr_total=38 / nr_defined=42 /
-//! nr_registered=41 / nr_ceiling=45（口径与内核侧头注同源同值）。
+//! 预算四元组（生成器执法，ADR #11 帽）：nr_total=39 / nr_defined=43 /
+//! nr_registered=42 / nr_ceiling=45（口径与内核侧头注同源同值）。
 
 use crate::{Handle, Rights, Status, Time};
 
@@ -167,6 +167,18 @@ pub(crate) mod nr {
     pub(crate) const PROCESS_SUSPEND: usize = 0x3E;
     /// S1 收口：SVC 面 direct yield_now（含切换锁舞蹈）已落。
     pub(crate) const THREAD_YIELD: usize = 0x3F;
+    /// CP-08 util 通道首环（docs/调度彻底计划-v1.2.md:100 验收线「berry-power 消费
+    /// util 信号（schedutil 同构 f≈util×fmax/capacity）」的内核侧产出面）+ OQ-8
+    /// （:217）通道形态首裁：快照 syscall pull 形态先行——共享环 push 形态随 CP-10
+    /// 通道窗叠加（add-only 不互斥）。加号依据：零 VMO 共享先例（telemetry_open
+    /// 0x84 环面 stage=v3 未启，建环面远超首环体量）；add-only 加号先例 0x86/0x87/
+    /// 0x88；PM-15 §4.1「六面零新 syscall」辖 SDK 服务 op 面，不辖内核→服务数据通道
+    /// （util 生产侧 v1.3 立法时已内定「PM 读面」，sched/src/util.rs:94-96）。生产侧
+    /// 零新累积——Fair::tick 记账在役（class.rs util_accumulate/util_tick_window），
+    /// 本号只读不写。锁类 SVC_CLASS_TABLE（copy_out 链走查调用方页表——§A113 读者
+    /// 面，同 0x61/0x87）；EWMA 槽 Relaxed 原子读（统计信号无序角色）。消费端 =
+    /// berry-power UtilTrack::ingest_snapshot（折叠数学单源 berry-emface）。
+    pub(crate) const SCHED_UTIL_SNAPSHOT: usize = 0x40;
     pub(crate) const CHANNEL_CREATE: usize = 0x51;
     pub(crate) const CHANNEL_SEND: usize = 0x52;
     pub(crate) const CHANNEL_RECV: usize = 0x53;

@@ -256,6 +256,8 @@ NO_GATE_SYSCALLS = {
     "signal_take",            # 当前进程 pending 自面：零 handle
     "power_off",              # 零 handle（整机下电全局动作——v1 单用户仿真系统
                               # 无能力框架；门控随 I3 关机流程正规化刀）
+    "sched_util_snapshot",    # 零 handle（系统级遥测读面——util 是统计信号非
+                              # 对象内容；CP-08 首环，单用户仿真无能力框架）
 }
 
 

@@ -100,6 +100,14 @@ pub fn run() {
     // 自然红，零输出行保 boot 相逐行零漂移）；真装载链 QEMU 证据 =
     // `bootparams ...` eco 行（notes 验证记录）。
     test_bootparams();
+    // CP-11（§3.8 机制面）：timer slack LATE-only 顺延律差分钉板（同
+    // test_bootparams 位——纯函数面 + 全局往返，静默执法零输出行）。
+    test_timer_slack();
+    // 调度深水区收官·任务②（M4 首批 band 激活，2026-11-16）：band_enabled
+    // 收窄 ×4→×2（interactive+utility 现役——保守激活，入场券纪律）+
+    // class_fair_intent 参数差异断言（末位新号纪律——ktest done 前；
+    // sched::init 前跑；BAND 族定义体在 test_band 后）。
+    test_band_m4();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
@@ -2336,6 +2344,56 @@ fn test_syscall() {
     assert_eq!(unsafe { WM_IDX }, 0, "SYSCALL：idx 须指首项（入参序最前）");
     // 清场。
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hw_ev as u64, 0, 0), 0, "SYSCALL：close hw_ev");
+
+    // F. CP-08 util 快照面（0x40 sched_util_snapshot——util 通道首环，OQ-8
+    //    通道形态首裁快照 pull）：参数拒面（count < 核数 → -EINVAL）+
+    //    快照真值面（泵一窗满账 CPU0 → ewma 128、CPU1 未记账 0 → svc 读
+    //    回 [128, 0]，count > 核数只写实数槽、余槽不动）。**收口
+    //    util_reset 双核**——本函数是 ktest 首族（先于 UTIL/OU/INTEG 族），
+    //    其「未启态零」前提靠此处清场不破（同 test_util 收口纪律）。
+    {
+        use crate::syscall::NR_SCHED_UTIL_SNAPSHOT;
+        use berry_sched::{util_accumulate, util_reset, util_tick_window, util_window_vct,
+                          UTIL_NR_CPU};
+        static mut UBUF: [u32; 8] = [0; 8];
+        // F1 参数拒面：count=0 / 1 皆 < UTIL_NR_CPU(2) → -EINVAL（槽位不足
+        //    拒收——快照全核原子语义，无半写面）。
+        // SAFETY: svc 同步异常；UBUF 为本函数私有静态。
+        unsafe { UBUF = [0; 8] };
+        assert_eq!(svc4(NR_SCHED_UTIL_SNAPSHOT as u64, &raw mut UBUF as u64, 0, 0), -22,
+            "SYSCALL：util_snapshot count=0 须 -EINVAL");
+        assert_eq!(svc4(NR_SCHED_UTIL_SNAPSHOT as u64, &raw mut UBUF as u64, 1, 0), -22,
+            "SYSCALL：util_snapshot count<核数须 -EINVAL");
+        // F2 泵窗（test_util 同款判序——elapsed 恰等窗长 → util_raw 精确
+        //    1024 → ewma = 0 + 1024>>3 = 128）：reset → 开窗 → 满账一窗 →
+        //    到期折叠。
+        let w = util_window_vct();
+        for c in 0..UTIL_NR_CPU {
+            util_reset(c);
+        }
+        util_tick_window(0, 1_000); // 首调只开窗（NewWindow 丢弃既往账）
+        util_accumulate(0, w); // 一窗满账（accum == 窗长）
+        util_tick_window(0, 1_000 + w); // elapsed == w → 精确折叠
+        assert_eq!(berry_sched::cpu_util(0), 128, "SYSCALL：F2 泵窗后 CPU0 ewma 须 128");
+        // F3 快照真值：count=8（> 核数）→ rc = 2（实写槽位数 = 探核数
+        //    count-wins 口径同 0x24 表批）；[0]=128（泵窗真值过 copy_out 链）
+        //    / [1]=0（未记账核）；余槽不动（UBUF[2] 哨兵 0xAA 保位）。
+        // SAFETY: svc 同步异常；UBUF 为本函数私有静态。
+        unsafe { UBUF = [0xAA; 8] };
+        assert_eq!(
+            svc4(NR_SCHED_UTIL_SNAPSHOT as u64, &raw mut UBUF as u64, 8, 0),
+            UTIL_NR_CPU as i64,
+            "SYSCALL：util_snapshot 须返实写槽位数（恰 = 核数）"
+        );
+        // SAFETY: 只读比对。
+        assert_eq!(unsafe { UBUF[0] }, 128, "SYSCALL：快照 CPU0 须 128（真值过 copy_out）");
+        assert_eq!(unsafe { UBUF[1] }, 0, "SYSCALL：快照 CPU1 未记账须 0");
+        assert_eq!(unsafe { UBUF[2] }, 0xAA, "SYSCALL：余槽须不动");
+        // F4 收口：回未启态（后续 UTIL/OU/INTEG 族零态前提不破）。
+        for c in 0..UTIL_NR_CPU {
+            util_reset(c);
+        }
+    }
 
     berry_hal_aarch64::uart_puts(b"SYSCALL ok\n");
 }
@@ -5793,6 +5851,15 @@ fn test_bootparams() {
     assert_eq!(ok.intent, Some(berry_sched::INTENT_INTERACTIVE), "BP：正例 intent");
     assert!(ok.diag.is_none(), "BP：正例零诊断");
 
+    // CP-11：三键同件正例（词表 v1 全谱——键序无关，解析面逐键独立）。
+    let ok3 = bootparams::parse(
+        b"schema = 1\nintent_default = \"utility\"\nsched_slice_hz = 64\ntimer_slack = 50000000\n",
+    );
+    assert_eq!(ok3.slice_hz, Some(64), "BP：三键 slice_hz");
+    assert_eq!(ok3.intent, Some(berry_sched::INTENT_UTILITY), "BP：三键 intent");
+    assert_eq!(ok3.timer_slack, Some(50_000_000), "BP：三键 timer_slack");
+    assert!(ok3.diag.is_none(), "BP：三键零诊断");
+
     // intent 六档全词表（ADR #58——unspecified 也是合法声明值，≠ 件缺）。
     for (word, code) in bootparams::INTENT_WORDS {
         let mut c = alloc::vec::Vec::new();
@@ -5824,6 +5891,28 @@ fn test_bootparams() {
         let o = bootparams::parse(&c);
         assert_eq!(o.slice_hz, None, "BP：坏值 {} 须拒", bad);
         assert!(o.diag.is_some(), "BP：坏值 {} 须 loud", bad);
+    }
+
+    // CP-11 第三键 timer_slack：u32 纳秒——0（=无松弛的显式声明形）与
+    // 词表上界 999999999 过；非数字/负数/越九位（>999999999 落 parse_u32
+    // None）拒 + loud（域上界 = berry_assemble BOOT_PARAMS_SPEC 对读）。
+    for good in ["0", "50000000", "999999999"] {
+        let mut c = alloc::vec::Vec::new();
+        c.extend_from_slice(b"schema = 1\ntimer_slack = ");
+        c.extend_from_slice(good.as_bytes());
+        c.push(b'\n');
+        let o = bootparams::parse(&c);
+        assert_eq!(o.timer_slack, Some(good.parse().unwrap()), "BP：slack 域内过");
+        assert!(o.diag.is_none(), "BP：slack 域内零诊断");
+    }
+    for bad in ["abc", "-1", "1000000000"] {
+        let mut c = alloc::vec::Vec::new();
+        c.extend_from_slice(b"schema = 1\ntimer_slack = ");
+        c.extend_from_slice(bad.as_bytes());
+        c.push(b'\n');
+        let o = bootparams::parse(&c);
+        assert_eq!(o.timer_slack, None, "BP：slack 坏值 {} 须拒", bad);
+        assert!(o.diag.is_some(), "BP：slack 坏值 {} 须 loud", bad);
     }
 
     // schema 拒面：头缺失 / =2（未来版本）/ 坏值 → 全段弃（已拾键清空
@@ -5884,17 +5973,18 @@ fn test_bootparams() {
     }
 
     let params_txt: &[u8] =
-        b"schema = 1\nsched_slice_hz = 250\nintent_default = \"interactive\"\n";
+        b"schema = 1\nsched_slice_hz = 250\nintent_default = \"interactive\"\ntimer_slack = 50000000\n";
     let mut arc = alloc::vec::Vec::new();
     bp_entry(b"bin/aa", b"XX", 1, &mut arc);
     bp_entry(b"etc/boot-params.toml", params_txt, 2, &mut arc);
     bp_entry(b"zz", b"", 3, &mut arc);
     bp_entry(b"TRAILER!!!", b"", 4, &mut arc);
     let src = Src::Bytes(&arc);
-    // 全链 scan：命中 + 读回 + 解析两键。
+    // 全链 scan：命中 + 读回 + 解析三键。
     let full = bootparams::scan(&src).expect("BP：scan 须命中定址件");
     assert_eq!(full.slice_hz, Some(250), "BP：scan slice_hz");
     assert_eq!(full.intent, Some(berry_sched::INTENT_INTERACTIVE), "BP：scan intent");
+    assert_eq!(full.timer_slack, Some(50_000_000), "BP：scan timer_slack");
     assert!(full.diag.is_none(), "BP：scan 零诊断");
     // 定址精确性：他名缺席 / 数据区逐字节对账。
     assert!(bootparams::find(&src, b"etc/other.toml").is_none(), "BP：他名不命中");
@@ -5918,6 +6008,78 @@ fn test_bootparams() {
     berry_sched::set_intent_default(saved);
     let t2 = *berry_sched::Task::new_kernel(bp_dummy, 0, b"bp_k2");
     assert_eq!(t2.intent_declared, saved, "BP：还原后回配置档");
+}
+
+/// CP-11（§3.8 机制面·2026-11-15）：timer slack LATE-only 顺延律的内核侧
+/// 差分钉板（静默执法——G3-1a f4 先例）。**同 slack 值**下交互/后台任务
+/// 的 timer 到期差：交互（INTERACTIVE/LATENCY_CRITICAL）= 精确（slackface
+/// L2 最紧不越的推论——交互零牺牲）；非交互（UTILITY/BACKGROUND/
+/// MAINTENANCE）= +slack（ns→VCT tick 截尾换算——实际顺延恒 ≤ 声明值）；
+/// 未声明（UNSPECIFIED）= 精确（「未声明不是声明了低档」——保存量任务
+/// BLOCK/INTENT/G1.5 时序零漂移）。判定律单源 =
+/// `berry_sched::intent::timer_slack_defer`（slackface 纯面的内核消费面
+/// ——本测不立第二实现）。save/restore：真镜像 bootparams 可能已设全局
+/// （ktest 前的 rootfs 装载段），还原配置态而非清零（test_bootparams
+/// 同款纪律）。
+fn test_timer_slack() {
+    use berry_sched::{
+        set_timer_slack_ns, timer_slack_defer, timer_slack_ns, INTENT_BACKGROUND,
+        INTENT_INTERACTIVE, INTENT_LATENCY_CRITICAL, INTENT_MAINTENANCE, INTENT_UNSPECIFIED,
+        INTENT_UTILITY,
+    };
+    // QEMU virt CNTFRQ = 62.5MHz（slice 换算直证同频）：50ms → 3_125_000 tick。
+    const FQ: u64 = 62_500_000;
+    const SLACK: u64 = 50_000_000;
+    const D: u64 = 1_000;
+    const D_TICKS: u64 = 3_125_000;
+    // 差分主线：同 slack 值，交互=精确 / 非交互=+slack。
+    assert_eq!(timer_slack_defer(INTENT_INTERACTIVE, D, SLACK, FQ), D, "TS：交互精确");
+    assert_eq!(timer_slack_defer(INTENT_LATENCY_CRITICAL, D, SLACK, FQ), D, "TS：LC exact");
+    assert_eq!(timer_slack_defer(INTENT_UNSPECIFIED, D, SLACK, FQ), D, "TS：未声明零漂移");
+    assert_eq!(timer_slack_defer(INTENT_UTILITY, D, SLACK, FQ), D + D_TICKS, "TS：utility +slack");
+    assert_eq!(timer_slack_defer(INTENT_BACKGROUND, D, SLACK, FQ), D + D_TICKS, "TS：后台 +slack");
+    assert_eq!(
+        timer_slack_defer(INTENT_MAINTENANCE, D, SLACK, FQ),
+        D + D_TICKS,
+        "TS：maintenance +slack"
+    );
+    // 保留域（0x06..）保守回 exact（intent_valid 词表外不借出顺延优势）。
+    assert_eq!(timer_slack_defer(0x06, D, SLACK, FQ), D, "TS：保留域 exact");
+    assert_eq!(timer_slack_defer(0xFF, D, SLACK, FQ), D, "TS：顶保留域 exact");
+    // 恒等三面：零 slack（缺省无松弛=现役零漂移）/ 异常频率 / 无限等哨兵。
+    assert_eq!(timer_slack_defer(INTENT_BACKGROUND, D, 0, FQ), D, "TS：零 slack 恒等");
+    assert_eq!(timer_slack_defer(INTENT_BACKGROUND, D, SLACK, 0), D, "TS：零频恒等");
+    assert_eq!(
+        timer_slack_defer(INTENT_BACKGROUND, u64::MAX, SLACK, FQ),
+        u64::MAX,
+        "TS：无限等哨兵恒等"
+    );
+    // 截尾：1ns @62.5MHz 不足 1 tick → 恒等（LATE-only 顺延 ≤ 声明 slack）。
+    assert_eq!(timer_slack_defer(INTENT_BACKGROUND, D, 1, FQ), D, "TS：截尾 0 tick");
+    // 顶域夹 MAX-1：不回绕、不撞无限等哨兵。
+    assert_eq!(
+        timer_slack_defer(INTENT_BACKGROUND, u64::MAX - 2, 10_000_000_000, FQ),
+        u64::MAX - 1,
+        "TS：顶域夹取"
+    );
+    // 非二进频率换算界：24MHz、100ms = 2_400_000 tick。
+    assert_eq!(
+        timer_slack_defer(INTENT_BACKGROUND, 7, 100_000_000, 24_000_000),
+        2_400_007,
+        "TS：24MHz 换算界"
+    );
+    // 单调：slack 越大顺延不减（LATE-only 方向性）。
+    let mut prev = timer_slack_defer(INTENT_BACKGROUND, D, 0, FQ);
+    for ns in [1, 16, 1_000, SLACK, 500_000_000, 999_999_999] {
+        let cur = timer_slack_defer(INTENT_BACKGROUND, D, ns, FQ);
+        assert!(cur >= prev, "TS：单调（ns={ns}）");
+        prev = cur;
+    }
+    // 全局存取往返（bootparams 注入面 = set_timer_slack_ns）。
+    let saved = timer_slack_ns();
+    set_timer_slack_ns(SLACK);
+    assert_eq!(timer_slack_ns(), SLACK, "TS：全局往返");
+    set_timer_slack_ns(saved);
 }
 
 /// sim-S3（PM-16 §4.4 步3）：深睡降级断言（run() 末位新号——ktest done 前；
@@ -7150,6 +7312,151 @@ fn test_band() {
     assert_eq!(u1.held_locks, 0, "BAND：收口不再执法");
 
     berry_hal_aarch64::uart_puts(b"BAND-K ok\n");
+}
+
+/// 调度深水区收官·任务②（M4 首批 band 激活，2026-11-16）：band_enabled
+/// 收窄 ×4→×2——interactive(0x02)+utility(0x03) 两带现役（保守激活，
+/// 入场券纪律），`class_fair_intent` 工厂给出**参数差异化**的带实例 =
+/// 首个真调度差异化面。五段：**现役集 / 工厂门 / 参数差异 / 表源执法 /
+/// 同 runqueue 共存**。
+///
+/// **不做面（如实注）**：task→band 赋值（spawn 时 manifest intent→band
+/// 选择）需 svcmgr/kernel spawn 面协同，归后续刀；band 位消费（v3
+/// `policy_bind` 写路）归 v3——见 `class.rs::class_fair_intent` 集成面
+/// 预留窗注。trait 行为面（enqueue/pick/tick）仍全委托 unit Fair（M4
+/// 并线前行为零漂移纪律）——故「两带任务不同 quantum/权重」在**带参数
+/// 轴**断言（热路径 per-band quantum/权重执法 = M4 并线面，本刀不实装）；
+/// 同 runqueue 段验证两带任务共存与出选完整性。
+///
+/// ktest 纪律（sched::init 前跑、单核）：本地 Runqueue 手搭（不动全局
+/// RUNQUEUE——同 test_band）；任务体 leak 不回收（ktest 语境同 spawn
+/// 政策——v1 无 reap）。
+fn test_band_m4() {
+    use berry_iprofile::{band_enabled, INTENT_BAND_TABLE};
+    use berry_sched::{
+        class_fair_intent, FairBand, Runqueue, SchedClass, Task, Topo, INTENT_BACKGROUND,
+        INTENT_INTERACTIVE, INTENT_LATENCY_CRITICAL, INTENT_MAINTENANCE, INTENT_UNSPECIFIED,
+        INTENT_UTILITY,
+    };
+
+    /// 占位入口（手搭带成员永不执行；halt 兜底——同 test_band）。
+    extern "C" fn m4_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    /// 手搭带成员：intent 即带键（§11——intent_effective 直落带档；
+    /// proc_tag=0 内核任务，policy::apply 哨兵键早退零写入）。
+    fn mk(name: &'static [u8], band: u8) -> &'static mut Task {
+        let t = alloc::boxed::Box::leak(Task::new_kernel_with_as(m4_dummy, 0, name, 0, 0));
+        t.intent_effective = band;
+        t
+    }
+
+    // —— M4A. 现役集恰两带（band_enabled 单源）：interactive+utility on；
+    //         其余四带 off（保守激活——LC/BG 首批外、MAINT 冻结、
+    //         UNSPECIFIED 无专带）。——
+    assert!(band_enabled(INTENT_INTERACTIVE), "BANDM4：interactive 须现役");
+    assert!(band_enabled(INTENT_UTILITY), "BANDM4：utility 须现役");
+    for code in [
+        INTENT_UNSPECIFIED,
+        INTENT_LATENCY_CRITICAL,
+        INTENT_BACKGROUND,
+        INTENT_MAINTENANCE,
+    ] {
+        assert!(!band_enabled(code), "BANDM4：档 {:#x} 须不现役（首批外）", code);
+    }
+
+    // —— M4B. 工厂门：两带 Some（带实例可构造）；四带 None = 无带（调用方
+    //         回落现役单带 Fair，缺省行为零漂移）。——
+    let ib = class_fair_intent(INTENT_INTERACTIVE).expect("BANDM4：interactive 工厂须建带");
+    let ub = class_fair_intent(INTENT_UTILITY).expect("BANDM4：utility 工厂须建带");
+    for code in [
+        INTENT_UNSPECIFIED,
+        INTENT_LATENCY_CRITICAL,
+        INTENT_BACKGROUND,
+        INTENT_MAINTENANCE,
+    ] {
+        assert!(
+            class_fair_intent(code).is_none(),
+            "BANDM4：档 {:#x} 工厂须 None（回落单带 Fair）",
+            code
+        );
+    }
+
+    // —— M4C. 参数差异生效（首个真调度差异化）：两带 quantum / 权重包络 /
+    //         latency_target 三轴各自不同——同 runqueue 中两带任务的调度
+    //         参数由此分化（trait 面消费 = M4 并线）。——
+    assert_ne!(ib.band.quantum_ns, ub.band.quantum_ns, "BANDM4：两带 quantum 须不同");
+    assert_ne!(
+        (ib.band.low_weight, ib.band.high_weight),
+        (ub.band.low_weight, ub.band.high_weight),
+        "BANDM4：两带权重包络须不同"
+    );
+    assert_ne!(
+        ib.band.latency_target_ns, ub.band.latency_target_ns,
+        "BANDM4：两带 latency_target 须不同"
+    );
+    // 方向钉板（u8 越小档越高在带参数阶梯上的投影）：interactive 短片 +
+    // 权重包络整体在 utility 之上（交互优先）。
+    assert!(
+        ib.band.quantum_ns < ub.band.quantum_ns,
+        "BANDM4：interactive quantum 须更短"
+    );
+    assert!(
+        ib.band.low_weight > ub.band.low_weight && ib.band.high_weight > ub.band.high_weight,
+        "BANDM4：interactive 权重包络须整体更高"
+    );
+
+    // —— M4D. FairBand::new 参数从 IntentBand 表读取（表→工厂单一事实链）：
+    //         工厂输出与显式 new(档, 表行) 逐字段同；band_id = intent 档编码
+    //         （§11 带键 = intent 恒等映射）。——
+    assert_eq!(
+        (ib.band_id, ib.band),
+        (INTENT_INTERACTIVE, INTENT_BAND_TABLE[INTENT_INTERACTIVE as usize]),
+        "BANDM4：interactive 带参数须源表行 [2]"
+    );
+    assert_eq!(
+        (ub.band_id, ub.band),
+        (INTENT_UTILITY, INTENT_BAND_TABLE[INTENT_UTILITY as usize]),
+        "BANDM4：utility 带参数须源表行 [3]"
+    );
+    assert_eq!(
+        ib.band,
+        FairBand::new(INTENT_INTERACTIVE, INTENT_BAND_TABLE[INTENT_INTERACTIVE as usize]).band,
+        "BANDM4：工厂 = FairBand::new(档, 表行)（interactive）"
+    );
+    assert_eq!(
+        ub.band,
+        FairBand::new(INTENT_UTILITY, INTENT_BAND_TABLE[INTENT_UTILITY as usize]).band,
+        "BANDM4：工厂 = FairBand::new(档, 表行)（utility）"
+    );
+
+    // —— M4E. 同 runqueue 共存：两带实例（trait 面现委托 unit Fair——行为
+    //         零漂移纪律）各 enqueue 一任务进同一本地环，两带任务同环
+    //         出选、互不吞并（每带恰一员出选；等权 EEVDF 的 FIFO 首见序
+    //         归 ringface 钉板面，此处集合断言不钉序）。——
+    let mut rq = Runqueue::new();
+    let topo = Topo::single();
+    let ti = mk(b"m4ia".as_slice(), INTENT_INTERACTIVE);
+    let tu = mk(b"m4ut".as_slice(), INTENT_UTILITY);
+    ib.enqueue(ti, &mut rq);
+    ub.enqueue(tu, &mut rq);
+    let p1 = ib.pick_next(&rq, &topo).expect("BANDM4：非空环须有出选");
+    let n1 = p1.name;
+    ib.dequeue(p1, &mut rq);
+    let p2 = ub.pick_next(&rq, &topo).expect("BANDM4：摘一员后仍须有出选");
+    let n2 = p2.name;
+    ub.dequeue(p2, &mut rq);
+    assert_ne!(n1, n2, "BANDM4：两带各出一员（互不吞并）");
+    assert!(
+        (n1 == b"m4ia".as_slice() && n2 == b"m4ut".as_slice())
+            || (n1 == b"m4ut".as_slice() && n2 == b"m4ia".as_slice()),
+        "BANDM4：出选集恰两带成员（实得 {:?}/{:?}）",
+        n1,
+        n2
+    );
+
+    berry_hal_aarch64::uart_puts(b"BANDM4 ok n=2\n");
 }
 
 /// v1.3 §7 EAS（`调点调度-v1.3.md` §7 预研建议② / ADR #53「砍实现不砍

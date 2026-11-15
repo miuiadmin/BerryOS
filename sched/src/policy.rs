@@ -274,8 +274,9 @@ fn lookup_o1(snap: &Snap, key: u64) -> Option<&SnapSlot> {
 /// ——写路恒 [`BAND_SEL_NONE`]（无意见）；band 位真值写入随 v3
 /// `policy_bind` 协议开（届时扩 Directive/ABI 镜像，Snap 槽位已预留——
 /// `Slot::band` @ 偏移 14，16B 布局不变）。带 id ↔ intent 档映射单源
-/// `berry_iprofile::band_id_of_intent`（带键 = intent：×4 现役集
-/// 0x01..=0x04）。**ADR #21 带内纪律**：band/intent 不入 AI 动作空间——
+/// `berry_iprofile::band_id_of_intent`（带键 = intent：首批现役集 =
+/// 0x02/0x03——词汇门 `band_enabled` 单源，×4 全集随入场券逐批开）。
+/// **ADR #21 带内纪律**：band/intent 不入 AI 动作空间——
 /// v3 写者的授权面（product 配置/manifest 通道，非策略服务动作）随协议
 /// 立法再定，本刀只落数据位。
 fn snap_insert(snap: &mut Snap, key: u64, d: &Directive) -> bool {
@@ -484,8 +485,9 @@ pub fn placement_hint(task_key: u64) -> u8 {
 /// 该 key 当前绑定的 band 选择位读出口（M4 骨架——ADR #42 第二段「策略
 /// 注入表 band 选择位」的读侧）：读活跃快照 O(1) 查表透传 [`SnapSlot::
 /// band`]。词汇：**0 = 无意见**（[`BAND_SEL_NONE`]——未绑/空表/未命中/
-/// 哨兵键）、0x01..=0x04 = ×4 现役带 id（= intent 档编码，映射单源
-/// `berry_iprofile::band_id_of_intent`；0x05 冻结不启用）。
+/// 哨兵键）、现役带 id（= intent 档编码，首批 = 0x02/0x03，映射单源
+/// `berry_iprofile::band_id_of_intent`、词汇门 `band_enabled`；×4 全集
+/// 随入场券逐批、0x05 冻结不启用）。
 ///
 /// **纯预留位**：v1 写路（[`snap_insert`]）恒 [`BAND_SEL_NONE`]——本读
 /// 出口恒 0，与接口缺席等价；v3 `policy_bind` 协议开 band 位真值写入后

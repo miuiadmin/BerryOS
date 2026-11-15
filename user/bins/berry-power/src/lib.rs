@@ -177,10 +177,17 @@ impl PowerCore {
         self.util.ingest_window(cpu, accum, elapsed)
     }
 
-    /// 裸 util 样本输入口（快照 VMO 形态通道的载荷面——PM-15 §4.1 两形
-    /// 态之一，通道待裁；拒面同 [`UtilTrack::ingest_sample`]）。
+    /// 裸 util 样本输入口（单核直投面——快照载荷的逐核分解形态；
+    /// 拒面同 [`UtilTrack::ingest_sample`]）。
     pub fn ingest_util_sample(&mut self, cpu: usize, util: u32) -> Option<u32> {
         self.util.ingest_sample(cpu, util)
+    }
+
+    /// 全核 util 快照输入口（面③通道载荷面——CP-08 首环已裁：快照
+    /// syscall `sched_util_snapshot` 0x40 pull 读，拒面全或无同
+    /// [`UtilTrack::ingest_snapshot`]）。
+    pub fn ingest_util_snapshot(&mut self, util: &[u32]) -> Option<()> {
+        self.util.ingest_snapshot(util)
     }
 
     /// 统一裁决读出（帽/票/频率——纯读、零副作用、幂等）。
