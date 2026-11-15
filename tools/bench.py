@@ -478,11 +478,11 @@ def run_once(kernel: str, el0: bool = False) -> dict[str, int]:
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
-        # M1 审计补刀：失败必留——异常在飞（断言红/超时）保留串口日志，
-        # 成功路径才清（write_receipt 证据档哲学同源）。
-        if sys.exc_info()[0] is None:
-            Path(log_path).unlink(missing_ok=True)
-        else:
+        # 二轮审计重修：finally 只杀进程——收割判定在 finally 之后才
+        # raise（boot 超时/标记未达），此时 exc_info 已 None，旧条件式会
+        # 先删后红（失败必留对主失败面失效）。删除权移交收割成功出口
+        #（_bench_log_ok）；异常在飞（Ctrl-C/IO）仍打保留提示。
+        if sys.exc_info()[0] is not None:
             print(f"bench: failure serial log kept: {log_path}", file=sys.stderr)
 
     metrics: dict[str, int] = {}
@@ -514,6 +514,9 @@ def run_once(kernel: str, el0: bool = False) -> dict[str, int]:
                          if el0 else
                          f"bench.py: BENCH 行数 {len(metrics)} ≠ BENCH ok n={done_n}"
                          "（内核侧计数与出表不一致——改 bench.rs 后同步 N_METRICS）")
+    # 二轮审计重修：收割全过（成功出口）才清串口日志——失败路径（超时/
+    # 标记未达/收割不齐的 raise）天然保留。
+    Path(log_path).unlink(missing_ok=True)
     return metrics
 
 
@@ -560,11 +563,11 @@ def run_rt(kernel: str) -> list[tuple[int, int, int, int]]:
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
-        # M1 审计补刀：失败必留——异常在飞（断言红/超时）保留串口日志，
-        # 成功路径才清（write_receipt 证据档哲学同源）。
-        if sys.exc_info()[0] is None:
-            Path(log_path).unlink(missing_ok=True)
-        else:
+        # 二轮审计重修：finally 只杀进程——收割判定在 finally 之后才
+        # raise（boot 超时/标记未达），此时 exc_info 已 None，旧条件式会
+        # 先删后红（失败必留对主失败面失效）。删除权移交收割成功出口
+        #（_bench_log_ok）；异常在飞（Ctrl-C/IO）仍打保留提示。
+        if sys.exc_info()[0] is not None:
             print(f"bench: failure serial log kept: {log_path}", file=sys.stderr)
 
     d = DONE_RT_RE.search(text)
@@ -586,6 +589,9 @@ def run_rt(kernel: str) -> list[tuple[int, int, int, int]]:
             f"bench.py: BENCHRT 收割不齐（rows={len(rows)} done_n={done_n} "
             f"deltas={deltas}——须恰 {RT_TIERS} 行、n 合计 {RT_TIERS * RT_N}、"
             f"delta 单调不重；改 task_rt_probe 后同步）")
+    # 二轮审计重修：收割全过（成功出口）才清串口日志——失败路径（超时/
+    # 标记未达/收割不齐的 raise）天然保留。
+    Path(log_path).unlink(missing_ok=True)
     return rows
 
 
@@ -641,11 +647,11 @@ def run_lat(kernel: str) -> dict[str, tuple[int, ...]]:
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
-        # M1 审计补刀：失败必留——异常在飞（断言红/超时）保留串口日志，
-        # 成功路径才清（write_receipt 证据档哲学同源）。
-        if sys.exc_info()[0] is None:
-            Path(log_path).unlink(missing_ok=True)
-        else:
+        # 二轮审计重修：finally 只杀进程——收割判定在 finally 之后才
+        # raise（boot 超时/标记未达），此时 exc_info 已 None，旧条件式会
+        # 先删后红（失败必留对主失败面失效）。删除权移交收割成功出口
+        #（_bench_log_ok）；异常在飞（Ctrl-C/IO）仍打保留提示。
+        if sys.exc_info()[0] is not None:
             print(f"bench: failure serial log kept: {log_path}", file=sys.stderr)
 
     # 完成标记按路分记（恰一个/路、n 逐路 == LAT_N；缺席诊断按缺失路点名）。
@@ -688,6 +694,9 @@ def run_lat(kernel: str) -> dict[str, tuple[int, ...]]:
             f"lane={lane} n,pmin,p50,p90,p99,pmax={','.join(map(str, vals))}"
             for lane, vals in sorted(rows.items())
         ))
+    # 二轮审计重修：收割全过（成功出口）才清串口日志——失败路径（超时/
+    # 标记未达/收割不齐的 raise）天然保留。
+    Path(log_path).unlink(missing_ok=True)
     return rows
 
 
@@ -1170,11 +1179,11 @@ def run_icount(kernel: str, trace_off: bool = False) -> tuple[dict[str, int], di
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
-        # M1 审计补刀：失败必留——异常在飞（断言红/超时）保留串口日志，
-        # 成功路径才清（write_receipt 证据档哲学同源）。
-        if sys.exc_info()[0] is None:
-            Path(log_path).unlink(missing_ok=True)
-        else:
+        # 二轮审计重修：finally 只杀进程——收割判定在 finally 之后才
+        # raise（boot 超时/标记未达），此时 exc_info 已 None，旧条件式会
+        # 先删后红（失败必留对主失败面失效）。删除权移交收割成功出口
+        #（_bench_log_ok）；异常在飞（Ctrl-C/IO）仍打保留提示。
+        if sys.exc_info()[0] is not None:
             print(f"bench: failure serial log kept: {log_path}", file=sys.stderr)
 
     if done_re.search(text) is None:
@@ -1212,6 +1221,9 @@ def run_icount(kernel: str, trace_off: bool = False) -> tuple[dict[str, int], di
         f"icount{'-off' if trace_off else ''}", text,
         "\n".join(f"{n} iters={iters_seen[n]} cyc={metrics[n]}"
                   for n in sorted(metrics)) + f"\n{wake_line}")
+    # 二轮审计重修：收割全过（成功出口）才清串口日志——失败路径（超时/
+    # 标记未达/收割不齐的 raise）天然保留。
+    Path(log_path).unlink(missing_ok=True)
     return metrics, iters_seen, wake_line
 
 

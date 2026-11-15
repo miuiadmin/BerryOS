@@ -105,7 +105,9 @@ fn append_index(line: &serde_json::Value) {
         .open(&path)
     {
         use std::io::Write;
-        // 先拼完整行（含换行）再一次写——单次 write 在 O_APPEND 下原子。
+        // 先拼完整行（含换行）再一次 write_all——常规本地文件上单次
+        // write 即完成，O_APPEND 保证各写不覆盖；writeln! 的必然多段
+        // write（并发交错面）已消除。
         let _ = f.write_all(format!("{line}\n").as_bytes());
     }
 }

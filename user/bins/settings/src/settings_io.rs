@@ -11,6 +11,9 @@
 //!   ≤2048B 单簇（近原子；canonical 实值 ~45B）。
 //! - 三约束沿袭：**缺席回默认不预写**（首 boot 常态）+ **坏件回默认并
 //!   canonical 重写自愈** + **写失败非致命**（内存态照用，app 不死）。
+//!   写失败的下 boot 结局注记：部分写截断件 = 前缀不完整 → parse None →
+//!   heal 全键默认化（不是回跳上一次成功值——单簇覆写无旧版可回，文档
+//!   化取舍）。
 //! - 旧档迁移：`SETTINGS.JSN`（单键 dark 两形）在场而 CFG 缺席 → 读旧
 //!   值组新形立即落盘（迁移期一两版后旧读面可删）。
 //! - fs 礼物缺席（`fs_h()==0`）→ 默认态直返零 RPC（内存态，同 theme_io）。
@@ -38,7 +41,10 @@ const CHUNK: usize = 256;
 /// 单簇帽（FAT12 2048B）。
 const BYTES_MAX: usize = 2048;
 
-/// bright 值域上限（Slider max=1000 同源——建树与解析一源）。
+/// bright 值域上限。依赖注记：本页 Slider min=0 且 max=BRIGHT_MAX 恰使
+/// 「绝对值 = permille 数值」恒等（desc.rs SliderProps 的 value 契约是
+/// 0..=1000 permille）——改 max 必须同步折算语义，否则绝对值/permille
+/// 分叉。
 pub const BRIGHT_MAX: u32 = 1000;
 
 /// 五键状态（wifi/bt/sync/dark = 布尔；bright = 0..=1000）。

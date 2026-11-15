@@ -378,6 +378,26 @@ jobs:
       - name: unsafe 台账对拍（SEC-01 §4.5 件 22）
         run: python3 tools/unsafe_audit.py --check
 
+      # 二轮审计补：失败必留的 CI 消费闭环——smoke/smoke-x86/smoke-image
+      # 失败时保留在 runner /tmp 的串口与辅助日志、直跑族 out/logs/，此前
+      # 无 artifact 收集（网页端只剩 stderr 提示行，现场随 runner 消失）。
+      # bcts 结果包先例同款：outcome 门防空 artifact；成功流日志已被脚本
+      # 自清，收集为空无妨。
+      - name: 失败留串口日志（收集到工作区）
+        if: failure()
+        run: |
+          mkdir -p ci-fail-logs
+          cp -r out/logs ci-fail-logs/ 2>/dev/null || true
+          cp /tmp/berryos-* ci-fail-logs/ 2>/dev/null || true
+          ls -la ci-fail-logs/ || true
+      - name: 上传失败串口日志 artifact
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-serial-logs
+          retention-days: 3
+          path: ci-fail-logs/
+
   # ---------- BCTS v0 全量回放挂 CI（ADR #84；BCTS 设计稿 v1.1 §4.2 五步） ----------
   # 独立关卡不并入 smoke job（规则/07 独立关卡纪律）：smoke job = 分层 CI 轻面
   # （SMOKE_PHASES=boot 32 标记）；本 job = 八跑全相 + 90 标记对账 + abi-check

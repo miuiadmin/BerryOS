@@ -397,6 +397,12 @@ fn rc_load(vars: &mut Vec<(String, String)>) {
         if line.is_empty() || line.first() == Some(&b'#') || line.len() > 128 {
             continue;
         }
+        // CRLF 行尾的回车剥除（宿主侧生成工具可能带 CRLF——值尾回车
+        // 入表即污染 echo 展示；LF-only 契约下为无操作零成本）。
+        let line = match line.strip_suffix(b"\r") {
+            Some(stripped) => stripped,
+            None => line,
+        };
         if let Some(eq) = line.iter().position(|&b| b == b'=') {
             if eq == 0 || eq > 32 {
                 continue; // 空键/超长键：坏行跳过。

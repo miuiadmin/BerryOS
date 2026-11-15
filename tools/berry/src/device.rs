@@ -428,10 +428,9 @@ fn boot_runtime(
             let _ = child.kill();
             let _ = child.wait();
             run_dir::write_state(run.path(), "failed");
-            // M1 审计补刀：第三条 QEMU 路径（device start/window/host 共
-            // 用）的失败现场保留——commands.rs 的 run/shot 同语义；此刻
-            // serial.log/qemu.log/vars.fd 俱在，焚了就只剩 qemu.log 尾 12 行。
-            run.keep_fail();
+            // 二轮审计上移：keep_fail 不在此层——boot_with_retry 的
+            // bind-race 重试成功时会走到这里又最终 Ok，此层保留会把健康
+            // run 目录粘性标记成失败保留；保留决策归 boot_with_retry 终态。
             // Surface QEMU's own words (bind races on pre-picked VNC ports,
             // bad fw_cfg args, …) — argv never contains a password, so the
             // log tail is safe to attach.
@@ -505,9 +504,11 @@ fn boot_with_retry(
     }
     let log_text = std::fs::read_to_string(log).unwrap_or_default();
     if !should_retry_bind_race(&log_text, ext.as_ref()) {
+        run.keep_fail();
         return first;
     }
     let Some(e) = ext.as_mut() else {
+        run.keep_fail();
         return first;
     };
     e.rebuild_auto_ports();
@@ -523,10 +524,14 @@ fn boot_with_retry(
     // Fresh log so a second failure shows the retry's own tail, not the
     // first attempt's.
     let _ = std::fs::File::create(log);
-    boot_runtime(
+    let second = boot_runtime(
         qemu, image, firmware, vars, serial, log, vnc, qmp_ep, accel, mem, tablet, mode, ram_path,
         run, stop_flag, ext.as_ref(),
-    )
+    );
+    if second.is_err() {
+        run.keep_fail();
+    }
+    second
 }
 
 /// Map a QMP VNC event onto its events.jsonl line; None for non-VNC events.

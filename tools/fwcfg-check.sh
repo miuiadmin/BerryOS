@@ -9,9 +9,14 @@ trap 'rm -rf "$tmp"' EXIT
 
 # 代码侧：全仓提取 opt/berry/<name>（键名字符集含下划线/大写——正则宽
 # 于现行全小写键名，防未来键名形态让对拍假阴性）；rootfsN 数字卷归并
-# rootfs0..9；只扫注入/消费代码面（docs 与 .agents 是文档不注入）。
-rg -o 'opt/berry/[A-Za-z0-9_-]+' --no-filename \
-  justfile tools/berry/src tools/*.sh tools/*.py kernel arch user 2>/dev/null \
+# rootfs0..9。二轮审计改排除式全仓扫（此前白名单列举式漏 bootloader/
+# drivers 等未来注入面，且吞 rg 报错静默缩面）——只排文档/归档/外部
+# 镜像/构建产物，代码面全收。
+rg -o 'opt/berry/[A-Za-z0-9_-]+' --no-filename --hidden \
+  -g '!docs/**' -g '!.agents/**' -g '!.git/**' -g '!reference/**' \
+  -g '!research/**' -g '!out/**' -g '!*target*/**' -g '!*.img' -g '!*.cpio' \
+  -g '!*.md' -g '!WAVE2-GALLERY/**' -g '!.berry-review/**' \
+  . 2>/dev/null \
   | sed -E -e 's|opt/berry/||' -e 's/^rootfs[0-9]+$/rootfs0..9/' | sort -u \
   > "$tmp/code.txt" || true
 

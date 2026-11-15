@@ -324,6 +324,8 @@ cleanup() {
     [ -n "$ECHO_LOG" ] && echo "smoke: echod 日志保留：$ECHO_LOG" >&2
     [ -n "$EVS_LOG" ] && echo "smoke: evsclient 日志保留：$EVS_LOG" >&2
     [ -n "$SKT_LOG" ] && echo "smoke: sktclient 日志保留：$SKT_LOG" >&2
+    # 二轮审计补：失败时 QMP_DIR 同为现场（含 sock）——保留必提示口径对齐。
+    [ -n "$QMP_DIR" ] && echo "smoke: QMP 目录保留：$QMP_DIR" >&2
   else
     rm -f "${LOGS[@]}"
     [ -n "$ECHO_LOG" ] && rm -f "$ECHO_LOG"
