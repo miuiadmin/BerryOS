@@ -93,8 +93,9 @@ pub use crate::abi_gen::{
 use crate::abi_gen::{CLOCK_MONOTONIC, CLOCK_REALTIME, ERR_E2BIG, RIGHT_SET_POLICY, VMO_OPT_DEMAND};
 
 /// 用户 VA 合法区（Vmar root 覆盖 `[0x1000, 2^39)`，0 页 NULL 保卫——
-/// `内存管理设计.md` §4；copy_out 的界检同源）。
-const USER_VA_END: u64 = 1 << 39;
+/// `内存管理设计.md` §4；copy_out 的界检同源）。W3-Q70：值域常量单源迁
+/// berry-aokface，此处 re-export 对齐（消费点引用不变）。
+const USER_VA_END: u64 = berry_aokface::USER_VA_END;
 
 // ---- 表派发（3-4a per-process 拆分）----
 
@@ -177,39 +178,36 @@ fn access_ok(caller_el1: bool, ptr: u64, len: u64, write: bool) -> bool {
     if len == 0 {
         return true;
     }
-    let Some(end) = ptr.checked_add(len) else { return false };
+    if ptr.checked_add(len).is_none() {
+        return false; // 回卷拒（原判序在 EL1/EL0 分派之前——两路共门）
+    }
     if caller_el1 {
-        ptr >= KERNEL_VA_BASE as u64
+        // W3-Q70：EL1 高半单比较判定律单源（berry-aokface——el1_span_ok
+        // 自带回卷门，此处前置共门后幂等零漂移）。
+        berry_aokface::el1_span_ok(ptr, len, KERNEL_VA_BASE as u64)
     } else {
-        if ptr < 0x1000 || end > USER_VA_END {
+        // W3-Q70：EL0 值域四门判定律单源（berry-aokface——len==0 恒过/
+        // checked_add 回卷拒/null 页下界/USER_VA_END 上界）；逐页走查
+        // 物理臂留壳（walk_leaf 读 TTBR0 三级表）。
+        if !berry_aokface::el0_span_ok(ptr, len) {
             return false;
         }
         let l1 = berry_hal_aarch64::current_ttbr0_pa();
-        let first = (ptr as usize) & !(PAGE_SIZE - 1);
-        let last = (end as usize - 1) & !(PAGE_SIZE - 1);
-        let mut va = first;
-        while va <= last {
-            match crate::vmar::walk_leaf(l1, va) {
-                Some(desc) => {
-                    let ap = (desc >> 6) & 0b11;
-                    if write && ap >= 0b10 {
-                        return false; // RO(10) / EL0 专属(11)：EL1 不可写
-                    }
-                    if !write && ap == 0b11 {
-                        return false; // EL0 专属页内核读不到
-                    }
-                }
-                None => return false, // 未映射页
+        for va in berry_aokface::span_pages(ptr, len) {
+            match crate::vmar::walk_leaf(l1, va as usize) {
+                // W3-Q70：AP 位域读写拒律单源（berry-aokface::leaf_admits）。
+                Some(desc) if berry_aokface::leaf_admits(desc, write) => {}
+                _ => return false, // 缺叶或权限不符
             }
-            va += PAGE_SIZE;
         }
         true
     }
 }
 
 /// 窗内同页缓存哨兵：用户 VA < 2^39、EL1 高半直映 ≥ KERNEL_VA_BASE，
-/// u64::MAX 两界之外——首块必走查。
-const SAME_PAGE_NONE: u64 = u64::MAX;
+/// u64::MAX 两界之外——首块必走查。W3-Q70：哨兵单源迁 berry-aokface，
+/// 此处 re-export 对齐（消费点引用不变）。
+const SAME_PAGE_NONE: u64 = berry_aokface::SAME_PAGE_NONE;
 
 /// **单一 PT 锁窗内**的逐页校验（P1 同页跳过）。`last_page` = 本窗局部
 /// 缓存：块覆盖的每个页若 == 缓存页，该页已在本窗走查过且写者（他核
@@ -230,20 +228,17 @@ fn access_ok_window(
     if len == 0 {
         return true;
     }
-    let mask = !(PAGE_SIZE as u64 - 1);
-    let last = (ptr + len - 1) & mask;
-    let mut va = ptr & mask;
-    while va <= last {
-        if va != *last_page {
+    // W3-Q70：同页跳过律单源（berry-aokface::window_should_walk——
+    // SAME_PAGE_NONE 哨兵首块必查；缓存只记最近页）。页序同源 span_pages。
+    for va in berry_aokface::span_pages(ptr, len) {
+        if berry_aokface::window_should_walk(va, &mut *last_page) {
             // 本块在本页内的字节段 [max(va, ptr), min(页尾, 块尾))。
             let start = va.max(ptr);
             let end = (va + PAGE_SIZE as u64).min(ptr + len);
             if !access_ok(caller_el1, start, end - start, write) {
                 return false;
             }
-            *last_page = va;
         }
-        va += PAGE_SIZE as u64;
     }
     true
 }

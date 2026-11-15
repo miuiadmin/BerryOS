@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "berry-aokface"
+version = "0.2.0"
+
+[[package]]
 name = "berry-bandface"
 version = "0.2.0"
 
@@ -76,6 +80,7 @@ dependencies = [
 name = "berry-kernel"
 version = "0.2.0"
 dependencies = [
+ "berry-aokface",
  "berry-chanface",
  "berry-dpgface",
  "berry-dtbface",
