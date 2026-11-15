@@ -15,13 +15,32 @@ edition = "2021"
 # 见 src/main.rs 头注窗表）。
 #
 # 形态：simbattery/berry-launcher 同形独立小工作区（空 [workspace] escape
-# 根 workspace，不入 user/Cargo.toml members）。**未接线面如实注**：
-# justfile build-user/rootfs 装配/svcmgr 服务表均未挂本件（svcmgr/壳族 =
-# owner 占用零碰，任务纪律；挂接刀随 CP-08/CP-10 窗）——musl 链真实产线
-# 接线前，本件只以 host `cargo test` 验证。
+# 根 workspace，不入 user/Cargo.toml members）。CP-08 装配件（04 号复核
+# §6-5）已接线：justfile build-user musl 段（--features wired）+
+# rootfs-manifest 条目 + test-host host 测试行；**svcmgr 预拉 arm 留窗**
+# ——svcmgr 平像满载（.bss 终点 0x1dff0 距内核钉位 .pager_entry@0x1e000
+# 仅 0x10，arm 最小面装不进，链接期 loud 炸响实证；扩容走 kernel 面），
+# rootfs 条目零消费零行为变化；通道面（fd0 sim 分端/内核聚合点写面/
+# chargerd 票 IPC——04 号 §6-1..4 裁决类）同留窗（src/main.rs 窗表）。
 license = "Apache-2.0"
 
 [workspace]
+
+# bin 面（musl/berry-libc 链）host 不可链接（berry-libc 含 aarch64 专属
+# asm——bin 自检壳用 println/park 家族原语经 shim）——挂 required-features
+# 门（berry-thermal 同款）：host 测试相（无 --features）整跳过 bin，产线
+# 构建相（build-user PM 段）开 `--features wired` 落 musl 链；纯核全在
+# lib，host 单测盖。
+[[bin]]
+name = "berry-power"
+path = "src/main.rs"
+test = false
+required-features = ["wired"]
+
+[features]
+# wired = bin 壳接上 berry-libc（println/park 家族原语）；host 测试不需要
+# （04 号复核 F4「bin 无 berry-libc shim」缺注随本刀收口）。
+wired = ["dep:berry-libc"]
 
 [dependencies]
 # 契约单源：sim 三设备快照协议（帧/ACK/流式解码——ADR #68 ③ SDK 面零新
@@ -30,6 +49,8 @@ berry-pwproto = { path = "../../berry-pwproto" }
 # EWMA 折叠数学单源（α=1/8 移位、0..=1024 尺度、窗常量——sched/src/util.rs
 # 生产侧同源消费；本件消费侧零第二实现，W3-Q14 纪律）。
 berry-emface = { path = "../../../emface" }
+# bin 壳（optional，wired 门）：console 诊断行 + park 常驻原语。
+berry-libc = { path = "../../berry-libc", optional = true }
 
 [profile.release]
 opt-level = "z"

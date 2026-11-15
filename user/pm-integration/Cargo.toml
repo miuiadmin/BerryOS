@@ -18,8 +18,7 @@ edition = "2021"
 # 不入 user/Cargo.toml members——berry-em/berry-slackface 同例）。差异如实
 # 记：本件是 host 验证面 harness 非产线服务——无 bin 壳、无 musl 产线 profile
 # （[profile.release] 省略），lib 桥面 no_std 兼容、场景全在 cfg(test)。
-# 未接线如实注：justfile test-host 未挂本件（justfile = owner 占用零碰，
-# 04 号复核 F3 同款留窗）；不进 rootfs/产线。
+# CP-08 接线刀已挂 justfile test-host（04 号复核 F3 收口）；不进 rootfs/产线。
 #
 # host 测试（仓根 .cargo/config.toml 锁 build.target = aarch64-unknown-none，
 # 须显式 --target 覆盖——四 crate 同款纪律）：

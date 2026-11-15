@@ -25,7 +25,13 @@
                                       #   resolve_entries 复用——override 路径
                                       #   替换同语义，零第二解析器），消
                                       #   「源索引条目表」自持面；基座表仍
-                                      #   经 --rootfs-manifest 供路径解析
+                                      #   经 --rootfs-manifest 供路径解析；
+                                      #   首产免鸡蛋循环（44 号 §4-3 清偿）：
+                                      #   load 面 lite——[product.source]
+                                      #   .instance 深校验让位（产前自指
+                                      #   合法——两件套正是本模式要产的
+                                      #   工件，全量执法归 berry-assemble
+                                      #   --check）
   gensourceindex.py --verify <source-index.tlv> [--prev <source-index.tlv>]
                                       # 结构/八字段/单调/签名验证（signed =
                                       #   berry-sign verify-raw 真验签；同
@@ -653,16 +659,26 @@ def load_preset_entries(product_path: str, base_manifest: str,
                         user_dir: str) -> list:
     """G16 单源派生（--preset）：product.toml → app/*.bap 条目。
 
-    解析/复验全量复用 berry_assemble（load_product 结构+产物面执法 ⊕
+    解析/复验复用 berry_assemble（load_product 结构面执法 ⊕
     resolve_entries 终表解析——preset 筛选、override 路径替换、构建树
     存在性、launcher 终表对账一身；零第二产品解析器），本函数只做
     app/ 前缀过滤 + 绝对/相对路径归一。拒面 = berry_assemble Reject
     → die（文案原样透传，前缀 --preset 标注）。返回 [(name, local)]，
     条目集 ≡ 产品终表 app 集（preset ⊕ override——与 rootfs 条目表
-    同源，双源自持消解）。"""
+    同源，双源自持消解）。
+
+    首产鸡蛋循环豁免（44 号 §4-3 清偿）：load 面走 lite=True（G4
+    两段式第一段——berry_assemble.load_product 既有通道零新旗标）
+    ——[product.source].instance 两件套深校验（目录/两件套在席/TLV
+    解析）让位，因其正是本模式要产的工件：产前自指合法，全新工作
+    区首跑不再 rc=1「缺 source-index.tlv」。lite 同时让位的
+    override/trust load 面存在性由 resolve_entries 终表逐条对账兜底
+    （两者均入终表、绝对路径直查——存在性执法不弱化）；branding
+    资产非 app 条目、与索引字节无关（全量执法归 berry-assemble
+    --check 组装面单点，层界同 G4）。"""
     import berry_assemble  # 惰性导入（彼方亦函数级 import 本文件——无环）
     try:
-        prod = berry_assemble.load_product(product_path)
+        prod = berry_assemble.load_product(product_path, lite=True)
         items, _ = berry_assemble.resolve_entries(prod, base_manifest, user_dir)
     except berry_assemble.Reject as e:
         die(f"--preset 产品解析拒：{e}")
@@ -770,6 +786,10 @@ def do_generate(args) -> int:
         print(f"gensourceindex: 条目单源派生（G16）: --preset {args.preset}"
               f"（preset ⊕ override = 产品终表 app 集——「源索引条目表」"
               f"自持面消解，38 号 §4）")
+        print("gensourceindex: 注: 首产豁免面（44 号 §4-3 清偿）: load 面"
+              "lite——[product.source].instance 深校验让位（产前自指合法，"
+              "两件套由本工具产出）；override/trust 存在性由终表逐条对账"
+              "兜底；branding/全量执法归 berry-assemble --check（G4 层界）")
     print(f"gensourceindex: {kpath} {len(keys_bytes)}B source_id="
           f"{args.source_id} sig_state={'signed' if signed else 'unsigned'}")
     if signed:
@@ -1246,6 +1266,27 @@ def selftest() -> int:
                     PRODUCT.replace('preset = ["app/A.bap"]', "preset = []").
                     replace('[product.apps.override]\nA = "oem/A.bap"\n\n',
                             ""), "empty.toml"), base, user))
+        # 首产鸡蛋循环豁免（44 号 §4-3 清偿）：[product.source].instance
+        # 指缺席目录（首产态——两件套正是本工具要产的工件）不再 rc=1
+        # 「缺 source-index.tlv」；派生结果与无 source 节形逐项恒等
+        # （索引内容零依赖 source 节）；lite 结构面执法不弱化——source
+        # 节键集/类型仍拒面在（未知键照拒）。
+        SRC_BLOCK = '\n\n[product.source]\ninstance = "sourceinst"\n'
+        got_fresh = load_preset_entries(
+            write_product(PRODUCT + SRC_BLOCK, "fresh.toml"), base, user)
+        leg(got_fresh == got,
+            "--preset 首产豁免（[product.source] 指缺席目录仍派生——产前"
+            "自指合法；条目与无 source 节形恒等）")
+        leg_die("--preset lite 结构面拒（source 未知键照拒）",
+                "--preset 产品解析拒",
+                lambda: load_preset_entries(write_product(
+                    PRODUCT + SRC_BLOCK + 'extra = 1\n', "badsrc.toml"),
+                    base, user))
+        leg_die("--preset lite 结构面拒（instance 非串照拒）",
+                "--preset 产品解析拒",
+                lambda: load_preset_entries(write_product(
+                    PRODUCT + '\n\n[product.source]\ninstance = 7\n',
+                    "badsrc2.toml"), base, user))
 
     if bad:
         print(f"gensourceindex: selftest FAIL x{bad}")

@@ -7,10 +7,15 @@
 //!
 //! ## 留窗表（真实接线全留窗——如实注，不做假接线）
 //!
-//! - **窗 1（常驻挂接）**：svcmgr 服务表预拉 + gift 交付（表号/礼物位随
-//!   挂接刀立法——simbattery 表 0x0001_0005 + `opt/berry/simdev` 门开相
-//!   先例；svcmgr/壳族 = owner 占用零碰，任务纪律）。当前形态 = 未挂接：
-//!   单轮 dry-run 后退出（下方 `main`）。
+//! - **窗 1（常驻挂接）**：装配半边已挂（CP-08 装配件，04 号复核 §6-5：
+//!   `bin/berry-power` rootfs 条目 + build-user musl 段〔--features
+//!   wired〕）；**svcmgr 预拉 arm 留窗**——svcmgr 平像满载（.bss 终点
+//!   0x1dff0 距内核钉位 .pager_entry@0x1e000 仅 0x10，arm 最小面 ~0x1a0
+//!   装不进，链接期 loud 炸响实证；扩容走 kernel 面 128KiB D3 帽/pager
+//!   钉位——kernel/src/main.rs:1621 同值双改），扩容刀挂 arm 补消费。
+//!   gift 交付位（通道端点/env 块 extras）随分端执法刀（窗 2 的 F2 终裁
+//!   落地件）立法。当前 bin 形态 = 起机自检（下方 dry-run，引擎活面单轮
+//!   走通）后 park 常驻（rootfs 在册未被拉起 = 零消费零行为变化）。
 //! - **窗 2（真实通道）**：fd0 = sim 帧通道 RECV 端（task_simcon 转发
 //!   UART1 字节流）、gift = ACK 9B 回程 SEND 端——recv 阻塞形态照
 //!   simbattery `recv_blocking`（`berry_channel_recv` 空 -EAGAIN →
@@ -164,6 +169,8 @@ fn main() {
         applied, rejected, acks, cap, v.chg.limit_ma, v.chg.reason, compat_pct, cap_uah,
         v.freq.req_khz, v.freq.eff_khz
     );
-    // 骨架形态 = 单轮 dry-run 即退；常驻 wait 循环（recv 长帽重臂——窗 1/2
-    // 真实形态）挂 svcmgr 挂接刀，本件不假常驻。
+    // CP-08 装配形态：自检（上方 dry-run = 引擎活面单轮走通）后 park 常驻
+    // ——真实通道（窗 2 recv 长帽重臂）接线前，零产出动作零唤醒（被拉起
+    // 也不写任何帽/票/发布位；berry-thermal park 壳同款骨架相）。
+    berry_libc::park();
 }

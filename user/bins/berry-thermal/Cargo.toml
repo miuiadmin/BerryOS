@@ -10,8 +10,11 @@ edition = "2021"
 # L1，docs/架构决策.md 决策总表 #66 行立法、服务未建——本刀只落 lib 纯函数
 # 仲裁引擎 + bin 壳循环骨架，常驻挂接/写面全部留窗如实注）。
 # 形态照 user/bins/ 现族例（simbattery/bsh 同款独立小工作区：空 [workspace]
-# escape 根 workspace、musl target + berry-libc shim + berry-ld 链——本骨架
-# 未入 justfile build-user 配方与 rootfs 装配，接线刀补）。
+# escape 根 workspace、musl target + berry-libc shim + berry-ld 链）。
+# CP-08 装配件已接线：build-user PM 段（--features wired 落 musl 链）+
+# rootfs-manifest 条目；svcmgr 预拉 arm 留窗（svcmgr 平像满载——.bss 终点
+# 0x1dff0 距内核钉位 .pager_entry@0x1e000 仅 0x10，arm 装不进；证据全文 =
+# berry-power Cargo.toml 头注），扩容刀补消费。
 # lib = 仲裁引擎（host 可测：cargo test --manifest-path
 # user/bins/berry-thermal/Cargo.toml -p berry-thermal --target <host>，同
 # 根 config build.target 锁下须显式 --target 覆盖——justfile test-host 同款

@@ -25,6 +25,10 @@
 # 逐条目列）↔ 回放清单 pr——frozen 态锚 = 冻结件 platform_revision（认证
 # 语义：OEM 声称版本必须与回放冻结件同版，不等 loud 拒）；live 态锚 =
 # tools/abi.toml [platform].level（mkimage platform_level() 取值同源）。
+# **manifest 名参数化**（G8×G3 联动，44 号 §4-4 清偿）：--manifest-name
+# <name> 指 mkimage --manifest-name 同名（防互踩名镜像不再被误判「非平台
+# 产链」拒跑）；缺省 manifest.txt 向后兼容；守卫 = 纯文件名（mkimage
+# manifest_path_for 同款——同目录侧产物语义，跨目录名 loud 拒）。
 # 字节对拍/VER 哨兵/金丝雀/RX 注入 = smoke-image.sh 标准镜像面（G15：钉
 # 仓库根工件，对定制镜像结构性不可复用），不在镜像腿断言面（#84 后续吸收）。
 #
@@ -65,6 +69,12 @@
 #                                                          # boot 相回放；live 态 PR 锚
 #                                                          # = abi.toml level；--dry 零
 #                                                          # QEMU 零固件（对账+回显）
+#   tools/bcts-run.sh --image <img> --manifest-name <name> [--dry]
+#                                                          # manifest 名参数化（G8×G3
+#                                                          # 联动，44 号 §4-4）：指
+#                                                          # mkimage --manifest-name 同
+#                                                          # 名；缺省 manifest.txt 向后
+#                                                          # 兼容；须纯文件名
 #   BCTS_FROZEN=<bcts@*.toml> tools/bcts-run.sh \
 #     --image <定制镜像>                                   # 镜像腿回放态（OEM 提交形：
 #                                                          # manifest PR ↔ 冻结件 pr 对账）
@@ -101,6 +111,8 @@ SELFTEST=0
 TIER=1
 TIER_EXPLICIT=0
 IMAGE_FILE=""
+MANIFEST_NAME="manifest.txt"   # G8×G3 联动（44 号 §4-4）：镜像腿 manifest 名
+MANIFEST_NAME_EXPLICIT=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry) DRY=1 ;;
@@ -109,6 +121,11 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || { echo "bcts: --image 缺值（<FAT 整盘镜像路径>）" >&2; exit 2; }
       IMAGE_FILE="$2"
       shift ;;
+    --manifest-name)
+      [ $# -ge 2 ] || { echo "bcts: --manifest-name 缺值（<纯文件名——mkimage --manifest-name 同名>）" >&2; exit 2; }
+      MANIFEST_NAME="$2"
+      MANIFEST_NAME_EXPLICIT=1
+      shift ;;
     --tier)
       [ $# -ge 2 ] || { echo "bcts: --tier 缺值（1 | 2）" >&2; exit 2; }
       case "$2" in
@@ -116,7 +133,7 @@ while [ $# -gt 0 ]; do
         *) echo "bcts: --tier 须 1 或 2，实得 $2（v0 只开通 Tier 1/2）" >&2; exit 2 ;;
       esac
       shift ;;
-    *) echo "bcts: 未知参数：${1}（--dry | --selftest | --tier 1|2 | --image <img>；冻结件经 BCTS_FROZEN=<file> 指定）" >&2; exit 2 ;;
+    *) echo "bcts: 未知参数：${1}（--dry | --selftest | --tier 1|2 | --image <img> | --manifest-name <name>；冻结件经 BCTS_FROZEN=<file> 指定）" >&2; exit 2 ;;
   esac
   shift
 done
@@ -147,6 +164,22 @@ if [ -n "${BCTS_FROZEN:-}" ]; then
       exit 2 ;;
   esac
 fi
+
+# --manifest-name 面（G8×G3 联动，44 号 §4-4 清偿）：镜像腿 manifest 名
+# 参数化——OEM 用 mkimage --manifest-name 防互踩名却被「同目录无
+# manifest.txt」误判非平台产链的缝接收口。只与 --image 同席（标准流零
+# manifest 消费面）；守卫 = 纯文件名（mkimage manifest_path_for 同款——
+# 同目录侧产物语义：非空、无路径分隔符、非 ./..，跨目录名 = 命名面
+# 注入口 loud 拒）；缺省 manifest.txt 向后兼容（无 --image 零扰动）。
+if [ "$MANIFEST_NAME_EXPLICIT" = 1 ] && [ -z "$IMAGE_FILE" ]; then
+  echo "bcts: FAIL: --manifest-name 只与 --image 同席（标准流无 manifest 消费面——G8 联动位在镜像腿版本声称位对账）" >&2
+  exit 2
+fi
+case "$MANIFEST_NAME" in
+  ""|"."|".."|*/*|*\\*)
+    echo "bcts: FAIL: --manifest-name 须纯文件名（非空、无路径分隔符——mkimage manifest_path_for 同款守卫，同目录侧产物语义），got '${MANIFEST_NAME}'" >&2
+    exit 2 ;;
+esac
 
 # --image 面约束（G3 镜像腿）：只开通 Tier 1 回放位（Tier 2 = 零 QEMU 槽位
 # 合同静态对账，无镜像回放对象）；与 --selftest 互斥（selftest = 零 QEMU
@@ -853,11 +886,11 @@ if [ "$SELFTEST" = 1 ]; then
   # bcts@1.toml（真件 pr=0 是 V9 预埋值，与现役镜像 PR=1 异版——首件 pr=1
   # 冻结件随下次发版落，本腿以合成件钉死 frozen 锚代码路径）。
   IMGBAD=$(mktemp -d "${TMPDIR:-/tmp}/berryos-bcts-img-selftest.XXXXXX")
-  img_manifest() {  # $1=PR $2=目录——合成 manifest v1 单条目（PR 对账面）
-    printf 'berryos-manifest v1 format_frozen=2026-11-10 entries=01\nitem path=/KERNEL.ELF sha256=%064d size=000000000001 rollback_index=00000000000000000000 platform_revision=%010d\n' 0 "$1" > "$2/manifest.txt"
+  img_manifest() {  # $1=PR $2=目录 [$3=manifest 名（缺省 manifest.txt）]
+    printf 'berryos-manifest v1 format_frozen=2026-11-10 entries=01\nitem path=/KERNEL.ELF sha256=%064d size=000000000001 rollback_index=00000000000000000000 platform_revision=%010d\n' 0 "$1" > "$2/${3:-manifest.txt}"
   }
   LV=$(abi_level) || { echo "bcts: FAIL: abi_level 读失败（--image 腿前置）" >&2; exit 1; }
-  for d in ok-live ok-frozen miss-live miss-frozen nomanifest; do
+  for d in ok-live ok-frozen miss-live miss-frozen nomanifest ok-alt; do
     mkdir -p "$IMGBAD/$d"
     : > "$IMGBAD/$d/std.img"
   done
@@ -866,6 +899,9 @@ if [ "$SELFTEST" = 1 ]; then
   sed 's/^platform_revision = 0$/platform_revision = 1/' "$ART" > "$IMGBAD/bcts@1.toml"
   img_manifest 1 "$IMGBAD/ok-frozen"
   img_manifest 2 "$IMGBAD/miss-frozen"
+  # ok-alt = G8 联动腿：仅非缺省名（acme-rich.manifest.txt）在席、缺省
+  # manifest.txt 缺席——证 --manifest-name 真被消费（无静默回落缺省名）。
+  img_manifest "$LV" "$IMGBAD/ok-alt" "acme-rich.manifest.txt"
 
   leg "--image 缺值拒（参数面）" 2 "\"$SCRIPT_DIR/bcts-run.sh\" --image"
   leg "--image 镜像不存在拒" 1 "\"$SCRIPT_DIR/bcts-run.sh\" --image '$IMGBAD/absent.img' --dry"
@@ -880,13 +916,26 @@ if [ "$SELFTEST" = 1 ]; then
     "BCTS_FROZEN='$IMGBAD/bcts@1.toml' \"$SCRIPT_DIR/bcts-run.sh\" --image '$IMGBAD/ok-frozen/std.img' --dry | grep -q '版本声称位对账 ok'"
   leg "版本声称位对账 frozen 态拒面（manifest PR=2 ≠ 冻结件 pr=1）" 1 \
     "BCTS_FROZEN='$IMGBAD/bcts@1.toml' \"$SCRIPT_DIR/bcts-run.sh\" --image '$IMGBAD/miss-frozen/std.img' --dry"
+  # ---------- --manifest-name 腿（G8×G3 联动，44 号 §4-4 清偿；零 QEMU——dry） ----------
+  leg "--manifest-name 缺值拒（参数面）" 2 \
+    "\"$SCRIPT_DIR/bcts-run.sh\" --manifest-name"
+  leg "--manifest-name 无 --image 拒（标准流零 manifest 消费面）" 2 \
+    "\"$SCRIPT_DIR/bcts-run.sh\" --manifest-name alt.manifest.txt --dry"
+  leg "--manifest-name 跨目录名拒（mkimage G8 同款纯文件名守卫）" 2 \
+    "\"$SCRIPT_DIR/bcts-run.sh\" --image '$IMGBAD/ok-alt/std.img' --manifest-name a/b.txt --dry"
+  leg "--manifest-name 名对上过（G8 联动：同目录无缺省 manifest.txt 不误拒）" 0 \
+    "\"$SCRIPT_DIR/bcts-run.sh\" --image '$IMGBAD/ok-alt/std.img' --manifest-name acme-rich.manifest.txt --dry | grep -q '版本声称位对账 ok'"
+  leg "--manifest-name 名不对拒（无静默回落缺省名）" 1 \
+    "\"$SCRIPT_DIR/bcts-run.sh\" --image '$IMGBAD/ok-alt/std.img' --manifest-name other.manifest.txt --dry"
+  leg "--image 缺省名缺席拒（向后兼容钉板：无 --manifest-name 仍取 manifest.txt）" 1 \
+    "\"$SCRIPT_DIR/bcts-run.sh\" --image '$IMGBAD/ok-alt/std.img' --dry"
   rm -rf "$IMGBAD"
 
   if [ "$fail_legs" -gt 0 ]; then
     echo "bcts: FAIL: selftest ${fail_legs}/${legs} 腿红" >&2
     exit 1
   fi
-  echo "bcts: selftest ${legs}/${legs} 腿绿（T1 工件 schema 自校验 + 拒面合成 + 两态清单对拍 + T2 对账真跑/咬合 + --image 参数/拒面/版本声称位对账；零 QEMU）"
+  echo "bcts: selftest ${legs}/${legs} 腿绿（T1 工件 schema 自校验 + 拒面合成 + 两态清单对拍 + T2 对账真跑/咬合 + --image 参数/拒面/版本声称位/manifest 名联动对账；零 QEMU）"
   exit 0
 fi
 
@@ -932,8 +981,8 @@ if [ -n "$IMAGE_FILE" ]; then
     echo "bcts: FAIL: 镜像腿空集守卫——bare 相 ${N_BARE:-0} 件 < ${TIER1_BARE_FLOOR}（防假绿；rootfs/RX 相 EFI 路结构性缺席，bare 相是镜像腿唯一回放面）" >&2
     exit 1
   fi
-  IMG_MANIFEST="${IMAGE_FILE%/*}/manifest.txt"
-  [ -f "$IMG_MANIFEST" ] || { echo "bcts: FAIL: 镜像同目录无 manifest.txt：${IMG_MANIFEST}（mkimage 件 3 侧产物——缺席即非平台产链镜像）" >&2; exit 1; }
+  IMG_MANIFEST="${IMAGE_FILE%/*}/${MANIFEST_NAME}"
+  [ -f "$IMG_MANIFEST" ] || { echo "bcts: FAIL: 镜像同目录无 ${MANIFEST_NAME}：${IMG_MANIFEST}（mkimage 件 3 侧产物——缺席即非平台产链镜像；防互踩名镜像加 --manifest-name 指 mkimage 同名，G8 联动）" >&2; exit 1; }
   if [ "$MODE" = frozen ]; then
     IMG_PR=$(head -1 "$WORK/entries.tsv" | cut -f2)
     IMG_PR_ANCHOR="冻结件 platform_revision（${FROZEN_FILE}）"
@@ -953,7 +1002,7 @@ if [ "$DRY" = 1 ]; then
       '{print "bcts: platform_revision = "$2"；frozen_at = "$6"；abi_snapshot = "$7"（"$8"）"}'
   fi
   if [ -n "$IMAGE_FILE" ]; then
-    echo "bcts: 镜像腿 = EFI 镜像流（AAVMF + ${IMAGE_FILE}）；回放面 = bare 相 ${N_BARE} 件 + EFI 十段/接续结构面；版本对账锚 = ${IMG_PR_ANCHOR}（pr=${IMG_PR}，已对账 ok）"
+    echo "bcts: 镜像腿 = EFI 镜像流（AAVMF + ${IMAGE_FILE}）；manifest = ${MANIFEST_NAME}；回放面 = bare 相 ${N_BARE} 件 + EFI 十段/接续结构面；版本对账锚 = ${IMG_PR_ANCHOR}（pr=${IMG_PR}，已对账 ok）"
   fi
   awk -F'\t' '$1=="MARK"{printf "  marker %-9s %-10s %s\n",$2,$3,$4}
               $1=="GATE"{printf "  gate   %-10s %s\n",$2,$3}' "$WORK/entries.tsv"

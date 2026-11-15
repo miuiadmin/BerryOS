@@ -3534,8 +3534,10 @@ extern "C" fn task_intent_slow(_arg: usize) -> ! {
     unreachable!("it_slow: u64::MAX 不到期")
 }
 
-/// it_probe（验收司机）：睡 8 slice（slice_ns 换算同 waker2——clock 域
-/// 确定性）等全链落定 → 遍历 SLEEPQ 断言四睡眠者 intent 字段 + 遥测三计数
+/// it_probe（验收司机）：睡 max(8 slice, 400ms) 墙钟（slice_ns 换算同
+/// waker2——clock 域确定性；400ms 墙钟下限 = 2× it_slow 200ms 被测事件
+///——高 slice_hz 档 8×slice 缩到 32/8ms 司机早醒断言炸，46 号案 a 修窗）
+/// 等全链落定 → 遍历 SLEEPQ 断言四睡眠者 intent 字段 + 遥测三计数
 /// 器（borrows≥3 / hop_capped≥1 / budget_capped≥2——send 降级 + recv 封顶
 /// 两路）→ 打 `INTENT ok`（smoke 第 19 标记）→ exit。字段即机器关卡：借入
 /// 生效 / opt-out 回落 / hop==1 转发活证 / 双帽拒传播 / 降级转发不清借入，
@@ -3548,10 +3550,15 @@ extern "C" fn task_intent_probe(_arg: usize) -> ! {
     // SAFETY: 本任务内核栈局部变量，活过调用。
     let pnow = core::ptr::addr_of_mut!(now) as u64;
     assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "it_probe: clock_read");
+    // 46 号案 a：等待窗加墙钟下限——10Hz 恒等（8×100ms=800ms 取大端，
+    // 谱系零回归）；250/1000Hz 档 8×slice 仅 32/8ms < it_slow 200ms 被
+    // 测事件，司机早醒断言炸（P0 跨线冲突）。400ms=2× 被测事件兜底；
+    // 魔数对：it_slow 200ms 睡改则此处跟改。
     assert_eq!(
-        svc4(NR_THREAD_SLEEP as u64, now + 8 * slice_ns, 0, 0),
+        svc4(NR_THREAD_SLEEP as u64,
+             now + core::cmp::max(8 * slice_ns, 400_000_000), 0, 0),
         0,
-        "it_probe: thread_sleep 8 slice（等全链落定）"
+        "it_probe: thread_sleep ≥8 slice 且 ≥400ms 墙钟（等全链落定）"
     );
     let (mut saw_mid, mut saw_a, mut saw_b, mut saw_slow) = (false, false, false, false);
     // 契约包络（复盘雷 2 残留诊断）：for_each_sleeper 须 IRQ 屏蔽窗内调用

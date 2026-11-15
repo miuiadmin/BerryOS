@@ -257,6 +257,26 @@ build-user:
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/simbattery/Cargo.toml \
         --target aarch64-unknown-linux-musl
+    # CP-08 装配件（04 号复核 §6-5/§6-6）：PM 双服务入 rootfs——
+    # berry-power（电源中枢服务骨架：频率帽聚合/充电限流票仲裁/util
+    # EWMA 消费位/pwproto 帧会话纯核全在 lib〔host 单测盖〕，bin 壳 =
+    # 起机自检 dry-run 诊断行后 park 常驻）+ berry-thermal（热治理仲裁
+    # 引擎 + 自检/park 壳）。bin 面经 wired 门链 berry-libc shim
+    # （println/park 原语——04 号 F4 缺注随本刀收口；berry-thermal
+    # Cargo.toml 门注同款：host cargo test 相整跳 bin，纯核全在 lib）。
+    # **消费端留窗（svcmgr 预拉 arm 未挂）**：svcmgr 平像已满载——
+    # HEAD .bss 终点 0x1dff0 距内核钉位 .pager_entry@0x1e000 仅 0x10 余量
+    # （kernel/src/main.rs:1621 同值双改 + 128KiB D3 帽 kernel/src/
+    # user.rs:85），预拉 arm 最小面 ~0x1a0 装不进（链接期 loud 炸响实证
+    # ——link-user.ld 头注「fail loud 二道几何钉」设计使然）；rootfs 条目
+    # 主走查未知名算术跳过 = 零消费零行为变化（a-1 先例），svcmgr 扩容
+    # （帽抬升/瘦身，kernel 面）后挂 arm 补消费。
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path bins/berry-power/Cargo.toml --features wired \
+        --target aarch64-unknown-linux-musl
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path bins/berry-thermal/Cargo.toml --features wired \
+        --target aarch64-unknown-linux-musl
     # G4 X-4：dpgx（exec 装载差分子——单 PT_LOAD 特形链接脚本
     # bins/dpgx/link-dpgx.ld：单 LOAD 单 k=−0x200000（X-4e：FILEHDR
     # PHDRS 吃头进段——先前 −0x1ff000 时头在段外，__ehdr_start=0 杀胎）
@@ -746,6 +766,22 @@ test-host:
     # ACK/流式再同步解码 + 值域双向执法 + 黄金字节钉板，host 9 测；
     # PM-16 §4.1 契约冻结）。
     cargo test --manifest-path user/Cargo.toml -p berry-pwproto --target {{host}}
+    # CP-08 接线刀（04 号复核 F3/§6-13 收口）：PM 四 crate host 测试行——
+    # berry-power(31)/berry-thermal(13)/berry-em(8)/berry-slackface(12)
+    # 全是独立小工作区（空 [workspace] escape 根/父 workspace，不入
+    # user/Cargo.toml members），--manifest-path 直指 crate（berry-ksproto
+    # 先例形态）。berry-power/berry-thermal bin 挂 wired required-features
+    # 门（musl 产线面——build-user PM 段开 --features wired 落链；host
+    # 测试相整跳 bin，聚合/仲裁纯核全在 lib）。
+    cargo test --manifest-path user/bins/berry-power/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/bins/berry-thermal/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/berry-em/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/berry-slackface/Cargo.toml --target {{host}}
+    # pm-integration（CP-08 联合场景 harness，host 14 测）：PM 四 crate 按
+    # ADR #66/#68 数据流接成三个端到端场景（热降频全链/slack+EM 联合/
+    # 充电票+关机边界）——只读 path 依赖零改被测件，验证「上游出→下游
+    # 收」跨 crate 正确性；host 验证面 harness 非产线服务，不进 rootfs。
+    cargo test --manifest-path user/pm-integration/Cargo.toml --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-tcp --target {{host}}
     # C-3：berry-psproto（ps 查询 RPC 协议纯函数面——表/ver/mem 三 op
     # 编解码 + 严格解析全拒面 + 黄金字节钉板，host 15 测）。

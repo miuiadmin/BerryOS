@@ -5,9 +5,13 @@
 //!
 //! ## 挂接留窗（接线刀逐件补，本刀零碰）
 //!
-//! 1. **常驻预拉/rootfs 装配留窗**：svcmgr = owner 占用（表位/门控/spawn 形
-//!    态照 simbattery 先例：表项在席 = 门开相）；justfile build-user musl 链
-//!    配方（berry-ld + aarch64-unknown-linux-musl）同窗。
+//! 1. **常驻预拉半窗**：装配半边已挂（CP-08 装配件：rootfs 条目 +
+//!    build-user PM 段〔--features wired 落 musl 链〕）；**svcmgr 预拉
+//!    arm 留窗**——svcmgr 平像满载（.bss 终点 0x1dff0 距内核钉位
+//!    .pager_entry@0x1e000 仅 0x10，arm 最小面装不进，链接期 loud 炸响
+//!    实证；证据全文 = berry-power main.rs 窗 1），svcmgr 扩容刀挂 arm
+//!    补消费（表位/门控/spawn 形态照 simbattery 先例：表项在席 = 门开
+//!    相）。rootfs 在册未被拉起 = 零消费零行为变化。
 //! 2. **输入面留窗**：驱动自报 trips 订阅（中断 trip 优先 + 轮询兜底，
 //!    ADR #66 ①）——tick 组装 = pwproto `ThermalSnapshot`（DEV_THERMAL）→
 //!    `Tick`（sensor_id 由通道端点位显式化）；电池温取电池驱动自报
