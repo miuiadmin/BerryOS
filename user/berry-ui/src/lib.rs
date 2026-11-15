@@ -164,6 +164,19 @@ pub(crate) const BADGE_DOT_D: u32 = 16;
 pub(crate) const BADGE_PAD_X: u32 = 8;
 /// Select 固定内在宽（下拉标准行——批 C）。
 pub(crate) const SELECT_W: u32 = 200;
+/// Input 固定内在宽（单行输入——批 D）。
+pub(crate) const INPUT_W: u32 = 200;
+/// Input 固定内在高（= 按钮行高 48）。
+pub(crate) const INPUT_H: u32 = 48;
+/// Edit 固定内在宽（多行编辑——三行档）。
+pub(crate) const EDIT_W: u32 = 200;
+/// Edit 固定内在高（三行 48×2 + 行距）。
+pub(crate) const EDIT_H: u32 = 96;
+/// Canvas 固定内在边长（自绘面占位——批 D 视觉底）。
+pub(crate) const CANVAS_D: u32 = 200;
+/// 输入内容侧表容量（批 D：Input/Edit 实际文本不走 props——引擎侧
+/// 定容表 keyed by NodeId；满 = NodeFull loud 同族）。
+pub const INPUT_TEXT_MAX: usize = 8;
 /// Tip 高（= S8x16 cell_h——Tip 文本与 Button 标签同档）。
 pub(crate) const TIP_H: u32 = 16;
 /// Collapse header 高（内在高恒定基 + expanded 子摆放纵向偏移——布
@@ -444,6 +457,9 @@ pub struct Ui<const N: usize> {
     a11y: [Option<A11yEntry>; A11Y_MAX], // a11y 侧表（D12——apply 落/encode 读）
     press_map: [PressEntry; PRESS_MAP_MAX], // pressed 短路径表（D18——pump 期消费）
     press_map_n: usize,
+    focus: Option<NodeId>, // 输入焦点窗（批 D——Input/Edit 焦点环/caret 单源）
+    input_bufs: [Option<(NodeId, desc::TextBuf)>; INPUT_TEXT_MAX], // 输入内容侧表（批 D）
+    input_buf_n: usize,
     widget_events: EventBuf, // 组件事件缓冲（widget_react 期产——take_events 消费）
     lost_widget_events: u32, // 缓冲满被丢的事件计数（loud 诊断面——Gesture::lost_msgs 同形）
 }
@@ -621,7 +637,9 @@ impl<const N: usize> Ui<N> {
                 active: false,
             }; PRESS_MAP_MAX],
             press_map_n: 0,
-            widget_events: EventBuf::new(),
+            focus: None,
+            input_bufs: [None; INPUT_BUF_MAX],
+            input_buf_n: 0,            widget_events: EventBuf::new(),
             lost_widget_events: 0,
         }
     }
@@ -799,6 +817,9 @@ impl<const N: usize> Ui<N> {
         self.deps.clear(); // 旧树 NodeId 全悬空——边表整清（dep 表侧单源）
         self.a11y = [None; A11Y_MAX]; // 同理整清（D12 侧表随树生命周期）
         self.press_map_n = 0; // 同理整清（D18 表随树生命周期——悬空 id 无还原义）
+        self.focus = None; // 焦点随树清（批 D——悬空 id 无义）
+        self.input_bufs = [None; INPUT_BUF_MAX]; // 内容侧表同理整清
+        self.input_buf_n = 0;
         self.widget_events = EventBuf::new(); // 同理整清（组件事件随树生命周期——旧 NodeId 悬空无义）
         self.lost_widget_events = 0;
         self.input_n = 0;
@@ -1139,6 +1160,12 @@ impl<const N: usize> Ui<N> {
                 | Some((ViewKind::List, Props::List(_)))
                 // 波2 批 C：Select 开口（selected/option_count 面）。
                 | Some((ViewKind::Select, Props::Select(_)))
+                // 波2 批 D：Input/Edit 开口（placeholder/max_len/type 面
+                // ——内容走侧表 set_input_text）；Canvas 开口（paint_ops
+                // 计数面）。
+                | Some((ViewKind::Input, Props::Input(_)))
+                | Some((ViewKind::Edit, Props::Edit(_)))
+                | Some((ViewKind::Canvas, Props::Canvas(_)))
                 // 组件第三批（Tip/Collapse/Chip/Fab/Card 开口）：文本/
                 // expanded/selected/扩展标签/elevation·corner_radius 面。
                 | Some((ViewKind::Tip, Props::Tip(_)))
@@ -1550,6 +1577,120 @@ impl<const N: usize> Ui<N> {
     }
 
     /// 表查（immutable 面）：首个 trigger 命中的条目副本。
+    // —— 波2 批 D：输入焦点 + 文本内容面 ——
+
+    /// 设置输入焦点（None = 清焦点）。目标须 Input/Edit（他 kind NodeBad
+    /// loud——焦点域立法）；置焦同帧 damage 本界（焦点环视觉）。
+    pub fn set_focus(&mut self, node: Option<NodeId>) -> Result<(), UiError> {
+        match node {
+            None => {
+                if let Some(old) = self.focus {
+                    if let Ok(i) = self.slot_of(old) {
+                        self.damage_rect(self.abs_rect_of(i));
+                    }
+                }
+                self.focus = None;
+                Ok(())
+            }
+            Some(id) => {
+                let idx = self.slot_of(id)? as usize;
+                let ok = matches!(
+                    self.nodes[idx].as_ref().map(|n| n.kind),
+                    Some(ViewKind::Input) | Some(ViewKind::Edit)
+                );
+                if !ok {
+                    return Err(UiError::NodeBad);
+                }
+                if let Some(old) = self.focus {
+                    if old != id {
+                        if let Ok(i) = self.slot_of(old) {
+                            self.damage_rect(self.abs_rect_of(i));
+                        }
+                    }
+                }
+                self.focus = Some(id);
+                self.damage_rect(self.abs_rect_of(idx));
+                Ok(())
+            }
+        }
+    }
+
+    /// 当前焦点节点（无焦点 None）。
+    pub fn focus(&self) -> Option<NodeId> {
+        self.focus
+    }
+
+    /// 读输入内容（侧表——props 只载约束）。无内容空切片。
+    pub fn input_text(&self, node: NodeId) -> Option<&[u8]> {
+        self.input_bufs[..self.input_buf_n]
+            .iter()
+            .find_map(|s| match s {
+                Some((id, tb)) if *id == node => Some(tb.as_bytes()),
+                _ => None,
+            })
+    }
+
+    /// 写输入内容（侧表 upsert——add/update；max_len 域执法在此）。非
+    /// Input/Edit kind → NodeBad loud；表满新键 → NodeFull loud。
+    pub fn set_input_text(&mut self, node: NodeId, bytes: &[u8]) -> Result<(), UiError> {
+        let idx = self.slot_of(node)? as usize;
+        let ok = matches!(
+            self.nodes[idx].as_ref().map(|n| n.kind),
+            Some(ViewKind::Input) | Some(ViewKind::Edit)
+        );
+        if !ok {
+            return Err(UiError::NodeBad);
+        }
+        let max = match self.nodes[idx].as_ref().map(|n| &n.props) {
+            Some(Props::Input(p)) => p.max_len,
+            Some(Props::Edit(p)) => p.max_len,
+            _ => return Err(UiError::NodeBad),
+        };
+        if bytes.len() as u32 > max || bytes.len() > TEXT_INLINE {
+            return Err(UiError::NodeBad); // 帽越域 loud（max_len 与 TextBuf 内联帽取小）
+        }
+        let tb = desc::TextBuf::new(bytes)?;
+        // upsert
+        for e in self.input_bufs[..self.input_buf_n].iter_mut() {
+            if let Some((id, slot)) = e {
+                if *id == node {
+                    *slot = tb;
+                    let r = self.abs_rect_of(idx);
+                    self.damage_rect(r);
+                    return Ok(());
+                }
+            }
+        }
+        if self.input_buf_n >= INPUT_TEXT_MAX {
+            return Err(UiError::NodeFull);
+        }
+        self.input_bufs[self.input_buf_n] = Some((node, tb));
+        self.input_buf_n += 1;
+        let r = self.abs_rect_of(idx);
+        self.damage_rect(r);
+        Ok(())
+    }
+
+    /// 焦点槽值（paint 焦点环查表单源——None = u32::MAX）。
+    fn focus_slot(&self) -> u32 {
+        match self.focus {
+            Some(id) => id.0 & 0xFFFF,
+            None => u32::MAX,
+        }
+    }
+
+    /// 输入内容快照（批 D：侧表 → paint 消费面）。
+    fn input_texts_snapshot(&self) -> paint::InputTexts {
+        let mut t = paint::InputTexts::empty();
+        for e in self.input_bufs[..self.input_buf_n].iter().flatten() {
+            if t.n < t.entries.len() {
+                t.entries[t.n] = Some((e.0 .0 & 0xFFFF, e.1));
+                t.n += 1;
+            }
+        }
+        t
+    }
+
     /// pressed 视觉活动集快照（波2 批 A：press_map active 条目的 visual
     /// 槽值——paint 期 Button 等 Filled 底换 ACCENT_PRESSED 的查表面；
     /// 复制进 paint::PressedVis 定容小表，n ≤ PRESS_MAP_MAX 结构保证）。
@@ -1656,6 +1797,11 @@ impl<const N: usize> Ui<N> {
                     Some(Props::Button(p)) => {
                         let on_tap = p.on_tap;
                         self.fire_widget_event(node, on_tap, 0);
+                    }
+                    Some(Props::Input(_)) | Some(Props::Edit(_)) => {
+                        // 波2 批 D：点击置焦（焦点环/caret 随焦）——值面
+                        // 无事件（on_* props 未载）；再击幂等。
+                        let _ = self.set_focus(Some(node));
                     }
                     Some(Props::Select(p)) => {
                         // 波2 批 C：Select 点击循环下一项（末项回 0；
@@ -1888,6 +2034,8 @@ impl<const N: usize> Ui<N> {
             enc,
             self.icons, // D28 槽取传（门面签名不变）
             &self.pressed_snapshot(),
+            self.focus_slot(),
+            &self.input_texts_snapshot(),
         )
     }
 
@@ -2096,6 +2244,8 @@ impl<const N: usize> Ui<N> {
                 enc,
                 self.icons, // D28 槽取传
                 &self.pressed_snapshot(),
+                self.focus_slot(),
+                &self.input_texts_snapshot(),
             )
         } else {
             paint::PaintReport { cmds: 0, drawn_px: 0, culled: 0, overdraw_x256: 0 }

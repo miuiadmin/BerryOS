@@ -101,6 +101,18 @@ pub const SELECT_BG: Color = Color { r: 0xFF, g: 0xFF, b: 0xFF };
 pub const SELECT_BORDER: Color = Color { r: 0x66, g: 0x66, b: 0x66 };
 /// Select 箭头/索引前景。
 pub const SELECT_FG: Color = Color { r: 0x21, g: 0x21, b: 0x21 };
+/// Input/Edit 框底（输入面白）。
+pub const INPUT_BG: Color = Color { r: 0xFF, g: 0xFF, b: 0xFF };
+/// Input/Edit 无焦框边灰。
+pub const INPUT_BORDER: Color = Color { r: 0x66, g: 0x66, b: 0x66 };
+/// Input/Edit 焦点环色（ACCENT 同源——置焦框边）。
+pub const INPUT_FOCUS_RING: Color = Color { r: 0x19, g: 0x76, b: 0xD2 };
+/// Input/Edit placeholder 前景（弱化灰）。
+pub const INPUT_PLACEHOLDER: Color = Color { r: 0x9E, g: 0x9E, b: 0x9E };
+/// Input caret 竖线宽。
+const INPUT_CARET_W: i32 = 2;
+/// Canvas 自绘面底（占位棋盘格浅色）。
+pub const CANVAS_BG: Color = Color { r: 0xEE, g: 0xEE, b: 0xEE };
 /// pressed 视觉活动集（波2 批 A：press_map active 条目的 visual 槽值
 /// 快照——emit 期查表换暗色底；容量 = PRESS_MAP_MAX 同源上界，调用方
 /// 保证不超）。
@@ -118,6 +130,29 @@ impl PressedVis {
     /// slot 是否在活动集（线性查——n ≤ PRESS_MAP_MAX 小表）。
     pub fn contains(&self, slot: u32) -> bool {
         self.slots[..self.n].contains(&slot)
+    }
+}
+
+/// 输入内容快照（批 D：lib 侧表 → paint 消费面；槽值 keyed）。
+pub struct InputTexts {
+    pub entries: [Option<(u32, crate::desc::TextBuf)>; crate::INPUT_TEXT_MAX],
+    pub n: usize,
+}
+
+impl InputTexts {
+    /// 空表。
+    pub fn empty() -> Self {
+        InputTexts { entries: [None; crate::INPUT_TEXT_MAX], n: 0 }
+    }
+
+    /// slot 的内容（无则空切片）。
+    pub fn text_of(&self, slot: u32) -> &[u8] {
+        for e in self.entries[..self.n].iter().flatten() {
+            if e.0 == slot {
+                return e.1.as_bytes();
+            }
+        }
+        &[]
     }
 }
 /// Button 压下态底色（ACCENT 暗化 20%——0x19/0x76/0xD2 × 0.8 取整）。
@@ -181,6 +216,8 @@ pub(crate) fn paint<'a>(
     enc: &mut CommandEncoder<'a>,
     icons: &'a dyn IconSource,
     pressed: &PressedVis,
+    focus_slot: u32,
+    texts: &InputTexts,
 ) -> PaintReport {
     let mut rep =
         PaintReport { cmds: 0, drawn_px: 0, culled: 0, overdraw_x256: 0 };
@@ -236,11 +273,11 @@ pub(crate) fn paint<'a>(
             // （N ≤ MAX_NODES=512 < ORDER_CAP/2）结构性不达此面——防御
             // 路径不设竞速断言，仅 offscreen 回归测试钉板行为。
             rep.culled = culled_before;
-            emit_walk_all(nodes, root, 0, 0, d, &vp_rect, icons, pressed, &mut rest, enc, &mut rep, 0);
+            emit_walk_all(nodes, root, 0, 0, d, &vp_rect, icons, pressed, focus_slot, texts, &mut rest, enc, &mut rep, 0);
         } else {
             // 发射 = 收集序之逆（前序 = 画家算法背到前）
             for k in (0..n_order).rev() {
-                emit_node(nodes, order[k], &bnds[k], &vp_rect, icons, pressed, &mut rest, enc, &mut rep);
+                emit_node(nodes, order[k], &bnds[k], &vp_rect, icons, pressed, focus_slot, texts, &mut rest, enc, &mut rep);
             }
         }
     }
@@ -378,7 +415,10 @@ fn cull_walk(
         | ViewKind::Chip
         | ViewKind::Fab
         | ViewKind::Card
-        | ViewKind::Select => {}
+        | ViewKind::Select
+        | ViewKind::Input
+        | ViewKind::Edit
+        | ViewKind::Canvas => {}
         ViewKind::Root
         | ViewKind::Col
         | ViewKind::Row
@@ -433,6 +473,8 @@ fn emit_walk_all<'a>(
     vp_rect: &RectI,
     icons: &'a dyn IconSource,
     pressed: &PressedVis,
+    focus_slot: u32,
+    texts: &InputTexts,
     rest: &mut &'a mut [GlyphPos],
     enc: &mut CommandEncoder<'a>,
     rep: &mut PaintReport,
@@ -474,12 +516,15 @@ fn emit_walk_all<'a>(
         | ViewKind::Chip
         | ViewKind::Fab
         | ViewKind::Card
-        | ViewKind::Select => {
+        | ViewKind::Select
+        | ViewKind::Input
+        | ViewKind::Edit
+        | ViewKind::Canvas => {
             let b = RectI::new(i64_to_i32_sat(bx), i64_to_i32_sat(by), n.w, n.h);
             if b.intersect(d).is_empty() {
                 rep.culled += 1; // damage 外叶子
             } else {
-                emit_node(nodes, slot, &b, vp_rect, icons, pressed, rest, enc, rep);
+                emit_node(nodes, slot, &b, vp_rect, icons, pressed, focus_slot, texts, rest, enc, rep);
             }
         }
         ViewKind::Root
@@ -516,7 +561,7 @@ fn emit_walk_all<'a>(
         }
         match nodes.get(c as usize) {
             Some(Some(ch)) if ch.alive => {
-                emit_walk_all(nodes, c, bx, by, d, vp_rect, icons, pressed, rest, enc, rep, hops + 1);
+                emit_walk_all(nodes, c, bx, by, d, vp_rect, icons, pressed, focus_slot, texts, rest, enc, rep, hops + 1);
                 c = ch.next_sib;
             }
             _ => return, // 链上死槽 = 树结构异常，防御放弃余段
@@ -538,6 +583,8 @@ fn emit_node<'a>(
     vp_rect: &RectI,
     icons: &'a dyn IconSource,
     pressed: &PressedVis,
+    focus_slot: u32,
+    texts: &InputTexts,
     rest: &mut &'a mut [GlyphPos],
     enc: &mut CommandEncoder<'a>,
     rep: &mut PaintReport,
@@ -959,6 +1006,76 @@ fn emit_node<'a>(
                 };
                 emit_widget_text(&buf[..n], b.x + 4, b.w - 20, b.y, b.h, SELECT_FG, rest, enc, rep);
             }
+        }
+        // 波2 批 D（Input/Edit/Canvas）：Input = 白底框（焦点 = ACCENT
+        // 环）/内容或 placeholder/caret（有焦且内容未满时尾置 2×16 竖
+        // 线——内容经 lib 侧表传入无从查，v1 caret 恒随内容尾近似 =
+        // max(8, len×8) 位；Edit = 多行版（Canvas 同底框无 caret）；
+        // Canvas = 浅底占位面（自绘协议挂后续刀——paint_ops 计数面）。
+        Props::Input(p) => {
+            let ring = if focus_slot == slot { INPUT_FOCUS_RING } else { INPUT_BORDER };
+            let t = BUTTON_BORDER.min(b.w / 2).min(b.h / 2).max(1);
+            fill(enc, b.x, b.y, b.w, t, ring, rep);
+            fill(enc, b.x, b.y + b.h - t, b.w, t, ring, rep);
+            fill(enc, b.x, b.y + t, t, b.h - 2 * t, ring, rep);
+            fill(enc, b.x + b.w - t, b.y + t, t, b.h - 2 * t, ring, rep);
+            if b.w > 2 * t && b.h > 2 * t {
+                fill(enc, b.x + t, b.y + t, b.w - 2 * t, b.h - 2 * t, INPUT_BG, rep);
+            }
+            let focused = focus_slot == slot;
+            let text: &[u8] = texts.text_of(slot);
+            if text.is_empty() {
+                if !p.placeholder.is_empty() {
+                    emit_widget_text(
+                        p.placeholder.as_bytes(),
+                        b.x + 6, b.w - 12, b.y, b.h, INPUT_PLACEHOLDER, rest, enc, rep,
+                    );
+                }
+            } else {
+                let fg = match p.input_kind {
+                    crate::desc::InputKind::Password => b'*',
+                    _ => 0,
+                };
+                if fg == 0 {
+                    emit_widget_text(text, b.x + 6, b.w - 12, b.y, b.h, SELECT_FG, rest, enc, rep);
+                } else {
+                    let mask = [fg; 32];
+                    let n = text.len().min(32);
+                    emit_widget_text(&mask[..n], b.x + 6, b.w - 12, b.y, b.h, SELECT_FG, rest, enc, rep);
+                }
+            }
+            if focused {
+                let cx = b.x + 6 + (text.len() as i32 * 8).min(b.w - 16);
+                fill(enc, cx, b.y + 14, INPUT_CARET_W, 16, INPUT_FOCUS_RING, rep);
+            }
+        }
+        Props::Edit(p) => {
+            let ring = if focus_slot == slot { INPUT_FOCUS_RING } else { INPUT_BORDER };
+            let t = BUTTON_BORDER.min(b.w / 2).min(b.h / 2).max(1);
+            fill(enc, b.x, b.y, b.w, t, ring, rep);
+            fill(enc, b.x, b.y + b.h - t, b.w, t, ring, rep);
+            fill(enc, b.x, b.y + t, t, b.h - 2 * t, ring, rep);
+            fill(enc, b.x + b.w - t, b.y + t, t, b.h - 2 * t, ring, rep);
+            if b.w > 2 * t && b.h > 2 * t {
+                fill(enc, b.x + t, b.y + t, b.w - 2 * t, b.h - 2 * t, INPUT_BG, rep);
+            }
+            let etext = texts.text_of(slot);
+            if etext.is_empty() && !p.placeholder.is_empty() {
+                emit_widget_text(
+                    p.placeholder.as_bytes(),
+                    b.x + 6, b.w - 12, b.y, 40, INPUT_PLACEHOLDER, rest, enc, rep,
+                );
+            } else if !etext.is_empty() {
+                emit_widget_text(etext, b.x + 6, b.w - 12, b.y, 40, SELECT_FG, rest, enc, rep);
+            }
+            if focus_slot == slot {
+                let cy = b.y + 2 + ((etext.len() / 24) as i32).min(1) * 20;
+                let cx = b.x + 6 + ((etext.len() % 24) as i32 * 8).min(b.w - 16);
+                fill(enc, cx, cy + 8, INPUT_CARET_W, 16, INPUT_FOCUS_RING, rep);
+            }
+        }
+        Props::Canvas(_) => {
+            fill(enc, b.x, b.y, b.w, b.h, CANVAS_BG, rep);
         }
         // Root/Col/Row/Pad/Grid + 余组件件：无视觉内容（子树各自发射）
         _ => {}

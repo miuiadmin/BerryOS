@@ -455,32 +455,33 @@ fn set_props_updates_all_four_and_rejects_bad_values() {
         Err(UiError::NodeBad),
         "add 面 permille 域同律拒"
     );
-    // 未开口组件（Input——波2 批 D 待接线件）set_props 仍拒——防半落
-    // 状态。（Scroll 批 A、Select 批 C 已开口迁出本哨位。）
-    let inp = ui
+    // 未开口组件（Refresh——批 E 待接线件）set_props 仍拒——防半落
+    // 状态。（Scroll 批 A、Select 批 C、Input/Edit/Canvas 批 D 已开口
+    // 迁出本哨位。）
+    let rf = ui
         .add(
             root,
             ViewSpec {
-                kind: ViewKind::Input,
+                kind: ViewKind::Refresh,
                 key: 0,
-                props: Props::Input(berry_ui::desc::InputProps {
-                    placeholder: TextBuf::new(b"hint").unwrap(),
-                    max_len: 16,
-                    input_kind: berry_ui::desc::InputKind::Text,
+                props: Props::Refresh(berry_ui::desc::RefreshProps {
+                    refreshing: false,
+                    offset: 0,
+                    on_refresh: 0,
                 }),
             },
         )
         .unwrap();
     assert_eq!(
         ui.set_props(
-            inp,
-            Props::Input(berry_ui::desc::InputProps {
-                placeholder: TextBuf::new(b"hint").unwrap(),
-                max_len: 16,
-                input_kind: berry_ui::desc::InputKind::Text,
+            rf,
+            Props::Refresh(berry_ui::desc::RefreshProps {
+                refreshing: true,
+                offset: 0,
+                on_refresh: 0,
             })
         ),
         Err(UiError::NodeBad),
-        "Input 未开口——set_props 拒（批 D 接线前防半落）"
+        "Refresh 未开口——set_props 拒（批 E 接线前防半落）"
     );
 }
