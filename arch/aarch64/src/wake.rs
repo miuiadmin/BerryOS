@@ -31,6 +31,12 @@ use crate::wake_gen::{
     WAKE_SRC_SGI_TLB, WAKE_SRC_TIMER, WAKE_SRC_UART_RX, WAKE_SRC_UNKNOWN,
 };
 
+// W3-Q66：归因链判定律单源迁 berry-wakeface（号→源映射/保存值域判/槽位
+// 钳位——host 钉板在 wakeface；wsrcface 姊妹件：本面钉号怎么归源，wsrcface
+// 钉源怎么分类进环）。号表锚以 gic.rs 冻结号参数化注入——HAL 改号时
+// wakeface 镜像测试红双执法。原子 cell/到达计数物理臂留壳。
+use berry_wakeface::{restore_valid as wf_restore_valid, slot_index as wf_slot_index, IrqMap};
+
 /// per-CPU cell 数（QEMU virt `-smp 2` 钉 2——canary 表同口径）。
 const CPUS: usize = 2;
 
@@ -47,6 +53,12 @@ fn cell() -> &'static AtomicU8 {
 /// 读当前核的唤醒归因语境（内核 `on_wake` per-source 记账读点）。
 pub fn wake_src_current() -> u8 {
     cell().load(Ordering::Relaxed)
+}
+
+/// 槽位钳位读（W3-Q66 单源 re-export——kernel G1.5 快照合并/到达记账
+/// 读点消费面；wsrcface 姊妹件合钉同律）。
+pub fn wake_src_slot_index(src: u8) -> usize {
+    wf_slot_index(src)
 }
 
 /// 任务语境基线写点（`berry_sched::note_switch` 顶调）：切入任务/idle 语境
@@ -66,28 +78,40 @@ pub(crate) fn wake_src_irq_enter(src: u8) -> u8 {
 }
 
 /// IRQ 单出口：恢复 [`wake_src_irq_enter`] 返回的旧值。
+///
+/// W3-Q66：保存值域判单源 = `berry_wakeface::restore_valid`（九源集——
+/// debug 形执法：非法保存值 = cell 被外物写坏，fail-loud；release 形直写
+/// 不放大损伤——毒值本就已在 cell 里，恢复不引入第二份）。
 pub(crate) fn wake_src_irq_exit(saved: u8) {
+    debug_assert!(
+        wf_restore_valid(saved),
+        "WAKE: 恢复值 {saved:#04x} 不在已定义源集（cell 被外物写坏或保存寄存器被踩）"
+    );
     cell().store(saved, Ordering::Relaxed);
 }
 
 /// GIC INTID → 唤醒源。未知号一律 `UNKNOWN`（只进到达计数、永不进环）。
+///
+/// W3-Q66：判序单源 = `berry_wakeface::IrqMap::src_of`（host 钉板在
+/// wakeface——板上六活锚/SGI 段正交/SPURIOUS 不进号表钉板）；本函数
+/// 薄壳传真常量表。SPURIOUS(1023) 在 `exception_irq` enter 之前早退，
+/// 不进号表（语义上也是未知臂）。
 pub(crate) fn src_of(id: u32) -> u8 {
-    // SGI 号常量转 usize 模式位（pattern 不收 `as` 表达式——trap.rs 同惯例）。
-    const SGI_RESCHED_US: usize = crate::gic::SGI_RESCHEDULE as usize;
-    const SGI_TLB_US: usize = crate::gic::SGI_TLB_SHOOTDOWN as usize;
-    match id as usize {
-        crate::gic::IRQ_CNTV => WAKE_SRC_TIMER,
-        crate::gic::IRQ_PL011_RX => WAKE_SRC_UART_RX,
-        // sim-S1：UART1 与 UART0 同 U 类**归并不拆**（PL011 同设备类；设计
-        // 文档 §3 裁决——per-UART 粒度归 0x84 telemetry_open 终身面）。
-        crate::gic::IRQ_PL1_RX => WAKE_SRC_UART_RX,
-        // sim-S2 A4②：电源键——到达-only 源（无主 IRQ：IRQ 级记账 + no_waiter
-        // 台账，恒无唤醒、永不进环；v2 电源管理服务醒面落地后才可进环）。
-        crate::gic::IRQ_PL061 => WAKE_SRC_POWER_KEY,
-        SGI_RESCHED_US => WAKE_SRC_SGI_RESCHED,
-        SGI_TLB_US => WAKE_SRC_SGI_TLB,
-        _ => WAKE_SRC_UNKNOWN,
-    }
+    static BOARD: IrqMap = IrqMap {
+        cntv: crate::gic::IRQ_CNTV as u32,
+        pl011_rx: crate::gic::IRQ_PL011_RX as u32,
+        pl1_rx: crate::gic::IRQ_PL1_RX as u32,
+        pl061: crate::gic::IRQ_PL061 as u32,
+        sgi_resched: crate::gic::SGI_RESCHEDULE as u32,
+        sgi_tlb: crate::gic::SGI_TLB_SHOOTDOWN as u32,
+        src_timer: WAKE_SRC_TIMER,
+        src_uart_rx: WAKE_SRC_UART_RX,
+        src_power_key: WAKE_SRC_POWER_KEY,
+        src_sgi_resched: WAKE_SRC_SGI_RESCHED,
+        src_sgi_tlb: WAKE_SRC_SGI_TLB,
+        src_unknown: WAKE_SRC_UNKNOWN,
+    };
+    BOARD.src_of(id)
 }
 
 /// SGI_TLB_SHOOTDOWN 到达计数（无唤醒路径，只计到达；G1.5 快照合并消费）。
