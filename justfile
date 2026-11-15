@@ -652,6 +652,12 @@ test-host:
     # 4 对齐步进/畸形九态全 None 零 panic，host 13 测；单源 crate，
     # kernel dtb.rs 壳化消费（boot_probe 物理臂留内核侧））。
     cargo test -p berry-dtbface --target {{host}}
+    # W3-Q66：berry-wakeface（唤醒归因链纯函数面——GIC INTID→源映射
+    # 板上六活锚/SGI 段正交/SPURIOUS 不进号表/保存值域 = 九源集/槽位
+    # 钳位，host 12 测；单源 crate，HAL wake.rs 消费〔src_of 号表锚
+    # 参数化注入 + irq_exit 值域执法；wsrcface 姊妹件——号归源/源分类
+    # 进环两件合钉刀1 归因链〕）。
+    cargo test -p berry-wakeface --target {{host}}
     # W3-Q3：berry-vmoledger（VMO 页面生命周期簿记纯函数面——提交/归还
     # 资格、映射计数悬空 PTE 防线、demand 钉计数、MMIO 窗口恒空不变量，
     # host 13 测；记账状态机单源，kernel/src/vmo.rs 物理臂消费）。

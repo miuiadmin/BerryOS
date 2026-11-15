@@ -49,6 +49,7 @@ dependencies = [
  "berry-lkface",
  "berry-psface",
  "berry-trapface",
+ "berry-wakeface",
 ]
 
 [[package]]
@@ -200,6 +201,10 @@ version = "0.2.0"
 
 [[package]]
 name = "berry-vslotface"
+version = "0.2.0"
+
+[[package]]
+name = "berry-wakeface"
 version = "0.2.0"
 
 [[package]]

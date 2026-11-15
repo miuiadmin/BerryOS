@@ -1,0 +1,16 @@
+[package]
+name = "berry-wakeface"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+
+[lib]
+name = "berry_wakeface"
+path = "src/lib.rs"
+
+# 无外部依赖：唤醒归因链纯函数面（host 单测走 cfg(test) 链 std，
+# 形态抄 berry-asidface / berry-uartface 同款）。HAL arch/aarch64
+# wake.rs 消费（src_of 号→源映射/保存值域判/slot_index 槽位钳位
+# 迁此单源，HAL re-export——wsrcface 姊妹件：本面钉「号怎么归源、
+# 保存恢复协议值域」，wsrcface 钉「源怎么分类进环」；AtomicU8
+# cell/到达计数物理臂留壳）。
