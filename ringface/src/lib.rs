@@ -37,6 +37,9 @@
 #![cfg_attr(not(test), no_std)]
 #![allow(clippy::result_unit_err)]
 
+// W3-Q51：scan_filtered 单圈合并扫描骨架（ScanAcc 三分支带序状态机）。
+pub mod scan;
+
 // ---- TaskState 纯值域投影 ----
 // sched 侧 `crate::task::TaskState` 是无数据 enum，判等面在环序语义里
 // 只有「是否 Running」一处（eligible 单比较）；本面以 u8 镜像四值钉板

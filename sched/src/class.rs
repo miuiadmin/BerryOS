@@ -58,14 +58,16 @@ static mut LAST_VCT: u64 = 0;
 /// `(vdeadline, vruntime)`，不空转。
 pub struct Fair;
 
-/// **S2b 纯 EEVDF 开关**（实验轨道）：
+/// **S2b 纯 EEVDF 开关**（实验轨道；W3-Q51 起单源
+/// `berry_ringface::scan::PURE_EEVDF`——ScanAcc 带比较门与本常量同值
+/// 执法，两处漂移 = 编译红/语义红）：
 /// - `false`（默认，S2a）：严格带序 + 带内 EEVDF——PI boost 即时生效
 ///   （高带先出），deadline 带（≥1000）恒先于 fair。v1 安全形态。
 /// - `true`（S2b）：去带序——所有任务纯 `(eligible, vdeadline, vruntime)`
 ///   竞争。PI boost 经 weight 影响 VD（软优先——高权→短 VD→常先但不保证）。
 ///   deadline 带语义失效（绝对截止期 VD 与 fair VD 尺度不可比——需 v2
 ///   归一化）。**仅实验用——v1 测试全按 S2a 假设构建**。
-pub const PURE_EEVDF: bool = false;
+pub use berry_ringface::scan::PURE_EEVDF;
 
 /// 兼容别名：既有调用点仍以 `RoundRobin` 指类型（1.1/S2 语义已是 Fair）。
 pub type RoundRobin = Fair;
@@ -409,63 +411,25 @@ impl Fair {
     fn scan_filtered(&self, rq: &Runqueue, my_cur: *mut Task) -> Option<NonNull<Task>> {
         let h = rq.head()?;
         let avg = avg_vruntime(rq).unwrap_or(0);
+        // W3-Q51：三分支带序状态机骨架单源 berry-ringface::scan::ScanAcc
+        //（host 钉板：带序重置/退化带首见/过滤前置/PURE_EEVDF 两形/敌意
+        // 全表 2000 例与两圈参考实现逐例一致）；本函数只留环走查
+        //（rq_next 推进 + 回 head 闭合判）与 NonNull 投影的物理臂。
+        use berry_ringface::scan::ScanAcc;
         // SAFETY: 环上任务均调度器拥有且在环；调用侧全在 KERN_LOCK 窗内
         // （SVC/tick/klock 包络）——扫描期间无并发出/入环（E0 BKL 执法面）。
         unsafe {
-            let mut best: Option<NonNull<Task>> = None;
-            let mut best_eff = i32::MIN;
-            let mut best_elig = false;
-            let mut best_key = (u64::MAX, u64::MAX);
+            let mut acc = ScanAcc::new();
             let mut cur = h;
             loop {
                 let p = cur.as_ptr();
-                // eligible 过滤（Running-elsewhere/FROZEN/THROTTLE）在带比较
-                // 前——被过滤者不参与 best_eff 竞争（旧两段同口径）。
-                if eligible(my_cur, p) {
-                    let e = (*p).prio_effective;
-                    if !PURE_EEVDF && e > best_eff {
-                        // 更高带 → 重置带内最优。
-                        let t = &*p;
-                        best_eff = e;
-                        best = Some(cur);
-                        best_elig = t.vruntime <= avg;
-                        best_key = (t.vdeadline, t.vruntime);
-                    } else if PURE_EEVDF || e == best_eff {
-                        // 同带 → EEVDF（eligible 优先；同键首见保序——
-                        // `key < best_key` 严格小于，首见不替换）。
-                        // W3-Q12 起比较律单源 berry_ringface::pick_better
-                        // （host 钉板：eligible 优先档/键序/首见保序/
-                        // None 兜底）。
-                        let t = &*p;
-                        let elig = t.vruntime <= avg;
-                        let better = berry_ringface::pick_better(
-                            &ring_desc(t),
-                            elig,
-                            // SAFETY: best 指环上节点（同圈扫描前缀内的
-                            // 已见者）——外层 unsafe 块同窗覆盖，裸解引用
-                            // 合法（unsafe 台账：scan_filtered 既有 unsafe
-                            // 块内，零新增出现点）。
-                            best.as_ref().map(|b| {
-                                let bt = &*b.as_ptr();
-                                (ring_desc(bt), best_elig)
-                            }),
-                            best_key,
-                            avg,
-                        );
-                        if better {
-                            best = Some(cur);
-                            best_elig = elig;
-                            best_key = (t.vdeadline, t.vruntime);
-                        }
-                    }
-                    // e < best_eff → 低带无资格，跳过。
-                }
+                acc.offer(&ring_desc(&*p), cur, p == my_cur, avg);
                 cur = (*p).rq_next.get().expect("环上节点必有 next");
                 if cur == h {
                     break;
                 }
             }
-            best
+            acc.best()
         }
     }
 }
