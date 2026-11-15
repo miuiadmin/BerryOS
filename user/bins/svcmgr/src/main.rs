@@ -17,8 +17,9 @@
 //!
 //! 子程序镜像 `include_bytes!` 内嵌（两遍构建：leaf bins 先产平像再编本
 //! crate，见 justfile `build-user`；改子程序须先重跑 pass 1）。入口 x0 =
-//! console 发端（boot 首插定值 0x0001_0001）。任何链断 → 自陷被杀 →
-//! 标记缺失 = smoke FAIL 兜底。
+//! console 发端（boot 首插定值 0x0001_0001）；x1 = env 旗标（06 号修窗
+//! 件 1 后半——[`USER_ENV_DEMO_OFF`]）。任何链断 → 自陷被杀 → 标记缺失
+//! = smoke FAIL 兜底。
 
 #![no_std]
 #![no_main]
@@ -90,6 +91,11 @@ const HEXYL_PLAIN: &[u8] = include_bytes!("hexyl-plain.bin");
 const ECHO_REQ: u64 = 0x00C0_FFEE_E000_0E30;
 /// smoke 第 21 标记（7 字节）。
 const SVC_OK: &[u8; 7] = b"SVC ok\n";
+
+/// 内核→svcmgr 入口 env 旗标位（x1——spawn_user_env 通道；kernel/src/
+/// main.rs USER_ENV_DEMO_OFF 两侧对读镜像，RT_PROBE_NAME 同款纪律）。
+/// bit0 = demo-face 门关（06 号修窗件 1 后半——门内让位面见 `_start`）。
+const USER_ENV_DEMO_OFF: usize = 1 << 0;
 
 const TIMEOUT_NS: u64 = 10 * 1_000_000_000;
 
@@ -353,8 +359,15 @@ pub extern "C" fn pager_main() -> ! {
 
 #[link_section = ".text.entry"]
 #[no_mangle]
-pub extern "C" fn _start(console: Handle) -> ! {
+pub extern "C" fn _start(console: Handle, env: usize) -> ! {
     CONSOLE_H.store(console as usize, core::sync::atomic::Ordering::Relaxed);
+    // 06 号修窗件 1 后半：demo-face 门（内核 fw_cfg `opt/berry/demo-face` 读数
+    // 经 spawn x1 env 旗标递入——内核 main.rs USER_ENV_DEMO_OFF 两侧对读
+    // 镜像）。门关（env 位 0 置位）= B/A 演示半 + 'v' 稳态环整体让位：
+    // echo/talker/echo2 不拉起（'d'/'v' 双环与 SVC ok/DEMO ok 标记随门缺席
+    // ——OFF 态 idle 环的 svcmgr 税源清零）；ON 态（位清零）逐字零漂移。
+    // PM 双服务/guifbd/wmd/launcher 预拉与全部 boot 自验不动（真服务非演示）。
+    let demo_off = env & USER_ENV_DEMO_OFF != 0;
     // X-3c-3：demand 装载钩子面开张（pager 任务已由内核 boot 直拉——
     // main.rs X-3c-1；此后本服务 spawn_rootfs_elf 走 congruent→demand
     // 路，bsh 链接副本无钩子恒 eager = exec 面零漂移隔离）。
@@ -362,33 +375,38 @@ pub extern "C" fn _start(console: Handle) -> ! {
     // C-3 段①：拉起账本开卷——svcmgr 自身行（报告者恒 alive；裸跑也记，
     // 表零消费者无害）。
     ps_reg(b"svcmgr", psp::STATE_ALIVE, 0);
-    // ---- B 半：echo 服务 + ECHO_REQ 往返 + `SVC ok` ----
-    let (end0, end1) = channel_pair();
-    spawn_child(ECHO_BIN, end1);
-    ps_reg(b"echo", psp::STATE_ALIVE, 0); // 常驻（稳态 'v' 往返对端）
+    // end0 = 0 表示演示门关（稳态环据此跳过 echo 往返 + 'v'——见尾部 loop）。
+    let mut end0 = 0 as Handle;
     let mut buf = [0u8; 8];
     let req = ECHO_REQ.to_le_bytes();
-    send_retry(end0, req.as_ptr(), 8);
-    roundtrip(end0, &mut buf, &req);
-    send_retry(console, SVC_OK.as_ptr(), 7);
+    if !demo_off {
+        // ---- B 半：echo 服务 + ECHO_REQ 往返 + `SVC ok` ----
+        let (e0, end1) = channel_pair();
+        spawn_child(ECHO_BIN, end1);
+        ps_reg(b"echo", psp::STATE_ALIVE, 0); // 常驻（稳态 'v' 往返对端）
+        end0 = e0;
+        send_retry(end0, req.as_ptr(), 8);
+        roundtrip(end0, &mut buf, &req);
+        send_retry(console, SVC_OK.as_ptr(), 7);
 
-    // ---- A 半：talker + echo2，交接双 handle ----
-    let (s1, t1) = channel_pair();
-    spawn_child(TALKER_BIN, t1);
-    ps_reg(b"talker", psp::STATE_ALIVE, 0); // 常驻（交接后持双 handle 等待）
-    let (t2, e2) = channel_pair();
-    spawn_child(ECHO_BIN, e2);
-    ps_reg(b"echo2", psp::STATE_ALIVE, 0); // 常驻（talker 链对端）
-    let mut gift = [0 as Handle; 2];
-    // TRANSFER：dup 结果随 channel_send 迁交（send 随行预检执法——Zircon
-    // 模型「新 handle 默认携位」，dup 只紧不松故掩码须显式保位）。
-    if berry_handle_duplicate(console, RIGHT_SEND | RIGHT_TRANSFER, &mut gift[0]) != 0 {
-        trap(); // 先复制再送：send 会 take 走句柄，原值须留给稳态
-    }
-    gift[1] = t2; // echo2 对端随消息交付 talker
-    let payload = 0u64; // 纯载体，talker 不看内容
-    if berry_channel_send(s1, payload.to_le_bytes().as_ptr(), 8, gift.as_ptr(), 2) != 0 {
-        trap(); // 交接件未入队 = A 半链断
+        // ---- A 半：talker + echo2，交接双 handle ----
+        let (s1, t1) = channel_pair();
+        spawn_child(TALKER_BIN, t1);
+        ps_reg(b"talker", psp::STATE_ALIVE, 0); // 常驻（交接后持双 handle 等待）
+        let (t2, e2) = channel_pair();
+        spawn_child(ECHO_BIN, e2);
+        ps_reg(b"echo2", psp::STATE_ALIVE, 0); // 常驻（talker 链对端）
+        let mut gift = [0 as Handle; 2];
+        // TRANSFER：dup 结果随 channel_send 迁交（send 随行预检执法——Zircon
+        // 模型「新 handle 默认携位」，dup 只紧不松故掩码须显式保位）。
+        if berry_handle_duplicate(console, RIGHT_SEND | RIGHT_TRANSFER, &mut gift[0]) != 0 {
+            trap(); // 先复制再送：send 会 take 走句柄，原值须留给稳态
+        }
+        gift[1] = t2; // echo2 对端随消息交付 talker
+        let payload = 0u64; // 纯载体，talker 不看内容
+        if berry_channel_send(s1, payload.to_le_bytes().as_ptr(), 8, gift.as_ptr(), 2) != 0 {
+            trap(); // 交接件未入队 = A 半链断
+        }
     }
 
     // ---- G-eco-c/d：rootfs VMO 消费（流式步进 → ELF 泵送 → rootfs 程序）----
@@ -481,10 +499,15 @@ pub extern "C" fn _start(console: Handle) -> ! {
     // 照 trap——app_serve_one/app_supervise 内执法）。----
     let v = [b'v'];
     loop {
-        throttle();
-        send_retry(end0, req.as_ptr(), 8);
-        roundtrip(end0, &mut buf, &req);
-        send_retry(console, v.as_ptr(), 1);
+        // 06 号修窗件 1 后半：演示环（throttle 忙转 + echo 往返 + 'v'）只属
+        // 演示链——end0==0（门关）整体跳过；throttle 是纯忙环节流器非时点，
+        // 门关态圈速兜底改由尾部长睡/并等承担（见 loop 尾）。
+        if end0 != 0 {
+            throttle();
+            send_retry(end0, req.as_ptr(), 8);
+            roundtrip(end0, &mut buf, &req);
+            send_retry(console, v.as_ptr(), 1);
+        }
         // poll-first：先收干再并等（guifbd 三路同序）；SPAWN 帧异步形
         // （M-C）：拉起即 ACK、收口尾入 APP_CHILDREN——app_supervise 探
         // 活兑现，echo/监督零长停。
@@ -570,6 +593,16 @@ pub extern "C" fn _start(console: Handle) -> ! {
             );
             if s != 0 && s != BERRY_ERR_TIMEDOUT {
                 trap(); // 到点 = 空闲重臂；余错 = 死亡面（guifbd 同口径）
+            }
+        } else if end0 == 0 {
+            // 06 号修窗件 1 后半：演示门关 + 三路皆空 = 纯停泊长睡（帽同
+            // APP_IDLE_CAP_NS——throttle 忙环已随门让位，圈速兜底由本臂
+            // 承接；真事件面〔APP_SVC 接入/launcher 起〕由下一圈 n!=0 并等
+            // 接管，10s 帽内自愈）。clock 失败 = 契约面破（紧扫不睡——pager
+            // 空闲臂同口径）；供给正确性不依赖本臂。
+            let mut t = 0u64;
+            if berry_clock_read(CLOCK_MONOTONIC, &mut t) == 0 {
+                let _ = berry_thread_sleep(t + APP_IDLE_CAP_NS);
             }
         }
     }
@@ -6102,9 +6135,109 @@ fn app_launch(
             return (false, uface, None);
         }
     }
+    // —— GUI 通道授权（波 4 侦察 §二「GUI 通道授权缺位」的 v1 接线）：
+    //    [ui] 词在场的 app 追授 wm 客户端端 + inputd 端——launcher_
+    //    assemble 同源纪律（WMD_CLI_DUP/INPUT_A 常驻源**现 dup**，SEND|
+    //    RECV——wmd arm w_dup 同口径；TRANSFER = 随 env 块迁移的 send
+    //    预检保位）。门 = [ui] ∧ WMD_CLI_DUP≠0：manifest type 无 gui
+    //    分类（app/driver 两值域——ADR #82），[ui] 节 = 现行最近似的
+    //    GUI 判别位；rootfs 形/裸相 wmd 未起恒缺席（rootfs smoke 现状
+    //    零漂）。APPQUIET 无 [ui] 不入此面——其 lifecycle absent 探针
+    //    断言 GIFT_H[0]==0（berry-libc lifecycle.rs 零义务兼容律），槽
+    //    位一占即 assert 炸连坐 `APP ok n=`。console app（APPDEMO 带
+    //    [ui]）照授——app 侧无访问器即惰性无害（v1 统一简化）。波 4
+    //    裁决 A（`ui = ["wm","input"]` 能力词 + appshell crt0 位序立法）
+    //    落地时本面整体换轨退役。
+    let wants_gui = man.ui.is_some();
+    let wmd_src = WMD_CLI_DUP.load(Ordering::Relaxed);
+    let inp_src = INPUT_A.load(Ordering::Relaxed);
+    // slot 布局（前缀紧致律——berry-exec「零 0 洞」与 libc io.rs GIFT_H
+    // 按位落种的对偶）：wants_fs = [rootfs, fs] 双端不动（APPDEMO 面
+    // GIFT_H[0]/[1] 语义零漂），wm/input 尾追 [2]/[3]（input 固定位
+    // [3] = `input_h()`；wm 落 [2] 暂无 app 侧访问器 = 波 4 appshell
+    // 裁决 A 位）。!wants_fs = wm 落 [0]（`wm_cli_h()`——settings 链
+    // berry-launcher 镜像位）+ input 固定位 [3]，[1]/[2] 为占位端
+    // （wm 同源别名——零新授权面；input 到 [3] 需满前缀，洞 = send
+    // 预检 0 值 -EBADF 自陷；错位消费 = 对 wmd 发帧得错误应答 loud，
+    // 非对死通道的静默死等）。
+    let mut wm_dup: Handle = 0;
+    let mut gui_ph: [Handle; 2] = [0; 2];
+    let mut in_dup: Handle = 0;
+    if wants_gui && wmd_src != 0 {
+        // inputd 端缺席（INPUT_A==0）= 尾截断：app 侧 input_h()==0 静态
+        // 页降级（launcher input 缺席截断同款），wm 面照授。
+        let mut bad = false;
+        if berry_handle_duplicate(wmd_src, RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER, &mut wm_dup) != 0 {
+            bad = true;
+        }
+        if !bad && !wants_fs {
+            for h in gui_ph.iter_mut() {
+                if berry_handle_duplicate(wmd_src, RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER, h) != 0 {
+                    bad = true;
+                    break;
+                }
+            }
+        }
+        if !bad && inp_src != 0 {
+            if berry_handle_duplicate(inp_src, RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER, &mut in_dup) != 0 {
+                bad = true;
+            }
+        }
+        if bad {
+            // 半途失败：已 dup 面（wm/占位/input）全量回收 + fs dup 连带
+            // （构建序反序——fs 半途失败关 rootfs_dup 同款）+ out 对
+            // （console=false 已分岔面）。loud 降级不拦系统：app 侧走
+            // 「wm absent」park 自述（fs "fs dup" 路同形）。
+            for h in [wm_dup, gui_ph[0], gui_ph[1], in_dup] {
+                if h != 0 && berry_handle_close(h) != 0 {
+                    trap();
+                }
+            }
+            if wants_fs {
+                if berry_handle_close(rootfs_dup) != 0 || berry_handle_close(fs_dup) != 0 {
+                    trap();
+                }
+            }
+            eco_app(console, id, b"gui dup"); // 7B ≤ 24B
+            if out_s != 0
+                && (berry_handle_close(out_s) != 0 || berry_handle_close(stdout) != 0)
+            {
+                trap();
+            }
+            return (false, uface, None);
+        }
+    }
     // gift 数组前置绑定（E0716：字面数组临时值撑不过 SpawnSpec 借用窗）；
-    // !wants_fs 时两枚恒 0、数组不被引用。
-    let fs_gifts = [rootfs_dup, fs_dup];
+    // 无 GUI 面 = 现 fs 双端（或零端）原形。前缀截断纪律（launcher_
+    // assemble / bsh netd-input 条款同源）：input 只随满前缀入列。
+    let mut gifts = [0 as Handle; 4];
+    let gifts: &[Handle] = if wants_fs {
+        gifts[0] = rootfs_dup;
+        gifts[1] = fs_dup;
+        if wm_dup != 0 {
+            gifts[2] = wm_dup;
+            if in_dup != 0 {
+                gifts[3] = in_dup;
+                &gifts[..4]
+            } else {
+                &gifts[..3]
+            }
+        } else {
+            &gifts[..2]
+        }
+    } else if wm_dup != 0 {
+        gifts[0] = wm_dup;
+        gifts[1] = gui_ph[0];
+        gifts[2] = gui_ph[1];
+        if in_dup != 0 {
+            gifts[3] = in_dup;
+            &gifts[..4]
+        } else {
+            &gifts[..3]
+        }
+    } else {
+        &[]
+    };
     match spawn_rootfs_elf(
         H_ROOTFS,
         &SpawnSpec {
@@ -6114,13 +6247,13 @@ fn app_launch(
             stdout,
             stack_pages: man.stack_pages as u64,
             // stdin 无数据面（hello/vprobe 同款——appdemo/appquiet 都不读
-            // fd0）。SDK-1a：wants_fs 时改 `Some(&[])`——berry-exec 契约
-            // extras 非空须 stdin 槽在位（:446-449 assert），零长 feed =
-            // 纯槽位占位无数据。
-            stdin_feed: if wants_fs { Some(&[]) } else { None },
+            // fd0）。SDK-1a：extras 非空须 stdin 槽在位（berry-exec 契约
+            // :446-449 assert），零长 feed = 纯槽位占位无数据——判据从
+            // wants_fs 改 gifts 非空（GUI 面 !wants_fs 也须在席）。
+            stdin_feed: if gifts.is_empty() { None } else { Some(&[]) },
             stdin_handle: None,
             args: &[],
-            extra_gifts: if wants_fs { &fs_gifts } else { &[] },
+            extra_gifts: gifts,
             mmio_vmo: None,
             mmio_va: 0,
             intent: 0,
@@ -6131,9 +6264,15 @@ fn app_launch(
             // spawn Err 全在 env send 前（berry-exec 契约）：本表零 take，
             // fresh 私有对原值都在——关掉（vblk Err-path close 同款纪律）。
             // SDK-1a §5.2 步骤 6：fs dup 未 take 也在表——先关两枚再关
-            // out 对（半途失败连带关的序一致化）。
+            // out 对（半途失败连带关的序一致化）。GUI 四 dup（wm/占位
+            // ×2/input）同理未 take——非零全量回收防表槽泄漏。
             if wants_fs {
                 if berry_handle_close(rootfs_dup) != 0 || berry_handle_close(fs_dup) != 0 {
+                    trap();
+                }
+            }
+            for h in [wm_dup, gui_ph[0], gui_ph[1], in_dup] {
+                if h != 0 && berry_handle_close(h) != 0 {
                     trap();
                 }
             }
@@ -6150,7 +6289,8 @@ fn app_launch(
         Ok(child) => {
             // SDK-1a §5.2 步骤 7：fs 两 dup 已被 take 随 env 块迁移（子表
             // 所有）——本表勿关（旧值已失效，关 = -EBADF；bsh arm 同款
-            // 注释义务）。
+            // 注释义务）。GUI 四 dup（wm/占位 ×2/input）同律随 extras
+            // take 迁入。
             if ledger {
                 ps_reg(id, psp::STATE_ALIVE, 0);
             }
