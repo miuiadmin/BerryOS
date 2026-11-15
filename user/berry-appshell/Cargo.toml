@@ -1,20 +1,38 @@
-# berry-appshell —— BerryOS 应用壳组件 v1（刀 C/波 3 件：Dialog/Menu/Toast）
-#
-# 六波总纲步骤 4「Dialog/Menu/Toast v1 落 berry-appshell」的最小承载：
-# 只做三件 overlay 组件（in-app 形态——真 SYSTEM/SERVICE 层窗随波 3 分支
-# 并主后接线，接点注释在源内标注）。依赖收窄 = berry-ui + berry-gfx
-# （Color 单源；C-RECON §五裁决：不 cherry-pick wave3 抽取版——彼为
-# launcher 五模块骨架且不含本三件；并主时抽取版骨架吸收本 widget 模块，
-# 纯增量）。
-# 形态照 berry-layout 家族：cfg_attr(not(test), no_std)——lib 按 no_std
-# 编（musl/none 消费面皆可挂），test 构建放开 std 跑默认 harness。
+# 波3-件⑦（plans/2026-11-15-波3桌面三栏与系统窗实施设计.md §6）：
+# 应用壳 crate——launcher 五模块纯抽取（rpc/pump/scene/icons/conf 五模块
+# API 面）+ 刀C overlay 组件（Dialog/Menu/Toast——base 030095971 裁决
+# 「并主时抽取版骨架吸收本 widget 模块」的兑现：组件面存 overlay.rs）。
+# 静态链随应用（「框架是库不是层」规范 §3.5）。库本体 no_std
+# （cfg_attr(not(test), no_std) + alloc，berry-ui 同款）：syscall 半程直连
+# berry-sys（extern 声明 host 可编译）、按 berry-fsclient 先例
+# cfg(not(test)) 门（berry-sys 符号宿主不存在）；berry-libc 面（诊断
+# 输出/park/fs fd 操作/gift 句柄）经 [Host] 绑定表由消费者 boot 期注入
+# ——berry-libc 结构性不可 host cargo test（其 crt0 global_asm 为 ELF
+# 专写法 + libc 符号插入，lib.rs「实况勘定」注记），成员 crate（host
+# 测试面）依赖它无先例且不可行，故 libc 面一律不直连。首消费者 =
+# berry-launcher（musl 独立小工作区 path 依赖）；波 4 预制应用
+# （settings-app 形态）为后续消费者。host 测试经 justfile test-host
+# 显式行跑（--target host）。
 [package]
 name = "berry-appshell"
 version.workspace = true
 edition = "2021"
-description = "BerryOS app-shell overlay widgets v1: Dialog/Menu/Toast (wave3 fill, in-app form)"
+description = "BerryOS application shell: serial RPC + frame pump + scene base + icon bridge + canonical conf keys + overlay widgets (no_std lib, host-tested pure faces)"
 license = "Apache-2.0"
 
 [dependencies]
-berry-gfx = { path = "../berry-gfx" }
+# syscall 面（cfg(not(test)) 半程直连——channel/wait/VMO/clock/handle 族；
+# 类型面（Handle=u32 等）恒可编译）。host 符号缺席由 cfg 门消化。
+berry-sys = { path = "../berry-sys" }
+# wire 单源（非收发）：wm/present 帧编解码 + DAMAGE_MAX/Rect/旗常量。
+berry-guiproto = { path = "../berry-guiproto" }
+# app 域 RPC wire（icons 的 APP_LIST 分片流拉取）。
+berry-appproto = { path = "../berry-appproto" }
+# 布局 JSON parse/emit 单源（conf 的 canonical 读写由消费侧 schema 经
+# berry-layout 编解码，本 crate 只供单簇原子读写面）。
+berry-layout = { path = "../berry-layout" }
+# 引擎（scene 建树/pump 帧循环的 retained 树与 damage 面）。
 berry-ui = { path = "../berry-ui" }
+# 渲染消费面（Color/FontSize/CommandEncoder/Queue——pump 光栅提交）+
+# overlay 混色单源（scrim 预混 + toast 恒色对）。
+berry-gfx = { path = "../berry-gfx" }

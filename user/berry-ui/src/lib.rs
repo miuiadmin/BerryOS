@@ -2136,6 +2136,13 @@ impl<const N: usize> Ui<N> {
         self.tm = tm;
     }
 
+    /// 文本内在宽（刀 2 状态栏对齐缝）：走当前度量供件（换装
+    /// ProportionalTextMetrics 后 = 真实 advance）——供件侧单源，消费面
+    /// 与排布/渲染同轨（免「等宽估算 vs 真测」两套口径漂移）。
+    pub fn text_width(&self, text: &[u8], scale: u8) -> u32 {
+        self.tm.measure(text, scale).0
+    }
+
     /// 图标/图片资源供件换装（默认 [`EmptyIconSource`]——dims 恒 None）。
     pub fn set_icon_source(&mut self, src: &'static dyn IconSource) {
         self.icons = src;

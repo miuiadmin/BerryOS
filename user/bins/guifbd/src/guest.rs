@@ -136,6 +136,10 @@ const SEND_REARM_NS: u64 = 10 * 1_000_000_000;
 const VBLANK_SIG: u64 = 1 << 32;
 /// token 环深（FRAME_CALLBACK 校验窗口——单客户端 v1 足够覆盖在途 8 帧）。
 const TOKEN_RING: usize = 8;
+/// 波3-件② 系统面 surface_id marker（launcher 提交带系统带视觉不裁剪；
+/// 0 = 应用面裁系统带。非协议号——SUBMIT 既有 u32 域的本地语义分档）。
+const SYS_SURFACE_ID: u32 = 0xFFFF;
+
 /// 行弹舱帽（= ramfb stride 800×4；启动门执法——越帽说明几何非 ramfb
 /// 基线，blit 行弹越界 = 未定义行为，宁可不起服务）。
 // 行弹舱：≥ 1280×4（16:9 桌面）；1920×4 同帽可容。
@@ -500,7 +504,7 @@ impl<'a> Srv<'a> {
                 send_rep(ch, &out[..n]);
             }
             Some(gp::PresentReq::Submit {
-                surface_id: _,
+                surface_id,
                 buffer_id,
                 flags,
                 rate_hint: _,
@@ -508,7 +512,7 @@ impl<'a> Srv<'a> {
                 rects,
                 rect_count,
             }) => {
-                self.submit(ch, hs, buffer_id, flags, &rects, rect_count);
+                self.submit(ch, hs, buffer_id, flags, &rects, rect_count, surface_id);
             }
             Some(gp::PresentReq::FrameCallback { frame_token }) => {
                 if !hs.is_empty() {
@@ -595,7 +599,7 @@ impl<'a> Srv<'a> {
     /// SUBMIT：v1 = **blit-at-SUBMIT**（处理内同步 CPU blit——无 pending
     /// 帧状态机，squash/DISCARDED 死路径留异步后端刀）。
     fn submit(&mut self, ch: Handle, hs: &[Handle], buffer_id: u32, flags: u8,
-              rects: &[gp::Rect; gp::DAMAGE_MAX], rect_count: usize) {
+              rects: &[gp::Rect; gp::DAMAGE_MAX], rect_count: usize, surface_id: u32) {
         // 随行恰 1 buffer VMO 别名（rights ⊆ 源集——dup 只紧不松）。
         if hs.len() != 1 {
             close_all(hs);
@@ -638,7 +642,48 @@ impl<'a> Srv<'a> {
         } else {
             &rects[..rect_count]
         };
-        for r in targets {
+        // 波3-件② 带合成 v1 兼容档：surface_id=0（应用面）提交裁剪系统
+        // 带——顶部状态栏带 + 底部导航条带（几何镜像 launcher desktop.rs
+        // 常量：big 档 132/190px、紧凑档 44/44px；满档判据同源
+        // vp>=600×1800）。应用全屏提交不再覆盖系统带 → 状态栏/导航条
+        // 视觉常驻（owner 投诉「应用进去了状态栏没了」v1 根治）。
+        // surface_id=0xFFFF = 系统面 marker（launcher 提交自带带视觉）
+        // 不裁剪。裁剪只动 damage 面：blit 与抽样（②）同用裁后集，
+        // 抽样点恒落裁后 rect 内 → 与 fb 对拍口径不变。
+        let big = self.w >= 600 && self.h >= 1800;
+        let (band_top, band_bot) = if big { (132usize, 190usize) } else { (44, 44) };
+        let sys_surface = surface_id == SYS_SURFACE_ID;
+        let mut clipped_storage = [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX + 1];
+        let mut clipped_n = 0usize;
+        let final_targets: &[gp::Rect] = if sys_surface {
+            targets
+        } else {
+            for r in targets {
+                let mut y0 = r.y as usize;
+                let mut y1 = (r.y as usize + r.h as usize).min(self.h);
+                if y1 <= y0 || y0 >= self.h {
+                    continue;
+                }
+                // 裁顶带（全宽带：与 rect 求交即弃 y<band_top 段）
+                if y0 < band_top {
+                    y0 = band_top;
+                }
+                // 裁底带
+                if y1 > self.h - band_bot {
+                    y1 = self.h - band_bot;
+                }
+                if y1 <= y0 {
+                    continue; // rect 全在带内 = 空集跳过
+                }
+                if clipped_n < clipped_storage.len() {
+                    clipped_storage[clipped_n] =
+                        gp::Rect { x: r.x, y: y0 as u32, w: r.w, h: (y1 - y0) as u32 };
+                    clipped_n += 1;
+                }
+            }
+            &clipped_storage[..clipped_n]
+        };
+        for r in final_targets {
             let x0 = r.x as usize;
             let y0 = r.y as usize;
             let x1 = (r.x as usize + r.w as usize).min(self.w);
@@ -679,8 +724,16 @@ impl<'a> Srv<'a> {
         // = smoke FAIL），不拦应答（抽样 = 验证仪表非协议门）。
         let mut n_pass = 0usize;
         let mut all_pass = true;
+        // 抽样与 blit 同用裁后集（final_targets）——空集帧（全在带内）
+        // 跳过抽样恒 pass（无 damage 面 = 无可对拍点）。
+        if final_targets.is_empty() {
+            n_pass = SAMPLE_N; // 空集合法帧：抽样面空转全过
+        }
         for i in 0..SAMPLE_N {
-            let r = if full { &fullrect } else { &rects[i % rect_count] };
+            if final_targets.is_empty() {
+                break;
+            }
+            let r = &final_targets[i % final_targets.len()];
             // 采样点 = rect 内 (i+1)/(SAMPLE_N+1) 分位（u32 乘加无溢出面：
             // rect ≤ 界内值域）；分母 = SAMPLE_N+1 ⇒ 分位 <1 恒严格内点
             // （A5-b 对任意合法几何封闭——分母勿改 SAMPLE_N 否则尾点取

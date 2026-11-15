@@ -122,6 +122,29 @@ pub const DEV_KEYBOARD: u8 = 1;
 /// 文本提交（IME 提交面——payload = ASCII 字节串）。
 pub const DEV_TEXT: u8 = 2;
 
+// ---------- 波3 wm 事件通道（六波方案步骤 4 / 波3设计 §3——add-only） ----------
+//
+// guiproto add-only 纪律同波2：只增常量与新编解码函数，不动任何既有 op
+// 的字节面。事件通道 = wm 域旁路单帧通道——WM_CREATE 应答随行 gift 的
+// 属主端（表项记属主）或 OP_WM_SUBSCRIBE 订阅端（无窗跟随者面），只承载
+// 下列三帧型，不与 wm_srv 请求面混跑。帧型带 0x90..=0x9F 落在全部 op 带
+// （present 1..=6 / input 0x20..=0x22 / hdi 0x40..=0x43 / wm 0x60..=0x7F）
+// 之外——错投任一请求分发面恒 ST_BAD，结构性防错投（wm 带互斥 Q1 同法）。
+
+/// wm 域：订阅表变更事件通道（无窗跟随者——guifbd 表快照「通知驱动 +
+/// 异步拉取」面，波3设计 §4）；ack = 1B ST_OK + 随行恰 1 handle（订阅者
+/// 事件通道客户端端）。表跟随纪律（波3设计 §9）：TABLE_WAIT 冻结零新增
+/// 驻留者，跟随一律走本通道通知 + TABLE_GET 快照。
+pub const OP_WM_SUBSCRIBE: u8 = 0x68;
+/// 事件帧型：返回键投递（wmd → 焦点窗属主；`[kind][wid u16][r]`——500ms
+/// 无 BACK_ACK 且无表变更则 wmd 兜底 DESTROY，wire 只管投递不管兜底）。
+pub const WM_EVT_BACK: u8 = 0x90;
+/// 事件帧型：表变更通知（wmd → 全体属主/订阅者；`[kind][version u32]`——
+/// 尽力而为：非阻塞 send 满即丢，真值恒经 TABLE_GET 快照，丢弃至多迟一拍）。
+pub const WM_EVT_TABLE: u8 = 0x91;
+/// 事件帧型：返回应答（属主 → wmd，1B 无域——解除 500ms 兜底槽）。
+pub const WM_EVT_BACK_ACK: u8 = 0x92;
+
 // ---------- wm 域值域（GUI-5；钦定位域未知位双侧拒）----------
 
 /// 窗口层：应用层（桌面/普通窗）。
@@ -130,28 +153,12 @@ pub const WM_LAYER_APP: u8 = 0;
 pub const WM_LAYER_SYSTEM: u8 = 1;
 /// CREATE flags：申请几何避让系统层（wmd 写有效几何进表，不变量式重推导）。
 pub const WM_CREATE_F_AVOID_SYS: u8 = 1 << 0;
-/// CREATE flags：沉浸窗（波3 批A，设计稿 §1/§3——焦点窗沉浸位 = launcher
-/// 隐藏状态窗的示范位（波 4 Photos/Camera 消费）；沉浸窗自身不设避让——
-/// 全屏几何，wmd 避让算法零改动）。add-only 位顺延 1<<1（防撞先读：波2
-/// 落地时 CREATE 旗仅 AVOID_SYS 一位，lib.rs:132）。
-pub const WM_CREATE_F_IMMERSIVE: u8 = 1 << 1;
-/// CREATE flags：声明需要输入法（波3 批A，设计稿 §5——softimed 按焦点窗
-/// ime_wanted 位显隐；快照镜像位 [`WM_WIN_F_IME_WANTED`]，运行期翻转走
-/// [`WM_SET_F_IME_WANTED`] mask 位）。add-only 位顺延 1<<2。
-pub const WM_CREATE_F_IME_WANTED: u8 = 1 << 2;
 /// SET mask 位：几何四槽（x/y/w/h）。
 pub const WM_SET_F_GEOM: u8 = 1 << 0;
 /// SET mask 位：可见槽（vis）。
 pub const WM_SET_F_VIS: u8 = 1 << 1;
 /// SET mask 位：Z 序槽（z）。
 pub const WM_SET_F_Z: u8 = 1 << 2;
-/// SET mask 位：ime_wanted 布尔槽（波3 批A，设计稿 §5——appshell 随
-/// berry-ui 焦点环置/清，返回键 R3「先收键盘链」的支点）。**槽值 = vis
-/// 槽字节复用**（[`WM_VIS_HIDE`]=清 / [`WM_VIS_SHOW`]=置）：SET 定长
-/// 20B 的预留字节是前向兼容锚不可认领（模块头注保留位纪律），而布尔
-/// 0/1 值域与 vis 同律且无条件双侧执法（Q18）——帧字节面零变化 add-only；
-/// VIS+IME_WANTED 双位同帧时两槽共享同值（v1 语义——分值需两帧）。
-pub const WM_SET_F_IME_WANTED: u8 = 1 << 3;
 /// SET vis 槽值：隐藏。
 pub const WM_VIS_HIDE: u8 = 0;
 /// SET vis 槽值：显示。
@@ -160,13 +167,6 @@ pub const WM_VIS_SHOW: u8 = 1;
 pub const WM_WIN_F_VISIBLE: u8 = 1 << 0;
 /// WmEntry flags 位：持焦点（wmd 单焦点窗策略面）。
 pub const WM_WIN_F_FOCUSED: u8 = 1 << 1;
-/// WmEntry flags 位：沉浸窗（[`WM_CREATE_F_IMMERSIVE`] 的快照镜像——波3
-/// 批A，launcher 沉浸反应消费位：焦点窗沉浸位=1 时 SET_F_VIS 隐藏状态窗）。
-pub const WM_WIN_F_IMMERSIVE: u8 = 1 << 2;
-/// WmEntry flags 位：声明需要输入法（[`WM_CREATE_F_IME_WANTED`]/
-/// [`WM_SET_F_IME_WANTED`] 的快照镜像——波3 批A，softimed 显隐依据：
-/// 焦点窗 ime_wanted=1 且键盘未显 → SHOW，否则 HIDE）。
-pub const WM_WIN_F_IME_WANTED: u8 = 1 << 3;
 
 // ---------- 状态码 / 值域 ----------
 
@@ -458,30 +458,29 @@ const fn frame_status_known(s: u8) -> bool {
     s == FRAME_PRESENTED || s == FRAME_DISCARDED
 }
 
+/// 层值域执法（波3 收宽——波2 R1 立法「拒点从 2 移钉 3」落地）：SERVICE=2
+/// 入域（softime 服务窗面），3 起仍拒。scene_known 收宽先例同款（值域
+/// 收宽不升版——VER_WM 恒 1）。
 const fn wm_layer_known(l: u8) -> bool {
-    l <= WM_LAYER_SYSTEM
+    l <= WM_LAYER_SERVICE
 }
 
-/// CREATE flags 值域（波3 批A 收宽：IMMERSIVE/IME_WANTED 位认领——
-/// `scene_known` 收宽先例，add-only 值域扩面，既有编码字节零漂移）。
 const fn wm_create_flags_known(f: u8) -> bool {
-    f & !(WM_CREATE_F_AVOID_SYS | WM_CREATE_F_IMMERSIVE | WM_CREATE_F_IME_WANTED) == 0
+    f & !WM_CREATE_F_AVOID_SYS == 0
 }
 
 /// SET mask 值域：mask=0（「空设置」非法定义在协议层——netdproto port 0 /
-/// INPUT_POLL max_events 0 同款）与未知位双侧拒（波3 批A 收宽 IME_WANTED
-/// 位）。
+/// INPUT_POLL max_events 0 同款）与未知位双侧拒。
 const fn wm_set_mask_known(m: u8) -> bool {
-    m != 0 && m & !(WM_SET_F_GEOM | WM_SET_F_VIS | WM_SET_F_Z | WM_SET_F_IME_WANTED) == 0
+    m != 0 && m & !(WM_SET_F_GEOM | WM_SET_F_VIS | WM_SET_F_Z) == 0
 }
 
 const fn wm_vis_known(v: u8) -> bool {
     v <= WM_VIS_SHOW
 }
 
-/// WmEntry flags 值域（波3 批A 收宽：IMMERSIVE/IME_WANTED 位认领）。
 const fn wm_win_flags_known(f: u8) -> bool {
-    f & !(WM_WIN_F_VISIBLE | WM_WIN_F_FOCUSED | WM_WIN_F_IMMERSIVE | WM_WIN_F_IME_WANTED) == 0
+    f & !(WM_WIN_F_VISIBLE | WM_WIN_F_FOCUSED) == 0
 }
 
 // ---------- LE 读写辅助（私有；encode 侧长度已由 get_mut 定界）----------
@@ -1522,8 +1521,7 @@ pub fn parse_wm_getinfo_rep(buf: &[u8]) -> Option<WmGetinfoRep> {
 pub struct WmCreateReq {
     /// [`WM_LAYER_APP`]/[`WM_LAYER_SYSTEM`]（值域双侧执法）。
     pub layer: u8,
-    /// [`WM_CREATE_F_AVOID_SYS`]/[`WM_CREATE_F_IMMERSIVE`]/
-    /// [`WM_CREATE_F_IME_WANTED`] 位域（未知位双侧拒——波3 批A 扩位）。
+    /// [`WM_CREATE_F_AVOID_SYS`] 位域（未知位双侧拒）。
     pub flags: u8,
     /// 父窗 id（0 = 无父——QNX 缝安全域聚合，v1 字段缝先占）。
     pub parent: u16,
@@ -1628,9 +1626,8 @@ pub fn parse_wm_destroy_req(buf: &[u8]) -> Option<u16> {
 /// 语义仍编入（定长 +「编什么收什么」——禁实现侧偷偷清零，解析对称回显）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WmSetReq {
-    /// [`WM_SET_F_GEOM`]/[`WM_SET_F_VIS`]/[`WM_SET_F_Z`]/
-    /// [`WM_SET_F_IME_WANTED`] 位域（mask=0 / 未知位双侧拒——波3 批A
-    /// 扩位）。
+    /// [`WM_SET_F_GEOM`]/[`WM_SET_F_VIS`]/[`WM_SET_F_Z`] 位域（mask=0 /
+    /// 未知位双侧拒）。
     pub mask: u8,
     pub window_id: u16,
     /// 几何槽（GEOM 位选中才生效——申请几何，有效几何推导在 wmd）。
@@ -1639,8 +1636,7 @@ pub struct WmSetReq {
     pub w: u16,
     pub h: u16,
     /// 可见槽（[`WM_VIS_HIDE`]/[`WM_VIS_SHOW`]——值域无条件双侧执法，Q18；
-    /// VIS 位选中才生效）。波3 批A：[`WM_SET_F_IME_WANTED`] 位选中时本槽
-    /// 值兼作 ime_wanted 布尔（单值域双槽复用，见该常量注）。
+    /// VIS 位选中才生效）。
     pub vis: u8,
     /// Z 槽（任意 u8——z 平铺客户端自选语义，Q5）。
     pub z: u8,
@@ -1759,8 +1755,7 @@ pub struct WmEntry {
     pub layer: u8,
     /// 同层 Z 序（客户端自选平铺；服务端归一化 = VER_WM 升版面）。
     pub z: u8,
-    /// [`WM_WIN_F_VISIBLE`]/[`WM_WIN_F_FOCUSED`]/[`WM_WIN_F_IMMERSIVE`]/
-    /// [`WM_WIN_F_IME_WANTED`] 位域（未知位双侧拒——波3 批A 扩位）。
+    /// [`WM_WIN_F_VISIBLE`]/[`WM_WIN_F_FOCUSED`] 位域（未知位双侧拒）。
     pub flags: u8,
 }
 
@@ -1970,6 +1965,109 @@ pub fn parse_wm_back_req(buf: &[u8]) -> Option<()> {
     Some(())
 }
 
+// ---------- 波3 wm 事件通道编解码（add-only——见 OP_WM_SUBSCRIBE 块注） ----------
+
+/// WM_SUBSCRIBE 请求帧长（`[op][r][r16]`——TABLE_GET 同形）。
+pub const WM_SUBSCRIBE_REQ_LEN: usize = 4;
+/// WM_EVT_BACK 帧长（`[kind][wid u16][r]`）。
+pub const WM_EVT_BACK_LEN: usize = 4;
+/// WM_EVT_TABLE 帧长（`[kind][version u32]`）。
+pub const WM_EVT_TABLE_LEN: usize = 5;
+/// WM_EVT_BACK_ACK 帧长（`[kind]`——1B 回程帧）。
+pub const WM_BACK_ACK_LEN: usize = 1;
+
+/// 编码 WM_SUBSCRIBE 请求（无域）。buf 不足 = 调用方错 assert。
+pub fn encode_wm_subscribe_req(out: &mut [u8]) -> usize {
+    assert!(out.len() >= WM_SUBSCRIBE_REQ_LEN, "guiproto: wm subscribe buf 不足");
+    out[0] = OP_WM_SUBSCRIBE;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 0;
+    WM_SUBSCRIBE_REQ_LEN
+}
+
+/// 解析 WM_SUBSCRIBE 请求：恰 4B + op（保留位解析侧恒不校验——前向兼容
+/// 锚同 GETINFO/TABLE_GET 族）。
+pub fn parse_wm_subscribe_req(buf: &[u8]) -> Option<()> {
+    if buf.len() != WM_SUBSCRIBE_REQ_LEN || buf[0] != OP_WM_SUBSCRIBE {
+        return None;
+    }
+    Some(())
+}
+
+/// 编码 WM_EVT_BACK 事件帧：`wid` = 返回键路由目标窗。尾 r 解析侧恒不
+/// 校验（前向兼容锚）。
+pub fn encode_wm_evt_back(out: &mut [u8], wid: u16) -> usize {
+    assert!(out.len() >= WM_EVT_BACK_LEN, "guiproto: wm evt back buf 不足");
+    out[0] = WM_EVT_BACK;
+    out[1..3].copy_from_slice(&wid.to_le_bytes());
+    out[3] = 0;
+    WM_EVT_BACK_LEN
+}
+
+/// 解析 WM_EVT_BACK 事件帧：恰 4B + kind → wid（任意 u16——存在性归
+/// wmd 策略面）。
+pub fn parse_wm_evt_back(buf: &[u8]) -> Option<u16> {
+    if buf.len() != WM_EVT_BACK_LEN || buf[0] != WM_EVT_BACK {
+        return None;
+    }
+    Some(u16::from_le_bytes([buf[1], buf[2]]))
+}
+
+/// 编码 WM_EVT_TABLE 事件帧：`version` = 表版本（u32 任意值——「恒 ≥1」
+/// 是服务端不变量非 wire 执法，Q3 同款）。
+pub fn encode_wm_evt_table(out: &mut [u8], version: u32) -> usize {
+    assert!(out.len() >= WM_EVT_TABLE_LEN, "guiproto: wm evt table buf 不足");
+    out[0] = WM_EVT_TABLE;
+    out[1..5].copy_from_slice(&version.to_le_bytes());
+    WM_EVT_TABLE_LEN
+}
+
+/// 解析 WM_EVT_TABLE 事件帧：恰 5B + kind → version。
+pub fn parse_wm_evt_table(buf: &[u8]) -> Option<u32> {
+    if buf.len() != WM_EVT_TABLE_LEN || buf[0] != WM_EVT_TABLE {
+        return None;
+    }
+    Some(u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]))
+}
+
+/// 编码 WM_EVT_BACK_ACK 回程帧（1B 无域）。
+pub fn encode_wm_back_ack(out: &mut [u8]) -> usize {
+    assert!(out.len() >= WM_BACK_ACK_LEN, "guiproto: wm back ack buf 不足");
+    out[0] = WM_EVT_BACK_ACK;
+    WM_BACK_ACK_LEN
+}
+
+/// 解析 WM_EVT_BACK_ACK 回程帧：恰 1B + kind。
+pub fn parse_wm_back_ack(buf: &[u8]) -> Option<()> {
+    if buf.len() != WM_BACK_ACK_LEN || buf[0] != WM_EVT_BACK_ACK {
+        return None;
+    }
+    Some(())
+}
+
+/// 事件通道帧统一判别（消费侧单入口——属主端收 BACK/TABLE、wmd 端收
+/// BACK_ACK 共用；错帧型 None 交调用方策略）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WmEvt {
+    /// 返回键投递（携带目标窗 id）。
+    Back(u16),
+    /// 表变更通知（携带表 version）。
+    Table(u32),
+    /// 返回应答（1B 无域）。
+    BackAck,
+}
+
+/// 解析事件通道帧 → [`WmEvt`]（帧型互斥判别面——三个单帧解析器的收口）。
+pub fn parse_wm_evt(buf: &[u8]) -> Option<WmEvt> {
+    match buf.first() {
+        Some(&WM_EVT_BACK) => parse_wm_evt_back(buf).map(WmEvt::Back),
+        Some(&WM_EVT_TABLE) => parse_wm_evt_table(buf).map(WmEvt::Table),
+        Some(&WM_EVT_BACK_ACK) => parse_wm_back_ack(buf).map(|_| WmEvt::BackAck),
+        _ => None,
+    }
+}
+
 /// 编码 INPUT_INJECT 请求：`dev_kind` ∈ {DEV_POINTER, DEV_KEYBOARD,
 /// DEV_TEXT}；`payload` ≤ 24B（键盘 = 1B key code；文本 = ASCII 串）。
 /// 野 dev_kind / 载荷越帽 / buf 不足 → None（调用方可构造面——assert
@@ -2003,100 +2101,6 @@ pub fn parse_input_inject_req<'a>(buf: &'a [u8]) -> Option<(u8, &'a [u8])> {
         return None;
     }
     Some((dk, &buf[2..buf.len() - 2]))
-}
-
-// ---------- 波3 批A 属主事件通道帧型（add-only——设计稿 §3 wmd 配套立法） ----------
-//
-// wmd 在 WM_CREATE 时建属主事件 channel 对：wmd 留一端（表项记属主），
-// 另一端随 CREATE ack **随行 handle gift** 给客户端（8B ack 帧字节零变化
-// ——旧客户端不解析随行 handle 零破坏，仅闲置其收窗槽位）。本段帧型走
-// 该专用通道，不占 wm 域 op 空间（0x60..=0x7F 互斥带不动）；kind 字节
-// 独立成段 0x01..=0x03（波2 INPUT_EVT 的 IEK_* kind 段先例——专用通道
-// 自带帧型判别域）。方向：wmd→属主 = BACK 投递/表变更广播；属主→wmd =
-// BACK_ACK 回程。
-
-/// 属主事件帧 kind：返回键投递（wmd → 焦点窗属主）。帧 8B
-/// `[ev][r][r16][window_id u16][r16]`（DESTROY 请求同形）；属主消费
-/// （Nav 栈 pop / 优雅退出）后回 [`BACK_ACK`]，500ms 无回且表未变由
-/// wmd 兜底 DESTROY（设计稿 §3 R2）。
-pub const WM_EVENT_BACK: u8 = 0x01;
-/// 属主事件帧 kind：表变更广播（wmd → 全体有通道属主）。帧 8B
-/// `[ev][r][r16][version u32]`（TABLE_WAIT 请求同形）。**通知尽力而为**
-/// ——非阻塞 send 满即丢，真值恒经 TABLE_GET 快照（设计稿 §3；TABLE_WAIT
-/// 冻结零新增驻留者，§9）。
-pub const WM_EVENT_TABLE: u8 = 0x02;
-/// 属主事件帧 kind：返回键回程（属主 → wmd）。帧恰 1B `[ev]`（1B status
-/// 形同款）——解除 500ms 兜底定时；无归因域（wmd 单槽 pending 语义下至多
-/// 一个待解除面，设计稿 §3）。
-pub const BACK_ACK: u8 = 0x03;
-
-/// WM_EVENT_BACK 帧长。
-pub const WM_EVENT_BACK_LEN: usize = 8;
-/// WM_EVENT_BACK 帧帽（= 帧长——帽一致性族同形）。
-pub const WM_EVENT_BACK_MAX: usize = WM_EVENT_BACK_LEN;
-/// WM_EVENT_TABLE 帧长。
-pub const WM_EVENT_TABLE_LEN: usize = 8;
-/// WM_EVENT_TABLE 帧帽（= 帧长）。
-pub const WM_EVENT_TABLE_MAX: usize = WM_EVENT_TABLE_LEN;
-/// BACK_ACK 帧长。
-pub const BACK_ACK_LEN: usize = 1;
-/// BACK_ACK 帧帽（= 帧长）。
-pub const BACK_ACK_MAX: usize = BACK_ACK_LEN;
-
-/// 编码 WM_EVENT_BACK（buf 不足 = 调用方错 assert——域内既有编码器同律）。
-pub fn encode_wm_event_back(out: &mut [u8], window_id: u16) -> usize {
-    assert!(out.len() >= WM_EVENT_BACK_LEN, "guiproto: wm event back buf 不足");
-    out[0] = WM_EVENT_BACK;
-    out[1] = 0;
-    out[2] = 0;
-    out[3] = 0;
-    out[4..6].copy_from_slice(&window_id.to_le_bytes());
-    out[6..8].copy_from_slice(&0u16.to_le_bytes());
-    WM_EVENT_BACK_LEN
-}
-
-/// 解析 WM_EVENT_BACK：恰 8B + kind → window_id（任意 u16 合法——目标
-/// 在册由 wmd 投递侧保证，wire 不执法）。
-pub fn parse_wm_event_back(buf: &[u8]) -> Option<u16> {
-    if buf.len() != WM_EVENT_BACK_LEN || buf[0] != WM_EVENT_BACK {
-        return None;
-    }
-    le16(buf, 4)
-}
-
-/// 编码 WM_EVENT_TABLE（buf 不足 = 调用方错 assert）。
-pub fn encode_wm_event_table(out: &mut [u8], version: u32) -> usize {
-    assert!(out.len() >= WM_EVENT_TABLE_LEN, "guiproto: wm event table buf 不足");
-    out[0] = WM_EVENT_TABLE;
-    out[1] = 0;
-    out[2] = 0;
-    out[3] = 0;
-    out[4..8].copy_from_slice(&version.to_le_bytes());
-    WM_EVENT_TABLE_LEN
-}
-
-/// 解析 WM_EVENT_TABLE：恰 8B + kind → version（任意 u32 合法——纪元
-/// 语义同 TABLE_WAIT last_seen，消费侧超龄重探测兜底）。
-pub fn parse_wm_event_table(buf: &[u8]) -> Option<u32> {
-    if buf.len() != WM_EVENT_TABLE_LEN || buf[0] != WM_EVENT_TABLE {
-        return None;
-    }
-    le32(buf, 4)
-}
-
-/// 编码 BACK_ACK（恰 1B；buf 不足 = 调用方错 assert）。
-pub fn encode_back_ack(out: &mut [u8]) -> usize {
-    assert!(out.len() >= BACK_ACK_LEN, "guiproto: back ack buf 不足");
-    out[0] = BACK_ACK;
-    BACK_ACK_LEN
-}
-
-/// 解析 BACK_ACK：恰 1B + kind（长出/错 kind 一律 None——畸形面 loud）。
-pub fn parse_back_ack(buf: &[u8]) -> Option<()> {
-    if buf.len() != BACK_ACK_LEN || buf[0] != BACK_ACK {
-        return None;
-    }
-    Some(())
 }
 
 // ---------- 帽一致性 const assert（§3.1/§8.1-5；改帽必炸）----------
@@ -3433,8 +3437,8 @@ mod tests {
     fn wm_value_domain_reject_matrix() {
         // 值域拒矩阵（编码 + 解析对称；相异野值防互换静绿）。
         let mut buf = [0u8; WM_REP_MAX];
-        // CREATE：layer 野值 2 / flags 未知位 0x08（波3 批A 认领 1<<1/
-        // 1<<2 后未知位样本上移——拒面语义不变）。
+        // CREATE：layer 野值 3（波3 收宽：SERVICE=2 入域，拒点移钉 3）/
+        // flags 未知位 0x02。
         let good_create = WmCreateReq {
             layer: WM_LAYER_APP,
             flags: 0,
@@ -3445,20 +3449,20 @@ mod tests {
             w: 7,
             h: 8,
         };
-        let bad_layer = WmCreateReq { layer: 2, ..good_create };
+        let bad_layer = WmCreateReq { layer: 3, ..good_create };
         assert_eq!(encode_wm_create_req(&mut buf, &bad_layer), None);
         let mut f = [0u8; WM_CREATE_REQ_LEN];
         let _ = encode_wm_create_req(&mut f, &good_create).unwrap();
-        f[1] = 2;
+        f[1] = 3;
         assert_eq!(parse_wm_create_req(&f), None);
-        let bad_flags = WmCreateReq { flags: WM_CREATE_F_AVOID_SYS | 0x08, ..good_create };
+        let bad_flags = WmCreateReq { flags: WM_CREATE_F_AVOID_SYS | 0x02, ..good_create };
         assert_eq!(encode_wm_create_req(&mut buf, &bad_flags), None);
         let mut f = [0u8; WM_CREATE_REQ_LEN];
         let _ = encode_wm_create_req(&mut f, &good_create).unwrap();
-        f[2] = 0x08;
+        f[2] = 0x02;
         assert_eq!(parse_wm_create_req(&f), None);
-        // SET：mask=0 / mask 未知位 0x10（波3 批A 认领 1<<3 后样本上移）/
-        // vis 野值 2（vis 无条件执法——masked-out 也拒，Q18）。
+        // SET：mask=0 / mask 未知位 0x08 / vis 野值 2（vis 无条件执法——
+        // masked-out 也拒，Q18）。
         let good = WmSetReq {
             mask: WM_SET_F_GEOM,
             window_id: 1,
@@ -3472,7 +3476,7 @@ mod tests {
         let n = encode_wm_set_req(&mut buf, &good).unwrap();
         let patches: [(usize, u8, &str); 3] = [
             (1, 0, "mask=0"),
-            (1, 0x10, "mask 未知位"),
+            (1, 0x08, "mask 未知位"),
             (16, 2, "vis 野值"),
         ];
         for (off, val, why) in patches {
@@ -3482,23 +3486,22 @@ mod tests {
         }
         assert_eq!(encode_wm_set_req(&mut buf, &WmSetReq { mask: 0, ..good }), None);
         assert_eq!(
-            encode_wm_set_req(&mut buf, &WmSetReq { mask: 0x10 | WM_SET_F_Z, ..good }),
+            encode_wm_set_req(&mut buf, &WmSetReq { mask: 0x08 | WM_SET_F_Z, ..good }),
             None
         );
         assert_eq!(encode_wm_set_req(&mut buf, &WmSetReq { vis: 2, ..good }), None);
-        // 快照表项：layer 野值 2（off 头+13）/ flags 未知位 0x10（off 头+15；
-        // 波3 批A 认领 1<<2/1<<3 后样本上移）。
+        // 快照表项：layer 野值 3（波3 收宽同 CREATE）/ flags 未知位 0x04（off 头+15）。
         let n = encode_wm_snapshot_rep(&mut buf, &wm_snap_sample(1)).unwrap();
         let mut f = buf;
-        f[WM_SNAP_HEAD + 13] = 2;
+        f[WM_SNAP_HEAD + 13] = 3;
         assert_eq!(parse_wm_snapshot_rep(&f[..n]), None);
         let mut f = buf;
-        f[WM_SNAP_HEAD + 15] = 0x10;
+        f[WM_SNAP_HEAD + 15] = 0x04;
         assert_eq!(parse_wm_snapshot_rep(&f[..n]), None);
         let mut bad_snap = wm_snap_sample(1);
-        bad_snap.entries[0].flags = WM_WIN_F_FOCUSED | 0x10;
+        bad_snap.entries[0].flags = WM_WIN_F_FOCUSED | 0x04;
         assert_eq!(encode_wm_snapshot_rep(&mut buf, &bad_snap), None);
-        bad_snap.entries[0].layer = 2;
+        bad_snap.entries[0].layer = 3;
         assert_eq!(encode_wm_snapshot_rep(&mut buf, &bad_snap), None);
         // GETINFO rep：windows_max 越帽 16（解析面；编码面 assert 见
         // should_panic 测试）。
@@ -3848,124 +3851,137 @@ mod tests {
         assert_eq!(WM_LAYER_SERVICE, 2, "服务层值域在 SYSTEM 之上");
     }
 
-    // —— 波3 批A（add-only，设计稿 §8 首项/§5 协议半）：沉浸/IME 旗位 +
-    //    属主事件通道帧型 ——
+    // —— 波3 wm 事件通道 + SERVICE 层收宽（add-only 消费侧测试） ——
 
     #[test]
-    fn wm_wave3_immersive_ime_flags_roundtrip() {
+    fn wm_layer_service_create_and_snapshot_legal() {
+        // SERVICE=2 入域（波2 R1「拒点从 2 移钉 3」落地）：CREATE/快照双侧
+        // 编解码对称收 2。
         let mut buf = [0u8; WM_REP_MAX];
-        // 位值钉板（防撞——add-only 顺延链：CREATE 1<<1/1<<2、SET 1<<3、
-        // 快照 1<<2/1<<3；改位 = 跨版本破面）。
-        assert_eq!(WM_CREATE_F_IMMERSIVE, 0x02);
-        assert_eq!(WM_CREATE_F_IME_WANTED, 0x04);
-        assert_eq!(WM_SET_F_IME_WANTED, 0x08);
-        assert_eq!(WM_WIN_F_IMMERSIVE, 0x04);
-        assert_eq!(WM_WIN_F_IME_WANTED, 0x08);
-        // CREATE 三旗并置往返（flags 字节 = 0x07）。
-        let cr = WmCreateReq {
-            layer: WM_LAYER_APP,
-            flags: WM_CREATE_F_AVOID_SYS | WM_CREATE_F_IMMERSIVE | WM_CREATE_F_IME_WANTED,
+        let svc = WmCreateReq {
+            layer: WM_LAYER_SERVICE,
+            flags: 0,
             parent: 0,
             group: 0,
-            x: 1,
-            y: 2,
-            w: 3,
-            h: 4,
-        };
-        let n = encode_wm_create_req(&mut buf, &cr).unwrap();
-        assert_eq!(n, WM_CREATE_REQ_LEN);
-        assert_eq!(buf[2], 0x07);
-        assert_eq!(parse_wm_create_req(&buf[..n]), Some(cr));
-        // 既有编码零漂移：仅 AVOID_SYS 的帧字节与波3 前逐字节同（黄金钉板
-        // 在 wm_wire_golden——此处再钉 flags 字节单点）。
-        let old = WmCreateReq { flags: WM_CREATE_F_AVOID_SYS, ..cr };
-        encode_wm_create_req(&mut buf, &old).unwrap();
-        assert_eq!(buf[2], 0x01);
-        // SET：IME_WANTED 位 + vis 槽载布尔（置/清两值）。
-        let s_on = WmSetReq {
-            mask: WM_SET_F_IME_WANTED,
-            window_id: 3,
             x: 0,
-            y: 0,
-            w: 0,
-            h: 0,
-            vis: WM_VIS_SHOW,
-            z: 0,
+            y: 400,
+            w: 800,
+            h: 200,
         };
-        let n = encode_wm_set_req(&mut buf, &s_on).unwrap();
-        assert_eq!(n, WM_SET_REQ_LEN);
-        assert_eq!(parse_wm_set_req(&buf[..n]), Some(s_on));
-        let s_off = WmSetReq { vis: WM_VIS_HIDE, ..s_on };
-        let n = encode_wm_set_req(&mut buf, &s_off).unwrap();
-        assert_eq!(parse_wm_set_req(&buf[..n]), Some(s_off));
-        // 双位同帧共享同值（v1 语义——mask=0x0A、vis 槽单值双用）。
-        let s_both = WmSetReq { mask: WM_SET_F_VIS | WM_SET_F_IME_WANTED, ..s_on };
-        let n = encode_wm_set_req(&mut buf, &s_both).unwrap();
-        assert_eq!(buf[1], WM_SET_F_VIS | WM_SET_F_IME_WANTED);
-        assert_eq!(parse_wm_set_req(&buf[..n]), Some(s_both));
-        // 黄金字节：IME 单位帧（mask 0x08）——vis 槽值落在 off 16。
-        let n = encode_wm_set_req(&mut buf, &s_on).unwrap();
-        assert_eq!(
-            &buf[..n],
-            &[0x63, 0x08, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0][..]
-        );
-        // 快照两位并置往返（flags 字节 = VISIBLE|IMMERSIVE|IME = 0x0D）。
+        let n = encode_wm_create_req(&mut buf, &svc).unwrap();
+        assert_eq!(parse_wm_create_req(&buf[..n]), Some(svc));
         let mut snap = wm_snap_sample(1);
-        snap.entries[0].flags = WM_WIN_F_VISIBLE | WM_WIN_F_IMMERSIVE | WM_WIN_F_IME_WANTED;
+        snap.entries[0].layer = WM_LAYER_SERVICE;
         let n = encode_wm_snapshot_rep(&mut buf, &snap).unwrap();
-        assert_eq!(buf[WM_SNAP_HEAD + 15], 0x0D);
         assert_eq!(parse_wm_snapshot_rep(&buf[..n]).unwrap().ok().unwrap(), snap);
-        // 拒面已被 wm_value_domain_reject_matrix 移钉样本覆盖（0x08/0x10）；
-        // 此处补 encode 侧新位组合外的合成野值。
-        let mut bad = cr;
-        bad.flags = WM_CREATE_F_IMMERSIVE | 0x08;
-        assert_eq!(encode_wm_create_req(&mut buf, &bad), None);
-        let mut bad = s_on;
-        bad.mask = WM_SET_F_IME_WANTED | 0x10;
-        assert_eq!(encode_wm_set_req(&mut buf, &bad), None);
     }
 
     #[test]
-    fn wm_event_frames_roundtrip_and_rejects() {
-        let mut buf = [0u8; 32];
-        // kind 段钉板：独立于 wm op 带外（0x60..=0x7F 互斥带不动）+ 段内互异。
-        assert_ne!(WM_EVENT_BACK, WM_EVENT_TABLE);
-        assert_ne!(WM_EVENT_BACK, BACK_ACK);
-        assert_ne!(WM_EVENT_TABLE, BACK_ACK);
-        assert!(WM_EVENT_BACK < OP_WM_GETINFO && WM_EVENT_TABLE < OP_WM_GETINFO);
-        assert!(BACK_ACK < OP_WM_GETINFO);
-        // WM_EVENT_BACK：往返 + 黄金字节（DESTROY 请求同形——wid off 4 LE）。
-        let n = encode_wm_event_back(&mut buf, 0x0304);
-        assert_eq!(n, WM_EVENT_BACK_LEN);
-        assert_eq!(WM_EVENT_BACK_MAX, 8);
-        assert_eq!(&buf[..n], &[WM_EVENT_BACK, 0, 0, 0, 0x04, 0x03, 0, 0][..]);
-        assert_eq!(parse_wm_event_back(&buf[..n]), Some(0x0304));
-        assert_eq!(parse_wm_event_back(&buf[..n - 1]), None, "截断拒");
-        assert_eq!(parse_wm_event_back(&buf[..n + 1]), None, "尾随拒");
-        assert_eq!(parse_wm_event_back(&[WM_EVENT_TABLE, 0, 0, 0, 4, 3, 0, 0]), None, "错 kind 拒");
-        // wid=0 合法（wmd 分配策略保证非 0，wire 层不执法——ack 同口径）。
-        let n = encode_wm_event_back(&mut buf, 0);
-        assert_eq!(parse_wm_event_back(&buf[..n]), Some(0));
-        // WM_EVENT_TABLE：往返 + 黄金字节（TABLE_WAIT 请求同形——ver off 4 LE）。
-        let n = encode_wm_event_table(&mut buf, 0x0A00_0001);
-        assert_eq!(n, WM_EVENT_TABLE_LEN);
-        assert_eq!(WM_EVENT_TABLE_MAX, 8);
-        assert_eq!(&buf[..n], &[WM_EVENT_TABLE, 0, 0, 0, 0x01, 0x00, 0x00, 0x0A][..]);
-        assert_eq!(parse_wm_event_table(&buf[..n]), Some(0x0A00_0001));
-        // 越界角：version 顶格 u32（纪元回退角由消费侧兜底——wire 层合法）。
-        let n = encode_wm_event_table(&mut buf, u32::MAX);
-        assert_eq!(parse_wm_event_table(&buf[..n]), Some(u32::MAX));
-        assert_eq!(parse_wm_event_table(&buf[..7]), None, "截断拒");
-        assert_eq!(parse_wm_event_table(&[BACK_ACK, 0, 0, 0, 0, 0, 0, 0]), None, "错 kind 拒");
-        // BACK_ACK：恰 1B 往返 + 拒面（尾随/错值/空帧）。
-        let n = encode_back_ack(&mut buf);
-        assert_eq!(n, BACK_ACK_LEN);
-        assert_eq!(BACK_ACK_MAX, 1);
-        assert_eq!(&buf[..n], &[BACK_ACK][..]);
-        assert_eq!(parse_back_ack(&buf[..n]), Some(()));
-        assert_eq!(parse_back_ack(&buf[..2]), None, "尾随拒");
-        assert_eq!(parse_back_ack(&[0]), None, "错值拒");
-        assert_eq!(parse_back_ack(&[]), None, "空帧拒");
-        assert_eq!(parse_back_ack(&[ST_OK]), None, "status 字节非 ACK");
+    fn wm_hit_test_service_layer_precedence() {
+        // 层降序天然覆盖 SERVICE>SYSTEM>APP（layer 数值序即层序——零算法
+        // 改动，波2 冻结口径的波3 消费侧钉板）。
+        let base = WmEntry {
+            id: 7,
+            parent: 0,
+            group: 0,
+            x: 0,
+            y: 0,
+            w: 800,
+            h: 600,
+            layer: WM_LAYER_APP,
+            z: 0,
+            flags: WM_WIN_F_VISIBLE,
+        };
+        let sys = WmEntry { id: 3, h: 30, layer: WM_LAYER_SYSTEM, ..base };
+        let svc = WmEntry {
+            id: 9,
+            y: 560,
+            h: 40,
+            layer: WM_LAYER_SERVICE,
+            z: 0,
+            ..base
+        };
+        // SERVICE 压 SYSTEM 任意 z（软键盘暂态压顶语义）。
+        assert_eq!(wm_hit_test(&[sys, svc], 400, 575), Some(9));
+        assert_eq!(wm_hit_test(&[svc, sys], 400, 575), Some(9));
+        // SERVICE 窗外仍中 SYSTEM。
+        assert_eq!(wm_hit_test(&[sys, svc], 400, 10), Some(3));
+        // APP 恒垫底：带外点穿到 APP、带内点中 SYSTEM。
+        assert_eq!(wm_hit_test(&[base, sys, svc], 400, 10), Some(3));
+        assert_eq!(wm_hit_test(&[base, sys, svc], 400, 300), Some(7));
+        assert_eq!(wm_hit_test(&[base, svc], 400, 300), Some(7));
+    }
+
+    #[test]
+    fn wm_subscribe_roundtrip_and_rejects() {
+        let mut buf = [0u8; 8];
+        let n = encode_wm_subscribe_req(&mut buf);
+        assert_eq!(&buf[..n], &[OP_WM_SUBSCRIBE, 0, 0, 0][..]);
+        assert_eq!(parse_wm_subscribe_req(&buf[..n]), Some(()));
+        // 拒面：长度不符 / 错 op（含 TABLE_GET 同形邻值）。
+        assert_eq!(parse_wm_subscribe_req(&buf[..n - 1]), None);
+        assert_eq!(parse_wm_subscribe_req(&buf[..n + 1]), None);
+        assert_eq!(parse_wm_subscribe_req(&[OP_WM_TABLE_GET, 0, 0, 0]), None);
+        // op 带位：wm 域 0x60..=0x7F 内 TABLE_WAIT 之后的互斥新值。
+        assert!(OP_WM_SUBSCRIBE > OP_WM_BACK && OP_WM_BACK > OP_WM_FOCUS);
+    }
+
+    #[test]
+    fn wm_evt_frames_roundtrip_and_rejects() {
+        let mut buf = [0u8; 8];
+        // BACK 事件：`[kind][wid u16][r]` 恰 4B；尾 r 解析侧恒不校验。
+        let n = encode_wm_evt_back(&mut buf, 0x0304);
+        assert_eq!(&buf[..n], &[WM_EVT_BACK, 0x04, 0x03, 0][..]);
+        assert_eq!(parse_wm_evt_back(&buf[..n]), Some(0x0304));
+        buf[3] = 0xEE;
+        assert_eq!(parse_wm_evt_back(&buf[..n]), Some(0x0304));
+        assert_eq!(parse_wm_evt_back(&buf[..n - 1]), None);
+        assert_eq!(parse_wm_evt_back(&buf[..n + 1]), None);
+        // TABLE 事件：`[kind][version u32]` 恰 5B；version 任意 u32 合法
+        // （「恒 ≥1」是服务端不变量非 wire 执法，Q3 同款）。
+        let n = encode_wm_evt_table(&mut buf, 0x1122_3344);
+        assert_eq!(&buf[..n], &[WM_EVT_TABLE, 0x44, 0x33, 0x22, 0x11][..]);
+        assert_eq!(parse_wm_evt_table(&buf[..n]), Some(0x1122_3344));
+        for v in [0u32, u32::MAX] {
+            let n = encode_wm_evt_table(&mut buf, v);
+            assert_eq!(parse_wm_evt_table(&buf[..n]), Some(v));
+        }
+        assert_eq!(parse_wm_evt_table(&buf[..4]), None);
+        assert_eq!(parse_wm_evt_table(&buf[..6]), None);
+        // BACK_ACK：恰 1B。
+        let n = encode_wm_back_ack(&mut buf);
+        assert_eq!(&buf[..n], &[WM_EVT_BACK_ACK][..]);
+        assert_eq!(parse_wm_back_ack(&buf[..n]), Some(()));
+        assert_eq!(parse_wm_back_ack(&[]), None);
+        assert_eq!(parse_wm_back_ack(&[WM_EVT_BACK, 0]), None);
+    }
+
+    #[test]
+    fn wm_evt_unified_parse_and_band_isolation() {
+        // 统一判别面：三帧型互斥收口。
+        let mut buf = [0u8; 8];
+        let n = encode_wm_evt_back(&mut buf, 9);
+        assert_eq!(parse_wm_evt(&buf[..n]), Some(WmEvt::Back(9)));
+        let n = encode_wm_evt_table(&mut buf, 5);
+        assert_eq!(parse_wm_evt(&buf[..n]), Some(WmEvt::Table(5)));
+        let n = encode_wm_back_ack(&mut buf);
+        assert_eq!(parse_wm_evt(&buf[..n]), Some(WmEvt::BackAck));
+        // 错帧型/截断/空 → None。
+        assert_eq!(parse_wm_evt(&[0x00]), None);
+        assert_eq!(parse_wm_evt(&[WM_EVT_BACK, 0x01]), None);
+        assert_eq!(parse_wm_evt(&[]), None);
+        // 帧型带隔离：0x90..=0x92 落在全部 op 带（present 1..=6 / input
+        // 0x20..=0x22 / hdi 0x40..=0x43 / wm 0x60..=0x7F）之外——错投任一
+        // 请求分发面恒 ST_BAD（结构性防错投，wm 带互斥 Q1 同法）。
+        let kinds = [WM_EVT_BACK, WM_EVT_TABLE, WM_EVT_BACK_ACK];
+        for k in kinds {
+            assert!(k < OP_WM_GETINFO || k > 0x7F, "事件帧型 {} 不得落 wm op 带", k);
+            assert!(!(1..=6).contains(&k) && !(0x20..=0x22).contains(&k));
+            assert!(!(0x40..=0x43).contains(&k));
+            assert!(parse_wm_create_req(&[k, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]) == None);
+        }
+        assert_ne!(WM_EVT_BACK, WM_EVT_TABLE);
+        assert_ne!(WM_EVT_TABLE, WM_EVT_BACK_ACK);
+        assert_ne!(WM_EVT_BACK, WM_EVT_BACK_ACK);
     }
 }

@@ -17,7 +17,13 @@ use core::sync::atomic::AtomicU32;
 
 use crate::{c_int, c_void, size_t};
 
-pub const HEAP_SIZE: usize = 1024 * 1024;
+pub const HEAP_SIZE: usize = if cfg!(feature = "heap-4m") {
+    // 波3-件⑦验收债：launcher 图标常驻（PX_CAP 879KiB）+ UiMain 87KiB
+    // 挤爆 1MiB——重消费面提档 4MiB（feature 分档法，默认不动）。
+    4 * 1024 * 1024
+} else {
+    1024 * 1024
+};
 
 /// 堆互斥（futex 化：0 = 空、1 = 持有）。**不可重入**——持锁路径只走
 /// inner_* 私函数，public 面（malloc/free/…）不得嵌套互调。

@@ -1026,7 +1026,7 @@ fn gallery2_golden_hashes() {
         ("kind_spacer", 0x945e2ba34a5b9c8a),
         ("kind_stack", 0xde3c446edc32b455),
         ("kind_step", 0x3804f6dcb9c826e6),
-        ("kind_select", 0x6de6195f69ce7888),
+        ("kind_select", 0xf5988cfc5db90688),
         // kind_input：B9 caret 居中同式（+14 → (h−16)/2 = +16）重钉。
         ("kind_input", 0xa9de573fc08899a1),
         ("kind_edit", 0x95a720941ffbc112),

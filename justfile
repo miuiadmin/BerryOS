@@ -873,9 +873,19 @@ test-host:
     # referee + 三态停帧 FramePhase + 重采样常量 guiproto 单源；
     # 验收三件 = damage/frame/offscreen）。
     cargo test --manifest-path user/Cargo.toml -p berry-ui --target {{host}}
+    # 波3-件⑦：berry-appshell（应用壳 crate——launcher 五模块纯抽取的
+    # host 纯函数面：rpc 重试分类/conf 读写谓词/scene 档位-scrim-组宽/
+    # icons 导航几何-pump damage 包络-等待帽；syscall 半程 cfg(not(test))
+    # 门（berry-fsclient 先例）——首消费者 berry-launcher musl 链由
+    # build-user 段覆盖）。
+    cargo test --manifest-path user/Cargo.toml -p berry-appshell --target {{host}}
     # GUI-4 段②：guiproto 协议面 + gui-inputd 泵/服务单测入 host 台账。
     cargo test --manifest-path user/Cargo.toml -p berry-guiproto --target {{host}}
     cargo test --manifest-path drivers/Cargo.toml -p gui-inputd --target {{host}}
+    # 波3（六波方案步骤 4）：gui-wmd 策略核（lib 双面 crate——窗口表/
+    # 焦点维护/OP_WM_BACK 500ms 兜底/事件通道广播状态机，MockPort mock
+    # 客户端喂真 wire 帧；gui-inputd 同法 host 台账，musl 面走 build-user）。
+    cargo test --manifest-path user/bins/gui-wmd/Cargo.toml --target {{host}}
     # app-0：berry-manifest（.bap manifest v0 纯函数解析——「解析器即产品」
     # 第 8 例，host 44 测：完整钉板/缺省合并/坏输入族 + 恰满边界正例/真
     # manifest fixture 共识/intent 判别值钉板 + ID_MAX 绝对钉（berry-layout

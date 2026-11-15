@@ -17,7 +17,11 @@ version = "0.2.0"
 name = "berry-appshell"
 version = "0.2.0"
 dependencies = [
+ "berry-appproto",
  "berry-gfx",
+ "berry-guiproto",
+ "berry-layout",
+ "berry-sys",
  "berry-ui",
 ]
 
