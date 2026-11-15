@@ -20,8 +20,14 @@ MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TAS
 # +DPGP ok 跨进程供给面；THR 尾插随合并序；sim-S2 A2 +FRZ 两轮冻结循环
 #——EL0 载体：thrchild 冻结轮数以退出码带出，svcmgr 收码打标（防子进程
 # 标记字面量被冻结路径吞掉）；EL1 ktest 载体 = 裸相 FRZCYC，双载体执法）。
+# 刀 A 计数锁数：APP ok n=9 / APPUI ok n=8 锁实数（槽集单源 = 9 槽：八枚
+# [ui]（APPDEMO/SETTINGS/FILES/PHOTOS/CAMERA/CONTACTS/MMS/BROWSER——裁决
+# B deferred 记账入 ok）+ APPQUIET 批拉起形；APPUI = [ui] 八枚资产面）。
+# 加/减应用槽随动契约同批改齐：本行两计数 + smoke-image.sh ECO_MARKERS
+# 同对 + gui8-smoke.py MARK_APP_N9 + smoke.sh/smoke-smp.sh deferred 名单 +
+# justfile spec 清单；破 10 先扩 APP_SLOTS 与 svcmgr 单数字位断言。
 ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" \
-  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "LSN ok n=7" "TCPS ok echo=" "APP ok n=" "APPUI ok n=" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "TAB ok" "INT ok" "POLL ok" "EVS ok n=2" "SKT ok n=3" "EPL ok n=8" "NETS ok n=2" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "PS ok n=" "BC ok" "M3DEMO ok n=5" "THR ok" "FRZ ok n=2" "DPGP ok" "INPUT ok" "DPGS ok n=4" "DPGN ok n=4" "FROZEN ok n=1" "WAKE ok n=1" "TOMB ok n=1" "CLI ok n=" "TERM ok n=2")
+  "HEXYL ok" "BSH ok" "EXIT ok" "PIPE ok" "FS ok n=" "VIRTIO ok" "VBLK ok" "BLKD ok n=" "FAT ok n=" "FATW ok n=" "NET ok ping=" "DNS ok addr=" "TCP ok echo=" "LSN ok n=7" "TCPS ok echo=" "APP ok n=9" "APPUI ok n=8" "DIR ok n=" "CD ok" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "DF ok" "U4 ok" "TAB ok" "INT ok" "POLL ok" "EVS ok n=2" "SKT ok n=3" "EPL ok n=8" "NETS ok n=2" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "PS ok n=" "BC ok" "M3DEMO ok n=5" "THR ok" "FRZ ok n=2" "DPGP ok" "INPUT ok" "DPGS ok n=4" "DPGN ok n=4" "FROZEN ok n=1" "WAKE ok n=1" "TOMB ok n=1" "CLI ok n=" "TERM ok n=2")
 # app-1 段 a-1 +FROZEN ok n=1（51→52）：freeze-first 自验——tomb_selftest 通道
 # 判据（UP → suspend → 8s 零收 → thaw → RESUMED 全过才打）。与 T-1 的
 # 「FRZ ok n=2」互非子串（F-R-O-Z-E-N 插元音），canon 机查已复核（对抗审查 L2）。
