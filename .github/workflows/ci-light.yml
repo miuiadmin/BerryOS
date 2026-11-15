@@ -15,6 +15,9 @@ on:
     paths: [docs/**, .agents/**, '**.md', tools/**, deny.toml]
   pull_request:
     paths: [docs/**, .agents/**, '**.md', tools/**, deny.toml]
+  # 手动兜底（2026-11-15 #325 判例）：事件黑洞时手动点火，dispatch 不经
+  # paths 过滤——黑洞分支的 head 也能拿到轻道门禁信号。
+  workflow_dispatch:
 
 concurrency:
   # 轻道独立组：无 QEMU/构建面，同机并行不抢核（纯文档门禁秒级），
