@@ -1,0 +1,46 @@
+[package]
+name = "settings"
+# L-SYS 0.2.0：字面版本不走 workspace 继承（musl 链独立小工作区，版本治理
+# 规则/14；user/bins 同批同值——appstub/gfxdemo/berry-launcher 同款）。
+# 升版 = 逐 crate 手同步。
+version = "0.2.0"
+edition = "2021"
+
+# 波 4 首件（.agents/research/2026-11-15-波4应用翻新侦察.md §一/§二）：
+# SETTINGS 真 GUI 应用——appstub 秒退壳（exit(0)）的垂直切片替换。目标 =
+# 证明 berry-ui 41 kind 组件面（Toggle/Slider/Check 等）能被真实 app 消费：
+# 单页设置 UI（标题 + Toggle×2 + Slider + Check），交互全走引擎内建
+# widget_react（pump_input 期 Toggle·Check 翻转 / Slider 拖跟），app 侧
+# take_events 消费 on_change 驱动亮度百分值 Text。
+#
+# 链与形态 = berry-launcher 镜像：guifbd/berry-launcher 同形独立小工作区
+#（空 [workspace] escape user 根 workspace，不入 members；musl target +
+# berry-libc shim + berry-ld 链，构建行见 justfile build-user 的 RUSTFLAGS
+# 形）。服务连接：wm_cli_h() 门控 + WM_GETINFO 几何 + present 三部曲
+#（SUBMIT surface_id=0 全幅——v1 单面呈现模型，launcher 同形）；输入 =
+# input_h() INPUT_POLL 批拉（无礼物 = 静态页常驻不退）。
+#
+# 与任务书草签 Cargo.toml 的三处偏差（均为仓库既有惯例/必要性）：
+# ① 字面 version 替 `version.workspace = true`——独立小工作区无上游
+#   [workspace.package] 可继承（L-SYS 规则/14 全体 musl bin 同款）；
+# ② + berry-libc（crt0 链接种子/wm_cli_h/input_h/park——std bin 的
+#   env 块消费面，launcher 同依赖）；
+# ③ + berry-guiproto（wm/present/input wire 编解码——berry-ui 只引类型
+#   不 re-export 收发面）。
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+berry-sys = { path = "../../berry-sys" }
+berry-guiproto = { path = "../../berry-guiproto" }
+berry-ui = { path = "../../berry-ui" }
+berry-gfx = { path = "../../berry-gfx" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
