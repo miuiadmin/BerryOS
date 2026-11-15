@@ -108,6 +108,23 @@ pub fn asid_bits() -> u32 {
     mmu::asid_bits()
 }
 
+/// 北极星审计修（2026-11-15）：TTBR0 ASID 位域环回探针——boot 单线程窗调
+/// 一次（`rust_main` 早期、任何任务地址空间激活之前）。位域不环回（QEMU
+/// HVF 形虚拟化）⇒ 按号 TLB 语义不可依托，P0-3 免失效激活档整档退化全量
+/// 档（见 `mmu::ASID_TLB_UNTRUSTED`）。
+///
+/// # Safety
+/// EL1、MMU 已开、boot 单线程 DAIF 屏蔽窗；先于首个 `activate_aspace`。
+pub unsafe fn probe_asid_field_roundtrip() {
+    // SAFETY: 调用点合同见函数注（rust_main 早期单线程窗）。
+    unsafe { mmu::probe_asid_field_roundtrip() };
+}
+
+/// 北极星审计修：探针结果只读透传（关卡行/诊断面）。
+pub fn asid_tlb_untrusted() -> bool {
+    mmu::asid_tlb_untrusted()
+}
+
 /// 2b-2：激活任务地址空间——TTBR0 ← 表+ASID、CONTEXTIDR、`tlbi aside1is`
 /// （变化才调，比较由调度器做）。`ttbr0_pa == 0` = 无 AS → 内核空表（低半必然
 /// fault——身份表已退役）。填表方须先 `dsb ish`（本函数只管寄存器）。

@@ -15,7 +15,10 @@
 //! 绝对到期时刻——[`arm_slice`] 以计数器现读（CNTVCT）重算，绝不基于上次编程值外推。
 //! v1 无其他定时事件源，min(最早超时事件, 时间片终点) 退化为时间片终点；S-3a 起
 //! tickless park 引入第二截止源（[`arm_at`] = SLEEPQ 最近 deadline，park 武装面）；
-//! 授片处取 min 仍留后（Phase 4+）。
+//! 忙核 arm-to-nearest-deadline 起「授片处取 min」（Phase 4+ 留后项）落地——
+//! sched.rs 两臂（on_irq_tick expire 后 / block_current 忙核授片）经
+//! `berry_sched::oneshot::tighten_deadline` 收紧到 min(最近超时, 现臂)，片终点
+//! 仍是硬底（永不推迟，方向同 [`arm_slice`] 的 S-6 夹取）。
 //!
 //! **热路径零分配**：本模块无堆、无锁（G0 单核）。
 

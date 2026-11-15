@@ -2488,6 +2488,23 @@ pub fn block_current(obj: usize, signals: u64, deadline_vct: u64) -> WakeReason 
             (*next_ptr).slice_left = hal::timer::slice_cycles();
             // SAFETY: IRQ 已屏蔽；写 CNTV 系统寄存器；EL1。
             hal::timer::arm_slice();
+            // 忙核 arm-to-nearest-deadline（本刀）·件三：授片处取 min（timer.rs
+            // 模块头 Phase 4+ 留后项兑现）：本支 = 出选有货（忙核），新睡眠者
+            // 的 deadline 已在上方 insert_sorted 进 SLEEPQ——但 arm_slice 只夹
+            // 取（不推迟）不收紧，片内中途入睡的短睡者若无人臂到其截止，
+            // 唤醒粒度仍 1 slice（on_irq_tick 的 tick 臂只能看见「上 tick 时
+            // 已在队」的截止）。SQ 窗（sq_phys）仍持——直接读队头（免
+            // nearest_deadline 重锁的同核自死锁），收紧判同律单源
+            // oneshot::tighten_deadline。IDLE/park 两臂零改（idle_loop /
+            // secondary_main park 环本就按最近 deadline arm_at）。
+            // SAFETY: 同上（SQ 窗内只读队头；读 CNTVCT/CVAL + 写 CNTV）。
+            unsafe {
+                let nearest = sleepq().head.get().map(|h| (*h.as_ptr()).wait_deadline);
+                let armed = hal::timer::cval();
+                if let Some(d) = crate::oneshot::tighten_deadline(nearest, armed) {
+                    hal::timer::arm_at(d);
+                }
+            }
         }
         // 4-3b：新睡眠者已入队、状态定型——PI 全图重推（写 pi/eff 字段，不碰
         // 链接；屏蔽窗内零分配）后才切走。
@@ -2841,16 +2858,19 @@ pub fn try_preempt() -> bool {
     false
 }
 
-/// SLEEPQ 超时扫描（`on_irq_tick` 开头调；tick 粗粒度——deadline 过后最迟一个
-/// slice 被摘，tickless 精确 arm 到最近 deadline 留后）。升序队列头未到期即
-/// 早停（空队近零开销）。S-3c c-2a 起：全体包 SQ 锁窗（扫描摘队 + PI 收尾
-/// 一体；IRQ 语境调用 ⇒ 同核重入不可能——窗纪律见 `SLEEPQ_LOCK`）。
+/// SLEEPQ 超时扫描（`on_irq_tick` 开头调；tick 粗粒度扫描——忙核 arm-to-
+/// nearest-deadline 起唤醒时刻已 oneshot 精确（oneshot 收紧律），本扫描只
+/// 负责摘队）。升序队列头未到期即早停（空队近零开销）。**返回是否摘出过
+/// 到期者**（忙核超时唤醒出口检查点的门——见 on_irq_tick 收消费点）。
+/// S-3c c-2a 起：全体包 SQ 锁窗（扫描摘队 + PI 收尾一体；IRQ 语境调用 ⇒
+/// 同核重入不可能——窗纪律见 `SLEEPQ_LOCK`）。
 ///
 /// # Safety
 /// IRQ 屏蔽窗内（on_irq_tick 调用）。
-unsafe fn expire_timeouts() {
+unsafe fn expire_timeouts() -> bool {
     let now = hal::timer::cntvct();
     let phys = sq_lock(); // SQ 窗开
+    let mut popped = false;
     loop {
         let Some(h) = sleepq().head.get() else { break };
         if (*h.as_ptr()).wait_deadline > now {
@@ -2862,10 +2882,12 @@ unsafe fn expire_timeouts() {
         (*t).wakeup.set(WakeReason::Timeout);
         enqueue_with_kick(&mut *t, (*t).home_cpu as usize);
         note_wake(t, WakeReason::Timeout);
+        popped = true;
     }
     // 4-3b：超时摘队也改变睡眠者集合（纯 sleep 者超时离队 → 冻结其 boost）。
     unsafe { note_sleepq_changed() };
     sq_unlock(phys); // SQ 窗闭
+    popped
 }
 
 // ---- PI 图推导支撑原语（4-3b；消费者 = `kernel/src/pi.rs`，图语义在那侧）----
@@ -3381,7 +3403,39 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
     hal::smp::note_tick();
     // 4-0：先扫 SLEEPQ 超时（到期者置 Timeout 入 runqueue——本 tick 后续的
     // pick 即可能选中它们；头未到期早停，空队近零开销）。
-    expire_timeouts();
+    let expired = expire_timeouts();
+    // 忙核 arm-to-nearest-deadline（本刀）·件一：expire 后 SLEEPQ 队头即最近
+    // 到期——早于现臂（tick 入口 `timer::handle` rearm 的满片终点）即收紧
+    // CVAL 到该截止（oneshot 精确唤醒）；无到期/不更早 = 保持现臂（周期 tick
+    // 兜底）。永不推迟（与 arm_slice 的 S-6 单调夹取同向）——片终点仍是硬底，
+    // RR.tick 记账/slice 燃尽抢占链不丢。忙核（cur 在跑）此前超时扫描只在
+    // tick 跑、唤醒粒度恒 1 slice（idle/park 路径早有 arm_at 精确武装——
+    // 本臂让忙核同走 oneshot 面）。此点位在 cur 判空/记账/抢占支之前：一切
+    // 后续路径（含 context_switch 支——切换后本帧不再续行）都带着收紧后的
+    // CVAL 离场。cur==null 的 park 态 tick 亦过此臂——回环 park 环顶同值
+    // 重臂幂等（「两核对同一 deadline 双 arm = 至多一次冗余醒」同款）。
+    // nearest_deadline 契约：IRQ 屏蔽 ✓、不持结构位 ✓（expire 的 SQ 窗已闭）。
+    // SAFETY: IRQ 上下文（PSTATE.I=1）；读 CNTVCT/CVAL + 写 CNTV 系统寄存器。
+    unsafe {
+        let armed = hal::timer::cval();
+        if let Some(d) = crate::oneshot::tighten_deadline(nearest_deadline(), armed) {
+            hal::timer::arm_at(d);
+        }
+    }
+    // 忙核 arm-to-nearest-deadline（本刀）·件二：**超时唤醒出口检查点**——
+    // G3-1c 检查点族（「严格更高 eff 直切」）覆盖了 SVC 尾/UART RX/SGI 一切
+    // 唤醒出口，唯超时唤醒（本处 expire 摘队）出口无检查点：唤醒者只入
+    // runqueue，低优占用者的 slice 燃尽支才会 pick 它——严格更高 eff 的
+    // 超时醒者（cyclictest 形）重续仍被片终点支配，oneshot 精确唤醒只醒
+    // 了核没醒任务。补齐 = expire 摘出过人且本核可切（preempt_count==0——
+    // G43 防 PRINT_LOCK 窗，同下方 slice 燃尽支门）时 try_preempt（探峰
+    // 集 == 出选集 + 幻影出选防线内置；IRQ 上下文调用先例 = PL011 RX
+    // 检查点）。未摘出（空转 tick）零成本跳过——不改变既有「非超时唤醒
+    // 等片尽」语义。try_preempt 内部授片 arm_slice 受 S-6 夹取——上方件一
+    // 已收紧的更早截止不会被推走。
+    if expired && preempt_count() == 0 {
+        try_preempt();
+    }
     let cur = current_task();
     // S-2b PAR 金丝雀采样（草案 §5.2 D1）：EL0 tick 纪事钉板 / 非 EL0 清钉。
     // is_el0 判据 = ttbr0 != 0（有地址空间的任务 = EL0 用户进程；内核任务/

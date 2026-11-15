@@ -103,6 +103,8 @@ VNC 第九波·网页桌面产品化（2026-11-14 落）：`vnc web` 默认页�
 
 VNC 第十波·LAN 远程桌面（2026-11-15 落）：`vnc web --lan` 把网页桌面扩成 LAN 直开形态——berry 作唯一 LAN 入口，页面与 `/ws` ws 代理**同口**绑 `0.0.0.0`；`/ws` 升级请求只把请求行 target 改写为 `/`（QEMU ws 端点只认根路径）后按明文字节管道转发到 QEMU 的环回 ws 口（QEMU 不绑 LAN，VNC DES 认证端到端透传，代理连接豁免 30s 连接预算）。配对流程：终端打印剥 `#password=` fragment 的 URL 二维码（qrcodegen 1.8，MIT，零传递依赖），手机连同一 Wi-Fi 扫码打开页面，口令从终端 URL 行读取后在页面凭据弹窗手动输入（口令不进任何可扫实体/argv/日志）。准入：`--tls` 组合 rc=2 拒绝（互斥），**无口令 run 一律拒绝**（`--vnc-pass` 重启），启动打一次性 DES 弱防线提醒；LAN 地址解析 = `--host` 显式 > 平台接口 IPv4（macOS `ipconfig` 实测、Linux/Windows 尽力解析未实机验证）> 127.0.0.1 回退警告。同波壳页长出**底栏设备面板**（拇指位）：返回/多任务/主页/旋转四导航键——按客机 launcher 五键导航条的真实几何（紧凑 44px/大屏 160px 两档）经合成指针事件**代点客机自己的导航条**（真客机语义，实测坐标命中；`#password=` fragment/sessionStorage 双通道口令，刷新免重输）；截图（canvas 当前帧 PNG 直接存进手机）+ 重启/关机（`POST /api/power/<reboot|off>`，berry 转发控制面 `power` op；run 有口令时必须 `X-Berry-Pass` 匹配——LAN 下与 VNC 认证等强；Host 头须为 IP/localhost 形态防 DNS 重绑定；关机 3s 双击确认）+ 全屏键。环回模式（无 `--lan`）输出与行为逐字节照旧。
 
+GUI 家族 noktest 注入（2026-11-15 落，六波 owner 裁决提前实现）：`berry shell`/`device start`/`host` 的 QEMU 参数默认注入 `opt/berry/noktest=1`——GUI 启动形态按生产 boot 走（内核跳过 ktest/bench 开发自测，省分钟级开机）；`berry run`/`berry shot` 冒烟路径**不注**（ktest 逐行输出仍是冒烟断言面，语义零漂移）。诊断要真跑内核自测时用 `berry run` 或 `BERRY_QEMU` 直跑。
+
 VNC 第十一波·解冻收尾 + TLS×LAN（2026-11-15 落）：两件。①TLS run 的 `--lan` 形态兑现（wave10 重启条件销账）——页面维持明文 http 0.0.0.0 单口（URL/QR/文本输出与明文 `--lan` 逐字节同构，手机侧零新墙），只有 `/ws` 代理的**上游腿**以严格校验的 rustls 客户端连 QEMU 环回 wss（安全语义与 `vnc check` 一致：证书目录 `--ca <dir>` 显式 > run meta `vnc_tls` 自动推 > rc=2 带 `vnc certs` hint；`--insecure` 逃生门跳过校验并打一次性警告，与 `--ca` 互斥 rc=2；坏 CA 时服务正常起、上游握手失败 stderr 有声、页面转错误态）；JSON `lan` 对象增 `upstream: ws|wss` 单键。LAN 腿暴露面与明文 `--lan` 同构——明文 http 页 + VNC DES 端到端，TLS 只加在 berry→QEMU 环回腿，不宣称「LAN 加密」。②内部机制退役：wave1 冻结期的 LAUNCH/LAUNCH_STICKY 进程级覆盖删除，`--vnc` 五旗标改 `Device::start` 直参（shell→`window::run`→`Device::start`，RES 菜单/ROTATE 同进程重启显式重传）——CLI 用户面零变化（旗标/env/输出全照旧）。附窗口工具栏新增第六键 WEB：点击后台起 `berry vnc web --open` 并自动开浏览器（明文 run 环回 URL、TLS run 自动落 https 双口环回形态；再点幂等拒，换分辨率/旋转后需重点、退出窗口即收）；check-appdir.sh 的 TPN 检查补钉 `qrcodegen 1.8` 行。
 
 真实客户端矩阵（QEMU 11.0.3 + macOS 实测）：
@@ -181,11 +183,13 @@ C1g 的 host 自动重启已落：`device start --restart-on-crash`（QEMU 异�
 | id | 面板 | 客机渲染 | 备注 |
 | --- | --- | --- | --- |
 | `default` | 800×600 | 800×600 | P1 兼容档 / CI |
-| `desktop` | 540×960 | 1080×1920 | GUI 9:16 竖屏桌面档（`just desktop`） |
+| `desktop` | 540×960 | 1080×1920 | GUI 9:16 竖屏桌面档（`just desktop`）；fb 8.3MB 走同一 defer+buddy 路 |
 | `phone` | 1080×2250 | 480×1000 | 默认；恰好用满 800×600 GOP 缓冲 |
 | `phone16` | 1080×1920 | 480×854 | 16:9 |
-| `phone20` | 1080×2400 | 540×1200 | 已支持：buddy 4MB 连续 fb + ramfb 重编程 |
-| `tablet` | 1600×2560 | 800×1280 | 已支持：buddy 4MB 连续块 + ramfb 重编程 |
+| `phone20` | 1080×2400 | 540×1200 | 已验证：defer+buddy 连续 fb + ramfb 重编程 |
+| `tablet` | 1600×2560 | 800×1280 | 已验证：defer+buddy 连续 fb + ramfb 重编程 |
+
+> 表内「已验证」是**验证登记**，不是分配能力上限——所有超 GOP 缓冲（1.92MB）的档都走同一条 defer+buddy 路（按需取 2^n 连续页，上限 `MAX_ORDER=13` = 32MiB）。2026-11-15 曾把「desktop 档未标已验证」误读成「4MB 分配帽」，实际是当日 a11y 容量回归（`A11Y_MAX` 34>32，大屏档建 dock 才触发）——教训与证据见 [.agents/research/2026-11-15-1080p恒黑根因会审.md](../../.agents/research/2026-11-15-1080p恒黑根因会审.md)。
 
 `phone*`/`tablet` 默认内存 **256MiB**（`MMAP ok` + ROOTFS/GUI）；`default` 128MiB，
 `--memory 128` 仍零回归。gui8 540 预览镜像也已换 256 内核。
