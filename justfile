@@ -438,12 +438,22 @@ check: docs-guard writable-globals abi-check build-user
 
 # 默认机型 virt + -kernel ELF：QEMU 直加载，起始 EL1。期望输出: 1BerryOS boot
 # DEMO=off 时多一行 DEMO gate off（门态自证）+ 舰队/忙环零输出。
+# M1 止血：直跑族日志 tee 落盘 out/logs/<recipe>-<epoch>.log（stdio 即焚
+# 是 AI 取证面最大空白）；pipefail 保 QEMU 退出码不被 tee 吞。
 run: build
-    {{QEMU}} {{MACH}} {{ if DEMO == "" { "" } else { "-fw_cfg name=opt/berry/demo-face,string=" + DEMO } }} -kernel {{KERNEL}}
+    #!/bin/sh
+    set -e
+    set -o pipefail
+    mkdir -p out/logs
+    {{QEMU}} {{MACH}} {{ if DEMO == "" { "" } else { "-fw_cfg name=opt/berry/demo-face,string=" + DEMO } }} -kernel {{KERNEL}} 2>&1 | tee "out/logs/run-$(date +%s).log"
 
 # virtualization=on：强制起始 EL2，测 boot.asm 的 EL2→EL1 eret 降级。期望输出: 21BerryOS boot
 run-el2: build
-    {{QEMU}} -machine virt,virtualization=on -cpu cortex-a72 -m 128M -nographic -kernel {{KERNEL}}
+    #!/bin/sh
+    set -e
+    set -o pipefail
+    mkdir -p out/logs
+    {{QEMU}} -machine virt,virtualization=on -cpu cortex-a72 -m 128M -nographic -kernel {{KERNEL}} 2>&1 | tee "out/logs/run-el2-$(date +%s).log"
 
 # S-1 副核 bring-up 手跑（`SMP设计草案.md` §3/§4）：默认机型 + -smp 2——
 # PSCI CPU_ON 拉副核走 §3.2 十项 → 心跳握手 → `SMP ok ncores=2`。
@@ -451,7 +461,11 @@ run-el2: build
 # 一律单核——单核零漂移硬线（S-1 盒子边界）。默认机型（boot EL1）才有
 # HVC→PSCI 拦截；virtualization=on 下内核 BOOT_EL 门先行跳过（conduit 分型）。
 run-smp: build
-    {{QEMU}} {{MACH}} -smp 2 -kernel {{KERNEL}}
+    #!/bin/sh
+    set -e
+    set -o pipefail
+    mkdir -p out/logs
+    {{QEMU}} {{MACH}} -smp 2 -kernel {{KERNEL}} 2>&1 | tee "out/logs/run-smp-$(date +%s).log"
 
 # G-eco 入机侧开发：带 rootfs 启动——fw_cfg 具名文件递送（QEMU 非 Linux ELF
 # 直加载不走 Linux boot 协议：x0=0/RAM 无 DTB/-initrd 整体不加载，2026-10 实证；
@@ -516,6 +530,7 @@ run-smp: build
 run-rootfs: build
     #!/bin/sh
     set -e
+    set -o pipefail
     test -f rootfs.cpio || { echo "缺 rootfs.cpio（G-eco 编译侧产出）"; exit 1; }
     python3 tools/mkfat.py disk.img
     printf 'BERRYOSVBLK!' | dd of=disk.img conv=notrunc status=none
@@ -549,6 +564,7 @@ run-rootfs: build
         i=$((i+1))
     done
     [ -n "$FWCFG" ] || FWCFG="-fw_cfg name=opt/berry/rootfs,file=rootfs.cpio"
+    mkdir -p out/logs
     {{QEMU}} {{MACH}} -kernel {{KERNEL}} $FWCFG \
         -global virtio-mmio.force-legacy=false \
         -drive if=none,id=drv0,format=raw,file=disk.img,cache.writeback=off \
@@ -557,11 +573,16 @@ run-rootfs: build
         -device virtio-tablet-device,id=tab0 \
         -serial mon:stdio \
         -serial unix:/tmp/berryos-sim1.sock,server=on,wait=off \
-        -fw_cfg name=opt/berry/simdev,string=1
+        -fw_cfg name=opt/berry/simdev,string=1 \
+        2>&1 | tee "out/logs/run-rootfs-$(date +%s).log"
 
 run-release: docs-guard abi-check build-user
+    #!/bin/sh
+    set -e
+    set -o pipefail
     cargo build --release
-    {{QEMU}} {{MACH}} -kernel {{KERNEL_RELEASE}}
+    mkdir -p out/logs
+    {{QEMU}} {{MACH}} -kernel {{KERNEL_RELEASE}} 2>&1 | tee "out/logs/run-release-$(date +%s).log"
 
 clean:
     cargo clean
@@ -1232,7 +1253,11 @@ build-x86: docs-guard
 # 哨兵经内核恢复路径归位）。
 # 退出同 aarch64：Ctrl-A X。
 run-x86: build-x86
-    qemu-system-x86_64 -m 128M -nographic -no-reboot -kernel {{X86_KERNEL}}
+    #!/bin/sh
+    set -e
+    set -o pipefail
+    mkdir -p out/logs
+    qemu-system-x86_64 -m 128M -nographic -no-reboot -kernel {{X86_KERNEL}} 2>&1 | tee "out/logs/run-x86-$(date +%s).log"
 
 # x86 独立冒烟（7 标记恰一次；不并入主 smoke——ARM64 四跑零扰动；P7-x4
 # 收官起已挂 CI：ci.yml 两条 x86 步 = cargo 直调构建 + 本脚本）。
@@ -1711,9 +1736,12 @@ berry-vnc-lan-smoke: berry-build
 run-efi: image
     #!/bin/sh
     set -e
+    set -o pipefail
     python3 -c "import sys; sys.stdout.buffer.write(b'\xff'*(64<<20))" > {{BOOT_OUT}}/vars.fd
+    mkdir -p out/logs
     {{QEMU}} -machine virt -cpu cortex-a72 -m 128M -nographic \
         -pflash "{{AAVMF_CODE}}" -pflash {{BOOT_OUT}}/vars.fd \
         -drive if=none,file={{IMAGE}},format=raw,id=bb \
         -device qemu-xhci -device usb-storage,drive=bb \
-        -device ramfb
+        -device ramfb \
+        2>&1 | tee "out/logs/run-efi-$(date +%s).log"

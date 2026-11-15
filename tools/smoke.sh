@@ -284,6 +284,10 @@ QMP_DIR=""
 QMP_SOCK=""
 
 cleanup() {
+  # M1 失败必留：trap 传脚本退出码——非零（任一相失败/断言红）时串口与
+  # 辅助日志一律保留（与人记得设 SMOKE_KEEP_LOG=1 的旧行为并存，成功流
+  # 行为不变仍删）。
+  rc=${1:-0}
   if [ -n "$QEMU_PID" ] && kill -0 "$QEMU_PID" 2>/dev/null; then
     kill "$QEMU_PID" 2>/dev/null
     wait "$QEMU_PID" 2>/dev/null
@@ -310,7 +314,7 @@ cleanup() {
     kill "$SKT_PID" 2>/dev/null
     wait "$SKT_PID" 2>/dev/null
   fi
-  if [ -n "${SMOKE_KEEP_LOG:-}" ]; then
+  if [ -n "${SMOKE_KEEP_LOG:-}" ] || [ "$rc" -ne 0 ]; then
     for lg in "${LOGS[@]}"; do
       echo "smoke: 串口日志保留：$lg" >&2
     done
@@ -332,7 +336,7 @@ cleanup() {
     rm -rf "$SMOKE_LOCK"
   fi
 }
-trap cleanup EXIT
+trap 'cleanup $?' EXIT
 
 # 自托管互斥：echod/hostfwd 端口 18080-83 与本地开发、其他 smoke 会话
 # （runner CI 与并行验证同机）结构性冲突——EADDRINUSE 假红。mkdir 原子锁
