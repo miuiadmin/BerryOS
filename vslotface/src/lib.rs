@@ -216,3 +216,6 @@ pub fn demand_hit_at<V: SlotView + ?Sized>(regions: &V, va: usize) -> Option<usi
 pub fn snapshot_kind_of(kind: SlotKind) -> SlotKind {
     kind
 }
+
+/// asid→root 反查登记槽判序面（W3-Q60——register/lookup/deregister 三步）。
+pub mod droot;

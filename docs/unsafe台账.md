@@ -42,14 +42,14 @@
 <!-- UNSAFE-AUDIT:SUMMARY:BEGIN -->
 | 目录 | .rs 文件数 | 总行数 | unsafe 非空行 | 密度 |
 |------|-----------|--------|--------------|------|
-| kernel/ | 26 | 29238 | 2075 | 7.10% |
+| kernel/ | 26 | 29236 | 2075 | 7.10% |
 | mm/ | 7 | 2230 | 4 | 0.18% |
 | sched/ | 14 | 7277 | 1646 | 22.62% |
 | ipc/ | 0 | 0 | 0 | — |
 | arch/ | 22 | 7214 | 1044 | 14.47% |
-| **合计** | 69 | 45959 | 4769 | **10.38%** |
+| **合计** | 69 | 45957 | 4769 | **10.38%** |
 
-- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 36701，unsafe 非空行 4075，密度 11.10%（生产面口径）
+- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 36699，unsafe 非空行 4075，密度 11.10%（生产面口径）
 - 分类计数：页表 63 | 上下文切换 33 | MMIO 159 | 分配器 13 | 硬件原子 0 | 其它 747
 - 类型计数：block 873 | fn 138 | impl 2 | extern 2（另有类型签名位提及 14 处——只计不登记，防双计）
 - 对标：Android ~4%（unsafe 行占 Rust 总行比，Google 2025-11）；本表为跨度非空行口径（偏高估），见 §一
@@ -858,30 +858,30 @@
 | kernel/src/user.rs | 1707 | block | 其它 | unsafe { blob(&__user_pp, &__user_pp_end) } } /// soakload 永续载荷子 |
 | kernel/src/user.rs | 1716 | block | 其它 | unsafe { blob(&__user_soakload, &__user_soakload_end) } } /// be |
 | kernel/src/user.rs | 1725 | block | 其它 | unsafe { blob(&__user_latslp, &__user_latslp_end) } } /// svcmgr |
-| kernel/src/vmar.rs | 350 | block | 页表 | unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_ |
-| kernel/src/vmar.rs | 361 | block | 页表 | unsafe { slot.write_volatile(hal::page_descriptor(pa, attr, sh) |
-| kernel/src/vmar.rs | 367 | block | 页表 | unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_ |
-| kernel/src/vmar.rs | 443 | block | 页表 | unsafe { &mut *r.vmo }, r.vmo_off) }; // 幂等门：叶已在（前次供给）→ 零动作成功。 i |
-| kernel/src/vmar.rs | 448 | block | 页表 | unsafe { slot.read_volatile() } & 1 != 0 { return Ok(()); } } le |
-| kernel/src/vmar.rs | 468 | block | 页表 | unsafe { slot.write_volatile(hal::page_descriptor(pa, hal::ATTR_ |
-| kernel/src/vmar.rs | 472 | block | 页表 | unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_ |
-| kernel/src/vmar.rs | 517 | block | 页表 | unsafe { let r = &self.regions[idx]; (*r.vmo).untrack_map(r.vmo_ |
-| kernel/src/vmar.rs | 526 | block | 页表 | unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_ |
-| kernel/src/vmar.rs | 544 | block | 页表 | unsafe { let e = slot.read_volatile(); slot.write_volatile((e & |
-| kernel/src/vmar.rs | 551 | block | 页表 | unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_ |
-| kernel/src/vmar.rs | 610 | block | 页表 | unsafe { slot.read_volatile() }; if e & TABLE_BIT != 0 { Ok((e a |
-| kernel/src/vmar.rs | 617 | block | 页表 | unsafe { slot.write_volatile(hal::table_descriptor(pa)) }; Ok(pa |
-| kernel/src/vmar.rs | 624 | block | 页表 | unsafe { Self::table_of(self.l1_pa).add((va >> 30) & IDX_MASK) } |
-| kernel/src/vmar.rs | 625 | block | 页表 | unsafe { Self::table_of(l2_pa).add((va >> 21) & IDX_MASK) })?; O |
-| kernel/src/vmar.rs | 626 | block | 页表 | unsafe { Self::table_of(l3_pa).add((va >> 12) & IDX_MASK) }) } / |
-| kernel/src/vmar.rs | 633 | block | 页表 | unsafe { l1.add((va >> 30) & IDX_MASK).read_volatile() }; if e0 |
-| kernel/src/vmar.rs | 639 | block | 页表 | unsafe { l2.add((va >> 21) & IDX_MASK).read_volatile() }; if e1 |
-| kernel/src/vmar.rs | 644 | block | 页表 | unsafe { l3.add((va >> 12) & IDX_MASK) }) } /// 清一段区间的 L3 叶（逐槽写 |
-| kernel/src/vmar.rs | 654 | block | 页表 | unsafe { slot.write_volatile(0) }; } } } } // ---- asid → root V |
-| kernel/src/vmar.rs | 796 | block | 页表 | unsafe { (*r.vmo).untrack_demand(r.len) }; } } if !held { hal::k |
-| kernel/src/vmar.rs | 818 | block | 页表 | unsafe { l1.add((va >> 30) & IDX_MASK).read_volatile() }; if e0 |
-| kernel/src/vmar.rs | 823 | block | 页表 | unsafe { l2.add((va >> 21) & IDX_MASK).read_volatile() }; if e1 |
-| kernel/src/vmar.rs | 828 | block | 页表 | unsafe { l3.add((va >> 12) & IDX_MASK).read_volatile() }; (leaf |
+| kernel/src/vmar.rs | 351 | block | 页表 | unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_ |
+| kernel/src/vmar.rs | 362 | block | 页表 | unsafe { slot.write_volatile(hal::page_descriptor(pa, attr, sh) |
+| kernel/src/vmar.rs | 368 | block | 页表 | unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_ |
+| kernel/src/vmar.rs | 444 | block | 页表 | unsafe { &mut *r.vmo }, r.vmo_off) }; // 幂等门：叶已在（前次供给）→ 零动作成功。 i |
+| kernel/src/vmar.rs | 449 | block | 页表 | unsafe { slot.read_volatile() } & 1 != 0 { return Ok(()); } } le |
+| kernel/src/vmar.rs | 469 | block | 页表 | unsafe { slot.write_volatile(hal::page_descriptor(pa, hal::ATTR_ |
+| kernel/src/vmar.rs | 473 | block | 页表 | unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_ |
+| kernel/src/vmar.rs | 518 | block | 页表 | unsafe { let r = &self.regions[idx]; (*r.vmo).untrack_map(r.vmo_ |
+| kernel/src/vmar.rs | 527 | block | 页表 | unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_ |
+| kernel/src/vmar.rs | 545 | block | 页表 | unsafe { let e = slot.read_volatile(); slot.write_volatile((e & |
+| kernel/src/vmar.rs | 552 | block | 页表 | unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_ |
+| kernel/src/vmar.rs | 611 | block | 页表 | unsafe { slot.read_volatile() }; if e & TABLE_BIT != 0 { Ok((e a |
+| kernel/src/vmar.rs | 618 | block | 页表 | unsafe { slot.write_volatile(hal::table_descriptor(pa)) }; Ok(pa |
+| kernel/src/vmar.rs | 625 | block | 页表 | unsafe { Self::table_of(self.l1_pa).add((va >> 30) & IDX_MASK) } |
+| kernel/src/vmar.rs | 626 | block | 页表 | unsafe { Self::table_of(l2_pa).add((va >> 21) & IDX_MASK) })?; O |
+| kernel/src/vmar.rs | 627 | block | 页表 | unsafe { Self::table_of(l3_pa).add((va >> 12) & IDX_MASK) }) } / |
+| kernel/src/vmar.rs | 634 | block | 页表 | unsafe { l1.add((va >> 30) & IDX_MASK).read_volatile() }; if e0 |
+| kernel/src/vmar.rs | 640 | block | 页表 | unsafe { l2.add((va >> 21) & IDX_MASK).read_volatile() }; if e1 |
+| kernel/src/vmar.rs | 645 | block | 页表 | unsafe { l3.add((va >> 12) & IDX_MASK) }) } /// 清一段区间的 L3 叶（逐槽写 |
+| kernel/src/vmar.rs | 655 | block | 页表 | unsafe { slot.write_volatile(0) }; } } } } // ---- asid → root V |
+| kernel/src/vmar.rs | 794 | block | 页表 | unsafe { (*r.vmo).untrack_demand(r.len) }; } } if !held { hal::k |
+| kernel/src/vmar.rs | 816 | block | 页表 | unsafe { l1.add((va >> 30) & IDX_MASK).read_volatile() }; if e0 |
+| kernel/src/vmar.rs | 821 | block | 页表 | unsafe { l2.add((va >> 21) & IDX_MASK).read_volatile() }; if e1 |
+| kernel/src/vmar.rs | 826 | block | 页表 | unsafe { l3.add((va >> 12) & IDX_MASK).read_volatile() }; (leaf |
 | kernel/src/vmo.rs | 178 | block | 其它 | unsafe { core::ptr::copy_nonoverlapping( phys_to_virt(pa + off) |
 | kernel/src/vmo.rs | 201 | block | 其它 | unsafe { core::ptr::copy_nonoverlapping( data.as_ptr().add(pos - |
 | kernel/src/vmo.rs | 288 | block | 其它 | unsafe { core::ptr::write_bytes(phys_to_virt(pa) as *mut u8, 0, |
