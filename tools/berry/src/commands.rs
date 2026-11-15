@@ -215,8 +215,7 @@ pub fn shot(args: ShotArgs) -> Result<()> {
         })
     });
     let mut run = RunDir::create("shot", args.keep)?;
-    let vars = run.file("vars.fd");
-    qemu::create_vars(&vars, 64)?;
+    let vars = qemu::vars_store(run.path(), 64)?;
     let serial = run.file("serial.log");
     let log = run.file("qemu.log");
     let (vnc, qmp_ep) = endpoints(&run);
@@ -2256,24 +2255,40 @@ pub(crate) fn find_run(id: Option<&str>) -> Result<PathBuf> {
         return Err(BerryError::env(format!("run not found: {}", p.display())));
     }
     let root = run_dir::home().join("run");
-    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    let mut best_vnc: Option<(std::time::SystemTime, PathBuf)> = None;
+    let mut best_any: Option<(std::time::SystemTime, PathBuf)> = None;
     if let Ok(rd) = std::fs::read_dir(&root) {
         for e in rd.flatten() {
             let p = e.path();
-            if !p.is_dir() || !vnc_endpoint(&p).is_ok() {
+            // 合法 run 目录 = meta.json 在（create 即写）。M2 第 11 步前过滤
+            // 是 vnc 端点在席——run/shot 类 run 目录（无 VNC 端点文件）永远
+            // 进不了候选，`berry logs` 无参必报 no running device。
+            if !p.is_dir() || !p.join("meta.json").is_file() {
                 continue;
             }
             let t = e
                 .metadata()
                 .and_then(|m| m.modified())
                 .unwrap_or(std::time::UNIX_EPOCH);
-            if best.as_ref().is_none_or(|(bt, _)| t > *bt) {
-                best = Some((t, p));
+            let has_vnc = vnc_endpoint(&p).is_ok();
+            if has_vnc && best_vnc.as_ref().is_none_or(|(bt, _)| t > *bt) {
+                best_vnc = Some((t, p.clone()));
+            }
+            if best_any.as_ref().is_none_or(|(bt, _)| t > *bt) {
+                best_any = Some((t, p));
             }
         }
     }
-    best.map(|(_, p)| p)
-        .ok_or_else(|| BerryError::env("no running device").with_hint("start one with `berry shell`"))
+    // 活设备（VNC 端点）优先；无 VNC run 时回落最新 run 目录——logs 等读
+    // 面直接可用（文件在即读），VNC 类命令对回落 run 在 vnc_endpoint 报
+    // 明确的 no VNC endpoint。
+    best_vnc
+        .or(best_any)
+        .map(|(_, p)| p)
+        .ok_or_else(|| {
+            BerryError::env("no run directory found")
+                .with_hint("start one with `berry shell` / `berry run`")
+        })
 }
 
 pub(crate) fn vnc_endpoint(run: &Path) -> Result<Endpoint> {

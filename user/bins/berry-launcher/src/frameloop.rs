@@ -6,14 +6,19 @@
 //!
 //! ```text
 //! wake 起振 → loop {
-//!   pump_input(上帧 expected) → Msg 分发（pager.on_msg→翻页 rehang /
-//!     Click→槽命中映射→APP_SPAWN 门控桩）
+//!   pump_input_at(now)（C′：从 now 推下一拍做重采样目标——禁上一帧
+//!     expected；press_react/widget_react 标精确 damage → 有事件才内建
+//!     wake——A′：damage 非空保矩形，首触不落 FULL 兜底）
+//!   → Msg 分发（pager.on_msg→翻页 rehang / Click→槽命中映射→只记账
+//!     pending_spawn——B′：阻塞 APP_SPAWN RPC 后置，不挡渲染）
 //!   → pager.tick（snap 动画步进）→ render_frame（anim→relayout→paint
 //!     →damage 出帧）
 //!   → [drew] 光栅进帧 VMO → SUBMIT（FULL xor K；fresh READ dup 别名
 //!     ——send 即 take；rate_hint/expected 直传）→ FRAME_CALLBACK（断
 //!     PRESENTED）→ note_presented（credits 真值重同步）→ RELEASE（归还
 //!     别名即关）→ vote（票面变化才发）
+//!   → pending_spawn 执行（B′：呈现完成后才跑阻塞 spawn RPC——按压
+//!     反馈帧已上屏，动作不顶穿视觉）
 //!   → selftest 状态机（LAUNCH ok / PAGE ok n=2 标记——字节精确）
 //!   → wait_many n=1 [wm READABLE] + deadline = min(next_wakeup, now+10s)
 //! }
@@ -50,9 +55,11 @@
 //! 速度环远超 500px/s fling 阈，双判据同向）各落定 → `PAGE ok n=2`。
 //!
 //! **段④ 点击面（真实输入 → APP_SPAWN）**：`Msg::Click` 槽命中 →
-//! `app_cli_h()!=0` 时真发 APP_SPAWN；**首例 ok 回执恰一次**打 `CLICK
-//! ok n=1`——**仅当 `smoke` 为真**（main 经 GUI8.SMK 精确载荷判定）。
-//! 失败回执维持 eprintln 诊断、零标记——spawn 是旁路动作，不打断帧循环。
+//! `app_cli_h()!=0` 时记账 pending（B′ 后置）——呈现完成后（RELEASE
+//! 归还后、稳态 wait_many 前）才真发 APP_SPAWN；**首例 ok 回执恰一次**
+//! 打 `CLICK ok n=1`——**仅当 `smoke` 为真**（main 经 GUI8.SMK 精确载荷
+//! 判定）。失败回执维持 eprintln 诊断、零标记——spawn 是旁路动作，不打
+//! 断帧循环。
 //! **正常交互 boot（smoke=false）点击照常 spawn，但 CLICK 行与 click
 //! ready 行都不打**（冻结相 app_cli_h()==0 更早退：零 RPC 零打印）。
 //! `launcher: click ready` 非标记行 = 宿主注入的**状态谓词**门（规则/07
@@ -261,7 +268,6 @@ pub fn run(
     ui.set_vsync(VSYNC_NS, 0);
     ui.wake(now());
 
-    let mut last_expected: u64 = 0; // pump 重采样 target（上帧 expected 轨）
     let mut last_vote: Option<VoteBallot> = None; // 票面变化才发
     let mut presented: u64 = 0; // FRAME_CALLBACK 过链计数（自测基线）
     let mut launched = false; // LAUNCH ok 恰一次
@@ -322,7 +328,10 @@ pub fn run(
 
         // —— 段④ 真实输入：先收上一轮 INPUT_POLL 应答，再挂下一轮 poll。
         //    非阻塞排空（-EAGAIN = 事件尚未到，poll 仍在服务端阻塞）；事件
-        //    逐条 push 进引擎，与合成注入共用 push_pointer 口。
+        //    逐条 push 进引擎，与合成注入共用 push_pointer 口。此处不
+        //    wake——A′（触摸响应设计 v1.0）：起振后置到 pump 之后
+        //    （pump_input_at 内建），先让 press_react 标精确矩形再判
+        //    FULL 兜底，首触 damage 不被整屏语义吞掉。
         if hi != 0 && input_pending {
             let mut nb = input_buf.len();
             let mut nh = input_hs.len();
@@ -360,7 +369,6 @@ pub fn run(
                                 }
                             }
                         }
-                        ui.wake(now());
                     }
                     Some(Err(gp::ST_EAGAIN)) => {
                         if !input_logged {
@@ -391,7 +399,14 @@ pub fn run(
         }
 
         // —— 输入泵 + Msg 分发（合成注入与真实输入同口）——
-        let msgs = ui.pump_input(last_expected);
+        //    C′：pump_input_at 从 t_now 推下一拍做重采样目标（上一帧
+        //    expected 轨退役——稳态陈旧一个 period、idle 长睡后是远古
+        //    值，跨度帽 >20ms 直接拒采）；A′：有事件才内建 wake，
+        //    press_react 的精确按压矩形先落 damage 再判 FULL 兜底。
+        let msgs = ui.pump_input_at(t_now);
+        // B′：Click 的 spawn 只记账不执行——阻塞 RPC 后置到呈现完成后
+        //    （同批多击取最新覆盖；旧语义本就幂等重拉）。
+        let mut pending_spawn: Option<PendingSpawn> = None;
         for m in msgs.iter() {
             match m {
                 Msg::Click { node } => {
@@ -403,8 +418,11 @@ pub fn run(
                         &mut power_armed,
                         t_now,
                         &mut recents_app,
+                        &mut pending_spawn,
                     ) {
-                        on_click(*node, &desktop, &mut spawn_ok, smoke, &mut recents_app);
+                        if let Some(app) = spawn_request_for(*node, &desktop) {
+                            pending_spawn = Some(PendingSpawn::Slot(app));
+                        }
                     }
                 }
                 _ => {
@@ -426,7 +444,6 @@ pub fn run(
         // —— 渲染（跳过帧不提交——damage 空集零 SUBMIT 零 RPC）——
         let mut enc = CommandEncoder::new();
         let out = ui.render_frame(t_now, scratch, &mut enc);
-        last_expected = out.expected_present_ns;
         if out.drew {
             let dmg = out.damage;
             // K>0 xor FULL 立法兜底：count==0 非空集视同整帧。
@@ -543,6 +560,25 @@ pub fn run(
             let m = enc_req(gp::encode_present_req(&mut req, &vreq));
             expect_ok(hw, &req[..m], &[], &mut rep, &mut rhs, "vote");
             last_vote = Some(ballot);
+        }
+
+        // —— B′：后置 spawn 执行（触摸响应设计 v1.0：视觉优先于动作）。
+        //    本迭代按压反馈帧已 SUBMIT+presented（blit-at-SUBMIT 应答
+        //    即 latch），此刻才跑阻塞 APP_SPAWN RPC——首触反馈不再被
+        //    几十 ms 级回执顶穿预算。回执记账 / `CLICK ok n=1` 恰一次
+        //    门 / 失败 eprintln 诊断面与分发处直调完全一致（只挪时序
+        //    不改语义）。spawn 成功后新应用建窗 → wmd 表变更 → 下轮
+        //    迭代自然出反馈面。
+        if let Some(pending) = pending_spawn.take() {
+            match pending {
+                PendingSpawn::Slot(app) => {
+                    if spawn_by_id_inner(app.id_bytes(), smoke, &mut spawn_ok) {
+                        // 多任务键记忆：spawn 成功才记账（失败不占槽）。
+                        recents_app = Some(app);
+                    }
+                }
+                PendingSpawn::Recents(app) => spawn_by_id(&app),
+            }
         }
 
         // —— 自测状态机（boot 一次性；标记字节精确）——
@@ -768,6 +804,9 @@ fn set_power_face(ui: &mut UiMain, nav: &crate::desktop::NavNodes, armed: bool) 
 ///   再击 = 内核 `power_off`（0x88 PSCI SYSTEM_OFF，**成功不归**——整机
 ///   退出）；失败（conduit 死 / 固件拒）eprintln 诊断 + 回常态不 fail
 ///   （桌面常驻义务优先）；窗过期复位（循环头）。
+/// - **多任务**：重拉记账 `pending`（B′ 后置——spawn RPC 排到呈现完成
+///   后；本函数零 RPC）。
+#[allow(clippy::too_many_arguments)]
 fn on_nav_click(
     node: NodeId,
     ui: &mut UiMain,
@@ -775,6 +814,7 @@ fn on_nav_click(
     power_armed: &mut Option<u64>,
     t_now: u64,
     recents: &mut Option<RecentsApp>,
+    pending: &mut Option<PendingSpawn>,
 ) -> bool {
     let nav = desktop.nav;
     let snap_page = |ui: &mut UiMain, desktop: &mut Desktop, target: u8| {
@@ -791,10 +831,11 @@ fn on_nav_click(
         true
     } else if node == nav.recents {
         // 多任务 v1：重新拉起最近 spawn 的应用（真重拉非死键）；无历史
-        // = 静默无操作（桌面常驻义务）。整体取出再 spawn——避免 spawn
-        // RPC 窗内再借用 desktop。
+        // = 静默无操作（桌面常驻义务）。B′：整体取出后记账 pending——
+        // spawn RPC 后置到呈现完成后执行（取出即消费：重复击键不重拉
+        // 旧目标）。
         if let Some(app) = recents.take() {
-            spawn_by_id(&app);
+            *pending = Some(PendingSpawn::Recents(app));
         }
         true
     } else if node == nav.home {
@@ -830,13 +871,16 @@ fn on_nav_click(
     }
 }
 
-/// CLICK 面（修约 1 / 段④）：槽命中映射（cell/label/icon 三节点皆归本
-/// 格——最深叶命中面）→ 注册表条目 → `app_cli_h()==0`（冻结相 extras 恰
-/// [wm]）静默跳过零 RPC 零打印；在场 = APP_SPAWN 真跑（**正常 boot 与
-/// 冒烟 boot 同路**）。**首例 ok 回执**仅在 `smoke` 为真时打 `CLICK ok
-/// n=1`（恰一次，`spawn_ok` 计数门——后续成功点击静默，避免重启/连点
-/// 制造重复标记）；失败回执维持 eprintln 诊断（spawn 是旁路动作，不打
-/// 断帧循环、不 fail、**不产标记**）。
+/// CLICK 面（修约 1 / 段④ + 触摸响应设计 v1.0 B′）：槽命中映射
+/// （cell/label/icon 三节点皆归本格——最深叶命中面）→ 注册表条目 →
+/// **只记账 [`PendingSpawn`]**（spawn RPC 后置到呈现完成后执行——视觉
+/// 优先于动作）；`app_cli_h()==0`（冻结相 extras 恰 [wm]）的结构性缺席
+/// 由执行段 `spawn_by_id_inner` 静默跳过（零 RPC 零打印），在场 =
+/// APP_SPAWN 真跑（**正常 boot 与冒烟 boot 同路**）。**首例 ok 回执**仅
+/// 在 `smoke` 为真时打 `CLICK ok n=1`（恰一次，`spawn_ok` 计数门——
+/// 后续成功点击静默，避免重启/连点制造重复标记）；失败回执维持
+/// eprintln 诊断（spawn 是旁路动作，不打断帧循环、不 fail、**不产
+/// 标记**）。
 /// 多任务键记忆体：最近一次 spawn 成功的应用 id（二进制拷贝——注册表
 /// 条目生命周期不随帧循环，spawn 窗外安全）。
 pub struct RecentsApp {
@@ -844,7 +888,33 @@ pub struct RecentsApp {
     pub id_len: u8,
 }
 
-/// 按 id spawn（on_click 与多任务键重拉共用）。回执记账返回 ok 与否。
+impl RecentsApp {
+    /// 从注册表条目 id 字节建记忆体（≤24 截断——spawn 面协议域）。
+    fn from_bytes(src: &[u8]) -> Self {
+        let mut id = [0u8; 24];
+        let n = src.len().min(24);
+        id[..n].copy_from_slice(&src[..n]);
+        RecentsApp { id, id_len: n as u8 }
+    }
+
+    /// id 字节切片（spawn RPC 载荷面）。
+    fn id_bytes(&self) -> &[u8] {
+        &self.id[..self.id_len as usize]
+    }
+}
+
+/// 后置 spawn 待办（B′：Click 分发处只记账，呈现完成后执行——两风味
+/// 的回执记账 / 标记门 / 失败诊断面与旧分发处直调逐字一致）。
+enum PendingSpawn {
+    /// app 格点击：真 `smoke` 门 + `spawn_ok` 记账（`CLICK ok n=1` 恰
+    /// 一次面）；成功后记多任务键记忆。
+    Slot(RecentsApp),
+    /// 多任务键重拉：静默路径（无标记面）；失败 eprintln 诊断。
+    Recents(RecentsApp),
+}
+
+/// 按 id spawn（B′ 后置段两风味共用：Slot 直调 / Recents 经
+/// `spawn_by_id`）。回执记账返回 ok 与否。
 fn spawn_by_id_inner(id: &[u8], smoke: bool, spawn_ok: &mut u32) -> bool {
     let h = app_cli_h();
     if h == 0 {
@@ -871,32 +941,29 @@ fn spawn_by_id_inner(id: &[u8], smoke: bool, spawn_ok: &mut u32) -> bool {
     }
 }
 
-/// 多任务键重拉入口（无 smoke 标记面——正常交互路径）。
+/// 多任务键重拉入口（无 smoke 标记面——正常交互路径；B′ 后置段的
+/// `PendingSpawn::Recents` 执行体）。
 fn spawn_by_id(id: &RecentsApp) {
     let mut n = 0u32;
-    if !spawn_by_id_inner(&id.id[..id.id_len as usize], false, &mut n) {
+    if !spawn_by_id_inner(id.id_bytes(), false, &mut n) {
         eprintln!("launcher: recents respawn failed");
     }
 }
 
-fn on_click(node: NodeId, desktop: &Desktop, spawn_ok: &mut u32, smoke: bool, recents: &mut Option<RecentsApp>) {
+/// Click 槽命中 → 待 spawn 的注册表条目 id（B′：**只查表不执行**——
+/// 执行后置到呈现完成后的 pending_spawn 段）。cell/label/icon 三节点
+/// 皆归本格（最深叶命中面）；壁纸/状态栏/圆点/容器白区 = 无格
+/// （None）；占位/幽灵格不可 spawn（None）；注册表条目缺席 = None。
+fn spawn_request_for(node: NodeId, desktop: &Desktop) -> Option<RecentsApp> {
     let slot = desktop
         .slots
         .iter()
         .flatten()
         .chain(desktop.dock.iter())
-        .find(|s| s.cell == node || s.label_node == node || s.icon == Some(node));
-    let Some(slot) = slot else { return }; // 壁纸/状态栏/圆点/容器白区 = 无格
-    let Some(idx) = slot.app else { return }; // 占位/幽灵格不可 spawn
-    let Some(entry) = icons::registry().get(idx) else { return };
-    if spawn_by_id_inner(entry.id_bytes(), smoke, spawn_ok) {
-        // 多任务键记忆：spawn 成功才记账（失败不占 recents 槽）。
-        let mut id = [0u8; 24];
-        let src = entry.id_bytes();
-        let n = src.len().min(24);
-        id[..n].copy_from_slice(&src[..n]);
-        *recents = Some(RecentsApp { id, id_len: n as u8 });
-    }
+        .find(|s| s.cell == node || s.label_node == node || s.icon == Some(node))?;
+    let idx = slot.app?;
+    let entry = icons::registry().get(idx)?;
+    Some(RecentsApp::from_bytes(entry.id_bytes()))
 }
 
 // ---- 标记门纯谓词测试（同 layout_io：aarch64-musl 目标可编译，宿主

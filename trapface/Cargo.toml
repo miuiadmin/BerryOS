@@ -1,0 +1,15 @@
+[package]
+name = "berry-trapface"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+
+[lib]
+name = "berry_trapface"
+path = "src/lib.rs"
+
+# 无外部依赖：AArch64 异常分类面（ESR EC 域分类/FAR 归类/ec_name 定名
+# 表）纯函数面（host 单测走 `cfg(test)` 链 std，形态抄 berry-lkface /
+# berry-evface）。berry-hal-aarch64 trap.rs 消费（EC 词表与定名表单源
+# 迁此，HAL re-export——exception_sync 物理臂留壳，lkface 迁 rank 表
+# 同款纪律）。

@@ -51,6 +51,12 @@ berry-safeck = { path = "../safeck" }
 # 三态/GC 臂/溢出键路由）——本 crate dpg.rs 判定段消费（原子槽机械与
 # wake 调用留壳）。
 berry-dpgface = { path = "../dpgface" }
+# W3-Q39：heap size-class/order 路由算术单源在 berry-heapface（host 可测
+# 钉板）；本 crate heap.rs alloc/dealloc 两臂消费 route/dealloc_route。
+berry-heapface = { path = "../heapface" }
+# W3-Q85：rootfs 装载门纯面单源（fwcfg 多卷发现/v0 init_blob 域门/
+# isegs Σ 帽/拼装对账四判定门 host 钉板；main.rs 消费，物理臂留壳）。
+berry-rootface = { path = "../rootface" }
 
 [features]
 # G3-3 lockdep：`cargo build --features lockdep` 出检测镜像（smoke-lockdep 面

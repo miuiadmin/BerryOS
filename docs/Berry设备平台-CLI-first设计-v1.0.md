@@ -517,7 +517,7 @@ enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
 | `phone16` | 480×854 | 可用 |
 | `phone20` | 540×1200 | **已验证**：defer+buddy 连续 fb + ramfb 重编程 |
 | `tablet` | 800×1280 | **已验证**：defer+buddy 连续 fb + ramfb 重编程 |
-| `desktop` | 1080×1920 | 已落（`just desktop`；fb 8.3MB 同走 defer+buddy 路，2026-11-15 曾因客机 a11y 容量回归恒黑、修复在 [wip/boot-events-knife6]——见 [.agents/research/2026-11-15-1080p恒黑根因会审.md](../.agents/research/2026-11-15-1080p恒黑根因会审.md)） |
+| `desktop` | 1080×1920 | 已落（`just desktop`；fb 8.3MB 同走 defer+buddy 路，2026-11-15 曾因客机 a11y 容量回归恒黑、修复在 [wip/boot-events-knife6]——见 .agents/research/2026-11-15-1080p恒黑根因会审.md（未入库，行内注）） |
 
 > 「已验证/可用」是**验证登记**不是分配能力上限：超 GOP 缓冲（1.92MB）的档全走同一条 defer+buddy 路（按需 2^n 连续页，`MAX_ORDER=13`=32MiB）。勿再从本表推断「分配器帽」——2026-11-15 的误判判例已入会审文档。
 

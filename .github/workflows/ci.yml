@@ -408,15 +408,63 @@ jobs:
         run: just build
 
       # netns 隔离与 smoke job 同因（ci 上方 ARM64 冒烟步注）：全相含 RX 相
-      # echod/hostfwd 18080-83，与宿主常驻容器结构性冲突。结果包落
+      # echod/hostfwd 18080-83，与宿主常驻容器结构性冲突。**mount ns +
+      # dns-stub（2026-11-13 run 43306506456 attempt 2 实证）**：bcts 是
+      # CI 上唯一 SMOKE_PHASES=all 全相步，SLIRP 虚拟 DNS 10.0.2.3 转发
+      # 目标 = 宿主 resolv.conf 外网 NS（223.5.5.5），netns 内无外网路由
+      # → bsh EPL⑤ getaddrinfo("localhost") 慢路超时 park（串口签名
+      # `bsh: epl: gai dns r=-2 res=true`）→ 其后 RPC 族 12 标记全灭
+      # （FAT…M3DEMO），600s FAIL。修 = mount ns 内 bind-mount stub
+      # resolv.conf（nameserver 127.0.0.1）+ ns 内起 tools/dns-stub.py
+      # 应答器（A → 127.0.0.1，对齐 smoke 契约 DNS_QUERY("localhost")）；
+      # 生效证据 = 串口 `eco: dns reply` + `EPL ok n=8`。结果包落
       # /tmp 随机目录（bcts-run.sh mktemp）；红面拷进工作区留 artifact，
       # 绿面不留（verdict 恒 PASS 无对账价值）。
       - name: BCTS 全量回放（八跑全相 + 90 标记对账 + abi-check host 门禁）
         id: bcts
         run: |
           rc=0
-          unshare -Urn sh -c 'ip link set lo up && exec just bcts' > bcts-ci.log 2>&1 || rc=$?
+          # run 43461288210 实证（RUNNER_TEMP 修后）：mount/stub 均成功、
+          # guest boot 32/32 + rootfs 45/45 过，但 RX 相零 eco/EPL 标记、
+          # evsclient ×10 超时——SLIRP→stub 段是否真通无串口可证（artifact
+          # 配额撞顶结果包未传）。故：①预检——ns 内解析非常规名（避
+          # /etc/hosts 短路，强制走 DNS→stub），5 秒出绿/红，不再盲烧
+          # 10 分钟；②失败路径转储 guest 串口尾（smoke mktemp 落
+          # RUNNER_TEMP 共享 FS，ns 退出后仍在）——bsh park 签名直接进
+          # job log，不依赖 artifact。
+          unshare -Urnm sh -c '
+            set -e
+            ip link set lo up
+            d="${RUNNER_TEMP:-/tmp}/resolv.ci.$$"
+            printf "nameserver 127.0.0.1\n" > "$d"
+            mount --bind "$d" /etc/resolv.conf
+            python3 tools/dns-stub.py &
+            sleep 0.5
+            python3 -c "import socket; print(\"bcts-dns preflight ok:\", socket.getaddrinfo(\"berryos-dns-preflight\", 80)[0][4])"
+            # hostfwd 入向段预检（#290 REJECT 修面）：腿 A = ns loopback/
+            # 18080 bind/回显环回（echod 环境锚）；腿 B = 最小 QEMU -S
+            # 冻结态挂 smoke.sh 同款 netdev，宿主侧 connect 18081-83 探活
+            # （SLIRP hostfwd 监听面与 guest 状态解耦——accept 即活证）。
+            # evsclient 超时红面由此 5s 钉死在 QEMU/SLIRP 侧或环境侧，
+            # 不再盲烧 16 分钟全相。红即 loud 退（10=A/20=B），定谳行
+            # 直接进 job log；判据单源 tools/bcts-hostfwdprobe.py
+            # （--selftest 挂 test-host）。
+            python3 tools/bcts-hostfwdprobe.py
+            exec just bcts' > bcts-ci.log 2>&1 || rc=$?
           cat bcts-ci.log
+          # park 签名自动分类（#257 后继件）：berryos-smoke.* 逐件定谳
+          # （dns_park / churn_starve / net_live / clean_boot）——替代裸
+          # tail 盲扫，reviewer/worker 免手工归因；判据单源
+          # tools/bcts-parkprobe.py（--selftest 挂 test-host）。
+          if [ "$rc" -ne 0 ]; then
+            for f in $(ls -t "${TMPDIR:-/tmp}"/berryos-smoke.* 2>/dev/null | head -2); do
+              echo "---- $(basename "$f") 尾 30 行（guest park 签名取证）----"
+              tail -n 30 "$f"
+            done
+            python3 tools/bcts-parkprobe.py \
+              $(ls -t "${TMPDIR:-/tmp}"/berryos-smoke.* 2>/dev/null | head -2) \
+              || true
+          fi
           if [ "$rc" -ne 0 ]; then
             rd=$(ls -dt "${TMPDIR:-/tmp}"/berryos-bcts-result.* 2>/dev/null | head -1)
             if [ -n "${rd:-}" ] && [ -f "$rd/bcts-result.txt" ]; then
@@ -439,6 +487,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: bcts-result
+          retention-days: 3
           path: |
             bcts-ci.log
             bcts-artifact

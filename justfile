@@ -165,10 +165,13 @@ build-user:
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/appquiet/Cargo.toml \
         --target aarch64-unknown-linux-musl
-    # GUI-8 视觉补全：appstub 共用静默壳（零 argv0 断言/console=false/0 退出）
-    # 复制成 8 个占位 app 的 bin/<name>；真 app 内容后续替换。
-    CARGO_TARGET_DIR=cargo-target cargo build --release --manifest-path bins/appstub/Cargo.toml \
-        --target aarch64-unknown-none
+    # GUI-8 视觉补全退役（刀 A 应用槽合流）：appstub ELF 构建面退役——
+    # 七槽（SETTINGS/FILES/PHOTOS/CAMERA/CONTACTS/MMS/BROWSER）全数换真
+    # crate（下段），零 bin/ 消费者；appstub 仅存占位 fallback 职能 =
+    # apps/<ID>/{icons,views} 资产兜底源（contacts/settings 两 crate 无
+    # 自有资产目录，下段 if 兜底消费）+ genohicons.py 图标再生成输出位。
+    # ELF 壳本体（bins/appstub/src）在册保留——后续新增槽未落 crate 前
+    # 的应急占位（重建接线 = 恢复本构建行 + cp 到 staging bin/）。
     # C-2a：uutils coreutils 批（VM 草案 §C-2a）——家族 workspace bins/uu/
     # 单次构建 12 命令（=0.12.0 锁步，MIT，上游逐字不动；薄 harness =
     # CRT0 锚 + uumain 直传——`#[uucore::main]` proc 宏已统一改写 -> i32）。
@@ -325,14 +328,37 @@ build-user:
     cp bins/apptomb/manifest.toml userbins/app-stage/APPTOMB/
     cp cargo-target/aarch64-unknown-linux-musl/release/apptomb userbins/app-stage/APPTOMB/bin/
     python3 ../tools/mkapp.py userbins/app/APPTOMB.bap userbins/app-stage/APPTOMB
-    # GUI-8 视觉补全：7 个占位 app（图标/入口填充；内容未实现）。
+    # 波 4 先行批（W4-RECON §5.4 改动点 1）+ 刀 A SETTINGS 接线：七应用
+    # crate 接线——appstub 秒退壳退役，APPTOMB :315-327 食谱（musl +
+    # berry-ld 绝对路径 RUSTFLAGS → staging → mkapp 五道门禁）。资产单源
+    # = crate 内 icons/views（contacts/settings 批资产留 appstub——两
+    # crate 无资产目录，W4-IMPL-CONTACTS §1.1 口径，if 兜底两形）。SETTINGS
+    # 体 = 主树 settings crate（9035af061 垂直切片，A-RECON §二裁决：交互
+    # 帧循环 + crate 级全形态 manifest，弃 wave3 settings-app 静态手绘页）。
+    # 常驻 park 形入镜像的前置 = svcmgr 裁决 B（boot 批 [ui] 入册不拉起 +
+    # `app <id> gui deferred` 行——W4-RECON §1.7 铁律），同批已落；smoke
+    # APP/APPUI 计数零漂（n=9/n=8 仍打，语义随裁决 B 两支化），PS 行数随
+    # appdemo 不再 boot 拉起而 -1（前缀断言面零扰动）——W4-VERIFY.md 落账。
+    for c in settings files photos camera contacts messages browser; do
+        CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+            cargo build --release --manifest-path "bins/$c/Cargo.toml" \
+            --target aarch64-unknown-linux-musl
+    done
     for spec in SETTINGS:settings FILES:files PHOTOS:photos CAMERA:camera CONTACTS:contacts MMS:messages BROWSER:browser; do
-        id=${spec%%:*}; bin=${spec##*:}
+        id=${spec%%:*}; c=${spec##*:}
         mkdir -p "userbins/app-stage/$id/bin"
-        cp "bins/appstub/apps/$id/manifest.toml" "userbins/app-stage/$id/"
-        cp cargo-target/aarch64-unknown-none/release/appstub "userbins/app-stage/$id/bin/$bin"
-        cp -R "bins/appstub/apps/$id/icons" "userbins/app-stage/$id/"
-        cp -R "bins/appstub/apps/$id/views" "userbins/app-stage/$id/"
+        cp "bins/$c/manifest.toml" "userbins/app-stage/$id/"
+        cp "cargo-target/aarch64-unknown-linux-musl/release/$c" "userbins/app-stage/$id/bin/"
+        if [ -d "bins/$c/icons" ]; then
+            cp -R "bins/$c/icons" "userbins/app-stage/$id/"
+        else
+            cp -R "bins/appstub/apps/$id/icons" "userbins/app-stage/$id/"
+        fi
+        if [ -d "bins/$c/views" ]; then
+            cp -R "bins/$c/views" "userbins/app-stage/$id/"
+        else
+            cp -R "bins/appstub/apps/$id/views" "userbins/app-stage/$id/"
+        fi
         python3 ../tools/mkapp.py "userbins/app/$id.bap" "userbins/app-stage/$id"
     done
     # G-eco-c/d + app-0：rootfs.cpio（hello + stdhello + hexyl + bsh + fail + bench1 + fsmgr + vprobe + vblk + vnet ELF 本体——装载走
@@ -1102,6 +1128,26 @@ test-host:
     # 全仓扫描）分层——同 gen_abi --check/--selftest 双面纪律。改
     # shvarcheck.py 检测逻辑必跑。
     python3 tools/shvarcheck.py --selftest
+    # W1 接线（独立冒烟族零接线判例同族）：smoke-lockdep / smoke-dpgsoak /
+    # soak-g3 三件独立关卡脚本 selftest 挂载——前置拒面（用法/缺件/marker
+    # 串/分钟数/QEMU 缺件）+ lockdep 假 QEMU 相 1 判定引擎（计数/行序红绿
+    # 两向），零真 QEMU 零端口零真仓副作用（脚本副本沙箱）。此前有
+    # selftest 零自动执法 = 拒面或相 1 判定面改坏无机器咬合。改三件脚本
+    # 前置拒面或判定面必跑。
+    {{BASH}} tools/smoke-lockdep.sh --selftest
+    {{BASH}} tools/smoke-dpgsoak.sh --selftest
+    {{BASH}} tools/soak-g3.sh --selftest
+    # W1 接线（D-审计 §4.3「从未跑过」面）：guifbd lib 单测 13 测
+    # （B1-b/c vgpu 后端纯面——后端分派/INDIRECT 链/ATTACH 段/提交序）入
+    # host 台账。独立小工作区（空 [workspace] escape），berry-libc
+    # 按 target_os=linux 门控故 host 编译零 libc shim 连接；此前仅
+    # B1-b 落地时手动跑过，无 just/CI 接线 = 改坏无机器咬合。
+    cargo test --manifest-path user/bins/guifbd/Cargo.toml --target {{host}}
+    # W1 接线（D-审计 §4.2 尾「无 just/CI 接线」面）：tools/berry 设备壳
+    # host 单测 121 测（VNC/VeNCrypt/DES/QR/网页壳状态机等纯面——README
+    # §测试原只记手动咒语）入 host 台账。独立小工作区，host 纯面零
+    # 交叉编译；此前手动 cargo test 从未接线 = 面改坏无机器咬合。
+    cargo test --manifest-path tools/berry/Cargo.toml --target {{host}}
 
 # 忙核 arm-to-nearest-deadline（oneshot 收紧律）host 钉板：律单源
 # sched/src/oneshot.rs（sched crate 本体 no_std + HAL 依赖不编 host），
@@ -1109,6 +1155,10 @@ test-host:
 # cargo test -p berry-sched 走不通（lib 先于 tests 编译即败于 HAL），
 # 故 rustc --test 直跑单文件。改收紧律 / sched.rs 两消费臂必跑。
 test-oneshot:
+    # 刀 A 顺手修：rustc -o 落 target-cargo/ 但目录未必在（首跑即败
+    # "couldn't create a temp dir"）——mkdir 前置（mkfat --check-fixture
+    # 同位自足纪律）。
+    mkdir -p target-cargo
     rustc --test sched/host/oneshot_law_test.rs -o target-cargo/oneshot_law_test
     target-cargo/oneshot_law_test
 
@@ -1455,11 +1505,20 @@ desktop: berry-build
     [ -f "$IMG" ] || IMG=out/berryos.img
     [ -f "$IMG" ] || IMG=out/berryos-desktop.img
     test -f "$IMG" || { echo "缺 out/berryos.img（先 just image）或 out/berryos-desktop.img"; exit 1; }
-    python3 tools/mkfat.py out/gui-data.img
-    printf 'BERRYOSVBLK!' | dd of=out/gui-data.img conv=notrunc status=none
+    # M2 第 4 步：数据盘复用制——设备壳 profile 路径的持久盘一次造、跨
+    # 启动复用（berry 挂载侧本就非 snapshot 只挂不造；此前每次 mkfat 重造
+    # 是持久性被吃掉的唯一根因）。BERRY_HOME 覆写与 berry CLI home() 语义
+    # 对齐；smoke/CI 路径不经本 recipe，确定性面零扰动。
+    BERRY_ROOT="${BERRY_HOME:-$HOME/.berry}"
+    DATA="$BERRY_ROOT/data/desktop.img"
+    mkdir -p "$BERRY_ROOT/data"
+    if [ ! -f "$DATA" ]; then
+        python3 tools/mkfat.py "$DATA"
+        printf 'BERRYOSVBLK!' | dd of="$DATA" conv=notrunc status=none
+    fi
     HOST=$(rustc -vV | sed -n 's/^host: //p')
     # display fw_cfg 是 gui 位真值源：不传则 guifbd console 不静音、桌面被日志盖。
-    BERRY_DATA_DISK=out/gui-data.img exec tools/berry/cargo-target/$HOST/release/berry shell --image "$IMG" --profile desktop --memory 256
+    BERRY_DATA_DISK="$DATA" exec tools/berry/cargo-target/$HOST/release/berry shell --image "$IMG" --profile desktop --memory 256
 
 # P0 宿主面冒烟：doctor + 内核 marker + EFI 截图（不建窗口；TCG 确定性）。
 berry-smoke: berry-build

@@ -1,6 +1,6 @@
 [workspace]
+members = ["arch/aarch64","bandface","chanface","dpgface","dtbface","emface","evface","frzface","hdlface","hdrface","heapface","hofface","intface","iprofile","itally","kernel","lkface","mm","piface","polface","rootface","ringface","safeck","sched","sliceface","telface","trapface","utrace","vmoledger","vslotface","wqmatch"]
 resolver = "2"
-members = ["arch/aarch64","bandface","chanface","dtbface","dpgface","emface","evface","frzface","hdlface","hdrface","hofface","intface","iprofile","itally","kernel","mm","piface","polface","ringface","safeck","sched","sliceface","telface","utrace","vmoledger","vslotface","wqmatch"]
 
 [workspace.package]
 edition = "2021"

@@ -1,0 +1,14 @@
+[package]
+name = "berry-lkface"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+
+[lib]
+name = "berry_lkface"
+path = "src/lib.rs"
+
+# 无外部依赖：lockdep 检查面纯函数（rank 七类全序表 + check_acquire 三检
+# 判序/check_release 两臂/check_irq_exit 配平判）。host 单测走 `cfg(test)`
+# 链 std；berry-hal-aarch64 lockdep.rs 消费（类号/rank/三检查单源迁此，
+# HAL re-export——物理臂/链槽/SmpCpu 留壳，形态抄 berry-frzface/evface）。

@@ -1,0 +1,37 @@
+[package]
+name = "messages"
+# L-SYS 0.2.0：字面版本不走 workspace 继承（musl 链独立小工作区，版本
+# 治理规则/14；user/bins 同批同值——settings/contacts/files 同款）。
+# 升版 = 逐 crate 手同步。
+version = "0.2.0"
+edition = "2021"
+
+# 波 4 第六件（.agents/plans/2026-11-15-波4预制应用翻新实施设计.md §2.6
+# + worktree 根 W4-RECON.md §四 MMS 行）：MMS 真 GUI 应用——appstub 秒退
+# 壳（exit(0)）的翻新替换。v1 形态 = 会话列表（list_item 行）→ 会话页
+# （气泡列 Card 变体 + 快捷短语 chips 输入区 + Input 草稿值面 + Send）
+# ——真 typing 敲键挂 softimed（3b），故无 fs 词（MMS.JSN 持久化同挂
+# 终态）。
+#
+# 链与形态 = settings/contacts 镜像：独立小工作区（空 [workspace]
+# escape user 根 workspace，不入 members；musl target + berry-libc shim
+# + berry-ld 链，构建行见 justfile build-user 的 RUSTFLAGS 形）。服务
+# 连接：wm_cli_h() 门控（无 fs 词 → wm 落 [0] launcher 镜像位）+
+# WM_GETINFO 几何 + present 三部曲；输入 = input_h() INPUT_POLL 批拉。
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+berry-sys = { path = "../../berry-sys" }
+berry-guiproto = { path = "../../berry-guiproto" }
+berry-ui = { path = "../../berry-ui" }
+berry-gfx = { path = "../../berry-gfx" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

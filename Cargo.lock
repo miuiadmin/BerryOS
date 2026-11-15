@@ -36,6 +36,10 @@ dependencies = [
 [[package]]
 name = "berry-hal-aarch64"
 version = "0.2.0"
+dependencies = [
+ "berry-lkface",
+ "berry-trapface",
+]
 
 [[package]]
 name = "berry-hdlface"
@@ -43,6 +47,10 @@ version = "0.2.0"
 
 [[package]]
 name = "berry-hdrface"
+version = "0.2.0"
+
+[[package]]
+name = "berry-heapface"
 version = "0.2.0"
 
 [[package]]
@@ -74,11 +82,13 @@ dependencies = [
  "berry-evface",
  "berry-hal-aarch64",
  "berry-hdlface",
+ "berry-heapface",
  "berry-hofface",
  "berry-itally",
  "berry-mm",
  "berry-piface",
  "berry-polface",
+ "berry-rootface",
  "berry-safeck",
  "berry-sched",
  "berry-telface",
@@ -86,6 +96,10 @@ dependencies = [
  "berry-vslotface",
  "berry-wqmatch",
 ]
+
+[[package]]
+name = "berry-lkface"
+version = "0.2.0"
 
 [[package]]
 name = "berry-mm"
@@ -107,6 +121,10 @@ dependencies = [
 
 [[package]]
 name = "berry-ringface"
+version = "0.2.0"
+
+[[package]]
+name = "berry-rootface"
 version = "0.2.0"
 
 [[package]]
@@ -139,6 +157,10 @@ version = "0.2.0"
 
 [[package]]
 name = "berry-telface"
+version = "0.2.0"
+
+[[package]]
+name = "berry-trapface"
 version = "0.2.0"
 
 [[package]]

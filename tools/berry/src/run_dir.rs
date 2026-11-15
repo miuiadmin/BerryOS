@@ -39,7 +39,7 @@ impl RunDir {
         let root = home().join("run");
         fs::create_dir_all(&root)?;
         let id = format!("{}-{}-{}", stamp(), std::process::id(), label);
-        let path = root.join(id);
+        let path = root.join(&id);
         fs::create_dir_all(&path)?;
         let meta = serde_json::json!({
             "v": 1,
@@ -48,6 +48,11 @@ impl RunDir {
             "started": stamp(),
         });
         fs::write(path.join("meta.json"), serde_json::to_vec_pretty(&meta)?)?;
+        // M2 第 10 步：run 历史索引——逐 run 追加单行 JSON（O_APPEND 单行
+        // 写，多进程并发安全）；字段不复制 meta.json，只引用 run 目录。
+        append_index(&serde_json::json!({
+            "v": 1, "t": "run.start", "run": id, "label": label,
+        }));
         Ok(Self { path, keep })
     }
 
@@ -66,9 +71,31 @@ impl RunDir {
 
 impl Drop for RunDir {
     fn drop(&mut self) {
+        // end 行先记后删（宿主崩溃时 end 必漏——索引容忍不全，枚举以扫
+        // 目录兜底，见 index.jsonl 头注）。
+        append_index(&serde_json::json!({
+            "v": 1, "t": "run.end",
+            "run": self.path.file_name().map(|s| s.to_string_lossy()).unwrap_or_default(),
+            "kept": self.keep,
+        }));
         if !self.keep {
             let _ = fs::remove_dir_all(&self.path);
         }
+    }
+}
+
+/// M2 第 10 步：~/.berry/run/index.jsonl 历史索引（O_APPEND 单行写；宿主
+/// 崩溃必漏 end 行——消费方枚举以扫目录兜底，索引只是加速与留痕，不是
+/// 权威清单）。
+fn append_index(line: &serde_json::Value) {
+    let path = home().join("run").join("index.jsonl");
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        use std::io::Write;
+        let _ = writeln!(f, "{line}");
     }
 }
 
