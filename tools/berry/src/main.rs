@@ -93,7 +93,7 @@ struct RunCmd {
     marker: String,
     #[arg(long, default_value_t = 30)]
     timeout: u64,
-    #[arg(long, default_value = "tcg")]
+    #[arg(long, default_value = "auto")]
     accel: String,
     #[arg(long)]
     memory: Option<u32>,
@@ -113,9 +113,9 @@ struct ShotCmd {
     delay_ms: u64,
     #[arg(long)]
     out: Option<PathBuf>,
-    #[arg(long, default_value = "default")]
+    #[arg(long, default_value = "desktop")]
     profile: String,
-    #[arg(long, default_value = "tcg")]
+    #[arg(long, default_value = "auto")]
     accel: String,
     #[arg(long)]
     memory: Option<u32>,
@@ -281,9 +281,9 @@ struct LogsCmd {
 struct StartCmd {
     #[arg(long)]
     image: Option<PathBuf>,
-    #[arg(long, default_value = "phone")]
+    #[arg(long, default_value = "desktop")]
     profile: String,
-    #[arg(long, default_value = "tcg")]
+    #[arg(long, default_value = "auto")]
     accel: String,
     #[arg(long)]
     memory: Option<u32>,
@@ -321,9 +321,9 @@ struct RestartCmd {
 struct HostCmd {
     #[arg(long)]
     image: Option<PathBuf>,
-    #[arg(long, default_value = "phone")]
+    #[arg(long, default_value = "desktop")]
     profile: String,
-    #[arg(long, default_value = "tcg")]
+    #[arg(long, default_value = "auto")]
     accel: String,
     #[arg(long)]
     memory: Option<u32>,
