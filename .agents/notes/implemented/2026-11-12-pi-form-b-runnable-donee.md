@@ -35,4 +35,4 @@ Status: implemented
 - 复杂度增项：门开重推多一圈 O(环上者) 扫描（传播趟每 donor 一圈 + 清零/尾趟各一圈）；单核环 ≤~20 任务，icount 量级不变（FAST bench 冒烟对拍）。
 - 清零趟对环上者**全域**（含共享表者——stale boost 于下次门开时回落）：冻结语义由「重推盲区补偿」收敛为「门闭窗冻结」——冻结的本意（boost 带进 runqueue 供下一轮出选）由门闭窗承接（donor 全退场 ⇒ 门闭 ⇒ 冻结随行）。
 
-Related: [R3 实时延迟界](../../../docs/阶段沿革.md)（形 B 无界定谳）· [PI 全图重推原始落地](../../../docs/IPC设计-v1.0.md)（4-3b）· [SLEEPQ per-key 唤醒链](./2026-11-12-sleepq-per-key-wake-chain.md)（同 P2 门控家族）
+Related: [R3 实时延迟界](../../../docs/阶段沿革.md)（形 B 无界定谳）· [PI 全图重推原始落地](../../../docs/IPC设计-v1.0.md)（4-3b）· [SLEEPQ per-key 唤醒链](../../../docs/阶段沿革.md)（同 P2 门控家族——沿革 P2-1 条；笔记本体随 2026-11-13 base 重整出库）

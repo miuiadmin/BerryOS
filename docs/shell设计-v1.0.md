@@ -4,7 +4,7 @@
 
 > 回答三件事：**用什么 shell、配哪些命令、管道怎么实现**。
 > 先拆一个常见误解：内核不需要"支持 shell"——shell 只是一个普通用户态程序，干的活就是一个死循环（读一行 → 解析 → 起子进程 → 等它跑完）。bash / zsh / fish 全是这个循环，只是语法与功能不同。
-> 里程碑挂钩 `路线图-v1.1.md` P5（"UART 上交互式 shell"）；体验侧展开见 `开发体验.md` §3；进程创建/handle 传递见 `系统调用ABI设计-v1.0.md` §6。
+> 里程碑挂钩 `路线图-v1.2.md` P5（"UART 上交互式 shell"）；体验侧展开见 `开发体验.md` §3；进程创建/handle 传递见 `系统调用ABI设计-v1.0.md` §6。
 
 ## 0. 分层：bash/zsh 到底站在哪
 
@@ -116,7 +116,7 @@ BusyBox 的"单二进制多命令"只作思路参考（GPLv2，不搬代码）�
 
 ## 6. 与既有文档的挂钩
 
-- `路线图-v1.1.md` P5：本文是"shell + 基础命令"里程碑的展开。
+- `路线图-v1.2.md` P5：本文是"shell + 基础命令"里程碑的展开。
 - `开发体验.md` §3：`berry>` 提示符、`berryctl test run G3` 的出处在此定名。
 - `系统调用ABI设计-v1.0.md` §6：process_create / handle 传递 = 起子进程的 ABI 根基；§8.5 稳定性行政策同样约束 shell 的消息格式（berryctl 与各命令的 `--json` schema 按 add-only 管理）。
 - `IPC设计-v1.0.md`：channel 当 pipe 的语义来源；Ctrl-C 原草案的 Event 中转未走（C-4b v1 落地 = process_terminate 直杀，见 §2.2）。

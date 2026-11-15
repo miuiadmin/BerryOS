@@ -1,8 +1,8 @@
 # BCTS 冻结测试件清单（发布后只读；作废走台账 add-only）——schema 全文照搬
 # `docs/BCTS兼容性测试套件设计-v1.0.md` §4.1（预 ADR #84）。
 # v0 首冻件（Tier 1）＝现役 smoke 标记集机械提取：单源 tools/markers.sh
-# （blob 5f4a00f0ae8c），裸相 32（MARKERS）＋ rootfs 相 54（ROOTFS_MARKERS）
-# ＋ RX 注入专属 2（RX_MARKERS）＝ 88 ＝ tier1_floor（设计稿 §3.2 宽口径：
+# （blob 5f4a00f0ae8c），裸相 32（MARKERS）＋ rootfs 相 56（ROOTFS_MARKERS）
+# ＋ RX 注入专属 2（RX_MARKERS）＝ 90 ＝ tier1_floor（设计稿 §3.2 宽口径：
 # just smoke 八跑是回放执行单元，冻结件按执行单元整体冻结）。
 # platform_revision：V9 预埋 → 一八四起取平台 level（PR≡level 三方联动——tools/mkimage.py
 # build_manifest 缺省 0）；文件名与字段冗余自证（设计稿 §2.4-1）。
@@ -16,7 +16,7 @@ platform_revision = 0
 frozen_at = "02501ab42802cfb7b7a67c4b0cd53d18327e76a1"
 abi_snapshot = "tools/abi.toml"
 abi_snapshot_hash = "sha256:438e5d538e913b51d07ea223e0d6242efe2a0ec91c3b937a02266f14f1a85e57"
-tier1_floor = 88
+tier1_floor = 90
 
 # —— 裸相 32（MARKERS；boot 全链）——
 [[marker]]
@@ -537,6 +537,18 @@ expect = "TOMB ok n=1"
 phase = "rootfs"
 tier = 1
 source = "tools/markers.sh@5f4a00f0ae8c"
+[[marker]]
+id = "rootfs-55"
+expect = "CLI ok n="
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@f4e829f52d74"
+[[marker]]
+id = "rootfs-56"
+expect = "TERM ok n=2"
+phase = "rootfs"
+tier = 1
+source = "tools/markers.sh@f4e829f52d74"
 
 # —— RX 注入专属 2（RX_MARKERS；仅 smoke RX 相 serial1/QMP 注入后出现）——
 [[marker]]

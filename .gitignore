@@ -119,9 +119,11 @@ smoke-wt-*/
 /.dsh-worktrees/
 /kernel/kernel/
 /.berry-review/
-
 # launcher 独立小工作区本机构建缓存（波0 基线收口补）
 /user/bins/berry-launcher/cargo-target/
 
 # 波 2 画廊 PPM 中间产物（gallery2 测试再生——PNG/cells.tsv 入仓，ppm/ 不进提交）
 /WAVE2-GALLERY/ppm/
+# W3 lane 隔离构建缓存目录（#208/#216 判例：.target-* 构建产物不入库；
+# base 重写反复剥落本规则，随刀补回）
+/.target-*/

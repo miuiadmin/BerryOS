@@ -134,7 +134,8 @@ def selftest() -> int:
       各自红字 + rc=1）/ --update 收敛（更新后 --check 转绿 rc=0）/
       --list 键全集 + stderr 计数
     - live 树对拍：scan() 非空 + 键全 path::symbol 形 + group 全在册 +
-      与 tools/writable_globals.txt 逐条对拍（--check 语义不变量）
+      与 tools/writable_globals.txt 键集对拍（--check 语义不变量：
+      人工 group 覆盖合法，不参与对拍红绿）+ manifest group 全在册
     - 确定性：scan() 两次全等（--check 对拍前提）
     - exit-code 契约：--selftest 独占守卫（组合旗标/未知旗标 rc=2）
     """
@@ -275,9 +276,12 @@ def selftest() -> int:
     check("live: group 全在册", set(live.values()) <= set(GROUPS),
           str(set(live.values()) - set(GROUPS)))
     orig = parse_manifest()
-    check("live: 与在册清单逐条对拍（--check 语义）",
-          orig == live, f"only-scan={sorted(set(live) - set(orig))[:3]} "
+    check("live: 与在册清单逐条对拍（--check 语义，键集）",
+          set(orig) == set(live), f"only-scan={sorted(set(live) - set(orig))[:3]} "
                         f"only-man={sorted(set(orig) - set(live))[:3]}")
+    check("live: 人工 group 覆盖合法（manifest group 全在册）",
+          set(orig.values()) <= set(GROUPS),
+          str(set(orig.values()) - set(GROUPS)))
     check("determ: scan 两次全等", scan() == live)
 
     print(f"\nwritable_globals selftest: "
