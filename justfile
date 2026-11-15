@@ -749,6 +749,15 @@ test-host:
     # 单源，kernel syscall.rs sa_parse 薄壳消费（copy_from_user 物理臂
     # + admission 原子读留壳））。
     cargo test -p berry-safeck --target {{host}}
+    # W3-Q70：berry-aokface（access_ok 用户缓冲准入判定律纯面——EL0 值域
+    # 四门〔len==0 恒过/checked_add 回卷拒/null 页 0x1000 下界/USER_VA_END
+    # =2^39 上界〕+ EL1 高半单比较 + 回卷拒〔原判序两路共门保形〕+ 叶 AP
+    # 位域读写拒矩阵〔写需 <0b10、读需 ≠0b11〕+ span_pages 页序单源 +
+    # window_should_walk 同页跳过窗律〔SAME_PAGE_NONE 哨兵首块必查/
+    # 缓存只记最近页〕钉板，host 17 测；
+    # 判定律单源，kernel syscall.rs access_ok/access_ok_window 判定段
+    # 换消费〔walk_leaf TTBR0 走查 + PT 锁窗物理臂留壳〕）。
+    cargo test -p berry-aokface --target {{host}}
     # W3-Q16：berry-hdrface（HDR 延迟直方图形状与分位数学纯函数面——
     # 桶映射全域往返/保守上界严格递增/分位秩单式/Hdr 记账·钳位·reset/
     # 合并读面桶位直和钉板，host 7 测；HDR_* 常量与 bucket_of/bucket_upper/
@@ -1118,7 +1127,7 @@ test-host:
     # 扫描只扫 *.py，bcts-run.sh --selftest 自称 8/8 绿但从未接线：
     # 有 selftest 零自动执法 = parse_frozen 校验逻辑改坏无机器咬合，
     # 冻结件 ↔ markers.sh 单源漂移无人咬。注意两腿义务：活树计数
-    # 32/54/2 钉板 + 冻结快照全等腿——加标记的 PR 会红到此门，须随刀
+    # 32/56/3 钉板 + 冻结快照全等腿——加标记的 PR 会红到此门，须随刀
     # 更新 TIER1_FLOOR_LIVE/冻结件（ADR #84 兼容面演进显式化，非误红）。
     # 改 bcts-run.sh / markers.sh 标记面 / bcts@*.toml 冻结件必跑。
     {{BASH}} tools/bcts-run.sh --selftest

@@ -93,8 +93,9 @@ pub use crate::abi_gen::{
 use crate::abi_gen::{CLOCK_MONOTONIC, CLOCK_REALTIME, ERR_E2BIG, RIGHT_SET_POLICY, VMO_OPT_DEMAND};
 
 /// 用户 VA 合法区（Vmar root 覆盖 `[0x1000, 2^39)`，0 页 NULL 保卫——
-/// `内存管理设计.md` §4；copy_out 的界检同源）。
-const USER_VA_END: u64 = 1 << 39;
+/// `内存管理设计.md` §4；copy_out 的界检同源）。W3-Q70：值域常量单源迁
+/// berry-aokface，此处 re-export 对齐（消费点引用不变）。
+const USER_VA_END: u64 = berry_aokface::USER_VA_END;
 
 // ---- 表派发（3-4a per-process 拆分）----
 
@@ -177,39 +178,36 @@ fn access_ok(caller_el1: bool, ptr: u64, len: u64, write: bool) -> bool {
     if len == 0 {
         return true;
     }
-    let Some(end) = ptr.checked_add(len) else { return false };
+    if ptr.checked_add(len).is_none() {
+        return false; // 回卷拒（原判序在 EL1/EL0 分派之前——两路共门）
+    }
     if caller_el1 {
-        ptr >= KERNEL_VA_BASE as u64
+        // W3-Q70：EL1 高半单比较判定律单源（berry-aokface——el1_span_ok
+        // 自带回卷门，此处前置共门后幂等零漂移）。
+        berry_aokface::el1_span_ok(ptr, len, KERNEL_VA_BASE as u64)
     } else {
-        if ptr < 0x1000 || end > USER_VA_END {
+        // W3-Q70：EL0 值域四门判定律单源（berry-aokface——len==0 恒过/
+        // checked_add 回卷拒/null 页下界/USER_VA_END 上界）；逐页走查
+        // 物理臂留壳（walk_leaf 读 TTBR0 三级表）。
+        if !berry_aokface::el0_span_ok(ptr, len) {
             return false;
         }
         let l1 = berry_hal_aarch64::current_ttbr0_pa();
-        let first = (ptr as usize) & !(PAGE_SIZE - 1);
-        let last = (end as usize - 1) & !(PAGE_SIZE - 1);
-        let mut va = first;
-        while va <= last {
-            match crate::vmar::walk_leaf(l1, va) {
-                Some(desc) => {
-                    let ap = (desc >> 6) & 0b11;
-                    if write && ap >= 0b10 {
-                        return false; // RO(10) / EL0 专属(11)：EL1 不可写
-                    }
-                    if !write && ap == 0b11 {
-                        return false; // EL0 专属页内核读不到
-                    }
-                }
-                None => return false, // 未映射页
+        for va in berry_aokface::span_pages(ptr, len) {
+            match crate::vmar::walk_leaf(l1, va as usize) {
+                // W3-Q70：AP 位域读写拒律单源（berry-aokface::leaf_admits）。
+                Some(desc) if berry_aokface::leaf_admits(desc, write) => {}
+                _ => return false, // 缺叶或权限不符
             }
-            va += PAGE_SIZE;
         }
         true
     }
 }
 
 /// 窗内同页缓存哨兵：用户 VA < 2^39、EL1 高半直映 ≥ KERNEL_VA_BASE，
-/// u64::MAX 两界之外——首块必走查。
-const SAME_PAGE_NONE: u64 = u64::MAX;
+/// u64::MAX 两界之外——首块必走查。W3-Q70：哨兵单源迁 berry-aokface，
+/// 此处 re-export 对齐（消费点引用不变）。
+const SAME_PAGE_NONE: u64 = berry_aokface::SAME_PAGE_NONE;
 
 /// **单一 PT 锁窗内**的逐页校验（P1 同页跳过）。`last_page` = 本窗局部
 /// 缓存：块覆盖的每个页若 == 缓存页，该页已在本窗走查过且写者（他核
@@ -230,20 +228,17 @@ fn access_ok_window(
     if len == 0 {
         return true;
     }
-    let mask = !(PAGE_SIZE as u64 - 1);
-    let last = (ptr + len - 1) & mask;
-    let mut va = ptr & mask;
-    while va <= last {
-        if va != *last_page {
+    // W3-Q70：同页跳过律单源（berry-aokface::window_should_walk——
+    // SAME_PAGE_NONE 哨兵首块必查；缓存只记最近页）。页序同源 span_pages。
+    for va in berry_aokface::span_pages(ptr, len) {
+        if berry_aokface::window_should_walk(va, &mut *last_page) {
             // 本块在本页内的字节段 [max(va, ptr), min(页尾, 块尾))。
             let start = va.max(ptr);
             let end = (va + PAGE_SIZE as u64).min(ptr + len);
             if !access_ok(caller_el1, start, end - start, write) {
                 return false;
             }
-            *last_page = va;
         }
-        va += PAGE_SIZE as u64;
     }
     true
 }
@@ -2074,8 +2069,10 @@ extern "C" fn sys_process_suspend(tf: &mut TrapFrame) -> i64 {
         // S5.12 防 freeze DoS：每 caller 活跃 SuspendToken 上限 64——超限
         // -EBUSY（安全审计 F1 修：原在 sys_process_terminate 错位——suspend
         // 创建路径无帽致 am 持 ≥64 token 后 terminate 恒 -EBUSY 监督 kill 链
-        // 瘫痪；检查移到 token 生产者（本处+thread 臂）而非消费者）。
-        if t.count_type(ObjType::SuspendToken) >= 64 {
+        // 瘫痪；检查移到 token 生产者〔本处+thread 臂〕而非消费者）。
+        // 帽值单源在 berry-susface（W3-Q38）；判位保 base 形（get_raw 前——
+        // token 帽先于 handle 错误码报）。
+        if t.count_type(ObjType::SuspendToken) >= berry_susface::SUSPEND_TOKEN_CAP as usize {
             crate::telemetry::freeze_busy();
             return ERR_BUSY as i64;
         }
@@ -2096,24 +2093,26 @@ extern "C" fn sys_process_suspend(tf: &mut TrapFrame) -> i64 {
                 return ERR_BAD_HANDLE as i64;
             };
             first_process_token = p.freeze_depth == 0;
-            if p.state == ProcState::Exited {
-                return ERR_BAD_STATE as i64;
+            // 六门判序（Exited → pager → 粒度互斥 → depth 帽 → precheck）
+            // 单源在 berry-susface（W3-Q38 host 钉板）——token 帽已在上方
+            // get_raw 前保 base 判位先报，此处装包恒绿位（0）只走后五门。
+            let gate = berry_susface::proc_admission(&berry_susface::ProcGateInput {
+                caller_tokens: 0,
+                state: if p.state == ProcState::Exited {
+                    berry_susface::ProcStateP::Exited
+                } else {
+                    berry_susface::ProcStateP::Running
+                },
+                pager_load: p.ht.pager_load() as u32,
+                freeze_depth: p.freeze_depth,
+                thread_freezes: p.thread_freezes,
+                precheck: berry_sched::freeze_precheck_by_pinned(pinned),
+            });
+            match gate {
+                berry_susface::Admission::Ok => {}
+                berry_susface::Admission::Busy => return ERR_BUSY as i64,
+                berry_susface::Admission::BadState => return ERR_BAD_STATE as i64,
             }
-            // D6：冻 pager = 缺页者永久阻塞。demand VMO + SET_POLICY 合取
-            // 扫描派生，close/take/drain/迁移天然随表走。
-            if p.ht.pager_load() > 0 {
-                return ERR_BUSY as i64;
-            }
-            // 单一位图不能同时表达进程冻与线程冻的交叉 close；两种粒度互斥。
-            if p.freeze_depth == 0 && p.thread_freezes > 0 {
-                return ERR_BUSY as i64;
-            }
-            if p.freeze_depth >= 8 {
-                return ERR_BUSY as i64;
-            }
-        }
-        if !berry_sched::freeze_precheck_by_pinned(pinned) {
-            return ERR_BUSY as i64;
         }
         unsafe {
             let r = &mut *obj.as_ptr();
@@ -2149,7 +2148,8 @@ extern "C" fn sys_process_suspend(tf: &mut TrapFrame) -> i64 {
         }
         let tok = crate::suspend::SuspendTok {
             target: crate::suspend::SuspendTarget::Process(obj),
-            key: pinned,
+            // thaw 键装载律单源（W3-Q38）：Process = pinned。
+            key: berry_susface::thaw_route(berry_susface::TargetKind::Process, pinned, 0),
             since_vct: berry_hal_aarch64::timer::cntvct(),
         };
         let ret = insert_suspend_token(tf, t, tok, token_out);
@@ -2202,34 +2202,42 @@ extern "C" fn sys_process_suspend(tf: &mut TrapFrame) -> i64 {
         let Some(thrd) = r.obj.as_thread_mut() else {
             return ERR_BAD_HANDLE as i64;
         };
-        if !thrd.started || thrd.exited {
-            return ERR_BAD_STATE as i64;
-        }
         // 目标所属 Process 必须活着且已启动；pager 义务同进程全冻口径保守拒绝。
+        // owner 缺席面保 base 形（EBAD_STATE 拒，不 panic）；七门判序单源在
+        // berry-susface（W3-Q38 host 钉板）——base 形本臂无 token 帽（F1 帽
+        // 只落进程生产者臂），装包恒绿位（0）不引入新拒面。
         let owner = thrd.owner();
-        let Some(p) = (*owner.as_ptr()).obj.as_process_mut() else {
-            return ERR_BAD_STATE as i64;
-        };
-        if p.state == ProcState::Exited || !p.started {
-            return ERR_BAD_STATE as i64;
+        let owner_gate;
+        {
+            let Some(p) = (*owner.as_ptr()).obj.as_process() else {
+                return ERR_BAD_STATE as i64;
+            };
+            let owner_state = if p.state == ProcState::Exited {
+                berry_susface::ProcStateP::Exited
+            } else {
+                berry_susface::ProcStateP::Running
+            };
+            owner_gate = berry_susface::ThreadOwnerGate {
+                owner_state,
+                owner_started: p.started,
+                pager_load: p.ht.pager_load() as u32,
+                owner_freeze_depth: p.freeze_depth,
+            };
         }
-        if p.ht.pager_load() > 0 {
-            return ERR_BUSY as i64;
+        let gate = berry_susface::thread_admission(&berry_susface::ThreadGateInput {
+            caller_tokens: 0,
+            started: thrd.started,
+            exited: thrd.exited,
+            owner: owner_gate,
+            freeze_ready: thrd.sched_attr.flags & SA_FLAG_FREEZE_READY != 0,
+            freeze_depth: thrd.freeze_depth,
+            precheck: berry_sched::freeze_precheck_by_thread(thread_key),
+        });
+        match gate {
+            berry_susface::Admission::Ok => {}
+            berry_susface::Admission::Busy => return ERR_BUSY as i64,
+            berry_susface::Admission::BadState => return ERR_BAD_STATE as i64,
         }
-        // FREEZE_READY 是应用自证，不是内核安全担保（D8）。
-        if thrd.sched_attr.flags & SA_FLAG_FREEZE_READY == 0 {
-            return ERR_BUSY as i64;
-        }
-        // 进程级 token 在席时不再引入单线程 token，防止交叉 close 提前解冻。
-        if thrd.freeze_depth == 0 && p.freeze_depth > 0 {
-            return ERR_BUSY as i64;
-        }
-        if thrd.freeze_depth >= 8 {
-            return ERR_BUSY as i64;
-        }
-    }
-    if !berry_sched::freeze_precheck_by_thread(thread_key) {
-        return ERR_BUSY as i64;
     }
     let first_thread_token;
     unsafe {
@@ -2266,7 +2274,8 @@ extern "C" fn sys_process_suspend(tf: &mut TrapFrame) -> i64 {
     }
     let tok = crate::suspend::SuspendTok {
         target: crate::suspend::SuspendTarget::Thread(obj),
-        key: thread_key,
+        // thaw 键装载律单源（W3-Q38）：Thread = Thread ObjRef 地址。
+        key: berry_susface::thaw_route(berry_susface::TargetKind::Thread, 0, thread_key),
         since_vct: berry_hal_aarch64::timer::cntvct(),
     };
     let ret = insert_suspend_token(tf, t, tok, token_out);
