@@ -208,7 +208,7 @@ pub const TREE_DEPTH_MAX: u32 = 96;
 // ---------- a11y 侧表（GUI-6 D12 段B 最小落位） ----------
 
 /// a11y 侧表容量（D12：a11y 条目数帽——超 → apply 面 TooSmall loud）。
-pub const A11Y_MAX: usize = 32;
+pub const A11Y_MAX: usize = 40; // 北极星审计：桌面树 a11y 实需 34（4状态+4dock+5键+1页+20格），01bb3e37a 同款
 
 /// a11y 角色常量域（wire u8；§6 冻结——枚举外的开放值域，host 可扩）。
 pub const ROLE_NONE: u8 = 0;

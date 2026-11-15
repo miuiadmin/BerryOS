@@ -89,15 +89,16 @@ fn thirty_third_entry_node_full_loud() {
     let mut ui = Ui::<48>::new(100, 100);
     let root = ui.root();
     let mut ids = Vec::new();
-    for _ in 0..33 {
+    let cap = berry_ui::A11Y_MAX;
+    for _ in 0..cap + 1 {
         ids.push(ui.add(root, rect_spec(4, 4)).unwrap());
     }
     ui.layout();
     ui.drain_damage();
 
     for (k, &id) in ids.iter().enumerate() {
-        if k < 32 {
-            assert!(ui.set_a11y(id, 1, b"e").is_ok(), "第 {} 条应过（帽 32）", k + 1);
+        if k < cap {
+            assert!(ui.set_a11y(id, 1, b"e").is_ok(), "第 {} 条应过（帽 {}）", k + 1, cap);
         } else {
             assert_eq!(
                 ui.set_a11y(id, 1, b"e"),
@@ -106,11 +107,11 @@ fn thirty_third_entry_node_full_loud() {
             );
         }
     }
-    assert_eq!(ui.a11y_iter().count(), 32);
+    assert_eq!(ui.a11y_iter().count(), cap);
 
     // 满表后 in-place 覆写仍过（同节点不占新槽——33 帽只数唯一节点）
     assert!(ui.set_a11y(ids[0], 5, b"upd").is_ok());
-    assert_eq!(ui.a11y_iter().count(), 32);
+    assert_eq!(ui.a11y_iter().count(), cap);
     let first = ui.a11y_iter().find(|e| e.node == ids[0]).unwrap();
     assert_eq!((first.role, label_of(first)), (5, &b"upd"[..]));
 }
