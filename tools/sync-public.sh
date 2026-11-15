@@ -214,6 +214,16 @@ WHITELIST=(
   vmoledger vslotface wqmatch wsrcface lkface trapface heapface
   # rootface 补账（2026-11-15 #305 本件净增量重放时白名单笔未随刀——本刀补登）
   rootface docs
+  # fwcfgface/susface 补账（2026-11-16 本刀实捕：#299/#307 合入后白名单
+  # 笔未随刀——check-members 门被 base 重写剥落故两连漏无人咬；接线重放
+  # 即红，红分支实捕定谳）
+  fwcfgface susface
+  # psface 补账（2026-11-16 本刀 rebase 进 #362 后门再咬：W3-Q72 合入后
+  # 白名单笔未随刀——接线恢复后门第一次真执法实捕）
+  psface
+  # wakeface 补账（2026-11-16 本刀 merge 进 #365 后门三咬：W3-Q66 合入后
+  # 白名单笔未随刀——check-members 三连实捕定谳）
+  wakeface
   # heapface 补账（2026-11-15 #301 合入后机器门首咬：新增顶层 crate 忘补
   # 白名单即 test-host 红——check-members 门执法生效的第一次实捕）
   .github .cargo

@@ -1207,6 +1207,23 @@ test-host:
     # §测试原只记手动咒语）入 host 台账。独立小工作区，host 纯面零
     # 交叉编译；此前手动 cargo test 从未接线 = 面改坏无机器咬合。
     cargo test --manifest-path tools/berry/Cargo.toml --target {{host}}
+    # W1 接线（base 重写剥落重放，#304 面）：sync-public members 对账门——
+    # 白名单 ⊇ workspace members 机器执法（#153/#171/#227 三连 REJECT
+    # 判例族根因：新增顶层 crate 忘补白名单 = 公开仓 build 必炸）。本刀
+    # 实捕 fwcfgface/susface 两漏（#299/#307 合入后白名单笔未随刀）。
+    # 新增顶层 crate 或改 WHITELIST 必跑。
+    {{BASH}} tools/sync-public.sh --check-members
+    # W1 接线（#290 后继件，base 重写剥落重放）：sync-public 门禁自检——
+    # 出口形态钉板 21 腿（端到端同步/安检拦泄漏/members 红分支/独立入口；
+    # 零网络零真实镜像仓）。改 sync-public.sh 出口安检或形态适配面必跑。
+    {{BASH}} tools/sync-public.sh --selftest
+    # W1 接线（#214 面，base 重写剥落重放）：selftest_guard——tools 自检
+    # 接线门禁本体。「有 selftest 零自动执法」判例族 7 连发根治：tools/
+    # 下声明 --selftest 而 justfile 无接线行即红。本刀元自证——恢复时
+    # 门禁先咬到自己与 sync-public 两件未接线。改 tools/ 新增自检 /
+    # justfile test-host 面必跑（本行即自证）。
+    python3 tools/selftest_guard.py --selftest
+    python3 tools/selftest_guard.py
 
 # 忙核 arm-to-nearest-deadline（oneshot 收紧律）host 钉板：律单源
 # sched/src/oneshot.rs（sched crate 本体 no_std + HAL 依赖不编 host），
