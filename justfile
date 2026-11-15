@@ -906,6 +906,13 @@ test-host:
     # 编解码黄金字节 + 严格串行会话机，host 20 测；独立小工作区绕开
     # user/Cargo.toml——manifest-path 直指 crate，同 stdhello/bsh 先例）。
     cargo test --manifest-path user/berry-ksproto/Cargo.toml --target {{host}}
+    # W1 接线（D-审计 §4 同款零接线面）：berry-softime（波3 件 C 软键盘
+    # 引擎 v1——QWERTY-lite ASCII 键位模型 + OP_INPUT_INJECT 载荷编码 +
+    # 显隐状态机，host 5 测落地时未接线 test-host；SERVICE 底窗本体随波 3
+    # 分支并主接线，此 crate 零改动吸收——接线不依赖底窗面；berry-appshell
+    # 接线去重——#356 已带 workspace 形 -p berry-appshell 行（上方波3-件⑦
+    # 段），manifest-path 重复行移除（appshell 33 测曾双跑，实测去重）。
+    cargo test --manifest-path user/berry-softime/Cargo.toml --target {{host}}
     # mkapp 门禁自检（a-3 U4：mkfat --check-fixture 同位前置——打包器门禁
     # 面此前只在 build-user 产物链上被动覆盖，门禁自身坏 = 产物链静默劣化）。
     python3 tools/mkapp.py --selftest

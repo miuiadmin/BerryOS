@@ -38,9 +38,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "berry-fwcfgface"
+version = "0.2.0"
+
+[[package]]
 name = "berry-hal-aarch64"
 version = "0.2.0"
 dependencies = [
+ "berry-fwcfgface",
  "berry-lkface",
  "berry-trapface",
 ]
@@ -89,6 +94,7 @@ dependencies = [
  "berry-hdlface",
  "berry-heapface",
  "berry-hofface",
+ "berry-iprofile",
  "berry-itally",
  "berry-mm",
  "berry-piface",

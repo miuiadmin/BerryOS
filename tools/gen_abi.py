@@ -996,7 +996,9 @@ stage = "v1"
            if not p.exists() or p.read_text("utf-8") != want]
     check("在册五产物逐字节 oracle", not bad, f"漂移: {bad}")
     nt, nd, nr, nc = four_tuple(real)
-    check("在册四元组口径", (nt, nd, nr, nc) == (38, 42, 41, 45),
+    # CP-08 0x40 sched_util_snapshot 加号（988944e09）随刀滚新：38/42/41→39/43/42
+    # （nr_total/defined/registered 各 +1，帽 45 不动——abi_gen 头注同值单源）。
+    check("在册四元组口径", (nt, nd, nr, nc) == (39, 43, 42, 45),
           f"got {(nt, nd, nr, nc)}")
     check("在册 wakesrc 空闲段活算", next_free_wakesrc(
         {w["name"]: eval_expr(w["expr"]) for w in real["wakesrc"]}) == 0x08)
