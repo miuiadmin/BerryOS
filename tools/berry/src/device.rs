@@ -68,7 +68,7 @@ impl Device {
         // with it; invalid specs fail fast here with E_USAGE instead of
         // after QEMU spawns.
         let resolved_vnc = vnc_cfg::resolve(vnc)?;
-        let run = RunDir::create(label, keep)?;
+        let mut run = RunDir::create(label, keep)?;
         run_dir::write_state(run.path(), "starting");
         let vars = qemu::vars_store(run.path(), 64)?;
         let serial = run.file("serial.log");
@@ -138,7 +138,7 @@ impl Device {
             true,
             mode.as_deref(),
             Some(&ram_path),
-            &run,
+            &mut run,
             stop_flag.clone(),
             &mut vnc_ext,
         )?;
@@ -219,7 +219,7 @@ impl Device {
             true,
             self.mode.as_deref(),
             Some(&self.ram_path),
-            &self.run,
+            &mut self.run,
             self.stop_flag.clone(),
             &mut self.vnc_ext,
         );
@@ -348,7 +348,7 @@ fn boot_runtime(
     tablet: bool,
     mode: Option<&str>,
     ram_path: Option<&std::path::Path>,
-    run: &RunDir,
+    run: &mut RunDir,
     stop_flag: Arc<std::sync::atomic::AtomicBool>,
     ext: Option<&vnc_cfg::Exposed>,
 ) -> Result<(
@@ -428,6 +428,10 @@ fn boot_runtime(
             let _ = child.kill();
             let _ = child.wait();
             run_dir::write_state(run.path(), "failed");
+            // M1 审计补刀：第三条 QEMU 路径（device start/window/host 共
+            // 用）的失败现场保留——commands.rs 的 run/shot 同语义；此刻
+            // serial.log/qemu.log/vars.fd 俱在，焚了就只剩 qemu.log 尾 12 行。
+            run.keep_fail();
             // Surface QEMU's own words (bind races on pre-picked VNC ports,
             // bad fw_cfg args, …) — argv never contains a password, so the
             // log tail is safe to attach.
@@ -483,7 +487,7 @@ fn boot_with_retry(
     tablet: bool,
     mode: Option<&str>,
     ram_path: Option<&std::path::Path>,
-    run: &RunDir,
+    run: &mut RunDir,
     stop_flag: Arc<std::sync::atomic::AtomicBool>,
     ext: &mut Option<vnc_cfg::Exposed>,
 ) -> Result<(

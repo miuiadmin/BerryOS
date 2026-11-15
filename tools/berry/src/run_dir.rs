@@ -67,6 +67,14 @@ impl RunDir {
     pub fn keep(&mut self) {
         self.keep = true;
     }
+
+    /// M1 审计补刀：失败现场保留 + stderr 打印路径（无上限堆积的出口
+    /// 提示——失败目录留了、在哪、知道能手动清；成功路径与显式 --keep
+    /// 走 keep() 静默）。
+    pub fn keep_fail(&mut self) {
+        self.keep = true;
+        eprintln!("berry: failure run kept: {}", self.path.display());
+    }
 }
 
 impl Drop for RunDir {
@@ -84,9 +92,11 @@ impl Drop for RunDir {
     }
 }
 
-/// M2 第 10 步：~/.berry/run/index.jsonl 历史索引（O_APPEND 单行写；宿主
-/// 崩溃必漏 end 行——消费方枚举以扫目录兜底，索引只是加速与留痕，不是
-/// 权威清单）。
+/// M2 第 10 步：~/.berry/run/index.jsonl 历史索引（O_APPEND + 单次
+/// write_all 整行——O_APPEND 只保证单次 write(2) 原子，writeln! 对未缓冲
+/// File 是多次 write，两进程并发时行会字符级交错〔审计实抓〕；宿主崩溃
+/// 必漏 end 行——消费方枚举以扫目录兜底，索引只是加速与留痕，不是权威
+/// 清单）。
 fn append_index(line: &serde_json::Value) {
     let path = home().join("run").join("index.jsonl");
     if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -95,7 +105,8 @@ fn append_index(line: &serde_json::Value) {
         .open(&path)
     {
         use std::io::Write;
-        let _ = writeln!(f, "{line}");
+        // 先拼完整行（含换行）再一次写——单次 write 在 O_APPEND 下原子。
+        let _ = f.write_all(format!("{line}\n").as_bytes());
     }
 }
 

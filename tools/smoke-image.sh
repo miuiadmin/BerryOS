@@ -344,6 +344,9 @@ RX_FIFO=""
 RX_HOLDER=""
 
 cleanup() {
+  # M1 失败必留（审计补刀：smoke.sh 同款——trap 传退出码，非零即保留；
+  # 失败时 RUN_DIR 一并留——vars.fd 现场随失败保全，成功流照旧收）。
+  rc=${1:-0}
   if [ -n "$QEMU_PID" ] && kill -0 "$QEMU_PID" 2>/dev/null; then
     kill "$QEMU_PID" 2>/dev/null
     wait "$QEMU_PID" 2>/dev/null
@@ -353,14 +356,18 @@ cleanup() {
     wait "$RX_HOLDER" 2>/dev/null
   fi
   [ -n "$RX_FIFO" ] && rm -f "$RX_FIFO"
-  rm -rf "$RUN_DIR"
-  if [ -n "${SMOKE_KEEP_LOG:-}" ]; then
+  if [ "$rc" -eq 0 ]; then
+    rm -rf "$RUN_DIR"
+  else
+    echo "smoke-image: 现场目录保留：$RUN_DIR" >&2
+  fi
+  if [ -n "${SMOKE_KEEP_LOG:-}" ] || [ "$rc" -ne 0 ]; then
     echo "smoke-image: 串口日志保留：$LOG" >&2
   else
     rm -f "$LOG"
   fi
 }
-trap cleanup EXIT
+trap 'cleanup $?' EXIT
 
 fail() {
   echo "smoke-image: FAIL: $1" >&2

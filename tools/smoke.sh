@@ -147,7 +147,8 @@
 #
 # 注意：QEMU TCG 下 CNTV tick 实测 ≈ SLICE_HZ/2（见 规则/08-QEMU与仿真.md / 雷册 §A8），
 # 切换率 ≈5/s，100 次切换 ≈20s，故金丝雀截止 180s 足够宽。
-# 调试：SMOKE_KEEP_LOG=1 just smoke 保留串口日志不删。
+# 调试：SMOKE_KEEP_LOG=1 just smoke 保留串口日志不删（M1 起失败自动保留
+# ——非零退出码即留，无需手动设变量）。
 set -u
 
 # 内核路径解析收敛在 paths.sh（单一事实源，justfile/CI 同源；含非交互 PATH 修补）。

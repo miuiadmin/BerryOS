@@ -169,10 +169,12 @@ pub fn run(args: RunArgs) -> Result<()> {
         if let Some(status) = child.try_wait()? {
             let text = tail.tail_text(4000);
             stop_child(&mut child, None);
-            // M1 失败现场保留：marker 面下 qemu 先退 = 未达 marker 必失败；
-            // 无 marker 面（交互 run）仅异常退出算失败——正常退出不保留。
+            // M1 失败现场保留：marker 面（CLI 有默认 marker「BerryOS boot」
+            //——空 marker 仅 --marker '' 显式可达）qemu 先退 = 未达 marker
+            // 必失败；显式空 marker 的交互 run 仅异常退出算失败——正常退
+            // 出不保留。
             if !status.success() || !args.marker.is_empty() {
-                run.keep();
+                run.keep_fail();
             }
             let marker_note = if args.marker.is_empty() {
                 String::new()
@@ -187,7 +189,7 @@ pub fn run(args: RunArgs) -> Result<()> {
         if Instant::now() >= deadline {
             let text = tail.tail_text(4000);
             stop_child(&mut child, None);
-            run.keep();
+            run.keep_fail();
             return Err(BerryError::timeout(format!(
                 "timed out after {}s waiting for '{}'",
                 args.timeout.as_secs(),
@@ -246,13 +248,13 @@ pub fn shot(args: ShotArgs) -> Result<()> {
     //（端点不起 / VNC 连不上 / qemu 先退 / 超时 / 取帧失败 / png 落盘
     // 失败）自动 keep run 目录，成功才默认删。
     if let Err(e) = wait_endpoint(&vnc, Duration::from_secs(10)) {
-        run.keep();
+        run.keep_fail();
         return Err(e);
     }
     let mut source = match VncSource::connect(&vnc) {
         Ok(s) => s,
         Err(e) => {
-            run.keep();
+            run.keep_fail();
             return Err(e);
         }
     };
@@ -266,7 +268,7 @@ pub fn shot(args: ShotArgs) -> Result<()> {
             }
             if let Some(status) = child.try_wait()? {
                 stop_child(&mut child, None);
-                run.keep();
+                run.keep_fail();
                 return Err(BerryError::device(format!(
                     "qemu exited ({status}) before marker '{marker}'"
                 ))
@@ -274,7 +276,7 @@ pub fn shot(args: ShotArgs) -> Result<()> {
             }
             if Instant::now() >= deadline {
                 stop_child(&mut child, None);
-                run.keep();
+                run.keep_fail();
                 return Err(BerryError::timeout(format!(
                     "timed out waiting for marker '{marker}'"
                 ))
@@ -290,14 +292,14 @@ pub fn shot(args: ShotArgs) -> Result<()> {
         Some(f) => f,
         None => {
             let err = source.error().unwrap_or_else(|| "no frame".to_string());
-            run.keep();
+            run.keep_fail();
             return Err(BerryError::protocol(format!("VNC: {err}"))
                 .with_hint(format!("serial tail:\n{}", tail.tail_text(4000))));
         }
     };
     let out = args.out.unwrap_or_else(|| PathBuf::from("shot.png"));
     if let Err(e) = crate::png::write_png(&out, frame.width, frame.height, &frame.to_rgb()) {
-        run.keep();
+        run.keep_fail();
         return Err(e);
     }
     let mut qmp = QmpClient::connect(&qmp_ep).ok();
@@ -2282,6 +2284,14 @@ pub(crate) fn find_run(id: Option<&str>) -> Result<PathBuf> {
     // 活设备（VNC 端点）优先；无 VNC run 时回落最新 run 目录——logs 等读
     // 面直接可用（文件在即读），VNC 类命令对回落 run 在 vnc_endpoint 报
     // 明确的 no VNC endpoint。
+    // 审计补刀：回落命中时 stderr 提示——无活设备时 berry logs 无参回放
+    // 的是死 run 旧 serial.log（旧版报 no running device），静默成功比报
+    // 错更误导。
+    if best_vnc.is_none() {
+        if let Some((_, p)) = &best_any {
+            eprintln!("berry: no live device; fell back to latest run dir {}", p.display());
+        }
+    }
     best_vnc
         .or(best_any)
         .map(|(_, p)| p)

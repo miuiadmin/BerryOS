@@ -1264,7 +1264,7 @@ ver-check:
     {{BASH}} tools/ver-check.sh
 
 # 无人值守冒烟（CI 同款入口）：boot 标记断言 + switches 金丝雀严格递增。
-# 调试保留串口日志：SMOKE_KEEP_LOG=1 just smoke
+# 调试保留串口日志：SMOKE_KEEP_LOG=1 just smoke（M1 起失败自动保留）
 smoke: build
     {{BASH}} tools/smoke.sh
 

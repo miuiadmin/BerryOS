@@ -1,5 +1,5 @@
-//! settings_io —— settings 应用五键持久化面（M2 第 8 步：theme_io 维八
-//! 暗色刀的单键版升格为全键版）。
+//! settings_io —— settings 应用五键持久化面（M2 第 8 步：theme_io 单键
+//! 前身（已并入本模块）升格为全键版）。
 //!
 //! 形态沿 theme_io / launcher `layout_io.rs` 的 canonical 单簇原子写先例：
 //!
@@ -29,7 +29,7 @@ use berry_ui::theme::Theme;
 /// 卷根配置文件（8.3 大写——fsmgr 单 FAT 卷根；LAYOUT.JSN 同位）。
 const PATH: &[u8] = b"SETTINGS.CFG\0";
 
-/// 旧档（theme_io 单键版；迁移读取面）。
+/// 旧档（单键前身形态；迁移读取面——迁完一两版可删）。
 const PATH_LEGACY: &[u8] = b"SETTINGS.JSN\0";
 
 /// 单次读块（theme_io 同款 256B）。

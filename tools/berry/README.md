@@ -8,7 +8,7 @@
 
 CLI 是主接口；窗口按钮只是命令的按钮化，任何 UI 动作都应有等价 CLI。
 
-设计依据：`docs/Berry设备平台-CLI-first设计-v1.0.md`（平台/CLI/控制面/快捷栏单一事实源）+
+设计依据：`docs/Berry设备平台-CLI-first设计-v1.8.md`（平台/CLI/控制面/快捷栏单一事实源）+
 `docs/berry设备壳设计草案-v1.0.md`（显示/帧面/QEMU 子系统）+ ADR #62 追记。**QEMU 只是引擎子进程**：
 帧面走 QEMU `memory-backend-file,share=on` 的客机 RAM 镜（`RamSource`），输入走
 VNC 多客户端（`VncInput`），生命周期/复位走 QMP。窗口、截图、缩放都在宿主侧。
@@ -17,8 +17,10 @@ VNC 多客户端（`VncInput`），生命周期/复位走 QMP。窗口、截图�
 
 ```bash
 just berry-build          # host 独立 workspace，显式 --target <host>
-just berry doctor         # QEMU / 固件 / 镜像 / accel
+just berry doctor         # QEMU / 固件 / 镜像 / accel / fw_cfg 键注入报告（--json 含 fwcfg 数组）
 ```
+
+fw_cfg 具名键（`opt/berry/*`）的单源键表在 `tools/fwcfg-keys.toml`（20 键：形态/注入方/消费方/极性），改键先改表再动代码，`bash tools/fwcfg-check.sh` 对拍两侧零漂移。
 
 `tools/berry` 是独立 workspace；根 `.cargo/config.toml` 把 `build.target` 锁成
 `aarch64-unknown-none`，所以必须走 `just berry-build`（或显式 `--target`）。宿主依赖
@@ -47,7 +49,7 @@ just berry shot --image out/berryos.img --out out/shot.png --timeout 120
 just berry shot --image out/berryos.img --profile phone --out out/phone.png
 just berry screenshot --out out/shot.png --settle-ms 500   # 抓正在跑的 shell，不重启
 just shell                                  # GUI 优先（out/berryos.img）/ console 回退
-just desktop                                # GUI 桌面：out/berryos-portrait.img + out/gui-data.img + tablet + 1080×1920@60
+just desktop                                # GUI 桌面：out/berryos-portrait.img + ~/.berry/data/desktop.img（一次造跨启动复用） + tablet + 1080×1920@60
 just berry shell --profile phone --timeout 30
 just berry device list
 just berry device status --run <id>
@@ -161,7 +163,8 @@ C1g 的 host 自动重启已落：`device start --restart-on-crash`（QEMU 异�
 | `BERRY_HOME` | run dir 根（默认 `~/.berry`，Windows `%LOCALAPPDATA%\BerryOS`） |
 | `BERRY_QEMU` | 指定 `qemu-system-aarch64` |
 | `BERRY_KERNEL` / `BERRY_IMAGE` | 默认内核/镜像 |
-| `BERRY_DATA_DISK` | GUI 桌面数据盘（FAT12 + `BERRYOSVBLK!`；launcher 需它拿 fs/app/input gift） |
+| `BERRY_DATA_DISK` | GUI 桌面数据盘（FAT12 + `BERRYOSVBLK!`；launcher 需它拿 fs/app/input gift；`just desktop` 默认设为 `~/.berry/data/desktop.img` 复用制） |
+| `BERRY_VARS_PERSIST` | vars.fd 可选持久位（设了且文件在即复用，不在则造 blank 到该位；未设 = one-per-run blank——确定性干净启动默认，勿放 run 目录内） |
 | `BERRY_VNC` | 对外 VNC 暴露 spec 兜底（`off`/`on`/`<port>`/`<host>:<port>`；显式 `--vnc` 优先，先例 `BERRY_DATA_DISK`） |
 | `BERRY_VNC_TLS` | `--vnc-tls` 证书目录兜底（spec 已给时仍可补 tls；要求 `--vnc` 非 off） |
 | `AAVMF_CODE` | AAVMF code pflash（默认 brew / 发行版路径） |

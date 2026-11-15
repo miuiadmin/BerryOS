@@ -7,9 +7,10 @@ cd "$(dirname "$0")/.."
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-# 代码侧：全仓提取 opt/berry/<name>；rootfsN 数字卷归并 rootfs0..9；
-# 只扫注入/消费代码面（docs 与 .agents 是文档不注入）。
-rg -o 'opt/berry/[a-z0-9-]+' --no-filename \
+# 代码侧：全仓提取 opt/berry/<name>（键名字符集含下划线/大写——正则宽
+# 于现行全小写键名，防未来键名形态让对拍假阴性）；rootfsN 数字卷归并
+# rootfs0..9；只扫注入/消费代码面（docs 与 .agents 是文档不注入）。
+rg -o 'opt/berry/[A-Za-z0-9_-]+' --no-filename \
   justfile tools/berry/src tools/*.sh tools/*.py kernel arch user 2>/dev/null \
   | sed -E -e 's|opt/berry/||' -e 's/^rootfs[0-9]+$/rootfs0..9/' | sort -u \
   > "$tmp/code.txt" || true

@@ -47,17 +47,19 @@ LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-x86.XXXXXX")
 QEMU_PID=""
 
 cleanup() {
+  # M1 失败必留（审计补刀：smoke.sh 同款——trap 传退出码，非零即保留）。
+  rc=${1:-0}
   if [ -n "$QEMU_PID" ] && kill -0 "$QEMU_PID" 2>/dev/null; then
     kill "$QEMU_PID" 2>/dev/null
     wait "$QEMU_PID" 2>/dev/null
   fi
-  if [ -n "${SMOKE_KEEP_LOG:-}" ]; then
+  if [ -n "${SMOKE_KEEP_LOG:-}" ] || [ "$rc" -ne 0 ]; then
     echo "smoke-x86: 串口日志保留：$LOG" >&2
   else
     rm -f "$LOG"
   fi
 }
-trap cleanup EXIT
+trap 'cleanup $?' EXIT
 
 fail() {
   echo "smoke-x86: FAIL: $1" >&2

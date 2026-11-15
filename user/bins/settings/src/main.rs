@@ -12,8 +12,9 @@
 //! `Ui::set_theme_mode` 引擎单源）；切换 = `set_theme_mode` 即时生效
 //! （FULL damage 全帧换肤：引擎组件色板随档换 + 本页 chrome——clear 底
 //! 与文本 fg——经 [`chrome`] 双档换，纯 PAINT 帧零重排）；持久化 =
-//! [`theme_io`]（SETTINGS.JSN 单簇近原子覆写，launcher LAYOUT.JSN 先例
-//! 同形；fs 礼物缺席装配退化为内存态开关——theme_io 头注诚实标注）。
+//! [`settings_io`]（SETTINGS.CFG 五键 canonical 单簇近原子覆写，含旧
+//! SETTINGS.JSN dark 键自动迁移，launcher LAYOUT.JSN 先例同形；fs 礼物
+//! 缺席装配退化为内存态开关——settings_io 头注诚实标注）。
 //!
 //! **链形态** = berry-launcher 镜像（musl std + berry-libc shim + CRT0
 //! 链接种子；gfxdemo/berry-launcher 先例）：
@@ -528,7 +529,7 @@ fn build(ui: &mut UiMain, st: &settings_io::State) -> Result<Page, UiError> {
     ui.set_a11y(sync_check, ROLE_TOGGLE, b"auto-sync check")?;
 
     // — 暗色开关（维八暗色刀：Toggle 消费 pattern/theme 冻结名——切换
-    //   = set_theme_mode 即时生效 + theme_io 落盘；checked 初值 = 启动
+    //   = set_theme_mode 即时生效 + settings_io 落盘；checked 初值 = 启动
     //   档同源）—
     let (r, theme_label, theme_tp) = row(
         ui,
