@@ -1114,6 +1114,10 @@ test-host:
 # cargo test -p berry-sched 走不通（lib 先于 tests 编译即败于 HAL），
 # 故 rustc --test 直跑单文件。改收紧律 / sched.rs 两消费臂必跑。
 test-oneshot:
+    # 刀 A 顺手修：rustc -o 落 target-cargo/ 但目录未必在（首跑即败
+    # "couldn't create a temp dir"）——mkdir 前置（mkfat --check-fixture
+    # 同位自足纪律）。
+    mkdir -p target-cargo
     rustc --test sched/host/oneshot_law_test.rs -o target-cargo/oneshot_law_test
     target-cargo/oneshot_law_test
 
