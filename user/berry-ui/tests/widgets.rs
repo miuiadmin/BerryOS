@@ -10,10 +10,11 @@ use berry_gfx::queue::Queue;
 use berry_ui::sdk::{
     column, divider, icon, row, text, Button, Card, EmptyState, InteractionState, ListTile,
     ListTileSpec, ListItem, Msg, NavigationIconSource, NAV_ICON_BACK, NAV_ICON_BACK_ACTIVE,
-    AlertDialog, AppBar, Badge, ButtonEmphasis, Checkbox, Chip, ChipKind, DialogAction, Grid,
-    IconButton, LoadingIndicator, Menu,
+    AlertDialog, AppBar, Badge, ButtonEmphasis, Checkbox, Chip, ChipKind, DatePicker,
+    DatePickerValue, DialogAction, Grid, IconButton, LoadingIndicator, Menu,
     MenuItemSpec, ProgressIndicator, Radio, SearchField, Section, SegmentedControl,
-    SegmentedItemSpec, Sheet, Slider, Stepper, TabBarStyle, TabItemSpec, Tabs, TextPicker, Toast,
+    SegmentedItemSpec, Sheet, Slider, Stepper, TabBarStyle, TabItemSpec, Tabs, TextPicker,
+    TimePicker, TimePickerValue, Toast, days_in_month,
     PanelProps, Props, RectProps, RectI, Scaffold, ScrollView, ScrollViewAxis, SwipePager,
     Switch, TextVariant, Theme, Ui, UiError, ViewKind, ViewSpec, WidgetContext, image,
 };
@@ -719,6 +720,94 @@ fn workflow_p0_quick_wins_are_real_sdk_apis() {
         ui.sem_of(item.panel).unwrap().state,
         berry_ui::SEM_STATE_SELECTED
     );
+}
+
+#[test]
+fn compact_date_and_time_pickers_are_real_and_clamped() {
+    let context = ctx(1080, 1920);
+    let mut ui = Ui::<128>::new(1080, 1920);
+    let root = ui.root();
+
+    assert_eq!(days_in_month(2024, 2), Some(29));
+    assert_eq!(days_in_month(2025, 2), Some(28));
+    assert_eq!(days_in_month(2025, 4), Some(30));
+    assert!(DatePicker::new(
+        &mut ui,
+        root,
+        &context,
+        DatePickerValue { year: 2025, month: 2, day: 29 },
+    )
+    .is_err());
+
+    let mut date = DatePicker::new(
+        &mut ui,
+        root,
+        &context,
+        DatePickerValue { year: 2024, month: 1, day: 31 },
+    )
+    .unwrap();
+    ui.layout();
+    assert_eq!(ui.bounds(date.panel).unwrap().w, 480);
+    assert_eq!(
+        ui.sem_of(date.panel).unwrap().value.as_bytes(),
+        b"2024-01-31"
+    );
+    let month_clicked = date
+        .on_msg(
+            &mut ui,
+            &context,
+            &Msg::Click { node: date.month_next() },
+        )
+        .unwrap();
+    assert!(month_clicked);
+    assert_eq!(
+        date.value(),
+        DatePickerValue { year: 2024, month: 2, day: 29 }
+    );
+    assert_eq!(
+        ui.sem_of(date.panel).unwrap().value.as_bytes(),
+        b"2024-02-29"
+    );
+    assert!(date
+        .on_msg(
+            &mut ui,
+            &context,
+            &Msg::Click { node: date.year_next() },
+        )
+        .unwrap());
+    assert_eq!(
+        date.value(),
+        DatePickerValue { year: 2025, month: 2, day: 28 }
+    );
+    assert_eq!(ui.sem_iter().count(), 7, "six buttons + one date value");
+
+    let mut ui = Ui::<64>::new(1080, 1920);
+    let root = ui.root();
+    let mut time = TimePicker::new(
+        &mut ui,
+        root,
+        &context,
+        TimePickerValue { hour: 1, minute: 59 },
+    )
+    .unwrap();
+    ui.layout();
+    assert_eq!(ui.bounds(time.panel).unwrap().w, 360);
+    assert_eq!(
+        ui.sem_of(time.panel).unwrap().value.as_bytes(),
+        b"01:59"
+    );
+    assert!(time
+        .on_msg(
+            &mut ui,
+            &context,
+            &Msg::Click { node: time.minute_next() },
+        )
+        .unwrap());
+    assert_eq!(
+        time.value(),
+        TimePickerValue { hour: 2, minute: 0 }
+    );
+    assert_eq!(ui.sem_of(time.panel).unwrap().value.as_bytes(), b"02:00");
 }
 
 #[test]

@@ -3447,6 +3447,448 @@ impl TextPicker {
     }
 }
 
+/// DatePicker 的 Plain Data 取值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DatePickerValue {
+    pub year: u16,
+    pub month: u8,
+    pub day: u8,
+}
+
+pub const DATE_PICKER_YEAR_MIN: u16 = 1970;
+pub const DATE_PICKER_YEAR_MAX: u16 = 2100;
+
+/// 公历月天数。1583 以现代格里历为唯一口径；Berry v1 产品档不引入历法变体。
+pub fn days_in_month(year: u16, month: u8) -> Option<u8> {
+    if !(1..=12).contains(&month) {
+        return None;
+    }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    Some(match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return None,
+    })
+}
+
+fn valid_date(value: DatePickerValue) -> bool {
+    (DATE_PICKER_YEAR_MIN..=DATE_PICKER_YEAR_MAX).contains(&value.year)
+        && days_in_month(value.year, value.month).is_some_and(|days| value.day >= 1 && value.day <= days)
+}
+
+fn date_bytes(value: DatePickerValue) -> ([u8; 16], usize) {
+    let mut out = [0u8; 16];
+    let mut len = 0usize;
+    let (year, year_len) = signed_decimal_bytes(i32::from(value.year));
+    out[..year_len].copy_from_slice(&year[..year_len]);
+    len += year_len;
+    out[len] = b'-';
+    len += 1;
+    let (month, month_len) = signed_decimal_bytes(i32::from(value.month));
+    if month_len == 1 {
+        out[len] = b'0';
+        out[len + 1] = month[0];
+    } else {
+        out[len] = month[0];
+        out[len + 1] = month[1];
+    }
+    len += 2;
+    out[len] = b'-';
+    len += 1;
+    let (day, day_len) = signed_decimal_bytes(i32::from(value.day));
+    if day_len == 1 {
+        out[len] = b'0';
+        out[len + 1] = day[0];
+    } else {
+        out[len] = day[0];
+        out[len + 1] = day[1];
+    }
+    len += 2;
+    (out, len)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PickerColumn {
+    previous: Button,
+    value: NodeId,
+    next: Button,
+}
+
+impl PickerColumn {
+    fn new<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, label: &[u8], width: u32,
+    ) -> Result<Self, UiError> {
+        let panel = add(
+            ui,
+            parent,
+            panel_spec(ctx.theme.colors.surface, Some(width), None, ctx.spacing(SpacingToken::Xs), 0, 0),
+        )?;
+        let line = add(
+            ui,
+            panel,
+            ViewSpec {
+                kind: ViewKind::Row,
+                key: 0,
+                props: Props::Row(RowProps {
+                    gap: ctx.spacing(SpacingToken::Xs),
+                    w: Some(width),
+                    h: None,
+                    cross: CrossAlign::Center,
+                }),
+            },
+        )?;
+        let previous = Button::new(ui, line, ctx, b"<", InteractionState::Normal)?;
+        let value = add(
+            ui,
+            line,
+            text_spec(label, ctx.theme.colors.text_primary, ctx.metrics.typography(TypographyToken::Body))?,
+        )?;
+        ui.set_a11y(value, ROLE_TEXT, label)?;
+        let next = Button::new(ui, line, ctx, b">", InteractionState::Normal)?;
+        Ok(Self {
+            previous,
+            value,
+            next,
+        })
+    }
+
+    fn set_label<const N: usize>(&self, ui: &mut Ui<N>, label: &[u8]) -> Result<(), UiError> {
+        ui.set_text(self.value, label)?;
+        ui.set_a11y(self.value, ROLE_TEXT, label)
+    }
+
+    fn on_msg<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, msg: &Msg,
+    ) -> Result<Option<bool>, UiError> {
+        if self.previous.on_msg(ui, ctx, msg)? {
+            return Ok(Some(true));
+        }
+        if self.next.on_msg(ui, ctx, msg)? {
+            return Ok(Some(false));
+        }
+        Ok(None)
+    }
+}
+
+/// 紧凑三方共性 DatePicker：年/月/日三列确定性调节。
+///
+/// 这是 compact/wheel picker 的 Plain Data 子集，不伪造滚轮惯性和月历格。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DatePicker {
+    pub panel: NodeId,
+    year: PickerColumn,
+    month: PickerColumn,
+    day: PickerColumn,
+    value: DatePickerValue,
+}
+
+impl DatePicker {
+    pub fn new<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, value: DatePickerValue,
+    ) -> Result<Self, UiError> {
+        if !valid_date(value) {
+            return Err(UiError::NodeBad);
+        }
+        let (vp_w, _) = ui.viewport();
+        let width = ctx.metrics.effective_px(640).min(vp_w);
+        let column = width / 3;
+        let panel = add(
+            ui,
+            parent,
+            panel_spec(ctx.theme.colors.surface, Some(width), None, ctx.spacing(SpacingToken::Xs), 0, 0),
+        )?;
+        let line = add(
+            ui,
+            panel,
+            ViewSpec {
+                kind: ViewKind::Row,
+                key: 0,
+                props: Props::Row(RowProps {
+                    gap: ctx.spacing(SpacingToken::Xs),
+                    w: Some(width),
+                    h: None,
+                    cross: CrossAlign::Center,
+                }),
+            },
+        )?;
+        let (bytes, len) = date_bytes(value);
+        let year_label = b"YYYY";
+        let year = PickerColumn::new(ui, line, ctx, year_label, column)?;
+        let month = PickerColumn::new(ui, line, ctx, b"MM", column)?;
+        let day = PickerColumn::new(ui, line, ctx, b"DD", column)?;
+        let mut picker = Self {
+            panel,
+            year,
+            month,
+            day,
+            value,
+        };
+        picker.apply_labels(ui)?;
+        ui.set_a11y(panel, ROLE_TEXT, &bytes[..len])?;
+        ui.set_sem(SemEntry::new(
+            panel,
+            SEM_ACTION_ADJUST,
+            SEM_STATE_SELECTED,
+            &bytes[..len],
+            0,
+            0,
+            true,
+        )?)?;
+        Ok(picker)
+    }
+
+    pub fn value(&self) -> DatePickerValue {
+        self.value
+    }
+
+    pub fn year_next(&self) -> NodeId {
+        self.year.next.panel
+    }
+
+    pub fn month_next(&self) -> NodeId {
+        self.month.next.panel
+    }
+
+    pub fn day_next(&self) -> NodeId {
+        self.day.next.panel
+    }
+
+    fn apply_labels<const N: usize>(&mut self, ui: &mut Ui<N>) -> Result<(), UiError> {
+        let (year, year_len) = signed_decimal_bytes(i32::from(self.value.year));
+        self.year.set_label(ui, &year[..year_len])?;
+        let (month, month_len) = signed_decimal_bytes(i32::from(self.value.month));
+        self.month.set_label(ui, &month[..month_len])?;
+        let (day, day_len) = signed_decimal_bytes(i32::from(self.value.day));
+        self.day.set_label(ui, &day[..day_len])
+    }
+
+    pub fn set_value<const N: usize>(
+        &mut self, ui: &mut Ui<N>, value: DatePickerValue,
+    ) -> Result<(), UiError> {
+        if !valid_date(value) {
+            return Err(UiError::NodeBad);
+        }
+        self.value = value;
+        self.apply_labels(ui)?;
+        let (bytes, len) = date_bytes(value);
+        ui.set_a11y(self.panel, ROLE_TEXT, &bytes[..len])?;
+        if let Some(mut semantic) = ui.sem_of(self.panel) {
+            semantic.value = TextBuf::new(&bytes[..len])?;
+            ui.set_sem(semantic)?;
+        }
+        Ok(())
+    }
+
+    pub fn on_msg<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, msg: &Msg,
+    ) -> Result<bool, UiError> {
+        if let Some(dec) = self.year.on_msg(ui, ctx, msg)? {
+            let year = if dec {
+                self.value.year.saturating_sub(1).max(DATE_PICKER_YEAR_MIN)
+            } else {
+                self.value.year.saturating_add(1).min(DATE_PICKER_YEAR_MAX)
+            };
+            let mut value = self.value;
+            value.year = year;
+            value.day = value.day.min(days_in_month(year, value.month).unwrap_or(28));
+            self.set_value(ui, value)?;
+            return Ok(true);
+        }
+        if let Some(dec) = self.month.on_msg(ui, ctx, msg)? {
+            let month = if dec {
+                self.value.month.saturating_sub(1).max(1)
+            } else if self.value.month == 12 {
+                1
+            } else {
+                self.value.month + 1
+            };
+            let mut value = self.value;
+            value.month = month;
+            value.day = value.day.min(days_in_month(value.year, month).unwrap_or(28));
+            self.set_value(ui, value)?;
+            return Ok(true);
+        }
+        if let Some(dec) = self.day.on_msg(ui, ctx, msg)? {
+            let days = days_in_month(self.value.year, self.value.month).unwrap_or(28);
+            let day = if dec {
+                self.value.day.saturating_sub(1).max(1)
+            } else if self.value.day == days {
+                1
+            } else {
+                self.value.day + 1
+            };
+            let mut value = self.value;
+            value.day = day;
+            self.set_value(ui, value)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+}
+
+/// TimePicker 的 Plain Data 取值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimePickerValue {
+    pub hour: u8,
+    pub minute: u8,
+}
+
+fn valid_time(value: TimePickerValue) -> bool {
+    value.hour < 24 && value.minute < 60
+}
+
+fn time_bytes(value: TimePickerValue) -> ([u8; 8], usize) {
+    let hour = signed_decimal_bytes(i32::from(value.hour));
+    let minute = signed_decimal_bytes(i32::from(value.minute));
+    let mut out = [0u8; 8];
+    if hour.1 == 1 {
+        out[0] = b'0';
+        out[1] = hour.0[0];
+    } else {
+        out[..2].copy_from_slice(&hour.0[..2]);
+    }
+    let mut len = 2usize;
+    out[len] = b':';
+    len += 1;
+    if minute.1 == 1 {
+        out[len] = b'0';
+        out[len + 1] = minute.0[0];
+    } else {
+        out[len] = minute.0[0];
+        out[len + 1] = minute.0[1];
+    }
+    len += 2;
+    (out, len)
+}
+
+/// 紧凑三方共性 TimePicker：时/分两列确定性调节，不伪造滚轮惯性。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimePicker {
+    pub panel: NodeId,
+    hour: PickerColumn,
+    minute: PickerColumn,
+    value: TimePickerValue,
+}
+
+impl TimePicker {
+    pub fn new<const N: usize>(
+        ui: &mut Ui<N>, parent: NodeId, ctx: &WidgetContext, value: TimePickerValue,
+    ) -> Result<Self, UiError> {
+        if !valid_time(value) {
+            return Err(UiError::NodeBad);
+        }
+        let (vp_w, _) = ui.viewport();
+        let width = ctx.metrics.effective_px(480).min(vp_w);
+        let column = width / 2;
+        let panel = add(
+            ui,
+            parent,
+            panel_spec(ctx.theme.colors.surface, Some(width), None, ctx.spacing(SpacingToken::Xs), 0, 0),
+        )?;
+        let line = add(
+            ui,
+            panel,
+            ViewSpec {
+                kind: ViewKind::Row,
+                key: 0,
+                props: Props::Row(RowProps {
+                    gap: ctx.spacing(SpacingToken::Xs),
+                    w: Some(width),
+                    h: None,
+                    cross: CrossAlign::Center,
+                }),
+            },
+        )?;
+        let hour = PickerColumn::new(ui, line, ctx, b"HH", column)?;
+        let minute = PickerColumn::new(ui, line, ctx, b"MM", column)?;
+        let (bytes, len) = time_bytes(value);
+        let mut picker = Self {
+            panel,
+            hour,
+            minute,
+            value,
+        };
+        picker.apply_labels(ui)?;
+        ui.set_a11y(panel, ROLE_TEXT, &bytes[..len])?;
+        ui.set_sem(SemEntry::new(
+            panel,
+            SEM_ACTION_ADJUST,
+            SEM_STATE_SELECTED,
+            &bytes[..len],
+            0,
+            0,
+            true,
+        )?)?;
+        Ok(picker)
+    }
+
+    pub fn value(&self) -> TimePickerValue {
+        self.value
+    }
+
+    pub fn minute_next(&self) -> NodeId {
+        self.minute.next.panel
+    }
+
+    fn apply_labels<const N: usize>(&mut self, ui: &mut Ui<N>) -> Result<(), UiError> {
+        let (hour, hour_len) = signed_decimal_bytes(i32::from(self.value.hour));
+        self.hour.set_label(ui, &hour[..hour_len])?;
+        let (minute, minute_len) = signed_decimal_bytes(i32::from(self.value.minute));
+        self.minute.set_label(ui, &minute[..minute_len])
+    }
+
+    pub fn set_value<const N: usize>(
+        &mut self, ui: &mut Ui<N>, value: TimePickerValue,
+    ) -> Result<(), UiError> {
+        if !valid_time(value) {
+            return Err(UiError::NodeBad);
+        }
+        self.value = value;
+        self.apply_labels(ui)?;
+        let (bytes, len) = time_bytes(value);
+        ui.set_a11y(self.panel, ROLE_TEXT, &bytes[..len])?;
+        if let Some(mut semantic) = ui.sem_of(self.panel) {
+            semantic.value = TextBuf::new(&bytes[..len])?;
+            ui.set_sem(semantic)?;
+        }
+        Ok(())
+    }
+
+    pub fn on_msg<const N: usize>(
+        &mut self, ui: &mut Ui<N>, ctx: &WidgetContext, msg: &Msg,
+    ) -> Result<bool, UiError> {
+        if let Some(dec) = self.hour.on_msg(ui, ctx, msg)? {
+            let hour = if dec {
+                self.value.hour.saturating_sub(1)
+            } else if self.value.hour == 23 {
+                0
+            } else {
+                self.value.hour + 1
+            };
+            let mut value = self.value;
+            value.hour = hour;
+            self.set_value(ui, value)?;
+            return Ok(true);
+        }
+        if let Some(dec) = self.minute.on_msg(ui, ctx, msg)? {
+            let mut value = self.value;
+            if dec {
+                value.minute = value.minute.saturating_sub(1);
+            } else if value.minute == 59 {
+                value.minute = 0;
+                value.hour = (value.hour + 1) % 24;
+            } else {
+                value.minute += 1;
+            }
+            self.set_value(ui, value)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+}
+
 /// SearchField：前置搜索 icon、TextField、后置清除按钮的组合件。
 ///
 /// 查询文本与 selection 仍归 app 的 TextInputState；清除 Click 只返回激活。

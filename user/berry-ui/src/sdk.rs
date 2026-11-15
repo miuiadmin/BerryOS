@@ -32,12 +32,14 @@ pub use crate::text_input::{
 };
 pub use crate::widgets::{
     AlertDialog, AppBar, Badge, Button, ButtonEmphasis, Card, Checkbox, Chip, ChipKind,
-    DialogAction, EmptyState, Grid, IconButton, ListDetail, ListDetailSpec, ListTile,
-    ListTileSpec, ListItem, LoadingIndicator, Menu, MenuItemSpec, OverlaySurface,
-    ProgressIndicator, Radio, SafeInsets, Scaffold, ScrollView, ScrollViewAxis, SearchField,
-    Section, SegmentedControl, SegmentedItemSpec, Sheet, Slider, Stepper, Switch, TabBarStyle,
-    TabItemSpec, Tabs, TextPicker, TextVariant, TextField, TextFieldSpec, Toast, WidgetContext,
-    column, divider, icon, image, row, text, SEGMENTED_MAX, TABS_MAX, TEXT_PICKER_MAX,
+    DatePicker, DatePickerValue, DialogAction, EmptyState, Grid, IconButton, ListDetail,
+    ListDetailSpec, ListTile, ListTileSpec, ListItem, LoadingIndicator, Menu, MenuItemSpec,
+    OverlaySurface, ProgressIndicator, Radio, SafeInsets, Scaffold, ScrollView, ScrollViewAxis,
+    SearchField, Section, SegmentedControl, SegmentedItemSpec, Sheet, Slider, Stepper, Switch,
+    TabBarStyle, TabItemSpec, Tabs, TextPicker, TextVariant, TextField, TextFieldSpec,
+    TimePicker, TimePickerValue, Toast, WidgetContext, column, days_in_month, divider, icon,
+    image, row, text, DATE_PICKER_YEAR_MAX, DATE_PICKER_YEAR_MIN, SEGMENTED_MAX, TABS_MAX,
+    TEXT_PICKER_MAX,
 };
 pub use crate::swipe::{
     SwipePager, DOT_OFF, DOT_ON, FLIP_VEL_PX_S, SNAP_DUR_NS, SWIPE_PAGES_MAX,

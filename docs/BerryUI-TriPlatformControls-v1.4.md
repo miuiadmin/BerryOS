@@ -1,6 +1,7 @@
 Type: standard
 Version: 1.4.0
-Status: current
+Status: superseded
+Superseded-by: [BerryUI-TriPlatformControls-v1.5.md](BerryUI-TriPlatformControls-v1.5.md)
 Updated: 2026-11-15
 
 # BerryUI 三方共性控件、浮层、P1 基础件与 Swiper/Image
