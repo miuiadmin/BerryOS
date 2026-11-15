@@ -162,6 +162,8 @@ pub(crate) const BADGE_DOT_D: u32 = 16;
 /// Badge 数字档水平留白（左右合计——数字两侧各 4；宽随位档 = 位档×8
 /// + 此值）。
 pub(crate) const BADGE_PAD_X: u32 = 8;
+/// Select 固定内在宽（下拉标准行——批 C）。
+pub(crate) const SELECT_W: u32 = 200;
 /// Tip 高（= S8x16 cell_h——Tip 文本与 Button 标签同档）。
 pub(crate) const TIP_H: u32 = 16;
 /// Collapse header 高（内在高恒定基 + expanded 子摆放纵向偏移——布
@@ -324,6 +326,9 @@ fn widget_value_ok(p: &Props) -> bool {
         // 组件第三批：Card elevation 0..=3（AST BadValue 同律——
         // desc::CARD_ELEVATION_MAX 单源；corner_radius 无域）。
         Props::Card(c) => c.elevation <= desc::CARD_ELEVATION_MAX,
+        // 波2 批 C：Select 选中索引域（option_count == 0 空选择器合法
+        // ——selected 恒 0）。
+        Props::Select(sl) => sl.option_count == 0 || sl.selected < sl.option_count,
         _ => true,
     }
 }
@@ -554,6 +559,9 @@ fn props_geom_equal(a: &Props, b: &Props) -> bool {
         (Props::List(x), Props::List(y)) => {
             x.item_count == y.item_count && x.item_height == y.item_height
         }
+        // 波2 批 C：Select 内在恒定（几何常量单源）——selected/
+        // option_count 全纯绘面。
+        (Props::Select(_), Props::Select(_)) => true,
         (Props::Tip(x), Props::Tip(y)) => x.text.as_bytes() == y.text.as_bytes(),
         (Props::Collapse(x), Props::Collapse(y)) => x.expanded == y.expanded,
         (Props::Chip(x), Props::Chip(y)) => x.label.as_bytes() == y.label.as_bytes(),
@@ -1129,6 +1137,8 @@ impl<const N: usize> Ui<N> {
                 | Some((ViewKind::Badge, Props::Badge(_)))
                 | Some((ViewKind::Scroll, Props::Scroll(_)))
                 | Some((ViewKind::List, Props::List(_)))
+                // 波2 批 C：Select 开口（selected/option_count 面）。
+                | Some((ViewKind::Select, Props::Select(_)))
                 // 组件第三批（Tip/Collapse/Chip/Fab/Card 开口）：文本/
                 // expanded/selected/扩展标签/elevation·corner_radius 面。
                 | Some((ViewKind::Tip, Props::Tip(_)))
@@ -1646,6 +1656,23 @@ impl<const N: usize> Ui<N> {
                     Some(Props::Button(p)) => {
                         let on_tap = p.on_tap;
                         self.fire_widget_event(node, on_tap, 0);
+                    }
+                    Some(Props::Select(p)) => {
+                        // 波2 批 C：Select 点击循环下一项（末项回 0；
+                        // 空选择器零操作）。展开面板挂波3/波4 消费面。
+                        if p.option_count == 0 {
+                            return;
+                        }
+                        let next = if p.selected + 1 >= p.option_count {
+                            0
+                        } else {
+                            p.selected + 1
+                        };
+                        let on_change = p.on_change;
+                        let np = Props::Select(desc::SelectProps { selected: next, ..p });
+                        if self.set_props(node, np).is_ok() {
+                            self.fire_widget_event(node, on_change, next);
+                        }
                     }
                     Some(Props::Toggle(p)) => {
                         let checked = !p.checked;

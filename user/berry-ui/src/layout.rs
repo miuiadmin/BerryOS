@@ -366,6 +366,7 @@ fn intrinsic(
                 )
             }
         }
+        Props::Select(_) => (crate::SELECT_W, crate::BUTTON_H),
         Props::Scroll(p) => {
             let (cw, _, _) = child_agg(nodes, n.first_child, true);
             (u64_to_u32_sat(cw), p.content_height)
@@ -473,7 +474,6 @@ fn intrinsic(
         // 协议定——全挂 Phase 2 布局刀，本层 0×0 占位（place_children
         // 走 `_` 臂全幅叠放，半实现必与摆放失配——「不半实现」纪律
         // 同源）。
-        | Props::Select(_)
         | Props::Input(_)
         | Props::Edit(_)
         | Props::Canvas(_)
@@ -643,7 +643,8 @@ fn final_size(n: &Node, avail_w: i32, avail_h: i32) -> (i32, i32) {
         // 入；SIZE 块同拒）。
         | Props::Tip(_)
         | Props::Chip(_)
-        | Props::Fab(_) => (u32_to_i32_sat(n.meas_w), u32_to_i32_sat(n.meas_h)),
+        | Props::Fab(_)
+        | Props::Select(_) => (u32_to_i32_sat(n.meas_w), u32_to_i32_sat(n.meas_h)),
         // Collapse = 纵向容器（Col 同形）：十字轴吃 avail、主轴内在
         //（收起折叠至 header 高——expanded 几何位单源 intrinsic）。
         Props::Collapse(_) => (avail_w, u32_to_i32_sat(n.meas_h)),
@@ -654,9 +655,8 @@ fn final_size(n: &Node, avail_w: i32, avail_h: i32) -> (i32, i32) {
         | Props::List(_)
         | Props::Stack(_)
         | Props::Spacer(_)
-        // P0 尾四件（占位同前两批）：随父填充；SIZE 块同拒（§8.2 表
-        // 未随本批扩——无双源）。
-        | Props::Select(_)
+        // P0 尾三件（占位同前两批）：随父填充；SIZE 块同拒（§8.2 表
+        // 未随本批扩——无双源）。Select 批 C 已迁内在型叶（上表）。
         | Props::Input(_)
         | Props::Edit(_)
         | Props::Canvas(_)

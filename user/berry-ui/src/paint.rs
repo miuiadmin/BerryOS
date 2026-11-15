@@ -95,6 +95,12 @@ const SBAR_MIN_THICK: i32 = 4;
 pub const BADGE_BG: Color = Color { r: 0xD9, g: 0x2B, b: 0x2B };
 /// Badge 数字前景（红底白字）。
 pub const ON_BADGE: Color = Color { r: 0xFF, g: 0xFF, b: 0xFF };
+/// Select 框底（下拉选择器——组件面白）。
+pub const SELECT_BG: Color = Color { r: 0xFF, g: 0xFF, b: 0xFF };
+/// Select 框边（OUTLINE 同系）。
+pub const SELECT_BORDER: Color = Color { r: 0x66, g: 0x66, b: 0x66 };
+/// Select 箭头/索引前景。
+pub const SELECT_FG: Color = Color { r: 0x21, g: 0x21, b: 0x21 };
 /// pressed 视觉活动集（波2 批 A：press_map active 条目的 visual 槽值
 /// 快照——emit 期查表换暗色底；容量 = PRESS_MAP_MAX 同源上界，调用方
 /// 保证不超）。
@@ -371,7 +377,8 @@ fn cull_walk(
         | ViewKind::Collapse
         | ViewKind::Chip
         | ViewKind::Fab
-        | ViewKind::Card => {}
+        | ViewKind::Card
+        | ViewKind::Select => {}
         ViewKind::Root
         | ViewKind::Col
         | ViewKind::Row
@@ -466,7 +473,8 @@ fn emit_walk_all<'a>(
         | ViewKind::Collapse
         | ViewKind::Chip
         | ViewKind::Fab
-        | ViewKind::Card => {
+        | ViewKind::Card
+        | ViewKind::Select => {
             let b = RectI::new(i64_to_i32_sat(bx), i64_to_i32_sat(by), n.w, n.h);
             if b.intersect(d).is_empty() {
                 rep.culled += 1; // damage 外叶子
@@ -914,6 +922,42 @@ fn emit_node<'a>(
                 fill(enc, b.x, b.y, b.w - off, b.h - off, CARD_BG, rep);
             } else {
                 fill(enc, b.x, b.y, b.w, b.h, CARD_BG, rep);
+            }
+        }
+        // 波2 批 C（Select）：下拉选择器 = 白底框（描边四边组合——
+        // Outlined 按钮同形）+ 右侧下拉箭头 v 形 + 选中索引十进制数字
+        //（选项文本不进数据层——Seg 同律计数面；数字为索引值级可对拍）。
+        Props::Select(p) => {
+            let t = BUTTON_BORDER.min(b.w / 2).min(b.h / 2).max(1);
+            fill(enc, b.x, b.y, b.w, t, SELECT_BORDER, rep);
+            fill(enc, b.x, b.y + b.h - t, b.w, t, SELECT_BORDER, rep);
+            fill(enc, b.x, b.y + t, t, b.h - 2 * t, SELECT_BORDER, rep);
+            fill(enc, b.x + b.w - t, b.y + t, t, b.h - 2 * t, SELECT_BORDER, rep);
+            if b.w > 2 * t && b.h > 2 * t {
+                fill(enc, b.x + t, b.y + t, b.w - 2 * t, b.h - 2 * t, SELECT_BG, rep);
+            }
+            // 箭头 v：右端 16px 区带内三行递缩（fill 组合近似）。
+            let ax = b.x + b.w - 16;
+            let cy = b.y + b.h / 2;
+            fill(enc, ax, cy - 4, 8, 2, SELECT_FG, rep);
+            fill(enc, ax + 2, cy - 2, 4, 2, SELECT_FG, rep);
+            fill(enc, ax + 3, cy, 2, 2, SELECT_FG, rep);
+            // 选中索引数字（1 起——人类序；0 = 空选择器/未选）。
+            if p.selected > 0 || p.option_count > 0 {
+                let idx1 = p.selected.saturating_add(1); // 1 起显示
+                let mut buf = [b'0'; 3];
+                let n = if idx1 > 99 {
+                    buf.copy_from_slice(b"99+");
+                    3
+                } else if idx1 >= 10 {
+                    buf[0] = b'0' + (idx1 / 10) as u8;
+                    buf[1] = b'0' + (idx1 % 10) as u8;
+                    2
+                } else {
+                    buf[0] = b'0' + idx1 as u8;
+                    1
+                };
+                emit_widget_text(&buf[..n], b.x + 4, b.w - 20, b.y, b.h, SELECT_FG, rest, enc, rep);
             }
         }
         // Root/Col/Row/Pad/Grid + 余组件件：无视觉内容（子树各自发射）
