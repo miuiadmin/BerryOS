@@ -37,7 +37,7 @@ Status: implemented
 
 - 计划（契约/偏差/验收记录）：[2026-11-13-vnc-maturity-wave2](../../plans/2026-11-13-vnc-maturity-wave2.md)
 - 第一波笔记（本波反转其「内建页面 vs 透传选透传」一条，其余互链）：[2026-11-13-vnc-desktop-suite](2026-11-13-vnc-desktop-suite.md)
-- 设计（§7/§8/§13/§14/§15，v1.2）：[Berry设备平台-CLI-first设计-v1.0](../../../docs/Berry设备平台-CLI-first设计-v1.0.md)
+- 设计（§7/§8/§13/§14/§15，v1.2）：[Berry设备平台-CLI-first设计-v1.0](../../../docs/Berry设备平台-CLI-first设计-v1.8.md)
 - vendored 资产声明：[tools/berry/web/NOTICE.md](../../../tools/berry/web/NOTICE.md)
 - 代码：`tools/berry/src/web.rs`（HTTP/1.1 静态服务）、`vnc_cfg.rs`（tls/dial_host/rebuild_auto_ports/到期翻译）、`qmp.rs`（读线程 + 事件 sink）、`qemu.rs`（`tls-creds-x509` 追加）、`device.rs`（sink 装配 + `boot_with_retry`）、`commands.rs`/`control.rs`/`main.rs`（布线）
 - 实证产物：`out/vnc-w2-novnc-browser.png`（Chrome headless 网页桌面）、`out/vnc-w2-realvnc-frame.png`（RealVNC 真客户端帧）

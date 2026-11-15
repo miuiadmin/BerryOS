@@ -6,7 +6,7 @@ version = "0.2.0"
 edition = "2021"
 
 # timer slack 聚合判定律——host 纯函数面(零依赖)。
-# 设计锚:docs/调度器设计-v1.1.md §3.8 :155「timer 原语带 slack+policy 三元组
+# 设计锚:docs/调度器设计-v1.2.md §3.8 :156「timer 原语带 slack+policy 三元组
 # (学 zx_timer_set,v1 day-one)」——01 号对账硬缺口 #9「代码零命中」的判定律
 # 兑现第一步(纯面先行,sched 接线归接线窗:sched 域 owner 在途,本件零碰)。
 # 形态照 user 族独立小工作区例(berry-power/berry-thermal 同款空 [workspace]

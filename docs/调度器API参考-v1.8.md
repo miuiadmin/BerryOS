@@ -1,11 +1,11 @@
 # 调度器 API 参考
 
-> 版本：v1.7（2026-11-15 升版：调度终窗 idle 闭合+M4 骨架〔01cd881b〕——`spawn_user_env` 新 fn〔sched.rs 79→80，boot env 旗标面 x1 递 EL0 服务〕+ `try_prepare_user`/`try_spawn_user` 签名扩 `arg1` 参 + `band_of`〔policy.rs 15→16，band 选择位读出口——v1 恒 `BAND_SEL_NONE` 纯预留〕+ `FairBand::new`/`class_fair_intent`〔class.rs 2→4，Intent M4 带实例工厂〕，合计 144→148、const 3→4；v1.6：P2-2 退出异步化〔9791a99〕新增 `set_reap_post_hook` 单 fn（sched.rs 78→79）——`reap_drain` 尾钩子槽，kernel 侧 pending ht-drain 队列的异步排水入口，合计 143→144；v1.5：PI 形 B 修复〔42a794e0〕新增 `pi_rq_lock`/`pi_rq_unlock`/`for_each_runnable`/`rq_insert_kt`/`rq_unlink_kt` 五 fn（sched.rs 73→78）+ G5 bootparams〔345739e1〕新增 `set_intent_default`/`intent_default` 双 fn（intent.rs 2→4），合计 136→143；v1.4：daa5ef7e perf(pi) 全图重推门控新增 `pi_recompute_needed`/`pi_boost_recount` 双计数闸门 fn，sched.rs 71→73、合计 134→136；v1.3：W3-Q16 HDR 形状与分位数学外迁随迁——`bucket_of`/`bucket_upper`/`Hdr`/`CpuHdr` 等 12 项转 re-export 单源 `berry_hdrface`，hdr.rs 20→8 机械壳，计数 146→134；v1.2：W3-Q13 `intent_valid` 外迁随迁 147→146）｜ 对象：`sched/` crate（`berry-sched`，12 文件）｜ 审计口径：**148 个 `pub fn`**（含 `pub const fn` / `pub unsafe fn`，逐文件机提 + 人工核对 + sched/ 12 文件全量复核；初估 132 为低估）
-> 事实源 = 源码 doc 注释首行（提取时点 2026-11-08，2026-11-11 增量对拍至 daa5ef7e，2026-11-13 增量对拍至 f44c2ba8/HEAD，2026-11-15 增量对拍至 01cd881b/HEAD）；本文是影抄不是立法——签名冲突时以 `sched/src/` 为准并回改本文。
+> 版本：v1.8（2026-11-15 升版：A 线审计 §4 漏登收口——补登 `sched/src/oneshot.rs`（第 13 文件，`tighten_deadline` 1 fn〔c3022903b 忙核 arm-to-nearest-deadline 收紧律，lib.rs:53 已 `pub use`；v1.7 升版时该件在途未并故缺席〕），对象口径 12→13 文件、合计 148→149（sched.rs 80 逐文件口径不变——「12 文件 148」系 oneshot 缺席非虚计，非逐文件重算差）；v1.7：2026-11-15 升版：调度终窗 idle 闭合+M4 骨架〔01cd881b〕——`spawn_user_env` 新 fn〔sched.rs 79→80，boot env 旗标面 x1 递 EL0 服务〕+ `try_prepare_user`/`try_spawn_user` 签名扩 `arg1` 参 + `band_of`〔policy.rs 15→16，band 选择位读出口——v1 恒 `BAND_SEL_NONE` 纯预留〕+ `FairBand::new`/`class_fair_intent`〔class.rs 2→4，Intent M4 带实例工厂〕，合计 144→148、const 3→4；v1.6：P2-2 退出异步化〔9791a99〕新增 `set_reap_post_hook` 单 fn（sched.rs 78→79）——`reap_drain` 尾钩子槽，kernel 侧 pending ht-drain 队列的异步排水入口，合计 143→144；v1.5：PI 形 B 修复〔42a794e0〕新增 `pi_rq_lock`/`pi_rq_unlock`/`for_each_runnable`/`rq_insert_kt`/`rq_unlink_kt` 五 fn（sched.rs 73→78）+ G5 bootparams〔345739e1〕新增 `set_intent_default`/`intent_default` 双 fn（intent.rs 2→4），合计 136→143；v1.4：daa5ef7e perf(pi) 全图重推门控新增 `pi_recompute_needed`/`pi_boost_recount` 双计数闸门 fn，sched.rs 71→73、合计 134→136；v1.3：W3-Q16 HDR 形状与分位数学外迁随迁——`bucket_of`/`bucket_upper`/`Hdr`/`CpuHdr` 等 12 项转 re-export 单源 `berry_hdrface`，hdr.rs 20→8 机械壳，计数 146→134；v1.2：W3-Q13 `intent_valid` 外迁随迁 147→146）｜ 对象：`sched/` crate（`berry-sched`，13 文件）｜ 审计口径：**149 个 `pub fn`**（含 `pub const fn` / `pub unsafe fn` / `pub unsafe extern "C" fn`，逐文件机提 + 人工核对 + sched/ 13 文件全量复核〔v1.8 重数：`grep -oE 'pub (const |unsafe )*(extern "C" )?fn'` 逐文件=7/4/6/8/4/0/1/16/7/80/4/5/7 合计 149〕；初估 132 为低估）
+> 事实源 = 源码 doc 注释首行（提取时点 2026-11-08，2026-11-11 增量对拍至 daa5ef7e，2026-11-13 增量对拍至 f44c2ba8/HEAD，2026-11-15 增量对拍至 01cd881b/HEAD，2026-11-15 v1.8 补登对拍至 4f673f206/HEAD——oneshot.rs 全量复核）；本文是影抄不是立法——签名冲突时以 `sched/src/` 为准并回改本文。
 
 ## 使用方法
 
-- **查 API**：按下方八个模块分组浏览；每条目格式为签名 + `> 模块 | 一句话描述`（描述提自该函数 doc 注释首行，`[`链接`]` 已清洗）。
+- **查 API**：按下方九个模块分组浏览（附：自旋锁不计）；每条目格式为签名 + `> 模块 | 一句话描述`（描述提自该函数 doc 注释首行，`[`链接`]` 已清洗）。
 - **调用路径**：所有条目均可经 crate 根 `berry_sched::` 直达（`sched/src/lib.rs` 的 `pub use` 扁平再导出）；未导出者（如 `Runqueue::link_back`）标注 `pub(crate)`。
 - **unsafe 条目**：签名标 `unsafe` 者携带 Safety 契约（IRQ 上下文/锁窗/C-ABI 槽），调用前读源码对应 `# Safety` 节。
 - **trait 面**：`SchedClass` 的 `enqueue`/`dequeue`/`pick_next`/`tick`/`priority` 是 trait 方法（签名冻结，一字不改），非自由函数——归入「一、调度核心」节末表。
@@ -588,6 +588,15 @@ intent（u8）第一类输入：六档词汇表（ADR #58）+ send/recv 两侧�
 
 ---
 
+## 九、oneshot 收紧律（oneshot.rs）
+
+忙核 arm-to-nearest-deadline（CP-17 前置子件，c3022903b）——tick/授片两臂共用的纯决策律单源，host 钉板 `sched/host/oneshot_law_test.rs`（`just test-oneshot`，rustc 直编同源编译）；无 HAL/asm 依赖，纯 core 面。v1.8 补漏登（A 线审计 §4——v1.7 升版时该文件在途未并）。
+
+### `tighten_deadline(nearest: Option<u64>, armed: u64) -> Option<u64>`
+> oneshot | 收紧律：已知最近到期超时 `nearest` 与现编程截止 `armed`，**仅当 `nearest` 严格早于 `armed` 才收紧**（`Some(d)`），否则 `None` 保持现臂（无到期/不更早 → 周期 tick 兜底已在场）——方向性与 `arm_slice` 的 S-6 单调夹取同向，只在「更早」方向移动、永不推迟；`nearest ≤ now` 过期值合法（compare 立即成立即醒，回环 `expire_timeouts` 承接）；`nearest == armed` 同值幂等不重臂。消费臂两处（sched.rs）：`on_irq_tick` 的 `expire_timeouts` 之后（tick 处理器 oneshot 化）+ `block_current` 忙核授片臂——两臂合璧后 CVAL 恒 ≤ 最近已知截止，睡眠唤醒粒度从 1 slice 收紧到真 deadline（R-1 δ 塌缩 16.5-33.1× 实测在册）。
+
+---
+
 ## 附：自旋锁（spin.rs）
 
 `SpinLock`（TTAS：CAS 入主，失败转廉读自旋让出总线）——lib.rs 未列 `pub use`，经 `berry_sched::spin::` 路径可达。
@@ -619,6 +628,7 @@ intent（u8）第一类输入：六档词汇表（ADR #58）+ send/recv 两侧�
 | runqueue.rs | 7 | 七、环形队列 |
 | intent.rs | 4（+`pub use` re-export 族：`intent_valid` 单源 `berry_intface`；G5 前 2） | 八、intent |
 | spin.rs | 4 | 附 |
+| oneshot.rs | 1 | 九、oneshot 收紧律（v1.8 补登——c3022903b） |
 | class.rs | 4（+trait 5 法） | 一、调度核心 |
 | lib.rs | 0（`pub use` 根） | — |
-| **合计** | **148** | ｜ 含 `unsafe` 8、`const` 4、`extern "C"` 4（v1.7：调度终窗〔01cd881b〕+4 fn 后 148——`spawn_user_env`〔sched.rs，safe〕/`band_of`〔policy.rs，safe〕/`FairBand::new`〔class.rs，const——const 3→4〕/`class_fair_intent`〔class.rs，safe〕+ `try_prepare_user`/`try_spawn_user` 签名扩 `arg1` 参净计数不变；v1.6 的 144 为终窗前时点；v1.6：P2-2 退出异步化 +1 fn〔`set_reap_post_hook`，safe 非 const〕后 144——v1.5 的 143 为退出异步化前时点；v1.5：PI 形 B〔42a794e0〕+5 fn + G5 intent 缺省档〔345739e1〕+2 fn 后 143——v1.4 的 136 为形 B/G5 前时点，新增 7 fn 全 safe 非 const；v1.4：daa5ef7e perf(pi) 全图重推门控 +2 fn 后 136——v1.3 的 134 为门控前时点；v1.3：W3-Q16 hdrface 外迁后 134——v1.2 的 146 为外迁前时点，const 6→3 = `bucket_upper`/`Hdr::new`/`CpuHdr::new` 三 const 随迁；v1.2：W3-Q13 `intent_valid` 外迁 re-export 后 146，v1.1 的 147 为外迁前时点；const 6 系 v1.1 勘误，v1.0 笔误 5 不回传；W3-Q6 起含 `intent_settle_current_ext`） |
+| **合计** | **149** | ｜ 含 `unsafe` 8、`const` 4、`extern "C"` 4（v1.8：补登 oneshot.rs `tighten_deadline`〔第 13 文件，safe〕后 149——v1.7 的 148 为该件在途未并时点，A 线审计 §4 收口；v1.7：调度终窗〔01cd881b〕+4 fn 后 148——`spawn_user_env`〔sched.rs，safe〕/`band_of`〔policy.rs，safe〕/`FairBand::new`〔class.rs，const——const 3→4〕/`class_fair_intent`〔class.rs，safe〕+ `try_prepare_user`/`try_spawn_user` 签名扩 `arg1` 参净计数不变；v1.6 的 144 为终窗前时点；v1.6：P2-2 退出异步化 +1 fn〔`set_reap_post_hook`，safe 非 const〕后 144——v1.5 的 143 为退出异步化前时点；v1.5：PI 形 B〔42a794e0〕+5 fn + G5 intent 缺省档〔345739e1〕+2 fn 后 143——v1.4 的 136 为形 B/G5 前时点，新增 7 fn 全 safe 非 const；v1.4：daa5ef7e perf(pi) 全图重推门控 +2 fn 后 136——v1.3 的 134 为门控前时点；v1.3：W3-Q16 hdrface 外迁后 134——v1.2 的 146 为外迁前时点，const 6→3 = `bucket_upper`/`Hdr::new`/`CpuHdr::new` 三 const 随迁；v1.2：W3-Q13 `intent_valid` 外迁 re-export 后 146，v1.1 的 147 为外迁前时点；const 6 系 v1.1 勘误，v1.0 笔误 5 不回传；W3-Q6 起含 `intent_settle_current_ext`） |

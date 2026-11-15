@@ -356,7 +356,15 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
             // 的 RAM 镜（宿主共享 RAM 面）。缺席 = 原 800×600 零扰动。
             let (mut gw, mut gh, mut gs) = (g.width, g.height, g.stride);
             let mut need_alloc = false;
-            if let Some((w, h)) = display_mode_req() {
+            if let Some((w0, h)) = display_mode_req() {
+                // ramfb 宽度 32 对齐（2026-11-15 会审定谳）：非对齐宽（如
+                // 1080）传 QEMU 后 surface 按对齐几何（1088）建、扫出断裂
+                // ——客机画面完整进 ramfb 而 VNC/screendump 恒黑帧；对齐后
+                // 1088×1920 全链实证恢复（画面/导航条/输入）。480/800 天生
+                // 对齐从未触雷。8px 边缘列由壁纸铺满消化，launcher 按
+                // fbinfo 几何自适应零改动。证据：.agents/research/2026-11-15-
+                // 1080p恒黑根因会审.md 终审补记。
+                let w = (w0 + 31) & !31;
                 let stride = w.saturating_mul(4);
                 let cap = (g.stride as u64) * (g.height as u64);
                 let need = (stride as u64) * (h as u64);
@@ -851,7 +859,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // EL0 pager、无 0x21；marker `DPG ok` = smoke 裸相第 28 标记）。
     dpg::init();
 
-    // ---- 方案 B（调点调度-v1.3 §9 留刀 / 调度器设计-v1.1 §测量基础设施）：
+    // ---- 方案 B（调点调度-v1.3 §9 留刀 / 调度器设计-v1.2 §测量基础设施）：
     // rwake 真 sleep/wake 唤醒基准——HDR 第二个真实消费者（首个 = ktest
     // test_hdr_wake 方案 A 忙等；本任务是它的真睡相：`block_current(0,0,
     // deadline)` 纯睡 + on_irq_tick 超时扫描唤醒，**IRQ 唤醒而非忙等** =
@@ -3677,8 +3685,24 @@ extern "C" fn task_intent_probe(_arg: usize) -> ! {
         }
     });
     berry_hal_aarch64::kern_lock::klock_exit();
+    // 44 号 §4-14 顺手刀：断言前打独立诊断行——panic 消息不含「缺哪个睡眠者」，
+    // 且 BCTS/smoke 日志面只 grep 标记行（INTENT 缺席不报因）；诊断行直给四
+    // 睡眠者在席位（1/0 × mid/a/b/slow），日志即证据、无需读源解码。
+    if !(saw_mid && saw_a && saw_b && saw_slow) {
+        berry_hal_aarch64::kern_lock::with_print_lock(|| {
+            berry_hal_aarch64::uart_puts(b"E INTENT probe saw mid/a/b/slow=");
+            berry_hal_aarch64::uart_put_dec(saw_mid as u64);
+            berry_hal_aarch64::uart_puts(b"/");
+            berry_hal_aarch64::uart_put_dec(saw_a as u64);
+            berry_hal_aarch64::uart_puts(b"/");
+            berry_hal_aarch64::uart_put_dec(saw_b as u64);
+            berry_hal_aarch64::uart_puts(b"/");
+            berry_hal_aarch64::uart_put_dec(saw_slow as u64);
+            berry_hal_aarch64::uart_puts(b"\n");
+        });
+    }
     assert!(saw_mid && saw_a && saw_b && saw_slow,
-           "it_probe: 四睡眠者未同时在线（时序未达）");
+           "it_probe: sleepers mid/a/b/slow not all online");
     assert!(crate::telemetry::intent_borrows() >= 3,
            "it_probe: 借入计数须 ≥3（mid/sinkA/slow 三次结算）");
     assert!(crate::telemetry::intent_hop_capped_total() >= 1,
@@ -4351,7 +4375,7 @@ extern "C" fn task_rt_probe(arg: usize) -> ! {
 
 // ---- 方案 B：rwake 真 sleep/wake 唤醒基准（HDR 第二个真实消费者；boot 门控
 // spawn 块见上方 dpg::init 后；设计 = docs/调点调度-v1.3.md §9 留刀 +
-// docs/调度器设计-v1.1.md §测量基础设施「boot 序列真 sleep/wake」）----
+// docs/调度器设计-v1.2.md §测量基础设施「boot 序列真 sleep/wake」（:403 留刀行））----
 
 /// rwake 的 fw_cfg 具名项名（门控键——手跑/bench 专递
 /// `-fw_cfg name=opt/berry/rwake,string=1`；RT_PROBE_NAME 同款「两侧对读

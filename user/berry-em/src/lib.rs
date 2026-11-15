@@ -4,8 +4,8 @@
 //! 选核算法 compute_energy/FEuC …能量比较单源 host 钉板」；:70 裁四「判定
 //! 律先 host 钉板后进内核」）。现状两源：EM **形状**已单源 berry-emface
 //! （W3-Q14——emface/src/lib.rs:1-35，sched/src/em.rs:32 re-export 消费），
-//! 而**能量算法**「留 M2/真机」（docs/调度器设计-v1.1.md:346「零算法」；
-//! :345 QEMU virt 默认表）；01 号实测 EM「有产无消」（research/调度彻底
+//! 而**能量算法**「留 M2/真机」（docs/调度器设计-v1.2.md:357「零算法」；
+//! :356 QEMU virt 默认表）；01 号实测 EM「有产无消」（research/调度彻底
 //! 计划/01-调度现状全景与在途线收编.md:144「util EWMA（产）/placement
 //! hint（产）/EM 表（数据面）三件全部有产无消」）。本 crate 补**消**侧
 //! 第一块纯面：容量查询 + 选核打分（EAS 式 energy_diff 最简形）+ QEMU

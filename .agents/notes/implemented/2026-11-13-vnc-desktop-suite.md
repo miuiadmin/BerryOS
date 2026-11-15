@@ -35,6 +35,6 @@ BerryOS 桌面此前只有 berry 自己能看、能点：帧面主路是共享�
 ## Related
 
 - 计划（契约/偏差/验收记录）：[2026-11-13-vnc-desktop-suite](../../plans/2026-11-13-vnc-desktop-suite.md)
-- 设计（§7/§8/§13/§14/§15，v1.1）：[Berry设备平台-CLI-first设计-v1.0](../../../docs/Berry设备平台-CLI-first设计-v1.0.md)
+- 设计（§7/§8/§13/§14/§15，v1.1）：[Berry设备平台-CLI-first设计-v1.0](../../../docs/Berry设备平台-CLI-first设计-v1.8.md)
 - 代码：`tools/berry/src/vnc_cfg.rs`、`tools/berry/src/display/des.rs`、`tools/berry/src/display/vnc.rs`（`connect_auth`）、`tools/berry/src/qemu.rs`（双 `-vnc`）、`tools/berry/src/control.rs`（`vnc`/`vnc_passwd` op）
 - 冒烟产物：`out/vnc-smoke-desktop.png`、`out/vnc-smoke-regress-default.png`

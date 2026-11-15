@@ -107,7 +107,7 @@ check-appdir.sh TPN 段（L341-358）在 web/NOTICE.md 检查对（L353-357）�
 | [tools/berry/src/main.rs](../../tools/berry/src/main.rs) | `VncWebCmd`（L464-503）；dispatch `vnc_web` 调用（L~770-790） | 增 `--ca`/`--insecure`（help 注依赖与互斥）；dispatch 传参与校验（rc=2 路径）；其余零改 |
 | [tools/berry/packaging/linux/check-appdir.sh](../../tools/berry/packaging/linux/check-appdir.sh) | TPN 段 L341-358 | L357 与 L358 之间第四对 grep（`^qrcodegen 1.8`，rustls 行同型） |
 | [tools/berry/README.md](../../tools/berry/README.md) | `vnc web` 段 | TLS run 的 LAN 用法（`--ca`/`--insecure`/上游语义/安全姿态）；直参化无感变更说明（内部机制退役，CLI 零变化） |
-| [docs/Berry设备平台-CLI-first设计-v1.0.md](../../docs/Berry设备平台-CLI-first设计-v1.0.md) | 头块（现 v1.7）；§8 命令树行（L361）与参数说明；§13 LAN 行（L579）；§14 刀序表 | 升 v1.8：版本行 + 【v1.8】沿革行；§8 补 TLS×LAN 语法；§13「TLS run × `--lan` 架构性拒绝」表述改写为 TLS×LAN 形态与证书语义；§14 增第十一波行 |
+| [docs/Berry设备平台-CLI-first设计-v1.0.md](../../docs/Berry设备平台-CLI-first设计-v1.8.md) | 头块（现 v1.7）；§8 命令树行（L361）与参数说明；§13 LAN 行（L579）；§14 刀序表 | 升 v1.8：版本行 + 【v1.8】沿革行；§8 补 TLS×LAN 语法；§13「TLS run × `--lan` 架构性拒绝」表述改写为 TLS×LAN 形态与证书语义；§14 增第十一波行 |
 | [docs/阶段沿革.md](../../docs/阶段沿革.md) | 文末新节 | 五段式（刀面/宿主/客机/实测/未落）；节号落笔时实时重读文末取唯一（probe 时点二百六十二已过时不作依据）；销账 wave10 TLS×LAN 重启条件 |
 | `.agents/notes/implemented/2026-11-15-vnc-wave11-unfreeze-tls-lan.md` | implement 阶段新建 | Problem/Decision/Alternatives（直参形态选型/sticky 退役 vs `#[cfg(test)]` 保留/TLS×LAN 三案（硬拒维持 vs rustls 上游 vs https 页）/WEB 键裁决）/Consequences/Related（与 wave1/wave10 笔记互链） |
 | out/ | 冒烟/e2e 产物 | `vnc-w11-` 前缀截图与 QR 样张；口令样串不落仓 |

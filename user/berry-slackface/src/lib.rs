@@ -1,6 +1,6 @@
 //! berry-slackface —— timer slack 聚合判定律(host 纯函数面,零依赖)。
 //!
-//! **设计锚**:docs/调度器设计-v1.1.md §3.8 :155「timer 原语带 slack+policy
+//! **设计锚**:docs/调度器设计-v1.2.md §3.8 :156「timer 原语带 slack+policy
 //! 三元组(学 `zx_timer_set`,v1 day-one)——intent 的 timer_slack_ns 列的
 //! 执行载体,也是省电第二杠杆(唤醒合并)的内核机制」。01 号对账
 //! (research/调度彻底计划/01-调度现状全景与在途线收编.md :30/:222 硬缺口

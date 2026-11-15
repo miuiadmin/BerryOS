@@ -43,6 +43,29 @@ mod status_icons;
 #[path = "wallpaper.rs"]
 mod wallpaper;
 
+/// 壁纸预采样源顶部均色（波3 批C1 状态栏 scrim 动态预混的采样面：
+/// 前 `rows` 行全列 ARGB 均值 → (r,g,b)。genohwallpaper 离线实算的
+/// 运行期化——任意壁纸下 scrim 基色随顶色走（设计稿 §2））。
+pub(crate) fn wallpaper_top_avg(rows: u32) -> (u32, u32, u32) {
+    let w = wallpaper::WALLPAPER_W as usize;
+    let h = wallpaper::WALLPAPER_H as usize;
+    let px = &wallpaper::WALLPAPER_PX;
+    let rows = (rows as usize).min(h).max(1);
+    let mut sr = 0u64;
+    let mut sg = 0u64;
+    let mut sb = 0u64;
+    for y in 0..rows {
+        for x in 0..w {
+            let c = px[y * w + x];
+            sr += (c >> 16 & 0xFF) as u64;
+            sg += (c >> 8 & 0xFF) as u64;
+            sb += (c & 0xFF) as u64;
+        }
+    }
+    let n = (rows * w) as u64;
+    ((sr / n) as u32, (sg / n) as u32, (sb / n) as u32)
+}
+
 /// 内建状态/dock 图标 id（desktop 直建 Icon 节点；位于 app 图标稠密域
 /// 前缀，app id 从 11 起——launcher 是唯一消费者，契约不外泄）。
 pub const STATUS_SIGNAL: u16 = 0;
@@ -76,9 +99,9 @@ pub const DOCK1_DIM: (u32, u32) = (status_icons::DOCK1_W, status_icons::DOCK1_H)
 pub const DOCK2_DIM: (u32, u32) = (status_icons::DOCK2_W, status_icons::DOCK2_H);
 pub const DOCK3_DIM: (u32, u32) = (status_icons::DOCK3_W, status_icons::DOCK3_H);
 pub const DOCK_DIMS: [(u32, u32); 4] = [DOCK0_DIM, DOCK1_DIM, DOCK2_DIM, DOCK3_DIM];
-pub const STATUS_SIGNAL_DIM: (u32, u32) = (status_icons::SIGNAL_W, status_icons::SIGNAL_H);
-pub const STATUS_WIFI_DIM: (u32, u32) = (status_icons::WIFI_W, status_icons::WIFI_H);
-pub const STATUS_BATTERY_DIM: (u32, u32) = (status_icons::BATTERY_W, status_icons::BATTERY_H);
+// 状态三面真值尺寸出口退役（波3 批C1：渲染归一 24vp——desktop 不再消费
+// 真值宽高；源尺寸仍经 status_icons::SIGNAL_W 等供 FACES 装配与像素帽
+// 记账）。
 /// 导航面源边长（66px 源 → big 132 目标 2x ScaledArgb / 紧凑 44 缩采样）。
 pub const NAV_SRC_PX: u32 = 66;
 const BUILTIN_FACES: usize = 13;
@@ -153,6 +176,10 @@ static FACES: OnceLock<&'static [IconFace]> = OnceLock::new();
 /// 诊断 + 空注册表——半张清单不进渲染面，launcher 不死）。
 pub fn init(app_h: Handle) {
     if app_h == 0 {
+        // 冻结相（extras 恰 [wm]、无 APP_LIST）也补状态栏图标面：FACES 不装
+        // = 无数据盘拓扑状态栏零图标——pull 失败分支同款兜底（桌面 UX B 线
+        // 存量 bug 一行修）。
+        let _ = FACES.set(Box::leak(status_faces().into_boxed_slice()));
         return;
     }
     match pull(app_h) {

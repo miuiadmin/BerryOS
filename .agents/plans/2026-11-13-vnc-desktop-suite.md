@@ -8,7 +8,7 @@ Updated: 2026-11-13
 
 ## 背景
 
-BerryOS 桌面目前只有 berry 自己能看、能点：帧面主路是共享客机 RAM（`ram.bin` 的 `RamSource`），输入走 run 目录 `vnc.sock` 上的 `VncInput`，这套内部面只服务于 berry 的 CLI/GUI/host 三角色。外部标准 VNC 客户端无法接入——没有对外 TCP 监听，`display/vnc.rs` 的 RFB 客户端也只会 None 认证（遇到带口令的服务端直接报错）。本刀把 QEMU 已有的 VNC server 能力面向外部打开：同一个 QEMU 进程声明第二个 `-vnc`（TCP，可选 websocket、可选口令），berry 负责端点解析、口令策略、run 目录产物、控制面 op、CLI 动词与自检（`vnc check` 以完整 RFB 客户端身份走对外端点 + 认证握手并取一帧）。产品依据是 [../../docs/Berry设备平台-CLI-first设计-v1.0.md](../../docs/Berry设备平台-CLI-first设计-v1.0.md)（§5 CLI verbs、§7 控制面、§13 安全、§14 刀序）；QEMU 侧语法与限制以 probe 阶段实测（f1–f6，脚本与日志在 `/tmp/vncprobe/`，会话临时不入仓）为准，冲突处见「偏差」节。前置事实：QEMU 11.0.3 同进程双 `-vnc` 可用；`-vnc` 的 TCP 地址单冒号数字是 display 编号（实际端口 = 数字 + 5900），`tcp:` 前缀与 `host::port` 均被拒；`password=on` 是 per-endpoint，QMP `set_password` 只作用于第一个声明的 server（id=default）；`query-vnc-servers` 返回全部端点数组；ramfb 静默忽略客户端 SetDesktopSize。
+BerryOS 桌面目前只有 berry 自己能看、能点：帧面主路是共享客机 RAM（`ram.bin` 的 `RamSource`），输入走 run 目录 `vnc.sock` 上的 `VncInput`，这套内部面只服务于 berry 的 CLI/GUI/host 三角色。外部标准 VNC 客户端无法接入——没有对外 TCP 监听，`display/vnc.rs` 的 RFB 客户端也只会 None 认证（遇到带口令的服务端直接报错）。本刀把 QEMU 已有的 VNC server 能力面向外部打开：同一个 QEMU 进程声明第二个 `-vnc`（TCP，可选 websocket、可选口令），berry 负责端点解析、口令策略、run 目录产物、控制面 op、CLI 动词与自检（`vnc check` 以完整 RFB 客户端身份走对外端点 + 认证握手并取一帧）。产品依据是 [../../docs/Berry设备平台-CLI-first设计-v1.0.md](../../docs/Berry设备平台-CLI-first设计-v1.8.md)（§5 CLI verbs、§7 控制面、§13 安全、§14 刀序）；QEMU 侧语法与限制以 probe 阶段实测（f1–f6，脚本与日志在 `/tmp/vncprobe/`，会话临时不入仓）为准，冲突处见「偏差」节。前置事实：QEMU 11.0.3 同进程双 `-vnc` 可用；`-vnc` 的 TCP 地址单冒号数字是 display 编号（实际端口 = 数字 + 5900），`tcp:` 前缀与 `host::port` 均被拒；`password=on` 是 per-endpoint，QMP `set_password` 只作用于第一个声明的 server（id=default）；`query-vnc-servers` 返回全部端点数组；ramfb 静默忽略客户端 SetDesktopSize。
 
 ## 契约
 

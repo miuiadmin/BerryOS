@@ -9,13 +9,16 @@
 //!
 //! - **窗 1（常驻挂接）**：装配半边已挂（CP-08 装配件，04 号复核 §6-5：
 //!   `bin/berry-power` rootfs 条目 + build-user musl 段〔--features
-//!   wired〕）；**svcmgr 预拉 arm 留窗**——svcmgr 平像满载（.bss 终点
-//!   0x1dff0 距内核钉位 .pager_entry@0x1e000 仅 0x10，arm 最小面 ~0x1a0
-//!   装不进，链接期 loud 炸响实证；扩容走 kernel 面 128KiB D3 帽/pager
-//!   钉位——kernel/src/main.rs:1621 同值双改），扩容刀挂 arm 补消费。
-//!   gift 交付位（通道端点/env 块 extras）随分端执法刀（窗 2 的 F2 终裁
-//!   落地件）立法。当前 bin 形态 = 起机自检（下方 dry-run，引擎活面单轮
-//!   走通）后 park 常驻（rootfs 在册未被拉起 = 零消费零行为变化）。
+//!   wired〕）；**svcmgr 预拉 arm 已落**（CP-08 闭合：svcmgr/src/main.rs
+//!   1108-1173 PM 双服务预拉起——D3 帽 128→160KiB + pager 钉位
+//!   0x1E000→0x28000 扩容刀让出的 .bss 面，kernel/src/main.rs:1689-1691
+//!   同值双改；spawn 形态照 simbattery 先例，拉起即 park 常驻不 reap，
+//!   观测行 `eco: berry-power up`）。**剩余留窗**（拉起 ≠ 通道接通）：
+//!   gift 交付位（通道端点/env 块 extras）与 ps 账本面（psproto
+//!   NAME_MAX=8 装不下全名、PS_MAX=18 恰满）随分端执法刀（窗 2 的 F2
+//!   终裁落地件）立法。当前 bin 形态 = 起机自检（下方 dry-run，引擎
+//!   活面单轮走通）后 park 常驻——被拉起也不写任何帽/票/发布位
+//!   （零行为变化；berry-thermal park 壳同款骨架相）。
 //! - **窗 2（真实通道）**：fd0 = sim 帧通道 RECV 端（task_simcon 转发
 //!   UART1 字节流）、gift = ACK 9B 回程 SEND 端——recv 阻塞形态照
 //!   simbattery `recv_blocking`（`berry_channel_recv` 空 -EAGAIN →

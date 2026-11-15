@@ -54,6 +54,8 @@
   python3 tools/bench.py             # B-0：跑一次 + 对拍基线（无基线 = 只出表）
   python3 tools/bench.py --update    # B-0：跑一次 + 刷新基线 B-0 段（B-1 段保留）
   python3 tools/bench.py --factor 5  # 放宽因子（CI 慢机场景）
+  python3 tools/bench.py --qemu-wait 30  # 预检等空帽收紧到 30s（0 = 单探即降级；
+                                        # 超时降级 = 非阻塞 Warn 放行，不再硬拒）
   python3 tools/bench.py --el0       # B-1：rootfs 形态跑一次 + 对拍 B-1 段
   python3 tools/bench.py --el0 --update  # B-1：跑一次 + 刷新 B-1 段（B-0 段保留）
   python3 tools/bench.py --rt        # R-1：裸跑（fw_cfg 门控 rt_probe）出三档表
@@ -361,18 +363,36 @@ def kernel_elf() -> str:
 # 他源宿主负载（编译/他系模拟器）从来不在守卫射程内。
 QEMU_GUARD_PATTERN = r"qemu-system.*(-machine virt|-kernel)"
 
+# 预检等空帽（秒，模块级单点）：main() 按 --qemu-wait 落值，五个通道入口
+# （run_once/run_rt/run_lat/dpg_boot/run_icount）的裸调 qemu_preflight() 共读；
+# 形参 wait_s 留给 selftest 短窗注入（不真睡 900s）。
+QEMU_WAIT_S = 900.0
 
-def qemu_preflight() -> None:
+
+def qemu_preflight(wait_s: float | None = None) -> None:
     """起 QEMU 前跨进程串行守卫（2026-10-27 三镜审查补修——「QEMU 严格单
     实例」从进程内天然串行升格为执法点）：`pgrep -f QEMU_GUARD_PATTERN`
     非空 = 另一终端/CI job 的**本仓** QEMU 在场（soak/smoke 长跑正属常态；
     Android/AVD 他系模拟器不在此面——见 QEMU_GUARD_PATTERN 注）——静默并行
     第二台既违本仓串行纪律，也污染 vanilla/rt 通道的墙钟派生计时（CNTVCT
     走 TCG 实时，宿主竞争 = L1 假红面；icount 数值由虚拟时钟驱动免疫，
-    纪律一体适用）。行为 = 轮询等空（2s 粒度——「等空而非并行」铁律的
-    工具化）而非立即拒绝；帽 900s 后 loud SystemExit——等一小时级的 soak
-    不如让人稍后再跑（无人值守 CI 下超时即失败，不静默并行）。"""
-    deadline = time.time() + 900
+    纪律一体适用）。
+
+    行为 = 轮询等空（2s 粒度——「等空而非并行」铁律的工具化）而非立即
+    拒绝；帽（默认 QEMU_WAIT_S=900s，--qemu-wait 可调，0 = 单探即判）到点
+    **降级非阻塞 Warn 放行**（F-C6 逃生位，2026-11-15 起——旧语义「帽后
+    loud SystemExit 硬拒」废止：owner 长跑 soak/演练在场的真实工况下，
+    900s 死等 + 硬拒 = 工具被堵死 15 分钟别无出路，45 号 §4-8 实咬、
+    bench_baseline_icount.notes.md 环境注记两轮 900s 等空超时在案）。
+    Warn 语义：第二台 QEMU 即将并行——墙钟通道（vanilla/rt/lat/dpg）
+    数值可能被在场 QEMU 污染（假红自查），icount 通道虚拟时钟免疫；无人
+    值守 CI 想要旧硬拒 = 先清场再跑，本工具不再代拒。pgrep 自身失效
+    （rc∉{0,1}）仍硬拒——守卫坏了不是场地问题，拒不起。
+
+    wait_s 形参：None = 读模块级 QEMU_WAIT_S（main 按 --qemu-wait 落值）；
+    selftest 以短窗/零窗注入做降级腿，不真睡满帽。"""
+    cap = QEMU_WAIT_S if wait_s is None else wait_s
+    deadline = time.time() + cap
     notified = False
     while True:
         r = subprocess.run(["pgrep", "-f", QEMU_GUARD_PATTERN],
@@ -384,16 +404,20 @@ def qemu_preflight() -> None:
                 f"bench.py: pgrep 异常 rc={r.returncode}"
                 f"（stderr: {r.stderr.strip()}）——串行守卫自身失效，拒不起 QEMU")
         if not notified:
-            print("bench.py: 检测到在场 QEMU（pgrep -f QEMU_GUARD_PATTERN 非空"
-                  "——本仓签名，Android/AVD 不误伤）——"
-                  "串行纪律轮询等空中（帽 900s，绝不并行第二台）", file=sys.stderr)
+            print(f"bench.py: 检测到在场 QEMU（pgrep -f QEMU_GUARD_PATTERN 非空"
+                  f"——本仓签名，Android/AVD 不误伤）——"
+                  f"串行纪律轮询等空中（帽 {cap:g}s，绝不静默并行第二台）",
+                  file=sys.stderr)
             notified = True
         if time.time() >= deadline:
+            # F-C6 逃生位：等空超时降级 = 非阻塞 Warn 放行（非硬拒）。
             pids = " ".join(r.stdout.split())
-            raise SystemExit(
-                f"bench.py: QEMU 串行守卫等空超时（900s）——在场 pids: {pids}；"
-                "长跑（just soak 等）占用期间勿并行 bench，稍后重试")
-        time.sleep(2)
+            print(f"bench.py: Warn QEMU 串行守卫等空超时（{cap:g}s）——在场 "
+                  f"pids: {pids}；降级放行（逃生位 --qemu-wait 可调帽/0 单探）："
+                  "第二台 QEMU 即将并行，墙钟通道数值可能被污染（假红先查在场 "
+                  "QEMU；icount 通道虚拟时钟免疫）", file=sys.stderr)
+            return
+        time.sleep(min(2, deadline - time.time()))
 
 
 def run_once(kernel: str, el0: bool = False) -> dict[str, int]:
@@ -454,7 +478,12 @@ def run_once(kernel: str, el0: bool = False) -> dict[str, int]:
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
-        Path(log_path).unlink(missing_ok=True)
+        # M1 审计补刀：失败必留——异常在飞（断言红/超时）保留串口日志，
+        # 成功路径才清（write_receipt 证据档哲学同源）。
+        if sys.exc_info()[0] is None:
+            Path(log_path).unlink(missing_ok=True)
+        else:
+            print(f"bench: failure serial log kept: {log_path}", file=sys.stderr)
 
     metrics: dict[str, int] = {}
     done_n = None
@@ -531,7 +560,12 @@ def run_rt(kernel: str) -> list[tuple[int, int, int, int]]:
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
-        Path(log_path).unlink(missing_ok=True)
+        # M1 审计补刀：失败必留——异常在飞（断言红/超时）保留串口日志，
+        # 成功路径才清（write_receipt 证据档哲学同源）。
+        if sys.exc_info()[0] is None:
+            Path(log_path).unlink(missing_ok=True)
+        else:
+            print(f"bench: failure serial log kept: {log_path}", file=sys.stderr)
 
     d = DONE_RT_RE.search(text)
     if d is None:
@@ -607,7 +641,12 @@ def run_lat(kernel: str) -> dict[str, tuple[int, ...]]:
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
-        Path(log_path).unlink(missing_ok=True)
+        # M1 审计补刀：失败必留——异常在飞（断言红/超时）保留串口日志，
+        # 成功路径才清（write_receipt 证据档哲学同源）。
+        if sys.exc_info()[0] is None:
+            Path(log_path).unlink(missing_ok=True)
+        else:
+            print(f"bench: failure serial log kept: {log_path}", file=sys.stderr)
 
     # 完成标记按路分记（恰一个/路、n 逐路 == LAT_N；缺席诊断按缺失路点名）。
     lane_of = {v: k for k, v in LAT_DONE_MARKERS.items()}
@@ -1131,7 +1170,12 @@ def run_icount(kernel: str, trace_off: bool = False) -> tuple[dict[str, int], di
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
-        Path(log_path).unlink(missing_ok=True)
+        # M1 审计补刀：失败必留——异常在飞（断言红/超时）保留串口日志，
+        # 成功路径才清（write_receipt 证据档哲学同源）。
+        if sys.exc_info()[0] is None:
+            Path(log_path).unlink(missing_ok=True)
+        else:
+            print(f"bench: failure serial log kept: {log_path}", file=sys.stderr)
 
     if done_re.search(text) is None:
         raise SystemExit(
@@ -1465,6 +1509,10 @@ def selftest() -> int:
     - write_receipt 回执：落盘 + serial_sha256 内容指纹（K-DE2）
     - 组合拒绝 exit-code 契约：六通道互斥族子进程真跑（rc!=0 + 逐组
       说因消息在 stderr）；--selftest 独占守卫（组合旗标 rc=2）
+    - qemu_preflight 逃生位（F-C6）：空场静默过 / 占场帽 0 降级 Warn
+      放行（非硬拒）/ 等空轮询两探让场 / pgrep 自身失效仍硬拒——
+      subprocess.run 打桩纯 host 零 QEMU + --qemu-wait 值域与独占
+      守卫子进程契约（负值拒绝 rc!=0 / 组合 --selftest rc=2）
     """
     import shutil
 
@@ -1700,6 +1748,89 @@ def selftest() -> int:
     check("guard: --selftest 独占（组合旗标 rc=2）", r.returncode == 2,
           f"rc={r.returncode}")
 
+    # --- 12. qemu_preflight 逃生位（F-C6，2026-11-15）：占场超时降级 Warn
+    #     非硬拒 + 空场静默过 + 等空轮询路径 + pgrep 自身失效仍硬拒。
+    #     纯 host 零 QEMU——subprocess.run 打桩伪造 pgrep 回执（rc/stdout
+    #     可控），stderr 经 redirect_stderr 捕获；桩只罩本节（真 subprocess
+    #     在 finally 还原——组合拒绝腿已在上节跑完，互不干扰）。 ---
+    import io
+    from contextlib import redirect_stderr
+
+    real_run = subprocess.run
+
+    class _FakePgrep:
+        """pgrep 回执桩：按序吐 (rc, stdout)；rc=0 = 占场（pids 在 stdout）。"""
+        def __init__(self, replies):
+            self.replies = list(replies)
+            self.calls = 0
+
+        def __call__(self, cmd, **kw):
+            i = min(self.calls, len(self.replies) - 1)
+            rc, out = self.replies[i]
+            self.calls += 1
+            import types
+            return types.SimpleNamespace(returncode=rc, stdout=out, stderr="")
+
+    fake = _FakePgrep([(1, "")])  # 空场（rc=1）
+    subprocess.run = fake
+    try:
+        err = io.StringIO()
+        with redirect_stderr(err):
+            qemu_preflight(wait_s=0)
+        check("preflight: 空场静默过（rc=1 即返，零 stderr）",
+              fake.calls == 1 and err.getvalue() == "",
+              f"calls={fake.calls} stderr={err.getvalue()!r}")
+
+        fake = _FakePgrep([(0, "123\n456\n")])  # 占场恒在（rc=0）
+        subprocess.run = fake
+        err = io.StringIO()
+        with redirect_stderr(err):
+            qemu_preflight(wait_s=0)  # 帽 0 = 单探即判
+        out = err.getvalue()
+        check("preflight: 占场帽 0 降级 Warn 放行（非硬拒——F-C6 逃生位）",
+              fake.calls == 1 and "Warn" in out and "123 456" in out
+              and "--qemu-wait" in out,
+              f"calls={fake.calls} stderr={out.strip()[:120]!r}")
+
+        # 等空轮询路径：首探占场 → 通知行 → 短窗 sleep → 次探空场静默返
+        #（sleep 时长 = min(2, 余量)——帽 0.4s 不真睡 2s 粒度）。
+        fake = _FakePgrep([(0, "123\n"), (1, "")])
+        subprocess.run = fake
+        err = io.StringIO()
+        with redirect_stderr(err):
+            qemu_preflight(wait_s=0.4)
+        out = err.getvalue()
+        check("preflight: 等空轮询两探让场（通知行在、无 Warn）",
+              fake.calls == 2 and "检测到在场 QEMU" in out
+              and "Warn" not in out,
+              f"calls={fake.calls} stderr={out.strip()[:120]!r}")
+
+        fake = _FakePgrep([(2, "")])  # pgrep 自身失效（rc=2）
+        subprocess.run = fake
+        raised = None
+        err = io.StringIO()
+        try:
+            with redirect_stderr(err):
+                qemu_preflight(wait_s=0)
+        except SystemExit as e:
+            raised = e
+        check("preflight: pgrep 自身失效仍硬拒（守卫坏 ≠ 场地问题）",
+              raised is not None and "守卫自身失效" in str(raised),
+              f"raised={raised!r}")
+    finally:
+        subprocess.run = real_run
+
+    r = subprocess.run([sys.executable, str(here), "--qemu-wait", "-1"],
+                       capture_output=True, text=True, timeout=60)
+    check("qemu-wait: 负值拒绝（rc!=0 且说因在 stderr）",
+          r.returncode != 0 and "负等空帽" in r.stderr,
+          f"rc={r.returncode} stderr={r.stderr.strip()[:100]}")
+    r = subprocess.run([sys.executable, str(here), "--selftest",
+                        "--qemu-wait", "5"],
+                       capture_output=True, text=True, timeout=60)
+    check("qemu-wait: 入 --selftest 独占守卫（组合 rc=2）", r.returncode == 2,
+          f"rc={r.returncode}")
+
     total = _SELFTEST_TOTAL[0]
     if failures:
         print(f"\nbench.py selftest: FAIL（{len(failures)} 面红 / 共 {total} 面）")
@@ -1715,6 +1846,10 @@ def main() -> None:
     ap.add_argument("--update", action="store_true", help="刷新基线文件（本模式对应段）")
     ap.add_argument("--factor", type=float, default=None,
                     help="劣化因子门禁（默认 3.0——拦数量级劣化不拦噪声）")
+    ap.add_argument("--qemu-wait", type=float, default=None, metavar="SECONDS",
+                    help="QEMU 串行守卫等空帽秒数（默认 900；0 = 单探即判——"
+                         "在场即降级 Warn 放行非硬拒；负值拒绝。可与任一通道组合，"
+                         "F-C6 逃生位：owner 长跑在场时收紧帽快速拿到 Warn 放行）")
     ap.add_argument("--el0", action="store_true",
                     help="B-1 通道：run-rootfs 形态收割 BENCH1 四行（默认 B-0 裸跑）")
     ap.add_argument("--rt", action="store_true",
@@ -1741,16 +1876,30 @@ def main() -> None:
     ap.add_argument("--kernel", default=None, help="内核 ELF 路径（默认 paths.sh 解析）")
     args = ap.parse_args()
 
+    # --qemu-wait 值域（负帽无义——「等负秒」≠ 立即判，显式拒绝说因；
+    # 0 合法 = 单探即判。先于通道互斥校验 = 纯参数面先红（组合拒绝腿同序）。
+    if args.qemu_wait is not None and args.qemu_wait < 0:
+        raise SystemExit(
+            f"bench.py: --qemu-wait {args.qemu_wait} 无义（负等空帽）——"
+            "0 = 单探即判（在场即 Warn 放行），正数 = 等空帽秒数")
+
     # --selftest 独占守卫（writable_globals/unsafe_audit 同款）：组合任何
     # 通道旗标 = 语义未定义（自检不跑 QEMU，通道参数无处消费），rc=2 区分
     # 于运行失败（rc=1）。
     channel_flags = [args.update, args.el0, args.rt, args.lat, args.icount,
                      args.prove, args.dpg, args.trace_dual,
-                     args.factor is not None, args.kernel is not None]
+                     args.factor is not None, args.kernel is not None,
+                     args.qemu_wait is not None]
     if args.selftest:
         if any(channel_flags):
             ap.error("--selftest 独占——不与任何通道/基线旗标组合（rc=2）")
         raise SystemExit(selftest())
+
+    # F-C6 逃生位落值：--qemu-wait → 模块级 QEMU_WAIT_S（五个通道入口的
+    # qemu_preflight() 裸调共读；None = 维持默认 900）。
+    if args.qemu_wait is not None:
+        global QEMU_WAIT_S
+        QEMU_WAIT_S = args.qemu_wait
 
     if args.rt and (args.update or args.el0 or args.factor is not None
                     or args.icount or args.prove or args.lat or args.trace_dual):

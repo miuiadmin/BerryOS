@@ -92,6 +92,44 @@ pub const OVERDRAW_BUDGET_X256: u32 = 640; // 2.5×256（GUI-10 反清单 7）
 pub const IDLE_AFTER_MS: u64 = 2000; // OH 常量：静默强降 IDLE
 pub type UiMain = Ui<MAX_NODES>;
 
+// ---------- density/vp 换算单点（03-1080P §3.2 层二） ----------
+//
+// vp 体系已立法（应用规范 :138 基准画布 360×640vp @3x = 1080×1920；一切
+// 几何经 GETINFO 协商）——本函数是其换算单点：宿主侧（launcher/settings
+// 族）一切 vp 口径布局常量经此落 px，禁散选手乘（「手乘清零」）。px→vp
+// 用除法取整，仅供断点判断（消费面 = berry-launcher desktop.rs 断点 vp 化，
+// density 由档表推 v0 过渡；info VMO density 域 = v1 与 02 号动态分辨率
+// 合刀）。44px 触控下限保持 px 口径不随 density 缩（应用规范 :147 是 px
+// 下限，「命中区不缩」语义）。整数 density 简化（OH 手机 1080/360 = 3
+// 同值实证；Android `px = dp × dpi/160` 同构）。
+
+/// vp→px：整数密度乘法（saturating——u32 几何域防溢出，dock 宽
+/// `saturating_mul` 先例同款）。
+pub fn vp(v: u32, density: u32) -> u32 {
+    v.saturating_mul(density)
+}
+
+#[cfg(test)]
+mod vp_tests {
+    // vp() 单点换算钉板（03-1080P §3.2 层二）：pub 面本可自 tests/ 钉，
+    // 就近内联（anim kind_of 先例）——OH phone 真值锚（39vp 状态栏 /
+    // 360vp 基准宽 @3）一并钉死换算语义。
+    use super::vp;
+
+    #[test]
+    fn vp_multiplies_integer_density() {
+        assert_eq!(vp(39, 3), 117); // OH phone 状态栏 39vp @3 = 117px
+        assert_eq!(vp(360, 3), 1080); // 基准画布逻辑宽 → 物理宽（应用规范 :138）
+        assert_eq!(vp(44, 1), 44); // @1 档零缩放（紧凑/sm 形态）
+        assert_eq!(vp(0, 3), 0);
+    }
+
+    #[test]
+    fn vp_saturates_instead_of_wrapping() {
+        assert_eq!(vp(u32::MAX, 3), u32::MAX);
+    }
+}
+
 // ---------- 组件四件 v1 几何常量（Phase 2 首批——Button/Toggle/Slider/Progress） ----------
 //
 // 布局 intrinsic（layout.rs）与渲染/命中映射（paint.rs / 本文件

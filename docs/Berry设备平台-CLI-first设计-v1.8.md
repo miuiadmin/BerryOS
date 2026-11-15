@@ -240,7 +240,7 @@ Created → Starting → Running ⇄ Paused → Rebooting/Stopping → Exited
 
 - `device start`：默认后台（spawn 同二进制 `host` 角色，打印 run id）；`--foreground` 调试。
 - `shell`：起 host + GUI；`--attach <id>` 只开窗口。
-- `shot`：ephemeral；结束自动清理（`--keep` 保留）。
+- `shot`：成功 ephemeral（结束自动清理，`--keep` 显式保留）；失败（marker 未达/超时/端点不起/VNC 连不上/取帧失败）自动保留 run 目录（M1 起，stderr 报路径）。
 - `stop`：`quit` → 5s SIGTERM → 2s SIGKILL；回收子进程。
 - 崩溃：`state.json` 标 `failed`；`list` 显示；`berry logs` 可看尾巴。
 

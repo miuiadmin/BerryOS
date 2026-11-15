@@ -42,6 +42,8 @@
 | `1<<47` | soakload 哑（S-5d 双核满载载荷） |
 | `1<<48` | lat 握手（G3-4a bench-lat IPC 路） |
 | `1<<49` | latsgi 位签名（G3-4b bench-lat SGI 路） |
+| `1<<50` | lat 触发 Event 内部位（G3-5 C 形常驻再触发——soakmon 拍后 signal+wake_matching；Event 落内核私有表不经 ABI object_signal 面） |
+| `1<<51` | dpg 握手位（G4-1 demand 闭环——裸键族共用一位：内核 fault/pager/done 三键 + EL0 键化族共 37 键；不经 Event 对象） |
 
 新增用户位前先查本表碰撞；合成/非对象等待只等用户位（内核永不置位，见「判例瘦行」§A40 行）。口径源 = §A29 / §A40 / §A61（模板握手信号用专用位、清位豁免——§A61 瘦行正主在 `06-用户程序与编译链.md`）。
 
