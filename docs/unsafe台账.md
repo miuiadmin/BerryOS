@@ -42,16 +42,16 @@
 <!-- UNSAFE-AUDIT:SUMMARY:BEGIN -->
 | 目录 | .rs 文件数 | 总行数 | unsafe 非空行 | 密度 |
 |------|-----------|--------|--------------|------|
-| kernel/ | 26 | 28807 | 2053 | 7.13% |
+| kernel/ | 26 | 28829 | 2070 | 7.18% |
 | mm/ | 7 | 2230 | 4 | 0.18% |
 | sched/ | 14 | 7209 | 1640 | 22.75% |
 | ipc/ | 0 | 0 | 0 | — |
 | arch/ | 22 | 7199 | 1058 | 14.70% |
-| **合计** | 69 | 45445 | 4755 | **10.46%** |
+| **合计** | 69 | 45467 | 4772 | **10.50%** |
 
-- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 36494，unsafe 非空行 4066，密度 11.14%（生产面口径）
-- 分类计数：页表 63 | 上下文切换 33 | MMIO 158 | 分配器 13 | 硬件原子 0 | 其它 740
-- 类型计数：block 865 | fn 138 | impl 2 | extern 2（另有类型签名位提及 14 处——只计不登记，防双计）
+- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 36516，unsafe 非空行 4083，密度 11.18%（生产面口径）
+- 分类计数：页表 63 | 上下文切换 33 | MMIO 158 | 分配器 13 | 硬件原子 0 | 其它 742
+- 类型计数：block 867 | fn 138 | impl 2 | extern 2（另有类型签名位提及 14 处——只计不登记，防双计）
 - 对标：Android ~4%（unsafe 行占 Rust 总行比，Google 2025-11）；本表为跨度非空行口径（偏高估），见 §一
 <!-- UNSAFE-AUDIT:SUMMARY:END -->
 
@@ -724,8 +724,10 @@
 | kernel/src/process.rs | 318 | block | 其它 | unsafe { let mut n = 0; while HT_DRAINQ_LEN > 0 && n < HT_DRAINQ |
 | kernel/src/process.rs | 375 | fn | 其它 | unsafe fn new(proc_ref: NonNull<ObjRef>) -> Self { (*proc_ref.as |
 | kernel/src/process.rs | 390 | block | 其它 | unsafe { ObjRef::release(self.proc) }; } } |
-| kernel/src/suspend.rs | 43 | block | 其它 | unsafe { let r = &mut *ptr.as_ptr(); match &mut r.obj { crate::h |
-| kernel/src/suspend.rs | 90 | block | 其它 | unsafe { ObjRef::release(ptr) } } } |
+| kernel/src/suspend.rs | 43 | block | 其它 | unsafe { (*p.as_ptr()).obj.as_process().map(\|pr\| pr.freeze_depth |
+| kernel/src/suspend.rs | 46 | block | 其它 | unsafe { (*t.as_ptr()).obj.as_thread_mut().map(\|th\| th.freeze_de |
+| kernel/src/suspend.rs | 55 | block | 其它 | unsafe { let r = &mut *ptr.as_ptr(); match &mut r.obj { crate::h |
+| kernel/src/suspend.rs | 98 | block | 其它 | unsafe { ObjRef::release(ptr) } } } |
 | kernel/src/syscall.rs | 108 | block | 其它 | unsafe { let slot = &raw mut BOOTSTRAP_HT; if (*slot).is_none() |
 | kernel/src/syscall.rs | 138 | block | 其它 | unsafe { &mut *(tag as *mut HandleTable) }) } else { Ok(bootstra |
 | kernel/src/syscall.rs | 146 | block | 其它 | unsafe { &mut *(tag as *mut HandleTable) }) } } // ---- copy_fro |
@@ -779,51 +781,51 @@
 | kernel/src/syscall.rs | 1860 | block | 其它 | unsafe { if thread_key != 0 { let tobj = thread_key as *mut ObjR |
 | kernel/src/syscall.rs | 1913 | block | 其它 | unsafe { berry_sched::kill_all_tasks_by_pinned(p, 0) }; } berry_ |
 | kernel/src/syscall.rs | 1995 | block | 其它 | unsafe { let r = &mut *obj.as_ptr(); let Some(p) = r.obj.as_proc |
-| kernel/src/syscall.rs | 2093 | block | 其它 | unsafe { let r = &mut *obj.as_ptr(); let Some(p) = r.obj.as_proc |
-| kernel/src/syscall.rs | 2118 | block | 其它 | unsafe { let r = &mut *obj.as_ptr(); let Some(p) = r.obj.as_proc |
-| kernel/src/syscall.rs | 2128 | block | 其它 | unsafe { let r = &mut *obj.as_ptr(); if let Some(p) = r.obj.as_p |
-| kernel/src/syscall.rs | 2144 | block | 其它 | unsafe { if let Some(p) = (*obj.as_ptr()).obj.as_process_mut() { |
-| kernel/src/syscall.rs | 2165 | block | 其它 | unsafe { if let Some(p) = (*obj.as_ptr()).obj.as_process_mut() { |
-| kernel/src/syscall.rs | 2171 | block | 其它 | unsafe { let r = &mut *obj.as_ptr(); if let Some(p) = r.obj.as_p |
-| kernel/src/syscall.rs | 2200 | block | 其它 | unsafe { let r = &mut *obj.as_ptr(); let Some(thrd) = r.obj.as_t |
-| kernel/src/syscall.rs | 2235 | block | 其它 | unsafe { let r = &mut *obj.as_ptr(); let Some(thrd) = r.obj.as_t |
-| kernel/src/syscall.rs | 2252 | block | 其它 | unsafe { let r = &mut *obj.as_ptr(); if let Some(thrd) = r.obj.a |
-| kernel/src/syscall.rs | 2276 | block | 其它 | unsafe { let r = &mut *obj.as_ptr(); if let Some(thrd) = r.obj.a |
-| kernel/src/syscall.rs | 2418 | block | 其它 | unsafe { &*th.owner().as_ptr() }; let base = owner.obj.as_proces |
-| kernel/src/syscall.rs | 2443 | block | 其它 | unsafe { let r = &mut *obj.as_ptr(); match &mut r.obj { KernelOb |
-| kernel/src/syscall.rs | 2498 | block | 其它 | unsafe { let r = &*obj.as_ptr(); match &r.obj { KernelObj::Threa |
-| kernel/src/syscall.rs | 2568 | block | 其它 | unsafe { &mut *(p as *mut ObjRef) } } else { let Ok(t) = caller_ |
-| kernel/src/syscall.rs | 2573 | block | 其它 | unsafe { &mut *o.as_ptr() }, Err(e) => return e as i64, // 坏值/类型 |
-| kernel/src/syscall.rs | 2606 | block | 其它 | unsafe { (*(p as *mut ObjRef)).obj.as_process_mut() }) else { re |
-| kernel/src/syscall.rs | 2616 | block | 其它 | unsafe { (*(p as *mut ObjRef)).obj.as_process_mut() } { proc.pen |
-| kernel/src/syscall.rs | 2946 | block | 其它 | unsafe { ChannelEnd::pair(a, b) }; let r0 = copy_out_u32(el1, ou |
-| kernel/src/syscall.rs | 3057 | block | 其它 | unsafe { let Some(end) = (*self_ptr.as_ptr()).obj.as_channel_mut |
-| kernel/src/syscall.rs | 3212 | block | 其它 | unsafe { let Some(peer_end) = (*peer_ptr.as_ptr()).obj.as_channe |
-| kernel/src/syscall.rs | 3231 | block | 其它 | unsafe { berry_sched::fast_wake_locked(t) }; berry_sched::sq_unl |
-| kernel/src/syscall.rs | 3260 | block | 其它 | unsafe { if let Some(p) = (*owner.as_ptr()).obj.as_process_mut() |
-| kernel/src/syscall.rs | 3292 | fn | 其它 | unsafe fn recv_rollback(t: &mut HandleTable, endp: NonNull<ObjRe |
-| kernel/src/syscall.rs | 3334 | block | 其它 | unsafe { let Some(end) = (*self_ptr.as_ptr()).obj.as_channel_mut |
-| kernel/src/syscall.rs | 3347 | block | 其它 | unsafe { recv_rollback(t, self_ptr, msg, &[]) }; return e as i64 |
-| kernel/src/syscall.rs | 3355 | block | 其它 | unsafe { recv_rollback(t, self_ptr, msg, &[]) }; return e as i64 |
-| kernel/src/syscall.rs | 3361 | block | 其它 | unsafe { recv_rollback(t, self_ptr, msg, &[]) }; return ERR_INVA |
-| kernel/src/syscall.rs | 3380 | block | 其它 | unsafe { recv_rollback(t, self_ptr, msg, &[]) }; return ERR_FAUL |
-| kernel/src/syscall.rs | 3385 | block | 其它 | unsafe { recv_rollback(t, self_ptr, msg, &[]) }; return e as i64 |
-| kernel/src/syscall.rs | 3395 | block | 其它 | unsafe { recv_rollback(t, self_ptr, msg, &[]) }; return e as i64 |
-| kernel/src/syscall.rs | 3407 | block | 其它 | unsafe { recv_rollback(t, self_ptr, msg, &newvals[..n]) }; retur |
-| kernel/src/syscall.rs | 3412 | block | 其它 | unsafe { recv_rollback(t, self_ptr, msg, &newvals[..n]) }; retur |
-| kernel/src/syscall.rs | 3417 | block | 其它 | unsafe { recv_rollback(t, self_ptr, msg, &newvals[..n]) }; retur |
-| kernel/src/syscall.rs | 3426 | block | 其它 | unsafe { (*self_ptr.as_ptr()).obj.as_channel() }).and_then(\|e\| e |
-| kernel/src/syscall.rs | 3432 | block | 其它 | unsafe { (*self_ptr.as_ptr()).obj.as_channel() }).map_or(false, |
-| kernel/src/syscall.rs | 3514 | fn | 其它 | unsafe fn signal_state(obj: NonNull<ObjRef>) -> Option<u64> { un |
-| kernel/src/syscall.rs | 3515 | block | 其它 | unsafe { match &(*obj.as_ptr()).obj { KernelObj::Event(e) => Som |
-| kernel/src/syscall.rs | 3582 | block | 其它 | unsafe { let Some(ev) = (*obj.as_ptr()).obj.as_event_mut() else |
-| kernel/src/syscall.rs | 3674 | block | 其它 | unsafe { (*obj.as_ptr()).retain() }; // AM-1.5：SuspendToken 等待者挂 |
-| kernel/src/syscall.rs | 3685 | block | 其它 | unsafe { &(*obj.as_ptr()).obj } { KernelObj::SuspendToken(tok) = |
-| kernel/src/syscall.rs | 3702 | block | 其它 | unsafe { signal_state(obj) }) else { break ERR_BAD_HANDLE as i64 |
-| kernel/src/syscall.rs | 3742 | block | 其它 | unsafe { ObjRef::release(obj) }; ret } /// `object_wait_many(han |
-| kernel/src/syscall.rs | 3834 | block | 其它 | unsafe { (*o.as_ptr()).retain() }; } let ret = loop { // 逐项重验（醒来 |
-| kernel/src/syscall.rs | 3843 | block | 其它 | unsafe { signal_state(o) }) else { hit = Some(Err(ERR_BAD_HANDLE |
-| kernel/src/syscall.rs | 3886 | block | 其它 | unsafe { ObjRef::release(*o) }; } ret } // ---- boot 期注册（rust_ma |
+| kernel/src/syscall.rs | 2095 | block | 其它 | unsafe { let r = &mut *obj.as_ptr(); let Some(p) = r.obj.as_proc |
+| kernel/src/syscall.rs | 2122 | block | 其它 | unsafe { let r = &mut *obj.as_ptr(); let Some(p) = r.obj.as_proc |
+| kernel/src/syscall.rs | 2132 | block | 其它 | unsafe { let r = &mut *obj.as_ptr(); if let Some(p) = r.obj.as_p |
+| kernel/src/syscall.rs | 2148 | block | 其它 | unsafe { if let Some(p) = (*obj.as_ptr()).obj.as_process_mut() { |
+| kernel/src/syscall.rs | 2170 | block | 其它 | unsafe { if let Some(p) = (*obj.as_ptr()).obj.as_process_mut() { |
+| kernel/src/syscall.rs | 2176 | block | 其它 | unsafe { let r = &mut *obj.as_ptr(); if let Some(p) = r.obj.as_p |
+| kernel/src/syscall.rs | 2205 | block | 其它 | unsafe { let r = &mut *obj.as_ptr(); let Some(thrd) = r.obj.as_t |
+| kernel/src/syscall.rs | 2248 | block | 其它 | unsafe { let r = &mut *obj.as_ptr(); let Some(thrd) = r.obj.as_t |
+| kernel/src/syscall.rs | 2265 | block | 其它 | unsafe { let r = &mut *obj.as_ptr(); if let Some(thrd) = r.obj.a |
+| kernel/src/syscall.rs | 2290 | block | 其它 | unsafe { let r = &mut *obj.as_ptr(); if let Some(thrd) = r.obj.a |
+| kernel/src/syscall.rs | 2432 | block | 其它 | unsafe { &*th.owner().as_ptr() }; let base = owner.obj.as_proces |
+| kernel/src/syscall.rs | 2457 | block | 其它 | unsafe { let r = &mut *obj.as_ptr(); match &mut r.obj { KernelOb |
+| kernel/src/syscall.rs | 2512 | block | 其它 | unsafe { let r = &*obj.as_ptr(); match &r.obj { KernelObj::Threa |
+| kernel/src/syscall.rs | 2582 | block | 其它 | unsafe { &mut *(p as *mut ObjRef) } } else { let Ok(t) = caller_ |
+| kernel/src/syscall.rs | 2587 | block | 其它 | unsafe { &mut *o.as_ptr() }, Err(e) => return e as i64, // 坏值/类型 |
+| kernel/src/syscall.rs | 2620 | block | 其它 | unsafe { (*(p as *mut ObjRef)).obj.as_process_mut() }) else { re |
+| kernel/src/syscall.rs | 2630 | block | 其它 | unsafe { (*(p as *mut ObjRef)).obj.as_process_mut() } { proc.pen |
+| kernel/src/syscall.rs | 2960 | block | 其它 | unsafe { ChannelEnd::pair(a, b) }; let r0 = copy_out_u32(el1, ou |
+| kernel/src/syscall.rs | 3071 | block | 其它 | unsafe { let Some(end) = (*self_ptr.as_ptr()).obj.as_channel_mut |
+| kernel/src/syscall.rs | 3226 | block | 其它 | unsafe { let Some(peer_end) = (*peer_ptr.as_ptr()).obj.as_channe |
+| kernel/src/syscall.rs | 3245 | block | 其它 | unsafe { berry_sched::fast_wake_locked(t) }; berry_sched::sq_unl |
+| kernel/src/syscall.rs | 3274 | block | 其它 | unsafe { if let Some(p) = (*owner.as_ptr()).obj.as_process_mut() |
+| kernel/src/syscall.rs | 3306 | fn | 其它 | unsafe fn recv_rollback(t: &mut HandleTable, endp: NonNull<ObjRe |
+| kernel/src/syscall.rs | 3348 | block | 其它 | unsafe { let Some(end) = (*self_ptr.as_ptr()).obj.as_channel_mut |
+| kernel/src/syscall.rs | 3361 | block | 其它 | unsafe { recv_rollback(t, self_ptr, msg, &[]) }; return e as i64 |
+| kernel/src/syscall.rs | 3369 | block | 其它 | unsafe { recv_rollback(t, self_ptr, msg, &[]) }; return e as i64 |
+| kernel/src/syscall.rs | 3375 | block | 其它 | unsafe { recv_rollback(t, self_ptr, msg, &[]) }; return ERR_INVA |
+| kernel/src/syscall.rs | 3394 | block | 其它 | unsafe { recv_rollback(t, self_ptr, msg, &[]) }; return ERR_FAUL |
+| kernel/src/syscall.rs | 3399 | block | 其它 | unsafe { recv_rollback(t, self_ptr, msg, &[]) }; return e as i64 |
+| kernel/src/syscall.rs | 3409 | block | 其它 | unsafe { recv_rollback(t, self_ptr, msg, &[]) }; return e as i64 |
+| kernel/src/syscall.rs | 3421 | block | 其它 | unsafe { recv_rollback(t, self_ptr, msg, &newvals[..n]) }; retur |
+| kernel/src/syscall.rs | 3426 | block | 其它 | unsafe { recv_rollback(t, self_ptr, msg, &newvals[..n]) }; retur |
+| kernel/src/syscall.rs | 3431 | block | 其它 | unsafe { recv_rollback(t, self_ptr, msg, &newvals[..n]) }; retur |
+| kernel/src/syscall.rs | 3440 | block | 其它 | unsafe { (*self_ptr.as_ptr()).obj.as_channel() }).and_then(\|e\| e |
+| kernel/src/syscall.rs | 3446 | block | 其它 | unsafe { (*self_ptr.as_ptr()).obj.as_channel() }).map_or(false, |
+| kernel/src/syscall.rs | 3528 | fn | 其它 | unsafe fn signal_state(obj: NonNull<ObjRef>) -> Option<u64> { un |
+| kernel/src/syscall.rs | 3529 | block | 其它 | unsafe { match &(*obj.as_ptr()).obj { KernelObj::Event(e) => Som |
+| kernel/src/syscall.rs | 3596 | block | 其它 | unsafe { let Some(ev) = (*obj.as_ptr()).obj.as_event_mut() else |
+| kernel/src/syscall.rs | 3688 | block | 其它 | unsafe { (*obj.as_ptr()).retain() }; // AM-1.5：SuspendToken 等待者挂 |
+| kernel/src/syscall.rs | 3699 | block | 其它 | unsafe { &(*obj.as_ptr()).obj } { KernelObj::SuspendToken(tok) = |
+| kernel/src/syscall.rs | 3716 | block | 其它 | unsafe { signal_state(obj) }) else { break ERR_BAD_HANDLE as i64 |
+| kernel/src/syscall.rs | 3756 | block | 其它 | unsafe { ObjRef::release(obj) }; ret } /// `object_wait_many(han |
+| kernel/src/syscall.rs | 3848 | block | 其它 | unsafe { (*o.as_ptr()).retain() }; } let ret = loop { // 逐项重验（醒来 |
+| kernel/src/syscall.rs | 3857 | block | 其它 | unsafe { signal_state(o) }) else { hit = Some(Err(ERR_BAD_HANDLE |
+| kernel/src/syscall.rs | 3900 | block | 其它 | unsafe { ObjRef::release(*o) }; } ret } // ---- boot 期注册（rust_ma |
 | kernel/src/telemetry.rs | 113 | fn | 其它 | unsafe fn ring_write(rec: SwitchRec) { let cpu = cpu_id().min(NC |
 | kernel/src/telemetry.rs | 141 | block | 其它 | unsafe { ring_write(rec) } } /// 注册切换钩子（`rust_main` 在 `berry_sch |
 | kernel/src/telemetry.rs | 183 | block | 其它 | unsafe { &(*core::ptr::addr_of!(SWITCH_RINGS))[cpu] }; loop { le |

@@ -36,6 +36,18 @@ impl Drop for SuspendTok {
             SuspendTarget::Process(p) => p,
             SuspendTarget::Thread(t) => t,
         };
+        // Drop 判定段（depth 记账律）单源在 berry-susface（W3-Q38 host
+        // 钉板）：非零减一/归零全解冻/0 防御不下溢——判定与记账剥离，物理
+        // 臂（清面三件/thaw 路由/release 配平）留壳本侧。
+        let (kind, depth) = match self.target {
+            SuspendTarget::Process(p) => (berry_susface::TargetKind::Process, unsafe {
+                (*p.as_ptr()).obj.as_process().map(|pr| pr.freeze_depth).unwrap_or(0)
+            }),
+            SuspendTarget::Thread(t) => (berry_susface::TargetKind::Thread, unsafe {
+                (*t.as_ptr()).obj.as_thread_mut().map(|th| th.freeze_depth).unwrap_or(0)
+            }),
+        };
+        let eff = berry_susface::drop_effect(&berry_susface::DropInput { kind, freeze_depth: depth });
         let mut thaw_key = None;
 
         // SAFETY: 目标已 retain（refs ≥ 1 保证 Drop 时对象存活）；Drop 链在
@@ -44,35 +56,31 @@ impl Drop for SuspendTok {
             let r = &mut *ptr.as_ptr();
             match &mut r.obj {
                 crate::handle::KernelObj::Process(p) => {
-                    if p.freeze_depth > 0 {
-                        p.freeze_depth -= 1;
-                        if p.freeze_depth == 0 {
-                            // AM-1.5 清面完整（全解冻才清——嵌套中间层不解冻
-                            // 不清）：wake_pending 归零 + 全部端点冻标释放
-                            //（retain 配平）。此刻本 token 对目标仍持 1 引用
-                            //（函数尾才 release）⇒ 枚举中属主恒活，clear 的
-                            // release 只退 mark 份额、归零销毁不落枚举中途
-                            //（ptr = 目标 Process ObjRef，打标侧的 owner 键）。
-                            p.wake_pending = false;
-                            p.ht.thaw_channel_ends(ptr);
-                            thaw_key = Some(self.key);
-                        }
+                    p.freeze_depth = eff.depth_after;
+                    if eff.fully_thawed {
+                        // AM-1.5 清面完整（全解冻才清——嵌套中间层不解冻
+                        // 不清）：wake_pending 归零 + 全部端点冻标释放
+                        //（retain 配平）。此刻本 token 对目标仍持 1 引用
+                        //（函数尾才 release）⇒ 枚举中属主恒活，clear 的
+                        // release 只退 mark 份额、归零销毁不落枚举中途
+                        //（ptr = 目标 Process ObjRef，打标侧的 owner 键）。
+                        p.wake_pending = false;
+                        p.ht.thaw_channel_ends(ptr);
+                        thaw_key = Some(self.key);
                     }
                 }
                 crate::handle::KernelObj::Thread(t) => {
-                    if t.freeze_depth > 0 {
-                        t.freeze_depth -= 1;
-                        if t.freeze_depth == 0 {
-                            // 设计契约：最后一次 thaw 自动清 FREEZE_READY；
-                            // 下次单线程冻结必须重新自证。同时撤销该 Thread 在
-                            // Process 侧的单线程冻结占位（进程全冻互斥面）。
-                            t.sched_attr.flags &= !SA_FLAG_FREEZE_READY;
-                            let owner = t.owner();
-                            if let Some(p) = (*owner.as_ptr()).obj.as_process_mut() {
-                                p.thread_freezes = p.thread_freezes.saturating_sub(1);
-                            }
-                            thaw_key = Some(self.key);
+                    t.freeze_depth = eff.depth_after;
+                    if eff.fully_thawed {
+                        // 设计契约：最后一次 thaw 自动清 FREEZE_READY；下次
+                        // 单线程冻结必须重新自证。同时撤销该 Thread 在 Process
+                        // 侧的单线程冻结占位（进程全冻互斥面）。
+                        t.sched_attr.flags &= !SA_FLAG_FREEZE_READY;
+                        let owner = t.owner();
+                        if let Some(p) = (*owner.as_ptr()).obj.as_process_mut() {
+                            p.thread_freezes = p.thread_freezes.saturating_sub(1);
                         }
+                        thaw_key = Some(self.key);
                     }
                 }
                 _ => {}

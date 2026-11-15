@@ -91,6 +91,7 @@ dependencies = [
  "berry-rootface",
  "berry-safeck",
  "berry-sched",
+ "berry-susface",
  "berry-telface",
  "berry-vmoledger",
  "berry-vslotface",
@@ -154,6 +155,10 @@ dependencies = [
 [[package]]
 name = "berry-sliceface"
 version = "0.2.0"
+
+[[package]]
+name = "berry-susface"
+version = "0.1.0"
 
 [[package]]
 name = "berry-telface"
