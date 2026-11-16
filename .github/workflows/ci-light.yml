@@ -62,7 +62,7 @@ jobs:
         run: python3 tools/unsafe_audit.py --check
 
       - name: shvarcheck（bash3.2 吞名面门禁）
-        run: python3 tools/shvarcheck.py
+        run: python3 tools/shvarcheck.py --check
 
       # W1-Q20（2026-11-16）：tools 自检执行面（CI 层缺口收口）——判例族
       # 「有 selftest 零自动执法」在 CI 侧的同款缺口：tools/** 正是本轻道
