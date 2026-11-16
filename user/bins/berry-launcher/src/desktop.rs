@@ -416,7 +416,7 @@ pub fn build(
     //    建树面零改动，只换父位）；sys 页（应用列表/设置）按需建入本
     //    Stack 顶层——不透明底整面盖住桌面（v1 无 clip/隐藏原语，覆盖
     //    即隐藏——子树保活，pager 翻页态零损），离树 = remove 整页。
-    let tabs_h = if big { berry_ui::pattern::BOTTOMTABS_H } else { TABS_H_COMPACT };
+    let tabs_h = 0; // 沉浸裁定（owner）：BottomTabs 不占桌面页高度
     let nav_h = if big { NAV_BAR_H_BIG } else { NAV_KEY_PX };
     let host_h = vp_h
         .saturating_sub(status_h + grid_top + tabs_h + nav_h)
@@ -690,7 +690,9 @@ pub fn build(
             props: Props::Stack(StackProps { align: StackAlign::Start }),
         },
     )?;
-    let (bar_inst, tab_nodes) = syspages::build_tab_bar(ui, bar_host, 0)?;
+    // 沉浸裁定（owner 2026-11-16）：桌面页不建 BottomTabs 实例——
+    // 切 sys 页时 rebuild_tab_bar 在 bar_host 上按需建。
+    let (bar_inst, tab_nodes) = (bar_host, [bar_host; 3]);
     let tab_labels: [&[u8]; 3] = [b"home tab", b"apps tab", b"settings tab"];
     for (i, &tn) in tab_nodes.iter().enumerate() {
         ui.set_a11y(tn, ROLE_BUTTON, tab_labels[i])?;
@@ -763,10 +765,11 @@ pub fn build(
         Ok((n, rect))
     };
     let (back, back_face) = nav_icon(icons::NAV_BACK, b"back")?;
-    let (recents, recents_face) = nav_icon(icons::NAV_RECENTS, b"recents")?;
     let (home, home_face) = nav_icon(icons::NAV_HOME, b"home")?;
-    let (rotate, rotate_face) = nav_icon(icons::NAV_ROTATE, b"rotate screen")?;
-    let (power, power_face) = nav_icon(icons::NAV_POWER, b"power off")?;
+    let (recents, recents_face) = nav_icon(icons::NAV_RECENTS, b"recents")?;
+    // 三键裁定（owner 2026-11-16）：旋转/关机撤出屏条；别名保 NavNodes。
+    let (rotate, rotate_face) = (back, back_face);
+    let (power, power_face) = (back, back_face);
     drop(nav_icon);
     // 刀 B：press_map 登记——**当前页**（页 0——build 时 snap 基线）20 格
     // （cell → press_face）+ 5 nav 键（icon → rect face）= 25 对 <

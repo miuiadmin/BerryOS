@@ -3043,19 +3043,7 @@ pub fn bottom_tabs_slots(
 ) -> Result<[NodeId; 8], UiError> {
     let (vp_w, _) = ui.viewport();
     // 底条：白底（非沉浸桌面页底色）+ 满宽 144px 高。
-    ui.add(
-        parent,
-        ViewSpec {
-            kind: ViewKind::Rect,
-            key: 0,
-            props: Props::Rect(RectProps {
-                bg: Color { r: 0xFF, g: 0xFF, b: 0xFF },
-                w: Some(vp_w),
-                h: Some(BOTTOMTABS_H),
-                radius: 0,
-            }),
-        },
-    )?;
+        // 沉浸裁定（owner 2026-11-16）：白底 Rect 撤。
     let row = ui.add(
         parent,
         ViewSpec {
@@ -3102,19 +3090,7 @@ pub fn bottom_tabs_slots(
             )?;
         }
         // 图标 24vp。
-        ui.add(
-            cell,
-            ViewSpec {
-                kind: ViewKind::Icon,
-                key: 0,
-                props: Props::Icon(IconProps {
-                    id: t.icon,
-                    fg: Color { r: 0xFF, g: 0xFF, b: 0xFF },
-                    w: Some(24 * DENSITY),
-                    h: Some(24 * DENSITY),
-                }),
-            },
-        )?;
+            // 沉浸裁定（owner 2026-11-16）：白底 Rect 撤。
         // 标签 12vp（选中 = brand，未选 = 灰）。
         let label_color = if t.selected {
             Color { r: 0x00, g: 0x7D, b: 0xFF }
