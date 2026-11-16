@@ -297,7 +297,6 @@ fn pager_node_budget_exact_and_launcher_margin() {
 }
 
 // —— 维三最小刀第二刀：松手吸附可配置（默认 QuadOut 零变化）——
-
 /// 帧步（弹簧子步同源——每 tick 恰一子步）。
 const SPRING_FRAME_NS: u64 = 16_000_000;
 
@@ -314,8 +313,11 @@ fn snap_default_quadout_zero_change() {
     // 默认档行为零变化：velocity 非零（-600）仍走 QuadOut 240ms 定长
     // 时间线——起拍持 from、中点值级（Q16.16 定点 interp 单源钉板：
     // t=0.5 → eased=49152 → (-70·49152)>>16 = -53 → -83）、精确终点、
-    // 到期即毕再 tick 零开销。
+    // 到期即毕再 tick 零开销。AP3 融合后 QuadOut 时长按档整帧量化——
+    // 此处钉「档未协商」（period 0）退化直通 240ms，历史值级钉板逐字
+    // 保持；量化生效面另测（snap_duration_quantized_to_frames）。
     let (mut ui, mut pager, track) = pager3();
+    ui.set_vsync(0, 0); // 未协商档：quantize_duration_ns 直通 SNAP_DUR_NS
     release_to_page1(&mut pager, &mut ui, track, -600);
     let t0 = 1_000u64;
     assert!(pager.tick(&mut ui, t0), "吸附起拍帧");
@@ -384,4 +386,23 @@ fn snap_velocity_spring_zero_velocity_falls_back() {
     assert!(pager.tick(&mut ui, t0 + SNAP_DUR_NS));
     assert_eq!(page0_x(&ui, &pager), 0, "Cancel 回弹当前页");
     assert!(!pager.tick(&mut ui, t0 + SNAP_DUR_NS + 1));
+}
+
+/// AP3（§9 刀6）：吸附时长按当前档周期整帧量化——120Hz 档 240ms → 29 帧
+///（241.67ms）。t+240ms 未完（未量化形此刻已完成 = 量化生效判别面）、
+/// t+29 整帧处完成、其后零开销。默认 60Hz 档（14 帧 = 233ms）不改既有
+/// settle 语义（t+240ms 已过完成点）。
+#[test]
+fn snap_duration_quantized_to_frames() {
+    let (mut ui, mut pager, track) = pager3();
+    ui.set_vsync(8_333_333, 0); // 120Hz 档
+    assert!(drag_start(&mut pager, &mut ui, track, 50));
+    assert!(drag_move(&mut pager, &mut ui, track, 20)); // dx=-30（< 40 阈，速度向主导）
+    assert!(drag_end(&mut pager, &mut ui, track, -600)); // 速度向翻页
+    let t0 = 1_000u64;
+    assert!(pager.tick(&mut ui, t0), "起拍帧（量化定格）");
+    assert!(pager.tick(&mut ui, t0 + SNAP_DUR_NS), "240ms 仍在吸附（尾帧补齐）");
+    let q = 29 * 8_333_333; // quantize_duration_ns(240ms, 120Hz 档周期)
+    assert!(pager.tick(&mut ui, t0 + q), "整帧长完成（精确 to）");
+    assert!(!pager.tick(&mut ui, t0 + q + 1), "吸附毕再 tick 零开销");
 }

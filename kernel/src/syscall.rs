@@ -78,7 +78,8 @@ use core::ptr::NonNull;
 #[allow(unused_imports)]
 pub use crate::abi_gen::{
     CHAN_OPT_NO_INTENT, NR_CHANNEL_CREATE, NR_CHANNEL_RECV, NR_CHANNEL_SEND, NR_CLOCK_READ,
-    NR_EVENT_CREATE, NR_HANDLE_CLOSE, NR_HANDLE_DUPLICATE, NR_HANDLE_REPLACE, NR_OBJECT_SIGNAL,
+    NR_CBOX_DRAIN, NR_EVENT_CREATE, NR_HANDLE_CLOSE, NR_HANDLE_DUPLICATE, NR_HANDLE_REPLACE,
+    NR_OBJECT_SIGNAL,
     NR_OBJECT_WAIT_MANY, NR_OBJECT_WAIT_ONE, NR_PAGER_SUPPLY_MAPPED, NR_PAGER_SUPPLY_MAPPED_TABLE,
     NR_PAGER_SUPPLY_PAGES, NR_PROCESS_CREATE,
     NR_PROCESS_EXIT, NR_PROCESS_GET_EXIT_CODE, NR_PROCESS_START, NR_PROCESS_SUSPEND,
@@ -2000,6 +2001,57 @@ extern "C" fn sys_process_get_exit_code(tf: &mut TrapFrame) -> i64 {
         return ERR_AGAIN as i64; // poll 语义：先 wait TERMINATED 再查
     }
     match copy_out_u32(el1, out, p.exit_code as u32) {
+        Ok(()) => 0,
+        Err(e) => e as i64,
+    }
+}
+
+/// `cbox_drain(buf, cap, *out_len)`（0x42，cbox 刀 1）：黑匣子崩溃记录表全量
+/// 快照 copy-out——12B 头 {ver,total,stored} + 存量 104B 记录按 seq 升序。
+/// cap==0 = 尺寸查询（`*out_len` = 所需字节，返 0）；cap 不足 → -ENOMEM 不
+/// 部分写；cap 高 32 位非零 = -EINVAL（u64 截断成假小帽会绕尺寸契约）；出参
+/// 预清 fail-fast（`process_get_exit_code` 同款）。无 right 门（诊断几何面
+/// ——need=0 惯例）；结构面零锁但走 SVC_CLASS_TABLE 在册（svc_enter 取锁
+/// 纪律同全体 syscall，`cbox.rs` 表读写自身无锁——seqlock 快照）。
+extern "C" fn sys_cbox_drain(tf: &mut TrapFrame) -> i64 {
+    let (buf, cap_raw, out) = (tf.regs[1], tf.regs[2], tf.regs[3]);
+    let Ok(cap) = u32::try_from(cap_raw) else {
+        return ERR_INVALID_ARG as i64;
+    };
+    let el1 = caller_is_el1(tf);
+    if let Err(e) = copy_out_u32(el1, out, 0) {
+        return e as i64;
+    }
+    // 两遍快照（先尺寸后拷贝）共一锚：drain_total 取一次贯穿两遍——遍间新
+    // 崩溃不进窗口，两遍等长；拷贝回的越界分支纯防御（同锚下结构性不可达）。
+    let total = crate::cbox::drain_total();
+    let mut need = 0usize;
+    crate::cbox::drain_with(total, &mut |s| need += s.len());
+    if cap == 0 {
+        return match copy_out_u32(el1, out, need as u32) {
+            Ok(()) => 0,
+            Err(e) => e as i64,
+        };
+    }
+    if (cap as usize) < need {
+        return ERR_NO_MEMORY as i64;
+    }
+    let mut off = 0usize;
+    let mut err = 0i32;
+    crate::cbox::drain_with(total, &mut |s| {
+        if err != 0 || off + s.len() > cap as usize {
+            err = ERR_NO_MEMORY;
+            return;
+        }
+        match copy_to_user(el1, buf + off as u64, s) {
+            Ok(()) => off += s.len(),
+            Err(e) => err = e,
+        }
+    });
+    if err != 0 {
+        return err as i64;
+    }
+    match copy_out_u32(el1, out, off as u32) {
         Ok(()) => 0,
         Err(e) => e as i64,
     }
@@ -4001,7 +4053,8 @@ extern "C" fn sys_object_wait_many(tf: &mut TrapFrame) -> i64 {
 /// pager_supply_mapped(0x23，门 C 裁 A add-only——恒等选源挂派发) = 35 号；
 /// X-6 刀① 加 pager_supply_mapped_table(0x24) = 36 号已实现；桌面UX刀D 加
 /// power_off(0x88) = 37 号；CP-08 加 sched_util_snapshot(0x40，util 快照读
-/// ——OQ-8 首环，add-only) = 38 号已实现；v1 在册 39 号
+/// ——OQ-8 首环，add-only) = 38 号已实现；cbox 刀 1 加 cbox_drain(0x42，黑匣子
+/// 排液口，add-only) = 39 号已实现；v1 在册 40 号
 /// （唯 0x85 `berry_attest` 预留未实现）**；
 /// **S6-b 加 policy_bind(0x83，v3 号提前实现最小 COMMIT 面——v1 号面之外
 /// 首个真注册的 v3 号，ABI §4 在册同名单源）**。
@@ -4025,6 +4078,11 @@ pub fn install() {
     // P2-2 退出异步化：REAP 排水尾钩子——CPU0 idle/yield 点排空 pending
     // ht-drain 队列（退出钩子的异步半场；注册先于 sched::init/首个任务）。
     berry_sched::set_reap_post_hook(crate::process::ht_drain_flush);
+    // cbox 刀 1：黑匣子排液（0x42）——静态表读零锁，但出参 copy_out 链经
+    // walk_leaf 无锁走查本进程页表 = §A113 读者面（0x61/0x87 同链同判）——
+    // 升 TABLE 持 KL 与页表写者互斥，NONE 实装号归零不变量（刀 1 初判 NONE
+    // 为漏审，刀 2 回改）。
+    reg(NR_CBOX_DRAIN, sys_cbox_drain, SVC_CLASS_TABLE);
     // —— SQ+RQ+TABLE（0x2E）：wait/send 族（wake→enqueue 双结构窗 + 表）——
     reg(NR_HANDLE_CLOSE, sys_handle_close, SVC_CLASS_SQ_RQ_TABLE);
     reg(NR_HANDLE_DUPLICATE, sys_handle_duplicate, SVC_CLASS_TABLE);

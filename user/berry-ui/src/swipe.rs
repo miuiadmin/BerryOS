@@ -48,25 +48,30 @@ pub const DOT_OFF: berry_gfx::cmd::Color = berry_gfx::cmd::Color { r: 128, g: 12
 
 /// 松手吸附档（可配置——默认 [`SnapMode::QuadOut`] 行为零变化）：
 /// - `QuadOut` = 既有固定 QuadOut 240ms 定长时间线（默认档——velocity
-///   不参与，历史钉板逐字保持）。
+///   不参与，历史钉板逐字保持）；时长 = AP3（§9）整帧量化：起拍按当前
+///   档周期定格（240ms → 60Hz 15 帧 / 120Hz 29 帧），尾拍无小数帧抖动；
+///   档未协商（period 0）退化直通 240ms。
 /// - `VelocitySpring` = 松手速度**非零**时切 [`SpringProp`] 定点弹簧、
 ///   以松手速度入参（速度续接主干——OH springMotion / iOS
 ///   interpolatingSpring 等价物；预设 Smooth = 近临界无过冲档）；速度
-///   为零（含 Cancel）回落 QuadOut。
+///   为零（含 Cancel）回落 QuadOut。弹簧自持积分不吃整帧量化（dt 连续
+///   采样——量化会折叠首步速度）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SnapMode {
     QuadOut,
     VelocitySpring,
 }
 
-/// 吸附态（一次至多一条）：QuadOut 定长时间线（起拍 = 首次 tick）或
-/// SpringProp 弹簧（自持积分态）。目标页在 `begin_snap` 即裁定进
+/// 吸附态（一次至多一条）：QuadOut 定长时间线（起拍 = 首次 tick；
+/// `dur_ns` = AP3 整帧量化时长，首次 tick 按当前档周期定格，0 = 未定）
+/// 或 SpringProp 弹簧（自持积分态）。目标页在 `begin_snap` 即裁定进
 /// `self.page`/圆点——此处只余轨迹簿记。
 enum Snap {
     QuadOut {
         from: i32,
         to: i32,
         start_ns: Option<u64>,
+        dur_ns: u64,
     },
     Spring(SpringProp),
 }
@@ -308,26 +313,31 @@ impl SwipePager {
     }
 
     /// 吸附推进（帧循环调；无吸附 → false 零开销）。QuadOut 起拍 =
-    /// 首次 tick 的 now_ns（Msg 无时戳位——§7.4 时钟缝的 tick 补面）；
-    /// Spring 首步 dt=0 持初值（同式起拍）；完成帧应用精确 `to` 终点
+    /// 首次 tick 的 now_ns（Msg 无时戳位——§7.4 时钟缝的 tick 补面），
+    /// 时长 = AP3（§9）整帧量化：起拍按当前档周期定格（240ms → 60Hz
+    /// 15 帧 / 120Hz 29 帧），尾拍无小数帧抖动；档未协商（period 0）
+    /// 退化直通 240ms。Spring 首步 dt=0 持初值（同式起拍、不吃量化——
+    /// 弹簧速度续接主干，量化会折叠首步速度）；完成帧应用精确 `to` 终点
     /// （QuadOut 定长到期 / Spring 双阈值收敛吸附——与 anim::tick 完成
     /// 语义同式）。
     pub fn tick<const N: usize>(&mut self, ui: &mut Ui<N>, now_ns: u64) -> bool {
         let (v, done) = match &mut self.snap {
             None => return false,
-            Some(Snap::QuadOut { from, to, start_ns }) => {
+            Some(Snap::QuadOut { from, to, start_ns, dur_ns }) => {
                 let start = match *start_ns {
                     Some(t) => t,
                     None => {
                         *start_ns = Some(now_ns);
+                        *dur_ns = crate::step::quantize_duration_ns(SNAP_DUR_NS, ui.vsync().0);
                         now_ns
                     }
                 };
+                let dur = if *dur_ns == 0 { SNAP_DUR_NS } else { *dur_ns };
                 let elapsed = now_ns.saturating_sub(start);
-                if elapsed >= SNAP_DUR_NS {
+                if elapsed >= dur {
                     (*to, true)
                 } else {
-                    (anim::interp(Easing::QuadOut, *from, *to, elapsed, SNAP_DUR_NS), false)
+                    (anim::interp(Easing::QuadOut, *from, *to, elapsed, dur), false)
                 }
             }
             Some(Snap::Spring(sp)) => {
@@ -376,7 +386,7 @@ impl SwipePager {
             return;
         }
         self.snap = Some(match self.snap_mode {
-            SnapMode::QuadOut => Snap::QuadOut { from: self.ox, to, start_ns: None },
+            SnapMode::QuadOut => Snap::QuadOut { from: self.ox, to, start_ns: None, dur_ns: 0 },
             SnapMode::VelocitySpring if vx != 0 => Snap::Spring(SpringProp::new(
                 self.track,
                 AnimProp::OffsetX,
@@ -386,7 +396,7 @@ impl SwipePager {
                 SpringPreset::Smooth, // 近临界档——OH springMotion 翻页气质
             )),
             SnapMode::VelocitySpring => {
-                Snap::QuadOut { from: self.ox, to, start_ns: None } // 零速回落
+                Snap::QuadOut { from: self.ox, to, start_ns: None, dur_ns: 0 } // 零速回落
             }
         });
     }

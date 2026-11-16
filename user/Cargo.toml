@@ -104,6 +104,12 @@
 # （本工作区成员，none target，段② 接线）+ berry-launcher 客户端
 # （段③ 独立小工作区编 musl target，同 stdhello 不入 members）——host
 # 测试经 justfile test-host 显式行跑）。
+# cbox 刀 2：berry-cbox（黑匣子账本纯函数 crate，「解析器即产品」——排液
+# 快照解码（镜像内核 cbox.rs 定宽表）/CBOX.LOG 行编解码（冻结字段序
+# add-only）/合并轮转 + 跨写者续号纯核，.agents/plans/cbox/design.md；三消费
+# = svcmgr（本工作区成员，none target）+ berry-launcher（独立小工作区编
+# musl target，同 stdhello 不入 members）+ 刀 3 宿主 berry crash-log——host
+# 测试经 justfile test-host 显式行跑）。
 # sim-S1：berry-pwproto（sim 三设备快照协议纯函数 crate——帧头/定长全量
 # 快照/ACK/流式再同步解码，host 测试；PM-16 §4.1 契约 + docs/sim设备通道
 # 与契约设计-v1.0.md §5 冻结。双消费 = bins/simbattery 服务（首消费）+
@@ -136,7 +142,7 @@
 # host cargo test）；纯函数面 host 测试。首消费者 = berry-launcher（musl
 # 独立小工作区 path 依赖，不入 bins 段），波 4 预制应用随后）。
 members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-winplan", "berry-argv", "berry-strmem", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto", "berry-gpuproto",
-    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-layout", "berry-psproto", "berry-complete", "berry-tls", "berry-mmap", "berry-signal", "berry-fbcon", "berry-gfx", "berry-poll", "berry-guiproto", "berry-ui", "berry-appshell", "berry-softime", "berry-appproto", "berry-pwproto", "berry-lifecycle", "berry-crypto", "berry-spawngeo", "bins/abuser", "bins/berry-verify", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild", "bins/dpgp", "bins/policydemo"]
+    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-layout", "berry-psproto", "berry-complete", "berry-tls", "berry-mmap", "berry-signal", "berry-fbcon", "berry-gfx", "berry-poll", "berry-guiproto", "berry-ui", "berry-appshell", "berry-softime", "berry-appproto", "berry-cbox", "berry-pwproto", "berry-lifecycle", "berry-crypto", "berry-spawngeo", "bins/abuser", "bins/berry-verify", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild", "bins/dpgp", "bins/policydemo"]
 exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet", "bins/apptomb"]
 resolver = "2"
 

@@ -24,6 +24,9 @@ berry-libc = { path = "../../berry-libc" }
 berry-sys = { path = "../../berry-sys" }
 berry-gfx = { path = "../../berry-gfx" }
 berry-guiproto = { path = "../../berry-guiproto" }
+# 刀6 k6t：T5 时长不变性 guest 面——DET 拍距喂真身 FixedStep（launcher
+# 同款先例：no_std rlib 入 musl std 程序）。
+berry-ui = { path = "../../berry-ui" }
 
 [profile.release]
 opt-level = "z"

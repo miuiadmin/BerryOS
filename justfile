@@ -945,6 +945,14 @@ test-host:
     # 接线去重——#356 已带 workspace 形 -p berry-appshell 行（上方波3-件⑦
     # 段），manifest-path 重复行移除（appshell 33 测曾双跑，实测去重）。
     cargo test --manifest-path user/berry-softime/Cargo.toml --target {{host}}
+    # cbox 刀 2：berry-cbox（黑匣子账本纯函数面——排液快照解码/行编解码
+    # 冻结字段序/合并轮转 + boot_pick 续号；黄金行钉板 + 负例全家桶 +
+    # 轮转年龄序钉死，.agents/plans/cbox/design.md）。
+    cargo test --manifest-path user/Cargo.toml -p berry-cbox --target {{host}}
+    # cbox 刀 3：berry CLI 工具面（symbolize ELF64 零依赖解析 + crash-log
+    # FAT12 直读/指纹聚合——对真 mkfat --put 造盘对拍 + 撕链负例；userbins
+    # 现实全 strip，双空如实报错指路不静默）。
+    cargo test --manifest-path tools/berry/Cargo.toml --target {{host}}
     # mkapp 门禁自检（a-3 U4：mkfat --check-fixture 同位前置——打包器门禁
     # 面此前只在 build-user 产物链上被动覆盖，门禁自身坏 = 产物链静默劣化）。
     python3 tools/mkapp.py --selftest

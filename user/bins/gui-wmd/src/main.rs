@@ -1,8 +1,10 @@
 //! gui-wmd —— GUI-5（ADR #61）窗口管理守护 + 波3 焦点/返回路由/事件通道：
 //! 呈现（guifbd）/窗口策略（本服务）分离。guifbd 零改动；gfxdemo 改连
-//! wm 域（同 op 换端——present/hdi 六+四 op 经本服务透传中继，wm 九 op
-//! 本地权威处理）；inputd 追加推送端收窗口表快照（WM_TABLE_WAIT 阻塞
-//! 应答形——波3 冻结面，零新增驻留者）。
+//! wm 域（同 op 换端——present/hdi 八+六 op 经本服务透传中继〔refresh 刀3
+//! A6/刀4 P3 扩域：present +0x07 INPUT_PULSE/+0x08 FRAME_TIMING、hdi
+//! +0x44 VBLANK_TIMING/+0x45 PANEL_CAPS〕，wm 九 op 本地权威处理）；inputd
+//! 追加推送端收窗口表快照（WM_TABLE_WAIT 阻塞应答形——波3 冻结面，零新
+//! 增驻留者）。
 //!
 //! **boot 授能链**：EFI 相 svcmgr guifbd arm Ok 后 wmd arm 预拉本服务
 //! （门 = present_cli≠0 ∧ cpio 命中），extras 4 枚 = [wm_srv（wm 客户端
@@ -227,20 +229,22 @@ impl Port for ChanPort {
     }
 }
 
-/// wm_srv 帧分发（§3 #6 分发表执法 + 波3 新 op）：present 1..=6 →
-/// present_cli 透传；hdi 0x40..=0x43 → hdi_cli 透传；wm 0x60..=0x7F →
-/// 本地表处理（九 op：GETINFO/CREATE/DESTROY/SET/TABLE_GET/TABLE_WAIT +
-/// 波3 FOCUS 0x66/BACK 0x67/SUBSCRIBE 0x68；0x69..=0x7F 未定形 → 1B
-/// ST_BAD）；**其余一切 op（含 0x20..=0x22 input 域错投、0x90..=0x9F
-/// 事件帧型错投）→ 1B ST_BAD + close 随行**。
+/// wm_srv 帧分发（§3 #6 分发表执法 + 波3 新 op + refresh 扩域）：present
+/// 1..=8 → present_cli 透传（0x07 INPUT_PULSE 刀3 A6 入域；0x08
+/// FRAME_TIMING 刀4 P3 入域——呈现回执查询面）；hdi 0x40..=0x45 →
+/// hdi_cli 透传（0x44 VBLANK_TIMING 刀1 / 0x45 PANEL_CAPS 刀2 入域）；
+/// wm 0x60..=0x7F → 本地表处理（九 op：GETINFO/CREATE/DESTROY/SET/
+/// TABLE_GET/TABLE_WAIT + 波3 FOCUS 0x66/BACK 0x67/SUBSCRIBE 0x68；
+/// 0x69..=0x7F 未定形 → 1B ST_BAD）；**其余一切 op（含 0x20..=0x22
+/// input 域错投、0x90..=0x9F 事件帧型错投）→ 1B ST_BAD + close 随行**。
 #[cfg(target_os = "linux")]
 fn on_wm(table: &mut WmTable, present_cli: Handle, hdi_cli: Handle, ch: Handle,
          msg: &[u8], hs: &[Handle]) {
     match msg.first() {
-        Some(&op) if (gp::OP_GETINFO..=gp::OP_POWER_MODE).contains(&op) => {
+        Some(&op) if (gp::OP_GETINFO..=gp::OP_FRAME_TIMING).contains(&op) => {
             relay::relay(ch, present_cli, msg, hs);
         }
-        Some(&op) if (gp::OP_REG_VBLANK..=gp::OP_COMMIT).contains(&op) => {
+        Some(&op) if (gp::OP_REG_VBLANK..=gp::OP_VBLANK_TIMING).contains(&op) => {
             relay::relay(ch, hdi_cli, msg, hs);
         }
         Some(&op) if (gp::OP_WM_GETINFO..=0x7F).contains(&op) => {
