@@ -1,6 +1,6 @@
 # Berry 设备平台（CLI-first）设计
 
-> 版本：**1.8**（v1.8）｜2026-11-15
+> 版本：**1.9**（v1.9）｜2026-11-16
 
 > 【状态】2026-11-04 立稿；ADR #62 追记。**本文 = 产品形态 / CLI / 控制面 / 窗口快捷栏 / 刀序的单一事实源。**
 > 【v1.1】2026-11-13：VNC 桌面全套已落——`berry vnc` 四动词、`--vnc/--vnc-ws/--vnc-pass` 三入口旗标、控制面 `vnc`/`vnc_passwd` op（§7/§8/§13/§14/§15 同步）。
@@ -11,6 +11,7 @@
 > 【v1.6】2026-11-14：VNC 第九波已落——`vnc web` 默认页换 BerryOS 自有壳页（自动重连/工具栏/移动端）+ `--open`（§8/§14 同步）。
 > 【v1.7】2026-11-15：VNC 第十波已落——`vnc web --lan` 单口 LAN 远程桌面（页面与 `/ws` ws 代理同口绑 0.0.0.0 + 终端 QR 配对，`--host`/`--qr`/`--no-qr`）+ 壳页底栏设备面板（导航键代点客机导航条/截图/经 `POST /api/power/<action>` 的重启与关机，口令门）（§8/§13/§14 同步）；同日续：GUI 家族 noktest 注入落地（生产 boot 跳 ktest，`run`/`shot` 冒烟路径不注）与 §10.1 Profile 表语义勘误（「已验证」= 验证登记非分配上限，补 desktop 行——11-15 容量回归误判判例入会审文档）。
 > 【v1.8】2026-11-15：VNC 第十一波已落——TLS run 的 `--lan` 形态（http 页 + `/ws` 代理上游腿 rustls wss，`--ca`/`--insecure` 证书语义）、LAUNCH_STICKY 直参化退役（CLI 零变化）、窗口工具栏 WEB 键（§8/§13/§14 同步）。
+> 【v1.9】2026-11-16：宿主 `berry console` 串口直连已落——QEMU 串口 chardev 化（socket + logfile：serial.log 仍由 QEMU 写且含零客户端期早期字节，logs 面五读方零改动）+ `berry console [--run]` 子命令（TTY raw 双向泵/Ctrl-D 断开不断 run/console.lock 独占/Ctrl-C 原样转发客机杀链）（§8/§8.2/§14 同步）。
 > 【关系】`berry设备壳设计草案-v1.0.md` 降为**显示/帧面/QEMU/客机侧子系统**；两文冲突时以本文为准。
 > 【一句话】一个 `berry` 二进制，三种角色：CLI client / GUI client / session host；
 > CLI 是主接口，GUI 是同一控制面的客户端，QEMU 只是引擎子进程。
@@ -362,6 +363,7 @@ vnc web [--run] [--port N] [--max-conns N] [--tls <dir>] [--open]   # 本地服�
 vnc web --lan [--host <addr>] [--qr | --no-qr] [--ca <dir> | --insecure] [--port N]   # LAN 单口形态：页面与 /ws ws 代理同口绑 0.0.0.0，手机同 Wi-Fi 直开桌面（明文/TLS run 均可 + 必须有口令；TLS run 上游腿为 rustls wss，--ca 覆盖信任源/--insecure 跳过校验带警告，两者互斥；终端 QR 配对默认开，内容=剥 fragment 的页面 URL；--host 显式覆盖自动解析的 LAN 地址；--qr/--no-qr/--host/--ca/--insecure 无 --lan 时 rc=2）
 vnc certs <dir>                       # 生成自签 x509 证书集（openssl 子进程，出 SHA256 指纹）
 
+console [--run <id>]                   # 宿主终端直连 run 的串口进 bsh（Ctrl-D 断开不断 run；Ctrl-C 原样转发客机；同 run 单会话 console.lock 独占；管道一步式须持开形态——EOF 即拆，见 §8.2）
 logs [--run] [-f] [--tail N] [--json]
 events [--run] [--tail N] [-f] [--filter <substr>] [--json]
 record [--run] --out <dir> --frames N --interval-ms MS [--apng file] [--json]
@@ -396,6 +398,7 @@ version
 
 ### 8.2 语义
 
+- **`console`**：attach 活 run 的串口数据面（不走 control.sock——直连 run 的 serial.sock，screenshot 的 VNC 兜底同族）。串口经 chardev socket 暴露（`-serial file:` 旧形态的 run 无端点，报错带 restart hint）；serial.log 由 QEMU 同步落盘（logs/boot tail/GUI tail 零改动），console 只是第二客户端；TTY raw 双向泵（Ctrl-C=0x03 字节转发——bsh 杀链真语义；Ctrl-D/EOF 断开恢复终端，run 继续）；单会话独占（console.lock flock，第二连接显式拒绝——把 QEMU 单活客户端的静默僵尸升格）；连接 0.5s×8 重试（chardev backlog=1 拒连窗）。管道/脚本一步式形态：EOF 即拆会话，应答取不回——持开写法 `(sleep N; printf "cmd\n"; sleep M; printf "\x04") | berry console`（linger 语义挂 v2）。Windows 未支持（chardev TCP 化跟进）。
 - **`shot` vs `screenshot`**：`shot` 起临时设备并抓一帧；`screenshot` attach 现有设备，
   不启动、不停止。
 - **`shell`**：打开窗口；headless 用 `device start`；`shell --attach` 附着已有 session；双击兼容。
@@ -608,6 +611,7 @@ enum UiAction { Screenshot, Resolution, Reboot, PowerOff, Fullscreen }
 | **C2f（已落交互）** | 按钮 hover 高亮 + tooltip；菜单当前项高亮；OFF 二次确认 | 悬停可见提示；15 单测绿 |
 | **C2g（已落）** | 先起新 host 再停旧（失败旧 host 不动）；旧 run 按 keep 清理；tooltip 保持 | 新 host 失败不伤旧；keep=false 旧 run 删除 |
 | **C2h（已落）** | attach 新 host 失败保留旧 host；VNC 重连失败按旧 profile 回滚重连；stale 提示 cleanup | 失败不丢旧会话；rollback 可恢复 |
+| **console 串口直连（已落，v1.9）** | chardev socket+logfile 双向化（qemu.rs machine_args 单点，run/shot/device 三路）+ `berry console` 子命令（flock 独占/TTY raw FFI/双向泵/Ctrl-D 断开） | 142 测全绿（+4）；实跑端到端：持开管道 rx→`RX ok` 回显→Ctrl-D→run 存活；logs 零变化；run --marker/shot 回归绿 |
 | **C2i（下一刀）** | 快捷键提示扩展；Windows 实机验证 | 交互/平台收口 |
 | **VNC（已落，v1.1）** | 对外 VNC 暴露：QEMU 第二个 `-vnc` TCP 服务 + `--vnc-ws` websocket + 口令策略（非环回强制）；`berry vnc status/passwd/check/open`；控制面 `vnc`/`vnc_passwd` op | `berry vnc check` 完整 RFB 自检取帧 1080×1920；noVNC ws 通路（HTTP 101 + RFB 3.8）；杀 QEMU 重生同端口同口令；冒烟产物 `out/vnc-smoke-desktop.png` |
 | **VNC 成熟化（已落，v1.2）** | noVNC 网页桌面（`vnc web`，vendored 1.7.0 静态页直连 QEMU ws，无代理）+ `vnc certs`（openssl 自签证书集）；TLS/VeNCrypt（`--vnc-tls`，与口令组合 x509-vnc）；连接事件审计（events.jsonl 三事件 + `events --filter`）；口令到期（`passwd --expire`）；端口竞态重试与可拨 uri/bind 回显 | Chrome headless 截图与客机帧缓冲调色板同构（`out/vnc-w2-novnc-browser.png`）；TLS 1.3 + 链验证 + TLS 内 DES（STARTTLS 探针）；RealVNC 真客户端完整三事件生命周期（`out/vnc-w2-realvnc-frame.png`）；`cargo test` 55 绿 |

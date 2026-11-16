@@ -52,6 +52,8 @@ enum Cmd {
     Power(PowerCmd),
     /// Read the session serial log.
     Logs(LogsCmd),
+    /// Attach the host terminal to the guest serial console (bsh).
+    Console(ConsoleCmd),
     /// Display/profile operations.
     Display(DisplayCmd),
     /// Trigger a window-style shortcut action.
@@ -277,6 +279,13 @@ struct LogsCmd {
     tail: usize,
     #[arg(long, short = 'f')]
     follow: bool,
+}
+
+#[derive(Parser, Debug)]
+struct ConsoleCmd {
+    /// Run id/dir; default = newest running device.
+    #[arg(long)]
+    run: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -707,6 +716,7 @@ fn dispatch(cli: Cli) -> Result<()> {
         Some(Cmd::Logs(c)) => {
             commands::logs(c.run.as_deref(), c.tail, c.follow, cli.json)
         }
+        Some(Cmd::Console(c)) => commands::console(c.run.as_deref()),
         Some(Cmd::Screenshot(c)) => commands::screenshot(ScreenshotArgs {
             run: c.run,
             out: c.out,
