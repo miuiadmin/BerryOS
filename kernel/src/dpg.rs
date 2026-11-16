@@ -1004,10 +1004,17 @@ extern "C" fn dpg_press(arg: usize) -> ! {
         if crate::am2b_pressure_bits() & partial == 0 {
             break; // 位不置 = θ_p 不误报自证过
         }
-        // 硬 panic 仅单核独占形（SMP 多消费者形态 wall 前提破——降软，
+        // 硬 panic 仅单核独占静默形（SMP 多消费者形态 wall 前提破——降软，
         // 详 ⑤ 块注；par_enabled = 副核上线面，与 smoke -smp 形态一致）。
+        // F5（SMP-01 §3.5，2026-11-16）起第三形态降软：**带执法在飞**
+        //（any_armed——utility 等 FairBand 槽武装）时单核也不再是静默场
+        //——限流垄断者强制让点生效后，utility 带进入真实配额占空比
+        //（quantum/期），每翻期整批解限（high_weight VD 重臂 = 回场优先）
+        //，缺页供给墙钟被回场 Burst 合法推高（对角 A/B 实证：判据关
+        // DPGPRESS ok / 判据开 Σ≥4×阈）。「wall ≈ 自证停顿量级」前提与
+        // SMP 形同构性破——同走软路径（清位重冲 + x 记账），θ_p 语义零改动。
         assert!(
-            wall < theta_w || hal::smp::par_enabled(),
+            wall < theta_w || hal::smp::par_enabled() || berry_sched::any_armed(),
             "dpg_press: 反向臂自证缺页墙钟 Σ={} ≥ θ_p·W={}（单核独占形：少量缺页即达压——单页供给停顿标定漂移，θ_p 误报判据前提破）",
             wall,
             theta_w

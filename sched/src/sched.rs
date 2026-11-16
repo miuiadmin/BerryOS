@@ -3578,6 +3578,24 @@ pub fn thaw_by_thread(thread_key: usize) {
     }
 }
 
+/// F5（SMP-01 §3.5，2026-11-16 修）：限流垄断者强制让点判据——cur 带
+/// [`crate::task::HELD_THROTTLE`] 即**不得按「出选 None ⇒ 续跑」旧路继续**。
+/// THROTTLE 位只挡「再出选」（ringface `eligible` 位过滤——`my_cur` 自豁免
+/// 只覆盖 Running 臂，救不了限流位）不挡「继续跑」：单任务独占核时 pick
+/// 恒 None ⇒ 旧路 cur 直落续跑到 block/yield/exit，限流被架空（垄断者
+/// 无视带预算/逐任务预算）。
+///
+/// 位是两写者的统一表达面：band 越线（`band::throttle_all`——含 SMP-01
+/// lazy 补位）与 S5-c 逐任务 deadline 预算（`Fair::tick` 的
+/// `throttle_admissible`）都只写本位——判据只看位不问写者，两面同执法。
+/// 消费点 = [`on_irq_tick`] 片燃尽支的出选 None 臂（限流则强制切
+/// idle/park）。pub = ktest 决策面钉板（SMPLZ 同款先例）；切换舞蹈本体
+/// 归 boot/smoke 面。
+#[inline]
+pub fn throttle_yield_due(cur: *const Task) -> bool {
+    !cur.is_null() && unsafe { (*cur).held_locks } & crate::task::HELD_THROTTLE != 0
+}
+
 pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
     // S-2b 排障期诊断面：tick 入口计数（pre 涨/ticks 冻 = 卡锁；
     // 同冻 = CNTV/IRQ 链死）——含下方 gate 早退轮，两核都计。
@@ -3824,6 +3842,21 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
                 go = Some(next_ptr);
             }
         }
+        // F5（SMP-01 §3.5，2026-11-16 修）：限流垄断者强制让点——出选
+        // None（无可选后继）而 cur 带限流位时，不得走「未切走路直回」
+        // 续跑（THROTTLE 只挡再出选不挡续跑 = 限流被架空）。判据单源
+        // [`throttle_yield_due`]；Ready 化在 RQ 窗内落定（同上抢占支的
+        // 窗纪律）：限流者**在环保留**（不摘环——翻期解限后原环原位回
+        // 场），清 Running = 解除 Running-elsewhere 自锁（否则本核 pick
+        // 恒滤、对核偷不得，翻期也回不来）。配额跨线早于片燃尽的形态
+        // （quota < quantum 配置）让点推迟到片终点——上界一个本带
+        // quantum（CBS 期内超卖同界），非本刀执法面。
+        let mut forced_yield = false;
+        if go.is_none() && throttle_yield_due(cur) {
+            assert_preempt_balanced("on_irq_tick（F5 限流强制让点支）");
+            (*cur).state = TaskState::Ready;
+            forced_yield = true;
+        }
         rq_unlock(phys);
         if let Some(next_ptr) = go {
             (*next_ptr).slice_left = class_of_task(&*next_ptr).grant_cycles(); // M4 并线:per-task 授片(Unit=全局 slice 零漂移/Band=本带 quantum)
@@ -3852,6 +3885,57 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
             // 恢复路径（本函数尾 + IRQ 收尾 eret）双重放锁。
             // SAFETY: PSTATE.I=1（IRQ 屏蔽）；prev/next 有效、不别名。
             hal::task::context_switch(&raw mut (*cur).ctx, &raw const (*next_ptr).ctx);
+            return;
+        }
+        // F5 强制让点切换舞（判据/Ready 化在上方 RQ 窗内已毕）：限流 cur
+        // 让出核——CPU0/单核切 IDLE_TASK、副核回 park 探测环。醒源护栏 =
+        // nearest_deadline 已并入限流带截止（band::nearest_throttle_wake）
+        //——停泊核在带翻期时刻自醒，tick 入口 band_period_sweep 翻期解限
+        // 后原任务回场；无此护栏深 park（mask CNTV 无 tick）= 让点变饿死。
+        if forced_yield {
+            if hal::smp::cpu_id() != 0 {
+                // 副核：block/exit 的 pick-None park 臂同形——set_current(null)
+                // 空哨兵 + 切 sec_park_ctx；park_recheck 承接醒后再派发
+                //（ stealing 兜底同在其环顶）。
+                set_current(core::ptr::null_mut());
+                if (*cur).ttbr0 != 0 {
+                    hal::activate_aspace(0, 0);
+                }
+                bump_switches(); // S-6 ①：递增+打印共享 helper（A12 兑现）
+                hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
+                note_switch(cur, core::ptr::null_mut(), SwitchKind::Preempt);
+                // SAFETY: PSTATE.I=1（IRQ 屏蔽）；cur/park ctx 有效。被 park
+                // 派发切回时续行于下一行 → return 回 IRQ 收尾 eret（tick
+                // 抢占支同径；无 klock 配平——被打断者非 SVC 主体，与
+                // yield park 臂的 klock 对舞不同源）。
+                hal::task::context_switch(
+                    &raw mut (*cur).ctx,
+                    hal::smp::sec_park_ctx() as *const _,
+                );
+                return;
+            }
+            // CPU0/单核：block/exit 的 pick-None 臂同形——切 IDLE_TASK。
+            // idle_loop 承接后续：环非空（限流者在环保留）→「有活」热旋支
+            // 每 tick 跑 band_period_sweep，翻期即解限回场；尽空则按
+            // nearest_deadline（含限流带截止）武装停泊。
+            let idle = addr_of_mut!(IDLE_TASK);
+            // 切 idle 同律授片不 arm（block/exit pick-None 臂——idle_loop
+            // 自管武装，arm 反引入空 tick）。
+            (*idle).slice_left = class_of_task(&*idle).grant_cycles();
+            set_current(idle);
+            // S-6 ①：递增+打印共享 helper；金丝雀拍点顺带对账（tick 抢占支
+            // 同款 crossed 门挡频率）。
+            let crossed = bump_switches();
+            hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
+            activate_if_changed(cur, idle);
+            note_switch(cur, idle, SwitchKind::Preempt);
+            if crossed {
+                integrity_check();
+            }
+            // SAFETY: PSTATE.I=1（IRQ 屏蔽）；cur/idle 有效不别名（cur 在环
+            // 限流保留、IDLE 永不在环）。切回 cur（翻期解限后再派发）时
+            // 续行于下一行 → return 回 IRQ 收尾 eret。
+            hal::task::context_switch(&raw mut (*cur).ctx, &raw const (*idle).ctx);
             return;
         }
     }
@@ -4197,9 +4281,10 @@ unsafe fn dispatch_from_idle(next_ptr: *mut Task) {
     };
 }
 
-/// SLEEPQ 最近截止时刻（S-3a tickless park 武装面——子案 §9.5 步 A；
-/// 头未到期即最近，空队 None = 深 park）。锁窗内读队头（与
-/// [`expire_timeouts`] 同口径——升序队头即最近到期）。
+/// 最近醒源时刻（S-3a tickless park 武装面——子案 §9.5 步 A）：SLEEPQ
+/// 队头截止与**限流带翻期截止**（F5，2026-11-16 起——`band::
+/// nearest_throttle_wake`）的 min。锁窗内读队头（与 [`expire_timeouts`]
+/// 同口径——升序队头即最近到期）。
 ///
 /// 调用契约：IRQ 屏蔽窗内（secondary_main park 环天然满足）；**不持任何
 /// 结构位**（今日两处调用点皆 park 空态——CURRENT=null 恒真取；任务语境
@@ -4216,5 +4301,19 @@ pub fn nearest_deadline() -> Option<u64> {
         sleepq().head.get().map(|h| (*h.as_ptr()).wait_deadline)
     };
     sq_unlock(phys);
-    d
+    // F5（SMP-01 §3.5，2026-11-16 修）：限流带截止并入醒源（min 合并）
+    //——强制让点后核回 idle/park，停泊武装须含「带翻期解限」时刻
+    //（`band::nearest_throttle_wake`），否则深 park mask CNTV 无 tick ⇒
+    // band_period_sweep 永不再跑 ⇒ 限流永不翻期（让点变饿死）。零武装
+    // 面一次原子读早退（any_armed 门——unit 单带负载零语义差）；band
+    // 读面无结构位（原子账 + 屏蔽窗镜像——调用点契约不变）。
+    let band_wake = if crate::band::any_armed() {
+        crate::band::nearest_throttle_wake()
+    } else {
+        None
+    };
+    match (d, band_wake) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
 }

@@ -53,7 +53,7 @@
 | 5 | timer_slack 第三键+机制面 | [bootparams.rs](../../kernel/src/bootparams.rs):19/:65/:258-259/:338-339（CP-11 机制面三缺已破，K 链 5 实测） |
 | 6 | API 参考 oneshot 漏登 | [调度器API参考-v1.9](../../docs/调度器API参考-v1.9.md)（225f3bbef，slack 三 fn 同批） |
 | 7 | 显示设计 v1.0→v1.1 升版+裁六竖屏回填 | [索引.md](../../docs/索引.md):133（F-D6/F-B5 同刀） |
-| 8 | CLI-first 名/版断裂 | 改名 [Berry设备平台-CLI-first设计-v1.8.md](../../docs/Berry设备平台-CLI-first设计-v1.8.md)（F-D7） |
+| 8 | CLI-first 名/版断裂 | 改名 [Berry设备平台-CLI-first设计-v1.9.md](../../docs/Berry设备平台-CLI-first设计-v1.9.md)（F-D7） |
 | 9 | 信号位表缺 1<<50/51 | [规则/04](../../docs/规则/04-调度与IPC.md):45-46 两行在（F-D8） |
 | 10 | nr_total 37→38 | [规则/03](../../docs/规则/03-系统调用.md):20（改引 abi.toml 单源不写死值） |
 | 11 | 索引 0x88 | [索引.md](../../docs/索引.md):49 |
