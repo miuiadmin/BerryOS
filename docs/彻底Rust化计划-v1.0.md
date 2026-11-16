@@ -2,7 +2,7 @@
 
 > **性质**：计划文档（用户令「补充彻底 Rust 计划」定稿）· 预 ADR #86 候选
 > **采集日期**：2026-11-12 · **证据基座**：`research/彻底Rust化研究/01-03 号`（README 为入口）
-> **状态**：已拍板待实施——刀序 §4/验收线 §5 自本日起生效；边界件开放问题 §7 随首刀裁
+> **状态**：实施中——独立件先行：elf2flat 已五步全闭换轨（b598e5bbf Rust 件 + 8d8a2f3ed 产线换轨，[补档笔记](../.agents/notes/implemented/2026-11-17-elf2flat产链Rust换轨补档.md)）、elf2pe Rust 件在位（2a342d813，产链换轨挂二刀）；主刀序 §4 未动，边界件开放问题 §7 仍开
 
 ---
 
@@ -31,8 +31,8 @@
 | 5 | gensourceindex | py | ~900行 | M | 惰性 import mkapp/mkcpio |
 | 6 | berry_assemble | py | ~1400行 | L− | 消费全族 |
 | 7 | bcts-run | sh+5段py | ~1300行 | M | 认证面——OEM 拿走单语言件 |
-| 8 | elf2flat | py | ~300行 | S | |
-| 9 | elf2pe | py | ~200行 | S | BerryBoot 产线 |
+| 8 | elf2flat | ✅Rust(2026-11-16) | — | — | 已换轨:Rust 件 b598e5bbf(#393,五步 2/3/4)+产线换轨 8d8a2f3ed(第 5/5 步,build-user 六处,py 降格 oracle 改名 `elf2flat_oracle.py`) |
+| 9 | elf2pe | py(Rust 件在位) | — | — | Rust 件 2a342d813 已落(字节级对拍口径);产链换轨挂二刀(justfile Python 件现役不动) | BerryBoot 产线 |
 | 10 | gen_abi | py | ~500行 | M | 边界件（abi 产线伴生,归属 §7 裁） |
 | 11 | berry-ld | ld脚本+py | — | S 或路线裁 | rustc 原生 linker 配置实验刀先裁（§7） |
 
@@ -61,7 +61,7 @@ mkcpio → mkfat → mkimage → mkapp → gensourceindex → berry_assemble →
 
 ## §6 验收线(机器可执法)
 
-`tools/` b 层清单内 `.py` 计数 = 0(docs_guard 扩一 G 规则或 CI grep——随首刀落)。
+`tools/` b 层清单内 `.py` 计数 = 0(docs_guard 扩一 G 规则或 CI grep——随首刀落)。进度(2026-11-17):elf2flat 已出列(oracle 改名入豁免区),现役 b 层 `.py` 计 10,验收线随末件生效。
 
 ## §7 开放问题(随首刀裁)
 

@@ -349,7 +349,7 @@ justfile 里包一层 `berry-build`，解析 triple 后调用；这是构建入�
 | `clap` | CLI | MIT/Apache-2.0 |
 
 - 依赖只进 `tools/berry/Cargo.lock`；`deny.toml` 独立 allowlist；GPL/AGPL 零进入（ADR #37）。
-- 不引 `wgpu`/`egui`：v1 只做「一个窗口 + 一张图」，softbuffer 足够；设备管理器面板 v2 再议。
+- 不引 `wgpu`/`egui`：v1 只做「一个窗口 + 一张图」，softbuffer 足够；设备管理器面板 v2 再议。（更正 2026-11-17：wgpu 已引入——B1-b 壳半呈现骨架 6fa6b6ca2 落地，wgpu（Metal）主路 + softbuffer 降级备胎；本行作为 v1.0 时点设计立场保留，现行状态见 [显示与加速体系设计](显示与加速体系设计-v1.1.md) §4 刀 6。）
 - Linux 需要 X11/Wayland 运行库；AppImage 打包解决，源码开发者在 README 写清 `libxkbcommon` 等前置。
 
 ### 9.3 Runtime Pack 与 QEMU 边界
