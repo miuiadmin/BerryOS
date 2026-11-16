@@ -44,14 +44,14 @@
 |------|-----------|--------|--------------|------|
 | kernel/ | 27 | 30634 | 2083 | 6.80% |
 | mm/ | 7 | 2368 | 4 | 0.17% |
-| sched/ | 14 | 7532 | 1652 | 21.93% |
+| sched/ | 14 | 7582 | 1657 | 21.85% |
 | ipc/ | 0 | 0 | 0 | — |
 | arch/ | 23 | 7311 | 1048 | 14.33% |
-| **合计** | 71 | 47845 | 4787 | **10.01%** |
+| **合计** | 71 | 47895 | 4792 | **10.01%** |
 
-- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 37725，unsafe 非空行 4079，密度 10.81%（生产面口径）
-- 分类计数：页表 63 | 上下文切换 33 | MMIO 160 | 分配器 13 | 硬件原子 0 | 其它 764
-- 类型计数：block 891 | fn 138 | impl 2 | extern 2（另有类型签名位提及 14 处——只计不登记，防双计）
+- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 37775，unsafe 非空行 4084，密度 10.81%（生产面口径）
+- 分类计数：页表 63 | 上下文切换 33 | MMIO 160 | 分配器 13 | 硬件原子 0 | 其它 768
+- 类型计数：block 895 | fn 138 | impl 2 | extern 2（另有类型签名位提及 14 处——只计不登记，防双计）
 - 对标：Android ~4%（unsafe 行占 Rust 总行比，Google 2025-11）；本表为跨度非空行口径（偏高估），见 §一
 <!-- UNSAFE-AUDIT:SUMMARY:END -->
 
@@ -945,14 +945,18 @@
 | sched/src/policy.rs | 630 | block | 其它 | unsafe { if (*src).gen == 0 { policy_unlock(); // 错误路径同解锁（false |
 | sched/src/policy.rs | 723 | block | 其它 | unsafe { &*shadow_snap() }; if shd.gen == 0 { return; // shadow |
 | sched/src/policy.rs | 728 | block | 其它 | unsafe { &*active_snap() }; // key 0（内核任务）：lookup_o1 早退返 None → |
-| sched/src/runqueue.rs | 133 | fn | 其它 | unsafe fn lock_acquire(&self) { self.lock.acquire(); } /// 放本队列自 |
-| sched/src/runqueue.rs | 176 | block | 其它 | unsafe { let mut cur = h; let mut sum: u128 = 0; loop { sum += ( |
-| sched/src/runqueue.rs | 214 | block | 其它 | unsafe { let mut cur = h; let mut steps = 0; let mut vsum: u128 |
-| sched/src/runqueue.rs | 267 | block | 其它 | unsafe { let mut cur = h; let mut steps = 0; let mut n = 0; loop |
-| sched/src/runqueue.rs | 297 | fn | 其它 | unsafe fn link_back(&self, task: NonNull<Task>) { let t = task.a |
-| sched/src/runqueue.rs | 348 | fn | 其它 | unsafe fn unlink(&self, task: NonNull<Task>) { let t = task.as_p |
-| sched/src/runqueue.rs | 406 | fn | 其它 | unsafe fn advance_past(&self, node: NonNull<Task>) { // SAFETY: |
-| sched/src/runqueue.rs | 430 | block | 其它 | unsafe { let mut cur = h; loop { if crate::class::eligible(my_cu |
+| sched/src/runqueue.rs | 134 | fn | 其它 | unsafe fn lock_acquire(&self) { self.lock.acquire(); } /// 放本队列自 |
+| sched/src/runqueue.rs | 179 | block | 其它 | unsafe { berry_ringface::ilist::run_resync( &mut RqStore, Some(h |
+| sched/src/runqueue.rs | 212 | block | 其它 | unsafe { let mut cur = h; let mut steps = 0; let mut vsum: u128 |
+| sched/src/runqueue.rs | 265 | block | 其它 | unsafe { let mut cur = h; let mut steps = 0; let mut n = 0; loop |
+| sched/src/runqueue.rs | 299 | fn | 其它 | unsafe fn link_back(&self, task: NonNull<Task>) { let t = task.a |
+| sched/src/runqueue.rs | 353 | fn | 其它 | unsafe fn unlink(&self, task: NonNull<Task>) { let t = task.as_p |
+| sched/src/runqueue.rs | 407 | fn | 其它 | unsafe fn advance_past(&self, node: NonNull<Task>) { // SAFETY: |
+| sched/src/runqueue.rs | 431 | block | 其它 | unsafe { let mut cur = h; loop { if crate::class::eligible(my_cu |
+| sched/src/runqueue.rs | 464 | block | 其它 | unsafe { (*(id as *mut Task)) .rq_prev .get() .map(\|p\| p.as_ptr( |
+| sched/src/runqueue.rs | 473 | block | 其它 | unsafe { (*(id as *mut Task)) .rq_next .get() .map(\|p\| p.as_ptr( |
+| sched/src/runqueue.rs | 482 | block | 其它 | unsafe { (*(id as *mut Task)).rq_prev.set(v.map(\|p\| { // SAFETY: |
+| sched/src/runqueue.rs | 491 | block | 其它 | unsafe { (*(id as *mut Task)).rq_next.set(v.map(\|p\| { // SAFETY: |
 | sched/src/sched.rs | 90 | fn | 其它 | unsafe fn current_task() -> *mut Task { match hal::smp::current_ |
 | sched/src/sched.rs | 101 | fn | 其它 | unsafe fn set_current(t: *mut Task) { match hal::smp::current_sl |
 | sched/src/sched.rs | 298 | fn | 其它 | unsafe fn rq() -> &'static mut Runqueue { rq_of(hal::smp::cpu_id |
