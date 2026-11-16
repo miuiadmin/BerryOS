@@ -20,6 +20,10 @@ name = "berry-fsproto"
 version = "0.2.0"
 
 [[package]]
+name = "berry-iprofile"
+version = "0.2.0"
+
+[[package]]
 name = "berry-libc"
 version = "0.2.0"
 dependencies = [
@@ -46,11 +50,19 @@ name = "berry-netdproto"
 version = "0.2.0"
 
 [[package]]
+name = "berry-polface"
+version = "0.2.0"
+dependencies = [
+ "berry-iprofile",
+]
+
+[[package]]
 name = "berry-power"
 version = "0.2.0"
 dependencies = [
  "berry-emface",
  "berry-libc",
+ "berry-polface",
  "berry-pwproto",
  "berry-sys",
 ]

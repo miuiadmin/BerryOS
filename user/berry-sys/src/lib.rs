@@ -529,7 +529,7 @@ pub const TELEMETRY_OP_KLOG: u64 = 0;
 
 /// `berry_telemetry_klog_snapshot(buf, len)`（0x84 op=0，阶段五第 17 步
 /// bsh dmesg 消费面）：读内核日志字节环到 `buf`，**返回 >0 = 实写字节数**
-/// （CPU 序拼接、环内旧→新、每环贡献最新 min(有效, len) 字节——dmesg 尾部
+/// （CPU 序拼接、环内旧→新、每环贡献最新 min(环内有效字节扣除 128B 热尾容错窗, 余量) 字节；返回 0 = 两环皆空/读窗不稳的诚实空——dmesg 尾部
 /// 语义）；op 域外 → -ENOTSUP、len=0/超 16KiB 单读帽 → -EINVAL、坏指针
 /// → -EFAULT。零 handle 零权利位（系统级遥测读面——`berry_sched_util_
 /// snapshot` 同族口径）。

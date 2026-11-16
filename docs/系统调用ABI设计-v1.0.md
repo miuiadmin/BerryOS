@@ -98,7 +98,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | 0x82 | `namespace_mount` | 服务把 channel 挂到路径 | v3 | — |
 | **策略注入 / 遥测**（AI 调度，见 `AI调度设计-v1.0.md`） |||||
 | 0x83 | `policy_bind` | 注册 AI 策略注入通道（共享环，SET_POLICY） | v3 | 2026-11-11 |
-| 0x84 | `telemetry_open` | 打开遥测环（只读）。翻真首域（阶段五第 16 步）：op=0 klog 快照——telemetry_open(op, buf, len) 读内核日志字节环（per-CPU 双环 CPU 序拼接、环内旧→新、每环贡献最新 min(有效, 余量) 字节），返回实写字节数（>0）；op 域外 -ENOTSUP（SwitchRec/WakeRec 环读口随后续波次）。零 handle 零权利位（系统级遥测读面——sched_util_snapshot 同族口径） | v3 | — |
+| 0x84 | `telemetry_open` | 打开遥测环（只读）。翻真首域（阶段五第 16 步）：op=0 klog 快照——telemetry_open(op, buf, len) 读内核日志字节环（per-CPU 双环 CPU 序拼接、环内旧→新、每环贡献最新 min(环内有效字节扣除 128B 热尾容错窗, 余量) 字节），返回实写字节数（0 = 两环皆空/读窗不稳的诚实空，常态 >0）；三拒面：op 域外 -ENOTSUP（SwitchRec/WakeRec 环读口随后续波次）、len=0 或超 16KiB 单读帽 -EINVAL、copy_out 失败 -EFAULT（已写段诚实保留）。零 handle 零权利位（系统级遥测读面——sched_util_snapshot 同族口径） | v3 | — |
 | **安全 / 远程证明**（预留） |||||
 | 0x85 | `berry_attest` | 远程证明预留位（SEC-01 件 11，底料 research/sec-notes/SEC-3）：本地取度量摘要 / quote——EAT/CBOR token 形态、PSA initial_attest 同思路；v1 在册未实现恒 -ENOTSUP（与未知号同形——ABI §8.0 永不 panic 执法） | v1 | — |
 | **信号**（POSIX 兼容——libc 协同式投递，A7-4） |||||
