@@ -27,6 +27,8 @@ boot splash 双模式整套（含五键导航、press_map 按压态、HD 百分�
 
 刀 1 完成 splash 合入半；入口统一半（五入口默认值收敛）与刀 2（状态栏 OH 形）未动，见 [2026-11-14-模拟器体验统一分刀方案.md](../../plans/2026-11-14-模拟器体验统一分刀方案.md)。verbose 形未单独跑（uart mirror 路径随重放入库，构造性验证）。noktest-wrap 包装脚本落 worktree out/（gitignored，复现法见 berryos-sim-shell skill）。
 
+更正（2026-11-17）：上文 Decision「整取……berry CLI 主链四件」的零漂移前提是重放时点断言——#354 合入时点 origin 已进 VNC/设备面，整取覆掉现行面（berry host check 42 错实证），经 acad332ba 取回 767 行，--boot-mode 注入半成品随重放弃置挂账波1 合并刀 B；详见 [2026-11-17-重放与并集解对现行面的静默覆写.md](./2026-11-17-重放与并集解对现行面的静默覆写.md)。
+
 ## Related
 
 - [2026-11-14-模拟器体验统一分刀方案.md](../../plans/2026-11-14-模拟器体验统一分刀方案.md)

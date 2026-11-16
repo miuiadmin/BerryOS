@@ -1,7 +1,8 @@
 #!/bin/sh
 # fwcfg 键表对拍：tools/fwcfg-keys.toml（单源键表）vs 仓内实际注入/消费的
 # opt/berry/<name> 键名集合。零漂移 = 两侧键名集合相等；漂移 = 键表漏登记
-# 或死键新增。用法：bash tools/fwcfg-check.sh（退出 0=对拍过，1=有漂移）。
+# 或死键新增；键表侧另有 tomllib 严格解析结构门（表头吞并/同表重键红）。
+# 用法：bash tools/fwcfg-check.sh（退出 0=对拍过，1=有漂移或结构破）。
 #
 # 引擎 = git grep（tracked 单源，-I 跳二进制）：FW_CFG_DIR 对拍只对源码面
 # 有义——构建产物/未跟踪草稿不是注入面；rg 依赖 runner 缺件判例（#371
@@ -88,6 +89,10 @@ if [ "${1:-}" = "--selftest" ]; then
   mkdir -p "${SELF}/norepo/tools"
   cp "$S" "${SELF}/norepo/tools/fwcfg-check.sh"
   leg "非 git 树扫描面损坏红" 1 stderr "扫描面损坏" sh "${SELF}/norepo/tools/fwcfg-check.sh"
+  # 腿 9：结构门红——同表重键（行级并集吞 [[keys]] 表头形态，51f6d8fdc 判例）。
+  printf '\n[[keys]]\nname = "accel"\nname = "bootmode"\n' >> "${SELF}/root/tools/fwcfg-keys.toml"
+  track
+  leg "结构门红（同表重键）" 1 stderr "结构破" run
 
   echo "fwcfg-check --selftest: ${legs} 腿，${fails} 红"
   [ "$fails" -eq 0 ] || exit 1
@@ -115,7 +120,13 @@ git grep -hoIE 'opt/berry/[A-Za-z0-9_-]+' -- \
   exit 1
 }
 
-# 键表侧：[[keys]] name 字段。
+# 键表侧：[[keys]] name 字段；先过 tomllib 严格解析结构门——行级并集会吞
+# [[keys]] 表头成同表重键（51f6d8fdc 判例），sed 抽名口径对此盲（键名仍全过）。
+if ! python3 -c 'import tomllib,sys; tomllib.load(open(sys.argv[1],"rb"))' \
+    tools/fwcfg-keys.toml 2>/dev/null; then
+  echo "fwcfg-check: 键表结构破（tomllib 严格解析失败——[[keys]] 表头吞并/同表重键，51f6d8fdc 判例形态）" >&2
+  exit 1
+fi
 sed -n 's/^name = "\(.*\)"$/\1/p' tools/fwcfg-keys.toml | sort -u > "$tmp/toml.txt"
 
 # 键长上限（键表公约：全名 opt/berry/<name> ≤ 55B——FW_CFG_DIR 项定长，
