@@ -47,6 +47,12 @@ Linux/Windows 分发链（wave5 实机化，产物落 `out/`）：Linux 侧 `too
 
 ## 命令
 
+- `berry symbolize <elf>`——ELF64 零依赖符号化（cbox 刀 3）
+- `berry crash-log <fat 镜像>`——CBOX.LOG 黑匣子账本直读/指纹聚合（cbox 刀 3；fatcat.py 继任）
+- `berry version`——版本面
+- `berry stats` / `berry record` / `berry play`——会话统计/录制/回放（速览 70-73 行详载）
+- `berry swipe ...`——swipe 别名（tap/key/text 同族，见 main.rs:81）
+
 ```bash
 just berry doctor [--json]
 just berry run --kernel <elf> --marker "BerryOS boot" --timeout 30 --follow

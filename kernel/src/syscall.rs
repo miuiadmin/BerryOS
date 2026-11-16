@@ -4063,7 +4063,7 @@ extern "C" fn sys_object_wait_many(tf: &mut TrapFrame) -> i64 {
 /// ——OQ-8 首环，add-only) = 38 号已实现；v1 在册 39 号
 /// （唯 0x85 `berry_attest` 预留未实现）**；
 /// **S6-b 加 policy_bind(0x83，v3 号提前实现最小 COMMIT 面——v1 号面之外
-/// 首个真注册的 v3 号，ABI §4 在册同名单源）**。
+/// 首个真注册的 v3 号；0x84 telemetry_open 同款 v3 提前实现（klog 快照首域，见尾部 reg 局注），ABI §4 在册同名单源）**。
 /// 未列号走 HAL 默认 `-ENOTSUP`。同时注册**任务退出钩子**（Plan B：Process
 /// Exited 落账 + TERMINATED 唤醒 + drain/release 异步移交；T-1 分序版：Thread
 /// 簿记/join 唤醒 + `live_threads` 末线程裁决——见 [`task_exit_hook`]）与

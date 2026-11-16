@@ -197,7 +197,7 @@ pub unsafe fn init(handoff: Option<&'static crate::handoff::BerryHandoff>) {
 /// 取全局帧分配器的可变引用。
 ///
 /// # Safety（调用方视角）
-/// G0 单核无抢占下安全。SMP 后需加锁或改每核实例。
+/// G0 单核无抢占下安全。SMP 现役（双核在役）：帧分配器实际由 SVC TABLE 类 KL 窗串行保护（见 syscall.rs install() vmo/vmar 段注）——本文件无需自持锁。
 pub fn frames() -> &'static mut FrameAllocator<'static> {
     // SAFETY: G0 下唯一可变访问点。
     unsafe {
