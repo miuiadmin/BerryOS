@@ -4727,7 +4727,7 @@ const _: () = {
 ///   随样本序线性涨——量出的是**漂移**不是**延迟**（对调度器的错误指控；
 ///   4·slice 档同 boot 实测 p50=4M = 真实唤醒延迟 ≤1 tick）。再锚后每样本
 ///   回到「δ 未来请求的唤醒延迟」语义（短档量出的正是定时器粒度本身
-///   ——tier-1 p50 ≈ 1 slice 量级是 v1 的诚实答案，arm-to-nearest-deadline
+///   ——tier-1 p50 ≈ 1 slice 量级是 v1 的诚实答案，arm-to-nearest-deadline（已落地 2026-11-15 oneshot 三件套，R-1 三档塌缩 33×）
 ///   （优化议程挂账）落地后该值应塌缩，本基准即其验收面）。
 /// - oversleep = wake_vct − deadline，`checked_sub` 负值 panic（提前醒 = 再睡
 ///   循环破损 bug——L0 严格执法，R-0 on_wake 负延迟 panic 同款；正常统计

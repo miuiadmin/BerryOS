@@ -5,7 +5,7 @@
 BPB → 根目录 → 簇链直读。卷面发现：主路盘 LBA0 是 `BERRYOSVBLK!` 印章
 保留区（vblk 对拍面，非 MBR 无分区表），FAT 卷真身在 LBA16（mkfat
 vol@LBA16 铁律）；故先验 LBA0 是否合法 BPB（55aa + 几何健全），否则落
-LBA16。刀 3 `berry crash-log` 落地后由正式工具接管。
+LBA16。刀 3 `berry crash-log` 已落地接管（2026-11-17 系统审计 S5 翻状态）：本件退役保留取证面，现役勿再扩展（继任 = tools/berry/src/crashlog.rs，LBA16 卷面发现同款修法）。
 """
 import sys
 import struct

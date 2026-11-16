@@ -1545,7 +1545,7 @@ smoke-image: image
 # 逐字节 = `BERRYOS-GUI8-SMOKE-V1\n`；错/缺 payload 一律 fail closed）+
 # 256M + ramfb + display fw_cfg 800x600@60 + virtio-blk + virtio-tablet +
 # QMP unix sock：
-#   Boot A：等基础 5 + boot 批 `app APPDEMO up` → `launcher: click ready`
+#   Boot A：等基础 5 + boot 批 `app APPDEMO gui deferred`（裁决 B 入册不拉起）→ 点击后 `app APPDEMO up` 恰 1 + `launcher: click ready`
 #           强制在席（缺席 FAIL，不 sleep 回退）→ QMP 单击 APPDEMO 格 →
 #           精确 CLICK ok n=1×1 / LAYOUTW ok×1 / LAYOUT ok×0；新增
 #           `app APPDEMO up`×1、APPQUIET×0；宿主 LAYOUT.JSN 恰 109 canonical

@@ -498,7 +498,7 @@ pub fn placement_hint(task_key: u64) -> u8 {
 /// 自己的防乒乓双门承担（home >80% ∧ 新核 spare>25%）——Linux 平行
 /// 律：overutil 时 EAS 退场，但 wake 路负载均衡/select_idle_sibling
 /// 照常工作。词汇执法（非 {1,2} 按无意见）在消费面 [`crate::sched::
-/// eas_wake_pick`] 收口（与 spawn 面同律）。
+/// eas_wake_pick`] 收口（与 spawn 面同律）。〔审计注 2026-11-17：eas_wake_pick 实只读 cpu_util 双门阈值、不读 hint——本出口当前零消费者，接线归调度 owner 裁量〕
 ///
 /// 读纪律同 [`placement_hint`]（active_snap 静态区指针 + 已发布槽不可变
 /// + 屏蔽窗读写互斥——读窗内快照稳定）。
