@@ -22,12 +22,42 @@ use crate::cmd::{Cmd, GlyphRun, ImageSrc, Rect};
 use crate::color::TextureDesc;
 use crate::font::GlyphBits;
 
+/// 圆角半径 LUT 帽（波 2 横向原语③）：单命令半径钳此帽——行 LUT 栈上
+/// 定容（u16×(帽+1) = 514B）。OH phone @3x 档最大消费面（卡片 24px/
+/// 全圆角钮 ~72px）远在帽内；超帽敌意值折直角梯度收口不炸。
+const RADIUS_LUT_MAX: u32 = 255;
+
+/// 圆角行内缩量单源（波 2 横向原语③——行 LUT 的几何源）：半径 `r`
+/// 的四分之一圆角在第 `row` 行（0 基，自角顶起算）的水平内缩 px 数 =
+/// `r − ⌊√(r²−(r−row)²)⌋`（整数平方根牛顿迭代，const 可编译期取值）；
+/// `row ≥ r` 折 0（角区外）、`r == 0` 恒 0（直角）。
+const fn radius_row_inset(radius: u32, row: u32) -> u32 {
+    if radius == 0 || row >= radius {
+        return 0;
+    }
+    let d = row; // 距角顶行距（< radius）
+    let x = radius * radius - (radius - d) * (radius - d);
+    let mut g = x;
+    while g * g > x {
+        g = (g + x / g) / 2;
+    }
+    radius - g
+}
+
 /// 命令分派（回放入口——`Queue::submit` 逐命令驱动）。
 pub(crate) fn exec(target: &mut [u8], desc: &TextureDesc, cmd: &Cmd, clip: &Rect) {
     match cmd {
         Cmd::FillRect { rect, paint } => {
             let px = desc.format().pack(paint.color.r, paint.color.g, paint.color.b);
             fill_rect(target, desc, rect, px, clip);
+        }
+        Cmd::FillRectRounded { rect, radius, paint } => {
+            let px = desc.format().pack(paint.color.r, paint.color.g, paint.color.b);
+            fill_rect_rounded(target, desc, rect, *radius, px, clip);
+        }
+        Cmd::PushClip { .. } | Cmd::PopClip => {
+            // 裁剪栈语义在 `Queue::submit` 回放环（栈在环上维护、逐命令
+            // 收窄后传入本 exec 的 `clip`）——raster 面无栈，no-op。
         }
         Cmd::DrawLine { x0, y0, x1, y1, paint } => {
             let px = desc.format().pack(paint.color.r, paint.color.g, paint.color.b);
@@ -82,6 +112,72 @@ pub(crate) fn fill_rect(target: &mut [u8], desc: &TextureDesc, rect: &Rect, px: 
     while y < y_end {
         let mut x = r.x;
         while x < x_end {
+            put_px(target, desc, clip, x, y, px);
+            x += 1;
+        }
+        y += 1;
+    }
+}
+
+/// 圆角矩形填充（波 2 横向原语③——raster 行 LUT 执行臂）：
+/// `radius` 钳 `min(rect.w, rect.h)/2` 与 [`RADIUS_LUT_MAX`] 后取行
+/// 内缩 LUT（`radius_row_inset` 单源，一次预计算两角复用）；逐可见行
+/// 内缩量 = `max(上角内缩, 下角内缩)`，行内区间 `[x0+inset, x1-inset)`
+/// 再 ∩ clip 后经 [`put_px`] 单口落盘。中段（两角均 0 内缩）与
+/// [`fill_rect`] 逐像素等价；圆区外像素结构性不写（无 AA——整数内缩）。
+pub(crate) fn fill_rect_rounded(
+    target: &mut [u8],
+    desc: &TextureDesc,
+    rect: &Rect,
+    radius: u32,
+    px: u32,
+    clip: &Rect,
+) {
+    // 半径三重钳：min(w,h)/2（半径 > 半宽 = 全圆退化）、LUT 帽、敌意
+    // 巨值（行索引域收口）。
+    let half = (rect.w.min(rect.h) as u64 / 2) as u32;
+    let r = radius.min(half).min(RADIUS_LUT_MAX);
+    let Some(vis) = rect.intersect(clip) else { return };
+    if r == 0 {
+        // 直角快速路：与 fill_rect 同循环（不另起 LUT）。
+        let (y_end, x_end) = (vis.y.saturating_add(vis.h), vis.x.saturating_add(vis.w));
+        let mut y = vis.y;
+        while y < y_end {
+            let mut x = vis.x;
+            while x < x_end {
+                put_px(target, desc, clip, x, y, px);
+                x += 1;
+            }
+            y += 1;
+        }
+        return;
+    }
+    // 行 LUT：inset[row] = radius_row_inset(r, row)，row ∈ [0, r)。
+    let mut lut = [0u16; RADIUS_LUT_MAX as usize + 1];
+    let mut i = 0u32;
+    while i < r {
+        lut[i as usize] = radius_row_inset(r, i) as u16;
+        i += 1;
+    }
+    let (x_lo_bound, x_hi_bound) = (vis.x, vis.x.saturating_add(vis.w));
+    let y_end = vis.y.saturating_add(vis.h);
+    let rect_y_end = rect.y.saturating_add(rect.h);
+    let rect_x_end = rect.x.saturating_add(rect.w);
+    let clip_x1 = clip.x.saturating_add(clip.w);
+    let mut y = vis.y;
+    while y < y_end {
+        // 距上下边的行距（角区判定：< r 才有内缩；vis ⊆ rect ⇒ 非负）。
+        let d_top = (y - rect.y) as u32;
+        let d_bot = (rect_y_end - 1 - y).max(0) as u32;
+        let inset_top = if d_top < r { lut[d_top as usize] as i32 } else { 0 };
+        let inset_bot = if d_bot < r { lut[d_bot as usize] as i32 } else { 0 };
+        let inset = inset_top.max(inset_bot);
+        // 行内区间 = [rect.x+inset, rect.x+rect.w−inset) ∩ vis 行界 ∩ clip
+        //（敌意巨坐标 saturating——put_px 纹理界直检兜底）。
+        let x0 = rect.x.saturating_add(inset).max(x_lo_bound).max(clip.x);
+        let x1 = rect_x_end.saturating_sub(inset).min(x_hi_bound).min(clip_x1);
+        let mut x = x0;
+        while x < x1 {
             put_px(target, desc, clip, x, y, px);
             x += 1;
         }

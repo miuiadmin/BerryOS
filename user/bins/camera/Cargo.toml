@@ -1,0 +1,42 @@
+[package]
+name = "camera"
+# L-SYS 0.2.0：字面版本不走 workspace 继承（musl 链独立小工作区，版本治理
+# 规则/14；user/bins 同批同值——settings/photos/appstub/berry-launcher
+# 同款）。升版 = 逐 crate 手同步。
+version = "0.2.0"
+edition = "2021"
+
+# 波 4 第五件（.agents/plans/2026-11-15-波4预制应用翻新实施设计.md §2.5；
+# 侦察/对账底册 = worktree 根 W4-RECON.md）：CAMERA 真 GUI 应用——
+# appstub 秒退壳替换。页面树 = 全幅取景（程序化模拟景 + 三分网格线）
+# + 顶行 icon_button(Flash Auto/Off 循环 · Front/Back 切换) + 底行
+# 大圆快门（按压反馈 + 全屏白 Rect 单帧特效 + 瞬态行 Saved n）。
+#
+# 模式件消费纪律（波 4 铁律）：按压 = 引擎 set_press_map（PRESSED_BG
+# 单源换底）；控制钮 = pattern::icon_button；骨架 = pattern::stack/
+# spacer——应用零手写 press 字面量、零手拼 Rect 卡片；文案全 ASCII
+#（词汇表：Flash/Auto/Off/Front/Back/Saved）。全屏白 Rect = 设计稿
+# §2.5 明载的快门白闪特效（非拼卡、不走 press 三禁区）。
+#
+# 链与形态 = settings/photos crate 镜像（W4-RECON §1 先例）：独立
+# 小工作区（空 [workspace] escape user 根 workspace）+ musl target +
+# berry-libc shim + berry-ld 链，构建行照 justfile build-user APPTOMB
+# 段 RUSTFLAGS 形。持久化 CAMERA.JSN 走 launcher layout_io 食谱
+#（fs 词授权 → fs gift；缺席/坏读自愈 + 写失败非致命）。
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+berry-sys = { path = "../../berry-sys" }
+berry-guiproto = { path = "../../berry-guiproto" }
+berry-ui = { path = "../../berry-ui" }
+berry-gfx = { path = "../../berry-gfx" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

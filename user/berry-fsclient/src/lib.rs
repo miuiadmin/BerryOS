@@ -19,12 +19,13 @@
 //!   拼接、stat 整形、dirent 解码、ST_*→FsErr 映射——libc（刀 2）把这些
 //!   组装成 open/close/read/write/lseek/stat/opendir/readdir/chdir/getcwd。
 //! - **会话机**（`rpc` 模块，`cfg(not(test))`）：自 bsh 迁居的 fs_rpc 核心
-//!   （严格串行 RPC、任一收侧超时即毒化会话、90s commit / 10s 常规双帽、
-//!   EBUSY 阻塞重试形态）+ fd 面分片 op。协议面全按 berry-fsproto 单源
-//!   消费：v1 四 op（PUT/TRUNC/GET/LIST——GET/PUT 自带 off，客户端游标
-//!   = 服务端无会话）+ v2 五 op（LOOKUP/MKDIR/UNLINK/READDIR/STAT）原样
-//!   零改动；C-2 刀 2 新增 STATFS（卷级几何/空闲真值，无路径参——df/
-//!   statfs 桩的原料），协议 9→10 op。
+//!   （严格串行 RPC + P1-1 请求号 txid——每请求自增取号、应答按号匹配，
+//!   他者/迟到应答弃收不静默错配；任一收侧超时即毒化会话、90s commit /
+//!   10s 常规双帽、EBUSY 阻塞重试形态）+ fd 面分片 op。协议面全按
+//!   berry-fsproto 单源消费：v1 四 op（PUT/TRUNC/GET/LIST——GET/PUT 自带
+//!   off，客户端游标 = 服务端无会话）+ v2 五 op（LOOKUP/MKDIR/UNLINK/
+//!   READDIR/STAT）原样零改动；C-2 刀 2 新增 STATFS（卷级几何/空闲真值，
+//!   无路径参——df/statfs 桩的原料），协议 9→10 op。
 //!
 //! ## C-1 两裁决（随五刀拆解单批准）
 //!
@@ -887,6 +888,8 @@ pub enum SockOp {
 
 // errno 数值面（Linux/musl 同值、ABI 冻结；libc lib.rs 同名常量的
 // 对拍锚点——见 libc net.rs const assert）。
+// EADDRINUSE：2026-11-08 仓主裁 98 → 112（对齐 Linux 通用值域
+// asm-generic/musl aarch64——调研 25 号坑二回归锚），与 berry-libc 单源同步。
 pub const EIO: i32 = 5;
 pub const EAGAIN: i32 = 11;
 pub const EINVAL: i32 = 22;
@@ -1757,5 +1760,59 @@ mod tests {
         assert_eq!(t.snapshot(ep), None);
         assert!(!t.free(ep));
         assert!(!t.free(26));
+    }
+}
+
+// —— errno 值域镜像锚（host 执法锚；P1-d）——
+//
+// 对照 Linux 通用 errno 值域（musl 同）——swift-os 坑二回归锚，调研 25 号（原 13）
+// （research/25-2026新OS四家轨迹与踩坑.md §2 坑二：内核返回 EADDRINUSE=98
+// 而目标 newlib 头定义 112，nginx -t 拒掉合法配置）。abi-check 只对拍
+// syscall 号位、不对拍 errno 值域——本锚补该盲区。
+//
+// 执法链：本 crate 上述 errno 立值 ←（berry-libc/src/net.rs「errno 单源
+// 对拍」const assert 钉死）→ berry-libc lib.rs 值域单源——本锚跑绿即
+// 对拍面内单源值域与 Linux 通用值域对齐的物理证明。EPERM/ENOENT/ENOTSUP
+// 等超对拍面值的正牌探针在 berry-libc lib.rs `errno_probe`（该 crate
+// 结构性不可 host test——crt0 ELF-only asm + libc 同名符号插入——仅
+// `cargo check --tests` 编译验证）。
+//
+// 镜像面钉板（w7c）：镜像多少钉多少——errno 7 项全钉（EADDRINUSE 断差
+// #[ignore] 报差另测）+ EAI 2 项；不扩镜像面（超集值归 berry-libc 探针）。
+#[cfg(test)]
+mod errno_probe {
+    use super::*;
+
+    /// 镜像六档：Linux 通用值域（asm-generic；musl 同）。
+    #[test]
+    fn errno_mirror_matches_linux_generic() {
+        assert_eq!(EIO, 5);
+        assert_eq!(ENODEV, 19);
+        assert_eq!(EAGAIN, 11);
+        assert_eq!(EINVAL, 22);
+        assert_eq!(EPIPE, 32);
+        assert_eq!(ETIMEDOUT, 110);
+    }
+
+    /// 断差报差（w7c，不改语义待裁）：本 crate 镜像立值 112（经 net.rs
+    /// const assert 与 berry-libc 单源钉死、两侧同步），Linux 通用值域
+    /// = 98——kernel uapi asm-generic/errno.h 实文 EADDRINUSE=98、
+    /// EHOSTDOWN=112，musl arch/generic/bits/errno.h（aarch64 用）同。
+    /// 三审翻案（2026-11-08，wave7 全量钉板三源核实）：asm-generic 与
+    /// musl aarch64 的 EADDRINUSE = 98（112 是 EHOSTDOWN/newlib 值域）——
+    /// 立值已随 berry-libc 决策链翻回 98，镜像锚转为活断言（决策链全文
+    /// 见 berry-libc EADDRINUSE 裁注）。
+    #[test]
+    fn eaddrinuse_mirror_matches_linux_generic() {
+        assert_eq!(EADDRINUSE, 98);
+    }
+
+    /// EAI 镜像两档（getaddrinfo 直接返回码，非 errno；musl netdb.h
+    /// 同值）——本 crate 镜像面即两项（EAI_FAMILY 等 libc 侧断差归
+    /// berry-libc 探针），镜像多少钉多少。
+    #[test]
+    fn eai_mirror_matches_musl() {
+        assert_eq!(EAI_NONAME, -2);
+        assert_eq!(EAI_AGAIN, -3);
     }
 }

@@ -3,11 +3,19 @@
 //! 守卫 = `just abi-check`（`tools/gen_abi.py --check`，挂 build/smoke 前置）。
 //! 与内核侧 `kernel/src/abi_gen.rs` 同源生成（两端 u32/u64 类型约定见
 //! `tools/gen_abi.py` 头注——那是 ABI 决策不是漂移）。
+//! 预算四元组（生成器执法，ADR #11 帽）：nr_total=39 / nr_defined=43 /
+//! nr_registered=42 / nr_ceiling=45（口径与内核侧头注同源同值）。
 
 use crate::{Handle, Rights, Status, Time};
 
 /// 无效 handle（表槽 0 恒空；`berry_handle_t` = 0）。
 pub const INVALID_HANDLE: Handle = 0;
+
+// ---- 平台 API level（abi.toml [platform]；与内核侧同源同值）----
+/// 单调整数 level 轨道（VER-01 提案第 4 条：只增不减、不兼容 ABI 变更
+/// +1、兼容新增不 +1——Android API level 形而更简）；svcmgr 装载期与
+/// .bap `[compat] min_level` 比较的平台级基线。
+pub const BERRY_PLATFORM_LEVEL: u32 = 1;
 
 // ---- rights 位（12 位；权限在 handle 不在对象）----
 pub const RIGHT_READ: Rights = 1 << 0;
@@ -36,8 +44,16 @@ pub const SIGNAL_WRITABLE: u64 = 1 << 1;
 /// Process 已退出（Plan B v0.5 内核派生位；Exited 置位时唤醒，永久置位——
 /// 同 Zircon TASK_TERMINATED 口径；父进程 wait 到该位后 unmap/close 回收）。
 pub const SIGNAL_TERMINATED: u64 = 1 << 2;
+/// 冻结进程收讯挂起位（AM-1.5 内核派生位——SuspendToken 的 wait 面唯一可
+/// 命中位）：目标进程冻结期间任一 send 成功入队即置位（一次语义防风暴，同窗
+/// 多跳不重复通知），全解冻（最后一枚 token close）清零；所有在册 token 同刻
+/// 同视（signal_state 直接读目标 Process.wake_pending 派生，零 per-token 存储）。
+/// 消费形：object_wait_one(token, SIGNAL_WAKE_PENDING, deadline, &observed)——
+/// deadline=0 即 poll 探针；零新 syscall。
+pub const SIGNAL_WAKE_PENDING: u64 = 1 << 3;
 /// 用户信号位掩码（Event `object_signal` 只收高 32 位用户位；低 32 位保留给
-/// 内核派生信号 READABLE/WRITABLE/TERMINATED——位面冲突由内核执法拒绝）。
+/// 内核派生信号 READABLE/WRITABLE/TERMINATED/WAKE_PENDING——位面冲突由内核
+/// 执法拒绝）。
 pub const SIGNAL_USER_MASK: u64 = 0xFFFF_FFFF_0000_0000;
 
 // ---- options 位 / clock id ----
@@ -50,8 +66,10 @@ pub const CHAN_OPT_NO_INTENT: u32 = 1 << 0;
 /// 门权）。映射走 vmar_map 对象级分流 map_demand（首触缺页由 EL0 pager 供给）。
 /// 其余位保留（非 0 尾 → -EINVAL，options 纪律）。
 pub const VMO_OPT_DEMAND: u32 = 1 << 0;
-/// `clock_read` 的 clock_id：v1 只有单调钟（壁钟留 v2）。
+/// `clock_read` 的 clock_id：单调钟（`berry_time_t` = 纳秒）。
 pub const CLOCK_MONOTONIC: u32 = 0;
+/// `clock_read` 的 clock_id：壁钟（宿主注入 epoch；未注入 → -ENOTSUP）。
+pub const CLOCK_REALTIME: u32 = 1;
 
 // ---- 错误码（G2 冻结面；`berry_status_t` = i32，0 = Ok）----
 /// EBADF：坏 handle / 类型不符 / 代号过期。
@@ -105,7 +123,7 @@ pub(crate) mod nr {
     pub(crate) const VMAR_ALLOCATE: usize = 0x19;
     /// G-eco（svcmgr 消费 rootfs 需要 cpio 总长；通用元数据查询不止 initrd 受益）。
     pub(crate) const VMO_GET_SIZE: usize = 0x1A;
-    /// P6 A-3（用户态 DMA 面：virtqueue 描述符地址是 guest PA，驱动须能查自己 VMO 页的后备；无 IOMMU 板上 PA 披露面 = 已授 MMIO 窗口的设备本可 DMA 全内存，v1 接受并文档化——IOMMU/SMMU 随 `安全与硬件隔离设计.md`）。
+    /// P6 A-3（用户态 DMA 面：virtqueue 描述符地址是 guest PA，驱动须能查自己 VMO 页的后备；无 IOMMU 板上 PA 披露面 = 已授 MMIO 窗口的设备本可 DMA 全内存，v1 接受并文档化——IOMMU/SMMU 随 `安全与硬件隔离设计-v1.0.md`）。
     pub(crate) const VMO_GET_PHYS: usize = 0x1B;
     /// G4-2 首形（§5-③ 裁决）＝阻塞收货：无武装缺页请求时 poll-first 后睡 pager
     /// 裸键，fault 探针武装 EL0 请求槽 + 唤醒即递送——ADR #9 缺页路径零分配。供给 =
@@ -113,6 +131,20 @@ pub(crate) mod nr {
     /// 源数据 VMO 页须 pre-commit（§2.2 防线 4）。pager 崩溃语义 = faulter 永久阻塞
     /// （§5-⑤ 裁决）。
     pub(crate) const PAGER_SUPPLY_PAGES: usize = 0x21;
+    /// X-3（exec 装载 demand 化）供给面：0x21 收货前钉死 src_off 单偏移，真 ELF
+    /// 多段装载需按请求页选源页——源偏 = demand 页偏 + 常量 delta（门 C 裁 A 形
+    /// 2026-11-07：新号 add-only 破冻，先例 0x86/0x87；0x21 原义零漂移）。收货/
+    /// 唤醒/供给路径与 0x21 同形（阻塞收货 + poll-first 睡 pager 裸键）；源数据
+    /// VMO 页须 pre-commit（§2.2 防线 4）。
+    pub(crate) const PAGER_SUPPLY_MAPPED: usize = 0x23;
+    /// X-6 刀①（批供提速）表批形，冻结裁决 2026-11-08（设计稿
+    /// `X6批供提速设计-v1.0.md` §7 主裁③「全套照提案冻」）：号 0x24 / N=32
+    /// 三源镜像（EREQ_SLOTS / PAGER_SLOTS / 表帽）/ count-in-x0 / PagerWindow
+    /// 布局一次定全即冻。每窗门控/供给/唤醒链与 0x23 同构（阻塞收货 +
+    /// poll-first 睡 pager 裸键）；整批 ≤32 页一 KL 窗；池空且已供>0 → 即返
+    /// 计数不阻塞，池空且 0 供 → 泊键阻塞醒后重扫表。boot 探测回退：
+    /// 0x24(dv:0,n:1) 新核 -EBADF / 旧核 -ENOTSUP。
+    pub(crate) const PAGER_SUPPLY_MAPPED_TABLE: usize = 0x24;
     pub(crate) const PROCESS_CREATE: usize = 0x31;
     pub(crate) const PROCESS_START: usize = 0x32;
     /// Plan B v0.5 落地：真退出（不返——`exit_current_with` 经退出钩子 drain+回收）。
@@ -135,6 +167,18 @@ pub(crate) mod nr {
     pub(crate) const PROCESS_SUSPEND: usize = 0x3E;
     /// S1 收口：SVC 面 direct yield_now（含切换锁舞蹈）已落。
     pub(crate) const THREAD_YIELD: usize = 0x3F;
+    /// CP-08 util 通道首环（docs/调度彻底计划-v1.2.md:100 验收线「berry-power 消费
+    /// util 信号（schedutil 同构 f≈util×fmax/capacity）」的内核侧产出面）+ OQ-8
+    /// （:217）通道形态首裁：快照 syscall pull 形态先行——共享环 push 形态随 CP-10
+    /// 通道窗叠加（add-only 不互斥）。加号依据：零 VMO 共享先例（telemetry_open
+    /// 0x84 klog 快照域已翻真 2026-11-16、SwitchRec/WakeRec 环读口未启）；add-only 加号先例 0x86/0x87/
+    /// 0x88；PM-15 §4.1「六面零新 syscall」辖 SDK 服务 op 面，不辖内核→服务数据通道
+    /// （util 生产侧 v1.3 立法时已内定「PM 读面」，sched/src/util.rs:94-96）。生产侧
+    /// 零新累积——Fair::tick 记账在役（class.rs util_accumulate/util_tick_window），
+    /// 本号只读不写。锁类 SVC_CLASS_TABLE（copy_out 链走查调用方页表——§A113 读者
+    /// 面，同 0x61/0x87）；EWMA 槽 Relaxed 原子读（统计信号无序角色）。消费端 =
+    /// berry-power UtilTrack::ingest_snapshot（折叠数学单源 berry-emface）。
+    pub(crate) const SCHED_UTIL_SNAPSHOT: usize = 0x40;
     pub(crate) const CHANNEL_CREATE: usize = 0x51;
     pub(crate) const CHANNEL_SEND: usize = 0x52;
     pub(crate) const CHANNEL_RECV: usize = 0x53;
@@ -145,10 +189,12 @@ pub(crate) mod nr {
     // 在册未实现：无 berry_* wrapper 消费（§8.3 原型层 v2 挂账）——豁免 dead_code。
     #[allow(dead_code)]
     pub(crate) const BERRY_ATTEST: usize = 0x85;
-    /// A7-4 段② 翻真（2026-10-31，门 C 裁定 A add-only）：h=0 当前进程 raise 面 / h≠0 门控 MANAGE；sig ∈ 1..=64 界检；幂等位置位、不唤醒目标（协同式用户态投递）。设计 = `docs/事件循环A7-4信号面实施设计草案.md` §3.1。
+    /// A7-4 段② 翻真（2026-10-31，门 C 裁定 A add-only）：h=0 当前进程 raise 面 / h≠0 门控 MANAGE；sig ∈ 1..=64 界检；幂等位置位、不唤醒目标（协同式用户态投递）。设计 = `docs/事件循环A7-4信号面实施设计草案-v1.0.md` §3.1。
     pub(crate) const SIGNAL_SEND: usize = 0x86;
     /// A7-4 段② 翻真（2026-10-31，与 0x86 同刀）：swap(0) 语义取走当前进程 pending 集；出参写失败不消费（先写后清）。投递中新到位置回内核 pending（下轮 take）——竞态免设计。
     pub(crate) const SIGNAL_TAKE: usize = 0x87;
+    /// 桌面UX刀D add-only 加号（2026-11-14，先例 0x86/0x87）：v1 无门控——单用户仿真系统无能力框架，消费面 launcher 关机键（二击 3s 窗确认）+ berryctl power 子命令；门控与优雅关机序（服务停摆/数据 flush）随 I3 关机流程正规化刀（审计 02 号 §6.2）。probe 缓存门保证无 PSCI 路诚实 -ENOTSUP 不盲发 HVC。
+    pub(crate) const POWER_OFF: usize = 0x88;
 }
 
 // ---- 宽度冻结断言（abi.toml [types]；G2 冻结面的机器执法）----

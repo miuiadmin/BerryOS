@@ -1,0 +1,16 @@
+# 调度深度调研（2026-11-15）
+
+> 用户令「全面的深度调研」——六路并行（SMP/实时/AI 原生/业界最新/功耗权衡/综合定谳），产出六份研究底稿 + 综合定谳 + 计划升版建议。
+
+| # | 文件 | 主题 |
+|---|---|---|
+| 01 | `SMP-01-多核调度面全面审计-2026-11.md` | 现役 SMP 八子面全审计 + SMPD 剩余四刀 + 4/8 核扩展瓶颈 + 拓扑感知 + 竞争面审计 |
+| 02 | `02-实时性.md` | deadline 带 EDF + 抢占覆盖 + WCET 逐段 + PI 面 + v2 RT 路线 + 延迟上界论证 |
+| 03 | `03-AI原生成熟度-v1.0.md` | intent 六档→查表→M4→消费面逐环 + 策略注入就绪 + kill criteria 证据 + sched_ext/LAVD 定位 + M4→v3→AI 路线图 |
+| 04 | `04-业界最新对照-2024-2026.md` | Linux 6.x-7.x EEVDF 效果/Android 15-16 EAS/Ziron libsched/QNX 8.x APS/Rust 调度器/AI 学习型/形式化验证（28 一手源） |
+| 05 | `05-功耗-性能权衡.md` | tickless/idle/slack/PM/频率帽全谱 + DVFS 协同 + EAS 就绪 + 功耗度量 + 深度 idle |
+| 06 | `06-综合定谳-v1.0.md` | 六面 Top-3 收敛→CP 影响 + 差距矩阵（领先项单列） + 计划升版 v1.0→v1.2 + 最紧迫三刀 + 五维终局判断 |
+| 07 | `07-syscall屏蔽窗表.md` | 42 号全 syscall icount 定量+屏蔽窗交叉+R3 双态修正(FPSIMD lazy 后现役)——中断上界论证空白收口 |
+| 08 | `08-三刀复核.md` | 三刀独立复核:shadow 竞争 18 测(50 万+读零撕裂)/δ 塌缩 33×/42 号全表——全过 |
+| AB-01 | `AB-01-CP06首份AB数据-ktest负载生成器-v1.0.md` | CP-06 首份 A/B 数据(ktest 负载生成器):timer_slack × band 四组两跑——slack +10ms 顺延精确落地/交互零牺牲/band 限流尾延迟 3.2×/burst 吞吐 +75% |
+| SMP-01V | `SMP-01-双核全路径验证.md` | 双核全路径验证(新鲜视角):FairBand/EAS/slack/oneshot 在 par 门下现态 + `-smp 2` 实证(32 标记/偷取/拉取/PAR)+ 六发现——F1 band 跨环执法→深 park 结构性饿死(修:lazy_enforce)、F2 parked 核 util 冻结喂 EAS/overutil(修:util_idle_fold)+ SMPLZ ktest 钉板 |

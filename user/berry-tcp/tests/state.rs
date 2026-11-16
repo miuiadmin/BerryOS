@@ -4,8 +4,8 @@
 //! snd_nxt=1001 / snd_una=1001 / rcv_nxt=5001 / inflight=None。
 
 use berry_tcp::{
-    rto_ms, Action, Conn, MSS, RTO_START_MS, SegFlags, State, TcpSeg, TIME_WAIT_MS, WINDOW,
-    ACCEPT_Q_MAX, AcceptQueue,
+    rto_ms, Action, Conn, MSS, RTO_START_MS, SegFlags, State, TcpSeg, TIME_WAIT_MS, TX_SLOTS,
+    WINDOW, ACCEPT_Q_MAX, AcceptQueue,
 };
 
 fn syn_ack(seq: u32, ack: u32, mss: Option<u16>) -> TcpSeg<'static> {
@@ -50,6 +50,16 @@ fn fin_seg(seq: u32) -> TcpSeg<'static> {
         mss: None,
         payload: &[],
     }
+}
+
+/// 指定 window 的纯 ACK（二刀发送窗消费测试用）。F72 起 seq 取对端
+/// snd_nxt=5001（握手基线 wl1=5000 之后的真实新鲜值——纯 ACK 携发送方
+/// 当前序号；旧 seq=0 形按护栏属陈旧段不采纳窗）。
+fn ack_seg_w(ack: u32, window: u16) -> TcpSeg<'static> {
+    let mut s = ack_seg(ack);
+    s.seq = 5001;
+    s.window = window;
+    s
 }
 
 fn rst_seg() -> TcpSeg<'static> {
@@ -136,10 +146,11 @@ fn send_gatekeeping() {
     let mut c = established();
     assert_eq!(c.send(0).action, Action::None);
     assert_eq!(c.send(MSS as u32 + 1).action, Action::None);
-    // in-flight=1：未确认前第二段拒。
+    // 二刀在途环：未确认段不再占位即拒——环满与越窗拒面各见专项测试
+    //（send_ring_full_rejects / window_limits_inflight）。
     c.send(64);
-    assert_eq!(c.send(10).action, Action::None);
-    assert_eq!(c.snd_nxt, 1065); // 状态未动
+    assert_eq!(c.send(10).action, Action::Data { seq: 1065, len: 10 });
+    assert_eq!(c.snd_nxt, 1075);
 }
 
 #[test]
@@ -199,7 +210,7 @@ fn ack_not_regression() {
 
 #[test]
 fn rst_any_state_to_closed() {
-    // SynSent / Established / FinWait1 三态收 RST → Closed；之后任意段被忽略。
+    // SynSent / Established / FinWait1 / TimeWait 四态收 RST → Closed；之后任意段被忽略。
     let states: Vec<Conn> = vec![
         {
             let (mut c, _) = Conn::open(1000);
@@ -214,6 +225,18 @@ fn rst_any_state_to_closed() {
         {
             let mut c = established();
             c.close();
+            c.on_seg(&rst_seg());
+            c
+        },
+        {
+            // TimeWait 是 2s 长驻态（杂散 RST 命中概率最高）：主动关闭全程
+            // 至 TimeWait 再收 RST——on_seg 的 RST 分支先于状态分派，长驻
+            // 态同样直转 Closed。
+            let mut c = established();
+            c.close(); // → FinWait1
+            c.on_seg(&ack_seg(1002)); // FIN 被 ACK → FinWait2
+            c.on_seg(&fin_seg(5001)); // 对端 FIN → TimeWait
+            assert_eq!(c.state, State::TimeWait);
             c.on_seg(&rst_seg());
             c
         },
@@ -449,17 +472,19 @@ fn partial_ack_keeps_inflight() {
 }
 
 #[test]
-fn close_overrides_data_inflight() {
-    // 头注契约钉板：数据在途直接 close → FIN 覆盖单槽（数据重传面让位；
-    // 累计 ACK 语义下 FIN 的 ACK 隐含确认数据）。
+fn close_queues_fin_behind_data() {
+    // 二刀改义钉板（旧 close_overrides_data_inflight：FIN 覆盖单槽——数据
+    // 重传面让位；语义扩域为 FIN 排队尾，旧「槽已换主」断言废除）：数据在途
+    // 直接 close → FIN 排在数据槽后，数据槽保留重发面。
     let mut c = established();
-    c.send(64); // snd_nxt=1065, inflight=Data{1001,64}
+    c.send(64); // snd_nxt=1065, 环=[Data{1001,64}]
     let out = c.close();
     assert_eq!(c.state, State::FinWait1);
     assert_eq!(out.action, Action::Fin { seq: 1065 });
-    // 槽已换主：RTO 重发 FIN 而非数据。
-    assert_eq!(c.on_rto().action, Action::Fin { seq: 1065 });
-    // ACK 只覆盖数据尾（未覆盖 fin+1=1066）：槽保留、状态停 FinWait1。
+    // 环头仍是数据：GBN 队头重发数据而非 FIN。
+    assert_eq!(c.on_rto().action, Action::Data { seq: 1001, len: 64 });
+    // ACK 只覆盖数据尾（未覆盖 fin+1=1066）：数据槽弹出、FIN 槽保留、
+    // 状态停 FinWait1（④ 环非空不转 FinWait2）。
     let a = ack_seg(1065);
     c.on_seg(&a);
     assert_eq!(c.state, State::FinWait1);
@@ -468,6 +493,177 @@ fn close_overrides_data_inflight() {
     let a2 = ack_seg(1066);
     c.on_seg(&a2);
     assert_eq!(c.state, State::FinWait2);
+}
+
+// ─── 二刀：在途环（Go-Back-N）+ 发送窗消费 ───
+
+#[test]
+fn tx_ring_two_segments_and_snd_nxt() {
+    // 双段排队：一个 op 拆 128+122 两段连续入环（in-flight>1），snd_nxt 连续
+    // 推进；RTO 重发环头（GBN 队头）。
+    let mut c = established();
+    let o1 = c.send(128);
+    assert_eq!(o1.action, Action::Data { seq: 1001, len: 128 });
+    let o2 = c.send(122);
+    assert_eq!(o2.action, Action::Data { seq: 1129, len: 122 });
+    assert_eq!(c.snd_nxt, 1251);
+    assert_eq!(c.tx_inflight(), 2);
+    assert_eq!(c.on_rto().action, Action::Data { seq: 1001, len: 128 });
+}
+
+#[test]
+fn cross_seg_ack_pops_multi_straddle_keeps() {
+    // 部分 ACK 落在第一段中间：straddling 保槽 + snd_una 推进 + backoff 归零
+    // + RTO 仍从原 seq 全段重发（h14 语义在环上的延续）。
+    let mut c = established();
+    c.send(128); // [1001,1129)
+    c.send(122); // [1129,1251)
+    c.on_seg(&ack_seg(1050));
+    assert_eq!(c.snd_una, 1050);
+    assert_eq!(c.tx_inflight(), 2);
+    assert_eq!(c.rto_backoff, 0);
+    assert_eq!(c.on_rto().action, Action::Data { seq: 1001, len: 128 });
+    // ACK 覆盖第一段尾（落在第二段中间）：第一段弹出、第二段 straddling 保留
+    //——环头推进到第二段。
+    let mut c2 = established();
+    c2.send(128);
+    c2.send(122);
+    c2.on_seg(&ack_seg(1200));
+    assert_eq!(c2.tx_inflight(), 1);
+    assert_eq!(c2.on_rto().action, Action::Data { seq: 1129, len: 122 });
+    // 跨段覆盖一次弹多头：ACK 覆盖两段尾 → 两槽一次弹尽、可续发。
+    c.on_seg(&ack_seg(1251));
+    assert_eq!(c.tx_inflight(), 0);
+    assert_eq!(c.on_rto().action, Action::None);
+    assert_eq!(c.send(10).action, Action::Data { seq: 1251, len: 10 });
+}
+
+#[test]
+fn gbn_head_retransmit_and_cap_clears_ring() {
+    // GBN 队头重发：RTO 恒重发环头最老段（后续段不随发），backoff 递增；
+    // 到帽放弃 → Closed 清环。
+    let mut c = established();
+    c.send(128);
+    c.send(122);
+    assert_eq!(c.on_rto().action, Action::Data { seq: 1001, len: 128 });
+    assert_eq!(c.rto_backoff, 1);
+    assert_eq!(c.on_rto().action, Action::Data { seq: 1001, len: 128 });
+    assert_eq!(c.on_rto().action, Action::Data { seq: 1001, len: 128 });
+    let out = c.on_rto(); // 第 4 次：放弃
+    assert_eq!(out.action, Action::None);
+    assert_eq!(c.state, State::Closed);
+    assert_eq!(c.tx_inflight(), 0);
+}
+
+#[test]
+fn zero_window_blocks_until_update() {
+    // 零窗停发（h06 判据翻新的树内镜像）：对端通告 0 → send 拒；窗更新 ACK
+    //（纯 ACK 携新窗）放行。旧「零窗照发」语义域已扩为消费对端窗。
+    let (mut c, _) = Conn::open(1000);
+    let mut sa = syn_ack(5000, 1001, None);
+    sa.window = 0;
+    c.on_seg(&sa);
+    assert_eq!(c.snd_wnd, 0);
+    assert_eq!(c.send(64).action, Action::None, "零窗停发");
+    c.on_seg(&ack_seg_w(1001, 512));
+    assert_eq!(c.snd_wnd, 512);
+    assert_eq!(c.send(64).action, Action::Data { seq: 1001, len: 64 });
+}
+
+#[test]
+fn window_limits_inflight() {
+    // 窗口限在途：128 窗下第一段（128B）恰放行，第二段拒（128+10 > 128）；
+    // ACK 推进 snd_una 后放行（窗不变——放行来自在途清零）。
+    let (mut c, _) = Conn::open(1000);
+    let mut sa = syn_ack(5000, 1001, None);
+    sa.window = 128;
+    c.on_seg(&sa);
+    assert_eq!(c.snd_wnd, 128);
+    assert_eq!(c.send(128).action, Action::Data { seq: 1001, len: 128 });
+    assert_eq!(c.send(10).action, Action::None, "越窗拒：在途 128+10 > 窗 128");
+    c.on_seg(&ack_seg_w(1129, 128));
+    assert_eq!(c.snd_una, 1129);
+    assert_eq!(c.send(10).action, Action::Data { seq: 1129, len: 10 });
+}
+
+#[test]
+fn data_seg_piggybacks_window_update() {
+    // 数据段捎带窗更新：snd_wnd 记账对「一切携 ACK 段」生效——窗更新不
+    // 必走纯 ACK，数据+ACK 同段携新窗同样解锁零窗停发（与
+    // zero_window_blocks_until_update 的纯 ACK 路互补钉板）。
+    let (mut c, _) = Conn::open(1000);
+    let mut sa = syn_ack(5000, 1001, None);
+    sa.window = 0;
+    c.on_seg(&sa);
+    assert_eq!(c.send(64).action, Action::None, "零窗停发");
+    let mut seg = data_seg(5001, b"hi!");
+    seg.window = 512;
+    let out = c.on_seg(&seg);
+    assert_eq!(c.rcv_nxt, 5004); // 数据正常交付
+    assert_eq!(out.action, Action::Ack);
+    assert_eq!(c.snd_wnd, 512, "数据+ACK 同段携新窗");
+    assert_eq!(c.send(64).action, Action::Data { seq: 1001, len: 64 });
+}
+
+#[test]
+fn window_shrink_limits_inflight() {
+    // 缩窗即刻生效：宽窗放行 64B 在途后，携小窗 ACK 把 snd_wnd 压至 32
+    // ——覆盖赋值即刻生效，在途 64 已超新窗，后续段拒（门控只会拦不会
+    // 放，不腐化已发段——单向 0→512 放行的补面）。
+    let (mut c, _) = Conn::open(1000);
+    let mut sa = syn_ack(5000, 1001, None);
+    sa.window = 512;
+    c.on_seg(&sa);
+    assert_eq!(c.send(64).action, Action::Data { seq: 1001, len: 64 });
+    c.on_seg(&ack_seg_w(1001, 32)); // ACK 不推进 una，仅窗回缩
+    assert_eq!(c.snd_una, 1001);
+    assert_eq!(c.snd_wnd, 32);
+    assert_eq!(c.send(10).action, Action::None, "缩窗后按新窗限在途：64+10 > 32");
+}
+
+#[test]
+fn send_ring_full_rejects() {
+    // 环满拒：宽窗（8192）下 4×128 恰满 TX_SLOTS，第 5 段拒；弹槽腾位后续发。
+    let (mut c, _) = Conn::open(1000);
+    let mut sa = syn_ack(5000, 1001, None);
+    sa.window = 8192;
+    c.on_seg(&sa);
+    for i in 0..4 {
+        let seq = 1001 + 128 * i;
+        assert_eq!(c.send(128).action, Action::Data { seq, len: 128 });
+    }
+    assert_eq!(c.tx_inflight(), TX_SLOTS);
+    assert_eq!(c.send(1).action, Action::None, "环满拒");
+    c.on_seg(&ack_seg_w(1129, 8192)); // 弹第一段
+    assert_eq!(c.tx_inflight(), TX_SLOTS - 1);
+    assert_eq!(c.send(1).action, Action::Data { seq: 1513, len: 1 });
+}
+
+#[test]
+fn handshake_consumes_peer_window() {
+    // 握手消费对端窗：主动面 SYN+ACK(window=1400) → snd_wnd=1400；被动面
+    // SYN(window=900) → passive_open 即记（第三步 ACK 再刷新）。
+    let (mut c, _) = Conn::open(1000);
+    let mut sa = syn_ack(5000, 1001, None);
+    sa.window = 1400;
+    c.on_seg(&sa);
+    assert_eq!(c.snd_wnd, 1400);
+    let mut ps = pure_syn(5000, None);
+    ps.window = 900;
+    let (sc, _) = Conn::passive_open(2000, &ps).unwrap();
+    assert_eq!(sc.snd_wnd, 900);
+}
+
+#[test]
+fn rst_clears_tx_ring() {
+    // RST 清环：多段在途态收 RST → Closed + 环空 + on_rto 无重发面。
+    let mut c = established();
+    c.send(128);
+    c.send(122);
+    c.on_seg(&rst_seg());
+    assert_eq!(c.state, State::Closed);
+    assert_eq!(c.tx_inflight(), 0);
+    assert_eq!(c.on_rto().action, Action::None);
 }
 
 #[test]
@@ -692,4 +888,93 @@ fn accept_queue_rejects_non_established() {
     assert!(!q.push(dead));
     assert!(q.is_empty());
     assert!(q.accept().is_none());
+}
+
+// ─── 首刀防几何回归钉（NET-01 §3.3 入站 >MSS 单段黑洞——1460B 满段交付）───
+// vnet 拒收线已锚 RX_SEG_MAX=1460（MTU 域），状态机对大段的交付语义在此
+// 直喂钉板：vnet 几何回归（拒收线回落/pbuf 缩水）会让黑洞复现，而状态机
+// 侧若引入长度上限/截断，本两测必炸。
+
+#[test]
+fn large_seg_in_order_delivered() {
+    // 1460B 满段（对端 MTU 拼段形态——SLIRP 不读我方 MSS 通告）：按序
+    // 全量交付不截断、rcv_nxt 推进 1460、单 ACK。
+    let mut c = established();
+    let big = [7u8; 1460];
+    let seg = data_seg(5001, &big);
+    let out = c.on_seg(&seg);
+    assert_eq!(out.deliver, Some(&big[..]));
+    assert_eq!(c.rcv_nxt, 5001 + 1460);
+    assert_eq!(out.action, Action::Ack);
+}
+
+#[test]
+fn large_seg_then_regular_continuity() {
+    // 大段后接常规段：序号衔接与交付序正确——若大段被截断或 rcv_nxt
+    // 推进错位，后续段即乱序丢弃，本断言必炸；对照臂：错位段仍丢弃回
+    // 当前 ACK（乱序语义不因大段而漂移）。
+    let mut c = established();
+    let big = [7u8; 1460];
+    c.on_seg(&data_seg(5001, &big));
+    let tail = data_seg(5001 + 1460, b"tail");
+    let out = c.on_seg(&tail);
+    assert_eq!(out.deliver, Some(&b"tail"[..]));
+    assert_eq!(c.rcv_nxt, 5001 + 1460 + 4);
+    let stray = data_seg(5001 + 1460, b"xxxx");
+    let out = c.on_seg(&stray);
+    assert!(out.deliver.is_none());
+    assert_eq!(out.action, Action::Ack);
+    assert_eq!(c.rcv_nxt, 5001 + 1460 + 4);
+}
+
+// —— 四刀顺带批：F72 窗新鲜度护栏 + ACK 域上界（RFC793 SEG.ACK ≤ SND.NXT）——
+
+#[test]
+fn f72_stale_ack_does_not_shrink_window() {
+    // 迟到/乱序段携缩窗不回缩（seq 旧于 wl1 / 同 seq 但 ack 旧于 wl2 两面）；
+    // 新鲜段（seq 更新，或同 seq 且 ack 不旧）覆写——SLIRP 恒 65535 域的
+    // 理论面护栏，多 op 在途 ACK 面扩大后收口。
+    let mut c = established();
+    assert_eq!((c.snd_wl1, c.snd_wl2), (5000, 1001)); // SYN-ACK 基线
+    c.send(64);
+    let mut stale = ack_seg_w(1001, 100);
+    stale.seq = 4000; // 旧于 wl1
+    c.on_seg(&stale);
+    assert_eq!(c.snd_wnd, WINDOW);
+    assert_eq!(c.snd_wl1, 5000);
+    let mut same_seq = ack_seg_w(1001, 100);
+    same_seq.seq = 5000;
+    same_seq.ack = 1000; // 同 seq 但 ack 旧于 wl2
+    c.on_seg(&same_seq);
+    assert_eq!(c.snd_wnd, WINDOW);
+    let mut fresh = ack_seg_w(1065, 200);
+    fresh.seq = 6000; // 更新
+    c.on_seg(&fresh);
+    assert_eq!(c.snd_wnd, 200);
+    assert_eq!((c.snd_wl1, c.snd_wl2), (6000, 1065));
+    let mut fresh2 = ack_seg_w(1065, 300);
+    fresh2.seq = 6000; // 同 seq 且 ack == wl2（不旧）→ 覆写
+    c.on_seg(&fresh2);
+    assert_eq!(c.snd_wnd, 300);
+}
+
+#[test]
+fn phantom_ack_beyond_snd_nxt_rejected() {
+    // 幻 ACK 越 snd_nxt：不推进 snd_una、不弹槽、不采纳窗（RFC793 不可接受
+    // ACK 面——多 op 在途放大「幻 ACK 弹未发槽」的已知限制，本刀硬面）。
+    let mut c = established();
+    c.send(64);
+    c.send(64);
+    assert_eq!(c.snd_nxt, 1129);
+    let mut ph = ack_seg(c.snd_nxt + 1000);
+    ph.seq = 9000;
+    ph.window = 7;
+    c.on_seg(&ph);
+    assert_eq!(c.snd_una, 1001);
+    assert_eq!(c.tx_inflight(), 2);
+    assert_eq!(c.snd_wnd, WINDOW);
+    // 合法累计 ACK 照常推进/弹槽（护栏不伤正常路径）。
+    c.on_seg(&ack_seg(1129));
+    assert_eq!(c.snd_una, 1129);
+    assert_eq!(c.tx_inflight(), 0);
 }

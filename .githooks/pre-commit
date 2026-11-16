@@ -1,0 +1,29 @@
+#!/bin/sh
+# BerryOS 跨根合并闸（commit 层）——防线详见 .agents/notes/implemented/2026-11-16-跨根合并防线与判例.md
+# 背景：main（根 f7eb5535）与 wip/sched-1.1（根 afd68392）无共同祖先。整树合并是 owner 专属动作。
+# 本闸：MERGE_HEAD 在场且与 HEAD 无共同祖先 → 拒绝提交。owner 逃生阀 BERRYOS_ALLOW_CROSSROOT=1。
+# 旧 .git/hooks/pre-commit 的 Curia 文档关卡在此逐字节保留（原钩子随 core.hooksPath 切换而退役）。
+
+mh=$(git rev-parse --git-path MERGE_HEAD)
+if [ -f "$mh" ] && [ "$BERRYOS_ALLOW_CROSSROOT" != "1" ]; then
+  m=$(cat "$mh" 2>/dev/null)
+  if [ -n "$m" ] && [ -z "$(git merge-base HEAD "$m" 2>/dev/null)" ]; then
+    cat >&2 <<'EOF'
+[berryos-guard] 拒绝：这是跨根合并（HEAD 与 MERGE_HEAD 无共同祖先）。
+
+main 与 wip/sched-1.1 是两棵不相关历史。整树硬合 = 348 个 add/add 冲突，
+是 owner 专属的收口动作，lane 一律禁止。正确做法：
+  1. 立即回安全态：git merge --abort
+  2. lane 的职责是把工作推 wip/sched-1.1，勿直接动 main
+  3. 跨线内容走净增量重放（实测冲突面 348→35）
+判例与数据：.agents/notes/implemented/2026-11-16-跨根合并防线与判例.md
+owner 确要收口：BERRYOS_ALLOW_CROSSROOT=1 git commit
+EOF
+    exit 1
+  fi
+fi
+
+# ---- 以下为原 .git/hooks/pre-commit 的 Curia 文档关卡（原样保留）----
+staged=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null | grep -E '^(docs/|\.agents/)' | head -1)
+[ -z "$staged" ] && exit 0
+node .agents/tools/check-docs.mjs --strict

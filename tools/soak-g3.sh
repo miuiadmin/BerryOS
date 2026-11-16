@@ -48,6 +48,57 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 cd "$SCRIPT_DIR/.."
 source "$SCRIPT_DIR/paths.sh"
 
+# ---------- --selftest（零 QEMU；前置拒面钉板——端口/盘面/对端之前） ----------
+# sync-public 同款合成腿风格：脚本副本 + paths.sh 入 sandbox（ROOT 恒沙箱——
+# 真仓 rootfs.cpio 在席会把腿推进到造盘/对端面，绝不触真仓零端口）。腿全部
+# 落在确定性前置出口（分钟数校验 = 本件独有面）。改拒面必跑（挂 test-host）。
+if [ "${1:-}" = "--selftest" ]; then
+  SELF=$(mktemp -d "${TMPDIR:-/tmp}/berryos-soakg3-selftest.XXXXXX")
+  cleanup() { rm -rf "${SELF}"; }
+  trap cleanup EXIT
+  mkdir -p "${SELF}/root/tools"
+  cp "${BASH_SOURCE[0]}" "${SELF}/root/tools/soak-g3.sh"
+  cp "$SCRIPT_DIR/paths.sh" "${SELF}/root/tools/paths.sh"
+  S="${SELF}/root/tools/soak-g3.sh"
+
+  legs=0; fails=0
+  leg() {  # leg <名> <期望rc> <锚:stdout|stderr|-> <pattern> <cmd…>
+    local name="$1" want="$2" face="$3" pat="$4"; shift 4
+    local rc=0
+    ( "$@" ) >"${SELF}/out.log" 2>&1 || rc=$?
+    legs=$((legs+1))
+    local why=""
+    [ "$rc" = "$want" ] || why="rc 期望 ${want} 实得 ${rc}"
+    if [ -z "$why" ] && [ "$face" != "-" ] && ! grep -qF "$pat" "${SELF}/out.log"; then
+      why="输出缺锚「${pat}」"
+    fi
+    if [ -n "$why" ]; then
+      fails=$((fails+1)); echo "soak-g3 selftest 腿红：${name}（${why}）" >&2
+      tail -4 "${SELF}/out.log" >&2
+    else
+      echo "soak-g3 selftest 腿绿：${name}"
+    fi
+  }
+  printf 'LOCKDEP selftest ok\n' > "${SELF}/k-good"
+  printf 'no markers here\n' > "${SELF}/k-nomark"
+
+  leg "用法红（无参）" 2 stderr "用法" bash "$S"
+  leg "缺文件红" 2 stderr "用法" bash "$S" "${SELF}/no-such-elf"
+  leg "marker 缺席红（default 面直拒）" 2 stderr "镜像非 lockdep feature 面" \
+    bash "$S" "${SELF}/k-nomark"
+  leg "分钟数非数字红" 1 stderr "分钟数须为正整数" bash "$S" "${SELF}/k-good" abc
+  leg "分钟数 1 拒（平凡无鉴别力）" 1 stderr "须 ≥2" bash "$S" "${SELF}/k-good" 1
+  leg "QEMU 缺件红（沙箱无 qemu——盘/对端面前置）" 1 stderr "找不到" \
+    env QEMU="${SELF}/no-qemu" bash "$S" "${SELF}/k-good" 5
+
+  if [ "$fails" -ne 0 ]; then
+    echo "soak-g3: selftest FAIL（${fails}/${legs} 腿红）" >&2
+    exit 1
+  fi
+  echo "soak-g3: selftest ok（拒面 ${legs} 腿——零 QEMU 零端口零真仓副作用）"
+  exit 0
+fi
+
 KERNEL="${1:-}"
 MINUTES="${2:-60}"
 if [ -z "$KERNEL" ] || [ ! -f "$KERNEL" ]; then
@@ -154,11 +205,11 @@ fail() {
   echo "selftest ok=$(grep -ac 'LOCKDEP selftest ok' "$LOG" 2>/dev/null || true) selftest FAIL=$(grep -ac 'LOCKDEP selftest FAIL' "$LOG" 2>/dev/null || true) VIOLATION=$(grep -ac 'LOCKDEP VIOLATION' "$LOG" 2>/dev/null || true)" >&2
   echo "---- BENCHLAT 收割（全部）----" >&2
   grep -aoE 'BENCHLAT,lane=(ipc|sgi),n=32,min=[0-9]+,p50=[0-9]+,p90=[0-9]+,p99=[0-9]+,max=[0-9]+' "$LOG" >&2 || true
-  echo "---- 串口日志尾部（全文保留：$LOG）----" >&2
+  echo "---- 串口日志尾部（全文保留：${LOG}）----" >&2
   tail -40 "$LOG" >&2
   for f in "$ECHO_LOG" "$EVS_LOG" "$SKT_LOG"; do
     if [ -n "$f" ] && [ -s "$f" ]; then
-      echo "---- $(basename "$f") 尾部（$f）----" >&2
+      echo "---- $(basename "$f") 尾部（${f}）----" >&2
       tail -10 "$f" >&2
     fi
   done
@@ -221,8 +272,8 @@ lat_face() {
   local n_ipc n_sgi
   n_ipc=$(printf '%s\n' "$lines_ipc" | command grep -c . || true)
   n_sgi=$(printf '%s\n' "$lines_sgi" | command grep -c . || true)
-  [ "${n_ipc:-0}" -eq "$want" ] || { echo "lat 面：lane=ipc BENCHLAT 行数 ${n_ipc:-0} ≠ $want（boot+每拍一周期——断链/漏触发/自由跑形破）" >&2; bad=1; }
-  [ "${n_sgi:-0}" -eq "$want" ] || { echo "lat 面：lane=sgi BENCHLAT 行数 ${n_sgi:-0} ≠ $want（boot+每拍一周期——断链/漏触发/自由跑形破）" >&2; bad=1; }
+  [ "${n_ipc:-0}" -eq "$want" ] || { echo "lat 面：lane=ipc BENCHLAT 行数 ${n_ipc:-0} ≠ ${want}（boot+每拍一周期——断链/漏触发/自由跑形破）" >&2; bad=1; }
+  [ "${n_sgi:-0}" -eq "$want" ] || { echo "lat 面：lane=sgi BENCHLAT 行数 ${n_sgi:-0} ≠ ${want}（boot+每拍一周期——断链/漏触发/自由跑形破）" >&2; bad=1; }
   # 全周期行取 max（单帽覆盖 boot + 稳态全周期）。
   local m_ipc m_sgi p99_ipc p99_sgi
   m_ipc=$(printf '%s\n' "$lines_ipc" | awk -F'max=' '{print $2}' | command grep -oE '^[0-9]+' | sort -n | tail -1 || echo "")
@@ -327,7 +378,7 @@ while :; do
   done
   [ -z "$missing" ] && break
   [ $(( $(date +%s) - t0 )) -gt "$DEADLINE_BOOT" ] \
-    && fail "boot 覆盖标记 ${DEADLINE_BOOT}s 未到齐，缺：$missing（门控键漂移/载荷 master 未跑 = 断言必假绿，勿空心跑）"
+    && fail "boot 覆盖标记 ${DEADLINE_BOOT}s 未到齐，缺：${missing}（门控键漂移/载荷 master 未跑 = 断言必假绿，勿空心跑）"
   sleep 2
 done
 BOOT_WALL=$(( $(date +%s) - t0 ))
@@ -452,5 +503,5 @@ if [ "$MINUTES" -ge 7 ]; then
 else
   echo "soak-g3: PASS ${MINUTES}/${MINUTES} 拍七断言全绿 + pages 稳态窗未及执法（≥7 拍才真比较，n=${MINUTES} 平凡非绿）+ lockdep 三计数绿 + lat ${LAT_OBS}"
 fi
-echo "soak-g3: R3 定标：boot=${BOOT_WALL}s（帽 ${DEADLINE_BOOT}s）/ 首拍=${first_beat_wall}s（帽 ${FIRST_BEAT_CAP}s）/ 均拍=${mean_beat}s（帽 ${PER_BEAT_CAP}s，下界 40）/$summary（park 帽 +${PARK_CAP} / Δsw1 地板 ${SW1_FLOOR}/拍 / pages 稳态帽 +64 首拍豁免 / churn 严格递增）"
+echo "soak-g3: R3 定标：boot=${BOOT_WALL}s（帽 ${DEADLINE_BOOT}s）/ 首拍=${first_beat_wall}s（帽 ${FIRST_BEAT_CAP}s）/ 均拍=${mean_beat}s（帽 ${PER_BEAT_CAP}s，下界 40）/${summary}（park 帽 +${PARK_CAP} / Δsw1 地板 ${SW1_FLOOR}/拍 / pages 稳态帽 +64 首拍豁免 / churn 严格递增）"
 echo "soak-g3: 全程 ${elapsed}s（总帽 ${TOTAL_CAP}s）"

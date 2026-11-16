@@ -146,18 +146,18 @@ fail() {
   echo "soak-smp: FAIL: $1" >&2
   echo "---- 心跳表（全部已收拍）----" >&2
   grep -aoE 'SOAK t=[0-9]+ sw=[0-9]+ sw0=[0-9]+ sw1=[0-9]+ park0=[0-9]+ park1=[0-9]+ pages=[0-9]+ lost=[0-9]+ churn=[0-9]+' "$LOG" >&2 || true
-  echo "---- 串口日志尾部（全文保留：$LOG）----" >&2
+  echo "---- 串口日志尾部（全文保留：${LOG}）----" >&2
   tail -40 "$LOG" >&2
   if [ -n "$ECHO_LOG" ] && [ -s "$ECHO_LOG" ]; then
-    echo "---- echod 日志尾部（$ECHO_LOG）----" >&2
+    echo "---- echod 日志尾部（${ECHO_LOG}）----" >&2
     tail -10 "$ECHO_LOG" >&2
   fi
   if [ -n "$EVS_LOG" ] && [ -s "$EVS_LOG" ]; then
-    echo "---- evsclient 日志尾部（$EVS_LOG）----" >&2
+    echo "---- evsclient 日志尾部（${EVS_LOG}）----" >&2
     tail -10 "$EVS_LOG" >&2
   fi
   if [ -n "$SKT_LOG" ] && [ -s "$SKT_LOG" ]; then
-    echo "---- sktclient 日志尾部（$SKT_LOG）----" >&2
+    echo "---- sktclient 日志尾部（${SKT_LOG}）----" >&2
     tail -10 "$SKT_LOG" >&2
   fi
   echo "--------------------------------" >&2
@@ -268,7 +268,7 @@ while :; do
   done
   [ -z "$missing" ] && break
   [ $(( $(date +%s) - t0 )) -gt "$DEADLINE_BOOT" ] \
-    && fail "boot 覆盖标记 ${DEADLINE_BOOT}s 未到齐，缺：$missing（soakload 门控键漂移/载荷 master 未跑 = 满载断言必假绿，勿空心跑）"
+    && fail "boot 覆盖标记 ${DEADLINE_BOOT}s 未到齐，缺：${missing}（soakload 门控键漂移/载荷 master 未跑 = 满载断言必假绿，勿空心跑）"
   sleep 2
 done
 BOOT_WALL=$(( $(date +%s) - t0 ))
@@ -366,11 +366,11 @@ mean_beat=$(( (elapsed - first_beat_wall) / (MINUTES - 1) ))
 [ "$mean_beat" -ge 40 ] || fail "均拍 ${mean_beat}s < 40s——拍周期塌缩（deadline 减半形 bug 全绿假象，S-5e ① 封口）"
 # S-5e m6：PASS 措辞按拍数条件化——pages 稳态窗真比较最早第 7 拍。
 if [ "$MINUTES" -ge 7 ]; then
-  echo "soak-smp: PASS ${MINUTES}/${MINUTES} 拍八断言全绿（$summary）"
+  echo "soak-smp: PASS ${MINUTES}/${MINUTES} 拍八断言全绿（${summary}）"
 else
-  echo "soak-smp: PASS ${MINUTES}/${MINUTES} 拍七断言全绿 + pages 稳态窗未及执法（真比较须 ≥7 拍，n=${MINUTES} 平凡非绿——S-5e m6 措辞边界；$summary）"
+  echo "soak-smp: PASS ${MINUTES}/${MINUTES} 拍七断言全绿 + pages 稳态窗未及执法（真比较须 ≥7 拍，n=${MINUTES} 平凡非绿——S-5e m6 措辞边界；${summary}）"
 fi
 # R3 定标行（观测面非断言面；任一数 > 帽 70% 即预授权 ×1.5 一次——smoke-smp
 # R3 三数同款 §6 纪律）。
-echo "soak-smp: R3 定标：boot=${BOOT_WALL}s（帽 ${DEADLINE_BOOT}s）/ 首拍=${first_beat_wall}s（帽 ${FIRST_BEAT_CAP}s）/ 均拍=${mean_beat}s（帽 ${PER_BEAT_CAP}s，下界 40）/$summary（park 帽 +${PARK_CAP} / Δsw1 地板 ${SW1_FLOOR}/拍 = 双写者在席 ≥57% / pages 稳态帽 +64，首 5 拍结算豁免——pmin..pmax 含豁免窗观测 / churn 严格递增〔M1〕）"
+echo "soak-smp: R3 定标：boot=${BOOT_WALL}s（帽 ${DEADLINE_BOOT}s）/ 首拍=${first_beat_wall}s（帽 ${FIRST_BEAT_CAP}s）/ 均拍=${mean_beat}s（帽 ${PER_BEAT_CAP}s，下界 40）/${summary}（park 帽 +${PARK_CAP} / Δsw1 地板 ${SW1_FLOOR}/拍 = 双写者在席 ≥57% / pages 稳态帽 +64，首 5 拍结算豁免——pmin..pmax 含豁免窗观测 / churn 严格递增〔M1〕）"
 echo "soak-smp: 全程 ${elapsed}s（总帽 ${TOTAL_CAP}s）"

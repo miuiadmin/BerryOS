@@ -1,6 +1,8 @@
 [package]
 name = "berrydump"
-version = "0.1.0"
+# L-SYS 0.2.0：字面版本不走 workspace 继承（berryboot 同款；版本治理
+# 规则/14）。
+version = "0.2.0"
 edition = "2021"
 
 # EFI 应用镜像形态（berryboot/app 同款）：staticlib 出静态库，链接/转

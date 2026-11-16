@@ -1,6 +1,6 @@
 [package]
 name = "berry-netproto"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 
 # P6 A-7：最小以太网/ARP/IPv4/ICMP-echo 编解码纯函数 crate（解析器即产品

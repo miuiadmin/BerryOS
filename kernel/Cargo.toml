@@ -12,6 +12,64 @@ path = "src/main.rs"
 berry-hal-aarch64 = { path = "../arch/aarch64" }
 berry-mm = { path = "../mm" }
 berry-sched = { path = "../sched" }
+# 调度深水区收官·任务②（M4 首批 band 激活，2026-11-16）：IntentBand 带表
+# 与现役集判单源 berry-iprofile——ktest `BANDM4` 断言「FairBand::new 参数
+# 从表读取」需直名表本体（经 sched 的 transitive 面不可 use，Cargo 直依赖
+# 惯例同 berry-wqmatch）。
+berry-iprofile = { path = "../iprofile" }
+berry-vmoledger = { path = "../vmoledger" }
+# W3-Q5：PI 纯函数面单源（donor_edge 资格判 + PI_MAX_HOPS 轮帽）——本
+# crate 消费，pi.rs 保留锁窗/反查机械。
+berry-piface = { path = "../piface" }
+# W3-Q5：WaitKey 值域三形（pi.rs 投影用）——crate 依赖显式化（经 sched
+# re-export 的 transitive 面不可 use，Cargo 直依赖惯例）。
+berry-wqmatch = { path = "../wqmatch" }
+berry-telface = { path = "../telface" }
+# W3-Q7：Event 信号位空间判定律单源（用户位门/置清位律/wait 命中/唤醒
+# 资格）——本 crate 消费（event.rs/syscall.rs）；位值冻结面仍在 abi_gen。
+berry-evface = { path = "../evface" }
+# W3-Q6：intent 档位计数/通胀计数遥测纯函数面（档位直方 + inflate 数学 +
+# tele: 行装配）——本 crate 消费（telemetry.rs 计数器族 + main.rs tele_dump）。
+berry-itally = { path = "../itally" }
+# W3-Q8：handle 位域编码单源（slot/gen 位域 + 别名拒判定律）——本
+# crate 消费，handle.rs re-export。
+berry-hdlface = { path = "../hdlface" }
+# W3-Q9：channel 队列资格判与容量门单源（send 参数上限律/数组内无重复/
+# 满队拒/空队拒/recv 容量门/READABLE·WRITABLE 派生位）——本 crate 消费
+#（syscall.rs/channel.rs）；界常量值冻结面仍在 channel.rs。
+berry-chanface = { path = "../chanface" }
+berry-dtbface = { path = "../dtbface" }
+# W3-Q15：handoff 交接几何判定律单源（probe 对齐/窗界/version 门 +
+# init_segs 同页自相对/段几何 + gop 四非零门）——本 crate 消费
+#（handoff.rs probe/init_segs/gop_info 判定段换消费，raw 解引用留壳）。
+berry-hofface = { path = "../hofface" }
+berry-vslotface = { path = "../vslotface" }
+# W3-Q20：SchedAttr 位选律（默认∪覆盖/FREEZE_READY 特判）+ policy 查表
+# 数学单源在 berry-polface（host 可测钉板）；本 crate process.rs re-export
+# 消费（SchedAttr/SA_FLAG_* 既有路径零改动）。
+berry-polface = { path = "../polface" }
+# W3-Q38：suspend 冻结深度判序单源（六门/七门 admission/thaw 键路由/
+# Drop 判定段）——本 crate syscall.rs/suspend.rs 消费（判定段换消费，
+# 物理臂留壳）。
+berry-susface = { path = "../susface" }
+# W3-Q22：berry_sched_attr 结构解码+校验纯面单源（sa_check——size 门/尾零
+# 律/version 门/域门/交叉门/admission 判定）；本 crate syscall.rs sa_parse
+# 薄壳消费（copy_from_user 物理臂 + DL_TOTAL_UTIL_Q12 原子读留壳）。
+berry-safeck = { path = "../safeck" }
+# W3-Q24：dpg EL0 槽池认领制判定律单源（fsc 滤形/空闲槽选择/属主过滤取
+# 三态/GC 臂/溢出键路由）——本 crate dpg.rs 判定段消费（原子槽机械与
+# wake 调用留壳）。
+berry-dpgface = { path = "../dpgface" }
+# W3-Q70：access_ok 用户缓冲准入判定律单源（EL0 值域四门/EL1 高半单比较/
+# 叶 AP 位域读写拒/同页跳过窗律）——本 crate syscall.rs access_ok/
+# access_ok_window 判定段消费（walk_leaf TTBR0 走查 + PT 锁窗物理臂留壳）。
+berry-aokface = { path = "../aokface" }
+# W3-Q39：heap size-class/order 路由算术单源在 berry-heapface（host 可测
+# 钉板）；本 crate heap.rs alloc/dealloc 两臂消费 route/dealloc_route。
+berry-heapface = { path = "../heapface" }
+# W3-Q85：rootfs 装载门纯面单源（fwcfg 多卷发现/v0 init_blob 域门/
+# isegs Σ 帽/拼装对账四判定门 host 钉板；main.rs 消费，物理臂留壳）。
+berry-rootface = { path = "../rootface" }
 
 [features]
 # G3-3 lockdep：`cargo build --features lockdep` 出检测镜像（smoke-lockdep 面

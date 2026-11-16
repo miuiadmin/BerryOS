@@ -1,0 +1,524 @@
+{
+ "stats": {
+  "lenses": 7,
+  "found": 51,
+  "verified": 4
+ },
+ "all_findings": [
+  {
+   "lens": "android-signing",
+   "findings": [
+    {
+     "berry_map": "D1 案A：key_lineage（1..=16B 壳）只装得下 lineage id，转移链本体必须放 app.bap.sig 内——旧钥签「新钥接管」证明形成有序链，appd 验链=同 lineage 换钥自动接受、断链=拒载（草案错误域「lineage 断链」已有）；v3 实证该结构离线可验且无需任何 CA——案C 里 A 部分与 B 部分天然共存，v1 按 A 落地不损失终态",
+     "claim": "Android 9（2018）v3 方案在 APK Signing Block 中新增 proof-of-rotation 结构：有序签名证书转移链，每个节点携带签名证书并由旧钥对新钥作出授权签名，平台验链通过后即把新钥视同原始身份——纯离线验证、零中心基建。这正是 BerryOS key_lineage 的语义原型：lineage 不是裸标识符，而是「旧钥授权新钥」的带签名转移链",
+     "relevance": "核心",
+     "source": "https://source.android.com/docs/security/features/apksigning/v3",
+     "title": "v3 proof-of-rotation：key_lineage 的直接对标物（Android 9，2018）"
+    },
+    {
+     "berry_map": "D1/D2 实施面：草案已定 app.bap.sig = .bap 全字节摘要 + manifest 关键域摘要，天然免疫前置/截断类攻击，不可让步；验签与装载必须共用 ADR #59 的单一 TLV 解释器——Janus 根因即「签名验证器」与「装载解析器」是两套解析代码；manifest 摘要入签防「换 manifest 不换载荷」；篡改/截断/前置三类负样例进验收线（草案 §七第 1 条可据此扩）",
+     "claim": "v1 基于 JAR 签名，自 2008 年 Android 起沿用：只覆盖 ZIP 条目内容，官方明言「v1 签名不保护 ZIP 元数据等部分」，且验证须解压全部条目（大攻击面+慢）。2017-11 Guardsquare 披露 Janus（CVE-2017-13156，提权漏洞）：构造同时是合法 DEX 与合法 APK 的文件，把恶意 DEX 前置到仅 v1 签名的 APK，签名校验仍通过，影响 Android 5.x–8.0，2017-12 安全更新修复。根因=同一文件对 ZIP/DEX 两套解析器各自成立，签名覆盖面小于解析面",
+     "relevance": "核心",
+     "source": "https://source.android.com/docs/security/features/apksigning https://nvd.nist.gov/vuln/detail/CVE-2017-13156",
+     "title": "v1 JAR 签名的结构性缺陷与 Janus 实证（CVE-2017-13156）"
+    },
+    {
+     "berry_map": "D1 采纳案A 的最大规模先例，直接支持草案推荐 C（v1 按 A、结构前向兼容 B）；必须移植的两条纪律：①更新必须同钥（跨 lineage 换钥=新身份须用户显式确认，草案已写）；②TOFU 首装锚定由 appd 系统侧持久记录（等价 PackageManager 首装记录），不能信包自带声明；另 X.509 有效期是 Android 自带的坑（自管建议 ≥25 年、Play 硬性要求有效至 2033-10-22 之后），BerryOS 选 ed25519 无有效期语义=免掉整类过期翻车面",
+     "claim": "官方明文：Android 用自签证书做代码签名、「Android 目前不对应用证书执行 CA 验证」、签名证书定义应用与 UID 的绑定；更新时新旧版本证书必须完全一致，不同证书必须换包名、按全新应用安装；同钥还派生 signature 级权限共享与模块化。Android 从不拿 CA 当身份锚——身份=钥本身+首装记录，跑了 12+ 年、数百万应用规模",
+     "relevance": "核心",
+     "source": "https://source.android.com/docs/security/features/apksigning",
+     "title": "Android 身份模型 12 年：自签证书即身份、从不做 CA 验证"
+    },
+    {
+     "berry_map": "D1 案C 的 A→CA 之外第三条演化路：源列表运营方（D3 类 APT 源）可演「源托管包钥」=Play 同构，不必等商店时代；BerryOS 结构应留「开发者上传钥 ≠ 源分发钥」的双层签名位（源钥签源索引、包钥 lineage 进源索引，APT 的 archive 钥+维护者钥双层即此形）；key upgrade 教训=即使 ed25519 选对了也要留算法升级道，而升级道只有 lineage/托管结构给得起",
+     "claim": "2017 年推出，2021-08 之后新建应用实质强制（AAB 必须）：钥拆二——app signing key 由 Google 托管（存 Google KMS、留灾难恢复备份、开发者取不回）；upload key 归开发者，丢失/泄漏可在 Play Console 申请重置且不影响分发钥。托管才买得到 key upgrade：可换「密码学更强的钥」且新钥只签 Android 13+ 的分发、旧设备仍用旧钥（搭 v3.1 定向机制）。失：不可退出托管、Google 保留备份钥=中心信任点、要多商店同钥必须自备钥上交",
+     "relevance": "核心",
+     "source": "https://developer.android.com/studio/publish/app-signing",
+     "title": "Play App Signing 密钥托管：得（丢钥可救+算法可升级）与失（中心信任+不可退出）"
+    },
+    {
+     "berry_map": "D1：BerryOS v1 无托管，丢钥死刑必在首批开发者身上复现——案A 落地时应天一生水带恢复面：首装初始化 lineage 时同步登记 recovery key（旧钥预签「恢复钥可另开新 lineage」逃生门），或由 D3 源列表运营方做 lineage 见证；mkapp 文档把「钥备份」立为一等公民纪律；「跨 lineage 换钥须用户确认」（草案已有）正是 Android「换包名」的软化身，别再硬一步",
+     "claim": "官方判词（自管钥时代）：「丢失或找不到钥，你将无法为现有应用发布更新。已生成的钥无法重新生成」；换证书必须换包名=按全新应用安装，丢全部用户/评分/排名——应用身份随钥物理死亡，不可上诉。这一事故模式 12 年间反复重演（Stack Overflow/Play 开发者社区大量实例帖），直接催生 2017 Play 托管与 upload key reset 免死通道；相邻坑是 X.509 有效期：官方建议自管钥有效期 ≥25 年，Play 硬性要求有效至 2033-10-22 之后，过期同样断升级",
+     "relevance": "核心",
+     "source": "https://developer.android.com/studio/publish/app-signing",
+     "title": "丢钥=应用身份死亡：官方判词与十二年事故史"
+    },
+    {
+     "berry_map": "D2/D1 实施面：现役 SHA256SUMS 第三条目只是损坏校验，升级为签名后要把「本包已签名」这一事实本身写进受签域（等价 v1 记录 v2 存在的机制），防分发链剥掉 app.bap.sig 降级到裸哈希校验；v2 把摘要按结构分域（条目/中央目录/EOCD）的思路可借：BerryOS 摘要按「载荷字节+manifest 三域（身份/版本/security）」分域计算，manifest 单域改动可定位到具体坏点，喂草案「哪个环节坏」的错误域设计",
+     "claim": "Android 7.0（2016）v2 方案把 APK 当单个 blob 对三段（ZIP 条目、Central Directory、EOCD）分别摘要再整体签名，签名块插在 ZIP 结构之外——任何字节改动（含 ZIP 元数据）都致验签失败，Janus 类前置/截断攻击全部失效；验证不再解压条目，装载更快；且 v1+v2 双签时 v1 签名里记录「本包已 v2 签名」——新设备上剥掉 v2 签名会被直接拒绝，杜绝签名方案降级",
+     "relevance": "重要",
+     "source": "https://source.android.com/docs/security/features/apksigning/v2",
+     "title": "v2 全文件哈希与反剥离降级（Android 7.0，2016）"
+    },
+    {
+     "berry_map": "D1：BerryOS 验签者多版本并存（QEMU 验证器 vs 真机、appd 升级前后），lineage 节点应带「最低验证者能力」域（借 manifest 词表机制立法）；轮换频率可参考「≥2 年一换」写进运维纪律；v3 的教训=旋转机制上线首日就带实现 bug，BerryOS 验签负样例（断链/跳版本/双头链/新旧钥同时出现）要进 G0–G5 测试面，别只测正样例",
+     "claim": "v3 旋转对全平台生效，旧设备只认旧钥使旋转事实不可用；v3.1（Android 13，2022）引入 SDK 版本定向旋转：新钥只对 Android 13+ 设备生效（v3.1 块 ID 在 Android 12- 不被识别），旧设备继续用 v3 块验原钥，并复用全部 v3 验证代码、免去多目标 APK 复杂度。官方最佳实践「至少每两年轮换一次签名钥」；同页还披露 Android 11/12 上旋转实现曾有 bug（签名权限/回滚能力/checkSignatures/sharedUserId lineage 处理）并被修复",
+     "relevance": "重要",
+     "source": "https://source.android.com/docs/security/features/apksigning/v3-1",
+     "title": "v3→v3.1 教训：整平台旋转杀死旧验证者，旋转必须按验证者版本定向"
+    }
+   ]
+  },
+  {
+   "lens": "apple-notarization",
+   "findings": [
+    {
+     "berry_map": "D1：中心 CA 案的身份面不是『发一张证书』而是『会员资格+稳定短 ID+分型证书』三件套；BerryOS 案 A 的 key_lineage（ADR #59 预留 1..=16B [a-z0-9-]）正是同构物——短稳定身份串锚定首代公钥，即 BerryOS 版 Team ID。D3：源列表条目单元应为『身份串（key_lineage/发布者 ID）+ ed25519 公钥 + .bap 哈希』，对齐 Team ID+公钥模型而非裸哈希清单。",
+     "claim": "Apple 官方定义 Team ID 为分配给 Apple Developer Program / Enterprise Program 会员资格的唯一 10 字符串，是签名身份的稳定短锚；证书链为叶证书（Developer ID Application/Installer，与开发、App Store 等用途证书严格分型）→ 中间 CA（Developer ID CA / WWDR）→ Apple Root CA 三层，codesign 校验按『链必须锚到 Apple 根』判定（anchor apple 规则）。分发软件身份 = Team ID + 证书类型 + 公钥，而非裸公钥指纹。",
+     "relevance": "核心",
+     "source": "https://developer.apple.com/help/glossary/team-id/",
+     "title": "身份模型：Team ID 10 字符短标识锚定证书链，签名身份 = 叶证书+中间 CA+Apple 根三层"
+    },
+    {
+     "berry_map": "D1：公证面 = 扫描服务+票据库+在线查询端点+工具链持续维护，四项全是 BerryOS v1 装不下的在线基建（网络栈仅 net client 最小面）；altool→notarytool 断代证明中心工具链会强制生态迁移。D3：『钉附票据』的 BerryOS 正解即分离式 app.bap.sig——签名旁挂、.bap 载荷冻结不动；『在线票据库』由源列表（索引+清单）以可离线镜像方式承担，staple≈.sig 随包分发。",
+     "claim": "官方文档明确『The Apple notary service is an automated system』——自动扫描恶意内容与签名问题（『Notarization of macOS software is not App Review』），通过后生成票据：可 staple 附进分发物，同时『publishes that ticket online where Gatekeeper can find it』；macOS 10.14.5 起新 Developer ID 证书签名软件必须公证，10.15 起凡 2019-06-01 后构建的 Developer ID 分发软件一律强制。前置要求含 hardened runtime 与安全时间戳；扫描通常不到 1 小时；2023-11-01 起不再接受 altool/Xcode 13 及更早上传（工具链断代）。",
+     "relevance": "核心",
+     "source": "https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution",
+     "title": "公证 = 自动扫描 + 在线票据库 + 可钉附票据，非人审；2019-06-01 后构建的 Developer ID 软件强制公证"
+    },
+    {
+     "berry_map": "D3：这是源列表+TOFU 的 UX 全模板——首装展示『发布者+来源+是否已验签』并要用户显式批准（TOFU 落点）；sideload 退化情形 = 单包未见身份，走类 Open Anyway 的二次确认而非静默装；已装应用不重复打扰。App Translocation 教训：对不可信首跑加随机只读壳会破坏应用对自身路径的假设，BerryOS 四棵树能力沙箱（ADR #45）天然以能力隔离替代此 hack。D1：CA 签名免提示只是同一首装流程的快路径（案 C 两轨语义）。",
+     "claim": "平台安全指南：Gatekeeper 对下载软件『requests user approval before opening downloaded software for the first time』，核对三要素——已识别开发者、已公证、未被篡改；『When necessary, Gatekeeper opens apps from randomized, read-only locations』（App Translocation）并追踪下载软件所写文件的来源（provenance）。用户侧官方支持页（102445）给出 Open Anyway 例外通道，确认 macOS Catalina 起强制公证、Gatekeeper 存在在线检查（官方声明不收集用户身份、不记证书检查 IP）。",
+     "relevance": "核心",
+     "source": "https://support.apple.com/guide/security/gatekeeper-and-notarization-sec5599b66df/web",
+     "title": "Gatekeeper 首开批准 + 隔离 + App Translocation：TOFU 交互与 sideload 退路的现成模板"
+    },
+    {
+     "berry_map": "D1：中心 CA 的吊销面 = 常备受理渠道+CRL/在线查询+策略裁决（挡新装、不废已装），是持续运营成本，Apple 连『任意吊销权』都写进条款。BerryOS 案 A 无在线吊销，等价物 = 源列表发布作废声明（宣布某 key_lineage 代际作废）：appd 验签拒新装、存量 .bap 照跑，语义对齐『吊销挡新装不废已装』且天然离线。",
+     "claim": "官方证书总览页明示『Apple can revoke digital certificates at any time at its sole discretion』；Developer ID Application 证书被吊销后『users will no longer be able to install applications that have been signed with this certificate』，而证书过期后已安装应用仍可运行（新装/更新需有效证书，Installer 包依赖 trusted timestamp）。公证文档补充：公证服务为每个签名密钥维护 audit trail，密钥泄露时开发者可『work with Apple to revoke the tickets』按版本撤销票据。",
+     "relevance": "核心",
+     "source": "https://developer.apple.com/help/account/certificates/certificates-overview",
+     "title": "吊销语义：Apple 保留任意吊销权——吊销阻断新装、过期不废已装；公证票据也可按版本撤销"
+    },
+    {
+     "berry_map": "D1：CA 层级轮换不是运维小事而是生态级强迁移（Apple 两次实证）；自建 CA 必须预置轮换协议+旧签名长期可验。案 A 的 key_lineage 世代号正是分发者层轮换演练——换钥=新 lineage 代际，先在 TOFU 层练熟轮换心智，将来上 CA 复用同套协议（案 C『结构前向兼容』的具体含义）。D3：源列表需支持『同一身份多代公钥并存』条目，等价 Apple 证书链新旧并行的过渡窗。",
+     "claim": "官方页确认 WWDR 中间证书已于 2023-02-07 到期（续期版至 2030-02-20），轮换动机含提升 CRL 性能与证书用途分段；Developer ID 链同样在轮：原 Developer ID Certification Authority 将于 2027-02-01 到期，之后旧链证书不能再用于签名，开发者须换 G2 Sub-CA 证书，且『Certificates issued from G2 are valid for one year and must be renewed annually』——中间 CA 一动，全体分发者被迫换证迁移。",
+     "relevance": "重要",
+     "source": "https://developer.apple.com/help/account/certificates/replace-developer-id-certificates；https://developer.apple.com/help/account/certificates/wwdr-intermediate-certificates",
+     "title": "中间 CA 到期是生态级迁移事件：WWDR 中间证书 2023-02-07 过期、Developer ID CA G1 2027-02-01 到期、G2 叶证书仅 1 年有效"
+    },
+    {
+     "berry_map": "D1：中心 CA 案成本面完整账单——平台要运营注册/计费/角色系统，分发者年年交钱换证；BerryOS v1 生态为零，此门槛直接劝退首批分发者，支持草案取向：v1 按案 A（TOFU 零门槛、零账户）落地、结构前向兼容 CA（案 C）。D3：源列表+TOFU 无账户体系即可开张——加一条源=信一个身份，代价对齐 APT 而非 App Store。",
+     "claim": "Apple Developer Program 年费 $99、Enterprise Program 年费 $299（官方价目）；Developer ID 证书只能由 Account Holder 角色生成（团队单点瓶颈）；同类 Developer ID 证书同时最多持 5 张（Application 与 Installer 各 5）；叠加 G2 叶证书 1 年有效期 = 每年续费+每年换证双循环，会员资格失效即失去分发能力。",
+     "relevance": "核心",
+     "source": "https://developer.apple.com/programs/；https://developer.apple.com/help/account/certificates/replace-developer-id-certificates",
+     "title": "中心制的分发者负担清单：$99/年会员（Enterprise $299）+ 年度换证 + Account Holder 单点 + 每类 5 张证书帽"
+    },
+    {
+     "berry_map": "D1：自建 CA 除签发外还须自营 TSA（或采购 RFC 3161 服务）才能保证『换钥/过期不废旧包』——又一持续在线基建。BerryOS v1 用 ed25519 裸密钥+key_lineage 无证书过期问题，时间语义由源列表索引单调序+ADR #56 三值版本域承担；.bap.sig 设计应明确『旧签名对旧版本长期有效』，对齐 Apple『过期不废已装』语义，避免将来上 CA 时被迫补 TSA。",
+     "claim": "官方技术文档（TN2206）记载『Developer ID signatures carry cryptographic timestamps by default』，带时间戳的签名按签名时刻验证证书有效性；官方证书页说明 Developer ID Installer 证书过期后安装包能否继续安装取决于 trusted timestamp；Apple 在 PKI 目录中自营 Timestamp CA。无时间戳的签名在证书过期后验签即受牵连。",
+     "relevance": "重要",
+     "source": "https://developer.apple.com/library/archive/technotes/tn2206/_index.html",
+     "title": "安全时间戳是中心制隐性基建：Developer ID 签名默认带 TSA 时间戳，证书过期后新装依赖 trusted timestamp"
+    }
+   ]
+  },
+  {
+   "lens": "tuf-uptane",
+   "findings": [
+    {
+     "berry_map": "D1：v1 案A 单钥=四角色坍缩成一把，但「信任锚与发布清单分离」的结构位 v1 必抄——manifest security 域 key_lineage 即 root（钥匙册）等价物、载荷哈希清单即 targets 等价物，两者分离后将来才有角色分裂空间；snapshot/timestamp 分离是「出现在线高频签名面（商店）之后」的件，v1 静态源列表无此面，推迟。TUF 系生态默认 ed25519，佐证算法候选选型。",
+     "claim": "官方文档列十类攻击并按角色分摊：root=信任锚兼钥匙册（防钥匙册篡改/任意软件），targets=授权文件清单（防装错件、未授权依赖），snapshot=把各 targets/委托清单的版本号钉成一份（防 mix-and-match 拼装仓库视图），timestamp=最高频重签的小文件、内嵌 snapshot 版本+过期时间（防冻结与回滚），mirror 角色不签名（镜像默认不可信）。密钥按角色分离是在线钥被攻破不等于任意软件安装的根源。",
+     "relevance": "核心",
+     "source": "https://theupdateframework.io/docs/security",
+     "title": "TUF 四角色分工：每把钥匙只护一段攻击面"
+    },
+    {
+     "berry_map": "D2 最小必抄件：两版并存原子切换下，验签器（TLV 校验器同源件）须持久记录「已见最高版本」（ADR #56 三值版本域正当单调计数器用），同 lineage 拒绝降级安装，sideload 同规则；强过期判据 v1 可推迟——QEMU/无 RTC 场景墙钟不可信，可先用「上次成功安装时间」做宽松冻结判据（Uptane 式独立时间源是 v2+ 件），且防回滚状态要放攻击者抹不掉的位置（与 boot 记录/appd 只读锚同层）。",
+     "claim": "规范硬性机制：root 链版本严格 N+1、timestamp 新版本必须大于已存值且内嵌 snapshot 版本、任何过期元数据客户端 MUST NOT 信任（官方节奏参考 timestamp/snapshot≈1 天、root/targets≈1 年）；同时规范明确防回滚/冻结全部依赖客户端持久可信状态——若攻击者能抹掉本地已见版本记录，回滚防御失效（TUF 本身不解决，Uptane 用 nonce/release counter 补）。",
+     "relevance": "核心",
+     "source": "https://theupdateframework.github.io/specification/latest/",
+     "title": "防回滚/冻结=单调版本号+签名过期，但前提是客户端持久可信状态"
+    },
+    {
+     "berry_map": "D1：门限+离线仪式对零生态 v1 明显过度（推迟件），但「换钥不换信任」结构 v1 必抄——key_lineage 预留壳（1..=16B）正是代际标识：轮换时旧钥签「新钥接任」过渡声明（1-of-1 版双阈值），妥协后恢复路径=升 lineage 代际。",
+     "claim": "TUF 源头论文（Samuel/Mathewson/Cappos/Dingledine，ACM CCS 2010）核心论断：攻击者若能应答客户端请求且控住全部密钥，系统无解；单钥设计无论在线（TLS-only）还是离线（keysigning）都失败。TUF 答案=信任分散：离线 root、门限签名（生产实践常用 2-of-3，Foundries 建议至少 3 把离线 root 钥、阈值 2）、在线钥低权限、快速撤销替换。",
+     "relevance": "核心",
+     "source": "https://dl.acm.org/doi/10.1145/1866307.1866315",
+     "title": "可生存性设计：密钥必被妥协为前提（CCS 2010 原始论文）"
+    },
+    {
+     "berry_map": "D1 轮换协议三硬规则直接抄进 key_lineage 语义：①过渡双签（换代表老钥 lineage 证明+新钥签载荷）②代际严格单调且持久记录已见最高代际（顺带挡快进攻击）③初代锚随系统镜像/appd 带外分发、老代际元数据继续可查；lineage 升代时作废旧代缓存清单（对应删旧 timestamp/snapshot 的 Mercury 恢复动作）。",
+     "claim": "TUF 规范 §6.1：新 root（N+1）须同时满足 N 的门限与 N+1 自身门限双重签名、版本严格 +1、仓库 MUST 保留全部历史版本 root 供旧客户端逐级追链；轮换 timestamp/snapshot 钥时客户端删除旧信任状态（引 Mercury 论文恢复快进攻击）。生产实践（Rugged TUF）：root 钥常态放隔离机（airgapped workstation），默认阈值 2 时轮换=2 旧钥+2 新钥四方签名，且仪式未完成前旧钥严禁删除。",
+     "relevance": "重要",
+     "source": "https://rugged.works/background/ceremonies/key-rotation",
+     "title": "Root rotation 仪式：N+1 双门限签名、严格+1、全版本存档"
+    },
+    {
+     "berry_map": "D2：Uptane 的 SHALL「验证失败保留旧版本并中止」与 BerryOS 草案「两版并存+自动回滚」同构，可引为标准级背书，且应写死为 appd 装载规则「验签失败不得覆写现役槽」；Director 定向分发/nonce 防重放是 v2 在线商店件。对任务前提的修正：勿把 Uptane 写成强制标准，强制的是 R156/24089 流程，Uptane 是参考实现——BerryOS v2 若攻工业 RT，按 ISO 24089 流程+Uptane 式架构叙事更有利。",
+     "claim": "Uptane 2.1.0（Linux Foundation JDF 项目）在 TUF 四角色上加：Director（在线、按车定向、SHALL NOT 委托）+Image（离线、人控）双仓库，威胁模型=攻击者不能同时攻破两仓；主 ECU 全验证（两仓 metadata 交叉比对），弱 ECU 半验证（安全时间+Director targets 即可）；ECU 版本报告带每周期更换的 nonce 防重放，release counter 使 Director 被攻破也防回滚，验证失败 SHALL 保留旧 targets 并中止安装，全体 SHALL 监控下载速度。采用：AGL 集成、Airbiquity/HERE 商用、多家美/国际车企——但 Uptane 本身是自愿框架，监管强制的是 UNECE R156（软件更新管理体系）与 ISO 24089（2023 出版）流程要求。",
+     "relevance": "重要",
+     "source": "https://uptane.org/docs/2.1.0/standard/uptane-standard",
+     "title": "Uptane 对 TUF 的强化：双仓库+全/半验证+不可信本地状态下的回滚对策"
+    },
+    {
+     "berry_map": "D1/D3 判据证据：PyPI 级工程能力都未消化 full TUF（离线钥仪式+过期节奏运维+多签流水是主负担）→ BerryOS v1 走案A（TOFU+lineage）+源列表是正确档位；同时学 PEP 458 的做法——明写 v1 威胁模型不防什么（开发者机被控=失守边界）、把升级路径（商店时代再上 delegation 分桶）画进设计，即「结构前向兼容」的具体含义。",
+     "claim": "PEP 458 定义最小安全模型：离线 root（阈值>1）+targets(2,2)/bins 一次性钥 + 在线 timestamp/snapshot/bin-n 共享单钥（推荐 16384 分桶），并明确承认在线钥被控时不防仓库自身作恶（冻结上限=timestamp 1 天过期）。截至 2024 年索引级 TUF 验签仍未部署，PyPI 实际转向 Sigstore 证明（PEP 740，2024；PGP 弃用走 PEP 761）——提案搁置逾十年，说明 full TUF 对已有海量用户的仓库都是重运维负担。",
+     "relevance": "重要",
+     "source": "https://peps.python.org/pep-0458/",
+     "title": "采用者现实之一：pip/PyPI 十年未落全 TUF，转向 Sigstore"
+    },
+    {
+     "berry_map": "D3：ostree 是最贴近 BerryOS 形态的判例（静态单映像/类树提交+固定公钥+单调前进），佐证「源列表+TOFU（类 APT）」档位；conda 说明分层够用——SHA256SUMS 升级为「签名清单（含各包哈希+三值版本）」即同款，且清单式签名不动 .bap 载荷，满足冻结面约束（分离式 app.bap.sig 之外多一条不碰载荷的路）；回滚防线按 ostree 哲学放在系统层（两版并存+自动回退+验签器版本状态）而非协议层。",
+     "claim": "conda（Anaconda 2021-05 博客，conda-content-trust，TUF 子集实现）只签 defaults 渠道 repodata 索引：包文件本身不签，conda-forge 等社区渠道不在覆盖内；ostree 则完全绕开角色体系：ostree sign 对 commit/summary 逐工件签名（ed25519 为默认引擎，另 spki），信任=系统信任路径固定公钥（如 /etc/ostree/trusted.ed25519），静态 delta 亦可签——回滚防护交由系统层（bootloader 部署计数/自动回退）而非协议层版本计数。证明「固定锚+逐工件签名」生产长期可用。",
+     "relevance": "重要",
+     "source": "https://ostreedev.github.io/ostree/man/ostree-sign.html",
+     "title": "采用者现实之二：conda 只落简化版、ostree 干脆绕开角色体系"
+    },
+    {
+     "berry_map": "D1/D2 终合：v1 必抄最小四件=①签名清单含载荷哈希+单调版本 ②lineage 代际可换 ③已见最高版本/代际持久状态 ④验签失败保留旧槽；可推迟四件=门限签名、timestamp/snapshot 独立角色、强过期判据、delegation/多仓库。升级触发判据三条：发布者>1（再上 delegation 分桶）、出现在线仓库高频签名面（再分离在线/离线钥）、真机时钟可信（再启用 expiry）——此即「full TUF 过度与否」的可操作分界。",
+     "claim": "TUF 官方 FAQ 开列的落地负担：初代 root 带外分发、离线钥生成/备份/轮换、元数据过期节奏运维（变化越频繁过期越短）、客户端验证工作流常需自行实现。结合三判例可提炼判据：完整四角色=「有在线仓库+多发布者+持续交付」的生态期方案；单发布者+静态源列表阶段，pip/conda/ostree 殊途同归于「固定信任锚+签名清单+单调版本」最小集。",
+     "relevance": "核心",
+     "source": "https://theupdateframework.io/faq/",
+     "title": "「full TUF 对零生态 v1 是否过度」的判据与最小件清单"
+    }
+   ]
+  },
+  {
+   "lens": "linux-repos",
+   "findings": [
+    {
+     "berry_map": "D3 直接母型：源列表+TOFU 就是此模型的复刻。必补护栏三条：(a) 换钥走带内通道——新钥必须由旧钥签名后随仓库分发（security 域 key_lineage 字段正是为此预留）；(b) 新旧钥并行双签期（覆盖最慢用户的更新窗口），验证器对「双签任一有效」放行而非要求双签齐验；(c) 键递送绝不依赖官网手动下载。per-source signed-by 绑定（Debian 13 方向）说明全局 keyring 混流已被行业抛弃：BerryOS 源列表每条源必须钉住自己的钥+key_lineage，不得共享全局信任池。",
+     "claim": "apt-secure 由 Colin Walters/Isaac Jones 2003 年实现并入 APT 0.6，Debian 2005-02 全面迁移；模型=仓顶单文件 Release（内含全部索引与包的校验和链）+ 分离式 Release.gpg/InRelease（detached OpenPGP 签名，与 app.bap.sig 同构），每仓一钥、信任锚为系统预装 keyring。换钥是三十年最大事故源：2006-01 新年钥上线撞上 apt 双签 bug（须两钥齐验才信任，0.6.43.1 才修）；同次新钥先裸挂官网、无任何带内递送渠道，直接逼出 debian-archive-keyring 包（用已装系统通道递送新钥的标准机制）；2006 年末 etch 钥在公告与 keyring 更新之前就开始签仓，用户只看到 NO_PUBKEY 警告；2007-02-07 旧钥过期当场弄坏 etch rc1 安装器。apt-key 已在 Debian 13 Trixie 移除，密钥管理收敛到 /etc/apt/trusted.gpg.d + per-source signed-by 绑定。",
+     "relevance": "核心",
+     "source": "https://wiki.debian.org/SecureApt",
+     "title": "APT 仓签名模型：每仓一钥+keyring 包递送，换钥史即事故史（2003-2025）"
+    },
+    {
+     "berry_map": "D1 key_lineage 的直接教案：轮换是常态而非异常。必补护栏：(a) 验证器把「旧钥签新钥的交接证明+key_lineage 单调递增」做成一等公民，禁止任何 TrustAll/lsign 式逃生门（Arch 的逃生门正是信任链破口）；(b) 键更新走带内自动刷新（仓库自身签名覆盖），绝不制造用户手动仪式；(c) 时间不可信宽限策略——BerryOS QEMU 主验环境与无 RTC 设备首启常态无时钟，签名时间窗校验需配 monotonic/deadline 豁免逻辑，否则装机即卡。",
+     "claim": "Arch 用 5 把 master key（各由不同开发者持有、吊销证交另一人保管）签 packager key，每把 packager key 需 >=3 把 master 签名（marginal trust），经 archlinux-keyring 包递送。但轮换期全用户遭殃：2021-01 packager keys 全量换签（ArchWiki 明言 unknown trust 三大成因之一就是「新 master key 顶替旧钥，通常因持钥人离职」）；2022-07 新主签钥 75BD80E4D834509F6E740257B1B73B02CC52A02A 加入 keyring 时，月报原文自述活跃 packager key「约 85% 已签完、仍在进行」——过渡期以月计。用户侧痛点逼出机制补丁：2022-07-29 archlinux-keyring 引入 archlinux-keyring-wkd-sync systemd timer 每周从 WKD 自动刷新已有钥，官方自述目的就是消除「先升 keyring 再升系统」仪式；pacman 7.1（2024）起才原生气处理过期钥。期间时钟偏移即签名失败，社区通行自救是 rm -rf /etc/pacman.d/gnupg 重灌——等于放弃增量信任、退回全新 TOFU。",
+     "relevance": "核心",
+     "source": "https://monthly-reports.archlinux.page/2022/07/（佐证：https://wiki.archlinux.org/title/Pacman/Package_signing 与 https://archlinux.org/master-keys/）",
+     "title": "Arch master key 3-of-5 仲裁链：2021-22 轮换过渡以月计，85% 签名覆盖率逼出 WKD 自动刷新"
+    },
+    {
+     "berry_map": "D1 与实施面双重落点：ed25519 候选获主流包管理器官方背书（Homebrew 下轮换钥即迁 ed25519，ostree 已原生支持，见另条）；PGP 生态退役是明确行业方向，BerryOS 用 ed25519 裸签名而非 OpenPGP 是对的，别引入 PGP 依赖。必补护栏：若 mkapp/仓发布走 CI，签名钥注入通道与第三方 action 钉扎列为签名链安全评审第一项；验签模块设计时给钥 ID 加用途域分隔（签仓钥 vs 签包钥 vs 签 delta 钥不同 ID 前缀），避免审计 #25 式混淆。",
+     "claim": "Trail of Bits 审计（OTF 资助）2024-07-30 双向公布，报告 25 项：16 已修/3 进行中/6 已知悉，无 High 级。真正的信任面发现：#18 pull_request_target 滥用、#19 未钉住的第三方 GitHub action、#23 action 输入代码注入（均已修）——即现代分发的实际信任根是构建 CI 完整性而非签名人；#21 JSON API 目前用 RSA 签名，官方明确「下次换钥将改用 Ed25519」；#24 决定移除 PGP 提交签名（维护成本不值）；#25 指出签名钥与钥 ID 之间存在不必要的域分隔混乱。brew 6.0.0（2025）随信任面整改引入新 tap 信任机制。",
+     "relevance": "重要",
+     "source": "https://brew.sh/2024/07/30/homebrew-security-audit",
+     "title": "Homebrew 2024-07-30 审计公示：信任根在 CI 不在签名人，RSA 下轮换 Ed25519、PGP 直接退役"
+    },
+    {
+     "berry_map": "D3 首触与 sideload 护栏的直接依据：(a) 官方源钥必须出厂预装（BerryOS 镜像内置），不依赖网络首触；(b) 第三方源首触必须有带外指纹确认 UI——完整展示钥指纹+key_lineage 并要求显式确认，TOFU 的 F 只对确认后的钥成立；(c) SHA256SUMS 这类校验和文件本身必须落在签名覆盖域内（manifest v2 三域+TLV 的 security 域管住它，不留明文孤儿文件）；(d) sideload 文件视为「未信任源载荷」，装载时高亮提示来源未知，与渠道安装区分。",
+     "claim": "2016-02-20 Linux Mint 官网 WordPress 被入侵，ISO 下载链接被改指一台保加利亚服务器，分发植入 Tsunami IRC 后门的 Mint 17.3 Cinnamon 64-bit ISO；02-21 官方博客（?p=2994）承认，且 phpBB 论坛库被拖走（口令 MD5 哈希）。官方给用户的对策是「验证 MD5」——但校验和与 ISO 同在一条被控渠道上发布且 MD5 无签名，攻击者完全可以一并替换：信任首触发生在被攻陷的渠道内，TOFU 被整体绕过，签名体系根本没机会启动。",
+     "relevance": "核心",
+     "source": "https://blog.linuxmint.com/?p=2994",
+     "title": "Linux Mint 2016-02-20 官网掉包事件：TOFU 首触通道沦陷+未签名校验和=整套验证旁路"
+    },
+    {
+     "berry_map": "双裁决落点。D2（v1 不做增量）：连 ostree 的 delta 验签都是默认关且强制不了，BerryOS v1 整包+两版并存原子切换的裁决获强佐证；若 v2 做增量，护栏铁律：delta 必须入签且「未签名 delta 默认拒绝」写死为不可关闭项，不做 ostree 式可选开关。D1：ed25519+分离签名组合在 ostree 已有 5 年生产先例（签名进 detached metadata 不动物理载荷，与 app.bap.sig 完全同构），且 trusted/revoked 双目录模型可直接映射为 BerryOS 的钥信任表+吊销表设计。D3：源索引文件（BerryOS 的包列表对应物）验签强度必须与载荷一致、默认必验——manifest v2 三域+TLV 校验器应把「索引与载荷同钥同强度」立为不变量。",
+     "claim": "ostree 官方 man 页：remote 的 gpg-verify 默认 true（commit 必须有 GPG 签名），但 gpg-verify-summary 默认 false——索引文件默认不验签，是仓模型里的著名盲区；更糟的是 flatpak/flatpak#1479（2018-03）：给 remote 设 collection-id（P2P 分发模式）时 flatpak 自动把 gpg-verify-summary 关掉。ed25519 是 ostree 第二签名引擎（OstreeSign API 自 2020.2），签名进 commit 的 detached metadata 不动载荷——与 BerryOS app.bap.sig 分离签名同构；钥经 verification-ed25519-file 或 trusted.ed25519.d/revoked.ed25519.d 目录管理（信任与吊销双表）。static delta：sign-verify-deltas 默认 false，且 man 页明言其语义无法强制「delta 必须签名」——未签名 delta 直接应用；GitHub issue #3651 还抱怨签名 delta 文档缺失。",
+     "relevance": "核心",
+     "source": "https://ostreedev.github.io/ostree/man/ostree.repo-config.html（辅：https://github.com/flatpak/flatpak/issues/1479、https://ostreedev.github.io/ostree/reference/ostree-Signature-management.html）",
+     "title": "OSTree/Flatpak 验签默认值三层缝隙：commit 默认验、summary 默认不验、delta 签名强制不了"
+    },
+    {
+     "berry_map": "D1/D3 总裁背书：草案案 C（中心伞+TOFU 落地）方向与实证一致，v1 按案 A（TOFU+key_lineage）落地正确、勿过度工程造 CA。四条护栏从三十年事故清单直接导出，全部应写进 SDK-2 草案 D1/D3 的「必补护栏」节：(1) key_lineage 交接签名+新旧钥并行期（Debian/Arch 教训）；(2) 索引与校验和全部入签、与载荷同强度（ostree summary 缝隙）；(3) 官方钥出厂预装+第三方源首触带外指纹确认 UI（Mint 教训）；(4) 键更新带内自动化，验证器零用户仪式、零逃生门（Arch rm -rf gnupg 教训）。",
+     "claim": "apt-secure 2003 年落地至今 22 年、Arch 自 2011-2012（pacman 4 默认签名）至今、ostree/Flatpak 新世代（2015-）沿用同一「仓级单钥+系统预装信任锚+keyring 包轮换」拓扑——三十余年无一主流二进制分发采用 WebPKI 式中心 CA 链，TOFU 拓扑被反复重新发明并存活，证明案 A/案 C 的 v1 落地路线与行业实证一致。代价清单同样清晰（本组其余发现详证）：换钥=事故高发区（Debian 2006/2007、Arch 2021-22）、首触=最弱环节（Mint 2016）、索引与旁路文件=默认盲区（gpg-verify-summary、无签名校验和）、键管理仪式把用户推向危险自救（rm -rf pacman gnupg、TrustAll/lsign 逃生门）。",
+     "relevance": "重要",
+     "source": "https://archlinux.org/master-keys/（辅：https://wiki.debian.org/SecureApt、https://ftp-master.debian.org/keys.html）",
+     "title": "三十年总裁词：仓级单钥+预装信任锚拓扑全行业通用，无一主流二进制分发走 CA 链"
+    }
+   ]
+  },
+  {
+   "lens": "update-engines",
+   "findings": [
+    {
+     "berry_map": "D3 源列表更新检查协议的形态蓝图：客户端上报 per-app（版本+abi_revision+channel），服务器只答 ok/noupdate+包 URL+size+哈希；灰度放量零客户端改动——设备稳定哈希分桶=cohort 等价物，noupdate 即「放量组外」，不必发明新协议字段。",
+     "claim": "Omaha v3（Chrome/ChromeOS 更新底座，2007 随 Chrome 起用）app 元素带 cohort/cohorthint/cohortname 三属性（ASCII 32-127、≤1024 字符）：客户端上报所属 cohort，服务器在响应回写任意一个（哪怕空串）客户端都必须覆盖存储——放量分组由服务器单边指派且自稳定，避免随机分组抖动；更新检查=HTTP POST XML 拉模式，响应给 urls+manifest（package 带 name/size/SHA1-base64 hash）+actions；targetversionprefix（带 $ 精确匹配）允许服务端钉版本上限。",
+     "relevance": "核心",
+     "source": "https://github.com/google/omaha/blob/main/doc/ServerProtocol.md",
+     "title": "Omaha v3 协议：灰度放量的原生机制是 cohort（服务器指派、客户端回存），放量不需要客户端任何改动"
+    },
+    {
+     "berry_map": "D2「v1 不做增量」的协议层印证：delta 面=6+ 个协议字段+回退路径+独立遥测，全在故障面上；v1 只实现整包路径=只实现各家共同的兜底正路。v2 若开 delta，「内容哈希指纹定位基线（而非版本号）+先试后回退」是可直接抄的成熟语义。",
+     "claim": "Omaha 3.1 文档明文：delta 靠客户端已有二进制取得更好压缩；版本号不足以定位本地基线，故用 differential fingerprint（Google 服务器发 \"1.hash\"=载荷 SHA256），客户端在 request.app.fp 回声；响应带 package.fp/sizediff/hashdiff_sha256/namediff 与 url.codebasediff；协议要求客户端「先试差分包、失败回退整包」，事件上报带 diffresult/differrorcode/previousfp 一族。即 delta 从来是尽力而为的旁路，整包永远是兜底正路。",
+     "relevance": "核心",
+     "source": "https://chromium.googlesource.com/chromium/src/+/main/docs/updater/protocol_3_1.md",
+     "title": "Omaha 3.1 增量面：服务器按「差分指纹」（内容哈希而非版本号）选 delta，客户端先试 delta、失败回退全量是协议明文"
+    },
+    {
+     "berry_map": "D2 自动回滚触发条件直接移植：appd 切激活指针时写 tries=N（如 3），该 app 每次启动失败/墓碑减一，归零即指针拨回上一激活版——回滚判定在装载器侧闭环、无需用户介入；「成功确认=用户态显式 markSuccessful」对应新版首启后健康检查提交指针。",
+     "claim": "ChromeOS GPT 内核分区项 bits 48-63 定义三字段：Priority（4 位，15 最高/0=不可启动）、Tries Remaining（4 位，仅在 successful=0 时使用）、Successful Boot Flag（首次成功启动置 1）。BIOS 选 Priority 最高的内核，检查 successful=1 或 tries>0，不满足即把该内核 Priority 置 0 找下一个（=回落旧槽）；每次尝试 tries 减一；OS 成功启动后用户态置 successful=1、tries=0。「更新失败自动回滚」由此作为 boot 选择算法的副产品免费获得。",
+     "relevance": "核心",
+     "source": "https://chromium.googlesource.com/chromiumos/docs/+/refs/heads/factory-14162.B/disk_format.md",
+     "title": "ChromeOS 自动回滚的真实触发条件：固件 boot 计数器（priority/tries/successful 三字段），不是更新引擎"
+    },
+    {
+     "berry_map": ".bap 两版并存是 per-app 级 A/B：双份代价只是四棵树沙箱内包数据树多一版，比 OS 级双槽便宜一个量级；「判死放装载器、判活放应用侧」分工可直接抄——appd=bootloader 角色（计数判死），新版首启自检/健康检查=update_verifier 角色（确认判活）。",
+     "claim": "Android A/B：update_engine 流式写非活动槽后 setActiveBootSlot；新槽多次起不来由 bootloader 标 unbootable 回落旧槽（AOSP 引导控制块 tries_remaining 为 3 位字段、上限 7，逐次递减）；能起但未确认的槽由 update_verifier 在 zygote 前跑 dm-verity 校验，全过才 markBootSuccessful；安装期失败由客户端按错误码决定重试或从 diff OTA 降级全量。代价=整套分区双份存储。",
+     "relevance": "核心",
+     "source": "https://source.android.com/docs/core/ota/ab",
+     "title": "Android A/B 分工：bootloader 判死（tries 计数）、用户态判活（dm-verity 后 markBootSuccessful），双槽是空间换无缝"
+    },
+    {
+     "berry_map": "D2 尺寸分界线的原料：编译产物 delta 收益率数量级高，但绝对收益封顶=包本身大小；Chrome 值得做是因为 ~10MB 包×十亿用户×双周频次。Rust 全静态 .bap 估 1~20MB，增量绝对收益 <20MB/次，而服务端 per-(旧,新)对生成（内存 17 倍包大小）+客户端 apply/全哈希复验/失败回退三件套全是新增故障面。",
+     "claim": "bsdiff（Colin Percival 2003）：内存 max(17n, 9n+m)、时间 O((n+m)log n)——作者基准 200MHz Pentium 上 4MB 文件打补丁 90 秒（bspatch 仅需 n+m 内存、约 2 秒）。Courgette（Chromium 2009）：x86 汇编感知差分（指针符号化后差分）把 190.1→190.4 更新从整包 10,385,920B / bsdiff 704,512B 压到 78,848B（整包的 0.76%、bsdiff 的 1/9），后被 Zucchini 取代。zstd --patch-from（v1.4.7，2020）把旧文件当字典，生成速度比 bsdiff 快约一个量级（社区实测 30s vs <1s），v1.5.7（2025-02）再大幅提速提比。",
+     "relevance": "核心",
+     "source": "https://www.chromium.org/developers/design-documents/software-updates-courgette ; https://www.daemonology.net/bsdiff/",
+     "title": "delta 三代算法的压缩率与算力代价：bsdiff（2003）→ courgette/Zucchini（2009/2018）→ zstd --patch-from（2020）"
+    },
+    {
+     "berry_map": "D2「v1 不做增量」的判例背书：零生态阶段带宽成本≈0，delta 成本（生成基建/协议字段/回退路径/长期维护）前置而收益后置；微软 express 模式还提示——远期若做 delta 可后置到服务端按设备现算（客户端只见整包），客户端协议面保持不膨胀。",
+     "claim": "Fedora Change「Drop Delta RPMs」（2023-09 提议、F40 落地）：停止 compose 期生成 delta、DNF/DNF5 默认禁用，理由=直接收益有限+deltarpm 项目失修（zchunk 相关错误频发）+网速提升与 zchunk 部分下载使其不再必要。微软 Lifecycle FAQ 明文：2019-04-09 起不再提供 delta 更新（2019-03-12 与 04-09 为最后两批），改走全量+express（按设备云端定制下载）。两个有全球分发压力的生态都在「维护成本>带宽收益」裁决下砍掉 delta 主线。",
+     "relevance": "核心",
+     "source": "https://learn.microsoft.com/en-us/lifecycle/faq/windows ; https://fedoraproject.org/wiki/Changes/Drop_Delta_RPMs",
+     "title": "工业判例：Fedora F40（2024）弃 delta RPM、微软 2019-04 弃 delta 更新——成熟生态都因维护成本砍 delta"
+    },
+    {
+     "berry_map": "草案 §三 PWA 移植的三点补强：①「控制零客户端」→appd 在该 app 无运行实例时才切激活指针（进程级原子窗，比 SW 标签页粒度更干净）；②「24h 内不重查」→检查间隔去抖参数直接进 manifest distribution 域；③ install 失败即弃=验签/manifest 校验失败路径，与草案已对齐，可写进验收负样例。",
+     "claim": "web.dev 官方生命周期文档：新版 SW 后台 install，install promise 拒绝或脚本解析失败→新 worker 进 redundant 被丢弃、现行 worker 继续服务——安装期失败天然回滚；成功后进 waiting，默认直到「控制零客户端」（全部标签页关闭）才 activate，核心保证「同页全程由同一 SW 控制」（per-page 原子）；skipWaiting 可跳过等待但会新旧混版；更新检查触发=作用域内导航/功能事件（24 小时内不重查），Chrome 68+ 默认忽略 SW 脚本的 HTTP 缓存头（updateViaCache 可调）。",
+     "relevance": "核心",
+     "source": "https://web.dev/articles/service-worker-lifecycle/",
+     "title": "PWA service worker 生命周期：install 失败即弃（天然回滚）、接管原子、「控制零客户端」才切换、24h 检查去抖"
+    },
+    {
+     "berry_map": "D2 拍板的直接弹药：v1 .bap 全静态小包整体位于增量无意义区，整包+两版并存+自动回滚（PWA/ostree 模型）是唯一理性组合；增量挂 v2 候选时建议写成「单包 ≥50MB 才启用」的守门条件，防止协议面提前复杂化。",
+     "claim": "无官方统一阈值，但一手数据可拼出分界线：(a) Chrome 最佳工程（courgette）在 10.4MB 包上 delta=78KB，绝对收益封顶 10.3MB；(b) 10MB 在 1Mbps 慢网约 80 秒、日常宽带个位数秒——感知差异不在体验级；(c) delta 固定成本=服务端 per-(旧,新)版本对生成（bsdiff 内存 17n）+协议字段族+客户端第二路径，Fedora/微软在生态成熟后仍判不划算。结论：10MB 量级以下增量无意义；50MB 建议为开线（资源/字体/模型大包拆分后仍超此线再评估），且须同时满足用户规模×更新频次使带宽成本可计。",
+     "relevance": "核心",
+     "source": "https://fedoraproject.org/wiki/Changes/Drop_Delta_RPMs",
+     "title": "判词：整包/增量分界线≈单包压缩后 50MB；.bap（1~20MB 量级）整体落在增量无意义区"
+    }
+   ]
+  },
+  {
+   "lens": "tofu-ux",
+   "findings": [
+    {
+     "berry_map": "D1 验签状态机照抄此不对称：首见钥自动信任并记为 key_lineage 起点；key_lineage 变化=默认拒绝安装/升级，且不提供「仍要继续」一键按钮——逃生门必须带摩擦（显式删源重建/卸载重装级操作）；D3 源列表首拉与 sideload 退化情形维持 TOFU 低摩擦，换钥场景单独硬化。",
+     "claim": "OpenSSH 官方 ssh_config(5)：默认值 ask 下 ssh 拒绝连接到主机密钥已变更的主机；accept-new 自动接受首见新钥但「不允许连接到密钥已变更的主机」；只有显式 no 才放行换钥连接。known_hosts 的 TOFU 三十年在管理员面成立，不是因为用户聪明，而是因为换钥=硬阻断（REMOTE HOST IDENTIFICATION HAS CHANGED），绕过需手工删条目——摩擦被放在攻击者最不想去的位置。",
+     "relevance": "核心",
+     "source": "https://man.openbsd.org/ssh_config",
+     "title": "SSH known_hosts：TOFU 三十年成功的前提是「换钥默认硬拒」"
+    },
+    {
+     "berry_map": "D1：换钥护栏不能设计成「给用户看指纹让他自己比对」——必须机器可验：key_lineage 载「旧钥签名的新钥过渡证书」（ed25519），验签器自动裁决合法性，用户仅在无 lineage 证明时被硬拦；且告警必须绑定验签器实际使用的全部钥/身份（单一信任对象），防 Signal 式「警示对象≠信任对象」缝隙；D3：v1 无透明账本，等价弱实现=源元数据预登记 lineage 链，升级由旧钥链自动裁决。",
+     "claim": "Signal 官方支持页明言安全号码「不验证任何人身份」、变更须人工批准后才能发送新消息，但换机/重装等良性原因主导使用户习惯性忽略变更提示；2026-08-11 Signal 官方博客推出 Automatic Key Verification，理由是人工比对需面对面或经第二可信渠道而可能不可行，改为防篡改账本（key transparency，Cloudflare/Trail of Bits 第三方签名审计）自动裁决——等于官方承认纯 TOFU+人工比对在消费面不成立。USENIX Security '26 消息注入论文更示 PNI/ACI 双身份缝隙下「安全号码已变更」告警照常弹出而比对结果依然正确，靠人工比对防不住注入。",
+     "relevance": "核心",
+     "source": "https://signal.org/blog/automatic-key-verification",
+     "title": "Signal 安全号码消费面败退：2026 年官方转向 key transparency 自动验证"
+    },
+    {
+     "berry_map": "D1：换钥确认 UI 按「70% 用户会点继续」定安全边界——「继续」不得是免死金牌：无 lineage 证明的换钥，确认后也只进降级观察态（旧版保留、新包打未验证标、自动回滚门槛降低），而非全信任；警告文案须具体（哪个源、哪把钥、何时首见）并默认阻断。",
+     "claim": "USENIX Security '13（Akhawe & Felt）基于浏览器遥测统计 25,405,944 次 Chrome 警告展示（另含 Firefox 遥测）：用户点击穿过 70.2% 的 Chrome SSL 证书警告、33.0% 的 Firefox SSL 警告，恶意软件/钓鱼警告穿透率 7.2%–23.2%——同一类密码学异常，警告 UX 形态决定穿透率；纯文字、可一键继续的警告被无脑确认是常态。「换钥提示」在真实产品里的基线：多数人不核实、直接确认。",
+     "relevance": "核心",
+     "source": "https://www.usenix.org/system/files/conference/usenixsecurity13/sec13-paper_akhawe.pdf",
+     "title": "Alice in Warningland：25,405,944 次真实警告展示，Chrome SSL 警告 70.2% 点击穿透"
+    },
+    {
+     "berry_map": "D1：.bap 验签绝不设「用户核对发布者指纹」步骤——指纹仅供高级用户可选查看，安全决策由验签器按 lineage 链自动完成；app.bap.sig 校验失败的默认动作=拒装+具体原因，而非警告后放行；D3 第三方源添加页显示完整指纹+首包哈希并陈属「信息透明」，不构成「要求用户判断」。",
+     "claim": "USENIX SOUPS 2017（Vaziripour 等）对 WhatsApp/Signal 类应用实测：无引导时仅 14% 的参与对能自发找到并完成密钥比对（认证仪式）；经研究者明示「比对很重要」后成功率才跳至 78%；应用内既有的「需验证密钥」提示在第一阶段被「基本忽略」。结论：把安全寄托于用户主动进设置页核对哈希的路线在消费面不成立——提示在，人不看。",
+     "relevance": "核心",
+     "source": "https://www.usenix.org/system/files/conference/soups2017/soups2017-vaziripour.pdf",
+     "title": "「认证仪式」自发完成率仅 14%：Is that you, Alice?（SOUPS 2017）"
+    },
+    {
+     "berry_map": "D1：key_lineage 轮换须引入「注册锁」等价物——新钥生效设冷静期（期间旧钥仍可签撤销/异议），换钥事件在旧信任根侧产生不可屏蔽系统级通知；D3：源钥轮换公告走双签重叠窗口（Debian 式），不留「即时静默换钥」社工窗口；v1 net client minimal 下轮换更须离线包可验证。",
+     "claim": "2022-08 Twilio 钓鱼事件（Signal 官方通报）：攻击者经客服控制台获约 1900 个 Signal 用户的手机号/短信验证码，可尝试将号码重注册到攻击者设备；其中 3 个号码被定向搜索，1 人确认被重注册接管（可替身收发消息，消息历史不受影响）。Signal 的补救不是换密码学算法，而是全量强制重注册+力推 Registration Lock（PIN 注册锁，官方明言为防此类威胁而造）。TOFU 体系最脆的一环是「身份与钥的绑定通道」而非签名本身。",
+     "relevance": "核心",
+     "source": "https://support.signal.org/hc/en-us/articles/4850133017242-Twilio-Incident-What-Signal-Users-Need-to-Know",
+     "title": "Signal/Twilio 2022 社工重注册：约 1900 用户暴露、3 人定向、1 人实锤被接管"
+    },
+    {
+     "berry_map": "D2：整包+两版原子切换+自动回滚须补两块——源元数据带版本号+时间戳，客户端持久记最高水位拒绝回退（防被喂回含已知漏洞旧版）；长期拉不到新元数据=显式「数据陈旧」告警而非静默「已是最新」，防冻结在含 CVE 版本；D3：现状仅 SHA256SUMS 对 freeze/rollback 零防御，签名落地（app.bap.sig+源元数据）时一并补版本/新鲜度语义。",
+     "claim": "TUF（The Update Framework）官方安全文档将 rollback attack（攻击者向更新系统提供比客户端已见更旧的文件）与 indefinite freeze attack（攻击者持续提供客户端已见过的文件，使其永远不知道有新文件）列为一等威胁；防御三件套=元数据版本号单调不回退、信任须有到期时间（\"Trust should expire if it is not renewed\"）、多钥门限签名。只记「上次见过的签名钥」的通道对这两类攻击零防御：钥没换、签名有效、内容是旧的。",
+     "relevance": "核心",
+     "source": "https://theupdateframework.io/security/",
+     "title": "TUF：纯 TOFU 通道对回滚攻击与无限冻结攻击全盲"
+    },
+    {
+     "berry_map": "D1 裁决支撑：草案案 C（v1 以案A TOFU 起步+结构上前向兼容中心 CA）方向正确——信任锚系统级预置（类 debian-archive-keyring），永不做用户间信任图/互签机制；D3：第三方源走 TOFU 但系统源与用户源权限分层（ADR #45 四棵树沙箱配套），用户级源永远不能为系统组件签名背书。",
+     "claim": "PGP 信任网（用户互签构建去中心化信任图）自 1990s 起从未在普通用户中达到临界参与——钥匙签名派对成本高、语义混乱，Schneier 2014 评「PGP 只交付了协议碎片而无端到端服务」；2019-06 末攻击者向 SKS keyserver 网络倾倒数万伪造第三方签名（certificate flooding），用户导入即致 GnuPG 崩溃，keys.gnupg.net 池就此下线，dkg 称其为对整个开放密钥分发模型的攻击。教训：把信任决策分发给用户网络的模型不可运维。",
+     "relevance": "核心",
+     "source": "https://dkg.fifthhorseman.net/blog/openpgp-certificate-flooding.html",
+     "title": "PGP 信任网失败史：用户互签从未达临界质量，2019 SKS 投毒瘫痪密钥分发"
+    },
+    {
+     "berry_map": "D1：key_lineage 壳（1..=16B [a-z0-9-]）v1 即须定语义=「当前钥+pending 后继钥」双登记（HPKP 的 backup pin 教训与 Debian 双签过渡合体）：轮换=旧钥签新钥过渡证书+重叠双签窗口+提前到期日历，事故时才能区分合法轮换与劫持且不 brick 更新通道；D3：源 keyring 常备 pending 下一钥，过期钥保留可验旧版（与 D2 两版并存天然契合），换钥全程对用户透明、零用户级提问。",
+     "claim": "负面对照：RFC 7469 HPKP 让浏览器记住公钥 pin 却无「旧钥签新钥」谱系，站点钥一丢即在「自锁烧砖」与「劫持不可区分」间二选一，Chrome 官方以采用率极低、造成拒绝服务与恶意 pin 风险为由于 Chrome 72（2019-01）整体移除。正面对照：Debian 2009-05-23 官方公告轮换档案签名钥（政策=三年一换），起约三周新旧双签过渡、之后仅新钥，新钥早已经 debian-archive-keyring 包（走现行信任链分发）预置，用户零操作（https://chronicles.debian.org/www/News/2009/20090523）。换钥成败全在流程结构，与用户判断无关。",
+     "relevance": "重要",
+     "source": "https://developer.chrome.com/blog/chrome-72-deps-rems",
+     "title": "HPKP 无轮换谱系自锁被 Chrome 72 移除 vs Debian 双签过渡平稳换钥"
+    }
+   ]
+  },
+  {
+   "lens": "berry-surface",
+   "findings": [
+    {
+     "berry_map": "D1：key_lineage 壳与 canonical 定序已就位，但 16B 上限只够做别名/谱系标识，完整公钥须落分离签名文件或 distribution 域；同时「分离式 app.bap.sig 不动载荷」与既有冻结面（canonical 定序、--check 不识内嵌 sig）天然兼容",
+     "claim": "mkapp.py 产包 = cpio(newc) 条目 manifest.toml + 唯一 bin/ + SHA256SUMS（SDK-1a 起新产包恒在，行形 = 64 位小写 hex + 双空格 + 条目名、LF 收尾、名序，--check 全量复验）+ icons/*.byi + views/*。berry-manifest v2 [security] 域现键恰两枚 profile/key_lineage，齐备或齐缺（单键 = bad security），值域 SEC_VAL_MAX=16、字符集 [a-z0-9-]；canonical 定序 [security] 居 [runtime] 后、[ui] 前（[ui] 居末保 F0–F6 字节零漂移）。mkapp selftest 正样本 f4 已用 profile=\"ed25519-main\"、key_lineage=\"root-2026\"——算法名已进测试词面。注意 16B [a-z0-9-] 装不下 ed25519 公钥本体（32B），只能承载别名/谱系标识，真公钥须另落（分离 sig 文件内嵌或分发域）。",
+     "relevance": "核心",
+     "source": "tools/mkapp.py（L96-136 常量/L300-309 security 门/L1004 f4 样本）+ user/berry-manifest/src/lib.rs（L276-281 Security 结构、L537-548 set_sec）",
+     "title": ".bap 布局与 SHA256SUMS 现状 + security 域确切规格"
+    },
+    {
+     "berry_map": "D1：分离式 app.bap.sig（rootfs.cpio 兄弟条目 app/<ID>.bap.sig）可无扰落地——外层走查未匹配名静默跳过、内层冻结面不破；验签逻辑插在 app_launch 双守卫后 fs 授能前，与既有守卫链同构",
+     "claim": "svcmgr 兼任 appd（appd 雏形）。装载链 = 外层 rootfs 走查收集 app/<ID>.bap（只记 bap_off/bap_len 几何）→ bap_scan 内层走查（SHA256SUMS 只记在场 has_sums，注释明写「不读内容不验摘要——零 no_std sha256 依赖 + 无签名的摘要非安全边界；真执法点 = v2 安装期签名验证，挂账 O4」）→ berry_manifest::parse → 双守卫（manifest.id↔文件名、entry↔包内条目）→ compat min 检查 → net 词 loud 拒 → ui_face → fs 授能 → spawn_rootfs_elf。分离签名的自然验签点：外层走查加 .sig 收集臂（当前 app/<ID>.bap.sig 兄弟条目不匹配任何 arm、静默跳过，落地零扰动），验签逻辑插 app_launch 双守卫后（manifest.security 在手）fs 授能前；内层 bap_scan 对未知条目一律 bap shape 拒——sig 绝不能进 .bap 内部，与「载荷冻结」一致。",
+     "relevance": "核心",
+     "source": "user/bins/svcmgr/src/main.rs（L1451-1474 外层收集臂、L4314-4324 SHA256SUMS 只记账、L4507-4563 app_launch 守卫链）",
+     "title": "appd 装载链现状：SHA256SUMS 只记不验、验签点已显式挂账"
+    },
+    {
+     "berry_map": "D2：两版并存+原子切换+自动回滚在现实施面 = 装载源切换工程（appd 从 rootfs VMO 改读 fsmgr 树 + 新增激活指针/版本槽），是 D2 的最大实施缺口",
+     "claim": "AppSlot = {id[24], id_len, bap_off, bap_len} 单版本几何，APP_SLOTS 帽 v1=4（appd 正式化 v2 才扩容）；启动源硬绑 boot rootfs VMO（H_ROOTFS 只读，berry_vmo_read 直读，归档永不整档驻留）；启动批每 boot 全量重走，无「已安装」概念、无版本保留/激活指针状态机。fsmgr 的 FAT 可写树（PUT/TRUNC/MKDIR/UNLINK）与 appd 装载源目前零接线——两版并存要落地必须让 appd 增加从 fsmgr 树读 .bap 的新路径（bsh run/stdhello 同样只认 rootfs VMO，无先例可借）。",
+     "relevance": "核心",
+     "source": "user/bins/svcmgr/src/main.rs（L471-483 AppSlot/APP_SLOTS、L4288 berry_vmo_read(H_ROOTFS,…)）",
+     "title": "升级/回滚零挂点：单版本槽 + 装载源硬绑只读 rootfs VMO"
+    },
+    {
+     "berry_map": "D2：两版并存的持久化与掉电安全基底已在位（含 .bap 增删推送的协议留位），缺口集中在 appd↔fsmgr 接线与整包写吞吐分档",
+     "claim": "fsmgr fat.rs 已有 FAT 覆写 commit 完整写序（⓪-⑧ 13 次扇区写 + 回读对账）+ 掉电毒环自愈（SIGKILL 直杀 QEMU + cache.writeback=off 验收面），fsproto 提供 PUT（192B 分片、off 超现长零填充扩容 = 新文件可造）/TRUNC/MKDIR/UNLINK——两版并存（写新版本文件 + 原子改指针文件）有真实持久化基底。成本约束：TCG 单次扇区 RPC ≈0.8s、fs 写收侧帽 90s（16KiB worst）——BAP_MAX=4MiB 整包落盘在 TCG 下远超现有时限模型，升级包须按包体分档或走宿主侧注入。另外 berry-appproto APP_EVENT(3) op 码留位零实施，注释明写「.bap 增删推送——v2 /apps 树前提」——安装/卸载推送的协议挂点已预留。",
+     "relevance": "重要",
+     "source": "user/bins/fsmgr/src/fat.rs（L1148 write_sector）+ user/berry-fsproto/src/lib.rs（L69-70 OP_PUT）+ docs/规则/05-服务监督.md（FS/盘面写序节）+ user/berry-appproto/src/lib.rs（APP_EVENT 留位）",
+     "title": "D2 基底在位：FAT 写路径掉电安全 + APP_EVENT(3) 增删推送留位"
+    },
+    {
+     "berry_map": "D3：源列表拉取机制面 = DNS+TCP 客户端可达（slirp 内网/宿主回环），但缺 HTTP 层且 app 无网帽——fetch 须做成系统服务；「无 TLS ⇒ 签名索引是唯一完整性机制」反证 D3 源列表+TOFU+签名索引路线与网络栈现状互洽",
+     "claim": "netd RPC 恰四 op：OP_DNS_QUERY(1)/OP_TCP_OPEN(2)/OP_TCP_ROUNDTRIP(3)/OP_TCP_CLOSE(4)；vnet（virtio-net 用户态驱动，slirp 10.0.2.2）+ berry-tcp 状态机定值 = MSS 128/WINDOW 512/in-flight=1（顺序单发收 ACK 再发）/RTO 3s×3 帽/TIME_WAIT 2s，验收面是 64B 单会话回显量级；netprobe 证明 std::net TcpStream 经 berry-libc shim 全链可用（DNS 解析 + connect + 回显对拍）。全栈无 TLS、无 HTTP（三 crate 零 http 字样）。硬门槛：appd 对 manifest net 词 loud 拒（eco: app <id> net unserved，ADR #55 词表先行 ≠ 无服务硬授）——v1 应用拿不到网络能力，源列表拉取器必须是系统服务侧（svcmgr/netd 扩展）而非应用；MSS=128/in-flight=1 下拉 4MiB 包 = 3 万余段顺序 RTT，吞吐面先过排除 8 问。",
+     "relevance": "核心",
+     "source": "user/berry-netdproto/src/lib.rs（L59-65 op 表）+ user/berry-tcp/src/lib.rs（MSS/WINDOW/RTO 定值）+ user/bins/svcmgr/src/main.rs（L4560-4563 net unserved）+ user/bins/netprobe/src/main.rs",
+     "title": "net client 最小面对源列表拉取的支撑度：DNS+TCP 可达、无 TLS 无 HTTP、appd 拒授应用网帽"
+    },
+    {
+     "berry_map": "D1：ed25519 验签在用户态可行（no_std/零分配可满足、dalek 先例全 safe），但按仓纪律应走自建 berry-crypto 纯函数 crate（解析器即产品第 10 例）或 reference/ 隔离引入后手写移植，引 crates.io 依赖须过排除 8 问门",
+     "claim": "user 工作区 Cargo.lock 32 个 crate 全部自研（berry-* 24 + bins 8），零 crates.io 外部依赖；内核 root lock 仅 4 crate 同为仓内。每个协议 crate 头注纪律 = 「零分配、零 unsafe、零依赖、#![no_std]，输入只借用」（解析器即产品模式，已 9 例）；svcmgr 编 aarch64-unknown-none target（no_std 无 alloc）。引入外部 crate 须过 docs/规则/13-工作流程与协议.md + 架构综合纲领「排除 8 问」准入门；且 guest 侧连 no_std sha256 都曾以依赖面为由刻意不引（SHA256SUMS 不验的三理由之一）。ed25519 纯 Rust 验签可行（curve25519-dalek 系 100% safe Rust、no_std、verify 零分配），但破「零依赖」纪律；替代路径 = 自写 berry-crypto 纯函数 crate 或 reference/ 协议隔离引入后手写移植——host 测试面（just test-host，berry-manifest 23 测同源）天然承载签名验证向量化测试，宿主侧 mkapp 验签可直接用 Python cryptography 库零新增约束。",
+     "relevance": "核心",
+     "source": "user/Cargo.toml（members/注释纪律）+ user/Cargo.lock（32 crate 全自研）+ docs/规则/13-工作流程与协议.md + user/bins/svcmgr/src/main.rs L4317（零 no_std sha256 依赖理由）",
+     "title": "ed25519 依赖面：全仓零外部依赖纪律 + 排除 8 问门，guest 侧连 sha256 都未引"
+    },
+    {
+     "berry_map": "D1/D3：密钥状态（首见/轮换中/吊销）与来源（sideload vs 源列表）无现成记录面——需 appd 侧新增静态账本或 manifest distribution 域回读通道；D2：版本分布可从已解析 manifest.version 取数但无导出 wire，属验收面新建工程",
+     "claim": "kernel/src/telemetry.rs 遥测环 = SwitchRec{vct,prev,next(FNV-1a-32 名 id),kind,idle_next} + WakeRec，64 槽×2 CPU 静态预储、boot 后永不增长、切换钩子零分配铁律，#[repr(C)] 字段全定宽且 ABI 形状 day-one 定型（为将来 telemetry_open 映射用户态）——无字符串槽、无来源/密钥/版本字段，装「分发来源/密钥状态/版本分布」不匹配现环形状，强行复用须动冻结 ABI。用户态现状：appd 诊断 eco_app 行帽 64B（id 截 24B + reason 截 24B）；berry-appproto APP_ENTRY wire = {id[24], label[64], icon_w/h, blob_len} 无 version/source 字段——manifest.version（≤16B）appd 已解析但无导出通道；CI 级遥测 = smoke 确定性标记（APP ok n=/APPUI ok n=）。",
+     "relevance": "重要",
+     "source": "kernel/src/telemetry.rs（L33-55 RING_LEN/SwitchRec）+ user/bins/svcmgr/src/main.rs（L3994-4011 eco_app 截断）+ user/berry-appproto/src/lib.rs（APP_ENTRY wire）",
+     "title": "遥测环形状与分发遥测缺口：内核环是调度定宽 ABI，用户态无版本导出通道"
+    }
+   ]
+  }
+ ],
+ "verdicts": [
+  {
+   "decision": "D1-密钥体系",
+   "evidence_checked": [
+    "https://source.android.com/docs/security/features/apksigning/v3",
+    "https://source.android.com/docs/security/features/apksigning",
+    "https://man.openbsd.org/ssh_config",
+    "https://raw.githubusercontent.com/dalek-cryptography/curve25519-dalek/main/ed25519-dalek/README.md"
+   ],
+   "fixed_recommendation": "D1 定案维持案C（v1 按 TOFU+lineage 落地、ed25519、分离式 app.bap.sig），按以下五条修正落地：\n\n1) key_lineage 壳【改语义、禁扩字段】：SEC_RE 1..=16B [a-z0-9-] 维持冻结，语义定为「稳定 lineage 身份别名」（跨轮换不变，Team ID/Android 身份串同构物）；轮换链、公钥、代际号全部落 app.bap.sig 信封。理由：manifest.toml 在 .bap 载荷内部，扩 SEC_VAL_MAX 即改冻结面 L1 且旧验证者拒新包；且 32B 也装不下链，扩字段零收益。信封 v1 形制：ver(u8)+alg id+lineage_id 回声+gen(u32 单调)+当前 ed25519 公钥(32B)+线性轮换链（每节点=旧钥对(新钥,gen,lineage_id)的签名；单路径、禁分叉收敛——v3 官方明文单旋转路径约束）+当前钥对(.bap 全字节摘要+manifest 关键域摘要+信封头)的签名；信封全部字节入顶签，防信封拼装。\n\n2) 信任账本 day-one 结构【TOFU→CA 不成单向门的保证】：条目={lineage_id → anchors:[(ed25519 公钥, anchor_type)], gen_max, ver_max}，anchor_type ∈ {tofu, system, ca}（v1 只用前两类，ca 枚举位占住）；身份绑定裸公钥，永不引入 X.509 证书语义（有效期/DN 类坑整类免掉）。信封版本域=算法升级道（Homebrew 下轮换迁 Ed25519 教训反用）。\n\n3) ed25519 维持，实施硬门：三选一路（自建 berry-crypto 纯函数 crate / 过排除8问引 ed25519-dalek（已核实 default-features=false 即 no_std）/ reference/ 隔离引入后手写差分移植），无论哪条路必须过 RFC 8032 + Wycheproof Ed25519 全向量（含非规范编码/小阶点/弱钥/可塑签名负例），验签语义=strict（拒弱钥、拒可塑签名）；mkapp 宿主侧签名用 Python cryptography 零新增约束。\n\n4) 换钥语义硬化（推翻草案「跨 lineage 换钥须用户确认」原表述）：同 lineage 换钥=机器验链自动裁决（旧钥签名的新钥交接证明+gen 严格 +1），无「仍要继续」一键钮，逃生门=显式卸载/删源级摩擦操作（SSH ask 语义）；跨 lineage 换钥=全新身份新槽并行安装，不覆盖旧身份、不继承信任，用户确认只管「装不装新身份」；全部验签决策机器完成，零用户指纹比对步骤（14% 自发核指纹率 + 70.2% 警告穿透率实证）。\n\n5) 必补护栏（与 D2/D3 联动但 D1 执法）：a) 防剥离——已签 app id 再见无 .sig 包=拒载（v1+v2 反剥离同构），dev 镜像走显式响亮降级模式；b) 持久单调水位 gen_max/ver_max 拒旧钥回放与版本回退（TUF N+1 语义）——若 v1 无持久账本落点，必须诚实声明「回放防护未生效」不得虚标；c) 验签与装载共用 ADR #59 单一 TLV/manifest 解释器（Janus 根因=两套解析）；d) 官方源钥出厂预装，第三方源首触指纹展示=透明信息而非判断请求。\n\n【一票否决条件】①落地形制必须改 .bap 载荷或扩 manifest 才能表达轮换链——方案否决重来；②验签实现无全向量测试门——不许合入；③状态机存在无摩擦换钥放行道（一键继续）——不许合入；④验签与装载两套解析代码——不许合入；⑤换钥裁决依赖用户比对指纹/看警告——不许合入。",
+   "holds": true,
+   "open_questions": [
+    "v1 镜像验签执法档位：dev 镜像允许无签 .bap（响亮降级日志）还是强制全签（现有 smoke/selftest 链全要配签）？影响每一条既有测试面。",
+    "ed25519 实施三选一：自建 berry-crypto（手写+全向量门）/ 过排除8问引 ed25519-dalek / reference/ 隔离引入后差分移植——按仓零依赖纪律优先级如何排？",
+    "持久信任账本 v1 落点：fsmgr FAT 树新账本文件（appd↔fsmgr 接线是新增工程），还是 v1 先定语义、账本挂 v1.x（需接受「回放防护未生效」降级声明）？",
+    "轮换冷静期/双签重叠窗（Debian 式，信封加 pending 钥位+验证器双验逻辑）v1 立还是 v1.5 再立？",
+    "官方源钥出厂预装的镜像工程谁做、何时做（首触通道不得走网络的前提）？"
+   ],
+   "recommended": "案C 混合：v1 按 TOFU+key_lineage 轮换落地（结构前向兼容未来 CA）；ed25519；分离式 app.bap.sig",
+   "risks": [
+    "草案 §二原文「key_lineage（1..=16B 壳）承担密钥轮换链」按字面不可实施（v3 PoR 每节点数百字节、ed25519 公钥本体 32B>16B）——不修正语义直接实施必翻车，须回写草案为「壳=身份别名，链在 .sig 信封」",
+    "手写 ed25519 验签的实现缺陷面：非规范标量编码/小阶点/弱钥/签名可塑性正是 ed25519-dalek 文档自曝的坑（verify≠verify_strict、batch 弱钥结果不一致）；无全向量门=高危面",
+    "持久信任账本 v1 无现成落点（rootfs VMO 只读、appd 启动批每 boot 重走、无「已安装」概念）——账本不落地则轮换防回放（旧钥重放）与防剥离形同虚设，机制语义与实际防护有落差",
+    "换钥 UX 若退化为「警告+继续」按钮，70.2% 穿透率实证等于没防；sideload/第三方源首触在无商店阶段无带外指纹确认通道，TOFU 首锚仍是最弱环（Mint 2016 同型）",
+    "信封若无版本/算法域，将来算法升级=破坏性格式迁移；信任账本若无双钥并存过渡位，Debian/Arch 式换钥事故（2006 双签 bug、2021-22 月级过渡）会在首个官方轮换日重演",
+    "Android 11/12 v3 轮换实现首日带 bug 的先例：验签负样例（断链/跳代/双头链/新旧钥并存/旧钥回放）不进 G0–G5 测试面就重蹈；零依赖纪律与密码学安全的张力可能拖长落地周期"
+   ],
+   "verdict": "成立但需修正"
+  },
+  {
+   "decision": "D2-更新与增量",
+   "evidence_checked": [
+    "https://fedoraproject.org/wiki/Changes/Drop_Delta_RPMs",
+    "https://theupdateframework.io/security/",
+    "https://chromium.googlesource.com/chromiumos/docs/+/refs/heads/factory-14162.B/disk_format.md",
+    "https://source.android.com/docs/core/ota/ab",
+    "https://chromium.googlesource.com/chromium/src/+/main/docs/updater/protocol_3_1.md",
+    "https://web.dev/articles/service-worker-lifecycle/",
+    "https://learn.microsoft.com/en-us/lifecycle/faqs/windows-10-and-windows-server-update-frequently-asked-questions（404，微软弃 delta 日期改经官方 KB4522010/KB4522012 文本复核属实）"
+   ],
+   "fixed_recommendation": "核心维持：v1 不做增量；整包替换；per-app 双槽（N=2）+ 激活指针原子切换 + 激活失败 tries 计数自动回滚（ChromeOS GPT priority/tries/successful 模型移植，一手复核属实：tries 仅在 successful=0 时用、耗尽即 priority 置 0 落回旧槽、成功后用户态置 successful=1）。尺寸论据修正后更强：现帽 BAP_MAX=4MiB 双端执法（tools/mkapp.py L98 + svcmgr L1463），证据链「1~20MB」高估——当前包体更深落在增量无意义区。需修正/补强四件：\n\n【1 补 freshness——草案 §三 完全缺此件】per-app 持久「已见最高版本」水位（ADR #56 三值版本域作单调计数），源列表/sideload/直连三路同规则：version < 水位一律拒装（TUF rollback 防御）；源元数据序号/时间戳不前进且无新版本 = 显式「数据陈旧」态而非静默「已是最新」（freeze 防御）。v1 无 RTC 信任（QEMU/PM-11），过期只做软告警不做硬拒。水位仅经 appd/fsmgr 系统路径写，应用与网络不可触达。\n\n【2 回滚/防降级边界立法——特别核③的答案】两台状态机互不相通：网络路径只许升（水位门控），本地回滚只由 appd 本地失败证据触发（激活时写 tries=N，启动失败/墓碑减一，归零拨回上一激活版），网络输入永远不能驱动指针回拨——这是「保留旧版可回滚」与「拒绝降级安装」的共存边界：旧槽是本地恢复资源而非可安装目标。回滚后的失败版本进 per-app 拒载名单 + 回滚计数帽转用户处置（防攻击者制造新版崩溃把系统永困在带洞旧版）。\n\n【3 delta 前向兼容铁律（防单向门，现在立法）——特别核②的答案】非单向门，但须把可逆性写死为不变量：v2 delta 只许传输层——重建字节级 .bap 后走与整包完全同一条验签路（app.bap.sig 全字节摘要为唯一信任锚；Omaha 3.1 一手复核：「先试 delta 失败回退整包」且整包哈希永在协议中），禁止独立 delta 验证路径（Janus 双解析器教训）；源索引/更新检查协议按 add-only 预留扩展位（fp/hashdiff/sizediff 类字段位），v1 索引条目恒含整包哈希。delta 重开触发条件与 BAP_MAX 抬帽（GUI 资产/字体/模型时代）联动：单包压缩后 ≥50MB 且用户规模×更新频次使带宽成本可计，方立项。\n\n【4 实施面诚实化 + 验收方法学】D2 是 SDK-2 最大新建工程而非「确认题」：appd 现只读 rootfs VMO、单槽、无「已安装」概念、APP_EVENT(3) 零实施——需 appd↔fsmgr 读 .bap 新路径 + 双槽 + 指针文件（复用 fat.rs 掉电安全 commit 纪律；撕裂中间态只许停「旧激活版」）+ tries/墓碑观测。TCG 下 4MiB 整包落盘 ≈ 小时级（0.8s/扇区 × 8192，fs 收侧帽 90s 只覆盖 16KiB worst），QEMU 验收须走宿主侧镜像注入或小包分档，写进验收线。\n\n一票否决条件：① v2 delta 提案若需动 .bap 冻结格式或分叉验签路径（非字节级重建+同路验签）→ 否决提案而非回头改 v1；② per-app 版本水位若做不到「仅系统路径可写」（应用/网络可触达）→ 源列表更新整件缓发（无 TLS 下降级攻击无解）；③ 激活指针 FAT 写若过不了掉电复验（SIGKILL+writeback=off 三 boot，撕裂态停在无版本/半版本）→ 不上线原子切换，退守「验签后替换+保留上一包」静态模型；④ 激活失败若不可机器判定（appd 无可靠 spawn/墓碑观测）→ 自动回滚退化为手动回滚，勿上假阴/假阳自动机。",
+   "holds": true,
+   "open_questions": [
+    "markSuccessful v1 最小判据：appd 启发式（spawn 成功 + 首 T 秒无墓碑 + N 次干净退出）还是应用自报健康检查？误判方向取舍（误回滚伤好应用 vs 漏判留坏版本）须用户拍板",
+    "卸载是否重置版本水位：建议「是 = 显式信任重置」并留墓碑宽限记录，但社工重装降级面须用户接受",
+    "QEMU/TCG 验收方法学：宿主侧镜像注入为标准路径，还是按包体分档抬 fs 时限帽（影响验收线措辞与工时）",
+    "delta 重开闸门立法确认：与 BAP_MAX 抬帽（GUI 资产时代）联动 + 单包压缩后 ≥50MB + 带宽成本可计，三条件同满足才立项——确认为 v2 闸门",
+    "fsmgr 侧安装 app 的数量帽与双槽存储预算（APP_SLOTS=4 是否随 appd 正式化扩容、rootfs 内置 app 与安装 app 的双轨语义）"
+   ],
+   "recommended": "v1 不做增量，整包 + 两版并存原子切换 + 激活失败自动回滚（保留 N=2 版）",
+   "risks": [
+    "草案 §三 零防回滚/防冻结件：无 TLS 的 v1 里 MITM 可永久喂旧包或旧元数据，两槽设计对此零防御（TUF 一手复核确认 rollback/indefinite freeze 为一等威胁且防御依赖客户端持久状态）——不补水位+陈旧信号，D2 只做成可用性件而非安全件",
+    "隐含成本漏算：D2 是 SDK-2 最大实施件（appd↔fsmgr 接线 + 双槽 + 指针 + tries 全新建），且 TCG 吞吐下 4MiB 整包落盘小时级、验收须宿主侧注入——草案验收线只字未提",
+    "自动回滚可被武器化：能令新版崩溃的攻击面可把系统反复回滚到带已知 CVE 的旧版；须失败版拒载名单 + 回滚计数帽 + 系统级通知",
+    "指针/水位是完整性邻近状态：FAT 物理访问者可抹（v1 威胁模型须显式写明=仅网络攻击者）；水位随卸载重置 = 社工重装降级面",
+    "回滚保留版 = 带 CVE 旧版常驻可启（可用性优先的既定取舍），但作废语义依赖 D3 源侧作废声明——跨决策点耦合，草案未接线",
+    "N=2 与 APP_SLOTS(=4) 帽语义冲突未审：fsmgr 侧安装 app 数帽与双槽存储预算（4MiB×2×帽）未立法",
+    "证据链小史实偏差（方向不变、论据反更强）：Fedora F40 弃 delta 主因是一手复核所得「覆盖有限（42 次升级仅 25 次有 delta）+ 失败重建净浪费（均耗 52.7MB vs 成功均省 22.5MB）+ 元数据膨胀」，而非证据链所述「deltarpm 失修+网速提升」；微软 lifecycle FAQ 引用 URL 已 404，日期改由官方 KB4522010/KB4522012（「March 12 and April 9 were the last two Delta updates」）证实",
+    "markSuccessful 判据空缺：任意应用的「激活成功」不可判定面（合法秒退应用 vs 崩溃）——OS 级 A/B（ChromeOS/Android，均已一手复核）无此问题，per-app 粒度是 BerryOS 新增难点"
+   ],
+   "verdict": "成立但需修正"
+  },
+  {
+   "decision": "D3-分发形态",
+   "evidence_checked": [
+    "https://wiki.debian.org/SecureApt",
+    "https://ostreedev.github.io/ostree/man/ostree.repo-config.html",
+    "https://man.openbsd.org/ssh_config",
+    "https://source.android.com/docs/security/features/apksigning/v3"
+   ],
+   "fixed_recommendation": "方向维持：源列表+TOFU（类 APT 拓扑）正确，直连 sideload-only 被否——首触即通道（Mint 教训最大化暴露）、无聚合吊销、升级无正源，且与 22 年 APT/ostree/flatpak 全行业收敛实证相悖。但草案四处实质缺口必须修正后才可拍板：\n\n1) v1 实例化范围钉死（草案最大隐含跳步）：「类 APT」只能指信任拓扑，不含网络面。v1 源列表 = 镜像内置官方源的静态实例（mkapp/host 构建期生成签名索引），在线拉取为 v2 系统服务侧件——netd 仅 4 op（DNS/TCP open/roundtrip/close）无 HTTP/TLS、MSS=128/in-flight=1、svcmgr L4561 对应用网帽 loud 拒，1–20MB 包在现网栈与 TCG 时限模型下不可拉。\n2) 签名索引必做（Release/InRelease 对应物，草案完全未提）：源索引 = 逐包条目 {id, 三值版本, size, 哈希, key_lineage, 公钥见证}，源钥签索引；索引与一切校验和永在签名域内、无明文孤儿（ostree gpg-verify-summary 默认 false 的著名缝隙 + Mint 无签名校验和教训）；索引 day one 带单调版本号（防回滚 + 为 v2 新鲜度留位），v1 不做墙钟过期（QEMU 无 RTC，Debian 官方文档实证时钟偏差即全线挂）——新鲜度只靠单调计数器。\n3) 两层信任显式分离（草案「类 APT/信号协议」混喻掩盖的核心含混）：源钥 = 通道信任（签索引，一钥担保源内全部）；包身份 = 逐包钥 + lineage（D1 案A）。索引只能「见证」身份（记录首见公钥），不能「起源」身份：换钥接受仅凭 lineage 链（旧钥签新钥，Android v3 proof-of-rotation 已实证纯离线可验、无需 CA）由验签器自动裁决；断链换钥 = 硬拒（OpenSSH ask/accept-new 语义：首见自动信、已见变更硬阻断），逃生门必须带卸载重装级摩擦，「仍要继续」不得授予全信任（70.2% 警告穿透基线）；验签失败禁降级到裸哈希校验（v3 失败禁回退 v1/v2 同律，且「本包已签名」事实本身入受签域防剥离降级）。\n4) sideload 退化情形细规 + 记录账本 day one 立法：首装 sideload = TOFU 锚定 + 「来源未知」标记 + 显式确认；已装应用的 sideload 升级且钥未链 = 硬拒（走先卸载路径）。每源钉钥（per-source pinning，无全局信任池，Debian 13 移除 apt-key/signed-by 方向）；官方源钥出厂预装，绝不网络首触；用户级源永不为系统组件背书。账本记：per-app {锚定公钥, 安装来源(源 id/sideload), 安装 boot 计数, 现版本, 已见最高版本}、per-source {钥指纹, lineage 代际, 首见 boot 计数, pending 后继钥}——现 eco_app 64B 行与 APP_ENTRY wire 均无版本/来源字段，此为新建工程须入成本。\n5) 轮换纪律（Debian/Arch/HPKP 事故直接导出）：换钥带内（旧钥签新钥过渡证书随源分发）、重叠双签窗内验任一即过（非 require-both——Debian 2006 apt 0.6.43.1 bug 教训）、pending 后继钥 day one 登记（HPKP 无备份 pin 自锁教训）、全程零用户仪式零 TrustAll 逃生门（Arch rm -rf gnupg 教训）、换钥事件系统级不可屏蔽通知。\n\n一票否决条件（任一触发即降级/返工）：① guest 侧 ed25519 验签件无法在仓纪律内落地（自写 berry-crypto 或 reference/ 隔离移植过排除8问）→「源内包全验签」为假，v1 只许声明「格式定案+enforcement v2」，验收线不得含验签通过项；② 签名或索引进 .bap 载荷/动 canonical TLV 定序 → 冻结面破；③ 出现 TrustAll/lsign 式逃生门或换钥一键继续给全信任；④ v1 验收线含在线源拉取；⑤ 用户级源可见证或升级系统组件。",
+   "holds": true,
+   "open_questions": [
+    "v1 是否只开镜像内置官方单源（推荐），第三方源仅定格式不开首触 UI？",
+    "sideload 首装默认放行，还是设「未知来源」系统开关（Android unknown sources vs Gatekeeper Open Anyway 取舍）？",
+    "记录账本落点选型：appd 静态账本 / fsmgr FAT 树 / boot 锚区（防篡改等级与掉电安全三角）？",
+    "ed25519 guest 验签落地路径：自写 berry-crypto（推荐，解析器即产品第 10 例）/ reference/ 协议隔离移植 / 过排除8问引 crates.io？",
+    "官方源钥 day one 是否登记 pending 后继钥并立钥生成仪式（推荐是）？",
+    "源索引格式是否复用 ADR #59 TLV 单解释器立法（推荐是，防 Janus 式双解析器缝隙）？"
+   ],
+   "recommended": "D3 自建分发 v1 形态：源列表+TOFU（类 APT/信号协议风格：用户添加源=信任该源钥，源内包全验签；sideload 为退化情形）——草案 §四/§六，推荐理由「零中心基建可用，商店形态为独立后续案」",
+   "risks": [
+    "第三方源首触天然可社工（Mint 2016 官网掉包：TOFU 首触通道沦陷即整套旁路）：v1 只有 UX 级缓解，威胁模型须明写「源首触通道沦陷=失守边界」（PEP 458 式诚实）",
+    "v1 无过期语义 ⇒ 对冻结攻击全盲（TUF 一等威胁）：单调版本只防回滚不防冻结，静态 v1 可接受但必须显式声明，v2 在线化时补新鲜度告警",
+    "官方单源单钥 = 单点：沦陷即全生态暴露（Mint 实证），丢钥 = 应用身份死亡（Android 官方判词）；轮换协议须在需要前演练（Arch 2021-22 过渡以月计），recovery key/源见证机制 day one 挂账",
+    "账本持久化是新增攻击面与工程量：本地已核实账本抹除 = 回滚防御失效（TUF 明文前提），且 appd 装载源硬绑只读 rootfs VMO、appd↔fsmgr 接线为零；FAT 写序掉电安全在位但 TCG 下 4MiB 包远超 90s fs 窗，安装路径须分档或宿主注入",
+    "索引格式 day one 不带版本号/公钥见证位 ⇒ v2 在线化时破坏性格式变更；两层钥（源钥/包钥）用途域若不分隔 ⇒ Homebrew 审计 #25 式钥 ID 混淆",
+    "验签器与装载解析器若不同源（两套代码）⇒ Janus 类签名覆盖面小于解析面缝隙；必须单一 TLV 解释器同源件（ADR #59 纪律延伸到验签），负样例（篡改/断链/换钥/剥离降级）进 G0–G5 验收面"
+   ],
+   "verdict": "成立但需修正"
+  },
+  {
+   "decision": "范围裁剪",
+   "evidence_checked": [
+    "https://source.android.com/docs/security/features/apksigning/v3",
+    "https://source.android.com/docs/security/features/apksigning/v2",
+    "https://fedoraproject.org/wiki/Changes/Drop_Delta_RPMs",
+    "https://www.usenix.org/conference/usenixsecurity13/technical-sessions/presentation/akhawe",
+    "https://developer.android.com/google/play/requirements/target-sdk",
+    "https://support.google.com/googleplay/android-developer/answer/11926878"
+   ],
+   "fixed_recommendation": "逐支柱裁决（必保=单向门：SDK-2 把 mkapp 发给开发者后在野包格式/数据即成事实，改=全量重打包；推迟=appd 内部逻辑或无传输/持久地基，可后补不触冻结面）：\n\n【必保清单——一次不做将来全量重打包】\n1. app.bap.sig 分离签名格式定案（支柱1格式面）：算法标识（ed25519）+ .bap 全字节摘要 + manifest 关键域摘要（身份/版本/词表/security，作错误定位辅助）+ lineage 链槽位（首发=自签单节点，含代际号与「最低验证者能力」域）。复核实证：Android v3 lineage 是「旧节点签新节点、原始钥为根」的有序链——锚在首发签名时确立，在野包无 lineage 结构位则后续轮换只能走重锚通道（Android 对应物=换包名/Play 托管，全是重基建）。签名覆盖面≥appd 解析面（全字节摘要打底不可让步——Janus 根因=签名覆盖面<解析面，v1 JAR 签名此洞 Android 背了 8 年且存量包永远填不上）。\n2. mkapp 从 SDK-2 起默认产 .sig（关闭需显式 flag）+ abi_revision 自动打戳进 distribution 域。abi_revision 是教科书单向门：复核实证 Play 年年 8-31 执法（API 34→35→36）之所以可行，唯一前提是每个 APK 自始带 targetSdkVersion——缺戳旧包无法补录。mkapp 嵌戳开发者零成本；SDK-2 发出后未带戳的包永久失去门槛数据。\n3. 源元数据格式草案（签名索引：源钥+包哈希+三值版本+lineage）与 .sig 同属「发出后成标准」的格式面，本档只草案化不实施。\n4. 「全签策略」立法进 ADR：rootfs/官方分发面内包无 .sig 即拒载——生态为零使存量无签包=0，此策略只有现在零成本；窗口在第一个无签第三方包在野时永久关闭。防剥离不能靠「已签名事实入受签域」（见风险1），必须靠系统侧策略锚。\n\n【削减/推迟清单——证伪为过早】\nA. 支柱2 整体（两版并存+原子切换+自动回滚）推迟 v2：激活指针/tries 计数/保留 N 版全是 appd 运行时状态，零格式单向门；且实施地基不存在——复核实证 AppSlot 单版本几何{id,bap_off,bap_len}+装载源硬绑只读 rootfs VMO+appd↔fsmgr 零接线+TCG 下 4MiB 写盘远超 90s 帽，下载/写盘两层皆缺。distribution 域升级参数可后加（域字段可扩展）。\nB. 支柱3 实施面推迟：源列表 fetcher/TOFU UI/第三方源管理——复核实证 netd 恰 4 op 无 HTTP 无 TLS、MSS=128/in-flight=1（4MiB=3万+顺序RTT）、app 无网帽，v1 做源列表=先造 HTTP+吞吐两座桥（另案刀）。D3 只拍方向。\nC. 渠道门槛数据面（装载警告+遥测统计）削减至近零：遥测受众=零应用零用户，数据恒为空集；复核实证 70.2% Chrome SSL 穿透，且论文结论同时表明警告有效性是高方差 UX 工艺品须按真实受众迭代——零受众阶段投入=无法迭代的设计赌博；内核遥测环是冻结调度 ABI、APP_ENTRY wire 无 version/source 字段，数据面是新建 wire 工程非加行日志。保留近零成本件：eco_app 诊断行带 version 截断+错误域机器可读码。source_channel 是不可回溯补录数据，但记时点=分发开始日（D3 实施日）非 SDK-2 日，随 TOFU 锚同日落地。\nD. guest 侧 ed25519 验签执法分阶段：复核实证全仓零外部依赖纪律（Cargo.lock 32 crate 全自研），berry-crypto 手写 ed25519+哈希是数周级密码学高风险件；v1 无不可信传输（包只经构建管线进 rootfs，完整性=git+SHA256SUMS 已够），威胁模型为空。第一阶段 host 侧签+验（mkapp/CI/smoke，Python cryptography 零约束）+官方钥出厂预装清单设计；guest 验签随 berry-crypto 落地，落地即接全签策略。\nE. 验收线裁剪：草案§七第1条保留并扩负样例（篡改/断链/跳版本/双头链/新旧钥同现/剥sig+去security域降级）；第2条（两版并存回滚）推迟；第3条削减为 abi_revision 进 mkapp selftest 断言。\n\n【一票否决条件（任一成立则本裁剪作废/反转）】①SDK-2 实际不外发第三方→连 .sig 格式都降为设计预留，必保只剩 lineage 结构位+abi_revision；②v1 计划外发镜像/真机给外部试玩→全签窗口关闭日提前，berry-crypto+guest 验签升必保；③排除 8 问门拒自建 berry-crypto 且用户不批手写移植/引 dalek→guest 验签永缓，只保 host 侧；④网络栈另案提前补 HTTP+吞吐→D3 实施刀解冻，源元数据格式+TOFU 锚升必保。",
+   "holds": true,
+   "open_questions": [
+    "SDK-2 是否对外发开发者、何时发——单向门关门日期的唯一决定变量，须最先拍板",
+    "berry-crypto 路线三选一：自建纯函数 crate（解析器即产品第10例）/ reference/ 协议隔离引入后手写移植 / 引 curve25519-dalek 过排除 8 问（一次性豁免零依赖纪律）",
+    ".sig 摘要哈希选型：SHA-256（与 SHA256SUMS 同族但 guest 需两份哈希实现）vs SHA-512/256（ed25519 验签内部本需 SHA-512，一份实现复用）——属格式定案一部分",
+    "官方钥预装清单载体：系统镜像内建信任文件 vs 仅 ADR 立法推迟到实施刀",
+    "D2 推迟后是否在 SDK-2 文档向早期开发者声明『v1 应用无原地升级、升级=重装』的预期管理",
+    "全签策略执法时点：ADR 立法在 SDK-2 拍板时即立，还是等 berry-crypto/guest 验签落地时随刀立（推荐前者，窗口论据）"
+   ],
+   "recommended": "草案支柱全集按 v1 全量落地：①签名块+验签（D1 案C：v1 按案A TOFU+key_lineage）②两版并存+原子切换+自动回滚（D2 增量不做）③渠道门槛数据面（装载警告+遥测统计）+源列表+TOFU（D3，sideload 为退化情形）④manifest distribution 域衔接（abi_revision/source_channel/升级参数）",
+   "risks": [
+    "分离式签名防剥离不闭环（证据镜头漏判的推理跳步）：复核实证 Android v2 反剥离成立靠 X-Android-APK-Signed 属性在 v1 签名覆盖域内且内嵌不可剥；BerryOS 分离式 .sig 剥离后无带内残留证据——攻击者剥 .sig+改 manifest 去 security 域（已核实该域可选、齐缺合法）+重生成无签 SHA256SUMS，包与原生无签包不可区分。唯一解=系统侧策略锚（全签策略/官方预装清单），草案未写",
+    "推迟 guest 验签期间官方包若经非构建管线外流且无签，在野化即关闭全签窗口——须以 mkapp 默认开签名+ADR 立法双保险",
+    "berry-crypto 手写 ed25519 是密码学高风险件：Android v3 旋转机制上线首日即带实现 bug（签名权限/回滚/checkSignatures 处理），验签负样例族（断链/跳代/双头链）必须进 G0-G5 测试面",
+    "遥测削减后 abi_revision 门槛将来立硬门槛时无统计面支撑，须靠源清单全量扫描替代——可接受但须 ADR 写明，避免将来误以为有遥测数据可用",
+    "两版并存推迟=早期应用升级只能重装，开发者体验债（生态为零时可接受，SDK-2 文档须声明预期）",
+    "Akhawe&Felt 复核出的方向修正：论文结论同时表明设计良好的警告（Firefox malware ~10% 穿透）可以有效——将来做警告 UX 时不可拿 70.2% 当『警告无用』的免做理由，应按真实受众迭代"
+   ],
+   "verdict": "成立但需修正"
+  }
+ ]
+}

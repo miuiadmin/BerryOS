@@ -1,7 +1,9 @@
 //! PL011 UART 驱动（QEMU `virt` UART0）——TX 面 + P5 A-1 起 RX 面/RX 中断。
 //!
 //! **TX**：`uart_putc` 直写 DR、不查 FR（QEMU PL011 对 TX 宽容——host 侧串口
-//! 即时排空；真机不可，非本步范围）。历史上在 lib.rs，P5 A-1 起 UART 面收敛
+//! 即时排空；真机不可）。P1 console 批量写起新增 [`uart_write_txff`]：批量
+//! 写 DR 前查 FR.TXFF（真机硬化面；`uart_putc` 原样不动——boot/panic/ktest
+//! 直写消费者零扰动）。历史上在 lib.rs，P5 A-1 起 UART 面收敛
 //! 到本模块（lib.rs `pub use` 转发，调用方零改动）。
 //!
 //! **RX（P5 A-1 内核 RX 中断——GIC 第二个 IRQ 源，trap.rs 自此按 INTID 分流）**：
@@ -26,7 +28,7 @@
 
 use crate::gic;
 use crate::mmio;
-use crate::{KERNEL_VA_BASE, UART0_BASE};
+use crate::{KERNEL_VA_BASE, UART0_BASE, UART1_BASE};
 
 /// UART0 高半直映基址（2b-2 低半退役：PA 直访必 fault；boot asm 早期打印
 /// 例外——开 MMU 前直写 PA，不走这里）。
@@ -47,6 +49,9 @@ const UART_ICR: usize = 0x044;
 
 /// FR.RXFE：RX FIFO **空**（置位 = 无数据；=0 才可读 DR）。
 const UART_FR_RXFE: u32 = 1 << 4;
+/// FR.TXFF：TX FIFO **满**（FEN=0 = 保持寄存器忙）。置位时写 DR = 丢字节
+///（UART0 批量写面 [`uart_write_txff`] 与 UART1 TX 面 `uart1_tx` 共用）。
+const UART_FR_TXFF: u32 = 1 << 5;
 /// CR 使能位（RXE=bit9 | TXE=bit8 | UARTEN=bit0）——QEMU `-kernel` 启动即此值，
 /// rx_init 里 RMW 保险（万一 boot 流程动过 CR 也不失 TX）。
 const UART_CR_EN: u32 = (1 << 9) | (1 << 8) | 1;
@@ -64,8 +69,12 @@ const UART_ICR_STICKY: u32 = UART_ICR_ALL & !(UART_IMSC_RXIM); // RXIC 与 RXIM 
 
 /// 输出一个字节到 UART0（2b-2 起走高半直映别名——低半身份已退役，PA 直写必 fault；
 /// boot asm 早期打印不走这里，是 asm 里直写 PA）。
+/// 阶段五第 16 步起每字节先入本核 klog 环（`klog_ring::put`——串口镜像，
+/// 无锁 fetch_add，任何上下文含 panic 绕锁面皆可调；boot asm 三字符标记
+/// 在环外是已知口径，见 klog_ring 模块头）。
 #[inline]
 pub fn uart_putc(c: u8) {
+    crate::klog_ring::put(c);
     // unsafe 收敛在此：MMIO 写。
     unsafe { mmio::write(UART, c as u32) };
 }
@@ -105,6 +114,37 @@ pub fn uart_put_dec(v: u64) {
     while i > 0 {
         i -= 1;
         uart_putc(buf[i]);
+    }
+}
+
+/// UART0 TX 丢弃计数（批量写 TXFF 有界自旋触界面——健康路径恒 0；诊断预留，
+/// `UART1_TX_LOST` 同款）。真机/异常慢 sink wedge 面的观测位。
+pub static UART0_TX_LOST: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
+/// 批量输出一段字节串到 UART0，写 DR 前逐字节查 FR.TXFF（P1 console 批量写
+/// 路径专用新增面）。FR.TXFF 置位（FEN=0 = TX 保持寄存器忙）时写 DR = 丢
+/// 字节——QEMU PL011 对 TX 宽容（宿主 sink 即时排空，实测不达界），真机不可。
+/// 忙则自旋让位（`uart1_tx` 同款有界自旋——1M 次触界后整批余量记账丢弃、
+/// 不逐字节再耗界，不 wedge；真机中断驱动 TX 归 v2）。逐字节发射仍走
+/// [`uart_putc`]（发射面单源；`uart_putc`/`uart_puts` 本体不动——boot/
+/// panic/ktest 直写消费者零扰动）。
+pub fn uart_write_txff(s: &[u8]) {
+    for (i, &b) in s.iter().enumerate() {
+        // SAFETY: MMIO 读写。自旋窗 IRQ 仍开（任务态调用、调用方 PRINT_LOCK
+        // preempt 计数包络「入而不切」）——不构成禁活锁面（uart1_tx 同口径）。
+        unsafe {
+            let mut spin: u32 = 0;
+            while mmio::read(UART + UART_FR) & UART_FR_TXFF != 0 {
+                spin += 1;
+                if spin >= 1_000_000 {
+                    UART0_TX_LOST
+                        .fetch_add((s.len() - i) as u32, core::sync::atomic::Ordering::Relaxed);
+                    return;
+                }
+            }
+        }
+        uart_putc(b);
     }
 }
 
@@ -230,4 +270,126 @@ pub unsafe fn rx_init() {
         crate::uart_puts(b"uart: SPI33 missing from SPI_ROUTES\n");
     }
     mmio::write(UART + UART_IMSC, UART_IMSC_RXIM);
+}
+
+// ---- UART1 RX 面（sim-S1：第二 PL011，sim 设备注入通道——
+// `docs/sim设备通道与契约设计-v1.1.md` §4）----
+//
+// 全套镜像 UART0 RX 面（结构同形、静态双份——避免泛型化搅动现役 UART0 面）。
+// 关键差异两点：
+// - **在席门在调用方**：UART1 设备随 QEMU 第二 `-serial` 配置存在（单串口 =
+//   地址洞，见 lib.rs `UART1_BASE` 注）——`uart1_init` 只在 fw_cfg
+//   `opt/berry/simdev` 在席门开后调（main.rs boot 接线块），本模块不自行探测。
+// - **TX 面新增**（UART0 TX 常规面 `uart_putc` 不查 FR——批量面走
+//   `uart_write_txff` 才查；UART1 的 ACK 回程是真
+//   依赖）：`uart1_tx` 写 DR 前查 FR.TXFF（FEN=0 下 TX 保持寄存器忙即置位——
+//   不查直接写 = 丢字节），忙则自旋让位（QEMU 宿主 sink 排水快，9B ACK 微秒
+//   级；真机 hardening 归 v2——有界自旋后丢字节 + 计数，不 wedge）。
+
+/// UART1 高半直映基址（与 UART0 同落 2MiB Device 块 `[0x0900_0000, 0x0920_0000)`
+/// ——`mmu.rs build_boot_pt` dev_blocks 已覆盖，零页表工作）。
+const UART1: usize = KERNEL_VA_BASE + UART1_BASE;
+
+/// UART1 RX 静态环（`RX_RING_SIZE` 同容量——帧帽 98B，256 环 = 整帧 + 余量；
+/// 消费者一次 `uart1_rx_pop_all` 全搬出，环空 ⟺ 可清位的几何前提同 UART0）。
+static mut UART1_RING: RxRing = RxRing { data: [0; RX_RING_SIZE], head: 0, tail: 0, lost: 0 };
+
+/// UART1「RX 到数据」通知槽（`RX_NOTIFY` 同模式；注册先于 `uart1_init`）。
+static mut UART1_NOTIFY: Option<unsafe extern "C" fn() -> bool> = None;
+
+/// 注册 UART1 RX 通知（boot 期、`uart1_init` 之前——先注册后使能）。
+pub fn set_uart1_notify(f: unsafe extern "C" fn() -> bool) {
+    // SAFETY: 启动单线程、DAIF 屏蔽。
+    unsafe { *core::ptr::addr_of_mut!(UART1_NOTIFY) = Some(f) };
+}
+
+/// UART1 环满丢字节数（诊断面）。
+pub fn uart1_rx_lost() -> u32 {
+    // SAFETY: 单核顺序读；addr_of 取裸指针（不借用 static mut）。
+    unsafe { (*core::ptr::addr_of!(UART1_RING)).lost }
+}
+
+/// UART1 RX IRQ handler（`exception_irq` INTID=40 分流、EOIR 之前调）——
+/// `rx_irq` 逐句同形：drain FIFO 到 RXFE（电平去活铁序）→ 清粘滞不清 RXIC
+/// （`UART_ICR_STICKY` 竞速字节锁存保住，EOIR 时线仍高 → GIC 重投再 drain）
+/// → 通知槽（置 Event + wake），回报「是否唤醒」（EOIR 后检查点决策）。
+pub fn uart1_rx() -> bool {
+    // SAFETY: IRQ 上下文（PSTATE.I=1）单生产者（SPI40 路由钉 CPU0）；MMIO 读写。
+    unsafe {
+        while mmio::read(UART1 + UART_FR) & UART_FR_RXFE == 0 {
+            let c = mmio::read(UART1 + UART_DR) as u8;
+            let r = &mut *core::ptr::addr_of_mut!(UART1_RING);
+            let next = (r.head + 1) % RX_RING_SIZE;
+            if next == r.tail {
+                r.lost += 1; // 环满：丢字节计数（消费侧欠账，不崩）
+            } else {
+                r.data[r.head] = c;
+                r.head = next;
+            }
+        }
+        mmio::write(UART1 + UART_ICR, UART_ICR_STICKY);
+        if let Some(f) = *core::ptr::addr_of!(UART1_NOTIFY) {
+            return f();
+        }
+    }
+    false
+}
+
+/// 搬空 UART1 RX 环（task_simcon 消费）——`rx_pop_all` 同形：必须在
+/// `disable_irq` 包络内调（与 IRQ 生产者同核串行——SPI40 钉 CPU0 + 消费任务
+/// 钉核前提，console/S-2 盒子同款边界）。
+pub fn uart1_rx_pop_all(buf: &mut [u8]) -> usize {
+    // SAFETY: 单消费者（task_simcon）；调用方保证 IRQ 屏蔽包络。
+    unsafe {
+        let r = &mut *core::ptr::addr_of_mut!(UART1_RING);
+        let mut i = 0usize;
+        while r.tail != r.head && i < buf.len() {
+            buf[i] = r.data[r.tail];
+            r.tail = (r.tail + 1) % RX_RING_SIZE;
+            i += 1;
+        }
+        i
+    }
+}
+
+/// UART1 写一字节（ACK 回程；task_simcon 语境）。FR.TXFF 忙则自旋让位——
+/// QEMU 下宿主 sink 排水微秒级、实测不达界；有界自旋（防真机/异常慢 sink
+/// wedge 整核）后丢字节计数（静默——ACK 丢失由宿主 client 超时对拍暴露，
+/// 断链诊断走 client 面）。FEN=0 下 TXFF=保持寄存器忙，逐字节写前必查。
+pub fn uart1_tx(c: u8) {
+    // SAFETY: MMIO 读写。自旋窗 IRQ 仍开（任务态调用）、抢占点照常——
+    // 不构成禁活锁面。
+    unsafe {
+        let mut spin: u32 = 0;
+        while mmio::read(UART1 + UART_FR) & UART_FR_TXFF != 0 {
+            spin += 1;
+            if spin >= 1_000_000 {
+                UART1_TX_LOST.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                return;
+            }
+        }
+        mmio::write(UART1, c as u32);
+    }
+}
+
+/// UART1 TX 丢弃计数（TXFF 有界自旋触界面——健康路径恒 0；诊断预留）。
+pub static UART1_TX_LOST: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
+/// 使能 UART1 RX 中断（boot 期、DAIF 屏蔽窗内、fw_cfg simdev 门开后调一次）
+/// ——`rx_init` 三段序同形：清粘滞（掩 RXIC 保竞速锁存）→ CR 确保收发使能 →
+/// GIC 使能 SPI 40（`SPI_ROUTES` 表路由）→ IMSC.RXIM 最后开。
+///
+/// # Safety
+/// MMIO 读写（Device 映射区）；boot 单线程、DAIF 屏蔽（任何 enable_irq 之前
+/// ——通知槽已注册；**调用前提 = fw_cfg `opt/berry/simdev` 在席**，否则单
+/// 串口配置下本函数首读即 external abort，见 lib.rs `UART1_BASE` 注）。
+pub unsafe fn uart1_init() {
+    mmio::write(UART1 + UART_ICR, UART_ICR_STICKY);
+    let cr = mmio::read(UART1 + UART_CR);
+    mmio::write(UART1 + UART_CR, cr | UART_CR_EN);
+    if !gic::enable_spi_routed(gic::IRQ_PL1_RX) {
+        crate::uart_puts(b"uart1: SPI40 missing from SPI_ROUTES\n");
+    }
+    mmio::write(UART1 + UART_IMSC, UART_IMSC_RXIM);
 }

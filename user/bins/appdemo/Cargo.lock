@@ -4,14 +4,22 @@ version = 4
 
 [[package]]
 name = "appdemo"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
+ "berry-gfx",
+ "berry-guiproto",
  "berry-libc",
+ "berry-sys",
+ "berry-ui",
 ]
 
 [[package]]
+name = "berry-fbcon"
+version = "0.2.0"
+
+[[package]]
 name = "berry-fsclient"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "berry-fsproto",
  "berry-netdproto",
@@ -20,36 +28,72 @@ dependencies = [
 
 [[package]]
 name = "berry-fsproto"
-version = "0.1.0"
+version = "0.2.0"
+
+[[package]]
+name = "berry-gfx"
+version = "0.2.0"
+dependencies = [
+ "berry-fbcon",
+]
+
+[[package]]
+name = "berry-guiproto"
+version = "0.2.0"
+dependencies = [
+ "berry-manifest",
+]
 
 [[package]]
 name = "berry-libc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "berry-fsclient",
+ "berry-lifecycle",
  "berry-mmap",
  "berry-netdproto",
  "berry-signal",
+ "berry-strmem",
  "berry-sys",
  "berry-tls",
 ]
 
 [[package]]
+name = "berry-lifecycle"
+version = "0.2.0"
+
+[[package]]
+name = "berry-manifest"
+version = "0.2.0"
+
+[[package]]
 name = "berry-mmap"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "berry-netdproto"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "berry-signal"
-version = "0.1.0"
+version = "0.2.0"
+
+[[package]]
+name = "berry-strmem"
+version = "0.2.0"
 
 [[package]]
 name = "berry-sys"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "berry-tls"
-version = "0.1.0"
+version = "0.2.0"
+
+[[package]]
+name = "berry-ui"
+version = "0.2.0"
+dependencies = [
+ "berry-gfx",
+ "berry-guiproto",
+]

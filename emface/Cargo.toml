@@ -1,0 +1,14 @@
+[package]
+name = "berry-emface"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+
+[lib]
+name = "berry_emface"
+path = "src/lib.rs"
+
+# 无外部依赖：EM 表形状执法 + util EWMA 窗口数学纯函数面（host 单测走
+# `cfg(test)` 链 std，形态抄 berry-sliceface / berry-intface）。sched crate
+# 消费（EmPoint/EmDomain 形状与 em_register 拒收判据、util 折叠/overutil
+# 阈值律单源迁此，sched/src/em.rs、util.rs 机械壳化——W3-Q2/Q11 同款纪律）。

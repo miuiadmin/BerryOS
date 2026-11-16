@@ -1,47 +1,26 @@
-//! frameloop —— 长活帧循环 embedder（GUI-8 段③ W2，docs/GUI-8实施设计
-//! 草案.md §4 段③「长活帧循环 embedder」；蓝图 = 草案 + 侦察 S1 帧链
-//! 拓扑 / S2 embedder 食谱）。
+//! frameloop —— launcher 帧循环特化（GUI-8 段③ W2，docs/GUI-8实施设计
+//! 草案.md §4 段③「长活帧循环 embedder」；波3-件⑦ 起帧循环骨架抽入
+//! appshell::pump——本模块经 [`LoopHost`]（appshell::pump::HostHooks 实现）
+//! 注入 launcher 特化，操作序逐字保真）。
 //!
-//! 帧循环体：
+//! 帧循环体（骨架在 appshell::pump，特化在此）：
 //!
 //! ```text
-//! wake 起振 → loop {
-//!   pump_input(上帧 expected) → Msg 分发（pager.on_msg→翻页 rehang /
-//!     Click→槽命中映射→APP_SPAWN 门控桩）
-//!   → pager.tick（snap 动画步进）→ render_frame（anim→relayout→paint
-//!     →damage 出帧）
-//!   → [drew] 光栅进帧 VMO → SUBMIT（FULL xor K；fresh READ dup 别名
-//!     ——send 即 take；rate_hint/expected 直传）→ FRAME_CALLBACK（断
-//!     PRESENTED）→ note_presented（credits 真值重同步）→ RELEASE（归还
-//!     别名即关）→ vote（票面变化才发）
-//!   → selftest 状态机（LAUNCH ok / PAGE ok n=2 标记——字节精确）
-//!   → wait_many n=1 [wm READABLE] + deadline = min(next_wakeup, now+10s)
+//! pump::run(起振) → loop {
+//!   on_head：armed 过期复位 → 状态栏时钟续摆（分钟字变才动笔）
+//!   [pump] input 收/挂 → pump_input → on_msgs（五键导航/tab 命中优先，
+//!     槽命中 → APP_SPAWN；pager.on_msg → 翻页 rehang）
+//!   on_tick：pager.tick（snap 动画步进）
+//!   [pump] render → SUBMIT（surface_id=0xFFFF 系统面豁免——guifbd
+//!     波3-件② 带裁剪）→ FRAME_CALLBACK → RELEASE → on_presented
+//!     （`LAUNCH ok` 首帧恰一次）→ vote
+//!   on_frame：selftest 状态机（`PAGE ok n=2`）→ click-ready 谓词
+//!   [pump] wait_many（deadline 含 armed 窗——extra_deadline）
 //! }
 //! ```
 //!
-//! **稳态 = 非燃 CPU 阻塞形**（S1 判词）：Idle 相 next_wakeup=None →
-//! deadline 落 now+10s IDLE 帽，单次 wait_many 睡满——10s 一轮回零渲染
-//! 零 RPC（非 park 形：事件口（段④ input 订阅未来接此 wait）与定时面
-//! 双活）。
-//!
-//! **背压 = 结构性**（S2 食谱）：Credits 无公开读面 → embedder 义务形
-//! ——SUBMIT→FRAME_CALLBACK→RELEASE 严格内联串行，在途恒 ≤1 <
-//! CREDITS_MAX=2；note_presented(credits_remaining) 以服务端应答为真值
-//! 重同步引擎簿记。
-//!
-//! **帧 VMO 一次三连**（gfxdemo raw 形同源）：create→commit→map @
-//! FRAME_VA——libc mmap 禁用：SUBMIT 随行须本 VMO 的 dup 别名，mmap
-//! region 表藏 handle 取不出；每帧 SUBMIT fresh READ dup（A6-b send 即
-//! take——原 vmo handle 恒留本表）。
-//!
-//! **栈面**（R5 仪器定谳，svcmgr launcher arm stack_pages=64 = 256KB——
-//! 8 页下 `UiMain::new` 构造中间体 LTO 后仍部分落栈 ~29KB + pre-main std
-//! 运行时，main+0x1c 序言即穿保护页 D-abort；gfxdemo 8 页先例无 berry-ui
-//! 链不可平移，装配面注释为单源）：
-//! CommandEncoder（DisplayList [Option<Cmd>; 256] ≈18KB）每帧栈构
-//! （256KB 预算内）；glyph scratch（1024×12B）Box::leak 堆置；
-//! Ui arena 堆置（main）。elf2flat 物化 .bss（单页墙判例）——零大 static
-//! 缓冲。
+//! **稳态 = 非燃 CPU 阻塞形**：Idle 相 10s IDLE 帽单次睡满（骨架面）；
+//! 时钟续摆每轮回读 CLOCK_REALTIME——分钟界最迟 10s 内换字。
 //!
 //! **自测**（裁决七：合成注入在 push_pointer = 逻辑真线）：首帧
 //! FRAME_CALLBACK 过链 → `LAUNCH ok`；合成 swipe ×2（视口广义坐标，
@@ -63,56 +42,34 @@
 //! 裁决四-c（输入拓扑）：真实输入订阅 = 段④（input extras 冻结相结构
 //! 性缺席）；裁决四-e（归属）：状态栏/壁纸/桌面全在 launcher 进程内。
 
+use berry_appshell as appshell;
 use berry_appproto as ap;
-use berry_gfx::cmd::{CommandEncoder, GlyphPos, Rect as GfxRect};
-use berry_gfx::color::{TextureDesc, TextureFormat};
-use berry_gfx::pass::{LoadOp, PassDescriptor, StoreOp};
-use berry_gfx::queue::Queue;
 use berry_guiproto as gp;
 use berry_libc::io::{app_cli_h, self_vmar_h};
-use berry_sys::{
-    berry_channel_recv, berry_channel_send, berry_handle_duplicate, berry_object_wait_many,
-    berry_object_wait_one, berry_vmar_map, berry_vmo_commit, berry_vmo_create, Handle,
-    BERRY_ERR_AGAIN, BERRY_ERR_BUSY, BERRY_ERR_TIMEDOUT, RIGHT_READ, RIGHT_WRITE,
-    SIGNAL_READABLE, SIGNAL_WRITABLE,
-};
-use berry_ui::damage::DamageSet;
-use berry_ui::frame::VoteBallot;
+use berry_sys::{berry_clock_read, berry_power_off, Handle, CLOCK_REALTIME};
+use berry_ui::desc::{IconProps, MsgBuf, Props};
 use berry_ui::hit::PtrEvent;
 use berry_ui::{Msg, NodeId, UiMain};
 
-use crate::desktop::{self, Desktop};
+use appshell::rpc::{fail, rpc};
+
+use crate::desktop::{self, Desktop, NavNodes, POWER_ARM_WINDOW_NS};
 use crate::icons;
-use crate::{close_h, enc_req, expect_ok, fail, now, rpc};
+use crate::settings_io;
+use crate::syspages;
 
-/// 帧缓冲映射 VA（gfxdemo 同位：mmap VA 窗 [0x5000_0000,0x6000_0000) 内
-/// 固定位 +16MiB——与假想 first-fit 分配零交叠的防御位；页对齐）。
-const FRAME_VA: usize = 0x5100_0000;
-
-/// 默认 vsync 周期（60Hz；present GETINFO 无周期域——S2 食谱默认
-/// 16_666_666 phase 0）。
-const VSYNC_NS: u64 = 16_666_666;
-
-/// IDLE 稳态等待帽（S1 判词：Idle 相撤定时器 → 10s 周期兜底醒，醒后
-/// 跳过帧零提交再睡——非燃 CPU 阻塞形的定长节拍）。
-const IDLE_CAP_NS: u64 = 10 * 1_000_000_000;
-
-/// glyph scratch 容量（堆置；桌面 ~30 短 label 富余——paint 对超容 run
-/// 截断尾字形，视觉面非正确性面）。
-const SCRATCH_GLYPHS: usize = 1024;
+/// 整帧清屏底色（gfxdemo 同值——FULL 帧先铺底再回放 DisplayList）。
+const CLEAR_BG: (u8, u8, u8) = (0x10, 0x18, 0x28);
 
 /// 自测 swipe 收敛帽（超时 = eprintln 诊断 + 放弃——PAGE 缺失由 smoke
 /// 兜底 loud；不 fail 挂死：桌面常驻义务优先于自测件）。
 const SETTLE_CAP_NS: u64 = 5 * 1_000_000_000;
 
-/// 整帧清屏底色（gfxdemo 同值——FULL 帧先铺底再回放 DisplayList）。
-const CLEAR_BG: (u8, u8, u8) = (0x10, 0x18, 0x28);
-
 /// 自测状态机（boot 一次性走完 → Done 常驻）。
 #[derive(Clone, Copy)]
 enum Selftest {
-    /// 首帧在途——presented>0 时注入第一轮 swipe（LAUNCH ok 已由提交块
-    /// 打出——首帧 FRAME_CALLBACK 过链即打）。
+    /// 首帧在途——presented>0 时注入第一轮 swipe（LAUNCH ok 已由
+    /// on_presented 打出——首帧 FRAME_CALLBACK 过链即打）。
     WaitFirst,
     /// 第一轮 swipe 收敛中（pc = 注入时已呈现数基线；page()==1 且 snap
     /// 停（tick false）且再有一帧呈现 = 落定）。
@@ -162,6 +119,38 @@ fn note_spawn_ack(smoke: bool, spawn_ok: &mut u32, ack: Option<(bool, u32)>) -> 
     }
 }
 
+/// launcher 帧循环特化状态（appshell::pump::HostHooks 实现——全部字段
+/// 即抽取前 frameloop::run 的局部态）。
+struct LoopHost {
+    /// wm/present 客户端端柄（back 键查表/收窗 RPC 面）。
+    hw: Handle,
+    /// 桌面静态面句柄。
+    desktop: Desktop,
+    /// 冒烟模式（段④ 两标记的唯一门）。
+    smoke: bool,
+    /// input gift 在场（run 参数定格——hi 后续在 pump 内可因输入面失效
+    /// 置 0，门仍真）。
+    has_input: bool,
+    /// APP_SPAWN ok 回执计数（CLICK ok 恰一次）。
+    spawn_ok: u32,
+    /// `LAUNCH ok` 恰一次。
+    launched: bool,
+    /// 多任务键记忆（最近 spawn 成功的 app）。
+    recents_app: Option<RecentsApp>,
+    /// 自测状态机。
+    st: Selftest,
+    /// PAGE ok 后 snap_to(0) 的呈现基线。
+    snap_frame: Option<u64>,
+    /// `launcher: click ready` 恰一次。
+    click_ready: bool,
+    /// 关机二击确认窗（Some(deadline) = armed 态——3s 内再击 = 真关机；
+    /// 过期回常态，deadline 纳入稳态等待帽保证准时醒复位）。
+    power_armed: Option<u64>,
+    /// 状态栏时钟续摆：上帧摆字（None = 尚未/永不摆：注入缺席时
+    /// REALTIME 恒 -ENOTSUP，本面静默，桌面保持建树时的 12:00 占位）。
+    last_clock: Option<[u8; 5]>,
+}
+
 /// 帧循环入口（签名 = W2 冻结面——`hw` = wm 客户端端柄（wm/present 同
 /// 端混流，ADR #61 中继），`ui` = 泄堆 arena，`desktop` = 静态面句柄，
 /// `smoke` = main 单次读取的 GUI8.SMK 精确载荷判定——只门控段④两标记，
@@ -170,333 +159,144 @@ pub fn run(
     hw: Handle,
     hi: Handle,
     ui: &'static mut UiMain,
-    mut desktop: Desktop,
+    desktop: Desktop,
     smoke: bool,
 ) -> ! {
-    // —— present GETINFO（wmd 中继同端）：能力面轻断言（gfxdemo 同面）
-    //    + 几何真值源（present 权威；与 wm 缓存一致性 = 内部不变量，
-    //    失配 fail loud）。——
-    let mut req = [0u8; 256];
-    let mut rep = [0u8; 256];
-    let mut rhs = [0 as Handle; 8];
-    let m = enc_req(gp::encode_present_req(&mut req, &gp::PresentReq::Getinfo));
-    let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
-    let pinfo = match gp::parse_getinfo_rep(&rep[..n]) {
-        Some(i) => i,
-        None => fail(&format!("present getinfo bad st={}", rep[0])),
+    let mut host = LoopHost {
+        hw,
+        desktop,
+        smoke,
+        has_input: hi != 0,
+        spawn_ok: 0,
+        launched: false,
+        recents_app: None,
+        st: Selftest::WaitFirst,
+        snap_frame: None,
+        click_ready: false,
+        power_armed: None,
+        last_clock: None,
     };
-    if pinfo.version_present != gp::VER_PRESENT
-        || pinfo.format_bits & gp::FMT_XRGB8888 == 0
-        || pinfo.max_credits != gp::CREDITS_MAX
-    {
-        fail(&format!(
-            "present getinfo vp={} fmt={:#x} credits={}",
-            pinfo.version_present, pinfo.format_bits, pinfo.max_credits
-        ));
-    }
-    let (vp_w, vp_h) = ui.viewport();
-    if pinfo.display_w != vp_w || pinfo.display_h != vp_h {
-        fail(&format!(
-            "disp mismatch wm {}x{} present {}x{}",
-            vp_w, vp_h, pinfo.display_w, pinfo.display_h
-        ));
-    }
-
-    // —— 跨代清账（对抗审查 R2 修）：前代实例若死于 SUBMIT ack→RELEASE
-    //    close 窗，其 VMO 别名成孤儿永占 guifbd held 槽（RELEASE_WAIT 应答
-    //    = held 全量排空，含他源/前代）；监督重启路纯 spawn 无 present 域
-    //    清账——重启实例首帧 RELEASE 得 count=2 断言炸 → park 活死
-    //    （TERMINATED 永不落，重启帽已耗）。boot 与重启两路都经本清账
-    //    （wmd 启动序② relay::boot_release_all 同款）。
-    let m = enc_req(gp::encode_present_req(&mut req, &gp::PresentReq::ReleaseWait));
-    let (n, nh) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
-    if gp::parse_release_rep(&rep[..n]).is_none() {
-        fail(&format!("boot release bad st={}", rep[0]));
-    }
-    for h in &rhs[..nh] {
-        close_h(*h);
-    }
-
-    // —— 帧缓冲 VMO 三连（gfxdemo raw 形同源）：stride = w*4 tight
-    //    packing；len 页取整（vmar_map 页倍执法；尾页零无害）。
-    let (w, h) = (pinfo.display_w as usize, pinfo.display_h as usize);
-    let stride = w.checked_mul(4).unwrap_or_else(|| fail("stride overflow"));
-    let frame_bytes = stride.checked_mul(h).unwrap_or_else(|| fail("frame overflow"));
-    let len = frame_bytes
-        .checked_add(0xFFF)
-        .map(|v| v & !0xFFF)
-        .unwrap_or_else(|| fail("page round overflow"));
-    let mut vmo: Handle = 0;
-    if berry_vmo_create(len as u64, 0, &mut vmo) != 0 || vmo == 0 {
-        fail("vmo create");
-    }
-    if berry_vmo_commit(vmo, 0, len as u64) != 0 {
-        fail("vmo commit");
-    }
-    let hv = self_vmar_h();
-    if hv == 0 {
-        fail("no self vmar gift");
-    }
-    let mut va = FRAME_VA;
-    if berry_vmar_map(hv, 0, vmo, 0, &mut va, len, RIGHT_READ | RIGHT_WRITE) != 0
-        || va != FRAME_VA
-    {
-        fail("vmar map");
-    }
-    let desc = match TextureDesc::new(w, h, stride, TextureFormat::Rgbx) {
-        Ok(d) => d,
-        Err(e) => fail(&format!("texture desc {e:?}")),
+    let cfg = appshell::pump::PumpCfg {
+        hw,
+        hi,
+        vmar: self_vmar_h(),
+        // 波3-件②：系统面 marker（guifbd 带裁剪豁免——launcher 帧自带
+        // 状态栏/导航条带视觉）。
+        surface_id: 0xFFFF,
+        clear_bg: CLEAR_BG,
     };
-    // SAFETY: [FRAME_VA, FRAME_VA+len) 刚由 vmar_map 落位且整段已 commit
-    //（gfxdemo 同形）；run 永不返回——fb 终身持有。
-    let fb: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(va as *mut u8, len) };
+    appshell::pump::run(cfg, ui, &mut host)
+}
 
-    // —— glyph scratch 堆置（DisplayList 'a 钉调用方 scratch + 'static
-    //    图集/像素面——paint.rs 头注契约；堆置免栈穿）。
-    let scratch: &'static mut [GlyphPos] =
-        Box::leak(vec![GlyphPos { ch: 0, x: 0, y: 0 }; SCRATCH_GLYPHS].into_boxed_slice());
-
-    // —— vsync 协商 + 起振（Idle→Run + 条件 FULL——首帧整帧 damage）。
-    ui.set_vsync(VSYNC_NS, 0);
-    ui.wake(now());
-
-    let mut last_expected: u64 = 0; // pump 重采样 target（上帧 expected 轨）
-    let mut last_vote: Option<VoteBallot> = None; // 票面变化才发
-    let mut presented: u64 = 0; // FRAME_CALLBACK 过链计数（自测基线）
-    let mut launched = false; // LAUNCH ok 恰一次
-    let mut spawn_ok: u32 = 0; // 真实 APP_SPAWN ok 回执计数（CLICK ok 恰一次）
-    let mut buf_id: u32 = 1; // SUBMIT buffer 代际（RELEASE echo 非断言面）
-    let mut st = Selftest::WaitFirst;
-    // 段④：真实输入（inputd INPUT_POLL 阻塞批拉；hi==0 = 冻结相静默）。
-    let mut hi = hi;
-    let has_input = hi != 0; // 礼物在场（hi 后续可因输入面失效置 0——门仍真）
-    // PAGE ok 后 snap_to(0) 的呈现基线：Some(pc) 且 presented>pc 才 click ready。
-    let mut snap_frame: Option<u64> = None;
-    let mut click_ready = false;
-    let mut input_pending = false;
-    let mut input_logged = false;
-    let mut input_buf = [0u8; gp::INPUT_REP_MAX];
-    let mut input_hs = [0 as Handle; 8];
-
-    loop {
-        let t_now = now();
-
-        // —— 段④ 真实输入：先收上一轮 INPUT_POLL 应答，再挂下一轮 poll。
-        //    非阻塞排空（-EAGAIN = 事件尚未到，poll 仍在服务端阻塞）；事件
-        //    逐条 push 进引擎，与合成注入共用 push_pointer 口。
-        if hi != 0 && input_pending {
-            let mut nb = input_buf.len();
-            let mut nh = input_hs.len();
-            let s = berry_channel_recv(
-                hi,
-                input_buf.as_mut_ptr(),
-                &mut nb,
-                input_hs.as_mut_ptr(),
-                &mut nh,
-            );
-            if s == 0 {
-                input_pending = false;
-                for h in &input_hs[..nh] {
-                    close_h(*h);
-                }
-                match gp::parse_input_events_rep(&input_buf[..nb]) {
-                    Some(Ok(view)) => {
-                        if !input_logged {
-                            eprintln!("launcher: input events n={}", view.count());
-                            input_logged = true;
-                        }
-                        for i in 0..view.count() {
-                            if let Some(ev) = view.event(i) {
-                                let pe = PtrEvent::from_wire(
-                                    ev.phase,
-                                    ev.pointer_id,
-                                    ev.x,
-                                    ev.y,
-                                    ev.timestamp_ns,
-                                    ev.buttons,
-                                    ev.pressure,
-                                );
-                                if let Err(e) = ui.push_pointer(pe) {
-                                    eprintln!("launcher: input push err={e:?}");
-                                }
-                            }
-                        }
-                        ui.wake(now());
-                    }
-                    Some(Err(gp::ST_EAGAIN)) => {
-                        if !input_logged {
-                            eprintln!("launcher: input poll EAGAIN");
-                            input_logged = true;
-                        }
-                    }
-                    Some(Err(st)) => eprintln!("launcher: input poll st={st}"),
-                    None => eprintln!("launcher: input poll rep bad len={nb}"),
-                }
-            } else if s != BERRY_ERR_AGAIN {
-                eprintln!("launcher: input recv err={s}");
-                hi = 0;
-                input_pending = false;
-            }
-        }
-        if hi != 0 && !input_pending {
-            if input_arm(hi) {
-                input_pending = true;
-                if !input_logged {
-                    eprintln!("launcher: input poll armed h={hi}");
-                    input_logged = true;
-                }
-            } else {
-                eprintln!("launcher: input poll arm failed -- disable");
-                hi = 0;
+impl appshell::pump::HostHooks for LoopHost {
+    fn on_head(&mut self, ui: &mut UiMain, t_now: u64) {
+        // —— 波一刀 D：armed 窗过期复位（视觉回常态面 + 清窗——wait
+        //    deadline 已含本窗，3s 准时醒；复位 set_props 自标 damage
+        //    出帧，无需另 wake）。
+        if let Some(dl) = self.power_armed {
+            if t_now > dl {
+                set_power_face(ui, &self.desktop.nav, false);
+                self.power_armed = None;
             }
         }
 
-        // —— 输入泵 + Msg 分发（合成注入与真实输入同口）——
-        let msgs = ui.pump_input(last_expected);
+        // —— 波一刀 B：状态栏真时钟续摆——稳态每 10s（IDLE 帽）醒一回，
+        //    读 CLOCK_REALTIME；分钟字变才动笔（set_text 等长换文 = 纯
+        //    PAINT；a11y label 同步 in-place 覆写）+ wake（Idle→Run 保
+        //    产出帧——inject_swipe 同款正统路径）。分钟界最迟 10s 内
+        //    换字（分钟级摆字语境足够）。
+        let mut rt = 0u64;
+        if berry_clock_read(CLOCK_REALTIME, &mut rt) == 0 {
+            let hm = appshell::scene::hhmm_utc(rt);
+            if self.last_clock != Some(hm) {
+                if let Err(e) = ui.set_text(self.desktop.clock, &hm) {
+                    fail(&format!("clock set_text err={e:?}"));
+                }
+                let mut label = *b"00:00 utc";
+                label[..5].copy_from_slice(&hm);
+                // a11y in-place 覆写（同节点不占新槽）；Err 非关键面容忍。
+                let _ = ui.set_a11y(self.desktop.clock, berry_ui::ROLE_TEXT, &label);
+                ui.wake(appshell::rpc::now());
+                self.last_clock = Some(hm);
+            }
+        }
+    }
+
+    fn on_msgs(&mut self, ui: &mut UiMain, msgs: &MsgBuf, t_now: u64) {
         for m in msgs.iter() {
             match m {
-                Msg::Click { node } => on_click(*node, &desktop, &mut spawn_ok, smoke),
+                Msg::Click { node } => {
+                    // 五键导航先判（含 BottomTabs 三页位——命中 = 消费，
+                    // 不落槽 spawn 面）。
+                    if !on_nav_click(
+                        *node,
+                        ui,
+                        &mut self.desktop,
+                        &mut self.power_armed,
+                        t_now,
+                        &mut self.recents_app,
+                        self.hw,
+                    ) {
+                        if !on_sys_click(
+                            *node,
+                            ui,
+                            &mut self.desktop,
+                            &mut self.spawn_ok,
+                            self.smoke,
+                            &mut self.recents_app,
+                        ) {
+                            on_click(
+                                *node,
+                                &self.desktop,
+                                &mut self.spawn_ok,
+                                self.smoke,
+                                &mut self.recents_app,
+                            );
+                        }
+                    }
+                }
                 _ => {
-                    // pager.on_msg true = 翻页目标变更 → a11y 重挂当前页
-                    //（幂等；Err = 容量违例 fail 收口）。
-                    if desktop.pager.on_msg(ui, m) {
-                        let page = desktop.pager.page();
-                        if let Err(e) = desktop::rehang_a11y(ui, &mut desktop, page) {
-                            fail(&format!("rehang a11y err={e:?}"));
+                    // pager.on_msg true = 翻页目标变更 → a11y/press 重挂
+                    //（幂等；Err = 容量违例 fail 收口）。sys 页在树时桌面
+                    // 被整面盖住——隐藏 pager 不吃翻页手势（可见性真相面；
+                    // Msg 不劫持，只是不喂）。
+                    if self.desktop.tabs.cur == 0 && self.desktop.pager.on_msg(ui, m) {
+                        if let Err(e) = desktop::rehang_view(ui, &mut self.desktop) {
+                            fail(&format!("rehang view err={e:?}"));
                         }
                     }
                 }
             }
         }
+        // —— 波3-件⑤c：组件事件（widget_react 派发面）——设置控件真值
+        //    回写 + 持久化（Toggle/Seg/Radio 翻转与 Slider 拖动均由引擎
+        //    组件反应面即时改 props，此处只追真值镜像与落盘）。
+        for ev in ui.take_events().iter() {
+            on_widget_event(ui, &mut self.desktop, ev.event, ev.value);
+        }
+    }
+
+    fn on_tick(&mut self, ui: &mut UiMain, t_now: u64) {
         // snap 动画步进（每迭代必调——snap 驱动面；返回值仅为「有吸附
-        // 在推进」观察位，自测判据已不依赖——见 Settle1 注）。
-        desktop.pager.tick(ui, t_now);
+        // 在推进」观察位，自测判据已不依赖）。
+        self.desktop.pager.tick(ui, t_now);
+    }
 
-        // —— 渲染（跳过帧不提交——damage 空集零 SUBMIT 零 RPC）——
-        let mut enc = CommandEncoder::new();
-        let out = ui.render_frame(t_now, scratch, &mut enc);
-        last_expected = out.expected_present_ns;
-        if out.drew {
-            let dmg = out.damage;
-            // K>0 xor FULL 立法兜底：count==0 非空集视同整帧。
-            let full = dmg.full || dmg.count == 0;
-            let pass = if full {
-                PassDescriptor::clear(CLEAR_BG.0, CLEAR_BG.1, CLEAR_BG.2)
-            } else {
-                // 增量帧：Load+Store + K 矩形并集包络（写侧约束——soft
-                // 光栅只在 dirty 域动笔，域外像素保持上帧）。
-                PassDescriptor::new(LoadOp::Load, StoreOp::Store, Some(damage_envelope(&dmg)))
-            };
-            let dl = enc.finish();
-            if let Err(e) = Queue::new().submit(&dl, fb, &desc, &pass) {
-                fail(&format!("raster submit {e:?}"));
-            }
-
-            // SUBMIT：fresh READ dup 别名随行（send 即 take——原 vmo 留表）。
-            let mut alias: Handle = 0;
-            if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
-                fail("dup alias");
-            }
-            let (flags, rects, k) = if full {
-                (
-                    gp::SUBMIT_F_DAMAGE_FULL,
-                    [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX],
-                    0usize,
-                )
-            } else {
-                (0u8, dmg.rects, dmg.count as usize)
-            };
-            let sreq = gp::PresentReq::Submit {
-                surface_id: 0,
-                buffer_id: buf_id,
-                flags,
-                rate_hint: out.rate_hint_hz,
-                target_present_ns: out.expected_present_ns,
-                rects,
-                rect_count: k,
-            };
-            let m = enc_req(gp::encode_present_req(&mut req, &sreq));
-            let (n, _) = rpc(hw, &req[..m], &[alias], &mut rep, &mut rhs);
-            let token = match gp::parse_submit_ack(&rep[..n]) {
-                Some(t) => t,
-                None => fail(&format!("submit ack bad st={}", rep[0])),
-            };
-            ui.note_submitted();
-
-            // FRAME_CALLBACK：blit-at-SUBMIT 形下帧已呈现（token 校验即
-            // 答）——断 PRESENTED（DISCARDED = 呈现链破相 fail loud）。
-            let m = enc_req(gp::encode_present_req(
-                &mut req,
-                &gp::PresentReq::FrameCallback { frame_token: token },
-            ));
-            let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
-            let done = match gp::parse_frame_done_rep(&rep[..n]) {
-                Some(d) => d,
-                None => fail(&format!("frame done bad st={}", rep[0])),
-            };
-            if done.status != gp::FRAME_PRESENTED {
-                fail(&format!("frame status={}", done.status));
-            }
-            // seq = 本帧引擎序（render 后 telemetry 帧计数 -1 = last_seq）；
-            // credits 以服务端应答为真值重同步（S2 食谱）。
-            ui.note_presented(
-                (ui.telemetry().frames() - 1) as u32,
-                now(),
-                done.status,
-                done.credits,
-            );
-
-            // RELEASE（归还别名即关——在途 ≤1 结构性背压，见头注）。
-            // RETURN-ALL 语义（对抗审查 R2 修）：应答 = held 全量排空——
-            // 稳态恒 count==1（单 present 客户端 + 在途≤1），但可含前代
-            // 孤儿别名（boot 清账同刀兜底）；count≥1 时随行 handle 全量
-            // close 归还。
-            let m = enc_req(gp::encode_present_req(&mut req, &gp::PresentReq::ReleaseWait));
-            let (n, nh) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
-            let rel = match gp::parse_release_rep(&rep[..n]) {
-                Some(r) => r,
-                None => fail(&format!("release rep bad st={}", rep[0])),
-            };
-            if rel.count < 1 || nh != rel.count {
-                fail(&format!("release count={} nh={}", rel.count, nh));
-            }
-            for h in &rhs[..nh] {
-                close_h(*h);
-            }
-
-            presented += 1;
-            buf_id = buf_id.wrapping_add(1);
-            if buf_id == 0 {
-                buf_id = 1;
-            }
-            if !launched {
-                // 标记（字节精确）：首帧呈现回执过链恰一次。
-                println!("LAUNCH ok");
-                launched = true;
-            }
+    fn on_presented(&mut self, _ui: &mut UiMain, presented: u64) {
+        if !self.launched && presented >= 1 {
+            // 标记（字节精确）：首帧呈现回执过链恰一次。
+            println!("LAUNCH ok");
+            self.launched = true;
         }
+    }
 
-        // —— vote（S2 食谱：票面变化才发——省流；幂等面在服务端）。
-        let ballot = ui.vote_hint();
-        if last_vote != Some(ballot) {
-            let vreq = gp::PresentReq::Vote {
-                sticky: ballot.sticky,
-                scene: ballot.scene,
-                min_hz: ballot.min_hz,
-                max_hz: ballot.max_hz,
-                preferred_hz: ballot.preferred_hz,
-            };
-            let m = enc_req(gp::encode_present_req(&mut req, &vreq));
-            expect_ok(hw, &req[..m], &[], &mut rep, &mut rhs, "vote");
-            last_vote = Some(ballot);
-        }
-
+    fn on_frame(&mut self, ui: &mut UiMain, presented: u64, t_now: u64) {
         // —— 自测状态机（boot 一次性；标记字节精确）——
-        match st {
+        match self.st {
             Selftest::WaitFirst => {
                 if presented > 0 {
                     inject_swipe(ui, t_now);
-                    st = Selftest::Settle1 { pc: presented, deadline: t_now + SETTLE_CAP_NS };
+                    self.st = Selftest::Settle1 { pc: presented, deadline: t_now + SETTLE_CAP_NS };
                 }
             }
             Selftest::Settle1 { pc, deadline } => {
@@ -508,37 +308,37 @@ pub fn run(
                 // 100-400ms，240ms 动画全程竞速 5s 帽：首个过帽迭代恰
                 // 逢完成帧 → timeout 吞掉本已成立的落定（rig 实证：超时
                 // 时 page=1、桌面存活续渲）。
-                if desktop.pager.page() == 1 && presented > pc {
+                if self.desktop.pager.page() == 1 && presented > pc {
                     inject_swipe(ui, t_now);
-                    st = Selftest::Settle2 { pc: presented, deadline: t_now + SETTLE_CAP_NS };
+                    self.st = Selftest::Settle2 { pc: presented, deadline: t_now + SETTLE_CAP_NS };
                 } else if t_now > deadline {
                     eprintln!(
                         "launcher: selftest page1 settle timeout (page={})",
-                        desktop.pager.page()
+                        self.desktop.pager.page()
                     );
-                    st = Selftest::Done;
+                    self.st = Selftest::Done;
                 }
             }
             Selftest::Settle2 { pc, deadline } => {
                 // 同 Settle1 判据（裁定 + 帧流）——竞态面同理。
-                if desktop.pager.page() == 2 && presented > pc {
+                if self.desktop.pager.page() == 2 && presented > pc {
                     // 标记（字节精确）：两轮翻页各落一帧呈现。
                     println!("PAGE ok n=2");
                     // 段④ 收尾：自测只验状态机，落回 page 0（默认布局的
                     // app 全在第 0 页；停在 page 2 = 用户看到空桌面）。
-                    desktop.pager.snap_to(ui, 0);
-                    if let Err(e) = desktop::rehang_a11y(ui, &mut desktop, 0) {
-                        fail(&format!("rehang a11y reset err={e:?}"));
+                    self.desktop.pager.snap_to(ui, 0);
+                    if let Err(e) = desktop::rehang_view(ui, &mut self.desktop) {
+                        fail(&format!("rehang view reset err={e:?}"));
                     }
                     // 命中面回 page 0 的呈现基线（click ready 状态谓词用）。
-                    snap_frame = Some(presented);
-                    st = Selftest::Done;
+                    self.snap_frame = Some(presented);
+                    self.st = Selftest::Done;
                 } else if t_now > deadline {
                     eprintln!(
                         "launcher: selftest page2 settle timeout (page={})",
-                        desktop.pager.page()
+                        self.desktop.pager.page()
                     );
-                    st = Selftest::Done;
+                    self.st = Selftest::Done;
                 }
             }
             Selftest::Done => {}
@@ -549,86 +349,22 @@ pub fn run(
         //    出，命中面稳落 page 0）才宣布可注入；`has_input` 缺席或非冒烟
         //    模式恒不打（冻结相/正常 boot 字节零扰动）。恰一次。
         if click_ready_gate(
-            smoke,
-            has_input,
-            click_ready,
-            snap_frame,
+            self.smoke,
+            self.has_input,
+            self.click_ready,
+            self.snap_frame,
             presented,
-            desktop.pager.page(),
+            self.desktop.pager.page(),
         ) {
             println!("launcher: click ready");
-            click_ready = true;
-        }
-
-        // —— 稳态等待（S1 判词：wait_many n=1 [wm READABLE] + deadline =
-        //    min(next_wakeup, now+IDLE 帽)；Idle 相 = 睡满 10s 零渲染零
-        //    RPC 非燃 CPU；wm READABLE = 段④ 输入事件未来口。TIMEDOUT =
-        //    期限到正常醒——渲染下一拍 / Idle 空转睡回。）
-        let nw = now();
-        let cap = nw + IDLE_CAP_NS;
-        let deadline = ui.next_wakeup().map_or(cap, |t| t.min(cap));
-        let mut hs = [hw, 0 as Handle];
-        let ss = [SIGNAL_READABLE, SIGNAL_READABLE];
-        let mut n = 1usize;
-        if hi != 0 && input_pending {
-            hs[1] = hi;
-            n = 2;
-        }
-        let mut idx = 0usize;
-        let mut obs = 0u64;
-        let wst = berry_object_wait_many(hs.as_ptr(), ss.as_ptr(), n, deadline, &mut idx, &mut obs);
-        if wst != 0 && wst != BERRY_ERR_TIMEDOUT {
-            fail(&format!("wait err={wst}"));
+            self.click_ready = true;
         }
     }
-}
 
-/// K 矩形并集包络（增量 pass 的 dirty 域）。engine damage 恒 viewport
-/// 裁剪——u32 界内值；i32 折 try_from 饱和防御（gfx Rect 值域）。
-fn damage_envelope(dmg: &DamageSet) -> GfxRect {
-    let mut x0 = u32::MAX;
-    let mut y0 = u32::MAX;
-    let mut x1 = 0u32;
-    let mut y1 = 0u32;
-    for r in &dmg.rects[..dmg.count as usize] {
-        x0 = x0.min(r.x);
-        y0 = y0.min(r.y);
-        x1 = x1.max(r.x.saturating_add(r.w));
-        y1 = y1.max(r.y.saturating_add(r.h));
-    }
-    let (ew, eh) = (x1.saturating_sub(x0), y1.saturating_sub(y0));
-    GfxRect::new(
-        i32::try_from(x0).unwrap_or(0),
-        i32::try_from(y0).unwrap_or(0),
-        i32::try_from(ew).unwrap_or(0).max(0),
-        i32::try_from(eh).unwrap_or(0).max(0),
-    )
-}
-
-/// 挂一轮 INPUT_POLL（段④）：inputd 阻塞批拉 ≤3 事件；-EBUSY = 通道满
-///（前一轮未收），等 WRITABLE 后重试；其余错 = 输入面失效，返回 false。
-fn input_arm(h: Handle) -> bool {
-    let mut req = [0u8; 4];
-    let n = gp::encode_input_poll_req(&mut req, gp::INPUT_EVENTS_MAX as u8);
-    let mut deadline = 0u64;
-    loop {
-        let s = berry_channel_send(h, req.as_ptr(), n, core::ptr::null(), 0);
-        if s == 0 {
-            return true;
-        }
-        if s != BERRY_ERR_BUSY {
-            eprintln!("launcher: input send err={s}");
-            return false;
-        }
-        if deadline == 0 {
-            deadline = now() + 10_000_000_000;
-        }
-        let mut obs = 0u64;
-        if berry_object_wait_one(h, SIGNAL_WRITABLE, deadline, &mut obs) != 0 {
-            eprintln!("launcher: input send wait timeout");
-            return false;
-        }
-        deadline = 0;
+    fn extra_deadline(&mut self) -> Option<u64> {
+        // 刀 D：armed 窗纳入等待帽——3s 准时醒做过期复位（不醒 = 红键
+        // 滞留至 IDLE 帽 10s，确认语义受损）。
+        self.power_armed
     }
 }
 
@@ -683,6 +419,152 @@ fn inject_swipe(ui: &mut UiMain, base: u64) {
     ui.wake(base);
 }
 
+/// 关机键视觉态切换（刀 D：armed ↔ 常态——set_props 换 Icon id，同
+/// w/h 纯 PAINT 面；Err 非关键面 eprintln 容忍，关机链不受视觉件拖累）。
+fn set_power_face(ui: &mut UiMain, nav: &NavNodes, armed: bool) {
+    let id = if armed { icons::NAV_POWER_ARMED } else { icons::NAV_POWER };
+    let props = Props::Icon(IconProps {
+        id,
+        fg: crate::desktop::ICON_FG,
+        w: Some(nav.key_px),
+        h: Some(nav.key_px),
+    });
+    if let Err(e) = ui.set_props(nav.power, props) {
+        eprintln!("launcher: power face set err={e:?}");
+    }
+}
+
+/// 导航五键命中 + 动作（刀 D，审计 02 号 §6.1 M2——走现役 `Msg::Click`
+/// 通道零新输入面）。返回 true = 已消费（不落槽 spawn）；false = 非导航
+/// 键（调用方续走 app 槽命中）。
+///
+/// - **返回**：波3-件④——应用在焦先收应用（查表→焦点窗 DESTROY→
+///   wmd 表序回焦桌面）；无应用在焦 = 桌面翻页语义（v1 原路）。
+///   launcher/wmd 同步 RPC 无死锁对（guifbd 的 SUBMIT 内禁同步 RPC
+///   wmd 才是死锁对——launcher 非 blit 路径）。
+/// - **多任务**：重新拉起最近 spawn 的应用（真重拉非死键）；无历史 =
+///   静默无操作。
+/// - **桌面**：`page!=0` 吸附 page 0；已在 = 无操作。
+/// - **旋转**：打 `ROTATE` 串口标记——宿主 berry 窗口监听并换几何
+///   重启（guest 无法自转 ramfb 几何——fw_cfg 是宿主注入面）。
+/// - **关机**：二击 3s 窗确认——首击 armed（换警示面 + 窗起算）；窗内
+///   再击 = 内核 `power_off`（0x88 PSCI SYSTEM_OFF，**成功不归**——整机
+///   退出）；失败（conduit 死 / 固件拒）eprintln 诊断 + 回常态不 fail
+///   （桌面常驻义务优先）；窗过期复位（on_head）。
+fn on_nav_click(
+    node: NodeId,
+    ui: &mut UiMain,
+    desktop: &mut Desktop,
+    power_armed: &mut Option<u64>,
+    t_now: u64,
+    recents: &mut Option<RecentsApp>,
+    wm_h: Handle,
+) -> bool {
+    let nav = desktop.nav;
+    let snap_page = |ui: &mut UiMain, desktop: &mut Desktop, target: u8| {
+        desktop.pager.snap_to(ui, target);
+        if let Err(e) = desktop::rehang_view(ui, desktop) {
+            fail(&format!("nav rehang view err={e:?}"));
+        }
+    };
+    // 波3-件⑤：系统页 tab 命中（BottomTabs 三页位）——切页优先于
+    // 五键导航消费。整树装配（离树/入树/换条/重挂）；Err = 容量违例
+    // 非致命收口（桌面常驻义务优先）。
+    for (i, &tn) in desktop.tabs.tab_nodes.iter().enumerate() {
+        if i < 3 && node == tn {
+            if let Err(e) = desktop::switch_sys_page(ui, desktop, i as u8) {
+                eprintln!("launcher: sys page switch err={e:?}");
+            }
+            return true;
+        }
+    }
+    if node == nav.back {
+        // 波3-件④ 最小刀：应用在焦先收应用（查表→焦点窗 DESTROY→
+        // wmd 表序回焦桌面窗）；无应用在焦 = 桌面翻页语义（v1 原路）。
+        let mut req = [0u8; 256];
+        let mut rep = [0u8; 256];
+        let mut rhs = [0 as Handle; 8];
+        let m = gp::encode_wm_table_get_req(&mut req);
+        let (n, _) = rpc(wm_h, &req[..m], &[], &mut rep, &mut rhs);
+        let focused_app = match gp::parse_wm_snapshot_rep(&rep[..n]) {
+            Some(Ok(snap)) => snap
+                .entries
+                .iter()
+                .take(snap.count)
+                .find(|e| e.flags & gp::WM_WIN_F_FOCUSED != 0 && e.layer == gp::WM_LAYER_APP)
+                .map(|e| e.id),
+            _ => None,
+        };
+        if let Some(wid) = focused_app {
+            // DESTROY 焦点应用窗（owner/client 不明 v1——wmd 摘表+关窗,
+            // 进程退出归其监督;refocus 表序回桌面已是 wmd 内建)。
+            let m = gp::encode_wm_destroy_req(&mut req, wid);
+            let (n, _) = rpc(wm_h, &req[..m], &[], &mut rep, &mut rhs);
+            if rep[0] != 0 {
+                eprintln!("launcher: back destroy st={}", rep[0]);
+            }
+            let _ = n;
+        } else if desktop.tabs.cur != 0 {
+            // R1：非桌面 tab = 回桌面 tab（sys 页在树先摘——桌面整面回显
+            //）；同拍不做页翻（一 back 一义）。
+            if let Err(e) = desktop::switch_sys_page(ui, desktop, 0) {
+                eprintln!("launcher: back to home tab err={e:?}");
+            }
+        } else {
+            let p = desktop.pager.page();
+            if p > 0 {
+                snap_page(ui, desktop, p - 1);
+            }
+        }
+        true
+    } else if node == nav.recents {
+        // 多任务 v1：重新拉起最近 spawn 的应用（真重拉非死键）；无历史
+        // = 静默无操作（桌面常驻义务）。整体取出再 spawn——避免 spawn
+        // RPC 窗内再借用 desktop。
+        if let Some(app) = recents.take() {
+            spawn_by_id(&app);
+        }
+        true
+    } else if node == nav.home {
+        // 桌面键：sys 页在树先回桌面 tab（R1 同律）；再落翻页回 page 0。
+        if desktop.tabs.cur != 0 {
+            if let Err(e) = desktop::switch_sys_page(ui, desktop, 0) {
+                eprintln!("launcher: home tab err={e:?}");
+            }
+        } else {
+            let p = desktop.pager.page();
+            if p != 0 {
+                snap_page(ui, desktop, 0);
+            }
+        }
+        true
+    } else if node == nav.rotate {
+        // 旋转 v1：打 `ROTATE` 串口标记——宿主 berry 窗口监听并换几何
+        // 重启（guest 无法自转 ramfb 几何——fw_cfg 是宿主注入面）。标记
+        // 字节精确（gui8-smoke 标记族同形）。
+        println!("ROTATE");
+        true
+    } else if node == nav.power {
+        match *power_armed {
+            Some(dl) if t_now <= dl => {
+                // 二击确认：真关机（PSCI SYSTEM_OFF——成功整机退出不归）。
+                let st = berry_power_off();
+                eprintln!("launcher: power off st={st} -- use host toolbar OFF");
+                set_power_face(ui, &desktop.nav, false);
+                *power_armed = None;
+            }
+            _ => {
+                // 首击：arm（3s 窗 + 警示面；窗起算点 = 本击时刻）。
+                set_power_face(ui, &desktop.nav, true);
+                *power_armed = Some(t_now + POWER_ARM_WINDOW_NS);
+            }
+        }
+        true
+    } else {
+        false
+    }
+}
+
 /// CLICK 面（修约 1 / 段④）：槽命中映射（cell/label/icon 三节点皆归本
 /// 格——最深叶命中面）→ 注册表条目 → `app_cli_h()==0`（冻结相 extras 恰
 /// [wm]）静默跳过零 RPC 零打印；在场 = APP_SPAWN 真跑（**正常 boot 与
@@ -690,7 +572,177 @@ fn inject_swipe(ui: &mut UiMain, base: u64) {
 /// n=1`（恰一次，`spawn_ok` 计数门——后续成功点击静默，避免重启/连点
 /// 制造重复标记）；失败回执维持 eprintln 诊断（spawn 是旁路动作，不打
 /// 断帧循环、不 fail、**不产标记**）。
-fn on_click(node: NodeId, desktop: &Desktop, spawn_ok: &mut u32, smoke: bool) {
+/// 多任务键记忆体：最近一次 spawn 成功的应用 id（二进制拷贝——注册表
+/// 条目生命周期不随帧循环，spawn 窗外安全）。
+pub struct RecentsApp {
+    pub id: [u8; 24],
+    pub id_len: u8,
+}
+
+/// 按 id spawn（on_click 与多任务键重拉共用）。回执记账返回 ok 与否。
+fn spawn_by_id_inner(id: &[u8], smoke: bool, spawn_ok: &mut u32) -> bool {
+    let h = app_cli_h();
+    if h == 0 {
+        return false; // 冻结相：app 通道结构性缺席
+    }
+    let mut req = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    match ap::encode_spawn_request(&mut req, id) {
+        Some(m) => {
+            let (n, _) = rpc(h, &req[..m], &[], &mut rep, &mut rhs);
+            let ack = ap::parse_spawn_ack(&rep, n);
+            if note_spawn_ack(smoke, spawn_ok, ack) {
+                // 标记（字节精确）：真实 APP_SPAWN ok 回执恰一次，且仅
+                // 冒烟模式（正常 boot 零 CLICK）。
+                println!("CLICK ok n=1");
+            }
+            matches!(ack, Some((true, _)))
+        }
+        None => {
+            eprintln!("launcher: spawn id bad");
+            false
+        }
+    }
+}
+
+/// 多任务键重拉入口（无 smoke 标记面——正常交互路径）。
+fn spawn_by_id(id: &RecentsApp) {
+    let mut n = 0u32;
+    if !spawn_by_id_inner(&id.id[..id.id_len as usize], false, &mut n) {
+        eprintln!("launcher: recents respawn failed");
+    }
+}
+
+/// sys 页点击路由（波3-件⑤——`tabs.cur != 0` 时；桌面态恒返 false
+/// 落槽面）。返回 true = 已消费。
+///
+/// - 应用列表页：固定过滤词命中 → 换选（换底 + 重装行 + rehang）；
+///   行命中（Card/Row/Pad/Text 四面）→ 与桌面格同一 spawn 路（注册表
+///   真流——成功记账 recents；空行/标题 = 不消费）。
+/// - 设置页：Slider 纯点击步进（+100 permille wrap——Drag 路引擎已接
+///   ；步进值落 SETTINGS.JSN）。其余控件 = 引擎组件反应面（事件经
+///   [`on_widget_event`] 回写），此处零动作。
+fn on_sys_click(
+    node: NodeId,
+    ui: &mut UiMain,
+    desktop: &mut Desktop,
+    spawn_ok: &mut u32,
+    smoke: bool,
+    recents: &mut Option<RecentsApp>,
+) -> bool {
+    match desktop.tabs.cur {
+        1 => {
+            // 过滤词命中（id 拷出判定——避免跨 rehang 持 desktop 借）。
+            let mut hit_filter = None;
+            if let Some(page) = desktop.sys.apps.as_ref() {
+                for (i, &wn) in page.words.iter().enumerate() {
+                    if node == wn {
+                        hit_filter = Some(i as u8);
+                        break;
+                    }
+                }
+            }
+            if let Some(f) = hit_filter {
+                if desktop.sys.filter != f {
+                    desktop.sys.filter = f;
+                    let big = desktop.sys.big;
+                    if let Some(page) = desktop.sys.apps.as_mut() {
+                        if let Err(e) = syspages::set_filter(ui, page, f, big) {
+                            eprintln!("launcher: filter err={e:?}");
+                        }
+                    }
+                    if let Err(e) = desktop::rehang_view(ui, desktop) {
+                        eprintln!("launcher: rehang view err={e:?}");
+                    }
+                }
+                return true;
+            }
+            // 行命中 → spawn（与桌面格同路；真流注册表条目）。
+            let mut hit_app = None;
+            if let Some(page) = desktop.sys.apps.as_ref() {
+                if let Some(ri) = syspages::row_index_of(page, node) {
+                    hit_app = page.rows[ri].app;
+                }
+            }
+            match hit_app.and_then(|idx| icons::registry().get(idx)) {
+                Some(entry) => {
+                    if spawn_by_id_inner(entry.id_bytes(), smoke, spawn_ok) {
+                        let mut id = [0u8; 24];
+                        let src = entry.id_bytes();
+                        let n = src.len().min(24);
+                        id[..n].copy_from_slice(&src[..n]);
+                        *recents = Some(RecentsApp { id, id_len: n as u8 });
+                    }
+                    true
+                }
+                None => false,
+            }
+        }
+        2 => {
+            let slider = desktop.sys.setpg.as_ref().map(|p| p.vol_slider);
+            if slider == Some(node) {
+                let cur = desktop.sys.settings.volume;
+                let next = match desktop.sys.setpg.as_ref() {
+                    Some(p) => syspages::step_slider(ui, p, cur),
+                    None => cur,
+                };
+                desktop.sys.settings.volume = next;
+                settings_io::save_settings(&desktop.sys.settings);
+                true
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
+/// 组件事件回写（波3-件⑤c——`ui.take_events` 消费面）：设置控件真值
+/// 镜像更新 + 持久化。Toggle/Seg/Radio 的 props 翻转由引擎组件反应面
+/// 完成（本面零 props 笔）；Radio 组互斥清位 + 镜像去重归本面。
+fn on_widget_event(ui: &mut UiMain, desktop: &mut Desktop, event: u32, value: u32) {
+    match event {
+        syspages::EV_BOOT => {
+            desktop.sys.boot = if value == 1 {
+                settings_io::BootMode::Verbose
+            } else {
+                settings_io::BootMode::Splash
+            };
+            settings_io::save_boot(desktop.sys.boot);
+        }
+        syspages::EV_THEME_LIGHT | syspages::EV_THEME_DARK => {
+            let dark = event == syspages::EV_THEME_DARK;
+            if desktop.sys.settings.dark != dark {
+                desktop.sys.settings.dark = dark;
+                if let Some(p) = desktop.sys.setpg.as_ref() {
+                    syspages::enforce_theme_pair(ui, p, dark);
+                }
+                settings_io::save_settings(&desktop.sys.settings);
+            }
+        }
+        syspages::EV_ANIM => {
+            let anim = value == 1;
+            if desktop.sys.settings.anim != anim {
+                desktop.sys.settings.anim = anim;
+                settings_io::save_settings(&desktop.sys.settings);
+            }
+        }
+        syspages::EV_VOL => {
+            desktop.sys.settings.volume = value.min(1000);
+            settings_io::save_settings(&desktop.sys.settings);
+        }
+        _ => {}
+    }
+}
+
+fn on_click(
+    node: NodeId,
+    desktop: &Desktop,
+    spawn_ok: &mut u32,
+    smoke: bool,
+    recents: &mut Option<RecentsApp>,
+) {
     let slot = desktop
         .slots
         .iter()
@@ -700,32 +752,13 @@ fn on_click(node: NodeId, desktop: &Desktop, spawn_ok: &mut u32, smoke: bool) {
     let Some(slot) = slot else { return }; // 壁纸/状态栏/圆点/容器白区 = 无格
     let Some(idx) = slot.app else { return }; // 占位/幽灵格不可 spawn
     let Some(entry) = icons::registry().get(idx) else { return };
-    let h = app_cli_h();
-    if h == 0 {
-        return; // 冻结相：app 通道结构性缺席
-    }
-    let mut req = [0u8; 256];
-    let mut rep = [0u8; 256];
-    let mut rhs = [0 as Handle; 8];
-    match ap::encode_spawn_request(&mut req, entry.id_bytes()) {
-        Some(m) => {
-            let (n, _) = rpc(h, &req[..m], &[], &mut rep, &mut rhs);
-            let ack = ap::parse_spawn_ack(&rep, n);
-            if note_spawn_ack(smoke, spawn_ok, ack) {
-                // 标记（字节精确）：真实 APP_SPAWN ok 回执恰一次，且仅
-                // 冒烟模式（正常 boot 零 CLICK）。
-                println!("CLICK ok n=1");
-            }
-            match ack {
-                Some((true, _)) => {}
-                Some((false, err)) => eprintln!(
-                    "launcher: spawn {} err={err}",
-                    String::from_utf8_lossy(entry.id_bytes())
-                ),
-                None => eprintln!("launcher: spawn ack bad"),
-            }
-        }
-        None => eprintln!("launcher: spawn id bad"),
+    if spawn_by_id_inner(entry.id_bytes(), smoke, spawn_ok) {
+        // 多任务键记忆：spawn 成功才记账（失败不占 recents 槽）。
+        let mut id = [0u8; 24];
+        let src = entry.id_bytes();
+        let n = src.len().min(24);
+        id[..n].copy_from_slice(&src[..n]);
+        *recents = Some(RecentsApp { id, id_len: n as u8 });
     }
 }
 

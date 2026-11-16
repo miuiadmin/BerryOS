@@ -1,4 +1,11 @@
 /target
+
+# kernel/ 仓内默认 target（取证时代仓内直跑残留，正式构建走共享 ~/.cargo-target）
+/kernel/target/
+
+# 刀 A 隔离 target（任务指定 CARGO_TARGET_DIR=.target-a——直跑 cargo 面
+# check/test 隔离，不与 justfile 各工作区 target 互染）
+/.target-a/
 **/*.rs.bk
 
 # G-eco initrd 镜像（编译侧产物，不入库）——A1-3b 起含 --split 编号卷
@@ -76,8 +83,8 @@
 # python 脚本字节码缓存（size.py 被工具链调用时产生）
 __pycache__/
 
-# Claude Code 会话/工作树目录（本地工具产物，不入库）——例外：Curia 三桥之一的
-# .claude/skills 符号链接入库（.codex/skills 与 CLAUDE.md 两桥已在库，见 init.mjs:40 契约）；
+# Claude Code 会话/工作树目录（本地工具产物，不入库）；
+# .claude/skills 符号链接入库（.codex/skills 与 CLAUDE.md 两桥已在库）——
 # 父目录被排除时 git 不下钻，须用 .claude/* + ! 取反惯用法，单写 !.claude/skills 无效
 .claude/*
 !.claude/skills
@@ -96,3 +103,35 @@ __pycache__/
 /berry-shot-*.png
 .cargo-target-local/
 .tmp_report.md
+
+# 合并 worktree 残骸与本地构建缓存（审计 2026-11-08）
+smoke-wt-*/
+.target-local/
+
+# W3 lane 隔离构建 target（unsafe 台账重产/QA 独立复现——防误入库，#208/#216 判例）
+/.target-*/
+
+# W3 lane 本地独立构建缓存（干净复现纪律——不与共享 ~/.cargo-target 互染）
+/.cargo-w3/
+
+# SDK-2 dev 签发密钥对（just sign-user → berry-sign keygen 产物；纪律 =
+# tools/testkeys/README.md——钥本体永不入仓，README 入仓）
+/tools/testkeys/dev/
+
+# 并行会话构建缓存与本地面包容器（VNC wave5 条件项，probe 2026-11-13 裁决：
+# 六路径全 NOT IGNORED 且无竞争性 ACTIVE 声索——第四波 survey F23 明言
+# 「与并行线协调后一并于后续刀补」；均纯未跟踪，忽略不影响已入库文件）
+/target-cargo/
+/.dsh-target/
+/.dsh-worktrees/
+/kernel/kernel/
+/.berry-review/
+# launcher 独立小工作区本机构建缓存（波0 基线收口补）
+/user/bins/berry-launcher/cargo-target/
+
+# 波 2 画廊 PPM 中间产物（gallery2 测试再生——PNG/cells.tsv 入仓，ppm/ 不进提交）
+/WAVE2-GALLERY/ppm/
+# W3 lane 隔离构建缓存目录（#208/#216 判例：.target-* 构建产物不入库；
+# base 重写反复剥落本规则，随刀补回）
+/.target-*/
+.plugins/

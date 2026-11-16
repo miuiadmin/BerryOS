@@ -17,7 +17,7 @@
 //!   为 §6 冻结面（树走查自根，空闲槽不在链上天然跳过——签名保留）。
 
 use crate::damage::{i64_to_i32_sat, u32_to_i32_sat, u64_to_u32_sat, DamageSet, RectI};
-use crate::desc::{Props, ViewKind};
+use crate::desc::{Orientation, Props, ViewKind};
 use crate::metrics::{IconSource, TextMetrics};
 use crate::Node;
 
@@ -314,6 +314,191 @@ fn intrinsic(
         }
         Props::Image(p) => icon_dims(icons, p.res, p.w, p.h),
         Props::Icon(p) => icon_dims(icons, p.id, p.w, p.h),
+        // 组件七件的 Phase 2 首批（Button/Toggle/Slider/Progress——本刀）：
+        // 内在型叶（Text 同列），固定值起步（几何常量单源 crate::——
+        // lib.rs「组件四件 v1 几何常量」块）。Button 宽 = 标签字节长 ×
+        // 8（S8x16 档 cell_w——与 paint 渲染推进同值）+ 32 水平留白、下
+        // 限 64、恒高 48（触摸最小可点区）；Toggle 52×32 标准开关；
+        // Slider 200×44 最小可拖区；Progress 200×8 线性进度条。
+        Props::Button(p) => {
+            let w = (p.label.len as u64 * crate::BUTTON_CHAR_W as u64)
+                .saturating_add(crate::BUTTON_PAD_X as u64)
+                .max(crate::BUTTON_MIN_W as u64);
+            (u64_to_u32_sat(w), crate::BUTTON_H)
+        }
+        Props::Toggle(_) => (crate::TOGGLE_W, crate::TOGGLE_H),
+        Props::Slider(_) => (crate::SLIDER_W, crate::SLIDER_H),
+        Props::Progress(_) => (crate::PROGRESS_W, crate::PROGRESS_H),
+        // 波2 批 A（Tabs/Sbar/Badge/Scroll/List）：Tabs 内在 = 页签条高
+        // 48 + 子聚合 max（子 = 内容区面板）；Sbar/Badge = 固定内在叶
+        //（Badge count=0 且无圆点 = 隐藏 → 0×0 空绘）；Scroll/List =
+        // 容器（Scroll = 子聚合宽 × content_height；List = 子聚合宽 ×
+        // item_count×item_h——等高项 v1）。Tabs 子高取 **max** 不取 Σ
+        //（place 面 z 叠放——Stack 同形；Σ 是批 A 半成品错源，多面板
+        // 各异高时会虚高内容区）。
+        Props::Tabs(_) => {
+            let (cw, _, _) = child_agg(nodes, n.first_child, true); // 宽取子 max
+            let (_, ch, _) = child_agg(nodes, n.first_child, false); // 高取子 max（z 叠放）
+            (
+                u64_to_u32_sat(cw.max(crate::TABS_MIN_W as u64)),
+                u64_to_u32_sat(ch.saturating_add(crate::TABS_BAR_H as u64)),
+            )
+        }
+        Props::Sbar(p) => match p.orientation {
+            // 第三批定稿：内在随走向互转（竖 4×200 / 横 200×4——批 A 的
+            // 横定臂是半成品遗留，paint 两态渲染已在位）。
+            Orientation::Vertical => (crate::SBAR_THICK, crate::SBAR_LONG),
+            Orientation::Horizontal => (crate::SBAR_LONG, crate::SBAR_THICK),
+        },
+        Props::Badge(p) => {
+            if p.show_dot {
+                (crate::BADGE_DOT_D, crate::BADGE_DOT_D)
+            } else if p.count == 0 {
+                (0, 0) // count=0 隐藏（desc.rs 语义）
+            } else {
+                // 数字角标随文本（第三批定稿）：宽 = 位档×8 + 8 留白
+                //（1/2/3 位——>99 封顶显 99+ 是 paint 侧文案，位档此处
+                // 单源定宽；批 A 的固宽 32 是半成品遗留）。
+                let chars: u64 = if p.count > 99 { 3 } else if p.count >= 10 { 2 } else { 1 };
+                (
+                    u64_to_u32_sat(
+                        (chars * crate::BUTTON_CHAR_W as u64)
+                            .saturating_add(crate::BADGE_PAD_X as u64),
+                    ),
+                    crate::BADGE_DOT_D,
+                )
+            }
+        }
+        Props::Select(_) => (crate::SELECT_W, crate::BUTTON_H),
+        // 波2 批 D：Input 200×48 单行框；Edit 200×96 三行档；Canvas
+        // 200×200 占位面（自绘协议挂后续刀——内在先定框）。
+        Props::Input(_) => (crate::INPUT_W, crate::INPUT_H),
+        Props::Edit(_) => (crate::EDIT_W, crate::EDIT_H),
+        Props::Canvas(_) => (crate::CANVAS_D, crate::CANVAS_D),
+        // 波2 批 E：DatePick/TimePick 固定内在（日期 96×48 / 时间 64×48
+        // ——数字定宽显示）；Refresh/SwipeItem = 容器（内在随子聚合）。
+        Props::Refresh(_) => {
+            let (cw, ch, _) = child_agg(nodes, n.first_child, true);
+            (u64_to_u32_sat(cw), u64_to_u32_sat(ch))
+        }
+        Props::DatePick(_) => (96, 48),
+        Props::TimePick(_) => (64, 48),
+        Props::Scroll(p) => {
+            let (cw, _, _) = child_agg(nodes, n.first_child, true);
+            (u64_to_u32_sat(cw), p.content_height)
+        }
+        Props::List(p) => {
+            let (cw, _, _) = child_agg(nodes, n.first_child, true);
+            let h = (p.item_count as u64).saturating_mul(p.item_height as u64);
+            (u64_to_u32_sat(cw), u64_to_u32_sat(h))
+        }
+        // 组件七件第二批之交互四件（Check/Radio/Step/Seg——本刀）：内
+        // 在型叶（首批四件同列），固定值起步（几何常量单源 crate::——
+        // lib.rs「组件七件 v1 几何常量」块）。Check/Radio 24×24 标准
+        // 可点方框/圆、Step 120×36 三段（左减号+值+右加号）、Seg =
+        // 段数×80 宽 36 高（u64 累计防段数×段宽溢出）。
+        Props::Check(_) => (crate::CHECK_W, crate::CHECK_H),
+        Props::Radio(_) => (crate::RADIO_W, crate::RADIO_H),
+        Props::Step(_) => (crate::STEP_W, crate::STEP_H),
+        Props::Seg(p) => {
+            let w = p.segment_count as u64 * crate::SEG_SEG_W as u64;
+            (u64_to_u32_sat(w), crate::SEG_H)
+        }
+        // 组件七件第二批之布局三件（Stack/Spacer/Divider——本刀）：
+        // Stack = 子聚合 **max×max**（z 序叠层——与 Col/Row 的 Σ 聚合
+        // 不同源：子全幅叠放时容器内在取最大子尺寸）；Spacer = 0×0 最
+        // 小占位（flex 权重分配挂后续布局刀——final_size 吃满 avail 已
+        // 合义）；Divider = 宽 0 高 thickness（宽随父——final_size 臂）。
+        Props::Stack(_) => {
+            let (mut w, mut h) = (0u32, 0u32);
+            let mut cur = n.first_child;
+            let mut guard = 0usize;
+            while cur != u32::MAX && guard <= nodes.len() {
+                guard += 1;
+                let Some(c) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else { break };
+                if !c.alive {
+                    break;
+                }
+                let next = c.next_sib;
+                w = w.max(c.meas_w);
+                h = h.max(c.meas_h);
+                cur = next;
+            }
+            (w, h)
+        }
+        Props::Spacer(_) => (0, 0),
+        Props::Divider(p) => (0, p.thickness),
+        // 组件第三批七件（Badge/Sbar 已上批 A 块定稿；余五件——本刀）：
+        // Tip = 内在型叶（文本同列——len×8 宽 ×16 高，S8x16 与
+        // BUTTON_CHAR_W 单源）；Collapse = 容器（header 32 恒基 +
+        // expanded 时加子 Σ 高——收起折叠，宽恒子 max）；Chip = 内在型
+        // 叶（标签×8 + 16 留白 ×32 高）；Fab = 内在型叶（空标签 =
+        // 56 圆形，扩展 = 56 + 8 间隙 + 标签×8）；Card = 容器（子聚合
+        // max×max——Stack 同形，final 随父填充走 `_` 摆位）。
+        Props::Tip(p) => (
+            u64_to_u32_sat(p.text.len as u64 * crate::BUTTON_CHAR_W as u64),
+            crate::TIP_H,
+        ),
+        Props::Collapse(p) => {
+            let (w, ch, _) = child_agg(nodes, n.first_child, true);
+            let ch = if p.expanded { ch } else { 0 };
+            (
+                u64_to_u32_sat(w),
+                u64_to_u32_sat(ch.saturating_add(crate::COLLAPSE_HEADER_H as u64)),
+            )
+        }
+        Props::Chip(p) => (
+            u64_to_u32_sat(
+                (p.label.len as u64 * crate::BUTTON_CHAR_W as u64)
+                    .saturating_add(crate::CHIP_PAD_X as u64),
+            ),
+            crate::CHIP_H,
+        ),
+        Props::Fab(p) => {
+            if p.extended_label.is_empty() {
+                (crate::FAB_D, crate::FAB_D)
+            } else {
+                (
+                    u64_to_u32_sat(
+                        (crate::FAB_D as u64)
+                            .saturating_add(crate::FAB_LABEL_GAP as u64)
+                            .saturating_add(p.extended_label.len as u64 * crate::BUTTON_CHAR_W as u64),
+                    ),
+                    crate::FAB_D,
+                )
+            }
+        }
+        Props::Card(_) => {
+            let (mut w, mut h) = (0u32, 0u32);
+            let mut cur = n.first_child;
+            let mut guard = 0usize;
+            while cur != u32::MAX && guard <= nodes.len() {
+                guard += 1;
+                let Some(c) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else { break };
+                if !c.alive {
+                    break;
+                }
+                let next = c.next_sib;
+                w = w.max(c.meas_w);
+                h = h.max(c.meas_h);
+                cur = next;
+            }
+            (w, h)
+        }
+        // P0 尾（批 C/D 已迁出单列——此组清空防 unreachable）
+        // 批 F（末刀三件）：Gauge = 表盘方格 64×64（值条 + 值文本两带）；
+        // Qr = module_count×4 点阵方阵（u64 累计防大版本溢出——21 模块
+        // = 84×84、177 模块 = 708×708）；DragReorder = 手柄列 24×36。
+        Props::Gauge(_) => (crate::GAUGE_D, crate::GAUGE_D),
+        Props::Qr(p) => {
+            let s = (p.module_count as u64).saturating_mul(crate::QR_MODULE_PX as u64);
+            (u64_to_u32_sat(s), u64_to_u32_sat(s))
+        }
+        Props::DragReorder(_) => (crate::DRAG_W, crate::DRAG_H),
+        // P1 尾（占位保持——末件）：SwipeItem 内在应为行高，挂后续布
+        // 局刀，本层 0×0 占位（批 E 视觉已接线；随父填充由 final_size
+        // 占位臂合义）。
+        Props::SwipeItem(_) => (0, 0),
     }
 }
 
@@ -437,6 +622,68 @@ fn final_size(n: &Node, avail_w: i32, avail_h: i32) -> (i32, i32) {
             p.w.map(u32_to_i32_sat).unwrap_or(u32_to_i32_sat(n.meas_w)),
             p.h.map(u32_to_i32_sat).unwrap_or(u32_to_i32_sat(n.meas_h)),
         ),
+        // 组件件（Phase 2 两批）：交互八件 = 内在型叶（Text 同列——恒
+        // 内在 meas_w/h，**不吃 avail**，§4.1 豁免行同律；十字轴拉伸只
+        // 及随父型子）。内在值单源 = intrinsic 各臂（固定几何起步）；
+        // 定尺寸面（SIZE 块）§8.2 表未扩，组件拒块——无双源。
+        Props::Button(_)
+        | Props::Toggle(_)
+        | Props::Slider(_)
+        | Props::Progress(_)
+        | Props::Check(_)
+        | Props::Radio(_)
+        | Props::Step(_)
+        | Props::Seg(_) => (
+            u32_to_i32_sat(n.meas_w),
+            u32_to_i32_sat(n.meas_h),
+        ),
+        // Divider = 横线半随父型：高恒内在（thickness），宽吃 avail
+        //（随父——Col/Row/Stack 里随容器宽拉通，intrinsic 宽 0 不占聚
+        // 合）。
+        Props::Divider(_) => (avail_w, u32_to_i32_sat(n.meas_h)),
+        // 波2 批 A：Tabs/Sbar/Badge = 内在型叶（Text 同列——恒内在，
+        // 不吃 avail）；Scroll/List = 容器随父填充（内在已上表）。SIZE
+        // 块同拒。
+        Props::Tabs(_)
+        | Props::Sbar(_)
+        | Props::Badge(_)
+        // 组件第三批：Tip/Chip/Fab = 内在型叶同列（Badge/Sbar 批 A 已
+        // 入；SIZE 块同拒）。
+        | Props::Tip(_)
+        | Props::Chip(_)
+        | Props::Fab(_)
+        | Props::Select(_)
+        | Props::Input(_)
+        | Props::Edit(_)
+        | Props::Canvas(_)
+        | Props::DatePick(_)
+        | Props::TimePick(_) => (u32_to_i32_sat(n.meas_w), u32_to_i32_sat(n.meas_h)),
+        // Collapse = 纵向容器（Col 同形）：十字轴吃 avail、主轴内在
+        //（收起折叠至 header 高——expanded 几何位单源 intrinsic）。
+        Props::Collapse(_) => (avail_w, u32_to_i32_sat(n.meas_h)),
+        // 组件件占位余员（占位同前）：随父填充；Stack 的全幅叠放子分
+        // 配由 `_` 臂天然合义（z 序叠层 = Root 型全幅）；Spacer 吃满
+        // avail（flex 权重分配挂后续布局刀）。SIZE 块同拒。
+        Props::Scroll(_)
+        | Props::List(_)
+        | Props::Stack(_)
+        | Props::Spacer(_)
+        // P0 尾三件批 D 已迁内在型叶（Input/Edit/Canvas——上表单列）；
+        // 余件占位随父填充。SIZE 块同拒（§8.2 表未随本批扩——无双源）。
+        // P1 尾五件（占位同前三批）：随父填充；Refresh 的子分配由 `_`
+        // 臂天然合义（包裹容器 = Root 型全幅给子）；SIZE 块同拒。
+        | Props::Refresh(_)
+        | Props::SwipeItem(_)
+        // 批 E：DatePick/TimePick 迁内在型叶（上表）；P2 余件（占位同
+        // 前四批）：随父填充；Card 的子分配由 `_` 臂天然合义（包裹容器
+        // = Root 型全幅给子——intrinsic 已上表取子 max）；SIZE 块同拒
+        //（§8.2 表未随本批扩——无双源）。
+        | Props::Card(_) => (avail_w, avail_h),
+        // 批 F（末刀）：Gauge/Qr/DragReorder 迁内在型叶（Text 同列——
+        // 恒内在不吃 avail；内在单源 = intrinsic 各臂，SIZE 块同拒）。
+        Props::Gauge(_)
+        | Props::Qr(_)
+        | Props::DragReorder(_) => (u32_to_i32_sat(n.meas_w), u32_to_i32_sat(n.meas_h)),
     }
 }
 
@@ -661,8 +908,93 @@ fn place_children(
                 cur = next;
             }
         }
-        // Root（及其余不可达——Rect/Text/Image/Icon 已在叶卫拦下）：viewport
-        // 整给——子各自 (0,0) 起满幅
+        // Root/Stack（及其余不可达——Rect/Text/Image/Icon 已在叶卫拦
+        // 下）：分配面整给——子各自 (0,0) 起满幅。对 Stack 即叠层语义
+        // 本义：全子同位叠放（前序子在下、后序子盖上 = z 序），内在型
+        // 子（Text/组件叶）保内在尺寸钉 (0,0)、随父型子（Rect w/h
+        // None/Spacer）吃满——**下划线臂对叠层天然合义**（本刀确认）。
+        Props::Tabs(_) => {
+            // 波2 批 A：Tabs = 页签条（顶 48）+ 内容区（余高全幅给子
+            // ——Root 型全幅叠放的纵向偏移版；多面板 z 叠放，active 面
+            // 由 app 摆子序控制（后插者盖上））。
+            let content_h = i64_to_i32_sat((h as i64 - crate::TABS_BAR_H as i64).max(0));
+            let mut cur = first;
+            let mut guard = 0usize;
+            while cur != u32::MAX && guard <= nodes.len() {
+                guard += 1;
+                let Some(c) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else { break };
+                let next = c.next_sib;
+                place(
+                    nodes, cur, ncx, ncy, 0, crate::TABS_BAR_H, w, content_h, force_kids,
+                    recomputed, old_abs, vp, damage, placed, hops + 1,
+                );
+                cur = next;
+            }
+        }
+        Props::Scroll(p) => {
+            // 波2 批 A：Scroll = 视口容器：子按内在全幅摆放、纵向上移
+            // offset_y（内容高于视口时滚动；paint 期 clip 由双面 clip
+            // 横向原语挂账——v1 无 clip 面，子溢出视口可见（保守正确
+            // ——launcher 消费面自管 offset 域））。
+            let off = p.offset_y as i64;
+            let mut cur = first;
+            let mut guard = 0usize;
+            while cur != u32::MAX && guard <= nodes.len() {
+                guard += 1;
+                let Some(c) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else { break };
+                let next = c.next_sib;
+                place(
+                    nodes, cur, ncx, ncy, 0, i64_to_i32_sat(-off), w, h, force_kids,
+                    recomputed, old_abs, vp, damage, placed, hops + 1,
+                );
+                cur = next;
+            }
+        }
+        Props::Collapse(p) => {
+            // 组件第三批：Collapse = 折叠组容器——expanded 时子在 header
+            //（32）下方 Col 型游标排列（宽吃满、高按内在累进）；收起 →
+            // 子不摆位（paint 不发射 + hit 不命中三面同守卫——陈旧
+            // bounds 一致跳过，收起瞬时旧界 damage 由本节点新旧界收）。
+            if !p.expanded {
+                return;
+            }
+            let mut cursor: i64 = u32_to_i32_sat(crate::COLLAPSE_HEADER_H) as i64;
+            let mut cur = first;
+            let mut guard = 0usize;
+            while cur != u32::MAX && guard <= nodes.len() {
+                guard += 1;
+                let Some(c) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else { break };
+                let next = c.next_sib;
+                let ch_h = u32_to_i32_sat(c.meas_h);
+                place(
+                    nodes, cur, ncx, ncy, 0, i64_to_i32_sat(cursor), w, ch_h, force_kids,
+                    recomputed, old_abs, vp, damage, placed, hops + 1,
+                );
+                cursor += ch_h as i64;
+                cur = next;
+            }
+        }
+        Props::List(p) => {
+            // 波2 批 A 补账：List = 等高行容器——行序子 y = i×item_height
+            //、x=0 宽吃满、行槽高 = item_height（批 A 半成品落 `_` 兜臂
+            //全叠 (0,0)；内在 item_count×item_height 已单源，摆位同源）。
+            let ih = u32_to_i32_sat(p.item_height) as i64;
+            let mut i: i64 = 0;
+            let mut cur = first;
+            let mut guard = 0usize;
+            while cur != u32::MAX && guard <= nodes.len() {
+                guard += 1;
+                let Some(c) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else { break };
+                let next = c.next_sib;
+                place(
+                    nodes, cur, ncx, ncy, 0, i64_to_i32_sat(i.saturating_mul(ih)), w,
+                    i64_to_i32_sat(ih), force_kids,
+                    recomputed, old_abs, vp, damage, placed, hops + 1,
+                );
+                i += 1;
+                cur = next;
+            }
+        }
         _ => {
             let mut cur = first;
             let mut guard = 0usize;

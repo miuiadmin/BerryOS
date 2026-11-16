@@ -1,6 +1,6 @@
 [package]
 name = "hello"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 # G-eco-c：首个经 rootfs 全链拉起的程序（fw_cfg → ROOTFS static → 只读
 # VMO → svcmgr cpio/ELF 加载 → process_start）。与其他 bin 不同：**产物是

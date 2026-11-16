@@ -42,14 +42,15 @@
 #      族前——EFI 路无盘亦打）。
 #   5. P5 RX 交互相（**rootfs+FIFO 合相**，P5 A-1 起为第三跑；注入序列
 #      P5 v0 起扩为编辑三段、P6 A-6 起四段、C-0 刀 4 起五段、C-1 刀 5 起六段、
-#      C-4b 起七段、GUI-4 段② 起八段（+h QMP 注入往返））：三拉 QEMU 带
-#      -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），78 标记
-#      （boot 28 + rootfs 50——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
+#      C-4b 起七段、GUI-4 段② 起八段（+h QMP 注入往返）、sim-S1 M3 起
+#      +serial1 battery 快照四流（OK×2/BAD/STALE，ACK 宿主逐字节对拍））：
+#      三拉 QEMU 带 -fw_cfg rootfs + FIFO stdin（holder 子进程占住写端防 EOF），
+#      88 基础标记 + RX 专属 SIMBAT/BATT/PWRKEY（boot 32 + rootfs 56——PIPE ok/VIRTIO ok/VBLK ok/BLKD ok/FAT ok/
 #      FATW ok/NET ok ping=/DNS ok addr=/TCP ok echo=/LSN ok n=7/TCPS ok echo=/
 #      APP ok n=/APPUI ok n=/
 #      DIR ok n=/U1 ok/U2 ok/U3 ok/B1 ok n=4/DF ok/U4 ok/TAB ok/INT ok/POLL ok/
 #      EVS ok n=2/SKT ok n=3/EPL ok n=8/NETS ok n=2/MMP ok n=9/CLK ok n=6/
-#      SIG ok n=6/PS ok n=/BC ok/
+#      SIG ok n=6/CLI ok n=/TERM ok n=/PS ok n=/BC ok/
 #      M3DEMO ok n=5/THR ok/INPUT ok 在列 = bsh 已进交互读循环/virtio 探测与块设备 IO/块设备服务
 #      消费链/FAT 只读底座与**落盘写**/网络往返与网络服务/TCP 客户端与 TCP
 #      服务/TCP 服务端监听面（A2-2 段③ hostfwd 环回自连自验）/.bap 应用拉起
@@ -106,7 +107,7 @@
 #      破坏屏蔽态/EOI 漏发类 bug 的死状 = 冻而不死，kill -0 活性检抓不到）。
 #   6. C-0 刀 4 FAT 子目录相（第四跑）：盘 = mkfat **--fixture 模式**（fixture
 #      专列 DATA/ 目录 + DATA/NOTE.TXT——默认盘不含，默认盘字节零漂移硬线
-#      不破；独立盘 disk_dirs.img，与 disk.img 链零交集），78 标记载明全链
+#      不破；独立盘 disk_dirs.img，与 disk.img 链零交集），88 标记载明全链
 #      在目录盘上照跑后注入三段（断言与注入行互非子串 + 顺序防回声）：
 #      `ls DATA` → grep 'NOTE.TXT'（READDIR FAT 回落链走查——断言先于一切
 #      含 NOTE.TXT 的注入行回显）→ `cat DATA/NOTE.TXT` → grep
@@ -115,7 +116,7 @@
 #      类型冲突面）。
 #   7. P6 A-6 FAT 持久化相（第五跑）：**不重造盘**（复用第 5 相已写的
 #      disk.img——mkfat 重产 = 持久化零验收；disk_dirs.img 不复用——无
-#      跨盘盘混），78 标记载明写过的盘再起（bsh FATW 自验走覆写路径 =
+#      跨盘盘混），88 标记载明写过的盘再起（bsh FATW 自验走覆写路径 =
 #      旧链回收/新链分配幂等重过）+ 注入 `cat OUT.TXT` → grep 'f42t'——
 #      `>` 落的是真扇区、跨 boot 存活。盘 cache writeback=off：QEMU 由
 #      SIGTERM 终止，writeback 模式可能不刷页缓存（所有 -drive 行统一，
@@ -146,7 +147,8 @@
 #
 # 注意：QEMU TCG 下 CNTV tick 实测 ≈ SLICE_HZ/2（见 规则/08-QEMU与仿真.md / 雷册 §A8），
 # 切换率 ≈5/s，100 次切换 ≈20s，故金丝雀截止 180s 足够宽。
-# 调试：SMOKE_KEEP_LOG=1 just smoke 保留串口日志不删。
+# 调试：SMOKE_KEEP_LOG=1 just smoke 保留串口日志不删（M1 起失败自动保留
+# ——非零退出码即留，无需手动设变量）。
 set -u
 
 # 内核路径解析收敛在 paths.sh（单一事实源，justfile/CI 同源；含非交互 PATH 修补）。
@@ -170,8 +172,10 @@ python3 "$(dirname "$0")/size.py" --assert-flip "$KERNEL" \
 python3 "$(dirname "$0")/gen_abi.py" --check \
   || { echo "smoke: FAIL: ABI 单源守卫失败（改了 abi.toml 跑 just abi-gen）" >&2; exit 1; }
 
-DEADLINE_BOOT=120    # 秒：boot 全部标记到齐（裸相）
-DEADLINE_ROOTFS=420  # 秒：rootfs/RX/持久化三相标记到齐——P6 A-6 起 FATW
+# 秒：boot 全部标记到齐（裸相）。帽只兜结构性挂死不赌快；env 可调——
+# 自托管同机多 run 并行分抢核时 TCG 拖慢（技能坑表），CI 里放宽到 360。
+DEADLINE_BOOT="${SMOKE_DEADLINE_BOOT:-120}"
+DEADLINE_ROOTFS=600  # 秒：rootfs/RX/持久化三相标记到齐——P6 A-6 起 FATW
                      # 自验含整链 commit（fsmgr 侧 ~13 次串行扇区 RPC，TCG
                      # 下每次 ~0.8s）+ GET 读回 ≈ +30-40s，120s 结构性不够；
                      # T-d 起 svcmgr TCPS 三 op（每 op 一轮 TCP 会话相位，
@@ -207,9 +211,17 @@ DEADLINE_ROOTFS=420  # 秒：rootfs/RX/持久化三相标记到齐——P6 A-6 �
                      # 不能倒）；**A3-3 起 SKT 链入 bsh 尾**（evs 后：
                      # ⓪ client 段单连接 RT ≈ T-c TCP 同量级 + ①纯本地
                      # 面 + ②两连接对拍 ≈ EVS 同量级——合计每相估
-                     # +10-30s，420 帽首跑盯实测，压力显性再升）
+                     # +10-30s，420 帽首跑盯实测，压力显性再升）；
+                     # **X-5 起 420→600**：musl 族 demand 化后逐页
+                     # fault→arm→0x23→醒往返 TCG 实测 ≈6 页/s（2026-11-08
+                     # 净窗复跑 kick 行定锚），hexyl 工作集 ~150-250 页
+                     # = +50-90s 装载（eager 时代 spawn 全幅预拷即完），
+                     # U1/APP 批同机制小工作集已消化；两跑同脸缺
+                     # HEXYL ok（verify 10s 帽误判慢为死，svcmgr 侧另修
+                     # HEXYL_EOF_CAP）+ 全链余量见底，依「压力显性再升」
+                     # 政策升 600。
 DEADLINE_CANARY=180  # 秒：等 ≥3 条 switches 金丝雀
-DEADLINE_BOOTC=420   # 秒：B4 掉电 Boot C 恢复终验标记到齐。帽史：初值 300
+DEADLINE_BOOTC=600   # 秒：B4 掉电 Boot C 恢复终验标记到齐。帽史：初值 300
                      # 沿 rootfs 相旧帽（Boot C = 同源 bsh 全链重跑），但
                      # B-1/C-5/A2-3/A3-3 历次加链只升了 DEADLINE_ROOTFS
                      #（300→420），Boot C 未跟——帽债实锤于 S-3c c-1 归因
@@ -220,20 +232,25 @@ DEADLINE_BOOTC=420   # 秒：B4 掉电 Boot C 恢复终验标记到齐。帽史�
                      # c-1；420 对齐 DEADLINE_ROOTFS（同源负载同帽口径，
                      # A2-3 升帽先例同型：帽只兜结构性挂死，常态 CD ok
                      # ~285-305s + TCG 波动 ±5s）。
-DEADLINE_BOOTA=300   # 秒：B4 掉电 Boot A FAT ok 到齐（FAT 5000 前缀段）。
+DEADLINE_BOOTA=600   # 秒：B4 掉电 Boot A FAT ok 到齐（FAT 5000 前缀段）。
                      # 帽史：初值 240（内联），同族帽债随 Boot B 一并勘正
                      #（2026-11-01）：归因复现实测 FAT ok 落点 ~200-206s（基线/
                      # c-1 双跑），c-1 源致 +2% + TCG 波动 ±5s 下 240 余量仅
                      # ~10-15%——链再加即重蹈；300 = 阶梯对齐链深（A 守 FAT
                      # 前缀 < B 守 FATW < C 守全链 CD），帽只兜结构性挂死。
-DEADLINE_BOOTB=360   # 秒：B4 掉电 Boot B FATW ok 到齐（FAT 5000 + FATW 3000）。
+                     # 300→600（2026-11-09，CI 首跑 B4）：ubuntu-latest TCG 实测
+                     # 同源 88 标记链 boot→到齐 ~6m30s（rootfs/RX/FAT 子目录/
+                     # 持久化四相一致），300s 结构性必红；对齐 DEADLINE_ROOTFS
+                     # 同帽口径（A/B/C 同步抬，B4 相 CI 首验实录 Boot A @300s
+                     # 仅至 SIG ok——bsh 自验族尚余 PS/BC/M3DEMO/FAT 5000）。
+DEADLINE_BOOTB=600   # 秒：B4 掉电 Boot B FATW ok 到齐（FAT 5000 + FATW 3000）。
                      # 帽史：初值 240（内联），2026-11-01 S-3c c-1 复验八跑实炸：
                      # FATW ok 未到（fail dump switches 钟 @2000 仍在爬 = 慢而非
                      # 断；对照同 c-1 首跑过线态 FAT @sw1600→FATW @sw1900，本跑
                      # FAT @sw1700 慢 ~6% = c-1 源致 +2% + TCG 波动），外推 FATW
                      # ~245-250s 撞穿 240——与 Boot C 同债族早一相发作；360 ≈
                      # 最坏观测 ×1.45（与 Boot C 420/304 同口径）。
-# 标记单源：裸相 28 + rootfs 50 双数组抽出 tools/markers.sh（smoke-smp.sh
+# 标记单源：裸相 32 + rootfs 56 双数组抽出 tools/markers.sh（smoke-smp.sh
 # 同源消费——原「复制+awk 计数对拍」方案退役，S-5 后测试基建收尾刀）。
 source "$SCRIPT_DIR/markers.sh"
 
@@ -268,6 +285,10 @@ QMP_DIR=""
 QMP_SOCK=""
 
 cleanup() {
+  # M1 失败必留：trap 传脚本退出码——非零（任一相失败/断言红）时串口与
+  # 辅助日志一律保留（与人记得设 SMOKE_KEEP_LOG=1 的旧行为并存，成功流
+  # 行为不变仍删）。
+  rc=${1:-0}
   if [ -n "$QEMU_PID" ] && kill -0 "$QEMU_PID" 2>/dev/null; then
     kill "$QEMU_PID" 2>/dev/null
     wait "$QEMU_PID" 2>/dev/null
@@ -294,7 +315,7 @@ cleanup() {
     kill "$SKT_PID" 2>/dev/null
     wait "$SKT_PID" 2>/dev/null
   fi
-  if [ -n "${SMOKE_KEEP_LOG:-}" ]; then
+  if [ -n "${SMOKE_KEEP_LOG:-}" ] || [ "$rc" -ne 0 ]; then
     for lg in "${LOGS[@]}"; do
       echo "smoke: 串口日志保留：$lg" >&2
     done
@@ -303,6 +324,8 @@ cleanup() {
     [ -n "$ECHO_LOG" ] && echo "smoke: echod 日志保留：$ECHO_LOG" >&2
     [ -n "$EVS_LOG" ] && echo "smoke: evsclient 日志保留：$EVS_LOG" >&2
     [ -n "$SKT_LOG" ] && echo "smoke: sktclient 日志保留：$SKT_LOG" >&2
+    # 二轮审计补：失败时 QMP_DIR 同为现场（含 sock）——保留必提示口径对齐。
+    [ -n "$QMP_DIR" ] && echo "smoke: QMP 目录保留：$QMP_DIR" >&2
   else
     rm -f "${LOGS[@]}"
     [ -n "$ECHO_LOG" ] && rm -f "$ECHO_LOG"
@@ -311,28 +334,55 @@ cleanup() {
     # GUI-4 段②：QMP 临时目录（-rf = 目录连 sock 一起收）。
     [ -n "$QMP_DIR" ] && rm -rf "$QMP_DIR"
   fi
+  # 端口互斥锁释放（本会话持有才清——防误删他人锁）。
+  if [ -n "${SMOKE_LOCK:-}" ] && [ "$(cat "$SMOKE_LOCK/pid" 2>/dev/null)" = "$$" ]; then
+    rm -rf "$SMOKE_LOCK"
+  fi
 }
-trap cleanup EXIT
+trap 'cleanup $?' EXIT
+
+# 自托管互斥：echod/hostfwd 端口 18080-83 与本地开发、其他 smoke 会话
+# （runner CI 与并行验证同机）结构性冲突——EADDRINUSE 假红。mkdir 原子锁
+# 序列化全库 smoke（trap 已收；锁目录以 PID 冠名防陈尸，等待上限 40min
+# 对齐最长相帽）。
+SMOKE_LOCK=/tmp/berryos-smoke.lock
+if mkdir "$SMOKE_LOCK" 2>/dev/null; then
+  echo "$$" > "$SMOKE_LOCK/pid"
+else
+  held_by=$(cat "$SMOKE_LOCK/pid" 2>/dev/null || echo '?')
+  if ! kill -0 "$held_by" 2>/dev/null; then
+    echo "smoke: 陈锁清障（holder pid=$held_by 已死）"
+    rm -rf "$SMOKE_LOCK" && mkdir "$SMOKE_LOCK" && echo "$$" > "$SMOKE_LOCK/pid"
+  else
+    echo "smoke: 端口锁被 pid=$held_by 持有（另一 smoke 在跑），等待…"
+    waited=0
+    while ! mkdir "$SMOKE_LOCK" 2>/dev/null; do
+      sleep 10; waited=$((waited+10))
+      [ $waited -ge 2400 ] && { echo "smoke: FAIL: 端口锁等待超时（40min）——另一 smoke 会话长跑未释放" >&2; exit 1; }
+      kill -0 "$held_by" 2>/dev/null || { rm -rf "$SMOKE_LOCK"; mkdir "$SMOKE_LOCK" && echo "$$" > "$SMOKE_LOCK/pid"; break; }
+    done
+  fi
+fi
 
 fail() {
   echo "smoke: FAIL: $1" >&2
   # 失败必带现场：串口日志尾部直接进 stderr（CI 里即是诊断依据）。
-  echo "---- 串口日志尾部（$LOG）----" >&2
+  echo "---- 串口日志尾部（${LOG}）----" >&2
   tail -40 "$LOG" >&2
   # T-c 对抗审查补：echod 宿主侧死因（无异常处理，traceback 只落 ECHO_LOG）——
   # 无 SMOKE_KEEP_LOG 的 CI 失败 run 也要看见，随失败即打印不留文件。
   if [ -n "$ECHO_LOG" ] && [ -s "$ECHO_LOG" ]; then
-    echo "---- echod 日志尾部（$ECHO_LOG）----" >&2
+    echo "---- echod 日志尾部（${ECHO_LOG}）----" >&2
     tail -10 "$ECHO_LOG" >&2
   fi
   # A2-3 同款：evsclient 死因（重试诊断只落 EVS_LOG）。
   if [ -n "$EVS_LOG" ] && [ -s "$EVS_LOG" ]; then
-    echo "---- evsclient 日志尾部（$EVS_LOG）----" >&2
+    echo "---- evsclient 日志尾部（${EVS_LOG}）----" >&2
     tail -10 "$EVS_LOG" >&2
   fi
   # A3-3 同款：sktclient 死因。
   if [ -n "$SKT_LOG" ] && [ -s "$SKT_LOG" ]; then
-    echo "---- sktclient 日志尾部（$SKT_LOG）----" >&2
+    echo "---- sktclient 日志尾部（${SKT_LOG}）----" >&2
     tail -10 "$SKT_LOG" >&2
   fi
   echo "--------------------------------" >&2
@@ -353,7 +403,7 @@ evs_client_wait() {
   tc=$(date +%s)
   while ! grep -q 'EVS client ok n=2' "$EVS_LOG" 2>/dev/null; do
     kill -0 "$EVS_PID" 2>/dev/null \
-      || fail "evsclient 提前退出（$tag）：$(tail -5 "$EVS_LOG" | tr '\n' ' ')"
+      || fail "evsclient 提前退出（${tag}）：$(tail -5 "$EVS_LOG" | tr '\n' ' ')"
     [ $(( $(date +%s) - tc )) -gt 30 ] \
       && fail "$tag EVS client 30s 未对拍完成（guest EVS ok 已到——查 EVS_LOG 重试诊断）"
     sleep 1
@@ -388,7 +438,7 @@ skt_client_wait() {
   tc=$(date +%s)
   while ! grep -q 'SKT client ok n=2' "$SKT_LOG" 2>/dev/null; do
     kill -0 "$SKT_PID" 2>/dev/null \
-      || fail "sktclient 提前退出（$tag）：$(tail -5 "$SKT_LOG" | tr '\n' ' ')"
+      || fail "sktclient 提前退出（${tag}）：$(tail -5 "$SKT_LOG" | tr '\n' ' ')"
     [ $(( $(date +%s) - tc )) -gt 30 ] \
       && fail "$tag SKT client 30s 未对拍完成（guest SKT ok 已到——查 SKT_LOG 重试诊断）"
     sleep 1
@@ -422,7 +472,7 @@ assert_marker() {
   fi
 }
 
-echo "smoke: QEMU 启动（$KERNEL）"
+echo "smoke: QEMU 启动（${KERNEL}）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
   < /dev/null > "$LOG" 2>&1 &
 QEMU_PID=$!
@@ -441,7 +491,35 @@ while :; do
   [ $(( $(date +%s) - t0 )) -gt "$DEADLINE_BOOT" ] && fail "boot 标记 ${DEADLINE_BOOT}s 未到齐，缺：$missing"
   sleep 1
 done
+# G-ver-2（版本管理标准 §3）：boot banner 形态断言——首匹配行须为
+# `BerryOS boot <semver> (<ident>[ rustc<ver> dbg|rel])`（版本编译期同源
+# env!("CARGO_PKG_VERSION")；ident = describe 形 vN.N.N-N-g<hash>[-dirty]/
+# 短哈希/nogit（build.rs git_ident 注入，a4a6286 起尾追工具链+profile
+# 元数据——rustc 版本未知时为 rustc?）。ident 无兼容语义不参与比较（标准
+# §2 表），门只锚 semver 段 + 括号结构。上方轮询的
+# "BerryOS boot" 子串断言（markers.sh MARKERS[0]）原样保留——本行只加形态
+# 边不松子串边；置轮询到齐后 = banner 行必已在席，断言零竞态。
+grep -m1 'BerryOS boot' "$LOG" | grep -Eq 'BerryOS boot [0-9]+\.[0-9]+\.[0-9]+ \([A-Za-z0-9.-]+( rustc[A-Za-z0-9.?]+ (dbg|rel))?\)' \
+  || fail "boot banner 形态缺：首匹配行应为 'BerryOS boot <semver> (<ident>[ rustc<ver> dbg|rel])'（版本管理标准 §3 G-ver-2）；实得：$(grep -m1 'BerryOS boot' "$LOG" || echo '（日志无 BerryOS boot 行）')"
+# 标准 §6 执法化（审计洞②：原纯人律无机器门）：ident 非 nogit 拒——nogit
+# 标识产物不得对外发布（无归因能力的构建仅限本地调试），冒烟门是发布链
+# 前闸，nogit 构建过门即违规。门 = 首 banner 行含 nogit 即红（行内唯一可
+# 含该串的段 = ident——semver/rustc/profile 段均数字与固定词）；置形态
+# 断言后 = banner 行必已在席零竞态，与 smoke-image/smoke-smp 两路同形同
+# 正则（三脚本复制非各写各的）。
+grep -m1 'BerryOS boot' "$LOG" | grep -q 'nogit' \
+  && fail "boot banner ident 为 nogit：nogit 标识产物不得对外发布/进发布链（版本管理标准 §6——无归因能力的构建仅限本地调试）；实得：$(grep -m1 'BerryOS boot' "$LOG")"
 echo "smoke: boot 标记 ${#MARKERS[@]}/${#MARKERS[@]} 到齐"
+
+# —— 分相门控（CI 分层用）：SMOKE_PHASES=boot 时 boot 相绿即收——
+# 自托管慢 runner（无 KVM x86_64 TCG）跑不完四相全链 wall-clock，CI 分层：
+# 服务器跑 boot 相（轻），四相全链在快机（Mac 本地/后续 KVM 机）跑。
+# 未设或非 boot = 原行为不变（四相全链）。
+if [ "${SMOKE_PHASES:-all}" = "boot" ]; then
+  echo "smoke: SMOKE_PHASES=boot 止于 boot 相（分层 CI 轻面）"
+  cleanup 2>/dev/null || true
+  exit 0
+fi
 
 # —— 阶段 2：switches 金丝雀（诊断轴，非永久硬门）——
 # 2026-11-06 定谳：TCG 环境/负载形态下 timer IRQ 打 UART 会与 rootfs I/O
@@ -863,6 +941,25 @@ QEMU_PID=$!
 # spawn = 零 fs 盘面，链位置 clk 后 fat 族前（A 系契约位，EFI 路无盘亦打
 # SIG）；无拓扑降级门，失败即 park loud。"SIG ok" 与现役标记两两互非子串
 # （现役无 `XSIG ok` 形态在册——前邻特例不需要）。
+# 命令行体验刀：+ CLI ok n= / + TERM ok n=——bsh 六内建（clear/uname/
+# uptime/sleep/type/history）行为面 + 哑终端管道契约钉板（CLI 六步：
+# ⓪clear `\x1b[2J\x1b[H` 11B 逐字节对拍+带参照打幂等 ①uname 前缀+
+# 带参拒 ②uptime `up <N>s` 数值域+带参拒 ③sleep 1s 时钟差分 [1s,30s]
+# TCG 宽带+拒面四连（缺失/非数字/负数/超 60s 帽）+sleep 0 域内放行
+# ④type 三分支逐字节对拍（内建档 echo/bin 档 hello——int_selftest 同款
+# 依赖/not-found 档码 1 空数据）+缺参拒+BUILTINS 单源六新内建在册
+# ⑤history 两条目 `N  cmd` 环回读+空环空输出+带参拒；TERM 两步：⓪spawn
+# 子 bsh（--no-selftest 跳链直进交互循环+stdin_feed 喂两命令+fs_gifts
+# 四元同参 run_capture_fs 先例）私有 stdout 收齐 `bsh> `×2/回显行/
+# berryterm 结果行/BerryOS aarch64 结果行——提示符/回显/结果混流同一
+# 字节流（GUI 终端应用的地基契约）；①feeder EOF 后子 bsh 空读续读恒驻
+# → terminate(130)+reap 真码 130 收口（C-4b 先例））全过才打——rootfs 相
+# 第 55/56 标记，**命令行体验刀验收线**。CLI 前缀式 n=（步数单源在 bsh，
+# FS ok n= 同款）；零 fs 盘面（render_cmd 直调+cpio 查档+usleep 补桩+
+# spawn 通用装配），链位置 sig 后 fat 族前（A 系契约位，EFI 路无盘亦打
+# CLI/TERM——smoke-image ECO canon 同面）；无拓扑降级门，失败即 park
+# loud。"CLI ok"与"CLK ok"位 3 I≠K 互非子串、"TERM ok"词头现役唯一
+#（markers.sh 注互指）——两串均不进 assert_marker 特判面。
 # GUI-7（appd [ui] 资产面）：+ APPUI ok n=——rootfs 相第 24 标记，
 # **GUI-7 验收线**（DOC-1 勘误：原注误标「第 46」——46 = THR，
 # markers.sh 枚举为准）。带 [ui] 声明的 .bap 逐项对账：icon 声明 ↔ 包内
@@ -919,15 +1016,30 @@ done
 # 标记清单由单源数组生成（f4 复验 minor：手写 47 元素清单 = 数组外第三处
 # 复制物；元素不含 `)`/引号约束即为此处安全内插——markers.sh 头注）。
 rootfs_list=$(printf '%s + ' "${ROOTFS_MARKERS[@]}"); rootfs_list=${rootfs_list% + }
-echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（$rootfs_list）"
+echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（${rootfs_list}）"
 
-# app-0 a-2 证据层：APPDEMO（console=true）子自证输出——谓词 `APP ok n=`
-# 证明「全部槽拉起 + reap 真码 0」，本行证明 console 能力面真把 stdout
-# 接到了串口（reap 0 而输出丢失 = 能力面静默断，谓词层抓不到）。小写
-# `app ` 前缀与全部大写标记面互非子串（与谓词分立的两层——HEXYL ok 的
-# 「私有通道收齐 + 基准对拍才打」同款分层思想）。
-grep -q 'app APPDEMO up' "$LOG" \
-  || fail "app APPDEMO up 缺失（console=true 能力面断——appdemo 未见自证输出；查 eco: app 行）"
+# P2 治理钉板（2026-11-16 跨分卷评估）：多卷形态断言——rootfs1.cpio 在席
+#（vols 上界 ≤4 由帽 128MiB / 卷 32MiB 推出，[2-9] 以此为前提——单改
+# split 参数后须同步此形态）
+# 则 ROOTFS ok 行必须 vols>=2（P1 的 vols= 打点）。防 rootfs 将来瘦身后多卷
+# 覆盖「形态碰巧」静默失守：跨卷条目读取的隐性覆盖由本断言升格为钉板。
+if [ -f rootfs1.cpio ]; then
+  grep -q 'ROOTFS ok src=.*vols=[2-9]' "$LOG"     || { echo "smoke: FAIL: rootfs1.cpio 在席但 vols<2——多卷装载退化（分卷线失守）" >&2; exit 1; }
+fi
+
+# app-0 a-2 证据层（波 4 裁决 B 随动重裁）：原断 `app APPDEMO up`（boot 批
+# 拉起 console=true app 的串口自证）——波 4 六应用 + appdemo 画廊均为常驻
+# park 形 GUI app，boot 批改「[ui] 入册不拉起」（svcmgr 裁决 B，W4-RECON
+# §1.7 铁律：常驻形由 boot 批拉起 = app_reap_tail 永等 = `APP ok` 缺失）。
+# rootfs 相新证据 = 逐 [ui] 槽 `app <id> gui deferred` 记账行（svcmgr 打，
+# 8 槽全在 = 入册面完整；任一缺席已由 `APP ok n=` 谓词兜底 FAIL，此处逐
+# 行断 = 失败可归因到具体 app）。console=true 的串口能力面证据随迁 GUI
+# 形（gui8-smoke 点击 spawn 的 `app APPDEMO up`/`fs ok` 行——launcher
+# SPAWN 路径 console 同接线）。
+for id in APPDEMO SETTINGS FILES PHOTOS CAMERA CONTACTS MMS BROWSER; do
+  grep -q "app $id gui deferred" "$LOG" \
+    || fail "app $id gui deferred 缺失（裁决 B 入册记账——boot 批未见 [ui] 槽入册；查 eco: app 行）"
+done
 # A2-3：guest EVS ok 已在标记面到齐——收本相 client 对拍结果（30s 帽只盖
 # 透传余量；compare 与 guest 打标几乎同时）。
 evs_client_wait "rootfs 相"
@@ -936,7 +1048,8 @@ skt_client_wait "rootfs 相"
 
 # —— 阶段 4：P5 RX 交互相（rootfs+FIFO 合相：内核 RX 中断 + console 行编辑
 # + bsh stdin 转发 + bsh 应答）——
-# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 28 + rootfs 50 = 78
+# stdin 换 FIFO：holder（sleep 占写端）防 EOF 断流；boot 32 + rootfs 56 = 88
+#（sim-S2 A2 双载体：EL1 ktest +FRZCYC / EL0 thrchild+svcmgr +FRZ）
 # 标记到齐（PIPE ok 在列 = bsh selftest 全过、已进交互读循环——注入的行才
 # 有人收；VIRTIO/VBLK/BLKD/FAT/FATW/NET ok 在列 = MMIO 探测、块设备 IO、块
 # 设备服务消费链、FAT 只读底座+落盘写与网络往返全过（DNS ok addr= = 网络
@@ -984,18 +1097,22 @@ echo "smoke: QEMU 启动（RX 交互相：rootfs + FIFO stdin + virtio-blk + vir
 #（brew 新版 QEMU 已废 server=nowait 简写——解析期即拒，首跑实录）。
 QMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/berryos-qmp.XXXXXX")
 QMP_SOCK="$QMP_DIR/sock"   # unix socket 路径帽 107B——mktemp 短前缀必达
+SIM_SOCK="$QMP_DIR/sim1"   # sim-S1 serial1（与 QMP 同临时目录统一 cleanup）
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
   $FWCFG \
+  -fw_cfg name=opt/berry/simdev,string=1 \
   -global virtio-mmio.force-legacy=false \
   -drive if=none,id=drv0,format=raw,file=disk.img,cache.writeback=off \
   -device virtio-blk-device,drive=drv0 \
   -netdev user,id=n0,hostfwd=tcp::18081-:18081,hostfwd=tcp::18082-:18082,hostfwd=tcp::18083-:18083 -device virtio-net-device,netdev=n0 \
   -device virtio-tablet-device,id=tab0 \
+  -serial mon:stdio \
+  -serial unix:"$SIM_SOCK",server=on,wait=off \
   -qmp unix:"$QMP_SOCK",server=on,wait=off \
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-# 注入口先备好读端存在的证据：78 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
+# 注入口先备好读端存在的证据：88 标记全到 = QEMU 正常跑且 bsh 就位（exec 3>
 # 对 FIFO 阻塞直至有读者——QEMU 死则上面 marker 轮询先 loud 失败，不卡在这）。
 ALL_MARKERS=("${MARKERS[@]}" "${ROOTFS_MARKERS[@]}")
 t3=$(date +%s)
@@ -1090,6 +1207,81 @@ send([{"type": "btn", "data": {"down": False, "button": "left"}}])
 PYEOF
 }
 exec 3> "$RX_FIFO"
+# sim-S1 M3：serial1 独立注入 battery 原子快照（serial0 FIFO 编辑序列零
+# 干扰）。四流 = seq1 OK / seq2 OK / capacity=101 BAD / 重放 seq1 STALE；
+# ACK 全部由宿主 client 从同一 Unix socket 逐字节对拍，串口只允许出现两行
+# SIMBAT（BAD/STALE 无标记——回声与消费的消费面歧义在此消去）。
+if ! python3 "$SCRIPT_DIR/siminj.py" "$SIM_SOCK"; then
+  fail "sim-S1 注入/ACK 四流失败（查 SIM gate on、simbattery alive、serial1 socket）"
+fi
+t4=$(date +%s)
+while :; do
+  kill -0 "$QEMU_PID" 2>/dev/null || fail "QEMU 在 SIMBAT 阶段退出"
+  n_sim=$(grep -aoF 'SIMBAT ok seq=' "$LOG" | wc -l | tr -d ' ')
+  grep -aqF 'SIMBAT ok seq=1' "$LOG" && grep -aqF 'SIMBAT ok seq=2' "$LOG" \
+    && [ "$n_sim" -eq 2 ] && break
+  [ $(( $(date +%s) - t4 )) -gt 60 ] && fail \
+    "SIMBAT 60s 未达正形（须恰 seq=1/seq=2 两行，实得 ${n_sim} 行——查 siminj ACK 与 task_simcon）"
+  # 刀 C 发布面：每个被接受的电池帧随行发布真值标记（pct/state——launcher
+  # 消费通道随波 3 接线，此标记 = 真值在场的机器门）。
+  grep -aqF 'BATT ok pct=' "$LOG" \
+    || fail "BATT ok pct= 未随 SIMBAT 出现（刀 C 发布面断裂——查 simbattery print_batt）"
+  sleep 1
+done
+# sim-S2 A4②（PM-16 §4.2）：PM 微相——QMP system_powerdown 注入 PL061 GPIO3
+# 脉冲（v1 无主 IRQ 正向对照三件）：①PWRKEY unowned n= 标记在席（IRQ 级
+# 到达 + no_waiter 双台账落账）；②系统存活（QEMU 不退——v1 无 ACPI 面时
+# powerdown 只脉冲 GPIO3，无主 IRQ 不许击杀内核）；③计数 +1 且风暴上界
+# n≤6（IBE 双沿单脉冲 ≤2 IRQ × 重注入帽 3——超帽 = PL061 去活序破绽，红）。
+qmp_powerdown() {
+  python3 - "$QMP_SOCK" <<'PYEOF'
+import json, socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect(sys.argv[1])
+f = s.makefile("rw", encoding="utf-8", newline="\n")
+while True:                            # greeting → qmp_capabilities → 应答
+    line = f.readline()
+    if not line:
+        raise SystemExit("qmp: eof（QEMU 退出？）")
+    m = json.loads(line)
+    if "QMP" in m:
+        f.write('{"execute": "qmp_capabilities"}\n'); f.flush()
+    elif "return" in m or "error" in m:
+        break
+f.write('{"execute": "system_powerdown"}\n'); f.flush()
+while True:                            # 等命令应答（异步事件行跳过）
+    line = f.readline()
+    if not line:
+        raise SystemExit("qmp: eof（QEMU 退出？）")
+    m = json.loads(line)
+    if "return" in m:
+        break
+    if "error" in m:
+        raise SystemExit("qmp: {}".format(m))
+PYEOF
+}
+pm_inj=0
+t4=$(date +%s)
+until grep -aqF 'PWRKEY unowned n=' "$LOG"; do
+  kill -0 "$QEMU_PID" 2>/dev/null \
+    || fail "QEMU 在 PWRKEY 阶段退出（无主 IRQ 击杀 = A4② 反例红）"
+  [ $(( $(date +%s) - t4 )) -gt 60 ] && fail \
+    "PWRKEY 60s 未达（注入 ${pm_inj} 次无标记——查 SIM gate on 与 SPI39 使能）"
+  pm_inj=$((pm_inj + 1))
+  [ "$pm_inj" -gt 3 ] && fail "PWRKEY 三次重注入仍无标记（PL061 接线断）"
+  qmp_powerdown || fail "QMP system_powerdown 注入失败"
+  sleep 1
+done
+pm_max=$(grep -ao 'PWRKEY unowned n=[0-9]*' "$LOG" | cut -d= -f2 | sort -n | tail -1)
+[ -n "$pm_max" ] && [ "$pm_max" -ge 1 ] && [ "$pm_max" -le 6 ] || fail \
+  "PWRKEY 计数越界 n=${pm_max:-none}（须 1..6：0=漏记、>6=风暴/去活破绽）"
+echo "smoke: PWRKEY 无主 IRQ 正向对照过（n=${pm_max}，系统存活，注入 ${pm_inj} 次）"
+# markers.sh RX_MARKERS 数组在此消费（防死单源：数组行 = 段门必查面——
+# 后续追加 RX 注入行只改 markers.sh 即自动入执法；boot 双数组不受染）。
+for m in "${RX_MARKERS[@]}"; do
+  grep -aqF "$m" "$LOG" || fail "RX 注入段标记缺席：${m}（markers.sh RX_MARKERS 对拍）"
+done
+echo "smoke: SIMBAT 双正例到齐（BAD/STALE 静默 + ACK 四流对拍过）"
 # a. token 行：RX ok（A-1 console token 面；`rx` 行入历史但不转发）。
 printf 'r' >&3; sleep 0.5
 printf 'x' >&3; sleep 0.5
@@ -1284,7 +1476,7 @@ fi
 # DATA/NOTE.TXT = `berryos fat subdir note\n`——与 berry-fatfs host 共识
 # 基准同源字节）；**独立盘 disk_dirs.img**：disk.img（RX 相已写、阶段 6
 # 持久化相将复用）零扰动——默认盘字节零漂移硬线不破（子目录只在 fixture
-# 模式，正是刀 3 的设计面）。78 标记载明全链在目录盘上照跑（DIR/CD ok 自验
+# 模式，正是刀 3 的设计面）。88 标记载明全链在目录盘上照跑（DIR/CD ok 自验
 # + FATW/RW.TXT 覆写幂等 + FAT 基准读）后注入三段，断言三重防回声：
 # ① `ls DATA` → grep 'NOTE.TXT'——断言先于一切含 NOTE.TXT 的注入行回显
 #   （顺序防线：本注入行自身只含 'ls DATA'，NOTE.TXT 只能来自 READDIR
@@ -1368,7 +1560,7 @@ echo "smoke: FAT 子目录到齐（READDIR + 多段 GET + 目录类型面）"
 # **不重造盘**（复用 RX 相已写的 disk.img——mkfat 重产 = 持久化零验收；
 # disk_dirs.img 本相不复用——两盘链零混）；
 # 不关 fd3（本相注入完 cat 行后 FIFO 再无消费者——阶段 7 掉电相三 boot
-# 均 stdin=/dev/null，exec 3>&- 移到阶段 7 尾）。78 标记载明
+# 均 stdin=/dev/null，exec 3>&- 移到阶段 7 尾）。88 标记载明
 # 全链在「脏盘」上照跑：bsh FATW 自验走**覆写路径**（RW.TXT 旧链 collect →
 # 新链分配 → 旧链释放——每次 boot 幂等重过），HELLO/PATTERN 基准照读；
 # DF 自验的差分面同走覆写路径（RW.TXT 3000→2048→3000 双向，绝对 free 跨
@@ -1508,13 +1700,13 @@ if grep -qF 'FATW ok n=3000' "$LOG"; then
   # 快机已进 DF 覆写面（FATW ok 已见于终局日志）——按 Boot B 口径放行。
   case "$PWR_A" in
     "PWR cls=clean "*|"PWR cls=poison "*) ;;
-    *) fail "掉电 Boot A 采样越界：$PWR_A（FATW 已毕、覆写窗口径 {clean, poison}——midchain/malformed = 扇区原子性假设破）" ;;
+    *) fail "掉电 Boot A 采样越界：${PWR_A}（FATW 已毕、覆写窗口径 {clean, poison}——midchain/malformed = 扇区原子性假设破）" ;;
   esac
 else
   # fatw 未毕——新文件窗口径（④ 空转无毒环面；粗检 canary，见块注）。
   case "$PWR_A" in
     "PWR cls=noent "*|"PWR cls=clean "*) ;;
-    *) fail "掉电 Boot A 采样越界：$PWR_A（新文件路径应 ∈ {noent, clean}——出现毒环 = ④ 旧链释放被无端执行）" ;;
+    *) fail "掉电 Boot A 采样越界：${PWR_A}（新文件路径应 ∈ {noent, clean}——出现毒环 = ④ 旧链释放被无端执行）" ;;
   esac
 fi
 
@@ -1534,7 +1726,7 @@ while :; do
     || fail "QEMU 提前退出（掉电 Boot B）；日志尾部：$(tail -5 "$LOG" | tr '\n' ' ')"
   grep -qF 'FATW ok n=3000' "$LOG" && break
   [ $(( $(date +%s) - t7b )) -gt "$DEADLINE_BOOTB" ] \
-    && fail "掉电 Boot B ${DEADLINE_BOOTB}s FATW ok 未到（fatw 链断？Boot A 留盘 $PWR_A）"
+    && fail "掉电 Boot B ${DEADLINE_BOOTB}s FATW ok 未到（fatw 链断？Boot A 留盘 ${PWR_A}）"
   sleep 1
 done
 grep -q 'ROOTFS vmo=none' "$LOG" \
@@ -1549,7 +1741,7 @@ PWR_B=$(python3 tools/pwrcls.py --classify disk.pwr.img) \
 echo "smoke: 掉电采样 B（DF resize 窗）: $PWR_B"
 case "$PWR_B" in
   "PWR cls=clean "*|"PWR cls=poison "*) ;;
-  *) fail "掉电 Boot B 采样越界：$PWR_B（整扇区 FAT 写下应 ∈ {clean, poison}——midchain/malformed = 扇区原子性假设破）" ;;
+  *) fail "掉电 Boot B 采样越界：${PWR_B}（整扇区 FAT 写下应 ∈ {clean, poison}——midchain/malformed = 扇区原子性假设破）" ;;
 esac
 python3 tools/pwrcls.py --poison disk.pwr.img \
   || fail "毒环注入失败（pwrcls --poison 自检未过）"
@@ -1557,18 +1749,25 @@ PWR_P=$(python3 tools/pwrcls.py --classify disk.pwr.img) \
   || fail "注入后分类失败（pwrcls 退出非 0）"
 case "$PWR_P" in
   "PWR cls=poison "*) ;;
-  *) fail "注入后非毒环态：$PWR_P（--poison 自检与分类分歧——工具面 bug）" ;;
+  *) fail "注入后非毒环态：${PWR_P}（--poison 自检与分类分歧——工具面 bug）" ;;
 esac
-echo "smoke: 毒环注入就位（$PWR_P）"
+echo "smoke: 毒环注入就位（${PWR_P}）"
 
 # Boot C：毒环盘恢复终验——guest 标记（fsmgr/bsh fat 族 + DF/DIR/CD）+ 盘面双面。
 rotate_log
-echo "smoke: QEMU 启动（B4 掉电 Boot C：毒环恢复终验，无 netdev）"
+# sim-S2 A8：Boot C 加 serial1 + simdev 同线配对，毒环后注入电源类别非法帧；
+# A/B 两 boot 保持无门零扰动。sock 独立文件，避免复用 RX 相残留 server 路径。
+SIM_C_SOCK="$QMP_DIR/simc"
+rm -f "$SIM_C_SOCK"
+echo "smoke: QEMU 启动（B4 掉电 Boot C：毒环恢复终验 + A8 电源类别毒环，无 netdev）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
   $FWCFG \
+  -fw_cfg name=opt/berry/simdev,string=1 \
   -global virtio-mmio.force-legacy=false \
   -drive if=none,id=drv0,format=raw,file=disk.pwr.img,cache.writeback=off \
   -device virtio-blk-device,drive=drv0 \
+  -serial mon:stdio \
+  -serial unix:"$SIM_C_SOCK",server=on,wait=off \
   < /dev/null > "$LOG" 2>&1 &
 QEMU_PID=$!
 # FAT/FATW 精确形（盘确定性：PATTERN 5000B / RW 3000B）；DF/CD 证明 resize
@@ -1590,6 +1789,22 @@ while :; do
     && fail "掉电 Boot C ${DEADLINE_BOOTC}s 标记未到齐（毒环恢复链断？），缺：$missing"
   sleep 1
 done
+# sim-S2 A8 电源类别毒环：未 init 非法类/错服务类/未知类 + stale/坏值连环
+# 注入，随后合法帧恢复。非法帧零持久腐蚀：last_seq 不推进、无 SIMBAT；恢复
+# 后恰 seq=1/2/3 三行。PWR_MARKERS 已先到齐 = 毒盘恢复链与系统活性在前。
+# 真正 lease/power·mode -EINVAL 仍归 berry-power（v2 面落）——本相只毒类别位。
+if ! python3 "$SCRIPT_DIR/siminj.py" "$SIM_C_SOCK" --profile a8; then
+  fail "sim-S2 A8 电源类别毒环/恢复对拍失败（查 SIM gate、simbattery 与 serial1）"
+fi
+kill -0 "$QEMU_PID" 2>/dev/null \
+  || fail "sim-S2 A8 注入后 QEMU 退出（毒环须零腐蚀且系统存活）"
+n_a8=$(grep -aoF 'SIMBAT ok seq=' "$LOG" | wc -l | tr -d ' ')
+grep -aqF 'SIMBAT ok seq=1' "$LOG" \
+  && grep -aqF 'SIMBAT ok seq=2' "$LOG" \
+  && grep -aqF 'SIMBAT ok seq=3' "$LOG" \
+  && [ "$n_a8" -eq 3 ] \
+  || fail "sim-S2 A8 标记形状错（须恰 seq=1/2/3 三行，实得 ${n_a8} 行）"
+echo "smoke: A8 电源类别毒环到齐（非法样本静默 + 恢复帧照打 + 系统存活）"
 # 盘取证前优雅退 + 等真退（P6 A-6 纪律）。
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
@@ -1598,9 +1813,9 @@ PWR_C=$(python3 tools/pwrcls.py --classify disk.pwr.img) \
   || fail "掉电终验分类失败（pwrcls 退出非 0）"
 case "$PWR_C" in
   "PWR cls=clean "*) ;;
-  *) fail "掉电终验非 clean：$PWR_C（guest 标记全绿而盘面未恢复——恢复 commit 假绿或 ④ 守卫失效）" ;;
+  *) fail "掉电终验非 clean：${PWR_C}（guest 标记全绿而盘面未恢复——恢复 commit 假绿或 ④ 守卫失效）" ;;
 esac
-echo "smoke: B4 掉电相到齐（采样 A/B + 毒环注入 + 恢复终验 $PWR_C）"
+echo "smoke: B4 掉电相到齐（采样 A/B + 毒环注入 + 恢复终验 ${PWR_C}）"
 
 exec 3>&-
-echo "smoke: PASS（金丝雀 ${n:-0} 条诊断 + rootfs 相全链 + RX 交互相（RX ok + bsh 退格/历史召回/落盘/RAM 目录链/cd-pwd 五应答）+ FAT 子目录相（fixture 盘 ls/cat DATA 活覆盖）+ FAT 持久化相（跨 boot 读回 f42t + M3DEMO T3.TXT 交互 cat 面）+ B4 掉电相（采样 A/B ∈ 合法集 + 毒环注入 + Boot C 恢复终验盘面 clean））"
+echo "smoke: PASS（金丝雀 ${n:-0} 条诊断 + rootfs 相全链 + RX 交互相（A4② PM 微相 PWRKEY 无主对照 + SIMBAT 双正例 + ACK 四流 + RX ok + bsh 退格/历史召回/落盘/RAM 目录链/cd-pwd 五应答）+ FAT 子目录相（fixture 盘 ls/cat DATA 活覆盖）+ FAT 持久化相（跨 boot 读回 f42t + M3DEMO T3.TXT 交互 cat 面）+ B4 掉电相（采样 A/B ∈ 合法集 + 毒环注入 + A8 电源类别毒环 + Boot C 恢复终验盘面 clean））"

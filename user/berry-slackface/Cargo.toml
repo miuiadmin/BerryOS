@@ -1,0 +1,24 @@
+[package]
+name = "berry-slackface"
+# L-SYS 0.2.0:字面版本不走 workspace 继承(独立小工作区,版本治理规则/14;
+# user 族同批同值)。升版 = 逐 crate 手同步。
+version = "0.2.0"
+edition = "2021"
+
+# timer slack 聚合判定律——host 纯函数面(零依赖)。
+# 设计锚:docs/调度器设计-v1.2.md §3.8 :156「timer 原语带 slack+policy 三元组
+# (学 zx_timer_set,v1 day-one)」——01 号对账硬缺口 #9「代码零命中」的判定律
+# 兑现第一步(纯面先行,sched 接线归接线窗:sched 域 owner 在途,本件零碰)。
+# 形态照 user 族独立小工作区例(berry-power/berry-thermal 同款空 [workspace]
+# escape 根 workspace);但零依赖——不引 iprofile/intface path 依赖,域值镜像
+# + 同步义务注(lib.rs 头注「零依赖镜像」节)。
+# host 测试:cargo test --manifest-path user/berry-slackface/Cargo.toml(仓内 cwd 起;根
+# config build.target 锁 aarch64-unknown-none 须显式 --target 覆盖——
+# justfile test-host 同款纪律)。
+license = "Apache-2.0"
+
+[workspace]
+
+[lib]
+name = "berry_slackface"
+path = "src/lib.rs"

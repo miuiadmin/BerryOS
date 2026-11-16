@@ -1,6 +1,6 @@
 [package]
 name = "berry-fatfs"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 # P6 A-5（文件系统设计.md「MVP 用 FAT」/ 开发体验.md L2 fat:rw 第一刀）：
 # FAT12 只读解析纯函数 crate，`berry-loader`/`berry-fsproto`/`berry-blkproto`

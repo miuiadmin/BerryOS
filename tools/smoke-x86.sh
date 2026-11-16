@@ -47,26 +47,28 @@ LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-x86.XXXXXX")
 QEMU_PID=""
 
 cleanup() {
-  if [ -n "$QEMU_PID" ] && kill -0 "$QEMU_PID" 2>/dev/null; then
+  # M1 失败必留（审计补刀：smoke.sh 同款——trap 传退出码，非零即保留）。
+  rc=${1:-0}
+  if [ -n "${QEMU_PID:-}" ] && kill -0 "$QEMU_PID" 2>/dev/null; then
     kill "$QEMU_PID" 2>/dev/null
     wait "$QEMU_PID" 2>/dev/null
   fi
-  if [ -n "${SMOKE_KEEP_LOG:-}" ]; then
-    echo "smoke-x86: 串口日志保留：$LOG" >&2
+  if [ -n "${SMOKE_KEEP_LOG:-}" ] || [ "$rc" -ne 0 ]; then
+    [ -n "${LOG:-}" ] && echo "smoke-x86: 串口日志保留：$LOG" >&2
   else
-    rm -f "$LOG"
+    [ -n "${LOG:-}" ] && rm -f "$LOG"
   fi
 }
-trap cleanup EXIT
+trap 'cleanup $?' EXIT
 
 fail() {
   echo "smoke-x86: FAIL: $1" >&2
-  echo "---- 串口日志尾部（$LOG）----" >&2
+  echo "---- 串口日志尾部（${LOG}）----" >&2
   tail -30 "$LOG" >&2
   exit 1
 }
 
-echo "smoke-x86: QEMU 启动（$KERNEL）"
+echo "smoke-x86: QEMU 启动（${KERNEL}）"
 "$QEMU" -m 128M -nographic -no-reboot -kernel "$KERNEL" \
   < /dev/null > "$LOG" 2>&1 &
 QEMU_PID=$!
@@ -90,7 +92,7 @@ done
 # 标记恰一次（重复 = 引导脚本重入，PVH 不该有第二跳）
 for m in "${MARKERS[@]}"; do
   n=$(grep -cF "$m" "$LOG" || true)
-  [ "$n" -eq 1 ] || fail "标记非恰一次（n=$n）：$m"
+  [ "$n" -eq 1 ] || fail "标记非恰一次（n=${n}）：$m"
 done
 
 kill "$QEMU_PID" 2>/dev/null

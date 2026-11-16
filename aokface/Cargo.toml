@@ -1,0 +1,19 @@
+[package]
+name = "berry-aokface"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+description = "BerryOS access_ok user-buffer admission pure-function plane (host-testable)"
+
+[lib]
+name = "berry_aokface"
+path = "src/lib.rs"
+
+# W3-Q70：syscall.rs access_ok/access_ok_window 的用户缓冲准入判定律纯面——
+# EL0 四值域门（len==0 恒过/checked_add 回卷拒/ptr<0x1000 null 页拒/end>
+# USER_VA_END=2^39 拒）+ EL1 高半单比较 + 回卷拒（原判序两路共门保形）+
+# 叶 AP 位域读写拒律（写需 AP∈{00,01}、读需 AP≠11）+ access_ok_window
+# 同页跳过窗律（页流迭代/SAME_PAGE_NONE=u64::MAX 哨兵/首块必走查），host
+# 表驱动钉板；kernel 侧 walk_leaf TTBR0 走查物理臂留壳（纪律同
+# safeck/chanface 先例族）。
+[dependencies]

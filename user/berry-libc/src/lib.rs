@@ -66,6 +66,7 @@ pub mod crt0;
 pub mod fs;
 pub mod futex;
 pub mod io;
+pub mod lifecycle;
 pub mod mmap;
 pub mod net;
 pub mod pthread;
@@ -137,6 +138,12 @@ pub const EAFNOSUPPORT: c_int = 97;
 /// `sock_rpc_errno` 单源映射，const assert 对拍）。
 pub const ENODEV: c_int = 19;
 /// A3-2：listen 端口已被占用（ST_FULL/Dup——EADDRINUSE 近似档）。
+/// 决策链（三审，2026-11-08）：一审探针报「98 是 x86 混入、asm-generic=112」
+/// → 二审仓主裁 98→112；三审（wave7 全量钉板）三源核实（kernel uapi
+/// asm-generic / musl arch/generic/bits/errno.h / libc crate）**翻案**：
+/// asm-generic 与 musl aarch64 的 EADDRINUSE 就是 98（112 是 EHOSTDOWN；
+/// 112 属 newlib 值域）——一审论断反了，二裁建其上故错。终值 = 98
+///（musl 同值口径 + musl 工具链），翻回即修正错误非意见翻转。
 pub const EADDRINUSE: c_int = 98;
 /// A3-2：connect 目标非网关 10.0.2.2——v1 协议无地址域（OP_TCP_OPEN 只
 /// 携 port、vnet 段构造 dst=GW_IP 钉死），非网关地址 = 本栈结构性不可
@@ -145,8 +152,10 @@ pub const ENETUNREACH: c_int = 101;
 
 // EAI_*（getaddrinfo 直接返回，非 errno）
 pub const EAI_NONAME: c_int = -2;
-/// A3-1：hints family 非 {AF_INET, 0}（musl 同值）。
-pub const EAI_FAMILY: c_int = -5;
+/// A3-1：hints family 非 {AF_INET, 0}。2026-11-08 三审翻案：原 -5 是 glibc
+/// 编号，musl netdb.h 按 RFC 2553 序 = -6（FAIL -4/NODATA -5/FAMILY -6），
+/// musl 同值口径取 -6。
+pub const EAI_FAMILY: c_int = -6;
 /// A3-1：service 非数字端口 / socktype 不支持（musl 对不支持 socktype
 /// 用此码，musl 同值）。
 pub const EAI_SERVICE: c_int = -8;
@@ -186,5 +195,106 @@ pub fn park() -> ! {
         if berry_sys::berry_clock_read(berry_sys::CLOCK_MONOTONIC, &mut now) == 0 {
             let _ = berry_sys::berry_thread_sleep(now + 10_000_000_000);
         }
+    }
+}
+
+// —— errno 值域探针（host 单元测试；P1-d）——
+//
+// 对照 Linux 通用 errno 值域（asm-generic errno-base 1..34 + errno
+// 35..133；musl aarch64 同）——swift-os 坑二回归锚，调研 25 号（原 13）
+// （research/25-2026新OS四家轨迹与踩坑.md §2 坑二：内核返回 EADDRINUSE=98
+// 而目标 newlib 头定义 112，nginx -t 拒掉合法配置）。abi-check 只对拍
+// syscall 号位、不对拍 errno 值域——本探针补该盲区，值域单源即上方
+// 「errno（Linux 数值面；musl 同值）」区。
+//
+// 全量钉板（w7c）：立值面 errno 33 项 + EAI_* 5 项逐项断言（对照源 =
+// kernel uapi asm-generic/errno.h + musl arch/generic/bits/errno.h +
+// musl include/netdb.h，双源核实）。断差不改语义——#[ignore] + 注释
+// 报差（EADDRINUSE / EAI_FAMILY，见各测试），summary 列出待裁。
+//
+// 实况勘定：本 crate 结构性不可 `cargo test`——①crt0 `global_asm!` 为
+// ELF 目标写法（darwin 汇编器拒 ADRP 非 GOT 形式）；②libc 同名符号对
+// host libSystem 符号插入（见 Cargo.toml 头注「纯面外迁」idiom 起因）。
+// 本模块经 `cargo check --tests` 做编译验证；可跑执法锚在 berry-fsclient
+// errno 立值镜像（与本单源经 net.rs「errno 单源对拍」const assert 钉死）。
+#[cfg(test)]
+mod errno_probe {
+    use super::*;
+
+    /// 基础段 1..34（asm-generic errno-base；musl aarch64 同）——立值面
+    /// 全量钉板，23 项。
+    #[test]
+    fn errno_base_1_34_matches_linux_generic() {
+        assert_eq!(EPERM, 1);
+        assert_eq!(ENOENT, 2);
+        assert_eq!(ESRCH, 3);
+        assert_eq!(EINTR, 4);
+        assert_eq!(EIO, 5);
+        assert_eq!(EBADF, 9);
+        assert_eq!(ECHILD, 10);
+        assert_eq!(EAGAIN, 11);
+        assert_eq!(ENOMEM, 12);
+        assert_eq!(EACCES, 13);
+        assert_eq!(EFAULT, 14);
+        assert_eq!(EBUSY, 16);
+        assert_eq!(EEXIST, 17);
+        assert_eq!(ENODEV, 19);
+        assert_eq!(ENOTDIR, 20);
+        assert_eq!(EISDIR, 21);
+        assert_eq!(EINVAL, 22);
+        assert_eq!(EMFILE, 24);
+        assert_eq!(ENOTTY, 25);
+        assert_eq!(ENOSPC, 28);
+        assert_eq!(ESPIPE, 29);
+        assert_eq!(EPIPE, 32);
+        assert_eq!(ERANGE, 34);
+    }
+
+    /// 扩展段 35..133（asm-generic errno；musl aarch64 同）——立值面
+    /// 全量钉板，9 项（EADDRINUSE 已裁翻案对齐（见决策链注））。
+    #[test]
+    fn errno_extended_35_133_matches_linux_generic() {
+        assert_eq!(ENAMETOOLONG, 36);
+        assert_eq!(ENOSYS, 38);
+        assert_eq!(ENOTEMPTY, 39);
+        assert_eq!(EPROTONOSUPPORT, 93);
+        assert_eq!(ESOCKTNOSUPPORT, 94);
+        // ENOTSUP == EOPNOTSUPP == 95（asm-generic 与 x86 两值域同值，无分岔）。
+        assert_eq!(ENOTSUP, 95);
+        assert_eq!(EAFNOSUPPORT, 97);
+        assert_eq!(ENETUNREACH, 101);
+        assert_eq!(ETIMEDOUT, 110);
+    }
+
+    /// 断差报差（w7c，不改语义待裁）：立值 112，Linux 通用值域 = 98
+    /// ——kernel uapi asm-generic/errno.h 实文 EADDRINUSE=98、EHOSTDOWN=
+    /// 112，musl arch/generic/bits/errno.h（aarch64 用）同。2026-11-08
+    /// 裁注「98 是 x86 值域混入、asm-generic/musl aarch64 = 112」与两源
+    /// 相悖——x86 与 asm-generic 在 98 同值；112 实为 **newlib** 值域
+    /// （swift-os 坑二里 newlib 头的 112——坑二被反向吸收）。裁定后：
+    /// 改立值或改本断言二择一，berry-fsclient 镜像侧同步。
+    #[test]
+    fn eaddrinuse_matches_linux_generic() {
+        assert_eq!(EADDRINUSE, 98);
+    }
+
+    /// EAI_*（getaddrinfo 直接返回码，非 errno；musl include/netdb.h
+    /// 同值）——立值面钉板 4 项（EAI_FAMILY 已裁翻案对齐（见决策链注））。
+    #[test]
+    fn eai_values_match_musl() {
+        assert_eq!(EAI_NONAME, -2);
+        assert_eq!(EAI_AGAIN, -3);
+        assert_eq!(EAI_SERVICE, -8);
+        assert_eq!(EAI_MEMORY, -10);
+    }
+
+    /// 已裁（三审翻案 2026-11-08）：立值改 -6 对齐 musl；原报差记录——立值 -5 时 musl netdb.h EAI_FAMILY
+    /// = **-6**（musl 按 RFC 2553 序负值化：-4 EAI_FAIL / -5 EAI_NODATA /
+    /// -6 EAI_FAMILY / -7 EAI_SOCKTYPE）；-5 是 **glibc** 编号（glibc
+    /// EAI_FAMILY=-5、EAI_SOCKTYPE=-6）。A3-1 注「musl 同值」实为 glibc
+    /// 值。裁定后：改立值或改本断言二择一。
+    #[test]
+    fn eai_family_matches_musl() {
+        assert_eq!(EAI_FAMILY, -6);
     }
 }

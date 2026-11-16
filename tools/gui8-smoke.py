@@ -4,10 +4,10 @@
 
 为什么单独立脚本（不并回 smoke-image.sh）
 ----------------------------------------
-冻结相 smoke-image 的断言面是「EFI 十段恰一次 + 裸相 28 + 生态 36 + 字节
+冻结相 smoke-image 的断言面是「EFI 十段恰一次 + 裸相 32 + 生态 41（历史注释值曾 36/39 随刀漂移；CLI/TERM 链位 fat park 前照打，不属缺席族）+ 字节
 对拍 + 金丝雀」，其 QEMU 拓扑**结构性无 virtio**（不挂 blk/tablet/QMP）。
 交互相需要另一套拓扑（FAT12 数据盘 + virtio-tablet + QMP unix sock）和
-另一套标记族（fs 端点让给 launcher 后 bsh 在 fs_selftest park，ECO 36 里
+另一套标记族（fs 端点让给 launcher 后 bsh 在 fs_selftest park，ECO 缺席族里
 FS/U1/U2/U3/B1/U4/TAB/INT/POLL/MMP/CLK/SIG/PS/BC/THR/EXIT 均结构性缺席）。
 因此本脚本 = 独立关卡，**零改 smoke-image.sh 行为**；`just gui8-smoke`
 单口调用。
@@ -20,13 +20,15 @@ FS/U1/U2/U3/B1/U4/TAB/INT/POLL/MMP/CLK/SIG/PS/BC/THR/EXIT 均结构性缺席）�
 - Boot A：AAVMF + out/berryos.img + 独立 FAT12 数据盘（LBA0 印章
   `BERRYOSVBLK!` + 精确 magic 的 `GUI8.SMK`），display fw_cfg 800x600@60，
   virtio-blk + virtio-tablet + QMP。
-  - 等基础 5 + boot 批 `app APPDEMO up`（先把 boot 批 app 证据吃完）；
+  - 等基础 5 + boot 批 `app APPDEMO gui deferred`（裁决 B：boot 批对
+    [ui] app 入册不拉起——桌面就绪锚 = LAUNCH/PAGE 基础 5 本体）；
   - `launcher: click ready` **强制在席恰一次**（缺席即 FAIL，不 sleep
     回退——这是 QMP 注入前的状态谓词门）；
   - QMP 三批注入（abs → btn down → btn up）单击 APPDEMO 格中心；
   - 精确计数：`CLICK ok n=1` == 1、`LAYOUTW ok` == 1、`LAYOUT ok n=`
     == 0（重复/顺序假绿一律 FAIL，不 warn）；
-  - 点击后**新增** `app APPDEMO up` 恰 1 行（点击真 spawn），
+  - 点击后 `app APPDEMO up` 恰 1 行（boot 批 0 行 = 裁决 B 面，
+    点击真 spawn 且全日志唯一），
     `app APPQUIET up` 零新增（未误点/误 spawn）；
   - 宿主侧再经 FAT12 读回 `LAYOUT.JSN`：必须恰 **109 canonical bytes**
     且 cells 逐项 == `APPDEMO(0,0,0)` + `APPQUIET(page=3,row=0,col=1)`。
@@ -81,6 +83,7 @@ MARK_BERRYBOOT = "BERRYBOOT ok"
 MARK_ROOTFS = "ROOTFS ok src=handoff"
 MARK_APP_N9 = "APP ok n=9"
 MARK_APP_DEMO_UP = "app APPDEMO up"
+MARK_APP_DEMO_DEFERRED = "app APPDEMO gui deferred"
 MARK_APP_QUIET_UP = "app APPQUIET up"
 MARK_LAUNCH = "LAUNCH ok"
 MARK_PAGE = "PAGE ok n=2"
@@ -126,7 +129,10 @@ STATUS_H = 44
 # 小屏档无 Dock，只保留 SwipePager 16px 视觉点行（OH 96px 指示区仅 phone 档）。
 DOT_H = 16
 GRID_TOP = 8
-BOTTOM_PAD = 8
+# 底部保留 = 8px 底垫 + 导航条 44px（刀 D 三键导航——desktop.rs 紧凑档
+# grid_h 公式镜像；导航条本身不是点击断言面，只参与格高推导）。
+BOTTOM_PAD = 52
+NAV_KEY_PX = 44
 GRID_COLS = 4
 GRID_ROWS = 5
 GRID_GAP = 12
@@ -791,11 +797,20 @@ def verify_boot_a_click(
     _require_exact_count(text, MARK_LAYOUTW, 1, "boot A click", log_path)
     _require_exact_count(text, MARK_LAYOUT, 0, "boot A click", log_path)
     _require_exact_count(text, MARK_CLICK_READY, 1, "boot A click", log_path)
+    # 裁决 B 面：deferral 行恰一（boot 批入册不拉起的记账——多次/零次
+    # 都 FAIL）。
+    _require_exact_count(text, MARK_APP_DEMO_DEFERRED, 1, "boot A click", log_path)
     demo_after = text.count(MARK_APP_DEMO_UP)
     if demo_after != demo_before + 1:
         raise SmokeError(
             f"boot A click: 新增 {MARK_APP_DEMO_UP!r} "
             f"{demo_after - demo_before} 行 != 1（点击未 spawn APPDEMO？）",
+            log_path,
+        )
+    if demo_after != 1:
+        raise SmokeError(
+            f"boot A click: {MARK_APP_DEMO_UP!r} 全日志 {demo_after} 行"
+            " != 1（裁决 B「恰 1 行」——boot 批/点击外多 spawn）",
             log_path,
         )
     quiet_after = text.count(MARK_APP_QUIET_UP)
@@ -825,6 +840,10 @@ def verify_boot_b(text: str, log_path: Path | None = None) -> None:
     _require_exact_count(text, MARK_LAYOUT, 1, "boot B", log_path)
     _require_exact_count(text, MARK_LAYOUTW, 0, "boot B", log_path)
     _require_exact_count(text, MARK_CLICK_ANY, 0, "boot B", log_path)
+    # 裁决 B 面：无点击 boot 的 deferral 记账恰一；APPDEMO up 零行
+    #（Boot B 不点击 = 不 spawn）。
+    _require_exact_count(text, MARK_APP_DEMO_DEFERRED, 1, "boot B", log_path)
+    _require_exact_count(text, MARK_APP_DEMO_UP, 0, "boot B", log_path)
 
 
 def verify_normal_boot(
@@ -839,6 +858,8 @@ def verify_normal_boot(
     _require_exact_count(text, MARK_LAYOUTW, 0, "normal boot", log_path)
     _require_exact_count(text, MARK_LAYOUT, 0, "normal boot", log_path)
     _require_exact_count(text, MARK_CLICK_READY, 0, "normal boot", log_path)
+    # 裁决 B 面：常态 boot 同走 deferral 记账（非哨兵门控行）。
+    _require_exact_count(text, MARK_APP_DEMO_DEFERRED, 1, "normal boot", log_path)
     demo_after = text.count(MARK_APP_DEMO_UP)
     if demo_after != demo_before + 1:
         raise SmokeError(
@@ -1094,9 +1115,14 @@ def _boot_base_markers() -> list[str]:
 
 
 def _wait_boot_batch(boot: Boot, timeout: float) -> None:
-    """基础 5 + boot 批 app 证据：先把 boot 批 APPDEMO up 吃完再点击。"""
+    """基础 5 + 裁决 B deferral 面：[ui] app 入册不拉起的 boot 批记账。
+
+    波 4 裁决 B（W4-RECON §1.7）后 boot 批不再拉起 [ui] app——原
+    「boot 批 APPDEMO up」锚退役，桌面就绪锚 = 基础 5 本体（LAUNCH/PAGE）
+    ；boot 批证据改验 deferral 行恰在席（点击 spawn 前置面）。
+    """
     boot.wait_markers(_boot_base_markers(), timeout)
-    boot.wait_markers([MARK_APP_DEMO_UP], timeout)
+    boot.wait_markers([MARK_APP_DEMO_DEFERRED], timeout)
 
 
 def _warn_input_armed(boot: Boot) -> None:
@@ -1157,9 +1183,17 @@ def run_dual_boot(args) -> int:
         ready_pos = boot_a.log.text.find(MARK_CLICK_READY)
         demo_before = boot_a.log.text.count(MARK_APP_DEMO_UP)
         quiet_before = boot_a.log.text.count(MARK_APP_QUIET_UP)
+        # 裁决 B 面（波 4 两处重裁之二）：boot 批 0 拉起——点击前
+        # APPDEMO up 必须零行，点击后的全日志恰 1 行才成立。
+        if demo_before != 0:
+            raise SmokeError(
+                f"boot A: 点击前 {MARK_APP_DEMO_UP!r} 已有 {demo_before} 行"
+                "——boot 批仍拉起 [ui] app（裁决 B 未生效？）",
+                boot_a.log_path,
+            )
         log(
             f"boot A: click ready 在席（pos={ready_pos}，"
-            f"boot 批 APPDEMO up×{demo_before}）"
+            f"boot 批 APPDEMO up×{demo_before}，deferral 生效）"
         )
 
         w, h, src = geometry_from_log(boot_a.log)
@@ -1319,7 +1353,8 @@ def run_normal_boot(args) -> int:
         _warn_input_armed(boot)
 
         # 快照点 = 注入前（哨兵缺席时 click ready 结构性不打印，不能拿它
-        # 当门）。boot 批 APPDEMO up 已吃完，此后的新增只能来自本次点击。
+        # 当门）。boot 批 deferral 行已吃完（裁决 B：up 行零基线），此后
+        # 的新增只能来自本次点击。
         boot.log.poll()
         snapshot_pos = len(boot.log.text)
         demo_before = boot.log.text.count(MARK_APP_DEMO_UP)
@@ -1642,9 +1677,10 @@ def self_test(args) -> int:
         )
 
         # 2) 几何
-        if cell0_center(800, 600) != (95, 99):
+        if cell0_center(800, 600) != (95, 95):
             raise SmokeError(f"cell0_center 异常：{cell0_center(800, 600)}")
-        if cell0_center(480, 1000) != (55, 139):
+        # 刀 D 后：grid_h = 1000-(44+8+16+44+8)=880；cell_h=(880-48)/5=166。
+        if cell0_center(480, 1000) != (55, 135):
             raise SmokeError(f"cell0_center 480x1000 异常：{cell0_center(480, 1000)}")
         log("self-test: geometry ok（800x600→(95,99)，480x1000→(55,139)）")
 
@@ -1673,47 +1709,63 @@ def self_test(args) -> int:
         if re.search(RE_CLICK_N1, "CLICK ok n=10"):
             raise SmokeError("CLICK 正则误吞 n=10")
 
+        # 裁决 B 形：boot 批 deferral 行（非 up 行）+ 点击后恰 1 up 行。
         fake_a = (
-            f"{MARK_APP_DEMO_UP}\n"
+            f"{MARK_APP_DEMO_DEFERRED}\n"
             f"{MARK_LAYOUTW}\n"
             f"{MARK_CLICK_READY}\n"
             f"{MARK_CLICK}\n"
             f"{MARK_APP_DEMO_UP}\n"
         )
         pos_a = fake_a.index(MARK_CLICK_READY)
-        verify_boot_a_click(fake_a, pos_a, 1, 0)
+        verify_boot_a_click(fake_a, pos_a, 0, 0)
         expect_error(
             "Boot A 重复 CLICK",
             lambda: verify_boot_a_click(
-                fake_a + MARK_CLICK + "\n", pos_a, 1, 0
+                fake_a + MARK_CLICK + "\n", pos_a, 0, 0
             ),
         )
         expect_error(
             "Boot A 重复 LAYOUTW",
             lambda: verify_boot_a_click(
-                fake_a + MARK_LAYOUTW + "\n", pos_a, 1, 0
+                fake_a + MARK_LAYOUTW + "\n", pos_a, 0, 0
             ),
         )
         expect_error(
             "Boot A 出现 LAYOUT",
             lambda: verify_boot_a_click(
-                fake_a + "LAYOUT ok n=2\n", pos_a, 1, 0
+                fake_a + "LAYOUT ok n=2\n", pos_a, 0, 0
             ),
         )
         expect_error(
             "Boot A 缺新 APPDEMO",
             lambda: verify_boot_a_click(
-                f"{MARK_APP_DEMO_UP}\n{MARK_CLICK_READY}\n"
+                f"{MARK_APP_DEMO_DEFERRED}\n{MARK_CLICK_READY}\n"
                 f"{MARK_CLICK}\n{MARK_LAYOUTW}\n",
                 fake_a.index(MARK_CLICK_READY),
-                1,
                 0,
+                0,
+            ),
+        )
+        expect_error(
+            "Boot A 缺 deferral 记账",
+            lambda: verify_boot_a_click(
+                fake_a.replace(MARK_APP_DEMO_DEFERRED + "\n", ""),
+                pos_a,
+                0,
+                0,
+            ),
+        )
+        expect_error(
+            "Boot A boot 批仍拉起 APPDEMO（裁决 B 破）",
+            lambda: verify_boot_a_click(
+                MARK_APP_DEMO_UP + "\n" + fake_a, pos_a, 1, 0
             ),
         )
         expect_error(
             "Boot A 误 spawn APPQUIET",
             lambda: verify_boot_a_click(
-                fake_a + MARK_APP_QUIET_UP + "\n", pos_a, 1, 0
+                fake_a + MARK_APP_QUIET_UP + "\n", pos_a, 0, 0
             ),
         )
         order_bad = fake_a.replace(MARK_CLICK_READY + "\n", "").replace(
@@ -1722,7 +1774,7 @@ def self_test(args) -> int:
         expect_error(
             "Boot A CLICK 早于 click ready",
             lambda: verify_boot_a_click(
-                order_bad, order_bad.index(MARK_CLICK_READY), 1, 0
+                order_bad, order_bad.index(MARK_CLICK_READY), 0, 0
             ),
         )
         expect_error(
@@ -1730,16 +1782,19 @@ def self_test(args) -> int:
             lambda: verify_boot_a_click(
                 fake_a.replace(MARK_CLICK_READY + "\n", ""),
                 fake_a.index(MARK_CLICK_READY),
-                1,
+                0,
                 0,
             ),
         )
         log(
-            "self-test: Boot A 精确断言 ok（1/1/0 + 新 APPDEMO；"
-            "重复/错序/缺 ready/APPQUIET 均 FAIL）"
+            "self-test: Boot A 精确断言 ok（1/1/0 + deferral×1 + "
+            "APPDEMO up 恰 1；重复/错序/缺 ready/boot 批拉起/APPQUIET "
+            "均 FAIL）"
         )
 
-        fake_b = "LAUNCH ok\nLAYOUT ok n=2\n"
+        fake_b = (
+            f"LAUNCH ok\n{MARK_APP_DEMO_DEFERRED}\nLAYOUT ok n=2\n"
+        )
         verify_boot_b(fake_b)
         expect_error(
             "Boot B 重复 LAYOUT",
@@ -1755,16 +1810,23 @@ def self_test(args) -> int:
         )
         expect_error(
             "Boot B LAYOUT n 漂移",
-            lambda: verify_boot_b("LAUNCH ok\nLAYOUT ok n=3\n"),
+            lambda: verify_boot_b(
+                f"LAUNCH ok\n{MARK_APP_DEMO_DEFERRED}\nLAYOUT ok n=3\n"
+            ),
+        )
+        expect_error(
+            "Boot B 缺 deferral 记账",
+            lambda: verify_boot_b("LAUNCH ok\nLAYOUT ok n=2\n"),
         )
         log(
-            "self-test: Boot B 精确断言 ok（LAYOUT×1 / LAYOUTW×0 / CLICK×0）"
+            "self-test: Boot B 精确断言 ok（LAYOUT×1 / LAYOUTW×0 / "
+            "CLICK×0 / deferral×1）"
         )
 
-        fake_n = f"{MARK_APP_DEMO_UP}\n"
+        fake_n = f"{MARK_APP_DEMO_DEFERRED}\n"
         snap_n = len(fake_n)
         fake_n += f"{MARK_APP_DEMO_UP}\n"
-        verify_normal_boot(fake_n, snap_n, 1, 0)
+        verify_normal_boot(fake_n, snap_n, 0, 0)
         for needle, label in (
             (MARK_CLICK_ANY + "1\n", "CLICK"),
             (MARK_LAYOUTW + "\n", "LAYOUTW"),
@@ -1775,13 +1837,13 @@ def self_test(args) -> int:
             expect_error(
                 f"常态隔离出现 {label}",
                 lambda n=needle: verify_normal_boot(
-                    fake_n + n, snap_n, 1, 0
+                    fake_n + n, snap_n, 0, 0
                 ),
             )
         expect_error(
             "常态隔离无新 APPDEMO",
             lambda: verify_normal_boot(
-                f"{MARK_APP_DEMO_UP}\n", snap_n, 1, 0
+                f"{MARK_APP_DEMO_DEFERRED}\n", snap_n, 0, 0
             ),
         )
         log(

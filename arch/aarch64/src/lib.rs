@@ -14,10 +14,13 @@ mod boot;
 pub mod fwcfg;
 pub mod gic;
 pub mod kern_lock;
+pub mod klog_ring;
 pub mod lockdep;
 mod mmio;
 mod mmu;
 mod paging;
+pub mod pl061;
+pub mod psci;
 pub mod smp;
 pub mod syscall;
 pub mod task;
@@ -25,6 +28,8 @@ pub mod tlbshoot;
 pub mod timer;
 pub mod trap;
 pub mod uart;
+pub mod wake;
+pub mod wake_gen;
 
 // P5 A-1：UART TX 四函数迁入 `uart` 模块——crate root 重导出转发，crate 内
 // 既有 `use crate::uart_putc` 与下游 `berry_hal_aarch64::uart_putc` 均零改动。
@@ -42,6 +47,21 @@ pub const RAM_TOP: usize = 0x5000_0000;
 pub const RAM_TOP_DEFAULT: usize = 0x4800_0000;
 /// QEMU `virt` PL011 UART0 基址。
 pub const UART0_BASE: usize = 0x0900_0000;
+/// QEMU `virt` 第二 PL011（UART1）基址（sim-S1：PM-16 §2/§3、`docs/sim设备通道
+/// 与契约设计-v1.1.md` §2）。**存在性 = 拓扑事实非常量**：DTB 实证（QEMU 11.0.3
+/// dumpdtb + info mtree）——配置第二个 `-serial` 才建设备（节点 pl011@9040000，
+/// SPI 8/GIC INTID 40、LEVEL_HIGH）；单串口配置**该地址是洞**（mtree 无映射——
+/// 盲探 PID = external abort）。内核面在席门 = fw_cfg 具名键 `opt/berry/simdev`
+///（GUI P2 `opt/berry/display` 同款拓扑真值纪律；justfile 同一行配 serial1+键，
+/// 裸跑/EFI 零扰动）——门开才许碰此基址。virt 机型稳定 ABI（virt-2.4 起未变）。
+pub const UART1_BASE: usize = 0x0904_0000;
+/// QEMU `virt` PL061 GPIO 基址（sim-S2 A4②：电源键通道——GPIO3 = QMP
+/// `system_powerdown` 脉冲，SPI 7 → GIC INTID 39）。与 UART1 的关键差异：
+/// PL061 是**板级常在设备**（非 `-serial` 配置依赖）——内核面在席门仍与
+/// UART1 同线（fw_cfg `opt/berry/simdev` 注入族策略门，PM-16 §2/§3）：门开
+/// 才使能 SPI 39，裸跑/EFI 零扰动。同落 2MiB Device 块（`mmu.rs
+/// build_boot_pt` 已覆盖），零页表工作。
+pub const PL061_BASE: usize = 0x0903_0000;
 /// GICv2 distributor 基址（QEMU `virt`）。
 pub const GICD_BASE: usize = 0x0800_0000;
 /// GICv2 CPU interface 基址（QEMU `virt`）。
@@ -89,12 +109,41 @@ pub fn asid_bits() -> u32 {
     mmu::asid_bits()
 }
 
+/// 北极星审计修（2026-11-15）：TTBR0 ASID 位域环回探针——boot 单线程窗调
+/// 一次（`rust_main` 早期、任何任务地址空间激活之前）。位域不环回（QEMU
+/// HVF 形虚拟化）⇒ 按号 TLB 语义不可依托，P0-3 免失效激活档整档退化全量
+/// 档（见 `mmu::ASID_TLB_UNTRUSTED`）。
+///
+/// # Safety
+/// EL1、MMU 已开、boot 单线程 DAIF 屏蔽窗；先于首个 `activate_aspace`。
+pub unsafe fn probe_asid_field_roundtrip() {
+    // SAFETY: 调用点合同见函数注（rust_main 早期单线程窗）。
+    unsafe { mmu::probe_asid_field_roundtrip() };
+}
+
+/// 北极星审计修：探针结果只读透传（关卡行/诊断面）。
+pub fn asid_tlb_untrusted() -> bool {
+    mmu::asid_tlb_untrusted()
+}
+
 /// 2b-2：激活任务地址空间——TTBR0 ← 表+ASID、CONTEXTIDR、`tlbi aside1is`
 /// （变化才调，比较由调度器做）。`ttbr0_pa == 0` = 无 AS → 内核空表（低半必然
 /// fault——身份表已退役）。填表方须先 `dsb ish`（本函数只管寄存器）。
 pub fn activate_aspace(ttbr0_pa: usize, asid: u16) {
     // SAFETY: EL1、单核、切换临界区（IRQ 屏蔽）内调用。
     unsafe { mmu::activate_ttbr0(ttbr0_pa, asid) };
+}
+
+/// P0-3（ASID 代数消费）：激活任务地址空间——**免失效档**。寄存器写入
+/// （TTBR0/CONTEXTIDR）与 [`activate_aspace`] 同源，跳过 `tlbi aside1is`+
+/// `dsb ish`。调用方合同：本核上次激活该 ASID 以来回卷代数未变（读
+/// `tlbshoot::roll_gen` 对账，由调度器 `activate_if_changed` 的 per-CPU
+/// 激活代数表执法）——该号在本核 TLB 的项全为有效项。代数变（回卷过）
+/// 须走 [`activate_aspace`] 原档。`ttbr0_pa == 0` = 无 AS → 内核空表，同上。
+pub fn activate_aspace_keep_tlb(ttbr0_pa: usize, asid: u16) {
+    // SAFETY: EL1、切换临界区（IRQ 屏蔽）内调用；免失效正确性由调用方
+    // 代数对账合同保证（见函数文档）。
+    unsafe { mmu::activate_ttbr0_keep_tlb(ttbr0_pa, asid) };
 }
 
 /// 2b-2：低半身份表退役——TTBR0 ← 内核空表 + `tlbi vmalle1is`。此后低半任何

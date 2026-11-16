@@ -1,0 +1,68 @@
+# W3A-IMPL-SB —— 波3 wmd 面实施清单（SB）
+
+Date: 2026-11-15
+Owner: SB（wmd 面）
+依据: 波3 设计稿《2026-11-15-波3桌面三栏与系统窗实施设计》（主树 .agents/plans/ 在册）§3 返回键路由状态机/§9 TABLE_WAIT 裁决 + 侦察稿《2026-11-15-波3三栏侦察》（主树 .agents/research/ 在册）§三/§五
+
+> 注一：任务书指名的 `W3A-RECON.md` 在本工作树不存在（实施时全树检索无果）——侦察面按波3 侦察研究稿 + 设计稿 §3/§9 直核现场替代，wmd 定位 = 独立 bin `user/bins/gui-wmd/`（非 launcher 内嵌，零 launcher 文件触碰）。
+> 注二（并行会话事故，已自愈）：本批实施中途被波4 会话的「工作树净」清树两度抹除未提交现场（含本文件）；已按显式路径逐件重写并即时提交落账（6ef6e7b46 wire 面 / b2b865a37 wmd 面 / 1c1f1331b justfile 台账）——波4 会话清树时请勿 checkout 本三笔触及路径。
+
+## 范围与边界
+
+只动 wmd 相关源（`user/bins/gui-wmd/`）与 berry-guiproto 的 wm 域消费面/测试；禁碰 guifbd/launcher UI 面（SA/SC 地盘）——零触碰。同工作树并行会话（波3 件⑤/波4 apps）在途改动一律不碰；justfile 仅追加 test-host 一行（gui-inputd 先例位）。
+
+## 改动清单
+
+### ① TABLE_WAIT 多客户端语义（注记裁定 = 冻结，零语义改动）
+
+- 裁决依据：设计 §9「TABLE_WAIT 冻结、零新增驻留者，表跟随一律走事件通知 + TABLE_GET」。parked 单车位原语义（后到覆盖不排队/表变更向当前 parked 应答）逐字保留，钉板测试 `table_wait_frozen_single_slot_semantics`。
+- 收口动作：`table.rs` 模块注记与 `main.rs` 头注补波3 立法（唯一合法驻留者 = inputd push 面）；多客户端跟随面改走事件通道（见③）。
+- 新增 OP_WM_SUBSCRIBE=0x68（add-only；ack 1B ST_OK + 随行恰 1 订阅者事件通道端；帽 `WM_EVT_SUBS_MAX=4` 静态定容，满 ST_FULL）——无窗跟随者（guifbd 表快照「通知驱动 + 异步拉取」，设计 §4）的事件源，避免 guifbd 走 wm_srv TABLE_WAIT 位移 inputd 的 parked 单车位（§9 乒乓自旋禁令）。
+
+### ② wmd 焦点表：OP_WM_FOCUS 维护 + WM_LAYER_SERVICE=2 窗表支持
+
+- `focus()`：win=0 = 让出（焦点清空不动他窗——wm_srv 共享面发送者不可辨，v1 单焦点在席者即发送者口径）；win≠0 须在册（ST_NOENT）且可见（ST_BAD——持焦窗恒可见不变量；策略拒码先例 = OP_INPUT_INJECT 拒面）；授予/让出皆 bump（版本抬 + parked 应答 + 事件广播）。
+- `wm_layer_known` 收宽 `<= WM_LAYER_SERVICE`（波2 R1「拒点从 2 移钉 3」落地——本工作树此前谓词仍 ≤1，SERVICE 常量已落但建窗被拒）；CREATE/快照双侧对称收 2 拒 3，值域收宽不升版（VER_WM 恒 1）。
+- SERVICE 层窗表语义：入表/快照回显 layer=2；AVOID_SYS 挖坑仍只对可见 SYSTEM 窗（SERVICE 不挖坑——设计 §5 覆盖裁决，`recompute` 零改动）；层序 SERVICE>SYSTEM>APP 由 `wm_hit_test` layer 降序天然覆盖（guiproto 侧钉板测试）。
+- 属主事件通道入表项：`Win.evt: Option<Handle>`——CREATE 建联（应答随行 gift 通道端；内核资源拒绝降级无通道窗、ack 零随行）、DESTROY 关联关闭；gfxdemo 现网 CREATE ack 忽略随行 handle（`let (n, _)`），向后兼容零改。
+
+### ③ 返回路由 wmd 侧（状态机按设计 §3 R2 + 配套立法）
+
+- `back()`（OP_WM_BACK=0x67，无参帧——wmd 查表路由焦点窗）：无焦点 ST_NOENT；目标窗无事件通道（旧式/降级）= 直接 DESTROY（返回语义仍正确）；有通道 = 非阻塞投递 WM_EVT_BACK(wid) 后武装 500ms 单槽（`WMD_BACK_FALLBACK_NS`）——满即丢（EBUSY）同武装（兜底网兜）、余错码关闭通道降级 + 直接 DESTROY。应答 ST_OK = 已受理。
+- 帧型（guiproto add-only，带 0x90..=0x92 落全部 op 带之外——错投任一请求分发面恒 ST_BAD）：WM_EVT_BACK=0x90（4B `[kind][wid u16][r]`）/ WM_EVT_TABLE=0x91（5B `[kind][version u32]`）/ WM_EVT_BACK_ACK=0x92（1B 回程解除兜底）+ 统一判别面 `parse_wm_evt → WmEvt`。
+- 兜底状态机：BACK_ACK（属主通道来帧，wid 失配=迟到/位移忽略）或**任何表变更**（bump——设计 R2「无 BACK_ACK 且无表变更」字面）解除；500ms 到点 `on_back_tick` 兜底 DESTROY + 表序内建 refocus 回最末可见窗。单槽语义同 parked：后到覆盖重臂不排队。
+- 表变更广播 `broadcast_table`：每次 bump 向全部属主/订阅者通道非阻塞发 WM_EVENT_TABLE(version)——满即丢（真值恒经 TABLE_GET，丢弃至多迟一拍）；余错码关闭拆除（属主降级无通道窗/订阅者摘除保序）。内核 v1 无对端死亡检测 → 500ms 兜底是唯一可靠网（不依赖错码分支）。
+- serve 循环接线（main.rs）：每轮顶 = `on_back_tick` + `sweep_evt`（事件通道收割，防请求面饿死 BACK_ACK）→ wm_srv→push_srv poll-first → wait_many；wait 集 = 2 请求面 + 事件通道（表序稳定）截 `WAIT_MANY_MAX=16`，越窗截断 + 100ms 短帽重询兜底；deadline = min(空闲帽 10s, 兜底截止, 越窗短帽)。
+
+### ④ 协议面单测（mock 客户端）
+
+- gui-wmd 升双面 crate（gui-inputd 先例）：`src/lib.rs` = 纯策略核 + `Port` I/O 缝（时间/收发/建联/关闭/防御出口；`SendEvtStatus` 收窄回传，berry_sys 错码不进 lib）+ MockPort mock 客户端 14 测；`src/main.rs` = ChanPort 壳 + serve（berry-libc 按 `cfg(target_os = "linux")` 门控，host 空壳 main）。berry-libc 门控 + `Cargo.toml` 依赖面迁移。
+- 14 测覆盖：焦点授予/让出/拒面（NOENT/BAD/畸形帧）、SERVICE 层建窗 + 挖坑豁免、BACK 路由 + ACK 解除、500ms 超时兜底 + refocus + 幂等、无通道窗直接 DESTROY、满即丢同武装、无焦点 NOENT、单槽位移 + 迟到 ACK 忽略、表变更清槽（优雅退出序）、CREATE gift/DESTROY 关闭、病态通道降级、订阅广播/帽满/随行拒面、parked 冻结语义钉板。
+- guiproto 消费侧 +5 测：SERVICE 收宽往返/拒点、hit-test SERVICE>SYSTEM>APP 层序、SUBSCRIBE 往返/拒面、事件帧族往返/r 容忍/长度拒、统一判别 + op 带隔离矩阵。
+
+## 文件账（= 三笔提交）
+
+| 提交 | 路径 | 动作 |
+|---|---|---|
+| 6ef6e7b46 | `user/berry-guiproto/src/lib.rs` | `wm_layer_known` 收宽 + 波3 事件通道常量/编解码/统一判别（add-only）+ 拒点测试 2→3 迁移 + 新增 5 测 |
+| b2b865a37 | `user/bins/gui-wmd/Cargo.toml` | 双面 crate 化（lib 面自动）+ berry-libc 目标门控 |
+| b2b865a37 | `user/bins/gui-wmd/src/lib.rs` | 新增：Port 缝 + SendEvtStatus + MockPort 14 测 |
+| b2b865a37 | `user/bins/gui-wmd/src/table.rs` | Port 参数化重构 + focus/back/subscribe/on_back_tick/sweep_evt/broadcast_table/pending/subs + 模块注记波3 立法 |
+| b2b865a37 | `user/bins/gui-wmd/src/main.rs` | ChanPort + serve 循环接线（tick/收割/wait 集拼装）+ guest 面目标门控 |
+| b2b865a37 | `.agents/notes/implemented/2026-11-15-波3-wmd焦点与返回路由落地.md` | 决策笔记（同批义务） |
+| 1c1f1331b | `justfile` | test-host 追加 gui-wmd lib 一行（gui-inputd 位后） |
+| — | `user/bins/gui-wmd/src/relay.rs` | 零改动（依赖的 crate 助手全保留） |
+
+## 验证
+
+- `cargo test --manifest-path user/Cargo.toml -p berry-guiproto --target aarch64-apple-darwin`：52 绿（+5，原 47 零回归）。
+- `cargo test --manifest-path user/bins/gui-wmd/Cargo.toml --target aarch64-apple-darwin`：14 绿零警告。
+- musl release 构建（justfile 同链 berry-ld）：绿，包体 339648B 与基线同值。
+- 邻面零回归：berry-ui host 测 47 绿、gui-inputd host 测 25 绿。
+- `node .agents/tools/check-docs.mjs`：本批文档零告警（工作树余 3 条既有他稿链接告警，非本批）。
+
+## 移交面（SA/SC 依赖）
+
+- **SA（guifbd）**：表快照「通知驱动」用 OP_WM_SUBSCRIBE（wm_cli 面发 4B 请求，ack 随行收订阅端；WM_EVT_TABLE(version) 到达 → TABLE_GET 拉快照，version 比对消费）；带缓存消费快照 layer 域含 SERVICE=2。
+- **SC（launcher/appshell）**：CREATE ack 须容忍 0/1 随行 handle（1 = 属主事件端，drain WM_EVT_BACK/WM_EVT_TABLE；BACK 处理后回 1B WM_EVT_BACK_ACK；优雅退出 = 自 DESTROY 即解除兜底无需 ACK 到达）；返回键链 = TABLE_GET 查焦点 → OP_WM_BACK（无参）；softimed SERVICE 底窗建窗即用 layer=2。
+- **波4/波5**：IMMERSIVE/IME_WANTED 旗未落（SA/SC 消费面挂账——本刀不占 guiproto 位）。

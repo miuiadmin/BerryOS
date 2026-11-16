@@ -17,6 +17,10 @@
 //!   电量坑（R3 三态停帧的诚实前提）。
 //! - 零 panic / 零分配：i128 插值中间量防 i32×u64 乘法溢出；父链累计
 //!   i64 + 步数帽防环。
+//! - [`SpringProp`]（维三最小刀）= **定点弹簧第二动画面**：质量-刚度-
+//!   阻尼离散积分（Q16.16、半隐式 Euler、子步帽）、初速度入参、重定
+//!   目标以当前状态续接、双阈值收敛吸附——与既有五属性四档缓动零
+//!   交叠（见弹簧节首注）。
 
 use crate::damage::{DamageSet, RectI};
 use crate::desc::NodeId;
@@ -78,6 +82,198 @@ pub struct Anim {
     pub start_ns: u64,
     pub dur_ns: u64,
     pub easing: Easing,
+}
+
+// ---------- 弹簧（维三最小刀——UI-02 维三裁决两刀之一） ----------
+//
+// 与 `Anim`（from/to/start/dur/easing 定长时间线）平行的**第二动画面**：
+// 定点弹簧 SpringProp——质量-刚度-阻尼离散积分（Q16.16 纯整数，同
+// interp 的 i128 全程中间量纪律）。覆盖 OH `curves.springMotion` 与
+// iOS `interpolatingSpring` 的主干：初速度入参（速度环 96ms 窗差分
+// 输出 px/s 可直入）+ 重定目标以当前位置/速度续接（= iOS
+// velocity/shouldMerge 与 OH 终点变化自动接管的主干等价物）。
+//
+// 不扩 `AnimProp` 枚举本体：AnimProp 语义 = 「驱动哪个属性」（五属性
+// 之一），Spring 不是属性而是**驱动方式**——无属性面的变体在
+// `kind_of`/`apply` 的 exhaustive match 纪律下只能落死臂（递归载荷又
+// 需 Box，热路径禁）。挂载面 = lib.rs 弹簧表（`spring_add`，与 anims
+// 表同帽同错）+ `SpringProp.prop` 指认五属性之一经同一 `apply` 落点。
+
+/// 弹簧刚度/阻尼预设两档（质量恒 1——k/c 已按 m=1 折算；ω = 无阻尼
+/// 固有频率，ζ = 阻尼比，k=ω²、c=2ζω）：
+/// - [`SpringPreset::Smooth`] = **临界阻尼**（ω=12、ζ=1.0 → k=144、
+///   c=24，收敛≈0.5s）：无过冲单调收敛——OH `curves.springMotion`
+///   默认档（response≈0.55s、dampingFraction≈0.83 近临界）与 iOS
+///   `.smooth` 的共同气质；翻页/吸附主干。
+/// - [`SpringPreset::Bouncy`] = **欠阻尼**（ω=16、ζ=0.625 → k=256、
+///   c=20，过冲≈8%）：iOS `.bouncy` 气质；按压回弹主干。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpringPreset {
+    Smooth,
+    Bouncy,
+}
+
+impl SpringPreset {
+    /// 刚度 k（Q16.16，1/s²）。
+    const fn stiffness_q(self) -> i64 {
+        match self {
+            SpringPreset::Smooth => 144 << 16,
+            SpringPreset::Bouncy => 256 << 16,
+        }
+    }
+
+    /// 阻尼 c（Q16.16，1/s）。
+    const fn damping_q(self) -> i64 {
+        match self {
+            SpringPreset::Smooth => 24 << 16,
+            SpringPreset::Bouncy => 20 << 16,
+        }
+    }
+}
+
+/// 积分子步（16ms = 60Hz 帧步）。半隐式 Euler 稳定域 dt·ω < 2——两档
+/// ω ≤ 16 → 子步上限 125ms，取 16ms 留 8 倍裕量。
+const SPRING_SUBSTEP_NS: u64 = 16_000_000;
+
+/// 单 tick 子步帽：16 步 = 256ms 实际物理推进——长帧/时钟大跳走**慢
+/// 动作追赶**而非爆积分（确定性：同 now 序列同子步序列，无随机）。
+const SPRING_SUBSTEP_MAX: u32 = 16;
+
+/// 终止判据——位移阈（Q16.16：0.5px，亚像素不可见）。
+const SPRING_POS_EPS_Q: i64 = 32_768;
+
+/// 终止判据——速度阈（Q16.16：20px/s，低于可感知平移率）。
+const SPRING_VEL_EPS_Q: i64 = 20 << 16;
+
+/// 定点弹簧条目（弹簧表元素——lib.rs `spring_add` 入表；SwipePager
+/// 自管路径（同 `anim::interp` 单源复用风格）直接持一条步进）。
+/// 终止判据 = 位移与速度**双阈值**收敛后吸附目标（`done` 置位、
+/// `value()` 返精确 target——与 anim::tick 完成帧「终点钉板」同语义）。
+#[derive(Debug, Clone, Copy)]
+pub struct SpringProp {
+    /// 驱动节点（引擎表挂载面经 `apply` 分派；死节点 no-op 但照常
+    /// 收敛移除——与 anim 表同纪律，防 anim_active 卡死）。
+    pub node: NodeId,
+    /// 驱动属性（既有五属性之一——弹簧是驱动方式非属性，见节首注）。
+    pub prop: AnimProp,
+    /// 目标值（重定目标 = `retarget`——以当前位置/速度重起算）。
+    pub target: i32,
+    /// 刚度/阻尼预设两档。
+    pub preset: SpringPreset,
+    /// 位置积分态（Q16.16 px）。
+    pos_q: i64,
+    /// 速度积分态（Q16.16 px/s——重定目标续接的接口态）。
+    vel_q: i64,
+    /// 上次步进时刻（None = 未起拍：首次 step 定基线、dt=0 持初值
+    /// ——与 SwipePager 吸附「起拍 = 首次 tick 的 now_ns」同式）。
+    last_ns: Option<u64>,
+    /// 收敛完成旗（吸附目标后置位；retarget 复位续跑）。
+    done: bool,
+}
+
+impl SpringProp {
+    /// 构造：`from` = 当前位置、`target` = 目标值、`vel0_px_s` = 初速度
+    /// （速度环 96ms 窗差分输出 px/s 可直入——hit.rs `velocity_at_end`
+    /// 同单位）、`preset` = 刚度/阻尼两档。
+    pub fn new(
+        node: NodeId,
+        prop: AnimProp,
+        from: i32,
+        target: i32,
+        vel0_px_s: i32,
+        preset: SpringPreset,
+    ) -> Self {
+        Self {
+            node,
+            prop,
+            target,
+            preset,
+            pos_q: (from as i64) << 16,
+            vel_q: (vel0_px_s as i64) << 16,
+            last_ns: None,
+            done: false,
+        }
+    }
+
+    /// 重定目标：**以当前位置与当前速度重起算**——只换 target，位置/
+    /// 速度积分态原样续接（中断恢复语义的主干等价物：iOS
+    /// velocity/shouldMerge 合并、OH 终点变化自动接管）。已收敛条目
+    /// 复活续跑。
+    pub fn retarget(&mut self, target: i32) {
+        self.target = target;
+        self.done = false;
+    }
+
+    /// 步进（dt = 与上次 step 之差；首步 dt=0 持初值起拍）：半隐式
+    /// Euler 子步积分，返回当前整值位置。收敛（双阈值）→ 吸附目标。
+    pub fn step(&mut self, now_ns: u64) -> i32 {
+        let last = match self.last_ns {
+            None => {
+                self.last_ns = Some(now_ns);
+                return self.value(); // 起拍帧：dt=0 持初值
+            }
+            Some(t) => t,
+        };
+        let mut remain = now_ns.saturating_sub(last); // 时钟回拨 → 0
+        self.last_ns = Some(now_ns);
+        let mut steps = 0u32;
+        while remain > 0 && steps < SPRING_SUBSTEP_MAX && !self.done {
+            let dt = remain.min(SPRING_SUBSTEP_NS);
+            self.integrate(dt);
+            remain -= dt;
+            steps += 1;
+        }
+        self.value()
+    }
+
+    /// 收敛完成旗（双阈值满足 + 吸附目标）。
+    pub fn done(&self) -> bool {
+        self.done
+    }
+
+    /// 当前整值位置（Q16.16 四舍五入 → i32 饱和——§0 坐标铁律收口）。
+    pub fn value(&self) -> i32 {
+        sat_q_to_i32(self.pos_q)
+    }
+
+    /// 当前速度读出（px/s 整值——重定目标/续接调试面）。
+    pub fn vel_px_s(&self) -> i32 {
+        sat_q_to_i32(self.vel_q)
+    }
+
+    /// 单子步积分（Q16.16 全 i128 中间量；pos/vel 饱和钳回 i64——
+    /// 极端参数（i32 端点/巨速度）不 panic 只钳制）：
+    /// `a = -k·(x - target) - c·v`（m=1 折入常量）→ 先速度后位置。
+    fn integrate(&mut self, dt_ns: u64) {
+        let k = self.preset.stiffness_q() as i128;
+        let c = self.preset.damping_q() as i128;
+        let target_q = ((self.target as i64) as i128) << 16;
+        let dt_q = ((dt_ns as i128) << 16) / 1_000_000_000; // Q16.16 秒
+        let disp = (self.pos_q as i128) - target_q;
+        let accel = -((k * disp) >> 16) - ((c * self.vel_q as i128) >> 16);
+        let vel_new = (self.vel_q as i128) + ((accel * dt_q) >> 16);
+        let pos_new = (self.pos_q as i128) + ((vel_new * dt_q) >> 16);
+        self.vel_q = sat_i128_to_i64(vel_new);
+        self.pos_q = sat_i128_to_i64(pos_new);
+        // 终止判据：位移与速度双阈值 → 吸附目标（终点钉板）。
+        let d = (self.pos_q as i128) - target_q;
+        if d.abs() <= SPRING_POS_EPS_Q as i128 && self.vel_q.abs() <= SPRING_VEL_EPS_Q {
+            self.pos_q = target_q as i64; // |target|≤i32::MAX → <<16 不溢 i64
+            self.vel_q = 0;
+            self.done = true;
+        }
+    }
+}
+
+/// Q16.16 → i32 饱和（四舍五入到最近整数；i128 中间量防 +32768 溢出）。
+fn sat_q_to_i32(q: i64) -> i32 {
+    let v = ((q as i128) + 32_768) >> 16;
+    v.clamp(i32::MIN as i128, i32::MAX as i128) as i32
+}
+
+/// i128 → i64 饱和（积分态钳制——溢出负例不 panic）。
+fn sat_i128_to_i64(v: i128) -> i64 {
+    v.clamp(i64::MIN as i128, i64::MAX as i128) as i64
 }
 
 /// S7 anim staging（§6/D1——B 面 cfg s7）：Layout 型动画 tick 期产
@@ -443,6 +639,55 @@ pub(crate) fn tick(
         apply(&a, v, nodes, damage, &vp);
         if done {
             anims[i] = None; // 完成项移除（§3.7）
+        } else {
+            active = true;
+        }
+    }
+    active
+}
+
+/// 弹簧表帧内推进（与 `tick` 同帧同时钟；空表全 None 零动静）：逐条
+/// `SpringProp::step` 子步积分 → 经同一 `apply` 单源落点（临时 `Anim`
+/// 只借 node/prop 分派面——apply 不读 from/to/dur）；收敛项吸附目标
+/// 后移除；返回 active（弹簧在飞 = 帧循环 RUN 保持——同 tick 语义）。
+/// 死节点 no-op 但照常收敛移除（防 anim_active 卡死的同纪律）。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spring_tick(
+    springs: &mut [Option<SpringProp>],
+    nodes: &mut [Option<Node>],
+    damage: &mut DamageSet,
+    now_ns: u64,
+    vp_w: u32,
+    vp_h: u32,
+    #[cfg(feature = "s7")] staging: &mut AnimStaging,
+) -> bool {
+    let vp = RectI::new(
+        0,
+        0,
+        crate::damage::u32_to_i32_sat(vp_w),
+        crate::damage::u32_to_i32_sat(vp_h),
+    );
+    let mut active = false;
+    for i in 0..springs.len() {
+        let Some(sp) = &mut springs[i] else {
+            continue;
+        };
+        let v = sp.step(now_ns);
+        let a = Anim {
+            node: sp.node,
+            prop: sp.prop,
+            from: 0,
+            to: sp.target,
+            start_ns: 0,
+            dur_ns: 0,
+            easing: Easing::Linear, // 供 s7 staging 分派——apply 不读缓动面
+        };
+        #[cfg(feature = "s7")]
+        apply(&a, v, nodes, damage, &vp, staging);
+        #[cfg(not(feature = "s7"))]
+        apply(&a, v, nodes, damage, &vp);
+        if sp.done() {
+            springs[i] = None; // 收敛吸附后移除（终点钉板）
         } else {
             active = true;
         }

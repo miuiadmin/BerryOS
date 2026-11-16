@@ -1,6 +1,6 @@
 [package]
 name = "berry-gfx"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 # GUI-2 段①（docs/GUI里程碑规划-2026-10.md GUI-2 行 + ADR #51）：pass 形态
 # 图形 API + soft 光栅核纯函数 crate，host 测试先行（berry-virtio/berry-fbcon

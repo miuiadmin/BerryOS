@@ -3,7 +3,10 @@
 //! - [`TextMetrics`]：文本内在测量缝（`scale` = 档位 id u8，**不焊**
 //!   FontSize——GUI-2 增件⑧ 真字体面的迁移缝）；[`MonospaceTextMetrics`]
 //!   逐位复刻 v1 现状测量（宽 = `len × cell_w`、高 = `cell_h`——
-//!   `FontSize` 单源），换件前的默认供件。
+//!   `FontSize` 单源），换件前的默认供件；[`ProportionalTextMetrics`]
+//!   比例供件（宽 = 逐字形 `GlyphAtlas::advance` 累计——与 paint 推进
+//!   同源；三档点阵下与等宽供件逐值恒等，HD 档为真实比例宽，痛点⑥
+//!   根修 03 号 §1.3-3）。
 //! - [`IconSource`]：图标/图片资源缝（dims 内在尺寸 + 解码后 ARGB 借用
 //!   ——LRU/解码编排留消费侧）；[`EmptyIconSource`] = 默认空供件（未
 //!   注册资源恒 None——空绘不炸的供给面）。
@@ -34,10 +37,12 @@ fn tier(scale: u8) -> FontSize {
 /// 文本内在测量缝（§6 冻结签名）：`text` = 有效字节切片；`scale` = 档位
 /// id（u8，不焊 FontSize——GUI-2 增件⑧ 迁移缝）。返回 (w, h)。
 ///
-/// **v1 契约不变量（R2-8 钉）**：等长字节串必等宽（等宽字体假设）——
-/// B 面 set_text「等长换文 = 纯 PAINT 零重测」三态判据的正确性前提。
-/// 自定义供件（比例字体）须自证或回避该面；GUI-2 真字体落地时三态
-/// 判据改经度量缓存比对内在宽（equal-len 不再蕴含等尺寸）。
+/// **v1 契约不变量（R2-8 钉）**：等宽供件（[`MonospaceTextMetrics`] 与
+/// 三档点阵）下等长字节串必等宽——B 面 set_text「等长换文 = 纯 PAINT
+/// 零重测」三态判据的正确性前提。比例供件（[`ProportionalTextMetrics`]
+/// + HD 档）下等长**不再蕴含等宽**（"iii"≠"WWW"）——set_text 三态判据
+/// 已改经本缝比对内在宽（equal-len 且等宽才走纯 PAINT 分支），R2-8 面
+/// 由判据侧兜底而非供件侧假设。
 pub trait TextMetrics {
     fn measure(&self, text: &[u8], scale: u8) -> (u32, u32);
 }
@@ -51,6 +56,27 @@ impl TextMetrics for MonospaceTextMetrics {
     fn measure(&self, text: &[u8], scale: u8) -> (u32, u32) {
         let fs = tier(scale);
         let w = text.len() as u64 * fs.cell_w() as u64;
+        (crate::damage::u64_to_u32_sat(w), fs.cell_h() as u32)
+    }
+}
+
+/// 比例供件（痛点⑥根修 03 号 §1.3-3）：宽 = 逐字形 `GlyphAtlas::advance`
+/// 累计、高 = `cell_h`——与 paint 侧推进同源单轨（排布/测量不会分叉）。
+///
+/// 三档点阵（advance 缺省 = cell_w）下输出与 [`MonospaceTextMetrics`]
+/// **逐值恒等**——等宽语义零漂移，换装无三档回归面；HD 档（Noto Sans
+/// CJK 比例字源）下为真实比例宽（「Browser Settings」= 269px 而等宽
+/// 排布 512px，03 号 §1.1 实测）。
+pub struct ProportionalTextMetrics;
+
+impl TextMetrics for ProportionalTextMetrics {
+    fn measure(&self, text: &[u8], scale: u8) -> (u32, u32) {
+        let fs = tier(scale);
+        let atlas = fs.atlas();
+        let mut w: u64 = 0;
+        for &b in text {
+            w += atlas.advance(b) as u64;
+        }
         (crate::damage::u64_to_u32_sat(w), fs.cell_h() as u32)
     }
 }

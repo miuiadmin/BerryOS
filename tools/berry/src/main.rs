@@ -52,6 +52,8 @@ enum Cmd {
     Power(PowerCmd),
     /// Read the session serial log.
     Logs(LogsCmd),
+    /// Attach the host terminal to the guest serial console (bsh).
+    Console(ConsoleCmd),
     /// Display/profile operations.
     Display(DisplayCmd),
     /// Trigger a window-style shortcut action.
@@ -79,8 +81,12 @@ enum Cmd {
     Swipe(SwipeCmd),
     /// Top-level text alias for `input text`.
     Text(TextCmd),
+    /// External VNC endpoint operations (status/passwd/check/open/web/certs).
+    Vnc(VncCmd),
     /// Print version.
     Version,
+    /// 打印 home() 根路径（recipe/脚本消费——justfile 侧消除 home() 逻辑复制）。
+    Home,
 }
 
 #[derive(Parser, Debug)]
@@ -91,7 +97,7 @@ struct RunCmd {
     marker: String,
     #[arg(long, default_value_t = 30)]
     timeout: u64,
-    #[arg(long, default_value = "tcg")]
+    #[arg(long, default_value = "auto")]
     accel: String,
     #[arg(long)]
     memory: Option<u32>,
@@ -111,9 +117,9 @@ struct ShotCmd {
     delay_ms: u64,
     #[arg(long)]
     out: Option<PathBuf>,
-    #[arg(long, default_value = "default")]
+    #[arg(long, default_value = "desktop")]
     profile: String,
-    #[arg(long, default_value = "tcg")]
+    #[arg(long, default_value = "auto")]
     accel: String,
     #[arg(long)]
     memory: Option<u32>,
@@ -207,6 +213,9 @@ struct EventsCmd {
     tail: usize,
     #[arg(long, short = 'f')]
     follow: bool,
+    /// Only print lines containing this substring (empty = no filter).
+    #[arg(long)]
+    filter: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -273,12 +282,19 @@ struct LogsCmd {
 }
 
 #[derive(Parser, Debug)]
+struct ConsoleCmd {
+    /// Run id/dir; default = newest running device.
+    #[arg(long)]
+    run: Option<String>,
+}
+
+#[derive(Parser, Debug)]
 struct StartCmd {
     #[arg(long)]
     image: Option<PathBuf>,
-    #[arg(long, default_value = "phone")]
+    #[arg(long, default_value = "desktop")]
     profile: String,
-    #[arg(long, default_value = "tcg")]
+    #[arg(long, default_value = "auto")]
     accel: String,
     #[arg(long)]
     memory: Option<u32>,
@@ -291,6 +307,19 @@ struct StartCmd {
     /// Restart QEMU in the same run after an unexpected exit.
     #[arg(long)]
     restart_on_crash: bool,
+    /// Expose an external VNC endpoint: off | on | <port> | <host>:<port>.
+    #[arg(long)]
+    vnc: Option<String>,
+    /// WebSocket listener for noVNC: off | on | <port> (requires --vnc).
+    #[arg(long)]
+    vnc_ws: Option<String>,
+    /// VNC password; loopback defaults to none, non-loopback auto-generates.
+    /// Ignored when no endpoint is exposed (no --vnc and no BERRY_VNC).
+    #[arg(long)]
+    vnc_pass: Option<String>,
+    /// TLS (VeNCrypt) cert dir for the endpoint (requires --vnc).
+    #[arg(long)]
+    vnc_tls: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -303,9 +332,9 @@ struct RestartCmd {
 struct HostCmd {
     #[arg(long)]
     image: Option<PathBuf>,
-    #[arg(long, default_value = "phone")]
+    #[arg(long, default_value = "desktop")]
     profile: String,
-    #[arg(long, default_value = "tcg")]
+    #[arg(long, default_value = "auto")]
     accel: String,
     #[arg(long)]
     memory: Option<u32>,
@@ -316,6 +345,22 @@ struct HostCmd {
     /// Restart QEMU in the same run after an unexpected exit.
     #[arg(long)]
     restart_on_crash: bool,
+    /// Expose an external VNC endpoint: off | on | <port> | <host>:<port>.
+    #[arg(long)]
+    vnc: Option<String>,
+    /// WebSocket listener for noVNC: off | on | <port> (requires --vnc).
+    #[arg(long)]
+    vnc_ws: Option<String>,
+    /// VNC password; loopback defaults to none, non-loopback auto-generates.
+    /// Ignored when no endpoint is exposed (no --vnc and no BERRY_VNC).
+    #[arg(long)]
+    vnc_pass: Option<String>,
+    /// TLS (VeNCrypt) cert dir for the endpoint (requires --vnc).
+    #[arg(long)]
+    vnc_tls: Option<String>,
+    /// One-shot password file for cross-run inheritance (internal).
+    #[arg(long, hide = true)]
+    vnc_pass_file: Option<PathBuf>,
 }
 
 #[derive(Parser, Debug)]
@@ -325,11 +370,11 @@ struct ShellCmd {
     attach: Option<String>,
     #[arg(long)]
     image: Option<PathBuf>,
-    #[arg(long, default_value = "phone")]
+    #[arg(long, default_value = "desktop")]
     profile: String,
     #[arg(long, default_value = "fit")]
     scale: String,
-    #[arg(long, default_value = "tcg")]
+    #[arg(long, default_value = "auto")]
     accel: String,
     #[arg(long)]
     memory: Option<u32>,
@@ -339,6 +384,153 @@ struct ShellCmd {
     keep: bool,
     #[arg(long)]
     display_mode: Option<String>,
+    /// Expose an external VNC endpoint: off | on | <port> | <host>:<port>.
+    #[arg(long)]
+    vnc: Option<String>,
+    /// WebSocket listener for noVNC: off | on | <port> (requires --vnc).
+    #[arg(long)]
+    vnc_ws: Option<String>,
+    /// VNC password; loopback defaults to none, non-loopback auto-generates.
+    /// Ignored when no endpoint is exposed (no --vnc and no BERRY_VNC).
+    #[arg(long)]
+    vnc_pass: Option<String>,
+    /// TLS (VeNCrypt) cert dir for the endpoint (requires --vnc).
+    #[arg(long)]
+    vnc_tls: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+struct VncCmd {
+    #[command(subcommand)]
+    action: VncAction,
+}
+
+#[derive(Subcommand, Debug)]
+enum VncAction {
+    /// Show the external endpoint (listen/uri/auth/clients).
+    Status(VncStatusCmd),
+    /// Rotate or expire the VNC password (needs an auth-enabled endpoint).
+    Passwd(VncPasswdCmd),
+    /// Full RFB self-check through the endpoint (auth + one frame);
+    /// --ws switches to the browser (websocket) path.
+    Check(VncCheckCmd),
+    /// Open the endpoint in the platform VNC viewer (macOS).
+    Open(VncOpenCmd),
+    /// Serve the BerryOS shell page for browser access (vendored noVNC
+    /// kept at /novnc/ as the escape hatch; plaintext runs proxy
+    /// nothing; --tls on a TLS run adds a local wss proxy).
+    Web(VncWebCmd),
+    /// Generate a self-signed x509 cert set for --vnc-tls (openssl).
+    Certs(VncCertCmd),
+}
+
+#[derive(Parser, Debug)]
+struct VncStatusCmd {
+    #[arg(long)]
+    run: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+struct VncPasswdCmd {
+    #[arg(long)]
+    run: Option<String>,
+    /// Set an explicit password (default: generate a random one).
+    #[arg(long)]
+    set: Option<String>,
+    /// Generate a random password (default behavior, kept for clarity).
+    #[arg(long)]
+    generate: bool,
+    /// Schedule expiry: never | <positive seconds>.
+    #[arg(long)]
+    expire: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+struct VncCheckCmd {
+    #[arg(long)]
+    run: Option<String>,
+    /// Password for the check; default reads the run's vnc.pass.
+    #[arg(long)]
+    password: Option<String>,
+    /// Check the websocket (browser) endpoint instead of TCP: ws/wss
+    /// upgrade + RFB handshake to ServerInit, the exact path noVNC takes.
+    #[arg(long)]
+    ws: bool,
+    /// Certificate dir for TLS (VeNCrypt) endpoints; default reads the
+    /// run's --vnc-tls directory. Ignored on plaintext endpoints.
+    #[arg(long)]
+    ca: Option<PathBuf>,
+    /// Skip TLS certificate verification (explicit escape hatch; prints
+    /// a warning). Ignored on plaintext endpoints; excludes --ca.
+    #[arg(long)]
+    insecure: bool,
+}
+
+#[derive(Parser, Debug)]
+struct VncOpenCmd {
+    #[arg(long)]
+    run: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+struct VncWebCmd {
+    #[arg(long)]
+    run: Option<String>,
+    /// Port for the local page server (default: pick a free one; 0 is
+    /// refused — the URL/QR would advertise a dead :0 link).
+    #[arg(long, value_parser = berry::web::parse_web_port)]
+    port: Option<u16>,
+    /// Max concurrent page connections (1..=1024, default 16).
+    #[arg(
+        long,
+        value_parser = berry::web::parse_max_conns,
+        default_value_t = berry::web::DEFAULT_MAX_CONNS
+    )]
+    max_conns: usize,
+    /// Serve the page over https from this certificate dir (default on
+    /// TLS runs: the run's --vnc-tls directory; then a local wss proxy
+    /// carries the browser connection to QEMU).
+    #[arg(long, value_name = "DIR")]
+    tls: Option<PathBuf>,
+    /// Single-port LAN mode: bind 0.0.0.0, serve pages and proxy `/ws`
+    /// to QEMU's loopback websocket on the same port — phones on the
+    /// same Wi-Fi open the BerryOS desktop directly (requires a
+    /// password on the run; QR on by default).
+    #[arg(long)]
+    lan: bool,
+    /// Override the LAN address printed into the URL/QR (requires
+    /// --lan; bare IPv6 gets bracketed automatically).
+    #[arg(long, value_name = "ADDR")]
+    host: Option<String>,
+    /// Render the pairing QR in the terminal (default with --lan).
+    #[arg(long)]
+    qr: bool,
+    /// Skip the pairing QR even in --lan mode.
+    #[arg(long)]
+    no_qr: bool,
+    /// Certificate dir overriding the upstream trust source when --lan
+    /// serves a TLS run (default: the run's --vnc-tls directory; the
+    /// page itself stays http — only the berry->QEMU upstream leg speaks
+    /// wss). Requires --lan; excludes --insecure; silently ignored on
+    /// plaintext runs.
+    #[arg(long, value_name = "DIR")]
+    ca: Option<PathBuf>,
+    /// Skip the upstream wss certificate verification when --lan serves
+    /// a TLS run (escape hatch; prints a warning). Requires --lan;
+    /// excludes --ca.
+    #[arg(long)]
+    insecure: bool,
+    /// Open the printed URL in the default browser before serving
+    /// (macOS: `open` without the password fragment; other platforms
+    /// print a manual hint instead — never an error).
+    #[arg(long)]
+    open: bool,
+}
+
+#[derive(Parser, Debug)]
+struct VncCertCmd {
+    /// Output directory for ca-cert/ca-key/server-cert/server-key pems.
+    dir: PathBuf,
 }
 
 #[derive(Parser, Debug)]
@@ -465,7 +657,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             commands::shortcut(c.run.as_deref(), &c.action, cli.json)
         }
         Some(Cmd::Events(c)) => {
-            commands::events(c.run.as_deref(), c.tail, c.follow, cli.json)
+            commands::events(c.run.as_deref(), c.tail, c.follow, c.filter.as_deref(), cli.json)
         }
         Some(Cmd::Stats(c)) => commands::stats(c.run.as_deref(), cli.json),
         Some(Cmd::Record(c)) => {
@@ -487,6 +679,11 @@ fn dispatch(cli: Cli) -> Result<()> {
             display_mode: c.display_mode,
             keep: c.keep,
             restart_on_crash: c.restart_on_crash,
+            vnc_spec: c.vnc,
+            vnc_ws: c.vnc_ws,
+            vnc_pass: c.vnc_pass,
+            vnc_pass_file: c.vnc_pass_file,
+            vnc_tls: c.vnc_tls,
         }),
         Some(Cmd::Device(c)) => match c.action {
             DeviceAction::Start(s) => commands::device_start(DeviceStartArgs {
@@ -499,6 +696,11 @@ fn dispatch(cli: Cli) -> Result<()> {
                 foreground: s.foreground,
                 restart_on_crash: s.restart_on_crash,
                 json: cli.json,
+                vnc_spec: s.vnc,
+                vnc_ws: s.vnc_ws,
+                vnc_pass: s.vnc_pass,
+                vnc_pass_file: None,
+                vnc_tls: s.vnc_tls,
             }),
             DeviceAction::List => commands::device_list(cli.json),
             DeviceAction::Status(s) => commands::device_status(s.run.as_deref(), cli.json),
@@ -514,6 +716,7 @@ fn dispatch(cli: Cli) -> Result<()> {
         Some(Cmd::Logs(c)) => {
             commands::logs(c.run.as_deref(), c.tail, c.follow, cli.json)
         }
+        Some(Cmd::Console(c)) => commands::console(c.run.as_deref()),
         Some(Cmd::Screenshot(c)) => commands::screenshot(ScreenshotArgs {
             run: c.run,
             out: c.out,
@@ -532,6 +735,10 @@ fn dispatch(cli: Cli) -> Result<()> {
             keep: c.keep,
             display_mode: c.display_mode,
             json: cli.json,
+            vnc_spec: c.vnc,
+            vnc_ws: c.vnc_ws,
+            vnc_pass: c.vnc_pass,
+            vnc_tls: c.vnc_tls,
         }),
         Some(Cmd::Input(c)) => commands::input(InputArgs {
             run: c.run,
@@ -571,8 +778,112 @@ fn dispatch(cli: Cli) -> Result<()> {
             action: InputAction::Text(c.text),
             json: cli.json,
         }),
+        Some(Cmd::Vnc(c)) => match c.action {
+            VncAction::Status(s) => commands::vnc_status(s.run.as_deref(), cli.json),
+            VncAction::Passwd(s) => {
+                // Plan contract: --set/--generate/--expire are mutually
+                // exclusive (commands::vnc_passwd only sees --set vs --expire,
+                // so the --generate pairs are rejected here).
+                if s.generate && (s.set.is_some() || s.expire.is_some()) {
+                    return Err(BerryError::new(
+                        2,
+                        "--generate is mutually exclusive with --set/--expire",
+                    ));
+                }
+                commands::vnc_passwd(
+                    s.run.as_deref(),
+                    // None (default, or explicit --generate) generates.
+                    s.set.as_deref(),
+                    s.expire.as_deref(),
+                    cli.json,
+                )
+            }
+            VncAction::Check(s) => {
+                commands::vnc_check(
+                    s.run.as_deref(),
+                    s.password.as_deref(),
+                    s.ca.as_deref(),
+                    s.insecure,
+                    s.ws,
+                    cli.json,
+                )
+            }
+            VncAction::Open(s) => commands::vnc_open(s.run.as_deref(), cli.json),
+            VncAction::Web(s) => {
+                // Wave-10 flag-family validation (rc=2 usage semantics):
+                // --host/--qr/--no-qr only mean something with --lan (a
+                // loopback QR is a dead end for phones — wave 9 f4), and
+                // --qr × --no-qr is a contradiction.
+                if !s.lan && s.host.is_some() {
+                    return Err(berry::error::BerryError::new(
+                        2,
+                        "--host requires --lan".to_string(),
+                    )
+                    .with_hint("QR 内容与 URL 是 LAN 地址，只在 --lan 模式有意义"));
+                }
+                if !s.lan && (s.qr || s.no_qr) {
+                    return Err(berry::error::BerryError::new(
+                        2,
+                        "--qr/--no-qr require --lan".to_string(),
+                    )
+                    .with_hint("QR 内容是 LAN 地址，只在 --lan 模式有意义"));
+                }
+                if s.qr && s.no_qr {
+                    return Err(berry::error::BerryError::new(
+                        2,
+                        "--qr and --no-qr are mutually exclusive".to_string(),
+                    )
+                    .with_hint("pass exactly one (default: on with --lan)"));
+                }
+                // Wave 11 TLS×LAN trust flags: --ca/--insecure shape the
+                // /ws proxy's upstream rustls client on TLS runs; they
+                // only mean something under --lan (loopback TLS runs
+                // serve their own https form), and naming both trust
+                // sources at once is a contradiction.
+                if s.ca.is_some() && s.insecure {
+                    return Err(berry::error::BerryError::new(
+                        2,
+                        "--ca and --insecure are mutually exclusive".to_string(),
+                    ));
+                }
+                if !s.lan && (s.ca.is_some() || s.insecure) {
+                    return Err(berry::error::BerryError::new(
+                        2,
+                        "--ca/--insecure require --lan".to_string(),
+                    )
+                    .with_hint("上游 wss 信任源只在 --lan 模式有意义（环回 TLS run 走自带 https 形态）"));
+                }
+                if let Some(h) = s.host.as_deref() {
+                    berry::lan::validate_host_override(h)?;
+                }
+                commands::vnc_web(
+                    s.run.as_deref(),
+                    s.port,
+                    s.max_conns,
+                    s.tls.as_deref(),
+                    s.lan,
+                    s.host.as_deref(),
+                    match (s.qr, s.no_qr) {
+                        (true, false) => Some(true),
+                        (false, true) => Some(false),
+                        _ => None,
+                    },
+                    s.open,
+                    s.ca.as_deref(),
+                    s.insecure,
+                    cli.json,
+                )
+            }
+            VncAction::Certs(s) => commands::vnc_certs(&s.dir, cli.json),
+        },
         Some(Cmd::Version) => {
             commands::version(cli.json);
+            Ok(())
+        }
+        Some(Cmd::Home) => {
+            // 单源出口：run 目录/数据盘/vars 持久位的根（BERRY_HOME 覆写
+            // 与 Windows LOCALAPPDATA 分支只活在这里——justfile 勿再复制）。
+            println!("{}", berry::run_dir::home().display());
             Ok(())
         }
         None => {
@@ -591,14 +902,20 @@ fn dispatch(cli: Cli) -> Result<()> {
             commands::shell(ShellArgs {
                 attach: None,
                 image: None,
-                profile: "phone".to_string(),
+                // 与 `berry shell` 默认一致（2026-11-13 owner 裁定：双击/
+                // 无参入口 = 横屏 1080P + 硬件加速，统一启动形态）。
+                profile: "desktop".to_string(),
                 scale: ScaleMode::Fit,
-                accel: "tcg".to_string(),
+                accel: "auto".to_string(),
                 memory: None,
                 timeout: Duration::from_secs(timeout),
                 keep: std::env::var_os("BERRY_SHELL_KEEP").is_some(),
                 display_mode: None,
                 json: false,
+                vnc_spec: None,
+                vnc_ws: None,
+                vnc_pass: None,
+                vnc_tls: None,
             })
         }
     }

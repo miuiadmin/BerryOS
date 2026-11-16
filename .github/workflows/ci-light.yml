@@ -1,0 +1,77 @@
+name: CI-light
+
+# 路径分流双道（2026-11-10 定案）：纯 docs/工具文档面 PR 与重道分离——
+# 近 20 件已合 PR 实测 50% 只动 docs/tools/md，却进 ci-serial 串行队列烧
+# QEMU 全套 ~20min。轻道只跑零依赖门禁（docs-guard/check-docs/writable-
+# globals/原语 grep/unsafe 台账/shvarcheck），~2min；独立 ci-light 组可
+# 并行（无 QEMU 无抢核面），串行队列有效吞吐翻倍。
+# 触发面：docs/**、*.md、.agents/**、tools/*.py、tools/*.sh、deny.toml
+# ——这些步全部纯 host 面（python3/node），不动 Rust/QEMU。
+# 与重道互斥由 GitHub 原生 paths 语义保证：PR 只动这些路径 → 只触发轻道；
+# 混入任何重道路径（kernel/ 等）→ 只触发重道（ci.yml paths-ignore 对称排除）。
+on:
+  push:
+    branches: [main, wip/sched-1.1]
+    paths: [docs/**, .agents/**, '**.md', tools/**, deny.toml]
+  pull_request:
+    paths: [docs/**, .agents/**, '**.md', tools/**, deny.toml]
+  # 手动兜底（2026-11-15 #325 判例）：事件黑洞时手动点火，dispatch 不经
+  # paths 过滤——黑洞分支的 head 也能拿到轻道门禁信号。
+  workflow_dispatch:
+
+concurrency:
+  # 轻道独立组：无 QEMU/构建面，同机并行不抢核（纯文档门禁秒级），
+  # cancel-in-progress 收敛同分支连推的旧 run（轻道无长尾，取消无损）。
+  group: ci-light-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PATH: /home/runner/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+
+jobs:
+  light:
+    runs-on: [self-hosted, linux-x64, brew]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: bare-conflict-markers（裸冲突标记拦截——并集解族第五犯根治）
+        run: |
+          if git grep -nE '^(<{7}|>{7}|={7}$)' -- '.' ':!*.lock'; then
+            echo "FAIL: 树内残留裸冲突标记（<<<<<<< / ======= / >>>>>>>）——历史上 stash pop/merge 残留两次入库，污染扩散吃掉重放工"
+            exit 1
+          fi
+
+      - name: docs-guard（AGENTS 注入预算 + 探针/锚点）
+        run: python3 tools/docs_guard.py
+
+      - name: check-docs（Curia 文档面：头块/归属/断链）
+        run: node .agents/tools/check-docs.mjs --strict
+
+      - name: writable-globals（可写全局清单门禁）
+        run: python3 tools/writable_globals.py --check
+
+      - name: 全类别原语 grep 守卫（禁 all-files/all-media/all-devices）
+        run: |
+          if git grep -nE 'all[-_]files|all[-_]media|all[-_]devices' -- '*.rs'; then
+            echo "FAIL: 发现全类别原语——树级/句柄粒度是唯一单位"
+            exit 1
+          fi
+
+      - name: unsafe 台账对拍（SEC-01 §4.5 件 22）
+        run: python3 tools/unsafe_audit.py --check
+
+      - name: shvarcheck（bash3.2 吞名面门禁）
+        run: python3 tools/shvarcheck.py
+
+      # W1-Q20（2026-11-16）：tools 自检执行面（CI 层缺口收口）——判例族
+      # 「有 selftest 零自动执法」在 CI 侧的同款缺口：tools/** 正是本轻道
+      # 的触发路径，但轻道六门不含任何自检真跑——只动 tools/*.py 的 PR
+      # 全绿合入而受影响工具的自检从未在 CI 执行（「接线」只保证 justfile
+      # 有行，不保证行被执行）。--run 从 justfile 单源读出接线行真跑
+      # （44 行全量，自建 runner 实测 ~18s，轻道 10min 帽内宽裕）；首红即
+      # 停，日志逐行记账指认罪犯。注册表仍是 justfile——本步不持第二份
+      # 清单，新增自检接线后本步自动带上（selftest_guard 执法扫描保证
+      # 有自检必有接线行，两门互锁）。
+      - name: tools 自检全量真跑（selftest_guard --run）
+        run: python3 tools/selftest_guard.py --run

@@ -105,7 +105,7 @@ idle park 计数（SmpCpu 尾插字段）；心跳 v2 `SOAK t= sw= sw0= sw1= par
    对抗审查重点镜面（炸此处是真 finding 非压测 bug）。
 6. CI 全链绿门槛每落码态过；unsafe 台账重产随源（integrity_check 新块已入册 :491）。
 
-## §9.1 S-5a 执行追记（2026-11-03 进行中）
+## §9.1 S-5a 执行追记（2026-11-03 落码，同日验证面六绿收官——详本节末）
 
 - 落码面（本段）：
   - `arch/aarch64/src/smp.rs`：SmpCpu 尾插 `sw_cnt`@88/`park_cnt`@96（逻辑尺寸 104 取整

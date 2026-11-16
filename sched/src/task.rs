@@ -24,18 +24,13 @@ fn try_box<T>(val: T) -> Option<Box<T>> {
 }
 
 /// 内核线程的默认栈大小（16KiB）。v1 切换在 IRQ-mask 中（无嵌套 IRQ）、无深递归，
-/// 够用；守卫页 TODO（plan R7）。
+/// 够用；v1 16KiB 无守卫页定谳（原孤儿 TODO 升格→ 规则/01 瘦行 + 雷册 §A144；v2 = 水位探针或 guard page）。
 pub const STACK_SIZE: usize = 16 * 1024;
 
-/// 能效倾向 hint（EPP，`调度器设计.md` §6）：指引大小核放置与改频。字段先落地
-/// （2b-4），消费语义随放置路径（M1b）/PM 服务（M3）兑现。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EppHint {
-    /// 效率优先（默认——省电是身份支柱）。
-    Efficiency,
-    /// 性能优先。
-    Perf,
-}
+// EppHint 单源已迁 `berry-iprofile`（W3-Q1：intent 六档 IntentProfile 映射
+// 表与 EPP 同 crate——查表键先于消费者落地）；本模块 re-export，既有引用
+// 路径（`berry_sched::task::EppHint` / `crate::task::EppHint`）零改动。
+pub use berry_iprofile::EppHint;
 
 /// 持有集位图常量（S-3c 义务⑥，F-L9）：`Task::held_locks` 的位定义。
 /// bit0 已退役（原 klock_window 单 bool 语义位，c-2c slice 1 起随 bit5 定名
@@ -57,11 +52,15 @@ pub const HELD_RQ1: u8 = 1 << 3;
 /// REAPQ 持有位（c-2b slice 2 起随 `reapq_push`/`reap_drain` 置/清）。
 pub const HELD_REAPQ: u8 = 1 << 4;
 /// 1.1/S3：冻结位（held_locks bit5——process_suspend 置 / SuspendToken close 清）。
-pub const HELD_FROZEN: u8 = 1 << 6;
+/// W3-Q12 起位值单源在 `berry_ringface::HELD_FROZEN`（host 可测纯面
+/// crate——过滤判定律同面单源）；此处 re-export 维持既有引用路径零改动
+/// （ktest 的 `berry_sched::HELD_FROZEN` 面）。
+pub use berry_ringface::HELD_FROZEN;
 /// 1.1/S5-c：预算限流位（budget 耗尽 → 置位；周期到 lazy_unthrottle → 清位）。
 /// 与 [`HELD_FROZEN`]（进程/线程冻结）**分立**——共用一位会导致预算周期到期
 /// 误清进程冻结位（进程冻结须由 SuspendToken close 独占解除）。
-pub const HELD_THROTTLE: u8 = 1 << 7;
+/// W3-Q12 起位值单源在 `berry_ringface::HELD_THROTTLE`（同上 re-export 面）。
+pub use berry_ringface::HELD_THROTTLE;
 
 /// 任务生命周期状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,6 +153,14 @@ pub struct Task {
     /// 线程**（并行收益面），服务根留家核；b-2 偷取迁移再放开。语义归
     /// `内核` crate，sched 只存取（同 `pinned` 的 crate 边界纪律）。
     pub spread: bool,
+    /// v1.3 EAS-1 首刀（`调点调度-v1.3` §6 placement 第一消费者·基础设施）：
+    /// 放置偏置 hint——策略表 [`crate::policy::Directive::placement`] 三值
+    /// 词汇（0 = 无意见（默认）/ 1 = 偏 little 省电核 / 2 = 偏 big 性能核）。
+    /// 写点 = [`crate::policy::apply`]（表命中且 SMP 参与门开——**只存不
+    /// 路由**）；消费点 = 唤醒路径核选择（真路由面等 smoke-smp 三相 LB
+    /// 稳定后接）。单核形态恒 0（gate 关 = 写点零触发——空表等价纪律延伸
+    /// 到放置面：placement 有值 = 无操作）。
+    pub placement_hint: u8,
     /// S-2 E0（BKL 纪元，`SMP-S2实施设计草案.md` §2.3）：持锁义务位——「本任务
     /// 当前处于 KERN_LOCK 持锁窗」随任务走（不放 per-CPU——SVC 入口/切走点
     /// 可能换核）。置位 = arch SVC/fault 入口（`kern_lock::svc_enter` 经槽）；
@@ -192,12 +199,14 @@ pub struct Task {
     /// v1 无 IPC/继承，恒等于 `prio_base`；P4 channel 落地后开始分叉。
     pub prio_effective: i32,
     /// PI 捐赠暂存（4-3b，`IPC设计.md` §2.1 QNX 发送者语义）：睡眠者等 channel
-    /// 派生位（READABLE/WRITABLE）时，其有效优先级**捐赠给持有 peer 端点且正
-    /// 阻塞的任务**——本字段记受捐额。合成公式（[`crate::sched::refresh_effective`]）
+    /// 派生位（READABLE/WRITABLE）时，其有效优先级**捐赠给持有 peer 端点且
+    /// 带解锁 right 的任务（SLEEPQ 在队或本核 RQ 在环）**——本字段记受捐额。
+    /// 合成公式（[`crate::sched::refresh_effective`]）
     /// ：`prio_effective = max(prio_base + 策略权重, pi_inherited)`。
-    /// **冻结语义**：全图重推只清/算 SLEEPQ 在队者；受捐者被唤醒离队时**冻结
-    /// 当前值随行**（boost 带进 runqueue——「server 处理消息期间持有」的 v1
-    /// 形态），下次入睡被重推清零回落（=「reply 即回退」的无 reply 等价物）。
+    /// **冻结语义（形 B 后）**：全图重推清/算 SLEEPQ 在队者 + 本核 RQ 在环者；
+    /// P2 门闭窗（无 donor 可能且无待清睡眠者 boost）无重推 ⇒ 环上 boost
+    /// 冻结随行（「server 处理消息期间持有」的 v1 形态），门开或任务自身
+    /// 入睡时被重推清零回落（=「reply 即回退」的无 reply 等价物）。
     pub pi_inherited: i32,
     /// 预期运行时长 hint（纳秒；0 = 未指定）——AI 调度慢/快循环切分词汇
     /// （`AI调度设计.md`）。
@@ -251,6 +260,15 @@ pub struct Task {
     /// rt_probe 的 wake_vct 读点同族。0 = 无在途戳）。
     pub wake_vct: Cell<u64>,
 
+    // ---- P2-1 同键兄弟链（`sched::KEY_HEADS` 键桶链；与 SLEEPQ 双挂）----
+    /// 同键链上一个等待者（非环形双向——同 `sleep_prev`/`sleep_next` 形制；
+    /// 维护收口在 `SleepQueue::insert_sorted`/`unlink` 两机械面，见
+    /// `sched.rs` KEY_HEADS 块注）。真对象键等待者入队时接线、离队时摘线；
+    /// 纯睡（0）/WAIT_ANY 哨兵不入链（两字段恒 `None`）。
+    pub(crate) key_prev: Cell<Option<NonNull<Task>>>,
+    /// 同键链下一个等待者（同上）。
+    pub(crate) key_next: Cell<Option<NonNull<Task>>>,
+
 }
 
 impl Task {
@@ -299,16 +317,19 @@ impl Task {
     /// 16KiB（EL0 异常帧 + handler 都跑在它上面）。`proc_tag` = 所属进程标签
     /// （3-4a：syscall 层映射为该进程的 handle 表指针；0 = 无表——内核任务）。
     /// **可信语境便捷包装**（boot 直构用户进程用；OOM 直接 expect）。
+    /// `arg1` = 入口第二参（x1——boot env 旗标面，06 号修窗件 1 后半；
+    /// 既有单参消费者传 0）。
     pub fn new_user_with_as(
         entry_va: usize,
         arg: usize,
+        arg1: usize,
         sp0_va: usize,
         name: &'static [u8],
         ttbr0: usize,
         asid: u16,
         proc_tag: usize,
     ) -> Box<Task> {
-        Self::try_new_user_with_as(entry_va, arg, sp0_va, name, ttbr0, asid, proc_tag)
+        Self::try_new_user_with_as(entry_va, arg, arg1, sp0_va, name, ttbr0, asid, proc_tag)
             .expect("用户线程装配（boot 可信语境）")
     }
 
@@ -318,6 +339,7 @@ impl Task {
     pub fn try_new_user_with_as(
         entry_va: usize,
         arg: usize,
+        arg1: usize,
         sp0_va: usize,
         name: &'static [u8],
         ttbr0: usize,
@@ -325,7 +347,7 @@ impl Task {
         proc_tag: usize,
     ) -> Option<Box<Task>> {
         let (kstack, stack_top) = Self::try_alloc_kstack()?;
-        let ctx = TaskContext::new_user(entry_va, arg, sp0_va, stack_top);
+        let ctx = TaskContext::new_user(entry_va, arg, arg1, sp0_va, stack_top);
         Self::try_assemble(ctx, kstack, name, ttbr0, asid, proc_tag)
     }
 
@@ -350,6 +372,12 @@ impl Task {
         asid: u16,
         proc_tag: usize,
     ) -> Option<Box<Task>> {
+        // G5（§1.6-补）：intent_default 产品级缺省——boot-params 在位则
+        // 新任务出生即带声明档（declared/effective 同置——`spawn_intent`
+        // :1105 先例；推断注：设计表只指名 intent_declared，effective
+        // 随置是「出生档 = 自身声明」语义的一致化，非设计明文）。缺席 =
+        // UNSPECIFIED 现役零漂移。
+        let idefault = crate::intent::intent_default();
         try_box(Task {
             ctx,
             kstack: Some(kstack),
@@ -365,6 +393,7 @@ impl Task {
             thread_key: 0,
             home_cpu: 0,
             spread: false,
+            placement_hint: 0,
             held_locks: 0,
             svc_mask: 0,
             prio_base: 0,
@@ -373,8 +402,8 @@ impl Task {
             duration_hint_ns: 0,
             epp: EppHint::Efficiency,
             preempt_threshold: 0,
-            intent_declared: 0,
-            intent_effective: 0,
+            intent_declared: idefault,
+            intent_effective: idefault,
             intent_hop: 0,
             intent_since: 0,
             intent_acc: 0,
@@ -388,6 +417,8 @@ impl Task {
             wait_since: 0,
             wakeup: Cell::new(WakeReason::Pending),
             wake_vct: Cell::new(0),
+            key_prev: Cell::new(None),
+            key_next: Cell::new(None),
         })
     }
 }

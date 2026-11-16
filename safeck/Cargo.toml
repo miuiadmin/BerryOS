@@ -1,0 +1,22 @@
+[package]
+name = "berry-safeck"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+description = "BerryOS berry_sched_attr struct decode + validation pure-function plane (host-testable)"
+
+[lib]
+name = "berry_safeck"
+path = "src/lib.rs"
+
+# W3-Q22：sched_setattr 底座 sa_parse 的结构解码+校验纯面——size 门（<56/
+# >256 拒）+ size>56 尾段全零（前向兼容律）+ version 门 + reserved0/未知
+# flags 门 + weight/intent/policy/freeze_clock 各自域门 + policy=3↔BUDGET
+# 联动 + RESERVE 与 policy=3 互斥 + BUDGET 五拒面 + admission Q12 恰过/
+# 恰拒界 + DEADLINE 依赖 BUDGET，纯值域判定律 host 可测钉板；kernel
+# syscall.rs sa_parse 薄壳消费（copy_from_user 物理臂 + DL_TOTAL_UTIL_Q12
+# 原子读留壳——形态抄 berry-polface / berry-chanface）。
+[dependencies]
+# SchedAttr/SA_FLAG_* 单源在 berry-polface（W3-Q20 已迁）——本 crate 消费
+# 不二写（布局字段与 flags 位词汇表 ABI §7.2 冻结面）。
+berry-polface = { path = "../polface" }

@@ -17,6 +17,7 @@ extern crate alloc;
 mod abi_gen;
 mod aspace;
 mod bench; // B-0：内核微基准 + churn 泄漏金丝雀（docs/基准与压力测试设计.md）
+mod bootparams; // G5 内核半：etc/boot-params.toml 消费端（§1.6-补）
 mod channel;
 mod dtb;
 mod dpg; // G4-1：demand paging 内核机制自喂闭环（docs/G4按需调页实施设计草案.md）
@@ -24,13 +25,16 @@ mod event;
 mod handle;
 mod handoff; // V-0b 刀 3：BerryBoot 交接协议双镜像（const assert 执法，消费随刀 4 起）
 mod heap;
+mod klog; // 阶段五第 14 步：klog! 宏（[ns][I|W|E] 整行单 PRINT_LOCK 窗发射）
 mod ktest;
 mod mem; // GUI-0：本仓 mem* 整数版覆写（内核 SIMD-free 合同 builtins 半边）
 mod mm;
 mod pi;
 mod process;
+mod rtc; // 波一刀 B：壁钟注入面（fw_cfg opt/berry/rtc → CLOCK_REALTIME）
 mod suspend; // 1.1/S3-a：冻结令牌对象（process_suspend handler 配对）
 mod syscall;
+mod sysver; // VER：版本身份 VMO（运行时查询面——boot 编译期成像 + 第 9 插只读交付）
 mod telemetry;
 mod user;
 mod vmar;
@@ -47,7 +51,7 @@ static mut ROOTFS: Option<RootfsBuf> = None;
 /// rootfs 源缓冲形态。handoff/dtb 路**零拷贝借片**——源已页钉 DRAM
 /// （BerryBoot AllocatePages 的 EfiLoaderData / boot 保留区），EBS 后内核
 /// 即 owner，整档 to_vec 是纯浪费；fw_cfg 路 fw_cfg 无 RAM 副本，必须整读
-/// 进堆（冷启 RAM 完整，ROOTFS_MAX 帽内单块可达）。不统一 to_vec 的硬理由：
+/// 进堆（冷启 RAM 完整，`berry_rootface::MAX_VOL` 帽内单块可达）。不统一 to_vec 的硬理由：
 /// 内核堆大对象 = 单块连续 buddy 块（heap.rs 整页路径），21.3MiB rootfs 在
 /// EFI 路的固件碎块 + blob 自占 20.4MiB 地形下结构性拿不到 order-13 对齐
 /// 块（C-2c smoke-image 实踩 boot panic）；借片 + VMO 逐页 commit 两路皆
@@ -71,20 +75,30 @@ impl RootfsBuf {
             RootfsBuf::Assembled(_, n) => *n,
         }
     }
+
+    /// G5：boot-params 查找源视图（`bootparams::scan` 消费——三形态归一：
+    /// 借片/堆整档字节直读，VMO 拼装件按逻辑长（非页对齐容量）只读 read）。
+    fn params_src(&self) -> bootparams::Src<'_> {
+        match self {
+            RootfsBuf::Borrowed(b) => bootparams::Src::Bytes(b),
+            RootfsBuf::Owned(v) => bootparams::Src::Bytes(v),
+            RootfsBuf::Assembled(v, n) => bootparams::Src::Vmo(v, *n),
+        }
+    }
 }
 
 /// rootfs 大小上限——与 `vmo_create` 的 32MiB 同口径（no-panic：巨 blob 的
 /// 分配 abort 是 boot 期可触发 panic，超限降级为「无 rootfs」存活）。
 /// A1-3b 起语义拆分（帽分家，容量工程前置-A1 §3.1）：本帽 = **单卷帽**
 /// （fw_cfg 单具名文件/单暂存块面，mkcpio `--split 32` 产链契约）；
-/// 多卷总量另见 [`ROOTFS_TOTAL_MAX`]。
-const ROOTFS_MAX: usize = 32 << 20;
+/// 多卷总量另见 [`berry_rootface::TOTAL_MAX`]。
+/// W3-Q85 起常量单源在 `berry_rootface::MAX_VOL`（host 可测纯面——四判定门
+/// 表驱动钉板）；此处 re-export 维持既有引用路径零改动。
 
 /// fw_cfg 多卷**总量帽**（A1-3b）——拼装终点单一 VMO，须 ≤ A1-2 的
 /// `VMO_MAX_SIZE`（128MiB，syscall.rs）同口径；Σ 超帽 = 产链违约，拒收
-/// 降级（boot 期无 panic 纪律）。
-const ROOTFS_TOTAL_MAX: usize = 128 << 20;
-
+/// 降级（boot 期无 panic 纪律）。W3-Q85 起判定与常量单源
+/// `berry_rootface::TOTAL_MAX`（本文件不再持有本地绑定）。
 /// fw_cfg 多卷逐 chunk 拼装的堆暂存块（A1-3b）——4MiB = order 10 单块，
 /// 冷启/常态地形均稳定可得（C-2c 实证 13.8MiB order 12 冷启可达，本块更
 /// 低一档）；**堆峰 = 单 chunk 非全 blob**（40MB+ = order 15 > MAX_ORDER 13
@@ -142,10 +156,14 @@ fn rootfs_bytes_to_vmo(bytes: &[u8]) -> vmo::Vmo {
 /// 地形免疫——A1-1 地形墙的装载侧执法）；VMO 逐页 commit 物理不连续无碍
 /// （A1-2 帽 128MiB 内）。
 ///
-/// 两帽执法（§3.1 帽分家）：单卷 ≤ [`ROOTFS_MAX`]（产链契约）、Σ ≤
-/// [`ROOTFS_TOTAL_MAX`]。rootfs0 缺席 → `None`（调用方回落旧名单单卷整读，
+/// 两帽执法（§3.1 帽分家）：单卷 ≤ [`berry_rootface::MAX_VOL`]（产链契约）、Σ ≤
+/// [`berry_rootface::TOTAL_MAX`]。rootfs0 缺席 → `None`（调用方回落旧名单单卷整读，
 /// [`ROOTFS_NAME`] 原路）；卷在位但帽越/空卷/拼装对账不符 → 也 `None`
 /// （整源降级为「无 rootfs」存活，boot 期无 panic 纪律）。
+/// 装载卷数打点（P1 治理：多卷常态后「几卷在装」是分卷线第一诊断量；
+/// boot 单线程写、打点后只读——与 ROOTFS 槽同款 SAFETY 论证）。
+static mut ROOTFS_VOLS_LOADED: u32 = 1;
+
 fn fwcfg_rootfs_multivol() -> Option<RootfsBuf> {
     use berry_hal_aarch64::fwcfg;
 
@@ -155,14 +173,13 @@ fn fwcfg_rootfs_multivol() -> Option<RootfsBuf> {
     for i in 0..fwcfg::ROOTFS_VOLS {
         let Some(e) = fwcfg::rootfs_volume(i) else { break };
         let sz = e.size as usize;
-        // 单卷帽（含空卷拒）：mkcpio --split 32 产链契约，越帽 = 违约拒收。
-        if sz == 0 || sz > ROOTFS_MAX {
-            return None;
-        }
-        // 总量帽 + 溢出守卫（Σ 超帽 = 递送面违约，与单卷帽同降级语义）。
-        total = total.checked_add(sz)?;
-        if total > ROOTFS_TOTAL_MAX {
-            return None;
+        // 单卷帽 + 总量帽 + 溢出守卫（mkcpio --split 32 产链契约；Σ 超帽 =
+        // 递送面违约，与单卷帽同降级语义）——判定律单源
+        // `berry_rootface::vol_admit`（W3-Q85 host 钉板：判序/恰帽/溢出/
+        // Σ 域全表）。
+        match berry_rootface::vol_admit(sz, total) {
+            berry_rootface::VolOutcome::Admit(t) => total = t,
+            berry_rootface::VolOutcome::Reject => return None,
         }
         vols.push(e);
     }
@@ -189,10 +206,13 @@ fn fwcfg_rootfs_multivol() -> Option<RootfsBuf> {
         }
     }
     // 对账：实拼字节 == Σ 卷 size（SeqRead 项尾守卫的调用侧执法——差值
-    // 即拼装错位，整源降级不裸奔半截 blob）。
-    if off != total {
+    // 即拼装错位，整源降级不裸奔半截 blob）——谓词单源
+    // `berry_rootface::assembly_matches`（W3-Q85）。
+    if !berry_rootface::assembly_matches(off, total) {
         return None;
     }
+    // SAFETY: boot 单线程写入后只读（打点消费）。
+    unsafe { *(&raw mut ROOTFS_VOLS_LOADED) = vols.len() as u32 };
     Some(RootfsBuf::Assembled(vmo, total))
 }
 
@@ -225,7 +245,21 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // 2b-1：注入 direct map 基址——必须先于任何 phys_to_virt 消费者（mm/heap）。
     berry_mm::va::set_kernel_va_base(berry_hal_aarch64::KERNEL_VA_BASE);
     berry_hal_aarch64::init();
-    berry_hal_aarch64::uart_puts(b"BerryOS boot\n");
+    // VER-01 第一档：构建标识——版本（Cargo workspace version）+ git 短哈希
+    // + dirty 位（build.rs 注入）。marker "BerryOS boot" 子串保持冻结（追加
+    // 后缀不前置——smoke -qF 零漂移）。
+    berry_hal_aarch64::uart_puts(b"BerryOS boot ");
+    berry_hal_aarch64::uart_puts(env!("CARGO_PKG_VERSION").as_bytes());
+    berry_hal_aarch64::uart_puts(b" (");
+    berry_hal_aarch64::uart_puts(env!("BERRY_GIT_IDENT").as_bytes());
+    // 构建元数据（VER §1）：工具链 + profile——行为异常时排除工具链变量。
+    berry_hal_aarch64::uart_puts(b" rustc");
+    berry_hal_aarch64::uart_puts(option_env!("BERRY_RUSTC_VER").unwrap_or("?").as_bytes());
+    if cfg!(debug_assertions) {
+        berry_hal_aarch64::uart_puts(b" dbg)\n");
+    } else {
+        berry_hal_aarch64::uart_puts(b" rel)\n");
+    }
 
     // 2b-0：TTBR1 高半表自校验（RAM 魔数 + GIC PIDR2 双别名，见 HAL `mmu`）。
     // 不过 = 高半翻译未生效，2b-1 重链前必须在此暴露——panic 停机优于带病前进。
@@ -234,13 +268,30 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     }
     berry_hal_aarch64::uart_puts(b"KVA ok\n");
 
+    // 北极星审计修（2026-11-15）：TTBR0 ASID 位域环回探针——MMU 已开、boot
+    // 单线程 DAIF 屏蔽窗、先于任何任务地址空间激活（首个 activate_aspace 在
+    // 调度器首切）。位域不环回（QEMU HVF 形）⇒ P0-3 免失效激活档整档退化
+    // 全量档（按号 TLB 语义不可依托——详见 HAL `mmu::ASID_TLB_UNTRUSTED`）。
+    // SAFETY: 上行合同（单线程窗 + MMU 开 + 首激活前）恰为本点位。
+    unsafe { berry_hal_aarch64::probe_asid_field_roundtrip() };
+
     // V-1a：入口首参分流——EFI 路命中即打标记（**EFI 路专属**，smoke 的
     // -kernel 五跑不见此行）；未中 → None，既有 DTB/fw_cfg 路零扰动。
     // 插点在 KVA ok 之后：probe 经高半直映读 handoff 页，别名已自证。
     let handoff = handoff::probe(boot_x0);
+    // 波一刀 B（状态栏可信化）：宿主壁钟注入消费（fw_cfg `opt/berry/rtc`
+    // epoch 秒 → 双 Atomic 锚存 → sys_clock_read(CLOCK_REALTIME)）。
+    // EFI/-kernel 两路同点、ktest 之前——ktest 的 clock 负样本（id=2）
+    // 不依赖注入态；缺席（-kernel 冒烟拓扑）零行零扰动。
+    rtc::boot_init();
     // S-1：EFI 路标记（handoff 后续被 rootfs 装载消费 move 走，先钉存）——
     // smp_bringup 的 conduit 门之一（EFI 路 PSCI 归固件管，S-1 盒子跳过）。
     let efi_boot = handoff.is_some();
+    // sim-S3（PM-16 §4.4 步3）：PSCI 深睡能力探测——EFI/EL2/TCG/KVM 四路
+    // 同点打 `PSCI susp=`（EL1 路前置 `PSCI version 0x…` conduit 活证行）。
+    // **必须在 ktest::run 之前**：PWRDEG 断言读缓存；probe 只读 boot EL 静态
+    // 量 + 至多两条 HVC，对后续 boot 链零扰动。
+    berry_hal_aarch64::psci::probe(efi_boot);
     // GUI-1：GOP 事实五域钉存（V-6a 只打点，GUI-1 起消费——fb VMO 授能块
     // 在 rootfs/virtio 插表段；handoff @下文 move 进 mm::init 前取走，
     // `efi_boot` 同款先例）。
@@ -268,6 +319,39 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         berry_hal_aarch64::uart_puts(b"HANDOFF ok ver=");
         berry_hal_aarch64::uart_put_dec(h.version as u64);
         berry_hal_aarch64::uart_puts(b"\n");
+        // P3/V10：boot 期验签槽最小消费（设计 = docs/设备侧验签与账本落盘
+        // 设计-v1.0.md §一 boot 期四步步 3 的内核侧打点——「槽已填+验签
+        // 结果」链通证明，init_segs 版本分派同族的最小消费面）。判定律
+        // 单源 = berry_hofface::v10_gate（W3-Q15 同纪律）：meas_root 非全零
+        // ∧ sig_slot off/len 双非零 ∧ 槽区落窗 = BerryBoot 验过填槽（§4.1
+        // 决策表第三行）→ 打 VBS 行；全零 = 未度量（第一行 unverified，
+        // QEMU 默认无签镜像恒落此行）→ 零行零扰动。深度消费（verified
+        // bootstate 四态汇成下游 keystored/盘加密绑定）随 P8。
+        if berry_hofface::v10_gate(
+            &h.meas_root,
+            h.sig_slot_off,
+            h.sig_slot_len,
+            berry_hal_aarch64::RAM_BASE as u64,
+            berry_hal_aarch64::RAM_TOP as u64,
+        ) {
+            // SAFETY: gate 已验槽区 [off, off+len) 落 [RAM_BASE, RAM_TOP)
+            // 且高半直映 L2 全覆盖 RAM 窗（probe 同论证）；boot 单线程、
+            // BerryBoot 写完才 br entry，此后只读。前 8B hex = 链通对拍
+            // 证据面（槽所指 KERNEL.SIG 首字节），全槽消费随 P8。
+            let slot_head = unsafe {
+                core::ptr::read_volatile(phys_to_virt(h.sig_slot_off as usize) as *const u64)
+            };
+            berry_hal_aarch64::uart_puts(b"VBS ok slot=");
+            berry_hal_aarch64::uart_put_hex64(h.sig_slot_off);
+            berry_hal_aarch64::uart_puts(b" len=");
+            berry_hal_aarch64::uart_put_dec(h.sig_slot_len);
+            berry_hal_aarch64::uart_puts(b" meas=");
+            let head = u64::from_le_bytes(h.meas_root[0..8].try_into().unwrap());
+            berry_hal_aarch64::uart_put_hex64(head);
+            berry_hal_aarch64::uart_puts(b" sig=");
+            berry_hal_aarch64::uart_put_hex64(slot_head);
+            berry_hal_aarch64::uart_puts(b"\n");
+        }
         // V-6a：GOP 携面消费（BerryBoot banner 期 QueryMode → handoff
         // @56..@76；fbcon 数据源先行到内核——打点即「事实到内核」证据，
         // MMIO 窗授能/fbcon 服务随后刀）。零值 = 无此物：QEMU `-kernel`
@@ -279,7 +363,15 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
             // 的 RAM 镜（宿主共享 RAM 面）。缺席 = 原 800×600 零扰动。
             let (mut gw, mut gh, mut gs) = (g.width, g.height, g.stride);
             let mut need_alloc = false;
-            if let Some((w, h)) = display_mode_req() {
+            if let Some((w0, h)) = display_mode_req() {
+                // ramfb 宽度 32 对齐（2026-11-15 会审定谳）：非对齐宽（如
+                // 1080）传 QEMU 后 surface 按对齐几何（1088）建、扫出断裂
+                // ——客机画面完整进 ramfb 而 VNC/screendump 恒黑帧；对齐后
+                // 1088×1920 全链实证恢复（画面/导航条/输入）。480/800 天生
+                // 对齐从未触雷。8px 边缘列由壁纸铺满消化，launcher 按
+                // fbinfo 几何自适应零改动。证据：.agents/research/2026-11-15-
+                // 1080p恒黑根因会审.md 终审补记。
+                let w = (w0 + 31) & !31;
                 let stride = w.saturating_mul(4);
                 let cap = (g.stride as u64) * (g.height as u64);
                 let need = (stride as u64) * (h as u64);
@@ -401,14 +493,17 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                     berry_hal_aarch64::uart_puts(b"rootfs: isegs=0\n");
                     return None;
                 }
-                // Σ 总量帽（与 fw_cfg 多卷路同口径——A1-1 帽分家执法点）。
+                // Σ 总量帽（与 fw_cfg 多卷路同口径——A1-1 帽分家执法点）；
+                // 判定律单源 `berry_rootface::segs_total_step`（W3-Q85）。
                 let mut total: usize = 0;
                 for s in segs {
-                    total = total.checked_add(s.len as usize)?;
-                    if total > ROOTFS_TOTAL_MAX {
-                        berry_hal_aarch64::uart_puts(b"rootfs: isegs=cap\n");
-                        return None;
-                    }
+                    total = match berry_rootface::segs_total_step(total, s.len as usize) {
+                        Some(t) => t,
+                        None => {
+                            berry_hal_aarch64::uart_puts(b"rootfs: isegs=cap\n");
+                            return None;
+                        }
+                    };
                 }
                 if segs.len() == 1 {
                     // 单段零拷贝借片：与 v0 同纪律（源已在 DRAM，EfiLoaderData
@@ -470,22 +565,25 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                         mm::frames().release(s.pa as usize, len);
                         off += len;
                     }
-                    // 对账（拼装完整性——同 fw_cfg 路纪律）。
-                    if off != total {
+                    // 对账（拼装完整性——同 fw_cfg 路纪律；谓词单源
+                    // `berry_rootface::assembly_matches`，W3-Q85）。
+                    if !berry_rootface::assembly_matches(off, total) {
                         berry_hal_aarch64::uart_puts(b"rootfs: vmo=off\n");
                         return None;
                     }
                     Some((b"handoff" as &[u8], RootfsBuf::Assembled(vmo, total)))
                 }
             } else {
-                // v0：init_blob_* 单 blob 原路（旧装载器兼容面）。
+                // v0：init_blob_* 单 blob 原路（旧装载器兼容面）。域门判定律
+                // 单源 `berry_rootface::blob_span_ok`（W3-Q85：零拒/帽拒/
+                // 窗下界/回卷四查判序 host 钉板）。
                 let (pa, len) = (h.init_blob_pa, h.init_blob_len);
-                if pa == 0 || len == 0 || len > ROOTFS_MAX as u64 {
-                    return None;
-                }
-                if pa < berry_hal_aarch64::RAM_BASE as u64
-                    || pa.checked_add(len)? > berry_hal_aarch64::RAM_TOP as u64
-                {
+                if !berry_rootface::blob_span_ok(
+                    pa,
+                    len,
+                    berry_hal_aarch64::RAM_BASE as u64,
+                    berry_hal_aarch64::RAM_TOP as u64,
+                ) {
                     return None;
                 }
                 // SAFETY: 界检已过（整段在 DRAM 窗内）——高半直映 L2 全覆盖，
@@ -525,7 +623,12 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
             let size = entry.size as usize;
             // no-panic：与 vmo_create 32MiB 同口径——巨 blob 分配 abort 是
             // boot 期可触发 panic，超限/空文件一律降级为「无 rootfs」存活。
-            if size == 0 || size > ROOTFS_MAX {
+            // 域门单源 `berry_rootface::vol_admit(size, 0)`（空卷拒/单卷帽
+            // 两判与多卷发现门同律；Σ=0 无溢出/总量帽面——W3-Q85）。
+            if !matches!(
+                berry_rootface::vol_admit(size, 0),
+                berry_rootface::VolOutcome::Admit(_)
+            ) {
                 return None;
             }
             let mut buf = alloc::vec![0u8; size];
@@ -534,6 +637,12 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
             }
             Some((b"fwcfg" as &[u8], RootfsBuf::Owned(buf)))
         });
+    // G5 内核半（§1.6-补）：boot-params 扫描在 rootfs 入静态槽**之前**
+    //（借本地 buf；通道裁决 + 消费契约 = bootparams.rs 头注）。件缺 =
+    // None 静默（空 params 不投放的工具侧合同——默认镜像零行）。
+    let boot_params = rootfs
+        .as_ref()
+        .and_then(|(_, buf)| bootparams::scan(&buf.params_src()));
     match rootfs {
         Some((src, buf)) => {
             let bytes = buf.len();
@@ -544,7 +653,16 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
             berry_hal_aarch64::uart_puts(src);
             berry_hal_aarch64::uart_puts(b" bytes=");
             berry_hal_aarch64::uart_put_dec(bytes as u64);
+            berry_hal_aarch64::uart_puts(b" vols=");
+            // SAFETY: boot 单线程写入后只读（与 ROOTFS 槽同窗口）。
+            berry_hal_aarch64::uart_put_dec(unsafe { *(&raw const ROOTFS_VOLS_LOADED) } as u64);
             berry_hal_aarch64::uart_puts(b"\n");
+            // G5：应用 + eco 行紧随 ROOTFS ok 行（注入点时序约束见
+            // bootparams::apply_and_report 头注——timer::init :737 与首
+            // spawn :789 均在本点之后，成立）。
+            if let Some(o) = &boot_params {
+                bootparams::apply_and_report(o);
+            }
         }
         None => berry_hal_aarch64::uart_puts(b"ROOTFS absent\n"),
     }
@@ -606,12 +724,104 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         print_unlock: berry_hal_aarch64::kern_lock::print_unlock,
     });
 
-    ktest::run();
+    // ---- AM-2b（候选①·裁决①）：系统压力 Event + 窗口聚合接线。先于
+    // ktest::run（AM2B-K 直调 fold 与真 SVC 清位）与 dpg 计值点
+    //（sched::init/dpg::init 均在后）。Event 落内核 bootstrap 表（EL1
+    // tag=0 面——ktest svc6 真派发经此表解析）；ObjRef retain ×2：一枚 =
+    // 内核静态钉住（fold 出口写位，RX_EV 同款 :845-846 锚——永不
+    // release），一枚 = 待移交 svcmgr 表的 dup 令牌（boot fb 段 insert_ref
+    // 接管，handle.rs「调用方移交的引用令牌」契约）。窗口长 70ms 按
+    // CNTFRQ 换算周期数（裁决②——TCG 频偏，禁编译期常量）。----
+    let h_am2b = syscall::bootstrap_table()
+        .insert(
+            handle::KernelObj::Event(crate::event::Event::new()),
+            handle::RIGHT_SIGNAL,
+        )
+        .expect("main: AM-2b 压力 Event 进 bootstrap 表");
+    let p_am2b = syscall::bootstrap_table()
+        .get_raw(h_am2b, handle::ObjType::Event, 0)
+        .expect("main: 取 AM-2b 压力 Event ObjRef")
+        .0;
+    // SAFETY: boot 单线程；刚 insert + get_raw 过（在表、类型 Event）——
+    // retain ×2（静态钉住 + svcmgr dup 令牌）；静态槽写先于一切读者
+    //（RX_EV_H 口径）。handle 本体不留静态槽：ktest 期 WAKEP 清场会 drain
+    // bootstrap 表作废槽位（实踩），SVC 清位面改 ktest 现插现关
+    //（`am2b_pressure_ktest_handle`）。
+    unsafe {
+        (*p_am2b.as_ptr()).retain();
+        (*p_am2b.as_ptr()).retain();
+        *core::ptr::addr_of_mut!(PRESSURE_EV_REF) = Some(p_am2b);
+    }
+    crate::telemetry::dpg_win_init(
+        AM2B_WIN_MS,
+        berry_hal_aarch64::timer::cntfrq(),
+        berry_hal_aarch64::timer::cntvct(),
+        pressure_partial_cross,
+    );
 
-    // B-0（基准与压力测试设计 §4）：内核微基准 + churn 泄漏金丝雀——ktest 后、
-    // timer/sched init 前的干净窗口（单线程 IRQ 屏蔽零调度噪声）。每次 boot
-    // 都跑：金丝雀属「主干永远绿」红线，BENCH 行供 smoke/bench.py 收割。
-    bench::run();
+    // P0-4（路线图-v1.1）：生产模式跳过开发工具 ktest/bench——fw_cfg 具名键
+    // `opt/berry/noktest` 在位才跳过（rt/rwake 门控同款「机制不是自律」，
+    // 极性反转：缺席 = 默认全跑，smoke/boot 相逐行零漂移；EFI 路无 fw_cfg
+    // 具名文件 = 天然缺席）。ktest/bench 相互独立（bench 只借此处「timer/
+    // sched init 前干净窗」的时序位置，无数据依赖；AM-2b 接线在本块之前
+    // 不受影响）→ 合并一门跳过，生产 boot 减秒级。
+    if berry_hal_aarch64::fwcfg::find_file(NOKTEST_PROBE_NAME).is_none() {
+        ktest::run();
+
+        // B-0（基准与压力测试设计 §4）：内核微基准 + churn 泄漏金丝雀——ktest 后、
+        // timer/sched init 前的干净窗口（单线程 IRQ 屏蔽零调度噪声）。门内每次
+        // boot 都跑：金丝雀属「主干永远绿」红线，BENCH 行供 smoke/bench.py 收割。
+        bench::run();
+    }
+
+    // 06 号修窗件 1（idle 满核主根因闭合）：演示面 fw_cfg 门——`opt/berry/
+    // demo-face` absent/"on" = 演示面在（现状零漂移；EFI 无键路径天然缺席 =
+    // 全演示）；"off"/"clean" = task_a/task_b 忙环 + boot EL0 演示舰队 +
+    // 其验收 watchdog 不出（runqueue 清空 → idle_loop tickless park → wfi，
+    // QEMU vCPU 真睡——06 号 §4-1 修窗预期 idle CPU → ~0%）。极性同
+    // noktest「机制不是自律」；值面 fail-open（畸形值一律按 on——注入错
+    // 不静默砍演示面，display 畸形降级 None 同族）。
+    let demo_face = demo_face_on();
+    if !demo_face {
+        // storm 门族惯例（LATSGI gate on 同款）：行在 ⟺ 门态可 grep 判别；
+        // on/缺席侧零行 = boot 相逐行零漂移。
+        berry_hal_aarch64::uart_puts(b"DEMO gate off\n");
+    }
+
+    // CP-06（docs/调度彻底计划-v1.2.md §4.1·首份 A/B 数据面）：loadgen 配置
+    // 早读——须在 timer::init 前（set_slice_hz 契约：boot 单线程、init 前写、
+    // init 消费换算 SLICE）。值语法 `s=<ns>;b=<0|1>`（**分号**分隔——QEMU -fw_cfg 的 string 值以逗号切参；s = timer slack 纳秒
+    // 〔0=off〕；b = intent→band 分派臂 1 / 无 intent 基线臂 0）；坏值打
+    // 诊断行整门跳过（fail loud——不跑半配置）。rootfs bootparams 同窗已
+    // 生效（timer_slack/sched_slice_hz 两键）——本块后置 = 探针值覆盖产品值
+    //（boot 单线程零竞态；四臂全走本通道 = 同源注入）。
+    if let Some(e) = berry_hal_aarch64::fwcfg::find_file(LOADGEN_PROBE_NAME) {
+        let mut buf = [0u8; 48];
+        let n = e.size as usize;
+        if n > 0 && n <= buf.len() && berry_hal_aarch64::fwcfg::read_to(&e, &mut buf[..n]) {
+            match lg_parse_cfg(&buf[..n]) {
+                Some((slack, band)) => {
+                    LG_SLACK_NS.store(slack, core::sync::atomic::Ordering::Relaxed);
+                    LG_BAND_ARM.store(band, core::sync::atomic::Ordering::Relaxed);
+                    LG_ARMED.store(true, core::sync::atomic::Ordering::Relaxed);
+                    // G5 官方覆盖面（与 bootparams `sched_slice_hz` 同一
+                    // setter）：100Hz 测量档换唤醒量化分辨率——缺省 10Hz 的
+                    // 100ms 粒度（v1 唤醒粒度恒 1 slice，rt_probe 首跑实录）
+                    // 会把 30ms 级 slack 信号整吃进量化窗。四臂同值可比。
+                    // SAFETY: boot 单线程、init 前（set_slice_hz 契约）。
+                    unsafe { berry_hal_aarch64::timer::set_slice_hz(LG_SLICE_HZ) };
+                    // slack 落 sched 全局（bootparams 第三键同 sink；消费点
+                    // = block_current 入队 LATE-only 顺延）。
+                    berry_sched::set_timer_slack_ns(slack);
+                }
+                None => {
+                    berry_hal_aarch64::uart_puts(b"LOADGEN: bad cfg (want s=<ns>;b=<0|1>)\n");
+                }
+            }
+        } else {
+            berry_hal_aarch64::uart_puts(b"LOADGEN: cfg read fail\n");
+        }
+    }
 
     // Phase 2a Step 5：IRQ 派发钩子 + timer 管线（规律 tick，**不从 IRQ 调 switch**）。
     // SAFETY: EL1、启动单线程、仅一次：缓存 CNTFRQ/算 SLICE（不武装）。
@@ -619,13 +829,9 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
 
     // 2b-2：两忙循环任务各挂一个私有地址空间——timer 抢占切任务 = 切 TTBR0/ASID
     // （switch 路径真 churn），任务体每次打印节流点自证私有页内容（隔离金丝雀）。
-    // `Box::leak`：AS 须与任务同寿（v1 任务不退出）。
-    let as_a: &'static aspace::MiniAspace = alloc::boxed::Box::leak(alloc::boxed::Box::new(
-        aspace::MiniAspace::new(mm::frames(), aspace::alloc_asid(), TASK_A_MAGIC),
-    ));
-    let as_b: &'static aspace::MiniAspace = alloc::boxed::Box::leak(alloc::boxed::Box::new(
-        aspace::MiniAspace::new(mm::frames(), aspace::alloc_asid(), TASK_B_MAGIC),
-    ));
+    // `Box::leak`：AS 须与任务同寿（v1 任务不退出）。06 号修窗件 1（demo-face
+    // 门）：task_a/b 随门让位——AS 创建下移进 spawn 门内（门关不建不占
+    // ASID；sched::init 后 alloc_asid/frames = dpg::init 同款先例）。
 
     // S-2 前置件 2（S-2b 前移至 sched::init 前）：主核自钉 per-CPU 块
     //（TPIDR_EL1 ← SMP_CPU0）——LAST_VCT per-CPU 记账（A11）+ CURRENT per-CPU
@@ -653,6 +859,12 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     #[cfg(feature = "lockdep")]
     berry_hal_aarch64::lockdep::selftest();
 
+    // v1.3 §7 EAS：EM 表形状注册——QEMU virt 手动默认表（真机 DT/OPP 解析
+    // 后由 boot 换注重注册；算法面留 M2/真机）。ktest 后调 = ktest 自管
+    // 注册面不被预填污染（EM-0 未注册态断言）；boot DAIF 屏蔽窗内单写者
+    //（EM_TABLE static mut 契约同 BANDS）。
+    assert!(berry_sched::em_register_qemu_virt(), "EM：QEMU virt 默认表注册");
+
     // IRQ 此刻仍屏蔽（boot DAIF）；spawn 要求屏蔽态（alloc/enqueue 不可打断）。
     berry_sched::init();
     // 3-4c 遥测环：注册切换钩子（init 后、首个切换前——rust_main 尾部的
@@ -661,51 +873,73 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // 4-3b PI：注册 SLEEPQ 变更钩子（block 睡下后 / wake 摘队后全图重推；
     // 与 telemetry 同位——均须在首个切换前）。
     pi::init();
-    berry_sched::spawn_as_spread(
-        task_a,
-        TASK_A_MAGIC as usize,
-        b"task_a",
-        as_a.ttbr0_pa,
-        as_a.asid,
-    );
-    berry_sched::spawn_as_spread(
-        task_b,
-        TASK_B_MAGIC as usize,
-        b"task_b",
-        as_b.ttbr0_pa,
-        as_b.asid,
-    );
+    // 06 号修窗件 1：task_a/task_b 忙环是「idle 窗实为满载窗」的主税源
+    //（06 号 §2.2 PC 采样 task_a+0x5c ×6 直落）——demo-face 门关时两忙环
+    // 不 spawn，runqueue 清空后 idle_loop 走 tickless park（mask +
+    // masked-wfi），vCPU 真睡。缺席 = 现状零漂移（smoke/boot 相逐行不动）。
+    if demo_face {
+        let as_a: &'static aspace::MiniAspace = alloc::boxed::Box::leak(alloc::boxed::Box::new(
+            aspace::MiniAspace::new(mm::frames(), aspace::alloc_asid(), TASK_A_MAGIC),
+        ));
+        let as_b: &'static aspace::MiniAspace = alloc::boxed::Box::leak(alloc::boxed::Box::new(
+            aspace::MiniAspace::new(mm::frames(), aspace::alloc_asid(), TASK_B_MAGIC),
+        ));
+        berry_sched::spawn_as_spread(
+            task_a,
+            TASK_A_MAGIC as usize,
+            b"task_a",
+            as_a.ttbr0_pa,
+            as_a.asid,
+        );
+        berry_sched::spawn_as_spread(
+            task_b,
+            TASK_B_MAGIC as usize,
+            b"task_b",
+            as_b.ttbr0_pa,
+            as_b.asid,
+        );
+    }
 
     // G4-1：demand paging 内核机制自喂闭环（内核任务 faulter/pager 对——无
     // EL0 pager、无 0x21；marker `DPG ok` = smoke 裸相第 28 标记）。
     dpg::init();
 
-    // 2b-4（§5.1 第 5 步收官）：首批 EL0 用户进程 + G1.5 隔离关卡。good 打 'u'
-    // （syscall 往返在 EL0 生效的活证）；rogue_ptr 野指针自作死 → 只死自己
-    // （user_fault_exit）；abuser 坏 handle 滥用 → **-EBADF 存活**（3-1 撤
-    // 「畸形号杀」政策：syscall 层错误一律错误码自理）。watchdog 断言后打关卡标记。
-    let mut up_good =
-        user::UserProcess::build(mm::frames(), user::user_good_code(), user::USER_MAGIC);
-    let up_rogue_ptr =
-        user::UserProcess::build(mm::frames(), user::user_rogue_ptr_code(), user::USER_MAGIC);
-    let up_abuser =
-        user::UserProcess::build(mm::frames(), user::user_abuser_code(), user::USER_MAGIC);
-    let up_spawner =
-        user::UserProcess::build(mm::frames(), user::user_spawner_code(), user::USER_MAGIC);
+    // ---- 方案 B（调点调度-v1.3 §9 留刀 / 调度器设计-v1.2 §测量基础设施）：
+    // rwake 真 sleep/wake 唤醒基准——HDR 第二个真实消费者（首个 = ktest
+    // test_hdr_wake 方案 A 忙等；本任务是它的真睡相：`block_current(0,0,
+    // deadline)` 纯睡 + on_irq_tick 超时扫描唤醒，**IRQ 唤醒而非忙等** =
+    // cyclictest 真口径）。门控同 rt_probe 形（R-1 判例：boot 相 bench 开销
+    // 秒级，「不进 smoke 需要机制不是自律」）：fw_cfg 具名键 `opt/berry/rwake`
+    // 在位才 spawn——缺席 = run/smoke/boot 相逐行零扰动（EFI 路无 fw_cfg 具名
+    // 文件 = 天然缺席）；也不进 markers.sh（gated 非 smoke 面，RT ok 同族）。
+    // 位置约束：ktest 后、首个用户态 spawn 前（任务书口径）；sched::init 后
+    // + boot DAIF 屏蔽窗内（enable_irq 前——全体 spawn 先例共同约束）。----
+    if berry_hal_aarch64::fwcfg::find_file(RWAKE_PROBE_NAME).is_some() {
+        // prio 8（rt_probe/soakmon 同档裁决）：全体常驻（矩阵/console/
+        // watchdog/EL0 用户全 0）之上——醒后即时出选续行（被测的唤醒延迟
+        // 不掺轮转排队）；瞬态 boot bench 对（fa/ai 16/32）之下——结构性
+        // 让位 = 不 preempt 它们的 RT 测量窗（rt_probe 首跑 prio 24 一次醒
+        // 来就把 AIDEMO rt2 顶到 rt1×4 撞容差判例）。
+        berry_sched::spawn_with(task_bench_rwake, 0, b"rwake", 8);
+    }
 
-    // 3-4a：per-process 表拆分——每个 boot 手搭用户进程一张 leak 常驻表
-    //（任务 tag 指向它，EL0 syscall 派发到自己的表；v1 无进程退出，表同寿）。
-    use handle::{HandleTable, KernelObj, RIGHT_DUPLICATE, RIGHT_MANAGE, RIGHT_MAP};
-    let ht_good: &'static mut HandleTable = alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
-    let ht_rogue: &'static mut HandleTable = alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
-    let ht_abuser: &'static mut HandleTable = alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
-    let ht_spawner: &'static mut HandleTable = alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
-    let (tag_good, tag_rogue, tag_abuser, tag_spawner) = (
-        ht_good as *mut HandleTable as usize,
-        ht_rogue as *mut HandleTable as usize,
-        ht_abuser as *mut HandleTable as usize,
-        ht_spawner as *mut HandleTable as usize,
-    );
+    // 舰队/服务段通道与表原语统一引入（原舰队段内三处就地 use 收编提前——
+    // 06 号修窗件 1 起 demo-face 门把舰队段整段让位，console/pi/intent/fa/
+    // svcmgr/ai 等保留段仍消费这些名字，import 属函数作用域非门内物）。
+    use crate::channel::ChannelEnd;
+    use handle::{
+        HandleTable, KernelObj, ObjType, RIGHT_DUPLICATE, RIGHT_MANAGE, RIGHT_MAP, RIGHT_RECV,
+        RIGHT_SEND, RIGHT_SIGNAL, RIGHT_TRANSFER,
+    };
+
+    // 2b-4（§5.1 第 5 步收官）：首批 EL0 用户进程 + G1.5 隔离关卡（good 打
+    // 'u'——syscall 往返在 EL0 生效的活证；rogue_ptr 野指针自作死只死自己
+    //〔user_fault_exit〕；abuser 坏 handle 滥用 → **-EBADF 存活**——3-1 撤
+    // 「畸形号杀」政策：syscall 层错误一律错误码自理）。**06 号修窗件 1：本段
+    // 的 build/表/插入/spawn 连同 watchdog 整体挂 demo-face 门，移至下方
+    // console 服务段之后的单一门内块**（good/abuser/spawner/waiter/pinger/
+    // ponger 是稳态打字永不退的 EL0 演示舰——06 号 §0-1 主根因第 2 支；
+    // 门关时 runqueue 清空才可达 tickless idle）。
 
     // 4-5a：console 服务通道——**首个服务循环**（v1 留内核任务形态：用户态无
     // MMIO 映射，输出须经内核代劳，ADR「启动关键暂留内核」；4-5b svcmgr 落地
@@ -714,18 +948,23 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // BOOTSTRAP_HT，PI 受捐判定只看自己的表）+ 稳态等待走 **wait_many
     // （WAIT_ANY）**——PI 双保险（私有表断错捐喷洒、哨兵断 donor 边，详见
     // spawn 处说明，勿改回 wait_one(endK)）。endU（发端 ObjRef）以 insert_ref
-    // 落各用户表（RIGHT_SEND）——**用户打印全部改走真 IPC**（HAL 调试槽
+    // 落各用户表（RIGHT_SEND|RIGHT_TRANSFER——TRANSFER 支持下游 dup 转赠）
+    // ——**用户打印全部改走真 IPC**（HAL 调试槽
     // 0xFE/0xFF 退役）。通道 opt-out（4-3c 五件套之 4）：固定优先级系统服务
     // 不借入调用方 intent。发送侧 -EBUSY/-EAGAIN 重试（用户模板，EL0 可抢占
     // 有界）、服务侧 wait READABLE → drain 循环。
     let ct: &'static mut HandleTable =
         alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+    // 建对即插两端：endK 落 console 私有表、endU 落内核侧表（取 ObjRef 后
+    // `insert_ref` 分发各用户表）。两端均携 TRANSFER（Zircon 新 handle 默认
+    // 携位模型——send 随行预检 4-4b 起执法；console 发端会经 dup 转赠下游
+    //（spawner/svcmgr 模板），去位即断赠链）。
     let h_end_k = ct
         .insert(
             KernelObj::Channel(
                 crate::channel::ChannelEnd::try_unpaired(true).expect("main: 建 console 收端"),
             ),
-            handle::RIGHT_RECV,
+            handle::RIGHT_RECV | handle::RIGHT_TRANSFER,
         )
         .expect("main: console 收端进私有表");
     let h_end_u = syscall::bootstrap_table()
@@ -733,7 +972,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
             KernelObj::Channel(
                 crate::channel::ChannelEnd::try_unpaired(true).expect("main: 建 console 发端"),
             ),
-            handle::RIGHT_SEND,
+            handle::RIGHT_SEND | handle::RIGHT_TRANSFER,
         )
         .expect("main: console 发端进内核侧表");
     let (pk, pu) = (
@@ -839,41 +1078,74 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         *core::ptr::addr_of_mut!(BSH_IN_H) = h_end_k2;
     }
 
-    // 3-2：good 的 root Vmar 进**它自己的表** = 首能力（能力模型 §5「第一个
-    // 能力从哪来」——用户拿自己的地址空间根，MAP|MANAGE|DUPLICATE）。handle
-    // 作 spawn arg → 入口 x0 → good 的 3-2 验收链经真 syscall map 读写自己的
-    // VMO（全链落在 good 自己的表里——per-process 拆分后其余进程看不见）。
-    let good_vmar = up_good.vmar.take().expect("main: good vmar");
-    let good_vmar_h = ht_good
-        .insert(KernelObj::Vmar(good_vmar), RIGHT_MAP | RIGHT_MANAGE | RIGHT_DUPLICATE)
-        .expect("main: 插 root Vmar 进 good 表");
-    // 4-5a：console 发端 append 进 good 表（vmar 后首插 = 槽 2/代号 1）——
-    // good 模板硬编码依赖，boot 断言即防线（漂移 → boot 期炸响）。
-    let h_cu_good = ht_good
-        .insert_ref(pu, handle::RIGHT_SEND)
-        .expect("main: console 发端进 good 表");
-    assert_eq!(h_cu_good, 0x0001_0002, "main: good 表 console 须槽 2/代号 1（模板硬编码）");
+    // ---- 06 号修窗件 1：EL0 演示舰队单一门内块（demo-face）----
+    // 门内 = 上方 2b-4 段移入的 build/表 + 本段插入/spawn + watchdog：
+    // good 'u'/abuser 'S'/spawner-pong 'C''s'（稳态打字永不退）+ rogue_ptr
+    // （G1.5 验收样本，即死但属舰队故事面）+ watchdog（G1.5 验收看门狗——
+    // 断言舰队金丝雀活性〔console 排水/switches 增长、rogue_ptr 被杀〕，
+    // 舰队缺席则 2000 轮忙等后 panic，结构性依赖舰队故随舰同门）。
+    // waiter 'W'/pinger 'P'/ponger 'p' 见下方各自门内块。
+    if demo_face {
+        let mut up_good =
+            user::UserProcess::build(mm::frames(), user::user_good_code(), user::USER_MAGIC);
+        let up_rogue_ptr =
+            user::UserProcess::build(mm::frames(), user::user_rogue_ptr_code(), user::USER_MAGIC);
+        let up_abuser =
+            user::UserProcess::build(mm::frames(), user::user_abuser_code(), user::USER_MAGIC);
+        let up_spawner =
+            user::UserProcess::build(mm::frames(), user::user_spawner_code(), user::USER_MAGIC);
 
-    // 4-5a：abuser/spawner 的 console 发端 = 各表**首插**（0x0001_0001）——入口
-    // x0 改传之（原 0；两模板自带 handle 都在运行期创建，首插槽位无既有依赖）。
-    let h_cu_abuser = ht_abuser
-        .insert_ref(pu, handle::RIGHT_SEND)
-        .expect("main: console 发端进 abuser 表");
-    let h_cu_spawner = ht_spawner
-        .insert_ref(pu, handle::RIGHT_SEND)
-        .expect("main: console 发端进 spawner 表");
-    berry_sched::spawn_user(user::USER_CODE_VA, good_vmar_h as usize, user::USER_STACK_TOP,
-                          b"user_good", up_good.ttbr0_pa, up_good.asid, tag_good);
-    berry_sched::spawn_user(user::USER_CODE_VA, 0, user::USER_STACK_TOP,
-                          b"user_rogue_ptr", up_rogue_ptr.ttbr0_pa, up_rogue_ptr.asid, tag_rogue);
-    berry_sched::spawn_user(user::USER_CODE_VA, h_cu_abuser as usize, user::USER_STACK_TOP,
-                          b"user_abuser", up_abuser.ttbr0_pa, up_abuser.asid, tag_abuser);
-    // 3-3/3-4 验收：spawner 经真 syscall 创建第二个进程；process_start 的
-    // bootstrap 迁移把「礼物 VMO」handle 送进子进程表（子入口 x0 收到后读出
-    // 魔数自证——跨进程能力流动，见 user.rs spawner 模板注释）。
-    berry_sched::spawn_user(user::USER_CODE_VA, h_cu_spawner as usize, user::USER_STACK_TOP,
-                          b"user_spawner", up_spawner.ttbr0_pa, up_spawner.asid, tag_spawner);
-    berry_sched::spawn(user::watchdog, 0, b"watchdog");
+        // 3-4a：per-process 表拆分——每个 boot 手搭用户进程一张 leak 常驻表
+        //（任务 tag 指向它，EL0 syscall 派发到自己的表；v1 无进程退出，表同寿）。
+        let ht_good: &'static mut HandleTable = alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        let ht_rogue: &'static mut HandleTable = alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        let ht_abuser: &'static mut HandleTable = alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        let ht_spawner: &'static mut HandleTable = alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        let (tag_good, tag_rogue, tag_abuser, tag_spawner) = (
+            ht_good as *mut HandleTable as usize,
+            ht_rogue as *mut HandleTable as usize,
+            ht_abuser as *mut HandleTable as usize,
+            ht_spawner as *mut HandleTable as usize,
+        );
+
+        // 3-2：good 的 root Vmar 进**它自己的表** = 首能力（能力模型 §5「第一个
+        // 能力从哪来」——用户拿自己的地址空间根，MAP|MANAGE|DUPLICATE）。handle
+        // 作 spawn arg → 入口 x0 → good 的 3-2 验收链经真 syscall map 读写自己的
+        // VMO（全链落在 good 自己的表里——per-process 拆分后其余进程看不见）。
+        let good_vmar = up_good.vmar.take().expect("main: good vmar");
+        let good_vmar_h = ht_good
+            .insert(KernelObj::Vmar(good_vmar), RIGHT_MAP | RIGHT_MANAGE | RIGHT_DUPLICATE)
+            .expect("main: 插 root Vmar 进 good 表");
+        // 4-5a：console 发端 append 进 good 表（vmar 后首插 = 槽 2/代号 1）——
+        // good 模板硬编码依赖，boot 断言即防线（漂移 → boot 期炸响）。
+        let h_cu_good = ht_good
+            .insert_ref(pu, handle::RIGHT_SEND | handle::RIGHT_TRANSFER)
+            .expect("main: console 发端进 good 表");
+        assert_eq!(h_cu_good, 0x0001_0002, "main: good 表 console 须槽 2/代号 1（模板硬编码）");
+
+        // 4-5a：abuser/spawner 的 console 发端 = 各表**首插**（0x0001_0001）——入口
+        // x0 改传之（原 0；两模板自带 handle 都在运行期创建，首插槽位无既有依赖）。
+        // spawner 位补 DUPLICATE（P3-1 dup 执法：模板 dup(console, SEND|TRANSFER)
+        // 转赠子进程须源持 DUP；abuser 模板不 dup，保持最小授能不带位）。
+        let h_cu_abuser = ht_abuser
+            .insert_ref(pu, handle::RIGHT_SEND | handle::RIGHT_TRANSFER)
+            .expect("main: console 发端进 abuser 表");
+        let h_cu_spawner = ht_spawner
+            .insert_ref(pu, handle::RIGHT_SEND | handle::RIGHT_TRANSFER | handle::RIGHT_DUPLICATE)
+            .expect("main: console 发端进 spawner 表");
+        berry_sched::spawn_user(user::USER_CODE_VA, good_vmar_h as usize, user::USER_STACK_TOP,
+                              b"user_good", up_good.ttbr0_pa, up_good.asid, tag_good);
+        berry_sched::spawn_user(user::USER_CODE_VA, 0, user::USER_STACK_TOP,
+                              b"user_rogue_ptr", up_rogue_ptr.ttbr0_pa, up_rogue_ptr.asid, tag_rogue);
+        berry_sched::spawn_user(user::USER_CODE_VA, h_cu_abuser as usize, user::USER_STACK_TOP,
+                              b"user_abuser", up_abuser.ttbr0_pa, up_abuser.asid, tag_abuser);
+        // 3-3/3-4 验收：spawner 经真 syscall 创建第二个进程；process_start 的
+        // bootstrap 迁移把「礼物 VMO」handle 送进子进程表（子入口 x0 收到后读出
+        // 魔数自证——跨进程能力流动，见 user.rs spawner 模板注释）。
+        berry_sched::spawn_user(user::USER_CODE_VA, h_cu_spawner as usize, user::USER_STACK_TOP,
+                              b"user_spawner", up_spawner.ttbr0_pa, up_spawner.asid, tag_spawner);
+        berry_sched::spawn(user::watchdog, 0, b"watchdog");
+    }
     // 4-0 验收（`IPC设计.md` Phase 4 拆步表）：sleeper/waker 对打——超时自醒
     // （'T'）+ 条件唤醒（'K'）双路径全绿打 `BLOCK ok`（smoke 第 14 标记）。
     // ktest 在 sched::init 前跑不能睡，睡眠面只能走 boot spawn 活证。
@@ -885,90 +1157,96 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // signal 唤醒）+ waker2（内核任务）经真 SVC signal 内核侧表 handle。
     // 同一 Event **双表挂同一 ObjRef**（insert_ref）——signal 侧与 wait 侧各
     // 持自己表的 handle（能力跨表互通的活证，匹配键 = ObjRef 地址）。
-    let up_waiter =
-        user::UserProcess::build(mm::frames(), user::user_waiter_code(), user::USER_MAGIC);
-    let ht_waiter: &'static mut HandleTable =
-        alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
-    use handle::{ObjType, RIGHT_SIGNAL};
-    let h_ev_kernel = syscall::bootstrap_table()
-        .insert(KernelObj::Event(event::Event::new()), RIGHT_SIGNAL)
-        .expect("main: Event 进内核侧表");
-    let (ev_ptr, _) = syscall::bootstrap_table()
-        .get_raw(h_ev_kernel, ObjType::Event, 0)
-        .expect("main: 取 Event ObjRef");
-    let h_ev_waiter = ht_waiter
-        .insert_ref(ev_ptr, RIGHT_SIGNAL)
-        .expect("main: Event 进 waiter 表（同一 ObjRef）");
-    // 4-5a：console 发端 append（Event 后首插 = 槽 2/代号 1）——waiter 模板硬编码。
-    let h_cu_waiter = ht_waiter
-        .insert_ref(pu, handle::RIGHT_SEND)
-        .expect("main: console 发端进 waiter 表");
-    assert_eq!(h_cu_waiter, 0x0001_0002, "main: waiter 表 console 须槽 2/代号 1（模板硬编码）");
-    berry_sched::spawn_user(user::USER_CODE_VA, h_ev_waiter as usize, user::USER_STACK_TOP,
-                          b"user_waiter", up_waiter.ttbr0_pa, up_waiter.asid,
-                          ht_waiter as *mut HandleTable as usize);
-    berry_sched::spawn(task_waker2, h_ev_kernel as usize, b"waker2");
+    // 06 号修窗件 1：waiter 'W' 是 EL0 演示舰常驻打字员（稳态三路全过仍
+    // 循环打 'W' 永不退）——挂 demo-face 门；waker2 是本验收的司机（信号
+    // 无对端即验收失去意义），与其 Event 同门让位。
+    if demo_face {
+        let up_waiter =
+            user::UserProcess::build(mm::frames(), user::user_waiter_code(), user::USER_MAGIC);
+        let ht_waiter: &'static mut HandleTable =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        let h_ev_kernel = syscall::bootstrap_table()
+            .insert(KernelObj::Event(event::Event::new()), RIGHT_SIGNAL)
+            .expect("main: Event 进内核侧表");
+        let (ev_ptr, _) = syscall::bootstrap_table()
+            .get_raw(h_ev_kernel, ObjType::Event, 0)
+            .expect("main: 取 Event ObjRef");
+        let h_ev_waiter = ht_waiter
+            .insert_ref(ev_ptr, RIGHT_SIGNAL)
+            .expect("main: Event 进 waiter 表（同一 ObjRef）");
+        // 4-5a：console 发端 append（Event 后首插 = 槽 2/代号 1）——waiter 模板硬编码。
+        let h_cu_waiter = ht_waiter
+            .insert_ref(pu, handle::RIGHT_SEND | handle::RIGHT_TRANSFER)
+            .expect("main: console 发端进 waiter 表");
+        assert_eq!(h_cu_waiter, 0x0001_0002, "main: waiter 表 console 须槽 2/代号 1（模板硬编码）");
+        berry_sched::spawn_user(user::USER_CODE_VA, h_ev_waiter as usize, user::USER_STACK_TOP,
+                              b"user_waiter", up_waiter.ttbr0_pa, up_waiter.asid,
+                              ht_waiter as *mut HandleTable as usize);
+        berry_sched::spawn(task_waker2, h_ev_kernel as usize, b"waker2");
+    }
 
     // 4-2 验收（`IPC设计.md` Phase 4 拆步表 4-2）：pinger/ponger 两 EL0 进程经
     // channel 阻塞链对打——pinger（endA：RIGHT_SEND）send 灌到 -EBUSY →
     // wait_one(WRITABLE) 阻塞 → ponger（endB：RIGHT_RECV）recv 腾位唤醒 →
     // 补发成功打 `CHAIN ok`（smoke 第 16 标记）。两端各进**对方进程的表**
     //（`channel_create` 建对语义的 boot 手搭版：两表 insert + `pair` 互钉）。
-    let up_pinger =
-        user::UserProcess::build(mm::frames(), user::user_pinger_code(), user::USER_MAGIC);
-    let up_ponger =
-        user::UserProcess::build(mm::frames(), user::user_ponger_code(), user::USER_MAGIC);
-    let ht_pinger: &'static mut HandleTable =
-        alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
-    let ht_ponger: &'static mut HandleTable =
-        alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
-    use crate::channel::ChannelEnd;
-    use handle::{RIGHT_RECV, RIGHT_SEND};
-    let h_end_a = ht_pinger
-        .insert(
-            KernelObj::Channel(ChannelEnd::try_unpaired(false).expect("main: 建 endA")),
-            RIGHT_SEND,
-        )
-        .expect("main: endA 进 pinger 表");
-    // 4-5a：console 发端 append（endA 后首插 = 槽 2/代号 1）——pinger 模板硬编码。
-    let h_cu_pinger = ht_pinger
-        .insert_ref(pu, RIGHT_SEND)
-        .expect("main: console 发端进 pinger 表");
-    assert_eq!(h_cu_pinger, 0x0001_0002, "main: pinger 表 console 须槽 2/代号 1（模板硬编码）");
-    let h_end_b = ht_ponger
-        .insert(
-            KernelObj::Channel(ChannelEnd::try_unpaired(false).expect("main: 建 endB")),
-            RIGHT_RECV,
-        )
-        .expect("main: endB 进 ponger 表");
-    let (pa, pb) = (
-        ht_pinger.get_raw(h_end_a, ObjType::Channel, 0).expect("main: 取 endA ObjRef").0,
-        ht_ponger.get_raw(h_end_b, ObjType::Channel, 0).expect("main: 取 endB ObjRef").0,
-    );
-    // SAFETY: 两端刚 insert + get_raw 过（在表、类型 Channel）——pair 完成互钉。
-    unsafe { ChannelEnd::pair(pa, pb) };
-    // 4-2b：哑 Event 进 ponger 表——wait_many 稳态等待的对照项（只入数组、
-    // 永不 signal；等 1<<32 位 = 永不命中）。boot 直插定值断言：ponger 模板把
-    // 该 handle 硬编为 0x0001_0002（表内第 2 插 = 槽 2/代号 1）——表序有变须同步
-    // 模板（断言即防线，错值 → wait_many -EBADF → ponger 自陷被杀 → MANY 缺失）。
-    let h_evt_ponger = ht_ponger
-        .insert(KernelObj::Event(crate::event::Event::new()), RIGHT_SIGNAL)
-        .expect("main: 哑 Event 进 ponger 表");
-    assert_eq!(
-        h_evt_ponger, 0x0001_0002,
-        "main: ponger 表哑 Event 须为槽 2/代号 1（ponger 模板硬编码依赖）"
-    );
-    // 4-5a：console 发端 append（endB + 哑 Event 后 = 槽 3/代号 1）——ponger 模板硬编码。
-    let h_cu_ponger = ht_ponger
-        .insert_ref(pu, RIGHT_SEND)
-        .expect("main: console 发端进 ponger 表");
-    assert_eq!(h_cu_ponger, 0x0001_0003, "main: ponger 表 console 须槽 3/代号 1（模板硬编码）");
-    berry_sched::spawn_user(user::USER_CODE_VA, h_end_a as usize, user::USER_STACK_TOP,
-                          b"user_pinger", up_pinger.ttbr0_pa, up_pinger.asid,
-                          ht_pinger as *mut HandleTable as usize);
-    berry_sched::spawn_user(user::USER_CODE_VA, h_end_b as usize, user::USER_STACK_TOP,
-                          b"user_ponger", up_ponger.ttbr0_pa, up_ponger.asid,
-                          ht_ponger as *mut HandleTable as usize);
+    // 06 号修窗件 1：pinger 'P'/ponger 'p' 验收毕进稳态节流对打环（永不退）
+    // ——EL0 演示舰成员，挂 demo-face 门（表/通道对/哑 Event 同让）。
+    if demo_face {
+        let up_pinger =
+            user::UserProcess::build(mm::frames(), user::user_pinger_code(), user::USER_MAGIC);
+        let up_ponger =
+            user::UserProcess::build(mm::frames(), user::user_ponger_code(), user::USER_MAGIC);
+        let ht_pinger: &'static mut HandleTable =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        let ht_ponger: &'static mut HandleTable =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        let h_end_a = ht_pinger
+            .insert(
+                KernelObj::Channel(ChannelEnd::try_unpaired(false).expect("main: 建 endA")),
+                RIGHT_SEND,
+            )
+            .expect("main: endA 进 pinger 表");
+        // 4-5a：console 发端 append（endA 后首插 = 槽 2/代号 1）——pinger 模板硬编码。
+        let h_cu_pinger = ht_pinger
+            .insert_ref(pu, RIGHT_SEND | RIGHT_TRANSFER)
+            .expect("main: console 发端进 pinger 表");
+        assert_eq!(h_cu_pinger, 0x0001_0002, "main: pinger 表 console 须槽 2/代号 1（模板硬编码）");
+        let h_end_b = ht_ponger
+            .insert(
+                KernelObj::Channel(ChannelEnd::try_unpaired(false).expect("main: 建 endB")),
+                RIGHT_RECV,
+            )
+            .expect("main: endB 进 ponger 表");
+        let (pa, pb) = (
+            ht_pinger.get_raw(h_end_a, ObjType::Channel, 0).expect("main: 取 endA ObjRef").0,
+            ht_ponger.get_raw(h_end_b, ObjType::Channel, 0).expect("main: 取 endB ObjRef").0,
+        );
+        // SAFETY: 两端刚 insert + get_raw 过（在表、类型 Channel）——pair 完成互钉。
+        unsafe { ChannelEnd::pair(pa, pb) };
+        // 4-2b：哑 Event 进 ponger 表——wait_many 稳态等待的对照项（只入数组、
+        // 永不 signal；等 1<<32 位 = 永不命中）。boot 直插定值断言：ponger 模板把
+        // 该 handle 硬编为 0x0001_0002（表内第 2 插 = 槽 2/代号 1）——表序有变须同步
+        // 模板（断言即防线，错值 → wait_many -EBADF → ponger 自陷被杀 → MANY 缺失）。
+        let h_evt_ponger = ht_ponger
+            .insert(KernelObj::Event(crate::event::Event::new()), RIGHT_SIGNAL)
+            .expect("main: 哑 Event 进 ponger 表");
+        assert_eq!(
+            h_evt_ponger, 0x0001_0002,
+            "main: ponger 表哑 Event 须为槽 2/代号 1（ponger 模板硬编码依赖）"
+        );
+        // 4-5a：console 发端 append（endB + 哑 Event 后 = 槽 3/代号 1）——ponger 模板硬编码。
+        let h_cu_ponger = ht_ponger
+            .insert_ref(pu, RIGHT_SEND | RIGHT_TRANSFER)
+            .expect("main: console 发端进 ponger 表");
+        assert_eq!(h_cu_ponger, 0x0001_0003, "main: ponger 表 console 须槽 3/代号 1（模板硬编码）");
+        berry_sched::spawn_user(user::USER_CODE_VA, h_end_a as usize, user::USER_STACK_TOP,
+                              b"user_pinger", up_pinger.ttbr0_pa, up_pinger.asid,
+                              ht_pinger as *mut HandleTable as usize);
+        berry_sched::spawn_user(user::USER_CODE_VA, h_end_b as usize, user::USER_STACK_TOP,
+                              b"user_ponger", up_ponger.ttbr0_pa, up_ponger.asid,
+                              ht_ponger as *mut HandleTable as usize);
+    }
 
     // 4-3b 验收（`IPC设计.md` Phase 4 拆步表 4-3 前半）：PI 捐赠三任务链——
     // pi_client（prio 32，donor）send 灌满后 wait WRITABLE 阻塞；pi_server
@@ -1170,9 +1448,11 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     let ht_svcmgr: &'static mut HandleTable =
         alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
     // console 发端 = svcmgr 表**首插**（0x0001_0001）——入口 x0 传入（模板
-    // 硬编码依赖，boot 断言拦表序漂移）。
+    // 硬编码依赖，boot 断言拦表序漂移）。DUPLICATE 位（P3-1 dup 执法）：
+    // svcmgr 是 console 的常驻 dup 源（dup(console, SEND|TRANSFER) 铸 gift
+    // 转赠子进程——talker/spawn 面），缺位即 -EACCES 断赠链。
     let h_cu_svcmgr = ht_svcmgr
-        .insert_ref(pu, RIGHT_SEND)
+        .insert_ref(pu, RIGHT_SEND | RIGHT_TRANSFER | RIGHT_DUPLICATE)
         .expect("main: console 发端进 svcmgr 表");
     assert_eq!(
         h_cu_svcmgr, 0x0001_0001,
@@ -1206,10 +1486,13 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
             }
         };
         ht_svcmgr
-            .insert(handle::KernelObj::Vmo(vmo), handle::RIGHT_READ)
+            .insert(handle::KernelObj::Vmo(vmo), handle::RIGHT_READ | handle::RIGHT_TRANSFER | handle::RIGHT_DUPLICATE)
             .expect("main: rootfs VMO 进 svcmgr 表")
     });
     // （A-2）rootfs 相位标记——endB2 插序断言用：rootfs 槽缺席 = 少一插。
+    // rootfs VMO 的 DUPLICATE 位（P3-1）：svcmgr dup(H_ROOTFS, READ|TRANSFER)
+    // 铸 gift 是 rootfs 相 spawn 链（hello/bsh/verify 族）的通用前缀，缺位
+    // 即 -EACCES 断整链。
     let rootfs_present = h_rootfs.is_some();
     match h_rootfs {
         Some(h) => {
@@ -1236,7 +1519,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
             KernelObj::Channel(
                 crate::channel::ChannelEnd::try_unpaired(true).expect("main: 建 bsh-stdin svcmgr 端"),
             ),
-            handle::RIGHT_RECV,
+            handle::RIGHT_RECV | handle::RIGHT_TRANSFER,
         )
         .expect("main: bsh-stdin 端进 svcmgr 表");
     assert_eq!(
@@ -1335,7 +1618,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                         .expect("main: fbinfo Vmo commit");
                     ivmo.write(0, &info).expect("main: fbinfo Vmo write");
                     let h_info = ht_svcmgr
-                        .insert(handle::KernelObj::Vmo(ivmo), handle::RIGHT_READ)
+                        .insert(handle::KernelObj::Vmo(ivmo), handle::RIGHT_READ | handle::RIGHT_TRANSFER)
                         .expect("main: fbinfo VMO 进 svcmgr 表");
                     assert_eq!(
                         h_info, 0x0001_0006,
@@ -1375,7 +1658,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                                 crate::channel::ChannelEnd::try_unpaired(true)
                                     .expect("main: 建 fb-上屏 guifbd 端"),
                             ),
-                            handle::RIGHT_RECV,
+                            handle::RIGHT_RECV | handle::RIGHT_TRANSFER,
                         )
                         .expect("main: fb-上屏 guifbd 端进 svcmgr 表");
                     assert_eq!(
@@ -1399,6 +1682,43 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                     unsafe {
                         *core::ptr::addr_of_mut!(FB_PIPE_H) = h_end_kfb;
                     }
+                    // AM-2b 裁决①：压力 Event dup 进 svcmgr 表**第 8 插定值
+                    // 0x0001_0008**（console 1/rootfs 2/endB2 3/virtio 4/
+                    // fb VMO 5/fbinfo 6/endB_fb 7 之后——GOP 相位内表序确定，
+                    // boot assert 拦漂移；裸相/rootfs-无-fb 相缺席 = svcmgr
+                    // 查表 -EBADF，同 fb/virtio 惯例——am 未成形，env 块
+                    // extras 迁交随消费链段）。授 SIGNAL|DUPLICATE
+                    //（`event_create` 出生授同口径，abi.toml 0x54 note——
+                    // am 持 SIGNAL 右 `object_signal` 自清位 + svcmgr 需
+                    // DUPLICATE 再迁）。令牌 = boot 接线段第二枚 retain
+                    //（insert_ref 接管既有令牌、不 +1——handle.rs 契约）。
+                    let h_am2b_svc = ht_svcmgr
+                        .insert_ref(p_am2b, handle::RIGHT_SIGNAL | handle::RIGHT_DUPLICATE | handle::RIGHT_TRANSFER)
+                        .expect("main: AM-2b 压力 Event dup 进 svcmgr 表");
+                    assert_eq!(
+                        h_am2b_svc, 0x0001_0008,
+                        "main: svcmgr 表 AM-2b 压力 Event 须第 8 插 0x0001_0008（编译侧硬编码）"
+                    );
+                    // VER 运行时查询面：boot 建只读 version VMO——1 页版本身份
+                    // 结构体（sysver 模块编译期 env! 成像，零运行时取数；fbinfo
+                    // VMO 同款 create+commit+write 三连）插 svcmgr 表**第 9 插
+                    // 定值 0x0001_0009**（与第 8 插同 fb GOP 相位同分支，表序
+                    // 确定——boot assert 拦漂移；裸相/rootfs-无-fb 相缺席 =
+                    // svcmgr 查表 -EBADF，同 fb/virtio 惯例）。rights 仅
+                    // READ——版本面禁写（vmo_write 放宽面拒；权限在 handle
+                    // 不在对象），内核侧不留柄（boot 即写即交，无 dup 消费面）。
+                    let h_sysver = ht_svcmgr
+                        .insert(
+                            handle::KernelObj::Vmo(
+                                sysver::build_vmo().expect("main: version Vmo 装配（create/commit/write）"),
+                            ),
+                            handle::RIGHT_READ,
+                        )
+                        .expect("main: version VMO 进 svcmgr 表");
+                    assert_eq!(
+                        h_sysver, 0x0001_0009,
+                        "main: svcmgr 表 version VMO 须第 9 插 0x0001_0009（编译侧硬编码）"
+                    );
                 }
                 Err(_) => {
                     // 界检已过仍拒 = fb_pa 非页对齐（RamfbDxe AllocatePages
@@ -1414,8 +1734,29 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
 
     // D3（G-eco-b）：svcmgr 是首个多页镜像（编译产物内嵌 echo/talker 平像），
     // data/stack 上移——sp 从 `stack_top` 取，不读单页常量。
-    berry_sched::spawn_user(user::USER_CODE_VA, h_cu_svcmgr as usize, up_svcmgr.stack_top,
-                          b"user_svcmgr", up_svcmgr.ttbr0_pa, up_svcmgr.asid,
+    // 06 号修窗件 1 后半：demo-face 门值经 x1 env 旗标随 spawn 递 svcmgr
+    //（[`USER_ENV_DEMO_OFF`]——门关时 svcmgr 侧 talker/echo/echo2 演示链
+    // 与 'v' 稳态环让位，06 号 §4-1 idle→~0% 的 svcmgr 半边闭合；ON 态
+    // env=0 逐字零漂移）。
+    berry_sched::spawn_user_env(
+        user::USER_CODE_VA,
+        h_cu_svcmgr as usize,
+        if demo_face { 0 } else { USER_ENV_DEMO_OFF },
+        up_svcmgr.stack_top,
+        b"user_svcmgr",
+        up_svcmgr.ttbr0_pa,
+        up_svcmgr.asid,
+        ht_svcmgr as *mut HandleTable as usize,
+    );
+    // X-3c-1：svcmgr pager 任务（exec demand 装载收货面）——共享同
+    // ttbr0/asid/句柄表：寄存表即 svcmgr .bss 静态（PAGER_REQS），零 IPC。
+    // 入口/栈顶 = svcmgr link-user.ld 钉位（.pager_entry@0x28000 /
+    // .pager_stack 顶 0x29000——**同值双改**；CP-08 扩容自 0x1E000/
+    // 0x20000 上移，D3 帽 160KiB = user.rs `USER_CODE_MAX` 同步）；
+    // x0=0（pager 无 console 面，入口不读参数）。boot 即在（svcmgr
+    // _start 装钩子前空转小睡，无害）。
+    berry_sched::spawn_user(0x28_000, 0, 0x29_000, b"user_svcmgr_pager",
+                          up_svcmgr.ttbr0_pa, up_svcmgr.asid,
                           ht_svcmgr as *mut HandleTable as usize);
 
     // ---- 4-6 B 半（AI 最小演示，`docs/4-6出口演示设计草案.md` B 半管线）：
@@ -1529,6 +1870,71 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                                     ht_rt as *mut HandleTable as usize);
     }
 
+    // ---- CP-06（docs/调度彻底计划-v1.2.md §4.1·首份 A/B 数据面）：loadgen
+    //      门控 spawn（配置早读在 timer::init 前；探针体在 task_rt_probe 后）----
+    // 三类受控工作负载（interactive/utility/burst：N 任务 × M ms 级 CPU
+    // burst）+ 每任务唤醒→运行延迟采样；报告消费面 =
+    // research/调度彻底计划/13-首份AB报告-loadgen.md。门控同 rt 块形：
+    // fw_cfg `opt/berry/loadgen` 在位才 spawn（LG_ARMED = 早读解析成功的
+    // 自证），缺席 = run/smoke 零扰动，EFI 路天然缺席；位置约束同 rt 块：
+    // sched::init 后 + boot DAIF 屏蔽窗内（enable_irq 前）。
+    if LG_ARMED.load(core::sync::atomic::Ordering::Relaxed) {
+        let band = LG_BAND_ARM.load(core::sync::atomic::Ordering::Relaxed);
+        let ht_lg: &'static mut HandleTable =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        // 家族表：master + 4 sleeper 各一枚哑 Event（纯用户位等待 → PI 零
+        // 受捐 + 私有表零跨表错捐面；burst 无等待面不配）。永不 signal——
+        // 唯一醒因 Timeout（rt 块同形）。
+        let mut evs = [0usize; 5];
+        for (i, slot) in evs.iter_mut().enumerate() {
+            let h = ht_lg
+                .insert(KernelObj::Event(crate::event::Event::new()), handle::RIGHT_SIGNAL)
+                .expect("main: loadgen 哑 Event 进表");
+            let p = ht_lg
+                .get_raw(h, ObjType::Event, 0)
+                .expect("main: 取 loadgen ObjRef")
+                .0;
+            *slot = p.as_ptr() as usize;
+            if i > 0 {
+                LG_SLEEP_EV[i - 1].store(*slot, core::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        // master prio 8（rt_probe 同档：全体常驻之上、瞬态 boot bench 对
+        // 之下）；载荷全 prio 0——「被延迟本身就是待测的调度延迟」（§10）。
+        berry_sched::spawn_with_tag(task_lg_master, evs[0], b"lg_master", 8,
+                                    ht_lg as *mut HandleTable as usize);
+        // b 臂分派：b=1 = spawn_intent（intent→band 分派面——现役带
+        // interactive/utility，[band] 行自证）；b=0 = plain spawn（缺省
+        // UNSPECIFIED：无带、无 slack 资格——两臂同代码路径，差只在 intent
+        // 声明面，A/B 可归因）。
+        if band {
+            berry_sched::spawn_intent(task_lg_slp, 0, b"lg_ia0",
+                                      berry_sched::INTENT_INTERACTIVE);
+            berry_sched::spawn_intent(task_lg_slp, 1, b"lg_ia1",
+                                      berry_sched::INTENT_INTERACTIVE);
+            berry_sched::spawn_intent(task_lg_slp, 2, b"lg_ut0",
+                                      berry_sched::INTENT_UTILITY);
+            berry_sched::spawn_intent(task_lg_slp, 3, b"lg_ut1",
+                                      berry_sched::INTENT_UTILITY);
+        } else {
+            berry_sched::spawn(task_lg_slp, 0, b"lg_ia0");
+            berry_sched::spawn(task_lg_slp, 1, b"lg_ia1");
+            berry_sched::spawn(task_lg_slp, 2, b"lg_ut0");
+            berry_sched::spawn(task_lg_slp, 3, b"lg_ut1");
+        }
+        // 过载源两臂同形（UNSPECIFIED——b 臂语义差只在 sleeper 的 intent 面）。
+        berry_sched::spawn(task_lg_bu, 0, b"lg_bu0");
+        berry_sched::spawn(task_lg_bu, 0, b"lg_bu1");
+        // 门控自证行（SOAK gate on 同款）：行在 ⟺ 载荷已 spawn + 配置生效。
+        berry_hal_aarch64::uart_puts(b"LOADGEN gate on s=");
+        berry_hal_aarch64::uart_put_dec(LG_SLACK_NS.load(core::sync::atomic::Ordering::Relaxed));
+        berry_hal_aarch64::uart_puts(b" b=");
+        berry_hal_aarch64::uart_put_dec(if band { 1 } else { 0 });
+        berry_hal_aarch64::uart_puts(b" slice_hz=");
+        berry_hal_aarch64::uart_put_dec(LG_SLICE_HZ);
+        berry_hal_aarch64::uart_puts(b"\n");
+    }
+
     // ---- G3-4（docs/G3全抢占实施设计草案.md §4）：bench-lat IPC 路门控 spawn ----
     // wake→run 段补盲（草案 §4 暂名 bench-lat）两路之一：IPC send 路 =
     // **内核任务对**（侦察定谳：SGI 路须 EL0 用户对——place() 内核任务恒
@@ -1629,8 +2035,10 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
 
     // 注册回调（HAL→sched 反转，避循环依赖；均须在 enable_irq / 首个用户任务被
     // 调度之前）。IRQ 槽驱动抢占；用户故障槽驱动 G1.5 kill；SGI 槽（义务⑧
-    // S-3b b-1）驱动 CPU0 快速重调度（跨核唤醒不等整 tick）。
-    berry_hal_aarch64::set_irq_dispatch(berry_sched::on_irq_tick);
+    // S-3b b-1）驱动 CPU0 快速重调度（跨核唤醒不等整 tick）。刀1：tick 槽外套
+    // 计数包装 [`irq_tick_acct`]（TIMER 到达 + 派发戳入 per-source 表）——转发
+    // 原 on_irq_tick，语义零漂移。
+    berry_hal_aarch64::set_irq_dispatch(irq_tick_acct);
     berry_hal_aarch64::set_sgi_dispatch(berry_sched::on_sgi_resched);
     berry_hal_aarch64::set_user_fault_exit(berry_sched::user_fault_exit);
     // G3-1b 落点①接线：syscall 返回边界检查点（SVC 派发尾空探；sched 侧
@@ -1652,6 +2060,151 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     berry_hal_aarch64::uart::set_rx_notify(rx_irq_notify);
     // SAFETY: MMIO 写；boot 单线程、DAIF 屏蔽。
     unsafe { berry_hal_aarch64::uart::rx_init() };
+    // sim-S1（`docs/sim设备通道与契约设计-v1.1.md` §4）：UART1 注入通道全链
+    // 接线——**在席门 = fw_cfg 具名键 `opt/berry/simdev`**（GUI P2
+    // `opt/berry/display` 同款拓扑真值纪律：justfile 同一行配第二 `-serial`
+    // 与此键，键缺 = 设备不存在——0x0904_0000 是洞，盲配即 external abort
+    // boot 崩；EFI 路无具名键面 = 门恒闭零扰动；既有 run/smoke 不带键零漂移）。
+    // 门开四件（全在 DAIF 屏蔽窗内）：
+    // ① simbattery 礼物对进 svcmgr 表（帧 RECV **0x0001_0005** / 回执 SEND
+    //   **0x0001_0006**——-kernel rootfs 相专属槽位：EFI-GOP 相 5/6/7 被
+    //   fb/info/endB_fb 占（上方块），而 fw_cfg 键在 EFI 不可见 = 两相结构性
+    //   互斥；assert = 并存绊网——真并存即拓扑互斥裁决破产，boot 期炸响）；
+    // ② task_simcon 私有表（Event 1 / 帧 SEND 2 / 回执 RECV 3——console
+    //   私有表同款错捐断根）+ 双通道 pair（endK2/endB2 同款：两端异地入表、
+    //   配对延到后插入侧；boot 单线程中间无人能发）+ 静态槽/retain 钉住；
+    // ③ 通知槽先注册（rx_notify 同款次序硬约束——槽空时首字节静默落环）；
+    // ④ spawn + `uart1_init`（IMSC.RXIM 最后开——线一拉高即真数据，等待者
+    //   与任务须已就位）。
+    if rootfs_present
+        && berry_hal_aarch64::fwcfg::find_file(SIM_DEV_KEY).is_some()
+    {
+        // ① simbattery 礼物对（svcmgr 表，rootfs 相槽 5/6——simbattery 由
+        // svcmgr spawn 时经 SpawnSpec stdin/extra_gifts 领走，M2 后段接线）。
+        // 双端 DUPLICATE 位（P3-1）：svcmgr sim 自验 dup(H_SIM_RX/ACK) 探针
+        // 铸别名，缺位即 -EACCES 探针降级。
+        let h_simb_rx = ht_svcmgr
+            .insert(
+                KernelObj::Channel(
+                    crate::channel::ChannelEnd::try_unpaired(true)
+                        .expect("main: 建 sim 帧通道 simbattery 端"),
+                ),
+                handle::RIGHT_RECV | handle::RIGHT_TRANSFER | handle::RIGHT_DUPLICATE,
+            )
+            .expect("main: sim 帧 RECV 端进 svcmgr 表");
+        assert_eq!(
+            h_simb_rx, 0x0001_0005,
+            "main: svcmgr 表 sim 帧 RECV 须 0x0001_0005（-kernel 相第 5 插；EFI-GOP 相此槽 = fb VMO——并存即互斥裁决破产）"
+        );
+        let h_simb_tx = ht_svcmgr
+            .insert(
+                KernelObj::Channel(
+                    crate::channel::ChannelEnd::try_unpaired(true)
+                        .expect("main: 建 sim 回执通道 simbattery 端"),
+                ),
+                handle::RIGHT_SEND | handle::RIGHT_TRANSFER | handle::RIGHT_DUPLICATE,
+            )
+            .expect("main: sim 回执 SEND 端进 svcmgr 表");
+        assert_eq!(
+            h_simb_tx, 0x0001_0006,
+            "main: svcmgr 表 sim 回执 SEND 须 0x0001_0006（-kernel 相第 6 插）"
+        );
+        // ② simcon 私有表三插（表序定值断言惯例——错值 boot 期炸响）。
+        let ht_sim: &'static mut HandleTable =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        let h_ev = ht_sim
+            .insert(
+                KernelObj::Event(crate::event::Event::new()),
+                handle::RIGHT_SIGNAL,
+            )
+            .expect("main: UART1 Event 进 simcon 表");
+        assert_eq!(h_ev, 0x0001_0001, "main: simcon 表 Event 须首插 0x0001_0001");
+        let h_tx = ht_sim
+            .insert(
+                KernelObj::Channel(
+                    crate::channel::ChannelEnd::try_unpaired(true)
+                        .expect("main: 建 sim 帧通道 simcon 端"),
+                ),
+                handle::RIGHT_SEND,
+            )
+            .expect("main: sim 帧 SEND 端进 simcon 表");
+        assert_eq!(h_tx, 0x0001_0002, "main: simcon 表帧 SEND 须 0x0001_0002");
+        let h_ack = ht_sim
+            .insert(
+                KernelObj::Channel(
+                    crate::channel::ChannelEnd::try_unpaired(true)
+                        .expect("main: 建 sim 回执通道 simcon 端"),
+                ),
+                handle::RIGHT_RECV,
+            )
+            .expect("main: sim 回执 RECV 端进 simcon 表");
+        assert_eq!(h_ack, 0x0001_0003, "main: simcon 表回执 RECV 须 0x0001_0003");
+        // ObjRef 四取：Event（IRQ 通知/清位共用）+ simcon 双端（pair 用）+
+        // svcmgr 双端（pair 对侧）。get_raw 即过在表/类型门控。
+        let (p_ev, p_tx, p_ack) = (
+            ht_sim
+                .get_raw(h_ev, handle::ObjType::Event, 0)
+                .expect("main: 取 sim Event ObjRef")
+                .0,
+            ht_sim
+                .get_raw(h_tx, handle::ObjType::Channel, 0)
+                .expect("main: 取 sim 帧 SEND ObjRef")
+                .0,
+            ht_sim
+                .get_raw(h_ack, handle::ObjType::Channel, 0)
+                .expect("main: 取 sim 回执 RECV ObjRef")
+                .0,
+        );
+        let (p_b_rx, p_b_tx) = (
+            ht_svcmgr
+                .get_raw(h_simb_rx, handle::ObjType::Channel, 0)
+                .expect("main: 取 sim 帧 RECV ObjRef")
+                .0,
+            ht_svcmgr
+                .get_raw(h_simb_tx, handle::ObjType::Channel, 0)
+                .expect("main: 取 sim 回执 SEND ObjRef")
+                .0,
+        );
+        // SAFETY: 四端刚 insert + get_raw 过（在表、类型 Channel）——pair 完成
+        // 互钉（endK2/endB2 同款：两表异地、配对在后插入侧；boot 单线程）。
+        unsafe {
+            crate::channel::ChannelEnd::pair(p_tx, p_b_rx); // 帧通道
+            crate::channel::ChannelEnd::pair(p_b_tx, p_ack); // 回执通道
+        }
+        // 静态槽 + retain 钉住（RX Event 块同款有意泄漏双保险：永不 close +
+        // 永不 release = IRQ 语境无 UAF 面）。
+        // SAFETY: boot 单线程写、先于一切任务与 IRQ 读（DAIF 屏蔽窗无竞态）。
+        unsafe {
+            (*p_ev.as_ptr()).retain();
+            *core::ptr::addr_of_mut!(UART1_EV_H) = h_ev;
+            *core::ptr::addr_of_mut!(UART1_EV_REF) = Some(p_ev);
+            *core::ptr::addr_of_mut!(SIM_TX_H) = h_tx;
+            *core::ptr::addr_of_mut!(SIM_ACK_H) = h_ack;
+        }
+        // ③④ spawn → 通知槽 → 使能（次序硬约束：消费者就位先于线拉高）。
+        // prio 0（console 同层常驻——系统转发服务，瞬态验收任务之下靠轮转）。
+        berry_sched::spawn_with_tag(
+            task_simcon,
+            0,
+            b"simcon",
+            0,
+            ht_sim as *mut HandleTable as usize,
+        );
+        berry_hal_aarch64::uart::set_uart1_notify(uart1_notify);
+        // SAFETY: MMIO 写；boot 单线程、DAIF 屏蔽；fw_cfg 门开 = 第二 serial
+        // 已配、设备在席（0x0904_0000 非洞）。
+        unsafe { berry_hal_aarch64::uart::uart1_init() };
+        // sim-S2 A4②：PL061 电源键接线（同门同窗——PL061 板级常在但裸跑/EFI
+        // 零扰动，策略门与 UART1 同线）。次序硬约束同 UART1：通知槽先注册、
+        // `pl061_init` 内 IMSC 等价面（GPIO_IE）最后开——首脉冲即真到达时
+        // 记账/标记面已就位。SPI 39 不在路由表时 init 内 loud 让位（拓扑
+        // 漂移在 enable 处炸响，不静默）。
+        berry_hal_aarch64::pl061::set_pl061_notify(pl061_notify);
+        // SAFETY: MMIO 写；boot 单线程、DAIF 屏蔽；PL061 板级常在（0x0903_0000
+        // 恒非洞）——门只裁「是否使能」，不裁「是否存在」。
+        unsafe { berry_hal_aarch64::pl061::pl061_init() };
+        berry_hal_aarch64::uart_puts(b"SIM gate on\n");
+    }
     // S-1 副核 bring-up（`SMP设计草案.md` §3.2/§4）：窗口 = DAIF 屏蔽尾窗
     //（全 spawn/回调注册后、arm_slice/enable_irq 前）——主核 CPU_ON 后静默
     // 轮询心跳，无中断无调度，与副核 bring-up 窗口结构性无重叠（UART 单写者
@@ -1873,6 +2426,8 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     berry_hal_aarch64::enable_irq();
     berry_sched::yield_now(); // idle(main) 让出 → task_a；timer 每 slice 抢占切到 task_b → A/B 交替。
     // 不可达（忙循环任务不退出）；防御兜底：若被切回则进 tickless idle。
+    // 06 号修窗件 1：demo-face 门关时 task_a/b 不在——idle_loop 即常态归途
+    //（runqueue 清空 → tickless park → wfi，QEMU vCPU 真睡）。
     berry_sched::idle_loop();
 }
 
@@ -2246,6 +2801,23 @@ pub fn console_drained() -> u64 {
     CONSOLE_DRAINED.load(core::sync::atomic::Ordering::Relaxed)
 }
 
+/// console 批量写冲刷（P1）：单 PRINT_LOCK 锁窗把 stage 整段（一次 drain
+/// 突发多条消息的拼接）落串口——**n 条消息 = 1 次锁取放**（原逐条 n 次 =
+/// n 个争用点；3-1a 判例刀只做到单条原子，本面把粒度升到整突发）。TX 走
+/// `uart_write_txff`（写 DR 前查 FR.TXFF——QEMU 宽容、真机不可丢字节；
+/// `uart_putc` 本体不动）。CONSOLE_DRAINED 按整段一次累加（Relaxed 纯计数，
+/// 逐字节 fetch_add 的等价收敛——watchdog 金丝雀只看跨轮递增）。slen 归零。
+fn console_stage_flush(stage: &mut [u8], slen: &mut usize) {
+    if *slen == 0 {
+        return; // 空段不取锁（心跳轮空转零扰动）
+    }
+    berry_hal_aarch64::kern_lock::with_print_lock(|| {
+        berry_hal_aarch64::uart::uart_write_txff(&stage[..*slen]);
+        CONSOLE_DRAINED.fetch_add(*slen as u64, core::sync::atomic::Ordering::Relaxed);
+    });
+    *slen = 0;
+}
+
 // ---- P5 A-1：console 输入面（内核 RX 中断的等待/消费侧）----
 
 /// RX Event 的用户位（占用登记见 [`USER_SIGNAL_BITS`]——1<<32..1<<38 已满，
@@ -2288,6 +2860,150 @@ fn fb_pipe_h() -> u32 {
     unsafe { *core::ptr::addr_of!(FB_PIPE_H) }
 }
 
+// ---- sim-S1：UART1 注入面静态槽（task_simcon 等待/消费侧——
+// `docs/sim设备通道与契约设计-v1.1.md` §4）----
+//
+// console 输入面三件套全套镜像（RX_EV_BIT/RX_EV_H/RX_EV_REF 同形）：IRQ 侧
+// 置位（`uart1_notify`）、simcon 消费包络内清位（`uart1_ev_clear`）。差异两
+// 点：①唤醒记账与 UART0 **归并不拆**（`wake.rs src_of` 同 U 类——per-UART
+// 粒度归 0x84 telemetry_open 终身面，设计文档 §3 裁决）；②多一对通道槽
+// （`SIM_TX_H` 帧 SEND / `SIM_ACK_H` 回执 RECV——spawn arg=0，handle 全走
+// 静态槽，RX_EV_H/BSH_IN_H 惯例）。
+
+/// sim-S1 在席门键：fw_cfg 具名文件 `opt/berry/simdev`（LAT_PROBE_NAME 同款
+/// `opt/berry/` 命名空间——justfile 配方同一行配第二 `-serial` 与此键，键在
+/// = UART1 设备在席的拓扑真值）。值本身不消费（在席即门开）。
+const SIM_DEV_KEY: &str = "opt/berry/simdev";
+
+/// UART1 RX Event 的用户位（RX_EV_BIT=1<<39 顺延 1<<40；高半用户位纪律同
+/// `USER_SIGNAL_BITS`）。
+const UART1_EV_BIT: u64 = 1 << 40;
+
+/// UART1 RX Event handle 静态槽（task_simcon 读；写点 = boot sim 接线段，
+/// 先于一切任务）。
+static mut UART1_EV_H: u32 = 0;
+/// UART1 RX Event 的 ObjRef（`uart1_notify` 置位 / `uart1_ev_clear` 清位共用；
+/// boot 写入后不变 + retain 钉住永不 release——RX_EV_REF 同款双保险）。
+static mut UART1_EV_REF: Option<core::ptr::NonNull<handle::ObjRef>> = None;
+
+/// 读 UART1 RX Event handle 静态槽（task_simcon 侧）。
+fn uart1_ev_h() -> u32 {
+    // SAFETY: 只读；全部写点先于任务启动（boot 顺序）。
+    unsafe { *core::ptr::addr_of!(UART1_EV_H) }
+}
+
+/// sim 帧通道 simcon 发端 handle 静态槽（UART1 排水 → simbattery）。
+static mut SIM_TX_H: u32 = 0;
+/// sim 回执通道 simcon 收端 handle 静态槽（simbattery ACK → UART1 TX 回写）。
+static mut SIM_ACK_H: u32 = 0;
+
+/// 读 SIM_TX_H 静态槽（task_simcon 侧）。
+fn sim_tx_h() -> u32 {
+    // SAFETY: 只读；写点先于任务启动。
+    unsafe { *core::ptr::addr_of!(SIM_TX_H) }
+}
+
+/// 读 SIM_ACK_H 静态槽（task_simcon 侧）。
+fn sim_ack_h() -> u32 {
+    // SAFETY: 只读；写点先于任务启动。
+    unsafe { *core::ptr::addr_of!(SIM_ACK_H) }
+}
+
+/// 「UART1 RX 到数据」通知（HAL `exception_irq` PL1_RX 臂 → `uart::uart1_rx`
+/// 经槽调；`rx_irq_notify` 逐句同形——IRQ 上下文 PSTATE.I=1、pre-EOI）。到达
+/// 记账归 `WAKE_SRC_UART_RX`（与 UART0 归并口径）→ SQ 窗内置位 + `wake_
+/// matching_locked`（义务③写位+扫描同窗）→ n=0 记 no_waiter → 回报 n>0
+/// （检查点决策在 trap.rs PL1_RX 臂 EOIR 后——本槽不切，EOIR 饿死防线）。
+unsafe extern "C" fn uart1_notify() -> bool {
+    // SAFETY: IRQ 上下文（单核屏蔽窗串行）；UART1_EV_REF boot 后不变。
+    let p = unsafe { *core::ptr::addr_of!(UART1_EV_REF) }
+        .expect("uart1_notify: UART1_EV_REF 未初始化（boot 接线缺失）");
+    // sim-S1：与 UART0 同源归并记账（per-UART 拆分归 v2 0x84 遥测面）。
+    crate::telemetry::note_irq_arrival(
+        berry_hal_aarch64::wake_gen::WAKE_SRC_UART_RX,
+        berry_hal_aarch64::timer::cntvct(),
+    );
+    unsafe {
+        // 写位+扫描同窗（c-2b slice 4 自锁面；KL 外层包络剥除后的纯 SQ 单锁窗）。
+        let sq_phys = berry_sched::sq_lock(); // 位感知退化形（c-2c slice 2a）
+        if let Some(ev) = (*p.as_ptr()).obj.as_event_mut() {
+            ev.signal(0, UART1_EV_BIT);
+        }
+        let n = berry_sched::wake_matching_locked(p.as_ptr() as usize, UART1_EV_BIT);
+        berry_sched::sq_unlock(sq_phys);
+        if n == 0 {
+            crate::telemetry::note_irq_no_waiter(berry_hal_aarch64::wake_gen::WAKE_SRC_UART_RX);
+        }
+        // 只回报不检查点（F1 定谳——检查点在 trap 臂 EOIR 后）。
+        n > 0
+    }
+}
+
+/// 「PL061 电源键到达」通知（HAL `exception_irq` SPI39 臂 → `pl061::power_
+/// key_irq` 经槽调；调用语境与 [`uart1_notify`] 同：IRQ 上下文 PSTATE.I=1、
+/// pre-EOI——ICR 去活在槽调用方已完成）。v1 无主 IRQ 正向对照（A4②）：
+/// 电源管理服务 v2 才落，**恒无等待者/恒无唤醒**——无 Event 置位、无
+/// wake_matching，只做双台账：到达 `note_irq_arrival`（POWER_KEY，IRQ 级）
+/// + no_waiter `note_irq_no_waiter`（结构性无主——每次到达都记，与
+/// uart1_notify 的「n==0 才记」语义不同）；回报恒 false（trap 臂无
+/// woke-检查点面）。标记行 `PWRKEY unowned n=` 的数值**读自 telemetry
+/// no_waiter 台账**（记账为 unowned 的验收本体——telemetry 被拆/漏记时
+/// n=0 直红，本地计数器会让变异假绿，审查裁决改源）。打印门 = trap.rs
+/// 未知臂同款 preempt_count 门（count>0 = 被打断者可能在 PRINT_LOCK 窗
+/// 内，裸取 = 同核自旋等不可运行者自死锁——只记账让位；QMP 重注入可补拍
+/// 标记行，台账不丢）。
+unsafe extern "C" fn pl061_notify() -> bool {
+    crate::telemetry::note_irq_arrival(
+        berry_hal_aarch64::wake_gen::WAKE_SRC_POWER_KEY,
+        berry_hal_aarch64::timer::cntvct(),
+    );
+    crate::telemetry::note_irq_no_waiter(berry_hal_aarch64::wake_gen::WAKE_SRC_POWER_KEY);
+    let in_preempt_window = berry_hal_aarch64::smp::preempt_count_slot()
+        .map_or(false, |c| c.load(core::sync::atomic::Ordering::Relaxed) > 0);
+    if !in_preempt_window {
+        let n = crate::telemetry::wake_src_snapshot(
+            berry_hal_aarch64::wake_gen::WAKE_SRC_POWER_KEY,
+        )
+        .no_waiter;
+        berry_hal_aarch64::kern_lock::print_lock();
+        berry_hal_aarch64::uart_puts(b"PWRKEY unowned n=");
+        berry_hal_aarch64::uart_put_dec(n);
+        berry_hal_aarch64::uart_puts(b"\n");
+        berry_hal_aarch64::kern_lock::print_unlock();
+    }
+    false
+}
+
+/// 清 UART1 RX Event 位（task_simcon 消费包络内调；`rx_ev_clear` 同形——
+/// IRQ 在包络内被屏蔽，位只可能在包络外被置，置后下轮 poll-first 必命中）。
+///
+/// # Safety
+/// 须在 `disable_irq` 包络内调（与 UART1 RX IRQ 生产者串行）；引用不变。
+unsafe fn uart1_ev_clear() {
+    // SAFETY: 调用方保证屏蔽包络 + 引用不变。
+    let p = unsafe { *core::ptr::addr_of!(UART1_EV_REF) }
+        .expect("uart1_ev_clear: UART1_EV_REF 未初始化");
+    unsafe {
+        if let Some(ev) = (*p.as_ptr()).obj.as_event_mut() {
+            ev.signal(UART1_EV_BIT, 0);
+        }
+    }
+}
+
+/// 刀1：CNTV tick 槽计数包装（HAL `exception_irq` CNTV 臂经 `irq_dispatch`
+/// 槽调，post-EOIR）。先记 TIMER 到达 + 派发戳（`last_ack_ts` = 槽派发点
+/// ——post-EOI 语义；per-source 记账面见 `telemetry::WAKE_SRC_TABLE`）再转
+/// [`berry_sched::on_irq_tick`]。IRQ 语境纪律：零分配、纯原子，槽原语义
+/// 零漂移。
+unsafe extern "C" fn irq_tick_acct(tf: &mut berry_hal_aarch64::trap::TrapFrame) {
+    crate::telemetry::note_irq_arrival(
+        berry_hal_aarch64::wake_gen::WAKE_SRC_TIMER,
+        berry_hal_aarch64::timer::cntvct(),
+    );
+    // SAFETY: IRQ 上下文（PSTATE.I=1，post-EOIR）；转发原槽契约不变。
+    unsafe { berry_sched::on_irq_tick(tf) }
+}
+
 /// 「RX 到数据」通知（HAL `exception_irq` → `uart::rx_irq` 经槽调；IRQ 上下文
 /// PSTATE.I=1）。置位 RX Event（用户半位）+ `wake_matching`（匹配键 = ObjRef
 /// 地址，同 4-1 `sys_object_signal` 唤醒路径；console 的 wait_many 挂
@@ -2310,6 +3026,12 @@ unsafe extern "C" fn rx_irq_notify() -> bool {
     // SAFETY: IRQ 上下文（单核屏蔽窗串行）；RX_EV_REF boot 后不变。
     let p = unsafe { *core::ptr::addr_of!(RX_EV_REF) }
         .expect("rx_irq_notify: RX_EV_REF 未初始化（boot 接线缺失）");
+    // 刀1：UART_RX 到达记账（pre-EOI 到达戳——本槽在 uart::rx_irq 内、
+    // gic::end 之前跑；post-EOI ack 接力精化归 v2，设计文档演进节）。
+    crate::telemetry::note_irq_arrival(
+        berry_hal_aarch64::wake_gen::WAKE_SRC_UART_RX,
+        berry_hal_aarch64::timer::cntvct(),
+    );
     unsafe {
         // c-2b slice 4（自锁面第三处，F-L2 + 义务③ IRQ 面）：**写位+扫描
         // 同窗**——Event 位写与 SLEEPQ 扫描摘队在同一 SQ 窗内原子（分段后
@@ -2323,6 +3045,11 @@ unsafe extern "C" fn rx_irq_notify() -> bool {
         }
         let n = berry_sched::wake_matching_locked(p.as_ptr() as usize, RX_EV_BIT);
         berry_sched::sq_unlock(sq_phys);
+        // 刀1：n=0 = 到达无等待者（console 醒-再睡窗内到达的良性竞态——位
+        // 已置、下轮 poll-first 必命中，无丢唤醒；计数 + sticky，不设门禁）。
+        if n == 0 {
+            crate::telemetry::note_irq_no_waiter(berry_hal_aarch64::wake_gen::WAKE_SRC_UART_RX);
+        }
         // G3-2 修复批（F1）：本槽只回报，不检查点——SQ 窗内禁切换（义务③
         // 「写位+扫描同窗」契约不破）且检查点须在 trap 臂 EOIR 之后（EOIR
         // 饿死防线，详见函数头注）。n=0 = 无唤醒诉求，false 不探。
@@ -2348,6 +3075,80 @@ unsafe fn rx_ev_clear() {
     }
 }
 
+// ---- AM-2b（2026-11-08 提案候选①·主会话六裁决）：系统压力 Event 出口。
+// 阈值判据/惰性翻卷在 telemetry 窗口聚合块（提案 §二）；本块 = 位定义 +
+// ObjRef 静态槽 + 跨阈置位回调。写者语境 = dpg 探针 note 点的**内核任务
+// 语境**（KL 窗内 SQ 嵌套 = dpg.rs `wake_matching` 同构）——免 event.rs
+// 非 SVC 写者修约（裁决④）。complete 位（1<<41）登记预留不置位（裁决②，
+// 登记面 = tools/abi.toml [[signal]] 注记区）。----
+
+/// 压力 Event 的 partial 跨阈位（1<<40，裁决③；complete 预留 1<<41 不落
+/// 常量——本刀只登记不置位）。内核占用用户位登记面 = abi.toml [[signal]]
+/// 注记区（防撞单源）。位空间按对象隔离：与 UART1_EV_BIT（1<<40·另一
+/// Event 对象）/ `USER_SIGNAL_BITS` 在册哑位（1<<40 起各自对象）无清位/
+/// 唤醒纠缠——登记语义 = 内核写者在席公示，非全局排他。
+const AM2B_PARTIAL_BIT: u64 = 1 << 40;
+
+/// partial 窗口长初值 70ms（裁决②【推，实测定标】——boot 期按 CNTFRQ
+/// 换算周期数，TCG 频偏禁编译期常量；complete 700ms 同式随 waiter 深度
+/// 跟踪后置）。
+const AM2B_WIN_MS: u64 = 70;
+
+/// 压力 Event 的 ObjRef（`pressure_partial_cross` 置位用；boot 写入后
+/// 不变 + retain 钉住永不 release——RX_EV_REF 同款双保险）。
+static mut PRESSURE_EV_REF: Option<core::ptr::NonNull<handle::ObjRef>> = None;
+
+/// AM-2b：partial 跨阈出口（telemetry `dpg_stall_fold` 的跨阈回调）。
+/// `rx_irq_notify` 形先例（:2653-2658）：写位 + 扫描同 SQ 窗（义务③「写
+/// 位+扫描同窗」）；非 IRQ 到达**不记** WAKE_SRC 台账；n=0（am 未成形无
+/// 等待者）静默——位已置，消费者 poll-first 必命中。complete 位不置。
+fn pressure_partial_cross() {
+    // SAFETY: 只读；boot 写点先于一切 dpg 计值点（boot 顺序）。
+    let p = unsafe { *core::ptr::addr_of!(PRESSURE_EV_REF) }
+        .expect("am2b: PRESSURE_EV_REF 未初始化（boot 接线缺失）");
+    let sq_phys = berry_sched::sq_lock();
+    // SAFETY: retain 钉住 + boot 后不变（RX_EV_REF 口径）。
+    unsafe {
+        if let Some(ev) = (*p.as_ptr()).obj.as_event_mut() {
+            ev.signal(0, AM2B_PARTIAL_BIT);
+        }
+        let _n = berry_sched::wake_matching_locked(p.as_ptr() as usize, AM2B_PARTIAL_BIT);
+    }
+    berry_sched::sq_unlock(sq_phys);
+}
+
+/// 读压力 Event 当前位掩码（ktest 直读面——`object_wait_one` 的 poll-first
+/// 同源读；ktest 在 sched::init 前跑不能睡，走直读〔任务书步骤⑤〕）。
+pub(crate) fn am2b_pressure_bits() -> u64 {
+    // SAFETY: 只读；boot 写点先于 ktest::run。
+    let p = unsafe { *core::ptr::addr_of!(PRESSURE_EV_REF) }
+        .expect("am2b_pressure_bits: PRESSURE_EV_REF 未初始化");
+    // SAFETY: 同上（retain 钉住 + 类型恒 Event）。
+    unsafe { (*p.as_ptr()).obj.as_event_mut().map(|e| e.load()).unwrap_or(0) }
+}
+
+/// ktest 期压力 Event 的 SVC 面 handle（bootstrap 表插取——E3h「VMO 经
+/// bootstrap 表插取」同款惯例。**boot 期不预插**：ktest 前序测试（WAKEP
+/// 清场）会 drain bootstrap 表作废槽位（实踩）；retain 一枚随 insert_ref
+/// 移交（handle.rs「接管既有令牌」契约），测毕 close 归还）。
+pub(crate) fn am2b_pressure_ktest_handle() -> u32 {
+    // SAFETY: 只读；boot 写点先于 ktest::run。
+    let p = unsafe { *core::ptr::addr_of!(PRESSURE_EV_REF) }
+        .expect("am2b: PRESSURE_EV_REF 未初始化（boot 接线缺失）");
+    // SAFETY: retain 后随 insert_ref 移交（在表、类型 Event、retain 钉住）。
+    unsafe {
+        (*p.as_ptr()).retain();
+        crate::syscall::bootstrap_table()
+            .insert_ref(p, handle::RIGHT_SIGNAL)
+            .expect("am2b: 压力 Event ktest 插取进 bootstrap 表")
+    }
+}
+
+/// 读 partial 位常量（ktest 断言位值 = 裁决③的 1<<40）。
+pub(crate) fn am2b_partial_bit() -> u64 {
+    AM2B_PARTIAL_BIT
+}
+
 // ---- P5 v0.5：console mini-readline（历史环 + 召回 + Ctrl-U）——**C-4 已
 // 退役**：行编辑归属下沉 bsh（Tab 补全需 rootfs/fs 知识——用户态；P5 留档
 // 的「编辑会话归属」裁定兑现，shell设计 §2.4）。内核删历史环/ESC 状态机/
@@ -2360,7 +3161,8 @@ unsafe fn rx_ev_clear() {
 
 /// 4-5a console 服务任务：**首个服务循环**——wait_many [endK:READABLE, 哑
 /// Event:1<<32]（任一命中；10s 心跳帽，空等超时非错误、回环重等）→ drain
-/// recv 排空本端队列 → 逐字节 UART + 计数。全真 SVC 链（EL1 入口与 EL0 同权，
+/// recv 排空本端队列 → P1 批量 UART（整突发单 PRINT_LOCK 锁窗 + TXFF 查，
+/// [`console_stage_flush`]) + 计数。全真 SVC 链（EL1 入口与 EL0 同权，
 /// 3-1）；消息纯字节、不携带 handle（recv cap 0）。opt-out 通道 = 固定优先级
 /// 系统服务（recv 不结算 intent 借入——4-3c 五件套之 4 的常驻消费面）。
 ///
@@ -2433,6 +3235,11 @@ extern "C" fn task_console(arg: usize) -> ! {
     let mut fb_drop: u64 = 0;
     let mut rx_total: u64 = 0;
     let mut rx_ok_done = false;
+    // P1 批量写：drain 突发汇流缓冲——一次 drain 突发 ≤ CHAN_DEPTH(8) ×
+    // CHAN_MSG_MAX(256) = 2048B，整突发单锁窗写完（SMP 下生产者边排边灌的
+    // 超界段 = 中途冲刷续排，见 drain 循环）。栈 16KB，局部总量 ~2.8KB 安全。
+    let mut stage = [0u8; 2048];
+    let mut slen = 0usize;
     let (mut n, mut nh): (u64, u64);
     loop {
         assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "console: clock_read");
@@ -2563,21 +3370,6 @@ extern "C" fn task_console(arg: usize) -> ! {
                 break; // 排空——回外层阻塞等
             }
             assert_eq!(r2, 0, "console: recv 异常");
-            // 3-1a 判例刀（smoke-smp 相 2 实抓「LSN oBk n=7」）：用户打印
-            // drain 改整条消息 PRINT_LOCK 包络——原逐字节裸 uart_putc 与
-            // ktest 矩阵任务单字符直写者**字节级并发**（无共同锁面），标记
-            // 行中段可被织入单字符 → smoke grep 假 FAIL（840s 假阴性）。包
-            // 络后矩阵字符只能落消息前后（整条原子），标记恒完整。
-            // with_print_lock 包络 = preempt 计数对（G43 改版 G3-1c-1——
-            // 任务态持锁期 IRQ 解蔽，tick/SGI 抢占支按计数闭门「入而不切」；
-            // 详 kern_lock 模块头/§A114 追记）；n ≤ 256B @ QEMU PL011 TX
-            // 恒 ready = 微秒级锁窗。
-            berry_hal_aarch64::kern_lock::with_print_lock(|| {
-                for i in 0..n as usize {
-                    berry_hal_aarch64::uart_putc(buf[i]);
-                    CONSOLE_DRAINED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                }
-            });
             // GUI-1 段②：fb 上屏 fan-out——整段 best-effort 一发（n ≤ 256B
             // = channel 内联额度内；满 -EBUSY/-EAGAIN → 丢弃 + fb_drop 计数
             // 不重试不阻塞，保串口主路——guifbd 未起（boot 早期）/慢的输出
@@ -2603,6 +3395,163 @@ extern "C" fn task_console(arg: usize) -> ! {
                     fb_drop += 1;
                 }
             }
+            // P1 批量写：消息字节入 stage，整突发一窗落串口（3-1a 判例刀的
+            // 粒度升级——原逐条消息一个 PRINT_LOCK 窗 = 每条一个争用点 +
+            // ktest 矩阵单字符直写者的 n 次争用面；批量后整突发原子，矩阵
+            // 字符只能落突发前后，标记恒完整（判例刀语义只增不减）。消息
+            // 间字节序保持（stage 顺序拼接）。stage 满即中途冲刷（SMP 生产
+            // 者边排边灌的界；单核队列深 8 → 整突发恰一窗）。
+            if slen + n as usize > stage.len() {
+                console_stage_flush(&mut stage, &mut slen);
+            }
+            stage[slen..slen + n as usize].copy_from_slice(&buf[..n as usize]);
+            slen += n as usize;
+        }
+        // 突发收口：整段 stage 单锁窗写完（recv 非阻塞 → 突发边界即冲刷点，
+        // 延迟上限 = 本突发字节数，无跨 wait 滞留）。
+        console_stage_flush(&mut stage, &mut slen);
+    }
+}
+
+/// sim-S1 EL1 转发任务（`docs/sim设备通道与契约设计-v1.1.md` §3 裁决案 C：
+/// 内核 drain + EL1 转发 + 纯协议 bin）。链 = UART1 RX（HAL 环）→ 帧通道 →
+/// simbattery（解码/验证/打 `SIMBAT ok seq=N`）→ 回执通道 → `uart1_tx` 回写
+/// 宿主 client。**task_console 全套镜像**：wait_many [UART1 Event:1<<40,
+/// 回执:READABLE, (条件)帧SEND:WRITABLE] 10s 心跳帽 → `disable_irq` 包络内
+/// `uart1_rx_pop_all` + 清位（「位 0 ⟺ 环空」不变量包络内闭环；包络内无
+/// SVC/阻塞）→ 帧块发（`CHAN_MSG_MAX`=256 ≥ 帧帽 98B——一次 drained burst
+/// 恰一条 send；-EBUSY = simbattery 欠账，记 pending 偏移等 WRITABLE——
+/// console C-4r 吸收环的块级简化版）→ 回执 drain（-EAGAIN 即空）→ 逐字节
+/// `uart1_tx`（自带 TXFF 有界自旋）。opt-out 通道 + 私有表 + WAIT_ANY 哨兵
+/// （console 同款三保险：固定优先级常驻、错捐断根、退出 donor 面）。常驻
+/// 不退出；spawn arg=0（三 handle 全走静态槽）。
+extern "C" fn task_simcon(_arg: usize) -> ! {
+    use crate::handle::{ERR_AGAIN, ERR_BUSY, ERR_TIMEDOUT, SIGNAL_READABLE, SIGNAL_WRITABLE};
+    use crate::syscall::{NR_CHANNEL_RECV, NR_CHANNEL_SEND, NR_CLOCK_READ, NR_OBJECT_WAIT_MANY};
+    let h_ev = uart1_ev_h();
+    let h_tx = sim_tx_h();
+    let h_ack = sim_ack_h();
+    // wait_many 三数组（栈上 EL1 内核高半——copy_from_user 的 EL1 分支收）。
+    // 第 3 项（帧 SEND WRITABLE）只在 pending 非空时入列——console endK2 条件
+    // 项同纪律（恒满足项钉死 drain 相位 = A-2 自旋饿死面）。
+    let hs = [h_ev, h_ack, h_tx];
+    let sigs = [UART1_EV_BIT, SIGNAL_READABLE, SIGNAL_WRITABLE];
+    let mut now: u64 = 0;
+    // SAFETY: svc 同步异常；栈变量私有（内核高半，copy 直拷）。
+    let pnow = core::ptr::addr_of_mut!(now) as u64;
+    let (mut idx, mut observed): (u64, u64) = (0, 0);
+    let (pidx, pobs) = (
+        core::ptr::addr_of_mut!(idx) as u64,
+        core::ptr::addr_of_mut!(observed) as u64,
+    );
+    // 排水缓冲 = 环容量（包络内必搬空）；pending 缓冲 = 环帽 + 帧帽余量
+    //（EBUSY 残余 ≤ 帧帽 + 新排水 ≤ 环帽 → 352 几何不溢；溢 = simbattery
+    // 死面，丢新计数、SIMBAT 缺席由 smoke 兜底——不 panic 不 wedge）。
+    let mut rxbuf = [0u8; berry_hal_aarch64::uart::RX_RING_SIZE];
+    let mut pend = [0u8; 352];
+    let (mut pend_off, mut pend_len) = (0usize, 0usize);
+    let mut sim_drop: u64 = 0;
+    let mut ackbuf = [0u8; 256];
+    let (mut n, mut nh): (u64, u64);
+    loop {
+        assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "simcon: clock_read");
+        let n_items: u64 = if pend_off < pend_len { 3 } else { 2 };
+        let r = svc6(
+            NR_OBJECT_WAIT_MANY as u64,
+            hs.as_ptr() as u64,
+            sigs.as_ptr() as u64,
+            n_items,
+            now + 10 * 1_000_000_000,
+            pidx,
+            pobs,
+        );
+        assert!(
+            r == 0 || r == ERR_TIMEDOUT as i64,
+            "simcon: wait_many 异常 ret={}",
+            r
+        );
+        if r == 0 {
+            // 命中面全集：ev(0) 注入数据 / ack(1) 回执到 / tx(2) 队列腾位
+            //（仅 pending 非空轮入列）。
+            assert!(
+                idx == 0 || idx == 1 || idx == 2,
+                "simcon: wait 命中须 ev(0)/ack(1)/tx(2)，得 {}",
+                idx
+            );
+        }
+        // UART1 消费——**每次唤醒无条件执行**（console 同款：wait 返回与 IRQ
+        // 置位任意交错——早到/迟到/心跳顺带——都收敛到「环搬空 + 位清零」）。
+        // 包络内无 SVC/阻塞（屏蔽窗内切走 = 违约）。
+        berry_hal_aarch64::disable_irq();
+        let nrx = berry_hal_aarch64::uart::uart1_rx_pop_all(&mut rxbuf);
+        // SAFETY: 包络内与 UART1 RX IRQ 生产者串行；引用不变。
+        unsafe { uart1_ev_clear() };
+        berry_hal_aarch64::enable_irq();
+        // 新排水并 pending（残余 + 新到；满 = 消费者死面丢新计数）。
+        for i in 0..nrx {
+            if pend_len < pend.len() {
+                pend[pend_len] = rxbuf[i];
+                pend_len += 1;
+            } else {
+                sim_drop += 1;
+            }
+        }
+        // 帧块发：chunk ≤ CHAN_MSG_MAX(256)——StreamDecoder 字节流语义对任意
+        // 分片边界鲁棒（§5 静默重同步）；-EBUSY 停排留余量（下轮第 3 项
+        // WRITABLE 唤醒续发）。其它错码 = 接线错乱（boot 定值 + SEND right
+        // 在手），panic 兜底。
+        while pend_off < pend_len {
+            let chunk = core::cmp::min(pend_len - pend_off, 256);
+            let rs = svc6(
+                NR_CHANNEL_SEND as u64,
+                h_tx as u64,
+                core::ptr::addr_of!(pend[pend_off]) as u64,
+                chunk as u64,
+                0,
+                0,
+                0,
+            );
+            if rs == ERR_BUSY as i64 {
+                break;
+            }
+            assert_eq!(rs, 0, "simcon: sim 帧 send ret={}", rs);
+            pend_off += chunk;
+        }
+        if pend_off >= pend_len {
+            pend_off = 0;
+            pend_len = 0;
+        }
+        // 回执 drain：排空本端队列（simbattery 逐条回 9B ACK；深度 8 → 批量
+        // 有界）→ 逐字节 uart1_tx。UART1 单写者 = simcon，无需 PRINT_LOCK
+        //（UART0 多写者争面不存在；ACK 帧定界由宿主 client 解码器负责）。
+        loop {
+            n = 256;
+            nh = 0;
+            let r2 = svc6(
+                NR_CHANNEL_RECV as u64,
+                h_ack as u64,
+                ackbuf.as_mut_ptr() as u64,
+                core::ptr::addr_of_mut!(n) as u64,
+                0,
+                core::ptr::addr_of_mut!(nh) as u64,
+                0,
+            );
+            if r2 == ERR_AGAIN as i64 {
+                break; // 排空——回外层阻塞等
+            }
+            assert_eq!(r2, 0, "simcon: ack recv 异常 ret={}", r2);
+            for i in 0..n as usize {
+                berry_hal_aarch64::uart::uart1_tx(ackbuf[i]);
+            }
+        }
+        // 诊断面：心跳顺带打丢弃计数（健康路径恒 0 且无行——只在丢过才打，
+        // 零扰动 smoke 面；TXFF 触界同 UART1_TX_LOST 静默计数面）。
+        if sim_drop > 0 {
+            berry_hal_aarch64::kern_lock::with_print_lock(|| {
+                berry_hal_aarch64::uart_puts(b"SIM drop=");
+                berry_hal_aarch64::uart_put_dec(sim_drop);
+                berry_hal_aarch64::uart_puts(b"\n");
+            });
         }
     }
 }
@@ -2786,8 +3735,10 @@ extern "C" fn task_intent_slow(_arg: usize) -> ! {
     unreachable!("it_slow: u64::MAX 不到期")
 }
 
-/// it_probe（验收司机）：睡 8 slice（slice_ns 换算同 waker2——clock 域
-/// 确定性）等全链落定 → 遍历 SLEEPQ 断言四睡眠者 intent 字段 + 遥测三计数
+/// it_probe（验收司机）：睡 max(8 slice, 400ms) 墙钟（slice_ns 换算同
+/// waker2——clock 域确定性；400ms 墙钟下限 = 2× it_slow 200ms 被测事件
+///——高 slice_hz 档 8×slice 缩到 32/8ms 司机早醒断言炸，46 号案 a 修窗）
+/// 等全链落定 → 遍历 SLEEPQ 断言四睡眠者 intent 字段 + 遥测三计数
 /// 器（borrows≥3 / hop_capped≥1 / budget_capped≥2——send 降级 + recv 封顶
 /// 两路）→ 打 `INTENT ok`（smoke 第 19 标记）→ exit。字段即机器关卡：借入
 /// 生效 / opt-out 回落 / hop==1 转发活证 / 双帽拒传播 / 降级转发不清借入，
@@ -2800,10 +3751,15 @@ extern "C" fn task_intent_probe(_arg: usize) -> ! {
     // SAFETY: 本任务内核栈局部变量，活过调用。
     let pnow = core::ptr::addr_of_mut!(now) as u64;
     assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "it_probe: clock_read");
+    // 46 号案 a：等待窗加墙钟下限——10Hz 恒等（8×100ms=800ms 取大端，
+    // 谱系零回归）；250/1000Hz 档 8×slice 仅 32/8ms < it_slow 200ms 被
+    // 测事件，司机早醒断言炸（P0 跨线冲突）。400ms=2× 被测事件兜底；
+    // 魔数对：it_slow 200ms 睡改则此处跟改。
     assert_eq!(
-        svc4(NR_THREAD_SLEEP as u64, now + 8 * slice_ns, 0, 0),
+        svc4(NR_THREAD_SLEEP as u64,
+             now + core::cmp::max(8 * slice_ns, 400_000_000), 0, 0),
         0,
-        "it_probe: thread_sleep 8 slice（等全链落定）"
+        "it_probe: thread_sleep ≥8 slice 且 ≥400ms 墙钟（等全链落定）"
     );
     let (mut saw_mid, mut saw_a, mut saw_b, mut saw_slow) = (false, false, false, false);
     // 契约包络（复盘雷 2 残留诊断）：for_each_sleeper 须 IRQ 屏蔽窗内调用
@@ -2839,8 +3795,24 @@ extern "C" fn task_intent_probe(_arg: usize) -> ! {
         }
     });
     berry_hal_aarch64::kern_lock::klock_exit();
+    // 44 号 §4-14 顺手刀：断言前打独立诊断行——panic 消息不含「缺哪个睡眠者」，
+    // 且 BCTS/smoke 日志面只 grep 标记行（INTENT 缺席不报因）；诊断行直给四
+    // 睡眠者在席位（1/0 × mid/a/b/slow），日志即证据、无需读源解码。
+    if !(saw_mid && saw_a && saw_b && saw_slow) {
+        berry_hal_aarch64::kern_lock::with_print_lock(|| {
+            berry_hal_aarch64::uart_puts(b"E INTENT probe saw mid/a/b/slow=");
+            berry_hal_aarch64::uart_put_dec(saw_mid as u64);
+            berry_hal_aarch64::uart_puts(b"/");
+            berry_hal_aarch64::uart_put_dec(saw_a as u64);
+            berry_hal_aarch64::uart_puts(b"/");
+            berry_hal_aarch64::uart_put_dec(saw_b as u64);
+            berry_hal_aarch64::uart_puts(b"/");
+            berry_hal_aarch64::uart_put_dec(saw_slow as u64);
+            berry_hal_aarch64::uart_puts(b"\n");
+        });
+    }
     assert!(saw_mid && saw_a && saw_b && saw_slow,
-           "it_probe: 四睡眠者未同时在线（时序未达）");
+           "it_probe: sleepers mid/a/b/slow not all online");
     assert!(crate::telemetry::intent_borrows() >= 3,
            "it_probe: 借入计数须 ≥3（mid/sinkA/slow 三次结算）");
     assert!(crate::telemetry::intent_hop_capped_total() >= 1,
@@ -3044,7 +4016,8 @@ const USER_SIGNAL_BITS: &[(u64, &str)] = &[
     (1 << 48, "lat 握手 Event（G3-4 bench-lat IPC 路——waker wake_matching 唤醒，sleeper 测 wake→run 段）"),
     (1 << 49, "latsgi 位签名（G3-4b bench-lat SGI 路——EL0 sleeper wait_one 位签名门 + 内核 waker Event 置位跨核唤醒）"),
     (1 << 50, "lat 触发 Event 内部位（G3-5 候选① C 形常驻再触发——soakmon 拍后 signal+wake_matching；Event 落内核私有表不经 ABI object_signal 面，登记 = 防撞/去重面〔f4 F8 补〕）"),
-    (1 << 51, "dpg 握手位（G4-1 demand 闭环——裸键族共用一位：内核 fault/pager/done 三键 + EL0 键化族 EFAULT×8/EOVERFLOW/EPAGER〔G4-2 起、B-1 池化〕共 13 键；不经 Event 对象，登记 = 防撞/去重面）"),
+    (1 << 51, "dpg 握手位（G4-1 demand 闭环——裸键族共用一位：内核 fault/pager/done 三键 + EL0 键化族 EFAULT×32〔X-5 扩池 8→32〕/EOVERFLOW/EPAGER〔G4-2 起、B-1 池化〕共 37 键；不经 Event 对象，登记 = 防撞/去重面）"),
+    (1 << 52, "loadgen 哑 Event（CP-06 A/B 负载生成器——master/sleeper 轮询块与周期睡，永不置位，仅超时醒）"),
 ];
 // 编译期执法：登记表不得重复位（挑位前查表 + 本断言 = 双保险）。
 const _: () = {
@@ -3181,6 +4154,21 @@ fn tele_dump() {
     berry_hal_aarch64::uart_puts(b"/thaw=");
     berry_hal_aarch64::uart_put_dec(crate::telemetry::auto_thaw_total());
     berry_hal_aarch64::uart_puts(b"\n");
+    // W3-Q6：intent 档位直方 + 通胀计数行（`berry_itally::tally_line` 单源
+    // 装配——纯 ASCII 定长缓冲一次写出；advisor.py 摘要行族面，全零表打
+    // `none` 省略形）。三帽计数 = 4-3c 既有计数器（borrows/hop/budget），
+    // 与档位直方同窗同源——advisor 无需第二数据面。
+    {
+        let mut line = [0u8; berry_itally::LINE_MAX];
+        let n = berry_itally::tally_line(
+            crate::telemetry::intent_tally(),
+            crate::telemetry::intent_borrows(),
+            crate::telemetry::intent_hop_capped_total(),
+            crate::telemetry::intent_budget_capped_total(),
+            &mut line,
+        );
+        berry_hal_aarch64::uart_puts(&line[..n]);
+    }
 }
 
 /// ai_demo 私助：clock_read → wait_one(h, bit, now+cap) → 断言命中 → 清用户
@@ -3493,6 +4481,389 @@ extern "C" fn task_rt_probe(arg: usize) -> ! {
         berry_hal_aarch64::uart_put_dec((deltas.len() * RT_SAMPLES) as u64);
         berry_hal_aarch64::uart_puts(b"\n");
     });
+    berry_sched::exit_current()
+}
+
+// ---- CP-06（docs/调度彻底计划-v1.2.md §4.1·首份 A/B 数据面）：loadgen ——
+//      A/B 负载生成器探针体（boot 门控 spawn 块见 rt 块后；配置早读块见
+//      timer::init 前；报告 = research/调度彻底计划/13-首份AB报告-loadgen.md）----
+
+/// loadgen 的 fw_cfg 具名项名（门控键——A/B 收割专递
+/// `-fw_cfg name=opt/berry/loadgen,string=s=<ns>;b=<0|1>`；RT_PROBE_NAME
+/// 同款「两侧对读维护」纪律）。独立键、不与 rt/rwake 同 boot 混发（bench
+/// 单通道纪律——同 prio 8 探针并跑互相加噪）。
+const LOADGEN_PROBE_NAME: &str = "opt/berry/loadgen";
+
+/// loadgen 哑 Event 的用户位（占用登记见 [`USER_SIGNAL_BITS`]——RT_EV_BIT
+/// 的续位）。永不置位：唯一醒因 Timeout。
+const LG_EV_BIT: u64 = 1 << 52;
+
+/// 测量档 slice 频率（G5 官方覆盖面 [`berry_hal_aarch64::timer::set_slice_hz`]
+/// ——产品通道 = bootparams `sched_slice_hz`，探针通道 = fw_cfg 早读直调
+/// 同一 setter，init 前单线程契约两侧同守）。缺省 10Hz（100ms 片）的唤醒
+/// 量化窗（v1 粒度恒 1 slice——rt_probe 首跑实录）会把 30ms 级 slack 信号
+/// 整吃掉；100Hz/10ms 换测量分辨率，四臂同值 = A/B 内部可比。
+const LG_SLICE_HZ: u64 = 100;
+
+// —— 工作负载形状（「每类 N 任务 × M ms 级 CPU burst」；窗口对齐 ~1.92s
+//    vct：ia 48×40ms = ut 32×60ms）——
+/// interactive：N=2 × 48 轮，40ms 周期（4 slice）+ 3ms burst——高频短醒。
+const LG_IA_N: usize = 2;
+const LG_IA_ROUNDS: usize = 48;
+const LG_IA_PERIOD_MS: u64 = 40;
+const LG_IA_BURST_MS: u64 = 3;
+/// utility：N=2 × 32 轮，60ms 周期（6 slice）+ 8ms burst——低频长 burst。
+const LG_UT_N: usize = 2;
+const LG_UT_ROUNDS: usize = 32;
+const LG_UT_PERIOD_MS: u64 = 60;
+const LG_UT_BURST_MS: u64 = 8;
+/// burst：N=2 连续 5ms 自旋单元到 END——过载源（单核饱和，竞争面常驻）。
+const LG_BU_N: usize = 2;
+const LG_BU_UNIT_MS: u64 = 5;
+/// 样本槽帽（两类共用；实用量 96/64 之上留余量）。原子槽写免 static mut
+/// 面（policy.rs ACTIVE/HAZARD 同款纪律——原子内部可变性免入
+/// tools/writable_globals.txt）。
+const LG_CAP: usize = 128;
+
+/// A/B 配置（boot 早窗解析 fw_cfg 值落地；spawn 块与任务体读此）。
+static LG_SLACK_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static LG_BAND_ARM: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static LG_ARMED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// 采样面：写方 = 本类 sleeper（游标 fetch_add 单赢家槽写，Relaxed 纯计数
+/// 不通信）；读方 = master（全部 sleeper exit 后——活跃计数 Release 写 /
+/// Acquire 读对序发布，读在序之后必见全量槽）。
+static LG_IA_CURSOR: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static LG_IA_SAMPLES: [core::sync::atomic::AtomicU64; LG_CAP] =
+    [const { core::sync::atomic::AtomicU64::new(0) }; LG_CAP];
+static LG_IA_DONE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static LG_UT_CURSOR: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static LG_UT_SAMPLES: [core::sync::atomic::AtomicU64; LG_CAP] =
+    [const { core::sync::atomic::AtomicU64::new(0) }; LG_CAP];
+static LG_UT_DONE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static LG_BU_DONE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+/// burst 吞吐面：完成 5ms 自旋单元计数（窗口归一在 master 侧）。
+static LG_BU_UNITS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// 过载源收工旗（master 在 sleepers 全收后置——Release 发布）。
+static LG_END: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// sleeper 等待键静态传递槽（spawn arg 已满走静态槽——RX_EV_H 同款惯例；
+/// boot 写入先于一切任务）。下标 = sleeper 槽位（0/1=ia，2/3=ut）。
+static LG_SLEEP_EV: [core::sync::atomic::AtomicUsize; 4] =
+    [const { core::sync::atomic::AtomicUsize::new(0) }; 4];
+
+/// ms → CNTVCT 周期换算（cntfrq 现读；62.5MHz 下 1ms = 62500 周期）。
+fn lg_ms_cycles(ms: u64) -> u64 {
+    ms * berry_hal_aarch64::timer::cntfrq() / 1000
+}
+
+/// 解析 loadgen 配置值 `s=<u64>,b=<0|1>`（fw_cfg string 字节；严格拒面）。
+fn lg_parse_cfg(b: &[u8]) -> Option<(u64, bool)> {
+    let s = core::str::from_utf8(b).ok()?.trim_end();
+    let (a, c) = s.split_once(';')?;
+    let band = match c.strip_prefix("b=")? {
+        "0" => false,
+        "1" => true,
+        _ => return None,
+    };
+    Some((a.strip_prefix("s=")?.parse().ok()?, band))
+}
+
+/// loadgen sleeper 载荷（ia/ut 共体）：arg = 槽位（0/1=ia、2/3=ut）。每轮 =
+/// 睡到绝对周期锚（oversleep = 唤醒→运行延迟样本：tick 粒度 + 排队 +
+/// 〔slack 臂〕LATE-only 顺延）→ M ms CPU burst → 锚推进（漏周期再锚，
+/// rt_probe 同律）。b 臂的 intent 在 spawn 侧落（spawn_intent / plain
+/// spawn）；slack 在 block_current 内核面按 intent 生效——任务体零配置
+/// 分支（两臂同一代码路径 = A/B 可归因）。
+extern "C" fn task_lg_slp(arg: usize) -> ! {
+    use berry_sched::{block_current, exit_current, WakeReason};
+    let (rounds, period, burst, done, cursor, samples) = if arg >= 2 {
+        (
+            LG_UT_ROUNDS,
+            lg_ms_cycles(LG_UT_PERIOD_MS),
+            lg_ms_cycles(LG_UT_BURST_MS),
+            &LG_UT_DONE,
+            &LG_UT_CURSOR,
+            &LG_UT_SAMPLES,
+        )
+    } else {
+        (
+            LG_IA_ROUNDS,
+            lg_ms_cycles(LG_IA_PERIOD_MS),
+            lg_ms_cycles(LG_IA_BURST_MS),
+            &LG_IA_DONE,
+            &LG_IA_CURSOR,
+            &LG_IA_SAMPLES,
+        )
+    };
+    let ev = LG_SLEEP_EV[arg].load(core::sync::atomic::Ordering::Relaxed);
+    let mut deadline = berry_hal_aarch64::timer::cntvct() + period; // 档首锚
+    for _ in 0..rounds {
+        berry_hal_aarch64::kern_lock::klock_enter();
+        let r = block_current(ev, LG_EV_BIT, deadline);
+        // rt_probe 顺序例外同款：醒后先读 wake_vct、后 klock_exit。
+        let wake_vct = berry_hal_aarch64::timer::cntvct();
+        berry_hal_aarch64::kern_lock::klock_exit();
+        assert!(r == WakeReason::Timeout, "lg_slp: 醒因非 Timeout（哑 Event 永不置位）");
+        // 样本 = 唤醒→运行延迟（saturating 口径同 test_hdr_wake——死码防御）。
+        let lat = wake_vct.saturating_sub(deadline);
+        let slot = cursor.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        if slot < samples.len() {
+            samples[slot].store(lat, core::sync::atomic::Ordering::Relaxed);
+        }
+        // CPU burst：M ms 受控自旋（本周期的工作量；片内可被 tick 抢占）。
+        let burst_end = berry_hal_aarch64::timer::cntvct() + burst;
+        while berry_hal_aarch64::timer::cntvct() < burst_end {
+            core::hint::spin_loop();
+        }
+        // 绝对锚推进 + 漏周期再锚（cyclictest overrun 形——rt_probe 取舍实录）。
+        deadline = if lat >= period { wake_vct + period } else { deadline + period };
+    }
+    done.fetch_add(1, core::sync::atomic::Ordering::Release);
+    exit_current()
+}
+
+/// loadgen burst 载荷：连续 5ms 自旋单元到 END（过载源——竞争面常驻，
+/// 单核饱和；吞吐面 = 完成单元数，窗口归一在 master）。
+extern "C" fn task_lg_bu(_arg: usize) -> ! {
+    use berry_sched::exit_current;
+    let unit = lg_ms_cycles(LG_BU_UNIT_MS);
+    while !LG_END.load(core::sync::atomic::Ordering::Acquire) {
+        let e = berry_hal_aarch64::timer::cntvct() + unit;
+        while berry_hal_aarch64::timer::cntvct() < e {
+            core::hint::spin_loop();
+        }
+        LG_BU_UNITS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    }
+    LG_BU_DONE.fetch_add(1, core::sync::atomic::Ordering::Release);
+    exit_current()
+}
+
+/// 分位统计（最近秩 ceil(p·n/100)，rt_probe 同形；拷贝排序面 1KB 栈）。
+struct LgStats {
+    min: u64,
+    p50: u64,
+    p99: u64,
+    max: u64,
+}
+fn lg_stats(samples: &[core::sync::atomic::AtomicU64; LG_CAP], n: usize) -> LgStats {
+    let mut v = [0u64; LG_CAP];
+    let n = n.min(LG_CAP);
+    for i in 0..n {
+        v[i] = samples[i].load(core::sync::atomic::Ordering::Relaxed);
+    }
+    v[..n].sort_unstable();
+    let rank = |p: u64| ((p * n as u64 + 99) / 100).saturating_sub(1) as usize;
+    LgStats { min: v[0], p50: v[rank(50)], p99: v[rank(99)], max: v[n - 1] }
+}
+
+/// loadgen master：等 sleeper 全收（阶段 1）→ END 收 burst（阶段 2）→
+/// 分位收割 + 机器可读行（阶段 3）→ 退（REAPQ 单条流量，rt_probe 同款）。
+/// 20ms 轮询块让 CPU 给载荷；哑 Event 唯一醒因 Timeout，返回值不判——
+/// 轮询谓词在计数。
+extern "C" fn task_lg_master(arg: usize) -> ! {
+    use berry_sched::{block_current, exit_current};
+    let t0 = berry_hal_aarch64::timer::cntvct();
+    while LG_IA_DONE.load(core::sync::atomic::Ordering::Acquire) < LG_IA_N
+        || LG_UT_DONE.load(core::sync::atomic::Ordering::Acquire) < LG_UT_N
+    {
+        let dl = berry_hal_aarch64::timer::cntvct() + lg_ms_cycles(20);
+        berry_hal_aarch64::kern_lock::klock_enter();
+        block_current(arg, LG_EV_BIT, dl);
+        berry_hal_aarch64::kern_lock::klock_exit();
+    }
+    LG_END.store(true, core::sync::atomic::Ordering::Release);
+    while LG_BU_DONE.load(core::sync::atomic::Ordering::Acquire) < LG_BU_N {
+        let dl = berry_hal_aarch64::timer::cntvct() + lg_ms_cycles(20);
+        berry_hal_aarch64::kern_lock::klock_enter();
+        block_current(arg, LG_EV_BIT, dl);
+        berry_hal_aarch64::kern_lock::klock_exit();
+    }
+    let t1 = berry_hal_aarch64::timer::cntvct();
+    // 收割：n = 类任务数 × 轮数（96/64；p99 = 最近秩——n<100 时与 max 重合
+    // 是样本量的诚实上界，勿为观感改次大值，rt_probe 同注）。
+    let ia_n = (LG_IA_N * LG_IA_ROUNDS).min(LG_CAP);
+    let ut_n = (LG_UT_N * LG_UT_ROUNDS).min(LG_CAP);
+    let ia = lg_stats(&LG_IA_SAMPLES, ia_n);
+    let ut = lg_stats(&LG_UT_SAMPLES, ut_n);
+    let units = LG_BU_UNITS.load(core::sync::atomic::Ordering::Relaxed);
+    let span = t1.saturating_sub(t0);
+    let span_ms = span / (berry_hal_aarch64::timer::cntfrq() / 1000);
+    let units_per_s = if span_ms > 0 { units * 1000 / span_ms } else { 0 };
+    // 行 ≤192B 包络（G43 拼行——PRINT_LOCK 整条消息原子，BENCHRT 同款）。
+    berry_hal_aarch64::kern_lock::with_print_lock(|| {
+        berry_hal_aarch64::uart_puts(b"LG ia min=");
+        berry_hal_aarch64::uart_put_dec(ia.min);
+        berry_hal_aarch64::uart_puts(b" p50=");
+        berry_hal_aarch64::uart_put_dec(ia.p50);
+        berry_hal_aarch64::uart_puts(b" p99=");
+        berry_hal_aarch64::uart_put_dec(ia.p99);
+        berry_hal_aarch64::uart_puts(b" max=");
+        berry_hal_aarch64::uart_put_dec(ia.max);
+        berry_hal_aarch64::uart_puts(b" n=");
+        berry_hal_aarch64::uart_put_dec(ia_n as u64);
+        berry_hal_aarch64::uart_puts(b"\n");
+        berry_hal_aarch64::uart_puts(b"LG ut min=");
+        berry_hal_aarch64::uart_put_dec(ut.min);
+        berry_hal_aarch64::uart_puts(b" p50=");
+        berry_hal_aarch64::uart_put_dec(ut.p50);
+        berry_hal_aarch64::uart_puts(b" p99=");
+        berry_hal_aarch64::uart_put_dec(ut.p99);
+        berry_hal_aarch64::uart_puts(b" max=");
+        berry_hal_aarch64::uart_put_dec(ut.max);
+        berry_hal_aarch64::uart_puts(b" n=");
+        berry_hal_aarch64::uart_put_dec(ut_n as u64);
+        berry_hal_aarch64::uart_puts(b"\n");
+        berry_hal_aarch64::uart_puts(b"LG bu units=");
+        berry_hal_aarch64::uart_put_dec(units);
+        berry_hal_aarch64::uart_puts(b" span_ms=");
+        berry_hal_aarch64::uart_put_dec(span_ms);
+        berry_hal_aarch64::uart_puts(b" units_per_s=");
+        berry_hal_aarch64::uart_put_dec(units_per_s);
+        berry_hal_aarch64::uart_puts(b"\n");
+        berry_hal_aarch64::uart_puts(b"LOADGEN ok\n");
+    });
+    exit_current()
+}
+
+// ---- 方案 B：rwake 真 sleep/wake 唤醒基准（HDR 第二个真实消费者；boot 门控
+// spawn 块见上方 dpg::init 后；设计 = docs/调点调度-v1.3.md §9 留刀 +
+// docs/调度器设计-v1.2.md §测量基础设施「boot 序列真 sleep/wake」（:403 留刀行））----
+
+/// rwake 的 fw_cfg 具名项名（门控键——手跑/bench 专递
+/// `-fw_cfg name=opt/berry/rwake,string=1`；RT_PROBE_NAME 同款「两侧对读
+/// 维护」纪律）。独立键、不与 rt 同 boot 混发：两基准同 prio 8 并跑互相
+/// 加噪（bench 单通道纪律——bench.py --rt 通道拒绝混跑同因）。
+const RWAKE_PROBE_NAME: &str = "opt/berry/rwake";
+
+/// P0-4 生产模式开关的 fw_cfg 具名项名（在位 = 跳过 ktest/bench——手跑/生产
+/// 专递 `-fw_cfg name=opt/berry/noktest,string=1`；RT/SOAK_PROBE_NAME 同款
+/// 「两侧对读维护」纪律，极性反转：缺席 = 默认全跑 = smoke 零漂移）。
+const NOKTEST_PROBE_NAME: &str = "opt/berry/noktest";
+
+/// 演示面门的 fw_cfg 具名项名（06 号修窗件 1——idle 满核主根因闭合：
+/// task_a/task_b 忙环 + boot EL0 演示舰队〔good/rogue/abuser/spawner/
+/// waiter/pinger/ponger〕+ 验收 watchdog 挂此门）。值语义：absent/"on" =
+/// 演示面在（现状零漂移；EFI 无键路径天然缺席 = 全演示）；"off"/"clean" =
+/// 演示面关（产品/桌面档——runqueue 清空 → tickless park → wfi）。
+/// NOKTEST_PROBE_NAME 同款「两侧对读维护」纪律——宿主注入口 = berry CLI
+/// fw_cfg 面（display/rtc 同形；justfile `demo=off` 直跑传递）。
+const DEMO_FACE_PROBE_NAME: &str = "opt/berry/demo-face";
+
+/// svcmgr 入口 env 旗标位（06 号修窗件 1 后半：spawn_user_env x1 通道——
+/// 内核 fw_cfg 门值递 svcmgr 的最小侵入通道。裁决：a) 句柄表新插槽位 =
+/// 裸相/rootfs 相槽值漂移（相位序定值 1-9 全占），重排两侧硬编码面 ×100
+/// 不可行；b) sysver VMO 扩字段 = fb GOP 相位专属（裸相缺席）+ 编译期常量
+/// 页像破「零运行时取数」设计；c) 新 syscall = ABI 号位预算消耗（42/45）
+/// 且单 bool 面过重；d) x1 = 落 env gift 语义（spawn 期注入、零新 ABI、
+/// 全相位恒在）——采 d。**两侧对读维护**：svcmgr 侧 USER_ENV_DEMO_OFF
+/// 同值镜像（RT_PROBE_NAME 同款纪律）。
+const USER_ENV_DEMO_OFF: usize = 1 << 0;
+
+/// 读演示面门（[`display_mode_req`] 同款读法：find_file → read_to → trim）。
+/// fail-open：缺席/空/超长/读失败/非 "off"|"clean" 值一律 true（现状零漂移
+/// ——门键注入错误不静默砍演示面；display 畸形降级 None 同族纪律）。
+fn demo_face_on() -> bool {
+    use berry_hal_aarch64::fwcfg;
+    let e = match fwcfg::find_file(DEMO_FACE_PROBE_NAME) {
+        Some(e) => e,
+        None => return true,
+    };
+    if e.size == 0 || e.size > 32 {
+        return true;
+    }
+    let mut buf = [0u8; 32];
+    if !fwcfg::read_to(&e, &mut buf[..e.size as usize]) {
+        return true;
+    }
+    let s = core::str::from_utf8(&buf[..e.size as usize]).unwrap_or("");
+    let s = s.trim_matches(|c: char| c == '\0' || c.is_ascii_whitespace());
+    !matches!(s, "off" | "clean")
+}
+
+/// rwake 样本轮数（任务书定值 64；间隔 = CNTFRQ/100 ≈ 10ms）。`BENCHRWAKE
+/// n=` 收割面与此镜像（n = record_wake_lat 实收非零样本数 ≤ 64——lat==0
+/// 被写点静默拒，实测结构上不可达：唤醒路径 IRQ+切换 ≥ 数百周期）。
+const RWAKE_ROUNDS: u64 = 64;
+
+/// rwake 任务（方案 B）：64 轮「block_current 纯睡到 deadline → IRQ tick
+/// 超时唤醒」的唤醒延迟采样 → `record_wake_lat` 灌 HDR → merged_percentile
+/// 出分位。与方案 A（ktest test_hdr_wake 忙等）的差别即本基准的存在理由：
+/// 方案 A 量的是「轮询粒度」（醒来是自查 deadline），本任务真睡 SLEEPQ、由
+/// on_irq_tick 的 expire_timeouts 摘队唤醒——量到的才是 v1 真实唤醒路径
+/// （tick 粒度 + 出选调度）的延迟，HDR wake_lat 路自此有真消费者。
+///
+/// - **睡点 = `block_current(0, 0, deadline)`**：obj=0/signals=0 = 纯 sleep
+///   （wake_matching 对 obj==0 直返 0——纯睡者只能超时自醒，无 signal 面；
+///   task_sleeper 路径 1 同款先例）。deadline 直接传 CNTVCT 周期，不走 ns
+///   换算（公约 5：换算舍入污染被测量；rt_probe 同纪律）。
+/// - 包络（task_sleeper/rt_probe 同款，S-2 E0）：klock_enter → block →
+///   **锁窗内先读 wake_vct** → klock_exit（F33/F42 顺序例外：block 返回前
+///   舞蹈已重取锁，读点落在重取后且与醒点之间零 tick/切换噪声混入）。
+/// - **漏整周期再锚（cyclictest overrun 形——rt_probe 首跑实踩判例）**：
+///   间隔 10ms < v1 唤醒粒度（超时扫描只在 tick 跑 = 恒 1 slice = 100ms）
+///   ⇒ 每轮 oversleep 几乎必 ≥ δ，纯 `deadline += interval` 绝对递推只会
+///   量出漂移阶梯（对调度器的错误指控）——再锚 `醒时刻 + δ` 后每样本恢复
+///   「δ 未来请求的唤醒延迟」语义。短档量出的正是定时器粒度本身（p50 ≈
+///   1 slice 量级是 v1 的诚实答案；arm-to-deadline 落地后该值应塌缩，本
+///   基准即其验收面）。
+/// - 断言面 = L0 形状执法（接线执法非数值门禁，test_hdr_wake 同政策）：
+///   醒因恒 Timeout / 负延迟 panic（再睡循环破损）/ HDR n ≥ 实录样本数
+///   （写点与合并读面不失联）/ p99 ≥ p50（分位单调）。统计数值只出数
+///   不设门（公约 2——数值归收割面同表比较）。
+extern "C" fn task_bench_rwake(_arg: usize) -> ! {
+    use berry_sched::{LatKind, WakeReason};
+    // ~10ms（CNTFRQ/100）；不换算 ns——被测量保 CNTVCT 原周期口径。
+    let interval = berry_hal_aarch64::timer::cntfrq() / 100;
+    let mut deadline = berry_hal_aarch64::timer::cntvct() + interval; // 档首锚
+    let mut recorded = 0u64; // 实录非零样本数（HDR n 面的对账基数）
+    for _ in 0..RWAKE_ROUNDS {
+        berry_hal_aarch64::kern_lock::klock_enter();
+        let r = berry_sched::block_current(0, 0, deadline);
+        // 顺序例外（rt_probe 行同款）：醒后锁窗内先读 wake_vct、后 klock_exit。
+        let wake_vct = berry_hal_aarch64::timer::cntvct();
+        berry_hal_aarch64::kern_lock::klock_exit();
+        // obj=0 纯睡无 signal 面——非 Timeout = 纯睡语义被破（wake 面破损）。
+        assert!(r == WakeReason::Timeout,
+                "rwake: 醒因非 Timeout（obj=0 纯睡只能超时自醒——wake 面破损）");
+        // oversleep = wake_vct − deadline；负值 = 提前醒 = 再睡循环破损（L0）。
+        let lat = match wake_vct.checked_sub(deadline) {
+            Some(l) => l,
+            None => panic!("rwake: 负唤醒延迟（wake={} < deadline={}）= 再睡循环破损",
+                           wake_vct, deadline),
+        };
+        // record 面值域 1 起（0 静默拒）——显式门 + 本地对账计数。
+        if lat > 0 {
+            berry_sched::record_wake_lat(lat); // 热路径真 API（本核槽化）
+            recorded += 1;
+        }
+        // 漏整周期再锚（cyclictest overrun 形，取舍实录见任务 doc 注）。
+        deadline = if lat >= interval { wake_vct + interval } else { deadline + interval };
+    }
+    // 分位/总数走 HDR 合并读面（跨核桶位直和；本任务恒 CPU0——place() 内核
+    // 任务家核定值，record 已落 CPU0 槽，merged_* 两核和不受损）。
+    let n = berry_sched::merged_total(LatKind::Wake);
+    let p50 = berry_sched::merged_percentile(LatKind::Wake, 500);
+    let p99 = berry_sched::merged_percentile(LatKind::Wake, 990);
+    // L0 形状断言：n ≥ 实录（写点→per-CPU 槽→合并读面不失联；ktest 方案 A
+    // 收口已清零、boot 期无其他 wake_lat 写者，等值是常态——取 ≥ 容后续
+    // 新写者共灌）；p99 ≥ p50（rank 单调 ⇒ 桶上界单调，破坏 = 桶映射 bug）。
+    assert!(n >= recorded && n > 0,
+            "rwake: HDR 接线断（n={n} < recorded={recorded}——写点与合并读面失联）");
+    assert!(p99 >= p50, "rwake: p99={p99} < p50={p50}（分位非单调 = 桶映射 bug）");
+    // 单行标记（BENCHRT/BENCHWAKE 族形）：with_print_lock 整行拼完（G43——
+    // smp_bringup 后裸打撕行面判例；纯 ASCII + uart 直写，内核任务非 console
+    // 通道无分片面）。数值口径 = CNTVCT 周期（换算留收割面）。
+    berry_hal_aarch64::kern_lock::with_print_lock(|| {
+        berry_hal_aarch64::uart_puts(b"BENCHRWAKE p50=");
+        berry_hal_aarch64::uart_put_dec(p50);
+        berry_hal_aarch64::uart_puts(b" p99=");
+        berry_hal_aarch64::uart_put_dec(p99);
+        berry_hal_aarch64::uart_puts(b" n=");
+        berry_hal_aarch64::uart_put_dec(n);
+        berry_hal_aarch64::uart_puts(b"\n");
+    });
+    // 跑完即退（REAPQ 单条流量，rt_probe 同款——非常驻）；标记在 exit 前
+    //（其后是死码，Plan B v0.5 gotcha 同族）。
     berry_sched::exit_current()
 }
 

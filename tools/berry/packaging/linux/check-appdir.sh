@@ -28,7 +28,8 @@ Options:
   -q, --quiet   only warnings, failures, and the summary
   -h, --help    show this help
 
-Checks: AppRun, usr/bin/berry, berryos.img, AAVMF_CODE.fd, the desktop entry,
+Checks: AppRun, usr/bin/berry, berryos.img, AAVMF_CODE.fd, the noVNC web
+assets (usr/share/berry/web with its license files), the desktop entry,
 permissions, AppRun environment variables, and the Exec/TryExec fields.
 EOF
 }
@@ -231,6 +232,8 @@ fi
 check_dir "$APP/usr"
 check_dir "$APP/usr/bin"
 check_dir "$APP/usr/share"
+check_dir "$APP/usr/share/berry"
+check_dir "$APP/usr/share/berry/web"
 check_dir "$APP/usr/share/berryos"
 check_dir "$APP/usr/share/applications"
 
@@ -310,6 +313,52 @@ if check_file "$FW" "AAVMF code" 0; then
     _fw_size=$(size_of "$FW")
     if [ "$_fw_size" -lt 1048576 ]; then
         warn "AAVMF code is smaller than 1 MiB ($_fw_size bytes)"
+    fi
+fi
+
+# Web assets (usr/share/berry/web): the own BerryOS shell page plus the
+# vendored noVNC tree with its license files — vnc.html, NOTICE.md,
+# novnc/LICENSE.txt, novnc/AUTHORS, novnc/vendor/pako/LICENSE (wave 9
+# adds the own index.html and its NOTICE declaration).
+WEB=$APP/usr/share/berry/web
+check_file "$WEB/novnc/vnc.html" "noVNC page" 0
+check_file "$WEB/NOTICE.md" "web NOTICE" 0
+check_file "$WEB/novnc/LICENSE.txt" "noVNC license" 0
+check_file "$WEB/novnc/AUTHORS" "noVNC authors" 0
+check_file "$WEB/novnc/vendor/pako/LICENSE" "pako license" 0
+check_file "$WEB/index.html" "own shell page" 0
+if grep -q '^## 自有资产' "$WEB/NOTICE.md"; then
+    pass "web NOTICE declares the own assets"
+else
+    fail "web NOTICE misses the own-assets (自有资产) declaration"
+fi
+
+# Third-party notices for the statically linked host-tool dependencies
+# (single source: tools/berry/packaging/THIRD-PARTY-NOTICES.txt; this
+# checker faces a standalone AppDir, so it verifies presence and the key
+# content lines rather than comparing against the repo copy — the
+# single-source-to-artifact sync is pinned by the packaging smoke runs).
+TPN=$APP/usr/share/berry/THIRD-PARTY-NOTICES.txt
+if check_file "$TPN" "third-party notices" 0; then
+    if grep -q '^rustls 0.23' "$TPN"; then
+        pass "third-party notices register rustls 0.23"
+    else
+        fail "third-party notices miss the rustls 0.23 entry"
+    fi
+    if grep -q 'BSD-3-Clause' "$TPN"; then
+        pass "third-party notices name the BSD-3-Clause crate (subtle)"
+    else
+        fail "third-party notices miss the BSD-3-Clause entry (subtle)"
+    fi
+    if grep -q 'web/NOTICE.md' "$TPN"; then
+        pass "third-party notices point at web/NOTICE.md for noVNC"
+    else
+        fail "third-party notices miss the web/NOTICE.md pointer for noVNC"
+    fi
+    if grep -q '^qrcodegen 1.8' "$TPN"; then
+        pass "third-party notices register qrcodegen 1.8"
+    else
+        fail "third-party notices miss the qrcodegen 1.8 entry"
     fi
 fi
 

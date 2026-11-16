@@ -1,0 +1,170 @@
+# BerryOS fw_cfg 具名键单源键表（v1）
+#
+# 一切 `opt/berry/*` fw_cfg 具名键的家：键名、递送形态、注入方（含 spawn
+# 点）、客机消费方、极性。改键/加键先改本表再动代码——两侧对读无编译
+# 期绑定，漏一侧 = 门静默失效（判例：陈 rootfs0.cpio 劫持旧名单路）。
+#
+# 极性公约：未标注 = 「在位即开、缺席零扰动」；例外显式标注（noktest
+# 在位=跳过；demo-face 值 off/clean=关且缺席 fail-open；trace 恰 '0'=关）。
+# 纪律：一键一注入方（同名多源注入 QEMU 不去重，find_file 取首个命中，
+# 行为未定义）；键名上限 55 字节（FILE_DIR 项定长，前缀占 10 余量 45）；
+# 新键必须写明注在哪个 spawn 点（spawn_image 与 spawn_kernel 行为分裂是
+# 既有坑面）；EFI/真机路无 fw_cfg 具名文件——键在彼路天然缺席，产品
+# 配置走 rootfs 内 etc/boot-params.toml（g5 笔记裁决），不进来。
+#
+# 锚点行号 = 2026-11-15 快照，漂移以 rg 'opt/berry' 现算为准（对拍：
+# bash tools/fwcfg-check.sh）。
+
+version = 1
+updated = "2026-11-15"
+namespace = "opt/berry/"
+
+# —— rootfs 递送族（file / cpio 字节流；两键并在 rootfs0 优先）——
+
+[[keys]]
+name = "rootfs"
+kind = "file"
+injectors = [
+  "justfile run-rootfs（单卷回落臂）",
+  "tools/smoke.sh / smoke-smp.sh / smoke-lockdep.sh / smoke-dpgsoak.sh",
+  "tools/soak.sh / soak-smp.sh / soak-g3.sh / bench.py（el0 路）",
+]
+consumer = "kernel/src/main.rs（常量 ROOTFS_NAME 于 arch/aarch64/src/fwcfg.rs）"
+polarity = "在位=整卷装载（帽 32MiB）；缺席=ROOTFS absent 正常降级（裸跑常态）"
+
+[[keys]]
+name = "rootfs0..9"
+kind = "file"
+injectors = [
+  "justfile run-rootfs（mkcpio --split 32 多卷，连续前缀发现）",
+  "tools/smoke.sh / smoke-smp.sh / smoke-lockdep.sh / smoke-dpgsoak.sh / bench.py",
+]
+consumer = "kernel fwcfg rootfs_volume（拼装 fwcfg_rootfs_multivol；总帽 128MiB）"
+polarity = "rootfs0 在席走多卷名；缺席回落单卷旧名"
+
+# —— berry CLI 注入族（spawn_image 专属；spawn_kernel 零注入是坑面）——
+
+[[keys]]
+name = "display"
+kind = "string"
+injectors = ["tools/berry/src/qemu.rs spawn_image（仅 profile 给档时）", "tools/gui8-smoke.py"]
+consumer = "kernel/src/main.rs display_mode_req（解析 WxH[@Hz]，畸形=None）"
+polarity = "在位=profile 几何；缺席=固件 GOP 800×600 零漂移"
+
+[[keys]]
+name = "accel"
+kind = "string"
+injectors = ["tools/berry/src/qemu.rs spawn_image（仅 accel≠TCG 时）"]
+consumer = "kernel/src/ktest.rs（FPSR 断言跳过 + CNTVCT 判例）"
+polarity = "在位=读 hvf/kvm/whpx 跳对应断言；缺席（TCG）=断言全量"
+
+[[keys]]
+name = "noktest"
+kind = "string"
+injectors = ["tools/berry/src/qemu.rs spawn_image（恒注 string=1；spawn_kernel 不注）"]
+consumer = "kernel/src/main.rs（常量 NOKTEST_PROBE_NAME）"
+polarity = "极性反转：在位=跳过 ktest+bench；缺席=全跑（smoke 断言面）"
+
+[[keys]]
+name = "rtc"
+kind = "string"
+injectors = ["tools/berry/src/qemu.rs spawn_image（宿主系统时间可读才注，值=epoch 秒）"]
+consumer = "kernel/src/rtc.rs（epoch=0 视为未注入 → CLOCK_REALTIME 返 -ENOTSUP）"
+polarity = "在位=真实时钟；缺席=状态栏静态占位钟"
+
+# —— justfile / smoke / soak 专递门族（string \"1\"，缺席零扰动）——
+
+[[keys]]
+name = "demo-face"
+kind = "string"
+injectors = ["justfile run（DEMO 变量，缺省不注）", "berry CLI GUI 家族（qemu.rs fwcfg_plan 恒注 off，BERRY_DEMO_FACE=on 逃生门，2026-11-16 布线）"]
+consumer = "kernel/src/main.rs demo_face_on（经 env 旗标递 svcmgr）"
+polarity = "值 off/clean=演示舰队关；缺席/畸形 fail-open=开（注意与 display 畸形=None 方向相反）"
+
+[[keys]]
+name = "simdev"
+kind = "string"
+injectors = ["justfile run-rootfs", "tools/smoke.sh（sim 相）"]
+consumer = "kernel/src/main.rs（门 = rootfs_present ∧ simdev；开 UART1/PL061/SIM 设备族）"
+polarity = "在位且带 serial1 配对=SIM 通道开；只配键不配 serial=boot 崩（拓扑契约）"
+
+[[keys]]
+name = "rt"
+kind = "string"
+injectors = ["tools/bench.py（--rt）"]
+consumer = "kernel/src/main.rs（spawn rt_probe）"
+
+[[keys]]
+name = "lat"
+kind = "string"
+injectors = ["tools/bench.py（--lat）", "tools/soak-g3.sh"]
+consumer = "kernel/src/main.rs（IPC 与 SGI 两路共用）"
+
+[[keys]]
+name = "soak"
+kind = "string"
+injectors = ["tools/soak.sh / soak-smp.sh / soak-g3.sh", "tools/bench.py"]
+consumer = "kernel/src/main.rs（spawn soakmon，自证行 SOAK gate on）"
+
+[[keys]]
+name = "soakload"
+kind = "string"
+injectors = ["tools/soak-smp.sh / soak-g3.sh"]
+consumer = "kernel/src/main.rs"
+
+[[keys]]
+name = "lb"
+kind = "string"
+injectors = ["tools/smoke-smp.sh"]
+consumer = "kernel/src/main.rs"
+
+[[keys]]
+name = "asidroll"
+kind = "string"
+injectors = ["tools/smoke-smp.sh"]
+consumer = "kernel/src/main.rs（测试注入面 kernel/src/aspace.rs）"
+
+[[keys]]
+name = "tlbs"
+kind = "string"
+injectors = ["tools/smoke-smp.sh"]
+consumer = "kernel/src/main.rs（武装期望故障槽 arch/aarch64/src/trap.rs）"
+
+[[keys]]
+name = "alloc"
+kind = "string"
+injectors = ["tools/smoke-smp.sh"]
+consumer = "kernel/src/main.rs"
+
+[[keys]]
+name = "ht"
+kind = "string"
+injectors = ["tools/smoke-smp.sh"]
+consumer = "kernel/src/main.rs"
+
+[[keys]]
+name = "pp"
+kind = "string"
+injectors = ["tools/smoke-smp.sh"]
+consumer = "kernel/src/main.rs"
+
+[[keys]]
+name = "trace"
+kind = "string"
+injectors = ["tools/bench.py（--trace-dual off 臂，string=0）"]
+consumer = "kernel/src/telemetry.rs（记录面开关）"
+polarity = "恰 1 字节 '0'=关；缺席/他值=开（默认面零漂移；计数器族不随关）"
+
+[[keys]]
+name = "rwake"
+kind = "string"
+injectors = ["（无仓内注入方——手拼 -fw_cfg 专递，调度审计 08 号实录）"]
+consumer = "kernel/src/main.rs（常量 + 消费点）"
+polarity = "死键收编：内核常量在、产链无注入——加注入面或注记手拼专递"
+
+[[keys]]
+name = "loadgen"
+kind = "string"
+injectors = ["（无仓内注入方——A/B 收割手拼 -fw_cfg 专递，rwake 同款；复现配方单源 = research/调度彻底计划/13-首份AB报告-loadgen.md）"]
+consumer = "kernel/src/main.rs 载荷生成门 LOADGEN_PROBE_NAME（在位才 spawn loadgen 探针；坏值 fail loud 诊断行整门跳过）"
+polarity = "在位且值合法（s=<ns>;b=<0|1>，分号分隔）才 spawn；缺席零扰动"

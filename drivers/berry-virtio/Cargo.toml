@@ -1,6 +1,6 @@
 [package]
 name = "berry-virtio"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 # P6 A-3（docs/文件系统设计.md §6 P6 后续的块设备刀）：virtio 1.x split
 # virtqueue 布局/编解码纯函数 crate，`berry-loader`/`berry-fsproto` 先例
@@ -14,3 +14,7 @@ description = "BerryOS virtio split-ring layout: pure encode/decode for userland
 license = "Apache-2.0"
 
 [dependencies]
+# B1-c（02 号 §3.2 落法）：mmio 设备 ID 族新增 DEVICE_ID_GPU 行的数值单源
+# 在 berry-gpuproto（uapi 两源断言冻结）——跨工作区 path 依赖引常量不复制
+# （drivers → user 先例 = vnet 消费 berry-netproto；纯 no_std 面零连锁）。
+berry-gpuproto = { path = "../../user/berry-gpuproto" }

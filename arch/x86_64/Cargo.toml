@@ -1,6 +1,8 @@
 [package]
 name = "berry-x86"
-version = "0.1.0"
+# L-SYS 0.2.0：字面版本不走 workspace 继承（x86 独立小工作区非根 member，
+# 版本治理规则/14；bootloader 字面同值同款）。升版 = 手同步。
+version = "0.2.0"
 edition = "2021"
 
 # P7-x0（ADR #41 x86_64 最小集）：独立小工作区（同 user/ 模式）——

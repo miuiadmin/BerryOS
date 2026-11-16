@@ -64,8 +64,8 @@ use berry_fsproto::{
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
     berry_handle_duplicate, berry_object_wait_one, berry_vmo_commit, berry_vmo_create,
-    berry_vmo_read, berry_vmo_write, Handle, RIGHT_READ, RIGHT_WRITE, SIGNAL_READABLE,
-    SIGNAL_WRITABLE, BERRY_ERR_BUSY, CLOCK_MONOTONIC,
+    berry_vmo_read, berry_vmo_write, Handle, RIGHT_READ, RIGHT_TRANSFER, RIGHT_WRITE,
+    SIGNAL_READABLE, SIGNAL_WRITABLE, BERRY_ERR_BUSY, CLOCK_MONOTONIC,
 };
 
 use crate::trap;
@@ -311,7 +311,9 @@ fn rpc_read(h: Handle, vmo: Handle, lba: u64, out: &mut [u8; SECTOR_SZ]) -> RpcR
         None => return RpcRes::Fail, // 扇区域恒合法——编码失败 = 调用方 bug 面
     };
     let mut dup = 0 as Handle;
-    if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_WRITE, &mut dup) != 0 {
+    // TRANSFER 保位：别名随请求 channel_send 迁交 vblk（send 随行预检执法；
+    // dup 只紧不松须显式保位）。
+    if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER, &mut dup) != 0 {
         return RpcRes::Fail;
     }
     let hs = [dup];
@@ -361,7 +363,9 @@ fn rpc_write(h: Handle, vmo: Handle, lba: u64, src: &[u8; SECTOR_SZ]) -> RpcRes 
         return RpcRes::Fail; // 数据未离表——干净失败，不毒化
     }
     let mut dup = 0 as Handle;
-    if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_WRITE, &mut dup) != 0 {
+    // TRANSFER 保位：别名随请求 channel_send 迁交 vblk（send 随行预检执法；
+    // dup 只紧不松须显式保位）。
+    if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER, &mut dup) != 0 {
         return RpcRes::Fail;
     }
     let hs = [dup];
@@ -400,7 +404,7 @@ impl Fat {
     /// （读到正在写的文件；staged 名不经盘——会话毒化下也照常服务，数据
     /// 在内存）→ 盘上 FAT 面 + 簇界分片服务（chunk = 协议窗、文件尾、簇
     /// 界三取小——dlen < CHUNK 合法，more 链由 client 侧 off 前进收敛）。
-    pub fn handle_get(&mut self, name: &[u8], off: u32, rep: &mut [u8; 256]) -> GetRes {
+    pub fn handle_get(&mut self, name: &[u8], off: u32, rep: &mut [u8; 256], txid: u32) -> GetRes {
         if name.contains(&0) {
             // 多段：子目录走查（写面恒单段——多段 PUT/TRUNC 在 main 层
             // 构造性走 RAM 树，到不了这里）。
@@ -409,7 +413,7 @@ impl Fat {
                     if f.size as usize > FILE_SIZE_MAX {
                         return GetRes::Full;
                     }
-                    self.serve(&f, off as usize, f.size as usize, rep)
+                    self.serve(&f, off as usize, f.size as usize, rep, txid)
                 }
                 FatPath::Dir(_) => GetRes::IsDir, // 目录不是读面（类型冲突）
                 FatPath::Noent => GetRes::Miss,
@@ -422,7 +426,7 @@ impl Fat {
         };
         if let Some((n, buf)) = self.staging.as_ref() {
             if *n == n11 {
-                return self.serve_slice(buf, off, rep);
+                return self.serve_slice(buf, off, rep, txid);
             }
         }
         if !self.sess_ok {
@@ -433,7 +437,7 @@ impl Fat {
                 if f.size as usize > FILE_SIZE_MAX {
                     return GetRes::Full;
                 }
-                self.serve(&f, off as usize, f.size as usize, rep)
+                self.serve(&f, off as usize, f.size as usize, rep, txid)
             }
             // 单段 8.3 目录名：类型冲突（ST_BAD）而非 NOENT——fstree read
             // 的 IsDir 同义（刀 3）。
@@ -812,7 +816,7 @@ impl Fat {
     /// 重读进局部 scratch 不动 `self.fat` 镜像（见 `free_dirty` 字段注——
     /// 盘面/镜像两不混源）；RPC 失败/毒化/畸形计数拒 = Bad（诚实 ST_BAD，
     /// 服务不死）。
-    pub fn statfs(&mut self, rep: &mut [u8; 256]) -> FatStatfs {
+    pub fn statfs(&mut self, rep: &mut [u8; 256], txid: u32) -> FatStatfs {
         if self.free_dirty {
             let mut fat_buf = [0u8; FAT_CAP]; // init 帽已断言 fat_sz*512 ≤ FAT_CAP
             let base = self.bpb.hidden as u64 + self.bpb.fat_sector as u64;
@@ -844,7 +848,7 @@ impl Fat {
             free_clusters: self.free_cache,
             sector_sz: self.bpb.bps as u32, // init 帽已断言 == 512
         };
-        match encode_reply_statfs(rep, &s) {
+        match encode_reply_statfs(rep, txid, &s) {
             Some(n) => FatStatfs::Served(n),
             None => trap(), // rep 256B ≥ 21——编码 None = 内部不变量破，不静默
         }
@@ -1024,9 +1028,16 @@ impl Fat {
     /// off 起一片：协议窗（CHUNK）、文件尾、簇界三取小；簇不在缓存则整簇
     /// 读入（单簇缓存给顺序读局部性）。编码 None（算术出界）= 服务端 bug
     /// → trap（不静默）。
-    fn serve(&mut self, f: &DirFile, off: usize, size: usize, rep: &mut [u8; 256]) -> GetRes {
+    fn serve(
+        &mut self,
+        f: &DirFile,
+        off: usize,
+        size: usize,
+        rep: &mut [u8; 256],
+        txid: u32,
+    ) -> GetRes {
         if off >= size {
-            return match encode_reply_get(rep, off as u32, &[], false) {
+            return match encode_reply_get(rep, txid, off as u32, &[], false) {
                 Some(n) => GetRes::Served(n),
                 None => trap(),
             };
@@ -1043,7 +1054,7 @@ impl Fat {
         let end = (off + CHUNK).min(size).min(off - in_off + csz);
         let more = end < size;
         let d = &self.cache[in_off..in_off + (end - off)];
-        match encode_reply_get(rep, off as u32, d, more) {
+        match encode_reply_get(rep, txid, off as u32, d, more) {
             Some(n) => GetRes::Served(n),
             None => trap(),
         }
@@ -1052,7 +1063,7 @@ impl Fat {
     /// staging GET 切片（RAM handle_get 同语义：off ≥ len → 空片收尾；
     /// 否则 ≤CHUNK 窗 + more。服务端不变量 more=true ⇒ dlen ≥ 1）。
     /// 编码 None（算术出界）= 服务端 bug → trap（不静默）。
-    fn serve_slice(&self, buf: &[u8], off: u32, rep: &mut [u8; 256]) -> GetRes {
+    fn serve_slice(&self, buf: &[u8], off: u32, rep: &mut [u8; 256], txid: u32) -> GetRes {
         let off = off as usize;
         let (slice, more) = if off >= buf.len() {
             (&buf[buf.len()..], false) // 空片收尾
@@ -1060,7 +1071,7 @@ impl Fat {
             let end = (off + CHUNK).min(buf.len());
             (&buf[off..end], end < buf.len())
         };
-        match encode_reply_get(rep, off as u32, slice, more) {
+        match encode_reply_get(rep, txid, off as u32, slice, more) {
             Some(n) => GetRes::Served(n),
             None => trap(),
         }

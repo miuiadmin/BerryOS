@@ -9,12 +9,21 @@ intent = "utility"
 min = "0.1.0"
 target = "0.1.0"
 compile = "0.1.0"
+min_level = 1
 
 [capabilities]
 console = true
 fs = ["rootfs"]
 
+[runtime]
+stack_pages = 64
+
+[security]
+profile = "ed25519-main"
+key_lineage = "berryos-dev"
+integrator = "berryos"
+
 [ui]
 icon = "icons/icon.byi"
-label = "APPDEMO"
+label = "Gallery"
 views = "views/main.bui"

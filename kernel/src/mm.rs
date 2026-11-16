@@ -60,29 +60,42 @@ static mut FRAMES: Option<FrameAllocator<'static>> = None;
 /// 实际 RAM 顶：BerryBoot 的 `dram_top` 可能仍是 128MiB 模板；用 EFI 图里
 /// Conventional 段的最大 end 修正（cap 到 HAL `RAM_TOP` 256MiB）。无图/坏图
 /// 时退回 handoff `dram_top`。
+///
+/// W3-Q35 起折叠律单源在 `berry_mm::ramtop`（host 钉板——checked 双拒/
+/// 非 Conventional 不参与/cap+clamp 判序）；本壳只做走图（`desc_at` raw
+/// 指针臂留此）+ 纯投影入参装配。
 fn efi_ram_top(h: &crate::handoff::BerryHandoff) -> usize {
-    let mut top = h.dram_top as usize;
-    if let Some(n) = berry_mm::memmap::map_ok(
+    let n = berry_mm::memmap::map_ok(
         h.memmap_pa,
         h.memmap_size,
         h.memmap_desc_size,
         h.memmap_desc_version,
         RAM_BASE as u64,
         RAM_TOP as u64,
-    ) {
-        for i in 0..n {
-            let d = unsafe { berry_mm::memmap::desc_at(h.memmap_pa, h.memmap_desc_size, i) };
-            if d.kind == berry_mm::memmap::EFI_CONVENTIONAL {
-                if let Some(len) = d.number_of_pages.checked_mul(4096) {
-                    if let Some(end) = d.physical_start.checked_add(len) {
-                        let end = end.min(RAM_TOP as u64) as usize;
-                        top = top.max(end);
-                    }
-                }
-            }
+    );
+    // SAFETY: map_ok 已过（窗内可直读）；boot 单线程只读。
+    let projs = berry_mm::ramtop::DescProj::project_raw(n, |i| {
+        let d = unsafe { berry_mm::memmap::desc_at(h.memmap_pa, h.memmap_desc_size, i) };
+        EfiMemdescCopy::copy_of(d)
+    });
+    berry_mm::ramtop::efi_ram_top(h.dram_top, projs, RAM_BASE as u64, RAM_TOP as u64) as usize
+}
+
+/// `EfiMemdesc` 非 Copy（镜像 40B 协议结构刻意裸型）——走图闭包按字段
+/// 重构造一份按值返回（`project_raw` 的 `FnMut(usize) -> EfiMemdesc` 契约）。
+struct EfiMemdescCopy;
+impl EfiMemdescCopy {
+    #[inline]
+    fn copy_of(d: &berry_mm::memmap::EfiMemdesc) -> berry_mm::memmap::EfiMemdesc {
+        berry_mm::memmap::EfiMemdesc {
+            kind: d.kind,
+            _pad: d._pad,
+            physical_start: d.physical_start,
+            virtual_start: d.virtual_start,
+            number_of_pages: d.number_of_pages,
+            attribute: d.attribute,
         }
     }
-    top.clamp(RAM_BASE, RAM_TOP)
 }
 
 /// `handoff` = `handoff::probe` 命中的交接结构（EFI 路）；`None` = QEMU
@@ -99,9 +112,10 @@ pub unsafe fn init(handoff: Option<&'static crate::handoff::BerryHandoff>) {
         core::ptr::addr_of!(__kernel_end) as usize - berry_hal_aarch64::KERNEL_VA_BASE;
     // 全窗构造（V-1b）。位图/摘要后备随 K-1 索引一并借入。
     // SAFETY: 单核启动期，无并发；后备数组生命周期 'static。
-    let ram_top = handoff
-        .map(efi_ram_top)
-        .unwrap_or(RAM_TOP_DEFAULT);
+    let ram_top = berry_mm::ramtop::frame_window(
+        handoff.map(efi_ram_top).map(|t| t as u64),
+        RAM_TOP_DEFAULT as u64,
+    ) as usize;
     let mut fa = FrameAllocator::new(
         RAM_BASE,
         ram_top,

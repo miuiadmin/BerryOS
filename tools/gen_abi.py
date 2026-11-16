@@ -1,22 +1,38 @@
 #!/usr/bin/env python3
-"""BerryOS ABI 单源生成器（`tools/abi.toml` → 四面产物）。
+"""BerryOS ABI 单源生成器（`tools/abi.toml` → 五面产物）。
 
 产物：
   1. kernel/src/abi_gen.rs              —— NR/CLOCK/CHAN_OPT/RIGHT/SIGNAL/ERR（syscall.rs/handle.rs 转发）
   2. user/berry-sys/src/abi_gen.rs  —— 同面镜像（+ INVALID_HANDLE + 私有 mod nr）
-  3. docs/系统调用ABI设计-v1.0.md    —— §4 编号表体 + §8.2 两段 C 定义列（marker 块替换）
+  3. docs/系统调用ABI设计-v1.0.md    —— §4 编号表体 + §8.2 三段 C 定义列（marker 块替换）
   4. tools/abi.syz                      —— syzkaller syscall 描述骨架（SEC-01 §4.5 件 25；未过
                                           syz-sysgen 编译验证——头注如实声明，详见 gen_syz）
+  5. arch/aarch64/src/wake_gen.rs   —— 唤醒源枚举常量 WAKE_SRC_*（刀 1：trap 臂源映射/
+                                          cell 初值/内核 telemetry per-source 记账同源；用户侧
+                                          berry-power 刀落地时从同 [[wakesrc]] 再生用户面常量）
 
 用法：
   python3 tools/gen_abi.py           # 生成（写盘；文档块外的内容一字不动）
   python3 tools/gen_abi.py --check   # 逐字节比对盘上四产物 vs 期望——
                                       # 挂 just abi-check（build/smoke 前置）：
-                                      # 改了 abi.toml 忘再生成 / 手改产物 → FAIL。
+                                      # 改了 abi.toml 忘再生成 / 手改产物 → FAIL；
+                                      # + G-ver-1（版本管理标准 §3）：[platform]
+                                      # level 现值 < git HEAD 值 → FAIL（无 git /
+                                      # HEAD 无该段 = 豁免注记不红）。
+  python3 tools/gen_abi.py --selftest  # 门禁自检（挂 just test-host 前置）：
+                                      # 求值器/C 映射/号段/四元组/行筛选/
+                                      # syz 投影/marker 替换/装载校验钉板 +
+                                      # 在册五产物逐字节 oracle（a-3 U4 纪律
+                                      # 同款；--check 只拦漂移不拦逻辑改坏）。
 
 保真策略：产物 checked-in（盘上文件即真相，diff 可审、blame 可查）——同
 elf2flat/mkcpio/size.py --assert-flip 的房子风格；不用 build.rs 运行时生成
 （berry-sys 无 build.rs；rerun-if-changed 漏列 = 静默旧字节，G-eco-b 教训）。
+
+执法台账（路线图 P1-4）：abi.toml syscall 行 enforced_since（TOML 裸日期）
+= 现行权利门控集执法起始日——文档 §4 表「执法起始」列；live + 涉 handle +
+缺登记且不在 NO_GATE_SYSCALLS 白名单 → WARN（建议性，abi-check 不红；
+selftest 钉在册零 WARN）。
 
 环境要求：Python ≥3.11（stdlib tomllib；macOS CLT 自带 /usr/bin/python3 是
 3.9 跑不了——交互 PATH 的 brew python 不受影响，版本不足时给出干净 FAIL）。
@@ -26,6 +42,7 @@ elf2flat/mkcpio/size.py --assert-flip 的房子风格；不用 build.rs 运行�
 """
 
 import argparse
+import datetime
 import re
 import sys
 
@@ -43,6 +60,7 @@ ROOT = Path(__file__).resolve().parent.parent
 IDL = ROOT / "tools" / "abi.toml"
 KERNEL_RS = ROOT / "kernel" / "src" / "abi_gen.rs"
 USER_RS = ROOT / "user" / "berry-sys" / "src" / "abi_gen.rs"
+ARCH_RS = ROOT / "arch" / "aarch64" / "src" / "wake_gen.rs"
 DOC = ROOT / "docs" / "系统调用ABI设计-v1.0.md"
 SYZ = ROOT / "tools" / "abi.syz"
 
@@ -89,6 +107,14 @@ def c_value(expr: str) -> str:
     raise Fail(f"abi.toml: right.expr 无 C 宏映射（只收 `1 << N` / `u64::MAX` / 整数字面）：{expr!r}")
 
 
+def next_free_wakesrc(wv: dict) -> int | None:
+    """号段下一个空闲号（0x01–0x7E 最小未占；NONE/UNKNOWN 两语义锚永不入
+    空闲集）。报错文案与 wake_gen 头注共用——空闲段活算而非硬抄区间，
+    再占一号不需回头改文案（sim-S2 审查裁决：0x07=POWER_KEY 后三处
+    『预留段 0x07–0x7E』旧文全数漂移，根因即硬编码区间）。"""
+    return next((v for v in range(1, 0x7F) if v not in wv.values()), None)
+
+
 # ---------------------------------------------------------------- 装载 + 校验
 
 def load() -> dict:
@@ -98,10 +124,15 @@ def load() -> dict:
         raise Fail(f"abi.toml 语法错：{e}")
     except OSError as e:
         raise Fail(f"读单源文件失败：{IDL}（{e}）")
-    for key in ("meta", "types"):
+    return validate(d)
+
+
+def validate(d: dict) -> dict:
+    """单源校验（--selftest 钉板位；load = 读盘 + 本函数）。"""
+    for key in ("meta", "platform", "types"):
         if key not in d:
             raise Fail(f"abi.toml: 缺 [{key}] 段")
-    for key in ("clock", "option", "right", "signal", "errno", "group"):
+    for key in ("clock", "option", "right", "signal", "errno", "group", "wakesrc"):
         if key not in d:
             raise Fail(f"abi.toml: 缺 [[{key}]] 段")
         if not d[key]:
@@ -117,7 +148,34 @@ def load() -> dict:
         raise Fail(f"abi.toml: meta.nr_total={meta['nr_total']} != v1 行数 {len(v1)}")
     if len(impl) != meta["implemented"]:
         raise Fail(f"abi.toml: meta.implemented={meta['implemented']} != 实际 {len(impl)}")
-    for sec in ("clock", "option", "right", "signal", "errno"):
+    # 预算四元组（刀 1 前置 #8，PM-17 终审 §4 裁 B 机制）：nr_ceiling 在册 +
+    # nr_defined ≤ 帽执法；口径唯一收口进两端 abi_gen 头注——消灭 35/39/38
+    # 三口径打架的文档面（「稳定性靠执法工具不靠文档承诺」，ADR #55）。
+    for key in ("nr_total", "implemented", "nr_ceiling"):
+        if key not in meta:
+            raise Fail(f"abi.toml: [meta] 缺 {key}（四元组执法面）")
+    # [platform] level：单调整数 API level 轨道（VER-01 提案第 4 条）——
+    # ≥1 整数（bool 是 int 子类，显式拒——TOML `level = true` 不是 1）；
+    # 「只增不减、不兼容变更 +1、兼容新增不 +1」是流程纪律（改值 = 不兼容
+    # ABI 变更，评审执法），单源只钉形状。
+    lvl = d["platform"].get("level")
+    if not isinstance(lvl, int) or isinstance(lvl, bool) or lvl < 1:
+        raise Fail("abi.toml: [platform] level 应为 ≥1 的整数（单调整数轨道："
+                   "只增不减、不兼容 ABI 变更 +1、兼容新增不 +1）")
+    _, nr_defined, nr_registered, _ = four_tuple(d)
+    if nr_defined > meta["nr_ceiling"]:
+        raise Fail(f"abi.toml: nr_defined={nr_defined} > nr_ceiling={meta['nr_ceiling']}"
+                   "（ADR #11 号面帽——回收/合并后再加号）")
+    if nr_registered > nr_defined:
+        raise Fail(f"abi.toml: nr_registered={nr_registered} > nr_defined={nr_defined}（口径反常）")
+    # enforced_since（路线图 P1-4 安全执法台账）：只收 TOML 裸日期（tomllib →
+    # datetime.date）——格式错在 TOML 层即炸；引号字符串显式拒（留给消费面猜
+    # 就是漂移面）。
+    for s in rows:
+        if "enforced_since" in s and not isinstance(s["enforced_since"], datetime.date):
+            raise Fail(f"abi.toml: syscall {s['name']} enforced_since 应为 TOML 裸日期"
+                       "（如 2026-11-12；引号字符串不收）")
+    for sec in ("clock", "option", "right", "signal", "errno", "wakesrc"):
         names = [e["name"] for e in d[sec]]
         if len(set(names)) != len(names):
             raise Fail(f"abi.toml: [[{sec}]] name 重复")
@@ -131,6 +189,19 @@ def load() -> dict:
             vals = [eval_expr(e["expr"]) for e in d[sec]]
             if len(set(vals)) != len(vals):
                 raise Fail(f"abi.toml: [[{sec}]] expr 值重复")
+    # [[wakesrc]] 值域纪律：u8 且 ≤ 0x7F；NONE=0x00 / UNKNOWN=0x7F 两语义锚
+    # 必在册（cell 哨兵与未知臂映射的编译期前提——缺任一 = 消费面悬空）。
+    wv = {w["name"]: eval_expr(w["expr"]) for w in d["wakesrc"]}
+    for name, val in wv.items():
+        if not 0 <= val <= 0x7F:
+            free = next_free_wakesrc(wv)
+            hint = f"下一位空闲 0x{free:02X}" if free is not None else "号段已满"
+            raise Fail(f"abi.toml: wakesrc {name}={val} 出值域（u8 且 ≤ 0x7F——"
+                       f"0x7F 即 UNKNOWN 锚，{hint}；占用以在册为准）")
+    for anchor, want in (("NONE", 0x00), ("UNKNOWN", 0x7F)):
+        if wv.get(anchor) != want:
+            raise Fail(f"abi.toml: wakesrc 语义锚 {anchor}=0x{want:02X} 缺失或变值"
+                       "（add-only 纪律——哨兵/未知锚不得改值）")
     return d
 
 
@@ -146,6 +217,73 @@ def all_rows(d: dict) -> list:
 def const_rows(d: dict) -> list:
     """常量层镜像 v1 + 1.1（v2/v3 未到号，不提前发常量）。"""
     return [s for g in d["group"] for s in g["syscall"] if s["stage"] in ("v1", "1.1")]
+
+
+def four_tuple(d: dict) -> tuple:
+    """预算四元组（刀 1 前置 #8，PM-17 终审 §4）：(nr_total, nr_defined,
+    nr_registered, nr_ceiling)。nr_total = v1 在册行数；nr_defined = v1+1.1
+    常量层在册（abi_gen `pub const NR_` 计数面）；nr_registered = 其中
+    implemented 行数（= 已挂派发号数——在册未实现号恒 -ENOTSUP 回落不挂
+    reg）；nr_ceiling = ADR #11 号面帽。load() 执法 nr_defined ≤ 帽。"""
+    defined = const_rows(d)
+    registered = [s for s in defined if s.get("implemented", True)]
+    return (d["meta"]["nr_total"], len(defined), len(registered), d["meta"]["nr_ceiling"])
+
+
+# ------------------------------------------------ enforced_since 执法台账（P1-4）
+
+# 在册**无权利门**白名单（live 面）：涉 handle 但设计上不设权利门的 syscall。
+# 这是新 syscall 的绊网：要么带 enforced_since（有门控即登记），要么经评审进
+# 本单（无门控正当）——两者皆无 = WARN（防再产裸面，R2 安全审计建议）。
+# abi.toml 无逐 syscall 参数表（§8.3 原型层 v2 挂账），「涉 handle」只能在此
+# 单源裁决；新加零 handle 号须同步进单（理由随行注记）。
+NO_GATE_SYSCALLS = {
+    "handle_close",           # 表槽收口：close 不需权利（Zircon 同形）
+    "handle_replace",         # 槽位原子换：类型门无权利门
+    "object_wait_one",        # 等待不需权利（12 位 rights 表无 WAIT）
+    "object_wait_many",       # 同上
+    "vmo_create",             # 创建面：产物授位 READ|WRITE|MAP|DUPLICATE 在册
+    "vmo_get_size",           # 对象几何非内容：need=0 惯例
+    "process_create",         # v1 无父 handle（job 恒 0）；设防 = P3-2 挂账
+    "process_exit",           # 当前进程自退：零 handle
+    "process_get_exit_code",  # 对象几何非内容：need=0 惯例
+    "thread_exit",            # 当前线程自退：零 handle
+    "thread_sleep",           # 零 handle
+    "thread_yield",           # 零 handle（等价内核 yield_now）
+    "channel_create",         # 创建面：产物授位 SEND|RECV|DUPLICATE|TRANSFER 在册
+    "event_create",           # 创建面：产物授位 SIGNAL|DUPLICATE|TRANSFER 在册
+    "clock_read",             # 零 handle（单调钟全局面）
+    "signal_take",            # 当前进程 pending 自面：零 handle
+    "power_off",              # 零 handle（整机下电全局动作——v1 单用户仿真系统
+                              # 无能力框架；门控随 I3 关机流程正规化刀）
+    "sched_util_snapshot",    # 零 handle（系统级遥测读面——util 是统计信号非
+                              # 对象内容；CP-08 首环，单用户仿真无能力框架）
+    "telemetry_open",         # 零 handle（系统级遥测读面——klog 字节环是串口
+                              # 镜像非对象内容，sched_util_snapshot 同族口径；
+                              # 阶段五第 16 步 v3 号翻真，add-only op 域只读）
+}
+
+
+def row_live(s: dict) -> bool:
+    """是否已挂派发（live）：显式 implemented 覆盖一切；缺省 = v1/1.1 在册即
+    实现（const 层契约——v2/v3 行不缺省实现；0x83 类「v3 但字面量挂派发」的
+    例外行自带 enforced_since，不依赖本判定入台账）。"""
+    if "implemented" in s:
+        return bool(s["implemented"])
+    return s["stage"] in ("v1", "1.1")
+
+
+def enforcement_warnings(d: dict) -> list:
+    """执法台账 WARN（P1-4）：live + 无 enforced_since + 不在无门白名单 → 疑似
+    涉 handle 忘加能力门控。建议性（不 FAIL——abi-check 照 PASS）；WARN 消面
+    二选一：补门控并登记 enforced_since，或评审进 NO_GATE_SYSCALLS 显式豁免。"""
+    out = []
+    for s in all_rows(d):
+        if not row_live(s) or "enforced_since" in s or s["name"] in NO_GATE_SYSCALLS:
+            continue
+        out.append(f"0x{s['num']:02X} {s['name']}：implemented 且疑似涉 handle，缺"
+                   " enforced_since（补门控并登记执法起始日，或评审进 NO_GATE_SYSCALLS 豁免单）")
+    return out
 
 
 # ---------------------------------------------------------------- Rust 生成
@@ -180,16 +318,33 @@ def gen_kernel_rs(d: dict) -> str:
     L = list(GEN_HEADER)
     L.append("//! 消费：`syscall.rs` / `handle.rs` 经 `pub use` 转发，既有路径")
     L.append("//! （`crate::syscall::NR_*`、`crate::handle::RIGHT_*` 等）零改动。")
+    nt, nd, nr, nc = four_tuple(d)
+    L.append(f"//! 预算四元组（生成器执法，ADR #11 帽）：nr_total={nt}（v1 在册）/")
+    L.append(f"//! nr_defined={nd}（v1+1.1 常量层）/ nr_registered={nr}（已挂派发）/")
+    L.append(f"//! nr_ceiling={nc}（nr_defined ≤ 帽 = `tools/gen_abi.py` load 执法）。")
     L.append("")
     L.append("use crate::handle::Rights;")
+    L.append("")
+    # [platform] level（VER-01 提案第 4 条）：两端同源同值；内核侧暂无消费者
+    # （装载期门在用户态 svcmgr），照在册未实现号先例豁免 dead_code。
+    L.append("// ---- 平台 API level（abi.toml [platform]；VER-01 提案第 4 条：单调整数")
+    L.append("// level 轨道——只增不减、不兼容 ABI 变更 +1、兼容新增不 +1。内核侧")
+    L.append("// 在册无消费者（装载期门在 svcmgr），照在册未实现号先例豁免 dead_code）----")
+    L.append("/// svcmgr 装载期与 .bap `[compat] min_level` 比较的平台级基线")
+    L.append("///（用户侧同名常量同源同值，两端在册防漂移）。")
+    L.append("#[allow(dead_code)]")
+    L.append(f"pub const BERRY_PLATFORM_LEVEL: u32 = {d['platform']['level']};")
     L.append("")
     L.append("// ---- syscall 号（ABI §4 编号表；"
              f"v1 {meta['nr_total']} 号在册、{meta['implemented']} 已实现）----")
     if unimpl:
         names = "、".join(f"0x{s['num']:02X} {s['name']}" for s in unimpl)
         L.append(f"// 在册未实现：{names}（派发回落 -ENOTSUP，永不 panic）")
-    if extra:
-        names = "、".join(f"0x{s['num']:02X} {s['name']}" for s in extra)
+    # 1.1 行只在真未实现时列（S1/S3-b 翻真后全实现——stage 全集 ≠ 未实现集，
+    # 陈旧「全列」标签曾与 nr_registered=已挂派发自相矛盾，2026-11 X-3b 收口）。
+    extra_unimpl = [s for s in extra if not s.get("implemented", True)]
+    if extra_unimpl:
+        names = "、".join(f"0x{s['num']:02X} {s['name']}" for s in extra_unimpl)
         L.append(f"// 1.1/S1 在册未实现：{names}（派发回落 -ENOTSUP，永不 panic）")
     for s in rows:
         push_doc(L, s.get("note", ""))
@@ -233,14 +388,24 @@ def gen_kernel_rs(d: dict) -> str:
 
 def gen_user_rs(d: dict) -> str:
     rows = const_rows(d)
+    nt, nd, nr, nc = four_tuple(d)
     L = list(GEN_HEADER)
     L.append("//! 与内核侧 `kernel/src/abi_gen.rs` 同源生成（两端 u32/u64 类型约定见")
     L.append("//! `tools/gen_abi.py` 头注——那是 ABI 决策不是漂移）。")
+    L.append(f"//! 预算四元组（生成器执法，ADR #11 帽）：nr_total={nt} / nr_defined={nd} /")
+    L.append(f"//! nr_registered={nr} / nr_ceiling={nc}（口径与内核侧头注同源同值）。")
     L.append("")
     L.append("use crate::{Handle, Rights, Status, Time};")
     L.append("")
     L.append("/// 无效 handle（表槽 0 恒空；`berry_handle_t` = 0）。")
     L.append(f"pub const INVALID_HANDLE: Handle = {d['types']['invalid_handle']};")
+    L.append("")
+    # [platform] level（VER-01 提案第 4 条）：svcmgr 装载期消费（min_level 门）。
+    L.append("// ---- 平台 API level（abi.toml [platform]；与内核侧同源同值）----")
+    L.append("/// 单调整数 level 轨道（VER-01 提案第 4 条：只增不减、不兼容 ABI 变更")
+    L.append("/// +1、兼容新增不 +1——Android API level 形而更简）；svcmgr 装载期与")
+    L.append("/// .bap `[compat] min_level` 比较的平台级基线。")
+    L.append(f"pub const BERRY_PLATFORM_LEVEL: u32 = {d['platform']['level']};")
     L.append("")
     L.append("// ---- rights 位（12 位；权限在 handle 不在对象）----")
     for r in d["right"]:
@@ -292,23 +457,54 @@ def gen_user_rs(d: dict) -> str:
     return "\n".join(L)
 
 
+# ---------------------------------------------------------------- 唤醒源生成（第五产物）
+
+def gen_arch_rs(d: dict) -> str:
+    """arch/aarch64/src/wake_gen.rs —— [[wakesrc]] → WAKE_SRC_* u8 常量。
+
+    消费面：`wake.rs` per-CPU cell 初值（KERNEL_BOOT/NONE）、`trap.rs` IRQ 臂
+    IAR→源映射、内核 telemetry per-source 记账（kernel 经
+    `berry_hal_aarch64::wake_gen` 同名直引——arch 与 kernel 同值同源，
+    漂移被 --check 逐字节拦）。用户侧常量随 berry-power 刀（0x84
+    telemetry_open 快照面）从同 toml 段再生——本刀只冻形状不实现。"""
+    L = list(GEN_HEADER)
+    L.append("//! 唤醒源枚举（`tools/abi.toml` [[wakesrc]]；add-only——新源只追加，")
+    wv = {w["name"]: eval_expr(w["expr"]) for w in d["wakesrc"]}
+    free = next_free_wakesrc(wv)
+    hint = f"下一位空闲 0x{free:02X}" if free is not None else "号段已满"
+    L.append(f"//! 不改值/不改义/不复用退役值，值域 u8 ≤ 0x7F，{hint}，占用以在册为准）。")
+    L.append("//! 消费：`wake.rs`（per-CPU cell 初值）+ `trap.rs`（IRQ 臂 IAR→源")
+    L.append("//! 映射）；内核 telemetry per-source 记账同名常量直引。语义协议详注 →")
+    L.append("//! research/pm-notes/刀1-前置两问-裁决.md §5（PM-17 终审问①裁 A1）。")
+    L.append("")
+    L.append("// ---- 唤醒源（哨兵/锚 = NONE 0x00 与 UNKNOWN 0x7F，add-only）----")
+    for w in d["wakesrc"]:
+        push_doc(L, w.get("desc", ""))
+        L.append(f"pub const WAKE_SRC_{w['name']}: u8 = {w['expr']};")
+    L.append("")
+    return "\n".join(L)
+
+
 # ---------------------------------------------------------------- 文档生成
 
 # §4 表头 + 分隔行——HTML 注释 marker 独占一行是 GFM 的 HTML block、会按
 # 「另一块级结构开始处」断表：marker 对只能**包整表**放表外，故表头也归生成
 # 物（对抗审查 [3]/[8] 修——marker 夹在分隔行与表体间 = 整表渲染塌成竖线文本）。
+# 「执法起始」列（P1-4 台账面）= enforced_since 裸日期；缺登记（无门/未标注）
+# 出「—」。
 DOC_TABLE_HEADER = [
-    "| 号 | syscall | 说明 | 阶段 |",
-    "|----|---------|------|------|",
+    "| 号 | syscall | 说明 | 阶段 | 执法起始 |",
+    "|----|---------|------|------|----------|",
 ]
 
 
 def doc_syscall_table(d: dict) -> str:
     L = list(DOC_TABLE_HEADER)
     for g in d["group"]:
-        L.append(f"| {g['title']} ||||")
+        L.append(f"| {g['title']} |||||")
         for s in g["syscall"]:
-            L.append(f"| 0x{s['num']:02X} | `{s['name']}` | {s['desc']} | {s['stage']} |")
+            es = str(s["enforced_since"]) if "enforced_since" in s else "—"
+            L.append(f"| 0x{s['num']:02X} | `{s['name']}` | {s['desc']} | {s['stage']} | {es} |")
     return "\n".join(L)
 
 
@@ -334,6 +530,19 @@ def doc_rights_c(d: dict) -> str:
     return c_defines(entries)
 
 
+def meta_platform_level(d: dict) -> int:
+    """[platform] level 单值读口（syz 注释/文档 C 列共用；validate 已钉形状）。"""
+    return d["platform"]["level"]
+
+
+def doc_platform_c(d: dict) -> str:
+    """§8.2 平台 API level C 行（VER-01 提案第 4 条——单调整数轨道单源出口）。"""
+    return c_defines([
+        ("BERRY_PLATFORM_LEVEL", str(meta_platform_level(d)),
+         "平台 API level（单调整数轨道：只增不减；不兼容 ABI 变更 +1；兼容新增不 +1）"),
+    ])
+
+
 def doc_errno_c(d: dict) -> str:
     entries = []
     for e in d["errno"]:
@@ -345,6 +554,7 @@ def doc_errno_c(d: dict) -> str:
 
 DOC_BLOCKS = {
     "syscalls": doc_syscall_table,
+    "platform-c": doc_platform_c,
     "rights-c": doc_rights_c,
     "errno-c": doc_errno_c,
 }
@@ -448,6 +658,8 @@ def gen_syz(d: dict) -> str:
     L.append(f"type berry_time {syz_int(t['time'], False)}")
     L.append("")
     L.append("# ---- 常量注释（abi.toml 单源字面量；非 syz const 引用）----")
+    L.append("# 平台 API level（[platform]；单调整数轨道——只增不减、不兼容 ABI 变更 +1）:")
+    L.append(f"#   BERRY_PLATFORM_LEVEL = {meta_platform_level(d)}")
     L.append("# clock id:")
     for c in d["clock"]:
         L.append(f"#   CLOCK_{c['name']} = {syz_val(c['expr'])}")
@@ -474,7 +686,8 @@ def gen_syz(d: dict) -> str:
         L.append("")
         L.append(f"# {g['title']}")
         for s in g["syscall"]:
-            L.append(f"# 0x{s['num']:02X} {s['name']}{syz_stage_mark(s)}——{s['desc'].split('\n')[0]}")
+            _d = s['desc'].split(chr(10))[0]
+            L.append(f"# 0x{s['num']:02X} {s['name']}{syz_stage_mark(s)}——{_d}")
             for cont in s["desc"].split("\n")[1:]:
                 L.append(f"#   {cont}")
             if s.get("note"):
@@ -487,6 +700,370 @@ def gen_syz(d: dict) -> str:
     return "\n".join(L)
 
 
+# ---------------------------------------------------------------- selftest
+
+def selftest() -> int:
+    """门禁自检（挂 just test-host 前置；mkfat/genfbfont --selftest 同位纪律）。
+
+    --check 只拦「盘上产物 vs 再生期望」漂移——生成器逻辑本身改坏（如
+    eval_expr 吞了负号、c_value 透传裸 1<<40、four_tuple 口径换了）且两侧
+    同步再生成时照样绿。selftest 用合成向量钉住纯函数语义 + 在册单源跑
+    全链（validate → 五产物）对真实盘上文件做逐字节 oracle——逻辑改坏
+    即咬，无需再生成。
+    """
+    failures = []
+    passed = 0
+
+    def check(name, cond, detail=""):
+        nonlocal passed
+        if cond:
+            passed += 1
+        else:
+            failures.append((name, detail))
+
+    def expect_fail(name, fn, want_sub):
+        try:
+            fn()
+        except Fail as e:
+            check(name, want_sub in str(e), f"msg={str(e)!r} 不含 {want_sub!r}")
+        else:
+            check(name, False, "未抛 Fail")
+
+    # --- 1. 求值器 eval_expr：四语法族 + 拒面 ---
+    check("eval u64::MAX", eval_expr("u64::MAX") == (1 << 64) - 1)
+    check("eval 1 << N（带空格归一）", eval_expr("1 << 40") == 1 << 40)
+    check("eval 0x/十进制/_ 分隔", eval_expr("0xFFFF_FFFF_0000_0000") == 0xFFFF_FFFF_0000_0000
+          and eval_expr("-110") == -110 and eval_expr(" -110 ") == -110)
+    expect_fail("eval 拒不可求值", lambda: eval_expr("1 <<< 4"), "不可求值")
+    expect_fail("eval 拒表达式注入", lambda: eval_expr("__import__('os')"), "不可求值")
+
+    # --- 2. C 宏映射 c_value：u64::MAX/-1LL、1<<N/1ULL、裸整直通、
+    #     非规范拼写拒（裸进 C 是 int 移位 UB——对抗审查修的口径） ---
+    check("c_value u64::MAX → (-1LL)", c_value("u64::MAX") == "(-1LL)")
+    check("c_value 1 << 40 → (1ULL << 40)", c_value("1 << 40") == "(1ULL << 40)")
+    check("c_value 裸整直通", c_value("12") == "12" and c_value("0x10") == "0x10")
+    expect_fail("c_value 拒负数（rights 位全正值域）", lambda: c_value("-9"), "C 宏映射")
+    check("c_value 归一后收 1<<40（非规范拼写不透传——产 ULL 形）",
+          c_value("1<<40") == "(1ULL << 40)")
+    check("c_value 归一后收 u64 :: MAX", c_value("u64 :: MAX") == "(-1LL)")
+    expect_fail("c_value 拒 2 << 3（只收 1<<N）", lambda: c_value("2 << 3"), "C 宏映射")
+
+    # --- 3. 唤醒源号段 next_free_wakesrc：0x01–0x7E 最小未占；
+    #     NONE/UNKNOWN 锚不入空闲集（占用以在册为准） ---
+    w_full = {f"W{i}": v for i, v in enumerate(range(0x00, 0x7F))}
+    check("next_free 号段占满 → None", next_free_wakesrc(
+        {**w_full, "UNKNOWN": 0x7F}) is None)
+    w_gap = {"NONE": 0x00, "KERNEL_BOOT": 0x01, "TIMER": 0x02, "UNKNOWN": 0x7F}
+    check("next_free 跳锚取最小未占 0x03", next_free_wakesrc(w_gap) == 0x03)
+    w_mid = {"NONE": 0x00, "A": 0x01, "C": 0x03, "UNKNOWN": 0x7F}
+    check("next_free 中段空洞 0x02", next_free_wakesrc(w_mid) == 0x02)
+
+    # --- 4. 装载校验 validate：合成最小 toml 逐拒面咬 ---
+    base_toml = """
+[meta]
+stage = "v1"
+nr_total = 1
+implemented = 1
+nr_ceiling = 45
+[platform]
+level = 1
+[types]
+handle = 4
+rights = 8
+status = 4
+time = 8
+invalid_handle = 0
+[[wakesrc]]
+name = "NONE"
+expr = "0x00"
+[[wakesrc]]
+name = "UNKNOWN"
+expr = "0x7F"
+[[clock]]
+name = "MONOTONIC"
+expr = "0"
+[[option]]
+name = "OPT_A"
+scope = "channel_create"
+expr = "1 << 0"
+[[right]]
+name = "READ"
+expr = "1 << 0"
+[[signal]]
+name = "READABLE"
+expr = "1 << 0"
+[[errno]]
+name = "OK"
+expr = "0"
+[[group]]
+title = "**t**"
+[[group.syscall]]
+num = 0x01
+name = "handle_close"
+desc = "d"
+stage = "v1"
+"""
+    import tomllib as _tl
+    base = _tl.loads(base_toml)
+
+    d = validate(_tl.loads(base_toml))
+    check("validate 最小合成单源过", d["meta"]["nr_total"] == 1)
+
+    def mut(**kw):
+        obj = _tl.loads(base_toml)
+        for k, v in kw.items():
+            obj[k] = v
+        return obj
+
+    expect_fail("validate 拒缺 [meta]", lambda: validate(
+        {k: v for k, v in base.items() if k != "meta"}), "缺 [meta]")
+    # [platform] level（VER-01 提案第 4 条）：缺段/非正整数/bool 全拒
+    expect_fail("validate 拒缺 [platform]", lambda: validate(
+        {k: v for k, v in base.items() if k != "platform"}), "缺 [platform]")
+    expect_fail("validate 拒 level=0", lambda: validate(
+        mut(platform={"level": 0})), "≥1 的整数")
+    expect_fail("validate 拒 level=bool（int 子类显式拒）", lambda: validate(
+        mut(platform={"level": True})), "≥1 的整数")
+    expect_fail("validate 拒空 [[clock]]", lambda: validate(
+        mut(clock=[])), "段为空")
+    expect_fail("validate 拒 num 重复", lambda: validate(mut(group=[{
+        "title": "t", "syscall": [
+            {"num": 0x01, "name": "a", "desc": "d", "stage": "v1"},
+            {"num": 0x01, "name": "b", "desc": "d", "stage": "v1"}]}] + base["group"][1:])),
+        "num 重复")
+    expect_fail("validate 拒 nr_total 账错", lambda: validate(
+        mut(meta={**base["meta"], "nr_total": 2})), "nr_total=2")
+    expect_fail("validate 拒 implemented 账错", lambda: validate(
+        mut(meta={**base["meta"], "implemented": 0})), "implemented=0")
+    expect_fail("validate 拒超号面帽", lambda: validate(
+        mut(meta={**base["meta"], "nr_ceiling": 0})), "nr_ceiling=0")
+    expect_fail("validate 拒 right 值重复", lambda: validate(mut(right=[
+        {"name": "READ", "expr": "1 << 0"}, {"name": "WRITE", "expr": "1 << 0"}])),
+        "right]] expr 值重复")
+    # option 同 scope 同值咬、异 scope 同值放行（per-syscall 位图口径）
+    expect_fail("validate 拒同 scope option 同值", lambda: validate(mut(option=[
+        {"name": "OPT_A", "scope": "channel_create", "expr": "1 << 0"},
+        {"name": "OPT_B", "scope": "channel_create", "expr": "1 << 0"}])),
+        "同 scope 下 expr 值重复")
+    check("validate 放异 scope option 同值", (lambda: (
+        validate(mut(option=[
+            {"name": "OPT_A", "scope": "channel_create", "expr": "1 << 0"},
+            {"name": "OPT_B", "scope": "vmo_create", "expr": "1 << 0"}])), True)[1])())
+    expect_fail("validate 拒 wakesrc 出值域", lambda: validate(mut(wakesrc=[
+        {"name": "NONE", "expr": "0x00"}, {"name": "X", "expr": "0x80"},
+        {"name": "UNKNOWN", "expr": "0x7F"}])), "出值域")
+    expect_fail("validate 拒 UNKNOWN 锚变值", lambda: validate(mut(wakesrc=[
+        {"name": "NONE", "expr": "0x00"}, {"name": "UNKNOWN", "expr": "0x7E"}])),
+        "语义锚 UNKNOWN")
+    expect_fail("validate 拒 name 重复", lambda: validate(mut(right=[
+        {"name": "READ", "expr": "1 << 0"}, {"name": "READ", "expr": "1 << 1"}])),
+        "name 重复")
+    # enforced_since（P1-4 台账）：裸日期收、字符串拒
+    check("validate 收裸日期 enforced_since", (lambda: (
+        validate(_tl.loads(base_toml.replace(
+            'desc = "d"\nstage = "v1"',
+            'desc = "d"\nstage = "v1"\nenforced_since = 2026-01-01'))), True)[1])())
+    expect_fail("validate 拒字符串 enforced_since", lambda: validate(_tl.loads(
+        base_toml.replace('desc = "d"\nstage = "v1"',
+                          'desc = "d"\nstage = "v1"\nenforced_since = "2026-01-01"'))),
+        "裸日期")
+
+    # --- 5. 行筛选三分口径：v1_rows/const_rows/all_rows（v1+1.1 常量层 /
+    #     全量表 / v1 在册） ---
+    synth = {"group": [{"title": "g", "syscall": [
+        {"num": 0x01, "name": "a", "desc": "d", "stage": "v1"},
+        {"num": 0x02, "name": "b", "desc": "d", "stage": "1.1"},
+        {"num": 0x03, "name": "c", "desc": "d", "stage": "v2"},
+    ]}]}
+    check("v1_rows 只收 v1", [s["name"] for s in v1_rows(synth)] == ["a"])
+    check("const_rows 收 v1+1.1", [s["name"] for s in const_rows(synth)] == ["a", "b"])
+    check("all_rows 收全量", [s["name"] for s in all_rows(synth)] == ["a", "b", "c"])
+
+    # --- 6. 四元组 four_tuple：在册/常量层/已挂派发/帽 四口径（PM-17 §4） ---
+    ft = {"meta": {"nr_total": 1, "nr_ceiling": 45}, "group": [{"syscall": [
+        {"num": 0x01, "name": "a", "stage": "v1"},
+        {"num": 0x02, "name": "b", "stage": "1.1"},
+        {"num": 0x03, "name": "c", "stage": "1.1", "implemented": False},
+        {"num": 0x04, "name": "d", "stage": "v1", "implemented": False},
+    ]}]}
+    check("four_tuple 四口径", four_tuple(ft) == (1, 4, 2, 45),
+          f"got {four_tuple(ft)}")
+
+    # --- 6.5 执法台账（P1-4）：row_live 三态 + WARN 绊网（恰响「live + 缺
+    #      登记 + 未豁免」行；白名单/已登记/非 live 全静默）+ 在册零 WARN 钉板
+    #      （台账随本刀收口为零——新 syscall 裸面 = selftest 红，评审判走
+    #      enforced_since 或 NO_GATE_SYSCALLS 二门之一）---
+    check("row_live 缺省看 stage（v1/1.1 真、v2/v3 假）",
+          row_live({"stage": "v1"}) and row_live({"stage": "1.1"})
+          and not row_live({"stage": "v2"}) and not row_live({"stage": "v3"}))
+    check("row_live 显式 implemented 覆盖一切",
+          row_live({"stage": "v3", "implemented": True})
+          and not row_live({"stage": "v1", "implemented": False}))
+    led = {"group": [{"title": "g", "syscall": [
+        {"num": 0x01, "name": "a", "desc": "d", "stage": "v1"},           # 响：缺登记未豁免
+        {"num": 0x02, "name": "clock_read", "desc": "d", "stage": "v1"},  # 静：白名单
+        {"num": 0x03, "name": "c", "desc": "d", "stage": "v1",
+         "enforced_since": datetime.date(2026, 11, 12)},                  # 静：已登记
+        {"num": 0x04, "name": "e", "desc": "d", "stage": "v2"},           # 静：非 live
+        {"num": 0x05, "name": "f", "desc": "d", "stage": "v1",
+         "implemented": False},                                           # 静：显式未实现
+    ]}]}
+    ws = enforcement_warnings(led)
+    check("台账 WARN 恰响缺登记行", len(ws) == 1 and ws[0].startswith("0x01 a"),
+          f"got {ws}")
+    check("在册台账零 WARN（登记 25 + 豁免单收口；P3-1 已登记除名）",
+          enforcement_warnings(load()) == [])
+
+    # --- 7. syz 投影：syz_int 宽度映射 + 拒面、syz_val 同形不重复、
+    #     stage 标记四态 ---
+    check("syz_int 映射", syz_int(4, True) == "int32" and syz_int(8, False) == "uint64")
+    expect_fail("syz_int 拒 3 字节宽", lambda: syz_int(3, True), "无 syz 整型映射")
+    check("syz_val 同形直通", syz_val("0") == "0" and syz_val("-9") == "-9")
+    check("syz_val 异形附求值", syz_val("1 << 40") == "1 << 40  (0x10000000000)")
+    check("syz_val hex 异形附 hex", syz_val("0xFFFF_FFFF_0000_0000") ==
+          "0xFFFF_FFFF_0000_0000  (0xffffffff00000000)")
+    check("syz_stage_mark 四态", [
+        syz_stage_mark({"stage": "v1"}),
+        syz_stage_mark({"stage": "v1", "implemented": False}),
+        syz_stage_mark({"stage": "1.1"}),
+        syz_stage_mark({"stage": "1.1", "implemented": False}),
+    ] == ["（v1）", "（v1·在册未实现）", "（1.1·已实现）", "（1.1·未实现）"])
+
+    # --- 8. marker 分流 + patch_doc 唯一性执法：C fence 内 C 注释、
+    #     markdown HTML 注释；重复对/交叉序/缺计数锚拒 ---
+    check("markers markdown 语境", markers("syscalls") == (
+        "<!-- @gen:syscalls begin -->", "<!-- @gen:syscalls end -->"))
+    check("markers -c fence 语境", markers("rights-c") == (
+        "/* @gen:rights-c begin */", "/* @gen:rights-c end */"))
+    doc_ok = ("# T\n\n<!-- @gen:syscalls begin -->\nOLD\n<!-- @gen:syscalls end -->\n\n"
+              "```c\n/* @gen:platform-c begin */\nP\n/* @gen:platform-c end */\n```\n\n"
+              "```c\n/* @gen:rights-c begin */\nX\n/* @gen:rights-c end */\n```\n\n"
+              "```c\n/* @gen:errno-c begin */\nY\n/* @gen:errno-c end */\n```\n\n"
+              "v1 计数 = 1\n")
+    patched = patch_doc(doc_ok, base)
+    check("patch_doc 四块全替换", "OLD" not in patched and "\nP\n" not in patched
+          and "\nX\n" not in patched and "\nY\n" not in patched and "v1 计数 = 1" in patched)
+    check("patch_doc 表头契约在席", DOC_TABLE_HEADER[0] in patched
+          and DOC_TABLE_HEADER[1] in patched)
+    check("patch_doc 执法起始列在席（缺登记行出「—」）",
+          "执法起始" in patched and "| — |" in patched)
+    check("patch_doc platform C 行在席", "#define BERRY_PLATFORM_LEVEL" in patched)
+    expect_fail("patch_doc 拒重复 marker 对", lambda: patch_doc(
+        doc_ok.replace("<!-- @gen:syscalls begin -->",
+                       "<!-- @gen:syscalls begin -->\n<!-- @gen:syscalls begin -->"),
+        base), "恰一对")
+    expect_fail("patch_doc 拒计数锚漂移", lambda: patch_doc(
+        doc_ok.replace("v1 计数 = 1", "v1 计数 = 2"), base), "nr_total")
+    expect_fail("patch_doc 拒缺计数锚", lambda: patch_doc(
+        doc_ok.replace("v1 计数 = 1", "无关行"), base), "计数断言锚点")
+
+    # --- 9. C 定义列 c_defines：对齐数学（名列宽 = 最长+2）+ 尾随空白纪律
+    #      （无注释行不补尾空白） ---
+    aligned = c_defines([("A", "1", "note"), ("LONGER_NAME", "22", "")])
+    lines = aligned.split("\n")
+    check("c_defines 名列对齐（A 补到 13 宽 = 12 空格）",
+          lines[0].startswith("#define A" + " " * 12 + "1")
+          and lines[1] == "#define LONGER_NAME  22")
+
+    # --- 9.5 G-ver-1（版本管理标准 §3）：level 单调裁决钉板（降号红负向钉） ---
+    check("G-ver-1 升号过（1→2）", level_verdict(2, 1) is None)
+    check("G-ver-1 平号过（1→1）", level_verdict(1, 1) is None)
+    check("G-ver-1 豁免不红（old=None）", level_verdict(1, None) is None)
+    down = level_verdict(1, 2)
+    check("G-ver-1 降号红（2→1；消息含两值与标准 §3 引用）",
+          down is not None and "现值 1" in down and "HEAD 值 2" in down
+          and "§3" in down)
+    head_lvl, head_note = head_platform_level()
+    check("G-ver-1 HEAD 基线口径（豁免注记 或 ≥1 整值同形注记）",
+          (head_lvl is None and "豁免" in head_note)
+          or (isinstance(head_lvl, int) and not isinstance(head_lvl, bool)
+              and head_lvl >= 1 and head_note == f"HEAD level={head_lvl}"))
+
+    # --- 10. exit-code 契约（子进程真跑；不测 --selftest 自身——自引用
+    #      会无限递归；extra-arg 守卫 = exact-arg 契约） ---
+    import subprocess as sp
+    p1 = sp.run([sys.executable, __file__, "--check"], capture_output=True, text=True)
+    check("--check rc=0 且 PASS 行", p1.returncode == 0 and "abi-check: PASS" in p1.stdout)
+    p2 = sp.run([sys.executable, __file__, "--bogus"], capture_output=True, text=True)
+    check("--bogus rc=2 usage（argparse 契约）", p2.returncode == 2 and "usage:" in p2.stderr)
+    p3 = sp.run([sys.executable, __file__, "--selftest", "extra"],
+                capture_output=True, text=True)
+    check("--selftest exact-arg guard（extra arg = usage 拒，不静默跑）",
+          p3.returncode != 0 and "usage:" in p3.stderr)
+
+    # --- 11. 在册单源全链 oracle：validate → 五产物 vs 盘上逐字节 ---
+    real = load()
+    k, u, doc, syz, arch = build_all(real)
+    targets = [(KERNEL_RS, k), (USER_RS, u), (DOC, doc), (SYZ, syz), (ARCH_RS, arch)]
+    bad = [str(p.relative_to(ROOT)) for p, want in targets
+           if not p.exists() or p.read_text("utf-8") != want]
+    check("在册五产物逐字节 oracle", not bad, f"漂移: {bad}")
+    nt, nd, nr, nc = four_tuple(real)
+    # 钉板值随在册面活算对齐（CP-08 加 0x40 v1 号后 38→39——彼批漏更此钉，
+    # 实抓于阶段五第 16 步复跑；gen_abi 台账零 WARN 钉板不受影响）。
+    # CP-08 0x40 sched_util_snapshot 加号（988944e09）随刀滚新：38/42/41→39/43/42
+    # （nr_total/defined/registered 各 +1，帽 45 不动——abi_gen 头注同值单源）。
+    check("在册四元组口径", (nt, nd, nr, nc) == (39, 43, 42, 45),
+          f"got {(nt, nd, nr, nc)}")
+    check("在册 wakesrc 空闲段活算", next_free_wakesrc(
+        {w["name"]: eval_expr(w["expr"]) for w in real["wakesrc"]}) == 0x08)
+
+    # 确定性：全链再跑一遍逐字节同值（无隐状态/时间漂移）。
+    k2, u2, doc2, syz2, arch2 = build_all(load())
+    check("全链确定性（两跑逐字节同值）",
+          (k, u, doc, syz, arch) == (k2, u2, doc2, syz2, arch2))
+
+    print(f"\ngen_abi selftest: {'PASS' if not failures else 'FAIL'}"
+          f"（{passed} passed, {len(failures)} failed）")
+    for name, detail in failures:
+        print(f"  FAIL: {name}" + (f"——{detail}" if detail else ""))
+    return 1 if failures else 0
+
+
+# ---------------------------------------------------- G-ver-1（版本管理标准 §3）
+# level 单调执法（挂 --check = just abi-check，build/smoke 前置顺带）：
+# 现值 < git HEAD 值即 FAIL。豁免（注记不红，与 build.rs 的 nogit 标识同
+# 哲学——缺证据不冒充通过）：无 git / HEAD abi.toml 无 [platform] level
+# （level 轨道首入轨前的历史提交）。基线取 HEAD 而非「工作树某旧值」：
+# abi-check 的执法时点 = 提交前，HEAD 即「上一个已入库的对外承诺」。
+
+def head_platform_level() -> tuple:
+    """git HEAD `tools/abi.toml` 的 [platform] level（G-ver-1 比较基线）。
+
+    返回 (level, note)：level=None = 豁免、note 为豁免原因；否则
+    (≥1 整数, "HEAD level=<n>")。HEAD 文件缺段/不可解析一律豁免——
+    本门只裁「能确证旧值的提交」上的回退，不在证据缺席时冒充执法。"""
+    import subprocess as sp
+    try:
+        p = sp.run(["git", "-C", str(ROOT), "show", "HEAD:tools/abi.toml"],
+                   capture_output=True, text=True, encoding="utf-8",
+                   errors="replace")
+    except OSError:
+        return None, "豁免（无 git 可用）"
+    if p.returncode != 0:
+        return None, "豁免（非 git 仓或无 HEAD 提交）"
+    try:
+        old = tomllib.loads(p.stdout)
+    except tomllib.TOMLDecodeError:
+        return None, "豁免（HEAD abi.toml 不可解析）"
+    lvl = old.get("platform", {}).get("level")
+    if not isinstance(lvl, int) or isinstance(lvl, bool):
+        return None, "豁免（HEAD abi.toml 无 [platform] level）"
+    return lvl, f"HEAD level={lvl}"
+
+
+def level_verdict(cur: int, old) -> str | None:
+    """G-ver-1 单调裁决（--selftest 钉板位）：old=None 豁免 → None；
+    cur < old → FAIL 消息（含两值与标准 §3 引用）；cur ≥ old → None。"""
+    if old is None:
+        return None
+    if cur < old:
+        return (f"G-ver-1（版本管理标准 §3）level 单调性破坏：现值 {cur} <"
+                f" HEAD 值 {old}——level 只增不减（回退请 revert tools/abi.toml"
+                " 或走不兼容变更评审 +1 纪律）")
+    return None
+
+
 # ---------------------------------------------------------------- 主流程
 
 def build_all(d: dict) -> tuple:
@@ -494,19 +1071,33 @@ def build_all(d: dict) -> tuple:
         doc_text = DOC.read_text("utf-8")
     except OSError as e:
         raise Fail(f"读 ABI 文档失败：{DOC}（{e}）")
-    return (gen_kernel_rs(d), gen_user_rs(d), patch_doc(doc_text, d), gen_syz(d))
+    return (gen_kernel_rs(d), gen_user_rs(d), patch_doc(doc_text, d), gen_syz(d),
+            gen_arch_rs(d))
 
 
 def main() -> int:
+    # --selftest 前置守卫（不经 argparse）：exact-arg 契约——extra arg 落
+    # argparse usage 拒（rc=2），不静默跑半套。
+    if len(sys.argv) == 2 and sys.argv[1] == "--selftest":
+        return selftest()
     ap = argparse.ArgumentParser(description="BerryOS ABI 单源生成/守卫")
     ap.add_argument("--check", action="store_true",
-                    help="不写盘：逐字节比对盘上四产物 vs 期望，漂移即 FAIL")
+                    help="不写盘：逐字节比对盘上产物 vs 期望（漂移即 FAIL）"
+                         " + G-ver-1 level 单调（现值 < git HEAD 即 FAIL）")
+    ap.add_argument("--selftest", action="store_true",
+                    help="门禁自检：纯函数钉板 + 在册五产物逐字节 oracle（exit 0=PASS）")
     args = ap.parse_args()
+    if args.selftest:
+        return selftest()
     try:
         d = load()
-        k, u, doc, syz = build_all(d)
+        # 执法台账 WARN（P1-4）：建议性——不 FAIL（abi-check 照 PASS），但
+        # selftest 钉「在册台账零 WARN」；消面 = 补 enforced_since 或进豁免单。
+        for w in enforcement_warnings(d):
+            print(f"abi-gen: WARN——enforced_since 台账：{w}", file=sys.stderr)
+        k, u, doc, syz, arch = build_all(d)
         if args.check:
-            targets = [(KERNEL_RS, k), (USER_RS, u), (DOC, doc), (SYZ, syz)]
+            targets = [(KERNEL_RS, k), (USER_RS, u), (DOC, doc), (SYZ, syz), (ARCH_RS, arch)]
             bad = []
             for path, want in targets:
                 got = path.read_text("utf-8") if path.exists() else None
@@ -517,15 +1108,27 @@ def main() -> int:
                     print(f"abi-check: FAIL——{p.relative_to(ROOT)} 与 abi.toml 期望不符"
                           f"（改了 abi.toml 跑 `just abi-gen`；手改了产物请改回）")
                 return 1
+            # G-ver-1（版本管理标准 §3）：[platform] level 单调——现值 <
+            # git HEAD 值即 FAIL；无 git / HEAD 无该段 = 豁免注记不红。
+            cur_lvl = d["platform"]["level"]
+            old_lvl, lvl_note = head_platform_level()
+            verdict = level_verdict(cur_lvl, old_lvl)
+            if verdict is not None:
+                print(f"abi-check: FAIL——{verdict}")
+                return 1
             n = len(v1_rows(d))
-            print(f"abi-check: PASS（NR v1 {n} 号在册——内核 ↔ berry-sys ↔ 文档 ↔ syz 四面单源一致）")
+            print(f"abi-check: G-ver-1 level 单调 {lvl_note}，现 level={cur_lvl}")
+            print(f"abi-check: PASS（NR v1 {n} 号在册——内核 ↔ berry-sys ↔ 文档 ↔ syz ↔"
+                  " arch-wake 五面单源一致）")
             return 0
         KERNEL_RS.write_text(k, "utf-8")
         USER_RS.write_text(u, "utf-8")
         DOC.write_text(doc, "utf-8")
         SYZ.write_text(syz, "utf-8")
+        ARCH_RS.write_text(arch, "utf-8")
         print(f"abi-gen: 写 {KERNEL_RS.relative_to(ROOT)} / {USER_RS.relative_to(ROOT)}"
-              f" / 文档三 marker 块 / {SYZ.relative_to(ROOT)}——提交时产物 diff 一并入册")
+              f" / 文档四 marker 块 / {SYZ.relative_to(ROOT)} /"
+              f" {ARCH_RS.relative_to(ROOT)}——提交时产物 diff 一并入册")
         return 0
     except Fail as e:
         print(f"abi-gen: FAIL——{e}", file=sys.stderr)

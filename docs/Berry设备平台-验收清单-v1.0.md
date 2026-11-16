@@ -2,7 +2,7 @@
 
 > 版本：**1.0**（v1.0）｜2026-11-06
 
-> 配套：`Berry设备平台-CLI-first设计-v1.0.md`（单一事实源）+ `berry设备壳设计草案-v1.0.md`（显示/帧面子系统）。
+> 配套：`Berry设备平台-CLI-first设计-v1.9.md`（单一事实源）+ `berry设备壳设计草案-v1.0.md`（显示/帧面子系统）。
 > 标记：✅ 已实测 / 🟡 有实现未实机 / ⬜ 未落。所有命令默认 `--json` 可用。
 
 ## 0. 构建与门禁
@@ -120,7 +120,7 @@ berry play script.json --run "$RUN"
 - GUI-8 桌面图标仍 dash（launcher app registry/app channel；归 GUI-8 app 服务）。
 - Windows 实机/打包（C1g）；host 自动重启已落。
 - P3：virtio-gpu / damage / 120Hz / 视频录屏 / 时间轴回放。
-- 顶层 `berry tap/key` 别名、`input text`、`display rotate`、`display set WxH` 未落。
+- 顶层 `berry tap/key/swipe/text` 别名、`input text`、`display set WxH` 已落 2026-11-05（12fab4a/e783303/f289d44）；实测注见 §3，剩余缺口表 ✅ 行互证。唯 `display rotate` 未落（`display set <profile|WxH>` 已可设，旋转归剩余缺口表「需客机/呈现面旋转」项）。
 
 ## 10. 最小 AI/CI 闭环
 

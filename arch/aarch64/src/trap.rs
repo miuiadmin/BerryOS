@@ -20,6 +20,12 @@ use core::arch::global_asm;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::{halt, uart_put_hex64, uart_puts};
 
+// W3-Q37：异常分类面纯函数单源 berry-trapface（host 钉板）——re-export
+// 保持全树调用面零变化（EC_* 词表常量/ec_of 位域提取/far_relevant
+// FAR 归类判/ec_name 定名表单源在此；exception_sync/exception_sync_el0
+// 物理分流臂留壳本文件）。
+pub use berry_trapface::{classify, ec_name, ec_of, far_relevant};
+
 /// 期望故障槽（2b-2 低半退役正向断言）：非 0 = 期望下一次 current-EL **D-abort**
 /// 的 FAR。命中 → 恢复（ELR+=4，4 字节 ldr/str 假设）并清槽；未 arm 或 FAR 不符 →
 /// 原 fatal 路径。调用方读回 [`fault_armed`] 判「确实 fault 了」（槽被消费 = 异常真
@@ -331,20 +337,20 @@ pub unsafe fn init() {
 /// 由异常向量 asm 以 `x0 = &mut TrapFrame` 调用；C-ABI。
 #[no_mangle]
 pub extern "C" fn exception_sync(tf: &mut TrapFrame) {
-    let ec = ((tf.esr >> 26) & 0x3f) as u32;
+    let ec = ec_of(tf.esr);
     match ec {
-        0x15 => {
+        berry_trapface::EC_SVC => {
             // SVC：派发，ret 写回 x0，eret 续行（无 dump）。
             crate::syscall::dispatch(tf);
             return;
         }
-        0x3c => {
+        berry_trapface::EC_BRK => {
             dump(tf, ec);
             uart_puts(b"  -> BRK recover: ELR+=4, eret\n");
             tf.elr = tf.elr.wrapping_add(4);
             return;
         }
-        0x25 => {
+        berry_trapface::EC_DABORT_CURRENT => {
             // G4-1：D-abort(current-EL) 先问 demand 探针（期望故障槽**之前**
             // ——demand 是架构路径，ktest 期望槽是测试机制；两 FAR 域不交）。
             // 探针命中 → 槽内已走 pager 协议（阻塞/供给/唤醒），eret 重试
@@ -394,9 +400,9 @@ pub extern "C" fn exception_sync(tf: &mut TrapFrame) {
 /// 由异常向量 asm 以 `x0 = &mut TrapFrame` 调用；C-ABI。
 #[no_mangle]
 pub extern "C" fn exception_sync_el0(tf: &mut TrapFrame) {
-    let ec = ((tf.esr >> 26) & 0x3f) as u32;
+    let ec = ec_of(tf.esr);
     match ec {
-        0x15 => {
+        berry_trapface::EC_SVC => {
             // 未知/未实现号 → -ENOTSUP 存活（3-1 政策；滥用面如坏 handle → -EBADF）。
             crate::syscall::dispatch(tf);
             return; // 一切 SVC 正常往返（含错误码）
@@ -406,9 +412,10 @@ pub extern "C" fn exception_sync_el0(tf: &mut TrapFrame) {
             // 恢复零锁零打印；ELR+=4 = AArch64 定长约定，payload 端 str 合同）。
             // 仅 data abort（EC=0x24）查 FAR——canary 触发面全为 str/ldr 数据
             // 访问；其余 EC（I-abort/BRK/对齐…）FAR 为保留值，查 = 幻影吞面
-            // （对抗审查 R4 收紧）。未武装面（生产 boot 恒 far=0）零命中 =
-            // 原杀链不变量保持。
-            if ec == 0x24 && canary_consume(tf.far as usize) {
+            // （对抗审查 R4 收紧——W3-Q37 起判据单源 far_relevant（§11.5.2
+            // 有效面）之外再收窄到 D-abort 单值门）。未武装面（生产 boot
+            // 恒 far=0）零命中 = 原杀链不变量保持。
+            if ec == berry_trapface::EC_DABORT_LOWER && canary_consume(tf.far as usize) {
                 tf.elr = tf.elr.wrapping_add(4);
                 return;
             }
@@ -418,8 +425,14 @@ pub extern "C" fn exception_sync_el0(tf: &mut TrapFrame) {
             // 之前——快路径零锁；未注册/未命中/非翻译缺页（esr 自滤 fsc）
             // 恒 false = 原杀链不变量保持。EL0 异常 taken-to-higher-EL
             // 自动屏蔽 PSTATE.I；SMP KL 窗由探针实现方自管（P2-2①）。
+            // G4-4 X-2：EL0 I-abort（0x20）同臂并入（§5-⑦ 留面的 exec 代码
+            // 页用例——dpgp I 腿受验）：IFSC 与 DFSC 同 fsc 编码（翻译缺页
+            // 0b00101 同值），I-abort FAR = 取指 VA 有效可查；探针内滤
+            // fsc 4..=7 语义两态同形。
             // SAFETY: 同步异常上下文；槽 boot 屏蔽窗注册。
-            if ec == 0x24 && unsafe { crate::demand_fault_probe_el0(tf.esr as usize, tf.far as usize) } {
+            if (ec == berry_trapface::EC_DABORT_LOWER || ec == berry_trapface::EC_IABORT_LOWER)
+                && unsafe { crate::demand_fault_probe_el0(tf.esr as usize, tf.far as usize) }
+            {
                 return; // 槽内已完成 pager 协议——eret 重试
             }
             // S-2 E0（草案 3.1-2）→ S-3c c-2c slice 2b 全量形：EL0 fault kill
@@ -541,6 +554,11 @@ pub extern "C" fn exception_irq(tf: &mut TrapFrame) {
         crate::lockdep::irq_floor_lower();
         return;
     }
+    // 刀1 唤醒归因：本臂语境存入（save → 四臂分派 → 单出口 restore）。窗口
+    // 闭合论证：IRQ 不嵌套（handler 全程 PSTATE.I=1）⇒ 同核串行；SPURIOUS
+    // 早退在 store 之前 = 零字节窗口；臂内 dispatch 槽经 EOIR 后纪律切换、
+    // 若真切走则本帧不归（restore 死码同 load_frame——归者必经此单出口）。
+    let saved_wake_src = crate::wake::wake_src_irq_enter(crate::wake::src_of(id));
     // SGI 号常量转 usize 模式位（pattern 不收 `as` 表达式——函数内 const 落地）。
     const SGI_RESCHED_US: usize = crate::gic::SGI_RESCHEDULE as usize;
     const SGI_TLB_US: usize = crate::gic::SGI_TLB_SHOOTDOWN as usize;
@@ -578,6 +596,31 @@ pub extern "C" fn exception_irq(tf: &mut TrapFrame) {
                 }
             }
         }
+        crate::gic::IRQ_PL1_RX => {
+            // sim-S1：第二 PL011 RX——与 SPI33 臂逐句同形（uart1_rx 内部 drain
+            // 到 RXFE 去活电平 → 静态环 → 通知槽；唤醒语境经上方 wake_src_irq_enter
+            // 已并入 WAKE_SRC_UART_RX 归并不拆）。检查点同在 **EOIR 后**（Bug 1
+            // 同纪律——本臂 woke 走与 SPI33 臂同一 SVC_EXIT_CHECKPOINT 槽）。
+            let woke = crate::uart::uart1_rx();
+            crate::gic::end(id);
+            if woke {
+                // SAFETY: IRQ 上下文（PSTATE.I=1）；槽由 boot 在 enable_irq 前
+                // 注册（set_svc_exit_checkpoint），与 SPI33 臂同一面。
+                if let Some(checkpoint) = unsafe { crate::SVC_EXIT_CHECKPOINT } {
+                    checkpoint();
+                }
+            }
+        }
+        crate::gic::IRQ_PL061 => {
+            // sim-S2 A4②（PM-16 §4.2）：PL061 电源键（SPI 7 → INTID 39）——
+            // v1 无主 IRQ 正向对照：power_key_irq 内 MIS 确认 + **ICR 清锁存
+            //（EOIR 前去活电平铁序——GIC 电平触发，线挂 MIS!=0，不 ICR 则
+            // EOIR 后立即重投）** + 通知槽（内核侧到达/no_waiter 双台账 +
+            // `PWRKEY unowned n=` 标记行）。恒无唤醒 ⇒ 无 woke-检查点面
+            //（uart 双臂的检查点在此结构性缺席——无等待者可醒）。
+            let _woke = crate::pl061::power_key_irq();
+            crate::gic::end(id);
+        }
         SGI_RESCHED_US => {
             // 义务⑧（S-3b b-1）接收侧半件：入队 SGI 不再只计数——tickful 核
             //（CPU0）经独立 SGI 槽快速重调度（跨核唤醒不再等整 tick；无
@@ -597,17 +640,18 @@ pub extern "C" fn exception_irq(tf: &mut TrapFrame) {
             // S-4 4-1：TLB shootdown 收端——EOIR 先行（Bug 1 纪律：dispatch 类
             // 工作必须在 EOIR 后），随后本地全量失效 + dsb ish + 回执计数
             //（tlbshoot::irq_ack——零锁零打印零分配，SGI_SEEN 同款 IRQ 上下文
-            // 纪律；§3.2 无环判据的收端半边：handler 取锁面恒零）。
+            // 纪律；§3.2 无环判据的收端半边：handler 取锁面恒零）。刀1：到达
+            // 计数（wake::TLB_SEEN——无唤醒路径，G1.5 快照合并面）。
             crate::gic::end(id);
+            crate::wake::TLB_SEEN.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             crate::tlbshoot::irq_ack();
         }
         _ => {
             // 未知源：EOI 后忽略；首 4 个 loud（防新源接错号静默吞），之后静默
-            //（防电平未清源的重投打印风暴）。
+            //（防电平未清源的重投打印风暴）。刀1：计数自函数内 static 升格到
+            // wake::UNKNOWN_SEEN（永续——只进 IRQ 级到达计数，永不进环）。
             crate::gic::end(id);
-            static UNKNOWN_SEEN: core::sync::atomic::AtomicU32 =
-                core::sync::atomic::AtomicU32::new(0);
-            let k = UNKNOWN_SEEN.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            let k = crate::wake::UNKNOWN_SEEN.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             if k < 4 {
                 // m1 门（errata 批，§A114 追记二）：G3-1c-1 后任务态
                 // with_print_lock = preempt 包络（IRQ 可入窗）——本核
@@ -628,6 +672,8 @@ pub extern "C" fn exception_irq(tf: &mut TrapFrame) {
             }
         }
     }
+    // 刀1：语境 cell 单出口恢复（match 不可达早退只有 SPURIOUS——在 store 之前）。
+    crate::wake::wake_src_irq_exit(saved_wake_src);
     // G3-3 lockdep IRQ 地板收回：断言深度恰归地板（handler 配平执法——
     // 留残 = 有锁未放跨流泄漏）后归 0（IRQ 不可嵌套：handler 全程 PSTATE.I=1）。
     #[cfg(feature = "lockdep")]
@@ -640,24 +686,6 @@ unsafe fn read_esr_elr() -> (u64, u64) {
     core::arch::asm!("mrs {0}, esr_el1", out(reg) esr, options(nostack, preserves_flags));
     core::arch::asm!("mrs {0}, elr_el1", out(reg) elr, options(nostack, preserves_flags));
     (esr, elr)
-}
-
-fn ec_name(ec: u32) -> &'static [u8] {
-    match ec {
-        0x00 => b"Unknown",
-        0x07 => b"FP/SIMD-trap",
-        0x0d => b"FP/trap",
-        0x15 => b"SVC",
-        0x20 => b"I-abort(lower)",
-        0x21 => b"I-abort(current)",
-        0x22 => b"PC-align",
-        0x24 => b"D-abort(lower)",
-        0x25 => b"D-abort(current)",
-        0x26 => b"SP-align",
-        0x2f => b"SError",
-        0x3c => b"BRK",
-        _ => b"other",
-    }
 }
 
 fn put_kv(k: &[u8], v: u64) {

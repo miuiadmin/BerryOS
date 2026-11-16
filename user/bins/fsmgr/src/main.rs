@@ -7,8 +7,10 @@
 //! svcmgr 预拉+自验门后交付）；bsh 持对端 fs_a 的 SEND|RECV dup（gift[3]，
 //! libc `fs_h()`）发请求。协议 = berry-fsproto（PUT/TRUNC/GET/LIST + v2
 //! 五 op LOOKUP/MKDIR/UNLINK/READDIR/STAT + C-2 刀 2 STATFS 卷级几何/空闲
-//! ——无路径参，**严格串行 RPC**——一请求一
-//! 应答，队列深 1 用量，无乱序死锁面）；存储 = berry-fstree 目录树
+//! ——无路径参，**严格串行 RPC**——一请求一应答，队列深 1 用量，无乱序
+//! 死锁面；P1-1 起每应答回显请求 txid（公共头 5 字节——多 client 共享
+//! fs_a 队列时 client 按 txid 甄别弃收他者/迟到应答，见 berry-fsproto
+//! 模块头）；存储 = berry-fstree 目录树
 //! （RAM-fs——C-0 刀 2 起多段 NUL 路径，单段名 v1 语义零漂移；
 //! FILE_COUNT_MAX=9 × FILE_SIZE_MAX=16KiB + DIR_COUNT_MAX=17 静态堆
 //! 预算内——C-2 刀 2 起含启动预建保留槽（/etc + mtab 各占 1，用户可
@@ -41,8 +43,8 @@ use berry_sys::{
     BERRY_ERR_AGAIN, BERRY_ERR_BUSY, CLOCK_MONOTONIC, SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
 use berry_fsproto::{
-    encode_reply_get, encode_reply_list, encode_reply_stat, encode_reply_status, parse_request,
-    Req, ST_BAD, TYPE_DIR,
+    encode_reply_get, encode_reply_list, encode_reply_stat, encode_reply_status, hdr_txid,
+    parse_request, Req, ST_BAD, TYPE_DIR,
 };
 use berry_fstree::{ReadDirRes, ReadRes, StatRes, Tree};
 
@@ -100,6 +102,10 @@ fn main() {
             }
             trap(); // 非 -EAGAIN 错码 = 通道链断（真死亡面，不重臂）
         }
+        // P1-1 txid 回显：先于 parse 单独取（畸形请求的 ST_BAD 应答也要带
+        // 请求号——client 收侧按号匹配）；截到 <HDR 取不出 → 0（真请求
+        // 永不取 0，错配即弃，client 走诚实超时面）。
+        let txid = hdr_txid(&msg[..nb]).unwrap_or(0);
         let rep_len: usize = match parse_request(&msg[..nb]) {
             Some(Req::Put { path: name, off, data }) => {
                 // A-6 路由：8.3 大写名 → FAT 层 staging（TRUNC 点落盘）；其余
@@ -111,7 +117,7 @@ fn main() {
                     Some(fat::StageRes::Staged) => berry_fsproto::ST_OK,
                     Some(fat::StageRes::Deny(st)) => st,
                 };
-                encode_reply_status(&mut rep, st).unwrap_or_else(|| trap())
+                encode_reply_status(&mut rep, txid, st).unwrap_or_else(|| trap())
             }
             Some(Req::Trunc { path: name, size }) => {
                 // TRUNC = FAT 名的 commit 触发点（bsh fs_put 尾随 TRUNC 恰合：
@@ -120,37 +126,38 @@ fn main() {
                     None => tree.trunc(name, size),
                     Some(st) => st,
                 };
-                encode_reply_status(&mut rep, st).unwrap_or_else(|| trap())
+                encode_reply_status(&mut rep, txid, st).unwrap_or_else(|| trap())
             }
             Some(Req::Get { path: name, off }) => match tree.read(name, off) {
                 // 服务端不变量（fstree read 构造保证）：more=true ⇒ dlen ≥ 1；
                 // 编码 None（算术出界）= 服务端 bug → trap（不静默）。
                 ReadRes::Win(slice, more) => {
-                    encode_reply_get(&mut rep, off, slice, more).unwrap_or_else(|| trap())
+                    encode_reply_get(&mut rep, txid, off, slice, more).unwrap_or_else(|| trap())
                 }
                 // RAM Miss → FAT 回落（v1 流不变——单段 8.3 名由 name_to_fat11
                 // 门自筛进 FAT；刀 3 起多段 NUL 串走 FAT 子目录链读面）。
-                ReadRes::Miss => match fat.as_mut().map(|f| f.handle_get(name, off, &mut rep)) {
+                ReadRes::Miss => match fat.as_mut().map(|f| f.handle_get(name, off, &mut rep, txid)) {
                     Some(GetRes::Served(n)) => n, // rep 已编码（handle_get 内部落字）
-                    Some(GetRes::Full) => encode_reply_status(&mut rep, berry_fsproto::ST_FULL)
+                    Some(GetRes::Full) => encode_reply_status(&mut rep, txid, berry_fsproto::ST_FULL)
                         .unwrap_or_else(|| trap()),
                     Some(GetRes::Bad) => {
-                        encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap())
+                        encode_reply_status(&mut rep, txid, ST_BAD).unwrap_or_else(|| trap())
                     }
                     // FAT 面命中的是目录（单段目录名/多段终段目录）——与
                     // RAM IsDir 同义（刀 3）。
                     Some(GetRes::IsDir) => {
-                        encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap())
+                        encode_reply_status(&mut rep, txid, ST_BAD).unwrap_or_else(|| trap())
                     }
                     // RAM/FAT 双未命中（或 FAT 层缺席）——NOENT。
                     Some(GetRes::Miss) | None => encode_reply_status(
                         &mut rep,
+                        txid,
                         berry_fsproto::ST_NOENT,
                     )
                     .unwrap_or_else(|| trap()),
                 },
                 // 目录不是读面（类型冲突，协议头 v2 注）。
-                ReadRes::IsDir => encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap()),
+                ReadRes::IsDir => encode_reply_status(&mut rep, txid, ST_BAD).unwrap_or_else(|| trap()),
             },
             Some(Req::List) => {
                 // 名列暂存走独立 scratch（msg 的借用跨整个 match 存活）；
@@ -162,7 +169,7 @@ fn main() {
                     Some(f) => f.append_names(&tree.root_names(), &mut names, n, b' '),
                     None => n,
                 };
-                encode_reply_list(&mut rep, &names[..n]).unwrap_or_else(|| trap())
+                encode_reply_list(&mut rep, txid, &names[..n]).unwrap_or_else(|| trap())
             }
             // v2 五 op（C-0 刀 2 服务面接树 / 刀 3 FAT 子目录读面）：
             // LOOKUP/STAT 的 RAM Miss 回落 FAT——单段 8.3 面（内存镜像）+
@@ -184,13 +191,13 @@ fn main() {
                         },
                     }
                 };
-                encode_reply_status(&mut rep, st).unwrap_or_else(|| trap())
+                encode_reply_status(&mut rep, txid, st).unwrap_or_else(|| trap())
             }
             Some(Req::Mkdir { path: name }) => {
-                encode_reply_status(&mut rep, tree.mkdir(name)).unwrap_or_else(|| trap())
+                encode_reply_status(&mut rep, txid, tree.mkdir(name)).unwrap_or_else(|| trap())
             }
             Some(Req::Unlink { path: name }) => {
-                encode_reply_status(&mut rep, tree.unlink(name)).unwrap_or_else(|| trap())
+                encode_reply_status(&mut rep, txid, tree.unlink(name)).unwrap_or_else(|| trap())
             }
             Some(Req::Readdir { path: name }) => {
                 let mut names = [0u8; 256];
@@ -203,12 +210,12 @@ fn main() {
                 // 同门）。
                 if name.is_empty() {
                     let n = root_overlay(&tree, &fat, &mut names);
-                    encode_reply_list(&mut rep, &names[..n]).unwrap_or_else(|| trap())
+                    encode_reply_list(&mut rep, txid, &names[..n]).unwrap_or_else(|| trap())
                 } else {
                     match tree.readdir(name, &mut names) {
                         // NUL 连接子名（READDIR 应答 blob = LIST 同形）。
                         ReadDirRes::Names(n) => {
-                            encode_reply_list(&mut rep, &names[..n]).unwrap_or_else(|| trap())
+                            encode_reply_list(&mut rep, txid, &names[..n]).unwrap_or_else(|| trap())
                         }
                         // RAM 未命中 → FAT 目录回落（刀 3：FAT 卷挂 / 的子目录
                         // 读面；RAM 同名项在树上时恒走上面 Names 臂——overlay
@@ -216,21 +223,22 @@ fn main() {
                         ReadDirRes::Noent => {
                             match fat.as_mut().map(|f| f.readdir(name, &mut names)) {
                                 Some(FatList::Names(n)) => {
-                                    encode_reply_list(&mut rep, &names[..n])
+                                    encode_reply_list(&mut rep, txid, &names[..n])
                                         .unwrap_or_else(|| trap())
                                 }
                                 Some(FatList::NotDir) | Some(FatList::Bad) => {
-                                    encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap())
+                                    encode_reply_status(&mut rep, txid, ST_BAD).unwrap_or_else(|| trap())
                                 }
                                 Some(FatList::Noent) | None => encode_reply_status(
                                     &mut rep,
+                                    txid,
                                     berry_fsproto::ST_NOENT,
                                 )
                                 .unwrap_or_else(|| trap()),
                             }
                         }
                         ReadDirRes::NotDir => {
-                            encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap())
+                            encode_reply_status(&mut rep, txid, ST_BAD).unwrap_or_else(|| trap())
                         }
                     }
                 }
@@ -243,23 +251,23 @@ fn main() {
                 if name.is_empty() {
                     let mut names = [0u8; 256];
                     let n = root_overlay(&tree, &fat, &mut names);
-                    encode_reply_stat(&mut rep, TYPE_DIR, nul_count(&names[..n]))
+                    encode_reply_stat(&mut rep, txid, TYPE_DIR, nul_count(&names[..n]))
                         .unwrap_or_else(|| trap())
                 } else {
                     match tree.stat(name) {
                         StatRes::Ok(ty, size) => {
-                            encode_reply_stat(&mut rep, ty, size).unwrap_or_else(|| trap())
+                            encode_reply_stat(&mut rep, txid, ty, size).unwrap_or_else(|| trap())
                         }
                         // FAT 回落面：文件 (TYPE_FILE, size) / 目录 (TYPE_DIR, 0)
                         // （刀 3 起含子目录链；毒化/链断诚实 ST_BAD）。
                         StatRes::Noent => match fat.as_mut().map(|f| f.stat(name)) {
                             Some(FatStat::Ok(ty, sz)) => {
-                                encode_reply_stat(&mut rep, ty, sz).unwrap_or_else(|| trap())
+                                encode_reply_stat(&mut rep, txid, ty, sz).unwrap_or_else(|| trap())
                             }
                             Some(FatStat::Bad) => {
-                                encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap())
+                                encode_reply_status(&mut rep, txid, ST_BAD).unwrap_or_else(|| trap())
                             }
-                            _ => encode_reply_status(&mut rep, berry_fsproto::ST_NOENT)
+                            _ => encode_reply_status(&mut rep, txid, berry_fsproto::ST_NOENT)
                                 .unwrap_or_else(|| trap()),
                         },
                     }
@@ -269,15 +277,15 @@ fn main() {
             // 参）。无卷（盘缺席/未挂/init 降级 RAM-only）→ ST_NOENT（fat
             // 族无盘语义同款）；RPC 失败/毒化/畸形计数 → ST_BAD（服务不死
             // 纪律：错误分流应答，不自陷）。
-            Some(Req::Statfs) => match fat.as_mut().map(|f| f.statfs(&mut rep)) {
+            Some(Req::Statfs) => match fat.as_mut().map(|f| f.statfs(&mut rep, txid)) {
                 Some(FatStatfs::Served(n)) => n,
                 Some(FatStatfs::Bad) => {
-                    encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap())
+                    encode_reply_status(&mut rep, txid, ST_BAD).unwrap_or_else(|| trap())
                 }
-                None => encode_reply_status(&mut rep, berry_fsproto::ST_NOENT)
+                None => encode_reply_status(&mut rep, txid, berry_fsproto::ST_NOENT)
                     .unwrap_or_else(|| trap()),
             },
-            None => encode_reply_status(&mut rep, ST_BAD).unwrap_or_else(|| trap()),
+            None => encode_reply_status(&mut rep, txid, ST_BAD).unwrap_or_else(|| trap()),
         };
         send_reply(h, &rep, rep_len);
     }

@@ -1,6 +1,6 @@
 [package]
 name = "dpgp"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 # G4-2（pager 服务首形）demand 装载受验子：跨进程供给形的 EL0 侧——
 # hello/thrchild 同款 no_std berry-sys 裸 bin，走 elf2flat 平像产链

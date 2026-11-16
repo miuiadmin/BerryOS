@@ -54,12 +54,14 @@
   python3 tools/bench.py             # B-0：跑一次 + 对拍基线（无基线 = 只出表）
   python3 tools/bench.py --update    # B-0：跑一次 + 刷新基线 B-0 段（B-1 段保留）
   python3 tools/bench.py --factor 5  # 放宽因子（CI 慢机场景）
+  python3 tools/bench.py --qemu-wait 30  # 预检等空帽收紧到 30s（0 = 单探即降级；
+                                        # 超时降级 = 非阻塞 Warn 放行，不再硬拒）
   python3 tools/bench.py --el0       # B-1：rootfs 形态跑一次 + 对拍 B-1 段
   python3 tools/bench.py --el0 --update  # B-1：跑一次 + 刷新 B-1 段（B-0 段保留）
   python3 tools/bench.py --rt        # R-1：裸跑（fw_cfg 门控 rt_probe）出三档表
   python3 tools/bench.py --lat       # G3-4 bench-lat：-smp 2（fw_cfg 门控 lat 对）
                                       # wake→run 出 lane 表（IPC 路在册）
-  python3 tools/bench.py --dpg       # G4-3 D/E 刀：dpgb/dpge 门控变体卷双 boot
+  python3 tools/bench.py --dpg       # G4-3 D/E 刀 + X-4/X-5 exec 面：dpgb / dpge+dpgx+x5 变体卷双 boot
                                       #（D 首触延迟出表 + E footprint 差分断言）
   python3 tools/bench.py --icount    # B-2：-icount 确定性跑一次 + L2 对拍
                                       #（无基线 = 只出表 + 提示 --update）
@@ -133,10 +135,32 @@ BOOT_TIMEOUT_LAT = 240
 # G4-3 D 刀帽（--dpg D 臂）：rootfs 走查 ~60-90s + dpg_bench 32 供给（TCG
 # 弹性）+ 余量——300s = ~3x。
 DPG_BOOT_TIMEOUT_D = 600
-# G4-3 E 刀帽（--dpg E 臂）：boot ~60s + svcmgr 预滚 340s + 4×130s 窗 +
-# spawn/poll 余量 ≈ 16min guest 钟（TCG guest 钟 = 墙钟，§A8；宿主争用面
-# §A128 只多不少）——1600s ≈ 1.7x 余量；超帽 loud 上报不硬凑绿。
-DPG_BOOT_TIMEOUT_E = 1600
+# G4-3 E 刀帽（--dpg E 臂）：boot ~60s + **三帧**（X-4 起 DPGE 帧后叠 DPGX
+# exec 差分帧；X-5 起再叠 X5 现役 bin 差分帧：各预滚 340s + 4×130s 窗）
+# + spawn/poll 余量 ≈ 42min guest 钟（TCG guest 钟 = 墙钟，§A8；宿主争用面
+# §A128 只多不少）——3600s ≈ 1.4x 余量；超帽 loud 上报不硬凑绿。
+DPG_BOOT_TIMEOUT_E = 3600
+# X-6 页/s 直测面（仪器刀 0——X6批供提速设计-v1.0 §5）：guest 观测行
+# `X6 pg=N sw=M`（pg = PAGER_SUPPLIED 累计供页〔rc==0 增〕、sw = PAGER_SWEEPS
+# 同源累计圈数；十进制单行、行不带钟）——svcmgr boot 验证环各 demand bin
+# （hello/hexyl/boot 尾——83 lane 侦察校准三点形；grep 不在 boot 环，仅
+# x5_foot 语境）验证成功后各单发，恰 3 行；x5/dpg 相位零发射
+# （kick 行与 dpgsoak 面不动）。**观测线非门标记**：不进 markers.sh /
+# rootfs 51（kick 行同例——bench 侧消费）；词形契约 = X6 设计稿 §5 冻结。
+# 钟 = 宿主侧轮询新字节到达时戳（分辨率 ±X6_POLL_S；X6 §5「页/s 的钟 =
+# 宿主侧 marker 到达时戳」——34 背书钉进验收节）。
+X6_RE = re.compile(r"^X6 pg=(\d+) sw=(\d+)\s*$", re.M)
+X6_POLL_S = 0.2
+# hexyl 窗（首窗 = stdhello→hexyl 差分，主装载窗）页/s 常驻回归门。None =
+# 观测不动判——X-6 刀未落内核照跑照绿（零漂移）。定标法（首净窗实测、
+# 不拍阈值）：② 落地首跑读 [X-6(0)] hexyl 实测率 R → 本常量写 R×0.7
+# （TCG 方差带）；收刀验收另口一次性判 R ≥ 基线(~6 页/s)×3（§5；kill
+# criteria <2× 撤刀）。
+X6_HEXYL_PGS_FLOOR: float | None = 7.98
+# 定标回执：2026-11-08 首净窗（HEAD=89703cb 硬化核，场净核验——E 臂守卫
+# 通过即 boot 时零在场 QEMU）R=11.4pg/s（102 页/8.92s，sw+77；receipt
+# dpg-20261108-130150-49261）×0.7。终判另裁口径：R/基线 6pg/s ≈1.9×——
+# 低于 kill 线 2× 与 ② 门 ×3（18），落设计稿诚实带宽 p≈0.5 带（1.4-2×）。
 # B-2 通道帽：与 vanilla BOOT_TIMEOUT=120 同口径、不放大。实测依据（M 系
 # mac，QEMU 11.0.3，2026-10-27 首跑探针）：boot 到 BENCHWAKE 全程 ≈2s——
 # sleep=off 下虚拟时钟纯指令驱动，「-icount 慢 2-4x」预期被实测反驳
@@ -339,18 +363,36 @@ def kernel_elf() -> str:
 # 他源宿主负载（编译/他系模拟器）从来不在守卫射程内。
 QEMU_GUARD_PATTERN = r"qemu-system.*(-machine virt|-kernel)"
 
+# 预检等空帽（秒，模块级单点）：main() 按 --qemu-wait 落值，五个通道入口
+# （run_once/run_rt/run_lat/dpg_boot/run_icount）的裸调 qemu_preflight() 共读；
+# 形参 wait_s 留给 selftest 短窗注入（不真睡 900s）。
+QEMU_WAIT_S = 900.0
 
-def qemu_preflight() -> None:
+
+def qemu_preflight(wait_s: float | None = None) -> None:
     """起 QEMU 前跨进程串行守卫（2026-10-27 三镜审查补修——「QEMU 严格单
     实例」从进程内天然串行升格为执法点）：`pgrep -f QEMU_GUARD_PATTERN`
     非空 = 另一终端/CI job 的**本仓** QEMU 在场（soak/smoke 长跑正属常态；
     Android/AVD 他系模拟器不在此面——见 QEMU_GUARD_PATTERN 注）——静默并行
     第二台既违本仓串行纪律，也污染 vanilla/rt 通道的墙钟派生计时（CNTVCT
     走 TCG 实时，宿主竞争 = L1 假红面；icount 数值由虚拟时钟驱动免疫，
-    纪律一体适用）。行为 = 轮询等空（2s 粒度——「等空而非并行」铁律的
-    工具化）而非立即拒绝；帽 900s 后 loud SystemExit——等一小时级的 soak
-    不如让人稍后再跑（无人值守 CI 下超时即失败，不静默并行）。"""
-    deadline = time.time() + 900
+    纪律一体适用）。
+
+    行为 = 轮询等空（2s 粒度——「等空而非并行」铁律的工具化）而非立即
+    拒绝；帽（默认 QEMU_WAIT_S=900s，--qemu-wait 可调，0 = 单探即判）到点
+    **降级非阻塞 Warn 放行**（F-C6 逃生位，2026-11-15 起——旧语义「帽后
+    loud SystemExit 硬拒」废止：owner 长跑 soak/演练在场的真实工况下，
+    900s 死等 + 硬拒 = 工具被堵死 15 分钟别无出路，45 号 §4-8 实咬、
+    bench_baseline_icount.notes.md 环境注记两轮 900s 等空超时在案）。
+    Warn 语义：第二台 QEMU 即将并行——墙钟通道（vanilla/rt/lat/dpg）
+    数值可能被在场 QEMU 污染（假红自查），icount 通道虚拟时钟免疫；无人
+    值守 CI 想要旧硬拒 = 先清场再跑，本工具不再代拒。pgrep 自身失效
+    （rc∉{0,1}）仍硬拒——守卫坏了不是场地问题，拒不起。
+
+    wait_s 形参：None = 读模块级 QEMU_WAIT_S（main 按 --qemu-wait 落值）；
+    selftest 以短窗/零窗注入做降级腿，不真睡满帽。"""
+    cap = QEMU_WAIT_S if wait_s is None else wait_s
+    deadline = time.time() + cap
     notified = False
     while True:
         r = subprocess.run(["pgrep", "-f", QEMU_GUARD_PATTERN],
@@ -362,16 +404,20 @@ def qemu_preflight() -> None:
                 f"bench.py: pgrep 异常 rc={r.returncode}"
                 f"（stderr: {r.stderr.strip()}）——串行守卫自身失效，拒不起 QEMU")
         if not notified:
-            print("bench.py: 检测到在场 QEMU（pgrep -f QEMU_GUARD_PATTERN 非空"
-                  "——本仓签名，Android/AVD 不误伤）——"
-                  "串行纪律轮询等空中（帽 900s，绝不并行第二台）", file=sys.stderr)
+            print(f"bench.py: 检测到在场 QEMU（pgrep -f QEMU_GUARD_PATTERN 非空"
+                  f"——本仓签名，Android/AVD 不误伤）——"
+                  f"串行纪律轮询等空中（帽 {cap:g}s，绝不静默并行第二台）",
+                  file=sys.stderr)
             notified = True
         if time.time() >= deadline:
+            # F-C6 逃生位：等空超时降级 = 非阻塞 Warn 放行（非硬拒）。
             pids = " ".join(r.stdout.split())
-            raise SystemExit(
-                f"bench.py: QEMU 串行守卫等空超时（900s）——在场 pids: {pids}；"
-                "长跑（just soak 等）占用期间勿并行 bench，稍后重试")
-        time.sleep(2)
+            print(f"bench.py: Warn QEMU 串行守卫等空超时（{cap:g}s）——在场 "
+                  f"pids: {pids}；降级放行（逃生位 --qemu-wait 可调帽/0 单探）："
+                  "第二台 QEMU 即将并行，墙钟通道数值可能被污染（假红先查在场 "
+                  "QEMU；icount 通道虚拟时钟免疫）", file=sys.stderr)
+            return
+        time.sleep(min(2, deadline - time.time()))
 
 
 def run_once(kernel: str, el0: bool = False) -> dict[str, int]:
@@ -432,7 +478,12 @@ def run_once(kernel: str, el0: bool = False) -> dict[str, int]:
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
-        Path(log_path).unlink(missing_ok=True)
+        # 二轮审计重修：finally 只杀进程——收割判定在 finally 之后才
+        # raise（boot 超时/标记未达），此时 exc_info 已 None，旧条件式会
+        # 先删后红（失败必留对主失败面失效）。删除权移交收割成功出口的
+        # 内联 unlink；异常在飞（Ctrl-C/IO）仍打保留提示。
+        if sys.exc_info()[0] is not None:
+            print(f"bench: failure serial log kept: {log_path}", file=sys.stderr)
 
     metrics: dict[str, int] = {}
     done_n = None
@@ -463,6 +514,9 @@ def run_once(kernel: str, el0: bool = False) -> dict[str, int]:
                          if el0 else
                          f"bench.py: BENCH 行数 {len(metrics)} ≠ BENCH ok n={done_n}"
                          "（内核侧计数与出表不一致——改 bench.rs 后同步 N_METRICS）")
+    # 二轮审计重修：收割全过（成功出口）才清串口日志——失败路径（超时/
+    # 标记未达/收割不齐的 raise）天然保留。
+    Path(log_path).unlink(missing_ok=True)
     return metrics
 
 
@@ -509,7 +563,12 @@ def run_rt(kernel: str) -> list[tuple[int, int, int, int]]:
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
-        Path(log_path).unlink(missing_ok=True)
+        # 二轮审计重修：finally 只杀进程——收割判定在 finally 之后才
+        # raise（boot 超时/标记未达），此时 exc_info 已 None，旧条件式会
+        # 先删后红（失败必留对主失败面失效）。删除权移交收割成功出口的
+        # 内联 unlink；异常在飞（Ctrl-C/IO）仍打保留提示。
+        if sys.exc_info()[0] is not None:
+            print(f"bench: failure serial log kept: {log_path}", file=sys.stderr)
 
     d = DONE_RT_RE.search(text)
     if d is None:
@@ -530,6 +589,9 @@ def run_rt(kernel: str) -> list[tuple[int, int, int, int]]:
             f"bench.py: BENCHRT 收割不齐（rows={len(rows)} done_n={done_n} "
             f"deltas={deltas}——须恰 {RT_TIERS} 行、n 合计 {RT_TIERS * RT_N}、"
             f"delta 单调不重；改 task_rt_probe 后同步）")
+    # 二轮审计重修：收割全过（成功出口）才清串口日志——失败路径（超时/
+    # 标记未达/收割不齐的 raise）天然保留。
+    Path(log_path).unlink(missing_ok=True)
     return rows
 
 
@@ -585,7 +647,12 @@ def run_lat(kernel: str) -> dict[str, tuple[int, ...]]:
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
-        Path(log_path).unlink(missing_ok=True)
+        # 二轮审计重修：finally 只杀进程——收割判定在 finally 之后才
+        # raise（boot 超时/标记未达），此时 exc_info 已 None，旧条件式会
+        # 先删后红（失败必留对主失败面失效）。删除权移交收割成功出口的
+        # 内联 unlink；异常在飞（Ctrl-C/IO）仍打保留提示。
+        if sys.exc_info()[0] is not None:
+            print(f"bench: failure serial log kept: {log_path}", file=sys.stderr)
 
     # 完成标记按路分记（恰一个/路、n 逐路 == LAT_N；缺席诊断按缺失路点名）。
     lane_of = {v: k for k, v in LAT_DONE_MARKERS.items()}
@@ -627,6 +694,9 @@ def run_lat(kernel: str) -> dict[str, tuple[int, ...]]:
             f"lane={lane} n,pmin,p50,p90,p99,pmax={','.join(map(str, vals))}"
             for lane, vals in sorted(rows.items())
         ))
+    # 二轮审计重修：收割全过（成功出口）才清串口日志——失败路径（超时/
+    # 标记未达/收割不齐的 raise）天然保留。
+    Path(log_path).unlink(missing_ok=True)
     return rows
 
 
@@ -644,46 +714,79 @@ assert all(_lbl in DPGB_RE.pattern
 # E 刀相位标记（svcmgr dpg_foot 6 字节行；帧序 A→B→C→E）——子串 find，
 # 拼行免疫。
 DPGE_MARKERS = ("DPGE A", "DPGE B", "DPGE C", "DPGE E")
+# X-4 E 面 exec 差分帧标记（svcmgr dpgx_foot 行；帧序 A→B→C→E，DPGE 同形）
+# ——非锚定子串 find 同上；`DPGX ready` 走私有通道不进串口，不作断言面。
+DPGX_MARKERS = ("DPGX A", "DPGX B", "DPGX C", "DPGX E")
+# X-5 现役 bin 差分帧标记（svcmgr x5_foot 行；帧序 A→B→C→E，DPGX 同形）
+# ——hexyl/grep 停泊双胎 demand vs eager 装载差分（第三组 d''<e''）。
+X5_MARKERS = ("X5 A", "X5 B", "X5 C", "X5 E")
 # soakmon 心跳 pages= 字段（内核 main.rs 9 字段行 `SOAK t=… pages=<n> lost=…`；
 # 60s 拍、首拍潜伏 5 拍 ≈ 300s）。**非锚定**同 DPGB_RE——内核行也会被并发
 # 前缀拼行（switches= 实证）；行内原子性由单次 uart_puts 整行写保证。
 SOAK_PAGES_RE = re.compile(r"SOAK .*?pages=(\d+)")
 
 
-def dpg_variant(gate: str) -> Path:
-    """门控变体卷：rootfs.cpio TRAILER 前手术追 `<gate>.on` 空档（smoke-
+def dpg_volumes() -> list[Path]:
+    """rootfs 递送卷集发现（X-3c 后 rootfs >32MiB 常态双卷，smoke.sh A1-3b
+    同口径）：rootfs0..N 连续前缀在席即 split 形（手术面 = 末卷，真
+    TRAILER 恒在末卷——mkcpio 切分器条目对齐保证）；缺席回落旧单卷
+    rootfs.cpio。返回 = 递送序全卷（前缀卷原样 + 末卷待手术）。"""
+    vols, i = [], 0
+    while (REPO / f"rootfs{i}.cpio").exists():
+        vols.append(REPO / f"rootfs{i}.cpio")
+        i += 1
+    return vols or [ROOTFS]
+
+
+def dpg_variant(*gates: str) -> list[Path]:
+    """门控变体卷集：末卷 TRAILER 前手术追各 `<gate>.on` 空档（smoke-
     dpgsoak 同款 newc 逻辑；TRAILER 名域 rfind 定位 = 档尾真 trailer，数据
-    内偶合 ASCII 被跳过）。确定性产物：同输入同字节。"""
+    内偶合 ASCII 被跳过——rootfs0 卷内十余处数据偶合实证同防；X-4 起 E 臂
+    三门 dpge+dpgx+x5 同卷共递；X-3c 后 rootfs 越单卷帽，手术面从 rootfs.cpio
+    迁末 split 卷——门档落归档尾 = 与单卷时代同字节位）。确定性产物：同输入
+    同字节。返回 = 递送序全卷（前缀卷原样引用 + 手术末卷）。"""
     sys.path.insert(0, str(REPO / "tools"))
     from mkcpio import entry
 
-    variant = REPO / f"rootfs.{gate}.cpio"
-    blob = ROOTFS.read_bytes()
+    vols = dpg_volumes()
+    last = vols[-1]
+    if len(vols) == 1:
+        variant = REPO / f"rootfs.{'.'.join(gates)}.cpio"
+    else:
+        variant = REPO / f"rootfs{len(vols) - 1}.{'.'.join(gates)}.cpio"
+    blob = last.read_bytes()
     name_pos = blob.rfind(b"TRAILER!!!")
     if name_pos <= 0:
-        raise SystemExit("bench.py: rootfs.cpio 无 TRAILER——档坏（先 just build-user）")
+        raise SystemExit("bench.py: 末卷无 TRAILER——档坏（先 just build-user）")
     out = blob[: name_pos - 110]
-    out += entry(gate.encode() + b".on", b"", 0xF0000001)  # ino 避开正装递增域
+    for i, gate in enumerate(gates):
+        # ino 避开正装递增域（双门错开 0xF0000001/2）。
+        out += entry(gate.encode() + b".on", b"", 0xF0000001 + i)
     out += entry(b"TRAILER!!!", b"", 0)
     out += b"\0" * (-len(out) % 4)
     variant.write_bytes(out)
-    return variant
+    return vols[:-1] + [variant]
 
 
-def dpg_boot(kernel: str, variant: Path, soak: bool, done_pat: str, cap: int,
-             log_kind: str) -> str:
+def dpg_boot(kernel: str, volumes: list[Path], soak: bool, done_pat: str,
+             cap: int, log_kind: str,
+             x6_out: "list[tuple[float, int, int]] | None" = None) -> str:
     """D/E 共形 boot：**满配设备面**（dpgsoak 同款——vblk 预拉扫 MMIO 无盘
     即 loud 自陷 → G1.5 杀数 2>1 panic；TCPS 相先于 dpg 位 ⇒ echod 对端
     在席；evs/skt 非本终态依赖〔f4 C-full concur-2〕）+ -smp 2（家族对照
     口径一致）→ 轮询临时日志至 done_pat → SIGTERM+wait+3s 串口落定 →
-    杀 echod → 返回串口全文。E 臂 soak=True 追加 opt/berry/soak 心跳门。"""
-    # 变体越帽执法（CRIT-CF1 判例：fw_cfg 单卷越内核 ROOTFS_MAX 32MiB =
-    # main.rs 静默 return None，门 miss → 烧帽且无成因行——越帽即 loud 拒入）。
-    vsz = variant.stat().st_size
-    if vsz > 33_554_432:
-        raise SystemExit(
-            f"bench.py: 变体卷 {variant.name} {vsz}B 越内核 ROOTFS_MAX 32MiB "
-            "帽（fw_cfg 静默拒收面）——瘦身 rootfs 后重建")
+    杀 echod → 返回串口全文。E 臂 soak=True 追加 opt/berry/soak 心跳门。
+    卷递送（X-3c 后 split 形）：单卷名 opt/berry/rootfs 旧口径；多卷 =
+    内核连续前缀发现域 opt/berry/rootfs0..9（smoke.sh A1-3b 同口径）。"""
+    # 每卷越帽执法（CRIT-CF1 判例：fw_cfg 单卷越内核 ROOTFS_MAX 32MiB =
+    # main.rs 静默 return None，门 miss → 烧帽且无成因行——越帽即 loud 拒入；
+    # split 形逐卷查——手术只胀末卷，但前缀卷同查防手改盘外档）。
+    for vol in volumes:
+        vsz = vol.stat().st_size
+        if vsz > 33_554_432:
+            raise SystemExit(
+                f"bench.py: 递送卷 {vol.name} {vsz}B 越内核 ROOTFS_MAX 32MiB "
+                "帽（fw_cfg 静默拒收面）——瘦身 rootfs 后重建")
     # 端口让场（smoke/soak 族同值端口 = 天然串行协议；被占即退）。
     if subprocess.run(["lsof", "-nP", "-iTCP:18080-18083", "-sTCP:LISTEN"],
                       capture_output=True).returncode == 0:
@@ -692,7 +795,7 @@ def dpg_boot(kernel: str, variant: Path, soak: bool, done_pat: str, cap: int,
     # 门控串预检（smoke-dpgsoak :44 同款）：内核 ELF 缺 dpg 手排/相位串 =
     # 陈旧内核（改嵌用户 bin 未重建——§A53 两遍构建纪律）——预拒不烧帽。
     kernel_blob = Path(kernel).read_bytes()
-    for sig in (b"DPGB p50=", b"DPGE A"):
+    for sig in (b"DPGB p50=", b"DPGE A", b"DPGX A", b"X5 A"):
         if sig not in kernel_blob:
             raise SystemExit(
                 f"bench.py: 内核 ELF 无 `{sig.decode()}` 串——陈旧内核（改嵌"
@@ -703,10 +806,18 @@ def dpg_boot(kernel: str, variant: Path, soak: bool, done_pat: str, cap: int,
                    check=True)
     with open(disk, "r+b") as f:
         f.write(b"BERRYOSVBLK!")
+    # rootfs 递送（split 形多卷名 / 单卷旧名——dpg_volumes 同口径）。
+    if len(volumes) == 1:
+        fw_rootfs = ["-fw_cfg", f"name=opt/berry/rootfs,file={volumes[0].resolve()}"]
+    else:
+        fw_rootfs = [
+            arg for i, vol in enumerate(volumes)
+            for arg in ("-fw_cfg", f"name=opt/berry/rootfs{i},file={vol.resolve()}")
+        ]
     qemu_cmd = [
         "qemu-system-aarch64", "-machine", "virt", "-cpu", "cortex-a72",
         "-m", "128M", "-nographic", "-kernel", kernel, "-smp", "2",
-        "-fw_cfg", f"name=opt/berry/rootfs,file={variant.resolve()}",
+        *fw_rootfs,
         "-global", "virtio-mmio.force-legacy=false",
         "-drive", f"if=none,id=drv0,format=raw,file={disk},"
                   "cache.writeback=off",
@@ -739,13 +850,23 @@ def dpg_boot(kernel: str, variant: Path, soak: bool, done_pat: str, cap: int,
     )
     try:
         deadline = time.time() + cap
+        prev_len = 0
+        x6_end = 0
         while time.time() < deadline:
             if proc.poll() is not None:
                 break  # QEMU 提前退出（崩溃）——带现有日志走收割失败路径
             text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+            if x6_out is not None:
+                now = time.time()
+                # 回看 64B 覆盖上轮半行（X6 行 <30B）；end 单调防重采。
+                for m in X6_RE.finditer(text, max(0, prev_len - 64)):
+                    if m.end() > x6_end:
+                        x6_out.append((now, int(m.group(1)), int(m.group(2))))
+                        x6_end = m.end()
+                prev_len = len(text)
             if done_pat in text:
                 break
-            time.sleep(1)
+            time.sleep(X6_POLL_S if x6_out is not None else 1)
     finally:
         # run_rt 同款：halt 后不退出，收完即杀（kill 后补 wait 收尸）；
         # SIGTERM 后 3s 串口落定（dpgsoak A-6 实证同款）再读终态。
@@ -757,15 +878,27 @@ def dpg_boot(kernel: str, variant: Path, soak: bool, done_pat: str, cap: int,
             proc.wait()
         time.sleep(3)
         text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+        if x6_out is not None:
+            # 终读补采：done 后至 SIGTERM 落定窗内新到观测行（3s 落定窗）。
+            for m in X6_RE.finditer(text, max(0, prev_len - 64)):
+                if m.end() > x6_end:
+                    x6_out.append((time.time(), int(m.group(1)),
+                                   int(m.group(2))))
+                    x6_end = m.end()
         echod.terminate()
         echod.wait(timeout=5)
     if done_pat in text:
         Path(log_path).unlink(missing_ok=True)
         return text
     # 失败保留串口全文（诊断面：S-C2 同族——烧帽档须可复核）。
+    # 实耗/预算帽双报（2026-11-09 判例：外杀/崩溃提前收卷时消息只报 cap
+    # 令验尸误读「跑满 3600s」——mtime 才是地面真值，消息面同步补齐）。
+    elapsed = int(time.time() - (deadline - cap))
     raise SystemExit(
-        f"bench.py: `{done_pat}` {cap}s 未出现（boot 失败 / svcmgr dpg 链"
-        f"降级（eco 行）/ 门控卷未递 / 内核陈旧〔改 bin 未重建〕？）"
+        f"bench.py: `{done_pat}` 未出现（实耗 {elapsed}s / 预算帽 {cap}s——提前"
+        f"收卷先查 QEMU 死因：外杀/panic/崩溃；跑满帽才是真超时）"
+        f"（boot 失败 / svcmgr dpg 链降级（eco 行）/ 门控卷未递 / 内核陈旧"
+        f"〔改 bin 未重建〕？）"
         f"——串口全文保留：{log_path}"
         f"（尾部：{' | '.join(text.splitlines()[-5:])}）")
 
@@ -776,13 +909,30 @@ def run_dpg(kernel: str) -> None:
 
     D 臂（dpgb.on）：单子 32 页顺序首触 × 一对一供给，faulter 侧 clock 环夹
     → `DPGB p50= p99= min= max= n=32` 收割出表。
-    E 臂（dpge.on + opt/berry/soak）：demand 8 触 vs eager 32 页 commit 的
-    soakmon `pages=` 心拍差分——「标记前最近拍」配对 d=pB−pA / e=pC−pB
-    （**窗在标记前** = svcmgr dpg_foot 帧序契约），d<e 结构断言（demand 省
-    ≈24 页面 + 元页）；帧序 DPGE A→B→C→E + 相邻标记间 ≥2 拍窗完整性。
+    E 臂（dpge.on + dpgx.on + x5.on + opt/berry/soak，X-5 起三门同卷）：DPGE 帧 =
+    demand 8 触 vs eager 32 页 commit 的 soakmon `pages=` 心拍差分——「标记
+    前最近拍」配对 d=pB−pA / e=pC−pB（**窗在标记前** = svcmgr dpg_foot 帧
+    序契约），d<e 结构断言（demand 省 ≈24 页面 + 元页）；帧序 DPGE A→B→C→E
+    + 相邻标记间 ≥2 拍窗完整性。DPGX 帧（X-4 E 面 exec 实装载差分）= 同形
+    帧跑 bin/dpgx 双生 spawn（demand 胎 = congruent 单 k 特形真消费者；
+    eager 胎 = EagerGuard 摘钩对照，唯一变量 = 装载分支）——第二组 d'<e'
+    配对 + 同套帧序/窗完整性断言。X5 帧（X-5 现役 bin 差分）= 同形帧跑
+    bin/hexyl+bin/grep 停泊双胎（demand 双胎 stdin 持端停泊锚 warm 集 vs
+    eager 双胎全幅 commit）——第三组 d''<e'' 配对 + 同套断言；done 标记 =
+    `X5 E`（全帧最后行）。
     """
     if not ROOTFS.exists():
         raise SystemExit("bench.py: rootfs.cpio 缺席——先 just build-user")
+    # 内核字节冻结（X-4 判例：双臂逐 boot，臂间主树重编 = 活臂下静默换 ELF
+    # ——门控串预检只防「串缺席」不防「同串不同码」；D 臂旧码绿 + E 臂新码
+    # 楔的混态跑实踩）。run 起点快照 + sha256 回执，双臂恒用快照件。
+    with tempfile.NamedTemporaryFile(
+        prefix="berryos-bench-dpg-kernel.", suffix=".elf", delete=False
+    ) as kf:
+        kf.write(Path(kernel).read_bytes())
+        kernel = kf.name
+    ksha = hashlib.sha256(Path(kernel).read_bytes()).hexdigest()
+    print(f"bench.py: 内核冻结 {kernel} sha256={ksha[:16]}…（双臂恒用此字节）")
     # D 臂。
     text_d = dpg_boot(kernel, dpg_variant("dpgb"), False, "DPGB p50=",
                       DPG_BOOT_TIMEOUT_D, "d")
@@ -798,9 +948,10 @@ def run_dpg(kernel: str) -> None:
     # C-DE2：D 臂收割即先落一档——E 臂独立盘/独立 boot，E 败时 D 证据不陪葬。
     write_receipt("dpg-d", text_d,
                   f"D: p50={p50} p99={p99} min={mn} max={mx} n={n}")
-    # E 臂。
-    text_e = dpg_boot(kernel, dpg_variant("dpge"), True, "DPGE E",
-                      DPG_BOOT_TIMEOUT_E, "e")
+    # E 臂。x6_events = X-6(0) 观测行宿主时戳采集（D 臂不采——E 族 = 验收面）。
+    x6_events: list[tuple[float, int, int]] = []
+    text_e = dpg_boot(kernel, dpg_variant("dpge", "dpgx", "x5"), True, "X5 E",
+                      DPG_BOOT_TIMEOUT_E, "e", x6_out=x6_events)
     beats = [(b.start(), int(b.group(1))) for b in SOAK_PAGES_RE.finditer(text_e)]
     if not beats:
         raise SystemExit(
@@ -837,10 +988,125 @@ def run_dpg(kernel: str) -> None:
             f"小于 eager 32 页 commit 增量；pA={pa} pB={pb} pC={pc}）")
     print(f"[G4-3(E)] pA={pa} pB={pb} pC={pc} | d(demand 8触)={d} "
           f"e(eager 32页)={e} | d<e ok（差 {e - d} 页）")
-    write_receipt(
-        "dpg", text_d + "\n===== E 臂 =====\n" + text_e,
+    # X-4 X 面（exec 实装载差分）：DPGX 帧同套断言——帧序/≥2 拍窗完整性/
+    # 第二组 d'<e'（demand 胎 congruent 装载触集 vs eager 胎全幅 commit）。
+    pos_x: dict[str, int] = {}
+    for mk in DPGX_MARKERS:
+        p = text_e.find(mk)
+        if p < 0:
+            raise SystemExit(f"bench.py: E 臂 `{mk}` 标记缺席（X 帧中断）")
+        pos_x[mk] = p
+    if [pos_x[mk] for mk in DPGX_MARKERS] != sorted(pos_x.values()):
+        raise SystemExit(f"bench.py: E 臂 DPGX 标记行序错乱（{pos_x}）")
+    if pos["DPGE E"] >= pos_x["DPGX A"]:
+        raise SystemExit("bench.py: E 臂 DPGX A 未后随 DPGE E（帧叠序破）")
+    last_x: dict[str, int] = {}
+    for mk, p in pos_x.items():
+        prev = [v for s, v in beats if s < p]
+        if not prev:
+            raise SystemExit(
+                f"bench.py: E 臂 `{mk}` 前无 SOAK 拍（X 预滚不足？）")
+        last_x[mk] = prev[-1]
+    for lo, hi in (("DPGX A", "DPGX B"), ("DPGX B", "DPGX C"),
+                   ("DPGX C", "DPGX E")):
+        n_between = sum(1 for s, _ in beats if pos_x[lo] < s < pos_x[hi])
+        if n_between < 2:
+            raise SystemExit(
+                f"bench.py: E 臂 {lo}→{hi} 窗内拍数 {n_between} < 2（X 帧"
+                "窗口/心跳契约破）")
+    xa, xb, xc = last_x["DPGX A"], last_x["DPGX B"], last_x["DPGX C"]
+    dx, ex = xb - xa, xc - xb
+    if not (dx < ex):
+        raise SystemExit(
+            f"bench.py: X-4 结构断言败：d'={dx} !< e'={ex}（demand 胎 exec"
+            f" 装载触集应小于 eager 胎全幅 commit；pA'={xa} pB'={xb} pC'={xc}）")
+    print(f"[X-4(X)] pA'={xa} pB'={xb} pC'={xc} | d'(demand胎exec)={dx} "
+          f"e'(eager胎全幅)={ex} | d'<e' ok（差 {ex - dx} 页）")
+    # X-5 面（现役 musl 多段族 exec demand 化差分）：X5 帧同套断言——帧序/
+    # 叠序（X5 A 后随 DPGX E）/≥2 拍窗完整性/第三组 d''<e''（demand 双胎
+    # 停泊 warm 集 vs eager 双胎全幅 commit）。
+    pos_x5: dict[str, int] = {}
+    for mk in X5_MARKERS:
+        p = text_e.find(mk)
+        if p < 0:
+            raise SystemExit(f"bench.py: E 臂 `{mk}` 标记缺席（X-5 帧中断）")
+        pos_x5[mk] = p
+    if [pos_x5[mk] for mk in X5_MARKERS] != sorted(pos_x5.values()):
+        raise SystemExit(f"bench.py: E 臂 X5 标记行序错乱（{pos_x5}）")
+    if pos_x["DPGX E"] >= pos_x5["X5 A"]:
+        raise SystemExit("bench.py: E 臂 X5 A 未后随 DPGX E（帧叠序破）")
+    last_x5: dict[str, int] = {}
+    for mk, p in pos_x5.items():
+        prev = [v for s, v in beats if s < p]
+        if not prev:
+            raise SystemExit(
+                f"bench.py: E 臂 `{mk}` 前无 SOAK 拍（X-5 预滚不足？）")
+        last_x5[mk] = prev[-1]
+    for lo, hi in (("X5 A", "X5 B"), ("X5 B", "X5 C"), ("X5 C", "X5 E")):
+        n_between = sum(1 for s, _ in beats if pos_x5[lo] < s < pos_x5[hi])
+        if n_between < 2:
+            raise SystemExit(
+                f"bench.py: E 臂 {lo}→{hi} 窗内拍数 {n_between} < 2（X-5 帧"
+                "窗口/心跳契约破）")
+    x5a, x5b, x5c = last_x5["X5 A"], last_x5["X5 B"], last_x5["X5 C"]
+    dx5, ex5 = x5b - x5a, x5c - x5b
+    if not (dx5 < ex5):
+        raise SystemExit(
+            f"bench.py: X-5 结构断言败：d''={dx5} !< e''={ex5}（demand 双胎"
+            f"停泊 warm 集应小于 eager 双胎全幅 commit；pA''={x5a} "
+            f"pB''={x5b} pC''={x5c}）")
+    print(f"[X-5(X5)] pA''={x5a} pB''={x5b} pC''={x5c} | "
+          f"d''(demand双胎停泊)={dx5} e''(eager双胎全幅)={ex5} | "
+          f"d''<e'' ok（差 {ex5 - dx5} 页）")
+    # X-6(0) 页/s 直测面：观测行恰 3（hello/hexyl/boot 尾各一——83 lane 发射
+    # 点校准形）——相邻差
+    # 分 = 各窗页数，宿主到达时戳差分 = 窗钟。无行 = 刀未落，观测面静默
+    # （pre-X6 内核照跑照绿 = 零漂移构造性保证）；有行而非 3 = 词形契约破
+    # loud 拒。
+    x6_summary = ""
+    if x6_events:
+        if len(x6_events) != 3:
+            raise SystemExit(
+                f"bench.py: X6 观测行 {len(x6_events)} ≠ 3（词形契约破——"
+                "boot 环三点各一（hello/hexyl/尾）；查 svcmgr 发射点/行形）")
+        # 窗 i = 事件 i→i+1。win0 = hello→hexyl = 纯 hexyl 装载窗（两 arm 环内
+        # 相邻零插花；u1 十二胎 + stdhello 均在首行前 = 黑暗基线不入窗）；
+        # win1 = hexyl→尾行 = 尾窗（simbattery/vprobe/app 批拉页）。
+        win_names = ("hexyl", "tail")
+        wins = []
+        for i, ((t0, p0, s0), (t1, p1, s1)) in enumerate(
+                zip(x6_events, x6_events[1:])):
+            dt = t1 - t0
+            dp, ds = p1 - p0, s1 - s0
+            if dp < 0 or ds < 0:
+                raise SystemExit(
+                    f"bench.py: X6 计数非单调（事件 {i}→{i+1}：pg {p0}→{p1} "
+                    f"sw {s0}→{s1}）——收割面坏，勿读率")
+            # 钟粒度下限垫分母（窗短于轮询粒度时低估率 = 下限门安全侧）。
+            rate = dp / max(dt, X6_POLL_S)
+            name = win_names[i] if i < len(win_names) else f"win{i}"
+            wins.append((name, dp, dt, rate, ds))
+            print(f"[X-6(0)] {name}: {dp} 页/{dt:.2f}s = {rate:.1f}pg/s"
+                  f"（sw+{ds}）")
+        hexyl_rate = wins[0][3]
+        if X6_HEXYL_PGS_FLOOR is None:
+            print(f"[X-6(0)] hexyl 回归门未定标（首净窗实测 {hexyl_rate:.1f}"
+                  "pg/s ×0.7 → 写 X6_HEXYL_PGS_FLOOR 常量）")
+        elif hexyl_rate < X6_HEXYL_PGS_FLOOR:
+            raise SystemExit(
+                f"bench.py: X-6 页/s 回归门败：hexyl {hexyl_rate:.1f}pg/s < "
+                f"下限 {X6_HEXYL_PGS_FLOOR}（首净窗定标 ×0.7——供给链回归？"
+                "查 pager 扫圈/svcmgr 供给路径）")
+        x6_summary = "\n".join(
+            f"X6[{n}]: pages={dp} dt={dt:.2f}s rate={r:.1f}pg/s sw+{ds}"
+            for n, dp, dt, r, ds in wins)
+    summary = (
         f"D: p50={p50} p99={p99} min={mn} max={mx} n={n}\n"
-        f"E: pA={pa} pB={pb} pC={pc} d={d} e={e} (d<e)")
+        f"E: pA={pa} pB={pb} pC={pc} d={d} e={e} (d<e)\n"
+        f"X: pA'={xa} pB'={xb} pC'={xc} d'={dx} e'={ex} (d'<e')\n"
+        f"X5: pA''={x5a} pB''={x5b} pC''={x5c} d''={dx5} e''={ex5} (d''<e'')"
+        + (f"\n{x6_summary}" if x6_summary else ""))
+    write_receipt("dpg", text_d + "\n===== E 臂 =====\n" + text_e, summary)
 
 
 def run_icount(kernel: str, trace_off: bool = False) -> tuple[dict[str, int], dict[str, int], str]:
@@ -913,7 +1179,12 @@ def run_icount(kernel: str, trace_off: bool = False) -> tuple[dict[str, int], di
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
-        Path(log_path).unlink(missing_ok=True)
+        # 二轮审计重修：finally 只杀进程——收割判定在 finally 之后才
+        # raise（boot 超时/标记未达），此时 exc_info 已 None，旧条件式会
+        # 先删后红（失败必留对主失败面失效）。删除权移交收割成功出口的
+        # 内联 unlink；异常在飞（Ctrl-C/IO）仍打保留提示。
+        if sys.exc_info()[0] is not None:
+            print(f"bench: failure serial log kept: {log_path}", file=sys.stderr)
 
     if done_re.search(text) is None:
         raise SystemExit(
@@ -950,6 +1221,9 @@ def run_icount(kernel: str, trace_off: bool = False) -> tuple[dict[str, int], di
         f"icount{'-off' if trace_off else ''}", text,
         "\n".join(f"{n} iters={iters_seen[n]} cyc={metrics[n]}"
                   for n in sorted(metrics)) + f"\n{wake_line}")
+    # 二轮审计重修：收割全过（成功出口）才清串口日志——失败路径（超时/
+    # 标记未达/收割不齐的 raise）天然保留。
+    Path(log_path).unlink(missing_ok=True)
     return metrics, iters_seen, wake_line
 
 
@@ -1223,11 +1497,371 @@ def _l2_bad(tag: str, metrics: dict[str, int], base: dict[str, int]) -> list[str
     return bad
 
 
+def selftest() -> int:
+    """门禁自检（a-3 U4 纪律同款）——bench 对拍器自身的钉板（纯 host 零 QEMU）。
+
+    本工具是 just bench / bench-rt / bench-icount 六通道 QEMU 门禁的宿主
+    收割与对拍面，此前零自检：收割正则坏 = 基准行静默漏收（假超时红）或
+    误收（空心绿）；基线读写两侧不同形 = 「双绿」对陈旧基线自证（P6 A-5
+    基准漂移雷）。覆盖：
+    - 收割正则族：B-0 行锚定 vs B-1/RT/LAT/WAKE 全文子串（矩阵巨行中段
+      教训族）；DONE_RE MULTILINE 中位命中；BENCHWAKE 撕裂半行结构性
+      不命中（轮询/收割三处共用全形状——2026-10-27 三镜审查补修面）
+    - 双段基线 roundtrip：B-0 裸 CSV / B-1 BENCH1 前缀 / --update 单段
+      刷新另一段保留 / 文件缺席双空 dict（首跑自立合法）
+    - icount 双文件：on/off 头契约（ICOUNT_TOL / TRACE_CAP 镜像行）+
+      回读等 + off 写不触 on（两文件数据源不同臂不能互写）
+    - _l2_bad L2 带：等值过 / 0→0 恰等过 / 0→非零无界红 / 双侧漂移红 /
+      项消失红 / 新项跳过 / tol 参数化双侧带语义
+    - 三镜迭代定值 live 对读：bench.rs 六项字面 ↔ _iter_table；bench1
+      四 const ↔ _iter_table_el0；bsh bench1_selftest WANT ↔ 同表
+      （「改值三处同步」纪律的宿主执法面）
+    - RT/LAT wire 镜像：RT_SAMPLES/LAT_SAMPLES ↔ RT_N/LAT_N、deltas
+      档数 ↔ RT_TIERS、RT_TIERS×RT_N=96（`RT ok n=96` 字面账）
+    - write_receipt 回执：落盘 + serial_sha256 内容指纹（K-DE2）
+    - 组合拒绝 exit-code 契约：六通道互斥族子进程真跑（rc!=0 + 逐组
+      说因消息在 stderr）；--selftest 独占守卫（组合旗标 rc=2）
+    - qemu_preflight 逃生位（F-C6）：空场静默过 / 占场帽 0 降级 Warn
+      放行（非硬拒）/ 等空轮询两探让场 / pgrep 自身失效仍硬拒——
+      subprocess.run 打桩纯 host 零 QEMU + --qemu-wait 值域与独占
+      守卫子进程契约（负值拒绝 rc!=0 / 组合 --selftest rc=2）
+    """
+    import shutil
+
+    failures: list[str] = []
+    _SELFTEST_TOTAL = [0]
+
+    def check(name: str, cond, detail: str = "") -> None:
+        _SELFTEST_TOTAL[0] += 1
+        print(f"  {'ok' if cond else 'FAIL'} {name}"
+              + (f": {detail}" if not cond else ""))
+        if not cond:
+            failures.append(name)
+
+    here = Path(__file__).resolve()
+
+    # --- 1. B-0 收割正则：行锚定（内核 bench 段行位干净的裸行语义） ---
+    m = BENCH_RE.match("BENCH,frame_alloc4k,1024,1234")
+    check("re b0: 全形行命中（name/iters/cyc 三组）",
+          m is not None and m.group(1) == "frame_alloc4k"
+          and m.group(2) == "1024" and m.group(3) == "1234")
+    check("re b0: 矩阵巨行中段不命中（行锚定语义——B-1 面由子串正则收）",
+          BENCH_RE.match("ssssBENCH,frame_alloc4k,1024,1234PPP") is None)
+    check("re b0: 多余字段拒", BENCH_RE.match("BENCH,x,1,2,3") is None)
+    check("re b0: 大写名拒（字符域 [a-z0-9_]）",
+          BENCH_RE.match("BENCH,X,1,2") is None)
+
+    # --- 2. DONE_RE：MULTILINE 中位命中 + 撕裂半行不命中 ---
+    d = DONE_RE.search("matrix line\nBENCH ok n=6\nmore output")
+    check("re done: 多行文本中位命中（MULTILINE——无它 ^ 只匹配串首）",
+          d is not None and d.group(1) == "6")
+    check("re done: 撕裂半行不命中", DONE_RE.search("BENCH ok n=") is None)
+
+    # --- 3. B-1：全文子串收割（bsh relay 行嵌稳态矩阵巨行中段教训） ---
+    giant = "s" * 40 + "BENCH1,sys_null,4096,77" + "P" * 40
+    hits = list(BENCH1_RE.finditer(giant))
+    check("re b1: 巨行中段子串收割（不 ^ 锚定）",
+          len(hits) == 1 and hits[0].group(1) == "sys_null"
+          and hits[0].group(3) == "77")
+    check("re b1: done 标记子串命中（B1 ok 同嵌巨行）",
+          DONE1_RE.search("ssB1 ok n=4BB") is not None)
+
+    # --- 4. R-1：BENCHRT 全形状 + n=32 字面 wire 冻结 ---
+    mrt = BENCHRT_RE.search("xxBENCHRT,delta=200,n=32,p50=1,p99=2,max=3yy")
+    check("re rt: 全形状命中（嵌流子串）",
+          mrt is not None and mrt.group(1) == "200" and mrt.group(2) == "1")
+    check("re rt: n=31 拒（RT_SAMPLES 镜像字面冻结）",
+          BENCHRT_RE.search("BENCHRT,delta=200,n=31,p50=1,p99=2,max=3") is None)
+    drt = DONE_RT_RE.search("RT ok n=96")
+    check("re rt: done 标记命中", drt is not None and drt.group(1) == "96")
+
+    # --- 5. G3-4 lat：lane 双路 + 标记表一致性 ---
+    mlat = BENCHLAT_RE.search(
+        "xxBENCHLAT,lane=sgi,n=32,min=1,p50=2,p90=3,p99=4,max=5yy")
+    check("re lat: 全形状命中（lane 分组）",
+          mlat is not None and mlat.group(1) == "sgi" and mlat.group(2) == "32")
+    check("re lat: 未在册 lane 拒（ipc|sgi 白名单）",
+          BENCHLAT_RE.search(
+              "BENCHLAT,lane=xyz,n=32,min=1,p50=2,p90=3,p99=4,max=5") is None)
+    check("re lat: LAT_DONE_MARKERS 键 ⊇ LAT_LANES（新增路只扩两表）",
+          set(LAT_DONE_MARKERS) >= set(LAT_LANES))
+    dlat1 = DONE_LAT_RE.search("LATIPC ok n=32")
+    dlat2 = DONE_LAT_RE.search("LATSGI ok n=32")
+    check("re lat: 双路完成标记各命中",
+          dlat1 is not None and dlat2 is not None)
+
+    # --- 6. BENCHWAKE：全八字段形状——撕裂半行结构性不命中 ---
+    wake = ("BENCHWAKE n=210 min=1497 p50=4096 p90=32768 p99=33554432 "
+            "max=46253511 sig=0 tmo=0")
+    check("re wake: 八字段全形状命中",
+          BENCHWAKE_RE.search(wake) is not None)
+    check("re wake: 撕裂半行不命中（三处共用全形状——宽前缀假早退雷）",
+          BENCHWAKE_RE.search("BENCHWAKE n=21") is None)
+    check("re wake: 缺字段拒",
+          BENCHWAKE_RE.search("BENCHWAKE n=210 min=1497 p50=4096") is None)
+
+    # --- 7/8/9. 基线 roundtrip + icount 双文件 + _l2_bad 带（tmp 隔离） ---
+    global BASELINE, BASELINE_ICOUNT, BASELINE_ICOUNT_OFF, RECEIPT_DIR, ICOUNT_TOL
+    with tempfile.TemporaryDirectory(prefix="berryos-bench-selftest.") as td:
+        tdp = Path(td)
+        saved = (BASELINE, BASELINE_ICOUNT, BASELINE_ICOUNT_OFF,
+                 RECEIPT_DIR, ICOUNT_TOL)
+        # 回执目录必须在 REPO 下（write_receipt 打印 relative_to(REPO)）；
+        # out/ 已 gitignore，测后整目录删除。
+        RECEIPT_DIR = REPO / "out" / "bench-receipts-selftest"
+        BASELINE = tdp / "bench_baseline.txt"
+        BASELINE_ICOUNT = tdp / "bench_baseline_icount.txt"
+        BASELINE_ICOUNT_OFF = tdp / "bench_baseline_icount_traceoff.txt"
+        try:
+            b0a, b1a = load_baseline()
+            check("base: 文件缺席 → 双空 dict（首跑自立合法）",
+                  not b0a and not b1a)
+            save_baseline(False, {"cntvct_pair": 0, "frame_alloc4k": 1234})
+            txt = BASELINE.read_text(encoding="utf-8")
+            check("base: B-0 段裸 CSV 行带 iter 表（读写同形）",
+                  "cntvct_pair,4096,0" in txt
+                  and "frame_alloc4k,1024,1234" in txt)
+            save_baseline(True, {"sys_null": 456})
+            txt = BASELINE.read_text(encoding="utf-8")
+            check("base: B-1 段 BENCH1 前缀", "BENCH1,sys_null,4096,456" in txt)
+            b0b, b1b = load_baseline()
+            check("base: 双段 roundtrip 回读等",
+                  b0b == {"cntvct_pair": 0, "frame_alloc4k": 1234}
+                  and b1b == {"sys_null": 456})
+            save_baseline(False, {"frame_alloc4k": 999})
+            b0c, b1c = load_baseline()
+            check("base: --update 单段刷新另一段保留（不 wipe 数值历史）",
+                  b0c == {"frame_alloc4k": 999} and b1c == {"sys_null": 456})
+
+            save_baseline_icount({"cntvct_pair": 0, "handle_evt": 166})
+            ictxt = BASELINE_ICOUNT.read_text(encoding="utf-8")
+            check("icount: 头含 ICOUNT_TOL 单源镜像行（防双源漂移）",
+                  "ICOUNT_TOL" in ictxt)
+            check("icount: 回读等",
+                  load_baseline_icount()
+                  == {"cntvct_pair": 0, "handle_evt": 166})
+            save_baseline_icount_off({"handle_evt": 166})
+            offtxt = BASELINE_ICOUNT_OFF.read_text(encoding="utf-8")
+            check("icount-off: 头含 TRACE_CAP 镜像行", "TRACE_CAP" in offtxt)
+            check("icount-off: off 写不触 on（两文件不同臂）",
+                  load_baseline_icount()
+                  == {"cntvct_pair": 0, "handle_evt": 166})
+
+            rp = write_receipt("selftest", "serial-text", "summary-line")
+            rtxt = rp.read_text(encoding="utf-8")
+            want_sha = hashlib.sha256(
+                "serial-text".encode("utf-8")).hexdigest()
+            check("receipt: 落盘 + serial_sha256 内容指纹（K-DE2）",
+                  rp.exists() and f"serial_sha256={want_sha}" in rtxt
+                  and "kind=selftest" in rtxt and "serial-text" in rtxt)
+
+            # --- _l2_bad L2 带（tol=0 精确相等 / 参数化双侧） ---
+            base_l2 = {"a": 100, "z": 0}
+            check("l2: 等值过", _l2_bad("t", {"a": 100, "z": 0}, base_l2) == [])
+            check("l2: 新基准项跳过（基线缺席不过门禁）",
+                  _l2_bad("t", {"a": 100, "z": 0, "n": 5}, base_l2) == [])
+            check("l2: +1 漂移红（ICOUNT_TOL=0 精确相等形态）",
+                  len(_l2_bad("t", {"a": 101, "z": 0}, base_l2)) == 1)
+            check("l2: 0→非零 = 无界漂移红",
+                  any("无界" in b
+                      for b in _l2_bad("t", {"a": 100, "z": 1}, base_l2)))
+            check("l2: 基准项消失红",
+                  any("消失" in b for b in _l2_bad("t", {"a": 100}, base_l2)))
+            ICOUNT_TOL = 0.05
+            check("l2: tol=0.05 带内过（+4%）",
+                  _l2_bad("t", {"a": 104, "z": 0}, base_l2) == [])
+            check("l2: tol=0.05 带外红（+6%）",
+                  len(_l2_bad("t", {"a": 106, "z": 0}, base_l2)) == 1)
+            check("l2: tol=0.05 下侧带外红（−6%，双向漂移都是指令流变化）",
+                  len(_l2_bad("t", {"a": 94, "z": 0}, base_l2)) == 1)
+        finally:
+            (BASELINE, BASELINE_ICOUNT, BASELINE_ICOUNT_OFF, RECEIPT_DIR,
+             ICOUNT_TOL) = saved
+            shutil.rmtree(RECEIPT_DIR, ignore_errors=True)
+
+    # --- 10. 三镜迭代定值 live 对读（「改值三处同步」的宿主执法面） ---
+    bench_rs = REPO / "kernel" / "src" / "bench.rs"
+    bench1_rs = REPO / "user" / "bins" / "bench1" / "src" / "main.rs"
+    bsh_rs = REPO / "user" / "bins" / "bsh" / "src" / "main.rs"
+    main_rs = REPO / "kernel" / "src" / "main.rs"
+    mirrors = [bench_rs, bench1_rs, bsh_rs, main_rs]
+    for p in mirrors:
+        check(f"mirror: {p.relative_to(REPO)} 在席", p.exists())
+    if all(p.exists() for p in mirrors):
+        got: dict[str, int] = {}
+        for nm, it in re.findall(r'bench\(b"([a-z0-9_]+)", (\d+),',
+                                 bench_rs.read_text(encoding="utf-8")):
+            got[nm] = int(it)
+        check("mirror: bench.rs 六项字面 ↔ _iter_table（B-0 镜）",
+              got == _iter_table(),
+              f"rs={sorted(got.items())} py={sorted(_iter_table().items())}")
+        got1: dict[str, int] = {}
+        # bench1 的 const 名去 ITERS 尾后小写 ≠ 表键（VMO_RW4K→vmo_rw4k 而
+        # 键 = sys_vmo_rw4k——bench1 里 sys_ 前缀被 const 名吞进 SYS_ 段位），
+        # 故映射显式逐项（四项闭集，加项时三镜同步纪律自会咬）。
+        for cn, it in re.findall(r'const ([A-Z0-9_]+)_ITERS: u64 = (\d+);',
+                                 bench1_rs.read_text(encoding="utf-8")):
+            key = {
+                "SYS_NULL": "sys_null",
+                "VMO_RW4K": "sys_vmo_rw4k",
+                "IPC_ENQUEUE8": "ipc_enqueue8",
+                "EVT_SIGNAL": "evt_signal",
+            }.get(cn, cn.lower())
+            got1[key] = int(it)
+        check("mirror: bench1 四 const ↔ _iter_table_el0（B-1 镜）",
+              got1 == _iter_table_el0(),
+              f"rs={sorted(got1.items())} py={sorted(_iter_table_el0().items())}")
+        bsh_text = bsh_rs.read_text(encoding="utf-8")
+        seg = bsh_text.split("const WANT: [(&str, &str); 4]", 1)
+        want: dict[str, int] = {}
+        if len(seg) == 2:
+            for nm, it in re.findall(r'\("([a-z0-9_]+)", "(\d+)"\)',
+                                     seg[1].split("];", 1)[0]):
+                want[nm] = int(it)
+        check("mirror: bsh bench1_selftest WANT ↔ _iter_table_el0（第三镜）",
+              want == _iter_table_el0(),
+              f"bsh={sorted(want.items())} py={sorted(_iter_table_el0().items())}")
+        main_text = main_rs.read_text(encoding="utf-8")
+        rt_m = re.search(r'const RT_SAMPLES: usize = (\d+);', main_text)
+        lat_m = re.search(r'const LAT_SAMPLES: usize = (\d+);', main_text)
+        dl_m = re.search(r'let deltas = \[([^\]]*)\];', main_text)
+        check("mirror: RT_SAMPLES ↔ RT_N",
+              rt_m is not None and int(rt_m.group(1)) == RT_N)
+        check("mirror: deltas 档数 ↔ RT_TIERS",
+              dl_m is not None
+              and len([e for e in dl_m.group(1).split(",") if e.strip()])
+              == RT_TIERS)
+        check("mirror: RT ok n=96 字面账（RT_TIERS×RT_N）",
+              RT_TIERS * RT_N == 96)
+        check("mirror: LAT_SAMPLES ↔ LAT_N",
+              lat_m is not None and int(lat_m.group(1)) == LAT_N)
+
+    # --- 11. 组合拒绝 exit-code 契约（子进程真跑；参数验证先于 kernel_elf
+    #     解析 = 零 QEMU 零构建，纯参数面红绿） ---
+    combos = [
+        (["--rt", "--el0"], "--rt 独立通道"),
+        (["--rt", "--update"], "--rt 独立通道"),
+        (["--lat", "--factor", "3"], "--lat 独立通道"),
+        (["--icount", "--el0"], "--icount 不与 --el0 组合"),
+        (["--icount", "--factor", "3"], "--icount 不与 --factor 组合"),
+        (["--prove"], "--prove 只对 --icount"),
+        (["--icount", "--prove", "--update"], "观测 only"),
+        (["--trace-dual", "--icount"], "--trace-dual 不与"),
+        (["--dpg", "--rt"], "--dpg 独立通道"),
+    ]
+    for argv, needle in combos:
+        r = subprocess.run([sys.executable, str(here), *argv],
+                           capture_output=True, text=True, timeout=60)
+        check(f"reject: {' '.join(argv)} → rc!=0 且说因在 stderr",
+              r.returncode != 0 and needle in r.stderr,
+              f"rc={r.returncode} stderr={r.stderr.strip()[:100]}")
+    r = subprocess.run([sys.executable, str(here), "--selftest", "--rt"],
+                       capture_output=True, text=True, timeout=60)
+    check("guard: --selftest 独占（组合旗标 rc=2）", r.returncode == 2,
+          f"rc={r.returncode}")
+
+    # --- 12. qemu_preflight 逃生位（F-C6，2026-11-15）：占场超时降级 Warn
+    #     非硬拒 + 空场静默过 + 等空轮询路径 + pgrep 自身失效仍硬拒。
+    #     纯 host 零 QEMU——subprocess.run 打桩伪造 pgrep 回执（rc/stdout
+    #     可控），stderr 经 redirect_stderr 捕获；桩只罩本节（真 subprocess
+    #     在 finally 还原——组合拒绝腿已在上节跑完，互不干扰）。 ---
+    import io
+    from contextlib import redirect_stderr
+
+    real_run = subprocess.run
+
+    class _FakePgrep:
+        """pgrep 回执桩：按序吐 (rc, stdout)；rc=0 = 占场（pids 在 stdout）。"""
+        def __init__(self, replies):
+            self.replies = list(replies)
+            self.calls = 0
+
+        def __call__(self, cmd, **kw):
+            i = min(self.calls, len(self.replies) - 1)
+            rc, out = self.replies[i]
+            self.calls += 1
+            import types
+            return types.SimpleNamespace(returncode=rc, stdout=out, stderr="")
+
+    fake = _FakePgrep([(1, "")])  # 空场（rc=1）
+    subprocess.run = fake
+    try:
+        err = io.StringIO()
+        with redirect_stderr(err):
+            qemu_preflight(wait_s=0)
+        check("preflight: 空场静默过（rc=1 即返，零 stderr）",
+              fake.calls == 1 and err.getvalue() == "",
+              f"calls={fake.calls} stderr={err.getvalue()!r}")
+
+        fake = _FakePgrep([(0, "123\n456\n")])  # 占场恒在（rc=0）
+        subprocess.run = fake
+        err = io.StringIO()
+        with redirect_stderr(err):
+            qemu_preflight(wait_s=0)  # 帽 0 = 单探即判
+        out = err.getvalue()
+        check("preflight: 占场帽 0 降级 Warn 放行（非硬拒——F-C6 逃生位）",
+              fake.calls == 1 and "Warn" in out and "123 456" in out
+              and "--qemu-wait" in out,
+              f"calls={fake.calls} stderr={out.strip()[:120]!r}")
+
+        # 等空轮询路径：首探占场 → 通知行 → 短窗 sleep → 次探空场静默返
+        #（sleep 时长 = min(2, 余量)——帽 0.4s 不真睡 2s 粒度）。
+        fake = _FakePgrep([(0, "123\n"), (1, "")])
+        subprocess.run = fake
+        err = io.StringIO()
+        with redirect_stderr(err):
+            qemu_preflight(wait_s=0.4)
+        out = err.getvalue()
+        check("preflight: 等空轮询两探让场（通知行在、无 Warn）",
+              fake.calls == 2 and "检测到在场 QEMU" in out
+              and "Warn" not in out,
+              f"calls={fake.calls} stderr={out.strip()[:120]!r}")
+
+        fake = _FakePgrep([(2, "")])  # pgrep 自身失效（rc=2）
+        subprocess.run = fake
+        raised = None
+        err = io.StringIO()
+        try:
+            with redirect_stderr(err):
+                qemu_preflight(wait_s=0)
+        except SystemExit as e:
+            raised = e
+        check("preflight: pgrep 自身失效仍硬拒（守卫坏 ≠ 场地问题）",
+              raised is not None and "守卫自身失效" in str(raised),
+              f"raised={raised!r}")
+    finally:
+        subprocess.run = real_run
+
+    r = subprocess.run([sys.executable, str(here), "--qemu-wait", "-1"],
+                       capture_output=True, text=True, timeout=60)
+    check("qemu-wait: 负值拒绝（rc!=0 且说因在 stderr）",
+          r.returncode != 0 and "负等空帽" in r.stderr,
+          f"rc={r.returncode} stderr={r.stderr.strip()[:100]}")
+    r = subprocess.run([sys.executable, str(here), "--selftest",
+                        "--qemu-wait", "5"],
+                       capture_output=True, text=True, timeout=60)
+    check("qemu-wait: 入 --selftest 独占守卫（组合 rc=2）", r.returncode == 2,
+          f"rc={r.returncode}")
+
+    total = _SELFTEST_TOTAL[0]
+    if failures:
+        print(f"\nbench.py selftest: FAIL（{len(failures)} 面红 / 共 {total} 面）")
+    else:
+        print(f"\nbench.py selftest: PASS（0 面红 / 共 {total} 面）")
+    return 1 if failures else 0
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--selftest", action="store_true",
+                    help="门禁自检（a-3 U4 纪律，独占旗标——纯 host 零 QEMU）")
     ap.add_argument("--update", action="store_true", help="刷新基线文件（本模式对应段）")
     ap.add_argument("--factor", type=float, default=None,
                     help="劣化因子门禁（默认 3.0——拦数量级劣化不拦噪声）")
+    ap.add_argument("--qemu-wait", type=float, default=None, metavar="SECONDS",
+                    help="QEMU 串行守卫等空帽秒数（默认 900；0 = 单探即判——"
+                         "在场即降级 Warn 放行非硬拒；负值拒绝。可与任一通道组合，"
+                         "F-C6 逃生位：owner 长跑在场时收紧帽快速拿到 Warn 放行）")
     ap.add_argument("--el0", action="store_true",
                     help="B-1 通道：run-rootfs 形态收割 BENCH1 四行（默认 B-0 裸跑）")
     ap.add_argument("--rt", action="store_true",
@@ -1253,6 +1887,31 @@ def main() -> None:
                          "（d<e 结构断言；R-1 同族只出表无基线，回执落盘）")
     ap.add_argument("--kernel", default=None, help="内核 ELF 路径（默认 paths.sh 解析）")
     args = ap.parse_args()
+
+    # --qemu-wait 值域（负帽无义——「等负秒」≠ 立即判，显式拒绝说因；
+    # 0 合法 = 单探即判。先于通道互斥校验 = 纯参数面先红（组合拒绝腿同序）。
+    if args.qemu_wait is not None and args.qemu_wait < 0:
+        raise SystemExit(
+            f"bench.py: --qemu-wait {args.qemu_wait} 无义（负等空帽）——"
+            "0 = 单探即判（在场即 Warn 放行），正数 = 等空帽秒数")
+
+    # --selftest 独占守卫（writable_globals/unsafe_audit 同款）：组合任何
+    # 通道旗标 = 语义未定义（自检不跑 QEMU，通道参数无处消费），rc=2 区分
+    # 于运行失败（rc=1）。
+    channel_flags = [args.update, args.el0, args.rt, args.lat, args.icount,
+                     args.prove, args.dpg, args.trace_dual,
+                     args.factor is not None, args.kernel is not None,
+                     args.qemu_wait is not None]
+    if args.selftest:
+        if any(channel_flags):
+            ap.error("--selftest 独占——不与任何通道/基线旗标组合（rc=2）")
+        raise SystemExit(selftest())
+
+    # F-C6 逃生位落值：--qemu-wait → 模块级 QEMU_WAIT_S（五个通道入口的
+    # qemu_preflight() 裸调共读；None = 维持默认 900）。
+    if args.qemu_wait is not None:
+        global QEMU_WAIT_S
+        QEMU_WAIT_S = args.qemu_wait
 
     if args.rt and (args.update or args.el0 or args.factor is not None
                     or args.icount or args.prove or args.lat or args.trace_dual):

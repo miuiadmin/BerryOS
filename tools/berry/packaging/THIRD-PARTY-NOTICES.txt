@@ -1,0 +1,19 @@
+BerryOS host tool (berry) - statically linked third-party components
+--------------------------------------------------------------------
+rustls 0.23              Apache-2.0 OR ISC OR MIT
+rustls-pki-types 1.x     MIT OR Apache-2.0
+rustls-webpki 0.103.x    ISC
+ring 0.17                Apache-2.0 AND ISC  (builds via cc; cfg-if,
+                         getrandom, libc, untrusted under the same
+                         ISC/MIT/Apache-2.0 family)
+once_cell 1.x            MIT OR Apache-2.0
+zeroize 1.x              Apache-2.0 OR MIT
+subtle 2.6.x             BSD-3-Clause (three-clause; hard rustls
+                         dependency, accepted by the wave-5 plan)
+qrcodegen 1.8            MIT (zero transitive dependencies; terminal
+                         QR for vnc web --lan, wave 10)
+Full license texts are available in the respective crate sources:
+https://crates.io/crates/<name>/<version>
+
+Vendored noVNC (web assets) is not statically linked into the binary;
+its license layering ships with the web tree in web/NOTICE.md.

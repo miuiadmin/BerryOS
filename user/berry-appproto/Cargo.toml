@@ -1,6 +1,6 @@
 [package]
 name = "berry-appproto"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 # GUI-8 段①（docs/GUI-8实施设计草案.md §3-裁决二 + §5）：app 域 RPC 协议
 # 纯函数 crate，`berry-psproto`/`berry-fsproto` 先例（「解析器即产品」）

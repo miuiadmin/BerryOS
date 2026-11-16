@@ -250,6 +250,23 @@ pub enum Cmd<'a> {
     /// 缓冲，整帧已直写，无可「翻」；真后端（双缓冲/virtio-gpu）在此
     /// 承接页翻转/提交，`rect` = 损伤区提示。
     Present { rect: Rect },
+    /// 圆角矩形填充（波 2 横向原语③——add-only 新变体，[`Cmd::FillRect`]
+    /// 语义零漂移）：四角同半径 `radius`（px）；回放期 `radius` 钳
+    /// `min(w,h)/2` 与 raster LUT 帽（见 `raster` 模块）后按**行 LUT 内缩**
+    /// 逐行铺——圆区外不写、无 AA（整数行内缩，`radius_row_inset` 单源）。
+    /// `radius == 0` 与 FillRect 逐像素等价（走本变体亦无罚）。
+    FillRectRounded {
+        rect: Rect,
+        radius: u32,
+        paint: PaintDesc,
+    },
+    /// 裁剪栈压入（波 2 横向原语④——add-only 新变体）：回放期把当前
+    /// clip 与 `rect` 求交压栈（空交 = 零矩形 clip，后续绘制结构性
+    /// no-op）；配对 [`Cmd::PopClip`] 弹回。嵌套深度帽在回放侧
+    /// （`queue` 模块 CLIP_STACK_MAX=8——超帽 push 折 no-op + loud 防御）。
+    PushClip { rect: Rect },
+    /// 裁剪栈弹出（配对 [`Cmd::PushClip`]；空栈弹出 = no-op 防御）。
+    PopClip,
 }
 
 /// 显示列表录入错误（loud——零分配定容与先验执法的两个拒面）。
@@ -373,6 +390,29 @@ impl<'a> CommandEncoder<'a> {
         self.record(Cmd::Present { rect })
     }
 
+    /// 圆角矩形填充（波 2 横向原语③）：`radius` px，四角同半径；零半径
+    /// = FillRect 同义。语义/裁剪纪律与 [`CommandEncoder::fill_rect`] 同
+    /// （回放期裁到 clip ∩ 纹理界；圆区外不写）。
+    pub fn fill_rect_rounded(
+        &mut self,
+        rect: Rect,
+        radius: u32,
+        color: Color,
+    ) -> Result<(), CmdError> {
+        self.record(Cmd::FillRectRounded { rect, radius, paint: PaintDesc { color } })
+    }
+
+    /// 裁剪栈压入（波 2 横向原语④）：与 [`CommandEncoder::present`] 间
+    /// 可任意交错；配对 [`CommandEncoder::pop_clip`]。
+    pub fn push_clip(&mut self, rect: Rect) -> Result<(), CmdError> {
+        self.record(Cmd::PushClip { rect })
+    }
+
+    /// 裁剪栈弹出。
+    pub fn pop_clip(&mut self) -> Result<(), CmdError> {
+        self.record(Cmd::PopClip)
+    }
+
     /// 终结为不可变显示列表（记录/回放分离的形态面：记录期结束）。
     pub fn finish(self) -> DisplayList<'a> {
         self.list
@@ -386,12 +426,18 @@ impl Default for CommandEncoder<'_> {
 }
 
 /// 命令携带矩形的提取（BadRect 先验的执法点；无矩形命令返 None）。
+/// 波 2 add-only 扩臂：FillRectRounded/PushClip 携 rect（负宽高同拒）；
+/// PopClip 无矩形。
 fn rect_of<'a>(cmd: &'a Cmd<'_>) -> Option<&'a Rect> {
     match cmd {
         Cmd::FillRect { rect, .. } => Some(rect),
         Cmd::Blit { src, .. } => Some(src),
         Cmd::Present { rect } => Some(rect),
-        Cmd::DrawLine { .. } | Cmd::DrawGlyphRun { .. } | Cmd::DrawImage { .. } => None,
+        Cmd::FillRectRounded { rect, .. } => Some(rect),
+        Cmd::PushClip { rect } => Some(rect),
+        Cmd::DrawLine { .. } | Cmd::DrawGlyphRun { .. } | Cmd::DrawImage { .. } | Cmd::PopClip => {
+            None
+        }
     }
 }
 
@@ -461,6 +507,37 @@ mod tests {
         assert!(matches!(it.next(), Some(Cmd::DrawLine { .. })));
         assert!(matches!(it.next(), Some(Cmd::Blit { .. })));
         assert!(matches!(it.next(), Some(Cmd::Present { .. })));
+        assert!(it.next().is_none());
+    }
+
+    // —— 波 2 add-only 新变体：圆角填充/裁剪栈的 rect 门与编码器面 ——
+    #[test]
+    fn rounded_and_clip_cmd_rect_gates() {
+        let mut dl = DisplayList::new();
+        let c = Color { r: 9, g: 8, b: 7 };
+        // 负宽/高矩形 → BadRect（FillRectRounded/PushClip 与既有三命令同律）。
+        assert_eq!(
+            dl.push(Cmd::FillRectRounded { rect: Rect::new(0, 0, -1, 4), radius: 4, paint: PaintDesc { color: c } }),
+            Err(CmdError::BadRect)
+        );
+        assert_eq!(
+            dl.push(Cmd::PushClip { rect: Rect::new(0, 0, 4, -1) }),
+            Err(CmdError::BadRect)
+        );
+        // PopClip 无矩形可先验——任何形态可录。
+        assert!(dl.push(Cmd::PopClip).is_ok());
+        assert_eq!(dl.len(), 1, "拒面零录入（两条 BadRect 不入表）");
+        // 编码器类型化面 → finish 内容与顺序保真。
+        let mut enc = CommandEncoder::new();
+        enc.fill_rect_rounded(Rect::new(1, 2, 30, 30), 24, c).unwrap();
+        enc.push_clip(Rect::new(0, 0, 10, 10)).unwrap();
+        enc.pop_clip().unwrap();
+        let dl = enc.finish();
+        assert_eq!(dl.len(), 3);
+        let mut it = dl.iter();
+        assert!(matches!(it.next(), Some(Cmd::FillRectRounded { radius: 24, .. })));
+        assert!(matches!(it.next(), Some(Cmd::PushClip { .. })));
+        assert!(matches!(it.next(), Some(Cmd::PopClip)));
         assert!(it.next().is_none());
     }
 

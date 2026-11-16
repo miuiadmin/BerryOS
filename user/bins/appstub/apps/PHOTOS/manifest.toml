@@ -11,6 +11,11 @@ console = false
 [runtime]
 stack_pages = 8
 
+[security]
+profile = "ed25519-main"
+key_lineage = "berryos-dev"
+integrator = "berryos"
+
 [ui]
 icon = "icons/icon.byi"
 label = "Photos"

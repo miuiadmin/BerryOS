@@ -78,33 +78,29 @@ pub struct FileEntry {
 }
 
 /// 在 fw_cfg 文件目录里按名查项；不在位/目录畸形/名字超 55 字节一律 `None`。
+///
+/// W3-Q86：判定律单源在 berry-fwcfgface（find_file_in）——本函数是它的
+/// MMIO 物理臂（selector/data 口读流注入）；count 帽/名帽/无 NUL 项跳过
+/// 等判定面与本文件旧内联形逐字同律，语义变更须改 crate 侧单源。
 pub fn find_file(name: &str) -> Option<FileEntry> {
-    if name.len() >= 56 {
-        return None;
-    }
-    // SAFETY: 只读 MMIO 流；目录行走全界检（count 上限 1024 项防畸形大数）。
+    // SAFETY: 只读 MMIO 流；目录行走全界检在 berry_fwcfgface::find_file_in
+    // （count 上限 1024 项防畸形大数——DIR_MAX_ENTRIES 单源）。
     unsafe {
         mmio::write_u16(SELECTOR, FW_CFG_FILE_DIR.to_be());
-        let count = stream_be32();
-        if count > 1024 {
-            return None;
-        }
-        for _ in 0..count {
-            let size = stream_be32();
-            let sel_rsv = stream_be32(); // 高 16 位 select、低 16 位 reserved（BE）
-            let select = (sel_rsv >> 16) as u16;
-            // name[56]：14 × u32 顺序读，低字节在前 = 项内字节序原样恢复。
-            let mut nbuf = [0u8; 56];
-            for chunk in nbuf.chunks_mut(4) {
-                chunk.copy_from_slice(&stream_le32().to_le_bytes()[..chunk.len()]);
-            }
-            let nul = nbuf.iter().position(|&c| c == 0)?;
-            if &nbuf[..nul] == name.as_bytes() {
-                return Some(FileEntry { select, size });
-            }
-        }
+        let e = berry_fwcfgface::find_file_in(name, &mut MmioStream)?;
+        Some(FileEntry { select: e.select, size: e.size })
     }
-    None
+}
+
+/// MMIO 读臂（berry_fwcfgface::WordStream 的物理实现）：data 口按序弹 u32
+/// （项内字节序）。越流不存在（QEMU 目录可信）——臂上恒 Some。
+struct MmioStream;
+
+impl berry_fwcfgface::WordStream for MmioStream {
+    fn next_u32(&mut self) -> Option<u32> {
+        // SAFETY: data 口对齐 MMIO 只读；selector 已由调用方选定。
+        Some(unsafe { stream_le32() })
+    }
 }
 
 /// 把 `entry` 的文件内容整读进 `buf`（`buf.len()` 须恰为 `entry.size`——
@@ -132,19 +128,17 @@ pub fn read_to(entry: &FileEntry, buf: &mut [u8]) -> bool {
 /// 语义约束 = **会话存续期内不得有其他 fw_cfg 访问**（selector 是全局单
 /// 活动流——boot 单线程按序使用，无抢占窗）。
 pub struct SeqRead {
-    /// 剩余未读字节（项尾守卫：越项尾的 data 口行为不承诺，绝不越过）。
-    remaining: u32,
+    /// 判定面单源（W3-Q86）：berry_fwcfgface::SeqState——remaining 守卫 + plan
+    /// 4 字节粒度推进律；本结构只持会话状态，判定全走 crate。
+    st: berry_fwcfgface::SeqState,
 }
 
 impl SeqRead {
     /// 选定 `entry` 开始顺序读（selector 写一次）。空项（size==0）→ `None`。
     pub fn open(entry: &FileEntry) -> Option<SeqRead> {
-        if entry.size == 0 {
-            return None;
-        }
         // SAFETY: 只写 selector 口（选定后 data 口从项首起流）。
         unsafe { mmio::write_u16(SELECTOR, entry.select.to_be()) };
-        Some(SeqRead { remaining: entry.size })
+        Some(SeqRead { st: berry_fwcfgface::SeqState::open(entry.size)? })
     }
 
     /// 顺序读 ≤`buf.len()` 字节（项尾截断），返回实读数（0 = 本项读完）。
@@ -152,28 +146,22 @@ impl SeqRead {
     /// 4 字节粒度约束：data 口按 u32 弹出、尾字节不足 4 的余数按**前缀截取**
     /// （与 [`read_to`] 同序——被截掉的尾 1-3 字节已从流中消费）。因此**非
     /// 末段读**（本步没读到项尾）的实读数向下取整到 4 的倍数——调用方 chunk
-    /// 缓冲取 4 的倍数（A1-3b 内核侧 = 4MiB）即天然无截损。
+    /// 缓冲取 4 的倍数（A1-3b 内核侧 = 4MiB）即天然无截损。判定律（want =
+    /// min(buf, remaining)；非末段 `&= !3`）单源在 berry_fwcfgface::SeqState::plan。
     pub fn read(&mut self, buf: &mut [u8]) -> usize {
-        if self.remaining == 0 || buf.is_empty() {
+        let want = self.st.plan(buf.len());
+        if want == 0 {
             return 0;
         }
-        let mut want = core::cmp::min(buf.len() as u32, self.remaining);
-        // 非末段：4 字节粒度推进（余数只许发生在项尾——中途半 u32 = 跳字节）。
-        if want < self.remaining {
-            want &= !3;
-            if want == 0 {
-                return 0;
-            }
-        }
-        // SAFETY: 只读 MMIO 流；remaining 守卫保证不越过项尾。
+        // SAFETY: 只读 MMIO 流；remaining 守卫（SeqState）保证不越过项尾。
         unsafe {
-            for chunk in buf[..want as usize].chunks_mut(4) {
+            for chunk in buf[..want].chunks_mut(4) {
                 let w = stream_le32().to_le_bytes();
                 chunk.copy_from_slice(&w[..chunk.len()]);
             }
         }
-        self.remaining -= want;
-        want as usize
+        self.st.advance(want);
+        want
     }
 }
 
@@ -256,7 +244,7 @@ pub fn ramfb_set(fb_pa: u64, width: u32, height: u32, stride: u32) -> bool {
     crate::uart_puts(b" size=");
     crate::uart_put_dec(entry.size as u64);
     crate::uart_puts(b"\n");
-    if entry.size != 28 || width == 0 || height == 0 || stride == 0 {
+    if !berry_fwcfgface::ramfb_cfg_ok(entry.size, width, height, stride) {
         return false;
     }
     // SAFETY: 静态块独占；boot 单线程、任何 EL0 读取之前。

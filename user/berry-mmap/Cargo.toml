@@ -1,6 +1,6 @@
 [package]
 name = "berry-mmap"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 rust-version = "1.93"   # MSRV = musl 1.2.5 口径基线（Rust 2025-12 起 musl 目标；SDK-02 拍板①）
 # A7-1（docs/事件循环A7设计草案.md §3.1 + §7 落地追记）：mmap 匿名档

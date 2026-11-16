@@ -311,6 +311,44 @@ pub extern "C" fn berry_pager_supply_pages(vmo: Handle, src: Handle, src_off: u6
     unsafe { sys(nr::PAGER_SUPPLY_PAGES, vmo as usize, src as usize, src_off as usize, 0, 0, 0) }
 }
 
+/// `pager_supply_mapped(vmo, src, delta)`（0x23，G4-4 X-3，门 C 裁 A add-only）：
+/// 0x21 的恒等选源变体——门控/阻塞收货/供给/唤醒链全同（见
+/// `berry_pager_supply_pages`），唯源页偏不由调用方钉死、按**请求页现算**：
+/// `src_off = 目标页偏 + delta`（页对齐 i64，可负——congruent ELF 段装载的
+/// vaddr 偏置典型为负）。exec 装载 demand 化供给面：pager 无法预知下一缺页
+/// 页位（0x21 impasse 根因），本号以常量 delta 换「任意页请求一次供给」。
+#[no_mangle]
+pub extern "C" fn berry_pager_supply_mapped(vmo: Handle, src: Handle, delta: i64) -> Status {
+    unsafe { sys(nr::PAGER_SUPPLY_MAPPED, vmo as usize, src as usize, delta as usize, 0, 0, 0) }
+}
+
+/// `PagerWindow`（0x24 表批窗，X-6 刀① 冻结面——`X6批供提速设计-v1.0.md`
+/// §2.1：布局一次定全即冻）：`dv` = 目标 demand VMO 句柄（门控
+/// Vmo+SET_POLICY，同 0x23）；`sv` = 源 VMO 句柄（0 = 零页臂）；`delta` =
+/// 恒等选源常数（页对齐 i64 可负——同 0x23）。repr(C) 16B/项，内核侧逐项
+/// 小端拼装（`kernel/src/syscall.rs` 手写双镜像——§8.3 原型层纪律）。
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct PagerWindow {
+    pub dv: Handle,
+    pub sv: Handle,
+    pub delta: i64,
+}
+const _: () = assert!(core::mem::size_of::<PagerWindow>() == 16);
+const _: () = assert!(core::mem::align_of::<PagerWindow>() == 8);
+
+/// `pager_supply_mapped_table(tbl, n)`（0x24，X-6 刀① 批供表批）：0x23 的
+/// 多窗一次收货形——`tbl` = PagerWindow 数组、`n` ∈ [1,32]。rc =
+/// **count-wins**：>0 = 供给成功页数（部分成功部分计、不回滚；失败槽
+/// faulter 恒唤自愈）；**0 供才报 errno**（-EINVAL = n 越界 / delta 非页
+/// 对齐 / 聚合 NoneForVd；-EBADF = 门败）。阻塞二分同 0x23：池空且已
+/// 供>0 → 即返计数；池空且 0 供 → 泊键阻塞醒后重扫表。boot 探测形
+/// `tbl=[{dv:0,sv:0,delta:0}], n=1` → 新核 -EBADF / 旧核 -ENOTSUP。
+#[no_mangle]
+pub extern "C" fn berry_pager_supply_mapped_table(tbl: *const PagerWindow, n: u32) -> Status {
+    unsafe { sys(nr::PAGER_SUPPLY_MAPPED_TABLE, tbl as usize, n as usize, 0, 0, 0, 0) }
+}
+
 // —— 进程 / 线程 ——
 
 /// 双出参（`*process, *vmar`——Zircon 同形：父须拿子地址空间根才能装代码）。
@@ -461,6 +499,171 @@ pub extern "C" fn berry_thread_yield() -> Status {
     unsafe { sys(nr::THREAD_YIELD, 0, 0, 0, 0, 0, 0) }
 }
 
+/// CP-08 util 通道首环（0x40，OQ-8 通道形态首裁快照 pull 先行）：per-CPU
+/// util EWMA 快照读。`util` = u32 LE 数组出参（0..=1024——与调度器
+/// capacity/EM capacity 同尺度；生产侧 = 内核 `sched/src/util.rs` 唯一读出口
+/// `cpu_util`），`count` = 槽位数。**返回 >0 = 实写槽位数**（恰 = 内核核数
+/// `UTIL_NR_CPU`——调用方可以此探核数；count-wins 口径同
+/// `pager_supply_mapped_table`），count < 核数 → -EINVAL，坏指针 →
+/// -EFAULT。零 handle 零权利位（系统级遥测读面——统计信号非对象内容）。
+///
+/// 消费先例 = berry-power（快照→`UtilTrack::ingest_snapshot` 逐核折叠；
+/// EWMA 折叠数学单源 berry-emface）。
+#[no_mangle]
+pub extern "C" fn berry_sched_util_snapshot(util: *mut u32, count: usize) -> Status {
+    unsafe { sys(nr::SCHED_UTIL_SNAPSHOT, util as usize, count, 0, 0, 0, 0) }
+}
+
+// —— 遥测环读口（阶段五第 16/17 步：0x84 telemetry_open——klog 快照首域）——
+
+/// 0x84：v3 号提前实现（klog 快照首域翻真）。abi.toml 在册但 stage=v3——
+/// 常量层只产 v1/1.1 行（gen_abi.py defined 集），`nr::TELEMETRY_OPEN` 不
+/// 存在，故本文件私有字面量封 svc（POLICY_BIND_NR 同款先例；v3 常量层
+/// 落地后换 `nr::` 常量名——同内核派发注）。
+const TELEMETRY_OPEN_NR: usize = 0x84;
+
+/// `berry_telemetry_open` op 域：0 = klog 快照（内核日志字节环——串口
+/// 镜像；bsh `dmesg` 的数据源）。后续波次补 SwitchRec / WakeRec 环读口
+/// （各自新 op 值，add-only）。
+pub const TELEMETRY_OP_KLOG: u64 = 0;
+
+/// `berry_telemetry_klog_snapshot(buf, len)`（0x84 op=0，阶段五第 17 步
+/// bsh dmesg 消费面）：读内核日志字节环到 `buf`，**返回 >0 = 实写字节数**
+/// （CPU 序拼接、环内旧→新、每环贡献最新 min(环内有效字节扣除 128B 热尾容错窗, 余量) 字节；返回 0 = 两环皆空/读窗不稳的诚实空——dmesg 尾部
+/// 语义）；op 域外 → -ENOTSUP、len=0/超 16KiB 单读帽 → -EINVAL、坏指针
+/// → -EFAULT。零 handle 零权利位（系统级遥测读面——`berry_sched_util_
+/// snapshot` 同族口径）。
+#[no_mangle]
+pub extern "C" fn berry_telemetry_klog_snapshot(buf: *mut u8, len: usize) -> Status {
+    unsafe { sys(TELEMETRY_OPEN_NR, TELEMETRY_OP_KLOG as usize, buf as usize, len, 0, 0, 0) }
+}
+
+// —— 策略注入（0x83：机制在内核、策略可插拔的带内接口——表形面（COMMIT/
+// SHADOW_COMMIT）+ STATUS 面逐 op 包装）——
+
+/// 用户态策略表条目（16B——与内核 `PolicyEntryABI`（`kernel/src/syscall.rs`）
+/// 逐字段一致，`#[repr(C)]` 镜像；内核侧按 LE 字节流手工解码，偏移即 ABI）。
+///
+/// `weight` 内核侧夹紧 ±64（包络执法，不信任注入方自律）；0 键/重复/溢出由
+/// `bind_gen` first-wins 语义丢弃；`_rsv`/未定义 `epp_flags` 位非 0 → -EINVAL
+/// （options 纪律，调用方可清零修复）；单次收表 ≤ 128 条（`TBL_MAX` 限流 →
+/// -E2BIG，诚实拒收不静默截断）。
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PolicyEntry {
+    pub key: u64,
+    pub weight: i32,
+    pub placement: u8,
+    /// bit0 = `POLICY_EPP_HAS`（带 EPP 覆盖），bit1 = `POLICY_EPP_VAL`
+    /// （0 = Efficiency / 1 = Perf）；bit2.. 未定义（非 0 → -EINVAL）。
+    pub epp_flags: u8,
+    pub _rsv: u16,
+}
+const _: () = assert!(core::mem::size_of::<PolicyEntry>() == 16);
+const _: () = assert!(core::mem::align_of::<PolicyEntry>() == 8);
+// C-2a 钉板：偏移逐字段钉死（对内核 copy_from_user 后 from_le_bytes 的
+// 手工解码位对位——key@0/weight@8/placement@12/epp_flags@13/_rsv@14）。
+const _: () = {
+    use core::mem::offset_of;
+    assert!(offset_of!(PolicyEntry, key) == 0);
+    assert!(offset_of!(PolicyEntry, weight) == 8);
+    assert!(offset_of!(PolicyEntry, placement) == 12);
+    assert!(offset_of!(PolicyEntry, epp_flags) == 13);
+    assert!(offset_of!(PolicyEntry, _rsv) == 14);
+};
+
+/// `PolicyEntry.epp_flags` bit0：本条带 EPP 覆盖（bit1 才有意义）。
+/// 镜像内核 `PE_EPP_HAS`（其又镜像 `sched/policy.rs` 私有 EPP_HAS）。
+pub const POLICY_EPP_HAS: u8 = 1 << 0;
+/// `PolicyEntry.epp_flags` bit1：EPP 取值（0 = Efficiency / 1 = Perf）。
+/// 镜像内核 `PE_EPP_VAL`。
+pub const POLICY_EPP_VAL: u8 = 1 << 1;
+
+/// op 词汇表（内核 0x83 dispatch 已扩至六臂，S6-e）：1 COMMIT / 2 STATUS /
+/// 3 PROMOTE / 4 DEMOTE / 5 UNBIND / 6 SHADOW_COMMIT——本 crate 按消费面逐
+/// op 包装（先 COMMIT/STATUS，其余随需求落）。
+///
+/// `op = 1`：COMMIT——整表提交为活跃策略快照（表形参走
+/// [`berry_policy_bind`]；op=6 SHADOW_COMMIT 同形，比照对象换 shadow 谱系）。
+pub const POLICY_OP_COMMIT: u64 = 1;
+
+/// `op = 2`：STATUS——双谱系世代 + 调用者自身策略键一次读全（见
+/// [`berry_policy_status`]）。
+pub const POLICY_OP_STATUS: u64 = 2;
+
+/// 0x83：v3 号提前实现（S6-b 最小 COMMIT 面）。abi.toml 在册但 stage=v3——
+/// 常量层只产 v1/1.1 行（gen_abi.py defined 集），`nr::POLICY_BIND` 不存在，
+/// 故本文件私有字面量封 svc（v3 常量层落地后换 `nr::` 常量名——同内核派发注）。
+const POLICY_BIND_NR: usize = 0x83;
+
+/// `berry_policy_bind(auth, op, tbl, count, gen, rsv)`（0x83 表形面：op=1
+/// COMMIT / op=6 SHADOW_COMMIT）：用户态策略表注入（x1..x6 依次 = 六参）。
+///
+/// op=COMMIT：`tbl` = `&[PolicyEntry]` 首址、`count` = 条目数（0 = 空表提交
+/// 合法——「接口在位、表空」）；内核 copy_from_user 整表拷入（无 TOCTOU）后
+/// 逐条转换提交。`gen` = 世代数，**陈旧拒收**：gen ≤ 活跃世代 → -EAGAIN
+/// （写者重放/乱序到达的旧表不得覆盖新表；活跃快照未动，调用方对账 gen 后
+/// 携新 gen 重试）。门控（arch-r2 起 2026-11-11，全 op 面）：`auth` = 持
+/// `RIGHT_MANAGE` 权的 Process handle——内核三门控（在表 / 类型 Process /
+/// 权利 MANAGE）在 op 分派之前，坏值/类型不符（含 auth=0 裸调）→ -EBADF、
+/// 缺 MANAGE → -EACCES（对象不消费，纯资格面；持权者通常是 svcmgr/初始化
+/// 服务）。`rsv` 须 0（非 0 → -EINVAL）。
+#[no_mangle]
+pub extern "C" fn berry_policy_bind(
+    auth: Handle,
+    op: u64,
+    tbl: *const PolicyEntry,
+    count: u64,
+    gen: u64,
+    rsv: u64,
+) -> Status {
+    unsafe {
+        sys(
+            POLICY_BIND_NR,
+            auth as usize,
+            op as usize,
+            tbl as usize,
+            count as usize,
+            gen as usize,
+            rsv as usize,
+        )
+    }
+}
+
+/// `berry_policy_status(auth, packed, self_key)`（0x83 op=2，S6-e STATUS 面）：
+/// 双谱系世代 + 调用者自身策略键一次读全（写者对账/遥测）。门控同
+/// [`berry_policy_bind`]（arch-r2 起，全 op 面）：`auth` = 持 `RIGHT_MANAGE`
+/// 权的 Process handle，auth=0 裸调 → -EBADF（读面也在门后，出参不被写）；
+/// p4 保留恒 0（非 0 → -EINVAL，options 纪律）。
+///
+/// `packed`（u64 出参，**必填**——内核无条件写出，NULL → -EFAULT）：
+/// bit 0-31 = active gen、bit 32-63 = shadow gen（各截低 32 位）——内核
+/// 单读窗打包（双谱系无撕裂），位布局是 ABI 冻结面（内核 ktest SH-6 钉板）。
+/// `self_key`（u64 出参，**可选**——NULL 跳过）= 调用者自身策略键：v1 key
+/// 载体即 `Task::proc_tag`（内核态指针，用户态不可合成、只可经此查询），
+/// 内核经 `current_tag` 与 apply/weight_of 消费点同源读取——表里给自己
+/// 加权前先对账「我是几号键」；内核任务/boot 期 = 0（哨兵键——表侧本就
+/// 丢弃，诚实透出不伪装）。
+///
+/// 内核 op=2 另有 **p3 出参**（divergence 对账遥测：bit 0-31 =
+/// divergence_count、bit 32-63 = shadow_eval_count——A/B 评估面，内核
+/// ktest DV-5 钉板、宿主 `tools/policy_ab_eval.py` 消费）；本 wrapper 尚
+/// 未暴露（恒传 0 = NULL 跳过），用户态 A/B 评估器落地时扩参。
+#[no_mangle]
+pub extern "C" fn berry_policy_status(auth: Handle, packed: *mut u64, self_key: *mut u64) -> Status {
+    unsafe {
+        sys(
+            POLICY_BIND_NR,
+            auth as usize,
+            POLICY_OP_STATUS as usize,
+            packed as usize,
+            self_key as usize,
+            0, // p3 保留
+            0, // p4 保留（rsv）
+        )
+    }
+}
+
 // —— IPC / event ——
 
 /// 一次建一对端点（两端均授 SEND|RECV|DUPLICATE）；出参先置 0 再写新值
@@ -548,4 +751,16 @@ pub extern "C" fn berry_signal_send(process: Handle, sig: u32) -> Status {
 #[no_mangle]
 pub extern "C" fn berry_signal_take(pending: *mut u64) -> Status {
     unsafe { sys(nr::SIGNAL_TAKE, pending as usize, 0, 0, 0, 0, 0) }
+}
+
+// —— 电源（桌面UX刀D——guest 内关机最小闭环，审计 02 号 M3）——
+
+/// 整机下电（PSCI SYSTEM_OFF 0x84000008 经 HVC）。成功 = **不归**（整机
+/// 退出——QEMU 走 `qemu_system_shutdown_request`）；返回 0 结构性不可达；
+/// 非 0（-ENOTSUP）= conduit 死（EFI handoff / 非 EL1 / 无 PSCI——内核
+/// probe 缓存门）或固件拒收——调用方诚实降级（launcher 提示 / berryctl
+/// 退 1）。零参数零出参；v1 无门控（单用户仿真系统，门控随 I3 刀）。
+#[no_mangle]
+pub extern "C" fn berry_power_off() -> Status {
+    unsafe { sys(nr::POWER_OFF, 0, 0, 0, 0, 0, 0) }
 }

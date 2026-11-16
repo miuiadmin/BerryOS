@@ -125,6 +125,9 @@ fn write_chunk(w: &mut impl Write, kind: &[u8; 4], data: &[u8]) -> Result<()> {
     Ok(())
 }
 
+// CRC32 bitwise——镜像方 = `user/berry-lifecycle/src/lib.rs` `crc32`
+// （poly `0xEDB88320` 同款 bitwise：两侧互指单源纪律，改任一侧须同步；
+// 向量钉板 "123456789" → `0xCBF43926` 在 berry-lifecycle host 测）。
 struct Crc32 {
     value: u32,
 }

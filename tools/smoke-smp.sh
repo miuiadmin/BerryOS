@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # BerryOS S-2b 副核参与冒烟——八相（`SMP-S2实施设计草案.md` §5.1 起，相
 # 3-8 = S-3b/S-4/S-5b/S-5c 逐相增扩；smoke-x86 同款独立形态——不并入主 smoke、
-# 不进 CI：主 smoke 八跑是单核回归基线，零扰动）。相 1 = 裸相（28 标记 +
-# SMP 握手）；相 2 = rootfs 生态相（50 标记 + 对拍 client 对 + PAR 副核参
+# 不进 CI：主 smoke 八跑是单核回归基线，零扰动）。相 1 = 裸相（32 标记 +
+# SMP 握手）；相 2 = rootfs 生态相（56 标记——markers.sh 单源动态计数，历史注释值曾 51/54 随刀漂移 + 对拍 client 对 + PAR 副核参
 # 与活证）——rootfs 全链在 `-smp 2` 下绿 = E0「内核串行/用户并行」语义
 # 等价的端到端证据；相 3-8 = 专项门（LB/ASIDR/TLBS/ALLOC/HT/PP——各独立
 # boot，断言面见各相段注释与 `docs/规则/07-测试与冒烟.md`）。
@@ -25,7 +25,7 @@
 #      `SGI2 ok n=` 恰一次（CPU0→CPU1 SGI_TLB_SHOOTDOWN 单发 → 副核收端臂
 #      全量失效+回执计数；同归 smp_assertions——前缀 SGI2/SGI3 与 `SGI ok`
 #      互不子串、断言面零碰撞，单核相 TX 恒 0 主 smoke 零漂移）。
-#   2. 相 1 裸相 28 标记 / 相 2 rootfs 相 50 标记全部出现（与主 smoke 同面
+#   2. 相 1 裸相 32 标记 / 相 2 rootfs 相 56 标记全部出现（与主 smoke 同面
 #      ——标记数组与 smoke.sh 运行时计数对拍，见下方机器守卫）。
 #   3. switches 金丝雀 ≥3 条严格递增**按相**（任核 tick 命中 100 倍数即整行
 #      持 PRINT_LOCK 打印——两核交替打印不破坏数值序列单调，§5.2）。
@@ -34,6 +34,9 @@
 #      无 IPI + park 派发限频下真并行 witness 归 S-3——验收面 = PAR absent
 #      行 `d1=`（副核 park 派发计数）非零；PAR ok 提前命中 = 超预期收益，
 #      放行不拒）。
+#   5. G-ver-2（版本管理标准 §3/§6）相 1 裸相 banner 门（审计洞③补面：
+#      本线原无 banner 断言）：形态正则 + ident 非 nogit 拒——smoke.sh
+#      主路同正则同形逐字复制。
 #
 # 时限：双核 MTTCG 吞吐 ≈ 单核 0.61x（S-0 B 相）——一切帽 ×2 起步铁律
 # （boot 120→240s / 金丝雀 180→400s / rootfs 420→840s）。**R3 首跑定标
@@ -155,13 +158,13 @@ fail() {
     cp "$lg" "$keep" 2>/dev/null && echo "smoke-smp: 失败全尸已存：$keep" >&2
     i=$((i+1))
   done
-  echo "---- 串口日志尾部（$LOG）----" >&2
+  echo "---- 串口日志尾部（${LOG}）----" >&2
   tail -40 "$LOG" >&2
   # 客户端死因随失败即打印不留文件（smoke.sh 同款纪律）。
   for p in "echod:$ECHO_LOG" "evsclient:$EVS_LOG" "sktclient:$SKT_LOG"; do
     local lg="${p#*:}"
     if [ -n "$lg" ] && [ -s "$lg" ]; then
-      echo "---- ${p%%:*} 日志尾部（$lg）----" >&2
+      echo "---- ${p%%:*} 日志尾部（${lg}）----" >&2
       tail -10 "$lg" >&2
     fi
   done
@@ -194,15 +197,15 @@ source "$SCRIPT_DIR/markers.sh"
 smp_assertions() {
   local label="$1" n
   n=$(grep -cF "SMP ok ncores=2" "$LOG" || true)
-  [ "$n" -eq 1 ] || fail "$label SMP 标记非恰一次（n=$n）：SMP ok ncores=2"
+  [ "$n" -eq 1 ] || fail "$label SMP 标记非恰一次（n=${n}）：SMP ok ncores=2"
   grep -q "SMP: sec up" "$LOG" || fail "$label 缺副核报告行 SMP: sec up"
   # S-3a probe ②：SGI 收讫标记恰一次（超时面已由 `SMP: FAIL` 反向快败覆盖）。
   n=$(grep -cF "SGI ok n=" "$LOG" || true)
-  [ "$n" -eq 1 ] || fail "$label SGI ok 非恰一次（n=$n）——S-3a SGI_RESCHEDULE 收讫链断（发/投/收讫计数三面查）"
+  [ "$n" -eq 1 ] || fail "$label SGI ok 非恰一次（n=${n}）——S-3a SGI_RESCHEDULE 收讫链断（发/投/收讫计数三面查）"
   # S-4 4-1 probe ④：TLB shootdown 回执标记恰一次（超时面同由 `SMP: FAIL`
   # 反向快败覆盖——`SMP: FAIL sgi2 timeout` 同前缀）。
   n=$(grep -cF "SGI2 ok n=" "$LOG" || true)
-  [ "$n" -eq 1 ] || fail "$label SGI2 ok 非恰一次（n=$n）——S-4 4-1 SGI #2 回执链断（banked 使能/发送/投递/收端全量失效/回执计数四面查）"
+  [ "$n" -eq 1 ] || fail "$label SGI2 ok 非恰一次（n=${n}）——S-4 4-1 SGI #2 回执链断（banked 使能/发送/投递/收端全量失效/回执计数四面查）"
 }
 
 # 标记轮询公共体：QEMU 活着 + SMP: FAIL/skip 反向快败 + （可选）SMP ok
@@ -214,9 +217,9 @@ poll_markers() {
   t0=$(date +%s)
   while :; do
     kill -0 "$QEMU_PID" 2>/dev/null \
-      || fail "QEMU 提前退出（$label）；日志尾部：$(tail -5 "$LOG" | tr '\n' ' ')"
-    grep -q "SMP: FAIL" "$LOG" && fail "SMP 握手自报 FAIL（$label）：$(grep 'SMP: FAIL' "$LOG" | tail -1)"
-    grep -q "SMP: skip" "$LOG" && fail "SMP 被跳过（$label——错机型/错旗？）：$(grep 'SMP: skip' "$LOG" | tail -1)"
+      || fail "QEMU 提前退出（${label}）；日志尾部：$(tail -5 "$LOG" | tr '\n' ' ')"
+    grep -q "SMP: FAIL" "$LOG" && fail "SMP 握手自报 FAIL（${label}）：$(grep 'SMP: FAIL' "$LOG" | tail -1)"
+    grep -q "SMP: skip" "$LOG" && fail "SMP 被跳过（${label}——错机型/错旗？）：$(grep 'SMP: skip' "$LOG" | tail -1)"
     missing=""
     if [ "$with_smp" = "1" ]; then
       grep -qF "SMP ok ncores=2" "$LOG" || missing="SMP ok ncores=2"
@@ -243,7 +246,7 @@ canary_check() {
       v_first=$(grep -o 'switches=[0-9]*' "$LOG" | head -1 | cut -d= -f2)
     fi
     [ "${n:-0}" -ge 3 ] && break
-    kill -0 "$QEMU_PID" 2>/dev/null || fail "QEMU 在金丝雀阶段退出（$label）"
+    kill -0 "$QEMU_PID" 2>/dev/null || fail "QEMU 在金丝雀阶段退出（${label}）"
     [ $(( $(date +%s) - tc )) -gt "$dl" ] \
       && fail "$label 金丝雀 ${dl}s 内不足 3 条（现有 ${n:-0}）"
     sleep 2
@@ -255,7 +258,7 @@ canary_check() {
   v_last=$(grep -o 'switches=[0-9]*' "$LOG" | tail -1 | cut -d= -f2)
   if [ -n "$t_first" ] && [ "$v_last" -gt "$v_first" ]; then
     CAN_PERIOD_S=$(( ( $(date +%s) - t_first ) / (v_last - v_first) ))
-    echo "smoke-smp: $label 金丝雀行周期 ≈ ${CAN_PERIOD_S}s/行（值 $v_first→$v_last）"
+    echo "smoke-smp: $label 金丝雀行周期 ≈ ${CAN_PERIOD_S}s/行（值 ${v_first}→${v_last}）"
   fi
 }
 
@@ -270,7 +273,7 @@ evs_client_wait() {
   tc=$(date +%s)
   while ! grep -q 'EVS client ok n=2' "$EVS_LOG" 2>/dev/null; do
     kill -0 "$EVS_PID" 2>/dev/null \
-      || fail "evsclient 提前退出（$label）：$(tail -5 "$EVS_LOG" | tr '\n' ' ')"
+      || fail "evsclient 提前退出（${label}）：$(tail -5 "$EVS_LOG" | tr '\n' ' ')"
     [ $(( $(date +%s) - tc )) -gt "$CLIENT_CMP_CAP" ] \
       && fail "$label EVS client ${CLIENT_CMP_CAP}s 未对拍完成（guest EVS ok 已到——查 EVS_LOG 重试诊断）"
     sleep 1
@@ -296,7 +299,7 @@ skt_client_wait() {
   tc=$(date +%s)
   while ! grep -q 'SKT client ok n=2' "$SKT_LOG" 2>/dev/null; do
     kill -0 "$SKT_PID" 2>/dev/null \
-      || fail "sktclient 提前退出（$label）：$(tail -5 "$SKT_LOG" | tr '\n' ' ')"
+      || fail "sktclient 提前退出（${label}）：$(tail -5 "$SKT_LOG" | tr '\n' ' ')"
     [ $(( $(date +%s) - tc )) -gt "$CLIENT_CMP_CAP" ] \
       && fail "$label SKT client ${CLIENT_CMP_CAP}s 未对拍完成（guest SKT ok 已到——查 SKT_LOG 重试诊断）"
     sleep 1
@@ -330,16 +333,31 @@ echod_stop() {
   ECHO_LOG=""
 }
 
-# ============ 相 1：裸相（28 标记 + SMP 握手 + 金丝雀） ============
+# ============ 相 1：裸相（32 标记 + SMP 握手 + 金丝雀） ============
 
 field_wait
-echo "smoke-smp: QEMU 启动（$KERNEL，-smp 2，相 1 裸相）"
+echo "smoke-smp: QEMU 启动（${KERNEL}，-smp 2，相 1 裸相）"
 t_boot0=$(date +%s)
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -smp 2 -kernel "$KERNEL" \
   < /dev/null > "$LOG" 2>&1 &
 QEMU_PID=$!
 
 poll_markers "$DEADLINE_BOOT" "裸相" 1 "${MARKERS[@]}"
+# G-ver-2（版本管理标准 §3）：boot banner 形态断言——smoke.sh 主路同正则
+# 同形逐字复制（审计洞③：SMP 线裸相原无 banner 门）：首匹配行须为
+# `BerryOS boot <semver> (<ident>[ rustc<ver> dbg|rel])`。上方 poll_markers
+# 的 MARKERS[0] "BerryOS boot" 子串断言原样保留——本行只加形态边不松子串
+# 边；置轮询到齐后 = banner 行必已在席，断言零竞态。挂相 1 一处即足：八
+# 相同一 $KERNEL 同一 banner，逐相重断言零增量鉴别力。
+grep -m1 'BerryOS boot' "$LOG" | grep -Eq 'BerryOS boot [0-9]+\.[0-9]+\.[0-9]+ \([A-Za-z0-9.-]+( rustc[A-Za-z0-9.?]+ (dbg|rel))?\)' \
+  || fail "boot banner 形态缺：首匹配行应为 'BerryOS boot <semver> (<ident>[ rustc<ver> dbg|rel])'（版本管理标准 §3 G-ver-2）；实得：$(grep -m1 'BerryOS boot' "$LOG" || echo '（日志无 BerryOS boot 行）')"
+# 标准 §6 执法化（审计洞②：原纯人律无机器门）：ident 非 nogit 拒——nogit
+# 标识产物不得对外发布（无归因能力的构建仅限本地调试），冒烟门是发布链
+# 前闸，nogit 构建过门即违规。门 = 首 banner 行含 nogit 即红（行内唯一可
+# 含该串的段 = ident——semver/rustc/profile 段均数字与固定词）；与
+# smoke.sh 主路同形同正则。
+grep -m1 'BerryOS boot' "$LOG" | grep -q 'nogit' \
+  && fail "boot banner ident 为 nogit：nogit 标识产物不得对外发布/进发布链（版本管理标准 §6——无归因能力的构建仅限本地调试）；实得：$(grep -m1 'BerryOS boot' "$LOG")"
 SMP_BOOT_WALL=$(( $(date +%s) - t_boot0 ))
 smp_assertions "相 1"
 echo "smoke-smp: 相 1 SMP 握手 + boot 标记 ${#MARKERS[@]}/${#MARKERS[@]} 到齐（墙钟 ${SMP_BOOT_WALL}s）"
@@ -415,9 +433,14 @@ smp_assertions "相 2"
 # vmo 行须非降级形态（=none 即 seam 断：内核没把 rootfs 包进 VMO）。
 grep -q 'ROOTFS vmo=none' "$LOG" \
   && fail "ROOTFS vmo=none（rootfs 在但 VMO 交付缺席——入机侧 seam 断）"
-# app-0 a-2 证据层：APPDEMO（console=true）子自证输出（能力面断言随迁）。
-grep -q 'app APPDEMO up' "$LOG" \
-  || fail "app APPDEMO up 缺失（console=true 能力面断——appdemo 未见自证输出；查 eco: app 行）"
+# app-0 a-2 证据层（波 4 裁决 B 随动重裁，smoke.sh 同款）：boot 批 [ui]
+# app 入册不拉起——逐槽断 `app <id> gui deferred` 记账行（原
+# `app APPDEMO up` boot 批拉起面退役；console=true 串口证据随迁 GUI 形
+# gui8-smoke 点击 spawn）。
+for id in APPDEMO SETTINGS FILES PHOTOS CAMERA CONTACTS MMS BROWSER; do
+  grep -q "app $id gui deferred" "$LOG" \
+    || fail "app $id gui deferred 缺失（裁决 B 入册记账——boot 批未见 [ui] 槽入册；查 eco: app 行）"
+done
 
 evs_client_wait "rootfs 相"
 skt_client_wait "rootfs 相"
@@ -440,7 +463,7 @@ else
   d1=$(grep 'PAR absent' "$LOG" | tail -1 | grep -o ' d1=[0-9]*' | cut -d= -f2)
   [ -n "$d1" ] && [ "$d1" -gt 0 ] \
     || fail "PAR absent 行 d1=${d1:-缺}（副核 park 派发零活证——d1=0 = 副核从未摘入任务，S-2b 参与面破损）"
-  echo "smoke-smp: PAR absent d1=$d1（副核参与活证 ≥1 派发；真并行 witness 归 S-3）"
+  echo "smoke-smp: PAR absent d1=${d1}（副核参与活证 ≥1 派发；真并行 witness 归 S-3）"
 fi
 
 canary_check "相 2" "$DEADLINE_CANARY"
@@ -746,4 +769,4 @@ kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 QEMU_PID=""
 
-echo "smoke-smp: PASS（八相：相 1/2 boot 执法面 = SMP ok ncores=2 各恰一次 + SGI ok 各恰一次（S-3a IPI 收讫链）+ SGI2 ok 各恰一次（S-4 TLB shootdown 回执链）+ 裸相 ${#MARKERS[@]} + rootfs 相 ${#ROOTFS_MARKERS[@]} 标记 + PAR d1 活证 + 金丝雀严格递增；相 3 专项门 = LB c0=0/c1≥${LB_TICK_TH}/n=4 三硬门（S-3b 副核得货活证）；相 4 专项门 = ASIDR gate on + n≥1（S-4 4-3 回卷 quiesce 回执链）；相 5 专项门 = TLBS gate on + n=10（S-4 4-4 canary 压测双轮 decommit/Drop——stale TLB 被 SGI #2 广播打掉的十命中活证）；相 6 专项门 = ALLOC gate on + n=320（S-5b 双核 EL0 分配器 churn——水位恒等 + 双核 sw 参与证）；相 7 专项门 = HT gate on + n=320（S-5b 双核 handle 表风暴——静默点双走查 Ok(0)）；相 8 专项门 = PP gate on + a=320/b=320（S-5c 双核 channel ping-pong——单进程双线程对打 + 序号零丢失对账）——恰一次/金丝雀执法不跨相 3-8 boot）"
+echo "smoke-smp: PASS（八相：相 1/2 boot 执法面 = SMP ok ncores=2 各恰一次 + SGI ok 各恰一次（S-3a IPI 收讫链）+ SGI2 ok 各恰一次（S-4 TLB shootdown 回执链）+ banner 形态 + ident 非 nogit（G-ver-2 §3/§6，相 1——smoke.sh 同正则）+ 裸相 ${#MARKERS[@]} + rootfs 相 ${#ROOTFS_MARKERS[@]} 标记 + PAR d1 活证 + 金丝雀严格递增；相 3 专项门 = LB c0=0/c1≥${LB_TICK_TH}/n=4 三硬门（S-3b 副核得货活证）；相 4 专项门 = ASIDR gate on + n≥1（S-4 4-3 回卷 quiesce 回执链）；相 5 专项门 = TLBS gate on + n=10（S-4 4-4 canary 压测双轮 decommit/Drop——stale TLB 被 SGI #2 广播打掉的十命中活证）；相 6 专项门 = ALLOC gate on + n=320（S-5b 双核 EL0 分配器 churn——水位恒等 + 双核 sw 参与证）；相 7 专项门 = HT gate on + n=320（S-5b 双核 handle 表风暴——静默点双走查 Ok(0)）；相 8 专项门 = PP gate on + a=320/b=320（S-5c 双核 channel ping-pong——单进程双线程对打 + 序号零丢失对账）——恰一次/金丝雀执法不跨相 3-8 boot）"

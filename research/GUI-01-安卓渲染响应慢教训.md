@@ -178,7 +178,7 @@ Perfetto 实战给出的分解框架（一手技术文档，[androidperformance.
 
 **架构归因（为何 iOS 长期快）**：多方综述指向三点——①iOS 触摸事件与 UI 渲染跑在**专用高（实时）优先级线程**，触摸发生时调度器优先服务 UI；②GPU 加速是第一原则（从未有软件渲染时代）；③硬件/固件校准（触控 IC 采样与合并策略）（[PhoneArena: myth busted](https://www.phonearena.com/news/Android-can-never-be-as-smooth-as-iOS-myth-busted_id26252)、[Zhihu 讨论汇](https://www.zhihu.com/question/24180748/answer/24746921)，确定度中——非官方文档，属合理共识）。
 
-**对 BerryOS**：第 ① 条恰是 BerryOS 的机制本位优势——intent 第一类调度输入（`CLAUDE.md` 调度 intent 段，ADR #42）+ 调度器 class_rt/deadline 预留（`docs/调度器设计-v1.0.md`）让「GUI 帧循环线程申报高 intent/RT 档」成为 day-one 可用能力，不靠事后打补丁。
+**对 BerryOS**：第 ① 条恰是 BerryOS 的机制本位优势——intent 第一类调度输入（`CLAUDE.md` 调度 intent 段，ADR #42）+ 调度器 class_rt/deadline 预留（`docs/调度器设计-v1.1.md`）让「GUI 帧循环线程申报高 intent/RT 档」成为 day-one 可用能力，不靠事后打补丁。
 
 ---
 
@@ -237,7 +237,7 @@ Compose 用五年时间把「响应式/声明式 UI」的性能坑填到与手�
 | 9 | 触摸分发开销 | 逐层 View 遍历 + 中心枢纽排队 | deliverInputEvent 吃帧案例 | Z 序表坐标命中（无深度遍历）；无 system_server 单点 | 规划 GUI-5 |
 | 10 | 「晚到帧」型延迟 | 帧不慢但呈现偏移 | FrameTimeline expected/actual | 遥测记双指标：帧耗时直方图 + 呈现偏移；BENCHWAKE 直方图先例 | `CLAUDE.md` boot 速览 |
 | 11 | 度量后置 | jank 十年后才有官方指标体系 | JankStats/FrameTimeline 时间线 | FPS 统计 + 视图树 dump + 事件注入器 = GUI-9 第一梯队（AI 测试友好化支柱） | 规划 GUI-9、附录 B L2 DFX 条 |
-| 12 | 优先级不保证 | UI 线程与后台公平竞争 | iOS 实时优先级线程对照 | intent 第一类调度输入 + class_rt/deadline 预留：GUI 帧线程申报高 intent；AI 调度面天然消费 | `docs/调度器设计-v1.0.md`、ADR #42 |
+| 12 | 优先级不保证 | UI 线程与后台公平竞争 | iOS 实时优先级线程对照 | intent 第一类调度输入 + class_rt/deadline 预留：GUI 帧线程申报高 intent；AI 调度面天然消费 | `docs/调度器设计-v1.1.md`、ADR #42 |
 | 13 | 声明式层性能税（Compose 病） | 重组/不稳定参数/记忆化成本 | Strong Skipping 五年补课 | 保留模式 Rust 视图树 = 常驻显示列表（记忆化极限）；状态→Invalidate 绑定 API 留缝 | 规划裁决 C |
 | 14 | JIT/预热依赖 | 冷路径解释执行 | Baseline Profiles 叙事 | AOT 编译（无 JIT 面）；spawn 预热（appd 先例） | `CLAUDE.md` G-eco 段 |
 | 15 | 低功耗与流畅的对立 | 渲染全速=耗电 | Tickless vs 帧率治理（HGM/变帧率） | tickless day-one + GUI 空闲静默帧循环（无脏区不合成不唤醒）；PM 服务共管 | `CLAUDE.md` 调度/电源段 |

@@ -104,11 +104,96 @@ struct Reader {
     pf: PixelFormat,
     frame: Frame,
     seq: u64,
+    /// Whether the reader sends incremental framebuffer requests after
+    /// each update. False for TLS sessions, where the single rustls
+    /// session is shared under one mutex and `vnc check` only needs the
+    /// first full frame.
+    request_more: bool,
 }
 
-/// RFB 3.8 handshake (no encodings/request): version, security None, shared
-/// ClientInit, ServerInit. Returns framebuffer size + pixel format.
-fn handshake(stream: &mut Stream) -> Result<(u32, u32, PixelFormat)> {
+/// Security type actually used for a session (RFB 3.8): 1 (None) or 2
+/// (VNC auth). `vnc check` reports this so a password passed against an
+/// open endpoint shows the truth (`auth none`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthKind {
+    None,
+    Vnc,
+}
+
+impl AuthKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AuthKind::None => "none",
+            AuthKind::Vnc => "vnc",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// VeNCrypt (RFC-none; the de-facto spec + QEMU 11.0.3 wire truth, probe p2)
+// ---------------------------------------------------------------------------
+
+/// RFB security type carrying the VeNCrypt extension.
+pub const VENCRYPT_TYPE: u8 = 19;
+/// VeNCrypt version berry speaks (both directions on the wire: S->C offer,
+/// C->S reply; ack byte 0x00 follows, then the u8 subtype count).
+pub const VENCRYPT_VERSION: [u8; 2] = [0x00, 0x02];
+/// VeNCrypt ack byte (server accepts the negotiated version).
+pub const VENCRYPT_ACK_OK: u8 = 0x00;
+/// VeNCrypt subtype accept status (server accepted the chosen subtype).
+pub const VENCRYPT_ACCEPTED: u8 = 0x01;
+/// X509None: TLS with no inner VNC auth.
+pub const VENCRYPT_SUBTYPE_X509NONE: u32 = 260;
+/// X509Vnc: TLS with the classic DES challenge inside.
+pub const VENCRYPT_SUBTYPE_X509VNC: u32 = 261;
+
+/// Highest common VeNCrypt version between the server's offer and berry's
+/// 0.2: None when the server is strictly older (no common ground, the
+/// client must abort).
+pub fn vencrypt_common_version(server: [u8; 2]) -> Option<[u8; 2]> {
+    let (maj, min) = (server[0], server[1]);
+    if maj > 0 || (maj == 0 && min >= 2) {
+        Some(VENCRYPT_VERSION)
+    } else {
+        None
+    }
+}
+
+/// Subtype preference matrix (pure; unit-pinned): X509Vnc (261) whenever a
+/// password is available, else X509None (260) as the unauthenticated
+/// fallback; 261 without a password is a hard error with the password
+/// hint; anything else means the server's subtype set is unsupported.
+pub fn vencrypt_choose_subtype(offered: &[u32], password: Option<&str>) -> Result<(u32, AuthKind)> {
+    if password.is_some() && offered.contains(&VENCRYPT_SUBTYPE_X509VNC) {
+        return Ok((VENCRYPT_SUBTYPE_X509VNC, AuthKind::Vnc));
+    }
+    if offered.contains(&VENCRYPT_SUBTYPE_X509NONE) {
+        return Ok((VENCRYPT_SUBTYPE_X509NONE, AuthKind::None));
+    }
+    if offered.contains(&VENCRYPT_SUBTYPE_X509VNC) {
+        return Err(BerryError::protocol(
+            "VeNCrypt: server offers x509-vnc auth but no password is available",
+        )
+        .with_hint("pass --password (the run's vnc.pass is read by default; set one via `berry vnc passwd`)"));
+    }
+    Err(BerryError::protocol(format!(
+        "VeNCrypt: no supported subtype (need {VENCRYPT_SUBTYPE_X509VNC}/{VENCRYPT_SUBTYPE_X509NONE}, server offered {offered:?})"
+    )))
+}
+
+/// RFB 3.8 handshake: version, security negotiation (None or VNC auth),
+/// shared ClientInit, ServerInit. Returns framebuffer size, pixel format,
+/// and the auth type used. With `password` set we prefer security type 2;
+/// servers that only offer None continue unauthenticated so callers can
+/// report the actual mode. Password material never appears in errors.
+///
+/// Generic over the byte transport (wave 6): the TCP path passes `Stream`,
+/// `vnc check --ws` passes a `ws::WsStream` — one state machine, no
+/// copies; `rfb_tail`/`vnc_auth_exchange` were already generic.
+fn handshake_auth<S: Read + Write>(
+    stream: &mut S,
+    password: Option<&str>,
+) -> Result<(u32, u32, PixelFormat, AuthKind)> {
     let mut ver = [0u8; 12];
     read_exact(stream, &mut ver)?;
     if !ver.starts_with(b"RFB 003.") {
@@ -134,18 +219,98 @@ fn handshake(stream: &mut Stream) -> Result<(u32, u32, PixelFormat)> {
     }
     let mut types = vec![0u8; n[0] as usize];
     read_exact(stream, &mut types)?;
-    if !types.contains(&1) {
+    let auth = if types.contains(&2) && password.is_some() {
+        // VNC auth (RFC 6143 §7.2.2): 16-byte challenge, DES-ECB response
+        // under the bit-reversed password key, then SecurityResult u32.
+        stream.write_all(&[2])?;
+        stream.flush()?;
+        vnc_auth_exchange(stream, password.unwrap_or(""))?;
+        AuthKind::Vnc
+    } else if types.contains(&1) {
+        stream.write_all(&[1])?;
+        stream.flush()?;
+        let mut result = [0u8; 4];
+        read_exact(stream, &mut result)?;
+        if u32::from_be_bytes(result) != 0 {
+            return Err(BerryError::protocol("VNC: security handshake failed"));
+        }
+        AuthKind::None
+    } else if types.contains(&19) {
+        // VeNCrypt (subtype 19) needs a STARTTLS upgrade. The TLS-capable
+        // path lives in `connect_tls`; reaching this arm means the run
+        // state claimed a plaintext endpoint but the server disagrees.
+        return Err(BerryError::protocol(
+            "VNC: server requires TLS (VeNCrypt, security type 19)",
+        )
+        .with_hint(
+            "vnc check follows TLS automatically when the run's vnc.listen says tls=true — restart the run with --vnc-tls (see `berry vnc status`)",
+        ));
+    } else {
         return Err(BerryError::protocol("VNC: server requires authentication")
-            .with_hint("use a Unix socket (no auth) or configure password=off on loopback"));
-    }
-    stream.write_all(&[1])?;
+            .with_hint("pass --password / set one via `berry vnc passwd` (the run's vnc.pass works too)"));
+    };
+
+    let (w, h, pf) = rfb_tail(stream)?;
+    Ok((w, h, pf, auth))
+}
+
+/// ServerInit-depth handshake over any byte transport: the entry point
+/// for `vnc check --ws` (wave 6). The same `handshake_auth` state machine
+/// as the TCP paths — version, auth, ClientInit, ServerInit — minus the
+/// encodings request and reader startup: noVNC reports "connected" at the
+/// same depth, so the browser-path self-check needs no frame pull (and
+/// avoids QEMU's 8192-byte chunked bulk traffic).
+pub fn handshake_server_init<S: Read + Write>(
+    stream: &mut S,
+    password: Option<&str>,
+) -> Result<(u32, u32, AuthKind)> {
+    let (w, h, _pf, auth) = handshake_auth(stream, password)?;
+    Ok((w, h, auth))
+}
+
+/// VNC auth (security type 2) message exchange after the type choice:
+/// 16-byte DES challenge -> response -> SecurityResult. On failure the
+/// RFB 3.8 reason string is read best-effort for a usable message (the
+/// reason never carries password material).
+fn vnc_auth_exchange<S: Read + Write>(stream: &mut S, password: &str) -> Result<()> {
+    let mut challenge = [0u8; 16];
+    read_exact(stream, &mut challenge)?;
+    let resp = crate::display::des::vnc_challenge_response(password, &challenge);
+    stream.write_all(&resp)?;
     stream.flush()?;
     let mut result = [0u8; 4];
     read_exact(stream, &mut result)?;
     if u32::from_be_bytes(result) != 0 {
-        return Err(BerryError::protocol("VNC: security handshake failed"));
+        let mut reason = String::new();
+        let mut len = [0u8; 4];
+        if read_exact(stream, &mut len).is_ok() {
+            let size = u32::from_be_bytes(len) as usize;
+            if size <= 4096 {
+                let mut buf = vec![0u8; size];
+                if read_exact(stream, &mut buf).is_ok() {
+                    // QEMU's reason (e.g. "Authentication failed \0")
+                    // is NUL-padded with a trailing space; trim both so
+                    // the CLI error message reads clean.
+                    reason = String::from_utf8_lossy(&buf)
+                        .trim_matches(|c: char| c.is_whitespace() || c == '\0')
+                        .to_string();
+                }
+            }
+        }
+        let detail = if reason.is_empty() {
+            String::new()
+        } else {
+            format!(": {reason}")
+        };
+        return Err(BerryError::protocol(format!("VNC: auth failed{detail}"))
+            .with_hint("check the VNC password (`berry vnc passwd` or the run's vnc.pass)"));
     }
+    Ok(())
+}
 
+/// ClientInit (shared=1) -> ServerInit: framebuffer size, pixel format,
+/// name. Shared by the plaintext handshake and the TLS (VeNCrypt) tail.
+fn rfb_tail<S: Read + Write>(stream: &mut S) -> Result<(u32, u32, PixelFormat)> {
     stream.write_all(&[1])?; // shared
     stream.flush()?;
     let mut init = [0u8; 24];
@@ -168,6 +333,22 @@ fn handshake(stream: &mut Stream) -> Result<(u32, u32, PixelFormat)> {
     Ok((w, h, pf))
 }
 
+/// Advertise encodings (Raw + DesktopSize) and request one full
+/// non-incremental framebuffer update.
+fn send_encodings_request<S: Read + Write>(stream: &mut S, w: u32, h: u32) -> Result<()> {
+    // Encodings: Raw (0) + DesktopSize (-223). Cursor is deliberately not
+    // requested; the host draws its own touch indicator.
+    let mut enc = vec![2u8, 0];
+    enc.extend_from_slice(&2u16.to_be_bytes());
+    enc.extend_from_slice(&0i32.to_be_bytes());
+    enc.extend_from_slice(&(-223i32).to_be_bytes());
+    stream.write_all(&enc)?;
+    stream.flush()?;
+    stream.write_all(&request(0, 0, 0, w, h))?;
+    stream.flush()?;
+    Ok(())
+}
+
 pub struct VncSource {
     slot: Arc<Mutex<Option<Frame>>>,
     writer: Arc<Mutex<Stream>>,
@@ -175,25 +356,29 @@ pub struct VncSource {
     error: Arc<Mutex<Option<String>>>,
     handle: Option<JoinHandle<()>>,
     caps: Caps,
+    auth: AuthKind,
+    /// VeNCrypt subtype actually used ("x509-vnc" | "x509-none") when the
+    /// session was established over TLS; None on plaintext.
+    tls: Option<&'static str>,
+    /// Duplicate handle to the raw socket, TLS sessions only: `Drop`
+    /// unblocks a reader parked on the socket without waiting for the
+    /// stream mutex (the rustls session cannot be cloned).
+    shutdown_sock: Option<std::net::TcpStream>,
 }
 
 impl VncSource {
     pub fn connect(endpoint: &Endpoint) -> Result<Self> {
+        Self::connect_auth(endpoint, None)
+    }
+
+    /// Connect with an optional VNC-auth password (RFB security type 2).
+    /// Used by `berry vnc check` against the external TCP endpoint.
+    pub fn connect_auth(endpoint: &Endpoint, password: Option<&str>) -> Result<Self> {
         let mut stream = connect_retry(endpoint, Duration::from_secs(10))?;
         stream.set_read_timeout(Some(Duration::from_secs(10)))?;
 
-        let (w, h, pf) = handshake(&mut stream)?;
-
-        // Encodings: Raw (0) + DesktopSize (-223). Cursor is deliberately not
-        // requested; the host draws its own touch indicator.
-        let mut enc = vec![2u8, 0];
-        enc.extend_from_slice(&2u16.to_be_bytes());
-        enc.extend_from_slice(&0i32.to_be_bytes());
-        enc.extend_from_slice(&(-223i32).to_be_bytes());
-        stream.write_all(&enc)?;
-        stream.flush()?;
-        stream.write_all(&request(0, 0, 0, w, h))?;
-        stream.flush()?;
+        let (w, h, pf, auth) = handshake_auth(&mut stream, password)?;
+        send_encodings_request(&mut stream, w, h)?;
 
         stream.set_read_timeout(None)?;
         let writer = Arc::new(Mutex::new(stream.try_clone()?));
@@ -208,6 +393,7 @@ impl VncSource {
             pf,
             frame: Frame::new(w, h),
             seq: 0,
+            request_more: true,
         };
         let handle = std::thread::spawn(move || {
             if let Err(e) = reader.run(&mut stream) {
@@ -232,17 +418,204 @@ impl VncSource {
                 cursor: false,
                 kind: TransportKind::Vnc,
             },
+            auth,
+            tls: None,
+            shutdown_sock: None,
+        })
+    }
+
+    /// Connect over VeNCrypt (wave 5): plain RFB version exchange ->
+    /// security type 19 -> VeNCrypt 0.2 negotiation -> subtype (X509Vnc
+    /// 261 preferred, X509None 260 fallback) -> rustls handshake (strict
+    /// CA + SAN unless the caller passed the insecure config) -> the
+    /// subtype's inner auth -> the shared ClientInit/ServerInit tail.
+    /// Byte sequence pinned against QEMU 11.0.3 (probe p2).
+    pub fn connect_tls(
+        endpoint: &Endpoint,
+        password: Option<&str>,
+        client_cfg: std::sync::Arc<rustls::ClientConfig>,
+        name: rustls::pki_types::ServerName<'static>,
+    ) -> Result<Self> {
+        let mut tcp = match endpoint.connect()? {
+            Stream::Tcp(s) => s,
+            _ => return Err(BerryError::protocol("VNC: TLS endpoints are TCP only")),
+        };
+        tcp.set_read_timeout(Some(Duration::from_secs(10)))?;
+        tcp.set_write_timeout(Some(Duration::from_secs(10)))?;
+        // Raw-socket duplicate so Drop can unblock the reader without the
+        // session mutex (the rustls session itself is not cloneable).
+        let shutdown_sock = tcp.try_clone()?;
+
+        // --- plain RFB version exchange ---
+        let mut ver = [0u8; 12];
+        read_exact(&mut tcp, &mut ver)?;
+        if !ver.starts_with(b"RFB 003.") {
+            return Err(BerryError::protocol(format!(
+                "VNC: bad version {:?}",
+                String::from_utf8_lossy(&ver)
+            )));
+        }
+        tcp.write_all(b"RFB 003.008\n")?;
+        tcp.flush()?;
+
+        // --- security types: must offer VeNCrypt (19) ---
+        let mut n = [0u8; 1];
+        read_exact(&mut tcp, &mut n)?;
+        if n[0] == 0 {
+            return Err(BerryError::protocol("VNC: TLS endpoint refused the connection"));
+        }
+        let mut types = vec![0u8; n[0] as usize];
+        read_exact(&mut tcp, &mut types)?;
+        if !types.contains(&VENCRYPT_TYPE) {
+            return Err(BerryError::protocol(format!(
+                "VNC: server offers no VeNCrypt (type {VENCRYPT_TYPE}) in {:?}",
+                types
+            ))
+            .with_hint("this endpoint looks plaintext — check `berry vnc status` for the run's tls state"));
+        }
+        tcp.write_all(&[VENCRYPT_TYPE])?;
+        tcp.flush()?;
+
+        // --- VeNCrypt version negotiation (0.2) ---
+        let mut srv_ver = [0u8; 2];
+        read_exact(&mut tcp, &mut srv_ver)?;
+        let Some(common) = vencrypt_common_version(srv_ver) else {
+            return Err(BerryError::protocol(format!(
+                "VeNCrypt: server version {}.{} has no common ground with 0.2",
+                srv_ver[0], srv_ver[1]
+            )));
+        };
+        tcp.write_all(&common)?;
+        tcp.flush()?;
+        let mut ack = [0u8; 1];
+        read_exact(&mut tcp, &mut ack)?;
+        if ack[0] != 0 {
+            return Err(BerryError::protocol(
+                "VeNCrypt: server rejected the version negotiation",
+            ));
+        }
+
+        // --- subtype list and preference ---
+        let mut count = [0u8; 1];
+        read_exact(&mut tcp, &mut count)?;
+        let mut offered = vec![0u32; count[0] as usize];
+        for sub in &mut offered {
+            let mut b = [0u8; 4];
+            read_exact(&mut tcp, &mut b)?;
+            *sub = u32::from_be_bytes(b);
+        }
+        let (subtype, auth) = vencrypt_choose_subtype(&offered, password)?;
+        tcp.write_all(&subtype.to_be_bytes())?;
+        tcp.flush()?;
+        let mut status = [0u8; 1];
+        read_exact(&mut tcp, &mut status)?;
+        if status[0] != 1 {
+            return Err(BerryError::protocol(format!(
+                "VeNCrypt: server rejected subtype {subtype} (status {})",
+                status[0]
+            )));
+        }
+
+        // --- TLS handshake (rustls) ---
+        let conn = rustls::ClientConnection::new(std::sync::Arc::clone(&client_cfg), name)
+            .map_err(|e| BerryError::protocol(format!("VNC: TLS client setup: {e}")))?;
+        let mut tls = rustls::StreamOwned::new(conn, tcp);
+        let tls_err = |e: std::io::Error| {
+            BerryError::protocol(format!("VNC: TLS handshake failed: {e}")).with_hint(
+                "--ca <dir> must point at the CA that issued the run's certificate (berry vnc certs), or pass --insecure to skip verification",
+            )
+        };
+        while tls.conn.is_handshaking() {
+            tls.conn.complete_io(&mut tls.sock).map_err(tls_err)?;
+        }
+
+        // --- inner auth per subtype, then the shared tail ---
+        match subtype {
+            VENCRYPT_SUBTYPE_X509VNC => {
+                vnc_auth_exchange(&mut tls, password.unwrap_or(""))?;
+            }
+            VENCRYPT_SUBTYPE_X509NONE => {}
+            _ => return Err(BerryError::protocol("VeNCrypt: unhandled subtype")),
+        }
+        let (w, h, pf) = rfb_tail(&mut tls)?;
+        send_encodings_request(&mut tls, w, h)?;
+        let subtype_str = if subtype == VENCRYPT_SUBTYPE_X509VNC {
+            "x509-vnc"
+        } else {
+            "x509-none"
+        };
+
+        // --- reader over the single shared session ---
+        // The read timeout stays armed so a parked reader eventually
+        // releases the stream mutex; request_more=false keeps the reader
+        // from writing (one full frame for `vnc check` is enough).
+        let writer = Arc::new(Mutex::new(Stream::Tls(Box::new(tls))));
+        let slot = Arc::new(Mutex::new(None));
+        let stop = Arc::new(AtomicBool::new(false));
+        let error = Arc::new(Mutex::new(None));
+        let mut reader = Reader {
+            slot: slot.clone(),
+            writer: writer.clone(),
+            stop: stop.clone(),
+            error: error.clone(),
+            pf,
+            frame: Frame::new(w, h),
+            seq: 0,
+            request_more: false,
+        };
+        let handle = std::thread::spawn(move || {
+            if let Err(e) = reader.run_shared() {
+                if !reader.stop.load(Ordering::Relaxed) {
+                    *reader.error.lock().unwrap() = Some(e.message);
+                }
+            }
+        });
+
+        Ok(Self {
+            slot,
+            writer,
+            stop,
+            error,
+            handle: Some(handle),
+            caps: Caps {
+                version: 1,
+                max_w: MAX_DIM,
+                max_h: MAX_DIM,
+                damage: false,
+                multi_touch: 0,
+                cursor: false,
+                kind: TransportKind::Vnc,
+            },
+            auth,
+            tls: Some(subtype_str),
+            shutdown_sock: Some(shutdown_sock),
         })
     }
 
     pub fn error(&self) -> Option<String> {
         self.error.lock().unwrap().clone()
     }
+
+    /// Security type the handshake actually used (None or VNC auth).
+    pub fn auth(&self) -> AuthKind {
+        self.auth
+    }
+
+    /// VeNCrypt subtype of a TLS session ("x509-vnc" | "x509-none");
+    /// None for plaintext connections.
+    pub fn tls(&self) -> Option<&'static str> {
+        self.tls
+    }
 }
 
 impl Drop for VncSource {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        // TLS: unblock the reader via the raw socket first so the stream
+        // mutex is released promptly; then the generic shutdown path.
+        if let Some(s) = &self.shutdown_sock {
+            let _ = s.shutdown(std::net::Shutdown::Both);
+        }
         if let Ok(w) = self.writer.lock() {
             w.shutdown();
         }
@@ -263,9 +636,14 @@ pub struct VncInput {
 
 impl VncInput {
     pub fn connect(endpoint: &Endpoint) -> Result<Self> {
+        Self::connect_auth(endpoint, None)
+    }
+
+    /// Input-only handshake with an optional VNC-auth password.
+    pub fn connect_auth(endpoint: &Endpoint, password: Option<&str>) -> Result<Self> {
         let mut stream = connect_retry(endpoint, Duration::from_secs(5))?;
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-        let (w, h, _) = handshake(&mut stream)?;
+        let (w, h, _, _) = handshake_auth(&mut stream, password)?;
         stream.set_read_timeout(None)?;
         Ok(Self { stream, width: w, height: h })
     }
@@ -330,16 +708,18 @@ impl Reader {
             match t[0] {
                 0 => {
                     self.update(stream)?;
-                    let mut w = self.writer.lock().unwrap();
-                    let req = request(
-                        1,
-                        0,
-                        0,
-                        self.frame.width,
-                        self.frame.height,
-                    );
-                    w.write_all(&req)?;
-                    w.flush()?;
+                    if self.request_more {
+                        let mut w = self.writer.lock().unwrap();
+                        let req = request(
+                            1,
+                            0,
+                            0,
+                            self.frame.width,
+                            self.frame.height,
+                        );
+                        w.write_all(&req)?;
+                        w.flush()?;
+                    }
                 }
                 1 => {
                     let mut hdr = [0u8; 5];
@@ -358,6 +738,47 @@ impl Reader {
                     }
                     let mut data = vec![0u8; n];
                     read_exact(stream, &mut data)?;
+                }
+                other => {
+                    return Err(BerryError::protocol(format!(
+                        "VNC: unknown message {other}"
+                    )))
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// TLS variant: the single rustls session lives in the shared stream
+    /// mutex; every read/write takes it for the duration of one exact
+    /// read. The read timeout armed on the socket bounds each hold, and
+    /// `Drop` unblocks a parked read via the raw-socket duplicate.
+    fn run_shared(&mut self) -> Result<()> {
+        let writer = self.writer.clone();
+        let stop = self.stop.clone();
+        while !stop.load(Ordering::Relaxed) {
+            let mut guard = writer.lock().unwrap();
+            let mut t = [0u8; 1];
+            read_exact(&mut *guard, &mut t)?;
+            match t[0] {
+                0 => self.update(&mut guard)?,
+                1 => {
+                    let mut hdr = [0u8; 5];
+                    read_exact(&mut *guard, &mut hdr)?;
+                    let n = u16::from_be_bytes([hdr[3], hdr[4]]) as usize;
+                    let mut data = vec![0u8; n * 6];
+                    read_exact(&mut *guard, &mut data)?;
+                }
+                2 => {}
+                3 => {
+                    let mut hdr = [0u8; 7];
+                    read_exact(&mut *guard, &mut hdr)?;
+                    let n = u32::from_be_bytes([hdr[3], hdr[4], hdr[5], hdr[6]]) as usize;
+                    if n > 1 << 20 {
+                        return Err(BerryError::protocol("VNC: cut text too long"));
+                    }
+                    let mut data = vec![0u8; n];
+                    read_exact(&mut *guard, &mut data)?;
                 }
                 other => {
                     return Err(BerryError::protocol(format!(
@@ -454,7 +875,7 @@ fn request(incremental: u8, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
     m
 }
 
-fn read_exact(s: &mut Stream, buf: &mut [u8]) -> Result<()> {
+fn read_exact<S: Read>(s: &mut S, buf: &mut [u8]) -> Result<()> {
     s.read_exact(buf).map_err(|e| {
         if matches!(
             e.kind(),
@@ -467,7 +888,10 @@ fn read_exact(s: &mut Stream, buf: &mut [u8]) -> Result<()> {
     })
 }
 
-fn connect_retry(endpoint: &Endpoint, timeout: Duration) -> Result<Stream> {
+/// Dial with retry until `timeout` (QEMU's listener races the run dir).
+/// `pub(crate)` since wave 6: the ws path of `vnc check` reuses the same
+/// 10s discipline for its websocket dial.
+pub(crate) fn connect_retry(endpoint: &Endpoint, timeout: Duration) -> Result<Stream> {
     let start = Instant::now();
     loop {
         match endpoint.connect() {
@@ -521,5 +945,344 @@ mod tests {
         };
         // r=31, g=63, b=31 -> 0xffff -> white
         assert_eq!(pf.pixel(&[0xff, 0xff]), 0x00ff_ffff);
+    }
+
+    // ------------------------------------------------------------------
+    // Loopback fake-RFB servers: the handshake_auth network path (vnc check)
+    // pinned without QEMU. Shared scripting helpers first.
+    // ------------------------------------------------------------------
+
+    fn read_n(s: &mut std::net::TcpStream, n: usize) -> Vec<u8> {
+        use std::io::Read;
+        let mut b = vec![0u8; n];
+        s.read_exact(&mut b).unwrap();
+        b
+    }
+
+    fn server_write(s: &mut std::net::TcpStream, b: &[u8]) {
+        use std::io::Write;
+        s.write_all(b).unwrap();
+        s.flush().unwrap();
+    }
+
+    /// Server side of the version exchange (send ServerVersion, read the
+    /// client's 12-byte reply).
+    fn rfb_exchange_version(s: &mut std::net::TcpStream) {
+        server_write(s, b"RFB 003.008\n");
+        let _client_ver = read_n(s, 12);
+        assert_eq!(&_client_ver[..4], b"RFB ", "client must answer with a version");
+    }
+
+    /// Offer security types, return the client's 1-byte choice.
+    fn rfb_offer_types(s: &mut std::net::TcpStream, types: &[u8]) -> Vec<u8> {
+        server_write(s, &[types.len() as u8]);
+        server_write(s, types);
+        read_n(s, 1)
+    }
+
+    /// ClientInit -> ServerInit tail (4x2 BGRX 32bpp truecolor, name "t").
+    fn rfb_server_init(s: &mut std::net::TcpStream) {
+        let _shared = read_n(s, 1); // ClientInit (shared)
+        let mut init = Vec::new();
+        init.extend_from_slice(&4u16.to_be_bytes()); // width
+        init.extend_from_slice(&2u16.to_be_bytes()); // height
+        init.extend_from_slice(&[
+            32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0,
+        ]); // 32bpp BGRX LE
+        init.extend_from_slice(&1u32.to_be_bytes()); // name length
+        init.push(b't');
+        server_write(s, &init);
+    }
+
+    fn connect_to(port: u16) -> Stream {
+        let raw = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        raw.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        Stream::Tcp(raw)
+    }
+
+    /// Spawn a scripted RFB peer; returns the port to dial.
+    fn spawn_rfb(script: impl FnOnce(std::net::TcpStream) + Send + 'static) -> u16 {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (s, _) = l.accept().unwrap();
+            script(s);
+        });
+        port
+    }
+
+    #[test]
+    fn handshake_none_auth_with_and_without_password() {
+        // Type 1 only: open endpoint. Without a password: plain ok.
+        let port = spawn_rfb(|mut s| {
+            rfb_exchange_version(&mut s);
+            assert_eq!(rfb_offer_types(&mut s, &[1]), vec![1]);
+            server_write(&mut s, &[0, 0, 0, 0]); // SecurityResult ok
+            rfb_server_init(&mut s);
+        });
+        let mut c = connect_to(port);
+        let (w, h, pf, auth) = handshake_auth(&mut c, None).unwrap();
+        assert_eq!((w, h), (4, 2));
+        assert_eq!(pf.bpp, 32);
+        assert_eq!(auth, AuthKind::None);
+        // A password against an open endpoint does NOT force VNC auth — the
+        // handshake continues unauthenticated so the caller can report the
+        // actual mode (`auth none` truth).
+        let port = spawn_rfb(|mut s| {
+            rfb_exchange_version(&mut s);
+            assert_eq!(rfb_offer_types(&mut s, &[1]), vec![1]);
+            server_write(&mut s, &[0, 0, 0, 0]);
+            rfb_server_init(&mut s);
+        });
+        let mut c = connect_to(port);
+        let (_, _, _, auth) = handshake_auth(&mut c, Some("pw")).unwrap();
+        assert_eq!(auth, AuthKind::None);
+    }
+
+    #[test]
+    fn handshake_vnc_auth_challenge_response() {
+        // Type 2 with the right password: the DES challenge response is
+        // verified against the des module (the exact bytes QEMU expects).
+        let port = spawn_rfb(|mut s| {
+            rfb_exchange_version(&mut s);
+            assert_eq!(rfb_offer_types(&mut s, &[1, 2]), vec![2], "client prefers type 2");
+            let challenge = [
+                7u8, 23, 99, 4, 200, 0, 255, 16, 42, 1, 2, 3, 4, 5, 250, 9,
+            ];
+            server_write(&mut s, &challenge);
+            let resp = read_n(&mut s, 16);
+            assert_eq!(
+                resp,
+                crate::display::des::vnc_challenge_response("rightpw", &challenge).to_vec(),
+                "client response must be the DES-ECB challenge answer"
+            );
+            server_write(&mut s, &[0, 0, 0, 0]); // SecurityResult ok
+            rfb_server_init(&mut s);
+        });
+        let mut c = connect_to(port);
+        let (w, h, _, auth) = handshake_auth(&mut c, Some("rightpw")).unwrap();
+        assert_eq!((w, h), (4, 2));
+        assert_eq!(auth, AuthKind::Vnc);
+    }
+
+    #[test]
+    fn handshake_auth_failed_reason_is_cleaned() {
+        // Wrong password: SecurityResult 1 + a QEMU-style reason padded with
+        // a trailing space and NUL — the CLI error must read clean (wave-1
+        // live fix, now regression-pinned) and carry the passwd hint.
+        let port = spawn_rfb(|mut s| {
+            rfb_exchange_version(&mut s);
+            assert_eq!(rfb_offer_types(&mut s, &[2]), vec![2]);
+            let challenge = [9u8; 16];
+            server_write(&mut s, &challenge);
+            let _resp = read_n(&mut s, 16);
+            server_write(&mut s, &[0, 0, 0, 1]); // SecurityResult fail
+            let reason = b"Authentication failed \0";
+            let mut msg = (reason.len() as u32).to_be_bytes().to_vec();
+            msg.extend_from_slice(reason);
+            server_write(&mut s, &msg);
+        });
+        let mut c = connect_to(port);
+        let e = handshake_auth(&mut c, Some("wrongpw")).unwrap_err();
+        assert_eq!(e.code, 7, "auth failure is a protocol error (rc=7)");
+        assert_eq!(e.message, "VNC: auth failed: Authentication failed");
+        assert!(
+            !e.message.ends_with(' ') && !e.message.contains('\0'),
+            "trailing space/NUL must be trimmed: {:?}",
+            e.message
+        );
+        assert!(e.hint.unwrap().contains("berry vnc passwd"));
+    }
+
+    // ------------------------------------------------------------------
+    // VeNCrypt pure logic (U25/U26) + a full loopback TLS session
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn vencrypt_subtype_matrix() {
+        use VENCRYPT_SUBTYPE_X509NONE as N;
+        use VENCRYPT_SUBTYPE_X509VNC as V;
+        // 261 with a password: the preferred encrypted-VNC-auth pair.
+        assert_eq!(
+            vencrypt_choose_subtype(&[V], Some("pw")).unwrap(),
+            (V, AuthKind::Vnc)
+        );
+        // 261 without a password: hard error carrying the password hint.
+        let e = vencrypt_choose_subtype(&[V], None).unwrap_err();
+        assert_eq!(e.code, 7);
+        assert!(e.hint.as_deref().unwrap().contains("--password"));
+        // 260 only: unauthenticated TLS fallback.
+        assert_eq!(vencrypt_choose_subtype(&[N], None).unwrap(), (N, AuthKind::None));
+        assert_eq!(
+            vencrypt_choose_subtype(&[N], Some("pw")).unwrap(),
+            (N, AuthKind::None),
+            "no 261 offered -> 260 even with a password in hand"
+        );
+        // Both offered with a password: 261 wins.
+        assert_eq!(
+            vencrypt_choose_subtype(&[N, V], Some("pw")).unwrap(),
+            (V, AuthKind::Vnc)
+        );
+        // Nothing supported: [] , [18] (plain VNC over TLS-less), [17].
+        for offered in [&[][..], &[18u32][..], &[17u32][..], &[18u32, 17u32][..]] {
+            let e = vencrypt_choose_subtype(offered, Some("pw")).unwrap_err();
+            assert_eq!(e.code, 7, "offered={offered:?}");
+            assert!(e.message.contains("no supported subtype"));
+        }
+    }
+
+    #[test]
+    fn vencrypt_version_negotiation_bytes() {
+        // Wire constants pinned against the probe p2 byte dump.
+        assert_eq!(VENCRYPT_TYPE, 19);
+        assert_eq!(VENCRYPT_VERSION, [0x00, 0x02]);
+        assert_eq!(VENCRYPT_ACK_OK, 0x00);
+        assert_eq!(VENCRYPT_ACCEPTED, 0x01);
+        assert_eq!(VENCRYPT_SUBTYPE_X509NONE, 260);
+        assert_eq!(VENCRYPT_SUBTYPE_X509VNC, 261);
+        // Common-version logic: server at 0.2 or newer -> reply 0.2;
+        // server strictly older -> no common ground.
+        assert_eq!(vencrypt_common_version([0x00, 0x02]), Some([0x00, 0x02]));
+        assert_eq!(vencrypt_common_version([0x00, 0x03]), Some([0x00, 0x02]));
+        assert_eq!(vencrypt_common_version([0x01, 0x00]), Some([0x00, 0x02]));
+        assert_eq!(vencrypt_common_version([0x00, 0x01]), None);
+        assert_eq!(vencrypt_common_version([0x00, 0x00]), None);
+    }
+
+    /// Scripted VeNCrypt+TLS server over loopback: the full connect_tls
+    /// state machine against a real rustls server session (the same
+    /// pairing QEMU's gnutls exercises, minus QEMU). `subtype` selects
+    /// the offered list; 261 runs the DES challenge with `expect_pw`.
+    fn spawn_vencrypt_tls(
+        offered: &'static [u32],
+        expect_pw: Option<&'static str>,
+    ) -> u16 {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut s, _) = l.accept().unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            s.set_write_timeout(Some(Duration::from_secs(10))).unwrap();
+            rfb_exchange_version(&mut s);
+            let types = [VENCRYPT_TYPE];
+            server_write(&mut s, &[types.len() as u8]);
+            server_write(&mut s, &types);
+            assert_eq!(read_n(&mut s, 1), vec![VENCRYPT_TYPE]);
+            server_write(&mut s, &[0x00, 0x02]);
+            assert_eq!(read_n(&mut s, 2), vec![0x00, 0x02]);
+            server_write(&mut s, &[VENCRYPT_ACK_OK]);
+            server_write(&mut s, &[offered.len() as u8]);
+            for sub in offered {
+                server_write(&mut s, &sub.to_be_bytes());
+            }
+            let chosen = read_n(&mut s, 4);
+            let chosen = u32::from_be_bytes([chosen[0], chosen[1], chosen[2], chosen[3]]);
+            if !offered.contains(&chosen) {
+                server_write(&mut s, &[0x00]); // rejected
+                return;
+            }
+            server_write(&mut s, &[VENCRYPT_ACCEPTED]);
+            // TLS server handshake with the shared test certificate set.
+            let dir = crate::tls::test_support::certs_dir().to_path_buf();
+            let scfg = crate::tls::load_server_config(&dir).unwrap();
+            let conn = rustls::ServerConnection::new(scfg).unwrap();
+            let mut tls = rustls::StreamOwned::new(conn, s);
+            while tls.conn.is_handshaking() {
+                tls.conn.complete_io(&mut tls.sock).unwrap();
+            }
+            if chosen == VENCRYPT_SUBTYPE_X509VNC {
+                let challenge = [7u8, 23, 99, 4, 200, 0, 255, 16, 42, 1, 2, 3, 4, 5, 250, 9];
+                tls.write_all(&challenge).unwrap();
+                tls.flush().unwrap();
+                let mut resp = [0u8; 16];
+                tls.read_exact(&mut resp).unwrap();
+                let want = crate::display::des::vnc_challenge_response(
+                    expect_pw.unwrap_or(""),
+                    &challenge,
+                );
+                let ok = resp == want;
+                tls.write_all(if ok { &[0, 0, 0, 0] } else { &[0, 0, 0, 1] })
+                    .unwrap();
+                tls.flush().unwrap();
+                if !ok {
+                    return;
+                }
+            }
+            // ClientInit -> ServerInit (4x2 BGRX 32bpp, name "t").
+            let _shared = {
+                let mut b = [0u8; 1];
+                tls.read_exact(&mut b).unwrap();
+                b
+            };
+            let mut init = Vec::new();
+            init.extend_from_slice(&4u16.to_be_bytes());
+            init.extend_from_slice(&2u16.to_be_bytes());
+            init.extend_from_slice(&[
+                32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0,
+            ]);
+            init.extend_from_slice(&1u32.to_be_bytes());
+            init.push(b't');
+            tls.write_all(&init).unwrap();
+            tls.flush().unwrap();
+            // One framebuffer update (1x1 raw rect at 0,0) after the
+            // client's SetEncodings (12B) + full request (10B) arrive.
+            let mut hdr = [0u8; 22];
+            tls.read_exact(&mut hdr).unwrap();
+            let mut upd = vec![0u8, 0, 0, 1]; // type 0, pad, 1 rect
+            upd.extend_from_slice(&[0, 0, 0, 0, 0, 1, 0, 1]); // x,y,w,h = 0,0,1,1
+            upd.extend_from_slice(&0i32.to_be_bytes()); // Raw
+            upd.extend_from_slice(&[0x11, 0x22, 0x33, 0x00]); // 1 BGRX pixel
+            tls.write_all(&upd).unwrap();
+            tls.flush().unwrap();
+            // Hold the session open until the client drops the source.
+            let mut sink = [0u8; 16];
+            let _ = tls.read(&mut sink);
+        });
+        port
+    }
+
+    #[test]
+    fn vencrypt_tls_end_to_end_x509vnc() {
+        let port = spawn_vencrypt_tls(&[VENCRYPT_SUBTYPE_X509VNC], Some("rightpw"));
+        let cfg = crate::tls::load_client_config(crate::tls::test_support::certs_dir()).unwrap();
+        let name = crate::tls::server_name("127.0.0.1").unwrap();
+        let ep = Endpoint::Tcp(format!("127.0.0.1:{port}"));
+        let mut src =
+            VncSource::connect_tls(&ep, Some("rightpw"), cfg, name).expect("TLS connect");
+        assert_eq!(src.tls(), Some("x509-vnc"));
+        assert_eq!(src.auth(), AuthKind::Vnc);
+        let frame = src
+            .next_frame(Duration::from_secs(5))
+            .expect("first frame over TLS");
+        assert_eq!((frame.width, frame.height), (4, 2));
+    }
+
+    #[test]
+    fn vencrypt_tls_end_to_end_x509none() {
+        let port = spawn_vencrypt_tls(&[VENCRYPT_SUBTYPE_X509NONE], None);
+        let cfg = crate::tls::load_client_config(crate::tls::test_support::certs_dir()).unwrap();
+        let name = crate::tls::server_name("127.0.0.1").unwrap();
+        let ep = Endpoint::Tcp(format!("127.0.0.1:{port}"));
+        let mut src = VncSource::connect_tls(&ep, None, cfg, name).expect("TLS connect");
+        assert_eq!(src.tls(), Some("x509-none"));
+        assert_eq!(src.auth(), AuthKind::None);
+        let frame = src
+            .next_frame(Duration::from_secs(5))
+            .expect("first frame over TLS");
+        assert_eq!((frame.width, frame.height), (4, 2));
+    }
+
+    #[test]
+    fn vencrypt_tls_wrong_password_is_rc7() {
+        let port = spawn_vencrypt_tls(&[VENCRYPT_SUBTYPE_X509VNC], Some("rightpw"));
+        let cfg = crate::tls::load_client_config(crate::tls::test_support::certs_dir()).unwrap();
+        let name = crate::tls::server_name("127.0.0.1").unwrap();
+        let ep = Endpoint::Tcp(format!("127.0.0.1:{port}"));
+        let e = match VncSource::connect_tls(&ep, Some("wrongpw"), cfg, name) {
+            Err(e) => e,
+            Ok(_) => panic!("wrong password must fail the inner DES auth"),
+        };
+        assert_eq!(e.code, 7, "inner DES failure over TLS is rc=7: {e}");
+        assert!(e.message.contains("auth failed"), "{e}");
     }
 }
