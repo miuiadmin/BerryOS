@@ -27,12 +27,13 @@ pub mod policy;
 pub mod runqueue;
 pub mod sched;
 pub mod spin;
+pub mod stats;
 pub mod task;
 pub mod util;
 
 pub use band::{
-    band_on, configure, consume, period_check, state, throttle_all, unthrottle_all, BandBudget,
-    BAND_SLOTS,
+    any_armed, band_on, configure, consume, lazy_enforce, period_check, state, throttle_all,
+    unthrottle_all, BandBudget, BAND_SLOTS,
 };
 pub use class::{
     class_fair_intent, class_of_task, Fair, FairBand, RoundRobin, SchedClass, TaskClass,
@@ -54,11 +55,14 @@ pub use intent::{
     INTENT_LATENCY_CRITICAL, INTENT_MAINTENANCE, INTENT_UNSPECIFIED, INTENT_UTILITY,
 };
 pub use oneshot::tighten_deadline;
+// OBS-01（06 号 §5 观测维补面）：per-band/per-intent 出选与带 runtime
+// 计数读出口（telemetry/DUMP 消费面；记账点在 class.rs 热路径）。
+pub use stats::{band_picks, band_runtime, intent_picks};
 pub use runqueue::{linkable, Runqueue, Topo};
 pub use util::{
-    any_overutilized, cpu_util, overutilized, util_accumulate, util_reset, util_tick_window,
-    util_window_vct, EWMA_ALPHA_SHIFT, OVERUTIL_THRESHOLD, UTIL_NR_CPU, UTIL_WINDOW_HZ,
-    UTIL_WINDOW_VCT_REF,
+    any_overutilized, cpu_util, overutilized, util_accumulate, util_idle_fold, util_reset,
+    util_tick_window, util_window_vct, EWMA_ALPHA_SHIFT, OVERUTIL_THRESHOLD, UTIL_NR_CPU,
+    UTIL_WINDOW_HZ, UTIL_WINDOW_VCT_REF,
 };
 pub use sched::{
     block_current, current_pinned, current_tag, exit_current,

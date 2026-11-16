@@ -13,3 +13,4 @@
 | 07 | `07-syscall屏蔽窗表.md` | 42 号全 syscall icount 定量+屏蔽窗交叉+R3 双态修正(FPSIMD lazy 后现役)——中断上界论证空白收口 |
 | 08 | `08-三刀复核.md` | 三刀独立复核:shadow 竞争 18 测(50 万+读零撕裂)/δ 塌缩 33×/42 号全表——全过 |
 | AB-01 | `AB-01-CP06首份AB数据-ktest负载生成器-v1.0.md` | CP-06 首份 A/B 数据(ktest 负载生成器):timer_slack × band 四组两跑——slack +10ms 顺延精确落地/交互零牺牲/band 限流尾延迟 3.2×/burst 吞吐 +75% |
+| SMP-01V | `SMP-01-双核全路径验证.md` | 双核全路径验证(新鲜视角):FairBand/EAS/slack/oneshot 在 par 门下现态 + `-smp 2` 实证(32 标记/偷取/拉取/PAR)+ 六发现——F1 band 跨环执法→深 park 结构性饿死(修:lazy_enforce)、F2 parked 核 util 冻结喂 EAS/overutil(修:util_idle_fold)+ SMPLZ ktest 钉板 |
