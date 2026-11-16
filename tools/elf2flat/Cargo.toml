@@ -1,0 +1,23 @@
+[package]
+name = "elf2flat"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+description = "BerryOS ELF64 AArch64 → flat binary（G-eco 编译侧，彻底 Rust 化轨道 b 层 #8）"
+
+[lib]
+name = "elf2flat"
+path = "src/lib.rs"
+
+[[bin]]
+name = "elf2flat"
+path = "src/main.rs"
+
+# 零依赖纪律（W1 lane：禁新外部依赖）——纯 std，与 tools/berry 同款独立小工作区
+# 形态（根 .cargo/config.toml 锁 build.target=aarch64-unknown-none，宿主件靠
+# --manifest-path + 显式 --target 走 host 面）。
+[dependencies]
+
+# 独立小工作区标记（tools/berry 同款形态——根 workspace 自动上溯在此截断）
+[workspace]

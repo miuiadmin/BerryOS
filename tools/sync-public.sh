@@ -229,6 +229,7 @@ WHITELIST=(
   hdrface hofface intface iprofile itally piface polface ringface
   safeck schedface sliceface sysvface telface utrace
   vmoledger vslotface wqmatch wsrcface lkface trapface heapface
+  svcface
   # rootface 补账（2026-11-15 #305 本件净增量重放时白名单笔未随刀——本刀补登）
   rootface docs
   # fwcfgface/susface 补账（2026-11-16 本刀实捕：#299/#307 合入后白名单

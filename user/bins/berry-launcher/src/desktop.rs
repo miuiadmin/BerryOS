@@ -136,7 +136,7 @@ const A11Y_CELL_CAP: usize = 15;
 /// 导航键命中区边长：big = 160px（owner「大点」——原 132px 加大）；
 /// 紧凑 = 44px（应用规范 §3.2 触控目标硬指标下限——视觉 = 键块整体，
 /// 命中区不缩）。
-const NAV_KEY_PX_BIG: u32 = 160;
+const NAV_KEY_PX_BIG: u32 = 96;
 const NAV_KEY_PX: u32 = 44;
 /// 导航条高：big = 135（波3-件⑤ 起 = OH sysUI 45vp×3——BottomTabs 条
 /// 进驻内容列后 1920 高内须整列收口，原 owner 加高 190px 挤出屏 55px
@@ -144,8 +144,8 @@ const NAV_KEY_PX: u32 = 44;
 /// 桌面四件全收口进屏）；紧凑 = 44。
 const NAV_BAR_H_BIG: u32 = 135;
 /// 键间隔：big 48px；紧凑 12px。
-const NAV_GAP_BIG: u32 = 48;
-const NAV_GAP: u32 = 12;
+const NAV_GAP_BIG: u32 = 176;
+const NAV_GAP: u32 = 76;
 /// 关机二击确认窗（防误触——两次点击 3s 内才生效；过期回常态）。
 pub const POWER_ARM_WINDOW_NS: u64 = 3 * 1_000_000_000;
 /// a11y 页容器 label。
@@ -345,18 +345,7 @@ pub fn build(
     // 插入序 = z 序（paint 前序先发 = 先插者底）：壁纸 → 本 Rect → 内容列
     // ——**必须在 content 之前插入**（后插者盖上：尾插会把状态内容整条
     // 压在 scrim 之下，boot 实证 2026-11-13）。
-    ui.add(
-        root,
-        ViewSpec {
-            kind: ViewKind::Rect,
-            key: 0,
-            props: Props::Rect(RectProps {
-                bg: scene::status_scrim(),
-                w: Some(vp_w),
-                h: Some(status_h),
-            }),
-        },
-    )?;
+        // 沉浸（owner 2026-11-16）：scrim 撤除——壁纸直通顶部。
 
     // 内容列满屏：cross=Center 让固定宽 Grid/Dock 在页内水平居中。
     let content = ui.add(
@@ -637,7 +626,10 @@ pub fn build(
                 kind: ViewKind::Icon,
                 key: 0,
                 props: Props::Icon(IconProps {
-                    id: icons::DOCK_FACE_IDS[i],
+                    // 位图库优先（OH sysRes 单枚 66×66 面）；缺名回退
+                    // DOCK_FACE_IDS 分段背板面（位图/内建同域渲染，几何不变）。
+                    id: icons::bitmap_id(icons::DOCK_BITMAP_NAMES[i])
+                        .unwrap_or(icons::DOCK_FACE_IDS[i]),
                     fg: ICON_FG,
                     w: Some(if big { seg_w } else { 0 }),
                     h: Some(if big { seg_h } else { 0 }),
@@ -680,7 +672,7 @@ pub fn build(
     let nav_key = if big { NAV_KEY_PX_BIG } else { NAV_KEY_PX };
     let nav_gap = if big { NAV_GAP_BIG } else { NAV_GAP };
     let nav_h = if big { NAV_BAR_H_BIG } else { NAV_KEY_PX };
-    let nav_bar_w = nav_key * 5 + nav_gap * 4;
+    let nav_bar_w = nav_key * 3 + nav_gap * 2;
     let nav_bar = ui.add(
         content,
         ViewSpec {
@@ -712,10 +704,10 @@ pub fn build(
         Ok(n)
     };
     let back = nav_icon(icons::NAV_BACK, b"back")?;
-    let recents = nav_icon(icons::NAV_RECENTS, b"recents")?;
     let home = nav_icon(icons::NAV_HOME, b"home")?;
-    let rotate = nav_icon(icons::NAV_ROTATE, b"rotate screen")?;
-    let power = nav_icon(icons::NAV_POWER, b"power off")?;
+    let recents = nav_icon(icons::NAV_RECENTS, b"recents")?;
+    let rotate = back;
+    let power = back;
     drop(nav_icon);
 
     let mut d = Desktop {
