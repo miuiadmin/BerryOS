@@ -22,7 +22,6 @@ members = [
     "mm",
     "piface",
     "polface",
-    "psface",
     "rootface",
     "ringface",
     "safeck",
@@ -37,9 +36,13 @@ members = [
     "vmoledger",
     "vslotface",
     "wqmatch",
+    "psface",
     "fwcfgface",
     "svcface",
     "wakeface",]
+    "wakeface",
+    "memface",
+]
 resolver = "2"
 [workspace.package]
 edition = "2021"

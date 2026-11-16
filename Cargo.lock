@@ -123,6 +123,7 @@ dependencies = [
  "berry-hofface",
  "berry-iprofile",
  "berry-itally",
+ "berry-memface",
  "berry-mm",
  "berry-piface",
  "berry-polface",
@@ -138,6 +139,10 @@ dependencies = [
 
 [[package]]
 name = "berry-lkface"
+version = "0.2.0"
+
+[[package]]
+name = "berry-memface"
 version = "0.2.0"
 
 [[package]]
