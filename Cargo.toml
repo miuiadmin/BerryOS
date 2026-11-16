@@ -30,6 +30,7 @@ members = [
     "sliceface",
     "susface",
     "telface",
+    "tickface",
     "trapface",
     "utrace",
     "vmoledger",
@@ -38,7 +39,6 @@ members = [
     "fwcfgface",
     "wakeface",]
 resolver = "2"
-
 [workspace.package]
 edition = "2021"
 version = "0.2.0"
@@ -57,3 +57,4 @@ codegen-units = 1
 # dev/release 是 abort；显式 `[profile.test] panic` 反而被忽略并告警。`.cargo/config.toml`
 # 把 build.target 锁成 aarch64-unknown-none，host 单测须用 `cargo test --target <host>`
 # 覆盖（见 justfile `test-host`）。
+
