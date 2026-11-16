@@ -765,13 +765,28 @@ impl SchedClass for FairBand {
         // ② 带预算执法·自翻期：本带到期即翻 + 解限（事件驱动——记账前
         // 清账，防 sweep/tick 粒度下的跨期累积；CBS 期内律见 consume 注）。
         // 入口扫 [`band_period_sweep`] 仍是全限流带的兜底翻期面。
+        // F3（SMP-01 §3.3）：环扫（含 rearm_members_vd 走查）入
+        // [`crate::sched::try_rq_lock`] 非阻塞窗——对核 try_steal_one 持本环
+        // RQ 锁 unlink（被摘节点双字清 None），免锁走查可读半摘节点撕态
+        // （§A113 族）。try 失败跳过本轮环扫（下轮 tick 追上 + lazy_enforce
+        // pick 面兜底）——跳的是环扫不是记账：period_check 的原子翻期在
+        // 窗外照常落账。永不阻塞 ⇒ 永不 wedge（tick 面禁自旋等锁判例见
+        // sched::try_rq_lock_of 注）。
         if self.period_check(hal::timer::cntvct()) {
-            self.unthrottle_all(rq);
+            if let Some(phys) = crate::sched::try_rq_lock() {
+                self.unthrottle_all(rq);
+                crate::sched::try_rq_unlock(phys);
+            }
         }
         // ③ 带预算执法·记账：consume（quota = 本带 quantum）首越线 →
-        // throttle_all（low_weight VD 重臂）。
+        // throttle_all（low_weight VD 重臂）。环扫同入 F3 try 窗（②同款：
+        // consume 的原子记账/越线镜像位在窗外已落，try 失败只迟置环上位
+        // ——出选扫描的 lazy_enforce 补位，至多迟一个片）。
         if self.consume(delta) {
-            self.throttle_all(rq);
+            if let Some(phys) = crate::sched::try_rq_lock() {
+                self.throttle_all(rq);
+                crate::sched::try_rq_unlock(phys);
+            }
         }
     }
     fn priority(&self) -> i32 {
