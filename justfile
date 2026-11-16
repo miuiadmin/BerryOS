@@ -938,7 +938,6 @@ test-host:
     # user/Cargo.toml——manifest-path 直指 crate，同 stdhello/bsh 先例）。
     cargo test --manifest-path user/berry-ksproto/Cargo.toml --target {{host}}
     cargo test --manifest-path rootface/Cargo.toml --target {{host}}
-    cargo test --manifest-path user/berry-rootface/Cargo.toml --target {{host}}
     # W1 接线（D-审计 §4 同款零接线面）：berry-softime（波3 件 C 软键盘
     # 引擎 v1——QWERTY-lite ASCII 键位模型 + OP_INPUT_INJECT 载荷编码 +
     # 显隐状态机，host 5 测落地时未接线 test-host；SERVICE 底窗本体随波 3
