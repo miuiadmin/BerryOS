@@ -244,6 +244,9 @@ WHITELIST=(
   # wakeface 补账（2026-11-16 本刀 merge 进 #365 后门三咬：W3-Q66 合入后
   # 白名单笔未随刀——check-members 三连实捕定谳）
   wakeface
+  # tickface 补笔（2026-11-16 本刀随 W3-Q31 净增量重放带刀：白名单笔随刀，
+  # check-members 门先验——判例 #368 fwcfgface/susface/psface 同款纪律）
+  tickface
   # dmface/aokface 补账（2026-11-16 本刀净增量重放随刀：dmface 为 W3-Q84
   # 首开件白名单笔随刀补登（fwcfgface/balface 同判例，先登防红）；aokface
   # 为 base 债清偿——base 848a0fb35 树内 aokface/ 在、justfile 已消费而
