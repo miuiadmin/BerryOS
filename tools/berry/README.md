@@ -59,6 +59,8 @@ just berry shell --profile phone --timeout 30
 just berry device list
 just berry device status --run <id>
 just berry logs --run <id> --tail 50
+just berry console [--run <id>]                        # 宿主终端直连 run 的 serial.sock 进 bsh 交互（Ctrl-D 断开；Ctrl-C 原样转发客机——raw 模式字节流，不是杀本进程；同 run 单会话，console.lock 独占）
+                                                      # 管道/脚本一步式须持开形态：EOF 即拆会话（写泵语义），命令应答取不回——用 (sleep N; printf 'cmd\n'; sleep M; printf '\x04') | berry console 让会话存续到应答回显后再 Ctrl-D；linger（EOF 后等应答再拆）挂 v2
 just berry power reboot --run <id>
 just berry power off --run <id>
 just berry input key ret
@@ -160,6 +162,8 @@ C1a/C1b/C1c 已落：`berry shell` 进程内或 headless `berry device start` �
 headless host 开窗，关窗只 detach。C1d/C1e/C1f 已落（state/cleanup/TCP）；
 C1g 的 host 自动重启已落：`device start --restart-on-crash`（QEMU 异常退出后同 run
 原地重启；attach 窗口在 control 恢复后自动重连 VNC）；还剩 Windows 实机验证/打包。
+`berry console` 不走 control.sock——直连 run 的 `serial.sock` 数据面（`screenshot` 的 VNC
+兜底同族：attach 数据端点，不经控制面），同 run 单 console 会话（`console.lock` flock）。
 
 ## 环境变量
 
