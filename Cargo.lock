@@ -15,7 +15,15 @@ name = "berry-bandface"
 version = "0.2.0"
 
 [[package]]
+name = "berry-billface"
+version = "0.2.0"
+
+[[package]]
 name = "berry-chanface"
+version = "0.2.0"
+
+[[package]]
+name = "berry-dmface"
 version = "0.2.0"
 
 [[package]]
@@ -45,6 +53,10 @@ name = "berry-evface"
 version = "0.2.0"
 
 [[package]]
+name = "berry-fbcon"
+version = "0.2.0"
+
+[[package]]
 name = "berry-frzface"
 version = "0.2.0"
 dependencies = [
@@ -61,6 +73,7 @@ version = "0.2.0"
 dependencies = [
  "berry-fwcfgface",
  "berry-lkface",
+ "berry-numface",
  "berry-psface",
  "berry-tickface",
  "berry-trapface",
@@ -103,16 +116,20 @@ name = "berry-kernel"
 version = "0.2.0"
 dependencies = [
  "berry-aokface",
+ "berry-billface",
  "berry-chanface",
+ "berry-dmface",
  "berry-dpgface",
  "berry-dtbface",
  "berry-evface",
+ "berry-fbcon",
  "berry-hal-aarch64",
  "berry-hdlface",
  "berry-heapface",
  "berry-hofface",
  "berry-iprofile",
  "berry-itally",
+ "berry-memface",
  "berry-mm",
  "berry-piface",
  "berry-polface",
@@ -124,6 +141,7 @@ dependencies = [
  "berry-vmoledger",
  "berry-vslotface",
  "berry-wqmatch",
+ "berry-wsrcface",
 ]
 
 [[package]]
@@ -131,7 +149,15 @@ name = "berry-lkface"
 version = "0.2.0"
 
 [[package]]
+name = "berry-memface"
+version = "0.2.0"
+
+[[package]]
 name = "berry-mm"
+version = "0.2.0"
+
+[[package]]
+name = "berry-numface"
 version = "0.2.0"
 
 [[package]]
@@ -199,6 +225,10 @@ name = "berry-susface"
 version = "0.1.0"
 
 [[package]]
+name = "berry-svcface"
+version = "0.2.0"
+
+[[package]]
 name = "berry-telface"
 version = "0.2.0"
 
@@ -231,4 +261,8 @@ version = "0.2.0"
 
 [[package]]
 name = "berry-wqmatch"
+version = "0.2.0"
+
+[[package]]
+name = "berry-wsrcface"
 version = "0.2.0"

@@ -234,8 +234,10 @@ WHITELIST=(
   rootface docs
   # fwcfgface/susface 补账（2026-11-16 本刀实捕：#299/#307 合入后白名单
   # 笔未随刀——check-members 门被 base 重写剥落故两连漏无人咬；接线重放
-  # 即红，红分支实捕定谳）
-  fwcfgface susface
+  # 即红，红分支实捕定谳）；memface 三连实捕（2026-11-16 本刀：#381 第86跳
+  # merge 解冲突时白名单笔被剥，CI light sync-public --check-members 腿红
+  # run 43809528251 实锤——判例固化：解 merge 冲突后必核白名单笔未剥）
+  fwcfgface susface memface
   # balface 补账（2026-11-16 本刀重放接线实捕：W3-Q82 #273 首开件白名单
   # 笔未随刀——check-members 门红分支实捕定谳，同 fwcfgface 判例）
   balface
@@ -248,6 +250,20 @@ WHITELIST=(
   # tickface 补笔（2026-11-16 本刀随 W3-Q31 净增量重放带刀：白名单笔随刀，
   # check-members 门先验——判例 #368 fwcfgface/susface/psface 同款纪律）
   tickface
+  # billface 补账（2026-11-16 本刀 W3-Q76 净增量重放随刀：净增量重放必带
+  # 白名单笔，#368 fwcfgface/susface/psface 判例同款）
+  billface
+  # numface 补账（2026-11-16 本刀实捕：W3-Q83 净增量重放时白名单笔未随刀
+  # ——check-members 门咬，billface/fwcfgface/psface/wakeface 判例同款）
+  numface
+  # dmface/aokface 补账（2026-11-16 本刀净增量重放随刀：dmface 为 W3-Q84
+  # 首开件白名单笔随刀补登（fwcfgface/balface 同判例，先登防红）；aokface
+  # 为 base 债清偿——base 848a0fb35 树内 aokface/ 在、justfile 已消费而
+  # members/白名单双漏登，base tip test-host 必红，随刀一并清偿）
+  dmface aokface
+  # wsrcface 补账（2026-11-16 净增量重放随刀：W3-Q28 首开件白名单笔
+  # 随刀补登——fwcfgface/dmface 同判例，先登防 check-members 红）
+  wsrcface
   # heapface 补账（2026-11-15 #301 合入后机器门首咬：新增顶层 crate 忘补
   # 白名单即 test-host 红——check-members 门执法生效的第一次实捕）
   .github .cargo

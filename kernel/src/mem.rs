@@ -19,6 +19,10 @@
 //! 符号冲突）；正确性由 ktest `test_fp` ③ 直验 + 每次 boot 的全量 copy/zero 路径
 //! 事实覆盖（VMO/装载走查全是我们的实现）。
 //!
+//! 单源（W3-Q80）：块尾算法语义模型外迁 `berry-memface`（块切分几何/
+//! 方向分治/首异定位/广播字——host 钉板；本文件保留 `#[no_mangle]` 符号
+//! 壳与链接期强符号防线，语义锚互指）。
+//!
 //! 实现纪律：**正确性优先**——8 字节块（`read_unaligned`/`write_unaligned`，
 //! 不赌对齐）+ 字节尾；`memmove` 按方向处理重叠；`memcmp` 命中差异后块内逐字节
 //! 定位首异字节（LE 装载下低地址字节在低位，逐字节比较即得 memcmp 语义）。
@@ -29,7 +33,8 @@ mod imp {
     /// `void *memset(void *s, int c, size_t n)`。
     #[no_mangle]
     pub extern "C" fn memset(dst: *mut u8, c: u8, n: usize) -> *mut u8 {
-        let word = (c as u64) * 0x0101_0101_0101_0101;
+        // W3-Q80：广播字单源 berry-memface（值逐位等同旧内联式）。
+        let word = berry_memface::fill_word(c);
         let mut p = dst;
         let mut rem = n;
         // SAFETY（调用方合同）：dst 指向 n 可写字节；块写经 unaligned 原语不赌对齐。
@@ -75,12 +80,16 @@ mod imp {
     /// `void *memmove(void *dst, const void *src, size_t n)`（允许重叠）。
     #[no_mangle]
     pub extern "C" fn memmove(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+        // W3-Q80：方向分治单源 berry-memface（三态语义逐字等同旧内联式）。
+        let (back, same) = berry_memface::move_split(dst as usize, src as usize);
         // SAFETY：与 memcpy 同，重叠时按方向分治——前向（dst < src）正拷、
         // 后向（dst > src）从尾逆拷，逐块序保证不自我覆盖。
         unsafe {
-            if (dst as usize) < (src as usize) {
+            if same {
+                dst
+            } else if !back {
                 memcpy(dst, src, n)
-            } else if (dst as usize) > (src as usize) {
+            } else {
                 let mut d = dst.add(n);
                 let mut s = src.add(n);
                 let mut rem = n;
@@ -96,8 +105,6 @@ mod imp {
                     *d = *s;
                     rem -= 1;
                 }
-                dst
-            } else {
                 dst
             }
         }
@@ -117,12 +124,9 @@ mod imp {
                 let wb = (pb as *const u64).read_unaligned();
                 if wa != wb {
                     // LE 装载：块首字节在最低位——逐字节升序比较即 memcmp 语义。
-                    for i in 0..8 {
-                        let xa = ((wa >> (i * 8)) & 0xFF) as u8;
-                        let xb = ((wb >> (i * 8)) & 0xFF) as u8;
-                        if xa != xb {
-                            return xa as i32 - xb as i32;
-                        }
+                    // W3-Q80：首异定位单源 berry-memface。
+                    if let Some((_, xa, xb)) = berry_memface::cmp_first_diff(wa, wb) {
+                        return xa as i32 - xb as i32;
                     }
                     // 两字 word 不等但 8 字节全等 = 不可能；兜底继续。
                 }

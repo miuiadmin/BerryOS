@@ -87,7 +87,7 @@ fn tabs_scene() -> (Ui<64>, NodeId, NodeId) {
         ViewSpec {
             kind: ViewKind::Rect,
             key: 0,
-            props: Props::Rect(RectProps { bg: Color { r: 9, g: 9, b: 9 }, w: Some(200), h: Some(100) }),
+            props: Props::Rect(RectProps { bg: Color { r: 9, g: 9, b: 9 }, w: Some(200), h: Some(100), radius: 0 }),
         },
     )
     .unwrap();
@@ -271,7 +271,7 @@ fn scroll_offset_and_list_intrinsic() {
             ViewSpec {
                 kind: ViewKind::Rect,
                 key: 0,
-                props: Props::Rect(RectProps { bg: Color { r: 5, g: 6, b: 7 }, w: Some(100), h: Some(400) }),
+                props: Props::Rect(RectProps { bg: Color { r: 5, g: 6, b: 7 }, w: Some(100), h: Some(400), radius: 0 }),
             },
         )
         .unwrap();
@@ -625,8 +625,7 @@ fn collapse_toggle_and_children_visibility() {
                 props: Props::Rect(RectProps {
                     bg: Color { r: 1, g: 2, b: 3 },
                     w: Some(100),
-                    h: Some(50),
-                }),
+                    h: Some(50), radius: 0 }),
             },
         )
         .unwrap();
@@ -1005,7 +1004,7 @@ fn third_batch_set_props_and_reject_faces() {
         ViewSpec {
             kind: ViewKind::Rect,
             key: 0,
-            props: Props::Rect(RectProps { bg: Color { r: 0, g: 0, b: 0 }, w: Some(100), h: Some(50) }),
+            props: Props::Rect(RectProps { bg: Color { r: 0, g: 0, b: 0 }, w: Some(100), h: Some(50), radius: 0 }),
         },
     )
     .unwrap();
@@ -1186,7 +1185,7 @@ fn third_batch_set_props_and_reject_faces() {
             ViewSpec {
                 kind: ViewKind::Rect,
                 key: 0,
-                props: Props::Rect(RectProps { bg: Color { r: 0, g: 0, b: 0 }, w: None, h: None })
+                props: Props::Rect(RectProps { bg: Color { r: 0, g: 0, b: 0 }, w: None, h: None, radius: 0 })
             },
         ),
         Err(UiError::BadParent),
@@ -1198,7 +1197,7 @@ fn third_batch_set_props_and_reject_faces() {
             ViewSpec {
                 kind: ViewKind::Rect,
                 key: 0,
-                props: Props::Rect(RectProps { bg: Color { r: 0, g: 0, b: 0 }, w: None, h: None })
+                props: Props::Rect(RectProps { bg: Color { r: 0, g: 0, b: 0 }, w: None, h: None, radius: 0 })
             },
         ),
         Err(UiError::BadParent),

@@ -142,7 +142,7 @@ fn page_frame(
         ViewSpec {
             kind: ViewKind::Rect,
             key: 0,
-            props: Props::Rect(RectProps { bg: PAGE_BG, w: Some(w), h: Some(h) }),
+            props: Props::Rect(RectProps { bg: PAGE_BG, w: Some(w), h: Some(h), radius: 0 }),
         },
     )?;
     let content = ui.add(
@@ -673,7 +673,7 @@ pub fn build_tab_bar(
             ViewSpec {
                 kind: ViewKind::Rect,
                 key: 0,
-                props: Props::Rect(RectProps { bg: CARD_BG, w: Some(vp_w), h: Some(bar_h) }),
+                props: Props::Rect(RectProps { bg: CARD_BG, w: Some(vp_w), h: Some(bar_h), radius: 0 }),
             },
         )?;
         let row = ui.add(
@@ -713,7 +713,7 @@ pub fn build_tab_bar(
                     ViewSpec {
                         kind: ViewKind::Rect,
                         key: 0,
-                        props: Props::Rect(RectProps { bg: BRAND, w: Some(cw), h: Some(2) }),
+                        props: Props::Rect(RectProps { bg: BRAND, w: Some(cw), h: Some(2), radius: 0 }),
                     },
                 )?;
             }

@@ -23,7 +23,7 @@ fn rect_spec(w: Option<u32>, h: Option<u32>) -> ViewSpec {
     ViewSpec {
         kind: ViewKind::Rect,
         key: 0,
-        props: Props::Rect(RectProps { bg: bg(1, 2, 3), w, h }),
+        props: Props::Rect(RectProps { bg: bg(1, 2, 3), w, h, radius: 0 }),
     }
 }
 
@@ -99,7 +99,7 @@ fn capacity_full_then_slot_reuse_with_new_generation() {
     assert_eq!(ui.remove(b), Err(UiError::NodeBad), "double-remove 拒");
     assert_eq!(ui.add(b, rect_spec(Some(1), Some(1))), Err(UiError::NodeBad));
     assert_eq!(
-        ui.set_props(b, Props::Rect(RectProps { bg: bg(0, 0, 0), w: Some(1), h: Some(1) })),
+        ui.set_props(b, Props::Rect(RectProps { bg: bg(0, 0, 0), w: Some(1), h: Some(1), radius: 0 })),
         Err(UiError::NodeBad)
     );
     assert_eq!(ui.set_text(b, b"x"), Err(UiError::NodeBad));
@@ -172,7 +172,7 @@ fn sibling_chain_shape_via_preorder_bytes() {
                 .begin(
                     ViewKind::Rect,
                     0,
-                    &Props::Rect(RectProps { bg: bg(1, 2, 3), w: Some(20), h: Some(10) }),
+                    &Props::Rect(RectProps { bg: bg(1, 2, 3), w: Some(20), h: Some(10), radius: 0 }),
                 )
                 .unwrap();
             bld.end().unwrap();

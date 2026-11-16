@@ -94,6 +94,17 @@ global_asm!(
     "    str x20, [x1]",            //（先清后存）；x20 = _start 钉存的入口 EL
     "    bl build_boot_pt",            // 建表（mmu.rs，#[link_section .text.boot]；
     "    bl enable_mmu",               //  表在 .bss.boot 低半 → 函数内低半寻址即可）
+    // PAN 判例（HVF/M 系真硬件）：清 PSTATE.PAN 存量——mmu.rs SPAN=1 只防
+    // 「异常注入自动置位」增量；boot 时已置的存量仍需清。CPUID 门控
+    // （ID_AA64MMFR1.PAN bits[23:20] ≥ 1 才有 pan 寄存器；TCG A72 v8.0 裸
+    // msr pan = UNDEFINED trap 杀 CI smoke）。
+    ".arch armv8.2-a+pan",
+    "    mrs x1, id_aa64mmfr1_el1",
+    "    ubfx x1, x1, #20, #4",
+    "    cbz x1, 9f",
+    "    msr pan, #0",
+    "9:",
+    ".arch armv8-a",
     "    ldr x1, =__stack_top",     // 换高半主栈 + 跳高半入口（此后不再回低半执行；
     "    mov sp, x1",               //  本段 VA==PA 走身份 TTBR0，开 MMU 无缝衔接）
     "    ldr x1, =rust_main",       // C-ABI 首参 = 入口 x0（DTB/handoff PA，

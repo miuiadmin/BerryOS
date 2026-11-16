@@ -11,7 +11,7 @@ use core::arch::asm;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::smp::BOOT_EL;
-use crate::{uart_put_dec, uart_putc, uart_puts};
+use crate::{uart_put_dec, uart_puts};
 
 // W3-Q72：判定律单源迁 berry-psface（host 钉板）——HVC 臂/诊断行/原子缓存
 // 留壳在此。fnid/最小版本门/路由门/FEATURES 侦察/SYSTEM_OFF 能力判全在
@@ -77,12 +77,12 @@ fn hvc_call(fnid: u64, x1: u64) -> i64 {
 }
 
 /// 32 位值 8 位大写 hex（诊断行专用——[`crate::uart_put_hex64`] 为 16 位
-/// 小写全宽，形态不合本行）。
+/// 小写全宽，形态不合本行）。装配律单源 berry-numface（W3-Q83）——本函数
+/// 只留发射循环。
 fn put_hex32_upper(v: u32) {
-    const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
-    for i in (0..8).rev() {
-        uart_putc(DIGITS[((v >> (i * 4)) & 0xf) as usize]);
-    }
+    let mut buf = [0u8; berry_numface::HEX32_DIGITS];
+    berry_numface::write_hex32_upper(v, &mut buf);
+    uart_puts(&buf);
 }
 
 /// boot 期深睡能力探测（**必须在 ktest::run 之前**——PWRDEG 断言读缓存；

@@ -53,7 +53,7 @@ fn v7_oracle_bytes() -> Vec<u8> {
         &Props::Collapse(CollapseProps { expanded: true, on_toggle: 1 }),
     )
     .unwrap();
-    b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None }))
+    b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None, radius: 0 }))
         .unwrap();
     b.end().unwrap();
     b.end().unwrap(); // Collapse
@@ -88,7 +88,7 @@ fn v7_oracle_bytes() -> Vec<u8> {
         &Props::Card(CardProps { elevation: 2, corner_radius: 8 }),
     )
     .unwrap();
-    b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(4, 5, 6), w: None, h: None }))
+    b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(4, 5, 6), w: None, h: None, radius: 0 }))
         .unwrap();
     b.end().unwrap();
     b.end().unwrap(); // Card
@@ -556,7 +556,7 @@ fn p2_leaf_children_reject_both_faces_and_size_block() {
     )
     .unwrap();
     assert_eq!(
-        b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None })),
+        b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None, radius: 0 })),
         Err(AstError::BadParent)
     );
     // SIZE 块×新 kind 拒（§8.2 合法域表未扩——合法域检在长检前）
@@ -627,7 +627,7 @@ fn p2_add_face_smoke() {
         .unwrap();
     ui.add(
         cpse,
-        ViewSpec { kind: ViewKind::Rect, key: 0, props: Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None }) },
+        ViewSpec { kind: ViewKind::Rect, key: 0, props: Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None, radius: 0 }) },
     )
     .expect("Collapse 父位收编（第三批容器接线——子 = 折叠内容）");
     let card = ui
@@ -642,7 +642,7 @@ fn p2_add_face_smoke() {
         .unwrap();
     ui.add(
         card,
-        ViewSpec { kind: ViewKind::Rect, key: 0, props: Props::Rect(RectProps { bg: bg(4, 5, 6), w: None, h: None }) },
+        ViewSpec { kind: ViewKind::Rect, key: 0, props: Props::Rect(RectProps { bg: bg(4, 5, 6), w: None, h: None, radius: 0 }) },
     )
     .expect("Card 父位收编（`_` 臂全幅给子——子 = 卡片内容）");
 }
