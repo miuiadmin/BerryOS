@@ -130,11 +130,36 @@ fn read_version(path: &Path) -> String {
         .to_string()
 }
 
+/// 串口 chardev argv 单源（console 刀件1）：`-chardev socket,id=ser0,
+/// path=<sock>,server=on,wait=off,logfile=<serial.log>` + `-serial
+/// chardev:ser0`（-chardev 先声明）。语义（侦察实证，QEMU 11.0.3）：
+/// - logfile 落盘完整含零客户端期的 boot 早期字节——serial.log 仍由
+///   QEMU 写，logs/GUI tail 等读方零改动；
+/// - server=on,wait=off：无客户端也照跑；chardev 单活客户端为常态，
+///   第二连接只会成为不被服务的僵尸——console 子命令以 run 目录
+///   console.lock flock 把「静默僵尸」升格为显式拒绝（commands::console）；
+/// - socket backlog=1 存在偶发拒连窗（实证 5 连 4 即成）——客户端
+///   0.5s 重试即过（commands::connect_serial）。
+#[cfg(unix)]
+pub fn serial_chardev_args(serial_sock: &Path, serial_log: &Path) -> Vec<String> {
+    vec![
+        "-chardev".to_string(),
+        format!(
+            "socket,id=ser0,path={},server=on,wait=off,logfile={}",
+            serial_sock.display(),
+            serial_log.display()
+        ),
+        "-serial".to_string(),
+        "chardev:ser0".to_string(),
+    ]
+}
+
 fn machine_args(
     cmd: &mut Command,
     accel: Accel,
     memory_mib: u32,
     serial: &Path,
+    serial_sock: &Path,
     memory_backend: Option<&str>,
 ) {
     match memory_backend {
@@ -145,8 +170,23 @@ fn machine_args(
         .arg("-cpu").arg(accel.cpu())
         .arg("-m").arg(format!("{memory_mib}M"))
         .arg("-display").arg("none")
-        .arg("-monitor").arg("none")
-        .arg("-serial").arg(format!("file:{}", serial.display()));
+        .arg("-monitor").arg("none");
+    // 串口 chardev 双向化（console 刀件1）：serial.log 由 QEMU 写
+    // （logfile= 选项），读方零改动；logfile 缺省 logappend=off——每次
+    // spawn QEMU 自己截断 logfile，与 restart_in_place 侧
+    // File::create 截断语义天然一致。
+    #[cfg(unix)]
+    for a in serial_chardev_args(serial_sock, serial) {
+        cmd.arg(a);
+    }
+    // Windows 挂账（诚实）：chardev socket 的 unix path 形态需 TCP 化才
+    // 可用，本刀 Unix only——非 Unix 维持 -serial file: 单向落盘
+    // （serial.sock 天然缺席，console 子命令在非 Unix 报 not supported）。
+    #[cfg(not(unix))]
+    {
+        let _ = serial_sock;
+        cmd.arg("-serial").arg(format!("file:{}", serial.display()));
+    }
 }
 
 fn log_stdio(cmd: &mut Command, log: &Path) -> Result<()> {
@@ -162,12 +202,13 @@ pub fn spawn_kernel(
     qemu: &Qemu,
     kernel: &Path,
     serial: &Path,
+    serial_sock: &Path,
     log: &Path,
     accel: Accel,
     memory_mib: u32,
 ) -> Result<Child> {
     let mut cmd = qemu.command();
-    machine_args(&mut cmd, accel, memory_mib, serial, None);
+    machine_args(&mut cmd, accel, memory_mib, serial, serial_sock, None);
     cmd.arg("-kernel").arg(kernel);
     log_stdio(&mut cmd, log)?;
     cmd.spawn().map_err(|e| {
@@ -182,6 +223,7 @@ pub fn spawn_image(
     firmware: &Path,
     vars: &Path,
     serial: &Path,
+    serial_sock: &Path,
     log: &Path,
     vnc: &Endpoint,
     qmp: &Endpoint,
@@ -195,7 +237,7 @@ pub fn spawn_image(
     tls_creds: Option<&Path>,
 ) -> Result<Child> {
     let mut cmd = qemu.command();
-    machine_args(&mut cmd, accel, memory_mib, serial, ram_path.map(|_| "mem"));
+    machine_args(&mut cmd, accel, memory_mib, serial, serial_sock, ram_path.map(|_| "mem"));
     if let Some(ram) = ram_path {
         cmd.arg("-object").arg(format!(
             "memory-backend-file,id=mem,size={memory_mib}M,mem-path={},share=on",
@@ -510,6 +552,32 @@ pub fn wait_for_path(path: &Path, timeout: Duration) -> Result<()> {
         "timed out waiting for {}",
         path.display()
     )))
+}
+
+// ---- console 刀件1 护栏：serial chardev argv 形态与声明序（-chardev
+// ---- 先于 -serial；logfile 指向 serial.log——读方零改动的契约面）。
+#[cfg(unix)]
+#[cfg(test)]
+mod serial_chardev_tests {
+    use super::*;
+
+    #[test]
+    fn chardev_args_shape_and_order() {
+        let args = serial_chardev_args(
+            Path::new("/run/42/serial.sock"),
+            Path::new("/run/42/serial.log"),
+        );
+        // -chardev 声明在前（-serial chardev:ser0 引用其 id）。
+        assert_eq!(args[0], "-chardev");
+        assert!(args[1].starts_with("socket,id=ser0,path=/run/42/serial.sock,"));
+        assert!(args[1].contains("server=on"));
+        assert!(args[1].contains("wait=off"));
+        assert!(args[1].ends_with(",logfile=/run/42/serial.log"));
+        // -serial 绑定 chardev id，不再是 file: 单向落盘。
+        assert_eq!(args[2], "-serial");
+        assert_eq!(args[3], "chardev:ser0");
+        assert_eq!(args.len(), 4);
+    }
 }
 
 // ---- 四轮审计（D4）：fwcfg_plan 条件矩阵护栏——spawn_image（真注入）与

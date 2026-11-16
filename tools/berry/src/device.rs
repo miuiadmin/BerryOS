@@ -24,6 +24,10 @@ pub struct Device {
     firmware: std::path::PathBuf,
     vars: std::path::PathBuf,
     serial: std::path::PathBuf,
+    /// 串口 chardev socket（console 刀件1）：restart_in_place 重生 QEMU
+    /// 前须清残留 socket 文件（vnc.sock/qmp.sock 先例——QEMU unix listen
+    /// 对已存在路径不保证 unlink），路径来源 run.file("serial.sock")。
+    serial_sock: std::path::PathBuf,
     log: std::path::PathBuf,
     ram_path: std::path::PathBuf,
     vnc: Endpoint,
@@ -80,6 +84,7 @@ impl Device {
         run_dir::write_state(run.path(), "starting");
         let vars = qemu::vars_store(run.path(), 64)?;
         let serial = run.file("serial.log");
+        let serial_sock = run.file("serial.sock");
         let log = run.file("qemu.log");
         let ram_path = run.file("ram.bin");
         let (vnc, qmp_ep) = endpoints(&run);
@@ -138,6 +143,7 @@ impl Device {
             &firmware,
             &vars,
             &serial,
+            &serial_sock,
             &log,
             &vnc,
             &qmp_ep,
@@ -158,6 +164,7 @@ impl Device {
             firmware,
             vars,
             serial,
+            serial_sock,
             log,
             ram_path,
             vnc,
@@ -207,6 +214,10 @@ impl Device {
         if let Endpoint::Unix(p) = &self.qmp_ep {
             let _ = std::fs::remove_file(p);
         }
+        // 串口 chardev socket 同清（console 刀件1）：残留 socket 文件会让
+        // 重生的 QEMU bind 失败。serial.log 不用手截——logfile 缺省
+        // logappend=off，QEMU 自己截断（qemu.rs machine_args 注记）。
+        let _ = std::fs::remove_file(&self.serial_sock);
         let _ = std::fs::File::create(&self.serial);
         let _ = std::fs::File::create(&self.log);
         self.stop_flag
@@ -221,6 +232,7 @@ impl Device {
             &self.firmware,
             &self.vars,
             &self.serial,
+            &self.serial_sock,
             &self.log,
             &self.vnc,
             &self.qmp_ep,
@@ -351,6 +363,7 @@ fn boot_runtime(
     firmware: &std::path::Path,
     vars: &std::path::Path,
     serial: &std::path::Path,
+    serial_sock: &std::path::Path,
     log: &std::path::Path,
     vnc: &Endpoint,
     qmp_ep: &Endpoint,
@@ -375,8 +388,8 @@ fn boot_runtime(
     };
     let tls_creds = ext.and_then(|e| e.tls_dir.as_deref());
     let mut child = qemu::spawn_image(
-        qemu, image, firmware, vars, serial, log, vnc, qmp_ep, accel, mem, tablet, mode,
-        profile_id, ram_path, ext_arg.as_deref(), tls_creds,
+        qemu, image, firmware, vars, serial, serial_sock, log, vnc, qmp_ep, accel, mem, tablet,
+        mode, profile_id, ram_path, ext_arg.as_deref(), tls_creds,
     )?;
     let meta_path = run.file("meta.json");
     let mut meta: serde_json::Value = std::fs::read(&meta_path)
@@ -489,6 +502,7 @@ fn boot_with_retry(
     firmware: &std::path::Path,
     vars: &std::path::Path,
     serial: &std::path::Path,
+    serial_sock: &std::path::Path,
     log: &std::path::Path,
     vnc: &Endpoint,
     qmp_ep: &Endpoint,
@@ -508,8 +522,8 @@ fn boot_with_retry(
     Option<ControlServer>,
 )> {
     let first = boot_runtime(
-        qemu, image, firmware, vars, serial, log, vnc, qmp_ep, accel, mem, tablet, mode,
-        profile_id, ram_path, run, stop_flag.clone(), ext.as_ref(),
+        qemu, image, firmware, vars, serial, serial_sock, log, vnc, qmp_ep, accel, mem, tablet,
+        mode, profile_id, ram_path, run, stop_flag.clone(), ext.as_ref(),
     );
     if first.is_ok() {
         return first;
@@ -551,8 +565,8 @@ fn boot_with_retry(
     // first attempt's.
     let _ = std::fs::File::create(log);
     let second = boot_runtime(
-        qemu, image, firmware, vars, serial, log, vnc, qmp_ep, accel, mem, tablet, mode,
-        profile_id, ram_path, run, stop_flag, ext.as_ref(),
+        qemu, image, firmware, vars, serial, serial_sock, log, vnc, qmp_ep, accel, mem, tablet,
+        mode, profile_id, ram_path, run, stop_flag, ext.as_ref(),
     );
     if second.is_err() {
         run.keep_fail();
