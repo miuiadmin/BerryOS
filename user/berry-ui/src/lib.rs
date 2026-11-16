@@ -41,6 +41,7 @@ pub mod mask;
 pub mod metrics;
 pub mod paint;
 pub mod resample;
+pub mod step;
 pub mod swipe;
 pub mod telemetry;
 // arena 内嵌本文件（Node/槽表私有——§6）；NodeId 在 desc.rs 公开。
@@ -1487,7 +1488,13 @@ impl<const N: usize> Ui<N> {
             // 0：无提交的帧无帧率话语权（frame.rs 字段注/对齐条 12）。
             return frame::FrameOutcome::skipped(expected);
         }
-        frame::FrameOutcome { drew, damage: dmg, expected_present_ns: expected, rate_hint_hz: self.rate_hz() }
+        frame::FrameOutcome {
+            drew,
+            damage: dmg,
+            expected_present_ns: expected,
+            deadline_ns: expected,
+            rate_hint_hz: self.rate_hz(),
+        }
     }
 
     pub fn frame_phase(&self) -> frame::FramePhase {

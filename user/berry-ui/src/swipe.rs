@@ -43,10 +43,12 @@ pub const DOT_OFF: berry_gfx::cmd::Color = berry_gfx::cmd::Color { r: 128, g: 12
 
 /// 吸附态（一次至多一条）：`start_ns = None` = 未起拍（首次 tick 定）。
 /// 目标页在 `begin_snap` 即裁定进 `self.page`/圆点——此处只余轨迹簿记。
+/// `dur_ns` = AP3 整帧量化时长（首次 tick 按当前档周期定格；0 = 未定）。
 struct Snap {
     from: i32,
     to: i32,
     start_ns: Option<u64>,
+    dur_ns: u64,
 }
 
 /// 分页控制器（§6 冻结状态私有——「page 状态 + 动画簿记」）。
@@ -277,24 +279,28 @@ impl SwipePager {
 
     /// 吸附推进（帧循环调；无吸附 → false 零开销）。起拍 = 首次 tick 的
     /// now_ns（Msg 无时戳位——§7.4 时钟缝的 tick 补面）；完成帧应用精确
-    /// `to` 终点（与 anim::tick 完成语义同式）。
+    /// `to` 终点（与 anim::tick 完成语义同式）。时长 = AP3（§9）整帧量
+    /// 化：起拍按当前档周期定格（240ms → 60Hz 15 帧 / 120Hz 29 帧），
+    /// 尾拍无小数帧抖动；档未协商（period 0）退化直通 240ms。
     pub fn tick<const N: usize>(&mut self, ui: &mut Ui<N>, now_ns: u64) -> bool {
         let Some(s) = &mut self.snap else { return false };
         let start = match s.start_ns {
             Some(t) => t,
             None => {
                 s.start_ns = Some(now_ns);
+                s.dur_ns = crate::step::quantize_duration_ns(SNAP_DUR_NS, ui.vsync().0);
                 now_ns
             }
         };
+        let dur = if s.dur_ns == 0 { SNAP_DUR_NS } else { s.dur_ns };
         let elapsed = now_ns.saturating_sub(start);
-        if elapsed >= SNAP_DUR_NS {
+        if elapsed >= dur {
             let to = s.to;
             self.apply_ox(ui, to);
             self.snap = None;
             return true;
         }
-        let v = anim::interp(Easing::QuadOut, s.from, s.to, elapsed, SNAP_DUR_NS);
+        let v = anim::interp(Easing::QuadOut, s.from, s.to, elapsed, dur);
         self.apply_ox(ui, v);
         true
     }
@@ -329,7 +335,7 @@ impl SwipePager {
             self.snap = None; // 已在位（零位移松手）：免动画
             return;
         }
-        self.snap = Some(Snap { from: self.ox, to, start_ns: None });
+        self.snap = Some(Snap { from: self.ox, to, start_ns: None, dur_ns: 0 });
     }
 
     /// 圆点直摆（paint-only props 变更——measured==0 面；死点静默跳过）。

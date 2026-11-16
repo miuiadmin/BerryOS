@@ -70,6 +70,14 @@ name = "berry-tls"
 version = "0.1.0"
 
 [[package]]
+name = "berry-ui"
+version = "0.1.0"
+dependencies = [
+ "berry-gfx",
+ "berry-guiproto",
+]
+
+[[package]]
 name = "gfxdemo"
 version = "0.1.0"
 dependencies = [
@@ -77,4 +85,5 @@ dependencies = [
  "berry-guiproto",
  "berry-libc",
  "berry-sys",
+ "berry-ui",
 ]

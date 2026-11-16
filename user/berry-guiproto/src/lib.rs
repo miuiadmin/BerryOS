@@ -1062,18 +1062,21 @@ pub struct FrameTimingRep {
     pub flags: u8,
 }
 
-/// FRAME_TIMING_F_PRESENTED：本帧已呈现（v1 blit-at-SUBMIT 恒置——
-/// 无弃帧路径；DISCARDED 语义随 v2 异步呈现刀落）。
+/// FRAME_TIMING_F_PRESENTED：本帧已呈现（P1 恒置；P2 latch 呈现时置——
+/// DISCARDED 与之互斥）。
 pub const FRAME_TIMING_F_PRESENTED: u8 = 0x01;
 /// FRAME_TIMING_F_FULL：damage = FULL（全帧重绘 vs 局部 rect 集）。
 pub const FRAME_TIMING_F_FULL: u8 = 0x02;
+/// FRAME_TIMING_F_DISCARDED：本帧被 squash 弃帧（P2 深度 1 管线：新
+/// P2 帧压旧 P2 帧 = 旧帧从未上墙——刀6 §7-P2；与 PRESENTED 互斥）。
+pub const FRAME_TIMING_F_DISCARDED: u8 = 0x04;
 
 /// 编码 FRAME_TIMING 应答（恰 28B：`[st=0][flags][r16][frame_token u32]
 /// [presented_ns u64][seq u64][refresh_ns u32]`；buf 不足 / flags 野位 =
 /// 调用方错，assert）。
 pub fn encode_frame_timing_rep(out: &mut [u8], rep: &FrameTimingRep) -> usize {
     assert!(out.len() >= FRAME_TIMING_REP_LEN, "guiproto: frame timing buf 不足");
-    assert!(rep.flags & !(FRAME_TIMING_F_PRESENTED | FRAME_TIMING_F_FULL) == 0,
+    assert!(rep.flags & !(FRAME_TIMING_F_PRESENTED | FRAME_TIMING_F_FULL | FRAME_TIMING_F_DISCARDED) == 0,
         "guiproto: 野 frame timing flags");
     out[0] = ST_OK;
     out[1] = rep.flags;
@@ -1810,6 +1813,15 @@ pub mod softpanel {
         pub jitter_ns: u32,
         /// 切档生效拍起丢弃帧数（面板重配伪影）。
         pub sw_drop: u8,
+        /// P6 变节拍（§7-P6，刀6）：FreeRange 逐帧扫描形态（拍点 =
+        /// max(上一扫描 + min_interval, target)——帧就绪即上墙）。仅
+        /// FreeRange 有意义（Tiered 档位制无逐帧语义，位被忽略）。d7
+        /// bit48（保留位 add-only——旧内核零域 → false 缺省兼容）。
+        pub per_frame: bool,
+        /// PANEL_VRR 三态（§6.3 A8 的门位；d7 bits49-50 add-only）。
+        /// FreeRange 仿真恒 CAPABLE（宣告与仲裁门同源）；Tiered 仿真缺省
+        /// NONE，`tiered:vrr` boot 旋钮抬 CAPABLE（LFC guest 活证用）。
+        pub vrr: u8,
     }
 
     impl PanelCfg {
@@ -1821,6 +1833,8 @@ pub mod softpanel {
             drop_permille: 0,
             jitter_ns: 0,
             sw_drop: 0,
+            per_frame: false,
+            vrr: super::PANEL_VRR_NONE,
         };
 
         /// 解包 LE u64 域对（布局见 [`PanelCfg::pack_domains`]——kernel 打包
@@ -1833,15 +1847,20 @@ pub mod softpanel {
                 drop_permille: (d8 & 0xFFFF) as u16,
                 jitter_ns: ((d8 >> 16) & 0xFFFF_FFFF) as u32,
                 sw_drop: ((d8 >> 48) & 0xFF) as u8,
+                per_frame: (d7 >> 48) & 1 == 1,
+                vrr: ((d7 >> 49) & 0b11) as u8,
             }
         }
 
-        /// 打包 LE u64 域对：域 7 = `[model u8][mode u8][seed u32][r u16]`；
-        /// 域 8 = `[drop_pm u16][jitter_ns u32][sw_drop u8][r u8]`。
+        /// 打包 LE u64 域对：域 7 = `[model u8][mode u8][seed u32]
+        /// [per_frame u1][vrr u2][r13]`；域 8 = `[drop_pm u16][jitter_ns
+        /// u32][sw_drop u8][r u8]`。
         pub fn pack_domains(&self) -> (u64, u64) {
             let d7 = (self.model as u64)
                 | ((self.mode as u64) << 8)
-                | ((self.seed as u64) << 16);
+                | ((self.seed as u64) << 16)
+                | ((self.per_frame as u64) << 48)
+                | (((self.vrr & 0b11) as u64) << 49);
             let d8 = (self.drop_permille as u64)
                 | ((self.jitter_ns as u64) << 16)
                 | ((self.sw_drop as u64) << 48);
@@ -1874,6 +1893,11 @@ pub mod softpanel {
         sw_drop_left: u8,
         /// 最近一次切档生效 ACK（无切档 = None）。
         last_ack: Option<SwitchAck>,
+        /// P6 DET 虚拟钟累进：上一扫描墙钟（0 = 未见首扫）。
+        p6_last_wall_ns: u64,
+        /// P6 DET 虚拟钟已流逝 ns（ts = det_base + 本值——按扫描间隔累进，
+        /// 同输入序列 → 同 ts 链，T2 回放门 P6 变体的钟基）。
+        p6_det_elapsed_ns: u64,
     }
 
     /// 切档 ACK（§5 控制面；生效拍拍出）。
@@ -1900,6 +1924,8 @@ pub mod softpanel {
                 pending: None,
                 sw_drop_left: 0,
                 last_ack: None,
+                p6_last_wall_ns: 0,
+                p6_det_elapsed_ns: 0,
             }
         }
 
@@ -1932,6 +1958,36 @@ pub mod softpanel {
             self.last_ack
         }
 
+        /// P6 逐帧扫描形态在席（`freerange:per_frame` boot——§7-P6 刀6）。
+        pub fn per_frame(&self) -> bool {
+            self.cfg.per_frame
+        }
+
+        /// P6 面板最小重扫间隔（max_hz 帧率帽的周期形态——480Hz 仿真）。
+        pub fn min_interval_ns(&self) -> u64 {
+            period_of(FREERANGE_MAX_HZ)
+        }
+
+        /// P6 自刷新重扫上界（min_hz 周期——1Hz 仿真；超窗无新帧 = 重扫
+        /// 上一帧，停帧语义（A7）不在本面——无人观察时零拍点）。
+        pub fn max_interval_ns(&self) -> u64 {
+            period_of(FREERANGE_MIN_HZ)
+        }
+
+        /// P6 扫描点裁决（§7-P6 纯函数）：`max(上一扫描开始 + min_interval,
+        /// target)`——帧就绪即上墙，仅让面板帧率帽。target=0（无目标域）
+        /// = 尽快语义退化 `last + min_interval`。
+        pub fn scan_point(&self, last_scan_ns: u64, target_ns: u64) -> u64 {
+            let floor = last_scan_ns.saturating_add(self.min_interval_ns());
+            floor.max(target_ns)
+        }
+
+        /// 当前全点序（P2/P6 latch 在拍点取归属 seq 用——含被故障旋钮
+        /// 丢弃的点：丢弃点拍在、事件未投递，帧仍归属它）。
+        pub fn seq_now(&self) -> u64 {
+            self.seq
+        }
+
         /// FREE 族追赶在席（DET 关——见 MODE_DETERMINISTIC 注）。
         pub fn catchup(&self) -> bool {
             self.cfg.mode != MODE_DETERMINISTIC
@@ -1939,9 +1995,12 @@ pub mod softpanel {
 
         /// 切档请求（§5 控制面，受理排 2 帧生效窗）：Tiered = 档位表成员
         /// 制（class 过滤归刀3 仲裁器）；FreeRange = 钳制量化。零档/同档/
-        /// 在途重复/表外 → None（拒）。
+        /// 表外/在途更慢或同速 → None（拒）；**在途更快放行抢占**（换目标
+        /// 重开 2 帧窗）——输入 boost 必须拉回正要睡的面板：per_frame 空闲
+        /// 态生效窗按 1Hz 重扫走 ~2s，run7 k6-p6f arb1 实证 boost 撞未落地
+        /// 的 LFC 降档在途窗被吞（触摸抢占语义——更慢不得反过来打断升路）。
         pub fn request_refresh(&mut self, hz: u16) -> Option<()> {
-            if hz == 0 || self.pending.is_some() {
+            if hz == 0 {
                 return None;
             }
             let (hz, p) = match self.cfg.model {
@@ -1951,7 +2010,15 @@ pub mod softpanel {
                 }
                 _ => resolve(hz)?,
             };
-            if p == 0 || p == self.period_ns {
+            if p == 0 {
+                return None;
+            }
+            if let Some((_, pending_p, _)) = self.pending {
+                if p >= pending_p {
+                    return None;
+                }
+            }
+            if p == self.period_ns {
                 return None;
             }
             self.pending = Some((hz, p, 2));
@@ -1970,6 +2037,31 @@ pub mod softpanel {
             } else {
                 free_nominal_ns
             };
+            self.emit(nominal, false)
+        }
+
+        /// P6 扫描拍点裁决（`on_point` 的逐帧形态——seq/抖动/切档窗/丢帧
+        /// 全共用；ts：FREE = 扫描点墙钟直通、DET = 虚拟钟按扫描间隔累进
+        /// ——同输入序列（同 target 链）→ 同 ts 序列，T2 回放门 P6 变体）。
+        pub fn on_scan(&mut self, wall_scan_ns: u64) -> Option<super::VblankTimingRep> {
+            self.seq = self.seq.wrapping_add(1);
+            let nominal = if self.cfg.mode == MODE_DETERMINISTIC {
+                if self.p6_last_wall_ns != 0 {
+                    self.p6_det_elapsed_ns = self
+                        .p6_det_elapsed_ns
+                        .saturating_add(wall_scan_ns.saturating_sub(self.p6_last_wall_ns));
+                }
+                self.p6_last_wall_ns = wall_scan_ns;
+                self.det_base_ns.wrapping_add(self.p6_det_elapsed_ns)
+            } else {
+                wall_scan_ns
+            };
+            self.emit(nominal, true)
+        }
+
+        /// 拍点共尾：抖动旋钮 → 切档生效窗 → 丢帧裁决 → 载荷。`p6` = 逐帧
+        /// 形态（DET 切档重锚面分岔）。
+        fn emit(&mut self, nominal: u64, p6: bool) -> Option<super::VblankTimingRep> {
             // 抖动旋钮：仅扰上报 ts（绘制顺序固定——jitter 抽签恒先于丢帧
             // 抽签，两旋钮并存时序列仍确定）。
             let mut ts = nominal;
@@ -1993,8 +2085,14 @@ pub mod softpanel {
                         self.sw_drop_left = self.cfg.sw_drop;
                     }
                     if self.cfg.mode == MODE_DETERMINISTIC {
-                        self.det_base_ns = nominal;
-                        self.det_k = 1;
+                        if p6 {
+                            // P6 重锚：本拍 ts = 新基（累进清零、墙钟链不断）。
+                            self.det_base_ns = nominal;
+                            self.p6_det_elapsed_ns = 0;
+                        } else {
+                            self.det_base_ns = nominal;
+                            self.det_k = 1;
+                        }
                     }
                 } else {
                     self.pending = Some((hz, p, left - 1));
@@ -2083,6 +2181,8 @@ pub mod arbiter {
         Dim,
         Platform,
         Fallback,
+        /// A8 LFC 进入（整数倍重发面——内容节拍裁决的稳态迁移）。
+        Lfc,
     }
 
     /// 裁决输出。guifbd 执行面：`Switch` → `panel.request_refresh(hz)` +
@@ -2132,11 +2232,33 @@ pub mod arbiter {
         stopped: bool,
         /// A2 无解记号（证据/遥测代理——读侧消费即清）。
         warn_no_g: bool,
+        // —— A8 LFC ——
+        /// 资格折算（构造时 = vrr capable ∧ 面板 max ≥ 2×min；per_frame
+        /// 形态 LFC 天然内含——调用方 per_frame 面不走 LFC 裁决）。
+        lfc_capable: bool,
+        /// 当前置倍数（0 = 未激活——证据面读；内容率 ≥ G_min 即复位）。
+        lfc_k: u32,
+        /// A8 禁用告警记号（整数倍越 G_max / 档空 = 振荡护栏——读即清）。
+        warn_lfc_off: bool,
     }
 
     impl Arbiter {
         /// 由面板配置 + boot 档构造（boot 档 = A11 无票缺省）。
         pub fn new(cfg: &PanelCfg, boot_hz: u16) -> Arbiter {
+            // A8 面板能力门：vrr capable ∧ max ≥ 2×min（FreeRange 仿真
+            // 区间 1..=480、Tiered 仿真档表极值——两 sim 面均过倍率门，
+            // 真门 = vrr 位）。
+            let (pmin, pmax) = if cfg.model == super::RATE_MODEL_FREERANGE {
+                (softpanel::FREERANGE_MIN_HZ, softpanel::FREERANGE_MAX_HZ)
+            } else {
+                let mut lo = u16::MAX;
+                let mut hi = 0u16;
+                for t in softpanel::TIERS.iter() {
+                    lo = lo.min(t.hz);
+                    hi = hi.max(t.hz);
+                }
+                (lo, hi)
+            };
             Arbiter {
                 model: cfg.model,
                 det_test: cfg.mode == softpanel::MODE_DETERMINISTIC,
@@ -2150,6 +2272,9 @@ pub mod arbiter {
                 boost_until: 0,
                 stopped: false,
                 warn_no_g: false,
+                lfc_capable: cfg.vrr == super::PANEL_VRR_CAPABLE && pmax >= 2 * pmin,
+                lfc_k: 0,
+                warn_lfc_off: false,
             }
         }
 
@@ -2171,6 +2296,76 @@ pub mod arbiter {
             let w = self.warn_no_g;
             self.warn_no_g = false;
             w
+        }
+
+        /// A8 资格透出（PANEL_CAPS 宣告与裁决门同源——guifbd 宣告面用）。
+        pub fn lfc_capable(&self) -> bool {
+            self.lfc_capable
+        }
+
+        /// A8 当前置倍数（0 = 未激活——`PANELARB lfc` 证据行载荷面）。
+        pub fn lfc_k(&self) -> u32 {
+            self.lfc_k
+        }
+
+        /// A8 禁用告警消费（读即清——禁用条件到席即振荡护栏证据）。
+        pub fn take_warn_lfc_off(&mut self) -> bool {
+            let w = self.warn_lfc_off;
+            self.warn_lfc_off = false;
+            w
+        }
+
+        /// A8：内容节拍更新（guifbd 在呈现面量得的稳态内容 hz；0 = 无内
+        /// 容/未知——LFC 复位不迁移）。内容率 ≥ G_min → LFC 无关（k=0 复
+        /// 位，正常仲裁接管）；跌破 G_min → 面板率 = k×内容率（k =
+        /// ceil(G_min/内容率)）：Tiered 对齐 ≥ target 的最小产品档（测试档
+        /// 禁入——LFC 是稳态不是测试拓扑）、FreeRange 区间直取（粒度对齐
+        /// 归 softpanel 受理面）。k×内容率越 G_max / 档空 → 禁用 + 告警记
+        /// 号（A8 振荡护栏原文）。立即执行（内容节拍是慢变量，非拍积
+        /// streak 面——进入/退出都是稳态迁移）。
+        pub fn on_content_cadence(&mut self, content_hz: u16) -> Decision {
+            let (gmin, gmax, solvable) = self.g_range();
+            if !self.lfc_capable || !solvable || content_hz == 0 || content_hz >= gmin {
+                self.lfc_k = 0;
+                return Decision::Stay;
+            }
+            let k = (gmin + content_hz - 1) / content_hz; // ceil ≥ 1
+            let target = k as u32 * content_hz as u32; // u32 域防 16 位积溢
+            if target > gmax as u32 {
+                self.warn_lfc_off = true;
+                self.lfc_k = 0;
+                return Decision::Stay;
+            }
+            let target = target as u16;
+            let final_hz = if self.model == super::RATE_MODEL_FREERANGE {
+                target
+            } else {
+                let mut best: Option<u16> = None;
+                for t in softpanel::TIERS.iter() {
+                    if t.class != super::PANEL_CLASS_PRODUCT {
+                        continue;
+                    }
+                    if t.hz < gmin || t.hz > gmax {
+                        continue;
+                    }
+                    if t.hz >= target && best.map_or(true, |b: u16| t.hz < b) {
+                        best = Some(t.hz);
+                    }
+                }
+                match best {
+                    Some(hz) => hz,
+                    None => {
+                        self.warn_lfc_off = true;
+                        self.lfc_k = 0;
+                        return Decision::Stay;
+                    }
+                }
+            };
+            self.lfc_k = k as u32;
+            if final_hz == self.cur_hz {
+                return Decision::Stay;
+            }
+            self.commit(final_hz, Src::Lfc)
         }
 
         /// A1：新票入槽（单槽替换）+ 即时裁决。
@@ -4162,13 +4357,16 @@ mod tests {
             drop_permille: 137,
             jitter_ns: 250_000,
             sw_drop: 2,
+            per_frame: true,
+            vrr: PANEL_VRR_CAPABLE,
         };
         let (d7, d8) = cfg.pack_domains();
-        // 域 7 = [model u8][mode u8][seed u32][r u16]。
+        // 域 7 = [model u8][mode u8][seed u32][per_frame u1][vrr u2][r13]。
         assert_eq!(d7 & 0xFF, RATE_MODEL_FREERANGE as u64);
         assert_eq!((d7 >> 8) & 0xFF, softpanel::MODE_DETERMINISTIC as u64);
         assert_eq!((d7 >> 16) as u32, 0xDEAD_BEEF);
-        assert_eq!(d7 >> 48, 0);
+        assert_eq!((d7 >> 48) & 0b111, 0b011); // per_frame=1 + vrr=CAPABLE(01)
+        assert_eq!(d7 >> 51, 0);
         // 域 8 = [drop_pm u16][jitter_ns u32][sw_drop u8][r u8]。
         assert_eq!(d8 & 0xFFFF, 137);
         assert_eq!((d8 >> 16) as u32, 250_000);
@@ -4253,6 +4451,22 @@ mod tests {
         f.on_point(1).unwrap();
         let t = f.on_point(2).unwrap();
         assert_eq!((t.refresh_ns, f.hz()), (2_083_333, 480));
+    }
+
+    #[test]
+    fn softpanel_switch_inflight_faster_preempts() {
+        // 在途抢占方向性（run7 k6-p6f arb1 回归钉）：未落地的降档可被
+        // 「更快」请求换目标重开 2 帧生效窗（输入 boost 抢占正要睡的
+        // 面板）；同速在途重复仍拒；更慢打断由上测 30-撞-在途-120 钉。
+        let mut p = softpanel::SoftPanel::new(softpanel::PanelCfg::DEFAULT, 60);
+        assert_eq!(p.request_refresh(30), Some(())); // 在途降档 60→30
+        assert_eq!(p.request_refresh(30), None, "同速在途重复仍拒");
+        assert_eq!(p.request_refresh(120), Some(()), "更快抢占在途降档");
+        // 抢占后生效窗重开：第 1 拍旧钟、第 2 拍生效（120Hz）。
+        let t1 = p.on_point(10_000_000_000).unwrap();
+        assert_eq!(t1.refresh_ns, 16_666_667);
+        let t2 = p.on_point(10_016_666_667).unwrap();
+        assert_eq!((t2.refresh_ns, p.hz()), (8_333_333, 120));
     }
 
     #[test]
@@ -5604,5 +5818,155 @@ mod tests {
         assert_eq!(ack.new_refresh_ns as u64, 8_333_333, "ACK 周期 = 120Hz");
         assert_eq!(ack.effective_ns, 3 * T, "生效拍 = 受理后第 2 拍标称点");
         assert_eq!(last_seq, 12, "12 拍全投递（T4 丢 vblank = 0 ≤ 1）");
+    }
+
+    // —— 刀6 纯核：P6 逐帧扫描 + A8 LFC ——
+
+    /// A8 专用构造（vrr 位 × 模型 × boot 档可注——lfc_capable 由 vrr 与
+    /// 面板极值折算）。
+    fn ar_vrr(vrr: u8, model: u8, boot_hz: u16) -> Arbiter {
+        Arbiter::new(
+            &softpanel::PanelCfg {
+                vrr,
+                model,
+                ..softpanel::PanelCfg::DEFAULT
+            },
+            boot_hz,
+        )
+    }
+
+    #[test]
+    fn softpanel_p6_scan_point() {
+        // P6 逐帧拍点纯函数钉板：地板 = 上一扫描 + min_interval（480Hz 帧率
+        // 帽），target 迟于地板 = 锁相（panel follows host），target=0 = 尽快
+        // 语义退化到地板。
+        let p = softpanel::SoftPanel::new(softpanel::PanelCfg::DEFAULT, 60);
+        assert!(!p.per_frame(), "缺省 cfg 非逐帧形态");
+        assert_eq!(p.min_interval_ns(), 2_083_333, "min_interval = 480Hz 周期");
+        assert_eq!(p.max_interval_ns(), 1_000_000_000, "max_interval = 1Hz 自刷新窗");
+        let mi = p.min_interval_ns();
+        assert_eq!(p.scan_point(10_000_000_000, 10_000_000_001), 10_000_000_000 + mi);
+        assert_eq!(
+            p.scan_point(10_000_000_000, 10_000_000_000 + 5 * mi),
+            10_000_000_000 + 5 * mi,
+            "target 迟于地板 → 锁相"
+        );
+        assert_eq!(p.scan_point(10_000_000_000, 0), 10_000_000_000 + mi);
+        // 饱和防御：last 近 u64 峰值不回绕。
+        assert_eq!(p.scan_point(u64::MAX - 1, 0), u64::MAX);
+    }
+
+    #[test]
+    fn softpanel_p6_det_replay() {
+        // T2 P6 变体：同扫描墙钟链 → 同 (seq, ts, refresh) 逐位相等；DET 虚
+        // 拟钟 ts = det_base + 累进墙距（非墙钟直通、非固定网格——逐帧锁相
+        // 语义，Δts = 墙钟帧距）。
+        let mk = || {
+            let mut cfg = softpanel::PanelCfg::DEFAULT;
+            cfg.mode = softpanel::MODE_DETERMINISTIC;
+            cfg.per_frame = true;
+            cfg.seed = 7;
+            softpanel::SoftPanel::new(cfg, 60)
+        };
+        // 26fps 帧距墙钟链（38_461_538/…_539ns）。
+        let walls = [1_000_000_000u64, 1_038_461_538, 1_076_923_076, 1_115_384_615];
+        let mut a = mk();
+        let out_a: Vec<_> = walls.iter().map(|w| a.on_scan(*w).unwrap()).collect();
+        let mut b = mk();
+        let out_b: Vec<_> = walls.iter().map(|w| b.on_scan(*w).unwrap()).collect();
+        assert_eq!(
+            out_a.iter().map(|r| (r.seq, r.ts_ns, r.refresh_ns)).collect::<Vec<_>>(),
+            out_b.iter().map(|r| (r.seq, r.ts_ns, r.refresh_ns)).collect::<Vec<_>>(),
+            "同输入 → 逐位相等（T2）"
+        );
+        assert_eq!(out_a[0].seq, 1);
+        // det_base(seed=7) = 1e9 + 7×6_700_417 ≠ 首墙钟——DET 虚拟钟非直通。
+        assert_eq!(out_a[0].ts_ns, 1_046_902_919);
+        for i in 1..walls.len() {
+            assert_eq!(out_a[i].ts_ns - out_a[i - 1].ts_ns, walls[i] - walls[i - 1]);
+        }
+        // 切档重锚透明性：第 2 扫后受理 120Hz → 第 4 扫生效（受理后第 2
+        // 拍），refresh 自该拍报新周期；重锚（基 = 本拍 ts、累进清零）后
+        // Δts 仍 = 墙钟帧距——钟链不断不跳。
+        let mut c = mk();
+        let mut ts_chain = Vec::new();
+        for (i, w) in walls.iter().enumerate() {
+            if i == 2 {
+                assert!(c.request_refresh(120).is_some());
+            }
+            let r = c.on_scan(*w).unwrap();
+            ts_chain.push(r.ts_ns);
+            if i == 3 {
+                assert_eq!(r.refresh_ns, 8_333_333, "生效拍起报 120Hz 周期");
+                assert_eq!(c.last_ack().unwrap().effective_ns, r.ts_ns);
+            } else {
+                assert_eq!(r.refresh_ns, 16_666_667);
+            }
+        }
+        for i in 1..ts_chain.len() {
+            assert_eq!(ts_chain[i] - ts_chain[i - 1], walls[i] - walls[i - 1], "重锚零扰动");
+        }
+    }
+
+    #[test]
+    fn arb_a8_lfc_decision_table() {
+        // A8 决策表：正例（Tiered 档对齐 / FreeRange 区间直取 + 稳态 Stay
+        // + 回升复位）× 负例（vrr 门 / 越界禁用 / 档空禁用 / 无票 / 内容
+        // 0）——禁用两路各出告警记号（读即清）。
+        // ① Tiered 正例：boot 120、G=[60,120]，内容 30 → k=2 → 档对齐
+        // ≥60 的最小产品档 60（面板随内容降频——LFC 降档主场景）。
+        let mut a = ar_vrr(PANEL_VRR_CAPABLE, RATE_MODEL_TIERED, 120);
+        a.on_vote(0, false, bal(Intent::Interactive as u8, 60, 120, 120));
+        assert!(a.lfc_capable());
+        assert_eq!(a.on_content_cadence(30), Decision::Switch { hz: 60, src: Src::Lfc });
+        assert_eq!(a.lfc_k(), 2);
+        assert_eq!(a.hz(), 60);
+        assert_eq!(a.on_content_cadence(30), Decision::Stay, "稳态同节拍不重复切");
+        assert_eq!(a.lfc_k(), 2);
+        assert_eq!(a.on_content_cadence(90), Decision::Stay, "内容 ≥ G_min → 无关 LFC");
+        assert_eq!(a.lfc_k(), 0, "回升复位 k");
+        // ② Tiered 低价内容：G=[30,120]、内容 24 → k=2 → 48 → 对齐 60。
+        let mut b = ar_vrr(PANEL_VRR_CAPABLE, RATE_MODEL_TIERED, 120);
+        b.on_vote(0, false, bal(Intent::Utility as u8, 30, 120, 60));
+        assert_eq!(b.on_content_cadence(24), Decision::Switch { hz: 60, src: Src::Lfc });
+        assert_eq!(b.lfc_k(), 2);
+        // ③ vrr 门负例：NONE / SUPPORTED_OFF 恒 Stay 零迁移。
+        let mut n = ar_vrr(PANEL_VRR_NONE, RATE_MODEL_TIERED, 120);
+        n.on_vote(0, false, bal(Intent::Interactive as u8, 60, 120, 120));
+        assert!(!n.lfc_capable());
+        assert_eq!(n.on_content_cadence(30), Decision::Stay);
+        assert_eq!(n.lfc_k(), 0);
+        let mut o = ar_vrr(PANEL_VRR_SUPPORTED_OFF, RATE_MODEL_TIERED, 120);
+        o.on_vote(0, false, bal(Intent::Interactive as u8, 60, 120, 120));
+        assert_eq!(o.on_content_cadence(30), Decision::Stay);
+        // ④ 整数倍越 G_max：G=[60,60]、内容 50 → k=2 → 100 > 60 → 禁用
+        // + 告警（振荡护栏——单发读即清）。
+        let mut w = ar_vrr(PANEL_VRR_CAPABLE, RATE_MODEL_TIERED, 60);
+        w.on_vote(0, false, bal(Intent::Interactive as u8, 60, 60, 60));
+        assert_eq!(w.on_content_cadence(50), Decision::Stay);
+        assert!(w.take_warn_lfc_off());
+        assert!(!w.take_warn_lfc_off(), "告警读即清");
+        // ⑤ 档空禁用：G=[160,190] 全落测试档带（非 DET 产品族空）→ 内容
+        // 90 → k=2 → 180 ∈G 但 TEST 禁入 → 告警 Stay。
+        let mut e = ar_vrr(PANEL_VRR_CAPABLE, RATE_MODEL_TIERED, 120);
+        e.on_vote(0, false, bal(Intent::Interactive as u8, 160, 190, 180));
+        assert_eq!(e.on_content_cadence(90), Decision::Stay);
+        assert!(e.take_warn_lfc_off(), "档空禁用告警");
+        // ⑥ 无票：G=[30,480]（平台底线 × 面板极值），内容 40 ≥ 30 无关；
+        // 内容 25 → k=2 → 50 → 对齐 60。
+        let mut f = ar_vrr(PANEL_VRR_CAPABLE, RATE_MODEL_TIERED, 120);
+        assert_eq!(f.on_content_cadence(40), Decision::Stay);
+        assert_eq!(f.lfc_k(), 0);
+        assert_eq!(f.on_content_cadence(25), Decision::Switch { hz: 60, src: Src::Lfc });
+        assert_eq!(f.lfc_k(), 2);
+        // ⑦ FreeRange 正例：区间直取无档对齐（k=ceil(60/35)=2 → 70Hz）；
+        // 内容 0 = 无内容复位。
+        let mut g = ar_vrr(PANEL_VRR_CAPABLE, RATE_MODEL_FREERANGE, 120);
+        g.on_vote(0, false, bal(Intent::Interactive as u8, 60, 120, 120));
+        assert_eq!(g.on_content_cadence(35), Decision::Switch { hz: 70, src: Src::Lfc });
+        assert_eq!(g.lfc_k(), 2);
+        assert_eq!(g.hz(), 70);
+        assert_eq!(g.on_content_cadence(0), Decision::Stay, "内容 0 复位不迁移");
+        assert_eq!(g.lfc_k(), 0);
     }
 }

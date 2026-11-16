@@ -916,10 +916,14 @@ fn run_rootfs_child(console: Handle) {
                 },
             ) {
                 Ok(child) => {
-                    // k4 统计段（101 拍点网格采样 + 17 帧回执链）在 TCG+宿主
-                    // 争用下墙钟可数倍于常规 30s 帽（run3/4 实证 60s+ 量级）
-                    // ——per-arm 抬帽 120s，其余 arm 零扰动。
-                    match child.reap_with_timeout(120 * 1_000_000_000) {
+                    // k4 统计段（101 拍点网格采样 + 17 帧回执链）+ 刀6 k6 段
+                    // （k6p 定点窗 + det 形 k6t/k6l + k6h 210 拍——A5 升档
+                    // 2 拍确认 + 2 帧生效窗，预热 4 拍×2 段 + k6f 逐帧）
+                    // 在 TCG+宿主争用下墙钟远超常规 30s 帽——run3/5 实证：主
+                    // boot ~165s、per_frame 形 park 走 1Hz 重扫 ~480s worst
+                    // ——per-arm 抬帽 600s，其余 arm 零扰动（真挂死由 boot
+                    // deadline 兜底 FAIL，臂帽只是早响面）。
+                    match child.reap_with_timeout(600 * 1_000_000_000) {
                         // 零码零新行——GFX ok 归 gfxdemo 自打（stdhello 的
                         // EXIT ok 同位，本 arm 无自证标记面）。
                         Ok(0) => {}

@@ -4,7 +4,7 @@
 # 是否升第六跑）。零 -kernel / 零 fw_cfg：AAVMF 固件 + out/berryos.img 挂盘
 # （qemu-xhci + usb-storage）启动——「盘自己把自己拉起来」的全链自动验收。
 #
-# 断言面（ EFI 十段/接续形态源自 V-3 收官 run；生态 36 = 对抗审查保留日志
+# 断言面（ EFI 十段/接续形态源自 V-3 收官 run；生态 39 = 对抗审查保留日志
 # 标记普查实证面（B-1 起 +B1 ok n=4；C-2c 挂账刀起 +U4 ok——深坑六件执行
 # 面八步；C-4 起 +TAB ok——编辑器九步 + 真源两钉，零 fs 盘面 EFI 路可达；
 # T-1 起 +THR ok——进程内多线程消费面，thrchild 镜像内嵌 svcmgr 零
@@ -39,7 +39,7 @@
 #   3. 裸相 28 标记（与 smoke.sh 同一清单——内核行为零漂移的证据；B-0 起
 #      + BENCH ok n=6 微基准/churn 金丝雀关卡行；R-0 起 + BENCHWAKE n=
 #      唤醒延迟直方图形状行；S-2 起 + BENCHXH ok 资源耗尽/恢复六面行）+ EFI 路
-#      生态 36 标记（rootfs hello / ECO / STD 双 / FILE / HEXYL / BSH /
+#      生态 39 标记（rootfs hello / ECO / STD 双 / FILE / HEXYL / BSH /
 #      EXIT / APP / APPUI / PIPE / FS / U1 / U2 / U3 / B1 / U4 / TAB / INT /
 #      POLL / PS / BC / THR / DPGP / DPGS / DPGN / MMP / CLK / SIG / FBW / FBSERVE /
 #      GFX 双 / WM /
@@ -60,7 +60,18 @@
 #      C-4b 裁定：EFI 路不设 Ctrl-C 交互杀段（i130t）——bsh 交互编辑循环
 #      结构性不可达（fat park 挡断，详见阶段 5 后注记）；交互杀五环面由
 #      主路 smoke.sh RX 相段 g 独占（有盘路 bsh 全功能），EFI 路杀链核心
-#      由 boot 期 INT ok 覆盖（真机 spawn+terminate+reap 四步）。
+#      由 boot 期 INT ok 覆盖（真机 spawn+terminate+reap 四步）；
+#   7. 刷新率刀6 双 boot 形态面（阶段 7，K-6 起）：主 boot 收摊后串行两
+#      次独立 boot，fw_cfg 旋钮换面板形态——boot `k6-det`（tiered:vrr +
+#      det）断言 `PANEL cfg model=tiered:vrr mode=det`（证据行含尾
+#      ` seed=0`，断言取前缀子串）+ k6t 位级整倍/T5 不变性 + A8 LFC
+#      （`PANELARB lfc k=` engagement 换行）；boot `k6-p6f`
+#      （freerange:per_frame）断言 `PANEL cfg model=freerange:per_frame
+#      mode=free` + k6f 逐帧锁相。deadline 分 boot：det 相 park 走网格
+#      快（360s 同主相）；per_frame 相 idle 重扫 1Hz——k4t 101 + k4s 18 +
+#      k6h 202 park + k6p/k6f ≈ 460s worst → 600s。两 boot 共用 GFX ok
+#      总伞（guest 段内断言全过才打）+ 各自 PANEL cfg 证据行（内核
+#      panel_cfg_req——任一旋钮非缺省即打，形态错配即 FAIL loud）。
 #
 # UTM 手动点验四条（同镜像、UI 无法 CI——清单正文见 docs/开发体验.md §L3）：
 #   ① 插盘：UTM 新建 ARM64 虚机（UEFI）驱动器挂 berryos.img；
@@ -126,7 +137,7 @@ CONT_MARKERS=("HANDOFF ok ver=1" "MMAP ok segs=" "ROOTFS ok src=handoff")
 # 各自失去「同内核零漂移」对照力；S-2 起 +BENCHXH ok 资源耗尽行为行；
 # G4-1 起 +DPG ok demand 闭环行——P2-3 补同步）。
 KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "FP ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=6" "BENCHWAKE n=" "G1.5 ok" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok" "DPG ok")
-# EFI 路生态 36（对抗审查保留日志逐标记普查实证——健康 boot 各恰一次为
+# EFI 路生态 39（对抗审查保留日志逐标记普查实证——健康 boot 各恰一次为
 # 日志观察面，本脚本断言为 grep -cF 存在性 ≥1；除
 # WM ok 与 LAUNCH 双（GUI-5/GUI-8 起 EFI 专属）外与 smoke.sh rootfs 相断言
 # canon 同面，EFI
@@ -257,10 +268,19 @@ KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL o
 # 遥测快照行——P3 回执消费第一个读者到席；先于 LAUNCH ok 同块打）。
 # 四枚小写 `gfx: k4`/`launcher: telem` 词头独有，与现役标记（含大写
 # GFX/GFXF/LAUNCH 族）互非子串。
-ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=" "APPUI ok n=" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok" "TAB ok" "INT ok" "POLL ok" "PS ok n=" "BC ok" "THR ok" "DPGP ok" "DPGS ok n=4" "DPGN ok n=4" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "FBW ok" "FBSERVE ok" "GFX ok" "GFXF ok n=" "WM ok" "LAUNCH ok" "PAGE ok n=" "CBOX ok n=" "gfx: k4a hz=" "gfx: k4t p99=" "gfx: k4s n=" "launcher: telem f=")
+# K-6 起 +k6 三枚 + P5C 一枚（刀6 刷新率体系主 boot 面——k6t/k6l/k6f
+# 形态专属段归阶段 7 双 boot 断言，主 boot 只断无条件段）：`gfx: k6p
+# n=4`（P2 四探——挂起/迟到即呈/squash 判弃/P5 定点提交）、`gfx: k6h
+# hz=`（240/480 产品档拍点门——两行取前缀式）、`P5C ok latch=`（guifbd
+# 定点提交 latch 证据行——k6p ④ 首个 slot-commit 起打）。k6 词头与 k4
+# 族互异，P5C 词头在册唯一，两两互非子串。
+ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=" "APPUI ok n=" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok" "TAB ok" "INT ok" "POLL ok" "PS ok n=" "BC ok" "THR ok" "DPGP ok" "DPGS ok n=4" "DPGN ok n=4" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "FBW ok" "FBSERVE ok" "GFX ok" "GFXF ok n=" "WM ok" "LAUNCH ok" "PAGE ok n=" "CBOX ok n=" "gfx: k4a hz=" "gfx: k4t p99=" "gfx: k4s n=" "launcher: telem f=" "gfx: k6p n=4" "gfx: k6h hz=" "P5C ok latch=")
 
 LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")
 RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")
+# 阶段 7 双 boot 的独立日志/临时目录（run_boot7 内赋值；cleanup 兜中途中止）。
+LOG7=""
+RUN_DIR7=""
 QEMU_PID=""
 RX_FIFO=""
 RX_HOLDER=""
@@ -276,10 +296,11 @@ cleanup() {
   fi
   [ -n "$RX_FIFO" ] && rm -f "$RX_FIFO"
   rm -rf "$RUN_DIR"
+  [ -n "$RUN_DIR7" ] && rm -rf "$RUN_DIR7"
   if [ -n "${SMOKE_KEEP_LOG:-}" ]; then
-    echo "smoke-image: 串口日志保留：$LOG" >&2
+    echo "smoke-image: 串口日志保留：$LOG${LOG7:+ $LOG7}" >&2
   else
-    rm -f "$LOG"
+    rm -f "$LOG" "$LOG7"
   fi
 }
 trap cleanup EXIT
@@ -353,7 +374,7 @@ echo "smoke-image: QEMU 启动（AAVMF + $IMAGE——零 -kernel / 零 fw_cfg）
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-# —— 阶段 1：全部标记到齐（EFI 十段 + 接续 3 + 裸相 28 + 生态 36 = 77）——
+# —— 阶段 1：全部标记到齐（EFI 十段 + 接续 3 + 裸相 28 + 生态 39 = 80）——
 # EFI 段/接续用 ERE 固定串混合面，统一进一个等待循环（到齐是状态谓词，
 # 阶段间无独立验收语义；缺失清单在超时 fail 文案里分组可见）。
 ALL_COUNT=$(( ${#EFI_FIXED[@]} + ${#EFI_ERE[@]} + ${#CONT_MARKERS[@]} + ${#KERNEL_MARKERS[@]} + ${#ECO_MARKERS[@]} ))
@@ -373,7 +394,7 @@ while :; do
     && fail "标记 ${DEADLINE_BOOT}s 未到齐（实测全链 ~115s），缺：$missing"
   sleep 1
 done
-echo "smoke-image: 全标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 28 + 生态 36）"
+echo "smoke-image: 全标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 28 + 生态 39）"
 
 # —— 阶段 2：恰一次（EFI 十段 + 接续——引导链重入探测）——
 for m in "${EFI_FIXED[@]}" "${CONT_MARKERS[@]}"; do
@@ -445,4 +466,130 @@ while :; do
   sleep 2
 done
 
-echo "smoke-image: PASS（EFI 十段恰一次 + 接续 src=handoff + 裸相 28 + 生态 36 + 字节对拍 + 金丝雀严格递增 + RX 注入后活性复验）"
+# —— 阶段 7：刷新率刀6 双 boot 形态面（K-6 起）——
+# 主 boot 已验默认形态（tiered + vrr=NONE + free）；本相串行两次独立 boot，
+# fw_cfg 旋钮换面板形态，聚焦断言形态专属段。k6t/k6l 只在 tiered:vrr+det
+# 形真跑（guest 侧资格门：rate_model/vrr/probe），k6f 只在
+# freerange:per_frame 形真跑（model+flags 门）——缺件 boot 跳段零行，宿主
+# 侧按形态各自断言即无假阳性；GFX ok 总伞两 boot 共用（guest 段内断言
+# 全过才打）。PANEL cfg 证据行由内核 panel_cfg_req 打（任一旋钮非缺省即
+# 打），形态错配即标记缺 FAIL loud。deadline 分 boot：det 相 park 走
+# 网格快（360s 同主相）；per_frame 相 idle 重扫 1Hz——k4t 101 + k4s 18 +
+# k6h 202 park + k6p/k6f ~20 + boot ~115s ≈ 460s worst → 660s（run5 实测
+# 主相 gfxdemo ~165s 佐证 park ≈ 0.3s/拍，重扫形上限再留裕）。
+
+# 主 boot QEMU 收摊（trap cleanup 持续在册——阶段 7 各 boot 复用 QEMU_PID/
+# RX_HOLDER/RX_FIFO 变量位，收摊即换岗）。
+kill "$QEMU_PID" 2>/dev/null
+wait "$QEMU_PID" 2>/dev/null
+kill "$RX_HOLDER" 2>/dev/null
+wait "$RX_HOLDER" 2>/dev/null
+rm -f "$RX_FIFO"
+QEMU_PID=""
+RX_HOLDER=""
+RX_FIFO=""
+
+fail7() {
+  echo "smoke-image: FAIL: $1" >&2
+  echo "---- 串口日志尾部（$LOG7）----" >&2
+  tail -40 "$LOG7" >&2
+  echo "--------------------------------" >&2
+  exit 1
+}
+
+# run_boot7 <tag> <deadline_s> <qemu 附加参...>：单 boot 起停 + 聚焦标记
+# 等待循环（BOOT7_MARKERS 全局数组——bash 3.2 无数组传参面）。fw_cfg 字符串
+# 旋钮走内核 panel_cfg_req 既有解析（opt/berry/panel-model / panel-mode）。
+# vars.fd 每 boot 新产 blank（同主相理由——不继承陈旧 BootOrder）。
+run_boot7() {
+  local tag="$1" deadline="$2"
+  shift 2
+  LOG7=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-image7-${tag}.XXXXXX")
+  RUN_DIR7=$(mktemp -d "${TMPDIR:-/tmp}/berryos-smoke-image7-${tag}.XXXXXX")
+  python3 -c "import sys; sys.stdout.buffer.write(b'\xff'*(64<<20))" > "$RUN_DIR7/vars.fd" \
+    || fail7 "vars.fd 生成失败（$tag）"
+  RX_FIFO=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-image7-fifo.XXXXXX")
+  rm -f "$RX_FIFO"
+  mkfifo "$RX_FIFO" || fail7 "mkfifo 失败（$tag）"
+  ( sleep $((deadline + 120)) ) > "$RX_FIFO" &
+  RX_HOLDER=$!
+  echo "smoke-image: 阶段 7 boot（$tag）启动（$*）"
+  "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic \
+    -pflash "$AAVMF_CODE" -pflash "$RUN_DIR7/vars.fd" \
+    -drive if=none,file="$IMAGE",format=raw,id=bb \
+    -device qemu-xhci -device usb-storage,drive=bb \
+    -device ramfb \
+    "$@" \
+    < "$RX_FIFO" > "$LOG7" 2>&1 &
+  QEMU_PID=$!
+  local t0 missing m
+  t0=$(date +%s)
+  while :; do
+    kill -0 "$QEMU_PID" 2>/dev/null \
+      || fail7 "QEMU 提前退出（$tag 固件/引导崩溃？）；日志尾部：$(tail -5 "$LOG7" | tr '\n' ' ')"
+    missing=""
+    for m in "${BOOT7_MARKERS[@]}"; do
+      grep -qF -- "$m" "$LOG7" || missing="${missing:+$missing }$m"
+    done
+    [ -z "$missing" ] && break
+    [ $(( $(date +%s) - t0 )) -gt "$deadline" ] \
+      && fail7 "阶段 7（$tag）标记 ${deadline}s 未到齐，缺：$missing"
+    sleep 1
+  done
+  kill "$QEMU_PID" 2>/dev/null
+  wait "$QEMU_PID" 2>/dev/null
+  kill "$RX_HOLDER" 2>/dev/null
+  wait "$RX_HOLDER" 2>/dev/null
+  rm -f "$RX_FIFO"
+  QEMU_PID=""
+  RX_HOLDER=""
+  RX_FIFO=""
+  rm -rf "$RUN_DIR7"
+  RUN_DIR7=""
+  if [ -z "${SMOKE_KEEP_LOG:-}" ]; then
+    rm -f "$LOG7"
+    LOG7=""
+  fi
+  echo "smoke-image: 阶段 7（$tag）${#BOOT7_MARKERS[@]}/${#BOOT7_MARKERS[@]} 标记到齐"
+}
+
+# boot k6-det（tiered:vrr + det）：TEST 档 admissible（165/180）+ DET 位级
+# 整倍面 + T5 不变性 + A8 LFC engagement。`PANELARB lfc k=` 是 k 0→N 换行
+# （k 变更即打——engagement 证据，值无关断言）；k6t 断言取 `gfx: k6t n=3`
+# 前缀式（打印行含 a=/b=/c= 实值）。
+BOOT7_MARKERS=(
+  "PANEL cfg model=tiered:vrr mode=det"
+  "BerryOS boot"
+  "ktest done"
+  "GFX ok"
+  "GFXF ok n="
+  "WM ok"
+  "LAUNCH ok"
+  "gfx: k6p n=4"
+  "gfx: k6h hz="
+  "gfx: k6t n=3"
+  "gfx: k6l hz="
+  "PANELARB lfc k="
+)
+run_boot7 k6-det 360 \
+  -fw_cfg name=opt/berry/panel-model,string=tiered:vrr \
+  -fw_cfg name=opt/berry/panel-mode,string=det
+
+# boot k6-p6f（freerange:per_frame）：P6 逐帧扫描锁相——latch == 请求拍点
+# （无网格钳制；网格面板会钳到 ≤target 格点——k6f 残差门即判别面）。
+BOOT7_MARKERS=(
+  "PANEL cfg model=freerange:per_frame mode=free"
+  "BerryOS boot"
+  "ktest done"
+  "GFX ok"
+  "GFXF ok n="
+  "WM ok"
+  "LAUNCH ok"
+  "gfx: k6p n=4"
+  "gfx: k6h hz="
+  "gfx: k6f p99="
+)
+run_boot7 k6-p6f 660 \
+  -fw_cfg name=opt/berry/panel-model,string=freerange:per_frame
+
+echo "smoke-image: PASS（EFI 十段恰一次 + 接续 src=handoff + 裸相 28 + 生态 39 + 字节对拍 + 金丝雀严格递增 + RX 注入后活性复验 + 刀6 双 boot 形态面）"

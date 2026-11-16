@@ -252,7 +252,9 @@ fn fwcfg_trimmed<R>(name: &str, f: impl FnOnce(&str) -> R) -> Option<R> {
 /// 刀2（刷新率体系规范 §5 配置面）：fw_cfg 软面板三旋钮 → boot VMO 尾插
 /// 域 7/8 LE u64 对（位布局 = guiproto `softpanel::PanelCfg::pack_domains`
 /// 手镜像，host 对拍钉板——内核不依赖用户态 crate）：
-/// `opt/berry/panel-model` = `tiered|freerange`（缺省 tiered）、
+/// `opt/berry/panel-model` = `tiered|tiered:vrr|freerange|freerange:per_frame`
+/// （缺省 tiered；刀6 起 `tiered:vrr` 抬 A8 LFC 门位、`freerange:per_frame`
+/// 开 P6 逐帧扫描形态——FreeRange 仿真恒 vrr capable）、
 /// `opt/berry/panel-mode` = `free|det|det:SEED`（缺省 free；HOST_LOCK 在册
 /// 未接线——刀3 仲裁器，本刀不收）、`opt/berry/panel-fault` =
 /// `D,J,S` 十进制 CSV（丢帧千分比 0..=1000 / 抖动 ns / 切档丢帧 0..=16）。
@@ -261,20 +263,31 @@ fn fwcfg_trimmed<R>(name: &str, f: impl FnOnce(&str) -> R) -> Option<R> {
 /// 任一旋钮非缺省时打 `PANEL cfg …` 证据行（宿主探针取证面）。
 fn panel_cfg_req() -> (u64, u64) {
     use berry_hal_aarch64::uart_puts;
-    // model：0=Tiered 1=FreeRange。
+    // model：0=Tiered 1=FreeRange；刀6 后缀 = per_frame(bit48) + vrr(bits49-50)。
     let (mut model, mut model_name) = (0u64, b"tiered".as_slice());
-    if let Some(m) = fwcfg_trimmed("opt/berry/panel-model", |s| match s {
-        "tiered" => 0u64,
-        "freerange" => 1,
+    let (mut per_frame, mut vrr) = (0u64, 0u64);
+    if let Some((m, pf, vr)) = fwcfg_trimmed("opt/berry/panel-model", |s| match s {
+        "tiered" => (0u64, 0u64, 0u64),
+        "tiered:vrr" => (0, 0, 1),
+        "freerange" => (1, 0, 1),
+        "freerange:per_frame" => (1, 1, 1),
         _ => {
             uart_puts(b"PANEL model fail\n");
-            0
+            (0, 0, 0)
         }
     }) {
         model = m;
-        if m == 1 {
-            model_name = b"freerange";
-        }
+        per_frame = pf;
+        vrr = vr;
+        // 名字含 vrr 维度：tiered 与 tiered:vrr 行为差一整条 LFC 面，
+        // 证据行必须可分辨（run6 教训：二元匹配打成同名的 model=tiered）。
+        model_name = match (m, pf, vr) {
+            (1, 1, _) => b"freerange:per_frame".as_slice(),
+            (1, 0, _) => b"freerange".as_slice(),
+            (0, 1, _) => b"tiered:per_frame".as_slice(), // Tiered 位被忽略（值域防御显示）
+            (0, 0, 1) => b"tiered:vrr".as_slice(),
+            _ => b"tiered".as_slice(),
+        };
     }
     // mode：0=FREE 2=DET（+seed）；det:SEED 形收种子，SEED 非法整旋钮回退。
     let (mut mode, mut seed) = (0u64, 0u64);
@@ -323,7 +336,8 @@ fn panel_cfg_req() -> (u64, u64) {
         (drop_pm, jitter, sw) = vals;
     }
     // 证据行：任一非缺省才打（探针取证面；无 `ok` 形态——不撞在册标记）。
-    let d7 = model | (mode << 8) | (seed << 16);
+    // d7 刀6 位（bit48 per_frame / bits49-50 vrr）与 guiproto pack 同拍。
+    let d7 = model | (mode << 8) | (seed << 16) | (per_frame << 48) | (vrr << 49);
     let d8 = drop_pm | (jitter << 16) | (sw << 48);
     if d7 != 0 || d8 != 0 {
         uart_puts(b"PANEL cfg model=");
