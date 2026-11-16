@@ -964,13 +964,14 @@ fn poll_selftest() {
     println!("POLL ok");
 }
 
-/// EVS 对拍载荷（A2-3；与 `tools/evsclient.py` 同源定值——两连接异型
-/// 64B/24B，本侧断言 DRAIN 收割逐字节、client 侧断言回读逐字节，两侧
-/// 独立成立）。
-const EVS_PAYLOAD_0: [u8; 64] = {
-    let mut a = [0u8; 64];
+/// EVS 对拍载荷（A2-3；四刀 F76 64B→250B 入标记链——与 `tools/evsclient.py`
+/// 同源定值，两连接异型 250B/24B：使链覆盖 250B 全域多段路径（入站单段
+/// 250 + 出站 2×128 拼段）；本侧断言 DRAIN 收割逐字节、client 侧断言回读
+/// 逐字节，两侧独立成立）。
+const EVS_PAYLOAD_0: [u8; 250] = {
+    let mut a = [0u8; 250];
     let mut i = 0;
-    while i < 64 {
+    while i < 250 {
         a[i] = (i * 7 + 3) as u8;
         i += 1;
     }
@@ -1373,7 +1374,10 @@ fn evs_selftest() {
                     }
                     sleep_ms(tick, sleep_mask, 1000);
                 };
-                // data-wait：WRITABLE + rbytes>0 才是活连接；尸槽释槽重入。
+                // data-wait：WRITABLE + rbytes ≥ 全量才是可收割（四刀 F76
+                // 250B 起入站可拆 2×128 段——首段到达即收割必短斤；全量
+                // staged 后串行收割必得全量——单连接独占、无并发写者）；
+                // 尸槽释槽重入。
                 let dat_dl = now() + 60_000_000_000;
                 loop {
                     match netd_rpc(netd, ndp::TcpSReq::Poll, d, 10_000_000_000)
@@ -1393,7 +1397,9 @@ fn evs_selftest() {
                                 );
                                 continue 'acc;
                             }
-                            if r.rbytes > 0 && r.flags & ndp::POLL_FLAG_WRITABLE != 0 {
+                            if r.rbytes as usize >= want.len()
+                                && r.flags & ndp::POLL_FLAG_WRITABLE != 0
+                            {
                                 break 'acc d;
                             }
                         }
@@ -1551,7 +1557,7 @@ const SKT_PAYLOAD_C: [u8; 32] = {
 ///   send-on-Listen == -1 + EPIPE → close；
 /// - ② server 段（evs 七步链的 fd 皮）：bind 18083 + listen（hostfwd
 ///   专线——echod 18080/LSN 18081/EVS 18082 零交集；宿主
-///   `evsclient.py 18083 SKT` 两连接 64B/24B 串行对拍）→ 每连接
+///   `evsclient.py 18083 SKT` 两连接 250B/24B 串行对拍（F76 同批））→ 每连接
 ///   {阻塞 accept（libc 内 1s 节拍；挂死兜底 = 相帽——client 总帽 480s
 ///   > DEADLINE_ROOTFS 420s，accept 落地前 client 恒活）→ accept 出参
 ///   钉板（哨兵 0xFFFF/0xAA 预填必被覆写：AF_INET/port 0/10.0.2.2/
@@ -1793,12 +1799,30 @@ fn skt_selftest() {
                 }
                 break dfd;
             };
-            // recv 全长 64 逐字节对拍（POLL+DRAIN 在 libc 内；闸门已见 POLLIN
-            // 必即收割——DRAIN 原子全量 ⇒ 阻塞 recv 首拉即整载荷 24/64）。
-            // 放宽恰长 → 全长：ci==1 槽须能认出迟到重发的 P0（下支）。
-            let mut buf = [0u8; 64];
-            let n = unsafe { skt::recv(dfd, buf.as_mut_ptr() as *mut _, 64, 0) };
-            if ci == 1 && n == 64 && buf == EVS_PAYLOAD_0 {
+            // recv 全长 250 逐字节对拍（POLL+DRAIN 在 libc 内）。四刀 F76
+            // 250B 起入站可拆 2×128 段——libc recv 按就绪量返回（首拉可短），
+            // 循环收齐到全长再对拍；放宽恰长 → 全长：ci==1 槽须能认出迟到
+            // 重发的 P0（下支）。
+            let mut buf = [0u8; 250];
+            let mut n = 0usize;
+            let recv_dl = now() + 60_000_000_000;
+            while n < 250 {
+                // SAFETY: buf ≥ 250，n < 250。
+                let r = unsafe { skt::recv(dfd, buf.as_mut_ptr().add(n) as *mut _, 250 - n, 0) };
+                if r < 0 {
+                    let e = errno!();
+                    if e == berry_libc::EAGAIN && now() < recv_dl {
+                        sleep_ms(tick, sleep_mask, 1000);
+                        continue;
+                    }
+                    bail!("bsh: skt: c{} recv errno={} after {}B", ci, e, n);
+                }
+                if r == 0 {
+                    bail!("bsh: skt: c{} recv EOF after {}B", ci, n);
+                }
+                n += r as usize;
+            }
+            if ci == 1 && n == 250 && buf == EVS_PAYLOAD_0 {
                 // **活重复载荷槽**（evs ③ 同根同款，详见其注释）：client 45s
                 // 单尝试帽烧穿后重发 P0 落在 ci==1 槽——同款 echo 回发放行该次
                 // 重试闭环（client 进 P1 轮），释槽重入 accept 取真 P1；
@@ -1807,13 +1831,13 @@ fn skt_selftest() {
                 if revives > 3 {
                     bail!("bsh: skt: c{} dup loop", ci);
                 }
-                let _ = unsafe { skt::send(dfd, EVS_PAYLOAD_0.as_ptr() as *const _, 64, 0) };
+                let _ = unsafe { skt::send(dfd, EVS_PAYLOAD_0.as_ptr() as *const _, 250, 0) };
                 if close(dfd) != 0 {
                     bail!("bsh: skt: dup close c{} errno={}", ci, errno!());
                 }
                 continue 'conn;
             }
-            if n != want.len() as isize || &buf[..want.len()] != want {
+            if n != want.len() || &buf[..want.len()] != want {
                 bail!(
                     "bsh: skt: c{} drain n={} want={} mismatch={}",
                     ci,

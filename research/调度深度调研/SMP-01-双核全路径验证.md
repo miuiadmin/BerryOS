@@ -19,7 +19,7 @@ Updated: 2026-11-16
 | F2 | parked 核 util EWMA 冻结(深 park 无 tick = 折叠永不发生),冻结值喂 `any_overutilized`(EAS 全域回退门)与 `eas_place` utils 快照——忙核 util>819 后全员退出 → 恒 overutil → EAS 整域死亡直到该核再跑任务(结构性可能永不) | 正确性/降级(SMP 专属) | **已修**:util.rs `util_idle_fold` + sched.rs 两 park 入口(§4.2) |
 | F3 | band tick 面环扫(`FairBand::tick` 的 throttle/unthrottle、`band_period_sweep`)不持本地 RQ 锁,与对核 `try_steal_one`(持本环 RQ 锁 unlink)存在走查撕裂窗——§A113 族 | 竞态(低概率,预存) | 未修,归 CP-05/BAND-S 锁面裁决(tick 禁取 RQ 锁的 wedge 判例在案,§3.3) |
 | F4 | EAS 选核机会主义窗口窄:place() 只在 spawn 调用,wake/expire 恒回 home(迁移粘性)——负载形态变化后无重放 | 设计 v1 定谳 | 记录,归 EAS v2(§3.4) |
-| F5 | 被限流的 cur 垄断者(单任务独占核)跑到自然让点:pick None 不发生切换,THROTTLE 位只挡「再出选」不挡「继续跑」 | 单核同形(非 SMP 退化) | 记录(§3.5) |
+| F5 | 被限流的 cur 垄断者(单任务独占核)跑到自然让点:pick None 不发生切换,THROTTLE 位只挡「再出选」不挡「继续跑」 | 单核同形(非 SMP 退化) | 已修(§3.5,2026-11-16 F5 刀) |
 | F6 | smoke-smp 八相无 FairBand/EAS/slack/oneshot 任何专项相;计划 CP-03(SMPBENCH)/CP-05(BAND-S)未落——07 号「SMP 专属验收相零命中」复核**成立** | 验收缺口 | 本刀补决策面钉板(SMPLZ)+双核 boot 零回归;专项相归计划线(§5) |
 
 实证速览:`-smp 2` 下 ktest 全绿(BANDM4 ok n=2/LOADGEN ok 四组/EASPROD ok/SMPLZ ok n=3)、boot 32 标记全齐 + `SMP ok ncores=2` 恰一次、PAR ok c0=22 c1=33(真并行见证)、偷取/定时拉取/双核心跳全活(§2)。
@@ -93,9 +93,11 @@ smoke-smp 八相全量(tools/smoke-smp.sh)本轮未能起跑:同机 QEMU 字段�
 
 place() 只在 spawn 调用(sched.rs:755 注:「wake/expire 再入队回 home 不改道——防 sleeper 被唤醒方弹核」);偷取迁移是唯一的被动再平衡(随迁改写 home,sched.rs:4102)。负载形态剧变后无主动重放——Linux EAS 的 task placement 在 wake 路径每机会重判,此处 v1 收窄为 spawn-only + 偷取兜底。设计定谳在案,非缺陷;EAS v2 议。
 
-### 3.5 F5:限流 cur 垄断者跑到自然让点(记录,单核同形)
+### 3.5 F5:限流 cur 垄断者跑到自然让点(已修,单核同形)
 
-THROTTLE 位使任务不可再出选,但单任务独占核时 pick None ⇒ on_irq_tick 不切换(sched.rs:3806-3830 的 go=None 路)⇒ cur 继续跑到 block/yield/exit。单核同形(非 SMP 退化),v1 语义;真执法需 idle 注入或强制 park 切点,v2 议。
+THROTTLE 位使任务不可再出选,但单任务独占核时 pick None ⇒ on_irq_tick 不切换(sched.rs:3806-3830 的 go=None 路)⇒ cur 继续跑到 block/yield/exit。单核同形(非 SMP 退化)。
+
+**修复(2026-11-16 F5 刀,判据/切换舞/醒源三件,sched/ 内)**:① 判据单源 `sched::throttle_yield_due(cur)`(HELD_THROTTLE 位——band 越线与 S5-c 逐任务预算两位写者的统一面);② on_irq_tick 片燃尽支出选 None 臂强制让点(RQ 窗内 cur Ready 化——在环保留不摘环;CPU0 切 IDLE_TASK/idle 环热旋支承接翻期,副核 set_current(null) 切 sec_park_ctx 由 park_recheck 承接,均 block/exit pick-None 臂同形);③ 醒源护栏 `band::nearest_throttle_wake`(armed+throttled 槽的 DEADLINES 最小值)并入 `nearest_deadline`——缺此面深 park mask CNTV 无 tick,让点变永久饿死(sweep 永不再跑)。ktest `THRYLD ok n=4` 钉决策面四面;连带 dpg_press 硬 panic 门扩「带执法在飞降软」(any_armed——F5 使 utility 带进入真实配额占空比,翻期整批回场 Burst 合法推高缺页供给墙钟,单核静默场前提与 SMP 形同构性破,详 note)。
 
 ### 3.6 F6:验收面缺口复核
 
@@ -131,6 +133,6 @@ B 面会话(OBS-01)与本刀同时在 sched/ 施工:15:23-15:24 其落 stats 钩
 
 - **F3**(band tick 面环扫锁窗):归 CP-05/BAND-S——需先裁决「tick 面取本核 RQ 锁」与 wedge 判例的共存边界(或把 tick 入口 band_period_sweep 挪入既有 rq_lock 窗内并重验 LB 相)。
 - **专项验收相**:CP-03 SMPBENCH(跨核唤醒延迟 p50/p99 对拍)与 CP-05 BAND-S(超卖窗上界 = 一 slice 内每核各一份 delta,进断言)未落;本刀 SMPLZ 只钉决策面。
-- **F4/F5**:EAS v2(wake 路重放)与限流 monopolist 强制让点,v2 议。
+- **F4**:EAS v2(wake 路重放)v2 议;F5(限流 monopolist 强制让点)已于 2026-11-16 F5 刀收口(§3.5)。
 - **smoke-smp 八相全量**:本轮受同机 QEMU 字段占用未跑,待字段空闲补跑(相 1 形态已离线成立)。
 - 观测面(06 号扣分项的 B 面)由并行会话 OBS-01 承担(per-band pick/runtime、per-intent 吞吐、SCHED 周期行、EAS 决策周期线——本刀双核日志已见其生效),本报告不双写其结论。
