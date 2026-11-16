@@ -658,6 +658,12 @@ test-host:
     # 参数化注入 + irq_exit 值域执法；wsrcface 姊妹件——号归源/源分类
     # 进环两件合钉刀1 归因链〕）。
     cargo test -p berry-wakeface --target {{host}}
+    # W3-Q28：berry-wsrcface（唤醒源分类/白名单/钳位纯函数面——WSRC_F_*
+    # 五常量 + M_* 九源冻结值镜像 + class_of/valid/slot_index 三谓词，
+    # host 8 测（9 源两列全表/256 值全域扫描/钳位律/POWER_KEY 到达-only
+    # 三角/预留段律/位面冻结/到达置位门判序镜像）；单源 crate，kernel
+    # telemetry.rs 薄壳 re-export + 五钳位点换单源。
+    cargo test -p berry-wsrcface --target {{host}}
     # W3-Q3：berry-vmoledger（VMO 页面生命周期簿记纯函数面——提交/归还
     # 资格、映射计数悬空 PTE 防线、demand 钉计数、MMIO 窗口恒空不变量，
     # host 13 测；记账状态机单源，kernel/src/vmo.rs 物理臂消费）。

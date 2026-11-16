@@ -43,6 +43,10 @@ berry-dtbface = { path = "../dtbface" }
 # init_segs 同页自相对/段几何 + gop 四非零门）——本 crate 消费
 #（handoff.rs probe/init_segs/gop_info 判定段换消费，raw 解引用留壳）。
 berry-hofface = { path = "../hofface" }
+# W3-Q28（净增量重放）：唤醒源分类/白名单/槽位钳位纯函数面单源
+# （WSRC_F_* 五常量 + class_of/valid/slot_index）——本 crate telemetry.rs
+# 消费（薄壳 re-export + 五钳位点换单源）。
+berry-wsrcface = { path = "../wsrcface" }
 berry-vslotface = { path = "../vslotface" }
 # W3-Q20：SchedAttr 位选律（默认∪覆盖/FREEZE_READY 特判）+ policy 查表
 # 数学单源在 berry-polface（host 可测钉板）；本 crate process.rs re-export
