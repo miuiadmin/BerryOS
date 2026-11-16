@@ -16,6 +16,7 @@ rg -o 'opt/berry/[A-Za-z0-9_-]+' --no-filename --hidden \
   -g '!docs/**' -g '!.agents/**' -g '!.git/**' -g '!reference/**' \
   -g '!research/**' -g '!out/**' -g '!*target*/**' -g '!*.img' -g '!*.cpio' \
   -g '!*.md' -g '!WAVE2-GALLERY/**' -g '!.berry-review/**' \
+  -g '!fwcfgface/src/tests.rs' \
   . \
   | sed -E -e 's|opt/berry/||' -e 's/^rootfs[0-9]+$/rootfs0..9/' | sort -u \
   > "$tmp/code.txt" || true

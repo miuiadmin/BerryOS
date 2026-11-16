@@ -87,7 +87,7 @@ pub const NR_THREAD_YIELD: usize = 0x3F;
 /// util 信号（schedutil 同构 f≈util×fmax/capacity）」的内核侧产出面）+ OQ-8
 /// （:217）通道形态首裁：快照 syscall pull 形态先行——共享环 push 形态随 CP-10
 /// 通道窗叠加（add-only 不互斥）。加号依据：零 VMO 共享先例（telemetry_open
-/// 0x84 环面 stage=v3 未启，建环面远超首环体量）；add-only 加号先例 0x86/0x87/
+/// 0x84 klog 快照域已翻真 2026-11-16、SwitchRec/WakeRec 环读口未启）；add-only 加号先例 0x86/0x87/
 /// 0x88；PM-15 §4.1「六面零新 syscall」辖 SDK 服务 op 面，不辖内核→服务数据通道
 /// （util 生产侧 v1.3 立法时已内定「PM 读面」，sched/src/util.rs:94-96）。生产侧
 /// 零新累积——Fair::tick 记账在役（class.rs util_accumulate/util_tick_window），
