@@ -1,0 +1,44 @@
+#!/bin/sh
+# BerryOS 跨根合并闸（ref 层兜底）——防线详见 .agents/notes/implemented/2026-11-16-跨根合并防线与判例.md
+# 为什么需要本闸：pre-commit 不拦自动合并（无冲突的 git merge 不经过它），且 git commit --no-verify 可绕过。
+# 本闸在引用事务 prepared 阶段兜底：任何指向「跨根合并提交」的 ref 更新一律拒绝。
+# 跨根合并提交 = 多亲提交中存在相邻两亲无共同祖先（覆盖任意两条不相关历史，不写死根 OID）。
+# owner 逃生阀：BERRYOS_ALLOW_CROSSROOT=1。
+
+# 状态判测兼容两种传法：新 git 走位置参数 $1（Apple Git 2.50 实测），老 git 走环境变量
+state="$REF_TRANSACTION_STATE"
+[ -n "$state" ] || state="$1"
+[ "$state" = "prepared" ] || exit 0
+[ "$BERRYOS_ALLOW_CROSSROOT" = "1" ] && exit 0
+
+while read -r old new ref; do
+  # 只守 refs/heads/* 与 refs/tags/*：ORIG_HEAD/AUTO_MERGE 等记账伪引用不拦
+  # （git reset --hard 等清理动作会往 ORIG_HEAD 记跨根合并 OID，拦它会挡正常回收）
+  case "$ref" in
+    refs/heads/*|refs/tags/*) ;;
+    *) continue ;;
+  esac
+  # 全零 new OID = 删除引用，放行
+  [ -n "${new//[0]/}" ] || continue
+  # 快速筛：只看多亲提交（普通提交一个 rev-list 即放行，对 lane 零负担）
+  # 注意：多亲提取必须用 rev-list --parents——rev-parse --verify "$new^@" 对多亲提交输出为空
+  pline=$(git rev-list --parents -n1 "$new" </dev/null 2>/dev/null)
+  [ -n "$pline" ] || continue
+  set -- $pline
+  shift
+  [ $# -ge 2 ] || continue
+  p1=$1; p2=$2
+  if [ -z "$(git merge-base "$p1" "$p2" </dev/null 2>/dev/null)" ]; then
+    short=$(printf '%s' "$new" | cut -c1-12)
+    cat >&2 <<EOF
+[berryos-guard] 拒绝：ref $ref 将指向跨根合并提交 $short（两亲无共同祖先）。
+
+main 与 wip/sched-1.1 无共同祖先，整树合并是 owner 专属动作（348 add/add 冲突判例在案）。
+若是误操作：git merge --abort 回安全态。
+owner 确要收口：BERRYOS_ALLOW_CROSSROOT=1 重试。
+判例：.agents/notes/implemented/2026-11-16-跨根合并防线与判例.md
+EOF
+    exit 1
+  fi
+done
+exit 0

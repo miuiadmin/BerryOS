@@ -50,7 +50,7 @@ KERNEL=target-klog/aarch64-unknown-none/debug/berry-kernel   # 用实构建目�
 13. **add 混合文件前看 diff 归属**：`git diff <文件> | rg "^@@"` 逐 hunk 辨归属——同文件里并行 lane 的 hunks 会随整文件 add 入库（跨文件撕裂实抓：消费点入库、定义没入库 = 基线不可构建）。你的 hunks 独立时可 hunk 手术：构造中间态文件 → `git hash-object -w` → `git update-index --cacheinfo`（index 态入库，工作树零扰动——并行 lane 的在途面完好保留其 diff）。
 14. **恢复性接口摘抄**：并行半成品造成的基线破窗（如字段定义未入库）可用最小接口摘抄立即闭合（Cargo.toml members 修复、web.rs 三字段两个判例）——摘接口不摘功能面。
 15. **共享分支同步撞 dirty**：merge/rebase 会拒碰 dirty 文件——用 **detached worktree 绕行**：`git worktree add --detach /tmp/x HEAD` → 原地 `git rebase -r origin/<分支>`（冲突逐个解；纯追加日志型文件用 union 合并保两侧）→ `git push origin HEAD:refs/heads/<分支>` → 删 worktree——主工作树 HEAD 与 dirty 零干扰。
-16. **集成分支流程**：wip/sched-1.1 是集成分支（与 origin/main 无共同祖先、靠 owner 周期合流 merge 收口）——lane 的工作推 wip 即完成合入职责，勿直接动 main。
+16. **集成分支流程**：wip/sched-1.1 是集成分支（与 origin/main 无共同祖先、靠 owner 周期合流 merge 收口）——lane 的工作推 wip 即完成合入职责，勿直接动 main。跨根整树合并已被三层机器闸拦截（`.githooks/` pre-commit + reference-transaction + pre-push，判例 348 add/add 冲突，见[跨根合并防线笔记](../../notes/implemented/2026-11-16-跨根合并防线与判例.md)）；owner 逃生阀 `BERRYOS_ALLOW_CROSSROOT=1`；跨线内容走净增量重放（实测冲突面 348→35 文件）。
 17. **--no-verify 的合规使用**：pre-commit 钩子的 check-docs --strict 会被并行 lane 随 merge 进来的断链拦停（非自己的债）——AGENTS 规则 8 明文「不是提交硬门槛」，核实告警确属他人后可 --no-verify 提交自己的部分。
 
 ### 五、DSH workflow 规约
