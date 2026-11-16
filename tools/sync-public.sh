@@ -233,8 +233,10 @@ WHITELIST=(
   rootface docs
   # fwcfgface/susface 补账（2026-11-16 本刀实捕：#299/#307 合入后白名单
   # 笔未随刀——check-members 门被 base 重写剥落故两连漏无人咬；接线重放
-  # 即红，红分支实捕定谳）
-  fwcfgface susface
+  # 即红，红分支实捕定谳）；memface 三连实捕（2026-11-16 本刀：#381 第86跳
+  # merge 解冲突时白名单笔被剥，CI light sync-public --check-members 腿红
+  # run 43809528251 实锤——判例固化：解 merge 冲突后必核白名单笔未剥）
+  fwcfgface susface memface
   # balface 补账（2026-11-16 本刀重放接线实捕：W3-Q82 #273 首开件白名单
   # 笔未随刀——check-members 门红分支实捕定谳，同 fwcfgface 判例）
   balface
