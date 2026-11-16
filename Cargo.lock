@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "berry-aokface"
+version = "0.2.0"
+
+[[package]]
 name = "berry-bandface"
 version = "0.2.0"
 
@@ -13,10 +17,20 @@ version = "0.2.0"
 [[package]]
 name = "berry-dpgface"
 version = "0.2.0"
+dependencies = [
+ "berry-ringface",
+]
 
 [[package]]
 name = "berry-dtbface"
 version = "0.2.0"
+
+[[package]]
+name = "berry-em"
+version = "0.2.0"
+dependencies = [
+ "berry-emface",
+]
 
 [[package]]
 name = "berry-emface"
@@ -34,8 +48,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "berry-fwcfgface"
+version = "0.2.0"
+
+[[package]]
 name = "berry-hal-aarch64"
 version = "0.2.0"
+dependencies = [
+ "berry-fwcfgface",
+ "berry-lkface",
+ "berry-psface",
+ "berry-trapface",
+ "berry-wakeface",
+]
 
 [[package]]
 name = "berry-hdlface"
@@ -43,6 +68,10 @@ version = "0.2.0"
 
 [[package]]
 name = "berry-hdrface"
+version = "0.2.0"
+
+[[package]]
+name = "berry-heapface"
 version = "0.2.0"
 
 [[package]]
@@ -68,25 +97,34 @@ dependencies = [
 name = "berry-kernel"
 version = "0.2.0"
 dependencies = [
+ "berry-aokface",
  "berry-chanface",
  "berry-dpgface",
  "berry-dtbface",
  "berry-evface",
  "berry-hal-aarch64",
  "berry-hdlface",
+ "berry-heapface",
  "berry-hofface",
+ "berry-iprofile",
  "berry-itally",
  "berry-memface",
  "berry-mm",
  "berry-piface",
  "berry-polface",
+ "berry-rootface",
  "berry-safeck",
  "berry-sched",
+ "berry-susface",
  "berry-telface",
  "berry-vmoledger",
  "berry-vslotface",
  "berry-wqmatch",
 ]
+
+[[package]]
+name = "berry-lkface"
+version = "0.2.0"
 
 [[package]]
 name = "berry-memface"
@@ -111,7 +149,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "berry-psface"
+version = "0.2.0"
+dependencies = [
+ "berry-psface",
+]
+
+[[package]]
 name = "berry-ringface"
+version = "0.2.0"
+
+[[package]]
+name = "berry-rootface"
 version = "0.2.0"
 
 [[package]]
@@ -126,6 +175,7 @@ name = "berry-sched"
 version = "0.2.0"
 dependencies = [
  "berry-bandface",
+ "berry-em",
  "berry-emface",
  "berry-frzface",
  "berry-hal-aarch64",
@@ -143,7 +193,15 @@ name = "berry-sliceface"
 version = "0.2.0"
 
 [[package]]
+name = "berry-susface"
+version = "0.1.0"
+
+[[package]]
 name = "berry-telface"
+version = "0.2.0"
+
+[[package]]
+name = "berry-trapface"
 version = "0.2.0"
 
 [[package]]
@@ -159,6 +217,10 @@ version = "0.2.0"
 
 [[package]]
 name = "berry-vslotface"
+version = "0.2.0"
+
+[[package]]
+name = "berry-wakeface"
 version = "0.2.0"
 
 [[package]]
