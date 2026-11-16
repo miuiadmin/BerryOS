@@ -248,8 +248,12 @@ struct Srv<'a> {
     present_seq: u32,
     /// token 单调源（1 起；0 = 环槽空哨兵）。
     submit_seq: u32,
-    /// token 环：(frame_token, presented_ns)，覆盖最旧。
-    tokens: [(u32, u64); TOKEN_RING],
+    /// token 环（刀4 P3：呈现回执五元组覆盖最旧——FRAME_CALLBACK 与
+    /// FRAME_TIMING 两查询面共源；`frame_token == 0` = 环槽空哨兵）。
+    tokens: [gp::FrameTimingRep; TOKEN_RING],
+    /// A10 预告锚：最近一次非零 `target_present_ns`（0 = 未见——间隔密
+    /// 集判定只在连续非零目标间做）。
+    last_hint_target_ns: u64,
     /// 在途别名表（credits = len；RELEASE 全量归还清零）。
     held: [(u32, Handle); CREDITS],
     held_n: usize,
@@ -309,7 +313,14 @@ impl<'a> Srv<'a> {
             stride,
             present_seq: 0,
             submit_seq: 0,
-            tokens: [(0, 0); TOKEN_RING],
+            tokens: [gp::FrameTimingRep {
+                frame_token: 0,
+                presented_ns: 0,
+                seq: 0,
+                refresh_ns: 0,
+                flags: 0,
+            }; TOKEN_RING],
+            last_hint_target_ns: 0,
             held: [(0, 0); CREDITS],
             held_n: 0,
             arb,
@@ -548,8 +559,8 @@ impl<'a> Srv<'a> {
         true
     }
 
-    /// present 域分发：六 op；一切拒面 close 随行 handle 后 1B 应答
-    /// （A3-b——send 即 take，不 close 即泄漏）。
+    /// present 域分发：七 op（刀4 起 + FRAME_TIMING）；一切拒面 close 随行
+    /// handle 后 1B 应答（A3-b——send 即 take，不 close 即泄漏）。
     fn handle_present(&mut self, ch: Handle, msg: &[u8], hs: &[Handle]) {
         match gp::parse_present_req(msg) {
             Some(gp::PresentReq::Getinfo) => {
@@ -558,13 +569,14 @@ impl<'a> Srv<'a> {
                     st_rep(ch, gp::ST_BAD);
                     return;
                 }
-                // ver 1/1/2（wire 域版本——非本服务覆盖面；hdi v2 = 刀1
-                // OP_PANEL_CAPS——刷新率体系规范 §4-4）；格式面 v1
+                // ver 2/1/3（wire 域版本——非本服务覆盖面；present v2 =
+                // 刀4 OP_FRAME_TIMING，hdi v3 = 刀1 OP_PANEL_CAPS——刷新率
+                // 体系规范 §4-4）；格式面 v1
                 // 单格式：32bpp RGBX 族（ramfb Bgrx=1，Rgbx 同族）→
                 // FMT_XRGB8888 位——R/B 通道序 v1 wire 不建模（gfxdemo
                 // 同源 Bgrx 构造，直拷零转换）；max_credits = 帽真值。
                 let rep = gp::GetinfoRep {
-                    version_present: 1,
+                    version_present: gp::VER_PRESENT,
                     version_input: 1,
                     version_hdi: gp::VER_HDI,
                     format_bits: gp::FMT_XRGB8888,
@@ -580,12 +592,21 @@ impl<'a> Srv<'a> {
                 surface_id: _,
                 buffer_id,
                 flags,
-                rate_hint: _,
-                target_present_ns: _,
+                rate_hint,
+                target_present_ns,
                 rects,
                 rect_count,
             }) => {
-                self.submit(ch, hs, buffer_id, flags, &rects, rect_count);
+                self.submit(
+                    ch,
+                    hs,
+                    buffer_id,
+                    flags,
+                    rate_hint,
+                    target_present_ns,
+                    &rects,
+                    rect_count,
+                );
             }
             Some(gp::PresentReq::FrameCallback { frame_token }) => {
                 if !hs.is_empty() {
@@ -596,9 +617,9 @@ impl<'a> Srv<'a> {
                 // token 环校验（8 槽覆盖最旧；0 哨兵）；未命中 → ST_NOENT
                 // 1B 烘焙线。
                 let mut hit: Option<u64> = None;
-                for &(t, ns) in &self.tokens {
-                    if t == frame_token && t != 0 {
-                        hit = Some(ns);
+                for rec in &self.tokens {
+                    if rec.frame_token == frame_token && rec.frame_token != 0 {
+                        hit = Some(rec.presented_ns);
                     }
                 }
                 match hit {
@@ -615,6 +636,29 @@ impl<'a> Srv<'a> {
                         };
                         let mut out = [0u8; 16];
                         let n = gp::encode_frame_done_rep(&mut out, &rep);
+                        send_rep(ch, &out[..n]);
+                    }
+                }
+            }
+            Some(gp::PresentReq::FrameTiming { frame_token }) => {
+                if !hs.is_empty() {
+                    close_all(hs);
+                    st_rep(ch, gp::ST_BAD);
+                    return;
+                }
+                // 刀4 P3：非阻塞时序真相查询——token 环共源（与 FRAME_
+                // CALLBACK 同环同哨兵）；未命中 → ST_NOENT 1B（同烘焙线）。
+                let mut hit: Option<gp::FrameTimingRep> = None;
+                for rec in &self.tokens {
+                    if rec.frame_token == frame_token && rec.frame_token != 0 {
+                        hit = Some(*rec);
+                    }
+                }
+                match hit {
+                    None => st_rep(ch, gp::ST_NOENT),
+                    Some(rec) => {
+                        let mut out = [0u8; 28];
+                        let n = gp::encode_frame_timing_rep(&mut out, &rec);
                         send_rep(ch, &out[..n]);
                     }
                 }
@@ -704,6 +748,7 @@ impl<'a> Srv<'a> {
     /// SUBMIT：v1 = **blit-at-SUBMIT**（处理内同步 CPU blit——无 pending
     /// 帧状态机，squash/DISCARDED 死路径留异步后端刀）。
     fn submit(&mut self, ch: Handle, hs: &[Handle], buffer_id: u32, flags: u8,
+              rate_hint: u8, target_present_ns: u64,
               rects: &[gp::Rect; gp::DAMAGE_MAX], rect_count: usize) {
         // 随行恰 1 buffer VMO 别名（rights ⊆ 源集——dup 只紧不松）。
         if hs.len() != 1 {
@@ -813,12 +858,39 @@ impl<'a> Srv<'a> {
         // ③ 记账：谱系抬高 + token 入环 + 别名入 held。
         // 刀3 A7：damage 即活动——停帧破除取证（blit-at-SUBMIT 已同步上
         // 屏，Resume 不自排点——零唤醒基线不破）。
-        let d = self.arb.on_activity(now_ns());
+        let now = now_ns();
+        let d = self.arb.on_activity(now);
+        self.arb_exec(d);
+        // 刀4 A10 预告消费：两域任一指示节拍快于现档 → dense——
+        // - rate_hint（Hz，0 = 无预告）> 当前面板档；
+        // - target_present_ns 连续非零且间隔 ∈ (0, 当前面板周期)。
+        // 周期真值取 panel（在飞切档窗内 = 实际现行节拍）。
+        let cur_hz = self.panel.hz();
+        let dense = (rate_hint != 0 && (rate_hint as u16) > cur_hz)
+            || (target_present_ns != 0
+                && self.last_hint_target_ns != 0
+                && target_present_ns > self.last_hint_target_ns
+                && target_present_ns - self.last_hint_target_ns < self.panel.period_ns());
+        if target_present_ns != 0 {
+            self.last_hint_target_ns = target_present_ns;
+        }
+        let d = self.arb.on_present_hint(now, self.quiet_now(now), dense);
         self.arb_exec(d);
         self.present_seq = self.present_seq.wrapping_add(1);
         self.submit_seq = self.submit_seq.wrapping_add(1);
         let token = self.submit_seq;
-        self.tokens[token as usize % TOKEN_RING] = (token, now_ns());
+        // 刀4 P3 五元组：呈现归属拍 = 下一将拍点全点序（panel.next_seq——
+        // 与 vblank 事件 seq 同域，T6 一号到底）；refresh = 呈现时面板
+        // 周期；flags = PRESENTED 恒置（blit-at-SUBMIT 无弃帧）+ FULL 位。
+        let rec = gp::FrameTimingRep {
+            frame_token: token,
+            presented_ns: now,
+            seq: self.panel.next_seq(),
+            refresh_ns: self.panel.period_ns() as u32,
+            flags: gp::FRAME_TIMING_F_PRESENTED
+                | if full { gp::FRAME_TIMING_F_FULL } else { 0 },
+        };
+        self.tokens[token as usize % TOKEN_RING] = rec;
         self.held[self.held_n] = (buffer_id, hvmo);
         self.held_n += 1;
         // ⑦ 首帧标记：∧ 抽样全过 ∧ console_full_n≥1（FBW ok 回流自身

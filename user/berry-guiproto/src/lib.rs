@@ -76,6 +76,11 @@ pub const OP_POWER_MODE: u8 = 6;
 /// 任何持 present 端的观察者可发：v1 = 客户端输入环，inputd 直连挂
 /// extras 抬帽刀）。add-only：7 前此号空缺。
 pub const OP_INPUT_PULSE: u8 = 7;
+/// present 域：呈现回执查询（刀4 P3——8B 请求携 frame_token，28B 应答
+/// `{frame_token, presented_ns, seq, refresh_ns, flags}`；FRAME_CALLBACK
+/// 16B 定长不动，本 op 是非阻塞的时序真相查询面）。add-only：8 前此号
+/// 空缺（规范 v1.0 原文 0x07 与刀3 INPUT_PULSE 撞号，v1.1 修订）。
+pub const OP_FRAME_TIMING: u8 = 8;
 /// input 域：订阅 + 投递模式声明。
 pub const OP_INPUT_SUBSCRIBE: u8 = 0x20;
 /// input 域：拉事件批（可阻塞：阻塞到至少 1 个完整事件）。
@@ -327,8 +332,9 @@ pub const RESAMPLE_MAX_PREDICTION_MS: u64 = 8;
 
 // ---------- 域版本（per-interface version，v0 全部 = 1）----------
 
-/// present 域版本。
-pub const VER_PRESENT: u8 = 1;
+/// present 域版本（v2 = 刀4 增 OP_FRAME_TIMING 呈现回执查询——刷新率
+/// 体系规范 §7-P3）。
+pub const VER_PRESENT: u8 = 2;
 /// input 域版本。
 pub const VER_INPUT: u8 = 1;
 /// hdi 域版本（v2 = 刀1 增 OP_PANEL_CAPS；v3 = 刀2 增 OP_VBLANK_TIMING
@@ -345,6 +351,9 @@ const SUBMIT_REQ_HEAD: usize = 24;
 const SUBMIT_ACK_LEN: usize = 8;
 /// FRAME_CALLBACK 应答恰长 16B。
 const FRAME_DONE_REP_LEN: usize = 16;
+/// FRAME_TIMING 应答恰长（刀4 P3：`[st][flags][r16][token u32]
+/// [presented_ns u64][seq u64][refresh_ns u32]`）。
+const FRAME_TIMING_REP_LEN: usize = 28;
 /// RELEASE 应答定长头。
 const RELEASE_REP_HEAD: usize = 4;
 /// VOTE 请求恰长 12B。
@@ -681,6 +690,9 @@ pub enum PresentReq {
     /// INPUT_PULSE：输入活动脉冲（刀3 A6——无参，ST_OK 应答；触发仲裁器
     /// boost 窗，非投票面）。
     InputPulse,
+    /// FRAME_TIMING：呈现回执查询（刀4 P3——8B 请求携 frame_token；命中
+    /// → 28B 回执，未命中 → 1B ST_NOENT；非阻塞）。
+    FrameTiming { frame_token: u32 },
 }
 
 /// 编码 present 域请求（None 契约：rect_count 越帽 / flags·scene·mode·
@@ -792,10 +804,19 @@ pub fn encode_present_req(out: &mut [u8], req: &PresentReq) -> Option<usize> {
             m[3] = 0;
             Some(4)
         }
+        PresentReq::FrameTiming { frame_token } => {
+            let m = out.get_mut(..8)?;
+            m[0] = OP_FRAME_TIMING;
+            m[1] = 0;
+            m[2] = 0;
+            m[3] = 0;
+            m[4..8].copy_from_slice(&frame_token.to_le_bytes());
+            Some(8)
+        }
     }
 }
 
-/// 解析 present 域请求：六 op 各自恰长执法（截断/尾随 = 野值拒）；rect
+/// 解析 present 域请求：七 op 各自恰长执法（截断/尾随 = 野值拒）；rect
 /// 数由帧长推导（越帽拒）/ flags·scene·mode·sticky 值域对称拒；保留位
 /// （off 1/2/3 等）恒不校验。
 pub fn parse_present_req(buf: &[u8]) -> Option<PresentReq> {
@@ -885,6 +906,14 @@ pub fn parse_present_req(buf: &[u8]) -> Option<PresentReq> {
                 return None;
             }
             Some(PresentReq::InputPulse)
+        }
+        OP_FRAME_TIMING => {
+            if buf.len() != 8 {
+                return None;
+            }
+            Some(PresentReq::FrameTiming {
+                frame_token: le32(buf, 4)?,
+            })
         }
         _ => None,
     }
@@ -1013,6 +1042,62 @@ pub fn parse_frame_done_rep(buf: &[u8]) -> Option<FrameDoneRep> {
         credits,
         present_seq: le32(buf, 4)?,
         presented_ns: le64(buf, 8)?,
+    })
+}
+
+/// FRAME_TIMING 应答（刀4 P3 呈现回执——非阻塞时序真相查询；一次消费
+/// 面可反复查直至 token 被环覆盖）。`seq` = 呈现归属拍的全点序（软面板
+/// vblank 谱系——与 OP_VBLANK_TIMING 事件 seq 同域，T6 一号到底）；未
+/// 启动拍点的停帧窗内 = 下一将拍点的序号（预告语义归属拍）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameTimingRep {
+    pub frame_token: u32,
+    /// 呈现时刻（guest 钟单源——P4 断言锚）。
+    pub presented_ns: u64,
+    /// 呈现归属拍全点序（vblank 事件 seq 同域）。
+    pub seq: u64,
+    /// 呈现时面板周期（ns）。
+    pub refresh_ns: u32,
+    /// FRAME_TIMING_F_* 位或。
+    pub flags: u8,
+}
+
+/// FRAME_TIMING_F_PRESENTED：本帧已呈现（v1 blit-at-SUBMIT 恒置——
+/// 无弃帧路径；DISCARDED 语义随 v2 异步呈现刀落）。
+pub const FRAME_TIMING_F_PRESENTED: u8 = 0x01;
+/// FRAME_TIMING_F_FULL：damage = FULL（全帧重绘 vs 局部 rect 集）。
+pub const FRAME_TIMING_F_FULL: u8 = 0x02;
+
+/// 编码 FRAME_TIMING 应答（恰 28B：`[st=0][flags][r16][frame_token u32]
+/// [presented_ns u64][seq u64][refresh_ns u32]`；buf 不足 / flags 野位 =
+/// 调用方错，assert）。
+pub fn encode_frame_timing_rep(out: &mut [u8], rep: &FrameTimingRep) -> usize {
+    assert!(out.len() >= FRAME_TIMING_REP_LEN, "guiproto: frame timing buf 不足");
+    assert!(rep.flags & !(FRAME_TIMING_F_PRESENTED | FRAME_TIMING_F_FULL) == 0,
+        "guiproto: 野 frame timing flags");
+    out[0] = ST_OK;
+    out[1] = rep.flags;
+    out[2] = 0;
+    out[3] = 0;
+    out[4..8].copy_from_slice(&rep.frame_token.to_le_bytes());
+    out[8..16].copy_from_slice(&rep.presented_ns.to_le_bytes());
+    out[16..24].copy_from_slice(&rep.seq.to_le_bytes());
+    out[24..28].copy_from_slice(&rep.refresh_ns.to_le_bytes());
+    FRAME_TIMING_REP_LEN
+}
+
+/// 解析 FRAME_TIMING 应答：恰 28B + st=ST_OK；flags 未知位前向兼容不拒
+/// （v2 加位不改旧读端——FMT 位域先例）。
+pub fn parse_frame_timing_rep(buf: &[u8]) -> Option<FrameTimingRep> {
+    if buf.len() != FRAME_TIMING_REP_LEN || buf[0] != ST_OK {
+        return None;
+    }
+    Some(FrameTimingRep {
+        frame_token: le32(buf, 4)?,
+        presented_ns: le64(buf, 8)?,
+        seq: le64(buf, 16)?,
+        refresh_ns: le32(buf, 24)?,
+        flags: buf[1],
     })
 }
 
@@ -1826,6 +1911,13 @@ pub mod softpanel {
             self.period_ns
         }
 
+        /// 下一将拍点的全点序（呈现归属拍查询——刀4 P3 回执 seq 源：本帧
+        /// 落在当前拍间隙 → 归属下一拍 = `seq + 1`；与 on_point 产出的
+        /// 事件 seq 同域，T6 一号到底）。
+        pub fn next_seq(&self) -> u64 {
+            self.seq + 1
+        }
+
         pub fn mode(&self) -> u8 {
             self.cfg.mode
         }
@@ -2015,6 +2107,9 @@ pub mod arbiter {
         Event,
         /// A6 脉冲起臂（立即升——绕过 streak，规范「立即」）。
         BoostArm,
+        /// A10 预告升档（密集预告 ∧ 票非背景类——立即升，绕 streak，
+        /// 消「升档迟一帧」；目标仍走 target() 链，src 不新设）。
+        Hint,
     }
 
     /// 仲裁器纯核。
@@ -2103,6 +2198,31 @@ pub mod arbiter {
             self.stopped = false;
             self.boost_until = now + T_TOUCH_BOOST_NS;
             self.evaluate(now, quiet, Kind::BoostArm)
+        }
+
+        /// A10：呈现预告（SUBMIT `rate_hint`/`target_present_ns` 的
+        /// notifyExpectedPresent 面）——预告密集 ∧ 票 Intent 非背景类 →
+        /// 升档决策立即完成（Kind::Hint 绕 streak，消「升档迟一帧」）。
+        /// 密集判定归调用方（两域任一指示节拍快于现档）。资格 = 偏好承载
+        /// 三档（LatencyCritical/Interactive/Utility——§6.2 偏好档 > 30 的
+        /// 非背景类；Maintenance/Background/Unspecified 无高帧偏好，预告
+        /// 不构成升档意图，且过门会经 evaluate 起降档驻留锚——预告面禁
+        /// 降档副作用，结构排除）。不合格 → Stay（零裁决副作用——damage
+        /// 活动面归 [`Arbiter::on_activity`]，停帧资格不因预告翻转）；
+        /// 资格三档结构性排除停帧路（A7 资格 = 无票 ∨ 背景类），evaluate
+        /// 的 StopFrame 分支不可达。
+        pub fn on_present_hint(&mut self, now: u64, quiet: bool, dense: bool) -> Decision {
+            let qualifying = dense
+                && match self.ballot {
+                    Some(b) => {
+                        b.intent == I_LATENCY || b.intent == I_INTERACTIVE || b.intent == I_UTILITY
+                    }
+                    None => false,
+                };
+            if !qualifying {
+                return Decision::Stay;
+            }
+            self.evaluate(now, quiet, Kind::Hint)
         }
 
         /// A7：活动破除（damage / armed / parked——停帧→恢复；运行期活动
@@ -2204,7 +2324,7 @@ pub mod arbiter {
                     self.up_streak = 0;
                 }
                 match kind {
-                    Kind::BoostArm => return self.commit(target, src),
+                    Kind::BoostArm | Kind::Hint => return self.commit(target, src),
                     Kind::Tick => self.up_streak += 1,
                     Kind::Time | Kind::Event => {}
                 }
@@ -2953,8 +3073,9 @@ mod tests {
         assert_eq!(RESAMPLE_MIN_DELTA_MS, 2);
         assert_eq!(RESAMPLE_MAX_DELTA_MS, 20);
         assert_eq!(RESAMPLE_MAX_PREDICTION_MS, 8);
-        // 域版本钉板（hdi v3 = 刀2 OP_VBLANK_TIMING + PANEL_CAPS v2 stage）。
-        assert_eq!((VER_PRESENT, VER_INPUT, VER_HDI), (1, 1, 3));
+        // 域版本钉板（hdi v3 = 刀2 OP_VBLANK_TIMING + PANEL_CAPS v2 stage；
+        // present v2 = 刀4 OP_FRAME_TIMING）。
+        assert_eq!((VER_PRESENT, VER_INPUT, VER_HDI), (2, 1, 3));
         // wm 域帽钉板（GUI-5 §7 Q5——wm const assert 的可见镜像）。
         assert_eq!(WM_WINDOWS_MAX, 15);
         assert_eq!(WM_REQ_MAX, 20);
@@ -3132,7 +3253,7 @@ mod tests {
         let mut fl = buf;
         fl[12] = 0x80;
         assert_eq!(parse_present_req(&fl[..n]), None);
-        // 未知 op（0x1F——远离 present 1..=7 与 input 0x20+ 两域分配）。
+        // 未知 op（0x1F——远离 present 1..=8 与 input 0x20+ 两域分配）。
         assert_eq!(parse_present_req(&[0x1F, 0, 0, 0]), None);
         assert_eq!(parse_present_req(&[]), None);
     }
@@ -3185,6 +3306,83 @@ mod tests {
         let mut cr = buf;
         cr[2] = CREDITS_MAX + 1;
         assert_eq!(parse_frame_done_rep(&cr), None);
+    }
+
+    #[test]
+    fn frame_timing_wire_roundtrip_golden_and_rejects() {
+        // 0x08 8B 请求面（与 FRAME_CALLBACK 同形）。
+        assert_eq!(OP_FRAME_TIMING, 8);
+        assert_eq!(VER_PRESENT, 2, "present 域 v2 = 刀4 OP_FRAME_TIMING");
+        let mut buf = [0u8; 8];
+        let n = encode_present_req(&mut buf, &PresentReq::FrameTiming { frame_token: 7 }).unwrap();
+        assert_eq!(n, 8);
+        assert_eq!(&buf[..8], &[OP_FRAME_TIMING, 0, 0, 0, 7, 0, 0, 0]);
+        assert_eq!(parse_present_req(&buf[..8]), Some(PresentReq::FrameTiming { frame_token: 7 }));
+        assert_eq!(parse_present_req(&buf[..7]), None, "截断拒");
+        let mut trail = [0u8; 9];
+        trail[..8].copy_from_slice(&buf);
+        assert_eq!(parse_present_req(&trail), None, "尾随拒");
+        assert_eq!(encode_present_req(&mut buf[..7], &PresentReq::FrameTiming { frame_token: 7 }), None);
+        // 28B 应答黄金字节钉板：`[st=0][flags][r16][token][presented][seq]
+        // [refresh]`——LE 低位在前。
+        let rep = FrameTimingRep {
+            frame_token: 0xA1B2_C3D4,
+            presented_ns: 0x1122_3344_5566_7788,
+            seq: 0xFEDC_BA98_7654_3210,
+            refresh_ns: 8_333_333,
+            flags: FRAME_TIMING_F_PRESENTED | FRAME_TIMING_F_FULL,
+        };
+        let mut out = [0u8; 28];
+        let n = encode_frame_timing_rep(&mut out, &rep);
+        assert_eq!(n, 28);
+        let want: [u8; 28] = [
+            0, 0x03, 0, 0, //
+            0xD4, 0xC3, 0xB2, 0xA1, //
+            0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, //
+            0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE, //
+            0x15, 0x28, 0x7F, 0x00,
+        ];
+        assert_eq!(&out[..n], &want[..]);
+        assert_eq!(parse_frame_timing_rep(&out[..n]), Some(rep));
+        // 顶格值 + flags=0 合法（无位集——保留给 DISCARDED 语义刀）。
+        let rep2 = FrameTimingRep {
+            frame_token: u32::MAX,
+            presented_ns: u64::MAX,
+            seq: u64::MAX,
+            refresh_ns: u32::MAX,
+            flags: 0,
+        };
+        encode_frame_timing_rep(&mut out, &rep2);
+        assert_eq!(parse_frame_timing_rep(&out[..28]), Some(rep2));
+        // 截断每切点 / 尾随 / st 坏 / encode 野 flags 位 assert 面。
+        encode_frame_timing_rep(&mut out, &rep);
+        for cut in 0..28 {
+            assert_eq!(parse_frame_timing_rep(&out[..cut]), None, "截断 @{cut} 应拒");
+        }
+        let mut t = [0u8; 29];
+        t[..28].copy_from_slice(&out);
+        assert_eq!(parse_frame_timing_rep(&t), None); // 29B 拒
+        let mut bad = out;
+        bad[0] = ST_BAD;
+        assert_eq!(parse_frame_timing_rep(&bad), None);
+        // 未知 flags 位：parse 前向兼容不拒（v2 加位不改旧读端）。
+        let mut fut = out;
+        fut[1] = 0x80;
+        assert_eq!(parse_frame_timing_rep(&fut).map(|r| r.flags), Some(0x80));
+    }
+
+    #[test]
+    #[should_panic(expected = "guiproto")]
+    fn frame_timing_encode_wild_flags_panics() {
+        let rep = FrameTimingRep {
+            frame_token: 1,
+            presented_ns: 2,
+            seq: 3,
+            refresh_ns: 4,
+            flags: 0x80,
+        };
+        let mut sink = [0u8; 28];
+        let _ = encode_frame_timing_rep(&mut sink, &rep);
     }
 
     #[test]
@@ -4874,7 +5072,7 @@ mod tests {
         assert_eq!(&buf[..4], &[OP_INPUT_PULSE, 0, 0, 0]);
         assert_eq!(parse_present_req(&buf[..4]), Some(PresentReq::InputPulse));
         assert_eq!(parse_present_req(&buf[..5]), None, "尾随字节拒");
-        assert_eq!(parse_present_req(&[0x08, 0, 0, 0]), None, "op 错位拒");
+        assert_eq!(parse_present_req(&[0x09, 0, 0, 0]), None, "未知 op 拒（0x08 已被刀4 FRAME_TIMING 占用）");
         // out 不足 None（无参面同款 None 契约）。
         assert_eq!(encode_present_req(&mut buf[..3], &PresentReq::InputPulse), None);
     }
@@ -5185,6 +5383,85 @@ mod tests {
         let mut s = ar_boot(60);
         assert_eq!(s.on_tick(0, true), Decision::StopFrame);
         assert_eq!(s.on_input_pulse(T, false), Decision::Switch { hz: 120, src: Src::Boost });
+    }
+
+    #[test]
+    fn arb_a10_hint_dense_upshift() {
+        // 正面①「不迟一帧」：Interactive pref=120 票 + 当前 60（票落账零拍
+        // 未升——Event 不积 streak）→ 密集预告 → 单发即切 120（对照路：无
+        // 预告须 2 拍 streak——arb_a5_up_two_tick_streak 钉板）。
+        let mut a = ar_boot(60);
+        a.on_vote(0, false, bal(Intent::Interactive as u8, 0, 0, 120));
+        assert_eq!(
+            a.on_present_hint(T, false, true),
+            Decision::Switch { hz: 120, src: Src::Vote },
+            "密集预告立即升——绕 streak"
+        );
+        assert_eq!(a.hz(), 120);
+        // 资格三档矩阵：LatencyCritical / Interactive / Utility 均享快路。
+        for intent in [Intent::LatencyCritical, Intent::Interactive, Intent::Utility] {
+            let mut q = ar_boot(60);
+            q.on_vote(0, false, bal(intent as u8, 0, 0, 120));
+            assert_eq!(
+                q.on_present_hint(T, false, true),
+                Decision::Switch { hz: 120, src: Src::Vote },
+                "{intent:?} 快路"
+            );
+        }
+        // 负面①：非密集 → Stay 且 streak 面零污染（后续正常 2 拍路完好）。
+        let mut n = ar_boot(60);
+        n.on_vote(0, false, bal(Intent::Interactive as u8, 0, 0, 120));
+        assert_eq!(n.on_tick(T, false), Decision::Stay, "streak 1");
+        assert_eq!(n.on_present_hint(T + 5_000_000, false, false), Decision::Stay);
+        assert_eq!(n.on_tick(2 * T, false), Decision::Switch { hz: 120, src: Src::Vote });
+        // 负面②：背景类/无高帧偏好 Intent（Background/Unspecified/
+        // Maintenance）密集预告 → Stay。
+        for intent in [Intent::Background, Intent::Unspecified, Intent::Maintenance] {
+            let mut b = ar_boot(60);
+            b.on_vote(0, false, bal(intent as u8, 0, 0, 120));
+            assert_eq!(b.on_present_hint(T, false, true), Decision::Stay, "{intent:?} 不入快路");
+        }
+        // 负面③：无票密集预告 → Stay（A10 要偏好承载票——无票走 A11
+        // 平台档，预告不构成偏好）。
+        let mut nv = ar_boot(60);
+        assert_eq!(nv.on_present_hint(T, false, true), Decision::Stay);
+        // 动机例（规范 A10）：30Hz 降探后首帧压界——Maintenance 驻留降
+        // 30 → 换 Interactive 120 票（Event 不升）→ 密集预告立即升。
+        let mut m = ar_boot(60);
+        m.on_vote(0, false, bal(Intent::Maintenance as u8, 0, 0, 0));
+        assert_eq!(m.on_time(T_DOWN_DWELL_NS, false), Decision::Switch { hz: 30, src: Src::Dwell });
+        m.on_vote(1_100_000_000, false, bal(Intent::Interactive as u8, 0, 0, 120));
+        assert_eq!(
+            m.on_present_hint(1_100_000_000, false, true),
+            Decision::Switch { hz: 120, src: Src::Vote },
+            "降探后首帧预告即升——消迟一帧"
+        );
+        // 负面④：预告禁降档快路（target < cur 仍走驻留——Maintenance 票
+        // 密集预告不提前降）。
+        let mut d = ar_boot(120);
+        d.on_vote(0, false, bal(Intent::Maintenance as u8, 0, 0, 0)); // down(30, 0)
+        assert_eq!(d.on_present_hint(T, false, true), Decision::Stay, "降目标仍走驻留");
+        assert_eq!(
+            d.on_time(T + T_DOWN_DWELL_NS, false),
+            Decision::Switch { hz: 30, src: Src::Dwell }
+        );
+        // 负面⑤：G 帽量化后 == cur → Stay（Tiered max=90 → 120 量化 60）。
+        let mut g = ar_boot(60);
+        g.on_vote(0, false, bal(Intent::Interactive as u8, 0, 90, 120));
+        assert_eq!(g.on_present_hint(T, false, true), Decision::Stay, "90 帽内无档可升");
+        // DIM ∧ 预告：目标走 Dim 链携 Dim 源（boot 30 + Interactive 120 →
+        // dim 60 > 30 = 升路）。
+        let mut dm = ar_boot(30);
+        dm.on_vote(0, false, bal(Intent::Interactive as u8, 0, 0, 120));
+        dm.on_power_mode(0, false, POWER_DIM);
+        assert_eq!(dm.on_present_hint(T, false, true), Decision::Switch { hz: 60, src: Src::Dim });
+        // boost 窗内预告：目标已 Boost 面——Hint 直commit 不改写源。
+        let mut b = ar_boot(60);
+        b.on_input_pulse(0, false); // boost 120 到位
+        let mut v = ar_boot(60);
+        v.on_vote(0, false, bal(Intent::Utility as u8, 0, 0, 120));
+        assert_eq!(v.on_input_pulse(0, false), Decision::Switch { hz: 120, src: Src::Boost });
+        assert_eq!(v.on_present_hint(T, false, true), Decision::Stay, "boost 120 == 票目标——维持");
     }
 
     #[test]

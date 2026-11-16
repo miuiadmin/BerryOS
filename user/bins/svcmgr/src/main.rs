@@ -901,7 +901,11 @@ fn run_rootfs_child(console: Handle) {
                     data_off,
                     data_len,
                     stdout: console,
-                    stack_pages: 8,
+                    // 刀4 k4 统计面（T3/T6 双 101 帧对拍数组）把 main 帧推过
+                    // 8 页帽——guest 冒烟 EXCEPTION D-abort 实抓（写落保护页，
+                    // SP 低于栈底 0x150）；d-3c hexyl 同口径抬页（bsh/ps 同档
+                    // 16）。帧内大数组留栈走此路，不动 gfxdemo 源。
+                    stack_pages: 16,
                     stdin_feed: Some(&[]),
                     stdin_handle: None,
                     args: &[],
@@ -912,7 +916,10 @@ fn run_rootfs_child(console: Handle) {
                 },
             ) {
                 Ok(child) => {
-                    match child.reap() {
+                    // k4 统计段（101 拍点网格采样 + 17 帧回执链）在 TCG+宿主
+                    // 争用下墙钟可数倍于常规 30s 帽（run3/4 实证 60s+ 量级）
+                    // ——per-arm 抬帽 120s，其余 arm 零扰动。
+                    match child.reap_with_timeout(120 * 1_000_000_000) {
                         // 零码零新行——GFX ok 归 gfxdemo 自打（stdhello 的
                         // EXIT ok 同位，本 arm 无自证标记面）。
                         Ok(0) => {}
@@ -5143,7 +5150,8 @@ fn launcher_assemble(console: Handle, fs_gift: Handle) -> bool {
             // 64 页 = 256KB（R5 实测定值——段③ 首验仪器定谳：8 页 32KB 下
             // main+0x1c 序言即穿保护页 D-abort——`UiMain::new` 构造中间体
             // LTO 后仍部分落栈 ~29KB + pre-main std 运行时；帧循环另有
-            // CommandEncoder 18KB/帧（gfxdemo 8 页先例无 berry-ui 链）。
+            // CommandEncoder 18KB/帧（gfxdemo 16 页先例无 berry-ui 链——刀4
+            // k4 统计面自 8 抬，见上方 gfxdemo arm 注）。
             // bsh 32 页先例之上；manifest 域检 1..=64 顶格）。
             stack_pages: 64,
             // 占位 dummy（空 feeder 立即 EOF；berry-exec assert：extras 非

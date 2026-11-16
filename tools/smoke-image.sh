@@ -250,7 +250,14 @@ KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL o
 # 无 \n 可与上帧 art 行尾残字拼成 `veco: …`——grep 用无前缀子串）不进
 # canon。裸 grep -qF 足够——"LAUNCH ok"/"PAGE ok n="
 # 与现役 34 枚互非子串（LAUNCH/PAGE 词头独有）。
-ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=" "APPUI ok n=" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok" "TAB ok" "INT ok" "POLL ok" "PS ok n=" "BC ok" "THR ok" "DPGP ok" "DPGS ok n=4" "DPGN ok n=4" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "FBW ok" "FBSERVE ok" "GFX ok" "GFXF ok n=" "WM ok" "LAUNCH ok" "PAGE ok n=" "CBOX ok n=")
+# 刀4 起 +4（刷新率体系刀4——A10 预告快路 / T3 拍点误差 / T6 seq 贯穿 /
+# 遥测第一个读者）：`gfx: k4a hz=`（hint 2 拍生效判别——guest 断言内嵌
+# 失败即 fail loud 不打本行）、`gfx: k4t p99=`（TCG 2ms 门内值行）、
+# `gfx: k4s n=`（T6 全帧 seq 对拍计数）、`launcher: telem f=`（berry-ui
+# 遥测快照行——P3 回执消费第一个读者到席；先于 LAUNCH ok 同块打）。
+# 四枚小写 `gfx: k4`/`launcher: telem` 词头独有，与现役标记（含大写
+# GFX/GFXF/LAUNCH 族）互非子串。
+ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=" "APPUI ok n=" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok" "TAB ok" "INT ok" "POLL ok" "PS ok n=" "BC ok" "THR ok" "DPGP ok" "DPGS ok n=4" "DPGN ok n=4" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "FBW ok" "FBSERVE ok" "GFX ok" "GFXF ok n=" "WM ok" "LAUNCH ok" "PAGE ok n=" "CBOX ok n=" "gfx: k4a hz=" "gfx: k4t p99=" "gfx: k4s n=" "launcher: telem f=")
 
 LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")
 RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")

@@ -221,6 +221,20 @@ fn vb_point(hw: Handle) -> u64 {
     }
 }
 
+/// OP_VBLANK_TIMING 单趟——拍点三元组（seq/ts_ns/refresh_ns；刀2 事件面
+/// 24B 形）。k4t 拍点网格采样用（ts_ns = 标称点时刻——网格相位统计锚）。
+fn vb_timing_point(hw: Handle) -> (u64, u64, u32) {
+    let mut req = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let m = gp::encode_vblank_timing_req(&mut req);
+    let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+    match gp::parse_vblank_timing_rep(&rep[..n]) {
+        Some(v) => (v.seq, v.ts_ns, v.refresh_ns),
+        None => fail(&format!("vblank timing rep bad st={}", rep[0])),
+    }
+}
+
 /// 单调窗睡眠：永不置位的 event 上 wait 到点 = 纯超时睡眠（A5 驻留窗
 /// 计时——输入通道不用，严格串行 RPC 面不沾通道信号语义）。
 fn sleep_ns(ns: u64) {
@@ -695,6 +709,232 @@ fn main() {
         },
     ));
     expect_ok(hw, &req[..m], &[], &mut rep, &mut rhs, "vote neutral 2");
+
+    // —— 刀4 两段：A10 预告升档「不迟一帧」+ T3/T6 拍点误差与 seq 贯穿。
+    // 前态：panel 120（(d) 升档到位）、票已回中性。
+    // (e) A10 动机例（30Hz 降探后首帧压界）：Maintenance 票驻留降 30 →
+    // 换 Interactive 120 票（Event 不积 streak——正常路须再等 2 拍）→
+    // 单发 SUBMIT 携 rate_hint=120（密集预告）→ 服务端 hint 即 commit
+    //（`PANELARB sw hz=120 src=vote`）→ **恰 2 拍**（生效窗）后 caps==120。
+    // 判别性：若无预告快路，commit 落第 2 拍 streak → 生效须第 4 拍——
+    // 2 拍即 120 = 快路独有（对照路 host 单测 arb_a10_hint_dense_upshift
+    // 钉板）。
+    let m = enc_req(gp::encode_present_req(
+        &mut req,
+        &gp::PresentReq::Vote {
+            sticky: 0,
+            scene: gp::Intent::Maintenance as u8,
+            min_hz: 0,
+            max_hz: 0,
+            preferred_hz: 30,
+        },
+    ));
+    expect_ok(hw, &req[..m], &[], &mut rep, &mut rhs, "vote maintenance 2");
+    sleep_ns(1_500_000_000);
+    let _ = vb_point(hw);
+    let _ = vb_point(hw);
+    let _ = vb_point(hw);
+    let hz4 = caps_cur_hz(hw);
+    if hz4 != 30 {
+        fail(&format!("k4 pre hz={hz4} expect=30"));
+    }
+    let m = enc_req(gp::encode_present_req(
+        &mut req,
+        &gp::PresentReq::Vote {
+            sticky: 0,
+            scene: gp::Intent::Interactive as u8,
+            min_hz: 0,
+            max_hz: 120,
+            preferred_hz: 120,
+        },
+    ));
+    expect_ok(hw, &req[..m], &[], &mut rep, &mut rhs, "vote up hint");
+    // 预告帧：FULL damage + rate_hint=120（密集 = 快于现档 30）。vote 与
+    // submit 之间零拍点（30Hz 拍距 33ms ≫ RPC 对时——streak 面零污染）。
+    let mut alias_h: Handle = 0;
+    if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias_h) != 0 || alias_h == 0 {
+        fail("dup alias hint");
+    }
+    let hreq = gp::PresentReq::Submit {
+        surface_id: 0,
+        buffer_id: 1,
+        flags: gp::SUBMIT_F_DAMAGE_FULL,
+        rate_hint: 120,
+        target_present_ns: 0,
+        rects: [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX],
+        rect_count: 0,
+    };
+    let m = enc_req(gp::encode_present_req(&mut req, &hreq));
+    let (n, _) = rpc(hw, &req[..m], &[alias_h], &mut rep, &mut rhs);
+    if gp::parse_submit_ack(&rep[..n]).is_none() {
+        fail(&format!("hint submit bad st={}", rep[0]));
+    }
+    let m = enc_req(gp::encode_present_req(&mut req, &gp::PresentReq::ReleaseWait));
+    let (n, nh) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+    if gp::parse_release_rep(&rep[..n]).map(|r| r.count) != Some(nh) || nh < 1 {
+        fail("hint release bad");
+    }
+    for h in &rhs[..nh] {
+        close_h(*h);
+    }
+    let _ = vb_point(hw);
+    let _ = vb_point(hw);
+    let hz5 = caps_cur_hz(hw);
+    if hz5 != 120 {
+        fail(&format!("k4a hz={hz5} expect=120（2 拍生效 = 预告快路；streak 路此拍仍 30）"));
+    }
+    println!("gfx: k4a hz={hz5}");
+
+    // (f) T3 拍点相位门 + T6 回执链门 @60Hz：Utility 票驻留降 60 后两段。
+    // 设计实证（run3/4 取证改设计——原 101 帧 submit 驱动 p99 量的是 wmd
+    // 中继 RPC 链节拍非拍点网格：P1 blit-at-SUBMIT 下 presented_ns = 提交
+    // 瞬间，每帧 5 RPC × TCG+宿主争用 ≈ 0.2-1.4s/帧）：
+    // - T3 改量拍点网格本身——连 park VBLANK_TIMING 取三元组，相位残差
+    //   p99 = |Δts − round(Δts/period)·period|（miss 点不污染统计、只计数
+    //   另报：粗钟漏拍证据行归刀5 hrtimer 对拍面，不入门）；FREE 追赶态
+    //   名义网格在案（tick_vsync：迟到醒跳过已过点不耗相位）；
+    // - T6 改括号对拍——帧回执 seq ∈ (本帧前拍, 下帧前拍]：cadence 无关
+    //   的结构贯穿断言（一号到底），容 1 离群。
+    let m = enc_req(gp::encode_present_req(
+        &mut req,
+        &gp::PresentReq::Vote {
+            sticky: 0,
+            scene: gp::Intent::Utility as u8,
+            min_hz: 0,
+            max_hz: 0,
+            preferred_hz: 60,
+        },
+    ));
+    expect_ok(hw, &req[..m], &[], &mut rep, &mut rhs, "vote utility 60");
+    sleep_ns(1_500_000_000);
+    let _ = vb_point(hw);
+    let _ = vb_point(hw);
+    let _ = vb_point(hw);
+    let hz6 = caps_cur_hz(hw);
+    if hz6 != 60 {
+        fail(&format!("k4t pre hz={hz6} expect=60"));
+    }
+    // —— T3 网格段：101 连 park，相位残差 p99 ≤ 2ms（TCG 档——§10-T3）。
+    const K4G: usize = 101;
+    let mut gts = [0u64; K4G];
+    let mut gseq = [0u64; K4G];
+    let mut gperiod = 0u64;
+    for i in 0..K4G {
+        let (sq, ts, rf) = vb_timing_point(hw);
+        if rf as u64 != 16_666_667 {
+            fail(&format!("k4t grid refresh={rf} expect 60Hz"));
+        }
+        gperiod = rf as u64;
+        gseq[i] = sq;
+        gts[i] = ts;
+    }
+    if gseq[K4G - 1] <= gseq[0] {
+        fail("k4t grid seq not advancing");
+    }
+    let mut aerr = [0u64; K4G - 1];
+    let mut miss: u64 = 0;
+    for i in 0..aerr.len() {
+        let d = gts[i + 1] - gts[i];
+        let k = ((d + gperiod / 2) / gperiod).max(1);
+        miss += k - 1;
+        let resid = (d as i64) - (k as i64) * (gperiod as i64);
+        aerr[i] = resid.unsigned_abs();
+    }
+    for i in 1..aerr.len() {
+        let mut j = i;
+        while j > 0 && aerr[j - 1] > aerr[j] {
+            aerr.swap(j - 1, j);
+            j -= 1;
+        }
+    }
+    let rank = (99 * aerr.len() + 99) / 100; // nearest-rank p99（n=100 → 99 位）
+    let p99 = aerr[rank - 1];
+    if p99 > 2_000_000 {
+        fail(&format!("k4t p99={}ns > 2ms（TCG 档）", p99));
+    }
+    println!("gfx: k4t p99={}ns miss={} n={}", p99, miss, K4G - 1);
+    // —— T6 回执链段：17 帧 submit→回执，括号 seq 贯穿 + flags/refresh 恒真。
+    const K4M: usize = 17;
+    let mut rec_seq = [0u64; K4M];
+    let mut parks = [0u64; K4M + 1];
+    let mut flags_bad = 0usize;
+    for i in 0..K4M {
+        parks[i] = vb_point(hw);
+        let mut alias_i: Handle = 0;
+        if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias_i) != 0 || alias_i == 0 {
+            fail("dup alias loop");
+        }
+        let sreq = gp::PresentReq::Submit {
+            surface_id: 0,
+            buffer_id: 1,
+            flags: gp::SUBMIT_F_DAMAGE_FULL,
+            rate_hint: 0,
+            target_present_ns: 0,
+            rects: [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX],
+            rect_count: 0,
+        };
+        let m = enc_req(gp::encode_present_req(&mut req, &sreq));
+        let (n, _) = rpc(hw, &req[..m], &[alias_i], &mut rep, &mut rhs);
+        let token = match gp::parse_submit_ack(&rep[..n]) {
+            Some(t) => t,
+            None => fail(&format!("loop submit bad st={}", rep[0])),
+        };
+        // P3 回执查询（非阻塞真相面；在途 ≤1 ∧ 环 8 深 → 命中结构性保证）。
+        let m = enc_req(gp::encode_present_req(
+            &mut req,
+            &gp::PresentReq::FrameTiming { frame_token: token },
+        ));
+        let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+        let rec = match gp::parse_frame_timing_rep(&rep[..n]) {
+            Some(r) => r,
+            None => fail(&format!("frame timing bad st={}", rep[0])),
+        };
+        if rec.frame_token != token {
+            fail(&format!("timing token={} want={}", rec.frame_token, token));
+        }
+        if rec.flags != gp::FRAME_TIMING_F_PRESENTED | gp::FRAME_TIMING_F_FULL {
+            flags_bad += 1;
+        }
+        if rec.refresh_ns != 16_666_667 {
+            fail(&format!("k4s refresh={} expect 60Hz", rec.refresh_ns));
+        }
+        rec_seq[i] = rec.seq;
+        let m = enc_req(gp::encode_present_req(&mut req, &gp::PresentReq::ReleaseWait));
+        let (n, nh) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+        if gp::parse_release_rep(&rep[..n]).map(|r| r.count) != Some(nh) || nh < 1 {
+            fail("loop release bad");
+        }
+        for h in &rhs[..nh] {
+            close_h(*h);
+        }
+    }
+    parks[K4M] = vb_point(hw);
+    let mut t6_bad = 0usize;
+    for i in 0..K4M {
+        if rec_seq[i] <= parks[i] || rec_seq[i] > parks[i + 1] {
+            t6_bad += 1;
+        }
+    }
+    if flags_bad != 0 {
+        fail(&format!("k4s flags_bad={}", flags_bad));
+    }
+    if t6_bad > 1 {
+        fail(&format!("t6 bad={} > 1（seq 括号贯穿破坏面超离群容忍）", t6_bad));
+    }
+    println!("gfx: k4s n={} bad={}", K4M, t6_bad);
+    // 收尾回中性票（Unspecified——尾部 PREPARE/COMMIT 仪式与后续 demo 语义
+    // 与 (d) 收尾同款）。
+    let m = enc_req(gp::encode_present_req(
+        &mut req,
+        &gp::PresentReq::Vote {
+            sticky: 0,
+            scene: gp::Intent::Unspecified as u8,
+            min_hz: 0,
+            max_hz: 0,
+            preferred_hz: 0,
+        },
+    ));
+    expect_ok(hw, &req[..m], &[], &mut rep, &mut rhs, "vote neutral 3");
 
     let mut alias2: Handle = 0;
     if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias2) != 0 || alias2 == 0 {

@@ -1579,6 +1579,26 @@ impl<const N: usize> Ui<N> {
         self.credits.on_presented(credits_remaining);
     }
 
+    pub fn note_frame_timing(
+        &mut self,
+        seq: u32,
+        presented_ns: u64,
+        refresh_ns: u32,
+        status: u8,
+        credits_remaining: u8,
+    ) {
+        // P3 呈现回执消费（刀4——遥测第一个读者）：回执周期 = 呈现服务
+        // 单源真相，先纠本地 vsync 基再走 note_presented 同轨回填。
+        // 采纳面：LTPO 切档后 embedder 的静态 estimate 过期是 jank 误判
+        // 主源（60↔120 切档 deadline 差一倍）；actual 轨用回执拍点而非
+        // embedder 本地读钟——呈现时刻单源化。refresh_ns=0 = 服务端无
+        // 真相值（防御面）——不采纳，仅回填。
+        if refresh_ns != 0 {
+            self.vsync_period_ns = refresh_ns as u64;
+        }
+        self.note_presented(seq, presented_ns, status, credits_remaining);
+    }
+
     pub fn vote_hint(&self) -> frame::VoteBallot {
         // 票面单源 frame::ballot_for（场景定值表 §3.8；仲裁在显示服务
         // ——对齐条 12，产票不仲裁）。三信号：动画表活跃 / 手势拖拽进

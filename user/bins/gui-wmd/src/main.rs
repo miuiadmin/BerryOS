@@ -133,15 +133,16 @@ pub(crate) fn trap() -> ! {
     }
 }
 
-/// wm_srv 帧分发（§3 #6 分发表执法）：present 1..=7 → present_cli 透传
-///（0x07 INPUT_PULSE 刀3 A6 入域——触摸加速触发面）；hdi 0x40..=0x45 →
+/// wm_srv 帧分发（§3 #6 分发表执法）：present 1..=8 → present_cli 透传
+///（0x07 INPUT_PULSE 刀3 A6 入域；0x08 FRAME_TIMING 刀4 P3 入域——呈现
+/// 回执查询面）；hdi 0x40..=0x45 →
 /// hdi_cli 透传；wm 0x60..=0x7F → 本地表处理（六 op 之外 0x66..=0x7F 未
 /// 定形 → 1B ST_BAD）；**其余一切 op（含 0x20/0x21 input 域错投）→ 1B
 /// ST_BAD + close 随行**。
 fn on_wm(table: &mut table::WmTable, present_cli: Handle, hdi_cli: Handle, ch: Handle,
          msg: &[u8], hs: &[Handle]) {
     match msg.first() {
-        Some(&op) if (gp::OP_GETINFO..=gp::OP_INPUT_PULSE).contains(&op) => {
+        Some(&op) if (gp::OP_GETINFO..=gp::OP_FRAME_TIMING).contains(&op) => {
             relay::relay(ch, present_cli, msg, hs);
         }
         Some(&op) if (gp::OP_REG_VBLANK..=gp::OP_VBLANK_TIMING).contains(&op) => {

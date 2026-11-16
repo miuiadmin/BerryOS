@@ -448,6 +448,7 @@ pub fn run(
 
             // FRAME_CALLBACK：blit-at-SUBMIT 形下帧已呈现（token 校验即
             // 答）——断 PRESENTED（DISCARDED = 呈现链破相 fail loud）。
+            // status/credits 单源仍在本应答（P3 回执无 credits 域）。
             let m = enc_req(gp::encode_present_req(
                 &mut req,
                 &gp::PresentReq::FrameCallback { frame_token: token },
@@ -460,11 +461,24 @@ pub fn run(
             if done.status != gp::FRAME_PRESENTED {
                 fail(&format!("frame status={}", done.status));
             }
-            // seq = 本帧引擎序（render 后 telemetry 帧计数 -1 = last_seq）；
-            // credits 以服务端应答为真值重同步（S2 食谱）。
-            ui.note_presented(
+
+            // P3 呈现回执（刀4——遥测第一个读者）：presented_ns/refresh_ns
+            // 服务端单源真相接入（actual 轨 + jank 周期基——LTPO 切档后
+            // 静态 estimate 过期即纠）；seq = 本帧引擎序（render 后帧计
+            // 数 -1 = last_seq）；credits 以 FRAME_CALLBACK 应答为真值。
+            let m = enc_req(gp::encode_present_req(
+                &mut req,
+                &gp::PresentReq::FrameTiming { frame_token: token },
+            ));
+            let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+            let rec = match gp::parse_frame_timing_rep(&rep[..n]) {
+                Some(r) => r,
+                None => fail(&format!("frame timing bad st={}", rep[0])),
+            };
+            ui.note_frame_timing(
                 (ui.telemetry().frames() - 1) as u32,
-                now(),
+                rec.presented_ns,
+                rec.refresh_ns,
                 done.status,
                 done.credits,
             );
@@ -493,7 +507,20 @@ pub fn run(
                 buf_id = 1;
             }
             if !launched {
-                // 标记（字节精确）：首帧呈现回执过链恰一次。
+                // 标记（字节精确）：首帧呈现回执过链恰一次。附带遥测快照行
+                // （刀4 第一个读者到席证）：jank/deadline_miss/spinup_late/
+                // wakes/frames 全零策略账本只读快照——判定单源在引擎循环。
+                let t = ui.telemetry();
+                let jank_n = t.last(16).filter(|r| r.jank).count();
+                println!(
+                    "launcher: telem f={} w={} i={} d={} s={} j={}",
+                    t.frames(),
+                    t.wakes(),
+                    t.idle_exits(),
+                    t.deadline_miss(),
+                    t.spinup_late_frames(),
+                    jank_n
+                );
                 println!("LAUNCH ok");
                 launched = true;
             }
