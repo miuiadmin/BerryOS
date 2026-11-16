@@ -62,8 +62,9 @@ pub use berry_bandface::{
 /// consumed/deadline 已升全局原子账（[`CONSUMED`]/[`DEADLINES`]）——槽内
 /// 同名字段只是 [`configure`] 写入的初始镜像，[`state`] 合并点以原子账
 /// 为准覆盖读；槽内仍具语义的字段 = quota/period（冷配置，configure 启动
-/// 面单点写）+ throttled（观测镜像位，首越线赢家置 / 翻期赢家清——SMP
-/// lazy-pick 执法刀（SMP §3）再升 AtomicBool）。
+/// 面单点写）+ throttled（观测镜像位，首越线赢家置 / 翻期赢家清——两写
+/// 点均在屏蔽窗契约内，SMP-01 起 [`lazy_enforce`] 的读者同窗契约；升
+/// AtomicBool 的议题随 lazy 面落地再议（现役读写面全屏蔽窗串行）。
 static mut BANDS: [BandBudget; BAND_SLOTS] = [const { BandBudget::OFF }; BAND_SLOTS];
 
 /// band 全局原子账·consumed（SMP §3「SMP band 计账」/ v1.3 §5 预研建议③
@@ -79,6 +80,13 @@ static CONSUMED: [AtomicU64; BAND_SLOTS] = [const { AtomicU64::new(0) }; BAND_SL
 /// 变性免入 `tools/writable_globals.txt`（同 policy.rs `ACTIVE`/`HAZARD`
 /// 先例）。
 static DEADLINES: [AtomicU64; BAND_SLOTS] = [const { AtomicU64::new(0) }; BAND_SLOTS];
+
+/// 武装槽计数（SMP-01 lazy 执法扫描门）：configure 维护的武装槽数——
+/// 零武装（unit 单带负载的常态）时 [`crate::class`] 的 pick 扫描对每节点
+/// 零执法成本（一次 Relaxed 原子读 + 分支）。原子 static 同
+/// [`DEADLINES`] 纪律（A12——免入册 writable_globals）；写点唯一 =
+/// [`configure`]（boot/ktest 单写者窗）。
+static ARMED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// 取带槽裸指针（band 越界 → None）。界门单源 `berry_bandface::slot_ok`。
 ///
@@ -128,7 +136,25 @@ pub fn configure(band: u8, quota: u64, period: u64, now: u64) -> bool {
     }
     CONSUMED[i].store(0, Ordering::Relaxed);
     DEADLINES[i].store(deadline, Ordering::Relaxed);
+    // SMP-01：武装槽计数随配重算（单写者窗内整表重数——configure 是唯一
+    // 冷配置写点，幂等重数无需增量记账）。
+    // SAFETY: 只读走查；屏蔽窗内无并发写（slot 契约）。edition 2024 下
+    // static mut 数组经 &raw const 建共享引用（不立 static mut 别名）。
+    let table: &[BandBudget; BAND_SLOTS] = unsafe { &*&raw const BANDS };
+    let mut n = 0u32;
+    for s in table.iter() {
+        if armed(s) {
+            n += 1;
+        }
+    }
+    ARMED.store(n, Ordering::Relaxed);
     matches!(out, berry_bandface::ConfigOut::Armed { .. })
+}
+
+/// 是否存在任一武装槽（pick 扫描的 lazy 执法门——零武装时逐节点零成本；
+/// Relaxed 纯统计门，同 [`DEADLINES`] 口径）。
+pub fn any_armed() -> bool {
+    ARMED.load(Ordering::Relaxed) != 0
 }
 
 /// 该带包络是否在执法（quota/period 均正且带在表内）。判据单源
@@ -294,4 +320,56 @@ pub fn unthrottle_all(band: u8, rq: &Runqueue) -> usize {
         }
     }
     count
+}
+
+// ---- SMP-01（双核全路径验证）：跨核限流执法的 lazy-pick 兑现 ----
+//
+// 缺口（本仓注释此前以「SMP lazy-pick 执法刀（SMP §3）」挂账，本轮收口
+// 最小面）：带预算的**记账**已全局原子（[`CONSUMED`]/[`DEADLINES`]——
+// SMPD-3），但**环执法**仍是单环面——
+// - [`throttle_all`] 只扫**越线核自己的**环：consume 首越线单赢家在核 A，
+//   核 B 环上的同带成员照跑（全局配额、局部执法的跨核缝隙）；
+// - [`unthrottle_all`] 只扫**翻期 CAS 赢家的**环（`class.rs::
+//   band_period_sweep` 头注）：输家核的成员限流位残留；更深的洞 = 残留
+//   成员使输家核 pick 恒 None → 深 park（mask CNTV）→ 该核**永无 tick**
+//   → 翻期 CAS 永不再被该核争夺——残留成员被结构性无限饿死（不是「迟
+//   一期」是「无人再解」；且残留者仍占环长，[`crate::sched::place`] 的
+//   K=2 深度失衡判据把死重当负载，路由面也被污染）。
+//
+// 兑现（lazy-pick 最小形，与 `lazy_unthrottle_deadlines` 同消费点形态）：
+// pick 扫描（`Fair::scan_filtered`——本核 RQ 锁窗内，环的**归属核**执行）
+// 逐节点双向对账——带限流中（槽 `throttled` 镜像真）→ 补置 THROTTLE；
+// 带已翻期（镜像假）→ 清残留。位语义与环扫 API 逐位一致（幂等 / deadline
+// 豁免 / FROZEN 不碰）；VD 重臂不在此面（残留清理路径成员 VD 已是
+// low_weight 重臂值——EEVDF 的 vruntime 前进兜底不饿死；high_weight 回场
+// 优势损失是本最小面的已知代价，记录在案）。
+
+/// 单成员 lazy 执法（pick 扫描逐节点调；调用契约 = 本核 RQ 锁/屏蔽窗内、
+/// `t` 为本环在环任务）。未武装槽 / deadline 豁免（[`band_member`] 单源）
+/// → 零动作。双窗门 [`any_armed`] 在扫描外层（零武装负载逐节点零成本）。
+pub fn lazy_enforce(t: *mut Task) {
+    // SAFETY: 调用契约如上（屏蔽窗内读写 Task 的 THROTTLE 单位——fair
+    // 任务该位专属本模块，S5-c 逐任务预算只写 deadline 任务而 band_member
+    // 已豁免之）；槽字段读取同 state() 的屏蔽窗契约。
+    unsafe {
+        let b = (*t).intent_effective;
+        let Some(s) = slot(b) else {
+            return;
+        };
+        let s = s as *const BandBudget;
+        if !armed(&*s) {
+            return; // 未武装：零动作（unit 档常态——扫描门兜底的双保险）
+        }
+        if !task_member(t, b) {
+            return; // deadline 豁免（判定单源 band_member——RT 屏蔽不变量）
+        }
+        // throttled 镜像：首越线赢家置 / 翻期清（两写点均屏蔽窗内——本读
+        // 同窗无竞态；volatile 防 LTO 把静态读提升出调用序）。
+        let throttled = core::ptr::read_volatile(core::ptr::addr_of!((*s).throttled));
+        if throttled {
+            (*t).held_locks |= HELD_THROTTLE; // 幂等置位（跨核补执法）
+        } else {
+            (*t).held_locks &= !HELD_THROTTLE; // 幂等清位（翻期残留愈合）
+        }
+    }
 }

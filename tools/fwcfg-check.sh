@@ -20,6 +20,23 @@ rg -o 'opt/berry/[A-Za-z0-9_-]+' --no-filename --hidden \
   . \
   | sed -E -e 's|opt/berry/||' -e 's/^rootfs[0-9]+$/rootfs0..9/' | sort -u \
   > "$tmp/code.txt" || true
+# 代码侧：tracked 面提取 opt/berry/<name>（键名字符集含下划线/大写——正则
+# 宽于现行全小写键名，防未来键名形态让对拍假阴性）；rootfsN 数字卷归并
+# rootfs0..9。排除：*.md/.agents/docs（文档例文非注入）；
+# fwcfgface/src/tests.rs（纯解析 crate 合成 fixture——trac/missing 等非
+# 等值匹配腿非注入/消费面，base 曾因此假红）。
+# 零命中 = 扫描面构造性损坏（排除面过宽/git 缺件），显式红不静默缩面。
+# 排除检测器自身（本脚本）：selftest 夹具字面量（trac/doconly-key 等）非
+# 注入面——检测器与被测面分离，同 fwcfgface fixture 纪律。
+git grep -hoIE 'opt/berry/[A-Za-z0-9_-]+' -- \
+  ':!*.md' ':!.agents' ':!docs' ':!fwcfgface/src/tests.rs' \
+  ':!tools/fwcfg-check.sh' \
+  | sed -E -e 's|opt/berry/||' -e 's/^rootfs[0-9]+$/rootfs0..9/' \
+  | sort -u > "$tmp/code.txt"
+[ -s "$tmp/code.txt" ] || {
+  echo "fwcfg-check: 代码面零命中——扫描面损坏（排除面过宽或 git 缺件）" >&2
+  exit 1
+}
 
 # 键表侧：[[keys]] name 字段。
 sed -n 's/^name = "\(.*\)"$/\1/p' tools/fwcfg-keys.toml | sort -u > "$tmp/toml.txt"
