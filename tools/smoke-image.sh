@@ -324,15 +324,16 @@ KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL o
 # 无拓扑降级门，失败即 park loud。裸 grep -qF 足够——"CLI ok"与
 # "CLK ok"位 3 I≠K 互非子串（正反两向）、"TERM ok"词头 T-E-R-M 现役
 # 唯一（FROZEN/FRZCYC 不含；markers.sh 注互指）。
-# 刀 A 计数锁数：APP ok n=9 / APPUI ok n=8 由前缀通配改锁实数（诚实计数
-# ——app 槽集唯一确定：9 = APPDEMO/SETTINGS/FILES/PHOTOS/CAMERA/CONTACTS/
-# MMS/BROWSER 八枚 [ui]（裁决 B：boot 批入册不拉起，gui deferred 记账入
-# ok）+ APPQUIET（console=false 批拉起形）；APPUI = 前述 [ui] 八枚资产面）。
+# 刀 A 计数锁数（TERMINAL 刀滚新）：APP ok n=10 / APPUI ok n=9 锁实数（诚实
+# 计数——app 槽集唯一确定：10 = APPDEMO/SETTINGS/FILES/PHOTOS/CAMERA/
+# CONTACTS/MMS/BROWSER/TERMINAL 九枚 [ui]（裁决 B：boot 批入册不拉起，
+# gui deferred 记账入 ok）+ APPQUIET（console=false 批拉起形）；APPUI =
+# 前述 [ui] 九枚资产面）。
 # **加/减应用槽随动契约**（同批改齐，漏一即 smoke FAIL 指认到行）：① 本行
 # 两计数；② tools/markers.sh ROOTFS_MARKERS 同对；③ tools/gui8-smoke.py
-# MARK_APP_N9 锚；④ tools/smoke.sh + tools/smoke-smp.sh 逐槽 `app <id> gui
-# deferred` 名单；⑤ justfile 七槽 spec 清单；⑥ 槽位数破 10 先扩
-# berry-manifest APP_SLOTS + svcmgr `APP ok n=` 单数字位编译断言带参宽度。
+# MARK_APP_N10 锚；④ tools/smoke.sh + tools/smoke-smp.sh 逐槽 `app <id> gui
+# deferred` 名单；⑤ justfile spec 清单；⑥ 槽位数破 100 再扩
+# berry-manifest APP_SLOTS + svcmgr `APP ok n=` 两位数字编译断言带参宽度。
 # PS ok n= 保持前缀（boot 批进程组合随批次语义浮动，非槽位单源）；CLI/FS/
 # GFXF/PAGE n= 前缀 = 步数单源在产侧（bsh/fserv/gfxdemo/launcher），宿主
 # 断言侧不双写计数。
@@ -349,7 +350,7 @@ KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL o
 # hz=`（240/480 产品档拍点门——两行取前缀式）、`P5C ok latch=`（guifbd
 # 定点提交 latch 证据行——k6p ④ 首个 slot-commit 起打）。k6 词头与 k4
 # 族互异，P5C 词头在册唯一，两两互非子串。
-ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=9" "APPUI ok n=8" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok" "TAB ok" "INT ok" "POLL ok" "PS ok n=" "BC ok" "THR ok" "DPGP ok" "DPGS ok n=4" "DPGN ok n=4" "FROZEN ok n=1" "WAKE ok n=1" "TOMB ok n=1" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "CLI ok n=" "TERM ok n=" "FBW ok" "FBSERVE ok" "GFX ok" "GFXF ok n=" "WM ok" "LAUNCH ok" "PAGE ok n=" "CBOX ok n=" "gfx: k4a hz=" "gfx: k4t p99=" "gfx: k4s n=" "launcher: telem f=" "gfx: k6p n=4" "gfx: k6h hz=" "P5C ok latch=")
+ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=10" "APPUI ok n=9" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok" "TAB ok" "INT ok" "POLL ok" "PS ok n=" "BC ok" "THR ok" "DPGP ok" "DPGS ok n=4" "DPGN ok n=4" "FROZEN ok n=1" "WAKE ok n=1" "TOMB ok n=1" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "CLI ok n=" "TERM ok n=" "FBW ok" "FBSERVE ok" "GFX ok" "GFXF ok n=" "WM ok" "LAUNCH ok" "PAGE ok n=" "CBOX ok n=" "gfx: k4a hz=" "gfx: k4t p99=" "gfx: k4s n=" "launcher: telem f=" "gfx: k6p n=4" "gfx: k6h hz=" "P5C ok latch=")
 
 LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")
 RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")

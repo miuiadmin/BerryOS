@@ -42,6 +42,7 @@ version = 1
 "app/FILES.bap" = "userbins/app/FILES.bap"
 "app/PHOTOS.bap" = "userbins/app/PHOTOS.bap"
 "app/SETTINGS.bap" = "userbins/app/SETTINGS.bap"
+"app/TERMINAL.bap" = "userbins/app/TERMINAL.bap"
 "bin/bench1" = "cargo-target/aarch64-unknown-linux-musl/release/bench1"
 "bin/berry-launcher" = "cargo-target/aarch64-unknown-linux-musl/release/berry-launcher"
 # CP-08 装配件（04 号复核 §6-5/§6-6）：PM 双服务 bin——berry-power（电源

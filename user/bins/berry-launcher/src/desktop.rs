@@ -162,7 +162,7 @@ const PLACEHOLDER: &[u8] = b"";
 /// GUI 验收双 app（官方桌面常态隐藏，只保留后台/spawn 面）。
 const TEST_IDS: [&[u8]; 2] = [b"APPDEMO", b"APPQUIET"];
 /// OH PhonePresetDockItem 官方顺序。
-const DOCK_IDS: [&[u8]; DOCK_SLOTS] = [b"CONTACTS", b"PHOTOS", b"SETTINGS", b"MMS"];
+const DOCK_IDS: [&[u8]; DOCK_SLOTS] = [b"CONTACTS", b"PHOTOS", b"SETTINGS", b"TERMINAL"];
 
 /// 格 label 配色（ICON_FG 同族弱一档；文本白 TEXT_FG 单源 =
 /// appshell::scene）。

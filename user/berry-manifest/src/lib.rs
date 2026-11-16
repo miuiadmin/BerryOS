@@ -150,8 +150,8 @@ pub const ID_MAX: usize = 24;
 pub const VERSION_MAX: usize = 16;
 /// entry ≤ 32B，必 `bin/` 前缀（与包内文件一一对应）。
 pub const ENTRY_MAX: usize = 32;
-/// rootfs 内 app 条目 ≤ 9（appd 静态收集槽；标记 n= 单数字位帽同步）。
-pub const APP_SLOTS: usize = 9;
+/// rootfs 内 app 条目 ≤ 10（appd 静态收集槽；标记 n= 两位参数化帽同步）。
+pub const APP_SLOTS: usize = 10;
 /// stack_pages 缺省 8（std 小程序口径）。
 pub const STACK_PAGES_DEFAULT: u32 = 8;
 /// stack_pages 下界（0 页栈非法）。
