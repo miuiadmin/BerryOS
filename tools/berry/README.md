@@ -17,6 +17,10 @@ VNC 多客户端（`VncInput`），生命周期/复位走 QMP。窗口、截图�
 
 ```bash
 just berry-build          # host 独立 workspace，显式 --target <host>
+# 注：裸 cargo test 需带 --target <host> 且本机 ~/.cargo/config.toml 的
+# target-dir 指 ~/.cargo-target 时，cargo/rustc 子进程对该目录 .d 写会
+# EPERM（shell 可写 rustc 被拒——四轮审计实抓）——跑测试换
+# CARGO_TARGET_DIR=/tmp/berry-test cargo test --release --target <host>。
 just berry doctor         # QEMU / 固件 / 镜像 / accel / fw_cfg 键注入报告（--json 含 fwcfg 数组）
 ```
 
@@ -34,7 +38,7 @@ BERRY_IMAGE=out/berryos-desktop.img BERRY_BUNDLE_ID=dev.berryos.shell.desktop \
   tools/berry/packaging/macos/build.sh out/BerryOS-Desktop.app
 ```
 
-macOS `.app` 会从 `Contents/Resources` 找 `berryos.img`/`AAVMF_CODE.fd`；web 资产（vendored noVNC，`berry vnc web` 的页面源）同在 `Contents/Resources/web/`——Linux AppDir 落 `usr/share/berry/web/`（tarball/AppImage 随 AppDir 整体打包继承），Windows 目录包落 `<包根>/web/`（与 berry.exe 平铺）。三种形态里 `berry vnc web` 都零仓库依赖：双击态以包内二进制 `device start --profile desktop --vnc on --vnc-ws on`（desktop 档配 `BERRY_DATA_DISK` 数据盘）后 `berry vnc web`，资产按 `web_roots()` 顺序解析（exe 同目录 `web`、exe 父目录 `Resources/web` 与 `share/berry/web`、用户数据目录、cwd 逐级向上的 `tools/berry/web`——最后一路是仓库开发态）。QEMU 仍是外部依赖（GPLv2，进程边界，不打包）；Windows 交叉产物见下，真机 Windows 的 GUI 子系统 + `AttachConsole` 验证仍待补。
+macOS `.app` 会从 `Contents/Resources` 找 `berryos.img`/`AAVMF_CODE.fd`；web 资产（vendored noVNC，`berry vnc web` 的页面源）同在 `Contents/Resources/web/`——Linux AppDir 落 `usr/share/berry/web/`（tarball/AppImage 随 AppDir 整体打包继承），Windows 目录包落 `<包根>/web/`（与 berry.exe 平铺）。三种形态里 `berry vnc web` 都零仓库依赖：双击态以包内二进制 `device start --profile desktop --vnc on --vnc-ws on`（注：双击态无 shell 环境，暂拿不到 `BERRY_DATA_DISK` 数据盘——持久化入口收敛挂账中，此前 settings/BSHRC 降级内存态）后 `berry vnc web`，资产按 `web_roots()` 顺序解析（exe 同目录 `web`、exe 父目录 `Resources/web` 与 `share/berry/web`、用户数据目录、cwd 逐级向上的 `tools/berry/web`——最后一路是仓库开发态）。QEMU 仍是外部依赖（GPLv2，进程边界，不打包）；Windows 交叉产物见下，真机 Windows 的 GUI 子系统 + `AttachConsole` 验证仍待补。
 
 Linux/Windows 分发链（wave5 实机化，产物落 `out/`）：Linux 侧 `tools/berry/packaging/linux/` 四脚本依序产 musl 静态 ELF（`build-linux-binary.sh`，aarch64，ring 的 C 面经 Apple clang + `-ffreestanding` + 自足 `stddef.h` shim 交叉编译）→ `BerryOS.AppDir-linux`（`build-appdir.sh`，含 web 资产与 THIRD-PARTY-NOTICES.txt）→ 结构检查（`check-appdir.sh`，0 fail 门）→ `BerryOS-linux-aarch64.tar.gz` + sha256（`build-tarball.sh`）；用法与变量详见 [packaging/linux/README.md](packaging/linux/README.md)。docker（OrbStack 唤醒）可用时追加 `BerryOS-aarch64.AppImage`（`build-appimage-docker.sh`）与 Windows 目录包 `BerryOS-win64`/zip（`windows/build-cross-docker.sh` + `assemble.sh`，双 exe 为 PE32+ console/GUI x86-64）；容器冒烟（`linux/smoke-appimage.sh` AppImage FUSE 挂载跑 doctor、`linux/smoke-docker.sh` alpine 容器内真 ELF 起机双档截图）实测通过。AppDir 内 exe 在 `usr/bin`，`web_roots()` 第三落点解析到 `usr/share/berry/web` 与资产拷贝位一致——打包态 `vnc web` 零仓库依赖同明文档。
 

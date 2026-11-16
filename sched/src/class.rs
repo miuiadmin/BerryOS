@@ -436,7 +436,9 @@ impl Fair {
 
 // ---- M4 带实例化（ADR #42 第二段——class_fair 按 intent 实例化带实例；
 // 调度优化终窗 2026-11-15 骨架落，2026-11-16 首批 band 激活——两带现役、
-// 参数差异生效；trait 行为差异化仍凭 M4 入场券入场）----
+// 参数差异生效；2026-11-16 集成面收口〔06 号 §5 任务①〕——class 赋值面
+// `class_of_task` 接通 spawn→调度原语六点；trait 行为差异化仍凭 M4
+// 入场券入场）----
 //
 // 立法约束（ADR #42 / 重议触发器表「class_fair 单实例 → ×N 带实例」条）：
 // - **只许按 intent 实例化同一 `SchedClass` trait、禁改签名**——本段零
@@ -450,10 +452,10 @@ impl Fair {
 //   `berry_iprofile::band_enabled`（×4 全集随入场券逐批开）。
 // - **入场券未过前 band 执法不并线**（v1 遥测实证 + loadgen + 尾延迟断言
 //   + 空闲核金丝雀；`调点调度-v1.2.md` §7）——故 [`FairBand`] 的 trait
-//   行为与 [`Fair`] **逐位一致**（全方法委托 unit `Fair`）：本刀只立
-//   「带参数可构造」的实例化面，带间严格序/每带预算包络/deadline-server
-//   兜底/事件驱动记账全不实装（`band.rs` 预算包络骨架与执法开关分立的
-//   同款纪律）。
+//   行为与 [`Fair`] **逐位一致**（全方法委托 unit `Fair`）：集成面收口后
+//   立的是「带实例按任务分派」的 assignment 面（[`class_of_task`]），
+//   带间严格序/每带预算包络/deadline-server 兜底/事件驱动记账全不实装
+//   （`band.rs` 预算包络骨架与执法开关分立的同款纪律）。
 // - 数值不写死：[`IntentBand`] 表 = 骨架缺省基线（推断值，锚 = 手表表
 //   权重包络 + 现役 SLICE_HZ quantum 锚——见 `berry-iprofile` 表注）；
 //   M4 真数字经启动配置参数表覆盖（ADR #42「数字进启动配置不写死」）。
@@ -468,7 +470,7 @@ use berry_iprofile::IntentBand;
 ///
 /// 构造走 [`class_fair_intent`] 工厂（按 intent 档建带）或 [`FairBand::new`]
 /// （显式带参数——M4 启动配置覆盖路径的入口形状）。
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FairBand {
     /// 带 id = intent 档编码（带键 = intent，§11；工厂路径恒现役集——
     /// 首批 = 0x02/0x03，`band_of_intent` 门保证；`new` 显式路径的域执法归
@@ -485,6 +487,13 @@ impl FairBand {
     pub const fn new(band_id: u8, band: IntentBand) -> FairBand {
         FairBand { band_id, band }
     }
+
+    /// yield 片归还委托（[`Fair::yield_slice_return`] 同款——trait 外
+    /// inherent 方法，[`TaskClass`] 分派臂消费；行为与 unit Fair 逐位一致，
+    /// M4 入场券纪律）。
+    pub fn yield_slice_return(&self, t: &mut Task, rq: &Runqueue) {
+        Fair.yield_slice_return(t, rq)
+    }
 }
 
 /// **class_fair_intent 工厂**：按 intent 档建 [`FairBand`] 带实例——查
@@ -492,14 +501,14 @@ impl FairBand {
 /// 行；首批外档/保留域 → `None` = 无带，调用方回落现役单带 [`Fair`]，
 /// 缺省行为零漂移）。
 ///
-/// **集成面预留窗（M4 并线时接，本刀不实装）**：task→band 赋值——elf
-/// spawn 时读 manifest intent 档（`berry-manifest::Intent` 六档词表）→
-/// `berry_iprofile::band_id_of_intent`（带 id ↔ intent 档映射单源）→ 查
-/// 本工厂得带实例 → 入 per-CPU/全域 ×N 带实例表（带间严格序经既有
-/// `priority() -> i32` 映射——trait 签名零改动）；策略覆盖通道 =
-/// `policy::band_of`（band 选择位，v3 `policy_bind` 写路）。spawn 侧现役
-/// 接线点 = `sched.rs::spawn_intent`（intent 双字段直落处——该处注释窗
-/// 同批）。
+/// **集成面（06 号 §5「水通管道」任务①收口，2026-11-16）**：task→band
+/// 赋值已接——[`class_of_task`]（class 赋值面单源）按 `intent_effective`
+/// 查本工厂得带实例，`sched.rs` per-task 调度原语六点消费
+/// （`enqueue_with_kick`〔spawn+唤醒〕/偷取重入环/tick/dequeue×2/yield）；
+/// intent 双落点 = `sched.rs::spawn_intent`（内核 spawn 面）与 EL0 attr 面
+/// （`apply_sched_attr_to_task`——spawn 后落 intent，动态派生下一次原语
+/// 调用即改带）。策略覆盖通道 = `policy::band_of`（band 选择位，v3
+/// `policy_bind` 写路）仍归 v3——本工厂只认 intent 档。
 pub fn class_fair_intent(intent: u8) -> Option<FairBand> {
     berry_iprofile::band_of_intent(intent).map(|band| FairBand::new(intent, band))
 }
@@ -524,5 +533,104 @@ impl SchedClass for FairBand {
     }
     fn priority(&self) -> i32 {
         Fair.priority()
+    }
+}
+
+// ---- M4 集成面收口（06 号 §5「水通管道」任务①，2026-11-16）：class 赋值
+// 面单源——intent → class 实例的最后一环 ----
+//
+// 链路（管道闭合）：manifest 声明 intent → svcmgr 透传 → kernel spawn
+// 落 intent（`spawn_intent` intent 参数 / EL0 thread attr 双落
+// `intent_effective`）→ **[`class_of_task`] 分派（本段）** → 调度原语消费
+// （`sched.rs` 六点）。带键 = `intent_effective`（§11「band 不加 attr
+// 字段——intent 即带键」）：零 Task 新字段，intent 结算借入改档后下一次
+// 分派自然跟随。现役集（首批 0x02/0x03）走 [`FairBand`]（带参数自
+// `INTENT_BAND_TABLE` 表行分化），首批外档/未声明回落现役单带 [`Fair`]
+// （行为零漂移）。trait 行为仍逐位一致（全委托 unit Fair——M4 入场券
+// 纪律不变）：本环闭合的是「带实例按任务分派」的 assignment 面，热路径
+// per-band quantum/权重执法仍归 M4 并线面（`调点调度-v1.2.md` §7）。
+
+/// 任务的 class 实例（M4 集成面）：unit [`Fair`] 或带实例 [`FairBand`] 的
+/// 二元分派——[`class_of_task`] 的返回值。`Copy` 零分配（IRQ 热路径——
+/// 每次调度原语即时派生，不缓存不落 Task 字段）。`Unit` 无载荷（unit
+/// `Fair` 是无状态单例，分派臂现取 `Fair` 值——零成本）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskClass {
+    /// 现役单带（未声明 intent/首批外档/保留域——与 `Fair` 逐位等价，
+    /// 缺省行为零漂移）。
+    Unit,
+    /// 带实例（现役集 0x02/0x03——`class_fair_intent` 工厂产物，带参数
+    /// 携表行 quantum/权重包络/latency_target）。
+    Band(FairBand),
+}
+
+impl SchedClass for TaskClass {
+    fn enqueue(&self, t: &mut Task, rq: &mut Runqueue) {
+        match self {
+            TaskClass::Unit => Fair.enqueue(t, rq),
+            TaskClass::Band(b) => b.enqueue(t, rq),
+        }
+    }
+    fn dequeue(&self, t: &mut Task, rq: &mut Runqueue) {
+        match self {
+            TaskClass::Unit => Fair.dequeue(t, rq),
+            TaskClass::Band(b) => b.dequeue(t, rq),
+        }
+    }
+    fn pick_next(&self, rq: &Runqueue, topo: &Topo) -> Option<&mut Task> {
+        match self {
+            TaskClass::Unit => Fair.pick_next(rq, topo),
+            TaskClass::Band(b) => b.pick_next(rq, topo),
+        }
+    }
+    fn tick(&self, t: &mut Task, rq: &mut Runqueue) {
+        match self {
+            TaskClass::Unit => Fair.tick(t, rq),
+            TaskClass::Band(b) => b.tick(t, rq),
+        }
+    }
+    fn priority(&self) -> i32 {
+        match self {
+            TaskClass::Unit => Fair.priority(),
+            TaskClass::Band(b) => b.priority(),
+        }
+    }
+}
+
+impl TaskClass {
+    /// yield 片归还的分派形（[`Fair::yield_slice_return`] 的 per-task
+    /// 消费点——两臂同委托 unit Fair，行为零漂移）。
+    pub fn yield_slice_return(&self, t: &mut Task, rq: &Runqueue) {
+        match self {
+            TaskClass::Unit => Fair.yield_slice_return(t, rq),
+            TaskClass::Band(b) => b.yield_slice_return(t, rq),
+        }
+    }
+
+    /// 带参数投影（`Unit` = None）——ktest spawn 面断言与诊断面消费。
+    pub fn band(&self) -> Option<IntentBand> {
+        match self {
+            TaskClass::Unit => None,
+            TaskClass::Band(b) => Some(b.band),
+        }
+    }
+}
+
+/// **class 赋值面单源**（M4 集成面收口）：task → class 实例——
+/// `intent_effective`（§11 带键）经 [`class_fair_intent`] 工厂查表：现役
+/// 集（首批 0x02/0x03）→ [`TaskClass::Band`]（表行带参数）；其余/未声明
+/// → [`TaskClass::Unit`]（现役单带，缺省行为零漂移）。**动态派生、零
+/// 缓存**：intent 结算借入改档（`sched::intent`）或 EL0 attr spawn 后落
+/// 档后，下一次调度原语调用自然改带——「spawn 时 band 赋值」与「运行期
+/// band 跟随」同一实现。
+///
+/// 消费面 = `sched.rs` per-task 调度原语六点（`enqueue_with_kick`〔spawn+
+/// 唤醒〕/偷取重入环/`tick`/`dequeue`×2/yield）；`pick_next_filtered`
+/// 是队列级扫描（混合带同环出选），不经 per-task 分派。
+#[inline]
+pub fn class_of_task(t: &Task) -> TaskClass {
+    match class_fair_intent(t.intent_effective) {
+        Some(band) => TaskClass::Band(band),
+        None => TaskClass::Unit,
     }
 }

@@ -9,9 +9,11 @@
 //! 计划/01-调度现状全景与在途线收编.md:144「util EWMA（产）/placement
 //! hint（产）/EM 表（数据面）三件全部有产无消」）。本 crate 补**消**侧
 //! 第一块纯面：容量查询 + 选核打分（EAS 式 energy_diff 最简形）+ QEMU
-//! virt 第一张假想表。sched 接线（placement 消费/选核决策遥测/overutil
-//! 回退执法）归 CP-09 接线窗——sched/emface 域 owner 在途零碰（本件独立
-//! 小工作区，slackface/berry-power 同形，不入 user/Cargo.toml members）。
+//! virt 第一张假想表。**首个内核消费面已接**（06 号评估终判「水通管道」
+//! ②·2026-11-16）：sched `place()` → `eas_place` 消费 `eas_pick_cpu`
+//! （placement hint 经 prev 入座；root workspace exclude 收编本件为
+//! sched path 依赖——形态从「独立小工作区零消费」升「独立根 + 被依赖」，
+//! 版本治理字面值不变）；选核决策遥测/overutil 回退执法余面归 CP-09。
 //!
 //! **形状单源声明**：EmPoint/EmDomain/EM_POINTS_MAX/EM_DOMAINS_MAX/
 //! em_shape_ok/em_domain_from/em_max_capacity_of/em_min_power_of/

@@ -1,7 +1,8 @@
 //! settings_io —— settings 应用五键持久化面（M2 第 8 步：theme_io 单键
 //! 前身（已并入本模块）升格为全键版）。
 //!
-//! 形态沿 theme_io / launcher `layout_io.rs` 的 canonical 单簇原子写先例：
+//! 形态沿 launcher `layout_io.rs` 的 canonical 单簇原子写先例（本模块的
+//! 单键前身即同形，已并入）：
 //!
 //! - FAT12 卷根 8.3 大写名单文件（`SETTINGS.CFG`；CWD 默认根）。v1 写面
 //!   只认单段 8.3 大写名（fsmgr 写路由——小写/多段构造性落 RAM 树掉电
@@ -16,7 +17,7 @@
 //!   化取舍）。
 //! - 旧档迁移：`SETTINGS.JSN`（单键 dark 两形）在场而 CFG 缺席 → 读旧
 //!   值组新形立即落盘（迁移期一两版后旧读面可删）。
-//! - fs 礼物缺席（`fs_h()==0`）→ 默认态直返零 RPC（内存态，同 theme_io）。
+//! - fs 礼物缺席（`fs_h()==0`）→ 默认态直返零 RPC（内存态，同前身）。
 //!
 //! canonical 形（键序冻结）：`{"wifi":0,"bt":0,"bright":800,"sync":0,"dark":0}`
 //! ——值域：bool 键 0/1；bright 0..=1000（Slider min/max 同源）。解析
@@ -35,7 +36,7 @@ const PATH: &[u8] = b"SETTINGS.CFG\0";
 /// 旧档（单键前身形态；迁移读取面——迁完一两版可删）。
 const PATH_LEGACY: &[u8] = b"SETTINGS.JSN\0";
 
-/// 单次读块（theme_io 同款 256B）。
+/// 单次读块（前身同款 256B）。
 const CHUNK: usize = 256;
 
 /// 单簇帽（FAT12 2048B）。
@@ -127,7 +128,7 @@ pub fn parse(b: &[u8]) -> Option<State> {
     (i == b.len()).then_some(State { wifi, bt, bright, sync, dark })
 }
 
-/// 读结局四态（theme_io 同形）。
+/// 读结局四态（前身同形）。
 enum ReadOutcome {
     Absent,
     Bytes(Vec<u8>),
@@ -168,7 +169,7 @@ fn read_at(path: &[u8]) -> ReadOutcome {
     ReadOutcome::Bytes(data)
 }
 
-/// 旧档迁移读取（SETTINGS.JSN 单键两形——theme_io canonical 同形）。
+/// 旧档迁移读取（SETTINGS.JSN 单键两形——前身 canonical 同形）。
 fn legacy_dark() -> Option<bool> {
     match read_at(PATH_LEGACY) {
         ReadOutcome::Bytes(b) => match b.as_slice() {
@@ -236,7 +237,7 @@ pub fn theme_of(st: &State) -> Theme {
     st.theme()
 }
 
-/// 全量写（open(O_WRONLY|O_CREAT) → write 循环 → close=commit；theme_io
+/// 全量写（open(O_WRONLY|O_CREAT) → write 循环 → close=commit；前身
 /// 同款，部分写失败仍 close 部分提交——文档化取舍）。
 fn put_file(data: &[u8]) -> Result<(), i32> {
     // SAFETY: PATH NUL 结尾；fd 按 libc 契约使用。
@@ -266,7 +267,7 @@ fn put_file(data: &[u8]) -> Result<(), i32> {
 }
 
 // ---- 测试面（纯函数：canonical 形 + fail-closed 解析 + 迁移面；RPC 面
-// ---- 经 fs_h()/open 不可宿主机执行——theme_io 同注记。----
+// ---- 经 fs_h()/open 不可宿主机执行——前身同注记。----
 #[cfg(test)]
 mod tests {
     use super::*;

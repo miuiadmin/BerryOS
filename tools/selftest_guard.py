@@ -3,6 +3,7 @@
 
     python3 tools/selftest_guard.py            # 执法扫描（exit 0 = 过，1 = 漏接线）
     python3 tools/selftest_guard.py --selftest # 门禁自检（挂 just test-host）
+    python3 tools/selftest_guard.py --run      # 执行面：真跑全量接线自检（挂 CI-light）
 
 背景（7 连发判例族，LOG/QUEUE 可查）：echod/evsclient、genwycheproof、
 gensourceindex、fastlane_sim、gui8-smoke（连字符拼写漏网）、bcts-run.sh
@@ -20,9 +21,21 @@ selftest 而不接线，CI 直接红。
 豁免表 KNOWN_EXEMPT（单源）：声明「有自检声明但非门禁形态」的工具 + 理由。
 改豁免表 = 显式登记理由，不许静默（G3 探针串同哲学）。
 
+--run 执行面（2026-11-16 立，CI 层缺口收口）：判例族在 CI 侧的同款缺口
+——tools/** 是 CI-light 的触发路径，但轻道六门（docs-guard/check-docs/
+writable-globals/原语 grep/unsafe 台账/shvarcheck）不含任何自检真跑；
+只动 tools/*.py 的 PR 全绿合入而受影响工具的自检从未在 CI 执行过
+（「接线」只保证 justfile 有行，不保证行被执行）。--run 把接线行从
+justfile 单源读出真跑：注册表仍是 justfile（一事实一归属），本工具不
+持第二份清单。{{BASH}} 占位按 just 同序探测替换（homebrew → local →
+/bin/bash）；.sh 件经 bash 显式调起（shebang 免疫面）。
+
 改 tools/ 新增自检、改 justfile test-host 面必跑。
 """
+import os
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -82,9 +95,70 @@ def scan(
 KNOWN_EXEMPT: dict[str, str] = {}
 
 
+# 接线行提取（--run 执行面与执法扫描同源）：justfile 里形如
+# `... tools/<name> --self*` 的命令行（注释剔除同执法面 split('#')）。
+# 保留行内 {{BASH}} 占位与 python3 前缀原样——执行层负责展开。
+WIRE_LINE_RE = re.compile(r"(?:python3\s+)?tools/([\w.-]+)\s+(--self\w*)")
+
+
+def wired_lines(justfile: Path = JUSTFILE) -> list[str]:
+    """→ justfile 中全部自检接线命令行（原序，含重复跑面——重复也是契约）。"""
+    out: list[str] = []
+    for ln in justfile.read_text(encoding="utf-8").splitlines():
+        code = ln.split("#", 1)[0].strip()
+        if WIRE_LINE_RE.search(code):
+            out.append(code)
+    return out
+
+
+def resolve_bash() -> str:
+    """{{BASH}} 占位展开——探测序与 justfile 头部 BASH := 同款。"""
+    for b in (
+        "/opt/homebrew/bin/bash",
+        "/usr/local/bin/bash",
+        "/bin/bash",
+    ):
+        if Path(b).is_file() and os.access(b, os.X_OK):
+            return b
+    return shutil.which("bash") or "bash"
+
+
+def run_wired() -> int:
+    """执行面：真跑 justfile 注册的全部自检（--run，挂 CI-light）。
+
+    逐行跑、逐行记账——首红即停（fail-fast，CI 日志直接指认罪犯行）。
+    {{BASH}} 占位展开后 .sh 件形如 `/path/bash tools/x.sh --selftest`
+    （显式 bash 调起，shebang/x 位面免疫）；.py 件保持 python3 前缀。
+    """
+    import time
+
+    lines = wired_lines()
+    if not lines:
+        print("selftest_guard --run: FAIL——justfile 零自检接线行（异常态）", file=sys.stderr)
+        return 1
+    bash = resolve_bash()
+    t0 = time.monotonic()
+    for i, ln in enumerate(lines, 1):
+        cmd = ln.replace("{{BASH}}", bash)
+        r = subprocess.run(cmd, shell=True, cwd=ROOT)
+        status = "ok" if r.returncode == 0 else f"FAIL rc={r.returncode}"
+        print(f"[{i}/{len(lines)}] {status}  {cmd}", file=sys.stderr)
+        if r.returncode != 0:
+            print(
+                f"selftest_guard --run: FAIL——第 {i} 行自检红（上行）；tools 面改动须先过自检再推",
+                file=sys.stderr,
+            )
+            return 1
+    dt = time.monotonic() - t0
+    print(f"selftest_guard --run: PASS（{len(lines)} 行接线自检全绿，{dt:.1f}s）")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     if "--selftest" in argv:
         return selftest()
+    if "--run" in argv:
+        return run_wired()
     unwired, exempt = scan()
     for name, why in sorted(exempt):
         print(f"selftest_guard: 豁免 {name}（{why}）")
@@ -193,6 +267,79 @@ def selftest() -> int:
         )
         check("S6 豁免件不进漏接线清单", unwired == [], ",".join(unwired))
         check("S6 豁免件入豁免命中账", exempt == [("exc.py", "合成豁免")])
+
+    # S7 --run 执行面·接线行提取：合成 justfile 验证原序/注释剔除/占位保留。
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        jf = tdp / "justfile"
+        jf.write_text(
+            "test-host:\n"
+            "    python3 tools/a.py --selftest\n"
+            "    # python3 tools/b.py --selftest（注释行不提取）\n"
+            "    {{BASH}} tools/c.sh --selftest\n"
+            "    python3 tools/d.py --selftest-split\n"
+            "    python3 tools/e.py --check（非自检行不提取）\n",
+            encoding="utf-8",
+        )
+        got = wired_lines(jf)
+        check(
+            "S7 接线行提取原序全量",
+            got == [
+                "python3 tools/a.py --selftest",
+                "{{BASH}} tools/c.sh --selftest",
+                "python3 tools/d.py --selftest-split",
+            ],
+            repr(got),
+        )
+
+    # S8 --run 执行面·红分支：首红即停且 rc=1（合成红自检——exit 3 罪犯行
+    # 被指认，后续行不跑：日志只含第 1 行）。
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        (tdp / "tools").mkdir()
+        (tdp / "tools" / "red.py").write_text(
+            "import sys; sys.exit(3)\n", encoding="utf-8"
+        )
+        (tdp / "tools" / "green.py").write_text("print('g')\n", encoding="utf-8")
+        jf = tdp / "justfile"
+        jf.write_text(
+            "t:\n    python3 tools/green.py --selftest\n"
+            "    python3 tools/red.py --selftest\n"
+            "    python3 tools/green.py --selftest\n",
+            encoding="utf-8",
+        )
+        lines = wired_lines(jf)
+        check("S8 合成 3 行提取", len(lines) == 3, repr(lines))
+        # 执行循环本体（run_wired 的内联重演——run_wired 绑定活树 JUSTFILE，
+        # 合成仓走同一 cmd 构造 + 首红即停语义）。
+        import subprocess as sp
+
+        ran: list[str] = []
+        stopped = False
+        for ln in lines:
+            cmd = ln.replace("{{BASH}}", resolve_bash())
+            r = sp.run(cmd, shell=True, cwd=tdp, capture_output=True)
+            ran.append(cmd)
+            if r.returncode != 0:
+                stopped = True
+                break
+        check("S8 首红即停", stopped, "合成红件未被咬")
+        check("S8 红后不再跑", len(ran) == 2, f"ran={ran}")
+        check(
+            "S8 绿行 rc=0 先行",
+            sp.run(ran[0], shell=True, cwd=tdp).returncode == 0,
+        )
+
+    # S9 {{BASH}} 占位展开：探测序首位存在即命中；.sh 接线行展开后以
+    # bash 路径开头（显式调起形）。
+    b = resolve_bash()
+    check("S9 bash 解析非空", bool(b) and Path(b).exists(), b)
+    expanded = "{{BASH}} tools/c.sh --selftest".replace("{{BASH}}", b)
+    check(
+        "S9 展开后 bash 前缀",
+        expanded.startswith(b) and "tools/c.sh --selftest" in expanded,
+        expanded,
+    )
 
     print(
         f"\nselftest_guard selftest: {'PASS' if not fails else 'FAIL'}"

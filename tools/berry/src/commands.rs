@@ -141,6 +141,8 @@ pub fn run(args: RunArgs) -> Result<()> {
             json!({"v":1,"t":"run.start","run":run.path(),"kernel":kernel,"accel":accel.as_arg(),"memory_mib":memory})
         );
     }
+    // 取舍注记（三轮审计 C3）：spawn 失败的 ? 早退不 keep_fail——目录
+    // 仅 meta.json 半成品；QEMU 起后的失败保留见下方 keep_fail 各臂。
     let mut child = qemu::spawn_kernel(&qemu, &kernel, &serial, &log, accel, memory)?;
     let mut tail = Tail::open(&serial);
     let deadline = Instant::now() + args.timeout;
@@ -240,6 +242,7 @@ pub fn shot(args: ShotArgs) -> Result<()> {
         memory,
         true,
         mode.as_deref(),
+        profile.id,
         None,
         None,
         None,
@@ -858,6 +861,13 @@ pub fn events(
             .and_then(|l| l.as_array())
             .map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect())
             .unwrap_or_default()
+    } else if !run.join("events.jsonl").exists() {
+        // 同 logs()：run 不活且 events.jsonl 缺席——旧版空静默 exit 0。
+        eprintln!(
+            "berry: no events.jsonl in {} (run not live / file absent)",
+            run.display()
+        );
+        Vec::new()
     } else {
         let text = std::fs::read_to_string(run.join("events.jsonl")).unwrap_or_default();
         text.lines()
@@ -1101,7 +1111,7 @@ pub fn device_restart(run: Option<&str>, json: bool) -> Result<()> {
 pub fn device_cleanup(run: Option<&str>, all: bool, json: bool) -> Result<()> {
     if all {
         let root = run_dir::home().join("run");
-        let mut cleaned = Vec::new();
+        let mut cleaned: Vec<(String, Option<bool>)> = Vec::new();
         if let Ok(rd) = std::fs::read_dir(&root) {
             for e in rd.flatten() {
                 let p = e.path();
@@ -1111,33 +1121,73 @@ pub fn device_cleanup(run: Option<&str>, all: bool, json: bool) -> Result<()> {
                 if control::is_up(&p) && control::request(&p, "status", json!({})).is_ok() {
                     continue; // running; skip
                 }
-                if cleanup_one(&p).is_ok() {
-                    cleaned.push(p.display().to_string());
+                if let Ok((_, kept)) = cleanup_one(&p) {
+                    cleaned.push((p.display().to_string(), kept));
                 }
             }
         }
         if json {
-            println!("{}", json!({"v":1,"t":"device.cleanup","all":true,"runs":cleaned}));
+            let runs: Vec<_> = cleaned
+                .iter()
+                .map(|(p, kept)| json!({"run": p, "kept": kept}))
+                .collect();
+            println!("{}", json!({"v":1,"t":"device.cleanup","all":true,"runs":runs}));
         } else if cleaned.is_empty() {
             println!("cleanup: nothing stale/stopped");
         } else {
-            for p in &cleaned {
-                println!("cleanup: {p}");
+            for (p, kept) in &cleaned {
+                print_cleanup_line(p, *kept);
             }
         }
         return Ok(());
     }
     let run = find_run(run)?;
-    let pid = cleanup_one(&run)?;
+    let (pid, kept) = cleanup_one(&run)?;
     if json {
-        println!("{}", json!({"v":1,"t":"device.cleanup","run":run,"qemu_pid":pid}));
+        println!(
+            "{}",
+            json!({"v":1,"t":"device.cleanup","run":run,"qemu_pid":pid,"kept":kept})
+        );
     } else {
-        println!("cleanup: {}", run.display());
+        print_cleanup_line(&run.display().to_string(), kept);
     }
     Ok(())
 }
 
-fn cleanup_one(run: &Path) -> Result<u64> {
+/// cleanup 人读行：kept=true 的目录是 keep_fail 落的失败现场保留，清理
+/// 时标注来源（与 json 的 kept 字段同源，见 read_end_kept）。
+fn print_cleanup_line(run: &str, kept: Option<bool>) {
+    if kept == Some(true) {
+        println!("cleanup: {run} (kept: failure artifact)");
+    } else {
+        println!("cleanup: {run}");
+    }
+}
+
+/// index.jsonl 的第一个读方（四轮审计挂账收敛）：从尾向头找该 run id
+/// 最近一条 run.end 行取其 kept 值；文件缺席/无匹配行/字段缺席容错
+/// None（索引容忍不全——宿主崩溃必漏 end 行，枚举以扫目录兜底）。
+fn read_end_kept(run_id: &str) -> Option<bool> {
+    let idx = run_dir::home().join("run").join("index.jsonl");
+    let text = std::fs::read_to_string(idx).ok()?;
+    for line in text.lines().rev() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v.get("t").and_then(|t| t.as_str()) != Some("run.end") {
+            continue;
+        }
+        if v.get("run").and_then(|r| r.as_str()) != Some(run_id) {
+            continue;
+        }
+        return v.get("kept").and_then(|k| k.as_bool());
+    }
+    None
+}
+
+/// 清一个 run 目录，返回（meta 的 qemu_pid, index 最近 run.end 的 kept）。
+/// kept=Some(true) 的目录是失败现场保留（keep_fail），输出侧据此标注。
+fn cleanup_one(run: &Path) -> Result<(u64, Option<bool>)> {
     if control::is_up(run) && control::request(run, "status", json!({})).is_ok() {
         return Err(BerryError::device(
             "device is still running; stop it before cleanup",
@@ -1148,6 +1198,43 @@ fn cleanup_one(run: &Path) -> Result<u64> {
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_else(|| json!({}));
     let qemu_pid = meta.get("qemu_pid").and_then(|v| v.as_u64()).unwrap_or(0);
+    // 四轮审计（D2/D4）升级：探活对全部目录形态生效（移出 qemu_pid==0
+    // 分支）——meta 的 pid 是 berry 进程 pid（RunDir::create 恒写）：
+    // a) 活会话拒删：run/shot 类其 QEMU 无端点杀不到（直删 = 抽走活会话
+    //    的 serial.log 并孤儿化 QEMU）；device 类防 restart_in_place 窗口
+    //    （_control 已关而 sock 残留 → control 检查失守）误杀 pid 回收
+    //    复用的无辜进程并抽走活会话目录。
+    // b) pid=0（meta 缺/坏的残目录）不拒——残目录本就是要清的；旧版
+    //    「pid 0 也拒」是误导文案（四轮 D4 实抓）。
+    // c) 非 unix 无 kill -0 探活面，pid≠0 保守拒删。
+    let berry_pid = meta.get("pid").and_then(|v| v.as_u64()).unwrap_or(0);
+    #[cfg(unix)]
+    {
+        let alive = berry_pid != 0
+            && std::process::Command::new("kill")
+                .arg("-0")
+                .arg(berry_pid.to_string())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+        if alive {
+            return Err(BerryError::device(format!(
+                "run {} belongs to a live berry session (pid {berry_pid}); stop it before cleanup",
+                run.display()
+            )));
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        if berry_pid != 0 {
+            return Err(BerryError::device(format!(
+                "run {} pid liveness cannot be probed on this platform; verify manually",
+                run.display()
+            )));
+        }
+    }
     if qemu_pid != 0 {
         #[cfg(unix)]
         {
@@ -1170,8 +1257,14 @@ fn cleanup_one(run: &Path) -> Result<u64> {
                 .status();
         }
     }
+    // 删目录前读 index：目录一删，run.id 的最近 end 行就是唯一存活证词。
+    let run_id = run
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(str::to_string);
+    let kept = run_id.as_deref().and_then(read_end_kept);
     let _ = std::fs::remove_dir_all(run);
-    Ok(qemu_pid)
+    Ok((qemu_pid, kept))
 }
 
 pub fn stats(run: Option<&str>, json: bool) -> Result<()> {
@@ -2220,6 +2313,15 @@ pub fn logs(run: Option<&str>, tail: usize, follow: bool, json: bool) -> Result<
                     .collect()
             })
             .unwrap_or_default()
+    } else if !path.exists() {
+        // 四轮审计挂账（回落双行提示）：run 不活且 serial.log 缺席——旧版
+        // 空静默 exit 0（人读零输出、json 空 lines 数组），比报错更误导。
+        // stderr 一行说明后退；stdout 行为零漂移。文件在席路径不变。
+        eprintln!(
+            "berry: no serial.log in {} (run not live / file absent)",
+            run.display()
+        );
+        Vec::new()
     } else {
         std::fs::read_to_string(&path)
             .unwrap_or_default()
@@ -2382,4 +2484,93 @@ fn stop_child(child: &mut Child, qmp: Option<&mut QmpClient>) {
     }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+// ---- 四轮审计（D4 序·测试续建）：find_run 两级回落护栏——vnc 在席目录
+// ---- 优先于更新的无 vnc 目录 / 全无 vnc 回落最新 meta.json / 无
+// ---- meta.json 被滤 / 空 root 报错。BERRY_HOME 是进程级 env，经
+// ---- run_dir::ENV_LOCK 与其他 env 触碰测试串行；mtime 用 set_modified
+// ---- 钉死序（目录自身 mtime 是 find_run 的排序键）。
+#[cfg(unix)]
+#[cfg(test)]
+mod find_run_tests {
+    use super::*;
+    use std::time::{Duration, SystemTime};
+
+    /// 造一个 run 候选目录：meta.json 在 = 合法候选；vnc.sock 在 = vnc 级
+    /// 候选；mtime 钉到 base+off 秒（目录 mtime 是排序键，set_modified
+    /// 免真实时间流逝的偶发）。
+    fn mk_run(
+        root: &Path,
+        name: &str,
+        off: u64,
+        meta: bool,
+        vnc: bool,
+    ) -> PathBuf {
+        let d = root.join(name);
+        std::fs::create_dir_all(&d).unwrap();
+        if meta {
+            std::fs::write(d.join("meta.json"), "{}").unwrap();
+        }
+        if vnc {
+            std::fs::write(d.join("vnc.sock"), "").unwrap();
+        }
+        let t = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000 + off);
+        std::fs::File::open(&d).unwrap().set_modified(t).unwrap();
+        d
+    }
+
+    fn tmp_home(tag: &str) -> PathBuf {
+        let tmp = std::env::temp_dir().join(format!("berry-findrun-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("run")).unwrap();
+        std::env::set_var("BERRY_HOME", &tmp);
+        tmp
+    }
+
+    #[test]
+    fn vnc_dir_wins_over_newer_non_vnc() {
+        let _g = crate::run_dir::ENV_LOCK.lock().unwrap();
+        let tmp = tmp_home("vnc-wins");
+        let root = tmp.join("run");
+        let older_vnc = mk_run(&root, "100-a", 100, true, true);
+        let _newer = mk_run(&root, "200-b", 200, true, false);
+        assert_eq!(find_run(None).unwrap(), older_vnc);
+        std::env::remove_var("BERRY_HOME");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn all_no_vnc_falls_back_to_newest_meta() {
+        let _g = crate::run_dir::ENV_LOCK.lock().unwrap();
+        let tmp = tmp_home("fallback");
+        let root = tmp.join("run");
+        let _older = mk_run(&root, "100-a", 100, true, false);
+        let newer = mk_run(&root, "200-b", 200, true, false);
+        assert_eq!(find_run(None).unwrap(), newer);
+        std::env::remove_var("BERRY_HOME");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn dirs_without_meta_are_filtered() {
+        let _g = crate::run_dir::ENV_LOCK.lock().unwrap();
+        let tmp = tmp_home("no-meta");
+        let root = tmp.join("run");
+        let older = mk_run(&root, "100-a", 100, true, false);
+        // 更新的目录无 meta.json（残目录）：被滤，不夺回落位。
+        let _newest_nometa = mk_run(&root, "300-c", 300, false, false);
+        assert_eq!(find_run(None).unwrap(), older);
+        std::env::remove_var("BERRY_HOME");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn empty_root_errors() {
+        let _g = crate::run_dir::ENV_LOCK.lock().unwrap();
+        let tmp = tmp_home("empty");
+        assert!(find_run(None).is_err());
+        std::env::remove_var("BERRY_HOME");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

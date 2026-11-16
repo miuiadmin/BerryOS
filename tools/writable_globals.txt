@@ -7,6 +7,7 @@ arch/aarch64/src/fwcfg.rs::RAMFB_CFG	arch
 arch/aarch64/src/kern_lock.rs::NAME_HOOK	scheduler
 arch/aarch64/src/kern_lock.rs::PREEMPT_ENVELOPE	scheduler
 arch/aarch64/src/kern_lock.rs::SVC_WINDOW	scheduler
+arch/aarch64/src/klog_ring.rs::KLOG_RINGS	arch
 arch/aarch64/src/lib.rs::DEMAND_FAULT_PROBE	arch
 arch/aarch64/src/lib.rs::DEMAND_FAULT_PROBE_EL0	arch
 arch/aarch64/src/lib.rs::IRQ_DISPATCH	arch
@@ -60,6 +61,7 @@ kernel/src/process.rs::HT_DRAINQ	other
 kernel/src/process.rs::HT_DRAINQ_LEN	other
 kernel/src/process.rs::HT_DRAINQ_WARNED	other
 kernel/src/syscall.rs::BOOTSTRAP_HT	boot
+kernel/src/syscall.rs::KLOG_SNAP_STAGE	boot
 kernel/src/telemetry.rs::PRESSURE_OUTLET	telemetry
 kernel/src/telemetry.rs::SWITCH_RINGS	telemetry
 kernel/src/telemetry.rs::WAKE_RINGS	telemetry

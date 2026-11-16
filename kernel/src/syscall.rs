@@ -467,6 +467,63 @@ extern "C" fn sys_power_off(_tf: &mut TrapFrame) -> i64 {
     ERR_NOT_SUPPORTED as i64
 }
 
+// ---- 遥测环读口（阶段五第 16 步：0x84 telemetry_open 翻真——klog 快照首域）----
+
+/// 0x84 op 域：0 = klog 快照（内核日志字节环——`arch .../klog_ring.rs`，串口
+/// 镜像）。后续波次补 SwitchRec / WakeRec 环读口（各自新 op 值，add-only）。
+const TELEMETRY_OP_KLOG: u64 = 0;
+
+/// 单次快照读帽（= 单环容量 16KiB——再大也只装得下单环最新段；bsh dmesg
+/// 消费面 4KiB 尾帽远在其下）。
+const TELEMETRY_SNAPSHOT_MAX: usize = berry_hal_aarch64::klog_ring::KLOG_RING_SIZE;
+
+/// klog 快照暂存（ring 快照 → copy_out 之间的稳定缓冲）。**单写者 = KL**：
+/// 本 handler 恒 TABLE 类（KL 全局互斥跨核串行）+ ktest EL1 面同经 dispatch
+/// 取锁——无第二并发写者，免独立锁。
+static mut KLOG_SNAP_STAGE: [u8; TELEMETRY_SNAPSHOT_MAX] = [0; TELEMETRY_SNAPSHOT_MAX];
+
+/// `berry_telemetry_open(op, buf, len)`（0x84，阶段五第 16 步翻真首域）：
+/// op=0 klog 快照——读两核 klog 字节环拼接 copy_out 到 `buf`，返回实写字节
+/// 数（>0）。拼接契约：CPU 序（环 0 → 环 1）、环内旧→新、每环贡献其**最新**
+/// `min(环内有效字节, 余量)` 字节（先到环优先占满——裸相串口主力在 CPU0，
+/// dmesg 尾部语义天然成立；两环拼接非时序归并，读方自知）。
+///
+/// 拒面：op 域外 → -ENOTSUP（后续 SwitchRec/WakeRec op 语义位）；`len` 为 0
+/// 或 > [`TELEMETRY_SNAPSHOT_MAX`] → -EINVAL；copy_out 失败 → -EFAULT（逐环
+/// 分段拷贝，失败前的段已写——诚实部分读，调用方重试）。零 handle 零权利位
+/// （系统级遥测读面——统计信号非对象内容，`sched_util_snapshot` 同族口径）。
+///
+/// 锁类 TABLE：klog 环 seqlock 读无共享串行面；copy_out 链走查调用方页表
+/// = §A113 读者面（同 0x61 clock_read）。
+extern "C" fn sys_telemetry_open(tf: &mut TrapFrame) -> i64 {
+    let (op, ptr, len) = (tf.regs[1], tf.regs[2], tf.regs[3]);
+    if op != TELEMETRY_OP_KLOG {
+        return ERR_NOT_SUPPORTED as i64; // op 域外（后续环读口预留）
+    }
+    if len == 0 || len as usize > TELEMETRY_SNAPSHOT_MAX {
+        return ERR_INVALID_ARG as i64;
+    }
+    let el1 = caller_is_el1(tf);
+    // SAFETY: 单写者 = KL（见 KLOG_SNAP_STAGE 注）；本 handler 全程 KL 窗。
+    let stage = unsafe { &mut *core::ptr::addr_of_mut!(KLOG_SNAP_STAGE) };
+    let mut total: usize = 0;
+    for cpu in 0..berry_hal_aarch64::klog_ring::KLOG_NCPUS {
+        let rem = len as usize - total;
+        if rem == 0 {
+            break;
+        }
+        let n = berry_hal_aarch64::klog_ring::snapshot_into(cpu, &mut stage[..rem]);
+        if n == 0 {
+            continue; // 空环/读窗不稳——跳过该环（诚实空，不重试占锁）
+        }
+        match copy_to_user(el1, ptr + total as u64, &stage[..n]) {
+            Ok(()) => total += n,
+            Err(e) => return e as i64, // -EFAULT 透传（此前段已写=诚实部分读）
+        }
+    }
+    total as i64
+}
+
 /// MONOTONIC 纳秒 → CNTVCT 周期（先商后余防中间溢出，与 [`sys_clock_read`]
 /// 对称——`deadline_ns × 62.5MHz` 直乘在 ~29 年处溢 u64，拆两项后安全）。
 /// `freq==0` → `None`（真机异常，调用方折 -ENOTSUP）。
@@ -4067,4 +4124,10 @@ pub fn install() {
     // 0x87 signal_take）+ policy SNAPS 三槽轮转区是全局单写者共享面（KL 串
     // 行跨核 SVC 写者；读者 apply/weight_of 在 RQ 屏蔽决策窗，无共同写窗）。
     reg(0x83, sys_policy_bind, SVC_CLASS_TABLE);
+    // —— TABLE：阶段五第 16 步 0x84 telemetry_open 翻真（klog 快照首域）。
+    // 同 0x83：v3 在册号、abi_gen 常量层不产 NR_TELEMETRY_OPEN，字面量挂
+    // 派发（v3 常量层落地后换常量名）。TABLE 理由：copy_out 链走查调用方
+    // 页表（§A113 读者面，同 0x61/0x87）+ 快照暂存 stage 是 KL 串行共享面
+    //（见 sys_telemetry_open 注）。
+    reg(0x84, sys_telemetry_open, SVC_CLASS_TABLE);
 }

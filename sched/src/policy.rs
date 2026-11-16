@@ -390,7 +390,9 @@ pub fn bound() -> bool {
 /// IRQ 热路径零分配。快路径：哨兵/空表两次分支即返（§2「开销恒定」的
 /// 空态兑现）。v1.3 起顺带消费 ①放置偏置：SMP 参与门开且 placement≠0
 /// 才写 `Task::placement_hint`（单核 = 零写入——空表等价纪律延伸到放置
-/// 面；**只存不路由**，唤醒选核的真消费面随 SMP 路由接，见函数尾注）。
+/// 面；**只存不路由**——放置路由的真消费面在 [`crate::sched::place`] 的
+/// EAS 接线（06 号终判管道②；hint 读出口 = [`placement_hint`]），TCB
+/// 字段留遥测/迁移面消费）。
 ///
 /// **shadow 对账挂最前**（每次调用都对账，active 决策逻辑零改动）：
 /// [`shadow_reconcile`] 只读只计数——shadow 谱系空时一次 gen 读即返，热
@@ -422,9 +424,11 @@ pub fn apply(task: &mut Task) {
         task.epp = e;
     }
     // v1.3 EAS-1 首刀（`调点调度-v1.3` §6 placement 第一消费者·基础设施）：
-    // ①放置偏置的 TCB 落点——**只存不路由**（唤醒选核的真路由面等
-    // smoke-smp 三相 LB 稳定后再接）。单核形态（SMP 参与门关）→ 零写入：
-    // placement 有值 = 无操作，不改变任何行为（空表等价纪律延伸到放置面）。
+    // ①放置偏置的 TCB 落点——**只存不路由**（放置路由面已由
+    // `crate::sched::place` EAS 接线消费——06 号终判管道②，读出口 =
+    // [`placement_hint`]；本 TCB 字段留遥测/迁移面）。单核形态（SMP 参与门
+    // 关）→ 零写入：placement 有值 = 无操作，不改变任何行为（空表等价纪律
+    // 延伸到放置面）。
     // 短路序 = placement==0 先判：无放置偏置的常见态零新增原子读。
     if slot.placement != 0 && hal::smp::par_enabled() {
         task.placement_hint = slot.placement;
@@ -451,13 +455,13 @@ pub(crate) fn weight_of(task: &Task) -> i32 {
 }
 
 /// 该 key 当前绑定的放置偏置（动作空间①：`调点调度-v1.3` §6 placement
-/// 第一消费者——唤醒路径核选择的读出口）：读活跃快照 O(1) 查表透传
-/// [`SnapSlot::placement`]。三值词汇表：**0 = 无意见**（默认——未绑/空表/
+/// 第一消费者）：读活跃快照 O(1) 查表透传 [`SnapSlot::placement`]。三值词汇表：**0 = 无意见**（默认——未绑/空表/
 /// 未命中/哨兵键，与接口缺席等价）、1 = 偏 little（省电核 CPU0）、2 = 偏
-/// big（性能核 CPU1）。越域注入值原样透传（v1 注入面 = 受信内核侧，词汇
-/// 执法随 SMP 真消费面定）。v1.3 首刀只立读出口——「placement 值经策略表
-/// 正确可达」的 ktest 断言对象；唤醒选核的真消费随 SMP 路由（smoke-smp
-/// 三相 LB 稳定后）接，单核形态下 placement 有值 = 无操作。
+/// big（性能核 CPU1）。越域注入值原样透传——词汇执法在消费面收口
+/// （[`crate::sched::eas_pick_place`]：非 {1,2} 一律按无意见处理）。
+/// 消费面已接：spawn 放置路径 [`crate::sched::place`] →
+/// [`crate::sched::eas_place`]（06 号终判管道②首接——hint 经 prev 入座
+/// 进 berry-em `eas_pick_cpu` 两段选核，「偏好非钉死」）。
 ///
 /// **overutilized 门控**（§7 回退——EAS 永远是机会主义）：任一核 util 超
 /// 域最高容量 80%（[`crate::util::any_overutilized`]）→ 恒 0（放置 hint

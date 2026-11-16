@@ -161,3 +161,10 @@ kind = "string"
 injectors = ["（无仓内注入方——手拼 -fw_cfg 专递，调度审计 08 号实录）"]
 consumer = "kernel/src/main.rs（常量 + 消费点）"
 polarity = "死键收编：内核常量在、产链无注入——加注入面或注记手拼专递"
+
+[[keys]]
+name = "loadgen"
+kind = "string"
+injectors = ["kernel/src/main.rs 载荷生成门（s=<ns>;b=<0|1>——CP-06 调度 lane，四轮实施时对拍实抓补登记）"]
+consumer = "kernel/src/main.rs LOADGEN_PROBE_NAME（在位才 spawn loadgen 探针）"
+polarity = "在位=spawn；缺席零扰动"

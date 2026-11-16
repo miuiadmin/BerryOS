@@ -189,6 +189,7 @@ pub fn spawn_image(
     memory_mib: u32,
     tablet: bool,
     display_mode: Option<&str>,
+    profile_id: &str,
     ram_path: Option<&Path>,
     ext_vnc: Option<&str>,
     tls_creds: Option<&Path>,
@@ -242,10 +243,12 @@ pub fn spawn_image(
         .arg("-device").arg("usb-storage,drive=bb");
     // GUI 桌面数据盘（可选）：launcher 需要 virtio-blk 数据盘才拿到
     // fs/app/input 三枚 gift（svcmgr BLK_OK 门）；FAT12 盘由 just desktop
-    // 造。env 入口避免给 Device/CLI 加一整条参数链。
-    let data_disk = std::env::var_os("BERRY_DATA_DISK")
-        .map(std::path::PathBuf::from)
-        .map(|p| std::fs::canonicalize(&p).unwrap_or(p));
+    // 造。解析单源在 data_disk_plan（spawn 真挂载与 doctor 静态推演同源，
+    // fwcfg_plan 先例）：显式 BERRY_DATA_DISK 路径 > "off" 显式关 >
+    // home()/data/<profile>.img 存在即挂、缺席即无盘（挂账「持久化入口
+    // 收敛」setter 侧：berry 不内嵌 mkfat，首次造盘归 just desktop，
+    // berry CLI 只复用——双击态无 shell 环境也能拿到缺省盘）。
+    let data_disk = data_disk_plan(profile_id);
     // virtio-mmio 默认 legacy；guest 驱动族只认 VERSION_1（inputd GUI-4
     // 判例；guifbd vgpu 扫描遇占用槽 ver≠2 即弃 gpu 落 ramfb——05 号 §5.4
     // 实测）。gpu 恒挂（见下）后此项不再随 tablet/数据盘条件化。
@@ -270,7 +273,12 @@ pub fn spawn_image(
     // 声明序 = console 绑定序：QEMU 的 VNC 面向先声明的图形设备，gpu 须
     // 先于 ramfb（09 号 §4 实证定谳：ramfb 在前则 VNC 面恒黑帧）；ramfb
     // 保留为后备（guifbd 分派零改）。
-    cmd.arg("-device").arg("virtio-gpu-device");
+    // BERRY_NO_VGPU=1：跳过 virtio-gpu 仅挂 ramfb——ramfb 单后端客机构建
+    // （如 knife6 系镜像）在此形态下 VNC 才面向 ramfb；gpu 双后端客机不
+    // 要设（会失去加速相）。诊断/演示开关，缺省零漂移。
+    if std::env::var_os("BERRY_NO_VGPU").is_none() {
+        cmd.arg("-device").arg("virtio-gpu-device");
+    }
     cmd.arg("-device").arg("ramfb");
     // M2 第 12 步：fw_cfg 具名键注入单源化——键集与条件只在 fwcfg_plan
     // 一处定义，spawn_image（真注入）与 doctor（静态推演）同源消费；全景
@@ -319,6 +327,32 @@ pub fn fwcfg_plan(
         ("opt/berry/noktest", Some("1".to_string()), false),
         ("opt/berry/rtc", rtc, true),
     ]
+}
+
+/// 缺省数据盘位：home()/data/<profile>.img（profile 命名盘，一次造跨启动
+/// 复用——just desktop 的造盘口径同此路径）。
+pub fn default_data_disk(profile_id: &str) -> PathBuf {
+    crate::run_dir::home().join("data").join(format!("{profile_id}.img"))
+}
+
+/// 数据盘解析单源（spawn_image 真挂载与 doctor 静态推演同源，fwcfg_plan
+/// 先例）：
+/// - `BERRY_DATA_DISK=<path>`：显式路径直用（canonicalize 防 QEMU cwd
+///   相对路径失效；在席与否交 QEMU 自己报——显式选择不静默吞）。
+/// - `BERRY_DATA_DISK=off`：显式关（缺省盘在席也不挂）。
+/// - 未设：default_data_disk(profile_id) 存在即挂、缺席即无盘——berry
+///   不内嵌 mkfat，只挂已有件；首次造盘归 just desktop / 手动 mkfat。
+pub fn data_disk_plan(profile_id: &str) -> Option<PathBuf> {
+    if let Some(v) = std::env::var_os("BERRY_DATA_DISK") {
+        if v.to_string_lossy() == "off" {
+            return None;
+        }
+        let p = PathBuf::from(v);
+        return Some(std::fs::canonicalize(&p).unwrap_or(p));
+    }
+    let p = default_data_disk(profile_id);
+    p.is_file()
+        .then(|| std::fs::canonicalize(&p).unwrap_or(p))
 }
 
 /// App-bundle / runtime-pack resource roots: executable dir, the macOS
@@ -476,4 +510,179 @@ pub fn wait_for_path(path: &Path, timeout: Duration) -> Result<()> {
         "timed out waiting for {}",
         path.display()
     )))
+}
+
+// ---- 四轮审计（D4）：fwcfg_plan 条件矩阵护栏——spawn_image（真注入）与
+// ---- doctor（静态推演）双消费同源，键集改动两处同漂，此前零护栏。
+#[cfg(test)]
+mod fwcfg_plan_tests {
+    use super::*;
+
+    #[test]
+    fn plan_conditional_matrix() {
+        // TCG + 无 display 档：display/accel 双条件缺席（conditional=true），
+        // noktest 恒注（conditional=false），rtc 依系统时间（只断言结构）。
+        let v = fwcfg_plan(None, Accel::Tcg);
+        assert_eq!(v[0].0, "opt/berry/display");
+        assert_eq!(v[0].1, None);
+        assert!(v[0].2);
+        assert_eq!(v[1].0, "opt/berry/accel");
+        assert_eq!(v[1].1, None);
+        assert!(v[1].2);
+        assert_eq!(v[2].0, "opt/berry/noktest");
+        assert_eq!(v[2].1.as_deref(), Some("1"));
+        assert!(!v[2].2);
+        assert_eq!(v[3].0, "opt/berry/rtc");
+        assert!(v[3].2);
+        assert_eq!(v.len(), 4);
+    }
+
+    #[test]
+    fn plan_accel_and_display_values() {
+        // 硬件加速档：accel 注值。
+        let v = fwcfg_plan(None, Accel::Hvf);
+        assert_eq!(v[1].1.as_deref(), Some("hvf"));
+        let v = fwcfg_plan(None, Accel::Kvm);
+        assert_eq!(v[1].1.as_deref(), Some("kvm"));
+        // display 给档：注 profile 几何串原样。
+        let v = fwcfg_plan(Some("480x1000@60"), Accel::Tcg);
+        assert_eq!(v[0].1.as_deref(), Some("480x1000@60"));
+        // rtc 在时间可读环境下总有值（epoch 秒，数值域粗校验）。
+        if let Some(rtc) = v[3].1.as_deref() {
+            let secs: u64 = rtc.parse().unwrap();
+            assert!(secs > 1_700_000_000);
+        }
+    }
+}
+
+// ---- 四轮审计（D4 序·测试续建）：vars_store 三分支与 data_disk_plan
+// ---- 分支护栏。BERRY_VARS_PERSIST / BERRY_DATA_DISK / BERRY_HOME 是进程
+// ---- 级 env——经 run_dir::ENV_LOCK 与其他 env 触碰测试串行。
+#[cfg(test)]
+mod vars_store_tests {
+    use super::*;
+    use crate::run_dir::ENV_LOCK;
+
+    fn tmp_home(tag: &str) -> PathBuf {
+        let tmp = std::env::temp_dir().join(format!("berry-vars-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        tmp
+    }
+
+    #[test]
+    fn persist_set_and_file_present_reuses() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let tmp = tmp_home("reuse");
+        let persist = tmp.join("persist-vars.fd");
+        std::fs::write(&persist, b"PERSIST-MARK").unwrap();
+        let mtime = std::fs::metadata(&persist).unwrap().modified().unwrap();
+        std::env::set_var("BERRY_VARS_PERSIST", &persist);
+        let run = tmp.join("run");
+        std::fs::create_dir_all(&run).unwrap();
+        let got = vars_store(&run, 64).unwrap();
+        // 在席即复用：路径即持久件，mtime 与内容双不变（未重造）。
+        assert_eq!(got, persist);
+        assert_eq!(
+            std::fs::metadata(&persist).unwrap().modified().unwrap(),
+            mtime
+        );
+        assert_eq!(std::fs::read(&persist).unwrap(), b"PERSIST-MARK");
+        // run 目录不落 blank（持久分支不写 run vars.fd）。
+        assert!(!run.join("vars.fd").exists());
+        std::env::remove_var("BERRY_VARS_PERSIST");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn persist_set_and_file_absent_creates_blank() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let tmp = tmp_home("blank");
+        let persist = tmp.join("persist-vars.fd");
+        std::env::set_var("BERRY_VARS_PERSIST", &persist);
+        let run = tmp.join("run");
+        std::fs::create_dir_all(&run).unwrap();
+        let got = vars_store(&run, 2).unwrap();
+        // 不在则造 blank 到持久位：0xff × mib MiB。
+        assert_eq!(got, persist);
+        let data = std::fs::read(&persist).unwrap();
+        assert_eq!(data.len(), 2 * 1024 * 1024);
+        assert!(data.iter().all(|&b| b == 0xff));
+        assert!(!run.join("vars.fd").exists());
+        std::env::remove_var("BERRY_VARS_PERSIST");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn unset_uses_per_run_blank() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("BERRY_VARS_PERSIST");
+        let tmp = tmp_home("perrun");
+        let run = tmp.join("run");
+        std::fs::create_dir_all(&run).unwrap();
+        let got = vars_store(&run, 1).unwrap();
+        // 未设：one-per-run blank（现状零漂移）。
+        assert_eq!(got, run.join("vars.fd"));
+        assert!(got.is_file());
+        let data = std::fs::read(&got).unwrap();
+        assert_eq!(data.len(), 1 << 20);
+        assert!(data.iter().all(|&b| b == 0xff));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
+
+#[cfg(test)]
+mod data_disk_tests {
+    use super::*;
+    use crate::run_dir::ENV_LOCK;
+
+    fn tmp_home(tag: &str) -> (PathBuf, PathBuf) {
+        let tmp = std::env::temp_dir().join(format!("berry-dd-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let home = tmp.join("home");
+        std::fs::create_dir_all(home.join("data")).unwrap();
+        std::env::set_var("BERRY_HOME", &home);
+        (tmp, home)
+    }
+
+    #[test]
+    fn default_mounts_existing_and_absent_is_none() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("BERRY_DATA_DISK");
+        let (tmp, home) = tmp_home("default");
+        let disk = home.join("data").join("desktop.img");
+        std::fs::write(&disk, b"FAAT").unwrap();
+        // 在席即挂（canonicalize 后的绝对位）。
+        assert_eq!(
+            data_disk_plan("desktop"),
+            Some(std::fs::canonicalize(&disk).unwrap())
+        );
+        // 缺席即无盘——berry 只挂已有件，不内嵌 mkfat。
+        assert_eq!(data_disk_plan("phone"), None);
+        assert_eq!(default_data_disk("phone"), home.join("data").join("phone.img"));
+        std::env::remove_var("BERRY_HOME");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn env_off_disables_and_env_path_wins() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let (tmp, home) = tmp_home("env");
+        let disk = home.join("data").join("desktop.img");
+        std::fs::write(&disk, b"FAAT").unwrap();
+        // off 显式关：缺省盘在席也不挂。
+        std::env::set_var("BERRY_DATA_DISK", "off");
+        assert_eq!(data_disk_plan("desktop"), None);
+        // 显式路径直用（canonicalize 口径同 spawn argv）。
+        let other = tmp.join("explicit.img");
+        std::fs::write(&other, b"FAAT").unwrap();
+        std::env::set_var("BERRY_DATA_DISK", &other);
+        assert_eq!(
+            data_disk_plan("desktop"),
+            Some(std::fs::canonicalize(&other).unwrap())
+        );
+        std::env::remove_var("BERRY_DATA_DISK");
+        std::env::remove_var("BERRY_HOME");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

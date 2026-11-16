@@ -63,3 +63,15 @@ jobs:
 
       - name: shvarcheck（bash3.2 吞名面门禁）
         run: python3 tools/shvarcheck.py
+
+      # W1-Q20（2026-11-16）：tools 自检执行面（CI 层缺口收口）——判例族
+      # 「有 selftest 零自动执法」在 CI 侧的同款缺口：tools/** 正是本轻道
+      # 的触发路径，但轻道六门不含任何自检真跑——只动 tools/*.py 的 PR
+      # 全绿合入而受影响工具的自检从未在 CI 执行（「接线」只保证 justfile
+      # 有行，不保证行被执行）。--run 从 justfile 单源读出接线行真跑
+      # （44 行全量，自建 runner 实测 ~18s，轻道 10min 帽内宽裕）；首红即
+      # 停，日志逐行记账指认罪犯。注册表仍是 justfile——本步不持第二份
+      # 清单，新增自检接线后本步自动带上（selftest_guard 执法扫描保证
+      # 有自检必有接线行，两门互锁）。
+      - name: tools 自检全量真跑（selftest_guard --run）
+        run: python3 tools/selftest_guard.py --run

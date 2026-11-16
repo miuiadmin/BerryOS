@@ -31,6 +31,10 @@ pub struct Device {
     accel: qemu::Accel,
     memory_mib: u32,
     mode: Option<String>,
+    /// 缺省数据盘解析键（data_disk_plan 按 profile 命名盘挂
+    /// home()/data/<id>.img）：restart_in_place 重生 QEMU 时须用同一
+    /// profile 的盘。
+    profile_id: String,
     restart_on_crash: bool,
     child: std::process::Child,
     qmp: Arc<Mutex<QmpClient>>,
@@ -69,6 +73,10 @@ impl Device {
         // after QEMU spawns.
         let resolved_vnc = vnc_cfg::resolve(vnc)?;
         let mut run = RunDir::create(label, keep)?;
+        // 取舍注记（三轮审计 C3）：下方 pre-spawn 早退（vars/listen/pass/
+        // meta 写的 ?）不 keep_fail——彼时 QEMU 未起，目录仅 meta/vars
+        // 半成品，保留价值低于失败保留的信噪比；QEMU 起后的失败保留走
+        // boot_with_retry 终态 keep_fail。
         run_dir::write_state(run.path(), "starting");
         let vars = qemu::vars_store(run.path(), 64)?;
         let serial = run.file("serial.log");
@@ -137,6 +145,7 @@ impl Device {
             mem,
             true,
             mode.as_deref(),
+            profile.id,
             Some(&ram_path),
             &mut run,
             stop_flag.clone(),
@@ -156,6 +165,7 @@ impl Device {
             accel,
             memory_mib: mem,
             mode,
+            profile_id: profile.id.to_string(),
             restart_on_crash: false,
             child,
             qmp,
@@ -218,6 +228,7 @@ impl Device {
             self.memory_mib,
             true,
             self.mode.as_deref(),
+            &self.profile_id,
             Some(&self.ram_path),
             &mut self.run,
             self.stop_flag.clone(),
@@ -347,6 +358,7 @@ fn boot_runtime(
     mem: u32,
     tablet: bool,
     mode: Option<&str>,
+    profile_id: &str,
     ram_path: Option<&std::path::Path>,
     run: &mut RunDir,
     stop_flag: Arc<std::sync::atomic::AtomicBool>,
@@ -363,9 +375,8 @@ fn boot_runtime(
     };
     let tls_creds = ext.and_then(|e| e.tls_dir.as_deref());
     let mut child = qemu::spawn_image(
-        qemu, image, firmware, vars, serial, log, vnc, qmp_ep, accel, mem, tablet, mode, ram_path,
-        ext_arg.as_deref(),
-        tls_creds,
+        qemu, image, firmware, vars, serial, log, vnc, qmp_ep, accel, mem, tablet, mode,
+        profile_id, ram_path, ext_arg.as_deref(), tls_creds,
     )?;
     let meta_path = run.file("meta.json");
     let mut meta: serde_json::Value = std::fs::read(&meta_path)
@@ -485,6 +496,7 @@ fn boot_with_retry(
     mem: u32,
     tablet: bool,
     mode: Option<&str>,
+    profile_id: &str,
     ram_path: Option<&std::path::Path>,
     run: &mut RunDir,
     stop_flag: Arc<std::sync::atomic::AtomicBool>,
@@ -496,8 +508,8 @@ fn boot_with_retry(
     Option<ControlServer>,
 )> {
     let first = boot_runtime(
-        qemu, image, firmware, vars, serial, log, vnc, qmp_ep, accel, mem, tablet, mode, ram_path,
-        run, stop_flag.clone(), ext.as_ref(),
+        qemu, image, firmware, vars, serial, log, vnc, qmp_ep, accel, mem, tablet, mode,
+        profile_id, ram_path, run, stop_flag.clone(), ext.as_ref(),
     );
     if first.is_ok() {
         return first;
@@ -512,21 +524,35 @@ fn boot_with_retry(
         return first;
     };
     e.rebuild_auto_ports();
-    vnc_cfg::write_listen(run.path(), &e.host, e.port, e.ws_port, e.tls_dir.is_some())?;
+    // 三轮审计补：重试准备段（写 listen/meta）两个早退出口同属失败终态
+    // ——`?` 直传会让 RunDir::drop 按非 keep 焚掉首轮失败现场（boot_
+    // runtime 已产的 serial.log/qemu.log），keep_fail 对齐全 Err 出口。
+    if let Err(e) = vnc_cfg::write_listen(
+        run.path(),
+        &e.host,
+        e.port,
+        e.ws_port,
+        e.tls_dir.is_some(),
+    ) {
+        run.keep_fail();
+        return Err(e);
+    }
     let meta_path = run.file("meta.json");
     if let Ok(b) = std::fs::read(&meta_path) {
         if let Ok(mut meta) = serde_json::from_slice::<serde_json::Value>(&b) {
             meta["vnc_listen"] =
                 vnc_cfg::listen_value(&e.host, e.port, e.ws_port, e.tls_dir.is_some());
-            let _ = std::fs::write(&meta_path, serde_json::to_vec_pretty(&meta)?);
+            if let Ok(vec) = serde_json::to_vec_pretty(&meta) {
+                let _ = std::fs::write(&meta_path, vec);
+            }
         }
     }
     // Fresh log so a second failure shows the retry's own tail, not the
     // first attempt's.
     let _ = std::fs::File::create(log);
     let second = boot_runtime(
-        qemu, image, firmware, vars, serial, log, vnc, qmp_ep, accel, mem, tablet, mode, ram_path,
-        run, stop_flag, ext.as_ref(),
+        qemu, image, firmware, vars, serial, log, vnc, qmp_ep, accel, mem, tablet, mode,
+        profile_id, ram_path, run, stop_flag, ext.as_ref(),
     );
     if second.is_err() {
         run.keep_fail();

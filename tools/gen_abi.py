@@ -258,6 +258,9 @@ NO_GATE_SYSCALLS = {
                               # 无能力框架；门控随 I3 关机流程正规化刀）
     "sched_util_snapshot",    # 零 handle（系统级遥测读面——util 是统计信号非
                               # 对象内容；CP-08 首环，单用户仿真无能力框架）
+    "telemetry_open",         # 零 handle（系统级遥测读面——klog 字节环是串口
+                              # 镜像非对象内容，sched_util_snapshot 同族口径；
+                              # 阶段五第 16 步 v3 号翻真，add-only op 域只读）
 }
 
 
@@ -996,6 +999,8 @@ stage = "v1"
            if not p.exists() or p.read_text("utf-8") != want]
     check("在册五产物逐字节 oracle", not bad, f"漂移: {bad}")
     nt, nd, nr, nc = four_tuple(real)
+    # 钉板值随在册面活算对齐（CP-08 加 0x40 v1 号后 38→39——彼批漏更此钉，
+    # 实抓于阶段五第 16 步复跑；gen_abi 台账零 WARN 钉板不受影响）。
     # CP-08 0x40 sched_util_snapshot 加号（988944e09）随刀滚新：38/42/41→39/43/42
     # （nr_total/defined/registered 各 +1，帽 45 不动——abi_gen 头注同值单源）。
     check("在册四元组口径", (nt, nd, nr, nc) == (39, 43, 42, 45),

@@ -480,8 +480,8 @@ def run_once(kernel: str, el0: bool = False) -> dict[str, int]:
             proc.wait()
         # 二轮审计重修：finally 只杀进程——收割判定在 finally 之后才
         # raise（boot 超时/标记未达），此时 exc_info 已 None，旧条件式会
-        # 先删后红（失败必留对主失败面失效）。删除权移交收割成功出口
-        #（_bench_log_ok）；异常在飞（Ctrl-C/IO）仍打保留提示。
+        # 先删后红（失败必留对主失败面失效）。删除权移交收割成功出口的
+        # 内联 unlink；异常在飞（Ctrl-C/IO）仍打保留提示。
         if sys.exc_info()[0] is not None:
             print(f"bench: failure serial log kept: {log_path}", file=sys.stderr)
 
@@ -565,8 +565,8 @@ def run_rt(kernel: str) -> list[tuple[int, int, int, int]]:
             proc.wait()
         # 二轮审计重修：finally 只杀进程——收割判定在 finally 之后才
         # raise（boot 超时/标记未达），此时 exc_info 已 None，旧条件式会
-        # 先删后红（失败必留对主失败面失效）。删除权移交收割成功出口
-        #（_bench_log_ok）；异常在飞（Ctrl-C/IO）仍打保留提示。
+        # 先删后红（失败必留对主失败面失效）。删除权移交收割成功出口的
+        # 内联 unlink；异常在飞（Ctrl-C/IO）仍打保留提示。
         if sys.exc_info()[0] is not None:
             print(f"bench: failure serial log kept: {log_path}", file=sys.stderr)
 
@@ -649,8 +649,8 @@ def run_lat(kernel: str) -> dict[str, tuple[int, ...]]:
             proc.wait()
         # 二轮审计重修：finally 只杀进程——收割判定在 finally 之后才
         # raise（boot 超时/标记未达），此时 exc_info 已 None，旧条件式会
-        # 先删后红（失败必留对主失败面失效）。删除权移交收割成功出口
-        #（_bench_log_ok）；异常在飞（Ctrl-C/IO）仍打保留提示。
+        # 先删后红（失败必留对主失败面失效）。删除权移交收割成功出口的
+        # 内联 unlink；异常在飞（Ctrl-C/IO）仍打保留提示。
         if sys.exc_info()[0] is not None:
             print(f"bench: failure serial log kept: {log_path}", file=sys.stderr)
 
@@ -1181,8 +1181,8 @@ def run_icount(kernel: str, trace_off: bool = False) -> tuple[dict[str, int], di
             proc.wait()
         # 二轮审计重修：finally 只杀进程——收割判定在 finally 之后才
         # raise（boot 超时/标记未达），此时 exc_info 已 None，旧条件式会
-        # 先删后红（失败必留对主失败面失效）。删除权移交收割成功出口
-        #（_bench_log_ok）；异常在飞（Ctrl-C/IO）仍打保留提示。
+        # 先删后红（失败必留对主失败面失效）。删除权移交收割成功出口的
+        # 内联 unlink；异常在飞（Ctrl-C/IO）仍打保留提示。
         if sys.exc_info()[0] is not None:
             print(f"bench: failure serial log kept: {log_path}", file=sys.stderr)
 
