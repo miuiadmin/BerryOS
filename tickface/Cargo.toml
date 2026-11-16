@@ -1,0 +1,15 @@
+[package]
+name = "berry-tickface"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+
+[lib]
+name = "berry_tickface"
+path = "src/lib.rs"
+
+# W3-Q31：timer 滴答账纯函数面（tick→ns 倒数乘-移对预计算 + 快/慢双路
+# 资格判 + S-6 deadline 单调夹取律 + slice 预算再装数学 + LAST_VCT 回绕
+# 窗增量——host 可测钉板）。常量族与判定律单源在此，arch/aarch64
+# timer.rs 机械壳 re-export 消费（寄存器臂/原子 static 留壳）。
+[dependencies]
