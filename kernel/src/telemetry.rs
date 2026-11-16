@@ -207,11 +207,13 @@ fn ring_peek(cpu: usize, k: usize) -> Option<SwitchRec> {
     }
 }
 
-/// `cpu` 环内有效条数（min(total, RING_LEN)）。
+/// `cpu` 环内有效条数（min(total, RING_LEN)）。帽律单源
+/// `berry_telface::ringmerge::span_cap`（W3-Q81——环形缓冲「写了 N 条
+/// 只留最近 RING_LEN 条」的几何，host 钉板）。
 fn ring_span(cpu: usize) -> usize {
     // SAFETY: 只读 total（写方限本核，u64 读撕裂不在单核原子性讨论域）。
     let t = unsafe { (*core::ptr::addr_of!(SWITCH_RINGS))[cpu].total };
-    (t as usize).min(RING_LEN)
+    berry_telface::ringmerge::span_cap(t, RING_LEN)
 }
 
 /// `cpu` 环累计写入数。
@@ -233,31 +235,16 @@ pub fn span() -> usize {
 }
 
 /// 按新→旧序取合并第 `i` 条（0 = 最新；两环按 vct 归并——锁序=时序=vct 序
-/// 三位一体（义务⑨），vct 归并序 = 全局真序；越界 None）。
+/// 三位一体（义务⑨），vct 归并序 = 全局真序；越界 None）。归并判定律
+/// 单源 `berry_telface::ringmerge::merged_at`（W3-Q81——vct 大者胜/平局
+/// 取环 0/流尽 None，host 钉板；本壳只注入两环 peek 闭包）。
 pub fn last(i: usize) -> Option<SwitchRec> {
-    let mut k = [0usize; NCPUS]; // 各环已取条数（游标）
-    for _ in 0..=i {
-        // 两环各取当前游标条，vct 大者（更新）胜出。
-        let cands: [Option<SwitchRec>; NCPUS] = [ring_peek(0, k[0]), ring_peek(1, k[1])];
-        let winner = match (cands[0], cands[1]) {
-            (Some(a), Some(b)) => {
-                if a.vct >= b.vct {
-                    0
-                } else {
-                    1
-                }
-            }
-            (Some(_), None) => 0,
-            (None, Some(_)) => 1,
-            (None, None) => return None, // 合并流尽
-        };
-        let picked = cands[winner];
-        k[winner] += 1;
-        if k[0] + k[1] - 1 == i {
-            return picked;
-        }
-    }
-    None // 不可达（循环内必命中或流尽）
+    berry_telface::ringmerge::merged_at(
+        i,
+        |k| ring_peek(0, k),
+        |k| ring_peek(1, k),
+        |r: &SwitchRec| r.vct,
+    )
 }
 
 /// 环健康自检（watchdog 周期断言）：①有货；②vct 从旧到新单调不减（CNTVCT
@@ -698,7 +685,8 @@ fn wake_ring_peek(cpu: usize, k: usize) -> Option<WakeRec> {
 fn wake_ring_span(cpu: usize) -> usize {
     // SAFETY: 只读 total。
     let t = unsafe { (*core::ptr::addr_of!(WAKE_RINGS))[cpu].total };
-    (t as usize).min(WAKE_RING_LEN)
+    // 帽律单源 ringmerge::span_cap（W3-Q81——与切换环 ring_span 同一具）。
+    berry_telface::ringmerge::span_cap(t, WAKE_RING_LEN)
 }
 
 fn wake_ring_total(cpu: usize) -> u64 {
@@ -718,30 +706,15 @@ pub fn wake_span() -> usize {
 }
 
 /// 按新→旧序取合并第 `i` 条（0 = 最新；vct 归并同 [`last`]；越界 None）。
+/// 归并判定律单源 `ringmerge::merged_at`（W3-Q81——与切换环 last 同一具，
+/// 仅 peek 闭包与 vct 访问器不同）。
 pub fn wake_last(i: usize) -> Option<WakeRec> {
-    let mut k = [0usize; NCPUS];
-    for _ in 0..=i {
-        let cands: [Option<WakeRec>; NCPUS] =
-            [wake_ring_peek(0, k[0]), wake_ring_peek(1, k[1])];
-        let winner = match (cands[0], cands[1]) {
-            (Some(a), Some(b)) => {
-                if a.vct >= b.vct {
-                    0
-                } else {
-                    1
-                }
-            }
-            (Some(_), None) => 0,
-            (None, Some(_)) => 1,
-            (None, None) => return None,
-        };
-        let picked = cands[winner];
-        k[winner] += 1;
-        if k[0] + k[1] - 1 == i {
-            return picked;
-        }
-    }
-    None
+    berry_telface::ringmerge::merged_at(
+        i,
+        |k| wake_ring_peek(0, k),
+        |k| wake_ring_peek(1, k),
+        |r: &WakeRec| r.vct,
+    )
 }
 
 /// 环内出现过的唤醒原因掩码（bit0=Signaled、bit1=Timeout）。watchdog 断言
