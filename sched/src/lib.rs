@@ -75,6 +75,7 @@ pub use sched::{
     intent_snapshot_current, kill_all_tasks_by_pinned, last_killed,
     lb_stats,
     eas_pick_place, eas_place,
+    steal_band_rank, STEAL_RANK_COMPAT, STEAL_RANK_DEPRIOR, STEAL_RANK_PROTECT,
     on_irq_tick, on_sgi_resched, park_recheck, pi_boost_recount, pi_recompute_needed,
     pi_rq_lock, pi_rq_unlock, preempt_checkpoint, preempt_checkpoint_hits, preempt_count, preempt_disable,
     preempt_enable, print_window_enter, print_window_exit,

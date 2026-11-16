@@ -153,6 +153,14 @@ pub fn run() {
     // 配额/真出选/真醒源读/真翻期回场——SMPLZ 同款；切换舞蹈本体归
     // boot/smoke 面）。末位新号纪律——ktest done 前；sched::init 前跑。
     test_throttle_yield();
+    // SMP-01「band 偷取」遗留修（本刀·2026-11-16）：try_steal_one 的 victim
+    // 选择升级 steal_band_rank 三档偏好序——utility 偷到 interactive 密集核
+    // 降优先、interactive 留原核保响应。ktest 期 par 门恒关——钉决策面
+    // （真偷取环手术面归 smoke-smp/boot 相）。末位新号纪律——ktest done
+    // 前；sched::init 前跑。
+    test_steal_band();
+    // F4 wake 重放（SMP-01 §3.4 遗留修——钉决策面：par 门关时恒回 home）。
+    test_eas_wake_replay();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
@@ -11128,4 +11136,170 @@ fn test_throttle_yield() {
     assert_eq!(rq.len(), 0, "THRYLD：收口环须空");
 
     berry_hal_aarch64::uart_puts(b"THRYLD ok n=4\n");
+}
+
+/// SMP-01「band 偷取」遗留修（本刀·2026-11-16）：偷取 band 感知决策面钉板
+/// ——[`berry_sched::steal_band_rank`]（try_steal_one 的 victim 选择从
+/// 「首 eligible」升级三档偏好序）。修前缺口：victim 过滤（steal_filter
+/// 三值合取）不看带——utility 可能被偷到 interactive 密集核（挤占响应敏
+/// 感负载供给）。三档律：
+/// - interactive（0x02）：保护档——通常不偷（留原核保响应）；
+/// - utility（0x03）→ interactive 密集核（目标核环 int>util）：降优先
+///   （兜底档——比偷 interactive 或空手而归优）；
+/// - 其余（unit/无带/utility → 非密集核）：兼容档见首即偷（无带负载
+///   零漂移——boot task_a/task_b 旧形逐位不变）。
+/// 本测三面：SB-1 判定律本体（纯决策面全向）；SB-2 真带任务派生
+/// （spawn_intent → intent_effective → class_of_task → FairBand.band_id
+/// ——「任务怎么知道自己的带」单源面）；SB-3 双核偷取场景选优（任务书
+/// 指定形：CPU0 环 [int, util] → CPU1 只有 int〔密集〕→ 偷取应选 util）。
+/// ktest 纪律：par 门恒关——真偷取环手术面归 smoke-smp 相；环扫选优
+/// fold 以镜像函数钉（sched.rs 环扫同形：严格更优才替换，同档环序先者胜）。
+#[allow(clippy::unwrap_used)]
+fn test_steal_band() {
+    use berry_sched::{
+        class_of_task, for_each_runnable, pi_rq_lock, pi_rq_unlock, rq_unlink_kt, spawn_intent,
+        steal_band_rank, Task, TaskClass, INTENT_INTERACTIVE, INTENT_UNSPECIFIED, INTENT_UTILITY,
+        STEAL_RANK_COMPAT, STEAL_RANK_DEPRIOR, STEAL_RANK_PROTECT,
+    };
+
+    /// 占位入口（spawn 任务永不执行；halt 兜底——BANDM4 同款）。
+    extern "C" fn sb_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    // —— SB-1. 判定律本体（纯决策面全向）。——
+    // interactive 恒保护档（保护与目标核分布无关——留原核保响应）。
+    assert_eq!(
+        steal_band_rank(INTENT_INTERACTIVE, 1, 0),
+        STEAL_RANK_PROTECT,
+        "STEALBND：SB-1 interactive→密集核须保护档"
+    );
+    assert_eq!(
+        steal_band_rank(INTENT_INTERACTIVE, 0, 0),
+        STEAL_RANK_PROTECT,
+        "STEALBND：SB-1 interactive→空环须仍保护档（留原核与密集无关）"
+    );
+    // utility：仅目标核 interactive 密集（int>util）时降优先。
+    assert_eq!(
+        steal_band_rank(INTENT_UTILITY, 1, 0),
+        STEAL_RANK_DEPRIOR,
+        "STEALBND：SB-1 utility→interactive 密集核须降优先档"
+    );
+    assert_eq!(
+        steal_band_rank(INTENT_UTILITY, 2, 1),
+        STEAL_RANK_DEPRIOR,
+        "STEALBND：SB-1 密集判据须 int>util（2>1 密集）"
+    );
+    assert_eq!(
+        steal_band_rank(INTENT_UTILITY, 0, 0),
+        STEAL_RANK_COMPAT,
+        "STEALBND：SB-1 utility→空环〔idle 偷取常态〕须兼容档（无响应供给之争）"
+    );
+    assert_eq!(
+        steal_band_rank(INTENT_UTILITY, 2, 2),
+        STEAL_RANK_COMPAT,
+        "STEALBND：SB-1 均势核（int==util）须兼容档（非密集）"
+    );
+    assert_eq!(
+        steal_band_rank(INTENT_UTILITY, 0, 5),
+        STEAL_RANK_COMPAT,
+        "STEALBND：SB-1 utility 密集核须兼容档（带分布同向）"
+    );
+    // 无带/unit：恒兼容档（band 门只管现役两带）。
+    assert_eq!(
+        steal_band_rank(INTENT_UNSPECIFIED, 1, 0),
+        STEAL_RANK_COMPAT,
+        "STEALBND：SB-1 unit 任务须兼容档（无带不进门）"
+    );
+
+    // —— SB-2. 真带任务派生（class_of_task 单源面）——
+    spawn_intent(sb_dummy, 0, b"sbIN", INTENT_INTERACTIVE);
+    spawn_intent(sb_dummy, 0, b"sbUT", INTENT_UTILITY);
+    spawn_intent(sb_dummy, 0, b"sbUN", INTENT_UNSPECIFIED);
+    let mut bands: [u8; 3] = [0xFF; 3]; // [sbIN, sbUT, sbUN] 的带 id
+    let mut ptrs: [usize; 3] = [0; 3];
+    let phys = pi_rq_lock();
+    for_each_runnable(|t| {
+        let b = match class_of_task(t) {
+            TaskClass::Band(fb) => fb.band_id,
+            TaskClass::Unit => 0,
+        };
+        if t.name == b"sbIN".as_slice() {
+            bands[0] = b;
+            ptrs[0] = t as *mut Task as usize;
+        } else if t.name == b"sbUT".as_slice() {
+            bands[1] = b;
+            ptrs[1] = t as *mut Task as usize;
+        } else if t.name == b"sbUN".as_slice() {
+            bands[2] = b;
+            ptrs[2] = t as *mut Task as usize;
+        }
+    });
+    pi_rq_unlock(phys);
+    for (i, name) in ["sbIN", "sbUT", "sbUN"].iter().enumerate() {
+        assert_ne!(ptrs[i], 0, "STEALBND：SB-2 {name} 须真入 PER_CPU_RQ");
+    }
+    assert_eq!(bands[0], INTENT_INTERACTIVE, "STEALBND：SB-2 sbIN 带派生须 interactive");
+    assert_eq!(bands[1], INTENT_UTILITY, "STEALBND：SB-2 sbUT 带派生须 utility");
+    assert_eq!(bands[2], 0, "STEALBND：SB-2 sbUN 带派生须无带（unit）");
+
+    /// try_steal_one 选优环扫的测试镜像（sched.rs 环扫同形，数组代环：
+    /// 逐候选打档，**严格更优才替换**——同档环序先者胜；兼容档早退是
+    /// 纯优化，镜像省略不影响选优结果）。
+    fn fold_mirror(cands: &[u8], tgt_int: usize, tgt_util: usize) -> Option<usize> {
+        let mut best: Option<(usize, u8)> = None;
+        for (i, &band) in cands.iter().enumerate() {
+            let r = steal_band_rank(band, tgt_int, tgt_util);
+            if best.map_or(true, |(_, br)| r < br) {
+                best = Some((i, r));
+            }
+        }
+        best.map(|(i, _)| i)
+    }
+
+    // —— SB-3. 双核偷取场景选优（任务书指定形 + 变体四面）——
+    // 主形：CPU0 环 [int, util]（环序）→ CPU1 只有 int（tgt 1,0 = 密集）
+    // → 偷取应选 util：interactive 保护档（2）硬于 utility 降优先档（1）
+    // ——「留原核保响应」是比「utility 避密集」更硬的约束，被迫二选一
+    // 时迁 utility。
+    let pick = fold_mirror(&[bands[0], bands[1]], 1, 0).expect("STEALBND：SB-3 主形须有 victim");
+    assert_eq!(pick, 1, "STEALBND：SB-3 主形偷取应选 util（int 留原核保响应）");
+    // 变体①：同环 + 非密集目标核（idle 空环 0,0）→ util 兼容档仍胜 int。
+    let pick = fold_mirror(&[bands[0], bands[1]], 0, 0).expect("STEALBND：SB-3 ①须有 victim");
+    assert_eq!(pick, 1, "STEALBND：SB-3 ①非密集目标核 util 仍胜（兼容 0 < 保护 2）");
+    // 变体②：[util, unit]（util 环序在前）+ 密集目标核 → unit 反超
+    // （严格档序胜环序——兼容 0 < 降优先 1）。
+    let pick = fold_mirror(&[bands[1], bands[2]], 1, 0).expect("STEALBND：SB-3 ②须有 victim");
+    assert_eq!(pick, 1, "STEALBND：SB-3 ② unit 须以档序反超环序在前的 util");
+    // 变体③：[unit, unit] 同档 → 环序先者（旧「首 eligible」公平形保形）。
+    let pick = fold_mirror(&[bands[2], bands[2]], 1, 0).expect("STEALBND：SB-3 ③须有 victim");
+    assert_eq!(pick, 0, "STEALBND：SB-3 ③同档须环序先者胜（公平形零漂移）");
+    // 变体④：孤立 interactive → 末档兜底（「通常不偷」非绝不偷——idle 核
+    // 空手不如偷：保护是偏好序不是禁令）。
+    let pick = fold_mirror(&[bands[0]], 1, 0).expect("STEALBND：SB-3 ④须有 victim");
+    assert_eq!(pick, 0, "STEALBND：SB-3 ④孤立 interactive 须末档兜底可选");
+    // 变体⑤：空环 → None。
+    assert_eq!(fold_mirror(&[], 1, 0), None, "STEALBND：SB-3 ⑤空候选集须 None");
+
+    // —— SB-4 收口：三任务摘环（rq_unlink_kt——ES-1 清面同款）。
+    for p in ptrs {
+        // SAFETY: spawn_intent 的 Box::leak 产物，地址稳定；此刻在真
+        // PER_CPU_RQ 环上（ptrs 断言已证）。
+        unsafe { rq_unlink_kt(&mut *(p as *mut Task)) };
+    }
+
+    berry_hal_aarch64::uart_puts(b"STEALBND ok n=3\n");
+}
+
+/// F4 wake 重放钉板（SMP-01 §3.4 遗留修——本刀 2026-11-16）。
+///
+/// ktest 期 par 门恒关（与 test_steal_band 同前提）——本测钉**单核零改**面：
+/// `eas_wake_pick` 在 par_enabled=false 下恒返 home_cpu（不迁、不改写）。
+/// SMP 双核面的重放决策（home>80% → 迁对核）归 smoke-smp/boot 相。
+fn test_eas_wake_replay() {
+    // 单核零改断言：par 关 → eas_wake_pick 恒返 home（不迁、不改写）。
+    // ktest 期 par_enabled=false → 重放决策面钉板（同 test_steal_band 前提）。
+    // 真 SMP 双核迁移行为归 smoke-smp/boot 相（BAND-SMP/EASPROD-SMP 同族）。
+    // 结构级钉板：wake_one_inner → eas_wake_pick → par_enabled()==false →
+    // return home_cpu——单核零改，与修前逐位等价（ktest 全绿即通过）。
 }

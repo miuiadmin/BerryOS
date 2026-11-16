@@ -486,6 +486,34 @@ pub fn placement_hint(task_key: u64) -> u8 {
     }
 }
 
+/// [`placement_hint`] 的**非门控**读（overutil 让位律不在此面）：
+/// 同一张活跃快照的 O(1) 查表透传，去掉 any_overutilized 短路——
+/// 消费面唯一 = wake 重放（`crate::sched::eas_wake_replay`，SMP-01 F4 修）。
+///
+/// 为什么 wake 面不吃 overutil 让位：spawn 放置是**能量判据**（饱和系统
+/// 里能量比较失真 → 让位负载均衡，Linux EAS 同律）；wake 重放是**负载
+/// 动机迁移**——其触发条件恰是「home 核 util>80%」（[`crate::sched::
+/// eas_wake_pick`] 防乒乓第一门 = `overutil_judgment` 同尺），若沿用
+/// overutil 门控则 hint 恒 0、重放结构性死火。饱和下的迁移裁决由重放
+/// 自己的防乒乓双门承担（home >80% ∧ 新核 spare>25%）——Linux 平行
+/// 律：overutil 时 EAS 退场，但 wake 路负载均衡/select_idle_sibling
+/// 照常工作。词汇执法（非 {1,2} 按无意见）在消费面 [`crate::sched::
+/// eas_wake_pick`] 收口（与 spawn 面同律）。
+///
+/// 读纪律同 [`placement_hint`]（active_snap 静态区指针 + 已发布槽不可变
+/// + 屏蔽窗读写互斥——读窗内快照稳定）。
+pub fn placement_hint_ungated(task_key: u64) -> u8 {
+    // SAFETY: 同上。
+    let snap: &Snap = unsafe { &*active_snap() };
+    if snap.count == 0 {
+        return 0; // 未绑（哨兵）/空表：无意见
+    }
+    match lookup_o1(snap, task_key) {
+        Some(s) => s.placement,
+        None => 0, // 未命中/哨兵键（0 保留，lookup 早退）：无意见
+    }
+}
+
 /// 该 key 当前绑定的 band 选择位读出口（M4 骨架——ADR #42 第二段「策略
 /// 注入表 band 选择位」的读侧）：读活跃快照 O(1) 查表透传 [`SnapSlot::
 /// band`]。词汇：**0 = 无意见**（[`BAND_SEL_NONE`]——未绑/空表/未命中/
