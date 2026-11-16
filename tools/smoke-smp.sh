@@ -413,6 +413,8 @@ echo "smoke-smp: QEMU 启动（-smp 2，相 2 rootfs 相：fw_cfg rootfs 卷 + v
 t_rootfs0=$(date +%s)
 # GUI-4 段②：+virtio-tablet（id=tab0，无 QMP——INPUTP 注入往返不属本线；
 # tablet 在席 = INPUT ok 照打，数组同步后断言恰好覆盖）。
+# 命令行终端刀（2026-11-17）：+virtio-keyboard——SMP 面双设备认领实跑
+# （分类门同 smoke.sh 四相；探针实证过单核双绿，SMP 首跑由本线覆盖）。
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -smp 2 -kernel "$KERNEL" \
   $FWCFG \
   -global virtio-mmio.force-legacy=false \
@@ -420,6 +422,7 @@ t_rootfs0=$(date +%s)
   -device virtio-blk-device,drive=drv0 \
   -netdev user,id=n0,hostfwd=tcp::18081-:18081,hostfwd=tcp::18082-:18082,hostfwd=tcp::18083-:18083 -device virtio-net-device,netdev=n0 \
   -device virtio-tablet-device,id=tab0 \
+  -device virtio-keyboard-device,id=kb0 \
   < /dev/null > "$LOG" 2>&1 &
 QEMU_PID=$!
 
@@ -437,7 +440,7 @@ grep -q 'ROOTFS vmo=none' "$LOG" \
 # app 入册不拉起——逐槽断 `app <id> gui deferred` 记账行（原
 # `app APPDEMO up` boot 批拉起面退役；console=true 串口证据随迁 GUI 形
 # gui8-smoke 点击 spawn）。
-for id in APPDEMO SETTINGS FILES PHOTOS CAMERA CONTACTS MMS BROWSER; do
+for id in APPDEMO SETTINGS FILES PHOTOS CAMERA CONTACTS MMS BROWSER TERMINAL; do
   grep -q "app $id gui deferred" "$LOG" \
     || fail "app $id gui deferred 缺失（裁决 B 入册记账——boot 批未见 [ui] 槽入册；查 eco: app 行）"
 done

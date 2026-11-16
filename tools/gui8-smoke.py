@@ -81,7 +81,8 @@ ROOT = Path(__file__).resolve().parent.parent
 # —— 被断言的 launcher 标记（段④ 合并后由 launcher println 单行打出）——
 MARK_BERRYBOOT = "BERRYBOOT ok"
 MARK_ROOTFS = "ROOTFS ok src=handoff"
-MARK_APP_N9 = "APP ok n=9"
+# TERMINAL 刀滚新：槽 9→10（n=10 两位形——svcmgr 写面宽度参数化随动）。
+MARK_APP_N10 = "APP ok n=10"
 MARK_APP_DEMO_UP = "app APPDEMO up"
 MARK_APP_DEMO_DEFERRED = "app APPDEMO gui deferred"
 MARK_APP_QUIET_UP = "app APPQUIET up"
@@ -1111,7 +1112,7 @@ def preflight(args) -> None:
 
 
 def _boot_base_markers() -> list[str]:
-    return [MARK_BERRYBOOT, MARK_ROOTFS, MARK_APP_N9, MARK_LAUNCH, MARK_PAGE]
+    return [MARK_BERRYBOOT, MARK_ROOTFS, MARK_APP_N10, MARK_LAUNCH, MARK_PAGE]
 
 
 def _wait_boot_batch(boot: Boot, timeout: float) -> None:
@@ -1450,7 +1451,7 @@ def dry_run(args) -> int:
             markers = [
                 MARK_BERRYBOOT,
                 MARK_ROOTFS,
-                MARK_APP_N9,
+                MARK_APP_N10,
                 MARK_LAUNCH,
                 MARK_PAGE,
                 MARK_APP_DEMO_UP,
@@ -1473,7 +1474,7 @@ def dry_run(args) -> int:
                     [
                         MARK_BERRYBOOT,
                         MARK_ROOTFS,
-                        MARK_APP_N9,
+                        MARK_APP_N10,
                         MARK_LAUNCH,
                         MARK_PAGE,
                         MARK_APP_DEMO_UP,
@@ -1488,7 +1489,7 @@ def dry_run(args) -> int:
                     [
                         MARK_BERRYBOOT,
                         MARK_ROOTFS,
-                        MARK_APP_N9,
+                        MARK_APP_N10,
                         MARK_LAUNCH,
                         MARK_PAGE,
                         "LAYOUT ok n=2",

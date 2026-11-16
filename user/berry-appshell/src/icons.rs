@@ -106,11 +106,12 @@ pub fn bitmap_entry(id: u16) -> Option<(&'static str, &'static [u32], u32, u32)>
     icon_data::ICON_DATA.get((id - BITMAP_ID_BASE) as usize).copied()
 }
 
-/// dock 四位的位图库优先名（OH sysRes 资产；缺名回退 DOCK_FACE_IDS
-/// 分段面——位图优先序在 desktop.rs 建树侧）。
-// Dock 位图（owner 2026-11-16）：OH SVG Sketch 嵌套结构光栅化后坍缩 +
-// 位图 id 被渲染面按 BYI1 解码（BadMagic [0,0,0,0] → 桌面死）——回退
-// DOCK_FACE_IDS 程序化 SmartDock 面（genohicons BYI1 官方背板，原行为）。
+/// dock 四位的位图库优先名（owner 2026-11-16 裁定后四位全空——OH SVG
+/// Sketch 嵌套结构光栅化后坍缩 + 位图 id 被渲染面按 BYI1 解码（BadMagic
+/// [0,0,0,0] → 桌面死）：全回退 DOCK_FACE_IDS 程序化 SmartDock 面
+/// （genohicons BYI1 官方背板，原行为）。位 3 随 MMS→TERMINAL 换项
+/// （命令行终端刀 2026-11-17），背板仍 MMS 形几何复刻占位——OH 视觉
+/// 资产正式替换是后续挂账（ADR #63 协议洁净边界）。
 pub const DOCK_BITMAP_NAMES: [&str; 4] = ["", "", "", ""];
 
 /// 状态栏三位的位图库优先名：前两位 OH systemui 官方 signal/wifi 面；
@@ -129,7 +130,11 @@ pub const STATUS_BATTERY: u16 = 2;
 /// 静态壁纸源 id（稠密 app 域外的唯一固定特例——rodata 直供零堆）。
 pub const WALLPAPER: u16 = 0xFFFE;
 pub const WALLPAPER_DIM: (u32, u32) = (wallpaper::WALLPAPER_W, wallpaper::WALLPAPER_H);
-/// dock 分段内建面 id（0..3 号 app 对应 Contacts/Photos/Settings/MMS 官方顺序）。
+/// dock 分段内建面 id（0..3 号 dock 位对应 Contacts/Photos/Settings/
+/// TERMINAL——位 3 随 MMS→TERMINAL 换项；其分段背板仍 MMS 形几何复刻
+/// 占位：DOCK_BITMAP_NAMES 四位全空（owner 2026-11-16 位图/BYI1 裁定），
+/// 本回退面即现行面，OH 资产正式替换时随 genohstatus.py 重产同批换形
+/// ——ADR #63）。
 pub const DOCK0: u16 = 3;
 pub const DOCK1: u16 = 4;
 pub const DOCK2: u16 = 5;
