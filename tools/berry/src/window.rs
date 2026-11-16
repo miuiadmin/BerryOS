@@ -422,6 +422,8 @@ struct App {
     profile: Profile,
     scale: ScaleMode,
     window: Option<Arc<Window>>,
+    /// B1-b 壳半：wgpu GPU 呈现主路（Metal）；缺席降级 softbuffer（下方字段）。
+    wgpu: Option<crate::display::wgpu_pres::WgpuPresenter>,
     context: Option<Context<Arc<Window>>>,
     surface: Option<Surface<Arc<Window>, Arc<Window>>>,
     last_frame: Option<Frame>,
@@ -460,6 +462,7 @@ impl App {
             profile,
             scale,
             window: None,
+            wgpu: None,
             context: None,
             surface: None,
             last_frame: None,
@@ -493,6 +496,50 @@ impl App {
     }
 
     fn draw(&mut self) {
+        // B1-b 壳半：wgpu 主路——客帧 + 交互层（overlay alpha 合成）GPU 呈现。
+        // 交互层绘制函数（draw_toolbar/menu/tooltip）沿用 CPU 实现，产物转
+        // RGBA 写 overlay 纹理（alpha 0=透客帧/255=覆盖），shader 内合成。
+        if let (Some(p), Some(w)) = (self.wgpu.as_mut(), self.window.as_ref()) {
+            if let Some(frame) = self.last_frame.as_ref() {
+                let size = w.inner_size();
+                if size.width > 0 && size.height > 0 {
+                    let (sw, sh) = (size.width, size.height);
+                    // 交互层 CPU 面复用：先绘 softbuffer 形态的 u32 面，再转
+                    // RGBA（alpha：交互层覆盖区 255——工具栏底/按钮/菜单面，
+                    // 其余 0 透客帧）。
+                    let mut ui = vec![0u32; (sw * sh) as usize];
+                    let bar_top = sh.saturating_sub(TOOLBAR_H);
+                    if self.menu_open {
+                        draw_menu(&mut ui, sw, sh, self.profile.id);
+                    } else {
+                        // 工具栏底条（覆盖区 alpha 255）。
+                        for y in bar_top..sh {
+                            let s = (y * sw) as usize;
+                            ui[s..s + sw as usize].fill(0xFF00_0000 | 0x181C20);
+                        }
+                        draw_toolbar(&mut ui, sw, sh, self.power_armed.is_some(), self.hover);
+                        if let Some(h) = self.hover {
+                            draw_tooltip(&mut ui, sw, sh, h);
+                        }
+                    }
+                    // u32 面 → RGBA 字节面（alpha 位在 u32 高 8 位——UI 面
+                    // 绘制函数只写 0x00RRGGBB，故 alpha 统一在此按覆盖区写）。
+                    let mut rgba = Vec::with_capacity(ui.len() * 4);
+                    for px in ui {
+                        let a = (px >> 24) & 0xFF;
+                        let r = px & 0xFF;
+                        let g = (px >> 8) & 0xFF;
+                        let b = (px >> 16) & 0xFF;
+                        rgba.extend_from_slice(&[r as u8, g as u8, b as u8, a as u8]);
+                    }
+                    p.upload_full(frame);
+                    p.upload_overlay(&rgba, sw, sh);
+                    if p.present(w) {
+                        return;
+                    }
+                }
+            }
+        }
         let (Some(window), Some(surface)) = (self.window.clone(), self.surface.as_mut()) else {
             return;
         };
@@ -827,6 +874,13 @@ impl ApplicationHandler for App {
             return;
         };
         let window = Arc::new(window);
+        // B1-b：wgpu 主路先试（Metal 合成）；失败降 softbuffer（零行为漂移）。
+        let wgpu_pres = crate::display::wgpu_pres::WgpuPresenter::new(window.clone());
+        if let Some(p) = wgpu_pres.as_ref() {
+            eprintln!("berry: wgpu presenter on {} (Metal)", p.adapter);
+        } else {
+            eprintln!("berry: wgpu unavailable, fallback softbuffer");
+        }
         let Ok(context) = Context::new(window.clone()) else {
             eprintln!("berry: softbuffer context failed");
             event_loop.exit();
@@ -838,6 +892,7 @@ impl ApplicationHandler for App {
             return;
         };
         self.window = Some(window);
+        self.wgpu = wgpu_pres;
         self.context = Some(context);
         self.surface = Some(surface);
     }
