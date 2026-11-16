@@ -8,7 +8,7 @@
 //! - 少数签名敏感的（environ/posix_spawnp/getaddrinfo）手写——
 //!   T-1 起 syscall/futex、sem、pthread key/生命周期族迁 `futex.rs`/
 //!   `pthread.rs` 真身；A7-1 起 mmap/munmap 匿名档真身迁 `mmap.rs`
-//!   （vmo/vmar_map 桥，docs/事件循环A7设计草案.md §3.1）——此处只剩
+//!   （vmo/vmar_map 桥，docs/事件循环A7设计草案-v1.0.md §3.1）——此处只剩
 //!   attr getter 三桩。
 //!
 //! 返回宽度纪律：int 族 `-> c_int`、ssize 族 `-> isize`、指针族 `-> *mut T`。

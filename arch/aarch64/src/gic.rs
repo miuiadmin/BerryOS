@@ -198,7 +198,7 @@ pub unsafe fn enable_cntv_this_core() {
     mmio::write(GICD + GICD_ISENABLER0, 1 << IRQ_CNTV);
 }
 
-// ---- S-3a：SGI IPI 面（`docs/SMP-S3实施设计草案.md` §2）----
+// ---- S-3a：SGI IPI 面（`docs/SMP-S3实施设计草案-v1.0.md` §2）----
 
 /// SGI 目标形态（GICD_SGIR TargetListFilter[25:24] 直映）。
 pub enum SgiTarget {

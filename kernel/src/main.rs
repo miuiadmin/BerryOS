@@ -16,12 +16,12 @@ extern crate alloc;
 #[allow(dead_code)]
 mod abi_gen;
 mod aspace;
-mod bench; // B-0：内核微基准 + churn 泄漏金丝雀（docs/基准与压力测试设计.md）
+mod bench; // B-0：内核微基准 + churn 泄漏金丝雀（docs/基准与压力测试设计-v1.0.md）
 mod bootparams; // G5 内核半：etc/boot-params.toml 消费端（§1.6-补）
 mod channel;
 mod cbox; // 黑匣子崩溃记录表（plans/cbox/design.md——异常 fatal 路 RAM 镜像 + 排液）
 mod dtb;
-mod dpg; // G4-1：demand paging 内核机制自喂闭环（docs/G4按需调页实施设计草案.md）
+mod dpg; // G4-1：demand paging 内核机制自喂闭环（docs/G4按需调页实施设计草案-v1.0.md）
 mod event;
 mod handle;
 mod handoff; // V-0b 刀 3：BerryBoot 交接协议双镜像（const assert 执法，消费随刀 4 起）
@@ -1993,7 +1993,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                           up_svcmgr.ttbr0_pa, up_svcmgr.asid,
                           ht_svcmgr as *mut HandleTable as usize);
 
-    // ---- 4-6 B 半（AI 最小演示，`docs/4-6出口演示设计草案.md` B 半管线）：
+    // ---- 4-6 B 半（AI 最小演示，`docs/4-6出口演示设计草案-v1.0.md` B 半管线）：
     // 遥测 dump（`tele:` 行）→ host 侧 advisor.py（`tools/`，工具非关卡）规则
     // 出建议 → 构建期回填注入表（演示级通道，v3 policy_bind 随 ADR #21 实验
     // 轨道再立运行时协议）→ 内核执法活证（越界 +200 被 clamp 到 ±64——apply/
@@ -2067,7 +2067,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     berry_sched::spawn_with_tag(task_ai_probe, h_rel_p as usize, b"ai_probe", 0,
                                 ht_pr as *mut HandleTable as usize);
 
-    // ---- R-1（docs/基准与压力测试设计.md §10）：rt_probe 门控 spawn ----
+    // ---- R-1（docs/基准与压力测试设计-v1.0.md §10）：rt_probe 门控 spawn ----
     // 设计只写了「不进 smoke」（公约 7：~34s 采样循环 vs boot 开销 >5s /
     // smoke 总时长劣化 >10% 界），未定稿门控机制——smoke 与 bench-rt 同一
     // 内核 ELF，无条件 spawn = 每次常规 boot 白付 34s。以 **fw_cfg 具名项**
@@ -2169,7 +2169,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         berry_hal_aarch64::uart_puts(b"\n");
     }
 
-    // ---- G3-4（docs/G3全抢占实施设计草案.md §4）：bench-lat IPC 路门控 spawn ----
+    // ---- G3-4（docs/G3全抢占实施设计草案-v1.0.md §4）：bench-lat IPC 路门控 spawn ----
     // wake→run 段补盲（草案 §4 暂名 bench-lat）两路之一：IPC send 路 =
     // **内核任务对**（侦察定谳：SGI 路须 EL0 用户对——place() 内核任务恒
     // CPU0 + CPU1 出选 = user_only 臂（pinned!=0），内核对跨核架构堵死；
@@ -2199,7 +2199,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                                     ht_lat as *mut HandleTable as usize);
     }
 
-    // ---- S-1（docs/基准与压力测试设计.md §11）：soakmon 门控 spawn ----
+    // ---- S-1（docs/基准与压力测试设计-v1.0.md §11）：soakmon 门控 spawn ----
     // 设计只写了「不进 CI 主线（小时级），周跑或手跑」，未定稿门控机制——
     // 但 soakmon **常驻不退出**（比 rt_probe 一次性采样更强）：无门控 = 每次
     // 常规 boot 永久多一个任务（runqueue/PI 图节点 + 私有表/Event 泄漏 +
@@ -2448,7 +2448,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // EL2 机型 / EFI 路按 conduit 门跳过（见 smp.rs 注）。`SMP ok ncores=2`
     // 仅 -smp 2 双核心跳闭环后打（状态谓词，smoke-smp 专用标记）。
     berry_hal_aarch64::smp::smp_bringup(efi_boot);
-    // S-2b PAR 金丝雀门（`docs/SMP-S2实施设计草案.md` §5.3）：副核 bring-up
+    // S-2b PAR 金丝雀门（`docs/SMP-S2实施设计草案-v1.0.md` §5.3）：副核 bring-up
     // 成功（hb2 心跳闭环 → smp_active）才 spawn task_par_probe + 置参与 gate
     //（soak 块同款形态：私有表 + 哑 Event + prio 8 + 有意泄漏）。序硬约束：
     // **spawn 先于 par_enable**——gate 先开而探针缺位 = 副核已开始拉用户任务、
@@ -4223,7 +4223,7 @@ extern "C" fn task_svc_tag(arg: usize) -> ! {
 }
 
 // ---- 4-6 B 半：AI 最小演示（boot spawn 块见 main 尾段；设计 =
-// `docs/4-6出口演示设计草案.md` B 半管线：遥测 → advisor → 注入 → 执法活证）----
+// `docs/4-6出口演示设计草案-v1.0.md` B 半管线：遥测 → advisor → 注入 → 执法活证）----
 
 // ---- 用户半信号位登记表（单一事实源——挑新位前必查；新增必登记）----
 // 高 32 位用户位（SIGNAL_USER_MASK）的占用登记。此前唯一「登记」是散布各处
@@ -4606,7 +4606,7 @@ extern "C" fn task_ai_probe(arg: usize) -> ! {
 }
 
 // ---- R-1：rt_probe（cyclictest 式 oversleep，boot 门控 spawn 块见 main 尾段；
-// 设计 = docs/基准与压力测试设计.md §10 + 落地实录）----
+// 设计 = docs/基准与压力测试设计-v1.0.md §10 + 落地实录）----
 
 /// rt_probe 的 fw_cfg 具名项名（门控键——bench.py --rt 专递
 /// `-fw_cfg name=opt/berry/rt,string=1`；与 ROOTFS_NAME 同款「两侧对读维护」
@@ -5105,7 +5105,7 @@ extern "C" fn task_bench_rwake(_arg: usize) -> ! {
 }
 
 // ---- G3-4：bench-lat IPC 路（草案 §4 wake→run 段补盲；boot 门控 spawn 块
-// 见 main 尾段；设计 = docs/G3全抢占实施设计草案.md §4 + 基准与压力测试
+// 见 main 尾段；设计 = docs/G3全抢占实施设计草案-v1.0.md §4 + 基准与压力测试
 // 设计.md R 线家族）----
 
 /// bench-lat 的 fw_cfg 具名项名（门控键——bench.py --lat 专递
@@ -5577,7 +5577,7 @@ extern "C" fn task_latsgi_wak(_arg: usize) -> ! {
 const LATSGI_POLL_MAX: usize = 4096;
 
 // ---- S-1：soakmon（soak 长跑心跳，boot 门控 spawn 块见 main 尾段；
-// 设计 = docs/基准与压力测试设计.md §11 + 落地实录。命名注记：sched.rs 的
+// 设计 = docs/基准与压力测试设计-v1.0.md §11 + 落地实录。命名注记：sched.rs 的
 // SOAK_PRINT_EVERY（金丝雀节流常量）与 task_a 注释「SOAK=1 低噪 soak」是
 // 历史名，与本文 soakmon 无关，勿混读）----
 
@@ -5703,7 +5703,7 @@ extern "C" fn task_soakmon(arg: usize) -> ! {
     }
 }
 
-/// 副核高半入口（S-2b，`docs/SMP-S2实施设计草案.md` §2.3）：secondary_entry
+/// 副核高半入口（S-2b，`docs/SMP-S2实施设计草案-v1.0.md` §2.3）：secondary_entry
 /// asm `.Lsmp_final` 经 `__secondary_main_ptr` 指针字 blr 进入——不归（`-> !`）。
 /// `#[no_mangle]`：链接脚本 QUAD(secondary_main) 按名解析。
 ///
@@ -5802,7 +5802,7 @@ pub unsafe extern "C" fn secondary_main() -> ! {
     }
 }
 
-/// S-2b 副核参与金丝雀探针（`docs/SMP-S2实施设计草案.md` §5.3，soakmon
+/// S-2b 副核参与金丝雀探针（`docs/SMP-S2实施设计草案-v1.0.md` §5.3，soakmon
 /// envelope 变体）：每 2s 超时醒一次读 PAR 读数——`PAR ok c0=<n> c1=<n>` =
 /// 「两核各自跑过 ≥2 个 EL0 用户任务 tick + 存在某一 tick 两核同时在跑
 /// **不同** EL0 任务」（witness 粘性位，par_sample 在 on_irq_tick 锁窗内

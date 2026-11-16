@@ -1,4 +1,4 @@
-//! GUI-6 段B TLV v2 钉板（`docs/GUI-6实施设计草案.md` §8/§11.1-3/9——
+//! GUI-6 段B TLV v2 钉板（`docs/GUI-6实施设计草案-v1.0.md` §8/§11.1-3/9——
 //! D26 golden 双轨 + §8.2 合法域全矩阵 + Grid 双拒面 + builder 块序面）。
 //!
 //! - **GOLDEN_V2_STREAM 字面量**：三新 kind（Image/Icon/Grid）+ 三新

@@ -1,4 +1,4 @@
-//! appquiet —— app-0 demo app B（`docs/app-0实施设计草案.md` §4）。
+//! appquiet —— app-0 demo app B（`docs/app-0实施设计草案-v1.0.md` §4）。
 //!
 //! manifest `console = false`：**能力缺席可运行**的活证——stdout = appd
 //! `channel_pair` 私有对端（输出不进串口），main 静默；appd collect 面

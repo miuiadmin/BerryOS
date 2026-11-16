@@ -1,4 +1,4 @@
-//! fsmgr —— P6 A-1 RAM-fs 服务 + A-5/A-6 FAT 读写层（`docs/文件系统设计.md`
+//! fsmgr —— P6 A-1 RAM-fs 服务 + A-5/A-6 FAT 读写层（`docs/文件系统设计-v1.0.md`
 //! §6 P6 注记：tmpfs before disk——A-5 起读、A-6 起写）。
 //!
 //! stdhello/bsh 同链（musl target + berry-libc shim）。通道拓扑（svcmgr

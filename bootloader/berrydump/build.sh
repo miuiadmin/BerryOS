@@ -5,7 +5,7 @@
 #   2. rust-lld 静态全链接（--emit-relocs + 单 .img 链接脚本）
 #   3. elf2pe.py 转 PE32+ → out/BERRYDUMP.EFI
 # 部署 = 把 BERRYDUMP.EFI 放进 FAT 卷 \EFI\BOOT\BOOTAA64.EFI（可移动介质
-# 默认路径，与 BerryBoot 同形）——见 docs/VM里程碑设计草案.md V-5a runbook。
+# 默认路径，与 BerryBoot 同形）——见 docs/VM里程碑设计草案-v1.0.md V-5a runbook。
 set -e
 cd "$(dirname "$0")"
 

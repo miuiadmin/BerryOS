@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """B-0/B-1 性能基准单口：QEMU 跑 → 收割 BENCH/BENCH1 行 → 与基线对拍（宽松因子门禁）。
 
-设计 = docs/基准与压力测试设计.md §5-6（B-0 内核微基准）+ §8（B-1 EL0 用户态
+设计 = docs/基准与压力测试设计-v1.0.md §5-6（B-0 内核微基准）+ §8（B-1 EL0 用户态
 基准）。口径纪律（测试策略 §7）：
 - 内核计时 = CNTVCT 原始周期数，TCG 下 ≈ 实时/2——绝对值只做**同机同 QEMU
   的相对比较**；跨机器（本地 mac vs CI ubuntu runner）绝对值不可比。
@@ -226,7 +226,7 @@ TRACE_CAP = 0.0
 # [2026-10-27 B-2 立档] verdict=exact：0/29157/29127/50/29433/1695（首证）。
 # [2026-10-27 K-1 重证] verdict=exact：0/168/33/50/444/1695——buddy 空闲头
 #   索引线性扫→位图+摘要两级（K-1 回归修复，根因/机制/验收见
-#   docs/基准与压力测试设计.md §13 归因段）：buddy 族三项坍缩为常数
+#   docs/基准与压力测试设计-v1.0.md §13 归因段）：buddy 族三项坍缩为常数
 #   （4k 29157→168、64k 29127→33、commit1p 29433→444，commit1p−alloc4k=276
 #   与修复前 VMO 层常数逐位同——回归增量全部来自内嵌帧分配的归因再证）；
 #   非 buddy 三项（cntvct 0 / handle_evt 50 / rw4k 1695）与旧基线逐值相同
@@ -241,7 +241,7 @@ TRACE_CAP = 0.0
 #   双形态成立，icount 指令流不受扰。
 # [2026-10-31 S-2a 重证] verdict=exact：0/35/80/50/311/1695——KERN_LOCK BKL
 #   纪元锁底座段 A（TTAS 原子序进 SVC 入口/dispatch 尾 + 五切走点舞蹈 +
-#   计数原子化 A12，`docs/SMP-S2实施设计草案.md`）：非 buddy 三项（cntvct 0 /
+#   计数原子化 A12，`docs/SMP-S2实施设计草案-v1.0.md`）：非 buddy 三项（cntvct 0 /
 #   handle_evt 50 / rw4k 1695）与 S-1 基线（3bf9185 立档 0/78/33/354）逐值
 #   相同；buddy 族三项 78→35 / 33→80 / 354→311——三 delta 对称 ±43-47，
 #   归因 = 测量窗内 ±1 次 tick 事件的相位迁移（锁指令序改变 boot 后虚拟
@@ -249,7 +249,7 @@ TRACE_CAP = 0.0
 #   tick；非 buddy 三项窗小/相位无关不受扰）。基线同日重立。
 # [2026-10-31 GUI-0 重证] verdict=exact：0/125/31/166/1662/6937——FPSIMD 全量
 #   上下文 + 内核 SIMD-free 三层合同（TaskContext 112→640B、switch 无条件
-#   q0..q31+FPCR/FPSR、mem*/bcmp 整数覆写，`docs/GUI里程碑规划-2026-10.md`
+#   q0..q31+FPCR/FPSR、mem*/bcmp 整数覆写，`docs/GUI里程碑规划-2026-10-v1.0.md`
 #   GUI-0）：两项大头 vmo_commit1p 311→1662 / vmo_rw4k 1695→6937（×4-5）＝
 #   拷贝路径链 builtins NEON 版→整数 8 字节块循环的设计内代价（TCG 数量级
 #   足够、确定性优先，ADR #34 修订）；handle_evt 50→166（+116）≈ 切换点

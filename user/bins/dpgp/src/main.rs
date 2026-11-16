@@ -1,4 +1,4 @@
-//! G4-2（pager 服务首形，`G4按需调页实施设计草案.md` §4）：demand 装载
+//! G4-2（pager 服务首形，`docs/G4按需调页实施设计草案-v1.0.md` §4）：demand 装载
 //! 受验子——**跨进程供给形**的 EL0 侧（thrchild 同款裸 bin：零 TLS、零
 //! console、x0 直达 _start 无 crt0）。
 //!

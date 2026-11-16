@@ -1,4 +1,4 @@
-//! ChangeMask 位面单源（GUI-6 段E S7——`docs/GUI-6实施设计草案.md` §6
+//! ChangeMask 位面单源（GUI-6 段E S7——`docs/GUI-6实施设计草案-v1.0.md` §6
 //! 冻结契约 + §5 字段映射表；ADR #60 实验轨道 B 面，cfg(feature = "s7")
 //! 编译——A 面（默认构建）不编入本模块，三漏斗现状语义逐字保持）。
 //!

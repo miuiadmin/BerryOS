@@ -5,7 +5,7 @@ name = "berry-launcher"
 version = "0.2.0"
 edition = "2021"
 
-# GUI-8 段③（docs/GUI-8实施设计草案.md §4 段③）：桌面 launcher 主体——
+# GUI-8 段③（docs/GUI-8实施设计草案-v1.0.md §4 段③）：桌面 launcher 主体——
 # guifbd 同形独立小工作区（空 [workspace] escape 根 workspace，不入
 # user/Cargo.toml members；musl target + berry-libc shim + berry-ld 链）。
 # 前置 wiring 刀（gui3）面 = wm 域门控 + GETINFO 握手 + 单行 LAUNCH 非

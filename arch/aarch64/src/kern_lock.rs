@@ -1,5 +1,5 @@
 //! S-2 E0（BKL 纪元）：KERN_LOCK / PRINT_LOCK —— TTAS 自旋锁对。
-//! 设计单一事实源 = `docs/SMP-S2实施设计草案.md` §2.1/§2.2。
+//! 设计单一事实源 = `docs/SMP-S2实施设计草案-v1.0.md` §2.1/§2.2。
 //!
 //! - **TTAS**（test-and-test-and-set）：争用时只本地 `load(Relaxed)` + `spin_loop()`
 //!   探测释放、释放时一次 Acquire CAS 拿锁——等释放期间不碰共享行（TAS 的 LL/SC
@@ -185,7 +185,7 @@ pub fn kern_release() {
 /// SVC 入口锁类位集（S-3c c-2c slice 2b）：位值镜像 sched `task.rs` 的
 /// HELD_*（bit1=SQ 0x02 / bit2=RQ0 0x04 / bit3=RQ1 0x08 / bit4=REAPQ 0x10 /
 /// bit5=TABLE 0x20）；跨 crate 位对齐由 kernel main 编译期断言执法。
-/// 分类审计（34 号修正版落类表）= `docs/SMP-S3实施设计草案.md`；NONE 类号
+/// 分类审计（34 号修正版落类表）= `docs/SMP-S3实施设计草案-v1.0.md`；NONE 类号
 /// （默认槽/越界号——实装号零）**完全不取任何锁**；凡含 copy_out/copy_in
 /// 出参链的号（walk_leaf 页表读者）或任何共享面禁落 NONE（§A113 读者面）。
 /// W3-Q67 起位集常量单源在 `berry_svcface`（host 可测纯面 crate——类位集

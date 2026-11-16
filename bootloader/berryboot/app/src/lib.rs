@@ -201,7 +201,7 @@ const BANNER: &str = "BerryBoot EFI skeleton (V-0a)\r\n";
 // ==================== GOP 携面（V-6a） ====================
 //
 // banner 期 QueryMode 的事实快照——load_kernel 写 handoff `gop_*` 留位
-// （@56..@76）随行递送内核（fbcon 数据源，`docs/VM里程碑设计草案.md`
+// （@56..@76）随行递送内核（fbcon 数据源，`docs/VM里程碑设计草案-v1.0.md`
 // §4 V-6）。缺席语义 = 全零（与留位零值同一判定面）：无显示设备
 // （LocateProtocol NOT_FOUND）/ QueryMode 失败 / fmt=3 BltOnly 无线性
 // 帧缓冲 / fb 基为零——任一都按缺席递送，内核消费面零扰动。

@@ -14,7 +14,7 @@ edition = "2021"
 # 绕开 user/Cargo.toml|Cargo.lock（SEC-02 兄弟会话 WIP 在途禁碰）。
 # 形态抄 user/berry-psproto：`cfg_attr(not(test), no_std)`、纯函数编解码、
 # 严格串行 RPC 会话机、host 测试。双消费 = keystored 服务端（v2 软桩，
-# `docs/安全与硬件隔离设计.md` §6 C1 拍板）+ client（rollback/attest 面）。
+# `docs/安全与硬件隔离设计-v1.0.md` §6 C1 拍板）+ client（rollback/attest 面）。
 #
 # 注意：仓库根 .cargo/config.toml 锁 build.target=aarch64-unknown-none 且
 # config 发现跨 workspace 边界仍命中（C-2c Gotcha）——host 测试须显式

@@ -46,7 +46,7 @@ const BMAP_WORDS: usize = (MAX_PAGES + 63) / 64;
 static mut FRAME_BMAPS: [u64; (MAX_ORDER + 1) * BMAP_WORDS] = [0; (MAX_ORDER + 1) * BMAP_WORDS];
 /// buddy 后备：位图摘要（每阶 ceil(512/64)=8 字 × 14 阶 = 896B）——空阶
 /// 查询只付摘要扫（K-1 回归的病态路径正是空阶的全窗页扫：32768×7 指令
-/// ×59，见 `docs/基准与压力测试设计.md` §13 归因段）。
+/// ×59，见 `docs/基准与压力测试设计-v1.0.md` §13 归因段）。
 const SUM_WORDS: usize = (BMAP_WORDS + 63) / 64;
 static mut FRAME_SUMS: [u64; (MAX_ORDER + 1) * SUM_WORDS] = [0; (MAX_ORDER + 1) * SUM_WORDS];
 

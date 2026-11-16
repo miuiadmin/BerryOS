@@ -2,7 +2,7 @@
 //! `berry-fsproto` 先例：「解析器即产品」，零分配、零 unsafe、零依赖，
 //! 输入只借用）。
 //!
-//! 拓扑（docs/GUI-8实施设计草案.md §3-裁决二 + §5）：launcher arm 门内
+//! 拓扑（docs/GUI-8实施设计草案-v1.0.md §3-裁决二 + §5）：launcher arm 门内
 //! `channel_pair()` 一对，服务端 svcmgr 稳态 loop 挂第二通道常驻 serve
 //! （guifbd `wait_many` 多路先例），客户端端随 env extras[2] 赠 launcher
 //! （libc `app_cli_h()` 新增，同槽惯例）——单对双向 + **严格串行 RPC**

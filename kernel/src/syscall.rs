@@ -1,5 +1,5 @@
 //! 真 syscall 语义层（Phase 3-4b：channel 三号——非阻塞消息 + handle 随消息
-//! 迁移，`系统调用ABI设计.md` §4/§8）。
+//! 迁移，`docs/系统调用ABI设计-v1.0.md` §4/§8）。
 //!
 //! 分层：HAL [`syscall`]（`arch/aarch64/`）只做 nr 界检 + 派发 + 统一错误面；
 //! 真语义 handler 在本模块，boot 期经 [`install`] 注册进 HAL 表（同 IRQ 槽反转：
@@ -159,11 +159,11 @@ fn caller_is_el1(tf: &TrapFrame) -> bool {
 /// 无 niche 占 16B + mapcnt u16 2B——旧注释 10B/页 ≤40KB 系算术错，3b3 H2 勘
 /// 误），128MiB 上限对应 32768 页 ≈ 576KiB 记账。上限只拦巨参滥用；分配本身已
 /// try 化（`Vmo::create` 折 -ENOMEM——上限内 OOM 也不再 abort）。**A1-2 帽分家**
-/// （`docs/容量工程前置-A1设计草案.md` §3.1）：C-2c 曾与 `ROOTFS_MAX`/`MAX_ORDER`
+/// （`docs/容量工程前置-A1设计草案-v1.0.md` §3.1）：C-2c 曾与 `ROOTFS_MAX`/`MAX_ORDER`
 /// 同口径 16→32MiB（rootfs 装载同因）；大 blob 装载形态迁 VMO 逐页 commit 后帽
 /// 独立抬至 128MiB（逐页无堆单块地形压力——A5/A6 的 80-120MB 静态面），
 /// `MAX_ORDER` 不再联动。
-/// bench S-2（`基准与压力测试设计.md` §12）引用本常量做超帽/边界断言——
+/// bench S-2（`docs/基准与压力测试设计-v1.0.md` §12）引用本常量做超帽/边界断言——
 /// 帽值单一事实源，勿在 bench 侧另写裸数字。
 pub(crate) const VMO_MAX_SIZE: usize = 128 * 1024 * 1024;
 
@@ -340,7 +340,7 @@ fn copy_out_u64(caller_el1: bool, ptr: u64, val: u64) -> Result<(), i32> {
 }
 
 /// handle 出参写回（**4 字节**——ABI §8 冻结基础类型宽度 handle=u32，见
-/// `docs/系统调用ABI设计.md`「冻结的是形状」节）。G-eco-c 实踩：曾用
+/// `docs/系统调用ABI设计-v1.0.md`「冻结的是形状」节）。G-eco-c 实踩：曾用
 /// `copy_out_u64` 写 8 字节，砸穿调用方 4 字节 `Handle` 槽的**邻接局部**——
 /// 编译 Rust（编译器紧排局部）下 svcmgr 的 `saddr` 槽被 thread_create 出参
 /// 低半清零，hello 以 sp0=0x1000（应 0x3000）入 EL0 即写 0xff0 自陷；asm
@@ -4073,7 +4073,7 @@ pub fn install() {
     use berry_hal_aarch64::syscall::install as reg;
     // S-3c c-2c slice 2b：第三参 = SVC 入口锁类位集（`kern_lock::SVC_CLASS_*`，
     // 位值镜像 sched HELD_*——kernel main 编译期断言对齐）。分类审计 =
-    // `docs/SMP-S3实施设计草案.md` §:390 修正版落类表；0x37 已随 slice 3-1a
+    // `docs/SMP-S3实施设计草案-v1.0.md` §:390 修正版落类表；0x37 已随 slice 3-1a
     // 降档 SQ_RQ 无表档（`nearest_deadline` KL-only 读面收口 SQ——SLEEPQ
     // 全触面纯 SQ 串行，该号免 KL；死锁论证见常量注）。
     use berry_hal_aarch64::kern_lock::{

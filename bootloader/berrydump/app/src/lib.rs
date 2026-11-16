@@ -4,7 +4,7 @@
 //! ConOut 打机器可 grep 的行式事实（`fw:`/`gop:`/`cfg:`/`acpi:`/`xsdt:`/
 //! `madt:`/`spcr:`/`dbg2:`/`fdt:`/`pci:`/`hcs:` 前缀 + `madtraw:`/`spcrraw:`
 //! 原始 hex 锚——跨固件表形异时的裁决源），消费端 = 人/脚本
-//! 对拍回填 `docs/VM里程碑设计草案.md` 附录 B。**缺席显式打印**（`xxx:
+//! 对拍回填 `docs/VM里程碑设计草案-v1.0.md` 附录 B。**缺席显式打印**（`xxx:
 //! absent`——机器可读缺席报告纪律）；**不 EBS**（dump 完返回
 //! EFI_SUCCESS，ConOut 全程活——与 BerryBoot 的 EBS 后直写复杂度无涉）。
 //!

@@ -3,7 +3,7 @@ name = "berry-signal"
 version.workspace = true
 edition = "2021"
 rust-version = "1.93"   # MSRV = musl 1.2.5 口径基线（Rust 2025-12 起 musl 目标；SDK-02 拍板①）
-# A7-4（docs/事件循环A7-4信号面实施设计草案.md §3.2）：POSIX 信号面
+# A7-4（docs/事件循环A7-4信号面实施设计草案-v1.0.md §3.2）：POSIX 信号面
 # 纯函数底座——sigaction 表 / 掩码状态机（block/unblock/setmask +
 # held 集）/ musl 128B sigset 位图层 / 默认动作表 / 归并式投递分诊
 # 计划（plan_dispatch：pending×mask×actions → 升序零副作用步列表）。

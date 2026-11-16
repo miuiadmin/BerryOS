@@ -1,4 +1,4 @@
-//! G3-3 lockdep（运行时锁序检测器——`G3全抢占实施设计草案.md` §3；
+//! G3-3 lockdep（运行时锁序检测器——`docs/G3全抢占实施设计草案-v1.0.md` §3；
 //! cargo feature `lockdep`，**默认关**：一切钩子 `#[cfg]` 编译消除，
 //! release/CI 主面零成本）。
 //!
