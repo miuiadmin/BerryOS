@@ -67,6 +67,7 @@ berry> ls | grep boot
 | `sleep <s>` | 阻塞 `<s>` 秒（100ms 步进 usleep 环，v1 无长睡原语；不可打断——无异步信号抢占面）；缺失/非数字/负数/超 60s 帽均 usage 2 |
 | `type <name>` | 身份三档：内建表命中 `is a shell builtin`、rootfs 命中 `is /bin/<name>`、`not found`（码 1）；v1 单名字面（多词整串作一名，不分词） |
 | `history` | 回显 editor 历史环（8×256B newest-first，编号随会话重排）逐行 `N  cmd`；历史属交互循环 editor 状态，非交互调用方空环 |
+| `dmesg` | 内核日志快照（0x84 telemetry_open op=0 薄包装，4KiB 尾帽，失败诊断行码 1，数据字节可重定向——阶段五第 17 步第 19 件） |
 
 六件行为面由 bsh `cli_selftest` 自验钉板（`CLI ok n=6`，rootfs 相标记——六步：clear 7B 逐字节对拍/uname 前缀/uptime 数值域/sleep 1s 时钟差分 + 0/60 双闭边界/type 三分支 + help↔BUILTINS 互钉/history 环回读）。
 
