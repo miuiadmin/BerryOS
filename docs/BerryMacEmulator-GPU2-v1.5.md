@@ -1,12 +1,12 @@
 # Berry Mac Emulator GPU2（virtio-gpu HDI 显示框架）
 Type: standard
-Version: 1.5
+Version: 1.5.0
 Status: current
 Updated: 2026-11-15
 
 ## §1 产品裁决
 
-Mac Apple Silicon 产品入口仍是 `just desktop`，初始几何不变（开机真实进度框架见 [BerryBoot-BootProgress-P1-v1.2.md](BerryBoot-BootProgress-P1-v1.2.md)）：
+Mac Apple Silicon 产品入口仍是 `just desktop`，初始几何不变（开机真实进度框架见 [BerryBoot-BootProgress-P1-v1.3.md](BerryBoot-BootProgress-P1-v1.3.md)）：
 
 ```text
 1080×1920@60
@@ -15,7 +15,7 @@ virtio-gpu-device,id=vgpu0,xres=1080,yres=1920
 ramfb（固件引导/回退显示面）
 ```
 
-GPU2 不降分辨率、不把产品镜像变成测试镜像、不让普通 BerryUI app 绕过 Berry Room / gui-wmd。本规格取代 [BerryMacEmulator-GPU1-v1.0.md](BerryMacEmulator-GPU1-v1.0.md) 的显示路径现状；HVF/CPU、输入与启动基线仍见 [BerryMacEmulator-HVF1-v1.0.md](BerryMacEmulator-HVF1-v1.0.md)。
+GPU2 不降分辨率、不把产品镜像变成测试镜像、不让普通 BerryUI app 绕过 Berry Room / gui-wmd。本规格取代 GPU1 线的显示路径现状；HVF/CPU、输入与启动基线仍见 [BerryMacEmulator-HVF1-v1.0.md](BerryMacEmulator-HVF1-v1.0.md)。
 
 ## §2 服务装配与几何真值
 

@@ -667,6 +667,14 @@ test-host:
     # v1 冻结）/blob 收支/END 对账三执法 + 帧帽 256 编译期断言 + 黄金
     # 字节钉板 + recv 复用缓冲脏尾回归钉，host 22 测）。
     cargo test --manifest-path user/Cargo.toml -p berry-appproto --target {{host}}
+    # cbox 刀 2：berry-cbox（黑匣子账本纯函数面——排液快照解码/行编解码
+    # 冻结字段序/合并轮转 + boot_pick 续号；黄金行钉板 + 负例全家桶 +
+    # 轮转年龄序钉死，.agents/plans/cbox/design.md）。
+    cargo test --manifest-path user/Cargo.toml -p berry-cbox --target {{host}}
+    # cbox 刀 3：berry CLI 工具面（symbolize ELF64 零依赖解析 + crash-log
+    # FAT12 直读/指纹聚合——对真 mkfat --put 造盘对拍 + 撕链负例；userbins
+    # 现实全 strip，双空如实报错指路不静默）。
+    cargo test --manifest-path tools/berry/Cargo.toml --target {{host}}
     # mkapp 门禁自检（a-3 U4：mkfat --check-fixture 同位前置——打包器门禁
     # 面此前只在 build-user 产物链上被动覆盖，门禁自身坏 = 产物链静默劣化）。
     python3 tools/mkapp.py --selftest

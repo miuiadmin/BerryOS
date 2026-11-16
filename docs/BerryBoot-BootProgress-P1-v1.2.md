@@ -2,7 +2,8 @@
 
 Type: standard
 Version: 1.2.0
-Status: current
+Status: superseded
+Superseded-by: [BerryBoot-BootProgress-P1-v1.3.md](BerryBoot-BootProgress-P1-v1.3.md)
 Updated: 2026-11-15
 
 ## §1 产品裁决

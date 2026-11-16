@@ -96,8 +96,14 @@
 # （本工作区成员，none target，段② 接线）+ berry-launcher 客户端
 # （段③ 独立小工作区编 musl target，同 stdhello 不入 members）——host
 # 测试经 justfile test-host 显式行跑）。
+# cbox 刀 2：berry-cbox（黑匣子账本纯函数 crate，「解析器即产品」——排液
+# 快照解码（镜像内核 cbox.rs 定宽表）/CBOX.LOG 行编解码（冻结字段序
+# add-only）/合并轮转 + 跨写者续号纯核，.agents/plans/cbox/design.md；三消费
+# = svcmgr（本工作区成员，none target）+ berry-launcher（独立小工作区编
+# musl target，同 stdhello 不入 members）+ 刀 3 宿主 berry crash-log——host
+# 测试经 justfile test-host 显式行跑）。
 members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto",
-    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-layout", "berry-psproto", "berry-complete", "berry-tls", "berry-mmap", "berry-signal", "berry-fbcon", "berry-gfx", "berry-poll", "berry-guiproto", "berry-ui", "berry-appproto", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild", "bins/dpgp"]
+    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-layout", "berry-psproto", "berry-complete", "berry-tls", "berry-mmap", "berry-signal", "berry-fbcon", "berry-gfx", "berry-poll", "berry-guiproto", "berry-ui", "berry-appproto", "berry-cbox", "bins/abuser", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild", "bins/dpgp"]
 exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet"]
 resolver = "2"
 

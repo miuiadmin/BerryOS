@@ -29,7 +29,8 @@ use berry_sys::{
     berry_pager_supply_pages, berry_process_create, berry_process_get_exit_code,
     berry_process_start, berry_process_terminate, berry_thread_create, berry_thread_sleep,
     berry_thread_start, berry_vmar_map, berry_vmar_unmap, berry_vmo_commit, berry_vmo_create,
-    berry_vmo_get_size, berry_vmo_read, berry_vmo_write, Handle, BERRY_ERR_ACCESS_DENIED,
+    berry_vmo_get_size, berry_vmo_read, berry_vmo_write, berry_cbox_drain, Handle,
+    BERRY_ERR_ACCESS_DENIED,
     BERRY_ERR_AGAIN, BERRY_ERR_BAD_HANDLE, BERRY_ERR_BAD_STATE, BERRY_ERR_BUSY,
     BERRY_ERR_INVALID_ARG,
     BERRY_ERR_TIMEDOUT, CLOCK_MONOTONIC, RIGHT_DUPLICATE, RIGHT_MANAGE,
@@ -54,6 +55,12 @@ use berry_manifest::{
 };
 // C-3 段①：ps 查询 RPC 协议面（ps_selftest 服务端：请求解析 + 账本编码）。
 use berry_psproto as psp;
+// cbox 刀 2：黑匣子账本纯核（排液快照解码/CBOX.LOG 行编解码/合并轮转 +
+// 跨写者 boot id 续号——单源，launcher/宿主 berry crash-log 同引）。
+use berry_cbox as cbox;
+// cbox 刀 2：CBOX.LOG 整文件读-改-写的 RPC 面（显式 h 的 get_chunk/
+// put_chunk/commit——battery/死亡面两落账窗；berry-libc 同源消费）。
+use berry_fsclient as fsc;
 // GUI-4 段②：GUI wire 协议面（input 域 boot 自验——SUBSCRIBE 请求编码 +
 // 1B 状态应答收口，no_std 纯函数 crate）。
 use berry_guiproto as gp;
@@ -61,6 +68,7 @@ use berry_guiproto as gp;
 // 编解码——段① 落库，本刀接 serve 消费侧）。
 use berry_appproto as appp;
 // A-8b：vnet 常驻服务 client 端保活槽（单线程 svcmgr，Relaxed 足够）。
+// AtomicU64 = LAUNCHER_INIT_UNTIL（gen-2 init 窗闸，now() 纳秒宽）。
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// echo 服务镜像（G-eco-b 编译产物；echo1/echo2 共用同一份字节——asm 同款）。
@@ -84,6 +92,10 @@ const ECHO_REQ: u64 = 0x00C0_FFEE_E000_0E30;
 const SVC_OK: &[u8; 7] = b"SVC ok\n";
 
 const TIMEOUT_NS: u64 = 10 * 1_000_000_000;
+/// S-6 ③ 临终诊断用 console 柄快照（_start 首行单写；wait() 自陷前一读）
+/// ——console 逐层传参到不了 wait()（send_retry/roundtrip 均无此参），全局
+/// 快照是最小侵入面。0 = 未初始化（裸测/异常早跑）→ 诊断行跳过。
+static CONSOLE_H: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 const THROTTLE: u64 = 0x30_0000;
 /// 子进程布局：镜像首页 @0x1000 + 零栈页，映射 [0x1000,0x3000)，sp0=0x3000。
 const CHILD_MAP_LEN: usize = 0x2000;
@@ -93,6 +105,7 @@ const CHILD_SP: usize = 0x3000;
 #[link_section = ".text.entry"]
 #[no_mangle]
 pub extern "C" fn _start(console: Handle) -> ! {
+    CONSOLE_H.store(console as usize, core::sync::atomic::Ordering::Relaxed);
     // C-3 段①：拉起账本开卷——svcmgr 自身行（报告者恒 alive；裸跑也记，
     // 表零消费者无害）。
     ps_reg(b"svcmgr", psp::STATE_ALIVE, 0);
@@ -456,6 +469,37 @@ const APP_SPAWN_LIVE_MAX: usize = 4;
 static mut APP_CHILDREN: [Option<AppSpawnTail>; APP_SPAWN_LIVE_MAX] =
     [const { None }; APP_SPAWN_LIVE_MAX];
 
+/// cbox 刀 2（`.agents/plans/cbox/design.md`）：黑匣子排液/账本静态缓冲。
+/// CBOX_IN = 账本现容读入；CBOX_OUT = 合并产物（写盘 + 读回对拍源）；
+/// CBOX_DRAIN = syscall 0x42 快照落点。CBOX_BOOT = 本 boot 账本 id
+/// （battery 首落时 [`cbox::boot_pick`] 内容匹配定终身，死亡面续用——同
+/// boot 幂等组的锚）；CBOX_SEQ = 已见最大 seq（`cbox rec` eco 面的新 seq
+/// 门——重复监督死循环不刷屏）。SAFETY: 同 LAUNCHER_CHILD 单线程独占
+/// （battery/death 面顺序不交叠，serve 无并行插入面）。
+static mut CBOX_IN: [u8; cbox::LEDGER_MAX] = [0; cbox::LEDGER_MAX];
+static mut CBOX_OUT: [u8; cbox::LEDGER_MAX] = [0; cbox::LEDGER_MAX];
+static mut CBOX_DRAIN: [u8; cbox::DRAIN_MAX] = [0; cbox::DRAIN_MAX];
+static mut CBOX_BOOT: u32 = 0;
+static mut CBOX_SEQ: u32 = 0;
+
+/// cbox 轮 2 审计 [5]：gen-2 launcher 重启 init 窗截止（MONOTONIC 时刻，
+/// 0 = 无窗）。重启装配 Ok 后 gen-2 立即重入 init（icons APP_LIST →
+/// layout 装载 → cbox init_flush），持自有 fs dup 发 RPC；app_supervise
+/// 的 sole 门（表空 = 无并发 fs client）**看不见这个 init**——窗内最后活
+/// app 死亡走死亡排液的话，`cbox_drain_stale(FS_A)` 会把 gen-2 在途应答
+/// 当陈旧帧吃掉（fsproto 单应答队列共享面——一切 fs client 是同一端点
+/// 的 dup）。窗内抑制死亡排液的 fs 写面（`cbox rec` eco 面照发，记录留
+/// 内核 RAM 表延后下个安全窗——与多 app 形同语义）。无 init-done 信号
+/// 可依，时间界是唯一可执法面；帽值见 [`LAUNCHER_INIT_CAP_NS`]。launcher
+/// 死亡时清零——此后队列里的在途应答就是死者孤儿，drain_stale 吃它们
+/// 正是本义。boot 形不设窗：装配先于稳态 loop（app_supervise 首轮时
+/// gen-1 init 早已完成），结构上无交叠。
+static LAUNCHER_INIT_UNTIL: AtomicU64 = AtomicU64::new(0);
+
+/// init 窗帽：10s = init 现实毫秒级面 + 两个数量级余量；到点自动失效
+///（判据 `now() < deadline`，过期值无需显式清）。
+const LAUNCHER_INIT_CAP_NS: u64 = 10 * 1_000_000_000;
+
 /// 稳态空闲并等帽（guifbd `IDLE_CAP_NS` 同值同义——合法空闲非死线，到点
 /// 重臂续等；真断链面 = recv 非 -EAGAIN 错码照 trap）。
 const APP_IDLE_CAP_NS: u64 = 10 * 1_000_000_000;
@@ -685,7 +729,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                 let verbose_face = berry_vmo_read(
                     H_FBINFO,
                     face_bytes.as_mut_ptr(),
-                    48,
+                    72,
                     face_bytes.len(),
                 ) == 0
                     && u64::from_le_bytes(face_bytes) == 1;
@@ -1080,12 +1124,19 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                     data_off,
                     data_len,
                     stdout: console,
-                    // 32 页：gfxdemo 链 berry-gfx/VMO 三连后启动栈深超
-                    // 8 页（1080p 质量刀实测 8 页 = main 前静默栈穿退 0）。
+                    // 32 页：GUI8/1080p 质量刀与 refresh k4/k6 统计面都在
+                    // gfxdemo main 帧内放大数组；取两侧最大帽，避免任何
+                    // probe 形写落保护页。
                     stack_pages: 32,
                     stdin_feed: Some(&[]),
                     stdin_handle: None,
-                    args: &[],
+                    // ramfb/guifbd runs mainline refresh guest probes; vgpu
+                    // probe topology stays on the async GUI8 WM/DMA path.
+                    args: if vgpu_progress_cli == 0 {
+                        &[b"--refresh-guest"]
+                    } else {
+                        &[]
+                    },
                     extra_gifts: &[wm_cli],
                     mmio_vmo: None,
                     mmio_va: 0,
@@ -1093,7 +1144,14 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                 },
             ) {
                 Ok(child) => {
-                    match child.reap() {
+                    // k4 统计段（101 拍点网格采样 + 17 帧回执链）+ 刀6 k6 段
+                    // （k6p 定点窗 + det 形 k6t/k6l + k6h 210 拍——A5 升档
+                    // 2 拍确认 + 2 帧生效窗，预热 4 拍×2 段 + k6f 逐帧）
+                    // 在 TCG+宿主争用下墙钟远超常规 30s 帽——run3/5 实证：主
+                    // boot ~165s、per_frame 形 park 走 1Hz 重扫 ~480s worst
+                    // ——per-arm 抬帽 600s，其余 arm 零扰动（真挂死由 boot
+                    // deadline 兜底 FAIL，臂帽只是早响面）。
+                    match child.reap_with_timeout(600 * 1_000_000_000) {
                         // 零码零新行——GFX ok 归 gfxdemo 自打（stdhello 的
                         // EXIT ok 同位，本 arm 无自证标记面）。
                         Ok(0) => {}
@@ -1216,6 +1274,19 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                 blk_cli = 0;
                 eco_skip(b"fs spawn");
             }
+        }
+    }
+    // ---- cbox 刀 2：电池自检落账（battery）——fsmgr Ok 后、vnet 前的机械
+    // 唯一 fs client 窗（fs 端点集刚建：本表持 fs_a_h/fs_client，vnet/
+    // launcher/app 全未起——fsproto 严格串行无请求号，机制性排除交叠非
+    // 时序赌目）。期望 n≥1（boot 期 rogue 自验件确定性 fault 在册）；fs
+    // 缺席形 fs_client==0 = eco 降级行、不发标记；RAM-only 形（EFI 冒烟
+    // 路）fsmgr 照起：账本落 RAM 树、标记照发——盘面真值验收走主路
+    //（spec 验证节）。----
+    if fs_client != 0 {
+        match cbox_flush(fs_client, false) {
+            Ok(n) => cbox_ok_line(console, n),
+            Err(_) => eco_line(console, b"cbox bat"),
         }
     }
     // ---- P6 A-8b：vnet（常驻网络服务）预拉起——fsmgr 之后、主走查前 ----
@@ -4090,9 +4161,22 @@ fn send_retry(h: Handle, buf: *const u8, len: usize) {
 /// 82fe305 全场阻塞化消失。
 
 /// 阻塞等信号（10s 绝对帽；超时/错码自陷——对端断供即链断）。
+/// S-6 ③ 临终诊断：自陷前把柄/信号/错码一行单发 console（非阻塞单发，
+/// console 本身即断供源时发不出即罢——不递归 send_retry/wait）。定位
+/// 「谁断供」用；定谳后此行退役或转常设 low-noise 诊断。
 fn wait(h: Handle, signals: u64) {
     let mut obs = 0u64;
-    if berry_object_wait_one(h, signals, now() + TIMEOUT_NS, &mut obs) != 0 {
+    let s = berry_object_wait_one(h, signals, now() + TIMEOUT_NS, &mut obs);
+    if s != 0 {
+        let c = CONSOLE_H.load(core::sync::atomic::Ordering::Relaxed);
+        if c != 0 {
+            let mut line = *b"WTDIE h=0x00000000 sig=0x0000 e=0x0000\n";
+            put_hex4(&mut line[10..14], (h >> 16) as usize);
+            put_hex4(&mut line[14..18], (h & 0xffff) as usize);
+            put_hex4(&mut line[25..29], signals as usize);
+            put_hex4(&mut line[34..38], s as usize);
+            let _ = berry_channel_send(c as Handle, line.as_ptr(), line.len(), core::ptr::null(), 0);
+        }
         trap();
     }
 }
@@ -4449,6 +4533,314 @@ fn eco_app(console: Handle, id: &[u8], why: &[u8]) {
     n += why.len();
     line[n] = b'\n';
     send_retry(console, line.as_ptr(), n + 1);
+}
+
+// ---- cbox 刀 2（`.agents/plans/cbox/design.md`）：黑匣子排液落账面 ----
+// 纯核（快照解码/行编解码/合并轮转/boot 续号）单源在 berry-cbox；本段 =
+// 会话编排：排液 → 读账本 → boot id → 合并去重 → 分片 PUT staging +
+// TRUNC 收口 → 读回对拍。落账窗安全论证（fsproto 严格串行无请求号 ⇒
+// 唯一活跃客户纪律）：
+// - battery：fsmgr Ok 后、vnet 前的机械唯一 client 窗（fs 端点集刚建，
+//   vnet/launcher/app 全未起——机制性排除交叠，非时序赌目）；
+// - 死亡面：门控「死者是最后一个活 app」（表空 = 无并发 fs client；
+//   launcher 在 app 相位结构上不写 fs——layout RMW 只在 init）；
+// - launcher init（berry-launcher 侧自落账）：自身会话，catch 自身重启
+//   崩溃 + GUI 起链 fault。
+// 写安全 = staging 全程 + TRUNC 才是 commit 点（中断 = 旧账原样保命）。
+
+/// 账本路径（卷根 8.3 名，`LAYOUT.JSN` 惯例同形）。**裸字节无尾 NUL**——
+/// 本侧直调 fsclient RPC 面（get_chunk/put_chunk/commit），路径是协议
+/// 切片不是 libc C 串（`path_valid` 尾随 NUL 拒 → ST_BAD）；launcher 侧
+/// 走 libc `open` 才要 `\0`（`resolve_to` 剥壳层两制，勿混）。
+const CBOX_PATH: &[u8] = b"CBOX.LOG";
+
+/// 排液快照（syscall 0x42 → berry-cbox 解码）。Err = syscall 失败/快照
+/// 畸（腐坏按失败收口勿落盘——防半解数据毁旧账）；1 = syscall 2 = decode。
+fn cbox_drain_snap() -> Result<cbox::Snapshot, u8> {
+    // SAFETY: CBOX_DRAIN 单线程独占（LAUNCHER_CHILD 同纪律）。
+    let drain: &mut [u8] = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(CBOX_DRAIN) as *mut u8,
+            cbox::DRAIN_MAX,
+        )
+    };
+    let mut n = 0u32;
+    let st = berry_cbox_drain(drain.as_mut_ptr(), cbox::DRAIN_MAX as u32, &mut n);
+    if st != 0 {
+        return Err(1);
+    }
+    match cbox::drain_decode(&drain[..n as usize]) {
+        Some(s) => Ok(s),
+        None => Err(2),
+    }
+}
+
+/// 读账本现容进 CBOX_IN → `Ok(有效长)`。`Ok(0)` = 干净空账本（Noent 或
+/// 空文件）；`Err(<观测码>)` = RPC 错（FsErr code）/超帽畸账 -999
+/// （**中止排液**——瞬态错误下重写 = 毁旧账，宁可不落）。
+fn cbox_read_ledger(h: Handle) -> Result<usize, i64> {
+    // SAFETY: CBOX_IN 单线程独占。
+    let inn: &mut [u8] = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(CBOX_IN) as *mut u8,
+            cbox::LEDGER_MAX,
+        )
+    };
+    let mut n = 0usize;
+    let mut off = 0u32;
+    loop {
+        let mut buf = [0u8; fsc::RPC_BUF];
+        match fsc::get_chunk(h, CBOX_PATH, off, &mut buf) {
+            Ok((len, more)) => {
+                if n + len > cbox::LEDGER_MAX {
+                    return Err(-999);
+                }
+                inn[n..n + len].copy_from_slice(&buf[..len]);
+                n += len;
+                if !more {
+                    return Ok(n);
+                }
+                off = match off.checked_add(len as u32) {
+                    Some(v) => v,
+                    None => return Err(-998),
+                };
+            }
+            Err(fsc::FsErr::Noent) => return Ok(0),
+            Err(e) => return Err(e.code() as i64),
+        }
+    }
+}
+
+/// 合并产物写盘（PUT 分片 staging → `TRUNC(len)` commit 点 → 读回对拍）。
+/// 任一步失败 = `Err(<观测码>)`：TRUNC 未达 = 旧账原样保命；对拍失配 = 已
+/// 提交但内容可疑（loud 报，账本以盘上真值为准）。
+fn cbox_write_ledger(h: Handle, len: usize) -> Result<(), i64> {
+    // SAFETY: CBOX_OUT 单线程独占（读侧借用窗与 CBOX_IN 顺序不交叠）。
+    let out: &[u8] = unsafe {
+        core::slice::from_raw_parts(core::ptr::addr_of!(CBOX_OUT) as *const u8, len)
+    };
+    let mut off = 0usize;
+    while off < len {
+        let end = (off + fsc::CHUNK).min(len);
+        fsc::put_chunk(h, CBOX_PATH, off as u32, &out[off..end]).map_err(|e| e.code() as i64)?;
+        off = end;
+    }
+    fsc::commit(h, CBOX_PATH, len as u32).map_err(|e| e.code() as i64)?;
+    let rl = cbox_read_ledger(h)?;
+    // SAFETY: CBOX_IN 读侧（cbox_read_ledger 返回后借用已断，此处重建）。
+    let inn: &[u8] = unsafe {
+        core::slice::from_raw_parts(core::ptr::addr_of!(CBOX_IN) as *const u8, rl)
+    };
+    if rl != len || inn != out {
+        return Err(-997); // 读回失配
+    }
+    Ok(())
+}
+
+/// 写失败后的撤销性回写（尽力面，轮 2 审计 [1]/[6]）：把 CBOX_IN[0..len]
+/// （= 写前读入的旧账）回灌 staging + `TRUNC(len)` 提交。因果：fsproto
+/// staging 是**服务全局单槽**（`fat.rs` stage_put 跨名自动提交语义）——
+/// 写失败留在槽里的部分新账若不撤，后续任何异名 FAT 写（rootfs 形 bsh
+/// `FATW put_file("RW.TXT")` 同 boot 现实存在）会把残留当 CBOX.LOG 自动
+/// 提交 = 旧账被部分写入顶替（毁账，且 handle_get staging-first 读影同
+/// 步污染）。回写 0..len + commit(len) 一次清三面：staging 槽、盘上真值、
+/// 读影。回写自身失败 = 尽力面（瞬态错误风暴形），残留语义回到「下次同窗
+/// 同名全量重写自愈」挂账原位——回写只多试一次，不递归补偿。
+fn cbox_restore_ledger(h: Handle, len: usize) -> Result<(), i64> {
+    // SAFETY: CBOX_IN 单线程独占；调用点在 cbox_write_ledger 失败后——
+    // merge 只读借用 CBOX_IN，此刻其内容仍是写前旧账（CBOX_OUT 才是
+    // 合并产物落点，两者不相覆写）。
+    let inn: &[u8] = unsafe {
+        core::slice::from_raw_parts(core::ptr::addr_of!(CBOX_IN) as *const u8, len)
+    };
+    let mut off = 0usize;
+    while off < len {
+        let end = (off + fsc::CHUNK).min(len);
+        fsc::put_chunk(h, CBOX_PATH, off as u32, &inn[off..end]).map_err(|e| e.code() as i64)?;
+        off = end;
+    }
+    fsc::commit(h, CBOX_PATH, len as u32).map_err(|e| e.code() as i64)?;
+    Ok(())
+}
+
+/// 陈旧应答排空（死亡面前置）：死者若死在 RPC 中途（send 后 wait 前/超时
+/// 后迟归），队列可能残留其应答帧——先收干净再发自己的请求，防首个 recv
+/// 吃到死者的帧（fsproto 无请求号，recv 无法辨别归属）。随行 handle 全量
+/// close 丢弃（app_supervise drain 同纪律）；链异常不 trap（留给后续 RPC
+/// 失败面收口——cbox 失败勿杀 svcmgr）。残余窗（排空时服务端仍在处理
+/// 死者请求）与 bsh「唯一读者」纪律同类——既有系统性挂账，非本刀新增面。
+fn cbox_drain_stale(h: Handle) {
+    let mut msg = [0u8; 256];
+    let mut hh = [0 as Handle; 6];
+    loop {
+        let mut nb = msg.len();
+        let mut nh = hh.len();
+        let s = berry_channel_recv(h, msg.as_mut_ptr(), &mut nb, hh.as_mut_ptr(), &mut nh);
+        if s == BERRY_ERR_AGAIN || s != 0 {
+            return;
+        }
+        for k in 0..nh {
+            let _ = berry_handle_close(hh[k]);
+        }
+    }
+}
+
+/// gui8 冒烟相冻结门（与 berry-launcher `layout_io::smoke_mode` 同一哨兵
+/// `GUI8.SMK` / 载荷 `BERRYOS-GUI8-SMOKE-V1\n`——wire 契约常量双读者，
+/// 单源在 gui8-smoke 夹具）：在席 = fixture 世界，cbox 一切 fs 落账窗
+///（battery/死亡面，经 [`cbox_flush`] 收口）冻结——ktest 每 boot 必记
+/// rogue kill，boot B 排液必有新账必重写，撞 gui8「跨 boot 读路径零重写」
+/// 盘哈希不变量（2026-11-16 实证：窗一 boot B `CBOX ok n=2` 重写
+/// CBOX.LOG；launcher 窗三同批已门）。Noent/错载荷 = false（fail
+/// closed——常态 boot 落账面零变化）。定长门 + 全量比对：长于/短于魔数
+/// 的文件必不匹配（launcher smoke_mode 同款精确匹配语义；本侧 get_chunk
+/// 定容 256B——len==22 且字节全等才真）。
+fn cbox_smoke_freeze(h: Handle) -> bool {
+    const PATH: &[u8] = b"GUI8.SMK";
+    const MAGIC: &[u8] = b"BERRYOS-GUI8-SMOKE-V1\n";
+    let mut buf = [0u8; fsc::RPC_BUF];
+    match fsc::get_chunk(h, PATH, 0, &mut buf) {
+        Ok((len, _)) if len == MAGIC.len() => buf[..len] == *MAGIC,
+        _ => false,
+    }
+}
+
+/// 落账全链（battery/死亡面共用）：排液 → 读账 → boot id（首次
+/// [`cbox::boot_pick`] 内容匹配定终身、后续续用——与 launcher init 落账
+/// 三写者同 boot 幂等）→ merge 去重 → 需要时写盘对拍。`Ok(账本现存行
+/// 数)` / `Err`（任一步失败——调用方 eco 降级，监督面照跑）：1=syscall
+/// 2=decode 3=read 4=write。`stale`：battery 窗队列机械纯净（false）；
+/// 死亡面 true（见 [`cbox_drain_stale`]）。
+fn cbox_flush(h: Handle, stale: bool) -> Result<usize, u8> {
+    if h == 0 {
+        return Err(0);
+    }
+    if stale {
+        cbox_drain_stale(h);
+    }
+    // gui8 冒烟相冻结（[`cbox_smoke_freeze`] 头注）：零排液零落账，
+    // `Ok(0)` = 空账本语义（battery 标记面 = `CBOX ok n=0`——fixture 世界
+    // 真值：零落账）。stale 排空在门前照走——会话卫生态不随冻结退化。
+    if cbox_smoke_freeze(h) {
+        return Ok(0);
+    }
+    let snap = cbox_drain_snap()?;
+    let old_len = cbox_read_ledger(h).map_err(|_| 3)?;
+    // SAFETY: CBOX_BOOT/CBOX_IN 单线程独占。
+    let boot = unsafe {
+        if CBOX_BOOT == 0 {
+            let old: &[u8] = core::slice::from_raw_parts(
+                core::ptr::addr_of!(CBOX_IN) as *const u8,
+                old_len,
+            );
+            CBOX_BOOT = cbox::boot_pick(old, &snap);
+        }
+        CBOX_BOOT
+    };
+    // CBOX_SEQ 记账（rec eco 面新 seq 门）——记录已见即记，与写盘成败无关
+    //（serial 面 = 面包屑不是账本）。kind!=0 滤哨兵（排液见不稳槽的
+    // magic=0 占位——seq 同号但不代表真记录见闻，死亡面 cbox_death_flush
+    // 同滤）。
+    // SAFETY: CBOX_SEQ 单线程独占。
+    unsafe {
+        for r in snap.recs() {
+            if r.kind != 0 && r.seq > CBOX_SEQ {
+                CBOX_SEQ = r.seq;
+            }
+        }
+    }
+    // SAFETY: CBOX_IN（读）/CBOX_OUT（写）单线程独占，借用窗顺序不交叠。
+    let (n, appended, lines) = unsafe {
+        let inn: &[u8] = core::slice::from_raw_parts(
+            core::ptr::addr_of!(CBOX_IN) as *const u8,
+            old_len,
+        );
+        let out: &mut [u8] = core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(CBOX_OUT) as *mut u8,
+            cbox::LEDGER_MAX,
+        );
+        let st = cbox::merge(inn, &snap, boot, out);
+        (st.len, st.appended, st.lines)
+    };
+    if appended == 0 {
+        return Ok(lines); // 幂等重入（已落/无新记录）——零重写
+    }
+    if let Err(e) = cbox_write_ledger(h, n) {
+        // 写失败 → 撤销性回写（[1]/[6]，见 cbox_restore_ledger 头注）——
+        // **仅限 commit 点前**的失败（PUT/TRUNC 段）：staging 残留部分新账
+        // 必须当场撤，跨名 FAT 写会自动提交残留 = 毁旧账。-997 = 读回失配：
+        // 新账**已提交**（盘上真值已是新内容），回写旧账 = 撤销已提交数据
+        //（错向修复）——不回，loud eco 行交调用方，账本以盘上真值为准。
+        if e != -997 {
+            let _ = cbox_restore_ledger(h, old_len);
+        }
+        return Err(4);
+    }
+    Ok(lines)
+}
+
+/// `CBOX ok n=<行数>` 标记行（battery 收口——车辆面在册标记，与既有
+/// ECO_MARKERS 互非子串）。
+fn cbox_ok_line(console: Handle, n: usize) {
+    let mut line = [0u8; 32];
+    line[..10].copy_from_slice(b"CBOX ok n=");
+    let mut nb = [0u8; 10];
+    let mut i = nb.len();
+    let mut v = n;
+    loop {
+        i -= 1;
+        nb[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    let dn = nb.len() - i;
+    line[10..10 + dn].copy_from_slice(&nb[i..]);
+    line[10 + dn] = b'\n';
+    send_retry(console, line.as_ptr(), 10 + dn + 1);
+}
+
+/// 死亡面排液（app_supervise TERMINATED 命中后）：`cbox rec` eco 面恒走
+///（新 seq 在册时——serial 面包屑；全寄存器 dump 串口已有）；fs 落盘只在
+/// `sole`（死者是最后一个活 app——表空 = 无并发 fs client，见模块头安全
+/// 论证）门后。多 app 并存时活者可能正处 fs RPC 中途，此刻写 = 回混毁
+/// 无辜会话，宁缺勿毁——记录延后到下个安全窗，`(boot, seq)` 去重保不重
+/// 不漏。
+fn cbox_death_flush(console: Handle, sole: bool) {
+    let Ok(snap) = cbox_drain_snap() else {
+        return;
+    };
+    let mut seq_max = 0u32;
+    for r in snap.recs() {
+        if r.kind != 0 && r.seq > seq_max {
+            seq_max = r.seq;
+        }
+    }
+    // SAFETY: CBOX_SEQ 单线程独占。
+    let seq_prev = unsafe { CBOX_SEQ };
+    if seq_max > seq_prev {
+        eco_line(console, b"cbox rec");
+        unsafe { CBOX_SEQ = seq_max; }
+    }
+    if !sole {
+        return;
+    }
+    let fsa = FS_A.load(Ordering::Relaxed);
+    if fsa == 0 {
+        return;
+    }
+    // gen-2 init 窗抑制（[5]，见 LAUNCHER_INIT_UNTIL 头注）：窗内 launcher
+    // 正持自有 fs dup 发 init RPC，此刻经 FS_A 排液/写账 = 单应答队列上
+    // 双活跃客户交叠（stale 排空会误吃 gen-2 在途应答）。`cbox rec` eco
+    // 面已在上方照发——记录留 RAM 表延后下个安全窗，(boot, seq) 去重保
+    // 不重不漏。
+    if now() < LAUNCHER_INIT_UNTIL.load(Ordering::Relaxed) {
+        return;
+    }
+    if cbox_flush(fsa, true).is_err() {
+        eco_line(console, b"cbox w");
+    }
 }
 
 /// app EOF 收集帽：60s。worst 路径 = 子 main 全程 + EOF 排队（demo app
@@ -5437,7 +5829,8 @@ fn launcher_assemble(console: Handle, fs_gift: Handle) -> bool {
             // 64 页 = 256KB（R5 实测定值——段③ 首验仪器定谳：8 页 32KB 下
             // main+0x1c 序言即穿保护页 D-abort——`UiMain::new` 构造中间体
             // LTO 后仍部分落栈 ~29KB + pre-main std 运行时；帧循环另有
-            // CommandEncoder 18KB/帧（gfxdemo 8 页先例无 berry-ui 链）。
+            // CommandEncoder 18KB/帧（gfxdemo 16 页先例无 berry-ui 链——刀4
+            // k4 统计面自 8 抬，见上方 gfxdemo arm 注）。
             // bsh 32 页先例之上；manifest 域检 1..=64 顶格）。
             stack_pages: 64,
             // 占位 dummy（空 feeder 立即 EOF；berry-exec assert：extras 非
@@ -5847,6 +6240,9 @@ fn launcher_supervise(console: Handle) {
         trap();
     }
     LAUNCHER_LIVE.store(0, Ordering::Relaxed);
+    // init 窗随死亡收口（[5]）：此后队列里的在途 fs 应答 = 死者孤儿，
+    // drain_stale 吃它们正是本义（窗已无保护对象）。
+    LAUNCHER_INIT_UNTIL.store(0, Ordering::Relaxed);
     if LAUNCHER_RESTARTED.swap(1, Ordering::Relaxed) == 0 {
         let mut fs_dup: Handle = 0;
         // R1 判别器 v2 同门（boot arm 同款）：冻结相 BLK_OK=0 → 重启装配
@@ -5869,6 +6265,14 @@ fn launcher_supervise(console: Handle) {
                 trap();
             }
             eco_line(console, b"launcher restart");
+        } else {
+            // gen-2 init 窗开闸（[5]，见 LAUNCHER_INIT_UNTIL 头注）：gen-2
+            // 自此刻起持 fs dup 重入 init，死亡排液面让窗（帽 10s 到点自
+            // 失效——init-done 无信号，时间界唯一可执法面）。
+            LAUNCHER_INIT_UNTIL.store(
+                now() + LAUNCHER_INIT_CAP_NS,
+                Ordering::Relaxed,
+            );
         }
     }
 }
@@ -5937,6 +6341,11 @@ fn app_supervise(console: Handle) {
         }
         // 退出面：尾已在手（槽位 take 后即空）——收口兑现。
         app_reap_tail(console, t);
+        // cbox 刀 2：死亡面排液——`sole` = 死者是最后一个活 app（此刻表全
+        // 空：本槽 take 后回表前窗口），无并发 fs client（见 cbox 模块头
+        // 安全论证）。
+        let sole = children.iter().all(|c| c.is_none());
+        cbox_death_flush(console, sole);
     }
 }
 

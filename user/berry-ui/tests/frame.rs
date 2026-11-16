@@ -285,6 +285,41 @@ fn note_presented_tracks_actual_and_jank_boundary() {
 }
 
 #[test]
+fn note_frame_timing_adopts_server_period() {
+    // 刀4 P3 消费面：回执周期采纳 + actual 轨单源。判别性设计：F0 呈现
+    // 落 P+6ms——旧 60Hz 基的半周期（8.3ms）内非 jank、采纳 120Hz 真相
+    // 后半周期 4.2ms → jank：同拍点判定随采纳翻转 = 消费面真生效。
+    let mut ui = UiMain::new(64, 48);
+    ui.set_vsync(P, 0);
+    let root = ui.root();
+    ui.wake(P);
+    let out0 = rf(&mut ui, P);
+    assert!(out0.drew);
+    ui.note_submitted();
+    let q = 8_333_333u64; // 面板真相 120Hz（round(1e9/120)——服务端单源）
+    ui.note_frame_timing(0, P + 6_000_000, q as u32, FRAME_PRESENTED, 2);
+    assert_eq!(ui.vsync().0, q, "回执周期采纳");
+    let t = ui.telemetry();
+    let recs: Vec<&FrameRec> = t.last(1).collect();
+    assert_eq!(recs[0].actual_ns, P + 6_000_000, "actual 轨用回执拍点");
+    assert!(recs[0].jank, "采纳后按新半周期判定（旧基下同点非 jank）");
+    assert_eq!(t.deadline_miss(), 1);
+
+    // 防御面：refresh_ns=0（服务端无真相值）不采纳——周期保持 q，actual
+    // 轨照回填、jank 按现基判。
+    ui.invalidate(root).unwrap();
+    let out1 = rf(&mut ui, 2 * P);
+    assert!(out1.drew);
+    ui.note_submitted();
+    ui.note_frame_timing(1, 2 * P + 1_000_000, 0, FRAME_PRESENTED, 2);
+    assert_eq!(ui.vsync().0, q, "零真相值不采纳");
+    let recs: Vec<&FrameRec> = ui.telemetry().last(2).collect();
+    assert_eq!(recs[1].actual_ns, 2 * P + 1_000_000);
+    assert!(!recs[1].jank, "回填照走（1ms ≪ q/2）");
+    assert_eq!(ui.telemetry().deadline_miss(), 1);
+}
+
+#[test]
 fn credits_and_inflight_bookkeeping() {
     // 帽常量单源钉板
     assert_eq!(CREDITS_MAX, 2);

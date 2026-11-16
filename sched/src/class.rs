@@ -55,6 +55,15 @@ static mut LAST_VCT: u64 = 0;
 /// `(vdeadline, vruntime)`，不空转。
 pub struct Fair;
 
+/// **S2b 纯 EEVDF 开关**（实验轨道）：
+/// - `false`（默认，S2a）：严格带序 + 带内 EEVDF——PI boost 即时生效
+///   （高带先出），deadline 带（≥1000）恒先于 fair。v1 安全形态。
+/// - `true`（S2b）：去带序——所有任务纯 `(eligible, vdeadline, vruntime)`
+///   竞争。PI boost 经 weight 影响 VD（软优先——高权→短 VD→常先但不保证）。
+///   deadline 带语义失效（绝对截止期 VD 与 fair VD 尺度不可比——需 v2
+///   归一化）。**仅实验用——v1 测试全按 S2a 假设构建**。
+pub const PURE_EEVDF: bool = false;
+
 /// 兼容别名：既有调用点仍以 `RoundRobin` 指类型（1.1/S2 语义已是 Fair）。
 pub type RoundRobin = Fair;
 
@@ -106,6 +115,39 @@ fn avg_vruntime(rq: &Runqueue) -> Option<u64> {
     }
 }
 
+/// S5-c lazy unthrottle：扫环上被冻结的 deadline 任务——`cntvct() ≥ vdeadline`
+/// 者周期到：解冻（清 HELD_FROZEN）+ 重臂 vdeadline（+= duration_hint_ns =
+/// period_cycles）+ 授新预算 slice（preempt_threshold）。CBS 同形语义：
+/// 每期至多 budget CPU 时长；超了等下期。
+///
+/// # Safety
+/// rq 环节点有效；调用侧屏蔽窗（pick_next 语境）。
+unsafe fn lazy_unthrottle_deadlines(rq: &Runqueue) {
+    let now = hal::timer::cntvct();
+    let head = rq.head();
+    let mut cur = head;
+    while let Some(c) = cur {
+        let t = c.as_ptr();
+        cur = (*t).rq_next.get();
+        // 快路径：非 deadline 或未冻结 → 一比较跳过。
+        if (*t).prio_effective >= PRIO_DEADLINE
+            && (*t).held_locks & crate::task::HELD_THROTTLE != 0
+            && now >= (*t).vdeadline
+            && (*t).duration_hint_ns > 0
+        {
+            // 慢路径：周期到 → 解限流（只清 THROTTLE 位——FROZEN 位是进程
+            // 冻结独占语义，由 SuspendToken close 解除，不受预算周期影响）。
+            (*t).held_locks &= !crate::task::HELD_THROTTLE;
+            (*t).vdeadline = (*t).vdeadline.saturating_add((*t).duration_hint_ns);
+            let b = (*t).preempt_threshold.max(0) as u64;
+            if b > 0 {
+                (*t).slice_left = b;
+            }
+        }
+        if cur == head { break; } // 环回起点 → 一圈完成
+    }
+}
+
 impl SchedClass for Fair {
     fn enqueue(&self, t: &mut Task, rq: &mut Runqueue) {
         t.state = TaskState::Ready;
@@ -131,6 +173,11 @@ impl SchedClass for Fair {
     }
 
     fn pick_next(&self, rq: &Runqueue, _topo: &Topo) -> Option<&mut Task> {
+        // S5-c lazy unthrottle：周期到的冻结 deadline 任务——解冻 + 重臂
+        // vdeadline（+= period，存 duration_hint_ns）+ 授新预算 slice。
+        // 零额外定时器：pick_next 高频调用的顺带扫（is_deadline 一比较快
+        // 路过；冻结位零任务直接跳过）。
+        unsafe { lazy_unthrottle_deadlines(rq) };
         let chosen = self.scan_filtered(rq, core::ptr::null_mut())?;
         // SAFETY: scan_filtered 契约（环上节点在环、调用侧屏蔽窗）。
         unsafe { rq.advance_past(chosen) };
@@ -167,6 +214,17 @@ impl SchedClass for Fair {
         if t.slice_left == 0 && !is_deadline(t) {
             t.vdeadline = t.vruntime.saturating_add(slice_virtual(t));
         }
+        // S5-c 预算执法：deadline 任务的 slice = 预算尺寸（spawn 时由
+        // preempt_threshold 设定）。slice 耗尽 = 本期预算用完 → throttle
+        //（HELD_FROZEN 置位 → eligible 过滤 → 不再出选）。周期到 →
+        // lazy_unthrottle（pick_next 面扫）解冻 + 重臂 + 新预算。
+        if t.slice_left == 0
+            && is_deadline(t)
+            && t.preempt_threshold > 0
+            && t.held_locks & crate::task::HELD_THROTTLE == 0
+        {
+            t.held_locks |= crate::task::HELD_THROTTLE;
+        }
     }
 
     fn priority(&self) -> i32 {
@@ -190,7 +248,8 @@ impl SchedClass for Fair {
 pub(crate) fn eligible(my_cur: *mut Task, t: *const Task) -> bool {
     unsafe {
         !((*t).state == TaskState::Running && (t as *mut Task) != my_cur)
-            && (*t).held_locks & crate::task::HELD_FROZEN == 0
+            // FROZEN（进程/线程冻结）+ THROTTLE（预算限流）双位过滤。
+            && (*t).held_locks & (crate::task::HELD_FROZEN | crate::task::HELD_THROTTLE) == 0
     }
 }
 
@@ -222,32 +281,43 @@ impl Fair {
         // SAFETY: 环上任务均调度器拥有且在环；调用侧全在 KERN_LOCK 窗内
         // （SVC/tick/klock 包络）——扫描期间无并发出/入环（E0 BKL 执法面）。
         unsafe {
-            // 段 1：最高 prio_effective 带（严格带序——PI 仍即时生效）。
-            let mut max_eff = i32::MIN;
-            let mut cur = h;
-            loop {
-                if eligible(my_cur, cur.as_ptr()) {
-                    let e = (*cur.as_ptr()).prio_effective;
-                    if e > max_eff {
-                        max_eff = e;
+            // S2b 实验开关：true = 跳过段 1（无带序），段 2 对所有任务开放。
+            // false（S2a 默认）= 段 1 先选最高带，段 2 带内 EEVDF。
+            let max_eff = if PURE_EEVDF {
+                i32::MIN // 哨兵：段 2 的 `prio_effective == max_eff` 判恒假
+                        // → 改用 `!= i32::MIN`（即无条件通过）。
+                } else {
+                // 段 1：最高 prio_effective 带（严格带序——PI 仍即时生效）。
+                let mut me = i32::MIN;
+                let mut cur = h;
+                loop {
+                    if eligible(my_cur, cur.as_ptr()) {
+                        let e = (*cur.as_ptr()).prio_effective;
+                        if e > me {
+                            me = e;
+                        }
+                    }
+                    cur = (*cur.as_ptr()).rq_next.get().expect("环上节点必有 next");
+                    if cur == h {
+                        break;
                     }
                 }
-                cur = (*cur.as_ptr()).rq_next.get().expect("环上节点必有 next");
-                if cur == h {
-                    break;
-                }
-            }
-            if max_eff == i32::MIN {
+                me
+            };
+            if !PURE_EEVDF && max_eff == i32::MIN {
                 return None;
             }
-            // 段 2：带内 EEVDF（eligible 优先；同键首见保序）。
+            // 段 2：EEVDF（eligible 优先；同键首见保序）。S2a 带内 / S2b 全环。
+            let in_band = |e: i32| -> bool {
+                if PURE_EEVDF { true } else { e == max_eff }
+            };
             let mut best: Option<NonNull<Task>> = None;
             let mut best_elig = false;
             let mut best_key = (u64::MAX, u64::MAX);
             let mut cur = h;
             loop {
                 if eligible(my_cur, cur.as_ptr())
-                    && (*cur.as_ptr()).prio_effective == max_eff
+                    && in_band((*cur.as_ptr()).prio_effective)
                 {
                     let t = &*cur.as_ptr();
                     let elig = t.vruntime <= avg;

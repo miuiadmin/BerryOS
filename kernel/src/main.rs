@@ -18,6 +18,7 @@ mod abi_gen;
 mod aspace;
 mod bench; // B-0：内核微基准 + churn 泄漏金丝雀（docs/基准与压力测试设计.md）
 mod channel;
+mod cbox; // 黑匣子崩溃记录表（plans/cbox/design.md——异常 fatal 路 RAM 镜像 + 排液）
 mod dtb;
 mod dpg; // G4-1：demand paging 内核机制自喂闭环（docs/G4按需调页实施设计草案.md）
 mod event;
@@ -198,7 +199,10 @@ fn fwcfg_rootfs_multivol() -> Option<RootfsBuf> {
 
 /// GUI P2：从 fw_cfg `opt/berry/display` 读 `WxH[@Hz]`；缺席/畸形 = None。
 /// 只接受 ASCII 十进制；字符串项可能带 NUL/空白，统一 trim 后再拆。
-fn display_mode_req() -> Option<(u32, u32)> {
+/// 刀1（刷新率体系规范 §4-1）：@Hz 率域不再丢弃——语法层校验 1..=1000，
+/// 非法 loud 回退 60 + `DISP hz fail` 诊断行（语义层档位归属校验归
+/// guifbd 软面板——档位表单源，内核不自造集合）。
+fn display_mode_req() -> Option<(u32, u32, u16)> {
     use berry_hal_aarch64::fwcfg;
     let e = fwcfg::find_file("opt/berry/display")?;
     if e.size == 0 || e.size > 32 {
@@ -210,9 +214,151 @@ fn display_mode_req() -> Option<(u32, u32)> {
     }
     let s = core::str::from_utf8(&buf[..e.size as usize]).ok()?;
     let s = s.trim_matches(|c: char| c == '\0' || c.is_ascii_whitespace());
-    let s = s.split('@').next()?;
+    let (s, hz_s) = match s.split_once('@') {
+        Some((g, h)) => (g, Some(h)),
+        None => (s, None),
+    };
     let (w, h) = s.split_once('x')?;
-    Some((w.parse().ok()?, h.parse().ok()?))
+    let hz: u16 = match hz_s {
+        None => 60,
+        Some(t) => match t.parse::<u16>() {
+            Ok(v) if (1..=1000).contains(&v) => v,
+            _ => {
+                berry_hal_aarch64::uart_puts(b"DISP hz fail\n");
+                60
+            }
+        },
+    };
+    Some((w.parse().ok()?, h.parse().ok()?, hz))
+}
+
+/// fw_cfg 字符串项读入 + trim（display_mode_req 同款纪律：NUL/空白剥壳），
+/// 交闭包消费（无分配、无拷回——&str 借用不外逸）。缺席/空/超 32B/
+/// 非 UTF-8 = None。
+fn fwcfg_trimmed<R>(name: &str, f: impl FnOnce(&str) -> R) -> Option<R> {
+    use berry_hal_aarch64::fwcfg;
+    let e = fwcfg::find_file(name)?;
+    if e.size == 0 || e.size > 32 {
+        return None;
+    }
+    let mut buf = [0u8; 32];
+    if !fwcfg::read_to(&e, &mut buf[..e.size as usize]) {
+        return None;
+    }
+    let s = core::str::from_utf8(&buf[..e.size as usize]).ok()?;
+    Some(f(s.trim_matches(|c: char| c == '\0' || c.is_ascii_whitespace())))
+}
+
+/// 刀2（刷新率体系规范 §5 配置面）：fw_cfg 软面板三旋钮 → boot VMO 尾插
+/// 域 7/8 LE u64 对（位布局 = guiproto `softpanel::PanelCfg::pack_domains`
+/// 手镜像，host 对拍钉板——内核不依赖用户态 crate）：
+/// `opt/berry/panel-model` = `tiered|tiered:vrr|freerange|freerange:per_frame`
+/// （缺省 tiered；刀6 起 `tiered:vrr` 抬 A8 LFC 门位、`freerange:per_frame`
+/// 开 P6 逐帧扫描形态——FreeRange 仿真恒 vrr capable）、
+/// `opt/berry/panel-mode` = `free|det|det:SEED`（缺省 free；HOST_LOCK 在册
+/// 未接线——刀3 仲裁器，本刀不收）、`opt/berry/panel-fault` =
+/// `D,J,S` 十进制 CSV（丢帧千分比 0..=1000 / 抖动 ns / 切档丢帧 0..=16）。
+/// 非法值 loud 回退缺省 + `PANEL … fail` 诊断行（DISP hz fail 同款）；
+/// 零域 = 缺省态（旧 guifbd 只读前 56B 无扰动，add-only 尾插纪律）。
+/// 任一旋钮非缺省时打 `PANEL cfg …` 证据行（宿主探针取证面）。
+fn panel_cfg_req() -> (u64, u64) {
+    use berry_hal_aarch64::uart_puts;
+    // model：0=Tiered 1=FreeRange；刀6 后缀 = per_frame(bit48) + vrr(bits49-50)。
+    let (mut model, mut model_name) = (0u64, b"tiered".as_slice());
+    let (mut per_frame, mut vrr) = (0u64, 0u64);
+    if let Some((m, pf, vr)) = fwcfg_trimmed("opt/berry/panel-model", |s| match s {
+        "tiered" => (0u64, 0u64, 0u64),
+        "tiered:vrr" => (0, 0, 1),
+        "freerange" => (1, 0, 1),
+        "freerange:per_frame" => (1, 1, 1),
+        _ => {
+            uart_puts(b"PANEL model fail\n");
+            (0, 0, 0)
+        }
+    }) {
+        model = m;
+        per_frame = pf;
+        vrr = vr;
+        // 名字含 vrr 维度：tiered 与 tiered:vrr 行为差一整条 LFC 面，
+        // 证据行必须可分辨（run6 教训：二元匹配打成同名的 model=tiered）。
+        model_name = match (m, pf, vr) {
+            (1, 1, _) => b"freerange:per_frame".as_slice(),
+            (1, 0, _) => b"freerange".as_slice(),
+            (0, 1, _) => b"tiered:per_frame".as_slice(), // Tiered 位被忽略（值域防御显示）
+            (0, 0, 1) => b"tiered:vrr".as_slice(),
+            _ => b"tiered".as_slice(),
+        };
+    }
+    // mode：0=FREE 2=DET（+seed）；det:SEED 形收种子，SEED 非法整旋钮回退。
+    let (mut mode, mut seed) = (0u64, 0u64);
+    let mut mode_name = b"free".as_slice();
+    if let Some((m, sd)) = fwcfg_trimmed("opt/berry/panel-mode", |s| match s {
+        "free" => (0u64, 0u64),
+        "det" => (2, 0),
+        s if s.starts_with("det:") => match s[4..].parse::<u32>() {
+            Ok(v) => (2, v as u64),
+            Err(_) => {
+                uart_puts(b"PANEL mode fail\n");
+                (0, 0)
+            }
+        },
+        _ => {
+            uart_puts(b"PANEL mode fail\n");
+            (0, 0)
+        }
+    }) {
+        mode = m;
+        seed = sd;
+        if m == 2 {
+            mode_name = b"det";
+        }
+    }
+    // fault：D,J,S 严格三字段（多余字段/越界/非数字 = 整旋钮回退零）。
+    let (mut drop_pm, mut jitter, mut sw) = (0u64, 0u64, 0u64);
+    let mut fault_seen = false;
+    if let Some(vals) = fwcfg_trimmed("opt/berry/panel-fault", |s| {
+        let mut parts = s.split(',');
+        let (a, b, c, tail) =
+            (parts.next(), parts.next(), parts.next(), parts.next());
+        if let (Some(a), Some(b), Some(c), None) = (a, b, c, tail) {
+            if let (Ok(d), Ok(j), Ok(w)) =
+                (a.parse::<u16>(), b.parse::<u32>(), c.parse::<u8>())
+            {
+                if d <= 1000 && w <= 16 {
+                    return (d as u64, j as u64, w as u64);
+                }
+            }
+        }
+        uart_puts(b"PANEL fault fail\n");
+        (0, 0, 0)
+    }) {
+        fault_seen = true;
+        (drop_pm, jitter, sw) = vals;
+    }
+    // 证据行：任一非缺省才打（探针取证面；无 `ok` 形态——不撞在册标记）。
+    // d7 刀6 位（bit48 per_frame / bits49-50 vrr）与 guiproto pack 同拍。
+    let d7 = model | (mode << 8) | (seed << 16) | (per_frame << 48) | (vrr << 49);
+    let d8 = drop_pm | (jitter << 16) | (sw << 48);
+    if d7 != 0 || d8 != 0 {
+        uart_puts(b"PANEL cfg model=");
+        uart_puts(model_name);
+        uart_puts(b" mode=");
+        uart_puts(mode_name);
+        if mode == 2 {
+            uart_puts(b" seed=");
+            berry_hal_aarch64::uart_put_dec(seed);
+        }
+        if fault_seen && (drop_pm != 0 || jitter != 0 || sw != 0) {
+            uart_puts(b" drop=");
+            berry_hal_aarch64::uart_put_dec(drop_pm);
+            uart_puts(b" jit=");
+            berry_hal_aarch64::uart_put_dec(jitter);
+            uart_puts(b" sw=");
+            berry_hal_aarch64::uart_put_dec(sw);
+        }
+        uart_puts(b"\n");
+    }
+    (d7, d8)
 }
 
 /// Boot presentation face request. This mirrors BerryBoot's fw_cfg parser;
@@ -270,9 +416,13 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // GUI 模式 console 只走串口/记账，不上屏盖桌面。
     let mut gui_mode = false;
     let boot_face_verbose = bootmode_verbose_req();
+    // 刀1（刷新率体系规范 §4-2）：@Hz 率域随 fbinfo 第 7 域交 guifbd 软面板
+    //（ramfb_set 成功时才落值——几何回退则率域同回退 60；缺省 60）。
+    let mut gui_hz: u16 = 60;
     // 540×1200 等超出固件 GOP 缓冲的档：boot 先记 pending，mm::init 后从
-    // buddy 取连续块、重编程 ramfb；失败回退固件几何。
-    let mut pending_mode: Option<(u32, u32)> = None;
+    // buddy 取连续块、重编程 ramfb；失败回退固件几何（hz 随行——defer 期
+    // 率域先记，成败落值在重编程点）。
+    let mut pending_mode: Option<(u32, u32, u16)> = None;
     let print_fb = |g: (u64, u32, u32, u32, u32)| {
         berry_hal_aarch64::uart_puts(b"FB ok ");
         berry_hal_aarch64::uart_put_dec(g.1 as u64);
@@ -301,7 +451,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
             // 的 RAM 镜（宿主共享 RAM 面）。缺席 = 原 800×600 零扰动。
             let (mut gw, mut gh, mut gs) = (g.width, g.height, g.stride);
             let mut need_alloc = false;
-            if let Some((w, h)) = display_mode_req() {
+            if let Some((w, h, hz)) = display_mode_req() {
                 let stride = w.saturating_mul(4);
                 let cap = (g.stride as u64) * (g.height as u64);
                 let need = (stride as u64) * (h as u64);
@@ -313,21 +463,26 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                         gh = h;
                         gs = stride;
                         gui_mode = true;
+                        gui_hz = hz;
                         berry_hal_aarch64::uart_puts(b"DISP ok ");
                         berry_hal_aarch64::uart_put_dec(gw as u64);
                         berry_hal_aarch64::uart_puts(b"x");
                         berry_hal_aarch64::uart_put_dec(gh as u64);
+                        berry_hal_aarch64::uart_puts(b"@");
+                        berry_hal_aarch64::uart_put_dec(hz as u64);
                         berry_hal_aarch64::uart_puts(b"\n");
                     } else {
                         berry_hal_aarch64::uart_puts(b"DISP fail\n");
                     }
                 } else {
-                    pending_mode = Some((w, h));
+                    pending_mode = Some((w, h, hz));
                     need_alloc = true;
                     berry_hal_aarch64::uart_puts(b"DISP defer ");
                     berry_hal_aarch64::uart_put_dec(w as u64);
                     berry_hal_aarch64::uart_puts(b"x");
                     berry_hal_aarch64::uart_put_dec(h as u64);
+                    berry_hal_aarch64::uart_puts(b"@");
+                    berry_hal_aarch64::uart_put_dec(hz as u64);
                     berry_hal_aarch64::uart_puts(b"\n");
                 }
             }
@@ -350,7 +505,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
 
     // GUI P2：超出 GOP 缓冲的模式（如 540×1200）在 buddy 就绪后取连续块，
     // 重编程 ramfb；失败回退固件几何并补 FB ok（host 只等这一行）。
-    if let Some((w, h)) = pending_mode {
+    if let Some((w, h, hz)) = pending_mode {
         let stride = w.saturating_mul(4);
         let bytes = (stride as u64) * (h as u64);
         let pages = ((bytes + 0xFFF) / 0x1000) as usize;
@@ -362,11 +517,14 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                 let fmt = gop_saved.map(|g| g.4).unwrap_or(1);
                 gop_saved = Some((pa, w, h, stride, fmt));
                 gui_mode = true;
+                gui_hz = hz;
                 done = true;
                 berry_hal_aarch64::uart_puts(b"DISP ok ");
                 berry_hal_aarch64::uart_put_dec(w as u64);
                 berry_hal_aarch64::uart_puts(b"x");
                 berry_hal_aarch64::uart_put_dec(h as u64);
+                berry_hal_aarch64::uart_puts(b"@");
+                berry_hal_aarch64::uart_put_dec(hz as u64);
                 berry_hal_aarch64::uart_puts(b"\n");
                 print_fb((pa, w, h, stride, fmt));
             } else {
@@ -683,8 +841,20 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // 4-3b PI：注册 SLEEPQ 变更钩子（block 睡下后 / wake 摘队后全图重推；
     // 与 telemetry 同位——均须在首个切换前）。
     pi::init();
-    berry_sched::spawn_as(task_a, TASK_A_MAGIC as usize, b"task_a", as_a.ttbr0_pa, as_a.asid);
-    berry_sched::spawn_as(task_b, TASK_B_MAGIC as usize, b"task_b", as_b.ttbr0_pa, as_b.asid);
+    berry_sched::spawn_as_spread(
+        task_a,
+        TASK_A_MAGIC as usize,
+        b"task_a",
+        as_a.ttbr0_pa,
+        as_a.asid,
+    );
+    berry_sched::spawn_as_spread(
+        task_b,
+        TASK_B_MAGIC as usize,
+        b"task_b",
+        as_b.ttbr0_pa,
+        as_b.asid,
+    );
 
     // G4-1：demand paging 内核机制自喂闭环（内核任务 faulter/pager 对——无
     // EL0 pager、无 0x21；marker `DPG ok` = smoke 裸相第 28 标记）。
@@ -1330,17 +1500,23 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                         h_fb, 0x0001_0005,
                         "main: svcmgr 表 fb VMO 须第 5 插 0x0001_0005（编译侧硬编码）"
                     );
-                    // 几何 info VMO：56B = fb_pa/w/h/stride/fmt/gui/bootface
-                    // 七域 u64 LE（一页 VMO；第 7 域仅 vgpud 消费，旧读者
-                    // 只读前 48B，add-only）。
-                    let mut info = [0u8; 56];
+                    // 几何 info VMO：80B = fb_pa/w/h/stride/fmt/gui/
+                    // refresh_hz + 软面板 cfg 两域 + bootface = 十域 u64 LE。
+                    // Mainline refresh 已占第 7..9 域，GUI verbose face 合线后
+                    // add-only 尾插为第 10 域 offset 72..80；guifbd 只读 72B，
+                    // svcmgr/vgpud 单独读 bootface 尾域。
+                    let (panel_d7, panel_d8) = panel_cfg_req();
+                    let mut info = [0u8; 80];
                     info[0..8].copy_from_slice(&fb_pa.to_le_bytes());
                     info[8..16].copy_from_slice(&(w as u64).to_le_bytes());
                     info[16..24].copy_from_slice(&(h as u64).to_le_bytes());
                     info[24..32].copy_from_slice(&(stride as u64).to_le_bytes());
                     info[32..40].copy_from_slice(&(fmt as u64).to_le_bytes());
                     info[40..48].copy_from_slice(&(gui_mode as u64).to_le_bytes());
-                    info[48..56].copy_from_slice(&(boot_face_verbose as u64).to_le_bytes());
+                    info[48..56].copy_from_slice(&(gui_hz as u64).to_le_bytes());
+                    info[56..64].copy_from_slice(&panel_d7.to_le_bytes());
+                    info[64..72].copy_from_slice(&panel_d8.to_le_bytes());
+                    info[72..80].copy_from_slice(&(boot_face_verbose as u64).to_le_bytes());
                     let mut ivmo =
                         vmo::Vmo::create(4096).expect("main: fbinfo Vmo create");
                     ivmo.commit(mm::frames(), 0, 4096)
@@ -1645,6 +1821,8 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     berry_hal_aarch64::set_irq_dispatch(berry_sched::on_irq_tick);
     berry_hal_aarch64::set_sgi_dispatch(berry_sched::on_sgi_resched);
     berry_hal_aarch64::set_user_fault_exit(berry_sched::user_fault_exit);
+    // cbox 黑匣子镜像槽（同上 boot 单线程窗注册；fatal 路在杀链/halt 前回调）。
+    berry_hal_aarch64::set_cbox_hook(cbox::on_fault);
     // G3-1b 落点①接线：syscall 返回边界检查点（SVC 派发尾空探；sched 侧
     // 自带 irqsave 包络）。零行为变更步——注册与否不改变现役行为（探峰恒空），
     // g3-1c 域解蔽后承重。
@@ -3172,6 +3350,27 @@ fn tele_dump() {
     berry_hal_aarch64::uart_puts(b" tmo=");
     berry_hal_aarch64::uart_put_dec(t);
     berry_hal_aarch64::uart_puts(b"\n");
+    // 1.1/S4-b：billing 遥测面——跨域消息计数 + 各域 CPU 时长（非零槽）。
+    berry_hal_aarch64::uart_puts(b"tele: billing cross=");
+    berry_hal_aarch64::uart_put_dec(crate::telemetry::billing_cross_domain_total());
+    for i in 0..crate::telemetry::BILLING_SLOTS {
+        let (d, ns) = crate::telemetry::billing_slot_at(i);
+        if d != 0 {
+            berry_hal_aarch64::uart_puts(b" d");
+            berry_hal_aarch64::uart_put_dec(d);
+            berry_hal_aarch64::uart_puts(b"=");
+            berry_hal_aarch64::uart_put_dec(ns);
+            berry_hal_aarch64::uart_puts(b"ns");
+        }
+    }
+    // 1.1/S5.11 freeze 遥测面。
+    berry_hal_aarch64::uart_puts(b" freeze=");
+    berry_hal_aarch64::uart_put_dec(crate::telemetry::freeze_ok_total());
+    berry_hal_aarch64::uart_puts(b"/busy=");
+    berry_hal_aarch64::uart_put_dec(crate::telemetry::freeze_busy_total());
+    berry_hal_aarch64::uart_puts(b"/thaw=");
+    berry_hal_aarch64::uart_put_dec(crate::telemetry::auto_thaw_total());
+    berry_hal_aarch64::uart_puts(b"\n");
 }
 
 /// ai_demo 私助：clock_read → wait_one(h, bit, now+cap) → 断言命中 → 清用户
@@ -4303,6 +4502,9 @@ const TLBS_WRITER_N: usize = 4;
 /// （decommit/Drop）毕 `TLBS ok n=` 行 n = 2 × 本值 = 10，与 smoke 相 5
 /// n==10 断言三面钉同值——改此须三处同步。
 const TLBS_PARTICIPANTS: usize = 1 + TLBS_WRITER_N;
+/// TLBS 诊断：本轮 root Thread handle（fleet 装配期单写；收割失败时 poll
+/// TERMINATED 区分「root 未跑」与「root 已写成功 = CPU0 stale TLB」）。
+static TLBS_ROOT_H: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// S-5b 相 6 ALLOC churn 压测门控名（smoke-smp 相 6 专递：
 /// `-fw_cfg name=opt/berry/alloc,string=1`；lb/asidroll/tlbs 同款「两侧
@@ -4785,6 +4987,7 @@ fn tlbs_spawn_fleet(tag: &str) -> (u32, u32, u32) {
         "tlbs{}: process_start[root]",
         tag
     );
+    TLBS_ROOT_H.store(hth_root, core::sync::atomic::Ordering::Relaxed);
     for i in 0..TLBS_WRITER_N {
         assert_eq!(
             svc4(
@@ -4866,6 +5069,21 @@ fn tlbs_round(arg: usize, tag: &str, how: TlbsFree, budget: u64) {
         "tlbs{}: 本轮写者全落 CPU0（Δwarm[1]=0）——K=2 路由结构性意外，查 place/park 面",
         tag
     );
+    {
+        let (wc0, wc1) = (
+            berry_hal_aarch64::trap::canary_hits(0, 1),
+            berry_hal_aarch64::trap::canary_hits(1, 1),
+        );
+        berry_hal_aarch64::kern_lock::with_print_lock(|| {
+            berry_hal_aarch64::uart_puts(b"tlbs");
+            berry_hal_aarch64::uart_puts(tag.as_bytes());
+            berry_hal_aarch64::uart_puts(b" warm c0=");
+            berry_hal_aarch64::uart_put_dec(wc0 as u64);
+            berry_hal_aarch64::uart_puts(b" c1=");
+            berry_hal_aarch64::uart_put_dec(wc1 as u64);
+            berry_hal_aarch64::uart_puts(b"\n");
+        });
+    }
     // ③ unmap + 还帧（双构造分岔点）+ 复用。
     let h_base = hits(0);
     let (c0_base, c1_base) = (
@@ -4934,6 +5152,25 @@ fn tlbs_round(arg: usize, tag: &str, how: TlbsFree, budget: u64) {
         berry_hal_aarch64::trap::canary_hits(1, 0),
     );
     let hd = (c0_now + c1_now) - h_base;
+    if hd < TLBS_PARTICIPANTS {
+        use crate::abi_gen::SIGNAL_TERMINATED;
+        use crate::syscall::NR_OBJECT_WAIT_ONE;
+        let rh = TLBS_ROOT_H.load(core::sync::atomic::Ordering::Relaxed);
+        let mut obs = 0u64;
+        let rr = svc6(
+            NR_OBJECT_WAIT_ONE as u64, rh as u64, SIGNAL_TERMINATED, 0,
+            core::ptr::addr_of_mut!(obs) as u64, 0, 0,
+        );
+        berry_hal_aarch64::kern_lock::with_print_lock(|| {
+            berry_hal_aarch64::uart_puts(b"tlbs");
+            berry_hal_aarch64::uart_puts(tag.as_bytes());
+            berry_hal_aarch64::uart_puts(b" rootpoll ret=");
+            berry_hal_aarch64::uart_put_dec(rr as u64);
+            berry_hal_aarch64::uart_puts(b" obs=");
+            berry_hal_aarch64::uart_put_dec(obs);
+            berry_hal_aarch64::uart_puts(b"\n");
+        });
+    }
     assert!(
         hd >= TLBS_PARTICIPANTS,
         "tlbs{}: canary 收割超时（Δslot0 {}/{}——Δc0={} Δc1={}；计数不足 = 有写入成功 = stale 残留 = shootdown 断链）",

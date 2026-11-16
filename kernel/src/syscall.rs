@@ -77,7 +77,8 @@ use core::ptr::NonNull;
 #[allow(unused_imports)]
 pub use crate::abi_gen::{
     CHAN_OPT_NO_INTENT, NR_CHANNEL_CREATE, NR_CHANNEL_RECV, NR_CHANNEL_SEND, NR_CLOCK_READ,
-    NR_EVENT_CREATE, NR_HANDLE_CLOSE, NR_HANDLE_DUPLICATE, NR_HANDLE_REPLACE, NR_OBJECT_SIGNAL,
+    NR_CBOX_DRAIN, NR_EVENT_CREATE, NR_HANDLE_CLOSE, NR_HANDLE_DUPLICATE, NR_HANDLE_REPLACE,
+    NR_OBJECT_SIGNAL,
     NR_OBJECT_WAIT_MANY, NR_OBJECT_WAIT_ONE, NR_PAGER_SUPPLY_PAGES, NR_PROCESS_CREATE,
     NR_PROCESS_EXIT, NR_PROCESS_GET_EXIT_CODE, NR_PROCESS_START, NR_PROCESS_SUSPEND,
     NR_SCHED_GETATTR, NR_SCHED_SETATTR, NR_THREAD_YIELD,
@@ -1141,6 +1142,17 @@ fn apply_sched_attr_to_task(task_ptr: usize, attr: crate::process::SchedAttr) {
                 (*tp).prio_base = berry_sched::PRIO_DEADLINE;
                 (*tp).prio_effective = berry_sched::PRIO_DEADLINE;
                 (*tp).vdeadline = vct;
+                // S5-c 预算执法：周期存 duration_hint_ns（lazy unthrottle 重臂
+                // vdeadline 消费）；预算存 preempt_threshold（tick 面切预算
+                // 尺寸 slice 消费）。两字段此前零消费——零 Task 布局变化。
+                if let Some(period_vct) = ns_to_vct(attr.period_ns) {
+                    (*tp).duration_hint_ns = period_vct;
+                }
+                if let Some(budget_vct) = ns_to_vct(attr.budget_ns) {
+                    let b = budget_vct.min(i32::MAX as u64) as i32;
+                    (*tp).preempt_threshold = b;
+                    (*tp).slice_left = b as u64; // 首期预算 = slice 尺寸
+                }
             }
         }
     }
@@ -1181,7 +1193,17 @@ extern "C" fn sys_thread_start(tf: &mut TrapFrame) -> i64 {
     // bootstrap 迁移——失败零回滚面）：栈/TCB OOM → -ENOMEM。spread=true
     // （b-1 判谳）：同进程计算线程 = 铺核面（thread_start 专属——process 根
     // 恒家核，详 sched::place ④）。
-    match berry_sched::try_spawn_user(
+    // S-6 SMP 竞态收口：一切可被新任务退出钩子观察的簿记必须在 enqueue
+    // 前完成。旧序“先入环、后 started/live_threads/retain”，在跨核偷取下
+    // 新线程可能在父 syscall 继续前退出：live_threads 先减会使 Process 被
+    // 误判末线程并 drain 活主线程的表（SMP run7 DF/du 实录）。
+    thrd.started = true;
+    proc.live_threads += 1;
+    // SAFETY: 双 retain 与退出钩子 release 成对；对象均在表且类型已验。
+    unsafe { (*proc_ref.as_ptr()).retain() };
+    unsafe { (*vt.as_ptr()).retain() };
+    let eff = crate::process::SchedAttr::merge(proc.sched_attr, thrd.sched_attr);
+    let task_ptr = match berry_sched::try_prepare_user(
         entry as usize,
         arg as usize,
         sp as usize,
@@ -1193,21 +1215,19 @@ extern "C" fn sys_thread_start(tf: &mut TrapFrame) -> i64 {
         vt.as_ptr() as usize,
         true,
     ) {
-        Some(task_ptr) => {
-            // 1.1/S5-a：Thread effective = Process 默认 ∪ Thread 覆盖。
-            let eff = crate::process::SchedAttr::merge(proc.sched_attr, thrd.sched_attr);
-            apply_sched_attr_to_task(task_ptr, eff);
+        Some(p) => p,
+        None => {
+            thrd.started = false;
+            proc.live_threads -= 1;
+            // SAFETY: 与上方预登记 retain 成对回滚。
+            unsafe { ObjRef::release(proc_ref) };
+            unsafe { ObjRef::release(vt) };
+            return ERR_NO_MEMORY as i64;
         }
-        None => return ERR_NO_MEMORY as i64,
-    }
-    thrd.started = true;
-    proc.live_threads += 1;
-    // F-E1 前移（S-3b §9.6 步 b-1）：pinned/thread_key 两写点已随本刀前移进
-    // try_spawn_user（enqueue 前、出表窗闭）——此处只剩成对的 retain（引用
-    // 计数与字段值同在任务可运行前落定，E0 全量锁下无观测差）。
-    // SAFETY: 双 retain 与 spawn 内双字段写成对（任务已入队未运行，单核无竞态）。
-    unsafe { (*proc_ref.as_ptr()).retain() };
-    unsafe { (*vt.as_ptr()).retain() };
+    };
+    apply_sched_attr_to_task(task_ptr, eff);
+    // SAFETY: prepare 后、簿记/属性已毕；本函数全程 IRQ 屏蔽。
+    unsafe { berry_sched::enqueue_prepared_user(task_ptr) };
     0
 }
 
@@ -1295,7 +1315,16 @@ extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
     // 失败回滚）→ -ENOMEM；thrd/started/retain 全未动。单核 IRQ 屏蔽：已入队
     // 任务在 eret 前不会运行，下面字段补写无竞态。spread=false（b-1 判谳）：
     // process 根 = 服务/IPC 公民恒家核（详 sched::place ④）。
-    match berry_sched::try_spawn_user(
+    // S-6 SMP：与 thread_start 同款“簿记先于入环”。首线程可在对核立刻运行，
+    // Process.started/live_threads 与运行 retain/Thread retain 不得后补。
+    thrd.started = true;
+    proc.started = true;
+    proc.live_threads = 1;
+    // SAFETY: 双 retain 与退出钩子 release 成对；对象均在表且归属已验。
+    unsafe { (*vr.as_ptr()).retain() };
+    unsafe { (*vt.as_ptr()).retain() };
+    let eff = crate::process::SchedAttr::merge(proc.sched_attr, thrd.sched_attr);
+    let task_ptr = match berry_sched::try_prepare_user(
         entry as usize,
         child_x0,
         sp as usize,
@@ -1307,15 +1336,16 @@ extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
         vt.as_ptr() as usize,
         false,
     ) {
-        Some(task_ptr) => {
-            // 1.1/S5-a：首线程同样消费 Process 默认 ∪ Thread 覆盖。
-            let eff = crate::process::SchedAttr::merge(proc.sched_attr, thrd.sched_attr);
-            apply_sched_attr_to_task(task_ptr, eff);
-        }
+        Some(p) => p,
         None => {
+            thrd.started = false;
+            proc.started = false;
+            proc.live_threads = 0;
+            // SAFETY: 与上方预登记 retain 成对回滚。
+            unsafe { ObjRef::release(vr) };
+            unsafe { ObjRef::release(vt) };
             if bootstrap != 0 {
-                // 回滚迁移（子表刚插入、单核无插队 → take 必成；防御面下令牌泄漏，
-                // 安全向）。
+                // 迁移回滚：把子表令牌搬回调用者表（值可变，语义存活）。
                 if let Ok((obj, rights)) = proc.ht.take(child_x0 as u32) {
                     let _ = t.insert_ref(obj, rights);
                 }
@@ -1323,23 +1353,9 @@ extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
             return ERR_NO_MEMORY as i64;
         }
     };
-    thrd.started = true;
-    proc.started = true; // per-Process 单次执法（见上方对抗审查修注释）
-    proc.live_threads = 1; // T-1：首线程入账（thread_start 起再 +=1；减点唯一 = 退出钩子）
-    // Plan B v0.5：替运行中的任务钉一次 Process（retain）——退出钩子据
-    // Task.pinned 置 Exited/唤醒/drain/成对 release。F-E1 前移（S-3b §9.6
-    // 步 b-1）：字段写已前移进 try_spawn_user（enqueue 前、出表窗闭）——
-    // 此处只剩成对 retain（E0 全量锁下任务入队后到 eret 前不会跑，无观测差）。
-    // SAFETY: vr 在表（get_raw 过）；retain 与 spawn 内 pinned 写成对（任务已
-    // 入队未运行，无竞态）。
-    unsafe { (*vr.as_ptr()).retain() };
-    // T-1 修复（对抗审查②）：首线程**同样钉 Thread**——join 面（wait Thread
-    // TERMINATED）对首线程成立：thread_key 落 Task 后退出钩子① 才会置
-    // `exited`/唤醒 join 者/成对 release。不钉 = thread_key 恒 0 → 首线程
-    // join 结构性死等（与 sys_thread_start 成功尾同形）。
-    // SAFETY: vt 在表（get_raw 过）；retain 与 spawn 内 thread_key 写成对
-    // （任务已入队未运行，无竞态）。
-    unsafe { (*vt.as_ptr()).retain() };
+    apply_sched_attr_to_task(task_ptr, eff);
+    // SAFETY: prepare 后、Process/Thread 簿记与 effective 属性已毕。
+    unsafe { berry_sched::enqueue_prepared_user(task_ptr) };
     0
 }
 
@@ -1462,6 +1478,57 @@ extern "C" fn sys_process_get_exit_code(tf: &mut TrapFrame) -> i64 {
     }
 }
 
+/// `cbox_drain(buf, cap, *out_len)`（0x42，cbox 刀 1）：黑匣子崩溃记录表全量
+/// 快照 copy-out——12B 头 {ver,total,stored} + 存量 104B 记录按 seq 升序。
+/// cap==0 = 尺寸查询（`*out_len` = 所需字节，返 0）；cap 不足 → -ENOMEM 不
+/// 部分写；cap 高 32 位非零 = -EINVAL（u64 截断成假小帽会绕尺寸契约）；出参
+/// 预清 fail-fast（`process_get_exit_code` 同款）。无 right 门（诊断几何面
+/// ——need=0 惯例）；结构面零锁但走 SVC_CLASS_TABLE 在册（svc_enter 取锁
+/// 纪律同全体 syscall，`cbox.rs` 表读写自身无锁——seqlock 快照）。
+extern "C" fn sys_cbox_drain(tf: &mut TrapFrame) -> i64 {
+    let (buf, cap_raw, out) = (tf.regs[1], tf.regs[2], tf.regs[3]);
+    let Ok(cap) = u32::try_from(cap_raw) else {
+        return ERR_INVALID_ARG as i64;
+    };
+    let el1 = caller_is_el1(tf);
+    if let Err(e) = copy_out_u32(el1, out, 0) {
+        return e as i64;
+    }
+    // 两遍快照（先尺寸后拷贝）共一锚：drain_total 取一次贯穿两遍——遍间新
+    // 崩溃不进窗口，两遍等长；拷贝回的越界分支纯防御（同锚下结构性不可达）。
+    let total = crate::cbox::drain_total();
+    let mut need = 0usize;
+    crate::cbox::drain_with(total, &mut |s| need += s.len());
+    if cap == 0 {
+        return match copy_out_u32(el1, out, need as u32) {
+            Ok(()) => 0,
+            Err(e) => e as i64,
+        };
+    }
+    if (cap as usize) < need {
+        return ERR_NO_MEMORY as i64;
+    }
+    let mut off = 0usize;
+    let mut err = 0i32;
+    crate::cbox::drain_with(total, &mut |s| {
+        if err != 0 || off + s.len() > cap as usize {
+            err = ERR_NO_MEMORY;
+            return;
+        }
+        match copy_to_user(el1, buf + off as u64, s) {
+            Ok(()) => off += s.len(),
+            Err(e) => err = e,
+        }
+    });
+    if err != 0 {
+        return err as i64;
+    }
+    match copy_out_u32(el1, out, off as u32) {
+        Ok(()) => 0,
+        Err(e) => e as i64,
+    }
+}
+
 /// `process_terminate(process, code)`（0x3B，C-4b）：外部终止进程——kill /
 /// Ctrl-C 的内核原语。`code` 落为该进程退出码，父侧收割面与 `process_exit`
 /// 逐字同形（wait TERMINATED → `process_get_exit_code`）。
@@ -1492,6 +1559,11 @@ extern "C" fn sys_process_get_exit_code(tf: &mut TrapFrame) -> i64 {
 extern "C" fn sys_process_terminate(tf: &mut TrapFrame) -> i64 {
     let (h, code) = (tf.regs[1] as u32, tf.regs[2] as i32);
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    // S5.12 防 freeze DoS：每 caller 活跃 SuspendToken 上限 64——超限 -EBUSY。
+    if t.count_type(ObjType::SuspendToken) >= 64 {
+        crate::telemetry::freeze_busy();
+        return ERR_BUSY as i64;
+    }
     let obj = match t.get_raw(h, ObjType::Process, RIGHT_MANAGE) {
         Ok((o, _)) => o,
         Err(e) => return e as i64, // 坏值/类型不符 -EBADF；缺 MANAGE -EACCES
@@ -1807,7 +1879,7 @@ const SA_F_KNOWN: u16 = 0x00FF;
 
 /// 读入并校验一个 `berry_sched_attr`。返回 `(属性, 调用方声明 size)`——
 /// `getattr` 需要原 size 决定回写尾部长度。
-fn sa_parse(el1: bool, ptr: u64) -> Result<(crate::process::SchedAttr, usize), i32> {
+pub(crate) fn sa_parse(el1: bool, ptr: u64) -> Result<(crate::process::SchedAttr, usize), i32> {
     let mut buf = [0u8; SCHED_ATTR_MAX];
     if let Err(e) = copy_from_user(el1, ptr, &mut buf[..SCHED_ATTR_SIZE]) {
         return Err(e);
@@ -1877,6 +1949,16 @@ fn sa_parse(el1: bool, ptr: u64) -> Result<(crate::process::SchedAttr, usize), i
         {
             return Err(ERR_INVALID_ARG);
         }
+        // S5 admission：Σ(C_i/T_i) + 新申请 ≤ 1 − reserve（5% 固定——
+        // 计划 §6.3 EDF 可行性）。超载 → -EBUSY（诚实拒——不静默丢帧）。
+        // 全局原子累计（sched_setattr 成功 +、覆盖旧值 −；单核 SVC 窗序）。
+        let new_u = a.budget_ns as u128 * 4096 / a.period_ns as u128; // Q12 定点
+        let cur_u = DL_TOTAL_UTIL_Q12.load(Ordering::Relaxed) as u128;
+        // 1.0 − 0.05 = 0.95 → Q12 = 3891
+        if cur_u + new_u > 3891 {
+            return Err(ERR_BUSY);
+        }
+        // 计数在 sys_sched_setattr 成功尾累加（此处仅校验——防错误路径泄漏）。
     }
     if a.flags & SA_F_DEADLINE != 0 {
         if a.flags & SA_F_BUDGET == 0 || a.deadline_ns == 0 || a.deadline_ns > a.period_ns {
@@ -1885,6 +1967,11 @@ fn sa_parse(el1: bool, ptr: u64) -> Result<(crate::process::SchedAttr, usize), i
     }
     Ok((a, size))
 }
+
+/// S5 admission：deadline 任务总利用率（Q12 定点——1.0 = 4096）。
+/// sched_setattr budget 置位成功 +、清位/覆盖 −（budget_ns=0 覆盖回退）。
+static DL_TOTAL_UTIL_Q12: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
 
 /// Thread effective 属性：Process 默认 ∪ Thread 覆盖。位不设 = 继承；位设
 /// 后字段取 Thread 值（含 0=UNSPECIFIED 的显式语义）。
@@ -1920,6 +2007,17 @@ extern "C" fn sys_sched_setattr(tf: &mut TrapFrame) -> i64 {
         match &mut r.obj {
             KernelObj::Thread(th) => {
                 if attr.flags & SA_F_FREEZE_READY != 0 {
+                }
+                // S5 admission 扣减/累加面：旧 budget 退回 + 新 budget 累加
+                //（原子对——sa_parse 只校验不写，成功尾一次记账防泄漏）。
+                let old = th.sched_attr;
+                if old.flags & SA_F_BUDGET != 0 && old.period_ns > 0 {
+                    let old_u = old.budget_ns as u128 * 4096 / old.period_ns as u128;
+                    DL_TOTAL_UTIL_Q12.fetch_sub(old_u as u64, Ordering::Relaxed);
+                }
+                if attr.flags & SA_F_BUDGET != 0 && attr.period_ns > 0 {
+                    let new_u = attr.budget_ns as u128 * 4096 / attr.period_ns as u128;
+                    DL_TOTAL_UTIL_Q12.fetch_add(new_u as u64, Ordering::Relaxed);
                 }
                 th.sched_attr = attr;
             }
@@ -1980,6 +2078,20 @@ extern "C" fn sys_sched_getattr(tf: &mut TrapFrame) -> i64 {
     raw[32..40].copy_from_slice(&attr.deadline_ns.to_le_bytes());
     raw[40..48].copy_from_slice(&attr.budget_ns.to_le_bytes());
     raw[48..56].copy_from_slice(&attr.period_ns.to_le_bytes());
+    // v1.2：**运行时态注入**——自查（queried Thread = current task）时，
+    // deadline_ns/budget_ns 覆写为实际 Task 状态（绝对截止期 + 剩余预算，
+    // CNTVCT→ns 换算）。非自查（查别的线程）保持存值。
+    if obj.as_ptr() as usize == berry_sched::current_thread_key() {
+        let (vd, sl) = berry_sched::current_deadline_state();
+        if vd > 0 {
+            let ns = vd.saturating_mul(1_000_000_000) / berry_hal_aarch64::timer::cntfrq();
+            raw[32..40].copy_from_slice(&ns.to_le_bytes());
+        }
+        if sl > 0 {
+            let ns = sl.saturating_mul(1_000_000_000) / berry_hal_aarch64::timer::cntfrq();
+            raw[40..48].copy_from_slice(&ns.to_le_bytes());
+        }
+    }
     let mut out = [0u8; SCHED_ATTR_MAX];
     out[..SCHED_ATTR_SIZE].copy_from_slice(&raw);
     match copy_to_user(el1, attr_ptr, &out[..out_size]) {
@@ -2296,6 +2408,29 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
     // 1.1/S4：受益者付费——send 侧快照发送者域 ID（= Task.pinned）。
     // 零分配（纯填字段）；recv 侧可读（S4 只记不罚——telemetry 计数）。
     msg.billing.domain_id = berry_sched::current_pinned() as u64;
+    // 1.1/S4-b 区间计费终末：本任务是 server（此前 recv 设过区间起点）→
+    // 算差 → 记 client 域账户 → 清起点。Wall-clock 近似（穿插任务混入
+    // ——精确 per-task CPU 需 TCB 扩字段，S5-c 后再议）。
+    {
+        use core::sync::atomic::Ordering;
+        let slot = crate::telemetry::billing_slot();
+        let d = crate::telemetry::BILLING_RECV_DOMAIN[slot].load(Ordering::Relaxed);
+        if d != 0 {
+            let since = crate::telemetry::BILLING_RECV_VCT[slot].load(Ordering::Relaxed);
+            let now = berry_hal_aarch64::timer::cntvct();
+            if now > since {
+                let cycles = now - since;
+                // CNTVCT→ns：频率走 CNTFRQ（QEMU virt 62.5MHz，真机可变）。
+                let freq = berry_hal_aarch64::timer::cntfrq();
+                if freq != 0 {
+                    let ns = cycles * 1_000_000_000 / freq;
+                    crate::telemetry::billing_charge(d, ns);
+                }
+            }
+            // 清起点（下一个 recv 重设）。
+            crate::telemetry::BILLING_RECV_DOMAIN[slot].store(0, Ordering::Relaxed);
+        }
+    }
     // 4-4 检查链判定（push 前取条件——「对端队列空」链项此后不变：单核禁切
     // 无插队，g3-1c-2 段守卫在持）：无随行 handle + 队列空 + 恰一个非哨兵
     // READABLE 等待者且无哨兵在场 → fastpath；否则 slowpath（检查链其余项
@@ -2503,12 +2638,18 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
     // 超帽的语义与遥测见 `berry_sched::intent`；CURRENT 无效则跳过不记）。
     // SAFETY: 本端门控过；只读 no_intent 标志。
     let opt_out = (unsafe { (*self_ptr.as_ptr()).obj.as_channel() }).map_or(false, |e| e.no_intent());
-    // 1.1/S4：recv 侧读取 billing 域 ID——S4 只记（telemetry 计数）不罚。
-    // domain_id != 0 = 有归属（跨进程消息）；== 0 = 内核任务（记 system）。
-    // `msg` 在此行之前已被 dequeue 弹出（所有权已移）——billing 字段随行。
-    // S5 起：server 侧运行时将记到此 domain（受益者付费的执行半边）。
+    // 1.1/S4-b：recv 侧——记跨域计数 + 设区间计费起点（domain + CNTVCT 戳）。
+    // S4-a 计数 + S4-b 区间起点：send 侧（server 回复时）算差 → 记 client 域。
     if msg.billing.domain_id != 0 {
         crate::telemetry::billing_cross_domain();
+        // S4-b 区间起点：per-CPU 槽（v1 单核 0 号；SMP 需 per-CPU 数组）。
+        // v2 协议标签过滤：reply(msg_type=2) 不设计费区间——client recv
+        // server 回复不误归 server 域（v1 全部 msg_type=0 照设——已知局限）。
+        if msg.billing.msg_type != crate::channel::MSG_BILLING_REPLY {
+            let slot = crate::telemetry::billing_slot();
+            crate::telemetry::BILLING_RECV_DOMAIN[slot].store(msg.billing.domain_id, core::sync::atomic::Ordering::Relaxed);
+            crate::telemetry::BILLING_RECV_VCT[slot].store(berry_hal_aarch64::timer::cntvct(), core::sync::atomic::Ordering::Relaxed);
+        }
     }
     if let Some(out) = berry_sched::intent_settle_current(msg.meta, opt_out, vct_ns()) {
         match out {
@@ -2933,6 +3074,11 @@ pub fn install() {
         SVC_CLASS_TABLE,
     };
     berry_sched::set_exit_hook(task_exit_hook);
+    // cbox 刀 1：黑匣子排液（0x42）——静态表读零锁，但出参 copy_out 链经
+    // walk_leaf 无锁走查本进程页表 = §A113 读者面（0x61/0x87 同链同判）——
+    // 升 TABLE 持 KL 与页表写者互斥，NONE 实装号归零不变量（刀 1 初判 NONE
+    // 为漏审，刀 2 回改）。
+    reg(NR_CBOX_DRAIN, sys_cbox_drain, SVC_CLASS_TABLE);
     // —— SQ+RQ+TABLE（0x2E）：wait/send 族（wake→enqueue 双结构窗 + 表）——
     reg(NR_HANDLE_CLOSE, sys_handle_close, SVC_CLASS_SQ_RQ_TABLE);
     reg(NR_HANDLE_DUPLICATE, sys_handle_duplicate, SVC_CLASS_TABLE);

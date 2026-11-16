@@ -135,6 +135,8 @@ pub(crate) mod nr {
     pub(crate) const PROCESS_SUSPEND: usize = 0x3E;
     /// S1 收口：SVC 面 direct yield_now（含切换锁舞蹈）已落。
     pub(crate) const THREAD_YIELD: usize = 0x3F;
+    /// cbox 刀 1（`plans/cbox/design.md`）：异常 fatal 路径（EL0 kill 链 / EL1 halt 前）RAM 记录表的用户态排液口。无 right 门（诊断几何面——`process_get_exit_code` need=0 惯例）；表读写面零结构锁（seqlock 快照），syscall 整体走 SVC_CLASS_TABLE 在册取锁（同全体 syscall）。
+    pub(crate) const CBOX_DRAIN: usize = 0x42;
     pub(crate) const CHANNEL_CREATE: usize = 0x51;
     pub(crate) const CHANNEL_SEND: usize = 0x52;
     pub(crate) const CHANNEL_RECV: usize = 0x53;

@@ -427,7 +427,9 @@ def syz_val(expr: str) -> str:
 
 def syz_stage_mark(s: dict) -> str:
     if s["stage"] != "v1":
-        return f"（{s['stage']}·未实现）"
+        if not s.get("implemented", True):
+            return f"（{s['stage']}·未实现）"
+        return f"（{s['stage']}·已实现）"
     if not s.get("implemented", True):
         return "（v1·在册未实现）"
     return "（v1）"

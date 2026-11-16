@@ -114,12 +114,18 @@ impl ChildHandles {
     /// （0x3A 异常面）= `Err`：子已死句柄照收（后续 close 仍执行）…… 简化
     /// 起见读码失败即整链 Err 返（句柄留存有界，不二段收）。
     pub fn reap(&self) -> Result<i32, ()> {
+        self.reap_with_timeout(REAP_TIMEOUT_NS)
+    }
+
+    /// 定帽回收（gfxdemo k4 统计段先例：TCG+宿主争用下演示件墙钟可数倍
+    /// 于 30s 常规帽——per-arm 抬帽面，其余 arm 零扰动）。
+    pub fn reap_with_timeout(&self, timeout_ns: u64) -> Result<i32, ()> {
         let mut now = 0u64;
         if berry_clock_read(CLOCK_MONOTONIC, &mut now) != 0 {
             return Err(());
         }
         let mut obs = 0u64;
-        if berry_object_wait_one(self.hp, SIGNAL_TERMINATED, now + REAP_TIMEOUT_NS, &mut obs) != 0 {
+        if berry_object_wait_one(self.hp, SIGNAL_TERMINATED, now + timeout_ns, &mut obs) != 0 {
             return Err(()); // 未按期退出（挂死/帽尽）：不冒险回收
         }
         // wait 命中 = Exited 已落账（mark_exited 先于 wake TERMINATED——退出

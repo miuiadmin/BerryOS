@@ -13,6 +13,10 @@ name = "berry-appproto"
 version = "0.1.0"
 
 [[package]]
+name = "berry-cbox"
+version = "0.1.0"
+
+[[package]]
 name = "berry-fbcon"
 version = "0.1.0"
 
@@ -50,6 +54,7 @@ name = "berry-launcher"
 version = "0.1.0"
 dependencies = [
  "berry-appproto",
+ "berry-cbox",
  "berry-gfx",
  "berry-guiproto",
  "berry-layout",

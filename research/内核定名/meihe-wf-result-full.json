@@ -1,0 +1,888 @@
+{
+  "summary": "内核候选名 Meihe（莓核）深度研究：五面并行风险扫描 + 同音歧义专查 + 对抗复核",
+  "agentCount": 17,
+  "logs": [
+    "Meihe 五面并行扫描启动：软件撞名 / 商标商业 / 语言文化(没核同音专查) / 生态占位 / 拼音出海先例",
+    "扫描完成：5/5 面返回，风险项（blocker/caution）共 12 条，进入对抗复核"
+  ],
+  "result": {
+    "research": [
+      {
+        "angle": "软件撞名面（Meihe/莓核 vs 现有软件项目、库、产品、公司与打包生态）",
+        "findings": [
+          {
+            "detail": "GitHub API 仓库名搜索 q=meihe（含名称/描述/主题）total_count=38，全部为个人占位或练手仓。星数最高的三个：OverClimber/MeiheweitePro（游戏王 Rush Duel Unity 客户端，C#，3 星）、RafaelManfrim/MEIHelp_Django 与 MEIHelp_NextJS（3 星）、meihewenti/meihewenti（2 星）；其余 0–1 星，多为 meiheXXXX 个人主页仓（MeiHe325/meihe、Meihe812、Miwako-1004/meihe 等）。没有任何仓库把 Meihe 当作项目名做 OS/内核/系统软件/库。检索日 2026-11-06。",
+            "severity": "clean",
+            "source": "https://api.github.com/search/repositories?q=meihe&sort=stars&order=desc&per_page=30",
+            "title": "GitHub 全站无名为 Meihe 的正经软件项目：38 个命中仓最高仅 3 星，无一与 OS/内核/系统软件相关"
+          },
+          {
+            "detail": "crates.io 官方 API：q=meihe 返回 meta.total=0、crates 数组为空；q=mei-he 同样 total=0。对 Rust 微内核项目而言这是最直接的生态位——未来发布 meihe crate 无撞名、无既得用户。",
+            "severity": "clean",
+            "source": "https://crates.io/api/v1/crates?q=meihe 及 https://crates.io/api/v1/crates?q=mei-he",
+            "title": "crates.io 双零命中：Rust 生态无 meihe / mei-he crate"
+          },
+          {
+            "detail": "npm registry 官方搜索 API：text=meihe 返回 total=0、objects 空数组；text=mei-he 的返回全是模糊兜底（he、@types/he、verovio 等 9057 条宽匹配），无一实际名为 mei-he。npm 命名空间干净。",
+            "severity": "clean",
+            "source": "https://registry.npmjs.org/-/v1/search?text=meihe&size=20 及 https://registry.npmjs.org/-/v1/search?text=mei-he&size=10",
+            "title": "npm 零命中：无 meihe 包，也无 mei-he 包"
+          },
+          {
+            "detail": "PyPI JSON API /pypi/meihe/json 返回 HTTP 404（无此项目）；搜索引擎 site:pypi.org meihe 零链接。美合/美禾类中文项目若上 PyPI 也未见用此名。",
+            "severity": "clean",
+            "source": "https://pypi.org/pypi/meihe/json（404）+ WebSearch site:pypi.org meihe 零命中",
+            "title": "PyPI 无 meihe 项目：精确名 404 + 站内搜索零索引"
+          },
+          {
+            "detail": "RubyGems API search.json?query=meihe 返回空数组 []；Debian packages.debian.org 全套件/全架构搜索 'Sorry, your search gave no results'；Arch 官方仓库搜索 '0 matching packages found'；本机 brew search meihe 与 --casks 均 'No formulae or casks found'。四个发行/包管理渠道全空。",
+            "severity": "clean",
+            "source": "https://rubygems.org/api/v1/search.json?query=meihe ；https://packages.debian.org/search?keywords=meihe&searchon=names ；https://archlinux.org/packages/?q=meihe ；本机 `brew search meihe`（2026-11-06）",
+            "title": "RubyGems / Debian / Arch 官方仓 / Homebrew 全部零包"
+          },
+          {
+            "detail": "AUR RPC v5 (aur.archlinux.org/rpc/v5/search/meihe) 被站方 Anubis v1.28.2 反爬墙拦截（Access Denied error 9e4edb5b），无法直读 JSON；改用搜索引擎 site:aur.archlinux.org meihe 得零链接，AUR 页面通常可被索引，故判无 AUR 包。此条按'检索受阻+旁证为零'定级 clean，若需百分百确证可后续人工过墙复核。",
+            "severity": "clean",
+            "source": "https://aur.archlinux.org/rpc/v5/search/meihe（Anubis 拦截页）+ WebSearch site:aur.archlinux.org meihe 零命中",
+            "title": "AUR 无 meihe 包：RPC 接口被 Anubis 反爬拦截，站内零索引旁证"
+          },
+          {
+            "detail": "英文检索 'Meihe operating system/kernel/distro/firmware' 只命中实业公司与学者（Meihe Xu/Meihe Yin 等）；'Meihe AI LLM model open source' 零项目命中；GitHub q=meihe-os in:name total_count=0。不存在叫 Meihe 的操作系统、内核、发行版、固件或 AI 模型——对 BerryOS 这种系统层项目最致命的同类撞名完全不存在。",
+            "severity": "clean",
+            "source": "WebSearch 三组查询（2026-11-06）+ https://api.github.com/search/repositories?q=meihe-os+in:name",
+            "title": "无任何 Meihe 操作系统/内核/发行版/固件/AI 项目存在，meihe-os 仓零占用"
+          },
+          {
+            "detail": "GitHub 用户 meihe：2011-06-08 注册，3 个公开仓全是教程残留（Rails Depot 教程 fork、Hello-World 从未推送、Spoon-Knife），最后 push 2012-06，2 粉丝。这不是产品撞名，但开源后项目主页只能用 meihe-os / meihe-kernel / berryos 等变体——好在 meihe-os 经查零占用，可用性无实质障碍。",
+            "severity": "caution",
+            "source": "https://api.github.com/users/meihe 及 https://api.github.com/users/meihe/repos",
+            "title": "GitHub 精确用户名 meihe 已被占用：2011 年注册的个人休眠号（2012 年后停更，3 个教程仓）"
+          },
+          {
+            "detail": "q=meihe type:org 共 6 个组织：meihe-inc（=珠海市时代美禾科技有限公司，2019-08 注册，0 公开仓，email 163 邮箱，dormant）、meihekou（2019-04 注册，0 仓，从未配置）、meihei、meihe-danner、meiheyuan、meihemorg（均零活动）。没有组织叫纯 meihe，也无一个在发布软件。",
+            "severity": "info",
+            "source": "https://api.github.com/search/users?q=meihe+type:org 及 https://api.github.com/users/meihe-inc 、/users/meihekou",
+            "title": "GitHub 含 meihe 字样的 6 个组织全为空壳，其中 meihe-inc 挂靠珠海一家美禾公司但 0 公开仓"
+          },
+          {
+            "detail": "英文检索名 Meihe 的公司有：珠海美合科技（润滑油，新三板 834412，英文域名 makhop.com）、Shaanxi Meihe Biochemics（食品配料）、Meihe Hardware Industry（温州五金，1993）、Shenzhen Meihe Induction Technology（RFID 卡/腕带，MHcardfactory）。另有 GitHub 空壳 org 的珠海时代美禾科技。全部是润滑油/配料/五金/RFID 实业，无一做软件，与 OS 内核无领域交集、无混淆可能。",
+            "severity": "info",
+            "source": "http://www.makhop.com ；https://www.linkedin.com/company/meihe-hardware-industry-co-ltd ；https://www.facebook.com/MHcardfactory ；https://api.github.com/users/meihe-inc",
+            "title": "罗马字 Meihe 的公司在实体产业，无一家软件公司"
+          },
+          {
+            "detail": "美荷线：无 美荷 软件公司，仅香港 YHA 美荷樓青年旅舍（Mei Ho House）。美禾线：App Store/微软商店有 美禾 APP（美容行业装备电商），另有长春美禾科技（生物质化工，曾与可口可乐合作植物基塑料）等实业。梅河线：梅河口市有 梅河口信息网 App（App Store id1356976661）、掌上梅河、政务号 梅河口发布、玩转梅河口 旅游小程序——全是城市服务/垂直电商，与 OS 内核领域距离极远；但注意中文语境里 梅河 二字强绑定吉林省梅河口市（当地软件业以小型信息化外包为主，无知名产品），这是品牌联想层面的背景而非软件撞名。",
+            "severity": "info",
+            "source": "https://apps.apple.com/cn/app/%E6%A2%85%E6%B2%B3%E5%8F%A3%E4%BF%A1%E6%81%AF%E7%BD%91/id1356976661 ；https://www.yha.org.hk/zh/hostel/yha-mei-ho-house-youth-hostel ；WebSearch 美禾/美荷/梅河 app 公司 三组查询（2026-11-06）",
+            "title": "拼音同形的中文软件仅零星垂直品：美禾电商 App 与梅河口本地城市 App，均远离系统软件"
+          },
+          {
+            "detail": "Google Play/App Store 检索 Meihe 无同名应用或游戏；命中皆为无关项：台北捷运 App 里提到的 美河市（新店小碧潭站旁住宅小区）、noon.com 的 Meihe 积木玩具品牌（实体玩具 OEM）、乒乓球运动员张 Meihe、隐私研究者 Meihe Xu。英文世界 Meihe 的占位者是人名与地名，不占软件赛道。",
+            "severity": "clean",
+            "source": "WebSearch '\"Meihe\" app game Google Play OR \"App Store\"'（2026-11-06）；https://play.google.com/store/apps/details?id=com.alice51849.MetroTimeHelper",
+            "title": "英文应用市场上无名为 Meihe 的知名 App 或游戏"
+          }
+        ],
+        "verdict": "内核叫 Meihe 基本不撞软件圈：crates.io/npm/PyPI/RubyGems/Debian/Arch/Homebrew 全零命中，GitHub 无同名正经项目（38 仓最高 3 星且全是个人练手）、无同名活跃组织、无 Meihe OS/AI/App；仅两处软性注意——github.com/meihe 用户名被 2012 年起休眠的个人号占用（meihe-os 变体零占用可绕开），以及若干拼音同形的美合/美禾/梅河实业公司与城市服务 App，领域距离极远不构成混淆。"
+      },
+      {
+        "angle": "商标与商业面（Meihe/莓核：USPTO·Justia·EUIPO·日韩字号·中国同音写法·金融硬件实体）",
+        "findings": [
+          {
+            "detail": "Shenzhen Meihe Trading Co., Ltd. 于 2018-06-20 申请、2019-02-05 注册（RN 5670056，标准字符标），Class 25，商品全为 berets/coats/hats/underwear 等服装鞋帽。Justia 详页快照状态 700-Registered，但 trademarks411 镜像列表为 DEAD（合理推测 5.5 年 Section 8 未续展，注册 2019 + 维权窗 2024-25 已过）。类别与操作系统内核（Class 9/42）完全不相关，非商用开源使用不构成侵权；软点在于它是唯一活过审查的精确字标且生死状态两源不一致——若 BerryOS 将来想在美国自注册 Meihe，需先上 TSDR 用 SN 88006966 终核状态，再评估引用风险（类别远，被驳概率低）。",
+            "severity": "caution",
+            "source": "https://trademarks.justia.com/880/06/meihe-88006966.html（web_reader 全文取到）；https://www.legalhoop.com/trademark/detail/88006966/MEIHE；https://www.trademarks411.com（搜索镜像标 DEAD，详页 403）",
+            "title": "USPTO 存在唯一精确匹配 MEIHE 注册商标，但类别是 Class 25 服装且疑似已失效"
+          },
+          {
+            "detail": "site:trademarks.justia.com MEIHE 检索出的全部记录：长汀美和科技（MEIHEA，Class 16 贴纸/墙贴，2025 申请）、深圳美和时代科技（MEHOROPET，宠物玩具）、汕头美和科技发展（ZEIINPA，家具）、深圳美和科技发展（BLUESSENCE，电动咖啡机）、黑河美和电子商行（JOURLINA，美甲用品）。没有一件 MEIHE 家族标记落在 Class 9（计算机/软件）或 Class 42（软件服务）；各公司主体名含 Meihe 但注册标记本身都不是 MEIHE。对内核命名无法律压力。",
+            "severity": "clean",
+            "source": "https://trademarks.justia.com/owners/changting-meihe-technology-co-ltd-6159804；https://trademarks.justia.com/989/52/meihea-98952488.html；https://trademarks.justia.com/501/69/mehoropet-50169675.html；https://trademarks.justia.com/985/48/zeiinpa-98548700.html；https://trademarks.justia.com/869/55/bluessence-86955772.html；https://trademarks.justia.com/978/15/jourlina-97815557.html",
+            "title": "Justia 索引内 Meihe 系公司众多，但注册的都不是 MEIHE 本身，且无一在软件/电子类"
+          },
+          {
+            "detail": "对 euipo.europa.eu 与 tmdn.org（TMview）做域名限定 WebSearch 查询 MEIHE，返回零商标记录（仅有同人名/无关词）；eSearch 直连抓取因纯 JS 单页应用失败（socket hang up）。WIPO 通道检索仅命中 \"Meihe Science and Technology Development Co., Ltd.\" 出现在爱尔兰/荷兰商标公报的 WIPO 格式名单里（未见其持有 MEIHE 字标本身），以及 NXP 诉深圳美和感应科技案。定名前建议人工跑一次 euipo.europa.eu/eSearch 与 branddb.wipo.int 终验，但网检层面无欧盟雷。",
+            "severity": "info",
+            "source": "检索方式：WebSearch allowed_domains=[euipo.europa.eu, tmdn.org] 查询 MEIHE = 零命中；https://euipo.europa.eu/eSearch/#basic/1+1+1+1/100+100+100+100/meihe 直连失败（JS SPA，socket hang up）；https://ipoi.gov.ie/media/hdbdcbcl/2507.pdf",
+            "title": "EUIPO/欧盟：域名限定检索零命中，官方库直连被 JS 挡——按检索方法记录"
+          },
+          {
+            "detail": "查 \"Meihe\" + 株式会社/メイヘ：未发现任何日本法人叫 Meihe；命中的全是与日本做生意的中国公司（河南美和国际的赴日劳务/留学、青岛美和假发、广东美和铝业对日出口、河北美和制药原料药出口）以及在上海设总部的美妆奢侈品集团被日本商媒写作 メイヘー。日本法域对 Meihe 无字号/品牌占用，未来日文对外介绍无冲突面。",
+            "severity": "clean",
+            "source": "https://www.syogyo.jp/news/2021/09/post_031743；http://en.meiherc.com；检索式：\"Meihe\" company Japan OR 株式会社 OR メイヘ",
+            "title": "日本：无名为 Meihe 的本土企业，零字号冲突"
+          },
+          {
+            "detail": "Infobel Pro 商事名录显示京畿道金浦（Gampo）有一家 Meihe Limited Company，经营类别为电气器械与设备（小型经销类实体）；另有中国电商平台营销话术里的\"韩国 meihe 海苔\"零食与 #MeiheKorea 鞋类微商帖，均非本土注册大品牌。韩文拼写 메이허 无显著命中。无任何韩国科技/软件品牌占用。",
+            "severity": "info",
+            "source": "https://search.infobelpro.com/southkorea/en/businessdetails/KR/0807615903",
+            "title": "韩国：仅一家小型电气设备经销字号，无大品牌"
+          },
+          {
+            "detail": "梅河大米 = 吉林梅河口市区域公用品牌（吉林老字号、2024 入围世界稻米地理标志 100 强、2025 入选吉林大米十大地标品牌），梅河口本身是地级市名。风险定性：农产品/食品类别与操作系统无任何法律冲突面，但中文搜索引擎里\"梅河\"一词的流量几乎全被大米/城市/梅河高速占据——莓核若依赖拼音 Meihe 做中文传播，需始终绑定\"莓核\"二字定字，否则品牌词会被农产品稀释。属传播面软雷，非法律雷。",
+            "severity": "caution",
+            "source": "https://www.jl.gov.cn/szfzt/jlssxsxnyxdh/gddt/202411/t20241129_3325884.html；http://jl.people.com.cn/n2/2025/0806/c349771-41314398.html",
+            "title": "中国「梅河」写法：梅河大米地理标志+梅河口市占据搜索心智，是混流不是冲突"
+          },
+          {
+            "detail": "美合：珠海美合科技股份有限公司（新三板 834412）是润滑油企业，另美合系常见于美妆（上海 Meihe 集团）与婚庆语境；未网检到美合软件/美合电子类知名企业。美荷：香港美荷楼（YHA 青旅/生活馆，文旅品牌）与台湾美和企業（PCB 研磨材料）。梅鹤：四川梅鹤酒业、山东梅鹤生物（痔疮药）、咀香园 1918 年首注\"梅鹤\"食品商标、山东梅鹤堂\"梅鹤仙\"（Class 29 食品，已注册）。四个写法全部落在食品/文旅/医药/化工，无一件进入软件或电子计算类别。",
+            "severity": "clean",
+            "source": "http://www.makhop.com；https://s.askci.com/stock/summary/834412；https://www.discoverhongkong.com/tc/place-to-go/travel.guide-yha-mei-ho-house-youth-hostel.html；https://www.mei-ho.com/en/about；https://baike.baidu.com/item/%E5%9B%9B%E5%B7%9D%E6%A2%85%E9%B9%A4%E9%85%92%E4%B8%9A%E6%9C%89%E9%99%90%E5%85%AC%E5%8F%B8/51313905；https://m.chatm.com/detail/omuhauiooicct.html",
+            "title": "中国「美合/美荷/梅鹤」写法：全部是非科技实体，与内核无类别交集"
+          },
+          {
+            "detail": "金融侧：Meihe Capital Management Limited（香港 2007/2009 年注册）、美合投资（北京石景山）、宁波美合南方出行创投合伙（美的创投任执行合伙人）——均为投资类字号，Class 36 与软件远距。硬件侧：MEIHE Hardware Industry Co., Ltd.（乐清柳市，前温州永泰电气，UL/BHMA 商用门五金，YOTI 牌，对美进口记录活跃）、上海美和医疗器械（1998）、深圳美和感应科技（RFID/NFC 读写器硬件）——后者曾被 NXP 在中国以 MIFARE 商标侵权+不正当竞争起诉并列入 NXP 官方防伪通报，属同名的负面品牌杂音；但这些全是公司字号（trade name）而非 MEIHE 注册商标，无一家做操作系统/内核/开发者产品。开源内核与它们的渠道、用户、类别三不重叠。",
+            "severity": "caution",
+            "source": "https://www.ytai.com；https://www.linkedin.com/company/meihe-hardware-industry-co-ltd；https://www.nxp.com/docs/en/supporting-information/MIFARE-Anti-counterfeit-news.pdf；https://discovery.patsnap.com/company/shanghai-meihe-medical-engineering",
+            "title": "金融与硬件实体面：存在 Meihe Capital/Hardware 等字号，含一家被 NXP 起诉的 RFID 厂，但均为 trade name 非商标冲突"
+          },
+          {
+            "detail": "跨 USPTO/Justia/EUIPO线索/日韩/中国同音写法/金融硬件的全部检索中，没有任何商标、品牌或产品把 MEIHE（含梅河/美合/美荷/梅鹤写法）用在 Class 9 计算机软件/操作系统或 Class 42 软件开发服务上；也没有操作系统、发行版、内核、RTOS 项目占用此名。开源界惯例下（非商用发布+项目名不作商品来源标识），现存 MEIHE Class 25 服装标与之无混淆可能（商品渠道、消费者、类别三重距离），冲突等级为低。",
+            "severity": "clean",
+            "source": "综合：https://trademarks.justia.com/880/06/meihe-88006966.html；检索式 \"MEIHE\" trademark / MEIHE trademark \"class 9\" OR software OR electronics = 零软件类命中",
+            "title": "全球范围内无 MEIHE 落在软件/OS 类别的商标或同名技术产品——类别距离全面拉开"
+          },
+          {
+            "detail": "官方 TSDR（tsdr.uspto.gov info.json 404/JS）、trademarkia、legalhoop、trademarks411 详页均 403 或接口变更，精确状态靠 Justia 详页全文（web_reader 通道成功）+ 两家镜像交叉；site:trademarks.justia.com 的 Google 索引检索只保证索引内穷尽，不等于 USPTO 数据库穷尽（理论上存在申请人名不含 Meihe 的 MEIHE 标漏网）；EUIPO/TMview/WIPO branddb 官方库均未直查成功。终验建议：定名前人工在 tmsearch.uspto.gov、euipo.europa.eu/eSearch、branddb.wipo.int 各跑一次 MEIHE + 莓核，并在中国商标网（sbj.cnipa.gov.cn）查\"莓核/Meihe\"第 9/42 类。",
+            "severity": "caution",
+            "source": "检索方法记录：tsdr.uspto.gov/ts/cd/casedocs/sn88006966/info.json = HTTP 404；legalhoop/trademarkia/trademarks411 详页 = HTTP 403；euipo eSearch = socket hang up（JS SPA）",
+            "title": "检索覆盖度与终验清单：官方库三处被反爬挡，结论基于镜像交叉"
+          }
+        ],
+        "verdict": "商标面无硬雷（blocker 为零）：全球网检范围内没有任何 MEIHE 或其同音写法的商标/品牌落在软件、操作系统或电子计算类别；软雷三处——美国 Class 25 服装类精确字标 MEIHE（RN 5670056，疑已死，自注册前需 TSDR 终核）、中文\\\"梅河\\\"被梅河大米地理标志与梅河口市占据搜索心智（传播混流而非法律冲突）、零星 Meihe 字号中含一家被 NXP 起诉的 RFID 硬件商（品牌杂音）；非商用开源内核用此名可行，建议对外始终绑\\\"莓核\\\"定字并在正式定名前人工跑一次 USPTO/EUIPO/WIPO/中国商标网终验。"
+      },
+      {
+        "angle": "语言与文化面（Meihe/莓核）",
+        "findings": [
+          {
+            "detail": "逐字逐调核对：莓=mei²（阳平35，Wiktionary 词条原样标注 méi (mei²)，义 berry）；没（有没有的没）=mei2（阳平35，IPA /meɪ̯³⁵/，词条释义\"not have; there is not; to be without\"）；核（内核/核心义）=hé（ㄏㄜˊ 阳平，词条明确 hé 兼表 seed/pit/kernel/core 与 内核/核心）。故 莓核 与 没核 均为 méi35+hé35，声韵调全同，是教科书级完全同音。口语首闻必触发一次\"莓核？没核？你们内核没核？\"的玩笑。判定：不是自嘲级硬伤、不到必弃——理由：①贬义方向恰好顺微内核\"内核极简\"人设（\"核小到近乎没有\"反而是自我表扬）；②书面场景始终有字形锚定，莓+BerryOS 语境消歧；③无低俗、无政治敏感。但这是全维度最大扣分项：若团队不打算把\"没核\"主动认领成官方梗，则应视同 blocker（建议 tagline 直接接梗，如\"核，小到近乎没有\"）。",
+            "severity": "caution",
+            "source": "https://en.wiktionary.org/wiki/%E8%8E%93 ；https://en.wiktionary.org/wiki/%E6%B2%92 ；https://en.wiktionary.org/wiki/%E6%A0%B8",
+            "title": "「莓核」与「没核」逐字逐调完全同音（méi²+hé²），直义=没有内核/没有果核——口头传播必被玩梗一次"
+          },
+          {
+            "detail": "核 除 hé 外有口语音 hú，专用于儿化果核词（桃核儿/枣核儿/煤核儿，百度百科\"核儿\"明确注音 húr）。以\"果核\"为意象命名的 莓核，在北方口语里天然会被一部分人读成 méi húr——该读音同样撞\"没核儿\"，还叠加 煤核儿（没烧透的煤块；\"捡煤核\"是上世纪五六十年代穷苦营生的集体记忆，青岛新闻网专文记为\"拾煤核（hu）\"）。结果：hé、hú 两条读音路线都落进\"没核/煤核\"语义场；且名字没有唯一口语读法，演讲、播客场合读法会漂。属可承受但需预先决定的瑕疵：官方口径钉死读 hé（与\"内核 héné 同音\"反而强化系统术语联想）。",
+            "severity": "caution",
+            "source": "https://en.wiktionary.org/wiki/%E6%A0%B8 ；https://baike.baidu.com/item/%E6%A0%B8%E5%84%BF/16025517 ；https://news.qingdaonews.com/wap/2020-03/06/content_21367704.htm ；https://baike.baidu.com/item/%E7%85%A4%E6%A0%B8%E5%84%BF/9967692",
+            "title": "「核」hé/hú 双读使名字没有唯一念法：口语儿化后（méi húr）再撞「煤核儿」——旧时代捡煤核的穷苦记忆"
+          },
+          {
+            "detail": "①梅河：吉林梅河口市（通化代管县级市）得名之河，简称梅河，源自满语\"梅黑河\"（意为大黑蛇）；联想=东北交通枢纽城市+梅河大米，中性无负面。②媒合：台湾高频正式用词\"撮合/匹配\"（职缺媒合、托育媒合、网红媒合平台均有官方与商用实例），中性偏正面；彩蛋级巧合——微内核的 IPC 中枢本质就是\"进程间媒人\"，同名可玩。③美荷：měi 为上声，非逐字全同音；主要指香港二级历史建筑美荷楼（Mei Ho House，公屋活化青年旅舍），中性。④眉河：多轮中文检索零成词命中（非词）。冷知识：满语 meihe 本义即\"蛇\"（Tungusic Languages 语言学手册，梅河地名之源），满语近乎无人日常使用，无实害。",
+            "severity": "info",
+            "source": "https://baike.baidu.com/item/%E6%A2%85%E6%B2%B3%E5%8F%A3%E5%B8%82/8749541 ；https://patents.google.com/patent/TWI727476B/zh ；https://zh.wikipedia.org/wiki/%E7%BE%8E%E8%8D%B7%E6%A8%93 ；https://dokumen.pub/the-tungusic-languages-9781317542797-1317542797.html",
+            "title": "méi hé 常用同音词全排查：梅河（吉林地名）、媒合（台湾高频词）、美荷（非全同音）、眉河（零命中），另有满语 meihe=蛇"
+          },
+          {
+            "detail": "实证锚点：Overwatch 角色 Mei（中文美）在英语社区存在 May/My 读法分裂，Reddit 专帖显示不少母语者读\"My\"。Meihe 无英语拼写先例，可预期主流读法 MAY-hee/MAY-huh（ei→ay、尾 e 弱读或读 hee），少数读 MY-hee（受德语式 ei 或 Mei=My 惯性影响）或 meh-HEE；重音大概率落第一音节但尾音节不稳。拼写上 5 字母含 ei 元音丛，预期错形 Mihe/Mehe/Meiha/Meieh，搜索标签会稀释。无任何英语负面近形词（melee/mire 均不贴）。缓解：README/官网第一行钉死\"Meihe (MAY-huh)\"官方音标。",
+            "severity": "caution",
+            "source": "https://www.reddit.com/r/Overwatch/comments/52hymg/how_do_you_pronounce_mei",
+            "title": "英语母语者读法分裂：Mei 实证分裂 May/My 两派，Meihe 预期 MAY-hee/MAY-huh/MY-hee 并存，拼写易错为 Mihe/Mehe/Meiha，但无负面近形词"
+          },
+          {
+            "detail": "Meihe 的预期主流读法 /ˈmeɪ.hɛ/ 与 mayhem /ˈmeɪ.hɛm/ 仅差词尾 m——快速口语 \"I work on Meihe\" 有小概率被听成 mayhem。日语 メイヘ/めいへ 在国语辞典零词条（检索\"メイヘ めいへ 日本語 意味\"无任何词典命中），日本人第一直觉联想是外来语 メイヘム（mayhem=大混乱，有黑金属乐队梗）；韩语 메이헤 同样无词义，搜索自动纠错到 메이헴（mayhem）。判定 info：轻度负面（混乱）但反是强记忆锚点——社区语境里\"mayhem kernel\"式自嘲可玩，正式语境建议口头强调中文本义。",
+            "severity": "info",
+            "source": "https://www.eigo-duke.com/word/word/mayhem.html ；https://namu.wiki/w/%EB%A9%94%EC%9D%B4%ED%97%B4 ；（メイヘ 辞书检索零命中，检索词\"メイヘ めいへ 日本語 意味\"）",
+            "title": "与英语 mayhem 音近（/ˈmeɪ.hɛ/≈mayhem 去尾音 m），日语メイヘ/韩语메이헤均无独立词义但都自动联想到 mayhem"
+          },
+          {
+            "detail": "德文检索 \"Meihe deutscher Nachname Familienname\"：无 Meihe 作为德语姓氏的直接命中；近形 Miehe 为罕见姓氏（1871-1920 见于美/英移民记录，疑为 Meier/Meyer 家族低地德语变体，义=庄园管家，中性职业姓）。按德语正字法 ei=/aɪ/，德国人会读 Meihe 为\"MY-uh\"，字串不构成任何德语单词，无负面。唯一撞名：法文检索见 \"Meihé\" 为法国一家活动 RFID 手环小微品牌（重音标记不同，属商标维度，无语言负面）。",
+            "severity": "clean",
+            "source": "https://www.familysearch.org/de/surname （姓氏库检索：Meihe 零直命中、Miehe 见于检索摘要）；法文 Meihé 手环品牌见 WebSearch \"meihe signification français\" 结果摘要",
+            "title": "德语：Meihe 非在册德语姓氏、非德语词，德人按正字法读 MY-uh，零负面；近形罕见姓 Miehe（疑 Meier 变体，职业义中性）"
+          },
+          {
+            "detail": "俄文检索 \"Мэйхэ что значит\"：Мэйхэ 无词条、无俚语、无脏话；出现语境全部是中国地名梅河/梅河口的西里尔转写。检索带出的近音人名 Михей（米赫伊）为圣经先知/米迦勒短形，义\"谁像神\"，中性偏庄重。俄语风险面为零。",
+            "severity": "clean",
+            "source": "https://n-e-n.ru/imena/imya/mikhei ；（检索方式：WebSearch \"Мэйхэ значение\"，地名转写为唯一相关命中）",
+            "title": "俄语：Мэйхэ 仅作中国地名（梅河/梅河口）转写出现，无脏话俚语；近音人名 Михей=圣经先知名，中性"
+          },
+          {
+            "detail": "检索 \"meihe\" signification français OR español OR significato：法/西/意三语词典对 meihe 零定义，全部命中均为中国专名转写（梅河科技发展公司、吉林万通梅河药业等）。附带两条冷知识：萨摩亚语 meihe=蒸汽/嘶嘶声（meihe ihu=鼻喷气表情释义），无实害；法语读者会按字面读成\"mé-è\"，无歧义冲突。至此六语种负面排查闭环：除英语 mayhem 音近（info）与满语\"蛇\"（死语无实害）外，主要语种全部零负面。",
+            "severity": "clean",
+            "source": "https://emojiterra.com/face-with-steam-from-nose ；（检索方式：WebSearch \"meihe signification français OR español OR significato\"，词典零命中）",
+            "title": "法/西/意语：meihe 字串无任何既有词义（三语词典零命中）；仅萨摩亚语 meihe=蒸汽（无实害）"
+          },
+          {
+            "detail": "莓 是高能产食物语素（草莓/蓝莓/树莓/黑莓/蔓越莓等 30+ 复合词，Wiktionary 可证），其中\"树莓\"=raspberry，中文开发者圈自带树莓派（Raspberry Pi）命名系近亲联想，与 BerryOS 品牌一脉相承。核 兼表 果核 与 内核/核心/计算 -core；而英语 kernel 词源恰为\"小种子/谷粒\"（Wiktionary：OE cyrnel，=corn\"种子/谷物\"的指小词）——kernel 本义就是果核，故 莓核↔Berry kernel 是词源级精准对译，中英双关天然成立，可顾名思义、非生造词。唯一轻度暗面：莓的联想圈里有台湾贬称\"草莓族\"（娇气世代），但贬义绑定在\"草莓族\"整词，单字莓不承载，基本无感。",
+            "severity": "clean",
+            "source": "https://en.wiktionary.org/wiki/%E8%8E%93 ；https://en.wiktionary.org/wiki/kernel",
+            "title": "「莓核」中文自然度高且词源精准：kernel 本义=小种子，莓核=莓果之核是词源级对译，树莓联想接树莓派社区，可顾名思义非生造"
+          },
+          {
+            "detail": "中文搜索\"莓核 拼音\"首位被内容农场\"莓核美食网\"（mhwc.cn）及互链游戏站占据，无任何权威词典词条。含义：①该名当前无真实语义占用者（对命名自由度是好事）；②开源后中文搜索需靠内容权重挤占内容农场，属可解的 SEO 小事，非语言风险。",
+            "severity": "info",
+            "source": "http://mhwc.cn/dongshi101 ；（检索方式：WebSearch \"莓核 拼音 读音\"，首位即该内容农场站群）",
+            "title": "中文检索现状：\"莓核\"一词目前被内容农场网站\"莓核美食网\"（mhwc.cn）占据搜索首位，开源后需靠权重挤占"
+          }
+        ],
+        "verdict": "唯一高危点坐实：「莓核」méi²hé² 与「没核」逐字逐调完全同音，口头必被玩一次梗——但在微内核\\\"极简\\\"人设下属可玩梗非硬伤（caution 偏高危，前提是官方主动认领梗并钉死读法）；英语面 May/My 读法分裂与 mayhem 音近是小瑕疵，德日韩俄法西满语全部零负面，中文自然度与 kernel 词源对译反是加分项。"
+      },
+      {
+        "angle": "生态占位面（Meihe/莓核 在开发者生态的注册名占位检查）",
+        "findings": [
+          {
+            "detail": "GET https://crates.io/api/v1/crates/meihe 返回 404（对照：同接口请求 serde 返回 200，排除 URL 姿势错误）；crates.io 站内搜索 q=meihe 返回 {\"crates\":[],\"total\":0}——不仅精确名无主，模糊近似名也一个没有。内核 crate 名可立即注册。这是本维度最重要的一项，结论干净。",
+            "severity": "clean",
+            "source": "https://crates.io/api/v1/crates/meihe",
+            "title": "crates.io 包名 meihe 空置，且无任何近似名 crate"
+          },
+          {
+            "detail": "github.com/meihe 是个人 User 账号（非组织），id 836691，2011-06-08 注册，公开库仅 3 个（Hello-World、Spoon-Knife 演示 fork、2011 年 Rails 教材配套 Depot），2 粉丝，无 bio/姓名/公司，仓库全为演示遗留，十余年无实质产出。GitHub 用户名与组织名共用命名空间，组织「meihe」无法创建；GitHub 不主动释放休眠用户名，现实回收途径仅商标投诉（商标属另一维度）。规避方案现成：meihe-os / meihe-kernel 均空置（见下条）。",
+            "severity": "caution",
+            "source": "https://github.com/meihe （API 佐证：https://api.github.com/users/meihe 返回 200，created_at=2011-06-08T04:43:37Z）",
+            "title": "GitHub 短名 meihe 已被 2011 年休眠个人号占用"
+          },
+          {
+            "detail": "github.com/meihe-os 与 github.com/meihe-kernel 网页 404，api.github.com/users/meihe-os 与 /meihe-kernel 亦均 404。开源时可注册 meihe-os 作主组织名，短名 meihe 的损失有限且无品牌冲突方。",
+            "severity": "clean",
+            "source": "https://api.github.com/users/meihe-os （404）；https://api.github.com/users/meihe-kernel （404）",
+            "title": "GitHub 组织名 meihe-os、meihe-kernel 双双空置可注册"
+          },
+          {
+            "detail": "pypi.org/pypi/meihe/json 返回 404（对照：requests.json 返回 200）。网页版 pypi.org/project/meihe 被 bot 挑战页挡住无法直读（非 404），但 PyPI JSON API 是权威判据：包名不存在。",
+            "severity": "clean",
+            "source": "https://pypi.org/pypi/meihe/json",
+            "title": "PyPI 包名 meihe 空置"
+          },
+          {
+            "detail": "registry.npmjs.org/meihe 返回 404 Not Found，npm 包名 meihe 可注册。另探测 @meihe 作用域下拼造包名同样 404（作用域包无法被第三方抢注，作用域本身随 npmjs.com 组织/用户注册取得）。",
+            "severity": "clean",
+            "source": "https://registry.npmjs.org/meihe",
+            "title": "npm 包名 meihe 空置"
+          },
+          {
+            "detail": "Google Registry 官方 RDAP（www.registry.google/rdap/domain/meihe.dev）返回 404=无此注册对象；聚合器 rdap.org/domain/meihe.dev 同样 404（对照：rdap.org/domain/linux.org 返回 200，证明查询链路有效）。域名判定全部走注册局 RDAP，不受本地 DNS fake-ip 代理模式影响。域名可随时购买。",
+            "severity": "clean",
+            "source": "https://www.registry.google/rdap/domain/meihe.dev",
+            "title": "域名 meihe.dev 未注册，可购买"
+          },
+          {
+            "detail": "PIR 注册局 RDAP（rdap.publicinterestregistry.org/rdap/domain/meihe-os.org 及 …/meiheos.org）返回 404，rdap.org 聚合查询同 404（对照 linux.org 200）。两个候选 .org 域名均可注册。",
+            "severity": "clean",
+            "source": "https://rdap.publicinterestregistry.org/rdap/domain/meihe-os.org",
+            "title": "域名 meihe-os.org 与 meiheos.org 均未注册"
+          },
+          {
+            "detail": "英文维基 opensearch 无「Meihe」专条；全文检索 20 处命中全是非科技同名：日本乒乓球选手张美和（Miwa Harimoto 本名 Zhang Meihe，见 Tomokazu Harimoto 词条）、福建梅河（Mei River 支流，见 Luxi, Fujian 词条）、台湾屏东美和高中（美和，见 RSEA 词条）。中文维基「莓核」与「Meihe」opensearch 均零结果。百科层没有任何会争夺搜索首位的技术实体。",
+            "severity": "clean",
+            "source": "https://en.wikipedia.org/w/api.php?action=opensearch&search=Meihe ；https://zh.wikipedia.org/w/api.php?action=opensearch&search=%E8%8E%93%E6%A0%B8 （零结果）",
+            "title": "维基百科无 Meihe/莓核 词条，同名命中全为良性"
+          },
+          {
+            "detail": "baike.baidu.com 直取被「百度安全验证」403 挡（web_reader 亦网络报错无法代取），改用网页搜索取证：搜「莓核 百度百科」无百科词条命中；搜「Meihe 百度百科」返回的全是「梅河」系词条——梅河新区（吉林省级新区）、梅河大米、梅河（中华老字号白酒）、梅河麻将、梅河（辉发河支流）等，全属吉林梅河口地名/品牌群。拼音 méihé 与「梅河」同音拥挤是中文语境固有背景，但「莓核」字形在中文百科生态零占位，且无任何技术同名词条。",
+            "severity": "info",
+            "source": "https://baike.baidu.com/item/%E8%8E%93%E6%A0%B8 （403 挑战页）；结论经 WebSearch「\"Meihe\" 百度百科」「\"莓核\" 百度百科」交叉取证",
+            "title": "百度百科：莓核无词条；Meihe 拼音指向吉林「梅河」地名/品牌群"
+          },
+          {
+            "detail": "搜索 \"meihe-os\"/\"Meihe OS\" 精确短语零命中，不存在同名操作系统项目；\"meihe\"+开源关键词检索同样无软件项目——命中的只有论文作者人名（Meihe Fu/Yin/Xu）、满语词表 meihe=蛇（ManchuDict）、吉林大学梅河医院，以及法律文书中出现的「长春美和科技开发有限公司」（Changchun Meihe Science And Technology Development Company，非软件业务，仅作背景信息留给商标维度）。开发者生态中 Meihe 无任何在用占位。",
+            "severity": "clean",
+            "source": "WebSearch：\"meihe-os\" OR \"Meihe OS\" operating system project（零命中）；\"meihe\" open source software OR kernel OR crate OR package github（零软件命中）",
+            "title": "全网无任何叫 Meihe 的软件/OS 项目"
+          },
+          {
+            "detail": "pypi.org/user/meihe/ 与拼造的不存在对照用户（/user/definitely-not-exist-zz9x-77/）同样返回 200+Client Challenge——软 200 无判别力；npmjs.com/~meihe 对目标与对照均 403 Cloudflare。两处用户名是否被占无法确认，但影响轻微：包名可用性与此无关，注册账号时即时可见，且本项目主打 Rust 生态（crates.io 用户名 meihe 的 crates.io/users/meihe 页面亦 404=空置）。",
+            "severity": "info",
+            "source": "https://pypi.org/user/meihe/ （对照 https://pypi.org/user/definitely-not-exist-zz9x-77/ 同 200 挑战页）；https://www.npmjs.com/~meihe （对照同 403）",
+            "title": "PyPI/npm 用户名级占位无法确认（包名级已确认空置）"
+          }
+        ],
+        "verdict": "Meihe 在开发者生态占位近乎全空：crates.io/PyPI/npm 包名与 meihe.dev、meihe-os.org、meiheos.org 域名全部可立即注册（crates.io 连近似名都零命中，百度百科/维基亦无技术词条）；唯一硬伤是 GitHub 短名 meihe 被 2011 年注册的休眠演示个人号占用——用 meihe-os 组织名即可规避（该名空置）。开源发布时所有关键占位都抢得到，建议定名后第一时间注册 crate 名与三域名防抢注。"
+      },
+      {
+        "angle": "拼音名出海先例与策略面（Meihe/莓核 可念性·可记性·搜索区分度·双轨制可行性）",
+        "findings": [
+          {
+            "detail": "小米全球统一用拼音 Xiaomi，从未为国际市场改名，成为全球头部手机厂商。其成立要件：两音节超短名＋可读的 MI/Mijia 子品牌系＋产品力与营销预算兜底。对照 Meihe：同为双音节，且无 x/q/zh 等英语缺失音位，摩擦量级更低。",
+            "severity": "info",
+            "source": "https://en.wikipedia.org/wiki/Xiaomi",
+            "title": "Xiaomi 证明拼音名直上全球线不是 blocker，但成功靠的是产品力+短名+子品牌系兜底"
+          },
+          {
+            "detail": "BBC 2015 年发专文教读者读 Xiaomi（近似 show-MEE/ZHOW-mee），Reddit r/EnglishLearning 有专帖讨论美国人读成 Shaomi，甚至小米高管读法也不统一。对照：Meihe 全由英语常用字母构成，英语者自然读出 MAY-hee/may-HEY 一类近似音，无需媒体教育——拼音出海最被诟病的一环对 Meihe 反而最轻。",
+            "severity": "caution",
+            "source": "https://www.bbc.com/news/blogs-magazine-monitor-30848303",
+            "title": "拼音音系摩擦是真实长期成本（BBC 需专文教读），但对 Meihe 是相对优势"
+          },
+          {
+            "detail": "鸿蒙（创世混沌之典）2019-05-24 在华注册商标（本注册给 kernel），同期在欧盟注册 Ark OS 变体、7 月注册 Harmony 系商标，8 月定名 HarmonyOS，官方口径英文名寓意万物互联与和谐共生。弃拼音逻辑＝当名字的价值在文化含义时，拼音搬运不了含义、只增加读音成本，应译不应拼。关键区别：莓核不是文化典故而是描述性合成词（berry+core），其含义已由英文总名 BerryOS 预先承载，故此逻辑不强制适用于 Meihe。",
+            "severity": "info",
+            "source": "https://en.wikipedia.org/wiki/HarmonyOS",
+            "title": "华为鸿蒙国际线弃拼音 Hongmeng 定名 HarmonyOS——文化典故名的价值出了中文圈归零"
+          },
+          {
+            "detail": "魅族（常释 Enchanted Generation）曾进中国前五、较早出海，2023 被吉利系收购，2024-02 宣布转 AI 停传统手机，2026 年 2-3 月自研手机业务全面停摆（Meizu 23 已开发不发布）。名字既没救也没坑：拥挤市场里拼音名不构成差异化，胜负由产品决定——不要指望内核名本身做传播。",
+            "severity": "info",
+            "source": "https://en.wikipedia.org/wiki/Meizu",
+            "title": "Meizu：拼音名既没救也没坑，市场胜负与名字基本无关"
+          },
+          {
+            "detail": "BYD＝比亚迪（Bǐyàdí）罗马字缩写，起名部分为公司名录排序靠前，本无含义；约 2008 年补上 Build Your Dreams 寓意，2017 年起上车尾标，2023 年因争议又撤下拼写文字只留三字母。启示：中国源字串可以先无义上线，靠产品攒品牌资产；英文寓意层是可选项、可撤项，非必需品。",
+            "severity": "info",
+            "source": "https://en.wikipedia.org/wiki/BYD_Auto",
+            "title": "BYD：无义拼音缩写也能全球化，英文寓意是后补的且可撤回"
+          },
+          {
+            "detail": "马云在旧金山咖啡馆向服务员验证 Alibaba 的全球认知度（一千零一夜人人皆知）＋多语言易念＋open sesame 开宝库隐喻后才定名。这是拼音名做不到的一面：跨文化语义联想。Meihe 走开源开发者路线可以不按消费品牌标准要求自己，但要接受它在语义层永远到不了 Alibaba 档。",
+            "severity": "info",
+            "source": "https://abcnews.com/Business/alibaba-chinese-company/story?id=25591454",
+            "title": "Alibaba：全球消费品牌的黄金标准是跨文化有意义+好念，拼音路径天然达不成"
+          },
+          {
+            "detail": "字节跳动公司名取意译 ByteDance 而非拼音 Zijie Tiaodong；国际产品干脆另立 TikTok（滴答拟声词）与国内抖音（Douyin）完全分离；阿里同理走 Tongyi Qianwen（内）/Qwen（外）。中文主名+对外别名双轨在中国科技公司出海里是被反复验证的标准做法，BerryOS 若双轨毫不突兀。",
+            "severity": "info",
+            "source": "https://simple.wikipedia.org/wiki/ByteDance（辅证：WebSearch \"ByteDance name origin English name choice TikTok why not pinyin Zijie\"）",
+            "title": "ByteDance/TikTok：公司名意译+产品双名制（Douyin 内、TikTok 外）是中国公司出海标配"
+          },
+          {
+            "detail": "中国系 OS/基础软件的四条路：语义翻译（deepin←深度）、西名回译（openEuler←欧拉←Euler）、改造罗马字（麒麟用 Kylin 而非拼音 Qilin；龙芯用 Loongson/LoongArch 而非拼音 Long，据检索明确是为避开英文常用词 long 的碰撞并保持区分度）、概念已国际化（Taichi）。检索方式：WebSearch \"Chinese Linux distribution naming Kylin openEuler deepin English name translation pinyin\" 及 Loong 拼写溯源，均未现身纯拼音直上的内核级先例。Meihe 若上即此生态位第一个纯拼音内核名——是记忆点，也是无人走过的路径。",
+            "severity": "caution",
+            "source": "https://en.wikipedia.org/wiki/Kylin_(operating_system)",
+            "title": "Linux/基础软件世界没有纯拼音直上国际线的内核先例，成功者都做了拼写适配"
+          },
+          {
+            "detail": "Taichi（太极）作者胡渊鸣明确表示取名就是为了让国际朋友觉得熟悉——太极概念自带国际认知，项目获 SIGGRAPH 2020 开源软件奖、国际社区活跃；jieba（结巴/口吃，纯梗拼音名）因做中文分词、受众天然懂中文而成为事实标准库。莓核之核（莓果之核）不是国际常识，Meihe 走的是 jieba 型小众自选受众路线而非 Taichi 型概念普适路线——对以中文社区为首发基本盘的 BerryOS 恰好匹配。",
+            "severity": "info",
+            "source": "https://github.com/taichi-dev/taichi（辅证 https://github.com/fxsjy/jieba 、 https://www.taichi-lang.org ）",
+            "title": "Taichi 与 jieba：拼音名在开源社区成立的两要件——概念自明，或受众自选"
+          },
+          {
+            "detail": "通义千问→Qwen（Qianwen 缩合），Qw- 音序对英语者不自然，但开放权重后成为 Hugging Face 下载量最大的模型族之一；同期 01.AI 的 Yi、百川 Baichuan、智谱 Zhipu 均直接以拼音名国际上线并被接受。证明在开发者/开源场景，可念性摩擦远不如工件实力重要——这是 Meihe 所处场景（开源内核）最直接对标的一组近期先例。",
+            "severity": "clean",
+            "source": "https://en.wikipedia.org/wiki/Qwen",
+            "title": "Qwen：带别扭 Qw- 音序的拼音缩合名仍成全球最热开源模型族——开发者社区按工件说话"
+          },
+          {
+            "detail": "crates.io API 查询 q=meihe 返回 total=0（2026-11-06 实查）；GitHub 仓库搜索 38 个结果全为 0-3 星个人仓（多为以 Meihe 作人名/昵称，最大者 3 星游戏王模拟器 MeiheweitePro），无任何 OS/内核/科技公司同名。英文世界该词主要指：中文女性人名（美荷/美鹤/梅合）、台湾日月潭梅荷园 Meihe Garden、19 世纪美国稀有德裔姓氏、MEIHE 电磁阀小品牌。作为搜索词独立性强，文档/SEO/issue 检索不会与大牌串台——这正是 Loongson 当年避 long 拼写想要的性质，Meihe 天然满足。",
+            "severity": "clean",
+            "source": "https://crates.io/api/v1/crates?q=meihe（辅证 https://github.com/search?q=meihe&type=repositories 、 https://www.behindthename.com/name/meihe/submitted ）",
+            "title": "字串区分度实测：crates.io 零占用、GitHub 无同名科技项目、无大牌碰撞"
+          },
+          {
+            "detail": "英文站点将 Meihe 归为中文女性人名（Mei=美/梅＋he=荷/鹤/合，义为美丽荷花/鹤），日本名 Mei（如 Totoro 角色）强化人名联想；莓核的词源完全无法从字串推出，首见者是零信息。补救成本极低：README/英文文档首行固定一句 Meihe (莓核, méihé — literally \"berry core\": the kernel of BerryOS) 即可闭合解释环——BerryOS 这个英文总名恰好预先解释了 berry，Meihe 借力即可，不需要独立讲故事（这是 Hongmeng 做不到的：其含义无法被 Huawei 品牌名预解释）。",
+            "severity": "caution",
+            "source": "https://www.behindthename.com/name/meihe/submitted（辅证 https://www.ask-oracle.com/baby-name/meihe ）",
+            "title": "传播学短板确认：Meihe 对不识拼音者是无义字串，且会被读作女性人名"
+          },
+          {
+            "detail": "利＝短（双音节）、独特可注册可搜索（crates.io/GitHub 零冲突）、无英语常用词碰撞、且开发者场景摩擦被 Qwen/Yi/Baichuan 反复证明可容忍；弊＝语义不可搬运（berry core 故事必须靠注解携带）、读音漂移（英语者读 MAY-hee 而非 méi-hé，无伤大雅）、首见零信息。总体：弊在开源场景被显著缩小，利是实打实的。",
+            "severity": "info",
+            "source": "综合 BBC/Wikipedia Qwen/crates.io/GitHub 实查（各发现单列）",
+            "title": "提炼① 拼音名对国际开发者社区的利弊：利在短与独特，弊在语义不可搬运与读音漂移，开发者场景弊被缩小"
+          },
+          {
+            "detail": "保留要件＝短＋无英语缺失音位＋受众自选或概念可一句话讲清＋产品力兜底（Xiaomi/Qwen/Yi 满足，Meihe 满足）；配英文别名要件＝名字价值在文化含义且需全球叙事（Hongmeng→HarmonyOS）、或面向大众消费市场需跨文化好感（Douyin→TikTok、Alibaba 式咖啡店验证）。Meihe 属可保留象限，前提是词源注解永远随身（文档模板/README 首行固化）。",
+            "severity": "info",
+            "source": "综合 Xiaomi/HarmonyOS/TikTok/Alibaba/Qwen 判例（各发现单列）",
+            "title": "提炼② 何时保留拼音、何时配英文别名：判据是受众与含义可搬运性"
+          },
+          {
+            "detail": "中文面：莓核＝莓果之核，与 BerryOS 词源互为直译、自洽；英文面：BerryOS 已是英文总名并预解释 berry，Meihe 只需一行注解借力闭环，不必像鸿蒙那样再造独立英文别名——OS 总名已是英文的情况下再给内核起英文别名反而稀释品牌（对照 HarmonyOS 是因为 OS 总名本身需要英文名）。落地建议：中文文档/中文语境主名莓核，对外统一 Meihe kernel of BerryOS，README 首行固定词源注解，crates.io 的 meihe 名字现在就能占住。",
+            "severity": "clean",
+            "source": "综合 HarmonyOS/TikTok/Qwen 双轨判例（各发现单列）",
+            "title": "提炼③ Meihe×BerryOS 一致性高、双轨制可行且无需再造英文别名"
+          }
+        ],
+        "verdict": "从传播学看 Meihe 不是好名也不是坏名，而是\"自带一行注解就合格的拼音名\"：在开源开发者场景（Qwen/Yi/Baichuan 先例证明拼音不被歧视）它可念摩擦低于 Xiaomi/Qwen、Rust 生态零占用、搜索区分度好，配合 BerryOS 总名的 berry 锚点一行词源注解即可语义闭环，双轨制（中文主名莓核+对外 Meihe kernel of BerryOS）有充分先例支撑——可用（无 blocker），但按 Alibaba/TikTok 的跨文化黄金标准，它对不识拼音者永远是需注解携带的无义字串，达不到自解释好名档。"
+      }
+    ],
+    "flagged": [
+      {
+        "detail": "GitHub 用户 meihe：2011-06-08 注册，3 个公开仓全是教程残留（Rails Depot 教程 fork、Hello-World 从未推送、Spoon-Knife），最后 push 2012-06，2 粉丝。这不是产品撞名，但开源后项目主页只能用 meihe-os / meihe-kernel / berryos 等变体——好在 meihe-os 经查零占用，可用性无实质障碍。",
+        "severity": "caution",
+        "source": "https://api.github.com/users/meihe 及 https://api.github.com/users/meihe/repos",
+        "title": "GitHub 精确用户名 meihe 已被占用：2011 年注册的个人休眠号（2012 年后停更，3 个教程仓）",
+        "angle": "软件撞名面（Meihe/莓核 vs 现有软件项目、库、产品、公司与打包生态）",
+        "holds": true,
+        "recheck": "断言成立，独立复核全部核实：(1) https://api.github.com/users/meihe 返回 login=\"meihe\"、id=836691、type=\"User\"（个人号非组织）、created_at=2011-06-08T04:43:37Z、followers=2、public_repos=3，与断言的注册日期/粉丝数/仓库数逐一吻合；(2) https://api.github.com/users/meihe/repos 恰 3 仓且全为教程残留——Depot（描述为 \"Agile Web Development with Rails, 4th Edition\" 教程应用，pushed_at=2012-06-14）、Hello-World（pushed_at=null，从未推送，与断言一致）、Spoon-Knife（fork=true 官方演示仓）；最后 push 时间 2012-06 与断言一致；(3) 变体名复核：https://api.github.com/users/meihe-os 与 https://api.github.com/users/meihe-kernel 均返回 HTTP 404（未占用），证实断言「meihe-os 零占用、可用性无实质障碍」的次级声明。仅有两处微小瑕疵不动摇结论：① Depot 实为 fork=false 的自建仓（教程代码推送）而非 GitHub fork，断言措辞「教程 fork」略不精确；② 用户 updated_at=2026-10-18 显示近期仍有元数据活动（登录/关注级），「完全停更」指代码活动而言仍成立。另注：GitHub 官方不回收休眠用户名，精确名 meihe 无回收预期，断言的可用性判断（caution 级、无实质障碍）准确。"
+      },
+      {
+        "detail": "Shenzhen Meihe Trading Co., Ltd. 于 2018-06-20 申请、2019-02-05 注册（RN 5670056，标准字符标），Class 25，商品全为 berets/coats/hats/underwear 等服装鞋帽。Justia 详页快照状态 700-Registered，但 trademarks411 镜像列表为 DEAD（合理推测 5.5 年 Section 8 未续展，注册 2019 + 维权窗 2024-25 已过）。类别与操作系统内核（Class 9/42）完全不相关，非商用开源使用不构成侵权；软点在于它是唯一活过审查的精确字标且生死状态两源不一致——若 BerryOS 将来想在美国自注册 Meihe，需先上 TSDR 用 SN 88006966 终核状态，再评估引用风险（类别远，被驳概率低）。",
+        "severity": "caution",
+        "source": "https://trademarks.justia.com/880/06/meihe-88006966.html（web_reader 全文取到）；https://www.legalhoop.com/trademark/detail/88006966/MEIHE；https://www.trademarks411.com（搜索镜像标 DEAD，详页 403）",
+        "title": "USPTO 存在唯一精确匹配 MEIHE 注册商标，但类别是 Class 25 服装且疑似已失效",
+        "angle": "商标与商业面（Meihe/莓核：USPTO·Justia·EUIPO·日韩字号·中国同音写法·金融硬件实体）",
+        "holds": true,
+        "recheck": "断言成立，且比原文更进一步：其\"疑似已失效\"可定谳为\"已失效\"。(1) 存在性/类别/商品全核实：MEIHE 标准字符标（Mark Drawing 4000），SN 88006966 / RN 5670056，深圳 Meihe Trading Co., Ltd. 2018-06-20 申请、2019-02-05 注册，Class 25 服装帽类（berets/coats/hats/underwear 等全服装项），与 OS 内核（Class 9/42）完全无关——Justia 全文与 Trademarkia 双源一致（https://trademarks.justia.com/880/06/meihe-88006966.html ；https://www.trademarkia.com/meihe-88006966 ）。(2) 生死状态定谳：Trademarkia 镜像 USPTO 事件史显示 2024-02-05 \"COURTESY REMINDER - SEC. 8 (6-YR) E-MAILED\"、2025-08-15 \"CANCELLED SEC. 8 (6-YR)\"，状态 Dead/Cancelled（as of 15 Aug 2025）——即 6 年 Section 8 声明未交，宽限期（至 2025-08-05）后注销；trademarks411 的 DEAD 正确，Justia 的 700-Registered 是陈旧快照；今日 2026-11-06 已过 2 个月复恢申请窗，实际不可逆。检索方式说明：USPTO TSDR 直连 API（tsdr.uspto.gov/ts/cd/casedocs/sn88006966/info.json 及 rn 变体）全部 404，tmsearch.uspto.gov 新 API 被 S3/WAF 挡（NoSuchKey/MethodNotAllowed），Justia 站内搜索被 Cloudflare 拦，故以 Trademarkia 事件史（Last Updated 15 Aug 2025，事件码为 USPTO 原生码）为最强可得来源； BerryOS 若未来赴美注册，仍按断言建议以 SN 88006966 在 TSDR 终验一次。(3) \"唯一精确匹配\"核实：WebSearch 多轮（exact \"MEIHE\" + justia/uspto + 排除 Shenzhen Meihe Trading；serial 号段扫描）只找到近标 MEIHEA（长汀美荷科技，2025-01-10 申请，贴纸类，在审）、MEHOROPET（宠物玩具）、UMIHYGGE 及大量地址/人名级 Meihe，未见第二个精确 MEIHE 字标——支持\"唯一精确匹配\"表述，检索为搜索引擎级非 TESS 全库级，置信度中高。(4) 风险评级：info（对 BerryOS 非商业开源使用内核名 Meihe 无实际阻碍：类别无关 + 该标已死 + 原所有人仅剩服装类普通法权利的可能；唯一残留动作是未来赴美注册前查 TSDR）。结论：断言各要素（存在、唯一精确匹配、Class 25 服装、失效疑云、非阻碍结论、TSDR 终验建议）全部经独立来源证实，无反驳点。来源：https://trademarks.justia.com/880/06/meihe-88006966.html ；https://www.trademarkia.com/meihe-88006966 ；搜索（MEIHE justia/uspto 排除原主、serial 88/87/79/90 扫描）零其他精确命中。"
+      },
+      {
+        "detail": "梅河大米 = 吉林梅河口市区域公用品牌（吉林老字号、2024 入围世界稻米地理标志 100 强、2025 入选吉林大米十大地标品牌），梅河口本身是地级市名。风险定性：农产品/食品类别与操作系统无任何法律冲突面，但中文搜索引擎里\"梅河\"一词的流量几乎全被大米/城市/梅河高速占据——莓核若依赖拼音 Meihe 做中文传播，需始终绑定\"莓核\"二字定字，否则品牌词会被农产品稀释。属传播面软雷，非法律雷。",
+        "severity": "caution",
+        "source": "https://www.jl.gov.cn/szfzt/jlssxsxnyxdh/gddt/202411/t20241129_3325884.html；http://jl.people.com.cn/n2/2025/0806/c349771-41314398.html",
+        "title": "中国「梅河」写法：梅河大米地理标志+梅河口市占据搜索心智，是混流不是冲突",
+        "angle": "商标与商业面（Meihe/莓核：USPTO·Justia·EUIPO·日韩字号·中国同音写法·金融硬件实体）",
+        "holds": true,
+        "recheck": "断言整体成立（holds=true），核心事实全部经独立查证属实，仅一处措辞级小误。逐项复核：\n\n1) 品牌与荣誉【确认】。梅河大米确为吉林梅河口市的区域公用品牌，且三项荣誉全部核实：(a) 吉林老字号——吉林省政府网原文《看梅河口如何让梅河大米品牌熠熠生辉》(https://www.jl.gov.cn/szfzt/jlssxsxnyxdh/gddt/202411/t20241129_3325884.html，已全文抓取) 明确记载\"梅河大米成为我省大米产品'吉林老字号'\"；(b) 2024 入围世界稻米地理标志（县域）品牌榜100强——同文记载，榜单 2024-09-22 发布于黑龙江庆安国际稻香米品牌大会，另有新华网黑龙江频道佐证 (http://www.hlj.xinhuanet.com/20240925/56add77c76ae440eacac3df5c6be2b3b/c.html)；(c) 2025 入选\"吉林大米十大地理标志品牌\"——人民网吉林频道已抓全文核实 (http://jl.people.com.cn/n2/2025/0806/c349771-41314398.html)。另发现断言未提的加重项：2024 品牌价值 34.92 亿元居吉林大米榜首，且 2025 年 12 月\"梅河大米国家地理标志保护示范区\"获批 (http://mhk.gov.cn/xqxz/bmdt/202609/t20260928_9724442.html)——该品牌心智占用仍在走强，不会衰减。\n\n2) 唯一实错【不改变结论】：梅河口不是地级市，是通化市代管的县级市（1985 年曾短暂设地级市、1986 年改县级市；2013 年扩权强县试点获地级市经济社会管理权限，梅河新区为正厅级）——见维基百科 (https://zh.wikipedia.org/wiki/梅河口市) 与梅河口市政府官网 (http://mhk.gov.cn/xqgk/lsyg)。行政级别说错不影响\"城市名占据搜索心智\"的判断。\n\n3) 搜索心智稀释【确认】。实测 WebSearch 排除\"大米/梅河口\"后，\"梅河\"结果仍全是：梅河高速=广东梅州—河源高速公路（2005年通车，https://zh.wikipedia.org/wiki/梅州—河源高速公路）、梅河新区社保公告、CCTV《梅河警事》、河南梅河公园、深大数学学院教师人名\"梅河\" (https://math.szu.edu.cn/info/1082/3258.htm)——零科技/OS 命中，词槽被大米/城市/高速/地名占满。断言\"流量几乎全被大米/城市/梅河高速占据\"成立（残留项也全是非科技语义，稀释结论不变）。\n\n4) 非法律雷【确认】。梅河大米保护面=地理标志产品（2006 年国家质检总局第191号公告，限大米）+地理标志证明商标（注册号5568387）+2025示范区，全部限定农产品类别；检索\"\"梅河\" 商标 第9类/软件/电子 争议/侵权\"零命中任何涉第9类（软件）商标争议或诉讼。英文侧检索 \"Meihe kernel/operating system/software/GitHub\" 亦无任何同名科技实体（无冲突方，也佐证该名在科技域是空位）。\n\n结论：断言定性准确——法律面干净（不同商品类别+无公开争议），风险在传播面：拼音 Meihe 在中文搜索会被大米/城市/高速稀释，须始终绑定\"莓核\"定字。该风险为 caution 级软雷而非 blocker，且随梅河大米品牌投入加大（80亿品牌价值目标）只会加重。唯一需修正处：梅河口为县级市（扩权强县，非地级市）。"
+      },
+      {
+        "detail": "金融侧：Meihe Capital Management Limited（香港 2007/2009 年注册）、美合投资（北京石景山）、宁波美合南方出行创投合伙（美的创投任执行合伙人）——均为投资类字号，Class 36 与软件远距。硬件侧：MEIHE Hardware Industry Co., Ltd.（乐清柳市，前温州永泰电气，UL/BHMA 商用门五金，YOTI 牌，对美进口记录活跃）、上海美和医疗器械（1998）、深圳美和感应科技（RFID/NFC 读写器硬件）——后者曾被 NXP 在中国以 MIFARE 商标侵权+不正当竞争起诉并列入 NXP 官方防伪通报，属同名的负面品牌杂音；但这些全是公司字号（trade name）而非 MEIHE 注册商标，无一家做操作系统/内核/开发者产品。开源内核与它们的渠道、用户、类别三不重叠。",
+        "severity": "caution",
+        "source": "https://www.ytai.com；https://www.linkedin.com/company/meihe-hardware-industry-co-ltd；https://www.nxp.com/docs/en/supporting-information/MIFARE-Anti-counterfeit-news.pdf；https://discovery.patsnap.com/company/shanghai-meihe-medical-engineering",
+        "title": "金融与硬件实体面：存在 Meihe Capital/Hardware 等字号，含一家被 NXP 起诉的 RFID 厂，但均为 trade name 非商标冲突",
+        "angle": "商标与商业面（Meihe/莓核：USPTO·Justia·EUIPO·日韩字号·中国同音写法·金融硬件实体）",
+        "holds": true,
+        "recheck": "对抗复核后断言成立（风险确实存在，但恰如断言所述为\"负面品牌杂音\"级别，非商标冲突）。逐项证据：(1) 核心负面点被主源钉死——下载并全文提取 NXP 官方防伪通报 PDF（https://www.nxp.com/docs/en/supporting-information/MIFARE-Anti-counterfeit-news.pdf，©2024 仍在线），内含专节 \"Verdict in Shenzhen Meihe law case\"：NXP B.V. 在深圳对 Shenzhen Meihe Induction Technology Co., Ltd（深圳市美和感应技术有限公司，2000 年成立）提起 MIFARE 商标侵权+不正当竞争诉讼并获法院认定侵权成立；该公司主营 IC 卡/RFID 腕带硬件（https://www.rfidworld.com.cn/company/Product-86011-287-1.aspx、https://www.rfidcardfactory.com），不做 OS/开发产品——\"被 NXP 起诉的同名 RFID 厂\"属实。(2) MEIHE Hardware Industry 细节全吻合：ytai.com 官网证实乐清柳市/1993 年创立/YOTI 牌/UL 商用门五金/出口 30+ 国，无软件产品；美进口活跃有 ImportGenius/ImportKey 记录（https://www.importgenius.com/suppliers/meihe-hardware-industry-co-ltd）。(3) Meihe Capital Management Limited 存在：CR 1355136、2009-07-27 注册、美和資本管理有限公司（https://www.hkgbusiness.com/company/Meihe-Capital-Management-Limited）；小瑕疵：仅查到 2009 注册（\"2007\"未证实），且有名录标注已解散。(4) 宁波实体实质属实但名称有误：真名为\"宁波美和南旅创业投资合伙企业（有限合伙）\"非\"美合南方出行\"，美的创投任执行事务合伙人（https://www.aiqicha.com/company_detail_66077231901718、https://m.cheaa.com/n_detail/w_657144.html）。(5) 上海美和医疗工程 1998-06-25 成立证实（50M 注册资本）。(6) 断言唯一薄弱子项：\"美合投资（北京石景山）\"经三种检索式（\"美合投资 北京 石景山 投资 公司\"/\"北京美合投资\" 有限公司\"/\"美合投资\" 石景山区 工商）公开 web 零命中，标注为查无实据（企查查/天眼查/企信系登录墙无法穿透），但不影响结论。(7) \"均为 trade name 非商标\"需精确化：USPTO 实有一枚 MEIHE 注册商标（Reg. 5670056，Shenzhen Meihe Trading Co., Ltd.，https://trademarks.justia.com/880/06/meihe-88006966.html）——但属第 25 类服装鞋帽，持有人不在断言列举内，与第 9/42 类软件零交集，反而佐证无相关类别冲突。(8) 反向扫描 \"Meihe software/OS/kernel/GitHub\" 零命中软件实体，科技圈 Meihe 全为 RFID/供应链/电机/贸易公司，\"渠道/用户/类别三不重叠\"结论成立。总评：断言事实骨架全部或绝大部分被独立来源证实（含一处主源级证实），定性（caution 级杂音、非 blocker）恰当；仅北京美合投资一项查无实据、宁波实体名称写法有偏差、香港公司注册年份半对——属精度瑕疵，不动摇结论。"
+      },
+      {
+        "detail": "官方 TSDR（tsdr.uspto.gov info.json 404/JS）、trademarkia、legalhoop、trademarks411 详页均 403 或接口变更，精确状态靠 Justia 详页全文（web_reader 通道成功）+ 两家镜像交叉；site:trademarks.justia.com 的 Google 索引检索只保证索引内穷尽，不等于 USPTO 数据库穷尽（理论上存在申请人名不含 Meihe 的 MEIHE 标漏网）；EUIPO/TMview/WIPO branddb 官方库均未直查成功。终验建议：定名前人工在 tmsearch.uspto.gov、euipo.europa.eu/eSearch、branddb.wipo.int 各跑一次 MEIHE + 莓核，并在中国商标网（sbj.cnipa.gov.cn）查\"莓核/Meihe\"第 9/42 类。",
+        "severity": "caution",
+        "source": "检索方法记录：tsdr.uspto.gov/ts/cd/casedocs/sn88006966/info.json = HTTP 404；legalhoop/trademarkia/trademarks411 详页 = HTTP 403；euipo eSearch = socket hang up（JS SPA）",
+        "title": "检索覆盖度与终验清单：官方库三处被反爬挡，结论基于镜像交叉",
+        "angle": "商标与商业面（Meihe/莓核：USPTO·Justia·EUIPO·日韩字号·中国同音写法·金融硬件实体）",
+        "holds": true,
+        "recheck": "断言成立——各可检验项今日（2026-11-06）全部复现，且其\"漏网\"担忧被实证坐实，终验建议被证明可行且必要。\n\n【逐项复现（非浏览器工具，今日实测）】(1) TSDR https://tsdr.uspto.gov/ts/cd/casedocs/sn88006966/info.json = HTTP 404（curl 复现）；(2) 镜像三站 403 全部精确复现：legalhoop.com/trademark/detail/88006966/MEIHE、trademarks411.com、trademarkia.com 均 HTTP 403（curl+浏览器 UA）；Justia 搜索页对非浏览器通道也是 Cloudflare 403（WebFetch 403，curl 返回 __cf_chl_tk 挑战），印证原研究只能靠 web_reader 通道；(3) EUIPO eSearch 对 curl = Empty reply from server（即\"socket hang up\"等价复现）；TMview（tmdn.org）本网络 SSL 中断；WIPO branddb.wipo.int 返回 Altcha 人机验证挑战页。故\"EUIPO/TMview/WIPO 官方库未直查成功\"对无 JS 工具为真。\n\n【关键实证：漏网场景成真】用真实浏览器（chrome_devtools）直查 USPTO 官方库 tmsearch.uspto.gov，wordmark=meihe 恰 2 件：SN 88006966 MEIHE DEAD/CANCELLED（cl.25 服装，深圳 Meihe Trading，即断言中经镜像定位的那件）；SN 98099678 MEIHE LIVE/REGISTERED（2024-07-16 注册，cl.17 家具/花盆胶带，业主 Shenzhen Heshunchang Trading——申请人名不含 Meihe）。而 Google site:trademarks.justia.com meihe 检索首页只出现含 Meihe 申请人名的他标（MEIHEA/MEHOROPET/JOURLINA/BLUESSENCE 等），98099678 未现身——断言担心的\"申请人名不含 Meihe 的 MEIHE 标漏网\"不是理论而是事实。镜像库数据本身含 98099678（trademarks.justia.com/browse-by-serial-number/98/09/96 与 Trademarkia *IHE 结果可见），风险确如断言所定位：在\"谷歌索引/业主名\"式检索方法，而非镜像数据完整性。\n\n【官方库可查性澄清（微调而非反驳）】\"官方库未直查成功\"是原研究工具集（curl/WebFetch/web_reader 无 JS）的限制，非数据库绝对不可达：真实浏览器下 tmsearch.uspto.gov 与 euipo.europa.eu/eSearch 均一次成功（eSearch 首次 10s 超时、45s 即通，本就出了名的慢 SPA）。这恰与断言\"定名前人工各跑一次\"的建议自洽。本人已代跑两腿：USPTO 如上；EUIPO 官方库 meihe 检索 = 3 件近似标（Runmeihe 018097003 cl.7 / Runmeihe 019082383 cl.6+21+25，业主 Putian Binbinqiang；meihea 019224718 cl.16，业主 Changting Meihe Technology），EU 无字面 MEIHE 标。CNIPA（sbj.cnipa.gov.cn）一腿未跑，断言将其留作终验待办依然成立。\n\n【对定名的实质含义（附带）】现存 MEIHE 注册标均不在软件相关类：US 为 cl.17（LIVE）与 cl.25（DEAD），EU 为 cl.7/6/21/25/16——领域距离远，无 cl.9/42 冲突；但 cl.17 那件 LIVE 标的存在证明终验清单不能省。\n\n来源：tsdr.uspto.gov/ts/cd/casedocs/sn88006966/info.json（404）；legalhoop.com/trademark/detail/88006966/MEIHE、trademarkia.com/trademarks/m-e-i-h-e、trademarks411.com/trademarks/88006966（均 403）；tmsearch.uspto.gov/search/search-results 浏览器检索 meihe（2 结果）；euipo.europa.eu/eSearch/#basic/1+1+1+1/100+100+100+100/meihe（3 结果）；branddb.wipo.int/en/（Altcha 挑战）；trademarks.justia.com/browse-by-serial-number/98/09/96；trademarks.justia.com/owners/shenzhen-meihe-shidai-technology-co-ltd-6920308（Google 索引样例）。"
+      },
+      {
+        "detail": "逐字逐调核对：莓=mei²（阳平35，Wiktionary 词条原样标注 méi (mei²)，义 berry）；没（有没有的没）=mei2（阳平35，IPA /meɪ̯³⁵/，词条释义\"not have; there is not; to be without\"）；核（内核/核心义）=hé（ㄏㄜˊ 阳平，词条明确 hé 兼表 seed/pit/kernel/core 与 内核/核心）。故 莓核 与 没核 均为 méi35+hé35，声韵调全同，是教科书级完全同音。口语首闻必触发一次\"莓核？没核？你们内核没核？\"的玩笑。判定：不是自嘲级硬伤、不到必弃——理由：①贬义方向恰好顺微内核\"内核极简\"人设（\"核小到近乎没有\"反而是自我表扬）；②书面场景始终有字形锚定，莓+BerryOS 语境消歧；③无低俗、无政治敏感。但这是全维度最大扣分项：若团队不打算把\"没核\"主动认领成官方梗，则应视同 blocker（建议 tagline 直接接梗，如\"核，小到近乎没有\"）。",
+        "severity": "caution",
+        "source": "https://en.wiktionary.org/wiki/%E8%8E%93 ；https://en.wiktionary.org/wiki/%E6%B2%92 ；https://en.wiktionary.org/wiki/%E6%A0%B8",
+        "title": "「莓核」与「没核」逐字逐调完全同音（méi²+hé²），直义=没有内核/没有果核——口头传播必被玩梗一次",
+        "angle": "语言与文化面（Meihe/莓核）",
+        "holds": true,
+        "recheck": "断言成立，对抗复核未能推翻——语音学核心逐项实锤，且获 Wiktionary 之外的第二独立源交叉印证。\n\n【逐字逐调核验，全部属实】\n1) 莓：Wiktionary 词条 Pinyin \"méi (mei2)\"、注音 ㄇㄟˊ、IPA /meɪ̯³⁵/，义 berry（草莓名例在册）；仅此一个普通话读法。来源：https://en.wiktionary.org/wiki/莓\n2) 没（沒）：同一词条 Etymology 1 给 Pinyin \"méi (mei2)\"、IPA /meɪ̯³⁵/，义项第 1 条原样 \"not have; there is not; to be without\"（例：沒錢沒工作）。来源：https://en.wiktionary.org/wiki/沒\n3) 核：Pinyin \"hé, hú (he2, hu2)\"，hé=IPA /xɤ³⁵/，义项明确 \"seed; pit; stone; kernel; core; nut\" + 计算机义 \"4核 quad-core\"，复合词表内含 内核(nèihé)、核心(héxīn)。hú 仅口语儿化（核儿）。来源：https://en.wiktionary.org/wiki/核\n4) 调值：Wikipedia《Standard Chinese phonology》Chao 调值表 Tone 2（阳平）= ˧˥ 35 —— 断言中「阳平35」表述准确。来源：https://en.wikipedia.org/wiki/Standard_Chinese_phonology\n5) MDBG 独立交叉验证（非 Wiktionary 系）：莓 méi2 berry；没 méi2 \"have not; not\"（另 mò4 溺义）；核 hé2 \"pit/stone/nucleus\" —— 与断言完全一致。来源：https://www.mdbg.net/chinese/dictionary?page=worddict&wdrst=1&wdqb=%E8%8E%93%20%E6%B2%A1%20%E6%A0%B8\n\n【完全同音判定成立】莓/没 同为 /meɪ̯³⁵/，核（内核义）同读 /xɤ³⁵/；普通话 2+2 调序无变调规则，两词口头实现完全一致，「教科书级完全同音」无夸大。\n\n【「口头必被玩梗一次」接受为高度可信推断】此为社会预测、字典不可证，但佐证充分：(a) 同音 + 语义直击（给内核取名恰是「没核」）；(b) 谐音梗在中文网络/品牌传播中的普遍性有主流媒体与营销案例在册（中国记协《网络\"流行梗\"，你玩得转吗？》http://www.zgjx.cn/2020-09/24/c_139394104.htm ；中国青年报《\"玩梗\"能成为社交\"快捷键\"吗》、浙江宣传《谐音梗可别念\"邪\"了》、天猫\"就购了\"等品牌谐音案例，经 WebSearch 检索获得）。首闻玩梗近乎必然，找不到反证。\n\n【边缘稀释项，均不动摇结论】核 另有口语 hú 音但内核义标准音就是 hé，断言取音正确；Wiktionary 沒 字方言表显示西安/成都等地 没(méi义) 读 mo 类音，个别方言中同音削弱，但项目传播场景为标准普通话，不构成反驳。\n\n【判定部分】断言自附的 severity 分级（caution、条件性 blocker、建议主动接梗）属团队策略判断而非可查证事实，本次复核不裁；其赖以成立的事实基础（同音+直义+玩梗概率）全部属实。severity 建议维持原判：caution 起，若不认领官方梗则按 blocker 对待。"
+      },
+      {
+        "detail": "核 除 hé 外有口语音 hú，专用于儿化果核词（桃核儿/枣核儿/煤核儿，百度百科\"核儿\"明确注音 húr）。以\"果核\"为意象命名的 莓核，在北方口语里天然会被一部分人读成 méi húr——该读音同样撞\"没核儿\"，还叠加 煤核儿（没烧透的煤块；\"捡煤核\"是上世纪五六十年代穷苦营生的集体记忆，青岛新闻网专文记为\"拾煤核（hu）\"）。结果：hé、hú 两条读音路线都落进\"没核/煤核\"语义场；且名字没有唯一口语读法，演讲、播客场合读法会漂。属可承受但需预先决定的瑕疵：官方口径钉死读 hé（与\"内核 héné 同音\"反而强化系统术语联想）。",
+        "severity": "caution",
+        "source": "https://en.wiktionary.org/wiki/%E6%A0%B8 ；https://baike.baidu.com/item/%E6%A0%B8%E5%84%BF/16025517 ；https://news.qingdaonews.com/wap/2020-03/06/content_21367704.htm ；https://baike.baidu.com/item/%E7%85%A4%E6%A0%B8%E5%84%BF/9967692",
+        "title": "「核」hé/hú 双读使名字没有唯一念法：口语儿化后（méi húr）再撞「煤核儿」——旧时代捡煤核的穷苦记忆",
+        "angle": "语言与文化面（Meihe/莓核）",
+        "holds": true,
+        "recheck": "对抗复核失败，断言各支点均经独立来源证实成立，且定级（caution 级\"可承受瑕疵\"）与证据强度相称、未夸大。(1) hé/hú 双读属实且为规范事实：Wiktionary「核」词条明确收录 hú 为 Standard Chinese colloquial variant，儿化形式 húr，方言表列天津/西安/呼和浩特「枣核儿」「桃核儿」读 xu 类音（https://en.wiktionary.org/wiki/核）；汉典同样收录 hé/hú 双读、hú 专用于口语词（https://zdic.net/hans/核）；「核儿 húr」更是普通话水平测试（PSC）词语表独立收录的标准口语音——语音教学材料甚至把「梨核儿」「煤核儿」读成 hé 列为常见误读，即 hú 在儿化果核词里不是边缘口误而是规范读音，无法以\"不规范\"反驳。(2) 原引来源核实：百度百科「核儿」「煤核儿」两页 WebFetch 均 403，但经搜索快照间接确认——「核儿」词条注音 húr、例举梨核儿/煤核儿/冰核儿（https://baike.baidu.com/item/核儿/16025517）；「煤核儿」注音 méi húr（ㄇㄟˊ ㄏㄨˊ ㄦˊ）、释义\"没烧透的煤块或煤球\"（https://baike.baidu.com/item/煤核儿/9967692）。(3) 捡煤核穷苦记忆属实：青岛新闻网《五十年代的那些事——拾煤核（hu）》标题自带注音 hu，记五十年代初\"几乎形成一种职业\"的穷苦营生（https://news.qingdaonews.com/wap/2020-03/06/content_21367704.htm）。(4) 关键推论「莓核会被一部分人读成 méi húr」成立：北方口语\"果名+核\"儿化是能产模式（梨核儿/杏核儿/枣核儿/草莓核儿，维基百科果核条目亦注北方口语称 húr），「莓核」恰以\"莓果之核\"为意象，落入该模式；技术语境\"内核 héné\"确会强烈拉回 hé，故\"一部分人（而非全部）读漂\"的限定措辞准确。同音撞「没核儿」「煤核儿」（méi húr 完全同音）为音系事实，hé 路线撞「没核」与 hú 路线撞「没核儿/煤核儿」双双坐实。可补充的缓解事实仅两点：捡煤核记忆主要属 50/60 前世代，年轻受众联想弱；技术传播场合\"内核/多核 hé\"联想占主导——这支持断言自评的 caution 而非 blocker 定级，不构成推翻。建议照断言执行：官方口径钉死读 hé。"
+      },
+      {
+        "detail": "实证锚点：Overwatch 角色 Mei（中文美）在英语社区存在 May/My 读法分裂，Reddit 专帖显示不少母语者读\"My\"。Meihe 无英语拼写先例，可预期主流读法 MAY-hee/MAY-huh（ei→ay、尾 e 弱读或读 hee），少数读 MY-hee（受德语式 ei 或 Mei=My 惯性影响）或 meh-HEE；重音大概率落第一音节但尾音节不稳。拼写上 5 字母含 ei 元音丛，预期错形 Mihe/Mehe/Meiha/Meieh，搜索标签会稀释。无任何英语负面近形词（melee/mire 均不贴）。缓解：README/官网第一行钉死\"Meihe (MAY-huh)\"官方音标。",
+        "severity": "caution",
+        "source": "https://www.reddit.com/r/Overwatch/comments/52hymg/how_do_you_pronounce_mei",
+        "title": "英语母语者读法分裂：Mei 实证分裂 May/My 两派，Meihe 预期 MAY-hee/MAY-huh/MY-hee 并存，拼写易错为 Mihe/Mehe/Meiha，但无负面近形词",
+        "angle": "语言与文化面（Meihe/莓核）",
+        "holds": true,
+        "recheck": "断言成立（caution 级定级恰当），仅两处量级小修，核心风险实证无翻案空间。\n\n【1. 锚点帖核实——分裂实锤，但帖内多数派是 May】Reddit 52hymg（2016-09-13，r/Overwatch，10 条评论）经 Arctic Shift 存档 API 全量拉取（reddit 直连被墙，改走 https://arctic-shift.photon-reddit.com/api/comments/search?link_id=t3_52hymg）：帖子正文原话 \"My brother says May I say My. How do you pronounce it?\"（https://www.reddit.com/r/Overwatch/comments/52hymg/how_do_you_pronounce_mei/）——May/My 分裂直接实锤。评论统计：May 派 6 条（mandokarla1 母语者 score 5；sonofherb 与 goat-people 引游戏官方语音 \"ah-mei-zing\" 佐证 May）；My 派 2 条：OP 本人 + Basils_Flower_Crown（2022 追评：\"Native English speakers tend to pronounce it 'Mai'…my family kept calling me 'Mai'\"——真把 Mei 当自己名字用、家人持续误读、最终被迫改拼 Mae，对\"英文环境用此拼写会被读歪\"是最有说服力的实证）。量级修正：断言称\"不少母语者读 My\"略偏强，帖内 May 为多数，My 是有实锤的少数派。\n\n【2. 断言漏了第三派，反而加强结论】姊妹帖 4iyytp \"Mei's name pronunciation, straight from the horse's mouth\"（https://www.reddit.com/r/Overwatch/comments/4iyytp/meis_name_pronunciation_straight_from_the_horses/）OP 原话 \"I see a lot of people thinking it's pronounced 'me', But Mei, is pronounced 'May'\"——Mee 误读常见。实际分裂是 May/My/Mee 三分，比断言所述更碎。Nameberry 亦官方锚定 \"Pronounced MAY\"（https://nameberry.com/name/mei）。英语 ei 正字法本身三分（vein=/eɪ/、receive=/iː/、height=/aɪ/），MAY/MY 分裂有系统性正字法根据，非 Overwatch 孤例。\n\n【3. Meihe 尾音节不稳获直接证据】英文侧现存对 \"Meihe\" 的标音互相矛盾：ask-oracle 起名库给 \"May-hay\"（https://www.ask-oracle.com/baby-name/meihe）；HowToPronounce 给 mˈeɪ.h / \"may-h\"（en-us，难度 3/5，https://www.howtopronounce.com/meihe）；拼音惯例为 may-huh——三库三种尾音，\"尾音节不稳\"由预测升级为实证。重音落首音节与主流读 MAY- 起头获各源一致支持。\n\n【4. \"无英语拼写先例\"小修】并非完全无先例，但均为拼音先例而非英语原生词、且互相不锚定读音：Meihe 是罕见中文女名（Behind the Name submitted names 在册 https://www.behindthename.com/submit/names/usage/chinese/letter/m；names.org 称美国 <100 例）、Meihe Hardware Industry Co., Ltd. 英文商用（https://www.ytai.com/cases.html）、梅河口/梅河铁路时刻表缩写 \"Meihe\"（https://en.wikipedia.org/wiki/List_of_administrative_divisions_of_Jilin）。先例稀薄+读音互斥，实质仍支持\"无主流锚→读法漂移\"的结论。\n\n【5. 负面近形复核通过】WebSearch \"meihe urban dictionary OR slang OR insult OR pejorative\" 零命中 Urban Dictionary/俚语条目（仅返回无关 archive.org 词典扫描件与汤加语帖）。附 info 级补充：mayhem /ˈmeɪhɛm/ 与预期读法 MAY-hee 共享 /meɪh/ 开头、近韵可被玩梗（非负面词，对内核名甚至偏助记）；非英语侧另有满语 meihe=\"snake\"（Jerry Norman《A Comprehensive Manchu-English Dictionary》检索命中）、中医\"梅核气\"拼音 méihé（globus，https://www.pinyin-dictionary.com/?pinyin=mei+he+qi）同形——均不属英语负面近形，不改变断言结论。\n\n【6. 错形预测为预测级】Mihe/Mehe/Meiha 错形无法对假设名直接实证，但 Mihe 本身是独立拼音地名（山东青州弥河镇，https://en.wikipedia.org/wiki/Qingzhou），撞形稀释论合理。\n\n结论：断言成立（true）。风险真实存在、定级 caution 恰当、缓解措施（README 首行钉 \"Meihe (MAY-huh)\" 官方音标）为标准做法且必要。两处小修：帖内多数派为 May（My 为有实锤的少数派）；\"无英语拼写先例\"应改述为\"无英语原生先例——拼音先例存在且读音互斥\"。"
+      },
+      {
+        "detail": "github.com/meihe 是个人 User 账号（非组织），id 836691，2011-06-08 注册，公开库仅 3 个（Hello-World、Spoon-Knife 演示 fork、2011 年 Rails 教材配套 Depot），2 粉丝，无 bio/姓名/公司，仓库全为演示遗留，十余年无实质产出。GitHub 用户名与组织名共用命名空间，组织「meihe」无法创建；GitHub 不主动释放休眠用户名，现实回收途径仅商标投诉（商标属另一维度）。规避方案现成：meihe-os / meihe-kernel 均空置（见下条）。",
+        "severity": "caution",
+        "source": "https://github.com/meihe （API 佐证：https://api.github.com/users/meihe 返回 200，created_at=2011-06-08T04:43:37Z）",
+        "title": "GitHub 短名 meihe 已被 2011 年休眠个人号占用",
+        "angle": "生态占位面（Meihe/莓核 在开发者生态的注册名占位检查）",
+        "holds": true,
+        "recheck": "对抗复核失败——断言全部事实点经独立第一手查证均成立，无法反驳。(1) 账号事实：api.github.com/users/meihe 实测返回 200，login=\"meihe\"、id=836691、type=\"User\"（个人号非组织）、created_at=\"2011-06-08T04:43:37Z\"、followers=2、public_repos=3，name/company/bio 全 null；github.com/meihe 页面侧同样确认为个人资料页（2 followers、无姓名/公司/bio）。(2) 仓库事实：repos API 实测恰 3 个——Hello-World（\"My first project\"，pushed_at=null 从未推送）、Spoon-Knife（fork=true，octocat 演示库 fork）、Depot（Ruby，描述\"Agile Web Development with Rails, 4th Edition, 2nd Printing (2011)\"）；全库最后一次 push 是 Depot 的 2012-06-14，距今 14+ 年，「十余年无实质产出」成立。两处细枝不撼动结论：Depot 仓库创建于 2012-06（配套的教材是 2011 年印次，断言说「2011 年 Rails 教材配套」指书不指仓库创建年）；账号 updated_at=2026-10-18 仅为元数据级（主页显示给 4 个库点过 star），非代码产出。(3) 政策事实：现行官方 Username Policy（docs.github.com/en/site-policy/other-site-policies/github-username-policy）原文「We do not accept requests to release, transfer, or reclaim usernames on the basis that they appear inactive or unused」+「Valid trademark-related complaints are the only requests we review for possible release of a username」+ 用户名 first-come-first-served、被占即须另选名——「GitHub 不主动释放休眠名、现实回收途径仅商标投诉」逐句坐实；旧的 name-squatting 举报通道 2021 年起已不再受理（reddit.com/r/github/comments/o5v80i 佐证），且 squatting 条款针对囤名待售，本号是真实 2011 年练手个人号，该路径不适用。(4) 命名空间：GitHub 用户名/组织名同一命名空间，type=\"User\" 已占用即组织无法再注册「meihe」，与官方 first-come-first-served 政策一致。(5) 规避方案佐证：api.github.com/users/meihe-os 与 /users/meihe-kernel 实测均 404（无此用户/组织），meihe-os、meihe-kernel 确空置。结论：断言成立，风险真实存在——短名 meihe 在 GitHub 不可得且无现实回收途径（商标投诉除外），项目方只能采用 meihe-os/meihe-kernel 类变体名。来源：https://api.github.com/users/meihe ；https://github.com/meihe ；https://api.github.com/users/meihe/repos?per_page=100 ；https://docs.github.com/en/site-policy/other-site-policies/github-username-policy ；https://api.github.com/users/meihe-os (404) ；https://api.github.com/users/meihe-kernel (404) ；https://www.reddit.com/r/github/comments/o5v80i/github_no_longer_honoring_name_squatting_policy 。"
+      },
+      {
+        "detail": "BBC 2015 年发专文教读者读 Xiaomi（近似 show-MEE/ZHOW-mee），Reddit r/EnglishLearning 有专帖讨论美国人读成 Shaomi，甚至小米高管读法也不统一。对照：Meihe 全由英语常用字母构成，英语者自然读出 MAY-hee/may-HEY 一类近似音，无需媒体教育——拼音出海最被诟病的一环对 Meihe 反而最轻。",
+        "severity": "caution",
+        "source": "https://www.bbc.com/news/blogs-magazine-monitor-30848303",
+        "title": "拼音音系摩擦是真实长期成本（BBC 需专文教读），但对 Meihe 是相对优势",
+        "angle": "拼音名出海先例与策略面（Meihe/莓核 可念性·可记性·搜索区分度·双轨制可行性）",
+        "holds": true,
+        "recheck": "复核成立：断言的两个半（Xiaomi 摩擦证据链 + Meihe 相对优势）全部经一手来源验证，反驳失败。\n\n【Xiaomi 证据链——逐项属实】(1) BBC 原文全文取回（www.bbc.com 直连被工具拦截，改经 web_reader 取到全文）：2015-01-16 发布《How to say: Xiaomi》，系 BBC Pronunciation Unit（Jo Kim）专文教读。文中实列出四个英语媒体误读变体——show MEE / ZHOW-mee / sigh-OW-mee / zigh-OH-mee——与断言所引近似拼写完全吻合，官方推荐 SHOW-mee。来源：https://www.bbc.com/news/blogs-magazine-monitor-30848303 。(2) Reddit r/EnglishLearning 专帖《Why do Americans pronounce Xiaomi as Shaomi?》实存（WebSearch 命中原始 URL，约 4 年前发帖，70+ 赞）：https://www.reddit.com/r/EnglishLearning/comments/wku12k/why_do_americans_pronounce_xiaomi_as_shaomi 。(3) \"高管读法不统一\"由 BBC 原文直接佐证：公司总裁的 x 发音英语化近似 \"sh\"（ship）或 \"s\"（sit），CEO（雷军）的发音更接近 measure 里的 \"zh\"——两位高管声调与声母均不同，出自同篇 BBC 文，比传闻级证据更硬。结论：拼音音系摩擦是真实长期成本，非夸大。\n\n【Meihe 相对优势——成立但需一层限定】构成子命题\"英语者对 Mei 自然读出 may\"有旁证：英语世界主流将 Mei 读作 may（长 a，如月份 May），迪士尼-皮克斯《青春变形记》主角 Mei Lee 及多部流行作品已让该读音大众化（https://www.ask-oracle.com/baby-name/mei 及 Disney 命名指南均标注 MAY）。Meihe 规避了 Xiaomi 的全部摩擦点：无声母 x/q/zh，无 hua 式英语空缺韵母，M-e-i-h-e 逐字母均可按英语正字法发声，MAY-hee/may-HEY/mee-hay 均在近似带内、无需媒体教学——BBC 也从未为任何\"常见字母拼音名以外\"的此类结构发过教读文的反向事实与此一致。\n\n【对抗性限定（不推翻断言，仅细化）】\"全由常用字母构成\"并非免疫金牌：Huawei 同样全由常用字母构成，仍因 hua 韵母结构无英语对应，登上 BBC 2018 年度最常读错词榜（BIVR/Babbel 调查，WA-way）：https://www.bbc.co.uk/news/uk-46632322 。故严谨表述是：Meihe 的优势不来自\"字母常见\"本身，而来自其 CV-CV 结构的两个音节（may + he/hay）各自直接映射现存英语单音节读音。该限定下断言仍成立——它主张的本来就是\"相对最轻\"而非\"零摩擦\"。"
+      },
+      {
+        "detail": "中国系 OS/基础软件的四条路：语义翻译（deepin←深度）、西名回译（openEuler←欧拉←Euler）、改造罗马字（麒麟用 Kylin 而非拼音 Qilin；龙芯用 Loongson/LoongArch 而非拼音 Long，据检索明确是为避开英文常用词 long 的碰撞并保持区分度）、概念已国际化（Taichi）。检索方式：WebSearch \"Chinese Linux distribution naming Kylin openEuler deepin English name translation pinyin\" 及 Loong 拼写溯源，均未现身纯拼音直上的内核级先例。Meihe 若上即此生态位第一个纯拼音内核名——是记忆点，也是无人走过的路径。",
+        "severity": "caution",
+        "source": "https://en.wikipedia.org/wiki/Kylin_(operating_system)",
+        "title": "Linux/基础软件世界没有纯拼音直上国际线的内核先例，成功者都做了拼写适配",
+        "angle": "拼音名出海先例与策略面（Meihe/莓核 可念性·可记性·搜索区分度·双轨制可行性）",
+        "holds": true,
+        "recheck": "对抗复核结论：断言在其限定域（内核/Linux 基础软件）成立，反驳失败；但有两处证据瑕疵和一处风险校准需注明。【逐条核实】(1) Kylin——原来源 Wikipedia (https://en.wikipedia.org/wiki/Kylin_(operating_system)) 确认 OS \"named after the mythical beast qilin\"（标注拼音 Qílín），品牌拼写为 Kylin 而非拼音 Qilin，事实成立；注意：该条目只证明了\"用了 Kylin\"，未记载选择该拼写的动机，断言的\"为适配而改造\"是合理推断但略超来源。(2) Loongson/LoongArch——社区官方称呼指南 (https://areweloongyet.com/docs/loong-or-loongarch) 明确英文名= Loong(son) Architecture；百度百科 Loong 词条 (https://baike.baidu.com/item/Loong/31310) 记载多写一个 o 是为避免与英文单词 long 混淆（拼音 long 与英文 long 撞车），2024 龙年官媒 loong/dragon 讨论佐证；瑕疵：kernel.org 中文文档 (https://docs.kernel.org/6.0/translations/zh_CN/loongarch/introduction.html) 与 Wikipedia LoongArch 条目均不含词源说明，\"避开 long 碰撞\"的可引来源为百科/社区级而非龙芯官方一手文档。(3) deepin←深度——deepin.org 官方访谈 (https://www.deepin.org/zh/an-interview-the-inside-story-of-deepin-talk) 与百度百科 (https://baike.baidu.com/item/deepin/3432935)：Deepin=英文构词（Deep+in，创始人刘闻欢英文名），中文\"深度\"，语义/英文词路径属实。(4) openEuler←欧拉←Euler——EulerOS 维基与华为资料确认得名数学家 Leonhard Euler（华为科学家命名传统：GaussDB/欧拉），西名回译路径属实。【反例搜索（复核重点）】以 XiangShan/JingOS/Kunpeng/TaiShan/HarmonyOS 等为靶搜\"纯拼音直上国际线\"：内核与 OS 软件层零反例——鸿蒙国际线明确弃拼音 Hongmeng 改用 HarmonyOS（CNBC/Wikipedia：国内 HongmengOS、国际 HarmonyOS，余承东称 Hongmeng 意为 Genesis），deepin/Kylin/openEuler/UOS/Anolis/RT-Thread/LiteOS/AliOS 及学界 rCore/zCore 全部非拼音，反而强化断言。但相邻领域存在纯拼音国际线先例：华为服务器芯片与整机官方国际品牌即纯拼音 Kunpeng 920 与 TaiShan（华为全球英文文档 https://support.huawei.com/enterprise/en/doc/EDOC1100271566/e87ae273/overview 及 CNBC 报道均直用拼音）；中科院计算所开源高性能 RISC-V 处理器 XiangShan 香山（纯拼音，GitHub 6.7k+ stars，登 Hot Chips 2024，https://github.com/OpenXiangShan/XiangShan）；鲸鲮科技 JingOS（拼音 Jing，国际众筹营销，https://github.com/JingOS-team/JingOS，但商业上已消退、非成功者）。【校准】断言真但应校准为\"内核/OS 软件这一细分生态位无纯拼音先例\"，不能外推为\"纯拼音上不了国际线\"——同一华为的硬件线（Kunpeng/TaiShan）即纯拼音国际品牌，XiangShan 证明纯拼音可承载国际开源基础项目；故 Meihe 若采用确为该生态位第一个纯拼音内核名（记忆点+无先例路径断言属实），风险等级宜定为 caution 而非 blocker：真正无先例的是\"软件内核\"名，而非拼音本身。"
+      },
+      {
+        "detail": "英文站点将 Meihe 归为中文女性人名（Mei=美/梅＋he=荷/鹤/合，义为美丽荷花/鹤），日本名 Mei（如 Totoro 角色）强化人名联想；莓核的词源完全无法从字串推出，首见者是零信息。补救成本极低：README/英文文档首行固定一句 Meihe (莓核, méihé — literally \"berry core\": the kernel of BerryOS) 即可闭合解释环——BerryOS 这个英文总名恰好预先解释了 berry，Meihe 借力即可，不需要独立讲故事（这是 Hongmeng 做不到的：其含义无法被 Huawei 品牌名预解释）。",
+        "severity": "caution",
+        "source": "https://www.behindthename.com/name/meihe/submitted（辅证 https://www.ask-oracle.com/baby-name/meihe ）",
+        "title": "传播学短板确认：Meihe 对不识拼音者是无义字串，且会被读作女性人名",
+        "angle": "拼音名出海先例与策略面（Meihe/莓核 可念性·可记性·搜索区分度·双轨制可行性）",
+        "holds": true,
+        "recheck": "对抗复核后断言成立（severity：caution 级传播学短板，非 blocker；且断言自带的\"一行补救\"评估亦属实）。逐项查证：(1) 主来源核实——behindthename.com/name/meihe/submitted 实测存在，Meihe 归类 Feminine / Chinese，字串组合正是 美/梅/莓/玫＋鹤(crane)/荷(lotus,mint)/合(combine)，读音标 MAY-HU（用户 2021 年提交、验证等级 0，权威性低但页面内容与断言所引一致）；辅证 ask-oracle.com/baby-name/meihe 实测存在（WebFetch 403，webReader 取回全文），原文 \"Meihe is a Girl Name… a Chinese name, derived from the combination of two Chinese characters… traditionally a feminine name\"，还列出实名人物 Meihe Wang（2005 年生冰球运动员）——两处来源均坐实\"英文站点归为中文女性人名\"。(2) Totoro 关联核实——Ghibli Wiki：Mei Kusakabe 草壁メイ为《龙猫》4 岁主角；细节修正一处：该 Mei 实为英文 May 的片假名音译而非固有和名，但 Mei 本身确为真实日文人名（芽衣等），\"Mei- 前缀读作女孩名\"的联想机制成立。(3) \"无义字串\"核实——en.wiktionary.org/wiki/meihe 无任何英语词条，仅为 Ingrian/Veps 语代词变格（illative of möö/mö），即 Meihe 对英语者零词义；莓核词源须懂拼音 méi=莓、hé=核方能还原，且拼音读者在人名语境下 hé 默认解析为 荷/鹤/合/和 而非 核（核几乎不入名），\"女性人名\"反而是统计上的优势解析。(4) 对抗性反证检查未果反成佐证——实搜 \"Meihe\"+software/kernel/github/open source 零技术域同名项目；裸搜 \"Meihe\" 的 SERP 前排恰为 Wiktionary（非英语词义）＋婴儿起名站＋五金公司，即英文首见者搜索该词得到的首要读法就是\"女孩名\"，与断言一致。(5) 轻微保留（不推翻）：该名极冷门（names.org/n/meihe/about：1880 年以来美国 bearer 不足 100 人），两起名站还互相打架（MAY-HU vs May-hay）——说明更准确的说法是\"会被归类/读作人名\"而非\"广为人知的名字\"，但这正是断言原文的表述方式。(6) 补救评估合理：BerryOS 总名内嵌英文 Berry 预先解释 莓，README 首行一句即闭合解释环；对照 Hongmeng（鸿蒙=混沌元气，与 Huawei 品牌名无语义勾连）的对比成立。结论：风险真实存在但为一行注释成本即可对冲的 caution 项，不构成放弃该名的理由。来源：https://www.behindthename.com/name/meihe/submitted ；https://www.ask-oracle.com/baby-name/meihe ；https://www.names.org/n/meihe/about ；https://en.wiktionary.org/wiki/meihe ；https://ghibli.fandom.com/wiki/Mei_Kusakabe ；WebSearch \"Meihe\"（SERP 构成）与 \"Meihe software kernel github open source\"（技术域零命中）。"
+      }
+    ]
+  },
+  "workflowProgress": [
+    {
+      "type": "workflow_phase",
+      "index": 1,
+      "title": "Research"
+    },
+    {
+      "type": "workflow_phase",
+      "index": 2,
+      "title": "Verify"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 1,
+      "label": "meihe:sw-collision",
+      "phaseIndex": 1,
+      "phaseTitle": "Research",
+      "agentId": "a977e76f18dd47346",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793974506003,
+      "queuedAt": 1793974505993,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "软件撞名面（Meihe/莓核 vs 现有软件项目、库、产品、公司与打…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Meihe」（中文名写作「莓核」，即莓果之核，拼音 méi hé；此前已对另一候选 Goji 做过同规格深研）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在中文文档、英文对外介绍、commit 信息里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的维度【软件撞名面】：全面搜索名为 Meihe / meihe / MeiHe 的软件项目、库、产品、公司。必查：…",
+      "promptFramed": true,
+      "lastProgressAt": 1793974940976,
+      "tokens": 60187,
+      "toolCalls": 33,
+      "durationMs": 434973,
+      "resultPreview": "{\"angle\":\"软件撞名面（Meihe/莓核 vs 现有软件项目、库、产品、公司与打包生态）\",\"findings\":[{\"detail\":\"GitHub API 仓库名搜索 q=meihe（含名称/描述/主题）total_count=38，全部为个人占位或练手仓。星数最高的三个：OverClimber/MeiheweitePro（游戏王 Rush Duel Unity 客户端，C#，3 星）、RafaelManfrim/MEIHelp_Django 与 MEIHelp_NextJS（3 星）、meihewenti/meihewenti（2 星）；其余 0–1 星，多为 meiheXXXX 个人主页仓（MeiHe325/meihe、Meihe812、Miwako-1004/meihe 等）。没有任何仓库把 Meihe 当作项目名做 OS/内核/系统软件/库。检索日 2026-11-06…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 2,
+      "label": "meihe:trademark",
+      "phaseIndex": 1,
+      "phaseTitle": "Research",
+      "agentId": "afb6c37eaab4210e9",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793974506003,
+      "queuedAt": 1793974505993,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "商标与商业面（Meihe/莓核：USPTO·Justia·EUIPO·日韩字号·中国…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Meihe」（中文名写作「莓核」，即莓果之核，拼音 méi hé；此前已对另一候选 Goji 做过同规格深研）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在中文文档、英文对外介绍、commit 信息里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的维度【商标与商业面】：搜索 MEIHE 及其主要中文同音写法（梅河/美合/美荷/梅鹤）的商标与商业品牌。必查：U…",
+      "promptFramed": true,
+      "lastProgressAt": 1793975015935,
+      "tokens": 134020,
+      "toolCalls": 24,
+      "durationMs": 507300,
+      "resultPreview": "{\"angle\":\"商标与商业面（Meihe/莓核：USPTO·Justia·EUIPO·日韩字号·中国同音写法·金融硬件实体）\",\"findings\":[{\"detail\":\"Shenzhen Meihe Trading Co., Ltd. 于 2018-06-20 申请、2019-02-05 注册（RN 5670056，标准字符标），Class 25，商品全为 berets/coats/hats/underwear 等服装鞋帽。Justia 详页快照状态 700-Registered，但 trademarks411 镜像列表为 DEAD（合理推测 5.5 年 Section 8 未续展，注册 2019 + 维权窗 2024-25 已过）。类别与操作系统内核（Class 9/42）完全不相关，非商用开源使用不构成侵权；软点在于它是唯一活过审查的精确字标且生死状态两源不一致——若 Berr…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 3,
+      "label": "meihe:linguistic",
+      "phaseIndex": 1,
+      "phaseTitle": "Research",
+      "agentId": "a351d6ad2828d5b7b",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793974506003,
+      "queuedAt": 1793974505993,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "语言与文化面（Meihe/莓核）",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Meihe」（中文名写作「莓核」，即莓果之核，拼音 méi hé；此前已对另一候选 Goji 做过同规格深研）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在中文文档、英文对外介绍、commit 信息里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的维度【语言与文化面】，本维度含一条专查硬项：\n（A）【同音歧义专查——最重要】「莓核」méi hé 与「没核」m…",
+      "promptFramed": true,
+      "lastProgressAt": 1793975018539,
+      "tokens": 71613,
+      "toolCalls": 22,
+      "durationMs": 509903,
+      "resultPreview": "{\"angle\":\"语言与文化面（Meihe/莓核）\",\"findings\":[{\"detail\":\"逐字逐调核对：莓=mei²（阳平35，Wiktionary 词条原样标注 méi (mei²)，义 berry）；没（有没有的没）=mei2（阳平35，IPA /meɪ̯³⁵/，词条释义\\\"not have; there is not; to be without\\\"）；核（内核/核心义）=hé（ㄏㄜˊ 阳平，词条明确 hé 兼表 seed/pit/kernel/core 与 内核/核心）。故 莓核 与 没核 均为 méi35+hé35，声韵调全同，是教科书级完全同音。口语首闻必触发一次\\\"莓核？没核？你们内核没核？\\\"的玩笑。判定：不是自嘲级硬伤、不到必弃——理由：①贬义方向恰好顺微内核\\\"内核极简\\\"人设（\\\"核小到近乎没有\\\"反而是自我表扬）；②书面场景始终有字形锚定，莓+Berry…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 4,
+      "label": "meihe:eco-avail",
+      "phaseIndex": 1,
+      "phaseTitle": "Research",
+      "agentId": "aeeb2a7435dacf325",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793974506003,
+      "queuedAt": 1793974505993,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "生态占位面（Meihe/莓核 在开发者生态的注册名占位检查）",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Meihe」（中文名写作「莓核」，即莓果之核，拼音 méi hé；此前已对另一候选 Goji 做过同规格深研）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在中文文档、英文对外介绍、commit 信息里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的维度【生态占位面】：检查 Meihe 在开发者生态的占位。必查（尽量 WebFetch 直取）：https://…",
+      "promptFramed": true,
+      "lastProgressAt": 1793974898735,
+      "tokens": 53211,
+      "toolCalls": 20,
+      "durationMs": 390099,
+      "resultPreview": "{\"angle\":\"生态占位面（Meihe/莓核 在开发者生态的注册名占位检查）\",\"findings\":[{\"detail\":\"GET https://crates.io/api/v1/crates/meihe 返回 404（对照：同接口请求 serde 返回 200，排除 URL 姿势错误）；crates.io 站内搜索 q=meihe 返回 {\\\"crates\\\":[],\\\"total\\\":0}——不仅精确名无主，模糊近似名也一个没有。内核 crate 名可立即注册。这是本维度最重要的一项，结论干净。\",\"severity\":\"clean\",\"source\":\"https://crates.io/api/v1/crates/meihe\",\"title\":\"crates.io 包名 meihe 空置，且无任何近似名 crate\"},{\"detail\":\"github.com/meihe…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 5,
+      "label": "meihe:precedent",
+      "phaseIndex": 1,
+      "phaseTitle": "Research",
+      "agentId": "acf5c7d07360e8497",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793974506003,
+      "queuedAt": 1793974505993,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "拼音名出海先例与策略面（Meihe/莓核 可念性·可记性·搜索区分度…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Meihe」（中文名写作「莓核」，即莓果之核，拼音 méi hé；此前已对另一候选 Goji 做过同规格深研）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在中文文档、英文对外介绍、commit 信息里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的维度【拼音名出海先例与策略面】：研究中国科技公司拼音名出海的先例与教训。必查：Xiaomi（拼音出海成功案例，为…",
+      "promptFramed": true,
+      "lastProgressAt": 1793974970695,
+      "tokens": 74325,
+      "toolCalls": 23,
+      "durationMs": 462059,
+      "resultPreview": "{\"angle\":\"拼音名出海先例与策略面（Meihe/莓核 可念性·可记性·搜索区分度·双轨制可行性）\",\"findings\":[{\"detail\":\"小米全球统一用拼音 Xiaomi，从未为国际市场改名，成为全球头部手机厂商。其成立要件：两音节超短名＋可读的 MI/Mijia 子品牌系＋产品力与营销预算兜底。对照 Meihe：同为双音节，且无 x/q/zh 等英语缺失音位，摩擦量级更低。\",\"severity\":\"info\",\"source\":\"https://en.wikipedia.org/wiki/Xiaomi\",\"title\":\"Xiaomi 证明拼音名直上全球线不是 blocker，但成功靠的是产品力+短名+子品牌系兜底\"},{\"detail\":\"BBC 2015 年发专文教读者读 Xiaomi（近似 show-MEE/ZHOW-mee），Reddit r/EnglishLe…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 6,
+      "label": "verify:GitHub 精确用户名 meihe 已被占用：",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "ace8517ff5c596e8e",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793975018552,
+      "queuedAt": 1793975018541,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "断言成立，独立复核全部核实：(1) https://api.github.com/user…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Meihe」（中文名写作「莓核」，即莓果之核，拼音 méi hé；此前已对另一候选 Goji 做过同规格深研）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在中文文档、英文对外介绍、commit 信息里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Meihe（莓核），有人提出以下风险断言，你的职责是独立查证并尽力反驳它…",
+      "promptFramed": true,
+      "lastProgressAt": 1793975085219,
+      "tokens": 34392,
+      "toolCalls": 5,
+      "durationMs": 66667,
+      "resultPreview": "{\"holds\":true,\"note\":\"断言成立，独立复核全部核实：(1) https://api.github.com/users/meihe 返回 login=\\\"meihe\\\"、id=836691、type=\\\"User\\\"（个人号非组织）、created_at=2011-06-08T04:43:37Z、followers=2、public_repos=3，与断言的注册日期/粉丝数/仓库数逐一吻合；(2) https://api.github.com/users/meihe/repos 恰 3 仓且全为教程残留——Depot（描述为 \\\"Agile Web Development with Rails, 4th Edition\\\" 教程应用，pushed_at=2012-06-14）、Hello-World（pushed_at=null，从未推送，与断言一致）、Spoon-Kni…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 7,
+      "label": "verify:USPTO 存在唯一精确匹配 MEIHE 注册商",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "a6ec0c412b8b89a13",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793975018552,
+      "queuedAt": 1793975018541,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "断言成立，且比原文更进一步：其\"疑似已失效\"可定谳为\"已失效\"…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Meihe」（中文名写作「莓核」，即莓果之核，拼音 méi hé；此前已对另一候选 Goji 做过同规格深研）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在中文文档、英文对外介绍、commit 信息里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Meihe（莓核），有人提出以下风险断言，你的职责是独立查证并尽力反驳它…",
+      "promptFramed": true,
+      "lastProgressAt": 1793975309538,
+      "tokens": 55383,
+      "toolCalls": 13,
+      "durationMs": 288228,
+      "resultPreview": "{\"holds\":true,\"note\":\"断言成立，且比原文更进一步：其\\\"疑似已失效\\\"可定谳为\\\"已失效\\\"。(1) 存在性/类别/商品全核实：MEIHE 标准字符标（Mark Drawing 4000），SN 88006966 / RN 5670056，深圳 Meihe Trading Co., Ltd. 2018-06-20 申请、2019-02-05 注册，Class 25 服装帽类（berets/coats/hats/underwear 等全服装项），与 OS 内核（Class 9/42）完全无关——Justia 全文与 Trademarkia 双源一致（https://trademarks.justia.com/880/06/meihe-88006966.html ；https://www.trademarkia.com/meihe-88006966 ）。(2) 生死状态定…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 8,
+      "label": "verify:中国「梅河」写法：梅河大米地理标志+梅河口市占据",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "a144744f249de4857",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793975018552,
+      "queuedAt": 1793975018541,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "断言整体成立（holds=true），核心事实全部经独立查证属实，仅…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Meihe」（中文名写作「莓核」，即莓果之核，拼音 méi hé；此前已对另一候选 Goji 做过同规格深研）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在中文文档、英文对外介绍、commit 信息里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Meihe（莓核），有人提出以下风险断言，你的职责是独立查证并尽力反驳它…",
+      "promptFramed": true,
+      "lastProgressAt": 1793975234636,
+      "tokens": 101347,
+      "toolCalls": 11,
+      "durationMs": 213326,
+      "resultPreview": "{\"holds\":true,\"note\":\"断言整体成立（holds=true），核心事实全部经独立查证属实，仅一处措辞级小误。逐项复核：\\n\\n1) 品牌与荣誉【确认】。梅河大米确为吉林梅河口市的区域公用品牌，且三项荣誉全部核实：(a) 吉林老字号——吉林省政府网原文《看梅河口如何让梅河大米品牌熠熠生辉》(https://www.jl.gov.cn/szfzt/jlssxsxnyxdh/gddt/202411/t20241129_3325884.html，已全文抓取) 明确记载\\\"梅河大米成为我省大米产品'吉林老字号'\\\"；(b) 2024 入围世界稻米地理标志（县域）品牌榜100强——同文记载，榜单 2024-09-22 发布于黑龙江庆安国际稻香米品牌大会，另有新华网黑龙江频道佐证 (http://www.hlj.xinhuanet.com/20240925/56add77c76ae4…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 9,
+      "label": "verify:金融与硬件实体面：存在 Meihe Capita",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "a31d44007ea13170e",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793975018552,
+      "queuedAt": 1793975018541,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "对抗复核后断言成立（风险确实存在，但恰如断言所述为\"负面品牌…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Meihe」（中文名写作「莓核」，即莓果之核，拼音 méi hé；此前已对另一候选 Goji 做过同规格深研）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在中文文档、英文对外介绍、commit 信息里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Meihe（莓核），有人提出以下风险断言，你的职责是独立查证并尽力反驳它…",
+      "promptFramed": true,
+      "lastProgressAt": 1793975381100,
+      "tokens": 65918,
+      "toolCalls": 22,
+      "durationMs": 359790,
+      "resultPreview": "{\"holds\":true,\"note\":\"对抗复核后断言成立（风险确实存在，但恰如断言所述为\\\"负面品牌杂音\\\"级别，非商标冲突）。逐项证据：(1) 核心负面点被主源钉死——下载并全文提取 NXP 官方防伪通报 PDF（https://www.nxp.com/docs/en/supporting-information/MIFARE-Anti-counterfeit-news.pdf，©2024 仍在线），内含专节 \\\"Verdict in Shenzhen Meihe law case\\\"：NXP B.V. 在深圳对 Shenzhen Meihe Induction Technology Co., Ltd（深圳市美和感应技术有限公司，2000 年成立）提起 MIFARE 商标侵权+不正当竞争诉讼并获法院认定侵权成立；该公司主营 IC 卡/RFID 腕带硬件（https://www.rf…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 10,
+      "label": "verify:检索覆盖度与终验清单：官方库三处被反爬挡，结论基",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "abc7a7fe707518d55",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793975018552,
+      "queuedAt": 1793975018541,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "断言成立——各可检验项今日（2026-11-06）全部复现，且其\"漏网\"…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Meihe」（中文名写作「莓核」，即莓果之核，拼音 méi hé；此前已对另一候选 Goji 做过同规格深研）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在中文文档、英文对外介绍、commit 信息里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Meihe（莓核），有人提出以下风险断言，你的职责是独立查证并尽力反驳它…",
+      "promptFramed": true,
+      "lastProgressAt": 1793975443210,
+      "tokens": 56534,
+      "toolCalls": 22,
+      "durationMs": 421899,
+      "resultPreview": "{\"holds\":true,\"note\":\"断言成立——各可检验项今日（2026-11-06）全部复现，且其\\\"漏网\\\"担忧被实证坐实，终验建议被证明可行且必要。\\n\\n【逐项复现（非浏览器工具，今日实测）】(1) TSDR https://tsdr.uspto.gov/ts/cd/casedocs/sn88006966/info.json = HTTP 404（curl 复现）；(2) 镜像三站 403 全部精确复现：legalhoop.com/trademark/detail/88006966/MEIHE、trademarks411.com、trademarkia.com 均 HTTP 403（curl+浏览器 UA）；Justia 搜索页对非浏览器通道也是 Cloudflare 403（WebFetch 403，curl 返回 __cf_chl_tk 挑战），印证原研究只能靠 web…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 11,
+      "label": "verify:「莓核」与「没核」逐字逐调完全同音（méi²+h",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "aa8d369e88033237c",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793975018552,
+      "queuedAt": 1793975018541,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "断言成立，对抗复核未能推翻——语音学核心逐项实锤，且获 Wiktio…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Meihe」（中文名写作「莓核」，即莓果之核，拼音 méi hé；此前已对另一候选 Goji 做过同规格深研）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在中文文档、英文对外介绍、commit 信息里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Meihe（莓核），有人提出以下风险断言，你的职责是独立查证并尽力反驳它…",
+      "promptFramed": true,
+      "lastProgressAt": 1793975270082,
+      "tokens": 42692,
+      "toolCalls": 13,
+      "durationMs": 248771,
+      "resultPreview": "{\"holds\":true,\"note\":\"断言成立，对抗复核未能推翻——语音学核心逐项实锤，且获 Wiktionary 之外的第二独立源交叉印证。\\n\\n【逐字逐调核验，全部属实】\\n1) 莓：Wiktionary 词条 Pinyin \\\"méi (mei2)\\\"、注音 ㄇㄟˊ、IPA /meɪ̯³⁵/，义 berry（草莓名例在册）；仅此一个普通话读法。来源：https://en.wiktionary.org/wiki/莓\\n2) 没（沒）：同一词条 Etymology 1 给 Pinyin \\\"méi (mei2)\\\"、IPA /meɪ̯³⁵/，义项第 1 条原样 \\\"not have; there is not; to be without\\\"（例：沒錢沒工作）。来源：https://en.wiktionary.org/wiki/沒\\n3) 核：Pinyin \\\"hé, hú (h…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 12,
+      "label": "verify:「核」hé/hú 双读使名字没有唯一念法：口语儿",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "a3e0273e017305ef3",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793975018552,
+      "queuedAt": 1793975018541,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "对抗复核失败，断言各支点均经独立来源证实成立，且定级（cauti…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Meihe」（中文名写作「莓核」，即莓果之核，拼音 méi hé；此前已对另一候选 Goji 做过同规格深研）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在中文文档、英文对外介绍、commit 信息里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Meihe（莓核），有人提出以下风险断言，你的职责是独立查证并尽力反驳它…",
+      "promptFramed": true,
+      "lastProgressAt": 1793975216927,
+      "tokens": 44696,
+      "toolCalls": 11,
+      "durationMs": 195616,
+      "resultPreview": "{\"holds\":true,\"note\":\"对抗复核失败，断言各支点均经独立来源证实成立，且定级（caution 级\\\"可承受瑕疵\\\"）与证据强度相称、未夸大。(1) hé/hú 双读属实且为规范事实：Wiktionary「核」词条明确收录 hú 为 Standard Chinese colloquial variant，儿化形式 húr，方言表列天津/西安/呼和浩特「枣核儿」「桃核儿」读 xu 类音（https://en.wiktionary.org/wiki/核）；汉典同样收录 hé/hú 双读、hú 专用于口语词（https://zdic.net/hans/核）；「核儿 húr」更是普通话水平测试（PSC）词语表独立收录的标准口语音——语音教学材料甚至把「梨核儿」「煤核儿」读成 hé 列为常见误读，即 hú 在儿化果核词里不是边缘口误而是规范读音，无法以\\\"不规范\\\"反驳。(2) 原…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 13,
+      "label": "verify:英语母语者读法分裂：Mei 实证分裂 May/M",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "addf540f6dcd35400",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793975018552,
+      "queuedAt": 1793975018541,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "断言成立（caution 级定级恰当），仅两处量级小修，核心风险实…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Meihe」（中文名写作「莓核」，即莓果之核，拼音 méi hé；此前已对另一候选 Goji 做过同规格深研）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在中文文档、英文对外介绍、commit 信息里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Meihe（莓核），有人提出以下风险断言，你的职责是独立查证并尽力反驳它…",
+      "promptFramed": true,
+      "lastProgressAt": 1793975370913,
+      "tokens": 59005,
+      "toolCalls": 21,
+      "durationMs": 349602,
+      "resultPreview": "{\"holds\":true,\"note\":\"断言成立（caution 级定级恰当），仅两处量级小修，核心风险实证无翻案空间。\\n\\n【1. 锚点帖核实——分裂实锤，但帖内多数派是 May】Reddit 52hymg（2016-09-13，r/Overwatch，10 条评论）经 Arctic Shift 存档 API 全量拉取（reddit 直连被墙，改走 https://arctic-shift.photon-reddit.com/api/comments/search?link_id=t3_52hymg）：帖子正文原话 \\\"My brother says May I say My. How do you pronounce it?\\\"（https://www.reddit.com/r/Overwatch/comments/52hymg/how_do_you_pronounce_mei/…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 14,
+      "label": "verify:GitHub 短名 meihe 已被 2011",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "ae347b52143a81dea",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793975018552,
+      "queuedAt": 1793975018541,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "对抗复核失败——断言全部事实点经独立第一手查证均成立，无法反…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Meihe」（中文名写作「莓核」，即莓果之核，拼音 méi hé；此前已对另一候选 Goji 做过同规格深研）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在中文文档、英文对外介绍、commit 信息里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Meihe（莓核），有人提出以下风险断言，你的职责是独立查证并尽力反驳它…",
+      "promptFramed": true,
+      "lastProgressAt": 1793975233333,
+      "tokens": 38648,
+      "toolCalls": 10,
+      "durationMs": 212022,
+      "resultPreview": "{\"holds\":true,\"note\":\"对抗复核失败——断言全部事实点经独立第一手查证均成立，无法反驳。(1) 账号事实：api.github.com/users/meihe 实测返回 200，login=\\\"meihe\\\"、id=836691、type=\\\"User\\\"（个人号非组织）、created_at=\\\"2011-06-08T04:43:37Z\\\"、followers=2、public_repos=3，name/company/bio 全 null；github.com/meihe 页面侧同样确认为个人资料页（2 followers、无姓名/公司/bio）。(2) 仓库事实：repos API 实测恰 3 个——Hello-World（\\\"My first project\\\"，pushed_at=null 从未推送）、Spoon-Knife（fork=true，octocat…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 15,
+      "label": "verify:拼音音系摩擦是真实长期成本（BBC 需专文教读）",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "ae91f2c90b5887a72",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793975018552,
+      "queuedAt": 1793975018541,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "复核成立：断言的两个半（Xiaomi 摩擦证据链 + Meihe 相对优势…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Meihe」（中文名写作「莓核」，即莓果之核，拼音 méi hé；此前已对另一候选 Goji 做过同规格深研）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在中文文档、英文对外介绍、commit 信息里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Meihe（莓核），有人提出以下风险断言，你的职责是独立查证并尽力反驳它…",
+      "promptFramed": true,
+      "lastProgressAt": 1793975181869,
+      "tokens": 91932,
+      "toolCalls": 6,
+      "durationMs": 160558,
+      "resultPreview": "{\"holds\":true,\"note\":\"复核成立：断言的两个半（Xiaomi 摩擦证据链 + Meihe 相对优势）全部经一手来源验证，反驳失败。\\n\\n【Xiaomi 证据链——逐项属实】(1) BBC 原文全文取回（www.bbc.com 直连被工具拦截，改经 web_reader 取到全文）：2015-01-16 发布《How to say: Xiaomi》，系 BBC Pronunciation Unit（Jo Kim）专文教读。文中实列出四个英语媒体误读变体——show MEE / ZHOW-mee / sigh-OW-mee / zigh-OH-mee——与断言所引近似拼写完全吻合，官方推荐 SHOW-mee。来源：https://www.bbc.com/news/blogs-magazine-monitor-30848303 。(2) Reddit r/EnglishLe…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 16,
+      "label": "verify:Linux/基础软件世界没有纯拼音直上国际线的内",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "af1bf1614d78bc5ba",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793975085220,
+      "queuedAt": 1793975018541,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "对抗复核结论：断言在其限定域（内核/Linux 基础软件）成立，反…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Meihe」（中文名写作「莓核」，即莓果之核，拼音 méi hé；此前已对另一候选 Goji 做过同规格深研）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在中文文档、英文对外介绍、commit 信息里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Meihe（莓核），有人提出以下风险断言，你的职责是独立查证并尽力反驳它…",
+      "promptFramed": true,
+      "lastProgressAt": 1793975429284,
+      "tokens": 62235,
+      "toolCalls": 14,
+      "durationMs": 344063,
+      "resultPreview": "{\"holds\":true,\"note\":\"对抗复核结论：断言在其限定域（内核/Linux 基础软件）成立，反驳失败；但有两处证据瑕疵和一处风险校准需注明。【逐条核实】(1) Kylin——原来源 Wikipedia (https://en.wikipedia.org/wiki/Kylin_(operating_system)) 确认 OS \\\"named after the mythical beast qilin\\\"（标注拼音 Qílín），品牌拼写为 Kylin 而非拼音 Qilin，事实成立；注意：该条目只证明了\\\"用了 Kylin\\\"，未记载选择该拼写的动机，断言的\\\"为适配而改造\\\"是合理推断但略超来源。(2) Loongson/LoongArch——社区官方称呼指南 (https://areweloongyet.com/docs/loong-or-loongarch) 明确英…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 17,
+      "label": "verify:传播学短板确认：Meihe 对不识拼音者是无义字",
+      "phaseIndex": 2,
+      "phaseTitle": "Verify",
+      "agentId": "aabb61c73b61605ac",
+      "model": "glm-5.3[1m]",
+      "state": "done",
+      "startedAt": 1793975181870,
+      "queuedAt": 1793975018541,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "对抗复核后断言成立（severity：caution 级传播学短板，非 bloc…",
+      "promptPreview": "背景：为一颗自研 Rust 微内核（no_std，属操作系统 BerryOS 的内核）评估候选名「Meihe」（中文名写作「莓核」，即莓果之核，拼音 méi hé；此前已对另一候选 Goji 做过同规格深研）。项目文档以中文为主，未来可能开源与对外传播，内核名会大量出现在中文文档、英文对外介绍、commit 信息里。今天是 2026-11-06。要求：用 WebSearch/WebFetch 实搜取证，禁止凭记忆断言；每个发现标 severity：blocker（必须放弃此名）/ caution（可用但要注意）/ clean（干净无碍）/ info（背景信息）；每个发现必须附来源 URL（查不到的写明检索方式与零命中）。你的最终文本就是返回值，直接给结构化数据，不要寒暄。\n\n你的任务【对抗复核】：同项目方要给内核取名 Meihe（莓核），有人提出以下风险断言，你的职责是独立查证并尽力反驳它…",
+      "promptFramed": true,
+      "lastProgressAt": 1793975345719,
+      "tokens": 48850,
+      "toolCalls": 10,
+      "durationMs": 163849,
+      "resultPreview": "{\"holds\":true,\"note\":\"对抗复核后断言成立（severity：caution 级传播学短板，非 blocker；且断言自带的\\\"一行补救\\\"评估亦属实）。逐项查证：(1) 主来源核实——behindthename.com/name/meihe/submitted 实测存在，Meihe 归类 Feminine / Chinese，字串组合正是 美/梅/莓/玫＋鹤(crane)/荷(lotus,mint)/合(combine)，读音标 MAY-HU（用户 2021 年提交、验证等级 0，权威性低但页面内容与断言所引一致）；辅证 ask-oracle.com/baby-name/meihe 实测存在（WebFetch 403，webReader 取回全文），原文 \\\"Meihe is a Girl Name… a Chinese name, derived from the …"
+    }
+  ],
+  "totalTokens": 1094988,
+  "totalToolCalls": 280
+}

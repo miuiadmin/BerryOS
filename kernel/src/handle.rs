@@ -572,6 +572,21 @@ impl HandleTable {
         self.lookup(h).is_ok()
     }
 
+    /// 1.1/S5.12：按类型计数在册活 handle（token 上限执法面）。
+    /// O(n) 只扫 Used 槽——64 槽小表，SVC 路径可接受。
+    pub fn count_type(&self, ty: ObjType) -> usize {
+        let mut n = 0;
+        for slot in &self.slots {
+            if let SlotState::Used { obj, .. } = slot {
+                // SAFETY: Used 槽持有引用，obj_type 只读。
+                if unsafe { (*obj.as_ptr()).obj.obj_type() == ty } {
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
     /// 同 [`Self::lookup`]，另带 (槽位下标, gen)（close/replace 改槽用）。
     fn lookup_at(
         &self,

@@ -1,6 +1,6 @@
 # Berry Mac Emulator GPU2（virtio-gpu HDI 显示框架）
 Type: standard
-Version: 1.2
+Version: 1.2.0
 Status: superseded
 Superseded-by: [BerryMacEmulator-GPU2-v1.5.md](BerryMacEmulator-GPU2-v1.5.md)
 Updated: 2026-11-15

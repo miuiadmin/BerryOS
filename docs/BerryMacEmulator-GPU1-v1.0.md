@@ -1,6 +1,6 @@
 # Berry Mac Emulator GPU1（virtio-gpu 2D 产品显示）
 Type: standard
-Version: 1.0
+Version: 1.0.0
 Status: superseded
 Updated: 2026-11-13
 Superseded-by: [BerryMacEmulator-GPU2-v1.5.md](BerryMacEmulator-GPU2-v1.5.md)

@@ -1,7 +1,7 @@
 # BerryBoot Boot Progress P1（真实 0→100% 首屏框架）
 
 Type: standard
-Version: 1.0
+Version: 1.0.0
 Status: superseded
 Superseded-by: [BerryBoot-BootProgress-P1-v1.2.md](BerryBoot-BootProgress-P1-v1.2.md)
 Updated: 2026-11-15

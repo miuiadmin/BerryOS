@@ -33,11 +33,11 @@ pub use intent::{
 };
 pub use runqueue::{linkable, Runqueue, Topo};
 pub use sched::{
-    block_current, current_asid, current_pinned, current_tag, exit_current,
+    block_current, current_asid, current_pinned, current_tag, current_task_name, exit_current,
     exit_current_with, fast_wake_locked,
     find_single_waiter, find_single_waiter_locked, for_each_sleeper, freeze_by_pinned,
     freeze_by_thread, freeze_precheck_by_pinned, freeze_precheck_by_thread,
-    current_thread_key, idle_loop, init,
+    current_thread_key, current_deadline_state, idle_loop, init,
     intent_settle_current,
     intent_snapshot_current, kill_all_tasks_by_pinned, last_killed,
     lb_stats,
@@ -47,11 +47,12 @@ pub use sched::{
     set_exit_hook, set_lb_match, set_reply_handoff, set_reply_handoff_proc,
     set_klock_ops, set_sleepq_hook, sq_lock, sq_unlock,
     set_switch_hook, set_wake_hook, sleepq_insert,
-    sleepq_insertable, sleepq_unlink, spawn, spawn_as, spawn_intent, spawn_user, spawn_with,
-    spawn_with_tag, switches, svc_window, thaw_by_pinned, thaw_by_thread, topo_smp_online, try_preempt, try_spawn_user,
+    sleepq_insertable, sleepq_unlink, spawn, spawn_as, spawn_as_spread, spawn_intent, spawn_user, spawn_with,
+    spawn_with_tag, switches, switches_tt, svc_window, thaw_by_pinned, thaw_by_thread, topo_smp_online,
+    try_preempt, try_prepare_user, enqueue_prepared_user, try_spawn_user,
     user_fault_exit,
     user_kills,
     wake_matching, wake_matching_locked, wake_stamp_take, yield_now, yield_now_keep_irq, KlockOps, SleepqHook, SwitchHook, SwitchKind,
     WakeHook, WAIT_ANY,
 };
-pub use task::{EppHint, Task, TaskState, WakeReason, HELD_FROZEN, STACK_SIZE};
+pub use task::{EppHint, Task, TaskState, WakeReason, HELD_FROZEN, HELD_THROTTLE, STACK_SIZE};

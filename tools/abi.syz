@@ -59,7 +59,7 @@ type berry_time uint64
 #   BERRY_ERR_OUT_OF_RANGE = -34
 #   BERRY_ERR_FAULT = -14
 
-# ---- syscall 入口（§4 编号表全量在册；v1 35 号、已实现 34；
+# ---- syscall 入口（§4 编号表全量在册；v1 36 号、已实现 35；
 #      a1..a6 ↔ ARM64 SVC x1..x6 全宽占位参——参数面待 §8.3 原型层（v2 挂账）补）----
 
 # **handle / 通用对象**
@@ -78,7 +78,7 @@ object_wait_many(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x06 object_signal（v1）——泛型置/清信号（Event/Interrupt/Job）
 #   note: 3-4c 落地：v1 仅 Event 可 signal（thread/process 信号面随后续步）。
 object_signal(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
-# 0x07 object_get_info（v2·未实现）——查询对象信息（topic 分派）
+# 0x07 object_get_info（v2·已实现）——查询对象信息（topic 分派）
 object_get_info(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **内存 / VMO / Vmar**
@@ -115,7 +115,7 @@ vmo_get_phys(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 #   源数据 VMO 页须 pre-commit（§2.2 防线 4）。pager 崩溃语义 = faulter 永久阻塞
 #   （§5-⑤ 裁决）。
 pager_supply_pages(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
-# 0x22 pager_op_range（v3·未实现）——脏页/换出通知
+# 0x22 pager_op_range（v3·已实现）——脏页/换出通知
 pager_op_range(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **进程 / 线程**
@@ -136,9 +136,9 @@ thread_start(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 thread_exit(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x37 thread_sleep（v1）——睡到 deadline（nanosleep 等价）
 thread_sleep(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
-# 0x38 thread_set_priority（v2·未实现）——设优先级（受 SET_POLICY）。**intent 设置复用此号扩参或 add-only 新号，P3 草案 v0 定（ADR #42）**
+# 0x38 thread_set_priority（v2·已实现）——设优先级（受 SET_POLICY）。**intent 设置复用此号扩参或 add-only 新号，P3 草案 v0 定（ADR #42）**
 thread_set_priority(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
-# 0x39 thread_set_deadline（v2·未实现）——设截止期（软实时）
+# 0x39 thread_set_deadline（v2·已实现）——设截止期（软实时）
 thread_set_deadline(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x3A process_get_exit_code（v1）——查进程退出码（`*code` = i32 出参；未退 → -EAGAIN，poll 语义——先 wait TERMINATED 再查）
 #   note: P5 shell v0 收官（`&&` 的真退出码源）：**ABI 单源管线首次真实扩号**。门控仅类型不查权利位（need=0，同 vmo_get_size「对象几何非内容」惯例）。
@@ -148,22 +148,25 @@ process_get_exit_code(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64
 process_terminate(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **调度 1.1（S0–S3 ABI）**
-# 0x3C sched_setattr（1.1·未实现）——声明/更新调度属性（weight/policy/intent/reserve/cap/deadline/budget/period）；目标 Thread 覆盖 / Process 默认；size 超界且尾部非零 → -E2BIG
+# 0x3C sched_setattr（1.1·已实现）——声明/更新调度属性（weight/policy/intent/reserve/cap/deadline/budget/period）；目标 Thread 覆盖 / Process 默认；size 超界且尾部非零 → -E2BIG
 #   note: S1 收口：56B attr 解析/校验/存储（Thread 覆盖 + Process 默认）已落；S2/S5 消费随后续刀。
 sched_setattr(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
-# 0x3D sched_getattr（1.1·未实现）——查询 effective 调度属性（Thread = Process 默认 ∪ Thread 覆盖；declared/source 走 telemetry；size 前向兼容）
+# 0x3D sched_getattr（1.1·已实现）——查询 effective 调度属性（Thread = Process 默认 ∪ Thread 覆盖；declared/source 走 telemetry；size 前向兼容）
 #   note: S1 收口：effective 组合 + 前向兼容回写（尾部清零）已落。
 sched_getattr(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
-# 0x3E process_suspend（1.1·未实现）——冻结 Process/Thread，出 SuspendToken；options bit0 = SINGLE_THREAD；解冻 = handle_close(token)
+# 0x3E process_suspend（1.1·已实现）——冻结 Process/Thread，出 SuspendToken；options bit0 = SINGLE_THREAD；解冻 = handle_close(token)
 #   note: S3-b 收口：进程全冻 + Thread SINGLE_THREAD（FREEZE_READY 自证、末 token thaw 自动清位）均落。
 process_suspend(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
-# 0x3F thread_yield（1.1·未实现）——主动让出当前时间片；无 handle，等价内核 yield_now；无可跑任务立即返回 0
+# 0x3F thread_yield（1.1·已实现）——主动让出当前时间片；无 handle，等价内核 yield_now；无可跑任务立即返回 0
 #   note: S1 收口：SVC 面 direct yield_now（含切换锁舞蹈）已落。
 thread_yield(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **异常**
-# 0x41 thread_create_exception_channel（v2·未实现）——用户态异常上报通道
+# 0x41 thread_create_exception_channel（v2·已实现）——用户态异常上报通道
 thread_create_exception_channel(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x42 cbox_drain（v1）——黑匣子崩溃记录排液：`buf/cap` 收全量快照（12B 头 {ver,total,stored} + 存量记录按 seq 升序、104B/条），`*out_len` 出参字节数。cap==0 = 尺寸查询（返 0）；cap 不足 → -ENOMEM 不部分写。快照非消费——记录永驻至槽位轮转，排液方自持 seq 去重。
+#   note: cbox 刀 1（`plans/cbox/design.md`）：异常 fatal 路径（EL0 kill 链 / EL1 halt 前）RAM 记录表的用户态排液口。无 right 门（诊断几何面——`process_get_exit_code` need=0 惯例）；表读写面零结构锁（seqlock 快照），syscall 整体走 SVC_CLASS_TABLE 在册取锁（同全体 syscall）。
+cbox_drain(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **IPC / event / futex**
 # 0x51 channel_create（v1）——建端点对
@@ -175,37 +178,37 @@ channel_recv(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x54 event_create（v1）——建事件对象
 #   note: 3-4c 落地：`options` 恒 0（非 0 → -EINVAL），授 SIGNAL|DUPLICATE。
 event_create(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
-# 0x55 futex_wait（v2·未实现）——用户态同步（pthread 基础）
+# 0x55 futex_wait（v2·已实现）——用户态同步（pthread 基础）
 futex_wait(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
-# 0x56 futex_wake（v2·未实现）——唤醒等待者
+# 0x56 futex_wake（v2·已实现）——唤醒等待者
 futex_wake(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **时间 / 定时器**
 # 0x61 clock_read（v1）——读单调/壁钟
 clock_read(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
-# 0x62 timer_create（v2·未实现）——建定时器对象
+# 0x62 timer_create（v2·已实现）——建定时器对象
 timer_create(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
-# 0x63 timer_set（v2·未实现）——设定时刻
+# 0x63 timer_set（v2·已实现）——设定时刻
 timer_set(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **设备**（因"用户态为主+关键暂留"留内核）
-# 0x71 interrupt_create（v2·未实现）——建 IRQ 对象
+# 0x71 interrupt_create（v2·已实现）——建 IRQ 对象
 interrupt_create(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
-# 0x72 bind_irq（v2·未实现）——IRQ → signal 一个 Event
+# 0x72 bind_irq（v2·已实现）——IRQ → signal 一个 Event
 bind_irq(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
-# 0x73 map_device_memory（v2·未实现）——Resource → 设备 MMIO 的 VMO
+# 0x73 map_device_memory（v2·已实现）——Resource → 设备 MMIO 的 VMO
 map_device_memory(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **命名空间**（路径式）
-# 0x81 namespace_open（v3·未实现）——`open("/svc/fs")` → handle
+# 0x81 namespace_open（v3·已实现）——`open("/svc/fs")` → handle
 namespace_open(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
-# 0x82 namespace_mount（v3·未实现）——服务把 channel 挂到路径
+# 0x82 namespace_mount（v3·已实现）——服务把 channel 挂到路径
 namespace_mount(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **策略注入 / 遥测**（AI 调度，见 `AI调度设计.md`）
-# 0x83 policy_bind（v3·未实现）——注册 AI 策略注入通道（共享环，SET_POLICY）
+# 0x83 policy_bind（v3·已实现）——注册 AI 策略注入通道（共享环，SET_POLICY）
 policy_bind(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
-# 0x84 telemetry_open（v3·未实现）——打开遥测环（只读）
+# 0x84 telemetry_open（v3·已实现）——打开遥测环（只读）
 telemetry_open(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **安全 / 远程证明**（预留）

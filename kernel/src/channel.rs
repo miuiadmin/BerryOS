@@ -64,7 +64,16 @@ pub struct MsgBilling {
     /// 本消息已记账 CPU 时长（ns；S5 起 server 侧填充——S4 恒 0）。
     #[allow(dead_code)] // S5 起消费（server 侧 CPU 时长记域）
     pub charged_ns: u64,
+    /// v2 协议标签：0 = 未标注（默认——v1 全部计费，含 reply 误设已知局限）
+    /// / 1 = 请求（recv 侧设计费区间）/ 2 = 回复（recv 侧**跳过**计费——
+    /// 修 client recv reply 误设起点）。发送者经 `channel_send` flags 标注。
+    pub msg_type: u8,
 }
+
+/// `MsgBilling.msg_type` 值。
+pub const MSG_BILLING_UNSPECIFIED: u8 = 0;
+pub const MSG_BILLING_REQUEST: u8 = 1;
+pub const MSG_BILLING_REPLY: u8 = 2;
 
 impl Message {
     /// 空消息（零分配）。

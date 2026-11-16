@@ -215,7 +215,8 @@ fn ring_total(cpu: usize) -> u64 {
 }
 
 /// 累计写入数（全环求和——每环单调不减，和单调；遥测存活断言用：须 ≥
-/// `berry_sched::switches()`——SWITCHES 只计抢占切换，遥测环计全部四型）。
+/// `berry_sched::switches_tt()`——环只记任务↔任务切换，S-6 ① 起分母同口径
+/// 双计数器；SWITCHES 11 位全计含 park 语境，非本断言比较面）。
 pub fn total() -> u64 {
     ring_total(0) + ring_total(1)
 }
@@ -603,8 +604,118 @@ pub fn billing_cross_domain_total() -> u64 {
     BILLING_CROSS_DOMAIN.load(Ordering::Relaxed)
 }
 
+// ---- 1.1/S5.11 freeze 遥测（进现有环——不建第二数据库 #45）----
+
+/// S5.11：freeze 成功计数（process_suspend 成功尾）。
+pub fn freeze_ok() {
+    FREEZE_OK.fetch_add(1, Ordering::Relaxed);
+}
+
+/// S5.11：freeze 拒绝计数（谓词不过/token 上限/pager 拒）。
+pub fn freeze_busy() {
+    FREEZE_BUSY.fetch_add(1, Ordering::Relaxed);
+}
+
+/// S5.11：auto-thaw 计数（SuspendToken Drop → thaw）。
+pub fn auto_thaw() {
+    AUTO_THAW.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn freeze_ok_total() -> u64 { FREEZE_OK.load(Ordering::Relaxed) }
+pub fn freeze_busy_total() -> u64 { FREEZE_BUSY.load(Ordering::Relaxed) }
+pub fn auto_thaw_total() -> u64 { AUTO_THAW.load(Ordering::Relaxed) }
+
+static FREEZE_OK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static FREEZE_BUSY: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static AUTO_THAW: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 static BILLING_CROSS_DOMAIN: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
+
+// ---- 1.1/S4-b：per-domain CPU 时长账户（区间计费法）----
+
+/// S4-b 区间计费 per-CPU 槽（SMP 数组化——cpu_id() 索引）：recv 侧设
+/// domain + CNTVCT 戳，send 侧算差 → billing_charge。v1 诚实近似：send
+/// 前可能穿插其他任务（wall-clock 而非 pure CPU——精确 per-task 需
+/// TCB 扩字段，留 S5-c 后）。
+pub static BILLING_RECV_DOMAIN: [core::sync::atomic::AtomicU64; 2] = [
+    const { core::sync::atomic::AtomicU64::new(0) }; 2];
+pub static BILLING_RECV_VCT: [core::sync::atomic::AtomicU64; 2] = [
+    const { core::sync::atomic::AtomicU64::new(0) }; 2];
+
+/// 当前 CPU 的计费槽索引（SMP 安全——cpu_id() 本核恒有效）。
+#[inline]
+pub fn billing_slot() -> usize {
+    berry_hal_aarch64::smp::cpu_id() as usize & 1 // 2 核帽
+}
+
+/// 账户表容量（v1 目标 ≤4 deadline 进程 + fair 域——8 槽余量）。
+pub const BILLING_SLOTS: usize = 8;
+
+/// 账户槽：`(domain_id, cpu_ns)` 对——domain_id=0 = 空槽。
+static BILLING_DOMAINS: [core::sync::atomic::AtomicU64; BILLING_SLOTS] = [
+    const { core::sync::atomic::AtomicU64::new(0) }; BILLING_SLOTS];
+static BILLING_CPU_NS: [core::sync::atomic::AtomicU64; BILLING_SLOTS] = [
+    const { core::sync::atomic::AtomicU64::new(0) }; BILLING_SLOTS];
+
+/// S4-b：向域账户充 CPU 时长（ns）。域不存在 → 新槽；表满 → 最小槽覆写
+///（v1 诚实取舍：满表时牺牲最冷域，不静默丢账）。
+pub fn billing_charge(domain_id: u64, ns: u64) {
+    if domain_id == 0 || ns == 0 {
+        return;
+    }
+    use core::sync::atomic::Ordering;
+    // 槽查找/新建。
+    for i in 0..BILLING_SLOTS {
+        let d = BILLING_DOMAINS[i].load(Ordering::Relaxed);
+        if d == domain_id {
+            BILLING_CPU_NS[i].fetch_add(ns, Ordering::Relaxed);
+            return;
+        }
+        if d == 0 {
+            // 空槽 → 抢占（CAS 防双占）。
+            if BILLING_DOMAINS[i]
+                .compare_exchange(0, domain_id, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                BILLING_CPU_NS[i].fetch_add(ns, Ordering::Relaxed);
+                return;
+            }
+        }
+    }
+    // 表满 → 覆写最小账户（诚实取舍，防静默丢账）。
+    let mut min_i = 0;
+    let mut min_v = u64::MAX;
+    for i in 0..BILLING_SLOTS {
+        let v = BILLING_CPU_NS[i].load(Ordering::Relaxed);
+        if v < min_v {
+            min_v = v;
+            min_i = i;
+        }
+    }
+    BILLING_DOMAINS[min_i].store(domain_id, Ordering::Relaxed);
+    BILLING_CPU_NS[min_i].store(ns, Ordering::Relaxed);
+}
+
+/// S4-b：查询域账户（`Some(ns)` / None = 无账户）。
+pub fn billing_domain_total(domain_id: u64) -> Option<u64> {
+    use core::sync::atomic::Ordering;
+    for i in 0..BILLING_SLOTS {
+        if BILLING_DOMAINS[i].load(Ordering::Relaxed) == domain_id {
+            return Some(BILLING_CPU_NS[i].load(Ordering::Relaxed));
+        }
+    }
+    None
+}
+
+/// S4-b：按槽索引查询（telemetry 打印面——非零槽遍历）。
+pub fn billing_slot_at(i: usize) -> (u64, u64) {
+    use core::sync::atomic::Ordering;
+    (
+        BILLING_DOMAINS[i].load(Ordering::Relaxed),
+        BILLING_CPU_NS[i].load(Ordering::Relaxed),
+    )
+}
 
 /// 记一次跳数帽拒绝（recv 结算 slowpath）。
 pub fn intent_hop_capped_inc() {

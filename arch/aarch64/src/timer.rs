@@ -80,19 +80,35 @@ pub unsafe fn arm_at(deadline: u64) {
 }
 
 /// 武装一个时间片：**绝对编程**（`调度器设计.md` §4.1「绝对截止时间重编程」纪律，
-/// 非可选）——读 `CNTVCT` 现值、写 `CNTV_CVAL_EL0 = now + SLICE`（显式 CVAL 绝对
-/// 截止是该纪律的落地形态；写未来时刻的 CVAL 同样去活电平触发），绝不基于上次编程
-/// 值外推。随后写 CTL = ENABLE + 不屏蔽（0b01）。兼任 IRQ handler 内的 rearm
-/// （rearm-before-EOIR）。
-/// v1 无其他定时事件源，min(最早超时事件, 时间片终点) 退化为时间片终点；Phase 4+ 有
-/// 超时事件后在授片处取 min。
+/// 非可选）——读 `CNTVCT` 现值、算 `want = now + SLICE`，**但不把已编程的更早
+/// 截止推迟**（S-6 判例：deadline 单调夹取）：`cur = CVAL` 现读，若
+/// `now < cur < want` 则保留 `cur` 不写；否则（已过期 `cur<=now`，或 `cur` 比
+/// 整片更远，如 park 遗留的 SLEEPQ 截止 > now+SLICE 之外的远值）全新武装
+/// `want`。兼任 IRQ handler 内的 rearm（rearm-before-EOIR）——tick 入口时
+/// CVAL 刚过期（`cur<=now`），走全新武装支 = 原语义零漂移。
+///
+/// **为什么必须夹取（S-6 楔死定谳）**：无夹取时每个切换点无条件写
+/// `now+SLICE`，块驱动的快速切换（console-sender 重试环：spin→svc→block→
+/// switch，切换间隔 ≪ SLICE）形成 **deadline 跑步机**——CVAL 被无限前推
+/// 永不到期 ⇒ CNTV 永不 assert ⇒ 本核永不收 tick ⇒ 无抢占 ⇒ home 核的
+/// 常驻任务（watchdog/服务）全饿死（实测楔死核 ticks 冻结=4、GIC RPR/HPPIR/
+/// pend 全 idle、CVAL 恒 ≈ now+74~96ms < SLICE）。夹取后最近一次武装的截止
+/// 仍是本核 tick 的硬底——最早 `SLICE` 内必响一次 tick。
+///
+/// 附带兑现「授片处取 min」（模块头 Phase 4+ 留后）：park 唤醒派发时若
+/// SLEEPQ 截止早于整片终点，保留之 = min(最早超时, 片终点) 的提前落地。
 ///
 /// # Safety
-/// 读 CNTVCT + 写 CNTV 系统寄存器；EL1。
+/// 读 CNTVCT/CVAL + 写 CNTV 系统寄存器；EL1。
 pub unsafe fn arm_slice() {
-    let deadline = cntvct() + SLICE;
-    // SAFETY: 写 CVAL 绝对截止 + CTL（同 arm_at 契约，截止 = now+SLICE）。
-    unsafe { arm_at(deadline) };
+    let now = cntvct();
+    let want = now + SLICE;
+    let cur = cval();
+    // S-6：deadline 单调夹取——只在「更早」方向移动已编程截止。
+    if cur > now && cur < want {
+        return;
+    }
+    unsafe { arm_at(want) };
 }
 
 /// 屏蔽 CNTV 中断（IMASK=1，ENABLE 保持）——tickless idle 用。倒计仍在跑，但中断不投。
@@ -143,6 +159,15 @@ pub fn cntvct() -> u64 {
     let v: u64;
     // SAFETY: 只读计数器。
     unsafe { core::arch::asm!("mrs {0}, cntvct_el0", out(reg) v, options(nostack, preserves_flags)) };
+    v
+}
+
+/// 读已编程的比较截止 `CNTV_CVAL_EL0`（周期数）。[`arm_slice`] 的 deadline
+/// 单调夹取输入（S-6：防块驱动快速切换的 deadline 跑步机饿死 tick）。
+pub fn cval() -> u64 {
+    let v: u64;
+    // SAFETY: 只读比较寄存器。
+    unsafe { core::arch::asm!("mrs {0}, cntv_cval_el0", out(reg) v, options(nostack, preserves_flags)) };
     v
 }
 

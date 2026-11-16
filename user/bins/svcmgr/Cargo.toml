@@ -33,3 +33,9 @@ berry-guiproto = { path = "../../berry-guiproto" }
 # GUI-8 段②：app 域 RPC serve（launcher ↔ svcmgr：APP_LIST/APP_SPAWN 编
 # 解码——段① 落库纯函数 crate，本刀接消费侧；berry-manifest :26 体例）。
 berry-appproto = { path = "../../berry-appproto" }
+# cbox 刀 2：黑匣子账本纯核（排液快照解码/CBOX.LOG 行编解码/合并轮转 +
+# 跨写者 boot id 续号——单源，launcher/宿主 berry crash-log 同引）。
+berry-cbox = { path = "../../berry-cbox" }
+# cbox 刀 2：CBOX.LOG 整文件读-改-写的 RPC 面（显式 h 的 get_chunk/
+# put_chunk/commit——battery/死亡面两落账窗；berry-libc 同源消费）。
+berry-fsclient = { path = "../../berry-fsclient" }

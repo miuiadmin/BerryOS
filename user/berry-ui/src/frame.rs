@@ -166,6 +166,10 @@ pub struct FrameOutcome {
     pub damage: DamageSet,
     /// 期望呈现时刻（未来拍点 = expected 轨数据源，对齐条 7）。
     pub expected_present_ns: u64,
+    /// 本帧 SUBMIT 截止（AP4——P2 latch 面下 = 预期呈现拍点：SUBMIT 迟
+    /// 于该点即顺延一帧；deadline_miss 遥测以此为判）。skipped 帧 = 0
+    /// （无提交无截止——与 rate_hint 0 同诚实口径）。
+    pub deadline_ns: u64,
     /// 每帧必填的帧率提示（对齐条 12；drew=false 的跳过帧诚实填 0）。
     pub rate_hint_hz: u8,
 }
@@ -175,7 +179,13 @@ impl FrameOutcome {
     /// 的帧无帧率话语权）。lib.rs `render_frame` 的 `drew=false` 出口走
     /// 此构造器——跳过帧语义单源（字段注「诚实填 0」的执法点）。
     pub(crate) fn skipped(expected_present_ns: u64) -> Self {
-        Self { drew: false, damage: crate::damage::DamageSet::new(), expected_present_ns, rate_hint_hz: 0 }
+        Self {
+            drew: false,
+            damage: crate::damage::DamageSet::new(),
+            expected_present_ns,
+            deadline_ns: 0,
+            rate_hint_hz: 0,
+        }
     }
 }
 

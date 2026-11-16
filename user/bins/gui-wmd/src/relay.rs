@@ -5,7 +5,7 @@
 //! ST_BAD 拒线。
 //!
 //! **分发表执法**（R1 应修①，在 main.rs `on_wm` 入口）：present
-//! 1..=6 / hdi 0x40..=0x43 → 本模块；op 7 仅 wmd 自产 BootProgress，不接
+//! 1..=8 / hdi 0x40..=0x45 → 本模块；op 9 仅 wmd 自产 BootProgress，不接
 //! app 请求；wm 0x60..=0x7F → 本地表；其余 op
 //! （含 0x20/0x21 input 域错投）→ 1B ST_BAD。随行 handle 数与两域协议
 //! 定值不符 → ST_BAD + close（防坏客户端向中继塞 handle——send 即
@@ -66,8 +66,8 @@ fn expect_attach(msg: &[u8]) -> Option<(usize, usize)> {
             _ => None,
         },
         Some(&op)
-            if (gp::OP_GETINFO..=gp::OP_POWER_MODE).contains(&op)
-                || (gp::OP_VBLANK_WAIT..=gp::OP_COMMIT).contains(&op) =>
+            if (gp::OP_GETINFO..=gp::OP_FRAME_TIMING).contains(&op)
+                || (gp::OP_VBLANK_WAIT..=gp::OP_VBLANK_TIMING).contains(&op) =>
         {
             Some((0, 0))
         }
@@ -278,6 +278,7 @@ impl Compositor {
                 trap();
             }
         }
+
         // SAFETY: wmd is single-threaded and creates exactly one compositor.
         let bounce: &'static mut [u8] =
             unsafe { &mut *core::ptr::addr_of_mut!(COMPOSITE_BOUNCE) };
@@ -908,7 +909,7 @@ pub fn submit_composite(
         return false;
     }
     let src = hs[0];
-    let Some(gp::PresentReq::Submit { surface_id, flags, rects, rect_count, .. }) =
+    let Some(gp::PresentReq::Submit { surface_id, flags, rects, rect_count, target_present_ns, .. }) =
         gp::parse_present_req(msg)
     else {
         let _ = berry_handle_close(src);
@@ -1009,7 +1010,12 @@ pub fn submit_composite(
     }
     comp.clear_fresh_owner();
 
-    if !system_surface {
+    // P2 latch probes carry a future target. Draining the backend here would
+    // force every deferred frame to present before its successor, destroying
+    // depth-1 squash semantics. Normal window updates keep the safe front-write
+    // path; future-target submissions stay on the compositor back buffer.
+    let deferred = target_present_ns > now_ns();
+    if !system_surface && !deferred {
         // Window updates are not the swipe fast path. Drain any queued DMA and
         // update the authoritative front buffer atomically with this submit.
         boot_release_all(cli);

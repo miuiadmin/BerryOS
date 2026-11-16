@@ -604,6 +604,7 @@ struct HdiSlot {
 
 struct PendingFlip {
     token: u32,
+    full: bool,
     resource: u32,
     /// 本 flip 在 held 表的关联 alias（submit 时随行收入的 buffer 只读
     /// 别名）。flip 完成（DMA 终态）即无在途读者——pump_pending 里
@@ -621,7 +622,7 @@ struct PresentSrv {
     h: u32,
     present_seq: u32,
     submit_seq: u32,
-    tokens: [(u32, u64); TOKEN_RING],
+    tokens: [(u32, u64, u64, u32, u8); TOKEN_RING],
     /// 在途 flip 的 buffer alias 账（1:1 对应 pending 槽——flip 完成时
     /// `reclaim_held` 自动回收，RELEASE 只兜剩余；count ∈ 0..CREDITS）。
     held: [(u32, Handle); CREDITS],
@@ -646,6 +647,7 @@ struct PresentSrv {
     vb_ev: Handle,
     vb_parked: bool,
     vb_park_ch: Handle,
+    vb_park_timing: bool,
     slots: [HdiSlot; HDI_SLOTS],
     boot_vmo: Handle,
     boot_va: usize,
@@ -792,7 +794,8 @@ impl PresentSrv {
             self.perf_dma_last_ns = dma_elapsed;
             let t = now();
             self.present_seq = self.present_seq.wrapping_add(1);
-            self.tokens[token as usize % TOKEN_RING] = (token, t);
+            self.tokens[token as usize % TOKEN_RING] =
+                (token, t, u64::from(self.present_seq), 0, 0);
             self.boot_submit_done = true;
             // 同步完成面等价于「已完成的 pending flip」：DMA/token 已终态，
             // alias 无在途读者——inline 回收（close，不入 held）。若把它
@@ -805,6 +808,7 @@ impl PresentSrv {
             };
             *slot = Some(PendingFlip {
                 token,
+                full,
                 resource,
                 alias: hvmo,
                 rects: plan_storage,
@@ -817,6 +821,16 @@ impl PresentSrv {
         self.perf_submits = self.perf_submits.saturating_add(1);
         self.last_submit_ns = now();
         self.refresh_ltpo("submit");
+        let refresh_ns = Self::period_ns(self.ltpo_hz) as u32;
+        let token_record = &mut self.tokens[token as usize % TOKEN_RING];
+        *token_record = (
+            token,
+            token_record.1,
+            token_record.2,
+            refresh_ns,
+            if full { gp::FRAME_TIMING_F_PRESENTED | gp::FRAME_TIMING_F_FULL }
+            else { gp::FRAME_TIMING_F_PRESENTED },
+        );
         let submit_elapsed = now().saturating_sub(submit_started);
         self.perf_last_ns = submit_elapsed;
         self.perf_submit_ns = self.perf_submit_ns.saturating_add(submit_elapsed);
@@ -916,13 +930,14 @@ impl PresentSrv {
     }
 
     fn send_parked_or_current_callback(&self, token: u32, ch: Handle) {
-        let Some(&(_, presented_ns)) = self
+        let Some(&record) = self
             .tokens
             .iter()
-            .find(|&&(t, _)| t == token && t != 0)
+            .find(|&record| record.0 == token && record.0 != 0)
         else {
             trap();
         };
+        let presented_ns = record.1;
         let rep = gp::FrameDoneRep {
             status: gp::FRAME_PRESENTED,
             credits: (CREDITS - self.held_n) as u8,
@@ -975,7 +990,19 @@ impl PresentSrv {
         );
         let t = now();
         self.present_seq = self.present_seq.wrapping_add(1);
-        self.tokens[flip.token as usize % TOKEN_RING] = (flip.token, t);
+        self.refresh_ltpo("age");
+        let refresh_ns = Self::period_ns(self.ltpo_hz) as u32;
+        self.tokens[flip.token as usize % TOKEN_RING] = (
+            flip.token,
+            t,
+            u64::from(self.present_seq),
+            refresh_ns,
+            if flip.full {
+                gp::FRAME_TIMING_F_PRESENTED | gp::FRAME_TIMING_F_FULL
+            } else {
+                gp::FRAME_TIMING_F_PRESENTED
+            },
+        );
         // 完成即回收（在 parked callback 应答**之前**）：alias close +
         // credit 释放一步到位，FRAME_CALLBACK 的 credits 域因此报「回收
         // 后」真值；后到 callback 走 tokens ring 即答，同样见真值。
@@ -1240,12 +1267,25 @@ impl PresentSrv {
         let point = self.vb_next_ns;
         self.perf_jitter_ns = self.perf_jitter_ns.max(t.saturating_sub(point));
         if self.vb_parked {
-            let rep = gp::VblankRep { seq: self.vb_seq.wrapping_add(1), ts_ns: point };
-            let mut out = [0u8; 16];
-            let n = gp::encode_vblank_rep(&mut out, &rep);
-            send_rep(self.vb_park_ch, &out[..n]);
+            let seq = self.vb_seq.wrapping_add(1);
+            if self.vb_park_timing {
+                let rep = gp::VblankTimingRep {
+                    seq: u64::from(seq),
+                    ts_ns: point,
+                    refresh_ns: Self::period_ns(self.ltpo_hz) as u32,
+                };
+                let mut out = [0u8; 24];
+                let n = gp::encode_vblank_timing_rep(&mut out, &rep);
+                send_rep(self.vb_park_ch, &out[..n]);
+            } else {
+                let rep = gp::VblankRep { seq, ts_ns: point };
+                let mut out = [0u8; 16];
+                let n = gp::encode_vblank_rep(&mut out, &rep);
+                send_rep(self.vb_park_ch, &out[..n]);
+            }
             self.vb_parked = false;
             self.vb_park_ch = 0;
+            self.vb_park_timing = false;
         }
         if self.vb_armed && self.vb_ev != 0 {
             let _ = berry_object_signal(self.vb_ev, VBLANK_SIG, VBLANK_SIG);
@@ -1340,6 +1380,18 @@ impl PresentSrv {
                 }
                 self.vb_parked = true;
                 self.vb_park_ch = ch;
+                self.vb_park_timing = false;
+                self.vsync_schedule();
+            }
+            Some(&gp::OP_VBLANK_TIMING) if gp::parse_vblank_timing_req(msg).is_some() => {
+                if !hs.is_empty() || self.vb_parked {
+                    close_all(hs);
+                    st_rep(ch, gp::ST_BUSY);
+                    return;
+                }
+                self.vb_parked = true;
+                self.vb_park_ch = ch;
+                self.vb_park_timing = true;
                 self.vsync_schedule();
             }
             Some(&gp::OP_PREPARE) => match gp::parse_prepare_req(msg) {
@@ -1370,6 +1422,50 @@ impl PresentSrv {
                     st_rep(ch, gp::ST_BAD);
                 }
             },
+            Some(&gp::OP_PANEL_CAPS) if gp::parse_panel_caps_req(msg).is_some() => {
+                if !hs.is_empty() {
+                    close_all(hs);
+                    st_rep(ch, gp::ST_BAD);
+                    return;
+                }
+                let cfg = gp::softpanel::PanelCfg::DEFAULT;
+                let mut tiers = [gp::PanelTier {
+                    hz: 0,
+                    class: 0,
+                    stage: 0,
+                    period_ns: 0,
+                }; gp::PANEL_TIERS_MAX];
+                for (i, tier) in gp::softpanel::TIERS.iter().enumerate() {
+                    tiers[i] = gp::PanelTier {
+                        hz: tier.hz,
+                        class: tier.class,
+                        stage: tier.stage,
+                        period_ns: tier.period_ns as u32,
+                    };
+                }
+                let (mut min_hz, mut max_hz) = (u16::MAX, 0u16);
+                for tier in gp::softpanel::TIERS.iter() {
+                    min_hz = min_hz.min(tier.hz);
+                    max_hz = max_hz.max(tier.hz);
+                }
+                let rep = gp::PanelCapsRep {
+                    version: 2,
+                    rate_model: gp::RATE_MODEL_TIERED,
+                    flags: if cfg.per_frame { gp::PANEL_FLAG_PER_FRAME } else { 0 },
+                    min_hz,
+                    max_hz,
+                    granularity_hz: 0,
+                    vrr: cfg.vrr,
+                    current_hz: u16::from(self.ltpo_hz),
+                    current_period_ns: Self::period_ns(self.ltpo_hz) as u32,
+                    current_phase_ns: 0,
+                    tiers,
+                    n_tiers: gp::softpanel::TIERS.len() as u8,
+                };
+                let mut out = [0u8; gp::PANEL_CAPS_REP_MAX];
+                let n = gp::encode_panel_caps_rep(&mut out, &rep);
+                send_rep(ch, &out[..n]);
+            }
             _ => {
                 close_all(hs);
                 st_rep(ch, gp::ST_BAD);
@@ -1679,8 +1775,8 @@ impl PresentSrv {
                     return;
                 }
                 let rep = gp::GetinfoRep {
-                    version_present: 1,
-                    version_input: 1,
+                    version_present: gp::VER_PRESENT,
+                    version_input: gp::VER_INPUT,
                     version_hdi: 1,
                     format_bits: gp::FMT_XRGB8888,
                     display_w: self.w,
@@ -1720,8 +1816,8 @@ impl PresentSrv {
                 let hit = self
                     .tokens
                     .iter()
-                    .find(|&&(t, _)| t == frame_token && t != 0)
-                    .map(|&(_, ns)| ns);
+                    .find(|&&record| record.0 == frame_token && record.0 != 0)
+                    .map(|&record| record.1);
                 match hit {
                     None => st_rep(ch, gp::ST_NOENT),
                     Some(presented_ns) => {
@@ -1784,6 +1880,42 @@ impl PresentSrv {
                 self.refresh_ltpo("power");
                 st_rep(ch, gp::ST_OK);
             }
+            Some(gp::PresentReq::InputPulse) => {
+                if !hs.is_empty() {
+                    close_all(hs);
+                    st_rep(ch, gp::ST_BAD);
+                    return;
+                }
+                self.last_submit_ns = now();
+                self.refresh_ltpo("input");
+                st_rep(ch, gp::ST_OK);
+            }
+            Some(gp::PresentReq::FrameTiming { frame_token }) => {
+                if !hs.is_empty() {
+                    close_all(hs);
+                    st_rep(ch, gp::ST_BAD);
+                    return;
+                }
+                let Some(record) = self
+                    .tokens
+                    .iter()
+                    .find(|&&record| record.0 == frame_token && record.0 != 0)
+                    .copied()
+                else {
+                    st_rep(ch, gp::ST_NOENT);
+                    return;
+                };
+                let rep = gp::FrameTimingRep {
+                    frame_token: record.0,
+                    presented_ns: record.1,
+                    seq: record.2,
+                    refresh_ns: record.3,
+                    flags: record.4,
+                };
+                let mut out = [0u8; 28];
+                let n = gp::encode_frame_timing_rep(&mut out, &rep);
+                send_rep(ch, &out[..n]);
+            }
             Some(gp::PresentReq::BootProgress { stage, permille, milestone }) => {
                 if !hs.is_empty() {
                     close_all(hs);
@@ -1836,7 +1968,7 @@ fn serve_present(d: &Dma, regs: *mut u32, w: u32, h: u32, face: Face) -> ! {
         h,
         present_seq: 0,
         submit_seq: 0,
-        tokens: [(0, 0); TOKEN_RING],
+        tokens: [(0, 0, 0, 0, 0); TOKEN_RING],
         held: [(0, 0); CREDITS],
         held_n: 0,
         pending: [None, None],
@@ -1859,6 +1991,7 @@ fn serve_present(d: &Dma, regs: *mut u32, w: u32, h: u32, face: Face) -> ! {
         vb_ev: 0,
         vb_parked: false,
         vb_park_ch: 0,
+        vb_park_timing: false,
         boot_vmo: 0,
         boot_va: 0,
         boot_started: false,

@@ -93,10 +93,6 @@ const FRAME_VA: usize = 0x5100_0000;
 /// 帧保持同一 VA 窗内的 +32MiB 防御位。
 const FRAME_VA_B: usize = 0x5300_0000;
 
-/// 默认 vsync 周期（60Hz；present GETINFO 无周期域——S2 食谱默认
-/// 16_666_666 phase 0）。
-const VSYNC_NS: u64 = 16_666_666;
-
 /// IDLE 稳态等待帽（S1 判词：Idle 相撤定时器 → 10s 周期兜底醒，醒后
 /// 跳过帧零提交再睡——非燃 CPU 阻塞形的定长节拍）。
 const IDLE_CAP_NS: u64 = 10 * 1_000_000_000;
@@ -229,6 +225,28 @@ pub fn run(
         ));
     }
 
+    // —— hdi PANEL_CAPS（刀1 率通路 §4-5）：帧钟参数服务端下发注入——
+    //    服务端是率域唯一权威（R1 单源），客户端禁本地默认顶替真值。
+    //    version_hdi < 2 = 旧 guifbd 无此面 → 不注入，留 berry-ui 回退
+    //    缺省（无服务端信息面——lib.rs DEFAULT_VSYNC_PERIOD_NS 注释钉明）；
+    //    有面而应答畸形 = 协议违例 fail loud（GETINFO 同款）。
+    let mut srv_vsync_ns: Option<(u64, u64)> = None;
+    if pinfo.version_hdi >= 2 {
+        // hdi 域编码器 usize 直返（present 域 Option 形不同）——不过 enc_req。
+        let m = gp::encode_panel_caps_req(&mut req);
+        let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+        match gp::parse_panel_caps_rep(&rep[..n]) {
+            Some(caps) if caps.current_hz > 0 && caps.current_period_ns > 0 => {
+                srv_vsync_ns =
+                    Some((caps.current_period_ns as u64, caps.current_phase_ns as u64));
+                // 率通路串口证据行（规范 §11 验收面；仅 v2 面打印——旧内核
+                // 混跑缺席即旧面，非异常）。标记互非子串已核（tools/ 零 PANEL）。
+                println!("PANEL ok hz={} ns={}", caps.current_hz, caps.current_period_ns);
+            }
+            _ => fail(&format!("panel caps bad st={}", rep[0])),
+        }
+    }
+
     // —— 跨代清账（对抗审查 R2 修）：前代实例若死于 SUBMIT ack→RELEASE
     //    close 窗，其 VMO 别名成孤儿永占 guifbd held 槽（RELEASE_WAIT 应答
     //    = held 全量排空，含他源/前代）；监督重启路纯 spawn 无 present 域
@@ -289,8 +307,13 @@ pub fn run(
     let scratch: &'static mut [GlyphPos] =
         Box::leak(vec![GlyphPos { ch: 0, x: 0, y: 0 }; SCRATCH_GLYPHS].into_boxed_slice());
 
-    // —— vsync 协商 + 起振（Idle→Run + 条件 FULL——首帧整帧 damage）。
-    ui.set_vsync(VSYNC_NS, 0);
+    // —— vsync 起振（Idle→Run + 条件 FULL——首帧整帧 damage）。周期/相位
+    //    由服务端 PANEL_CAPS 下发注入（刀1 §4-5）；None = 旧 guifbd →
+    //    berry-ui 回退缺省（本地 vsync_ns 常量已废除——全仓周期单源
+    //    在 guifbd 档位表，规范 §3.4）。
+    if let Some((period_ns, phase_ns)) = srv_vsync_ns {
+        ui.set_vsync(period_ns, phase_ns);
+    }
     ui.wake(now());
 
     let mut last_expected: u64 = 0; // pump 重采样 target（上帧 expected 轨）
@@ -774,12 +797,13 @@ pub fn run(
         // 推进一拍后**单次** tick，让下一帧承载更新的位移（审计修 ④——
         // 曾双 tick：同帧两次 apply_ox 重复 flush，且第二拍时间戳越过
         // 真实 now，下一实拍 elapsed 回摆）。
+        let (vsync_ns, _) = ui.vsync();
         let overdue_flip = front_token.is_some()
             && ui.next_wakeup().is_some_and(|deadline| {
-                t_now.saturating_sub(deadline) >= VSYNC_NS
+                t_now.saturating_sub(deadline) >= vsync_ns
             });
         let tick_ns = if overdue_flip {
-            t_now.saturating_add(VSYNC_NS)
+            t_now.saturating_add(vsync_ns)
         } else {
             t_now
         };
@@ -844,6 +868,7 @@ pub fn run(
                         presented,
                     );
                     if !launched {
+                        print_launch_telemetry(ui);
                         println!("LAUNCH ok");
                         launched = true;
                     }
@@ -868,6 +893,7 @@ pub fn run(
                     presented,
                 );
                 if !launched {
+                    print_launch_telemetry(ui);
                     println!("LAUNCH ok");
                     launched = true;
                 }
@@ -1023,6 +1049,7 @@ pub fn run(
                 );
                 if !launched {
                     // First real desktop frame has now reached PRESENTED.
+                    print_launch_telemetry(ui);
                     println!("LAUNCH ok");
                     launched = true;
                 }
@@ -1055,7 +1082,7 @@ pub fn run(
         if snap_settle_pending {
             // Snap has no input edge to wake us; tick the pager at the product
             // cadence while its previous frame remains intentionally in flight.
-            cap = cap.min(nw + VSYNC_NS);
+            cap = cap.min(nw + vsync_ns);
         }
         if launch_toast_deadline != 0 {
             cap = cap.min(launch_toast_deadline);
@@ -1174,6 +1201,20 @@ fn submit_frame(hw: Handle, vmo: Handle, request: &gp::PresentReq) -> Option<u32
     }
 }
 
+fn print_launch_telemetry(ui: &UiMain) {
+    let telemetry = ui.telemetry();
+    let jank_n = telemetry.last(16).filter(|record| record.jank).count();
+    println!(
+        "launcher: telem f={} w={} i={} d={} s={} j={}",
+        telemetry.frames(),
+        telemetry.wakes(),
+        telemetry.idle_exits(),
+        telemetry.deadline_miss(),
+        telemetry.spinup_late_frames(),
+        jank_n
+    );
+}
+
 fn complete_front_frame(hw: Handle, ui: &mut UiMain, token: u32, engine_seq: u32, presented: u64) -> u64 {
     let mut req = [0u8; 256];
     let mut rep = [0u8; 256];
@@ -1190,7 +1231,17 @@ fn complete_front_frame(hw: Handle, ui: &mut UiMain, token: u32, engine_seq: u32
     if done.status != gp::FRAME_PRESENTED {
         fail(&format!("frame status={}", done.status));
     }
-    ui.note_presented(engine_seq, now(), done.status, done.credits);
+    // FrameCallback already carries the authoritative presented timestamp.
+    // Querying FRAME_TIMING again added a second serial RPC on every frame and
+    // starved the wmd relay under TCG load.
+    ui.note_frame_timing(
+        engine_seq,
+        done.presented_ns,
+        ui.vsync().0 as u32,
+        done.status,
+        done.credits,
+    );
+
     // vgpud reclaims a completed alias immediately. Do not issue RETURN-ALL
     // here: draining all pending flips would also synchronously wait on the
     // newer frame we intentionally left in flight. guifbd aliases are drained

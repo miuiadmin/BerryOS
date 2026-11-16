@@ -24,10 +24,57 @@ use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 /// S-2 E0 前置件 A12：原子化（写点全在 KERN_LOCK 锁窗，读侧锁外——Relaxed 无
 /// 序角色、仅计数；同时执法 static mut 别名 UB）。
 static IRQ_TICKS: AtomicU64 = AtomicU64::new(0);
-/// 上下文切换计数（`on_irq_tick` 抢占切一次自增）。里程碑金丝雀：两任务在 timer slice
-/// 下分时 → 计数持续涨（≥数千 = G1 过关）；冻结在某值 = switch 坏（卡死/饿死）。
-/// A12 同上原子化。
+/// 上下文切换计数（六切换原语位共享递增——[`bump_switches`]）。里程碑金丝雀：
+/// 两任务在 timer slice 下分时 → 计数持续涨（≥数千 = G1 过关）；冻结在某值 =
+/// switch 坏（卡死/饿死）。A12 同上原子化。
 static SWITCHES: AtomicU64 = AtomicU64::new(0);
+/// S-6 ③ 心跳诊断：上一行打点时的双核 ticks_pre 总数（跨 500 节流——
+/// [`on_irq_tick`] 心跳行用）。诊断面，定谳后随探针一并退役。
+static HB_LAST: AtomicU64 = AtomicU64::new(0);
+/// S-6 ③ 卡死等待者扫描：上一轮扫描时的双核 ticks_pre 总数（跨 5000
+/// 节流——[`on_irq_tick`] stuck 行用）。诊断面，定谳后随探针一并退役。
+static STUCK_LAST: AtomicU64 = AtomicU64::new(0);
+/// S-6 ② 拉取金丝雀行真序号（run5 曾误用 diag_readout().2——那是 CPU1
+/// 派发计数非拉取数，行号全标 #1）。仅诊断打印用。
+static PULL_CNT: AtomicU64 = AtomicU64::new(0);
+
+/// SWITCHES 递增 + 金丝雀打印（S-6 ①：全域唯一递增/打印口径）。
+/// 全部十一个切换原语位（yield/exit/block 三函数的直切臂 + park 切点 + tick
+/// 抢占 + SGI resched 直切 + try_preempt 直切 + park/idle 两派发位）共享本
+/// helper：%100 判定走**全局**计数——哪个位跨点哪个位打印。
+/// 沿革九十四发现①收口（两层）：打印若只挂 tick 抢占支（旧单点）SMP 稳态
+/// 忙对各占核时结构性冷；更深的洞 = **直切臂（出选有货即切）旧完全不计数**
+/// ——park 臂冷、直切臂热，漏计 = 金丝雀对 SMP 稳态主干结构性失明（S-6
+/// 复跑 0/53K 切换字符实证）。A12「SWITCHES 计入金丝雀」至此全量兑现。
+/// 返回 true = 本次跨过打印点（调用方可据此做**锁窗已证面**的附带走查）。
+///
+/// SAFETY 契约（print_lock_raw 要求）：调用点 IRQ 屏蔽窗内——六位皆然
+/// （切换原语锁窗/屏蔽窗，见各位注）。只取 PRINT_LOCK（与任务态
+/// with_print_lock 同锁——G43 拼行互斥保持），不触 RQ/SQ/REAPQ 结构锁；
+/// 任务持 PRINT_LOCK 期不可达切换原语（with_print_lock 为作用域闭包、
+/// 窗内禁切）⇒ 无自死锁面。
+fn bump_switches() -> bool {
+    let sw = SWITCHES.fetch_add(1, Ordering::Relaxed) + 1;
+    // bring-up 诊断（G1）：每 N 次切换打一行计数，证分时持续、计数不冻。
+    const SOAK_PRINT_EVERY: u64 = 100;
+    if sw % SOAK_PRINT_EVERY == 0 {
+        // S-2 E0 打印面（草案 3.1-3）：金丝雀三段在 PRINT_LOCK 内拼行原子
+        //（IRQ 屏蔽窗内调用——print 对不带 irqsave，纪律见 kern_lock 模块头）；
+        // sw 快照供整除判定与打印同值。
+        print_lock_raw();
+        hal::uart_puts(b"switches=");
+        hal::uart_put_dec(sw);
+        // S-3c c-2c 前置微刀：行尾拼 KL 争用计数（C20 收缩前后对照观测，
+        // 非门禁）。kl_contention 经 hal 直调——with_print_lock 同款先例
+        //（ops 槽只服务取放对，读数无语境约束）。
+        hal::uart_puts(b" kl=");
+        hal::uart_put_dec(hal::kern_lock::kl_contention());
+        hal::uart_puts(b"\n");
+        print_unlock_raw();
+        return true;
+    }
+    false
+}
 
 /// 当前在 CPU 上跑的任务。S-2b 起为**回落位**：主位 = 本核 `SmpCpu.current`
 ///（TPIDR_EL1 寻址，经 [`current_task`]/[`set_current`] 存取）；boot 起 =
@@ -180,11 +227,9 @@ pub fn print_window_exit() {
 /// c-2b 起取放启用。单核形态（gate 恒关）`cpu_id()` 恒 0 →
 /// `[0]` 行为等价旧全局 RUNQUEUE（零漂移根基）。
 static mut PER_CPU_RQ: [Runqueue; 2] = [Runqueue::new(), Runqueue::new()];
-/// Opt-in reply handoff hint. A channel fast-path sender may record the single
-/// waiter it woke on that waiter's home CPU; a subsequent cooperative
-/// `thread_yield` by the same sender may select that exact task. The hint is
-/// per-CPU, consumed on the next yield, and never bypasses a higher-priority
-/// runnable task.
+/// Opt-in reply handoff hint. A channel fast-path sender may record the
+/// single waiter it woke; the sender's next cooperative yield may pick it
+/// without bypassing a higher-priority runnable task.
 static mut REPLY_HANDOFF: [*mut Task; 2] = [core::ptr::null_mut(); 2];
 /// CPU 拓扑（capacity 由 [`init`] 从 HAL `cpu_capacity()` 填——S-3b 真化；
 /// 单核默认 `[1024, 0]` 同构占位，QEMU virt 双核 1024/1024，真差异容量 =
@@ -609,6 +654,56 @@ pub fn init() {
             t.capacity[c] = hal::smp::cpu_capacity(c as u32);
         }
     }
+    // S-6 ③b：自旋看门狗 bark 自装（spin.rs 零依赖槽的 hal 面）。
+    crate::spin::set_spin_bark(spin_bark_hal);
+    // S-6 ③b：KERN_LOCK 持者点名钩子自装（arch 反向注入槽）。
+    hal::kern_lock::set_kl_name_hook(current_name_ptrs);
+}
+
+/// S-6 ③b：本核当前任务名指针（arch KERN_LOCK 看门狗持者点名；诊断面，
+/// 定谳后随探针一并退役）。返回 (名指针, 名长)；(0, 0) = park 态/防御窗。
+/// 名 = 任务字面量 &'static [u8]——跨核读不悬垂。
+fn current_name_ptrs() -> (usize, usize) {
+    // SAFETY: current_task 本核槽读契约（锁窗/屏蔽窗内由持锁调用点满足）；
+    // 名切片 'static 字面量。
+    unsafe {
+        let t = current_task();
+        if t.is_null() {
+            return (0, 0);
+        }
+        let task: &Task = &*t;
+        (task.name.as_ptr() as usize, task.name.len())
+    }
+}
+
+// ---- S-6 ③b 自旋看门狗 bark（hal 面；诊断面，定谳后随探针一并退役）----
+
+/// bark 节流锚（上次 bark 的 cntvct；0 起点 = 首报即过门）。
+static SPIN_BARK_LAST: AtomicU64 = AtomicU64::new(0);
+/// bark 总量帽记账（超 32 行静默——wedge 尸检足够，串口不再刷屏）。
+static SPIN_BARK_CNT: AtomicU64 = AtomicU64::new(0);
+
+/// 自旋看门狗 bark：par 门（单核零漂移）+ 1s 全局节流 + 32 行总量帽，
+/// **原始 UART 直写不吃 PRINT_LOCK**（泄漏锁可能就是它——arch 侧
+/// PRINT_LOCK 自旋同款自报）。lock 地址供尸检 `nm` 反查（REAPQ/SLEEPQ
+/// 静态有名；Runqueue.lock 动态地址按区段归属）。
+fn spin_bark_hal(addr: usize) {
+    if !hal::smp::par_enabled() {
+        return;
+    }
+    let now = hal::timer::cntvct();
+    if now.saturating_sub(SPIN_BARK_LAST.load(Ordering::Relaxed)) < hal::timer::cntfrq() {
+        return; // 1s 节流（全局；多锁并发 wedge 轮流报，总量帽兜底）
+    }
+    if SPIN_BARK_CNT.fetch_add(1, Ordering::Relaxed) >= 32 {
+        return;
+    }
+    SPIN_BARK_LAST.store(now, Ordering::Relaxed);
+    hal::uart_puts(b"spin! cpu=");
+    hal::uart_put_dec(hal::smp::cpu_id() as u64);
+    hal::uart_puts(b" lock=0x");
+    hal::uart_put_hex64(addr as u64);
+    hal::uart_puts(b"\n");
 }
 
 /// S-3b（子案 §9.6 填充点）bring-up 成功后真化拓扑：`nr_cpus=2` +
@@ -697,6 +792,18 @@ pub fn spawn(entry: extern "C" fn(usize) -> !, arg: usize, name: &'static [u8]) 
 
 /// 同 [`spawn`]，但挂地址空间（2b-2）：`ttbr0` 页表 PA + `asid`（0/0 = 无 AS）。
 /// 表须已填好且对页表走查可见（调用方 `dsb ish`），activate 只管寄存器。
+pub fn spawn_as_spread(entry: extern "C" fn(usize) -> !, arg: usize,
+                          name: &'static [u8], ttbr0: usize, asid: u16) {
+    let task: &'static mut Task =
+        alloc::boxed::Box::leak(Task::new_kernel_with_as(entry, arg, name, ttbr0, asid));
+    // S-6：显式可迁移内核带 AS 任务（矩阵对等金丝雀）。服务/ pager 根任务
+    // 保持 spread=false 恒家核；跨核偷取只消费显式可迁移面。
+    task.spread = true;
+    unsafe {
+        enqueue_with_kick(task, place(task));
+    }
+}
+
 pub fn spawn_as(entry: extern "C" fn(usize) -> !, arg: usize, name: &'static [u8],
                 ttbr0: usize, asid: u16) {
     // SAFETY: CURRENT 已由 init 设好；allocator 已就绪。
@@ -765,24 +872,44 @@ pub fn spawn_user(entry_va: usize, arg: usize, sp0_va: usize, name: &'static [u8
 /// Plan B v0.5：返回新任务的裸指针（usize 不透明值——语义层写入 `pinned`
 /// 钉住字段；crate 边界纪律同 `proc_tag`）。任务已入 runqueue，指针即
 /// `&'static mut Task` 的地址（Box::leak）。
-pub fn try_spawn_user(entry_va: usize, arg: usize, sp0_va: usize, name: &'static [u8],
-                      ttbr0: usize, asid: u16, proc_tag: usize,
-                      pinned: usize, thread_key: usize, spread: bool) -> Option<usize> {
+pub fn try_prepare_user(entry_va: usize, arg: usize, sp0_va: usize, name: &'static [u8],
+                         ttbr0: usize, asid: u16, proc_tag: usize,
+                         pinned: usize, thread_key: usize, spread: bool) -> Option<usize> {
     let task = Task::try_new_user_with_as(entry_va, arg, sp0_va, name, ttbr0, asid, proc_tag)?;
     // SAFETY: CURRENT 已由 init 设好；allocator 已就绪；IRQ 屏蔽态。
     let task: &'static mut Task = alloc::boxed::Box::leak(task);
-    // F-E1（S-3b 步 b-1）：钉住双字段随装配写入、**enqueue 之前**——消灭
-    // 「任务已入队而 pinned/thread_key 未写」半初始化窗（E0 全量锁下本就
-    // benign；S-3c 拆锁后为真窗，结构先正）。语义层 set_task_pinned/
-    // set_task_thread 写点随签名并入退役。spread（可铺核资格——b-1 判谳
-    // 补）同窗写入：thread_start 真 / process_start 假。
+    // F-E1 / S-6 SMP：pinned/thread_key/spread 在 enqueue 前写入。SMP 下
+    // 远端核可能在入环后立刻偷取并运行新任务；一切调用侧簿记（started、
+    // live_threads、retain、调度属性）都必须在 enqueue 前完成。
     task.pinned = pinned;
     task.thread_key = thread_key;
     task.spread = spread;
-    unsafe {
-        enqueue_with_kick(task, place(task));
-    }
     Some(task as *mut Task as usize)
+}
+
+/// 把 [`try_prepare_user`] 产出的已初始化任务入环。调用侧必须已完成一切
+/// 可被新任务退出钩子/属性消费观察的簿记；本函数不再分配、不可失败。
+///
+/// # Safety
+/// IRQ 屏蔽窗内；`task` 来自 `try_prepare_user` 且尚未入任何 runqueue。
+pub unsafe fn enqueue_prepared_user(task_ptr: usize) {
+    let task = task_ptr as *mut Task;
+    // SAFETY: 上述调用契约；place 只读本/对核长度。
+    let cpu = place(unsafe { &*task });
+    // SAFETY: 同 try_spawn_user 旧路径。
+    unsafe { enqueue_with_kick(&mut *task, cpu) };
+}
+
+pub fn try_spawn_user(entry_va: usize, arg: usize, sp0_va: usize, name: &'static [u8],
+                      ttbr0: usize, asid: u16, proc_tag: usize,
+                      pinned: usize, thread_key: usize, spread: bool) -> Option<usize> {
+    let task_ptr = try_prepare_user(
+        entry_va, arg, sp0_va, name, ttbr0, asid, proc_tag,
+        pinned, thread_key, spread,
+    )?;
+    // SAFETY: prepare 返回尚未入环；本 wrapper 无调用侧额外簿记。
+    unsafe { enqueue_prepared_user(task_ptr) };
+    Some(task_ptr)
 }
 
 /// 当前任务的进程标签（3-4a per-process handle 表派发用）。0 = 无（内核任务/
@@ -798,11 +925,8 @@ pub fn current_tag() -> usize {
     }
 }
 
-/// 当前任务 ASID（Task 元数据单源；0 = 无 AS / CURRENT 空窗）。Apple
-/// Silicon/HVF 下 TTBR0/CONTEXTIDR 的 ASID 读回不可靠，demand page 与 per-AS
-/// PT 锁必须从调度器元数据取，而不是反读 hypervisor 系统寄存器。
+/// 当前任务 ASID（Task 元数据单源；0 = 无 AS / CURRENT 空窗）。
 pub fn current_asid() -> u16 {
-    // SAFETY: 只读；写点在切换原语锁窗，异常/系统调用语境当前任务稳定。
     let cur = unsafe { current_task() };
     if cur.is_null() { 0 } else { unsafe { (*cur).asid } }
 }
@@ -839,9 +963,12 @@ pub fn freeze_precheck_by_pinned(pinned: usize) -> bool {
             let t = &*t;
             t.pi_inherited == 0
                 && t.wait_signals & (SIG_READABLE | SIG_WRITABLE) == 0
-                // 排除 HELD_FROZEN（bit6）——嵌套冻结时已置位，不应被当作
-                // 持锁拒（只有结构锁位 bit1–5 + 未来义务位 bit7 才拒）。
-                && t.held_locks & !crate::task::HELD_FROZEN == 0
+                // 排除 HELD_FROZEN（bit6，嵌套冻结）+ HELD_THROTTLE（bit7，
+                // S5-c 预算限流——调度态非持锁，限流中的 deadline 任务仍可
+                // 被进程冻结）。只有结构锁位 bit1–5 才拒。
+                && t.held_locks
+                    & !(crate::task::HELD_FROZEN | crate::task::HELD_THROTTLE)
+                    == 0
                 && t.svc_mask == 0
         };
         // SLEEPQ
@@ -853,21 +980,19 @@ pub fn freeze_precheck_by_pinned(pinned: usize) -> bool {
                 return false;
             }
         }
-        // 双 RQ（A136：环形链先访当前节点，后判回到 head）。
+        // 双 RQ
         for cpu in 0..2 {
-            if let Some(h) = rq_of(cpu).head() {
-                let mut cur = h;
-                loop {
-                    let t = cur.as_ptr();
-                    if (*t).pinned == pinned && !check(t) {
-                        return false;
-                    }
-                    // SAFETY: 环上节点必有 next（环形不变式）。
-                    cur = (*t).rq_next.get().expect("RQ ring next");
-                    if cur == h {
-                        break;
-                    }
+            let head = rq_of(cpu).head();
+            let mut cur = head;
+            while let Some(c) = cur {
+                let t = c.as_ptr();
+                // §A136：先访当前节点，再推进并判回 head——先 break 会漏尾/单元素。
+                if (*t).pinned == pinned && !check(t) {
+                    return false;
                 }
+                cur = (*t).rq_next.get();
+                if cur == head { break; } // 环终止
+
             }
         }
     }
@@ -894,24 +1019,20 @@ pub fn freeze_by_pinned(pinned: usize) -> usize {
                 count += 1;
             }
         }
-        // 双 RQ 扫描（A136：环形链先访当前节点，后判回到 head）。
+        // 双 RQ 扫描
         for cpu in 0..2 {
-            if let Some(h) = rq_of(cpu).head() {
-                let mut cur = h;
-                loop {
-                    let t = cur.as_ptr();
-                    if (*t).pinned == pinned
-                        && (*t).held_locks & crate::task::HELD_FROZEN == 0
-                    {
-                        (*t).held_locks |= crate::task::HELD_FROZEN;
-                        count += 1;
-                    }
-                    // SAFETY: 环上节点必有 next（环形不变式）。
-                    cur = (*t).rq_next.get().expect("RQ ring next");
-                    if cur == h {
-                        break;
-                    }
+            let head = rq_of(cpu).head();
+            let mut cur = head;
+            while let Some(c) = cur {
+                let t = c.as_ptr();
+                // §A136：先访当前节点，再推进并判回 head。
+                if (*t).pinned == pinned && (*t).held_locks & crate::task::HELD_FROZEN == 0 {
+                    (*t).held_locks |= crate::task::HELD_FROZEN;
+                    count += 1;
                 }
+                cur = (*t).rq_next.get();
+                if cur == head { break; } // 环终止
+
             }
         }
     }
@@ -934,19 +1055,17 @@ pub fn thaw_by_pinned(pinned: usize) {
             }
         }
         for cpu in 0..2 {
-            if let Some(h) = rq_of(cpu).head() {
-                let mut cur = h;
-                loop {
-                    let t = cur.as_ptr();
-                    if (*t).pinned == pinned {
-                        (*t).held_locks &= !crate::task::HELD_FROZEN;
-                    }
-                    // SAFETY: 环上节点必有 next（环形不变式）。
-                    cur = (*t).rq_next.get().expect("RQ ring next");
-                    if cur == h {
-                        break;
-                    }
+            let head = rq_of(cpu).head();
+            let mut cur = head;
+            while let Some(c) = cur {
+                let t = c.as_ptr();
+                // §A136：先访当前节点，再推进并判回 head。
+                if (*t).pinned == pinned {
+                    (*t).held_locks &= !crate::task::HELD_FROZEN;
                 }
+                cur = (*t).rq_next.get();
+                if cur == head { break; } // 环终止
+
             }
         }
     }
@@ -1025,11 +1144,7 @@ pub fn set_reply_handoff(task: NonNull<Task>) {
     }
 }
 
-/// Record the most recent receiver process of a channel as this CPU's next
-/// cooperative-yield candidate. Unlike [`set_reply_handoff`], the receiver need
-/// not currently be asleep; this covers a busy RPC server that already drained
-/// its endpoint and remains Ready. No scheduling decision occurs until the
-/// sender explicitly calls `thread_yield`.
+/// Record a receiver process tag as this CPU's next cooperative-yield candidate.
 pub fn set_reply_handoff_proc(proc_tag: usize) {
     if proc_tag == 0 {
         return;
@@ -1046,7 +1161,7 @@ pub fn set_reply_handoff_proc(proc_tag: usize) {
         let mut cur = head;
         loop {
             let task = cur.as_ptr();
-            // SAFETY: scheduler-owned ring node; only fields are read here.
+            // SAFETY: scheduler-owned ring node; only stable fields are read.
             unsafe {
                 if (*task).proc_tag == proc_tag
                     && (*task).home_cpu as usize == cpu
@@ -1055,10 +1170,7 @@ pub fn set_reply_handoff_proc(proc_tag: usize) {
                     found = task;
                     break;
                 }
-                cur = (*task)
-                    .rq_next
-                    .get()
-                    .expect("on-ring task has next");
+                cur = (*task).rq_next.get().expect("on-ring task has next");
             }
             if cur == head {
                 break;
@@ -1072,7 +1184,6 @@ pub fn set_reply_handoff_proc(proc_tag: usize) {
     unsafe { rq_unlock_of(cpu, phys) };
 }
 
-/// Take this CPU's reply-handoff candidate (null if absent).
 fn take_reply_handoff() -> *mut Task {
     let cpu = hal::smp::cpu_id() as usize;
     if cpu >= 2 {
@@ -1134,6 +1245,10 @@ fn yield_now_impl(enable_irq_at_end: bool) {
                 // SAFETY: IRQ 已被 disable_irq 屏蔽；写 CNTV 系统寄存器；EL1。
                 hal::timer::arm_slice();
                 set_current(next_ptr);
+                // S-6 ① 补数：直切臂（出选有货）旧不计 SWITCHES——SMP 稳态忙对
+                // 占双核时 park 切点结构性冷、本臂才是热路径，漏计=金丝雀盲区。
+                bump_switches();
+                hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
                 activate_if_changed(prev, next_ptr);
                 note_switch(prev, next_ptr, SwitchKind::Yield);
                 // S-2 E0 舞蹈（草案 §2.3）：SVC 持锁窗内走到切换点 → 切前放锁
@@ -1151,7 +1266,7 @@ fn yield_now_impl(enable_irq_at_end: bool) {
             if (*prev).ttbr0 != 0 {
                 hal::activate_aspace(0, 0);
             }
-            SWITCHES.fetch_add(1, Ordering::Relaxed);
+            bump_switches(); // S-6 ①：递增+打印共享 helper（A12 兑现）
             hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
             note_switch(prev, core::ptr::null_mut(), SwitchKind::Yield);
             klock_release_switch(prev);
@@ -1224,6 +1339,21 @@ pub unsafe extern "C" fn user_fault_exit() -> ! {
     switch_away_forever_with(0)
 }
 
+/// cbox（黑匣子）读面：当前任务调试名。空态（boot 早期 CURRENT null / 副核
+/// park）= None——调用方落 `(boot)` 类占位名。读侧契约同 [`current_task`]
+/// （屏蔽窗/锁窗内读；cbox 钩子在异常入口 PSTATE.I=1 下调用，满足）。
+pub fn current_task_name() -> Option<&'static [u8]> {
+    // SAFETY: 读侧契约同 current_task（见上）；空指针判空先行。
+    let p = unsafe { current_task() };
+    if p.is_null() {
+        None
+    } else {
+        // SAFETY: 指针来自调度器钉入槽（活跃任务，生命周期至退出回收）；
+        // name 是 &'static [u8] 只读域。
+        Some(unsafe { (*p).name })
+    }
+}
+
 /// c-2c slice 2a 执法面：EXIT_HOOK 三调用点前置断言——结构位（bits1-4）
 /// 全零（钩子 = 结构锁窗外契约的执法点：任一置位 = 位/锁失同步或窗纪律
 /// 破缺，dev 构建 fail-loud）。bit5 表锁随调用语境可置（SVC 包络/直调
@@ -1290,7 +1420,7 @@ unsafe fn switch_away_forever_with(code: i32) -> ! {
             if (*cur).ttbr0 != 0 {
                 hal::activate_aspace(0, 0);
             }
-            SWITCHES.fetch_add(1, Ordering::Relaxed);
+            bump_switches(); // S-6 ①：递增+打印共享 helper（A12 兑现）
             hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
             note_switch(cur, core::ptr::null_mut(), SwitchKind::Exit);
             // 「-> ! 的 syscall 永不返回」同款：cur 已 dequeue 永不回——park
@@ -1311,6 +1441,9 @@ unsafe fn switch_away_forever_with(code: i32) -> ! {
         hal::timer::arm_slice();
     }
     set_current(next_ptr);
+    // S-6 ① 补数：退出直切臂（含切 IDLE）旧不计——同 park 臂口径补齐。
+    bump_switches();
+    hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
     activate_if_changed(cur, next_ptr);
     note_switch(cur, next_ptr, SwitchKind::Exit);
     // S-2 E0（草案 3.2 边界②收口点）：`-> !` 唯一放锁点——EXIT_HOOK（Process
@@ -1549,8 +1682,22 @@ pub unsafe fn kill_all_tasks_by_pinned(
 }
 
 /// switches 金丝雀只读访问（watchdog / 遥测读；A12 原子化后锁外读合法）。
+/// 任务↔任务切换计数（S-6 ① 双计数器契约）：只在 [`note_switch`] 非空臂
+/// 单点自增 = 遥测环的精确分母（每次自增恰对应一次环写——hook 在场时）。
+/// 缘起：SWITCHES 自 A12/S-6 起计全部 11 位（含 park 语境 4 位——3 park
+/// 切点 + park 派发），而遥测环只记任务↔任务（note_switch 空参跳过发射）
+///——G1.5「遥测环存活」断言旧比 SWITCHES 的契约在 A12 扩面时即过期，
+/// S-6 复跑 3 实证踩中（total=456 < switches=457，park 事件先于断言落地）。
+/// 金丝雀（switches= 行）继续走 SWITCHES 原口径——park 语境切换也是活性。
+static SWITCHES_TT: AtomicU64 = AtomicU64::new(0);
+
 pub fn switches() -> u64 {
     SWITCHES.load(Ordering::Relaxed)
+}
+
+/// 任务↔任务切换数（遥测环分母——G1.5 断言比较面，详 [`SWITCHES_TT`] 注）。
+pub fn switches_tt() -> u64 {
+    SWITCHES_TT.load(Ordering::Relaxed)
 }
 
 // ---- 切换遥测钩子（3-4c；`可观测性设计.md` per-CPU 无锁环的注入点）----
@@ -1591,6 +1738,10 @@ unsafe fn note_switch(prev: *mut Task, next: *mut Task, kind: SwitchKind) {
     if prev.is_null() || next.is_null() {
         return;
     }
+    // S-6 ① 双计数器：非空臂 = 遥测环分母同点自增（环写与计数同窗——
+    // G1.5 断言 tel >= switches_tt 的配平点；hook 缺席期（boot 前窗）也计
+    //——telemetry::init 先于首个切换，实际不可达，防御性保持对称）。
+    SWITCHES_TT.fetch_add(1, Ordering::Relaxed);
     // SAFETY: 两指针由调用点保证有效（刚做过状态写入）；IRQ 屏蔽路径。
     unsafe {
         let hook = SWITCH_HOOK;
@@ -1957,7 +2108,7 @@ pub fn block_current(obj: usize, signals: u64, deadline_vct: u64) -> WakeReason 
                 if (*cur).ttbr0 != 0 {
                     hal::activate_aspace(0, 0);
                 }
-                SWITCHES.fetch_add(1, Ordering::Relaxed);
+                bump_switches(); // S-6 ①：递增+打印共享 helper（A12 兑现）
                 hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
                 note_switch(cur, core::ptr::null_mut(), SwitchKind::Block);
                 klock_release_switch(cur);
@@ -1969,9 +2120,19 @@ pub fn block_current(obj: usize, signals: u64, deadline_vct: u64) -> WakeReason 
             None => addr_of_mut!(IDLE_TASK),
         };
         // 被选者置 Running 已入 RQ 窗（IDLE 臂恒 Running 同值幂等退役）。
-        // 授片记账先落；CNTV 重编必须在 SQ 窗闭后。
+        // 授片即重编（`调度器设计.md` §4.1 绝对截止时间纪律；同
+        // switch_away_forever：切去 idle 不 arm——idle_loop 自管 CNTV）。
         if next_ptr != addr_of_mut!(IDLE_TASK) {
             (*next_ptr).slice_left = hal::timer::slice_cycles();
+            let slice_end = hal::timer::cntvct() + hal::timer::slice_cycles();
+            if deadline_vct != 0 && deadline_vct < slice_end {
+                // SAFETY: IRQ masked; arm the sleeper's exact deadline rather
+                // than quantizing input/frame waits to the next fair slice.
+                hal::timer::arm_at(deadline_vct);
+            } else {
+                // SAFETY: IRQ 已屏蔽；写 CNTV 系统寄存器；EL1。
+                hal::timer::arm_slice();
+            }
         }
         // 4-3b：新睡眠者已入队、状态定型——PI 全图重推（写 pi/eff 字段，不碰
         // 链接；屏蔽窗内零分配）后才切走。
@@ -1982,21 +2143,11 @@ pub fn block_current(obj: usize, signals: u64, deadline_vct: u64) -> WakeReason 
         // 分支犯此序，本处即修。
         note_sleepq_changed();
         sq_unlock(sq_phys); // SQ 窗闭（CURRENT 翻转前——窗主上下文闭窗）
-        if next_ptr != addr_of_mut!(IDLE_TASK) {
-            // The just-blocked task's own deadline is already known without
-            // re-locking SLEEPQ. If it precedes the next 100ms slice, arm it
-            // exactly; this covers GUI 16.7ms frame waits and inputd's 1ms
-            // poll step while another service remains runnable.
-            let slice_end = hal::timer::cntvct() + hal::timer::slice_cycles();
-            if deadline_vct < slice_end {
-                // SAFETY: IRQ still masked; CNTV system registers are EL1.
-                hal::timer::arm_at(deadline_vct);
-            } else {
-                // SAFETY: IRQ still masked; CNTV system registers are EL1.
-                hal::timer::arm_slice();
-            }
-        }
         set_current(next_ptr);
+        // S-6 ① 补数：入睡直切臂（出选有货）旧不计——服务 IPC 蓄睡/唤醒往返
+        // 的主干切点，漏计=金丝雀盲区（SMP 稳态 park 臂结构性冷）。
+        bump_switches();
+        hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
         activate_if_changed(cur, next_ptr);
         note_switch(cur, next_ptr, SwitchKind::Block);
         // S-2 E0 舞蹈（草案 §2.3）：SLEEPQ 入队后放锁入睡（睡眠点先放锁 = 持锁者
@@ -2229,6 +2380,10 @@ pub fn try_preempt() -> bool {
             // SAFETY: IRQ 已屏蔽（调用方契约）；写 CNTV 系统寄存器；EL1。
             hal::timer::arm_slice();
             set_current(next_ptr);
+            // S-6 ① 补数：try_preempt 直切臂（fastpath/send 授片切换）旧不计
+            //——IPC ping-pong 最热切点，漏计=金丝雀对服务往返结构性失明。
+            bump_switches();
+            hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
             activate_if_changed(cur, next_ptr);
             note_switch(cur, next_ptr, SwitchKind::Preempt);
             // S-2 E0 舞蹈（草案 §2.3）：fastpath/send 授片切换——切前放锁
@@ -2253,15 +2408,14 @@ pub fn try_preempt() -> bool {
 /// IRQ 屏蔽窗内（on_irq_tick 调用）。
 unsafe fn expire_timeouts() -> bool {
     let now = hal::timer::cntvct();
-    let phys = sq_lock(); // SQ 窗开
+    let phys = sq_lock();
     let mut woke = false;
     let urgent_threshold = hal::timer::cntfrq().saturating_mul(5) / 1_000;
     loop {
         let Some(h) = sleepq().head.get() else { break };
         if (*h.as_ptr()).wait_deadline > now {
-            break; // 头未到期 → 后面更远，早停
+            break;
         }
-        // 摘头 → Timeout → 入 runqueue（enqueue 置 Ready）。
         let t = h.as_ptr();
         let urgent = (*t)
             .wait_deadline
@@ -2271,14 +2425,10 @@ unsafe fn expire_timeouts() -> bool {
         (*t).wakeup.set(WakeReason::Timeout);
         enqueue_with_kick(&mut *t, (*t).home_cpu as usize);
         note_wake(t, WakeReason::Timeout);
-        // Sub-millisecond polling hearts (notably inputd's active tick) must
-        // not cut a frame RPC in half merely because they timed out. Reserve
-        // immediate re-evaluation for frame-scale deadlines (>=5ms).
         woke = woke || urgent;
     }
-    // 4-3b：超时摘队也改变睡眠者集合（纯 sleep 者超时离队 → 冻结其 boost）。
     unsafe { note_sleepq_changed() };
-    sq_unlock(phys); // SQ 窗闭
+    sq_unlock(phys);
     woke
 }
 
@@ -2494,7 +2644,7 @@ pub fn idle_loop() -> ! {
                 }
             }
         } else {
-            // 单核/未参与形态：零漂移，但睡眠 deadline 精确武装。
+            // 单核/未参与形态：零漂移（原样）。
             // Plan B：idle 是天然回收点（退出者已不可能在任何执行上下文）——
             // drop Task Box + 内核栈，纯释放零分配。
             reap_drain();
@@ -2502,20 +2652,15 @@ pub fn idle_loop() -> ! {
             let rq_empty = unsafe { rq().is_empty() };
             if rq_empty {
                 match nearest_deadline() {
-                    // No runnable task but sleepers exist: arm the earliest
-                    // absolute deadline. A full 100ms slice here quantizes every
-                    // sub-slice wait (notably the 16.7ms GUI frame clock) to the
-                    // next scheduler tick.
-                    Some(d) => unsafe { hal::timer::arm_at(d) },
-                    // Deep idle: no runnable task and no sleeper.
+                    Some(deadline) => unsafe { hal::timer::arm_at(deadline) },
                     None => unsafe { hal::timer::mask() },
                 }
-                hal::smp::note_park_cpu(); // S-5a per-CPU park 统计（本核独占写）
-                hal::enable_irq(); // 允许 IRQ 唤醒 wfi
+                hal::smp::note_park_cpu();
+                hal::enable_irq();
                 hal::wfi();
-                // 被唤醒 → 回 loop 顶重检 runqueue / SLEEPQ。
             } else {
-                // Runnable work keeps periodic preemption; arm a full slice.
+                // 有活（runnable 或睡眠者）：武装一个时间片，让给 runnable 任务或
+                // 空 tick 扫超时（Step 6 起由 IRQ 驱动抢占）。
                 // SAFETY: 写 CNTV 系统寄存器；EL1。
                 unsafe { hal::timer::arm_slice() };
                 hal::enable_irq();
@@ -2547,6 +2692,22 @@ pub fn current_thread_key() -> usize {
     if cur.is_null() { 0 } else { unsafe { (*cur).thread_key } }
 }
 
+/// 1.1/v1.2：当前任务的运行时 deadline 状态（sched_getattr 自查面消费）。
+/// 返回 `(vdeadline, slice_left)`——(0,0) = 无当前任务或非 deadline。
+/// vdeadline = 绝对截止期（CNTVCT cycles）；slice_left = 剩余预算/片。
+pub fn current_deadline_state() -> (u64, u64) {
+    let cur = unsafe { current_task() };
+    if cur.is_null() {
+        return (0, 0);
+    }
+    unsafe {
+        if (*cur).prio_effective < crate::class::PRIO_DEADLINE {
+            return (0, 0); // 非 deadline 任务无运行时截止态
+        }
+        ((*cur).vdeadline, (*cur).slice_left)
+    }
+}
+
 /// 1.1/S3-b：按 thread_key 冻结前置谓词（单线程版 freeze_precheck）。
 pub fn freeze_precheck_by_thread(thread_key: usize) -> bool {
     // 扫双 RQ + SLEEPQ 找匹配 thread_key 的任务，检查 PI/派生位/持锁。
@@ -2557,19 +2718,15 @@ pub fn freeze_precheck_by_thread(thread_key: usize) -> bool {
             t.pi_inherited == 0 && t.held_locks == 0 && t.svc_mask == 0
         };
         for cpu in 0..2 {
-            if let Some(h) = rq_of(cpu).head() {
-                let mut cur = h;
-                loop {
-                    let t = cur.as_ptr();
-                    if (*t).thread_key == thread_key && !check(t) {
-                        return false;
-                    }
-                    // SAFETY: 环上节点必有 next（环形不变式）。
-                    cur = (*t).rq_next.get().expect("RQ ring next");
-                    if cur == h {
-                        break;
-                    }
-                }
+            let head = rq_of(cpu).head();
+            let mut cur = head;
+            while let Some(c) = cur {
+                let t = c.as_ptr();
+                // §A136：先访当前节点，再推进并判回 head。
+                if (*t).thread_key == thread_key && !check(t) { return false; }
+                cur = (*t).rq_next.get();
+                if cur == head { break; } // 环终止
+
             }
         }
         let mut cur = sleepq().head.get();
@@ -2587,20 +2744,18 @@ pub fn freeze_by_thread(thread_key: usize) -> usize {
     // SAFETY: SVC 路径 KL 已持。
     unsafe {
         for cpu in 0..2 {
-            if let Some(h) = rq_of(cpu).head() {
-                let mut cur = h;
-                loop {
-                    let t = cur.as_ptr();
-                    if (*t).thread_key == thread_key {
-                        (*t).held_locks |= crate::task::HELD_FROZEN;
-                        return 1;
-                    }
-                    // SAFETY: 环上节点必有 next（环形不变式）。
-                    cur = (*t).rq_next.get().expect("RQ ring next");
-                    if cur == h {
-                        break;
-                    }
+            let head = rq_of(cpu).head();
+            let mut cur = head;
+            while let Some(c) = cur {
+                let t = c.as_ptr();
+                // §A136：先访当前节点，再推进并判回 head。
+                if (*t).thread_key == thread_key {
+                    (*t).held_locks |= crate::task::HELD_FROZEN;
+                    return 1;
                 }
+                cur = (*t).rq_next.get();
+                if cur == head { break; } // 环终止
+
             }
         }
         let mut cur = sleepq().head.get();
@@ -2621,19 +2776,17 @@ pub fn thaw_by_thread(thread_key: usize) {
     // SAFETY: handle close 路径。
     unsafe {
         for cpu in 0..2 {
-            if let Some(h) = rq_of(cpu).head() {
-                let mut cur = h;
-                loop {
-                    let t = cur.as_ptr();
-                    if (*t).thread_key == thread_key {
-                        (*t).held_locks &= !crate::task::HELD_FROZEN;
-                    }
-                    // SAFETY: 环上节点必有 next（环形不变式）。
-                    cur = (*t).rq_next.get().expect("RQ ring next");
-                    if cur == h {
-                        break;
-                    }
+            let head = rq_of(cpu).head();
+            let mut cur = head;
+            while let Some(c) = cur {
+                let t = c.as_ptr();
+                // §A136：先访当前节点，再推进并判回 head。
+                if (*t).thread_key == thread_key {
+                    (*t).held_locks &= !crate::task::HELD_FROZEN;
                 }
+                cur = (*t).rq_next.get();
+                if cur == head { break; } // 环终止
+
             }
         }
         let mut cur = sleepq().head.get();
@@ -2644,24 +2797,6 @@ pub fn thaw_by_thread(thread_key: usize) {
                 (*t).held_locks &= !crate::task::HELD_FROZEN;
             }
         }
-    }
-}
-
-/// A12 金丝雀打印（全覆盖——从所有 SWITCHES 递增位调用）。
-/// SMP 稳态忙对各占一核 → preempt 支冷 → park/idle 派发位须也能打印。
-fn canary_print(sw: u64, with_integrity: bool) {
-    const SOAK_PRINT_EVERY: u64 = 100;
-    if sw % SOAK_PRINT_EVERY == 0 {
-        if with_integrity {
-            integrity_check();
-        }
-        print_lock_raw();
-        hal::uart_puts(b"switches=");
-        hal::uart_put_dec(sw);
-        hal::uart_puts(b" kl=");
-        hal::uart_put_dec(hal::kern_lock::kl_contention());
-        hal::uart_puts(b"\n");
-        print_unlock_raw();
     }
 }
 
@@ -2683,9 +2818,8 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
     // S-2b 诊断面：per-CPU tick 计数（两核都计——PAR absent 时区分「副核
     // tick 死」vs「tick 活但派发不出」）。
     hal::smp::note_tick();
-    // 4-0：先扫 SLEEPQ 超时（到期者置 Timeout 入 runqueue）。若本 IRQ 正是
-    // 为某个绝对 deadline 武装的，唤醒后必须立刻重算出选：否则 500µs 输入
-    // tick / 16.7ms 帧 tick 只入队，实际派发仍被剩余 50ms 公平片量化。
+    // 4-0：先扫 SLEEPQ 超时（到期者置 Timeout 入 runqueue——本 tick 后续的
+    // pick 即可能选中它们；头未到期早停，空队近零开销）。
     let deadline_wake = expire_timeouts();
     let cur = current_task();
     // S-2b PAR 金丝雀采样（草案 §5.2 D1）：EL0 tick 纪事钉板 / 非 EL0 清钉。
@@ -2728,6 +2862,103 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
         if preempt_count() > 0 {
             return;
         }
+        // S-6 ③ per-CPU 心跳（诊断面，定谳后退役）：双核 ticks_pre 快照对照
+        // 行——挂死尸检一跑定谳「单侧冻结 = 核 wedge（tick/抢占链死）」vs
+        // 「双爬 = 内核活、服务协议死锁」。安全位 = preempt_count 门后
+        // （PRINT_LOCK 持窗任务被 tick 打断不进本区，G43 同防线）；par 门
+        // 内 = 单核零漂移；tot 每 500 跳一行（phase2 ~840s 量级 ≈ 数十行）。
+        if hal::smp::par_enabled() {
+            let (hb0, hb1, _) = hal::smp::diag_readout();
+            let tot = hb0 + hb1;
+            if tot / 500 != HB_LAST.swap(tot, Ordering::Relaxed) / 500 {
+                hal::kern_lock::with_print_lock(|| {
+                    hal::uart_puts(b"hb c0=");
+                    hal::uart_put_dec(hb0);
+                    hal::uart_puts(b" c1=");
+                    hal::uart_put_dec(hb1);
+                    hal::uart_puts(b"\n");
+                });
+            }
+            // S-6 ③ 卡死等待者扫描（诊断面，与心跳同退役）：每 2500 tot-tick
+            //（run10 定谳：wedge 后全靠对核独爬，5000 门槛只扫到一轮即被
+            // smoke 超时杀——降到 2500 换死前两轮）持 SQ 窗走 SLEEPQ，>10s
+            // 高龄等待者点名（名/obj/年龄）。与心跳行配对一跑定谳「谁在对谁
+            // 断供」：尸末年龄持续爬升的 stuck 行 = 永久丢醒（跨核唤醒丢失）
+            // 候选；出现一两次即消失 = 慢链路非死锁。窗纪律同 expire_timeouts
+            // （SQ 自旋锁跨核互斥）；采集在窗内、打印在窗外——不新增锁序边。
+            if tot / 2500 != STUCK_LAST.swap(tot, Ordering::Relaxed) / 2500 {
+                let freq = hal::timer::cntfrq();
+                let now = hal::timer::cntvct();
+                const STUCK_MAX: usize = 8;
+                let mut hits = [(0usize, 0usize, 0usize, 0u64); STUCK_MAX];
+                let mut n_hits = 0usize;
+                let phys = sq_lock();
+                for_each_sleeper(|t| {
+                    let age = now.saturating_sub(t.wait_since);
+                    if age > freq * 10 && n_hits < STUCK_MAX {
+                        hits[n_hits] =
+                            (t.name.as_ptr() as usize, t.name.len(), t.wait_obj, age / freq);
+                        n_hits += 1;
+                    }
+                });
+                sq_unlock(phys);
+                for i in 0..n_hits {
+                    // SAFETY: 指针取自 Task.name（&'static [u8] 字面量——
+                    // 'static 生命周期，任务离队/退出均不悬垂）。
+                    let name: &[u8] = unsafe {
+                        core::slice::from_raw_parts(hits[i].0 as *const u8, hits[i].1)
+                    };
+                    hal::kern_lock::with_print_lock(|| {
+                        hal::uart_puts(b"stuck '");
+                        hal::uart_puts(name);
+                        hal::uart_puts(b"' obj=0x");
+                        hal::uart_put_hex64(hits[i].2 as u64);
+                        hal::uart_puts(b" age=");
+                        hal::uart_put_dec(hits[i].3);
+                        hal::uart_puts(b"s\n");
+                    });
+                }
+            }
+        }
+        // S-6 ②（沿革九十四发现②收口）：定时拉取——设计 §3.4「空闲核
+        // **定时**或被唤醒时从忙核拉任务」的定时半句最小兑现。旧触发面仅
+        // 「本核 pick None」（idle/park 空转点）：对核忙但独占（副核单任务
+        // 连续运行）→ 本核永不为空 → 一次偷取后拓扑锁死（run4 实证：22+
+        // 任务挤一核各得公平内卷份额，独占者 672:1）。判据 = 环深失衡
+        // K=2（place() ⑤ 同 K，AtomicUsize 免锁读——失衡不成立零锁成本）；
+        // 拉取复用 try_steal_one 全套（只持远端锁形 / F-E2 双过滤 / 随迁
+        // 改写 home / 回插本环置 Ready）——**不直派**：入环即归，本 tick
+        // 随后出选自然轮转（直派是 idle 空转点的特权——本点 cur 在跑）。
+        // 单向拉 + 迁移粘性 = 无乒乓；触发在 slice 燃尽支 = 每 slice 至多
+        // 一拉天然限速；单核 gate 零漂移。
+        if hal::smp::par_enabled() {
+            let me = hal::smp::cpu_id();
+            // SAFETY: rq_of 触 static mut 访问（IRQ 屏蔽窗）；len 为
+            // AtomicUsize（c-2b）Relaxed 免锁读，不触环结构。
+            let (mine, theirs) = unsafe { (rq_of(me).len(), rq_of(1 - me).len()) };
+            // 定时拉取只做“近空闲补偿”：本核环只有当前 monopolist（len<=1）
+            // 且对核显著更重时才拉一任务。若两核各自已有可轮转负载仍持续
+            // 按 K=2 拉取，会把服务/子进程反复迁移，SMP TCG 下形成 20 万+
+            // 切换与 KL 争用（run6 实录），rootfs 后段 FAT/DIR/DF 族超时。
+            if mine <= 1 && theirs >= mine + 2 {
+                // SAFETY: 调用契约面扩张（第三调用点）：IRQ 屏蔽 ✓、本核
+                // RQ 窗未开（rq_lock 在后）✓、preempt_count==0（PRINT_LOCK
+                // 持窗已让）✓——与 idle/park 两点的差异仅「本核出选非
+                // None」：失衡判据已保证只在对核显著更重时拉。
+                if let Some(p) = unsafe { try_steal_one() } {
+                    let st = PULL_CNT.fetch_add(1, Ordering::Relaxed) + 1;
+                    if st <= 8 {
+                        hal::kern_lock::with_print_lock(|| {
+                            hal::uart_puts(b"sS6: pull #");
+                            hal::uart_put_dec(st);
+                            hal::uart_puts(b" '");
+                            hal::uart_puts((*p).name);
+                            hal::uart_puts(b"'\n");
+                        });
+                    }
+                }
+            }
+        }
         // S-3a 义务⑥：mod4 切回 park 门退役——副核 slice 尽与 CPU0 同径出选；
         // 副核 park 化只经任务自身 block/exit/yield 的切回 sec_park_ctx 点，
         // 不再由 tick 强制（参与节奏由入队 SGI 事件定步，与上支注同源）。
@@ -2758,12 +2989,18 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
             // 授片重编已由 timer::handle 的 rearm-before-EOIR 在 IRQ 入口覆盖
             // （同一中断上下文、微秒级差）——CVAL 已是满片终点，此处不再 arm。
             set_current(next_ptr);
-            let sw = SWITCHES.fetch_add(1, Ordering::Relaxed) + 1;
+            // S-6 ①：递增+打印迁共享 helper（六位全域口径——沿革九十四发现①
+            // 收口；SMP 稳态忙对各占核时本支结构性冷，打印只挂此位 = 金丝雀
+            // 0 条假败）。
+            let crossed = bump_switches();
             hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
             activate_if_changed(cur, next_ptr);
             note_switch(cur, next_ptr, SwitchKind::Preempt);
-            // A12 金丝雀打印（tick 抢占位——含完整性走查）。
-            canary_print(sw, true);
+            // 完整性走查（复盘雷 2 残留诊断）：金丝雀拍点顺带对账环/SLEEPQ。
+            // 只在 tick 抢占支跑（rq_unlock 先行 + preempt_count 门挡 PRINT_LOCK 窗）。
+            if crossed {
+                integrity_check();
+            }
             // 切出 cur：存 callee-saved+sp，载 next；ret 进 next（首切→trampoline，
             // 否则→next 上次切出处）。切回 cur 时续行于下一行。
             // S-2 E0 舞蹈（草案 3.1-3，五切走点之一）→ 3-1b KL 剥除：切走前
@@ -2847,6 +3084,9 @@ pub unsafe extern "C" fn on_sgi_resched(_tf: &mut hal::trap::TrapFrame) {
         // SAFETY: IRQ 屏蔽窗内；写 CNTV 系统寄存器；EL1。
         hal::timer::arm_slice();
         set_current(next_ptr);
+        // S-6 ① 补数：SGI resched 直切臂旧不计——跨核唤醒直切主干，同口径补齐。
+        bump_switches();
+        hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
         activate_if_changed(cur, next_ptr);
         note_switch(cur, next_ptr, SwitchKind::Preempt);
         // 切走前无锁可放 + 切后不重取（on_irq_tick 同款协议 3-1b 形，详彼处注）：
@@ -2994,7 +3234,10 @@ unsafe fn try_steal_one() -> Option<*mut Task> {
     let mut victim = None;
     loop {
         let p = cur.as_ptr();
-        if (*p).ttbr0 != 0 && crate::class::eligible(core::ptr::null_mut(), p) {
+        if (*p).spread
+            && (*p).ttbr0 != 0
+            && crate::class::eligible(core::ptr::null_mut(), p)
+        {
             victim = Some(cur);
             break;
         }
@@ -3055,8 +3298,7 @@ unsafe fn dispatch_from_park_ctx(next_ptr: *mut Task) {
     // SAFETY: 本核 CVAL 重臂；PSTATE.I=1。
     unsafe { hal::timer::arm_slice() };
     set_current(next_ptr);
-    let sw = SWITCHES.fetch_add(1, Ordering::Relaxed) + 1;
-    canary_print(sw, false); // A12 SMP：park 派发位也打印
+    bump_switches(); // S-6 ①：递增+打印共享 helper（A12 兑现）
     hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
     hal::activate_aspace((*next_ptr).ttbr0, (*next_ptr).asid);
     // SAFETY: prev=本核 park ctx（惰性捕获——首次派发把调用帧存进本核槽）、
@@ -3092,8 +3334,7 @@ unsafe fn dispatch_from_idle(next_ptr: *mut Task) {
     // idle 派发无 CNTV IRQ 先行：wfi 醒 / SGI 醒 / 环顶重查三种入口皆然）。
     unsafe { hal::timer::arm_slice() };
     set_current(next_ptr);
-    let sw = SWITCHES.fetch_add(1, Ordering::Relaxed) + 1;
-    canary_print(sw, false); // A12 SMP：idle 派发位也打印
+    bump_switches(); // S-6 ①：递增+打印共享 helper（A12 兑现）
     hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
     activate_if_changed(idle, next_ptr);
     note_switch(idle, next_ptr, SwitchKind::Preempt);

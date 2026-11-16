@@ -1862,10 +1862,13 @@ pub extern "C" fn watchdog(_arg: usize) -> ! {
                 // --trace-dual 收割面）。金丝雀/杀数断言不动（不属记录面）。
                 let t_off = crate::telemetry::trace_off();
                 if !t_off {
-                // 3-4c 遥测环存活断言：环计**全部**三型切换 ≥ SWITCHES（只计抢占），
-                // 且环内 vct 从旧到新单调（乱序 = 写路径并发/覆盖 bug）。
+                // 3-4c 遥测环存活断言：环计任务↔任务切换 ≥ switches_tt（S-6 ①
+                // 双计数器——环只记任务↔任务，分母同口径；SWITCHES 自 A12/S-6
+                // 起 11 位全计含 park 语境，不可再作分母），且环内 vct 从旧到新
+                // 单调（乱序 = 写路径并发/覆盖 bug）。
                 let tel = crate::telemetry::total();
-                assert!(tel >= switches, "G1.5 FAIL: 遥测环未跟上（total={} < switches={}）", tel, switches);
+                let switches_tt = berry_sched::switches_tt();
+                assert!(tel >= switches_tt, "G1.5 FAIL: 遥测环未跟上（total={} < switches_tt={}）", tel, switches_tt);
                 assert!(crate::telemetry::check(), "G1.5 FAIL: 遥测环 vct 非单调");
                 // 4-0 配套唤醒环断言：sleeper 双路径全过（BLOCK_BOOT_DONE 置位
                 // 前提 = 两条 boot 记录已落环）后才验——①计数 ≥ 2；②健康自检

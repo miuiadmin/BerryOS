@@ -4,6 +4,8 @@
 
 **A microkernel operating system written entirely in Rust — power-first, capability-secure, and AI-native by construction.**
 
+The kernel is named **Meihe (莓核)** — Meihe (MAY-huh), the microkernel of BerryOS; "small enough to be almost no kernel at all."
+
 [![CI](https://github.com/miuiadmin/BerryOS/actions/workflows/ci.yml/badge.svg)](https://github.com/miuiadmin/BerryOS/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/tag/miuiadmin/BerryOS?label=release)](https://github.com/miuiadmin/BerryOS/tags)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)

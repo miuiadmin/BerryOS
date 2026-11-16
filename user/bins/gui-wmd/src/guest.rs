@@ -1,7 +1,7 @@
 //! gui-wmd —— GUI-5（ADR #61）窗口管理守护：呈现（guifbd）/窗口策略
 //! （本服务）分离。guifbd 零改动；gfxdemo 改连 wm 域（同 op 换端——
 //! present/hdi app-facing 六+四 op 经本服务透传中继，wm 六 op 本地权威处理；
-//! BootProgress op 7 是 wmd 自产系统控制面；
+//! BootProgress op 9 是 wmd 自产系统控制面；
 //! inputd 追加推送端收窗口表快照（WM_TABLE_WAIT 阻塞应答形）。
 //!
 //! **boot 授能链**：EFI 相 svcmgr guifbd arm Ok 后 wmd arm 预拉本服务
@@ -1114,10 +1114,10 @@ fn on_session(table: &mut table::WmTable, present_cli: Handle, hdi_cli: Handle,
                     .store(table.owner_is_immersive(owner), Ordering::Relaxed);
             }
         }
-        Some(&op) if (gp::OP_GETINFO..=gp::OP_POWER_MODE).contains(&op) => {
+        Some(&op) if (gp::OP_GETINFO..=gp::OP_FRAME_TIMING).contains(&op) => {
             relay::relay(ch, present_cli, msg, hs);
         }
-        Some(&op) if (gp::OP_REG_VBLANK..=gp::OP_COMMIT).contains(&op) => {
+        Some(&op) if (gp::OP_REG_VBLANK..=gp::OP_VBLANK_TIMING).contains(&op) => {
             relay::relay(ch, hdi_cli, msg, hs);
         }
         Some(&gp::OP_WM_SURFACE_MODE) => {

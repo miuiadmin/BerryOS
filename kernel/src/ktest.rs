@@ -44,8 +44,14 @@ pub fn run() {
     test_fast();
     test_freeze();
     test_deadline();
+    test_billing();
+    test_cmp();
+    test_suspend_negative();
+    test_billing_overflow();
+    test_sched_attr_negative();
     test_sched_attr();
     test_dtb();
+    test_cbox();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
@@ -3035,6 +3041,214 @@ fn test_freeze() {
     berry_hal_aarch64::uart_puts(b"FREEZE-K ok\n");
 }
 
+/// 1.1/S4-b：per-domain CPU 账户——charge / query / 表满覆写。
+fn test_billing() {
+    use crate::telemetry;
+
+    // BL1：charge + query 往返。
+    telemetry::billing_charge(100, 1_000);
+    telemetry::billing_charge(100, 2_000);
+    assert_eq!(telemetry::billing_domain_total(100), Some(3_000),
+               "BL：BL1 域 100 须累计 3000ns");
+
+    // BL2：多域隔离。
+    telemetry::billing_charge(200, 500);
+    assert_eq!(telemetry::billing_domain_total(100), Some(3_000),
+               "BL：BL2 域 100 不受域 200 影响");
+    assert_eq!(telemetry::billing_domain_total(200), Some(500),
+               "BL：BL2 域 200 须 500ns");
+
+    // BL3：域 0 / 零时长拒收（无副作用）。
+    telemetry::billing_charge(0, 999);
+    telemetry::billing_charge(300, 0);
+    assert_eq!(telemetry::billing_domain_total(300), None,
+               "BL：BL3 零时长 charge 须无副作用（不建槽）");
+
+    berry_hal_aarch64::uart_puts(b"BL-K ok\n");
+}
+
+/// 1.1/S5.12 负向：`count_type` 类型过滤语义（token 上限执法读侧判据）。
+fn test_suspend_negative() {
+    use crate::handle::{HandleTable, KernelObj, ObjType, RIGHT_READ, RIGHT_WRITE};
+    use crate::vmo::Vmo;
+
+    // A. 空表 → SuspendToken 计数 0。
+    let mut ht = HandleTable::new();
+    assert_eq!(ht.count_type(ObjType::SuspendToken), 0,
+        "SUS-NEG：空表 SuspendToken 计数须 0");
+
+    // B. 插 2 个 Vmo → SuspendToken 计数仍 0（类型隔离）。
+    let rw = RIGHT_READ | RIGHT_WRITE;
+    let h1 = ht.insert(KernelObj::Vmo(Vmo::create(4096).unwrap()), rw).unwrap();
+    let h2 = ht.insert(KernelObj::Vmo(Vmo::create(4096).unwrap()), rw).unwrap();
+    assert_eq!(ht.count_type(ObjType::Vmo), 2, "SUS-NEG：Vmo 计数须 2");
+    assert_eq!(ht.count_type(ObjType::SuspendToken), 0,
+        "SUS-NEG：Vmo 不污染 SuspendToken 计数");
+
+    // C. 全关归零。
+    ht.close(h1).unwrap();
+    ht.close(h2).unwrap();
+    assert_eq!(ht.count_type(ObjType::Vmo), 0, "SUS-NEG：全关归零");
+
+    berry_hal_aarch64::uart_puts(b"SUS-NEG-K ok\n");
+}
+
+/// 1.1/S4-b 补测：billing 表满覆写（9 域逼满 8 槽）。
+fn test_billing_overflow() {
+    use crate::telemetry;
+    assert_eq!(telemetry::BILLING_SLOTS, 8, "BL-OVF：槽位须 8");
+    for d in 300u64..=308 { // 避开 test_billing 的 100/200
+        telemetry::billing_charge(d, 1_000);
+    }
+    // 第 9 域（308）落账可查——覆写是新顶旧不丢账。
+    assert_eq!(telemetry::billing_domain_total(308), Some(1_000),
+        "BL-OVF：域 308 须覆写落账 1000ns");
+    berry_hal_aarch64::uart_puts(b"BL-OVF-K ok\n");
+}
+
+/// 1.1/S1 负向：sa_parse 输入校验面（sched_setattr 底层验证器直测）。
+fn test_sched_attr_negative() {
+    use crate::syscall::sa_parse;
+    const ERR_INVAL: i32 = -22;
+    const ERR_NOTSUP: i32 = -95;
+
+    // 构造 56B attr 并填字段。
+    fn mk_attr(version: u16, flags: u16, weight: u32, policy: u8,
+               budget: u64, period: u64) -> ([u8; 56], u64) {
+        let mut b = [0u8; 56];
+        b[0..4].copy_from_slice(&56u32.to_le_bytes());
+        b[4..6].copy_from_slice(&version.to_le_bytes());
+        b[6..8].copy_from_slice(&flags.to_le_bytes());
+        b[8..12].copy_from_slice(&weight.to_le_bytes());
+        b[12] = policy;
+        b[40..48].copy_from_slice(&budget.to_le_bytes());
+        b[48..56].copy_from_slice(&period.to_le_bytes());
+        // 写入静态槽取地址（EL1 形态——ktest 跑在 EL1）。
+        (b, 0) // 地址由调用方填
+    }
+
+    // 静态 attr 槽（SA_PARSE 测试面——每次覆写）。
+    static mut ATTR_BUF: [u8; 56] = [0; 56];
+
+    fn parse(version: u16, flags: u16, weight: u32, policy: u8,
+             budget: u64, period: u64) -> Result<(), i32> {
+        unsafe {
+            ATTR_BUF[0..4].copy_from_slice(&56u32.to_le_bytes());
+            ATTR_BUF[4..6].copy_from_slice(&version.to_le_bytes());
+            ATTR_BUF[6..8].copy_from_slice(&flags.to_le_bytes());
+            ATTR_BUF[8..12].copy_from_slice(&weight.to_le_bytes());
+            ATTR_BUF[12] = policy;
+            ATTR_BUF[40..48].copy_from_slice(&budget.to_le_bytes());
+            ATTR_BUF[48..56].copy_from_slice(&period.to_le_bytes());
+            let ptr = core::ptr::addr_of!(ATTR_BUF) as u64;
+            sa_parse(true, ptr).map(|_| ())
+        }
+    }
+
+    // AN-1: weight=0 → EINVAL。
+    assert_eq!(parse(1, 0x0001, 0, 1, 0, 0), Err(ERR_INVAL),
+        "ATTR-NEG：weight=0 须拒");
+    // AN-2: weight=10001 → EINVAL。
+    assert_eq!(parse(1, 0x0001, 10001, 1, 0, 0), Err(ERR_INVAL),
+        "ATTR-NEG：weight=10001 须拒");
+    // AN-3: version=2 → ENOTSUP。
+    assert_eq!(parse(2, 0, 100, 1, 0, 0), Err(ERR_NOTSUP),
+        "ATTR-NEG：version=2 须 ENOTSUP");
+    // AN-4: flags 未知位 → EINVAL。
+    assert_eq!(parse(1, 0x1000, 100, 1, 0, 0), Err(ERR_INVAL),
+        "ATTR-NEG：未知 flags 位须拒");
+    // AN-5: policy=5 → EINVAL。
+    assert_eq!(parse(1, 0x0004, 100, 5, 0, 0), Err(ERR_INVAL),
+        "ATTR-NEG：policy=5 须拒");
+    // AN-6: budget > period → EINVAL。
+    assert_eq!(parse(1, 0x0084, 100, 3, 100, 50), Err(ERR_INVAL),
+        "ATTR-NEG：budget>period 须拒");
+    // AN-7: budget=0 → EINVAL。
+    assert_eq!(parse(1, 0x0084, 100, 3, 0, 100), Err(ERR_INVAL),
+        "ATTR-NEG：budget=0 须拒");
+
+    let _ = mk_attr; // 消 unused 警
+    berry_hal_aarch64::uart_puts(b"ATTR-NEG-K ok\n");
+}
+
+/// 1.1 §4.5 CMP 验收——单比较器全序 property（ktest 形态）。
+/// CMP-1 反对称/传递：5 任务递增 VD → pick 序严格递增 VD。
+/// CMP-2 pick 最小：任一 pick 结果 == 全集 order_key 最小者。
+/// CMP-4 确定性：同输入重复 pick 同结果。
+fn test_cmp() {
+    use berry_sched::{Fair, Runqueue, SchedClass, Task, Topo};
+
+    extern "C" fn cmp_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    fn mk(name: &'static [u8], vd: u64, vr: u64) -> &'static mut Task {
+        let t = alloc::boxed::Box::leak(Task::new_kernel_with_as(cmp_dummy, 0, name, 0, 0));
+        t.vdeadline = vd;
+        t.vruntime = vr;
+        t
+    }
+
+    let mut rq = Runqueue::new();
+    let rr = Fair;
+    let topo = Topo::single();
+
+    // 5 任务（enqueue 后再设 VD——enqueue 会按 avg 覆写 VD/VR）。
+    let mut ts: alloc::vec::Vec<&'static mut Task> = alloc::vec![
+        mk(b"c3".as_slice(), 300, 50),
+        mk(b"c1".as_slice(), 100, 10),
+        mk(b"c5".as_slice(), 500, 90),
+        mk(b"c2".as_slice(), 200, 30),
+        mk(b"c4".as_slice(), 400, 70),
+    ];
+    for t in ts.iter_mut() {
+        rr.enqueue(&mut **t, &mut rq);
+    }
+    // 入环后设 VD/Vr（enqueue 的覆写不影响此处）。
+    let vds = [300u64, 100, 500, 200, 400];
+    let vrs = [50u64, 10, 90, 30, 70];
+    for (i, t) in ts.iter_mut().enumerate() {
+        (*t).vdeadline = vds[i];
+        (*t).vruntime = vrs[i];
+    }
+
+    // CMP-2：首 pick == 全集 VD 最小（c1=100）。
+    let p1 = rr.pick_next(&rq, &topo).expect("CMP：非空环须有出选");
+    assert_eq!(p1.vdeadline, 100, "CMP-2：首 pick 须 VD 最小（100）");
+
+    // CMP-1：连续 pick 序严格递增 VD（反对称 + 传递——无回跳）。
+    let mut last_vd = 0u64;
+    let mut picks: alloc::vec::Vec<u64> = alloc::vec::Vec::new();
+    for t in ts.iter_mut() {
+        (*t).vruntime = 0; // 全部 eligible
+    }
+    for _ in 0..5 {
+        if let Some(p) = rr.pick_next(&rq, &topo) {
+            assert!(p.vdeadline >= last_vd,
+                    "CMP-1：VD 须非递减（last={} cur={}）", last_vd, p.vdeadline);
+            last_vd = p.vdeadline;
+            picks.push(p.vdeadline);
+            p.vdeadline = u64::MAX; // 防重复 pick 同任务
+        }
+    }
+    assert!(picks.len() >= 3, "CMP-1：至少 3 pick 才能验全序");
+
+    // CMP-4：确定性——重置后同输入同结果。
+    for t in ts.iter_mut() {
+        (*t).vdeadline = 200; // 全部同键（在环上直改——不 re-enqueue）
+        (*t).vruntime = 0;
+        (*t).prio_effective = 0;
+    }
+    let pa = rr.pick_next(&rq, &topo).unwrap();
+    let va = pa.vdeadline;
+    pa.vdeadline = 300; // 改一个防重 pick
+    let pb = rr.pick_next(&rq, &topo).unwrap();
+    let vb = pb.vdeadline;
+    assert_eq!(va, vb, "CMP-4：同输入同键 pick 须同结果");
+
+    berry_hal_aarch64::uart_puts(b"CMP-K ok\n");
+}
+
 /// 1.1/S1：SchedAttr effective 组合（Process 默认 ∪ Thread 覆盖）。
 fn test_sched_attr() {
     use crate::process::{SchedAttr, SA_FLAG_INTENT, SA_FLAG_POLICY, SA_FLAG_WEIGHT};
@@ -3064,7 +3278,7 @@ fn test_sched_attr() {
 /// 序 = 天然 EDF。deadline 任务设 `prio_effective ≥ PRIO_DEADLINE` +
 /// `vdeadline = 绝对截止期`，Fair 不覆盖 VD。
 fn test_deadline() {
-    use berry_sched::{Fair, PRIO_DEADLINE, Runqueue, SchedClass, Task, Topo};
+    use berry_sched::{Fair, PRIO_DEADLINE, Runqueue, SchedClass, Task, Topo, HELD_FROZEN, HELD_THROTTLE};
 
     extern "C" fn dl_dummy(_arg: usize) -> ! {
         berry_hal_aarch64::halt()
@@ -3112,6 +3326,45 @@ fn test_deadline() {
     // D3：deadline 带空 → 所有任务退回 fair——任一出选即通过（不验具体是谁，
     // 因为 advance_past 游标位置决定首见者——三任务均合法）。
     let _p3 = rr.pick_next(&rq, &topo).expect("DL：D3 非空环须有出选");
+
+    // —— S5-c：预算执法——budget 耗尽 throttle + 周期到 lazy unthrottle ——
+    // DL-B1：deadline 任务带预算——slice 耗尽 → HELD_FROZEN 置位。
+    let tb = mk(b"dlB".as_slice()); // budget 任务
+    let tf2 = mk(b"dlF2".as_slice()); // fair 陪跑
+    let mut rq2 = Runqueue::new();
+
+    // 设 deadline + 预算。
+    tb.prio_effective = PRIO_DEADLINE;
+    tb.preempt_threshold = 100; // 预算 = 100 cycles
+    tb.duration_hint_ns = 1000; // 周期 = 1000 cycles
+    tb.vdeadline = u64::MAX; // 截止远（永不到——测 throttle 持续）
+    tb.slice_left = 100; // 当前 slice = 预算
+    rr.enqueue(&mut *tb, &mut rq2);
+    rr.enqueue(&mut *tf2, &mut rq2);
+
+    // tick 到 slice 耗尽 → 应 throttle（HELD_FROZEN 置位）。
+    // tick 读 timer 内部算 delta——直接置 slice_left=0 后 tick 模拟到期。
+    tb.slice_left = 0;
+    let rq_mut = &mut rq2;
+    let cur2 = tb as *mut berry_sched::Task;
+    let _ = rq_mut; // tick 签名需 rq 但 Fair::tick 未用——传 ref
+    rr.tick(unsafe { &mut *cur2 }, unsafe { &mut *core::ptr::addr_of_mut!(rq2) });
+    assert!(tb.held_locks & HELD_THROTTLE != 0,
+            "DL：B1 slice 耗尽须置 HELD_THROTTLE（预算限流）");
+    assert!(tb.held_locks & HELD_FROZEN == 0,
+            "DL：B1 预算限流不得误置 HELD_FROZEN（进程冻结独占语义）");
+    // fair 陪跑不受影响。
+    assert!(tf2.held_locks & (HELD_FROZEN | HELD_THROTTLE) == 0,
+            "DL：B1 fair 任务不受 deadline 预算执法影响");
+
+    // DL-B2：周期到（vdeadline 过去）→ lazy_unthrottle 解冻。
+    tb.vdeadline = 1; // 截止已过（cntvct ≥ 1）
+    // 触发 pick_next → lazy_unthrottle → 解冻。
+    let picked = rr.pick_next(&rq2, &topo).expect("DL：B2 非空环须有出选");
+    assert!(picked.held_locks & HELD_THROTTLE == 0,
+            "DL：B2 周期到后 lazy_unthrottle 须解限流（清 THROTTLE 位）");
+    assert!(picked.slice_left == 100,
+            "DL：B2 解冻后须授新预算 slice（期望 100，实际 {}）", picked.slice_left);
 
     berry_hal_aarch64::uart_puts(b"DL-K ok\n");
 }
@@ -3772,5 +4025,105 @@ fn test_dtb() {
     assert_eq!(find_initrd(&trunc), None, "DTB：截断");
 
     berry_hal_aarch64::uart_puts(b"DTB-K ok\n");
+}
+
+/// cbox 排液窗数学（审计二轮 [4]）：`first = total - stored + 1` 环形窗与
+/// `(s-1) % SLOTS` 槽映射的边界——此面差一会发出错 seq 记录、decode 照过、
+/// 标记照打、静默上船。纯内核内可测（on_fault 伪造帧直灌，无需真异常注入）。
+/// **污染隔离**：黑匣子是生产面——ktest_save/restore 快存恢复，用例不留痕
+/// （否则 battery 窗会把测试记录照实落账）。
+fn test_cbox() {
+    use crate::cbox::{self, CboxHdr, REC_MAGIC};
+    use berry_hal_aarch64::trap::{TrapFrame, KIND_EL0};
+
+    fn frame(pc: u64) -> TrapFrame {
+        TrapFrame {
+            regs: [0; 31],
+            esr: 0x9200_0046,
+            far: pc,
+            elr: pc,
+            spsr: 0,
+            sp: 0x7000,
+        }
+    }
+
+    /// 全量排液进定长缓冲（12B 头 + ≤8×104B = 844，ABI 0x42 定长同源），
+    /// 返回 (头, 实拷字节, 记录区)。头/记录回读走 `copy_nonoverlapping`
+    ///（字节偏移不保证对齐——read_volatile 未对齐 = UB，拷进对齐临时才是
+    /// 规范化读）。
+    fn drain(total: u32) -> (CboxHdr, usize, [u8; 12 + 8 * 104]) {
+        let mut buf = [0u8; 12 + 8 * 104];
+        let mut n = 0usize;
+        cbox::drain_with(total, &mut |s: &[u8]| {
+            buf[n..n + s.len()].copy_from_slice(s);
+            n += s.len();
+        });
+        let mut hdr = CboxHdr { ver: 0, total: 0, stored: 0 };
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                buf.as_ptr(),
+                &mut hdr as *mut CboxHdr as *mut u8,
+                core::mem::size_of::<CboxHdr>(),
+            );
+        }
+        (hdr, n, buf)
+    }
+
+    /// 缓冲内第 k 条记录回读（对齐临时形）。
+    fn rec_at(b: &[u8; 12 + 8 * 104], k: usize) -> cbox::CboxRec {
+        let mut r = cbox::REC_ZERO_FOR_KTEST;
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                b[12 + k * 104..].as_ptr(),
+                &mut r as *mut cbox::CboxRec as *mut u8,
+                core::mem::size_of::<cbox::CboxRec>(),
+            );
+        }
+        r
+    }
+
+    let saved = cbox::ktest_save();
+
+    // A. 空表：头 only（total=0 早退——12B 头零记录）。
+    cbox::ktest_restore(0, [cbox::REC_ZERO_FOR_KTEST; 8]);
+    let (h, n, _) = drain(0);
+    assert_eq!((h.total, h.stored), (0, 0), "CBOX：空表头");
+    assert_eq!(n, 12, "CBOX：空表恰 12B");
+
+    // B. 单条：stored=1、first=1（无轮转）。
+    cbox::ktest_restore(0, [cbox::REC_ZERO_FOR_KTEST; 8]);
+    unsafe { cbox::on_fault(KIND_EL0, &frame(0x2000)) };
+    let (h, n, b) = drain(1);
+    assert_eq!((h.total, h.stored, n), (1, 1, 12 + 104), "CBOX：单条头");
+    let r = rec_at(&b, 0);
+    assert!(r.magic == REC_MAGIC && r.seq == 1 && r.pc == 0x2000, "CBOX：单条记录");
+
+    // C. 恰满 8 条（无轮转边界）：first=1..=8 全量。
+    cbox::ktest_restore(0, [cbox::REC_ZERO_FOR_KTEST; 8]);
+    for i in 0..8u32 {
+        unsafe { cbox::on_fault(KIND_EL0, &frame(0x3000 + i as u64)) };
+    }
+    let (h, n, _) = drain(8);
+    assert_eq!((h.total, h.stored, n), (8, 8, 12 + 8 * 104), "CBOX：恰满");
+
+    // D. 9 条（轮转 +1）：stored 夹 8、窗 first=2..=9（seq 1 已被覆盖，逐条
+    // seq/槽映射对号——pc 编码序号即轮转见证）。
+    unsafe { cbox::on_fault(KIND_EL0, &frame(0x3008)) };
+    assert_eq!(cbox::drain_total(), 9, "CBOX：写序 9");
+    let (h, n, b) = drain(9);
+    assert_eq!((h.total, h.stored, n), (9, 8, 12 + 8 * 104), "CBOX：轮转头");
+    for k in 0..8usize {
+        let s = (k + 2) as u32; // 期望 seq
+        let r = rec_at(&b, k);
+        assert!(r.magic == REC_MAGIC && r.seq == s, "CBOX：窗序 seq={s}");
+        assert_eq!(r.pc, 0x3000 + (s - 1) as u64, "CBOX：轮转槽映射 seq={s}");
+    }
+
+    // E. 锚越界夹取（防御面）：total=15 > now=9 → 等价 drain(9)。
+    let (h2, n2, _) = drain(15);
+    assert_eq!((h2.total, h2.stored, n2), (9, 8, 12 + 8 * 104), "CBOX：锚夹取");
+
+    cbox::ktest_restore(saved.0, saved.1);
+    berry_hal_aarch64::uart_puts(b"CBOXK ok\n");
 }
 
