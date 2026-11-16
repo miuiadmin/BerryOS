@@ -7,9 +7,6 @@ intent = "utility"
 
 [capabilities]
 console = false
-# M2 第 8 步：五键跨 boot 持久化（SETTINGS.CFG——settings_io.rs 落盘，
-# 含旧 SETTINGS.JSN dark 键迁移；launcher LAYOUT.JSN 的 fs 词先例同形；
-# fsmgr 端经 app_launch fs 词授能，fs_h() 消费）。
 fs = ["rootfs"]
 
 [runtime]
