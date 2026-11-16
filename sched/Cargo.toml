@@ -49,6 +49,11 @@ berry-em = { path = "../user/berry-em" }
 # 入环门/配置三态/带成员豁免判——host 可测钉板）。BandBudget/BAND_SLOTS
 # 与判定律单源在此，本 crate band.rs 机械壳 re-export 消费。
 berry-bandface = { path = "../bandface" }
+# W3-Q82：on_irq_tick 内嵌 SMP 门纯函数面（心跳/卡扫折叠除法变档律 +
+# 高龄乘域判 + 定时拉取近空闲联合门 + 偷取 victim 三值合取——host 可测
+# 钉板）。HEARTBEAT_DIV/STUCK_*/PULL_K 常量与判定律单源在此，本 crate
+# sched.rs 机械壳消费。
+berry-balface = { path = "../balface" }
 # W3-Q20：policy O(1) 查表数学 + SchedAttr 位选律纯函数面（黄金比例散列/
 # 探测窗查表缺席判/first-wins 插入窗满拒收/EPP 两位打包——host 可测钉板）。
 # BUCKETS/PROBE_MAX/TBL_MAX/WEIGHT_MAX/EPP_* 常量与 bucket_of/lookup_o1/
