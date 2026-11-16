@@ -138,3 +138,39 @@ pub fn util_reset(cpu: usize) {
     UTIL_ACCUM[cpu].store(0, Ordering::Relaxed);
     UTIL_WINDOW_START[cpu].store(0, Ordering::Relaxed);
 }
+
+/// park 入口折一窗（SMP-01 修正：parked 核 util 冻结喂跨核读者）。
+///
+/// 缺口（双核形态实测推演，代码面定谳）：深 park（mask CNTV）后本核
+/// **无 tick** = [`util_tick_window`] 的折叠永不发生——EWMA 冻结在最后
+/// 一次 tick 时的值。跨核读者面两处受害：
+/// - [`crate::util::any_overutilized`]（EAS 全域回退门）：核忙至
+///   util>819 后其任务全部退出/阻塞 → 深 park → 冻结值使全域恒判
+///   overutil → `policy::placement_hint` 恒 0、`eas_place` 恒 None
+///   ——EAS 选核整域死亡，直到该核再跑任务（结构性可能永不）；
+/// - `crate::sched::eas_place` 的 utils 快照：冻结虚高/虚低都让对核
+///   spawn 的能量选核失真。
+///
+/// 修法 = 本核 park 入口（[`crate::sched::park_recheck`] 门后 + CPU0
+/// `idle_loop` SMP 分支皆空臂）无条件折一窗：accum 取走真值（park 前
+/// 片段若有运行账如实入 raw），elapsed = 距上次翻窗实差——数学面与
+/// [`util_tick_window`] 的 Fold 分支同源（[`ewma_fold`] 单源），仅去
+/// 「窗口到期」门（park = 本核对「即将无限期空闲」的自证，等待到期
+/// 折叠即等待一个不再到来的 tick——这正是缺口本身）。逐次 park 环 pass
+/// 各折一步（α=1/8），单调向 0 收敛；从未开窗（util 恒 0）零动作。
+/// 调用契约：本核 IRQ 屏蔽窗内（park 环天然满足）；只触本核槽。
+pub fn util_idle_fold(cpu: usize) {
+    if cpu >= UTIL_NR_CPU {
+        return;
+    }
+    let now = hal::timer::cntvct();
+    let start = UTIL_WINDOW_START[cpu].load(Ordering::Relaxed);
+    if start == 0 || now <= start {
+        return; // 未开窗（util 恒 0 无冻结面）/ 计数回绕防御（window_state 同款）
+    }
+    let accum = UTIL_ACCUM[cpu].swap(0, Ordering::Relaxed);
+    let ewma = UTIL_EWMA[cpu].load(Ordering::Relaxed);
+    let next = ewma_fold(accum, now - start, ewma);
+    UTIL_EWMA[cpu].store(next, Ordering::Relaxed);
+    UTIL_WINDOW_START[cpu].store(now, Ordering::Relaxed);
+}

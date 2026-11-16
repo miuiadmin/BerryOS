@@ -943,6 +943,7 @@ test-host:
     # 编解码黄金字节 + 严格串行会话机，host 20 测；独立小工作区绕开
     # user/Cargo.toml——manifest-path 直指 crate，同 stdhello/bsh 先例）。
     cargo test --manifest-path user/berry-ksproto/Cargo.toml --target {{host}}
+    cargo test --manifest-path rootface/Cargo.toml --target {{host}}
     cargo test --manifest-path user/berry-rootface/Cargo.toml --target {{host}}
     # W1 接线（D-审计 §4 同款零接线面）：berry-softime（波3 件 C 软键盘
     # 引擎 v1——QWERTY-lite ASCII 键位模型 + OP_INPUT_INJECT 载荷编码 +
