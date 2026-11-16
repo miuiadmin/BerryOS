@@ -982,6 +982,14 @@ test-host:
     # 上被动覆盖，门禁自身坏 = 平像静默劣化。合成双段 ELF（gap 零填 + bss
     # 尾零 + 页取整 + 确定性）+ 8 拒面（elf2pe --selftest 同位纪律）。
     python3 tools/elf2flat.py --selftest
+    # W1 接线（彻底 Rust 化轨道 b 层 #8 首刀）：elf2flat Rust 件 lib 纯面
+    # 测试（双段钉板 + 8 拒面 + Rust 侧短输入面 + synth 模式重导——与
+    # Python oracle 字节级对拍见 docs/彻底Rust化计划-v1.0.md §5 五步；本刀
+    # 落位第 2/3/4 步：Rust 件 + 对拍（scratch 对拍 PASS 背书）+ 接线，
+    # 产链换轨（justfile build-user 六处 python3 → rust bin）留二刀）。
+    # 独立小工作区（tools/berry 同款形态），根 .cargo/config.toml 锁
+    # build.target=aarch64-unknown-none 故必须显式 --target {{host}}。
+    cargo test --manifest-path tools/elf2flat/Cargo.toml --target {{host}}
     # Q1 续挖（a-3 U4 纪律同款）：pwrcls 门禁自检——smoke B4 掉电相三 boot
     # 的采样断言（A/B 档分类 + Boot C 后必 clean）与毒环注入都吃本件，此前
     # 只在 smoke 产物链上被动覆盖，门禁自身坏 = 掉电相静默劣化。
