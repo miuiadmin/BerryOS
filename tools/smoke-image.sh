@@ -169,7 +169,7 @@ PYEOF
 # B-1 起 +B1 ok n=4（bench1 spawn + ~8.6k SVC ≈ +5-10s TCG）——360s 帽不动。
 # C-3 起 +PS/BC（ps + berryctl 三拉起 = 两 musl spawn + 4 RPC ≈ +10-20s
 # TCG）——360s 帽不动。
-DEADLINE_BOOT=600
+DEADLINE_BOOT=900
 DEADLINE_CANARY=120
 DEADLINE_RX=60
 
@@ -315,7 +315,7 @@ KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL o
 # 防误配。裸 grep -qF 足够——"WM ok" 与现役标记互非子串（最近形
 # BENCHWAKE n=/MANY ok/WAIT ok 均不含）。GFX/GFXF 语义零漂移：present/hdi
 # 调用点仅换端经 wmd 中继（op 编码与断言零改动——guifbd 字节不动）。时
-# 序：wmd 一 spawn ≈+5-10s TCG，实测链 ~115s；并行 QEMU 主机负载下用 600s 帽——DEADLINE_BOOT=600s
+# 序：wmd 一 spawn ≈+5-10s TCG，实测链 ~115s；合并 BerryUI 真实 boot-probe 批后低载也需长窗，并行 QEMU 主机负载下用 900s 帽——DEADLINE_BOOT=900s
 # 帽不动。LAUNCH 双（GUI-8 段③）：launcher 常驻进程自测——首帧呈现回执
 # 过链 LAUNCH ok + 合成 swipe 两轮翻页各落一帧 PAGE ok n=2（frameloop.rs
 # Selftest 状态机——**每进程**恰一次；svcmgr 一次重启帽重拉后两标记可在

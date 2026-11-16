@@ -170,6 +170,10 @@ class ProductRig:
             "ramfb",
             "-fw_cfg",
             "name=opt/berry/display,string=1080x1920@60",
+            "-fw_cfg",
+            "name=opt/berry/noktest,string=1",
+            # Product e2e exercises the shipped desktop/app chain; kernel
+            # calibration benches are host-load-sensitive and not product gates.
         ]
 
     def text(self) -> str:

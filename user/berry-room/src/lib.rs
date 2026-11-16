@@ -18,7 +18,7 @@ use berry_sys::{
     berry_channel_create, berry_channel_recv, berry_channel_send, berry_clock_read,
     berry_handle_close, berry_handle_duplicate, berry_object_wait_one, berry_process_exit,
     berry_vmar_map, berry_vmar_unmap, berry_vmo_commit, berry_vmo_create, Handle,
-    BERRY_ERR_AGAIN, BERRY_ERR_BUSY, CLOCK_MONOTONIC, RIGHT_READ, RIGHT_WRITE,
+    BERRY_ERR_AGAIN, BERRY_ERR_BUSY, CLOCK_MONOTONIC, RIGHT_READ, RIGHT_TRANSFER, RIGHT_WRITE,
     SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
 
@@ -923,7 +923,7 @@ impl AppRoom {
             }
         }
         let mut alias: Handle = 0;
-        if berry_handle_duplicate(self.frame_vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
+        if berry_handle_duplicate(self.frame_vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias) != 0 || alias == 0 {
             return Err(RoomError::Handle);
         }
         let mut request = [0u8; 256];

@@ -59,7 +59,7 @@ use berry_sys::{
     berry_handle_close, berry_handle_duplicate, berry_object_wait_one, berry_thread_sleep,
     berry_vmar_map,
     berry_vmo_commit, berry_vmo_create, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BUSY,
-    CLOCK_MONOTONIC, RIGHT_DUPLICATE, RIGHT_READ, RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_WRITABLE,
+    CLOCK_MONOTONIC, RIGHT_DUPLICATE, RIGHT_READ, RIGHT_TRANSFER, RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
 use std::process::exit;
 
@@ -239,7 +239,7 @@ fn wm_connect_forged_surface_denied(broker: Handle, process: Handle) {
         || berry_channel_create(0, &mut local, &mut remote) != 0
         || berry_channel_create(0, &mut input_local, &mut input_remote) != 0
         || berry_channel_create(0, &mut token_sender, &mut token_receiver) != 0
-        || berry_handle_duplicate(process, RIGHT_DUPLICATE, &mut forge_process) != 0
+        || berry_handle_duplicate(process, RIGHT_DUPLICATE | RIGHT_TRANSFER, &mut forge_process) != 0
     {
         fail("forged surface channels");
     }
@@ -303,7 +303,7 @@ fn wm_connect_wrong_system_seed_denied(broker: Handle, process: Handle) {
     if berry_channel_create(0, &mut local, &mut remote) != 0
         || berry_channel_create(0, &mut input_local, &mut input_remote) != 0
         || berry_channel_create(0, &mut token_sender, &mut token_receiver) != 0
-        || berry_handle_duplicate(process, RIGHT_DUPLICATE, &mut spoof_process) != 0
+        || berry_handle_duplicate(process, RIGHT_DUPLICATE | RIGHT_TRANSFER, &mut spoof_process) != 0
     {
         fail("wm system seed spoof channels");
     }
@@ -965,7 +965,7 @@ fn render_tile(va: usize, w: usize, h: usize, stride: usize,
 fn submit_tile(ch: Handle, vmo: Handle, _w: usize, _h: usize,
                surface_id: u32, buffer_id: u32) -> u32 {
     let mut alias: Handle = 0;
-    if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
+    if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias) != 0 || alias == 0 {
         fail("tile dup");
     }
     let mut req = [0u8; 256];
@@ -1079,7 +1079,7 @@ fn submit_full(hw: Handle, surface_id: u32, vmo: Handle, target_ns: u64) -> u32 
     let mut rep = [0u8; 256];
     let mut rhs = [0 as Handle; 8];
     let mut alias: Handle = 0;
-    if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
+    if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias) != 0 || alias == 0 {
         fail("dup alias k6");
     }
     let sreq = gp::PresentReq::Submit {
@@ -1161,7 +1161,7 @@ fn submit_partial_damage(
     rect: gp::Rect,
 ) -> u32 {
     let mut alias: Handle = 0;
-    if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
+    if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias) != 0 || alias == 0 {
         fail("partial damage dup");
     }
     let mut req = [0u8; 256];
@@ -1268,11 +1268,11 @@ fn main() {
     let mut process2: Handle = 0;
     let mut process3: Handle = 0;
     let mut process4: Handle = 0;
-    if berry_handle_duplicate(process, RIGHT_DUPLICATE, &mut process2) != 0
+    if berry_handle_duplicate(process, RIGHT_DUPLICATE | RIGHT_TRANSFER, &mut process2) != 0
         || process2 == 0
-        || berry_handle_duplicate(process, RIGHT_DUPLICATE, &mut process3) != 0
+        || berry_handle_duplicate(process, RIGHT_DUPLICATE | RIGHT_TRANSFER, &mut process3) != 0
         || process3 == 0
-        || berry_handle_duplicate(process, RIGHT_DUPLICATE, &mut process4) != 0
+        || berry_handle_duplicate(process, RIGHT_DUPLICATE | RIGHT_TRANSFER, &mut process4) != 0
         || process4 == 0
     {
         fail("wm self process dup");
@@ -1287,7 +1287,7 @@ fn main() {
         let mut spoof_process: Handle = 0;
         if berry_channel_create(0, &mut local, &mut remote) != 0
             || berry_channel_create(0, &mut input_local, &mut input_remote) != 0
-            || berry_handle_duplicate(process, RIGHT_DUPLICATE, &mut spoof_process) != 0
+            || berry_handle_duplicate(process, RIGHT_DUPLICATE | RIGHT_TRANSFER, &mut spoof_process) != 0
             || spoof_process == 0
         {
             fail("wm system spoof channel");
@@ -1374,7 +1374,7 @@ fn main() {
             usize::from(creq.h),
         );
         let mut alias: Handle = 0;
-        if berry_handle_duplicate(deny_vmo, RIGHT_READ, &mut alias) != 0
+        if berry_handle_duplicate(deny_vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias) != 0
             || alias == 0
         {
             fail("unconfigured submit dup");
@@ -1761,7 +1761,7 @@ fn main() {
     // 提交 buffer；wmd 必须在拷贝前拒绝 ST_DENIED。
     {
         let mut alias: Handle = 0;
-        if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
+        if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias) != 0 || alias == 0 {
             fail("wm surface deny dup");
         }
         let sreq = gp::PresentReq::Submit {
@@ -1786,7 +1786,7 @@ fn main() {
     // 必须在拷贝前 ST_DENIED。
     {
         let mut alias: Handle = 0;
-        if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
+        if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias) != 0 || alias == 0 {
             fail("wm global deny dup");
         }
         let sreq = gp::PresentReq::Submit {
@@ -1811,7 +1811,7 @@ fn main() {
     // 完全越界批不得被全屏 clamp 成涂刷，必须 ST_BAD。
     {
         let mut alias: Handle = 0;
-        if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
+        if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias) != 0 || alias == 0 {
             fail("wm damage deny dup");
         }
         let mut rects = [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX];
@@ -1891,7 +1891,7 @@ fn main() {
         // size gate；FULL 提交必须 ST_BAD，防行错位静默。
         let (bad_vmo, _bad_stride, _bad_len) = frame_vmo(w - 8, h);
         let mut bad_alias: Handle = 0;
-        if berry_handle_duplicate(bad_vmo, RIGHT_READ, &mut bad_alias) != 0
+        if berry_handle_duplicate(bad_vmo, RIGHT_READ | RIGHT_TRANSFER, &mut bad_alias) != 0
             || bad_alias == 0
         {
             fail("raw buffer deny dup");
@@ -2194,7 +2194,7 @@ fn main() {
     // 预告帧：FULL damage + rate_hint=120（密集 = 快于现档 30）。vote 与
     // submit 之间零拍点（30Hz 拍距 33ms ≫ RPC 对时——streak 面零污染）。
     let mut alias_h: Handle = 0;
-    if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias_h) != 0 || alias_h == 0 {
+    if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias_h) != 0 || alias_h == 0 {
         fail("dup alias hint");
     }
     let hreq = gp::PresentReq::Submit {
@@ -2303,7 +2303,7 @@ fn main() {
     for i in 0..K4M {
         parks[i] = vb_point(hw);
         let mut alias_i: Handle = 0;
-        if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias_i) != 0 || alias_i == 0 {
+        if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias_i) != 0 || alias_i == 0 {
             fail("dup alias loop");
         }
         let sreq = gp::PresentReq::Submit {
@@ -2479,7 +2479,7 @@ fn main() {
         [b'P', b'5', b'C'],
     );
     let mut alias_p5: Handle = 0;
-    if berry_handle_duplicate(p5_vmo, RIGHT_READ, &mut alias_p5) != 0 || alias_p5 == 0 {
+    if berry_handle_duplicate(p5_vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias_p5) != 0 || alias_p5 == 0 {
         fail("dup alias k6p5");
     }
     let preq6 = gp::PrepareReq {

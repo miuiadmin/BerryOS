@@ -1229,9 +1229,9 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
         ) {
             Ok(_child) => {
                 ps_reg(b"vnet", psp::STATE_ALIVE, 0); // 拉起即常驻（自验门成败都活——serve 常驻）
-                if vgpu_progress_cli != 0 {
-                    vgpu_boot_progress(vgpu_progress_cli, gp::BOOT_M_VNET_SPAWNED);
-                }
+                // VNET milestone is deferred until after the GUI/input/fs
+                // service chain: progress truth must stay monotonic even when
+                // advanced-main parallel prepull starts this service earlier.
                 // 常驻不 reap。`NET ok` 标记仍由 vnet 自打（自验在 serve()
                 // 前，rootfs 相第 17 标记零扰动）；DNS ok（A-8c）起本端
                 // 转 client 消费。
@@ -1870,6 +1870,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                 ps_reg(b"fsmgr", psp::STATE_ALIVE, 0); // 拉起即常驻（FAT 降级不影响活性）
                 if vgpu_progress_cli != 0 {
                     vgpu_boot_progress(vgpu_progress_cli, gp::BOOT_M_FSMGR_SPAWNED);
+                    vgpu_boot_progress(vgpu_progress_cli, gp::BOOT_M_VNET_SPAWNED);
                 }
                 fs_a_h = fs_a;
                 fs_client = fs_dup;
@@ -2406,7 +2407,11 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
             let (launched, uface, tail) = app_launch(
                 console,
                 fs_a_h,
-                true, // 裁决 B：boot 批 [ui] app 入册不拉起（头注/W4-RECON §1.7）
+                // GUI verification rootfs (`probe.on`) must run the real
+                // boot-probe app batch. Product images omit probe.on and skip
+                // this block; runtime desktop clicks keep deferral authority
+                // in the launcher.
+                false,
                 &apps[i].id[..apps[i].id_len],
                 false,
                 apps[i].bap_off,
@@ -5634,7 +5639,11 @@ fn vgpu_hdi_selftest(h: Handle, present: Handle, console: Handle) -> bool {
     if berry_vmo_create(len, 0, &mut vmo) != 0
         || vmo == 0
         || berry_vmo_commit(vmo, 0, len) != 0
-        || berry_handle_duplicate(vmo, RIGHT_READ, &mut alias) != 0
+        || berry_handle_duplicate(
+            vmo,
+            RIGHT_READ | RIGHT_TRANSFER | RIGHT_DUPLICATE,
+            &mut alias,
+        ) != 0
         || alias == 0
     {
         let _ = berry_handle_close(vmo);
@@ -7105,7 +7114,11 @@ fn app_launch(
             }
             return (false, uface, None);
         }
-        if berry_handle_duplicate(src, RIGHT_SEND | RIGHT_RECV, &mut wm_dup) != 0 {
+        if berry_handle_duplicate(
+            src,
+            RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER | RIGHT_DUPLICATE,
+            &mut wm_dup,
+        ) != 0 {
             eco_app(console, id, b"wm dup");
             if wants_fs {
                 if berry_handle_close(rootfs_dup) != 0
@@ -8150,13 +8163,13 @@ fn launcher_assemble(console: Handle, fs_gift: Handle) -> bool {
             data_off,
             data_len,
             stdout: console,
-            // 64 页 = 256KB（R5 实测定值——段③ 首验仪器定谳：8 页 32KB 下
-            // main+0x1c 序言即穿保护页 D-abort——`UiMain::new` 构造中间体
-            // LTO 后仍部分落栈 ~29KB + pre-main std 运行时；帧循环另有
-            // CommandEncoder 18KB/帧（gfxdemo 16 页先例无 berry-ui 链——刀4
-            // k4 统计面自 8 抬，见上方 gfxdemo arm 注）。
-            // bsh 32 页先例之上；manifest 域检 1..=64 顶格）。
-            stack_pages: 64,
+            // 128 页 = 512KB（2026-11-17 合并后实测定值：BerryUI 控件语料
+            // 并集让 `UiMain` 90KB + 壁纸重采样 14KB + `UiMain::new` 构造
+            // 中间体在 LTO 后仍落主栈；64 页在 `icons::prime_wallpaper`/
+            // `UiMain::new` 段以 SP==FAR 干净穿护页（两次同 PC 复现）。
+            // 常驻桌面进程用 direct SpawnSpec 抬栈；manifest app 域检
+            // 1..=64 不适用本 direct 装配面。
+            stack_pages: 128,
             // 占位 dummy（空 feeder 立即 EOF；berry-exec assert：extras 非
             // 空须 stdin 槽在位——fsmgr/vnet 同款）。
             stdin_feed: Some(&[]),

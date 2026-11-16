@@ -7,7 +7,7 @@ cpio_filter.py --selftest
 
 产品桌面镜像与 GUI8 验证镜像共享同一套 rootfs 条目；验证镜像携带
 `probe.on`，svcmgr 只在该条目在场时执行串行 app boot-probe 批。GPU2 诊断
-镜像在同一产物上追加 `gpuhdi.on`。本工具只经 `mkcpio.build_archive`
+镜像在同一产物上追加 `gpuhdi.on`。本工具按 mkcpio X-3c 的 4096B 条目垫料解析，并只经 `mkcpio.build_archive`
 单编码器重发射，不做第二套 newc 编码逻辑。重复 remove marker 全移除；
 追加名如已存在则 loud 拒绝，防静默改写。
 """
@@ -18,7 +18,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from mkcpio import build_archive
+from mkcpio import CPIO_PAD, build_archive
 
 
 HEADER_SIZE = 110
@@ -59,7 +59,8 @@ def parse_entries(blob: bytes) -> list[tuple[bytes, bytes]]:
         if namesize == 0 or name_end > len(blob) or blob[name_end - 1] != 0:
             raise FilterError("bad cpio name")
         name = bytes(blob[name_start : name_end - 1])
-        data_start = (name_end + 3) & ~3
+        header_end = name_end - pos
+        data_start = pos + (header_end + CPIO_PAD - 1) // CPIO_PAD * CPIO_PAD
         data_end = data_start + size
         if data_end > len(blob):
             raise FilterError("truncated cpio data")
@@ -69,7 +70,7 @@ def parse_entries(blob: bytes) -> list[tuple[bytes, bytes]]:
             trailer_seen = True
             break
         items.append((name, bytes(blob[data_start:data_end])))
-        pos = (data_end + 3) & ~3
+        pos = (data_end + CPIO_PAD - 1) // CPIO_PAD * CPIO_PAD
     if not trailer_seen:
         raise FilterError("missing cpio trailer")
     return items

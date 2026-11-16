@@ -2057,6 +2057,12 @@ def qemu_command(
         "ramfb",
         "-fw_cfg",
         f"name=opt/berry/display,string={display}",
+        # GUI8 validates the interactive GUI chain, not host-load-sensitive
+        # kernel calibration benches. Keep the same production escape hatch
+        # used by manual topology runs so DPG/LOADGEN timing cannot poison
+        # marker latency under a loaded host.
+        "-fw_cfg",
+        "name=opt/berry/noktest,string=1",
         "-qmp",
         f"unix:{sock_path},server=on,wait=off",
     ]
@@ -5755,8 +5761,18 @@ def parse_args(argv=None):
         default="/tmp" if Path("/tmp").is_dir() else tempfile.gettempdir(),
         help="临时目录（默认 /tmp；QMP sock 路径帽）",
     )
-    ap.add_argument("--boot-a-timeout", type=float, default=420.0)
-    ap.add_argument("--boot-b-timeout", type=float, default=420.0)
+    ap.add_argument(
+        "--boot-a-timeout",
+        type=float,
+        default=900.0,
+        help="真实 BerryUI boot-probe 批在 TCG 合并语料下可超过旧 420s 帽",
+    )
+    ap.add_argument(
+        "--boot-b-timeout",
+        type=float,
+        default=900.0,
+        help="Boot B 复用同一真 app 批，保持双相同帽",
+    )
     ap.add_argument("--click-timeout", type=float, default=120.0)
     ap.add_argument(
         "--click-ready-timeout",

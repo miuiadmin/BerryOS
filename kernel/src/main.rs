@@ -4928,7 +4928,7 @@ const RWAKE_PROBE_NAME: &str = "opt/berry/rwake";
 /// P0-4 生产模式开关的 fw_cfg 具名项名（在位 = 跳过 ktest/bench——手跑/生产
 /// 专递 `-fw_cfg name=opt/berry/noktest,string=1`；RT/SOAK_PROBE_NAME 同款
 /// 「两侧对读维护」纪律，极性反转：缺席 = 默认全跑 = smoke 零漂移）。
-const NOKTEST_PROBE_NAME: &str = "opt/berry/noktest";
+pub(crate) const NOKTEST_PROBE_NAME: &str = "opt/berry/noktest";
 
 /// 演示面门的 fw_cfg 具名项名（06 号修窗件 1——idle 满核主根因闭合：
 /// task_a/task_b 忙环 + boot EL0 演示舰队〔good/rogue/abuser/spawner/

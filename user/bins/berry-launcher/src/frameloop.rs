@@ -73,7 +73,7 @@ use berry_libc::io::{app_cli_h, self_vmar_h};
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_handle_duplicate, berry_object_wait_many,
     berry_object_wait_one, berry_vmar_map, berry_vmo_commit, berry_vmo_create, Handle,
-    BERRY_ERR_AGAIN, BERRY_ERR_BUSY, BERRY_ERR_TIMEDOUT, RIGHT_READ, RIGHT_WRITE,
+    BERRY_ERR_AGAIN, BERRY_ERR_BUSY, BERRY_ERR_TIMEDOUT, RIGHT_READ, RIGHT_TRANSFER, RIGHT_WRITE,
     SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
 use berry_ui::damage::DamageSet;
@@ -1033,13 +1033,19 @@ pub fn run(
 
         // 动画/后续工作已停时，不能把最后一帧留在 pending 槽；在进入长睡
         // 前完成 FRAME_CALLBACK/RELEASE，让 UI phase、markers 和 credits
-        // 都回到真实静止态。跟手拖动与 snap 吸附期间故意保留一帧在途：
-        // 下一输入/下一 vsync 先 raster 再回调上一帧，DMA 才能与光栅重叠。
+        // 都回到真实静止态。产品首帧常在 render 侧已回 Idle（note_submitted
+        // 在渲染后记账，不重推相位），它与 Settle 同为“无后续工作”真值；
+        // 不纳入会把唯一桌面帧永久留在 pending，vgpud 只能降到 1Hz。跟手
+        // 拖动与 snap 吸附期间故意保留一帧在途：下一输入/下一 vsync 先
+        // raster 再回调上一帧，DMA 才能与光栅重叠。
         let keep_frame_in_flight = gesture_active || snap_settle_pending;
         if let Some(token) = front_token.take() {
-            if ui.frame_phase() == berry_ui::frame::FramePhase::Settle
-                && !keep_frame_in_flight
-            {
+            let frame_settled = matches!(
+                ui.frame_phase(),
+                berry_ui::frame::FramePhase::Settle
+                    | berry_ui::frame::FramePhase::Idle
+            );
+            if frame_settled && !keep_frame_in_flight {
                 presented = complete_front_frame(
                     hw,
                     ui,
@@ -1178,7 +1184,7 @@ fn submit_frame(hw: Handle, vmo: Handle, request: &gp::PresentReq) -> Option<u32
     let mut rhs = [0 as Handle; 8];
     loop {
         let mut alias: Handle = 0;
-        if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
+        if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias) != 0 || alias == 0 {
             fail("dup alias");
         }
         let m = enc_req(gp::encode_present_req(&mut req, request));

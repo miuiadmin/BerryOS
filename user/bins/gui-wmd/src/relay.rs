@@ -30,8 +30,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_handle_close, berry_handle_duplicate,
     berry_object_wait_one, berry_vmo_commit, berry_vmo_create, berry_vmo_get_size,
-    berry_vmo_read, berry_vmo_write, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BUSY, RIGHT_READ,
-    SIGNAL_READABLE, SIGNAL_WRITABLE,
+    berry_vmo_read, berry_vmo_write, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BUSY,
+    RIGHT_DUPLICATE, RIGHT_READ, RIGHT_TRANSFER, SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
 
 /// 中继收侧 READABLE 帽（10s 量级——gfxdemo `RPC_CAP_NS` 同值；帽 ≥
@@ -977,25 +977,23 @@ pub fn submit_composite(
         && !system_surface
         && (u32::from(raw_w) < comp.w || u32::from(raw_h) < comp.h);
     if bar_overlay {
-        let mut overlay_vmo = 0;
-        if berry_handle_duplicate(src, RIGHT_READ, &mut overlay_vmo) != 0
-            || overlay_vmo == 0
-            || !comp.cache_system_overlay(
-                owner,
-                u16::try_from(surface_id).unwrap_or(0),
-                overlay_vmo,
-            )
-        {
-            if overlay_vmo != 0 {
-                let _ = berry_handle_close(overlay_vmo);
-            }
+        // channel_send consumed RIGHT_TRANSFER while migrating this attached
+        // alias into wmd. It is already owned by this process, so cache it
+        // directly; the launcher closes only its separate creator handle.
+        if !comp.cache_system_overlay(
+            owner,
+            u16::try_from(surface_id).unwrap_or(0),
+            src,
+        ) {
             let _ = berry_handle_close(src);
             st_rep(ch, gp::ST_BAD);
             return false;
         }
         // Bar sources are cache-only: the first real backend SUBMIT remains
         // surface0's desktop frame, preserving m=10/m=11 BootProgress truth.
-        let _ = berry_handle_close(src);
+        // The cache now owns `src`; closing it here would drop the last alias
+        // once the launcher closes its creator handle and make re-blend reads
+        // fail on every real desktop submission.
         st_rep(ch, gp::ST_OK);
         return false;
     }
@@ -1109,7 +1107,13 @@ pub fn submit_composite(
 
     let (submit_rects, submit_n) = comp.submit_plan(&out_rects, out_n);
     let mut alias: Handle = 0;
-    if berry_handle_duplicate(comp.active_vmo(), RIGHT_READ, &mut alias) != 0 || alias == 0 {
+    if berry_handle_duplicate(
+        comp.active_vmo(),
+        RIGHT_READ | RIGHT_TRANSFER | RIGHT_DUPLICATE,
+        &mut alias,
+    ) != 0
+        || alias == 0
+    {
         trap();
     }
     let creq = gp::PresentReq::Submit {
@@ -1176,7 +1180,13 @@ pub fn replay_owner(
     // RETURN-ALL，连续 task_select 不会第三次 ST_FULL。
     boot_release_all(cli);
     let mut alias: Handle = 0;
-    if berry_handle_duplicate(comp.active_vmo(), RIGHT_READ, &mut alias) != 0 || alias == 0 {
+    if berry_handle_duplicate(
+        comp.active_vmo(),
+        RIGHT_READ | RIGHT_TRANSFER | RIGHT_DUPLICATE,
+        &mut alias,
+    ) != 0
+        || alias == 0
+    {
         trap();
     }
     let creq = gp::PresentReq::Submit {

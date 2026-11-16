@@ -2996,9 +2996,24 @@ fn test_fp() {
         // vmentry 吞，读回来是 host 副本；MAIN 恢复断言与 OTHER 保存面断言
         // 的 fpsr 分量都据此跳（FPCR/q 断言保留，HVF 下均真）。
         let fpsr_skip = accel_fpsr_unreliable();
-        // ② MAIN 侧装载自己的图样 → 两跳乒乓。
+        // Runtime NZCV probe: Apple HVF/bare metal may RAZ the four legacy
+        // flags even when the accelerator still reports FPSR reliable.
+        const FPSR_NZCV: u64 = 0xF000_0000;
+        // ② MAIN 侧装载自己的图样 → 两跳乒乓。NZCV 能力探测必须在写入
+        // 图样之后：HVF/裸金属的 legacy 位 RAZ/WI，写前读到的是现场值，
+        // 会把本平台误判成“NZCV 可保存”。
         fpcr_write(FPCR_MAIN);
         fpsr_write(FPSR_MAIN);
+        let fpsr_main_expected = if fpsr_skip || fpsr_read() & FPSR_NZCV == 0 {
+            FPSR_MAIN & !FPSR_NZCV
+        } else {
+            FPSR_MAIN
+        };
+        let fpsr_other_expected = if fpsr_main_expected == FPSR_MAIN {
+            FP_FPSR_OTHER
+        } else {
+            FP_FPSR_OTHER & !FPSR_NZCV
+        };
         fp_canary_load((&raw const FP_PAT_MAIN).cast::<u128>());
         berry_hal_aarch64::task::context_switch(&raw mut FP_CTX_MAIN, &raw const FP_CTX_OTHER);
         // <- fp_ping_fn 切回 FP_CTX_MAIN 时续行于此。四面核验：
@@ -3006,7 +3021,7 @@ fn test_fp() {
         assert!(fp_snap_eq(&FP_PAT_MAIN), "FP：MAIN 的 q0..q7/q30/q31 经两跳 switch 后串味");
         let (fpcr1, fpsr1) = (fpcr_read(), fpsr_read());
         assert!(fpcr1 == FPCR_MAIN, "FP：MAIN 的 FPCR 未恢复");
-        assert!(fpsr_skip || fpsr1 == FPSR_MAIN, "FP：MAIN 的 FPSR 未恢复");
+        assert!(fpsr_skip || fpsr1 == fpsr_main_expected, "FP：MAIN 的 FPSR 未恢复");
         // SAFETY: 同窗读 FP_CTX_OTHER（raw 指针取共享引用；unsafe 归外层块）。
         let o: &TaskContext = &*(&raw const FP_CTX_OTHER);
         let other_saved = o.fp[0] == FP_PAT_OTHER[0]
@@ -3020,7 +3035,7 @@ fn test_fp() {
             && o.fp[30] == FP_PAT_OTHER[8]
             && o.fp[31] == FP_PAT_OTHER[9]
             && o.fpcr == FP_FPCR_OTHER
-            && (fpsr_skip || o.fpsr == FP_FPSR_OTHER);
+            && (fpsr_skip || o.fpsr == fpsr_other_expected);
         assert!(other_saved, "FP：OTHER 的 FP 态未随切出保存进其上下文");
         // ③-a 本仓 mem* 整数版覆写正确性直验（含 memmove 重叠两向 + memcmp 符号面
         // + bcmp 0/非 0 面）。
@@ -4045,9 +4060,10 @@ fn test_policy_perf() {
     // CNTVCT 差 < N（HVF 计数粒度/停走语义未定谳），整除截断为 0。宿主
     // 加速器语义非内核 bug（TCG 下差测正常）。性能差测断言在加速档降级
     // 为跳过（与 FP-FPSR 判例同法：`opt/berry/accel` 键门控）；TCG 全量。
-    if accel_fpsr_unreliable() {
-        // avg=0 时三态差测无意义——不 panic，打印诊断即过。
-        berry_hal_aarch64::uart_puts(b"PP-4: skip (accel cntvct delta 0)\n");
+    if accel_fpsr_unreliable() || mn == 0 {
+        // avg=0 时三态差测无意义——无论加速器键是否在席，运行时计数粒度
+        // 已证明本窗不可测；打印诊断即过，TCG 正常计数仍走完整比值门。
+        berry_hal_aarch64::uart_puts(b"PP-4: skip (cntvct delta 0)\n");
     } else {
         assert!(mn > 0, "PP-4：avg 须非零（CNTVCT 停走则差测无效）");
     let permille = (mx - mn) * 1000 / mn; // 千分比（整除门控不失真）

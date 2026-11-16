@@ -55,6 +55,7 @@ mod frameloop;
 mod icons;
 mod layout_io;
 
+use berry_appshell::{self as appshell, Fs, Host};
 use berry_gfx::font::FontSize;
 use berry_guiproto as gp;
 use berry_libc::io::{app_cli_h, input_h, self_proc_h, self_vmar_h, wm_cli_h};
@@ -63,7 +64,7 @@ use berry_sys::{
     berry_handle_close, berry_handle_duplicate, berry_object_wait_one, berry_thread_sleep,
     berry_thread_yield, berry_vmar_map, berry_vmar_unmap, berry_vmo_commit, berry_vmo_create,
     Handle,
-    BERRY_ERR_AGAIN, BERRY_ERR_BUSY, CLOCK_MONOTONIC, RIGHT_DUPLICATE, RIGHT_READ,
+    BERRY_ERR_AGAIN, BERRY_ERR_BUSY, CLOCK_MONOTONIC, RIGHT_DUPLICATE, RIGHT_READ, RIGHT_TRANSFER,
     RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
 use berry_libc::io::fs_h;
@@ -86,6 +87,46 @@ const RPC_CAP_NS: u64 = 600 * 1_000_000_000;
 fn fail(what: &str) -> ! {
     eprintln!("launcher: {what}");
     berry_libc::park()
+}
+
+/// appshell 的 libc 注入面：诊断/park 与 FAT fd 半程都来自本进程的
+/// berry-libc。未绑定时 `conf::read_key` 会把 Host::fs 视为缺席并回 EIO，
+/// 使数据盘 LAYOUT.JSN 被误判坏件。
+static SHELL_HOST: Host = Host {
+    tag: "launcher",
+    diag: shell_diag,
+    park: berry_libc::park,
+    fs: Some(Fs {
+        open: shell_open,
+        read: shell_read,
+        write: shell_write,
+        close: shell_close,
+        errno: shell_errno,
+    }),
+};
+
+fn shell_diag(line: &str) {
+    eprintln!("{line}");
+}
+
+unsafe fn shell_open(path: *const u8, flags: i32) -> i32 {
+    berry_libc::fs::open(path.cast(), flags)
+}
+
+fn shell_read(fd: i32, buf: *mut u8, len: usize) -> isize {
+    berry_libc::io::read(fd, buf.cast(), len)
+}
+
+fn shell_write(fd: i32, buf: *const u8, len: usize) -> isize {
+    berry_libc::io::write(fd, buf.cast(), len)
+}
+
+fn shell_close(fd: i32) -> i32 {
+    berry_libc::io::close(fd)
+}
+
+fn shell_errno() -> i32 {
+    berry_libc::get_errno()
 }
 
 /// now = clock_read；失败按 0 → deadline 即刻到期 = fail-fast（gfxdemo
@@ -453,7 +494,7 @@ fn submit_system_overlay(
     }
 
     let mut alias = 0;
-    if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
+    if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias) != 0 || alias == 0 {
         let _ = berry_handle_close(vmo);
         fail("system overlay dup");
     }
@@ -480,6 +521,8 @@ fn submit_system_overlay(
 }
 
 fn main() {
+    appshell::bind(&SHELL_HOST);
+
     // —— 降级门：wm 客户端端未交付（rootfs 相 wmd 随 fb 探测门不被拉起
     // → 本程序不被拉起；bsh 手跑无 extras）→ 一行诊断 + park（v0 骨架
     // 形态延续——理论不可达兜底，hdi_srv_h 先例；勿改成 gfxdemo 的
@@ -494,7 +537,11 @@ fn main() {
         fail("wm self process");
     }
     let mut app_process: Handle = 0;
-    if berry_handle_duplicate(process, RIGHT_DUPLICATE, &mut app_process) != 0
+    if berry_handle_duplicate(
+        process,
+        RIGHT_DUPLICATE | RIGHT_TRANSFER,
+        &mut app_process,
+    ) != 0
         || app_process == 0
     {
         fail("wm app process dup");
@@ -887,7 +934,7 @@ fn main() {
             }
         }
         let mut alias: Handle = 0;
-        if berry_handle_duplicate(frame_vmo, RIGHT_READ, &mut alias) != 0
+        if berry_handle_duplicate(frame_vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias) != 0
             || alias == 0
         {
             fail("wm avoid dup");
@@ -939,7 +986,7 @@ fn main() {
         // R2 负例：damage 完全落在持久遮挡带内时，整批有效 damage 为空，
         // 必须显式 ST_BAD，不得变成零 damage 提交或偷写 overlay 区。
         let mut occluded_alias: Handle = 0;
-        if berry_handle_duplicate(frame_vmo, RIGHT_READ, &mut occluded_alias) != 0
+        if berry_handle_duplicate(frame_vmo, RIGHT_READ | RIGHT_TRANSFER, &mut occluded_alias) != 0
             || occluded_alias == 0
         {
             fail("wm occluded damage dup");

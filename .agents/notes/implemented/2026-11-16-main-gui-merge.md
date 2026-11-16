@@ -65,6 +65,18 @@ refresh guest 的 FULL submit 改走 gfxdemo 自己的 `wid`，surface 0 继续�
 2. Berry Room 是五个预制 GUI app 与 BerryDemo/UITEST 的唯一宿主；主线 wave4 的 direct libc/WM `*-app` 双实现删除，MMS/Camera 真 Berry Room 化留后续产品刀。
 3. HD 字体产物升 v3：v1 位图、v2 `ADVANCE_HD` 比例推进与 GUI A8 覆盖面共存，`DrawText` wire 保持 Unicode `u32` 码点。
 
+### 第二层合线的运行期裁决
+
+主线安全轮已开始执法 `RIGHT_TRANSFER`：凡随 `channel_send` 迁移的 VMO/Process alias 都以 `READ|TRANSFER` 铸出；下游还要再次 dup 的聚合帧 alias（wmd → vgpud backing pin）保留 `DUPLICATE`。wmd 收到的 SYSTEM bar attached alias 已归 wmd 所有，直接进 overlay 缓存，不再在收到后二次裁剪 dup——send 迁移后的句柄没有可传给 duplicate 的TRANSFER 位。
+
+X-3c 把 mkcpio 条目垫料统一升到 4096B。`cpio_filter` 是消费侧第二解析面，必须消费同一 `CPIO_PAD`，否则产品桌面镜像在 rootfs 越过 32MiB 后先报 bad cpio header。
+
+GUI 验证相（`probe.on`）保留真实 app boot-probe 批；产品相无 probe，GUI app 的启动权继续归 launcher 点击。appshell 抽取后，launcher 必须在 main 首行绑定 `Host` 的 libc fd 面，否则数据盘 `LAYOUT.JSN` 被 `Host::fs=None` 误折 EIO；常态默认布局过滤 APPDEMO/APPQUIET 后紧致重排，数据盘显式布局仍优先。
+
+合并后的 BerryUI 控件语料让 `UiMain` 达 90KB，壁纸重采样另有 14KB 栈阵；launcher 是 direct SpawnSpec 常驻进程，不属 manifest 1..=64 栈页域，抬到 128 页/512KB。产品首帧 render 后可能已回 Idle，`note_submitted` 不重推相位；Idle 与 Settle 同为“无后续工作”，最后一帧必须完成 FRAME_CALLBACK，否则唯一桌面帧永久 pending、软件 LTPO 掉到 1Hz。
+
+内核自检按运行时能力而非机器标签判：FPSR NZCV 探测在写入图样之后执行，`dpg_press` 与 ktest/bench 共用 `opt/berry/noktest` 生产门。GUI8/product e2e 注入该键只跳过宿主时序校准，不断 GUI 真链；真实 BerryUI boot-probe 批在合并语料下可超旧 420s，GUI8 双 boot 帽升 900s。
+
 ## Alternatives considered
 
 - 直接把 GUI 分支推 main：main 有 51 个独立提交，会丢 refresh/CBOX/调度线，拒绝。

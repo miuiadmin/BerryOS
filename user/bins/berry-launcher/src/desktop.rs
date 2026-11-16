@@ -251,7 +251,7 @@ fn is_dock_app(id: &[u8]) -> bool {
     DOCK_IDS.iter().any(|d| *d == id)
 }
 
-fn is_test_app(id: &[u8]) -> bool {
+pub(crate) fn is_test_app(id: &[u8]) -> bool {
     TEST_IDS.iter().any(|d| *d == id)
 }
 

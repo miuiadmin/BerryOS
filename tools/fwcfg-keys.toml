@@ -16,7 +16,7 @@
 # bash tools/fwcfg-check.sh）。
 
 version = 1
-updated = "2026-11-15"
+updated = "2026-11-17"
 namespace = "opt/berry/"
 
 # —— rootfs 递送族（file / cpio 字节流；两键并在 rootfs0 优先）——
@@ -168,3 +168,31 @@ kind = "string"
 injectors = ["（无仓内注入方——A/B 收割手拼 -fw_cfg 专递，rwake 同款；复现配方单源 = research/调度彻底计划/13-首份AB报告-loadgen.md）"]
 consumer = "kernel/src/main.rs 载荷生成门 LOADGEN_PROBE_NAME（在位才 spawn loadgen 探针；坏值 fail loud 诊断行整门跳过）"
 polarity = "在位且值合法（s=<ns>;b=<0|1>，分号分隔）才 spawn；缺席零扰动"
+
+[[keys]]
+name = "panel-model"
+kind = "string"
+injectors = ["tools/smoke-image.sh 刀6 双 boot 段（tiered:vrr + freerange:per_frame 实注）；亦可手拼 -fw_cfg 专递"]
+consumer = "kernel/src/main.rs panel_cfg_req（tiered|tiered:vrr|freerange|freerange:per_frame；缺省 tiered）"
+polarity = "在位且值合法才覆写缺省；非法 loud 回退缺省 + PANEL model fail 诊断行"
+
+[[keys]]
+name = "panel-mode"
+kind = "string"
+injectors = ["tools/smoke-image.sh 刀6 双 boot 段（det 实注）；亦可手拼 -fw_cfg 专递"]
+consumer = "kernel/src/main.rs panel_cfg_req（free|det|det:SEED；缺省 free；HOST_LOCK 在册未接线）"
+polarity = "在位且值合法才覆写缺省；非法 loud 回退缺省 + PANEL mode fail 诊断行"
+
+[[keys]]
+name = "panel-fault"
+kind = "string"
+injectors = ["tools/smoke-image.sh 刀6 双 boot 段（det 实注）；亦可手拼 -fw_cfg 专递"]
+consumer = "kernel/src/main.rs panel_cfg_req（D,J,S 十进制 CSV：丢帧千分比/抖动 ns/切档丢帧数）"
+polarity = "零域 = 缺省态；非法 loud 回退缺省 + PANEL fault fail 诊断行；任一 panel 旋钮非缺省打 PANEL cfg 证据行"
+
+[[keys]]
+name = "bootmode"
+kind = "string"
+injectors = ["（无产链注入方——手拼 -fw_cfg 专递 string=verbose；berry CLI bootmode 档待后续刀接回）"]
+consumer = "bootloader/berryboot/app/src/lib.rs + kernel/src/main.rs bootmode_verbose_req（双端 split-first 解析同一 verbose 词）"
+polarity = "值 verbose=装载滚日志 + vgpud verbose BootProgress 面；缺席/他值=BerryOS Logo 与白色胶囊缺省面"

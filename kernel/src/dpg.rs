@@ -138,7 +138,7 @@ unsafe extern "C" fn probe(esr: usize, far: usize) -> bool {
     // 第一段（KL 外零锁快拒）：asid 反查——**hint-only**（G4-2 修批 P0-1
     // 面 b：注销面已落，锁外指针不保证仍活；本段零解引用零依赖——stale
     // 命中由第二段窗内重查吸收）。miss = 本 AS 无 demand 面，不付全谱窗。
-    let asid = berry_sched::current_asid();
+    let asid = hal::current_asid();
     if vmar::demand_root(asid).is_none() {
         return false;
     }
@@ -271,7 +271,7 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
     if !berry_dpgface::fsc_is_translation(esr) {
         return false; // 非翻译缺页——原杀链
     }
-    let asid = berry_sched::current_asid();
+    let asid = hal::current_asid();
     // stage-1 hint-only（同 [`probe`]——零解引用零依赖，miss 零锁即拒）。
     if vmar::demand_root(asid).is_none() {
         return false; // KL 外零锁快拒（rogue fault 不付全谱窗）
@@ -683,7 +683,7 @@ extern "C" fn dpg_faulter(_arg: usize) -> ! {
 // 1<<40——全链无一处直灌。消费面同真：`object_wait_one` 收位 /
 // `object_signal` 清位 / close 全走真 SVC 派发（waker2/pi_server 的 EL1 真
 // SVC 先例；handle = boot 期经 `am2b_pressure_ktest_handle` 插取 bootstrap
-// 表——ktest 收场 drain 后的 boot 稳定窗，此后无 drain 作废面）。
+// 表——ktest 收场 drain 后的 boot 稳定窗，此后无 drain 作役面）。
 //
 // 为何 boot 任务而非 ktest 用例（载形甲/乙论证）：真停顿 = `block_current`
 // 等 pager 供给，需调度器在飞——ktest 先于 sched::init 跑（main.rs 序），
@@ -1086,26 +1086,35 @@ pub fn init() {
     // handle（`am2b_pressure_ktest_handle` 插取 bootstrap 表——ktest 收场
     // drain 后的 boot 稳定窗，此后无 drain 作废面；任务侧真 SVC 全链消费）。
     // 对象先泄漏后映射（Region.vmo 指针存对象地址——上方同款正序）。
-    let vmo_p: &'static mut Vmo =
-        alloc::boxed::Box::leak(alloc::boxed::Box::new(
-            Vmo::create_demand(PRESS_PAGES * PAGE_SIZE).expect("dpg: 建压力自验 demand VMO"),
-        ));
-    let asid_p = crate::aspace::alloc_asid();
-    let vmar_p: &'static mut Vmar =
-        alloc::boxed::Box::leak(alloc::boxed::Box::new(
-            Vmar::new_root(fa, asid_p).expect("dpg: 建压力自验 root Vmar"),
-        ));
-    vmar_p
-        .map_demand(vmo_p, PRESS_VA, 0, PRESS_PAGES * PAGE_SIZE, Perm::Rw)
-        .expect("dpg: 压力自验 map_demand");
-    vmar::register_demand_root(asid_p, core::ptr::from_mut(vmar_p))
-        .expect("dpg: 登记压力自验 demand root（满表即响雷）");
-    let h_press = crate::am2b_pressure_ktest_handle();
-    berry_sched::spawn_as(
-        dpg_press,
-        h_press as usize,
-        b"dpg_press",
-        vmar_p.ttbr0_pa(),
-        vmar_p.asid(),
-    );
+    //
+    // noktest 门（2026-11-13 判例）：dpg_press 校准断言（θ_p 占空比阈）按
+    // TCG 时序标定——HVF 5-6 倍速下供给停顿占比漂移，断言炸 → 任务域
+    // PANIC → faulter 链异常放大 → pager 误杀 → 供给断 fatal（实测三炸
+    // 同链）。ktest/bench 已进 noktest 门（main.rs 同款键）；本臂同收——
+    // 生产 boot 只保生产机制本体（dpg_pager/dpg_faulter），压力校准属
+    // 开发自检面。
+    if berry_hal_aarch64::fwcfg::find_file(crate::NOKTEST_PROBE_NAME).is_none() {
+        let vmo_p: &'static mut Vmo =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(
+                Vmo::create_demand(PRESS_PAGES * PAGE_SIZE).expect("dpg: 建压力自验 demand VMO"),
+            ));
+        let asid_p = crate::aspace::alloc_asid();
+        let vmar_p: &'static mut Vmar =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(
+                Vmar::new_root(fa, asid_p).expect("dpg: 建压力自验 root Vmar"),
+            ));
+        vmar_p
+            .map_demand(vmo_p, PRESS_VA, 0, PRESS_PAGES * PAGE_SIZE, Perm::Rw)
+            .expect("dpg: 压力自验 map_demand");
+        vmar::register_demand_root(asid_p, core::ptr::from_mut(vmar_p))
+            .expect("dpg: 登记压力自验 demand root（满表即响雷）");
+        let h_press = crate::am2b_pressure_ktest_handle();
+        berry_sched::spawn_as(
+            dpg_press,
+            h_press as usize,
+            b"dpg_press",
+            vmar_p.ttbr0_pa(),
+            vmar_p.asid(),
+        );
+    }
 }
