@@ -65,6 +65,10 @@ berry-polface = { path = "../polface" }
 # bucket_upper/rank_of/Hdr/CpuHdr 单源在此，本 crate hdr.rs 机械壳
 # re-export 消费。
 berry-hdrface = { path = "../hdrface" }
+# W3-Q31：滴答账判定律单源在 berry-tickface（host 可测纯面——tick→ns
+# 倒数乘-移对/快慢双路/S-6 夹取/slice 预算/回绕窗增量五面）；本 crate
+# class.rs tick 记账 delta 消费即唯一事实源。
+berry-tickface = { path = "../tickface" }
 
 [features]
 # G3-3 lockdep：透传 HAL feature（检测器/链栈在 HAL 侧 SmpCpu per-CPU 区）。

@@ -704,6 +704,13 @@ test-host:
     # 单源，kernel telemetry.rs 计数面 + main.rs tele_dump 行装配消费）。
     cargo test -p berry-itally --target {{host}}
     cargo test -p berry-sliceface --target {{host}}
+    # W3-Q31（重放）：berry-tickface（timer 滴答账纯函数面——tick→ns
+    # 倒数乘-移对预计算 const fn（QEMU (2048,7) 二进精准/24MHz (2667,6)
+    # 半 ulp/异常频率 (0,0) 域卫/<244_171Hz 快路弃）+ 快慢双路资格判与合流
+    # + S-6 deadline 单调夹取律（跑步机饿死防御）+ slice 预算再装 + LAST_VCT
+    # 回绕窗增量，host 24 测；判定律单源，arch/aarch64 timer.rs 机械壳
+    # re-export + sched class.rs tick 记账 delta 消费）。
+    cargo test -p berry-tickface --target {{host}}
     # W3-Q14：berry-emface（EM 表形状执法 + util EWMA 窗口数学纯函数面
     # ——em_shape_ok 六拒面/em_domain_from 装配不变量/极值首尾投影/
     # window_state 翻窗三态判序/ewma_fold 折叠·收敛·死区·钳位/
