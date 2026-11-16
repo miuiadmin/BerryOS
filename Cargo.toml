@@ -37,7 +37,8 @@ members = [
     "wqmatch",
     "fwcfgface",
     "wakeface",
-    "dmface",]
+    "dmface",
+    "aokface",]
 resolver = "2"
 
 [workspace.package]
