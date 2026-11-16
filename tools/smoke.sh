@@ -1019,6 +1019,8 @@ rootfs_list=$(printf '%s + ' "${ROOTFS_MARKERS[@]}"); rootfs_list=${rootfs_list%
 echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（${rootfs_list}）"
 
 # P2 治理钉板（2026-11-16 跨分卷评估）：多卷形态断言——rootfs1.cpio 在席
+#（vols 上界 ≤4 由帽 128MiB / 卷 32MiB 推出，[2-9] 以此为前提——单改
+# split 参数后须同步此形态）
 # 则 ROOTFS ok 行必须 vols>=2（P1 的 vols= 打点）。防 rootfs 将来瘦身后多卷
 # 覆盖「形态碰巧」静默失守：跨卷条目读取的隐性覆盖由本断言升格为钉板。
 if [ -f rootfs1.cpio ]; then
