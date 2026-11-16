@@ -333,8 +333,10 @@ pub(crate) fn status_faces() -> Vec<IconFace> {
 
 // —— 五键导航面（波一刀 D——程序化自绘，generic_face 同先例）——
 
-/// 导航键底块色（常态：深蓝灰，CLEAR_BG 同族）。
-const NAV_BASE_BG: u32 = 0xFF00_6BC8; // 沉浸（owner 2026-11-16）：壁纸蓝底——符号白、底融入壁纸渐变
+/// 导航键底块色（常态：全透明——P0-① 裁决 2026-11-17：白符号直浮
+/// 壁纸、无任何底色块；argb_blit 1-bit 透明键 A==0 跳过即得穿透。
+/// 裁决出处：.agents/plans/2026-11-17-图标透明与系统栏跟随综合裁决.md）。
+const NAV_BASE_BG: u32 = 0x0000_0000;
 /// 导航键底块色（关机确认态：暗红警示）。
 const NAV_ARMED_BG: u32 = 0xFF7A_1F1F;
 /// 符号白（TEXT_FG 同值系）。
@@ -425,8 +427,9 @@ pub(crate) fn nav_glyph_covers(g: NavGlyph, x: i32, y: i32) -> bool {
     }
 }
 
-/// 导航面生成（66×66 Argb：圆角块底 + 符号白——argb_blit 直写像素、
-/// IconProps.fg 不消费；圆角 r=18 外透明）——纯像素面，host 测试锚。
+/// 导航面生成（66×66 Argb：圆角域内符号白、底透明（P0-①）——argb_blit
+/// 直写像素、IconProps.fg 不消费；圆角 r=18 外透明）——纯像素面，host
+/// 测试锚。
 pub(crate) fn nav_face(glyph: NavGlyph, bg: u32) -> IconFace {
     const S: usize = NAV_SRC_PX as usize;
     const R: i32 = 18;
@@ -703,28 +706,31 @@ mod tests {
         assert_ne!(f[9].px, f[10].px);
     }
 
-    /// 导航符号几何探针：符号域内白/域外底色/圆角外透明三分。
+    /// 导航符号几何探针：符号域内白/域外底块透明/圆角外透明三分
+    ///（P0-① 裁决后底块 A==0——白符号直浮壁纸）。
     #[test]
     fn nav_faces_geometry_probes() {
+        // 常态底透明钉板（P0-① 裁决）：NAV_BASE_BG 恒 A==0。
+        assert_eq!(NAV_BASE_BG, 0);
         let back = nav_face(NavGlyph::Back, NAV_BASE_BG);
         const S: usize = NAV_SRC_PX as usize;
         let at = |f: &IconFace, x: usize, y: usize| f.px[y * S + x];
         // 圆角外 = 透明。
         assert_eq!(at(&back, 0, 0), 0);
         assert_eq!(at(&back, S - 1, S - 1), 0);
-        // 域内非透明（符号白或底色）。
+        // 域内符号白（底块透明后非 0 即符号像素——(33,33) 三角内）。
         assert_ne!(at(&back, S / 2, S / 2), 0);
-        // Back = 左向三角：左中点符号白，右缘外底色。
+        // Back = 左向三角：左中点符号白，右缘外底块透明。
         assert_eq!(at(&back, 13, 33), NAV_GLYPH_FG);
-        assert_eq!(at(&back, 60, 33), NAV_BASE_BG);
-        // Home 圆环：环带白、环心底色。
+        assert_eq!(at(&back, 60, 33), 0);
+        // Home 圆环：环带白、环心底块透明。
         let home = nav_face(NavGlyph::Home, NAV_BASE_BG);
         assert_eq!(at(&home, 33, 14), NAV_GLYPH_FG); // 外缘上带
-        assert_eq!(at(&home, 33, 35), NAV_BASE_BG); // 环心
-        // Power 顶部开口：正上环位不画（底色）、竖线段在位（band 外
+        assert_eq!(at(&home, 33, 35), 0); // 环心
+        // Power 顶部开口：正上环位不画（底块透明）、竖线段在位（band 外
         // y=13 ∈ [c-25,c-7] 段）。
         let power = nav_face(NavGlyph::Power, NAV_BASE_BG);
-        assert_eq!(at(&power, 33, 33 + 4 - 19), NAV_BASE_BG); // 开口段
+        assert_eq!(at(&power, 33, 33 + 4 - 19), 0); // 开口段
         assert_eq!(at(&power, 33, 13), NAV_GLYPH_FG); // 竖线段（band 外）
         // Recents：卡中心白。
         let recents = nav_face(NavGlyph::Recents, NAV_BASE_BG);
