@@ -14,7 +14,7 @@ F 号可做面三件（[F-P1可做面扫描](../../../research/全面遗漏审�
 
 1. **bench.py 逃生位（已落地）**：等空超时从 SystemExit 硬拒降级为**非阻塞 Warn 放行**（stderr 两行：通知 + Warn 带在场 pids 与污染面说明——墙钟通道可能被污染、icount 虚拟时钟免疫）；新增 `--qemu-wait SECONDS`（默认 900，0 = 单探即判，负值拒绝；可与任一通道组合、入 `--selftest` 独占守卫）；pgrep 自身失效（rc∉{0,1}）仍硬拒。selftest 新增第 12 节六腿（subprocess.run 打桩：空场静默过 / 占场帽 0 降级 Warn / 等空轮询两探让场 / 守卫失效仍硬拒 + 子进程契约两腿），57→63 面全绿；另以伪签名进程实跑 live E2E（真实 pgrep 路径，恰逢 owner 三 QEMU 在场）确认 Warn 放行。
 2. **vp() 单点（已落地）**：`berry-ui/src/lib.rs` 暴露 `pub fn vp(v: u32, density: u32) -> u32`（整数密度 saturating 乘法，03 号 §3.2 层二原案）+ 内联钉板两测（OH phone 真值锚 39vp@3=117px、360vp@3=1080px）；berry-ui 339 测全绿。**desktop.rs 断点 vp 化被阻**：开刀时桌面文件空闲，中途（23:34）被波3 批C1 会话占用（SYSTEM 窗/三栏重写 +332 行，含自建 `sys_density()`——其内部仍保持原像素判据「双口径判据保持原判据」）；按任务纪律「中途被占→blocked」已精确回退本刀在 desktop.rs 的唯一落笔（import 行），该文件零残留归波3 会话。断点 vp 化改刀须待波3 收笔，且须与 `sys_density`/`sys_bands_px` 单点协调（03 号层三层一 v0 档表推方案见 F-P1 §3-5，density_for 按 render 宽 1080 推 3 的设计随本笔记留档）。
-3. **CLI-first 改名（已落地）**：文件名升 `docs/Berry设备平台-CLI-first设计-v1.8.md`（最小修=名就版，头部 1.8 为真值）；索引行三处对齐（链接/标签版本 1.5→1.8/定位列补 v1.8 一句）；现行文档入链清点改指 7 件（索引 ×2、架构决策 ×2、剩余缺口、验收清单、壳草案 ×3、tools/berry/README）；阶段沿革 :2200 的「新立 …-v1.0.md」为历史记录按纪律不回改。docs_guard rc=0、check-docs 仅余 owner 新笔记 2 条告警（非本批）。
+3. **CLI-first 改名（已落地）**：文件名升 `docs/Berry设备平台-CLI-first设计-v1.9.md`（最小修=名就版，头部 1.8 为真值）；索引行三处对齐（链接/标签版本 1.5→1.8/定位列补 v1.8 一句）；现行文档入链清点改指 7 件（索引 ×2、架构决策 ×2、剩余缺口、验收清单、壳草案 ×3、tools/berry/README）；阶段沿革 :2200 的「新立 …-v1.0.md」为历史记录按纪律不回改。docs_guard rc=0、check-docs 仅余 owner 新笔记 2 条告警（非本批）。
 
 ## Alternatives considered
 
