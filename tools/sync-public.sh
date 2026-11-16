@@ -235,12 +235,18 @@ WHITELIST=(
   # 笔未随刀——check-members 门被 base 重写剥落故两连漏无人咬；接线重放
   # 即红，红分支实捕定谳）
   fwcfgface susface
+  # balface 补账（2026-11-16 本刀重放接线实捕：W3-Q82 #273 首开件白名单
+  # 笔未随刀——check-members 门红分支实捕定谳，同 fwcfgface 判例）
+  balface
   # psface 补账（2026-11-16 本刀 rebase 进 #362 后门再咬：W3-Q72 合入后
   # 白名单笔未随刀——接线恢复后门第一次真执法实捕）
   psface
   # wakeface 补账（2026-11-16 本刀 merge 进 #365 后门三咬：W3-Q66 合入后
   # 白名单笔未随刀——check-members 三连实捕定谳）
   wakeface
+  # tickface 补笔（2026-11-16 本刀随 W3-Q31 净增量重放带刀：白名单笔随刀，
+  # check-members 门先验——判例 #368 fwcfgface/susface/psface 同款纪律）
+  tickface
   # heapface 补账（2026-11-15 #301 合入后机器门首咬：新增顶层 crate 忘补
   # 白名单即 test-host 红——check-members 门执法生效的第一次实捕）
   .github .cargo

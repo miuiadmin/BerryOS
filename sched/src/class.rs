@@ -265,17 +265,19 @@ impl SchedClass for Fair {
         // 虚拟运行时间（EEVDF 记账）。片耗尽时重算虚拟截止期。
         let now = hal::timer::cntvct();
         // SAFETY: IRQ 上下文、本核独占写（per-CPU 块 / 回落位单核窗）。
+        // W3-Q31 重放：LAST_VCT 回绕窗增量单源 berry-tickface（last==0
+        // 首读哨兵 + wrapping_sub 回绕防御——host 钉板 vct_delta）。
         let delta = unsafe {
             match hal::smp::last_vct_slot() {
                 Some(p) => {
                     let last = p.read_volatile();
                     p.write_volatile(now);
-                    if last == 0 { 0 } else { now.wrapping_sub(last) }
+                    hal::timer::vct_delta(now, last)
                 }
                 None => {
                     let last = (&raw const LAST_VCT).read_volatile();
                     (&raw mut LAST_VCT).write_volatile(now);
-                    if last == 0 { 0 } else { now.wrapping_sub(last) }
+                    hal::timer::vct_delta(now, last)
                 }
             }
         };

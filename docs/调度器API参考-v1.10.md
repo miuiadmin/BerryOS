@@ -1,7 +1,7 @@
 # 调度器 API 参考
 
-> 版本：v1.9（2026-11-16 升版：调度深水区收官 timer slack 随迁〔988944e09〕——`intent.rs` 新增 `set_timer_slack_ns`/`timer_slack_ns`/`timer_slack_defer` 三 fn〔CP-11 §3.8 系统缺省 timer slack：boot-params 第三键存取双 fn + LATE-only 顺延判定律消费面，4→7〕，合计 149→152（三 fn 全 safe 非 const，const 4/unsafe 8/extern "C" 4 不变）；v1.8：2026-11-15 升版：A 线审计 §4 漏登收口——补登 `sched/src/oneshot.rs`（第 13 文件，`tighten_deadline` 1 fn〔c3022903b 忙核 arm-to-nearest-deadline 收紧律，lib.rs:53 已 `pub use`；v1.7 升版时该件在途未并故缺席〕），对象口径 12→13 文件、合计 148→149（sched.rs 80 逐文件口径不变——「12 文件 148」系 oneshot 缺席非虚计，非逐文件重算差）；v1.7：2026-11-15 升版：调度终窗 idle 闭合+M4 骨架〔01cd881b〕——`spawn_user_env` 新 fn〔sched.rs 79→80，boot env 旗标面 x1 递 EL0 服务〕+ `try_prepare_user`/`try_spawn_user` 签名扩 `arg1` 参 + `band_of`〔policy.rs 15→16，band 选择位读出口——v1 恒 `BAND_SEL_NONE` 纯预留〕+ `FairBand::new`/`class_fair_intent`〔class.rs 2→4，Intent M4 带实例工厂〕，合计 144→148、const 3→4；v1.6：P2-2 退出异步化〔9791a99〕新增 `set_reap_post_hook` 单 fn（sched.rs 78→79）——`reap_drain` 尾钩子槽，kernel 侧 pending ht-drain 队列的异步排水入口，合计 143→144；v1.5：PI 形 B 修复〔42a794e0〕新增 `pi_rq_lock`/`pi_rq_unlock`/`for_each_runnable`/`rq_insert_kt`/`rq_unlink_kt` 五 fn（sched.rs 73→78）+ G5 bootparams〔345739e1〕新增 `set_intent_default`/`intent_default` 双 fn（intent.rs 2→4），合计 136→143；v1.4：daa5ef7e perf(pi) 全图重推门控新增 `pi_recompute_needed`/`pi_boost_recount` 双计数闸门 fn，sched.rs 71→73、合计 134→136；v1.3：W3-Q16 HDR 形状与分位数学外迁随迁——`bucket_of`/`bucket_upper`/`Hdr`/`CpuHdr` 等 12 项转 re-export 单源 `berry_hdrface`，hdr.rs 20→8 机械壳，计数 146→134；v1.2：W3-Q13 `intent_valid` 外迁随迁 147→146）｜ 对象：`sched/` crate（`berry-sched`，13 文件）｜ 审计口径：**152 个 `pub fn`**（含 `pub const fn` / `pub unsafe fn` / `pub unsafe extern "C" fn`，逐文件机提 + 人工核对 + sched/ 13 文件全量复核〔v1.9 重数：`grep -oE 'pub (const |unsafe )*(extern "C" )?fn'` 逐文件=7/4/6/8/7/0/1/16/7/80/4/5/7 合计 152〕；初估 132 为低估）
-> 事实源 = 源码 doc 注释首行（提取时点 2026-11-08，2026-11-11 增量对拍至 daa5ef7e，2026-11-13 增量对拍至 f44c2ba8/HEAD，2026-11-15 增量对拍至 01cd881b/HEAD，2026-11-15 v1.8 补登对拍至 4f673f206/HEAD——oneshot.rs 全量复核，2026-11-16 v1.9 增量对拍至 988944e09/HEAD——intent.rs timer slack 三 fn 全量复核）；本文是影抄不是立法——签名冲突时以 `sched/src/` 为准并回改本文。
+> 版本：v1.10（2026-11-16 升版：水通管道随迁〔10297ac22，63fbca1c9 合流入 base〕——06 号 §5「水通管道」双管道首接：class.rs 新增 `class_of_task`〔class 赋值面单源——`intent_effective` 经 `class_fair_intent` 工厂查表动态派生 `TaskClass`，零缓存〕+ `FairBand::yield_slice_return`/`TaskClass::yield_slice_return`/`TaskClass::band` 三 fn〔4→8〕；sched.rs 新增 `eas_pick_place`〔纯决策面，ktest 钉板对象〕/`eas_place`〔现役面收集+决策——place() 的 SMP 消费面〕双 fn〔80→82〕，合计 152→158（六 fn 全 safe 非 const，const 4/unsafe 8/extern "C" 4 不变）；连带收口 `class_fair_intent` 条目——集成面已接（水通管道任务①），现役集口径改首批 0x02/0x03）；v1.9：2026-11-16 升版：调度深水区收官 timer slack 随迁〔988944e09〕——`intent.rs` 新增 `set_timer_slack_ns`/`timer_slack_ns`/`timer_slack_defer` 三 fn〔CP-11 §3.8 系统缺省 timer slack：boot-params 第三键存取双 fn + LATE-only 顺延判定律消费面，4→7〕，合计 149→152（三 fn 全 safe 非 const，const 4/unsafe 8/extern "C" 4 不变）；v1.8：2026-11-15 升版：A 线审计 §4 漏登收口——补登 `sched/src/oneshot.rs`（第 13 文件，`tighten_deadline` 1 fn〔c3022903b 忙核 arm-to-nearest-deadline 收紧律，lib.rs:53 已 `pub use`；v1.7 升版时该件在途未并故缺席〕），对象口径 12→13 文件、合计 148→149（sched.rs 80 逐文件口径不变——「12 文件 148」系 oneshot 缺席非虚计，非逐文件重算差）；v1.7：2026-11-15 升版：调度终窗 idle 闭合+M4 骨架〔01cd881b〕——`spawn_user_env` 新 fn〔sched.rs 79→80，boot env 旗标面 x1 递 EL0 服务〕+ `try_prepare_user`/`try_spawn_user` 签名扩 `arg1` 参 + `band_of`〔policy.rs 15→16，band 选择位读出口——v1 恒 `BAND_SEL_NONE` 纯预留〕+ `FairBand::new`/`class_fair_intent`〔class.rs 2→4，Intent M4 带实例工厂〕，合计 144→148、const 3→4；v1.6：P2-2 退出异步化〔9791a99〕新增 `set_reap_post_hook` 单 fn（sched.rs 78→79）——`reap_drain` 尾钩子槽，kernel 侧 pending ht-drain 队列的异步排水入口，合计 143→144；v1.5：PI 形 B 修复〔42a794e0〕新增 `pi_rq_lock`/`pi_rq_unlock`/`for_each_runnable`/`rq_insert_kt`/`rq_unlink_kt` 五 fn（sched.rs 73→78）+ G5 bootparams〔345739e1〕新增 `set_intent_default`/`intent_default` 双 fn（intent.rs 2→4），合计 136→143；v1.4：daa5ef7e perf(pi) 全图重推门控新增 `pi_recompute_needed`/`pi_boost_recount` 双计数闸门 fn，sched.rs 71→73、合计 134→136；v1.3：W3-Q16 HDR 形状与分位数学外迁随迁——`bucket_of`/`bucket_upper`/`Hdr`/`CpuHdr` 等 12 项转 re-export 单源 `berry_hdrface`，hdr.rs 20→8 机械壳，计数 146→134；v1.2：W3-Q13 `intent_valid` 外迁随迁 147→146）｜ 对象：`sched/` crate（`berry-sched`，13 文件）｜ 审计口径：**158 个 `pub fn`**（含 `pub const fn` / `pub unsafe fn` / `pub unsafe extern "C" fn`，逐文件机提 + 人工核对 + sched/ 13 文件全量复核〔v1.10 重数：`grep -oE 'pub (const |unsafe )*(extern "C" )?fn'` 逐文件=7/8/6/8/7/0/1/16/7/82/4/5/7 合计 158〕；初估 132 为低估）
+> 事实源 = 源码 doc 注释首行（提取时点 2026-11-08，2026-11-11 增量对拍至 daa5ef7e，2026-11-13 增量对拍至 f44c2ba8/HEAD，2026-11-15 增量对拍至 01cd881b/HEAD，2026-11-15 v1.8 补登对拍至 4f673f206/HEAD——oneshot.rs 全量复核，2026-11-16 v1.9 增量对拍至 988944e09/HEAD——intent.rs timer slack 三 fn 全量复核，2026-11-16 v1.10 增量对拍至 85434cb6d/HEAD——水通管道六 fn + class_fair_intent 集成面收口全量复核）；本文是影抄不是立法——签名冲突时以 `sched/src/` 为准并回改本文。
 
 ## 使用方法
 
@@ -266,8 +266,20 @@ EEVDF+EDF 混合调度核：spawn 家族、freeze/thaw、抢占控制、SLEEPQ �
 ### `FairBand::new(band_id: u8, band: IntentBand) -> FairBand` `const`
 > class | 显式带参数构造（M4 启动配置覆盖路径入口形状——数字进启动配置，不写死；band_id 域执法归调用方）。
 
+### `FairBand::yield_slice_return(&self, t: &mut Task, rq: &Runqueue)`
+> class | yield 片归还委托（trait 外 inherent 方法，`TaskClass` 分派臂消费；行为与 unit `Fair` 逐位一致，M4 入场券纪律）。
+
 ### `class_fair_intent(intent: u8) -> Option<FairBand>`
-> class | **class_fair_intent 工厂**：按 intent 档建 `FairBand` 带实例——查 `berry_iprofile::band_of_intent`（×4 现役集 0x01..=0x04 → 该档带参数行；0x00/0x05/保留域 → `None` = 无带，调用方回落现役单带 `Fair`，缺省行为零漂移）。M4 集成面预留窗：spawn 侧接线点 = `sched.rs::spawn_intent`；策略覆盖通道 = `policy::band_of`（v1.7 同批）。`FairBand` 的 trait 面全方法委托现役 unit `Fair`（行为逐位等价，等 M4 入场券后再分化）。
+> class | **class_fair_intent 工厂**：按 intent 档建 `FairBand` 带实例——查 `berry_iprofile::band_of_intent`（首批现役集 0x02/0x03 → 该档带参数行；首批外档/保留域 → `None` = 无带，调用方回落现役单带 `Fair`，缺省行为零漂移）。集成面（06 号 §5「水通管道」任务①，2026-11-16 收口）：task→band 赋值已接——`class_of_task` 按 `intent_effective` 查本工厂，`sched.rs` per-task 原语六点消费（enqueue_with_kick/偷取重入环/tick/dequeue×2/yield）；intent 双落点 = `spawn_intent`（内核 spawn 面）与 EL0 attr 面（spawn 后落 intent，动态派生下一次原语调用即改带）；策略覆盖通道 `policy::band_of` 仍归 v3——本工厂只认 intent 档。
+
+### `class_of_task(t: &Task) -> TaskClass`
+> class | **class 赋值面单源**（M4 集成面收口）：task → class 实例——`intent_effective`（§11 带键）经 `class_fair_intent` 工厂查表：现役集 → `TaskClass::Band`（表行带参数），其余 → `TaskClass::Unit`（现役单带，缺省行为零漂移）。动态派生、零缓存：intent 结算借入改档或 EL0 attr spawn 后落档，下一次调度原语调用自然改带——「spawn 时 band 赋值」与「运行期 band 跟随」同一实现。消费面 = `sched.rs` per-task 调度原语六点；`pick_next_filtered` 是队列级扫描（混合带同环出选），不经 per-task 分派。
+
+### `TaskClass::yield_slice_return(&self, t: &mut Task, rq: &Runqueue)`
+> class | yield 片归还的分派形（per-task 消费点——两臂同委托 unit `Fair`，行为零漂移）。
+
+### `TaskClass::band(&self) -> Option<IntentBand>`
+> class | 带参数投影（`Unit` = None）——ktest spawn 面断言与诊断面消费。
 
 **`SchedClass` trait 方法面**（class.rs，签名冻结——一字不改）：
 
@@ -362,9 +374,9 @@ intent 带级 CPU 包络（quota/period）：限流只叠不加、翻期事件�
 
 ---
 
-## 四、EAS 能效（em.rs + util.rs）
+## 四、EAS 能效（em.rs + util.rs + sched.rs EAS 放置面）
 
-EM 频点表（形状不落算法）+ per-CPU util EWMA + overutilized 回退判据。
+EM 频点表（形状不落算法）+ per-CPU util EWMA + overutilized 回退判据 + EAS 放置决策/现役面（v1.10 起含 `eas_pick_place`/`eas_place`——06 号 §5 水通管道②首接，2026-11-16）。
 
 ### `em_register(domain: usize, cpu_mask: u32, points: &[EmPoint]) -> bool`
 > em | 注册/重注册某域 EM 表（boot/ktest 期单写者；真机 DT 解析后调用）。
@@ -404,6 +416,12 @@ EM 频点表（形状不落算法）+ per-CPU util EWMA + overutilized 回退判
 
 ### `util_reset(cpu: usize)`
 > util | 清零重开窗（ktest/boot 期清场专用——生产路径无重置消费面）。
+
+### `eas_pick_place(domains: &[EmDomain], utils: &[u32], hint: u8, task_util: u32) -> Option<usize>`
+> sched | EAS 放置决策（**纯决策面**——输入全注入，ktest 钉板对象）：placement hint → `berry_em` `eas_pick_cpu` 的组合律。判序：①hint 词汇执法（0 无意见/越域值 → None 不进 EAS 面；{1=偏 little, 2=偏 big} 在此消费面收口）；②overutil 系统级门控（任一候选域任一成员核 util 超域顶容量 80% → None，判定律单源 `berry_emface::overutil_judgment`）；③hint → prev_cpu 映射（1→CPU0/2→CPU1）享平局保护（「只在严格更省时迁移」= 偏好非钉死）；④`eas_pick_cpu` 两段选核（EM 无据/放不下 → None 同回退）。
+
+### `eas_place(task_key: u64) -> Option<usize>`
+> sched | EAS 放置（**现役面收集** + 决策——`place` 的 SMP 消费面，ktest 直调面；par 门在 `place` 不在此）。三源真值：EM 域表（`em_domain`——boot `em_register_qemu_virt` 注册）+ per-CPU util EWMA（`cpu_util`——PM 频率信号同源读面）+ policy placement hint（overutil 门控在彼，本面快照再判）。hint 无意见/overutil/EM 无据/放不下 → None（`place` 回退现役 K=2 启发式）。
 
 ---
 
@@ -628,16 +646,16 @@ intent（u8）第一类输入：六档词汇表（ADR #58）+ send/recv 两侧�
 
 | 文件 | pub fn | 归组 |
 |------|--------|------|
-| sched.rs | 80 | 一、调度核心 |
+| sched.rs | 82（v1.10：水通管道〔10297ac22〕+2——`eas_pick_place`/`eas_place`〔EAS 放置面，归四〕） | 一、调度核心（EAS 放置双 fn 归四） |
 | policy.rs | 16 | 二、策略服务 |
 | band.rs | 7 | 三、层级预算 |
-| em.rs + util.rs | 6 + 7 | 四、EAS 能效 |
+| em.rs + util.rs | 6 + 7（+sched.rs EAS 放置 2 fn v1.10 起归本组） | 四、EAS 能效 |
 | hdr.rs | 8（+`pub use` re-export 族：`bucket_of`/`bucket_upper`/`rank_of`/`Hdr`·`CpuHdr` 全方法单源 `berry_hdrface`） | 五、测量 |
 | task.rs | 5 | 六、任务 |
 | runqueue.rs | 7 | 七、环形队列 |
 | intent.rs | 7（+`pub use` re-export 族：`intent_valid` 单源 `berry_intface`；G5 前 2——timer slack 三 fn 前为 4，v1.9 补 CP-11 族） | 八、intent |
 | spin.rs | 4 | 附 |
 | oneshot.rs | 1 | 九、oneshot 收紧律（v1.8 补登——c3022903b） |
-| class.rs | 4（+trait 5 法） | 一、调度核心 |
+| class.rs | 8（+trait 5 法；v1.10：水通管道〔10297ac22〕+4——`class_of_task`/`FairBand::yield_slice_return`/`TaskClass::yield_slice_return`/`TaskClass::band`） | 一、调度核心 |
 | lib.rs | 0（`pub use` 根） | — |
-| **合计** | **152** | ｜ 含 `unsafe` 8、`const` 4、`extern "C"` 4（v1.9：调度深水区收官〔988944e09〕`intent.rs` +3 fn——`set_timer_slack_ns`/`timer_slack_ns`/`timer_slack_defer`〔CP-11 §3.8 系统缺省 timer slack 族，全 safe 非 const〕后 152——v1.8 的 149 为 timer slack 前时点；v1.8：补登 oneshot.rs `tighten_deadline`〔第 13 文件，safe〕后 149——v1.7 的 148 为该件在途未并时点，A 线审计 §4 收口；v1.7：调度终窗〔01cd881b〕+4 fn 后 148——`spawn_user_env`〔sched.rs，safe〕/`band_of`〔policy.rs，safe〕/`FairBand::new`〔class.rs，const——const 3→4〕/`class_fair_intent`〔class.rs，safe〕+ `try_prepare_user`/`try_spawn_user` 签名扩 `arg1` 参净计数不变；v1.6 的 144 为终窗前时点；v1.6：P2-2 退出异步化 +1 fn〔`set_reap_post_hook`，safe 非 const〕后 144——v1.5 的 143 为退出异步化前时点；v1.5：PI 形 B〔42a794e0〕+5 fn + G5 intent 缺省档〔345739e1〕+2 fn 后 143——v1.4 的 136 为形 B/G5 前时点，新增 7 fn 全 safe 非 const；v1.4：daa5ef7e perf(pi) 全图重推门控 +2 fn 后 136——v1.3 的 134 为门控前时点；v1.3：W3-Q16 hdrface 外迁后 134——v1.2 的 146 为外迁前时点，const 6→3 = `bucket_upper`/`Hdr::new`/`CpuHdr::new` 三 const 随迁；v1.2：W3-Q13 `intent_valid` 外迁 re-export 后 146，v1.1 的 147 为外迁前时点；const 6 系 v1.1 勘误，v1.0 笔误 5 不回传；W3-Q6 起含 `intent_settle_current_ext`） |
+| **合计** | **158** | ｜ 含 `unsafe` 8、`const` 4、`extern "C"` 4（v1.10：水通管道〔10297ac22，2026-11-16 经 63fbca1c9 合流入 base〕+6 fn 后 158——`class_of_task`/`FairBand::yield_slice_return`/`TaskClass::yield_slice_return`/`TaskClass::band`〔class.rs 4→8〕+ `eas_pick_place`/`eas_place`〔sched.rs 80→82，归四〕，全 safe 非 const；v1.9 的 152 为水通管道前时点；v1.9：调度深水区收官〔988944e09〕`intent.rs` +3 fn——`set_timer_slack_ns`/`timer_slack_ns`/`timer_slack_defer`〔CP-11 §3.8 系统缺省 timer slack 族，全 safe 非 const〕后 152——v1.8 的 149 为 timer slack 前时点；v1.8：补登 oneshot.rs `tighten_deadline`〔第 13 文件，safe〕后 149——v1.7 的 148 为该件在途未并时点，A 线审计 §4 收口；v1.7：调度终窗〔01cd881b〕+4 fn 后 148——`spawn_user_env`〔sched.rs，safe〕/`band_of`〔policy.rs，safe〕/`FairBand::new`〔class.rs，const——const 3→4〕/`class_fair_intent`〔class.rs，safe〕+ `try_prepare_user`/`try_spawn_user` 签名扩 `arg1` 参净计数不变；v1.6 的 144 为终窗前时点；v1.6：P2-2 退出异步化 +1 fn〔`set_reap_post_hook`，safe 非 const〕后 144——v1.5 的 143 为退出异步化前时点；v1.5：PI 形 B〔42a794e0〕+5 fn + G5 intent 缺省档〔345739e1〕+2 fn 后 143——v1.4 的 136 为形 B/G5 前时点，新增 7 fn 全 safe 非 const；v1.4：daa5ef7e perf(pi) 全图重推门控 +2 fn 后 136——v1.3 的 134 为门控前时点；v1.3：W3-Q16 hdrface 外迁后 134——v1.2 的 146 为外迁前时点，const 6→3 = `bucket_upper`/`Hdr::new`/`CpuHdr::new` 三 const 随迁；v1.2：W3-Q13 `intent_valid` 外迁 re-export 后 146，v1.1 的 147 为外迁前时点；const 6 系 v1.1 勘误，v1.0 笔误 5 不回传；W3-Q6 起含 `intent_settle_current_ext`） |

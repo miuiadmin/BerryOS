@@ -704,6 +704,13 @@ test-host:
     # 单源，kernel telemetry.rs 计数面 + main.rs tele_dump 行装配消费）。
     cargo test -p berry-itally --target {{host}}
     cargo test -p berry-sliceface --target {{host}}
+    # W3-Q31（重放）：berry-tickface（timer 滴答账纯函数面——tick→ns
+    # 倒数乘-移对预计算 const fn（QEMU (2048,7) 二进精准/24MHz (2667,6)
+    # 半 ulp/异常频率 (0,0) 域卫/<244_171Hz 快路弃）+ 快慢双路资格判与合流
+    # + S-6 deadline 单调夹取律（跑步机饿死防御）+ slice 预算再装 + LAST_VCT
+    # 回绕窗增量，host 24 测；判定律单源，arch/aarch64 timer.rs 机械壳
+    # re-export + sched class.rs tick 记账 delta 消费）。
+    cargo test -p berry-tickface --target {{host}}
     # W3-Q14：berry-emface（EM 表形状执法 + util EWMA 窗口数学纯函数面
     # ——em_shape_ok 六拒面/em_domain_from 装配不变量/极值首尾投影/
     # window_state 翻窗三态判序/ewma_fold 折叠·收敛·死区·钳位/
@@ -740,6 +747,13 @@ test-host:
     # 含尾 + 防呆帽〕+ 区序两族〔pinned 族 SLEEPQ 先/thread 族 RQ 先〕+
     # 幂等置位/清位律，host 12 测；判定律单源，sched.rs 六函数消费）。
     cargo test -p berry-frzface --target {{host}}
+    # W3-Q82：berry-balface（on_irq_tick 内嵌 SMP 门纯函数钉板——心跳/
+    # 卡扫折叠除法变档律〔500/2500 两周期独立折叠〕+ 高龄乘域判〔严格
+    # 大于 10s，与报告字段 div 形两数学独立〕+ 定时拉取近空闲联合门
+    # 〔mine<=1 ∧ theirs>=mine+2，反复迁移防线〕+ 偷取 victim 三值合取
+    # 〔spread ∧ ttbr0!=0 ∧ eligible〕，host 13 测；判定律单源，sched.rs
+    # 五点消费）。
+    cargo test -p berry-balface --target {{host}}
     # W3-Q20：berry-polface（policy O(1) 快照查表数学 + SchedAttr 位选律
     # 纯函数面——散列锚点指纹/256 键桶覆盖摊平律/饱和窗全占+窗尽缺席/
     # 空槽早退缺席/桶 255 回绕落位/first-wins 不覆写/窗满拒收不入表/
@@ -924,6 +938,7 @@ test-host:
     # user/Cargo.toml——manifest-path 直指 crate，同 stdhello/bsh 先例）。
     cargo test --manifest-path user/berry-ksproto/Cargo.toml --target {{host}}
     cargo test --manifest-path rootface/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/berry-rootface/Cargo.toml --target {{host}}
     # W1 接线（D-审计 §4 同款零接线面）：berry-softime（波3 件 C 软键盘
     # 引擎 v1——QWERTY-lite ASCII 键位模型 + OP_INPUT_INJECT 载荷编码 +
     # 显隐状态机，host 5 测落地时未接线 test-host；SERVICE 底窗本体随波 3
@@ -1209,6 +1224,16 @@ test-host:
     # 改键表/改注入消费面必跑。
     {{BASH}} tools/fwcfg-check.sh
     {{BASH}} tools/fwcfg-check.sh --selftest
+    # W1 接线（tools 零自检纯函数件清零族）：paths.sh 路径解析单源——
+    # justfile KERNEL/RUST_LLD 属性背引号 + smoke.sh source 双消费面，
+    # 此前零自检（解析律/拒面/CLI 形态改坏无机器咬合）。selftest 10 腿
+    # （合成 cargo/rustc 垫片沙箱：target-dir/kernel 组装/垫片哑拒/缺席
+    # 拒/usage 拒/source 形态三函数）。改解析逻辑或拒面措辞必跑。
+    {{BASH}} tools/paths.sh --selftest
+    # W1 接线（同族）：ver-check 版本一致性验收——selftest 8 腿（合成 git
+    # 沙箱：G-ver-3 对拍绿/不匹配红点名/无 version 红/git_ident 缺席红/
+    # 段作用域防串号/零 tag 豁免/非 git 豁免）。发版门形态改坏可被咬合。
+    {{BASH}} tools/ver-check.sh --selftest
     # W1 接线（D-审计 §4.3「从未跑过」面）：guifbd lib 单测 13 测
     # （B1-b/c vgpu 后端纯面——后端分派/INDIRECT 链/ATTACH 段/提交序）入
     # host 台账。独立小工作区（空 [workspace] escape），berry-libc
