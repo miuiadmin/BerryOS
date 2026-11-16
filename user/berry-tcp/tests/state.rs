@@ -52,9 +52,12 @@ fn fin_seg(seq: u32) -> TcpSeg<'static> {
     }
 }
 
-/// 指定 window 的纯 ACK（二刀发送窗消费测试用）。
+/// 指定 window 的纯 ACK（二刀发送窗消费测试用）。F72 起 seq 取对端
+/// snd_nxt=5001（握手基线 wl1=5000 之后的真实新鲜值——纯 ACK 携发送方
+/// 当前序号；旧 seq=0 形按护栏属陈旧段不采纳窗）。
 fn ack_seg_w(ack: u32, window: u16) -> TcpSeg<'static> {
     let mut s = ack_seg(ack);
+    s.seq = 5001;
     s.window = window;
     s
 }
@@ -922,4 +925,56 @@ fn large_seg_then_regular_continuity() {
     assert!(out.deliver.is_none());
     assert_eq!(out.action, Action::Ack);
     assert_eq!(c.rcv_nxt, 5001 + 1460 + 4);
+}
+
+// —— 四刀顺带批：F72 窗新鲜度护栏 + ACK 域上界（RFC793 SEG.ACK ≤ SND.NXT）——
+
+#[test]
+fn f72_stale_ack_does_not_shrink_window() {
+    // 迟到/乱序段携缩窗不回缩（seq 旧于 wl1 / 同 seq 但 ack 旧于 wl2 两面）；
+    // 新鲜段（seq 更新，或同 seq 且 ack 不旧）覆写——SLIRP 恒 65535 域的
+    // 理论面护栏，多 op 在途 ACK 面扩大后收口。
+    let mut c = established();
+    assert_eq!((c.snd_wl1, c.snd_wl2), (5000, 1001)); // SYN-ACK 基线
+    c.send(64);
+    let mut stale = ack_seg_w(1001, 100);
+    stale.seq = 4000; // 旧于 wl1
+    c.on_seg(&stale);
+    assert_eq!(c.snd_wnd, WINDOW);
+    assert_eq!(c.snd_wl1, 5000);
+    let mut same_seq = ack_seg_w(1001, 100);
+    same_seq.seq = 5000;
+    same_seq.ack = 1000; // 同 seq 但 ack 旧于 wl2
+    c.on_seg(&same_seq);
+    assert_eq!(c.snd_wnd, WINDOW);
+    let mut fresh = ack_seg_w(1065, 200);
+    fresh.seq = 6000; // 更新
+    c.on_seg(&fresh);
+    assert_eq!(c.snd_wnd, 200);
+    assert_eq!((c.snd_wl1, c.snd_wl2), (6000, 1065));
+    let mut fresh2 = ack_seg_w(1065, 300);
+    fresh2.seq = 6000; // 同 seq 且 ack == wl2（不旧）→ 覆写
+    c.on_seg(&fresh2);
+    assert_eq!(c.snd_wnd, 300);
+}
+
+#[test]
+fn phantom_ack_beyond_snd_nxt_rejected() {
+    // 幻 ACK 越 snd_nxt：不推进 snd_una、不弹槽、不采纳窗（RFC793 不可接受
+    // ACK 面——多 op 在途放大「幻 ACK 弹未发槽」的已知限制，本刀硬面）。
+    let mut c = established();
+    c.send(64);
+    c.send(64);
+    assert_eq!(c.snd_nxt, 1129);
+    let mut ph = ack_seg(c.snd_nxt + 1000);
+    ph.seq = 9000;
+    ph.window = 7;
+    c.on_seg(&ph);
+    assert_eq!(c.snd_una, 1001);
+    assert_eq!(c.tx_inflight(), 2);
+    assert_eq!(c.snd_wnd, WINDOW);
+    // 合法累计 ACK 照常推进/弹槽（护栏不伤正常路径）。
+    c.on_seg(&ack_seg(1129));
+    assert_eq!(c.snd_una, 1129);
+    assert_eq!(c.tx_inflight(), 0);
 }

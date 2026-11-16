@@ -1,0 +1,41 @@
+#!/bin/sh
+# BerryOS main 线守门（push 层）——防线详见 .agents/notes/implemented/2026-11-16-跨根合并防线与判例.md
+# 职责：拒绝把跨根合并提交推进 refs/heads/main（GitHub 服务端装不了钩子，本地 push 是最后闸口）。
+# lane 往 wip/* 或别的分支推不受影响；owner 逃生阀 BERRYOS_ALLOW_CROSSROOT=1。
+
+[ "$BERRYOS_ALLOW_CROSSROOT" = "1" ] && exit 0
+zero=0000000000000000000000000000000000000000
+
+while read -r lref lsha rref rsha; do
+  [ "$rref" = "refs/heads/main" ] || continue
+  [ "$lsha" = "$zero" ] && continue
+  if [ "$rsha" = "$zero" ]; then
+    range="$lsha --not --all"
+  else
+    range="$rsha..$lsha"
+  fi
+  bad=$(
+    git rev-list --merges $range </dev/null 2>/dev/null | while read -r m; do
+      # 多亲提取必须用 rev-list --parents——rev-parse --verify "$m^@" 对多亲提交输出为空
+      pline=$(git rev-list --parents -n1 "$m" </dev/null 2>/dev/null)
+      [ -n "$pline" ] || continue
+      set -- $pline
+      shift
+      [ $# -ge 2 ] || continue
+      p1=$1; p2=$2
+      [ -z "$(git merge-base "$p1" "$p2" </dev/null 2>/dev/null)" ] && echo "$m"
+    done | head -3
+  )
+  if [ -n "$bad" ]; then
+    cat >&2 <<'EOF'
+[berryos-guard] 拒绝：本次推送将把跨根合并提交送上 refs/heads/main。
+
+main 与 wip/sched-1.1 无共同祖先，收口合并是 owner 专属动作，不经 local main 直推。
+lane 正确路径：工作推 wip/sched-1.1；跨线内容走净增量重放。
+owner 确要收口：BERRYOS_ALLOW_CROSSROOT=1 git push
+判例：.agents/notes/implemented/2026-11-16-跨根合并防线与判例.md
+EOF
+    exit 1
+  fi
+done
+exit 0
