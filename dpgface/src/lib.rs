@@ -256,7 +256,8 @@ pub fn faulter_key_route(claim: Claim) -> FaulterKey {
     }
 }
 
-/// W3-Q73：pager 表批窗 ABI 装配纯面（0x24 入参判定律——n 门 /
-/// PagerWindow 16B 小端拼装 / delta 页对齐预检；kernel syscall.rs
-/// handler 壳消费，dpgface 主面同源延续零新 crate）。
+/// W3-Q59：dpg P0-1 fastpath 唤醒直切判序纯面（P0-1 线1d 消费面——
+/// `dpg_pager` 供给毕唤 faulter 点的 `try_preempt` 直切资格 + 供给
+/// 临界段收口序 host 钉板；sched 物理臂/RQ 锁窗/切换舞蹈留壳）。
+pub mod fastpath;
 pub mod tblwin;

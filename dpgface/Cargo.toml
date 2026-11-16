@@ -14,4 +14,7 @@ path = "src/lib.rs"
 # + 空闲槽选择/池满溢出 convoy 路由 + take_for 三态判定表（属主过滤取/
 # 孤儿槽 GC 臂/any_armed 语义），host 表驱动钉板；kernel dpg.rs 判定段
 # 换消费（原子槽机械/wake 调用留壳——形态抄 berry-bandface / berry-utrace）。
-# 零外部依赖。
+# W3-Q59：fastpath 直切判序面加引 ringface（eligible/TaskDesc/
+# HELD_FROZEN·HELD_THROTTLE/RUNNING 单源直引——sched 侧探峰/出选
+# 同谓词，零第二实现）。
+berry-ringface = { path = "../ringface" }
