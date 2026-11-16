@@ -97,6 +97,52 @@ pub fn steal_filter(spread: bool, ttbr0: usize, eligible: bool) -> bool {
     spread && ttbr0 != 0 && eligible
 }
 
+// ---- F4 wake 迁移门（SMP-01 §3.4 遗留修的判定律单源，W3-Q87）----
+//
+// [`sched.rs::eas_wake_pick`]（2026-11-16 owner 跨根合流笔 c1f695be9 落
+// base）双门的判定律——负载动机迁移（非能量判据）：
+// - 触发门：home 核 util > 80%（1024 归一 → > 819）——home 不忙不迁
+//   （防乒乓第一门，`crate::policy::placement_hint_ungated` 头注自述
+//   「防乒乓第一门 = overutil_judgment 同尺」——emface 80% 常量族）；
+// - 容量门：对核 util < 75%（spare > 25% → util < 768）——对核不闲
+//   无处可去；
+// - 不吃 overutil 让位（wake 面的触发条件恰是 home 过载——若沿用
+//   overutil 门控则迁移结构性死火；Linux 平行律：overutil 时 EAS
+//   退场，但 wake 路负载均衡照常工作）；
+// - 防乒乓：迁移后改写 `home_cpu`（下次 wake 从新 home 出发）——物理
+//   臂留 sched（Task 指针写不在纯面）；
+// - 单核零改：`par_enabled == false` 恒 home——**此短路在 sched 壳**
+//   （HAL 调用不入纯面），纯面只钉双门数学。
+//
+// 域界：util 读（`crate::util::cpu_util`）与 home_cpu 改写留 sched
+// （原子/指针物理臂）；本面只钉「两门怎么判」的数定律。
+
+/// wake 迁移触发门阈值（80%，1024 归一）：home util **严格大于** 819
+/// 才开迁移评估（819 = 80% × 1024 / 1000 = 819.2 → 819——与内核内联
+/// 魔数 819 逐字对齐）。与 emface `overutil` 80% 常量族同尺（EAS 让位
+/// 律的唤醒路镜像——wake 面不吃让位但同尺触发）。
+pub const WAKE_MIGRATE_UTIL: u32 = 819;
+
+/// wake 迁移容量门阈值（75%，1024 归一）：对核 util **严格小于** 768
+/// 才有 spare（768 = 75% × 1024 / 1000 = 768 恰值——spare > 25%）。对核
+/// util ≥ 768 = 无余量，无处可去。
+pub const WAKE_SPARE_UTIL: u32 = 768;
+
+/// F4 wake 迁移双门（纯判定律——`sched.rs::eas_wake_pick` 消费）：
+/// `home_util > 819`（触发门：home 忙）∧ `other_util < 768`（容量门：
+/// 对核有 spare）→ 迁移。任一门不过 → 留 home。恰界值钉板（819 拒 /
+/// 820 过 / 767 过 / 768 拒）见测试；判序 = 触发门先（home 不忙的常见
+/// 态在第一门即返，省一次对核读——消费侧短路序同形）。域 = u32
+/// （`util::cpu_util` 的 1024 归一原生域——消费点零转换）。
+///
+/// 单核短路（`par_enabled()==false` 恒 home）与防乒乓改写（迁移后
+/// `home_cpu = other`）是 sched 壳的物理臂，不在此面——纯面输入已是
+/// 两核 util 快照，无 HAL 依赖。
+#[inline]
+pub fn wake_migrate_gate(home_util: u32, other_util: u32) -> bool {
+    home_util > WAKE_MIGRATE_UTIL && other_util < WAKE_SPARE_UTIL
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,5 +317,69 @@ mod tests {
         assert!(!steal_filter(false, 0x4000, true));
         // 出选资格否（eligible=false——cur-in-ring 常态对核 pick 滤跳过）。
         assert!(!steal_filter(true, 0x4000, false));
+    }
+
+    // ---- wake_migrate_gate：F4 wake 迁移双门（W3-Q87）----
+
+    #[test]
+    fn wake_gate_both_pass_migrates() {
+        // 双门全过：home 忙（>819）∧ 对核有 spare（<768）→ 迁移。
+        assert!(wake_migrate_gate(820, 767));
+        assert!(wake_migrate_gate(819 + 1, 768 - 1));
+        assert!(wake_migrate_gate(1024, 0)); // 满载 home + 全空闲对核
+        assert!(wake_migrate_gate(u32::MAX, 0)); // 敌意巨值（乘加无——纯比较恒安全）
+    }
+
+    #[test]
+    fn wake_gate_home_trigger_boundary() {
+        // 触发门恰界：819 = 80% 恰值 → 严格大于律拒（home「不忙」）。
+        assert!(!wake_migrate_gate(819, 0));
+        // 820 = 过（最小过值）。
+        assert!(wake_migrate_gate(820, 0));
+        // home 闲（0 / 常态 400）：无论对核多空都不迁（防乒乓第一门）。
+        assert!(!wake_migrate_gate(0, 0));
+        assert!(!wake_migrate_gate(400, 0));
+        assert!(!wake_migrate_gate(818, 767)); // 触发门差一拒
+    }
+
+    #[test]
+    fn wake_gate_other_spare_boundary() {
+        // 容量门恰界：768 = 75% 恰值 → 严格小于律拒（spare 不 >25%）。
+        assert!(!wake_migrate_gate(1024, 768));
+        // 767 = 过（最小 spare 过值）。
+        assert!(wake_migrate_gate(1024, 767));
+        // 对核也忙（1024/900）：home 再忙也无处可去。
+        assert!(!wake_migrate_gate(1024, 1024));
+        assert!(!wake_migrate_gate(u32::MAX, 900));
+    }
+
+    #[test]
+    fn wake_gate_quadrant_full_scan() {
+        // 双门四象限全域（步进 1 过界点）：门序独立、无交叠副作用。
+        for home in [0u32, 818, 819, 820, 900, 1024] {
+            for other in [0u32, 100, 500, 767, 768, 900, 1024] {
+                let want = home > 819 && other < 768;
+                assert_eq!(
+                    wake_migrate_gate(home, other),
+                    want,
+                    "home={home} other={other}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn wake_gate_constants_norm_alignment() {
+        // 常量与归一化尺对齐钉板：819 = 80%·1024/1000 下取整 + 严格大于
+        // （即「>80%」与「>=820」等价）；768 = 75% 恰值 + 严格小于
+        // （即「<75%」与「<=767」等价）。改阈值必红此测（防漂移钉）。
+        assert_eq!(WAKE_MIGRATE_UTIL, 819);
+        assert_eq!(WAKE_SPARE_UTIL, 768);
+        // 与旧内联魔数（sched.rs eas_wake_pick 源）逐字一致执法：
+        // > 819 / < 768 的旧字面在新常量下逐位重现。
+        for v in 0u32..=1024 {
+            assert_eq!(v > WAKE_MIGRATE_UTIL, v > 819, "trigger @ {v}");
+            assert_eq!(v < WAKE_SPARE_UTIL, v < 768, "spare @ {v}");
+        }
     }
 }
