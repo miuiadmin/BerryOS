@@ -137,18 +137,18 @@ fail() {
   echo "soak: FAIL: $1" >&2
   echo "---- 心跳表（全部已收拍）----" >&2
   grep -aoE 'SOAK t=[0-9]+ sw=[0-9]+ sw0=[0-9]+ sw1=[0-9]+ park0=[0-9]+ park1=[0-9]+ pages=[0-9]+ lost=[0-9]+' "$LOG" >&2 || true
-  echo "---- 串口日志尾部（全文保留：$LOG）----" >&2
+  echo "---- 串口日志尾部（全文保留：${LOG}）----" >&2
   tail -40 "$LOG" >&2
   if [ -n "$ECHO_LOG" ] && [ -s "$ECHO_LOG" ]; then
-    echo "---- echod 日志尾部（$ECHO_LOG）----" >&2
+    echo "---- echod 日志尾部（${ECHO_LOG}）----" >&2
     tail -10 "$ECHO_LOG" >&2
   fi
   if [ -n "$EVS_LOG" ] && [ -s "$EVS_LOG" ]; then
-    echo "---- evsclient 日志尾部（$EVS_LOG）----" >&2
+    echo "---- evsclient 日志尾部（${EVS_LOG}）----" >&2
     tail -10 "$EVS_LOG" >&2
   fi
   if [ -n "$SKT_LOG" ] && [ -s "$SKT_LOG" ]; then
-    echo "---- sktclient 日志尾部（$SKT_LOG）----" >&2
+    echo "---- sktclient 日志尾部（${SKT_LOG}）----" >&2
     tail -10 "$SKT_LOG" >&2
   fi
   echo "--------------------------------" >&2
@@ -265,7 +265,7 @@ while :; do
   done
   [ -z "$missing" ] && break
   [ $(( $(date +%s) - t0 )) -gt "$DEADLINE_BOOT" ] \
-    && fail "boot 覆盖标记 ${DEADLINE_BOOT}s 未到齐，缺：$missing（常驻服务族缺席/门控键漂移 = 覆盖面缩水或 soakmon 未 spawn，勿空心绿跑）"
+    && fail "boot 覆盖标记 ${DEADLINE_BOOT}s 未到齐，缺：${missing}（常驻服务族缺席/门控键漂移 = 覆盖面缩水或 soakmon 未 spawn，勿空心绿跑）"
   sleep 2
 done
 echo "soak: boot 覆盖标记 ${#COVER[@]}/${#COVER[@]} 到齐（含 SOAK gate on 门控自证；svcmgr/fsmgr/vblk/vnet 常驻族在席）"
@@ -337,5 +337,5 @@ while :; do
 done
 
 elapsed=$(( $(date +%s) - tq ))
-echo "soak: PASS ${MINUTES}/${MINUTES} 拍六断言全绿（$summary；pages 稳态帽 +64，首 5 拍结算豁免——pmin..pmax 含豁免窗观测）"
+echo "soak: PASS ${MINUTES}/${MINUTES} 拍六断言全绿（${summary}；pages 稳态帽 +64，首 5 拍结算豁免——pmin..pmax 含豁免窗观测）"
 echo "soak: 全程 ${elapsed}s（总帽 ${TOTAL_CAP}s）"

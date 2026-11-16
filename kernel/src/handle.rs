@@ -13,8 +13,10 @@
 //!   （引用计数 = 持有它的 handle 数，最后 close 释放）。
 //! - 权限只能收紧：`duplicate` 要求新 rights ⊆ 原（防提权，永不增权）。
 //!
-//! v1 裁剪：页表帧不回收（v1 政策）；`RIGHT_DUPLICATE` 位已定义但不门控
-//! `duplicate`（Zircon 同款：位留 vocab、暂不执法）。3-2 起 Vmo 销毁回收
+//! v1 裁剪：页表帧不回收（v1 政策）；`RIGHT_DUPLICATE` 位自 P3-1 起执法
+//! ——syscall 面（`sys_handle_duplicate` 经 [`HandleTable::rights_of`] 探针）
+//! 源 handle 缺位即 -EACCES，内核内部直调 [`HandleTable::duplicate`]（boot
+//! 插表/ktest 表 API 的授能语境）不设此门。3-2 起 Vmo 销毁回收
 //! 未映射物理页（`Vmo::Drop`），映射未解除的 VMO 拒 close（悬空 PTE 防线，
 //! 见 [`HandleTable::close`]）。
 
@@ -41,36 +43,17 @@ pub use crate::abi_gen::{
     ERR_TIMEDOUT, RIGHT_DUPLICATE, RIGHT_EXECUTE, RIGHT_INSPECT, RIGHT_MANAGE, RIGHT_MAP,
     RIGHT_READ, RIGHT_RECV, RIGHT_SEND, RIGHT_SET_POLICY, RIGHT_SIGNAL, RIGHTS_SAME,
     RIGHT_TRANSFER, RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_TERMINATED, SIGNAL_USER_MASK,
+    SIGNAL_WAKE_PENDING,
     SIGNAL_WRITABLE,
 };
 
 // ---- handle 位域（决策 #28：低位槽位、中位代号、高位可选类型）----
-
-/// 槽位号位宽（低 16 位 = 每表最多 65536 槽）。
-const SLOT_BITS: u32 = 16;
-const SLOT_MASK: u32 = (1 << SLOT_BITS) - 1;
-/// 代号位宽（bits [16, 30)；bit31 预留类型编码，v1 不写）。
-const GEN_BITS: u32 = 14;
-const GEN_MASK: u32 = (1 << GEN_BITS) - 1;
-
-fn encode(slot: u32, gen: u32) -> Handle {
-    debug_assert!(slot <= SLOT_MASK && gen >= 1 && gen <= GEN_MASK);
-    (gen << SLOT_BITS) | slot
-}
-
-fn decode_slot(h: Handle) -> u32 {
-    h & SLOT_MASK
-}
-
-fn decode_gen(h: Handle) -> u32 {
-    (h >> SLOT_BITS) & GEN_MASK
-}
-
-/// bit30/31 = ABI §8.1 预留位（v1 内核从不发行非零值）。lookup 对非零一律拒
-/// （3b3 审查 M5）——否则 X 与 X|0x8000_0000 被解码成同一 handle，replace 的
-/// 裸值 `h == repl` 挡不住这种别名，「任一无效则表不动」的原子承诺即被打破
-/// （调用者收错误码却已永久丢失合法能力）。
-const RESERVED_MASK: Handle = 0xC000_0000;
+// 常量与 encode/decode 单源在 berry-hdlface（W3-Q8 host 钉板——位域编码
+// 律/别名拒/发行域门表驱动在册）；此处 re-export 维持 kernel 内路径。
+pub use berry_hdlface::{
+    decode_gen, decode_slot, encode, gen_in_issue_domain, has_reserved_bits,
+    slot_index_valid, GEN_MASK,
+};
 
 /// 对象类型（镜像 `berry_obj_type` 枚举值，ABI §8.2 冻结）。
 /// Process/Channel 等暂无构造点——3-3/3-4 增补对象时启用，全表先冻结在册。
@@ -470,6 +453,48 @@ impl HandleTable {
         })
     }
 
+    /// AM-1.5 wake-pending 冻结面：枚举本表全部 Channel 端点打「属主冻结」
+    /// 标（`ChannelEnd.frozen_owner` = `owner` + retain——配平在
+    /// [`Self::thaw_channel_ends`] / 端点 Drop 防御面）。**幂等**：已标端点
+    /// 不动——同表 duplicate 别名（多槽共对象）不重复 retain。调用点 =
+    /// `process_suspend` 首枚 token 冻结生效后（首层才标，嵌套层不重复）；
+    /// 冻进程任务全冻 ⇒ 本表此后不可变 ⇒ 标集到 thaw 恒稳定。send 命中
+    /// 冻端点 → 属主 wake-pending + token 持有者通知（`sys_channel_send` 尾）。
+    pub fn freeze_channel_ends(&mut self, owner: NonNull<ObjRef>) {
+        for slot in self.slots.iter_mut() {
+            if let SlotState::Used { obj, .. } = *slot {
+                // SAFETY: Used 槽持引用（对象活）；单核 SVC 串行（调用点
+                // IRQ 屏蔽）；mark 幂等（同对象多槽别名不重复 retain）。
+                unsafe {
+                    if let Some(end) = (*obj.as_ptr()).obj.as_channel_mut() {
+                        end.mark_frozen(owner);
+                    }
+                }
+            }
+        }
+    }
+
+    /// AM-1.5 wake-pending 清面（thaw 侧）：清全部由 `owner` 打的端点冻标
+    ///（release 与 [`Self::freeze_channel_ends`] 的 retain 配平——mark 幂等 ⇒
+    /// 同表 duplicate 别名只有首槽见 Some，恰一次配对）。调用点 =
+    /// `SuspendTok::drop` **全解冻**（freeze_depth 归零）+ `process_suspend`
+    /// 插表失败回滚（首层撤冻同点）。枚举期间属主 ObjRef 恒活：调用方
+    ///（token Drop / 回滚序）此刻仍持 ≥1 引用——本面内的 release 只是退还
+    /// mark 时的份额，归零销毁不可能发生在枚举中途。
+    pub fn thaw_channel_ends(&mut self, owner: NonNull<ObjRef>) {
+        for slot in self.slots.iter_mut() {
+            if let SlotState::Used { obj, .. } = *slot {
+                // SAFETY: 同 freeze_channel_ends（在表活对象 + 单核串行）；
+                // clear 的 release 配平与属主存活论证见函数注释。
+                unsafe {
+                    if let Some(end) = (*obj.as_ptr()).obj.as_channel_mut() {
+                        end.clear_frozen(owner);
+                    }
+                }
+            }
+        }
+    }
+
     /// 在用（Used 态）槽计数（B-0 churn 金丝雀：全关光后必须归零——确定性
     /// 严格断言的判据，非热路径）。
     pub fn used_count(&self) -> usize {
@@ -512,7 +537,7 @@ impl HandleTable {
                     }
                 }
                 SlotState::Used { gen, obj, .. } => {
-                    if *gen == 0 || *gen > GEN_MASK {
+                    if !gen_in_issue_domain(*gen) {
                         return Err("HT integrity: Used gen out of range");
                     }
                     // SAFETY: 槽在表且 gen 在发行域内 → 按表不变量指针有效；
@@ -551,10 +576,22 @@ impl HandleTable {
         Ok((obj, rights))
     }
 
+    /// **类型无关权利探针**（P3-1 `handle_duplicate` 执法面）：查表 + 代号
+    /// 校验后返回该 handle 的权利全集。不验类型、不验 need 位——
+    /// `handle_duplicate` 对一切对象类型开放，`get_raw` 的具体 `ObjType`
+    /// 门在此不适配；need 位判定归调用方（syscall 入口查
+    /// [`RIGHT_DUPLICATE`]）。执法边界 = syscall 面（不受信面）：内核内部
+    /// 直调 [`Self::duplicate`]（boot 插表 / ktest 表 API）是授能语境，
+    /// 不经此门。
+    pub fn rights_of(&self, h: Handle) -> Result<Rights, i32> {
+        Ok(self.lookup(h)?.1)
+    }
+
     /// 查表（gen 校验）：槽空 / 越界 / 代号不符 / **预留位非零** →
     /// [`ERR_BAD_HANDLE`]。
     fn lookup(&self, h: Handle) -> Result<(NonNull<ObjRef>, Rights), i32> {
-        if h & RESERVED_MASK != 0 {            return Err(ERR_BAD_HANDLE); // 预留位非零 = 非法值（v1 从不发行）
+        if has_reserved_bits(h) {
+            return Err(ERR_BAD_HANDLE); // 预留位非零 = 非法值（v1 从不发行）
         }
         let slot = decode_slot(h) as usize;
         match self.slots.get(slot) {
@@ -592,7 +629,7 @@ impl HandleTable {
         &self,
         h: Handle,
     ) -> Result<(usize, u32, NonNull<ObjRef>, Rights), i32> {
-        if h & RESERVED_MASK != 0 {
+        if has_reserved_bits(h) {
             return Err(ERR_BAD_HANDLE); // 预留位非零 = 非法值（v1 从不发行）
         }
         let slot = decode_slot(h) as usize;
@@ -621,7 +658,7 @@ impl HandleTable {
         {
             return Ok(off + 1);
         }
-        if self.slots.len() > SLOT_MASK as usize {
+        if !slot_index_valid(self.slots.len()) {
             return Err(ERR_NO_MEMORY); // 表满（65536 槽）
         }
         // 尾插前预留（3b3 H2 try 化：push 增长的 OOM 曾是 abort 点）。
@@ -637,7 +674,7 @@ impl HandleTable {
         match self.slots[slot] {
             SlotState::Free { next_gen } => {
                 debug_assert!(next_gen >= 1);
-                if next_gen > GEN_MASK {
+                if !gen_in_issue_domain(next_gen) {
                     return Err(ERR_NO_MEMORY);
                 }
                 Ok(next_gen)

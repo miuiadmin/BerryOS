@@ -131,14 +131,20 @@ impl<'a> Iterator for CpioIter<'a> {
             self.done = true;
             return Some(Err(LoadError::BadField));
         }
-        // 全 u64 checked 几何：header → 名（垫 4）→ 数据（垫 4）→ 下条。
+        // 全 u64 checked 几何：header → 名（垫页）→ 数据（垫页）→ 下条。
+        // X-3c：垫 4096 = data_off 恒页对齐（0x23 pager_supply_mapped 的
+        // delta 页对齐门在产链侧兑现）——与 tools/mkcpio.py entry()、
+        // mkapp._cpio_entries + kernel bootparams 同口径五点一动（单
+        // 编码器纪律伴生义务）。
         let name_off = (self.pos + CPIO_HDR) as u64;
         let data_off = name_off
             .checked_add(namesize)
-            .and_then(|v| v.checked_add(3))
-            .map(|v| v & !3);
+            .and_then(|v| v.checked_add(PAGE_SIZE - 1))
+            .map(|v| v & !(PAGE_SIZE - 1));
         let data_end = data_off.and_then(|d| d.checked_add(filesize));
-        let next = data_end.map(|e| (e + 3) & !3);
+        let next = data_end
+            .and_then(|e| e.checked_add(PAGE_SIZE - 1))
+            .map(|v| v & !(PAGE_SIZE - 1));
         let (data_off, next) = match (data_off, next) {
             (Some(d), Some(n)) => (d, n),
             _ => {
@@ -359,12 +365,16 @@ pub fn cpio_step(window: &[u8], pos: u64, archive_len: u64) -> Result<StepOutcom
         return Err(LoadError::BadField);
     }
     let name_off = pos.checked_add(CPIO_HDR as u64).ok_or(LoadError::Truncated)?;
+    // 垫页几何（X-3c，与 cpio_walk/mkcpio/mkapp/bootparams 五点同口径）：
+    // data_off 恒页对齐——demand 装载 delta 门的产链兑现面。
     let data_off = name_off
         .checked_add(namesize)
-        .and_then(|v| v.checked_add(3))
-        .map(|v| v & !3);
+        .and_then(|v| v.checked_add(PAGE_SIZE - 1))
+        .map(|v| v & !(PAGE_SIZE - 1));
     let data_end = data_off.and_then(|d| d.checked_add(filesize));
-    let next = data_end.and_then(|e| e.checked_add(3)).map(|v| v & !3);
+    let next = data_end
+        .and_then(|e| e.checked_add(PAGE_SIZE - 1))
+        .map(|v| v & !(PAGE_SIZE - 1));
     let (data_off, next) = match (data_off, next) {
         (Some(d), Some(n)) => (d, n),
         _ => return Err(LoadError::Truncated), // 恶意巨值溢出
@@ -674,11 +684,11 @@ mod tests {
         }
         out.extend_from_slice(name.as_bytes());
         out.push(0);
-        while out.len() % 4 != 0 {
+        while out.len() % PAGE_SIZE as usize != 0 {
             out.push(0);
         }
         out.extend_from_slice(data);
-        while out.len() % 4 != 0 {
+        while out.len() % PAGE_SIZE as usize != 0 {
             out.push(0);
         }
         out
@@ -780,8 +790,9 @@ mod tests {
     #[test]
     fn cpio_namesize_lie_truncated() {
         let mut arc = cpio_archive(&[("a", b"x")]);
-        // namesize 字段 @6+11*8=94，改成 0xFF0 撒谎。
-        arc[94..102].copy_from_slice(&hex8(0xFF0));
+        // namesize 字段 @6+11*8=94，改成 0x3000 撒谎——垫页几何下档长
+        // = 条目页倍数和，谎须越过档尾才截断（小于页垫的谎被垫吸收）。
+        arc[94..102].copy_from_slice(&hex8(0x3000));
         assert_eq!(cpio_walk(&arc).next(), Some(Err(LoadError::Truncated)));
     }
 
@@ -998,16 +1009,53 @@ mod tests {
 
     #[test]
     fn cpio_step_geometry_arithmetic() {
-        // "bin/hello"（9B+NUL=10）：name_off=110 → data_off=align4(120)=120，
-        // 数据 4B → next=align4(124)=124。
+        // "bin/hello"（9B+NUL=10）：name_off=110 → data_off=align_page(120)
+        // =4096（X-3c 垫页：data_off 恒页对齐——demand 装载 delta 门），
+        // 数据 4B → next=align_page(4100)=8192。
         let arc = cpio_archive(&[("bin/hello", b"ABCD")]);
         match cpio_step(&arc, 0, arc.len() as u64).unwrap() {
             StepOutcome::Entry(s) => {
                 assert_eq!(s.name, "bin/hello");
-                assert_eq!((s.data_off, s.data_len, s.next_off), (120, 4, 124));
+                assert_eq!(s.data_off % PAGE_SIZE, 0);
+                assert_eq!((s.data_off, s.data_len, s.next_off), (4096, 4, 8192));
             }
             _ => panic!("expected entry"),
         }
+    }
+
+    #[test]
+    fn cpio_step_data_offsets_page_aligned() {
+        // X-3c 产链契约：多形态条目（奇名/短名/恰页长数据/跨页数据）全档
+        // 步进，每条 data_off 页对齐 + 数据逐字节在位（走查器与 mkcpio
+        // 垫页几何互锁——任一侧漂移必炸此锚）。
+        let items: &[(&str, &[u8])] = &[
+            ("a", b"x"),
+            ("bin/hexyl-ish-long-name", &[7u8; 4095]),
+            ("dir/", b""),
+            ("bb", &[9u8; 8192]),
+        ];
+        let arc = cpio_archive(items);
+        let mut pos = 0u64;
+        let mut seen = 0;
+        while pos < arc.len() as u64 {
+            let w = &arc[pos as usize..];
+            match cpio_step(w, pos, arc.len() as u64).unwrap() {
+                StepOutcome::End => break,
+                StepOutcome::Entry(s) => {
+                    assert_eq!(s.data_off % PAGE_SIZE, 0, "data_off 须页对齐");
+                    let (_, want) = items[seen];
+                    assert_eq!(
+                        &arc[s.data_off as usize..(s.data_off + s.data_len) as usize],
+                        want,
+                        "数据漂移 @ {}",
+                        s.name
+                    );
+                    seen += 1;
+                    pos = s.next_off;
+                }
+            }
+        }
+        assert_eq!(seen, items.len());
     }
 
     #[test]

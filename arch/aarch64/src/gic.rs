@@ -31,6 +31,16 @@ pub const IRQ_CNTV: usize = 27;
 /// 接线活证双源：zCore 同板 `irq_enable(33)` + QEMU 自产 DTB `LEVEL_HIGH`。
 /// 若接线有误，`exception_irq` 未知源分支 loud 打 `irq? id=N`（bring-up 面）。
 pub const IRQ_PL011_RX: usize = 33;
+/// IRQ 编号：第二 PL011 UART1 RX（SPI 8 + 16 SGI + 16 PPI，sim-S1）。QEMU
+/// `virt` 双 `-serial` 配置 DTB 实证（QEMU 11.0.3 dumpdtb：`interrupts =
+/// <0x00 0x08 0x04>` = SPI 8/LEVEL_HIGH；单串口配置设备不存在——在席门见
+/// [`crate::UART1_BASE`] 注，fw_cfg `opt/berry/simdev`）。
+pub const IRQ_PL1_RX: usize = 40;
+/// IRQ 编号：PL061 GPIO（SPI 7 + 16 SGI + 16 PPI，sim-S2 A4②）。QEMU `virt`
+/// DTB 实证：`pl061@9030000` `interrupts = <0x00 0x07 0x04>` = SPI 7/LEVEL_HIGH
+///（GPIO3 = 电源键——QMP `system_powerdown` 脉冲）。电平去活 = PL061 ICR
+/// 写 1 清边沿锁存（handler pre-EOI 铁序，`pl061.rs` 模块头）。
+pub const IRQ_PL061: usize = 39;
 /// SGI 号分配（S-3 §2.2）：1 = `SGI_RESCHEDULE`（跨核唤醒戳）；2 = TLB
 /// shootdown 回执（S-4 4-1 现役——收端 = trap.rs SGI_TLB 臂 + tlbshoot 模块）；
 /// **0 保留不用**（复位默认值域，观测面干净性）。
@@ -250,6 +260,8 @@ pub fn sgi_pending_this_core(id: usize) -> bool {
 /// S-1 盒子边界（副核稳态零中断源、零 UART 写）。
 pub const SPI_ROUTES: &[(usize, u8, u8, u32)] = &[
     (IRQ_PL011_RX, 0xa0, 0x01, 0b01), // PL011 RX：电平触发（DTB LEVEL_HIGH）
+    (IRQ_PL1_RX, 0xa0, 0x01, 0b01),   // PL011#1 RX（sim-S1）：电平（DTB 实证同上）
+    (IRQ_PL061, 0xa0, 0x01, 0b01),    // PL061 电源键（sim-S2 A4②）：电平（DTB 实证）
 ];
 
 /// 经 [`SPI_ROUTES`] 使能一个 SPI：查表命中才动 GICD（表外源返 false——

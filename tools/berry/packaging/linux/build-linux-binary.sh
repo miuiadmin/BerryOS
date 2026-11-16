@@ -45,6 +45,38 @@ RS
     "$STUB/dl.rs" -o "$STUB/dl.o" >/dev/null
 ar rcs "$STUB/libdl.a" "$STUB/dl.o"
 
+# Cross-C for ring (VNC wave 5: rustls's ring backend compiles C). On a
+# macOS host there is no musl cross-gcc; Apple clang + -ffreestanding
+# covers ring's freestanding crypto sources, with one shim needed:
+# clang's builtin stddef.h #include_next's unconditionally for the musl
+# branch and there is no musl sysroot to catch it — a self-contained
+# stddef.h placed in an -isystem dir ahead of the builtin resolves it.
+# (stdint.h needs no shim: its include_next is guarded by
+# __STDC_HOSTED__, which -ffreestanding clears.)
+CC_ENV="CC_${TARGET//-/_}"
+CFLAGS_ENV="CFLAGS_${TARGET//-/_}"
+if [ -z "$(eval "printf %s \"\${$CC_ENV:-}\"")" ] && command -v clang >/dev/null 2>&1; then
+    cat > "$STUB/stddef.h" <<'H'
+#pragma once
+typedef __SIZE_TYPE__ size_t;
+typedef __PTRDIFF_TYPE__ ptrdiff_t;
+#ifndef NULL
+#define NULL ((void *)0)
+#endif
+#define offsetof(t, member) __builtin_offsetof(t, member)
+typedef struct {
+    long long __berry_align_ll;
+    long double __berry_align_ld;
+} max_align_t;
+H
+    mkdir -p "$STUB/shim"
+    mv "$STUB/stddef.h" "$STUB/shim/stddef.h"
+    export CC_aarch64_unknown_linux_musl="$(command -v clang)" \
+           CC_x86_64_unknown_linux_musl="$(command -v clang)"
+    export CFLAGS_aarch64_unknown_linux_musl="--target=aarch64-unknown-linux-musl -ffreestanding -isystem $STUB/shim" \
+           CFLAGS_x86_64_unknown_linux_musl="--target=x86_64-unknown-linux-musl -ffreestanding -isystem $STUB/shim"
+fi
+
 cd tools/berry
 PATH="$HOME/.cargo/bin:$PATH" \
 CARGO_HOME="$PWD/.cargo-home" \

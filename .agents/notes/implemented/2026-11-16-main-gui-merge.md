@@ -55,7 +55,15 @@ refresh guest 的 FULL submit 改走 gfxdemo 自己的 `wid`，surface 0 继续�
 
 ### 验证拓扑内存
 
-smoke-image 是 GUI 常驻服务与 mainline 全探针合跑的验证拓扑，不是 128MiB 产品面。本合线把其 QEMU 内存从 128MiB 提到 192MiB：GUI wmd/launcher 常驻帧面叠加 U3 四段 uutils 管道后，128MiB 下 `pthread_create` 的 eager 栈 commit 已到边界。产品镜像内存与 1080×1920@60 约束不变。
+第一层合并曾把 smoke-image 从 128MiB 提到 192MiB：GUI wmd/launcher 常驻 eager 帧面叠加 U3 四段 uutils 管道时，`pthread_create` 的 eager 栈 commit 到边界。第二层合入主线 X-5 demand exec 后，短命 ELF 映像按实际触页供给，验证拓扑回到主线 128MiB；产品镜像内存与 1080×1920@60 约束不变。
+
+### 第二层主线超集合
+
+`origin/main` 在第一层合并期间前进到 104c0a7a（X-5 demand pager、PM 双服务、EAS/band、berry CLI/VNC、TCP 四刀）。第二层合并保留该服务/调度/治理基底，同时以 GUI 产品线裁决三处：
+
+1. present/wm op 依“让先落者律”：GUI 的 `WM_CONNECT..RECENTS_GET` 保 0x66..0x6D；主线 wave2/3 的 `WM_FOCUS/WM_BACK/WM_SUBSCRIBE` 重编号 0x6E..0x70，`INPUT_INJECT` 重编号 0x25。
+2. Berry Room 是五个预制 GUI app 与 BerryDemo/UITEST 的唯一宿主；主线 wave4 的 direct libc/WM `*-app` 双实现删除，MMS/Camera 真 Berry Room 化留后续产品刀。
+3. HD 字体产物升 v3：v1 位图、v2 `ADVANCE_HD` 比例推进与 GUI A8 覆盖面共存，`DrawText` wire 保持 Unicode `u32` 码点。
 
 ## Alternatives considered
 

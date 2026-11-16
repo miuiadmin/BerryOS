@@ -17,18 +17,26 @@
 //! **分配上下文纪律**：IRQ 热路径零分配（timer/GIC 异常路径不碰堆）；SVC
 //! **同步异常上下文允许**分配（syscall handler：入口硬件置 DAIF、单核、
 //! 不解蔽——无重入/并发窗口；分配失败的 no-panic 纪律见 3b3 审查 H2 try 化）。
+//!
+//! **单源纪律（W3-Q39）**：size-class 取整/align 修正/切页几何/整页 ceil 除与
+//! buddy 阶算术唯一事实源在 [`berry_heapface`]（host 钉板 8 测）；本模块
+//! 留物理臂——侵入式 freelist `push`/`pop`、`frames()` 帧源、`phys_to_virt`
+//! 映射与 loud 报错。alloc/dealloc 路由对称律由 `route`/`dealloc_route`
+//! 同一函数结构性保证。
 
 use alloc::alloc::{GlobalAlloc, Layout};
 use alloc::boxed::Box;
 use berry_hal_aarch64::{uart_put_dec, uart_put_hex64, uart_puts};
-use berry_mm::va::{phys_to_virt, virt_to_phys, PAGE_SHIFT, PAGE_SIZE};
+use berry_heapface::{
+    class_index, dealloc_route, route, Route, PAGE_SIZE, SLAB_CLASSES,
+};
+use berry_mm::va::{phys_to_virt, virt_to_phys, PAGE_SHIFT};
 use core::cell::UnsafeCell;
 use core::ptr;
 
-/// size-class（2 的幂，字节）。每类一条 freelist。
-const SLAB_CLASSES: [usize; 9] = [8, 16, 32, 64, 128, 256, 512, 1024, 2048];
-/// 走 slab 的上限；超过则走整页路径。
-const MAX_CLASS: usize = 2048;
+// 单源对拍：heapface 与 berry-mm 的页几何常量必须同值（两 crate 无编译期
+// 联动，const assert 钉漂移——`route` 的整页算术按 heapface 侧页尺寸走）。
+const _: () = assert!(PAGE_SIZE == berry_mm::va::PAGE_SIZE as usize);
 
 pub struct SlabHeap {
     /// 每类一条侵入式 freelist 头（`*mut u8`，槽首存 next 指针）。
@@ -48,45 +56,42 @@ unsafe impl Sync for SlabHeap {}
 
 unsafe impl GlobalAlloc for SlabHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let eff = core::cmp::max(layout.size(), layout.align());
-        match class_index(eff) {
+        match route(layout.size(), layout.align()) {
             // slab 路径
-            Some(ci) => {
+            Some(Route::Slab { class, slots }) => {
+                let ci = class_index(class).expect("Slab 路由 class 必在表内");
                 let fl = &mut *self.freelists.get();
                 if let Some(slot) = pop(fl, ci) {
                     return slot;
                 }
                 // freelist 空：取一页，切成 class 槽，槽 1.. 推入 freelist，返回槽 0。
-                let class = SLAB_CLASSES[ci];
                 let frame = match crate::mm::frames().alloc() {
                     Ok(pfn) => pfn,
                     Err(_) => return ptr::null_mut(),
                 };
                 let base = phys_to_virt(frame << PAGE_SHIFT) as *mut u8;
-                let nslots = PAGE_SIZE / class;
-                for i in 1..nslots {
+                for i in 1..slots {
                     push(fl, ci, base.add(i * class));
                 }
                 base
             }
             // 整页路径
-            None => {
-                let npages = div_round_up(layout.size(), PAGE_SIZE);
-                let order = order_for(npages);
-                match crate::mm::frames().alloc_order(order) {
-                    Ok(pfn) => phys_to_virt(pfn << PAGE_SHIFT) as *mut u8,
-                    Err(_) => ptr::null_mut(),
-                }
-            }
+            Some(Route::Pages { order, .. }) => match crate::mm::frames().alloc_order(order) {
+                Ok(pfn) => phys_to_virt(pfn << PAGE_SHIFT) as *mut u8,
+                Err(_) => ptr::null_mut(),
+            },
+            // 零大小（Layout 非零不变量外的防御面）：拒分配，不 panic。
+            None => ptr::null_mut(),
         }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        let eff = core::cmp::max(layout.size(), layout.align());
-        match class_index(eff) {
-            Some(ci) => push(&mut *self.freelists.get(), ci, ptr),
-            None => {
-                let order = order_for(div_round_up(layout.size(), PAGE_SIZE));
+        match dealloc_route(layout.size(), layout.align()) {
+            Some(Route::Slab { class, .. }) => {
+                let ci = class_index(class).expect("Slab 路由 class 必在表内");
+                push(&mut *self.freelists.get(), ci, ptr)
+            }
+            Some(Route::Pages { order, .. }) => {
                 // 2b-1 起高半 direct map：alloc 侧返回的是 phys_to_virt(pfn<<SHIFT)，
                 // 还帧前必须折回 PA——旧「VA==PA」是 2b-1 之前的过时前提，照抄会把
                 // 高半 VA 当 PFN 还帧必 Err，被吞错后每块静默漏帧（S-2 vmo_cap 踩亮）。
@@ -100,6 +105,8 @@ unsafe impl GlobalAlloc for SlabHeap {
                     uart_puts(b"\n");
                 }
             }
+            // 零大小 dealloc：无账可还（Layout 非零不变量下不到达；loud 不吞）。
+            None => uart_puts(b"heap: dealloc zero-size layout\n"),
         }
     }
 }
@@ -138,26 +145,8 @@ unsafe fn push(fl: &mut [*mut u8; SLAB_CLASSES.len()], ci: usize, slot: *mut u8)
     fl[ci] = slot;
 }
 
-// ---- class / order 算术 ----
-
-/// 返回 `>= eff` 的最小 class 下标；`eff > MAX_CLASS` 时 None（走整页）。
-fn class_index(eff: usize) -> Option<usize> {
-    if eff > MAX_CLASS {
-        return None;
-    }
-    SLAB_CLASSES.iter().position(|&c| c >= eff)
-}
-
-/// 向上取整除法。
-fn div_round_up(n: usize, d: usize) -> usize {
-    (n + d - 1) / d
-}
-
-/// `npages` 页所需 buddy 阶（最小 `2^order >= npages`）。`npages >= 1`。
-fn order_for(npages: usize) -> usize {
-    if npages <= 1 {
-        0
-    } else {
-        (usize::BITS - (npages - 1).leading_zeros()) as usize
-    }
-}
+// ---- class / order 算术：单源外迁 berry-heapface（W3-Q39，host 钉板）----
+// 本地仅保留消费面（alloc/dealloc 两臂同源路由 route/dealloc_route）；
+// class_index/effective_size/div_round_up/order_for/slots_per_page 的语义
+// 钉板见 heapface/tests/heap_tests.rs（经 kernel 公开 re-export 面为零——
+// 内核无外部消费者，纯函数族直接消费 berry-heapface crate 即可）。

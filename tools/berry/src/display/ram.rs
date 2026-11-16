@@ -12,9 +12,7 @@ use std::fs::File;
 use std::io;
 use std::path::Path;
 
-use std::sync::{Arc, Mutex};
-
-use crate::display::frame::{Caps, Frame, FrameRef, InputEvent, ScreenSource, TransportKind};
+use crate::display::frame::{Caps, Frame, InputEvent, ScreenSource, TransportKind};
 use crate::display::vnc::VncInput;
 use crate::error::{BerryError, Result};
 
@@ -135,7 +133,7 @@ impl ScreenSource for RamSource {
         }
     }
 
-    fn try_next_frame(&mut self) -> Option<FrameRef> {
+    fn try_next_frame(&mut self) -> Option<Frame> {
         Self::read_at(&self.file, &mut self.raw, self.offset).ok()?;
         // Skip static frames with a cheap sampled signature; the console/frame
         // is otherwise re-rendered 60x/s for no reason.
@@ -177,7 +175,7 @@ impl ScreenSource for RamSource {
                 };
             }
         }
-        Some(Arc::new(Mutex::new(frame)))
+        Some(frame)
     }
 
     fn send_input(&mut self, event: InputEvent) -> Result<()> {

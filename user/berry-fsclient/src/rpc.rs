@@ -1,19 +1,26 @@
 //! fs RPC 会话机 + fd 面分片 op（C-1 刀 1 自 bsh 迁居，语义逐字保真）。
 //!
 //! 迁居面：`fs_rpc`（严格串行 RPC 单趟：EBUSY 阻塞重试 + 收侧 READABLE 帽
-//! + **会话毒化位**——任一收侧超时即作废整个会话，v1 无请求序号防迟到
-//! 应答错配）、`fs_rpc_status`（应答恰 1 字节 st 面）、双帽（常规
-//! [`TIMEOUT_NS`] 10s / commit 面 [`FS_COMMIT_CAP_NS`] 90s——分片 PUT 与
-//! TRUNC 都走 commit 帽：跨名 PUT 对保留 staging 槽隐式重跑整链 commit，
-//! P6 A-6/A-7 对抗审查实抓）。bsh 刀 4 删自有面，改经 libc（刀 2 消费此处）
-//! ——「不长第二套」的终点形态。
+//! + **会话毒化位**——任一收侧超时即作废整个会话）、`fs_rpc_status`
+//! （应答恰 [`HDR`] 字节 st 面）、双帽（常规 [`TIMEOUT_NS`] 10s / commit 面
+//! [`FS_COMMIT_CAP_NS`] 90s——分片 PUT 与 TRUNC 都走 commit 帽：跨名 PUT
+//! 对保留 staging 槽隐式重跑整链 commit，P6 A-6/A-7 对抗审查实抓）。bsh
+//! 刀 4 删自有面，改经 libc（刀 2 消费此处）——「不长第二套」的终点形态。
+//!
+//! **txid（P1-1 请求号）**：每请求自增取号（[`next_txid`]，0 保留），应答
+//! 由 fsmgr 原样回显，收侧按号匹配（[`rpc`]）——不匹配 = 他者/迟到应答，
+//! 弃收续等，不再静默错配。毒化位姿态**保留零漂移**（迟到应答现可由
+//! txid 甄别，理论上可解封；解除属行为变更，随 v2 裁决）。注意 txid 是
+//! 甄别位不是路由位：共享 fs_a 队列（svcmgr 对多 client dup 授能）里被
+//! 本会话错收的他者应答弃收后其真主收不到（其会话按超时面诚实失败）；
+//! 多 client 全并发须 per-client channel（v2 再议）。
 //!
 //! fd 面 op（libc 刀 2 的原料，全部零分配——berry-libc 是纯 core crate）：
 //! - 读：`get_chunk(path, off)` 单片 GET（≤CHUNK 短读合法，POSIX 短读面；
 //!   调用方循环至 more=0 / EOF）。
 //! - 写：`put_chunk(path, off, data)` 单片 PUT（data ≤CHUNK）+ close 时
 //!   `commit(path, size)` = TRUNC——**写通道 commit 点 = close**（C-1 裁决
-//! 2，bsh `>` 两段式同款）。
+//!   2，bsh `>` 两段式同款）。
 //! - 状态五 op：lookup / mkdir / unlink / readdir / stat。
 //! - 卷级：`statfs()` → [`Statfs`]（C-2 刀 2——df/statfs 桩的原料，无路径
 //!   参：v1 单 FAT 卷、卷级）。
@@ -24,8 +31,8 @@
 
 use berry_fsproto::{
     encode_get, encode_lookup, encode_mkdir, encode_put, encode_readdir, encode_stat,
-    encode_statfs, encode_trunc, encode_unlink, parse_reply_get, parse_reply_list,
-    parse_reply_stat, parse_reply_statfs, Statfs, ST_OK,
+    encode_statfs, encode_trunc, encode_unlink, hdr_txid, parse_reply_get, parse_reply_list,
+    parse_reply_stat, parse_reply_statfs, Statfs, HDR, ST_OK,
 };
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_object_wait_one, Handle,
@@ -47,8 +54,25 @@ pub const TIMEOUT_NS: u64 = 10 * 1_000_000_000;
 /// 帽兜底，交互面 v1 接受单命令阻塞（异步 commit/后台 flush 随 v2）。
 pub const FS_COMMIT_CAP_NS: u64 = 90 * 1_000_000_000;
 
-/// RPC 请求/应答缓冲（PUT worst = op+path+off+CHUNK ≤ 246B；bsh 同值）。
+/// RPC 请求/应答缓冲（PUT worst = 头 6 + 名 48 + off/dlen 5 + CHUNK 192
+/// = 251B；bsh 同值）。
 pub const RPC_BUF: usize = 256;
+
+/// txid 发号器（P1-1）：0 保留——fsmgr 对取不出 txid 的截断帧回显 0，真
+/// 请求永不取 0（错配即弃，诚实超时面）；fetch_add 回绕跳 0。libc 单进程
+/// 长驻（单线程根基），静态位即会话位。
+static NEXT_TXID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(1);
+
+/// 取下一请求号（≥1；回绕跳 0）。
+fn next_txid() -> u32 {
+    let t = NEXT_TXID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    if t == 0 {
+        NEXT_TXID.store(1, core::sync::atomic::Ordering::Relaxed);
+        1
+    } else {
+        t
+    }
+}
 
 /// fs 会话健康位：任一收侧超时即作废（见 [`rpc`] 文档注释）——libc 单进程
 /// 长驻，静态位即会话位。诊断访问器 [`session_ok`]。
@@ -70,18 +94,28 @@ fn now() -> u64 {
     t
 }
 
-/// 严格串行 RPC 单趟（返回应答长度入 buf；None = 断链）。`cap` = 收侧
-/// READABLE 帽（常规 [`TIMEOUT_NS`]；commit 链走 [`FS_COMMIT_CAP_NS`]）。
+/// 严格串行 RPC 单趟（返回应答长度入 buf；None = 断链）。`txid` = 本请求
+/// 请求号（调用方编码进请求的同一值）；`cap` = 收侧 READABLE 帽（常规
+/// [`TIMEOUT_NS`]；commit 链走 [`FS_COMMIT_CAP_NS`]）。
 ///
 /// 发送侧：EBUSY → 阻塞等 WRITABLE（10s 帽重臂——console_write 同款契约，
 /// 雷 2 纪律：不自旋）；发送侧超时**不毒化**（请求未发出、无迟到应答）。
 ///
-/// **会话毒化**（P6 A-1 对抗审查实抓）：v1 协议无请求序号——任一**收侧**
-/// 超时后，fsmgr 的迟到应答仍会入队，下一 RPC 的 poll-first 收侧会把它
-/// 错配成自己的应答（GET 面 = 静默错数据，off-by-one 永不自愈）。故收侧
+/// **txid 收侧匹配**（P1-1）：应答帧的 txid 与本请求不符 → 他者/迟到应答
+/// （共享 fs_a 队列的并发 client 或毒化前遗留），弃收续等本请求的应答；
+/// 帧 < [`HDR`] 取不出 txid = 协议破缺，原样上交（op 解析面拒 → Rpc）。
+///
+/// **会话毒化**（P6 A-1 对抗审查实抓，txid 前时代的防线）：任一**收侧**
 /// 超时即作废整个会话：后续 fs op 确定性降级「fs unreachable」（确定性
-/// 失败优于无告警错数据；迟到应答无人消费、滞留队列无害）。
-fn rpc(h: Handle, buf: &mut [u8; RPC_BUF], reqlen: usize, cap: u64) -> Option<usize> {
+/// 失败优于无告警错数据）。txid 落地后迟到应答已可甄别弃收，理论上可
+/// 解封——行为变更留 v2 裁决，本刀零漂移保留。
+fn rpc(
+    h: Handle,
+    buf: &mut [u8; RPC_BUF],
+    reqlen: usize,
+    txid: u32,
+    cap: u64,
+) -> Option<usize> {
     if !session_ok() {
         return None;
     }
@@ -104,13 +138,20 @@ fn rpc(h: Handle, buf: &mut [u8; RPC_BUF], reqlen: usize, cap: u64) -> Option<us
         deadline = 0; // 重臂（命中后若仍满则续等——公平排队）
     }
     // 应答：空队阻塞等 READABLE（cap 帽——严格串行下一请求一应答，应答
-    // 必先于下一请求到队）。
+    // 必先于下一请求到队；他者应答被弃收后重臂续等，见他注）。
     loop {
         let mut nb = buf.len();
         let mut nh = 0usize;
         let s = berry_channel_recv(h, buf.as_mut_ptr(), &mut nb, core::ptr::null_mut(), &mut nh);
         if s == 0 {
-            return Some(nb);
+            match hdr_txid(&buf[..nb]) {
+                Some(t) if t == txid => return Some(nb), // 本请求应答
+                // 他者/迟到应答：弃收续等（其真主的超时面见模块头注——
+                // txid 是甄别位不是路由位）。
+                Some(_) => continue,
+                // <HDR 短帧：协议破缺，上交 op 解析面拒（Rpc）。
+                None => return Some(nb),
+            }
         }
         if s != BERRY_ERR_AGAIN {
             return None;
@@ -123,10 +164,17 @@ fn rpc(h: Handle, buf: &mut [u8; RPC_BUF], reqlen: usize, cap: u64) -> Option<us
     }
 }
 
-/// st 应答单趟（应答恰 1 字节 st；PUT/TRUNC 面）。长度破缺 = 协议面 Rpc。
-fn rpc_status(h: Handle, buf: &mut [u8; RPC_BUF], reqlen: usize, cap: u64) -> Result<(), FsErr> {
-    let n = rpc(h, buf, reqlen, cap).ok_or(FsErr::Rpc)?;
-    if n == 1 {
+/// st 应答单趟（应答恰 [`HDR`] 字节 st+txid；PUT/TRUNC 面）。长度破缺 =
+/// 协议面 Rpc。
+fn rpc_status(
+    h: Handle,
+    buf: &mut [u8; RPC_BUF],
+    reqlen: usize,
+    txid: u32,
+    cap: u64,
+) -> Result<(), FsErr> {
+    let n = rpc(h, buf, reqlen, txid, cap).ok_or(FsErr::Rpc)?;
+    if n == HDR {
         if buf[0] == ST_OK {
             return Ok(());
         }
@@ -148,8 +196,9 @@ pub fn get_chunk(
     if h == 0 {
         return Err(FsErr::NoFs);
     }
-    let l = encode_get(buf, path, off).ok_or(FsErr::Rpc)?;
-    let n = rpc(h, buf, l, TIMEOUT_NS).ok_or(FsErr::Rpc)?;
+    let txid = next_txid();
+    let l = encode_get(buf, txid, path, off).ok_or(FsErr::Rpc)?;
+    let n = rpc(h, buf, l, txid, TIMEOUT_NS).ok_or(FsErr::Rpc)?;
     // 数据在应答帧中部——前移到 buf[0..]（copy_within：源/目的同缓冲重叠，
     // copy_from_slice 对自重叠是 memcpy 契约 UB——P6 A-7 实踩雷）。
     let (len, more, src) = match parse_reply_get(&buf[..n]).ok_or(FsErr::Rpc)? {
@@ -174,8 +223,9 @@ pub fn put_chunk(h: Handle, path: &[u8], off: u32, data: &[u8]) -> Result<(), Fs
         return Err(FsErr::NoFs);
     }
     let mut buf = [0u8; RPC_BUF];
-    let l = encode_put(&mut buf, path, off, data).ok_or(FsErr::Rpc)?;
-    rpc_status(h, &mut buf, l, FS_COMMIT_CAP_NS)
+    let txid = next_txid();
+    let l = encode_put(&mut buf, txid, path, off, data).ok_or(FsErr::Rpc)?;
+    rpc_status(h, &mut buf, l, txid, FS_COMMIT_CAP_NS)
 }
 
 /// 写通道 commit（close 面，C-1 裁决 2）：`TRUNC(path, size)`——staging 落
@@ -185,8 +235,9 @@ pub fn commit(h: Handle, path: &[u8], size: u32) -> Result<(), FsErr> {
         return Err(FsErr::NoFs);
     }
     let mut buf = [0u8; RPC_BUF];
-    let l = encode_trunc(&mut buf, path, size).ok_or(FsErr::Rpc)?;
-    rpc_status(h, &mut buf, l, FS_COMMIT_CAP_NS)
+    let txid = next_txid();
+    let l = encode_trunc(&mut buf, txid, path, size).ok_or(FsErr::Rpc)?;
+    rpc_status(h, &mut buf, l, txid, FS_COMMIT_CAP_NS)
 }
 
 /// LOOKUP `<path>`（存在性探针 = open 快速失败面；RAM 树 → FAT 回落，
@@ -196,8 +247,9 @@ pub fn lookup(h: Handle, path: &[u8]) -> Result<(), FsErr> {
         return Err(FsErr::NoFs);
     }
     let mut buf = [0u8; RPC_BUF];
-    let l = encode_lookup(&mut buf, path).ok_or(FsErr::Rpc)?;
-    rpc_status(h, &mut buf, l, FS_COMMIT_CAP_NS)
+    let txid = next_txid();
+    let l = encode_lookup(&mut buf, txid, path).ok_or(FsErr::Rpc)?;
+    rpc_status(h, &mut buf, l, txid, FS_COMMIT_CAP_NS)
 }
 
 /// MKDIR `<path>`（RAM 目录树；已存在 → Exists）。纯 RAM 面（fsmgr 不回落
@@ -207,8 +259,9 @@ pub fn mkdir(h: Handle, path: &[u8]) -> Result<(), FsErr> {
         return Err(FsErr::NoFs);
     }
     let mut buf = [0u8; RPC_BUF];
-    let l = encode_mkdir(&mut buf, path).ok_or(FsErr::Rpc)?;
-    rpc_status(h, &mut buf, l, TIMEOUT_NS)
+    let txid = next_txid();
+    let l = encode_mkdir(&mut buf, txid, path).ok_or(FsErr::Rpc)?;
+    rpc_status(h, &mut buf, l, txid, TIMEOUT_NS)
 }
 
 /// UNLINK `<path>`：文件或**空**目录（非空目录 → NotEmpty）。→
@@ -218,8 +271,9 @@ pub fn unlink(h: Handle, path: &[u8]) -> Result<(), FsErr> {
         return Err(FsErr::NoFs);
     }
     let mut buf = [0u8; RPC_BUF];
-    let l = encode_unlink(&mut buf, path).ok_or(FsErr::Rpc)?;
-    rpc_status(h, &mut buf, l, TIMEOUT_NS)
+    let txid = next_txid();
+    let l = encode_unlink(&mut buf, txid, path).ok_or(FsErr::Rpc)?;
+    rpc_status(h, &mut buf, l, txid, TIMEOUT_NS)
 }
 
 /// READDIR `<dir>`：子名 blob（NUL 连接）搬进 `buf[0..len]`（dirent_next
@@ -228,8 +282,9 @@ pub fn readdir(h: Handle, path: &[u8], buf: &mut [u8; RPC_BUF]) -> Result<usize,
     if h == 0 {
         return Err(FsErr::NoFs);
     }
-    let l = encode_readdir(buf, path).ok_or(FsErr::Rpc)?;
-    let n = rpc(h, buf, l, FS_COMMIT_CAP_NS).ok_or(FsErr::Rpc)?;
+    let txid = next_txid();
+    let l = encode_readdir(buf, txid, path).ok_or(FsErr::Rpc)?;
+    let n = rpc(h, buf, l, txid, FS_COMMIT_CAP_NS).ok_or(FsErr::Rpc)?;
     let (len, src) = match parse_reply_list(&buf[..n]).ok_or(FsErr::Rpc)? {
         Ok(names) => {
             let src = names.as_ptr() as usize - buf.as_ptr() as usize;
@@ -249,8 +304,9 @@ pub fn stat(h: Handle, path: &[u8]) -> Result<(u8, u32), FsErr> {
         return Err(FsErr::NoFs);
     }
     let mut buf = [0u8; RPC_BUF];
-    let l = encode_stat(&mut buf, path).ok_or(FsErr::Rpc)?;
-    let n = rpc(h, &mut buf, l, FS_COMMIT_CAP_NS).ok_or(FsErr::Rpc)?;
+    let txid = next_txid();
+    let l = encode_stat(&mut buf, txid, path).ok_or(FsErr::Rpc)?;
+    let n = rpc(h, &mut buf, l, txid, FS_COMMIT_CAP_NS).ok_or(FsErr::Rpc)?;
     match parse_reply_stat(&buf[..n]).ok_or(FsErr::Rpc)? {
         Ok(r) => Ok(r),
         Err(st) => Err(st_to_err(st)),
@@ -266,8 +322,9 @@ pub fn statfs(h: Handle) -> Result<Statfs, FsErr> {
         return Err(FsErr::NoFs);
     }
     let mut buf = [0u8; RPC_BUF];
-    let l = encode_statfs(&mut buf).ok_or(FsErr::Rpc)?;
-    let n = rpc(h, &mut buf, l, FS_COMMIT_CAP_NS).ok_or(FsErr::Rpc)?;
+    let txid = next_txid();
+    let l = encode_statfs(&mut buf, txid).ok_or(FsErr::Rpc)?;
+    let n = rpc(h, &mut buf, l, txid, FS_COMMIT_CAP_NS).ok_or(FsErr::Rpc)?;
     match parse_reply_statfs(&buf[..n]).ok_or(FsErr::Rpc)? {
         Ok(s) => Ok(s),
         Err(st) => Err(st_to_err(st)),

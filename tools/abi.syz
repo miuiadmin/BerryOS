@@ -18,8 +18,11 @@ type berry_status int32
 type berry_time uint64
 
 # ---- 常量注释（abi.toml 单源字面量；非 syz const 引用）----
+# 平台 API level（[platform]；单调整数轨道——只增不减、不兼容 ABI 变更 +1）:
+#   BERRY_PLATFORM_LEVEL = 1
 # clock id:
 #   CLOCK_MONOTONIC = 0
+#   CLOCK_REALTIME = 1
 # options 位（未知位一律 -EINVAL；scope = 归属 syscall——同值异 scope 不冲突，DOC-6 修：旧裸值两条 1 << 0 无注记）:
 #   CHAN_OPT_NO_INTENT = 1 << 0  (0x1)（scope: channel_create）
 #   VMO_OPT_DEMAND = 1 << 0  (0x1)（scope: vmo_create）
@@ -41,6 +44,7 @@ type berry_time uint64
 #   SIGNAL_READABLE = 1 << 0  (0x1)
 #   SIGNAL_WRITABLE = 1 << 1  (0x2)
 #   SIGNAL_TERMINATED = 1 << 2  (0x4)
+#   SIGNAL_WAKE_PENDING = 1 << 3  (0x8)
 #   SIGNAL_USER_MASK = 0xFFFF_FFFF_0000_0000  (0xffffffff00000000)
 # 错误码（berry_status_t = i32；posix-ish 负数）:
 #   BERRY_OK = 0
@@ -59,7 +63,7 @@ type berry_time uint64
 #   BERRY_ERR_OUT_OF_RANGE = -34
 #   BERRY_ERR_FAULT = -14
 
-# ---- syscall 入口（§4 编号表全量在册；v1 36 号、已实现 35；
+# ---- syscall 入口（§4 编号表全量在册；v1 40 号、已实现 39；
 #      a1..a6 ↔ ARM64 SVC x1..x6 全宽占位参——参数面待 §8.3 原型层（v2 挂账）补）----
 
 # **handle / 通用对象**
@@ -104,7 +108,7 @@ vmar_allocate(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 #   note: G-eco（svcmgr 消费 rootfs 需要 cpio 总长；通用元数据查询不止 initrd 受益）。
 vmo_get_size(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x1B vmo_get_phys（v1）——查字节物理地址（出参 `*pa` = 所在页后备 PA + 页内偏移；匿名 VMO 该页须已 commit，MMIO 窗口 = pa_base+offset；门控仅类型 need=0，同 get_size 几何惯例；PA 是 u64 出参 8 字节宽）
-#   note: P6 A-3（用户态 DMA 面：virtqueue 描述符地址是 guest PA，驱动须能查自己 VMO 页的后备；无 IOMMU 板上 PA 披露面 = 已授 MMIO 窗口的设备本可 DMA 全内存，v1 接受并文档化——IOMMU/SMMU 随 `安全与硬件隔离设计.md`）。
+#   note: P6 A-3（用户态 DMA 面：virtqueue 描述符地址是 guest PA，驱动须能查自己 VMO 页的后备；无 IOMMU 板上 PA 披露面 = 已授 MMIO 窗口的设备本可 DMA 全内存，v1 接受并文档化——IOMMU/SMMU 随 `安全与硬件隔离设计-v1.0.md`）。
 vmo_get_phys(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **pager**
@@ -117,6 +121,22 @@ vmo_get_phys(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 pager_supply_pages(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x22 pager_op_range（v3·已实现）——脏页/换出通知
 pager_op_range(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x23 pager_supply_mapped（v1）——用户态 pager 给 demand VMO 供给一页（delta 恒等选源）：入参 vmo（目标，须持 RIGHT_SET_POLICY）+ src（源 VMO 句柄，0 = 填零页）+ delta（源页偏移 = demand 页偏移 + delta，congruent ELF 段装载形）
+#   note: X-3（exec 装载 demand 化）供给面：0x21 收货前钉死 src_off 单偏移，真 ELF
+#   多段装载需按请求页选源页——源偏 = demand 页偏 + 常量 delta（门 C 裁 A 形
+#   2026-11-07：新号 add-only 破冻，先例 0x86/0x87；0x21 原义零漂移）。收货/
+#   唤醒/供给路径与 0x21 同形（阻塞收货 + poll-first 睡 pager 裸键）；源数据
+#   VMO 页须 pre-commit（§2.2 防线 4）。
+pager_supply_mapped(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x24 pager_supply_mapped_table（v1）——用户态 pager 批供：入参 tbl（PagerWindow{dv:u32, sv:u32, delta:i64} 16B/项 repr(C) 数组）+ n（∈[1,32]）——多窗一次收货，rc = count-wins：>0 = 供给成功页数（部分成功部分计、不回滚），0 供才报 errno
+#   note: X-6 刀①（批供提速）表批形，冻结裁决 2026-11-08（设计稿
+#   `X6批供提速设计-v1.0.md` §7 主裁③「全套照提案冻」）：号 0x24 / N=32
+#   三源镜像（EREQ_SLOTS / PAGER_SLOTS / 表帽）/ count-in-x0 / PagerWindow
+#   布局一次定全即冻。每窗门控/供给/唤醒链与 0x23 同构（阻塞收货 +
+#   poll-first 睡 pager 裸键）；整批 ≤32 页一 KL 窗；池空且已供>0 → 即返
+#   计数不阻塞，池空且 0 供 → 泊键阻塞醒后重扫表。boot 探测回退：
+#   0x24(dv:0,n:1) 新核 -EBADF / 旧核 -ENOTSUP。
+pager_supply_mapped_table(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **进程 / 线程**
 # 0x31 process_create（v1）——建进程 + 出 root Vmar（双出参；job v1 恒 0）
@@ -160,6 +180,21 @@ process_suspend(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x3F thread_yield（1.1·已实现）——主动让出当前时间片；无 handle，等价内核 yield_now；无可跑任务立即返回 0
 #   note: S1 收口：SVC 面 direct yield_now（含切换锁舞蹈）已落。
 thread_yield(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+
+# **调度遥测**（调度彻底计划 CP-08——util 信号通道首环，OQ-8 通道形态首裁）
+# 0x40 sched_util_snapshot（v1）——per-CPU util EWMA 快照读（0..=1024——与 Topo::capacity/EM capacity 同尺度；sched/src/util.rs 生产侧唯一读出口 cpu_util 的用户态面）。入参 util（u32 LE 数组出参）+ count（槽位数）；count < 内核核数 → -EINVAL，≥ 则只写实数槽、余槽不动；返回 >0 = 实写槽位数（恰 = 内核 UTIL_NR_CPU，调用方以此探核数），负 = errno。零 handle 零权利位（系统级遥测读面——统计信号非对象内容；单用户仿真系统无能力框架）。拉模式（pull）——消费方轮询节奏自定，频率裁决单点归 PM 服务
+#   note: CP-08 util 通道首环（docs/调度彻底计划-v1.2.md:100 验收线「berry-power 消费
+#   util 信号（schedutil 同构 f≈util×fmax/capacity）」的内核侧产出面）+ OQ-8
+#   （:217）通道形态首裁：快照 syscall pull 形态先行——共享环 push 形态随 CP-10
+#   通道窗叠加（add-only 不互斥）。加号依据：零 VMO 共享先例（telemetry_open
+#   0x84 klog 快照域已翻真 2026-11-16、SwitchRec/WakeRec 环读口未启）；add-only 加号先例 0x86/0x87/
+#   0x88；PM-15 §4.1「六面零新 syscall」辖 SDK 服务 op 面，不辖内核→服务数据通道
+#   （util 生产侧 v1.3 立法时已内定「PM 读面」，sched/src/util.rs:94-96）。生产侧
+#   零新累积——Fair::tick 记账在役（class.rs util_accumulate/util_tick_window），
+#   本号只读不写。锁类 SVC_CLASS_TABLE（copy_out 链走查调用方页表——§A113 读者
+#   面，同 0x61/0x87）；EWMA 槽 Relaxed 原子读（统计信号无序角色）。消费端 =
+#   berry-power UtilTrack::ingest_snapshot（折叠数学单源 berry-emface）。
+sched_util_snapshot(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **异常**
 # 0x41 thread_create_exception_channel（v2·已实现）——用户态异常上报通道
@@ -205,10 +240,10 @@ namespace_open(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x82 namespace_mount（v3·已实现）——服务把 channel 挂到路径
 namespace_mount(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
-# **策略注入 / 遥测**（AI 调度，见 `AI调度设计.md`）
+# **策略注入 / 遥测**（AI 调度，见 `AI调度设计-v1.0.md`）
 # 0x83 policy_bind（v3·已实现）——注册 AI 策略注入通道（共享环，SET_POLICY）
 policy_bind(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
-# 0x84 telemetry_open（v3·已实现）——打开遥测环（只读）
+# 0x84 telemetry_open（v3·已实现）——打开遥测环（只读）。翻真首域（阶段五第 16 步）：op=0 klog 快照——telemetry_open(op, buf, len) 读内核日志字节环（per-CPU 双环 CPU 序拼接、环内旧→新、每环贡献最新 min(环内有效字节扣除 128B 热尾容错窗, 余量) 字节），返回实写字节数（0 = 两环皆空/读窗不稳的诚实空，常态 >0）；三拒面：op 域外 -ENOTSUP（SwitchRec/WakeRec 环读口随后续波次）、len=0 或超 16KiB 单读帽 -EINVAL、copy_out 失败 -EFAULT（已写段诚实保留）。零 handle 零权利位（系统级遥测读面——sched_util_snapshot 同族口径）
 telemetry_open(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **安全 / 远程证明**（预留）
@@ -218,8 +253,13 @@ berry_attest(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **信号**（POSIX 兼容——libc 协同式投递，A7-4）
 # 0x86 signal_send（v1）——向进程投信号：`h=0` → 当前进程（raise 面，零 handle 需求）；`h≠0` 门控 Process **MANAGE**。sig ∈ 1..=64 位置位 pending（幂等 = POSIX 标准信号合并语义）；目标非 Alive → -EBADSTATE。**不唤醒目标**——投递点在用户态（延迟档），内核零阻塞零解蔽零分配
-#   note: A7-4 段② 翻真（2026-10-31，门 C 裁定 A add-only）：h=0 当前进程 raise 面 / h≠0 门控 MANAGE；sig ∈ 1..=64 界检；幂等位置位、不唤醒目标（协同式用户态投递）。设计 = `docs/事件循环A7-4信号面实施设计草案.md` §3.1。
+#   note: A7-4 段② 翻真（2026-10-31，门 C 裁定 A add-only）：h=0 当前进程 raise 面 / h≠0 门控 MANAGE；sig ∈ 1..=64 界检；幂等位置位、不唤醒目标（协同式用户态投递）。设计 = `docs/事件循环A7-4信号面实施设计草案-v1.0.md` §3.1。
 signal_send(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x87 signal_take（v1）——原子取走当前进程 pending 集（swap(0) 语义——取后内核位清零）：`*pending` = u64 出参 8 字节（信号 n = 位 n-1）。libc 协同式投递的取货口；零 handle 面零权利位（「对象几何非内容」惯例）
 #   note: A7-4 段② 翻真（2026-10-31，与 0x86 同刀）：swap(0) 语义取走当前进程 pending 集；出参写失败不消费（先写后清）。投递中新到位置回内核 pending（下轮 take）——竞态免设计。
 signal_take(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+
+# **电源**（guest 内关机最小闭环——桌面UX审计 02 号 M3）
+# 0x88 power_off（v1）——整机下电（PSCI SYSTEM_OFF 0x84000008 经 HVC conduit——QEMU TCG/KVM 均受理 `qemu_system_shutdown_request`，PM-10 §1.6 实读）。成功 = 不归（整机退出）；返回 -ENOTSUP = conduit 死（EFI handoff / 非 EL1 入口 / 无 PSCI——`off_supported` probe 缓存门）或固件拒收。零参数零出参。
+#   note: 桌面UX刀D add-only 加号（2026-11-14，先例 0x86/0x87）：v1 无门控——单用户仿真系统无能力框架，消费面 launcher 关机键（二击 3s 窗确认）+ berryctl power 子命令；门控与优雅关机序（服务停摆/数据 flush）随 I3 关机流程正规化刀（审计 02 号 §6.2）。probe 缓存门保证无 PSCI 路诚实 -ENOTSUP 不盲发 HVC。
+power_off(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)

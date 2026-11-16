@@ -4,7 +4,6 @@
 //! it came from VNC, shared memory, or a replay. This is the single pixel
 //! truth the window and screenshot writers consume.
 
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::error::Result;
@@ -71,13 +70,11 @@ pub enum InputEvent {
     Key { keysym: u32, down: bool },
 }
 
-pub type FrameRef = Arc<Mutex<Frame>>;
-
 pub trait ScreenSource {
     fn caps(&self) -> Caps;
-    fn try_next_frame(&mut self) -> Option<FrameRef>;
+    fn try_next_frame(&mut self) -> Option<Frame>;
 
-    fn next_frame(&mut self, timeout: Duration) -> Option<FrameRef> {
+    fn next_frame(&mut self, timeout: Duration) -> Option<Frame> {
         let deadline = Instant::now() + timeout;
         loop {
             if let Some(f) = self.try_next_frame() {

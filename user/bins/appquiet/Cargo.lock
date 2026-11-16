@@ -4,11 +4,11 @@ version = 4
 
 [[package]]
 name = "appquiet"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "berry-sys",
 ]
 
 [[package]]
 name = "berry-sys"
-version = "0.1.0"
+version = "0.2.0"

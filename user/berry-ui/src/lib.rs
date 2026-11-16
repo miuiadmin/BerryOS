@@ -15,6 +15,22 @@
 //! 域，对齐条 19）。**embedder = GUI-5 留位**（guest 侧 gui-wm/gfxdemo
 //! 接驳挂账不在本刀；host 侧 embedder = tests/ 离屏 [u8] 纹理对拍）。
 //!
+//! # 组件件（Phase 2——Button/Toggle/Slider/Progress 首批 + Check/Radio/Step/Seg/Stack/Spacer/Divider 第二批 + Badge/Sbar/Tip/Collapse/Chip/Fab/Card 第三批）
+//!
+//! 从数据壳接通四面：渲染（paint 固定色板 + 已有原语组合）、布局（固
+//! 定内在——「组件 v1 几何常量」块单源）、交互（pump 期
+//! `widget_react`：Button 派 on_tap / Toggle·Check 翻转 + on_change /
+//! Slider 拖跟 + on_change / Radio 置位 + on_change / Step·Seg 击点
+//! 分段 + on_change——产物经 `Ui::take_events` 值面携出；ADR #52
+//! Msg-only 零闭包不动、desc.rs 冻结不加 Msg 变体）、命令面（add/
+//! set_props 开口 + 值域先验）。固定值起步（主题/样式系统落地后迁
+//! 出）。布局三件无交互：Stack = 子聚合 max 叠层容器（`_` 臂全幅叠
+//! 放）、Spacer = 0×0 占位吃满 avail、Divider = 厚度线随父宽。第三
+//! 批七件：显示三件无交互（Badge 角标 / Sbar 滚动条 / Tip 工具提
+//! 示）、组合四件（Collapse 折叠组容器——Click 翻转 expanded 派
+//! on_toggle、Chip 胶囊标签——Click 翻转 selected 派 on_tap、Fab 圆
+//! 钮——Click 派 on_tap、Card 卡片容器——双 fill_rect 阴影无交互）。
+//!
 //! # 纪律铁律（§0）
 //!
 //! - 全库零 alloc、零 panic：定容数组满 → loud `Err` 绝不静默丢；敌意
@@ -46,6 +62,9 @@ pub mod text_area;
 pub mod nav_stack;
 pub mod gesture;
 pub mod paint;
+// 波2 控件底座（六波方案步骤 3）：模式件 + 主题 token 两个新模块。
+pub mod pattern;
+pub mod theme;
 pub mod resample;
 pub mod sdk;
 pub mod sem;
@@ -55,14 +74,13 @@ pub mod telemetry;
 pub mod text_input;
 pub mod text_wrap;
 pub mod widgets;
-pub mod theme;
 pub mod utf8;
 // arena 内嵌本文件（Node/槽表私有——§6）；NodeId 在 desc.rs 公开。
 
 // 扁平面 re-export：门面签名里不限定模块路径的名字（§6 用法对齐）。
 pub use desc::{AstError, Axis, Msg, MsgBuf, NodeId, Props, TextBuf, ViewKind, ViewSpec};
+pub use metrics::{EmptyIconSource, IconSource, MonospaceTextMetrics, ProportionalTextMetrics, TextMetrics};
 pub use sem::{a11y_region_roundtrip, SemEntry, SEM_ACTION_ACTIVATE, SEM_ACTION_ADJUST, SEM_ACTION_FOCUS, SEM_ACTION_TEXT_EDIT, SEM_LABEL_MAX, SEM_MAX, SEM_STATE_CHECKED, SEM_STATE_DISABLED, SEM_STATE_SELECTED};
-pub use metrics::{EmptyIconSource, IconSource, MonospaceTextMetrics, TextMetrics};
 
 use berry_gfx::cmd::{Color, CommandEncoder, GlyphPos};
 use berry_guiproto::surface::{encode_a11y_region, A11yRegion, A11Y_ACTION_FOCUS, A11Y_ROLE_GAME_REGION, A11Y_STATE_FOCUSED, A11Y_STATE_VISIBLE};
@@ -89,6 +107,151 @@ pub const OVERDRAW_BUDGET_X256: u32 = 640; // 2.5×256（GUI-10 反清单 7）
 pub const IDLE_AFTER_MS: u64 = 2000; // OH 常量：静默强降 IDLE
 pub type UiMain = Ui<MAX_NODES>;
 
+// ---------- density/vp 换算单点（03-1080P §3.2 层二） ----------
+//
+// vp 体系已立法（应用规范 :138 基准画布 360×640vp @3x = 1080×1920；一切
+// 几何经 GETINFO 协商）——本函数是其换算单点：宿主侧（launcher/settings
+// 族）一切 vp 口径布局常量经此落 px，禁散选手乘（「手乘清零」）。px→vp
+// 用除法取整，仅供断点判断（消费面 = berry-launcher desktop.rs 断点 vp 化，
+// density 由档表推 v0 过渡；info VMO density 域 = v1 与 02 号动态分辨率
+// 合刀）。44px 触控下限保持 px 口径不随 density 缩（应用规范 :147 是 px
+// 下限，「命中区不缩」语义）。整数 density 简化（OH 手机 1080/360 = 3
+// 同值实证；Android `px = dp × dpi/160` 同构）。
+
+/// vp→px：整数密度乘法（saturating——u32 几何域防溢出，dock 宽
+/// `saturating_mul` 先例同款）。
+pub fn vp(v: u32, density: u32) -> u32 {
+    v.saturating_mul(density)
+}
+
+#[cfg(test)]
+mod vp_tests {
+    // vp() 单点换算钉板（03-1080P §3.2 层二）：pub 面本可自 tests/ 钉，
+    // 就近内联（anim kind_of 先例）——OH phone 真值锚（39vp 状态栏 /
+    // 360vp 基准宽 @3）一并钉死换算语义。
+    use super::vp;
+
+    #[test]
+    fn vp_multiplies_integer_density() {
+        assert_eq!(vp(39, 3), 117); // OH phone 状态栏 39vp @3 = 117px
+        assert_eq!(vp(360, 3), 1080); // 基准画布逻辑宽 → 物理宽（应用规范 :138）
+        assert_eq!(vp(44, 1), 44); // @1 档零缩放（紧凑/sm 形态）
+        assert_eq!(vp(0, 3), 0);
+    }
+
+    #[test]
+    fn vp_saturates_instead_of_wrapping() {
+        assert_eq!(vp(u32::MAX, 3), u32::MAX);
+    }
+}
+
+// ---------- 组件四件 v1 几何常量（Phase 2 首批——Button/Toggle/Slider/Progress） ----------
+//
+// 布局 intrinsic（layout.rs）与渲染/命中映射（paint.rs / 本文件
+// slider_permille_at）的单源；固定值起步（主题/样式系统落地后迁出——
+// 文档化豁免同 PRESSED_BG 先例）。pub(crate)：非契约面，随视觉迭代
+// 可调。
+
+/// Button 标签每字节字宽（= S8x16 档 cell_w——paint 渲染推进同值，
+/// 测量/渲染不分叉）。
+pub(crate) const BUTTON_CHAR_W: u32 = 8;
+/// Button 水平留白（左右合计——标签两侧各 16）。
+pub(crate) const BUTTON_PAD_X: u32 = 32;
+/// Button 最小宽（短标签的下限）。
+pub(crate) const BUTTON_MIN_W: u32 = 64;
+/// Button 恒高（触摸最小可点区 48px）。
+pub(crate) const BUTTON_H: u32 = 48;
+/// Toggle 固定内在宽（标准开关）。
+pub(crate) const TOGGLE_W: u32 = 52;
+/// Toggle 固定内在高。
+pub(crate) const TOGGLE_H: u32 = 32;
+/// Slider 固定内在宽（最小可拖区）。
+pub(crate) const SLIDER_W: u32 = 200;
+/// Slider 固定内在高。
+pub(crate) const SLIDER_H: u32 = 44;
+/// Slider 拖动圆直径（行程映射 inset = D/2——渲染与命中单源）。
+pub(crate) const SLIDER_KNOB_D: u32 = 20;
+/// Progress 固定内在宽（线性进度条）。
+pub(crate) const PROGRESS_W: u32 = 200;
+/// Progress 固定内在高。
+pub(crate) const PROGRESS_H: u32 = 8;
+/// Slider/Progress value 上域（desc.rs SliderProps/ProgressProps 契约
+/// 「0..=1000 permille」的命令面执法值——AST/builder 面 BadValue 同律）。
+pub(crate) const PERMILLE_MAX: u32 = 1000;
+
+// ---------- 组件七件 v1 几何常量（Phase 2 第二批——Check/Radio/Step/Seg + Stack/Spacer/Divider） ----------
+//
+// 同首批块纪律：布局 intrinsic（layout.rs）与渲染分段（paint.rs）/命中
+// 分段（本文件 widget_react）的单源；固定值起步（主题/样式系统落地后
+// 迁出——文档化豁免同 PRESSED_BG 先例）。
+
+/// Check 固定内在宽（标准复选方框）。
+pub(crate) const CHECK_W: u32 = 24;
+/// Check 固定内在高。
+pub(crate) const CHECK_H: u32 = 24;
+/// Radio 固定内在宽（标准单选圆）。
+pub(crate) const RADIO_W: u32 = 24;
+/// Radio 固定内在高。
+pub(crate) const RADIO_H: u32 = 24;
+/// Step 固定内在宽（左减号 + 值 + 右加号三段）。
+pub(crate) const STEP_W: u32 = 120;
+/// Step 固定内在高。
+pub(crate) const STEP_H: u32 = 36;
+/// Seg 单段宽（段数 = segment_count）。
+pub(crate) const SEG_SEG_W: u32 = 80;
+/// Seg 固定内在高。
+pub(crate) const SEG_H: u32 = 36;
+/// Tabs 页签条高（波2 批 A——paint TABS_BAR_H 同值 i32 面）。
+pub(crate) const TABS_BAR_H: i32 = 48;
+/// Tabs 最小内在宽（单页签下限）。
+pub(crate) const TABS_MIN_W: u32 = 96;
+/// Sbar 固定内在长（横轨长/竖轨长——第三批定稿 200：竖 4×200 / 横
+/// 200×4，批 A 的 100 为半成品遗留值）。
+pub(crate) const SBAR_LONG: u32 = 200;
+/// Sbar 固定内在厚（轨厚）。
+pub(crate) const SBAR_THICK: u32 = 4;
+/// Badge 圆点直径（show_dot 档；= 数字档高 16——双档同直径单源）。
+pub(crate) const BADGE_DOT_D: u32 = 16;
+/// Badge 数字档水平留白（左右合计——数字两侧各 4；宽随位档 = 位档×8
+/// + 此值）。
+pub(crate) const BADGE_PAD_X: u32 = 8;
+/// Select 固定内在宽（下拉标准行——批 C）。
+pub(crate) const SELECT_W: u32 = 200;
+/// Input 固定内在宽（单行输入——批 D）。
+pub(crate) const INPUT_W: u32 = 200;
+/// Input 固定内在高（= 按钮行高 48）。
+pub(crate) const INPUT_H: u32 = 48;
+/// Edit 固定内在宽（多行编辑——三行档）。
+pub(crate) const EDIT_W: u32 = 200;
+/// Edit 固定内在高（三行 48×2 + 行距）。
+pub(crate) const EDIT_H: u32 = 96;
+/// Canvas 固定内在边长（自绘面占位——批 D 视觉底）。
+pub(crate) const CANVAS_D: u32 = 200;
+/// 输入内容侧表容量（批 D：Input/Edit 实际文本不走 props——引擎侧
+/// 定容表 keyed by NodeId；满 = NodeFull loud 同族）。
+pub const INPUT_TEXT_MAX: usize = 8;
+/// Tip 高（= S8x16 cell_h——Tip 文本与 Button 标签同档）。
+pub(crate) const TIP_H: u32 = 16;
+/// Collapse header 高（内在高恒定基 + expanded 子摆放纵向偏移——布
+/// 局/渲染单源）。
+pub(crate) const COLLAPSE_HEADER_H: u32 = 32;
+/// Chip 高（胶囊标签标准高）。
+pub(crate) const CHIP_H: u32 = 32;
+/// Chip 水平留白（左右合计——标签两侧各 8）。
+pub(crate) const CHIP_PAD_X: u32 = 16;
+/// Fab 圆形直径（触摸最小可点区同 Button 48 上调至 Material 56）。
+pub(crate) const FAB_D: u32 = 56;
+/// Fab 扩展标签与圆的间隙。
+pub(crate) const FAB_LABEL_GAP: u32 = 8;
+/// Gauge 固定内在边长（批 F：表盘方格——值条 + 值文本两带）。
+pub(crate) const GAUGE_D: u32 = 64;
+/// Qr 每模块像素边长（批 F：21 模块 → 84×84；内在 = module_count × 此值）。
+pub(crate) const QR_MODULE_PX: u32 = 4;
+/// DragReorder 固定内在宽（批 F：拖拽手柄列）。
+pub(crate) const DRAG_W: u32 = 24;
+/// DragReorder 固定内在高（= 行高 36 档）。
+pub(crate) const DRAG_H: u32 = 36;
+
 /// arena 运行期树深帽（GUI-6 D29）：add() 执法（超深 → NodeBad loud）
 /// ——递归面（measure/place/cull/emit）未迭代化，深链 × ~200B/帧穿
 /// 32KB guest 栈；96×~200B + 数组面 < 32KB 安全。与 D11 builder 帽
@@ -98,7 +261,7 @@ pub const TREE_DEPTH_MAX: u32 = 96;
 // ---------- a11y 侧表（GUI-6 D12 段B 最小落位） ----------
 
 /// a11y 侧表容量（D12：a11y 条目数帽——超 → apply 面 TooSmall loud）。
-pub const A11Y_MAX: usize = 32;
+pub const A11Y_MAX: usize = 40; // 北极星审计：桌面树 a11y 实需 34（4状态+4dock+5键+1页+20格），01bb3e37a 同款
 
 /// a11y 角色常量域（wire u8；§6 冻结——枚举外的开放值域，host 可扩）。
 /// P0 起值域单源转发 BerrySession semantic sidecar：BerryUI 可扩展导出，
@@ -118,6 +281,64 @@ pub struct A11yEntry {
     pub node: NodeId,
     pub role: u8,
     pub label: TextBuf,
+}
+
+// ---------- 组件事件面（Phase 2 首批——Button/Toggle/Slider 派发） ----------
+
+/// 组件事件缓冲容量（MsgBuf 同形定容 8；满 = loud 计数不静默丢——
+/// [`Ui::lost_widget_events`]）。
+pub const WIDGET_EVENT_MAX: usize = 8;
+
+/// 组件事件（widget_react 派发产物——引擎产、app 消费，ADR #52 零闭
+/// 包同律：不新增 Msg 变体（desc.rs 冻结），事件 ID 面（props 的
+/// on_tap/on_change）经本值面携出）。
+///
+/// `value` 语义随 kind：Button = 恒 0；Toggle = 翻转后 checked（0/1）；
+/// Slider = 新 permille 值（0..=1000）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WidgetEvent {
+    pub node: NodeId,
+    /// 事件 ID（props 携载：on_tap / on_change）。
+    pub event: u32,
+    pub value: u32,
+}
+
+/// 定容组件事件缓冲（MsgBuf 同形：`iter`/`len`/`is_empty` 公共面；
+/// push 为 crate 内派发面，满 → `UiError::MsgFull` loud）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EventBuf {
+    slots: [Option<WidgetEvent>; WIDGET_EVENT_MAX],
+    n: usize,
+}
+
+impl EventBuf {
+    pub(crate) fn new() -> Self {
+        EventBuf { slots: [None; WIDGET_EVENT_MAX], n: 0 }
+    }
+
+    pub(crate) fn push(&mut self, e: WidgetEvent) -> Result<(), UiError> {
+        if self.n >= WIDGET_EVENT_MAX {
+            return Err(UiError::MsgFull);
+        }
+        self.slots[self.n] = Some(e);
+        self.n += 1;
+        Ok(())
+    }
+
+    /// 顺序迭代（产出序即手势时序）。
+    pub fn iter(&self) -> impl Iterator<Item = &WidgetEvent> {
+        self.slots[..self.n].iter().filter_map(|s| s.as_ref())
+    }
+
+    /// 已收事件数。
+    pub fn len(&self) -> usize {
+        self.n
+    }
+
+    /// 空谓词。
+    pub fn is_empty(&self) -> bool {
+        self.n == 0
+    }
 }
 
 // ---------- component focus 侧表（GUI-14 C1） ----------
@@ -188,8 +409,9 @@ pub struct TextWrapEntry {
 
 /// press_map 容量（D18：声明式 pressed-state 映射帽；超 = NodeFull loud
 /// ——D30 容量族单源立法：UiError 无侧表满变体，NodeFull 兼任「Ui 容量
-/// 域满」，与 a11y 满 32 / arena 满同族）。
-pub const PRESS_MAP_MAX: usize = 16;
+/// 域满」，与 a11y 满 32 / arena 满同族。波2 批 A 扩 16→28：launcher
+/// 建树尾全量登记（图标格 + Dock + 返回/导航键）。
+pub const PRESS_MAP_MAX: usize = 28;
 
 /// pressed 视觉底色（D18：RGB u32 打包 `r<<16|g<<8|b`）。设计意图 =
 /// 「bg 亮度减半」——v1 无样式系统，硬编码常量单源（文档化豁免；样式
@@ -216,6 +438,60 @@ fn pack_color(c: Color) -> u32 {
 /// RGB u32 打包 → Color（unpack 逆函数）。
 fn unpack_color(v: u32) -> Color {
     Color { r: (v >> 16) as u8, g: (v >> 8) as u8, b: v as u8 }
+}
+
+/// 组件值域先验（Phase 2 两批）：Slider value ≤ 1000 且 min ≤ max、
+/// Progress value ≤ 1000、Step step>0 且 min ≤ max 且 value ∈ [min,max]、
+/// Seg segment_count>0 且 active < segment_count——desc.rs props 契约
+/// （BadValue 域）的命令面执法（add/set_props 两口共用；AST/builder 面
+/// 已同律拒）。UiError 族冻结——违者 NodeBad loud（Grid 零维先验同形
+/// 兼任）。
+fn widget_value_ok(p: &Props) -> bool {
+    match p {
+        Props::Slider(s) => s.value <= PERMILLE_MAX && s.min <= s.max,
+        Props::Progress(v) => v.value <= PERMILLE_MAX,
+        Props::Step(s) => {
+            s.step > 0 && s.min <= s.max && s.value >= s.min && s.value <= s.max
+        }
+        Props::Seg(s) => s.segment_count > 0 && s.active < s.segment_count,
+        // 波2 批 A：Tabs 零页/active 越页（AST BadValue 同律）、Sbar
+        // thumb 两端 permille 域 + start≤end、Scroll offset ≤ content。
+        Props::Tabs(t) => t.tab_count > 0 && t.active < t.tab_count,
+        Props::Sbar(s) => {
+            s.thumb_start <= PERMILLE_MAX
+                && s.thumb_end <= PERMILLE_MAX
+                && s.thumb_start <= s.thumb_end
+        }
+        Props::Scroll(s) => s.offset_y <= s.content_height,
+        // 组件第三批：Card elevation 0..=3（AST BadValue 同律——
+        // desc::CARD_ELEVATION_MAX 单源；corner_radius 无域）。
+        Props::Card(c) => c.elevation <= desc::CARD_ELEVATION_MAX,
+        // 波2 批 C：Select 选中索引域（option_count == 0 空选择器合法
+        // ——selected 恒 0）。
+        Props::Select(sl) => sl.option_count == 0 || sl.selected < sl.option_count,
+        // 波2 批 E：Refresh offset / SwipeItem reveal 两端 permille 域、
+        // DatePick 月日域（AST BadValue 同律）、TimePick 时分域。
+        Props::Refresh(r) => r.offset <= PERMILLE_MAX,
+        Props::SwipeItem(w) => {
+            w.reveal_start <= PERMILLE_MAX && w.reveal_end <= PERMILLE_MAX
+        }
+        Props::DatePick(d) => {
+            (1..=12).contains(&d.month)
+                && (1..=31).contains(&d.day)
+                && d.min_year <= d.max_year
+                && d.year >= d.min_year
+                && d.year <= d.max_year
+        }
+        Props::TimePick(t) => t.hour <= 23 && t.minute <= 59,
+        // 批 F（末刀三件）：Gauge value 越千分域、Qr module_count 不在
+        // QR 版本域 {21,25,29,...,177}、DragReorder item_index 越项
+        //（total_items > 0 时；total_items == 0 空表合法——Select 零项
+        // 同律）。AST BadValue 面同律。
+        Props::Gauge(g) => g.value <= PERMILLE_MAX,
+        Props::Qr(q) => desc::qr_module_count_valid(q.module_count),
+        Props::DragReorder(d) => d.total_items == 0 || d.item_index < d.total_items,
+        _ => true,
+    }
 }
 
 // ---------- const 断言族（D10——冻结形态编译期钉死） ----------
@@ -306,6 +582,10 @@ pub struct Ui<const N: usize> {
     root_slot: u32,
     vp_w: u32,
     vp_h: u32,
+    /// 主题档运行态（维八暗色刀）：paint 双档取色单源——
+    /// [`Ui::set_theme_mode`] 换档并置 FULL damage（`set_viewport` 同形）。
+    theme: theme::Theme,
+    theme_mode: theme::ThemeMode,
     damage: damage::DamageSet,
     input_buf: [Option<hit::PtrEvent>; INPUT_BUF_MAX],
     input_n: usize,
@@ -313,6 +593,9 @@ pub struct Ui<const N: usize> {
     move_hist: [Sample; INPUT_BUF_MAX], // 活跃 MOVE 滑窗（重采样消费）
     hist_len: usize,
     anims: [Option<anim::Anim>; ANIM_MAX],
+    /// 弹簧表（维三最小刀）：与 anims 平行的第二动画面——SpringProp
+    /// 定点弹簧；定容零分配，帽/错位与 anims 同源（满 = AnimFull）。
+    springs: [Option<anim::SpringProp>; ANIM_MAX],
     phase: frame::FramePhase,
     last_work_ns: u64,
     last_now_ns: u64, // next_wakeup 的「当前时刻」锚（引擎无钟——最近帧时刻）
@@ -341,6 +624,11 @@ pub struct Ui<const N: usize> {
     wrap: [Option<TextWrapEntry>; TEXT_WRAP_MAX], // L5 runtime-only wrap 侧表
     press_map: [PressEntry; PRESS_MAP_MAX], // pressed 短路径表（D18——pump 期消费）
     press_map_n: usize,
+    input_focus: Option<NodeId>, // 输入焦点窗（批 D——Input/Edit 焦点环/caret 单源）
+    input_bufs: [Option<(NodeId, desc::TextBuf)>; INPUT_TEXT_MAX], // 输入内容侧表（批 D）
+    input_buf_n: usize,
+    widget_events: EventBuf, // 组件事件缓冲（widget_react 期产——take_events 消费）
+    lost_widget_events: u32, // 缓冲满被丢的事件计数（loud 诊断面——Gesture::lost_msgs 同形）
 }
 
 /// D28 默认供件（host 测试与 v1 guest 的开箱面——Monospace 逐位复刻
@@ -368,6 +656,21 @@ fn clamp_u32(v: i64) -> u32 {
         u32::MAX
     } else {
         v as u32
+    }
+}
+
+/// Badge 数字宽档（第三批几何面）：0 = 隐藏（0×0）、1 = 单位（16 宽）、
+/// 2 = 两位（24 宽）、3 = 99+ 封顶档（32 宽——>99 三字节文案）——同档
+/// 变值纯绘不重排（layout.rs Badge 臂与 paint 文案同律单源）。
+fn badge_width_class(c: u32) -> u32 {
+    if c == 0 {
+        0
+    } else if c < 10 {
+        1
+    } else if c < 100 {
+        2
+    } else {
+        3
     }
 }
 
@@ -404,6 +707,68 @@ fn props_geom_equal(a: &Props, b: &Props) -> bool {
         }
         (Props::Image(x), Props::Image(y)) => x.res == y.res && x.w == y.w && x.h == y.h,
         (Props::Icon(x), Props::Icon(y)) => x.id == y.id && x.w == y.w && x.h == y.h,
+        // 组件四件（Phase 2 首批）：Button label/style 入几何（标签宽/
+        // 底形变），on_tap 纯事件面不比；Toggle/Slider/Progress 内在恒
+        // 定尺寸（几何常量单源）——checked/value/min/max/style 全纯绘
+        // 面（滑块/填充位置与颜色），几何等价恒真。
+        (Props::Button(x), Props::Button(y)) => {
+            x.style == y.style && x.label.as_bytes() == y.label.as_bytes()
+        }
+        (Props::Toggle(_), Props::Toggle(_)) => true, // checked 纯绘、on_change 纯事件——全不比
+        (Props::Slider(_), Props::Slider(_)) => true, // value/min/max 纯绘/纯语义——全不比
+        (Props::Progress(_), Props::Progress(_)) => true, // value/style 纯绘——全不比
+        // 组件七件（Phase 2 第二批）：Check/Radio/Step 内在恒定尺寸
+        //（几何常量单源）——checked/selected/group/value/min/max/step
+        // 全纯绘/纯语义面；Seg 段数入几何（段数变 → 内在宽变）、active/
+        // on_change 不比；Divider 厚度入几何（内在高）、inset 两端纯绘
+        //（分隔线长随父——起点/终点留白不动布局）。
+        (Props::Check(_), Props::Check(_)) => true,
+        (Props::Radio(_), Props::Radio(_)) => true,
+        (Props::Step(_), Props::Step(_)) => true,
+        (Props::Seg(x), Props::Seg(y)) => x.segment_count == y.segment_count,
+        (Props::Divider(x), Props::Divider(y)) => x.thickness == y.thickness,
+        // 波2 批 A + 第三批：Tabs/Sbar/Badge/Scroll/List + Tip/Collapse/
+        // Chip/Fab/Card。Tabs 段数入几何（段宽变 → 指示条/分隔线变）、
+        // active/on_switch 不比；Sbar **orientation 入几何**（第三批内
+        // 在随走向互转 4×200↔200×4——批 A 恒几何的半成品遗留已修）、
+        // thumb 区间纯绘；Badge 圆点位 + 数字宽档入几何（count 同档变
+        // 值纯绘——第三批宽随位档 16/24/32）；Scroll content_height 入
+        // 几何、offset 纯绘（子上移）；List item_count×item_height 入
+        // 几何；Tip 文本入几何（宽随文）、placement 数据携载不比；
+        // Collapse expanded 入几何（内在高折叠/展开）；Chip label 入几
+        // 何、selected 纯绘；Fab 扩展标签入几何（圆↔扩展互转）、icon
+        // 纯绘（v1 文本占位）；Card elevation/corner_radius 纯绘（阴
+        // 影条在界内——视觉足迹不越界）。
+        (Props::Tabs(x), Props::Tabs(y)) => x.tab_count == y.tab_count,
+        (Props::Sbar(x), Props::Sbar(y)) => x.orientation == y.orientation,
+        (Props::Badge(x), Props::Badge(y)) => {
+            x.show_dot == y.show_dot
+                && badge_width_class(x.count) == badge_width_class(y.count)
+        }
+        // Scroll content_height 入几何；offset_y 入几何（子整体上移 =
+        // 摆位面，非纯绘——geom_same 误判会让子钉在旧 offset）。
+        (Props::Scroll(x), Props::Scroll(y)) => {
+            x.content_height == y.content_height && x.offset_y == y.offset_y
+        }
+        (Props::List(x), Props::List(y)) => {
+            x.item_count == y.item_count && x.item_height == y.item_height
+        }
+        // 波2 批 C：Select 内在恒定（几何常量单源）——selected/
+        // option_count 全纯绘面。
+        (Props::Select(_), Props::Select(_)) => true,
+        (Props::Tip(x), Props::Tip(y)) => x.text.as_bytes() == y.text.as_bytes(),
+        (Props::Collapse(x), Props::Collapse(y)) => x.expanded == y.expanded,
+        (Props::Chip(x), Props::Chip(y)) => x.label.as_bytes() == y.label.as_bytes(),
+        (Props::Fab(x), Props::Fab(y)) => {
+            x.extended_label.as_bytes() == y.extended_label.as_bytes()
+        }
+        (Props::Card(_), Props::Card(_)) => true,
+        // 批 F：Gauge/DragReorder 内在恒定（几何常量单源）——value/
+        // style/item_index/total_items 全纯绘面；Qr module_count 入几何
+        //（内在 = module_count×4 方阵）——dark/light 双色纯绘。
+        (Props::Gauge(_), Props::Gauge(_)) => true,
+        (Props::Qr(x), Props::Qr(y)) => x.module_count == y.module_count,
+        (Props::DragReorder(_), Props::DragReorder(_)) => true,
         _ => false, // 变体切换按几何变处理（保守重排）
     }
 }
@@ -656,6 +1021,8 @@ impl<const N: usize> Ui<N> {
             root_slot: NONE,
             vp_w: viewport_w,
             vp_h: viewport_h,
+            theme: theme::Theme::light(),
+            theme_mode: theme::ThemeMode::Light, // 默认 light 档
             damage: damage::DamageSet::new(),
             input_buf: [None; INPUT_BUF_MAX],
             input_n: 0,
@@ -663,6 +1030,7 @@ impl<const N: usize> Ui<N> {
             move_hist: [Sample { ts_ns: 0, x: 0, y: 0 }; INPUT_BUF_MAX],
             hist_len: 0,
             anims: [None; ANIM_MAX],
+            springs: [None; ANIM_MAX],
             phase: frame::FramePhase::Idle,
             last_work_ns: 0,
             last_now_ns: 0,
@@ -694,6 +1062,10 @@ impl<const N: usize> Ui<N> {
                 active: false,
             }; PRESS_MAP_MAX],
             press_map_n: 0,
+            input_focus: None,
+            input_bufs: [None; INPUT_BUF_MAX],
+            input_buf_n: 0,            widget_events: EventBuf::new(),
+            lost_widget_events: 0,
         }
     }
 
@@ -875,6 +1247,11 @@ impl<const N: usize> Ui<N> {
         self.flex = [None; FLEX_MAX];
         self.wrap = [None; TEXT_WRAP_MAX];
         self.press_map_n = 0; // 同理整清（D18 表随树生命周期——悬空 id 无还原义）
+        self.input_focus = None; // 输入焦点随树清（悬空 id 无义）
+        self.input_bufs = [None; INPUT_BUF_MAX]; // 内容侧表同理整清
+        self.input_buf_n = 0;
+        self.widget_events = EventBuf::new(); // 同理整清（组件事件随树生命周期——旧 NodeId 悬空无义）
+        self.lost_widget_events = 0;
         self.input_n = 0;
         self.hist_len = 0;
         self.gesture = hit::Gesture::new(); // 旧树 NodeId 全悬空——手势态随之归零
@@ -897,6 +1274,23 @@ impl<const N: usize> Ui<N> {
 
     pub fn viewport(&self) -> (u32, u32) {
         (self.vp_w, self.vp_h)
+    }
+
+    // —— 主题档（维八暗色刀——paint 双档取色的运行态单源） ——
+
+    /// 换主题档：色板随档换 → 全帧重画（FULL damage，`set_viewport`
+    /// 同形）；幂等（同档重设零脏帧）。即时生效语义 = 调用方随后
+    /// `wake` + 渲染一帧即换肤（settings 暗色开关消费面）。
+    pub fn set_theme_mode(&mut self, mode: theme::ThemeMode) {
+        if self.theme_mode != mode {
+            self.theme_mode = mode;
+            self.damage.add_full();
+        }
+    }
+
+    /// 当前主题档。
+    pub fn theme_mode(&self) -> theme::ThemeMode {
+        self.theme_mode
     }
 
     // —— 树构造（builder 入口①） ——
@@ -940,14 +1334,37 @@ impl<const N: usize> Ui<N> {
     pub fn add(&mut self, parent: NodeId, spec: desc::ViewSpec) -> Result<NodeId, UiError> {
         let pidx = self.slot_of(parent)?;
         match self.nodes[pidx].as_ref().map(|n| n.kind) {
+            // 容器白名单（Grid 入列——D24；Stack 入列——Phase 2 第二批：
+            // 叠层容器，子经 place_children `_` 臂 Root 型全幅叠放；波2
+            // 批 A：Tabs（内容区面板子）/Scroll（滚动视口子）/List（行
+            // 子）入列——place_children 各自臂已落；第三批：Collapse
+            //（折叠内容子——place_children Collapse 臂）/Card（卡片内容
+            // 子——`_` 臂全幅给子）入列；批 E 补漏：Refresh（包裹内容子
+            // ——desc.rs AST/builder 面本就按容器受理，此处白名单漏收是
+            // 两面漂移，tlv6「Refresh = 容器正例对照」同源）。
             Some(ViewKind::Root) | Some(ViewKind::Col) | Some(ViewKind::Row) | Some(ViewKind::Pad)
-            | Some(ViewKind::Grid) | Some(ViewKind::Panel) | Some(ViewKind::Clip) => {}
-            // 容器白名单（Grid 入列——D24；Clip 入列——C1 结构性 port）
-            // 叶四件显式列名（Rect/Text 原有 + Image/Icon 新叶）：容器位
+            | Some(ViewKind::Grid) | Some(ViewKind::Panel) | Some(ViewKind::Clip)
+            | Some(ViewKind::Stack) | Some(ViewKind::Tabs) | Some(ViewKind::Scroll)
+            | Some(ViewKind::List) | Some(ViewKind::Collapse) | Some(ViewKind::Card)
+            | Some(ViewKind::Refresh) => {}
+            // 叶带子显式列名（Rect/Text/Image/Icon 与组件叶）：容器位
             // 传叶子 → BadParent。Grid 格满/零维先验在 Root-子检后（段C
             // 已落——AST/builder/add/set_props 三面同律齐）。
             Some(ViewKind::Rect) | Some(ViewKind::Text) | Some(ViewKind::Image)
-            | Some(ViewKind::Icon) => return Err(UiError::BadParent),
+            | Some(ViewKind::Icon)
+            | Some(ViewKind::Spacer)
+            | Some(ViewKind::Divider)
+            | Some(ViewKind::Check)
+            | Some(ViewKind::Radio)
+            | Some(ViewKind::Step)
+            | Some(ViewKind::Seg)
+            // 第三批五新叶（Badge/Sbar 已随批 A 建档；Tip/Chip/Fab 补列
+            // ——desc.rs AST 面「叶带子拒面」同律）。
+            | Some(ViewKind::Badge)
+            | Some(ViewKind::Sbar)
+            | Some(ViewKind::Tip)
+            | Some(ViewKind::Chip)
+            | Some(ViewKind::Fab) => return Err(UiError::BadParent),
             _ => return Err(UiError::BadParent), // 死槽防御
         }
         if spec.kind == ViewKind::Root {
@@ -975,6 +1392,12 @@ impl<const N: usize> Ui<N> {
             if g.cols == 0 || g.rows == 0 {
                 return Err(UiError::NodeBad);
             }
+        }
+        // 组件值域先验（Phase 2 两批）：Slider/Progress permille 域、
+        // Step 刻度域、Seg 段域——AST/builder 面 BadValue 同律，命令面
+        // add/set_props 两口齐。
+        if !widget_value_ok(&spec.props) {
+            return Err(UiError::NodeBad);
         }
         // Grid 父位格满拒（GUI-6 段C——D24/add 面）：子数 ≥ cols×rows
         // 再 add = BadParent（「父位不容再子」族；AST 面 GridNotFit 同
@@ -1102,6 +1525,16 @@ impl<const N: usize> Ui<N> {
             }
             i += 1;
         }
+        // 随行弹簧同清理（同判据同纪律——remove 后无悬挂双面一体）。
+        let mut i = 0usize;
+        while i < ANIM_MAX {
+            if let Some(sp) = self.springs[i] {
+                if self.slot_of(sp.node).is_err() {
+                    self.springs[i] = None;
+                }
+            }
+            i += 1;
+        }
         if parent != NONE {
             self.mark_ancestors_dirty(parent);
         }
@@ -1119,6 +1552,36 @@ impl<const N: usize> Ui<N> {
             }
             k += 1;
         }
+        // 批 D 侧表同律随子树清（状态泄漏修复）：input_bufs 条目槽位命
+        // 中被删子树 → 剔除（紧凑表就地压实——set_input_text 追加写法
+        // 的不变量是 [..n] 无洞；槽位匹配同 a11y——旧 gen 残项/复用槽
+        // 两清皆正确，否则槽位复用后 input_text 串读新节点内容）；focus
+        // 指向被删子树 → 置 None（悬空 id 无还原义——clear() 整清同源；
+        // 焦点环视觉已随子树界 damage 收口）。
+        let mut w = 0usize;
+        let mut r = 0usize;
+        while r < self.input_buf_n {
+            let hit = match self.input_bufs[r] {
+                Some((id, _)) => list[..cnt].contains(&(id.0 & 0xFFFF)),
+                None => false, // 防御：紧凑不变量破洞原样保位
+            };
+            if !hit {
+                self.input_bufs[w] = self.input_bufs[r];
+                w += 1;
+            }
+            r += 1;
+        }
+        while w < self.input_buf_n {
+            self.input_bufs[w] = None;
+            w += 1;
+        }
+        self.input_buf_n = w;
+        if let Some(f) = self.input_focus {
+            if list[..cnt].contains(&(f.0 & 0xFFFF)) {
+                self.input_focus = None;
+            }
+        }
+
         // SEM-A1 语义旁表同理：子树摘除/残项一并清，不悬挂。
         let mut k = 0usize;
         while k < SEM_MAX {
@@ -1235,6 +1698,54 @@ impl<const N: usize> Ui<N> {
                 | Some((ViewKind::Image, Props::Image(_)))
                 | Some((ViewKind::Icon, Props::Icon(_)))
                 | Some((ViewKind::Grid, Props::Grid(_)))
+                // 组件件（Phase 2 两批——命令面开口）：props 可经
+                // set_props 更新（label/checked/value/active/thickness
+                // 面）；Stack/Spacer 仍拒（align/flex 未消费——防半落
+                // 状态），余组件件同拒（渲染/交互未接线）。
+                | Some((ViewKind::Button, Props::Button(_)))
+                | Some((ViewKind::Toggle, Props::Toggle(_)))
+                | Some((ViewKind::Slider, Props::Slider(_)))
+                | Some((ViewKind::Progress, Props::Progress(_)))
+                | Some((ViewKind::Check, Props::Check(_)))
+                | Some((ViewKind::Radio, Props::Radio(_)))
+                | Some((ViewKind::Step, Props::Step(_)))
+                | Some((ViewKind::Seg, Props::Seg(_)))
+                | Some((ViewKind::Divider, Props::Divider(_)))
+                // 波2 批 A（Tabs/Sbar/Badge/Scroll/List）：Tabs/Sbar/Badge
+                // 开口（active/thumb/count/圆点面）；Scroll/List 开口
+                //（offset/content_height/item_count——消费面滚动）。
+                | Some((ViewKind::Tabs, Props::Tabs(_)))
+                | Some((ViewKind::Sbar, Props::Sbar(_)))
+                | Some((ViewKind::Badge, Props::Badge(_)))
+                | Some((ViewKind::Scroll, Props::Scroll(_)))
+                | Some((ViewKind::List, Props::List(_)))
+                // 波2 批 C：Select 开口（selected/option_count 面）。
+                | Some((ViewKind::Select, Props::Select(_)))
+                // 波2 批 D：Input/Edit 开口（placeholder/max_len/type 面
+                // ——内容走侧表 set_input_text）；Canvas 开口（paint_ops
+                // 计数面）。
+                | Some((ViewKind::Input, Props::Input(_)))
+                | Some((ViewKind::Edit, Props::Edit(_)))
+                | Some((ViewKind::Canvas, Props::Canvas(_)))
+                // 波2 批 E：Refresh/SwipeItem/DatePick/TimePick 开口
+                //（offset/reveal/日期时间面——滚轮/手势消费挂波3/4）。
+                | Some((ViewKind::Refresh, Props::Refresh(_)))
+                | Some((ViewKind::SwipeItem, Props::SwipeItem(_)))
+                | Some((ViewKind::DatePick, Props::DatePick(_)))
+                | Some((ViewKind::TimePick, Props::TimePick(_)))
+                // 组件第三批（Tip/Collapse/Chip/Fab/Card 开口）：文本/
+                // expanded/selected/扩展标签/elevation·corner_radius 面。
+                | Some((ViewKind::Tip, Props::Tip(_)))
+                | Some((ViewKind::Collapse, Props::Collapse(_)))
+                | Some((ViewKind::Chip, Props::Chip(_)))
+                | Some((ViewKind::Fab, Props::Fab(_)))
+                | Some((ViewKind::Card, Props::Card(_)))
+                // 批 F（末刀）：Gauge/Qr/DragReorder 开口（value/style、
+                // module_count/双色、item_index/total_items 面）——全
+                // 41 kind 命令面收口，无未开口件残余。
+                | Some((ViewKind::Gauge, Props::Gauge(_)))
+                | Some((ViewKind::Qr, Props::Qr(_)))
+                | Some((ViewKind::DragReorder, Props::DragReorder(_)))
                 | Some((ViewKind::Circle, Props::Circle(_)))
                 | Some((ViewKind::Panel, Props::Panel(_)))
         );
@@ -1265,12 +1776,12 @@ impl<const N: usize> Ui<N> {
                 return Err(UiError::NodeBad);
             }
         }
-        // L2：flex 只允许双 None 的 Rect/Circle。props 离开 eligible
-        // 形态时连带摘除，防“固定尺寸却携 weight”的静默无效登记。本块
-        // 之后当前无再拒路径；若未来追加后验拒，需把摘除挪到最终写入
-        // 成功后，保持半落不污染。
-        let flex_eligible =
-            layout::flex_eligible_props(&self.nodes, idx, &props);
+        // 组件值域先验：Slider/Progress/Step/Seg 的 permille/刻度/段域。
+        if !widget_value_ok(&props) {
+            return Err(UiError::NodeBad);
+        }
+        // L2：flex 只允许双 None 的 Rect/Circle；离开 eligible 形态时摘除。
+        let flex_eligible = layout::flex_eligible_props(&self.nodes, idx, &props);
         if !flex_eligible {
             let node = pack_id(idx, self.nodes[idx].as_ref().map(|n| n.gen).unwrap_or(0));
             let slot = self.flex.iter().position(|e| {
@@ -1342,21 +1853,32 @@ impl<const N: usize> Ui<N> {
         // → TEXT|BG 纯 PAINT；变长 → TEXT|BG|W|H（内在变 = GEOM 追加）
         // → apply_change 单源分派。A 面现状体下方 cfg(not) 块逐字保持
         // （无旧值比较——同文全量 relayout 浪费保留，§10 诚实基线）。
+        // 比例供件改造（痛点⑥ 03 号 §1.2-4 架构注记收口）：等长不再
+        // 蕴含等宽（"iii"≠"WWW"）——等长分支经度量缝比对内在宽，等宽才
+        // 走纯 PAINT；Monospace/三档点阵下等长 ⇒ 宽恒等（advance 缺省 =
+        // cell_w），判据退化为 v1 行为零漂移（R2-8 钉板不松）。
         #[cfg(feature = "s7")]
         {
-            let (old, scale) = match self.nodes[idx].as_ref().map(|n| &n.props) {
+            let old = match self.nodes[idx].as_ref().map(|n| &n.props) {
                 Some(Props::Text(tp)) => (tp.text, tp.style.scale),
                 _ => return Err(UiError::NodeBad), // unreachable（is_text 已验）——loud 防御
             };
-            let scale_id = desc::scale_to_u8(scale);
-            let old_size = self.tm.measure(old.as_bytes(), scale_id);
-            let new_size = self.tm.measure(buf.as_bytes(), scale_id);
-            let m = if old.as_bytes() == buf.as_bytes() {
+            let m = if old.0.as_bytes() == buf.as_bytes() {
                 mask::ChangeMask::NONE // 同文：零操作（D2）
-            } else if old.len == buf.len && old_size == new_size {
-                // 等长且内在宽同（ASCII 等宽常态）：纯 PAINT。UTF-8 下等字节
-                // 长不必然等码点数，故尺寸面入判（CJK 首刀）。
-                mask::ChangeMask::TEXT.union(mask::ChangeMask::BG)
+            } else if old.0.len == buf.len {
+                // 等长换文：内在宽比对（比例供件下等长可不等宽——宽变
+                // 即 GEOM 追加重测；等宽供件下恒等 = v1 纯 PAINT 原状）。
+                let sc = crate::desc::scale_to_u8(old.1);
+                let same_w = self.tm.measure(old.0.as_bytes(), sc)
+                    == self.tm.measure(buf.as_bytes(), sc);
+                if same_w {
+                    mask::ChangeMask::TEXT.union(mask::ChangeMask::BG) // 等长等宽：纯 PAINT
+                } else {
+                    mask::ChangeMask::TEXT
+                        .union(mask::ChangeMask::BG)
+                        .union(mask::ChangeMask::W)
+                        .union(mask::ChangeMask::H) // 等长不等宽：内在变 → GEOM
+                }
             } else {
                 mask::ChangeMask::TEXT
                     .union(mask::ChangeMask::BG)
@@ -2282,7 +2804,17 @@ impl<const N: usize> Ui<N> {
             let idx = self.slot_of(vis)? as usize;
             let visual_ok = matches!(
                 self.nodes[idx].as_ref().map(|n| n.kind),
-                Some(ViewKind::Rect) | Some(ViewKind::Text)
+                // 波2 批 A：Button 入 visual 白名单——Filled 底的 press
+                // 暗化走 PressedVis 查表（paint 面），saved_bg 换底臂
+                // 对 Button 不动作（视觉单源在 paint，非 props）。
+                Some(ViewKind::Rect)
+                    | Some(ViewKind::Text)
+                    | Some(ViewKind::Button)
+                    | Some(ViewKind::Check)
+                    | Some(ViewKind::Radio)
+                    | Some(ViewKind::Tabs)
+                    | Some(ViewKind::Seg)
+                    | Some(ViewKind::Step)
             );
             if !visual_ok {
                 return Err(UiError::NodeBad);
@@ -2340,6 +2872,30 @@ impl<const N: usize> Ui<N> {
                     Err(_) => return, // visual 已死：跳过（还原义务随节点消亡解除）
                 };
                 // 读现 bg → 记 saved_bg → 换 PRESSED_BG（set_props 同帧生效）。
+                // 波2 批 A：组件件（Button 等）视觉单源在 paint（PressedVis
+                // 查表换 ACCENT_PRESSED）——此处不换 props，只置 active +
+                // 本界 damage（下一帧 paint 拾取暗化）。
+                let is_widget = matches!(
+                    self.nodes[idx].as_ref().map(|n| n.kind),
+                    Some(ViewKind::Button)
+                        | Some(ViewKind::Check)
+                        | Some(ViewKind::Radio)
+                        | Some(ViewKind::Tabs)
+                        | Some(ViewKind::Seg)
+                        | Some(ViewKind::Step)
+                );
+                if is_widget {
+                    let r = self.abs_rect_of(idx);
+                    self.damage_rect(r);
+                    if let Some(e) = Self::press_entry_of_mut(
+                        &mut self.press_map[..self.press_map_n],
+                        node,
+                    ) {
+                        e.saved_bg = None;
+                        e.active = true;
+                    }
+                    return;
+                }
                 let saved = match self.nodes[idx].as_ref().map(|n| n.props) {
                     Some(Props::Rect(rp)) => Some(pack_color(rp.bg)),
                     Some(Props::Text(tp)) => tp.style.bg.map(pack_color),
@@ -2397,6 +2953,25 @@ impl<const N: usize> Ui<N> {
                         tp.style.bg = saved.map(unpack_color);
                         Props::Text(tp)
                     }
+                    // 波2 批 A：组件件视觉在 paint（PressedVis）——Release
+                    // 只清 active + 本界 damage（还原由下一帧 paint 拾取）。
+                    Some(Props::Button(_))
+                    | Some(Props::Check(_))
+                    | Some(Props::Radio(_))
+                    | Some(Props::Tabs(_))
+                    | Some(Props::Seg(_))
+                    | Some(Props::Step(_)) => {
+                        let r = self.abs_rect_of(idx as usize);
+                        self.damage_rect(r);
+                        if let Some(e) = Self::press_entry_of_mut(
+                            &mut self.press_map[..self.press_map_n],
+                            node,
+                        ) {
+                            e.active = false;
+                            e.saved_bg = None;
+                        }
+                        return;
+                    }
                     _ => return, // 登记后 kind 被换（异常）：跳过
                 };
                 if self.set_props(vis, new_props).is_ok() {
@@ -2415,6 +2990,137 @@ impl<const N: usize> Ui<N> {
     }
 
     /// 表查（immutable 面）：首个 trigger 命中的条目副本。
+    // —— 波2 批 D：输入焦点 + 文本内容面 ——
+
+    /// 设置输入焦点（None = 清焦点）。目标须 Input/Edit（他 kind NodeBad
+    /// loud——焦点域立法）；置焦同帧 damage 本界（焦点环视觉）。
+    pub fn set_focus(&mut self, node: Option<NodeId>) -> Result<(), UiError> {
+        match node {
+            None => {
+                if let Some(old) = self.input_focus {
+                    if let Ok(i) = self.slot_of(old) {
+                        self.damage_rect(self.abs_rect_of(i));
+                    }
+                }
+                self.input_focus = None;
+                Ok(())
+            }
+            Some(id) => {
+                let idx = self.slot_of(id)? as usize;
+                let ok = matches!(
+                    self.nodes[idx].as_ref().map(|n| n.kind),
+                    Some(ViewKind::Input) | Some(ViewKind::Edit)
+                );
+                if !ok {
+                    return Err(UiError::NodeBad);
+                }
+                if let Some(old) = self.input_focus {
+                    if old != id {
+                        if let Ok(i) = self.slot_of(old) {
+                            self.damage_rect(self.abs_rect_of(i));
+                        }
+                    }
+                }
+                self.input_focus = Some(id);
+                self.damage_rect(self.abs_rect_of(idx));
+                Ok(())
+            }
+        }
+    }
+
+    /// 当前焦点节点（无焦点 None）。
+    pub fn focus(&self) -> Option<NodeId> {
+        self.input_focus
+    }
+
+    /// 读输入内容（侧表——props 只载约束）。无内容空切片。
+    pub fn input_text(&self, node: NodeId) -> Option<&[u8]> {
+        self.input_bufs[..self.input_buf_n]
+            .iter()
+            .find_map(|s| match s {
+                Some((id, tb)) if *id == node => Some(tb.as_bytes()),
+                _ => None,
+            })
+    }
+
+    /// 写输入内容（侧表 upsert——add/update；max_len 域执法在此）。非
+    /// Input/Edit kind → NodeBad loud；表满新键 → NodeFull loud。
+    pub fn set_input_text(&mut self, node: NodeId, bytes: &[u8]) -> Result<(), UiError> {
+        let idx = self.slot_of(node)? as usize;
+        let ok = matches!(
+            self.nodes[idx].as_ref().map(|n| n.kind),
+            Some(ViewKind::Input) | Some(ViewKind::Edit)
+        );
+        if !ok {
+            return Err(UiError::NodeBad);
+        }
+        let max = match self.nodes[idx].as_ref().map(|n| &n.props) {
+            Some(Props::Input(p)) => p.max_len,
+            Some(Props::Edit(p)) => p.max_len,
+            _ => return Err(UiError::NodeBad),
+        };
+        if bytes.len() as u32 > max || bytes.len() > TEXT_INLINE {
+            return Err(UiError::NodeBad); // 帽越域 loud（max_len 与 TextBuf 内联帽取小）
+        }
+        let tb = desc::TextBuf::new(bytes)?;
+        // upsert
+        for e in self.input_bufs[..self.input_buf_n].iter_mut() {
+            if let Some((id, slot)) = e {
+                if *id == node {
+                    *slot = tb;
+                    let r = self.abs_rect_of(idx);
+                    self.damage_rect(r);
+                    return Ok(());
+                }
+            }
+        }
+        if self.input_buf_n >= INPUT_TEXT_MAX {
+            return Err(UiError::NodeFull);
+        }
+        self.input_bufs[self.input_buf_n] = Some((node, tb));
+        self.input_buf_n += 1;
+        let r = self.abs_rect_of(idx);
+        self.damage_rect(r);
+        Ok(())
+    }
+
+    /// 焦点槽值（paint 焦点环查表单源——None = u32::MAX）。
+    fn focus_slot(&self) -> u32 {
+        match self.input_focus {
+            Some(id) => id.0 & 0xFFFF,
+            None => u32::MAX,
+        }
+    }
+
+    /// 输入内容快照（批 D：侧表 → paint 消费面）。
+    fn input_texts_snapshot(&self) -> paint::InputTexts {
+        let mut t = paint::InputTexts::empty();
+        for e in self.input_bufs[..self.input_buf_n].iter().flatten() {
+            if t.n < t.entries.len() {
+                t.entries[t.n] = Some((e.0 .0 & 0xFFFF, e.1));
+                t.n += 1;
+            }
+        }
+        t
+    }
+
+    /// pressed 视觉活动集快照（波2 批 A：press_map active 条目的 visual
+    /// 槽值——paint 期 Button 等 Filled 底换 ACCENT_PRESSED 的查表面；
+    /// 复制进 paint::PressedVis 定容小表，n ≤ PRESS_MAP_MAX 结构保证）。
+    fn pressed_snapshot(&self) -> paint::PressedVis {
+        let mut pv = paint::PressedVis::empty();
+        for e in &self.press_map[..self.press_map_n] {
+            if e.active {
+                let slot = e.visual.0 & 0xFFFF;
+                if pv.n < pv.slots.len() {
+                    pv.slots[pv.n] = slot;
+                    pv.n += 1;
+                }
+            }
+        }
+        pv
+    }
+
     fn press_entry_of(map: &[PressEntry], node: NodeId) -> Option<PressEntry> {
         map.iter().find(|e| e.trigger == node).copied()
     }
@@ -2422,6 +3128,267 @@ impl<const N: usize> Ui<N> {
     /// 表查（mutable 面）。
     fn press_entry_of_mut(map: &mut [PressEntry], node: NodeId) -> Option<&mut PressEntry> {
         map.iter_mut().find(|e| e.trigger == node)
+    }
+
+    // —— 组件四件交互反应（Phase 2 首批——pump 期消费，D18 press_react 同形） ——
+
+    /// 组件事件派发收口：满帽计 [`Self::lost_widget_events`] loud
+    /// （MsgBuf::push → Gesture::lost_msgs 同形——不自陷不静默丢）。
+    fn fire_widget_event(&mut self, node: NodeId, event: u32, value: u32) {
+        if self
+            .widget_events
+            .push(WidgetEvent { node, event, value })
+            .is_err()
+        {
+            self.lost_widget_events = self.lost_widget_events.saturating_add(1);
+        }
+    }
+
+    /// 组件事件消费面（app update 侧）：**take 语义**——取走即清（与
+    /// drain_damage 同形；未取事件留存至下帧，pump 期继续追加）。
+    pub fn take_events(&mut self) -> EventBuf {
+        core::mem::replace(&mut self.widget_events, EventBuf::new())
+    }
+
+    /// 事件缓冲满被丢的组件事件计数（loud 诊断面——宿主/测试读取）。
+    pub fn lost_widget_events(&self) -> u32 {
+        self.lost_widget_events
+    }
+
+    /// 拖动横坐标 → Slider permille（行程映射）：行程 = [x+圆半径,
+    /// x+w−圆半径]（圆半径 = [`SLIDER_KNOB_D`]/2——与 paint 渲染同式
+    /// 单源），界外钳 0/1000；i64 中间量防链加法溢出，商域 0..=1000。
+    /// 布局前（w=0 防御）恒 0。
+    fn slider_permille_at(&self, idx: usize, x: u32) -> u32 {
+        let r = self.abs_rect_of(idx);
+        let inset = (SLIDER_KNOB_D / 2) as i64;
+        let usable = (r.w as i64 - 2 * inset).max(1);
+        let rel = (x as i64 - r.x as i64 - inset).clamp(0, usable);
+        // rel ≤ usable ≤ 2^31 → rel×1000 不溢 i64；钳域保证 0..=1000。
+        (rel * PERMILLE_MAX as i64 / usable) as u32
+    }
+
+    /// 组件交互反应（Phase 2 两批——pump_input 期逐 Msg 即时消费——
+    /// D18 press_react 同形同拍，Msg: Copy 副本出借不持 buf 引用）：
+    /// - Click 落 **Button** → 派发 on_tap（value=0）；
+    /// - Click 落 **Toggle** → 翻转 checked（经 set_props 单漏斗——
+    ///   damage/dirty 同帧生效，视觉滑块随下次 paint 换位）+ 派发
+    ///   on_change（value = 翻转后 0/1）；
+    /// - Click 落 **Check** → 翻转 checked + 派发 on_change（Toggle
+    ///   同形，value = 翻转后 0/1）；
+    /// - Click 落 **Radio** → 置 selected + 派发 on_change（value 恒
+    ///   1 置位语义；组互斥执法在 app 面——group 仅数据携载）；
+    /// - Click 落 **Collapse** → 翻转 expanded + 派发 on_toggle（第三
+    ///   批；value = 翻转后 0/1——收起折叠/展开经 set_props 单漏斗同
+    ///   帧生效，子摆位随下次 layout 增减）；
+    /// - Click 落 **Chip** → 翻转 selected + 派发 on_tap（第三批；
+    ///   Toggle 同形）；
+    /// - Click 落 **Fab** → 派发 on_tap（第三批；Button 同形 value=0
+    ///   ——无状态件）；
+    /// - DragStart/DragMove 落 **Slider** → 跳跟/跟手按压横坐标（行程
+    ///   映射 [`Self::slider_permille_at`]，值变才写才派发 on_change）；
+    /// - DragStart/DragMove 落 **DragReorder** → 派发 on_reorder（批 F；
+    ///   value = 拖拽纵坐标 wire 原值——v1 记录 drag 位置，落位/交换语
+    ///   义挂波3/波4 消费面）；
+    /// - Release 落 **Step** → 击点横坐标定半区（左半减/右半加 step，
+    ///   clamp min/max）+ 值变才派发 on_change（Slider 同形）；
+    /// - Release 落 **Seg** → 击点横坐标折段索引 + 值变（≠ active）
+    ///   才写才派发 on_change。
+    ///
+    /// Step/Seg 挂 **Release** 臂而非 Click：分段命中需要击点坐标，
+    /// 而 `Msg::Click` 无坐标面（desc.rs 冻结不加字段）——Release 与
+    /// Click 在非拖 up 路径同拍成对双发且携 x/y，坐标消费面挂此臂零
+    /// 新面。
+    ///
+    /// 零闭包（ADR #52）：表驱动直查无回调；**不劫持 Msg 面**——
+    /// Click/Drag 原样交 app（app 亦可自管状态双消费，幂等面文档化）。
+    fn widget_react(&mut self, m: Msg) {
+        match m {
+            Msg::Click { node } => {
+                let idx = match self.slot_of(node) {
+                    Ok(i) => i as usize,
+                    Err(_) => return,
+                };
+                match self.nodes[idx].as_ref().map(|n| n.props) {
+                    Some(Props::Button(p)) => {
+                        let on_tap = p.on_tap;
+                        self.fire_widget_event(node, on_tap, 0);
+                    }
+                    Some(Props::Input(_)) | Some(Props::Edit(_)) => {
+                        // 波2 批 D：点击置焦（焦点环/caret 随焦）——值面
+                        // 无事件（on_* props 未载）；再击幂等。
+                        let _ = self.set_focus(Some(node));
+                    }
+                    Some(Props::Select(p)) => {
+                        // 波2 批 C：Select 点击循环下一项（末项回 0；
+                        // 空选择器零操作）。展开面板挂波3/波4 消费面。
+                        if p.option_count == 0 {
+                            return;
+                        }
+                        let next = if p.selected + 1 >= p.option_count {
+                            0
+                        } else {
+                            p.selected + 1
+                        };
+                        let on_change = p.on_change;
+                        let np = Props::Select(desc::SelectProps { selected: next, ..p });
+                        if self.set_props(node, np).is_ok() {
+                            self.fire_widget_event(node, on_change, next);
+                        }
+                    }
+                    Some(Props::Toggle(p)) => {
+                        let checked = !p.checked;
+                        let on_change = p.on_change;
+                        let np = Props::Toggle(desc::ToggleProps { checked, on_change });
+                        if self.set_props(node, np).is_ok() {
+                            self.fire_widget_event(node, on_change, checked as u32);
+                        }
+                    }
+                    Some(Props::Check(p)) => {
+                        let checked = !p.checked;
+                        let on_change = p.on_change;
+                        let np = Props::Check(desc::CheckProps { checked, on_change });
+                        if self.set_props(node, np).is_ok() {
+                            self.fire_widget_event(node, on_change, checked as u32);
+                        }
+                    }
+                    Some(Props::Radio(p)) => {
+                        let on_change = p.on_change;
+                        let np = Props::Radio(desc::RadioProps {
+                            selected: true,
+                            group: p.group,
+                            on_change,
+                        });
+                        // 恒派发（置位语义）：已选再击仍是合法 on_change
+                        // ——组互斥的「选谁」裁决在 app。
+                        if self.set_props(node, np).is_ok() {
+                            self.fire_widget_event(node, on_change, 1);
+                        }
+                    }
+                    // 组件第三批（组合交互三件）：Collapse 翻转 expanded +
+                    // on_toggle（value = 翻转后 0/1——几何面收起折叠/展开
+                    // 经 set_props 单漏斗同帧生效）；Chip 翻转 selected +
+                    // on_tap（Toggle 同形）；Fab 纯动作 on_tap（Button 同
+                    // 形，value=0——无状态件）。
+                    Some(Props::Collapse(p)) => {
+                        let expanded = !p.expanded;
+                        let on_toggle = p.on_toggle;
+                        let np = Props::Collapse(desc::CollapseProps { expanded, on_toggle });
+                        if self.set_props(node, np).is_ok() {
+                            self.fire_widget_event(node, on_toggle, expanded as u32);
+                        }
+                    }
+                    Some(Props::Chip(p)) => {
+                        let selected = !p.selected;
+                        let on_tap = p.on_tap;
+                        let np =
+                            Props::Chip(desc::ChipProps { label: p.label, selected, on_tap });
+                        if self.set_props(node, np).is_ok() {
+                            self.fire_widget_event(node, on_tap, selected as u32);
+                        }
+                    }
+                    Some(Props::Fab(p)) => {
+                        self.fire_widget_event(node, p.on_tap, 0);
+                    }
+                    _ => {}
+                }
+            }
+            Msg::Release { node, x, .. } => {
+                let idx = match self.slot_of(node) {
+                    Ok(i) => i as usize,
+                    Err(_) => return,
+                };
+                match self.nodes[idx].as_ref().map(|n| n.props) {
+                    Some(Props::Step(p)) => {
+                        let r = self.abs_rect_of(idx);
+                        // 半区判据 = 击点与节点水平中线（i64 中间量同
+                        // slider_permille_at 纪律）。
+                        let left = (x as i64) < r.x as i64 + r.w as i64 / 2;
+                        let nv = if left {
+                            p.value.saturating_sub(p.step).max(p.min)
+                        } else {
+                            p.value.saturating_add(p.step).min(p.max)
+                        };
+                        if nv == p.value {
+                            return; // clamp 贴边：值未变零操作（Slider 同形）
+                        }
+                        let on_change = p.on_change;
+                        let np = Props::Step(desc::StepProps { value: nv, ..p });
+                        if self.set_props(node, np).is_ok() {
+                            self.fire_widget_event(node, on_change, nv);
+                        }
+                    }
+                    Some(Props::Tabs(p)) => {
+                        // 波2 批 A：Tabs 点击切页——击点横坐标折段索引
+                        //（Seg 同形）；active 未变零操作。on_switch 派发
+                        //（value = 新 active）。
+                        let r = self.abs_rect_of(idx);
+                        let cnt = p.tab_count as i64;
+                        let tw = (r.w as i64 / cnt).max(1);
+                        let rel = (x as i64 - r.x as i64).max(0);
+                        let tab = (rel / tw).min(cnt - 1) as u32;
+                        if tab == p.active {
+                            return;
+                        }
+                        let on_switch = p.on_switch;
+                        let np = Props::Tabs(desc::TabsProps { active: tab, ..p });
+                        if self.set_props(node, np).is_ok() {
+                            self.fire_widget_event(node, on_switch, tab);
+                        }
+                    }
+                    Some(Props::Seg(p)) => {
+                        let r = self.abs_rect_of(idx);
+                        let cnt = p.segment_count as i64;
+                        // 段宽 = w/段数（整除向下）；段索引 = 相对横坐标
+                        // 折段 + 越界钳尾段（sw=0 防御折 0 段——widget_
+                        // value_ok 保证 count>0，w=0 布局前面）。
+                        let sw = (r.w as i64 / cnt).max(1);
+                        let rel = (x as i64 - r.x as i64).max(0);
+                        let seg = (rel / sw).min(cnt - 1) as u32;
+                        if seg == p.active {
+                            return; // 值未变：零操作（Slider 同形）
+                        }
+                        let on_change = p.on_change;
+                        let np = Props::Seg(desc::SegProps { active: seg, ..p });
+                        if self.set_props(node, np).is_ok() {
+                            self.fire_widget_event(node, on_change, seg);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Msg::DragStart { node, x, y, .. } | Msg::DragMove { node, x, y, .. } => {
+                let idx = match self.slot_of(node) {
+                    Ok(i) => i as usize,
+                    Err(_) => return,
+                };
+                match self.nodes[idx].as_ref().map(|n| n.props) {
+                    Some(Props::Slider(p)) => {
+                        let v = self.slider_permille_at(idx, x);
+                        if v == p.value {
+                            return; // 值未变：零操作（不重排不派发）
+                        }
+                        let on_change = p.on_change;
+                        let np = Props::Slider(desc::SliderProps { value: v, ..p });
+                        if self.set_props(node, np).is_ok() {
+                            self.fire_widget_event(node, on_change, v);
+                        }
+                    }
+                    // 批 F：DragReorder 拖拽记录——on_reorder(value = 拖拽
+                    // 纵坐标 wire 原值)逐样本派发；无 props 写面（item_
+                    // index 不随手势变——落位裁决在 app，重排挂消费面）。
+                    Some(Props::DragReorder(p)) => {
+                        if p.total_items == 0 {
+                            return; // 空表手柄：零操作（Select 零项同律）
+                        }
+                        self.fire_widget_event(node, p.on_reorder, y);
+                    }
+                    _ => {}
+                }
+            }
+            Msg::Press { .. } | Msg::DragEnd { .. } | Msg::Cancel { .. }
+            | Msg::FocusIn { .. } | Msg::FocusOut { .. } => {}
+        }
     }
 
     // —— 供给槽（D28：门面 layout/render_frame 签名不变——槽取传下） ——
@@ -2445,6 +3412,13 @@ impl<const N: usize> Ui<N> {
 
     pub(crate) fn text_metrics(&self) -> &'static dyn TextMetrics {
         self.tm
+    }
+
+    /// 文本内在宽（刀 2 状态栏对齐缝）：走当前度量供件（换装
+    /// ProportionalTextMetrics 后 = 真实 advance）——供件侧单源，消费面
+    /// 与排布/渲染同轨（免「等宽估算 vs 真测」两套口径漂移）。
+    pub fn text_width(&self, text: &[u8], scale: u8) -> u32 {
+        self.tm.measure(text, scale).0
     }
 
     /// 图标/图片资源供件换装（默认 [`EmptyIconSource`]——dims 恒 None）。
@@ -2604,9 +3578,12 @@ impl<const N: usize> Ui<N> {
             scratch,
             enc,
             self.icons, // D28 槽取传（门面签名不变）
-            self.fonts,
             self.tm,
             &self.wrap,
+            &self.pressed_snapshot(),
+            self.focus_slot(),
+            &self.input_texts_snapshot(),
+            &theme::Tokens::pick(self.theme_mode), // 双档取色
         )
     }
 
@@ -2622,6 +3599,10 @@ impl<const N: usize> Ui<N> {
         Ok(())
     }
 
+    /// 输入泵裸面：`expected_present_ns` = 调用方**显式给定**的重采样
+    /// 目标轨（host 测试确定性缝——合成场景手工钉 target 值级断言）。
+    /// 生产消费面（embedder 帧循环）一律走 [`Self::pump_input_at`]——
+    /// C′ 目标新鲜推导 + A′ pump→wake 内建时序，本面不自动起振。
     pub fn pump_input(&mut self, expected_present_ns: u64) -> desc::MsgBuf {
         // 帧头：referee + 重采样 + 消费（P7 输入同拍）。
         let mut out = desc::MsgBuf::new();
@@ -2681,13 +3662,16 @@ impl<const N: usize> Ui<N> {
                         *resampled = true;
                     }
                 }
-                // D18 pressed 短路径：本事件产出的 Msg 即时消费（Press 换
-                // 底 / Release·Cancel 还原——走现状 set_props 语义同帧生
-                // 效，主线零依赖 B 面 mask）。
+                // D18 pressed 短路径 + 组件交互反应（Phase 2 两批）：
+                // 本事件产出的 Msg 即时消费（Press 换底 / Release·Cancel
+                // 还原；Button on_tap / Toggle·Check 翻转 / Radio 置位 /
+                // Slider 跳跟 / Step·Seg 击点分段——走现状 set_props 语
+                // 义同帧生效，主线零依赖 B 面 mask）。
                 let mut k = n_before;
                 while k < out.len() {
                     if let Some(m) = out.at(k) {
                         self.press_react(m);
+                        self.widget_react(m);
                     }
                     k += 1;
                 }
@@ -2695,6 +3679,31 @@ impl<const N: usize> Ui<N> {
             i += 1;
         }
         self.input_n = 0;
+        out
+    }
+
+    /// 触摸响应设计 v1.0 **C′ + A′**：以**当前时刻**推导重采样目标的
+    /// 输入泵——生产消费面（embedder 帧循环）唯一入口。
+    ///
+    /// - **C′ 目标新鲜（规则 15 铁律 5）**：`expected =
+    ///   next_vsync_tick(now)`（与 render_frame 内部自算 expected 同式
+    ///   同拍——pump 与 render 同迭代 µs 级相邻，含沿不欠拍语义同源
+    ///   frame.rs），再经 [`resample::target_from_expected`] 单源减
+    ///   `RESAMPLE_LATENCY_MS`。**禁止消费方传入上一帧 expected**——
+    ///   稳态陈旧一个 period、idle 长睡后是远古值：跨度帽 >20ms 直接
+    ///   拒采、外推帽失义，拖跟预测整体静默失效。
+    /// - **A′ 内建时序（规则 15 铁律 3）**：pump 先行（press_react/
+    ///   widget_react 标精确 damage）→ **有输入事件才 wake**（damage
+    ///   非空保矩形，空集才兜底 FULL）——消费方不可能把 wake 排到
+    ///   pump 之前放大首触 damage。零事件泵不 wake（Idle 稳态睡事件
+    ///   的非燃 CPU 契约不破）。
+    pub fn pump_input_at(&mut self, now_ns: u64) -> desc::MsgBuf {
+        let expected = frame::next_vsync_tick(now_ns, self.vsync_period_ns, self.vsync_phase_ns);
+        let had_input = self.input_n > 0;
+        let out = self.pump_input(expected);
+        if had_input {
+            self.wake(now_ns);
+        }
         out
     }
 
@@ -2718,16 +3727,34 @@ impl<const N: usize> Ui<N> {
         Err(UiError::AnimFull)
     }
 
+    /// 弹簧入表（维三最小刀）：与 `anim_add` 同帽同错——表满
+    /// `AnimFull` loud；推进 = `render_frame` 内 `anim::spring_tick`
+    /// （与 anim tick 同帧同时钟）。
+    pub fn spring_add(&mut self, sp: anim::SpringProp) -> Result<(), UiError> {
+        let mut i = 0usize;
+        while i < ANIM_MAX {
+            if self.springs[i].is_none() {
+                self.springs[i] = Some(sp);
+                return Ok(());
+            }
+            i += 1;
+        }
+        Err(UiError::AnimFull)
+    }
+
     pub fn anim_clear(&mut self) {
         let mut i = 0usize;
         while i < ANIM_MAX {
             self.anims[i] = None;
+            self.springs[i] = None; // 弹簧同撤（「全撤」口径——两面一体）
             i += 1;
         }
     }
 
     pub fn anim_active(&self) -> bool {
-        self.anims.iter().any(|a| a.is_some())
+        // 两表任一在飞 = 动画占用帧（弹簧在飞不得落 Idle——同 anims
+        // 语义；空表零动静，现状路径逐字保持）。
+        self.anims.iter().any(|a| a.is_some()) || self.springs.iter().any(|s| s.is_some())
     }
 
     // —— 帧循环 ——
@@ -2786,6 +3813,28 @@ impl<const N: usize> Ui<N> {
             self.vp_w,
             self.vp_h,
         );
+        // 弹簧推进（维三最小刀）：与 anim tick 同帧同时钟、同一 apply
+        // 落点；空表零动静（现状 golden 路径零漂移）。
+        #[cfg(feature = "s7")]
+        let spring_on = anim::spring_tick(
+            &mut self.springs,
+            &mut self.nodes,
+            &mut self.damage,
+            now_ns,
+            self.vp_w,
+            self.vp_h,
+            &mut staging,
+        );
+        #[cfg(not(feature = "s7"))]
+        let spring_on = anim::spring_tick(
+            &mut self.springs,
+            &mut self.nodes,
+            &mut self.damage,
+            now_ns,
+            self.vp_w,
+            self.vp_h,
+        );
+        let anim_on = anim_on || spring_on;
         #[cfg(feature = "s7")]
         for k in 0..staging.n {
             let (slot, m) = staging.items[k];
@@ -2813,9 +3862,12 @@ impl<const N: usize> Ui<N> {
                 scratch,
                 enc,
                 self.icons, // D28 槽取传
-                self.fonts, // F5：guest 档可由系统字形 VMO 供给
                 self.tm,
                 &self.wrap,
+                &self.pressed_snapshot(),
+                self.focus_slot(),
+                &self.input_texts_snapshot(),
+                &theme::Tokens::pick(self.theme_mode), // 双档取色
             )
         } else {
             paint::PaintReport { cmds: 0, drawn_px: 0, culled: 0, overdraw_x256: 0 }
@@ -2905,6 +3957,14 @@ impl<const N: usize> Ui<N> {
         )
     }
 
+    /// Idle→Run 起振（立即渲不欠拍）+ 起振遥测。
+    ///
+    /// **damage 契约（触摸响应设计 v1.0 A′/规则 15 铁律 3）**：输入驱动
+    /// 的 wake **不放大 damage**——调用序必须让 press_react/widget_react
+    /// 先标出精确矩形再 wake（生产面 = [`Self::pump_input_at`] 内建
+    /// pump→wake 时序；手工起振面同样先 pump 后 wake）。已有脏区时保
+    /// 既有矩形集，**确无任何 damage 才兜底 FULL**（「不欠拍」节奏契约
+    /// ——点壁纸等无视觉变化面仍出一帧，起振遥测口径不漂）。
     pub fn wake(&mut self, now_ns: u64) {
         // IDLE→Run 立即渲不欠拍 + 起振遥测。
         if self.phase == frame::FramePhase::Idle {

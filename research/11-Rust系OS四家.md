@@ -1,6 +1,7 @@
 # Redox / Theseus / rCore→ArceOS 谱系 / Hubris —— Rust 系 OS 四家调研报告
 
 > 调研日期 2026-10-15 · 基于公开资料与源码快照（GitHub API 抓取现行源码 + 本地 `reference/zcore` 2022-11 快照实测）· 许可证：Redox=MIT · Theseus=MIT · zCore=MIT（**rCore-Tutorial-v3 为 GPL-3.0**）· ArceOS=Apache-2.0（仓库另附 GPLv3/Mulan 双许可文本）· Hubris=**现 MPL-2.0**（2021 首发 Apache-2.0，后按 Oxide 许可 RFD 切换）
+> 编号互注（2026-11-09）：本件与 research/调研报告/11-Unix进化史.md 同号不同系（主目录专题 vs 子目录进化史）——引用带全路径消歧。
 
 ## 0. 一句话定位
 

@@ -1,6 +1,6 @@
 [package]
 name = "berry-blkproto"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 # P6 A-4（docs/文件系统设计.md 块设备主线 / 开发体验.md L2 fat:rw 铺垫）：
 # 块设备服务 RPC 协议纯函数 crate，`berry-fsproto`/`berry-loader` 先例

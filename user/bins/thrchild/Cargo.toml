@@ -1,6 +1,6 @@
 [package]
 name = "thrchild"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 # T-1 §2（多线程首刀消费面）：THR ok 验收子——hello 同款 no_std berry-sys
 # 裸 bin，但走 echo/talker 的 elf2flat 平像产链（include_bytes 内嵌 svcmgr，

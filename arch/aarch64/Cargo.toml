@@ -12,3 +12,33 @@ path = "src/lib.rs"
 # G3-3 lockdep：默认关——钩子全 #[cfg] 编译消除，release/CI 主面零成本；
 # 开 = `cargo build --features lockdep` 出检测镜像（模块常驻、检测器激活）。
 lockdep = []
+
+[dependencies]
+# W3-Q36：lockdep 检查面纯函数单源（rank 七类全序表 + check_acquire 三检
+# 判序/check_release 两臂/check_irq_exit 配平判 + CLASS_*/DEPTH_MAX 常量）
+# ——本 crate lockdep.rs 消费（检查面 re-export；链槽寻址/记账/violation
+# 物理臂留壳）。host 钉板在 lkface；无依赖传染（纯 no_std lib）。
+berry-lkface = { path = "../../lkface" }
+# W3-Q37：异常分类面纯函数单源（ESR EC 域提取 ec_of + 十三类词表
+# classify + FAR 归类判 far_relevant + 定名表 ec_name + EC_* 常量）——
+# 本 crate trap.rs 消费（分类面 re-export；exception_sync 物理臂留壳）。
+# host 钉板在 trapface；无依赖传染（纯 no_std lib）。
+berry-trapface = { path = "../../trapface" }
+# W3-Q72：PSCI 版本门/路由门/FEATURES 侦察纯面（psface re-export 消费）。
+berry-psface = { path = "../../psface" }
+# W3-Q86：fw_cfg 判定面纯函数单源（目录行走 count 帽/名 55 帽/无 NUL 项
+# 跳过 + SeqState 顺序读 4 字节粒度推进律 + ramfb_cfg_ok 28B·三非零域门）
+# ——本 crate fwcfg.rs 消费（判定面 re-export；MMIO/DMA 物理臂留壳）。
+# host 钉板在 fwcfgface；无依赖传染（纯 no_std lib）。
+berry-fwcfgface = { path = "../../fwcfgface" }
+# W3-Q66：唤醒归因链判定律纯函数单源（GIC INTID→源映射/保存值域判/
+# 槽位钳位）——本 crate wake.rs 消费（src_of 号表锚参数化注入 +
+# irq_exit 值域执法；asidface 迁 mmu.rs 面同款纪律；原子 cell/到达
+# 计数物理臂留壳）。
+# host 钉板在 wakeface；无依赖传染（纯 no_std lib）。
+berry-wakeface = { path = "../../wakeface" }
+# W3-Q31 重放：timer 滴答账纯函数面（tick→ns 倒数乘-移对预计算 + 快/慢
+# 双路资格判 + S-6 deadline 单调夹取律 + slice 预算再装数学 + LAST_VCT
+# 回绕窗增量——host 可测钉板）。常量族与判定律单源在此，本 crate 机械
+# 壳 re-export 消费（寄存器臂/原子 static 留壳）。
+berry-tickface = { path = "../../tickface" }

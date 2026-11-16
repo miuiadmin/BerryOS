@@ -6,7 +6,7 @@
 //! HAL 不依赖内核 crate）。**3-1 政策**（撤 2b-4「EL0 畸形号杀」）：未知/未实现
 //! 编号一律 `-ENOTSUP` 存活、绝不 panic；错误由用户态自理。
 //!
-//! v1 35 号编号全部在册（`abi_gen` 单源生成、经 `pub use` 转发——`tools/abi.toml`）；**34 号已实现（唯 0x85 `berry_attest` 预留位恒 `-ENOTSUP`——T-1 后在册真语义全实现 + A7-4 信号两号 + G4-2 0x21 pager 首形）**——
+//! v1 39 号编号全部在册（`abi_gen` 单源生成、经 `pub use` 转发——`tools/abi.toml`）；**38 号已实现（唯 0x85 `berry_attest` 预留位恒 `-ENOTSUP`——T-1 后在册真语义全实现 + A7-4 信号两号 + G4-2 0x21 pager 首形 + G4-4 X-3b 0x23 恒等选源 + X-6 刀① 0x24 批供表批 + 桌面UX刀D 0x88 power_off + CP-08 0x40 util 快照读）**——
 //! handle 三操作 + clock_read（3-1）+ VMO/Vmar 十一号（3-2 + G-eco get_size +
 //! P6 get_phys 用户态 DMA 面）+
 //! process_create/start/exit + process_get_exit_code（P5——`&&` 真退出码源）+
@@ -19,8 +19,9 @@
 //! 能力门控——**权限在 handle 不在对象**。未注册槽由 HAL 默认返
 //! `-ENOTSUP`。**任务退出钩子**（Plan B → T-1 线程版）：任一任务
 //! 退出（含 fault 杀，码 0）经 [`task_exit_hook`] 做 Thread 簿记（join 唤醒）+
-//! 活线程计数——末线程再 Process 收口（Exited + 唤醒 TERMINATED + drain 子表
-//! + release 双钉住）——见下方 hook 注释。
+//! 活线程计数——末线程再 Process 收口（Exited + 唤醒 TERMINATED 同步 +
+//! drain 子表异步移交 HT_DRAINQ + release 双钉住——P2-2）——见下方 hook
+//! 注释。
 //!
 //! **copy_from/to_user（3-2）**：EL1 调用方（ktest）→ 内核高半直映区直拷；
 //! EL0 → 界检 `[0x1000, 2^39)` + 逐页走查**当前 TTBR0**（= 调用者自身表）验
@@ -57,7 +58,7 @@ use crate::handle::{
     ERR_NO_MEMORY, ERR_OUT_OF_RANGE, ERR_TIMEDOUT, RIGHT_DUPLICATE, RIGHT_MANAGE, RIGHT_MAP,
     RIGHT_TRANSFER, RIGHT_INSPECT,
     RIGHT_READ, RIGHT_RECV, RIGHT_SEND, RIGHT_SIGNAL, RIGHT_WRITE, SIGNAL_READABLE,
-    SIGNAL_TERMINATED, SIGNAL_USER_MASK, SIGNAL_WRITABLE,
+    SIGNAL_TERMINATED, SIGNAL_WRITABLE,
 };
 use crate::process::ProcState;
 use crate::vmar::{Perm, Vmar, VmarError};
@@ -67,7 +68,7 @@ use berry_hal_aarch64::KERNEL_VA_BASE;
 use berry_mm::va::PAGE_SIZE;
 use core::ptr::NonNull;
 
-// ---- v1 35 号编号表（ABI §4「阶段 = v1」行）——单源生成 ----
+// ---- v1 37 号编号表（ABI §4「阶段 = v1」行）——单源生成 ----
 // 常量本体在 `crate::abi_gen`（`tools/abi.toml` 生成文件）；此处 re-export
 // 维持既有路径（ktest/main 直接写 `crate::syscall::NR_*`）。改号/加号先改
 // abi.toml 再 `just abi-gen`——`gen_abi.py --check` 守卫挂 build/smoke 前置。
@@ -79,20 +80,23 @@ pub use crate::abi_gen::{
     CHAN_OPT_NO_INTENT, NR_CHANNEL_CREATE, NR_CHANNEL_RECV, NR_CHANNEL_SEND, NR_CLOCK_READ,
     NR_CBOX_DRAIN, NR_EVENT_CREATE, NR_HANDLE_CLOSE, NR_HANDLE_DUPLICATE, NR_HANDLE_REPLACE,
     NR_OBJECT_SIGNAL,
-    NR_OBJECT_WAIT_MANY, NR_OBJECT_WAIT_ONE, NR_PAGER_SUPPLY_PAGES, NR_PROCESS_CREATE,
+    NR_OBJECT_WAIT_MANY, NR_OBJECT_WAIT_ONE, NR_PAGER_SUPPLY_MAPPED, NR_PAGER_SUPPLY_MAPPED_TABLE,
+    NR_PAGER_SUPPLY_PAGES, NR_PROCESS_CREATE,
     NR_PROCESS_EXIT, NR_PROCESS_GET_EXIT_CODE, NR_PROCESS_START, NR_PROCESS_SUSPEND,
-    NR_SCHED_GETATTR, NR_SCHED_SETATTR, NR_THREAD_YIELD,
+    NR_SCHED_GETATTR, NR_SCHED_SETATTR, NR_SCHED_UTIL_SNAPSHOT, NR_THREAD_YIELD,
     NR_PROCESS_TERMINATE,
-    NR_SIGNAL_SEND, NR_SIGNAL_TAKE, NR_THREAD_CREATE, NR_THREAD_EXIT, NR_THREAD_SLEEP,
+    NR_POWER_OFF, NR_SIGNAL_SEND, NR_SIGNAL_TAKE, NR_THREAD_CREATE, NR_THREAD_EXIT,
+    NR_THREAD_SLEEP,
     NR_THREAD_START, NR_VMAR_ALLOCATE, NR_VMAR_MAP,
     NR_VMAR_PROTECT, NR_VMAR_UNMAP, NR_VMO_COMMIT, NR_VMO_CREATE, NR_VMO_DECOMMIT,
     NR_VMO_GET_PHYS, NR_VMO_GET_SIZE, NR_VMO_READ, NR_VMO_WRITE,
 };
-use crate::abi_gen::{CLOCK_MONOTONIC, ERR_E2BIG, RIGHT_SET_POLICY, VMO_OPT_DEMAND};
+use crate::abi_gen::{CLOCK_MONOTONIC, CLOCK_REALTIME, ERR_E2BIG, RIGHT_SET_POLICY, VMO_OPT_DEMAND};
 
 /// 用户 VA 合法区（Vmar root 覆盖 `[0x1000, 2^39)`，0 页 NULL 保卫——
-/// `内存管理设计.md` §4；copy_out 的界检同源）。
-const USER_VA_END: u64 = 1 << 39;
+/// `内存管理设计.md` §4；copy_out 的界检同源）。W3-Q70：值域常量单源迁
+/// berry-aokface，此处 re-export 对齐（消费点引用不变）。
+const USER_VA_END: u64 = berry_aokface::USER_VA_END;
 
 // ---- 表派发（3-4a per-process 拆分）----
 
@@ -175,68 +179,142 @@ fn access_ok(caller_el1: bool, ptr: u64, len: u64, write: bool) -> bool {
     if len == 0 {
         return true;
     }
-    let Some(end) = ptr.checked_add(len) else { return false };
+    if ptr.checked_add(len).is_none() {
+        return false; // 回卷拒（原判序在 EL1/EL0 分派之前——两路共门）
+    }
     if caller_el1 {
-        ptr >= KERNEL_VA_BASE as u64
+        // W3-Q70：EL1 高半单比较判定律单源（berry-aokface——el1_span_ok
+        // 自带回卷门，此处前置共门后幂等零漂移）。
+        berry_aokface::el1_span_ok(ptr, len, KERNEL_VA_BASE as u64)
     } else {
-        if ptr < 0x1000 || end > USER_VA_END {
+        // W3-Q70：EL0 值域四门判定律单源（berry-aokface——len==0 恒过/
+        // checked_add 回卷拒/null 页下界/USER_VA_END 上界）；逐页走查
+        // 物理臂留壳（walk_leaf 读 TTBR0 三级表）。
+        if !berry_aokface::el0_span_ok(ptr, len) {
             return false;
         }
         let l1 = berry_hal_aarch64::current_ttbr0_pa();
-        let first = (ptr as usize) & !(PAGE_SIZE - 1);
-        let last = (end as usize - 1) & !(PAGE_SIZE - 1);
-        let mut va = first;
-        while va <= last {
-            match crate::vmar::walk_leaf(l1, va) {
-                Some(desc) => {
-                    let ap = (desc >> 6) & 0b11;
-                    if write && ap >= 0b10 {
-                        return false; // RO(10) / EL0 专属(11)：EL1 不可写
-                    }
-                    if !write && ap == 0b11 {
-                        return false; // EL0 专属页内核读不到
-                    }
-                }
-                None => return false, // 未映射页
+        for va in berry_aokface::span_pages(ptr, len) {
+            match crate::vmar::walk_leaf(l1, va as usize) {
+                // W3-Q70：AP 位域读写拒律单源（berry-aokface::leaf_admits）。
+                Some(desc) if berry_aokface::leaf_admits(desc, write) => {}
+                _ => return false, // 缺叶或权限不符
             }
-            va += PAGE_SIZE;
         }
         true
     }
 }
 
-/// 从调用方缓冲拷进内核切片（`vmo_write` 源 / in 参数读）。
+/// 窗内同页缓存哨兵：用户 VA < 2^39、EL1 高半直映 ≥ KERNEL_VA_BASE，
+/// u64::MAX 两界之外——首块必走查。W3-Q70：哨兵单源迁 berry-aokface，
+/// 此处 re-export 对齐（消费点引用不变）。
+const SAME_PAGE_NONE: u64 = berry_aokface::SAME_PAGE_NONE;
+
+/// **单一 PT 锁窗内**的逐页校验（P1 同页跳过）。`last_page` = 本窗局部
+/// 缓存：块覆盖的每个页若 == 缓存页，该页已在本窗走查过且写者（他核
+/// map/unmap/protect 须取同 AS PT 锁）被本窗挡在表外 ⇒ 表冻结 ⇒ 免重复
+/// 三级走查；新页按**本块在该页内的实际字节段**走 [`access_ok`]（边界
+/// 语义与整段调用逐位同源）。逐页咨询而非只比块首页：非页对齐缓冲的
+/// 256B 块可跨页界，只比首页会漏验跨界页（未映射页直拷 = 内核 fault）。
+/// 缓存生命周期**严格 = 锁窗**：跨窗/跨调用复用即绕过 §A113 walk+store
+/// 同窗铁律（他核 unmap 撤页 TOCTOU）——故只经调用方局部变量传递，
+/// **禁提升 static**。
+fn access_ok_window(
+    caller_el1: bool,
+    ptr: u64,
+    len: u64,
+    write: bool,
+    last_page: &mut u64,
+) -> bool {
+    if len == 0 {
+        return true;
+    }
+    // W3-Q70：同页跳过律单源（berry-aokface::window_should_walk——
+    // SAME_PAGE_NONE 哨兵首块必查；缓存只记最近页）。页序同源 span_pages。
+    for va in berry_aokface::span_pages(ptr, len) {
+        if berry_aokface::window_should_walk(va, &mut *last_page) {
+            // 本块在本页内的字节段 [max(va, ptr), min(页尾, 块尾))。
+            let start = va.max(ptr);
+            let end = (va + PAGE_SIZE as u64).min(ptr + len);
+            if !access_ok(caller_el1, start, end - start, write) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// 窗内校验 + 拷贝：调用方**已持**本 AS PT 锁（EL1 路免锁高半直映）。
+/// 分块块流（`sys_vmo_read/write` 的 256B 块）在外层单窗内传递同一
+/// `last_page` 复用本函数——同页块免重复走查（64KB = 256 块：原每块
+/// 一窗一走查 256 次 → 每页 1 次 = 16 次）。
+fn copy_from_user_locked(
+    caller_el1: bool,
+    src: u64,
+    dst: &mut [u8],
+    last_page: &mut u64,
+) -> Result<(), i32> {
+    if dst.is_empty() {
+        return Ok(());
+    }
+    if !access_ok_window(caller_el1, src, dst.len() as u64, false, last_page) {
+        return Err(ERR_FAULT);
+    }
+    // SAFETY: 整段界检过（EL1 = 高半直映；EL0 = 调用者表逐页 AP 验过且
+    // 同窗持锁，见 [`access_ok_window`]）；无本核任务切换切进校验-拷贝间
+    // ——g3-1c-2 起双面：全屏蔽窗号（多数——屏蔽即无切换）；管道拷贝段
+    // 局部解蔽窗（send/recv——段级 preempt_disable 保无切换 §A113，窗在
+    // 调用点非此处内置，见 `irq_window`——内置对 TABLE 类号（vmo 面）还是
+    // tick 面活体违约：SQ 位不在集 ⇒ tick 入窗 expire_timeouts 物理取 SQ
+    // 于 KL 下 = §A126 同款七类锁序逆序，不只是切换面）。
+    unsafe { core::ptr::copy_nonoverlapping(src as *const u8, dst.as_mut_ptr(), dst.len()) };
+    Ok(())
+}
+
+/// 从调用方缓冲拷进内核切片（`vmo_write` 源 / in 参数读）。单发整段拷贝
+/// （自带 PT 锁窗 + 全段走查）。**256B 分块块流勿逐块调本函数**——每块
+/// 重取锁 + 重走查（同页 16 块 = 16 次三级走查，P1 瓶颈）——改由外层持
+/// 单窗循环调 [`copy_from_user_locked`]（同页跳过）。
 fn copy_from_user(caller_el1: bool, src: u64, dst: &mut [u8]) -> Result<(), i32> {
     if !dst.is_empty() {
         // S-4 4-2（判例 §A113 walk+copy 同窗铁律）：EL0 路走查与 store 同一
         // per-AS PT 锁窗——封死他核 unmap/protect 在两步之间撤页的 TOCTOU
         // （原「单核无 TOCTOU」假设随 SMP 退役）。EL1 路高半直映不取。
         let _pt = if caller_el1 { None } else { Some(crate::vmar::pt_lock_current()) };
-        if !access_ok(caller_el1, src, dst.len() as u64, false) {
-            return Err(ERR_FAULT);
-        }
-        // SAFETY: 整段界检过（EL1 = 高半直映；EL0 = 调用者表逐页 AP 验过且
-        // 同窗持锁，见上）；无本核任务切换切进校验-拷贝间——g3-1c-2 起双面：
-        // 全屏蔽窗号（多数——屏蔽即无切换）；管道拷贝段局部解蔽窗（send/recv
-        // ——段级 preempt_disable 保无切换 §A113，窗在调用点非此处内置，
-        // 见 `irq_window`——内置对 TABLE 类号（vmo 面）还是 tick 面活体违约：
-        // SQ 位不在集 ⇒ tick 入窗 expire_timeouts 物理取 SQ 于 KL 下 =
-        // §A126 同款七类锁序逆序，不只是切换面）。
-        unsafe { core::ptr::copy_nonoverlapping(src as *const u8, dst.as_mut_ptr(), dst.len()) };
+        let mut last_page = SAME_PAGE_NONE;
+        copy_from_user_locked(caller_el1, src, dst, &mut last_page)?;
     }
     Ok(())
 }
 
-/// 从内核切片拷出到调用方缓冲（`vmo_read` 目的 / out 参数写）。
+/// 窗内校验 + 拷出（同 [`copy_from_user_locked`]——调用方已持锁，同页
+/// 块免重复走查）。
+fn copy_to_user_locked(
+    caller_el1: bool,
+    dst: u64,
+    src: &[u8],
+    last_page: &mut u64,
+) -> Result<(), i32> {
+    if src.is_empty() {
+        return Ok(());
+    }
+    if !access_ok_window(caller_el1, dst, src.len() as u64, true, last_page) {
+        return Err(ERR_FAULT);
+    }
+    // SAFETY: 同 copy_from_user_locked。
+    unsafe { core::ptr::copy_nonoverlapping(src.as_ptr(), dst as *mut u8, src.len()) };
+    Ok(())
+}
+
+/// 从内核切片拷出到调用方缓冲（`vmo_read` 目的 / out 参数写）。单发整段
+/// 拷贝；分块块流同 [`copy_from_user`] 注——外层单窗 +
+/// [`copy_to_user_locked`]。
 fn copy_to_user(caller_el1: bool, dst: u64, src: &[u8]) -> Result<(), i32> {
     if !src.is_empty() {
         // S-4 4-2：同 copy_from_user——EL0 路走查与 store 同一 PT 锁窗。
         let _pt = if caller_el1 { None } else { Some(crate::vmar::pt_lock_current()) };
-        if !access_ok(caller_el1, dst, src.len() as u64, true) {
-            return Err(ERR_FAULT);
-        }
-        // SAFETY: 同 copy_from_user。
-        unsafe { core::ptr::copy_nonoverlapping(src.as_ptr(), dst as *mut u8, src.len()) };
+        let mut last_page = SAME_PAGE_NONE;
+        copy_to_user_locked(caller_el1, dst, src, &mut last_page)?;
     }
     Ok(())
 }
@@ -295,6 +373,13 @@ extern "C" fn sys_handle_close(tf: &mut TrapFrame) -> i64 {
 }
 
 /// `handle_duplicate(h, rights, *out)`：复制（rights ⊆ 原、非空；SAME=全集）。
+/// P3-1 起源 handle 须持 `RIGHT_DUPLICATE`——缺位 -EACCES（授予方去位 =
+/// 禁复制，Zircon `zx_handle_duplicate` 同形；与「请求 ⊆ 原、非空」两既有
+/// 拒面叠乘）。执法边界 = 本 syscall 面（不受信面）：`duplicate` 对一切
+/// 对象类型开放，故经类型无关权利探针 [`HandleTable::rights_of`] 查位
+/// （`get_raw` 的具体 `ObjType` 门不适配此面；坏 handle 仍 -EBADF 走
+/// lookup 语义）；内核内部直调表 API（boot 插表/ktest）是授能语境不经
+/// 此门。
 extern "C" fn sys_handle_duplicate(tf: &mut TrapFrame) -> i64 {
     let (h, rights, out) = (tf.regs[1] as u32, tf.regs[2] as Rights, tf.regs[3]);
     // 先验 out 指针（界检不过不浪费槽位/引用）。
@@ -302,11 +387,17 @@ extern "C" fn sys_handle_duplicate(tf: &mut TrapFrame) -> i64 {
         return e as i64;
     }
     match caller_table(tf) {
-        Ok(t) => match t.duplicate(h, rights) {
-            Ok(nh) => match copy_out_u32(caller_is_el1(tf), out, nh) {
-                Ok(()) => 0,
+        Ok(t) => match t.rights_of(h) {
+            // P3-1：RIGHT_DUPLICATE 执法——get_raw 等效检查处的 need 位
+            //（类型无关面经 rights_of 探针，缺位 -EACCES）。
+            Ok(r) if r & RIGHT_DUPLICATE != 0 => match t.duplicate(h, rights) {
+                Ok(nh) => match copy_out_u32(caller_is_el1(tf), out, nh) {
+                    Ok(()) => 0,
+                    Err(e) => e as i64,
+                },
                 Err(e) => e as i64,
             },
+            Ok(_) => ERR_ACCESS_DENIED as i64, // 源 handle 无 DUP 位 = 授予方明令禁复制
             Err(e) => e as i64,
         },
         Err(e) => e,
@@ -333,9 +424,13 @@ extern "C" fn sys_handle_replace(tf: &mut TrapFrame) -> i64 {
 
 /// `clock_read(clock_id, *out)`：单调钟纳秒（CNTVCT/CNTFRQ 换算；先商后余防
 /// 中间溢出——ticks×1e9 在 ~5 分钟处溢 u64，拆两项后 ~584 年）。
+/// 波一刀 B：id=1 `CLOCK_REALTIME` = 宿主 fw_cfg epoch 注入面（`crate::rtc`
+/// ——原「壁钟留 v2」提前落地为既有 0x61 的 id 域扩展，零新号；id 0 行为
+/// 逐位不变）。注入缺席 → REALTIME 仍 -ENOTSUP（用户态降级静态占位）。
 extern "C" fn sys_clock_read(tf: &mut TrapFrame) -> i64 {
-    if tf.regs[1] != CLOCK_MONOTONIC {
-        return ERR_NOT_SUPPORTED as i64; // 壁钟等 id 留 v2
+    let id = tf.regs[1];
+    if id != CLOCK_MONOTONIC && id != CLOCK_REALTIME {
+        return ERR_NOT_SUPPORTED as i64; // 未知 id（ktest 负样本 = 2）
     }
     let out = tf.regs[2];
     let ticks = berry_hal_aarch64::timer::cntvct();
@@ -344,10 +439,90 @@ extern "C" fn sys_clock_read(tf: &mut TrapFrame) -> i64 {
         return ERR_NOT_SUPPORTED as i64; // 频率不可读（真机异常）
     }
     let ns = (ticks / freq) * 1_000_000_000 + ((ticks % freq) * 1_000_000_000) / freq;
+    let ns = if id == CLOCK_REALTIME {
+        match crate::rtc::realtime_ns() {
+            Some(v) => v,
+            None => return ERR_NOT_SUPPORTED as i64, // 无注入（-kernel 冒烟拓扑）
+        }
+    } else {
+        ns
+    };
     match copy_out_u64(caller_is_el1(tf), out, ns) {
         Ok(()) => 0,
         Err(e) => e as i64,
     }
+}
+
+/// `power_off()`（0x88，桌面UX刀D——guest 内关机最小闭环）：PSCI
+/// SYSTEM_OFF（0x84000008）经 HVC conduit。成功 = 整机下电**不归**（QEMU
+/// TCG/KVM 走 `qemu_system_shutdown_request`——PM-10 §1.6 实读）；返回 =
+/// 失败恒 -ENOTSUP（两成因同形：conduit 死——EFI handoff / 非 EL1 入口 /
+/// 无 PSCI（probe 缓存 `off_supported` 门，不盲发 HVC）；或固件拒收
+/// （SYSTEM_OFF 无 PSCI_FEATURES 面，SMCCC 返回任何值即失败）。零参数零
+/// 出参。v1 无门控（单用户仿真系统，消费面 launcher 关机键 + berryctl
+/// power；门控与优雅关机序随审计 02 号 I3 刀）。
+extern "C" fn sys_power_off(_tf: &mut TrapFrame) -> i64 {
+    // SMCCC：SYSTEM_OFF 成功不归；任何返回 = 失败（conduit 死 / 固件拒），
+    // 错误码面恒 -ENOTSUP（调用方诚实降级——launcher 提示行 / berryctl 退 1）。
+    let _ = berry_hal_aarch64::psci::system_off_hvc();
+    ERR_NOT_SUPPORTED as i64
+}
+
+// ---- 遥测环读口（阶段五第 16 步：0x84 telemetry_open 翻真——klog 快照首域）----
+
+/// 0x84 op 域：0 = klog 快照（内核日志字节环——`arch .../klog_ring.rs`，串口
+/// 镜像）。后续波次补 SwitchRec / WakeRec 环读口（各自新 op 值，add-only）。
+const TELEMETRY_OP_KLOG: u64 = 0;
+
+/// 单次快照读帽（= 单环容量 16KiB——再大也只装得下单环最新段；bsh dmesg
+/// 消费面 4KiB 尾帽远在其下）。
+const TELEMETRY_SNAPSHOT_MAX: usize = berry_hal_aarch64::klog_ring::KLOG_RING_SIZE;
+
+/// klog 快照暂存（ring 快照 → copy_out 之间的稳定缓冲）。**单写者 = KL**：
+/// 本 handler 恒 TABLE 类（KL 全局互斥跨核串行）+ ktest EL1 面同经 dispatch
+/// 取锁——无第二并发写者，免独立锁。
+static mut KLOG_SNAP_STAGE: [u8; TELEMETRY_SNAPSHOT_MAX] = [0; TELEMETRY_SNAPSHOT_MAX];
+
+/// `berry_telemetry_open(op, buf, len)`（0x84，阶段五第 16 步翻真首域）：
+/// op=0 klog 快照——读两核 klog 字节环拼接 copy_out 到 `buf`，返回实写字节
+/// 数（>0）。拼接契约：CPU 序（环 0 → 环 1）、环内旧→新、每环贡献其**最新**
+/// `min(环内有效字节, 余量)` 字节（先到环优先占满——裸相串口主力在 CPU0，
+/// dmesg 尾部语义天然成立；两环拼接非时序归并，读方自知）。
+///
+/// 拒面：op 域外 → -ENOTSUP（后续 SwitchRec/WakeRec op 语义位）；`len` 为 0
+/// 或 > [`TELEMETRY_SNAPSHOT_MAX`] → -EINVAL；copy_out 失败 → -EFAULT（逐环
+/// 分段拷贝，失败前的段已写——诚实部分读，调用方重试）。零 handle 零权利位
+/// （系统级遥测读面——统计信号非对象内容，`sched_util_snapshot` 同族口径）。
+///
+/// 锁类 TABLE：klog 环热尾容错读无锁无共享串行面；copy_out 链走查调用方页表
+/// = §A113 读者面（同 0x61 clock_read）。
+extern "C" fn sys_telemetry_open(tf: &mut TrapFrame) -> i64 {
+    let (op, ptr, len) = (tf.regs[1], tf.regs[2], tf.regs[3]);
+    if op != TELEMETRY_OP_KLOG {
+        return ERR_NOT_SUPPORTED as i64; // op 域外（后续环读口预留）
+    }
+    if len == 0 || len as usize > TELEMETRY_SNAPSHOT_MAX {
+        return ERR_INVALID_ARG as i64;
+    }
+    let el1 = caller_is_el1(tf);
+    // SAFETY: 单写者 = KL（见 KLOG_SNAP_STAGE 注）；本 handler 全程 KL 窗。
+    let stage = unsafe { &mut *core::ptr::addr_of_mut!(KLOG_SNAP_STAGE) };
+    let mut total: usize = 0;
+    for cpu in 0..berry_hal_aarch64::klog_ring::KLOG_NCPUS {
+        let rem = len as usize - total;
+        if rem == 0 {
+            break;
+        }
+        let n = berry_hal_aarch64::klog_ring::snapshot_into(cpu, &mut stage[..rem]);
+        if n == 0 {
+            continue; // 空环/读窗不稳——跳过该环（诚实空，不重试占锁）
+        }
+        match copy_to_user(el1, ptr + total as u64, &stage[..n]) {
+            Ok(()) => total += n,
+            Err(e) => return e as i64, // -EFAULT 透传（此前段已写=诚实部分读）
+        }
+    }
+    total as i64
 }
 
 /// MONOTONIC 纳秒 → CNTVCT 周期（先商后余防中间溢出，与 [`sys_clock_read`]
@@ -362,16 +537,14 @@ fn ns_to_vct(ns: u64) -> Option<u64> {
     Some((ns / 1_000_000_000) * freq + ((ns % 1_000_000_000) * freq) / 1_000_000_000)
 }
 
-/// CNTVCT → MONOTONIC 纳秒（`sys_clock_read` 同式抽出；4-3c intent 两道时间帽
-/// 的计时源）。`freq==0` → 0（真机异常语境——帽永不触发，方向安全）。
+/// CNTVCT → MONOTONIC 纳秒（4-3c intent 两道时间帽 + S5-a 相对 deadline 的
+/// 计时源）。换算 = `timer::ticks_to_ns`：init 预计算倒数乘-移对（下一代
+/// 优化 #1——热路径 1 mul + 1 shift 消解 2×udiv；send/recv 3 处换算每往返
+/// 省 54-138 cycles）。慢路两除精确式与 `sys_clock_read` 同形；QEMU virt
+/// 62.5MHz（ns/tick=16 二进精准）两路逐位一致。`freq==0` → 0（真机异常
+/// 语境——帽永不触发，方向安全）。
 fn vct_ns() -> u64 {
-    // SAFETY: 只读 CNTVCT/CNTFRQ（timer::init 后恒有效）。
-    let freq = berry_hal_aarch64::timer::cntfrq();
-    if freq == 0 {
-        return 0;
-    }
-    let ticks = berry_hal_aarch64::timer::cntvct();
-    (ticks / freq) * 1_000_000_000 + ((ticks % freq) * 1_000_000_000) / freq
+    berry_hal_aarch64::timer::ticks_to_ns(berry_hal_aarch64::timer::cntvct())
 }
 
 /// `thread_sleep(deadline)`（0x37，4-0 首个阻塞 syscall）：睡到绝对时刻
@@ -444,7 +617,8 @@ pub fn soakload_churn_readout() -> u64 {
 }
 
 /// `vmo_create(size, options, *out)`：建匿名 VMO。默认授 READ|WRITE|MAP|
-/// DUPLICATE（全 Rights 面减 TRANSFER——transfer 随 3-4 channel 落地）。
+/// DUPLICATE|TRANSFER（Zircon 模型：新 handle 默认携 TRANSFER——send 随行
+/// 预检 4-4b 起执法，去位迁移须显式 dup 收紧）。
 /// options：bit0 = `VMO_OPT_DEMAND`（G4-2，§5-① 裁决）——按需后备 VMO
 /// （demand 对象属性，映射走 vmar_map 对象级分流 map_demand，首触缺页由
 /// EL0 pager 经 0x21 供给）+ **额外授 SET_POLICY**（0x21 门权——普通 dup
@@ -467,6 +641,16 @@ extern "C" fn sys_vmo_create(tf: &mut TrapFrame) -> i64 {
     if let Err(e) = copy_out_u32(el1, out, 0) {
         return e as i64;
     }
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    // per-Process VMO 配额帽（Medium 缺口收口，`process.rs` 帽常量注）：本表
+    // 在册 VMO handle 数 ≥ 帽先拒 -ENOMEM——fail-fast 先于 create 的页记账
+    // 分配（128MiB VMO 记账 Vec ≈ 576KiB/个，无帽单进程循环 create 可把共享
+    // 堆耗到全机 -ENOMEM）。记账 = `count_type` 表扫描（S5.12 token 帽同款；
+    // 随 close/take/drain/迁移天然配平，sidecar 计数器在跨表迁移下失配——
+    // `pager_load` 同口径）。admission 只查不写（沿革 #109 纪律）。
+    if t.count_type(ObjType::Vmo) >= crate::process::MAX_VMO_PER_PROC {
+        return ERR_NO_MEMORY as i64;
+    }
     // create try 化（3b3 H2）：NoMem → -ENOMEM（原 create 内嵌 vec! 双分配，
     // OOM abort 曾是 EL0 可触发 panic）。
     let vmo = match if demand { Vmo::create_demand(size) } else { Vmo::create(size) } {
@@ -474,28 +658,26 @@ extern "C" fn sys_vmo_create(tf: &mut TrapFrame) -> i64 {
         Err(e) => return voe(e) as i64,
     };
     // G4-2：demand 位附加 SET_POLICY（§5-① 裁决——demand VMO 首消费，
-    // 0x21 双验之一；默认面权利集逐位不变）。
+    // 0x21 双验之一；默认面权利集逐位不变）+ TRANSFER（Zircon 默认携位）。
     let rights = if demand {
         RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_DUPLICATE | RIGHT_SET_POLICY
+            | RIGHT_TRANSFER
     } else {
-        RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_DUPLICATE
+        RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_DUPLICATE | RIGHT_TRANSFER
     };
-    match caller_table(tf) {
-        Ok(t) => match t.insert(KernelObj::Vmo(vmo), rights) {
-            Ok(h) => match copy_out_u32(el1, out, h) {
-                Ok(()) => {
-                    // S-5e M1：soakload 载荷 churn 进度计数（svc 恒败/gen 顶格
-                    // → 心跳 churn 冻红；非 soakload boot 零成本分支直过）。
-                    if SOAKLOAD_ACTIVE.load(Ordering::Relaxed) {
-                        SOAK_CHURN_OK.fetch_add(1, Ordering::Relaxed);
-                    }
-                    0
+    match t.insert(KernelObj::Vmo(vmo), rights) {
+        Ok(h) => match copy_out_u32(el1, out, h) {
+            Ok(()) => {
+                // S-5e M1：soakload 载荷 churn 进度计数（svc 恒败/gen 顶格
+                // → 心跳 churn 冻红；非 soakload boot 零成本分支直过）。
+                if SOAKLOAD_ACTIVE.load(Ordering::Relaxed) {
+                    SOAK_CHURN_OK.fetch_add(1, Ordering::Relaxed);
                 }
-                Err(e) => e as i64,
-            },
+                0
+            }
             Err(e) => e as i64,
         },
-        Err(e) => e,
+        Err(e) => e as i64,
     }
 }
 
@@ -541,8 +723,8 @@ extern "C" fn sys_vmo_decommit(tf: &mut TrapFrame) -> i64 {
 /// `vmo_read(vmo, buf, offset, len)`：内核中介读（非映射访问）。门控：READ。
 /// 整段缓冲校验前置（fail-fast，纯读无半截副作用）；256B 分块防吃内核栈。
 /// S-4 4-2：前置 access_ok 是纯走查 fail-fast（不 store），**不是**安全边界
-/// ——真正的 §A113 读者窗在下方 copy_to_user 分块（每块 PT 锁同窗 + 每块
-/// 重查，前置被跨核 TOCTOU 绕过仅导致分块时 -EFAULT）。
+/// ——真正的 §A113 读者窗在下方分块拷贝（单一 PT 锁窗包整段块流 + 每新页
+/// 重查，前置被跨核 TOCTOU 绕过仅导致分块时 -EFAULT；P1 同页跳过见窗注）。
 extern "C" fn sys_vmo_read(tf: &mut TrapFrame) -> i64 {
     let (h, buf, off, len) = (tf.regs[1] as u32, tf.regs[2], tf.regs[3] as usize, tf.regs[4] as usize);
     let el1 = caller_is_el1(tf);
@@ -559,12 +741,20 @@ extern "C" fn sys_vmo_read(tf: &mut TrapFrame) -> i64 {
     };
     let mut chunk = [0u8; COPY_CHUNK];
     let mut pos = 0;
+    // P1 同页跳过：整段分块拷贝并成**单一 PT 锁窗**（§A113 不变量保持——
+    // 窗内每新页走查与 store 仍同窗；同页后续块免重复三级走查：64KB 载荷
+    // 256 块，原每块一窗一走查 = 256 次 → 每页 1 次 = 16 次）。窗含
+    // `vmo.read`：纯无锁 direct map 拷贝（界检 + 已提交检 + memcpy——不
+    // 取锁、不分配、不阻塞）⇒ 无锁序新边、持有有界；同 AS 写者自旋与本
+    // 窗串行——与既有单发整段 `copy_*_user`（一窗到底）同语义。
+    let _pt = if el1 { None } else { Some(crate::vmar::pt_lock_current()) };
+    let mut last_page = SAME_PAGE_NONE;
     while pos < len {
         let n = core::cmp::min(COPY_CHUNK, len - pos);
         if let Err(e) = vmo.read(off + pos, &mut chunk[..n]) {
             return voe(e) as i64;
         }
-        if let Err(e) = copy_to_user(el1, buf + pos as u64, &chunk[..n]) {
+        if let Err(e) = copy_to_user_locked(el1, buf + pos as u64, &chunk[..n], &mut last_page) {
             return e as i64;
         }
         pos += n;
@@ -581,7 +771,7 @@ extern "C" fn sys_vmo_read(tf: &mut TrapFrame) -> i64 {
 }
 
 /// `vmo_write(vmo, buf, offset, len)`：内核中介写。门控：WRITE。分块同 read
-/// （前置 access_ok 同为 fail-fast 纯走查，§A113 窗在 copy_from_user 分块）。
+/// （前置 access_ok 同为 fail-fast 纯走查，§A113 窗在下方单一 PT 锁分块窗）。
 extern "C" fn sys_vmo_write(tf: &mut TrapFrame) -> i64 {
     let (h, buf, off, len) = (tf.regs[1] as u32, tf.regs[2], tf.regs[3] as usize, tf.regs[4] as usize);
     let el1 = caller_is_el1(tf);
@@ -598,9 +788,14 @@ extern "C" fn sys_vmo_write(tf: &mut TrapFrame) -> i64 {
     };
     let mut chunk = [0u8; COPY_CHUNK];
     let mut pos = 0;
+    // P1 同页跳过：同 sys_vmo_read——单一 PT 锁窗包整段块流，`last_page`
+    // 窗内缓存，同页块免重复三级走查；窗含 `vmo.write`（纯无锁 direct map
+    // 拷贝——不取锁、不分配、不阻塞，无锁序新边）。
+    let _pt = if el1 { None } else { Some(crate::vmar::pt_lock_current()) };
+    let mut last_page = SAME_PAGE_NONE;
     while pos < len {
         let n = core::cmp::min(COPY_CHUNK, len - pos);
-        if let Err(e) = copy_from_user(el1, buf + pos as u64, &mut chunk[..n]) {
+        if let Err(e) = copy_from_user_locked(el1, buf + pos as u64, &mut chunk[..n], &mut last_page) {
             return e as i64;
         }
         if let Err(e) = vmo.write(off + pos, &chunk[..n]) {
@@ -656,7 +851,10 @@ extern "C" fn sys_vmo_get_phys(tf: &mut TrapFrame) -> i64 {
         return e as i64;
     }
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
-    let vmo = match t.get(h, ObjType::Vmo, 0) {
+    // 安全修复（arch-r2 #5）：need 0→READ——零权利观察者不可查询物理地址
+    //（侧信道重建内存布局 / 跨进程共享帧检测）。P6 DMA 动机只需有 READ 的
+    // 合法持有者。get_size 维持 need=0（纯容量无物理信息）。
+    let vmo = match t.get(h, ObjType::Vmo, RIGHT_READ) {
         Ok((obj, _)) => match obj.as_vmo() {
             Some(v) => v,
             None => return ERR_BAD_HANDLE as i64, // 类型门控后不可达；防御面
@@ -780,15 +978,250 @@ extern "C" fn sys_vmar_map(tf: &mut TrapFrame) -> i64 {
 /// （pager 重调 0x21 自愈）；pager 不再调 = faulter 永久阻塞（§5-⑤ 裁决
 /// ——PS 可见/不传染）。
 ///
-/// 多 faulter 面（G4-3 B 刀键化后）：K=8 槽池认领 + 每槽定向唤，错醒仅
-/// 存池满溢出 convoy（N>K 时 ≤N-K 有界，N≤K 恒空；C-lite 时代「错醒由
-/// 重 fault 自愈」的广播面退役）；目标 Vmo 指针须与武装请求区间匹配（冒充/跨进程请求拒
-/// -EINVAL——池化后不变，0x21 按 take 到的 (far,asid) 验属主）。
+/// 多 faulter 面（G4-3 B 刀键化后）：K 槽池认领（B 刀 8 → X-5 扩 32）+
+/// 每槽定向唤，错醒仅存池满溢出 convoy（N>K 时 ≤N-K 有界，N≤K 恒空；
+/// C-lite 时代「错醒由重 fault 自愈」的广播面退役）。X-5 起收货 = **属主
+/// 过滤取**（`el0_take_for(vd)` 只取属主匹配本 vmo 的武装槽）：有武装槽但
+/// 无一属主匹配 → **-EINVAL 让位**（不消费不唤醒——老形「全局取最低位 +
+/// 身份验 -EINVAL + 恒唤重臂」的错配消耗舞收敛纯靠时序运气，此根因拔除，
+/// pager 换窗/换轮再收。rc 与老形冒充臂同码 -EINVAL：svcmgr dpgn ④ 冒充
+/// 断言零漂移、X-5 仪器 rc 词表稳定）；供给体身份验保留（同窗不变量
+/// 防御——属主过滤后 take 到的槽已证属 vd，残余 TOCTOU 路收窄为 belt-
+/// and-suspenders）。
 extern "C" fn sys_pager_supply_pages(tf: &mut TrapFrame) -> i64 {
     let (vh, sh, soff) = (tf.regs[1] as u32, tf.regs[2] as u32, tf.regs[3] as usize);
     if soff % PAGE_SIZE != 0 {
         return ERR_INVALID_ARG as i64;
     }
+    pager_supply_common(tf, vh, sh, SrcOff::Fixed(soff))
+}
+
+/// `pager_supply_mapped(vmo, src, delta)`（0x23，G4-4 X-3，门 C 裁 A
+/// add-only）：0x21 的恒等选源变体——门控/阻塞收货/供给/唤醒链全同 0x21
+///（见上），唯源页偏不由调用方钉死、按**请求页现算**：`src_off = 目标页偏
+/// + delta`。exec 装载 demand 化供给面：pager 无法预知下一缺页页位（0x21
+/// impasse 根因——收货前钉死 src_off），本号以常量 delta 换「任意页请求
+/// 一次供给」（congruent ELF：段内 file_off − vaddr 偏置为常量；i64 可负
+/// ——典型 ELF vaddr 高于文件偏，偏置为负）。
+extern "C" fn sys_pager_supply_mapped(tf: &mut TrapFrame) -> i64 {
+    let (vh, sh, delta) = (tf.regs[1] as u32, tf.regs[2] as u32, tf.regs[3] as i64);
+    if delta % PAGE_SIZE as i64 != 0 {
+        return ERR_INVALID_ARG as i64;
+    }
+    pager_supply_common(tf, vh, sh, SrcOff::Delta(delta))
+}
+
+/// 0x24 表批窗（X-6 刀① 冻结面——`X6批供提速设计-v1.0.md` §2.1：结构体
+/// 布局一次定全即冻，§7 主裁③）：`dv` = 目标 demand VMO 句柄（门控
+/// Vmo+RIGHT_SET_POLICY，同 0x23）；`sv` = 源 VMO 句柄（0 = 零页臂）；
+/// `delta` = 恒等选源常数（页对齐 i64 可负——同 0x23）。repr(C) 16B：
+/// u32+u32+i64 自然布局 i64 恰落 offset 8 无填充、对齐 8。内核侧从用户
+/// 字节逐项小端拼装（`policy_tbl_parse`/`wait_many` 先例——不把用户字节
+/// 直 cast 成结构体指针）；`user/berry-sys` 手写双镜像（§8.3 原型层）。
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct PagerWindow {
+    pub dv: u32,
+    pub sv: u32,
+    pub delta: i64,
+}
+const _: () = assert!(core::mem::size_of::<PagerWindow>() == 16);
+const _: () = assert!(core::mem::align_of::<PagerWindow>() == 8);
+
+/// 0x24 表帽（X-6 冻结 N=32——三源镜像：本帽 / `dpg::EREQ_SLOTS` /
+/// svcmgr `PAGER_SLOTS`；抬帽走 len 兼容（调用方传 n），不破冻）。
+const PAGER_TABLE_MAX: usize = 32;
+
+/// `pager_supply_mapped_table(tbl, n)`（0x24，X-6 刀① 批供表批，冻结裁决
+/// 2026-11-08）：0x23 的多窗一次收货形——`tbl` = 调用方 PagerWindow 数组、
+/// `n` ∈ [1,32]，整表拷入（栈 512B staging——`policy_tbl_parse` 2KB 栈先例；
+/// ADR #9 零分配「内核静态/栈」两路皆合，取栈路免新 static）。rc =
+/// **count-wins**：>0 = 供给成功页数（部分成功部分计、不回滚；失败槽
+/// faulter 恒唤重臂自愈——与 0x23 同义）；**0 供才报 errno**（-EINVAL =
+/// n 越界 / delta 非页对齐 / 聚合 NoneForVd；供给执行体错误（voe/vme 面）
+/// 0 供时以其本码报；-EBADF = 门败）。
+///
+/// 语义裁定（实施刀冻结，X-6 设计 §2.1/§2.2 原文口径）：
+/// - **整批门控先行**：全 n 窗双门（dv Vmo+SET_POLICY / sv Vmo+READ，同
+///   0x23 门面）+ 全 retain（2N ObjRefs 单一出口统一释放）后才进收货环
+///   ——懒门控会造半供给 + 晚 -EBADF 与 count-wins 打架；boot 探测
+///   0x24(dv:0,n:1) 依赖「门败早返 -EBADF」区分新核（在册）与旧核
+///   （未注册 -ENOTSUP）。混合失败局由此消解：门败恒在收货前整批拒。
+/// - **逐 dv continue-take**：`el0_take_for` 签式不动（E3d/e/f 零耦合，
+///   deliberate de-risk）——每窗内环抽干：Supplied → `pager_supply_one`
+///   原样复用 + 恒唤本槽 faulter + 计数，续取；NoneForVd → 跳次窗（零
+///   消费零唤醒）；同 dv 多窗各段独立（前窗已抽干，后窗即刻空跳）。
+/// - **阻塞二分**：池空且已供>0 → 即返计数不阻塞（调用方有进展）；池空
+///   且 0 供 → 泊 EL0 pager 键（同 0x23 阻塞收货——`block_current` 承担
+///   SVC 入口类持锁的放/取舞蹈），醒后**重扫整表**（虚醒由重扫吸收）。
+/// - KL 窗策略：整批 ≤32 页一窗（v1 单核简形；SMP 前强制复审——喘息点
+///   设计在案不启用，挂 G4 §8 邻位账本）。SUPPLY_BUF 逐页（KL 持有语义
+///   同 `dpg.rs`——单 handler 调用内顺序借还零重叠）。
+extern "C" fn sys_pager_supply_mapped_table(tf: &mut TrapFrame) -> i64 {
+    let (tbl_p, n) = (tf.regs[1], tf.regs[2] as usize);
+    if n == 0 || n > PAGER_TABLE_MAX {
+        // n 越界（全宽读——x2 高 32 位脏值同拒，不做 u32 截断受纳）。
+        return ERR_INVALID_ARG as i64;
+    }
+    let el1 = caller_is_el1(tf);
+    let mut raw = [0u8; PAGER_TABLE_MAX * core::mem::size_of::<PagerWindow>()];
+    if let Err(e) = copy_from_user(el1, tbl_p, &mut raw[..n * 16]) {
+        return e as i64; // -EFAULT 透传（policy_tbl_parse 同口径）
+    }
+    let mut wins = [PagerWindow { dv: 0, sv: 0, delta: 0 }; PAGER_TABLE_MAX];
+    for i in 0..n {
+        let o = i * 16;
+        let w = PagerWindow {
+            dv: u32::from_le_bytes(raw[o..o + 4].try_into().unwrap()),
+            sv: u32::from_le_bytes(raw[o + 4..o + 8].try_into().unwrap()),
+            delta: i64::from_le_bytes(raw[o + 8..o + 16].try_into().unwrap()),
+        };
+        // delta 页对齐预检（0x23 fail-fast 先例——先于门控，参数面整批拒）。
+        if w.delta % PAGE_SIZE as i64 != 0 {
+            return ERR_INVALID_ARG as i64;
+        }
+        wins[i] = w;
+    }
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    // 整批门控先行——错柄 fail fast 不入睡（0x23 门控纪律的整批版；
+    // get_raw 不 retain，此段零回滚面）。
+    let mut vds: [Option<NonNull<ObjRef>>; PAGER_TABLE_MAX] = [None; PAGER_TABLE_MAX];
+    let mut svs: [Option<NonNull<ObjRef>>; PAGER_TABLE_MAX] = [None; PAGER_TABLE_MAX];
+    for i in 0..n {
+        match t.get_raw(wins[i].dv, ObjType::Vmo, RIGHT_SET_POLICY) {
+            Ok((o, _)) => vds[i] = Some(o),
+            // 门败（坏句柄 -EBADF / 权利缺 -EACCES）——boot 探测判据形。
+            Err(e) => return e as i64,
+        }
+        if wins[i].sv != 0 {
+            match t.get_raw(wins[i].sv, ObjType::Vmo, RIGHT_READ) {
+                Ok((o, _)) => svs[i] = Some(o),
+                Err(e) => return e as i64,
+            }
+        }
+    }
+    // 跨睡眠钉活（0x23 单对 retain 纪律推广到 2N——睡眠期本表可变，retain
+    // 钉对象活性）；表内重复 handle 合法（各项独立 retain/release 守恒，
+    // `wait_many` 同款）。
+    for i in 0..n {
+        // SAFETY: get_raw 门控后对象在表；release 与此成对（唯一出口）。
+        unsafe { (*vds[i].unwrap().as_ptr()).retain() };
+        if let Some(s) = svs[i] {
+            unsafe { (*s.as_ptr()).retain() };
+        }
+    }
+    // dv 本体指针整批预解析一次（retain 钉活 → 跨 block 睡眠有效；供给体
+    // 身份验同源口径——get_raw 已门控 ObjType::Vmo，None 臂防御复检）。
+    let mut dv_ptrs = [core::ptr::null_mut::<Vmo>(); PAGER_TABLE_MAX];
+    for i in 0..n {
+        // SAFETY: get_raw 门控后取本体（只取地址；retain 钉活跨睡眠）。
+        dv_ptrs[i] = match unsafe { (*vds[i].unwrap().as_ptr()).obj.as_vmo_mut() } {
+            Some(v) => v as *mut Vmo,
+            None => {
+                // SAFETY: 与 retain 段成对（防御臂收尾，同唯一出口）。
+                unsafe { release_wins(&vds, &svs) };
+                return ERR_BAD_HANDLE as i64;
+            }
+        };
+    }
+    // 收货主环：逐 dv 内环 continue-take 抽干；全表扫毕无池空 → 聚合出环。
+    let mut count: usize = 0;
+    let mut last_err: Option<i64> = None; // 供给执行体错误（0 供时 errno 候选）
+    loop {
+        let mut park = false;
+        'wins: for i in 0..n {
+            loop {
+                match crate::dpg::el0_take_for(dv_ptrs[i]) {
+                    crate::dpg::El0Take::Supplied { far, asid, slot } => {
+                        let sel = SrcOff::Delta(wins[i].delta);
+                        let r = pager_supply_one(vds[i].unwrap(), svs[i], &sel, far, asid);
+                        // 恒唤**本槽** faulter（0x23 同义：成功 = eret 命中
+                        // 新叶；失败 = 重试再 fault 再认领自愈）；count-wins
+                        // 只计成功供给（失败不计数不回滚）。
+                        crate::dpg::el0_wake_faulter(slot);
+                        // P0-1 线1d fastpath 直切（同 pager_supply_common
+                        // 唤醒点，SVC 窗条件/舞蹈/同层 FIFO 论证同彼注）：
+                        // 批内每页供给毕即探峰、命中即切——批量吞吐与单页
+                        // 延迟兼得。跨切点池态可变由 continue-take 每
+                        // el0_take_for 全池重扫吸收（armed swap 消费幂等，
+                        // 「整批一窗」的原子性本就只依托 KL 串行跨核写者
+                        // ——切点放锁后与本核他者交错同 SMP 语义）；
+                        // SUPPLY_BUF 借用在 pager_supply_one 内已收口，无
+                        // 跨切点存活借用。
+                        berry_sched::try_preempt();
+                        if r == 0 {
+                            count += 1;
+                        } else {
+                            last_err = Some(r);
+                        }
+                        continue; // continue-take：本 dv 抽干续取
+                    }
+                    // 本窗无武装臂——跳次窗（零消费零唤醒，让位面同 0x23）。
+                    crate::dpg::El0Take::NoneForVd => break,
+                    crate::dpg::El0Take::PoolEmpty => {
+                        if count > 0 {
+                            break 'wins; // 已供>0：即返计数不阻塞（调用方有进展）
+                        }
+                        park = true;
+                        break 'wins; // 0 供池空——出环泊键
+                    }
+                }
+            }
+        }
+        if !park {
+            break; // 全表扫毕（各窗皆 NoneForVd 出内环）——聚合出环
+        }
+        // 池空且 0 供：睡 EL0 pager 键（同 0x23 阻塞收货——SVC 入口类持锁
+        // 的放/取舞蹈由 block_current 承担；KL 全谱锁窗内查位+入队 = 无丢
+        // 唤醒）；醒后重扫整表（虚醒由重扫吸收）。
+        let _ = berry_sched::block_current(
+            crate::dpg::el0_pager_key(),
+            crate::dpg::DPG_WAKE_BIT,
+            u64::MAX,
+        );
+    }
+    let ret = if count > 0 {
+        count as i64
+    } else {
+        // 0 供才报 errno：聚合 NoneForVd → -EINVAL；供给执行体错误 → 本码
+        //（0x23 单发同码面的批形收口）。
+        last_err.unwrap_or(ERR_INVALID_ARG as i64)
+    };
+    // SAFETY: 与 retain 段成对（唯一出口）。
+    unsafe { release_wins(&vds, &svs) };
+    ret
+}
+
+/// 0x24 表批 2N ObjRefs 统一释放（单一出口，与整批 retain 成对）。
+///
+/// # SAFETY
+/// 各 Some 指针须均经 `get_raw` 门控 + `retain`（与调用方成对，恰释放一次）。
+unsafe fn release_wins(
+    vds: &[Option<NonNull<ObjRef>>; PAGER_TABLE_MAX],
+    svs: &[Option<NonNull<ObjRef>>; PAGER_TABLE_MAX],
+) {
+    for v in vds.iter().flatten() {
+        // SAFETY: 与整批 retain 成对（恰释放一次）。
+        unsafe { ObjRef::release(*v) };
+    }
+    for s in svs.iter().flatten() {
+        // SAFETY: 与整批 retain 成对（恰释放一次）。
+        unsafe { ObjRef::release(*s) };
+    }
+}
+
+/// 0x21/0x23 源偏选择：Fixed = 调用方钉死单偏（0x21）；Delta = 目标页偏 +
+/// 常量偏置按请求页现算（0x23）。
+enum SrcOff {
+    Fixed(usize),
+    Delta(i64),
+}
+
+/// 0x21/0x23 共体（阻塞收货主环）：门控先行（错柄 fail fast 不入睡）→
+/// retain 钉活 → poll-first 收货环（无武装请求睡 EL0 pager 键；有武装但
+/// 属主无一匹配 → -EINVAL 让位不入睡，X-5）→ 出口成对 release。两号仅
+/// 源偏选择不同（SrcOff）。
+fn pager_supply_common(tf: &mut TrapFrame, vh: u32, sh: u32, sel: SrcOff) -> i64 {
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
     // 目标/源门控先行——错柄 fail fast 不入睡（阻塞收货前收口校验面）。
     let vd = match t.get_raw(vh, ObjType::Vmo, RIGHT_SET_POLICY) {
@@ -810,18 +1243,54 @@ extern "C" fn sys_pager_supply_pages(tf: &mut TrapFrame) -> i64 {
     if let Some(s) = sv {
         unsafe { (*s.as_ptr()).retain() };
     }
+    // X-5 过滤取输入：dv 本体指针先行解析一次（retain 已钉活 → 跨 block
+    // 睡眠有效；供给体 pager_supply_one 身份验同源口径——get_raw 已门控
+    // ObjType::Vmo，None 臂防御复检同风格）。
+    // SAFETY: get_raw 门控后取本体（只取地址；retain 钉活跨睡眠）。
+    let dv_ptr = match unsafe { (*vd.as_ptr()).obj.as_vmo_mut() } {
+        Some(v) => v as *mut Vmo,
+        None => {
+            // SAFETY: 与入口 retain 成对（防御臂收尾，同唯一出口）。
+            unsafe { ObjRef::release(vd) };
+            if let Some(s) = sv {
+                unsafe { ObjRef::release(s) };
+            }
+            return ERR_BAD_HANDLE as i64;
+        }
+    };
     let ret = loop {
-        match crate::dpg::el0_take() {
-            Some((far, asid, slot)) => {
-                let r = pager_supply_one(vd, sv, soff, far, asid);
+        match crate::dpg::el0_take_for(dv_ptr) {
+            crate::dpg::El0Take::Supplied { far, asid, slot } => {
+                let r = pager_supply_one(vd, sv, &sel, far, asid);
                 // 恒唤**本槽** faulter（B 刀键化定向唤——自愈语义不变：
                 // 成功 = eret 命中新叶；失败 = 重试再 fault 再认领，pager
-                // 重调 0x21 自愈；供给窗收口后出环）。
+                // 重调 0x21/0x23 自愈；供给窗收口后出环）。
                 crate::dpg::el0_wake_faulter(slot);
+                // P0-1 线1d fastpath 直切（sys_channel_send fastpath 同款
+                // 参照）：唤醒只入环不抢占——被唤 faulter eff 严格更高时
+                // 立即直切，供给毕即回缺页者，免整调度片等待。SVC 窗调用
+                // 条件天然满足：IRQ 屏蔽 + 本号类位集含 SQ/RQ（§A126——
+                // try_preempt 的 rq_lock 退化形）；切走经舞蹈按 held 位放
+                // 锁、切回重取（位保持置位，svc_exit_class 出口断言恒
+                // 成立）；供给锁窗口不受扰——supply_page + 源拷贝已在上
+                // 行 pager_supply_one 内收口，直切点在临界段外；retain
+                // 钉活跨切换有效。同层 FIFO 不插队（严格更高才切，§A43）。
+                berry_sched::try_preempt();
                 break r;
             }
-            None => {
-                // 无武装请求：睡 EL0 pager 键（0x21 = 阻塞收货）。SVC 入口
+            crate::dpg::El0Take::NoneForVd => {
+                // 有武装请求但无一属主匹配本 dv（X-5 错配消耗舞修刀）：
+                // 不消费不唤醒直接出——-EINVAL 让 pager 出让收货窗（svcmgr
+                // 恒扫环换下一 dv 窗/下一轮再收；chan 非阻塞空取同语义）。
+                // 老形此局取走他槽 → 身份验 -EINVAL + 槽已耗 + faulter 恒唤
+                // 重臂 → 舞不收敛（收敛纯靠时序运气）。rc 取 -EINVAL 非
+                // -EAGAIN：与老形冒充臂同码——dpgn ④ 冒充断言
+                // （`supply_pages(dvb,0,0) != -EINVAL` 即早退）零漂移、四
+                // smoke 面不破；`let _ =` 盲进恒扫环消费 rc 无面。
+                break ERR_INVALID_ARG as i64;
+            }
+            crate::dpg::El0Take::PoolEmpty => {
+                // 无武装请求：睡 EL0 pager 键（0x21/0x23 = 阻塞收货）。SVC 入口
                 // 类持锁的放/取舞蹈由 block_current 承担（wait_one 先例）；
                 // KL 全谱锁窗内查位+入队 = 无丢唤醒（跨核供给者/探针写者
                 // 被 KL 串行，SMP 同验——dpg_pager 同构；G4-2 修批 C3 口径）。
@@ -842,11 +1311,13 @@ extern "C" fn sys_pager_supply_pages(tf: &mut TrapFrame) -> i64 {
     ret
 }
 
-/// 0x21 供给执行体（一次武装请求的收货窗；KL 在身——SVC 入口类 TABLE+SQ+RQ）。
+/// 0x21/0x23 供给执行体（一次武装请求的收货窗；KL 在身——SVC 入口类
+/// TABLE+SQ+RQ）。源页偏由 `sel` 选：Fixed 调用方钉死（0x21）/ Delta 按
+/// 请求页现算（0x23）。
 fn pager_supply_one(
     vd: NonNull<ObjRef>,
     sv: Option<NonNull<ObjRef>>,
-    soff: usize,
+    sel: &SrcOff,
     far: usize,
     asid: u16,
 ) -> i64 {
@@ -880,6 +1351,17 @@ fn pager_supply_one(
     if let Err(e) = unsafe { (*root).supply_page(crate::mm::frames(), va) } {
         return vme(e) as i64;
     }
+    // P1-3 ZFOD 学习点：零臂（sv=None——0x21/0x23/0x24 的 src=0）供给
+    // 成功 = pager 亲证「本 VMO 无内容后备」（零臂语义 = 供给页即清零
+    // 页）→ 置标志，此后本 VMO 的缺页走 `probe_el0` 内核直供快路径
+    // （供给页与零臂产物逐字节等价——`Vmo::zfod` 字段注「一 VMO 一种类」
+    // 契约）。有源臂（sv=Some）不置位——含源读失败形（DPGN ③
+    // -EBADSTATE：子恒唤收零页 exit 9，后续缺页仍走 pager 链零漂移）。
+    // SAFETY: dv_ptr 身份已验（Region 同体）；本函数 KL 契约窗内（与
+    // 探针读点同锁域串行）。
+    if sv.is_none() {
+        unsafe { &mut *dv_ptr }.mark_zfod();
+    }
     if let Some(s) = sv {
         // 源拷贝（防线 4：源页未提交 → read 报错拒——supply 链零缺页）。
         // SAFETY: get_raw 门控；KL 全谱锁窗串行（0x21 SVC 入口类 KL 在身
@@ -887,13 +1369,22 @@ fn pager_supply_one(
         let Some(src) = (unsafe { (*s.as_ptr()).obj.as_vmo_mut() }) else {
             return ERR_BAD_HANDLE as i64;
         };
+        let toff = vmo_off + (va - base);
+        // 源偏选择：0x21 调用方钉死；0x23 恒等 delta 按请求页现算
+        //（下溢/溢出 checked 拒——页对齐 delta + 页对齐 toff ⇒ 页对齐 soff）。
+        let soff = match sel {
+            SrcOff::Fixed(s) => *s,
+            SrcOff::Delta(d) => match toff.checked_add_signed(*d as isize) {
+                Some(s) => s,
+                None => return ERR_INVALID_ARG as i64,
+            },
+        };
         let buf = crate::dpg::supply_buf();
         if let Err(e) = src.read(soff, buf) {
             return voe(e) as i64;
         }
-        let off = vmo_off + (va - base);
         // SAFETY: dv_ptr 身份已验（Region 同体）；供给窗已提交该页。
-        if let Err(e) = unsafe { &mut *dv_ptr }.write(off, buf) {
+        if let Err(e) = unsafe { &mut *dv_ptr }.write(toff, buf) {
             return voe(e) as i64;
         }
     }
@@ -1003,9 +1494,12 @@ extern "C" fn sys_vmar_allocate(tf: &mut TrapFrame) -> i64 {
 /// `process_create(job, options, *process, *vmar)`：建空进程。**双出参**
 /// （Zircon `zx_process_create` 同形——ABI §8.3 v1 修正）：父进程靠返回的
 /// root Vmar handle 才能向子地址空间映射代码/栈，只给 process handle 不够用。
-/// 出权：process = MANAGE|DUPLICATE，root Vmar = MAP|MANAGE|DUPLICATE（与
-/// boot root 同面）。v1 参数面：`job` 恒 0（Job 对象 v2——**创建权未设防的
-/// 已知豁口**，落地记录见能力模型）、`options` 恒 0。
+/// 出权：process = MANAGE|DUPLICATE|TRANSFER，root Vmar =
+/// MAP|MANAGE|DUPLICATE|TRANSFER（boot root 同面 + TRANSFER——Zircon 新
+/// handle 默认携位模型；berry-exec env 块把 self-proc/self-vmar dup 随
+/// channel_send 迁交子进程，去位即断赠链）。v1 参数面：`job` 恒 0（Job
+/// 对象 v2——**创建权未设防的已知豁口**，落地记录见能力模型）、`options`
+/// 恒 0。
 extern "C" fn sys_process_create(tf: &mut TrapFrame) -> i64 {
     let (job, options, p_out, v_out) = (tf.regs[1], tf.regs[2] as u32, tf.regs[3], tf.regs[4]);
     if job != 0 || options != 0 {
@@ -1019,6 +1513,14 @@ extern "C" fn sys_process_create(tf: &mut TrapFrame) -> i64 {
         return e as i64;
     }
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    // P3-3：per-parent spawn 配额——防进程炸弹（全局 64 帽前置的单父分账：
+    // 无它则单 EL0 循环 create 即占满全局表、阻止其他服务拉起）。记账 =
+    // 本表在册 Process handle 数（`count_type` 扫描——VMO/Channel 帽同款，
+    // 随 close/take/drain/迁移天然配平、无退出递减面；sidecar 否决理由与
+    // 帽值余量论证见 `process.rs` `MAX_CHILDREN_PER_PROC` 注）。
+    if t.count_type(ObjType::Process) >= crate::process::MAX_CHILDREN_PER_PROC {
+        return ERR_NO_MEMORY as i64; // 与全局帽同错误面
+    }
     // 活进程帽（复盘雷 4）：无退出路径 + 创建权未设防 → 循环 create 的
     // 帧/Box 永不释放——超帽拒 -ENOMEM（`PROCESS_MAX` 见 process.rs）。
     if crate::process::process_live() >= crate::process::PROCESS_MAX {
@@ -1033,7 +1535,7 @@ extern "C" fn sys_process_create(tf: &mut TrapFrame) -> i64 {
     let (ttbr0, asid) = (vmar.ttbr0_pa(), vmar.asid());
     let hv = match t.insert(
         KernelObj::Vmar(vmar),
-        RIGHT_MAP | RIGHT_MANAGE | RIGHT_DUPLICATE,
+        RIGHT_MAP | RIGHT_MANAGE | RIGHT_DUPLICATE | RIGHT_TRANSFER,
     ) {
         Ok(h) => h,
         Err(e) => return e as i64, // 表满/gen 尽：-ENOMEM，vmar 正常 drop（先占槽后装箱，无泄漏）
@@ -1045,7 +1547,7 @@ extern "C" fn sys_process_create(tf: &mut TrapFrame) -> i64 {
     };
     // SAFETY: vobj 在表（刚插入且类型 Vmar）；Process 构造即钉住 vmar。
     let proc = unsafe { crate::process::Process::new(vobj, ttbr0, asid) };
-    match t.insert(KernelObj::Process(proc), RIGHT_MANAGE | RIGHT_DUPLICATE) {
+    match t.insert(KernelObj::Process(proc), RIGHT_MANAGE | RIGHT_DUPLICATE | RIGHT_TRANSFER) {
         Ok(hp) => {
             let r1 = copy_out_u32(el1, p_out, hp);
             let r2 = copy_out_u32(el1, v_out, hv);
@@ -1106,8 +1608,10 @@ extern "C" fn sys_thread_create(tf: &mut TrapFrame) -> i64 {
 /// retain（运行钉住，同首线程对）；Thread retain（线程钉住——退出钩子
 /// Thread 簿记/join 唤醒的键）。pinned/thread_key 字段值经 try_spawn_user
 /// 参数前移写入（F-E1，enqueue 前）。
-/// **无 per-process 线程帽**（16KiB 栈 + TCB 随 REAPQ 回收，无不回收泄漏；
-/// 堆尽由 try_spawn_user 折 -ENOMEM 优雅兜底）。sp 不做映射校验
+/// **per-Process 线程帽**（Medium 缺口收口）：`live_threads ≥
+/// MAX_THREADS_PER_PROC` → -ENOMEM（16KiB 栈 + TCB 随 REAPQ 回收，但运行期
+/// 占堆——无帽可循环铺线程耗尽共享堆；查先于一切不可逆变更）。
+/// sp 不做映射校验
 /// （process_start 同政策：错 sp = 首切 fault 杀兜底）；线程入口不得返回
 /// （返回 = fault 杀兜底）。
 /// 1.1/S5-a：把 effective `SchedAttr` 消费到刚 spawn 的 Task。
@@ -1188,6 +1692,15 @@ extern "C" fn sys_thread_start(tf: &mut TrapFrame) -> i64 {
     if proc.state != ProcState::Alive || !proc.started {
         return ERR_BAD_STATE as i64; // 首线程必须经 process_start
     }
+    // per-Process 线程帽（Medium 缺口收口，`process.rs` 帽常量注）：目标进程
+    // 已启动线程数（`live_threads`——增点三/减点唯一 = 退出钩子，单核 IRQ
+    // 屏蔽串行）≥ 帽先拒 -ENOMEM——每线 16KiB 内核栈 + TCB 运行期占堆，无帽
+    // 单进程循环 thread_start 可耗尽共享堆。查在一切不可逆变更之前（admission
+    // 只查不写，沿革 #109 纪律）；首线程走 process_start（此刻 live_threads
+    // 恒 0，帽结构性不可达）。
+    if proc.live_threads >= crate::process::MAX_THREADS_PER_PROC {
+        return ERR_NO_MEMORY as i64;
+    }
     let ht_ptr = &raw mut proc.ht as *mut HandleTable as usize;
     // 任务装配 try 化 + 前置于一切不可逆变更（process_start H2 纪律；本号无
     // bootstrap 迁移——失败零回滚面）：栈/TCB OOM → -ENOMEM。spread=true
@@ -1206,6 +1719,7 @@ extern "C" fn sys_thread_start(tf: &mut TrapFrame) -> i64 {
     let task_ptr = match berry_sched::try_prepare_user(
         entry as usize,
         arg as usize,
+        0, // x1 env 旗标：EL0 拉起的线程无 boot env 面（spawn_user_env 专属）
         sp as usize,
         b"user_thread",
         proc.ttbr0_pa,
@@ -1327,6 +1841,7 @@ extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
     let task_ptr = match berry_sched::try_prepare_user(
         entry as usize,
         child_x0,
+        0, // x1 env 旗标：EL0 拉起的进程无 boot env 面（spawn_user_env 专属）
         sp as usize,
         b"user_child",
         proc.ttbr0_pa,
@@ -1374,12 +1889,16 @@ extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
 ///   join 等待者 → release 对应 start 的 Thread 钉住（此后 Thread 生死
 ///   交还 handle 引用计数）。`thread_key == 0` 仅剩防御面（pinned!=0 的任务
 ///   现恒有 thread_key；修复前首线程不钉 = join 结构性死等）。
-/// - ②`live_threads -= 1`：**减到 0 = 末线程**才做 Process 收口 = 原四步
-///   （`mark_exited` 首因保码 → `wake_matching(pinned, TERMINATED)` →
-///   `ht.drain()`）；**非末线程绝不 `mark_exited`、绝不 drain**（K1 教训
-///   线程版——共享表上活兄弟的 handle 不能被先退线程扬掉）。
-/// - ③release Process 运行钉住（**最后**：此后 Process 生死交还 handle 引用
-///   计数；release 前 drain 防 Process 已 drop 还触其 `ht`）。
+/// - ②`live_threads -= 1`：**减到 0 = 末线程**才做 Process 收口 = 前两步
+///   同步（`mark_exited` 首因保码 → `wake_matching(pinned, TERMINATED)`）
+///   + 第三步 **drain 异步移交**（P2-2：钉住引用 push 进 HT_DRAINQ——
+///   O(表) 清理不在 IRQ 屏蔽的切换窗内做，由 REAP 排水点
+///   [`crate::process::ht_drain_flush`] 完成）；**非末线程绝不
+///   `mark_exited`、绝不 drain/移交**（K1 教训线程版——共享表上活兄弟的
+///   handle 不能被先退线程扬掉）。
+/// - ③Process 运行钉住引用**所有权移交 HT_DRAINQ**（队列独占持有——
+///   flush 侧 `drain → release` 序收口，drain 先于 Process Drop 的安全序
+///   不变、只是迟到；此后本钩子不再触 obj）。
 ///
 /// plain `-= 1` 无下溢检查的不变量：`pinned != 0` ⟺ 该任务入过账（
 /// `process_start`/`thread_start` 成功尾与 retain/pinned 写同点成对）——
@@ -1405,17 +1924,26 @@ unsafe extern "C" fn task_exit_hook(pinned: usize, thread_key: usize, code: i32)
         let Some(proc) = r.obj.as_process_mut() else { return }; // 防御面（不可达）
         proc.live_threads -= 1;
         if proc.live_threads == 0 {
-            // 末线程：Process 收口（原 Plan B 四步——首因保码）。
+            // 末线程：Process 收口（首因保码 + 唤醒——两步同步保留：join/
+            // TERMINATED 等待者不因异步化延迟醒来）。
             if proc.mark_exited() {
                 proc.exit_code = code;
                 // 唤醒等本 Process TERMINATED 的睡眠者（匹配键 = ObjRef 地址，
                 // 同 Event/Channel 面；SLEEPQ 钩子自动触发 PI 重推）。
                 berry_sched::wake_matching(pinned, SIGNAL_TERMINATED);
             }
-            proc.ht.drain();
+            // P2-2 退出异步化：drain 不在切换窗内做——运行钉住引用移交
+            // HT_DRAINQ（O(1)），O(表) drain + release 由 REAP 排水点异步
+            // 收口（`process.rs` HT_DRAINQ 块；满队同步回退 = 旧路径原样）。
+            // 安全序不变：drain 先于 Process Drop（队列持引用）；唤醒已在
+            // 上方同步完成。
+            // SAFETY: pinned 引用所有权移交（flush 侧 drain 后 release 成
+            // 对）；此后不再触 obj。
+            crate::process::defer_ht_drain(NonNull::new_unchecked(obj));
+        } else {
+            // SAFETY: 与 process_start 的 retain 成对；此后不再触 obj。
+            ObjRef::release(NonNull::new_unchecked(obj));
         }
-        // SAFETY: 与 process_start 的 retain 成对；此后不再触 obj。
-        ObjRef::release(NonNull::new_unchecked(obj));
     }
 }
 
@@ -1423,8 +1951,8 @@ unsafe extern "C" fn task_exit_hook(pinned: usize, thread_key: usize, code: i32)
 /// **整个进程**——先静默杀光兄弟线程（`kill_all_tasks_by_pinned(p, 0)`——
 /// 兄弟 code 传 0（诚实语义：非主动退出无自有码，同 fault 杀口径），打印
 /// 上移调用方、process_exit 路静默），再 `exit_current_with(code)` 退自己
-/// （自己走钩子 = 末线程收口：mark_exited + 码 + TERMINATED + drain +
-/// release）。当前任务非 Process 任务（`current_pinned()==0`——内核任务/
+/// （自己走钩子 = 末线程收口：mark_exited + 码 + TERMINATED 同步 +
+/// HT_DRAINQ 移交——drain/release 由 REAP 排水点异步，P2-2）。当前任务非 Process 任务（`current_pinned()==0`——内核任务/
 /// boot 裸表用户进程，ktest 禁测 0x33 会杀 ktest）= 只退任务自身，合法面
 /// （Zircon thread_exit 同义兜底）。**ABI `-> !`**：实现永不返回（切走即不
 /// 再回来）——HAL 派发回写 x0 的路径天然不可达（`exit_current_with` 内部
@@ -1544,7 +2072,8 @@ extern "C" fn sys_cbox_drain(tf: &mut TrapFrame) -> i64 {
 /// - **已 start**：[`berry_sched::kill_all_tasks_by_pinned`] 群杀（T-1 起进程
 ///   可多线程——外层重扫循环消化「钩子内 `wake_matching` 搬 SLEEPQ」的队形
 ///   变化），逐任务走与自退出同一退出钩子（末任务钩子完成 Process 收口：
-///   mark_exited + 码 + TERMINATED 唤醒 + drain 子表 + release 运行钉住）
+///   mark_exited + 码 + TERMINATED 唤醒同步 + HT_DRAINQ 移交——drain/
+///   release 由 REAP 排水点异步收口，P2-2）
 ///   + 摘队 + REAPQ；观测打一行 `TERM: killed '<名>'`（n>1 追加 ` x<n>`
 ///   ——非 smoke 标记）。**terminate 不再做 started 路径的 Process 侧收口**
 ///   （末任务钩子已做——重做 = drain 双跑/refs 打穿）。
@@ -1559,11 +2088,6 @@ extern "C" fn sys_cbox_drain(tf: &mut TrapFrame) -> i64 {
 extern "C" fn sys_process_terminate(tf: &mut TrapFrame) -> i64 {
     let (h, code) = (tf.regs[1] as u32, tf.regs[2] as i32);
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
-    // S5.12 防 freeze DoS：每 caller 活跃 SuspendToken 上限 64——超限 -EBUSY。
-    if t.count_type(ObjType::SuspendToken) >= 64 {
-        crate::telemetry::freeze_busy();
-        return ERR_BUSY as i64;
-    }
     let obj = match t.get_raw(h, ObjType::Process, RIGHT_MANAGE) {
         Ok((o, _)) => o,
         Err(e) => return e as i64, // 坏值/类型不符 -EBADF；缺 MANAGE -EACCES
@@ -1651,6 +2175,16 @@ extern "C" fn sys_process_suspend(tf: &mut TrapFrame) -> i64 {
 
     if !single {
         // ---- 进程全冻（S3-a；depth 支持嵌套 token）----
+        // S5.12 防 freeze DoS：每 caller 活跃 SuspendToken 上限 64——超限
+        // -EBUSY（安全审计 F1 修：原在 sys_process_terminate 错位——suspend
+        // 创建路径无帽致 am 持 ≥64 token 后 terminate 恒 -EBUSY 监督 kill 链
+        // 瘫痪；检查移到 token 生产者〔本处+thread 臂〕而非消费者）。
+        // 帽值单源在 berry-susface（W3-Q38）；判位保 base 形（get_raw 前——
+        // token 帽先于 handle 错误码报）。
+        if t.count_type(ObjType::SuspendToken) >= berry_susface::SUSPEND_TOKEN_CAP as usize {
+            crate::telemetry::freeze_busy();
+            return ERR_BUSY as i64;
+        }
         let obj = match t.get_raw(h, ObjType::Process, RIGHT_MANAGE) {
             Ok((o, _)) => o,
             // options=0 只收 Process：活 handle 但类型不符 → EINVAL（§5.4）。
@@ -1668,24 +2202,26 @@ extern "C" fn sys_process_suspend(tf: &mut TrapFrame) -> i64 {
                 return ERR_BAD_HANDLE as i64;
             };
             first_process_token = p.freeze_depth == 0;
-            if p.state == ProcState::Exited {
-                return ERR_BAD_STATE as i64;
+            // 六门判序（Exited → pager → 粒度互斥 → depth 帽 → precheck）
+            // 单源在 berry-susface（W3-Q38 host 钉板）——token 帽已在上方
+            // get_raw 前保 base 判位先报，此处装包恒绿位（0）只走后五门。
+            let gate = berry_susface::proc_admission(&berry_susface::ProcGateInput {
+                caller_tokens: 0,
+                state: if p.state == ProcState::Exited {
+                    berry_susface::ProcStateP::Exited
+                } else {
+                    berry_susface::ProcStateP::Running
+                },
+                pager_load: p.ht.pager_load() as u32,
+                freeze_depth: p.freeze_depth,
+                thread_freezes: p.thread_freezes,
+                precheck: berry_sched::freeze_precheck_by_pinned(pinned),
+            });
+            match gate {
+                berry_susface::Admission::Ok => {}
+                berry_susface::Admission::Busy => return ERR_BUSY as i64,
+                berry_susface::Admission::BadState => return ERR_BAD_STATE as i64,
             }
-            // D6：冻 pager = 缺页者永久阻塞。demand VMO + SET_POLICY 合取
-            // 扫描派生，close/take/drain/迁移天然随表走。
-            if p.ht.pager_load() > 0 {
-                return ERR_BUSY as i64;
-            }
-            // 单一位图不能同时表达进程冻与线程冻的交叉 close；两种粒度互斥。
-            if p.freeze_depth == 0 && p.thread_freezes > 0 {
-                return ERR_BUSY as i64;
-            }
-            if p.freeze_depth >= 8 {
-                return ERR_BUSY as i64;
-            }
-        }
-        if !berry_sched::freeze_precheck_by_pinned(pinned) {
-            return ERR_BUSY as i64;
         }
         unsafe {
             let r = &mut *obj.as_ptr();
@@ -1706,9 +2242,23 @@ extern "C" fn sys_process_suspend(tf: &mut TrapFrame) -> i64 {
             }
             return ERR_BAD_STATE as i64;
         }
+        // AM-1.5 wake-pending：首枚 token 冻结生效 → 枚举目标表给全部
+        // Channel 端点打冻结属主标（嵌套层不重复——标已在席）；send 命中
+        // 冻端点即触发通知（send 尾分支）。冻进程任务全冻 ⇒ 目标表此后
+        // 不可变 ⇒ 标集稳定到 thaw。
+        if first_process_token {
+            // SAFETY: obj 已 get_raw 类型门控（Process）+ 上文 retain；SVC
+            // 屏蔽串行。
+            unsafe {
+                if let Some(p) = (*obj.as_ptr()).obj.as_process_mut() {
+                    p.ht.freeze_channel_ends(obj);
+                }
+            }
+        }
         let tok = crate::suspend::SuspendTok {
             target: crate::suspend::SuspendTarget::Process(obj),
-            key: pinned,
+            // thaw 键装载律单源（W3-Q38）：Process = pinned。
+            key: berry_susface::thaw_route(berry_susface::TargetKind::Process, pinned, 0),
             since_vct: berry_hal_aarch64::timer::cntvct(),
         };
         let ret = insert_suspend_token(tf, t, tok, token_out);
@@ -1717,6 +2267,15 @@ extern "C" fn sys_process_suspend(tf: &mut TrapFrame) -> i64 {
             // token 需撤冻面（嵌套失败时既有 token 仍持有冻结义务）。
             if first_process_token {
                 berry_sched::thaw_by_pinned(pinned);
+                // AM-1.5：撤端点冻标（配平上文的 freeze_channel_ends——
+                // 本函数早前的 retain 此刻仍在身 ⇒ 枚举中属主恒活）。此窗
+                // 单核屏蔽无他任务可跑 ⇒ wake_pending 必未置位，无需清。
+                // SAFETY: 同上（obj 门控过 + retain 在身）。
+                unsafe {
+                    if let Some(p) = (*obj.as_ptr()).obj.as_process_mut() {
+                        p.ht.thaw_channel_ends(obj);
+                    }
+                }
             }
             unsafe {
                 let r = &mut *obj.as_ptr();
@@ -1727,6 +2286,11 @@ extern "C" fn sys_process_suspend(tf: &mut TrapFrame) -> i64 {
                 }
                 ObjRef::release(obj);
             }
+        }
+        if ret == 0 {
+            // sim-S2 A2：freeze 成功遥测（S5.11 既有 doc 面、调用点本刀补齐——
+            // ktest freeze 循环「轮际 token 计数严格递增」断言的载体）。
+            crate::telemetry::freeze_ok();
         }
         return ret;
     }
@@ -1747,34 +2311,42 @@ extern "C" fn sys_process_suspend(tf: &mut TrapFrame) -> i64 {
         let Some(thrd) = r.obj.as_thread_mut() else {
             return ERR_BAD_HANDLE as i64;
         };
-        if !thrd.started || thrd.exited {
-            return ERR_BAD_STATE as i64;
-        }
         // 目标所属 Process 必须活着且已启动；pager 义务同进程全冻口径保守拒绝。
+        // owner 缺席面保 base 形（EBAD_STATE 拒，不 panic）；七门判序单源在
+        // berry-susface（W3-Q38 host 钉板）——base 形本臂无 token 帽（F1 帽
+        // 只落进程生产者臂），装包恒绿位（0）不引入新拒面。
         let owner = thrd.owner();
-        let Some(p) = (*owner.as_ptr()).obj.as_process_mut() else {
-            return ERR_BAD_STATE as i64;
-        };
-        if p.state == ProcState::Exited || !p.started {
-            return ERR_BAD_STATE as i64;
+        let owner_gate;
+        {
+            let Some(p) = (*owner.as_ptr()).obj.as_process() else {
+                return ERR_BAD_STATE as i64;
+            };
+            let owner_state = if p.state == ProcState::Exited {
+                berry_susface::ProcStateP::Exited
+            } else {
+                berry_susface::ProcStateP::Running
+            };
+            owner_gate = berry_susface::ThreadOwnerGate {
+                owner_state,
+                owner_started: p.started,
+                pager_load: p.ht.pager_load() as u32,
+                owner_freeze_depth: p.freeze_depth,
+            };
         }
-        if p.ht.pager_load() > 0 {
-            return ERR_BUSY as i64;
+        let gate = berry_susface::thread_admission(&berry_susface::ThreadGateInput {
+            caller_tokens: 0,
+            started: thrd.started,
+            exited: thrd.exited,
+            owner: owner_gate,
+            freeze_ready: thrd.sched_attr.flags & SA_FLAG_FREEZE_READY != 0,
+            freeze_depth: thrd.freeze_depth,
+            precheck: berry_sched::freeze_precheck_by_thread(thread_key),
+        });
+        match gate {
+            berry_susface::Admission::Ok => {}
+            berry_susface::Admission::Busy => return ERR_BUSY as i64,
+            berry_susface::Admission::BadState => return ERR_BAD_STATE as i64,
         }
-        // FREEZE_READY 是应用自证，不是内核安全担保（D8）。
-        if thrd.sched_attr.flags & SA_FLAG_FREEZE_READY == 0 {
-            return ERR_BUSY as i64;
-        }
-        // 进程级 token 在席时不再引入单线程 token，防止交叉 close 提前解冻。
-        if thrd.freeze_depth == 0 && p.freeze_depth > 0 {
-            return ERR_BUSY as i64;
-        }
-        if thrd.freeze_depth >= 8 {
-            return ERR_BUSY as i64;
-        }
-    }
-    if !berry_sched::freeze_precheck_by_thread(thread_key) {
-        return ERR_BUSY as i64;
     }
     let first_thread_token;
     unsafe {
@@ -1811,7 +2383,8 @@ extern "C" fn sys_process_suspend(tf: &mut TrapFrame) -> i64 {
     }
     let tok = crate::suspend::SuspendTok {
         target: crate::suspend::SuspendTarget::Thread(obj),
-        key: thread_key,
+        // thaw 键装载律单源（W3-Q38）：Thread = Thread ObjRef 地址。
+        key: berry_susface::thaw_route(berry_susface::TargetKind::Thread, 0, thread_key),
         since_vct: berry_hal_aarch64::timer::cntvct(),
     };
     let ret = insert_suspend_token(tf, t, tok, token_out);
@@ -1836,7 +2409,58 @@ extern "C" fn sys_process_suspend(tf: &mut TrapFrame) -> i64 {
             ObjRef::release(obj);
         }
     }
+    if ret == 0 {
+        // sim-S2 A2：单线程冻结成功遥测（process 臂同款——计数器族）。
+        crate::telemetry::freeze_ok();
+    }
     ret
+}
+
+/// sim-S3（PM-16 §4.4 步3）：深睡请求执行体（ktest 直调，零 syscall 号——
+/// EL0 深睡入口随 PM-03 挂起原语刀另裁，本刀只立机制面）。
+///
+/// PSCI SYSTEM_SUSPEND 可达（probe 缓存 `susp=1`）→ 完整 HVC 形（fnid
+/// 0x8400000C，x0 inout，x1=0 = NULL re-entry：规范要求 INVALID_PARAMETERS，真臂只归独立 spike）；SMCCC 语义成功 = 下电不归，**返回即失败**
+/// → 落降级兜底（TCG 不可达面：probe 后 `suspend_supported()`=false 恒门住）。
+///
+/// 降级分支原语级复用 freeze 机器：`freeze_precheck_by_pinned` +
+/// `freeze_by_pinned` + 成功尾 `freeze_ok` 既有写点照走 + 深睡降级记账
+/// `note_degrade_freeze` + token 立即 Drop 语义（零持窗——ktest 前窗口无
+/// 定时器、TCG 无唤醒事件，冻结即 thaw）：`auto_thaw` + `thaw_by_pinned`，
+/// 与 SuspendTok Drop 在 depth 归零时的效果逐位同（无 ObjRef 面的原语级）。
+///
+/// ADR #67：slept_ns/suspend_count 记账待 KVM spike 回填三档表后裁，本刀
+/// 只留钩。打印零（标记归 ktest 断言层——PWRKEY 先例：标记行读台账）。
+///
+/// 调用窗契约：当前 ktest 直调在 sched::init/timer::init 前（DAIF 屏蔽、
+/// CURRENT=null）；PM-03 接 EL0 时必须持有 KL 并补自冻/交叉 token 门。
+///
+/// 与 sys_process_suspend 的语义差：**无自冻拒绝门**（彼 :1652 有
+/// `current_pinned()` 拒绝——单核永久停摆防线）——本面调用面唯 ktest 直调
+/// + 降级形零持窗返回前自愈（thaw 内联完成），不构成停摆；PM-03 EL0 入口
+/// 接机制面时补同款门。
+pub(crate) fn request_deep_sleep(pinned: usize) -> i64 {
+    if berry_hal_aarch64::psci::suspend_supported() {
+        // 真 SYSTEM_SUSPEND 面：成功 = 下电不归（无返回）；任何返回 = 失败，
+        // 落降级兜底。TCG 路结构性不可达。
+        let _ = berry_hal_aarch64::psci::system_suspend_hvc();
+    }
+    // 失败路径照 sys_process_suspend 的错误返回形（precheck 不过 -EBUSY /
+    // 无匹配任务 -EBADSTATE）。
+    if !berry_sched::freeze_precheck_by_pinned(pinned) {
+        return ERR_BUSY as i64;
+    }
+    if berry_sched::freeze_by_pinned(pinned) == 0 {
+        return ERR_BAD_STATE as i64;
+    }
+    // 成功尾 freeze_ok 既有写点照走（sys_process_suspend 成功尾同款）。
+    crate::telemetry::freeze_ok();
+    // 深睡降级记账（sim-S3 PWRDEG 判据载体）。
+    crate::telemetry::note_degrade_freeze();
+    // token 立即 Drop（零持窗）→ auto_thaw + thaw_by_pinned。
+    crate::telemetry::auto_thaw();
+    berry_sched::thaw_by_pinned(pinned);
+    0
 }
 
 /// SuspendToken 入调用方表 + 出参 copy_out。0 = 成功；`insert` 失败回
@@ -1864,20 +2488,14 @@ fn insert_suspend_token(
 
 // ---- 1.1/S1：sched_setattr / sched_getattr（0x3C / 0x3D）----
 
-/// `berry_sched_attr` 内核已知布局长度（ABI §7.2；前向兼容读入上限 256B）。
-const SCHED_ATTR_SIZE: usize = 56;
-const SCHED_ATTR_MAX: usize = 256;
-const SA_F_WEIGHT: u16 = 1 << 0;
-const SA_F_INTENT: u16 = 1 << 1;
-const SA_F_POLICY: u16 = 1 << 2;
-const SA_F_FREEZE_CLOCK: u16 = 1 << 3;
-const SA_F_FREEZE_READY: u16 = 1 << 4;
-const SA_F_RESERVE: u16 = 1 << 5;
-const SA_F_DEADLINE: u16 = 1 << 6;
-const SA_F_BUDGET: u16 = 1 << 7;
-const SA_F_KNOWN: u16 = 0x00FF;
+// W3-Q22：常量族单源迁 `berry-safeck`（sa_check 纯判定面持有——SA_F_* 位
+// 名对齐 berry-polface SA_FLAG_* 词汇表）；此处 use 消费（getattr 回写臂
+// 用 SCHED_ATTR_SIZE/MAX、admission 记账面用 SA_F_BUDGET/FREEZE_READY，
+// 既有名零改动）。
+use berry_safeck::{SA_F_BUDGET, SA_F_FREEZE_READY, SCHED_ATTR_MAX, SCHED_ATTR_SIZE};
 
-/// 读入并校验一个 `berry_sched_attr`。返回 `(属性, 调用方声明 size)`——
+/// 读入并校验一个 `berry_sched_attr`（薄壳——W3-Q22 结构解码+校验纯面单源
+/// 在 `berry-safeck::sa_check`）。返回 `(属性, 调用方声明 size)`——
 /// `getattr` 需要原 size 决定回写尾部长度。
 pub(crate) fn sa_parse(el1: bool, ptr: u64) -> Result<(crate::process::SchedAttr, usize), i32> {
     let mut buf = [0u8; SCHED_ATTR_MAX];
@@ -1893,79 +2511,17 @@ pub(crate) fn sa_parse(el1: bool, ptr: u64) -> Result<(crate::process::SchedAttr
         if let Err(e) = copy_from_user(el1, ptr + SCHED_ATTR_SIZE as u64, &mut buf[SCHED_ATTR_SIZE..size]) {
             return Err(e);
         }
-        if buf[SCHED_ATTR_SIZE..size].iter().any(|&b| b != 0) {
-            return Err(ERR_E2BIG);
-        }
     }
-    let version = u16::from_le_bytes([buf[4], buf[5]]);
-    if version != 1 {
-        return Err(ERR_NOT_SUPPORTED);
-    }
-    let a = crate::process::SchedAttr {
-        flags: u16::from_le_bytes([buf[6], buf[7]]),
-        weight: u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]),
-        policy: buf[12],
-        intent: buf[13],
-        freeze_clock: buf[14],
-        min_ns: u64::from_le_bytes(buf[16..24].try_into().unwrap()),
-        max_ns: u64::from_le_bytes(buf[24..32].try_into().unwrap()),
-        deadline_ns: u64::from_le_bytes(buf[32..40].try_into().unwrap()),
-        budget_ns: u64::from_le_bytes(buf[40..48].try_into().unwrap()),
-        period_ns: u64::from_le_bytes(buf[48..56].try_into().unwrap()),
-    };
-    // reserved0 与未知 flags：保留字段错 = EINVAL（不是 NOT_SUPPORTED——
-    // 调用方可通过清零修复；高 flags 位未在本 ABI 版本定义）。
-    if buf[15] != 0 || a.flags & !SA_F_KNOWN != 0 {
-        return Err(ERR_INVALID_ARG);
-    }
-    if a.flags & SA_F_WEIGHT != 0 && (a.weight == 0 || a.weight > 10000) {
-        return Err(ERR_INVALID_ARG);
-    }
-    if a.flags & SA_F_INTENT != 0 && a.intent > 0x05 {
-        return Err(ERR_INVALID_ARG);
-    }
-    if a.flags & SA_F_POLICY != 0 && !(1..=4).contains(&a.policy) {
-        return Err(ERR_INVALID_ARG);
-    }
-    // policy=3 是 admission-aware deadline 档：必须同时携带 budget/period
-    //（§7.2「policy=3 必须置 bit7」），否则 Task 无重臂周期可消费。
-    if a.flags & SA_F_POLICY != 0 && a.policy == 3 && a.flags & SA_F_BUDGET == 0 {
-        return Err(ERR_INVALID_ARG);
-    }
-    if a.flags & SA_F_FREEZE_CLOCK != 0 && a.freeze_clock > 1 {
-        return Err(ERR_INVALID_ARG);
-    }
-    if a.flags & SA_F_RESERVE != 0 {
-        if a.min_ns > a.max_ns || a.flags & SA_F_POLICY != 0 && a.policy == 3 {
-            return Err(ERR_INVALID_ARG);
-        }
-    }
-    if a.flags & SA_F_BUDGET != 0 {
-        if a.budget_ns == 0
-            || a.period_ns == 0
-            || a.budget_ns > a.period_ns
-            || a.flags & SA_F_POLICY == 0
-            || a.policy != 3
-        {
-            return Err(ERR_INVALID_ARG);
-        }
-        // S5 admission：Σ(C_i/T_i) + 新申请 ≤ 1 − reserve（5% 固定——
-        // 计划 §6.3 EDF 可行性）。超载 → -EBUSY（诚实拒——不静默丢帧）。
-        // 全局原子累计（sched_setattr 成功 +、覆盖旧值 −；单核 SVC 窗序）。
-        let new_u = a.budget_ns as u128 * 4096 / a.period_ns as u128; // Q12 定点
-        let cur_u = DL_TOTAL_UTIL_Q12.load(Ordering::Relaxed) as u128;
-        // 1.0 − 0.05 = 0.95 → Q12 = 3891
-        if cur_u + new_u > 3891 {
-            return Err(ERR_BUSY);
-        }
-        // 计数在 sys_sched_setattr 成功尾累加（此处仅校验——防错误路径泄漏）。
-    }
-    if a.flags & SA_F_DEADLINE != 0 {
-        if a.flags & SA_F_BUDGET == 0 || a.deadline_ns == 0 || a.deadline_ns > a.period_ns {
-            return Err(ERR_INVALID_ARG);
-        }
-    }
-    Ok((a, size))
+    // 纯判定面单源调用：cur_u = admission 全局原子快照（Q12）；SaError
+    // 映射回 ERR_* 常量。判定律（size 尾零/version/域门/交叉门/admission
+    // 3891 帽）全部钉板在 berry-safeck host 测试。
+    let cur_u = DL_TOTAL_UTIL_Q12.load(Ordering::Relaxed);
+    berry_safeck::sa_check(&buf[..size], cur_u).map_err(|e| match e {
+        berry_safeck::SaError::InvalidArg => ERR_INVALID_ARG,
+        berry_safeck::SaError::E2big => ERR_E2BIG,
+        berry_safeck::SaError::NotSupported => ERR_NOT_SUPPORTED,
+        berry_safeck::SaError::Busy => ERR_BUSY,
+    })
 }
 
 /// S5 admission：deadline 任务总利用率（Q12 定点——1.0 = 4096）。
@@ -2108,6 +2664,39 @@ extern "C" fn sys_thread_yield(_tf: &mut TrapFrame) -> i64 {
     0
 }
 
+/// `berry_sched_util_snapshot(*util, count)`（0x40，CP-08 util 通道首环——
+/// OQ-8 通道形态首裁快照 pull 先行）：per-CPU util EWMA 快照读 = 生产侧
+/// 唯一读出口 `berry_sched::cpu_util` 的用户态面（0..=1024，与
+/// `Topo::capacity`/EM capacity 同尺度；PM 服务 schedutil 同构
+/// `f ≈ util × fmax / capacity` 的输入源——**频率裁决单点归 PM**，本号只读
+/// 不写、调度路径零频率写点）。生产侧零新累积：`Fair::tick` 记账在役
+/// （`class.rs` 的 `util_accumulate`/`util_tick_window`）。
+///
+/// 契约：`count < UTIL_NR_CPU` → -EINVAL；≥ 则只写实数槽（余槽不动），
+/// 返回 >0 = 实写槽位数（恰 = 内核 `UTIL_NR_CPU`——调用方可以此探核数，
+/// count-wins 口径同 0x24 批供表）；copy_out 失败 → -EFAULT 单发整段
+/// 拷贝无半写面。零 handle 零权利位（系统级遥测读面——统计信号非对象
+/// 内容，gen_abi `NO_GATE_SYSCALLS` 在册豁免）。
+///
+/// 锁类 TABLE（仅 KL）：EWMA 槽 Relaxed 原子读（统计信号无序角色，同
+/// `sched.rs::IRQ_TICKS` 先例）零共享串行面；copy_out 链走查调用方页表
+/// = §A113 读者面（同 0x61 clock_read/0x87 signal_take 升档论证）。
+extern "C" fn sys_sched_util_snapshot(tf: &mut TrapFrame) -> i64 {
+    let (ptr, count) = (tf.regs[1], tf.regs[2]);
+    if count < berry_sched::UTIL_NR_CPU as u64 {
+        return ERR_INVALID_ARG as i64;
+    }
+    let el1 = caller_is_el1(tf);
+    let mut raw = [0u8; berry_sched::UTIL_NR_CPU * 4];
+    for (c, slot) in raw.chunks_exact_mut(4).enumerate() {
+        slot.copy_from_slice(&berry_sched::cpu_util(c).to_le_bytes());
+    }
+    match copy_to_user(el1, ptr, &raw) {
+        Ok(()) => berry_sched::UTIL_NR_CPU as i64,
+        Err(e) => e as i64,
+    }
+}
+
 /// `berry_signal_send(h_process, sig)`（0x86，A7-4 段②）：向进程 pending
 /// 集位置位（幂等 = POSIX 标准信号合并语义）。`h=0` → 当前进程（raise 面，
 /// 零 handle 需求）；`h≠0` 门控 Process **MANAGE**（同 terminate 权利面）。
@@ -2184,12 +2773,283 @@ extern "C" fn sys_signal_take(tf: &mut TrapFrame) -> i64 {
     }
 }
 
+// ---- 策略注入（S6-b 最小版：0x83 policy_bind——COMMIT 面）----
+
+/// `berry_policy_bind` 用户态表条目（16B，#[repr(C)]——与内核 `policy::SnapSlot`
+/// 布局兼容：key 落偏移 0，可按位审计同源）。
+#[repr(C)]
+struct PolicyEntryABI {
+    key: u64,
+    weight: i32,
+    placement: u8,
+    epp_flags: u8,
+    _rsv: u16,
+}
+const _: () = assert!(core::mem::size_of::<PolicyEntryABI>() == 16);
+
+/// `PolicyEntryABI::epp_flags` 位定义：bit0 = 带 EPP 覆盖，bit1 = EPP 取值
+/// （0 = Efficiency / 1 = Perf）——镜像 `sched/policy.rs` 私有 EPP_HAS/EPP_VAL；
+/// bit2.. 未定义（非 0 尾 → -EINVAL，options 纪律）。
+const PE_EPP_HAS: u8 = 1 << 0;
+const PE_EPP_VAL: u8 = 1 << 1;
+
+/// 单次收表上限（限流面）：镜像 `sched/policy.rs` 私有 `TBL_MAX = 128`（桶 256
+/// 装载因子 ≤50% 上界）。policy 侧 build 时自会截尾，但那是**内核侧写者的宽容
+/// 面**——用户态超限在此提前诚实拒收（-E2BIG），不做静默截断。
+const POLICY_TBL_MAX: usize = 128;
+
+/// 空条目（`entries` 栈数组 const 初始化基底）。
+const PE_ZERO: berry_sched::policy::Entry = berry_sched::policy::Entry {
+    task_key: 0,
+    directive: berry_sched::policy::Directive {
+        placement: 0,
+        weight: 0,
+        epp: None,
+    },
+};
+
+/// `berry_policy_bind(auth, op, p1, p2, p3, p4)`（0x83，S6-b COMMIT 面 +
+/// S6-c shadow 谱系 op 词汇扩展）。
+///
+/// op=1 (COMMIT)：p1 = 表指针（用户态 `&[PolicyEntryABI]`），p2 = 条目数
+/// （0 = 空表提交，「接口在位、表空」合法态），p3 = gen（世代数），p4 = 保留 0。
+/// → [`policy_tbl_parse`] 整表拷入转换（weight 夹紧 ±64——handler 第一道，
+/// policy build/消费点再夹，三点执法；0 键/重复/溢出由 `bind_gen` 的 build_snap
+/// 语义丢弃——first-wins）→ `policy::bind_gen(tbl, gen)`：
+/// true = 0 / false = **-EAGAIN**（陈旧拒收——gen ≤ 活跃世代，写者重放/乱序
+/// 到达的旧表不得覆盖新表，世代单调性在 policy 侧收口；活跃快照未动，调用方
+/// 对账 gen 后携新 gen 重试）。
+///
+/// op=2 (STATUS)：p1 = `*out_packed`（u64 出参）——bit 0-31 = active gen
+/// （`policy::gen()` 截低 32 位），bit 32-63 = shadow gen
+/// （`policy::shadow_gen()` 截低 32 位）——双谱系一次读全（写者对账/遥测）。
+/// 打包算式下放 [`policy_status_packed`]（ktest SHD-K SH-6 直测面）。
+/// p2 = `*out_self_key`（u64 出参，**可选**——0 = NULL 指针跳过）= 调用者
+/// 自身 proc_tag/policy key：v1 key 载体即 `Task::proc_tag`（见
+/// `sched/policy.rs`——apply/weight_of 消费点读 `task.proc_tag`），handler 经
+/// `berry_sched::current_tag()` 同源读取——用户态据此发现「我现在是几号键」
+/// （表里给别的进程加权前先对账自己）。内核任务/boot 期 = 0（哨兵键——0 键
+/// 条目表侧本就丢弃，天然诚实）。
+/// p3 = `*out_divergence`（u64 出参，**可选**——0 = NULL 指针跳过）= 对账
+/// 遥测双计数打包：bit 0-31 = `policy::divergence_count()`（截低 32 位）、
+/// bit 32-63 = `policy::shadow_eval_count()`（截低 32 位）——A/B 评估消费面
+/// （divergence 率 = 分子/分母 → PROMOTE/DEMOTE 判据，宿主侧
+/// `tools/policy_ab_eval.py`；两计数器经 promote/demote 轨道切换自动清零，
+/// 读数即当前对账期）。打包算式下放 [`policy_divergence_packed`]（ktest
+/// DV-K DV-5 直测面）。
+/// → 0 + copy_out_u64 ×3（任一写失败 → -EFAULT 透传；跳过面不计）。
+///
+/// op=3 (PROMOTE)：`policy::promote()`——shadow → enforced 原子转正：
+/// true = 0 / false = **-EBADSTATE**（shadow 空——gen == 0 从未
+/// `bind_gen_shadow` 受理，无表可转正，ACTIVE 不动）。
+///
+/// op=4 (DEMOTE)：`policy::demote()`——enforced → shadow 降级（ACTIVE 回
+/// 哨兵空表、shadow 表保留可复转正）→ 恒 0。
+///
+/// op=5 (UNBIND)：`policy::unbind()`——解绑回「接口缺席」哨兵态 → 恒 0。
+///
+/// op=6 (SHADOW_COMMIT)：表形同 COMMIT（p1/p2/p3 同参、经同一
+/// [`policy_tbl_parse`]）→ `policy::bind_gen_shadow(tbl, gen)`：true = 0 /
+/// false = **-EAGAIN**（陈旧拒收——gen ≤ shadow 侧世代，**比照对象换 shadow
+/// 谱系**、与 active 侧 gen 无关；shadow 未动）。
+///
+/// 其他 op → -ENOTSUP。全 op 面 p4 保留 0（非 0 → -EINVAL，options 纪律）。
+///
+/// 门控（arch-r2 High 收口）：`auth` = Process handle，须过 `get_raw` 三门控
+/// （在表、类型 Process、权利 **MANAGE**——同 terminate/signal_send 权利面）。
+/// 策略注入是全局旁路（COMMIT/PROMOTE 可给任意 proc_tag 加权 ±64 自肥抢占、
+/// UNBIND 可拆其他服务设置的策略），按「机制在内核、策略注入须过能力门控」
+/// 纲领收口：只有持某 Process MANAGE 权的调用者（通常是 svcmgr/初始化服务）
+/// 可操作全局策略表；对象本身不消费（纯资格面——SET_POLICY 细粒度权随 S6-c
+/// Job 对象落地再迁）。拒收面：坏值/类型不符 → -EBADF、缺 MANAGE → -EACCES、
+/// 无表调用者 → -EBADF（caller_table 既有口径）。锁类 TABLE：copy 链页表走查
+/// （§A113 读者面，同 clock_read）+ `SNAPS` 全局单写者跨核 KL 串行；SVC 主体
+/// IRQ 屏蔽（单核）下无读者竞态窗。
+extern "C" fn sys_policy_bind(tf: &mut TrapFrame) -> i64 {
+    let (auth, op, p1, p2, p3, rsv) =
+        (tf.regs[1], tf.regs[2], tf.regs[3], tf.regs[4], tf.regs[5], tf.regs[6]);
+    // 能力门（arch-r2）：auth = Process handle，三门控（在表/类型/权利）任一
+    // 不过即拒——对象不消费（纯资格面）。EL0 裸调（auth=0 或无 MANAGE 权
+    // handle）在此全 op 面统一拒，不再能注入/转正/拆绑全局策略。
+    let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    if let Err(e) = t.get_raw(auth as u32, ObjType::Process, RIGHT_MANAGE) {
+        return e as i64; // 坏值/类型不符 -EBADF；缺 MANAGE -EACCES
+    }
+    if rsv != 0 {
+        return ERR_INVALID_ARG as i64; // p4 保留 0（options 纪律，全 op 面）
+    }
+    let el1 = caller_is_el1(tf);
+    match op {
+        // COMMIT：p1 = 表指针、p2 = 条目数、p3 = gen → active 谱系换表。
+        1 => {
+            let (entries, n) = match policy_tbl_parse(el1, p1, p2) {
+                Ok(v) => v,
+                Err(e) => return e as i64,
+            };
+            if berry_sched::policy::bind_gen(&entries[..n], p3) {
+                0
+            } else {
+                ERR_AGAIN as i64 // 陈旧拒收：gen ≤ 活跃世代，活跃快照未动
+            }
+        }
+        // STATUS：p1 = *out_packed（gen 双谱系）、p2 = *out_self_key（调用者
+        // proc_tag——可选出参，0 = NULL 跳过）、p3 = *out_divergence（对账
+        // 双计数——可选出参，0 = NULL 跳过）。
+        2 => {
+            let packed = policy_status_packed();
+            if let Err(e) = copy_out_u64(el1, p1, packed) {
+                return e as i64;
+            }
+            if p2 != 0 {
+                // 自身策略键：与 apply/weight_of 消费点同源（v1 key =
+                // Task::proc_tag，current_tag 只读透传；单核屏蔽窗内值稳定）。
+                // 内核任务/ktest 期 = 0——哨兵键语义诚实透出，不伪装。
+                let self_key = berry_sched::current_tag() as u64;
+                if let Err(e) = copy_out_u64(el1, p2, self_key) {
+                    return e as i64;
+                }
+            }
+            if p3 != 0 {
+                // 对账遥测双计数（分子 divergence / 分母 eval 各截低 32 打包）
+                //——A/B 评估面（tools/policy_ab_eval.py），读窗纪律同 p1 面。
+                let divergence = policy_divergence_packed();
+                if let Err(e) = copy_out_u64(el1, p3, divergence) {
+                    return e as i64;
+                }
+            }
+            0
+        }
+        // PROMOTE：shadow → enforced 转正；shadow 空 → -EBADSTATE。
+        3 => {
+            if berry_sched::policy::promote() {
+                0
+            } else {
+                ERR_BAD_STATE as i64 // shadow 从未绑定（gen==0）：无表可转正
+            }
+        }
+        // DEMOTE：enforced → shadow 降级（幂等面 → 恒 0）。
+        4 => {
+            berry_sched::policy::demote();
+            0
+        }
+        // UNBIND：回「接口缺席」哨兵态（幂等面 → 恒 0）。
+        5 => {
+            berry_sched::policy::unbind();
+            0
+        }
+        // SHADOW_COMMIT：表形同 COMMIT → shadow 谱系换表（陈旧比照 SHD gen）。
+        6 => {
+            let (entries, n) = match policy_tbl_parse(el1, p1, p2) {
+                Ok(v) => v,
+                Err(e) => return e as i64,
+            };
+            if berry_sched::policy::bind_gen_shadow(&entries[..n], p3) {
+                0
+            } else {
+                ERR_AGAIN as i64 // 陈旧拒收：gen ≤ shadow 世代，shadow 谱系未动
+            }
+        }
+        _ => ERR_NOT_SUPPORTED as i64, // 未定义 op（options 纪律）
+    }
+}
+
+/// STATUS（op=2）**p1 面**打包算式：bit 0-31 = active gen（`policy::gen()` 截低
+/// 32 位）、bit 32-63 = shadow gen（`policy::shadow_gen()` 截低 32 位）——双谱系
+/// 一次读全。（op=2 的 p2 面 = 调用者自身 proc_tag/policy key，handler 直读
+/// `berry_sched::current_tag()` 整值写出——无位布局组合，不经本函数、无需
+/// 下放直测面。）抽成 pub(crate) 的动因：op=1/3/4/6 的 bool→errno 是字面映射
+/// （底座 ktest 全覆盖后映射面零风险），但本算式是 **ABI 可见的位布局组合**
+/// ——半区对调/位移宽度/gen 侧截断缺失都静默错（写者对账读反双谱系），且原本
+/// 只存在于 handler 内（TrapFrame + copy 链挡住 ktest 直调）。按 [`sa_parse`]
+/// 直测先例下放为可测单元，由 ktest SHD-K SH-6 真数据源驱动直测（连「哪个
+/// 谱系进哪个半区」的绑定序一并收口）。读窗纪律同 policy 读接口（单核
+/// 屏蔽窗——两读间无写者，无双谱系撕裂）。
+pub(crate) fn policy_status_packed() -> u64 {
+    ((berry_sched::policy::shadow_gen() & 0xFFFF_FFFF) << 32)
+        | (berry_sched::policy::gen() & 0xFFFF_FFFF)
+}
+
+/// STATUS（op=2）**p3 面**打包算式：bit 0-31 = divergence_count（截低 32
+/// 位）、bit 32-63 = shadow_eval_count（截低 32 位）——对账遥测双计数一次
+/// 读全（A/B 评估面：divergence 率 = 分子/分母，宿主侧
+/// `tools/policy_ab_eval.py` 消费）。同 [`policy_status_packed`] 的下放动因：
+/// 本算式是 **ABI 可见的位布局组合**——半区对调/位移宽度/截断缺失都静默错
+/// （对调 = 分子分母互换 → 率倒置，PROMOTE/DEMOTE 判据全反），且 handler 内
+/// TrapFrame + copy 链挡住 ktest 直调。ktest DV-K DV-5 真数据源驱动直测
+/// （分母 == ROUNDS、分子开区间 (0, ROUNDS)——两半非对称，对调必炸）。读窗
+/// 纪律同 p1 面：SVC 主体 IRQ 屏蔽（单核）下两读间无写者，双计数器无撕裂
+/// （Relaxed 纯统计读，非通信值）。
+pub(crate) fn policy_divergence_packed() -> u64 {
+    ((berry_sched::policy::shadow_eval_count() & 0xFFFF_FFFF) << 32)
+        | (berry_sched::policy::divergence_count() & 0xFFFF_FFFF)
+}
+
+/// COMMIT（op=1）/SHADOW_COMMIT（op=6）公共表解析：`tbl_p` = 表指针（用户态
+/// `&[PolicyEntryABI]`）、`n` = 条目数（0 = 空表合法）→ copy_from_user 整表
+/// 拷入 → 逐条转换 `policy::Entry`。拒收面全在 handler 侧收口：超限 →
+/// **-E2BIG**（单次表 ≤128 条 TBL_MAX 限流——policy 侧 build 会截尾，但那是
+/// 内核写者的宽容面，用户态超限提前诚实拒收、不静默截断）、拷页失败 →
+/// -EFAULT 透传、保留位/未定义 flags 非 0 → **-EINVAL**（调用方可清零修复，
+/// 同 sa_parse reserved0 口径——不是 NOT_SUPPORTED）。返回 `(entries, n)`：
+/// 前 n 槽就绪（0 键/重复/溢出留给 policy 侧 build_snap 语义丢弃——
+/// first-wins，此处不预审）。
+fn policy_tbl_parse(
+    el1: bool,
+    tbl_p: u64,
+    n: u64,
+) -> Result<([berry_sched::policy::Entry; POLICY_TBL_MAX], usize), i32> {
+    use berry_sched::policy::{Directive, Entry, WEIGHT_MAX};
+    if n > POLICY_TBL_MAX as u64 {
+        return Err(ERR_E2BIG); // 限流：单次表 ≤128 条（TBL_MAX）
+    }
+    let n = n as usize;
+    let mut raw = [0u8; POLICY_TBL_MAX * core::mem::size_of::<PolicyEntryABI>()];
+    if let Err(e) = copy_from_user(el1, tbl_p, &mut raw[..n * 16]) {
+        return Err(e);
+    }
+    let mut entries = [PE_ZERO; POLICY_TBL_MAX];
+    for i in 0..n {
+        let o = i * 16;
+        let e = PolicyEntryABI {
+            key: u64::from_le_bytes(raw[o..o + 8].try_into().unwrap()),
+            weight: i32::from_le_bytes(raw[o + 8..o + 12].try_into().unwrap()),
+            placement: raw[o + 12],
+            epp_flags: raw[o + 13],
+            _rsv: u16::from_le_bytes([raw[o + 14], raw[o + 15]]),
+        };
+        // 保留位/未定义 flags 非零 → -EINVAL（调用方可清零修复，同 sa_parse
+        // reserved0 口径——不是 NOT_SUPPORTED）。
+        if e._rsv != 0 || e.epp_flags & !(PE_EPP_HAS | PE_EPP_VAL) != 0 {
+            return Err(ERR_INVALID_ARG);
+        }
+        entries[i] = Entry {
+            task_key: e.key,
+            directive: Directive {
+                placement: e.placement,
+                // 夹紧 ±WEIGHT_MAX（±64）：包络是内核执法，不信任注入方自律。
+                weight: e.weight.clamp(-WEIGHT_MAX, WEIGHT_MAX),
+                epp: if e.epp_flags & PE_EPP_HAS != 0 {
+                    Some(if e.epp_flags & PE_EPP_VAL != 0 {
+                        berry_sched::EppHint::Perf
+                    } else {
+                        berry_sched::EppHint::Efficiency
+                    })
+                } else {
+                    None
+                },
+            },
+        };
+    }
+    Ok((entries, n))
+}
+
 // ---- channel（3-4b；对象 = `channel.rs`，端点互钉与环泄漏政策见其模块注）----
 
 /// `channel_create(options, *out0, *out1)`（4-3c 起 options 首参，Zircon/
 /// `event_create` 同形）：一次建一对端点（`channel.rs` 两端互指互钉——一端
-/// 活则对端对象必活）。两端均授 **SEND|RECV|DUPLICATE**（对称权利；TRANSFER
-/// 位同 DUPLICATE 的 vocab 政策：已定义不执法）。options：bit0 =
+/// 活则对端对象必活）。两端均授 **SEND|RECV|DUPLICATE|TRANSFER**（对称
+/// 权利；TRANSFER 随 send 随行预检执法——Zircon 新 handle 默认携位模型）。
+/// options：bit0 =
 /// [`CHAN_OPT_NO_INTENT`]（intent opt-out，两端同置——通道级不传播）；其余位
 /// → -EINVAL（options 纪律）。
 extern "C" fn sys_channel_create(tf: &mut TrapFrame) -> i64 {
@@ -2206,7 +3066,14 @@ extern "C" fn sys_channel_create(tf: &mut TrapFrame) -> i64 {
         return e as i64;
     }
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
-    let rights = RIGHT_SEND | RIGHT_RECV | RIGHT_DUPLICATE;
+    // per-Process channel 配额帽（Medium 缺口收口，`process.rs` 帽常量注）：
+    // 本表在册 channel 端点数 ≥ 帽先拒 -ENOMEM——fail-fast 先于两端
+    // CHAN_DEPTH×Message ≈ 2.7KB/端的队列预储分配（计数单位 = 端点，
+    // `channel_create` 一次入 2；`count_type` 表扫描口径同 sys_vmo_create）。
+    if t.count_type(ObjType::Channel) >= crate::process::MAX_CHANNEL_PER_PROC {
+        return ERR_NO_MEMORY as i64;
+    }
+    let rights = RIGHT_SEND | RIGHT_RECV | RIGHT_DUPLICATE | RIGHT_TRANSFER;
     // 端点装配 try 化（3b3 H2）：队列预储 CHAN_DEPTH × Message ≈ 2.7KB/端，
     // 失败先于一切入表——零回滚面，折 -ENOMEM。
     let (Some(end0), Some(end1)) =
@@ -2293,13 +3160,16 @@ fn irq_window<R>(f: impl FnOnce() -> R) -> R {
 /// 落进**它的**表——能力随消息跨表迁移（能力模型 §4）。
 ///
 /// 原子序（任一步失败 = 调用者表零变化）：参数上限（no-panic 前置）→ 门控 →
-/// 对端满检 → 随行值全量预检（活值 + 数组内无重复——重复值先 take 会作废后值，
-/// 回滚也换值）→ 载荷拷入 → 全量 take → 压队列。take 失败仅剩不可达防御面
+/// 对端满检 → 随行值全量预检（活值 + RIGHT_TRANSFER 迁移资格 + 数组内无
+/// 重复——重复值先 take 会作废后值，回滚也换值）→ 载荷拷入 → 全量 take →
+/// 压队列。take 失败仅剩不可达防御面
 /// （预检后单核无插队），回滚重插（值或变、语义活）。
 ///
 /// **4-4 fastpath/slowpath 分层**（`IPC设计.md` §7 检查链）：共享前缀（上列
-/// 全部错误面）之后按检查链 fork——「无随行 handle（迁移面留 slowpath）+
-/// 对端队列空 + 恰一个非哨兵 READABLE 等待者且无哨兵在场」全过 → fastpath
+/// 全部错误面，含随行 handle 预检 + 全量 take + 内联进消息——迁移面全链
+/// 非阻塞：查表纯槽操作无锁、refs 不动、无 drop、take 路零分配，fork 之后
+/// 两路均不再触表）之后按检查链 fork——「对端队列空 + 恰一个非哨兵
+/// READABLE 等待者且无哨兵在场」全过 → fastpath
 /// 定点唤醒（`fast_wake_locked`，与 slowpath 共用同一内部唤醒序列）+ 直切判定
 ///（`try_preempt`：严格更高 eff 才切，seL4 direct switch 的 v1 形态）；
 /// 任一不满足 → slowpath（`wake_matching` 全匹配唤醒）。**两路语义逐条对齐，
@@ -2317,7 +3187,7 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
         tf.regs[4],
         tf.regs[5] as usize,
     );
-    if nbytes > CHAN_MSG_MAX || nhandles > CHAN_HND_MAX {
+    if !berry_chanface::send_args_legal(nbytes, nhandles) {
         return ERR_INVALID_ARG as i64;
     }
     let el1 = caller_is_el1(tf);
@@ -2335,7 +3205,7 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
     // SAFETY: get_raw 已门控；对端由互钉保活（本端活 ⇒ 对端对象必在堆）；
     // 单核禁切无插队（g3-1c-2 段守卫；双核结构锁窗）。
     let _span = PreemptSpan::new();
-    let (peer_ptr, peer_empty) = unsafe {
+    let (peer_ptr, peer_empty, peer_frozen) = unsafe {
         let Some(end) = (*self_ptr.as_ptr()).obj.as_channel_mut() else {
             return ERR_BAD_HANDLE as i64;
         };
@@ -2348,7 +3218,10 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
         if peer_end.queue_full() {
             return ERR_BUSY as i64; // 非阻塞：满即返（阻塞等空位 = wait_one WRITABLE，4-2）
         }
-        (peer, !peer_end.has_message())
+        // AM-1.5：冻结属主标快照（freeze 时枚举属主表预打——send 热路径免
+        // 反查属主；非冻结态恒 None ⇒ 本快照即热路径唯一新增成本，一次
+        // Option 判空）。
+        (peer, !peer_end.has_message(), peer_end.frozen_owner())
     };
     // 随行 handle 值拷入 + 全量预检（无副作用——失败 = 表零变化）。拷贝窗
     // （g3-1c-2）：走查 + 拷入同窗解蔽，段计数保 §A113。
@@ -2360,15 +3233,43 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
     for i in 0..nhandles {
         hvals[i] = u32::from_le_bytes([hbuf[i * 4], hbuf[i * 4 + 1], hbuf[i * 4 + 2], hbuf[i * 4 + 3]]);
     }
+    // 随行 handle 预检（每枚两查）：活值 + **RIGHT_TRANSFER 迁移资格**——
+    // 安全轮 2 Medium 缺口关闭（`docs/阶段沿革.md`「RIGHT_TRANSFER 零执法」）：
+    // 迁移即能力委托，授予方去 TRANSFER 位的 handle 不得随消息转发第三方
+    //（Zircon `zx_channel_write` 对随行 handle 的 ZX_RIGHT_TRANSFER 同款门）。
+    // 死值 -EBADF（探活语义不变）、活值缺位 -EACCES。rights 附着槽上随
+    // handle 走，但 HandleTable 无类型无关查询面（`alive` 只回 bool、
+    // `get_raw` 先验类型）——按在册类型逐一 `get_raw(need=0)` 探测，命中者
+    // 即出槽 rights 且探活内联（全类型未命中 = 死值）。类型表 = KernelObj
+    // 全变体镜像（新增对象类型须同步）；7 次定点查表 × nhandles ≤ 4，较
+    // `holder_has` 的 64 槽全扫更廉，热路径成本可忽略。
     for i in 0..nhandles {
-        if !t.alive(hvals[i]) {
-            return ERR_BAD_HANDLE as i64;
-        }
-        for j in 0..i {
-            if hvals[j] == hvals[i] {
-                return ERR_INVALID_ARG as i64; // 数组内重复值（见函数注释原子序论证）
+        let mut hit: Option<Rights> = None;
+        for ty in [
+            ObjType::Process,
+            ObjType::Thread,
+            ObjType::Vmo,
+            ObjType::Vmar,
+            ObjType::Channel,
+            ObjType::Event,
+            ObjType::SuspendToken,
+        ] {
+            if let Ok((_, rights)) = t.get_raw(hvals[i], ty, 0) {
+                hit = Some(rights);
+                break;
             }
         }
+        match hit {
+            // 全类型未命中 = 死值（alive 语义内联于探测）
+            None => return ERR_BAD_HANDLE as i64,
+            // 活值缺 TRANSFER 位 = 无迁移资格（能力委托流转受控面）
+            Some(r) if r & RIGHT_TRANSFER == 0 => return ERR_ACCESS_DENIED as i64,
+            _ => {}
+        }
+    }
+    // 数组内重复预检（W3-Q9 单源判据——循环体见函数注释原子序论证）。
+    if !berry_chanface::handles_distinct(&hvals[..nhandles]) {
+        return ERR_INVALID_ARG as i64;
     }
     let mut bbuf = [0u8; CHAN_MSG_MAX];
     if let Err(e) = irq_window(|| copy_from_user(el1, bytes, &mut bbuf[..nbytes])) {
@@ -2420,21 +3321,24 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
             let now = berry_hal_aarch64::timer::cntvct();
             if now > since {
                 let cycles = now - since;
-                // CNTVCT→ns：频率走 CNTFRQ（QEMU virt 62.5MHz，真机可变）。
-                let freq = berry_hal_aarch64::timer::cntfrq();
-                if freq != 0 {
-                    let ns = cycles * 1_000_000_000 / freq;
-                    crate::telemetry::billing_charge(d, ns);
-                }
+                // CNTVCT→ns：timer::ticks_to_ns（init 预计算倒数乘-移对——
+                // 除法消解同 vct_ns，顺带消掉旧 `cycles*1e9` 在超长区间
+                //（>288s @62.5MHz）上的潜在 u64 溢出）。频率不可读 → 0ns →
+                // billing_charge 零时长拒收不建槽，与旧 freq!=0 守卫同效。
+                let ns = berry_hal_aarch64::timer::ticks_to_ns(cycles);
+                crate::telemetry::billing_charge(d, ns);
             }
             // 清起点（下一个 recv 重设）。
             crate::telemetry::BILLING_RECV_DOMAIN[slot].store(0, Ordering::Relaxed);
         }
     }
     // 4-4 检查链判定（push 前取条件——「对端队列空」链项此后不变：单核禁切
-    // 无插队，g3-1c-2 段守卫在持）：无随行 handle + 队列空 + 恰一个非哨兵
-    // READABLE 等待者且无哨兵在场 → fastpath；否则 slowpath（检查链其余项
-    // v1 结构性成立，见函数注释）。
+    // 无插队，g3-1c-2 段守卫在持）：队列空 + 恰一个非哨兵 READABLE 等待者
+    // 且无哨兵在场 → fastpath；否则 slowpath（检查链其余项 v1 结构性成立，
+    // 见函数注释）。随行 handle 不再挡快路（P0 拓宽，原「迁移面留 slowpath」
+    // 为历史保守切分）：take 迁移面全链非阻塞——alive/take 纯槽操作（无锁、
+    // refs 不动、无 drop、take 路零分配），且已在共享前缀完成并内联进消息；
+    // fork 之后快慢两路均不再触调用者表 → 有 handle 消息同样直切。
     // S-3c c-2a 义务④窗：find→push→fast_wake 同一 SLEEPQ 锁窗（终态形
     // 「查位+写位+唤醒不可分割」；过渡态 KL 全量在场 ⇒ 零争用，窗形先行
     // ——SLEEPQ_LOCK 注释的逆序标注在此同样适用）。未命中即闭窗——
@@ -2442,7 +3346,7 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
     // c-2c slice 2a：退化形窗——phys 随锁返回（位已置 = 外层逻辑持有，
     // 物理闭窗跳过）；miss/防御面/hit 三闭窗位互斥。
     let mut sq_phys = false;
-    let waiter = if nhandles == 0 && peer_empty {
+    let waiter = if peer_empty {
         sq_phys = berry_sched::sq_lock();
         let w =
             berry_sched::find_single_waiter_locked(peer_ptr.as_ptr() as usize, SIGNAL_READABLE);
@@ -2498,6 +3402,30 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
             berry_sched::set_reply_handoff_proc(peer_last_recv);
         }
     }
+    // AM-1.5 wake-pending（IPC × 冻结，Q1 裁决「唤醒即解冻」机制面）：send
+    // 命中冻结端点 → 消息已照常入队（上 push——排队不丢弃），此处补通知
+    // 闭环：属主首命中置 wake_pending（**一次语义**——同进程多端点/后续
+    // send 见位不再重复通知，防风暴；S5.12 token 在册上限 64 已是 DoS 帽）
+    // + 以进程钉键广播唤醒等其 SuspendToken 的持有者（wait_one 的 token
+    // 分支同键挂队——同进程全部在册 token 一跳全收）；策略在用户态——
+    // 持有者收通知后自行 close token 解冻。仅成功路径：-EBUSY 满拒未入
+    // 队、无消息可言，不通知（调用方 wait WRITABLE 后重试即再触发）。
+    if let Some(owner) = peer_frozen {
+        // SAFETY: 冻标由 freeze 路径 retain 属主（配平在 thaw 清面）；SVC
+        // 屏蔽串行语境无并发写竞；owner 必为 KernelObj::Process（打标侧
+        // 类型门控过），as_process_mut 恒 Some（else = 不可达防御面）。
+        unsafe {
+            if let Some(p) = (*owner.as_ptr()).obj.as_process_mut() {
+                if !p.wake_pending {
+                    p.wake_pending = true;
+                    berry_sched::wake_matching(
+                        owner.as_ptr() as usize,
+                        crate::handle::SIGNAL_WAKE_PENDING,
+                    );
+                }
+            }
+        }
+    }
     // 段出口检查点（g3-1c-2，f4 裁决 = wake 链尾非 push 直后）：拷贝窗内被
     // 双门（tick go 支/SGI）挡下的切换诉求在唤醒链全毕后兑现——①push 直后
     // 切走会打断 S-3c 义务④「find→push→fast_wake 查位+写位+唤醒不可分割」
@@ -2534,8 +3462,11 @@ unsafe fn recv_rollback(t: &mut HandleTable, endp: NonNull<ObjRef>, msg: Message
 /// -EINVAL 且消息保原样（v1 无「回写所需尺寸」面，ABI §8.3 注）。随行令牌
 /// `insert_ref` 落调用者表、**新值**写 `handles` 数组（值必变——表不同/槽不同）。
 ///
-/// 原子序：空队先检（空时零用户内存读 = 零 fault 面）→ pop 消费 → 容量/载荷/
-/// 令牌入表/回写各步任一失败 → [`recv_rollback`]（表 + 队列全复原）。
+/// 原子序：空队先检（空时零用户内存读 = 零 fault 面）→ pop 消费 → 容量 →
+/// **出参段全量 access_ok 预扫**（bytes/handles 数组/nbytes/nhandles 槽，
+/// write 走查——载荷拷出**前**收口全部 fault 面：否则载荷已落用户、后续
+/// 出参写才 fault → 回滚压回 = 同一消息可被无限次窥探的缺口）→ 载荷/
+/// 令牌入表/回写各步任一失败 → [`recv_rollback`]（表 + 队列全复原，最后防线）。
 extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
     let (h, bytes, nbytesp, handles, nhandlesp) = (
         tf.regs[1] as u32,
@@ -2583,10 +3514,29 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
             return e as i64;
         }
     };
-    if msg.nbytes > cap_bytes || msg.nhandles > cap_hnd {
+    if !berry_chanface::recv_capacity_legal(msg.nbytes, msg.nhandles, cap_bytes, cap_hnd) {
         // SAFETY: 同上。
         unsafe { recv_rollback(t, self_ptr, msg, &[]) };
         return ERR_INVALID_ARG as i64;
+    }
+    // 安全修复（recv 窥探缺口）：载荷拷出**前**预扫全部出参段——access_ok
+    // write 走查 = copy_to_user 同一页走查逻辑。原序 = bytes 先拷、
+    // handles/nbytes/nhandles 后写：任一后写 fault 触发 recv_rollback 压回
+    // 队首，载荷已落用户 = 同一消息可被无限次「窥探」（发送方以为未送达）
+    // + 队列槽钉死（DoS）。预扫任一失败 → 载荷零拷出即 -EFAULT（消息压回
+    // = 未消费原样）。nbytes/nhandles 槽的 write 预扫不可省：上方
+    // copy_in_u64 只验过**读**（RO 页读得过、写不过——正是原缺口形状）。
+    // 预扫是 fail-fast 纯走查（同 sys_vmo_read 前置注，非安全边界）：预扫
+    // 过 → 调用者自身无并发（v1 单核 + 段禁切）下后续出参写不再 fault，
+    // recv_rollback 收口面只剩他核 TOCTOU / insert_ref 资源面（最后防线）。
+    if !access_ok(el1, bytes, msg.nbytes as u64, true)
+        || !access_ok(el1, handles, (msg.nhandles * 4) as u64, true)
+        || !access_ok(el1, nbytesp, 8, true)
+        || !access_ok(el1, nhandlesp, 8, true)
+    {
+        // SAFETY: 同上（无令牌入表；载荷未拷出——用户侧零可见副作用）。
+        unsafe { recv_rollback(t, self_ptr, msg, &[]) };
+        return ERR_FAULT as i64;
     }
     if let Err(e) = irq_window(|| copy_to_user(el1, bytes, &msg.bytes[..msg.nbytes])) {
         // SAFETY: 同上。
@@ -2651,7 +3601,12 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
             crate::telemetry::BILLING_RECV_VCT[slot].store(berry_hal_aarch64::timer::cntvct(), core::sync::atomic::Ordering::Relaxed);
         }
     }
-    if let Some(out) = berry_sched::intent_settle_current(msg.meta, opt_out, vct_ns()) {
+    // W3-Q6：档位直方/通胀计数（Own/Borrowed 皆记——effective 档分布 +
+    // 借入档差；三帽计数器族同窗同纪律）。
+    if let Some((out, declared, effective)) =
+        berry_sched::intent_settle_current_ext(msg.meta, opt_out, vct_ns())
+    {
+        crate::telemetry::intent_settle_note(declared, effective);
         match out {
             berry_sched::SettleOut::Borrowed => crate::telemetry::intent_borrowed(),
             berry_sched::SettleOut::CappedHop => {
@@ -2677,8 +3632,9 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
 // ---- event_create（3-4c；对象 = `event.rs` 纯用户位掩码）----
 
 /// `event_create(options, *out)`：建一个 Event（出生信号全零）。`options` v1
-/// 恒 0（非 0 → -EINVAL，ABI §8.3 注记）；授 **SIGNAL|DUPLICATE**——持有者可
-/// 置/清位、可复制授权给同伴（等的一方 dup 到只读即可，wait 不需权利位）。
+/// 恒 0（非 0 → -EINVAL，ABI §8.3 注记）；授 **SIGNAL|DUPLICATE|TRANSFER**
+/// ——持有者可置/清位、可复制授权给同伴（等的一方 dup 到只读即可，wait 不
+/// 需权利位）；TRANSFER = send 随行迁移资格（Zircon 默认携位模型）。
 extern "C" fn sys_event_create(tf: &mut TrapFrame) -> i64 {
     let (options, out) = (tf.regs[1], tf.regs[2]);
     if options != 0 {
@@ -2689,7 +3645,7 @@ extern "C" fn sys_event_create(tf: &mut TrapFrame) -> i64 {
         return e as i64;
     }
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
-    let h = match t.insert(KernelObj::Event(Event::new()), RIGHT_SIGNAL | RIGHT_DUPLICATE) {
+    let h = match t.insert(KernelObj::Event(Event::new()), RIGHT_SIGNAL | RIGHT_DUPLICATE | RIGHT_TRANSFER) {
         Ok(h) => h,
         Err(e) => return e as i64, // 表满/gen 尽/装箱 OOM——对象未入表，零回滚面
     };
@@ -2705,10 +3661,13 @@ extern "C" fn sys_event_create(tf: &mut TrapFrame) -> i64 {
 /// - Event → 用户位掩码原样；
 /// - Channel → 内核派生：`READABLE`（**本端**队列非空）| `WRITABLE`（**对端**
 ///   队列未满；未配对端点对端恒「满」——运行期不可达，create 即配对）；
-/// - 其余类型 → `None`（wait 面只收 Event|Channel|Process|Thread）。
+/// - SuspendToken → 内核派生：`WAKE_PENDING`（目标进程冻结期间有 send 命中
+///   其端点——AM-1.5；零 per-token 状态，读目标 `Process.wake_pending` 派生）；
+/// - 其余类型 → `None`（wait 面只收 Event|Channel|Process|Thread|SuspendToken）。
 ///
 /// # Safety
-/// `obj` 须为在表/钉住的活对象；Channel 分支解引用互钉对端（互钉保活）。
+/// `obj` 须为在表/钉住的活对象；Channel 分支解引用互钉对端（互钉保活）、
+/// SuspendToken 分支解引用 token retain 的目标（Drop 链保活）。
 /// 只读；调用点均在 IRQ 屏蔽串行语境。
 unsafe fn signal_state(obj: NonNull<ObjRef>) -> Option<u64> {
     unsafe {
@@ -2736,6 +3695,19 @@ unsafe fn signal_state(obj: NonNull<ObjRef>) -> Option<u64> {
             KernelObj::Thread(th) => {
                 Some(if th.exited { SIGNAL_TERMINATED } else { 0 })
             }
+            // AM-1.5：SuspendToken 信号面 = 目标进程 wake_pending 派生（同刻
+            // 全部在册 token 同视；置位点 = send 命中冻端点、清位点 = 全解冻，
+            // 均不在本函数）。Thread 目标不参与——端点冻标只在进程全冻时打
+            //（单线程冻不在本面），且进程冻 × 线程冻互斥 ⇒ 线程 token 恒观 0。
+            // 等非 WAKE_PENDING 位 = 永不命中（不设门，同上两口径）。
+            KernelObj::SuspendToken(tok) => Some(match tok.target {
+                crate::suspend::SuspendTarget::Process(p) => {
+                    // SAFETY: token retain 过目标（Drop 链保活）；只读一位。
+                    let wp = (*p.as_ptr()).obj.as_process().map_or(false, |pr| pr.wake_pending);
+                    if wp { crate::handle::SIGNAL_WAKE_PENDING } else { 0 }
+                }
+                crate::suspend::SuspendTarget::Thread(_) => 0,
+            }),
             _ => None,
         }
     }
@@ -2760,8 +3732,9 @@ extern "C" fn sys_object_signal(tf: &mut TrapFrame) -> i64 {
         Ok((o, _)) => o,
         Err(e) => return e as i64, // 坏值/类型不符 -EBADF；缺 SIGNAL 位 -EACCES
     };
-    if (clear | set) & !SIGNAL_USER_MASK != 0 {
-        return ERR_INVALID_ARG as i64; // 低 32 位内核派生保留（4-2 位空间）
+    if !berry_evface::signal_masks_legal(clear, set) {
+        return ERR_INVALID_ARG as i64; // 低 32 位内核派生保留（4-2 位空间；
+        // 判定律单源 berry-evface，host 钉板——W3-Q7）
     }
     // SAFETY: get_raw 已三门控（在表、类型 Event、权利足）；单核 IRQ 屏蔽。
     unsafe {
@@ -2776,9 +3749,9 @@ extern "C" fn sys_object_signal(tf: &mut TrapFrame) -> i64 {
 }
 
 /// wait 面取对象（wait_one/wait_many 共用，Plan B 起三类型链、T-1 起
-/// 四类型链）：Event → Channel → Process → Thread（wait 不需权利位，
-/// need=0）。全拒回**首个**（Event 的）错误——与 4-2 的两类型链语义逐字
-/// 一致（-EBADF/-EACCES 原样透传）。
+/// 四类型链、AM-1.5 起五类型链）：Event → Channel → Process → Thread →
+/// SuspendToken（wait 不需权利位，need=0）。全拒回**首个**（Event 的）
+/// 错误——与 4-2 的两类型链语义逐字一致（-EBADF/-EACCES 原样透传）。
 fn wait_get(t: &HandleTable, h: crate::handle::Handle) -> Result<NonNull<ObjRef>, i32> {
     match t.get_raw(h, ObjType::Event, 0) {
         Ok((o, _)) => Ok(o),
@@ -2788,7 +3761,12 @@ fn wait_get(t: &HandleTable, h: crate::handle::Handle) -> Result<NonNull<ObjRef>
                 Ok((o, _)) => Ok(o),
                 Err(_) => match t.get_raw(h, ObjType::Thread, 0) {
                     Ok((o, _)) => Ok(o),
-                    Err(_) => Err(e),
+                    // AM-1.5：token 持有者（am）经既有 wait_face 收
+                    // wake-pending 通知——零新 syscall。
+                    Err(_) => match t.get_raw(h, ObjType::SuspendToken, 0) {
+                        Ok((o, _)) => Ok(o),
+                        Err(_) => Err(e),
+                    },
                 },
             },
         },
@@ -2801,14 +3779,17 @@ fn wait_get(t: &HandleTable, h: crate::handle::Handle) -> Result<NonNull<ObjRef>
 /// `deadline≠0`（MONOTONIC 绝对时刻）未命中 → 挂 [`berry_sched::block_current`]
 /// 睡到点。
 ///
-/// **wait 面对象 = Event | Channel | Process | Thread**（4-2 / Plan B / T-1）：
-/// Event 状态 = 用户位掩码；Channel 状态 = 内核派生 READABLE/WRITABLE；
-/// Process 状态 = 内核派生 TERMINATED（Exited 单调置位——父进程 wait 后
-/// unmap/close 回收，[`berry_exec`] 的 reap 链）；Thread 状态 = 内核派生
-/// TERMINATED（T-1 join 面——`thread_start` 后 `object_wait_one(th,
-/// TERMINATED, …)` 即内核侧 join，裁决二）。查询点 [`signal_state`]；等不出
-/// 的位（Channel 用户位 / Process|Thread 非 TERMINATED 位）永不命中，同
-/// Zircon 不设门。
+/// **wait 面对象 = Event | Channel | Process | Thread | SuspendToken**
+///（4-2 / Plan B / T-1 / AM-1.5）：Event 状态 = 用户位掩码；Channel 状态 =
+/// 内核派生 READABLE/WRITABLE；Process 状态 = 内核派生 TERMINATED（Exited
+/// 单调置位——父进程 wait 后 unmap/close 回收，[`berry_exec`] 的 reap 链）；
+/// Thread 状态 = 内核派生 TERMINATED（T-1 join 面——`thread_start` 后
+/// `object_wait_one(th, TERMINATED, …)` 即内核侧 join，裁决二）；SuspendToken
+/// 状态 = 内核派生 WAKE_PENDING（AM-1.5：冻结期间有 send 命中目标进程
+/// 端点——持有者收通知后自行 close token 解冻，策略在用户态）。查询点
+/// [`signal_state`]；等不出的位（Channel 用户位 / Process|Thread 非
+/// TERMINATED 位 / SuspendToken 非 WAKE_PENDING 位）永不命中，同 Zircon
+/// 不设门。
 ///
 /// **poll-first**：信号已到即返不睡（无丢信号）。醒来**重验条件**（醒因 ≠
 /// 结果：Timeout 时位可能刚被置、Signaled 时位可能又被清——清位竞态下重验
@@ -2849,6 +3830,20 @@ extern "C" fn sys_object_wait_one(tf: &mut TrapFrame) -> i64 {
     // SAFETY: 活对象（表内 handle 钉着）；睡眠期间全表 handle 被关光也不销毁
     //（3-3 钉住纪律的跨睡眠版）。
     unsafe { (*obj.as_ptr()).retain() };
+    // AM-1.5：SuspendToken 等待者挂队键 = 目标钉键（`SuspendTok.key`——
+    // Process 目标 = 进程 ObjRef 地址 = pinned；Thread 目标 = 线程键）而非
+    // token 自身 ObjRef 地址：send 侧 wake-pending 广播以进程钉键唤该进程
+    // **全部**在册 token 的等待者（嵌套多 token 一跳全收，无需逐 token 寻址）。
+    // 键与 Process 本体等待者（TERMINATED）共用，但请求位集不相交
+    //（WAKE_PENDING vs TERMINATED）⇒ 零互扰；偶发跨键虚假唤醒由醒来重验
+    // 兜底（同 WAIT_ANY 哨兵口径）。PI 面安全：`pi::donor_edge` 只对等
+    // READABLE|WRITABLE 派生位的睡眠者解引用 wait_obj（§A40 不变量），
+    // WAKE_PENDING 等待者恒不入捐赠图。
+    // SAFETY: 活对象（上方 retain 在身）；只读类型分支与 key 字段。
+    let wait_key = match unsafe { &(*obj.as_ptr()).obj } {
+        KernelObj::SuspendToken(tok) => tok.key,
+        _ => obj.as_ptr() as usize,
+    };
     // G3-4b SGI 路进入点钩子（位签名 + armed 双过滤——默认面恒短路，仅
     // 付一次寄存器比较；钉住后调用 = 落笔的 ObjRef 活性由本 wait 钉着）。
     // 前提〔f4 F8〕：「wait 入口位已清」是 EL0 payload 纪律而非内核执法——
@@ -2865,7 +3860,9 @@ extern "C" fn sys_object_wait_one(tf: &mut TrapFrame) -> i64 {
         let Some(current) = (unsafe { signal_state(obj) }) else {
             break ERR_BAD_HANDLE as i64; // 不可达防御面
         };
-        if current & signals != 0 {
+        // W3-Q7：命中判单源 berry-evface::wait_hit（current & signals != 0
+        // 纯投影，host 钉板）。
+        if berry_evface::wait_hit(current, signals) {
             break match copy_out_u64(el1, observed, current) {
                 Ok(()) => 0,
                 Err(e) => e as i64,
@@ -2878,11 +3875,11 @@ extern "C" fn sys_object_wait_one(tf: &mut TrapFrame) -> i64 {
         if deadline_vct <= berry_hal_aarch64::timer::cntvct() {
             break ERR_TIMEDOUT as i64; // 到点未命中（含传入即已过——不睡）
         }
-        // 匹配键 = ObjRef 地址；请求位 = signals（signal 侧以新置位集匹配）。
+        // 匹配键 = ObjRef 地址（SuspendToken 例外 = 目标钉键，见上方
+        // wait_key 注）；请求位 = signals（signal 侧以新置位集匹配）。
         // 醒因丢弃：Signaled/Timeout 都只信重验——Timeout 时位可能刚被置、
         // Signaled 时位可能又被清；未命中且未到点则再睡，循环兜底。
-        let _reason =
-            berry_sched::block_current(obj.as_ptr() as usize, signals, deadline_vct);
+        let _reason = berry_sched::block_current(wait_key, signals, deadline_vct);
         // G3-4b SGI 路醒来侧钩子（run 侧读点本体——醒后首段内核执行取戳；
         // Signaled 才采样，重验循环/返程尾钩执法其余路径）。
         if signals == crate::LAT_SGI_BIT
@@ -3005,7 +4002,9 @@ extern "C" fn sys_object_wait_many(tf: &mut TrapFrame) -> i64 {
                 hit = Some(Err(ERR_BAD_HANDLE as i64)); // 不可达防御面
                 break;
             };
-            if current & sbuf[i] != 0 {
+            // W3-Q7：命中判单源 berry-evface::wait_hit（wait_one 同款——
+            // 入参序最前命中循环留在调用方）。
+            if berry_evface::wait_hit(current, sbuf[i]) {
                 hit = Some(Ok((i, current)));
                 break;
             }
@@ -3057,11 +4056,20 @@ extern "C" fn sys_object_wait_many(tf: &mut TrapFrame) -> i64 {
 /// **P6 A-3 加 vmo_get_phys(0x1B) = 29 号**；**C-4b 加 process_terminate(0x3B)
 /// = 30 号**；**T-1 加 thread_start(0x35) = 31 号；A7-4 加
 /// signal_send(0x86)/signal_take(0x87) = 33 号；G4-2 加
-/// pager_supply_pages(0x21，v2 号激活) = 34 号——v1 在册 35 号
-/// （唯 0x85 `berry_attest` 预留）真语义全部实现**。
+/// pager_supply_pages(0x21，v2 号激活) = 34 号；G4-4 X-3b 加
+/// pager_supply_mapped(0x23，门 C 裁 A add-only——恒等选源挂派发) = 35 号；
+/// X-6 刀① 加 pager_supply_mapped_table(0x24) = 36 号已实现；桌面UX刀D 加
+/// power_off(0x88) = 37 号；CP-08 加 sched_util_snapshot(0x40，util 快照读
+/// ——OQ-8 首环，add-only) = 38 号已实现；cbox 刀 1 加 cbox_drain(0x42，黑匣子
+/// 排液口，add-only) = 39 号已实现；v1 在册 40 号
+/// （唯 0x85 `berry_attest` 预留未实现）**；
+/// **S6-b 加 policy_bind(0x83，v3 号提前实现最小 COMMIT 面——v1 号面之外
+/// 首个真注册的 v3 号，ABI §4 在册同名单源）**。
 /// 未列号走 HAL 默认 `-ENOTSUP`。同时注册**任务退出钩子**（Plan B：Process
-/// Exited 落账 + TERMINATED 唤醒 + drain + release 钉住；T-1 分序版：Thread
-/// 簿记/join 唤醒 + `live_threads` 末线程裁决——见 [`task_exit_hook`]）。
+/// Exited 落账 + TERMINATED 唤醒 + drain/release 异步移交；T-1 分序版：Thread
+/// 簿记/join 唤醒 + `live_threads` 末线程裁决——见 [`task_exit_hook`]）与
+/// **REAP 后处理钩子**（P2-2：pending ht-drain 队列在 CPU0 idle/yield 排水
+/// 点排空——见 [`crate::process::ht_drain_flush`]）。
 pub fn install() {
     use berry_hal_aarch64::syscall::install as reg;
     // S-3c c-2c slice 2b：第三参 = SVC 入口锁类位集（`kern_lock::SVC_CLASS_*`，
@@ -3074,6 +4082,9 @@ pub fn install() {
         SVC_CLASS_TABLE,
     };
     berry_sched::set_exit_hook(task_exit_hook);
+    // P2-2 退出异步化：REAP 排水尾钩子——CPU0 idle/yield 点排空 pending
+    // ht-drain 队列（退出钩子的异步半场；注册先于 sched::init/首个任务）。
+    berry_sched::set_reap_post_hook(crate::process::ht_drain_flush);
     // cbox 刀 1：黑匣子排液（0x42）——静态表读零锁，但出参 copy_out 链经
     // walk_leaf 无锁走查本进程页表 = §A113 读者面（0x61/0x87 同链同判）——
     // 升 TABLE 持 KL 与页表写者互斥，NONE 实装号归零不变量（刀 1 初判 NONE
@@ -3116,8 +4127,11 @@ pub fn install() {
     // —— SQ+RQ+TABLE（0x2E）：0x21 pager_supply_pages（G4-2）——阻塞收货
     //（block_current SQ 面）+ 唤 faulter（wake→enqueue RQ 面）+ 双对象
     // 表门控；供给窗 = vmar 族同构 KL 面（pt_lock 嵌 KL 正序）。锁类对齐
-    // wait_one（同为「表 + 可睡」handler）。
+    // wait_one（同为「表 + 可睡」handler）。0x23（X-3b）同形挂同类；0x24
+    //（X-6 刀① 表批）多窗一次收货——表门控 ×N、供给/唤醒链同构，同类。
     reg(NR_PAGER_SUPPLY_PAGES, sys_pager_supply_pages, SVC_CLASS_SQ_RQ_TABLE);
+    reg(NR_PAGER_SUPPLY_MAPPED, sys_pager_supply_mapped, SVC_CLASS_SQ_RQ_TABLE);
+    reg(NR_PAGER_SUPPLY_MAPPED_TABLE, sys_pager_supply_mapped_table, SVC_CLASS_SQ_RQ_TABLE);
     reg(NR_PROCESS_CREATE, sys_process_create, SVC_CLASS_ALL);
     // —— RQ+TABLE（0x2C）：start 双号（enqueue 双核升序 + 表）——
     reg(NR_PROCESS_START, sys_process_start, SVC_CLASS_RQ_TABLE);
@@ -3141,6 +4155,9 @@ pub fn install() {
     reg(NR_SCHED_GETATTR, sys_sched_getattr, SVC_CLASS_TABLE);
     // —— RQ+TABLE：yield（pick/requeue + 切换舞蹈；表位保守对称）——
     reg(NR_THREAD_YIELD, sys_thread_yield, SVC_CLASS_RQ_TABLE);
+    // —— TABLE：CP-08 util 快照读（0x40——EWMA 槽 Relaxed 原子读零共享
+    //    面；copy_out 链走查调用方页表 = §A113 读者面，同 0x61/0x87）。
+    reg(NR_SCHED_UTIL_SNAPSHOT, sys_sched_util_snapshot, SVC_CLASS_TABLE);
     reg(NR_CHANNEL_CREATE, sys_channel_create, SVC_CLASS_ALL);
     // —— SQ+RQ+TABLE：send/recv（fastpath sq_phys 外提已备，slice 2a）——
     reg(NR_CHANNEL_SEND, sys_channel_send, SVC_CLASS_SQ_RQ_TABLE);
@@ -3152,4 +4169,22 @@ pub fn install() {
     // 出参 copy_out 链走查本进程页表（§A113 读者面，同 0x61）——升 TABLE。
     reg(NR_SIGNAL_SEND, sys_signal_send, SVC_CLASS_TABLE);
     reg(NR_SIGNAL_TAKE, sys_signal_take, SVC_CLASS_TABLE);
+    // —— TABLE：桌面UX刀D 关机最小闭环（0x88 power_off）。零参数零出参零
+    //    表触达；TABLE（仅 KL）= 保守档：UART 诊断行 + PSCI 缓存原子读在
+    //    SVC 屏蔽窗内自安全（「NONE 实装号归零」纪律——clock_read :3863
+    //    同款升档论证）；成功路不归（整机下电），失败路正常返还解锁。
+    reg(NR_POWER_OFF, sys_power_off, SVC_CLASS_TABLE);
+    // —— TABLE：S6-b 策略注入最小 COMMIT 面。0x83 policy_bind 在 abi.toml §4
+    // 在册但 stage=v3——abi_gen 常量层只产 v1/1.1 行（gen_abi.py defined 集），
+    // NR_POLICY_BIND 不存在，故字面量挂派发（v3 常量层落地后换常量名）。
+    // TABLE 理由：copy_from_user 整表拷入走查本进程页表（§A113 读者面，同
+    // 0x87 signal_take）+ policy SNAPS 三槽轮转区是全局单写者共享面（KL 串
+    // 行跨核 SVC 写者；读者 apply/weight_of 在 RQ 屏蔽决策窗，无共同写窗）。
+    reg(0x83, sys_policy_bind, SVC_CLASS_TABLE);
+    // —— TABLE：阶段五第 16 步 0x84 telemetry_open 翻真（klog 快照首域）。
+    // 同 0x83：v3 在册号、abi_gen 常量层不产 NR_TELEMETRY_OPEN，字面量挂
+    // 派发（v3 常量层落地后换常量名）。TABLE 理由：copy_out 链走查调用方
+    // 页表（§A113 读者面，同 0x61/0x87）+ 快照暂存 stage 是 KL 串行共享面
+    //（见 sys_telemetry_open 注）。
+    reg(0x84, sys_telemetry_open, SVC_CLASS_TABLE);
 }

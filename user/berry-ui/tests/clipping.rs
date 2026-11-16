@@ -261,12 +261,12 @@ fn clip_ast_roundtrip_and_add_only_kind() {
     let _ = direct_clip;
 
 
-    // add-only 未知 kind 拒面顺延到 12。
+    // add-only 未知 kind 拒面顺延到 44（12..=43 已并入 Circle/Panel/Clip）。
     let mut probe = Ui::<8>::new(10, 10);
     probe.root();
     assert_eq!(
-        probe.apply_desc(&[12, 0]),
-        Err(berry_ui::AstError::UnknownKind { got: 12 })
+        probe.apply_desc(&[44, 0]),
+        Err(berry_ui::AstError::UnknownKind { got: 44 })
     );
 }
 

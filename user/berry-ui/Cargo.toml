@@ -1,6 +1,6 @@
 [package]
 name = "berry-ui"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 # GUI-3（docs/GUI-3实施设计草案.md §6 冻结契约 + ADR #52/#53）：自研
 # berry-ui 声明式框架的引擎内核——保留树 arena + 布局 + 脏区合并 +

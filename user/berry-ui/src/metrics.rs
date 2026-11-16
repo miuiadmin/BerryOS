@@ -2,6 +2,11 @@
 //!
 //! - [`TextMetrics`]：文本内在测量缝（`scale` = 档位 id u8，**不焊**
 //!   FontSize——GUI-2 增件⑧ 真字体面的迁移缝）；[`MonospaceTextMetrics`]
+//!   逐位复刻 v1 现状测量（宽 = `len × cell_w`、高 = `cell_h`——
+//!   `FontSize` 单源），换件前的默认供件；[`ProportionalTextMetrics`]
+//!   比例供件（宽 = 逐字形 `GlyphAtlas::advance` 累计——与 paint 推进
+//!   同源；三档点阵下与等宽供件逐值恒等，HD 档为真实比例宽，痛点⑥
+//!   根修 03 号 §1.3-3）。
 //!   按 UTF-8 码点等宽测量（宽 = `codepoints × cell_w`、高 =
 //!   `cell_h`——`FontSize` 单源）；ASCII 与旧字节语义零漂，CJK 多字节
 //!   折一个全宽码点。
@@ -35,6 +40,12 @@ fn tier(scale: u8) -> FontSize {
 /// 文本内在测量缝（§6 冻结签名）：`text` = 有效字节切片；`scale` = 档位
 /// id（u8，不焊 FontSize——GUI-2 增件⑧ 迁移缝）。返回 (w, h)。
 ///
+/// **v1 契约不变量（R2-8 钉）**：等宽供件（[`MonospaceTextMetrics`] 与
+/// 三档点阵）下等长字节串必等宽——B 面 set_text「等长换文 = 纯 PAINT
+/// 零重测」三态判据的正确性前提。比例供件（[`ProportionalTextMetrics`]
+/// + HD 档）下等长**不再蕴含等宽**（"iii"≠"WWW"）——set_text 三态判据
+/// 已改经本缝比对内在宽（equal-len 且等宽才走纯 PAINT 分支），R2-8 面
+/// 由判据侧兜底而非供件侧假设。
 /// **v1 契约（R2-8 修订）**：同一字节序列测量恒等宽（确定性）；UTF-8
 /// 下**等字节长不再必然等宽**（1 个 CJK 与 3 个 ASCII 同为 3B）。S7
 /// `set_text` 的“等长换文 = 纯 PAINT”判据必须并列比较旧/新测量宽；
@@ -79,6 +90,30 @@ impl MonospaceTextMetrics {
     /// 供 paint/诊断复用的换行计划（与测量共用 text_wrap 单源）。
     pub fn wrap_plan(&self, text: &[u8], scale: u8, max_w: u32) -> crate::text_wrap::WrapPlan {
         crate::text_wrap::plan(text, scale, max_w, self)
+    }
+}
+
+/// 比例供件（痛点⑥根修 03 号 §1.3-3）：宽 = 逐字形 `GlyphAtlas::advance`
+/// 累计、高 = `cell_h`——与 paint 侧推进同源单轨（排布/测量不会分叉）。
+///
+/// 三档点阵（advance 缺省 = cell_w）下输出与 [`MonospaceTextMetrics`]
+/// **逐值恒等**——等宽语义零漂移，换装无三档回归面；HD 档（Noto Sans
+/// CJK 比例字源）下为真实比例宽（「Browser Settings」= 269px 而等宽
+/// 排布 512px，03 号 §1.1 实测）。
+pub struct ProportionalTextMetrics;
+
+impl TextMetrics for ProportionalTextMetrics {
+    fn measure(&self, text: &[u8], scale: u8) -> (u32, u32) {
+        let fs = tier(scale);
+        let atlas = fs.atlas();
+        let mut w: u64 = 0;
+        let mut i = 0usize;
+        while i < text.len() {
+            let (cp, step) = crate::utf8::next(&text[i..]).unwrap_or((crate::utf8::REPLACEMENT, 1));
+            w += atlas.advance(cp) as u64;
+            i = i.saturating_add(step.max(1));
+        }
+        (crate::damage::u64_to_u32_sat(w), fs.cell_h() as u32)
     }
 }
 

@@ -348,15 +348,29 @@ impl Default for DisplayList<'_> {
 /// 语义 = DisplayList.push 的薄包装（同一拒面原样透传）。
 pub struct CommandEncoder<'a> {
     list: DisplayList<'a>,
+    clips: [Rect; 17],
+    clip_depth: usize,
 }
 
 impl<'a> CommandEncoder<'a> {
     pub fn new() -> CommandEncoder<'a> {
-        CommandEncoder { list: DisplayList::new() }
+        CommandEncoder { list: DisplayList::new(), clips: [Rect::new(0, 0, 1, 1); 17], clip_depth: 0 }
+    }
+
+    /// Current recording-time clip, if any.
+    pub fn open_clips(&self) -> usize {
+        self.clip_depth
+    }
+
+    pub fn effective_clip(&self) -> Option<Rect> {
+        (self.clip_depth != 0).then(|| self.clips[self.clip_depth - 1])
     }
 
     /// 通用录入（类型化方法的兜底口——命令形态新变体优先走这里）。
     pub fn record(&mut self, cmd: Cmd<'a>) -> Result<(), CmdError> {
+        if self.list.len() + self.clip_depth >= MAX_CMDS {
+            return Err(CmdError::Full);
+        }
         self.list.push(cmd)
     }
 
@@ -371,6 +385,17 @@ impl<'a> CommandEncoder<'a> {
     }
 
     /// 抗锯齿圆角矩形填充。
+    /// Compatibility name for the advanced-main paint corpus: the only
+    /// rounded-rect primitive remains the AA FillRoundRect command.
+    pub fn fill_rect_rounded(
+        &mut self,
+        rect: Rect,
+        radius: i32,
+        color: Color,
+    ) -> Result<(), CmdError> {
+        self.fill_round_rect(rect, radius.max(0) as u32, color)
+    }
+
     pub fn fill_round_rect(
         &mut self, rect: Rect, radius: u32, color: Color,
     ) -> Result<(), CmdError> {
@@ -414,12 +439,31 @@ impl<'a> CommandEncoder<'a> {
 
     /// 压入嵌套裁剪窗（与回放期当前 clip 求交）。
     pub fn push_clip(&mut self, rect: Rect) -> Result<(), CmdError> {
-        self.record(Cmd::PushClip { rect })
+        if self.clip_depth >= self.clips.len() {
+            return Err(CmdError::Full);
+        }
+        // Reserve one slot for the matching PopClip before opening a span;
+        // a full command budget must never leave a dangling clip.
+        if self.list.len() + 2 > MAX_CMDS {
+            return Err(CmdError::Full);
+        }
+        self.list.push(Cmd::PushClip { rect })?;
+        let effective = match self.effective_clip() {
+            Some(parent) => parent
+                .intersect(&rect)
+                .unwrap_or_else(|| Rect::new(rect.x, rect.y, 0, 0)),
+            None => rect,
+        };
+        self.clips[self.clip_depth] = effective;
+        self.clip_depth += 1;
+        Ok(())
     }
 
     /// 弹出一层嵌套裁剪窗。
     pub fn pop_clip(&mut self) -> Result<(), CmdError> {
-        self.record(Cmd::PopClip)
+        self.list.push(Cmd::PopClip)?;
+        self.clip_depth = self.clip_depth.saturating_sub(1);
+        Ok(())
     }
 
     /// 呈现（soft no-op / flip 留位）。

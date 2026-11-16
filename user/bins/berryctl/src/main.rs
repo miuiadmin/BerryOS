@@ -7,6 +7,10 @@
 //! - `ps`：拉起账本全表，行面与 ps bin 同（`{name} alive|exited(c)|spawnfail`）；
 //! - `mem`：`mem vmos=<n> bytes=<t>`（svcmgr 经既有 vmo_get_size 计数
 //!   自己可见的 VMO——内核遥测读 syscall 不新增）。
+//! - `power`（桌面UX刀D）：**非 RPC 面**早分支——内核 `power_off`（0x88，
+//!   PSCI SYSTEM_OFF 经 HVC）直调；成功 = 整机退出不归（无 gift 拓扑
+//!   （bsh 手跑档）亦可调）；失败 stderr 一行 + exit 1（无 PSCI 机器
+//!   诚实降级——宿主工具栏 OFF 仍是唯一关机路）。
 //!
 //! 失败面（无 gift / RPC 帽尽 / 畸形应答 / 未知子命令）stderr 一行诊断
 //! + exit 1——标记缺失 = smoke FAIL 兜底（链断 loud）。v0 边界：bsh
@@ -47,12 +51,21 @@ fn now() -> u64 {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let sub = args.get(1).map(String::as_str).unwrap_or("");
+    // `power` 早分支（桌面UX刀D）：走内核 PSCI SYSTEM_OFF（0x88），非
+    // psproto RPC 面——无 svcmgr gift 亦可调（bsh 手跑档同形）。成功 =
+    // 不归（整机退出）；失败 stderr 一行诊断 + exit 1（无 PSCI 拓扑
+    // 诚实降级——「宿主工具栏 OFF」为唯一关机路的机器上如实报）。
+    if sub == "power" {
+        let st = berry_sys::berry_power_off();
+        eprintln!("berryctl: power off unsupported (st={st}) -- use host toolbar OFF");
+        exit(1);
+    }
     let op: u8 = match sub {
         "ver" => OP_VER,
         "ps" => OP_PS_LIST,
         "mem" => OP_MEM,
         _ => {
-            eprintln!("usage: berryctl ver|ps|mem");
+            eprintln!("usage: berryctl ver|ps|mem|power");
             exit(1);
         }
     };

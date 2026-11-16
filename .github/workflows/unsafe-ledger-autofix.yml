@@ -1,0 +1,105 @@
+name: unsafe-ledger-autofix
+
+# unsafe 台账步红自动重产回流（W1-Q14 根治件，2026-11-15）。
+#
+# 基因（判例七连发 #167/#175/#220 系）：owner 直推 kernel/ 改源不带台账
+# 重产 → ci-light「unsafe 台账对拍」步红 → lane 手工重产开 fix PR。本
+# workflow 把该手工段自动化：base（wip/sched-1.1）每次 push 后跑
+# `unsafe_audit.py --check`（纯 python3 秒级，无 paths 过滤——kernel-only
+# 推送也会漂移台账，覆盖面须比 ci-light 的 paths 面宽），红即：
+#   重产 → 单一专用分支 unsafe-autofix/ledger 力推去重 → 复用/新开 fix
+#   PR（label hermes-auto 进 reviewer 队列）。fix PR 只动 docs/unsafe台账.md
+#   marker 块（prose 面零改），合入即步红自愈。
+# 去重两道：固定分支名 force push 原地更新；开 PR 前按 head 查 open PR
+# 命中即复用不重开。
+# 注：GITHUB_TOKEN 发起的事件不递归触发 workflow（GitHub 防环生语义），
+# 本文件仅挂 push@wip/sched-1.1；fix PR 面验证走 ci-light 常规道。
+on:
+  push:
+    branches: [wip/sched-1.1]
+
+permissions:
+  contents: write      # fix 分支 push
+  pull-requests: write # fix PR 开/查
+  issues: write        # PR 加 hermes-auto label
+
+concurrency:
+  # 串行去重：不取消在跑轮（cancel 会截断半产的 fix PR）。
+  group: unsafe-ledger-autofix
+  cancel-in-progress: false
+
+env:
+  PATH: /home/runner/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+
+jobs:
+  autofix:
+    runs-on: [self-hosted, linux-x64, brew]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 台账对拍（红面探测——同 ci-light 步）
+        id: audit
+        run: python3 tools/unsafe_audit.py --check
+
+      - name: 重产 + 对拍证绿 + 力推去重分支
+        id: pushfix
+        if: failure() && steps.audit.outcome == 'failure'
+        run: |
+          set -eu
+          # 重产（marker 块机器自有；prose 面零改）
+          python3 tools/unsafe_audit.py
+          if git diff --quiet -- docs/unsafe台账.md; then
+            echo "::error::对拍红但重产零 diff——非源码漂移红（marker 块缺失/结构性坏），须人工修，不自动开 PR。"
+            exit 1
+          fi
+          # 证绿闭环：重产后对拍必绿（红 = 重产器自身 bug，拦下不推）
+          python3 tools/unsafe_audit.py --check
+          git config user.name "berryos-autofix"
+          git config user.email "autofix@berryos.invalid"
+          git checkout -B unsafe-autofix/ledger
+          git add docs/unsafe台账.md
+          git commit -m "chore(unsafe): 台账重产——ci-light 步红自动回流（源 ${GITHUB_SHA}）"
+          git push --force origin unsafe-autofix/ledger
+
+      - name: 复用/新开 fix PR + 挂 label
+        if: failure() && steps.audit.outcome == 'failure' && steps.pushfix.outcome == 'success'
+        uses: actions/github-script@v7
+        env:
+          TRIGGER_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            const br = 'unsafe-autofix/ledger';
+            const head = context.repo.owner + ':' + br;
+            const pulls = await github.rest.pulls.list({
+              ...context.repo, head, state: 'open',
+            });
+            if (pulls.data.length > 0) {
+              core.notice(`复用 open fix PR #${pulls.data[0].number}（分支已 force 更新）`);
+              return;
+            }
+            const body = [
+              '**任务**：base push 后 unsafe 台账对拍红（owner 直推改源漏带重产的判例族，#167/#175/#220 系基因）——unsafe-ledger-autofix workflow 自动重产回流，零人工介入。',
+              '',
+              '**改动**：仅 `docs/unsafe台账.md` marker 块（密度总览 + 登记表），全量由 `python3 tools/unsafe_audit.py` 机械重产，prose 面零改。',
+              '',
+              '**验证**：workflow 内重产后 `--check` 对拍实跑绿（证绿闭环——红则不推）；本 PR 的 ci-light 台账步即合入面复验。',
+              '',
+              '**风险**：纯机械 docs 面，零 kernel/ABI/依赖；若红因手改 marker 块越界（非源码漂移），重产会覆盖手改——merge 前请人工过目 diff。',
+              '',
+              `触发：${process.env.RUN_URL}（源 push ${process.env.TRIGGER_SHA}）`,
+            ].join('\n');
+            const pr = await github.rest.pulls.create({
+              ...context.repo,
+              title: 'chore(unsafe): 台账重产——ci-light 步红自动回流',
+              head: br,
+              base: 'wip/sched-1.1',
+              body,
+            });
+            core.notice(`fix PR #${pr.data.number} 已开：${pr.data.html_url}`);
+            await github.rest.issues.addLabels({
+              ...context.repo,
+              issue_number: pr.data.number,
+              labels: ['hermes-auto'],
+            });

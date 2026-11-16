@@ -1,6 +1,6 @@
 [package]
 name = "berry-psproto"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 # C-3 段①（docs/VM里程碑设计草案.md §C-3）：ps 查询 RPC 协议纯函数
 # crate，`berry-fsproto` 先例（「解析器即产品」）——`cfg_attr(not(test),

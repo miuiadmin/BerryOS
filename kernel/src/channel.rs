@@ -24,16 +24,24 @@ use crate::handle::{ObjRef, Rights};
 use alloc::vec::Vec;
 use core::ptr::NonNull;
 
+// W3-Q9：界常量与队列资格判单源迁 berry-chanface（判据纯函数面，host
+// 可测钉板）；本文件 re-export 保持 crate 内路径稳定（hdlface 同款纪律）。
+// W3-Q49：冻结面配对判与队列序守卫单源迁 freeze 模块（mark/clear 资格 +
+// push/pop/push_front 不变量）；物理 retain/release 与 Vec 机械留壳。
+pub use berry_chanface::{
+    clear_frozen_ok, mark_frozen_ok, pop_ok, push_front_ok, push_ok,
+    queue_full_of, queue_readable, CHAN_DEPTH, CHAN_HND_MAX, CHAN_MSG_MAX,
+};
+
 /// 单条消息 inline 字节上限（IPC设计 §2：内联载荷 ≤256B；更大走共享 VMO）。
-pub const CHAN_MSG_MAX: usize = 256;
+/// **单源 = berry-chanface（W3-Q9 迁出）**——本文件 re-export（上方 pub use）
+/// 保 crate 内外路径稳定；沿革注记随源在 chanface。
 /// 单条消息随行 handle 上限（ABI §8.3 send/recv 数组界）。T-1：4→6——
 /// berry-exec env 块 gift 扩至 6 位；A2-3：6→8——bsh arm 三 extras
 /// （rootfs/fs/netd 端）+ base 2 + T-1 自描述对 2 = env 块 7 位（首跑实抓：
 /// nhandles=7 > 6 → send -EINVAL → spawn 链 trap 自陷 svcmgr）；libc
 /// `io.rs` 收窗与 ktest H3 超限样本同步 8/9 口径。
-pub const CHAN_HND_MAX: usize = 8;
 /// 每端收件队列深度（有界性 = send -EBUSY 的来源）。
-pub const CHAN_DEPTH: usize = 8;
 
 /// 一条消息：inline 字节 + 迁移中的 handle 令牌（`take` 出表、未入新表——
 /// 引用计数随令牌走，`insert_ref` 不动 refs）。**定长内联**（3b3 审查 H2 try
@@ -101,9 +109,20 @@ pub struct ChannelEnd {
     /// `channel_create` options bit0——置位端 recv **不结算 intent**（固定优先级
     /// server 逃生门）。对称建对 API 下「通道级」语义 = 两端同置、双向皆不传播。
     no_intent: bool,
-    /// 最近在本端执行 recv 的 Process tag（0 = 未知）。只作为协作 reply
-    /// handoff 的通道亲和提示：发送方自愿 yield 时调度器可优先选该进程的
-    /// Ready 任务；不参与唤醒语义、不改变公平优先级。
+    /// AM-1.5 wake-pending 冻结属主标：持有本端（接收侧）handle 的进程被
+    /// `process_suspend` 全冻时指向该 Process ObjRef（**retain 配平**——freeze
+    /// 枚举打标时 +1，thaw 清标/端点 Drop 防御面 -1）。设计意图（AM 设计
+    /// 「IPC × 冻结」Q1 裁决）：send 热路径免**反查属主**——非冻结态恒 None，
+    /// send 只加一次本位测试分支（非冻结零额外成本）；置位后 send 照常入队
+    /// （消息不丢弃），另触发 wake-pending 通知（`sys_channel_send` 尾）。
+    /// 冻进程任务全冻 ⇒ 表不可变 ⇒ 冻端点不可能先于 thaw 销毁（Drop 防御面
+    /// 仅为 retain 配平纪律）。共享端点（dup/迁移跨表）归**首冻结主**——
+    /// v1 单主形，多冻结主共享端点的次主通知面是已知保守缺口（消息仍排队，
+    /// 只是次主 token 持有者不被这一跳唤醒）。
+    frozen_owner: Option<NonNull<ObjRef>>,
+    /// 最近在本端 recv 的 Process tag（0 = 未知）。只作为协作 reply handoff
+    /// 的通道亲和提示：发送方自愿 yield 时调度器可优先选该进程的 Ready
+    /// 任务；不参与唤醒语义、不改变公平优先级。
     last_recv_proc: usize,
 }
 
@@ -117,7 +136,7 @@ impl ChannelEnd {
     pub fn try_unpaired(no_intent: bool) -> Option<Self> {
         let mut queue = Vec::new();
         queue.try_reserve_exact(CHAN_DEPTH).ok()?;
-        Some(Self { peer: None, queue, no_intent, last_recv_proc: 0 })
+        Some(Self { peer: None, queue, no_intent, frozen_owner: None, last_recv_proc: 0 })
     }
 
     /// 记录最近 recv 方 Process tag（含空队探测——服务 poll-first 也建立亲和）。
@@ -128,6 +147,43 @@ impl ChannelEnd {
     /// 最近 recv 方 Process tag（0 = 未知）。
     pub fn last_recv_proc(&self) -> usize {
         self.last_recv_proc
+    }
+
+    /// AM-1.5 冻结属主标（send 热路径唯一新增分支的测试位；`None` = 未冻结）。
+    pub fn frozen_owner(&self) -> Option<NonNull<ObjRef>> {
+        self.frozen_owner
+    }
+
+    /// AM-1.5：打冻结属主标。**幂等**——已标（他主或同主）返 `false` 不重复
+    /// retain（同表 duplicate 别名 / 跨进程共享端点归首冻结主，见字段注）。
+    /// 判据单源 = [`berry_chanface::mark_frozen_ok`]（W3-Q49——owner 以
+    /// 指针值投影，幂等/异主拒同臂钉板）。retain 配平点：[`Self::clear_frozen`]
+    /// 与本类型 Drop 防御面。
+    pub fn mark_frozen(&mut self, owner: NonNull<ObjRef>) -> bool {
+        if !mark_frozen_ok(self.frozen_owner.map(|o| o.as_ptr() as u64)) {
+            return false;
+        }
+        self.frozen_owner = Some(owner);
+        // SAFETY: owner = 调用方（freeze 枚举）持有的在表 Process ObjRef，
+        // 对象活；单核 IRQ 屏蔽串行。retain 本身是安全方法。
+        unsafe { (*owner.as_ptr()).retain() };
+        true
+    }
+
+    /// AM-1.5：清由 `owner` 打的冻标（属主不符/未标返 `false` 不动——跨主
+    /// 安全）。真清时 release 配平 mark 的 retain。判据单源 =
+    /// [`berry_chanface::clear_frozen_ok`]（W3-Q49——属主精确匹配钉板）。
+    /// **调用方契约**：枚举清标场景（thaw 走查全表）须保证 `owner` 在整轮
+    /// 枚举期间存活（token Drop / suspend 回滚序此刻必持 ≥1 引用——release
+    /// 只退 mark 份额，归零销毁不落在枚举中途）。
+    pub fn clear_frozen(&mut self, owner: NonNull<ObjRef>) -> bool {
+        if !clear_frozen_ok(self.frozen_owner.map(|o| o.as_ptr() as u64), owner.as_ptr() as u64) {
+            return false;
+        }
+        self.frozen_owner = None;
+        // SAFETY: 配平 mark_frozen 的 retain；此后本端点不再触 owner。
+        unsafe { ObjRef::release(owner) };
+        true
     }
 
     /// opt-out 标志（recv 结算侧查询）。
@@ -159,17 +215,19 @@ impl ChannelEnd {
 
     /// 队列是否已满（send 前置检查 → -EBUSY）。
     pub fn queue_full(&self) -> bool {
-        self.queue.len() >= CHAN_DEPTH
+        queue_full_of(self.queue.len())
     }
 
     /// 队列是否有消息（wait 面 READABLE 信号状态——4-2 内核派生位）。
     pub fn has_message(&self) -> bool {
-        !self.queue.is_empty()
+        queue_readable(self.queue.len())
     }
 
     /// 压一条消息进**本端**队列（send 侧实际调的是对端的这个方法）。
+    /// 守卫判据单源 = [`berry_chanface::push_ok`]（W3-Q49——容量不变量
+    /// 钉板；release 行为零变化：前置 `queue_full` 已挡，保旧无条件 push）。
     pub fn push(&mut self, msg: Message) {
-        debug_assert!(self.queue.len() < CHAN_DEPTH);
+        debug_assert!(push_ok(self.queue.len()));
         self.queue.push(msg);
     }
 
@@ -179,13 +237,19 @@ impl ChannelEnd {
     }
 
     /// 弹出队首（recv 全部成功路径的收尾；令牌已被调用方收割）。
+    /// 守卫判据单源 = [`berry_chanface::pop_ok`]（W3-Q49——空拒律钉板；
+    /// 调用方契约已窥视非空，保旧无条件 remove(0)）。
     pub fn pop(&mut self) -> Message {
+        debug_assert!(pop_ok(self.queue.len()));
         self.queue.remove(0) // 深度 ≤8：O(n) 可忽略
     }
 
     /// 消息压回**队首**（recv 失败回滚专用——消费路径的任一中途失败须保序
-    /// 复原，FIFO 语义下不能从队尾补回）。
+    /// 复原，FIFO 语义下不能从队尾补回）。守卫判据单源 =
+    /// [`berry_chanface::push_front_ok`]（W3-Q49——回滚容量不变量钉板：
+    /// 刚弹出一条必腾一空位，压回不越界）。
     pub fn push_front(&mut self, msg: Message) {
+        debug_assert!(push_front_ok(self.queue.len()));
         self.queue.insert(0, msg);
     }
 }
@@ -197,6 +261,12 @@ impl Drop for ChannelEnd {
         // SAFETY: pair 时 retain 过；单核顺序（对象仅在 IRQ 屏蔽路径销毁）。
         if let Some(peer) = self.peer {
             unsafe { ObjRef::release(peer) };
+        }
+        // AM-1.5 冻结属主标配平：正常序 thaw 清标先于端点销毁（冻进程任务
+        // 全冻 ⇒ 表不可变 ⇒ 此分支不可达）；万一到达（防御面）也保 retain
+        // 配平不泄漏。SAFETY: freeze 枚举打标时 retain 过；单核顺序同上。
+        if let Some(owner) = self.frozen_owner {
+            unsafe { ObjRef::release(owner) };
         }
     }
 }

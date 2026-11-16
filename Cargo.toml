@@ -1,10 +1,47 @@
 [workspace]
+exclude = ["user/berry-em"]
+members = [
+    "arch/aarch64",
+    "bandface",
+    "balface",
+    "chanface",
+    "dpgface",
+    "dtbface",
+    "emface",
+    "evface",
+    "frzface",
+    "hdlface",
+    "hdrface",
+    "heapface",
+    "hofface",
+    "intface",
+    "iprofile",
+    "itally",
+    "kernel",
+    "lkface",
+    "mm",
+    "piface",
+    "polface",
+    "psface",
+    "rootface",
+    "ringface",
+    "safeck",
+    "sched",
+    "sliceface",
+    "susface",
+    "telface",
+    "tickface",
+    "trapface",
+    "utrace",
+    "vmoledger",
+    "vslotface",
+    "wqmatch",
+    "fwcfgface",
+    "wakeface",]
 resolver = "2"
-members = ["kernel", "arch/aarch64", "mm", "sched"]
-
 [workspace.package]
 edition = "2021"
-version = "0.1.0"
+version = "0.2.0"
 
 # panic=abort 消除对 eh_personality 语言项的依赖（no_std 内核不需要 unwind）。
 [profile.dev]

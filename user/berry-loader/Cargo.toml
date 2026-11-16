@@ -1,6 +1,6 @@
 [package]
 name = "berry-loader"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 # G-eco-c（docs/G-eco编译侧设计草案.md D5）：cpio newc / ELF64 解析器 =
 # 用户态服务逻辑（微内核原则），纯函数 crate 零依赖。`cfg_attr(not(test),

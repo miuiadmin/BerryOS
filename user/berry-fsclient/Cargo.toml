@@ -1,6 +1,6 @@
 [package]
 name = "berry-fsclient"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 rust-version = "1.93"   # MSRV = musl 1.2.5 口径基线（Rust 2025-12 起 musl 目标；SDK-02 拍板①）
 # C-1 刀 1（docs/VM里程碑设计草案.md §C-1）：fs 服务客户端 crate，两层——
@@ -26,9 +26,9 @@ categories = ["api-bindings", "filesystem"]
 targets = ["aarch64-unknown-none", "aarch64-unknown-linux-musl"]
 
 [dependencies]
-berry-sys = { path = "../berry-sys", version = "0.1.0" }
-berry-fsproto = { path = "../berry-fsproto", version = "0.1.0" }
+berry-sys = { path = "../berry-sys", version = "0.2.0" }
+berry-fsproto = { path = "../berry-fsproto", version = "0.2.0" }
 # A3-2：netd ST 码/会话容量/POLL 旗单源引（socket RPC 语义纯函数面
 # poll_revents/sock_rpc_errno 的 wire 侧事实源——「不长第二套」；帽常量
 # 自 berry-fsproto 单源引的同族纪律）。
-berry-netdproto = { path = "../berry-netdproto", version = "0.1.0" }
+berry-netdproto = { path = "../berry-netdproto", version = "0.2.0" }

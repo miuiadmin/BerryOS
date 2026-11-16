@@ -191,6 +191,14 @@ pub fn stdin_h() -> u32 {
     unsafe { STDIN_H }
 }
 
+/// env 块 handles[0] 的 console 发端别名（app-2：lifecycle 非阻塞诊断口
+/// 消费——64-cap try-spin 面，与 [`console_write`] 的 EBUSY 阻塞重试形态
+/// 分立〔草案 §2.2 诊断口纪律/§8.3 R3〕）；0 = env 块未解出（纯丢行）。
+pub fn console_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { CONSOLE_H }
+}
+
 /// env 块 extras[0]（gift[4] 位）的 rootfs VMO handle（A-2：0 = 未交付——
 /// svcmgr 系老程序；bsh 持 READ dup 经 berry-exec 流式取子程序 ELF）。
 pub fn rootfs_h() -> u32 {
@@ -247,9 +255,41 @@ pub fn wm_srv_h() -> u32 {
     unsafe { GIFT_H[0] }
 }
 
+/// env 块 extras[0]（gift[4] 位）的同槽访问器（sim-S1 M2-b：simbattery 的
+/// ACK 通道 SEND 端——boot 手搭 simbattery↔task_simcon ACK 对后随 svcmgr
+/// 预拉 extras 首位交付，服务逐帧回 9B ACK（宿主 client 读回对拍面，
+/// `docs/sim设备通道与契约设计-v1.1.md` §6）；0 = 未交付 = 未在 sim 门相
+/// spawn（bsh 手跑/裸相），调用方单行诊断降级 park。与 [`rootfs_h`]/
+/// [`gift2_h`]/[`present_h`]/[`wm_cli_h`]/[`wm_srv_h`] 同槽不同名：spawn
+/// 侧同一 gift 位对不同程序承载不同对象（多产面惯例）。
+pub fn sim_ack_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[0] }
+}
+
 /// env 块 extras[1]（gift[5] 位）的 fs 客户端端（P6 A-1：bsh 的 `>`/`cat`/`ls` 走它发
 /// RPC；0 = 未交付 = fs 未拉起，调用方降级「fs not available」不死）。
 pub fn fs_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[1] }
+}
+
+/// env 块 extras[0]（gift[4] 位）的同槽访问器（app-1：apptomb / 未来生命周期
+/// app 的 lifecycle 通道端——svcmgr tomb_selftest 建对后端 B 随 extras 首位
+/// 迁入，up/beat/resumed/saved/restored 上报与 PAUSESV1 下行都走它；
+/// 0 = 未交付 = 未在生命周期 spawn 面。与 [`rootfs_h`] 族同槽不同名（多产面
+/// 惯例）。v0 apptomb 自解析 env 块不经 libc——本访问器为规范 §4.1-5 回调
+/// 三口/app-2 的 libc 路备。
+pub fn lifecycle_h() -> u32 {
+    // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
+    unsafe { GIFT_H[0] }
+}
+
+/// env 块 extras[1]（gift[5] 位）的同槽访问器（app-1 段 b：墓碑 state VMO
+/// ——appd 预建 64KiB 定尺寸（结构性帽）+ commit 后 dup 授子；relaunch 时
+/// duplicate(READ|WRITE)（复活者再入 pause 循环写权——草案 v1.2 §4，
+/// 不收紧只读）。与 [`fs_h`] 同槽不同名）。
+pub fn state_h() -> u32 {
     // SAFETY: 只读；唯一写点在 crt0 `berry_libc_boot`（先于 main）。
     unsafe { GIFT_H[1] }
 }

@@ -43,9 +43,15 @@
 //! alloc 失败折半重试）→ 每段 AllocatePages(EfiLoaderData) 页钉——
 //! **先于终段 GetMemoryMap**（页进图成非 Conventional，内核 V-1b pass2
 //! reserve 自动保）→ 段描述符数组透传 load_kernel 填 handoff v1
-//! （init_segs_* @112/@120 + @128 同页数组，A1-3b 起消费）+ 终段
+//! （init_segs_* @112/@120 + 同页数组（V10 头扩后基址 @176），A1-3b 起消费）+ 终段
 //! dcache 刷集逐段入刷（CPU 拷贝脏线防线）。盘上缺席打
 //! `init: absent` 续行——内核降级 ROOTFS absent，非致命。
+//! P3/V10 面：行 5c `sig:`（kfile 后）boot 期验签——读镜像侧锚两件
+//!（\TRUSTPK 32B + \KERNEL.SIG 64B）→ ed25519 verify（KERNEL.ELF 全
+//! 字节）→ 验过填 V10 槽（meas_root=SHA-512/256 + sig_slot_off/len=签名
+//! 缓冲 PA/64，设计 = docs/设备侧验签与账本落盘设计-v1.0.md §1.2/§4.1
+//! ——详「V10 boot 期验签携面」段注）；两件全缺 = 零行零扰动（默认无签
+//! 镜像），验败/半装 = loud 降级（QEMU 占位语义，真机拒跳随闸 E）。
 //!
 //! 纪律：引导链零 panic（panic handler = 死循环）；一切协议调用失败打
 //! **状态码诊断行**（机器可读缺席报告——AI 测试友好：`locate fail r=0x…e`
@@ -55,12 +61,13 @@
 
 use berry_efi::{
     fmt_u32_dec, fmt_u64_hex, utf16_encode, utf16_to_ascii, EfiFileInfo,
-    EfiGraphicsOutputModeInfo, EfiGraphicsOutputProtocol, EfiLoadedImageProtocol,
-    EfiMemoryDescriptor, EfiSimpleFileSystemProtocol, EfiStatus, EfiSystemTable,
-    EFI_ALLOCATE_ADDRESS, EFI_ALLOCATE_ANY_PAGES, EFI_BOOT_SERVICES_SIGNATURE,
-    EFI_BUFFER_TOO_SMALL, EFI_FILE_INFO_GUID, EFI_FILE_MODE_READ,
-    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, EFI_LOADED_IMAGE_PROTOCOL_GUID, EFI_LOADER_DATA,
-    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EFI_SUCCESS, EFI_SYSTEM_TABLE_SIGNATURE,
+    EfiFileProtocol, EfiGraphicsOutputModeInfo, EfiGraphicsOutputProtocol,
+    EfiLoadedImageProtocol, EfiMemoryDescriptor, EfiSimpleFileSystemProtocol,
+    EfiStatus, EfiSystemTable, EFI_ALLOCATE_ADDRESS, EFI_ALLOCATE_ANY_PAGES,
+    EFI_BOOT_SERVICES_SIGNATURE, EFI_BUFFER_TOO_SMALL, EFI_FILE_INFO_GUID,
+    EFI_FILE_MODE_READ, EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID,
+    EFI_LOADED_IMAGE_PROTOCOL_GUID, EFI_LOADER_DATA, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID,
+    EFI_SUCCESS, EFI_SYSTEM_TABLE_SIGNATURE,
 };
 use berry_bootprogress::{Renderer, Stage};
 use core::ffi::c_void;
@@ -94,7 +101,7 @@ fn boot_err_name(e: berry_loader::LoadError) -> &'static str {
     }
 }
 
-// ==================== BerryHandoff v1（V-0b 刀 3 冻结 v0；A1-3b 扩 v1） ====================
+// ==================== BerryHandoff v2（V-0b 刀 3 冻结 v0；A1-3b 扩 v1；V10 尾追加扩 v2——ADR #82 附录一） ====================
 //
 // **双镜像纪律**（同 kernel/src/handoff.rs——两侧逐字段同步 + 同一张 const
 // assert 偏移表，任一侧漂移 = 编译期炸响；abi_gen.rs 双面镜像同精神）。
@@ -103,8 +110,10 @@ fn boot_err_name(e: berry_loader::LoadError) -> &'static str {
 
 /// 魔数：LE u32 读出 = ASCII "BRYH"。
 pub const HANDOFF_MAGIC: u32 = 0x4252_5948;
-/// 协议版本：v1 = 1（A1-3b init 分段递送；v0 = 0 冻结于 V-0b 刀 3）。
-pub const HANDOFF_VERSION: u32 = 1;
+/// 协议版本：v2 = 2（V10 尾追加度量/签名槽留位——ADR #82 附录一，全零 =
+/// 未度量/未占用，v1 行为零变）；v1 = 1（A1-3b init 分段递送）；v0 = 0
+/// 冻结于 V-0b 刀 3（扩字段 = bump version，内核认 ≤ 当前版）。
+pub const HANDOFF_VERSION: u32 = 2;
 
 /// 分段描述符数上限（与内核侧同值——handoff 单页自含的执法点）。
 pub const INIT_SEGS_MAX: usize = 32;
@@ -116,7 +125,7 @@ pub const INIT_SEG_TARGET: usize = 8 * 1024 * 1024;
 /// INITRD.BIN 总量帽：与内核 `ROOTFS_TOTAL_MAX` 同口径（A1-2 帽分家）。
 pub const INIT_TOTAL_MAX: usize = 128 * 1024 * 1024;
 
-/// init 分段描述符（v1 描述符数组元素，随 handoff 同页 @128）。
+/// init 分段描述符（v1 描述符数组元素，随 handoff 同页：v2 @176 / v1 @128）。
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct InitSeg {
@@ -124,7 +133,7 @@ pub struct InitSeg {
     pub len: u64,
 }
 
-/// 交接结构（v1 = 128B 头，全 8B 字段 8 对齐；无指针——PA 直递）。
+/// 交接结构（v2 = 176B 头，全 8B 字段 8 对齐；无指针——PA 直递）。
 #[repr(C)]
 pub struct BerryHandoff {
     pub magic: u32,               // @0
@@ -146,14 +155,17 @@ pub struct BerryHandoff {
     pub init_blob_len: u64,       // @88 v0 事实源（v1 置零不读）
     pub cmdline_pa: u64,          // @96 留位零（裁决 B）
     pub cmdline_len: u64,         // @104 留位零（裁决 B）
-    pub init_segs_pa: u64,        // @112 描述符数组 PA（= handoff 页 @128；0=无）
+    pub init_segs_pa: u64,        // @112 描述符数组 PA（自相对基址按 version：v2 @176/v1 @128；0=无）
     pub init_segs_count: u32,     // @120 段数（0=无 INITRD）
     pub _r1: u32,                 // @124 保留零
+    pub meas_root: [u8; 32],      // @128 度量根留位（V10 预埋，ADR #82 附录一；全零 = 未度量）
+    pub sig_slot_off: u64,        // @160 签名槽偏移留位（V10 预埋，同上；零 = 未占用，off/len 同判）
+    pub sig_slot_len: u64,        // @168 签名槽长度留位（V10 预埋，同上；零 = 未占用）
 }
 
 /// 布局执法表（与 kernel/src/handoff.rs 逐行相同——两侧同表执法）。
 const _: () = {
-    assert!(size_of::<BerryHandoff>() == 128);
+    assert!(size_of::<BerryHandoff>() == 176);
     assert!(size_of::<InitSeg>() == 16);
     assert!(offset_of!(InitSeg, pa) == 0);
     assert!(offset_of!(InitSeg, len) == 8);
@@ -179,6 +191,9 @@ const _: () = {
     assert!(offset_of!(BerryHandoff, init_segs_pa) == 112);
     assert!(offset_of!(BerryHandoff, init_segs_count) == 120);
     assert!(offset_of!(BerryHandoff, _r1) == 124);
+    assert!(offset_of!(BerryHandoff, meas_root) == 128);
+    assert!(offset_of!(BerryHandoff, sig_slot_off) == 160);
+    assert!(offset_of!(BerryHandoff, sig_slot_len) == 168);
 };
 
 /// 刀 1 骨架行：ASCII + CRLF（EFI ConOut 惯例——部分终端只认 CRLF）。
@@ -640,6 +655,151 @@ impl ProgressRuntime {
     }
 }
 
+// ==================== V10 boot 期验签携面（P3） ====================
+//
+// 设计 = `docs/设备侧验签与账本落盘设计-v1.0.md` §1.2（boot 期四步）+
+// §4.1（meas_root×sig_slot 消费决策表）。最小闭环形态（推断标注——
+// §1.2-2 签名数据格式/信任锚随闸 C/Q3 立法，真机烧录锚随闸 E/Q1）：
+// - **镜像侧锚两件**（mkimage `--sign-key`/`--trust-pk` 产）：FAT 根
+//   `\TRUSTPK`（32B raw 公钥——`etc/trust-pk` 同款约定镜像侧形态，
+//   v1 测试场景件语义）+ `\KERNEL.SIG`（64B ed25519 裸签，覆盖域 =
+//   KERNEL.ELF 全字节——berry-sign sign-raw 独立合同，`<ID>.bap.sig`
+//   伴生命名直映）。
+// - **态处置**（§1.2-4：RED = 真机路拒跳，QEMU 路占位）：两件全缺 =
+//   未度量现状（**零行零扰动**——默认无签镜像）；两件齐验过 =
+//   `sig: verified` + 填槽；验败 = `sig: BAD` loud + 降级续跳（槽恒
+//   全零——QEMU 占位语义，推断）；半装（一在一缺）= `sig: half` loud
+//   + 降级（诚实可见，不留静默通道）。
+// - **槽语义**（§1.2-1 偏移基随闸 E 立法，此处取 PA 直递——与
+//   memmap_pa/init_segs_pa「PA 直递、装载器/内核各自解址」家族纪律
+//   一致）：meas_root = SHA-512/256(KERNEL.ELF)（槽 0 度量根）；
+//   sig_slot_off/len = KERNEL.SIG 读入缓冲 PA/64（EfiLoaderData 保活，
+//   内核经 memmap 纳管——memmap 缓冲同纪律）。
+
+/// V10 验签事实（§1.2 步 3「验证与态汇成」的 BerryBoot 侧载体——验镜像
+/// 签名 → 填槽递内核）。全零形 = 未度量（缺席/验败/半装同形——槽值面
+/// 不区分态，串口行区分；§4.1 决策表第一行 unverified）。
+#[derive(Clone, Copy)]
+struct SigFacts {
+    meas_root: [u8; 32], // 度量根 = KERNEL.ELF 全字节 SHA-512/256
+    slot_pa: u64,        // KERNEL.SIG 读入缓冲 PA（sig_slot_off 填充源）
+    slot_len: u64,       // 64（sig_slot_len 填充源——ed25519 裸签尺寸）
+}
+
+impl SigFacts {
+    /// 未度量形（V10 槽恒全零——现状语义，无签镜像零扰动）。
+    const UNMEASURED: SigFacts = SigFacts {
+        meas_root: [0; 32],
+        slot_pa: 0,
+        slot_len: 0,
+    };
+}
+
+/// FAT 根目录小件读取（TRUSTPK 32B / KERNEL.SIG 64B 量级）——Open →
+/// GetInfo 探 file_size → 尺寸恰 `want` 校验 → AllocatePool
+/// (EfiLoaderData) → 循环 Read 收齐 → Close（kfile 单句柄序同款）。
+/// 缓冲**不 FreePool**：验过的 KERNEL.SIG = V10 sig_slot 指向域，须活
+/// 到内核（EfiLoaderData 页进图成非 Conventional，内核 V-1b reserve
+/// 纳管——memmap 缓冲/init 段页同纪律）；未用缓冲（验败/半装/尺寸不
+/// 符）一页量级泄露无害。任一步失败/尺寸不符 = 诊断行 + None（引导链
+/// 零 panic——调用方按缺席/半装/降级处置）。
+fn read_exact_fat_file(
+    bs: &berry_efi::EfiBootServices,
+    con_out: &berry_efi::EfiSimpleTextOutputProtocol,
+    root: *mut EfiFileProtocol,
+    root_ref: &EfiFileProtocol,
+    name: &[u8],
+    want: usize,
+) -> Option<u64> {
+    // 8.3 短名 ≤11B + NUL——buf 全零初始化即 NUL 尾（HELLO.TXT 同款）。
+    let mut name16 = [0u16; 13];
+    let n16 = utf16_encode_bytes(name, &mut name16);
+    let mut file: *mut EfiFileProtocol = core::ptr::null_mut();
+    let r_open =
+        unsafe { (root_ref.open)(root, &mut file, n16.as_ptr(), EFI_FILE_MODE_READ, 0) };
+    if r_open != EFI_SUCCESS || file.is_null() {
+        return None; // 缺席 = 正常态（无签镜像两件皆缺）——不打诊断
+    }
+    let file_ref = unsafe { &*file };
+    let mut info_buf = [0u8; 256];
+    let mut info_len = info_buf.len();
+    let r_gi = unsafe {
+        (file_ref.get_info)(
+            file,
+            &EFI_FILE_INFO_GUID as *const _,
+            &mut info_len,
+            info_buf.as_mut_ptr() as *mut c_void,
+        )
+    };
+    if r_gi != EFI_SUCCESS || info_len < 80 {
+        // 判读边界外收句柄（kfile 面纪律——错误路径也不漏 close）。
+        unsafe { (file_ref.close)(file) };
+        print_line(con_out, None, |l| {
+            l.push_str("sig: info ");
+            l.push(name);
+            l.push_str(" r=0x");
+            let mut t = [0u8; 16];
+            l.push(fmt_u64_hex(r_gi as u64, &mut t));
+        });
+        return None;
+    }
+    let fsize = unsafe { (*(info_buf.as_ptr() as *const EfiFileInfo)).file_size } as usize;
+    if fsize != want {
+        unsafe { (file_ref.close)(file) };
+        print_line(con_out, None, |l| {
+            l.push_str("sig: size ");
+            l.push(name);
+            l.push_str(" got=");
+            l.push_u32_dec(fsize as u32);
+            l.push_str(" want=");
+            l.push_u32_dec(want as u32);
+        });
+        return None;
+    }
+    let mut buf: *mut c_void = core::ptr::null_mut();
+    let r_ap = unsafe { (bs.allocate_pool)(EFI_LOADER_DATA, fsize, &mut buf) };
+    if r_ap != EFI_SUCCESS || buf.is_null() {
+        unsafe { (file_ref.close)(file) };
+        print_line(con_out, None, |l| {
+            l.push_str("sig: alloc ");
+            l.push(name);
+            l.push_str(" r=0x");
+            let mut t = [0u8; 16];
+            l.push(fmt_u64_hex(r_ap as u64, &mut t));
+        });
+        return None;
+    }
+    let mut got = 0usize;
+    let mut r_rd = EFI_SUCCESS;
+    while got < fsize {
+        let mut chunk = fsize - got;
+        r_rd = unsafe {
+            (file_ref.read)(
+                file,
+                &mut chunk,
+                (buf as *mut u8).add(got) as *mut c_void,
+            )
+        };
+        if r_rd != EFI_SUCCESS || chunk == 0 {
+            break;
+        }
+        got += chunk;
+    }
+    unsafe { (file_ref.close)(file) };
+    if r_rd != EFI_SUCCESS || got != fsize {
+        print_line(con_out, None, |l| {
+            l.push_str("sig: read ");
+            l.push(name);
+            l.push_str(" got=");
+            l.push_u32_dec(got as u32);
+            l.push_str(" want=");
+            l.push_u32_dec(fsize as u32);
+        });
+        return None;
+    }
+    Some(buf as u64)
+}
+
 /// 行 7（V-0b 刀 3）：段装载——`span()` 整窗一次
 /// AllocatePages(AllocateAddress) 认领（段间缝隙一并拿下：段可共享页/
 /// 有缝，逐段认领撞页冲突）→ 全窗清零（.bss + 缝隙确定性归零，对齐
@@ -660,6 +820,7 @@ fn load_kernel(
     gop: &GopFacts,
     isegs: &[InitSeg],
     progress: &mut ProgressRuntime,
+    sig: &SigFacts,
 ) -> Option<u64> {
     let segs = bo.segments();
     // 整窗认领（AllocateAddress 对已占用页返错不覆盖——kbuf/固件数据若
@@ -754,13 +915,21 @@ fn load_kernel(
             init_blob_len: 0,
             cmdline_pa: 0,
             cmdline_len: 0,
-            init_segs_pa: if isegs.is_empty() { 0 } else { hpa + 128 },
+            init_segs_pa: if isegs.is_empty() { 0 } else { hpa + 176 },
             init_segs_count: isegs.len() as u32,
             _r1: 0,
+            // V10 验签槽（P3 启用，ADR #82 附录一预埋位的消费面）：
+            // 验过 = 填 meas_root + sig_slot（SigFacts 填充源——设计
+            // §1.2 步 3/§4.1 决策表第三行）；未度量/验败 = 恒全零
+            //（决策表第一行 unverified——现状语义，无签镜像零扰动）。
+            meas_root: sig.meas_root,
+            sig_slot_off: sig.slot_pa,
+            sig_slot_len: sig.slot_len,
         });
-        // 描述符数组随 handoff 同页 @128（§3.2.1 单页自含：32×16B+128B
-        // = 640B < 4KiB——内核 init_segs 按「恰为 hpa+128」自相对契约校验）。
-        let dst = (hpa + 128) as *mut InitSeg;
+        // 描述符数组随 handoff 同页 @176（V10 头 128B→176B；§3.2.1 单页
+        // 自含：32×16B+176B = 688B < 4KiB——内核 init_segs 按「恰为
+        // hpa+176」自相对契约校验，v1 旧装载器 @128 由版本分派认）。
+        let dst = (hpa + 176) as *mut InitSeg;
         for (i, s) in isegs.iter().enumerate() {
             dst.add(i).write(InitSeg { pa: s.pa, len: s.len });
         }
@@ -1396,6 +1565,101 @@ pub extern "C" fn efi_main(
                                             l.push_str("B ok");
                                         });
                                         progress.set(Stage::Ramdisk, 160);
+                                        // 行 5c（P3/V10）：boot 期验签——
+                                        // 读镜像侧锚两件（\TRUSTPK 32B +
+                                        // \KERNEL.SIG 64B）→ ed25519 verify
+                                        //（覆盖域 = KERNEL.ELF 全字节，kbuf
+                                        // 就地借用零拷贝）→ 验过填槽事实
+                                        //（meas_root = SHA-512/256；sig_slot
+                                        // = KERNEL.SIG 缓冲 PA/64）。
+                                        // 态处置见「V10 boot 期验签携面」
+                                        // 段注：两件全缺 = 零行零扰动
+                                        //（默认无签镜像）；验败 = `sig: BAD`
+                                        // loud 降级（QEMU 占位）；半装 =
+                                        // `sig: half` loud。签名缓冲脏线
+                                        // 防线：验过即刷 dcache（真机面
+                                        // ——TCG no-op；final_boot 刷集不
+                                        // 含此缓冲，此处自治）。
+                                        let mut sig_facts = SigFacts::UNMEASURED;
+                                        let bs_ref = unsafe { &*bs };
+                                        let pk_p = read_exact_fat_file(
+                                            bs_ref,
+                                            con_out,
+                                            root,
+                                            root_ref,
+                                            b"TRUSTPK",
+                                            32,
+                                        );
+                                        let sig_p = read_exact_fat_file(
+                                            bs_ref,
+                                            con_out,
+                                            root,
+                                            root_ref,
+                                            b"KERNEL.SIG",
+                                            64,
+                                        );
+                                        match (pk_p, sig_p) {
+                                            (Some(pk), Some(sp)) => {
+                                                // SAFETY: read_exact_fat_file
+                                                // 出品 = AllocatePool 已收齐
+                                                // want 字节的 EfiLoaderData
+                                                // 缓冲（32/64B 定长契约）；
+                                                // kbuf = kfile 收齐 fsize 的
+                                                // 整档缓冲——长度契约在调用
+                                                // 链上游已执法。
+                                                let kelf = unsafe {
+                                                    core::slice::from_raw_parts(
+                                                        kbuf as *const u8,
+                                                        fsize,
+                                                    )
+                                                };
+                                                let ok = unsafe {
+                                                    berry_crypto::ed25519::verify(
+                                                        &*(pk as *const [u8; 32]),
+                                                        &*(sp as *const [u8; 64]),
+                                                        kelf,
+                                                    )
+                                                };
+                                                if ok {
+                                                    sig_facts = SigFacts {
+                                                        meas_root:
+                                                            berry_crypto::sha512::digest256(
+                                                                kelf,
+                                                            ),
+                                                        slot_pa: sp,
+                                                        slot_len: 64,
+                                                    };
+                                                    // 签名槽指向域脏线入刷
+                                                    //（64B；真机面——SCTLR.C
+                                                    // 清零前压进 DRAM，init
+                                                    // 段页同款防线）。
+                                                    dcache_clean(sp, 64);
+                                                    print_line(con_out, None, |l| {
+                                                        l.push_str("sig: verified")
+                                                    });
+                                                } else {
+                                                    print_line(con_out, None, |l| {
+                                                        l.push_str("sig: BAD")
+                                                    });
+                                                }
+                                            }
+                                            (None, None) => {
+                                                // 未度量现状——零行零扰动。
+                                            }
+                                            _ => {
+                                                // 半装态：锚/签名缺一（产线
+                                                // 成对纪律的设备侧对拍——
+                                                // mkimage 已 loud 拒半装，此
+                                                // 行 = 手造盘/漂移面的兜底
+                                                // 可见性）。
+                                                print_line(con_out, None, |l| {
+                                                    l.push_str("sig: half pk?=");
+                                                    l.push_u32_dec(pk_p.is_some() as u32);
+                                                    l.push_str(" sig?=");
+                                                    l.push_u32_dec(sig_p.is_some() as u32);
+                                                });
+                                            }
+                                        }
                                         let mut name16i = [0u16; 16];
                                         let iname =
                                             utf16_encode_bytes(b"INITRD.BIN", &mut name16i);
@@ -1410,9 +1674,10 @@ pub extern "C" fn efi_main(
                                         // ——**必须发生在终段 GetMemoryMap
                                         // 之前**（页进图成非 Conventional，
                                         // 内核 V-1b pass2 reserve 自动保）。
-                                        // 段描述符数组随 handoff v1 递送
-                                        // （init_segs_* @112/@120 + @128
-                                        // 数组，load_kernel 写）。缺席（旧盘
+                                        // 段描述符数组随 handoff 递送
+                                        // （init_segs_* @112/@120 + 同页
+                                        // 数组（v2 基址 @176），load_kernel
+                                        // 写）。缺席（旧盘
                                         // 不带 INITRD.BIN）打 `init: absent`
                                         // 续行——内核降级 ROOTFS absent，
                                         // 非致命（零段同义）。总量帽 128MiB
@@ -1613,6 +1878,7 @@ pub extern "C" fn efi_main(
                                                     &gop_facts,
                                                     &isegs[..iseg_n],
                                                     &mut progress,
+                                                    &sig_facts,
                                                 ) {
                                                     final_boot(
                                                         unsafe { &*bs },

@@ -71,6 +71,12 @@ impl Editor {
         &self.line
     }
 
+    /// 历史环只读视图（命令行体验刀：`history` 内建的查询面——newest-first
+    /// 与环存储序一致，渲染序同向；只读不改环，行为面零改动）。
+    pub fn history(&self) -> &[Vec<u8>] {
+        &self.hist
+    }
+
     /// 喂一键（来自 stdin 的原始字节）。src 只在 Tab 键时被问。
     pub fn feed(&mut self, b: u8, src: &mut dyn TabSource) -> Flow {
         // ESC 序列状态机（先于一切常规字节处理——ESC/参数/final 都不该进

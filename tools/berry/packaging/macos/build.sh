@@ -19,6 +19,30 @@ chmod +x "$APP/Contents/MacOS/berry"
 cp "$IMG" "$APP/Contents/Resources/berryos.img"
 cp LICENSE "$APP/Contents/Resources/LICENSE"
 
+# Vendored noVNC web assets for `berry vnc web` (wave 3). web_roots() finds
+# <exe>/../Resources/web from Contents/MacOS/berry, i.e. this exact spot.
+# License compliance: NOTICE.md, novnc/LICENSE.txt, novnc/AUTHORS and
+# novnc/vendor/pako/LICENSE all ride along inside Contents/Resources/web/
+# (they are part of the tools/berry/web/ tree copied wholesale).
+WEB_SRC=tools/berry/web
+test -f "$WEB_SRC/novnc/vnc.html" || { echo "missing $WEB_SRC/novnc/vnc.html" >&2; exit 1; }
+rm -rf "$APP/Contents/Resources/web"
+cp -R "$WEB_SRC" "$APP/Contents/Resources/web"
+# Normalize modes (cp -R keeps the checkout's file modes; e.g. NOTICE.md at
+# 0600 would ship unreadable to anyone but the builder).
+chmod -R a+rX "$APP/Contents/Resources/web"
+for f in NOTICE.md novnc/vnc.html novnc/LICENSE.txt novnc/AUTHORS novnc/vendor/pako/LICENSE; do
+  test -f "$APP/Contents/Resources/web/$f" || { echo "web assets incomplete: missing $f" >&2; exit 1; }
+done
+
+# Third-party notices for the statically linked host-tool dependencies
+# (wave 6): single source under packaging/, copied into every platform
+# package — the macOS seat is Contents/Resources/THIRD-PARTY-NOTICES.txt.
+TPN_SRC=tools/berry/packaging/THIRD-PARTY-NOTICES.txt
+test -f "$TPN_SRC" || { echo "missing third-party notices source: $TPN_SRC" >&2; exit 1; }
+cp "$TPN_SRC" "$APP/Contents/Resources/THIRD-PARTY-NOTICES.txt"
+chmod 0644 "$APP/Contents/Resources/THIRD-PARTY-NOTICES.txt"
+
 FW=${AAVMF_CODE:-}
 if [ -z "$FW" ]; then
   for c in \
@@ -45,3 +69,4 @@ if command -v codesign >/dev/null 2>&1; then
     echo "warning: ad-hoc codesign failed" >&2
 fi
 echo "packaged: $APP"
+echo "web: $APP/Contents/Resources/web (NOTICE.md + novnc/)"

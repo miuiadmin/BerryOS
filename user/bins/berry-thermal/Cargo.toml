@@ -1,0 +1,56 @@
+[package]
+name = "berry-thermal"
+# L-SYS 0.2.0：字面版本不走 workspace 继承（musl 链独立小工作区，版本治理
+# 规则/14；user/bins 族同批同值）。升版 = 逐 crate 手同步。
+version = "0.2.0"
+edition = "2021"
+
+# 调度彻底计划三大接缝之二「调度-PM 契约空转：berry-power 服务本体未建、
+# util/placement/EM 有产无消」的第一块服务实体：berry-thermal 骨架（ADR #66
+# L1，docs/架构决策.md 决策总表 #66 行立法、服务未建——本刀只落 lib 纯函数
+# 仲裁引擎 + bin 壳循环骨架，常驻挂接/写面全部留窗如实注）。
+# 形态照 user/bins/ 现族例（simbattery/bsh 同款独立小工作区：空 [workspace]
+# escape 根 workspace、musl target + berry-libc shim + berry-ld 链）。
+# CP-08 装配件已接线：build-user PM 段（--features wired 落 musl 链）+
+# rootfs-manifest 条目；svcmgr 预拉 arm 留窗（svcmgr 平像满载——.bss 终点
+# 0x1dff0 距内核钉位 .pager_entry@0x1e000 仅 0x10，arm 装不进；证据全文 =
+# berry-power Cargo.toml 头注），扩容刀补消费。
+# lib = 仲裁引擎（host 可测：cargo test --manifest-path
+# user/bins/berry-thermal/Cargo.toml -p berry-thermal --target <host>，同
+# 根 config build.target 锁下须显式 --target 覆盖——justfile test-host 同款
+# 纪律）；契约单源 = berry-pwproto（DEV_THERMAL 自报面，trips 结构复用不双写）。
+license = "Apache-2.0"
+
+[workspace]
+
+[lib]
+name = "berry_thermal"
+path = "src/lib.rs"
+
+# bin 面（musl/berry-libc 链）host 不可链接（berry-libc 含 aarch64 专属
+# asm）——`cargo test` 会把 bin 目标当潜在 CARGO_BIN_EXE 依赖编译，故挂
+# required-features 门：host 测试相（无 --features）整跳过 bin，接线刀构建
+# 相开 `--features wired` 落 musl 链（仲裁面全在 lib，host 单测盖；家族 bin
+# 的 guest 绑定面由 svcmgr selftest 盖——bsh poll 同款分工纪律）。
+[[bin]]
+name = "berry-thermal"
+path = "src/main.rs"
+test = false
+required-features = ["wired"]
+
+[features]
+# wired = bin 壳接上 berry-libc（park/eprintln 家族原语）；host 测试不需要。
+wired = ["dep:berry-libc"]
+
+[dependencies]
+# 仲裁引擎唯一依赖：trips 自报结构/常量单源（DEV_THERMAL 面）。
+berry-pwproto = { path = "../../berry-pwproto" }
+# bin 壳（optional，wired 门）：park（永静默等待）+ eprintln（自检失败诊断）。
+berry-libc = { path = "../../berry-libc", optional = true }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

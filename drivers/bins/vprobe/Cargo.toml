@@ -1,6 +1,6 @@
 [package]
 name = "vprobe"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 
 # P6 A-2：virtio-mmio 探测程序（用户态驱动地基第一刀——`docs/文件系统

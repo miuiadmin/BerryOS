@@ -22,6 +22,10 @@ use alloc::vec::Vec;
 use berry_hal_aarch64 as hal;
 use berry_mm::frame::FrameAllocator;
 use berry_mm::va::{phys_to_virt, PAGE_SIZE};
+// W3-Q17：槽位/区间判定律单源迁 berry-vslotface（host 钉板）——本文件
+// check_slot/find_exact/find_mapped/demand_index 壳化消费。
+use berry_vslotface::droot;
+use berry_vslotface::{aligned_nonzero, bounds_end, overlaps, SlotError, SlotKind, SlotRegion, SlotView};
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
 
 /// 用户 VA 上界：T0SZ=25 → TTBR0 区 = `[0, 2^39)`。
@@ -163,6 +167,38 @@ struct Region {
     vmo: *mut Vmo,
     /// `Mapped`：本区间对应 VMO 内偏移（unmap 回调映射计数用）。
     vmo_off: usize,
+}
+
+/// W3-Q17：Region 切片只读投影（判定律表抽象单点装配——newtype 过
+/// orphan rule，零拷贝纯转发）。
+struct RegionSlots<'a>(&'a [Region]);
+
+impl SlotView for RegionSlots<'_> {
+    fn slot_len(&self) -> usize {
+        self.0.len()
+    }
+    fn slot_get(&self, i: usize) -> SlotRegion {
+        let r = &self.0[i];
+        SlotRegion {
+            start: r.start,
+            len: r.len,
+            kind: match r.kind {
+                RegionKind::Mapped(_) => SlotKind::Mapped,
+                RegionKind::Demand(_) => SlotKind::Demand,
+                RegionKind::Reserved => SlotKind::Reserved,
+            },
+        }
+    }
+}
+
+/// W3-Q17：判定错误投影 → VmarError（四态一一对应）。
+fn slot_err(e: SlotError) -> VmarError {
+    match e {
+        SlotError::Unaligned => VmarError::Unaligned,
+        SlotError::OutOfBounds => VmarError::OutOfBounds,
+        SlotError::Overlap => VmarError::Overlap,
+        SlotError::NotMapped => VmarError::NotMapped,
+    }
 }
 
 /// `Mapped` 带权限是为 Phase 3 `query`（§3 操作之一）留数据；v1 无读取点。
@@ -446,11 +482,8 @@ impl Vmar {
 
     /// `va` 所在 demand 区间下标（只读查——fault 探针命中判定 + 供给定位）。
     fn demand_index(&self, va: usize) -> Option<usize> {
-        self.regions.iter().position(|r| {
-            va >= r.start
-                && va < r.start + r.len
-                && matches!(r.kind, RegionKind::Demand(_))
-        })
+        // W3-Q17：探针命中律单源（闭开域 + Demand-only）。
+        berry_vslotface::demand_hit_at(&RegionSlots(&self.regions), va)
     }
 
     /// fault 探针面（G4-1）：`far` 命中本 AS 的 demand 区间 → `(vmo 指针,
@@ -529,14 +562,20 @@ impl Vmar {
 
     /// 槽位三查：对齐、管辖界、与既有区间/预留不重叠。
     fn check_slot(&self, vaddr: usize, len: usize) -> Result<(), VmarError> {
-        if vaddr % PAGE_SIZE != 0 || len % PAGE_SIZE != 0 || len == 0 {
+        // W3-Q17：三查判序单源 = berry-vslotface（Unaligned → OutOfBounds →
+        // Overlap 逐字旧序；重叠谓词半开交集同旧 any 扫描）。
+        if !aligned_nonzero(vaddr, len) {
             return Err(VmarError::Unaligned);
         }
-        let end = vaddr.checked_add(len).ok_or(VmarError::OutOfBounds)?;
-        if vaddr < self.base || end > self.base + self.len {
-            return Err(VmarError::OutOfBounds);
-        }
-        if self.regions.iter().any(|r| vaddr < r.start + r.len && r.start < end) {
+        let end = match bounds_end(vaddr, len, self.base, self.len) {
+            Some(e) => e,
+            None => return Err(VmarError::OutOfBounds),
+        };
+        if self
+            .regions
+            .iter()
+            .any(|r| overlaps(vaddr, end, r.start, r.len))
+        {
             return Err(VmarError::Overlap);
         }
         Ok(())
@@ -546,26 +585,17 @@ impl Vmar {
     /// 区间同收割），返回其下标。protect 仍走 [`Self::find_mapped`]
     /// （Mapped-only——demand 区间 protect v1 拒）。
     fn find_exact(&self, vaddr: usize, len: usize) -> Result<usize, VmarError> {
-        self.regions
-            .iter()
-            .position(|r| {
-                r.start == vaddr
-                    && r.len == len
-                    && matches!(r.kind, RegionKind::Mapped(_) | RegionKind::Demand(_))
-            })
-            .ok_or(VmarError::NotMapped)
+        // W3-Q17：精确匹配判定律单源 = berry-vslotface（kind 收 Mapped|Demand
+        // ——G4-1 起 unmap 对 demand 区间同收割；position 首中语义同旧）。
+        berry_vslotface::find_exact_at(&RegionSlots(&self.regions), vaddr, len)
+            .map_err(slot_err)
     }
 
     /// 找精确匹配的已映射区间，返回其下标。
     fn find_mapped(&self, vaddr: usize, len: usize) -> Result<usize, VmarError> {
-        self.regions
-            .iter()
-            .position(|r| {
-                r.start == vaddr
-                    && r.len == len
-                    && matches!(r.kind, RegionKind::Mapped(_))
-            })
-            .ok_or(VmarError::NotMapped)
+        // W3-Q17：Mapped-only 精确查找单源（demand 区间 protect v1 拒）。
+        berry_vslotface::find_mapped_at(&RegionSlots(&self.regions), vaddr, len)
+            .map_err(slot_err)
     }
 
     /// 表 PA → 经 direct map 的表基指针。
@@ -649,21 +679,49 @@ impl Vmar {
 // 回卷复用同号时旧登记已清——同 asid 双活由 `OwnerConflict` 防御拒兜底。
 
 /// 登记槽数（boot/测试语境上界；满 = 后续登记失败 fail loud）。
-const DEMAND_ROOT_SLOTS: usize = 16;
+/// W3-Q60：判序单源 `berry_vslotface::droot`（host 钉板），此处 re-export
+/// 执法两形同值。
+pub use berry_vslotface::droot::DEMAND_ROOT_SLOTS;
+const _: () = assert!(DEMAND_ROOT_SLOTS == 16);
 
 /// 登记失败形（G4-2：SVC 面失败码化——boot 面调用方 expect 收口 fail
 /// loud，SVC 面 [`DemandRootError`] → -ENOMEM / -ENOTSUP 错误码出口）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DemandRootError {
-    /// 16 槽满——无空位（拒登记 fail loud，不静默丢）。
-    Full,
-    /// asid 已登记且 root 指针不同——单 root 不变量破（异 Vmar 同 asid =
-    /// 装配面 bug，防御拒）。
-    OwnerConflict,
-}
+/// W3-Q60：纯投影单源 `berry_vslotface::droot::DemandRootError`。
+pub use berry_vslotface::droot::DemandRootError;
 
 static DEMAND_ROOTS: [(AtomicU16, AtomicUsize); DEMAND_ROOT_SLOTS] =
     [const { (AtomicU16::new(0), AtomicUsize::new(0)) }; DEMAND_ROOT_SLOTS];
+
+/// 原子槽表 → droot [`RootSlots`] 适配器（W3-Q60：纯判序单源消费面——
+/// 原子对留壳，登记/反查/注销三步的判序全走 `berry_vslotface::droot`）。
+struct AtomicRootSlots;
+
+impl berry_vslotface::droot::RootSlots for AtomicRootSlots {
+    fn slot(&self, i: usize) -> berry_vslotface::droot::RootSlot {
+        let (a, p) = &DEMAND_ROOTS[i];
+        berry_vslotface::droot::RootSlot {
+            asid: a.load(Ordering::Relaxed),
+            ptr: p.load(Ordering::Relaxed),
+        }
+    }
+    fn set(&mut self, i: usize, s: berry_vslotface::droot::RootSlot) {
+        let (a, p) = &DEMAND_ROOTS[i];
+        // 发布序（register）：ptr 先（Relaxed）asid 后（Release）——读者按
+        // asid 命中即见完整对；卫生序（deregister）：asid 先（Release）ptr
+        // 后（Relaxed）。两序对同一格的单次 set 只需「成对可见」，方向由
+        // 调用步语义（Ok(true) 新写 / true 清空）区分：本实现统一
+        // ptr 先写、asid 后写且 asid 用 Release——登记面读者（Acquire 读
+        // asid 命中再读 ptr）见完整对；注销面镜像序由 deregister 先行
+        // 判定 + 本 set 原子对落格承载（读者见 X+0 半态按 miss 处理）。
+        if s.ptr != 0 {
+            p.store(s.ptr, Ordering::Relaxed);
+            a.store(s.asid, Ordering::Release);
+        } else {
+            a.store(0, Ordering::Release);
+            p.store(0, Ordering::Relaxed);
+        }
+    }
+}
 
 /// 登记 asid → root Vmar（map_demand 的调用方/对象属主；boot DAIF 屏蔽窗、
 /// PT 锁窗或 SVC KL 窗内调用——写者经全谱锁串行，读者〔探针第一段〕锁外
@@ -671,28 +729,10 @@ static DEMAND_ROOTS: [(AtomicU16, AtomicUsize); DEMAND_ROOT_SLOTS] =
 /// demand map 只占一槽）；满表 / 异 root 冲突 = Err——静默丢登记 = 探针
 /// 永不命中 = demand 页死循环杀链，宁拒可响。
 pub fn register_demand_root(asid: u16, root: *mut Vmar) -> Result<(), DemandRootError> {
-    let mut free: Option<usize> = None;
-    for (i, (a, p)) in DEMAND_ROOTS.iter().enumerate() {
-        let cur = a.load(Ordering::Relaxed);
-        if cur == asid {
-            // 同 asid：同 root 幂等 Ok；异 root = OwnerConflict。
-            return if p.load(Ordering::Relaxed) == root as usize {
-                Ok(())
-            } else {
-                Err(DemandRootError::OwnerConflict)
-            };
-        }
-        if cur == 0 && free.is_none() {
-            free = Some(i);
-        }
-    }
-    let Some(i) = free else {
-        return Err(DemandRootError::Full);
-    };
-    let (a, p) = &DEMAND_ROOTS[i];
-    p.store(root as usize, Ordering::Relaxed);
-    a.store(asid, Ordering::Release);
-    Ok(())
+    // W3-Q60：判序单源 berry_vslotface::droot（幂等/冲突先于空槽扫描、
+    // 首空槽 first-wins、满表 Full——host 钉板）；此处原子臂留壳。
+    let mut slots = AtomicRootSlots;
+    droot::register_step(&mut slots, asid, root as usize).map(|_| ())
 }
 
 /// 反查 asid → root Vmar（fault 探针用；未登记 → `None` = 探针不命中）。
@@ -702,20 +742,10 @@ pub fn register_demand_root(asid: u16, root: *mut Vmar) -> Result<(), DemandRoot
 /// 窗内重查**（探针 stage-2 / 0x21 供给窗——窗内查得即窗内活，注销与释放
 /// 都在 KL 窗内发生，他核注销须先取同把 KL）。
 pub fn demand_root(asid: u16) -> Option<*mut Vmar> {
-    if asid == 0 {
-        return None;
-    }
-    for (a, p) in DEMAND_ROOTS.iter() {
-        if a.load(Ordering::Acquire) == asid {
-            let ptr = p.load(Ordering::Acquire);
-            if ptr != 0 {
-                return Some(ptr as *mut Vmar);
-            }
-            // 锁外读者可见的注销半态（deregister 先清 asid 后清 ptr 的镜像
-            // 序）：X+0 按 miss 处理——hint 面零解引用，窗内重查给真值。
-        }
-    }
-    None
+    // W3-Q60：判序单源 berry_vslotface::droot（0 哨兵直达/线性扫/X+0 半态
+    // miss——host 钉板）；此处原子臂留壳。
+    let slots = AtomicRootSlots;
+    droot::lookup_step(&slots, asid).map(|p| p as *mut Vmar)
 }
 
 /// 注销 asid → root Vmar（G4-2 修批 P0-1 面 b——[`Vmar::Drop`] 收口调用，
@@ -726,13 +756,10 @@ pub fn demand_root(asid: u16) -> Option<*mut Vmar> {
 /// stage-2 同锁域互斥——注销与对象释放在同窗内完成，探针窗内查得即
 /// 窗内活）。
 pub fn deregister_demand_root(asid: u16, root: *mut Vmar) {
-    for (a, p) in DEMAND_ROOTS.iter() {
-        if a.load(Ordering::Acquire) == asid && p.load(Ordering::Acquire) == root as usize {
-            a.store(0, Ordering::Release);
-            p.store(0, Ordering::Release);
-            return;
-        }
-    }
+    // W3-Q60：判序单源 berry_vslotface::droot（asid+ptr 双匹配才清——
+    // host 钉板）；此处原子臂留壳（清序 = 适配器 set 卫生序）。
+    let mut slots = AtomicRootSlots;
+    droot::deregister_step(&mut slots, asid, root as usize);
 }
 
 impl Drop for Vmar {

@@ -178,6 +178,10 @@ pub trait GlyphAtlas {
     fn cell_w(&self) -> usize;
     /// 字格像素高。
     fn cell_h(&self) -> usize;
+    /// Unicode 码点推进像素宽（缺省 = 等宽字格；比例图集覆写）。
+    fn advance(&self, _cp: u32) -> usize {
+        self.cell_w()
+    }
     /// 字格几何成对口（契约名保留——缺省实现组合两拆分口，三档静态
     /// 图集与自定义实现零改动获得）。
     fn cell(&self) -> GlyphCell {
@@ -366,6 +370,15 @@ impl GlyphAtlas for FontAtlas32x48 {
             rows: g.as_slice(),
         })
     }
+    fn advance(&self, cp: u32) -> usize {
+        match u8::try_from(cp).ok().and_then(|ch| usize::from(ch).checked_sub(32)) {
+            Some(i) if i < font_data_hd::ADVANCE_HD.len() => {
+                usize::from(font_data_hd::ADVANCE_HD[i])
+            }
+            _ => font_data_hd::CELL_W,
+        }
+    }
+
     fn coverage(&self, ch: u8) -> Option<GlyphA8<'static>> {
         let i = usize::from(ch).checked_sub(32)?;
         let a = font_data_hd::FONT_HD_A8.get(i)?;

@@ -1,0 +1,24 @@
+# 调度彻底计划（框架级重设计研究，2026-11-13）
+
+> 缘起：用户令——与显示加速体系同构的框架级重设计（三路研究+定稿）。调度 = BerryOS 三大身份支柱的机制核心（省电·AI 原生调度·PC 高性能）；不打补丁、从底层系统框架设计、一开始做最好最优秀。
+> 定稿目标：docs/ 调度体系设计 v2.0 形态（「推断」，按显示与加速体系先例）；本目录为其证据基座。
+> 在途纪律：sched 域 = W3/hermes lane 活跃主战场，零碰只收编。
+
+| # | 文件 | 核心定谳 | 落档 |
+|---|---|---|---|
+| 01 | `01-调度现状全景与在途线收编.md` | 八份在册文档对账（API 参考 v1.5 = 143 pub fn 机提零漂移；其余七份漂移主因=落地增量收录快于回填）；在途八线收编（W3 face 族两级口径——HEAD 22 crate 已并+hermes lane 深化在途/SMPD 刀序 2/6 落+双核终验 60 ok/perf 14 项+R3 实时界/PM 研究收官而 berry-power 未建）；机制面 26 件全景（17 成熟/6 就位/3 骨架）；缺口 12 条初判——三大接缝=策略服务实体缺位、调度-PM 契约空转、SMPD 收官+真机证据空白 | 2026-11-13 |
+| 02 | `02-调度终态架构-三大支柱映射与业界对照.md` | 终态架构研究：三大支柱（省电·AI 原生调度·PC 高性能）+ v2 工业 RT 的终态映射、业界五家终态对照（Linux EEVDF+sched_ext 双轨/Zircon libsched 环境无关可测与 W3 同构/QNX APS 量产活证等一手直取）、四层终态架构图、先进性对账（哪些现在立缝/哪些渐进）+ 新钉三缝（睡眠 lag 衰减/util 跨核迁移组合/管家核 reserved）；01 号中途落盘已即时消费、修正本件三处初稿事实 | 2026-11-13 |
+| 03 | `03-彻底计划骨架-刀序里程碑验证体系-v1.0.md` | 计划骨架件（docs 定稿直接底稿）：五份在册文档+四条在途线压成「从 v1 现实到终态」一张骨架——CP-01..19 三波刀序+G5 拆半提案（G5-Q/G5-H）+验证体系四层+host 钉板四条硬目标；01/02 号后落笔冲突时以研究件为准 | 2026-11-13 |
+| 04 | `04-PM双服务骨架复核.md` | 双服务契约对照复核(帽聚合/票仲裁/迟滞/JEITA/四档/失败安全逐条钉板,28+12 测实跑);F1 mA↔pct 票桥须裁/F2 sim 消费切分三方主张/F3 测试未挂门禁;CP-08 接线窗 13 件成表 | 2026-11-13 |
+| 05 | `05-轮二复核.md` | 轮二独立复核（只验不修）：F1 单位统一 mA 后两服务一致性（mA 域贯通/#68 兼容注释）与 F2 分流三方注释对齐逐项核；slackface 判定律对设计 §3.8 与 Linux 对照的正确性/交互零牺牲/聚合收益数值复算；CP-08 窗表更新核；验证全实跑+git 对拍零碰 owner | 2026-11-13 |
+| 06 | `06-idle满核归因.md` | idle 满核三面归因定谳：主根因 = boot 演示常驻面（task_a/b 忙环 + EL0 舰队 + ktest 金丝雀）永不退出 →「idle 窗」实为满载窗（12 号原始数据复算坐实 + PC 采样直落忙环体 + 9.9k SVC/s）；QEMU 面清白（干净 park TCG/HVF 双 0.0%）+ 一条 pending-masked wfi 早退忙旋险径（源码+最小内核四变体定标）；tickless oneshot 机构在位仅不可达；修窗五件（首刀 = 演示面 fw_cfg 门控,owner 域）；副刀 v1.2 漂移回填 owner 当日已毕（no-op 如实） | 2026-11-14 |
+| 07 | `07-轮三复核.md` | 轮三复核（只验不修）：06 号主根因数据可复现性独立实跑复算+修窗清单归属正确性核；副刀调度器设计 v1.1→v1.2 升版漂移回填独立抽验 | 2026-11-14 |
+| 08 | `08-白皮书与wgpu复核.md` | 两 wave 复核：调度器架构白皮书 v1.0→v1.1 升版收官（mv 升版+抬头+文末修订记录+§8 性能表/SMPD-3·4/路线图节回填+全仓引用随迁）与显示线 15 号 wgpu 上屏 PoC 独立抽验 | 2026-11-14 |
+| 09 | `09-icount与PM联合复核.md` | 两 wave 复核：icount 基线刷新（16 号四项漂移后 --update 立基 {0,37,82,274,1683,6948}+prove 五跑 exact 逐值同，L2 恒红解除）+PM 四 crate 联合场景复核（test-host 五面挂行全绿 31/13/8/12/14+build-user PM 段产件+rootfs 装配） | 2026-11-15 |
+| 10 | `10-大窗轮复核.md` | 大窗轮复核：P0 修窗（46 号案 a——task_intent_probe 等待窗 8×slice_ns→max(8×slice_ns,400ms) 墙钟下限，三档 INTENT ok 独立重靴全到+BCTS 250Hz 判定单重跑 PASS 32/32）+CP-08 PM 接线（装配半边全实+svcmgr 预拉阻断归档实证）+P1×3 收口独立抽验 | 2026-11-15 |
+| 11 | `11-深水区复核.md` | 深水区复核：svcmgr D3 帽扩容+berry-power/berry-thermal 预拉段（CP-08 消费半边，装配半边上轮 10 号已验）+idle 修窗首刀（kernel 面 fw_cfg 键 opt/berry/demo-face 门控 task_a/task_b 忙环+boot EL0 演示舰队） | 2026-11-15 |
+| 12 | `12-终窗复核.md` | 终窗复核：svcmgr idle 后半（x1 env gift 通道递 demo-face 门+单核 idle 停泊补+yield 账本防线）与 Intent M4 带骨架（IntentBand 六行+class_fair_intent 工厂〔Fair 零改〕+policy band 位）独立复核 | 2026-11-15 |
+| 13 | `13-首份AB报告-loadgen.md` | CP-06 首份产出：A/B 负载生成器（kernel boot 门控探针——interactive/utility/burst 三类受控负载 × 唤醒→运行延迟采样）+ 首份四组 A/B 数据（timer_slack off/on × band off/on × 3 reps）：slack 轴成立（utility p50 +25.9ms@30ms 声明、interactive 零牺牲、无 intent 时惰性实证）、band 轴真系统 null（FairBand 全委托的入场券纪律实证——零假设基线钉案）、吞吐四臂不变；判据分列执行（divergence 列缺席归 POLICY-S、能耗列未测 CP-15 口径）；策略维 5.0→6.5（推断） | 2026-11-16 |
+| 14 | `14-FairBand差异化后数据.md` | R5 全面复验（boot+smoke+loadgen 双面）：boot 32/32 绿 + ktest LOADGEN 四组零回归（含 A2/A4「数据同 R4」= 零回归非未生效——该面 R4 期即 harness 手驱执法）；真系统 band 轴 R4 null → R5 翻正（utility p99 g2−g1 −10.6ms → +75.1ms、2.0×，ut_p50 不动 = 包络执法是尾事件）——BANDM4G 新断言钉板同 boot 证据面 | 2026-11-16 |
+| 15 | `15-EAS生产激活首步.md` | EAS-PA 刀：placement hint 生产消费面——ABI 定谳（placement = 0x83 COMMIT 表条目字段非独立 op）；berry-power EL0 产面接线（util 0x40 → placement_hint → STATUS/COMMIT 提试）+ svcmgr 无 stdin 形态 auth=0 恒 -EBADF（立法态非缺陷）；ktest EASPROD 门内正向全链钉板（真 SVC 过门 → gen 对账 → COMMIT 受理 → util 真值驱动 eas_place 落低核、镜像翻转、overutil 回退） | 2026-11-16 |
+| 16 | `16-v3四动作激活-berry-power完整策略服务.md` | POLICY4 刀：四动作真实参数面定谳（op 词汇 1..6 无动作 op——①③④ = COMMIT 表条目三字段、②频率无 0x83 载体走 PM 域）+ berry-power 完整策略服务（lib `hint` 纯面三函数 host 3 测、`action_hints` 四动作一次读全、main 壳 COMMIT 单条目 + gen echo 对账）+ 授权落位（svcmgr 递 stdin → gift[2] 自描述对 → `self_proc_h()` 真值过 MANAGE 门真受理——15 号留窗①前半；key=自建议最小面）；host 36 测/产线形双 bin 实编，QEMU 证据归 owner（kernel/qemu 零碰纪律） | 2026-11-16 |

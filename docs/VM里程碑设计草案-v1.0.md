@@ -37,7 +37,7 @@
 | M-G2 | Fusion 设备面**未知**（GIC v3?、盘控制器 NVMe/AHCI?、有无 PL011?、USB xHCI、GOP）；帧缓冲 console 与 USB 键盘两个驱动件 | V-5a ~ V-8 |
 | M-G3 | fsmgr 平面表（无目录树/路径）；libc 无文件面（fd 3+ 不存在）；bsh 无 PATH 查找、无 Ctrl-C/kill 面、无 Tab 补全；ps/berryctl 不存在 | C-0 ~ C-5 |
 
-> **进展注记（2026-10-28 更）**：M-G1 五刀全落（`just image` / `just smoke-image` 挂 CI，唯余 UTM 手动点验）；**M-G3 全链收官——C-0/C-1/C-2a/C-2b/C-2c/刀 2/挂账刀/C-3/C-4（+C-4b Ctrl-C）/C-5 已落**（C-5 = 里程碑演示相 `M3DEMO ok n=5`，rootfs 相 35——本文件 §2 C-5 注记）；M-G2 未动。上表为 2026-10-22 立项时点的差距评估，勿当现状引用。
+> **进展注记（2026-11-11 更——上一版 2026-10-28）**：M-G1 五刀全落（`just image` / `just smoke-image` 挂 CI，唯余 UTM 手动点验）；**M-G3 全链收官——C-0/C-1/C-2a/C-2b/C-2c/刀 2/挂账刀/C-3/C-4（+C-4b Ctrl-C）/C-5 已落**（C-5 = 里程碑演示相 `M3DEMO ok n=5`，rootfs 相 35——本文件 §2 C-5 注记）；M-G2 非未动——**实证刀 V-5a 工具面已落**（V-5a-0 berrydump 采集器 2026-10-28 + V-5a-1 段① AAVMF 首验基线 2026-10-28 + 段② 帽审计/段③ lspci 对拍清单同日入册，附录 B AAVMF 参照列已回填），**V-6 全线收案 2026-10-29**（刀 1 GOP 携面 + 刀 2 fbcon/guifbd 双路上屏，`FBW ok`/`FBSERVE ok` 入 smoke-image canon）；余项 = V-5a 收口（Fusion 实机会话——附录 B Fusion 列仍「待实证」）+ V-5b（盘驱动）/V-7（USB 键盘）冻结中、真押事实表。上表为 2026-10-22 立项时点的差距评估，勿当现状引用。
 
 ## 2. B 线（CLI 四件，M-G3）——先做，早交付早验收
 
@@ -156,7 +156,7 @@
 ## 7. 与既有文档/资产的挂钩
 
 - `开发体验.md`：§1 四级阶梯——本里程碑 = **L3 兑现**（`just image`/`just dev` 命令演进表随刀位落）；§5 三级火箭第二级（交互 shell + FS）的体验面补完。
-- `路线图-v1.0.md`：本里程碑横跨 P5（shell 收尾：Tab/Ctrl-C）+ P6（驱动延伸：Fusion 设备）+ 引导加载器（P0 留位终于开工）；**Phase 8 真机不动**。
+- `路线图-v1.2.md`：本里程碑横跨 P5（shell 收尾：Tab/Ctrl-C）+ P6（驱动延伸：Fusion 设备）+ 引导加载器（P0 留位终于开工）；**Phase 8 真机不动**。
 - `shell设计-v1.0.md` §2.4：Tab 补全 v2 兑现（快照近似版）；`§2.2 channel 即 pipe` 已兑现面照旧。
 - `驱动模型设计-v1.0.md`（ADR #46）：fbcon/NVMe/xHCI 全按「驱动=持证应用」走 svcmgr 拉起链（devmgr v2 未到——boot 手授 MMIO 窗 = A-2 既有模式，devmgr 到位后迁正）。
 - `存储布局与沙箱设计-v1.0.md`（ADR #45）：镜像分区表（MBR/FAT16）是**引导实现细节**，不升用户概念（四棵树是系统盘布局语义，v1 盘仍是单卷 FAT——重议触发器既有「分区永远是实现细节」条款正引用于此）。

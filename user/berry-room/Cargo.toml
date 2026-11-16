@@ -6,8 +6,6 @@ edition = "2021"
 # frame VMO/present/input/destroy 生命周期归此，不绘制业务 UI。
 license = "Apache-2.0"
 
-[workspace]
-
 [dependencies]
 berry-gfx = { path = "../berry-gfx" }
 berry-guiproto = { path = "../berry-guiproto" }
@@ -15,10 +13,3 @@ berry-sys = { path = "../berry-sys" }
 
 [features]
 default = []
-
-[profile.release]
-opt-level = "z"
-lto = true
-codegen-units = 1
-panic = "abort"
-strip = true

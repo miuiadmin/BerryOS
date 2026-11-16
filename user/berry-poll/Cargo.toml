@@ -1,6 +1,6 @@
 [package]
 name = "berry-poll"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 # A2-1（docs/事件循环A2设计草案.md §3.1）：多路等待聚合器纯函数 crate，
 # `berry-complete` 同款形态——`cfg_attr(not(test), no_std)` +

@@ -1,0 +1,17 @@
+[package]
+name = "berry-gpuproto"
+version.workspace = true
+edition = "2021"
+# 刀 3 B1-a（research/显示与加速体系设计/02 号 §3.1 协议规格/§3.2 落法/§6
+# 刀序——本轮按任务书重切为「协议 crate 先行」）：virtio-gpu 2D 控制队列协议
+# 纯函数 crate，`berry-fsproto`/`berry-blkproto` 族例（D5「解析器即产品」）
+# ——`cfg_attr(not(test), no_std)`：库本体 no_std（用户态 workspace 成员在
+# aarch64-unknown-none 下构建），test 构建放开 std 仅为默认测试挂具。
+# 常量面单源对照 Linux uapi virtio_gpu.h/virtio_ids.h（BSD 许可，协议洁净）
+# ——host 测 uapi_constants_pinned 两源断言。消费 = guifbd virtio-gpu 后端
+# （B1-b）+ berry-virtio 传输接线（B1-c，path 依赖跨工作区引常量——vnet
+# 消费 berry-netproto 同例）。
+description = "BerryOS virtio-gpu 2D control-queue protocol: pure no_std encoder/parser (9 cmds + hdr/resp/event faces, host-testable)"
+license = "Apache-2.0"
+
+[dependencies]

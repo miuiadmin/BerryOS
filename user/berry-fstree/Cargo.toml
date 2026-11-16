@@ -1,6 +1,6 @@
 [package]
 name = "berry-fstree"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 # C-0 刀 2（docs/VM里程碑设计草案.md §C-0）：fsmgr RAM overlay 目录树纯函数
 # crate——v1 平面表 `Vec<(名, 内容)>` 升 NUL 分段路径树。`berry-fsproto`/

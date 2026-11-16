@@ -12,7 +12,7 @@
 # guest 面整体缺席——§7.2 两条验证命令得以逐字成立。
 [package]
 name = "gui-inputd"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
 

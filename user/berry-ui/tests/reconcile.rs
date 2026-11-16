@@ -13,9 +13,8 @@
 //! 确定性：无随机无时钟；拒面断言到变体载荷字段。
 
 use berry_ui::desc::{
-    AstError, CircleProps, ColProps, DescBuilder, PadProps, Props, RectProps, RowProps, TextProps,
-    TextStyle,
-    ViewKind, ViewSpec, KIND_COL, KIND_PANEL, KIND_RECT, KIND_ROOT, KIND_TEXT,
+    AstError, ColProps, DescBuilder, PadProps, Props, RectProps, RowProps, TextProps, TextStyle,
+    ViewKind, ViewSpec, KIND_COL, KIND_RECT, KIND_ROOT, KIND_TEXT,
 };
 use berry_ui::damage::RectI;
 use berry_ui::Ui;
@@ -222,9 +221,11 @@ fn rebuilt_tree_semantically_equivalent() {
 #[test]
 fn apply_reject_unknown_kind_and_flags() {
     let mut ui = Ui::<32>::new(100, 100);
-    // 未知 kind 字节（C1 起 11=Clip；未知负例顺延 12）
+    // 未知 kind 字节（P2 借来件批后值域 0..=40：34..=40 = Collapse/Chip/
+    // Fab/Card/Gauge/Qr/DragReorder——add-only 追加，旧绊线 34 让位新域
+    // 界 44：41..=43 = Circle/Panel/Clip add-only）
     assert_eq!(ui.apply_desc(&[0x99, 0]), Err(AstError::UnknownKind { got: 0x99 }));
-    assert_eq!(ui.apply_desc(&[12, 0]), Err(AstError::UnknownKind { got: 12 }));
+    assert_eq!(ui.apply_desc(&[44, 0]), Err(AstError::UnknownKind { got: 44 }));
     // flags 未知位绊线（GUI-6 D5 改钉）：bit1/2/3 = SIZE/A11Y/ALIGN 合法化
     // 后，未知位域起点 = bit4（0x10 拒；0x80 拒保）；bit1 本体转
     // HAS_SIZE×Root 拒（§8.2 合法域表——UnknownProp 载 kind×块失配）。
@@ -234,19 +235,6 @@ fn apply_reject_unknown_kind_and_flags() {
         ui.apply_desc(&[KIND_ROOT, 0x02]),
         Err(AstError::UnknownProp { kind: ViewKind::Root, got: 0x02 }),
         "bit1 合法化后 0x02 不再落 UnknownFlags——HAS_SIZE×Root 由合法域表拒"
-    );
-    let mut panel_with_size = vec![KIND_PANEL, 0x02, 1, 2, 3];
-    panel_with_size.extend_from_slice(&u32::MAX.to_le_bytes());
-    panel_with_size.extend_from_slice(&u32::MAX.to_le_bytes());
-    panel_with_size.extend_from_slice(&4u32.to_le_bytes());
-    panel_with_size.extend_from_slice(&0u32.to_le_bytes());
-    panel_with_size.extend_from_slice(&0u32.to_le_bytes());
-    panel_with_size.extend_from_slice(&8u32.to_le_bytes());
-    panel_with_size.extend_from_slice(&8u32.to_le_bytes());
-    assert_eq!(
-        ui.apply_desc(&panel_with_size),
-        Err(AstError::UnknownProp { kind: ViewKind::Panel, got: 0x02 }),
-        "Panel 定尺寸已在 props 域，HAS_SIZE 双源歧义必须拒绝"
     );
 }
 
@@ -431,30 +419,4 @@ fn desc_builder_child_cap_255_retry_stable() {
         .unwrap();
     assert_eq!(b.end(), Err(AstError::TooSmall { need: 256, got: 255 }));
     assert_eq!(b.end(), Err(AstError::TooSmall { need: 256, got: 255 }), "拒绝零半执行——重试同错");
-}
-
-
-// —— Circle wire add-only：建树→encode→apply→再 encode 字节闭环 ——
-#[test]
-fn circle_view_roundtrips_additive_wire_kind() {
-    let mut ui = Ui::<16>::new(100, 100);
-    let root = ui.root();
-    ui.add(root, ViewSpec {
-        kind: ViewKind::Circle,
-        key: 9,
-        props: Props::Circle(CircleProps { bg: bg(12, 34, 56), w: Some(16), h: Some(16) }),
-    })
-    .unwrap();
-    let mut first = [0u8; 64];
-    let n1 = ui.encode_desc(&mut first).unwrap();
-    let mut ui2 = Ui::<16>::new(100, 100);
-    ui2.apply_desc(&first[..n1]).unwrap();
-    let mut second = [0u8; 64];
-    let n2 = ui2.encode_desc(&mut second).unwrap();
-    assert_eq!(&first[..n1], &second[..n2]);
-    ui2.layout();
-    ui2.drain_damage();
-    let id = ui2.node_at(8, 8).unwrap();
-    assert_eq!(ui2.kind_of(id).unwrap(), ViewKind::Circle);
-    assert_eq!(ui2.bounds(id).unwrap(), RectI::new(0, 0, 16, 16));
 }

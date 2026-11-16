@@ -16,6 +16,7 @@ const SENTINEL: u32 = 0xEEEE_EEEE;
 const RED: Color = Color { r: 255, g: 0, b: 0 };
 const GREEN: Color = Color { r: 0, g: 255, b: 0 };
 const BLUE: Color = Color { r: 0, g: 0, b: 255 };
+const RED_SENTINEL: u32 = 0x00FF0000; // px() little-endian red word
 
 fn desc() -> TextureDesc {
     TextureDesc::new(W as usize, H as usize, STRIDE, TextureFormat::Rgbx).unwrap()
@@ -143,22 +144,17 @@ fn push_clip_rejects_negative_rect_at_record() {
 }
 
 #[test]
-fn command_full_missing_pop_rejects_whole_list() {
+fn command_budget_reserves_matching_pop() {
     let mut enc = CommandEncoder::new();
     enc.push_clip(Rect::new(0, 0, 8, 8)).unwrap();
-    for _ in 0..berry_gfx::cmd::MAX_CMDS - 1 {
+    for _ in 0..berry_gfx::cmd::MAX_CMDS - 2 {
         enc.fill_rect(Rect::new(0, 0, 1, 1), RED).unwrap();
     }
-    assert_eq!(enc.pop_clip(), Err(berry_gfx::cmd::CmdError::Full));
+    assert_eq!(enc.pop_clip().unwrap(), ());
+    assert_eq!(enc.len(), berry_gfx::cmd::MAX_CMDS);
     let mut fb = vec![0xEEu8; STRIDE * H as usize];
-    let err = Queue::new()
-        .submit(
-            &enc.finish(),
-            &mut fb,
-            &desc(),
-            &PassDescriptor::load(),
-        )
-        .unwrap_err();
-    assert!(matches!(err, berry_gfx::queue::SubmitError::UnbalancedClip { .. }));
-    assert_eq!(px(&fb, 0, 0), SENTINEL, "满帽缺 Pop：整表拒绝零半帧");
+    Queue::new()
+        .submit(&enc.finish(), &mut fb, &desc(), &PassDescriptor::load())
+        .unwrap();
+    assert_eq!(px(&fb, 0, 0), RED_SENTINEL);
 }

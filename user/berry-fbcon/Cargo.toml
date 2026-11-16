@@ -1,6 +1,6 @@
 [package]
 name = "berry-fbcon"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 # V-6 刀 2 前置段（docs/VM里程碑设计草案.md §4 V-6）：fbcon 纯函数 crate——
 # 自绘 8×16 点阵字形 + 蜂格渲染核，host 测试先行（berry-virtio/xHCI

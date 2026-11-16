@@ -1,6 +1,6 @@
 [package]
 name = "berry-complete"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 # C-4（docs/shell设计.md §2.4 留档兑现）：bsh Tab 补全纯函数 crate，
 # `berry-psproto` 先例（「解析器即产品」）——`cfg_attr(not(test), no_std)`

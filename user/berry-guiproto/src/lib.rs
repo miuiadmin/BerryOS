@@ -200,6 +200,55 @@ pub const OP_WM_TASK_SELECT: u8 = 0x6C;
 /// SYSTEM Recents：拉最近 APP owner 列表（请求 4B；应答 4+2N 字节）。
 pub const OP_WM_RECENTS_GET: u8 = 0x6D;
 
+// ---------- 波2/波3 add-on（advanced main；op 按让先落者律重编号） ----------
+// ---------- 波2 输入焦点协议（六波方案步骤 3——add-only 扩面） ----------
+//
+// guiproto add-only 纪律：只增常量与新编解码函数，不动任何既有 op 的
+// 字节面；服务端执法（wmd/guifbd 侧）挂波3 接线。
+
+/// wm 域：焦点请求（客户端 → wmd：申请/让出焦点。payload `[op][win][r16]`）。
+pub const OP_WM_FOCUS: u8 = 0x6E;
+/// wm 域：返回键路由（导航窗 → wmd：路由到焦点窗；payload `[op][r24]`）。
+pub const OP_WM_BACK: u8 = 0x6F;
+/// input 域：授权注入（softime/测试 → gui-inputd：以真实输入同一事件面
+/// 注入键盘/文本事件；payload `[op][dev_kind][key/text...]`）。授权面
+/// （谁可注入）执法在 inputd 服务端。
+pub const OP_INPUT_INJECT: u8 = 0x25;
+
+/// 窗口层：服务层（软键盘 softime 等——压 SYSTEM 之上、独立合成带）。
+pub const WM_LAYER_SERVICE: u8 = 2;
+
+/// input 域设备类（PointerEvent.device_id 高位带——v1 device_id = 0 恒
+/// 触屏；键盘/文本注入事件的 dev_kind 字节值域）：触摸屏。
+pub const DEV_POINTER: u8 = 0;
+/// 键盘（key 事件：code = ASCII 可打印字节或控制键）。
+pub const DEV_KEYBOARD: u8 = 1;
+/// 文本提交（IME 提交面——payload = ASCII 字节串）。
+pub const DEV_TEXT: u8 = 2;
+
+// ---------- 波3 wm 事件通道（六波方案步骤 4 / 波3设计 §3——add-only） ----------
+//
+// guiproto add-only 纪律同波2：只增常量与新编解码函数，不动任何既有 op
+// 的字节面。事件通道 = wm 域旁路单帧通道——WM_CREATE 应答随行 gift 的
+// 属主端（表项记属主）或 OP_WM_SUBSCRIBE 订阅端（无窗跟随者面），只承载
+// 下列三帧型，不与 wm_srv 请求面混跑。帧型带 0x90..=0x9F 落在全部 op 带
+// （present 1..=6 / input 0x20..=0x22 / hdi 0x40..=0x43 / wm 0x60..=0x7F）
+// 之外——错投任一请求分发面恒 ST_BAD，结构性防错投（wm 带互斥 Q1 同法）。
+
+/// wm 域：订阅表变更事件通道（无窗跟随者——guifbd 表快照「通知驱动 +
+/// 异步拉取」面，波3设计 §4）；ack = 1B ST_OK + 随行恰 1 handle（订阅者
+/// 事件通道客户端端）。表跟随纪律（波3设计 §9）：TABLE_WAIT 冻结零新增
+/// 驻留者，跟随一律走本通道通知 + TABLE_GET 快照。
+pub const OP_WM_SUBSCRIBE: u8 = 0x70;
+/// 事件帧型：返回键投递（wmd → 焦点窗属主；`[kind][wid u16][r]`——500ms
+/// 无 BACK_ACK 且无表变更则 wmd 兜底 DESTROY，wire 只管投递不管兜底）。
+pub const WM_EVT_BACK: u8 = 0x90;
+/// 事件帧型：表变更通知（wmd → 全体属主/订阅者；`[kind][version u32]`——
+/// 尽力而为：非阻塞 send 满即丢，真值恒经 TABLE_GET 快照，丢弃至多迟一拍）。
+pub const WM_EVT_TABLE: u8 = 0x91;
+/// 事件帧型：返回应答（属主 → wmd，1B 无域——解除 500ms 兜底槽）。
+pub const WM_EVT_BACK_ACK: u8 = 0x92;
+
 // ---------- wm 域值域（GUI-5；钦定位域未知位双侧拒）----------
 
 /// WM_CONNECT client_type：普通 app session。
@@ -400,6 +449,14 @@ pub const FMT_XRGB8888: u32 = 1 << 0;
 pub const FMT_ARGB8888: u32 = 1 << 1;
 /// 像素格式位（位域）：RGB565。
 pub const FMT_RGB565: u32 = 1 << 2;
+
+/// PREPARE flags 位（hdi 域 buffer 对象能力位）：预留——可被服务端
+/// （合成器）直接采样（Veda 启示八，调研 23 号；与 per-surface 帧率意图位
+/// 同批的伙伴位，GUI-2 消费侧已实施）；v1 无消费者，wire 位 add-only 冻结
+/// 语义=0 不可采样——置位帧 encode assert 炸响 / parse None（既有「flags
+/// v1 恒 0」双侧执法即其冻结面，位认领零 wire 行为变更）；未来激活 = 编码
+/// assert 与解析值域同步收宽（`scene_known` 收宽先例，add-only）。
+pub const PREPARE_F_SERVER_SAMPLABLE: u8 = 1 << 0;
 
 /// 投递模式：攒批（SYN 批聚合）。
 pub const DELIVERY_BATCHED: u8 = 0;
@@ -605,8 +662,11 @@ const fn frame_status_known(s: u8) -> bool {
     s == FRAME_PRESENTED || s == FRAME_DISCARDED
 }
 
+/// 层值域执法（波3 收宽——波2 R1 立法「拒点从 2 移钉 3」落地）：SERVICE=2
+/// 入域（softime 服务窗面），3 起仍拒。scene_known 收宽先例同款（值域
+/// 收宽不升版——VER_WM 恒 1）。
 const fn wm_layer_known(l: u8) -> bool {
-    l <= WM_LAYER_SYSTEM
+    l <= WM_LAYER_SERVICE
 }
 
 const fn wm_create_flags_known(f: u8) -> bool {
@@ -1898,7 +1958,9 @@ pub fn parse_vblank_rep(buf: &[u8]) -> Option<VblankRep> {
 /// 任意 u32 合法帧——编码/解析不拦，§3.5-6）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PrepareReq {
-    /// v1 恒 0（双侧执法）。
+    /// v1 恒 0（双侧执法）——含预留位 [`PREPARE_F_SERVER_SAMPLABLE`]（bit0
+    /// 已认领、语义冻结 0 不可采样，见其 doc；bit1..=7 未认领仍属「恒 0」
+    /// 整体执法面）。
     pub flags: u8,
     pub width: u32,
     pub height: u32,
@@ -1907,7 +1969,8 @@ pub struct PrepareReq {
 }
 
 /// 编码 PREPARE 请求（恰 20B `[op][flags][r16][w u32][h u32][stride u32]
-/// [format u32]`；flags ≠ 0 / buf 不足 = 调用方错，assert）。
+/// [format u32]`；flags ≠ 0（含预留位 SERVER_SAMPLABLE——v1 冻结 0 不可
+/// 采样）/ buf 不足 = 调用方错，assert）。
 pub fn encode_prepare_req(out: &mut [u8], req: &PrepareReq) -> usize {
     assert!(req.flags == 0, "guiproto: prepare flags v1 恒 0");
     assert!(out.len() >= PREPARE_REQ_LEN, "guiproto: prepare req buf 不足");
@@ -1922,7 +1985,8 @@ pub fn encode_prepare_req(out: &mut [u8], req: &PrepareReq) -> usize {
     PREPARE_REQ_LEN
 }
 
-/// 解析 PREPARE 请求：恰 20B + flags == 0（v1）；format 任意 u32 合法。
+/// 解析 PREPARE 请求：恰 20B + flags == 0（v1——含预留位
+/// [`PREPARE_F_SERVER_SAMPLABLE`] 冻结 0，置位帧拒）；format 任意 u32 合法。
 pub fn parse_prepare_req(buf: &[u8]) -> Option<PrepareReq> {
     if buf.len() != PREPARE_REQ_LEN || buf[0] != OP_PREPARE {
         return None;
@@ -3952,6 +4016,192 @@ pub fn wm_hit_test(entries: &[WmEntry], x: u32, y: u32) -> Option<u16> {
     best.map(|e| e.id)
 }
 
+// ---------- 波2 输入焦点协议编解码（add-only——见 OP_WM_FOCUS 块注） ----------
+
+/// WM_FOCUS 请求帧长（`[op][win u16][r16]`）。
+pub const WM_FOCUS_REQ_LEN: usize = 8;
+/// WM_FOCUS 请求帧帽（= 请求帧长——帽一致性族同形）。
+pub const WM_FOCUS_REQ_MAX: usize = WM_FOCUS_REQ_LEN;
+/// WM_BACK 请求帧长（`[op][r24]`）。
+pub const WM_BACK_REQ_LEN: usize = 8;
+/// WM_BACK 请求帧帽。
+pub const WM_BACK_REQ_MAX: usize = WM_BACK_REQ_LEN;
+/// INPUT_INJECT 帧长基（`[op][dev_kind]` + 载荷 ≤ 24 字节 + 尾 r16）。
+pub const INPUT_INJECT_REQ_MAX: usize = 28;
+
+/// 编码 WM_FOCUS 请求：`win` = 目标窗 id（0 = 让出焦点——本窗失焦不动
+/// 他窗）。buf 不足 = 调用方错 assert（域内既有编码器同律）。
+pub fn encode_wm_focus_req(out: &mut [u8], win: u16) -> usize {
+    assert!(out.len() >= WM_FOCUS_REQ_LEN, "guiproto: wm focus buf 不足");
+    out[0] = OP_WM_FOCUS;
+    out[1..3].copy_from_slice(&win.to_le_bytes());
+    out[3] = 0;
+    out[4..8].copy_from_slice(&[0; 4]);
+    WM_FOCUS_REQ_LEN
+}
+
+/// 解析 WM_FOCUS 请求：恰 8B + op → win（任意 u16 合法）。
+pub fn parse_wm_focus_req(buf: &[u8]) -> Option<u16> {
+    if buf.len() != WM_FOCUS_REQ_LEN || buf[0] != OP_WM_FOCUS {
+        return None;
+    }
+    Some(u16::from_le_bytes([buf[1], buf[2]]))
+}
+
+/// 编码 WM_BACK 请求（无参——导航键触发，wmd 查表路由到焦点窗）。
+pub fn encode_wm_back_req(out: &mut [u8]) -> usize {
+    assert!(out.len() >= WM_BACK_REQ_LEN, "guiproto: wm back buf 不足");
+    out[0] = OP_WM_BACK;
+    out[1..8].fill(0);
+    WM_BACK_REQ_LEN
+}
+
+/// 解析 WM_BACK 请求：恰 8B + op → true。
+pub fn parse_wm_back_req(buf: &[u8]) -> Option<()> {
+    if buf.len() != WM_BACK_REQ_LEN || buf[0] != OP_WM_BACK {
+        return None;
+    }
+    Some(())
+}
+
+// ---------- 波3 wm 事件通道编解码（add-only——见 OP_WM_SUBSCRIBE 块注） ----------
+
+/// WM_SUBSCRIBE 请求帧长（`[op][r][r16]`——TABLE_GET 同形）。
+pub const WM_SUBSCRIBE_REQ_LEN: usize = 4;
+/// WM_EVT_BACK 帧长（`[kind][wid u16][r]`）。
+pub const WM_EVT_BACK_LEN: usize = 4;
+/// WM_EVT_TABLE 帧长（`[kind][version u32]`）。
+pub const WM_EVT_TABLE_LEN: usize = 5;
+/// WM_EVT_BACK_ACK 帧长（`[kind]`——1B 回程帧）。
+pub const WM_BACK_ACK_LEN: usize = 1;
+
+/// 编码 WM_SUBSCRIBE 请求（无域）。buf 不足 = 调用方错 assert。
+pub fn encode_wm_subscribe_req(out: &mut [u8]) -> usize {
+    assert!(out.len() >= WM_SUBSCRIBE_REQ_LEN, "guiproto: wm subscribe buf 不足");
+    out[0] = OP_WM_SUBSCRIBE;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 0;
+    WM_SUBSCRIBE_REQ_LEN
+}
+
+/// 解析 WM_SUBSCRIBE 请求：恰 4B + op（保留位解析侧恒不校验——前向兼容
+/// 锚同 GETINFO/TABLE_GET 族）。
+pub fn parse_wm_subscribe_req(buf: &[u8]) -> Option<()> {
+    if buf.len() != WM_SUBSCRIBE_REQ_LEN || buf[0] != OP_WM_SUBSCRIBE {
+        return None;
+    }
+    Some(())
+}
+
+/// 编码 WM_EVT_BACK 事件帧：`wid` = 返回键路由目标窗。尾 r 解析侧恒不
+/// 校验（前向兼容锚）。
+pub fn encode_wm_evt_back(out: &mut [u8], wid: u16) -> usize {
+    assert!(out.len() >= WM_EVT_BACK_LEN, "guiproto: wm evt back buf 不足");
+    out[0] = WM_EVT_BACK;
+    out[1..3].copy_from_slice(&wid.to_le_bytes());
+    out[3] = 0;
+    WM_EVT_BACK_LEN
+}
+
+/// 解析 WM_EVT_BACK 事件帧：恰 4B + kind → wid（任意 u16——存在性归
+/// wmd 策略面）。
+pub fn parse_wm_evt_back(buf: &[u8]) -> Option<u16> {
+    if buf.len() != WM_EVT_BACK_LEN || buf[0] != WM_EVT_BACK {
+        return None;
+    }
+    Some(u16::from_le_bytes([buf[1], buf[2]]))
+}
+
+/// 编码 WM_EVT_TABLE 事件帧：`version` = 表版本（u32 任意值——「恒 ≥1」
+/// 是服务端不变量非 wire 执法，Q3 同款）。
+pub fn encode_wm_evt_table(out: &mut [u8], version: u32) -> usize {
+    assert!(out.len() >= WM_EVT_TABLE_LEN, "guiproto: wm evt table buf 不足");
+    out[0] = WM_EVT_TABLE;
+    out[1..5].copy_from_slice(&version.to_le_bytes());
+    WM_EVT_TABLE_LEN
+}
+
+/// 解析 WM_EVT_TABLE 事件帧：恰 5B + kind → version。
+pub fn parse_wm_evt_table(buf: &[u8]) -> Option<u32> {
+    if buf.len() != WM_EVT_TABLE_LEN || buf[0] != WM_EVT_TABLE {
+        return None;
+    }
+    Some(u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]))
+}
+
+/// 编码 WM_EVT_BACK_ACK 回程帧（1B 无域）。
+pub fn encode_wm_back_ack(out: &mut [u8]) -> usize {
+    assert!(out.len() >= WM_BACK_ACK_LEN, "guiproto: wm back ack buf 不足");
+    out[0] = WM_EVT_BACK_ACK;
+    WM_BACK_ACK_LEN
+}
+
+/// 解析 WM_EVT_BACK_ACK 回程帧：恰 1B + kind。
+pub fn parse_wm_back_ack(buf: &[u8]) -> Option<()> {
+    if buf.len() != WM_BACK_ACK_LEN || buf[0] != WM_EVT_BACK_ACK {
+        return None;
+    }
+    Some(())
+}
+
+/// 事件通道帧统一判别（消费侧单入口——属主端收 BACK/TABLE、wmd 端收
+/// BACK_ACK 共用；错帧型 None 交调用方策略）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WmEvt {
+    /// 返回键投递（携带目标窗 id）。
+    Back(u16),
+    /// 表变更通知（携带表 version）。
+    Table(u32),
+    /// 返回应答（1B 无域）。
+    BackAck,
+}
+
+/// 解析事件通道帧 → [`WmEvt`]（帧型互斥判别面——三个单帧解析器的收口）。
+pub fn parse_wm_evt(buf: &[u8]) -> Option<WmEvt> {
+    match buf.first() {
+        Some(&WM_EVT_BACK) => parse_wm_evt_back(buf).map(WmEvt::Back),
+        Some(&WM_EVT_TABLE) => parse_wm_evt_table(buf).map(WmEvt::Table),
+        Some(&WM_EVT_BACK_ACK) => parse_wm_back_ack(buf).map(|_| WmEvt::BackAck),
+        _ => None,
+    }
+}
+
+/// 编码 INPUT_INJECT 请求：`dev_kind` ∈ {DEV_POINTER, DEV_KEYBOARD,
+/// DEV_TEXT}；`payload` ≤ 24B（键盘 = 1B key code；文本 = ASCII 串）。
+/// 野 dev_kind / 载荷越帽 / buf 不足 → None（调用方可构造面——assert
+/// 面仅 buf 不足）。
+pub fn encode_input_inject_req(
+    out: &mut [u8],
+    dev_kind: u8,
+    payload: &[u8],
+) -> Option<usize> {
+    if payload.len() > 24 {
+        return None;
+    }
+    let total = 2 + payload.len() + 2;
+    if out.len() < total {
+        return None;
+    }
+    out[0] = OP_INPUT_INJECT;
+    out[1] = dev_kind;
+    out[2..2 + payload.len()].copy_from_slice(payload);
+    out[total - 2..total].fill(0);
+    Some(total)
+}
+
+/// 解析 INPUT_INJECT 请求：op + dev_kind ∈ 三值域 → (dev_kind, payload)。
+pub fn parse_input_inject_req<'a>(buf: &'a [u8]) -> Option<(u8, &'a [u8])> {
+    if buf.len() < 4 || buf[0] != OP_INPUT_INJECT {
+        return None;
+    }
+    let dk = buf[1];
+    if dk > DEV_TEXT {
+        return None;
+    }
+    Some((dk, &buf[2..buf.len() - 2]))
+}
+
 // ---------- 帽一致性 const assert（§3.1/§8.1-5；改帽必炸）----------
 
 const _: () = assert!(PRESENT_REQ_MAX == 24 + 16 * DAMAGE_MAX);
@@ -5063,11 +5313,17 @@ mod tests {
         odd.format = 0xFFFF_FFFF;
         let n = encode_prepare_req(&mut buf, &odd);
         assert_eq!(parse_prepare_req(&buf[..n]), Some(odd));
-        // flags ≠ 0 拒（v1 恒 0，双侧执法）。
+        // flags ≠ 0 拒（v1 恒 0，双侧执法）——预留位 SERVER_SAMPLABLE
+        // （bit0）同面：冻结语义=0 不可采样，置位帧解析 None（编码 assert
+        // 面见 should_panic 测试；Veda 启示八预留，激活 = 值域收宽）。
         let mut b2 = [0u8; PREPARE_REQ_LEN];
         encode_prepare_req(&mut b2, &req);
-        b2[1] = 1;
+        b2[1] = PREPARE_F_SERVER_SAMPLABLE;
         assert_eq!(parse_prepare_req(&b2), None);
+        // 预留位钉板：认领 bit0；flags=0 默认形上面已往返 = 新位默认 0
+        // 不可采样（与帧率意图位同批的伙伴位，GUI-2 消费侧已实施）。
+        assert_eq!(PREPARE_F_SERVER_SAMPLABLE, 1 << 0);
+        assert_eq!(req.flags & PREPARE_F_SERVER_SAMPLABLE, 0);
         // 截断每切点 / 尾随 / 错 op。
         encode_prepare_req(&mut buf, &req);
         for cut in 0..PREPARE_REQ_LEN {
@@ -5077,6 +5333,22 @@ mod tests {
         tail[..20].copy_from_slice(&buf);
         assert_eq!(parse_prepare_req(&tail), None);
         assert_eq!(parse_prepare_req(&[OP_COMMIT, 0, 0, 0]), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "guiproto")]
+    fn prepare_encode_rejects_server_samplable_frozen_zero() {
+        // 预留位 v1 冻结 0：置位编码 = 调用方程序员错，assert 炸响——
+        // 双侧执法的编码侧一半（解析侧 None 面在 roundtrip 测试钉板）。
+        let req = PrepareReq {
+            flags: PREPARE_F_SERVER_SAMPLABLE,
+            width: 800,
+            height: 600,
+            stride: 3200,
+            format: FMT_XRGB8888,
+        };
+        let mut buf = [0u8; PREPARE_REQ_LEN];
+        encode_prepare_req(&mut buf, &req);
     }
 
     #[test]
@@ -5795,7 +6067,8 @@ mod tests {
     fn wm_value_domain_reject_matrix() {
         // 值域拒矩阵（编码 + 解析对称；相异野值防互换静绿）。
         let mut buf = [0u8; WM_REP_MAX];
-        // CREATE：layer 野值 2 / flags 未知位 0x04。
+        // CREATE：layer 野值 3（SERVICE=2 入域）；EDGE_TO_EDGE 占 bit1，
+        // 未知位拒点为 0x04。
         let good_create = WmCreateReq {
             layer: WM_LAYER_APP,
             flags: 0,
@@ -5806,11 +6079,11 @@ mod tests {
             w: 7,
             h: 8,
         };
-        let bad_layer = WmCreateReq { layer: 2, ..good_create };
+        let bad_layer = WmCreateReq { layer: 3, ..good_create };
         assert_eq!(encode_wm_create_req(&mut buf, &bad_layer), None);
         let mut f = [0u8; WM_CREATE_REQ_LEN];
         let _ = encode_wm_create_req(&mut f, &good_create).unwrap();
-        f[1] = 2;
+        f[1] = 3;
         assert_eq!(parse_wm_create_req(&f), None);
         let bad_flags = WmCreateReq { flags: WM_CREATE_F_AVOID_SYS | 0x04, ..good_create };
         assert_eq!(encode_wm_create_req(&mut buf, &bad_flags), None);
@@ -5847,10 +6120,10 @@ mod tests {
             None
         );
         assert_eq!(encode_wm_set_req(&mut buf, &WmSetReq { vis: 2, ..good }), None);
-        // 快照表项：layer 野值 2（off 头+13）/ flags 未知位 0x04（off 头+15）。
+        // 快照表项：layer 野值 3（波3 收宽同 CREATE）/ flags 未知位 0x04（off 头+15）。
         let n = encode_wm_snapshot_rep(&mut buf, &wm_snap_sample(1)).unwrap();
         let mut f = buf;
-        f[WM_SNAP_HEAD + 13] = 2;
+        f[WM_SNAP_HEAD + 13] = 3;
         assert_eq!(parse_wm_snapshot_rep(&f[..n]), None);
         let mut f = buf;
         f[WM_SNAP_HEAD + 15] = 0x04;
@@ -5858,7 +6131,7 @@ mod tests {
         let mut bad_snap = wm_snap_sample(1);
         bad_snap.entries[0].flags = WM_WIN_F_FOCUSED | 0x04;
         assert_eq!(encode_wm_snapshot_rep(&mut buf, &bad_snap), None);
-        bad_snap.entries[0].layer = 2;
+        bad_snap.entries[0].layer = 3;
         assert_eq!(encode_wm_snapshot_rep(&mut buf, &bad_snap), None);
         // GETINFO rep：windows_max 越帽 16（解析面；编码面 assert 见
         // should_panic 测试）。
@@ -6256,6 +6529,185 @@ mod tests {
         let hidden = WmEntry { id: 8, flags: 0, ..high };
         assert_eq!(wm_hit_test(&[hidden, low], 400, 300), Some(1));
         assert_eq!(wm_hit_test(&[hidden], 400, 300), None);
+    }
+
+    // —— 波2 输入焦点协议（add-only）：FOCUS/BACK/INJECT 往返 + 拒面 ——
+
+    #[test]
+    fn wm_focus_back_roundtrip_and_rejects() {
+        let mut buf = [0u8; 32];
+        let n = encode_wm_focus_req(&mut buf, 0x0304);
+        assert_eq!(&buf[..n], &[OP_WM_FOCUS, 0x04, 0x03, 0, 0, 0, 0, 0][..]);
+        assert_eq!(parse_wm_focus_req(&buf[..n]), Some(0x0304));
+        // 让出（win=0）合法。
+        let n = encode_wm_focus_req(&mut buf, 0);
+        assert_eq!(parse_wm_focus_req(&buf[..n]), Some(0));
+        // 拒面：长度不符 / 错 op。
+        assert_eq!(parse_wm_focus_req(&buf[..n - 1]), None);
+        assert_eq!(parse_wm_focus_req(&[OP_WM_BACK, 0, 0, 0, 0, 0, 0, 0]), None);
+        // BACK。
+        let n = encode_wm_back_req(&mut buf);
+        assert_eq!(&buf[..n], &[OP_WM_BACK, 0, 0, 0, 0, 0, 0, 0][..]);
+        assert_eq!(parse_wm_back_req(&buf[..n]), Some(()));
+        assert_eq!(parse_wm_back_req(&buf[..n + 1]), None);
+        // 新 op 不与既有 wm 带冲突（互斥带内新值——add-only 不改旧值）。
+        assert_ne!(OP_WM_FOCUS, OP_WM_BACK);
+        assert!(OP_WM_FOCUS > OP_WM_TABLE_WAIT && OP_WM_BACK > OP_WM_TABLE_WAIT);
+    }
+
+    #[test]
+    fn input_inject_roundtrip_and_rejects() {
+        let mut buf = [0u8; 64];
+        // 键盘单键。
+        let n = encode_input_inject_req(&mut buf, DEV_KEYBOARD, &[b'a']).unwrap();
+        assert_eq!(parse_input_inject_req(&buf[..n]), Some((DEV_KEYBOARD, &[b'a'][..])));
+        // 文本串。
+        let n = encode_input_inject_req(&mut buf, DEV_TEXT, b"hello").unwrap();
+        assert_eq!(parse_input_inject_req(&buf[..n]), Some((DEV_TEXT, &b"hello"[..])));
+        // 拒面：载荷越帽（25B）/ buf 不足 / 野 dev_kind。
+        assert_eq!(encode_input_inject_req(&mut buf, DEV_TEXT, &[0u8; 25]), None);
+        let mut tiny = [0u8; 3];
+        assert_eq!(encode_input_inject_req(&mut tiny, DEV_KEYBOARD, &[b'a']), None);
+        let n = encode_input_inject_req(&mut buf, DEV_TEXT, b"xy").unwrap();
+        let mut bad = buf[..n].to_vec();
+        bad[1] = DEV_TEXT + 1;
+        assert_eq!(parse_input_inject_req(&bad), None, "野 dev_kind 拒");
+        assert_eq!(parse_input_inject_req(&[OP_INPUT_POLL, 0, 0, 0]), None, "错 op 拒");
+        assert_eq!(WM_LAYER_SERVICE, 2, "服务层值域在 SYSTEM 之上");
+    }
+
+    // —— 波3 wm 事件通道 + SERVICE 层收宽（add-only 消费侧测试） ——
+
+    #[test]
+    fn wm_layer_service_create_and_snapshot_legal() {
+        // SERVICE=2 入域（波2 R1「拒点从 2 移钉 3」落地）：CREATE/快照双侧
+        // 编解码对称收 2。
+        let mut buf = [0u8; WM_REP_MAX];
+        let svc = WmCreateReq {
+            layer: WM_LAYER_SERVICE,
+            flags: 0,
+            parent: 0,
+            group: 0,
+            x: 0,
+            y: 400,
+            w: 800,
+            h: 200,
+        };
+        let n = encode_wm_create_req(&mut buf, &svc).unwrap();
+        assert_eq!(parse_wm_create_req(&buf[..n]), Some(svc));
+        let mut snap = wm_snap_sample(1);
+        snap.entries[0].layer = WM_LAYER_SERVICE;
+        let n = encode_wm_snapshot_rep(&mut buf, &snap).unwrap();
+        assert_eq!(parse_wm_snapshot_rep(&buf[..n]).unwrap().ok().unwrap(), snap);
+    }
+
+    #[test]
+    fn wm_hit_test_service_layer_precedence() {
+        // 层降序天然覆盖 SERVICE>SYSTEM>APP（layer 数值序即层序——零算法
+        // 改动，波2 冻结口径的波3 消费侧钉板）。
+        let base = WmEntry {
+            id: 7,
+            parent: 0,
+            group: 0,
+            x: 0,
+            y: 0,
+            w: 800,
+            h: 600,
+            layer: WM_LAYER_APP,
+            z: 0,
+            flags: WM_WIN_F_VISIBLE,
+        };
+        let sys = WmEntry { id: 3, h: 30, layer: WM_LAYER_SYSTEM, ..base };
+        let svc = WmEntry {
+            id: 9,
+            y: 560,
+            h: 40,
+            layer: WM_LAYER_SERVICE,
+            z: 0,
+            ..base
+        };
+        // SERVICE 压 SYSTEM 任意 z（软键盘暂态压顶语义）。
+        assert_eq!(wm_hit_test(&[sys, svc], 400, 575), Some(9));
+        assert_eq!(wm_hit_test(&[svc, sys], 400, 575), Some(9));
+        // SERVICE 窗外仍中 SYSTEM。
+        assert_eq!(wm_hit_test(&[sys, svc], 400, 10), Some(3));
+        // APP 恒垫底：带外点穿到 APP、带内点中 SYSTEM。
+        assert_eq!(wm_hit_test(&[base, sys, svc], 400, 10), Some(3));
+        assert_eq!(wm_hit_test(&[base, sys, svc], 400, 300), Some(7));
+        assert_eq!(wm_hit_test(&[base, svc], 400, 300), Some(7));
+    }
+
+    #[test]
+    fn wm_subscribe_roundtrip_and_rejects() {
+        let mut buf = [0u8; 8];
+        let n = encode_wm_subscribe_req(&mut buf);
+        assert_eq!(&buf[..n], &[OP_WM_SUBSCRIBE, 0, 0, 0][..]);
+        assert_eq!(parse_wm_subscribe_req(&buf[..n]), Some(()));
+        // 拒面：长度不符 / 错 op（含 TABLE_GET 同形邻值）。
+        assert_eq!(parse_wm_subscribe_req(&buf[..n - 1]), None);
+        assert_eq!(parse_wm_subscribe_req(&buf[..n + 1]), None);
+        assert_eq!(parse_wm_subscribe_req(&[OP_WM_TABLE_GET, 0, 0, 0]), None);
+        // op 带位：wm 域 0x60..=0x7F 内 TABLE_WAIT 之后的互斥新值。
+        assert!(OP_WM_SUBSCRIBE > OP_WM_BACK && OP_WM_BACK > OP_WM_FOCUS);
+    }
+
+    #[test]
+    fn wm_evt_frames_roundtrip_and_rejects() {
+        let mut buf = [0u8; 8];
+        // BACK 事件：`[kind][wid u16][r]` 恰 4B；尾 r 解析侧恒不校验。
+        let n = encode_wm_evt_back(&mut buf, 0x0304);
+        assert_eq!(&buf[..n], &[WM_EVT_BACK, 0x04, 0x03, 0][..]);
+        assert_eq!(parse_wm_evt_back(&buf[..n]), Some(0x0304));
+        buf[3] = 0xEE;
+        assert_eq!(parse_wm_evt_back(&buf[..n]), Some(0x0304));
+        assert_eq!(parse_wm_evt_back(&buf[..n - 1]), None);
+        assert_eq!(parse_wm_evt_back(&buf[..n + 1]), None);
+        // TABLE 事件：`[kind][version u32]` 恰 5B；version 任意 u32 合法
+        // （「恒 ≥1」是服务端不变量非 wire 执法，Q3 同款）。
+        let n = encode_wm_evt_table(&mut buf, 0x1122_3344);
+        assert_eq!(&buf[..n], &[WM_EVT_TABLE, 0x44, 0x33, 0x22, 0x11][..]);
+        assert_eq!(parse_wm_evt_table(&buf[..n]), Some(0x1122_3344));
+        for v in [0u32, u32::MAX] {
+            let n = encode_wm_evt_table(&mut buf, v);
+            assert_eq!(parse_wm_evt_table(&buf[..n]), Some(v));
+        }
+        assert_eq!(parse_wm_evt_table(&buf[..4]), None);
+        assert_eq!(parse_wm_evt_table(&buf[..6]), None);
+        // BACK_ACK：恰 1B。
+        let n = encode_wm_back_ack(&mut buf);
+        assert_eq!(&buf[..n], &[WM_EVT_BACK_ACK][..]);
+        assert_eq!(parse_wm_back_ack(&buf[..n]), Some(()));
+        assert_eq!(parse_wm_back_ack(&[]), None);
+        assert_eq!(parse_wm_back_ack(&[WM_EVT_BACK, 0]), None);
+    }
+
+    #[test]
+    fn wm_evt_unified_parse_and_band_isolation() {
+        // 统一判别面：三帧型互斥收口。
+        let mut buf = [0u8; 8];
+        let n = encode_wm_evt_back(&mut buf, 9);
+        assert_eq!(parse_wm_evt(&buf[..n]), Some(WmEvt::Back(9)));
+        let n = encode_wm_evt_table(&mut buf, 5);
+        assert_eq!(parse_wm_evt(&buf[..n]), Some(WmEvt::Table(5)));
+        let n = encode_wm_back_ack(&mut buf);
+        assert_eq!(parse_wm_evt(&buf[..n]), Some(WmEvt::BackAck));
+        // 错帧型/截断/空 → None。
+        assert_eq!(parse_wm_evt(&[0x00]), None);
+        assert_eq!(parse_wm_evt(&[WM_EVT_BACK, 0x01]), None);
+        assert_eq!(parse_wm_evt(&[]), None);
+        // 帧型带隔离：0x90..=0x92 落在全部 op 带（present 1..=6 / input
+        // 0x20..=0x22 / hdi 0x40..=0x43 / wm 0x60..=0x7F）之外——错投任一
+        // 请求分发面恒 ST_BAD（结构性防错投，wm 带互斥 Q1 同法）。
+        let kinds = [WM_EVT_BACK, WM_EVT_TABLE, WM_EVT_BACK_ACK];
+        for k in kinds {
+            assert!(k < OP_WM_GETINFO || k > 0x7F, "事件帧型 {} 不得落 wm op 带", k);
+            assert!(!(1..=6).contains(&k) && !(0x20..=0x22).contains(&k));
+            assert!(!(0x40..=0x43).contains(&k));
+            assert!(parse_wm_create_req(&[k, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]) == None);
+        }
+        assert_ne!(WM_EVT_BACK, WM_EVT_TABLE);
+        assert_ne!(WM_EVT_TABLE, WM_EVT_BACK_ACK);
+        assert_ne!(WM_EVT_BACK, WM_EVT_BACK_ACK);
     }
 
     // ---------- 刀3 仲裁器决策表（规范 §6.3 A1-A11——每条一正一负 + 组合钉板）----------

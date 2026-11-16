@@ -1,6 +1,8 @@
 [package]
 name = "guifbd"
-version = "0.1.0"
+# L-SYS 0.2.0：字面版本不走 workspace 继承（musl 链独立小工作区，版本治理
+# 规则/14；user/bins 22 件同批同值）。升版 = 逐 crate 手同步。
+version = "0.2.0"
 edition = "2021"
 
 # GUI-1（M-GUI 首刀）：framebuffer 显示服务（V-6 刀 2 后段收口）。fsmgr/
@@ -18,16 +20,32 @@ edition = "2021"
 # console 路恒同步直写 + FULL 纯记账；首个 gfx 帧一次性 `GFXF ok n=`。
 # wire 单源 = berry-guiproto（三域 channel + 恰形编解码——本服务零协议
 # 改动，ADR #54 接线半边）。
+#
+# B1-b+c（显示与加速体系 02 号 §3.2/§6，双后端刀）：lib/bin 双面化
+# （gui-inputd 先例）——lib = vgpu 后端纯面（后端分派/INDIRECT 链构造/
+# ATTACH_BACKING 段切/提交序——host 单测，只依赖 berry-gpuproto +
+# berry-virtio 两纯 crate）；bin = guest 入口（真设备链 + syscall 面）。
+# berry-libc 按目标门控（`cfg(target_os = "linux")`——musl 侧才在场：
+# 其 crt0 汇编在 host 测试二进制不编，libc 同名符号插入劫 libSystem 同
+# T-1 实录，gui-inputd 同款）。
 license = "Apache-2.0"
 
 [workspace]
 
 [dependencies]
-berry-libc = { path = "../../berry-libc" }
 berry-sys = { path = "../../berry-sys" }
 berry-exec = { path = "../../berry-exec" }
 berry-fbcon = { path = "../../berry-fbcon" }
 berry-guiproto = { path = "../../berry-guiproto" }
+# B1-b：virtio-gpu 2D 控制队列协议（九命令 encode/parse + BGRX 直配）。
+berry-gpuproto = { path = "../../berry-gpuproto" }
+# B1-c：virtqueue 传输（RingLayout/publish/used + mmio 表 + INDIRECT 位）。
+berry-virtio = { path = "../../../drivers/berry-virtio" }
+
+# guest 面依赖（musl/linux 侧才在场——gui-inputd 同款门控）：crt0/交接
+# stdin/park（host `cargo test --lib` 只建 lib 纯面，bin 不连 berry-libc）。
+[target.'cfg(target_os = "linux")'.dependencies]
+berry-libc = { path = "../../berry-libc" }
 
 [profile.release]
 opt-level = "z"

@@ -19,6 +19,14 @@
 use crate::paging::*;
 use crate::{GICD_BASE, KERNEL_VA_BASE, RAM_BASE, RAM_TOP, UART0_BASE};
 use core::arch::asm;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+/// 免失效激活档（P0-3 `activate_ttbr0_keep_tlb`）可信度：`true` = 虚拟化层
+/// 不环回 TTBR0 的 ASID 位域（QEMU HVF 实测形态——Hypervisor 自管 guest
+/// ASID，寄存器读面丢弃位域），按号 TLB 语义不可依托。boot 单线程窗由
+/// [`probe_asid_field_roundtrip`] 探测写入；调度切换临界区只读（Relaxed
+/// 足够——程序序即真实序，A12 同款纪律）。
+static ASID_TLB_UNTRUSTED: AtomicBool = AtomicBool::new(false);
 
 const TWO_MB: usize = 1 << 21;
 const L2_INDEX_MASK: usize = PTES_PER_TABLE - 1; // 9 位
@@ -72,10 +80,22 @@ const TCR_EL1: u64 = (25 << 0) // T0SZ
     | (0b10 << 30) // TG1 = 4KiB
     | (0b000 << 32); // IPS = 32-bit PA（UART/GIC/RAM 全 < 4GiB）
 
-/// SCTLR_EL1 使能值：`M | C | I | SPAN`（开 MMU + 数据/统一 cache + 指令
-/// cache；`SPAN=1` 让 EL0→EL1 异常不自动置 PSTATE.PAN——Apple Silicon/HVF
-/// 实现 PAN，未置位时 syscall copy_to_user 会被内核侧 PAN 拦成 D-abort。
-/// 无 PAN 的 cortex-a72/TCG 该位为 RES0，双形态同值）。A=0（不查对齐）。
+/// SCTLR_EL1 使能值：`M | C | I | SPAN`（开 MMU + 数据/统一 cache + 指令 cache +
+/// 禁「异常入 EL1 自动置 PAN」）。A=0（不查对齐）。
+///
+/// SPAN（bit 23，ARMv8.1-PAN 扩展）= **必置 1**（2026-11-15 北极星审计修）：
+/// PAN 实现上该位复位值 0 = 「取异常进 EL1 时硬件自动置 PSTATE.PAN=1」——
+/// 本内核从不使用 PAN（无任何 `msr pan` 面；copy_from/to_user 靠 SW 走查
+/// 逐页验 AP 位后直接访问，v1 契约 = EL1 可自由读写用户页），PAN 一开则
+/// 一切 EL0 可访问页（AP=01）的 EL1 数据访问全变 level-3 权限错——首个
+/// 踩雷点 = svcmgr 首个带用户出参的 syscall（`copy_to_user → memcpy` 写
+/// `vmo_get_size` 出参），症状 = TAGTAB ok 后 D-abort(current) ISS=0x4f
+/// （WnR=1 权限错 L3）fatal 停机。HVF `-cpu host`（Apple Silicon，
+/// ARMv8.1+ PAN 在席）/ TCG `-cpu max` 必现；TCG `-cpu cortex-a72`
+/// （ARMv8.0 无 PAN，SPAN RES 1）天然免疫——故冒烟主路（A72）全绿而
+/// HVF 面 fatal 的「档间语义差」。写 1 对无 PAN 硬件 = 写 RES1 位，
+/// 零漂移；对 PAN 硬件 = 显式回归 v1「内核自由访问用户页」契约。
+/// 真正的 PAN 硬化（EL1 访用户面前 `msr pan` 显式开关）留 v2 安全批。
 const SCTLR_ENABLE: u64 = (1 << 0) | (1 << 2) | (1 << 12) | (1 << 23);
 
 /// 建表 + 编程系统寄存器 + 开 MMU。
@@ -208,6 +228,51 @@ pub(crate) unsafe fn tlbi_aside1(asid: u16) {
     isb();
 }
 
+/// TTBR0 ASID 位域环回探针（2026-11-15 北极星审计修第三刀；boot 高半单线程
+/// 窗调一次，`rust_main` 早期）。
+///
+/// 干什么：保 TTBR0 表基不动、只把 ASID 位域换成探针值（1）→ isb → 读回。
+/// 位域丢（≠ 探针值）= 虚拟化层自管 guest ASID、寄存器读面不回真值（QEMU
+/// HVF `-accel hvf` 实测：写 `1<<56|base` 读回 `0|base`）→ 按号 TLB 语义
+/// （`tlbi aside1` + P0-3 免失效激活档的「同号项只来自同号激活史」前提）
+/// 不可依托，置 [`ASID_TLB_UNTRUSTED`]。
+///
+/// 为什么这是**安全可探测面**：表基不变 ⇒ 本探针不改变任何翻译结果，只动
+/// TLB 标记（换号 → 旧号项天然失配、按需重填，无正确性面）；真机/TCG/KVM
+/// 位域忠实环回（TCR.A1=0 下 TTBR0.ASID 就是架构 ASID 源）→ 探针零命中、
+/// 免失效档照走，行为零漂移。
+///
+/// # Safety
+/// EL1、MMU 已开、boot 单线程 DAIF 屏蔽窗（调用点 `rust_main` 早期，先于
+/// 任何任务地址空间激活）；本函数自恢复原 TTBR0 值。
+pub unsafe fn probe_asid_field_roundtrip() {
+    let saved: u64;
+    // SAFETY: 特权读；EL1，无副作用。
+    unsafe { asm!("mrs {0}, ttbr0_el1", out(reg) saved, options(nostack, preserves_flags)) };
+    let shift = asid_shift();
+    let probe_ttbr = (saved & !(0xFFFF_u64 << shift)) | (1u64 << shift);
+    // SAFETY: 特权写；表基不变，仅换 ASID 标记（见函数注）。
+    unsafe { write_ttbr0_el1(probe_ttbr) };
+    // SAFETY: 特权读；isb 后必见新值（或虚拟化层的丢弃形）。
+    let back: u64;
+    unsafe {
+        isb();
+        asm!("mrs {0}, ttbr0_el1", out(reg) back, options(nostack, preserves_flags));
+    }
+    // SAFETY: 自恢复；特权写。
+    unsafe { write_ttbr0_el1(saved) };
+    // SAFETY: 特权屏障；恢复后指令流必见原值。
+    unsafe { isb() };
+    if (back >> shift) & 0xFFFF != 1 {
+        ASID_TLB_UNTRUSTED.store(true, Ordering::Relaxed);
+    }
+}
+
+/// [`ASID_TLB_UNTRUSTED`] 只读透传（可观测性——关卡行/诊断面用）。
+pub fn asid_tlb_untrusted() -> bool {
+    ASID_TLB_UNTRUSTED.load(Ordering::Relaxed)
+}
+
 /// 激活任务地址空间：TTBR0 ← `ttbr0_pa` + ASID（`ttbr0_pa == 0` = 无 AS → 内核
 /// 空表，低半必然 fault）；CONTEXTIDR.PROCID = asid（可观测性——硬件 ASID 恒取
 /// TTBR0，A1=0）；`tlbi aside1is` 防上一轮同号映射经 TLB 残留（§5.1 坑「TLB」）。
@@ -215,6 +280,15 @@ pub(crate) unsafe fn tlbi_aside1(asid: u16) {
 /// 只做寄存器操作，**不负责页表内容屏障**——填表方须在调用前 `dsb ish`
 /// （见内核 `aspace` 模块）。
 pub(crate) unsafe fn activate_ttbr0(ttbr0_pa: usize, asid: u16) {
+    activate_ttbr0_regs(ttbr0_pa, asid);
+    // 同号旧映射失效。
+    tlbi_aside1(asid);
+}
+
+/// 激活的**寄存器面**（P0-3 抽出件）：TTBR0 ← 表+ASID + CONTEXTIDR.PROCID，
+/// **不做任何 TLB 失效**——与 [`activate_ttbr0`] 共用，另经
+/// `activate_ttbr0_keep_tlb` 对调度器开放（激活代数消费的免失效档）。
+unsafe fn activate_ttbr0_regs(ttbr0_pa: usize, asid: u16) {
     let table = if ttbr0_pa == 0 {
         (&raw const NULL_L1) as usize - KERNEL_VA_BASE
     } else {
@@ -230,8 +304,29 @@ pub(crate) unsafe fn activate_ttbr0(ttbr0_pa: usize, asid: u16) {
         in(reg) (asid as u64) << 13,
         options(nostack, preserves_flags)
     );
-    // 同号旧映射失效。
-    tlbi_aside1(asid);
+}
+
+/// 激活任务地址空间（**免失效档**）：寄存器面同 [`activate_ttbr0`]，但跳过
+/// `tlbi aside1is`+`dsb ish`。调用方合同（P0-3 激活代数消费律）：本核上次
+/// 激活该 ASID 以来**回卷代数未变**——该号在本核 TLB 里的项全为有效项
+///（改叶路径自带按号失效 + 广播；同号复用只经回卷，回卷路径自带全量失效
+/// 且使代数前进）。违约 = 同号旧映射可能残留（§5.1 坑「TLB」）。
+///
+/// **虚化降级**（2026-11-15 北极星审计修第三刀）：[`ASID_TLB_UNTRUSTED`]
+/// 置位（TTBR0 ASID 位域读回不环回——QEMU HVF 形虚拟化）时**整档退化为
+/// [`activate_ttbr0` 全量档**。免失效档的正确性前提 = 「按号失效 + 按号
+/// 标记的 TLB 语义」成立（同号项只可能来自同号激活史）；HVF 把 guest 的
+/// TTBR0.ASID 自管（读回丢弃位域——boot 探针实测），TLB 标记面不随 guest
+/// ASID 走 ⇒ 跨表切换不失效 = 旧表项对新表别名（实测形态：TAGTAB 后 pager
+/// 取指 0x10c64 / svcmgr `copy_to_user` 写栈页，均 L3 翻译错——SW 走查叶
+/// 在、HW 走查叶无，HW/SW 走查面分裂）。全量档多付一次 `tlbi aside1is`，
+/// 正确性优先；TCG/KVM/真机（位域环回）零漂移照走免失效档。
+pub(crate) unsafe fn activate_ttbr0_keep_tlb(ttbr0_pa: usize, asid: u16) {
+    if ASID_TLB_UNTRUSTED.load(Ordering::Relaxed) {
+        activate_ttbr0(ttbr0_pa, asid);
+        return;
+    }
+    activate_ttbr0_regs(ttbr0_pa, asid);
 }
 
 /// 读当前 TTBR0_EL1 的表基 PA（bits[47:12]，ASID 位剔除；无 AS 时 = 内核空表
@@ -244,14 +339,25 @@ pub(crate) fn current_ttbr0_pa() -> usize {
     ttbr as usize & 0x0000_FFFF_FFFF_F000
 }
 
-/// S-4 4-2：当前 TTBR0 的 ASID 字段（bits[63:48]）——syscall copy 链读者
-/// 解析 per-AS PT 锁的键。与 [`current_ttbr0_pa`] 同一读点（EL0 syscall 不
-/// 切 AS，天然 = 调用者 ASID，同窗一致键）。
+/// S-4 4-2：当前 ASID——syscall copy 链读者解析 per-AS PT 锁的键；demand
+/// 探针（`dpg::probe`）asid 反查同源。与 [`current_ttbr0_pa`] 同一激活窗
+/// （EL0 syscall 不切 AS，天然 = 调用者 ASID，同窗一致键）。
+///
+/// **读点 = CONTEXTIDR_EL1（软件镜像），不读 TTBR0 位域**（2026-11-15 北极
+/// 星审计修第二刀）：TTBR0 读回取位在两档加速器上都不可靠——①TCG/HVF
+/// 8 位 ASID 机（HVF `-cpu host` 实测 `ID_AA64MMFR0.ASIDBits=0`）上 ASID
+/// 落 [63:56]，`>>48` 读出的是 `asid<<8`（错键）；②HVF 对 TTBR0_EL1 读回
+/// **丢弃 ASID 位域**（实测写 `1<<56|table` 读回 `0|table`——Hypervisor 自管
+/// shadow TLB 的 ASID，寄存器读面不回真值）。CONTEXTIDR 是激活面
+/// [`activate_ttbr0_regs`] 每次同窗写入的软件镜像（`asid<<13` 编码，
+/// 8 位号 ≤255 时 `<<13` 恒落 ASID 字段 [31:8] 内不溢出），两档均忠实回读
+/// （HVF 实测 0x2000 = 1<<13 ✓）。per-CPU 寄存器 = SMP 各核各自回读各自
+/// 激活值，无共享静态镜像的跨核串键面。
 pub(crate) fn current_asid() -> u16 {
-    let ttbr: u64;
+    let cid: u64;
     // SAFETY: 特权读；EL1，无副作用。
-    unsafe { asm!("mrs {0}, ttbr0_el1", out(reg) ttbr, options(nostack, preserves_flags)) };
-    (ttbr >> 48) as u16
+    unsafe { asm!("mrs {0}, contextidr_el1", out(reg) cid, options(nostack, preserves_flags)) };
+    (cid >> 13) as u16
 }
 
 /// 低半身份表退役（2b-2）：TTBR0 ← 内核空表（ASID 0）+ **全量 TLB 失效**。

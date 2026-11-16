@@ -1,2 +1,7 @@
 /cargo-target/
 /.cargo-home/
+
+# berry-review 本地面（wave5 条件项，同根 .gitignore 来源裁决）
+/.bt/
+# Linux 交叉链 target（build-linux-binary.sh 产物，同 /cargo-target/ 口径）
+/cargo-target-linux/

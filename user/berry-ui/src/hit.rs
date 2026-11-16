@@ -307,7 +307,11 @@ fn hit_walk(
 
     // 子优先（C1：子命中受结构性 Clip port 裁剪）；兄弟链尾 = 顶面。
     // 先沿 next_sib 走到链尾，再沿 prev_sib 回走（无堆栈的逆序遍历）。
-    let mut tail = n.first_child;
+    // 收起态 Collapse：子不参与命中（第三批三面同守卫——layout 不摆
+    // 位 + paint 不发射 + hit 不命中；不可见即不可命中，陈旧 bounds
+    // 不拦截收起后兄弟上移占据区）。
+    let kids_live = !matches!(&n.props, crate::desc::Props::Collapse(cp) if !cp.expanded);
+    let mut tail = if kids_live { n.first_child } else { NONE };
     let mut guard = 0usize;
     while tail != NONE {
         guard += 1;

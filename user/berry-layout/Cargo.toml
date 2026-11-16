@@ -8,7 +8,7 @@
 # 可挂），test 构建放开 std 跑默认 harness——家族既有形态。
 [package]
 name = "berry-layout"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "BerryOS desktop layout JSON v1: pure parser/emitter with canonical byte form (GUI-8)"
 license = "Apache-2.0"

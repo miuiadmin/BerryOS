@@ -30,10 +30,42 @@ if (-not $Fw -or -not (Test-Path $Fw -PathType Leaf)) {
   throw "AAVMF code not found; install QEMU or set AAVMF_CODE=C:\path\AAVMF_CODE.fd"
 }
 
+# Vendored noVNC web assets for `berry vnc web`: web_roots() finds <exe-dir>\web
+# next to berry.exe. License compliance: NOTICE.md, novnc/LICENSE.txt,
+# novnc/AUTHORS and novnc/vendor/pako/LICENSE all ride along inside web\
+# (copied wholesale from tools/berry/web).
+$Web = "tools/berry/web"
+if (-not (Test-Path (Join-Path $Web "novnc/vnc.html") -PathType Leaf)) {
+  throw "missing web assets: $Web/novnc/vnc.html"
+}
+
+# Idempotent rebuild: replace the target dir wholesale (New-Item -Force alone
+# would keep stale files from a previous run), guarded against unsafe paths.
+$AbsTarget = if ([System.IO.Path]::IsPathRooted($TargetDir)) { $TargetDir } else { Join-Path $Root $TargetDir }
+$AbsTarget = [System.IO.Path]::GetFullPath($AbsTarget)
+if (($AbsTarget -replace '[/\\]+$','') -eq ($Root -replace '[/\\]+$','')) {
+  throw "refusing unsafe TargetDir: $TargetDir"
+}
+if (Test-Path $TargetDir) { Remove-Item -Recurse -Force $TargetDir }
 New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
-Copy-Item $Exe (Join-Path $TargetDir "berry.exe") -Force
-Copy-Item $Img (Join-Path $TargetDir "berryos.img") -Force
-Copy-Item $Fw  (Join-Path $TargetDir "AAVMF_CODE.fd") -Force
+Copy-Item $Exe (Join-Path $TargetDir "berry.exe")
+Copy-Item $Img (Join-Path $TargetDir "berryos.img")
+Copy-Item $Fw  (Join-Path $TargetDir "AAVMF_CODE.fd")
+Copy-Item -Recurse $Web (Join-Path $TargetDir "web")
+foreach ($f in @("NOTICE.md","novnc/vnc.html","novnc/LICENSE.txt","novnc/AUTHORS","novnc/vendor/pako/LICENSE")) {
+  if (-not (Test-Path (Join-Path $TargetDir "web\$f") -PathType Leaf)) {
+    throw "web assets incomplete: missing web\$f"
+  }
+}
+
+# Third-party notices for the statically linked host-tool dependencies
+# (wave 6): single source under packaging\, copied into every platform
+# package — the Windows seat is the package root next to berry.exe.
+$Tpn = Join-Path $Root "tools/berry/packaging/THIRD-PARTY-NOTICES.txt"
+if (-not (Test-Path $Tpn -PathType Leaf)) {
+  throw "missing third-party notices source: $Tpn"
+}
+Copy-Item $Tpn (Join-Path $TargetDir "THIRD-PARTY-NOTICES.txt")
 
 @'
 @echo off
@@ -62,4 +94,4 @@ CLI is the primary interface: device/screenshot/record/play/stats/input/power.
 '@ | Set-Content (Join-Path $TargetDir "README.txt") -Encoding UTF8
 
 Write-Host "packaged: $TargetDir"
-Write-Host "  berry.exe + berryos.img + AAVMF_CODE.fd + run-berry.cmd"
+Write-Host "  berry.exe + berryos.img + AAVMF_CODE.fd + run-berry.cmd + web (NOTICE.md + novnc)"

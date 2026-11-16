@@ -261,8 +261,125 @@ def check_artifacts(arts: list) -> int:
     return 0
 
 
+def selftest() -> int:
+    """门禁自身钉板（a-3 U4 纪律）：结构契约/拒面/放大口径/字节向量/产物对偶。
+
+    --check 只证「生成器 ↔ 在册产物」一致；本 selftest 另证生成器**语义**
+    正确（NN 放大数学性质 + 手算字节向量）——生成器逻辑被改坏且重产产物
+    时 --check 仍绿（两侧同源），此处向量仍咬（golden 形状不随产链走）。
+    """
+    fails = []
+    # ① rows_of 结构契约：spec 从 row 3 起；空行简写 → 全空白；短行右补 '.'。
+    r = rows_of(33, ["...#....", "", ".#......"])
+    assert r[3] == "...#...." and r[4] == "........" and r[5] == ".#......"
+    if r[0] != "........" or r[1] != "........" or r[2] != "........" or r[15] != "........":
+        fails.append("rows_of rows 0..=2 / 15 非恒空")
+    if len(r) != 16 or any(len(x) != 8 for x in r):
+        fails.append(f"rows_of 形状非 16×8: {len(r)}×{[len(x) for x in r]}")
+    # ② rows_of 拒面 3 形（生成期 loud 的断言不许被拆）+ scale_glyph 2 形（见④）。
+    for spec, note in [
+        (["#......."] * 13, "13 行 spec 占 row 15"),
+        (["...x...."], "非法字符 x"),
+    ]:
+        try:
+            rows_of(65, spec)
+            fails.append(f"rows_of 拒面未抛 AssertionError: {note}")
+        except AssertionError:
+            pass
+    # 宽 ≠8 真拒面（9 字符行，右补不救——超宽即违）
+    try:
+        rows_of(65, ["#########"])
+        fails.append("rows_of 9 字符行未拒")
+    except AssertionError:
+        pass
+    # ③ ART 全号面：ASCII 32..=126 连续无缺无多。
+    keys = sorted(ART)
+    if keys != list(range(32, 127)):
+        missing = [c for c in range(32, 127) if c not in ART]
+        extra = [c for c in keys if not 32 <= c <= 126]
+        fails.append(f"ART 号面不连续: 缺 {missing} 多 {extra}")
+    rows = {ch: rows_of(ch, ART[ch]) for ch in keys}
+    # ④ scale_glyph 数学性质：n=1 恒等；行 r←r//n、列 c←c//n（重复纹样验证）。
+    src = ["........"] * 16
+    src[0], src[7], src[15] = "##......", "..#.....", ".......#"
+    if scale_glyph(src, 1) != src:
+        fails.append("scale_glyph n=1 非恒等")
+    s2 = scale_glyph(src, 2)
+    if len(s2) != 32 or any(len(x) != 16 for x in s2):
+        fails.append(f"scale_glyph s2 形状非 32×16: {len(s2)}×{set(map(len, s2))}")
+    for r_out in range(32):  # 行重复：输出行 = 源行逐字符 ×2
+        want = "".join(ch * 2 for ch in src[r_out // 2])
+        if s2[r_out] != want:
+            fails.append(f"scale_glyph s2 行 {r_out} ≠ 列重复纹样")
+            break
+    if scale_glyph(["........"] * 15 + ["########"], 3)[47] != "#" * 24:
+        fails.append("scale_glyph s3 全着墨行 ≠ 24 连 #")
+    # scale_glyph 拒面：非 16 行 / 行宽 ≠8。
+    for bad, note in [(["." * 8] * 15, "15 行"), (["." * 7] * 16, "7 列行")]:
+        try:
+            scale_glyph(bad, 2)
+            fails.append(f"scale_glyph 拒面未抛: {note}")
+        except AssertionError:
+            pass
+    # ⑤ build_1x 手算字节钉板（golden 形状不随产链走）：
+    #   '!' spec = 7×"...#...." (rows 3..=9) + 空行×2 + row 12 → col3 = 0x80>>3 = 0x10
+    #   '=' spec rows 6/8 = ".#####.." → cols1..5 = 0b01111100 = 0x7C
+    want_bang = [0x00]*3 + [0x10]*7 + [0x00]*2 + [0x10] + [0x00]*3
+    want_eq = [0x00]*3 + [0x00]*3 + [0x7C, 0x00, 0x7C] + [0x00]*7
+    text1x = build_1x(keys, rows)
+    for ch, want, label in [(33, want_bang, "!"), (61, want_eq, "=")]:
+        line = next((l for l in text1x.splitlines() if f"/* {ch:3}" in l), None)
+        if line is None:
+            fails.append(f"build_1x 缺 {label} 行")
+            continue
+        got = [int(b, 16) for b in line.split("[")[1].split("]")[0].split(",")]
+        if got != want:
+            fails.append(f"build_1x {label} 字节 ≠ 手算: {got!r}")
+    for frag in ["pub static FONT: [[u8; 16]; 95] = [", "MSB（bit7）= 最左列"]:
+        if frag not in text1x:
+            fails.append(f"build_1x 表头契约行缺席: {frag!r}")
+    # ⑥ build_scaled：s2/s3 的 '!' 向量 + 几何常量 + 每形字节数。
+    #   源 col3 着墨 → s2 输出 cols 6,7（字节0 低 2 位 0x03）；s3 输出 cols 9..11
+    #   （字节1 = 0x40|0x20|0x10 = 0x70）。着墨源 rows 3..=9 → s2 输出 6..=19、
+    #   s3 输出 9..=29；源 row 12 → s2 输出 24,25、s3 输出 36..38。
+    for n, table, ink_rows, per in [
+        (2, "FONT_S2", list(range(6, 20)) + [24, 25], [0x03, 0x00]),
+        (3, "FONT_S3", list(range(9, 30)) + [36, 37, 38], [0x00, 0x70, 0x00]),
+    ]:
+        text = build_scaled(keys, rows, n, table)
+        line = next((l for l in text.splitlines() if "/*  33" in l), None)
+        if line is None:
+            fails.append(f"build_scaled n={n} 缺 '!' 行")
+            continue
+        got = [int(b, 16) for b in line.split("[")[1].split("]")[0].split(",")]
+        if len(got) != 16 * n * n:
+            fails.append(f"build_scaled n={n} 每形字节数 {len(got)} ≠ {16*n*n}")
+        for r_out in range(16 * n):
+            chunk = got[r_out * n:(r_out + 1) * n]
+            want = per if r_out in ink_rows else [0x00] * n
+            if chunk != want:
+                fails.append(f"build_scaled n={n} '!' 输出行 {r_out} {chunk!r} ≠ {want!r}")
+                break
+        for frag in [f"pub const CELL_W: usize = {8*n};", f"pub const CELL_H: usize = {16*n};",
+                     f"pub static {table}: [[u8; {16*n*n}]; 95] = ["]:
+            if frag not in text:
+                fails.append(f"build_scaled n={n} 契约行缺席: {frag!r}")
+    # ⑦ --check 对偶：内存重产三档 ↔ 在册产物逐字节（产物漂移 = 立即咬）。
+    if check_artifacts(artifacts(keys, rows)) != 0:
+        fails.append("--check 对偶失败：在册产物 ≠ 重产（改 ART 后须重跑生成器）")
+    if fails:
+        for f in fails:
+            print(f"genfbfont selftest FAIL: {f}", file=sys.stderr)
+        return 1
+    print("genfbfont: selftest ok（结构契约+拒面 5、scale 数学性质、'!'/'=' 手算字节 ×3 档、"
+          "表头契约、在册产物对偶）")
+    return 0
+
+
 def main() -> int:
     args = sys.argv[1:]
+    if "--selftest" in args:
+        return selftest()
     check = False
     for a in args:
         if a == "--check":

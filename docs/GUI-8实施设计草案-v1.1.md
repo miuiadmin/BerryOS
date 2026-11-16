@@ -244,7 +244,7 @@ smoke.sh 锚 `qmp_inject`；EFI 路参数化复用为实施细节）。串口鼠
 - 工程注：dd S-4 验证链在途占共享 target dir——host 测走隔离
   `CARGO_TARGET_DIR=$HOME/.cargo-tmp-gui8` 避让。
 
-**段② svcmgr 装配（共享面——动前 ping 0c 错峰，§10）**
+**段② svcmgr 装配（共享面——动前 ping 0c 错峰，§10）** ✅ 已落 2026-11-03（d057144；沿革二十续——对抗审查 4 MAJOR 收编 + R1 判别器二次修约 INPUT_A→BLK_OK 仪器定谳；验收四门 = test-host 984/0 零漂 + 手跑 EFI 复现 + smoke-image 71/71 + rootfs 相 47/47）
 - arm 重排（§2.3）+ fs 分相错让位 + input dup 赠礼 + app 域常驻 serve
   （稳态 loop wait_many n=2）+ psproto 18 + ps_reg 入账 + 监督最小件。
   钉（0c）：gfxdemo「单活 wm 客户端」头注随动更新——launcher 真接 wm 后
@@ -253,7 +253,7 @@ smoke.sh 锚 `qmp_inject`；EFI 路参数化复用为实施细节）。串口鼠
 - 验收：rootfs 相 47/47 零漂（bsh 三元皮回归）+ EFI 冻结十段零字节扰动
   （除新增 LAUNCH 族标记）+ PS 值 17 定向对拍。
 
-**段③ launcher 主体**
+**段③ launcher 主体** ✅ 已落 2026-11-03（0a023af；沿革二十一续——settle 竞态 TCG 载荷定谳 + 栈面 R5 stack_pages 8→64 + 对抗审查 R2 收编；验收三门 = rig 780s 满窗 LAUNCH ok 1/PAGE ok n=2 1 恰一次 + smoke-image 73/73 + test-host 全绿；ECO_MARKERS 31→33）
 - 布局桩（壁纸三带 + 状态栏 Col + SwipePager track + page_node 填 Grid
   4×3）+ IconSource 供件桥接（boot 期 APP_LIST 拉取 → 静态注册表 → BYI1
   decode → LRU 装载编排——消费侧义务兑现）+ 长活帧循环 embedder（等输入/
@@ -268,7 +268,7 @@ smoke.sh 锚 `qmp_inject`；EFI 路参数化复用为实施细节）。串口鼠
 - 验收：EFI 冻结十段新两标记（LAUNCH ok/PAGE ok）到齐 + UTM 手验桌面起；
   CLICK ok 随段④ 交互相验（修约 1）。
 
-**段④ smoke 新相 + 文书收官**
+**段④ smoke 新相 + 文书收官** ✅ 已落 2026-11-05/06（段④ 刀链 76700fb/bbdd1ba/e05b8e7/20a7844 → 068ce78 验收面入 main；`just gui8-smoke` 独立关卡 = Boot A `CLICK ok n=1`×1 + `LAYOUTW ok`×1、Boot B `LAYOUT ok n=2`×1 + 宿主 canonical 109B 读回 + `gui8-smoke-normal` 常态隔离四标记全零；规则/07 GUI8 行 + justfile 双配方随刀入册）
 - EFI GUI 交互相（tablet+QMP+数据盘双 boot；哨兵 payload 精确 magic；
   click ready 强制；精确计数 + 新增 APPDEMO up + canonical 109B 读回）+
   `gui8-smoke-normal` 常态隔离（无哨兵，spawn 仍发生而四标记全零）+
@@ -277,6 +277,14 @@ smoke.sh 锚 `qmp_inject`；EFI 路参数化复用为实施细节）。串口鼠
   顺手清 + ADR 修订（#58 收官注记/#61 义务②兑现/psproto 18 追记）+
   索引登记 + S7 终判数据采集（双打点进遥测档，判 s7 转 CI or kill）+
   m-gui-wip 分支处置注记。
+- **文书收官兑现注记（2026-11-05/06 随刀 + 2026-11-10 W2 对账补账）**：
+  五件套已落 = 规则/07 GUI8 行 + justfile gui8-smoke/-normal 双配方 +
+  ADR #58 兑现注记（2026-11-03 段①）+ 索引 GUI-8 行 + 沿革；**余项两件
+  跨刀待收**——① S7 终判双打点采集（判定面 = launcher embedder，berry-ui
+  s7 feature 仍 feature-gate 未接；规划 :125 D20-① 判定文案在册）②
+  m-gui-wip 分支处置注记（分支已删零注记——沿革 :1456 处置裁定「保留至
+  GUI-8 收官，此后可删」为现状事实源）。规划 §4 末「GUI-8 落地注记」
+  补齐归本笔同刀（docs lane W2）。
 
 ## §5 协议面：berry-appproto v1
 

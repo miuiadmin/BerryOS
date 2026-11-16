@@ -72,13 +72,16 @@ static CRT0_SEED: unsafe extern "C" fn() = berry_libc::berry_crt0_anchor;
 /// 队列深（vblk 同档：2 的幂、整环落一页；QEMU virtio-net QueueNumMax
 /// 远大于此）。
 const QSIZE: u16 = 16;
-/// rx 缓冲数（= qsize：每缓冲一描述符整收一帧）。
-const RX_BUFS: usize = 16;
-/// rx 缓冲幅：12B net 头 + ≤244B 帧（T-c TCP 扩容：帧开销 66（vnet_hdr
-/// + eth + IP + TCP 头）+ MSS 128 = 194 上限 + 选项余量；16×256 = 4096
-/// 恰满 RX_BUF_PAGE 单页——DMA 四页排布零重排，「rx 单描述符整收」几何
-/// 结论不变）。消费侧 tcp.rs const assert 机器钉住（T-c ③）。
-pub(crate) const RX_BUF_SZ: usize = 256;
+/// rx 缓冲数（= 每趟可挂收帧数；1ms 轮询泵每趟清空 used + 发送面停等
+/// 128B 段，5×1600B/泵并发收帧容量非瓶颈）。
+const RX_BUFS: usize = 5;
+/// rx 缓冲幅：12B net 头 + ≤1514B 满以太帧（首刀入站大段容忍抬升
+/// 256→1600：SLIRP 不读我方 MSS/WINDOW 通告、按 MTU 拼段，对端单写
+/// >128B 即拼出 ~1500B 帧——旧 256B 在 DMA 收帧 len 检查即丢 = 入站
+/// 黑洞第一道闸，NET-01 §3.3 三例实证）。5×1600=8000 ≤ RX_BUF_PAGE
+/// 8192——「rx 缓冲带单页内、单描述符整收一帧」几何结论保持（旧
+/// 16×256=4096 排布退役）。消费侧 tcp.rs const assert 机器钉住。
+pub(crate) const RX_BUF_SZ: usize = 1600;
 /// DMA VMO 几何：页 0 rx ring / 页 1 tx ring / 页 2 rx 缓冲带 / 页 3 tx
 /// 缓冲（各结构单页内——desc 地址域不跨页，vblk 同前提）。
 const DMA_LEN: u64 = 16384;
@@ -117,6 +120,10 @@ const DNS_CAP_NS: u64 = 20_000_000_000;
 /// serve() 空闲/wait 重臂帽：10s（常驻服务空闲合法面——vblk SVC_IDLE
 /// 同款，超时重臂非链断）。
 const SVC_IDLE_NS: u64 = 10_000_000_000;
+/// serve() 挂起 op 在席的短等待节拍（四刀 P9，量级 10ms ≤ 唤醒量子）：
+/// session-0 挂起 op / RTO-TW 臂在席时替换 SVC_IDLE——完成延迟从秒级
+/// 塌到节拍级（K 窗重叠的泵活性面）；全闲保持 10s 心跳零漂移。
+const SVC_TICK_NS: u64 = 10_000_000;
 /// DNS 查询 id 计数器（每查询 fetch_add——应答按 id 精确匹配，杂散/迟到
 /// 应答天然滤除；u16 回卷 = id 空间复用，与「id 匹配」过滤共存）。Relaxed
 /// 单消费者足够。
@@ -141,9 +148,11 @@ static mut TXRING: [u8; 4096] = [0; 4096];
 /// used 环设备拥有）。
 static mut RXSTAGE: [u8; 4096] = [0; 4096];
 /// 帧暂存尺寸常量（静态数组与 tcp.rs 消费侧 const assert 同源——T-c ③）。
-pub(crate) const IOB_SZ: usize = 512;
-/// 帧暂存（tx 组 12B 头 + 帧 / rx 收帧；512 ≥ 12+186——TCP 段最大帧 =
-/// eth 14 + IP 20 + 段 152（头 20 + MSS 选项 4 + 载荷 128））。
+/// 首刀与 RX_BUF_SZ 同步抬升 512→1600：rx 收帧整帧读入（recv_frame 的
+/// vmo_read len ≤ RX_BUF_SZ 必须装下，tcp.rs const assert 钉住）；tx 面
+/// 最大 12+186B 远低此线。收发共用一张 IOB（单线程独占窗纪律）。
+pub(crate) const IOB_SZ: usize = 1600;
+/// 帧暂存（tx 组 12B 头 + 帧 / rx 收帧——rx 整帧读入须 ≥ RX_BUF_SZ）。
 static mut IOB: [u8; IOB_SZ] = [0; IOB_SZ];
 
 /// DMA VMO + 双环几何（vblk Dma 同形扩双队列）。
@@ -494,8 +503,9 @@ fn refill_rx(d: &mut Dma, regs: *mut u32, id: u16) {
     wr(regs, vio::mmio::Q_NOTIFY, 0);
 }
 
-/// 发一帧（同步单在途，vblk blk_op 同纪律）：**帧字节由调用方预先组在
-/// IOB[NET_HDR_SZ..] 连续区间**（arp/icmp_roundtrip 就地编码——同缓冲组
+/// 发一帧（同步单在途，vblk blk_op 同纪律；四刀 P10 起 = TCP 批量的
+/// batch-of-1 兄弟——ARP/ICMP/DNS 单帧路径原样）：**帧字节由调用方预先
+/// 组在 IOB[NET_HDR_SZ..] 连续区间**（arp/icmp_roundtrip 就地编码——同缓冲组
 /// 帧再整段搬移是 copy_from_slice 自重叠 = memcpy 契约 UB，对抗审查实抓
 /// 后撤掉搬移步；tx 只补 12B 零头）→ 缓冲页落盘 → TXRING 暂存重排
 /// （desc 0 + publish——**avail.idx 留在暂存跨帧续用**）→ 整页 vmo_write
@@ -505,7 +515,7 @@ fn refill_rx(d: &mut Dma, regs: *mut u32, id: u16) {
 fn tx_send(d: &Dma, regs: *mut u32, frame_len: usize) {
     // SAFETY: 单线程独占窗（同 vblk 惯例）。
     let ring: &mut [u8; 4096] = unsafe { &mut *core::ptr::addr_of_mut!(TXRING) };
-    let iob: &mut [u8; 512] = unsafe { &mut *core::ptr::addr_of_mut!(IOB) };
+    let iob: &mut [u8; crate::IOB_SZ] = unsafe { &mut *core::ptr::addr_of_mut!(IOB) };
     let total = vio::NET_HDR_SZ + frame_len;
     if total > iob.len() {
         println!("vnet: tx 帧超幅 {}B", total);
@@ -526,6 +536,76 @@ fn tx_send(d: &Dma, regs: *mut u32, frame_len: usize) {
     if berry_vmo_write(d.vmo, ring.as_ptr(), TX_RING_PAGE, 4096) != 0 {
         trap();
     }
+    tx_kick_poll(d, regs, expect);
+}
+
+/// tx 批暂态（四刀 P10）：帧已由 tcp.rs `stage_seg` 组进 IOB 批槽（slot ×
+/// TX_FRAME_STEP），本结构只记帧数与各帧实长（desc len 用）。
+pub(crate) struct TxBatch {
+    pub(crate) n: usize,
+    pub(crate) lens: [usize; tcp::TX_BATCH_MAX],
+}
+
+impl TxBatch {
+    pub(crate) const fn new() -> Self {
+        TxBatch { n: 0, lens: [0; tcp::TX_BATCH_MAX] }
+    }
+}
+
+/// 批量发送（四刀 P10 核心件）：整批帧一次缓冲页写 + desc 0..n-1 各指
+/// TX_BUF_PAGE 内偏移 + 一次 avail 页写 + 单门铃 + 单 poll used.idx 前进
+/// n——「每帧一次唤醒量子」塌成「每批一次」。n=0 无操作；批为原子（单
+/// 在途纪律保持——poll 完成才返回，下一批复用 desc 0..n-1 无并发写面）。
+pub(crate) fn tx_flush_batch(d: &Dma, regs: *mut u32, q: &mut TxBatch) {
+    if q.n == 0 {
+        return;
+    }
+    // SAFETY: 单线程独占窗（tx_send 同款）。
+    let ring: &mut [u8; 4096] = unsafe { &mut *core::ptr::addr_of_mut!(TXRING) };
+    let iob: &mut [u8; crate::IOB_SZ] = unsafe { &mut *core::ptr::addr_of_mut!(IOB) };
+    let n = q.n;
+    let total = n * tcp::TX_FRAME_STEP;
+    if total > iob.len() {
+        println!("vnet: tx 批超幅 {}B", total);
+        trap(); // 批布局几何由 tcp.rs const assert 钉；防御面
+    }
+    for i in 0..n {
+        // 每槽 12B virtio-net 头补零（stage_seg 只组帧本体）。
+        iob[i * tcp::TX_FRAME_STEP..i * tcp::TX_FRAME_STEP + vio::NET_HDR_SZ].fill(0);
+    }
+    if berry_vmo_write(d.vmo, iob.as_ptr(), TX_BUF_PAGE, total) != 0 {
+        trap();
+    }
+    for i in 0..n {
+        let _ = vio::put_desc(
+            ring,
+            &d.lay,
+            i,
+            d.tx_buf_pa + (i * tcp::TX_FRAME_STEP) as u64,
+            (vio::NET_HDR_SZ + q.lens[i]) as u32,
+            0,
+            0,
+        );
+    }
+    let expect = {
+        let old = vio::get_u16(ring, d.lay.avail_off + 2).unwrap_or(0);
+        for i in 0..n {
+            if vio::publish(ring, &d.lay, i as u16).is_none() {
+                trap(); // 布局几何恒在页内；防御面
+            }
+        }
+        old.wrapping_add(n as u16)
+    };
+    if berry_vmo_write(d.vmo, ring.as_ptr(), TX_RING_PAGE, 4096) != 0 {
+        trap();
+    }
+    tx_kick_poll(d, regs, expect);
+    q.n = 0;
+}
+
+/// 门铃 + poll used.idx 前进至 expect + 中断整洁面（tx_send/
+/// tx_flush_batch 共尾）。
+fn tx_kick_poll(d: &Dma, regs: *mut u32, expect: u16) {
     // 发布屏障（publish() 调用方契约，vblk 同位）：此前一切 Normal 写
     // （缓冲页 + ring 页经 SVC 落后备帧）→ Device 门铃写排序。TCG 无内存
     // 模型恒绿；真机缺此 = 设备取陈旧 avail.idx → poll 假超时。
@@ -573,16 +653,17 @@ fn recv_frame(d: &mut Dma, regs: *mut u32, deadline: u64) -> Option<&'static [u8
             trap();
         }
         if u[0] as u16 | (u[1] as u16) << 8 != d.rx_harvested {
-            // SAFETY: 单线程独占窗。
-            let ring: &mut [u8; 4096] = unsafe { &mut *core::ptr::addr_of_mut!(RXSTAGE) };
-            if berry_vmo_read(d.vmo, ring.as_mut_ptr(), RX_RING_PAGE, 4096) != 0 {
+            // 四刀 P11：单完成项 8B 短读（used 环设备拥有——只读其一项，
+            // 替代整页 4096B 读入 RXSTAGE；burst 收帧时每帧省一次整页拷）。
+            // used 布局 = flags u16 + idx u16 + 项（id u32 + len u32 各 8B）。
+            let i = (d.rx_harvested % d.lay.qsize as u16) as usize;
+            let mut ent = [0u8; vio::USED_ENT];
+            let ent_off = RX_RING_PAGE + d.lay.used_off as u64 + vio::USED_HDR as u64 + (i as u64) * vio::USED_ENT as u64;
+            if berry_vmo_read(d.vmo, ent.as_mut_ptr(), ent_off, ent.len()) != 0 {
                 trap();
             }
-            let i = (d.rx_harvested % d.lay.qsize as u16) as usize;
-            let (id, len) = match vio::used_ent(ring, &d.lay, i) {
-                Some(e) => e,
-                None => trap(), // i < qsize 恒成立；防御面
-            };
+            let id = u32::from_le_bytes([ent[0], ent[1], ent[2], ent[3]]);
+            let len = u32::from_le_bytes([ent[4], ent[5], ent[6], ent[7]]);
             if id as usize >= RX_BUFS
                 || len < vio::NET_HDR_SZ as u32
                 || len as usize > RX_BUF_SZ
@@ -591,7 +672,7 @@ fn recv_frame(d: &mut Dma, regs: *mut u32, deadline: u64) -> Option<&'static [u8
                 trap();
             }
             // SAFETY: 帧读入静态 IOB 后经 'static 视图返出（即用即弃）。
-            let iob: &mut [u8; 512] = unsafe { &mut *core::ptr::addr_of_mut!(IOB) };
+            let iob: &mut [u8; crate::IOB_SZ] = unsafe { &mut *core::ptr::addr_of_mut!(IOB) };
             if berry_vmo_read(
                 d.vmo,
                 iob.as_mut_ptr(),
@@ -604,7 +685,7 @@ fn recv_frame(d: &mut Dma, regs: *mut u32, deadline: u64) -> Option<&'static [u8
             d.rx_harvested = d.rx_harvested.wrapping_add(1);
             // id 已过 < RX_BUFS 界检——u32→u16 收窄安全。
             refill_rx(d, regs, id as u16);
-            let iob: &[u8; 512] = unsafe { &*core::ptr::addr_of!(IOB) };
+            let iob: &[u8; crate::IOB_SZ] = unsafe { &*core::ptr::addr_of!(IOB) };
             return Some(&iob[vio::NET_HDR_SZ..len as usize]);
         }
         let mut now = now();
@@ -626,9 +707,9 @@ fn recv_frame(d: &mut Dma, regs: *mut u32, deadline: u64) -> Option<&'static [u8
 fn arp_roundtrip(d: &mut Dma, regs: *mut u32, mac: &[u8; 6]) -> [u8; 6] {
     {
         // SAFETY: 单线程独占窗。
-        let iob: &mut [u8; 512] = unsafe { &mut *core::ptr::addr_of_mut!(IOB) };
+        let iob: &mut [u8; crate::IOB_SZ] = unsafe { &mut *core::ptr::addr_of_mut!(IOB) };
         if np::encode_eth(&mut iob[vio::NET_HDR_SZ..], &BROADCAST_MAC, mac, np::ET_ARP).is_none() {
-            trap(); // 42B 帧恒在 512 内；防御面
+            trap(); // 42B 帧恒在 IOB_SZ 内；防御面
         }
         if np::encode_arp(
             &mut iob[vio::NET_HDR_SZ + np::ETH_HDR_SZ..],
@@ -680,7 +761,7 @@ fn icmp_roundtrip(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) 
     }
     {
         // SAFETY: 单线程独占窗。
-        let iob: &mut [u8; 512] = unsafe { &mut *core::ptr::addr_of_mut!(IOB) };
+        let iob: &mut [u8; crate::IOB_SZ] = unsafe { &mut *core::ptr::addr_of_mut!(IOB) };
         if np::encode_eth(&mut iob[vio::NET_HDR_SZ..], gw_mac, mac, np::ET_IPV4).is_none() {
             trap();
         }
@@ -770,7 +851,7 @@ fn dns_roundtrip(
     }
     {
         // SAFETY: 单线程独占窗。
-        let iob: &mut [u8; 512] = unsafe { &mut *core::ptr::addr_of_mut!(IOB) };
+        let iob: &mut [u8; crate::IOB_SZ] = unsafe { &mut *core::ptr::addr_of_mut!(IOB) };
         if np::encode_eth(&mut iob[vio::NET_HDR_SZ..], gw_mac, mac, np::ET_IPV4).is_none() {
             return DnsRes::Bad;
         }
@@ -846,29 +927,39 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
     }
     let mut msg = [0u8; 256];
     // 一只缓冲两面按 op 出长度：DNS 应答 5B 前缀 / TCP ROUNDTRIP 应答
-    // [st][dlen][data≤128] = TCP_REP_MAX 130B。
-    let mut rep = [0u8; ndp::TCP_REP_MAX];
+    // [st][dlen][data≤TCP_DATA_MAX][seq] = RT_SEQ_REP_MAX 253B（四刀 seq 形
+    // 抬升；msg 256 = CHAN_MSG_MAX 通道帽恰容会话形 256）。
+    let mut rep = [0u8; ndp::RT_SEQ_REP_MAX];
     let mut hs = [0 as Handle; 6]; // 随行收口容量 = CHAN_HND_MAX（T-1 4→6；协议 0/富余丢弃）
     // TCP 单会话独占（草案 §8）：None = 无会话；OPEN 建 / CLOSE 弃——
     // selftest 与本服务同一 Sess 驱动（「不长第二套」）。
     let mut sess: Option<tcp::Sess> = None;
-    // ROUNDTRIP 回显暂存（服务端真实收到的字节——应答随行回传，对拍归 client）。
-    let mut rt = [0u8; ndp::TCP_DATA_MAX];
+    // ROUNDTRIP/DRAIN 回显暂存（服务端真实收到的字节——应答随行回传，对
+    // 拍归 client）。四刀 P9：session-0 泵的回显收流幅（拼段准入几何）。
+    let mut rt = [0u8; tcp::RT_ECHO_MAX];
     // 段③：会话表（LISTEN/ACCEPT/POLL + hostfwd 入站路由）——与 legacy
     // session-0 并存；listen_selftest 阶段的表内容清场重来。
     let table = tcp::mux();
     table.reset();
     loop {
+        // ① 完成队列 drain → 应答（四刀 P8：FIFO + seq 戳——K 窗在途 op 的
+        //    完成即答面；完成数据内联 RtDone，槽位复用不悬空）。
+        drain_done(h, &mut rep);
         let mut nb = msg.len();
         let mut nh = hs.len();
         let s = berry_channel_recv(h, msg.as_mut_ptr(), &mut nb, hs.as_mut_ptr(), &mut nh);
         if s != 0 {
             if s == BERRY_ERR_AGAIN {
-                // 空闲窗步进泵（段③）：hostfwd 入站不等 client RPC——非阻塞
-                // 单 poll；CPU 让出由下方 wait_one 承担。
-                tcp::pump_once(d, regs, mac, gw_mac, table, 0);
+                // 空闲窗泵（段③ hostfwd 入站 + 四刀 session-0 挂起 op 驱动
+                // ——突发收帧 + ACK 暂存 + 完成收割）；泵毕立即 drain 完成队
+                // 列（完成即答不经等待窗）；CPU 让出由下方 wait_one 承担。
+                tcp::pump_serve(d, regs, mac, gw_mac, table, &mut sess, &mut rt);
+                drain_done(h, &mut rep);
+                // 等待窗节拍（四刀 P9）：挂起 op / 完成 / RTO-TW 臂在席 →
+                // 短 tick；全闲 → 10s 心跳零漂移。
+                let tick_ns = if tcp::RtPipe::busy(&sess) { SVC_TICK_NS } else { SVC_IDLE_NS };
                 let mut obs = 0u64;
-                let _ = berry_object_wait_one(h, SIGNAL_READABLE, now() + SVC_IDLE_NS, &mut obs);
+                let _ = berry_object_wait_one(h, SIGNAL_READABLE, now() + tick_ns, &mut obs);
                 continue;
             }
             trap(); // 非空队错码 = 链断（fsmgr/vblk 同口径）
@@ -880,6 +971,11 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
         let mut sid_rep: u32 = 0; // LISTEN/ACCEPT 应答 sid（encode_*_reply 收）
         let mut accept_form = false; // Form::Sid 细分：ACCEPT（true）/ LISTEN（false）
         let (mut poll_flags, mut poll_rbytes) = (0u8, 0u16); // POLL 应答面
+        // 四刀 P8：session-0 RT 挂起 op 应答延迟至完成——dispatch 只入环注
+        // 册，本循环尾不立即应答；即答面（BUSY/BAD）必携原 seq（客户端同
+        // seq 退避重发的配对面）。
+        let mut defer = false;
+        let mut rep_seq: Option<u8> = None;
         if nh == 0 && nb >= 1 {
             match msg[0] {
                 ndp::OP_DNS_QUERY => match ndp::parse_request(&msg[..nb]) {
@@ -907,7 +1003,7 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
                     // Drain/命名 Rt·Close）。
                     form = Form::Tcp; // 默认 TCP 形；会话族各臂自改
                     match ndp::parse_tcp_s_request(&msg[..nb]) {
-                        Some((ndp::TcpSReq::Listen { port }, 0)) => {
+                        Some((ndp::TcpSReq::Listen { port }, 0, _)) => {
                             match table.listen(port) {
                                 Ok(sid) => {
                                     st = ndp::ST_OK;
@@ -918,7 +1014,7 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
                                 Err(tcp::ListenErr::Full) => st = ndp::ST_FULL,
                             }
                         }
-                        Some((ndp::TcpSReq::Accept, lsid)) => {
+                        Some((ndp::TcpSReq::Accept, lsid, _)) => {
                             accept_form = true;
                             form = Form::Sid;
                             match table.accept(lsid) {
@@ -930,7 +1026,7 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
                                 Err(tcp::AcceptErr::NoSession) => st = ndp::ST_NOSESSION,
                             }
                         }
-                        Some((ndp::TcpSReq::Poll, 0)) => {
+                        Some((ndp::TcpSReq::Poll, 0, _)) => {
                             // legacy (Poll, 0) 快照：会话在席即 OK——flags/rbytes
                             // 恒 0（v1 客户端无人发；文档化兼容面）。
                             form = Form::Poll;
@@ -940,7 +1036,7 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
                                 st = ndp::ST_NOSESSION;
                             }
                         }
-                        Some((ndp::TcpSReq::Poll, sid)) => {
+                        Some((ndp::TcpSReq::Poll, sid, _)) => {
                             form = Form::Poll;
                             match table.poll_of(sid) {
                                 Some((flags, rbytes)) => {
@@ -951,42 +1047,66 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
                                 None => st = ndp::ST_NOSESSION,
                             }
                         }
-                        Some((req, 0)) => {
-                            // legacy 三 op（Open/Roundtrip/Close）零漂移路径。
+                        Some((ndp::TcpSReq::Roundtrip { data }, 0, seq)) => {
+                            // 四刀 P8：session-0 RT = 入环即注册挂起 op，应答
+                            // 延迟至完成（完成队列 + seq 戳）——libc K 窗重叠面；
+                            // v1 串行消费者（seq=None）应答字节面零漂移（同为
+                            // 完成即答，仅时序经泵）。BUSY = 环/op 容量背压
+                            // （客户端同 seq 退避重发）；BAD = 会话态不可用。
+                            if sess.is_none() {
+                                st = ndp::ST_BAD; // 无会话先发 ROUNDTRIP = 协议面错
+                            } else {
+                                let dl = now() + TCPS_RT_CAP_NS;
+                                match tcp::rtpipe().enqueue(
+                                    sess.as_mut().unwrap(),
+                                    d, regs, mac, gw_mac, data, seq, dl,
+                                ) {
+                                    Ok(()) => defer = true,
+                                    Err(e) => {
+                                        st = e;
+                                        rep_seq = seq;
+                                    }
+                                }
+                            }
+                        }
+                        Some((req, 0, _)) => {
+                            // legacy Open/Close 零漂移路径（Roundtrip 已被上臂
+                            // 挂起路径消费）。
                             let (s2, n2) = tcp_op(&mut sess, req, d, regs, mac, gw_mac, table, &mut rt);
                             st = s2;
                             dl = n2;
                         }
                         // A2-3 命名数据面（echo server 三 op）：插在 legacy 臂后
                         // ——sid=0 已被上臂消费，这里的 sid ∈ 1..=8 由协议层保证。
-                        Some((ndp::TcpSReq::Roundtrip { data }, sid)) => {
-                            // 命名 RT = echo 回发：send_data → drive_until ACK 帽
-                            // 30s。RST-in-wait 裁定：Closed 态 arm 亦空 → ST_OK
-                            //（连接死活由后续 POLL/CLOSE 收口，不与 ACK 等待混淆）。
-                            if table.send_data(d, regs, mac, gw_mac, sid, data) {
-                                let ok = tcp::drive_until(
-                                    d, regs, mac, gw_mac, table,
-                                    |t| t.arm_idle(sid) == Some(true),
-                                    now() + TCPS_RT_CAP_NS,
-                                );
-                                st = if ok { ndp::ST_OK } else { ndp::ST_TIMEOUT };
+                        Some((ndp::TcpSReq::Roundtrip { data }, sid, _seq)) => {
+                            // 命名 RT = echo 回发（四刀语义细化）：入环即应答
+                            // ST_OK「入环受纳，ACK 归泵收口」——去 drive_until
+                            // arm_idle（应答字节形状/成功判据零漂移，仅时序
+                            // 提前；重传臂由 serve 空闲泵收口）。
+                            st = if table.send_data(d, regs, mac, gw_mac, sid, data) {
+                                ndp::ST_OK
                             } else {
                                 // 死 sid / 握手中 / 已关 = 用法错（Form::Tcp 域
                                 // 内无 NOSESSION 位——诊断位留 Form::Poll）。
-                                st = ndp::ST_BAD;
-                            }
+                                ndp::ST_BAD
+                            };
                         }
-                        Some((ndp::TcpSReq::Drain, sid)) => match table.rx_drain(sid, &mut rt) {
+                        Some((ndp::TcpSReq::Drain, sid, _)) => match table.rx_drain(sid, &mut rt[..ndp::TCP_DATA_MAX]) {
                             // 收割 rx：应答复用 v1 两形（OK 携收割字节；零收成
                             // = 1B OK 形——POLL 报过 rbytes 后串行收割必非零，
-                            // 0 是调用方节奏面诚实值非协议错）。
+                            // 0 是调用方节奏面诚实值非协议错）。verify 波实抓:
+                            // 割幅必须帽 TCP_DATA_MAX——rt 缓冲幅 RT_ECHO_MAX=500
+                            // 是 session-0 K 窗回显收流面,表会话 DRAIN 若割 >250B
+                            // 入应答,encode_tcp_reply 越帽返 None → serve 防御
+                            // trap 即崩(echo 相 16KB 突发攒 >250B 后首割即中,4/4
+                            // 确定性复现);帽后多次 250B 割循环收清,v1 契约保持。
                             Some(n) => {
                                 st = ndp::ST_OK;
                                 dl = n;
                             }
                             None => st = ndp::ST_BAD,
                         },
-                        Some((ndp::TcpSReq::Close, sid)) => {
+                        Some((ndp::TcpSReq::Close, sid, _)) => {
                             // 命名 CLOSE：close_sid 驱动到 Closed 后释槽（帽到
                             // 释槽亦然——槽容量优先，Some(false) 报 TIMEOUT 但
                             // 槽已不在，下次同 sid POLL = ST_NOSESSION 收口）。
@@ -996,7 +1116,7 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
                                 None => st = ndp::ST_BAD,
                             }
                         }
-                        Some((_, _)) => st = ndp::ST_BAD, // Open 携 sid = 形域外
+                        Some((_, _, _)) => st = ndp::ST_BAD, // Open 携 sid = 形域外
                         None => st = ndp::ST_BAD, // 尾随/越界 = 野值拒（协议面）
                     }
                 }
@@ -1026,10 +1146,15 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
                 }
             }
         }
+        // 四刀 P8：挂起 op 无立即应答（完成队列在循环头 drain）——收口随行
+        // handle 后直入下一轮（RT 请求面 nh 恒 0，五清不触发）。
+        if defer {
+            continue;
+        }
         // 段③：应答形分派——TCP/Poll/Sid(Dns 各归各的编码器；五清保
         // 「非 OK 恒零值」烘焙线，None = 编码面违约 trap（防御）。
         let rl = match form {
-            Form::Tcp => match ndp::encode_tcp_reply(&mut rep, st, &rt[..dl]) {
+            Form::Tcp => match ndp::encode_tcp_reply(&mut rep, st, &rt[..dl], rep_seq) {
                 Some(n) => n,
                 None => trap(), // st ∈ {OK,BAD,TIMEOUT,BUSY} + 非 OK 恒空 data 恒过；防御面
             },
@@ -1055,17 +1180,35 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
                 None => trap(), // st ∈ {OK,BAD,TIMEOUT} + 非 OK 恒零 addr 恒过；防御面
             },
         };
-        let mut obs = 0u64;
-        loop {
-            let s = berry_channel_send(h, rep.as_ptr(), rl, core::ptr::null(), 0);
-            if s == 0 {
-                break;
-            }
-            if s != BERRY_ERR_BUSY {
-                trap();
-            }
-            let _ = berry_object_wait_one(h, SIGNAL_WRITABLE, now() + SVC_IDLE_NS, &mut obs);
+        send_reply(h, &rep[..rl]);
+    }
+}
+
+/// 完成队列 drain → 逐条应答（循环头与 EAGAIN 泵后两调用点——完成即答
+/// 不经等待窗）。
+fn drain_done(h: Handle, rep: &mut [u8; ndp::RT_SEQ_REP_MAX]) {
+    while let Some(done) = tcp::rtpipe().pop_done() {
+        let rl = match ndp::encode_tcp_reply(rep, done.st, &done.echo[..done.len], done.seq) {
+            Some(n) => n,
+            None => trap(), // OK 恒 data ≤ TCP_DATA_MAX / 非 OK 恒空恒过；防御面
+        };
+        send_reply(h, &rep[..rl]);
+    }
+}
+
+/// 应答发送（满队 -EBUSY 阻塞等 WRITABLE 重试——完成队列 drain 与分派
+/// 应答共尾，四刀 P8 提取）。
+fn send_reply(h: Handle, rep: &[u8]) {
+    let mut obs = 0u64;
+    loop {
+        let s = berry_channel_send(h, rep.as_ptr(), rep.len(), core::ptr::null(), 0);
+        if s == 0 {
+            return;
         }
+        if s != BERRY_ERR_BUSY {
+            trap();
+        }
+        let _ = berry_object_wait_one(h, SIGNAL_WRITABLE, now() + SVC_IDLE_NS, &mut obs);
     }
 }
 
@@ -1136,12 +1279,12 @@ fn serve_nodev() -> ! {
     }
 }
 
-/// TCP 三 op 服务路径（T-d，草案 §3.4 单会话三 op 折叠）：一次 RPC 走
-/// 一段会话——OPEN 建会话 / ROUNDTRIP 会话上发收 / CLOSE 挥手弃置；
-/// 单会话独占（在席再 OPEN → ST_BUSY）。返回 (st, data_len)——data 在
-/// rt 前缀（服务端真实收到的回显字节，对拍归 client）。段③ 起会话族
-/// （Listen/Accept/Poll）由 serve 分派前置拦截，本函数只承 legacy 三 op
-/// （req 形为 TcpSReq 全域 + 防御臂兜形域外）。
+/// TCP 三 op 服务路径（T-d，草案 §3.4 单会话三 op 折叠；四刀 P8 起本函数
+/// 只承 legacy Open/Close——session-0 Roundtrip 已由 serve 分派前置入挂起
+/// op 队列，防御臂保留）：一次 RPC 走一段会话——OPEN 建会话 / CLOSE 先
+/// 收口在途 op 再挥手弃置；单会话独占（在席再 OPEN → ST_BUSY）。返回
+/// (st, data_len)——data 在 rt 前缀（服务端真实收到的回显字节，对拍归
+/// client）。段③ 起会话族（Listen/Accept/Poll）由 serve 分派前置拦截。
 #[allow(clippy::too_many_arguments)]
 fn tcp_op(
     sess: &mut Option<tcp::Sess>,
@@ -1151,7 +1294,7 @@ fn tcp_op(
     mac: &[u8; 6],
     gw_mac: &[u8; 6],
     table: &mut tcp::TcpMux,
-    rt: &mut [u8; ndp::TCP_DATA_MAX],
+    rt: &mut [u8],
 ) -> (u8, usize) {
     use ndp::TcpSReq as R;
     match req {
@@ -1162,6 +1305,9 @@ fn tcp_op(
             let sport = TCP_SPORT_NEXT.fetch_add(1, Ordering::Relaxed);
             match tcp::Sess::connect(d, regs, mac, gw_mac, table, sport, port, now() + TCPS_OPEN_CAP_NS) {
                 Some(s) => {
+                    // 新会话起点：挂起 op 队列/完成队列清场（旧会话残留
+                    // 只属旧 incarnation——新 op 从新 seq 配对）。
+                    tcp::rtpipe().reset();
                     *sess = Some(s);
                     (ndp::ST_OK, 0)
                 }
@@ -1169,25 +1315,35 @@ fn tcp_op(
             }
         }
         R::Roundtrip { data } => {
+            // 防御臂（serve 分派已前置挂起 op 队列——到达即分派面漂移）：
+            // 阻塞面保语义。
             let s2 = match sess.as_mut() {
                 Some(s) => s,
-                None => return (ndp::ST_BAD, 0), // 无会话先发 ROUNDTRIP = 协议面错
+                None => return (ndp::ST_BAD, 0),
             };
             match s2.roundtrip(d, regs, mac, gw_mac, table, data, rt, now() + TCPS_RT_CAP_NS) {
                 tcp::RtRes::Ok(n) => (ndp::ST_OK, n),
-                // Timeout 会话保命——但 in-flight 占位未清：后续 ROUNDTRIP
-                // 恒 ST_BAD（berry-tcp send 门控 inflight=Some 即拒；迟到
-                // ACK 躺 rx 环无人收割——serve 循环 op 之外不驱动会话），
-                // 唯 CLOSE 可收口（shutdown 的 FIN 覆盖单槽 + step 真收帧）。
                 tcp::RtRes::Timeout => (ndp::ST_TIMEOUT, 0),
                 tcp::RtRes::Bad => (ndp::ST_BAD, 0),
             }
         }
         R::Close => {
+            if sess.is_none() {
+                return (ndp::ST_BAD, 0);
+            }
+            // 四刀 P8：先收口在途 op（帽内泵到挂起队列清空——迟到 echo 流
+            // 位对齐、环腾空）再 shutdown——FIN 排队零改动。收集期完成的
+            // op 应答留在完成队列（serve 循环头 drain 后于本 CLOSE 应答
+            // 到达——seq 配对下次序无约束）。
+            let collect_cap = now() + TCPS_CLOSE_CAP_NS;
+            while tcp::rtpipe().has_ops() && now() < collect_cap {
+                tcp::pump_serve(d, regs, mac, gw_mac, table, sess, rt);
+            }
             let mut s2 = match sess.take() {
                 Some(s) => s,
                 None => return (ndp::ST_BAD, 0),
             };
+            tcp::rtpipe().reset_ops();
             // take() = 无论成败会话弃置（内存态，无设备面残留——Sess 无 Drop
             // 面，conn 纯内存几何；对端超时自收）。
             if s2.shutdown(d, regs, mac, gw_mac, table, now() + TCPS_CLOSE_CAP_NS) {

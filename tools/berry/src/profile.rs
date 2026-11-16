@@ -1,8 +1,8 @@
 //! Built-in device profiles (design doc §附录 C).
 //!
-//! Profiles drive the host window aspect, QEMU memory, and guest display
-//! request. Product `desktop` additionally gets a real virtio-gpu primary
-//! console; `render_*` is the single geometry authority.
+//! v0/P1 profiles only drive the host window aspect and QEMU memory. The
+//! `render_*` fields are the target guest mode for P2 (ramfb modeset); until
+//! then the guest still boots at 800x600 and the window letterboxes it.
 
 use crate::error::{BerryError, Result};
 
@@ -28,9 +28,12 @@ pub const PROFILES: &[Profile] = &[
         memory_mib: 128,
     },
     Profile {
+        // 竖屏 1080P 手机主形态（owner 2026-11-13 裁定：初始分辨率即 1080P、
+        // 竖屏 + 底部导航键，不做低清/横屏妥协）；render = panel = 1080x1920
+        // 零 letterbox。
         id: "desktop",
-        panel_w: 540,
-        panel_h: 960,
+        panel_w: 1080,
+        panel_h: 1920,
         render_w: 1080,
         render_h: 1920,
         refresh: 60,

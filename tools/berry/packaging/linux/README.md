@@ -66,6 +66,8 @@ tools/berry/packaging/linux/smoke-docker.sh
 
 ## 限制
 
-- AppDir 已验证为 **Linux ELF** 结构；尚未在 Linux 实机运行。
-- AppImage/FUSE/桌面集成未验。
+- AppDir 已在 arm64 Linux 容器实跑（`smoke-docker.sh`：真 ELF 起机双档截图）；裸机
+  Linux 实机未验。
+- AppImage/FUSE 已在容器内验证（`smoke-appimage.sh` 挂载跑 doctor）；桌面集成
+  （.desktop 注册）未验。
 - QEMU 必须由目标机提供；`AAVMF_CODE.fd` 已随 AppDir。

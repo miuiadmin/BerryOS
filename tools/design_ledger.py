@@ -183,6 +183,9 @@ def validate() -> list[dict]:
         if path == THEME:
             continue
         text = path.read_text(encoding="utf-8")
+        # Unit-test fixtures deliberately pin raw pixels; governance covers
+        # production color sources only.
+        text = text.split("#[cfg(test)]", 1)[0]
         literal = re.search(r"Color\s*\{\s*r:\s*(?:0x[0-9a-fA-F]{2}|\d+)", text)
         if literal and path.name not in legacy_decimal_color_paths:
             raise DesignLedgerError(f"hardcoded Color literal outside theme.rs: {path.name}")

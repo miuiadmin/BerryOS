@@ -66,6 +66,7 @@ use berry_sys::{
     BERRY_ERR_AGAIN, BERRY_ERR_BUSY, CLOCK_MONOTONIC, RIGHT_DUPLICATE, RIGHT_READ,
     RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
+use berry_libc::io::fs_h;
 use berry_ui::theme::Density;
 use berry_ui::UiMain;
 
@@ -577,7 +578,8 @@ fn main() {
     // 再开一个 APP session，在右下角建可见窗。该窗口不参与桌面 UI；QMP
     // 点入它时，wmd 必须把 window-local 事件投到 APP input 通道。常态
     // boot 不建，避免产品桌面右下角出现不可见输入占位。
-    let smoke = layout_io::smoke_mode();
+    let fs_ready = fs_h() != 0;
+    let smoke = layout_io::smoke_mode(fs_ready);
     let mut app_input: Handle = 0;
     if smoke {
         let (app_hw, input) =
@@ -988,7 +990,7 @@ fn main() {
 
     // 布局装载（冻结相 fs_h()==0 → 默认布局直返零 RPC；三约束自愈面
     // 见 layout_io 头注）。
-    let layout = layout_io::load(icons::registry(), smoke);
+    let layout = layout_io::load(icons::registry(), smoke, fs_ready);
     // cbox 刀 2：init 落账（第三窗——排液一次 + CBOX.LOG 读-改-写；catch
     // launcher 上一会话崩溃与 battery 后新入账 fault，与 svcmgr 两窗
     // (boot,seq) 去重幂等互恰；失败非致命照进桌面，见 cbox_io 头注）。

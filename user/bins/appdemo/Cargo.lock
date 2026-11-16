@@ -12,7 +12,7 @@ dependencies = [
 
 [[package]]
 name = "berry-fsclient"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "berry-fsproto",
  "berry-netdproto",
@@ -21,12 +21,12 @@ dependencies = [
 
 [[package]]
 name = "berry-fsproto"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "berry-netdproto"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "berry-sys"
-version = "0.1.0"
+version = "0.2.0"

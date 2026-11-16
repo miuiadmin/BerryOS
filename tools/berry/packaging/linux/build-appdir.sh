@@ -1,7 +1,8 @@
 #!/bin/sh
 # Build a portable Linux AppDir for the BerryOS device shell.
 #
-# QEMU stays external (GPLv2); the AppDir ships berry + berryos.img + AAVMF.
+# QEMU stays external (GPLv2); the AppDir ships berry + berryos.img + AAVMF
+# + the vendored noVNC web assets under usr/share/berry/web (`berry vnc web`).
 # Usage:
 #   tools/berry/packaging/linux/build-appdir.sh [APP_DIR]
 #
@@ -22,7 +23,8 @@ usage() {
 Usage: tools/berry/packaging/linux/build-appdir.sh [APP_DIR]
 
 Build an AppDir (default: out/BerryOS.AppDir) from the host release binary,
-out/berryos.img, and AAVMF code. QEMU is never bundled.
+out/berryos.img, AAVMF code, and the noVNC web assets (usr/share/berry/web).
+QEMU is never bundled.
 
 Environment:
   BERRY_BIN        berry release binary (default: tools/berry/cargo-target/<target>/release/berry)
@@ -292,6 +294,7 @@ umask 022
 rm -rf "$APP_ABS"
 mkdir -p \
     "$APP_ABS/usr/bin" \
+    "$APP_ABS/usr/share/berry" \
     "$APP_ABS/usr/share/berryos" \
     "$APP_ABS/usr/share/applications" || die "cannot create AppDir tree: $APP_ABS"
 
@@ -311,6 +314,32 @@ if [ -n "$FW" ]; then
     [ "$(size_of "$APP_ABS/usr/share/berryos/AAVMF_CODE.fd")" = "$(size_of "$FW")" ] || \
         die "short copy of AAVMF: $FW"
 fi
+
+# Vendored noVNC web assets for `berry vnc web` (wave 3). web_roots() finds
+# <exe>/../share/berry/web from usr/bin/berry, i.e. this exact spot. License
+# compliance: NOTICE.md, novnc/LICENSE.txt, novnc/AUTHORS and
+# novnc/vendor/pako/LICENSE all ride along inside usr/share/berry/web/
+# (they are part of the tools/berry/web/ tree copied wholesale).
+WEB_SRC=tools/berry/web
+[ -f "$WEB_SRC/novnc/vnc.html" ] || die "missing web assets: $WEB_SRC/novnc/vnc.html"
+rm -rf "$APP_ABS/usr/share/berry/web"
+cp -R "$WEB_SRC" "$APP_ABS/usr/share/berry/web" || die "failed to copy web assets: $WEB_SRC"
+chmod -R a+rX "$APP_ABS/usr/share/berry/web"
+for f in NOTICE.md novnc/vnc.html novnc/LICENSE.txt novnc/AUTHORS novnc/vendor/pako/LICENSE; do
+    [ -f "$APP_ABS/usr/share/berry/web/$f" ] || die "web assets incomplete: missing $f"
+done
+
+# Third-party notice for the statically linked host-tool dependencies
+# (wave 5: rustls and its ring-based supply chain entered the binary via
+# tools/berry/Cargo.toml — host tool only, never in the guest). Wave 6
+# moved the license facts to a single source file under packaging/ (one
+# fact, one home); every platform script copies from there, the Linux
+# AppDir seat staying usr/share/berry/THIRD-PARTY-NOTICES.txt.
+TPN_SRC=tools/berry/packaging/THIRD-PARTY-NOTICES.txt
+[ -f "$TPN_SRC" ] || die "missing third-party notices source: $TPN_SRC"
+cp -f "$TPN_SRC" "$APP_ABS/usr/share/berry/THIRD-PARTY-NOTICES.txt" || \
+    die "failed to copy third-party notices"
+chmod 0644 "$APP_ABS/usr/share/berry/THIRD-PARTY-NOTICES.txt"
 
 cp -f "$DESKTOP_SRC" "$APP_ABS/usr/share/applications/berry.desktop" || \
     die "failed to copy desktop entry"
@@ -375,6 +404,8 @@ chmod 0755 \
     "$APP_ABS/usr" \
     "$APP_ABS/usr/bin" \
     "$APP_ABS/usr/share" \
+    "$APP_ABS/usr/share/berry" \
+    "$APP_ABS/usr/share/berry/web" \
     "$APP_ABS/usr/share/berryos" \
     "$APP_ABS/usr/share/applications"
 
@@ -405,6 +436,7 @@ else
 fi
 printf '  desktop: %s\n' "$APP_ABS/usr/share/applications/berry.desktop"
 printf '  AppRun : %s\n' "$APP_ABS/AppRun"
+printf '  web    : %s (NOTICE.md + novnc/)\n' "$APP_ABS/usr/share/berry/web"
 
 if [ -n "$TOOL" ] && [ "$BIN_IS_ELF" != 0 ]; then
     OUT_APPIMAGE=${BERRY_APPIMAGE:-out/BerryOS-$ARCH.AppImage}

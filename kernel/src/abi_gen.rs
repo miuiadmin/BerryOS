@@ -3,12 +3,22 @@
 //! 守卫 = `just abi-check`（`tools/gen_abi.py --check`，挂 build/smoke 前置）。
 //! 消费：`syscall.rs` / `handle.rs` 经 `pub use` 转发，既有路径
 //! （`crate::syscall::NR_*`、`crate::handle::RIGHT_*` 等）零改动。
+//! 预算四元组（生成器执法，ADR #11 帽）：nr_total=40（v1 在册）/
+//! nr_defined=44（v1+1.1 常量层）/ nr_registered=43（已挂派发）/
+//! nr_ceiling=45（nr_defined ≤ 帽 = `tools/gen_abi.py` load 执法）。
 
 use crate::handle::Rights;
 
-// ---- syscall 号（ABI §4 编号表；v1 36 号在册、35 已实现）----
+// ---- 平台 API level（abi.toml [platform]；VER-01 提案第 4 条：单调整数
+// level 轨道——只增不减、不兼容 ABI 变更 +1、兼容新增不 +1。内核侧
+// 在册无消费者（装载期门在 svcmgr），照在册未实现号先例豁免 dead_code）----
+/// svcmgr 装载期与 .bap `[compat] min_level` 比较的平台级基线
+///（用户侧同名常量同源同值，两端在册防漂移）。
+#[allow(dead_code)]
+pub const BERRY_PLATFORM_LEVEL: u32 = 1;
+
+// ---- syscall 号（ABI §4 编号表；v1 40 号在册、39 已实现）----
 // 在册未实现：0x85 berry_attest（派发回落 -ENOTSUP，永不 panic）
-// 1.1/S1 在册未实现：0x3C sched_setattr、0x3D sched_getattr、0x3E process_suspend、0x3F thread_yield（派发回落 -ENOTSUP，永不 panic）
 pub const NR_HANDLE_CLOSE: usize = 0x01;
 pub const NR_HANDLE_DUPLICATE: usize = 0x02;
 pub const NR_HANDLE_REPLACE: usize = 0x03;
@@ -29,7 +39,7 @@ pub const NR_VMAR_PROTECT: usize = 0x18;
 pub const NR_VMAR_ALLOCATE: usize = 0x19;
 /// G-eco（svcmgr 消费 rootfs 需要 cpio 总长；通用元数据查询不止 initrd 受益）。
 pub const NR_VMO_GET_SIZE: usize = 0x1A;
-/// P6 A-3（用户态 DMA 面：virtqueue 描述符地址是 guest PA，驱动须能查自己 VMO 页的后备；无 IOMMU 板上 PA 披露面 = 已授 MMIO 窗口的设备本可 DMA 全内存，v1 接受并文档化——IOMMU/SMMU 随 `安全与硬件隔离设计.md`）。
+/// P6 A-3（用户态 DMA 面：virtqueue 描述符地址是 guest PA，驱动须能查自己 VMO 页的后备；无 IOMMU 板上 PA 披露面 = 已授 MMIO 窗口的设备本可 DMA 全内存，v1 接受并文档化——IOMMU/SMMU 随 `安全与硬件隔离设计-v1.0.md`）。
 pub const NR_VMO_GET_PHYS: usize = 0x1B;
 /// G4-2 首形（§5-③ 裁决）＝阻塞收货：无武装缺页请求时 poll-first 后睡 pager
 /// 裸键，fault 探针武装 EL0 请求槽 + 唤醒即递送——ADR #9 缺页路径零分配。供给 =
@@ -37,6 +47,20 @@ pub const NR_VMO_GET_PHYS: usize = 0x1B;
 /// 源数据 VMO 页须 pre-commit（§2.2 防线 4）。pager 崩溃语义 = faulter 永久阻塞
 /// （§5-⑤ 裁决）。
 pub const NR_PAGER_SUPPLY_PAGES: usize = 0x21;
+/// X-3（exec 装载 demand 化）供给面：0x21 收货前钉死 src_off 单偏移，真 ELF
+/// 多段装载需按请求页选源页——源偏 = demand 页偏 + 常量 delta（门 C 裁 A 形
+/// 2026-11-07：新号 add-only 破冻，先例 0x86/0x87；0x21 原义零漂移）。收货/
+/// 唤醒/供给路径与 0x21 同形（阻塞收货 + poll-first 睡 pager 裸键）；源数据
+/// VMO 页须 pre-commit（§2.2 防线 4）。
+pub const NR_PAGER_SUPPLY_MAPPED: usize = 0x23;
+/// X-6 刀①（批供提速）表批形，冻结裁决 2026-11-08（设计稿
+/// `X6批供提速设计-v1.0.md` §7 主裁③「全套照提案冻」）：号 0x24 / N=32
+/// 三源镜像（EREQ_SLOTS / PAGER_SLOTS / 表帽）/ count-in-x0 / PagerWindow
+/// 布局一次定全即冻。每窗门控/供给/唤醒链与 0x23 同构（阻塞收货 +
+/// poll-first 睡 pager 裸键）；整批 ≤32 页一 KL 窗；池空且已供>0 → 即返
+/// 计数不阻塞，池空且 0 供 → 泊键阻塞醒后重扫表。boot 探测回退：
+/// 0x24(dv:0,n:1) 新核 -EBADF / 旧核 -ENOTSUP。
+pub const NR_PAGER_SUPPLY_MAPPED_TABLE: usize = 0x24;
 pub const NR_PROCESS_CREATE: usize = 0x31;
 pub const NR_PROCESS_START: usize = 0x32;
 /// Plan B v0.5 落地：真退出（不返——`exit_current_with` 经退出钩子 drain+回收）。
@@ -59,6 +83,18 @@ pub const NR_SCHED_GETATTR: usize = 0x3D;
 pub const NR_PROCESS_SUSPEND: usize = 0x3E;
 /// S1 收口：SVC 面 direct yield_now（含切换锁舞蹈）已落。
 pub const NR_THREAD_YIELD: usize = 0x3F;
+/// CP-08 util 通道首环（docs/调度彻底计划-v1.2.md:100 验收线「berry-power 消费
+/// util 信号（schedutil 同构 f≈util×fmax/capacity）」的内核侧产出面）+ OQ-8
+/// （:217）通道形态首裁：快照 syscall pull 形态先行——共享环 push 形态随 CP-10
+/// 通道窗叠加（add-only 不互斥）。加号依据：零 VMO 共享先例（telemetry_open
+/// 0x84 klog 快照域已翻真 2026-11-16、SwitchRec/WakeRec 环读口未启）；add-only 加号先例 0x86/0x87/
+/// 0x88；PM-15 §4.1「六面零新 syscall」辖 SDK 服务 op 面，不辖内核→服务数据通道
+/// （util 生产侧 v1.3 立法时已内定「PM 读面」，sched/src/util.rs:94-96）。生产侧
+/// 零新累积——Fair::tick 记账在役（class.rs util_accumulate/util_tick_window），
+/// 本号只读不写。锁类 SVC_CLASS_TABLE（copy_out 链走查调用方页表——§A113 读者
+/// 面，同 0x61/0x87）；EWMA 槽 Relaxed 原子读（统计信号无序角色）。消费端 =
+/// berry-power UtilTrack::ingest_snapshot（折叠数学单源 berry-emface）。
+pub const NR_SCHED_UTIL_SNAPSHOT: usize = 0x40;
 /// cbox 刀 1（`plans/cbox/design.md`）：异常 fatal 路径（EL0 kill 链 / EL1 halt 前）RAM 记录表的用户态排液口。无 right 门（诊断几何面——`process_get_exit_code` need=0 惯例）；表读写面零结构锁（seqlock 快照），syscall 整体走 SVC_CLASS_TABLE 在册取锁（同全体 syscall）。
 pub const NR_CBOX_DRAIN: usize = 0x42;
 pub const NR_CHANNEL_CREATE: usize = 0x51;
@@ -69,14 +105,18 @@ pub const NR_EVENT_CREATE: usize = 0x54;
 pub const NR_CLOCK_READ: usize = 0x61;
 /// SEC-01 §4.5 件 11（2026-10）：号位按在册模式冻结预留（度量链零实现——底料 SEC-3；防 ABI 冻结后再挤号）；ktest B 段「在册未实现真号」-ENOTSUP 样本挂 kernel 解冻（ktest.rs 兄弟 WIP 冻结中；沿用既有纪律勿拿未知号 0x99 冒充——二者 -ENOTSUP 成因不同）。
 pub const NR_BERRY_ATTEST: usize = 0x85;
-/// A7-4 段② 翻真（2026-10-31，门 C 裁定 A add-only）：h=0 当前进程 raise 面 / h≠0 门控 MANAGE；sig ∈ 1..=64 界检；幂等位置位、不唤醒目标（协同式用户态投递）。设计 = `docs/事件循环A7-4信号面实施设计草案.md` §3.1。
+/// A7-4 段② 翻真（2026-10-31，门 C 裁定 A add-only）：h=0 当前进程 raise 面 / h≠0 门控 MANAGE；sig ∈ 1..=64 界检；幂等位置位、不唤醒目标（协同式用户态投递）。设计 = `docs/事件循环A7-4信号面实施设计草案-v1.0.md` §3.1。
 pub const NR_SIGNAL_SEND: usize = 0x86;
 /// A7-4 段② 翻真（2026-10-31，与 0x86 同刀）：swap(0) 语义取走当前进程 pending 集；出参写失败不消费（先写后清）。投递中新到位置回内核 pending（下轮 take）——竞态免设计。
 pub const NR_SIGNAL_TAKE: usize = 0x87;
+/// 桌面UX刀D add-only 加号（2026-11-14，先例 0x86/0x87）：v1 无门控——单用户仿真系统无能力框架，消费面 launcher 关机键（二击 3s 窗确认）+ berryctl power 子命令；门控与优雅关机序（服务停摆/数据 flush）随 I3 关机流程正规化刀（审计 02 号 §6.2）。probe 缓存门保证无 PSCI 路诚实 -ENOTSUP 不盲发 HVC。
+pub const NR_POWER_OFF: usize = 0x88;
 
 // ---- clock id（ABI §8.3 `berry_clock_id_t`）----
-/// `clock_read` 的 clock_id：v1 只有单调钟（`berry_time_t` = 纳秒；壁钟留 v2）。
+/// `clock_read` 的 clock_id：单调钟（`berry_time_t` = 纳秒；CNTVCT 换算）。
 pub const CLOCK_MONOTONIC: u64 = 0;
+/// `clock_read` 的 clock_id：壁钟（宿主 fw_cfg `opt/berry/rtc` epoch 注入面，内核 `rtc.rs`；缺席/畸形注入 → -ENOTSUP）。
+pub const CLOCK_REALTIME: u64 = 1;
 
 // ---- options 位（ABI §8「options 纪律」：未知位一律 -EINVAL）----
 /// `channel_create` options bit0（4-3c，五件套之 4）：intent opt-out——置位通道
@@ -116,8 +156,16 @@ pub const SIGNAL_WRITABLE: u64 = 1 << 1;
 /// Process 已退出（Plan B v0.5 内核派生位；Exited 置位时唤醒，永久置位——
 /// 同 Zircon TASK_TERMINATED 口径；父进程 wait 到该位后 unmap/close 回收）。
 pub const SIGNAL_TERMINATED: u64 = 1 << 2;
+/// 冻结进程收讯挂起位（AM-1.5 内核派生位——SuspendToken 的 wait 面唯一可
+/// 命中位）：目标进程冻结期间任一 send 成功入队即置位（一次语义防风暴，同窗
+/// 多跳不重复通知），全解冻（最后一枚 token close）清零；所有在册 token 同刻
+/// 同视（signal_state 直接读目标 Process.wake_pending 派生，零 per-token 存储）。
+/// 消费形：object_wait_one(token, SIGNAL_WAKE_PENDING, deadline, &observed)——
+/// deadline=0 即 poll 探针；零新 syscall。
+pub const SIGNAL_WAKE_PENDING: u64 = 1 << 3;
 /// 用户信号位掩码（Event `object_signal` 只收高 32 位用户位；低 32 位保留给
-/// 内核派生信号 READABLE/WRITABLE/TERMINATED——位面冲突由内核执法拒绝）。
+/// 内核派生信号 READABLE/WRITABLE/TERMINATED/WAKE_PENDING——位面冲突由内核
+/// 执法拒绝）。
 pub const SIGNAL_USER_MASK: u64 = 0xFFFF_FFFF_0000_0000;
 
 // ---- 错误码（posix-ish 负数；ABI §8.2，`berry_status_t` = i32）----

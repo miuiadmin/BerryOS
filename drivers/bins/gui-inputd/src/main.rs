@@ -1242,6 +1242,78 @@ mod guest {
                             send_rep(h, &rep[..n]);
                         }
                     },
+                    // 波3-件⑥：软键盘/注入源与真实输入同一事件面——
+                    // DEV_KEYBOARD（1B keycode）/DEV_TEXT（ASCII 串）转
+                    // EV_KEY press+release+SYN_REPORT 批 feed 泵，与
+                    // virtio-tablet 事件同队 drain（wm_hit_test 旁注同路
+                    // ——注入点击 = 真实点击语义）。
+                    gp::OP_INPUT_INJECT => match gp::parse_input_inject_req(&msg[..nb]) {
+                        Some((dk, payload)) if dk == gp::DEV_KEYBOARD && !payload.is_empty() => {
+                            let ts = now();
+                            let code = payload[0] as u16;
+                            pump.feed(gui_inputd::RawInputEvent {
+                                ts_ns: ts,
+                                ev_type: vio::input::EV_KEY,
+                                code,
+                                value: 1,
+                            });
+                            pump.feed(gui_inputd::RawInputEvent {
+                                ts_ns: ts,
+                                ev_type: vio::input::EV_SYN,
+                                code: vio::input::SYN_REPORT,
+                                value: 0,
+                            });
+                            pump.feed(gui_inputd::RawInputEvent {
+                                ts_ns: ts,
+                                ev_type: vio::input::EV_KEY,
+                                code,
+                                value: 0,
+                            });
+                            pump.feed(gui_inputd::RawInputEvent {
+                                ts_ns: ts,
+                                ev_type: vio::input::EV_SYN,
+                                code: vio::input::SYN_REPORT,
+                                value: 0,
+                            });
+                            let n = gp::encode_status_rep(&mut rep, gp::ST_OK);
+                            send_rep(h, &rep[..n]);
+                        }
+                        Some((dk, payload)) if dk == gp::DEV_TEXT && !payload.is_empty() => {
+                            let ts = now();
+                            for &b in payload {
+                                pump.feed(gui_inputd::RawInputEvent {
+                                    ts_ns: ts,
+                                    ev_type: vio::input::EV_KEY,
+                                    code: b as u16,
+                                    value: 1,
+                                });
+                                pump.feed(gui_inputd::RawInputEvent {
+                                    ts_ns: ts,
+                                    ev_type: vio::input::EV_SYN,
+                                    code: vio::input::SYN_REPORT,
+                                    value: 0,
+                                });
+                                pump.feed(gui_inputd::RawInputEvent {
+                                    ts_ns: ts,
+                                    ev_type: vio::input::EV_KEY,
+                                    code: b as u16,
+                                    value: 0,
+                                });
+                                pump.feed(gui_inputd::RawInputEvent {
+                                    ts_ns: ts,
+                                    ev_type: vio::input::EV_SYN,
+                                    code: vio::input::SYN_REPORT,
+                                    value: 0,
+                                });
+                            }
+                            let n = gp::encode_status_rep(&mut rep, gp::ST_OK);
+                            send_rep(h, &rep[..n]);
+                        }
+                        _ => {
+                            let n = gp::encode_status_rep(&mut rep, gp::ST_BAD);
+                            send_rep(h, &rep[..n]);
+                        }
+                    },
                     _ => {
                         // input 域只此两 op——未知 op 拒面（不 trap）
                         let n = gp::encode_status_rep(&mut rep, gp::ST_BAD);
