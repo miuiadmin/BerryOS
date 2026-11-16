@@ -11314,6 +11314,7 @@ fn test_eas_wake_replay() {
     // 真 SMP 双核迁移行为归 smoke-smp/boot 相（BAND-SMP/EASPROD-SMP 同族）。
     // 结构级钉板：wake_one_inner → eas_wake_pick → par_enabled()==false →
     // return home_cpu——单核零改，与修前逐位等价（ktest 全绿即通过）。
+}
 /// cbox 排液窗数学（审计二轮 [4]）：`first = total - stored + 1` 环形窗与
 /// `(s-1) % SLOTS` 槽映射的边界——此面差一会发出错 seq 记录、decode 照过、
 /// 标记照打、静默上船。纯内核内可测（on_fault 伪造帧直灌，无需真异常注入）。
