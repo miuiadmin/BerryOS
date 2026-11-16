@@ -23,6 +23,10 @@ name = "berry-chanface"
 version = "0.2.0"
 
 [[package]]
+name = "berry-dmface"
+version = "0.2.0"
+
+[[package]]
 name = "berry-dpgface"
 version = "0.2.0"
 dependencies = [
@@ -114,6 +118,7 @@ dependencies = [
  "berry-aokface",
  "berry-billface",
  "berry-chanface",
+ "berry-dmface",
  "berry-dpgface",
  "berry-dtbface",
  "berry-evface",

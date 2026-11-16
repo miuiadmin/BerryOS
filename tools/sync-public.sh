@@ -256,6 +256,11 @@ WHITELIST=(
   # numface 补账（2026-11-16 本刀实捕：W3-Q83 净增量重放时白名单笔未随刀
   # ——check-members 门咬，billface/fwcfgface/psface/wakeface 判例同款）
   numface
+  # dmface/aokface 补账（2026-11-16 本刀净增量重放随刀：dmface 为 W3-Q84
+  # 首开件白名单笔随刀补登（fwcfgface/balface 同判例，先登防红）；aokface
+  # 为 base 债清偿——base 848a0fb35 树内 aokface/ 在、justfile 已消费而
+  # members/白名单双漏登，base tip test-host 必红，随刀一并清偿）
+  dmface aokface
   # heapface 补账（2026-11-15 #301 合入后机器门首咬：新增顶层 crate 忘补
   # 白名单即 test-host 红——check-members 门执法生效的第一次实捕）
   .github .cargo

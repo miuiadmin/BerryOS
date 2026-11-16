@@ -44,6 +44,9 @@ members = [
     "wakeface",
     "memface",
 ]
+    "wakeface",
+    "dmface",
+    "aokface",]
 resolver = "2"
 [workspace.package]
 edition = "2021"

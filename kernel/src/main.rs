@@ -221,21 +221,19 @@ fn fwcfg_rootfs_multivol() -> Option<RootfsBuf> {
 
 /// GUI P2：从 fw_cfg `opt/berry/display` 读 `WxH[@Hz]`；缺席/畸形 = None。
 /// 只接受 ASCII 十进制；字符串项可能带 NUL/空白，统一 trim 后再拆。
+/// 判定链五门单源 = `berry_dmface::parse_display_mode`（W3-Q84 host 钉板）；
+/// 本函数只留 fw_cfg 物理臂（find_file/read_to）。
 fn display_mode_req() -> Option<(u32, u32)> {
     use berry_hal_aarch64::fwcfg;
     let e = fwcfg::find_file("opt/berry/display")?;
-    if e.size == 0 || e.size > 32 {
+    if e.size == 0 || e.size as usize > berry_dmface::MAX_ITEM_BYTES {
         return None;
     }
-    let mut buf = [0u8; 32];
+    let mut buf = [0u8; berry_dmface::MAX_ITEM_BYTES];
     if !fwcfg::read_to(&e, &mut buf[..e.size as usize]) {
         return None;
     }
-    let s = core::str::from_utf8(&buf[..e.size as usize]).ok()?;
-    let s = s.trim_matches(|c: char| c == '\0' || c.is_ascii_whitespace());
-    let s = s.split('@').next()?;
-    let (w, h) = s.split_once('x')?;
-    Some((w.parse().ok()?, h.parse().ok()?))
+    berry_dmface::parse_display_mode(&buf[..e.size as usize])
 }
 
 /// 内核 Rust 入口（由 HAL boot asm 的 `br rust_main` 调用——2b-1 起高半入口）。

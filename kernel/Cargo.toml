@@ -85,6 +85,10 @@ berry-heapface = { path = "../heapface" }
 # isegs Σ 帽/拼装对账四判定门 host 钉板；main.rs 消费，物理臂留壳）。
 
 berry-rootface = { path = "../rootface" }
+# W3-Q84：fw_cfg display 模式请求解析纯面单源（五门判定链——size 域/
+# UTF-8/trim/@ 截断/WxH u32 域）——本 crate main.rs display_mode_req
+# 薄壳消费（fw_cfg find_file/read_to 物理臂留壳）。
+berry-dmface = { path = "../dmface" }
 
 # W3-Q76：billing 域账户槽分派 + dpg 压力窗折卷判定律单源（host 钉板）；
 
