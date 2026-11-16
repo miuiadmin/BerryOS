@@ -241,6 +241,9 @@ WHITELIST=(
   # wakeface 补账（2026-11-16 本刀 merge 进 #365 后门三咬：W3-Q66 合入后
   # 白名单笔未随刀——check-members 三连实捕定谳）
   wakeface
+  # numface 补账（2026-11-16 本刀实捕：W3-Q83 净增量重放时白名单笔未随刀
+  # ——check-members 门咬，billface/fwcfgface/psface/wakeface 判例同款）
+  numface
   # heapface 补账（2026-11-15 #301 合入后机器门首咬：新增顶层 crate 忘补
   # 白名单即 test-host 红——check-members 门执法生效的第一次实捕）
   .github .cargo

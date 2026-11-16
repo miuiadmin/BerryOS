@@ -46,10 +46,10 @@
 | mm/ | 7 | 2368 | 4 | 0.17% |
 | sched/ | 14 | 7603 | 1657 | 21.79% |
 | ipc/ | 0 | 0 | 0 | — |
-| arch/ | 23 | 7311 | 1048 | 14.33% |
-| **合计** | 71 | 47912 | 4796 | **10.01%** |
+| arch/ | 23 | 7302 | 1048 | 14.35% |
+| **合计** | 71 | 47903 | 4796 | **10.01%** |
 
-- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 37792，unsafe 非空行 4088，密度 10.82%（生产面口径）
+- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 37783，unsafe 非空行 4088，密度 10.82%（生产面口径）
 - 分类计数：页表 63 | 上下文切换 33 | MMIO 160 | 分配器 13 | 硬件原子 0 | 其它 768
 - 类型计数：block 895 | fn 138 | impl 2 | extern 2（另有类型签名位提及 14 处——只计不登记，防双计）
 - 对标：Android ~4%（unsafe 行占 Rust 总行比，Google 2025-11）；本表为跨度非空行口径（偏高估），见 §一
@@ -252,20 +252,20 @@
 | arch/aarch64/src/trap.rs | 636 | block | 上下文切换 | unsafe { f(tf) }; } } SGI_TLB_US => { // S-4 4-1：TLB shootdown 收 |
 | arch/aarch64/src/trap.rs | 683 | fn | 上下文切换 | unsafe fn read_esr_elr() -> (u64, u64) { let esr: u64; let elr: |
 | arch/aarch64/src/uart.rs | 79 | block | MMIO | unsafe { mmio::write(UART, c as u32) }; } /// 输出一段字节串。 pub fn ua |
-| arch/aarch64/src/uart.rs | 136 | block | MMIO | unsafe { let mut spin: u32 = 0; while mmio::read(UART + UART_FR) |
-| arch/aarch64/src/uart.rs | 182 | block | MMIO | unsafe { *core::ptr::addr_of_mut!(RX_NOTIFY) = Some(f) }; } /// |
-| arch/aarch64/src/uart.rs | 188 | block | MMIO | unsafe { mmio::read(UART + UART_FR) & UART_FR_RXFE == 0 } } /// |
-| arch/aarch64/src/uart.rs | 194 | block | MMIO | unsafe { mmio::read(UART + UART_DR) as u8 } } /// 环满丢字节数（console |
-| arch/aarch64/src/uart.rs | 200 | block | MMIO | unsafe { (*core::ptr::addr_of!(RX_RING)).lost } } /// RX IRQ han |
-| arch/aarch64/src/uart.rs | 211 | block | MMIO | unsafe { while mmio::read(UART + UART_FR) & UART_FR_RXFE == 0 { |
-| arch/aarch64/src/uart.rs | 242 | block | MMIO | unsafe { let r = &mut *core::ptr::addr_of_mut!(RX_RING); let mut |
-| arch/aarch64/src/uart.rs | 261 | fn | MMIO | unsafe fn rx_init() { // 同掩 RXIC（UART_ICR_STICKY）：boot 期已落 FIFO |
-| arch/aarch64/src/uart.rs | 303 | block | MMIO | unsafe { *core::ptr::addr_of_mut!(UART1_NOTIFY) = Some(f) }; } / |
-| arch/aarch64/src/uart.rs | 309 | block | MMIO | unsafe { (*core::ptr::addr_of!(UART1_RING)).lost } } /// UART1 R |
-| arch/aarch64/src/uart.rs | 318 | block | MMIO | unsafe { while mmio::read(UART1 + UART_FR) & UART_FR_RXFE == 0 { |
-| arch/aarch64/src/uart.rs | 343 | block | MMIO | unsafe { let r = &mut *core::ptr::addr_of_mut!(UART1_RING); let |
-| arch/aarch64/src/uart.rs | 362 | block | MMIO | unsafe { let mut spin: u32 = 0; while mmio::read(UART1 + UART_FR |
-| arch/aarch64/src/uart.rs | 387 | fn | MMIO | unsafe fn uart1_init() { mmio::write(UART1 + UART_ICR, UART_ICR_ |
+| arch/aarch64/src/uart.rs | 125 | block | MMIO | unsafe { let mut spin: u32 = 0; while mmio::read(UART + UART_FR) |
+| arch/aarch64/src/uart.rs | 171 | block | MMIO | unsafe { *core::ptr::addr_of_mut!(RX_NOTIFY) = Some(f) }; } /// |
+| arch/aarch64/src/uart.rs | 177 | block | MMIO | unsafe { mmio::read(UART + UART_FR) & UART_FR_RXFE == 0 } } /// |
+| arch/aarch64/src/uart.rs | 183 | block | MMIO | unsafe { mmio::read(UART + UART_DR) as u8 } } /// 环满丢字节数（console |
+| arch/aarch64/src/uart.rs | 189 | block | MMIO | unsafe { (*core::ptr::addr_of!(RX_RING)).lost } } /// RX IRQ han |
+| arch/aarch64/src/uart.rs | 200 | block | MMIO | unsafe { while mmio::read(UART + UART_FR) & UART_FR_RXFE == 0 { |
+| arch/aarch64/src/uart.rs | 231 | block | MMIO | unsafe { let r = &mut *core::ptr::addr_of_mut!(RX_RING); let mut |
+| arch/aarch64/src/uart.rs | 250 | fn | MMIO | unsafe fn rx_init() { // 同掩 RXIC（UART_ICR_STICKY）：boot 期已落 FIFO |
+| arch/aarch64/src/uart.rs | 292 | block | MMIO | unsafe { *core::ptr::addr_of_mut!(UART1_NOTIFY) = Some(f) }; } / |
+| arch/aarch64/src/uart.rs | 298 | block | MMIO | unsafe { (*core::ptr::addr_of!(UART1_RING)).lost } } /// UART1 R |
+| arch/aarch64/src/uart.rs | 307 | block | MMIO | unsafe { while mmio::read(UART1 + UART_FR) & UART_FR_RXFE == 0 { |
+| arch/aarch64/src/uart.rs | 332 | block | MMIO | unsafe { let r = &mut *core::ptr::addr_of_mut!(UART1_RING); let |
+| arch/aarch64/src/uart.rs | 351 | block | MMIO | unsafe { let mut spin: u32 = 0; while mmio::read(UART1 + UART_FR |
+| arch/aarch64/src/uart.rs | 376 | fn | MMIO | unsafe fn uart1_init() { mmio::write(UART1 + UART_ICR, UART_ICR_ |
 | arch/x86_64/src/main.rs | 393 | fn | MMIO | unsafe fn outb(port: u16, val: u8) { asm!("out %al, %dx", in("al |
 | arch/x86_64/src/main.rs | 397 | fn | MMIO | unsafe fn inb(port: u16) -> u8 { let ret: u8; asm!("in %dx, %al" |
 | arch/x86_64/src/main.rs | 404 | block | MMIO | unsafe { outb(COM1 + 1, 0x00); // 关串口中断（串口无 IRQ 面：IRQ4 双重掩闭——设备级 |

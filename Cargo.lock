@@ -57,6 +57,7 @@ version = "0.2.0"
 dependencies = [
  "berry-fwcfgface",
  "berry-lkface",
+ "berry-numface",
  "berry-psface",
  "berry-trapface",
  "berry-wakeface",
@@ -127,6 +128,10 @@ version = "0.2.0"
 
 [[package]]
 name = "berry-mm"
+version = "0.2.0"
+
+[[package]]
+name = "berry-numface"
 version = "0.2.0"
 
 [[package]]
