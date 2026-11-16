@@ -989,8 +989,8 @@ unsafe fn enqueue_with_kick(task: &mut Task, cpu: usize) {
     //（MMIO 非阻塞、不触环——窗最小化）。
     let phys = rq_lock_of(cpu);
     // M4 集成面收口（06 号 §5 水通管道·任务①）：class 赋值面——按
-    // `intent_effective` 分派带实例（现役集 0x02/0x03 → FairBand，其余
-    // unit Fair；`class_of_task` 单源）。spawn 与唤醒（wake_one_inner）
+    // `intent_effective` 分派带实例（现役集四带 0x01–0x04 → FairBand，
+    // 其余 unit Fair；`class_of_task` 单源）。spawn 与唤醒（wake_one_inner）
     // 共用本点，动态派生零缓存（FairBand 全委托 Fair——行为零漂移）。
     let cls = class_of_task(task);
     cls.enqueue(task, rq_of(cpu));
@@ -1342,7 +1342,7 @@ pub fn thaw_by_pinned(pinned: usize) {
 ///
 /// **M4 集成面（06 号 §5「水通管道」任务①收口，2026-11-16）**：task→band
 /// 赋值在此闭合——intent 双落后 [`enqueue_with_kick`] 经 [`class_of_task`]
-/// 按带分派（现役集 0x02/0x03 → [`crate::class::FairBand`] 带实例〔表行
+/// 按带分派（现役集四带 0x01–0x04 → [`crate::class::FairBand`] 带实例〔表行
 /// quantum/权重包络〕+ boot 串口 `[band]` 行；其余档 unit Fair 零漂移）。
 /// 策略覆盖通道 = `policy::band_of`（v3 `policy_bind` 写路）仍归 v3。
 pub fn spawn_intent(entry: extern "C" fn(usize) -> !, arg: usize, name: &'static [u8],

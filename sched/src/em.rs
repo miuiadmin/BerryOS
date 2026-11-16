@@ -88,6 +88,30 @@ pub fn em_max_capacity(domain: usize) -> u32 {
     }
 }
 
+/// **CPU 所在域**的最高频点容量（per-CPU 容量基准——扫注册域取首个
+/// cpu_mask 含该 CPU 位的域；未注册/CPU 不在任何域/越界 ≥32 → 0）。
+///
+/// 消费点 = [`crate::util::overutilized`]：多域（大小核）拓扑下各域容量
+/// 各异，「本核相对**本域**容量」才是 overutil 语义——CP-09 EAS M2 修
+/// 域 0 硬编码（此前 `em_max_capacity(0)`——单域 QEMU 零漂移，多域语义
+/// 错：小核域 CPU 按大核域容量判会漏判 over）。域归属扫描与
+/// `berry_em::eas_pick_cpu` 的 `domain_of`/`eas_pick_place` 的候选域成员
+/// 判同口径（首含位域）。cap 0 语义归 `overutil_judgment` 钳 1（无据
+/// 保守回退——无 EM 的 CPU 本就该让 EAS 回退）。
+pub fn em_max_capacity_of_cpu(cpu: usize) -> u32 {
+    if cpu >= 32 {
+        return 0; // cpu_mask u32 口径上限（同 eas_pick_cpu domain_of 界）
+    }
+    for d in 0..EM_DOMAINS_MAX {
+        if let Some(dom) = em_domain(d) {
+            if dom.cpu_mask & (1u32 << cpu) != 0 {
+                return em_max_capacity_of(&dom);
+            }
+        }
+    }
+    0
+}
+
 /// 最低频点功耗（域最低能耗/空闲基准——首点即最低频点；未注册/越界 → 0）。
 pub fn em_min_power(domain: usize) -> u32 {
     match em_domain(domain) {

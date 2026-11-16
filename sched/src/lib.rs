@@ -40,8 +40,8 @@ pub use class::{
     PRIO_DEADLINE,
 };
 pub use em::{
-    em_domain, em_max_capacity, em_min_power, em_register, em_register_qemu_virt, em_valid,
-    EmDomain, EmPoint, EM_DOMAINS_MAX, EM_POINTS_MAX,
+    em_domain, em_max_capacity, em_max_capacity_of_cpu, em_min_power, em_register,
+    em_register_qemu_virt, em_valid, EmDomain, EmPoint, EM_DOMAINS_MAX, EM_POINTS_MAX,
 };
 pub use hdr::{
     bucket_of, bucket_upper, cpu_hdr, cpu_reset, merged_max, merged_min, merged_percentile,
