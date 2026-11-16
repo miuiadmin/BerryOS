@@ -141,6 +141,7 @@ dependencies = [
  "berry-vmoledger",
  "berry-vslotface",
  "berry-wqmatch",
+ "berry-wsrcface",
 ]
 
 [[package]]
@@ -256,4 +257,8 @@ version = "0.2.0"
 
 [[package]]
 name = "berry-wqmatch"
+version = "0.2.0"
+
+[[package]]
+name = "berry-wsrcface"
 version = "0.2.0"
