@@ -1112,6 +1112,8 @@ test-host:
     # 逻辑改坏仍绿），selftest 另钉生成器语义：结构契约+拒面 5、NN 放大
     # 数学性质、'!'/'=' 手算字节 ×3 档、表头契约、在册产物对偶。
     python3 tools/genfbfont.py --selftest
+    # 漂移守卫（遗漏审计 A3 判例——与 gen_abi --check 同款纪律，此前零接线）：
+    python3 tools/genfbfont.py --check
     # W1-Q4（a-3 U4 纪律同款）：policy_ab_eval 门禁自检——S6 策略服务 A/B
     # 升级判定器（PROMOTE/DEMOTE/HOLD）此前只在升级工作流里被一次性消费：
     # judge 三区间手算 + 阈值严格边界（恰等 = HOLD）+ packed u64 位布局 +
@@ -1221,6 +1223,8 @@ test-host:
     # 改坏即咬）。改 genwycheproof.py / wycheproof_ed25519_test.json /
     # wycheproof_vectors.rs 联动面必跑。
     python3 tools/genwycheproof.py --selftest
+    # 漂移守卫（遗漏审计 A3 判例——fixture↔产物对拍此前从未自动执行）：
+    python3 tools/genwycheproof.py --check
     # W1 接线（genwycheproof 同族·程序化扫描清尾 1/2）：gensourceindex
     # 门禁自检——源索引/源钥清单生成器（SDK-2 分发签名链 v1.2 §五镜像，
     # .sig 信封两件套随镜像 FAT /SOURCE/ 挂入），selftest 38 面（TLV

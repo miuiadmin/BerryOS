@@ -1,6 +1,6 @@
 [package]
 name = "gfxdemo"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 # GUI-2 段③（消费侧首刀）：present/hdi 域的首个真实消费者闭环——

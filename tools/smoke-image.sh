@@ -447,7 +447,7 @@ RX_HOLDER=$!
 
 echo "smoke-image: QEMU 启动（AAVMF + ${IMAGE}——零 -kernel / 零 fw_cfg）"
 # 与 justfile run-efi 同参（不挂 virtio——EFI 路无 virtio 面；ramfb 供 GOP）。
-"$QEMU" -machine virt -cpu cortex-a72 -m 256M -nographic \
+"$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic \
   -pflash "$AAVMF_CODE" -pflash "$RUN_DIR/vars.fd" \
   -drive if=none,file="$IMAGE",format=raw,id=bb \
   -device qemu-xhci -device usb-storage,drive=bb \
@@ -656,7 +656,7 @@ run_boot7() {
   ( sleep $((deadline + 120)) ) > "$RX_FIFO" &
   RX_HOLDER=$!
   echo "smoke-image: 阶段 8 boot（${tag}）启动（$*）"
-  "$QEMU" -machine virt -cpu cortex-a72 -m 256M -nographic \
+  "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic \
     -pflash "$AAVMF_CODE" -pflash "$RUN_DIR7/vars.fd" \
     -drive if=none,file="$IMAGE",format=raw,id=bb \
     -device qemu-xhci -device usb-storage,drive=bb \

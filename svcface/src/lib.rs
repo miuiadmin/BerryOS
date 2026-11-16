@@ -1,7 +1,7 @@
 //! berry-svcface —— SVC 入口锁类位集与号→锁类注册表纯函数面（W3-Q67）。
 //!
 //! **动机**：SVC 入口锁类分档（S-3c c-2c slice 2b 起）的六类位集常量与
-//! 43 号注册表此前只活在两处——`kern_lock.rs` 常量 + `kernel/src/syscall.rs`
+//! 45 号注册表此前只活在两处——`kern_lock.rs` 常量 + `kernel/src/syscall.rs`
 //! `install()` 的 43 行 `reg()` 字面量表。HAL/内核 crate 只 aarch64-unknown-none
 //! 可编，host 测不可达：类位集与 sched `HELD_*` 的**位镜像一致性**（bit1=SQ
 //! 0x02 / bit2=RQ0 0x04 / bit3=RQ1 0x08 / bit4=REAPQ 0x10 / bit5=TABLE 0x20）
@@ -19,7 +19,7 @@
 //!   [`HELD_TABLE_BIT`]：sched `task.rs` HELD_* 位值的**判据面镜像**（非
 //!   第二实现——host 侧拿不到 berry-sched，此处钉「类位集对 sched 位值的
 //!   组装律」，与 kernel main.rs 编译期断言同一语义的 host 可测形）。
-//! - [`REGISTRY`]：43 号注册表（`(nr, class)` 对——与 kernel `install()`
+//! - [`REGISTRY`]：45 号注册表（`(nr, class)` 对——与 kernel `install()`
 //!   逐行对应；`0x83 policy_bind` 字面量号同款入册）。
 //! - [`class_of`]：号→类查询——注册表线性扫（43 项，boot 期注册语义的
 //!   纯投影；**未注册号 → [`SVC_CLASS_NONE`]**，与 HAL 派发表默认槽
@@ -135,6 +135,8 @@ pub const REGISTRY: &[(u8, u8)] = &[
     // —— TABLE：CP-08 util 快照读（0x40——EWMA 槽 Relaxed 原子读零共享面；
     //    copy_out 链走查调用方页表 = §A113 读者面，同 0x61/0x87）。
     (0x40, SVC_CLASS_TABLE),      // sched_util_snapshot
+    // —— TABLE：cbox 刀 1 排液（0x42——黑匣子快照表读，copy_out 读者面 §A113）——
+    (0x42, SVC_CLASS_TABLE),      // cbox_drain
     // —— channel/event 族 ——
     (0x51, SVC_CLASS_ALL),          // channel_create
     (0x52, SVC_CLASS_SQ_RQ_TABLE),  // channel_send
@@ -143,6 +145,8 @@ pub const REGISTRY: &[(u8, u8)] = &[
     // —— 信号面（A7-4：0x86 表查 + pending 原子；0x87 copy_out 链升 TABLE）——
     (0x86, SVC_CLASS_TABLE), // signal_send
     (0x87, SVC_CLASS_TABLE), // signal_take
+    // —— TABLE：阶段五遥测环读（0x84——klog 快照首域 copy_out 读者面 §A113）——
+    (0x84, SVC_CLASS_TABLE),      // telemetry_open
 ];
 
 /// 号→入口锁类：注册表线性扫（43 项·boot 期注册语义纯投影）。**未注册号
@@ -239,10 +243,10 @@ mod tests {
         }
     }
 
-    /// 表规模与形状：43 号在册、无重复号。
+    /// 表规模与形状：45 号在册、无重复号（cbox 刀 1 0x42 + 阶段五遥测 0x84）。
     #[test]
     fn registry_shape() {
-        assert_eq!(REGISTRY.len(), 43);
+        assert_eq!(REGISTRY.len(), 45);
         assert!(nrs_unique());
     }
 
@@ -261,7 +265,7 @@ mod tests {
         // 未注册面：v1 预留 0x85 attest、调试槽退役位 0xFE/0xFF、随机空号
         //（0x40 CP-08 util 通道入册后移出此列——SVC_CLASS_TABLE）。
         for nr in [0x00u8, 0x07, 0x08, 0x10, 0x20, 0x25, 0x30, 0x38, 0x39,
-            0x50, 0x55, 0x60, 0x62, 0x70, 0x80, 0x82, 0x84, 0x85, 0x89,
+            0x50, 0x55, 0x60, 0x62, 0x70, 0x80, 0x82, 0x85, 0x89,
             0x8A, 0x90, 0xA0, 0xFE, 0xFF] {
             assert_eq!(class_of(nr), SVC_CLASS_NONE, "nr={nr:#04x} 须 NONE 默认");
         }

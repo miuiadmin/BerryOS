@@ -19,3 +19,15 @@ Status: implemented
 - 同键唤醒（IPC ping-pong 主路径）从 O(N) 降为 O(K)：全队扫只在 WAIT_ANY 兜底与桶哈希退化（全碰撞）时出现。
 - 后续 [`R3 形 B runnable 受捐注入`](./2026-11-12-pi-form-b-runnable-donee.md)（42a794e0）的 `pi_count_add`/受捐判定消费同一 P2 门控家族（①派生位等待者非零早退）。
 - BLOCK/WAIT/CHAIN/MANY/PI/FAST 全绿（七十六轮）；wake_matching 行为面零漂移（同一批被唤醒者，只是查找路径变）。
+
+## Alternatives considered
+
+- **每对象一个 waitq + 超时队列全双挂**（经典双挂）：被既有设计否决（SleepQueue 类型注释）——Task 链接字段翻倍、双挂一致性易错；本刀同键链只在同键扫描面复用「双挂」收益，deadline 主序与超时扫描仍单队列，机械面收口不变。
+- **哨兵也入链（专桶）**：哨兵挂 `wait_bucket(WAIT_ANY)` 专桶、每次唤醒扫两链，可把哨兵在场也压到 O(哨兵数)——被弃：与任务书「哨兵留全局、SLEEPQ 扫描兜底」的设计定谳相悖，且 v1 哨兵个位数，兜底冷路径不值得多一套专桶纪律。
+- **退守 fastpath 单点优化**（任务书风险控制预案：只改 `find_single_waiter_locked`）：不需要——全链机械收口在两机械面后影响面可控，BLOCK/WAIT/CHAIN/MANY/PI/FAST 冒烟全绿。
+
+## Related
+
+- [系统优化路线图-v1.0](../../../docs/系统优化路线图-v1.0.md) P2-1（SLEEPQ 分桶）· §0 已实施基线（五十五轮 P1 门控行——本刀的前置半边）
+- [sched/src/sched.rs](../../../sched/src/sched.rs) KEY_HEADS 块注（P2-1 机械面与哨兵兜底设计）· [sched/src/task.rs](../../../sched/src/task.rs) key_prev/key_next 字段注
+- [wqmatch](../../../wqmatch/src/lib.rs)（谓词单源——键门拒冲突桶异键者是本刀正确性的宿主面）
