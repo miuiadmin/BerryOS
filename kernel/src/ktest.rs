@@ -111,10 +111,11 @@ pub fn run() {
     // CP-11（§3.8 机制面）：timer slack LATE-only 顺延律差分钉板（同
     // test_bootparams 位——纯函数面 + 全局往返，静默执法零输出行）。
     test_timer_slack();
-    // 调度深水区收官·任务②（M4 首批 band 激活，2026-11-16）：band_enabled
-    // 收窄 ×4→×2（interactive+utility 现役——保守激活，入场券纪律）+
-    // class_fair_intent 参数差异断言（末位新号纪律——ktest done 前；
-    // sched::init 前跑；BAND 族定义体在 test_band 后）。
+    // 调度深水区收官·任务②（M4 首批 band 激活 2026-11-16 ×4→×2；CP-09
+    // EAS M2 批次 2026-11-17 ×2→×4 四带全开——06 号 §2 Top-3 ③）：
+    // band_enabled 现役集 + class_fair_intent 四带参数差异断言
+    // （末位新号纪律——ktest done 前；sched::init 前跑；BAND 族定义体
+    // 在 test_band 后）。
     test_band_m4();
     // 06 号评估终判「水通管道」②（2026-11-16）：EAS 选核首接——
     // berry-em eas_pick_cpu → sched place() 放置消费。policy placement
@@ -161,6 +162,14 @@ pub fn run() {
     // 配额/真出选/真醒源读/真翻期回场——SMPLZ 同款；切换舞蹈本体归
     // boot/smoke 面）。末位新号纪律——ktest done 前；sched::init 前跑。
     test_throttle_yield();
+    // SMP-01「band 偷取」遗留修（本刀·2026-11-16）：try_steal_one 的 victim
+    // 选择升级 steal_band_rank 三档偏好序——utility 偷到 interactive 密集核
+    // 降优先、interactive 留原核保响应。ktest 期 par 门恒关——钉决策面
+    // （真偷取环手术面归 smoke-smp/boot 相）。末位新号纪律——ktest done
+    // 前；sched::init 前跑。
+    test_steal_band();
+    // F4 wake 重放（SMP-01 §3.4 遗留修——钉决策面：par 门关时恒回 home）。
+    test_eas_wake_replay();
     // cbox 刀1（黑匣子崩溃记录表）排液窗数学钉板——main 线增量（末位新号
     // 纪律——ktest done 前；定义在文件尾）。
     test_cbox();
@@ -3238,7 +3247,7 @@ fn test_vmo() {
     // F. A1-2 容量冒烟：40MiB VMO 全量 commit/decommit——`vmo.rs` commit 逐页
     // order-0 出帧，不受 MAX_ORDER 堆单块地形约束；帧账本对账（B-0
     // `allocated_pages` 口径）钉「10240 页全出全还、零泄漏」。40MB+ blob
-    // 装载面的前置证据（`docs/容量工程前置-A1设计草案.md` §2 关键洞察 / §4 A1-2）。
+    // 装载面的前置证据（`docs/容量工程前置-A1设计草案-v1.0.md` §2 关键洞察 / §4 A1-2）。
     //
     // 对账须计**页记帐双 Vec**（`Vmo::create` 经堆整页路径入账——heap.rs
     // >2048B → `order_for` 取 `2^order >= npages` 最小阶）：`pages:
@@ -7419,6 +7428,13 @@ fn test_band() {
 /// 首个真调度差异化面。五段：**现役集 / 工厂门 / 参数差异 / 表源执法 /
 /// 同 runqueue 共存**。
 ///
+/// CP-09 EAS M2 批次（2026-11-17，06 号 §2 Top-3 ③）：LC(0x01)/BG(0x04)
+/// 激活——四带全开（×2→×4，ADR #42 第二段 ×4 终态兑现）。A–F 段扩四带
+/// （现役集/工厂门/参数阶梯/表源/共存/spawn 面）；G 段行为差异化驱动面
+/// 保持 interactive+utility 代表对（四 API 机械面的时序断言——12ms 跑段
+/// 介于 10/20ms 两带 quantum 之间是 G1 断言前提，四带全跑无单值跑段可满
+/// 足，LC/BG 的行为面归 LOADGEN/后续带专项）。
+///
 /// **集成面（06 号 §5「水通管道」任务①收口，2026-11-16）**：task→band
 /// 赋值已接——`class_of_task`（class 赋值面单源）按 `intent_effective`
 /// 分派，`sched.rs` 调度原语六点消费（spawn/wake 入队、偷取重入环、
@@ -7463,30 +7479,24 @@ fn test_band_m4() {
         t
     }
 
-    // —— M4A. 现役集恰两带（band_enabled 单源）：interactive+utility on；
-    //         其余四带 off（保守激活——LC/BG 首批外、MAINT 冻结、
-    //         UNSPECIFIED 无专带）。——
+    // —— M4A. 现役集四带全开（band_enabled 单源——2026-11-17 CP-09 EAS M2
+    //         批次 ×2→×4，06 号 §2 Top-3 ③）：LC/interactive/utility/
+    //         background on；UNSPECIFIED 无专带、MAINT 冻结 off。——
+    assert!(band_enabled(INTENT_LATENCY_CRITICAL), "BANDM4：LC 须现役（四带全开）");
     assert!(band_enabled(INTENT_INTERACTIVE), "BANDM4：interactive 须现役");
     assert!(band_enabled(INTENT_UTILITY), "BANDM4：utility 须现役");
-    for code in [
-        INTENT_UNSPECIFIED,
-        INTENT_LATENCY_CRITICAL,
-        INTENT_BACKGROUND,
-        INTENT_MAINTENANCE,
-    ] {
-        assert!(!band_enabled(code), "BANDM4：档 {:#x} 须不现役（首批外）", code);
+    assert!(band_enabled(INTENT_BACKGROUND), "BANDM4：background 须现役");
+    for code in [INTENT_UNSPECIFIED, INTENT_MAINTENANCE] {
+        assert!(!band_enabled(code), "BANDM4：档 {:#x} 须不现役（无专带/冻结）", code);
     }
 
-    // —— M4B. 工厂门：两带 Some（带实例可构造）；四带 None = 无带（调用方
-    //         回落现役单带 Fair，缺省行为零漂移）。——
+    // —— M4B. 工厂门：四带 Some（带实例可构造）；无专带/冻结档 None =
+    //         无带（调用方回落现役单带 Fair，缺省行为零漂移）。——
+    let lcb = class_fair_intent(INTENT_LATENCY_CRITICAL).expect("BANDM4：LC 工厂须建带");
     let ib = class_fair_intent(INTENT_INTERACTIVE).expect("BANDM4：interactive 工厂须建带");
     let ub = class_fair_intent(INTENT_UTILITY).expect("BANDM4：utility 工厂须建带");
-    for code in [
-        INTENT_UNSPECIFIED,
-        INTENT_LATENCY_CRITICAL,
-        INTENT_BACKGROUND,
-        INTENT_MAINTENANCE,
-    ] {
+    let bgb = class_fair_intent(INTENT_BACKGROUND).expect("BANDM4：background 工厂须建带");
+    for code in [INTENT_UNSPECIFIED, INTENT_MAINTENANCE] {
         assert!(
             class_fair_intent(code).is_none(),
             "BANDM4：档 {:#x} 工厂须 None（回落单带 Fair）",
@@ -7494,102 +7504,147 @@ fn test_band_m4() {
         );
     }
 
-    // —— M4C. 参数差异生效（首个真调度差异化）：两带 quantum / 权重包络 /
-    //         latency_target 三轴各自不同——同 runqueue 中两带任务的调度
-    //         参数由此分化（trait 面消费 = M4 并线）。——
-    assert_ne!(ib.band.quantum_ns, ub.band.quantum_ns, "BANDM4：两带 quantum 须不同");
-    assert_ne!(
-        (ib.band.low_weight, ib.band.high_weight),
-        (ub.band.low_weight, ub.band.high_weight),
-        "BANDM4：两带权重包络须不同"
-    );
-    assert_ne!(
-        ib.band.latency_target_ns, ub.band.latency_target_ns,
-        "BANDM4：两带 latency_target 须不同"
-    );
-    // 方向钉板（u8 越小档越高在带参数阶梯上的投影）：interactive 短片 +
-    // 权重包络整体在 utility 之上（交互优先）。
+    // —— M4C. 参数差异生效（四带阶梯——首个真调度差异化的 ×4 面）：四带
+    //         沿档位号（u8 越小档越高）quantum/latency_target 严格递增、
+    //         权重包络整体递降（low 严格降、high 不升且相邻包络互异）
+    //         ——同 runqueue 中四带任务的调度参数由此分化（trait 面消费
+    //         = M4 并线）。——
+    let ladder = [lcb, ib, ub, bgb]; // 档位号升序：LC→IA→UT→BG
+    for w in ladder.windows(2) {
+        assert!(
+            w[0].band.quantum_ns < w[1].band.quantum_ns,
+            "BANDM4：档 {:#x}→{:#x} quantum 须严格递增",
+            w[0].band_id,
+            w[1].band_id
+        );
+        assert!(
+            w[0].band.latency_target_ns < w[1].band.latency_target_ns,
+            "BANDM4：档 {:#x}→{:#x} latency_target 须严格递增",
+            w[0].band_id,
+            w[1].band_id
+        );
+        assert!(
+            w[0].band.low_weight > w[1].band.low_weight,
+            "BANDM4：档 {:#x}→{:#x} low_weight 须严格递降",
+            w[0].band_id,
+            w[1].band_id
+        );
+        assert!(
+            w[0].band.high_weight >= w[1].band.high_weight,
+            "BANDM4：档 {:#x}→{:#x} high_weight 须不升",
+            w[0].band_id,
+            w[1].band_id
+        );
+        assert_ne!(
+            (w[0].band.low_weight, w[0].band.high_weight),
+            (w[1].band.low_weight, w[1].band.high_weight),
+            "BANDM4：档 {:#x}→{:#x} 权重包络须互异",
+            w[0].band_id,
+            w[1].band_id
+        );
+    }
+    // 方向钉板（u8 越小档越高在带参数阶梯上的投影）：LC = 低延迟带——
+    // 四带最短 quantum + 最高权重包络；BG = 后台带——四带最长 quantum +
+    // 最低权重包络（与 interactive/utility 差异化）。
     assert!(
-        ib.band.quantum_ns < ub.band.quantum_ns,
-        "BANDM4：interactive quantum 须更短"
+        lcb.band.quantum_ns < ib.band.quantum_ns
+            && lcb.band.low_weight > ib.band.low_weight
+            && lcb.band.high_weight >= ib.band.high_weight,
+        "BANDM4：LC 须低延迟位（最短 quantum/最高包络）"
     );
     assert!(
-        ib.band.low_weight > ub.band.low_weight && ib.band.high_weight > ub.band.high_weight,
-        "BANDM4：interactive 权重包络须整体更高"
+        bgb.band.quantum_ns > ub.band.quantum_ns
+            && bgb.band.low_weight < ub.band.low_weight
+            && bgb.band.high_weight < ub.band.high_weight,
+        "BANDM4：BG 须后台位（最长 quantum/最低包络）"
     );
 
     // —— M4D. FairBand::new 参数从 IntentBand 表读取（表→工厂单一事实链）：
     //         工厂输出与显式 new(档, 表行) 逐字段同；band_id = intent 档编码
     //         （§11 带键 = intent 恒等映射）。——
-    assert_eq!(
-        (ib.band_id, ib.band),
-        (INTENT_INTERACTIVE, INTENT_BAND_TABLE[INTENT_INTERACTIVE as usize]),
-        "BANDM4：interactive 带参数须源表行 [2]"
-    );
-    assert_eq!(
-        (ub.band_id, ub.band),
-        (INTENT_UTILITY, INTENT_BAND_TABLE[INTENT_UTILITY as usize]),
-        "BANDM4：utility 带参数须源表行 [3]"
-    );
-    assert_eq!(
-        ib.band,
-        FairBand::new(INTENT_INTERACTIVE, INTENT_BAND_TABLE[INTENT_INTERACTIVE as usize]).band,
-        "BANDM4：工厂 = FairBand::new(档, 表行)（interactive）"
-    );
-    assert_eq!(
-        ub.band,
-        FairBand::new(INTENT_UTILITY, INTENT_BAND_TABLE[INTENT_UTILITY as usize]).band,
-        "BANDM4：工厂 = FairBand::new(档, 表行)（utility）"
-    );
+    for (code, fb) in [
+        (INTENT_LATENCY_CRITICAL, lcb),
+        (INTENT_INTERACTIVE, ib),
+        (INTENT_UTILITY, ub),
+        (INTENT_BACKGROUND, bgb),
+    ] {
+        assert_eq!(
+            (fb.band_id, fb.band),
+            (code, INTENT_BAND_TABLE[code as usize]),
+            "BANDM4：档 {:#x} 带参数须源表行 [{}]",
+            code,
+            code as usize
+        );
+        assert_eq!(
+            fb.band,
+            FairBand::new(code, INTENT_BAND_TABLE[code as usize]).band,
+            "BANDM4：工厂 = FairBand::new(档, 表行)（档 {:#x}）",
+            code
+        );
+    }
 
-    // —— M4E. 同 runqueue 共存：两带实例（trait 面现委托 unit Fair——行为
-    //         零漂移纪律）各 enqueue 一任务进同一本地环，两带任务同环
+    // —— M4E. 同 runqueue 共存：四带实例（trait 面现委托 unit Fair——行为
+    //         零漂移纪律）各 enqueue 一任务进同一本地环，四带任务同环
     //         出选、互不吞并（每带恰一员出选；等权 EEVDF 的 FIFO 首见序
     //         归 ringface 钉板面，此处集合断言不钉序）。——
     let mut rq = Runqueue::new();
     let topo = Topo::single();
+    let tlc = mk(b"m4lc".as_slice(), INTENT_LATENCY_CRITICAL);
     let ti = mk(b"m4ia".as_slice(), INTENT_INTERACTIVE);
     let tu = mk(b"m4ut".as_slice(), INTENT_UTILITY);
-    ib.enqueue(ti, &mut rq);
-    ub.enqueue(tu, &mut rq);
-    let p1 = ib.pick_next(&rq, &topo).expect("BANDM4：非空环须有出选");
-    let n1 = p1.name;
-    ib.dequeue(p1, &mut rq);
-    let p2 = ub.pick_next(&rq, &topo).expect("BANDM4：摘一员后仍须有出选");
-    let n2 = p2.name;
-    ub.dequeue(p2, &mut rq);
-    assert_ne!(n1, n2, "BANDM4：两带各出一员（互不吞并）");
+    let tbg = mk(b"m4bg".as_slice(), INTENT_BACKGROUND);
+    let mut names = [tlc.name, ti.name, tu.name, tbg.name];
+    for (fb, t) in [(lcb, tlc), (ib, ti), (ub, tu), (bgb, tbg)] {
+        fb.enqueue(t, &mut rq);
+    }
+    let mut picked = [b"".as_slice(); 4]; // 占位——循环内覆写为出选名
+    for (i, fb) in [lcb, ib, ub, bgb].iter().enumerate() {
+        let p = fb.pick_next(&rq, &topo).expect("BANDM4：非空环须有出选");
+        picked[i] = p.name;
+        fb.dequeue(p, &mut rq);
+    }
     assert!(
-        (n1 == b"m4ia".as_slice() && n2 == b"m4ut".as_slice())
-            || (n1 == b"m4ut".as_slice() && n2 == b"m4ia".as_slice()),
-        "BANDM4：出选集恰两带成员（实得 {:?}/{:?}）",
-        n1,
-        n2
+        lcb.pick_next(&rq, &topo).is_none(),
+        "BANDM4：四员摘尽后空环须 None"
+    );
+    names.sort_unstable();
+    let mut sorted = picked;
+    sorted.sort_unstable();
+    assert_eq!(
+        sorted, names,
+        "BANDM4：出选集恰四带成员（互不吞并，实得 {:?}）",
+        sorted
     );
 
-    // —— M4F. spawn 面端到端（06 号 §5「水通管道」任务①——链路最后一环）：
-    //         真 `spawn_intent` 路径（intent 双落 → `class_of_task` 分派 →
-    //         `enqueue_with_kick` 入真 PER_CPU_RQ）：interactive + utility
-    //         两任务各得带实例且参数分化（quantum/权重包络）、background
-    //         对照（首批外）回落 unit Fair；真 RQ 在席证明
-    //         （`for_each_runnable` 走查——pi_rq_lock 窗）后 `rq_unlink_kt`
-    //         清场（F8 先例——断言后即摘，不留 RQ 残留）。——
+    // —— M4F. spawn 面端到端（06 号 §5「水通管道」任务①——链路最后一环；
+    //         CP-09 EAS M2 批次扩四带）：真 `spawn_intent` 路径（intent
+    //         双落 → `class_of_task` 分派 → `enqueue_with_kick` 入真
+    //         PER_CPU_RQ）：四带各一任务得带实例且参数分化（quantum 阶梯/
+    //         权重包络）、UNSPECIFIED 对照（无专带）回落 unit Fair；真 RQ
+    //         在席证明（`for_each_runnable` 走查——pi_rq_lock 窗）后
+    //         `rq_unlink_kt` 清场（F8 先例——断言后即摘，不留 RQ 残留）。——
+    spawn_intent(m4_dummy, 0, b"m4spLC", INTENT_LATENCY_CRITICAL);
     spawn_intent(m4_dummy, 0, b"m4spIA", INTENT_INTERACTIVE);
     spawn_intent(m4_dummy, 0, b"m4spUT", INTENT_UTILITY);
     spawn_intent(m4_dummy, 0, b"m4spBG", INTENT_BACKGROUND);
-    let mut seen = [0usize; 3];
-    let mut cls = [None, None, None];
-    let mut ptrs = [0usize; 3];
+    spawn_intent(m4_dummy, 0, b"m4spUN", INTENT_UNSPECIFIED);
+    let mut seen = [0usize; 5];
+    let mut cls = [None, None, None, None, None];
+    let mut ptrs = [0usize; 5];
     let phys = pi_rq_lock();
     for_each_runnable(|t| {
         // 走查契约：只读字段 + 纯派生（class_of_task 无副作用）；裸指针
         // 存址供窗外清场 unlink（锁窗内不出/入环）。
-        let i = if t.name == b"m4spIA".as_slice() {
+        let i = if t.name == b"m4spLC".as_slice() {
             0
-        } else if t.name == b"m4spUT".as_slice() {
+        } else if t.name == b"m4spIA".as_slice() {
             1
-        } else if t.name == b"m4spBG".as_slice() {
+        } else if t.name == b"m4spUT".as_slice() {
             2
+        } else if t.name == b"m4spBG".as_slice() {
+            3
+        } else if t.name == b"m4spUN".as_slice() {
+            4
         } else {
             return;
         };
@@ -7598,8 +7653,13 @@ fn test_band_m4() {
         ptrs[i] = t as *mut Task as usize;
     });
     pi_rq_unlock(phys);
-    assert_eq!(seen, [1, 1, 1], "BANDM4：spawn 面三任务须真入 PER_CPU_RQ（各恰一枚）");
-    let (cia, cut, cbg) = (cls[0], cls[1], cls[2]);
+    assert_eq!(seen, [1, 1, 1, 1, 1], "BANDM4：spawn 面五任务须真入 PER_CPU_RQ（各恰一枚）");
+    let (clc, cia, cut, cbg, cun) = (cls[0], cls[1], cls[2], cls[3], cls[4]);
+    assert_eq!(
+        clc,
+        Some(TaskClass::Band(lcb)),
+        "BANDM4：spawn 面 LC 须得带实例（工厂同参）"
+    );
     assert_eq!(
         cia,
         Some(TaskClass::Band(ib)),
@@ -7612,15 +7672,34 @@ fn test_band_m4() {
     );
     assert_eq!(
         cbg,
+        Some(TaskClass::Band(bgb)),
+        "BANDM4：spawn 面 background 须得带实例（工厂同参）"
+    );
+    assert_eq!(
+        cun,
         Some(TaskClass::Unit),
-        "BANDM4：spawn 面 background（首批外）须回落 unit Fair"
+        "BANDM4：spawn 面 unspecified（无专带）须回落 unit Fair"
     );
-    let (bia, but) = (cia.unwrap().band().unwrap(), cut.unwrap().band().unwrap());
-    assert_ne!(bia.quantum_ns, but.quantum_ns, "BANDM4：spawn 面两带任务 quantum 须不同");
+    let (blc, bia, but, bbg) = (
+        clc.unwrap().band().unwrap(),
+        cia.unwrap().band().unwrap(),
+        cut.unwrap().band().unwrap(),
+        cbg.unwrap().band().unwrap(),
+    );
+    // 四带 quantum 阶梯 + 权重包络分化（spawn 面实得参数——表行 M4C 已
+    // 钉，此处钉 spawn 面分化真到达任务）。
     assert!(
-        bia.low_weight > but.low_weight && bia.high_weight > but.high_weight,
-        "BANDM4：spawn 面 interactive 权重包络须整体更高"
+        blc.quantum_ns < bia.quantum_ns && bia.quantum_ns < but.quantum_ns
+            && but.quantum_ns < bbg.quantum_ns,
+        "BANDM4：spawn 面四带 quantum 须阶梯分化"
     );
+    assert!(
+        blc.low_weight > bia.low_weight
+            && bia.low_weight > but.low_weight
+            && but.low_weight > bbg.low_weight,
+        "BANDM4：spawn 面四带权重包络须整体递降"
+    );
+    assert_eq!(cun.unwrap().band(), None, "BANDM4：unit 臂 band() 投影须 None");
     for p in ptrs {
         // SAFETY: p 来自锁窗走查（spawn_intent 的 Box::leak 产物，地址
         // 稳定）；此刻在真 PER_CPU_RQ 环上（seen 断言已证）。
@@ -7654,10 +7733,14 @@ fn test_band_m4() {
             }
         }
 
-        // 前提：两带槽默认关（test_band/前段零武装——懒武装起测面）。
+        // 前提：四带槽默认关（test_band/前段零武装——懒武装起测面；
+        // LC/BG 已激活但 M4A–F 段零 tick 消费 → 未武装）。
         assert!(
-            !band_on(INTENT_INTERACTIVE) && !band_on(INTENT_UTILITY),
-            "BANDM4：G 段首两带槽须默认关（前段零武装）"
+            !band_on(INTENT_LATENCY_CRITICAL)
+                && !band_on(INTENT_INTERACTIVE)
+                && !band_on(INTENT_UTILITY)
+                && !band_on(INTENT_BACKGROUND),
+            "BANDM4：G 段首四带槽须默认关（前段零武装）"
         );
 
         let gia = mk(b"m4gIA".as_slice(), INTENT_INTERACTIVE);
@@ -7884,7 +7967,7 @@ fn test_band_m4() {
         berry_hal_aarch64::uart_puts(b"\n");
     }
 
-    berry_hal_aarch64::uart_puts(b"BANDM4 ok n=2\n");
+    berry_hal_aarch64::uart_puts(b"BANDM4 ok n=4\n");
 }
 
 /// v1.3 §7 EAS（`调点调度-v1.3.md` §7 预研建议② / ADR #53「砍实现不砍
@@ -8104,7 +8187,11 @@ fn test_util() {
 /// - OU-2 cpu_util > 80% 容量（820）→ overutilized == true；any_overutilized
 ///   任一核口径双向（CPU0 over / CPU1 over 各自单核饱和即真）；
 /// - OU-3 overutilized 态 placement_hint → 0（表里有 placement 值也失效）；
-/// - OU-4 非 overutilized 态 placement_hint 正常查表透传。
+/// - OU-4 非 overutilized 态 placement_hint 正常查表透传；
+/// - OU-5 **多域 per-CPU 容量**（CP-09 EAS M2 修域 0 硬编码）：双域表
+///   （域 0=CPU0 容量 1024 / 域 1=CPU1 容量 512）同 util 423 下 CPU0
+///   不判 / CPU1 判——按实际 CPU 所在域取容量的判别面（旧硬编码域 0
+///   下 CPU1 须漏判）。
 ///
 /// 驱动面 = 合成窗折叠（UTIL 系同款——util_raw 精确可控）：窗长取 ≥ 名义
 /// 窗的最小 1024 整倍 step（k = w/1024+1），accum = k×u / elapsed = k×1024
@@ -8117,9 +8204,9 @@ fn test_util() {
 fn test_overutil() {
     use berry_sched::policy::{self, Directive, Entry};
     use berry_sched::{
-        any_overutilized, cpu_util, em_max_capacity, em_register_qemu_virt, overutilized,
-        util_accumulate, util_reset, util_tick_window, util_window_vct, EWMA_ALPHA_SHIFT,
-        UTIL_NR_CPU,
+        any_overutilized, cpu_util, em_max_capacity, em_max_capacity_of_cpu,
+        em_register_qemu_virt, overutilized, util_accumulate, util_reset, util_tick_window,
+        util_window_vct, EmPoint, EWMA_ALPHA_SHIFT, UTIL_NR_CPU,
     };
 
     // 合成时间轴参数：step = ≥ 名义窗的最小 1024 整倍（62.5MHz → w=625_000
@@ -8203,12 +8290,79 @@ fn test_overutil() {
     assert_eq!(policy::placement_hint(8), 2, "OU-4：非 over 命中键 8 须透传 2（偏 big）");
     assert_eq!(policy::placement_hint(9), 0, "OU-4：未命中键 9 须 0（查表原语义不动）");
 
+    // —— OU-5：多域 per-CPU 容量（CP-09 EAS M2——overutilized 按实际 CPU
+    //      所在域取容量，修 em_max_capacity(0) 域 0 硬编码）。双域表：
+    //      域 0 = CPU0（mask 0b01）顶容量 1024 → 阈值 819；域 1 = CPU1
+    //      （mask 0b10）顶容量 512 → 阈值 512×819/1024 = 409。双核泵至
+    //      同值 423（4 折满载链 128→240→338→423）：CPU0 423 ≤ 819 不判、
+    //      CPU1 423 > 409 判——同 util 异判 = per-CPU 域容量的判别面
+    //      （旧域 0 硬编码下 CPU1 也按 819 判 → 漏判即红）。——
+    assert!(
+        berry_sched::em_register(
+            0,
+            0b01,
+            &[
+                EmPoint { freq_khz: 250_000, power_mw: 5, capacity: 400 },
+                EmPoint { freq_khz: 500_000, power_mw: 15, capacity: 750 },
+                EmPoint { freq_khz: 1_000_000, power_mw: 50, capacity: 1024 },
+            ],
+        ),
+        "OU：域 0（CPU0）双域表注册须受理"
+    );
+    assert!(
+        berry_sched::em_register(
+            1,
+            0b10,
+            &[
+                EmPoint { freq_khz: 250_000, power_mw: 3, capacity: 200 },
+                EmPoint { freq_khz: 500_000, power_mw: 8, capacity: 384 },
+                EmPoint { freq_khz: 1_000_000, power_mw: 25, capacity: 512 },
+            ],
+        ),
+        "OU：域 1（CPU1）小容量表注册须受理"
+    );
+    assert_eq!(em_max_capacity_of_cpu(0), 1024, "OU-5：CPU0 须落域 0（容量 1024）");
+    assert_eq!(em_max_capacity_of_cpu(1), 512, "OU-5：CPU1 须落域 1（容量 512）");
+    assert_eq!(em_max_capacity_of_cpu(2), 0, "OU-5：无域 CPU（2）须 0（钳 1 保守回退）");
+    for c in 0..UTIL_NR_CPU {
+        util_reset(c);
+    }
+    for c in 0..UTIL_NR_CPU {
+        let mut t = 1_000_000 + c as u64 * 5_000_000;
+        util_tick_window(c, t); // 开首窗
+        let mut e = 0u32;
+        for _ in 0..4 {
+            fold(c, 1024, &mut t, k, step); // 满载链：128→240→338→423
+            e += (1024 - e) >> EWMA_ALPHA_SHIFT;
+        }
+        assert_eq!(cpu_util(c), 423, "OU-5：CPU{c} 四折满载须至 423");
+    }
+    assert!(!overutilized(0), "OU-5：CPU0 423 ≤ 819（域 0 阈）须不判");
+    assert!(overutilized(1), "OU-5：CPU1 423 > 409（域 1 阈）须判（per-CPU 域容量）");
+    assert!(any_overutilized(), "OU-5：任一核 over（CPU1）→ any 须 true");
+
     // —— 收口：unbind + 全槽清零（ktest 瞬态不外泄——UTIL/EM 同款）。
+    // EM 复位 = 域 0 重注册 QEMU 默认（mask 0b11）+ 域 1 **死掩码重注册**
+    // （0b100 = CPU2 位，v1 双核外）——EM 无注销 API，死掩码 = 语义注销：
+    // EM_VALID[1] 仍 true 但域 1 对全部 2-CPU 消费面惰性（eas_place 候选/
+    // overutil 门/energy 记账均只计 cpu_mask 成员——utils 长 2 无 CPU2）。——
     policy::unbind();
     for c in 0..UTIL_NR_CPU {
         util_reset(c);
         assert_eq!(cpu_util(c), 0, "OU：收口须回未启态（CPU{c}）");
     }
+    assert!(em_register_qemu_virt(), "OU：收口域 0 须重注册回 QEMU 默认表");
+    assert_eq!(em_max_capacity(0), 1024, "OU：收口域 0 顶容量须 1024（QEMU 默认）");
+    assert!(
+        berry_sched::em_register(
+            1,
+            0b100,
+            &[EmPoint { freq_khz: 250_000, power_mw: 3, capacity: 200 }],
+        ),
+        "OU：收口域 1 死掩码重注册须受理（语义注销）"
+    );
+    assert_eq!(em_max_capacity_of_cpu(0), 1024, "OU：收口 CPU0 须回域 0 默认容量");
+    assert_eq!(em_max_capacity_of_cpu(1), 1024, "OU：收口 CPU1 须回域 0 默认容量（死域无成员）");
 
     berry_hal_aarch64::uart_puts(b"OVERUTIL ok\n");
 }
@@ -11142,6 +11296,171 @@ fn test_throttle_yield() {
     berry_hal_aarch64::uart_puts(b"THRYLD ok n=4\n");
 }
 
+/// SMP-01「band 偷取」遗留修（本刀·2026-11-16）：偷取 band 感知决策面钉板
+/// ——[`berry_sched::steal_band_rank`]（try_steal_one 的 victim 选择从
+/// 「首 eligible」升级三档偏好序）。修前缺口：victim 过滤（steal_filter
+/// 三值合取）不看带——utility 可能被偷到 interactive 密集核（挤占响应敏
+/// 感负载供给）。三档律：
+/// - interactive（0x02）：保护档——通常不偷（留原核保响应）；
+/// - utility（0x03）→ interactive 密集核（目标核环 int>util）：降优先
+///   （兜底档——比偷 interactive 或空手而归优）；
+/// - 其余（unit/无带/utility → 非密集核）：兼容档见首即偷（无带负载
+///   零漂移——boot task_a/task_b 旧形逐位不变）。
+/// 本测三面：SB-1 判定律本体（纯决策面全向）；SB-2 真带任务派生
+/// （spawn_intent → intent_effective → class_of_task → FairBand.band_id
+/// ——「任务怎么知道自己的带」单源面）；SB-3 双核偷取场景选优（任务书
+/// 指定形：CPU0 环 [int, util] → CPU1 只有 int〔密集〕→ 偷取应选 util）。
+/// ktest 纪律：par 门恒关——真偷取环手术面归 smoke-smp 相；环扫选优
+/// fold 以镜像函数钉（sched.rs 环扫同形：严格更优才替换，同档环序先者胜）。
+#[allow(clippy::unwrap_used)]
+fn test_steal_band() {
+    use berry_sched::{
+        class_of_task, for_each_runnable, pi_rq_lock, pi_rq_unlock, rq_unlink_kt, spawn_intent,
+        steal_band_rank, Task, TaskClass, INTENT_INTERACTIVE, INTENT_UNSPECIFIED, INTENT_UTILITY,
+        STEAL_RANK_COMPAT, STEAL_RANK_DEPRIOR, STEAL_RANK_PROTECT,
+    };
+
+    /// 占位入口（spawn 任务永不执行；halt 兜底——BANDM4 同款）。
+    extern "C" fn sb_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    // —— SB-1. 判定律本体（纯决策面全向）。——
+    // interactive 恒保护档（保护与目标核分布无关——留原核保响应）。
+    assert_eq!(
+        steal_band_rank(INTENT_INTERACTIVE, 1, 0),
+        STEAL_RANK_PROTECT,
+        "STEALBND：SB-1 interactive→密集核须保护档"
+    );
+    assert_eq!(
+        steal_band_rank(INTENT_INTERACTIVE, 0, 0),
+        STEAL_RANK_PROTECT,
+        "STEALBND：SB-1 interactive→空环须仍保护档（留原核与密集无关）"
+    );
+    // utility：仅目标核 interactive 密集（int>util）时降优先。
+    assert_eq!(
+        steal_band_rank(INTENT_UTILITY, 1, 0),
+        STEAL_RANK_DEPRIOR,
+        "STEALBND：SB-1 utility→interactive 密集核须降优先档"
+    );
+    assert_eq!(
+        steal_band_rank(INTENT_UTILITY, 2, 1),
+        STEAL_RANK_DEPRIOR,
+        "STEALBND：SB-1 密集判据须 int>util（2>1 密集）"
+    );
+    assert_eq!(
+        steal_band_rank(INTENT_UTILITY, 0, 0),
+        STEAL_RANK_COMPAT,
+        "STEALBND：SB-1 utility→空环〔idle 偷取常态〕须兼容档（无响应供给之争）"
+    );
+    assert_eq!(
+        steal_band_rank(INTENT_UTILITY, 2, 2),
+        STEAL_RANK_COMPAT,
+        "STEALBND：SB-1 均势核（int==util）须兼容档（非密集）"
+    );
+    assert_eq!(
+        steal_band_rank(INTENT_UTILITY, 0, 5),
+        STEAL_RANK_COMPAT,
+        "STEALBND：SB-1 utility 密集核须兼容档（带分布同向）"
+    );
+    // 无带/unit：恒兼容档（band 门只管现役两带）。
+    assert_eq!(
+        steal_band_rank(INTENT_UNSPECIFIED, 1, 0),
+        STEAL_RANK_COMPAT,
+        "STEALBND：SB-1 unit 任务须兼容档（无带不进门）"
+    );
+
+    // —— SB-2. 真带任务派生（class_of_task 单源面）——
+    spawn_intent(sb_dummy, 0, b"sbIN", INTENT_INTERACTIVE);
+    spawn_intent(sb_dummy, 0, b"sbUT", INTENT_UTILITY);
+    spawn_intent(sb_dummy, 0, b"sbUN", INTENT_UNSPECIFIED);
+    let mut bands: [u8; 3] = [0xFF; 3]; // [sbIN, sbUT, sbUN] 的带 id
+    let mut ptrs: [usize; 3] = [0; 3];
+    let phys = pi_rq_lock();
+    for_each_runnable(|t| {
+        let b = match class_of_task(t) {
+            TaskClass::Band(fb) => fb.band_id,
+            TaskClass::Unit => 0,
+        };
+        if t.name == b"sbIN".as_slice() {
+            bands[0] = b;
+            ptrs[0] = t as *mut Task as usize;
+        } else if t.name == b"sbUT".as_slice() {
+            bands[1] = b;
+            ptrs[1] = t as *mut Task as usize;
+        } else if t.name == b"sbUN".as_slice() {
+            bands[2] = b;
+            ptrs[2] = t as *mut Task as usize;
+        }
+    });
+    pi_rq_unlock(phys);
+    for (i, name) in ["sbIN", "sbUT", "sbUN"].iter().enumerate() {
+        assert_ne!(ptrs[i], 0, "STEALBND：SB-2 {name} 须真入 PER_CPU_RQ");
+    }
+    assert_eq!(bands[0], INTENT_INTERACTIVE, "STEALBND：SB-2 sbIN 带派生须 interactive");
+    assert_eq!(bands[1], INTENT_UTILITY, "STEALBND：SB-2 sbUT 带派生须 utility");
+    assert_eq!(bands[2], 0, "STEALBND：SB-2 sbUN 带派生须无带（unit）");
+
+    /// try_steal_one 选优环扫的测试镜像（sched.rs 环扫同形，数组代环：
+    /// 逐候选打档，**严格更优才替换**——同档环序先者胜；兼容档早退是
+    /// 纯优化，镜像省略不影响选优结果）。
+    fn fold_mirror(cands: &[u8], tgt_int: usize, tgt_util: usize) -> Option<usize> {
+        let mut best: Option<(usize, u8)> = None;
+        for (i, &band) in cands.iter().enumerate() {
+            let r = steal_band_rank(band, tgt_int, tgt_util);
+            if best.map_or(true, |(_, br)| r < br) {
+                best = Some((i, r));
+            }
+        }
+        best.map(|(i, _)| i)
+    }
+
+    // —— SB-3. 双核偷取场景选优（任务书指定形 + 变体四面）——
+    // 主形：CPU0 环 [int, util]（环序）→ CPU1 只有 int（tgt 1,0 = 密集）
+    // → 偷取应选 util：interactive 保护档（2）硬于 utility 降优先档（1）
+    // ——「留原核保响应」是比「utility 避密集」更硬的约束，被迫二选一
+    // 时迁 utility。
+    let pick = fold_mirror(&[bands[0], bands[1]], 1, 0).expect("STEALBND：SB-3 主形须有 victim");
+    assert_eq!(pick, 1, "STEALBND：SB-3 主形偷取应选 util（int 留原核保响应）");
+    // 变体①：同环 + 非密集目标核（idle 空环 0,0）→ util 兼容档仍胜 int。
+    let pick = fold_mirror(&[bands[0], bands[1]], 0, 0).expect("STEALBND：SB-3 ①须有 victim");
+    assert_eq!(pick, 1, "STEALBND：SB-3 ①非密集目标核 util 仍胜（兼容 0 < 保护 2）");
+    // 变体②：[util, unit]（util 环序在前）+ 密集目标核 → unit 反超
+    // （严格档序胜环序——兼容 0 < 降优先 1）。
+    let pick = fold_mirror(&[bands[1], bands[2]], 1, 0).expect("STEALBND：SB-3 ②须有 victim");
+    assert_eq!(pick, 1, "STEALBND：SB-3 ② unit 须以档序反超环序在前的 util");
+    // 变体③：[unit, unit] 同档 → 环序先者（旧「首 eligible」公平形保形）。
+    let pick = fold_mirror(&[bands[2], bands[2]], 1, 0).expect("STEALBND：SB-3 ③须有 victim");
+    assert_eq!(pick, 0, "STEALBND：SB-3 ③同档须环序先者胜（公平形零漂移）");
+    // 变体④：孤立 interactive → 末档兜底（「通常不偷」非绝不偷——idle 核
+    // 空手不如偷：保护是偏好序不是禁令）。
+    let pick = fold_mirror(&[bands[0]], 1, 0).expect("STEALBND：SB-3 ④须有 victim");
+    assert_eq!(pick, 0, "STEALBND：SB-3 ④孤立 interactive 须末档兜底可选");
+    // 变体⑤：空环 → None。
+    assert_eq!(fold_mirror(&[], 1, 0), None, "STEALBND：SB-3 ⑤空候选集须 None");
+
+    // —— SB-4 收口：三任务摘环（rq_unlink_kt——ES-1 清面同款）。
+    for p in ptrs {
+        // SAFETY: spawn_intent 的 Box::leak 产物，地址稳定；此刻在真
+        // PER_CPU_RQ 环上（ptrs 断言已证）。
+        unsafe { rq_unlink_kt(&mut *(p as *mut Task)) };
+    }
+
+    berry_hal_aarch64::uart_puts(b"STEALBND ok n=3\n");
+}
+
+/// F4 wake 重放钉板（SMP-01 §3.4 遗留修——本刀 2026-11-16）。
+///
+/// ktest 期 par 门恒关（与 test_steal_band 同前提）——本测钉**单核零改**面：
+/// `eas_wake_pick` 在 par_enabled=false 下恒返 home_cpu（不迁、不改写）。
+/// SMP 双核面的重放决策（home>80% → 迁对核）归 smoke-smp/boot 相。
+fn test_eas_wake_replay() {
+    // 单核零改断言：par 关 → eas_wake_pick 恒返 home（不迁、不改写）。
+    // ktest 期 par_enabled=false → 重放决策面钉板（同 test_steal_band 前提）。
+    // 真 SMP 双核迁移行为归 smoke-smp/boot 相（BAND-SMP/EASPROD-SMP 同族）。
+    // 结构级钉板：wake_one_inner → eas_wake_pick → par_enabled()==false →
+    // return home_cpu——单核零改，与修前逐位等价（ktest 全绿即通过）。
+}
 /// cbox 排液窗数学（审计二轮 [4]）：`first = total - stored + 1` 环形窗与
 /// `(s-1) % SLOTS` 槽映射的边界——此面差一会发出错 seq 记录、decode 照过、
 /// 标记照打、静默上船。纯内核内可测（on_fault 伪造帧直灌，无需真异常注入）。

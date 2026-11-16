@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# 2026-11-17 系统审计 S5 孪生指针随换轨落地收口：本件已更名降格 oracle（对拍取证专用），
+# 产链现役件 = tools/elf2pe/（彻底 Rust 化计划 §2 #9 产链换轨二刀）。
 """elf2pe oracle——对拍取证专用（彻底 Rust 化轨道 b 层 #8 三刀换轨）。
 
 产链现役件 = tools/elf2pe（Rust 独立小工作区，#421 首刀件）；本件已降格：

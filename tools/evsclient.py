@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A2-3 EVS echo server 宿主对拍 client（`docs/事件循环A2设计草案.md` §3.4——
+"""A2-3 EVS echo server 宿主对拍 client（`docs/事件循环A2设计草案-v1.0.md` §3.4——
 A2 整卡验收线的 host 侧组件）。
 
 - guest 侧 bsh `evs_selftest` 经 netd LISTEN(18082) 起事件循环 echo server

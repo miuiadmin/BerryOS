@@ -1,4 +1,4 @@
-//! bsh —— P5 A-2 交互 shell（`docs/shell设计.md` v0 最小面 + v0.5 管道，
+//! bsh —— P5 A-2 交互 shell（`docs/shell设计-v1.0.md` v0 最小面 + v0.5 管道，
 //! stdhello 同链：musl target + berry-libc shim + berry-exec 流式拉起）。
 //!
 //! 通道拓扑（boot 手搭，见 main.rs A-2 段）：fd0 = endB2（console 转发键盘
@@ -13,7 +13,7 @@
 //! 空读（libc 10s 帽超时 EOF 化）= 噪声，静默续读不重刷 prompt。
 //!
 //! P5 v0.5 管道（`PIPE ok` = rootfs 相第 10 标记）：`A | B` 相邻段间 channel
-//! 对当 pipe（前段 stdout = 写端 / 后段 stdin = 读端，`shell设计.md` §2.2
+//! 对当 pipe（前段 stdout = 写端 / 后段 stdin = 读端，`docs/shell设计-v1.0.md` §2.2
 //! 「channel 即 pipe」）——自验三跑对拍：`hexyl | hexyl` 管道输出 == 同字节
 //! 直喂 `hexyl` 参照**逐字节全等**（证明管道把 A 的 stdout 原样递到 B 的
 //! stdin）+ 全链 EOF 到齐才打标。
@@ -70,7 +70,7 @@
 //! → libc `exit` → 0x33 真退出）。`run` 后 `reap()` 完整回收子进程（Plan B
 //! 前「每次 run 泄漏一个 park 中的子进程」的旧常态退役）。
 //!
-//! P5 v0 收官（`shell设计.md` §2.3/§2.5）：**环境变量**（shell 局部变量表 +
+//! P5 v0 收官（`docs/shell设计-v1.0.md` §2.3/§2.5）：**环境变量**（shell 局部变量表 +
 //! `$NAME`/`$?` 展开 + `env` 内建；子进程 env 传递 defer v2——argv 块无 env
 //! 面，POSIX `export` 语义随之）+ **`&&` 短路链**（`|` 优先级更高：先按 &&
 //! 切行、各 part 再分派处理 `|`；每 part **执行时**才展开变量——
@@ -294,8 +294,8 @@ fn main() {
     //    零盘面。
     nets_selftest();
     // —— A7-1/A7-3：mmap 匿名档 + 文件档 staging 自验（`MMP ok n=9`，
-    //    A7-1 验收线 `docs/事件循环A7设计草案.md` §3.1 + A7-3 扩步
-    //    `docs/事件循环A7-3实施设计草案.md`）：mmap/mprotect 真身
+    //    A7-1 验收线 `docs/事件循环A7设计草案-v1.0.md` §3.1 + A7-3 扩步
+    //    `docs/事件循环A7-3实施设计草案-v1.0.md`）：mmap/mprotect 真身
     //    （region 表 + vmo_create/整段 commit/vmar_map(self_vmar_h())
     //    桥 + 文件档 get_chunk 直 RPC staging + dormant 五臂）guest 全链
     //    活体——⓪-④ 匿名档五步（首映射/写读对拍/munmap 三态/再映射
@@ -306,7 +306,7 @@ fn main() {
     //    所有相恒在——失败即 park loud）。
     mmp_selftest();
     // —— A7-2：timer 壁钟分档自验（`CLK ok n=6` = rootfs 相第 44 标记，
-    //    `docs/事件循环A7-2实施设计草案.md` §4——设计稿「五步/n=5」系
+    //    `docs/事件循环A7-2实施设计草案-v1.0.md` §4——设计稿「五步/n=5」系
     //    ⑤ 增补后计数未同步的勘误，实现定案六步，台账随刀更正）：libc
     //    clock 族分诊（mono 族直读 / REALTIME 族 = EPOCH_BASE(0)+mono
     //    合成 / 冷门 id EINVAL 诚实拒）+ 补桩五真身（time/gettimeofday/
@@ -316,7 +316,7 @@ fn main() {
     //    降级门（失败即 park loud）。
     clk_selftest();
     // —— A7-4 段④：信号面 guest 自验（`SIG ok n=6` = rootfs 相第 45 标记，
-    //    `docs/事件循环A7-4信号面实施设计草案.md` §5）——libc signal.rs 真身
+    //    `docs/事件循环A7-4信号面实施设计草案-v1.0.md` §5）——libc signal.rs 真身
     //    （sigaction/sigprocmask 表面 + 协同式投递循环 kill/raise/pause）+
     //    内核 0x86/0x87 跨进程位面的六步链（⓪raise 即时投递 ①表/掩码回读
     //    ②blocked 窗 held→unblock 补投 ③kill 分诊 self/ESRCH/EINVAL
@@ -352,7 +352,7 @@ fn main() {
     dir_selftest();
     cd_selftest();
     // —— C-5：M-G3 里程碑演示相自验（`M3DEMO ok n=5` = rootfs 相第 35
-    //    标记，`VM里程碑设计草案.md` §2）。**排 fat 族后**（①步 ls /
+    //    标记，`docs/VM里程碑设计草案-v1.0.md` §2）。**排 fat 族后**（①步 ls /
     //    断言 HELLO.TXT 依赖挂载卷在位；原案五件之 ps 名单由 PS ok 承接
     //    ——拆解决策见 m3demo_selftest 头注）；EFI 路无盘 fat park
     //    （`-> !` 挡断其后自验）→ M3DEMO 结构性不打（smoke-image ECO
@@ -2890,7 +2890,7 @@ extern "C" {
 }
 
 /// A7-2：timer 壁钟分档 guest 自验（`CLK ok n=6` = rootfs 相第 44 标记，
-/// `docs/事件循环A7-2实施设计草案.md` §4）。六步全过才打；**状态谓词零
+/// `docs/事件循环A7-2实施设计草案-v1.0.md` §4）。六步全过才打；**状态谓词零
 /// 竞速**（4-5a 铁律——纯串行 libc 直调 + 唯一子进程 `date -u`（漂移
 /// 容忍判据非字面钉板），poll_selftest 同款形态）：
 /// ⓪ mono 双读单调非减 + nsec 域合法（0 ≤ nsec < 1e9）；
@@ -3475,7 +3475,7 @@ const BUILTINS: &[&str] = &[
 ];
 
 /// help 文案三行（A60：192B 控制台原子消息帽——单行装不下全清单，逐条
-/// 拆行各 ≤192B；命令行体验刀 12→18 内建后再拆第三行，同帽纪律）。与
+/// 拆行各 ≤192B；命令行体验刀 12→19 内建（dmesg 追补第 19 件）后再拆第三行，同帽纪律）。与
 /// [`BUILTINS`] 的名单一致性由 cli_selftest ④ 执法（每名必须出现）。
 const HELP_LINES: [&str; 3] = [
     "bsh 内建：help | echo <text> | env | run <name> | cat <file> | ls | ls <dir> | mkdir <dir> | rm <path> | cd <dir> | pwd | inputpoll",
@@ -4669,7 +4669,7 @@ fn cd_selftest() {
 }
 
 /// M-G3 里程碑演示相自验（C-5，`M3DEMO ok n=5` = rootfs 相第 35 标记，
-/// `VM里程碑设计草案.md` §2 C-5）。演示叙事五步全状态谓词（4-5a 纪律
+/// `docs/VM里程碑设计草案-v1.0.md` §2 C-5）。演示叙事五步全状态谓词（4-5a 纪律
 /// ——零竞速）：生态在册 → ls 列卷 → cp 复制 → 管道过滤 → 状态码跨
 /// 命令传递落盘读回。
 /// ⓪ 生态名单（cpio 真源面 = 「ls /bin」的等价真值——rootfs cpio **就是**
@@ -5168,7 +5168,7 @@ enum PipeFail {
     SpawnFail(String),
 }
 
-/// `A | B | …` 拉起 + 末段 stdout 收集（`shell设计.md` §2.2 channel 即 pipe）：
+/// `A | B | …` 拉起 + 末段 stdout 收集（`docs/shell设计-v1.0.md` §2.2 channel 即 pipe）：
 /// 相邻段间 [`channel_pair`]——前段 stdout = 写端（spawn 内 dup SEND 别名作
 /// gift[0]）、后段 stdin = 读端（`stdin_handle`，被 env send take 迁进子表）；
 /// 末段 stdout = 采集对。EOF 链 = 消息层约定（d-3b）：前段 exit → libc
@@ -5929,7 +5929,7 @@ fn fs_gifts() -> Option<(Handle, Handle)> {
     Some((rootfs_dup, fs_dup))
 }
 
-/// A5（`docs/事件循环A5设计草案.md` §3.1）：[`fs_gifts`] 的网络三元件——
+/// A5（`docs/事件循环A5设计草案-v1.0.md` §3.1）：[`fs_gifts`] 的网络三元件——
 /// rootfs/fs 双元同款 + netd 端 `RIGHT_SEND|RIGHT_RECV` dup 第三元
 /// （env 块 extras 第 3 枚 → gift[6] → libc `GIFT_H[4]`——协议在册零
 /// 扩容，berry-exec ≤3 断言恰满）。权利位对源 = svcmgr 给 bsh 的全量

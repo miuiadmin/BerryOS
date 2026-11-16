@@ -1,5 +1,5 @@
 //! virtio-input 设备类编解码（GUI-4 段①，virtio 规范 §5.8；实施依据 =
-//! docs/GUI-4实施设计草案.md §4/§6-I2）。
+//! docs/GUI-4实施设计草案-v1.0.md §4/§6-I2）。
 //!
 //! 消费者 = gui-inputd（drivers/bins/gui-inputd，v1 唯一）——eventq(q0)
 //! dequeue 的 8B 事件流经 `get_input_event` 逐个解码；config 查询区 union

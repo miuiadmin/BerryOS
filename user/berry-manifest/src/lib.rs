@@ -1,6 +1,6 @@
 //! # berry-manifest —— BerryOS 应用清单 v0（+ SDK-1a 增量）纯函数解析器
 //!
-//! `docs/app-0实施设计草案.md` §2/§3（ADR #43/#44：应用 = 纯用户态协议
+//! `docs/app-0实施设计草案-v1.0.md` §2/§3（ADR #43/#44：应用 = 纯用户态协议
 //! 约定 + cpio 容器 + TOML manifest）。「解析器即产品」家族第 8 例
 //! （loader/fsproto/virtio/blkproto/fatfs/netproto/netdproto/tcp 之后）：**零分配、零
 //! unsafe、零依赖、输入只借用、no_std**——宿主 svcmgr 是 none target 平像
@@ -14,7 +14,7 @@
 //! 整节可省：stack_pages（缺省 8，1..=64）。type = `"app"` 现役 /
 //! `"driver"` 收格式不消费（ADR #82 V1 预埋）；`service` 位不进 v1。
 //!
-//! ## schema v1 增量（SDK-1a，`docs/SDK-1a实施设计草案.md` §2——
+//! ## schema v1 增量（SDK-1a，`docs/SDK-1a实施设计草案-v1.0.md` §2——
 //! add-only：v0 冻结面一字不动，未知键放行永不发生）
 //!
 //! - `[compat]` 三值版本域：`min`/`target`/`compile` 三键**齐备或齐缺**，
@@ -53,7 +53,7 @@
 //!   占位（v1 appd 解析通过即忽略；签名实现 v2——节/键/值域今天定死，
 //!   v2 只能填进这个壳）。
 //!
-//! ## schema v1 增量（GUI-7，`docs/GUI里程碑规划-2026-10.md` 裁决 F——
+//! ## schema v1 增量（GUI-7，`docs/GUI里程碑规划-2026-10-v1.0.md` 裁决 F——
 //! add-only：三键独立可选，全缺省 = 旧包零漂移）
 //!
 //! - `[ui]` 整节可省：`icon`/`label`/`views` 三键**独立可选**（无齐备

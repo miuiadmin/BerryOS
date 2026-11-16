@@ -5,7 +5,7 @@ name = "berryctl"
 version = "0.2.0"
 edition = "2021"
 
-# C-3 段②（docs/VM里程碑设计草案.md §C-3）：berryctl v0 雏形——
+# C-3 段②（docs/VM里程碑设计草案-v1.0.md §C-3）：berryctl v0 雏形——
 # ver/ps/mem 三子命令 → psproto 三 op（OP_VER/OP_PS_LIST/OP_MEM）。
 # musl std 独立小工作区（ps/stdhello 同链），deps = berry-libc（gift2_h
 # 读 env 块 gift[2] = svcmgr 预建查询端 ps_b）+ berry-sys（channel/wait/

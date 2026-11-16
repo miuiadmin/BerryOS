@@ -46,7 +46,7 @@ const BMAP_WORDS: usize = (MAX_PAGES + 63) / 64;
 static mut FRAME_BMAPS: [u64; (MAX_ORDER + 1) * BMAP_WORDS] = [0; (MAX_ORDER + 1) * BMAP_WORDS];
 /// buddy 后备：位图摘要（每阶 ceil(512/64)=8 字 × 14 阶 = 896B）——空阶
 /// 查询只付摘要扫（K-1 回归的病态路径正是空阶的全窗页扫：32768×7 指令
-/// ×59，见 `docs/基准与压力测试设计.md` §13 归因段）。
+/// ×59，见 `docs/基准与压力测试设计-v1.0.md` §13 归因段）。
 const SUM_WORDS: usize = (BMAP_WORDS + 63) / 64;
 static mut FRAME_SUMS: [u64; (MAX_ORDER + 1) * SUM_WORDS] = [0; (MAX_ORDER + 1) * SUM_WORDS];
 
@@ -197,7 +197,7 @@ pub unsafe fn init(handoff: Option<&'static crate::handoff::BerryHandoff>) {
 /// 取全局帧分配器的可变引用。
 ///
 /// # Safety（调用方视角）
-/// G0 单核无抢占下安全。SMP 后需加锁或改每核实例。
+/// G0 单核无抢占下安全。SMP 现役（双核在役）：帧分配器实际由 SVC TABLE 类 KL 窗串行保护（见 syscall.rs install() vmo/vmar 段注）——本文件无需自持锁。
 pub fn frames() -> &'static mut FrameAllocator<'static> {
     // SAFETY: G0 下唯一可变访问点。
     unsafe {

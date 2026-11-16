@@ -274,8 +274,8 @@ fn lookup_o1(snap: &Snap, key: u64) -> Option<&SnapSlot> {
 /// ——写路恒 [`BAND_SEL_NONE`]（无意见）；band 位真值写入随 v3
 /// `policy_bind` 协议开（届时扩 Directive/ABI 镜像，Snap 槽位已预留——
 /// `Slot::band` @ 偏移 14，16B 布局不变）。带 id ↔ intent 档映射单源
-/// `berry_iprofile::band_id_of_intent`（带键 = intent：首批现役集 =
-/// 0x02/0x03——词汇门 `band_enabled` 单源，×4 全集随入场券逐批开）。
+/// `berry_iprofile::band_id_of_intent`（带键 = intent：现役集 = 四带
+/// 0x01–0x04——词汇门 `band_enabled` 单源，2026-11-17 ×4 全开）。
 /// **ADR #21 带内纪律**：band/intent 不入 AI 动作空间——
 /// v3 写者的授权面（product 配置/manifest 通道，非策略服务动作）随协议
 /// 立法再定，本刀只落数据位。
@@ -486,12 +486,40 @@ pub fn placement_hint(task_key: u64) -> u8 {
     }
 }
 
+/// [`placement_hint`] 的**非门控**读（overutil 让位律不在此面）：
+/// 同一张活跃快照的 O(1) 查表透传，去掉 any_overutilized 短路——
+/// 消费面唯一 = wake 重放（`crate::sched::eas_wake_replay`，SMP-01 F4 修）。
+///
+/// 为什么 wake 面不吃 overutil 让位：spawn 放置是**能量判据**（饱和系统
+/// 里能量比较失真 → 让位负载均衡，Linux EAS 同律）；wake 重放是**负载
+/// 动机迁移**——其触发条件恰是「home 核 util>80%」（[`crate::sched::
+/// eas_wake_pick`] 防乒乓第一门 = `overutil_judgment` 同尺），若沿用
+/// overutil 门控则 hint 恒 0、重放结构性死火。饱和下的迁移裁决由重放
+/// 自己的防乒乓双门承担（home >80% ∧ 新核 spare>25%）——Linux 平行
+/// 律：overutil 时 EAS 退场，但 wake 路负载均衡/select_idle_sibling
+/// 照常工作。词汇执法（非 {1,2} 按无意见）在消费面 [`crate::sched::
+/// eas_wake_pick`] 收口（与 spawn 面同律）。〔审计注 2026-11-17：eas_wake_pick 实只读 cpu_util 双门阈值、不读 hint——本出口当前零消费者，接线归调度 owner 裁量〕
+///
+/// 读纪律同 [`placement_hint`]（active_snap 静态区指针 + 已发布槽不可变
+/// + 屏蔽窗读写互斥——读窗内快照稳定）。
+pub fn placement_hint_ungated(task_key: u64) -> u8 {
+    // SAFETY: 同上。
+    let snap: &Snap = unsafe { &*active_snap() };
+    if snap.count == 0 {
+        return 0; // 未绑（哨兵）/空表：无意见
+    }
+    match lookup_o1(snap, task_key) {
+        Some(s) => s.placement,
+        None => 0, // 未命中/哨兵键（0 保留，lookup 早退）：无意见
+    }
+}
+
 /// 该 key 当前绑定的 band 选择位读出口（M4 骨架——ADR #42 第二段「策略
 /// 注入表 band 选择位」的读侧）：读活跃快照 O(1) 查表透传 [`SnapSlot::
 /// band`]。词汇：**0 = 无意见**（[`BAND_SEL_NONE`]——未绑/空表/未命中/
-/// 哨兵键）、现役带 id（= intent 档编码，首批 = 0x02/0x03，映射单源
-/// `berry_iprofile::band_id_of_intent`、词汇门 `band_enabled`；×4 全集
-/// 随入场券逐批、0x05 冻结不启用）。
+/// 哨兵键）、现役带 id（= intent 档编码，四带 0x01–0x04，映射单源
+/// `berry_iprofile::band_id_of_intent`、词汇门 `band_enabled`；0x00 无
+/// 专带、0x05 冻结不启用）。
 ///
 /// **纯预留位**：v1 写路（[`snap_insert`]）恒 [`BAND_SEL_NONE`]——本读
 /// 出口恒 0，与接口缺席等价；v3 `policy_bind` 协议开 band 位真值写入后
