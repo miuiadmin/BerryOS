@@ -123,6 +123,14 @@ pub fn run() {
     // （末位新号纪律——ktest done 前；sched::init 前跑，睡眠/调度/timer 全
     // 走 ktest 手驱真机械面；BANDM4/HDRWAKE/test_band 三先例合体）。
     test_loadgen();
+    // EAS 生产激活首步（EAS-PA 刀，任务 B，2026-11-16）：placement hint
+    // 生产消费面全链——真 SVC 过 MANAGE 门（process_create 持权 handle）
+    // → STATUS gen 对账 → COMMIT 表条目 placement 字段 → policy 表 →
+    // EAS `eas_place` 消费（berry-power EL0 产面的 EL1 姊妹钉板——EL0
+    // 正向链被授权立法留窗挡住，见 user/bins/berry-power/src/main.rs 尾段）。
+    // 末位新号纪律——ktest done 前；sched::init 前跑，par 门恒关 = 消费面
+    // 证到 eas_place（place() 的 EAS 臂全决策面），place() 路由面归 SMP 相。
+    test_eas_prod();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
@@ -9677,5 +9685,233 @@ fn test_loadgen() {
     assert_eq!(timer_slack_ns(), 0, "LOADGEN：收口 timer_slack 须归零");
 
     berry_hal_aarch64::uart_puts(b"LOADGEN ok\n");
+}
+
+/// EAS 生产激活首步（EAS-PA 刀·任务 B，2026-11-16）：placement hint
+/// **生产消费面**全链 ktest——berry-power EL0 产面的 EL1 姊妹钉板。
+///
+/// 语境：placement hint 的机制面（读出口 `policy::placement_hint` × EAS
+/// 选核 `eas_place`）已由 `test_eas_place`（06 号终判管道②）钉板，但其产
+/// 面是 ktest 静态常量表——**生产消费者缺位**。本刀把产面接进 berry-power
+/// （EL0：`sched_util_snapshot` 0x40 快照 → 低核偏好 hint → `policy_bind`
+/// 0x83 COMMIT），而 EL0 正向提交被 0x83 全 op 面 MANAGE 能力门挡住
+/// （arch-r2；svcmgr 预拉无 stdin → env 自描述对不装 → auth=0 → -EBADF
+/// ——授权立法留窗，见 user/bins/berry-power/src/main.rs 尾段「接线完成、
+/// 立法待窗」形态）。本测以真 SVC 链过门（`process_create` 出厂即带
+/// MANAGE 权 handle——H8 SEC-A 三负例的正面半边）走完同一生产语义：
+///
+/// - **EP-0 清场**：EM 幂等重注册 + policy 回哨兵 + util 全槽清零（EA 族
+///   同款——ktest 瞬态不外泄）。
+/// - **EP-A 门内正向链**：process_create → STATUS（op=2，真 SVC）gen 对账
+///   （双半区与 `policy::gen`/`shadow_gen` 逐位一致）+ self_key（ktest 期
+///   = 0 哨兵键——内核任务不可注入，诚实透出；与 `current_tag` 同源）。
+/// - **EP-B 产面律 + 消费**：EWMA 折 CPU0→350 带（真 `util_accumulate`/
+///   `util_tick_window`——`Fair::tick` 生产折叠同款）→ 产面镜像律（低核
+///   偏好——berry-power `UtilTrack::placement_hint` 的**独立副本**，两侧
+///   故意不复用：单侧漂移即对拍炸）出 hint=2 → COMMIT（op=1，真 SVC、
+///   16B ABI 表条目 placement 字段）受理 → `placement_hint(7)` 透传 →
+///   `eas_place(7)` = Some(1)（低核；底景 [350,0]+est128：加 CPU1 保档
+///   opp0 vs 加 CPU0 跨档 opp1——EA-6 同数值锚的镜像臂）。
+/// - **EP-C 镜像翻转**：对侧折叠 [0,350] → hint=1 → eas_place = Some(0)
+///   ——决策随产面输入翻转（非常量巧合）。
+/// - **EP-D overutil 诚实面**：泵 CPU0 越阈（>819）→ 产面律仍出 hint=2
+///   （产面不预判饱和），消费面内核收口：`placement_hint(7)`=0（门控回
+///   退）→ `eas_place(7)`=None——EAS 机会主义纪律（Linux overutilized
+///   同名律：饱和系统放置比较失真，让位负载均衡）。
+/// - **EP-E 收口**：close 双 handle（空进程无映射，H8 清场同款）+
+///   unbind + util 全槽清零。
+///
+/// **place() 路由面留注**：ktest 先于 smp_bringup/par_enable 跑（test_
+/// policy_v3 同注）→ place() 的 par 门恒关；`eas_place` 即 place() 的 EAS
+/// 臂委托点（sched.rs place() → eas_place()），决策面在此全证，par/spread/
+/// SGI kick 路由面归 SMP 冒烟相。
+fn test_eas_prod() {
+    use crate::syscall::{NR_HANDLE_CLOSE, NR_PROCESS_CREATE};
+    use berry_sched::policy;
+    use berry_sched::{
+        any_overutilized, cpu_util, eas_place, em_register_qemu_virt, util_accumulate,
+        util_reset, util_tick_window, util_window_vct, UTIL_NR_CPU,
+    };
+
+    /// 0x83 COMMIT 表条目 16B ABI 形：内核 `PolicyEntryABI` 私有不可名，
+    /// ktest 手镜像 + 尺寸断言（`berry_sys::PolicyEntry` 三方同律——key@0
+    /// /weight@8/placement@12/epp_flags@13/_rsv@14，LE 字节流即 ABI）。
+    #[repr(C)]
+    struct EpEntryAbi {
+        key: u64,
+        weight: i32,
+        placement: u8,
+        epp_flags: u8,
+        _rsv: u16,
+    }
+    const _: () = assert!(core::mem::size_of::<EpEntryAbi>() == 16);
+
+    /// COMMIT 表（static：EL1 copy 链只认高半直映区——H 系 static 缓冲
+    /// 同款）。探测键 7（EB-1 同键域）。
+    static mut EP_TBL: EpEntryAbi =
+        EpEntryAbi { key: 7, weight: 0, placement: 0, epp_flags: 0, _rsv: 0 };
+    /// STATUS 双出参缓冲（同上）。
+    static mut EP_PACKED: u64 = 0;
+    static mut EP_SELF_KEY: u64 = 0;
+    /// process_create 双出参缓冲（同上）。
+    static mut EP_HP: u64 = 0;
+    static mut EP_HV: u64 = 0;
+
+    /// 产面镜像律（berry-power `UtilTrack::placement_hint` 独立副本——
+    /// 对抗性对拍）：低核偏好，u0 ≤ u1 → 1（偏 little）/ 否则 2（偏 big）。
+    fn ep_hint_of(u0: u32, u1: u32) -> u8 {
+        if u0 <= u1 {
+            1
+        } else {
+            2
+        }
+    }
+
+    // EP-0 清场（EA 族同款）。
+    assert!(em_register_qemu_virt(), "EASPROD：QEMU 默认 EM 表注册须受理");
+    policy::unbind();
+    for c in 0..UTIL_NR_CPU {
+        util_reset(c);
+    }
+
+    // EP-A：门内 fixture + STATUS 正向（真 SVC 全走）。
+    // SAFETY: svc 同步异常；四个 static 均 ktest 私有（下同）。
+    unsafe { EP_HP = 0; EP_HV = 0 };
+    assert_eq!(
+        svc5(
+            NR_PROCESS_CREATE as u64,
+            0,
+            0,
+            &raw mut EP_HP as u64,
+            &raw mut EP_HV as u64
+        ),
+        0,
+        "EASPROD：process_create 须 0（0x83 授权 fixture——出厂带 MANAGE）"
+    );
+    // SAFETY: 同上。
+    let (hpp, hvp) = (unsafe { EP_HP } as u32, unsafe { EP_HV } as u32);
+    assert_ne!(hpp, 0, "EASPROD：process handle 须非零");
+    assert_ne!(hvp, 0, "EASPROD：root Vmar handle 须非零");
+    // SAFETY: 同上。
+    unsafe { EP_PACKED = 0; EP_SELF_KEY = 0 };
+    assert_eq!(
+        svc6(
+            0x83,
+            hpp as u64,
+            2,
+            &raw mut EP_PACKED as u64,
+            &raw mut EP_SELF_KEY as u64,
+            0,
+            0
+        ),
+        0,
+        "EASPROD：STATUS 持权过门须 0（EL0 同形裸调 = -EBADF，H8 钉板）"
+    );
+    // SAFETY: 同上。
+    let (packed, self_key) = (unsafe { EP_PACKED }, unsafe { EP_SELF_KEY });
+    // 双半区断言：打包侧按 ABI 各截低 32（前序 SHD 族可留 >32 位 gen 的
+    // shadow 谱系——对账比照同掩码，位布局是 ABI 面、gen 全宽不是）。
+    assert_eq!(packed & 0xFFFF_FFFF, policy::gen() & 0xFFFF_FFFF,
+        "EASPROD：STATUS 低半 = active gen（写者对账基准）");
+    assert_eq!(packed >> 32, policy::shadow_gen() & 0xFFFF_FFFF,
+        "EASPROD：STATUS 高半 = shadow gen（双谱系位布局钉板）");
+    assert_eq!(self_key, berry_sched::current_tag() as u64,
+        "EASPROD：self_key 与 current_tag 同源（apply/weight_of 消费点同键）");
+    assert_eq!(self_key, 0,
+        "EASPROD：ktest 期自身键 = 哨兵 0（内核任务不可注入——诚实透出，产面以探测键 7 代行）");
+
+    // —— EP-B：产面律 + 消费（真 EWMA 折叠 → 镜像律 → 真 SVC COMMIT → EAS）。
+    // 合成时间轴（OU 族 fold 同款）：step 下 accum=k×u → util_raw=u 精确折叠。
+    let k = util_window_vct() / 1024 + 1;
+    let step = k * 1024;
+    /// 折一窗：util_raw = u 精确进 EWMA（t 单调推进——双核共享时间轴）。
+    fn fold(cpu: usize, u: u32, t: &mut u64, k: u64, step: u64) {
+        util_accumulate(cpu, k * u as u64);
+        *t += step;
+        util_tick_window(cpu, *t);
+    }
+    let mut t = 1_000_000u64;
+    util_tick_window(0, t); // 开首窗（EB-2 同款）
+    // CPU0 折到 350 带（≥342 即同档——收敛单调，死区 <8 上停）。
+    let mut guard = 0;
+    while cpu_util(0) < 342 {
+        fold(0, 350, &mut t, k, step);
+        guard += 1;
+        assert!(guard < 128, "EASPROD：EWMA 折叠须收敛（guard 帽）");
+    }
+    let (u0, u1) = (cpu_util(0), cpu_util(1));
+    assert!((342..=350).contains(&u0), "EASPROD：CPU0 须折到 350 带（{u0}）");
+    assert_eq!(u1, 0, "EASPROD：CPU1 须保持 0（前置清场）");
+    assert_eq!(ep_hint_of(u0, u1), 2, "EASPROD：产面律须避忙核（CPU0 忙 → hint=2）");
+    // 提交前基线：未绑表 → 无意见（EB-0 语义在正向链语境复证）。
+    assert_eq!(policy::placement_hint(7), 0, "EASPROD：COMMIT 前须无意见（哨兵态）");
+    // SAFETY: 同上。
+    unsafe { EP_TBL.placement = 2 };
+    let g = policy::gen();
+    assert_eq!(
+        svc6(0x83, hpp as u64, 1, &raw const EP_TBL as u64, 1, g + 1, 0),
+        0,
+        "EASPROD：COMMIT 持权过门须 0（placement 字段经真 syscall 面入表）"
+    );
+    assert_eq!(policy::gen(), g + 1, "EASPROD：COMMIT 后 gen 须推进");
+    assert_eq!(policy::placement_hint(7), 2,
+        "EASPROD：键 7 须透传 hint=2（berry-power EL0 面将走的同一条链）");
+    assert_eq!(eas_place(7), Some(1),
+        "EASPROD：EAS 消费须落低核 CPU1（[350,0]+128：保档 vs 跨档）");
+
+    // —— EP-C：镜像翻转（决策随产面输入翻转，非常量巧合）。
+    for c in 0..UTIL_NR_CPU {
+        util_reset(c);
+    }
+    let mut t = 2_000_000u64;
+    util_tick_window(1, t);
+    let mut guard = 0;
+    while cpu_util(1) < 342 {
+        fold(1, 350, &mut t, k, step);
+        guard += 1;
+        assert!(guard < 128, "EASPROD：EWMA 折叠须收敛（guard 帽）");
+    }
+    assert_eq!(cpu_util(0), 0, "EASPROD：CPU0 须保持 0（翻转清场）");
+    assert_eq!(ep_hint_of(cpu_util(0), cpu_util(1)), 1,
+        "EASPROD：镜像底景产面律须翻 hint=1");
+    // SAFETY: 同上。
+    unsafe { EP_TBL.placement = 1 };
+    let g = policy::gen();
+    assert_eq!(
+        svc6(0x83, hpp as u64, 1, &raw const EP_TBL as u64, 1, g + 1, 0),
+        0,
+        "EASPROD：翻转 COMMIT 须受理（gen 严格递增）"
+    );
+    assert_eq!(policy::placement_hint(7), 1, "EASPROD：翻转后须透传 hint=1");
+    assert_eq!(eas_place(7), Some(0),
+        "EASPROD：EAS 消费须随产面翻到低核 CPU0（镜像对称）");
+
+    // —— EP-D：overutil 诚实面（产面不预判，消费面内核收口）。
+    let mut guard = 0;
+    while cpu_util(0) <= 819 {
+        fold(0, 1024, &mut t, k, step);
+        guard += 1;
+        assert!(guard < 128, "EASPROD：EWMA 泵阈须收敛（guard 帽）");
+    }
+    assert!(any_overutilized(), "EASPROD：泵后须 overutil 态");
+    assert_eq!(ep_hint_of(cpu_util(0), cpu_util(1)), 2,
+        "EASPROD：产面律仍出 hint=2（饱和预判不在产面）");
+    assert_eq!(policy::placement_hint(7), 0,
+        "EASPROD：overutil 门控须回退 0（表在绑也不透传——Linux 同律）");
+    assert_eq!(eas_place(7), None,
+        "EASPROD：EAS 须让位（饱和回退负载均衡，hint 失效）");
+
+    // —— EP-E 收口（H8 清场同款：空进程无映射，close 不受阻）。
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hpp as u64, 0, 0), 0,
+        "EASPROD：close process handle");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hvp as u64, 0, 0), 0,
+        "EASPROD：close root Vmar handle");
+    policy::unbind();
+    for c in 0..UTIL_NR_CPU {
+        util_reset(c);
+        assert_eq!(cpu_util(c), 0, "EASPROD：收口须回未启态（CPU{c}）");
+    }
+
+    berry_hal_aarch64::uart_puts(b"EASPROD ok\n");
 }
 

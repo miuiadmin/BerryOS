@@ -40,6 +40,11 @@
 //!   轮询面（当前仅自检单读——随窗 2 recv 循环同刀）。CP-08/CP-10 验收
 //!   线的内核侧两断言（调度路径零频率写点 / PM 崩溃内核保频继续跑）归
 //!   kernel/sched 面断言刀。
+//!   **EAS 生产激活首步（EAS-PA 刀）已装**：自检单读顺延产 placement
+//!   hint（`UtilTrack::placement_hint` 低核偏好）→ `policy_bind` 0x83
+//!   COMMIT 提试——当前 auth=0 被内核 MANAGE 门诚实拒（零行为变化），
+//!   handle 递达后零改动转真提交；详见 main 尾段与
+//!   `research/调度彻底计划/15-EAS生产激活首步.md`。
 //! - **窗 4（内核聚合点写面）**：ADR #66 ②——频率帽汇入 berry-power 同
 //!   一内核聚合点取 min = **唯一合法帽书写面**（帽不新开通道；本服务
 //!   `FreqCapAgg::aggregate` 是其纯函数形态）。真实写通道（对内核
@@ -62,7 +67,11 @@ use berry_power::{
     CoreEvent, PolicyParams, PowerCore, CAP_SRC_SCHEDHINT, CHG_REASON_USER, CHG_SLOT_USER,
 };
 use berry_power::util::UTIL_NR_CPU;
-use berry_sys::berry_sched_util_snapshot;
+use berry_libc::io::self_proc_h;
+use berry_sys::{
+    berry_policy_bind, berry_policy_status, berry_sched_util_snapshot, PolicyEntry,
+    POLICY_OP_COMMIT,
+};
 use berry_pwproto::{
     encode_ack, encode_battery, encode_modem, encode_thermal, BatterySnapshot, ModemSnapshot,
     ThermalSensor, ThermalSnapshot, ThermalTrip, ACK_LEN, ST_OK, THERMAL_SENSORS_MAX,
@@ -193,6 +202,48 @@ fn main() {
         applied, rejected, acks, util_max, util_src, cap, v.chg.limit_ma, v.chg.reason, compat_pct, cap_uah,
         v.freq.req_khz, v.freq.eff_khz
     );
+    // —— EAS 生产激活首步（EAS-PA 刀）：placement hint 生产消费面 ——
+    // 产消链：util（上方 0x40 快照 → `UtilTrack` EWMA 态）→ hint
+    // （`UtilTrack::placement_hint`——避开高 util 核）→ `policy_bind`
+    // （0x83 COMMIT 表条目 `placement` 字段——placement 不是独立 op，
+    // 是表条目字段面）→ 内核 EAS 放置消费（`sched/src/sched.rs`
+    // `place` → `eas_place` → `policy::placement_hint`——spawn 放置
+    // 路由，spread 计算线程面）。
+    //
+    // **auth = `self_proc_h()`**（env 块 gift[2] 自持 Process handle，
+    // berry-exec 装配携 MANAGE 权）：当前 svcmgr 预拉形态无 stdin →
+    // 自描述对不装（berry-exec lib.rs 条件装配）→ auth=0 → 内核 MANAGE
+    // 门（arch-r2，全 op 面）诚实拒 -EBADF = **零行为变化**；handle 递达
+    // （spawn 链赠权立法刀）后本链路零改动即真提交——激活首步 = 生产
+    // 接线完成、授权立法待窗形态。门内正向链（真 Process handle 过门 →
+    // STATUS 对账 → COMMIT 受理 → EAS 消费）钉板 = ktest EASPROD
+    // （kernel/src/ktest.rs `test_eas_prod`——EL1 面姊妹钉板）。
+    //
+    // 单发形态（非周期轮询）：窗 3 常驻循环留窗未开（上方窗表），周期
+    // 面（gen 重试协议/-EAGAIN 对账重发）随窗 2/3 立法刀——本刀只装
+    // 「读 util → 算 hint → 发 hint」最小链，一-shot 证据行后 park。
+    let eas_hint = core.util.placement_hint();
+    let eas_auth = self_proc_h();
+    let mut eas_packed: u64 = 0;
+    let mut eas_key: u64 = 0;
+    // STATUS（op=2）：gen 对账 + 自身策略键（受理形态下 gen+1 提交、
+    // key=self；当前门拒 → 出参保持 0 = 哨兵键形态，同样诚实透传）。
+    let eas_status = berry_policy_status(eas_auth, &mut eas_packed, &mut eas_key);
+    // COMMIT（op=1）：1 条 hint 条目（weight=0 纯放置意见——不动权重/EPP）。
+    // gen = STATUS 受理读回的 active gen + 1（门拒时读不到 → 携 1 探测，
+    // 门在表解析前——拒于门则 gen 值不消费）。
+    let eas_gen = if eas_status == 0 { (eas_packed & 0xFFFF_FFFF) + 1 } else { 1 };
+    let eas_entry = PolicyEntry { key: eas_key, placement: eas_hint, ..Default::default() };
+    let eas_bind =
+        berry_policy_bind(eas_auth, POLICY_OP_COMMIT, &eas_entry, 1, eas_gen, 0);
+    // 诊断行（非 smoke 标记——雷册 §A145 口径）：hint=产面意见（1/2）、
+    // key=STATUS 读回自身键（0 = 哨兵/门拒形态）、st/bd=两 syscall 返回
+    // （0=受理 / 负值=errno——当前预期 st=bd=-9 即 -EBADF 门在位活证）。
+    println!(
+        "berry-power: eas hint={} key={} st={} bd={} auth={}",
+        eas_hint, eas_key, eas_status, eas_bind, eas_auth
+    );
+
     // CP-08 装配形态：自检（上方 dry-run = 引擎活面单轮走通）后 park 常驻
     // ——真实通道（窗 2 recv 长帽重臂）接线前，零产出动作零唤醒（被拉起
     // 也不写任何帽/票/发布位；berry-thermal park 壳同款骨架相）。
