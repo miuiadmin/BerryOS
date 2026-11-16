@@ -32,8 +32,8 @@ pub mod task;
 pub mod util;
 
 pub use band::{
-    any_armed, band_on, configure, consume, lazy_enforce, period_check, state, throttle_all,
-    unthrottle_all, BandBudget, BAND_SLOTS,
+    any_armed, band_on, configure, consume, lazy_enforce, nearest_throttle_wake, period_check,
+    state, throttle_all, unthrottle_all, BandBudget, BAND_SLOTS,
 };
 pub use class::{
     class_fair_intent, class_of_task, Fair, FairBand, RoundRobin, SchedClass, TaskClass,
@@ -78,7 +78,7 @@ pub use sched::{
     on_irq_tick, on_sgi_resched, park_recheck, pi_boost_recount, pi_recompute_needed,
     pi_rq_lock, pi_rq_unlock, preempt_checkpoint, preempt_checkpoint_hits, preempt_count, preempt_disable,
     preempt_enable, print_window_enter, print_window_exit,
-    nearest_deadline, refresh_effective, reap_drain,
+    nearest_deadline, refresh_effective, reap_drain, throttle_yield_due,
     set_exit_hook, set_lb_match, set_reap_post_hook,
     set_klock_ops, set_sleepq_hook, sq_lock, sq_unlock,
     set_switch_hook, set_wake_hook, sleepq_insert,
