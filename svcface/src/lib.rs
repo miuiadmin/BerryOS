@@ -2,7 +2,7 @@
 //!
 //! **动机**：SVC 入口锁类分档（S-3c c-2c slice 2b 起）的六类位集常量与
 //! 45 号注册表此前只活在两处——`kern_lock.rs` 常量 + `kernel/src/syscall.rs`
-//! `install()` 的 43 行 `reg()` 字面量表。HAL/内核 crate 只 aarch64-unknown-none
+//! `install()` 的 45 行 `reg()` 字面量表。HAL/内核 crate 只 aarch64-unknown-none
 //! 可编，host 测不可达：类位集与 sched `HELD_*` 的**位镜像一致性**（bit1=SQ
 //! 0x02 / bit2=RQ0 0x04 / bit3=RQ1 0x08 / bit4=REAPQ 0x10 / bit5=TABLE 0x20）
 //! 此前只有 kernel main 编译期断言执法（aarch64-only），「实装号 NONE 归零
@@ -21,7 +21,7 @@
 //!   组装律」，与 kernel main.rs 编译期断言同一语义的 host 可测形）。
 //! - [`REGISTRY`]：45 号注册表（`(nr, class)` 对——与 kernel `install()`
 //!   逐行对应；`0x83 policy_bind` 字面量号同款入册）。
-//! - [`class_of`]：号→类查询——注册表线性扫（43 项，boot 期注册语义的
+//! - [`class_of`]：号→类查询——注册表线性扫（45 项，boot 期注册语义的
 //!   纯投影；**未注册号 → [`SVC_CLASS_NONE`]**，与 HAL 派发表默认槽
 //!   `(sys_unimplemented, NONE)` 全表初始化同一律）。
 //! - [`NONE 号归零律`]由 [`none_registered`] 执法：注册表内不存在 NONE 类
@@ -87,7 +87,7 @@ pub const fn assembled_class(sq: bool, rq0: bool, rq1: bool, reapq: bool, table:
     v
 }
 
-/// 号→锁类注册表：与 kernel `syscall.rs install()` 的 42 行 `reg()` 逐行
+/// 号→锁类注册表：与 kernel `syscall.rs install()` 的 45 行 `reg()` 逐行
 /// 对应（改 kernel 落类 = 同步改此表——host 钉板即执法面）。号值 = ABI
 /// v1/v3 真号（abi_gen NR_* / 0x83 字面量）。
 pub const REGISTRY: &[(u8, u8)] = &[
@@ -149,7 +149,7 @@ pub const REGISTRY: &[(u8, u8)] = &[
     (0x84, SVC_CLASS_TABLE),      // telemetry_open
 ];
 
-/// 号→入口锁类：注册表线性扫（43 项·boot 期注册语义纯投影）。**未注册号
+/// 号→入口锁类：注册表线性扫（45 项·boot 期注册语义纯投影）。**未注册号
 /// → [`SVC_CLASS_NONE`]**——与 HAL `SYSCALLS` 默认槽全表 NONE 初始化同一
 /// 律（未知/未实现/越界号零锁直达 `-ENOTSUP`，绝不 panic 绝不杀调用者）。
 pub const fn class_of(nr: u8) -> u8 {
@@ -293,7 +293,7 @@ mod tests {
                 hit_cnt += 1;
             }
         }
-        // 恰 43 号命中、213 号 NONE（256-43）。
+        // 恰 45 号命中、211 号 NONE（256-45）。
         assert_eq!(hit_cnt, REGISTRY.len() as u16);
         assert_eq!(none_cnt, 256 - REGISTRY.len() as u16);
     }

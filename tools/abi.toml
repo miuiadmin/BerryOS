@@ -718,6 +718,7 @@ num = 0x83
 name = "policy_bind"
 desc = '注册 AI 策略注入通道（共享环，SET_POLICY）'
 stage = "v3"
+implemented = true  # v3 提前实现（六臂全挂派发；2026-11-17 系统审计 S1 随刀补标）
 enforced_since = 2026-11-11  # auth Process RIGHT_MANAGE 三门控（arch-r2 H1 补门，55e08b1e——EL0 裸调全拒）
 [[group.syscall]]
 num = 0x84
