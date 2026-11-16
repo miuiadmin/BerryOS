@@ -1048,6 +1048,11 @@ test-host:
     # 独立小工作区（tools/berry 同款形态），根 .cargo/config.toml 锁
     # build.target=aarch64-unknown-none 故必须显式 --target {{host}}。
     cargo test --manifest-path tools/elf2flat/Cargo.toml --target {{host}}
+    # W1 三刀（彻底 Rust 化轨道 b 层 #8）：elf2pe Rust 件 lib 纯面测试
+    # （合成 ELF 全链钉板 + §A90 r_offset 槽位律回归 + 拒面 + 真实
+    # berryboot.elf 对 oracle 字节级对拍〔在位时〕——elf2flat 同位纪律；
+    # 产链换轨留二刀，Python elf2pe.py 现役不动）。
+    cargo test --manifest-path tools/elf2pe/Cargo.toml --target {{host}}
     # Q1 续挖（a-3 U4 纪律同款）：pwrcls 门禁自检——smoke B4 掉电相三 boot
     # 的采样断言（A/B 档分类 + Boot C 后必 clean）与毒环注入都吃本件，此前
     # 只在 smoke 产物链上被动覆盖，门禁自身坏 = 掉电相静默劣化。
