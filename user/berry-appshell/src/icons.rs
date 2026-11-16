@@ -106,21 +106,19 @@ pub fn bitmap_entry(id: u16) -> Option<(&'static str, &'static [u32], u32, u32)>
     icon_data::ICON_DATA.get((id - BITMAP_ID_BASE) as usize).copied()
 }
 
-/// dock 四位的位图库优先名（OH sysRes 资产；缺名回退 DOCK_FACE_IDS
-/// 分段面——位图优先序在 desktop.rs 建树侧）。
-pub const DOCK_BITMAP_NAMES: [&str; 4] = [
-    "oh_ic_person_fill",
-    "oh_ohos_ic_normal_white_grid_image",
-    "oh_ohos_ic_normal_white_grid_txt",
-    "oh_ohos_ic_public_email",
-];
+/// dock 四位的位图库优先名（owner 2026-11-16 裁定后四位全空——OH SVG
+/// Sketch 嵌套结构光栅化后坍缩 + 位图 id 被渲染面按 BYI1 解码（BadMagic
+/// [0,0,0,0] → 桌面死）：全回退 DOCK_FACE_IDS 程序化 SmartDock 面
+/// （genohicons BYI1 官方背板，原行为）。位 3 随 MMS→TERMINAL 换项
+/// （命令行终端刀 2026-11-17），背板仍 MMS 形几何复刻占位——OH 视觉
+/// 资产正式替换是后续挂账（ADR #63 协议洁净边界）。
+pub const DOCK_BITMAP_NAMES: [&str; 4] = ["", "", "", ""];
 
 /// 状态栏三位的位图库优先名：前两位 OH systemui 官方 signal/wifi 面；
 /// 第三位空串 = 电池走程序化 BATTERY 面（电量真值动态面，不入静态库）。
-pub const STATUS_BITMAP_NAMES: [&str; 3] = [
-    "oh_ic_statusbar_signal_full",
-    "oh_ic_statusbar_wifi_full",
-    "",
+// 状态栏位图（2026-11-16 同 dock 裁定）：位图 id 与 BYI1 渲染面不兼容，
+// 全回退程序化面（原行为，稳定）。
+pub const STATUS_BITMAP_NAMES: [&str; 3] = ["", "", "",
 ];
 
 /// 内建状态/dock 图标 id（建树侧直建 Icon 节点；位于 app 图标稠密域
@@ -132,7 +130,11 @@ pub const STATUS_BATTERY: u16 = 2;
 /// 静态壁纸源 id（稠密 app 域外的唯一固定特例——rodata 直供零堆）。
 pub const WALLPAPER: u16 = 0xFFFE;
 pub const WALLPAPER_DIM: (u32, u32) = (wallpaper::WALLPAPER_W, wallpaper::WALLPAPER_H);
-/// dock 分段内建面 id（0..3 号 app 对应 Contacts/Photos/Settings/MMS 官方顺序）。
+/// dock 分段内建面 id（0..3 号 dock 位对应 Contacts/Photos/Settings/
+/// TERMINAL——位 3 随 MMS→TERMINAL 换项；其分段背板仍 MMS 形几何复刻
+/// 占位：DOCK_BITMAP_NAMES 四位全空（owner 2026-11-16 位图/BYI1 裁定），
+/// 本回退面即现行面，OH 资产正式替换时随 genohstatus.py 重产同批换形
+/// ——ADR #63）。
 pub const DOCK0: u16 = 3;
 pub const DOCK1: u16 = 4;
 pub const DOCK2: u16 = 5;
@@ -337,7 +339,7 @@ pub(crate) fn status_faces() -> Vec<IconFace> {
 // —— 五键导航面（波一刀 D——程序化自绘，generic_face 同先例）——
 
 /// 导航键底块色（常态：深蓝灰，CLEAR_BG 同族）。
-const NAV_BASE_BG: u32 = 0xFF10_1828;
+const NAV_BASE_BG: u32 = 0xFF00_6BC8; // 沉浸（owner 2026-11-16）：壁纸蓝底——符号白、底融入壁纸渐变
 /// 导航键底块色（关机确认态：暗红警示）。
 const NAV_ARMED_BG: u32 = 0xFF7A_1F1F;
 /// 符号白（TEXT_FG 同值系）。

@@ -32,7 +32,7 @@ KERNEL=target-klog/aarch64-unknown-none/debug/berry-kernel   # 用实构建目�
   2>&1 | tee <日志>
 ```
 
-4. **拓扑契约三件**（缺一 park/boot 断）：rootfs 多卷（rootfs0/1 按在席卷拼）；**virtio-tablet 必挂**（gui-inputd 自验「input 槽须恰 1」——漏挂即 `park` 挡断，实抓两次）；盘要 `mkfat.py` 现造 + `printf 'BERRYOSVBLK!' | dd` 印章。netdev/hostfwd/echod 辅助进程可省（vnet 静默缺席不挡链）。
+4. **拓扑契约四件**（缺一 park/boot 断）：rootfs 多卷（rootfs0/1 按在席卷拼）；**virtio-tablet 必挂**（gui-inputd 分类认领门要求指针类恰 1（2026-11-17 键盘刀后多设备合法：键盘类至多 1）——漏挂 tablet 即 `park` 挡断，实抓两次）；盘要 `mkfat.py` 现造 + `printf 'BERRYOSVBLK!' | dd` 印章；**`simdev=1` 键必须配第二路 `-serial`**（内核见键即 init uart1（0x09040000）——无设备在席时 `uart1_init` 写寄存器直接 D-abort halt，2026-11-17 实抓；smoke 形态恒配 `-serial unix:$SIM_SOCK`）。netdev/hostfwd/echod 辅助进程可省（vnet 静默缺席不挡链）。
 5. **noktest 键**：`-fw_cfg name=opt/berry/noktest,string=1` 跳过 ktest/bench——绕开时序断言（LOADGEN A3 的 p50≤5ms 在宿主 load>8 时必 panic，环境面非代码面）；验证链路而非 ktest 时用它。
 6. **喂命令窗口**：TCG 下 boot 链 3-10 分钟（宿主负载敏感），`sleep` 值按最近一轮日志的 `bsh>` 首现行号估；命令回显会被稳态矩阵洪流打散——判据用 `rg -o` 直接搜特征串，勿依赖行完整性。
 7. **dmesg/探针类 e2e**：MARKER 探针与 dmesg 之间洪流可能把探针滚出 4KiB 尾窗——用 bsh 串接（`探针命令 && dmesg`）压间隔，或只依赖时序不敏感分量（已追尾行零再现、最新洪流特征在席）。

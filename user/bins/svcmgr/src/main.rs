@@ -2441,26 +2441,40 @@ fn run_rootfs_child(console: Handle) {
             }
         }
         if ok == app_n {
-            // 带参形态防子串混叠（`BLKD ok n=` 同款）；n ≤ APP_SLOTS → 单
-            // 位数字——抬 APP_SLOTS ≥ 10 前先扩带参宽度（b'0'+ok 会溢出
-            // ASCII 数字域；TCPS_PATTERN 定值钉板同款编译期拦）。
-            const _: () = assert!(APP_SLOTS < 10, "APP ok n= 单数字位形态");
-            let mut line = [0u8; 11];
+            // 带参形态防子串混叠（`BLKD ok n=` 同款）；n ≤ APP_SLOTS → 宽度
+            // 参数化（< 10 单数字、≥ 10 两位——TERMINAL 入册起 n=10 十位
+            // 入拼；抬 APP_SLOTS ≥ 100 前再扩带参宽度，b'0'+n/10 溢出
+            // ASCII 数字域——TCPS_PATTERN 定值钉板同款编译期拦）。
+            const _: () = assert!(APP_SLOTS < 100, "APP ok n= 两位数字形态");
+            let mut line = [0u8; 12];
             line[..9].copy_from_slice(b"APP ok n=");
-            line[9] = b'0' + ok as u8;
-            line[10] = b'\n';
-            send_retry(console, line.as_ptr(), line.len());
+            let mut w = 9;
+            if ok >= 10 {
+                line[w] = b'0' + (ok / 10) as u8;
+                w += 1;
+            }
+            line[w] = b'0' + (ok % 10) as u8;
+            w += 1;
+            line[w] = b'\n';
+            send_retry(console, line.as_ptr(), w + 1);
         }
         if ui_decl > 0 && ui_ok == ui_decl {
             // GUI-7（rootfs 相 45→46）：`APPUI ok n=`——ui 面全验过才打
             // （任一 Bad = 标记缺失 = smoke FAIL，`APP ok` 同款确定性状态
-            // 谓词）。13B 行、n 单数字——APP_SLOTS < 10 双钉板。
-            const _: () = assert!(APP_SLOTS < 10, "APPUI ok n= 单数字位形态");
-            let mut line = [0u8; 13];
+            // 谓词）。宽度参数化同 `APP ok`（< 10 单数字、≥ 10 两位）
+            // ——APP_SLOTS < 100 双钉板。
+            const _: () = assert!(APP_SLOTS < 100, "APPUI ok n= 两位数字形态");
+            let mut line = [0u8; 14];
             line[..11].copy_from_slice(b"APPUI ok n=");
-            line[11] = b'0' + ui_ok as u8;
-            line[12] = b'\n';
-            send_retry(console, line.as_ptr(), line.len());
+            let mut w = 11;
+            if ui_ok >= 10 {
+                line[w] = b'0' + (ui_ok / 10) as u8;
+                w += 1;
+            }
+            line[w] = b'0' + (ui_ok % 10) as u8;
+            w += 1;
+            line[w] = b'\n';
+            send_retry(console, line.as_ptr(), w + 1);
         }
     }
     // ---- app-1 段 a-1：freeze-first 自验（tomb_selftest——APPTOMB 走

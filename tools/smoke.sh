@@ -602,6 +602,10 @@ echo "smoke: QEMU 启动（rootfs 相：fw_cfg rootfs 卷（A1-3b 多卷名）+ 
 # tablet 追加在 blk/net 之后取更低槽 = 既有设备槽位零漂移——槽位注记见
 # justfile run-rootfs；B4 三 boot 不挂：掉电相无输入面，gui-inputd park
 # 优雅降级、INPUT ok 自然缺席不设门）。
+# 命令行终端刀（2026-11-17）：四相追挂 virtio-keyboard-device——gui-inputd
+# 分类认领门（指针恰 1 + 键盘至多 1，keyboard 无则 kb=none 降级）每 boot
+# 实跑；键盘倒序建取更低槽，tablet 槽位仍零漂移。gui8-smoke 不挂（触摸
+# 交互几何面，键盘非其验证面）。
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
   $FWCFG \
   -global virtio-mmio.force-legacy=false \
@@ -609,6 +613,7 @@ echo "smoke: QEMU 启动（rootfs 相：fw_cfg rootfs 卷（A1-3b 多卷名）+ 
   -device virtio-blk-device,drive=drv0 \
   -netdev user,id=n0,hostfwd=tcp::18081-:18081,hostfwd=tcp::18082-:18082,hostfwd=tcp::18083-:18083 -device virtio-net-device,netdev=n0 \
   -device virtio-tablet-device,id=tab0 \
+  -device virtio-keyboard-device,id=kb0 \
   < /dev/null > "$LOG" 2>&1 &
 QEMU_PID=$!
 
@@ -712,8 +717,8 @@ QEMU_PID=$!
 # （manifest.id ↔ 文件名、manifest.entry ↔ 包内条目名）→ spawn_rootfs_elf
 #（console=true 直打 / false 私有对端 + EOF 收集）→ reap 真码 0——**全部
 # 槽全过才打**（任一降级 = `eco: app <id> <why>` 行 + 标记缺失 loud）——
-# rootfs 相第 21 标记（确定性状态谓词：n ≤ APP_SLOTS=9 单位数字；裸跑
-# app_n==0 零扰动）。
+# rootfs 相第 21 标记（确定性状态谓词：n ≤ APP_SLOTS=10——写面宽度参数化
+#（< 10 单数字、≥ 10 两位）；裸跑 app_n==0 零扰动）。
 # DIR ok n= = **RAM 目录树 v2 五 op 全链**（C-0 刀 4）：bsh dir_selftest
 # 自驱——MKDIR `bdir` → 多段 PUT/GET（`bdir/n.bin` 64B 逐字节全等）→
 # READDIR 恰一名 → LOOKUP 命中 → STAT 双面（TYPE_DIR 子项数/TYPE_FILE
@@ -966,8 +971,9 @@ QEMU_PID=$!
 # icons/<stem>.byi 条目（BYI1 头校验：magic/ver/flags/尺寸帽）；views
 # 声明 ↔ views/ 条目在场；未声明 ⇔ 零条目 = mkapp 交叉门禁（§5.3 ⑥）
 # 的运行时镜像。ui_decl>0 且 ui_ok==ui_decl 才打——**与 APP ok 独立判**
-# （失败隔离双向：ui 坏不挡启动，启动坏不抹 ui 验证）。n= 单数字位
-# （APP_SLOTS<10 const assert）；n=1 = APPDEMO（APPQUIET 无 [ui] 不计）。
+# （失败隔离双向：ui 坏不挡启动，启动坏不抹 ui 验证）。n= 宽度参数化
+#（APP_SLOTS<100 const assert；< 10 单数字、≥ 10 两位——n=1 = APPDEMO
+# 单 app 拓扑形，APPQUIET 无 [ui] 不计）。
 # 纯 appd 扫描面 = 零新盘面/零新 syscall，链位置紧随 APP ok 行后；EFI
 # 路同打（appd 同二进制）。“APPUI ok” 与现役标记两两互非子串（现役无
 # `XAPPUI ok` 形态在册）。
@@ -1032,11 +1038,11 @@ fi
 # park 形 GUI app，boot 批改「[ui] 入册不拉起」（svcmgr 裁决 B，W4-RECON
 # §1.7 铁律：常驻形由 boot 批拉起 = app_reap_tail 永等 = `APP ok` 缺失）。
 # rootfs 相新证据 = 逐 [ui] 槽 `app <id> gui deferred` 记账行（svcmgr 打，
-# 8 槽全在 = 入册面完整；任一缺席已由 `APP ok n=` 谓词兜底 FAIL，此处逐
+# 9 槽全在 = 入册面完整；任一缺席已由 `APP ok n=` 谓词兜底 FAIL，此处逐
 # 行断 = 失败可归因到具体 app）。console=true 的串口能力面证据随迁 GUI
 # 形（gui8-smoke 点击 spawn 的 `app APPDEMO up`/`fs ok` 行——launcher
 # SPAWN 路径 console 同接线）。
-for id in APPDEMO SETTINGS FILES PHOTOS CAMERA CONTACTS MMS BROWSER; do
+for id in APPDEMO SETTINGS FILES PHOTOS CAMERA CONTACTS MMS BROWSER TERMINAL; do
   grep -q "app $id gui deferred" "$LOG" \
     || fail "app $id gui deferred 缺失（裁决 B 入册记账——boot 批未见 [ui] 槽入册；查 eco: app 行）"
 done
@@ -1106,6 +1112,7 @@ SIM_SOCK="$QMP_DIR/sim1"   # sim-S1 serial1（与 QMP 同临时目录统一 clea
   -device virtio-blk-device,drive=drv0 \
   -netdev user,id=n0,hostfwd=tcp::18081-:18081,hostfwd=tcp::18082-:18082,hostfwd=tcp::18083-:18083 -device virtio-net-device,netdev=n0 \
   -device virtio-tablet-device,id=tab0 \
+  -device virtio-keyboard-device,id=kb0 \
   -serial mon:stdio \
   -serial unix:"$SIM_SOCK",server=on,wait=off \
   -qmp unix:"$QMP_SOCK",server=on,wait=off \
@@ -1505,6 +1512,7 @@ echo "smoke: QEMU 启动（FAT 子目录相：fixture 盘 disk_dirs.img + FIFO s
   -device virtio-blk-device,drive=drv0 \
   -netdev user,id=n0,hostfwd=tcp::18081-:18081,hostfwd=tcp::18082-:18082,hostfwd=tcp::18083-:18083 -device virtio-net-device,netdev=n0 \
   -device virtio-tablet-device,id=tab0 \
+  -device virtio-keyboard-device,id=kb0 \
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 t6=$(date +%s)
@@ -1585,6 +1593,7 @@ echo "smoke: QEMU 启动（FAT 持久化相：复用已写盘 + FIFO stdin + vir
   -device virtio-blk-device,drive=drv0 \
   -netdev user,id=n0,hostfwd=tcp::18081-:18081,hostfwd=tcp::18082-:18082,hostfwd=tcp::18083-:18083 -device virtio-net-device,netdev=n0 \
   -device virtio-tablet-device,id=tab0 \
+  -device virtio-keyboard-device,id=kb0 \
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 t6=$(date +%s)
