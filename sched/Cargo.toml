@@ -49,6 +49,11 @@ berry-em = { path = "../user/berry-em" }
 # 入环门/配置三态/带成员豁免判——host 可测钉板）。BandBudget/BAND_SLOTS
 # 与判定律单源在此，本 crate band.rs 机械壳 re-export 消费。
 berry-bandface = { path = "../bandface" }
+# W3-Q82：on_irq_tick 内嵌 SMP 门纯函数面（心跳/卡扫折叠除法变档律 +
+# 高龄乘域判 + 定时拉取近空闲联合门 + 偷取 victim 三值合取——host 可测
+# 钉板）。HEARTBEAT_DIV/STUCK_*/PULL_K 常量与判定律单源在此，本 crate
+# sched.rs 机械壳消费。
+berry-balface = { path = "../balface" }
 # W3-Q20：policy O(1) 查表数学 + SchedAttr 位选律纯函数面（黄金比例散列/
 # 探测窗查表缺席判/first-wins 插入窗满拒收/EPP 两位打包——host 可测钉板）。
 # BUCKETS/PROBE_MAX/TBL_MAX/WEIGHT_MAX/EPP_* 常量与 bucket_of/lookup_o1/
@@ -60,6 +65,10 @@ berry-polface = { path = "../polface" }
 # bucket_upper/rank_of/Hdr/CpuHdr 单源在此，本 crate hdr.rs 机械壳
 # re-export 消费。
 berry-hdrface = { path = "../hdrface" }
+# W3-Q31：滴答账判定律单源在 berry-tickface（host 可测纯面——tick→ns
+# 倒数乘-移对/快慢双路/S-6 夹取/slice 预算/回绕窗增量五面）；本 crate
+# class.rs tick 记账 delta 消费即唯一事实源。
+berry-tickface = { path = "../tickface" }
 
 [features]
 # G3-3 lockdep：透传 HAL feature（检测器/链栈在 HAL 侧 SmpCpu per-CPU 区）。

@@ -77,6 +77,23 @@ case "$MODE" in
     cleanup() { rm -rf "${SELF}"; }
     trap cleanup EXIT
 
+    # 合成身份（CI hermetic 面，2026-11-16 判例：CI-light 第七门首跑暴露——
+    # selftest runner 用户无 git 身份，端到端腿走主流程 commit 时
+    # `fatal: empty ident name` rc=128）。export 经 leg 子 shell 传主流程；
+    # 主流程 commit 语义不变（真实镜像提交仍用操作者身份，本 export 只在
+    # --selftest 面内生效）。
+    export GIT_AUTHOR_NAME=selftest GIT_AUTHOR_EMAIL=selftest@t
+    export GIT_COMMITTER_NAME=selftest GIT_COMMITTER_EMAIL=selftest@t
+
+    # 依赖预检（同判例：runner 缺 rsync 时腿组 rc=127 且指认散在 rsync 行）：
+    # 缺件先红并点名，别让 21 腿逐个淹死在 127 里。
+    for bin in git rsync python3; do
+      command -v "$bin" >/dev/null 2>&1 || {
+        echo "sync-public selftest: FAIL——环境缺 ${bin}（本自检需 git/rsync/python3）" >&2
+        exit 1
+      }
+    done
+
     legs=0; fails=0
     ok()  { legs=$((legs+1)); echo "sync-public selftest 腿绿：$1"; }
     bad() { legs=$((legs+1)); fails=$((fails+1)); echo "sync-public selftest 腿红：$1（期望 rc=$2 实得 rc=$3）" >&2; }
@@ -218,12 +235,18 @@ WHITELIST=(
   # 笔未随刀——check-members 门被 base 重写剥落故两连漏无人咬；接线重放
   # 即红，红分支实捕定谳）
   fwcfgface susface
+  # balface 补账（2026-11-16 本刀重放接线实捕：W3-Q82 #273 首开件白名单
+  # 笔未随刀——check-members 门红分支实捕定谳，同 fwcfgface 判例）
+  balface
   # psface 补账（2026-11-16 本刀 rebase 进 #362 后门再咬：W3-Q72 合入后
   # 白名单笔未随刀——接线恢复后门第一次真执法实捕）
   psface
   # wakeface 补账（2026-11-16 本刀 merge 进 #365 后门三咬：W3-Q66 合入后
   # 白名单笔未随刀——check-members 三连实捕定谳）
   wakeface
+  # tickface 补笔（2026-11-16 本刀随 W3-Q31 净增量重放带刀：白名单笔随刀，
+  # check-members 门先验——判例 #368 fwcfgface/susface/psface 同款纪律）
+  tickface
   # heapface 补账（2026-11-15 #301 合入后机器门首咬：新增顶层 crate 忘补
   # 白名单即 test-host 红——check-members 门执法生效的第一次实捕）
   .github .cargo

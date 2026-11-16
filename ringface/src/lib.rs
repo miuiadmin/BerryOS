@@ -1,4 +1,5 @@
-//! berry-ringface —— runqueue 环游标与扫描序不变量纯函数面（W3-Q12）。
+//! berry-ringface —— runqueue 环游标与扫描序不变量纯函数面（W3-Q12）
+//! + 侵入式双向环接线律（W3-Q53 `ilist` 模块）。
 //!
 //! **动机**：环形 runqueue 的游标/出选语义此前只活在 `sched/src/runqueue.rs`
 //! 与 `class.rs` 的 `NonNull<Task>` 裸指针环走查里——sched 依赖 HAL
@@ -37,6 +38,7 @@
 #![cfg_attr(not(test), no_std)]
 #![allow(clippy::result_unit_err)]
 
+pub mod ilist;
 // W3-Q51：scan_filtered 单圈合并扫描骨架（ScanAcc 三分支带序状态机）。
 pub mod scan;
 
