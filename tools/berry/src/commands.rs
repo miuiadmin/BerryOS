@@ -2445,7 +2445,17 @@ pub(crate) fn vnc_reachable(run: &Path) -> bool {
     {
         let sock = run.join("vnc.sock");
         if sock.exists() {
-            return std::os::unix::net::UnixStream::connect(&sock).is_ok();
+            // 六轮 F1 副作用缓解：QEMU VNC 监听 backlog=1——探活 connect+close
+            // 占 accept 队列的 <0.5ms 窗内本连接自身可能吃 ECONNREFUSED
+            //（背靠背实测 29/40）——refused 时延时 2ms 重试一次再判死，防
+            // 活 run 被瞬时误滤。副作用注记：探活会让 QEMU 发一对
+            // vnc.connected/disconnected 事件进 events.jsonl（accept 即发，
+            // 无真会话对应）——消费侧知悉即可。
+            return std::os::unix::net::UnixStream::connect(&sock).is_ok()
+                || {
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                    std::os::unix::net::UnixStream::connect(&sock).is_ok()
+                };
         }
     }
     true
@@ -2545,27 +2555,32 @@ mod find_run_tests {
     use super::*;
     use std::time::{Duration, SystemTime};
 
-    /// 造一个 run 候选目录：meta.json 在 = 合法候选；vnc.sock 在 = vnc 级
-    /// 候选；mtime 钉到 base+off 秒（目录 mtime 是排序键，set_modified
-    /// 免真实时间流逝的偶发）。
+    /// 造一个 run 候选目录：meta.json 在 = 合法候选；vnc 桌 = 真监听 unix
+    /// socket（六轮审计 F1 实抓：普通文件假 sock 被 vnc_reachable 的
+    /// connect 预探判 ENOTSOCK → vnc 级候选永远选不出、断言必败且 panic
+    /// 泄漏 BERRY_HOME 连环污染 env 测试）；mtime 钉到 base+off 秒（目录
+    /// mtime 是排序键，set_modified 免真实时间流逝的偶发）。返回 (目录,
+    /// listener)——listener 须持有到断言后（drop 即 socket 消失）。
     fn mk_run(
         root: &Path,
         name: &str,
         off: u64,
         meta: bool,
         vnc: bool,
-    ) -> PathBuf {
+    ) -> (PathBuf, Option<std::os::unix::net::UnixListener>) {
         let d = root.join(name);
         std::fs::create_dir_all(&d).unwrap();
         if meta {
             std::fs::write(d.join("meta.json"), "{}").unwrap();
         }
+        let mut listener = None;
         if vnc {
-            std::fs::write(d.join("vnc.sock"), "").unwrap();
+            let l = std::os::unix::net::UnixListener::bind(d.join("vnc.sock")).unwrap();
+            listener = Some(l);
         }
         let t = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000 + off);
         std::fs::File::open(&d).unwrap().set_modified(t).unwrap();
-        d
+        (d, listener)
     }
 
     fn tmp_home(tag: &str) -> PathBuf {
@@ -2581,8 +2596,8 @@ mod find_run_tests {
         let _g = crate::run_dir::ENV_LOCK.lock().unwrap();
         let tmp = tmp_home("vnc-wins");
         let root = tmp.join("run");
-        let older_vnc = mk_run(&root, "100-a", 100, true, true);
-        let _newer = mk_run(&root, "200-b", 200, true, false);
+        let (older_vnc, _l) = mk_run(&root, "100-a", 100, true, true);
+        let (_newer, _nl) = mk_run(&root, "200-b", 200, true, false);
         assert_eq!(find_run(None).unwrap(), older_vnc);
         std::env::remove_var("BERRY_HOME");
         let _ = std::fs::remove_dir_all(&tmp);
@@ -2593,8 +2608,8 @@ mod find_run_tests {
         let _g = crate::run_dir::ENV_LOCK.lock().unwrap();
         let tmp = tmp_home("fallback");
         let root = tmp.join("run");
-        let _older = mk_run(&root, "100-a", 100, true, false);
-        let newer = mk_run(&root, "200-b", 200, true, false);
+        let (_older, _ol) = mk_run(&root, "100-a", 100, true, false);
+        let (newer, _nl) = mk_run(&root, "200-b", 200, true, false);
         assert_eq!(find_run(None).unwrap(), newer);
         std::env::remove_var("BERRY_HOME");
         let _ = std::fs::remove_dir_all(&tmp);
@@ -2605,9 +2620,9 @@ mod find_run_tests {
         let _g = crate::run_dir::ENV_LOCK.lock().unwrap();
         let tmp = tmp_home("no-meta");
         let root = tmp.join("run");
-        let older = mk_run(&root, "100-a", 100, true, false);
+        let (older, _ol) = mk_run(&root, "100-a", 100, true, false);
         // 更新的目录无 meta.json（残目录）：被滤，不夺回落位。
-        let _newest_nometa = mk_run(&root, "300-c", 300, false, false);
+        let (_newest_nometa, _nnl) = mk_run(&root, "300-c", 300, false, false);
         assert_eq!(find_run(None).unwrap(), older);
         std::env::remove_var("BERRY_HOME");
         let _ = std::fs::remove_dir_all(&tmp);
@@ -2652,5 +2667,29 @@ mod berry_alive_tests {
             child.wait().expect("wait");
             assert!(!berry_pid_alive(pid), "已收尸子进程应判死");
         }
+    }
+}
+
+// ---- 六轮审计 F1 收敛：vnc_reachable 探活的纯文件系统三例。----
+#[cfg(test)]
+mod vnc_reachable_tests {
+    use super::*;
+
+    #[test]
+    fn live_socket_true_dead_file_false_absent_true() {
+        let tmp = std::env::temp_dir().join(format!("berry-vncreach-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // 无 vnc.sock：TCP 形态语义——不预探，恒 true。
+        assert!(vnc_reachable(&tmp));
+        // 活 listener：connect 握手成 → true。
+        let _l = std::os::unix::net::UnixListener::bind(tmp.join("vnc.sock")).unwrap();
+        assert!(vnc_reachable(&tmp));
+        // 死残留（普通文件冒充）：connect 得 ENOTSOCK → false。
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("vnc.sock"), "").unwrap();
+        assert!(!vnc_reachable(&tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
