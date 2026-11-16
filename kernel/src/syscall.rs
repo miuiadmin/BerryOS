@@ -493,7 +493,7 @@ static mut KLOG_SNAP_STAGE: [u8; TELEMETRY_SNAPSHOT_MAX] = [0; TELEMETRY_SNAPSHO
 /// 分段拷贝，失败前的段已写——诚实部分读，调用方重试）。零 handle 零权利位
 /// （系统级遥测读面——统计信号非对象内容，`sched_util_snapshot` 同族口径）。
 ///
-/// 锁类 TABLE：klog 环 seqlock 读无共享串行面；copy_out 链走查调用方页表
+/// 锁类 TABLE：klog 环热尾容错读无锁无共享串行面；copy_out 链走查调用方页表
 /// = §A113 读者面（同 0x61 clock_read）。
 extern "C" fn sys_telemetry_open(tf: &mut TrapFrame) -> i64 {
     let (op, ptr, len) = (tf.regs[1], tf.regs[2], tf.regs[3]);

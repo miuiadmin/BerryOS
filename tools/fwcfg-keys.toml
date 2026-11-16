@@ -77,7 +77,7 @@ polarity = "在位=真实时钟；缺席=状态栏静态占位钟"
 [[keys]]
 name = "demo-face"
 kind = "string"
-injectors = ["justfile run（DEMO 变量，缺省不注）"]
+injectors = ["justfile run（DEMO 变量，缺省不注）", "berry CLI GUI 家族（qemu.rs fwcfg_plan 恒注 off，BERRY_DEMO_FACE=on 逃生门，2026-11-16 布线）"]
 consumer = "kernel/src/main.rs demo_face_on（经 env 旗标递 svcmgr）"
 polarity = "值 off/clean=演示舰队关；缺席/畸形 fail-open=开（注意与 display 畸形=None 方向相反）"
 
@@ -165,6 +165,6 @@ polarity = "死键收编：内核常量在、产链无注入——加注入面�
 [[keys]]
 name = "loadgen"
 kind = "string"
-injectors = ["kernel/src/main.rs 载荷生成门（s=<ns>;b=<0|1>——CP-06 调度 lane，四轮实施时对拍实抓补登记）"]
-consumer = "kernel/src/main.rs LOADGEN_PROBE_NAME（在位才 spawn loadgen 探针）"
-polarity = "在位=spawn；缺席零扰动"
+injectors = ["（无仓内注入方——A/B 收割手拼 -fw_cfg 专递，rwake 同款；复现配方单源 = research/调度彻底计划/13-首份AB报告-loadgen.md）"]
+consumer = "kernel/src/main.rs 载荷生成门 LOADGEN_PROBE_NAME（在位才 spawn loadgen 探针；坏值 fail loud 诊断行整门跳过）"
+polarity = "在位且值合法（s=<ns>;b=<0|1>，分号分隔）才 spawn；缺席零扰动"

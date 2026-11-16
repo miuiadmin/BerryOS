@@ -40,6 +40,18 @@
 //!   轮询面（当前仅自检单读——随窗 2 recv 循环同刀）。CP-08/CP-10 验收
 //!   线的内核侧两断言（调度路径零频率写点 / PM 崩溃内核保频继续跑）归
 //!   kernel/sched 面断言刀。
+//!   **EAS 生产激活首步（EAS-PA 刀）已装**：自检单读顺延产 placement
+//!   hint（`UtilTrack::placement_hint` 低核偏好）→ `policy_bind` 0x83
+//!   COMMIT 提试（详见 main 尾段与
+//!   `research/调度彻底计划/15-EAS生产激活首步.md`）。
+//!   **v3 全四动作激活（POLICY4 刀）已装**：EAS 单动作面扩为完整策略
+//!   服务——`PowerCore::action_hints` 产四动作 hint（①placement/
+//!   ②frequency/③weight/④EPP，lib `hint` 纯面）→ ①③④经 `policy_bind`
+//!   COMMIT 表条目三字段一次整表提交、②落 PM 域自家频率裁决（无 0x83
+//!   载体——`hint` 模块注入形态定谳）；授权同刀落位（svcmgr 预拉改递
+//!   stdin → 自描述对 gift[2] 装配 → `self_proc_h()` 真值过 MANAGE 门
+//!   真提交——15 号留窗①前半），详见 main 尾段与
+//!   `research/调度彻底计划/16-v3四动作激活-berry-power完整策略服务.md`。
 //! - **窗 4（内核聚合点写面）**：ADR #66 ②——频率帽汇入 berry-power 同
 //!   一内核聚合点取 min = **唯一合法帽书写面**（帽不新开通道；本服务
 //!   `FreqCapAgg::aggregate` 是其纯函数形态）。真实写通道（对内核
@@ -62,7 +74,11 @@ use berry_power::{
     CoreEvent, PolicyParams, PowerCore, CAP_SRC_SCHEDHINT, CHG_REASON_USER, CHG_SLOT_USER,
 };
 use berry_power::util::UTIL_NR_CPU;
-use berry_sys::berry_sched_util_snapshot;
+use berry_libc::io::self_proc_h;
+use berry_sys::{
+    berry_policy_bind, berry_policy_status, berry_sched_util_snapshot, PolicyEntry,
+    POLICY_EPP_HAS, POLICY_EPP_VAL, POLICY_OP_COMMIT,
+};
 use berry_pwproto::{
     encode_ack, encode_battery, encode_modem, encode_thermal, BatterySnapshot, ModemSnapshot,
     ThermalSensor, ThermalSnapshot, ThermalTrip, ACK_LEN, ST_OK, THERMAL_SENSORS_MAX,
@@ -120,6 +136,18 @@ fn synth_wire(out: &mut Vec<u8>) {
 fn push_frame(out: &mut Vec<u8>, buf: &mut [u8], n: Option<usize>) {
     if let Some(n) = n {
         out.extend_from_slice(&buf[..n]);
+    }
+}
+
+/// ④ EPP flags 的诊断字母（eff=效率覆盖 / perf=性能覆盖 / none=无意见
+/// ——位语义消费 `berry_sys` ABI 常量，与 polface 两位打包同值镜像）。
+fn epp_str(flags: u8) -> &'static str {
+    if flags & POLICY_EPP_HAS == 0 {
+        "none"
+    } else if flags & POLICY_EPP_VAL != 0 {
+        "perf"
+    } else {
+        "eff"
     }
 }
 
@@ -193,6 +221,85 @@ fn main() {
         applied, rejected, acks, util_max, util_src, cap, v.chg.limit_ma, v.chg.reason, compat_pct, cap_uah,
         v.freq.req_khz, v.freq.eff_khz
     );
+    // —— v3 全四动作激活（POLICY4 刀）：完整策略服务面 ——
+    // 产消链四动作（ADR #42 动作空间；注入形态定谳见 lib `hint` 模块注）：
+    // ①placement：util EWMA → `UtilTrack::placement_hint`（低核偏好）→
+    //   PolicyEntry.placement → 内核 EAS 放置消费（`sched.rs` `place` →
+    //   `eas_place` → `policy::placement_hint`——15 号 EAS-PA 刀已接）；
+    // ②frequency：EWMA max → schedutil `f ≈ util×fmax/capacity`（`util`
+    //   面单源公式）→ **PM 域自家裁决**（`FreqVerdict` req/eff，上方
+    //   dry-run 行已打）——无 0x83 载体（`sched/policy.rs` 动作空间②
+    //   「频率/热限 hint 走 PM 服务、不经调度路径——不在表里」；本服务
+    //   即 PM），内核聚合点写面留窗（窗 4）；
+    // ③weight：util 高→+Δ 低→-Δ（`hint::weight_delta`——±64 包络内，
+    //   polface WEIGHT_MAX 单源）→ PolicyEntry.weight → `policy::apply`/
+    //   `weight_of` 写 `prio_effective`（带序键——`class.rs` 4-3a pick
+    //   按 effective 出选；+Δ=忙段提带早完 race-to-idle）；
+    // ④EPP：thermal_level（sim 热帧遥测折叠）→ fair 起效率档
+    //   （`hint::epp_flags`）→ PolicyEntry.epp_flags → `policy::apply`
+    //   写 `task.epp`（TCB 落点；下游大小核放置/PM 消费随 M1b/M3——
+    //   iprofile EppHint 单源注）。
+    // ①③④ = COMMIT（op=1）单条目三字段一次整表提交——**不是三个 op**
+    // （15 号 §0-1 定谳：0x83 动作面 = 表条目字段，op 词汇 1..6 无动作
+    // 对应位）。
+    //
+    // **授权落位（本刀，15 号留窗①前半）**：auth = `self_proc_h()`——
+    // svcmgr 预拉改递 stdin（空喂+EOF——vblk/vnet 同款 `Some(&[])` 形
+    // 态）→ berry-exec 自描述对条件装配触发（其 lib.rs「stdin 在位 =
+    // T-1 时代的调用面」）→ gift[2] = 自身 Process handle（MANAGE|
+    // DUPLICATE）→ 本表内真值过内核 MANAGE 三门控（arch-r2）→ STATUS
+    // 对账 + COMMIT 真受理（st=0/bd=0）。key = STATUS 读回的自身策略
+    // 键（v1 载体 = `Task::proc_tag`，EL0 进程表指针非零）——「自建议
+    // 最小面」：跨进程 key 主张（给别的进程加权/放置）仍归授权立法刀
+    // （15 号留窗①后半）。
+    //
+    // 单发形态（非周期轮询）同 15 号：窗 3 常驻循环留窗未开，周期面
+    // （gen 重试协议/-EAGAIN 对账重发、hint 动态重提交）随窗 2/3 立法
+    // 刀——本刀只装「读 util/thermal → 算四动作 → 提交」最小完整链，
+    // 一-shot 证据行后 park。
+    let hints = core.action_hints();
+    let auth = self_proc_h();
+    // STATUS（op=2）：gen 对账 + 自身策略键（受理形态下 gen+1 提交、
+    // key=self；未绑/空表读回 active gen=0 → 携 1 提交）。
+    let mut packed: u64 = 0;
+    let mut key: u64 = 0;
+    let st = berry_policy_status(auth, &mut packed, &mut key);
+    let gen = if st == 0 { (packed & 0xFFFF_FFFF) + 1 } else { 1 };
+    // COMMIT（op=1）：1 条四动作条目——①placement/③weight/④epp_flags
+    // 三字段（②频率无 0x83 载体走 PM 域，见上注；epp=0 时④即无意见
+    // 字段——内核 epp=None 不覆盖）。
+    let entry = PolicyEntry {
+        key,
+        placement: hints.placement,
+        weight: hints.weight_delta,
+        epp_flags: hints.epp_flags,
+        ..Default::default()
+    };
+    let bd = berry_policy_bind(auth, POLICY_OP_COMMIT, &entry, 1, gen, 0);
+    // 受理回读（gen echo）：再 STATUS 读活跃 gen——bd=0 且回读 == 提交
+    // gen = 四动作条目真落表的对账活证（读失败/门拒 → 0 哨兵诚实透传）。
+    let mut echo_packed: u64 = 0;
+    let mut echo_key: u64 = 0;
+    let echo = berry_policy_status(auth, &mut echo_packed, &mut echo_key);
+    let gen_echo = if echo == 0 { echo_packed & 0xFFFF_FFFF } else { 0 };
+    // 诊断行（非 smoke 标记——雷册 §A145 口径）：place=①（1/2）、
+    // freq=②（kHz，pm=PM 域无 0x83 载体）、wd=③（±16 带内微调）、
+    // epp=④（eff/perf/none）、key=STATUS 读回自身键、st/bd=两 syscall
+    // 返回（0=受理/负值=errno）、gn=提交后活跃 gen 回读、auth=自持
+    // handle 值。授权在位时预期 st=0 bd=0 gn=gen（四动作全激活活证）。
+    println!(
+        "berry-power: policy4 place={} freq={}khz(pm) wd={} epp={} key={} st={} bd={} gn={} auth={}",
+        hints.placement,
+        hints.freq_req_khz,
+        hints.weight_delta,
+        epp_str(hints.epp_flags),
+        key,
+        st,
+        bd,
+        gen_echo,
+        auth
+    );
+
     // CP-08 装配形态：自检（上方 dry-run = 引擎活面单轮走通）后 park 常驻
     // ——真实通道（窗 2 recv 长帽重臂）接线前，零产出动作零唤醒（被拉起
     // 也不写任何帽/票/发布位；berry-thermal park 壳同款骨架相）。

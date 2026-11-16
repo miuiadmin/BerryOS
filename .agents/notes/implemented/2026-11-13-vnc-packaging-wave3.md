@@ -33,7 +33,7 @@ Status: implemented
 
 - 计划（契约/偏差/验收记录）：[2026-11-13-vnc-packaging-wave3](../../plans/2026-11-13-vnc-packaging-wave3.md)
 - 第一波笔记：[2026-11-13-vnc-desktop-suite](2026-11-13-vnc-desktop-suite.md)；第二波笔记：[2026-11-13-vnc-maturity-wave2](2026-11-13-vnc-maturity-wave2.md)（其「.app 打包拷贝留打包刀」由本刀收口）
-- 设计（§8/§12/§14，v1.3）：[Berry设备平台-CLI-first设计-v1.0](../../../docs/Berry设备平台-CLI-first设计-v1.8.md)
+- 设计（§8/§12/§14，v1.3）：[Berry设备平台-CLI-first设计-v1.0](../../../docs/Berry设备平台-CLI-first设计-v1.9.md)
 - vendored 资产声明：[tools/berry/web/NOTICE.md](../../../tools/berry/web/NOTICE.md)
 - 代码：`tools/berry/src/web.rs`（max_conns 纯函数 + `ConnSlot` + `web_roots` 新根）、`commands.rs`/`main.rs`（布线）、`packaging/{macos,linux,windows}`（资产拷贝与幂等）
 - 实证产物：`out/BerryOS-Desktop.app`、`out/vnc-w3-packaged-browser.png`

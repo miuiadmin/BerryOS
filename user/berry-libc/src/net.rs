@@ -34,7 +34,10 @@
 //!   1s 节拍）；CLOSED 旗 = 可读余量 + EOF 收口、NOSESSION = 会话已收
 //!   口（recv 返 0 = POSIX EOF）。
 //! - send 恒 RPC 至应答（v1 无「仅入队」语义——O_NONBLOCK 对 send 不
-//!   分岔，A3-1 残留条目同源文档化）；connect 恒阻塞至握手帽（无
+//!   分岔，A3-1 残留条目同源文档化）；四刀起 Client 臂升级 **K 窗流水线**
+//!   （`TCP_PIPE_K`=2：K 个 RT op 在途、应答按尾随 seq 配对收割、陈值
+//!   弃、BUSY 同 seq 退避重发——八 op 对外语义零漂移，纯实现面；DNS/
+//!   慢 op/Server 臂保持严格串行 v1 形）；connect 恒阻塞至握手帽（无
 //!   EINPROGRESS 谎报面）。
 //!
 //! 本模块无 host 测试（berry-tls 先例：libc 同名符号在 host 测试二进制
@@ -208,14 +211,23 @@ fn sleep_tick() {
     }
 }
 
-/// 严格串行 RPC 的线上层（encode 产物字节 → send（满队 -EBUSY 阻塞等
-/// WRITABLE 重试）→ 应答阻塞帽等 READABLE → recv 原长）。**超时不重发**：
-/// 晚到应答滞留队列毒化下一请求是设计面（v1 无请求序号防重——A2-3 头注
-/// 同源）。netd gift 缺席（netd_h()==0）与链断同返 None（调用方按 op 定
-/// errno——gift 面由公开入口先查，此处 None 即链断面）。A4-2 抽出：
-/// TcpSReq 包装层（[`netd_rpc`]）与 DNS 请求层（[`dns_query`]——请求
-/// 形态非 TcpSReq）共用同一线上协议。
+/// 严格串行 RPC 的线上层（A2-3 底座；四刀 P2 拆 issue/harvest 两壳）：
+/// encode 产物字节 → send（满队 -EBUSY 阻塞等 WRITABLE 重试）→ 应答阻塞
+/// 帽等 READABLE → recv 原长。**超时不重发**：晚到应答滞留队列毒化下一
+/// 请求是 v1 设计面——四刀起 Client 臂 K 窗（[`sock_send`]）用 seq 配对
+/// 收割（陈值 = seq ∉ 在途集即弃），本单发壳供 DNS/OPEN/CLOSE/慢 op/
+/// Server 臂保持 v1 严格串行零漂移。netd gift 缺席（netd_h()==0）与链断
+/// 同返 None（调用方按 op 定 errno——gift 面由公开入口先查，此处 None 即
+/// 链断面）。A4-2 抽出：TcpSReq 包装层（[`netd_rpc`]）与 DNS 请求层
+/// （[`dns_query`]——请求形态非 TcpSReq）共用同一线上协议。
 fn netd_rpc_raw(req: &[u8], cap_ns: u64, rep: &mut [u8]) -> Option<usize> {
+    netd_rpc_issue(req)?;
+    netd_rpc_harvest(cap_ns, rep)
+}
+
+/// RPC 发出相（四刀 P2 拆壳）：send 满队 -EBUSY 阻塞等 WRITABLE 重试
+/// （CAP_FAST 帽）；链断 None。K 窗的 issue 相直用。
+fn netd_rpc_issue(req: &[u8]) -> Option<()> {
     let netd = crate::io::netd_h();
     if netd == 0 {
         return None;
@@ -224,7 +236,7 @@ fn netd_rpc_raw(req: &[u8], cap_ns: u64, rep: &mut [u8]) -> Option<usize> {
     loop {
         let s = berry_channel_send(netd, req.as_ptr(), req.len(), core::ptr::null(), 0);
         if s == 0 {
-            break;
+            return Some(());
         }
         if s != BERRY_ERR_BUSY {
             return None; // 链断面（非满队）——非慢而活
@@ -234,7 +246,21 @@ fn netd_rpc_raw(req: &[u8], cap_ns: u64, rep: &mut [u8]) -> Option<usize> {
             return None;
         }
     }
-    let reply_dl = now() + cap_ns;
+}
+
+/// RPC 收割相（四刀 P2 拆壳）：应答阻塞帽等 READABLE → recv 原长；帽到/
+/// 链断 None（不重发——迟到应答按陈值由 seq 收割面弃）。
+fn netd_rpc_harvest(cap_ns: u64, rep: &mut [u8]) -> Option<usize> {
+    netd_rpc_harvest_dl(now() + cap_ns, rep)
+}
+
+/// 收割相的绝对时刻形（K 窗用：收割帽可收到 BUSY 退避时刻——空等帽
+/// 不吞重发窗）。
+fn netd_rpc_harvest_dl(dl: u64, rep: &mut [u8]) -> Option<usize> {
+    let netd = crate::io::netd_h();
+    if netd == 0 {
+        return None;
+    }
     loop {
         let mut nb = rep.len();
         let mut nhd = 0usize;
@@ -248,7 +274,7 @@ fn netd_rpc_raw(req: &[u8], cap_ns: u64, rep: &mut [u8]) -> Option<usize> {
             return None; // 坏 handle 类链断——立即死不空等
         }
         let mut obs = 0u64;
-        if berry_object_wait_one(netd, SIGNAL_READABLE, reply_dl, &mut obs) != 0 {
+        if berry_object_wait_one(netd, SIGNAL_READABLE, dl, &mut obs) != 0 {
             return None; // 帽到无应答 = 断链面（不重发）
         }
     }
@@ -402,10 +428,12 @@ fn slot_of(fd: c_int) -> usize {
 }
 
 // —— 槽缓冲（RESIDUE）：客户端 legacy RT 回显 + 服务端 DRAIN 短读余量
-//    （io.rs PEND 同款偏移口径；单槽容量 = TCP_DATA_MAX——「恰一应答」
-//    的收发粒度帽）——
+//    （io.rs PEND 同款偏移口径；单槽容量四刀 P3 = K×TCP_DATA_MAX——
+//    「恰一应答」收发粒度帽随 K 窗同步放宽，准入式见 sock_send）——
 
-const RES_MAX: usize = ndp::TCP_DATA_MAX;
+/// 槽缓冲容量（四刀 P3）：250 → K×TCP_DATA_MAX=500——K 窗在途 op 的
+/// 回显暂存上限（SOCK_FD_MAX=8，静态 +2KB）。
+const RES_MAX: usize = ndp::RT_PIPE_K * ndp::TCP_DATA_MAX;
 static mut RESIDUE: [[u8; RES_MAX]; SOCK_FD_MAX] = [[0; RES_MAX]; SOCK_FD_MAX];
 static mut RES_LEN: [usize; SOCK_FD_MAX] = [0; SOCK_FD_MAX];
 static mut RES_OFF: [usize; SOCK_FD_MAX] = [0; SOCK_FD_MAX];
@@ -776,9 +804,28 @@ unsafe fn sockaddr_in_view(addr: *const SockAddr, len: u32) -> Option<AddrView> 
     })
 }
 
+/// Client 臂 K 窗流水线深度（四刀 P2）：与 vnet session-0 挂起 op 队列
+/// 共源（netdproto [`ndp::RT_PIPE_K`] 单源——恰满 berry-tcp 环 500 ≤ 512）。
+const TCP_PIPE_K: usize = ndp::RT_PIPE_K;
+
+/// K 窗在途 op 槽（issue/harvest 两相的暂存：请求序号 + 回显缓冲——
+/// BUSY 重发时 buf 前缀即请求原文，got>0 后被回显覆写）。
+#[derive(Clone, Copy)]
+struct PipeOp {
+    seq: u8,
+    len: usize,
+    got: usize,
+    /// ST_BUSY 退避重发时刻（0 = 无待重发）。
+    retry_dl: u64,
+    echo: [u8; ndp::TCP_DATA_MAX],
+}
+
 /// `send(2)` / write 链尾（sock_send）：按 kind 分形——
-/// - Client：legacy RT（session-0）分片 ≤TCP_DATA_MAX，应答回显入槽缓冲
-///   （缓冲余量不足先返部分写——POSIX 部分写语义，调用方续写前先读）；
+/// - Client：legacy RT（session-0）分片 ≤TCP_DATA_MAX 走 **K 窗流水线**
+///   （四刀 P2：issue/harvest 两相——K 个 op 在途、应答按 seq 配对收割、
+///   陈值弃、BUSY 同 seq 退避重发帽内；回显按 op 序入槽缓冲——每 op 应答
+///   仍严格等长携本 op 回显，ROUNDTRIP 对外语义零漂移）；缓冲余量不足
+///   → 部分写返回（首片即不足 = EAGAIN——读写节奏面，容量 = K×250）；
 /// - Server：命名 RT 纯发送臂（应答不携数据，A3-1 案②）；
 /// - Unconnected/Listen → EPIPE（Linux 口径：非连接套接字 send）。
 pub(crate) fn sock_send(fd: c_int, buf: *const u8, n: usize) -> ssize_t {
@@ -788,41 +835,7 @@ pub(crate) fn sock_send(fd: c_int, buf: *const u8, n: usize) -> ssize_t {
     };
     match e.kind {
         SockKind::Unconnected | SockKind::Listen => err_ret(crate::EPIPE) as ssize_t,
-        SockKind::Client => {
-            let slot = slot_of(fd);
-            let mut sent = 0usize;
-            while sent < n {
-                let chunk = (n - sent).min(ndp::TCP_DATA_MAX);
-                // 回显将入槽缓冲：余量不足 → 部分写返回（首片即不足 =
-                // EAGAIN——读写节奏面，调用方先读再写）。
-                if res_pending(slot) + chunk > RES_MAX {
-                    return if sent > 0 {
-                        sent as ssize_t
-                    } else {
-                        err_ret(crate::EAGAIN) as ssize_t
-                    };
-                }
-                // SAFETY: 调用方缓冲前 n 字节有效（libc 契约）。
-                let data = unsafe { core::slice::from_raw_parts(buf.add(sent), chunk) };
-                let mut tmp = [0u8; RES_MAX];
-                match rpc_data(SockOp::Send, ndp::TcpSReq::Roundtrip { data }, 0, CAP_SLOW_NS, &mut tmp) {
-                    Ok(k) => {
-                        if k > 0 {
-                            res_append(slot, &tmp[..k]);
-                        }
-                        sent += chunk;
-                    }
-                    Err(errno) => {
-                        return if sent > 0 {
-                            sent as ssize_t
-                        } else {
-                            err_ret(errno) as ssize_t
-                        };
-                    }
-                }
-            }
-            sent as ssize_t
-        }
+        SockKind::Client => sock_send_pipe(fd, buf, n),
         SockKind::Server => {
             let mut sent = 0usize;
             while sent < n {
@@ -842,6 +855,165 @@ pub(crate) fn sock_send(fd: c_int, buf: *const u8, n: usize) -> ssize_t {
             }
             sent as ssize_t
         }
+    }
+}
+
+/// Client 臂 K 窗实现（四刀 P2）。
+fn sock_send_pipe(fd: c_int, buf: *const u8, n: usize) -> ssize_t {
+    let slot = slot_of(fd);
+    let mut sent = 0usize;
+    // 窗口槽 FIFO（占用区 head..head+inflight）；seq 滚动发号（回绕距
+    // 256 ≫ K——陈值判定 = seq ∉ 在途集即弃，超时 op 的迟到应答不毒化
+    // 下一窗）。
+    let mut win: [Option<PipeOp>; TCP_PIPE_K] = [None; TCP_PIPE_K];
+    let (mut head, mut inflight) = (0usize, 0usize);
+    /// 错误返回收口：已发部分 → 部分写；首片 → errno（在途 op 的迟到
+    /// 应答按陈值弃——seq 收割面纪律，echo 不再入槽）。
+    fn bail(sent: usize, errno: c_int) -> ssize_t {
+        if sent > 0 {
+            sent as ssize_t
+        } else {
+            err_ret(errno) as ssize_t
+        }
+    }
+    while sent < n || inflight > 0 {
+        // —— issue 相 ——
+        // ① BUSY 退避到期：同 seq 重发（请求原文在 echo 前缀——BUSY 即
+        //    未入环必无回显覆写）。
+        for w in win.iter_mut() {
+            if let Some(op) = w {
+                if op.retry_dl != 0 && now() >= op.retry_dl {
+                    let mut req = [0u8; ndp::RT_SEQ_REQ_MAX];
+                    if let Some(rn) =
+                        ndp::encode_rt_seq_request(&mut req, &op.echo[..op.len], op.seq)
+                    {
+                        let _ = netd_rpc_issue(&req[..rn]); // 链断留收割相收口
+                    }
+                    op.retry_dl = 0;
+                }
+            }
+        }
+        // ② 空槽 + 余量准入 → 发下一片（seq 形）。
+        while inflight < TCP_PIPE_K && sent < n {
+            let chunk = (n - sent).min(ndp::TCP_DATA_MAX);
+            // 余量准入（P3）：槽缓冲余量 ≥ 在途 + 新片（在途 op 的回显
+            // 将全部入槽）——不足时不再 issue，先收割腾位。
+            if res_pending(slot) + (inflight + 1) * ndp::TCP_DATA_MAX > RES_MAX {
+                break;
+            }
+            // SAFETY: 调用方缓冲前 n 字节有效（libc 契约）。
+            let data = unsafe { core::slice::from_raw_parts(buf.add(sent), chunk) };
+            let seq = seq_next();
+            let mut req = [0u8; ndp::RT_SEQ_REQ_MAX];
+            let rn = match ndp::encode_rt_seq_request(&mut req, data, seq) {
+                Some(rn) => rn,
+                None => break, // 参数面（chunk ≤ TCP_DATA_MAX 恒过——防御）
+            };
+            if netd_rpc_issue(&req[..rn]).is_none() {
+                if inflight == 0 {
+                    return bail(sent, crate::EIO);
+                }
+                break;
+            }
+            let i = (head + inflight) % TCP_PIPE_K;
+            let mut echo = [0u8; ndp::TCP_DATA_MAX];
+            echo[..chunk].copy_from_slice(data);
+            win[i] = Some(PipeOp { seq, len: chunk, got: 0, retry_dl: 0, echo });
+            inflight += 1;
+            sent += chunk;
+        }
+        // —— 收割相前置判据：窗空且全发完 = 收工；窗空但发不出 = 节奏面
+        //（首片即不足 = EAGAIN——读写节奏面，调用方先读再写）。
+        if inflight == 0 {
+            if sent >= n {
+                return sent as ssize_t;
+            }
+            return bail(sent, crate::EAGAIN);
+        }
+        // —— harvest 相：帽内等一应答（有 BUSY 待重发时收割帽收到退避
+        // 时刻——空等帽不吞重发窗）；seq 配对，陈值弃续收。——
+        let mut cap = now() + CAP_SLOW_NS;
+        for w in win.iter() {
+            if let Some(op) = w {
+                if op.retry_dl != 0 && op.retry_dl < cap {
+                    cap = op.retry_dl;
+                }
+            }
+        }
+        let mut rep = [0u8; ndp::RT_SEQ_REP_MAX];
+        let got = match netd_rpc_harvest_dl(cap, &mut rep) {
+            Some(k) => k,
+            None => {
+                // 帽到：若因退避时刻截短（重发窗到）→ 回 issue 相；真帽到
+                // → 部分写/EIO。
+                let retry_due = win.iter().any(|w| {
+                    w.as_ref().map(|o| o.retry_dl != 0 && now() >= o.retry_dl) == Some(true)
+                });
+                if retry_due {
+                    continue;
+                }
+                return bail(sent, crate::EIO);
+            }
+        };
+        let r = match ndp::parse_tcp_reply(&rep[..got]) {
+            Some(r) => r,
+            None => return bail(sent, crate::EIO),
+        };
+        // seq 配对：命中在途 op 收割；陈值（∉ 在途集——迟到/无 seq 形）
+        // 弃置续收。
+        let hit = (0..TCP_PIPE_K).find(|&i| win[i].as_ref().map(|o| o.seq) == r.seq);
+        let Some(i) = hit else {
+            continue;
+        };
+        match r.st {
+            ndp::ST_OK => {
+                let Some(op) = win[i].as_mut() else { continue };
+                if r.data.len() != op.len {
+                    // 回显短斤/超长 = 协议破缺（loud 错误面）。
+                    return bail(sent, crate::EIO);
+                }
+                op.echo[..op.len].copy_from_slice(r.data);
+                op.got = op.len;
+            }
+            ndp::ST_BUSY => {
+                // 环/op 容量背压：同 seq 退避重发（1s 节拍，收割帽内）。
+                if let Some(op) = win[i].as_mut() {
+                    op.retry_dl = now() + POLL_TICK_NS;
+                }
+                continue;
+            }
+            st => {
+                // TIMEOUT/BAD 等 op 级错误。
+                return bail(sent, sock_rpc_errno(SockOp::Send, st));
+            }
+        }
+        // —— 队头收割入槽（按 op 序——回显流序不变式）。——
+        while inflight > 0 {
+            let done = match &win[head] {
+                Some(op) => op.got == op.len && op.retry_dl == 0,
+                None => false,
+            };
+            if !done {
+                break;
+            }
+            let op = win[head].take().unwrap();
+            res_append(slot, &op.echo[..op.len]);
+            head = (head + 1) % TCP_PIPE_K;
+            inflight -= 1;
+        }
+    }
+    sent as ssize_t
+}
+
+/// Client 臂 K 窗 seq 发号器（滚动 u8；单线程 static mut 直写——本模块
+/// 单线程 ABI 口径）。回绕距 256 ≫ K=2：同 seq 复用需 256 op 间隔，迟到
+/// 应答窗口（vnet 内帽 60s）内结构性无碰撞。
+fn seq_next() -> u8 {
+    // SAFETY: 单线程读写。
+    static mut SEQ: u8 = 0;
+    unsafe {
+        SEQ = SEQ.wrapping_add(1);
+        SEQ
     }
 }
 

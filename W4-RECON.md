@@ -1,5 +1,8 @@
 # W4-RECON —— 波 4 先行批侦察（只读解剖）
 
+状态：已完成历史——机制面已被 settings_io.rs（SETTINGS.CFG 五键，2026-11-16）取代，本文仅作波 4 侦察过程存档（被取代面限 SETTINGS.JSN 键族规划两处，已就地加状态注记：§1.5 末行与 §四 Settings 行）。
+现行实现：[user/bins/settings/src/settings_io.rs](user/bins/settings/src/settings_io.rs)（SETTINGS.CFG 五键 canonical，含旧 SETTINGS.JSN dark 键自动迁移）。
+
 基线：worktree `wip/ui-wave4` 自主树 HEAD 769515a9a 开出（含 9035af061 Settings 垂直切片 + 5452649af svcmgr GUI 通道授权两先例）。全部行号为 2026-11-15 工作树现场直数；包体/rootfs 尺寸取主树构建产物实测（user/userbins/app/、rootfs*.cpio，Nov 15 14:22 批）。
 
 ## 〇、结论速览
@@ -47,7 +50,7 @@ v0 settings 直用 `berry_ui::desc::{CheckProps,ColProps,DividerProps,RowProps,S
 - 严格串行单 RPC 会话（fsclient 单读者协议：一请求一应答无序号，一次只持一个 fd，open→…→close 不交叠）；**close 即 commit**（TRUNC 游标两段式，C-1 裁决 2，bsh put_file 同款）。
 - `fs_h()==0` 结构性早退零 RPC（冻结相零扰动）；API = berry-libc fs::{open(O_CREAT/O_RDONLY/O_WRONLY), read, write} + io::close。
 - 冒烟面：数据盘根哨兵 GUI8.SMK 全字节比对 → LAYOUTW ok（写后读回自检）/ LAYOUT ok n=2（跨 boot 回读）；gui8-smoke.py 钉 LAYOUT_CANONICAL 109B 确定性字节。
-- 波 4 应用侧（SETTINGS.JSN 等六键族）规划走 appshell::conf——**crate 未落**，v1 降解见 §四。
+- 波 4 应用侧（SETTINGS.JSN 等六键族）规划走 appshell::conf——**crate 未落**，v1 降解见 §四。（状态注记 2026-11-16：该键族机制面后来未走 appshell::conf，由 settings 应用侧 settings_io.rs 落 SETTINGS.CFG 五键取代；本行仅作侦察时点史实。）
 
 ### 1.6 打包入镜像链（mkapp/userbins/rootfs 装配）
 
@@ -131,7 +134,7 @@ v0 settings 直用 `berry_ui::desc::{CheckProps,ColProps,DividerProps,RowProps,S
 
 | 应用 | v1 形态（3b 缺席降解） | 终态差异（3b/波 2 落齐后） |
 |---|---|---|
-| Settings | 纯 pattern 建树 + widget_react；SETTINGS.JSN 经 launcher layout_io 食谱自实现（libc fs 直开直写单簇）；无 NavStack back——单页 + 根页即退出位；Boot mode 项无 BOOT.JSN 真源 → 砍或只读展示 | appshell::conf 键族 + Nav pop + BOOT.JSN 与 launcher TabBar 设置页同键同源；Radio/Seg 详情页推拉 |
+| Settings | 纯 pattern 建树 + widget_react；SETTINGS.JSN 经 launcher layout_io 食谱自实现（libc fs 直开直写单簇；状态注记 2026-11-16：落地形即此食谱的单键前身 theme_io.rs，现已由 settings_io.rs 的 SETTINGS.CFG 五键含旧档迁移取代）；无 NavStack back——单页 + 根页即退出位；Boot mode 项无 BOOT.JSN 真源 → 砍或只读展示 | appshell::conf 键族 + Nav pop + BOOT.JSN 与 launcher TabBar 设置页同键同源；Radio/Seg 详情页推拉 |
 | Files | /apps 枚举可行（OP_MKDIR 链在 + launcher 预建落则真树）；Search 无 softimed → 预置过滤 chips（chip 件）前缀过滤替代敲键 | softimed 升起敲键回显；面包屑 chip 跳级同形可保 |
 | Contacts | 列表→详情用 NavHost 值面页序自管（pop 走 app 内手势位/自绘返回 glyph 的 icon_button，无系统 back）；Dialing Toast → 应用内底部 Text 瞬态行（帧循环节拍 2s 自撤）；CONTACTS.JSN 同 Settings 食谱 | 系统 back 全链 pop + appshell Toast 窗内 Overlay |
 | Photos | 看片窗无 IMMERSIVE → 全幅窗近似（AVOID_SYS 或 surface 全幅 + 状态栏区域自绘遮盖的诚实标注）；SwipePager 在册可用（swipe.rs 波 2 已落主树） | WM_CREATE_F_IMMERSIVE 沉浸态 + 状态栏隐藏/回显链 |

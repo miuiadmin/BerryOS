@@ -1018,6 +1018,15 @@ done
 rootfs_list=$(printf '%s + ' "${ROOTFS_MARKERS[@]}"); rootfs_list=${rootfs_list% + }
 echo "smoke: rootfs 相 ${#ROOTFS_MARKERS[@]}/${#ROOTFS_MARKERS[@]} 到齐（${rootfs_list}）"
 
+# P2 治理钉板（2026-11-16 跨分卷评估）：多卷形态断言——rootfs1.cpio 在席
+#（vols 上界 ≤4 由帽 128MiB / 卷 32MiB 推出，[2-9] 以此为前提——单改
+# split 参数后须同步此形态）
+# 则 ROOTFS ok 行必须 vols>=2（P1 的 vols= 打点）。防 rootfs 将来瘦身后多卷
+# 覆盖「形态碰巧」静默失守：跨卷条目读取的隐性覆盖由本断言升格为钉板。
+if [ -f rootfs1.cpio ]; then
+  grep -q 'ROOTFS ok src=.*vols=[2-9]' "$LOG"     || { echo "smoke: FAIL: rootfs1.cpio 在席但 vols<2——多卷装载退化（分卷线失守）" >&2; exit 1; }
+fi
+
 # app-0 a-2 证据层（波 4 裁决 B 随动重裁）：原断 `app APPDEMO up`（boot 批
 # 拉起 console=true app 的串口自证）——波 4 六应用 + appdemo 画廊均为常驻
 # park 形 GUI app，boot 批改「[ui] 入册不拉起」（svcmgr 裁决 B，W4-RECON

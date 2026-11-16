@@ -57,7 +57,7 @@ berry> ls | grep boot
 
 `cd` 改的是 shell 自己进程的状态，`type`/`exit`/环境变量赋值同理——这些必须是 shell 内建。判据一句话：**改 shell 自己状态的，进 shell；干活的，独立程序**。
 
-内建名单单源 `const BUILTINS`（`type` 身份查询与 Tab 补全候选两处消费同表；help 文案由 `HELP_LINES` 承载并经 cli_selftest 逐名互钉断言执法）。既有十二件（help/exit/env/echo/run/cat/ls/mkdir/rm/cd/pwd/inputpoll）之外，命令行体验刀（2026-11-15）补齐六件：
+内建名单单源 `const BUILTINS`（`type` 身份查询与 Tab 补全候选两处消费同表；help 文案由 `HELP_LINES` 承载并经 cli_selftest 逐名互钉断言执法）。既有十二件（help/exit/env/echo/run/cat/ls/mkdir/rm/cd/pwd/inputpoll）之外，命令行体验刀（2026-11-15）补齐六件（另 dmesg 为阶段五后追补，现役共 19 件）：
 
 | 命令 | 行为 |
 |------|------|
@@ -67,6 +67,7 @@ berry> ls | grep boot
 | `sleep <s>` | 阻塞 `<s>` 秒（100ms 步进 usleep 环，v1 无长睡原语；不可打断——无异步信号抢占面）；缺失/非数字/负数/超 60s 帽均 usage 2 |
 | `type <name>` | 身份三档：内建表命中 `is a shell builtin`、rootfs 命中 `is /bin/<name>`、`not found`（码 1）；v1 单名字面（多词整串作一名，不分词） |
 | `history` | 回显 editor 历史环（8×256B newest-first，编号随会话重排）逐行 `N  cmd`；历史属交互循环 editor 状态，非交互调用方空环 |
+| `dmesg` | 内核日志快照（0x84 telemetry_open op=0 薄包装，4KiB 尾帽，失败诊断行码 1，数据字节可重定向——阶段五第 17 步第 19 件） |
 
 六件行为面由 bsh `cli_selftest` 自验钉板（`CLI ok n=6`，rootfs 相标记——六步：clear 7B 逐字节对拍/uname 前缀/uptime 数值域/sleep 1s 时钟差分 + 0/60 双闭边界/type 三分支 + help↔BUILTINS 互钉/history 环回读）。
 
@@ -82,7 +83,7 @@ P5 第一刀 = PL011 **RX 中断**（`开发体验.md` §3 既定前置），其
 
 bsh 交互循环天然管道化：从 fd0 逐字节读、经 editor 状态机、全部输出走 fd1——不依赖任何终端专属原语。因此 `SpawnSpec.stdin_feed`（feeder 泵喂字节）加 `stdout` 私有对端（channel 收集）即构成「任意程序以哑终端形态驱动 bsh」的完整契约：提示符 `bsh> `、命令回显行与命令结果行混流同一 stdout 字节流，驱动方收流即得全部终端语义。契约由 bsh `term_selftest` 自验钉板（`TERM ok n=2`，rootfs 相标记）：spawn 子 bsh（`--no-selftest` 跳过自验链直进交互循环）喂两命令，私有 stdout 收齐提示符 ×2/回显行/两结果行后 terminate(130) 收口。
 
-GUI 终端应用（berry-term）与键盘链的五件挂账（QEMU 键盘设备与 inputd 解码分支、inputd 多订阅者焦点路由、.bap GUI 授能与 APP_SLOTS 扩容、宿主 `berry console` 串口直连、berry-term 本体）显式移交波3——明细见[命令行体验刀实施设计](../.agents/plans/2026-11-15-命令行体验刀实施设计.md)契约 4，本节管道契约即 berry-term 的地基。
+GUI 终端应用（berry-term）与键盘链的挂账显式移交波3（明细见[命令行体验刀实施设计](../.agents/plans/2026-11-15-命令行体验刀实施设计.md)契约 4，本节管道契约即 berry-term 的地基）。进展注（2026-11-16）：宿主 `berry console` 串口直连已落（chardev socket + `berry console` 子命令——宿主终端直进 bsh，CLI-first 设计 v1.9 §8）；wmd 半边已拆（波3 批A 起：焦点表/属主事件通道/表变更广播/OP_WM_SUBSCRIBE 落地），inputd 单订阅与物理键盘链（QEMU 键盘设备/认领门/Key·Text 出向帧/泵解码）仍锁；.bap GUI 授能经 [ui] 门 v1 换轨实质已解（APP_SLOTS 扩容前置在册）；berry-term 本体待波3 输入底座收口。
 
 ## 3. 命令三梯队
 
@@ -110,7 +111,7 @@ BusyBox 的"单二进制多命令"只作思路参考（GPLv2，不搬代码）�
 | P5 第一刀 | PL011 RX 中断 + mini-readline（**已落地 2026-10，A-1/A-2 两步**：A-1 = UART RX 面 + GIC SPI 33 + console 三项 wait_many，`RX ok` = smoke 交互相标记；A-2 = 键盘行转发端 + bsh 挂载。mini-readline（P5 v0 收官补齐）= console 行编辑归属：退格/上下键历史（8×96B newest-first 环 + ESC 序列状态机）/Ctrl-U，Tab 补全当时 defer v2（补全需 rootfs 知识）；**C-4（2026-10-28）兑现**：行编辑归属迁 bsh（console 退化逐字节透传），Tab 补全 = 内建 ∪ rootfs bin/ + 目录视图三态面，`TAB ok` = rootfs 相标记（见 §2.4 归属裁定）；smoke RX 相注入退格 + `ESC[A` 召回双验；**C-4b（2026-10-28）补 Ctrl-C 前台杀链**：collect_fg 收 0x03 → process_terminate(130) + TERMINATED 收口 → `$?`=130，smoke RX 相 g 段注入验） | 串口双向：能打字回显、历史（smoke 三跑注入序列断言） |
 | P5 v0 | bsh：内建命令 + `run` 外部程序 + 环境变量 + `&&`（**已落地 2026-10**：环境变量 = shell 局部 vars + `$NAME`/`$?` 展开 + `env` 内建（子进程 env 传递 defer v2——argv 块无 env 面，`export` 随之）；`&&` = 切行短路 + 每段执行时展开（`A=1 && echo $A` 求值序）；状态码 sh 惯例 0/2/126/127/子真码——真码源 = **0x3A `process_get_exit_code`（P5 扩号，ABI 单源管线首次真实扩号 28→29）**，`ChildHandles::reap` 改 `Result<i32>`；`fail`（exit 42）= rootfs 确定性非零源；自验 = and_selftest 三步断言 + smoke `EXIT ok` 强化 code==0） | 串口跑 `run hello`（`开发体验.md` §3 场景成真；bsh `&&` 自验内嵌 `run fail` 真码 42） |
 | P5 v0.5 | channel 管道 `\|`（已落地 2026-10：`PIPE ok` = rootfs 相第 10 标记，bsh 三跑对拍自验）；重定向 `>` 依赖 FS（/svc/fs），随 P6 | `hexyl \| hexyl` 端到端 |
-| P6 | uutils 文件命令全家 + berryctl/powertop/trace 三件套 + `>` 重定向（A-1 最小面已落地 2026-10：fsmgr RAM-fs 服务 + berry-fsproto 协议 + bsh `>`/cat/ls，`FS ok n=` = rootfs 相第 11 标记；**2026-10-23 注：P6 已收官，uutils 全家与 berryctl/powertop/trace 三件套未随 P6 落地——滑移 M-VM（M-G3「CLI 可用」站，C-2 拆步，见 `VM里程碑设计草案-v1.0.md`）**） | `berryctl --json` 遥测可读 |
+| P6 | uutils 文件命令全家 + berryctl/powertop/trace 三件套 + `>` 重定向（A-1 最小面已落地 2026-10：fsmgr RAM-fs 服务 + berry-fsproto 协议 + bsh `>`/cat/ls，`FS ok n=` = rootfs 相第 11 标记；**2026-10-23 注：P6 已收官，uutils 全家与 berryctl/powertop/trace 三件套未随 P6 落地——滑移 M-VM（M-G3「CLI 可用」站，C-2 拆步，见 `VM里程碑设计草案-v1.0.md`）；后记：uu 23 件与 berryctl 后经 C-2 系/装配链入 rootfs（tools/rootfs-manifest.toml 单源），powertop/trace 仍缺**） | `berryctl --json` 遥测可读 |
 | P6 后·命令行体验刀（2026-11-15） | 六内建（clear/uname/uptime/sleep/type/history，§2.3）+ 哑终端管道契约钉板（§2.5，`TERM ok n=2`）+ `--no-selftest` 子 bsh 直进交互面 | `CLI ok n=6` / `TERM ok n=2`（rootfs 相第 55/56 标记，EFI 路亦打） |
 | 远期 | 更丰富脚本语法；受限 fork（v3+ 探索）后评估更多 POSIX 面 | — |
 
