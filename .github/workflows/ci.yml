@@ -311,7 +311,11 @@ jobs:
           SMOKE_PHASES: boot
           # 同机多 run 并行分抢核 → TCG 拖慢（boot 120s 本地帽在 CI 并行态不够），
           # CI 放宽到 360（帽哲学：只兜结构性挂死不赌快）。
-          SMOKE_DEADLINE_BOOT: '360'
+          # 帽史：360→900（2026-11-16，boot 标记族膨胀帽债——ktest 深睡三族
+          # FRZCYC/PSCI/PWRDEG 入册 + 满表探测环使 CI TCG 到齐超 360s；本地
+          # HVF 8s / 本地 TCG 7s 双绿排除结构病，升帽同 smoke-image 360→900
+          # 判例。服务器 TCG ~10× 本地，900s 仍只兜挂死不赌快）。
+          SMOKE_DEADLINE_BOOT: '900'
         run: unshare -Urn sh -c 'ip link set lo up && exec just smoke'
 
       # ---------- P7-x4 五原语收官 gate：x86_64 最小集挂 CI ----------
