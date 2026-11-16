@@ -10,3 +10,7 @@
 | D 跨线 | 接缝 4+漂移 15+测试+索引 | **P0 漂移 3 件**(0x83 门控后文档不可执行)/test-host 零 CI/berry-gpuproto 无入册 |
 | E 修复验证与回归 | P0×3 + selftest 8 + cargo 7 + smoke boot | P0×3 全 PASS(vgpu 序/gate 文档/pr=1 双件+对账绿)/回归 16 件全绿/[E-修复验证与回归](E-修复验证与回归.md) |
 | G 新件集成检查 | crate 8 + docs 8 + ADR + README 4 系列 + test-host 8 | 沿革节 8/8 齐;索引行 4/8(gpuproto 仍仅沿革可考);**预留 ADR #86 三占**(Rust 化计划 vs 显示线未按让先落者律错开);research README 缺行 14(调度彻底计划 9/厂商定制化 44-46/显示 06·08);test-host 八件全挂且实跑全绿但 CI 零引用/[G-新件集成检查](G-新件集成检查.md) |
+| K | `K-语义完整性.md` | 五链语义级审计:intent→band(assignment 通·**行为差异化=0**·FairBand 全委托 unit Fair)/EAS(测试通·**生产未激活**)/LOADGEN(**数据真差异**——utility p50 758→10776)/PM util(**owner 曾实现频率决策后撤**——当前树未到位)/timer slack(全链通·实测 p50=due+10ms) |
+| L | `L-owner新件扫描.md` | owner 8 笔 192 文件:face crate×3+桌面三栏+TCP+零覆盖我方;两处误入库(W3A 副本×5+.berry-verify 缓存×73) |
+| M | `M-最终判定.md` | 终验三问:覆盖交叉(六类盲区)/已知未修完整清单/**审计完成判定** |
+| N | `N-快速终验.md` | R4 缺口闭合确认(intent→band ✅ FairBand 四 API 行为断言/EAS ✅ 内核侧+EL0 证据窗)+全量回归 **2138 测零败**+v3 四动作测试+漏网快扫(卫生债在册) |

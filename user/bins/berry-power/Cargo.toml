@@ -51,6 +51,10 @@ berry-pwproto = { path = "../../berry-pwproto" }
 # EWMA 折叠数学单源（α=1/8 移位、0..=1024 尺度、窗常量——sched/src/util.rs
 # 生产侧同源消费；本件消费侧零第二实现，W3-Q14 纪律）。
 berry-emface = { path = "../../../emface" }
+# 策略动作词汇/包络单源（v3 四动作激活刀）：EPP 两位打包（EPP_HAS/EPP_VAL）
+# 与权重包络（WEIGHT_MAX=±64）——kernel `sched/policy.rs` 同源消费
+# （polface re-export），hint 产面零第二实现。
+berry-polface = { path = "../../../polface" }
 # bin 壳（optional，wired 门）：console 诊断行 + park 常驻原语。
 berry-libc = { path = "../../berry-libc", optional = true }
 # util 通道首环（optional，wired 门）：sched_util_snapshot 0x40 快照读

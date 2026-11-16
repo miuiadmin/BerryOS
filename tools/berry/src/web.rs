@@ -699,6 +699,19 @@ impl Drop for ConnSlot {
 pub struct LanUpstream {
     pub dial: String,
     pub tls: Option<LanTlsUpstream>,
+    /// 在场即启用输入拦截器（2026-11-16 布线，装配面在 vnc-lan lane）：
+    /// QEMU 11 的 VNC pointer 路径丢弃绝对坐标，QMP input-send-event 可达
+    /// virtio-tablet——代理拦截浏览器 RFB PointerEvent 转 QMP。
+    pub qmp_sock: Option<PathBuf>,
+    pub guest_w: u32,
+    pub guest_h: u32,
+}
+
+impl LanUpstream {
+    /// 兼容旧调用形态（无拦截器）。
+    pub fn dial_only(dial: String) -> Self {
+        LanUpstream { dial, tls: None, qmp_sock: None, guest_w: 1, guest_h: 1 }
+    }
 }
 
 /// The TLS upstream leg of `--lan` on a TLS run (wave 11): the rustls
@@ -1936,7 +1949,7 @@ mod tests {
         std::fs::write(tmp.join("novnc").join("vnc.html"), b"<html>noVNC</html>").unwrap();
         let ctx = Arc::new(ServeCtx {
             root: tmp.clone(),
-            lan: Some(LanUpstream { dial: format!("127.0.0.1:{up_port}"), tls: None }),
+            lan: Some(LanUpstream { dial: format!("127.0.0.1:{up_port}"), tls: None, qmp_sock: None, guest_w: 1, guest_h: 1 }),
             ctl: None,
         });
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2031,7 +2044,7 @@ mod tests {
         std::fs::write(tmp.join("novnc").join("vnc.html"), b"<html>noVNC</html>").unwrap();
         let ctx = Arc::new(ServeCtx {
             root: tmp.clone(),
-            lan: Some(LanUpstream { dial: format!("127.0.0.1:{dead_port}"), tls: None }),
+            lan: Some(LanUpstream { dial: format!("127.0.0.1:{dead_port}"), tls: None, qmp_sock: None, guest_w: 1, guest_h: 1 }),
             ctl: None,
         });
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2612,6 +2625,9 @@ mod tests {
         let lan_up = LanUpstream {
             dial: format!("127.0.0.1:{up_port}"),
             tls: Some(LanTlsUpstream { cfg: client_cfg, name, dir: dir.clone() }),
+            qmp_sock: None,
+            guest_w: 1,
+            guest_h: 1,
         };
         let tmp = std::env::temp_dir().join(format!("berry-lan-tls-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
@@ -2715,6 +2731,9 @@ mod tests {
         let lan_up = LanUpstream {
             dial: format!("127.0.0.1:{up_port}"),
             tls: Some(LanTlsUpstream { cfg: client_cfg, name, dir: other }),
+            qmp_sock: None,
+            guest_w: 1,
+            guest_h: 1,
         };
         let tmp = std::env::temp_dir().join(format!("berry-lan-tls-neg-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
