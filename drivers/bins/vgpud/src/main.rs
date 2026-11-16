@@ -572,7 +572,6 @@ const TOKEN_RING: usize = 8;
 const CREDITS: usize = gp::CREDITS_MAX as usize;
 const IDLE_CAP_NS: u64 = 10_000_000_000;
 const SEND_REARM_NS: u64 = 10_000_000_000;
-const SOFT_VSYNC_NS: u64 = 16_666_666;
 const VBLANK_SIG: u64 = gp::HDI_USER_SIGNAL;
 const HDI_SLOTS: usize = gp::HDI_SLOTS_MAX as usize;
 const MAX_BACKING_PAGES: usize = 4096;
@@ -657,6 +656,15 @@ struct PresentSrv {
     boot_milestones: [bool; gp::BOOT_M_MAX as usize + 1],
     boot_logs: [&'static [u8]; VERBOSE_LOG_MAX],
     boot_log_n: usize,
+    // Software-LTPO arbitration state. QEMU has no panel mode-set; these are
+    // the display service's soft-vblank cadence decisions, not hardware claims.
+    ltpo_hz: u8,
+    ltpo_min_hz: u16,
+    ltpo_max_hz: u16,
+    ltpo_preferred_hz: u16,
+    ltpo_sticky: u8,
+    power_mode: u8,
+    last_submit_ns: u64,
 }
 
 impl PresentSrv {
@@ -807,6 +815,8 @@ impl PresentSrv {
             self.held_n += 1;
         }
         self.perf_submits = self.perf_submits.saturating_add(1);
+        self.last_submit_ns = now();
+        self.refresh_ltpo("submit");
         let submit_elapsed = now().saturating_sub(submit_started);
         self.perf_last_ns = submit_elapsed;
         self.perf_submit_ns = self.perf_submit_ns.saturating_add(submit_elapsed);
@@ -1178,9 +1188,43 @@ impl PresentSrv {
         });
     }
 
+    fn refresh_ltpo(&mut self, reason: &str) {
+        let t = now();
+        let idle_ns = t.saturating_sub(self.last_submit_ns);
+        let hz = gp::software_ltpo_hz(
+            self.ltpo_min_hz,
+            self.ltpo_max_hz,
+            self.ltpo_preferred_hz,
+            self.ltpo_sticky,
+            self.power_mode,
+            idle_ns,
+        );
+        let old_hz = self.ltpo_hz;
+        self.ltpo_hz = hz;
+        if hz == 0 {
+            self.vb_scheduled = false;
+        } else if self.vb_scheduled && hz > old_hz && old_hz != 0 {
+            // An upward transition must not wait out a prior 1Hz/10Hz slot.
+            self.vb_next_ns = t + Self::period_ns(hz);
+        }
+        if hz != old_hz {
+            println!("VGPULTPO ok hz={hz} old={old_hz} reason={reason}");
+        }
+    }
+
+    fn period_ns(hz: u8) -> u64 {
+        if hz == 0 {
+            return 0;
+        }
+        1_000_000_000 / u64::from(hz)
+    }
+
     fn vsync_schedule(&mut self) {
         if !self.vb_scheduled {
-            self.vb_next_ns = now() + SOFT_VSYNC_NS;
+            if self.ltpo_hz == 0 {
+                return;
+            }
+            self.vb_next_ns = now() + Self::period_ns(self.ltpo_hz);
             self.vb_scheduled = true;
         }
     }
@@ -1238,9 +1282,15 @@ impl PresentSrv {
             self.present_seq = self.present_seq.wrapping_add(1);
         }
         self.vb_seq = self.vb_seq.wrapping_add(1);
-        let mut next = point + SOFT_VSYNC_NS;
+        self.refresh_ltpo("age");
+        let period = Self::period_ns(self.ltpo_hz);
+        if period == 0 {
+            self.vb_scheduled = false;
+            return;
+        }
+        let mut next = point + period;
         while next <= t {
-            next += SOFT_VSYNC_NS;
+            next += period;
         }
         self.vb_next_ns = next;
         if !self.vb_armed && !self.vb_parked {
@@ -1713,12 +1763,25 @@ impl PresentSrv {
                     None => trap(),
                 }
             }
-            Some(gp::PresentReq::Vote { .. }) => {
+            Some(gp::PresentReq::Vote {
+                sticky,
+                scene: _,
+                min_hz,
+                max_hz,
+                preferred_hz,
+            }) => {
                 close_all(hs);
+                self.ltpo_min_hz = min_hz;
+                self.ltpo_max_hz = max_hz;
+                self.ltpo_preferred_hz = preferred_hz;
+                self.ltpo_sticky = sticky;
+                self.refresh_ltpo("vote");
                 st_rep(ch, gp::ST_OK);
             }
-            Some(gp::PresentReq::PowerMode { .. }) => {
+            Some(gp::PresentReq::PowerMode { mode }) => {
                 close_all(hs);
+                self.power_mode = mode;
+                self.refresh_ltpo("power");
                 st_rep(ch, gp::ST_OK);
             }
             Some(gp::PresentReq::BootProgress { stage, permille, milestone }) => {
@@ -1805,6 +1868,13 @@ fn serve_present(d: &Dma, regs: *mut u32, w: u32, h: u32, face: Face) -> ! {
         boot_milestones: [false; gp::BOOT_M_MAX as usize + 1],
         boot_logs: [b""; VERBOSE_LOG_MAX],
         boot_log_n: 0,
+        ltpo_hz: 60,
+        ltpo_min_hz: 0,
+        ltpo_max_hz: 60,
+        ltpo_preferred_hz: 60,
+        ltpo_sticky: 0,
+        power_mode: gp::POWER_NORMAL,
+        last_submit_ns: 0,
         slots: [HdiSlot {
             vmo: 0,
             resource: 0,
@@ -1816,6 +1886,7 @@ fn serve_present(d: &Dma, regs: *mut u32, w: u32, h: u32, face: Face) -> ! {
             committed: false,
         }; HDI_SLOTS],
     };
+    srv.last_submit_ns = now();
     let items = [present, hdi];
     let sigs = [SIGNAL_READABLE, SIGNAL_READABLE];
     let mut obs = [0u64; 2];

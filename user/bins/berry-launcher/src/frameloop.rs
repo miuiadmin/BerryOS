@@ -505,6 +505,11 @@ pub fn run(
                                             card.owner = Some(*owner);
                                         }
                                         ui.invalidate_full();
+                                        // TASK is an explicit shell transition even
+                                        // while the APP keeps keyboard focus; wake
+                                        // the event-driven frame loop for this
+                                        // full-screen Recents repaint.
+                                        ui.wake(now());
                                     }
                                 }
                             }

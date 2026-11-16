@@ -718,9 +718,11 @@ impl AppRoom {
         }
     }
 
-    /// 创建默认全屏窗口：避开持久系统状态栏/导航保留区。
+    /// Android-style edge-to-edge default: raw content extends beneath the
+    /// persistent status/navigation overlays while Surface Mode still returns
+    /// authoritative safe insets for app layout.
     pub fn open_window(&mut self) -> RoomResult<(usize, usize)> {
-        self.open_window_with_flags(gp::WM_CREATE_F_AVOID_SYS)
+        self.open_window_with_flags(gp::WM_CREATE_F_EDGE_TO_EDGE)
     }
 
     /// 创建沉浸全屏窗口：显式请求隐藏持久系统保留区。普通 app 仍只获
@@ -807,6 +809,23 @@ impl AppRoom {
         self.occlusion = occlusion;
         self.last_dirty = None;
         self.opened = true;
+        if create_flags & gp::WM_CREATE_F_EDGE_TO_EDGE != 0 {
+            let grant = self.configure_surface(SurfaceRequest {
+                mode: SurfaceModeKind::Retained,
+                input_classes: SURFACE_INPUT_TOUCH,
+                ime_mode: SURFACE_IME_DISABLED,
+                a11y_mode: SURFACE_A11Y_TREE,
+            })?;
+            self.occlusion = gp::insets::OcclusionSnapshot::new(
+                [
+                    grant.safe_left,
+                    grant.safe_top,
+                    grant.safe_right,
+                    grant.safe_bottom,
+                ],
+                [0; 4],
+            );
+        }
         Ok((width, height))
     }
 

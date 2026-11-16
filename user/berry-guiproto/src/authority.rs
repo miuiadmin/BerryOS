@@ -5,6 +5,7 @@
 //! 引入第二实现。
 
 use crate::{Rect, WM_CLIENT_APP, WM_CLIENT_SYSTEM, WM_CREATE_F_AVOID_SYS,
+    WM_CREATE_F_EDGE_TO_EDGE,
             WM_LAYER_APP, WM_LAYER_SYSTEM};
 
 /// WM_CREATE 层权限：APP 恒 APP 层；SYSTEM 可造 SYSTEM 层（系统壳/IME
@@ -27,8 +28,11 @@ pub fn wm_parent_allowed(parent: u16, parent_owner: Option<u16>, owner: u16, id:
 pub fn wm_create_flags_allowed(client_type: u8, flags: u8) -> bool {
     let known = client_type == WM_CLIENT_APP || client_type == WM_CLIENT_SYSTEM;
     known
-        && flags & !WM_CREATE_F_AVOID_SYS == 0
-        && (client_type != WM_CLIENT_SYSTEM || flags & WM_CREATE_F_AVOID_SYS == 0)
+        && flags & !(WM_CREATE_F_AVOID_SYS | WM_CREATE_F_EDGE_TO_EDGE) == 0
+        && (flags & (WM_CREATE_F_AVOID_SYS | WM_CREATE_F_EDGE_TO_EDGE)
+            != WM_CREATE_F_AVOID_SYS | WM_CREATE_F_EDGE_TO_EDGE)
+        && (client_type != WM_CLIENT_SYSTEM
+            || flags & (WM_CREATE_F_AVOID_SYS | WM_CREATE_F_EDGE_TO_EDGE) == 0)
 }
 
 /// 焦点策略：CREATE/SHOW 只让 APP 层接焦；SYSTEM 层是 overlay/输入法宿主，
@@ -88,6 +92,11 @@ impl SurfaceGeometry {
             visible_w: visible.2,
             visible_h: visible.3,
         })
+    }
+
+    /// visible 窗口全局矩形（合成/overlay 命中消费面）。
+    pub fn visible_bounds(&self) -> (u16, u16, u16, u16) {
+        (self.visible_x, self.visible_y, self.visible_w, self.visible_h)
     }
 
     /// visible 在 raw buffer 坐标系中的本地矩形。SUBMIT 的源 offset/stride
@@ -150,4 +159,32 @@ pub fn clip_damage_to_surface(r: Rect, w: u32, h: u32) -> Option<Rect> {
         return None;
     }
     Some(Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 })
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edge_to_edge_is_app_only_and_composes_with_avoid_sys_domain() {
+        assert!(wm_create_flags_allowed(WM_CLIENT_APP, WM_CREATE_F_EDGE_TO_EDGE));
+        assert!(!wm_create_flags_allowed(
+            WM_CLIENT_SYSTEM,
+            WM_CREATE_F_EDGE_TO_EDGE
+        ));
+        // Both mode bits together is ambiguous and rejected without assigning
+        // a second precedence rule.
+        assert!(!wm_create_flags_allowed(
+            WM_CLIENT_APP,
+            WM_CREATE_F_AVOID_SYS | WM_CREATE_F_EDGE_TO_EDGE
+        ));
+        assert!(!wm_create_flags_allowed(WM_CLIENT_APP, 0x04));
+    }
+
+    #[test]
+    fn surface_geometry_exposes_visible_bounds_without_second_derivation() {
+        let geometry = SurfaceGeometry::new((10, 20, 100, 200), (20, 30, 80, 180)).unwrap();
+        assert_eq!(geometry.visible_bounds(), (20, 30, 80, 180));
+    }
 }

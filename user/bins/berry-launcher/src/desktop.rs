@@ -78,7 +78,6 @@ const OH_DENSITY: u32 = 3;
 /// 状态栏可见高 39vp（phone statusbar float；launcher 布局保留 44vp）。
 const OH_STATUS_H: u32 = 39;
 /// 状态栏左右 padding 24vp。
-const OH_STATUS_PAD: u32 = 24;
 /// 桌面网格左右 margin 12vp。
 const OH_GRID_MARGIN: u32 = 12;
 /// 桌面 app item 80vp（网格 5×4 的行高）。
@@ -104,7 +103,6 @@ const DOCK_SLOTS: usize = 4;
 const ROLE_LIST: u8 = 6;
 
 /// 状态栏右件（时钟占位——TODO(W2)：真时钟经 berry_clock_read 摆字）。
-const STATUS_CLOCK: &[u8] = b"12:00";
 /// a11y 页容器 label。
 const PAGE_LABELS: [&[u8]; PAGES] = [b"page 0", b"page 1", b"page 2", b"page 3"];
 /// 空槽占位 label。
@@ -258,19 +256,6 @@ fn is_test_app(id: &[u8]) -> bool {
 }
 
 /// 状态栏 Icon spec（内建 id；宽高来自 OH 资产真值，不做运行时缩放）。
-fn status_icon_spec(id: u16) -> Result<ViewSpec, UiError> {
-    let (w, h) = match id {
-        icons::STATUS_SIGNAL => icons::STATUS_SIGNAL_DIM,
-        icons::STATUS_WIFI => icons::STATUS_WIFI_DIM,
-        icons::STATUS_BATTERY => icons::STATUS_BATTERY_DIM,
-        _ => return Err(UiError::NodeBad),
-    };
-    Ok(ViewSpec {
-        kind: ViewKind::Icon,
-        key: 0,
-        props: Props::Icon(IconProps { id, fg: TEXT_FG, w: Some(w), h: Some(h) }),
-    })
-}
 
 /// 桌面建树（main 单次调用；几何全 `ui.viewport()` 动态——裁决 D）。
 /// Err = 容量/文本域违例（NodeFull/NodeBad/TextTooLong 族）——调用方
@@ -286,7 +271,6 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
     // OpenHarmony phone 档：1080×1920 = 360×640vp @3x，直接消费 OH
     // launcher 源仓 phone 常量。800×600 调试档保留紧凑布局。
     let status_h = if big { OH_STATUS_H * OH_DENSITY } else { 44 };
-    let status_size = if big { FontSize::S32x48 } else { FontSize::S16x32 };
     let label_size = if big { FontSize::S32x48 } else { FontSize::S16x32 };
     // 800×600 调试档：56px 源采样 + 16px label 恰容 95px 轨高。
     let icon_px = if big { ICON_PX } else { 56 };
@@ -326,98 +310,21 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
         },
     )?;
 
-    // 状态栏：左时间、右 signal/wifi/battery（OH systemui phone 资产）。
-    let status = ui.add(
+    // Android-style transparent status overlay: wallpaper remains visible and
+    // only signal/wifi/battery/clock glyphs paint over it.
+    let _status = ui.add(
         content,
         ViewSpec {
-            kind: ViewKind::Panel,
+            kind: ViewKind::Col,
             key: 0,
-            props: Props::Panel(PanelProps {
-                bg: Color { r: 0, g: 0, b: 0 },
-                w: Some(vp_w),
-                h: Some(status_h),
-                padding: 0,
-                gap: 0,
-                radius: 0,
-            }),
-        },
-    )?;
-    // OH systemui phone：左右 24vp；左 = signal/wifi，右 = battery/clock
-    // （StatusbarConfig LayoutGroups 1/3；clock rightmost）。
-    let status_pad = if big { OH_STATUS_PAD * OH_DENSITY } else { 6 };
-    let time_w = STATUS_CLOCK.len() as u32 * status_size.cell_w() as u32;
-    let status_icon_gap = if big { 15 } else { 6 };
-    let left_w = icons::STATUS_SIGNAL_DIM.0
-        + status_icon_gap
-        + icons::STATUS_WIFI_DIM.0;
-    let right_w = icons::STATUS_BATTERY_DIM.0 + status_icon_gap + time_w;
-    let status_flex = vp_w.saturating_sub(status_pad * 2 + left_w + right_w);
-    let srow = ui.add(
-        status,
-        ViewSpec {
-            kind: ViewKind::Row,
-            key: 0,
-            props: Props::Row(RowProps {
+            props: Props::Col(ColProps {
                 gap: 0,
                 w: Some(vp_w),
                 h: Some(status_h),
-                cross: CrossAlign::Center,
+                cross: CrossAlign::Stretch,
             }),
         },
     )?;
-    let add_status_spacer = |ui: &mut UiMain, w: u32| -> Result<NodeId, UiError> {
-        ui.add(
-            srow,
-            ViewSpec {
-                kind: ViewKind::Col,
-                key: 0,
-                props: Props::Col(ColProps {
-                    gap: 0,
-                    w: Some(w),
-                    h: Some(1),
-                    cross: CrossAlign::Center,
-                }),
-            },
-        )
-    };
-    add_status_spacer(ui, status_pad)?;
-    let left_group = ui.add(
-        srow,
-        ViewSpec {
-            kind: ViewKind::Row,
-            key: 0,
-            props: Props::Row(RowProps {
-                gap: status_icon_gap,
-                w: Some(left_w),
-                h: None,
-                cross: CrossAlign::Center,
-            }),
-        },
-    )?;
-    let sig = ui.add(left_group, status_icon_spec(icons::STATUS_SIGNAL)?)?;
-    ui.set_a11y(sig, ROLE_TEXT, b"signal full")?;
-    let wifi = ui.add(left_group, status_icon_spec(icons::STATUS_WIFI)?)?;
-    ui.set_a11y(wifi, ROLE_TEXT, b"wifi full")?;
-    add_status_spacer(ui, status_flex)?;
-    let right_group = ui.add(
-        srow,
-        ViewSpec {
-            kind: ViewKind::Row,
-            key: 0,
-            props: Props::Row(RowProps {
-                gap: status_icon_gap,
-                w: Some(right_w),
-                h: None,
-                cross: CrossAlign::Center,
-            }),
-        },
-    )?;
-    let battery = ui.add(right_group, status_icon_spec(icons::STATUS_BATTERY)?)?;
-    ui.set_a11y(battery, ROLE_TEXT, b"battery 100")?;
-    let time_node = ui.add(right_group, text_spec(STATUS_CLOCK, TEXT_FG, status_size)?)?;
-    ui.set_a11y(time_node, ROLE_TEXT, STATUS_CLOCK)?;
-    add_status_spacer(ui, status_pad)?;
-
     // OH calculateDesktop：首 item top 绝对 162px；扣除状态栏 132px。
     let grid_top = if big { OH_DESKTOP_TOP.saturating_sub(status_h) } else { 8 };
     ui.add(

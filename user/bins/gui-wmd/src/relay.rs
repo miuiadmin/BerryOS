@@ -233,6 +233,13 @@ struct OwnerFrameCacheSlot {
     stamp: u64,
 }
 
+/// Cached alpha source for a launcher-owned SYSTEM bar window.
+struct SystemOverlay {
+    owner: u16,
+    id: u16,
+    vmo: Handle,
+}
+
 /// Phase 2 wmd 合成面：全屏 XRGB8888 VMO + 行弹舱。wmd 是 guifbd 唯一
 /// present client；每个 session SUBMIT 先按 owner 窗口拷入此 VMO，再以
 /// surface_id=0 聚合提交 guifbd。
@@ -248,6 +255,7 @@ pub struct Compositor {
     cache: [Option<OwnerFrameCacheSlot>; OWNER_CACHE_SLOTS],
     cache_epoch: u64,
     fresh_owner: Option<u16>,
+    overlays: [Option<SystemOverlay>; 2],
     /// back buffer 相对 front 的陈旧域（屏幕坐标包络）。恒等于「back 落后
     /// 于 front 的区域」：成功提交后 = 该次**实际写入域**（finish_submit
     /// 唯一记账点）；前写路径（`use_scanout_buffer` 写 front）并入写入域。
@@ -285,6 +293,7 @@ impl Compositor {
             cache: [None, None, None],
             cache_epoch: 0,
             fresh_owner: None,
+            overlays: [None, None],
             back_stale: gp::Rect { x: 0, y: 0, w, h },
         }
     }
@@ -346,6 +355,143 @@ impl Compositor {
 
     pub fn fresh_owner(&self) -> Option<u16> {
         self.fresh_owner
+    }
+
+    /// Replace the cached source for a SYSTEM overlay. The handle is a READ
+    /// duplicate owned by wmd; source alpha is straight ARGB8888.
+    fn cache_system_overlay(
+        &mut self,
+        owner: u16,
+        id: u16,
+        vmo: Handle,
+    ) -> bool {
+        let slot = self
+            .overlays
+            .iter()
+            .position(|o| o.is_none() || o.as_ref().is_some_and(|o| o.owner == owner && o.id == id))
+            .unwrap_or_else(|| {
+                let oldest = 0;
+                if let Some(old) = self.overlays[oldest].take() {
+                    let _ = berry_handle_close(old.vmo);
+                }
+                oldest
+            });
+        if let Some(old) = self.overlays[slot].take() {
+            let _ = berry_handle_close(old.vmo);
+        }
+        self.overlays[slot] = Some(SystemOverlay { owner, id, vmo });
+        true
+    }
+
+    /// Resolve cached overlays against current WM visibility/geometry.
+    fn visible_system_overlays(
+        &self,
+        mut geometry: impl FnMut(u16, u16) -> Option<gp::authority::SurfaceGeometry>,
+    ) -> [(u16, u16, u32, u32, u32, u32); 2] {
+        let mut out = [(0, 0, 0, 0, 0, 0); 2];
+        let mut count = 0usize;
+        for overlay in self.overlays.iter().flatten() {
+            if count == out.len() {
+                break;
+            }
+            if let Some(geom) = geometry(overlay.owner, overlay.id) {
+                let (x, y, w, h) = geom.visible_bounds();
+                out[count] = (overlay.owner, overlay.id, u32::from(x), u32::from(y), u32::from(w), u32::from(h));
+                count += 1;
+            }
+        }
+        out
+    }
+
+    /// Blend visible overlays over the active composition buffer. Alpha is
+    /// read from the overlay source; destination remains opaque XRGB.
+    fn apply_system_overlays(
+        &mut self,
+        visible: &[(u16, u16, u32, u32, u32, u32); 2],
+    ) -> bool {
+        for &(owner, id, x, y, w, h) in visible {
+            let Some(slot) = self
+                .overlays
+                .iter()
+                .position(|o| o.as_ref().is_some_and(|o| o.owner == owner && o.id == id))
+            else {
+                continue;
+            };
+            let overlay = self.overlays[slot].as_ref().expect("checked");
+            let row = w as usize * 4;
+            if row == 0 || row * 2 > self.bounce.len() {
+                return false;
+            }
+            let rows_per_chunk = (self.bounce.len() / 2 / row).max(1);
+            let mut y0 = 0usize;
+            while y0 < h as usize {
+                let rows = (h as usize - y0).min(rows_per_chunk);
+                let src_off = y0 * row;
+                if berry_vmo_read(
+                    overlay.vmo,
+                    self.bounce.as_mut_ptr(),
+                    src_off as u64,
+                    rows * row,
+                ) != 0
+                {
+                    return false;
+                }
+                let dst_base = ((y + y0 as u32) as usize * self.stride + x as usize * 4)
+                    as u64;
+                let dst_len = rows * row;
+                // Read destination into the second half of the bounce buffer,
+                // then blend source alpha in place without raw-pointer writes.
+                let destination_vmo = self.active_vmo();
+                let (source, destination) = self.bounce.split_at_mut(dst_len);
+                if berry_vmo_read(
+                    destination_vmo,
+                    destination.as_mut_ptr(),
+                    dst_base,
+                    dst_len,
+                ) != 0
+                {
+                    return false;
+                }
+                for i in 0..dst_len / 4 {
+                    let sp = i * 4;
+                    let dp = sp;
+                    let sa = source[sp + 3];
+                    if sa == 0 {
+                        continue;
+                    }
+                    let sr = source[sp];
+                    let sg = source[sp + 1];
+                    let sb = source[sp + 2];
+                    if sa == 255 {
+                        destination[dp] = sr;
+                        destination[dp + 1] = sg;
+                        destination[dp + 2] = sb;
+                    } else {
+                        let a = u32::from(sa);
+                        let inv = 255 - a;
+                        destination[dp] =
+                            ((u32::from(sr) * a + u32::from(destination[dp]) * inv) / 255) as u8;
+                        destination[dp + 1] = ((u32::from(sg) * a
+                            + u32::from(destination[dp + 1]) * inv)
+                            / 255) as u8;
+                        destination[dp + 2] = ((u32::from(sb) * a
+                            + u32::from(destination[dp + 2]) * inv)
+                            / 255) as u8;
+                    }
+                }
+                if berry_vmo_write(
+                    destination_vmo,
+                    destination.as_ptr(),
+                    dst_base,
+                    dst_len,
+                ) != 0
+                {
+                    return false;
+                }
+                y0 += rows;
+            }
+        }
+        true
     }
 
     fn active_vmo(&self) -> Handle {
@@ -823,6 +969,36 @@ pub fn submit_composite(
         boot_progress_first_submit_once(cli);
     }
 
+    // Launcher SYSTEM bar windows are alpha overlay sources. wmd keeps a READ
+    // duplicate so later APP/full-desktop submissions can re-blend the bars
+    // after edge-to-edge content has passed underneath them.
+    let bar_overlay = client_type == gp::WM_CLIENT_SYSTEM
+        && !system_surface
+        && (u32::from(raw_w) < comp.w || u32::from(raw_h) < comp.h);
+    if bar_overlay {
+        let mut overlay_vmo = 0;
+        if berry_handle_duplicate(src, RIGHT_READ, &mut overlay_vmo) != 0
+            || overlay_vmo == 0
+            || !comp.cache_system_overlay(
+                owner,
+                u16::try_from(surface_id).unwrap_or(0),
+                overlay_vmo,
+            )
+        {
+            if overlay_vmo != 0 {
+                let _ = berry_handle_close(overlay_vmo);
+            }
+            let _ = berry_handle_close(src);
+            st_rep(ch, gp::ST_BAD);
+            return false;
+        }
+        // Bar sources are cache-only: the first real backend SUBMIT remains
+        // surface0's desktop frame, preserving m=10/m=11 BootProgress truth.
+        let _ = berry_handle_close(src);
+        st_rep(ch, gp::ST_OK);
+        return false;
+    }
+
     // 他人（SYSTEM overlay、桌面 surface 或另一个 APP）即将覆盖合成面；
     // 先按 fresh owner 的有效窗口保存真实像素。缓存是 Recents 静态复显
     // 的增强面，失败时走既有“等待 app 自绘”路径。
@@ -900,6 +1076,29 @@ pub fn submit_composite(
         comp.invalidate_back_buffer();
         st_rep(ch, gp::ST_BAD);
         return false;
+    }
+
+    let visible_overlays = comp.visible_system_overlays(|overlay_owner, overlay_id| {
+        surface_geometry(overlay_owner, overlay_id)
+    });
+    if !comp.apply_system_overlays(&visible_overlays) {
+        comp.invalidate_back_buffer();
+        st_rep(ch, gp::ST_BAD);
+        return false;
+    }
+    for &(.., x, y, w, h) in visible_overlays.iter() {
+        if w == 0 || h == 0 {
+            continue;
+        }
+        // Keep damage conservative under DAMAGE_MAX by collapsing existing
+        // writes to their envelope before appending both bar rectangles.
+        if out_n == gp::DAMAGE_MAX {
+            let envelope = Compositor::envelope(&out_rects);
+            out_rects[0] = envelope;
+            out_n = 1;
+        }
+        out_rects[out_n] = gp::Rect { x, y, w, h };
+        out_n += 1;
     }
 
     let (submit_rects, submit_n) = comp.submit_plan(&out_rects, out_n);

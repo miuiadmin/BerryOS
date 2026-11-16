@@ -1016,7 +1016,7 @@ impl WmSession {
             // R2：persistent occlusion 以 raw surface-local 为基准写入既有
             // safe_* 字段。它是 host 授予值，不是 app 自报；IME/transient
             // occlusion 不在此通道。
-            let (left, top, right, bottom) = geometry.occlusion_insets();
+            let (left, top, right, bottom) = table.safe_insets(self.id, req.surface_id).ok_or(gp::ST_NOENT)?;
             info.safe_left = left;
             info.safe_top = top;
             info.safe_right = right;

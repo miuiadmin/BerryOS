@@ -395,6 +395,88 @@ fn create_system_reserve(
     id
 }
 
+/// Configure and submit one launcher-owned transparent SYSTEM bar overlay.
+///
+/// The bar-local VMO carries straight ARGB8888. wmd caches its READ alias and
+/// re-blends the bar after every later APP/full-desktop submission, so normal
+/// edge-to-edge app content can extend beneath status/navigation.
+fn submit_system_overlay(
+    hw: Handle, id: u16, w: u16, h: u16, status: bool,
+) {
+    let mut req = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+
+    let surface = gp::surface::SurfaceModeReq {
+        surface_id: id,
+        role: gp::surface::SURFACE_ROLE_SYSTEM,
+        mode: gp::surface::SURFACE_MODE_RETAINED,
+        input_classes: 1,
+        ime_mode: 0,
+        a11y_mode: 0,
+    };
+    let m = match gp::surface::encode_wm_surface_mode_req(&mut req, &surface) {
+        Some(m) => m,
+        None => fail("system overlay surface encode"),
+    };
+    let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+    let info = match gp::surface::parse_wm_surface_mode_rep(&rep[..n]) {
+        Some(Ok(info)) => info,
+        other => fail(&format!("system overlay surface id={id} got {other:?}")),
+    };
+    if !gp::surface::surface_mode_grant_matches(&surface, &info)
+        || !gp::surface::surface_mode_info_fits(&info, u32::from(w), u32::from(h))
+    {
+        fail("system overlay surface grant mismatch");
+    }
+
+    let stride = u32::from(w).saturating_mul(4) as usize;
+    let bytes = stride.saturating_mul(h as usize);
+    let map_len = (bytes + 0xFFF) & !0xFFF;
+    let mut vmo = 0;
+    if berry_vmo_create(map_len as u64, 0, &mut vmo) != 0
+        || vmo == 0
+        || berry_vmo_commit(vmo, 0, map_len as u64) != 0
+    {
+        fail("system overlay vmo");
+    }
+    let filled = if status {
+        icons::write_system_status_overlay(vmo, u32::from(w), u32::from(h))
+    } else {
+        icons::write_system_navigation_overlay(vmo, u32::from(w), u32::from(h))
+    };
+    if !filled {
+        let _ = berry_handle_close(vmo);
+        fail("system overlay pixels");
+    }
+
+    let mut alias = 0;
+    if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
+        let _ = berry_handle_close(vmo);
+        fail("system overlay dup");
+    }
+    let submit = gp::PresentReq::Submit {
+        surface_id: u32::from(id),
+        buffer_id: 0x53595342,
+        flags: gp::SUBMIT_F_DAMAGE_FULL,
+        rate_hint: 0,
+        target_present_ns: 0,
+        rects: [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX],
+        rect_count: 0,
+    };
+    let m = enc_req(gp::encode_present_req(&mut req, &submit));
+    let (n, _) = rpc_submit(hw, &req[..m], &[alias], &mut rep, &mut rhs);
+    if gp::parse_submit_ack(&rep[..n]).is_none()
+        && gp::parse_status_rep(&rep[..n]) != Some(gp::ST_OK)
+    {
+        fail(&format!("system overlay submit id={id} st={}", rep[0]));
+    }
+    if berry_handle_close(vmo) != 0 {
+        fail("system overlay vmo close");
+    }
+    println!("WMSYSOVERLAY ok id={id} {}x{} status={}", w, h, status as u8);
+}
+
 fn main() {
     // —— 降级门：wm 客户端端未交付（rootfs 相 wmd 随 fb 探测门不被拉起
     // → 本程序不被拉起；bsh 手跑无 extras）→ 一行诊断 + park（v0 骨架
@@ -467,6 +549,8 @@ fn main() {
         let nav_y = info.disp_h.saturating_sub(nav_h);
         let navigation =
             create_system_reserve(hw, b"navigation", 0, nav_y, info.disp_w, nav_h);
+        submit_system_overlay(hw, status, info.disp_w, status_h, true);
+        submit_system_overlay(hw, navigation, info.disp_w, nav_h, false);
         system_reserves = Some((status, navigation));
     }
 

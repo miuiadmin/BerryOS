@@ -30,12 +30,16 @@
 use std::sync::OnceLock;
 
 use berry_appproto as ap;
+use berry_gfx::font::FontSize;
 use berry_gfx::icon::{decode, IconError};
 use berry_layout::ID_MAX;
 use berry_libc::io::self_vmar_h;
 use berry_sys::{
-    berry_handle_close, berry_vmar_map, berry_vmo_commit, berry_vmo_create, Handle,
-    RIGHT_READ, RIGHT_WRITE,
+    berry_handle_close, berry_vmar_map, berry_vmo_commit, berry_vmo_create,
+    berry_vmo_write, Handle, RIGHT_READ, RIGHT_WRITE,
+};
+use berry_ui::navigation::{
+    NavigationIconSource, NAV_ICON_BACK, NAV_ICON_HOME, NAV_ICON_TASK,
 };
 use berry_ui::IconSource;
 
@@ -49,9 +53,6 @@ mod wallpaper;
 
 /// 内建状态/dock 图标 id（desktop 直建 Icon 节点；位于 app 图标稠密域
 /// 前缀，app id 从 7 起——launcher 是唯一消费者，契约不外泄）。
-pub const STATUS_SIGNAL: u16 = 0;
-pub const STATUS_WIFI: u16 = 1;
-pub const STATUS_BATTERY: u16 = 2;
 /// 静态壁纸源 id（稠密 app 域外的唯一固定特例——rodata 直供零堆）。
 pub const WALLPAPER: u16 = 0xFFFE;
 pub const WALLPAPER_DIM: (u32, u32) = (wallpaper::WALLPAPER_W, wallpaper::WALLPAPER_H);
@@ -66,9 +67,6 @@ pub const DOCK1_DIM: (u32, u32) = (status_icons::DOCK1_W, status_icons::DOCK1_H)
 pub const DOCK2_DIM: (u32, u32) = (status_icons::DOCK2_W, status_icons::DOCK2_H);
 pub const DOCK3_DIM: (u32, u32) = (status_icons::DOCK3_W, status_icons::DOCK3_H);
 pub const DOCK_DIMS: [(u32, u32); 4] = [DOCK0_DIM, DOCK1_DIM, DOCK2_DIM, DOCK3_DIM];
-pub const STATUS_SIGNAL_DIM: (u32, u32) = (status_icons::SIGNAL_W, status_icons::SIGNAL_H);
-pub const STATUS_WIFI_DIM: (u32, u32) = (status_icons::WIFI_W, status_icons::WIFI_H);
-pub const STATUS_BATTERY_DIM: (u32, u32) = (status_icons::BATTERY_W, status_icons::BATTERY_H);
 const BUILTIN_FACES: usize = 7;
 const _: () = assert!(BUILTIN_FACES == 7, "状态三 + dock 四内建面钉板");
 
@@ -505,55 +503,9 @@ fn smooth_wallpaper_into_argb(out: &mut [u32], dw: u32, dh: u32) {
     overlay_product_navigation(out, dw as usize, dh as usize);
 }
 
-/// 产品壁纸同帧烘焙底部系统导航条。系统壳像素来自 launcher surface0；
-/// 烘焙进缓存可避免为三枚静态 glyph 增加 512 节点桌面树。
-fn overlay_product_navigation(out: &mut [u32], dw: usize, dh: usize) {
-    if dw < 1000 || dh < 1800 {
-        return;
-    }
-    let y0 = dh - 108;
-    for y in y0..dh {
-        let row = y * dw;
-        for x in 0..dw {
-            out[row + x] = 0xFF00_0000;
-        }
-    }
-
-    let white = 0xFFFF_FFFF;
-    // BACK：72×72 几何箭头。
-    for y in 0..72usize {
-        for x in 0..72usize {
-            let dx = x as i32 - 18;
-            let dy = y as i32 - 36;
-            let stroke = (-dy - dx).abs() <= 5 || (dy - dx).abs() <= 5;
-            let tail = y >= 30 && y < 42 && x >= 18 && x < 54;
-            if stroke || tail {
-                out[(y0 + 8 + y) * dw + 144 + x] = white;
-            }
-        }
-    }
-    // HOME：圆环。
-    for y in 0..72usize {
-        for x in 0..72usize {
-            let dx = x as i32 - 36;
-            let dy = y as i32 - 36;
-            let d = dx * dx + dy * dy;
-            if (324..=576).contains(&d) {
-                out[(y0 + 8 + y) * dw + 504 + x] = white;
-            }
-        }
-    }
-    // TASK：方框。
-    for y in 0..72usize {
-        for x in 0..72usize {
-            let border = (x >= 18 && x < 54 && (y == 22 || y == 50))
-                || (y >= 22 && y < 50 && (x == 18 || x == 53));
-            if border {
-                out[(y0 + 8 + y) * dw + 864 + x] = white;
-            }
-        }
-    }
-}
+/// Product wallpaper no longer bakes the navigation band. The launcher-owned
+/// SYSTEM navigation overlay supplies its translucent scrim and AOSP glyphs.
+fn overlay_product_navigation(_out: &mut [u32], _dw: usize, _dh: usize) {}
 
 fn horiz_rgb565(
     px: &[u16],
@@ -572,6 +524,123 @@ fn horiz_rgb565(
         ((u32::from(g0) * inv + u32::from(g1) * fx) >> 8) as u8,
         ((u32::from(b0) * inv + u32::from(b1) * fx) >> 8) as u8,
     )
+}
+
+const OVERLAY_MAX_W: usize = 1920;
+const STATUS_CLOCK: &[u8] = b"12:00";
+
+fn blit_argb(
+    row: &mut [u32], x0: usize, y0: usize, w: usize, h: usize, face: &[u32],
+) {
+    for y in 0..h {
+        if y0 + y >= row.len() {
+            return;
+        }
+        for x in 0..w {
+            let src = face.get(y * w + x).copied().unwrap_or(0);
+            let sa = u32::from((src >> 24) & 0xFF);
+            if sa == 0 {
+                continue;
+            }
+            let x = x0 + x;
+            let Some(dst) = row.get_mut(x) else { continue };
+            let inv = 255 - sa;
+            let sr = u32::from((src >> 16) & 0xFF);
+            let sg = u32::from((src >> 8) & 0xFF);
+            let sb = u32::from(src & 0xFF);
+            let dr = u32::from((*dst >> 16) & 0xFF);
+            let dg = u32::from((*dst >> 8) & 0xFF);
+            let db = u32::from(*dst & 0xFF);
+            let r = (sr * sa + dr * inv) / 255;
+            let g = (sg * sa + dg * inv) / 255;
+            let b = (sb * sa + db * inv) / 255;
+            let a = u32::from((*dst >> 24) & 0xFF).max(sa);
+            *dst = (a << 24) | (r << 16) | (g << 8) | b;
+        }
+    }
+}
+
+/// Build the transparent launcher-owned status overlay in a bar-local VMO.
+pub fn write_system_status_overlay(vmo: Handle, w: u32, h: u32) -> bool {
+    let w = w as usize;
+    let h = h as usize;
+    if w == 0 || h == 0 || w > OVERLAY_MAX_W {
+        return false;
+    }
+    let mut row = [0u32; OVERLAY_MAX_W];
+    for value in row.iter_mut().take(w) {
+        *value = 0x6600_0000;
+    }
+    if h >= 45 {
+        let y = (h - 45) / 2;
+        blit_argb(&mut row, 72, y, status_icons::SIGNAL_W as usize, status_icons::SIGNAL_H as usize, &status_icons::SIGNAL_PX);
+        blit_argb(&mut row, 72 + status_icons::SIGNAL_W as usize + 15, y, status_icons::WIFI_W as usize, status_icons::WIFI_H as usize, &status_icons::WIFI_PX);
+        blit_argb(&mut row, w.saturating_sub(72 + status_icons::BATTERY_W as usize), y, status_icons::BATTERY_W as usize, status_icons::BATTERY_H as usize, &status_icons::BATTERY_PX);
+    }
+    let atlas = FontSize::S32x48.atlas();
+    let cell_w = FontSize::S32x48.cell_w();
+    let cell_h = FontSize::S32x48.cell_h();
+    if h >= cell_h {
+        let x0 = w.saturating_sub(72 + STATUS_CLOCK.len() * cell_w);
+        let y0 = (h - cell_h) / 2;
+        for (index, byte) in STATUS_CLOCK.iter().enumerate() {
+            let Some(coverage) = atlas.coverage(*byte) else { continue };
+            for gy in 0..coverage.h {
+                for gx in 0..coverage.w {
+                    let alpha = coverage.coverage[gy * coverage.w + gx];
+                    if alpha == 0 {
+                        continue;
+                    }
+                    let x = x0 + index * cell_w + gx;
+                    let y = y0 + gy;
+                    if x >= w || y >= h {
+                        continue;
+                    }
+                    let old = row[x];
+                    let a = u32::from(alpha).max(u32::from((old >> 24) & 0xFF));
+                    row[x] = (a << 24) | 0xFFFF_FF;
+                }
+            }
+        }
+    }
+    for y in 0..h {
+        let offset = u64::from(w as u32) * 4 * y as u64;
+        if berry_vmo_write(vmo, row.as_ptr().cast(), offset, w * 4) != 0 {
+            return false;
+        }
+    }
+    true
+}
+
+/// Build the translucent Android-style navigation overlay in a bar-local VMO.
+pub fn write_system_navigation_overlay(vmo: Handle, w: u32, h: u32) -> bool {
+    let w = w as usize;
+    let h = h as usize;
+    if w == 0 || h == 0 || w > OVERLAY_MAX_W {
+        return false;
+    }
+    let mut row = [0u32; OVERLAY_MAX_W];
+    for value in row.iter_mut().take(w) {
+        *value = 0xD800_0000;
+    }
+    if h >= 80 {
+        for (id, x0) in [
+            (NAV_ICON_BACK, 144usize),
+            (NAV_ICON_HOME, 504),
+            (NAV_ICON_TASK, 864),
+        ] {
+            if let Some(face) = NavigationIconSource.system_pixels(id) {
+                blit_argb(&mut row, x0, 8, 72, 72, face);
+            }
+        }
+    }
+    for y in 0..h {
+        let offset = u64::from(w as u32) * 4 * y as u64;
+        if berry_vmo_write(vmo, row.as_ptr().cast(), offset, w * 4) != 0 {
+            return false;
+        }
+    }
+    true
 }
 
 /// 供件引用（`&'static dyn`——供给槽生命周期面；unit static 即终身）。
@@ -623,23 +692,10 @@ mod wallpaper_tests {
     }
 
     #[test]
-    fn product_wallpaper_bakes_navigation_reserve() {
+    fn product_wallpaper_does_not_bake_navigation_overlay() {
         let mut px = vec![0x1234_5678u32; 1080 * 1920];
-        smooth_wallpaper_into_argb(&mut px, 1080, 1920);
-        for y in [1812, 1860, 1919] {
-            for x in [0, 1079] {
-                assert_eq!(px[y as usize * 1080 + x], 0xFF00_0000, "nav band black at {x},{y}");
-            }
-        }
-        let glyph_pixels = |x0: usize| {
-            px[1812..1920]
-                .chunks(1080)
-                .flat_map(|row| row.iter().skip(x0).take(72))
-                .filter(|&&p| p == 0xFFFF_FFFF)
-                .count()
-        };
-        assert!(glyph_pixels(144) > 500, "back glyph baked");
-        assert!(glyph_pixels(504) > 200, "home glyph baked");
-        assert!(glyph_pixels(864) > 50, "task glyph baked");
+        let before = px.clone();
+        overlay_product_navigation(&mut px, 1080, 1920);
+        assert_eq!(px, before, "SYSTEM overlay owns navigation pixels");
     }
 }

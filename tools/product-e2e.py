@@ -287,6 +287,19 @@ class ProductRig:
         )
 
     @classmethod
+    def region_hist(
+        cls, path: pathlib.Path, x: int, y: int, w: int, h: int
+    ) -> Counter[tuple[int, int, int]]:
+        pixels = cls.pixels(path)
+        out: Counter[tuple[int, int, int]] = Counter()
+        for row in range(h):
+            base = ((y + row) * WIDTH + x) * 3
+            for col in range(w):
+                index = base + col * 3
+                out[tuple(pixels[index : index + 3])] += 1
+        return out
+
+    @classmethod
     def recents_card_center(cls, path: pathlib.Path) -> tuple[int, int, tuple[int, int]]:
         pixels = cls.pixels(path)
         target = (36, 44, 54)
@@ -395,6 +408,10 @@ def run_recents(rig: ProductRig) -> None:
 
     histograms = list(map(rig.hist, [progress, desktop, app, recents, selected]))
     progress_h, desktop_h, app_h, recents_h, selected_h = histograms
+    desktop_status = rig.region_hist(desktop, 0, 0, WIDTH, 117)
+    desktop_nav = rig.region_hist(desktop, 0, HEIGHT - 108, WIDTH, 108)
+    app_nav = rig.region_hist(app, 0, HEIGHT - 108, WIDTH, 108)
+    text = rig.text()
     checks = {
         "progress_black": progress_h[(0, 0, 0)] > 2_000_000,
         "progress_white": progress_h[(255, 255, 255)] > 10_000,
@@ -404,13 +421,21 @@ def run_recents(rig: ProductRig) -> None:
         and recents_h[(36, 44, 54)] > 100_000,
         "selected_restored": sum(selected_h.values()) > 0
         and selected_h[(0, 0, 0)] < 1_000_000,
+        "android_status_overlay": desktop_status[(255, 255, 255)] > 5_000
+        and sum(desktop_status.values()) > 100_000,
+        "android_nav_overlay": 15_000 < desktop_nav[(255, 255, 255)] < 25_000
+        and 15_000 < app_nav[(255, 255, 255)] < 25_000
+        and desktop_nav[(0, 0, 0)] < 20_000,
+        "edge_to_edge_app": "WMAPPFRAME ok owner=2 immersive=0" in text,
+        "software_ltpo": "VGPULTPO ok hz=60" in text
+        and "VGPULTPO ok hz=1" in text
+        and "VGPULTPO ok hz=30" in text,
     }
     print_checks("recents", checks)
     print("RECENTS_TOP", recents_h.most_common(8))
     print("APP_TOP", app_h.most_common(6))
     print("SELECTED_TOP", selected_h.most_common(6))
 
-    text = rig.text()
     markers = {
         key: text.count(value)
         for key, value in {
@@ -420,6 +445,7 @@ def run_recents(rig: ProductRig) -> None:
             "LAUNCH": "LAUNCH ok",
             "APP": "BERRYDEMO up",
             "APPFRAME": "WMAPPFRAME ok owner=2",
+            "SYSTEM_OVERLAYS": "WMSYSOVERLAY ok id=",
             "TASK": "SHELLNAV ok action=3",
             "RECENTS": "WMRECENTS ok id=",
             "TASKSEL": "WMTASKSEL ok owner=2",
@@ -437,6 +463,7 @@ def run_recents(rig: ProductRig) -> None:
         "LAUNCH": 1,
         "APP": 1,
         "APPFRAME": 1,
+        "SYSTEM_OVERLAYS": 2,
         "TASK": 1,
         "RECENTS": 1,
         "TASKSEL": 1,

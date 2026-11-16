@@ -1,6 +1,7 @@
 Type: standard
 Version: 1.2.0
-Status: current
+Status: superseded
+Superseded-by: [Berry设备平台-AndroidImmersiveShell-v1.3.md](Berry设备平台-AndroidImmersiveShell-v1.3.md)
 Updated: 2026-11-15
 
 # Berry 设备平台 OpenHarmony 式系统壳（v1.1：沉浸全屏）

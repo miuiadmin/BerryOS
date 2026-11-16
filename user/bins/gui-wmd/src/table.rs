@@ -57,6 +57,7 @@ struct Win {
     z: u8,
     vis: bool,
     avoid_sys: bool,
+    edge_to_edge: bool,
     /// R3 per-window pending config event。None = 已 ack 或无待消费事件；
     /// 新事件直接覆盖旧事件（last-one-wins），serial 由 [`Self::bump`] 统一
     /// 落为本次表版本。
@@ -179,6 +180,7 @@ impl WmTable {
             z: 0,
             vis: false,
             avoid_sys: false,
+            edge_to_edge: false,
             config: None,
             config_synced: false,
         };
@@ -372,6 +374,19 @@ impl WmTable {
     /// overlay 不清焦。
     pub fn focused_app_owner(&self) -> Option<u16> {
         let (owner, id) = self.focused()?;
+        // A full-screen SYSTEM overlay (Recents) takes the compositor body
+        // even though keyboard focus intentionally stays with the selected
+        // APP. Persistent bar overlays do not: EDGE_TO_EDGE app content must
+        // remain the active body beneath the transparent bars.
+        let system_body = self.wins.iter().take(self.count).any(|win| {
+            win.vis
+                && win.layer == gp::WM_LAYER_SYSTEM
+                && win.req.2 == self.disp_w
+                && win.req.3 == self.disp_h
+        });
+        if system_body {
+            return None;
+        }
         let i = self.find(id)?;
         let win = &self.wins[i];
         (win.vis
@@ -381,15 +396,17 @@ impl WmTable {
             .then_some(owner)
     }
 
-    /// A visible full-display APP created without AVOID_SYS is an immersive
-    /// product body. This is diagnostic truth for the SYSTEM launcher; it does
-    /// not mutate visibility or reserve ownership here.
+    /// A visible full-display APP created without AVOID_SYS and without the
+    /// newer EDGE_TO_EDGE bar-overlap mode is an immersive product body. This
+    /// is diagnostic truth for the SYSTEM launcher; it does not mutate
+    /// visibility or reserve ownership here.
     pub fn owner_is_immersive(&self, owner: u16) -> bool {
         self.wins.iter().take(self.count).any(|win| {
             win.owner == owner
                 && win.vis
                 && win.layer == gp::WM_LAYER_APP
                 && !win.avoid_sys
+                && !win.edge_to_edge
                 && win.req.2 == self.disp_w
                 && win.req.3 == self.disp_h
         })
@@ -444,6 +461,55 @@ impl WmTable {
     /// present GETINFO 启动缓存尺寸；0x67 fit 检查的显示上限。
     pub fn display_size(&self) -> (u32, u32) {
         (u32::from(self.disp_w), u32::from(self.disp_h))
+    }
+
+    /// Safe insets for a configured surface. EDGE_TO_EDGE keeps raw geometry
+    /// full-screen and therefore cannot derive safe areas from raw-visible
+    /// subtraction; visible SYSTEM reserves are measured separately instead.
+    pub fn safe_insets(
+        &self,
+        owner: u16,
+        id: u16,
+    ) -> Option<(u16, u16, u16, u16)> {
+        let i = self.find(id)?;
+        if self.wins[i].owner != owner || !self.wins[i].vis {
+            return None;
+        }
+        let window = &self.wins[i];
+        if !window.edge_to_edge {
+            return Some(
+                gp::authority::SurfaceGeometry::new(window.req, window.eff)?
+                    .occlusion_insets(),
+            );
+        }
+        let (mut left, mut top, mut right, mut bottom) = (0u32, 0u32, 0u32, 0u32);
+        for system in self.wins.iter().take(self.count) {
+            if system.vis && system.layer == gp::WM_LAYER_SYSTEM {
+                let (sx, sy, sw, sh) = system.req;
+                let sx = u32::from(sx);
+                let sy = u32::from(sy);
+                let sx1 = sx.saturating_add(u32::from(sw));
+                let sy1 = sy.saturating_add(u32::from(sh));
+                if sx == 0 && sx1 < u32::from(self.disp_w) {
+                    left = left.max(sx1);
+                }
+                if sy == 0 && sy1 < u32::from(self.disp_h) {
+                    top = top.max(sy1);
+                }
+                if sx1 == u32::from(self.disp_w) && sx > 0 {
+                    right = right.max(u32::from(self.disp_w).saturating_sub(sx));
+                }
+                if sy1 == u32::from(self.disp_h) && sy > 0 {
+                    bottom = bottom.max(u32::from(self.disp_h).saturating_sub(sy));
+                }
+            }
+        }
+        Some((
+            u16::try_from(left).unwrap_or(u16::MAX),
+            u16::try_from(top).unwrap_or(u16::MAX),
+            u16::try_from(right).unwrap_or(u16::MAX),
+            u16::try_from(bottom).unwrap_or(u16::MAX),
+        ))
     }
 
     /// R3 config 同步门：Some(false) 表示窗口在册但未 ACK 当前配置。
@@ -551,6 +617,7 @@ impl WmTable {
             z: 0,
             vis: true,
             avoid_sys: req.flags & gp::WM_CREATE_F_AVOID_SYS != 0,
+            edge_to_edge: req.flags & gp::WM_CREATE_F_EDGE_TO_EDGE != 0,
             config: None,
             config_synced: false,
         };

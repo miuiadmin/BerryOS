@@ -62,7 +62,9 @@
 /// Berry Session Surface Mode / IME composition / a11y sidecar 协议（P0）。
 pub mod authority;
 pub mod insets;
+pub mod ltpo;
 pub mod surface;
+pub use ltpo::software_ltpo_hz;
 
 // ---------- op 表（三域）----------
 
@@ -197,6 +199,9 @@ pub const WM_LAYER_APP: u8 = 0;
 pub const WM_LAYER_SYSTEM: u8 = 1;
 /// CREATE flags：申请几何避让系统层（wmd 写有效几何进表，不变量式重推导）。
 pub const WM_CREATE_F_AVOID_SYS: u8 = 1 << 0;
+/// APP window keeps raw/full geometry while receiving SYSTEM bar safe insets
+/// through Surface Mode. SYSTEM windows reject this flag.
+pub const WM_CREATE_F_EDGE_TO_EDGE: u8 = 1 << 1;
 /// SET mask 位：几何四槽（x/y/w/h）。
 pub const WM_SET_F_GEOM: u8 = 1 << 0;
 /// SET mask 位：可见槽（vis）。
@@ -573,7 +578,7 @@ const fn wm_layer_known(l: u8) -> bool {
 }
 
 const fn wm_create_flags_known(f: u8) -> bool {
-    f & !WM_CREATE_F_AVOID_SYS == 0
+    f & !(WM_CREATE_F_AVOID_SYS | WM_CREATE_F_EDGE_TO_EDGE) == 0
 }
 
 /// SET mask 值域：mask=0（「空设置」非法定义在协议层——netdproto port 0 /
@@ -1937,7 +1942,8 @@ pub fn parse_wm_getinfo_rep(buf: &[u8]) -> Option<WmGetinfoRep> {
 pub struct WmCreateReq {
     /// [`WM_LAYER_APP`]/[`WM_LAYER_SYSTEM`]（值域双侧执法）。
     pub layer: u8,
-    /// [`WM_CREATE_F_AVOID_SYS`] 位域（未知位双侧拒）。
+    /// [`WM_CREATE_F_AVOID_SYS`] / [`WM_CREATE_F_EDGE_TO_EDGE`] 位域
+    ///（未知位与双模式同设双侧拒）。
     pub flags: u8,
     /// 父窗 id（0 = 无父——QNX 缝安全域聚合，v1 字段缝先占）。
     pub parent: u16,
@@ -3853,6 +3859,9 @@ mod tests {
         let n = encode_wm_create_req(&mut buf, &cr).unwrap();
         assert_eq!(n, 16);
         assert_eq!(parse_wm_create_req(&buf[..n]), Some(cr));
+        let edge = WmCreateReq { flags: WM_CREATE_F_EDGE_TO_EDGE, ..cr };
+        let n = encode_wm_create_req(&mut buf, &edge).unwrap();
+        assert_eq!(parse_wm_create_req(&buf[..n]), Some(edge));
         let n = encode_wm_create_ack(&mut buf, 0x1234);
         assert_eq!(n, 8);
         assert_eq!(parse_wm_create_ack(&buf[..n]), Some(0x1234));
@@ -4079,7 +4088,7 @@ mod tests {
     fn wm_value_domain_reject_matrix() {
         // 值域拒矩阵（编码 + 解析对称；相异野值防互换静绿）。
         let mut buf = [0u8; WM_REP_MAX];
-        // CREATE：layer 野值 2 / flags 未知位 0x02。
+        // CREATE：layer 野值 2 / flags 未知位 0x04。
         let good_create = WmCreateReq {
             layer: WM_LAYER_APP,
             flags: 0,
@@ -4096,11 +4105,11 @@ mod tests {
         let _ = encode_wm_create_req(&mut f, &good_create).unwrap();
         f[1] = 2;
         assert_eq!(parse_wm_create_req(&f), None);
-        let bad_flags = WmCreateReq { flags: WM_CREATE_F_AVOID_SYS | 0x02, ..good_create };
+        let bad_flags = WmCreateReq { flags: WM_CREATE_F_AVOID_SYS | 0x04, ..good_create };
         assert_eq!(encode_wm_create_req(&mut buf, &bad_flags), None);
         let mut f = [0u8; WM_CREATE_REQ_LEN];
         let _ = encode_wm_create_req(&mut f, &good_create).unwrap();
-        f[2] = 0x02;
+        f[2] = 0x04;
         assert_eq!(parse_wm_create_req(&f), None);
         // SET：mask=0 / mask 未知位 0x08 / vis 野值 2（vis 无条件执法——
         // masked-out 也拒，Q18）。
