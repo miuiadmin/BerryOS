@@ -1,5 +1,8 @@
 # 暗色刀验收报告（DARK-VERIFY）
 
+状态：已完成历史——机制面已被 settings_io.rs（SETTINGS.CFG 五键，2026-11-16）取代，本文仅作暗色刀过程存档。
+现行实现：[user/bins/settings/src/settings_io.rs](user/bins/settings/src/settings_io.rs)（取代面 = 验收对象中的 theme_io.rs / SETTINGS.JSN 持久化面，五键 canonical 含旧档迁移；引擎换档与 paint 色板面验收结论不受影响）。
+
 验收对象 = 工作树未提交改动（基点 `3af18dda1`，分支 `wip/ui-dark`，HEAD 即基点——全部改动在工作树，`git diff 3af18dda1` 即实施面），实施清单见 [DARK-IMPL.md](DARK-IMPL.md)。验收员与实施者非同一会话，全程独立复跑：测试与构建用隔离 target `.target-d`，遮罩律为手算逐通道对拍，基线对照用临时 worktree。结论：**五门全过、全绿收讫、一处小修**（main.rs 一行尾随空白——修后重编过链）。
 
 Updated: 2026-11-15
