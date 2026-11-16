@@ -136,6 +136,23 @@ pub fn run() {
     // 裸相/后续专项相；本测钉判定律本体：lazy 双向对账/豁免/武装门 +
     // idle 折窗衰减律）。末位新号纪律——ktest done 前；sched::init 前跑。
     test_smp_lazy();
+    // F6 SMP 专项测试相（SMP-01 报告遗留·2026-11-16）：smoke-smp 无
+    // FairBand/EAS/slack 专项相的三件最小补面——BAND-SMP（双环 quantum
+    // 差异 + per-band stats 双环聚合）/ EASPROD-SMP（双核活快照避忙核 +
+    // overutil 收口）/ SLACK-SMP（异 slack 双睡者落定/无交叉）。ktest 期
+    // par 门恒关——全部钉决策面（真 CPU1 派发/路由面归 smoke-smp/boot 相）。
+    // 末位新号纪律——ktest done 前；sched::init 前跑。
+    test_band_smp();
+    test_eas_prod_smp();
+    test_slack_smp();
+    // SMP-01 §3.5 F5（限流垄断者强制让点，2026-11-16 修）：THROTTLE 位只挡
+    // 「再出选」不挡「继续跑」——tick 出选 None 时被限流 cur 直落续跑 =
+    // 垄断者无视限流。修面 = on_irq_tick 出选 None 臂强制让点（判据单源
+    // sched::throttle_yield_due + nearest_deadline 并入限流带截止作停泊
+    // 醒源）。本测钉决策面四面（ktest 手驱真机械：真 FairBand tick 烧穿
+    // 配额/真出选/真醒源读/真翻期回场——SMPLZ 同款；切换舞蹈本体归
+    // boot/smoke 面）。末位新号纪律——ktest done 前；sched::init 前跑。
+    test_throttle_yield();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
@@ -10113,4 +10130,1002 @@ fn test_smp_lazy() {
     );
 
     berry_hal_aarch64::uart_puts(b"SMPLZ ok n=3\n");
+}
+
+/// F6 SMP 专项测试相之一（SMP-01 报告遗留·2026-11-16）：FairBand **双核
+/// 差异化**钉板——BAND-SMP。
+///
+/// SMP-01 §3.6 复核成立的验收缺口：现役断言（BANDM4-G1/LOADGEN/EASPROD/
+/// SMPLZ）在 `-smp 2` 下跑的全是**单核语义决策面**（ktest 先于
+/// smp_bringup/par_enable——main.rs boot 序；par 门恒关）。本测补最小
+/// 双核形状：双 runqueue（`PER_CPU_RQ: [Runqueue; 2]` 的 ktest 手搭形）
+/// 各驱各环、interleaved 交错推进——「双核各自派发各自记账、全局账跨环
+/// 聚合」的决策面。三段：
+/// - **BS-1 spawn 面路由负控**：真 `spawn_intent` 两带任务各一 → ktest 期
+///   par 门恒关 → `place()` 恒 CPU0（sched.rs place() 门③——pinned==0 早退
+///   在前）→ 两任务全落真 `PER_CPU_RQ[0]` 且 `home_cpu==0`。这是双核路由
+///   的「门关」半边（门开半边 = EAS/steal 线归 smoke-smp/boot 相）。
+/// - **BS-2 双环差异化驱动**：rq0 挂 interactive（短片 10ms/期 8ms）、
+///   rq1 挂 utility（长片 20ms/期 50ms），12ms 跑段（介于两带 quantum
+///   之间——BANDM4-G1 同锚）交错驱动：core0 一轮 + core1 一轮 × 20 轮。
+///   断言：跨核授片差异（interactive 短片 < utility 长片，各=本带
+///   quantum_ns 周期数）；quantum 消耗差异（interactive 片每轮燃尽 ≥3 次、
+///   utility 长片每派发重授恒不到期）；短周期到期更频繁（interactive 翻期
+///   ≥4 且 ≥3×utility）；interactive 配额（10ms/8ms 期 >100%）CBS 期内律
+///   不可越线（BANDM4-G1 同律在双环形状下复证）。
+/// - **BS-3 per-band stats 双环聚合**（stats.rs——「跨核一份全局账」的
+///   ktest 可达形态）：`Fair::pick_next_filtered`（生产出选唯一路径——
+///   note_pick 记账点）与 `FairBand::tick`（note_runtime 记账点）在两环
+///   上各自触发，全局原子计数从**两环同时**累积：Δband_picks 与本地出选
+///   计数逐一对账（rq0 出选 ↔ interactive 账、rq1 出选 ↔ utility 账——
+///   零串账）、Δintent_picks 同源、Δband_runtime ≥ 各环实跑周期。
+///
+/// ktest 纪律（SMPLZ 同款）：par 门恒关——真 CPU1 派发面归 smoke-smp/boot；
+/// 本地双环手搭（BANDM4-G/LOADGEN 机械先例）、段尾 unthrottle +
+/// configure(0) 收口（test_band 纪律）+ util 全槽清零（LOADGEN 收口纪律
+/// ——Fair::tick 的 util_accumulate 副作用不外泄）。
+#[allow(clippy::unwrap_used)]
+fn test_band_smp() {
+    use berry_hal_aarch64::timer::{cntfrq, cntvct};
+    use berry_sched::{
+        any_armed, band_on, band_picks, band_runtime, class_fair_intent, class_of_task, configure,
+        for_each_runnable, intent_picks, pi_rq_lock, pi_rq_unlock, rq_unlink_kt, spawn_intent,
+        state, util_reset, Fair, Runqueue, SchedClass, Task, Topo, UTIL_NR_CPU,
+        INTENT_INTERACTIVE, INTENT_UTILITY,
+    };
+
+    /// 占位入口（spawn/手搭成员永不执行；halt 兜底——BANDM4 同款）。
+    extern "C" fn bs_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    let freq = cntfrq();
+    assert!(freq > 0, "BAND-SMP：CNTFRQ 须非零");
+    // ns → CNTVCT 周期（截尾——timer_slack_defer 同口径）。
+    let ns2cyc = |ns: u64| -> u64 { ns.saturating_mul(freq) / 1_000_000_000 };
+    fn spin_until(tgt: u64) {
+        while cntvct() < tgt {
+            core::hint::spin_loop();
+        }
+    }
+
+    // —— BS-1. spawn 面路由负控：两带任务各一真 spawn_intent——ktest 期
+    //         par 门恒关（place() 门③）+ 内核任务 pinned==0（门②早退更前）
+    //         → 全落本核 rq[0]、home_cpu=0。双核路由的门关半边钉板。——
+    spawn_intent(bs_dummy, 0, b"bsIA", INTENT_INTERACTIVE);
+    spawn_intent(bs_dummy, 0, b"bsUT", INTENT_UTILITY);
+    let mut ptrs = [0usize; 2];
+    let mut homes = [9u8; 2];
+    let phys = pi_rq_lock();
+    for_each_runnable(|t| {
+        let i = if t.name == b"bsIA".as_slice() {
+            0
+        } else if t.name == b"bsUT".as_slice() {
+            1
+        } else {
+            return;
+        };
+        ptrs[i] = t as *mut Task as usize;
+        homes[i] = t.home_cpu;
+    });
+    pi_rq_unlock(phys);
+    assert!(
+        ptrs.iter().all(|p| *p != 0),
+        "BAND-SMP：BS-1 两带任务须真入 PER_CPU_RQ（各恰一枚）"
+    );
+    assert!(
+        homes == [0, 0],
+        "BAND-SMP：BS-1 ktest 期 spawn 须全落本核（par 门关 = place() 恒 CPU0）"
+    );
+    // SAFETY: spawn_intent 的 Box::leak 产物，地址稳定；此刻在真
+    // PER_CPU_RQ 环上（ptrs 断言已证）。
+    let (gia, gut) = unsafe { (&mut *(ptrs[0] as *mut Task), &mut *(ptrs[1] as *mut Task)) };
+    rq_unlink_kt(gia);
+    rq_unlink_kt(gut);
+
+    // —— BS-2. 双环差异化驱动（双核各自派发的决策面）——
+    let ib = class_fair_intent(INTENT_INTERACTIVE).expect("BAND-SMP：interactive 工厂须建带");
+    let ub = class_fair_intent(INTENT_UTILITY).expect("BAND-SMP：utility 工厂须建带");
+    // 前提：两带槽默认关（前序 BANDM4-G/LOADGEN/SMPLZ 全收口——懒武装起测面）。
+    assert!(
+        !band_on(INTENT_INTERACTIVE) && !band_on(INTENT_UTILITY),
+        "BAND-SMP：BS-2 首两带槽须默认关（前序收口）"
+    );
+    // 跨核授片差异：interactive 短片 < utility 长片，各=本带 quantum_ns 周期数
+    // （TaskClass::grant_cycles 的 per-task 分派——跨环同律）。
+    let (g_ia, g_ut) =
+        (class_of_task(&*gia).grant_cycles(), class_of_task(&*gut).grant_cycles());
+    assert_eq!(
+        g_ia,
+        ns2cyc(ib.band.quantum_ns),
+        "BAND-SMP：BS-2 interactive 授片须=quantum_ns 周期数"
+    );
+    assert_eq!(
+        g_ut,
+        ns2cyc(ub.band.quantum_ns),
+        "BAND-SMP：BS-2 utility 授片须=quantum_ns 周期数"
+    );
+    assert!(g_ia < g_ut, "BAND-SMP：BS-2 跨核授片须差异化（短片<长片）");
+
+    let topo = Topo::single();
+    let mut rq0 = Runqueue::new(); // 「CPU0」环（interactive 成员）
+    let mut rq1 = Runqueue::new(); // 「CPU1」环（utility 成员）
+    // LAST_VCT 先打底（首 tick delta 口径——LOADGEN 步 2 同款：空环 unit 路径
+    // tick，零带面副作用）。gut 已是 &mut（reborrow 安全）。
+    Fair.tick(&mut *gut, &mut rq1);
+    // SAFETY: 同上；off-ring 直改 EEVDF 字段（复位面——LOADGEN 同款，账本只
+    // 在 link/unlink/tick 三账点动）。
+    unsafe {
+        for t in [&mut *(ptrs[0] as *mut Task), &mut *(ptrs[1] as *mut Task)] {
+            t.vruntime = 0;
+            t.vdeadline = 0;
+            t.slice_left = 0;
+            t.held_locks = 0;
+        }
+    }
+    class_of_task(&*gia).enqueue(&mut *gia, &mut rq0);
+    class_of_task(&*gut).enqueue(&mut *gut, &mut rq1);
+
+    // per-band stats 快照（BS-3 对账基准——两环驱动前）。
+    let pre = (
+        band_picks(INTENT_INTERACTIVE),
+        band_picks(INTENT_UTILITY),
+        band_runtime(INTENT_INTERACTIVE),
+        band_runtime(INTENT_UTILITY),
+        intent_picks(INTENT_INTERACTIVE),
+        intent_picks(INTENT_UTILITY),
+    );
+
+    const ROUNDS: usize = 20;
+    /// 跑段：介于两带 quantum 之间（10ms < 12ms < 20ms——BANDM4-G1 同锚：
+    /// interactive 片每轮燃尽、utility 片每派发重授恒有余量）。
+    const RUN_NS: u64 = 12_000_000;
+    let run_cyc = ns2cyc(RUN_NS);
+    let idle_cyc = ns2cyc(2_000_000); // 限流窗防御推进粒度（G2 同款）
+    /// 净轮判据余量（跑段 12ms + 扫/授片开销；TCG 虚拟钟随宿主调度可能
+    /// 单步跳前——宿主停顿轮（实测同码双跑一绿一红的判例）不进 quantum
+    /// 律断言，按「净轮」分类执法）。
+    let clean_margin = ns2cyc(2_000_000);
+    let (mut exh_ia, mut exh_ut) = (0u64, 0u64);
+    let (mut clean_ia, mut clean_ut) = (0u64, 0u64);
+    let (mut exh_ia_clean, mut exh_ut_clean) = (0u64, 0u64);
+    let (mut picks_ia, mut picks_ut) = (0u64, 0u64);
+    let (mut cross_ia, mut cross_ut) = (0u64, 0u64);
+    let (mut prev_ia, mut prev_ut) = (false, false);
+    let (per_ia, per_ut) = (
+        ns2cyc(ib.band.latency_target_ns),
+        ns2cyc(ub.band.latency_target_ns),
+    );
+    let (mut dl_ia, mut dl_ut) = (0u64, 0u64);
+    let (mut flips_ia, mut flips_ut) = (0u64, 0u64);
+    let cap = cntvct() + ns2cyc(4_000_000_000); // 安全墙（fail loud；宿主停顿宽裕）
+    for _ in 0..ROUNDS {
+        // —— 核0 一轮（rq0）：入口翻期扫（band_period_sweep 的 per-core 环
+        //    形状——两武装槽都对本环扫）→ 出选 → 授片 → 跑段 → 真记账。
+        let t0 = cntvct();
+        for fb in [ib, ub] {
+            if fb.period_check(cntvct()) {
+                fb.unthrottle_all(&rq0);
+            }
+        }
+        // SAFETY: pick 产物（在环、调度器拥有）——BANDM4-G1 同款指针面。
+        let picked0: Option<*mut Task> = Fair
+            .pick_next_filtered(&rq0, &topo, core::ptr::null_mut())
+            .map(|n| n as *mut Task);
+        if let Some(next_ptr) = picked0 {
+            let next = unsafe { &mut *next_ptr };
+            next.slice_left = class_of_task(&*next).grant_cycles();
+            picks_ia += 1;
+            let run_start = cntvct();
+            spin_until(run_start + run_cyc);
+            class_of_task(&*next).tick(&mut *next, &mut rq0);
+            // 净轮分类：本相位实测 elapsed ≤ 跑段+余量 → tick delta 同界
+            //（delta ≤ elapsed——last_vct 必先于本相位），quantum 律按净轮执法。
+            if cntvct() - t0 <= run_cyc + clean_margin {
+                clean_ia += 1;
+                if next.slice_left == 0 {
+                    exh_ia_clean += 1;
+                }
+            }
+            if next.slice_left == 0 {
+                exh_ia += 1;
+            }
+        } else {
+            // 不可达防御（interactive 配额 >100% 不可越线——CBS 期内律）；
+            // 万一发生，exh_ia 断言自然红。
+            spin_until(cntvct() + idle_cyc);
+        }
+        // —— 核1 一轮（rq1）：同形。utility 限流窗内 pick None = 该核
+        //    idle 让核形状（G2 pick-None 路），翻期扫解限后回场。
+        let t1 = cntvct();
+        for fb in [ib, ub] {
+            if fb.period_check(cntvct()) {
+                fb.unthrottle_all(&rq1);
+            }
+        }
+        // SAFETY: 同上。
+        let picked1: Option<*mut Task> = Fair
+            .pick_next_filtered(&rq1, &topo, core::ptr::null_mut())
+            .map(|n| n as *mut Task);
+        if let Some(next_ptr) = picked1 {
+            let next = unsafe { &mut *next_ptr };
+            next.slice_left = class_of_task(&*next).grant_cycles();
+            picks_ut += 1;
+            let run_start = cntvct();
+            spin_until(run_start + run_cyc);
+            class_of_task(&*next).tick(&mut *next, &mut rq1);
+            // 净轮分类（同核0）：净轮内 delta ≤ 14ms < 20ms quantum——
+            // utility 长片净轮不可燃尽（差异化律的无停顿形态）。
+            if cntvct() - t1 <= run_cyc + clean_margin {
+                clean_ut += 1;
+                if next.slice_left == 0 {
+                    exh_ut_clean += 1;
+                }
+            }
+            if next.slice_left == 0 {
+                exh_ut += 1;
+            }
+        } else {
+            spin_until(cntvct() + idle_cyc);
+        }
+        // —— 观测（BANDM4-G1 同口径）：越线 = throttled 镜像 false→true 边沿；
+        //    翻期 = deadline 推进量 ÷ period（整数倍精确——全路径覆盖）。
+        let (s_ia, s_ut) = (state(INTENT_INTERACTIVE), state(INTENT_UTILITY));
+        let t_ia = s_ia.map(|s| s.throttled).unwrap_or(false);
+        let t_ut = s_ut.map(|s| s.throttled).unwrap_or(false);
+        if t_ia && !prev_ia {
+            cross_ia += 1;
+        }
+        if t_ut && !prev_ut {
+            cross_ut += 1;
+        }
+        prev_ia = t_ia;
+        prev_ut = t_ut;
+        if let Some(s) = s_ia {
+            if dl_ia != 0 && s.deadline > dl_ia {
+                flips_ia += (s.deadline - dl_ia) / per_ia;
+            }
+            dl_ia = s.deadline;
+        }
+        if let Some(s) = s_ut {
+            if dl_ut != 0 && s.deadline > dl_ut {
+                flips_ut += (s.deadline - dl_ut) / per_ut;
+            }
+            dl_ut = s.deadline;
+        }
+        assert!(cntvct() < cap, "BAND-SMP：BS-2 超安全墙（驱动器疑似失速）");
+    }
+    assert!(
+        band_on(INTENT_INTERACTIVE) && band_on(INTENT_UTILITY),
+        "BAND-SMP：BS-2 懒武装须生效（首消费按表行 configure）"
+    );
+    assert_eq!(cross_ia, 0, "BAND-SMP：BS-2 interactive 配额（10ms/8ms 期>100%）不可越线");
+    assert!(cross_ut >= 1, "BAND-SMP：BS-2 utility 单环 duty 100% 须烧穿 20ms/50ms 配额");
+    // 净轮下限（宿主停顿只削样本不削律——净轮占比超半即执法面在席）。
+    assert!(
+        clean_ia >= 6 && clean_ut >= 6,
+        "BAND-SMP：BS-2 净轮样本须足（ia {clean_ia}/ut {clean_ut} of {ROUNDS}——宿主停顿异常？）"
+    );
+    assert!(
+        exh_ia_clean >= 3,
+        "BAND-SMP：BS-2 interactive 短片净轮（10ms<12ms 跑段）须频繁燃尽（实得 {exh_ia_clean}/{clean_ia}）"
+    );
+    assert_eq!(
+        exh_ut_clean, 0,
+        "BAND-SMP：BS-2 utility 长片净轮（20ms>12ms 跑段，每派发重授）不到期（实得 {exh_ut_clean}/{clean_ut}）"
+    );
+    assert!(
+        flips_ia >= 4,
+        "BAND-SMP：BS-2 interactive 短周期（8ms）翻期须频繁（实得 {}）",
+        flips_ia
+    );
+    assert!(
+        flips_ut >= 1,
+        "BAND-SMP：BS-2 utility 长周期（50ms）至少翻一期（实得 {}）",
+        flips_ut
+    );
+    assert!(
+        flips_ia >= 3 * flips_ut,
+        "BAND-SMP：BS-2 翻期频次比（8ms:50ms）须≥3x（实得 {}/{}）",
+        flips_ia,
+        flips_ut
+    );
+
+    // —— BS-3. per-band stats 双环聚合对账（stats.rs 全局账从两环同时累积）。
+    let d = (
+        band_picks(INTENT_INTERACTIVE) - pre.0,
+        band_picks(INTENT_UTILITY) - pre.1,
+        band_runtime(INTENT_INTERACTIVE) - pre.2,
+        band_runtime(INTENT_UTILITY) - pre.3,
+        intent_picks(INTENT_INTERACTIVE) - pre.4,
+        intent_picks(INTENT_UTILITY) - pre.5,
+    );
+    assert!(
+        picks_ia >= 1 && picks_ut >= 1,
+        "BAND-SMP：BS-3 双环须各有出选（前置）"
+    );
+    assert_eq!(
+        d.0, picks_ia,
+        "BAND-SMP：BS-3 rq0（interactive 环）出选须全数入 interactive 带账（零串账）"
+    );
+    assert_eq!(
+        d.1, picks_ut,
+        "BAND-SMP：BS-3 rq1（utility 环）出选须全数入 utility 带账（零串账）"
+    );
+    assert_eq!(
+        d.4, picks_ia,
+        "BAND-SMP：BS-3 intent 档账（0x02）须与带账同源同数"
+    );
+    assert_eq!(d.5, picks_ut, "BAND-SMP：BS-3 intent 档账（0x03）须与带账同源同数");
+    // runtime：每 tick delta ≥ 本跑段（LAST_VCT 单源——上一 tick 先于本跑段），
+    // 两环各积各的、全局账恰聚合（「跨核一份全局账」的 ktest 可达形态）。
+    assert!(
+        d.2 >= picks_ia * run_cyc,
+        "BAND-SMP：BS-3 interactive runtime 须聚合 rq0 实跑周期（{} < {}）",
+        d.2,
+        picks_ia * run_cyc
+    );
+    assert!(
+        d.3 >= picks_ut * run_cyc,
+        "BAND-SMP：BS-3 utility runtime 须聚合 rq1 实跑周期（{} < {}）",
+        d.3,
+        picks_ut * run_cyc
+    );
+
+    // 收口（test_band 纪律：先 unthrottle 清环上位再 configure(0)；各带解限
+    // 扫本带成员所在环）+ util 清零（Fair::tick 副作用不外泄——LOADGEN 同款）。
+    class_of_task(&*gia).dequeue(&mut *gia, &mut rq0);
+    class_of_task(&*gut).dequeue(&mut *gut, &mut rq1);
+    if band_on(INTENT_INTERACTIVE) {
+        ib.unthrottle_all(&rq0);
+        assert!(
+            !configure(INTENT_INTERACTIVE, 0, 0, 0),
+            "BAND-SMP：收口须关 interactive 带"
+        );
+    }
+    if band_on(INTENT_UTILITY) {
+        ub.unthrottle_all(&rq1);
+        assert!(!configure(INTENT_UTILITY, 0, 0, 0), "BAND-SMP：收口须关 utility 带");
+    }
+    assert_eq!(rq0.len(), 0, "BAND-SMP：收口 rq0 须空");
+    assert_eq!(rq1.len(), 0, "BAND-SMP：收口 rq1 须空");
+    assert!(
+        !band_on(INTENT_INTERACTIVE) && !band_on(INTENT_UTILITY) && !any_armed(),
+        "BAND-SMP：收口后两带槽须回 OFF、零武装"
+    );
+    for c in 0..UTIL_NR_CPU {
+        util_reset(c);
+    }
+
+    // 观测行（QEMU 证据面：双环差异化计数对拍；c=净轮样本）。
+    berry_hal_aarch64::uart_puts(b"BAND-SMP diff exh=");
+    berry_hal_aarch64::uart_put_dec(exh_ia);
+    berry_hal_aarch64::uart_puts(b"/");
+    berry_hal_aarch64::uart_put_dec(exh_ut);
+    berry_hal_aarch64::uart_puts(b" flips=");
+    berry_hal_aarch64::uart_put_dec(flips_ia);
+    berry_hal_aarch64::uart_puts(b"/");
+    berry_hal_aarch64::uart_put_dec(flips_ut);
+    berry_hal_aarch64::uart_puts(b" picks=");
+    berry_hal_aarch64::uart_put_dec(d.0);
+    berry_hal_aarch64::uart_puts(b"/");
+    berry_hal_aarch64::uart_put_dec(d.1);
+    berry_hal_aarch64::uart_puts(b" clean=");
+    berry_hal_aarch64::uart_put_dec(clean_ia);
+    berry_hal_aarch64::uart_puts(b"/");
+    berry_hal_aarch64::uart_put_dec(clean_ut);
+    berry_hal_aarch64::uart_puts(b" exhC=");
+    berry_hal_aarch64::uart_put_dec(exh_ia_clean);
+    berry_hal_aarch64::uart_puts(b"/");
+    berry_hal_aarch64::uart_put_dec(exh_ut_clean);
+    berry_hal_aarch64::uart_puts(b"\n");
+
+    berry_hal_aarch64::uart_puts(b"BAND-SMP ok n=2\n");
+}
+
+/// F6 SMP 专项测试相之二（SMP-01 报告遗留·2026-11-16）：EAS **双核选核**
+/// 钉板——EASPROD-SMP。
+///
+/// 现役 EAS 面（EAS/EASPROD）已钉：纯决策面注入（EA-2 overutil/EA-6/7 档
+/// 界越 hint）、单核翻转底景（EP-B/EP-C——对侧恒 0）、overutil 经 policy
+/// 门（EP-D）。本测补**双核同活**的 SMP 形状（place() 的 EAS 臂在双核
+/// 快照下的选核正确性——决策面，ktest 直调面；par/spread/SGI 路由面归
+/// smoke-smp/boot 相）。三段：
+/// - **ES-1 spawn 路由负控**：真 `spawn_intent` 落 `home_cpu==0` + 真
+///   `PER_CPU_RQ[0]` 在席——ktest 期 par 门恒关 = place() 恒 CPU0
+///   （sched.rs place() 门③）；与 EAS 决策面合成 place() 双核选核的
+///   门关/决策两半（BAND-SMP BS-1 同律的 EAS 侧独立复证）。
+/// - **ES-2 双核活快照避忙核**：per-CPU util EWMA 双核**同时非零**折叠
+///   （CPU0→350 带、CPU1→100 带——EASPROD 只折一核对侧恒 0，此处双核
+///   同活），快照独立性（折 CPU1 零扰动 CPU0——per-CPU 槽隔离）；
+///   policy 双键双 hint（key7 偏 little=1 / key8 偏 big=2）下
+///   `eas_place` 两方向**都避高 util 核**（hint 经 prev 入座只享平局
+///   保护——能量严格更省越 hint，sched.rs eas_pick_place ③④）；
+///   镜像翻转（CPU0↔CPU1 快照对调）决策随快照翻转（非常量巧合）。
+/// - **ES-3 overutil 双核收口**：双核同活底景上泵 CPU1 越阈（>819）→
+///   `any_overutilized` 全域真、CPU0 快照不受扰（隔离复证）、
+///   `eas_place` 两键全 None（EAS 机会主义纪律——饱和让位负载均衡；
+///   EP-D 是 policy 门路径，此处双核活快照路径）。
+///
+/// ktest 纪律（EASPROD 同款）：EM 幂等重注册 + policy 回哨兵 + util 全槽
+/// 清零（EA 族清场）；par 门在 place() 不在 eas_place——决策面独立可测。
+#[allow(clippy::unwrap_used)]
+fn test_eas_prod_smp() {
+    use berry_sched::policy::{self, Directive, Entry};
+    use berry_sched::{
+        any_overutilized, cpu_util, eas_place, em_domain, em_register_qemu_virt, for_each_runnable,
+        pi_rq_lock, pi_rq_unlock, rq_unlink_kt, spawn_intent, util_accumulate, util_reset,
+        util_tick_window, util_window_vct, Task, UTIL_NR_CPU, INTENT_INTERACTIVE,
+    };
+
+    /// 占位入口（spawn 任务永不执行；halt 兜底——BANDM4 同款）。
+    extern "C" fn es_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    // ES-0 清场（EA 族同款）。
+    assert!(em_register_qemu_virt(), "EASPROD-SMP：QEMU 默认 EM 表注册须受理");
+    let dom = em_domain(0).expect("EASPROD-SMP：域 0 拷出须 Some（QEMU 双核表 0b11）");
+    assert!(
+        (dom.cpu_mask & 0b11) == 0b11,
+        "EASPROD-SMP：域 0 须覆盖双核（cpu_mask）"
+    );
+    policy::unbind();
+    for c in 0..UTIL_NR_CPU {
+        util_reset(c);
+    }
+
+    // —— ES-1. spawn 路由负控：真 spawn_intent（interactive 带任务）→
+    //         ktest 期 par 门恒关 → place() 恒 CPU0 → 真 PER_CPU_RQ[0] 在席
+    //         且 home_cpu==0。EAS/spread 路由的门开半边归 smoke-smp 相。——
+    spawn_intent(es_dummy, 0, b"esSP", INTENT_INTERACTIVE);
+    let mut sp_ptr = 0usize;
+    let mut sp_home = 9u8;
+    let phys = pi_rq_lock();
+    for_each_runnable(|t| {
+        if t.name == b"esSP".as_slice() {
+            sp_ptr = t as *mut Task as usize;
+            sp_home = t.home_cpu;
+        }
+    });
+    pi_rq_unlock(phys);
+    assert_ne!(sp_ptr, 0, "EASPROD-SMP：ES-1 spawn 须真入 PER_CPU_RQ");
+    assert_eq!(sp_home, 0, "EASPROD-SMP：ES-1 ktest 期 spawn 须落本核（par 门关）");
+    // SAFETY: spawn_intent 的 Box::leak 产物，地址稳定；此刻在真 PER_CPU_RQ
+    // 环上（sp_ptr 断言已证）。
+    unsafe { rq_unlink_kt(&mut *(sp_ptr as *mut Task)) };
+
+    // —— ES-2. 双核活快照 + 避忙核（合成时间轴——EASPROD EP-B 同款：
+    //         step 下 accum=k×u → util_raw=u 精确折叠，t 单调推进）。
+    let k = util_window_vct() / 1024 + 1;
+    let step = k * 1024;
+    /// 折一窗：util_raw = u 精确进 EWMA（t 单调推进——双核共享时间轴）。
+    fn fold(cpu: usize, u: u32, t: &mut u64, k: u64, step: u64) {
+        util_accumulate(cpu, k * u as u64);
+        *t += step;
+        util_tick_window(cpu, *t);
+    }
+    let mut t = 1_000_000u64;
+    util_tick_window(0, t); // 开首窗（EB-2/EP-B 同款）
+    let mut guard = 0;
+    while cpu_util(0) < 342 {
+        fold(0, 350, &mut t, k, step);
+        guard += 1;
+        assert!(guard < 128, "EASPROD-SMP：CPU0 EWMA 折叠须收敛（guard 帽）");
+    }
+    // CPU1 折到 100 带——双核同活快照（对侧非零=EASPROD 未覆盖的 SMP 形）。
+    util_tick_window(1, t);
+    let mut guard = 0;
+    while cpu_util(1) < 92 {
+        fold(1, 100, &mut t, k, step);
+        guard += 1;
+        assert!(guard < 128, "EASPROD-SMP：CPU1 EWMA 折叠须收敛（guard 帽）");
+    }
+    let (u0, u1) = (cpu_util(0), cpu_util(1));
+    assert!((342..=350).contains(&u0), "EASPROD-SMP：CPU0 须在 350 带（{u0}）");
+    assert!((92..=100).contains(&u1), "EASPROD-SMP：CPU1 须在 100 带（{u1}）");
+    // 快照独立性（per-CPU 槽隔离——F2 修复面的读者侧）：折 CPU1 全程 CPU0
+    // 值域不动（EWMA 无跨核污染）。
+    assert!(
+        (342..=350).contains(&cpu_util(0)),
+        "EASPROD-SMP：折 CPU1 须零扰动 CPU0 快照（per-CPU 槽隔离）"
+    );
+
+    // policy 双键双 hint：key7 偏 little（hint=1 → prev CPU0）、key8 偏 big
+    //（hint=2 → prev CPU1）——同一快照下两方向都须避高 util 核。
+    static SMP_HINT: [Entry; 2] = [
+        Entry {
+            task_key: 7,
+            directive: Directive { placement: 1, weight: 0, epp: None },
+        },
+        Entry {
+            task_key: 8,
+            directive: Directive { placement: 2, weight: 0, epp: None },
+        },
+    ];
+    assert!(
+        policy::bind_gen(&SMP_HINT, policy::gen() + 1),
+        "EASPROD-SMP：双键 hint 表 bind_gen 须受理"
+    );
+    assert_eq!(policy::placement_hint(7), 1, "EASPROD-SMP：键 7 须透传 hint=1（偏 little）");
+    assert_eq!(policy::placement_hint(8), 2, "EASPROD-SMP：键 8 须透传 hint=2（偏 big）");
+    // [350,100]+est128：加 CPU0 跨档 opp1（Δ大）、加 CPU1 保档 opp0（Δ小）
+    //——两个 hint 方向都选 CPU1（避高 util 核；EA-6 档界律的双核活底景形）。
+    assert_eq!(
+        eas_place(7),
+        Some(1),
+        "EASPROD-SMP：hint=1（偏 CPU0）仍须避忙核落 CPU1（能量严格更省越 hint）"
+    );
+    assert_eq!(
+        eas_place(8),
+        Some(1),
+        "EASPROD-SMP：hint=2（偏 CPU1）落低 util 核 CPU1"
+    );
+
+    // 镜像翻转：CPU0↔CPU1 快照对调 → 决策随快照翻到 CPU0（非常量巧合）。
+    for c in 0..UTIL_NR_CPU {
+        util_reset(c);
+    }
+    util_tick_window(1, t);
+    let mut guard = 0;
+    while cpu_util(1) < 342 {
+        fold(1, 350, &mut t, k, step);
+        guard += 1;
+        assert!(guard < 128, "EASPROD-SMP：翻转 CPU1 泵升须收敛（guard 帽）");
+    }
+    util_tick_window(0, t);
+    let mut guard = 0;
+    while cpu_util(0) < 92 {
+        fold(0, 100, &mut t, k, step);
+        guard += 1;
+        assert!(guard < 128, "EASPROD-SMP：翻转 CPU0 泵升须收敛（guard 帽）");
+    }
+    assert!((92..=100).contains(&cpu_util(0)), "EASPROD-SMP：镜像后 CPU0 须在 100 带");
+    assert!((342..=350).contains(&cpu_util(1)), "EASPROD-SMP：镜像后 CPU1 须在 350 带");
+    assert_eq!(
+        eas_place(7),
+        Some(0),
+        "EASPROD-SMP：镜像快照 [100,350] 须翻到低 util 核 CPU0（hint=1 同向）"
+    );
+    assert_eq!(
+        eas_place(8),
+        Some(0),
+        "EASPROD-SMP：镜像快照下 hint=2（偏 CPU1）仍须避忙核落 CPU0"
+    );
+
+    // —— ES-3. overutil 双核收口：双核同活底景上泵 CPU1 越阈——全域让位，
+    //         CPU0 快照隔离不动（跨核读者不再见对核泵升——F2 面）。
+    let mut guard = 0;
+    while cpu_util(1) <= 819 {
+        fold(1, 1024, &mut t, k, step);
+        guard += 1;
+        assert!(guard < 128, "EASPROD-SMP：CPU1 泵阈须收敛（guard 帽）");
+    }
+    assert!(any_overutilized(), "EASPROD-SMP：泵后须全域 overutil 态");
+    assert!(
+        (92..=100).contains(&cpu_util(0)),
+        "EASPROD-SMP：CPU1 泵越阈须零扰动 CPU0 快照（槽隔离）"
+    );
+    assert_eq!(
+        eas_place(7),
+        None,
+        "EASPROD-SMP：overutil 须让位负载均衡（hint=1 失效——Linux 同律）"
+    );
+    assert_eq!(eas_place(8), None, "EASPROD-SMP：overutil 须让位（hint=2 同失效）");
+
+    // ES-4 收口（EA 族同款）。
+    policy::unbind();
+    for c in 0..UTIL_NR_CPU {
+        util_reset(c);
+        assert_eq!(cpu_util(c), 0, "EASPROD-SMP：收口须回未启态（CPU{c}）");
+    }
+
+    berry_hal_aarch64::uart_puts(b"EASPROD-SMP ok n=3\n");
+}
+
+/// F6 SMP 专项测试相之三（SMP-01 报告遗留·2026-11-16）：timer slack **双核
+/// 不竞态**钉板——SLACK-SMP。
+///
+/// SMP-01 §1.2 定谳「slack 在多核下无竞态」的代码面论证（顺延在
+/// block_current 入队点**一次落定**〔sched.rs `timer_slack_defer` 调用〕
+/// + SLEEPQ 全局升序单队列 + SQ 自旋锁串行摘队）此前无专项断言面
+/// （LOADGEN A3/A4 只测单一全局 slack 值）。本测补最小双核形状：
+/// 双「核」睡者**同刻 due、不同 slack 值**（各自的入队时刻读各自当时的
+/// 全局 slack——defer 在入队点落定为任务私有字段，此后全局 slack 改动
+/// 不回写——跨核零竞态的机制面）。两段：
+/// - **SS-1 异 slack 落定/无交叉**：真 spawn 三睡者（interactive 控制 +
+///   双 utility 各代一「核」），同刻 due、slack 5ms/10ms 各一、入队序
+///   故意打乱（SLEEPQ 升序恢复）；arm 后全局 slack 改 0 → 三睡者 stamp
+///   零变（一次落定）+ `nearest_deadline` 队头 = 交互者 stamp（升序队头
+///   ——oneshot 收紧律跨核读的同一头）；忙等到期检出（LOADGEN 形态）→
+///   各自 wake 落在自己 stamp 的检出容差内、严格保序（IA < UA < UB）
+///   ——**无交叉**（谁也没吃到别人的 slack/谁的 slack 也没串到别人）。
+/// - **SS-2 翻转镜像**：slack 互换（UA↔UB）→ 落定值与到期序随 slack
+///   翻转（各自正确随自己的 slack，非随任务身份/入队序）。
+///
+/// ktest 纪律（LOADGEN 同款）：真 SLEEPQ（`sleepq_insert`/`sleepq_unlink`）
+/// + 真顺延律 `timer_slack_defer`（block_current 入队点同款——入队点一次
+/// 落定）；到期检出为忙等形态（真 IRQ 口径归 rwake 族 boot spawn 面）；
+/// 收口 SLEEPQ 清空 + slack 回 saved。
+#[allow(clippy::unwrap_used)]
+fn test_slack_smp() {
+    use berry_hal_aarch64::timer::{cntfrq, cntvct};
+    use berry_sched::{
+        for_each_runnable, nearest_deadline, pi_rq_lock, pi_rq_unlock, rq_unlink_kt,
+        set_timer_slack_ns, sleepq_insert, sleepq_unlink, spawn_intent, timer_slack_defer,
+        timer_slack_ns, Task, INTENT_INTERACTIVE, INTENT_UTILITY,
+    };
+
+    /// 占位入口（睡者永不执行——驱动器同步代跑；halt 兜底，LOADGEN 同款）。
+    extern "C" fn ss_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    let freq = cntfrq();
+    assert!(freq > 0, "SLACK-SMP：CNTFRQ 须非零");
+    let ns2cyc = |ns: u64| -> u64 { ns.saturating_mul(freq) / 1_000_000_000 };
+    /// 「核0」slack 5ms / 「核1」slack 10ms（双核不同 slack 值——任务书口径）。
+    const SLACK_A_NS: u64 = 5_000_000;
+    const SLACK_B_NS: u64 = 10_000_000;
+    /// arm 时距（due 在未来——三睡者同刻）。
+    const DUE_AFTER_NS: u64 = 30_000_000;
+    /// 检出上界帽（宽松：忙等扫描粒度 µs 级即达标；TCG 虚拟钟随宿主调度
+    /// 单步跳前（并行会话构建负载实测判例）——上界只证「扫描不睡死」，
+    /// 「无交叉」本体由 stamp 恒等 + 下界 + 构造序三面执法，不受此帽影响）。
+    const LATE_CAP_NS: u64 = 50_000_000;
+
+    // 前置：LOADGEN 收口 slack 归零（SLEEPQ 亦空——LOADGEN 收口断言）。
+    let saved = timer_slack_ns();
+    assert_eq!(saved, 0, "SLACK-SMP：前置全局 slack 须 0（LOADGEN 收口）");
+
+    // spawn 三睡者（真 spawn_intent 面 → 真 RQ 在席验证 → 摘出接管，
+    // loadgen_spawn 同款）；IA = interactive 控制（零顺延律的活证）。
+    spawn_intent(ss_dummy, 0, b"ssIA", INTENT_INTERACTIVE);
+    spawn_intent(ss_dummy, 0, b"ssUA", INTENT_UTILITY);
+    spawn_intent(ss_dummy, 0, b"ssUB", INTENT_UTILITY);
+    let mut ptrs = [0usize; 3];
+    let phys = pi_rq_lock();
+    for_each_runnable(|t| {
+        let i = if t.name == b"ssIA".as_slice() {
+            0
+        } else if t.name == b"ssUA".as_slice() {
+            1
+        } else if t.name == b"ssUB".as_slice() {
+            2
+        } else {
+            return;
+        };
+        ptrs[i] = t as *mut Task as usize;
+    });
+    pi_rq_unlock(phys);
+    assert!(
+        ptrs.iter().all(|p| *p != 0),
+        "SLACK-SMP：三睡者须真入 PER_CPU_RQ（各恰一枚）"
+    );
+    for p in ptrs {
+        // SAFETY: spawn_intent 的 Box::leak 产物，地址稳定；此刻在真
+        // PER_CPU_RQ 环上（ptrs 断言已证）。
+        rq_unlink_kt(unsafe { &mut *(p as *mut Task) });
+    }
+    let (tia, tua, tub) = unsafe {
+        (
+            &mut *(ptrs[0] as *mut Task),
+            &mut *(ptrs[1] as *mut Task),
+            &mut *(ptrs[2] as *mut Task),
+        )
+    };
+
+    /// arm 单睡者：设全局 slack → 顺延律在**入队点一次落定**
+    /// （block_current 同款：intent 档判 + LATE-only 截尾）→ 真 SLEEPQ 入队。
+    /// SAFETY: 调用方保证 t 此刻不在 SLEEPQ（fresh spawn / 上轮已摘）。
+    fn arm(t: &mut Task, due: u64, intent: u8, slack_ns: u64, freq: u64) -> u64 {
+        set_timer_slack_ns(slack_ns);
+        let deferred = timer_slack_defer(intent, due, slack_ns, freq);
+        t.wait_obj = 0;
+        t.wait_signals = 0;
+        t.wait_deadline = deferred;
+        sleepq_insert(t);
+        deferred
+    }
+
+    /// 忙等到期检出（LOADGEN expire_timeouts 形态）：批扫睡者到期即摘，
+    /// 逐个记 wake 时刻；每次摘后复核队头 = 剩余最小 stamp（升序推进——
+    /// oneshot 两臂收紧律跨核读的同一队头）。返三睡者 wake 时刻。
+    /// SAFETY: 三指针来自 spawn_intent Box::leak，地址稳定、均在 SLEEPQ。
+    fn expire_scan(ia: &mut Task, ua: &mut Task, ub: &mut Task, cap: u64) -> (u64, u64, u64) {
+        let mut woken = [false; 3];
+        let mut wake = [0u64; 3];
+        let slots: [*mut Task; 3] = [ia as *mut _, ua as *mut _, ub as *mut _];
+        let stamps = [ia.wait_deadline, ua.wait_deadline, ub.wait_deadline];
+        while !woken.iter().all(|w| *w) {
+            let now = cntvct();
+            assert!(now < cap, "SLACK-SMP：到期检出超安全墙（驱动器疑似失速）");
+            // 本拍到期者中 stamp 最小者先摘——expire_timeouts 头扫同形
+            //（升序单队列 = 摘序恒 stamp 序，与索引序无关）。
+            let due_min = (0..3)
+                .filter(|j| !woken[*j] && stamps[*j] <= now)
+                .min_by_key(|j| stamps[*j]);
+            let Some(i) = due_min else {
+                continue;
+            };
+            // SAFETY: 在队（arm 入队后未经摘除）——unlink 契约满足。
+            unsafe { sleepq_unlink(&mut *slots[i]) };
+            woken[i] = true;
+            wake[i] = cntvct();
+            // 队头推进复核：摘一员后队头须=剩余最小 stamp（升序单队列
+            // 语义——stamp 升序即摘序，跳序 = 交叉的队列面形态）。
+            let expect = (0..3)
+                .filter(|j| !woken[*j])
+                .map(|j| stamps[j])
+                .min()
+                .map_or(None, Some);
+            assert_eq!(
+                nearest_deadline(),
+                expect,
+                "SLACK-SMP：摘一员后队头须=剩余最小 stamp（升序推进）"
+            );
+        }
+        (wake[0], wake[1], wake[2])
+    }
+
+    let late_cap = ns2cyc(LATE_CAP_NS);
+    let cap_extra = ns2cyc(DUE_AFTER_NS + SLACK_B_NS + 3 * LATE_CAP_NS);
+
+    // —— SS-1. 异 slack 落定/无交叉：同刻 due，UA（「核0」）slack 5ms、
+    //         UB（「核1」）slack 10ms；入队序 UB→UA→IA（逆 stamp 序——
+    //         SLEEPQ 升序恢复）。IA 控制臂在 UB 同款 slack=10ms 语境 arm
+    //         （交互零牺牲——intent 档判优先于全局值）。——
+    let base = cntvct() + ns2cyc(DUE_AFTER_NS);
+    let d_ub = arm(tub, base, INTENT_UTILITY, SLACK_B_NS, freq);
+    let d_ua = arm(tua, base, INTENT_UTILITY, SLACK_A_NS, freq);
+    let d_ia = arm(tia, base, INTENT_INTERACTIVE, SLACK_B_NS, freq);
+    let (def_a, def_b) = (ns2cyc(SLACK_A_NS), ns2cyc(SLACK_B_NS));
+    assert_eq!(d_ia, base, "SLACK-SMP：SS-1 interactive 须零顺延（intent 档判优先）");
+    assert_eq!(d_ua, base + def_a, "SLACK-SMP：SS-1 UA stamp 须=due+5ms（自家 slack）");
+    assert_eq!(d_ub, base + def_b, "SLACK-SMP：SS-1 UB stamp 须=due+10ms（自家 slack）");
+    assert!(d_ia < d_ua && d_ua < d_ub, "SLACK-SMP：SS-1 三 stamp 须严格分立");
+    // 一次落定（无竞态机制面）：arm 后全局 slack 改 0，三睡者 stamp 零变。
+    set_timer_slack_ns(0);
+    assert_eq!(
+        tub.wait_deadline, d_ub,
+        "SLACK-SMP：SS-1 全局 slack 改 0 不得回写已入队睡者 stamp（一次落定）"
+    );
+    // 升序恢复 + 队头（逆序入队后队头 = 最小 stamp = 交互者）。
+    assert_eq!(
+        nearest_deadline(),
+        Some(d_ia),
+        "SLACK-SMP：SS-1 SLEEPQ 队头须=最小 stamp（升序恢复——逆序入队）"
+    );
+    let cap1 = base + cap_extra;
+    let (w_ia, w_ua, w_ub) = expire_scan(tia, tua, tub, cap1);
+    assert_eq!(nearest_deadline(), None, "SLACK-SMP：SS-1 全醒后 SLEEPQ 须空");
+    // 到期各自正确：wake ∈ [stamp, stamp+容差]（不早到 = 没吃别人的更短
+    // slack；不迟到超容差 = 没被别人的更长 slack 拖走）。
+    assert!(
+        w_ia >= d_ia && w_ia <= d_ia + late_cap,
+        "SLACK-SMP：SS-1 IA 须按 stamp 到期（零顺延，实得偏差 {}cyc）",
+        w_ia.saturating_sub(d_ia)
+    );
+    assert!(
+        w_ua >= d_ua && w_ua <= d_ua + late_cap,
+        "SLACK-SMP：SS-1 UA 须按自家 +5ms stamp 到期（实得偏差 {}cyc）",
+        w_ua.saturating_sub(d_ua)
+    );
+    assert!(
+        w_ub >= d_ub && w_ub <= d_ub + late_cap,
+        "SLACK-SMP：SS-1 UB 须按自家 +10ms stamp 到期（实得偏差 {}cyc）",
+        w_ub.saturating_sub(d_ub)
+    );
+    // 无交叉：严格保序（IA 的 exact 没串成 UA 的 +5ms、UA/UB 互不串）。
+    assert!(
+        w_ia < w_ua && w_ua < w_ub,
+        "SLACK-SMP：SS-1 wake 序须严格 IA<UA<UB（无交叉）"
+    );
+
+    // —— SS-2. 翻转镜像：slack 互换（UA←10ms、UB←5ms）→ 落定与到期序
+    //         随 slack 翻转（各自随自家 slack，非随任务身份）。——
+    let base2 = cntvct() + ns2cyc(DUE_AFTER_NS);
+    let d_ub2 = arm(tub, base2, INTENT_UTILITY, SLACK_A_NS, freq);
+    let d_ua2 = arm(tua, base2, INTENT_UTILITY, SLACK_B_NS, freq);
+    let d_ia2 = arm(tia, base2, INTENT_INTERACTIVE, SLACK_B_NS, freq);
+    assert_eq!(d_ia2, base2, "SLACK-SMP：SS-2 interactive 仍须零顺延");
+    assert_eq!(d_ua2, base2 + def_b, "SLACK-SMP：SS-2 UA stamp 须随互换翻 +10ms");
+    assert_eq!(d_ub2, base2 + def_a, "SLACK-SMP：SS-2 UB stamp 须随互换翻 +5ms");
+    assert!(d_ia2 < d_ub2 && d_ub2 < d_ua2, "SLACK-SMP：SS-2 stamp 序须翻转（UB 先于 UA）");
+    assert_eq!(
+        nearest_deadline(),
+        Some(d_ia2),
+        "SLACK-SMP：SS-2 队头仍=最小 stamp（IA）"
+    );
+    let cap2 = base2 + cap_extra;
+    let (w2_ia, w2_ua, w2_ub) = expire_scan(tia, tua, tub, cap2);
+    assert!(
+        w2_ub >= d_ub2 && w2_ub <= d_ub2 + late_cap
+            && w2_ua >= d_ua2
+            && w2_ua <= d_ua2 + late_cap,
+        "SLACK-SMP：SS-2 双 utility 须各按互换后 stamp 到期（UA 偏差 {}cyc / UB 偏差 {}cyc）",
+        w2_ua.saturating_sub(d_ua2),
+        w2_ub.saturating_sub(d_ub2)
+    );
+    assert!(
+        w2_ia < w2_ub && w2_ub < w2_ua,
+        "SLACK-SMP：SS-2 wake 序须随 slack 翻转（IA<UB<UA——各自正确非身份粘连）"
+    );
+    assert_eq!(nearest_deadline(), None, "SLACK-SMP：SS-2 全醒后 SLEEPQ 须空");
+
+    // 收口：全局 slack 回 saved（SS-2 尾 arm 的 SLACK_B_NS 在席——arm 面
+    // 值如实透出，检测期零隐式改动）。
+    assert_eq!(
+        timer_slack_ns(),
+        SLACK_B_NS,
+        "SLACK-SMP：SS-2 尾 arm 后全局 slack 须=SLACK_B_NS（零隐式扰动）"
+    );
+    set_timer_slack_ns(saved);
+
+    berry_hal_aarch64::uart_puts(b"SLACK-SMP ok n=2\n");
+}
+
+/// SMP-01 §3.5 F5（限流垄断者强制让点，2026-11-16 修）的决策面钉板——
+/// THROTTLE 位只挡「再出选」（ringface eligible 位过滤）不挡「继续跑」：
+/// 单任务独占核时 pick 恒 None ⇒ 旧路 on_irq_tick 不切换、cur 续跑到
+/// block/yield/exit，带预算被架空。修面（sched.rs）：
+/// 1. 判据单源 [`berry_sched::throttle_yield_due`]（HELD_THROTTLE 位——
+///    band 越线与 S5-c 逐任务 deadline 预算两位写者的统一面）；
+/// 2. on_irq_tick 片燃尽支出选 None 臂强制让点（CPU0 切 IDLE / 副核回
+///    park；限流者在环保留 + Ready 化）；
+/// 3. 醒源护栏 nearest_deadline 并入限流带截止（band::
+///    nearest_throttle_wake）——停泊核翻期自醒，深 park 不饿死。
+/// 四段（真机械手驱——SMPLZ/BANDM4-G 同款）：T1 真 FairBand tick 烧穿
+/// 配额置位 cur；T2 判据四面（限流垄断者须让点 / unit 垄断者续跑零漂移 /
+/// 限流者在环时他者出选 / S5-c deadline 位同判据）；T3 醒源 min 律；
+/// T4 翻期回场。切换舞蹈本体（真 IRQ 真切换）归 boot/smoke 面。
+#[allow(clippy::unwrap_used)]
+fn test_throttle_yield() {
+    use berry_sched::{
+        any_armed, class_of_task, configure, nearest_deadline, period_check, state,
+        throttle_yield_due, unthrottle_all, Fair, Runqueue, SchedClass, Task, Topo,
+        HELD_THROTTLE, INTENT_UNSPECIFIED, INTENT_UTILITY, PRIO_DEADLINE,
+    };
+    use berry_hal_aarch64::timer::{cntfrq, cntvct};
+
+    /// 占位入口（手搭成员永不执行；halt 兜底——SMPLZ 同款）。
+    extern "C" fn ty_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    /// 手搭成员（intent 即带键 §11；proc_tag=0 内核任务——policy::apply
+    /// 哨兵键早退零写入，SMPLZ mk 同款）。
+    fn mk(name: &'static [u8], band: u8) -> &'static mut Task {
+        let t = alloc::boxed::Box::leak(Task::new_kernel_with_as(ty_dummy, 0, name, 0, 0));
+        t.intent_effective = band;
+        t
+    }
+
+    fn ns2cyc(ns: u64) -> u64 {
+        (ns as u128 * cntfrq() as u128 / 1_000_000_000) as u64
+    }
+
+    // 前置：前序族（BANDM4/SMPLZ/F6 三相）全收口 → 零武装；SLEEPQ 醒源
+    // 基线（T3 min 律对照臂——基线或有早睡者，断言取 min 而非裸带截止）。
+    assert!(!any_armed(), "THRYLD：前置须零武装带（前序族收口）");
+    let wake_base = nearest_deadline();
+
+    // —— T1. 真链烧穿：utility 垄断者真跑真记账（FairBand::tick consume
+    //         首越线 → throttle_all 扫环置位 **cur 本身**）——
+    let freq = cntfrq();
+    let quota = freq / 20_000; // 50µs 配额（一跑段即穿）
+    let period = ns2cyc(200_000_000); // 200ms 期（>> 本段实跑 ~10ms）
+    let mut rq = Runqueue::new();
+    let topo = Topo::single();
+    let tu = mk(b"tyut".as_slice(), INTENT_UTILITY); // 垄断者（utility 带成员）
+    Fair.enqueue(tu, &mut rq);
+    let now0 = cntvct();
+    assert!(configure(INTENT_UTILITY, quota, period, now0), "THRYLD：T1 utility 须武装");
+    // 真跑两拍（LOADGEN 手驱同形）：拍 1 锚记账基准（CBS 期内律剪辑掉
+    // 跨段 delta——无越线）；跑段后拍 2 真越线 + 片燃尽（slice 预置 1 =
+    // 任意真 delta 即燃尽——F5 支入口前提）。
+    tu.slice_left = 1;
+    class_of_task(&*tu).tick(&mut *tu, &mut rq); // 基准锚定（consume 剪辑零越线）
+    let spin_to = cntvct() + freq / 100; // ~10ms 跑段（>> quota、<< period）
+    while cntvct() < spin_to {
+        core::hint::spin_loop();
+    }
+    class_of_task(&*tu).tick(&mut *tu, &mut rq); // consume 首越线 → throttle_all（cur 在环）
+    assert_eq!(tu.slice_left, 0, "THRYLD：T1 片须燃尽（F5 支入口前提）");
+    assert!(
+        tu.held_locks & HELD_THROTTLE != 0,
+        "THRYLD：T1 越线 tick 须置位 cur 限流位（throttle_all 扫环——垄断者=唯一成员）"
+    );
+    assert!(
+        state(INTENT_UTILITY).map(|s| s.throttled).unwrap_or(false),
+        "THRYLD：T1 越线后槽镜像须真"
+    );
+
+    // —— T2. 判据四面 ——
+    // T2a 限流垄断者：出选 None（F5 前提）+ 判据真（须让点不得续跑）。
+    let picked: Option<*mut Task> = Fair
+        .pick_next_filtered(&rq, &topo, tu as *mut Task)
+        .map(|n| n as *mut Task);
+    assert!(
+        picked.is_none(),
+        "THRYLD：T2a 限流者不可再出选（eligible 位过滤——pick None 即 F5 场景）"
+    );
+    assert!(
+        throttle_yield_due(tu as *const Task),
+        "THRYLD：T2a 限流垄断者判据须真（旧路续跑=架空限流——F5 修面）"
+    );
+    // T2b unit 垄断者（无限流）+ 限流者在环：出选有货（低优他者照常承接
+    // = 「让给任何可运行任务」面）+ unit 判据假（正常续跑零漂移——单核
+    // ktest 回归面的判据投影）。
+    let tn = mk(b"tyun".as_slice(), INTENT_UNSPECIFIED); // unit 任务（非成员）
+    Fair.enqueue(tn, &mut rq);
+    let picked_n: Option<*mut Task> = Fair
+        .pick_next_filtered(&rq, &topo, tn as *mut Task)
+        .map(|n| n as *mut Task);
+    assert!(
+        picked_n == Some(tn as *mut Task),
+        "THRYLD：T2b 限流者在环时 unit 他者须出选（让给任何可运行任务）"
+    );
+    assert!(
+        !throttle_yield_due(tn as *const Task),
+        "THRYLD：T2b unit 垄断者判据须假（正常续跑——不限流任务零漂移）"
+    );
+    Fair.dequeue(tn, &mut rq);
+    // T2c S5-c deadline 预算位同判据（位是两位写者的统一面）：deadline
+    // 任务预算燃尽 → Fair::tick 置位 → 判据真。
+    let td = mk(b"tydl".as_slice(), INTENT_UNSPECIFIED);
+    td.prio_effective = PRIO_DEADLINE;
+    td.preempt_threshold = 1; // 预算 1 周期 → 首拍燃尽（throttle_admissible 三与门）
+    td.vdeadline = now0 + period; // 远截止（不触 lazy_unthrottle 面——INTEG 同款）
+    td.slice_left = 1;
+    Fair.enqueue(td, &mut rq);
+    Fair.tick(&mut *td, &mut rq); // 真记账：slice 燃尽 + admissible → 置位
+    assert!(
+        td.held_locks & HELD_THROTTLE != 0,
+        "THRYLD：T2c deadline 预算燃尽须置位（S5-c 写者）"
+    );
+    assert!(
+        throttle_yield_due(td as *const Task),
+        "THRYLD：T2c deadline 限流位同判据须真（统一执法面）"
+    );
+    Fair.dequeue(td, &mut rq);
+
+    // —— T3. 醒源 min 律：nearest_deadline 并入限流带截止（SLEEPQ 基线
+    //         取 min——基线空则即带截止；缺此面深 park 无醒 = 让点变饿死）——
+    let band_dl = state(INTENT_UTILITY).map(|s| s.deadline).unwrap_or(0);
+    assert!(band_dl > now0, "THRYLD：T3 带截止须在未来（武装首期）");
+    let got = nearest_deadline().expect("THRYLD：T3 限流期须有醒源");
+    let want = wake_base.map_or(band_dl, |b| b.min(band_dl));
+    assert_eq!(got, want, "THRYLD：T3 nearest_deadline 须并入限流带截止（min 律）");
+
+    // —— T4. 翻期回场：period_check 翻期 → unthrottle_all 清位 → 出选
+    //         复活 + 判据假（idle/park 停泊醒后由此回场——收口环）——
+    assert!(
+        period_check(INTENT_UTILITY, now0 + period + 1),
+        "THRYLD：T4 到期须翻期（合成时刻——SMPLZ L2b 同款）"
+    );
+    assert_eq!(
+        unthrottle_all(INTENT_UTILITY, &rq),
+        1,
+        "THRYLD：T4 解限须清垄断者（在环唯一成员）"
+    );
+    assert!(
+        tu.held_locks & HELD_THROTTLE == 0,
+        "THRYLD：T4 解限后位须清"
+    );
+    assert!(
+        !throttle_yield_due(tu as *const Task),
+        "THRYLD：T4 解限后判据须假（可续跑）"
+    );
+    let picked: Option<*mut Task> = Fair
+        .pick_next_filtered(&rq, &topo, core::ptr::null_mut())
+        .map(|n| n as *mut Task);
+    assert!(picked.is_some(), "THRYLD：T4 解限后须可再出选（回场）");
+    // 收口（test_band 纪律）：摘环 + 关带 + 环空。
+    Fair.dequeue(tu, &mut rq);
+    assert!(!configure(INTENT_UTILITY, 0, 0, 0), "THRYLD：收口关带须受理（返假=关态，SMPLZ L2c 同款）");
+    assert!(!any_armed(), "THRYLD：收口后须零武装带");
+    assert_eq!(rq.len(), 0, "THRYLD：收口环须空");
+
+    berry_hal_aarch64::uart_puts(b"THRYLD ok n=4\n");
 }

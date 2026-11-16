@@ -260,6 +260,41 @@ pub fn period_check(band: u8, now: u64) -> bool {
     }
 }
 
+/// 最近限流带截止（SMP-01 F5 强制让点的醒源面，2026-11-16）：`armed` 且
+/// `throttled` 镜像真的槽中 [`DEADLINES`] 最小值——即最早「翻期解限」时刻。
+/// 无（未武装 / 无一在限流）→ None。
+///
+/// 消费点 = `sched.rs::nearest_deadline`（与 SLEEPQ 队头 min 合并）：idle/park
+/// 停泊武装与 tick 入口收紧据此定时——F5 强制让点（限流 cur 不再续跑、核回
+/// idle/park）之后，停泊核在带翻期时刻自醒（tick → `band_period_sweep`
+/// 翻期解限 → pick 回场）。缺此面则深 park（mask CNTV 无 tick）把「让点」
+/// 变「永久饿死」：sweep 永不再运行、限流永不翻期、无人再醒。非限流武装
+/// 槽不参与（无解限义务——零多余醒源）。
+///
+/// 读序：`throttled` 镜像（static mut 屏蔽窗契约——调用点皆 IRQ 屏蔽/park
+/// 环，同 [`lazy_enforce`] 读者）先行、[`DEADLINES`] Acquire 后随——与
+/// [`period_check`] 翻期「清镜像先行 + CAS(Release) 发布」配对：镜像真 ⇒
+/// 读到的 deadline 必为置位同窗或之后的值（旧期值已被翻期 CAS 赢家发布为
+/// 新期，Acquire 侧不见旧账）。防御面：镜像真而账 0（configure 半途态——
+/// 实际同批落账不可达）跳过，方向安全。
+pub fn nearest_throttle_wake() -> Option<u64> {
+    let mut best: Option<u64> = None;
+    for b in 0u8..(BAND_SLOTS as u8) {
+        let Some(s) = slot(b) else { continue };
+        // SAFETY: 只读快照拷贝；调用侧 IRQ 屏蔽窗内（slot 契约）。
+        let snap = unsafe { *s };
+        if !armed(&snap) || !snap.throttled {
+            continue;
+        }
+        let d = DEADLINES[b as usize].load(Ordering::Acquire);
+        if d == 0 {
+            continue;
+        }
+        best = Some(best.map_or(d, |x: u64| x.min(d)));
+    }
+    best
+}
+
 /// 带级限流：扫环上带成员（intent_effective == band 的 fair 任务）置
 /// [`HELD_THROTTLE`]（eligible 过滤 → 不再出选，同 S5-c）。幂等（已置位
 /// 不重复计数）。deadline 任务豁免（[`band_member`]）；FROZEN 位不碰
