@@ -75,6 +75,7 @@ dependencies = [
  "berry-lkface",
  "berry-numface",
  "berry-psface",
+ "berry-svcface",
  "berry-tickface",
  "berry-trapface",
  "berry-wakeface",

@@ -48,3 +48,5 @@ berry-tickface = { path = "../../tickface" }
 # 消费（asidface 迁 mmu.rs 面同款纪律；MMIO 发射面 uart_putc/uart_puts
 # 留壳）。host 钉板在 numface；无依赖传染（纯 no_std lib）。
 berry-numface = { path = "../../numface" }
+# W3-Q67：SVC 判定面纯函数单源（kern_lock.rs 消费 re-export；host 钉板在 svcface）。
+berry-svcface = { path = "../../svcface" }

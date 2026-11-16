@@ -19,6 +19,7 @@ mod aspace;
 mod bench; // B-0：内核微基准 + churn 泄漏金丝雀（docs/基准与压力测试设计.md）
 mod bootparams; // G5 内核半：etc/boot-params.toml 消费端（§1.6-补）
 mod channel;
+mod cbox; // 黑匣子崩溃记录表（plans/cbox/design.md——异常 fatal 路 RAM 镜像 + 排液）
 mod dtb;
 mod dpg; // G4-1：demand paging 内核机制自喂闭环（docs/G4按需调页实施设计草案.md）
 mod event;
@@ -221,9 +222,10 @@ fn fwcfg_rootfs_multivol() -> Option<RootfsBuf> {
 
 /// GUI P2：从 fw_cfg `opt/berry/display` 读 `WxH[@Hz]`；缺席/畸形 = None。
 /// 只接受 ASCII 十进制；字符串项可能带 NUL/空白，统一 trim 后再拆。
-/// 判定链五门单源 = `berry_dmface::parse_display_mode`（W3-Q84 host 钉板）；
-/// 本函数只留 fw_cfg 物理臂（find_file/read_to）。
-fn display_mode_req() -> Option<(u32, u32)> {
+/// 刀1（刷新率体系规范 §4-1）：@Hz 率域不再丢弃——语法层校验 1..=1000，
+/// 非法 loud 回退 60 + `DISP hz fail` 诊断行（语义层档位归属校验归
+/// guifbd 软面板——档位表单源，内核不自造集合）。
+fn display_mode_req() -> Option<(u32, u32, u16)> {
     use berry_hal_aarch64::fwcfg;
     let e = fwcfg::find_file("opt/berry/display")?;
     if e.size == 0 || e.size as usize > berry_dmface::MAX_ITEM_BYTES {
@@ -233,7 +235,153 @@ fn display_mode_req() -> Option<(u32, u32)> {
     if !fwcfg::read_to(&e, &mut buf[..e.size as usize]) {
         return None;
     }
-    berry_dmface::parse_display_mode(&buf[..e.size as usize])
+    let s = core::str::from_utf8(&buf[..e.size as usize]).ok()?;
+    let s = s.trim_matches(|c: char| c == '\0' || c.is_ascii_whitespace());
+    let (s, hz_s) = match s.split_once('@') {
+        Some((g, h)) => (g, Some(h)),
+        None => (s, None),
+    };
+    let (w, h) = s.split_once('x')?;
+    let hz: u16 = match hz_s {
+        None => 60,
+        Some(t) => match t.parse::<u16>() {
+            Ok(v) if (1..=1000).contains(&v) => v,
+            _ => {
+                berry_hal_aarch64::uart_puts(b"DISP hz fail\n");
+                60
+            }
+        },
+    };
+    Some((w.parse().ok()?, h.parse().ok()?, hz))
+}
+
+/// fw_cfg 字符串项读入 + trim（display_mode_req 同款纪律：NUL/空白剥壳），
+/// 交闭包消费（无分配、无拷回——&str 借用不外逸）。缺席/空/超 32B/
+/// 非 UTF-8 = None。
+fn fwcfg_trimmed<R>(name: &str, f: impl FnOnce(&str) -> R) -> Option<R> {
+    use berry_hal_aarch64::fwcfg;
+    let e = fwcfg::find_file(name)?;
+    if e.size == 0 || e.size > 32 {
+        return None;
+    }
+    let mut buf = [0u8; 32];
+    if !fwcfg::read_to(&e, &mut buf[..e.size as usize]) {
+        return None;
+    }
+    let s = core::str::from_utf8(&buf[..e.size as usize]).ok()?;
+    Some(f(s.trim_matches(|c: char| c == '\0' || c.is_ascii_whitespace())))
+}
+
+/// 刀2（刷新率体系规范 §5 配置面）：fw_cfg 软面板三旋钮 → boot VMO 尾插
+/// 域 7/8 LE u64 对（位布局 = guiproto `softpanel::PanelCfg::pack_domains`
+/// 手镜像，host 对拍钉板——内核不依赖用户态 crate）：
+/// `opt/berry/panel-model` = `tiered|tiered:vrr|freerange|freerange:per_frame`
+/// （缺省 tiered；刀6 起 `tiered:vrr` 抬 A8 LFC 门位、`freerange:per_frame`
+/// 开 P6 逐帧扫描形态——FreeRange 仿真恒 vrr capable）、
+/// `opt/berry/panel-mode` = `free|det|det:SEED`（缺省 free；HOST_LOCK 在册
+/// 未接线——刀3 仲裁器，本刀不收）、`opt/berry/panel-fault` =
+/// `D,J,S` 十进制 CSV（丢帧千分比 0..=1000 / 抖动 ns / 切档丢帧 0..=16）。
+/// 非法值 loud 回退缺省 + `PANEL … fail` 诊断行（DISP hz fail 同款）；
+/// 零域 = 缺省态（旧 guifbd 只读前 56B 无扰动，add-only 尾插纪律）。
+/// 任一旋钮非缺省时打 `PANEL cfg …` 证据行（宿主探针取证面）。
+fn panel_cfg_req() -> (u64, u64) {
+    use berry_hal_aarch64::uart_puts;
+    // model：0=Tiered 1=FreeRange；刀6 后缀 = per_frame(bit48) + vrr(bits49-50)。
+    let (mut model, mut model_name) = (0u64, b"tiered".as_slice());
+    let (mut per_frame, mut vrr) = (0u64, 0u64);
+    if let Some((m, pf, vr)) = fwcfg_trimmed("opt/berry/panel-model", |s| match s {
+        "tiered" => (0u64, 0u64, 0u64),
+        "tiered:vrr" => (0, 0, 1),
+        "freerange" => (1, 0, 1),
+        "freerange:per_frame" => (1, 1, 1),
+        _ => {
+            uart_puts(b"PANEL model fail\n");
+            (0, 0, 0)
+        }
+    }) {
+        model = m;
+        per_frame = pf;
+        vrr = vr;
+        // 名字含 vrr 维度：tiered 与 tiered:vrr 行为差一整条 LFC 面，
+        // 证据行必须可分辨（run6 教训：二元匹配打成同名的 model=tiered）。
+        model_name = match (m, pf, vr) {
+            (1, 1, _) => b"freerange:per_frame".as_slice(),
+            (1, 0, _) => b"freerange".as_slice(),
+            (0, 1, _) => b"tiered:per_frame".as_slice(), // Tiered 位被忽略（值域防御显示）
+            (0, 0, 1) => b"tiered:vrr".as_slice(),
+            _ => b"tiered".as_slice(),
+        };
+    }
+    // mode：0=FREE 2=DET（+seed）；det:SEED 形收种子，SEED 非法整旋钮回退。
+    let (mut mode, mut seed) = (0u64, 0u64);
+    let mut mode_name = b"free".as_slice();
+    if let Some((m, sd)) = fwcfg_trimmed("opt/berry/panel-mode", |s| match s {
+        "free" => (0u64, 0u64),
+        "det" => (2, 0),
+        s if s.starts_with("det:") => match s[4..].parse::<u32>() {
+            Ok(v) => (2, v as u64),
+            Err(_) => {
+                uart_puts(b"PANEL mode fail\n");
+                (0, 0)
+            }
+        },
+        _ => {
+            uart_puts(b"PANEL mode fail\n");
+            (0, 0)
+        }
+    }) {
+        mode = m;
+        seed = sd;
+        if m == 2 {
+            mode_name = b"det";
+        }
+    }
+    // fault：D,J,S 严格三字段（多余字段/越界/非数字 = 整旋钮回退零）。
+    let (mut drop_pm, mut jitter, mut sw) = (0u64, 0u64, 0u64);
+    let mut fault_seen = false;
+    if let Some(vals) = fwcfg_trimmed("opt/berry/panel-fault", |s| {
+        let mut parts = s.split(',');
+        let (a, b, c, tail) =
+            (parts.next(), parts.next(), parts.next(), parts.next());
+        if let (Some(a), Some(b), Some(c), None) = (a, b, c, tail) {
+            if let (Ok(d), Ok(j), Ok(w)) =
+                (a.parse::<u16>(), b.parse::<u32>(), c.parse::<u8>())
+            {
+                if d <= 1000 && w <= 16 {
+                    return (d as u64, j as u64, w as u64);
+                }
+            }
+        }
+        uart_puts(b"PANEL fault fail\n");
+        (0, 0, 0)
+    }) {
+        fault_seen = true;
+        (drop_pm, jitter, sw) = vals;
+    }
+    // 证据行：任一非缺省才打（探针取证面；无 `ok` 形态——不撞在册标记）。
+    // d7 刀6 位（bit48 per_frame / bits49-50 vrr）与 guiproto pack 同拍。
+    let d7 = model | (mode << 8) | (seed << 16) | (per_frame << 48) | (vrr << 49);
+    let d8 = drop_pm | (jitter << 16) | (sw << 48);
+    if d7 != 0 || d8 != 0 {
+        uart_puts(b"PANEL cfg model=");
+        uart_puts(model_name);
+        uart_puts(b" mode=");
+        uart_puts(mode_name);
+        if mode == 2 {
+            uart_puts(b" seed=");
+            berry_hal_aarch64::uart_put_dec(seed);
+        }
+        if fault_seen && (drop_pm != 0 || jitter != 0 || sw != 0) {
+            uart_puts(b" drop=");
+            berry_hal_aarch64::uart_put_dec(drop_pm);
+            uart_puts(b" jit=");
+            berry_hal_aarch64::uart_put_dec(jitter);
+            uart_puts(b" sw=");
+            berry_hal_aarch64::uart_put_dec(sw);
+        }
+        uart_puts(b"\n");
+    }
+    (d7, d8)
 }
 
 /// 内核 Rust 入口（由 HAL boot asm 的 `br rust_main` 调用——2b-1 起高半入口）。
@@ -303,9 +451,13 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // GUI P2：ramfb 手机档成功时置 1——随 fbinfo 第 6 域交 guifbd，
     // GUI 模式 console 只走串口/记账，不上屏盖桌面。
     let mut gui_mode = false;
+    // 刀1（刷新率体系规范 §4-2）：@Hz 率域随 fbinfo 第 7 域交 guifbd 软面板
+    //（ramfb_set 成功时才落值——几何回退则率域同回退 60；缺省 60）。
+    let mut gui_hz: u16 = 60;
     // 540×1200 等超出固件 GOP 缓冲的档：boot 先记 pending，mm::init 后从
-    // buddy 取连续块、重编程 ramfb；失败回退固件几何。
-    let mut pending_mode: Option<(u32, u32)> = None;
+    // buddy 取连续块、重编程 ramfb；失败回退固件几何（hz 随行——defer 期
+    // 率域先记，成败落值在重编程点）。
+    let mut pending_mode: Option<(u32, u32, u16)> = None;
     let print_fb = |g: (u64, u32, u32, u32, u32)| {
         berry_hal_aarch64::uart_puts(b"FB ok ");
         berry_hal_aarch64::uart_put_dec(g.1 as u64);
@@ -367,7 +519,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
             // 的 RAM 镜（宿主共享 RAM 面）。缺席 = 原 800×600 零扰动。
             let (mut gw, mut gh, mut gs) = (g.width, g.height, g.stride);
             let mut need_alloc = false;
-            if let Some((w0, h)) = display_mode_req() {
+            if let Some((w0, h, hz)) = display_mode_req() {
                 // ramfb 宽度 32 对齐（2026-11-15 会审定谳）：非对齐宽（如
                 // 1080）传 QEMU 后 surface 按对齐几何（1088）建、扫出断裂
                 // ——客机画面完整进 ramfb 而 VNC/screendump 恒黑帧；对齐后
@@ -387,21 +539,26 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                         gh = h;
                         gs = stride;
                         gui_mode = true;
+                        gui_hz = hz;
                         berry_hal_aarch64::uart_puts(b"DISP ok ");
                         berry_hal_aarch64::uart_put_dec(gw as u64);
                         berry_hal_aarch64::uart_puts(b"x");
                         berry_hal_aarch64::uart_put_dec(gh as u64);
+                        berry_hal_aarch64::uart_puts(b"@");
+                        berry_hal_aarch64::uart_put_dec(hz as u64);
                         berry_hal_aarch64::uart_puts(b"\n");
                     } else {
                         berry_hal_aarch64::uart_puts(b"DISP fail\n");
                     }
                 } else {
-                    pending_mode = Some((w, h));
+                    pending_mode = Some((w, h, hz));
                     need_alloc = true;
                     berry_hal_aarch64::uart_puts(b"DISP defer ");
                     berry_hal_aarch64::uart_put_dec(w as u64);
                     berry_hal_aarch64::uart_puts(b"x");
                     berry_hal_aarch64::uart_put_dec(h as u64);
+                    berry_hal_aarch64::uart_puts(b"@");
+                    berry_hal_aarch64::uart_put_dec(hz as u64);
                     berry_hal_aarch64::uart_puts(b"\n");
                 }
             }
@@ -424,7 +581,7 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
 
     // GUI P2：超出 GOP 缓冲的模式（如 540×1200）在 buddy 就绪后取连续块，
     // 重编程 ramfb；失败回退固件几何并补 FB ok（host 只等这一行）。
-    if let Some((w, h)) = pending_mode {
+    if let Some((w, h, hz)) = pending_mode {
         let stride = w.saturating_mul(4);
         let bytes = (stride as u64) * (h as u64);
         let pages = ((bytes + 0xFFF) / 0x1000) as usize;
@@ -436,11 +593,14 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                 let fmt = gop_saved.map(|g| g.4).unwrap_or(1);
                 gop_saved = Some((pa, w, h, stride, fmt));
                 gui_mode = true;
+                gui_hz = hz;
                 done = true;
                 berry_hal_aarch64::uart_puts(b"DISP ok ");
                 berry_hal_aarch64::uart_put_dec(w as u64);
                 berry_hal_aarch64::uart_puts(b"x");
                 berry_hal_aarch64::uart_put_dec(h as u64);
+                berry_hal_aarch64::uart_puts(b"@");
+                berry_hal_aarch64::uart_put_dec(hz as u64);
                 berry_hal_aarch64::uart_puts(b"\n");
                 print_fb((pa, w, h, stride, fmt));
             } else {
@@ -1666,9 +1826,16 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                         h_fb, 0x0001_0005,
                         "main: svcmgr 表 fb VMO 须第 5 插 0x0001_0005（编译侧硬编码）"
                     );
-                    // 几何 info VMO：48B = fb_pa/w/h/stride/fmt/gui 六域 u64 LE
-                    //（一页 VMO，create+commit+write 三连——rootfs VMO 同款）。
-                    let mut info = [0u8; 48];
+                    // 几何 info VMO：72B = fb_pa/w/h/stride/fmt/gui/refresh_hz
+                    // + 软面板 cfg 两域 = 九域 u64 LE（一页 VMO，create+
+                    // commit+write 三连——rootfs VMO 同款；第 7 域 = 刀1
+                    // 率通路尾插、第 8/9 域 = 刀2 软面板 cfg（model/mode/
+                    // seed + 故障旋钮，位布局 = guiproto
+                    // `softpanel::PanelCfg::pack_domains` 手镜像），add-only
+                    // 不重排——旧 guifbd 只读前 56B 无扰动，新 guifbd 读
+                    // 旧内核零页 = 0 → 缺省态）。
+                    let (panel_d7, panel_d8) = panel_cfg_req();
+                    let mut info = [0u8; 72];
                     info[0..8].copy_from_slice(&fb_pa.to_le_bytes());
                     info[8..16].copy_from_slice(&(w as u64).to_le_bytes());
                     info[16..24].copy_from_slice(&(h as u64).to_le_bytes());
@@ -1676,6 +1843,9 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                     info[32..40].copy_from_slice(&(fmt as u64).to_le_bytes());
                     info[40..48].copy_from_slice(&(gui_mode_val as u64).to_le_bytes());
                     info[40..48].copy_from_slice(&(gui_mode as u64).to_le_bytes());
+                    info[48..56].copy_from_slice(&(gui_hz as u64).to_le_bytes());
+                    info[56..64].copy_from_slice(&panel_d7.to_le_bytes());
+                    info[64..72].copy_from_slice(&panel_d8.to_le_bytes());
                     let mut ivmo =
                         vmo::Vmo::create(4096).expect("main: fbinfo Vmo create");
                     ivmo.commit(mm::frames(), 0, 4096)
@@ -2105,6 +2275,8 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     berry_hal_aarch64::set_irq_dispatch(irq_tick_acct);
     berry_hal_aarch64::set_sgi_dispatch(berry_sched::on_sgi_resched);
     berry_hal_aarch64::set_user_fault_exit(berry_sched::user_fault_exit);
+    // cbox 黑匣子镜像槽（同上 boot 单线程窗注册；fatal 路在杀链/halt 前回调）。
+    berry_hal_aarch64::set_cbox_hook(cbox::on_fault);
     // G3-1b 落点①接线：syscall 返回边界检查点（SVC 派发尾空探；sched 侧
     // 自带 irqsave 包络）。零行为变更步——注册与否不改变现役行为（探峰恒空），
     // g3-1c 域解蔽后承重。

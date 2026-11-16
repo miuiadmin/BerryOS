@@ -41,10 +41,12 @@
 //! 留异步后端刀，永不判弃即合规）；credits = 在途未 RELEASE 别名数 ≤2
 //! （满 → ST_FULL 1B 烘焙线）；「无 damage 不提交」两条 ST_BAD 立法
 //! （K>0∧FULL 同设 / K=0∧无 FULL）；**一切拒收面 close 已随行迁入的
-//! handle**（send 即 take，不 close 即泄漏）。hdi 四 op 退化形：
-//! REG_VBLANK 存 event、VBLANK_WAIT park 到软 vsync 点（SOFT_VSYNC_NS
+//! handle**（send 即 take，不 close 即泄漏）。hdi 五 op 退化形：
+//! REG_VBLANK 存 event、VBLANK_WAIT park 到软 vsync 点（周期查
+//! `mod panel` 档位表——刀1 率通路，旧 SOFT_VSYNC_NS 私常量废除
 //! 合成 ts_ns；已 parked 再来 = ST_BUSY）、PREPARE 槽记账 + 空置 fence、
-//! COMMIT 记账——deadline 到点 = 应答 parked + 信号 event（`1<<32` 用户
+//! COMMIT 记账、PANEL_CAPS 应答档位表与当前档——deadline 到点 = 应答
+//! parked + 信号 event（`1<<32` 用户
 //! 半位——客户端同位等待契约，bsh/bench1 家族默认）。console 路**恒同步
 //! 直写**不变（FULL 纯记账：console_full_n++ + 共享 present_seq 谱系，
 //! 不占 credits 不发 token——误入 vsync 排队呈现 = 文本路 +16.67ms/
@@ -123,8 +125,27 @@ static CRT0_SEED: unsafe extern "C" fn() = berry_libc::berry_crt0_anchor;
 
 // —— 段③ 常量（软 vsync / serve 帽 / 信号位 / 定容帽）——
 
-/// 软 vsync 周期（≈60Hz——ramfb 无真实 vsync，服务端合成时基）。
-const SOFT_VSYNC_NS: u64 = 16_666_666;
+/// boot 率域解析（活设备半件——刷新率体系规范 §13「按概念迁移不按文件
+/// 形态」）：档位周期表单源已迁 `gp::softpanel::TIERS`（刀2，host 可测
+/// 纯核），本侧只留**语义层校验落值 + loud 回退**：Tiered 表内直取，
+/// 表外/0 回退 60 + 诊断行（规范 §4-1；旧内核 48B 零页域同路回退）；
+/// FreeRange 钳 1..=480 后单点换算（0 同归 60——缺省语义不分模型）。
+fn boot_panel_tier(cfg: &gp::softpanel::PanelCfg, boot_hz: u16) -> (u16, u64) {
+    let hz0 = if boot_hz == 0 { 60 } else { boot_hz };
+    match cfg.model {
+        gp::RATE_MODEL_FREERANGE => {
+            let q = gp::softpanel::freerange_quantize(hz0);
+            (q, gp::softpanel::period_of(q))
+        }
+        _ => match gp::softpanel::resolve(hz0) {
+            Some((hz, p)) => (hz, p),
+            None => {
+                eprintln!("guifbd: panel hz={} not in tiers, fallback 60", hz0);
+                (60, gp::softpanel::period_of(60))
+            }
+        },
+    }
+}
 /// serve 空闲并等帽：wait_many deadline 外层上界（合法空闲非死线——到点
 /// 重臂续等；真断链面 = recv 非 -EAGAIN 错码，照 trap）。
 const IDLE_CAP_NS: u64 = 10 * 1_000_000_000;
@@ -150,6 +171,10 @@ const SAMPLE_N: usize = 7;
 const CREDITS: usize = gp::CREDITS_MAX as usize;
 /// hdi 域槽帽（= [`gp::HDI_SLOTS_MAX`]，usize 面给槽表定容）。
 const SLOTS: usize = gp::HDI_SLOTS_MAX as usize;
+/// A8 内容节拍窗（呈现面折稳态内容 hz 的窗口——500ms 平衡响应与稳态判据）。
+const CC_WINDOW_NS: u64 = 500 * 1_000_000;
+/// A8 成窗最少帧数（<3 帧 = 窗太稀不折——防间歇抖动误报内容率）。
+const CC_MIN_N: u32 = 3;
 /// console 文本色（自验收的 bg1 黑/白字延续——段② 语义零变化）。
 const CON_FG: (u8, u8, u8) = (0xFF, 0xFF, 0xFF);
 const CON_BG: (u8, u8, u8) = (0x00, 0x00, 0x00);
@@ -245,6 +270,19 @@ fn close_all(hs: &[Handle]) {
     }
 }
 
+/// 刀3 决策源证据行标（小写——串口可 grep 面）。
+fn arb_src_label(s: gp::arbiter::Src) -> &'static str {
+    match s {
+        gp::arbiter::Src::Vote => "vote",
+        gp::arbiter::Src::Dwell => "dwell",
+        gp::arbiter::Src::Boost => "boost",
+        gp::arbiter::Src::Dim => "dim",
+        gp::arbiter::Src::Platform => "platform",
+        gp::arbiter::Src::Fallback => "fallback",
+        gp::arbiter::Src::Lfc => "lfc",
+    }
+}
+
 /// hdi PREPARE 槽（记账面——v1 COMMIT 不触碰 VMO 内容，别名只存不读）。
 #[derive(Clone, Copy)]
 struct Slot {
@@ -254,6 +292,29 @@ struct Slot {
     stride: u32,
     /// 最近 COMMIT target（0 = 尽快）——纯记账，排队呈现留异步后端刀。
     commit_target: u64,
+}
+
+/// 刀6 P2 在途帧（深度 1 管线——SUBMIT 记帧、latch 拍呈现；spec §7-P2：
+/// 帧呈现于 ≤ target_present_ns 的最大拍点，latch 已过 = 即时呈现的迟到
+/// 诚实形）。`token == 0` = P5 COMMIT 面（无回执域——COMMIT wire 无 token
+/// 位，呈现证据 = vblank 拍 + 一次性 `P5C ok` 行）。
+struct PendingFrame {
+    token: u32,
+    /// SUBMIT 随行 buffer 别名（已入 held——latch 呈现后归 RELEASE 面）/
+    /// P5 面 = 槽 VMO（服务端持有，不入 held；别名生命周期挂槽，blit
+    /// 失败不 close）。
+    vmo: Handle,
+    full: bool,
+    /// damage 快照（rects 从 SUBMIT 消息拷出——消息缓冲复用）。
+    rects: [gp::Rect; gp::DAMAGE_MAX],
+    rect_count: usize,
+    /// 波3-件② 带合成面：系统面 marker（SYS_SURFACE_ID）不裁剪、应用面
+    /// 0 裁系统带——latch 呈现时随行进 blit_and_sample 共尾。
+    surface_id: u32,
+    /// latch 拍点（绝对 ns；serve deadline min 臂 + 到点即呈现）。
+    latch_ns: u64,
+    /// UNSQUASHABLE 位（新 P2 到席时不可压弃——ST_BUSY 挡新帧）。
+    unsquashable: bool,
 }
 
 /// 段③ 服务状态（全静态定容——见模块头⑧注；无堆分配、无生长面）。
@@ -268,21 +329,28 @@ struct Srv<'a> {
     present_seq: u32,
     /// token 单调源（1 起；0 = 环槽空哨兵）。
     submit_seq: u32,
-    /// token 环：(frame_token, presented_ns)，覆盖最旧。
-    tokens: [(u32, u64); TOKEN_RING],
+    /// token 环（刀4 P3：呈现回执五元组覆盖最旧——FRAME_CALLBACK 与
+    /// FRAME_TIMING 两查询面共源；`frame_token == 0` = 环槽空哨兵）。
+    tokens: [gp::FrameTimingRep; TOKEN_RING],
+    /// A10 预告锚：最近一次非零 `target_present_ns`（0 = 未见——间隔密
+    /// 集判定只在连续非零目标间做）。
+    last_hint_target_ns: u64,
     /// 在途别名表（credits = len；RELEASE 全量归还清零）。
     held: [(u32, Handle); CREDITS],
     held_n: usize,
-    /// VOTE 票面（记账不仲裁——§0 不做面）。
-    vote: (u8, u8, u16, u16, u16),
-    /// POWER_MODE 最近值（同上）。
-    power_mode: u8,
+    /// 刀3 仲裁器（§6：票簿 + A 规则裁决纯核——panel 是执行面，arb 是决
+    /// 策面；VOTE/POWER_MODE 旧记账字段收编于此）。
+    arb: gp::arbiter::Arbiter,
     // —— hdi 域（软 vsync）——
-    vb_seq: u32,
-    /// 下次软 vsync 点（`vb_scheduled` 时有效）。
+    /// 软面板拍点状态机（刀2 §5：FREE 零扰动 / DET 虚拟钟 / 故障旋钮；
+    /// hz·period·模式·点序单源在此——旧 panel_hz/panel_period_ns/vb_seq
+    /// 三字段收编）。
+    panel: gp::softpanel::SoftPanel,
+    /// 下次软 vsync 点（`vb_scheduled` 时有效；调度面值——DET 态上报
+    /// ts 走虚拟钟，此值只管 serve 环何时醒）。
     vb_next_ns: u64,
-    /// 有点在案（REG_VBLANK 使能 ∧/∨ VBLANK_WAIT parked——wait_many
-    /// deadline 的 min 臂来源）。
+    /// 有点在案（REG_VBLANK 使能 ∧/∨ parked wait——wait_many deadline
+    /// 的 min 臂来源）。
     vb_scheduled: bool,
     vb_armed: bool,
     /// REG_VBLANK 存量 event（0 = 无）。
@@ -290,7 +358,28 @@ struct Srv<'a> {
     vb_parked: bool,
     /// parked VBLANK_WAIT 的应答通道。
     vb_park_ch: Handle,
+    /// parked 形态：false = VBLANK_WAIT 16B（GOLDEN 钉板面）/ true =
+    /// OP_VBLANK_TIMING 24B 三元组（刀2 事件面——两 op 共用单车位）。
+    vb_park_timing: bool,
     slots: [Slot; SLOTS],
+    // —— 刀6 P2/P5/P6 呈现管线 ——
+    /// 在途帧（深度 1；P1 即时呈现 = latch 已过的退化特例——同管线同码）。
+    pending: Option<PendingFrame>,
+    /// parked FRAME_CALLBACK（P2：应答须待 latch 呈现——单客户端单车位）。
+    cb_park: Option<Handle>,
+    cb_park_token: u32,
+    /// parked RELEASE_WAIT（P2：在途帧持别名未呈现前不归还——防 latch 前
+    /// 客户端覆写缓冲撕裂；呈现后随应答全量归还）。
+    rel_park: Option<Handle>,
+    /// P6 最近扫描墙钟（0 = 未扫描——自刷新重扫窗锚）。
+    p6_last_scan_ns: u64,
+    /// A8 内容节拍窗锚（0 = 窗未开；呈现面量稳态内容 hz）。
+    cc_start_ns: u64,
+    cc_n: u32,
+    /// A8 上一已报 k（变更才打证据行；u32::MAX = 未见过）。
+    cc_last_k: u32,
+    /// P5 首呈现一次性证据行位。
+    p5c_seen: bool,
     // —— 标记 / console 记账 ——
     served: bool,
     gfxf: bool,
@@ -312,7 +401,14 @@ impl<'a> Srv<'a> {
         stride: usize,
         gui: bool,
         vgpu: Option<Vgpu>,
+        cfg: gp::softpanel::PanelCfg,
+        boot_hz: u16,
     ) -> Self {
+        // 语义层校验/回退先走（loud 诊断行在 boot_panel_tier），SoftPanel
+        // 构造内自查表落周期——period 首值不外传；仲裁器同 boot 档起（A11
+        // 无票缺省 = 平台表达档）。
+        let (hz, _) = boot_panel_tier(&cfg, boot_hz);
+        let arb = gp::arbiter::Arbiter::new(&cfg, hz);
         Srv {
             con,
             w,
@@ -320,19 +416,35 @@ impl<'a> Srv<'a> {
             stride,
             present_seq: 0,
             submit_seq: 0,
-            tokens: [(0, 0); TOKEN_RING],
+            tokens: [gp::FrameTimingRep {
+                frame_token: 0,
+                presented_ns: 0,
+                seq: 0,
+                refresh_ns: 0,
+                flags: 0,
+            }; TOKEN_RING],
+            last_hint_target_ns: 0,
             held: [(0, 0); CREDITS],
             held_n: 0,
-            vote: (0, 0, 0, 0, 0),
-            power_mode: 0,
-            vb_seq: 0,
+            arb,
+            panel: gp::softpanel::SoftPanel::new(cfg, hz),
             vb_next_ns: 0,
             vb_scheduled: false,
             vb_armed: false,
             vb_ev: 0,
             vb_parked: false,
             vb_park_ch: 0,
+            vb_park_timing: false,
             slots: [Slot { vmo: 0, w: 0, h: 0, stride: 0, commit_target: 0 }; SLOTS],
+            pending: None,
+            cb_park: None,
+            cb_park_token: 0,
+            rel_park: None,
+            p6_last_scan_ns: 0,
+            cc_start_ns: 0,
+            cc_n: 0,
+            cc_last_k: u32::MAX,
+            p5c_seen: false,
             served: false,
             gfxf: false,
             console_full_n: 0,
@@ -342,18 +454,32 @@ impl<'a> Srv<'a> {
         }
     }
 
-    /// 软 vsync 排点（无点在案时；REG_VBLANK 使能 / VBLANK_WAIT park 共用）。
+    /// 软 vsync 排点（无点在案时；REG_VBLANK 使能 / parked wait 共用）。
+    /// per_frame 形态 no-op：拍 = 扫描（latch/p6_rescan），周期点名不排
+    /// ——vb_scheduled/vb_next_ns 仅周期形态有意义（误排不撤 = deadline
+    /// 挂过去点自旋）。
     fn vsync_schedule(&mut self) {
+        if self.panel.per_frame() {
+            return;
+        }
         if !self.vb_scheduled {
-            self.vb_next_ns = now_ns() + SOFT_VSYNC_NS;
+            self.vb_next_ns = now_ns() + self.panel.period_ns();
             self.vb_scheduled = true;
         }
     }
 
-    /// 软 vsync 到点检查（每轮回环顶）：到点 → 应答 parked VBLANK_WAIT +
-    /// 信号 REG_VBLANK event，seq 抬高、点推进（滞后追赶跳过已过点——
-    /// 不补偿积压 vsync）；armed∧parked 双空后撤点（零唤醒不变量回位）。
+    /// 软 vsync 到点检查（每轮回环顶）：拍点过软面板裁决（刀2 §5 事件面）
+    /// ——投递点应答 parked wait（16B/24B 按停车形态）+ 信号 REG_VBLANK
+    /// event；丢帧 = 不投递（parked 留座、不信号——面板拍点在、seq 消耗，
+    /// 客户端见跳号 = 诚实丢帧信号）。FREE 态名义点追赶跳过已过点（不
+    /// 补偿积压 vsync，跳过点不耗 seq——现状不变量）；DET 态每醒恰一点
+    ///（虚拟钟墙钟无关，追赶会引墙钟依赖破 T2 回放）。armed∧parked∧在途
+    /// 帧三空后撤点（零唤醒不变量回位——P2 在途帧须拍驱动）。
     fn tick_vsync(&mut self) {
+        if self.panel.per_frame() {
+            self.p6_rescan();
+            return;
+        }
         if !self.vb_scheduled {
             return;
         }
@@ -361,11 +487,46 @@ impl<'a> Srv<'a> {
         if t < self.vb_next_ns {
             return;
         }
-        let point = self.vb_next_ns; // 名义点 = 合成 ts_ns（clock 口径）
+        let point = self.vb_next_ns; // 名义点 = FREE 合成 ts（clock 口径）
+        if let Some(tick) = self.panel.on_point(point) {
+            self.deliver_tick(&tick);
+        }
+        let p = self.panel.period_ns();
+        let mut next = if self.panel.catchup() {
+            point + p
+        } else {
+            t + p
+        };
+        if self.panel.catchup() {
+            while next <= t {
+                next += p;
+            }
+        }
+        self.vb_next_ns = next;
+        // 刀3 拍后裁决（A5 streak 随拍积；armed/parked/在途全空的末拍 =
+        // quiet=true → A7 停帧判拍；boost 窗内禁停——quiet 汇拢面）。
+        let d = self.arb.on_tick(point, self.quiet_now(point));
+        self.arb_exec(d);
+        if !self.vb_armed && !self.vb_parked && self.pending.is_none() {
+            self.vb_scheduled = false;
+        }
+    }
+
+    /// 拍点投递共尾（周期拍 / P6 扫描拍 / 自刷新重扫共尾）：应答 parked
+    /// wait（16B/24B 按停车形态）+ 信号 REG_VBLANK event。
+    fn deliver_tick(&mut self, tick: &gp::VblankTimingRep) {
         if self.vb_parked {
-            let mut out = [0u8; 16];
-            let rep = gp::VblankRep { seq: self.vb_seq.wrapping_add(1), ts_ns: point };
-            let n = gp::encode_vblank_rep(&mut out, &rep);
+            // 停车形态分应答：16B GOLDEN 面（VBLANK_WAIT）/ 24B 三元组
+            //（OP_VBLANK_TIMING）——同一拍点同一载荷两形。
+            let mut out = [0u8; 24];
+            let n = if self.vb_park_timing {
+                gp::encode_vblank_timing_rep(&mut out, tick)
+            } else {
+                gp::encode_vblank_rep(
+                    &mut out,
+                    &gp::VblankRep { seq: tick.seq as u32, ts_ns: tick.ts_ns },
+                )
+            };
             send_rep(self.vb_park_ch, &out[..n]);
             self.vb_parked = false;
         }
@@ -374,14 +535,319 @@ impl<'a> Srv<'a> {
             // clear+set 同位：周期信号每点重置可观察。
             let _ = berry_object_signal(self.vb_ev, VBLANK_SIG, VBLANK_SIG);
         }
-        self.vb_seq = self.vb_seq.wrapping_add(1);
-        let mut next = point + SOFT_VSYNC_NS;
-        while next <= t {
-            next += SOFT_VSYNC_NS;
+    }
+
+    /// P6 自刷新重扫：per_frame 形态下听众在席（armed/parked）而无一帧
+    /// 内容时，max_interval 窗（1Hz）到点重扫维持 tick 流——真实自刷新
+    /// 硬件不可观测，仿真面仅保 vblank 订阅者不断流；零听众不排（零唤醒
+    /// 优先）。周期拍路径（tick_vsync 主体）在 per_frame 形态下不排点——
+    /// 拍 = 扫描（latch_fire / 此处），节奏逐帧随内容。
+    fn p6_rescan(&mut self) {
+        if self.p6_last_scan_ns == 0 || (!self.vb_armed && !self.vb_parked) {
+            return;
         }
-        self.vb_next_ns = next;
-        if !self.vb_armed && !self.vb_parked {
-            self.vb_scheduled = false;
+        let t = now_ns();
+        let rescan_at = self.p6_last_scan_ns.saturating_add(self.panel.max_interval_ns());
+        if t < rescan_at {
+            return;
+        }
+        // ts = 名义重扫点（自刷新硬件按自身节拍，宿主迟到醒只是观察晚——
+        // 与周期拍名义点同语义）：墙钟直通会把 K1 唤醒尾（p99≈16.7ms）灌
+        // 进 park 残差统计（k4t 2ms / k6h 高刷门在 per_frame 形态假红）。
+        // p6_last_scan_ns 同步推进名义值 → 重扫流 = 恒 1Hz 网格。
+        if let Some(tick) = self.panel.on_scan(rescan_at) {
+            self.deliver_tick(&tick);
+            let d = self.arb.on_tick(tick.ts_ns, self.quiet_now(tick.ts_ns));
+            self.arb_exec(d);
+        }
+        self.p6_last_scan_ns = rescan_at;
+    }
+
+    /// P2 latch 拍点（§7-P2）：≤ target 的最大网格点（网格锚 = 下一点
+    /// `vb_next_ns`、间距 = 当前面板周期）。latch ≤ now = 迟到（即时呈现
+    /// 的退化特例）；target 跨多档取最远不外推网格。
+    fn latch_point(&self, target_ns: u64) -> u64 {
+        let p = self.panel.period_ns();
+        let mut t = self.vb_next_ns;
+        while t > target_ns {
+            t -= p; // 网格单调下探（target ≥ 0 恒可止）
+        }
+        while t + p <= target_ns {
+            t += p; // 远期 target 对齐最近网格（不外推不越界）
+        }
+        t
+    }
+
+    /// P2 在途帧到点呈现（每轮回环顶，serve deadline min 臂保证最迟本拍
+    /// 醒）：per_frame 形态先扫描（拍 = 扫描，ts 走 DET 虚拟钟）再投递；
+    /// 周期形态呈现拍序 = 下一将拍点（与 vblank 同域，T6 一号到底）。
+    fn tick_latch(&mut self) {
+        let Some(pf) = self.pending.as_ref() else { return };
+        let now = now_ns();
+        if now < pf.latch_ns {
+            return;
+        }
+        self.latch_fire(now);
+    }
+
+    /// 在途帧 latch 拍（serve deadline 臂面——None = 无在途）。
+    fn pending_ref(&self) -> Option<u64> {
+        self.pending.as_ref().map(|p| p.latch_ns)
+    }
+
+    /// 呈现时戳裁决（latch 呈现 / 即时呈现共尾）：per_frame = 扫描即拍
+    ///（ts = DET 虚拟钟 / FREE 直通；丢帧旋钮吞 tick 时呈现仍发生——seq
+    /// 已耗，ts 退化 now）；周期形态 = 呈现拍序 = 下一将拍点（与 vblank
+    /// 同域，T6 一号到底）。
+    fn present_stamp(&mut self, now: u64) -> (u64, u64) {
+        if self.panel.per_frame() {
+            self.p6_last_scan_ns = now;
+            match self.panel.on_scan(now) {
+                Some(tick) => {
+                    self.deliver_tick(&tick);
+                    let d = self.arb.on_tick(tick.ts_ns, self.quiet_now(tick.ts_ns));
+                    self.arb_exec(d);
+                    (tick.ts_ns, tick.seq)
+                }
+                None => (now, self.panel.seq_now()),
+            }
+        } else {
+            (now, self.panel.next_seq())
+        }
+    }
+
+    /// 在途帧呈现本体：blit + 抽样 + 回执环 + parked 应答（callback /
+    /// release）+ A8 内容节拍窗。blit 读失败 = loud + 弃帧（不 trap——
+    /// 单客户端槽复用竞态是已知面，诚实丢弃好过杀服务）。
+    fn latch_fire(&mut self, now: u64) {
+        let pf = self.pending.take().unwrap();
+        let (presented_ns, seq) = self.present_stamp(now);
+        // 带裁剪/vgpu 钩子统一在 blit_and_sample 共尾——surface_id 随行
+        //（P2 latch 呈现与应用面同口径裁剪）。
+        let (read_ok, all_pass, n_pass) =
+            self.blit_and_sample(pf.vmo, pf.full, &pf.rects, pf.rect_count, pf.surface_id);
+        if !read_ok {
+            // 读失败 = loud + 诚实弃帧（不 trap——单客户端槽复用竞态是已
+            // 知面）：环记 DISCARDED、parked callback 答弃、parked release
+            // 归还（别名留 held 由 release 面迁回），谱系不动。
+            eprintln!("guifbd: latch blit fail drop token={}", pf.token);
+            if pf.token != 0 {
+                let rec = gp::FrameTimingRep {
+                    frame_token: pf.token,
+                    presented_ns: 0,
+                    seq: 0,
+                    refresh_ns: self.panel.period_ns() as u32,
+                    flags: gp::FRAME_TIMING_F_DISCARDED
+                        | if pf.full { gp::FRAME_TIMING_F_FULL } else { 0 },
+                };
+                self.tokens[pf.token as usize % TOKEN_RING] = rec;
+                if self.cb_park.is_some() && self.cb_park_token == pf.token {
+                    self.answer_cb_discarded();
+                }
+            }
+            if self.rel_park.is_some() {
+                self.answer_release();
+            }
+            return;
+        }
+        if pf.token != 0 {
+            self.present_seq = self.present_seq.wrapping_add(1);
+            let rec = gp::FrameTimingRep {
+                frame_token: pf.token,
+                presented_ns,
+                seq,
+                refresh_ns: self.panel.period_ns() as u32,
+                flags: gp::FRAME_TIMING_F_PRESENTED
+                    | if pf.full { gp::FRAME_TIMING_F_FULL } else { 0 },
+            };
+            self.tokens[pf.token as usize % TOKEN_RING] = rec;
+            // parked FRAME_CALLBACK 同 token 即应答（token 异 park = 留座
+            // 待其自帧——单客户端时序上不可达，防御面）。
+            if self.cb_park.is_some() && self.cb_park_token == pf.token {
+                self.answer_cb(presented_ns);
+            }
+        } else if !self.p5c_seen {
+            self.p5c_seen = true;
+            println!("P5C ok latch={}", presented_ns);
+        }
+        self.gfxf_check(all_pass, n_pass);
+        // A8 内容节拍窗（per_frame 形态 LFC 天然内含——不走裁决）。
+        self.cc_track(presented_ns);
+        // parked RELEASE_WAIT：在途已清——全量归还。
+        if self.rel_park.is_some() {
+            self.answer_release();
+        }
+    }
+
+    /// 在途帧压弃（新 P2 到席 / UNSQUASHABLE 除外）：回执环记 DISCARDED、
+    /// parked callback 同 token 即答 DISCARDED；别名留 held 归 RELEASE 面。
+    fn squash_pending(&mut self) {
+        let Some(old) = self.pending.take() else { return };
+        if old.token != 0 {
+            let rec = gp::FrameTimingRep {
+                frame_token: old.token,
+                presented_ns: 0,
+                seq: 0,
+                refresh_ns: self.panel.period_ns() as u32,
+                flags: gp::FRAME_TIMING_F_DISCARDED
+                    | if old.full { gp::FRAME_TIMING_F_FULL } else { 0 },
+            };
+            self.tokens[old.token as usize % TOKEN_RING] = rec;
+            if self.cb_park.is_some() && self.cb_park_token == old.token {
+                self.answer_cb_discarded();
+            }
+        }
+        println!("guifbd: p2 squash token={}", old.token);
+    }
+
+    /// parked FRAME_CALLBACK 应答（呈现形）。
+    fn answer_cb(&mut self, presented_ns: u64) {
+        if let Some(ch) = self.cb_park.take() {
+            let rep = gp::FrameDoneRep {
+                status: gp::FRAME_PRESENTED,
+                credits: (CREDITS - self.held_n) as u8,
+                present_seq: self.present_seq,
+                presented_ns,
+            };
+            let mut out = [0u8; 16];
+            let n = gp::encode_frame_done_rep(&mut out, &rep);
+            send_rep(ch, &out[..n]);
+        }
+    }
+
+    /// parked FRAME_CALLBACK 应答（压弃形——FRAME_DISCARDED）。
+    fn answer_cb_discarded(&mut self) {
+        if let Some(ch) = self.cb_park.take() {
+            let rep = gp::FrameDoneRep {
+                status: gp::FRAME_DISCARDED,
+                credits: (CREDITS - self.held_n) as u8,
+                present_seq: self.present_seq,
+                presented_ns: 0,
+            };
+            let mut out = [0u8; 16];
+            let n = gp::encode_frame_done_rep(&mut out, &rep);
+            send_rep(ch, &out[..n]);
+        }
+    }
+
+    /// parked RELEASE_WAIT 应答（在途已清——全量归还；与即时面同码共尾）。
+    fn answer_release(&mut self) {
+        if let Some(ch) = self.rel_park.take() {
+            let k = self.held_n;
+            let mut ids = [0u32; gp::RELEASE_MAX];
+            let mut hs_out = [0u32; gp::RELEASE_MAX];
+            for i in 0..k {
+                ids[i] = self.held[i].0;
+                hs_out[i] = self.held[i].1;
+            }
+            self.held_n = 0;
+            let mut out = [0u8; 4 + 4 * gp::RELEASE_MAX];
+            match gp::encode_release_rep(&mut out, &ids[..k]) {
+                Some(n) => send_rep_handles(ch, &out[..n], &hs_out[..k]),
+                None => trap(), // k ≤ 2 恒 ≤ 帽；防御面
+            }
+        }
+    }
+
+    /// A8 内容节拍窗（呈现面量稳态内容 hz——窗口 500ms 最少 3 帧成窗）：
+    /// 窗满折 hz 入仲裁（on_content_cadence；per_frame 形态天然内含不走
+    /// 裁决）+ k 变更/lfc-off 证据行（读即清）。
+    fn cc_track(&mut self, presented_ns: u64) {
+        if self.cc_start_ns == 0 {
+            self.cc_start_ns = presented_ns;
+            self.cc_n = 0;
+        }
+        self.cc_n += 1;
+        let span = presented_ns.saturating_sub(self.cc_start_ns);
+        if span < CC_WINDOW_NS || self.cc_n < CC_MIN_N {
+            return;
+        }
+        // 帧距均值折 hz（n 帧间隔数 = n-1；u64 域防溢）。
+        let hz = ((self.cc_n as u64 - 1) * 1_000_000_000 / span) as u16;
+        if !self.panel.per_frame() {
+            let d = self.arb.on_content_cadence(hz);
+            self.arb_exec(d);
+            if self.arb.take_warn_lfc_off() {
+                println!("PANELARB lfc-off");
+            }
+            let k = self.arb.lfc_k();
+            if k != self.cc_last_k {
+                self.cc_last_k = k;
+                println!("PANELARB lfc k={}", k);
+            }
+        }
+        // 窗滚动（新窗自本帧起）。
+        self.cc_start_ns = presented_ns;
+        self.cc_n = 1;
+    }
+
+    /// parked wait 入座（VBLANK_WAIT / OP_VBLANK_TIMING 共用单车位）：
+    /// 随行 handle 拒面、已停 ST_BUSY（A3-d③）、无即刻应答——tick_vsync
+    /// 到点按 `timing` 分 16B/24B 应答（deadline min 臂保证最迟一个空闲
+    /// 帽内到点）。
+    fn park_vblank(&mut self, ch: Handle, hs: &[Handle], timing: bool) {
+        if !hs.is_empty() {
+            close_all(hs);
+            st_rep(ch, gp::ST_BAD);
+            return;
+        }
+        if self.vb_parked {
+            st_rep(ch, gp::ST_BUSY);
+            return;
+        }
+        // 刀3 A7：等拍即活动——停帧破除（Resume 证据）先于入座排点。
+        let d = self.arb.on_activity(now_ns());
+        self.arb_exec(d);
+        self.vb_parked = true;
+        self.vb_park_ch = ch;
+        self.vb_park_timing = timing;
+        // P6 首听众锚（boot 后无内容零扫描——latch 未发生过）：锚 now 使
+        // 自刷新重扫窗（max_interval）起算，parked 应答 ≤ 1s 保底。
+        if self.panel.per_frame() && self.p6_last_scan_ns == 0 {
+            self.p6_last_scan_ns = now_ns();
+        }
+        self.vsync_schedule();
+    }
+
+    /// A7 静默判定（armed/parked/boost 窗/在途帧四汇拢；SUBMIT/pulse 的
+    /// 活动破除走 on_activity 直达面，不入此布尔——P2 在途呈现 = 活动面）。
+    fn quiet_now(&self, now: u64) -> bool {
+        !self.vb_armed && !self.vb_parked && !self.arb.boost_active(now) && self.pending.is_none()
+    }
+
+    /// 决策执行面（刀3 A9）：Switch → 软面板切档受理（拒 → 回滚重裁）+
+    /// 排点驱动在飞 2 帧窗；StopFrame/Resume → A7 证据行（调度语义即零
+    /// 唤醒基线：撤点 = 不排点；Resume 不自排点——活动源（armed/park 排
+    /// 点 / pulse 的 Switch 排点）各持排点权）。证据行无 ` ok` 形态（smoke
+    /// 标记互撞纪律）。
+    fn arb_exec(&mut self, d: gp::arbiter::Decision) {
+        if self.arb.take_warn_no_g() {
+            println!("PANELARB nog");
+        }
+        match d {
+            gp::arbiter::Decision::Stay => {}
+            gp::arbiter::Decision::Switch { hz, src } => {
+                if self.panel.request_refresh(hz).is_none() {
+                    self.arb.on_switch_rejected(self.panel.hz());
+                } else {
+                    self.vsync_schedule(); // 在飞 2 帧窗须拍驱动（armed/parked 可双空）
+                    println!("PANELARB sw hz={} src={}", hz, arb_src_label(src));
+                }
+            }
+            gp::arbiter::Decision::StopFrame => println!("PANELARB stop"),
+            gp::arbiter::Decision::Resume => println!("PANELARB resume"),
+        }
+    }
+
+    /// serve 时钟醒检查（回环顶）：仲裁 next_wake 到点 → on_time 无拍评
+    /// 估（降档驻留 / boost 到期推进——停帧态恒 None 零醒）。
+    fn arb_on_time(&mut self) {
+        let now = now_ns();
+        if let Some(w) = self.arb.next_wake(now) {
+            if now >= w {
+                let d = self.arb.on_time(now, self.quiet_now(now));
+                self.arb_exec(d);
+            }
         }
     }
 
@@ -476,8 +942,8 @@ impl<'a> Srv<'a> {
         true
     }
 
-    /// present 域分发：六 op；一切拒面 close 随行 handle 后 1B 应答
-    /// （A3-b——send 即 take，不 close 即泄漏）。
+    /// present 域分发：七 op（刀4 起 + FRAME_TIMING）；一切拒面 close 随行
+    /// handle 后 1B 应答（A3-b——send 即 take，不 close 即泄漏）。
     fn handle_present(&mut self, ch: Handle, msg: &[u8], hs: &[Handle]) {
         match gp::parse_present_req(msg) {
             Some(gp::PresentReq::Getinfo) => {
@@ -486,14 +952,16 @@ impl<'a> Srv<'a> {
                     st_rep(ch, gp::ST_BAD);
                     return;
                 }
-                // ver 1/1/1（wire 域版本——非本服务覆盖面）；格式面 v1
+                // ver 2/1/3（wire 域版本——非本服务覆盖面；present v2 =
+                // 刀4 OP_FRAME_TIMING，hdi v3 = 刀1 OP_PANEL_CAPS——刷新率
+                // 体系规范 §4-4）；格式面 v1
                 // 单格式：32bpp RGBX 族（ramfb Bgrx=1，Rgbx 同族）→
                 // FMT_XRGB8888 位——R/B 通道序 v1 wire 不建模（gfxdemo
                 // 同源 Bgrx 构造，直拷零转换）；max_credits = 帽真值。
                 let rep = gp::GetinfoRep {
-                    version_present: 1,
+                    version_present: gp::VER_PRESENT,
                     version_input: 1,
-                    version_hdi: 1,
+                    version_hdi: gp::VER_HDI,
                     format_bits: gp::FMT_XRGB8888,
                     display_w: self.w as u32,
                     display_h: self.h as u32,
@@ -507,12 +975,22 @@ impl<'a> Srv<'a> {
                 surface_id,
                 buffer_id,
                 flags,
-                rate_hint: _,
-                target_present_ns: _,
+                rate_hint,
+                target_present_ns,
                 rects,
                 rect_count,
             }) => {
-                self.submit(ch, hs, buffer_id, flags, &rects, rect_count, surface_id);
+                self.submit(
+                    ch,
+                    hs,
+                    buffer_id,
+                    flags,
+                    rate_hint,
+                    target_present_ns,
+                    &rects,
+                    rect_count,
+                    surface_id,
+                );
             }
             Some(gp::PresentReq::FrameCallback { frame_token }) => {
                 if !hs.is_empty() {
@@ -522,26 +1000,69 @@ impl<'a> Srv<'a> {
                 }
                 // token 环校验（8 槽覆盖最旧；0 哨兵）；未命中 → ST_NOENT
                 // 1B 烘焙线。
-                let mut hit: Option<u64> = None;
-                for &(t, ns) in &self.tokens {
-                    if t == frame_token && t != 0 {
-                        hit = Some(ns);
+                let mut hit: Option<gp::FrameTimingRep> = None;
+                for rec in &self.tokens {
+                    if rec.frame_token == frame_token && rec.frame_token != 0 {
+                        hit = Some(*rec);
+                    }
+                }
+                match hit {
+                    Some(rec) => {
+                        // 环命中即已终态（PRESENTED / DISCARDED——P2 压弃
+                        // 面）：按环旗分形应答，不 park。
+                        // present_seq = 谱系现值——console 共享抬高，
+                        // **禁断言精确值**（A2-b）。
+                        let status = if rec.flags & gp::FRAME_TIMING_F_DISCARDED != 0 {
+                            gp::FRAME_DISCARDED
+                        } else {
+                            gp::FRAME_PRESENTED
+                        };
+                        let rep = gp::FrameDoneRep {
+                            status,
+                            credits: (CREDITS - self.held_n) as u8,
+                            present_seq: self.present_seq,
+                            presented_ns: rec.presented_ns,
+                        };
+                        let mut out = [0u8; 16];
+                        let n = gp::encode_frame_done_rep(&mut out, &rep);
+                        send_rep(ch, &out[..n]);
+                    }
+                    None => {
+                        // 环未命中 + 在途同 token = latch 未到——park 到呈现
+                        // （latch_fire/squash 届时应答；单车位占用 → ST_BUSY
+                        // ——客户端串行等一帧恒无碰撞）。
+                        if self.pending.as_ref().map_or(false, |p| p.token == frame_token) {
+                            if self.cb_park.is_some() {
+                                st_rep(ch, gp::ST_BUSY);
+                            } else {
+                                self.cb_park = Some(ch);
+                                self.cb_park_token = frame_token;
+                            }
+                        } else {
+                            st_rep(ch, gp::ST_NOENT);
+                        }
+                    }
+                }
+            }
+            Some(gp::PresentReq::FrameTiming { frame_token }) => {
+                if !hs.is_empty() {
+                    close_all(hs);
+                    st_rep(ch, gp::ST_BAD);
+                    return;
+                }
+                // 刀4 P3：非阻塞时序真相查询——token 环共源（与 FRAME_
+                // CALLBACK 同环同哨兵）；未命中 → ST_NOENT 1B（同烘焙线）。
+                let mut hit: Option<gp::FrameTimingRep> = None;
+                for rec in &self.tokens {
+                    if rec.frame_token == frame_token && rec.frame_token != 0 {
+                        hit = Some(*rec);
                     }
                 }
                 match hit {
                     None => st_rep(ch, gp::ST_NOENT),
-                    Some(presented_ns) => {
-                        // blit-at-SUBMIT：应答即 latch（v1 退化形）。
-                        // present_seq = 谱系现值——console 共享抬高，
-                        // **禁断言精确值**（A2-b）。
-                        let rep = gp::FrameDoneRep {
-                            status: gp::FRAME_PRESENTED,
-                            credits: (CREDITS - self.held_n) as u8,
-                            present_seq: self.present_seq,
-                            presented_ns,
-                        };
-                        let mut out = [0u8; 16];
-                        let n = gp::encode_frame_done_rep(&mut out, &rep);
+                    Some(rec) => {
+                        let mut out = [0u8; 28];
+                        let n = gp::encode_frame_timing_rep(&mut out, &rec);
                         send_rep(ch, &out[..n]);
                     }
                 }
@@ -550,6 +1071,16 @@ impl<'a> Srv<'a> {
                 if !hs.is_empty() {
                     close_all(hs);
                     st_rep(ch, gp::ST_BAD);
+                    return;
+                }
+                // P2：在途帧持别名未呈现——RELEASE 须待 latch（防 latch 前
+                // buffer 重写撕帧）；park 到呈现（单车位占用 → ST_BUSY）。
+                if self.pending.is_some() {
+                    if self.rel_park.is_some() {
+                        st_rep(ch, gp::ST_BUSY);
+                    } else {
+                        self.rel_park = Some(ch);
+                    }
                     return;
                 }
                 // 帧外别名重挂：在途别名全量随应答迁回客户端（≤ CREDITS=2
@@ -575,8 +1106,21 @@ impl<'a> Srv<'a> {
                     st_rep(ch, gp::ST_BAD);
                     return;
                 }
-                // 票面收下即回执（仲裁策略挂 GUI-6+——§0 不做面）。
-                self.vote = (sticky, scene, min_hz, max_hz, preferred_hz);
+                // 刀3 §6：票入仲裁器（A1 入槽替换 + 即时裁决——事件不积
+                // streak，升档随拍确认）。
+                let now = now_ns();
+                let d = self.arb.on_vote(
+                    now,
+                    self.quiet_now(now),
+                    gp::arbiter::Ballot {
+                        sticky: sticky != 0,
+                        intent: scene,
+                        min_hz,
+                        max_hz,
+                        preferred_hz,
+                    },
+                );
+                self.arb_exec(d);
                 st_rep(ch, gp::ST_OK);
             }
             Some(gp::PresentReq::PowerMode { mode }) => {
@@ -585,7 +1129,26 @@ impl<'a> Srv<'a> {
                     st_rep(ch, gp::ST_BAD);
                     return;
                 }
-                self.power_mode = mode; // PM 脉冲真落地挂 GUI-6+——记账面
+                // 刀3 A5：POWER_DIM 置位 = 偏好降一档（仲裁器 dim 位）。
+                let now = now_ns();
+                let d = self.arb.on_power_mode(now, self.quiet_now(now), mode);
+                self.arb_exec(d);
+                st_rep(ch, gp::ST_OK);
+            }
+            Some(gp::PresentReq::InputPulse) => {
+                if !hs.is_empty() {
+                    close_all(hs);
+                    st_rep(ch, gp::ST_BAD);
+                    return;
+                }
+                // 刀3 A6：脉冲即活动（停帧破除取证）→ boost 起臂立即升
+                //（绕 streak）。任何持 present 端的观察者可发——v1 = 客户
+                // 端输入环，inputd 直连挂 extras 抬帽刀。
+                let now = now_ns();
+                let d = self.arb.on_activity(now);
+                self.arb_exec(d);
+                let d = self.arb.on_input_pulse(now, false);
+                self.arb_exec(d);
                 st_rep(ch, gp::ST_OK);
             }
             None => {
@@ -596,9 +1159,13 @@ impl<'a> Srv<'a> {
         }
     }
 
-    /// SUBMIT：v1 = **blit-at-SUBMIT**（处理内同步 CPU blit——无 pending
-    /// 帧状态机，squash/DISCARDED 死路径留异步后端刀）。
+    /// SUBMIT：刀6 P2 统一管线——target_present_ns = 0 / latch 已过 =
+    /// **即时呈现**（P1 blit-at-SUBMIT 降格为深度 1 特例，旧客户端零扰
+    /// 动）；target 未来 = 记帧入途，latch 拍（≤ target 的最大网格点 /
+    /// P6 扫描点）呈现。深度 1：新 P2 压弃旧 P2（UNSQUASHABLE 除外 →
+    /// ST_BUSY）。
     fn submit(&mut self, ch: Handle, hs: &[Handle], buffer_id: u32, flags: u8,
+              rate_hint: u8, target_present_ns: u64,
               rects: &[gp::Rect; gp::DAMAGE_MAX], rect_count: usize, surface_id: u32) {
         // 随行恰 1 buffer VMO 别名（rights ⊆ 源集——dup 只紧不松）。
         if hs.len() != 1 {
@@ -630,13 +1197,114 @@ impl<'a> Srv<'a> {
             st_rep(ch, gp::ST_FULL);
             return;
         }
-        // SUBMIT_F_UNSQUASHABLE：v1 恒不判弃（blit-at-SUBMIT 钉板）——
-        // 旗标收到即合规忽略。
+        // P2 压弃门：在途 UNSQUASHABLE 帧挡新帧（深度 1 不可排队——
+        // ST_BUSY；拒面 close 随行）。
+        if self.pending.as_ref().map_or(false, |p| p.unsquashable) {
+            let _ = berry_handle_close(hvmo);
+            st_rep(ch, gp::ST_BUSY);
+            return;
+        }
+        let now = now_ns();
+        // latch 拍点裁决（P2/P6 分面）。
+        let latch_ns = if target_present_ns == 0 {
+            now // 无目标 = 尽快（P1 语义直通——latch 已过即即时）
+        } else if self.panel.per_frame() {
+            // P6 扫描点 = max(上一扫描 + min_interval, target)——帧就绪
+            // 即上墙（首扫 p6_last_scan_ns=0 → floor= min_interval，target
+            // 主导 = 逐帧锁相）。
+            self.panel.scan_point(self.p6_last_scan_ns, target_present_ns)
+        } else {
+            self.vsync_schedule(); // latch 须拍驱动（armed/parked 可双空）
+            self.latch_point(target_present_ns)
+        };
+        // 刀3 A7 + 刀4 A10（两域任一指示节拍快于现档 → dense——周期真值
+        // 取 panel 在飞窗现行节拍）：SUBMIT 即活动 + 预告，与即时/入途
+        // 分面无关。
+        let d = self.arb.on_activity(now);
+        self.arb_exec(d);
+        let cur_hz = self.panel.hz();
+        let dense = (rate_hint != 0 && (rate_hint as u16) > cur_hz)
+            || (target_present_ns != 0
+                && self.last_hint_target_ns != 0
+                && target_present_ns > self.last_hint_target_ns
+                && target_present_ns - self.last_hint_target_ns < self.panel.period_ns());
+        if target_present_ns != 0 {
+            self.last_hint_target_ns = target_present_ns;
+        }
+        let d = self.arb.on_present_hint(now, self.quiet_now(now), dense);
+        self.arb_exec(d);
+        self.submit_seq = self.submit_seq.wrapping_add(1);
+        let token = self.submit_seq;
+        if latch_ns <= now {
+            // —— 即时呈现（P1 特例）：blit + 抽样 + 回执环 + 应答 ——
+            // （带裁剪/vgpu 钩子统一在 blit_and_sample 共尾——surface_id
+            // 随行传入。）
+            let (read_ok, all_pass, n_pass) =
+                self.blit_and_sample(hvmo, full, &rects, rect_count, surface_id);
+            if !read_ok {
+                let _ = berry_handle_close(hvmo);
+                st_rep(ch, gp::ST_BAD);
+                return;
+            }
+            self.present_seq = self.present_seq.wrapping_add(1);
+            // 刀4 P3 五元组：呈现归属拍 = 下一将拍点全点序（panel.next_seq
+            // ——与 vblank 事件 seq 同域，T6 一号到底）；refresh = 呈现时
+            // 面板周期；flags = PRESENTED 恒置（即时面无弃帧）+ FULL 位。
+            let rec = gp::FrameTimingRep {
+                frame_token: token,
+                presented_ns: now,
+                seq: self.panel.next_seq(),
+                refresh_ns: self.panel.period_ns() as u32,
+                flags: gp::FRAME_TIMING_F_PRESENTED
+                    | if full { gp::FRAME_TIMING_F_FULL } else { 0 },
+            };
+            self.tokens[token as usize % TOKEN_RING] = rec;
+            self.held[self.held_n] = (buffer_id, hvmo);
+            self.held_n += 1;
+            self.gfxf_check(all_pass, n_pass);
+            self.cc_track(now);
+            // 8B token 应答（blit 已完成——应答即呈现，credits 剩余随
+            // FRAME_CALLBACK 面）。
+            let mut out = [0u8; 8];
+            let n = gp::encode_submit_ack(&mut out, token);
+            send_rep(ch, &out[..n]);
+            return;
+        }
+        // —— P2 入途：压弃旧帧 + 记帧 + 入 held + 应答 token（呈现走
+        // latch 面——FRAME_CALLBACK/RELEASE_WAIT 届时 parking）。
+        self.squash_pending();
+        let mut rcopy = [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX];
+        rcopy[..rect_count].copy_from_slice(&rects[..rect_count]);
+        self.pending = Some(PendingFrame {
+            token,
+            vmo: hvmo,
+            full,
+            rects: rcopy,
+            rect_count,
+            surface_id,
+            latch_ns,
+            unsquashable: flags & gp::SUBMIT_F_UNSQUASHABLE != 0,
+        });
+        self.held[self.held_n] = (buffer_id, hvmo);
+        self.held_n += 1;
+        let mut out = [0u8; 8];
+        let n = gp::encode_submit_ack(&mut out, token);
+        send_rep(ch, &out[..n]);
+    }
+
+    /// damage 裁剪 CPU blit + 7 点抽样对拍（P1 即时面与 P2 latch 呈现面
+    /// 共尾；波3-件② 带合成 v1 裁剪在共尾内统一执法）。返回 (读成败,
+    /// 抽样全过, 过数)：读失败 = 致命（即时面拒帧/latch 面弃帧——调用方
+    /// 分面处置）；抽样失配 = 验证仪表 loud 不拦。
+    fn blit_and_sample(
+        &mut self,
+        hvmo: Handle,
+        full: bool,
+        rects: &[gp::Rect; gp::DAMAGE_MAX],
+        rect_count: usize,
+        surface_id: u32,
+    ) -> (bool, bool, usize) {
         let fullrect = gp::Rect { x: 0, y: 0, w: self.w as u32, h: self.h as u32 };
-        // ① damage 裁剪 CPU blit：逐 rect 行弹 vmo_read → 直写 fb（Bgrx
-        // 同源直拷零转换）。越界裁剪（rect 与 fb 求交）；写路径走裸指针
-        // ——Fbcon 持 fb slice 借用，px() 同理；ramfb 实为 DRAM，非
-        // volatile 拷贝与 Fbcon 自身写路径同待遇。
         let targets: &[gp::Rect] = if full {
             core::slice::from_ref(&fullrect)
         } else {
@@ -695,9 +1363,8 @@ impl<'a> Srv<'a> {
             for y in y0..y1 {
                 let off = (y * self.stride + x0 * 4) as u64;
                 if berry_vmo_read(hvmo, self.bounce.as_mut_ptr(), off, len) != 0 {
-                    let _ = berry_handle_close(hvmo);
-                    st_rep(ch, gp::ST_BAD);
-                    return;
+                    eprintln!("guifbd: blit vmo_read fail @y={}", y);
+                    return (false, false, 0);
                 }
                 // SAFETY: 目标界内（上取 min(w,h) 裁剪；映射幅 =
                 // ceil_page(stride×h)——px() 同口径）；len ≤ ROW_BOUNCE_MAX
@@ -719,7 +1386,7 @@ impl<'a> Srv<'a> {
             v.submit_frame(full, rects, rect_count);
         }
         // ② 抽样对拍（交叉核验强于复算期望——§7-⑤）：SAMPLE_N 点全落
-        // damage 并集内（第 i 点取 rects[i%K]——A5-b），px() 读回 vs
+        // damage 并集内（第 i 点取 final_targets[i%K]——A5-b），px() 读回 vs
         // vmo_read 同坐标。失配 = 服务端 bug → eprintln loud（标记缺失
         // = smoke FAIL），不拦应答（抽样 = 验证仪表非协议门）。
         let mut n_pass = 0usize;
@@ -736,7 +1403,7 @@ impl<'a> Srv<'a> {
             let r = &final_targets[i % final_targets.len()];
             // 采样点 = rect 内 (i+1)/(SAMPLE_N+1) 分位（u32 乘加无溢出面：
             // rect ≤ 界内值域）；分母 = SAMPLE_N+1 ⇒ 分位 <1 恒严格内点
-            // （A5-b 对任意合法几何封闭——分母勿改 SAMPLE_N 否则尾点取
+            //（A5-b 对任意合法几何封闭——分母勿改 SAMPLE_N 否则尾点取
             // rect 尾缘外假失配）；clamp 到 fb 界内（防御野 rect——px()
             // 界内前提）。
             let sx = ((r.x as u64 + r.w as u64 * (i as u64 + 1) / (SAMPLE_N as u64 + 1)) as usize)
@@ -761,24 +1428,16 @@ impl<'a> Srv<'a> {
                 n_pass += 1;
             }
         }
-        // ③ 记账：谱系抬高 + token 入环 + 别名入 held。
-        self.present_seq = self.present_seq.wrapping_add(1);
-        self.submit_seq = self.submit_seq.wrapping_add(1);
-        let token = self.submit_seq;
-        self.tokens[token as usize % TOKEN_RING] = (token, now_ns());
-        self.held[self.held_n] = (buffer_id, hvmo);
-        self.held_n += 1;
-        // ⑦ 首帧标记：∧ 抽样全过 ∧ console_full_n≥1（FBW ok 回流自身
-        // pipe 的结构保证——console 已有 FULL 记账才证明两路同屏）。
+        (true, all_pass, n_pass)
+    }
+
+    /// 首帧标记共尾（∧ 抽样全过 ∧ console_full_n≥1——FBW ok 回流自身
+    /// pipe 的结构保证——console 已有 FULL 记账才证明两路同屏）。
+    fn gfxf_check(&mut self, all_pass: bool, n_pass: usize) {
         if !self.gfxf && all_pass && n_pass == SAMPLE_N && self.console_full_n >= 1 {
             self.gfxf = true;
             println!("GFXF ok n={}", n_pass);
         }
-        // ④ 8B token 应答（blit 已完成——应答即呈现，credits 剩余随
-        // FRAME_CALLBACK 面）。
-        let mut out = [0u8; 8];
-        let n = gp::encode_submit_ack(&mut out, token);
-        send_rep(ch, &out[..n]);
     }
 
     /// hdi 域分发：四 op 退化形（软 vsync；wire 零改动——§7-②）。
@@ -797,6 +1456,13 @@ impl<'a> Srv<'a> {
                     }
                     self.vb_ev = hs[0];
                     self.vb_armed = true;
+                    // 刀3 A7：vsync 需求即活动——停帧破除取证先于排点。
+                    let d = self.arb.on_activity(now_ns());
+                    self.arb_exec(d);
+                    // P6 首听众锚（与 park_vblank 同款）：重扫窗起算。
+                    if self.panel.per_frame() && self.p6_last_scan_ns == 0 {
+                        self.p6_last_scan_ns = now_ns();
+                    }
                     self.vsync_schedule();
                     st_rep(ch, gp::ST_OK);
                 }
@@ -812,6 +1478,11 @@ impl<'a> Srv<'a> {
                     self.vb_armed = false;
                     if !self.vb_parked {
                         self.vb_scheduled = false; // 双空撤点（零唤醒回位）
+                        // 刀3 A7：撤点即静默判拍（此后无拍——on_time 面评估；
+                        // 停帧证据行在席）。
+                        let now = now_ns();
+                        let d = self.arb.on_time(now, self.quiet_now(now));
+                        self.arb_exec(d);
                     }
                     st_rep(ch, gp::ST_OK);
                 }
@@ -821,22 +1492,12 @@ impl<'a> Srv<'a> {
                 }
             },
             Some(&gp::OP_VBLANK_WAIT) if gp::parse_vblank_wait_req(msg).is_some() => {
-                if !hs.is_empty() {
-                    close_all(hs);
-                    st_rep(ch, gp::ST_BAD);
-                    return;
-                }
-                // 单车位：已 parked 再来 = ST_BUSY（A3-d③——严格串行 RPC
-                // 下属客户端违约面）。
-                if self.vb_parked {
-                    st_rep(ch, gp::ST_BUSY);
-                    return;
-                }
-                // park 到软 vsync 点——**无即刻应答**（tick_vsync 到点
-                // 应答；deadline min 臂保证最迟一个空闲帽内到点）。
-                self.vb_parked = true;
-                self.vb_park_ch = ch;
-                self.vsync_schedule();
+                self.park_vblank(ch, hs, false);
+            }
+            // 刀2 事件面（§4-4）：等拍点三元组——VBLANK_WAIT 同车位同纪律，
+            // 应答 24B 三元组（16B GOLDEN 面不动）。
+            Some(&gp::OP_VBLANK_TIMING) if gp::parse_vblank_timing_req(msg).is_some() => {
+                self.park_vblank(ch, hs, true);
             }
             Some(&gp::OP_PREPARE) => match gp::parse_prepare_req(msg) {
                 Some(req) => self.prepare(ch, hs, req),
@@ -861,9 +1522,75 @@ impl<'a> Srv<'a> {
                             st_rep(ch, gp::ST_NOENT);
                             return;
                         }
-                        // v1 纯记账：target 不排队（blit-at-SUBMIT 形态下
-                        // hdi 提交面无呈现动作——排队呈现挂异步后端刀）。
+                        // P5 §7：在途帧在案 → ST_BUSY（深度 1 管线——
+                        // SUBMIT/COMMIT 同队列互斥）。
+                        if self.pending.is_some() {
+                            st_rep(ch, gp::ST_BUSY);
+                            return;
+                        }
+                        // 提交即活动（A7——呈现管线动，同 SUBMIT 面）。
+                        let now = now_ns();
+                        let d = self.arb.on_activity(now);
+                        self.arb_exec(d);
+                        let latch_ns = if target == 0 {
+                            now // 无目标 = 尽快（即时呈现）
+                        } else if self.panel.per_frame() {
+                            self.panel.scan_point(self.p6_last_scan_ns, target)
+                        } else {
+                            self.vsync_schedule();
+                            self.latch_point(target)
+                        };
+                        if latch_ns <= now {
+                            // 即时呈现：槽 VMO 全幅 blit + 呈现时戳 +
+                            // P5C 一次性证据 + 谱系抬高（无 token 域——
+                            // 回执环不记，帧时序查询面不适用 P5）。
+                            // P5 面（hdi 槽呈现）无 surface 域——按系统面
+                            // 口径 SYS_SURFACE_ID 不裁带（refresh 语义逐字
+                            // 保真；带裁剪是 present 域 surface 语义）。
+                            let (read_ok, all_pass, n_pass) = self.blit_and_sample(
+                                self.slots[slot as usize].vmo,
+                                true,
+                                &[gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX],
+                                0,
+                                SYS_SURFACE_ID,
+                            );
+                            if read_ok {
+                                let (presented_ns, _seq) = self.present_stamp(now);
+                                self.present_seq = self.present_seq.wrapping_add(1);
+                                self.slots[slot as usize].commit_target = target;
+                                if !self.p5c_seen {
+                                    self.p5c_seen = true;
+                                    println!("P5C ok latch={}", presented_ns);
+                                }
+                                self.gfxf_check(all_pass, n_pass);
+                                self.cc_track(presented_ns);
+                                if self.rel_park.is_some() {
+                                    self.answer_release();
+                                }
+                                st_rep(ch, gp::ST_OK);
+                            } else {
+                                // 读失败 = loud + 拒答（槽内容客户端可见可
+                                // 重试；谱系不动）。
+                                eprintln!("guifbd: commit blit fail slot={}", slot);
+                                st_rep(ch, gp::ST_BAD);
+                            }
+                            return;
+                        }
+                        // 入途（token=0 = P5 面——无回执域；槽 VMO 借读不
+                        // 迁权，槽复用竞态面 = latch 读失败 loud 弃）。
                         self.slots[slot as usize].commit_target = target;
+                        self.pending = Some(PendingFrame {
+                            token: 0,
+                            vmo: self.slots[slot as usize].vmo,
+                            full: true,
+                            rects: [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX],
+                            rect_count: 0,
+                            // P5 面（hdi 槽呈现）无 surface 域——系统面口径
+                            // 不裁带（latch 共尾与即时面同口径）。
+                            surface_id: SYS_SURFACE_ID,
+                            latch_ns,
+                            unsquashable: false,
+                        });
                         st_rep(ch, gp::ST_OK);
                     }
                     None => {
@@ -871,6 +1598,85 @@ impl<'a> Srv<'a> {
                         st_rep(ch, gp::ST_BAD);
                     }
                 }
+            }
+            // 面板能力宣告（§4-4）：Tiered = 档位表全量（class + 首启阶段
+            // 入行——v2 形；min/max 取全表极值，声明序非升序）/ FreeRange
+            // = 空档位表 + 区间 {1..=480, gran 1, per_frame, vrr capable}
+            //（§3.2 仿真宣告）。当前档两态同报。flags/vrr 取 PanelCfg 真值
+            //（内核 fw_cfg 旋钮面——freerange:per_frame / tiered:vrr），
+            // 不再服务端硬编码。无随行 handle、无副作用。
+            Some(&gp::OP_PANEL_CAPS) if gp::parse_panel_caps_req(msg).is_some() => {
+                if !hs.is_empty() {
+                    close_all(hs);
+                    st_rep(ch, gp::ST_BAD);
+                    return;
+                }
+                let cfg = self.panel.cfg();
+                let (flags, vrr) = (
+                    if cfg.per_frame { gp::PANEL_FLAG_PER_FRAME } else { 0 },
+                    cfg.vrr,
+                );
+                let rep = match cfg.model {
+                    gp::RATE_MODEL_FREERANGE => gp::PanelCapsRep {
+                        version: 2,
+                        rate_model: gp::RATE_MODEL_FREERANGE,
+                        flags,
+                        min_hz: gp::softpanel::FREERANGE_MIN_HZ,
+                        max_hz: gp::softpanel::FREERANGE_MAX_HZ,
+                        granularity_hz: gp::softpanel::FREERANGE_GRAN_HZ,
+                        vrr,
+                        current_hz: self.panel.hz(),
+                        current_period_ns: self.panel.period_ns() as u32,
+                        current_phase_ns: 0,
+                        tiers: [gp::PanelTier {
+                            hz: 0,
+                            class: 0,
+                            stage: 0,
+                            period_ns: 0,
+                        }; gp::PANEL_TIERS_MAX],
+                        n_tiers: 0,
+                    },
+                    _ => {
+                        let mut tiers = [gp::PanelTier {
+                            hz: 0,
+                            class: 0,
+                            stage: 0,
+                            period_ns: 0,
+                        }; gp::PANEL_TIERS_MAX];
+                        for (i, t) in gp::softpanel::TIERS.iter().enumerate() {
+                            tiers[i] = gp::PanelTier {
+                                hz: t.hz,
+                                class: t.class,
+                                stage: t.stage,
+                                period_ns: t.period_ns as u32,
+                            };
+                        }
+                        // min/max = 档位表首尾语义（§4-4）——TIERS 声明序
+                        // 非升序（产品→测试→LTPO），取全表极值。
+                        let (mut min_hz, mut max_hz) = (u16::MAX, 0u16);
+                        for t in gp::softpanel::TIERS.iter() {
+                            min_hz = min_hz.min(t.hz);
+                            max_hz = max_hz.max(t.hz);
+                        }
+                        gp::PanelCapsRep {
+                            version: 2,
+                            rate_model: gp::RATE_MODEL_TIERED,
+                            flags,
+                            min_hz,
+                            max_hz,
+                            granularity_hz: 0,
+                            vrr,
+                            current_hz: self.panel.hz(),
+                            current_period_ns: self.panel.period_ns() as u32,
+                            current_phase_ns: 0,
+                            tiers,
+                            n_tiers: gp::softpanel::TIERS.len() as u8,
+                        }
+                    }
+                };
+                let mut out = [0u8; gp::PANEL_CAPS_REP_MAX];
+                let n = gp::encode_panel_caps_rep(&mut out, &rep);
+                send_rep(ch, &out[..n]);
             }
             _ => {
                 close_all(hs);
@@ -1577,14 +2383,16 @@ pub(crate) fn main() {
         let n = read(0, b.as_mut_ptr() as *mut core::ffi::c_void, 1);
         backend_from_handoff(if n == 1 { Some(b[0]) } else { None })
     };
-    // 几何 info VMO（boot 48B 六域 u64 LE：fb_pa/w/h/stride/fmt/gui）。
+    // 几何 info VMO（boot 72B 九域 u64 LE：fb_pa/w/h/stride/fmt/gui/
+    // refresh_hz + 软面板 cfg 两域——第 8/9 域 = 刀2 尾插；refresh 刀2
+    // 尾插域经薄壳交接面透传，ours 48B 六域旧注由本注取代）。
     let h: Handle = gift2_h();
     if h == 0 {
         // svcmgr 探测门后恒随行 info——理论不可达；eprintln loud 兜底。
         eprintln!("guifbd: no fbinfo gift");
         berry_libc::park();
     }
-    let mut info = [0u8; 48];
+    let mut info = [0u8; 72];
     if berry_vmo_read(h, info.as_mut_ptr(), 0, info.len()) != 0 {
         eprintln!("guifbd: fbinfo read failed");
         berry_libc::park();
@@ -1596,6 +2404,27 @@ pub(crate) fn main() {
     let fmt_raw = (rd(4) as u64 & 0xFFFF_FFFF) as u32;
     // 第 6 域 = GUI 模式（旧内核只写 40B → 该域读 0 = 兼容旧行为）。
     let gui = rd(5) != 0;
+    // 第 7 域 = 刷新率（旧内核 48B → 零页域读 0；语义层校验/回退在
+    // `boot_panel_tier`——0 与表外值同路 loud 回退 60，规范 §4-1/§4-2）。
+    let boot_hz = rd(6) as u16;
+    // 第 8/9 域 = 软面板 cfg（旧内核 56B → 零页域读 0 = 缺省 Tiered/
+    // FREE/无故障——add-only 尾插兼容读；位布局单源 guiproto
+    // `softpanel::PanelCfg::from_domains`，kernel 打包手镜像对拍钉板）。
+    let rdu = |i: usize| u64::from_le_bytes(info[i * 8..i * 8 + 8].try_into().unwrap());
+    let panel_cfg = gp::softpanel::PanelCfg::from_domains(rdu(7), rdu(8));
+    if panel_cfg != gp::softpanel::PanelCfg::DEFAULT {
+        // 非缺省旋钮到位的证据行（宿主探针取证面；kernel 侧另有
+        // `PANEL cfg` 前导行）。
+        eprintln!(
+            "guifbd: panel cfg model={} mode={} seed={} drop={} jit={} sw={}",
+            panel_cfg.model,
+            panel_cfg.mode,
+            panel_cfg.seed,
+            panel_cfg.drop_permille,
+            panel_cfg.jitter_ns,
+            panel_cfg.sw_drop
+        );
+    }
     // QEMU ramfb fmt=1 = DRM_FORMAT_XRGB8888（LE 内存 B,G,R,X）。本仓
     // `PixelFormat::Rgbx.pack` 才落该字节序；历史 `Bgrx` 映射把 R/B 互换，
     // 桌面蓝灰显示成土棕（截图实证）。只改显示契约映射。
@@ -1700,18 +2529,7 @@ pub(crate) fn main() {
         eprintln!("guifbd: no fb pipe gift");
         berry_libc::park();
     }
-    // —— boot splash 收尾（第 6 域三态：0 = 非 GUI；1 = GUI+splash；2 =
-    // GUI+verbose——bootmode verbose 的内核 console 滚屏面留屏，桌面首帧
-    // 覆盖）。splash 形（=1）：自检末相位把屏清成纯黑 + 一行过渡反馈（桌面
-    // 首帧前可能数十秒——TCG 慢速 + APP_LIST 流；fbcon 直写同款路径）。首帧
-    // present 的 blit 直接覆盖本行，零协议面。verbose 形（=2）不清屏不写字
-    // ——Linux 式日志续到桌面接手。
-    let gui_mode6 = rd(5);
-    if gui && gui_mode6 != 2 {
-        con.clear(CON_BG);
-        con.put_str("BerryOS starting...\n", CON_FG, CON_BG);
-    }
-    let mut srv = Srv::new(con, w, h, stride, gui, vgpu);
+    let mut srv = Srv::new(con, w, h, stride, gui, vgpu, panel_cfg, boot_hz);
     // —— 三路 serve：present→hdi→console 确定性轮询；全 EAGAIN 才
     // wait_many n=3 并等。deadline = min(下次软 vsync 点, now+10s) **进
     // 调用本身**（A1-a——醒来后补查不够：parked 最长迟答 10s 且 smoke
@@ -1719,6 +2537,8 @@ pub(crate) fn main() {
     // 零唤醒不变量：无未决请求 = 无主动 send（IDLE 面结构先行）。
     loop {
         srv.tick_vsync();
+        srv.tick_latch(); // P2 在途帧到点呈现（deadline 臂保证最迟本拍醒）
+        srv.arb_on_time(); // 仲裁时钟醒（降档驻留 / boost 到期——无拍推进面）
         if srv.poll_present(hpresent) {
             continue;
         }
@@ -1732,6 +2552,29 @@ pub(crate) fn main() {
         let mut deadline = t + IDLE_CAP_NS;
         if srv.vb_scheduled && srv.vb_next_ns < deadline {
             deadline = srv.vb_next_ns;
+        }
+        // P2 在途 latch 臂（呈现拍最迟醒——parked callback/release 不悬）。
+        if let Some(p) = srv.pending_ref() {
+            if p < deadline {
+                deadline = p;
+            }
+        }
+        // P6 自刷新重扫臂（armed/parked 在席 + max_interval 窗到点——
+        // 零听众不排，零唤醒优先）。
+        if srv.panel.per_frame()
+            && srv.p6_last_scan_ns != 0
+            && (srv.vb_armed || srv.vb_parked)
+        {
+            let r = srv.p6_last_scan_ns + srv.panel.max_interval_ns();
+            if r < deadline {
+                deadline = r;
+            }
+        }
+        // 刀3 仲裁醒臂（A5 驻留到点 / A6 窗到期；停帧态 None 零醒）。
+        if let Some(w) = srv.arb.next_wake(t) {
+            if w < deadline {
+                deadline = w;
+            }
         }
         let hs = [hpresent, hhdi, hpipe];
         let sigs = [SIGNAL_READABLE, SIGNAL_READABLE, SIGNAL_READABLE];

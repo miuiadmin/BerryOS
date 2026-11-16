@@ -239,6 +239,8 @@ def four_tuple(d: dict) -> tuple:
 # 单源裁决；新加零 handle 号须同步进单（理由随行注记）。
 NO_GATE_SYSCALLS = {
     "handle_close",           # 表槽收口：close 不需权利（Zircon 同形）
+    "cbox_drain",             # 诊断几何面 need=0 惯例（同 process_get_exit_code；
+                             # 2026-11-16 跨根并回自 main 显示线 cbox 刀1）
     "handle_replace",         # 槽位原子换：类型门无权利门
     "object_wait_one",        # 等待不需权利（12 位 rights 表无 WAIT）
     "object_wait_many",       # 同上
@@ -261,6 +263,9 @@ NO_GATE_SYSCALLS = {
     "telemetry_open",         # 零 handle（系统级遥测读面——klog 字节环是串口
                               # 镜像非对象内容，sched_util_snapshot 同族口径；
                               # 阶段五第 16 步 v3 号翻真，add-only op 域只读）
+    "cbox_drain",             # 零 handle（黑匣子排液读面——诊断几何，快照非
+                              # 消费、记录永驻槽位轮转；process_get_exit_code
+                              # need=0 同惯例；cbox 刀 1，plans/cbox/design.md）
 }
 
 
@@ -1003,7 +1008,9 @@ stage = "v1"
     # 实抓于阶段五第 16 步复跑；gen_abi 台账零 WARN 钉板不受影响）。
     # CP-08 0x40 sched_util_snapshot 加号（988944e09）随刀滚新：38/42/41→39/43/42
     # （nr_total/defined/registered 各 +1，帽 45 不动——abi_gen 头注同值单源）。
-    check("在册四元组口径", (nt, nd, nr, nc) == (39, 43, 42, 45),
+    # main 合流 2/2：refresh 0x42 cbox_drain 并入后再滚新——39/43/42→40/44/43
+    # （nr_total/defined/registered 各 +1，帽 45 不动）。
+    check("在册四元组口径", (nt, nd, nr, nc) == (40, 44, 43, 45),
           f"got {(nt, nd, nr, nc)}")
     check("在册 wakesrc 空闲段活算", next_free_wakesrc(
         {w["name"]: eval_expr(w["expr"]) for w in real["wakesrc"]}) == 0x08)

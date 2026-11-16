@@ -282,11 +282,36 @@ impl appshell::pump::HostHooks for LoopHost {
         self.desktop.pager.tick(ui, t_now);
     }
 
-    fn on_presented(&mut self, _ui: &mut UiMain, presented: u64) {
+    fn on_presented(&mut self, ui: &mut UiMain, presented: u64) {
         if !self.launched && presented >= 1 {
-            // 标记（字节精确）：首帧呈现回执过链恰一次。
+            // 标记（字节精确）：首帧呈现回执过链恰一次。附带遥测快照行
+            //（refresh 刀4 第一个读者到席证）：jank/deadline_miss/
+            // spinup_late/wakes/frames 全零策略账本只读快照——判定单源
+            // 在引擎循环。
+            let t = ui.telemetry();
+            let jank_n = t.last(16).filter(|r| r.jank).count();
+            println!(
+                "launcher: telem f={} w={} i={} d={} s={} j={}",
+                t.frames(),
+                t.wakes(),
+                t.idle_exits(),
+                t.deadline_miss(),
+                t.spinup_late_frames(),
+                jank_n
+            );
             println!("LAUNCH ok");
             self.launched = true;
+        }
+    }
+
+    /// refresh 刀1 §4-5：PANEL_CAPS 率通路串口证据行（规范 §11 验收面；
+    /// 仅 v2 面打印——旧内核混跑缺席即旧面，非异常。标记互非子串已核
+    ///（tools/ 零 PANEL））。注入面与 pump 默认实现同式（set_vsync——
+    /// 覆写内直写，防 `Trait::method(self,…)` 解析回本覆写的自递归）。
+    fn on_panel_caps(&mut self, ui: &mut UiMain, caps: Option<&gp::PanelCapsRep>) {
+        if let Some(c) = caps {
+            println!("PANEL ok hz={} ns={}", c.current_hz, c.current_period_ns);
+            ui.set_vsync(c.current_period_ns as u64, c.current_phase_ns as u64);
         }
     }
 

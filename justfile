@@ -970,6 +970,14 @@ test-host:
     # v1 冻结）/blob 收支/END 对账三执法 + 帧帽 256 编译期断言 + 黄金
     # 字节钉板 + recv 复用缓冲脏尾回归钉，host 22 测）。
     cargo test --manifest-path user/Cargo.toml -p berry-appproto --target {{host}}
+    # cbox 刀 2：berry-cbox（黑匣子账本纯函数面——排液快照解码/行编解码
+    # 冻结字段序/合并轮转 + boot_pick 续号；黄金行钉板 + 负例全家桶 +
+    # 轮转年龄序钉死，.agents/plans/cbox/design.md）。
+    cargo test --manifest-path user/Cargo.toml -p berry-cbox --target {{host}}
+    # cbox 刀 3：berry CLI 工具面（symbolize ELF64 零依赖解析 + crash-log
+    # FAT12 直读/指纹聚合——对真 mkfat --put 造盘对拍 + 撕链负例；userbins
+    # 现实全 strip，双空如实报错指路不静默）。
+    cargo test --manifest-path tools/berry/Cargo.toml --target {{host}}
     # SEC-02 刀 A2：berry-ksproto（keystored 密钥服务 RPC 协议纯函数面——
     # KeyMint 借号段 tag 编号表 add-only 冻结钉板 + AuthorizationList 软硬
     # 双域/SecurityLevel 三档 wire + KEY_GENERATE/KEY_ATTEST/COUNTER 三 op

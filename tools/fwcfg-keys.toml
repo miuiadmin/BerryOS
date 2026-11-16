@@ -170,6 +170,25 @@ consumer = "kernel/src/main.rs 载荷生成门 LOADGEN_PROBE_NAME（在位才 sp
 polarity = "在位且值合法（s=<ns>;b=<0|1>，分号分隔）才 spawn；缺席零扰动"
 
 [[keys]]
+name = "panel-model"
+kind = "string"
+injectors = ["tools/smoke-image.sh 刀6 双 boot 段（tiered:vrr + det 实注）；亦可手拼 -fw_cfg 专递——2026-11-16 跨根并回自 main 显示线 refresh 刀2/刀6"]
+consumer = "kernel/src/main.rs panel_cfg_req（tiered|tiered:vrr|freerange|freerange:per_frame；缺省 tiered；刀6 后缀抬 A8 LFC/P6 逐帧位）"
+polarity = "在位且值合法才覆写缺省；非法 loud 回退缺省 + PANEL model fail 诊断行"
+
+[[keys]]
+name = "panel-mode"
+kind = "string"
+injectors = ["tools/smoke-image.sh 刀6 双 boot 段（det 实注）；亦可手拼 -fw_cfg 专递——跨根并回自 main refresh 刀2"]
+consumer = "kernel/src/main.rs panel_cfg_req（free|det|det:SEED；缺省 free；HOST_LOCK 在册未接线——刀3 仲裁器）"
+polarity = "在位且值合法才覆写缺省；非法 loud 回退缺省 + PANEL mode fail 诊断行"
+
+[[keys]]
+name = "panel-fault"
+kind = "string"
+injectors = ["tools/smoke-image.sh 刀6 双 boot 段（det 实注）；亦可手拼 -fw_cfg 专递——跨根并回自 main refresh 刀2"]
+consumer = "kernel/src/main.rs panel_cfg_req（D,J,S 十进制 CSV：丢帧千分比 0..=1000/抖动 ns/切档丢帧 0..=16）"
+polarity = "零域 = 缺省态；非法 loud 回退缺省 + PANEL fault fail 诊断行；任一 panel 旋钮非缺省打 PANEL cfg 证据行"
 name = "bootmode"
 kind = "string"
 injectors = ["（无仓内注入方——手拼 -fw_cfg 专递 string=verbose，rwake 同款；ux 刀 1/splash 半随净增量重放入链，漏登记由 #400 复活的 fwcfg-check 抓获补记）"]

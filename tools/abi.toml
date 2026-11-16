@@ -30,18 +30,19 @@ level = 1             # 初值 1 = 首个冻结面起点（v1 37 号在册面）
 
 [meta]
 stage = "v1"
-nr_total = 39        # v1 在册号数（生成器校验 = 下方 stage="v1" 行数；含 0x85
+nr_total = 40        # v1 在册号数（生成器校验 = 下方 stage="v1" 行数；含 0x85
                      # berry_attest 在册未实现预留位——SEC-01 件 11；含 0x86/0x87
                      # 信号面——A7-4 门 C 裁定 A add-only 加号；含 0x23
                      # pager_supply_mapped——G4-4 门 C 裁 A add-only 加号；含 0x24
                      # pager_supply_mapped_table——X-6 刀① 批供表批加号；含
                      # 0x88 power_off——桌面UX刀D add-only 加号；含 0x40
-                     # sched_util_snapshot——CP-08 util 通道首环 add-only 加号）
-implemented = 38     # 已实现（T-1 后在册真语义全实现 + A7-4 段②信号两号翻真 +
+                     # sched_util_snapshot——CP-08 util 通道首环 add-only 加号；含
+                     # 0x42 cbox_drain——cbox 刀1 黑匣子排液口（跨根并回））
+implemented = 39     # 已实现（T-1 后在册真语义全实现 + A7-4 段②信号两号翻真 +
                      # G4-2 0x21 pager_supply_pages v2 号激活 + G4-4 X-3b
                      # 0x23 pager_supply_mapped 挂派发翻真 + X-6 刀①
                      # 0x24 pager_supply_mapped_table 挂派发 + CP-08
-                     # 0x40 sched_util_snapshot 快照读面；
+                     # 0x40 sched_util_snapshot 快照读面 + 0x42 cbox_drain 排液（跨根并回）；
                      # 唯 0x85 berry_attest 预留位恒 -ENOTSUP——与未知号同形，
                      # ABI §8.0 永不 panic 执法）
 nr_ceiling = 45      # syscall 号面帽上界（ADR #11「~30–45」上限端）。生成器执法
@@ -617,6 +618,13 @@ num = 0x41
 name = "thread_create_exception_channel"
 desc = '用户态异常上报通道'
 stage = "v2"
+[[group.syscall]]
+num = 0x42
+name = "cbox_drain"
+desc = '黑匣子崩溃记录排液：`buf/cap` 收全量快照（12B 头 {ver,total,stored} + 存量记录按 seq 升序、104B/条），`*out_len` 出参字节数。cap==0 = 尺寸查询（返 0）；cap 不足 → -ENOMEM 不部分写。快照非消费——记录永驻至槽位轮转，排液方自持 seq 去重。'
+stage = "v1"
+implemented = true
+note = 'cbox 刀 1（`plans/cbox/design.md`）：异常 fatal 路径（EL0 kill 链 / EL1 halt 前）RAM 记录表的用户态排液口。无 right 门（诊断几何面——`process_get_exit_code` need=0 惯例）；表读写面零结构锁（seqlock 快照），syscall 整体走 SVC_CLASS_TABLE 在册取锁（同全体 syscall）。（2026-11-16 跨根并回：main 显示线 cbox 刀 1 并入调度线）'
 
 [[group]]
 title = "**IPC / event / futex**"
