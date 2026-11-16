@@ -1,5 +1,5 @@
 //! vnet TCP 会话驱动（T-c 自验 + T-d 服务化共用——「不长第二套」，
-//! `docs/TCP栈设计草案.md` §3/§8）：guest 主动 connect SLIRP 宿主回显
+//! `docs/TCP栈设计草案-v1.0.md` §3/§8）：guest 主动 connect SLIRP 宿主回显
 //! 服务——10.0.2.2 = host 本机（QEMU user 网标准，guest 主动出站由 SLIRP
 //! 转发宿主 127.0.0.1 同端口，**不用 hostfwd**——那是 host 连 guest 的反向
 //! 面 v2）；宿主侧 = `tools/echod.py`（smoke/justfile 起，被动关闭——client

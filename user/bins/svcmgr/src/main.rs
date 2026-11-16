@@ -5187,7 +5187,7 @@ const DNS_OK: &[u8] = b"DNS ok addr=127.0.0.1\n";
 /// blk_rpc 同款纪律）。
 const DNS_REPLY_CAP: u64 = 120 * 1_000_000_000;
 
-/// rootfs 相第 20 标记（T-d，`docs/TCP栈设计草案.md` §7）：vnet TCP 三 op
+/// rootfs 相第 20 标记（T-d，`docs/TCP栈设计草案-v1.0.md` §7）：vnet TCP 三 op
 /// 服务消费自验——OPEN(18080) → ROUNDTRIP 64B 逐字节对拍 → CLOSE 三步全
 /// ST_OK 才打。**与 vnet 自验标记 `TCP ok echo=` 互非子串**（第 4 字符
 /// 'S' vs ' '——自验走 `Sess` 直连、本标记走 netdproto RPC 服务链，「栈

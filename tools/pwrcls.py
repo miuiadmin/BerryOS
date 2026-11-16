@@ -19,7 +19,7 @@
 卷基 LBA=16 与 hidden 互检不符即 loud 拒——本工具只服务 smoke 平盘，
 不猜 MBR/分区盘。12 位紧包解码/编码与 mkfat.py 同式（跨实现写读共识面）。
 
-B4 设计依据：docs/FAT写路径原子性评估-2026-10.md（13 写序列与撕裂前缀表）。
+B4 设计依据：docs/FAT写路径原子性评估-2026-10-v1.0.md（13 写序列与撕裂前缀表）。
 
 自检：pwrcls.py --selftest——合成 smoke 平盘（mkfat 裸调同形：单编码器
 复用 import，非第二套几何）+ RW.TXT 链注入，classify 七态钉板

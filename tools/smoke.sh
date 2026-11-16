@@ -689,7 +689,7 @@ QEMU_PID=$!
 # 虚拟 DNS 10.0.2.3 → 宿主 /etc/hosts，离线确定无外网依赖）往返对拍全过
 # 才打——「驱动服务化」网络版分层活证——rootfs 相第 18 标记（状态谓词，
 # 无竞速面；60s 应答帽盖 vnet 自验尾巴 + 服务端 20s DNS 帽，帽不押时序）。
-# TCP ok echo= = **最小 TCP 客户端全链**（T-c，`docs/TCP栈设计草案.md`）：
+# TCP ok echo= = **最小 TCP 客户端全链**（T-c，`docs/TCP栈设计草案-v1.0.md`）：
 # vnet 自验（NET ok）后、转常驻服务前，guest 主动 connect SLIRP 宿主
 # echod（10.0.2.2:18080）——berry-tcp 状态机（握手/序号/RTO/TIME_WAIT
 # 纯函数）+ tcp.rs IO 驱动：三次握手（我方 MSS 128 通告）→ 64B pattern
@@ -697,7 +697,7 @@ QEMU_PID=$!
 # 可靠交付/连接拆除三阶段全在用户态**，零内核 TCP——rootfs 相第 19 标记
 # （状态谓词；对端 echod 由本相前脚本拉起，pcap 实证 SLIRP 遵守我方
 # MSS：64B 回显单段不分片；无竞速面）。
-# TCPS ok echo= = **TCP 服务化消费链**（T-d，`docs/TCP栈设计草案.md` §7）：
+# TCPS ok echo= = **TCP 服务化消费链**（T-d，`docs/TCP栈设计草案-v1.0.md` §7）：
 # svcmgr 作 client 经 berry-netdproto TCP 三 op 严格串行 RPC——
 # OPEN(18080)（在席会话 ST_BUSY 单会话独占）→ ROUNDTRIP(64B pattern) 逐
 # 字节对拍 → CLOSE（TIME_WAIT 收口）三步全 ST_OK 才打；与 vnet 自验
@@ -756,7 +756,7 @@ QEMU_PID=$!
 # grep/find/which 挂账另刀（docs/挂账-C2c深坑件.md）。链序契约同 U2 排
 # fat 族前（EFI 路无盘亦打 U3——smoke-image ECO 14 同面）——rootfs 相第
 # 27 标记（状态谓词，无竞速面）。
-# B-1：B1 ok n=4（EL0 用户态基准验收——docs/基准与压力测试设计.md §8）：
+# B-1：B1 ok n=4（EL0 用户态基准验收——docs/基准与压力测试设计-v1.0.md §8）：
 # bsh bench1_selftest spawn bin/bench1（stdhello 同链 std 面，四项基准
 # sys_null/sys_vmo_rw4k/ipc_enqueue8/evt_signal 全 syscall 自造 = 零新
 # 管道）→ 私有通道收齐 BENCH1 行 → **格式断言**（行数恰 4 + 名字-iters
@@ -1631,7 +1631,7 @@ echo "smoke: FAT 持久化到齐（跨 boot 读回 f42t + M3DEMO T3.TXT 交互 c
 # 恢复终验）——
 # 掉电模拟 = SIGKILL 直杀 QEMU（cache.writeback=off 下已完成扇区已在宿主
 # 盘、在途扇区蒸发 = **扇区间**撕裂前缀；扇区内撕裂 = 真机面不在本相覆盖，
-# 见 docs/FAT写路径原子性评估-2026-10.md）。三 boot 均无 netdev：vnet 无
+# 见 docs/FAT写路径原子性评估-2026-10-v1.0.md）。三 boot 均无 netdev：vnet 无
 # net 槽 = trap 干净自死（NET 族标记自然缺席不设门——EFI 路设备缺席优雅
 # 降级同款先例）；bsh 的 fat 族自验（fat→fatw→df 相邻三连）不依赖 net。
 # 盘重造 + LBA0 印章（vblk 自验读它）——每次 run 从确定性盘起。

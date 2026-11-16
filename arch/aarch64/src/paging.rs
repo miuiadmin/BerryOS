@@ -36,7 +36,7 @@ pub const AP_RO: u64 = 0b10 << 6;
 
 /// AP bits[7:6]=01：EL0/EL1 均读写——用户页（2b-4 首个 EL0）。`UserRo`=11 留
 /// v2 按需（v1 无用户只读映射需求）。页描述符不设 UXN/PXN → 用户页可执行
-/// （代码页即数据属性；NX 随 `安全与硬件隔离设计.md` v2 批次开）。
+/// （代码页即数据属性；NX 随 `docs/安全与硬件隔离设计-v1.0.md` v2 批次开）。
 pub const AP_USER_RW: u64 = 0b01 << 6;
 
 /// MAIR_EL1 取值：attr0=Device-nGnRnE、attr1=Normal WB RA+WA、attr2=Normal 非缓存。

@@ -1,5 +1,5 @@
 //! berry-gfx：pass 形态图形 API + soft 光栅核（GUI-2 段①——
-//! `docs/GUI里程碑规划-2026-10.md` GUI-2 行 + ADR #51；概念/命名 1:1
+//! `docs/GUI里程碑规划-2026-10-v1.0.md` GUI-2 行 + ADR #51；概念/命名 1:1
 //! 对齐 WebGPU，语义按本仓几何铁律收敛）。
 //!
 //! # 六件套 day-one 契约（GUI-10 附录 C §5——逐条在场）

@@ -27,7 +27,7 @@ pub struct Timespec {
     pub tv_nsec: c_long,
 }
 
-// —— A7-2 clockid 双轨（`docs/事件循环A7-2实施设计草案.md` §3.1/§1 #8）——
+// —— A7-2 clockid 双轨（`docs/事件循环A7-2实施设计草案-v1.0.md` §3.1/§1 #8）——
 // 调用侧事实源 = libc crate（crates.io）携 **Linux/musl 编号**；berry-sys
 // `CLOCK_MONOTONIC`=0 是内核侧编号（仅作 berry_clock_read 实参）——两轨
 // 勿混（REALTIME=0 与 berry MONOTONIC=0 数值撞位，分诊表按 Linux 值收参）。

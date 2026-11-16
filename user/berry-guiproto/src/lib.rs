@@ -4,7 +4,7 @@
 //! 收官：VOTE scene 字节改携 berry_intent 六档值，`Intent` 判别值经其
 //! 镜像 sched/src/intent.rs 单源转发，禁第三份手抄）。
 //!
-//! 拓扑（docs/GUI-4实施设计草案.md §2）：**三域 = 三对独立 channel**，不是
+//! 拓扑（docs/GUI-4实施设计草案-v1.0.md §2）：**三域 = 三对独立 channel**，不是
 //! 一个 op 空间——能力即权限（客户端拿不到它域 channel 端点就结构性发不了
 //! 它域 op，微内核纪律，替代「op 层鉴权」的第二套机制）：
 //! - **present 域**（op 1..6）：应用 → gui-wmd 代理（GUI-5 换手，ADR #61：

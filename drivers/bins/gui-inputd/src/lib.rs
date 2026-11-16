@@ -1,5 +1,5 @@
 //! gui-inputd lib —— GUI-4 段① I3 纯逻辑面：virtio-input wire 事件流 →
-//! 归一化 → PointerEvent 泵（实施依据 = docs/GUI-4实施设计草案.md §5.1/§6-I3）。
+//! 归一化 → PointerEvent 泵（实施依据 = docs/GUI-4实施设计草案-v1.0.md §5.1/§6-I3）。
 //!
 //! 三段职责：
 //! 1. **wire 适配**（`raw_from_wire`）：`VirtioInputEvent`（8B LE，value 线上

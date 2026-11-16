@@ -1,6 +1,6 @@
 //! # net —— socket ABI 面（A3-1 地基 + A3-2 桩批转真）
 //!
-//! `docs/事件循环A3设计草案.md` §3 的 libc 侧落点：
+//! `docs/事件循环A3设计草案-v1.0.md` §3 的 libc 侧落点：
 //! - 字节序四件（htons/ntohs/htonl/ntohl——sockaddr_in 构造消费面）；
 //! - sockaddr/addrinfo ABI `#[repr(C)]` + offset_of 全字段编译期钉板
 //!   （C-2a Stat 布局案同族执法：「同尺寸不同字段序 = 最阴的静默错」；
@@ -1165,7 +1165,7 @@ pub(crate) fn sock_poll_one(fd: c_int, events: i16) -> i16 {
     }
 }
 
-// —— epoll 真实现（A4-1，docs/事件循环A4设计草案.md §3.1/§3.2——epoll
+// —— epoll 真实现（A4-1，docs/事件循环A4设计草案-v1.0.md §3.1/§3.2——epoll
 //    fd 皮 + interest 注册 + wait 三档节拍循环；语义蓝本 berry-poll：
 //    LT / poll-first / timeout 三档，对象面 = socket fd 快照）——
 

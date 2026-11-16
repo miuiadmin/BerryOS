@@ -3246,7 +3246,7 @@ fn test_vmo() {
     // F. A1-2 容量冒烟：40MiB VMO 全量 commit/decommit——`vmo.rs` commit 逐页
     // order-0 出帧，不受 MAX_ORDER 堆单块地形约束；帧账本对账（B-0
     // `allocated_pages` 口径）钉「10240 页全出全还、零泄漏」。40MB+ blob
-    // 装载面的前置证据（`docs/容量工程前置-A1设计草案.md` §2 关键洞察 / §4 A1-2）。
+    // 装载面的前置证据（`docs/容量工程前置-A1设计草案-v1.0.md` §2 关键洞察 / §4 A1-2）。
     //
     // 对账须计**页记帐双 Vec**（`Vmo::create` 经堆整页路径入账——heap.rs
     // >2048B → `order_for` 取 `2^order >= npages` 最小阶）：`pages:

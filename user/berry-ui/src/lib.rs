@@ -1,6 +1,6 @@
 //! berry-ui：声明式 UI 引擎内核——保留树 arena + 布局 + 脏区合并 +
 //! 遮挡剔除渲染 + 输入手势 referee + 动画表 + 三态停帧帧循环 + 双轨遥测
-//! （GUI-3，`docs/GUI-3实施设计草案.md` §6 冻结契约；ADR #52 自研
+//! （GUI-3，`docs/GUI-3实施设计草案-v1.0.md` §6 冻结契约；ADR #52 自研
 //! berry-ui 声明式框架 / ADR #53 三态停帧 RUN-SETTLE-IDLE）。
 //!
 //! # 拓扑（§2）
