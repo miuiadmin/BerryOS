@@ -34,7 +34,8 @@ default: run
 
 # G-eco 编译侧：用户程序 → flat binary（草案 D6）。builtin aarch64-unknown-none
 # + 各 bin 自带链接脚本（build.rs 绝对路径注入）——**免 nightly**（custom target
-# 推迟到确需 target 级差异再上，草案 D1 修订）。elf2flat.py 解 PT_LOAD 出平像
+# （推迟到确需 target 级差异再上，草案 D1 修订）。elf2flat（Rust 件，彻底
+# Rust 化轨道 b 层 #8 二刀起产链现役）解 PT_LOAD 出平像
 # 并补零到页（.bss 覆盖在文件侧兑现）。两遍构建（G-eco-b）：pass 1 先产
 # echo/talker/thrchild/dpgp 平像进 user/userbins/，pass 2 svcmgr 才 include_bytes!
 # 内嵌（单遍 workspace 无编排保证，鸡生蛋只能拆两刀）。--max 墙：子程序
@@ -56,6 +57,23 @@ build-user:
     # 产物继续走（P6 A-2 实踩：bsh 漏补 mmio_vmo 字段，E0063 静默、smoke 跑
     # 的是旧 bsh——「缺产物编译期炸响」的 D6 纪律只护了内核侧，这边失守）。
     set -e
+    # elf2flat 换轨二刀（彻底 Rust 化轨道 b 层 #8，§5 钉板五步第 5 步）：
+    # 产链现役件 = tools/elf2flat（Rust 独立小工作区，#393 首刀件）——先编
+    # 后用，六处消费点全走本 bin；Python 版降格为 elf2flat_oracle.py（对拍
+    # 取证专用，不进产链）。独立小工作区 + 根 config 锁 build.target=
+    # aarch64-unknown-none → 显式 --target host（test-host 接线同款纪律）；
+    # CARGO_TARGET_DIR 显式钉 tools/elf2flat/cargo-target（防全局 target-dir
+    # 覆盖漂移；该目录已 gitignore，同 tools/berry 形态）。对拍背书：六真实 ELF（echo/talker/
+    # thrchild/dpgp/abuser/svcmgr）oracle↔Rust 产物 sha256 6/6 恒等 +
+    # stdout 数值行全等（#393 首刀 + 本刀换轨前复验）。
+    # 注意：本块在 `cd user` 之前执行，cwd = 仓库根——ROOT_ABS 取 $(pwd)
+    # 即仓库根（勿用 `cd ..`——那会落到仓库父目录，换轨首跑实捕）。
+    ROOT_ABS=$(pwd)
+    HOST_TRIPLE="{{host}}"
+    CARGO_TARGET_DIR="$ROOT_ABS/tools/elf2flat/cargo-target" \
+        cargo build --release --manifest-path tools/elf2flat/Cargo.toml \
+        --target "$HOST_TRIPLE"
+    ELF2FLAT="$ROOT_ABS/tools/elf2flat/cargo-target/$HOST_TRIPLE/release/elf2flat"
     # GUI-0（2026-10-29）：user 侧 none-target 家族（echo/talker/thrchild/svcmgr/
     # abuser/hello）**保留 NEON codegen**——EL0 任务 FP 态已由 TaskContext 全量保存
     # 兜底、GUI 光栅后续正要用 SIMD；根 .cargo/config.toml 的 -neon 旗只属内核
@@ -65,28 +83,28 @@ build-user:
     cd user
     CARGO_TARGET_DIR=cargo-target cargo build --release -p echo -p talker -p thrchild -p dpgp
     mkdir -p userbins ../kernel/src/userbins
-    python3 ../tools/elf2flat.py \
+    "$ELF2FLAT" \
         cargo-target/aarch64-unknown-none/release/echo \
         userbins/echo.bin --max 4096
-    python3 ../tools/elf2flat.py \
+    "$ELF2FLAT" \
         cargo-target/aarch64-unknown-none/release/talker \
         userbins/talker.bin --max 4096
     # T-1 §2：thrchild（进程内双线程自验子——bootstrap 自句柄经 process_start
     # x0 递入；pass 1 平像 + svcmgr include_bytes 内嵌，零 rootfs 新条目）。
-    python3 ../tools/elf2flat.py \
+    "$ELF2FLAT" \
         cargo-target/aarch64-unknown-none/release/thrchild \
         userbins/thrchild.bin --max 16384
     # G4-2：dpgp（demand 装载受验子——跨进程供给形 EL0 侧，bootstrap=0 零
     # 句柄；2 页墙 = 像 1 页 + 头寸，像窗 [0x1000,0x6000) 外 0x6000 起
     # demand 页由 svcmgr dpg_selftest 另映）。同产链内嵌 svcmgr。
-    python3 ../tools/elf2flat.py \
+    "$ELF2FLAT" \
         cargo-target/aarch64-unknown-none/release/dpgp \
         userbins/dpgp.bin --max 8192
     CARGO_TARGET_DIR=cargo-target cargo build --release
-    python3 ../tools/elf2flat.py \
+    "$ELF2FLAT" \
         cargo-target/aarch64-unknown-none/release/abuser \
         ../kernel/src/userbins/abuser.bin --max 4096
-    python3 ../tools/elf2flat.py \
+    "$ELF2FLAT" \
         cargo-target/aarch64-unknown-none/release/svcmgr \
         ../kernel/src/userbins/svcmgr.bin --max 163840
     # G-eco-d：std 面——stdhello（musl target + berry-libc shim + berry-ld
@@ -1014,16 +1032,19 @@ test-host:
     # 表名注册，host 8 测；独立 workspace 与 berryboot 主引导链解耦，
     # 唯一依赖 berry-efi 纯数据 crate）。
     cargo test --manifest-path bootloader/berrydump/Cargo.toml --target {{host}}
-    # Q1（a-3 U4 纪律收口）：elf2flat 门禁自检——build-user 产链 6 处消费的
-    # 平像转换器（echo/talker/thrchild/dpgp/abuser/svcmgr），此前只在产物链
-    # 上被动覆盖，门禁自身坏 = 平像静默劣化。合成双段 ELF（gap 零填 + bss
-    # 尾零 + 页取整 + 确定性）+ 8 拒面（elf2pe --selftest 同位纪律）。
-    python3 tools/elf2flat.py --selftest
-    # W1 接线（彻底 Rust 化轨道 b 层 #8 首刀）：elf2flat Rust 件 lib 纯面
+    # Q1（a-3 U4 纪律收口，elf2flat 换轨二刀后双形态）：elf2flat 门禁——
+    # 产链现役件 = Rust（下行 cargo test，tools/elf2flat）；Python 版已降格
+    # elf2flat_oracle.py（对拍取证专用，§5 第 1/5 步——转换核逐字保留，
+    # selftest 照跑守语义钉板，Rust 件有疑时拿本件复算对拍；不降豁免表
+    # ——selftest_guard 零豁免契约不动，接线即纪律）。合成双段 ELF（gap
+    # 零填 + bss 尾零 + 页取整 + 确定性）+ 8 拒面（elf2pe 同位纪律）。
+    python3 tools/elf2flat_oracle.py --selftest
+    # W1 接线（彻底 Rust 化轨道 b 层 #8）：elf2flat Rust 件 lib 纯面
     # 测试（双段钉板 + 8 拒面 + Rust 侧短输入面 + synth 模式重导——与
-    # Python oracle 字节级对拍见 docs/彻底Rust化计划-v1.0.md §5 五步；本刀
-    # 落位第 2/3/4 步：Rust 件 + 对拍（scratch 对拍 PASS 背书）+ 接线，
-    # 产链换轨（justfile build-user 六处 python3 → rust bin）留二刀）。
+    # Python oracle 字节级对拍见 docs/彻底Rust化计划-v1.0.md §5 五步；首刀
+    # 落位第 2/3/4 步，二刀（本刀）落位第 5 步：build-user 产链六处
+    # python3 → rust bin 换轨，oracle 降格；对拍背书 = 六真实 ELF
+    # sha256 6/6 恒等 + stdout 全等）。
     # 独立小工作区（tools/berry 同款形态），根 .cargo/config.toml 锁
     # build.target=aarch64-unknown-none 故必须显式 --target {{host}}。
     cargo test --manifest-path tools/elf2flat/Cargo.toml --target {{host}}

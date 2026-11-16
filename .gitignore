@@ -98,6 +98,10 @@ __pycache__/
 # berry 宿主工具独立 target（just berry-build 显式 CARGO_TARGET_DIR）
 /tools/berry/cargo-target/
 
+# elf2flat 宿主工具独立 target（just build-user 换轨二刀起产链内构建，
+# CARGO_TARGET_DIR 显式钉此——防全局 target-dir 覆盖漂移）
+/tools/elf2flat/cargo-target/
+
 # berry 宿主工具截图产物（berry shot 默认输出 / 窗口 Cmd-S）
 /shot.png
 /berry-shot-*.png
