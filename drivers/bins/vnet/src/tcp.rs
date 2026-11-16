@@ -40,7 +40,7 @@
 //! 转回 guest:18081（echod 同机制的方向反转）；服务端会话四元组取自入
 //! 站 SYN（对端口 = SLIRP 分配），客户端侧 peer 恒 10.0.2.2:18081。
 
-use crate::{now, recv_frame, trap, tx_send, Dma, GW_IP, IOB, OUR_IP, POLL_STEP_NS};
+use crate::{now, recv_frame, trap, Dma, TxBatch, GW_IP, IOB, OUR_IP, POLL_STEP_NS};
 use berry_netdproto as ndp;
 use berry_netproto as np;
 use berry_tcp as bt;
@@ -58,6 +58,25 @@ const SELFTEST_CAP_NS: u64 = 60_000_000_000;
 const SEND_CAP_NS: u64 = 30_000_000_000;
 /// 单帧组帧缓冲：TCP 头 20 + MSS 选项 4 + 段体 MSS=128 = 152B。
 const SEG_BUF_SZ: usize = np::TCP_HDR_SZ + np::TCP_OPT_MSS_SZ + bt::MSS as usize;
+/// 发送暂存跨 op 容量（四刀 P5）= berry-tcp 在途环容量 TX_SLOTS×MSS=512
+/// ——K 窗多 op 并发在途时 tx 暂存跨 op 连续（tx_seq0 基点不因单 op 完成
+/// 重立，环空才失效——post_account 语义不变）。
+pub(crate) const TX_CAP: usize = bt::TX_SLOTS * bt::MSS as usize;
+/// tx 批量单帧槽步长（四刀 P10，含 12B virtio-net 头）：TCP 段最大帧
+/// 12+14+20+152 = 198B——desc 各指 TX_BUF_PAGE 内偏移，整批一次页写/
+/// 单门铃/单 poll。
+pub(crate) const TX_FRAME_STEP: usize = berry_virtio::NET_HDR_SZ
+    + np::ETH_HDR_SZ
+    + np::IPV4_HDR_SZ
+    + SEG_BUF_SZ;
+/// 每批帧数帽 = TX_SLOTS（一个批 = 环内一次可压入的段数上界；ARP/ICMP/
+/// DNS 单帧路径不经批——main.rs tx_send batch-of-1 原样）。
+pub(crate) const TX_BATCH_MAX: usize = bt::TX_SLOTS;
+/// session-0 挂起 op 的回显收流幅（四刀 P6）：echod/SLIRP 可把 K 个在途
+/// op 的回显拼成单段（MTU 域内）——准入缓冲必须容 K×TCP_DATA_MAX，否则
+/// 拼段被首刀准入闸拒收 = 重传同形拒 = 死锁面（几何不变式：未收回显 ≤
+/// 挂起 op 数 × 单 op 帽）。
+pub(crate) const RT_ECHO_MAX: usize = ndp::RT_PIPE_K * ndp::TCP_DATA_MAX;
 /// 收段 payload 上限（首刀入站大段容忍：满 MTU TCP 段 1460B）。vnet 侧
 /// 定值，与 bt::MSS（发送帽 + 通告几何）解耦——NET-01 §3.3 实证 SLIRP
 /// 不读我方 MSS/WINDOW 通告、按 MTU 拼段，>128B 入站段是常态而非违约；
@@ -95,6 +114,13 @@ const _: () = assert!(crate::RX_BUF_SZ <= crate::IOB_SZ);
 // 128 钉板把守。
 const _: () = assert!(berry_netdproto::TCP_DATA_MAX > bt::MSS as usize);
 const _: () = assert!(bt::TX_SLOTS * bt::MSS as usize >= berry_netdproto::TCP_DATA_MAX);
+// 四刀几何钉：① K 窗恰满环（K×TCP_DATA_MAX ≤ TX_CAP=TX_SLOTS×MSS——K=2
+// 恰在环容与 guest 自通告收窗 512 双界内；K≥3 需环扩+通告窗联动双前置）；
+// ② tx 批布局装进 IOB（批帧数 × 步长 ≤ IOB_SZ）；③ session-0 回显收流幅
+// = K×TCP_DATA_MAX 单源（拼段准入几何）。
+const _: () = assert!(ndp::RT_PIPE_K * ndp::TCP_DATA_MAX <= TX_CAP);
+const _: () = assert!(TX_BATCH_MAX * TX_FRAME_STEP <= crate::IOB_SZ);
+const _: () = assert!(RT_ECHO_MAX == ndp::RT_PIPE_K * ndp::TCP_DATA_MAX);
 
 /// 回显载荷 64B（ICMP 32B probe 同族确定性 pattern）。
 static PATTERN: &[u8; 64] = b"berryos-tcp-probe-0123456789012345678901234567890123456789abcdef";
@@ -135,13 +161,19 @@ pub(crate) struct Sess {
     /// 见常量注；准入预检见 route_seg）。
     rx: [u8; RX_SESS_BUF],
     rx_len: usize,
-    /// 发送暂存（二刀重传载荷源）：op 首段发送时整批拷入（≤TCP_DATA_MAX，
-    /// 基点 tx_seq0），重发按 (seq−tx_seq0, len) 切片组帧——berry-tcp 维持
-    /// 零拷贝纯状态机，载荷归属 IO 层。环空即失效（post_account 收账，下
-    /// 一 op 重立基）；净生成面 = step/pump_timers 两处 RTO 路径 act(&[])。
-    tx: [u8; ndp::TCP_DATA_MAX],
+    /// 发送暂存（二刀重传载荷源，四刀 P5 跨 op 扩容 TX_CAP=512）：op 首段
+    /// 发送时整批拷入（≤K×TCP_DATA_MAX，基点 tx_seq0），重发按 (seq−tx_seq0,
+    /// len) 切片组帧——berry-tcp 维持零拷贝纯状态机，载荷归属 IO 层。环空
+    /// 即失效（post_account 收账——K 窗下 = 全部挂起 op 收口；下一 op 重立
+    /// 基）；净生成面 = step/pump_timers 两处 RTO 路径 act(&[])。
+    tx: [u8; TX_CAP],
     tx_len: usize,
     tx_seq0: u32,
+    /// 泵突发窗纯 ACK 暂存（四刀 P9）：hold_ack=true 时 Ack 动作只立旗、
+    /// 突发尾 [`Sess::ack_flush`] 一次发出（累计 rcv_nxt 覆盖）——每突发
+    /// 一发送量子替代每段一量子。阻塞路径恒 false = 行为零漂移。
+    hold_ack: bool,
+    ack_due: bool,
 }
 
 /// RTO 挂臂对账：snd_una wrapping 覆盖段尾（差值落在前半 = 已越过）或会话
@@ -150,12 +182,12 @@ fn arm_settled(conn: &bt::Conn, arm: &Arm) -> bool {
     conn.state == bt::State::Closed || conn.snd_una.wrapping_sub(arm.end) < 0x8000_0000
 }
 
-/// 组一个 TCP 段并发送（段先进独立栈缓冲，再层层包裹进 IOB——dns_roundtrip
-/// 家族模板；返回值 None 契约 = 参数面错，一律 trap loud）。
+/// 组一个 TCP 段进 IOB 批槽（四刀 P10：帧布局偏移 slot×TX_FRAME_STEP，
+/// 不发送——发送归 [`crate::tx_flush_batch`] 整批一次页写/单门铃/单 poll）。
+/// 段先进独立栈缓冲，再层层包裹进 IOB 槽位（dns_roundtrip 家族模板；返回
+/// 帧长 = eth+ip+tcp 段总长，desc len 用）。
 #[allow(clippy::too_many_arguments)]
-fn send_seg(
-    d: &mut Dma,
-    regs: *mut u32,
+fn stage_seg(
     mac: &[u8; 6],
     gw_mac: &[u8; 6],
     sport: u16,
@@ -165,7 +197,8 @@ fn send_seg(
     flags: np::TcpFlags,
     mss: Option<u16>,
     payload: &[u8],
-) {
+    slot: usize,
+) -> usize {
     let mut seg = [0u8; SEG_BUF_SZ];
     let tl = match np::encode_tcp(
         &mut seg, OUR_IP, GW_IP, sport, dport, seq, ack, flags, bt::WINDOW, mss, payload,
@@ -173,13 +206,24 @@ fn send_seg(
         Some(n) => n,
         None => trap(),
     };
+    let base = slot * TX_FRAME_STEP;
     {
         let iob: &mut [u8; crate::IOB_SZ] = unsafe { &mut *core::ptr::addr_of_mut!(IOB) };
-        if np::encode_eth(&mut iob[berry_virtio::NET_HDR_SZ..], gw_mac, mac, np::ET_IPV4).is_none() {
+        if base + berry_virtio::NET_HDR_SZ + np::ETH_HDR_SZ + np::IPV4_HDR_SZ + tl > iob.len() {
+            trap(); // 批布局几何由 const assert 钉；防御面
+        }
+        if np::encode_eth(
+            &mut iob[base + berry_virtio::NET_HDR_SZ..],
+            gw_mac,
+            mac,
+            np::ET_IPV4,
+        )
+        .is_none()
+        {
             trap();
         }
         if np::encode_ipv4(
-            &mut iob[berry_virtio::NET_HDR_SZ + np::ETH_HDR_SZ..],
+            &mut iob[base + berry_virtio::NET_HDR_SZ + np::ETH_HDR_SZ..],
             64,
             np::IP_PROTO_TCP,
             OUR_IP,
@@ -191,7 +235,7 @@ fn send_seg(
             trap();
         }
     }
-    tx_send(d, regs, np::ETH_HDR_SZ + np::IPV4_HDR_SZ + tl);
+    np::ETH_HDR_SZ + np::IPV4_HDR_SZ + tl
 }
 
 impl Sess {
@@ -200,7 +244,8 @@ impl Sess {
         Sess {
             conn, sport, dport, arm: None, tw: None,
             rx: [0; RX_SESS_BUF], rx_len: 0,
-            tx: [0; ndp::TCP_DATA_MAX], tx_len: 0, tx_seq0: 0,
+            tx: [0; TX_CAP], tx_len: 0, tx_seq0: 0,
+            hold_ack: false, ack_due: false,
         }
     }
 
@@ -211,7 +256,8 @@ impl Sess {
         Sess {
             conn, sport: local_port, dport: remote_port, arm: None, tw: None,
             rx: [0; RX_SESS_BUF], rx_len: 0,
-            tx: [0; ndp::TCP_DATA_MAX], tx_len: 0, tx_seq0: 0,
+            tx: [0; TX_CAP], tx_len: 0, tx_seq0: 0,
+            hold_ack: false, ack_due: false,
         }
     }
 
@@ -407,6 +453,28 @@ impl Sess {
         cap: u64,
         rcv: &mut [u8],
     ) -> Result<usize, ()> {
+        // 阻塞面（selftest/legacy）：单步即冲（出段数 ≤1，批退化单帧——
+        // 行为与二刀逐帧发送零漂移）。
+        let mut q = TxBatch::new();
+        let r = self.step_q(d, regs, mac, gw_mac, table, cap, rcv, &mut q);
+        crate::tx_flush_batch(d, regs, &mut q);
+        r
+    }
+
+    /// 批量形单步（四刀 P10）：出段 staged 进 `q`（Ack 受 hold_ack 暂存），
+    /// 调用方突发尾 flush——serve 泵（pump_serve）用。
+    #[allow(clippy::too_many_arguments)]
+    fn step_q(
+        &mut self,
+        d: &mut Dma,
+        regs: *mut u32,
+        mac: &[u8; 6],
+        gw_mac: &[u8; 6],
+        table: &mut TcpMux,
+        cap: u64,
+        rcv: &mut [u8],
+        q: &mut TxBatch,
+    ) -> Result<usize, ()> {
         let mut dl = cap;
         if let Some(a) = &self.arm {
             dl = dl.min(a.deadline);
@@ -430,7 +498,7 @@ impl Sess {
                         if matches!(ev.action, bt::Action::None) {
                             self.arm = None;
                         } else {
-                            self.act(d, regs, mac, gw_mac, ev.action, &[]);
+                            self.act_q(d, regs, mac, gw_mac, ev.action, &[], q);
                         }
                         pump_timers(d, regs, mac, gw_mac, table);
                         return Ok(0);
@@ -469,7 +537,7 @@ impl Sess {
                         "vnet: tcp session-0 准入拒段 dport={} seg={} rcv={}",
                         self.dport, seg.payload.len(), rcv.len()
                     );
-                    self.act(d, regs, mac, gw_mac, bt::Action::Ack, &[]);
+                    self.act_q(d, regs, mac, gw_mac, bt::Action::Ack, &[], q);
                 } else {
                     let out = self.conn.on_seg(&seg);
                     if let Some(del) = out.deliver {
@@ -477,7 +545,7 @@ impl Sess {
                         rcv[..n].copy_from_slice(&del[..n]);
                         delivered = n;
                     }
-                    self.act(d, regs, mac, gw_mac, out.action, &[]);
+                    self.act_q(d, regs, mac, gw_mac, out.action, &[], q);
                 }
             } else {
                 route_seg(d, regs, mac, gw_mac, table, sport, dport, &seg);
@@ -489,13 +557,8 @@ impl Sess {
         Ok(delivered)
     }
 
-    /// Action → wire 段统一翻译 + RTO 挂臂（二刀臂语义升级为「覆盖全环最晚
-    /// 段尾」：Syn/Data/Fin 出段即重挂，臂端只进不退——RTO 队头重发不清
-    /// 尾，部分 ACK 不清臂、snd_una 推进后 arm_settled 判全环清；on_rto
-    /// 重发同经此处按 backoff+1 重挂；Ack 无需重传不挂）。Data 臂双面：
-    /// 初次发送（data 非空且恰长）拷入暂存再组帧；重发（data 空）按
-    /// (seq−tx_seq0) 切暂存组帧——失配/无暂存/越界 trap loud（调用方契约
-    /// 违约不静默）。
+    /// Action → wire 段统一翻译 + RTO 挂臂（立即发送面——批次即冲，阻塞
+    /// 路径/表路由用；四刀 P10 起内部 = [`Sess::act_q`] + 单批 flush）。
     fn act(
         &mut self,
         d: &mut Dma,
@@ -505,6 +568,29 @@ impl Sess {
         action: bt::Action,
         data: &[u8],
     ) {
+        let mut q = TxBatch::new();
+        self.act_q(d, regs, mac, gw_mac, action, data, &mut q);
+        crate::tx_flush_batch(d, regs, &mut q);
+    }
+
+    /// 批量形（四刀 P10）：出段先 staged 进 IOB 批槽（满批即自动 flush），
+    /// 调用方突发尾一次 [`crate::tx_flush_batch`]——整批帧一次页写/单门铃/
+    /// 单 poll。RTO 挂臂语义同二刀：Syn/Data/Fin 出段即重挂、臂端只进不退
+    /// ——RTO 队头重发不清尾，部分 ACK 不清臂、snd_una 推进后 arm_settled
+    /// 判全环清；Data 臂双面：初次发送（data 非空且恰长）拷入暂存再组帧；
+    /// 重发（data 空）按 (seq−tx_seq0) 切暂存组帧——失配/无暂存/越界 trap
+    /// loud。Ack 臂在 hold_ack 泵突发窗只立旗（`ack_flush` 突发尾收口）。
+    #[allow(clippy::too_many_arguments)]
+    fn act_q(
+        &mut self,
+        d: &mut Dma,
+        regs: *mut u32,
+        mac: &[u8; 6],
+        gw_mac: &[u8; 6],
+        action: bt::Action,
+        data: &[u8],
+        q: &mut TxBatch,
+    ) {
         // 臂端 wrapping 取更晚（只进不退：重发队头不改尾、新段扩尾）。
         let arm_extend = |prev: Option<Arm>, end: u32, backoff: u8| {
             let end = match prev {
@@ -513,21 +599,31 @@ impl Sess {
             };
             Arm { end, deadline: now() + bt::rto_ms(backoff) * 1_000_000 }
         };
+        // 批槽占位（满批自动 flush——批容量 = TX_SLOTS 恒 ≥ 单突发帧数上界，
+        /// 防御帽）。
+        macro_rules! stage {
+            ($seq:expr, $ack:expr, $flags:expr, $mss:expr, $payload:expr) => {{
+                if q.n == TX_BATCH_MAX {
+                    crate::tx_flush_batch(d, regs, q);
+                }
+                let fl = stage_seg(mac, gw_mac, self.sport, self.dport, $seq, $ack, $flags, $mss, $payload, q.n);
+                q.lens[q.n] = fl;
+                q.n += 1;
+            }};
+        }
         match action {
             bt::Action::None => {}
             bt::Action::Syn { seq } => {
-                send_seg(
-                    d, regs, mac, gw_mac, self.sport, self.dport, seq, 0,
-                    np::TcpFlags { syn: true, ..Default::default() }, Some(bt::MSS), &[],
-                );
+                stage!(seq, 0, np::TcpFlags { syn: true, ..Default::default() }, Some(bt::MSS), &[]);
                 self.arm = Some(arm_extend(self.arm, seq.wrapping_add(1), self.conn.rto_backoff));
             }
             // 服务端握手应答（A2-2 段② 与 berry-tcp 服务端半边同步入册；会话表
             // 接线在段③——本臂 = SYN|ACK 线上编码 + RTO 挂臂（SYN 占一序号同 Syn）。
             bt::Action::SynAck { seq, ack } => {
-                send_seg(
-                    d, regs, mac, gw_mac, self.sport, self.dport, seq, ack,
-                    np::TcpFlags { syn: true, ack: true, ..Default::default() }, Some(bt::MSS), &[],
+                stage!(
+                    seq, ack,
+                    np::TcpFlags { syn: true, ack: true, ..Default::default() },
+                    Some(bt::MSS), &[]
                 );
                 self.arm = Some(arm_extend(self.arm, seq.wrapping_add(1), self.conn.rto_backoff));
             }
@@ -566,26 +662,48 @@ impl Sess {
                     }
                     &self.tx[off..off + len as usize]
                 };
-                send_seg(
-                    d, regs, mac, gw_mac, self.sport, self.dport, seq, self.conn.rcv_nxt,
-                    np::TcpFlags { ack: true, ..Default::default() }, None, payload,
+                stage!(
+                    seq, self.conn.rcv_nxt,
+                    np::TcpFlags { ack: true, ..Default::default() }, None, payload
                 );
                 self.arm = Some(arm_extend(self.arm, seq.wrapping_add(len), self.conn.rto_backoff));
             }
             bt::Action::Fin { seq } => {
-                send_seg(
-                    d, regs, mac, gw_mac, self.sport, self.dport, seq, self.conn.rcv_nxt,
-                    np::TcpFlags { fin: true, ack: true, ..Default::default() }, None, &[],
+                stage!(
+                    seq, self.conn.rcv_nxt,
+                    np::TcpFlags { fin: true, ack: true, ..Default::default() }, None, &[]
                 );
                 self.arm = Some(arm_extend(self.arm, seq.wrapping_add(1), self.conn.rto_backoff));
             }
             bt::Action::Ack => {
-                send_seg(
-                    d, regs, mac, gw_mac, self.sport, self.dport, self.conn.snd_nxt,
-                    self.conn.rcv_nxt, np::TcpFlags { ack: true, ..Default::default() }, None, &[],
-                );
+                if self.hold_ack {
+                    self.ack_due = true; // 泵突发窗暂存——ack_flush 突发尾收口
+                } else {
+                    stage!(
+                        self.conn.snd_nxt, self.conn.rcv_nxt,
+                        np::TcpFlags { ack: true, ..Default::default() }, None, &[]
+                    );
+                }
             }
         }
+    }
+
+    /// 泵突发尾的暂存 ACK 一次收口（四刀 P9）：累计 rcv_nxt 一段覆盖突发
+    /// 内全部交付——对端 RTO（≥200ms）≫ 突发窗（ms 级），迟发不触发对端
+    /// 重传风暴；无暂存即无操作。
+    pub(crate) fn ack_flush(&mut self, d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) {
+        if !self.ack_due {
+            return;
+        }
+        self.ack_due = false;
+        let fl = stage_seg(
+            mac, gw_mac, self.sport, self.dport, self.conn.snd_nxt, self.conn.rcv_nxt,
+            np::TcpFlags { ack: true, ..Default::default() }, None, &[], 0,
+        );
+        let mut q = TxBatch::new();
+        q.lens[0] = fl;
+        q.n = 1;
+        crate::tx_flush_batch(d, regs, &mut q);
     }
 }
 
@@ -870,6 +988,340 @@ pub(crate) fn drive_until(
     true
 }
 
+// ==================== session-0 RT 流水线（四刀 P6/P8/P9）====================
+//
+// 「入环即注册挂起 op，应答延迟至完成」：libc Client 臂 K 窗（
+// netdproto RT_PIPE_K）发来的 ≤K 个在途 RT 各注册一条挂起记录，回显流
+// 按 op 序填充（echod/SLIRP 拼段准入几何 = RT_ECHO_MAX），完成判据 =
+// echo 收齐 + snd_una 覆盖本 op 末段尾——完成/超时/会话死进完成队列，
+// serve 每泵步后 drain 发应答（seq 戳配对）。超时记录保留至 echo 收齐
+// 才弃置（流位对齐——迟到 echo 字节不致错位下一 op，对抗面必测）。
+
+/// 挂起 op 记录（FIFO 环槽）。
+#[derive(Clone, Copy)]
+struct SessOp {
+    /// netdproto 请求尾随 seq（v1 形串行消费者 = None——应答同形零漂移）。
+    seq: Option<u8>,
+    /// 请求载荷长（回显期望长）。
+    len: usize,
+    /// 本 op 末段后的 snd_nxt（完成判据：snd_una wrapping 覆盖）。
+    end: u32,
+    echo_got: usize,
+    deadline: u64,
+    /// 已应答 TIMEOUT、记录保留至 echo 收齐（流位对齐）。
+    timed_out: bool,
+}
+
+/// 完成记录（serve 应答面——echo 数据内联，槽位复用不悬空）。
+#[derive(Clone, Copy)]
+pub(crate) struct RtDone {
+    pub(crate) seq: Option<u8>,
+    pub(crate) st: u8,
+    pub(crate) echo: [u8; ndp::TCP_DATA_MAX],
+    pub(crate) len: usize,
+}
+
+/// session-0 挂起 op 队列 + 完成队列（定槽环 ×2——零分配家法）。单例
+/// 静态（vnet 单线程：自验与 serve 串行；session-0 独占——表会话无此面）。
+pub(crate) struct RtPipe {
+    ops: [Option<SessOp>; ndp::RT_PIPE_K],
+    ops_head: usize,
+    ops_tail: usize,
+    /// 显式占用计数（head==tail 的满/空歧义不可用模算术消解——K=2 时
+    /// 双 op 在环被算成空 = 回显超收+完成丢失,四刀实测实抓;计数与
+    /// head/tail 同步维护）。
+    ops_len: usize,
+    echo: [[u8; ndp::TCP_DATA_MAX]; ndp::RT_PIPE_K],
+    done: [Option<RtDone>; ndp::RT_PIPE_K],
+    done_head: usize,
+    done_tail: usize,
+    done_len: usize,
+    /// 超收防御计数（无挂起 op 可承接的回显字节——诊断面）。
+    overflow: usize,
+}
+
+static mut RTPIPE: RtPipe = RtPipe {
+    ops: [None; ndp::RT_PIPE_K],
+    ops_head: 0,
+    ops_tail: 0,
+    ops_len: 0,
+    echo: [[0; ndp::TCP_DATA_MAX]; ndp::RT_PIPE_K],
+    done: [None; ndp::RT_PIPE_K],
+    done_head: 0,
+    done_tail: 0,
+    done_len: 0,
+    overflow: 0,
+};
+
+/// 全局 RtPipe 单例（SAFETY 同 [`mux`]：单线程无别名窗口）。
+pub(crate) fn rtpipe() -> &'static mut RtPipe {
+    unsafe { &mut *core::ptr::addr_of_mut!(RTPIPE) }
+}
+
+impl RtPipe {
+    pub(crate) fn reset(&mut self) {
+        self.ops = [None; ndp::RT_PIPE_K];
+        self.ops_head = 0;
+        self.ops_tail = 0;
+        self.ops_len = 0;
+        self.done = [None; ndp::RT_PIPE_K];
+        self.done_head = 0;
+        self.done_tail = 0;
+        self.done_len = 0;
+    }
+
+    /// 只清挂起 op 环（完成队列保留——CLOSE 收口期完成的 op 应答仍由
+    /// serve 循环头 drain 送出，seq 配对无次序约束）。
+    pub(crate) fn reset_ops(&mut self) {
+        self.ops = [None; ndp::RT_PIPE_K];
+        self.ops_head = 0;
+        self.ops_tail = 0;
+    }
+
+    fn olen(&self) -> usize {
+        self.ops_len
+    }
+
+    pub(crate) fn has_ops(&self) -> bool {
+        self.olen() != 0
+    }
+
+    /// 会话-0 是否有待驱动面（serve 等待窗节拍判据——P9 短 tick 面）：
+    /// 挂起 op 在途 **或完成队列未 drain**（完成即答的时延面——done 在队
+    /// 而 tick 取 SVC_IDLE = 应答白等 10s 心跳，四刀实测 10.2s/op 主因）。
+    pub(crate) fn busy(sess: &Option<Sess>) -> bool {
+        let rtp_has = rtpipe_olen_snapshot();
+        let done_has = rtpipe_done_snapshot();
+        let arm_alive = match sess {
+            Some(s) => s.arm.is_some() || s.tw.is_some(),
+            None => false,
+        };
+        rtp_has || done_has || arm_alive
+    }
+
+    fn push_done(&mut self, seq: Option<u8>, st: u8, echo: &[u8]) {
+        let t = self.done_tail;
+        if self.done_len == ndp::RT_PIPE_K {
+            // 完成队列满：serve 每循环头 drain 后才可能 enqueue——结构性
+            // 不可达，防御 loud。
+            println!("vnet: rt done 队列满（防御面不应到达）");
+            trap();
+        }
+        let mut e = [0u8; ndp::TCP_DATA_MAX];
+        let n = echo.len().min(e.len());
+        e[..n].copy_from_slice(&echo[..n]);
+        self.done[t] = Some(RtDone { seq, st, echo: e, len: n });
+        self.done_tail = (t + 1) % ndp::RT_PIPE_K;
+        self.done_len += 1;
+    }
+
+    /// 完成队列 drain（FIFO）。
+    pub(crate) fn pop_done(&mut self) -> Option<RtDone> {
+        if self.done_len == 0 {
+            return None;
+        }
+        let r = self.done[self.done_head].take();
+        self.done_head = (self.done_head + 1) % ndp::RT_PIPE_K;
+        self.done_len -= 1;
+        r
+    }
+
+    /// 入环即注册（四刀 P8 session-0 RT 臂）：环容量准入（空槽 ≥
+    /// ceil(len/MSS) + op 槽空——`Err(ST_BUSY)` 背压，客户端同 seq 重发）
+    /// → 分批入环（批量 tx）→ 注册挂起 op。`Err(ST_BAD)` = 会话态不可用。
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn enqueue(
+        &mut self,
+        sess: &mut Sess,
+        d: &mut Dma,
+        regs: *mut u32,
+        mac: &[u8; 6],
+        gw_mac: &[u8; 6],
+        data: &[u8],
+        seq: Option<u8>,
+        deadline: u64,
+    ) -> Result<(), u8> {
+        if sess.conn.state != bt::State::Established {
+            return Err(ndp::ST_BAD);
+        }
+        let need = data.len().div_ceil(bt::MSS as usize);
+        let free = bt::TX_SLOTS - sess.conn.tx_inflight();
+        if self.olen() == ndp::RT_PIPE_K || free < need {
+            println!(
+                "vnet: rt busy seq={:?} len={} need={} free={} ops={}",
+                seq, data.len(), need, free, self.olen()
+            );
+            return Err(ndp::ST_BUSY);
+        }
+        let mut q = TxBatch::new();
+        let mut off = 0usize;
+        while off < data.len() {
+            let end = (off + bt::MSS as usize).min(data.len());
+            let ev = sess.conn.send((end - off) as u32);
+            match ev.action {
+                bt::Action::Data { .. } => {
+                    sess.act_q(d, regs, mac, gw_mac, ev.action, &data[off..end], &mut q);
+                    off = end;
+                }
+                _ => {
+                    // 准入已过检仍拒 = 窗门（SLIRP 65535 域不可达）/态变——
+                    // 防御面：已入环段留在环内靠 ACK/关闭收口，本 op 不注册
+                    // 背压重发。
+                    crate::tx_flush_batch(d, regs, &mut q);
+                    return Err(ndp::ST_BUSY);
+                }
+            }
+        }
+        crate::tx_flush_batch(d, regs, &mut q);
+        self.ops[self.ops_tail] = Some(SessOp {
+            seq,
+            len: data.len(),
+            end: sess.conn.snd_nxt,
+            echo_got: 0,
+            deadline,
+            timed_out: false,
+        });
+        self.ops_tail = (self.ops_tail + 1) % ndp::RT_PIPE_K;
+        self.ops_len += 1;
+        Ok(())
+    }
+
+    /// 回显流按 op 序切分填充（FIFO 头起逐 op 灌满；无承接者的字节计
+    /// 超收防御——op 靠相位帽收口，宁超时不腐化）。
+    pub(crate) fn feed(&mut self, bytes: &[u8]) {
+        let mut b = bytes;
+        let mut idx = self.ops_head;
+        let mut n = self.olen();
+        while n > 0 && !b.is_empty() {
+            let Some(op) = self.ops[idx].as_mut() else { break };
+            let want = op.len - op.echo_got;
+            let c = want.min(b.len());
+            self.echo[idx][op.echo_got..op.echo_got + c].copy_from_slice(&b[..c]);
+            op.echo_got += c;
+            b = &b[c..];
+            idx = (idx + 1) % ndp::RT_PIPE_K;
+            n -= 1;
+        }
+        if !b.is_empty() {
+            self.overflow += b.len();
+            println!(
+                "vnet: rt 回显超收 {}B（无挂起 op 承接，累计 {}）",
+                b.len(), self.overflow
+            );
+        }
+    }
+
+    /// 完成收割（回显流严格有序 ⇒ 只有队头 op 可完成）：echo 齐 + snd_una
+    /// 覆盖末段 → OK；帽到 → TIMEOUT 应答但记录保留（流位对齐）；已超时
+    /// op 的迟到 echo 收齐 → 静默弃置；会话死（RST/重传到帽）→ 全挂起 op
+    /// 即刻 BAD 收口。
+    pub(crate) fn poll(&mut self, sess: &Sess) {
+        if sess.conn.state == bt::State::Closed {
+            while self.ops_len > 0 {
+                let op = self.ops[self.ops_head].unwrap();
+                self.push_done(op.seq, ndp::ST_BAD, &[]);
+                self.ops[self.ops_head] = None;
+                self.ops_head = (self.ops_head + 1) % ndp::RT_PIPE_K;
+                self.ops_len -= 1;
+            }
+            return;
+        }
+        let t = now();
+        loop {
+            if self.olen() == 0 {
+                return;
+            }
+            let mut op = self.ops[self.ops_head].unwrap();
+            if op.timed_out {
+                if op.echo_got >= op.len {
+                    // 迟到 echo 收齐——流位对齐后弃置，下一 op 干净。
+                    self.ops[self.ops_head] = None;
+                    self.ops_head = (self.ops_head + 1) % ndp::RT_PIPE_K;
+                    self.ops_len -= 1;
+                    continue;
+                }
+                return; // 等迟到回显（帽内）
+            }
+            let covered = sess.conn.snd_una.wrapping_sub(op.end) < 0x8000_0000;
+            if op.echo_got >= op.len && covered {
+                let hi = self.ops_head;
+                let mut ebuf = [0u8; ndp::TCP_DATA_MAX];
+                ebuf[..op.len].copy_from_slice(&self.echo[hi][..op.len]);
+                self.push_done(op.seq, ndp::ST_OK, &ebuf[..op.len]);
+                self.ops[self.ops_head] = None;
+                self.ops_head = (self.ops_head + 1) % ndp::RT_PIPE_K;
+                self.ops_len -= 1;
+                continue;
+            }
+            if t >= op.deadline {
+                op.timed_out = true;
+                self.ops[self.ops_head] = Some(op);
+                self.push_done(op.seq, ndp::ST_TIMEOUT, &[]);
+                continue;
+            }
+            return; // 队头未完成——后面必然也未完成（流序不变式）
+        }
+    }
+}
+
+/// [`RtPipe::busy`] 的只读快照（单线程下立取；隔一层避免双 &mut）。
+fn rtpipe_olen_snapshot() -> bool {
+    // SAFETY: 只读；唯一写点与本调用方同线程串行。
+    unsafe { (*core::ptr::addr_of!(RTPIPE)).olen() != 0 }
+}
+
+/// 完成队列非空快照（busy 判据的 drain 面）。
+fn rtpipe_done_snapshot() -> bool {
+    // SAFETY: 只读；同上。
+    unsafe { (*core::ptr::addr_of!(RTPIPE)).done_len != 0 }
+}
+
+/// serve 泵步（四刀 P8/P9）：session-0 挂起 op 在席时的驱动面——突发
+/// 收帧（帧已在环即连步不睡）、纯 ACK 暂存突发尾一次 flush（每突发一
+/// 发送量子）、RtPipe 完成收割。sess None 时退化为表泵（hostfwd 面，
+/// 零漂移）。
+pub(crate) fn pump_serve(
+    d: &mut Dma,
+    regs: *mut u32,
+    mac: &[u8; 6],
+    gw_mac: &[u8; 6],
+    table: &mut TcpMux,
+    sess: &mut Option<Sess>,
+    scratch: &mut [u8],
+) {
+    let Some(s) = sess else {
+        pump_once(d, regs, mac, gw_mac, table, 0);
+        return;
+    };
+    let rtp = rtpipe();
+    s.hold_ack = true;
+    let mut burst = 0usize;
+    loop {
+        let mut q = TxBatch::new();
+        // cap=now() → recv 非阻塞单 poll 不睡（帧已在环即 Ok，定时到点
+        // 亦 Ok(0) 续驱动；无事件 Err 收突发）。
+        match s.step_q(d, regs, mac, gw_mac, table, now(), scratch, &mut q) {
+            Ok(n) => {
+                if n > 0 {
+                    rtp.feed(&scratch[..n]);
+                }
+                crate::tx_flush_batch(d, regs, &mut q);
+                burst += 1;
+                if burst >= 16 {
+                    break; // 防御帽（持续流帧下次泵续收）
+                }
+            }
+            Err(()) => {
+                crate::tx_flush_batch(d, regs, &mut q);
+                break;
+            }
+        }
+    }
+    s.ack_flush(d, regs, mac, gw_mac);
+    rtp.poll(s);
+    s.hold_ack = false;
+}
+
 impl TcpMux {
     /// sid → 槽索引（sid = 槽号+1，域 1..=SLOTS；0/越界 None）。
     fn idx_of(sid: u32) -> Option<usize> {
@@ -1027,13 +1479,14 @@ impl TcpMux {
         }
     }
 
-    /// 表会话上发数据（二刀多段化）：data 按 MSS 分批入环（环/窗阻塞时
-    /// pump_once 泵等位，帽 = SEND_CAP_NS 内）。仅 Ready/Data 槽（Pending
-    /// 握手中 / Closed 不可发）→ false；上一 op 未收口（在途环占用）→ false
-    ///（老 in-flight 占位契约保持，serve 翻 ST_BAD）。拷出改写两段式同
-    /// route_seg——阻塞泵后表内状态已变，逐分片重取副本。A2-3 起 serve
-    /// 命名 RT 臂直用（echo 回发面，返回后由 serve RT 臂 drive_until
-    /// arm_idle 收全 ACK）。
+    /// 表会话上发数据（二刀多段化 + 四刀 P7 容量化）：data 按 MSS 分批
+    /// 入环（环满/越窗时 pump_once 泵等位，帽 = SEND_CAP_NS 内——「去
+    /// up-front 独占拒,保逐段泵等位」：连续命名 RT 的环占用由泵收口，非
+    /// BUSY 拒面）。仅 Ready/Data 槽（Pending 握手中 / Closed 不可发）→
+    /// false；拷出改写两段式同 route_seg——阻塞泵后表内状态已变，逐分片
+    /// 重取副本。四刀 P8 起命名 RT 臂不再 drive_until arm_idle（入环即
+    /// ST_OK「入环受纳，ACK 归泵收口」——应答字节形状零漂移，时序提前；
+    /// 重传臂由 serve 空闲泵收口）。
     pub(crate) fn send_data(
         &mut self,
         d: &mut Dma,
@@ -1052,26 +1505,6 @@ impl TcpMux {
             Slot::Data(_) => 2,
             _ => return false,
         };
-        let s = match self.slots[i] {
-            Slot::Ready(s) | Slot::Data(s) => s,
-            _ => return false,
-        };
-        if s.conn.tx_inflight() != 0 {
-            // 上一 op 在途未收口（TIMEOUT 残留）——拒面 loud 诊断（排障期；
-            // 绿路零输出）。
-            println!(
-                "vnet: rt bad sid={} len={} state={:?} infl={} rx={} una=0x{:x} nxt=0x{:x}",
-                sid,
-                data.len(),
-                s.conn.state,
-                s.conn.inflight_kind(),
-                s.rx_len,
-                s.conn.snd_una,
-                s.conn.snd_nxt
-            );
-            self.slots[i] = if ready_kind == 1 { Slot::Ready(s) } else { Slot::Data(s) };
-            return false;
-        }
         let mut off = 0usize;
         let send_cap = now() + SEND_CAP_NS;
         while off < data.len() {
@@ -1081,9 +1514,38 @@ impl TcpMux {
                 _ => return false, // 防御面（泵不换槽种类）
             };
             let end = (off + bt::MSS as usize).min(data.len());
+            // 暂存容量闸（verify 波实抓）：入环即答后命名 RT 连发可在 ACK
+            // 归泵前把 snd_nxt−tx_seq0 推过 TX_CAP——act_q Data 臂的暂存
+            // 越界 trap 即崩（echo 相 16KB 连发 3 op 必中）。环有空槽 ≠
+            // 暂存有余位：暂存容不下下一片时泵等环空（post_account 环空
+            // 即失效暂存、下次入环基点重立），帽内；ACK 跟得上时零等待
+            // ——入环即答时序不受扰。
+            // 暂存余位：暂存容不下下一片时泵等环空（post_account 环空
+            // 即失效暂存、下次入环基点重立——tx_len==0 时暂存空、tx_seq0
+            // 陈值不算在途）,帽内;ACK 跟得上时零等待——入环即答时序不受扰。
+            let staged = if s.tx_len == 0 {
+                0
+            } else {
+                s.conn.snd_nxt.wrapping_sub(s.tx_seq0) as usize
+            };
+            if staged + (end - off) > s.tx.len() {
+                if s.conn.state != bt::State::Established {
+                    self.slots[i] = if ready_kind == 1 { Slot::Ready(s) } else { Slot::Data(s) };
+                    return false;
+                }
+                if now() >= send_cap {
+                    println!("vnet: rt send 暂存等位帽到 sid={} off={}", sid, off);
+                    return false;
+                }
+                self.slots[i] = if ready_kind == 1 { Slot::Ready(s) } else { Slot::Data(s) };
+                pump_once(d, regs, mac, gw_mac, self, POLL_STEP_NS);
+                continue;
+            }
             let ev = s.conn.send((end - off) as u32);
             if let bt::Action::Data { .. } = ev.action {
-                s.act(d, regs, mac, gw_mac, ev.action, &data[off..end]);
+                let mut q = TxBatch::new();
+                s.act_q(d, regs, mac, gw_mac, ev.action, &data[off..end], &mut q);
+                crate::tx_flush_batch(d, regs, &mut q);
                 s.post_account();
                 self.slots[i] = if ready_kind == 1 { Slot::Ready(s) } else { Slot::Data(s) };
                 off = end;
