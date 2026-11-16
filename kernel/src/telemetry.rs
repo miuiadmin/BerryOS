@@ -968,13 +968,15 @@ static DPG_WIN_CYC: AtomicU64 = AtomicU64::new(0);
 static mut PRESSURE_OUTLET: Option<fn()> = None;
 
 /// θ_p 初值 = 10%（裁决②【推，实测定标】；判据式 Σcyc×100 ≥ W×θ_p——
-/// 乘法实现免除法，翻卷点才付）。
-const DPG_WIN_THETA_P_PERCENT: u64 = 10;
+/// 乘法实现免除法，翻卷点才付）。值单源 `berry_billface::THETA_P_PERCENT`
+///（W3-Q76——本常量保留为历史注记位，判式已单源外迁）。
+const DPG_WIN_THETA_P_PERCENT: u64 = berry_billface::THETA_P_PERCENT;
 
 /// AM-2b：boot 接线——窗口长按 CNTFRQ 换算 + 起点钉当前 + 出口注册
-///（main 单线程调，先于 ktest::run 与一切 dpg 计值点）。
+///（main 单线程调，先于 ktest::run 与一切 dpg 计值点）。窗长换算单源
+/// `berry_billface::win_len_of`（W3-Q76——`freq×ms/1000` 饱和防溢出）。
 pub(crate) fn dpg_win_init(win_ms: u64, freq: u64, now: u64, outlet: fn()) {
-    DPG_WIN_LEN.store(freq.saturating_mul(win_ms) / 1000, Ordering::Relaxed);
+    DPG_WIN_LEN.store(berry_billface::win_len_of(freq, win_ms), Ordering::Relaxed);
     DPG_WIN_START.store(now, Ordering::Relaxed);
     // SAFETY: boot 单线程写、先于一切读者（RX_EV_H 口径）。
     unsafe { *core::ptr::addr_of_mut!(PRESSURE_OUTLET) = Some(outlet); }
@@ -1009,8 +1011,13 @@ pub(crate) fn dpg_stall_fold(now: u64) {
     }
     let sum = DPG_WIN_CYC.swap(0, Ordering::Relaxed);
     // θ_p 占比判据（×100 免除法；saturating_mul 防多 waiter Σ>W 病态面
-    //——提案 §二「全局 Σ 分不清并发 waiter 数」同源）。
-    if sum.saturating_mul(100) >= len.saturating_mul(DPG_WIN_THETA_P_PERCENT) {
+    //——提案 §二「全局 Σ 分不清并发 waiter 数」同源）。折卷判定单源
+    // `berry_billface::fold_step`（W3-Q76 外迁——快退/跨窗/θ_p 纯投影，
+    // host 钉板）；CAS 胜者独占判阈执行。
+    let w = berry_billface::WinState { len, start, sum };
+    if let berry_billface::FoldStep::Roll { fire: true, .. } =
+        berry_billface::fold_step(now, w)
+    {
         // SAFETY: boot 注册后不变（只读）；未注册 = 未接线（不可达——
         // ktest 与 dpg 计值点均在 boot 接线后，防御跳过）。
         if let Some(f) = unsafe { *core::ptr::addr_of!(PRESSURE_OUTLET) } {
@@ -1059,8 +1066,9 @@ pub fn billing_slot() -> usize {
     berry_hal_aarch64::smp::cpu_id() as usize & 1 // 2 核帽
 }
 
-/// 账户表容量（v1 目标 ≤4 deadline 进程 + fair 域——8 槽余量）。
-pub const BILLING_SLOTS: usize = 8;
+/// 账户表容量（v1 目标 ≤4 deadline 进程 + fair 域——8 槽余量）。值单源
+/// `berry_billface::BILLING_SLOTS`（W3-Q76；ktest BL-OVF 仍钉 8 值执法）。
+pub const BILLING_SLOTS: usize = berry_billface::BILLING_SLOTS;
 
 /// 账户槽：`(domain_id, cpu_ns)` 对——domain_id=0 = 空槽。
 static BILLING_DOMAINS: [core::sync::atomic::AtomicU64; BILLING_SLOTS] = [
@@ -1069,53 +1077,60 @@ static BILLING_CPU_NS: [core::sync::atomic::AtomicU64; BILLING_SLOTS] = [
     const { core::sync::atomic::AtomicU64::new(0) }; BILLING_SLOTS];
 
 /// S4-b：向域账户充 CPU 时长（ns）。域不存在 → 新槽；表满 → 最小槽覆写
-///（v1 诚实取舍：满表时牺牲最冷域，不静默丢账）。
+///（v1 诚实取舍：满表时牺牲最冷域，不静默丢账）。分派判序单源
+/// `berry_billface::charge_step`（W3-Q76 外迁——槽查找/抢占/覆写三态纯
+/// 投影，host 钉板）；本面只留原子执行臂。
 pub fn billing_charge(domain_id: u64, ns: u64) {
-    if domain_id == 0 || ns == 0 {
-        return;
-    }
     use core::sync::atomic::Ordering;
-    // 槽查找/新建。
-    for i in 0..BILLING_SLOTS {
-        let d = BILLING_DOMAINS[i].load(Ordering::Relaxed);
-        if d == domain_id {
-            BILLING_CPU_NS[i].fetch_add(ns, Ordering::Relaxed);
-            return;
+    use berry_billface::{charge_step, ChargeStep};
+    // CAS 竞态收敛循环：Claim 败者（他人先占）以新快照重走分派——收敛
+    // 三态（Accrue/新 Claim/Overwrite），界 = 表容量（快照有限域）。
+    loop {
+        // 原子表快照（分派纯函数入参——W3-Q24 纯结构投影同款）。
+        let mut ds = [0u64; BILLING_SLOTS];
+        let mut cs = [0u64; BILLING_SLOTS];
+        for i in 0..BILLING_SLOTS {
+            ds[i] = BILLING_DOMAINS[i].load(Ordering::Relaxed);
+            cs[i] = BILLING_CPU_NS[i].load(Ordering::Relaxed);
         }
-        if d == 0 {
-            // 空槽 → 抢占（CAS 防双占）。
-            if BILLING_DOMAINS[i]
-                .compare_exchange(0, domain_id, Ordering::Relaxed, Ordering::Relaxed)
-                .is_ok()
-            {
-                BILLING_CPU_NS[i].fetch_add(ns, Ordering::Relaxed);
+        match charge_step(domain_id, ns, &ds, &cs) {
+            ChargeStep::SkipZero => return,
+            ChargeStep::Accrue { slot } => {
+                BILLING_CPU_NS[slot].fetch_add(ns, Ordering::Relaxed);
+                return;
+            }
+            ChargeStep::Claim { slot } => {
+                // 空槽 → 抢占（CAS 防双占；败者重走分派）。
+                if BILLING_DOMAINS[slot]
+                    .compare_exchange(0, domain_id, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    BILLING_CPU_NS[slot].fetch_add(ns, Ordering::Relaxed);
+                    return;
+                }
+                // 败者：快照已变，重走。
+            }
+            ChargeStep::Overwrite { slot } => {
+                // 表满 → 覆写最小账户（诚实取舍，防静默丢账）。
+                BILLING_DOMAINS[slot].store(domain_id, Ordering::Relaxed);
+                BILLING_CPU_NS[slot].store(ns, Ordering::Relaxed);
                 return;
             }
         }
     }
-    // 表满 → 覆写最小账户（诚实取舍，防静默丢账）。
-    let mut min_i = 0;
-    let mut min_v = u64::MAX;
-    for i in 0..BILLING_SLOTS {
-        let v = BILLING_CPU_NS[i].load(Ordering::Relaxed);
-        if v < min_v {
-            min_v = v;
-            min_i = i;
-        }
-    }
-    BILLING_DOMAINS[min_i].store(domain_id, Ordering::Relaxed);
-    BILLING_CPU_NS[min_i].store(ns, Ordering::Relaxed);
 }
 
-/// S4-b：查询域账户（`Some(ns)` / None = 无账户）。
+/// S4-b：查询域账户（`Some(ns)` / None = 无账户）。查表律单源
+/// `berry_billface::domain_total`（W3-Q76——首命中槽投影）。
 pub fn billing_domain_total(domain_id: u64) -> Option<u64> {
     use core::sync::atomic::Ordering;
+    let mut ds = [0u64; BILLING_SLOTS];
+    let mut cs = [0u64; BILLING_SLOTS];
     for i in 0..BILLING_SLOTS {
-        if BILLING_DOMAINS[i].load(Ordering::Relaxed) == domain_id {
-            return Some(BILLING_CPU_NS[i].load(Ordering::Relaxed));
-        }
+        ds[i] = BILLING_DOMAINS[i].load(Ordering::Relaxed);
+        cs[i] = BILLING_CPU_NS[i].load(Ordering::Relaxed);
     }
-    None
+    berry_billface::domain_total(domain_id, &ds, &cs)
 }
 
 /// S4-b：按槽索引查询（telemetry 打印面——非零槽遍历）。

@@ -703,6 +703,12 @@ test-host:
     # 非零档省略、u64 极值界）钉板，host 11 测；tally_key/inflate/tally_line
     # 单源，kernel telemetry.rs 计数面 + main.rs tele_dump 行装配消费）。
     cargo test -p berry-itally --target {{host}}
+    # W3-Q76：berry-billface（billing 域账户槽分派 + dpg 压力窗折卷纯函数
+    # 面——槽查找/空槽抢占/表满覆写最小账户三态判序/CAS 竞态收敛/θ_p 恰界/
+    # 回绕窗/饱和病态/ktest test_billing·overflow 全周期模型对拍钉板，
+    # host 16 测；charge_step/domain_total/fold_step/win_len_of 单源，
+    # kernel telemetry.rs 原子表物理臂留壳消费）。
+    cargo test -p berry-billface --target {{host}}
     cargo test -p berry-sliceface --target {{host}}
     # W3-Q31（重放）：berry-tickface（timer 滴答账纯函数面——tick→ns
     # 倒数乘-移对预计算 const fn（QEMU (2048,7) 二进精准/24MHz (2667,6)

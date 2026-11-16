@@ -113,6 +113,7 @@ smoke-wt-*/
 
 # W3 lane 本地独立构建缓存（干净复现纪律——不与共享 ~/.cargo-target 互染）
 /.cargo-w3/
+/.target-*/
 
 # W3 lane 独立 no_std target 目录（CARGO_TARGET_DIR 隔离构建——#216 判例
 # 「构建产物不入库」防再犯；base 剥落后随刀补回）

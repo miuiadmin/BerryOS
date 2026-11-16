@@ -15,6 +15,10 @@ name = "berry-bandface"
 version = "0.2.0"
 
 [[package]]
+name = "berry-billface"
+version = "0.2.0"
+
+[[package]]
 name = "berry-chanface"
 version = "0.2.0"
 
@@ -107,6 +111,7 @@ name = "berry-kernel"
 version = "0.2.0"
 dependencies = [
  "berry-aokface",
+ "berry-billface",
  "berry-chanface",
  "berry-dpgface",
  "berry-dtbface",
