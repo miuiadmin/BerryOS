@@ -109,6 +109,9 @@ smoke-wt-*/
 # W3 lane 隔离验证 target（#208/#216 判例——/.target-*/ 构建产物防误入 git）
 /.target-*/
 
+# W3 lane 隔离构建 target（unsafe 台账重产/QA 独立复现——防误入库，#208/#216 判例）
+/.target-*/
+
 # W3 lane 本地独立构建缓存（干净复现纪律——不与共享 ~/.cargo-target 互染）
 /.cargo-w3/
 
