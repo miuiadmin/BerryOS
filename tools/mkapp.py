@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-r"""mkapp——.bap 应用包打包器（app-0，`docs/app-0实施设计草案.md` §4；
-SDK-1a 增量 `docs/SDK-1a实施设计草案.md` §4；GUI-7 增量见本头注
+r"""mkapp——.bap 应用包打包器（app-0，`docs/app-0实施设计草案-v1.0.md` §4；
+SDK-1a 增量 `docs/SDK-1a实施设计草案-v1.0.md` §4；GUI-7 增量见本头注
 「GUI-7」段与「门禁」第 1 道；ADR #43/#44：应用 = 纯用户态协议约定，
 包 = cpio(newc) 容器，内核零概念）。
 

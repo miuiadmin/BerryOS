@@ -1,4 +1,4 @@
-//! berry-ui 双轨打点遥测（GUI-3——`docs/GUI-3实施设计草案.md` §3.11；
+//! berry-ui 双轨打点遥测（GUI-3——`docs/GUI-3实施设计草案-v1.0.md` §3.11；
 //! P8 一份数据喂三消费者：host 断言（本刀 tests）/ 性能工具 / AI 遥测
 //! （guest 侧收口归 GUI-9）；expected/actual 双轨 = ADR #53）。
 //!

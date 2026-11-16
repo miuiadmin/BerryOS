@@ -1,4 +1,4 @@
-//! berry-ui 度量供给面（GUI-6——`docs/GUI-6实施设计草案.md` §6 D7/D8）。
+//! berry-ui 度量供给面（GUI-6——`docs/GUI-6实施设计草案-v1.0.md` §6 D7/D8）。
 //!
 //! - [`TextMetrics`]：文本内在测量缝（`scale` = 档位 id u8，**不焊**
 //!   FontSize——GUI-2 增件⑧ 真字体面的迁移缝）；[`MonospaceTextMetrics`]

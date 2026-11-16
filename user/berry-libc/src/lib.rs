@@ -18,7 +18,7 @@
 //! Status: experimental (0.1.0) — the surface moves with the BerryOS v1
 //! userland. Repo docs are mostly zh-CN.
 //!
-//! 合约源 = `docs/G-eco编译侧设计草案.md` 附录 A（d-0 审计）：musl target 下
+//! 合约源 = `docs/G-eco编译侧设计草案-v1.0.md` 附录 A（d-0 审计）：musl target 下
 //! Rust std 的 unix 后端引用 189 个强未定义 libc 符号（hello 探针真实面 41）
 //! ——本 crate **全定义**：shim 全定义 ⇒ 链接器永不从 musl libc.a 拉成员
 //! （依赖 rlib 在 `-lc` 之前，归档按需拉入），产物零 musl 字节。

@@ -1,8 +1,9 @@
 //! GICv2 中断控制器驱动（QEMU `virt` 默认 GICv2）。
 //!
 //! 内存图（QEMU `hw/arm/virt.c`）：GICD（distributor）@`0x0800_0000`、
-//! GICC（CPU interface）@`0x0801_0000`。Phase 1 单核：仅配 **IRQ27 = CNTV 虚拟
-//! 定时器**（PPI；SGI=0..15、PPI=16..31、SPI=32+）。
+//! GICC（CPU interface）@`0x0801_0000`。SMP 双核在役（CPU0/CPU1 双 GICC 初始化）：配 **IRQ27 = CNTV 虚拟
+//! 定时器** + IRQ33 = PL011_RX、IRQ39 = PL061、IRQ40 = PL1_RX 与 SGI 双号
+//!（PPI=16..31、SPI=32+；Phase 1 单核旧注 2026-11-17 系统审计翻正）。
 //!
 //! **GICD 序**（plan Step 7）：`CTLR=0` → 禁/清 pending/去活 ID 0..31
 //! （`ICENABLER0`/`ICPENDR0`/`ICACTIVER0`）→ 设 IRQ27 优先级/target/触发 →
@@ -198,7 +199,7 @@ pub unsafe fn enable_cntv_this_core() {
     mmio::write(GICD + GICD_ISENABLER0, 1 << IRQ_CNTV);
 }
 
-// ---- S-3a：SGI IPI 面（`docs/SMP-S3实施设计草案.md` §2）----
+// ---- S-3a：SGI IPI 面（`docs/SMP-S3实施设计草案-v1.0.md` §2）----
 
 /// SGI 目标形态（GICD_SGIR TargetListFilter[25:24] 直映）。
 pub enum SgiTarget {

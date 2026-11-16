@@ -1,4 +1,4 @@
-//! berry-ui 布局引擎（GUI-3——`docs/GUI-3实施设计草案.md` §3.3）。
+//! berry-ui 布局引擎（GUI-3——`docs/GUI-3实施设计草案-v1.0.md` §3.3）。
 //!
 //! - **单遍自顶向下**：容器分配子界——Col/Row 累进游标 + gap；Pad 四
 //!   向内缩；Root = viewport 持有者。叶子尺寸 = 定值（`Option<u32>`，

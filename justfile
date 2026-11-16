@@ -125,7 +125,7 @@ build-user:
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/fail/Cargo.toml \
         --target aarch64-unknown-linux-musl
-    # B-1（docs/基准与压力测试设计.md §8）：bench1——EL0 用户态四项微基准
+    # B-1（docs/基准与压力测试设计-v1.0.md §8）：bench1——EL0 用户态四项微基准
     # （sys_null/sys_vmo_rw4k/ipc_enqueue8/evt_signal；stdhello 同链 std 面，
     # vmo/channel/event 全 syscall 自造 = 零新管道）；bsh bench1_selftest
     # spawn + 私有通道收齐格式断言后打 `B1 ok n=4`（rootfs 相第 28 标记）。
@@ -1367,14 +1367,14 @@ test-oneshot:
 size: build
     python3 tools/size.py {{KERNEL}}
 
-# B-0 性能基准单口（docs/基准与压力测试设计.md）：QEMU 裸跑收割 BENCH 行 +
+# B-0 性能基准单口（docs/基准与压力测试设计-v1.0.md）：QEMU 裸跑收割 BENCH 行 +
 # 基线对拍（tools/bench_baseline.txt，宽松因子 3x 拦数量级劣化）。改内核后
 # 刷新基线：python3 tools/bench.py --update（diff 随源入册）。严格确定性
 # 断言（churn 泄漏金丝雀/标记到齐）已挂 just smoke 永绿红线——本口只管数值。
 bench: build
     python3 tools/bench.py
 
-# R-1 实时基准单口（docs/基准与压力测试设计.md §10）：cyclictest 式 oversleep
+# R-1 实时基准单口（docs/基准与压力测试设计-v1.0.md §10）：cyclictest 式 oversleep
 # 三档（slice/4、slice、4·slice）× 32 样本。fw_cfg 具名项 opt/berry/rt 门控
 # （缺席 = run/smoke 零扰动——公约 7：~34s 采样循环不进常规 boot；EFI 路
 # 无 fw_cfg 具名文件 = smoke-image 亦天然缺席）；裸跑等 RT ok n=96，帽 120s；
@@ -1383,7 +1383,7 @@ bench: build
 bench-rt: build
     python3 tools/bench.py --rt
 
-# B-2 -icount 确定性通道单口（docs/基准与压力测试设计.md §13）：QEMU 追加
+# B-2 -icount 确定性通道单口（docs/基准与压力测试设计-v1.0.md §13）：QEMU 追加
 # 定值 `-icount shift=1,sleep=off`——周期数变指令数代理（shift=1 虚拟时钟
 # ≈0.125 cyc/instr），与 TCG 实时基线**不可比、分文件**
 # tools/bench_baseline_icount.txt（跨机/跨 QEMU 版本亦不可比，CI 首跑自立）。
@@ -1395,7 +1395,7 @@ bench-rt: build
 bench-icount: build
     python3 tools/bench.py --icount
 
-# S-1 soak 长跑单口（docs/基准与压力测试设计.md §11）：内核常驻任务 soakmon
+# S-1 soak 长跑单口（docs/基准与压力测试设计-v1.0.md §11）：内核常驻任务 soakmon
 # 每 60s vct（本机实测 ≈60s wall——CNTVCT ≈1.0x，历史半率机型 ≈120s，规划
 # 按半率保守）打心跳 v2.1 行 `SOAK t= sw= sw0= sw1= park0= park1= pages=
 # lost= churn=`（单核面 sw1/park1 恒零自证 + churn 无载荷恒 0 不入断言），
@@ -1420,7 +1420,7 @@ bench-icount: build
 soak minutes="60": build
     {{BASH}} tools/soak.sh {{quote(minutes)}}
 
-# S-5d 双核满载 soak 单口（docs/SMP-S5实施设计草案.md §2 D1/D2/D4）：soak.sh
+# S-5d 双核满载 soak 单口（docs/SMP-S5实施设计草案-v1.0.md §2 D1/D2/D4）：soak.sh
 # 全量形态 + `-smp 2` + 双 fw_cfg 门控（opt/berry/soak 心跳 v2.1 九字段 +
 # opt/berry/soakload = 内核门控 EL0 churn 舰队 root 家核 + 2 写者 spread→
 # CPU1——sw1 双臂断言物理源（严格递增 ∧ Δsw1 ≥320/拍载荷活性主判〔口径 =
@@ -1517,7 +1517,7 @@ run-x86: build-x86
 smoke-x86: build-x86
     {{BASH}} tools/smoke-x86.sh "{{X86_KERNEL}}"
 
-# S-2b 副核参与冒烟——八相（`SMP-S2实施设计草案.md` §5.1 起源双相，现
+# S-2b 副核参与冒烟——八相（`docs/SMP-S2实施设计草案-v1.0.md` §5.1 起源双相，现
 # 八相——计数陈账 sim-S3 顺手矫正）：相 1 裸相（32 标记 + SMP 握手）+
 # 相 2 rootfs 生态相（51 标记 + EVS/SKT 对拍
 # client + PAR absent d1 副核参与活证——真并行 witness 归 S-3）。
@@ -1545,7 +1545,7 @@ smoke-image: image
 # 逐字节 = `BERRYOS-GUI8-SMOKE-V1\n`；错/缺 payload 一律 fail closed）+
 # 256M + ramfb + display fw_cfg 800x600@60 + virtio-blk + virtio-tablet +
 # QMP unix sock：
-#   Boot A：等基础 5 + boot 批 `app APPDEMO up` → `launcher: click ready`
+#   Boot A：等基础 5 + boot 批 `app APPDEMO gui deferred`（裁决 B 入册不拉起）→ 点击后 `app APPDEMO up` 恰 1 + `launcher: click ready`
 #           强制在席（缺席 FAIL，不 sleep 回退）→ QMP 单击 APPDEMO 格 →
 #           精确 CLICK ok n=1×1 / LAYOUTW ok×1 / LAYOUT ok×0；新增
 #           `app APPDEMO up`×1、APPQUIET×0；宿主 LAYOUT.JSN 恰 109 canonical

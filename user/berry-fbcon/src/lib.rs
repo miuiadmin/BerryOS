@@ -1,4 +1,4 @@
-//! fbcon 纯函数 crate（V-6 刀 2 前置段——`docs/VM里程碑设计草案.md` §4 V-6：
+//! fbcon 纯函数 crate（V-6 刀 2 前置段——`docs/VM里程碑设计草案-v1.0.md` §4 V-6：
 //! 帧缓冲 console 的字体与渲染核先纯函数化 host 测，服务接入/VMO 授能/
 //! smoke 标记留刀 2 后段）。两模块：
 //!

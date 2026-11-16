@@ -1,3 +1,4 @@
+# 注：本件为现役产线（build-boot 消费），但已进入 Rust 化换轨——孪生 = tools/elf2pe/（彻底 Rust 化计划 §2 #9，产链换轨挂二刀；对照 elf2flat 先例：换轨后本件将更名 _oracle.py 降格）。2026-11-17 系统审计 S5 补指针。
 #!/usr/bin/env python3
 """elf2pe——静态 ELF（AArch64）→ PE32+ EFI 应用转换器（V-0a 刀 1，配对
 消费端 = QEMU AAVMF 固件 DXE 加载器；elf2flat 同纪律：确定性、无时刻输入）。

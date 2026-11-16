@@ -1,6 +1,6 @@
 //! # signal.rs —— POSIX 信号面 libc 真身（A7-4：段③a 纯语义面 + 段③b 投递循环）
 //!
-//! `docs/事件循环A7-4信号面实施设计草案.md` §4 拆步表：**段③a** = 不依赖
+//! `docs/事件循环A7-4信号面实施设计草案-v1.0.md` §4 拆步表：**段③a** = 不依赖
 //! 内核两号的纯用户态语义面（sigset 五件 + sigprocmask 掩码状态机 +
 //! sigaction/signal 表面）；**段③b（内核 0x86/0x87 落地后）** = 投递循环
 //! （`take() | held_swap(0)` 归并分诊）+ kill/raise/pause 真身 + unblock

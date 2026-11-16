@@ -7,7 +7,7 @@
 //! 同权，错误由用户态自理。真语义 handler 在内核（`kernel/src/syscall.rs`）经
 //! [`install`] 注册（同 IRQ 槽反转：HAL 不依赖内核 crate）。
 //!
-//! 编号布局：ABI v1..v3 真号 ≤ `0x87`（`系统调用ABI设计.md` §4）。原调试槽
+//! 编号布局：ABI v1..v3 真号 ≤ `0x87`（`docs/系统调用ABI设计-v1.0.md` §4）。原调试槽
 //! `0xFE/0xFF`（echo/putchar，非 ABI）**4-5a 退役**——EL0 输出改走 console
 //! 服务通道（`channel_send` 真 IPC），两槽回落 [`sys_unimplemented`] 的
 //! -ENOTSUP（ktest 退役面断言在册）。

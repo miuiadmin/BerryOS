@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# BerryOS S-2b 副核参与冒烟——八相（`SMP-S2实施设计草案.md` §5.1 起，相
+# BerryOS S-2b 副核参与冒烟——八相（`docs/SMP-S2实施设计草案-v1.0.md` §5.1 起，相
 # 3-8 = S-3b/S-4/S-5b/S-5c 逐相增扩；smoke-x86 同款独立形态——不并入主 smoke、
 # 不进 CI：主 smoke 八跑是单核回归基线，零扰动）。相 1 = 裸相（32 标记 +
 # SMP 握手）；相 2 = rootfs 生态相（56 标记——markers.sh 单源动态计数，历史注释值曾 51/54 随刀漂移 + 对拍 client 对 + PAR 副核参

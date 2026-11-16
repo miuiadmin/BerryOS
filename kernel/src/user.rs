@@ -1910,7 +1910,7 @@ pub extern "C" fn watchdog(_arg: usize) -> ! {
                 berry_hal_aarch64::kern_lock::with_print_lock(|| {
                     berry_hal_aarch64::uart_puts(b"\nG1.5 ok (rogue dead, abuser alive, canaries alive)\n");
                 });
-                // R-0（基准与压力测试设计.md §9）：唤醒延迟直方图 boot 尾一行。
+                // R-0（docs/基准与压力测试设计-v1.0.md §9）：唤醒延迟直方图 boot 尾一行。
                 // 落点契约：watchdog 单次执行 + 下行 exit_current 切走不归 →
                 // **恰一次**；写在 exit 之后 = 死码（Plan B v0.5 gotcha 同族）。
                 // 形状严格断言（L0 执法）：n>0 且 min<=max（两条皆撕裂安全——

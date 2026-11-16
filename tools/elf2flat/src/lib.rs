@@ -1,5 +1,5 @@
 //! elf2flat 纯转换核——ELF64 AArch64 → flat binary（G-eco 编译侧，
-//! docs/G-eco编译侧设计草案.md D2）。
+//! docs/G-eco编译侧设计草案-v1.0.md D2）。
 //!
 //! 彻底 Rust 化轨道 b 层 #8（docs/彻底Rust化计划-v1.0.md §2）：Python 版
 //! （tools/elf2flat.py）降格为 oracle，本件按 §5 钉板五步落位——同输入

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""确定性 TCP 回显服务（`docs/TCP栈设计草案.md` §6 —— T-c 的 host 侧验收组件）。
+"""确定性 TCP 回显服务（`docs/TCP栈设计草案-v1.0.md` §6 —— T-c 的 host 侧验收组件）。
 
 - bind 127.0.0.1:18080（QEMU user 网：guest 主动 connect 10.0.2.2:18080
   由 SLIRP 转发到宿主本机同端口——vnet tcp.rs 自验的对端）。

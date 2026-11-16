@@ -1,5 +1,5 @@
 //! mmap 真身（A7-1 匿名档 / A7-3 文件档 staging + mprotect dormant
-//! —— docs/事件循环A7-3实施设计草案.md）
+//! —— docs/事件循环A7-3实施设计草案-v1.0.md）
 //!
 //! 匿名档形态：`mmap(NULL/ignored-hint, len, PROT_READ|PROT_WRITE[|PROT_EXEC],
 //! MAP_ANONYMOUS|MAP_PRIVATE, -1, 0)` → **参数分诊**（[`berry_mmap::classify`]

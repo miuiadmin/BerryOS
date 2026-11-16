@@ -1,5 +1,5 @@
 //! icons —— app 注册表 + 图标供给桥（GUI-8 段③ W2，docs/
-//! GUI-8实施设计草案.md §4 段③「IconSource 供件桥接」）。
+//! docs/GUI-8实施设计草案-v1.0.md §4 段③「IconSource 供件桥接」）。
 //!
 //! 责任：boot 期 APP_LIST 拉取（S3 蓝图：**一请求 → 分片流**——svcmgr
 //! `app_serve_list` 对单个 APP_LIST_REQ 发整条 ENTRY/CHUNK/END 流，应答

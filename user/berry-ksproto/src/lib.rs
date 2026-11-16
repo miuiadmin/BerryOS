@@ -10,7 +10,7 @@
 //! （keystore2 形态：出参一律加密不透明 blob，原始密钥只在后端/岛内）。
 //!
 //! 拓扑（v2 keystored 软桩落地时）：keystored（用户态密钥服务，
-//! `docs/安全与硬件隔离设计.md` §6 C1 拍板）持通道一端，client（app /
+//! `docs/安全与硬件隔离设计-v1.0.md` §6 C1 拍板）持通道一端，client（app /
 //! 引导链 rollback 面）持对端——**单对双向 + 严格串行 RPC**（一请求一
 //! 应答，队列深 1 用量；[`Session`] 把该纪律做成可执行状态机）。v1 软桩
 //! SecurityLevel=Software，真机岛到位后**同协议换 Enclave/StrongBox
