@@ -1,4 +1,4 @@
-//! 蜂格渲染核（V-6 刀 2 前置段——`docs/VM里程碑设计草案.md` §4 V-6）：
+//! 蜂格渲染核（V-6 刀 2 前置段——`docs/VM里程碑设计草案-v1.0.md` §4 V-6）：
 //! 帧缓冲 console 的几何/打包/滚动半边，与 [`crate::font`]（字形半边）
 //! 只经 `font::glyph` 一个接缝对偶。谁消费：刀 2 后段的 fbcon 服务
 //! （BerryHandoff `gop_info` 的 w/h/stride/fmt 四事实 → [`Fbcon::new`]

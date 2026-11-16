@@ -36,6 +36,7 @@ Status: implemented
 - a11y 32/32 帽保持（角标不占槽）；桌面树 354→357 节点（<512；刀 D 并行再 +4 = 361）。
 - **boot 实证踩坑（z 序）**：scrim 初版插在 content 之后（Root 第 3 子）——「先插者在底」使其成为最顶层，把状态栏内容整条盖住（截图实证：顶带纯 scrim 零白件）。修正 = scrim 必须在 content 插入之前（壁纸 → scrim → 内容列）。教训：Root 直接子的 z 序 = 插入序，尾插不是「垫底」而是「压顶」。
 - **顺带发现的存量缺口（非本刀产物，挂账）**：冻结相（无数据盘，`app_h==0`）`icons::init` 早退不设 `FACES`，`IconSource::dims/pixels` 对非壁纸 id 一律空服务——状态/dock/导航图标在冻结相桌面全部不渲染（壁纸走特判通道故在）。全相（APP_LIST 跑通）不受影响。修法 = init(0) 分支补 `FACES.set(status_faces())`（一行），归图标服务面随刀补。
+- **兑现注记（2026-11-17）**：上段冻结相 FACES 缺口已修——6e1697170 首修（2026-11-15 23:52，P1+P2 批量清偿笔）+ b9e7d4b64 波 3 迁移携行；现行位 user/berry-appshell/src/icons.rs:273/:281（init 各相 set_faces(status_faces()) 双路在），launcher 经 `pub use appshell::icons`（main.rs:65）消费；launcher/src/icons.rs 旧原件仍在树但不再是活路径（迁移残留，随波 3 后续清偿处置）。审计对拍在册：[M-最终判定](../../../research/全面遗漏审计/M-最终判定.md) §2.1 #17。下段波二挂账清单中的「冻结相 FACES 空服务缺口」同此收口。
 - 波二挂账：本地时区（宿主注入偏移或 guest TZ 换算）；simbattery 通道接真值（图标随注入变）；CLOCK_REALTIME 的 ktest 正例（随注入态门控，暂以串口证据行代）；冻结相 FACES 空服务缺口。
 
 ## Related

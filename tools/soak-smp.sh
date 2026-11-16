@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# BerryOS S-5d soak-smp 双核满载长跑通道（docs/SMP-S5实施设计草案.md §2 D1/D2/D4
+# BerryOS S-5d soak-smp 双核满载长跑通道（docs/SMP-S5实施设计草案-v1.0.md §2 D1/D2/D4
 # + §4「soak-smp ≥30min」）——`just soak-smp <分钟数>` 的实现（30 默认）。
 #
 # 与单核 tools/soak.sh 的差异面（其余全复刻）：

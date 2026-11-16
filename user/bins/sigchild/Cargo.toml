@@ -5,7 +5,7 @@ name = "sigchild"
 version = "0.2.0"
 edition = "2021"
 
-# A7-4 段④（docs/事件循环A7-4信号面实施设计草案.md §5）：信号终止靶——
+# A7-4 段④（docs/事件循环A7-4信号面实施设计草案-v1.0.md §5）：信号终止靶——
 # bsh sig_selftest 步④ spawn 后经 `berry_signal_send(hp, SIGTERM)` 置位
 # （跨进程 0x86 面），本进程 200ms 睡循环的每次醒来 = libc
 # `clock_nanosleep` 链尾投递点（A7-4 ③b §3.3）→ SIGTERM DFL →

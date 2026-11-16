@@ -1,5 +1,5 @@
 //! gui-inputd —— GUI-4 段① I3 guest 入口：virtio-input 用户态输入服务
-//! （常驻，实施依据 = docs/GUI-4实施设计草案.md §5.2）。
+//! （常驻，实施依据 = docs/GUI-4实施设计草案-v1.0.md §5.2）。
 //!
 //! vnet/vblk 同链（musl target + berry-libc shim；MMIO 窗口经
 //! `SpawnSpec::mmio_vmo` 映到 [`VIRTIO_MMIO_VA`]，berry-exec 单源）。扫 32
@@ -24,7 +24,7 @@
 //! nh != 0 → ST_BAD 分流不 trap——P6 A-4）；服务端永不主动 send（应答
 //! 均为请求受激）。用户态进程自有 handle 表——私有表铁律天然满足。
 //!
-//! **GUI-5（docs/GUI-5实施设计草案.md §3 #10）**：serve 升格两路
+//! **GUI-5（docs/GUI-5实施设计草案-v1.0.md §3 #10）**：serve 升格两路
 //! poll-first——wmd 推送端在席（`wm_push_h()`≠0，EFI 链 wmd 起）时并监
 //! wm 表快照通道：WM_TABLE_WAIT 串行 park-应答循环（快照静态缓存 +
 //! 超龄三层失效 Q11）+ drain 后逐事件 `wm_hit_test` **内存旁注**（Q9

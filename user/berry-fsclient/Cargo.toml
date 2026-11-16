@@ -3,7 +3,7 @@ name = "berry-fsclient"
 version.workspace = true
 edition = "2021"
 rust-version = "1.93"   # MSRV = musl 1.2.5 口径基线（Rust 2025-12 起 musl 目标；SDK-02 拍板①）
-# C-1 刀 1（docs/VM里程碑设计草案.md §C-1）：fs 服务客户端 crate，两层——
+# C-1 刀 1（docs/VM里程碑设计草案-v1.0.md §C-1）：fs 服务客户端 crate，两层——
 # ① 会话机（`src/rpc.rs`，cfg(not(test))）：bsh 的 fs_rpc 会话核心迁居（毒化
 # 位 / 90s·10s 双帽 / EBUSY-阻塞重试形态，语义逐字保真）+ fd 面分片 op
 # （put_chunk/commit/get_chunk/lookup/mkdir/unlink/readdir/stat）——真消费

@@ -3,7 +3,7 @@ name = "berry-mmap"
 version.workspace = true
 edition = "2021"
 rust-version = "1.93"   # MSRV = musl 1.2.5 口径基线（Rust 2025-12 起 musl 目标；SDK-02 拍板①）
-# A7-1（docs/事件循环A7设计草案.md §3.1 + §7 落地追记）：mmap 匿名档
+# A7-1（docs/事件循环A7设计草案-v1.0.md §3.1 + §7 落地追记）：mmap 匿名档
 # 簿记纯函数 crate——定容 region 表 + VA 窗 first-fit 底起分配（munmap
 # 空洞复用，F2 裁定）+ 页取整。
 # `berry-tls` 同款

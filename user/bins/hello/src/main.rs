@@ -1,4 +1,4 @@
-//! G-eco-c——首个经 rootfs 全链拉起的程序（`docs/G-eco编译侧设计草案.md`
+//! G-eco-c——首个经 rootfs 全链拉起的程序（`docs/G-eco编译侧设计草案-v1.0.md`
 //! G-eco-c 行）。装载路径与 boot 手搭的 echo/talker 完全不同：本镜像以
 //! **ELF 本体**躺 rootfs.cpio（fw_cfg 具名文件 → 内核 `ROOTFS` static →
 //! 只读 VMO 第 2 插 0x0001_0002 → svcmgr cpio walk → berry-loader ELF

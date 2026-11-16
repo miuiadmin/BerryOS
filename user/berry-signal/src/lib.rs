@@ -19,7 +19,7 @@
 //! cooperative: the kernel merely sets a pending bit
 //! (`signal_send`, ABI 0x86) and userland drains it
 //! (`signal_take`, ABI 0x87) — see
-//! `docs/事件循环A7-4信号面实施设计草案.md` §2 (plan B). This crate
+//! `docs/事件循环A7-4信号面实施设计草案-v1.0.md` §2 (plan B). This crate
 //! holds no syscall face; no_std core; builds and unit-tests on any
 //! host.
 //!

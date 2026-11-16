@@ -21,6 +21,7 @@ build-user 全链绿（tlsscan 58 ELF 过）；noktest boot 复验：SVC ok + LA
 - 应用建窗通道已开：appdemo 后续帧循环（present SUBMIT + FRAME_CALLBACK + 返回键退桌面）在 wm_app_h 真链上接。
 - **状态栏 SYSTEM 层**（owner「应用内状态栏常驻」）的接线点已就绪：AVOID_SYS 避让在 wmd 表重算里现成，只差状态栏窗本身从 launcher 进程内迁 wmd 系统窗（GUI-8 裁决 e 翻案）。
 - svcmgr 主体帽 136KB 不是终点：APP 域扩容（>4 活 app）或 appd 正式化会再顶——到时走 appd 独立进程分拆而非继续提帽。
+- 更正（2026-11-17）：本笔记 Decision「gift 位 app spawn extras 第三枚（hs[6]/GIFT_H[6]）……[4]=rootfs/[5]=fs/[6]=wm」是刀稿口径——该 [6] 版（746d0e506）未随链合入，重放基底的排布为 wm_app_h 归位 GIFT_H[4]（9b122cc20 完整性清偿笔明示「base 排布」）；现行合同活源 = berry-libc/src/io.rs 的 GIFT_H 排布注释段（:47-51，产侧实长零 0 洞），读槽位以彼为准。
 
 ## Related
 

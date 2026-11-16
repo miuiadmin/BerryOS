@@ -29,7 +29,7 @@
 //! - DNS 请求 `[op u8][nlen u8][name nlen B]` = 2+nlen（恰长，尾随字节 = 野值
 //!   拒；nlen ∈ 1..=[`NAME_MAX`]，0 拒——空名非法定义在协议层不是调用方
 //!   约定）；应答 `[st u8][addr 4B]` = [`REPLY_LEN`] 5 B（恰长，尾随拒）
-//! - TCP 三 op（T-d，`docs/TCP栈设计草案.md` §8）：OPEN `[op][port u16 LE]`
+//! - TCP 三 op（T-d，`docs/TCP栈设计草案-v1.0.md` §8）：OPEN `[op][port u16 LE]`
 //!   3B（port 0 拒）/ ROUNDTRIP `[op][dlen u8][data]` = 2+dlen（dlen ∈
 //!   1..=[`TCP_DATA_MAX`] = RPC 单 op 载荷帽——inline 通道几何定值，与
 //!   berry-tcp MSS 解耦：op 载荷可拆多段在途（分段归 vnet/berry-tcp），
@@ -38,7 +38,7 @@
 //!   ROUNDTRIP 成功，回传服务端**真实收到的字节**——对拍归 client，驱动不
 //!   知道期望答案，DNS「addr 该是多少归 svcmgr」同款分工）。单会话独占：
 //!   会话已被占用时 OPEN → [`ST_BUSY`]。
-//! - TCP 会话化面（A2-2，`docs/事件循环A2设计草案.md` §3.2）：session 字段
+//! - TCP 会话化面（A2-2，`docs/事件循环A2设计草案-v1.0.md` §3.2）：session 字段
 //!   以**尾随 u32 LE** 携带——session 0 = 默认会话（v1 字节逐字节相同，
 //!   现行 op 序零漂移），1..=[`TCP_SESSIONS_MAX`] = 命名会话（v1 形 +4B
 //!   尾随）；新 op LISTEN/ACCEPT/POLL 无 v1 形各自恰长执法；应答 sid 形
@@ -420,7 +420,7 @@ pub fn encode_rt_seq_request(out: &mut [u8], data: &[u8], seq: u8) -> Option<usi
 
 // ---------- TCP 会话化面（A2-2 段①：协议层）----------
 //
-// `docs/事件循环A2设计草案.md` §3.2——单会话 ST_BUSY 升会话表。**零漂移轴**：
+// `docs/事件循环A2设计草案-v1.0.md` §3.2——单会话 ST_BUSY 升会话表。**零漂移轴**：
 // session 字段以尾随 u32 LE 携带，session 0 = 默认会话编码与 v1 字节**逐字节
 // 相同**（无尾随——`tcp_s_session0_bytes_identical_to_legacy` 钉板执法），
 // 现行 TCPS/vnet 消费链零改动即兼容；session ∈ 1..=[`TCP_SESSIONS_MAX`]

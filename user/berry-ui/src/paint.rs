@@ -1,4 +1,4 @@
-//! berry-ui paint 段（GUI-3——`docs/GUI-3实施设计草案.md` §3.5）。
+//! berry-ui paint 段（GUI-3——`docs/GUI-3实施设计草案-v1.0.md` §3.5）。
 //!
 //! - **前到后剔除、后到前发射**（OH ui_lite 同路）：按 damage 矩形逐
 //!   个走树——逆前序（尾兄先、子先于父 = 画家算法后画者先看）维护

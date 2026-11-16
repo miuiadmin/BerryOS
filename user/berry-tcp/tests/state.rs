@@ -1,4 +1,4 @@
-//! berry-tcp 状态机 host 测试（`docs/TCP栈设计草案.md` §4 定值表 + §7 T-b 全状态分支）。
+//! berry-tcp 状态机 host 测试（`docs/TCP栈设计草案-v1.0.md` §4 定值表 + §7 T-b 全状态分支）。
 //!
 //! 约定：我方 ISS=1000，对端 ISS=5000——握手后 Established 基线：
 //! snd_nxt=1001 / snd_una=1001 / rcv_nxt=5001 / inflight=None。
@@ -699,7 +699,7 @@ fn closed_ignores_all() {
     assert_eq!(c.close().action, Action::None);
 }
 
-// ─── 服务端半边（A2-2 段②，`docs/事件循环A2设计草案.md` §3.2）───
+// ─── 服务端半边（A2-2 段②，`docs/事件循环A2设计草案-v1.0.md` §3.2）───
 // 约定沿用：我方 ISS=1000、对端 SYN seq=5000；服务端握手 = 被动收 SYN →
 // 回 SYN|ACK → 收第三步 ACK(=iss+1)。客户端 30 测零改动铁律的对面锚。
 

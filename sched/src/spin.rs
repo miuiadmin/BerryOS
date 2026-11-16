@@ -61,6 +61,19 @@ impl SpinLock {
         }
     }
 
+    /// 非阻塞取锁（F3——SMP-01 §3.3）：单次 CAS，成功 = 已持锁返 `true`；
+    /// 失败 = `false`——**不自旋不等待**（与 [`Self::acquire`] 同一条 CAS
+    /// 入口路径，去掉失败转自旋的回廊）。消费面 = tick 上下文的 band 环扫
+    /// try 窗（`sched::try_rq_lock`）：tick 面取 RQ 锁有实测 wedge 判例
+    /// （SVC 窗预持双 RQ 跨核忙等 + tick 抢锁成环——sched.rs `Fair::tick`
+    /// 调用点注沿革），自旋形态被禁；try 形**永不阻塞 ⇒ 永不加入忙等环**，
+    /// 失败只让调用方迟一轮（skip 语义归调用侧）。
+    pub fn try_acquire(&self) -> bool {
+        self.locked
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+    }
+
     /// 放锁。
     pub fn release(&self) {
         self.locked.store(false, Ordering::Release);

@@ -13,7 +13,7 @@
 //! Status: experimental (0.1.0) — the API moves with the BerryOS v1
 //! wire format. Repo docs are mostly zh-CN.
 //!
-//! 合约源 = `docs/VM里程碑设计草案.md` §C-1。两层：
+//! 合约源 = `docs/VM里程碑设计草案-v1.0.md` §C-1。两层：
 //!
 //! - **纯函数面**（本文件，host 测试）：fd 3+ 表项的客户端游标模型、cwd
 //!   拼接、stat 整形、dirent 解码、ST_*→FsErr 映射——libc（刀 2）把这些
@@ -310,7 +310,7 @@ impl AliasTable {
     }
 }
 
-// —— socket 表（A3-1：POSIX socket fd 面，docs/事件循环A3设计草案.md
+// —— socket 表（A3-1：POSIX socket fd 面，docs/事件循环A3设计草案-v1.0.md
 //    §3.1——fd↔netd 会话映射的宿主表）——
 
 /// socket fd 段基址：15 起。别名/fs 段扫描上界 = `FD_BASE + (FD_MAX +
@@ -442,7 +442,7 @@ impl SocketTable {
     }
 }
 
-// —— epoll 表（A4-1：POSIX epoll fd 面，docs/事件循环A4设计草案.md
+// —— epoll 表（A4-1：POSIX epoll fd 面，docs/事件循环A4设计草案-v1.0.md
 //    §3.1——interest 注册的宿主表；语义蓝本 = berry-poll LT/poll-first/
 //    timeout 三档，对象面 = socket fd 快照）——
 

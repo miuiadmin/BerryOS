@@ -135,6 +135,21 @@ impl Runqueue {
         self.lock.acquire();
     }
 
+    /// **非阻塞**取本队列自旋锁（F3——SMP-01 §3.3）：单次 CAS，失败即返
+    /// `false`（不自旋——`SpinLock::try_acquire` 直通）。**持有**语义与
+    /// [`Self::lock_acquire`] 逐位相同（放锁配对 [`Self::lock_release`]、
+    /// 窗内禁切换、不可重入），唯一差异 = 获取失败立即让路而非等待——
+    /// tick 上下文（IRQ）自旋等本队列锁会与对核「持锁等本核」成环（wedge
+    /// 判例，`sched::Fair::tick` 调用点注）。持有位记账不在此层（同
+    /// [`Self::lock_acquire`]——由 `sched::try_rq_lock_of`/`rq_unlock_of`
+    /// 统一承担）；lockdep 只记成功物理取（`sched::rq_try_acquire`）。
+    ///
+    /// # Safety
+    /// 调用方契约同 [`Self::lock_acquire`]（屏蔽窗 + 不重入 + 窗内禁切换）。
+    pub(crate) unsafe fn try_lock_acquire(&self) -> bool {
+        self.lock.try_acquire()
+    }
+
     /// 放本队列自旋锁（先清持有位后放——位与锁恒同窗，见 `sched::rq_unlock_of`）。
     pub(crate) fn lock_release(&self) {
         self.lock.release();

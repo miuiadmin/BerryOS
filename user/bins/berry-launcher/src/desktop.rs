@@ -1,4 +1,4 @@
-//! desktop —— 桌面静态面（GUI-8 段③ W1，docs/GUI-8实施设计草案.md §4
+//! desktop —— 桌面静态面（GUI-8 段③ W1，docs/GUI-8实施设计草案-v1.0.md §4
 //! 段③「布局桩」；波3-件⑦ 起状态栏底座/scrim/文本叶抽入
 //! appshell::scene——本模块只留桌面特化）。
 //!

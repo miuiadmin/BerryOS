@@ -40,8 +40,8 @@ pub use class::{
     PRIO_DEADLINE,
 };
 pub use em::{
-    em_domain, em_max_capacity, em_min_power, em_register, em_register_qemu_virt, em_valid,
-    EmDomain, EmPoint, EM_DOMAINS_MAX, EM_POINTS_MAX,
+    em_domain, em_max_capacity, em_max_capacity_of_cpu, em_min_power, em_register,
+    em_register_qemu_virt, em_valid, EmDomain, EmPoint, EM_DOMAINS_MAX, EM_POINTS_MAX,
 };
 pub use hdr::{
     bucket_of, bucket_upper, cpu_hdr, cpu_reset, merged_max, merged_min, merged_percentile,
@@ -85,7 +85,8 @@ pub use sched::{
     set_switch_hook, set_wake_hook, sleepq_insert,
     sleepq_insertable, sleepq_unlink, rq_insert_kt, rq_unlink_kt, spawn, spawn_as, spawn_as_spread, spawn_intent, spawn_user, spawn_user_env, spawn_with,
     spawn_with_tag, switches, switches_tt, svc_window, thaw_by_pinned, thaw_by_thread, topo_smp_online,
-    try_preempt, try_prepare_user, enqueue_prepared_user, try_spawn_user,
+    try_preempt, try_prepare_user, try_rq_lock, try_rq_unlock,
+    enqueue_prepared_user, try_spawn_user,
     user_fault_exit,
     user_kills,
     wake_matching, wake_matching_locked, wake_stamp_take, yield_now, yield_now_keep_irq, KlockOps, SleepqHook, SwitchHook, SwitchKind,
