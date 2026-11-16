@@ -2,7 +2,7 @@
 //! 配对消费端 = QEMU AAVMF 固件 DXE 加载器）。
 //!
 //! 彻底 Rust 化轨道 b 层 #8（docs/彻底Rust化计划-v1.0.md §2 #9）：Python
-//! 版（tools/elf2pe.py）现役保留，本件按 §5 钉板五步落位首刀（lib 纯面 +
+//! 版已降格为 oracle（tools/elf2pe_oracle.py，对拍取证专用），本件按 §5 钉板五步落位首刀（lib 纯面 +
 //! CLI + 测试接线）；二刀产链换轨（build-boot 的 python3 调用 → 本 bin +
 //! Python 降格 oracle）另件。
 //!

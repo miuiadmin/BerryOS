@@ -286,7 +286,7 @@ fn truncated_input_rejected() {
 }
 
 /// 真实产物对拍（首刀取证面）：bootloader/berryboot/out/berryboot.elf 在位
-/// 时做全链对拍——Rust convert vs Python oracle（tools/elf2pe.py）产物
+/// 时做全链对拍——Rust convert vs Python oracle（tools/elf2pe_oracle.py）产物
 /// sha256 恒等 + verify 行全等。缺席打 skip（CI 无构建产物，钉板面已覆盖
 /// 合成全链）。
 #[test]
@@ -299,8 +299,9 @@ fn real_elf_oracle_difftest() {
     let out = convert(&elf_bytes).unwrap();
     let line = verify(&out.pe, out.reloc_count).unwrap();
     assert!(!line.is_empty());
-    // Python oracle 现役件在位时：字节级对拍（sha256 恒等）。
-    let oracle = std::path::Path::new("../elf2pe.py");
+    // Python oracle（降格为 elf2pe_oracle.py，二刀后仅对拍取证用）在位时：
+    // 字节级对拍（sha256 恒等）。
+    let oracle = std::path::Path::new("../elf2pe_oracle.py");
     if oracle.exists() {
         let tmp = std::env::temp_dir().join(format!(
             "elf2pe-diff-{:x}",
