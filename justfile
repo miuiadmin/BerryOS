@@ -1218,6 +1218,16 @@ test-host:
     # 改键表/改注入消费面必跑。
     {{BASH}} tools/fwcfg-check.sh
     {{BASH}} tools/fwcfg-check.sh --selftest
+    # W1 接线（tools 零自检纯函数件清零族）：paths.sh 路径解析单源——
+    # justfile KERNEL/RUST_LLD 属性背引号 + smoke.sh source 双消费面，
+    # 此前零自检（解析律/拒面/CLI 形态改坏无机器咬合）。selftest 10 腿
+    # （合成 cargo/rustc 垫片沙箱：target-dir/kernel 组装/垫片哑拒/缺席
+    # 拒/usage 拒/source 形态三函数）。改解析逻辑或拒面措辞必跑。
+    {{BASH}} tools/paths.sh --selftest
+    # W1 接线（同族）：ver-check 版本一致性验收——selftest 8 腿（合成 git
+    # 沙箱：G-ver-3 对拍绿/不匹配红点名/无 version 红/git_ident 缺席红/
+    # 段作用域防串号/零 tag 豁免/非 git 豁免）。发版门形态改坏可被咬合。
+    {{BASH}} tools/ver-check.sh --selftest
     # W1 接线（D-审计 §4.3「从未跑过」面）：guifbd lib 单测 13 测
     # （B1-b/c vgpu 后端纯面——后端分派/INDIRECT 链/ATTACH 段/提交序）入
     # host 台账。独立小工作区（空 [workspace] escape），berry-libc
