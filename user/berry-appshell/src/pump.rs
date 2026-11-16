@@ -52,7 +52,8 @@ use berry_gfx::color::{TextureDesc, TextureFormat};
 use berry_gfx::pass::{LoadOp, PassDescriptor, StoreOp};
 #[cfg(not(test))]
 use berry_gfx::queue::Queue;
-#[cfg(not(test))]
+// 无条件：HostHooks::on_panel_caps 签名引用 gp::PanelCapsRep（纯 wire
+// 类型——host 测试面可见；guiproto 本 host 安全零 syscall 面）。
 use berry_guiproto as gp;
 use berry_sys::Handle;
 #[cfg(not(test))]
@@ -78,10 +79,6 @@ use crate::rpc::{close_h, enc_req, expect_ok, fail, now, rpc};
 /// 帧缓冲映射 VA（gfxdemo 同位：mmap VA 窗 [0x5000_0000,0x6000_0000) 内
 /// 固定位 +16MiB——与假想 first-fit 分配零交叠的防御位；页对齐）。
 pub const FRAME_VA: usize = 0x5100_0000;
-
-/// 默认 vsync 周期（60Hz；present GETINFO 无周期域——S2 食谱默认
-/// 16_666_666 phase 0）。
-pub const VSYNC_NS: u64 = 16_666_666;
 
 /// IDLE 稳态等待帽（Idle 相撤定时器 → 10s 周期兜底醒，醒后跳过帧零提交
 /// 再睡——非燃 CPU 阻塞形的定长节拍）。
@@ -154,6 +151,18 @@ pub trait HostHooks {
 
     /// 额外等待帽（Some(dl) = 准时醒面——关机 armed 窗过期复位类）。
     fn extra_deadline(&mut self) -> Option<u64>;
+
+    /// hdi PANEL_CAPS 应答回调（refresh 刀1 率通路 §4-5——帧钟参数服务端
+    /// 下发，服务端是率域唯一权威 R1 单源）。默认实现 = 有应答即注入
+    /// `set_vsync`；None = 旧服务端无此面 → 不注入，留 berry-ui 回退缺省
+    ///（[`UiMain`]( berry_ui::UiMain) 构造默认周期，lib.rs
+    /// DEFAULT_VSYNC_PERIOD_NS 注释钉明）。证据行（`PANEL ok`）类应用面
+    /// 策略归覆写侧。
+    fn on_panel_caps(&mut self, ui: &mut UiMain, caps: Option<&gp::PanelCapsRep>) {
+        if let Some(c) = caps {
+            ui.set_vsync(c.current_period_ns as u64, c.current_phase_ns as u64);
+        }
+    }
 }
 
 /// pump 装配参数。
@@ -205,6 +214,23 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
             vp_w, vp_h, pinfo.display_w, pinfo.display_h
         ));
     }
+
+    // —— hdi PANEL_CAPS（refresh 刀1 率通路 §4-5）：帧钟参数服务端下发
+    //    注入——服务端是率域唯一权威（R1 单源），客户端禁本地默认顶替
+    //    真值。version_hdi < 2 = 旧 guifbd 无此面 → None 形回调（留
+    //    berry-ui 回退缺省）；有面而应答畸形 = 协议违例 fail loud
+    //    （GETINFO 同款）。hdi 域编码器 usize 直返（present 域 Option 形
+    //    不同）——不过 enc_req。
+    let mut caps: Option<gp::PanelCapsRep> = None;
+    if pinfo.version_hdi >= 2 {
+        let m = gp::encode_panel_caps_req(&mut req);
+        let (n, _) = rpc(cfg.hw, &req[..m], &[], &mut rep, &mut rhs);
+        match gp::parse_panel_caps_rep(&rep[..n]) {
+            Some(c) if c.current_hz > 0 && c.current_period_ns > 0 => caps = Some(c),
+            _ => fail(&format!("panel caps bad st={}", rep[0])),
+        }
+    }
+    hooks.on_panel_caps(ui, caps.as_ref());
 
     // —— 跨代清账（对抗审查 R2 修）：前代实例若死于 SUBMIT ack→RELEASE
     //    close 窗，其 VMO 别名成孤儿永占 guifbd held 槽（RELEASE_WAIT 应答
@@ -259,8 +285,10 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
     let scratch: &'static mut [GlyphPos] =
         alloc::boxed::Box::leak(vec![GlyphPos { ch: 0, x: 0, y: 0 }; SCRATCH_GLYPHS].into_boxed_slice());
 
-    // —— vsync 协商 + 起振（Idle→Run + 条件 FULL——首帧整帧 damage）。
-    ui.set_vsync(VSYNC_NS, 0);
+    // —— vsync 起振（Idle→Run + 条件 FULL——首帧整帧 damage）。周期/相位
+    //    已由上方 PANEL_CAPS 下发注入（on_panel_caps 默认实现）；旧服务端
+    //    None 形 = berry-ui 回退缺省（本地 VSYNC_NS 常量废除——全仓周期
+    //    单源在 guifbd 档位表，规范 §3.4）。
     ui.wake(now());
 
     let mut last_expected: u64 = 0; // pump 重采样 target（上帧 expected 轨）
@@ -410,6 +438,7 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
 
             // FRAME_CALLBACK：blit-at-SUBMIT 形下帧已呈现（token 校验即
             // 答）——断 PRESENTED（DISCARDED = 呈现链破相 fail loud）。
+            // status/credits 单源仍在本应答（P3 回执无 credits 域）。
             let m = enc_req(gp::encode_present_req(
                 &mut req,
                 &gp::PresentReq::FrameCallback { frame_token: token },
@@ -422,11 +451,25 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
             if done.status != gp::FRAME_PRESENTED {
                 fail(&format!("frame status={}", done.status));
             }
-            // seq = 本帧引擎序（render 后 telemetry 帧计数 -1 = last_seq）；
-            // credits 以服务端应答为真值重同步（S2 食谱）。
-            ui.note_presented(
+
+            // P3 呈现回执（refresh 刀4——遥测第一个读者）：presented_ns/
+            // refresh_ns 服务端单源真相接入（actual 轨 + jank 周期基——
+            // LTPO 切档后静态 estimate 过期即纠）；seq = 本帧引擎序
+            //（render 后帧计数 -1 = last_seq）；credits 以 FRAME_CALLBACK
+            // 应答为真值。
+            let m = enc_req(gp::encode_present_req(
+                &mut req,
+                &gp::PresentReq::FrameTiming { frame_token: token },
+            ));
+            let (n, _) = rpc(cfg.hw, &req[..m], &[], &mut rep, &mut rhs);
+            let rec = match gp::parse_frame_timing_rep(&rep[..n]) {
+                Some(r) => r,
+                None => fail(&format!("frame timing bad st={}", rep[0])),
+            };
+            ui.note_frame_timing(
                 (ui.telemetry().frames() - 1) as u32,
-                now(),
+                rec.presented_ns,
+                rec.refresh_ns,
                 done.status,
                 done.credits,
             );

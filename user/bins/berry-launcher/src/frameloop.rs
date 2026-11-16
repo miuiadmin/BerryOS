@@ -41,14 +41,6 @@
 //!
 //! 裁决四-c（输入拓扑）：真实输入订阅 = 段④（input extras 冻结相结构
 //! 性缺席）；裁决四-e（归属）：状态栏/壁纸/桌面全在 launcher 进程内。
-//!
-//! **跨根合并注记（wip/sched-1.1 × main 显示线）**：本模块取调度线泵
-//! 架构（appshell::pump）为主线；显示线 refresh 刀1-6 中属本文件的增量
-//! 已整移——刀1 率通路（PANEL_CAPS RPC + `PANEL ok` 证据行 + 首拍
-//! `set_vsync` 覆写注入，见 [`LoopHost::srv_vsync`]）与刀4 遥测快照行
-//! （`launcher: telem`，on_presented 首帧）。刀4 的 FRAME_TIMING(0x08)
-//! actual 轨注入与 SUBMIT 别名掩码收窄位于泵骨架 `appshell::pump`
-//! （FRAME_CALLBACK 路径持 token）——不属本文件，待泵侧跟进。
 
 use berry_appshell as appshell;
 use berry_appproto as ap;
@@ -157,10 +149,6 @@ struct LoopHost {
     /// 状态栏时钟续摆：上帧摆字（None = 尚未/永不摆：注入缺席时
     /// REALTIME 恒 -ENOTSUP，本面静默，桌面保持建树时的 12:00 占位）。
     last_clock: Option<[u8; 5]>,
-    /// refresh 刀1 率通路（跨根合并自显示线）：服务端 PANEL_CAPS 协商的
-    /// (周期, 相位)——run 前置 RPC 取得；on_head 首拍一次性注入后清空。
-    /// None = 旧 guifbd 无此面 → berry-ui 回退缺省（60Hz 档表值）。
-    srv_vsync: Option<(u64, u64)>,
 }
 
 /// 帧循环入口（签名 = W2 冻结面——`hw` = wm 客户端端柄（wm/present 同
@@ -174,41 +162,6 @@ pub fn run(
     desktop: Desktop,
     smoke: bool,
 ) -> ! {
-    // —— hdi PANEL_CAPS（refresh 刀1 率通路 §4-5——跨根合并自显示线
-    //    frameloop 内联版整移）：帧钟参数服务端下发注入——服务端是率域
-    //    唯一权威（R1 单源），客户端禁本地默认顶替真值。version_hdi < 2
-    //    = 旧 guifbd 无此面 → 不注入，留 berry-ui 回退缺省（无服务端信息
-    //    面——lib.rs DEFAULT_VSYNC_PERIOD_NS 注释钉明）；有面而应答畸形
-    //    = 协议违例 fail loud（GETINFO 同款）。泵架构下主 GETINFO 在
-    //    appshell::pump::run 内——此处自起一拍 GETINFO 只为 version_hdi
-    //    门（幂等读，boot 期一次性，零标记扰动）。
-    let mut srv_vsync: Option<(u64, u64)> = None;
-    {
-        let mut req = [0u8; 256];
-        let mut rep = [0u8; 256];
-        let mut rhs = [0 as Handle; 8];
-        let m = appshell::rpc::enc_req(gp::encode_present_req(&mut req, &gp::PresentReq::Getinfo));
-        let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
-        let pinfo = match gp::parse_getinfo_rep(&rep[..n]) {
-            Some(i) => i,
-            None => fail(&format!("present getinfo bad st={}", rep[0])),
-        };
-        if pinfo.version_hdi >= 2 {
-            // hdi 域编码器 usize 直返（present 域 Option 形不同）——不过 enc_req。
-            let m = gp::encode_panel_caps_req(&mut req);
-            let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
-            match gp::parse_panel_caps_rep(&rep[..n]) {
-                Some(caps) if caps.current_hz > 0 && caps.current_period_ns > 0 => {
-                    srv_vsync =
-                        Some((caps.current_period_ns as u64, caps.current_phase_ns as u64));
-                    // 率通路串口证据行（规范 §11 验收面；仅 v2 面打印——旧内核
-                    // 混跑缺席即旧面，非异常）。标记互非子串已核（tools/ 零 PANEL）。
-                    println!("PANEL ok hz={} ns={}", caps.current_hz, caps.current_period_ns);
-                }
-                _ => fail(&format!("panel caps bad st={}", rep[0])),
-            }
-        }
-    }
     let mut host = LoopHost {
         hw,
         desktop,
@@ -222,7 +175,6 @@ pub fn run(
         click_ready: false,
         power_armed: None,
         last_clock: None,
-        srv_vsync,
     };
     let cfg = appshell::pump::PumpCfg {
         hw,
@@ -246,14 +198,6 @@ impl appshell::pump::HostHooks for LoopHost {
                 set_power_face(ui, &self.desktop.nav, false);
                 self.power_armed = None;
             }
-        }
-
-        // —— refresh 刀1 率通路（跨根合并自显示线整移）：服务端 PANEL_CAPS
-        //    下发的周期/相位在 pump 固定起振（60Hz 缺省）后、首帧渲染前
-        //    一次性覆写注入（on_head = 循环首拍，先于 render；take 后清空
-        //    ——仅首拍生效）。None = 旧 guifbd → 保持 berry-ui 回退缺省。
-        if let Some((period_ns, phase_ns)) = self.srv_vsync.take() {
-            ui.set_vsync(period_ns, phase_ns);
         }
 
         // —— 波一刀 B：状态栏真时钟续摆——稳态每 10s（IDLE 帽）醒一回，
@@ -341,11 +285,9 @@ impl appshell::pump::HostHooks for LoopHost {
     fn on_presented(&mut self, ui: &mut UiMain, presented: u64) {
         if !self.launched && presented >= 1 {
             // 标记（字节精确）：首帧呈现回执过链恰一次。附带遥测快照行
-            // （refresh 刀4 第一个读者到席证——跨根合并自显示线整移）：
-            // jank/deadline_miss/spinup_late/wakes/frames 全零策略账本
-            // 只读快照——判定单源在引擎循环。（刀4 的 FRAME_TIMING
-            // actual 轨注入在泵骨架 appshell::pump——见模块头跨根合并
-            // 注记。）
+            //（refresh 刀4 第一个读者到席证）：jank/deadline_miss/
+            // spinup_late/wakes/frames 全零策略账本只读快照——判定单源
+            // 在引擎循环。
             let t = ui.telemetry();
             let jank_n = t.last(16).filter(|r| r.jank).count();
             println!(
@@ -359,6 +301,17 @@ impl appshell::pump::HostHooks for LoopHost {
             );
             println!("LAUNCH ok");
             self.launched = true;
+        }
+    }
+
+    /// refresh 刀1 §4-5：PANEL_CAPS 率通路串口证据行（规范 §11 验收面；
+    /// 仅 v2 面打印——旧内核混跑缺席即旧面，非异常。标记互非子串已核
+    ///（tools/ 零 PANEL））。注入面与 pump 默认实现同式（set_vsync——
+    /// 覆写内直写，防 `Trait::method(self,…)` 解析回本覆写的自递归）。
+    fn on_panel_caps(&mut self, ui: &mut UiMain, caps: Option<&gp::PanelCapsRep>) {
+        if let Some(c) = caps {
+            println!("PANEL ok hz={} ns={}", c.current_hz, c.current_period_ns);
+            ui.set_vsync(c.current_period_ns as u64, c.current_phase_ns as u64);
         }
     }
 
