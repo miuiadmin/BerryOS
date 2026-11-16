@@ -13,17 +13,14 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use crate::smp::BOOT_EL;
 use crate::{uart_put_dec, uart_putc, uart_puts};
 
-// PSCI 1.0 fnid 钉板（32 位函数号走 HVC conduit；SMCCC 有符号返回语义）。
-const PSCI_VERSION_FNID: u64 = 0x8400_0000;
-const PSCI_FEATURES_FNID: u64 = 0x8400_000A;
-const PSCI_SYSTEM_SUSPEND_FNID: u64 = 0x8400_000C;
-/// PSCI SYSTEM_OFF（0.2 起强制函数——无 PSCI_FEATURES 查询面；QEMU
-/// TCG/KVM 实现均受理：`research/PM-10-无真机电源验证-v1.0.md` §1.6
-/// 实读 ps ci.c——TCG 走 `qemu_system_shutdown_request`）。
-const PSCI_SYSTEM_OFF_FNID: u64 = 0x8400_0008;
-/// PSCI_VERSION 最小有效值（PSCI 1.0 = 0x00010000；-1 = NOT_SUPPORTED 按符
-/// 号语义天然排除——`ver >= 最小值` 即「有效」判）。
-const PSCI_VERSION_MIN: u32 = 0x0001_0000;
+// W3-Q72：判定律单源迁 berry-psface（host 钉板）——HVC 臂/诊断行/原子缓存
+// 留壳在此。fnid/最小版本门/路由门/FEATURES 侦察/SYSTEM_OFF 能力判全在
+// psface；本文件只保留物理臂与 re-export。
+pub use berry_psface::{
+    features_suspend_supported, off_supported_from, probe_route, version_major, version_minor,
+    version_valid, ProbeRoute, PSCI_FEATURES_FNID, PSCI_SYSTEM_OFF_FNID,
+    PSCI_SYSTEM_SUSPEND_FNID, PSCI_VERSION_FNID, PSCI_VERSION_MIN,
+};
 
 /// 深睡能力探测结果缓存（probe 尾单写点，此后只读；ktest PWRDEG /
 /// request_deep_sleep 降级门的消费面）。
@@ -100,33 +97,39 @@ fn put_hex32_upper(v: u32) {
 ///
 /// 打印走与相邻 boot 行同款 UART 路径（`BerryOS boot` 同期窗口）。
 pub fn probe(efi_boot: bool) {
+    // 路由门单源（psface）：EFI 门 → 非 EL1 门 → EL1 探测形。
     let mut supported = false;
     let mut alive = false;
-    if efi_boot {
-        uart_puts(b"PSCI susp=0 (EFI handoff)\n");
-    } else if boot_el() != 1 {
-        uart_puts(b"PSCI susp=0 (EL");
-        uart_put_dec(boot_el());
-        uart_puts(b")\n");
-    } else {
-        // PSCI_VERSION 是 32 位函数：先截到 u32 位型再判值，不赌 conduit
-        // 对 -1 做符号扩展还是零扩展（0xFFFFFFFF 一律 NOT_SUPPORTED）。
-        let ver = hvc_call(PSCI_VERSION_FNID, 0) as u32;
-        if ver != u32::MAX && ver >= PSCI_VERSION_MIN {
-            alive = true; // conduit 活证（SYSTEM_OFF 门开——0.2 起强制）
-            // 正向对照：conduit 活证（PSCI 1.x 在席）——版本号诊断行。
-            uart_puts(b"PSCI version 0x");
-            put_hex32_upper(ver);
-            uart_puts(b"\n");
-            // PSCI_FEATURES(SYSTEM_SUSPEND)：0 = 支持；-1/其它 = 不支持。
-            if hvc_call(PSCI_FEATURES_FNID, PSCI_SYSTEM_SUSPEND_FNID) == 0 {
-                supported = true;
-                uart_puts(b"PSCI susp=1\n");
+    match probe_route(efi_boot, boot_el()) {
+        ProbeRoute::EfiGated => {
+            uart_puts(b"PSCI susp=0 (EFI handoff)\n");
+        }
+        ProbeRoute::BootElGated(el) => {
+            uart_puts(b"PSCI susp=0 (EL");
+            uart_put_dec(el);
+            uart_puts(b")\n");
+        }
+        ProbeRoute::Probe => {
+            // PSCI_VERSION 是 32 位函数：先截到 u32 位型再判值，不赌 conduit
+            // 对 -1 做符号扩展还是零扩展（0xFFFFFFFF 一律 NOT_SUPPORTED）。
+            let ver = hvc_call(PSCI_VERSION_FNID, 0) as u32;
+            if version_valid(ver) {
+                alive = true; // conduit 活证（SYSTEM_OFF 门开——0.2 起强制）
+                // 正向对照：conduit 活证（PSCI 1.x 在席）——版本号诊断行。
+                uart_puts(b"PSCI version 0x");
+                put_hex32_upper(ver);
+                uart_puts(b"\n");
+                // PSCI_FEATURES(SYSTEM_SUSPEND)：0 = 支持；-1/其它 = 不支持。
+                if features_suspend_supported(hvc_call(PSCI_FEATURES_FNID, PSCI_SYSTEM_SUSPEND_FNID))
+                {
+                    supported = true;
+                    uart_puts(b"PSCI susp=1\n");
+                } else {
+                    uart_puts(b"PSCI susp=0\n");
+                }
             } else {
                 uart_puts(b"PSCI susp=0\n");
             }
-        } else {
-            uart_puts(b"PSCI susp=0\n");
         }
     }
     PSCI_SUSPEND_SUPPORTED.store(supported, Ordering::Relaxed);

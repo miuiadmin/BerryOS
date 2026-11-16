@@ -1001,6 +1001,8 @@ stage = "v1"
     nt, nd, nr, nc = four_tuple(real)
     # 钉板值随在册面活算对齐（CP-08 加 0x40 v1 号后 38→39——彼批漏更此钉，
     # 实抓于阶段五第 16 步复跑；gen_abi 台账零 WARN 钉板不受影响）。
+    # CP-08 0x40 sched_util_snapshot 加号（988944e09）随刀滚新：38/42/41→39/43/42
+    # （nr_total/defined/registered 各 +1，帽 45 不动——abi_gen 头注同值单源）。
     check("在册四元组口径", (nt, nd, nr, nc) == (39, 43, 42, 45),
           f"got {(nt, nd, nr, nc)}")
     check("在册 wakesrc 空闲段活算", next_free_wakesrc(

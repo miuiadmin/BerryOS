@@ -1,0 +1,66 @@
+# W3A-IMPL-SA —— 波3 件⑦ berry-appshell 抽取实施清单（SA）
+
+Date: 2026-11-15
+Owner: SA（appshell 面）
+依据: 波3 设计稿《2026-11-15-波3桌面三栏与系统窗实施设计》（plans/ 在册）§6 berry-appshell 模块抽取清单 + 侦察稿《2026-11-15-波3三栏侦察》（research/ 在册）§一/§五
+
+> 注一：任务书指名的 `W3A-RECON.md` 在本工作树不存在（开工时全树检索无果）——侦察面按波3 侦察研究稿 §一（launcher 五模块现场）+ 设计稿 §6 直核现场替代。
+> 注二（并行会话事故）：本批实施三度遭波4 会话的「工作树净」清树抹除未提交现场（含整 crate 目录）；第三轮按 SB 先例打法（W3A-IMPL-SB.md 注二）逐件重写后**即时显式路径提交落账**（f016aa99a + 510f6ce95）——波4 会话清树时请勿 checkout 本两笔触及路径（user/berry-appshell、user/Cargo.toml、user/bins/berry-launcher、tools/genoh*.py、justfile）。
+
+## 范围与边界
+
+只动 launcher 五模块的抽取面 + 新 crate 落位：`user/berry-appshell`（新 crate，user 工作区 members 登记）+ `user/bins/berry-launcher` 改消费 + workspace/justfile/生成器路径台账。禁碰 guifbd/gui-wmd（他路地盘，SB/SC 零触碰对仗）；**设计 §6 的「新增面 v1」（wm 窗生命周期封装/Nav 页栈/back 消费/ime_wanted/Dialog/Menu/Toast/APPDEMO 样例）不在本刀**——纯抽取刀，新增面挂账后续批次（其 wmd 侧依赖面 = SB 已落的 b2b865a37 事件通道件）。
+
+## 交付物
+
+### ① 新 crate `user/berry-appshell`（五模块，f016aa99a）
+
+设计 §6 表逐行落地——模块 API 面：
+
+| appshell 模块 | 抽自 | 面内容 |
+|---|---|---|
+| `rpc` | main.rs:75-181 | 严格串行 RPC 半程族（`rpc_send`/`rpc_recv`/`rpc`/`expect_ok`/`enc_req`/`now`/`close_h`）+ `fail`/park 收口 + `RPC_CAP_NS`——**逐字保真**（fail 诊断前缀经 Host tag 参数化，launcher 绑 "launcher" 字节不变） |
+| `pump` | frameloop.rs 骨架 | 帧循环本体（GETINFO 断言→跨代清账→帧 VMO 三连→scratch 堆置→vsync 起振→input 泵→render→SUBMIT→FRAME_CALLBACK→RELEASE→vote→wait_many）+ `HostHooks` 六回调（on_head/on_msgs/on_tick/on_presented/on_frame/extra_deadline）+ `PumpCfg`（hw/hi/vmar/surface_id/clear_bg）——操作序逐字保真，应用特化全在回调 |
+| `scene` | desktop.rs 建树底座 | 状态栏整条装配 `build_status_bar`（scrim 组对齐/图标桥/a11y 四件）+ `status_scrim`（壁纸顶 15 行均值 × 0.5 预混）+ `text_spec`/`hhmm_utc`/`clock_texts`/`status_sizes`/`status_pad`/`status_icon_gap`/`status_group_widths` + OH_DENSITY/OH_STATUS_H/OH_STATUS_PAD/STATUS_CLOCK/STATUS_SCRIM/SIM_TAG/UTC_TAG/TEXT_FG 单源导出 |
+| `icons` | icons.rs（含两生成子模块） | APP_LIST 拉取 + `ListDecoder` 三执法 + BYI1 两遍解码 + 稠密 id 域 + `ShellIcons`（IconSource 真供件）+ 导航五面/通用 fallback 像素生成 + `wallpaper_top_rows`；status_icons.rs/wallpaper.rs 经 `git mv` 迁入（rename 100% 保历史） |
+| `conf` | layout_io.rs I/O 半程 | `ConfKey`（8.3 路径 + 单簇帽）/`read_key`/`write_key`（close=commit 两段式）/`ReadOutcome` 四态 + ENOENT/EIO/open 旗立值钉板——LAYOUT.JSN/BOOT.JSN 同款持久键读写面（schema 留消费侧） |
+| `host` | （新增缝） | `Host` 绑定表（tag/diag/park/fs 五面 fn 指针）+ `bind()`——libc 面注入点（见②形态） |
+
+**形态纪律**（为什么这样切）：
+- no_std（`cfg_attr(not(test), no_std)` + alloc，berry-ui 同款）——user 工作区 members 须 none-target 可编（根 config build.target 锁 aarch64-unknown-none）。
+- berry-sys syscall 半程 `cfg(not(test))` 门（berry-fsclient 先例：berry-sys 符号宿主不存在，host 测试不链接 syscall 面；依赖 crate 编译时 cfg(test) 恒关——launcher musl 消费/测试编译均全量）。
+- **berry-libc 不直连**：berry-libc 结构性不可 host `cargo test`（crt0 `global_asm!` ELF 专写法 + libc 符号对 host libSystem 插入，其 lib.rs「实况勘定」注记），成员 crate 依赖它无先例——诊断输出/park/FAT fd 操作经 `Host` fn 指针由 std musl 消费者 boot 期注入。这是 launcher（std musl）与 host 测试（std host）双面可编译的唯一干净缝。
+- icons 注册表 OnceLock → ptr+len 原子对（no_std 无 OnceLock；boot 单线程单写 + 首装定界语义逐字保真）。
+
+**每模块 host 单测**（`cargo test -p berry-appshell --target <host>`，justfile test-host 显式行入账）：27 测——host（缺省三律/诊断前缀）、rpc（send/recv 分类真值表/帽钉板）、conf（ENOENT 分界/超帽闭界/零写破缺/POSIX 立值）、scene（hhmm 换算/时钟文本对/档位表/组宽饱和/scrim 独立复算对拍/文本 64B 域执法/状态栏离屏装配+等长换文）、icons（13 内建面钉板/导航几何探针/通用 fallback/坏 blob 降级/注册表缺省/壁纸钳制/竣工拒面）、pump（damage 包络含饱和/整帧判据/等待帽最早者胜）。
+
+### ② launcher 改消费（行为零变化）
+
+- `main.rs`：`SHELL_HOST` 绑定（tag "launcher" + eprintln + `berry_libc::park` + libc fd 包装 fn）→ `appshell::bind` 首拍注入；`pub use appshell::icons`（crate::icons 路径零改动）；GETINFO RPC 走 appshell::rpc；fs_ready 单取传 layout_io/smoke_mode（原 fs_h()==0 冻结相门语义不变）；icons.rs 删除（迁 crate）。
+- `desktop.rs`：状态栏整条块（原 416-537 建树序逐字节同序）→ `scene::build_status_bar`；scrim → `scene::status_scrim`；text_spec/hhmm_utc/status 档位/TEXT_FG/OH_DENSITY 等单源改引 scene——桌面特化（网格/dock/导航条/TabBar 三页/TABS_H_COMPACT/switch_sys_page/rehang_a11y）全留。
+- `frameloop.rs`：`run` 瘦身为 LoopHost 装配 + `appshell::pump::run(cfg, ui, &mut host)`；`LoopHost` impl HostHooks——全部字段 = 抽取前 run 局部态（power_armed/last_clock/recents/spawn_ok/launched/selftest/snap_frame/click_ready/has_input）；on_presented 内打 `LAUNCH ok`（presented==1 恰一次，位次 = 原 drew 块内 RELEASE 后/vote 前，字节序不变）；自测/click-ready/五键导航/时钟续摆全在回调，消息序逐字保真。
+- `layout_io.rs`：read_file/put_file/ReadOutcome 删（I/O 半程走 `appshell::conf::{read_key, write_key}` + ConfKey）；LAYOUT schema（default_layout/smoke_variant/same_cells/OwnedLayout/canonical 编码）+ 全部标记面（LAYOUT ok/LAYOUTW ok）与既有测试原样留 launcher。
+- `Cargo.toml`：+`berry-appshell = { path = "../../berry-appshell" }`（escape 小工作区 path 跨界，berry-ui 同款）。
+- 零变化验收锚：全部标记行（LAUNCH v=/LAUNCH ok/PAGE ok n=2/CLICK ok n=1/click ready/LAYOUT ok/LAYOUTW ok/ROTATE/SET ok 非本面）打印点全在 launcher 侧；诊断行前缀经 Host tag 字节恒等；`HH:MM` 首摆/续摆、SIM/UTC 角标、a11y 四件、冒烟 109B canonical 均单源未动。
+
+### ③ 台账
+
+- `user/Cargo.toml`：members + "berry-appshell"（GUI 家族位，berry-ui 后）+ 注释段。
+- `justfile` test-host：berry-ui 行后 + `cargo test -p berry-appshell --target {{host}}`。
+- `tools/genohstatus.py`/`tools/genohwallpaper.py`：OUT 迁 `user/berry-appshell/src/`（源资产 ohstatus/ohwallpaper 留 berry-launcher；selftest 绿含 PIL 对拍 byte-equal）。
+
+## 验证
+
+- `cargo test -p berry-appshell --target aarch64-apple-darwin`：**27 passed / 0 failed**。
+- `cargo build -p berry-appshell`（none target，user 工作区）：绿。
+- launcher musl：`cargo build --release --target aarch64-unknown-linux-musl`（berry-ld 链，justfile 同形）：绿（零 warning）。
+- launcher 既有测试编译：`cargo test --no-run --target aarch64-unknown-linux-musl`：过链（launcher 测试宿主不可执行的既有注记不变——layout_io/frameloop 纯谓词测试原样在册）。
+- `tools/genohstatus.py --selftest`：绿。
+- gui8-smoke（GUI8_REBUILD=1 全链重编镜像后跑）：**红——但为基线既有红，非本刀回归**。定谳实验：检出自本刀前的净基点 b1646469d 建独立 worktree 跑同一 smoke，同红（launcher 三次 EL0 D-abort、零标记）；本刀版反而跑得更远——`LAYOUTW ok`/`LAYOUT ok n=2` 过链（conf/icons 抽取面在机实证），两实例均死于 `UiMain::new` 87432B 堆分配 abort。归因 = wave4 七真应用注册表的图标常驻质量压垮 launcher 1MiB 堆悬崖（PX_CAP 225000px ≈ 900KB + UiMain 87KB + scratch——预算本就贴边，基点 b1646469d 之前最后一次 gui8-smoke 绿在 wave4 应用入册前）——修复归 launcher/wave4 lane（PX_CAP 收紧或 launcher arm 映幅帽扩），本刀在其上零回归（同基线同红、标记面不多不少）。
+
+## 波4 消费的后续挂账（设计 §6 新增面，非本刀）
+
+- wm 窗生命周期封装（CREATE AVOID_SYS/事件通道/SUBMIT surface_id=wid/DESTROY）——wmd 侧事件通道件已由 SB 落（b2b865a37），封装可接。
+- Nav 页栈 + back 消费（WM_EVT_BACK → pop/优雅退出/BACK_ACK）+ ime_wanted 声明与 Key/Text 消费。
+- Dialog/Menu/Toast（v1 应用内 Overlay）。
+- settings-app 形态（1bc9c6f00 波4 样板）迁 appshell 消费：其 HEAD 注「交互路由随 berry-appshell 件⑦」——rpc/pump 面现成可用；launcher settings_io（SC lane 在途件，本批未见落账）头注「SA 合入后切换 appshell::conf」——conf 面已就位。

@@ -26,7 +26,10 @@ use core::ptr::NonNull;
 
 // W3-Q9：界常量与队列资格判单源迁 berry-chanface（判据纯函数面，host
 // 可测钉板）；本文件 re-export 保持 crate 内路径稳定（hdlface 同款纪律）。
+// W3-Q49：冻结面配对判与队列序守卫单源迁 freeze 模块（mark/clear 资格 +
+// push/pop/push_front 不变量）；物理 retain/release 与 Vec 机械留壳。
 pub use berry_chanface::{
+    clear_frozen_ok, mark_frozen_ok, pop_ok, push_front_ok, push_ok,
     queue_full_of, queue_readable, CHAN_DEPTH, CHAN_HND_MAX, CHAN_MSG_MAX,
 };
 
@@ -139,9 +142,11 @@ impl ChannelEnd {
 
     /// AM-1.5：打冻结属主标。**幂等**——已标（他主或同主）返 `false` 不重复
     /// retain（同表 duplicate 别名 / 跨进程共享端点归首冻结主，见字段注）。
-    /// retain 配平点：[`Self::clear_frozen`]（thaw 清标）与本类型 Drop 防御面。
+    /// 判据单源 = [`berry_chanface::mark_frozen_ok`]（W3-Q49——owner 以
+    /// 指针值投影，幂等/异主拒同臂钉板）。retain 配平点：[`Self::clear_frozen`]
+    /// 与本类型 Drop 防御面。
     pub fn mark_frozen(&mut self, owner: NonNull<ObjRef>) -> bool {
-        if self.frozen_owner.is_some() {
+        if !mark_frozen_ok(self.frozen_owner.map(|o| o.as_ptr() as u64)) {
             return false;
         }
         self.frozen_owner = Some(owner);
@@ -152,12 +157,13 @@ impl ChannelEnd {
     }
 
     /// AM-1.5：清由 `owner` 打的冻标（属主不符/未标返 `false` 不动——跨主
-    /// 安全）。真清时 release 配平 mark 的 retain。**调用方契约**：枚举清标
-    /// 场景（thaw 走查全表）须保证 `owner` 在整轮枚举期间存活（token Drop /
-    /// suspend 回滚序此刻必持 ≥1 引用——release 只退 mark 份额，归零销毁
-    /// 不落在枚举中途）。
+    /// 安全）。真清时 release 配平 mark 的 retain。判据单源 =
+    /// [`berry_chanface::clear_frozen_ok`]（W3-Q49——属主精确匹配钉板）。
+    /// **调用方契约**：枚举清标场景（thaw 走查全表）须保证 `owner` 在整轮
+    /// 枚举期间存活（token Drop / suspend 回滚序此刻必持 ≥1 引用——release
+    /// 只退 mark 份额，归零销毁不落在枚举中途）。
     pub fn clear_frozen(&mut self, owner: NonNull<ObjRef>) -> bool {
-        if self.frozen_owner != Some(owner) {
+        if !clear_frozen_ok(self.frozen_owner.map(|o| o.as_ptr() as u64), owner.as_ptr() as u64) {
             return false;
         }
         self.frozen_owner = None;
@@ -204,8 +210,10 @@ impl ChannelEnd {
     }
 
     /// 压一条消息进**本端**队列（send 侧实际调的是对端的这个方法）。
+    /// 守卫判据单源 = [`berry_chanface::push_ok`]（W3-Q49——容量不变量
+    /// 钉板；release 行为零变化：前置 `queue_full` 已挡，保旧无条件 push）。
     pub fn push(&mut self, msg: Message) {
-        debug_assert!(self.queue.len() < CHAN_DEPTH);
+        debug_assert!(push_ok(self.queue.len()));
         self.queue.push(msg);
     }
 
@@ -215,13 +223,19 @@ impl ChannelEnd {
     }
 
     /// 弹出队首（recv 全部成功路径的收尾；令牌已被调用方收割）。
+    /// 守卫判据单源 = [`berry_chanface::pop_ok`]（W3-Q49——空拒律钉板；
+    /// 调用方契约已窥视非空，保旧无条件 remove(0)）。
     pub fn pop(&mut self) -> Message {
+        debug_assert!(pop_ok(self.queue.len()));
         self.queue.remove(0) // 深度 ≤8：O(n) 可忽略
     }
 
     /// 消息压回**队首**（recv 失败回滚专用——消费路径的任一中途失败须保序
-    /// 复原，FIFO 语义下不能从队尾补回）。
+    /// 复原，FIFO 语义下不能从队尾补回）。守卫判据单源 =
+    /// [`berry_chanface::push_front_ok`]（W3-Q49——回滚容量不变量钉板：
+    /// 刚弹出一条必腾一空位，压回不越界）。
     pub fn push_front(&mut self, msg: Message) {
+        debug_assert!(push_front_ok(self.queue.len()));
         self.queue.insert(0, msg);
     }
 }

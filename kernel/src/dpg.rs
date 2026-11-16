@@ -625,7 +625,11 @@ extern "C" fn dpg_pager(_arg: usize) -> ! {
         // 的 block_current 同一舞蹈（KL 窗内切换的既有先例）；供给临界段
         //（supply_page + magic 写）已在唤醒点前收口，直切不打断锁窗口。
         // 同层 FIFO 不插队（严格更高才切，§A43）；sched::init 前 CURRENT
-        // null 早退（ktest 护栏内置）。
+        // null 早退（ktest 护栏内置）。W3-Q59：直切判序三门（null 护栏/
+        // has_eff_above 探峰〔幻影出选防线——无严格更高不 pick〕/严格
+        // 更高才切）+ 本供给链收口序（SupplyPage→MagicWrite→Wake→
+        // TryPreempt→KlockExit）host 钉板 berry_dpgface::fastpath——
+        // 判序律单源可测；sched 物理臂零改动（消费点锚）。
         berry_sched::try_preempt();
         hal::kern_lock::klock_exit();
     }

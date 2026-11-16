@@ -53,6 +53,7 @@ use crate::desc::{
     ViewKind, ViewSpec,
 };
 use crate::layout::CrossAlign;
+use crate::UiMain;
 use crate::swipe::{FLIP_VEL_PX_S, SNAP_DUR_NS};
 use crate::theme::Tokens;
 use crate::{Ui, UiError};
@@ -3019,4 +3020,117 @@ mod tests {
         let t: Tk = Tokens::pick(Theme::Light);
         assert_eq!(t.brand, crate::theme::BRAND);
     }
+}
+
+/// BottomTabs 页位（图标 + 标签竖排；选中态高亮）。
+#[derive(Debug, Clone, Copy)]
+pub struct TabSlot {
+    /// 图标资产 id（IconSource 消费）。
+    pub icon: u16,
+    /// 标签文本（ASCII）。
+    pub label: &'static [u8],
+    /// 选中态（true = brand 色标签 + 顶部指示条）。
+    pub selected: bool,
+}
+
+/// BottomTabs 建树：满宽 48vp 高底条 + N 页位横排（图标 24vp + 标签
+/// 12vp 竖排，选中页 label 染 brand 色 + 2vp 顶指示条）。
+/// 返回页位节点序（消费面挂 a11y/命中）。
+pub fn bottom_tabs_slots(
+    ui: &mut UiMain,
+    parent: NodeId,
+    slots: &[TabSlot],
+) -> Result<[NodeId; 8], UiError> {
+    let (vp_w, _) = ui.viewport();
+    // 底条：白底（非沉浸桌面页底色）+ 满宽 144px 高。
+    ui.add(
+        parent,
+        ViewSpec {
+            kind: ViewKind::Rect,
+            key: 0,
+            props: Props::Rect(RectProps {
+                bg: Color { r: 0xFF, g: 0xFF, b: 0xFF },
+                w: Some(vp_w),
+                h: Some(BOTTOMTABS_H),
+            }),
+        },
+    )?;
+    let row = ui.add(
+        parent,
+        ViewSpec {
+            kind: ViewKind::Row,
+            key: 0,
+            props: Props::Row(RowProps {
+                gap: 0,
+                w: Some(vp_w),
+                h: Some(BOTTOMTABS_H),
+                cross: CrossAlign::Center,
+            }),
+        },
+    )?;
+    let mut nodes = [NodeId(0); 8];
+    for (i, t) in slots.iter().enumerate() {
+        // 页位 = 竖排（图标上、标签下），等宽分摊（flex 由消费面给 w）。
+        let cell = ui.add(
+            row,
+            ViewSpec {
+                kind: ViewKind::Col,
+                key: 0,
+                props: Props::Col(ColProps {
+                    gap: 2,
+                    w: Some(vp_w / slots.len() as u32),
+                    h: Some(BOTTOMTABS_H),
+                    cross: CrossAlign::Center,
+                }),
+            },
+        )?;
+        // 选中指示条：顶 2vp 满格宽 brand 色横条。
+        if t.selected {
+            ui.add(
+                cell,
+                ViewSpec {
+                    kind: ViewKind::Rect,
+                    key: 0,
+                    props: Props::Rect(RectProps {
+                        bg: Color { r: 0x00, g: 0x7D, b: 0xFF },
+                        w: Some(vp_w / slots.len() as u32),
+                        h: Some(2 * DENSITY),
+                    }),
+                },
+            )?;
+        }
+        // 图标 24vp。
+        ui.add(
+            cell,
+            ViewSpec {
+                kind: ViewKind::Icon,
+                key: 0,
+                props: Props::Icon(IconProps {
+                    id: t.icon,
+                    fg: Color { r: 0xFF, g: 0xFF, b: 0xFF },
+                    w: Some(24 * DENSITY),
+                    h: Some(24 * DENSITY),
+                }),
+            },
+        )?;
+        // 标签 12vp（选中 = brand，未选 = 灰）。
+        let label_color = if t.selected {
+            Color { r: 0x00, g: 0x7D, b: 0xFF }
+        } else {
+            Color { r: 0x99, g: 0x99, b: 0x99 }
+        };
+        ui.add(
+            cell,
+            ViewSpec {
+                kind: ViewKind::Text,
+                key: 0,
+                props: Props::Text(TextProps {
+                    style: TextStyle { fg: label_color, bg: None, scale: FontSize::S8x16 },
+                    text: TextBuf::new(t.label)?,
+                }),
+            },
+        )?;
+        nodes[i] = cell;
+    }
+    Ok(nodes)
 }

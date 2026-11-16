@@ -54,3 +54,12 @@ berry-signal = { path = "../berry-signal", version = "0.2.0" }
 # + 机械件 + 非阻塞诊断口）；apptomb（刀2 迁 libc 路）经本 crate 间接
 # 消费——三口现役首消费者。berry-tls/signal 同款独立纯 crate 形态。
 berry-lifecycle = { path = "../berry-lifecycle", version = "0.2.0" }
+
+[features]
+# 波3-件⑦验收债清偿（W3A-IMPL-SA 记账）：launcher 图标常驻质量
+# （PX_CAP 225'000 px ≈ 879KiB）+ UiMain 87KiB + scratch 贴 1MiB 堆
+# 悬崖——wave4 七真应用图标入册后 UiMain::new 87432B 分配 abort。
+# 分档法：默认 1MiB 不动（全部 std musl bin .bss 不涨），重消费面
+# （launcher）开 feature 提档 4MiB。堆本体静态数组（alloc.rs），
+# feature 只换常量——零运行期差异。
+heap-4m = []

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """从 OpenHarmony phone 默认壁纸生成 launcher 内建 135×240 静态源图。
 
-产物：`user/bins/berry-launcher/src/wallpaper.rs`。
+产物：`user/berry-appshell/src/wallpaper.rs`（波3-件⑦ 起随 icons 模块迁 berry-appshell；源资产 ohwallpaper/ 仍在 berry-launcher）。
 
 用法：
   python3 tools/genohwallpaper.py             # 重产 wallpaper.rs（硬依赖 PIL）
@@ -35,7 +35,7 @@ except ImportError:  # selftest 结构面零依赖可跑；build() 路径硬依�
 
 REPO = Path(__file__).resolve().parent.parent
 SRC = REPO / 'user/bins/berry-launcher/ohwallpaper/img_wallpaper_default.jpg'
-OUT = REPO / 'user/bins/berry-launcher/src/wallpaper.rs'
+OUT = REPO / 'user/berry-appshell/src/wallpaper.rs'
 W, H = 135, 240
 
 
@@ -129,7 +129,7 @@ def parse_artifact(text: str) -> tuple[str, list[int]]:
 
 
 def selftest() -> int:
-    art_path = REPO / 'user/bins/berry-launcher/src/wallpaper.rs'
+    art_path = REPO / 'user/berry-appshell/src/wallpaper.rs'
     text = art_path.read_text(encoding='utf-8')
     src_hash, vals = parse_artifact(text)  # 拒面零容忍：结构坏即抛
 

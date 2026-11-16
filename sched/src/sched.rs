@@ -2948,6 +2948,10 @@ pub unsafe fn fast_wake_locked(t: NonNull<Task>) {
 /// telemetry 专用计数器区分）。
 pub fn try_preempt() -> bool {
     // SAFETY: 契约如上；CURRENT/本核 runqueue 顺序访问。
+    // W3-Q59：本判序三门（null 护栏/has_eff_above 探峰〔幻影出选防线〕/
+    // 严格更高才切）的纯值域钉板 = berry_dpgface::fastpath（dpg.rs 线1d
+    // 消费面锚；探峰过滤谓词 = berry_ringface::eligible 单源直引——零
+    // 第二实现）。物理臂（RQ 锁窗/出选/切换舞蹈）留此。
     unsafe {
         assert_preempt_balanced("try_preempt");
         let cur = current_task();

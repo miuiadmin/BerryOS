@@ -17,19 +17,24 @@ edition = "2021"
 # retained 树/SwipePager/a11y 侧表/IconSource 缝）、berry-gfx（Color/
 # FontSize 渲染常量单源）、berry-layout（布局 JSON parse/emit 单源——
 # 裁决三 PAGE_MAX=4 权威）、berry-appproto（app 域 RPC wire——W1 只挂
-# 编译面，APP_LIST/APP_SPAWN 接线归 W2）。
+# 编译面，APP_LIST/APP_SPAWN 接线归 W2）、berry-appshell（波3-件⑦：五
+# 模块通用面抽取 crate——rpc/pump/scene/icons/conf；launcher 经 Host
+# 绑定表注入 "launcher" 诊断前缀/park/FAT fd 面，行为零变化）。
 license = "Apache-2.0"
 
 [workspace]
 
 [dependencies]
-berry-libc = { path = "../../berry-libc" }
+# heap-4m：launcher 图标常驻面堆提档（PX_CAP 879KiB + UiMain 87KiB 贴
+# 1MiB 悬崖——W3A-IMPL-SA 验收记账债；feature 分档法默认 1MiB 不动）。
+berry-libc = { path = "../../berry-libc", features = ["heap-4m"] }
 berry-sys = { path = "../../berry-sys" }
 berry-guiproto = { path = "../../berry-guiproto" }
 berry-ui = { path = "../../berry-ui" }
 berry-gfx = { path = "../../berry-gfx" }
 berry-layout = { path = "../../berry-layout" }
 berry-appproto = { path = "../../berry-appproto" }
+berry-appshell = { path = "../../berry-appshell" }
 
 [profile.release]
 opt-level = "z"

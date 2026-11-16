@@ -652,6 +652,12 @@ test-host:
     # 4 对齐步进/畸形九态全 None 零 panic，host 13 测；单源 crate，
     # kernel dtb.rs 壳化消费（boot_probe 物理臂留内核侧））。
     cargo test -p berry-dtbface --target {{host}}
+    # W3-Q66：berry-wakeface（唤醒归因链纯函数面——GIC INTID→源映射
+    # 板上六活锚/SGI 段正交/SPURIOUS 不进号表/保存值域 = 九源集/槽位
+    # 钳位，host 12 测；单源 crate，HAL wake.rs 消费〔src_of 号表锚
+    # 参数化注入 + irq_exit 值域执法；wsrcface 姊妹件——号归源/源分类
+    # 进环两件合钉刀1 归因链〕）。
+    cargo test -p berry-wakeface --target {{host}}
     # W3-Q3：berry-vmoledger（VMO 页面生命周期簿记纯函数面——提交/归还
     # 资格、映射计数悬空 PTE 防线、demand 钉计数、MMIO 窗口恒空不变量，
     # host 13 测；记账状态机单源，kernel/src/vmo.rs 物理臂消费）。
@@ -741,6 +747,14 @@ test-host:
     # 特判+flags=0 回默认钉板，host 14 测；常量族与判定律单源，sched
     # policy.rs / kernel process.rs 机械壳 re-export 消费）。
     cargo test -p berry-polface --target {{host}}
+    # W3-Q72：berry-psface（PSCI 版本门/探测路由门/FEATURES 侦察纯面——
+    # version 编码域 major/minor 16+16 拆装往返/最小有效值门〔≥1.0 且非
+    # 0xFFFFFFFF——SMCCC -1 截断律〕/探测路由三形〔EFI 门→非 EL1 门→EL1
+    # 探测，门住形零 HVC〕/FEATURES 三档现实表〔0 过 -1 拒〕/SYSTEM_OFF
+    # conduit 活证判〔0.2 起强制函数不查 FEATURES〕钉板，host 9 测；
+    # 判定律单源，HAL psci.rs probe/能力门 re-export 消费〔HVC asm 臂/
+    # 诊断行/原子缓存留壳〕）。
+    cargo test -p berry-psface --target {{host}}
     # W3-Q22：berry-safeck（berry_sched_attr 结构解码+校验纯函数面——
     # size 门/尾零前向兼容律/version 门/reserved0·未知 flags/weight·
     # intent·policy·freeze_clock 域门/policy=3↔BUDGET 联动/RESERVE 与
@@ -873,9 +887,19 @@ test-host:
     # referee + 三态停帧 FramePhase + 重采样常量 guiproto 单源；
     # 验收三件 = damage/frame/offscreen）。
     cargo test --manifest-path user/Cargo.toml -p berry-ui --target {{host}}
+    # 波3-件⑦：berry-appshell（应用壳 crate——launcher 五模块纯抽取的
+    # host 纯函数面：rpc 重试分类/conf 读写谓词/scene 档位-scrim-组宽/
+    # icons 导航几何-pump damage 包络-等待帽；syscall 半程 cfg(not(test))
+    # 门（berry-fsclient 先例）——首消费者 berry-launcher musl 链由
+    # build-user 段覆盖）。
+    cargo test --manifest-path user/Cargo.toml -p berry-appshell --target {{host}}
     # GUI-4 段②：guiproto 协议面 + gui-inputd 泵/服务单测入 host 台账。
     cargo test --manifest-path user/Cargo.toml -p berry-guiproto --target {{host}}
     cargo test --manifest-path drivers/Cargo.toml -p gui-inputd --target {{host}}
+    # 波3（六波方案步骤 4）：gui-wmd 策略核（lib 双面 crate——窗口表/
+    # 焦点维护/OP_WM_BACK 500ms 兜底/事件通道广播状态机，MockPort mock
+    # 客户端喂真 wire 帧；gui-inputd 同法 host 台账，musl 面走 build-user）。
+    cargo test --manifest-path user/bins/gui-wmd/Cargo.toml --target {{host}}
     # app-0：berry-manifest（.bap manifest v0 纯函数解析——「解析器即产品」
     # 第 8 例，host 44 测：完整钉板/缺省合并/坏输入族 + 恰满边界正例/真
     # manifest fixture 共识/intent 判别值钉板 + ID_MAX 绝对钉（berry-layout
@@ -896,6 +920,13 @@ test-host:
     # 编解码黄金字节 + 严格串行会话机，host 20 测；独立小工作区绕开
     # user/Cargo.toml——manifest-path 直指 crate，同 stdhello/bsh 先例）。
     cargo test --manifest-path user/berry-ksproto/Cargo.toml --target {{host}}
+    # W1 接线（D-审计 §4 同款零接线面）：berry-softime（波3 件 C 软键盘
+    # 引擎 v1——QWERTY-lite ASCII 键位模型 + OP_INPUT_INJECT 载荷编码 +
+    # 显隐状态机，host 5 测落地时未接线 test-host；SERVICE 底窗本体随波 3
+    # 分支并主接线，此 crate 零改动吸收——接线不依赖底窗面；berry-appshell
+    # 接线去重——#356 已带 workspace 形 -p berry-appshell 行（上方波3-件⑦
+    # 段），manifest-path 重复行移除（appshell 33 测曾双跑，实测去重）。
+    cargo test --manifest-path user/berry-softime/Cargo.toml --target {{host}}
     # mkapp 门禁自检（a-3 U4：mkfat --check-fixture 同位前置——打包器门禁
     # 面此前只在 build-user 产物链上被动覆盖，门禁自身坏 = 产物链静默劣化）。
     python3 tools/mkapp.py --selftest
@@ -1131,6 +1162,24 @@ test-host:
     # 更新 TIER1_FLOOR_LIVE/冻结件（ADR #84 兼容面演进显式化，非误红）。
     # 改 bcts-run.sh / markers.sh 标记面 / bcts@*.toml 冻结件必跑。
     {{BASH}} tools/bcts-run.sh --selftest
+    # W1 接线（2026-11-13 run 43306506456 实证；base 重写剥落重放）：dns-stub
+    # 门禁自检——CI netns 内 SLIRP DNS 转发死路的 UDP:53 应答器（bsh EPL⑤
+    # getaddrinfo park → rootfs 相 RPC 族 12 标记全灭 600s FAIL）。协议腿
+    # （A/NXDOMAIN/压缩指针/畸形包）+ live UDP 闭环 13 腿；改 dns-stub.py
+    # 或 bcts wrap 必跑。
+    python3 tools/dns-stub.py --selftest
+    # W1 接线（#257 后继件；base 重写剥落重放）：bcts-parkprobe 门禁自检
+    # ——berryos-smoke.* 串口日志 park 签名分类器（dns_park/churn_starve/
+    # net_live/clean_boot 四分支钉板 + unreadable 负样本）；bcts 失败路径
+    # 自动消费（ci.yml bcts 步），签名库漂移即红。改 bcts-parkprobe.py
+    # 或 bcts 失败取证面必跑。
+    python3 tools/bcts-parkprobe.py --selftest
+    # W1 接线（#290 REJECT 修面；base 重写剥落重放）：bcts-hostfwdprobe
+    # 门禁自检——CI netns 内 SLIRP hostfwd 入向段预检（腿 A ns loopback/
+    # 18080 回显环境锚 + 腿 B QEMU -S 冻结态 18081-83 connect 探活）；
+    # netdev 单源对拍/argv/回显环回/poll 收敛/恒拒面/定谳行钉板 6 腿零
+    # QEMU。改 bcts-hostfwdprobe.py 或 smoke.sh hostfwd 面必跑。
+    python3 tools/bcts-hostfwdprobe.py --selftest
     # W1 接线（同轮·shvarcheck 自检本体）：--check 面（tools/*.sh 花括号
     # 守卫）已挂 test-host 首位，但 selftest 钉板（吞名 7 形 + 免疫 6 形
     # + 修复口径）零接线——check 的检测逻辑自身改坏（吞名形漏检/免疫形
@@ -1158,6 +1207,23 @@ test-host:
     # §测试原只记手动咒语）入 host 台账。独立小工作区，host 纯面零
     # 交叉编译；此前手动 cargo test 从未接线 = 面改坏无机器咬合。
     cargo test --manifest-path tools/berry/Cargo.toml --target {{host}}
+    # W1 接线（base 重写剥落重放，#304 面）：sync-public members 对账门——
+    # 白名单 ⊇ workspace members 机器执法（#153/#171/#227 三连 REJECT
+    # 判例族根因：新增顶层 crate 忘补白名单 = 公开仓 build 必炸）。本刀
+    # 实捕 fwcfgface/susface 两漏（#299/#307 合入后白名单笔未随刀）。
+    # 新增顶层 crate 或改 WHITELIST 必跑。
+    {{BASH}} tools/sync-public.sh --check-members
+    # W1 接线（#290 后继件，base 重写剥落重放）：sync-public 门禁自检——
+    # 出口形态钉板 21 腿（端到端同步/安检拦泄漏/members 红分支/独立入口；
+    # 零网络零真实镜像仓）。改 sync-public.sh 出口安检或形态适配面必跑。
+    {{BASH}} tools/sync-public.sh --selftest
+    # W1 接线（#214 面，base 重写剥落重放）：selftest_guard——tools 自检
+    # 接线门禁本体。「有 selftest 零自动执法」判例族 7 连发根治：tools/
+    # 下声明 --selftest 而 justfile 无接线行即红。本刀元自证——恢复时
+    # 门禁先咬到自己与 sync-public 两件未接线。改 tools/ 新增自检 /
+    # justfile test-host 面必跑（本行即自证）。
+    python3 tools/selftest_guard.py --selftest
+    python3 tools/selftest_guard.py
 
 # 忙核 arm-to-nearest-deadline（oneshot 收紧律）host 钉板：律单源
 # sched/src/oneshot.rs（sched crate 本体 no_std + HAL 依赖不编 host），

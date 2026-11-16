@@ -1,0 +1,13 @@
+[package]
+name = "berry-fwcfgface"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+
+[lib]
+name = "berry_fwcfgface"
+path = "src/lib.rs"
+
+# W3-Q86：fw_cfg 目录行走/顺序读推进/ramfb 域门纯函数面——零依赖纯判定律，
+# host 可测钉板；HAL fwcfg.rs 机械壳消费即唯一事实源（MMIO data 口读臂/
+# selector 写/DMA 描述符臂留 HAL 侧）。numface（W3-Q83）HAL-依赖-face 同族。

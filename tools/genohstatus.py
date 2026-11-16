@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """生成 OpenHarmony 状态图标与 dock 分段内建面。
 
-产物：`user/bins/berry-launcher/src/status_icons.rs`。
+产物：`user/berry-appshell/src/status_icons.rs`（波3-件⑦ 起随 icons 模块迁 berry-appshell；源资产 ohstatus/ 仍在 berry-launcher）。
 
 - signal/wifi：`ohstatus/*.svg` 官方资产光栅化后的 1-bit 白色形。
 - battery：按 OpenHarmony batteryPic 官方几何复刻（body/head 尺寸）。
@@ -29,7 +29,7 @@ except ImportError:  # selftest 结构面零依赖可跑；生成路径硬依赖
 REPO=Path(__file__).resolve().parent.parent
 ROOT=REPO/'user/bins/berry-launcher/ohstatus'
 APPS=REPO/'user/bins/appstub/apps'
-OUT=REPO/'user/bins/berry-launcher/src/status_icons.rs'
+OUT=REPO/'user/berry-appshell/src/status_icons.rs'
 WALL_SRC=REPO/'user/bins/berry-launcher/ohwallpaper/img_wallpaper_default.jpg'
 # 复用 mkapp 的宿主侧唯一 BYI1 生产者（大 dock 面走 RLE，防 launcher 二进制膨胀）。
 _spec=importlib.util.spec_from_file_location('mkapp', REPO/'tools/mkapp.py')

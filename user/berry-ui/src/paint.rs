@@ -1189,7 +1189,11 @@ fn emit_node<'a>(
             fill(enc, ax, cy - 4, 8, 2, tokens.w.select_fg, rep);
             fill(enc, ax + 2, cy - 2, 4, 2, tokens.w.select_fg, rep);
             fill(enc, ax + 3, cy, 2, 2, tokens.w.select_fg, rep);
-            // 选中索引数字（1 起——人类序；0 = 空选择器/未选）。
+            // 选中索引数字（1 起——人类序；0 = 空选择器/未选）。区带 =
+            // 左端 12px 数字带：emit_widget_text 在区带内水平居中，1 位
+            // 数字 4+(12-8)/2=6 恰落 widgets4 钉板 x=6（出生版 b9788e248
+            // 误传整框区带 b.w-20，数字悬于框心 90——生而红，波3a 验收
+            // 修复对齐钉板）。
             if p.selected > 0 || p.option_count > 0 {
                 let idx1 = p.selected.saturating_add(1); // 1 起显示
                 let mut buf = [b'0'; 3];
@@ -1204,7 +1208,7 @@ fn emit_node<'a>(
                     buf[0] = b'0' + idx1 as u8;
                     1
                 };
-                emit_widget_text(&buf[..n], b.x + 4, b.w - 20, b.y, b.h, tokens.w.select_fg, rest, enc, rep);
+                emit_widget_text(&buf[..n], b.x + 4, 12, b.y, b.h, tokens.w.select_fg, rest, enc, rep);
             }
         }
         // 波2 批 D（Input/Edit/Canvas）：Input = 白底框（焦点 = tokens.w.accent

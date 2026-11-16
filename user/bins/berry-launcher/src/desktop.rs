@@ -1,8 +1,10 @@
 //! desktop —— 桌面静态面（GUI-8 段③ W1，docs/GUI-8实施设计草案.md §4
-//! 段③「布局桩」）。
+//! 段③「布局桩」；波3-件⑦ 起状态栏底座/scrim/文本叶抽入
+//! appshell::scene——本模块只留桌面特化）。
 //!
-//! 责任：一次性建桌面保留树——OH 官方壁纸 + phone 状态栏 + SwipePager
-//! 四页 × Grid 5×4 槽板 + 常驻 Dock + a11y 骨架（32/32）。数据源 = berry-layout 布局 ×
+//! 责任：一次性建桌面保留树——OH 官方壁纸 + phone 状态栏（appshell::scene
+//! 整条装配）+ SwipePager 四页 × Grid 5×4 槽板 + 常驻 Dock + a11y 骨架
+//!（32/32）。数据源 = berry-layout 布局 ×
 //! icons 注册表（注册表空 → 布局 0 cell → 全占位格 label "-"，W1 冻结
 //! 相常态形态）。**帧循环/翻页/点击全无**——`frameloop`（W2）经本模块
 //! 公开面驱动：`pager`（on_msg/tick）+ `slots` 槽表（命中映射/spawn）+
@@ -53,21 +55,24 @@
 //! Col+20 Icon+20 Text) + filler 1 + Dock 5 + 导航条 4（Row + 3 键 Icon）
 //! = **361 节点** < MAX_NODES=512。
 
+use berry_appshell as appshell;
 use berry_gfx::cmd::Color;
 use berry_gfx::font::FontSize;
 use berry_layout::{CELL_MAX, PAGE_MAX};
 use berry_ui::desc::{
-    ColProps, GridProps, IconProps, PadProps, RectProps, RowProps, TextProps, TextStyle,
+    ColProps, GridProps, IconProps, PadProps, RectProps, RowProps, StackAlign, StackProps,
 };
 use berry_ui::layout::CrossAlign;
 use berry_ui::swipe::SwipePager;
-use berry_ui::{
-    NodeId, Props, TextBuf, UiError, UiMain, ViewKind, ViewSpec, ROLE_BUTTON, ROLE_TEXT,
-};
+use berry_ui::{NodeId, Props, TextBuf, UiError, UiMain, ViewKind, ViewSpec, ROLE_BUTTON};
+
+use appshell::scene::{self, text_spec, OH_DENSITY};
 
 use crate::icons;
 use crate::icons::{AppEntry, NO_ICON};
 use crate::layout_io::OwnedLayout;
+use crate::settings_io::{BootMode, Settings};
+use crate::syspages;
 
 // —— 桌面视窗常量（默认布局公式同源消费——layout_io::default_layout）——
 
@@ -88,18 +93,15 @@ const _: () = assert!(PAGES * SLOTS_PER_PAGE >= CELL_MAX, "OH 5×4 视窗覆盖�
 
 /// 页指示器视觉点行高（swipe.rs DOT_SIZE 镜像）。
 const DOT_ROW_H: u32 = 16;
+/// 紧凑档 BottomTabs 条高（pattern.rs BOTTOMTABS_H 紧凑 48px——网格高度
+/// 扣减项，防 800×600 底条与末行格重叠）。
+const TABS_H_COMPACT: u32 = 48;
 /// 格内图标目标边长（OH phone icon 54vp×3；108px 源经 ScaledArgb 采样）。
 const ICON_PX: u32 = 162;
 
 // —— OpenHarmony phone launcher 几何（applications_launcher 源仓
 //    PhonePresetStyleConstants / PhoneSmartDockStyleConfig；1080×1920
-//    = 360×640vp @3x 折算）——
-/// 密度（1080 物理宽 / 360vp 逻辑宽）。
-const OH_DENSITY: u32 = 3;
-/// 状态栏可见高 39vp（phone statusbar float；launcher 布局保留 44vp）。
-const OH_STATUS_H: u32 = 39;
-/// 状态栏左右 padding 24vp。
-const OH_STATUS_PAD: u32 = 24;
+//    = 360×640vp @3x 折算；密度/状态栏几何单源 = appshell::scene）——
 /// 桌面网格左右 margin 12vp。
 const OH_GRID_MARGIN: u32 = 12;
 /// 桌面 app item 80vp（网格 5×4 的行高）。
@@ -110,8 +112,8 @@ const OH_GRID_GAP: u32 = 16;
 const OH_DESKTOP_TOP: u32 = 162;
 /// Dock 视觉高 78vp（不含外层 bottom margin）。
 const OH_DOCK_H: u32 = 78;
-/// Dock 下方保留区 45vp（sysUI bottom 36vp + dock margin 9vp）。
-const OH_DOCK_BOTTOM: u32 = 45;
+/// Dock 下方保留区 45vp（sysUI bottom 36vp + dock margin 9vp——波3-件⑤
+/// 起该区与 BottomTabs 条区共享，值并入 filler 公式注释，不再单列）。
 /// Dock 源资产密度（目标 3x；源段 167×156 → 目标段 ~250×234）。
 const DOCK_SRC_DENSITY: u32 = 2;
 /// Dock 目标分段宽（167×1.5 四舍分配，和 = 1002）。
@@ -122,21 +124,12 @@ const DOCK_SLOTS: usize = 4;
 /// ROLE_LIST —— berry-ui 角色常量域（wire u8 0..=5 在册）之外的**开放
 /// 值域 host 扩展**（lib.rs 角色常量族头注明文「host 可扩」）：6 =
 /// launcher 扩 LIST（页 Grid 容器）。
-const ROLE_LIST: u8 = 6;
+pub(crate) const ROLE_LIST: u8 = 6;
 
-/// 状态栏时钟占位（REALTIME 注入缺席时的静态回退——波一刀 B；在场 =
-/// `build` 参数 `clock` 首摆真值，frameloop 每分钟 set_text 续摆）。
-const STATUS_CLOCK: &[u8] = b"12:00";
-/// 状态栏 scrim 衬底色（波一刀 B）：Rect 无 alpha 通道（berry-ui v1 纯
-/// 不透明）——预混 = 50% 黑混壁纸顶部均色（genohwallpaper 源前 15 行
-/// 实算 #06BCC6 → #035E63）。白图标/白小字对它 6.6:1，同过非文本
-/// ≥3:1 与小字 ≥4.5:1（docs/应用规范-v1.0.md §3.2）。
-const STATUS_SCRIM: Color = Color { r: 0x03, g: 0x5E, b: 0x63 };
-/// 模拟态角标字（QEMU 无信号/电池真值源——恒满格为模拟值，如实注；
-/// 02 号 §5.2：模拟器静态满格+标注是两大生态通行做法）。
-const SIM_TAG: &[u8] = b"SIM";
-/// 时钟 UTC 角标（epoch 注入口径 = UTC；本地时区换算挂账波二）。
-const UTC_TAG: &[u8] = b"UTC";
+/// 波3-件⑤：桌面页有主格的 a11y 挂载帽（预算 = A11Y_MAX 32 − 底座 16
+///（状态栏 4 + dock 4 + 五键 5 + tab 三页位 3）− 页容器 1；满注册表
+/// 20 格超帽时行主序截断——帽内诚实收口面）。
+const A11Y_CELL_CAP: usize = 15;
 
 // —— 五键导航条（owner 2026-11-13 裁定：返回/多任务/桌面/旋转/关机，
 // 键加大）——
@@ -145,8 +138,11 @@ const UTC_TAG: &[u8] = b"UTC";
 /// 命中区不缩）。
 const NAV_KEY_PX_BIG: u32 = 160;
 const NAV_KEY_PX: u32 = 44;
-/// 导航条高：big = 190（dock 底 sysUI 保留区 135 + 加高 55）；紧凑 = 44。
-const NAV_BAR_H_BIG: u32 = 190;
+/// 导航条高：big = 135（波3-件⑤ 起 = OH sysUI 45vp×3——BottomTabs 条
+/// 进驻内容列后 1920 高内须整列收口，原 owner 加高 190px 挤出屏 55px
+/// 的超额让位给条区；键面 160px 不变，条内居中上下溢 12px 视觉可容，
+/// 桌面四件全收口进屏）；紧凑 = 44。
+const NAV_BAR_H_BIG: u32 = 135;
 /// 键间隔：big 48px；紧凑 12px。
 const NAV_GAP_BIG: u32 = 48;
 const NAV_GAP: u32 = 12;
@@ -162,8 +158,8 @@ const TEST_IDS: [&[u8]; 2] = [b"APPDEMO", b"APPQUIET"];
 /// OH PhonePresetDockItem 官方顺序。
 const DOCK_IDS: [&[u8]; DOCK_SLOTS] = [b"CONTACTS", b"PHOTOS", b"SETTINGS", b"MMS"];
 
-/// 文本配色（白色 = systemui TintStateManager 默认 contentColor）。
-const TEXT_FG: Color = Color { r: 240, g: 240, b: 244 };
+/// 格 label 配色（ICON_FG 同族弱一档；文本白 TEXT_FG 单源 =
+/// appshell::scene）。
 const LABEL_FG: Color = Color { r: 228, g: 228, b: 232 };
 /// 图标 tint 色（Icon Argb 源不消费 fg——`paint.rs emit_image` 直写
 /// 像素；仅 mono/Bits 源着墨。刀 D：frameloop `set_power_face` 复用）。
@@ -205,6 +201,47 @@ pub struct Desktop {
     page_nodes: [NodeId; PAGES],
     /// a11y 当前挂载页（`u8::MAX` 哨兵 = 未挂——build 尾经 rehang(0) 初挂）。
     a11y_page: u8,
+    /// 波3-件⑤：系统页三件套（0=桌面 1=应用列表 2=设置）。
+    pub tabs: SysTabs,
+    /// 波3-件⑤：系统页框（pages 宿主 + 两 sys 页在树态 + 设置真值镜像）。
+    pub sys: SysFrame,
+    /// sys 页 a11y 挂载位（`u8::MAX` = 桌面态——sys 页 a11y 全摘）。
+    a11y_sys: u8,
+}
+
+/// 波3-件⑤：BottomTabs 三页位句柄（pattern 冻结名消费——条实例整条
+/// 重建换选，节点 id 随实例换，命中面读当帧值）。
+pub struct SysTabs {
+    /// 条宿主 Stack（内容列内恒定流槽——重建实例 z 叠其上，几何零漂）。
+    pub bar_host: NodeId,
+    /// 当前条实例（摘除锚——换选时整树 remove）。
+    pub bar_inst: NodeId,
+    /// 三页位节点（命中面——frameloop Click 路由）。
+    pub tab_nodes: [NodeId; 3],
+    /// 当前系统页（0=桌面 1=应用列表 2=设置）。
+    pub cur: u8,
+}
+
+/// 波3-件⑤：系统页框（宿主几何 + 在树 sys 页 + 设置/过滤真值镜像——
+/// frameloop 事件回写单源）。
+pub struct SysFrame {
+    /// pages 宿主 Stack（桌面页 + sys 页 z 叠——sys 页不透明底盖桌面）。
+    pub host: NodeId,
+    /// 页几何（w/h——sys 页建树参数）。
+    pub w: u32,
+    pub h: u32,
+    /// big 档（建树档位——sys 页重建时沿用）。
+    pub big: bool,
+    /// 应用列表页在树态（桌面态/设置页态 = None——离树即摘）。
+    pub apps: Option<syspages::AppPage>,
+    /// 设置页在树态。
+    pub setpg: Option<syspages::SettingsPage>,
+    /// 应用列表过滤位（AppPage 离树重建间保留——FILTER_WORDS 域）。
+    pub filter: u8,
+    /// boot 模式真值镜像（设置页 Toggle 初值 + 事件回写）。
+    pub boot: BootMode,
+    /// 设置项真值镜像（控件初值 + 事件回写）。
+    pub settings: Settings,
 }
 
 /// 五键导航节点句柄（owner 2026-11-13——frameloop 消费面）。
@@ -237,35 +274,6 @@ struct SlotPlan<'a> {
     app: Option<usize>,
 }
 
-/// S8x16 文本叶子 spec（label/状态栏共用字号档；超 `TEXT_INLINE`=64B
-/// loud Err——id≤24/label≤64 域内不可达）。
-fn text_spec(text: &[u8], fg: Color, scale: FontSize) -> Result<ViewSpec, UiError> {
-    Ok(ViewSpec {
-        kind: ViewKind::Text,
-        key: 0,
-        props: Props::Text(TextProps {
-            style: TextStyle { fg, bg: None, scale },
-            text: TextBuf::new(text)?,
-        }),
-    })
-}
-
-/// REALTIME 纳秒 → "HH:MM"（UTC 口径；恒 5B 等长——set_text 等长换文
-/// = 纯 PAINT 零重测，metrics R2-8 等宽契约吃得住）。main 建树首摆与
-/// frameloop 每分钟续摆共用单源（波一刀 B）。
-pub(crate) fn hhmm_utc(rt_ns: u64) -> [u8; 5] {
-    let s = rt_ns / 1_000_000_000;
-    let h = (s / 3600) % 24;
-    let m = (s / 60) % 60;
-    [
-        b'0' + (h / 10) as u8,
-        b'0' + (h % 10) as u8,
-        b':',
-        b'0' + (m / 10) as u8,
-        b'0' + (m % 10) as u8,
-    ]
-}
-
 /// 条目图标三态：`NO_ICON` → None（不建节点）；域内 id → Some。
 fn icon_of(e: &AppEntry) -> Option<u16> {
     if e.icon == NO_ICON {
@@ -284,32 +292,19 @@ fn is_test_app(id: &[u8]) -> bool {
     TEST_IDS.iter().any(|d| *d == id)
 }
 
-/// 状态栏 Icon spec（内建 id；宽高来自 OH 资产真值，不做运行时缩放）。
-fn status_icon_spec(id: u16) -> Result<ViewSpec, UiError> {
-    let (w, h) = match id {
-        icons::STATUS_SIGNAL => icons::STATUS_SIGNAL_DIM,
-        icons::STATUS_WIFI => icons::STATUS_WIFI_DIM,
-        icons::STATUS_BATTERY => icons::STATUS_BATTERY_DIM,
-        _ => return Err(UiError::NodeBad),
-    };
-    Ok(ViewSpec {
-        kind: ViewKind::Icon,
-        key: 0,
-        props: Props::Icon(IconProps { id, fg: TEXT_FG, w: Some(w), h: Some(h) }),
-    })
-}
-
 /// 桌面建树（main 单次调用；几何全 `ui.viewport()` 动态——裁决 D）。
 /// Err = 容量/文本域违例（NodeFull/NodeBad/TextTooLong 族）——调用方
 /// `fail` 收口（eprintln + park；监督重启归 svcmgr 域，本进程不自救）。
 /// `clock`（波一刀 B）= main 经 `berry_clock_read(CLOCK_REALTIME)` 单次
-/// 取值换算的 "HH:MM"——`None` = 注入缺席（冒烟拓扑/-kernel 相）回退
-/// `STATUS_CLOCK` 静态占位。
+/// 取值换算的 "HH:MM"（appshell::scene::hhmm_utc 单源）——`None` = 注入
+/// 缺席（冒烟拓扑/-kernel 相）回退 12:00 静态占位（scene::STATUS_CLOCK）。
 pub fn build(
     ui: &mut UiMain,
     layout: &OwnedLayout,
     reg: &[AppEntry],
     clock: Option<[u8; 5]>,
+    boot: BootMode,
+    settings: Settings,
 ) -> Result<Desktop, UiError> {
     let (vp_w, vp_h) = ui.viewport();
     // OH phone 固定几何只给 1080×1920（360×640vp @3x）；横屏/调试档走
@@ -317,9 +312,10 @@ pub fn build(
     let big = vp_w >= 600 && vp_h >= 1800;
 
     // OpenHarmony phone 档：1080×1920 = 360×640vp @3x，直接消费 OH
-    // launcher 源仓 phone 常量。800×600 调试档保留紧凑布局。
-    let status_h = if big { OH_STATUS_H * OH_DENSITY } else { 44 };
-    let status_size = if big { FontSize::S32x48 } else { FontSize::S16x32 };
+    // launcher 源仓 phone 常量。800×600 调试档保留紧凑布局。状态栏档位
+    // 表（高/主字号/角标字号）单源 = appshell::scene::status_sizes。
+    let sizes = scene::status_sizes(big);
+    let status_h = sizes.h;
     let label_size = if big { FontSize::S32x48 } else { FontSize::S16x32 };
     // 800×600 调试档：56px 源采样 + 16px label 恰容 95px 轨高。
     let icon_px = if big { ICON_PX } else { 56 };
@@ -344,18 +340,18 @@ pub fn build(
         },
     )?;
 
-    // 波一刀 B：状态栏 scrim 衬底——壁纸之上、内容列之下的整宽深色带。
+    // 波一刀 B → 刀 2（OH 形）：状态栏 scrim 衬底——壁纸之上、内容列之下的
+    // 整宽暗化带，色值 = 壁纸顶区动态采样预混（50% 黑，随壁纸跟随）。
     // 插入序 = z 序（paint 前序先发 = 先插者底）：壁纸 → 本 Rect → 内容列
     // ——**必须在 content 之前插入**（后插者盖上：尾插会把状态内容整条
-    // 压在 scrim 之下，boot 实证 2026-11-13）。预混色见 STATUS_SCRIM 注：
-    // 50% 黑混壁纸顶色，白件对比 6.6:1 达标。
+    // 压在 scrim 之下，boot 实证 2026-11-13）。
     ui.add(
         root,
         ViewSpec {
             kind: ViewKind::Rect,
             key: 0,
             props: Props::Rect(RectProps {
-                bg: STATUS_SCRIM,
+                bg: scene::status_scrim(),
                 w: Some(vp_w),
                 h: Some(status_h),
             }),
@@ -377,116 +373,25 @@ pub fn build(
         },
     )?;
 
-    // 状态栏：左时间、右 signal/wifi/battery（OH systemui phone 资产）。
-    let status = ui.add(
+    // 状态栏整条装配（appshell::scene——OH systemui phone：左 = signal/
+    // wifi（+SIM 模拟态角标），右 = battery/clock（+UTC 角标）；
+    // StatusbarConfig LayoutGroups 1/3，clock rightmost）。首摆时钟文本
+    // 对 = scene::clock_texts（真值或 12:00 占位回退）；返回时钟节点
+    //（UTC 角标建树定格不入句柄）。
+    let (clock_text, utc_text) = scene::clock_texts(&clock);
+    let time_node = scene::build_status_bar(
+        ui,
         content,
-        ViewSpec {
-            kind: ViewKind::Col,
-            key: 0,
-            props: Props::Col(ColProps {
-                gap: 0,
-                w: Some(vp_w),
-                h: Some(status_h),
-                cross: CrossAlign::Stretch,
-            }),
+        &scene::StatusBarArgs {
+            vp_w,
+            status_h,
+            big,
+            status_size: sizes.main,
+            tag_size: sizes.tag,
+            clock_text,
+            utc_text,
         },
     )?;
-    // OH systemui phone：左右 24vp；左 = signal/wifi（+SIM 模拟态角标），
-    // 右 = battery/clock（+UTC 角标）（StatusbarConfig LayoutGroups 1/3；
-    // clock rightmost——波一刀 B 两角标随组）。
-    let status_pad = if big { OH_STATUS_PAD * OH_DENSITY } else { 6 };
-    // 波一刀 B：首摆时钟文本——真值（REALTIME 换算）或 12:00 占位回退。
-    let clock_text: &[u8] = match clock.as_ref() {
-        Some(hm) => hm.as_slice(),
-        None => STATUS_CLOCK,
-    };
-    let utc_text: &[u8] = if clock.is_some() { UTC_TAG } else { b"" };
-    let time_w = clock_text.len() as u32 * status_size.cell_w() as u32;
-    // 角标字号档：大档 S16x32（117px 带内 32px 小注）/紧凑档 S8x16。
-    let tag_size = if big { FontSize::S16x32 } else { FontSize::S8x16 };
-    let sim_w = SIM_TAG.len() as u32 * tag_size.cell_w() as u32;
-    let utc_w = utc_text.len() as u32 * tag_size.cell_w() as u32;
-    let status_icon_gap = if big { 15 } else { 6 };
-    let left_w = icons::STATUS_SIGNAL_DIM.0
-        + status_icon_gap
-        + icons::STATUS_WIFI_DIM.0
-        + status_icon_gap
-        + sim_w;
-    let right_w = icons::STATUS_BATTERY_DIM.0 + status_icon_gap + time_w + status_icon_gap + utc_w;
-    let status_flex = vp_w.saturating_sub(status_pad * 2 + left_w + right_w);
-    let srow = ui.add(
-        status,
-        ViewSpec {
-            kind: ViewKind::Row,
-            key: 0,
-            props: Props::Row(RowProps {
-                gap: 0,
-                w: Some(vp_w),
-                h: Some(status_h),
-                cross: CrossAlign::Center,
-            }),
-        },
-    )?;
-    let add_status_spacer = |ui: &mut UiMain, w: u32| -> Result<NodeId, UiError> {
-        ui.add(
-            srow,
-            ViewSpec {
-                kind: ViewKind::Col,
-                key: 0,
-                props: Props::Col(ColProps {
-                    gap: 0,
-                    w: Some(w),
-                    h: Some(1),
-                    cross: CrossAlign::Center,
-                }),
-            },
-        )
-    };
-    add_status_spacer(ui, status_pad)?;
-    let left_group = ui.add(
-        srow,
-        ViewSpec {
-            kind: ViewKind::Row,
-            key: 0,
-            props: Props::Row(RowProps {
-                gap: status_icon_gap,
-                w: Some(left_w),
-                h: None,
-                cross: CrossAlign::Center,
-            }),
-        },
-    )?;
-    let sig = ui.add(left_group, status_icon_spec(icons::STATUS_SIGNAL)?)?;
-    // a11y label「simulated」（波一刀 B）：QEMU 无真值源，满格 = 模拟值
-    // ——如实标注（02 号 §6.1 M1②）；视觉面 = SIM 角标字。
-    ui.set_a11y(sig, ROLE_TEXT, b"signal simulated full")?;
-    let wifi = ui.add(left_group, status_icon_spec(icons::STATUS_WIFI)?)?;
-    ui.set_a11y(wifi, ROLE_TEXT, b"wifi simulated full")?;
-    // SIM 角标不占 a11y 槽（32/32 帽满——头注裁决八注记；模拟态如实
-    // 标注由左组两 icon 的「simulated」label 承载）。
-    ui.add(left_group, text_spec(SIM_TAG, TEXT_FG, tag_size)?)?;
-    add_status_spacer(ui, status_flex)?;
-    let right_group = ui.add(
-        srow,
-        ViewSpec {
-            kind: ViewKind::Row,
-            key: 0,
-            props: Props::Row(RowProps {
-                gap: status_icon_gap,
-                w: Some(right_w),
-                h: None,
-                cross: CrossAlign::Center,
-            }),
-        },
-    )?;
-    let battery = ui.add(right_group, status_icon_spec(icons::STATUS_BATTERY)?)?;
-    ui.set_a11y(battery, ROLE_TEXT, b"battery simulated 100")?;
-    let time_node = ui.add(right_group, text_spec(clock_text, TEXT_FG, status_size)?)?;
-    ui.set_a11y(time_node, ROLE_TEXT, clock_text)?;
-    // UTC 角标：仅 REALTIME 在场显字（空文本零宽——占位钟态不误导）；
-    // 建树定格不入句柄（运行期无改笔——见 Desktop.clock 注）。
-    ui.add(right_group, text_spec(utc_text, TEXT_FG, tag_size)?)?;
-    add_status_spacer(ui, status_pad)?;
 
     // OH calculateDesktop：首 item top 绝对 162px；扣除状态栏 132px。
     let grid_top = if big { OH_DESKTOP_TOP.saturating_sub(status_h) } else { 8 };
@@ -504,8 +409,41 @@ pub fn build(
         },
     )?;
 
+    // —— 波3-件⑤：pages 宿主 Stack + 桌面页——内容列自「状态栏 + 桌面」
+    //    改「状态栏 + pages 区 + BottomTabs 条 + 五键条」四段。桌面页 =
+    //    原 SwipePager 四页 + filler + Dock **原样内嵌**（pager 状态机与
+    //    建树面零改动，只换父位）；sys 页（应用列表/设置）按需建入本
+    //    Stack 顶层——不透明底整面盖住桌面（v1 无 clip/隐藏原语，覆盖
+    //    即隐藏——子树保活，pager 翻页态零损），离树 = remove 整页。
+    let tabs_h = if big { berry_ui::pattern::BOTTOMTABS_H } else { TABS_H_COMPACT };
+    let nav_h = if big { NAV_BAR_H_BIG } else { NAV_KEY_PX };
+    let host_h = vp_h
+        .saturating_sub(status_h + grid_top + tabs_h + nav_h)
+        .saturating_sub(if big { 0 } else { 8 }); // 紧凑档 8px 底垫（原公式同值）
+    let pages_host = ui.add(
+        content,
+        ViewSpec {
+            kind: ViewKind::Stack,
+            key: 0,
+            props: Props::Stack(StackProps { align: StackAlign::Start }),
+        },
+    )?;
+    let desktop_page = ui.add(
+        pages_host,
+        ViewSpec {
+            kind: ViewKind::Col,
+            key: 0,
+            props: Props::Col(ColProps {
+                gap: 0,
+                w: Some(vp_w),
+                h: Some(host_h),
+                cross: CrossAlign::Center,
+            }),
+        },
+    )?;
+
     let mut pager = SwipePager::new(PAGES as u8);
-    pager.attach(ui, content)?;
+    pager.attach(ui, desktop_page)?;
 
     // 布局 → 槽计划；dock 常驻 app 不重复进网格（OH SmartDock 语义）。
     // 剔除 dock 后非 dock app 按原相对序**紧致重排**——否则默认 9 app
@@ -551,9 +489,10 @@ pub fn build(
         OH_ITEM_H * OH_DENSITY * GRID_ROWS as u32
             + OH_GRID_GAP * (GRID_ROWS as u32 - 1)
     } else {
-        // 小屏无 Dock：16px 视觉点行 + 8px 底垫 + 导航条 44px（刀 D——
-        // OH 96px 指示区预留仅 phone 档）。
-        vp_h.saturating_sub(status_h + grid_top + DOT_ROW_H + NAV_KEY_PX + 8)
+        // 小屏无 Dock：16px 视觉点行 + 8px 底垫 + BottomTabs 48px + 导航
+        // 条 44px（刀 D——OH 96px 指示区预留仅 phone 档；波3-件⑤b 起底条
+        // 占位并入扣减——末行格与底条不再重叠，cell 高收窄 48px 帽内）。
+        vp_h.saturating_sub(status_h + grid_top + DOT_ROW_H + TABS_H_COMPACT + NAV_KEY_PX + 8)
     };
     let cell_h = if big {
         OH_ITEM_H * OH_DENSITY
@@ -650,14 +589,16 @@ pub fn build(
         .sum::<u32>()
         .saturating_mul(OH_DENSITY)
         / DOCK_SRC_DENSITY;
+    let dock_h = if big { OH_DOCK_H * OH_DENSITY } else { 0 };
     if big {
-        // SwipePager 点行是 16px 视觉件；OH 32vp 指示区差额并入 filler，
-        // 保证 dock top = 1920 − 45vp×3 − 78vp×3 = 1551px。
-        let before_dock = status_h + grid_top + grid_h + DOT_ROW_H;
-        let target = vp_h.saturating_sub((OH_DOCK_BOTTOM + OH_DOCK_H) * OH_DENSITY);
-        let filler = target.saturating_sub(before_dock);
+        // 波3-件⑤：filler = 页区余高扣 pager（grid+点行）与 dock——
+        // BottomTabs 进驻后 dock 整体上移 144px（OH 45vp 底保留区
+        //（sysUI 36vp + margin 9vp）与条区共享；桌面网格/dock 本体几何
+        // 零改动，仅纵向让位）。
+        let before_dock = grid_h + DOT_ROW_H;
+        let filler = host_h.saturating_sub(before_dock + dock_h);
         ui.add(
-            content,
+            desktop_page,
             ViewSpec {
                 kind: ViewKind::Col,
                 key: 0,
@@ -671,14 +612,14 @@ pub fn build(
         )?;
     }
     let dock_row = ui.add(
-        content,
+        desktop_page,
         ViewSpec {
             kind: ViewKind::Row,
             key: 0,
             props: Props::Row(RowProps {
                 gap: 0,
                 w: Some(if big { dock_w } else { 0 }),
-                h: Some(if big { OH_DOCK_H * OH_DENSITY } else { 0 }),
+                h: Some(dock_h),
                 cross: CrossAlign::Center,
             }),
         },
@@ -714,6 +655,24 @@ pub fn build(
         });
     }
     let dock: [Slot; DOCK_SLOTS] = dock.try_into().ok().expect("dock 恰四槽");
+
+    // —— 波3-件⑤：BottomTabs 条宿主（content 流槽：pages 区之下、五键
+    //    条之上）——宿主 Stack 恒定占位，条实例整条重建换选（pattern
+    //    选中态建树期烘焙——重建零漂移面；实例 z 叠宿主顶层，几何恒同）。
+    //    条本体建树在 syspages::build_tab_bar（pattern 冻结名单源）。
+    let bar_host = ui.add(
+        content,
+        ViewSpec {
+            kind: ViewKind::Stack,
+            key: 0,
+            props: Props::Stack(StackProps { align: StackAlign::Start }),
+        },
+    )?;
+    let (bar_inst, tab_nodes) = syspages::build_tab_bar(ui, bar_host, 0)?;
+    let tab_labels: [&[u8]; 3] = [b"home tab", b"apps tab", b"settings tab"];
+    for (i, &tn) in tab_nodes.iter().enumerate() {
+        ui.set_a11y(tn, ROLE_BUTTON, tab_labels[i])?;
+    }
 
     // —— 五键导航条（owner 2026-11-13：返回/多任务/桌面/旋转/关机）：
     //    content 列尾行。键 = Icon 节点整体（Argb 深底圆角块 + 白符号，
@@ -774,9 +733,218 @@ pub fn build(
         },
         page_nodes,
         a11y_page: u8::MAX,
+        tabs: SysTabs { bar_host, bar_inst, tab_nodes, cur: 0 },
+        sys: SysFrame {
+            host: pages_host,
+            w: vp_w,
+            h: host_h,
+            big,
+            apps: None,
+            setpg: None,
+            filter: syspages::FILTER_ALL,
+            boot,
+            settings,
+        },
+        a11y_sys: u8::MAX,
     };
-    rehang_a11y(ui, &mut d, 0)?;
+    rehang_view(ui, &mut d)?;
     Ok(d)
+}
+
+/// 波3-件⑤：系统页切换（整树装配面）。
+pub fn switch_sys_page(ui: &mut UiMain, d: &mut Desktop, target: u8) -> Result<u8, UiError> {
+    if target > 2 || target == d.tabs.cur {
+        return Ok(d.tabs.cur);
+    }
+    if let Some(p) = d.sys.apps.take() {
+        ui.remove(p.node)?;
+    }
+    if let Some(p) = d.sys.setpg.take() {
+        ui.remove(p.node)?;
+    }
+    match target {
+        1 => {
+            let page = syspages::build_apps(
+                ui,
+                d.sys.host,
+                d.sys.w,
+                d.sys.h,
+                d.sys.big,
+                d.sys.filter,
+            )?;
+            d.sys.apps = Some(page);
+        }
+        2 => {
+            let page = syspages::build_settings(
+                ui,
+                d.sys.host,
+                d.sys.w,
+                d.sys.h,
+                d.sys.big,
+                d.sys.boot,
+                &d.sys.settings,
+            )?;
+            d.sys.setpg = Some(page);
+        }
+        _ => {}
+    }
+    rebuild_tab_bar(ui, d, target)?;
+    d.tabs.cur = target;
+    rehang_view(ui, d)?;
+    Ok(target)
+}
+
+/// BottomTabs 实例整条重建（换选面——旧实例摘除 + 新实例入宿主顶层 +
+/// a11y 三页位重挂）。
+fn rebuild_tab_bar(ui: &mut UiMain, d: &mut Desktop, selected: u8) -> Result<(), UiError> {
+    ui.remove(d.tabs.bar_inst)?;
+    let (inst, nodes) = syspages::build_tab_bar(ui, d.tabs.bar_host, selected)?;
+    let labels: [&[u8]; 3] = [b"home tab", b"apps tab", b"settings tab"];
+    for (i, &tn) in nodes.iter().enumerate() {
+        ui.set_a11y(tn, ROLE_BUTTON, labels[i])?;
+    }
+    d.tabs.bar_inst = inst;
+    d.tabs.tab_nodes = nodes;
+    Ok(())
+}
+
+/// 可见面重挂单源（a11y + press_map 整表）——sys 页切换/桌面翻页/建树尾
+/// 三拍共用。幂等（同态零动作）。
+///
+/// - **a11y（帽 32 的预算重立法）**：底座常驻 = 状态栏 4 + dock 4 +
+///   五键 5 + tab 三页位 3 = 16；页集随可见真相挂/摘——桌面页 = 页容器
+///   + **有主格**（占位格 label 空、无 spawn 面——不占 a11y 槽；满页
+///   超预算时确定性截断，帽内诚实收口，记 W3A-IMPL-SC）；应用列表页 =
+///   List 容器 + 有主行；设置页 = 控件五件。
+/// - **press_map（帽 28）**：桌面页 = 当前页 20 格 (cell→label)（波 2
+///   批 A 落地形原样——翻页重登记即本面）；应用列表页 = 有主行
+///   (pad/text→label) 双触发面 + 过滤词自映；设置页 = 控件→行标签
+///   （控件不在 visual 白名单——反馈落标签 Text 换底）。整表替换语义。
+pub fn rehang_view(ui: &mut UiMain, d: &mut Desktop) -> Result<(), UiError> {
+    // —— a11y：sys 页集换挂 ——
+    if d.a11y_sys != d.tabs.cur {
+        match d.a11y_sys {
+            1 => {
+                if let Some(p) = d.sys.apps.as_ref() {
+                    ui.take_a11y(p.list);
+                    for r in p.rows.iter().take(p.rows_n) {
+                        ui.take_a11y(r.text);
+                    }
+                }
+            }
+            2 => {
+                if let Some(p) = d.sys.setpg.as_ref() {
+                    ui.take_a11y(p.boot_toggle);
+                    ui.take_a11y(p.theme_light);
+                    ui.take_a11y(p.theme_dark);
+                    ui.take_a11y(p.anim_seg);
+                    ui.take_a11y(p.vol_slider);
+                }
+            }
+            _ => {}
+        }
+        match d.tabs.cur {
+            1 => {
+                if let Some(p) = d.sys.apps.as_ref() {
+                    ui.set_a11y(p.list, ROLE_LIST, b"apps")?;
+                    for r in p.rows.iter().take(p.rows_n) {
+                        if let Some(idx) = r.app {
+                            let label = icons::registry()
+                                .get(idx)
+                                .map(|e| e.label_bytes())
+                                .unwrap_or(b"");
+                            ui.set_a11y(r.text, berry_ui::ROLE_LIST_ITEM, label)?;
+                        }
+                    }
+                }
+            }
+            2 => {
+                if let Some(p) = d.sys.setpg.as_ref() {
+                    ui.set_a11y(p.boot_toggle, berry_ui::ROLE_TOGGLE, b"verbose boot")?;
+                    ui.set_a11y(p.theme_light, ROLE_BUTTON, b"theme light")?;
+                    ui.set_a11y(p.theme_dark, ROLE_BUTTON, b"theme dark")?;
+                    ui.set_a11y(p.anim_seg, ROLE_BUTTON, b"animation")?;
+                    ui.set_a11y(p.vol_slider, ROLE_BUTTON, b"volume")?;
+                }
+            }
+            _ => {}
+        }
+        d.a11y_sys = d.tabs.cur;
+    }
+    // —— a11y：桌面页集（sys!=0 时整集摘除——不可见即不挂）——
+    let page = d.pager.page();
+    if d.tabs.cur == 0 {
+        rehang_a11y(ui, d, page)?;
+    } else if (d.a11y_page as usize) < PAGES {
+        ui.take_a11y(d.page_nodes[d.a11y_page as usize]);
+        for s in &d.slots[d.a11y_page as usize] {
+            ui.take_a11y(s.cell);
+        }
+        d.a11y_page = u8::MAX;
+    }
+    // —— press_map：整表替换 ——
+    rehang_press(ui, d)?;
+    Ok(())
+}
+
+/// press_map 整表重挂（当前可见页的按压反馈面——帽 28 内）。
+fn rehang_press(ui: &mut UiMain, d: &mut Desktop) -> Result<(), UiError> {
+    // 占位对（NodeId 无公开构造——页容器 0 号作哑元，全部槽位在写入
+    // 前不读）。
+    let dummy = d.page_nodes[0];
+    let mut entries = [(dummy, dummy); berry_ui::PRESS_MAP_MAX];
+    let n = match d.tabs.cur {
+        1 => {
+            let mut n = 0usize;
+            if let Some(p) = d.sys.apps.as_ref() {
+                n = syspages::row_press_entries(p, &mut entries);
+                for &wn in p.words.iter() {
+                    if n >= entries.len() {
+                        break;
+                    }
+                    entries[n] = (wn, wn);
+                    n += 1;
+                }
+            }
+            n
+        }
+        2 => {
+            let mut n = 0usize;
+            if let Some(p) = d.sys.setpg.as_ref() {
+                let pairs = [
+                    (p.boot_toggle, p.boot_label),
+                    (p.theme_light, p.theme_label),
+                    (p.theme_dark, p.theme_label),
+                    (p.anim_seg, p.anim_label),
+                    (p.vol_slider, p.vol_label),
+                ];
+                for (trig, vis) in pairs {
+                    if n >= entries.len() {
+                        break;
+                    }
+                    entries[n] = (trig, vis);
+                    n += 1;
+                }
+            }
+            n
+        }
+        _ => {
+            // 桌面页：当前页 20 格 (cell→label)——波 2 批 A 建树尾登记形
+            // 原样（trigger = 格容器 Pad；Icon/Text 直击不换底 = 原面）。
+            let page = d.pager.page() as usize;
+            let mut n = 0usize;
+            for s in d.slots[page].iter() {
+                if n >= entries.len() {
+                    break;
+                }
+                entries[n] = (s.cell, s.label_node);
+                n += 1;
+            }
+            n
+        }
+    };
+    ui.set_press_map(&entries[..n])?;
+    Ok(())
 }
 
 /// a11y 翻页重挂（裁决八：当前页 12 格 ROLE_BUTTON take/set 重挂）。
@@ -784,6 +952,13 @@ pub fn build(
 /// 刀 D 修订：页容器 ROLE_LIST 同批 take/set（4 页全挂 → 当前页单挂——
 /// 32 帽腾 3 槽给三键导航，常态恰满：4 状态 + 1 页容器 + 20 格 +
 /// 4 dock + 3 键）。
+/// a11y 桌面页集重挂（裁决八形——`rehang_view` 的桌面页半程）。
+/// W2 帧循环在 `pager.on_msg` 返 true 且页值变化时经 `rehang_view` 调
+/// 用；幂等（同页直返）。
+/// 刀 D 修订 + **波3-件⑤ 预算重立法**：页容器 ROLE_LIST + **有主格**
+/// ROLE_BUTTON（占位格无 spawn 面、label 空——不占槽）；有主格超
+/// [`A11Y_CELL_CAP`] 时确定性截断（底座 16 + 容器 1 + 帽 32 的差值
+/// ——满注册表下帽内诚实收口，截断面记 W3A-IMPL-SC）。
 pub fn rehang_a11y(ui: &mut UiMain, d: &mut Desktop, page: u8) -> Result<(), UiError> {
     if page as usize >= PAGES || page == d.a11y_page {
         return Ok(());
@@ -795,8 +970,16 @@ pub fn rehang_a11y(ui: &mut UiMain, d: &mut Desktop, page: u8) -> Result<(), UiE
         }
     }
     ui.set_a11y(d.page_nodes[page as usize], ROLE_LIST, PAGE_LABELS[page as usize])?;
+    let mut mounted = 0usize;
     for s in &d.slots[page as usize] {
+        if s.app.is_none() {
+            continue; // 占位格：无 spawn 面、label 空——不占 a11y 槽
+        }
+        if mounted >= A11Y_CELL_CAP {
+            break; // 帽内截断（确定性：行主序前 N 格）
+        }
         ui.set_a11y(s.cell, ROLE_BUTTON, s.label_buf.as_bytes())?;
+        mounted += 1;
     }
     d.a11y_page = page;
     Ok(())

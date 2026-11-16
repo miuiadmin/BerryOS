@@ -16,7 +16,7 @@ kind_divider	Divider h + insets	460	190	402098e8c612870a
 kind_spacer	Spacer flex=1 (v1 0x0)	460	160	945e2ba34a5b9c8a
 kind_stack	Stack z = child order	460	210	de3c446edc32b455
 kind_step	Step 2/8 (- value +)	460	140	3804f6dcb9c826e6
-kind_select	Select collapsed (3/4)	460	150	6de6195f69ce7888
+kind_select	Select collapsed (3/4)	460	150	f5988cfc5db90688
 kind_input	Input placeholder + focused caret	460	220	a9de573fc08899a1
 kind_edit	Edit 200x96 (v1 single run)	460	240	95a720941ffbc112
 kind_canvas	Canvas 200x200 static face	460	250	d06ef53af02c0b25
