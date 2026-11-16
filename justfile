@@ -866,9 +866,11 @@ test-host:
     # user/Cargo.toml members），--manifest-path 直指 crate（berry-ksproto
     # 先例形态）。berry-power/berry-thermal bin 挂 wired required-features
     # 门（musl 产线面——build-user PM 段开 --features wired 落链；host
-    # 测试相整跳 bin，聚合/仲裁纯核全在 lib）。berry-power 33 = 31 +
+    # 测试相整跳 bin，聚合/仲裁纯核全在 lib）。berry-power 36 = 31 +
     # CP-08 刀③ util 快照载荷面 1 测（ingest_snapshot loopback/拒面）+
-    # EAS-PA 刀 placement hint 产面律 1 测（低核偏好/平局/通道同律）。
+    # EAS-PA 刀 placement hint 产面律 1 测（低核偏好/平局/通道同律）+
+    # POLICY4 刀（v3 四动作激活）hint 产面 3 测（weight 三带+包络自律/
+    # EPP 热档联动+位自律/四动作联合一致+EM 缺席零污染）。
     cargo test --manifest-path user/bins/berry-power/Cargo.toml --target {{host}}
     cargo test --manifest-path user/bins/berry-thermal/Cargo.toml --target {{host}}
     cargo test --manifest-path user/berry-em/Cargo.toml --target {{host}}
