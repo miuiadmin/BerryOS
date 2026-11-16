@@ -98,6 +98,13 @@ __pycache__/
 # berry 宿主工具独立 target（just berry-build 显式 CARGO_TARGET_DIR）
 /tools/berry/cargo-target/
 
+# elf2flat 宿主工具独立 target（just build-user 换轨二刀起产链内构建，
+# CARGO_TARGET_DIR 显式钉此——防全局 target-dir 覆盖漂移）
+/tools/elf2flat/cargo-target/
+# elf2pe 宿主工具独立 target（test-host 接线 cargo test 默认落此处，
+# 同款防全局 target-dir 覆盖漂移口径）
+/tools/elf2pe/cargo-target/
+
 # berry 宿主工具截图产物（berry shot 默认输出 / 窗口 Cmd-S）
 /shot.png
 /berry-shot-*.png
@@ -106,13 +113,19 @@ __pycache__/
 
 # 合并 worktree 残骸与本地构建缓存（审计 2026-11-08）
 smoke-wt-*/
-.target-local/
+# W3 lane 隔离验证 target（#208/#216 判例——/.target-*/ 构建产物防误入 git）
+/.target-*/
 
 # W3 lane 隔离构建 target（unsafe 台账重产/QA 独立复现——防误入库，#208/#216 判例）
 /.target-*/
 
 # W3 lane 本地独立构建缓存（干净复现纪律——不与共享 ~/.cargo-target 互染）
 /.cargo-w3/
+/.target-*/
+
+# W3 lane 独立 no_std target 目录（CARGO_TARGET_DIR 隔离构建——#216 判例
+# 「构建产物不入库」防再犯；base 剥落后随刀补回）
+/.target-*/
 
 # SDK-2 dev 签发密钥对（just sign-user → berry-sign keygen 产物；纪律 =
 # tools/testkeys/README.md——钥本体永不入仓，README 入仓）

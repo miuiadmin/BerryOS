@@ -1077,6 +1077,21 @@ pub fn current_tag() -> usize {
     }
 }
 
+/// cbox（黑匣子）读面：当前任务调试名。空态（boot 早期 CURRENT null / 副核
+/// park）= None——调用方落 `(boot)` 类占位名。读侧契约同 [`current_task`]
+/// （屏蔽窗/锁窗内读；cbox 钩子在异常入口 PSTATE.I=1 下调用，满足）。
+pub fn current_task_name() -> Option<&'static [u8]> {
+    // SAFETY: 读侧契约同 current_task（见上）；空指针判空先行。
+    let p = unsafe { current_task() };
+    if p.is_null() {
+        None
+    } else {
+        // SAFETY: 指针来自调度器钉入槽（活跃任务，生命周期至退出回收）；
+        // name 是 &'static [u8] 只读域。
+        Some(unsafe { (*p).name })
+    }
+}
+
 /// 当前任务钉住的 Process 对象键（C-4b `process_terminate` 的自杀判别用）：
 /// `Task.pinned` 只读透传（写点 = [`try_spawn_user`] 装配期，F-E1 前移）。
 /// 0 = 无（内核任务 / boot 裸表用户进程 / ktest 期 CURRENT=null）——调用方

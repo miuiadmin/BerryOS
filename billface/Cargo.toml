@@ -1,0 +1,7 @@
+[package]
+name = "berry-billface"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+
+[dependencies]

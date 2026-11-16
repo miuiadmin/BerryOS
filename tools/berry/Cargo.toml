@@ -18,6 +18,7 @@ path = "src/main.rs"
 gui = []
 
 [dependencies]
+berry-cbox = { path = "../../user/berry-cbox" }
 clap = { version = "4.5", features = ["derive"] }
 serde_json = "1.0"
 winit = "0.30"
@@ -39,6 +40,11 @@ rustls-pki-types = { version = "1", features = ["std"] }
 # no rust-version/edition declaration so MSRV risk is nil. Used only by
 # `berry vnc web --lan` pairing (host tool, never enters the guest).
 qrcodegen = "1.8"
+# 显示加速 B1-b 壳半（#286）：wgpu Metal 呈现骨架 + overlay alpha 合成。
+# Host 工具面（不进客机镜像）。wgpu 30 系依赖树经 lock 收敛（见 Cargo.lock）。
+wgpu = "30.0"
+pollster = "1.0.1"
+bytemuck = "1.25.2"
 
 [profile.release]
 lto = true

@@ -638,6 +638,17 @@ global_asm!(
     "    mov sp, x0",
     "    movz x0, #0x30, lsl #16",           // ⑤CPACR_EL1.FPEN=0b11（同 boot.rs）
     "    msr cpacr_el1, x0",
+    // PAN 判例续（副核同 boot 主修）：CPUID 门控条件清 PSTATE.PAN——
+    // ID_AA64MMFR1.PAN bits[23:20] ≥ 1 才有 pan 寄存器（TCG A72 v8.0 无，
+    // 裸 msr pan = UNDEFINED trap 杀 CI smoke）。HVF/M 系副核异常路径
+    // 同样会自动置位，须清。
+    ".arch armv8.2-a+pan",
+    "    mrs x0, id_aa64mmfr1_el1",
+    "    ubfx x1, x0, #20, #4",
+    "    cbz x1, 8f",
+    "    msr pan, #0",
+    "8:",
+    ".arch armv8-a",
     "    isb",
     "    mrs x0, cntkctl_el1",               // ⑨复位读（per-core 证据面）
     "    str x0, [x26, #48]",

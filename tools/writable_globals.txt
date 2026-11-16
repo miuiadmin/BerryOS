@@ -8,6 +8,7 @@ arch/aarch64/src/kern_lock.rs::NAME_HOOK	scheduler
 arch/aarch64/src/kern_lock.rs::PREEMPT_ENVELOPE	scheduler
 arch/aarch64/src/kern_lock.rs::SVC_WINDOW	scheduler
 arch/aarch64/src/klog_ring.rs::KLOG_RINGS	arch
+arch/aarch64/src/lib.rs::CBOX_HOOK	arch
 arch/aarch64/src/lib.rs::DEMAND_FAULT_PROBE	arch
 arch/aarch64/src/lib.rs::DEMAND_FAULT_PROBE_EL0	arch
 arch/aarch64/src/lib.rs::IRQ_DISPATCH	arch
@@ -40,12 +41,14 @@ arch/x86_64/src/main.rs::STACK_A	boot
 arch/x86_64/src/main.rs::STACK_B	boot
 arch/x86_64/src/main.rs::TSS	boot
 kernel/src/aspace.rs::ASIDS	page-table
+kernel/src/cbox.rs::CBOX_TBL	other
 kernel/src/dpg.rs::SUPPLY_BUF	other
 kernel/src/main.rs::BSH_IN_H	boot
 kernel/src/main.rs::FB_PIPE_H	boot
 kernel/src/main.rs::INTENT_H	boot
 kernel/src/main.rs::PRESSURE_EV_REF	boot
 kernel/src/main.rs::ROOTFS	boot
+kernel/src/main.rs::ROOTFS_VOLS_LOADED	boot
 kernel/src/main.rs::RX_EV_H	boot
 kernel/src/main.rs::RX_EV_REF	boot
 kernel/src/main.rs::SIM_ACK_H	boot
@@ -60,6 +63,7 @@ kernel/src/mm.rs::FRAME_SUMS	page-table
 kernel/src/process.rs::HT_DRAINQ	other
 kernel/src/process.rs::HT_DRAINQ_LEN	other
 kernel/src/process.rs::HT_DRAINQ_WARNED	other
+kernel/src/splash.rs::STATE	other
 kernel/src/syscall.rs::BOOTSTRAP_HT	boot
 kernel/src/syscall.rs::KLOG_SNAP_STAGE	boot
 kernel/src/telemetry.rs::PRESSURE_OUTLET	telemetry
@@ -87,4 +91,3 @@ sched/src/sched.rs::SWITCH_HOOK	scheduler
 sched/src/sched.rs::TOPO	scheduler
 sched/src/sched.rs::WAKE_HOOK	scheduler
 sched/src/spin.rs::SPIN_BARK	scheduler
-kernel/src/main.rs::ROOTFS_VOLS_LOADED	boot

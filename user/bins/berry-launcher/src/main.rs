@@ -53,6 +53,7 @@
 //! 监督重启可合法重打，smoke 侧一律 grep -qF 存在性断言，禁升恰一次。
 //! **正常交互 boot 仍可点击 spawn，但不打 CLICK / click ready 任一行。**
 
+mod cbox_io;
 mod desktop;
 mod frameloop;
 mod layout_io;
@@ -141,6 +142,63 @@ fn main() {
         info.version_wm, info.windows_max, info.disp_w, info.disp_h, input_h()
     );
 
+    // —— 刀 5（2026-11-15）：状态栏系统窗立法（owner「应用进去了状态栏
+    //    也要显示」）——GUI-8 裁决 e 有限翻案：launcher 不再裸占全屏单窗，
+    //    改注册双窗——① SYSTEM 层状态栏窗（0,0,w,39px：顶部常驻带，wmd
+    //    表内 layer=SYSTEM 且 vis=SHOW）② APP 层桌面窗（AVOID_SYS——有效
+    //    几何自动从状态栏下沿起）。应用窗（appdemo 同款 AVOID_SYS）的
+    //    有效几何同样被状态栏窗裁顶 = 应用画面永不覆盖状态栏（像素面仍
+    //    共享整屏 fb——launcher present 画状态栏像素，应用 present 画
+    //    各自窗内容，v1 无合成器下以「避让几何 + 互不越界」为约）。
+    //    建窗失败 = fail loud（策略面破缺，桌面不应盲跑）。
+    let mut req = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let sys_h: u16 = 39; // OH_STATUS_H（OH phone 档同值）
+    {
+        let creq = gp::WmCreateReq {
+            layer: gp::WM_LAYER_SYSTEM,
+            flags: 0,
+            parent: 0,
+            group: 0,
+            x: 0,
+            y: 0,
+            w: info.disp_w,
+            h: sys_h as u16,
+        };
+        let m = match gp::encode_wm_create_req(&mut req, &creq) {
+            Some(m) => m,
+            None => fail("syswin enc"),
+        };
+        let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+        // 切片执法：parse 面按实长验（整缓冲 256B 恒拒——ACK_LEN 协议门）。
+        match gp::parse_wm_create_ack(&rep[..n]) {
+            Some(id) if id != 0 => {}
+            _ => fail(&format!("syswin ack bad st={}", rep[0])),
+        }
+    }
+    {
+        let creq = gp::WmCreateReq {
+            layer: gp::WM_LAYER_APP,
+            flags: gp::WM_CREATE_F_AVOID_SYS,
+            parent: 0,
+            group: 0,
+            x: 0,
+            y: sys_h,
+            w: info.disp_w,
+            h: (info.disp_h as u16).saturating_sub(sys_h),
+        };
+        let m = match gp::encode_wm_create_req(&mut req, &creq) {
+            Some(m) => m,
+            None => fail("deskwin enc"),
+        };
+        let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+        match gp::parse_wm_create_ack(&rep[..n]) {
+            Some(id) if id != 0 => {}
+            _ => fail(&format!("deskwin ack bad st={}", rep[0])),
+        }
+    }
+
     // —— 段③ 静态面接线（W1：树成帧不驱——frameloop 静默 park）——
     //    注册表初始化（W2 = app 域 APP_LIST 拉取装载；冻结相
     //    app_cli_h()==0（extras 恰 [wm]）→ 空注册表——草案 R1 修约 1/2）。
@@ -158,6 +216,17 @@ fn main() {
     // 布局装载（冻结相 → 默认布局直返零 RPC；三约束自愈面见 layout_io
     // 头注）。
     let layout = layout_io::load(icons::registry(), smoke, fs_ready);
+    // cbox 刀 2：init 落账（第三窗——排液一次 + CBOX.LOG 读-改-写；catch
+    // launcher 上一会话崩溃与 battery 后新入账 fault，与 svcmgr 两窗
+    // (boot,seq) 去重幂等互恰；失败非致命照进桌面，见 cbox_io 头注）。
+    // 冒烟相（gui8 fixture）冻结落账：ktest 每 boot 必记一条 rogue kill
+    //（on_fault 钩，故意杀非真崩溃）——boot B 排液必有新账必重写，撞
+    // gui8「跨 boot 读路径零重写」盘哈希不变量（2026-11-16 实证：CBOX.LOG
+    // 2 条 = boot 1..2 各一条 user_rogue_ptr）。fixture 世界冻结语义与
+    // layout_io 冒烟支路同族；真机/常态 boot 落账面不变。
+    if !smoke {
+        cbox_io::init_flush();
+    }
     // Ui<512> arena ≈ 75KB+（Node 144B×512 + 走查/序/快照缓冲侧表）——
     // guest 栈 stack_pages=64 = 256KB（R5 仪器定谳，svcmgr 装配注释为
     // 单源——8 页下 main+0x1c 序言即穿保护页）栈置仍不稳：Box::leak

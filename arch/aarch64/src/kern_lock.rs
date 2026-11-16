@@ -188,23 +188,13 @@ pub fn kern_release() {
 /// 分类审计（34 号修正版落类表）= `docs/SMP-S3实施设计草案.md`；NONE 类号
 /// （默认槽/越界号——实装号零）**完全不取任何锁**；凡含 copy_out/copy_in
 /// 出参链的号（walk_leaf 页表读者）或任何共享面禁落 NONE（§A113 读者面）。
-pub const SVC_CLASS_NONE: u8 = 0x00;
-/// 纯表号（0x02/0x03/0x3A/0x61/0x86/0x87）：仅 KL。
-pub const SVC_CLASS_TABLE: u8 = 0x20;
-/// wait/send 族（0x01/0x04/0x05/0x06/0x52/0x53）：SQ+RQ+表。
-pub const SVC_CLASS_SQ_RQ_TABLE: u8 = 0x2E;
-/// thread_sleep 单号（0x37）：SQ+RQ 双核升序、**无表无 KL**（slice 3-1a
-/// 降档——`nearest_deadline` KL-only 读面收口 SQ 后，SLEEPQ 全触面纯 SQ
-/// 串行，本号 handler 纯睡眠面零表触）。死锁安全（终态序 slice 3-1b 后 +
-/// S-4 判例 klock_enter 收编）：全域结构物理取用恒升序前缀（本类入口/舞蹈
-/// 取步恒持完整 SQ+RQ0+RQ1 三元组；KL 取用点（svc TABLE 类号/recompute
-/// TABLE 子窗/klock_enter 全谱窗）一律结构先取 KL 后取）——「入口持 RQ
-/// 旋 KL」「持 KL 旋结构」双边皆不存在。
-pub const SVC_CLASS_SQ_RQ: u8 = 0x0E;
-/// start 双号（0x32/0x35）：RQ 双核升序 + 表。
-pub const SVC_CLASS_RQ_TABLE: u8 = 0x2C;
-/// 全谱（0x33/0x36/0x3B + vmo/vmar 0x11..0x1B + create 族 0x31/0x34/0x51/0x54）。
-pub const SVC_CLASS_ALL: u8 = 0x3E;
+/// W3-Q67 起位集常量单源在 `berry_svcface`（host 可测纯面 crate——类位集
+/// 对 HELD_* 组装律/42 号注册表/NONE 归零律钉板）；此处 re-export 维持
+/// 既有引用路径零改动（kernel install()/trap.rs/main 断言面）。
+pub use berry_svcface::{
+    SVC_CLASS_ALL, SVC_CLASS_NONE, SVC_CLASS_RQ_TABLE, SVC_CLASS_SQ_RQ,
+    SVC_CLASS_SQ_RQ_TABLE, SVC_CLASS_TABLE,
+};
 
 /// SVC 入口**结构锁窗**槽（slice 2b）：kernel main 装
 /// `berry_sched::svc_window` 对（(class, true)=取 / (class, false)=放）。

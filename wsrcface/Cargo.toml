@@ -1,0 +1,14 @@
+[package]
+name = "berry-wsrcface"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+
+[lib]
+name = "berry_wsrcface"
+path = "src/lib.rs"
+
+# 无外部依赖：唤醒源分类/白名单/槽位钳位纯函数面（host 单测走
+# `cfg(test)` 链 std，形态抄 berry-frzface / berry-telface）。kernel
+# telemetry.rs 消费（WSRC_F_* 常量与 wake_src_class/valid/slot_index
+# 单源迁此，kernel re-export——telface HIST_BUCKETS 迁移同款纪律）。

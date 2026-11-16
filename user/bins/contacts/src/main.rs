@@ -712,7 +712,7 @@ fn build_detail(ui: &mut UiMain, a: &mut App, contact: usize) -> Result<(), UiEr
     let page = pattern::stack(ui, a.nav_root)?;
     // 不透明页底（NavHost 滑入期页下内容不可透——pattern app_bar「面层
     // Rect」叠层语同款）。
-    ui.add(page, vspec(ViewKind::Rect, Props::Rect(RectProps { bg: t.bg_page, w: None, h: None })))?;
+    ui.add(page, vspec(ViewKind::Rect, Props::Rect(RectProps { bg: t.bg_page, w: None, h: None, radius: 0 })))?;
     let body = ui.add(
         page,
         vspec(

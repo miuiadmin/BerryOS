@@ -3,8 +3,8 @@
 //! 守卫 = `just abi-check`（`tools/gen_abi.py --check`，挂 build/smoke 前置）。
 //! 消费：`syscall.rs` / `handle.rs` 经 `pub use` 转发，既有路径
 //! （`crate::syscall::NR_*`、`crate::handle::RIGHT_*` 等）零改动。
-//! 预算四元组（生成器执法，ADR #11 帽）：nr_total=39（v1 在册）/
-//! nr_defined=43（v1+1.1 常量层）/ nr_registered=42（已挂派发）/
+//! 预算四元组（生成器执法，ADR #11 帽）：nr_total=40（v1 在册）/
+//! nr_defined=44（v1+1.1 常量层）/ nr_registered=43（已挂派发）/
 //! nr_ceiling=45（nr_defined ≤ 帽 = `tools/gen_abi.py` load 执法）。
 
 use crate::handle::Rights;
@@ -17,7 +17,7 @@ use crate::handle::Rights;
 #[allow(dead_code)]
 pub const BERRY_PLATFORM_LEVEL: u32 = 1;
 
-// ---- syscall 号（ABI §4 编号表；v1 39 号在册、38 已实现）----
+// ---- syscall 号（ABI §4 编号表；v1 40 号在册、39 已实现）----
 // 在册未实现：0x85 berry_attest（派发回落 -ENOTSUP，永不 panic）
 pub const NR_HANDLE_CLOSE: usize = 0x01;
 pub const NR_HANDLE_DUPLICATE: usize = 0x02;
@@ -95,6 +95,8 @@ pub const NR_THREAD_YIELD: usize = 0x3F;
 /// 面，同 0x61/0x87）；EWMA 槽 Relaxed 原子读（统计信号无序角色）。消费端 =
 /// berry-power UtilTrack::ingest_snapshot（折叠数学单源 berry-emface）。
 pub const NR_SCHED_UTIL_SNAPSHOT: usize = 0x40;
+/// cbox 刀 1（`plans/cbox/design.md`）：异常 fatal 路径（EL0 kill 链 / EL1 halt 前）RAM 记录表的用户态排液口。无 right 门（诊断几何面——`process_get_exit_code` need=0 惯例）；表读写面零结构锁（seqlock 快照），syscall 整体走 SVC_CLASS_TABLE 在册取锁（同全体 syscall）。（2026-11-16 跨根并回：main 显示线 cbox 刀 1 并入调度线）
+pub const NR_CBOX_DRAIN: usize = 0x42;
 pub const NR_CHANNEL_CREATE: usize = 0x51;
 pub const NR_CHANNEL_SEND: usize = 0x52;
 pub const NR_CHANNEL_RECV: usize = 0x53;

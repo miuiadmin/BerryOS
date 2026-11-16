@@ -29,6 +29,7 @@
 use crate::gic;
 use crate::mmio;
 use crate::{KERNEL_VA_BASE, UART0_BASE, UART1_BASE};
+use core::sync::atomic::Ordering;
 
 /// UART0 高半直映基址（2b-2 低半退役：PA 直访必 fault；boot asm 早期打印
 /// 例外——开 MMU 前直写 PA，不走这里）。
@@ -76,8 +77,18 @@ const UART_ICR_STICKY: u32 = UART_ICR_ALL & !(UART_IMSC_RXIM); // RXIC 与 RXIM 
 pub fn uart_putc(c: u8) {
     crate::klog_ring::put(c);
     // unsafe 收敛在此：MMIO 写。
-    unsafe { mmio::write(UART, c as u32) };
+    unsafe { mmio::write(UART, c as u32) }
+    // 镜像钩子（boot verbose——splash 注册；空指针 = 无镜像面直过）。
+    let cbp = FB_MIRROR.load(Ordering::Relaxed);
+    if !cbp.is_null() {
+        unsafe { (*cbp)(c) };
+    }
 }
+
+/// framebuffer 镜像回调（kernel splash 注册；None = 无镜像面）。
+pub static FB_MIRROR: core::sync::atomic::AtomicPtr<fn(u8)> =
+    core::sync::atomic::AtomicPtr::new(0 as *const fn(u8) as *mut fn(u8));
+
 
 /// 输出一段字节串。
 pub fn uart_puts(s: &[u8]) {
@@ -87,33 +98,22 @@ pub fn uart_puts(s: &[u8]) {
 }
 
 /// 以十六进制输出 u64（固定 16 位，无 `0x` 前缀）。供 trap dump / panic 格式化复用。
+///
+/// 装配律单源 berry-numface（W3-Q83）——本函数只留发射循环。
 pub fn uart_put_hex64(v: u64) {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut buf = [0u8; 16];
-    for i in 0..16 {
-        let shift = (15 - i) * 4;
-        buf[i] = DIGITS[((v >> shift) & 0xf) as usize];
-    }
+    let mut buf = [0u8; berry_numface::HEX64_DIGITS];
+    berry_numface::write_hex64_lower(v, &mut buf);
     uart_puts(&buf);
 }
 
 /// 以十进制输出 u64（无符号，无前导空格）。供 tick 计数等复用。
+///
+/// 装配律单源 berry-numface（W3-Q83）——本函数只留发射循环。
 pub fn uart_put_dec(v: u64) {
-    if v == 0 {
-        uart_putc(b'0');
-        return;
-    }
-    let mut buf = [0u8; 20];
-    let mut n = v;
-    let mut i = 0usize;
-    while n > 0 {
-        buf[i] = b'0' + (n % 10) as u8;
-        n /= 10;
-        i += 1;
-    }
-    while i > 0 {
-        i -= 1;
-        uart_putc(buf[i]);
+    let mut buf = [0u8; berry_numface::DEC64_MAX_DIGITS];
+    let n = berry_numface::write_dec_u64(v, &mut buf);
+    for &b in &buf[..n] {
+        uart_putc(b);
     }
 }
 

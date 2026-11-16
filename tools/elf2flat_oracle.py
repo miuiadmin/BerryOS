@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
-"""ELF64 → flat binary（G-eco 编译侧，docs/G-eco编译侧设计草案.md D2）。
+"""elf2flat oracle（降格件——彻底 Rust 化轨道 b 层 #8 二刀，§5 钉板五步第 1/5 步）。
 
-解析 PT_LOAD 段，从约定基址起铺平镜像：段内取 p_filesz 字节、间隙补零，
-尾部补零到 max(p_vaddr+p_memsz) 向上取整页——.bss 覆盖由文件侧兑现
-（VMO 页零初始化语义不依赖，UserProcess::build 零特判）。
+现役转换器 = tools/elf2flat（Rust，独立小工作区，build-user 六处消费）；
+本件按 docs/彻底Rust化计划-v1.0.md §5 降格为 oracle：不再接线任何产链/
+门禁，仅供 Rust 件与 Python 件语义对拍取证（同输入 → 产物 sha256 恒等）。
+原转换核 build_flat 逐字保留（字节级语义钉板就是本件的存留价值——
+Rust 件有疑时拿本件复算对拍，#393 首刀对拍 PASS 的同一份实现）。
 
-用法：elf2flat.py <in.elf> <out.bin> [--page 4096] [--max N] [--base 0x1000]
+用法：elf2flat_oracle.py <in.elf> <out.bin> [--page 4096] [--max N] [--base 0x1000]
 
 失败一律非零退出（坏魔数/非 AArch64/ET_DYN/基址漂移/越 --max）——
 缺产物或坏产物 = 下游 include_bytes/断言炸响，不静默。
 
-自检：elf2flat.py --selftest——内存合成最小 ELF 双段正样本（gap 零填 +
+自检：elf2flat_oracle.py --selftest——内存合成最小 ELF 双段正样本（gap 零填 +
 bss 尾零 + 页取整 + 确定性逐字节钉板）+ 八拒面（坏魔数/ELF32/非
-AArch64/ET_DYN/基址漂移/段重叠/超 --max/无 PT_LOAD）。挂 just test-host
-前置（elf2pe --selftest 同位纪律：本件是 build-user 产链 6 处消费的
-门禁，门禁自身坏 = 平像静默劣化，a-3 U4）。
+AArch64/ET_DYN/基址漂移/段重叠/超 --max/无 PT_LOAD）。selftest 沿挂
+just test-host（selftest_guard 零豁免契约不动，接线即纪律——2026-11-16
+换轨二刀起现役门禁 = tools/elf2flat Rust 件 5 测 + 本件 selftest 双保险）。
 """
 import argparse
 import struct
@@ -136,7 +138,10 @@ def main() -> int:
     args = sys.argv[1:]
     if args[:1] == ["--selftest"]:
         return selftest()
-    ap = argparse.ArgumentParser(description="ELF64 AArch64 → 页对齐 flat binary")
+    ap = argparse.ArgumentParser(
+        prog="elf2flat_oracle.py",
+        description="elf2flat oracle（降格件——对拍取证专用，产链现役件 = tools/elf2flat Rust）",
+    )
     ap.add_argument("elf")
     ap.add_argument("out")
     ap.add_argument("--page", type=lambda x: int(x, 0), default=4096)

@@ -728,8 +728,7 @@ fn build_row(
             props: Props::Rect(RectProps {
                 bg: state_color(ItemState::Normal),
                 w: None,
-                h: None,
-            }),
+                h: None, radius: 0 }),
         },
     )?;
     // 内容行（置顶层——文本盖按压层之上）。
@@ -1011,7 +1010,7 @@ fn row_of(page: &Page, node: NodeId) -> Option<usize> {
 fn row_press(ui: &mut UiMain, page: &Page, row: usize, on: bool) {
     let Some(r) = page.rows[row] else { return };
     let st = if on { ItemState::Pressed } else { ItemState::Normal };
-    let props = Props::Rect(RectProps { bg: state_color(st), w: None, h: None });
+    let props = Props::Rect(RectProps { bg: state_color(st), w: None, h: None, radius: 0 });
     if let Err(e) = ui.set_props(r.press, props) {
         eprintln!("files: press set err={e:?}");
     }
