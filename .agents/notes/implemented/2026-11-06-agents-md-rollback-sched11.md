@@ -24,6 +24,7 @@ Status: implemented
 - AGENTS.md 保持 3000/3400 零警不动；1.1 面事实由调点调度-v1.1 / ABI 文档 / 沿革三处承载（已在库）。
 - 同类问题的判据可检索本篇：先问「拍板落在哪个面——v1 冻结常量还是某刀面契约」，后者不进入口。
 - 挂账处置（同日）：① ABI 文档 §计数/§1.1 注记已两轮同步（S3-a 进程级 + S3-b 嵌套 depth 已落；表行由 abi.toml 生成不手改）。② `implemented` 翻 true 的精确条件 = 0x3E handler 落 SINGLE_THREAD（当前 options 恒 0 直 `-ENOTSUP`，库里注释明示留 S3-b）——落齐后翻值 + note 同改 + `abi-check`。③ 沿革撞号整理（窗关后执行）：库里现为双（八十一）+ 顺次八十二–八十五；方案 = 兄弟五节顺移 +1（S3-b 嵌套→八十二、bug 修→八十三、S4-a→八十四、S5-a→八十五、G4 收官→八十六），Curia 节保持八十一；窗开期间任何基的改号都会被兄弟下一次保存/整文件 add 覆盖（§A133 工作树非事实源），必须等沿革活动窗关闭。
+兑现注记（2026-11-17）：②已落——abi.toml 0x3E 行 `implemented = true`（:579-583，173a070e9 S3-b 单线程冻结刀随 handler 落地翻值），上文「options 恒 0 直 `-ENOTSUP`」为翻值前时点表述；③已落——沿革撞号经后续重写收口，process_suspend/freeze 相关条目现位 docs/阶段沿革.md:3456/:3471。
 
 ## Related
 

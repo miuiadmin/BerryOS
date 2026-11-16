@@ -90,7 +90,7 @@ guifbd 无 events_read/GET_EDID/CONFIG_GEN 消费（guest.rs 全文 grep 零命�
 | ①窗口（逻辑点口径/1:1/竖屏裁定） | 01 号修法 a（逻辑点）+ docs 刀 1②（1:1） | **逻辑点口径已实现；1:1 与波二清单未落；竖屏裁定已落但文档未回填；现树 1080P 带恒黑两病** | §2.1 |
 | ②导航（02 号 M2 三键/M3 关机） | 三键 44px + berryctl power + PSCI | **已实现且超预期（五键）；EFI 相关机=诚实降级（I3 未落）** | §2.2 |
 | ③顶栏（03 号 B1 清屏 + scrim 归 02 号） | gfxdemo 退出清屏 + 状态栏衬底 | **已实现** | §2.3 |
-| ④状态栏（02 号 M1 真时钟/scrim/SIM） | 宿主注入→RTC→CLOCK_REALTIME→每分钟摆字 | **已实现全链；FACES 冻结相存量 bug 未修；SYSTEM 窗（I1）未落** | §2.4 |
+| ④状态栏（02 号 M1 真时钟/scrim/SIM） | 宿主注入→RTC→CLOCK_REALTIME→每分钟摆字 | **已实现全链；FACES 冻结相存量 bug 未修（更正 2026-11-17：已修，见 §2.4 注）；SYSTEM 窗（I1）未落** | §2.4 |
 | ⑤触摸（03 号 C 刀按压反馈+toast） | press_map 接通 + 抬帽 + spawn toast | **未实现（抬帽至 28 已备、消费面零调用）** | §2.5 |
 | ⑥字体（03 号 A 刀比例 advance） | 烘焙/图集/排布三面 + kerning 挂账 | **三面已实现；kerning/抗锯齿/CJK 挂账维持；状态栏手算宽残留** | §2.6 |
 
@@ -108,7 +108,7 @@ guifbd 无 events_read/GET_EDID/CONFIG_GEN 消费（guest.rs 全文 grep 零命�
 
 ### 2.4 痛点④状态栏
 
-已实现全链（五段）：宿主 epoch 注入（`qemu.rs:286-289`）→ 内核 `rtc.rs` 单次锚定 → `CLOCK_REALTIME` id 域（0x61 add-only，零新号红线守住）→ launcher 首摆 + 每分钟摆字（`frameloop.rs:303-312`）→ scrim `STATUS_SCRIM #035E63`（`desktop.rs:134`）+ SIM/UTC 角标（`desktop.rs:137-139`）+ a11y「simulated」如实标注（`desktop.rs:462-483`）——04 号 §2 判过 + 现树代码双证。未落：**冻结相 FACES 存量 bug 未修**——04 号:75 点名一行修（init(0) 分支补 `FACES.set(status_faces())`），现树 `user/bins/berry-launcher/src/icons.rs:158-160` `if app_h == 0 { return; }` 仍早退不设 FACES（FACES.set 只在 pull 失败分支 :163）——无数据盘拓扑下状态栏仍无图标；simbattery 真值接入（I4）未做；SYSTEM 窗升格（I1）未做；本地时区（UTC 挂账波二）未做。
+已实现全链（五段）：宿主 epoch 注入（`qemu.rs:286-289`）→ 内核 `rtc.rs` 单次锚定 → `CLOCK_REALTIME` id 域（0x61 add-only，零新号红线守住）→ launcher 首摆 + 每分钟摆字（`frameloop.rs:303-312`）→ scrim `STATUS_SCRIM #035E63`（`desktop.rs:134`）+ SIM/UTC 角标（`desktop.rs:137-139`）+ a11y「simulated」如实标注（`desktop.rs:462-483`）——04 号 §2 判过 + 现树代码双证。未落：**冻结相 FACES 存量 bug 未修**——04 号:75 点名一行修（init(0) 分支补 `FACES.set(status_faces())`），现树 `user/bins/berry-launcher/src/icons.rs:158-160` `if app_h == 0 { return; }` 仍早退不设 FACES（FACES.set 只在 pull 失败分支 :163）——无数据盘拓扑下状态栏仍无图标（更正 2026-11-17：已修——6e1697170 首修 init(0) 分支补 set_faces、b9e7d4b64 波3 迁移携行，现行位 user/berry-appshell/src/icons.rs:273/:281，终判在 [M-最终判定](M-最终判定.md) §2.1 #17；本段 :158-160/:163 行锚属迁移前旧文件）；simbattery 真值接入（I4）未做；SYSTEM 窗升格（I1）未做；本地时区（UTC 挂账波二）未做。
 
 ### 2.5 痛点⑤触摸
 
