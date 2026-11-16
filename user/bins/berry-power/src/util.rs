@@ -103,6 +103,28 @@ impl UtilTrack {
     pub fn max_est(&self) -> u32 {
         self.ewma.iter().copied().max().unwrap_or(0)
     }
+
+    /// EAS placement hint（生产激活首步——EAS-PA 刀）：消费 per-CPU EWMA
+    /// 产出放置建议——「把 util 高的核避开」（hint 选低 util 核）。词汇与
+    /// 内核消费面同源：1 = 偏 little（CPU0）/ 2 = 偏 big（CPU1）
+    /// （`sched/src/policy.rs` `Directive::placement` 三值词汇表；0 = 无意见
+    /// 不由本产面发出——有数据即有意见）。平局（两核相等）→ 1。
+    ///
+    /// **推断标注**：平局偏 little 初值 = 省电核惯例（真机非对称拓扑下
+    /// little 域能耗低；QEMU 对称表无实际差异）。overutil 饱和门与
+    /// 词汇执法都不在产面——内核消费面收口（`policy::placement_hint`
+    /// overutil 回退恒 0 / `eas_pick_place` 非 {1,2} 拒），产面无需预判。
+    ///
+    /// 镜像钉板：kernel ktest `test_eas_prod`（EASPROD）以同律独立实现
+    /// 对拍（ktest 侧故意不复用本 crate——独立副本 = 对抗性对拍，防两侧
+    /// 同源漂移互证假绿）。
+    pub fn placement_hint(&self) -> u8 {
+        if self.est(0) <= self.est(1) {
+            1 // 偏 little（CPU0 较闲或平局）
+        } else {
+            2 // 偏 big（CPU1 较闲——避开高 util 的 CPU0）
+        }
+    }
 }
 
 impl Default for UtilTrack {
@@ -238,6 +260,46 @@ mod tests {
         assert_eq!(s.ingest_snapshot(&[512, UTIL_FULL + 1]), None, "越界核");
         assert_eq!(s.ingest_snapshot(&[u32::MAX, 0]), None, "wild 越界核");
         assert_eq!((s.est(0), s.est(1)), before, "拒面零改动（全或无）");
+    }
+
+    /// placement hint 产面律（EAS 生产激活首步）：低核偏好三态 + 平局 +
+    /// 快照通道同律（`ingest_snapshot` 后同一样本集与逐核 `ingest_sample`
+    /// 产同 hint——hint 只读 EWMA 态，通道无关）。
+    #[test]
+    fn placement_hint_avoids_busy_core() {
+        // CPU0 忙（600 > 100）→ 偏 big（CPU1 = 低 util 核）。
+        let mut t = UtilTrack::new();
+        t.ingest_sample(0, 600);
+        t.ingest_sample(1, 100);
+        assert_eq!(t.placement_hint(), 2, "CPU0 高 util 须避开（hint=2 偏 big）");
+        // 镜像：CPU1 忙 → 偏 little。
+        let mut t = UtilTrack::new();
+        t.ingest_sample(0, 100);
+        t.ingest_sample(1, 600);
+        assert_eq!(t.placement_hint(), 1, "CPU1 高 util 须避开（hint=1 偏 little）");
+        // 平局（含双零初值）→ 1（偏 little——推断标注见方法注）。
+        let mut t = UtilTrack::new();
+        t.ingest_sample(0, 300);
+        t.ingest_sample(1, 300);
+        assert_eq!(t.placement_hint(), 1, "平局须偏 little");
+        assert_eq!(UtilTrack::new().placement_hint(), 1, "双零初值平局同律");
+        // 深空闲死区地板（≤7）对远端 300 仍是低核——EWMA 态直接驱动。
+        let mut t = UtilTrack::new();
+        t.ingest_sample(0, UTIL_FULL);
+        for _ in 0..64 {
+            t.ingest_window(0, 0, 625_000);
+        }
+        t.ingest_sample(1, 300);
+        assert!(t.est(0) <= 7, "前置：CPU0 须已衰减到死区地板");
+        assert_eq!(t.placement_hint(), 1, "深空闲核胜出（hint 只随 EWMA 态）");
+        // 通道同律：快照路与逐核路产同 hint。
+        let mut s = UtilTrack::new();
+        let mut p = UtilTrack::new();
+        s.ingest_snapshot(&[600, 100]).unwrap();
+        p.ingest_sample(0, 600);
+        p.ingest_sample(1, 100);
+        assert_eq!(s.placement_hint(), p.placement_hint(), "快照通道同律");
+        assert_eq!(s.placement_hint(), 2);
     }
 
     /// 坏输入拒面：cpu 越界（UTIL_NR_CPU/255）、elapsed=0（除零前置）、

@@ -1407,7 +1407,7 @@ fn yield_now_impl(enable_irq_at_end: bool) {
         if let Some(next) = picked {
             let next_ptr: *mut Task = next;
             if next_ptr != prev {
-                (*next_ptr).slice_left = hal::timer::slice_cycles();
+                (*next_ptr).slice_left = class_of_task(&*next_ptr).grant_cycles(); // M4 并线:per-task 授片(Unit=全局 slice 零漂移/Band=本带 quantum)
                 // 授片即重编（`调度器设计.md` §4.1 绝对截止时间纪律）：以授片时刻的
                 // CNTVCT 现读重算绝对截止——新任务从授片时刻起拿满片，不继承 prev
                 // 的残余倒计。
@@ -1590,7 +1590,7 @@ unsafe fn switch_away_forever_with(code: i32) -> ! {
     };
     // 被选者置 Running 已入 RQ 窗（防偷屏障）；IDLE 臂恒 Running（static
     // 初值，无人改写）——本行旧置位为同值幂等，退役。
-    (*next_ptr).slice_left = hal::timer::slice_cycles();
+    (*next_ptr).slice_left = class_of_task(&*next_ptr).grant_cycles(); // M4 并线:per-task 授片(Unit=全局 slice 零漂移/Band=本带 quantum)
     // 授片即重编（同 yield_now；`调度器设计.md` §4.1 绝对截止时间纪律）——授片给
     // 真任务才 arm：切去 idle 不 arm（idle_loop 会 mask CNTV，arm 反引入一次空 tick）。
     // SAFETY: IRQ 已屏蔽（disable_irq 或异常入口硬件屏蔽）；写 CNTV 系统寄存器；EL1。
@@ -2650,7 +2650,7 @@ pub fn block_current(obj: usize, signals: u64, deadline_vct: u64) -> WakeReason 
         // 授片即重编（`调度器设计.md` §4.1 绝对截止时间纪律；同
         // switch_away_forever：切去 idle 不 arm——idle_loop 自管 CNTV）。
         if next_ptr != addr_of_mut!(IDLE_TASK) {
-            (*next_ptr).slice_left = hal::timer::slice_cycles();
+            (*next_ptr).slice_left = class_of_task(&*next_ptr).grant_cycles(); // M4 并线:per-task 授片(Unit=全局 slice 零漂移/Band=本带 quantum)
             // SAFETY: IRQ 已屏蔽；写 CNTV 系统寄存器；EL1。
             hal::timer::arm_slice();
             // 忙核 arm-to-nearest-deadline（本刀）·件三：授片处取 min（timer.rs
@@ -3002,7 +3002,7 @@ pub fn try_preempt() -> bool {
         }
         rq_unlock(phys);
         if let Some(next_ptr) = go {
-            (*next_ptr).slice_left = hal::timer::slice_cycles();
+            (*next_ptr).slice_left = class_of_task(&*next_ptr).grant_cycles(); // M4 并线:per-task 授片(Unit=全局 slice 零漂移/Band=本带 quantum)
             // 授片即重编（同 yield_now——`调度器设计.md` §4.1 绝对截止时间
             // 纪律）：直切即授满片，以现读 CNTVCT 重算绝对截止。
             // SAFETY: IRQ 已屏蔽（调用方契约）；写 CNTV 系统寄存器；EL1。
@@ -3591,6 +3591,11 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
             hal::timer::arm_at(d);
         }
     }
+    // M4 并线（第五刀·R4 语义审计链 1 补刀）：带翻期扫——带预算越线
+    // 全员限流后无带任务可 tick/pick，翻期由本入口兜底（防带级永久饿死，
+    // 见 class::band_period_sweep 注）；无武装槽 8 冷读早退，unit 单带
+    // 负载零语义差。IRQ 上下文 = band 环扫的屏蔽窗契约语境（band.rs 同款）。
+    crate::class::band_period_sweep(rq());
     // 忙核 arm-to-nearest-deadline（本刀）·件二：**超时唤醒出口检查点**——
     // G3-1c 检查点族（「严格更高 eff 直切」）覆盖了 SVC 尾/UART RX/SGI 一切
     // 唤醒出口，唯超时唤醒（本处 expire 摘队）出口无检查点：唤醒者只入
@@ -3787,7 +3792,7 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
         }
         rq_unlock(phys);
         if let Some(next_ptr) = go {
-            (*next_ptr).slice_left = hal::timer::slice_cycles();
+            (*next_ptr).slice_left = class_of_task(&*next_ptr).grant_cycles(); // M4 并线:per-task 授片(Unit=全局 slice 零漂移/Band=本带 quantum)
             // 授片重编已由 timer::handle 的 rearm-before-EOIR 在 IRQ 入口覆盖
             // （同一中断上下文、微秒级差）——CVAL 已是满片终点，此处不再 arm。
             set_current(next_ptr);
@@ -3879,7 +3884,7 @@ pub unsafe extern "C" fn on_sgi_resched(_tf: &mut hal::trap::TrapFrame) {
     }
     rq_unlock(phys);
     if let Some(next_ptr) = go {
-        (*next_ptr).slice_left = hal::timer::slice_cycles();
+        (*next_ptr).slice_left = class_of_task(&*next_ptr).grant_cycles(); // M4 并线:per-task 授片(Unit=全局 slice 零漂移/Band=本带 quantum)
         // 授片即重编（绝对截止时间纪律，同 try_preempt/park_recheck）：
         // SGI 入口无 timer::handle 的 rearm-before-EOIR，CVAL 不重编 =
         // 授片无界——必须显式 arm。
@@ -4100,7 +4105,7 @@ unsafe fn try_steal_one() -> Option<*mut Task> {
 /// 环，cur-in-ring 常态，对核 pick 的 eligible 滤跳过）。
 unsafe fn dispatch_from_park_ctx(next_ptr: *mut Task) {
     (*next_ptr).state = TaskState::Running;
-    (*next_ptr).slice_left = hal::timer::slice_cycles();
+    (*next_ptr).slice_left = class_of_task(&*next_ptr).grant_cycles(); // M4 并线:per-task 授片(Unit=全局 slice 零漂移/Band=本带 quantum)
     // SAFETY: 本核 CVAL 重臂；PSTATE.I=1。
     unsafe { hal::timer::arm_slice() };
     set_current(next_ptr);
@@ -4138,7 +4143,7 @@ unsafe fn dispatch_from_idle(next_ptr: *mut Task) {
     assert_preempt_balanced("dispatch_from_idle");
     let idle = addr_of_mut!(IDLE_TASK);
     (*next_ptr).state = TaskState::Running;
-    (*next_ptr).slice_left = hal::timer::slice_cycles();
+    (*next_ptr).slice_left = class_of_task(&*next_ptr).grant_cycles(); // M4 并线:per-task 授片(Unit=全局 slice 零漂移/Band=本带 quantum)
     // SAFETY: 本核 CVAL 重臂（授片侧显式 arm——同 dispatch_from_park_ctx，
     // idle 派发无 CNTV IRQ 先行：wfi 醒 / SGI 醒 / 环顶重查三种入口皆然）。
     unsafe { hal::timer::arm_slice() };

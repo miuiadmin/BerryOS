@@ -160,6 +160,10 @@ fn rootfs_bytes_to_vmo(bytes: &[u8]) -> vmo::Vmo {
 /// [`berry_rootface::TOTAL_MAX`]。rootfs0 缺席 → `None`（调用方回落旧名单单卷整读，
 /// [`ROOTFS_NAME`] 原路）；卷在位但帽越/空卷/拼装对账不符 → 也 `None`
 /// （整源降级为「无 rootfs」存活，boot 期无 panic 纪律）。
+/// 装载卷数打点（P1 治理：多卷常态后「几卷在装」是分卷线第一诊断量；
+/// boot 单线程写、打点后只读——与 ROOTFS 槽同款 SAFETY 论证）。
+static mut ROOTFS_VOLS_LOADED: u32 = 1;
+
 fn fwcfg_rootfs_multivol() -> Option<RootfsBuf> {
     use berry_hal_aarch64::fwcfg;
 
@@ -207,6 +211,8 @@ fn fwcfg_rootfs_multivol() -> Option<RootfsBuf> {
     if !berry_rootface::assembly_matches(off, total) {
         return None;
     }
+    // SAFETY: boot 单线程写入后只读（打点消费）。
+    unsafe { *(&raw mut ROOTFS_VOLS_LOADED) = vols.len() as u32 };
     Some(RootfsBuf::Assembled(vmo, total))
 }
 
@@ -645,6 +651,9 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
             berry_hal_aarch64::uart_puts(src);
             berry_hal_aarch64::uart_puts(b" bytes=");
             berry_hal_aarch64::uart_put_dec(bytes as u64);
+            berry_hal_aarch64::uart_puts(b" vols=");
+            // SAFETY: boot 单线程写入后只读（与 ROOTFS 槽同窗口）。
+            berry_hal_aarch64::uart_put_dec(unsafe { *(&raw const ROOTFS_VOLS_LOADED) } as u64);
             berry_hal_aarch64::uart_puts(b"\n");
             // G5：应用 + eco 行紧随 ROOTFS ok 行（注入点时序约束见
             // bootparams::apply_and_report 头注——timer::init :737 与首

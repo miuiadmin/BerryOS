@@ -39,6 +39,7 @@
 
 pub mod cap;
 pub mod charge;
+pub mod hint;
 pub mod session;
 pub mod util;
 
@@ -52,6 +53,13 @@ pub use charge::{
 };
 pub use session::{SessEvent, PwSession};
 pub use util::{schedutil_freq_khz, UtilTrack};
+// v3 四动作 hint 产面（本刀）：①placement/②frequency/③weight/④EPP 一次
+// 读全——①③④经 policy_bind 表条目字段注入、②PM 域自家裁决（`hint`
+// 模块注定谳）。
+pub use hint::{
+    action_hints, epp_flags, weight_delta, ActionHints, THERMAL_EFF_LEVEL, UTIL_HI, UTIL_LO,
+    WEIGHT_STEP,
+};
 
 /// 策略参数（**全部推断标注**——初值 + 真机/KC 循环定标窗，ADR #68 ⑥
 /// 「初值+策略表项可调+遥测导出」口径）。
@@ -175,6 +183,20 @@ impl PowerCore {
     /// 拒面同 [`UtilTrack::ingest_window`]（cpu 越界/elapsed=0 → None）。
     pub fn ingest_util_window(&mut self, cpu: usize, accum: u64, elapsed: u64) -> Option<u32> {
         self.util.ingest_window(cpu, accum, elapsed)
+    }
+
+    /// v3 四动作 hint 读出（①placement/②frequency/③weight/④EPP 一次
+    /// 读全——纯读、零副作用）：`thermal_level` = sim 热帧遥测折叠
+    /// （`apply_snapshot` 落位；None = 尚无热帧 → ④ 无意见），util/policy
+    /// 参数同 [`Self::decide`] 消费面。bin 壳据此组 `policy_bind` 表条目
+    /// （①③④字段）与 PM 域频率裁决（②——`hint` 模块注入形态定谳）。
+    pub fn action_hints(&self) -> hint::ActionHints {
+        hint::action_hints(
+            &self.util,
+            self.thermal_level,
+            self.policy.fmax_khz,
+            self.policy.capacity,
+        )
     }
 
     /// 裸 util 样本输入口（单核直投面——快照载荷的逐核分解形态；

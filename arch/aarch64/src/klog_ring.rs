@@ -28,8 +28,10 @@ pub const KLOG_RING_SIZE: usize = 16 * 1024;
 /// 环数 = NCPUS（2 核，telemetry.rs NCPUS 同款；拓扑真化后随扩）。
 pub const KLOG_NCPUS: usize = 2;
 
-/// 单核字节环：写方 = 本核 uart_putc（fetch_add 分配）；读者任意核按
-/// 热尾丢弃容错窗读（best-effort 快照——见 snapshot_into 注）。
+/// 单核字节环：写方 = 本核 uart_putc（fetch_add 独占分配槽位 + Release）；
+/// 读者任意核按热尾丢弃容错窗读（best-effort 快照——见 snapshot_into 注）。
+/// 并发模型终态（首版 per-char seqlock 已否决——高写压读者饿死，见
+/// 三裁决笔记）：无锁单写者、无版本校验、撕裂最坏读到旧圈残值。
 struct KlogRing {
     /// 单调累计写字节数（fetch_add 分配；`pos % SIZE` 为槽位，追尾覆盖）。
     pos: AtomicUsize,
@@ -57,7 +59,11 @@ pub fn put(c: u8) {
     let cpu = crate::smp::cpu_id().min(KLOG_NCPUS - 1); // 拓扑槽外防御：收敛尾槽
     // SAFETY: 写方限本核——本核槽无他核写者；槽位独占分配互不覆盖。
     let r = unsafe { &mut (*core::ptr::addr_of_mut!(KLOG_RINGS))[cpu] };
-    let slot = r.pos.fetch_add(1, Ordering::Relaxed) % KLOG_RING_SIZE;
+    // Release（五轮 E1 收口）：发布此前本槽数据 store……fetch_add 是分配
+    // 先于数据写的，Release 在此发布的是「此前其它槽的写」——与读者
+    // Acquire load pos 配对构成跨核传播下界；每字符一次发布开销在
+    // PRINT_LOCK 窗热路径上可忽略。
+    let slot = r.pos.fetch_add(1, Ordering::Release) % KLOG_RING_SIZE;
     // SAFETY: 槽位由 fetch_add 独占分配（同核嵌套写者也各得各槽）。
     unsafe { (*core::ptr::addr_of_mut!(r.buf))[slot] = c };
 }
@@ -79,7 +85,11 @@ pub fn snapshot_into(cpu: usize, out: &mut [u8]) -> usize {
     if take == 0 {
         return 0;
     }
-    let start = avail - take; // 最旧待拷位（热尾丢弃后的有效沿）
+    // 五轮审计（E1）锚定修正：start 必须锚真实 pos（累计总数）而非截断的
+    // avail——追尾覆盖后（pos > SIZE）avail 只是「有效沿」，旧实现 start
+    // = avail - take 会返回第一圈的 [SIZE-take, SIZE) 旧段而非最新尾窗
+    //（逐字节模拟实锤；pos >= avail >= take 恒成立，索引仍模 SIZE 回绕）。
+    let start = pos - take; // 最旧待拷位（热尾丢弃后的最新窗起点，模 SIZE 取槽）
     // SAFETY: 只读 buf；窗口内槽位在 pos 快照前已分配且大概率已落字。
     let buf = unsafe { &(*core::ptr::addr_of!(r.buf)) };
     for i in 0..take {

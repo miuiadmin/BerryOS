@@ -1,5 +1,8 @@
 # 暗色刀实施清单（维八三小刀）
 
+状态：已完成历史——机制面已被 settings_io.rs（SETTINGS.CFG 五键，2026-11-16）取代，本文仅作暗色刀过程存档。
+现行实现：[user/bins/settings/src/settings_io.rs](user/bins/settings/src/settings_io.rs)（取代面 = 本文的 theme_io.rs / SETTINGS.JSN 单键持久化，五键 canonical 含旧档迁移；引擎面 theme.rs 双档与 set_theme_mode 不在取代面、仍现行）。
+
 设计一句话：给 berry-ui 补「主题档运行态」——引擎 `Ui` 持档 + `set_theme_mode` 换档即 FULL damage 重画，paint 的「组件 v1 固定色板」29 色整块迁 theme.rs `WidgetColors` 双档组（light 档逐色同值零漂移），dark 档逐色给对应值并顺手修 brand_pressed 暗档同值问题，settings 加暗色开关行（切换即时生效 + SETTINGS.JSN 单簇持久化）。
 
 依据：`research/UI-02-六大系统UI差距深研与裁决-2026-11.md` 维八裁决（根因 = 工程量缺为主；三小刀 = paint 色板豁免清零改查 token、settings 暗色开关、dark 档 brand_pressed 同值顺手修；动态取色明示不做，与 OH 同立场）与 `.agents/research/2026-11-15-UI现状十四维盘点.md` 维八现状（token 双档在册、无切换入口、paint 不查主题档）。基点 `3af18dda1`，分支 `wip/ui-dark`。
