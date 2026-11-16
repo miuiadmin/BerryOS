@@ -127,10 +127,15 @@ pub fn run() {
     // 生产消费面全链——真 SVC 过 MANAGE 门（process_create 持权 handle）
     // → STATUS gen 对账 → COMMIT 表条目 placement 字段 → policy 表 →
     // EAS `eas_place` 消费（berry-power EL0 产面的 EL1 姊妹钉板——EL0
-    // 正向链被授权立法留窗挡住，见 user/bins/berry-power/src/main.rs 尾段）。
+    // 正向链被授权立法留窗挡住，见 user/bins/berry-power/src/main.rs 尾）。
     // 末位新号纪律——ktest done 前；sched::init 前跑，par 门恒关 = 消费面
     // 证到 eas_place（place() 的 EAS 臂全决策面），place() 路由面归 SMP 相。
     test_eas_prod();
+    // SMP-01（双核全路径验证·A 面）：SMP lazy 执法 + parked 核 util 折窗
+    // 两修复的决策面钉板（ktest 期 par 门恒关——SMP 路由面归 smoke-smp
+    // 裸相/后续专项相；本测钉判定律本体：lazy 双向对账/豁免/武装门 +
+    // idle 折窗衰减律）。末位新号纪律——ktest done 前；sched::init 前跑。
+    test_smp_lazy();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
@@ -9915,3 +9920,197 @@ fn test_eas_prod() {
     berry_hal_aarch64::uart_puts(b"EASPROD ok\n");
 }
 
+/// SMP-01（双核全路径验证·A 面，2026-11-16）：SMP 两个最小修复的决策面
+/// 钉板——
+/// 1. **band lazy 执法**（`sched/src/band.rs::lazy_enforce` + `class.rs::
+///    scan_filtered` 扫描门）：带预算记账已全局原子（SMPD-3），环执法仍
+///    单环——越线核只 throttle 自己的环（对核成员照跑）、翻期 CAS 赢家
+///    只解自己的环（输家核残留；残留成员使该核 pick 恒 None → 深 park 无
+///    tick → 永不再争夺 CAS = 结构性饿死）。lazy 面 = pick 扫描逐节点按
+///    槽 `throttled` 镜像双向对账。本测钉：越线补位（对核视角）/ 翻期
+///    残留愈合（输家视角）/ deadline 豁免 / 非成员不动 / 武装门（关带零
+///    执法——unit 负载零漂移的执法面）。
+/// 2. **parked 核 util 折窗**（`sched/src/util.rs::util_idle_fold` +
+///    `sched.rs` park_recheck/idle_loop 两 park 入口）：深 park 无 tick =
+///    EWMA 冻结，冻结值喂 `any_overutilized`（EAS 全域回退门——忙核
+///    util>819 后全员退出 → 恒 overutil → EAS 整域死亡）与 `eas_place`
+///    快照。本测钉：折窗衰减律（α=1/8 单调向 0、量化死区地板 <8、
+///    未开窗零动作）。
+/// ktest 纪律：par 门恒关（ktest 先于 smp_bringup/par_enable）——真
+/// park 入口/双核路由面归 smoke-smp 相；本地环手搭（BANDM4 同款）、
+/// 段尾 configure(0) 收口（test_band 纪律）。
+#[allow(clippy::unwrap_used)]
+fn test_smp_lazy() {
+    use berry_sched::{
+        any_armed, class_fair_intent, configure, consume, cpu_util, lazy_enforce, period_check,
+        state, util_accumulate, util_idle_fold, util_reset, util_tick_window, util_window_vct,
+        Fair, Runqueue, SchedClass, Task, Topo, HELD_THROTTLE, INTENT_UNSPECIFIED, INTENT_UTILITY,
+        PRIO_DEADLINE, UTIL_NR_CPU,
+    };
+
+    /// 占位入口（手搭成员永不执行；halt 兜底——BANDM4 同款）。
+    extern "C" fn sl_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    /// 手搭成员（intent 即带键 §11；proc_tag=0 内核任务——policy::apply
+    /// 哨兵键早退零写入，BANDM4 mk 同款）。
+    fn mk(name: &'static [u8], band: u8) -> &'static mut Task {
+        let t = alloc::boxed::Box::leak(Task::new_kernel_with_as(sl_dummy, 0, name, 0, 0));
+        t.intent_effective = band;
+        t
+    }
+
+    // —— L1. 扫描门基线：前序测（BANDM4-G/LOADGEN/INTEG）全收口 → 零武装。
+    assert!(!any_armed(), "SMPLZ：L1 前序收口后须零武装带");
+
+    // —— L2. lazy 双向执法（本地环手搭——「对核」语境以环执法 API 的
+    //         缺席模拟：越线只动账不动环 = 越线核在对核；翻期只 CAS 清
+    //         镜像不扫环 = 赢家的 unthrottle_all 落在了别的环）——
+    const QUOTA: u64 = 100;
+    const PERIOD: u64 = 10_000;
+    let now0 = 1_000_000u64;
+    let mut rq = Runqueue::new();
+    let topo = Topo::single();
+    let tu = mk(b"slut".as_slice(), INTENT_UTILITY); // fair 带成员（执法对象）
+    let td = mk(b"sldl".as_slice(), INTENT_UTILITY); // deadline 豁免者（RT 屏蔽）
+    td.prio_effective = PRIO_DEADLINE;
+    td.vdeadline = now0 + PERIOD; // 远截止（不触 lazy_unthrottle 面——INTEG 同款）
+    let tn = mk(b"slun".as_slice(), INTENT_UNSPECIFIED); // unit 任务（非成员）
+    Fair.enqueue(tu, &mut rq);
+    Fair.enqueue(td, &mut rq);
+    Fair.enqueue(tn, &mut rq);
+    assert!(configure(INTENT_UTILITY, QUOTA, PERIOD, now0), "SMPLZ：L2 utility 须武装");
+    assert!(any_armed(), "SMPLZ：L2 武装后扫描门须开");
+
+    // L2a 越线补位：consume 全局账首越线（slot.throttled 置位）但**不调
+    // throttle_all**（= 越线发生在对核、本环无人扫）→ lazy 补置本环成员。
+    assert!(consume(INTENT_UTILITY, QUOTA), "SMPLZ：L2a 满额 consume 须首越线");
+    assert!(
+        state(INTENT_UTILITY).map(|s| s.throttled).unwrap_or(false),
+        "SMPLZ：L2a 越线后槽镜像须真"
+    );
+    lazy_enforce(tu as *mut Task);
+    assert!(
+        tu.held_locks & HELD_THROTTLE != 0,
+        "SMPLZ：L2a lazy 须补置对核越线的本环成员（跨环执法缝隙收口）"
+    );
+    // 豁免面：deadline 同带成员不补位（RT 屏蔽不变量）；unit 非成员不动。
+    lazy_enforce(td as *mut Task);
+    assert!(
+        td.held_locks & HELD_THROTTLE == 0,
+        "SMPLZ：L2a deadline 成员须豁免（band_member 单源）"
+    );
+    lazy_enforce(tn as *mut Task);
+    assert!(
+        tn.held_locks & HELD_THROTTLE == 0,
+        "SMPLZ：L2a unit 任务非成员须零动作"
+    );
+
+    // L2b 翻期残留愈合：CAS 赢家清了槽镜像（period_check 翻期真）但
+    // **不调 unthrottle_all**（= 赢家扫的是它自己的环、本环是输家核）→
+    // lazy 清残留。
+    assert!(
+        period_check(INTENT_UTILITY, now0 + PERIOD + 1),
+        "SMPLZ：L2b 到期须翻期（CAS 赢家视角）"
+    );
+    assert!(
+        !state(INTENT_UTILITY).map(|s| s.throttled).unwrap_or(true),
+        "SMPLZ：L2b 翻期后槽镜像须假（CAS 赢家已清）"
+    );
+    lazy_enforce(tu as *mut Task);
+    assert!(
+        tu.held_locks & HELD_THROTTLE == 0,
+        "SMPLZ：L2b lazy 须愈合输家核残留限流位（结构性饿死窗收口）"
+    );
+
+    // L2c 武装门：关带后槽位不再执法（幂等门——手动置位也不被 lazy 动，
+    // unit 负载零漂移的执法面镜像；收口义务序 = 环上位已清，直 configure(0)）。
+    assert!(!configure(INTENT_UTILITY, 0, 0, 0), "SMPLZ：L2c 收口关带须受理");
+    assert!(!any_armed(), "SMPLZ：L2c 关带后扫描门须回零");
+    tu.held_locks |= HELD_THROTTLE; // 手动模拟历史残留（关带后无执法面）
+    lazy_enforce(tu as *mut Task);
+    assert!(
+        tu.held_locks & HELD_THROTTLE != 0,
+        "SMPLZ：L2c 未武装槽 lazy 须零动作（扫描门语义）"
+    );
+    tu.held_locks &= !HELD_THROTTLE; // 清场（不留带位脏到后续族）
+    Fair.dequeue(tu, &mut rq);
+    Fair.dequeue(td, &mut rq);
+    Fair.dequeue(tn, &mut rq);
+    assert_eq!(rq.len(), 0, "SMPLZ：L2 收口环须空");
+
+    // —— L3. parked 核 util 折窗衰减律（util_idle_fold——真 CNTVCT 时间
+    //         轴；EASPROD EP-B 同款 k×u 精确折叠泵到 350 带）——
+    for c in 0..UTIL_NR_CPU {
+        util_reset(c);
+    }
+    assert_eq!(cpu_util(1), 0, "SMPLZ：L3 前置清场 CPU1 须 0");
+    util_idle_fold(1); // 未开窗：零动作（防 panic + 不开窗——EAS 面 util 恒 0）
+    assert_eq!(cpu_util(1), 0, "SMPLZ：L3 未开窗折窗须零动作");
+    let k = util_window_vct() / 1024 + 1;
+    let step = k * 1024;
+    let mut t = berry_hal_aarch64::timer::cntvct().saturating_add(1_000_000);
+    util_tick_window(1, t); // 开首窗（EB-2/EP-B 同款）
+    let mut guard = 0;
+    while cpu_util(1) < 342 {
+        util_accumulate(1, k * 350);
+        t += step;
+        util_tick_window(1, t);
+        guard += 1;
+        assert!(guard < 128, "SMPLZ：L3 泵升须收敛（guard 帽）");
+    }
+    assert!((342..=350).contains(&cpu_util(1)), "SMPLZ：L3 须泵到 350 带");
+    // 时间轴重锚：泵窗的合成步进超前于真 CNTVCT（同一真实微秒窗内跑完）
+    //——idle_fold 的回绕防御门（now ≤ start 零动作）会吞掉全部后续折窗。
+    // 先以真时刻开新窗（window_state 的 now<start → NewWindow 支路：丢既往
+    // accum、锚点回真轴——生产语义不受影响：真实 cntvct 单调，永不进该支）。
+    util_tick_window(1, berry_hal_aarch64::timer::cntvct());
+    // park 折窗衰减循环：accum 恒 0（parked 核无运行账）→ raw 恒 0 → EWMA
+    // 按 α=1/8 单调衰减至量化死区（差 <8 折 0 的地板）。TCG 虚拟时钟粒度
+    // 下相邻 cntvct 读可能同值（elapsed=0 → 回绕防御门跳过该折）——失速
+    // 计数器容忍粒度抖动，连续 64 折零进展才判fail。
+    let mut prev = cpu_util(1);
+    let mut monotone = true;
+    let mut folds = 0usize;
+    let mut stall = 0usize;
+    while prev >= 8 {
+        util_idle_fold(1);
+        let cur = cpu_util(1);
+        if cur > prev {
+            monotone = false;
+        }
+        if cur == prev {
+            stall += 1;
+            assert!(
+                stall < 64,
+                "SMPLZ：L3 折窗连续零进展（时钟粒度异常？实得 {cur}）"
+            );
+        } else {
+            stall = 0;
+        }
+        prev = cur;
+        folds += 1;
+        assert!(folds < 512, "SMPLZ：L3 折窗衰减超帽（实得 {prev}）");
+    }
+    assert!(monotone, "SMPLZ：L3 折窗衰减须单调不升");
+    assert!(
+        prev < 8,
+        "SMPLZ：L3 衰减须入量化死区（实得 {prev}——parked 冻结喂 overutil 门的收口）"
+    );
+    // 衰减中途须已出 EAS 判据带（350 → <342：跨核读者不再见冻结虚高）。
+    assert!(prev < 342, "SMPLZ：L3 衰减后须低于 350 带");
+    for c in 0..UTIL_NR_CPU {
+        util_reset(c);
+        assert_eq!(cpu_util(c), 0, "SMPLZ：L3 收口须回未启态（CPU{c}）");
+    }
+
+    // —— L4. 带参数真源复证（修复不碰带表——现役集与工厂面零漂移钉板）——
+    let ub = class_fair_intent(INTENT_UTILITY).expect("SMPLZ：L4 utility 工厂须建带");
+    assert!(
+        ub.band.quantum_ns > 0 && ub.band.latency_target_ns > 0,
+        "SMPLZ：L4 带参数须在表（零漂移）"
+    );
+
+    berry_hal_aarch64::uart_puts(b"SMPLZ ok n=3\n");
+}
