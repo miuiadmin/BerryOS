@@ -1055,7 +1055,8 @@ test-host:
     # W1 三刀（彻底 Rust 化轨道 b 层 #8）：elf2pe Rust 件 lib 纯面测试
     # （合成 ELF 全链钉板 + §A90 r_offset 槽位律回归 + 拒面 + 真实
     # berryboot.elf 对 oracle 字节级对拍〔在位时〕——elf2flat 同位纪律；
-    # 产链换轨留二刀，Python elf2pe.py 现役不动）。
+    # 产链已换轨（elf2flat 二刀同款）：build-boot 走 Rust bin，Python 版
+    # 降格 elf2pe_oracle.py 对拍取证专用）。
     cargo test --manifest-path tools/elf2pe/Cargo.toml --target {{host}}
     # Q1 续挖（a-3 U4 纪律同款）：pwrcls 门禁自检——smoke B4 掉电相三 boot
     # 的采样断言（A/B 档分类 + Boot C 后必 clean）与毒环注入都吃本件，此前
@@ -1098,7 +1099,11 @@ test-host:
     # 证书结构钉板 + 拒面（非正权/空 classes/非法 JSON/exit-code 契约）。
     python3 tools/starvation_check.py --selftest
 
-    python3 tools/elf2pe.py --selftest
+    # elf2pe 换轨二刀后双形态（elf2flat 同位纪律）：产链现役件 = Rust
+    # （上方 cargo test tools/elf2pe）；Python 版已降格 elf2pe_oracle.py
+    # ——selftest 照跑守语义钉板，Rust 件有疑时拿本件复算对拍，不降豁免表
+    # （selftest_guard 零豁免契约不动）。
+    python3 tools/elf2pe_oracle.py --selftest
     python3 tools/mkfat.py --selftest
     # A1-3a/3b：mkcpio --split 切分面守卫（重装恒等/恰整数倍/单卷/命名/
     # 拒面/陈卷清理）——rootfs 多卷产链（build-user --split 32）的编码
@@ -1596,7 +1601,7 @@ gui8-smoke-normal:
 # 构建链四步（路线修正记录 → docs/阶段沿革.md V-0a 条目）：cargo staticlib
 # （builtin aarch64-unknown-none，免 nightly）→ rust-lld 静态全链接
 # （--emit-relocs 保留重定位 + berryboot.ld 钉单 .img @0x1000、--image-base
-# 0 ⇒ RVA==vaddr）→ elf2pe.py 转 PE32+（AArch64 EFI application；「staticlib
+# 0 ⇒ RVA==vaddr）→ elf2pe（Rust 现役件，b 层 #8 三刀换轨）转 PE32+（AArch64 EFI application；「staticlib
 # + lld COFF 直链」在 stable 实测死路，故走 ELF 全链接+转换）。产物全在
 # bootloader/berryboot/out/（gitignored）。V-3 起造盘段移交 `just image`
 #（mkimage.py MBR + FAT16 整盘——单口吸收，V-1c 8MiB FAT12 盘约定随
@@ -1621,9 +1626,19 @@ AAVMF_VARS := env_var_or_default("AAVMF_VARS", "/opt/homebrew/share/qemu/edk2-ar
 RUST_LLD := `bash tools/paths.sh rust-lld`
 
 # BerryBoot 构建链（EFI 应用——V-3 起纯 EFI 产链；造盘段已吸收进 just image）
+# elf2pe 换轨（彻底 Rust 化轨道 b 层 #8 三刀）：产链现役件 = tools/elf2pe
+# （Rust 独立小工作区，#421 首刀件）；Python 版已降格 elf2pe_oracle.py
+# （对拍取证专用，不进产链）。注意：本配方 `cd bootloader/berryboot` 后
+# 相对路径失效——elf2pe bin 在 cd 前先编（cwd=仓库根，elf2flat build-user
+# 同款纪律：ROOT_ABS 取 $(pwd)、CARGO_TARGET_DIR 显式钉防全局 target-dir
+# 覆盖漂移、显式 --target host 顶根 config 锁的 build.target）。
 build-boot:
     #!/bin/sh
     set -e
+    ELF2PE="$(pwd)/tools/elf2pe/cargo-target/{{host}}/release/elf2pe"
+    CARGO_TARGET_DIR="$(pwd)/tools/elf2pe/cargo-target" \
+        cargo build --release --manifest-path tools/elf2pe/Cargo.toml \
+        --target {{host}}
     cd {{BOOT_DIR}}
     # GUI-0 修复轮：根 .cargo/config.toml 的 -fp-armv8,-neon 旗经 config 发现
     # 向上吃到这里——但那是内核 SIMD-free 合同（kernel 限定）；BerryBoot 是
@@ -1636,7 +1651,7 @@ build-boot:
         -z max-page-size=4096 -z noseparate-code \
         -T berryboot.ld -e efi_main --image-base 0 \
         -o out/berryboot.elf cargo-target/{{BOOT_TARGET}}/release/libberryboot.a
-    python3 ../../tools/elf2pe.py out/berryboot.elf out/BERRYBOOT.EFI
+    "$ELF2PE" out/berryboot.elf out/BERRYBOOT.EFI
 
 # V-3 `just image` 单口：MBR + 单 FAT16 分区整盘镜像（吸收 build-boot 造盘
 # 段）。mkimage.py = MBR 薄层（LBA 假几何 255H/63S，protective CHS 自洽即可
