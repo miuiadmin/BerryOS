@@ -34,7 +34,10 @@ pub use band::{
     band_on, configure, consume, period_check, state, throttle_all, unthrottle_all, BandBudget,
     BAND_SLOTS,
 };
-pub use class::{class_fair_intent, Fair, FairBand, RoundRobin, SchedClass, PRIO_DEADLINE};
+pub use class::{
+    class_fair_intent, class_of_task, Fair, FairBand, RoundRobin, SchedClass, TaskClass,
+    PRIO_DEADLINE,
+};
 pub use em::{
     em_domain, em_max_capacity, em_min_power, em_register, em_register_qemu_virt, em_valid,
     EmDomain, EmPoint, EM_DOMAINS_MAX, EM_POINTS_MAX,
@@ -67,6 +70,7 @@ pub use sched::{
     intent_settle_current_ext,
     intent_snapshot_current, kill_all_tasks_by_pinned, last_killed,
     lb_stats,
+    eas_pick_place, eas_place,
     on_irq_tick, on_sgi_resched, park_recheck, pi_boost_recount, pi_recompute_needed,
     pi_rq_lock, pi_rq_unlock, preempt_checkpoint, preempt_checkpoint_hits, preempt_count, preempt_disable,
     preempt_enable, print_window_enter, print_window_exit,

@@ -77,6 +77,23 @@ case "$MODE" in
     cleanup() { rm -rf "${SELF}"; }
     trap cleanup EXIT
 
+    # 合成身份（CI hermetic 面，2026-11-16 判例：CI-light 第七门首跑暴露——
+    # selftest runner 用户无 git 身份，端到端腿走主流程 commit 时
+    # `fatal: empty ident name` rc=128）。export 经 leg 子 shell 传主流程；
+    # 主流程 commit 语义不变（真实镜像提交仍用操作者身份，本 export 只在
+    # --selftest 面内生效）。
+    export GIT_AUTHOR_NAME=selftest GIT_AUTHOR_EMAIL=selftest@t
+    export GIT_COMMITTER_NAME=selftest GIT_COMMITTER_EMAIL=selftest@t
+
+    # 依赖预检（同判例：runner 缺 rsync 时腿组 rc=127 且指认散在 rsync 行）：
+    # 缺件先红并点名，别让 21 腿逐个淹死在 127 里。
+    for bin in git rsync python3; do
+      command -v "$bin" >/dev/null 2>&1 || {
+        echo "sync-public selftest: FAIL——环境缺 ${bin}（本自检需 git/rsync/python3）" >&2
+        exit 1
+      }
+    done
+
     legs=0; fails=0
     ok()  { legs=$((legs+1)); echo "sync-public selftest 腿绿：$1"; }
     bad() { legs=$((legs+1)); fails=$((fails+1)); echo "sync-public selftest 腿红：$1（期望 rc=$2 实得 rc=$3）" >&2; }

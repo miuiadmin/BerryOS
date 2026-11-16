@@ -18,3 +18,4 @@
 | 10 | `10-大窗轮复核.md` | 大窗轮复核：P0 修窗（46 号案 a——task_intent_probe 等待窗 8×slice_ns→max(8×slice_ns,400ms) 墙钟下限，三档 INTENT ok 独立重靴全到+BCTS 250Hz 判定单重跑 PASS 32/32）+CP-08 PM 接线（装配半边全实+svcmgr 预拉阻断归档实证）+P1×3 收口独立抽验 | 2026-11-15 |
 | 11 | `11-深水区复核.md` | 深水区复核：svcmgr D3 帽扩容+berry-power/berry-thermal 预拉段（CP-08 消费半边，装配半边上轮 10 号已验）+idle 修窗首刀（kernel 面 fw_cfg 键 opt/berry/demo-face 门控 task_a/task_b 忙环+boot EL0 演示舰队） | 2026-11-15 |
 | 12 | `12-终窗复核.md` | 终窗复核：svcmgr idle 后半（x1 env gift 通道递 demo-face 门+单核 idle 停泊补+yield 账本防线）与 Intent M4 带骨架（IntentBand 六行+class_fair_intent 工厂〔Fair 零改〕+policy band 位）独立复核 | 2026-11-15 |
+| 13 | `13-首份AB报告-loadgen.md` | CP-06 首份产出：A/B 负载生成器（kernel boot 门控探针——interactive/utility/burst 三类受控负载 × 唤醒→运行延迟采样）+ 首份四组 A/B 数据（timer_slack off/on × band off/on × 3 reps）：slack 轴成立（utility p50 +25.9ms@30ms 声明、interactive 零牺牲、无 intent 时惰性实证）、band 轴真系统 null（FairBand 全委托的入场券纪律实证——零假设基线钉案）、吞吐四臂不变；判据分列执行（divergence 列缺席归 POLICY-S、能耗列未测 CP-15 口径）；策略维 5.0→6.5（推断） | 2026-11-16 |

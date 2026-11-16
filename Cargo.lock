@@ -30,6 +30,13 @@ name = "berry-dtbface"
 version = "0.2.0"
 
 [[package]]
+name = "berry-em"
+version = "0.2.0"
+dependencies = [
+ "berry-emface",
+]
+
+[[package]]
 name = "berry-emface"
 version = "0.2.0"
 
@@ -168,6 +175,7 @@ name = "berry-sched"
 version = "0.2.0"
 dependencies = [
  "berry-bandface",
+ "berry-em",
  "berry-emface",
  "berry-frzface",
  "berry-hal-aarch64",

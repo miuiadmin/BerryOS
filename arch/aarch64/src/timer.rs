@@ -326,9 +326,11 @@ pub fn slice_cycles_for_hz(hz: u64) -> u64 {
     (if f != 0 { f } else { read_cntfrq() }) / hz
 }
 
-/// 设置时间片频率覆盖（G5 boot-params 消费端专用——kernel/src/
-/// bootparams.rs `apply_and_report` 唯一调用点）。`hz == 0` 忽略（=
-/// 缺席）；域执法 [16,1024] 归解析端。
+/// 设置时间片频率覆盖（G5 boot-params 消费端 + CP-06 loadgen 探针早读块
+/// 共两个调用点——kernel/src/bootparams.rs `apply_and_report`（产品通道）与
+/// kernel/src/main.rs loadgen 配置早读（探针通道，2026-11-16 起；四臂同值
+/// 注入见 research/调度彻底计划/13-首份AB报告-loadgen.md §1.1））。`hz == 0`
+/// 忽略（= 缺席）；域执法 [16,1024] 归解析端。
 ///
 /// # Safety
 /// boot 单线程、[`init`] 之前调用（init 消费覆盖值换算 SLICE）。

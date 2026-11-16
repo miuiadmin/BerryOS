@@ -514,6 +514,30 @@ pub extern "C" fn berry_sched_util_snapshot(util: *mut u32, count: usize) -> Sta
     unsafe { sys(nr::SCHED_UTIL_SNAPSHOT, util as usize, count, 0, 0, 0, 0) }
 }
 
+// —— 遥测环读口（阶段五第 16/17 步：0x84 telemetry_open——klog 快照首域）——
+
+/// 0x84：v3 号提前实现（klog 快照首域翻真）。abi.toml 在册但 stage=v3——
+/// 常量层只产 v1/1.1 行（gen_abi.py defined 集），`nr::TELEMETRY_OPEN` 不
+/// 存在，故本文件私有字面量封 svc（POLICY_BIND_NR 同款先例；v3 常量层
+/// 落地后换 `nr::` 常量名——同内核派发注）。
+const TELEMETRY_OPEN_NR: usize = 0x84;
+
+/// `berry_telemetry_open` op 域：0 = klog 快照（内核日志字节环——串口
+/// 镜像；bsh `dmesg` 的数据源）。后续波次补 SwitchRec / WakeRec 环读口
+/// （各自新 op 值，add-only）。
+pub const TELEMETRY_OP_KLOG: u64 = 0;
+
+/// `berry_telemetry_klog_snapshot(buf, len)`（0x84 op=0，阶段五第 17 步
+/// bsh dmesg 消费面）：读内核日志字节环到 `buf`，**返回 >0 = 实写字节数**
+/// （CPU 序拼接、环内旧→新、每环贡献最新 min(有效, len) 字节——dmesg 尾部
+/// 语义）；op 域外 → -ENOTSUP、len=0/超 16KiB 单读帽 → -EINVAL、坏指针
+/// → -EFAULT。零 handle 零权利位（系统级遥测读面——`berry_sched_util_
+/// snapshot` 同族口径）。
+#[no_mangle]
+pub extern "C" fn berry_telemetry_klog_snapshot(buf: *mut u8, len: usize) -> Status {
+    unsafe { sys(TELEMETRY_OPEN_NR, TELEMETRY_OP_KLOG as usize, buf as usize, len, 0, 0, 0) }
+}
+
 // —— 策略注入（0x83：机制在内核、策略可插拔的带内接口——表形面（COMMIT/
 // SHADOW_COMMIT）+ STATUS 面逐 op 包装）——
 

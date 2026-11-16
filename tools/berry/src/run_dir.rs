@@ -95,8 +95,8 @@ impl Drop for RunDir {
 /// M2 第 10 步：~/.berry/run/index.jsonl 历史索引（O_APPEND + 单次
 /// write_all 整行——O_APPEND 只保证单次 write(2) 原子，writeln! 对未缓冲
 /// File 是多次 write，两进程并发时行会字符级交错〔审计实抓〕；宿主崩溃
-/// 必漏 end 行——消费方枚举以扫目录兜底，索引只是加速与留痕，不是权威
-/// 清单）。
+/// 必漏 end 行——消费方枚举以扫目录兜底；索引当前纯留痕（零读方，清
+/// 理/历史查询消费留待后续刀），不是权威清单）。
 fn append_index(line: &serde_json::Value) {
     let path = home().join("run").join("index.jsonl");
     if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -211,4 +211,56 @@ pub fn wait_for_file(path: &Path, timeout: Duration) -> Result<()> {
         "timed out waiting for {}",
         path.display()
     )))
+}
+
+// ---- 四轮审计（D4）：RunDir/index 生命周期护栏——write_all 整行格式与
+// ---- create/drop 两行契约此前零护栏（writeln! 并发交错是三轮实抓回归面）。
+// ---- env（BERRY_HOME）是进程级全局：跨模块的 env 触碰测试（本文件与
+// ---- commands.rs find_run / qemu.rs vars_store·data_disk）共用此锁串行。
+/// 测试串行锁：所有改 BERRY_HOME / BERRY_VARS_PERSIST / BERRY_DATA_DISK
+/// 的测试经此锁互斥（cargo test 同二进制多线程跑，env 是进程级全局）。
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+mod run_dir_tests {
+    use super::*;
+
+    #[test]
+    fn index_lifecycle_two_lines() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let tmp = std::env::temp_dir().join(format!("berry-run-test-{}", std::process::id()));
+        std::env::set_var("BERRY_HOME", &tmp);
+        std::fs::remove_dir_all(&tmp).ok();
+        {
+            let mut run = RunDir::create("t", false).unwrap();
+            run.keep();
+        } // Drop：先记 run.end（kept=true）再按 keep 免删
+        let idx = std::fs::read_to_string(tmp.join("run").join("index.jsonl")).unwrap();
+        let lines: Vec<&str> = idx.lines().collect();
+        assert_eq!(lines.len(), 2, "index 两行契约: {idx}");
+        assert!(lines[0].contains("\"t\":\"run.start\""));
+        assert!(lines[0].contains("\"label\":\"t\""));
+        assert!(lines[1].contains("\"t\":\"run.end\""));
+        assert!(lines[1].contains("\"kept\":true"));
+        assert!(idx.ends_with('\n'), "单行整写含尾换行");
+        std::env::remove_var("BERRY_HOME");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn drop_without_keep_removes_dir() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let tmp = std::env::temp_dir().join(format!("berry-run-test2-{}", std::process::id()));
+        std::env::set_var("BERRY_HOME", &tmp);
+        std::fs::remove_dir_all(&tmp).ok();
+        let path;
+        {
+            let run = RunDir::create("t2", false).unwrap();
+            path = run.path().to_path_buf();
+        }
+        assert!(!path.exists(), "非 keep 的 Drop 删目录");
+        std::env::remove_var("BERRY_HOME");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
 }

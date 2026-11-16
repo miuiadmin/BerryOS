@@ -14,6 +14,7 @@ mod boot;
 pub mod fwcfg;
 pub mod gic;
 pub mod kern_lock;
+pub mod klog_ring;
 pub mod lockdep;
 mod mmio;
 mod mmu;
