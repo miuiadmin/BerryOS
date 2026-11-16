@@ -20,6 +20,7 @@ members = [
     "kernel",
     "lkface",
     "mm",
+    "numface",
     "piface",
     "polface",
     "rootface",

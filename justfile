@@ -775,6 +775,13 @@ test-host:
     # 〔spread ∧ ttbr0!=0 ∧ eligible〕，host 13 测；判定律单源，sched.rs
     # 五点消费）。
     cargo test -p berry-balface --target {{host}}
+
+    # W3-Q83：berry-numface（UART 整数格式化族纯面钉板——u64 十进制〔无前
+    # 导/0 单位/20 位极值〕+ 固定 16 位小写 hex〔trap dump 形〕+ 8 位大写
+    # hex〔PSCI 诊断行形〕+ 两位十进制〔寄存器下标〕+ 键值行/寄存器行装配
+    # 序 + 敌意短缓冲安全律 + 数字表冻结锚，host 10 测；装配律单源，HAL
+    # uart.rs·trap.rs·psci.rs 四消费点壳化）。
+    cargo test -p berry-numface --target {{host}}
     # W3-Q20：berry-polface（policy O(1) 快照查表数学 + SchedAttr 位选律
     # 纯函数面——散列锚点指纹/256 键桶覆盖摊平律/饱和窗全占+窗尽缺席/
     # 空槽早退缺席/桶 255 回绕落位/first-wins 不覆写/窗满拒收不入表/
