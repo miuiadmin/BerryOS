@@ -497,7 +497,7 @@ fn stack_spacer_divider_layout_semantics() {
             ViewSpec {
                 kind: ViewKind::Rect,
                 key: 0,
-                props: Props::Rect(RectProps { bg: bg(1, 2, 3), w: Some(100), h: Some(50) }),
+                props: Props::Rect(RectProps { bg: bg(1, 2, 3), w: Some(100), h: Some(50), radius: 0 }),
             },
         )
         .unwrap();
@@ -507,7 +507,7 @@ fn stack_spacer_divider_layout_semantics() {
             ViewSpec {
                 kind: ViewKind::Rect,
                 key: 0,
-                props: Props::Rect(RectProps { bg: bg(4, 5, 6), w: Some(60), h: Some(80) }),
+                props: Props::Rect(RectProps { bg: bg(4, 5, 6), w: Some(60), h: Some(80), radius: 0 }),
             },
         )
         .unwrap();
@@ -569,7 +569,7 @@ fn stack_spacer_divider_layout_semantics() {
             ViewSpec {
                 kind: ViewKind::Rect,
                 key: 0,
-                props: Props::Rect(RectProps { bg: bg(7, 8, 9), w: Some(10), h: Some(10) }),
+                props: Props::Rect(RectProps { bg: bg(7, 8, 9), w: Some(10), h: Some(10), radius: 0 }),
             },
         )
         .unwrap();
@@ -598,7 +598,7 @@ fn stack_spacer_divider_layout_semantics() {
             ViewSpec {
                 kind: ViewKind::Rect,
                 key: 0,
-                props: Props::Rect(RectProps { bg: bg(1, 1, 1), w: Some(320), h: Some(100) }),
+                props: Props::Rect(RectProps { bg: bg(1, 1, 1), w: Some(320), h: Some(100), radius: 0 }),
             },
         )
         .unwrap();
@@ -618,7 +618,7 @@ fn stack_spacer_divider_layout_semantics() {
             ViewSpec {
                 kind: ViewKind::Rect,
                 key: 0,
-                props: Props::Rect(RectProps { bg: bg(2, 2, 2), w: Some(320), h: Some(100) }),
+                props: Props::Rect(RectProps { bg: bg(2, 2, 2), w: Some(320), h: Some(100), radius: 0 }),
             },
         )
         .unwrap();
@@ -834,7 +834,7 @@ fn set_props_updates_five_kinds_and_rejects_bad_values() {
             ViewSpec {
                 kind: ViewKind::Rect,
                 key: 0,
-                props: Props::Rect(RectProps { bg: bg(0, 0, 0), w: None, h: None })
+                props: Props::Rect(RectProps { bg: bg(0, 0, 0), w: None, h: None, radius: 0 })
             },
         ),
         Err(UiError::BadParent),

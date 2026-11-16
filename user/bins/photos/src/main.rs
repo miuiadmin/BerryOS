@@ -561,7 +561,7 @@ fn page_stack(
     h: u32,
 ) -> Result<NodeId, UiError> {
     let st = ui.add(parent, vspec(ViewKind::Stack, Props::Stack(StackProps { align: StackAlign::Start })))?;
-    ui.add(st, vspec(ViewKind::Rect, Props::Rect(RectProps { bg, w: None, h: None })))?;
+    ui.add(st, vspec(ViewKind::Rect, Props::Rect(RectProps { bg, w: None, h: None, radius: 0 })))?;
     ui.add(
         st,
         vspec(ViewKind::Col, Props::Col(ColProps {
@@ -763,7 +763,7 @@ fn rebuild_grid(ui: &mut UiMain, app: &mut App) -> Result<(), UiError> {
         // 按压暗框层（底层面 Rect；常态 = 组件面白——与 Card 卡面同色
         // 无缝；Press 经引擎 press_react 换 PRESSED_BG 呈边带暗框——
         // theme 单源，应用零 press 字面量）。
-        let mask = ui.add(st, vspec(ViewKind::Rect, Props::Rect(RectProps { bg: t.bg_comp, w: None, h: None })))?;
+        let mask = ui.add(st, vspec(ViewKind::Rect, Props::Rect(RectProps { bg: t.bg_comp, w: None, h: None, radius: 0 })))?;
         // 内容层（定尺寸撑 Stack；cross=Center 居中缩略图）。
         let col = ui.add(
             st,
@@ -1241,7 +1241,7 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, mut app: App) -> ! {
                         let hit = app.cells.iter().flatten().find(|c| c.img == *node || c.col == *node);
                         if let Some(c) = hit {
                             let bg = app.t.bg_comp;
-                            let _ = ui.set_props(c.mask, Props::Rect(RectProps { bg, w: None, h: None }));
+                            let _ = ui.set_props(c.mask, Props::Rect(RectProps { bg, w: None, h: None, radius: 0 }));
                             if let Err(e) = press_rebind(ui, &app) {
                                 eprintln!("photos: press rebind err={e:?}");
                             }

@@ -26,6 +26,8 @@
 use berry_mm::va::{phys_to_virt, PAGE_SHIFT};
 
 pub fn run() {
+    // boot splash：ktest 相位进度（8 步等分——ktest 是 boot 黑屏期的大头）。
+    crate::splash::step(1, b"ktest: early boot (gic/frame/heap/syscall/fp)");
     test_gic();
     test_frame();
     test_memmap();
@@ -33,6 +35,7 @@ pub fn run() {
     test_syscall();
     test_switch();
     test_fp();
+    crate::splash::step(2, b"ktest: aspace/vmo/handle/policy");
     test_aspace();
     test_vmo();
     test_handle();
@@ -44,6 +47,7 @@ pub fn run() {
     test_policy_divergence();
     test_policy_reject_stats();
     test_policy_yield_return();
+    crate::splash::step(3, b"ktest: rq/pi/intent/band/freeze");
     test_placement_hint();
     test_rq_ring2();
     test_rq_ring3();
@@ -60,6 +64,7 @@ pub fn run() {
     // AM-1.5（「IPC × 冻结」Q1 裁决）：wake-pending 全链（FREEZE 族续——
     // FRZCYC 后紧邻，同 SLEEPQ/表基座纪律）。
     test_wake_pending();
+    crate::splash::step(4, b"ktest: billing/sched/deadline");
     test_billing_overflow();
     test_sched_attr_negative();
     test_sched_perf();
@@ -67,6 +72,7 @@ pub fn run() {
     test_sched_attr();
     test_wake_src();
     test_dtb();
+    crate::splash::step(5, b"ktest: EAS em/util/hdr");
     // sim-S3（PM-16 §4.4 步3）：末位新号（ktest done 前；既有序不动）——
     // PSCI 探测已在 boot 早期跑，request_deep_sleep 读缓存降级。
     test_deep_sleep_degrade();
@@ -83,10 +89,12 @@ pub fn run() {
     // v1.3 §9 三路基准之路 2 首刀：定时器唤醒延迟基准（cyclictest 口径的
     // 忙等简化）——HDR 首个真实消费者，record_wake_lat → 合并分位全链验证。
     test_hdr_wake();
+    crate::splash::step(6, b"ktest: scheduler integration");
     // 全栈交叉验证（末位新号纪律——单面钉板之后、ktest done 之前）：一个
     // 场景串起 freeze × policy × band × deadline × billing × EAS，验
     // 「两两同席不打架」（单面钉板验「各自对」，本测验组合面）。
     test_scheduler_integration();
+    crate::splash::step(7, b"ktest: pressure/sysver/bootparams");
     // AM-2b（2026-11-08 提案候选①·主会话六裁决）：压力窗口聚合 + 系统压力
     // Event 用户位出口（末位新号纪律——ktest done 前；sched::init 前跑，
     // SLEEPQ 空扫 = 出口唤醒面恒 n=0，合法）。
@@ -157,6 +165,7 @@ pub fn run() {
     // 纪律——ktest done 前；定义在文件尾）。
     test_cbox();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
+    crate::splash::step(8, b"ktest done");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
 }

@@ -1027,9 +1027,11 @@ pub struct PagerWindow {
 const _: () = assert!(core::mem::size_of::<PagerWindow>() == 16);
 const _: () = assert!(core::mem::align_of::<PagerWindow>() == 8);
 
-/// 0x24 表帽（X-6 冻结 N=32——三源镜像：本帽 / `dpg::EREQ_SLOTS` /
-/// svcmgr `PAGER_SLOTS`；抬帽走 len 兼容（调用方传 n），不破冻）。
+/// 0x24 表帽（X-6 冻结 N=32——四源镜像：本帽 / `dpg::EREQ_SLOTS` /
+/// svcmgr `PAGER_SLOTS` / dpgface `tblwin::PAGER_TABLE_MAX`；抬帽走
+/// len 兼容（调用方传 n），不破冻）。
 const PAGER_TABLE_MAX: usize = 32;
+const _: () = assert!(PAGER_TABLE_MAX == berry_dpgface::tblwin::PAGER_TABLE_MAX);
 
 /// `pager_supply_mapped_table(tbl, n)`（0x24，X-6 刀① 批供表批，冻结裁决
 /// 2026-11-08）：0x23 的多窗一次收货形——`tbl` = 调用方 PagerWindow 数组、
@@ -1058,8 +1060,11 @@ const PAGER_TABLE_MAX: usize = 32;
 ///   同 `dpg.rs`——单 handler 调用内顺序借还零重叠）。
 extern "C" fn sys_pager_supply_mapped_table(tf: &mut TrapFrame) -> i64 {
     let (tbl_p, n) = (tf.regs[1], tf.regs[2] as usize);
-    if n == 0 || n > PAGER_TABLE_MAX {
-        // n 越界（全宽读——x2 高 32 位脏值同拒，不做 u32 截断受纳）。
+    // W3-Q73：n 门 + 16B 小端拼装 + delta 页对齐预检的判定律单源
+    // （dpgface tblwin——host 钉板；错误码映射在此：两态门/预检皆
+    // -EINVAL。n 越界 = 全宽读——x2 高 32 位脏值同拒，不做 u32 截断
+    // 受纳）。
+    if let Err(_e) = berry_dpgface::tblwin::n_gate(n) {
         return ERR_INVALID_ARG as i64;
     }
     let el1 = caller_is_el1(tf);
@@ -1067,20 +1072,23 @@ extern "C" fn sys_pager_supply_mapped_table(tf: &mut TrapFrame) -> i64 {
     if let Err(e) = copy_from_user(el1, tbl_p, &mut raw[..n * 16]) {
         return e as i64; // -EFAULT 透传（policy_tbl_parse 同口径）
     }
-    let mut wins = [PagerWindow { dv: 0, sv: 0, delta: 0 }; PAGER_TABLE_MAX];
-    for i in 0..n {
-        let o = i * 16;
-        let w = PagerWindow {
-            dv: u32::from_le_bytes(raw[o..o + 4].try_into().unwrap()),
-            sv: u32::from_le_bytes(raw[o + 4..o + 8].try_into().unwrap()),
-            delta: i64::from_le_bytes(raw[o + 8..o + 16].try_into().unwrap()),
-        };
-        // delta 页对齐预检（0x23 fail-fast 先例——先于门控，参数面整批拒）。
-        if w.delta % PAGE_SIZE as i64 != 0 {
-            return ERR_INVALID_ARG as i64;
+    // 整表装配单源（拼装 + 预检首错即停——判序 = EFAULT → delta 拒 →
+    // 门控；fail-fast 先于门控，参数面整批拒——0x23 先例）。
+    let (wins_tbl, _) = match berry_dpgface::tblwin::decode_table(&raw, n) {
+        Ok(v) => v,
+        Err(_) => return ERR_INVALID_ARG as i64,
+    };
+    let wins: [PagerWindow; PAGER_TABLE_MAX] = {
+        let mut w = [PagerWindow { dv: 0, sv: 0, delta: 0 }; PAGER_TABLE_MAX];
+        for i in 0..n {
+            w[i] = PagerWindow {
+                dv: wins_tbl[i].dv,
+                sv: wins_tbl[i].sv,
+                delta: wins_tbl[i].delta,
+            };
         }
-        wins[i] = w;
-    }
+        w
+    };
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
     // 整批门控先行——错柄 fail fast 不入睡（0x23 门控纪律的整批版；
     // get_raw 不 retain，此段零回滚面）。

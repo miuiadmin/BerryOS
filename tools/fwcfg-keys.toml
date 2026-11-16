@@ -16,7 +16,7 @@
 # bash tools/fwcfg-check.sh）。
 
 version = 1
-updated = "2026-11-15"
+updated = "2026-11-16"
 namespace = "opt/berry/"
 
 # —— rootfs 递送族（file / cpio 字节流；两键并在 rootfs0 优先）——
@@ -189,3 +189,8 @@ kind = "string"
 injectors = ["tools/smoke-image.sh 刀6 双 boot 段（det 实注）；亦可手拼 -fw_cfg 专递——跨根并回自 main refresh 刀2"]
 consumer = "kernel/src/main.rs panel_cfg_req（D,J,S 十进制 CSV：丢帧千分比 0..=1000/抖动 ns/切档丢帧 0..=16）"
 polarity = "零域 = 缺省态；非法 loud 回退缺省 + PANEL fault fail 诊断行；任一 panel 旋钮非缺省打 PANEL cfg 证据行"
+name = "bootmode"
+kind = "string"
+injectors = ["（无仓内注入方——手拼 -fw_cfg 专递 string=verbose，rwake 同款；ux 刀 1/splash 半随净增量重放入链，漏登记由 #400 复活的 fwcfg-check 抓获补记）"]
+consumer = "kernel/src/main.rs boot splash 模式门 + kernel/src/splash.rs（双模式渲染）"
+polarity = "值 verbose=Linux 式滚日志（uart 镜像上屏）；缺席/他值=iOS 式开机动画（缺省臂）"

@@ -32,8 +32,7 @@
 
 use berry_hal_aarch64::smp::cpu_id;
 use berry_hal_aarch64::wake_gen::{
-    WAKE_SRC_IPC, WAKE_SRC_KERNEL_BOOT, WAKE_SRC_NONE, WAKE_SRC_POWER_KEY, WAKE_SRC_SGI_RESCHED,
-    WAKE_SRC_SGI_TLB, WAKE_SRC_TIMER, WAKE_SRC_UART_RX, WAKE_SRC_UNKNOWN,
+    WAKE_SRC_NONE, WAKE_SRC_POWER_KEY, WAKE_SRC_SGI_RESCHED, WAKE_SRC_SGI_TLB, WAKE_SRC_UNKNOWN,
 };
 use berry_sched::{SwitchKind, Task, WakeReason};
 use berry_telface::HIST_BUCKETS;
@@ -207,11 +206,13 @@ fn ring_peek(cpu: usize, k: usize) -> Option<SwitchRec> {
     }
 }
 
-/// `cpu` 环内有效条数（min(total, RING_LEN)）。
+/// `cpu` 环内有效条数（min(total, RING_LEN)）。帽律单源
+/// `berry_telface::ringmerge::span_cap`（W3-Q81——环形缓冲「写了 N 条
+/// 只留最近 RING_LEN 条」的几何，host 钉板）。
 fn ring_span(cpu: usize) -> usize {
     // SAFETY: 只读 total（写方限本核，u64 读撕裂不在单核原子性讨论域）。
     let t = unsafe { (*core::ptr::addr_of!(SWITCH_RINGS))[cpu].total };
-    (t as usize).min(RING_LEN)
+    berry_telface::ringmerge::span_cap(t, RING_LEN)
 }
 
 /// `cpu` 环累计写入数。
@@ -233,31 +234,16 @@ pub fn span() -> usize {
 }
 
 /// 按新→旧序取合并第 `i` 条（0 = 最新；两环按 vct 归并——锁序=时序=vct 序
-/// 三位一体（义务⑨），vct 归并序 = 全局真序；越界 None）。
+/// 三位一体（义务⑨），vct 归并序 = 全局真序；越界 None）。归并判定律
+/// 单源 `berry_telface::ringmerge::merged_at`（W3-Q81——vct 大者胜/平局
+/// 取环 0/流尽 None，host 钉板；本壳只注入两环 peek 闭包）。
 pub fn last(i: usize) -> Option<SwitchRec> {
-    let mut k = [0usize; NCPUS]; // 各环已取条数（游标）
-    for _ in 0..=i {
-        // 两环各取当前游标条，vct 大者（更新）胜出。
-        let cands: [Option<SwitchRec>; NCPUS] = [ring_peek(0, k[0]), ring_peek(1, k[1])];
-        let winner = match (cands[0], cands[1]) {
-            (Some(a), Some(b)) => {
-                if a.vct >= b.vct {
-                    0
-                } else {
-                    1
-                }
-            }
-            (Some(_), None) => 0,
-            (None, Some(_)) => 1,
-            (None, None) => return None, // 合并流尽
-        };
-        let picked = cands[winner];
-        k[winner] += 1;
-        if k[0] + k[1] - 1 == i {
-            return picked;
-        }
-    }
-    None // 不可达（循环内必命中或流尽）
+    berry_telface::ringmerge::merged_at(
+        i,
+        |k| ring_peek(0, k),
+        |k| ring_peek(1, k),
+        |r: &SwitchRec| r.vct,
+    )
 }
 
 /// 环健康自检（watchdog 周期断言）：①有货；②vct 从旧到新单调不减（CNTVCT
@@ -394,7 +380,7 @@ fn on_wake(task: &Task, reason: WakeReason) {
     );
     let now = berry_hal_aarch64::timer::cntvct();
     {
-        let slot = &WAKE_SRC_TABLE[(src as usize).min(WAKE_SRC_SLOTS - 1)];
+        let slot = &WAKE_SRC_TABLE[berry_wsrcface::slot_index(src)];
         slot.wakes.fetch_add(1, Ordering::Relaxed);
         slot.first_ts.fetch_min(now, Ordering::Relaxed);
         slot.last_ts.fetch_max(now, Ordering::Relaxed);
@@ -459,14 +445,16 @@ fn on_wake(task: &Task, reason: WakeReason) {
 //（Process 无 pid 面，id 稳定性名字承重——演进节）。
 
 /// 槽表槽数 = 值域上界 + 1（源值 ≤ 0x7F；值直索引——`table[src]`）。
-pub const WAKE_SRC_SLOTS: usize = 128;
+/// **槽数与钳位单源 = berry-wsrcface（W3-Q28）**——本常量 re-export。
+pub const WAKE_SRC_SLOTS: usize = berry_wsrcface::SLOTS;
 
 /// 源分类位（add-only 位面；未定义源恒 0——未知位 mask 语义归消费方）。
-pub const WSRC_F_TIMER_CLASS: u16 = 1 << 0; // 定时器类（TIMER）
-pub const WSRC_F_IRQ_LINE: u16 = 1 << 1; // 外设线（UART_RX）
-pub const WSRC_F_SGI_INTERNAL: u16 = 1 << 2; // SGI 内部（RESCHED/TLB）
-pub const WSRC_F_HAD_NO_WAITER: u16 = 1 << 3; // 曾零唤醒 sticky（UART 到达无等待者）
-pub const WSRC_F_SLEPT: u16 = 1 << 4; // SLEPT 域事件见过（v2 挂起双钟预留，v1 恒不置）
+/// **位面单源 = berry-wsrcface（W3-Q28）**——五常量 re-export（静态数组
+/// 与 ktest 引用面承重）。
+pub use berry_wsrcface::{
+    WSRC_F_HAD_NO_WAITER, WSRC_F_IRQ_LINE, WSRC_F_SGI_INTERNAL, WSRC_F_SLEPT,
+    WSRC_F_TIMER_CLASS,
+};
 
 /// 单源记账槽（`#[repr(C)]` 64B 整——`telemetry_open` 快照面的 ABI 形状
 /// day-one 定型；字段全定宽原子——多写者 = 本核 on_wake / IRQ 臂计数点 /
@@ -548,13 +536,10 @@ pub fn wake_acct_conserved() -> bool {
 }
 
 /// 源值 → 分类位（纯函数；ktest 面）。未定义源 = 0。
+/// **单源 = berry-wsrcface::class_of（W3-Q28）**——本函数薄壳转发
+/// （ktest `telemetry::wake_src_class` 引用面保持）。
 pub fn wake_src_class(src: u8) -> u16 {
-    match src {
-        WAKE_SRC_TIMER => WSRC_F_TIMER_CLASS,
-        WAKE_SRC_UART_RX | WAKE_SRC_POWER_KEY => WSRC_F_IRQ_LINE,
-        WAKE_SRC_SGI_RESCHED | WAKE_SRC_SGI_TLB => WSRC_F_SGI_INTERNAL,
-        _ => 0,
-    }
+    berry_wsrcface::class_of(src)
 }
 
 /// 源值是否「可进环」的已定义唤醒源（NONE 哨兵 / UNKNOWN / POWER_KEY
@@ -562,21 +547,14 @@ pub fn wake_src_class(src: u8) -> u16 {
 /// 审计面；ktest 面）。未定义值（0x08–0x7E 预留段——0x07 自 sim-S2 起为
 /// POWER_KEY 到达-only 占用）恒 false。POWER_KEY 有意不在白名单：v1 无主
 /// 到达恒无唤醒，若进环 = 写路径违约，wake_check ⑤ 在此收口。
+/// **单源 = berry-wsrcface::valid（W3-Q28）**——薄壳转发同理。
 pub fn wake_src_valid(src: u8) -> bool {
-    matches!(
-        src,
-        WAKE_SRC_KERNEL_BOOT
-            | WAKE_SRC_TIMER
-            | WAKE_SRC_UART_RX
-            | WAKE_SRC_SGI_RESCHED
-            | WAKE_SRC_SGI_TLB
-            | WAKE_SRC_IPC
-    )
+    berry_wsrcface::valid(src)
 }
 
 /// 源 wakes 计数读点（G1.5 断言/打印）。
 pub fn wake_src_wakes(src: u8) -> u64 {
-    WAKE_SRC_TABLE[(src as usize).min(WAKE_SRC_SLOTS - 1)].wakes.load(Ordering::Relaxed)
+    WAKE_SRC_TABLE[berry_wsrcface::slot_index(src)].wakes.load(Ordering::Relaxed)
 }
 
 /// Σ 全槽 wakes（守恒断言左侧——只有已定义源可递增，NONE/UNKNOWN 写点
@@ -607,7 +585,7 @@ pub struct WakeSrcSnapshot {
 
 /// 取 `src` 槽快照（未触槽：first_ts = `u64::MAX`、计数全 0——ktest 面）。
 pub fn wake_src_snapshot(src: u8) -> WakeSrcSnapshot {
-    let s = &WAKE_SRC_TABLE[(src as usize).min(WAKE_SRC_SLOTS - 1)];
+    let s = &WAKE_SRC_TABLE[berry_wsrcface::slot_index(src)];
     WakeSrcSnapshot {
         src,
         wakes: s.wakes.load(Ordering::Relaxed),
@@ -626,7 +604,7 @@ pub fn wake_src_snapshot(src: u8) -> WakeSrcSnapshot {
 /// `stamp` = 到达/派发戳（`last_ack_ts` 语义见 [`WakeSrcRec`]）。IRQ 语境
 /// 纪律同 rx_irq_notify：零分配、纯原子。
 pub fn note_irq_arrival(src: u8, stamp: u64) {
-    let slot = &WAKE_SRC_TABLE[(src as usize).min(WAKE_SRC_SLOTS - 1)];
+    let slot = &WAKE_SRC_TABLE[berry_wsrcface::slot_index(src)];
     slot.irq_count.fetch_add(1, Ordering::Relaxed);
     slot.last_ack_ts.store(stamp, Ordering::Relaxed);
     let cls = wake_src_class(src);
@@ -638,7 +616,7 @@ pub fn note_irq_arrival(src: u8, stamp: u64) {
 /// 「到达而无等待者」记账（UART rx_notify n==0 臂——良性竞态，见
 /// [`WSRC_F_HAD_NO_WAITER`]；计数 + sticky，不设门禁）。
 pub fn note_irq_no_waiter(src: u8) {
-    let slot = &WAKE_SRC_TABLE[(src as usize).min(WAKE_SRC_SLOTS - 1)];
+    let slot = &WAKE_SRC_TABLE[berry_wsrcface::slot_index(src)];
     slot.no_waiter.fetch_add(1, Ordering::Relaxed);
     slot.flags.fetch_or(WSRC_F_HAD_NO_WAITER, Ordering::Relaxed);
 }
@@ -647,21 +625,21 @@ pub fn note_irq_no_waiter(src: u8) {
 /// （无内核回调槽），此处并入槽表——store 单调值幂等，可重入。
 pub fn wake_src_merge_hal() {
     let r = berry_hal_aarch64::wake::sgi_resched_arrivals() as u64;
-    WAKE_SRC_TABLE[(WAKE_SRC_SGI_RESCHED as usize).min(WAKE_SRC_SLOTS - 1)]
+    WAKE_SRC_TABLE[berry_wsrcface::slot_index(WAKE_SRC_SGI_RESCHED)]
         .irq_count
         .store(r, Ordering::Relaxed);
-    WAKE_SRC_TABLE[(WAKE_SRC_SGI_RESCHED as usize).min(WAKE_SRC_SLOTS - 1)]
+    WAKE_SRC_TABLE[berry_wsrcface::slot_index(WAKE_SRC_SGI_RESCHED)]
         .flags
         .fetch_or(WSRC_F_SGI_INTERNAL, Ordering::Relaxed);
     let t = berry_hal_aarch64::wake::sgi_tlb_arrivals() as u64;
-    WAKE_SRC_TABLE[(WAKE_SRC_SGI_TLB as usize).min(WAKE_SRC_SLOTS - 1)]
+    WAKE_SRC_TABLE[berry_wsrcface::slot_index(WAKE_SRC_SGI_TLB)]
         .irq_count
         .store(t, Ordering::Relaxed);
-    WAKE_SRC_TABLE[(WAKE_SRC_SGI_TLB as usize).min(WAKE_SRC_SLOTS - 1)]
+    WAKE_SRC_TABLE[berry_wsrcface::slot_index(WAKE_SRC_SGI_TLB)]
         .flags
         .fetch_or(WSRC_F_SGI_INTERNAL, Ordering::Relaxed);
     let u = berry_hal_aarch64::wake::unknown_arrivals() as u64;
-    WAKE_SRC_TABLE[(WAKE_SRC_UNKNOWN as usize).min(WAKE_SRC_SLOTS - 1)]
+    WAKE_SRC_TABLE[berry_wsrcface::slot_index(WAKE_SRC_UNKNOWN)]
         .irq_count
         .store(u, Ordering::Relaxed);
 }
@@ -698,7 +676,8 @@ fn wake_ring_peek(cpu: usize, k: usize) -> Option<WakeRec> {
 fn wake_ring_span(cpu: usize) -> usize {
     // SAFETY: 只读 total。
     let t = unsafe { (*core::ptr::addr_of!(WAKE_RINGS))[cpu].total };
-    (t as usize).min(WAKE_RING_LEN)
+    // 帽律单源 ringmerge::span_cap（W3-Q81——与切换环 ring_span 同一具）。
+    berry_telface::ringmerge::span_cap(t, WAKE_RING_LEN)
 }
 
 fn wake_ring_total(cpu: usize) -> u64 {
@@ -718,30 +697,15 @@ pub fn wake_span() -> usize {
 }
 
 /// 按新→旧序取合并第 `i` 条（0 = 最新；vct 归并同 [`last`]；越界 None）。
+/// 归并判定律单源 `ringmerge::merged_at`（W3-Q81——与切换环 last 同一具，
+/// 仅 peek 闭包与 vct 访问器不同）。
 pub fn wake_last(i: usize) -> Option<WakeRec> {
-    let mut k = [0usize; NCPUS];
-    for _ in 0..=i {
-        let cands: [Option<WakeRec>; NCPUS] =
-            [wake_ring_peek(0, k[0]), wake_ring_peek(1, k[1])];
-        let winner = match (cands[0], cands[1]) {
-            (Some(a), Some(b)) => {
-                if a.vct >= b.vct {
-                    0
-                } else {
-                    1
-                }
-            }
-            (Some(_), None) => 0,
-            (None, Some(_)) => 1,
-            (None, None) => return None,
-        };
-        let picked = cands[winner];
-        k[winner] += 1;
-        if k[0] + k[1] - 1 == i {
-            return picked;
-        }
-    }
-    None
+    berry_telface::ringmerge::merged_at(
+        i,
+        |k| wake_ring_peek(0, k),
+        |k| wake_ring_peek(1, k),
+        |r: &WakeRec| r.vct,
+    )
 }
 
 /// 环内出现过的唤醒原因掩码（bit0=Signaled、bit1=Timeout）。watchdog 断言
@@ -968,13 +932,15 @@ static DPG_WIN_CYC: AtomicU64 = AtomicU64::new(0);
 static mut PRESSURE_OUTLET: Option<fn()> = None;
 
 /// θ_p 初值 = 10%（裁决②【推，实测定标】；判据式 Σcyc×100 ≥ W×θ_p——
-/// 乘法实现免除法，翻卷点才付）。
-const DPG_WIN_THETA_P_PERCENT: u64 = 10;
+/// 乘法实现免除法，翻卷点才付）。值单源 `berry_billface::THETA_P_PERCENT`
+///（W3-Q76——本常量保留为历史注记位，判式已单源外迁）。
+const DPG_WIN_THETA_P_PERCENT: u64 = berry_billface::THETA_P_PERCENT;
 
 /// AM-2b：boot 接线——窗口长按 CNTFRQ 换算 + 起点钉当前 + 出口注册
-///（main 单线程调，先于 ktest::run 与一切 dpg 计值点）。
+///（main 单线程调，先于 ktest::run 与一切 dpg 计值点）。窗长换算单源
+/// `berry_billface::win_len_of`（W3-Q76——`freq×ms/1000` 饱和防溢出）。
 pub(crate) fn dpg_win_init(win_ms: u64, freq: u64, now: u64, outlet: fn()) {
-    DPG_WIN_LEN.store(freq.saturating_mul(win_ms) / 1000, Ordering::Relaxed);
+    DPG_WIN_LEN.store(berry_billface::win_len_of(freq, win_ms), Ordering::Relaxed);
     DPG_WIN_START.store(now, Ordering::Relaxed);
     // SAFETY: boot 单线程写、先于一切读者（RX_EV_H 口径）。
     unsafe { *core::ptr::addr_of_mut!(PRESSURE_OUTLET) = Some(outlet); }
@@ -1009,8 +975,13 @@ pub(crate) fn dpg_stall_fold(now: u64) {
     }
     let sum = DPG_WIN_CYC.swap(0, Ordering::Relaxed);
     // θ_p 占比判据（×100 免除法；saturating_mul 防多 waiter Σ>W 病态面
-    //——提案 §二「全局 Σ 分不清并发 waiter 数」同源）。
-    if sum.saturating_mul(100) >= len.saturating_mul(DPG_WIN_THETA_P_PERCENT) {
+    //——提案 §二「全局 Σ 分不清并发 waiter 数」同源）。折卷判定单源
+    // `berry_billface::fold_step`（W3-Q76 外迁——快退/跨窗/θ_p 纯投影，
+    // host 钉板）；CAS 胜者独占判阈执行。
+    let w = berry_billface::WinState { len, start, sum };
+    if let berry_billface::FoldStep::Roll { fire: true, .. } =
+        berry_billface::fold_step(now, w)
+    {
         // SAFETY: boot 注册后不变（只读）；未注册 = 未接线（不可达——
         // ktest 与 dpg 计值点均在 boot 接线后，防御跳过）。
         if let Some(f) = unsafe { *core::ptr::addr_of!(PRESSURE_OUTLET) } {
@@ -1059,8 +1030,9 @@ pub fn billing_slot() -> usize {
     berry_hal_aarch64::smp::cpu_id() as usize & 1 // 2 核帽
 }
 
-/// 账户表容量（v1 目标 ≤4 deadline 进程 + fair 域——8 槽余量）。
-pub const BILLING_SLOTS: usize = 8;
+/// 账户表容量（v1 目标 ≤4 deadline 进程 + fair 域——8 槽余量）。值单源
+/// `berry_billface::BILLING_SLOTS`（W3-Q76；ktest BL-OVF 仍钉 8 值执法）。
+pub const BILLING_SLOTS: usize = berry_billface::BILLING_SLOTS;
 
 /// 账户槽：`(domain_id, cpu_ns)` 对——domain_id=0 = 空槽。
 static BILLING_DOMAINS: [core::sync::atomic::AtomicU64; BILLING_SLOTS] = [
@@ -1069,53 +1041,60 @@ static BILLING_CPU_NS: [core::sync::atomic::AtomicU64; BILLING_SLOTS] = [
     const { core::sync::atomic::AtomicU64::new(0) }; BILLING_SLOTS];
 
 /// S4-b：向域账户充 CPU 时长（ns）。域不存在 → 新槽；表满 → 最小槽覆写
-///（v1 诚实取舍：满表时牺牲最冷域，不静默丢账）。
+///（v1 诚实取舍：满表时牺牲最冷域，不静默丢账）。分派判序单源
+/// `berry_billface::charge_step`（W3-Q76 外迁——槽查找/抢占/覆写三态纯
+/// 投影，host 钉板）；本面只留原子执行臂。
 pub fn billing_charge(domain_id: u64, ns: u64) {
-    if domain_id == 0 || ns == 0 {
-        return;
-    }
     use core::sync::atomic::Ordering;
-    // 槽查找/新建。
-    for i in 0..BILLING_SLOTS {
-        let d = BILLING_DOMAINS[i].load(Ordering::Relaxed);
-        if d == domain_id {
-            BILLING_CPU_NS[i].fetch_add(ns, Ordering::Relaxed);
-            return;
+    use berry_billface::{charge_step, ChargeStep};
+    // CAS 竞态收敛循环：Claim 败者（他人先占）以新快照重走分派——收敛
+    // 三态（Accrue/新 Claim/Overwrite），界 = 表容量（快照有限域）。
+    loop {
+        // 原子表快照（分派纯函数入参——W3-Q24 纯结构投影同款）。
+        let mut ds = [0u64; BILLING_SLOTS];
+        let mut cs = [0u64; BILLING_SLOTS];
+        for i in 0..BILLING_SLOTS {
+            ds[i] = BILLING_DOMAINS[i].load(Ordering::Relaxed);
+            cs[i] = BILLING_CPU_NS[i].load(Ordering::Relaxed);
         }
-        if d == 0 {
-            // 空槽 → 抢占（CAS 防双占）。
-            if BILLING_DOMAINS[i]
-                .compare_exchange(0, domain_id, Ordering::Relaxed, Ordering::Relaxed)
-                .is_ok()
-            {
-                BILLING_CPU_NS[i].fetch_add(ns, Ordering::Relaxed);
+        match charge_step(domain_id, ns, &ds, &cs) {
+            ChargeStep::SkipZero => return,
+            ChargeStep::Accrue { slot } => {
+                BILLING_CPU_NS[slot].fetch_add(ns, Ordering::Relaxed);
+                return;
+            }
+            ChargeStep::Claim { slot } => {
+                // 空槽 → 抢占（CAS 防双占；败者重走分派）。
+                if BILLING_DOMAINS[slot]
+                    .compare_exchange(0, domain_id, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    BILLING_CPU_NS[slot].fetch_add(ns, Ordering::Relaxed);
+                    return;
+                }
+                // 败者：快照已变，重走。
+            }
+            ChargeStep::Overwrite { slot } => {
+                // 表满 → 覆写最小账户（诚实取舍，防静默丢账）。
+                BILLING_DOMAINS[slot].store(domain_id, Ordering::Relaxed);
+                BILLING_CPU_NS[slot].store(ns, Ordering::Relaxed);
                 return;
             }
         }
     }
-    // 表满 → 覆写最小账户（诚实取舍，防静默丢账）。
-    let mut min_i = 0;
-    let mut min_v = u64::MAX;
-    for i in 0..BILLING_SLOTS {
-        let v = BILLING_CPU_NS[i].load(Ordering::Relaxed);
-        if v < min_v {
-            min_v = v;
-            min_i = i;
-        }
-    }
-    BILLING_DOMAINS[min_i].store(domain_id, Ordering::Relaxed);
-    BILLING_CPU_NS[min_i].store(ns, Ordering::Relaxed);
 }
 
-/// S4-b：查询域账户（`Some(ns)` / None = 无账户）。
+/// S4-b：查询域账户（`Some(ns)` / None = 无账户）。查表律单源
+/// `berry_billface::domain_total`（W3-Q76——首命中槽投影）。
 pub fn billing_domain_total(domain_id: u64) -> Option<u64> {
     use core::sync::atomic::Ordering;
+    let mut ds = [0u64; BILLING_SLOTS];
+    let mut cs = [0u64; BILLING_SLOTS];
     for i in 0..BILLING_SLOTS {
-        if BILLING_DOMAINS[i].load(Ordering::Relaxed) == domain_id {
-            return Some(BILLING_CPU_NS[i].load(Ordering::Relaxed));
-        }
+        ds[i] = BILLING_DOMAINS[i].load(Ordering::Relaxed);
+        cs[i] = BILLING_CPU_NS[i].load(Ordering::Relaxed);
     }
-    None
+    berry_billface::domain_total(domain_id, &ds, &cs)
 }
 
 /// S4-b：按槽索引查询（telemetry 打印面——非零槽遍历）。

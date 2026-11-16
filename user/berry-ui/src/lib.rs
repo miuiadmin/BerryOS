@@ -46,6 +46,7 @@
 #![cfg_attr(not(test), no_std)]
 
 pub mod anim;
+pub mod components;
 pub mod damage;
 pub mod dep;
 pub mod desc;
@@ -2135,17 +2136,17 @@ impl<const N: usize> Ui<N> {
 
     // —— 供给槽（D28：门面 layout/render_frame 签名不变——槽取传下） ——
 
-    /// 文本度量供件换装（默认 [`MonospaceTextMetrics`]；换件后脏位重测
-    /// 生效——set_viewport 触发全量重测）。
-    pub fn set_text_metrics(&mut self, tm: &'static dyn TextMetrics) {
-        self.tm = tm;
-    }
-
     /// 文本内在宽（刀 2 状态栏对齐缝）：走当前度量供件（换装
     /// ProportionalTextMetrics 后 = 真实 advance）——供件侧单源，消费面
     /// 与排布/渲染同轨（免「等宽估算 vs 真测」两套口径漂移）。
     pub fn text_width(&self, text: &[u8], scale: u8) -> u32 {
         self.tm.measure(text, scale).0
+    }
+
+    /// 文本度量供件换装（默认 [`MonospaceTextMetrics`]；换件后脏位重测
+    /// 生效——set_viewport 触发全量重测）。
+    pub fn set_text_metrics(&mut self, tm: &'static dyn TextMetrics) {
+        self.tm = tm;
     }
 
     /// 图标/图片资源供件换装（默认 [`EmptyIconSource`]——dims 恒 None）。

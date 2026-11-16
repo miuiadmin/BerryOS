@@ -657,7 +657,7 @@ fn text_spec(text: &[u8], fg: Color, scale: FontSize) -> Result<ViewSpec, UiErro
 
 /// 定尺寸 Rect spec（网格线/控制带底/白闪特效共用——非卡片拼装）。
 fn rect_spec(bg: Color, w: u32, h: u32) -> ViewSpec {
-    vspec(ViewKind::Rect, Props::Rect(RectProps { bg, w: Some(w), h: Some(h) }))
+    vspec(ViewKind::Rect, Props::Rect(RectProps { bg, w: Some(w), h: Some(h), radius: 0 }))
 }
 
 /// 应用运行态（建树一次落定；帧循环只换字/重生成/增删白闪节点）。
@@ -759,7 +759,7 @@ fn hud_button(
     cap_w: u32,
 ) -> Result<(NodeId, NodeId, NodeId), UiError> {
     let st = pattern::stack(ui, parent)?;
-    let chip = ui.add(st, vspec(ViewKind::Rect, Props::Rect(RectProps { bg: t.bg_comp, w: None, h: None })))?;
+    let chip = ui.add(st, vspec(ViewKind::Rect, Props::Rect(RectProps { bg: t.bg_comp, w: None, h: None, radius: 0 })))?;
     let col = ui.add(
         st,
         vspec(ViewKind::Col, Props::Col(ColProps {
@@ -1231,7 +1231,7 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, mut app: App) -> ! {
                 Msg::DragEnd { node, .. } => {
                     if let Some(chip) = app.chip_of(*node) {
                         let bg = app.t.bg_comp;
-                        let _ = ui.set_props(chip, Props::Rect(RectProps { bg, w: None, h: None }));
+                        let _ = ui.set_props(chip, Props::Rect(RectProps { bg, w: None, h: None, radius: 0 }));
                         if let Err(e) = press_rebind(ui, &app) {
                             eprintln!("camera: press rebind err={e:?}");
                         }

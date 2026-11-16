@@ -142,6 +142,63 @@ fn main() {
         info.version_wm, info.windows_max, info.disp_w, info.disp_h, input_h()
     );
 
+    // —— 刀 5（2026-11-15）：状态栏系统窗立法（owner「应用进去了状态栏
+    //    也要显示」）——GUI-8 裁决 e 有限翻案：launcher 不再裸占全屏单窗，
+    //    改注册双窗——① SYSTEM 层状态栏窗（0,0,w,39px：顶部常驻带，wmd
+    //    表内 layer=SYSTEM 且 vis=SHOW）② APP 层桌面窗（AVOID_SYS——有效
+    //    几何自动从状态栏下沿起）。应用窗（appdemo 同款 AVOID_SYS）的
+    //    有效几何同样被状态栏窗裁顶 = 应用画面永不覆盖状态栏（像素面仍
+    //    共享整屏 fb——launcher present 画状态栏像素，应用 present 画
+    //    各自窗内容，v1 无合成器下以「避让几何 + 互不越界」为约）。
+    //    建窗失败 = fail loud（策略面破缺，桌面不应盲跑）。
+    let mut req = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let sys_h: u16 = 39; // OH_STATUS_H（OH phone 档同值）
+    {
+        let creq = gp::WmCreateReq {
+            layer: gp::WM_LAYER_SYSTEM,
+            flags: 0,
+            parent: 0,
+            group: 0,
+            x: 0,
+            y: 0,
+            w: info.disp_w,
+            h: sys_h as u16,
+        };
+        let m = match gp::encode_wm_create_req(&mut req, &creq) {
+            Some(m) => m,
+            None => fail("syswin enc"),
+        };
+        let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+        // 切片执法：parse 面按实长验（整缓冲 256B 恒拒——ACK_LEN 协议门）。
+        match gp::parse_wm_create_ack(&rep[..n]) {
+            Some(id) if id != 0 => {}
+            _ => fail(&format!("syswin ack bad st={}", rep[0])),
+        }
+    }
+    {
+        let creq = gp::WmCreateReq {
+            layer: gp::WM_LAYER_APP,
+            flags: gp::WM_CREATE_F_AVOID_SYS,
+            parent: 0,
+            group: 0,
+            x: 0,
+            y: sys_h,
+            w: info.disp_w,
+            h: (info.disp_h as u16).saturating_sub(sys_h),
+        };
+        let m = match gp::encode_wm_create_req(&mut req, &creq) {
+            Some(m) => m,
+            None => fail("deskwin enc"),
+        };
+        let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+        match gp::parse_wm_create_ack(&rep[..n]) {
+            Some(id) if id != 0 => {}
+            _ => fail(&format!("deskwin ack bad st={}", rep[0])),
+        }
+    }
+
     // —— 段③ 静态面接线（W1：树成帧不驱——frameloop 静默 park）——
     //    注册表初始化（W2 = app 域 APP_LIST 拉取装载；冻结相
     //    app_cli_h()==0（extras 恰 [wm]）→ 空注册表——草案 R1 修约 1/2）。

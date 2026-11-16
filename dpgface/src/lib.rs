@@ -260,3 +260,4 @@ pub fn faulter_key_route(claim: Claim) -> FaulterKey {
 /// `dpg_pager` 供给毕唤 faulter 点的 `try_preempt` 直切资格 + 供给
 /// 临界段收口序 host 钉板；sched 物理臂/RQ 锁窗/切换舞蹈留壳）。
 pub mod fastpath;
+pub mod tblwin;

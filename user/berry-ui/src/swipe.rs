@@ -194,6 +194,7 @@ impl SwipePager {
                     kind: ViewKind::Rect,
                     key: 0,
                     props: Props::Rect(RectProps {
+                        radius: 0,
                         bg: if i == 0 { DOT_ON } else { DOT_OFF },
                         w: Some(DOT_SIZE),
                         h: None, // 随行（行 h=DOT_SIZE 定值 → 16×16）
@@ -404,7 +405,7 @@ impl SwipePager {
             let bg = if i == self.page as usize { DOT_ON } else { DOT_OFF };
             let _ = ui.set_props(
                 d,
-                Props::Rect(RectProps { bg, w: Some(DOT_SIZE), h: None }),
+                Props::Rect(RectProps { bg, w: Some(DOT_SIZE), h: None, radius: 0 }),
             );
         }
     }

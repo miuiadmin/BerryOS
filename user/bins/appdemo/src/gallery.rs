@@ -337,7 +337,7 @@ fn text_spec(fg: Color, scale: FontSize, bytes: &[u8]) -> Result<ViewSpec, UiErr
 /// 定尺寸/随父 Rect spec（theme token 色板展示与叠层语专用——零卡片
 /// 拼装：Card 视觉一律 pattern::card/list_item）。
 fn rect_spec(bg: Color, w: Option<u32>, h: Option<u32>) -> ViewSpec {
-    vspec(ViewKind::Rect, Props::Rect(RectProps { bg, w, h }))
+    vspec(ViewKind::Rect, Props::Rect(RectProps { bg, w, h, radius: 0 }))
 }
 
 /// Row spec。

@@ -658,10 +658,21 @@ test-host:
     # 参数化注入 + irq_exit 值域执法；wsrcface 姊妹件——号归源/源分类
     # 进环两件合钉刀1 归因链〕）。
     cargo test -p berry-wakeface --target {{host}}
+    # W3-Q28：berry-wsrcface（唤醒源分类/白名单/钳位纯函数面——WSRC_F_*
+    # 五常量 + M_* 九源冻结值镜像 + class_of/valid/slot_index 三谓词，
+    # host 8 测（9 源两列全表/256 值全域扫描/钳位律/POWER_KEY 到达-only
+    # 三角/预留段律/位面冻结/到达置位门判序镜像）；单源 crate，kernel
+    # telemetry.rs 薄壳 re-export + 五钳位点换单源。
+    cargo test -p berry-wsrcface --target {{host}}
     # W3-Q3：berry-vmoledger（VMO 页面生命周期簿记纯函数面——提交/归还
     # 资格、映射计数悬空 PTE 防线、demand 钉计数、MMIO 窗口恒空不变量，
     # host 13 测；记账状态机单源，kernel/src/vmo.rs 物理臂消费）。
     cargo test -p berry-vmoledger --target {{host}}
+    # W3-Q80：berry-memface（mem* 整数版语义模型——块切分几何/方向
+    # 分治/LE 首异定位/广播字 + 三模型对拍（memset/memcpy/memmove/
+    # memcmp 块算法 vs 逐字节参考全量一致），host 8 测；kernel mem.rs
+    # no_mangle 符号壳消费单源）。
+    cargo test -p berry-memface --target {{host}}
     # W3-Q17：berry-vslotface（Vmar 槽位/区间判定律纯函数面——三查判序
     # 对齐→界→重叠错误码优先级/半开重叠谓词/精确查找 kind 收 Mapped|Demand
     # 与 Mapped-only 分流/探针命中闭开域钉板，host 12 测；check_slot/
@@ -703,6 +714,12 @@ test-host:
     # 非零档省略、u64 极值界）钉板，host 11 测；tally_key/inflate/tally_line
     # 单源，kernel telemetry.rs 计数面 + main.rs tele_dump 行装配消费）。
     cargo test -p berry-itally --target {{host}}
+    # W3-Q76：berry-billface（billing 域账户槽分派 + dpg 压力窗折卷纯函数
+    # 面——槽查找/空槽抢占/表满覆写最小账户三态判序/CAS 竞态收敛/θ_p 恰界/
+    # 回绕窗/饱和病态/ktest test_billing·overflow 全周期模型对拍钉板，
+    # host 16 测；charge_step/domain_total/fold_step/win_len_of 单源，
+    # kernel telemetry.rs 原子表物理臂留壳消费）。
+    cargo test -p berry-billface --target {{host}}
     cargo test -p berry-sliceface --target {{host}}
     # W3-Q31（重放）：berry-tickface（timer 滴答账纯函数面——tick→ns
     # 倒数乘-移对预计算 const fn（QEMU (2048,7) 二进精准/24MHz (2667,6)
@@ -711,6 +728,16 @@ test-host:
     # 回绕窗增量，host 24 测；判定律单源，arch/aarch64 timer.rs 机械壳
     # re-export + sched class.rs tick 记账 delta 消费）。
     cargo test -p berry-tickface --target {{host}}
+    # W3-Q67：berry-svcface（SVC 入口锁类位集与号→锁类注册表纯函数面
+    # ——类位集六常量对 sched HELD_* 位值组装律〔host 可测形，与 kernel
+    # main 编译期断言双执法〕/42 号注册表全表往返/未注册号 NONE 默认/
+    # NONE 实装号归零律/REAPQ 位只在 ALL 档/敌意 0..=255 全域零 panic
+    # 钉板；常量单源迁此，HAL kern_lock.rs re-export 消费）。
+    cargo test -p berry-svcface --target {{host}}
+    # W3-Q67 执法件：三方对拍（install() 42 行 ↔ svcface REGISTRY ↔ NR
+    # 常量域）——reg() 字面量漂移（改 kernel 落类忘同步注册表）文本级
+    # 咬合，正负例验证（负例 = 单项类替换即咬出）。
+    python3 tools/svc_registry_check.py
     # W3-Q14：berry-emface（EM 表形状执法 + util EWMA 窗口数学纯函数面
     # ——em_shape_ok 六拒面/em_domain_from 装配不变量/极值首尾投影/
     # window_state 翻窗三态判序/ewma_fold 折叠·收敛·死区·钳位/
@@ -754,6 +781,13 @@ test-host:
     # 〔spread ∧ ttbr0!=0 ∧ eligible〕，host 13 测；判定律单源，sched.rs
     # 五点消费）。
     cargo test -p berry-balface --target {{host}}
+
+    # W3-Q83：berry-numface（UART 整数格式化族纯面钉板——u64 十进制〔无前
+    # 导/0 单位/20 位极值〕+ 固定 16 位小写 hex〔trap dump 形〕+ 8 位大写
+    # hex〔PSCI 诊断行形〕+ 两位十进制〔寄存器下标〕+ 键值行/寄存器行装配
+    # 序 + 敌意短缓冲安全律 + 数字表冻结锚，host 10 测；装配律单源，HAL
+    # uart.rs·trap.rs·psci.rs 四消费点壳化）。
+    cargo test -p berry-numface --target {{host}}
     # W3-Q20：berry-polface（policy O(1) 快照查表数学 + SchedAttr 位选律
     # 纯函数面——散列锚点指纹/256 键桶覆盖摊平律/饱和窗全占+窗尽缺席/
     # 空槽早退缺席/桶 255 回绕落位/first-wins 不覆写/窗满拒收不入表/
@@ -796,6 +830,11 @@ test-host:
     # gop 四非零门/fmt≤2 钉板，host 12 测；判定律单源，kernel handoff.rs
     # 判定段换消费，raw 解引用留壳）。
     cargo test -p berry-hofface --target {{host}}
+    # W3-Q84：berry-dmface（fw_cfg display 模式请求解析纯面——五门判定
+    # 链：size 域 (0,32]/UTF-8/trim NUL+ASCII 空白/@ 后缀截断/WxH u32
+    # 十进制域，host 6 测；parse_display_mode 单源，kernel main.rs
+    # display_mode_req 薄壳消费——fw_cfg find_file/read_to 物理臂留壳）。
+    cargo test -p berry-dmface --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-loader --target {{host}}
     # X-5 補：berry-winplan（demand 装载窗规划纯函数面——自 berry-exec 外迁
     # 的 plan_wins/cap 参数化；三色窗完备铺满 + congruent 门 (a')-(e') 各
@@ -980,6 +1019,14 @@ test-host:
     # 上被动覆盖，门禁自身坏 = 平像静默劣化。合成双段 ELF（gap 零填 + bss
     # 尾零 + 页取整 + 确定性）+ 8 拒面（elf2pe --selftest 同位纪律）。
     python3 tools/elf2flat.py --selftest
+    # W1 接线（彻底 Rust 化轨道 b 层 #8 首刀）：elf2flat Rust 件 lib 纯面
+    # 测试（双段钉板 + 8 拒面 + Rust 侧短输入面 + synth 模式重导——与
+    # Python oracle 字节级对拍见 docs/彻底Rust化计划-v1.0.md §5 五步；本刀
+    # 落位第 2/3/4 步：Rust 件 + 对拍（scratch 对拍 PASS 背书）+ 接线，
+    # 产链换轨（justfile build-user 六处 python3 → rust bin）留二刀）。
+    # 独立小工作区（tools/berry 同款形态），根 .cargo/config.toml 锁
+    # build.target=aarch64-unknown-none 故必须显式 --target {{host}}。
+    cargo test --manifest-path tools/elf2flat/Cargo.toml --target {{host}}
     # Q1 续挖（a-3 U4 纪律同款）：pwrcls 门禁自检——smoke B4 掉电相三 boot
     # 的采样断言（A/B 档分类 + Boot C 后必 clean）与毒环注入都吃本件，此前
     # 只在 smoke 产物链上被动覆盖，门禁自身坏 = 掉电相静默劣化。
@@ -1129,6 +1176,7 @@ test-host:
     # serve_bind/_accept_loop 复用同一段，被测 = 产线本体非影子副本）。
     python3 tools/echod.py --selftest
     python3 tools/evsclient.py --selftest
+    python3 tools/svg2icons.py --selftest
     # SDK-2 P0-1：berry-crypto（.sig 信封 v1 TLV + 信任账本 TOML + 水位比较器
     # + RFC 8032 向量门空转框架——对选型零敏感件先行，26 号 §3-2；原语本体 =
     # P0-2 另刀，向量门不过不合入；P0 合入 = 闸 B，24 号 §4.2 终核三条）。

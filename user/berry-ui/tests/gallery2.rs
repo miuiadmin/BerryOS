@@ -186,7 +186,7 @@ fn vspec(kind: ViewKind, props: Props) -> ViewSpec {
 }
 
 fn rect(bg: Color, w: Option<u32>, h: Option<u32>) -> ViewSpec {
-    vspec(ViewKind::Rect, Props::Rect(RectProps { bg, w, h }))
+    vspec(ViewKind::Rect, Props::Rect(RectProps { bg, w, h, radius: 0 }))
 }
 
 fn text(fg: Color, scale: FontSize, bytes: &[u8]) -> ViewSpec {

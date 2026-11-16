@@ -11,8 +11,8 @@
 //! - [`scene`]：窗树装配底座（状态栏 scrim 动态预混/三组对齐/图标桥/时钟
 //!   文本面）——抽自 desktop.rs；桌面特化（网格/壁纸/dock/TabBar 三页）
 //!   留 launcher。
-//! - [`icons`]：app 注册表 + BYI/OH 资产供给桥（含 status_icons/wallpaper
-//!   两生成子模块）——抽自 icons.rs。
+//! - [`icons`]：app 注册表 + BYI/OH 资产供给桥（含 status_icons/wallpaper/
+//!   icon_data 三生成子模块——末者为 SVG 位图库独立 id 域）——抽自 icons.rs。
 //! - [`conf`]：FAT canonical 单簇原子读写（LAYOUT.JSN/BOOT.JSN 同款持久键
 //!   面：缺席/坏件回默认 + 重写自愈 + 写失败非致命三约束的读写半程）——
 //!   抽自 layout_io.rs。
