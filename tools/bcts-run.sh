@@ -811,8 +811,12 @@ if [ "$SELFTEST" = 1 ]; then
     a_pr=$(basename "$a"); a_pr=${a_pr#bcts@}; a_pr=${a_pr%.toml}
     a_floor=$(sed -n 's/^tier1_floor = //p' "$a")
     a_cnt=$(grep -c '^expect = ' "$a")
+    # 期望串预生成真 TAB（printf）——eval 双层转义下 $'..\t..' 落到 grep 是字面
+    # 反斜杠 t，GNU grep 不解释（BSD 解释）：本地绿 CI 红的跨实现坑；-qF 固定串
+    # 匹配双栈同语义，模式含 TAB 也不进 BRE 解释面。
+    a_meta=$(printf 'META\t%s\t%s\t%s\t1\t' "$a_pr" "$a_floor" "$a_cnt")
     leg "工件 schema 自校验（$(basename "$a")，含空集守卫+文件名自证）" 0 \
-      "parse_frozen '$a' | grep -q \$'^META\\\\t${a_pr}\\\\t${a_floor}\\\\t${a_cnt}\\\\t1\\\\t'"
+      "parse_frozen '$a' | grep -qF \"\$a_meta\""
   done
   # 「最新工件」= pr 数值最大（sort -n 数值序取尾；字符串序 @10 < @9 坑）。
   ART=$(printf '%s\n' $arts | sort -t@ -k2 -n | tail -1)
@@ -866,8 +870,10 @@ if [ "$SELFTEST" = 1 ]; then
     t2a_floor=$(sed -n 's/^tier2_floor = //p' "$a")
     t2a_ctr=$(grep -c '^\[\[contract\]\]' "$a")
     t2a_cnt=$(grep -c '^\[\[contract\.case\]\]' "$a")
+    # T1 schema 腿同款：printf 预生成真 TAB + grep -qF（跨 GNU/BSD 同语义）。
+    t2a_meta=$(printf 'META\t%s\t%s\t%s\t%s\t' "$t2a_pr" "$t2a_floor" "$t2a_ctr" "$t2a_cnt")
     leg "T2 工件 schema 自校验（$(basename "$a")，含空集守卫+逐 op 覆盖+文件名自证）" 0 \
-      "parse_t2_frozen '$a' | grep -q \$'^META\\\\t${t2a_pr}\\\\t${t2a_floor}\\\\t${t2a_ctr}\\\\t${t2a_cnt}\\\\t'"
+      "parse_t2_frozen '$a' | grep -qF \"\$t2a_meta\""
   done
   # 「最新工件」= pr 数值最大（T1 ART 同款，sort -n 数值序取尾；字符串序
   # @10 < @9 坑）——对账真跑/咬合/拒面腿全走最新件；临时件名随件 pr（咬合
