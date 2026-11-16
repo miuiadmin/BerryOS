@@ -1202,6 +1202,15 @@ test-host:
     {{BASH}} tools/smoke-lockdep.sh --selftest
     {{BASH}} tools/smoke-dpgsoak.sh --selftest
     {{BASH}} tools/soak-g3.sh --selftest
+    # W1 接线（fwcfg 键表对拍门禁化——「有守卫零自检零接线」判例族）：
+    # fwcfg-check.sh 对拍执法面（tools/fwcfg-keys.toml 单源键表 vs 仓内
+    # tracked 注入/消费面零漂移）+ selftest 9 腿（对拍绿红双向/fixture
+    # 排除/rootfsN 归并/键长 55B 上限门/非 git 树拒）。引擎 git grep
+    # （tracked 单源；rg runner 缺件判例 #371），此前 rg 版在 base 假红
+    # 两月（fwcfgface 合成 fixture trac/missing 误入代码面）无人咬合。
+    # 改键表/改注入消费面必跑。
+    {{BASH}} tools/fwcfg-check.sh
+    {{BASH}} tools/fwcfg-check.sh --selftest
     # W1 接线（D-审计 §4.3「从未跑过」面）：guifbd lib 单测 13 测
     # （B1-b/c vgpu 后端纯面——后端分派/INDIRECT 链/ATTACH 段/提交序）入
     # host 台账。独立小工作区（空 [workspace] escape），berry-libc
