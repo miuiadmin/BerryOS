@@ -21,8 +21,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PIL import Image
-
 REPO = Path(__file__).resolve().parent.parent
 SRC = Path('/tmp/icons-src')
 OUT = REPO / 'user/berry-appshell/src/icon_data'
@@ -65,6 +63,10 @@ def rasterize(svg: Path, png: Path) -> bool:
 
 def px_array(svg: Path, cache: Path):
     """SVG → [u32; 66*66]（alpha 二值单色面）；空面/渲染失败 → None。"""
+    # PIL 惰性导入：selftest/结构钉板路径零 PIL 依赖（CI runner 无 Pillow，
+    # 顶层导入曾使 --selftest 即 ModuleNotFoundError 堵全部 PR light 门——
+    # #406 遗留 base 债，本刀随收口刀清偿）。
+    from PIL import Image
     if not (cache.exists() and cache.stat().st_size > 0):
         if not rasterize(svg, cache):
             return None
