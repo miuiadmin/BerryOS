@@ -28,6 +28,7 @@ members = [
     "safeck",
     "sched",
     "sliceface",
+    "billface",
     "susface",
     "telface",
     "tickface",
