@@ -16,7 +16,6 @@ use crate::profile::Profile;
 use crate::qemu::{self, Qemu};
 use crate::qmp::QmpClient;
 use crate::run_dir::{self, RunDir, Tail};
-use crate::vnc_cfg;
 
 pub struct Device {
     qemu: Qemu,
@@ -48,22 +47,17 @@ pub struct Device {
     stopped: bool,
     stop_flag: Arc<std::sync::atomic::AtomicBool>,
     _control: Option<ControlServer>,
-    /// External VNC exposure for this run (None = not exposed). Kept on the
-    /// Device so `restart_in_place` reuses the same port and re-injects the
-    /// same password after QEMU is reborn.
-    vnc_ext: Option<vnc_cfg::Exposed>,
 }
 impl Device {
-    #[allow(clippy::too_many_arguments)]
     pub fn start(
         image: Option<std::path::PathBuf>,
         profile: Profile,
         accel: &str,
         memory: Option<u32>,
         display_mode: Option<String>,
+        boot_mode: Option<String>,
         keep: bool,
         label: &str,
-        vnc: vnc_cfg::Launch,
     ) -> Result<Self> {
         let qemu = Qemu::discover()?;
         let image = qemu::resolve_image(image)?;
@@ -88,19 +82,6 @@ impl Device {
         let log = run.file("qemu.log");
         let ram_path = run.file("ram.bin");
         let (vnc, qmp_ep) = endpoints(&run);
-        let mut vnc_ext = resolved_vnc.exposed;
-        if let Some(ext) = &vnc_ext {
-            vnc_cfg::write_listen(
-                run.path(),
-                &ext.host,
-                ext.port,
-                ext.ws_port,
-                ext.tls_dir.is_some(),
-            )?;
-            if let Some(pw) = &ext.password {
-                vnc_cfg::write_pass(run.path(), pw)?;
-            }
-        }
         let mode = display_mode.or_else(|| {
             (profile.id != "default").then(|| {
                 format!(
@@ -122,22 +103,10 @@ impl Device {
             "memory_mib":mem,
             "display_mode":mode,
             "keep":keep,
-            "vnc_spec":resolved_vnc.spec_str,
-            "vnc_ws":resolved_vnc.ws_str,
-            "vnc_tls":vnc_ext
-                .as_ref()
-                .and_then(|e| e.tls_dir.as_ref())
-                .map(|d| d.display().to_string())
-                .unwrap_or_else(|| "off".to_string()),
-            "vnc_listen":vnc_ext.as_ref()
-                .map(|e| {
-                    vnc_cfg::listen_value(&e.host, e.port, e.ws_port, e.tls_dir.is_some())
-                })
-                .unwrap_or(serde_json::Value::Null),
         });
         std::fs::write(run.file("meta.json"), serde_json::to_vec_pretty(&meta)?)?;
         let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (child, qmp, source, control) = boot_with_retry(
+        let (child, qmp, source, control) = boot_runtime(
             &qemu,
             &image,
             &firmware,
@@ -155,7 +124,6 @@ impl Device {
             Some(&ram_path),
             &mut run,
             stop_flag.clone(),
-            &mut vnc_ext,
         )?;
         run_dir::write_state(run.path(), "running");
         Ok(Self {
@@ -182,13 +150,7 @@ impl Device {
             stopped: false,
             stop_flag,
             _control: control,
-            vnc_ext,
         })
-    }
-
-    /// External VNC endpoint for this run, when exposed.
-    pub fn vnc_exposed(&self) -> Option<&vnc_cfg::Exposed> {
-        self.vnc_ext.as_ref()
     }
 
     pub fn set_restart_on_crash(&mut self, on: bool) {
@@ -222,11 +184,7 @@ impl Device {
         let _ = std::fs::File::create(&self.log);
         self.stop_flag
             .store(false, std::sync::atomic::Ordering::Relaxed);
-        // Same run, same external endpoint: `self.vnc_ext` keeps the resolved
-        // port and password so the reborn QEMU comes back identical (the
-        // password must be re-injected over QMP — see boot_runtime). The
-        // &mut handoff lets a bind-race retry update the auto ports in place.
-        let runtime = boot_with_retry(
+        let runtime = boot_runtime(
             &self.qemu,
             &self.image,
             &self.firmware,
@@ -244,7 +202,6 @@ impl Device {
             Some(&self.ram_path),
             &mut self.run,
             self.stop_flag.clone(),
-            &mut self.vnc_ext,
         );
         match runtime {
             Ok((child, qmp, source, control)) => {
@@ -375,18 +332,12 @@ fn boot_runtime(
     ram_path: Option<&std::path::Path>,
     run: &mut RunDir,
     stop_flag: Arc<std::sync::atomic::AtomicBool>,
-    ext: Option<&vnc_cfg::Exposed>,
 ) -> Result<(
     std::process::Child,
     Arc<Mutex<QmpClient>>,
     Box<dyn ScreenSource>,
     Option<ControlServer>,
 )> {
-    let ext_arg = match ext {
-        Some(e) => Some(e.qemu_arg()?),
-        None => None,
-    };
-    let tls_creds = ext.and_then(|e| e.tls_dir.as_deref());
     let mut child = qemu::spawn_image(
         qemu, image, firmware, vars, serial, serial_sock, log, vnc, qmp_ep, accel, mem, tablet,
         mode, profile_id, ram_path, ext_arg.as_deref(), tls_creds,
@@ -415,26 +366,7 @@ fn boot_runtime(
         std::thread::sleep(Duration::from_millis(20));
     }
     let result = (|| {
-        let mut qmp = connect_qmp(qmp_ep, Duration::from_secs(10))?;
-        // Event pump (wave 2): map the three VNC client events onto the
-        // run's events.jsonl (same writer as control actions). Non-VNC
-        // events stay silent — wave-1 semantics for everything else.
-        {
-            let run_events = run.path().to_path_buf();
-            qmp.set_event_sink(Arc::new(move |name, v| {
-                if let Some(line) = vnc_event_line(name, v) {
-                    crate::control::append_event(&run_events, line);
-                }
-            }));
-        }
-        // Re-inject the VNC password on every (re)spawn: QEMU restarts lose
-        // it, and an auth-enabled endpoint without a password rejects every
-        // client. The error text carries only the QMP desc, never the value.
-        if let Some(pw) = ext.and_then(|e| e.password.as_deref()) {
-            qmp.set_vnc_password(pw).map_err(|e| {
-                crate::error::BerryError::device(format!("inject VNC password: {e}"))
-            })?;
-        }
+        let qmp = connect_qmp(qmp_ep, Duration::from_secs(10))?;
         let qmp = Arc::new(Mutex::new(qmp));
         let source: Box<dyn ScreenSource> = if let Some(info) = fb {
             let input = VncInput::connect(vnc)?;
@@ -642,9 +574,10 @@ fn endpoints(run: &RunDir) -> (Endpoint, Endpoint) {
 
 #[cfg(not(unix))]
 fn free_port() -> u16 {
-    // Internal -vnc endpoints also use display-number syntax on QEMU, so the
-    // port must be >= 5900 to be expressible (probe f2).
-    vnc_cfg::free_vnc_port()
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr())
+        .map(|a| a.port())
+        .unwrap_or(5900)
 }
 
 fn wait_endpoint(ep: &Endpoint, timeout: Duration) -> Result<()> {
@@ -657,91 +590,4 @@ fn wait_endpoint(ep: &Endpoint, timeout: Duration) -> Result<()> {
     let _ = (ep, timeout);
     std::thread::sleep(Duration::from_millis(100));
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const CONNECTED: &str = r#"{"timestamp":{"seconds":1794538787,"microseconds":68437},"event":"VNC_CONNECTED","data":{"server":{"auth":"none","family":"ipv4","service":"11801","host":"127.0.0.1","websocket":false},"client":{"family":"ipv4","service":"61086","host":"127.0.0.1","websocket":false}}}"#;
-
-    #[test]
-    fn vnc_event_mapping() {
-        // Three VNC events map to their t names with fields passed through.
-        for (ev, t) in [
-            ("VNC_CONNECTED", "vnc.connected"),
-            ("VNC_INITIALIZED", "vnc.initialized"),
-            ("VNC_DISCONNECTED", "vnc.disconnected"),
-        ] {
-            let raw = CONNECTED.replace("VNC_CONNECTED", ev);
-            let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
-            let line = vnc_event_line(ev, &v).unwrap();
-            assert_eq!(line["t"], t);
-            assert_eq!(line["v"], 1);
-            assert_eq!(line["source"], "qmp");
-            assert_eq!(line["client"]["service"], "61086");
-            assert_eq!(line["client"]["host"], "127.0.0.1");
-            assert_eq!(line["client"]["websocket"], false);
-            assert_eq!(line["server"]["service"], "11801");
-            assert_eq!(line["server"]["auth"], "none");
-            // Round-trip through events.jsonl formatting stays one line.
-            let s = serde_json::to_string(&line).unwrap();
-            assert!(!s.contains('\n'));
-        }
-        // Disconnect keeps the client object (probe p5: identical shapes).
-        let raw = r#"{"event":"VNC_DISCONNECTED","data":{"server":{"auth":"none","service":"11801"},"client":{"host":"127.0.0.1","service":"60628","websocket":true}}}"#;
-        let v: serde_json::Value = serde_json::from_str(raw).unwrap();
-        let line = vnc_event_line("VNC_DISCONNECTED", &v).unwrap();
-        assert_eq!(line["t"], "vnc.disconnected");
-        assert_eq!(line["client"]["websocket"], true);
-        // Non-VNC events map to None (stay silent).
-        let v: serde_json::Value =
-            serde_json::from_str(r#"{"event":"STOP","data":{}}"#).unwrap();
-        assert!(vnc_event_line("STOP", &v).is_none());
-        // Missing data still yields a line with null client/server.
-        let v: serde_json::Value =
-            serde_json::from_str(r#"{"event":"VNC_CONNECTED"}"#).unwrap();
-        let line = vnc_event_line("VNC_CONNECTED", &v).unwrap();
-        assert!(line["client"].is_null());
-    }
-
-    #[test]
-    fn bind_race_detection() {
-        // QEMU 11.0.3 TCP display and websocket failures (calibrated live).
-        let tcp = "qemu-system-aarch64: -vnc 127.0.0.1:71: Failed to find an available port: Address already in use\n";
-        let ws = "qemu-system-aarch64: -vnc 127.0.0.1:71,websocket=6001: Failed to find an available port: Address already in use\n";
-        assert!(is_vnc_bind_race(tcp));
-        assert!(is_vnc_bind_race(ws));
-        // Unrelated failures must not match: no VNC mention, no bind mention.
-        assert!(!is_vnc_bind_race("qemu: could not load kernel\n"));
-        assert!(!is_vnc_bind_race("qemu-system-aarch64: -qmp unix:/run/qmp.sock: Failed to bind\n"));
-        // Retry decision: bind race + at least one auto side.
-        let mut auto = vnc_cfg::Exposed {
-            host: "127.0.0.1".into(),
-            port: 5971,
-            ws_port: Some(6001),
-            password: None,
-            tls_dir: None,
-            port_auto: true,
-            ws_auto: false,
-        };
-        assert!(should_retry_bind_race(tcp, Some(&auto)));
-        auto.port_auto = false;
-        assert!(!should_retry_bind_race(tcp, Some(&auto)));
-        auto.ws_auto = true;
-        assert!(should_retry_bind_race(ws, Some(&auto)));
-        // Fixed everything: never retry, fail loudly instead.
-        let fixed = vnc_cfg::Exposed {
-            host: "127.0.0.1".into(),
-            port: 5971,
-            ws_port: Some(6001),
-            password: None,
-            tls_dir: None,
-            port_auto: false,
-            ws_auto: false,
-        };
-        assert!(!should_retry_bind_race(tcp, Some(&fixed)));
-        assert!(!should_retry_bind_race("unrelated boot failure", Some(&auto)));
-        assert!(!should_retry_bind_race(tcp, None));
-    }
 }

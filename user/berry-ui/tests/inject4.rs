@@ -22,7 +22,7 @@ fn rect_spec(w: u32, h: u32) -> ViewSpec {
     ViewSpec {
         kind: ViewKind::Rect,
         key: 0,
-        props: Props::Rect(RectProps { bg: bg(1, 2, 3), w: Some(w), h: Some(h) }),
+        props: Props::Rect(RectProps { bg: bg(1, 2, 3), w: Some(w), h: Some(h), radius: 0 }),
     }
 }
 

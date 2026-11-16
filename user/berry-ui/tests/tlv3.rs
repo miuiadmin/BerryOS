@@ -75,7 +75,7 @@ fn v3_oracle_bytes() -> Vec<u8> {
     b.end().unwrap(); // Col
     b.begin(ViewKind::Tabs, 0, &Props::Tabs(TabsProps { tab_count: 2, active: 0, on_switch: 5 }))
         .unwrap();
-    b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(9, 8, 7), w: None, h: None }))
+    b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(9, 8, 7), w: None, h: None, radius: 0 }))
         .unwrap();
     b.end().unwrap();
     b.end().unwrap(); // Tabs
@@ -188,7 +188,7 @@ fn scroll_list_roundtrip_and_add_face() {
     assert_eq!(
         ui.add(
             btn,
-            ViewSpec { kind: ViewKind::Rect, key: 0, props: Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None }) }
+            ViewSpec { kind: ViewKind::Rect, key: 0, props: Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None, radius: 0 }) }
         ),
         Err(berry_ui::UiError::BadParent),
         "Button 叶父位拒（含新叶）"
@@ -362,7 +362,7 @@ fn new_leaf_children_reject_both_faces_and_size_block() {
     )
     .unwrap();
     assert_eq!(
-        b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None })),
+        b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None, radius: 0 })),
         Err(AstError::BadParent)
     );
     // 对照：Tabs 容器带子合法（golden 已钉）；SIZE 块×新 kind 拒

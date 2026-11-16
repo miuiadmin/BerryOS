@@ -45,6 +45,10 @@ name = "berry-evface"
 version = "0.2.0"
 
 [[package]]
+name = "berry-fbcon"
+version = "0.2.0"
+
+[[package]]
 name = "berry-frzface"
 version = "0.2.0"
 dependencies = [
@@ -107,6 +111,7 @@ dependencies = [
  "berry-dpgface",
  "berry-dtbface",
  "berry-evface",
+ "berry-fbcon",
  "berry-hal-aarch64",
  "berry-hdlface",
  "berry-heapface",

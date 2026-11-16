@@ -60,6 +60,7 @@ kernel/src/mm.rs::FRAME_SUMS	page-table
 kernel/src/process.rs::HT_DRAINQ	other
 kernel/src/process.rs::HT_DRAINQ_LEN	other
 kernel/src/process.rs::HT_DRAINQ_WARNED	other
+kernel/src/splash.rs::STATE	other
 kernel/src/syscall.rs::BOOTSTRAP_HT	boot
 kernel/src/syscall.rs::KLOG_SNAP_STAGE	boot
 kernel/src/telemetry.rs::PRESSURE_OUTLET	telemetry

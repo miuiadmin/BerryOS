@@ -1700,6 +1700,17 @@ pub(crate) fn main() {
         eprintln!("guifbd: no fb pipe gift");
         berry_libc::park();
     }
+    // —— boot splash 收尾（第 6 域三态：0 = 非 GUI；1 = GUI+splash；2 =
+    // GUI+verbose——bootmode verbose 的内核 console 滚屏面留屏，桌面首帧
+    // 覆盖）。splash 形（=1）：自检末相位把屏清成纯黑 + 一行过渡反馈（桌面
+    // 首帧前可能数十秒——TCG 慢速 + APP_LIST 流；fbcon 直写同款路径）。首帧
+    // present 的 blit 直接覆盖本行，零协议面。verbose 形（=2）不清屏不写字
+    // ——Linux 式日志续到桌面接手。
+    let gui_mode6 = rd(5);
+    if gui && gui_mode6 != 2 {
+        con.clear(CON_BG);
+        con.put_str("BerryOS starting...\n", CON_FG, CON_BG);
+    }
     let mut srv = Srv::new(con, w, h, stride, gui, vgpu);
     // —— 三路 serve：present→hdi→console 确定性轮询；全 EAGAIN 才
     // wait_many n=3 并等。deadline = min(下次软 vsync 点, now+10s) **进

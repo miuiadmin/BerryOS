@@ -394,7 +394,7 @@ fn vote_drag_scene_interacting_ballot() {
             ViewSpec {
                 kind: ViewKind::Rect,
                 key: 0,
-                props: Props::Rect(RectProps { bg: Color { r: 1, g: 2, b: 3 }, w: Some(40), h: Some(40) }),
+                props: Props::Rect(RectProps { bg: Color { r: 1, g: 2, b: 3 }, w: Some(40), h: Some(40), radius: 0 }),
             },
         )
         .unwrap();
@@ -450,7 +450,7 @@ fn vote_scene_intent_tiers_all_phases() {
             ViewSpec {
                 kind: ViewKind::Rect,
                 key: 0,
-                props: Props::Rect(RectProps { bg: Color { r: 1, g: 2, b: 3 }, w: Some(40), h: Some(40) }),
+                props: Props::Rect(RectProps { bg: Color { r: 1, g: 2, b: 3 }, w: Some(40), h: Some(40), radius: 0 }),
             },
         )
         .unwrap();
@@ -609,7 +609,7 @@ fn wake_conditional_full_preserves_incremental_damage() {
             ViewSpec {
                 kind: ViewKind::Rect,
                 key: 0,
-                props: Props::Rect(RectProps { bg: Color { r: 1, g: 2, b: 3 }, w: Some(10), h: Some(10) }),
+                props: Props::Rect(RectProps { bg: Color { r: 1, g: 2, b: 3 }, w: Some(10), h: Some(10), radius: 0 }),
             },
         )
         .unwrap();

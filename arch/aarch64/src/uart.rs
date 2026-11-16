@@ -29,6 +29,7 @@
 use crate::gic;
 use crate::mmio;
 use crate::{KERNEL_VA_BASE, UART0_BASE, UART1_BASE};
+use core::sync::atomic::Ordering;
 
 /// UART0 高半直映基址（2b-2 低半退役：PA 直访必 fault；boot asm 早期打印
 /// 例外——开 MMU 前直写 PA，不走这里）。
@@ -76,8 +77,18 @@ const UART_ICR_STICKY: u32 = UART_ICR_ALL & !(UART_IMSC_RXIM); // RXIC 与 RXIM 
 pub fn uart_putc(c: u8) {
     crate::klog_ring::put(c);
     // unsafe 收敛在此：MMIO 写。
-    unsafe { mmio::write(UART, c as u32) };
+    unsafe { mmio::write(UART, c as u32) }
+    // 镜像钩子（boot verbose——splash 注册；空指针 = 无镜像面直过）。
+    let cbp = FB_MIRROR.load(Ordering::Relaxed);
+    if !cbp.is_null() {
+        unsafe { (*cbp)(c) };
+    }
 }
+
+/// framebuffer 镜像回调（kernel splash 注册；None = 无镜像面）。
+pub static FB_MIRROR: core::sync::atomic::AtomicPtr<fn(u8)> =
+    core::sync::atomic::AtomicPtr::new(0 as *const fn(u8) as *mut fn(u8));
+
 
 /// 输出一段字节串。
 pub fn uart_puts(s: &[u8]) {

@@ -129,6 +129,9 @@ struct ShotCmd {
     keep: bool,
     #[arg(long)]
     display_mode: Option<String>,
+    /// Boot screen mode: splash (default, iOS-style B/W) or verbose (Linux-style scrolling log).
+    #[arg(long)]
+    boot_mode: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -300,6 +303,9 @@ struct StartCmd {
     memory: Option<u32>,
     #[arg(long)]
     display_mode: Option<String>,
+    /// Boot screen mode: splash (default, iOS-style B/W) or verbose (Linux-style scrolling log).
+    #[arg(long)]
+    boot_mode: Option<String>,
     #[arg(long)]
     keep: bool,
     #[arg(long)]
@@ -340,6 +346,9 @@ struct HostCmd {
     memory: Option<u32>,
     #[arg(long)]
     display_mode: Option<String>,
+    /// Boot screen mode: splash (default, iOS-style B/W) or verbose (Linux-style scrolling log).
+    #[arg(long)]
+    boot_mode: Option<String>,
     #[arg(long)]
     keep: bool,
     /// Restart QEMU in the same run after an unexpected exit.
@@ -384,153 +393,9 @@ struct ShellCmd {
     keep: bool,
     #[arg(long)]
     display_mode: Option<String>,
-    /// Expose an external VNC endpoint: off | on | <port> | <host>:<port>.
+    /// Boot screen mode: splash (default, iOS-style B/W) or verbose (Linux-style scrolling log).
     #[arg(long)]
-    vnc: Option<String>,
-    /// WebSocket listener for noVNC: off | on | <port> (requires --vnc).
-    #[arg(long)]
-    vnc_ws: Option<String>,
-    /// VNC password; loopback defaults to none, non-loopback auto-generates.
-    /// Ignored when no endpoint is exposed (no --vnc and no BERRY_VNC).
-    #[arg(long)]
-    vnc_pass: Option<String>,
-    /// TLS (VeNCrypt) cert dir for the endpoint (requires --vnc).
-    #[arg(long)]
-    vnc_tls: Option<String>,
-}
-
-#[derive(Parser, Debug)]
-struct VncCmd {
-    #[command(subcommand)]
-    action: VncAction,
-}
-
-#[derive(Subcommand, Debug)]
-enum VncAction {
-    /// Show the external endpoint (listen/uri/auth/clients).
-    Status(VncStatusCmd),
-    /// Rotate or expire the VNC password (needs an auth-enabled endpoint).
-    Passwd(VncPasswdCmd),
-    /// Full RFB self-check through the endpoint (auth + one frame);
-    /// --ws switches to the browser (websocket) path.
-    Check(VncCheckCmd),
-    /// Open the endpoint in the platform VNC viewer (macOS).
-    Open(VncOpenCmd),
-    /// Serve the BerryOS shell page for browser access (vendored noVNC
-    /// kept at /novnc/ as the escape hatch; plaintext runs proxy
-    /// nothing; --tls on a TLS run adds a local wss proxy).
-    Web(VncWebCmd),
-    /// Generate a self-signed x509 cert set for --vnc-tls (openssl).
-    Certs(VncCertCmd),
-}
-
-#[derive(Parser, Debug)]
-struct VncStatusCmd {
-    #[arg(long)]
-    run: Option<String>,
-}
-
-#[derive(Parser, Debug)]
-struct VncPasswdCmd {
-    #[arg(long)]
-    run: Option<String>,
-    /// Set an explicit password (default: generate a random one).
-    #[arg(long)]
-    set: Option<String>,
-    /// Generate a random password (default behavior, kept for clarity).
-    #[arg(long)]
-    generate: bool,
-    /// Schedule expiry: never | <positive seconds>.
-    #[arg(long)]
-    expire: Option<String>,
-}
-
-#[derive(Parser, Debug)]
-struct VncCheckCmd {
-    #[arg(long)]
-    run: Option<String>,
-    /// Password for the check; default reads the run's vnc.pass.
-    #[arg(long)]
-    password: Option<String>,
-    /// Check the websocket (browser) endpoint instead of TCP: ws/wss
-    /// upgrade + RFB handshake to ServerInit, the exact path noVNC takes.
-    #[arg(long)]
-    ws: bool,
-    /// Certificate dir for TLS (VeNCrypt) endpoints; default reads the
-    /// run's --vnc-tls directory. Ignored on plaintext endpoints.
-    #[arg(long)]
-    ca: Option<PathBuf>,
-    /// Skip TLS certificate verification (explicit escape hatch; prints
-    /// a warning). Ignored on plaintext endpoints; excludes --ca.
-    #[arg(long)]
-    insecure: bool,
-}
-
-#[derive(Parser, Debug)]
-struct VncOpenCmd {
-    #[arg(long)]
-    run: Option<String>,
-}
-
-#[derive(Parser, Debug)]
-struct VncWebCmd {
-    #[arg(long)]
-    run: Option<String>,
-    /// Port for the local page server (default: pick a free one; 0 is
-    /// refused — the URL/QR would advertise a dead :0 link).
-    #[arg(long, value_parser = berry::web::parse_web_port)]
-    port: Option<u16>,
-    /// Max concurrent page connections (1..=1024, default 16).
-    #[arg(
-        long,
-        value_parser = berry::web::parse_max_conns,
-        default_value_t = berry::web::DEFAULT_MAX_CONNS
-    )]
-    max_conns: usize,
-    /// Serve the page over https from this certificate dir (default on
-    /// TLS runs: the run's --vnc-tls directory; then a local wss proxy
-    /// carries the browser connection to QEMU).
-    #[arg(long, value_name = "DIR")]
-    tls: Option<PathBuf>,
-    /// Single-port LAN mode: bind 0.0.0.0, serve pages and proxy `/ws`
-    /// to QEMU's loopback websocket on the same port — phones on the
-    /// same Wi-Fi open the BerryOS desktop directly (requires a
-    /// password on the run; QR on by default).
-    #[arg(long)]
-    lan: bool,
-    /// Override the LAN address printed into the URL/QR (requires
-    /// --lan; bare IPv6 gets bracketed automatically).
-    #[arg(long, value_name = "ADDR")]
-    host: Option<String>,
-    /// Render the pairing QR in the terminal (default with --lan).
-    #[arg(long)]
-    qr: bool,
-    /// Skip the pairing QR even in --lan mode.
-    #[arg(long)]
-    no_qr: bool,
-    /// Certificate dir overriding the upstream trust source when --lan
-    /// serves a TLS run (default: the run's --vnc-tls directory; the
-    /// page itself stays http — only the berry->QEMU upstream leg speaks
-    /// wss). Requires --lan; excludes --insecure; silently ignored on
-    /// plaintext runs.
-    #[arg(long, value_name = "DIR")]
-    ca: Option<PathBuf>,
-    /// Skip the upstream wss certificate verification when --lan serves
-    /// a TLS run (escape hatch; prints a warning). Requires --lan;
-    /// excludes --ca.
-    #[arg(long)]
-    insecure: bool,
-    /// Open the printed URL in the default browser before serving
-    /// (macOS: `open` without the password fragment; other platforms
-    /// print a manual hint instead — never an error).
-    #[arg(long)]
-    open: bool,
-}
-
-#[derive(Parser, Debug)]
-struct VncCertCmd {
-    /// Output directory for ca-cert/ca-key/server-cert/server-key pems.
-    dir: PathBuf,
+    boot_mode: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -645,6 +510,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             timeout: Duration::from_secs(c.timeout),
             keep: c.keep,
             display_mode: c.display_mode,
+            boot_mode: c.boot_mode,
             json: cli.json,
         }),
         Some(Cmd::Display(c)) => match c.action {
@@ -677,6 +543,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             accel: c.accel,
             memory: c.memory,
             display_mode: c.display_mode,
+            boot_mode: c.boot_mode,
             keep: c.keep,
             restart_on_crash: c.restart_on_crash,
             vnc_spec: c.vnc,
@@ -692,6 +559,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                 accel: s.accel,
                 memory: s.memory,
                 display_mode: s.display_mode,
+                boot_mode: s.boot_mode,
                 keep: s.keep,
                 foreground: s.foreground,
                 restart_on_crash: s.restart_on_crash,
@@ -734,6 +602,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             timeout: Duration::from_secs(c.timeout),
             keep: c.keep,
             display_mode: c.display_mode,
+            boot_mode: c.boot_mode,
             json: cli.json,
             vnc_spec: c.vnc,
             vnc_ws: c.vnc_ws,
@@ -911,6 +780,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                 timeout: Duration::from_secs(timeout),
                 keep: std::env::var_os("BERRY_SHELL_KEEP").is_some(),
                 display_mode: None,
+                boot_mode: None,
                 json: false,
                 vnc_spec: None,
                 vnc_ws: None,

@@ -8,7 +8,7 @@
 
 CLI 是主接口；窗口按钮只是命令的按钮化，任何 UI 动作都应有等价 CLI。
 
-设计依据：`docs/Berry设备平台-CLI-first设计-v1.8.md`（平台/CLI/控制面/快捷栏单一事实源）+
+设计依据：`docs/Berry设备平台-CLI-first设计-v1.9.md`（平台/CLI/控制面/快捷栏单一事实源）+
 `docs/berry设备壳设计草案-v1.0.md`（显示/帧面/QEMU 子系统）+ ADR #62 追记。**QEMU 只是引擎子进程**：
 帧面走 QEMU `memory-backend-file,share=on` 的客机 RAM 镜（`RamSource`），输入走
 VNC 多客户端（`VncInput`），生命周期/复位走 QMP。窗口、截图、缩放都在宿主侧。

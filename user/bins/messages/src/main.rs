@@ -1024,7 +1024,7 @@ fn build_chat(ui: &mut UiMain, a: &mut App, c: usize) -> Result<(), UiError> {
 
     let page = pattern::stack(ui, a.nav_root)?;
     // 不透明页底（NavHost 滑入期页下内容不可透——app_bar 面层语同款）。
-    ui.add(page, vspec(ViewKind::Rect, Props::Rect(RectProps { bg: t.bg_page, w: None, h: None })))?;
+    ui.add(page, vspec(ViewKind::Rect, Props::Rect(RectProps { bg: t.bg_page, w: None, h: None, radius: 0 })))?;
     // 滚动层（Scroll kind——Stack `_` 摆位吃满页 = 视口帽）。
     let scroll = ui.add(page, vspec(ViewKind::Scroll, Props::Scroll(ScrollProps { content_height: 0, offset_y: 0 })))?;
     let msg_col = ui.add(
@@ -1051,7 +1051,7 @@ fn build_chat(ui: &mut UiMain, a: &mut App, c: usize) -> Result<(), UiError> {
     let input_stack = pattern::stack(ui, chrome)?;
     ui.add(
         input_stack,
-        vspec(ViewKind::Rect, Props::Rect(RectProps { bg: t.bg_page, w: None, h: None })),
+        vspec(ViewKind::Rect, Props::Rect(RectProps { bg: t.bg_page, w: None, h: None, radius: 0 })),
     )?;
     let input_col = ui.add(
         input_stack,

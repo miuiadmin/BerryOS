@@ -833,7 +833,7 @@ fn card_at(ui: &mut UiMain, a: &App, x: u32, y: u32) -> Option<usize> {
 fn card_tint(ui: &mut UiMain, a: &App, idx: usize, on: bool) {
     let Some(c) = a.cards[idx] else { return };
     let st = if on { ItemState::Pressed } else { ItemState::Normal };
-    let props = Props::Rect(RectProps { bg: state_color(st.bg()), w: None, h: None });
+    let props = Props::Rect(RectProps { bg: state_color(st.bg()), w: None, h: None, radius: 0 });
     if let Err(e) = ui.set_props(c.press, props) {
         eprintln!("browser: card press err={e:?}");
     }
@@ -988,7 +988,7 @@ fn open_page(ui: &mut UiMain, a: &mut App, site: usize) -> Result<(), UiError> {
     let root = pattern::stack(ui, a.nav_root)?;
     // 不透明页底（NavHost 滑入期页下内容不可透——pattern app_bar「面层
     // Rect」叠层语同款 + 页域任意 damage 恒有重绘覆盖源）。
-    ui.add(root, vspec(ViewKind::Rect, Props::Rect(RectProps { bg: t.bg_page, w: None, h: None })))?;
+    ui.add(root, vspec(ViewKind::Rect, Props::Rect(RectProps { bg: t.bg_page, w: None, h: None, radius: 0 })))?;
     let body = ui.add(
         root,
         vspec(ViewKind::Col, Props::Col(ColProps {
@@ -1124,7 +1124,7 @@ fn build_all(ui: &mut UiMain, last: Option<usize>) -> Result<App, UiError> {
 
     // —— 书签页（depth 0 常驻底页）——
     let home = pattern::stack(ui, nav_root)?;
-    ui.add(home, vspec(ViewKind::Rect, Props::Rect(RectProps { bg: t.bg_page, w: None, h: None })))?;
+    ui.add(home, vspec(ViewKind::Rect, Props::Rect(RectProps { bg: t.bg_page, w: None, h: None, radius: 0 })))?;
     let content = ui.add(
         home,
         vspec(ViewKind::Col, Props::Col(ColProps {
@@ -1183,7 +1183,7 @@ fn build_all(ui: &mut UiMain, last: Option<usize>) -> Result<App, UiError> {
         // 五态按压层（Normal = 卡面白——常态隐形；Pressed = brand 20% 预混）。
         let press = ui.add(
             sk,
-            vspec(ViewKind::Rect, Props::Rect(RectProps { bg: state_color(ItemState::Normal.bg()), w: None, h: None })),
+            vspec(ViewKind::Rect, Props::Rect(RectProps { bg: state_color(ItemState::Normal.bg()), w: None, h: None, radius: 0 })),
         )?;
         // 内容行（置顶层——图标 + 站名/地址双行盖按压层之上）。
         let crow = ui.add(

@@ -437,7 +437,7 @@ fn set_props_updates_all_four_and_rejects_bad_values() {
     assert_eq!(
         ui.set_props(
             btn,
-            Props::Rect(RectProps { bg: Color { r: 9, g: 9, b: 9 }, w: None, h: None })
+            Props::Rect(RectProps { bg: Color { r: 9, g: 9, b: 9 }, w: None, h: None, radius: 0 })
         ),
         Err(UiError::NodeBad),
         "kind 失配拒（Rect props 塞 Button 槽）"

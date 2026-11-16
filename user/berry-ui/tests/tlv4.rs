@@ -89,7 +89,7 @@ fn v4_oracle_bytes() -> Vec<u8> {
     .unwrap();
     b.end().unwrap();
     b.end().unwrap(); // Stack
-    b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(9, 8, 7), w: None, h: None }))
+    b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(9, 8, 7), w: None, h: None, radius: 0 }))
         .unwrap();
     b.end().unwrap();
     b.end().unwrap(); // Root
@@ -416,7 +416,7 @@ fn p1_leaf_children_reject_both_faces_and_size_block() {
     b.begin(ViewKind::Check, 0, &Props::Check(CheckProps { checked: true, on_change: 3 }))
         .unwrap();
     assert_eq!(
-        b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None })),
+        b.begin(ViewKind::Rect, 0, &Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None, radius: 0 })),
         Err(AstError::BadParent)
     );
     // 对照：Stack 容器带子合法（golden 已钉）；SIZE 块×新 kind 拒
@@ -479,7 +479,7 @@ fn p1_add_face_smoke() {
     assert_eq!(
         ui.add(
             ck,
-            ViewSpec { kind: ViewKind::Rect, key: 0, props: Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None }) }
+            ViewSpec { kind: ViewKind::Rect, key: 0, props: Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None, radius: 0 }) }
         ),
         Err(berry_ui::UiError::BadParent),
         "Check 叶父位拒"
@@ -502,7 +502,7 @@ fn p1_add_face_smoke() {
     assert!(
         ui.add(
             st,
-            ViewSpec { kind: ViewKind::Rect, key: 0, props: Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None }) }
+            ViewSpec { kind: ViewKind::Rect, key: 0, props: Props::Rect(RectProps { bg: bg(1, 2, 3), w: None, h: None, radius: 0 }) }
         )
         .is_ok(),
         "Stack 命令面父位收编（Phase 2 第二批接线）"

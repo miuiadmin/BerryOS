@@ -11,7 +11,7 @@ fn rect_spec(w: u32, h: u32) -> ViewSpec {
     ViewSpec {
         kind: ViewKind::Rect,
         key: 0,
-        props: Props::Rect(RectProps { bg: berry_gfx::cmd::Color { r: 1, g: 2, b: 3 }, w: Some(w), h: Some(h) }),
+        props: Props::Rect(RectProps { bg: berry_gfx::cmd::Color { r: 1, g: 2, b: 3 }, w: Some(w), h: Some(h), radius: 0 }),
     }
 }
 
