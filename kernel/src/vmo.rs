@@ -14,7 +14,8 @@
 //! （帧分配/清零/归还、direct map 拷贝）+ 对象壳，资格判定与簿记迁移
 //! [`berry_vmoledger::PageLedger`]——**唯一事实源，非镜像**。
 //!
-//! 全 API 返回 `Result`（syscall 边界无 panic 纪律——Phase 3 直接折状态码）。
+//! 操作类 API 返回 `Result`（syscall 边界无 panic 纪律——Phase 3 直接折状态码）；
+//! 查询面（`is_*`/`size`/`page_pa` 等）返回裸值。
 
 use berry_mm::frame::FrameAllocator;
 use berry_mm::va::{phys_to_virt, PAGE_SHIFT, PAGE_SIZE};
