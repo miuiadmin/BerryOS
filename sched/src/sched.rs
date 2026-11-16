@@ -17,7 +17,7 @@ use crate::task::{
 use berry_hal_aarch64 as hal;
 use core::cell::Cell;
 use core::ptr::{addr_of, addr_of_mut, NonNull};
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 /// IRQ tick 计数（`on_irq_tick` 自增）。金丝雀：长跑中持续增长 = timer/EOIR 管线健康
 /// （rearm 对、无 EOIR 饿死——plan R4/R5）；停增即管线坏。
@@ -792,10 +792,18 @@ fn place(task: &Task) -> usize {
 /// 记账落地替换（调点调度 v1.3 §6 后续件）。
 const SPAWN_UTIL_EST: u32 = 128;
 
-/// EAS 选核决策自证行一次性门（首次真决策打一行选核日志 = SMP 双核面
-/// 「选核决策日志」证据面；par 门内才打 = ktest/单核零输出漂移。Relaxed
-/// 纯统计门，无同步角色）。
-static EAS_LOG_ONCE: AtomicBool = AtomicBool::new(false);
+/// EAS 选核决策日志门（OBS-01——06 号 §5 观测维「EAS 决策日志」最小面）：
+/// par 门内**首调即打 + 每 [`EAS_LOG_EVERY`] 次一行**（含 None 回退行——
+/// 默认 boot 无 policy hint（ai_demo 表 placement=0），只记 Some 决策的话
+/// 该面结构性冷：spawn 全走 hint=0 短路，run-smp 实测零行）。快照 =
+/// 决策结果 + hint + 双核 util/spare。raw UART 直写不吃 PRINT_LOCK
+/// （`spin_bark` 先例：调用点在 spawn 屏蔽窗内或持 KL，PRINT_LOCK 与 KL
+/// 不新增序边；跨核并写最坏形 = 字节交错，观测面容忍）。Relaxed 纯统计
+/// 门，无同步角色；par 门外（ktest 直调/单核）零输出漂移。
+static EAS_LOG_CNT: AtomicU64 = AtomicU64::new(0);
+/// 决策行频率：首行后每 N 次选核一行（LB/soakload fleet 的 spawn 突发
+/// 每轮 4-8 次，256 ≈ 数十轮一行——boot/smoke 全程个位数行不刷屏）。
+const EAS_LOG_EVERY: u64 = 256;
 
 /// EAS 放置决策（**纯决策面**——输入全注入，ktest 钉板对象）：
 /// placement hint → berry-em `eas_pick_cpu` 的组合律。判序：
@@ -852,19 +860,34 @@ pub fn eas_place(task_key: u64) -> Option<usize> {
         }
     }
     let utils = [crate::util::cpu_util(0), crate::util::cpu_util(1)];
-    let cpu = eas_pick_place(&domains[..n], &utils, hint, SPAWN_UTIL_EST)?;
-    // 选核决策自证行（一次）：raw UART 直写同 spin_bark 先例（spawn 屏蔽
-    // 窗内单行）；par 门内才打——ktest 直调/单核 boot 零输出漂移。
-    if hal::smp::par_enabled() && !EAS_LOG_ONCE.swap(true, Ordering::Relaxed) {
-        hal::uart_puts(b"EAS pick cpu=");
-        hal::uart_put_dec(cpu as u64);
-        hal::uart_puts(b" u=");
-        hal::uart_put_dec(utils[0] as u64);
-        hal::uart_puts(b"/");
-        hal::uart_put_dec(utils[1] as u64);
-        hal::uart_puts(b"\n");
+    let picked = eas_pick_place(&domains[..n], &utils, hint, SPAWN_UTIL_EST);
+    // OBS-01 决策日志（首调 + 每 N 次；门与形态见 EAS_LOG_CNT 注）：
+    // cpu=- 即 None（place() 回退现役 K=2 启发式）；spare = capacity −
+    // util（饱和减——与选核能量判据同源同尺度的余量读数）。
+    if hal::smp::par_enabled() {
+        let c = EAS_LOG_CNT.fetch_add(1, Ordering::Relaxed);
+        if c == 0 || c % EAS_LOG_EVERY == 0 {
+            // SAFETY: topo 只读访问器（init 一次性写、此后只读契约）。
+            let cap = unsafe { topo() }.capacity;
+            hal::uart_puts(b"EAS place cpu=");
+            match picked {
+                Some(cpu) => hal::uart_put_dec(cpu as u64),
+                None => hal::uart_puts(b"-(K=2)"),
+            }
+            hal::uart_puts(b" hint=");
+            hal::uart_put_dec(hint as u64);
+            hal::uart_puts(b" u=");
+            hal::uart_put_dec(utils[0] as u64);
+            hal::uart_puts(b"/");
+            hal::uart_put_dec(utils[1] as u64);
+            hal::uart_puts(b" spare=");
+            hal::uart_put_dec(cap[0].saturating_sub(utils[0]) as u64);
+            hal::uart_puts(b"/");
+            hal::uart_put_dec(cap[1].saturating_sub(utils[1]) as u64);
+            hal::uart_puts(b"\n");
+        }
     }
-    Some(cpu)
+    picked
 }
 
 /// 入队 + 跨核唤醒戳（义务⑧回归——S-3a 判词降级件，发送条件就此成立：
@@ -3340,6 +3363,10 @@ pub fn idle_loop() -> ! {
                     // 队头即最近到期（两核对同一 deadline 双 arm = 至多一次
                     // 冗余醒，锁内 expire 串行无撕）；尽空深 park（mask）醒源
                     // 只剩 SGI/外设 IRQ。
+                    // SMP-01：park 入口折一窗（本核 idle 冻结面同副核——
+                    // overutil 全域门/EAS 快照读者在跨核，契约见
+                    // crate::util::util_idle_fold）。
+                    crate::util::util_idle_fold(hal::smp::cpu_id());
                     match nearest_deadline() {
                         // SAFETY: 本核 CVAL 编程到绝对 deadline（过期即醒，环
                         // 顶 expire 承接——tick 进 expire 后 pick 到期者即时
@@ -3726,6 +3753,13 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
                 }
             }
         }
+        // OBS-01（06 号 §5 观测维补面）：SCHED 周期行轮询——per-intent
+        // picks + per-band picks/runtime 的节流快照（5s 窗 CAS 单赢家，
+        // stats.rs）。挂点位 = hb/stuck 同语境（slice 燃尽支 + preempt_
+        // count==0 门内——G43：被 PRINT_LOCK 持窗任务打断的 tick 不进本
+        // 区，with_print_lock 无自死锁面）。观测面非门禁：ktest 零断言、
+        // 单核照打（par 门外——intent/band 账面单核同样成立）。
+        crate::stats::sched_line_poll();
         // S-6 ②（沿革九十四发现②收口）：定时拉取——设计 §3.4「空闲核
         // **定时**或被唤醒时从忙核拉任务」的定时半句最小兑现。旧触发面仅
         // 「本核 pick None」（idle/park 空转点）：对核忙但独占（副核单任务
@@ -3933,6 +3967,10 @@ pub unsafe fn park_recheck() {
         return;
     }
     assert_preempt_balanced("park_recheck");
+    // SMP-01：park 入口折一窗（util 冻结喂 EAS/overutil 跨核读者的收口
+    //——深 park 无 tick = 折叠永不发生；本调用点 = park 环每 pass 的
+    // 固定位，只触本核槽，契约见 crate::util::util_idle_fold）。
+    crate::util::util_idle_fold(hal::smp::cpu_id());
     // S-3b（F8）：peek 只读版退役——本核队列游标私有，无回卷饥饿面；
     // 出选即消费版（advance_past 推进本核 FIFO）。my_cur=null：park 态
     // 环上无 Running 残留（任务离环只在 block/exit，切回 park 前已离）。
