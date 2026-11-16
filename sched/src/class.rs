@@ -430,6 +430,10 @@ impl Fair {
         unsafe { rq.advance_past(chosen) };
         let t = unsafe { &mut *chosen.as_ptr() };
         crate::policy::apply(t);
+        // OBS-01（06 号 §5 观测维补面）：出选记账——intent 全档 + 带任务
+        // per-band（生产出选唯一路径 = 本函数；`SchedClass::pick_next`
+        // 是 ktest 直调面不经此）。Relaxed 纯计数（stats.rs 纪律）。
+        crate::stats::note_pick(t);
         Some(t)
     }
 
@@ -465,8 +469,16 @@ impl Fair {
         unsafe {
             let mut acc = ScanAcc::new();
             let mut cur = h;
+            // SMP-01：带限流跨核执法的扫描门（零武装 = unit 单带负载的常态
+            // ——一次 Relaxed 原子读 + 逐节点一个分支，零执法动作）。门开时
+            // 逐节点 lazy 双向对账（限流补位 / 翻期残留愈合——band.rs
+            // lazy_enforce 注；先于 offer = 本扫的 eligible 判定即见新位）。
+            let lazy = crate::band::any_armed();
             loop {
                 let p = cur.as_ptr();
+                if lazy {
+                    crate::band::lazy_enforce(p);
+                }
                 acc.offer(&ring_desc(&*p), cur, p == my_cur, avg);
                 cur = (*p).rq_next.get().expect("环上节点必有 next");
                 if cur == h {
@@ -738,6 +750,9 @@ impl SchedClass for FairBand {
         // 带级 delta 预读（Fair.tick 记账基准的只读孪生——带账与任务账
         // 同 delta 口径，见 peek_tick_delta 注）。
         let delta = peek_tick_delta();
+        // OBS-01：per-band runtime 累积（delta 口径同上；unit Fair 路径
+        // 零触碰——unit 任务零漂移纪律）。
+        crate::stats::note_runtime(self.band_id, delta);
         Fair.tick(t, rq);
         // ① quantum 差异化：片耗尽 VD 重臂走带参数（grant = 本带
         // quantum / weight = 带包络——Fair.tick 的全局重臂被覆写；门与
