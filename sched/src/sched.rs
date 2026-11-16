@@ -2850,13 +2850,15 @@ unsafe fn eas_wake_pick(p: *mut Task) -> usize {
         return home; // 单核零改——恒回 home
     }
     let other = 1 - home;
-    // 触发门：home 核 util > 80%（1024 归一 → > 819）
-    if crate::util::cpu_util(home) <= 819 {
-        return home; // home 不忙——不迁（防乒乓）
-    }
-    // 容量门：对核 util < 75%（spare > 25% → util < 768）
-    if crate::util::cpu_util(other) >= 768 {
-        return home; // 对核也不闲——无处可去
+    // F4 双门单源 berry_balface::wake_migrate_gate（W3-Q87）：触发门
+    // home util > 819（80%·1024）+ 容量门对核 util < 768（spare > 25%）
+    // ——恰界/判序/防乒乓律 host 钉板在 balface；util 原子读与
+    // home_cpu 改写（物理臂）留此壳。
+    if !berry_balface::wake_migrate_gate(
+        crate::util::cpu_util(home),
+        crate::util::cpu_util(other),
+    ) {
+        return home; // 双门任一不过——不迁（防乒乓/无处可去）
     }
     // 双门都过 → 迁移 + 随迁改写 home（下次 wake 从新 home 出发）
     (*p).home_cpu = other as u8;
