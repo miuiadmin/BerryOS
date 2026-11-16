@@ -16,6 +16,7 @@ use crate::profile;
 use crate::qemu::{self, Qemu};
 use crate::qmp::QmpClient;
 use crate::run_dir::{self, RunDir, Tail};
+use crate::vnc_cfg;
 
 pub struct RunArgs {
     pub kernel: Option<PathBuf>,
@@ -39,7 +40,6 @@ pub struct ShotArgs {
     pub timeout: Duration,
     pub keep: bool,
     pub display_mode: Option<String>,
-    pub boot_mode: Option<String>,
     pub json: bool,
 }
 
@@ -57,9 +57,13 @@ pub struct HostArgs {
     pub accel: String,
     pub memory: Option<u32>,
     pub display_mode: Option<String>,
-    pub boot_mode: Option<String>,
     pub keep: bool,
     pub restart_on_crash: bool,
+    pub vnc_spec: Option<String>,
+    pub vnc_ws: Option<String>,
+    pub vnc_pass: Option<String>,
+    pub vnc_pass_file: Option<PathBuf>,
+    pub vnc_tls: Option<String>,
 }
 
 pub struct DeviceStartArgs {
@@ -68,11 +72,15 @@ pub struct DeviceStartArgs {
     pub accel: String,
     pub memory: Option<u32>,
     pub display_mode: Option<String>,
-    pub boot_mode: Option<String>,
     pub keep: bool,
     pub foreground: bool,
     pub restart_on_crash: bool,
     pub json: bool,
+    pub vnc_spec: Option<String>,
+    pub vnc_ws: Option<String>,
+    pub vnc_pass: Option<String>,
+    pub vnc_pass_file: Option<PathBuf>,
+    pub vnc_tls: Option<String>,
 }
 
 pub struct ShellArgs {
@@ -85,8 +93,11 @@ pub struct ShellArgs {
     pub timeout: Duration,
     pub keep: bool,
     pub display_mode: Option<String>,
-    pub boot_mode: Option<String>,
     pub json: bool,
+    pub vnc_spec: Option<String>,
+    pub vnc_ws: Option<String>,
+    pub vnc_pass: Option<String>,
+    pub vnc_tls: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -369,7 +380,21 @@ pub fn screenshot(args: ScreenshotArgs) -> Result<()> {
 }
 
 pub fn shell(args: ShellArgs) -> Result<()> {
-    crate::window::run(args)
+    // Fail fast with the real spec error before the window opens.
+    vnc_cfg::validate_flags(args.vnc_spec.as_deref(), args.vnc_ws.as_deref(), args.vnc_tls.as_deref())?;
+    // Wave 11: the VNC flags travel as a direct parameter into
+    // window::run -> Device::start (the wave-1 process-level launch
+    // override retired; BERRY_VNC env remains the fallback inside
+    // vnc_cfg::resolve).
+    let vnc = vnc_cfg::Launch {
+        spec: args.vnc_spec.clone(),
+        ws: args.vnc_ws.clone(),
+        pass: args.vnc_pass.clone(),
+        pass_file: None,
+        tls: args.vnc_tls.clone(),
+    };
+    vnc_cfg::maybe_security_note(args.vnc_spec.as_deref());
+    crate::window::run(args, vnc)
 }
 
 pub fn input(args: InputArgs) -> Result<()> {
@@ -462,16 +487,28 @@ pub(crate) fn qcode_to_keysym(q: &str) -> Option<u32> {
 /// blocks until control asks to stop or QEMU exits.
 pub fn host(args: HostArgs) -> Result<()> {
     let profile = profile::get(&args.profile)?;
+    // Fail fast with the real spec error instead of a bare exit.
+    vnc_cfg::validate_flags(args.vnc_spec.as_deref(), args.vnc_ws.as_deref(), args.vnc_tls.as_deref())?;
+    let vnc = vnc_cfg::Launch {
+        spec: args.vnc_spec.clone(),
+        ws: args.vnc_ws.clone(),
+        pass: args.vnc_pass.clone(),
+        pass_file: args.vnc_pass_file.clone(),
+        tls: args.vnc_tls.clone(),
+    };
     let mut device = crate::device::Device::start(
         args.image,
         profile,
         &args.accel,
         args.memory,
         args.display_mode,
-        args.boot_mode,
         args.keep,
         "host",
+        vnc,
     )?;
+    if let Some(ext) = device.vnc_exposed() {
+        vnc_cfg::print_security_note(ext);
+    }
     device.set_restart_on_crash(args.restart_on_crash);
     println!("RUN {}", device.run_path().display());
     std::io::stdout().flush().ok();
@@ -787,28 +824,43 @@ pub fn shortcut(run: Option<&str>, action: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn events(run: Option<&str>, tail: usize, follow: bool, json: bool) -> Result<()> {
+pub fn events(
+    run: Option<&str>,
+    tail: usize,
+    follow: bool,
+    filter: Option<&str>,
+    json: bool,
+) -> Result<()> {
     let run = find_run(run)?;
-    let path = run.join("events.jsonl");
+    // Client-side substring filter; empty string = no filtering.
+    let keep = |line: &str| filter.is_none_or(|f| f.is_empty() || line.contains(f));
+    let emit = |line: &str| {
+        if !keep(line) {
+            return;
+        }
+        if json {
+            println!("{}", json!({"v":1,"t":"event","line":line}));
+        } else {
+            println!("{line}");
+        }
+    };
     if follow {
-        let mut t = Tail::open(&path);
+        let mut t = Tail::open(&run.join("events.jsonl"));
         loop {
             let chunk = t.read_new();
             if !chunk.is_empty() {
                 let text = String::from_utf8_lossy(&chunk);
                 for line in text.lines() {
-                    if json {
-                        println!("{}", json!({"v":1,"t":"event","line":line}));
-                    } else {
-                        println!("{line}");
-                    }
+                    emit(line);
                 }
                 std::io::stdout().flush().ok();
             }
             std::thread::sleep(Duration::from_millis(100));
         }
     }
-    let lines: Vec<String> = if let Ok(v) = control::request(&run, "events", json!({"tail":tail})) {
+    let lines: Vec<String> = if let Ok(v) =
+        control::request(&run, "events", json!({"tail":tail}))
+    {
         v.get("lines")
             .and_then(|l| l.as_array())
             .map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect())
@@ -821,7 +873,7 @@ pub fn events(run: Option<&str>, tail: usize, follow: bool, json: bool) -> Resul
         );
         Vec::new()
     } else {
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let text = std::fs::read_to_string(run.join("events.jsonl")).unwrap_or_default();
         text.lines()
             .rev()
             .take(tail)
@@ -832,16 +884,15 @@ pub fn events(run: Option<&str>, tail: usize, follow: bool, json: bool) -> Resul
             .collect()
     };
     for line in lines {
-        if json {
-            println!("{}", json!({"v":1,"t":"event","line":line}));
-        } else {
-            println!("{line}");
-        }
+        emit(&line);
     }
     Ok(())
 }
 
 pub fn device_start(args: DeviceStartArgs) -> Result<()> {
+    // Pre-check before any spawn: an invalid spec must surface its own
+    // E_USAGE + hint, not "host exited before announcing run".
+    vnc_cfg::validate_flags(args.vnc_spec.as_deref(), args.vnc_ws.as_deref(), args.vnc_tls.as_deref())?;
     if args.foreground {
         return host(HostArgs {
             image: args.image,
@@ -849,11 +900,18 @@ pub fn device_start(args: DeviceStartArgs) -> Result<()> {
             accel: args.accel,
             memory: args.memory,
             display_mode: args.display_mode,
-            boot_mode: args.boot_mode,
             keep: args.keep,
             restart_on_crash: args.restart_on_crash,
+            vnc_spec: args.vnc_spec,
+            vnc_ws: args.vnc_ws,
+            vnc_pass: args.vnc_pass,
+            vnc_pass_file: args.vnc_pass_file,
+            vnc_tls: args.vnc_tls,
         });
     }
+    // The background host's stderr is discarded; surface the non-loopback
+    // note from the CLI process itself, before the flags go anywhere.
+    vnc_cfg::maybe_security_note(args.vnc_spec.as_deref());
     let json_out = args.json;
     let profile_id = args.profile.clone();
     let (run, pid) = device_start_run(args)?;
@@ -890,12 +948,40 @@ fn device_start_run(args: DeviceStartArgs) -> Result<(PathBuf, u32)> {
     if args.restart_on_crash {
         cmd.arg("--restart-on-crash");
     }
+    // The password never travels via child argv (audit finding: `ps` could
+    // read it): an explicit --vnc-pass is staged as the hidden one-shot 0600
+    // --vnc-pass-file — the same handoff restart_with uses for inheritance.
+    // The child deletes the file as soon as it has read it (read_pass_file).
+    if let Some(spec) = &args.vnc_spec {
+        cmd.arg("--vnc").arg(spec);
+    }
+    if let Some(ws) = &args.vnc_ws {
+        cmd.arg("--vnc-ws").arg(ws);
+    }
+    if let Some(tls) = &args.vnc_tls {
+        cmd.arg("--vnc-tls").arg(tls);
+    }
+    let mut staged_pass: Option<std::path::PathBuf> = None;
+    if let Some(pw) = &args.vnc_pass {
+        let f = vnc_cfg::write_pass_temp(pw)?;
+        cmd.arg("--vnc-pass-file").arg(&f);
+        staged_pass = Some(f);
+    } else if let Some(f) = &args.vnc_pass_file {
+        cmd.arg("--vnc-pass-file").arg(f);
+    }
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| BerryError::device(format!("spawn host: {e}")))?;
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            // The staged pass file never reached its reader; drop it.
+            if let Some(f) = &staged_pass {
+                let _ = std::fs::remove_file(f);
+            }
+            return Err(BerryError::device(format!("spawn host: {e}")));
+        }
+    };
     let stdout = child
         .stdout
         .take()
@@ -934,28 +1020,88 @@ fn restart_with(run: &Path, profile: &profile::Profile, display_mode: Option<Str
         .ok_or_else(|| BerryError::env("session has no image metadata; start with --image"))?;
     let memory = meta.get("memory_mib").and_then(|v| v.as_u64()).map(|v| v as u32);
     let keep = meta.get("keep").and_then(|v| v.as_bool()).unwrap_or(false);
-    // Start the replacement first: if it fails, the old host is untouched.
-    let (new_run, _) = device_start_run(DeviceStartArgs {
-        image: Some(image),
-        profile: profile.id.to_string(),
-        accel: "tcg".to_string(),
-        memory,
-        display_mode,
-        boot_mode: None,
-        keep,
-        foreground: false,
-        restart_on_crash: false,
-        json: false,
-    })?;
-    let _ = control::request(run, "power", json!({"action":"off"}));
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while control::is_up(&run) && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
+    // Inherit the VNC exposure across the restart: same spec, same password
+    // (v6/plan deviation 6). With a fixed port, two QEMUs cannot coexist, so
+    // the old host stops first and the "new-first keeps the old on failure"
+    // rollback is traded for the same-port guarantee.
+    let vnc_spec = meta
+        .get("vnc_spec")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .filter(|s| s != "off");
+    let vnc_ws = meta
+        .get("vnc_ws")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .filter(|s| s != "off");
+    let vnc_tls = meta
+        .get("vnc_tls")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .filter(|s| !s.is_empty() && s != "off");
+    let old_pass = vnc_cfg::read_pass(run);
+    let fixed_port = vnc_spec.as_deref().is_some_and(|s| {
+        matches!(
+            vnc_cfg::parse_spec(s),
+            Ok(vnc_cfg::VncSpec::Addr { port: vnc_cfg::PortSpec::Fixed(_), .. })
+        )
+    });
+    // One-shot 0600 file keeps the inherited password out of the child argv;
+    // the child deletes it as soon as it has read it (vnc_cfg::read_pass_file).
+    let pass_file = match (&old_pass, vnc_spec.is_some()) {
+        (Some(pw), true) => Some(vnc_cfg::write_pass_temp(pw)?),
+        _ => None,
+    };
+    // Parent-side pre-check of the inherited triple: a spec/ws/tls that went
+    // invalid since the original start (e.g. the TLS cert dir was deleted)
+    // must fail here with its real E_USAGE — the replacement host would die
+    // with stderr discarded, and on the fixed-port path the old session is
+    // already stopped by then.
+    vnc_cfg::validate_flags(vnc_spec.as_deref(), vnc_ws.as_deref(), vnc_tls.as_deref())?;
+    let stop_old = |run: &Path| {
+        let _ = control::request(run, "power", json!({"action":"off"}));
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while control::is_up(run) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if !keep {
+            let _ = std::fs::remove_dir_all(run);
+        }
+    };
+    let start_new = |pass_file: Option<PathBuf>| {
+        device_start_run(DeviceStartArgs {
+            image: Some(image.clone()),
+            profile: profile.id.to_string(),
+            accel: "tcg".to_string(),
+            memory,
+            display_mode: display_mode.clone(),
+            keep,
+            foreground: false,
+            restart_on_crash: false,
+            json: false,
+            vnc_spec: vnc_spec.clone(),
+            vnc_ws: vnc_ws.clone(),
+            vnc_pass: None,
+            vnc_pass_file: pass_file,
+            vnc_tls: vnc_tls.clone(),
+        })
+    };
+    let result = if fixed_port {
+        stop_old(run);
+        start_new(pass_file.clone())
+    } else {
+        // Auto/on ports: start the replacement first — if it fails, the old
+        // host is untouched (the new run re-picks a free port).
+        let r = start_new(pass_file.clone());
+        stop_old(run);
+        r
+    };
+    // The child normally consumes the file itself; clean up leftovers from a
+    // failed start so no password file lingers in BERRY_HOME/tmp.
+    if let Some(f) = &pass_file {
+        let _ = std::fs::remove_file(f);
     }
-    if !keep {
-        let _ = std::fs::remove_dir_all(run);
-    }
-    Ok(new_run)
+    result.map(|(new_run, _)| new_run)
 }
 pub fn device_restart(run: Option<&str>, json: bool) -> Result<()> {
     let run = find_run(run)?;
@@ -1217,13 +1363,22 @@ pub fn device_status(run: Option<&str>, json: bool) -> Result<()> {
                 let profile = v.get("profile").and_then(|s| s.as_str()).unwrap_or("-");
                 let mem = v.get("memory_mib").and_then(|n| n.as_u64()).unwrap_or(0);
                 let pid = v.get("qemu_pid").and_then(|n| n.as_u64()).unwrap_or(0);
+                let vnc = v
+                    .get("vnc")
+                    .and_then(|x| {
+                        let h = x.get("host").and_then(|s| s.as_str())?;
+                        let p = x.get("port").and_then(|n| n.as_u64())?;
+                        Some(format!(", vnc {h}:{p}"))
+                    })
+                    .unwrap_or_default();
                 println!(
-                    "{}: {} (profile {}, {}MiB, pid {})",
+                    "{}: {} (profile {}, {}MiB, pid {}{})",
                     run.display(),
                     state,
                     profile,
                     mem,
-                    pid
+                    pid,
+                    vnc
                 );
             }
         }
@@ -1231,11 +1386,24 @@ pub fn device_status(run: Option<&str>, json: bool) -> Result<()> {
             let saved = run_dir::read_state(&run).unwrap_or_else(|| "unknown".to_string());
             let stale = saved == "running";
             let label = if stale { "stale" } else { saved.as_str() };
+            let vnc = vnc_cfg::read_listen(&run)
+                .map(|l| {
+                    let dial = vnc_cfg::dial_host(&l.host);
+                    format!(", vnc {}:{}", dial, l.port)
+                })
+                .unwrap_or_default();
             if json {
                 println!("{}", json!({"v":1,"t":"device.status","run":run,
-                    "status":{"state":label,"stale":stale}}));
+                    "status":{"state":label,"stale":stale},
+                    "vnc":vnc_cfg::read_listen(&run)
+                        .map(|l| {
+                            let dial = vnc_cfg::dial_host(&l.host);
+                            json!({"host":dial,"port":l.port,
+                                "uri":vnc_cfg::uri_for(dial, l.port)})
+                        })
+                        .unwrap_or(serde_json::Value::Null)}));
             } else {
-                println!("{}: {}", run.display(), label);
+                println!("{}: {}{}", run.display(), label, vnc);
             }
         }
     }
@@ -2658,10 +2826,9 @@ fn endpoints(run: &RunDir) -> (Endpoint, Endpoint) {
 
 #[cfg(not(unix))]
 fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .and_then(|l| l.local_addr())
-        .map(|a| a.port())
-        .unwrap_or(5900)
+    // Internal -vnc endpoints use display-number syntax on QEMU, so ports
+    // below 5900 are not expressible (probe f2).
+    vnc_cfg::free_vnc_port()
 }
 
 fn wait_endpoint(ep: &Endpoint, timeout: Duration) -> Result<()> {
