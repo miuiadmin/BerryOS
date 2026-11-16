@@ -52,6 +52,7 @@ pub fn run() {
     test_rq_ring2();
     test_rq_ring3();
     test_pi();
+    test_pilat();
     test_intent();
     test_band();
     test_fast();
@@ -7052,6 +7053,225 @@ fn test_pi() {
     berry_hal_aarch64::uart_puts(b"PI-K ok\n");
 }
 
+/// CP-14 修订项（[06 号 §1](../../research/调度深度调研/06-综合定谳-v1.0.md)）
+/// ：PI 三任务链**延迟界**的 ktest 机器断言面（G 卡用例的确定性半边）。
+/// `test_pi` J 段已钉结构验收（捐赠字段/轮帽/冻结/形 B）；本段补「延迟
+/// 实测验收」的手驱不变式——高优 client 从请求到获得锁的延迟上界 =
+/// ΣCS + 3×(重推+出选+切换)，其机器形态 = **链悬挂期干扰者零出选 +
+/// 每跳解锁后下一次出选必是被提升的持有者**。boot 侧真 SVC 四任务组
+/// （main.rs `opt/berry/pilat` 探针）出 p50/p99 串口数据，与本段互补。
+///
+/// 拓扑（服务链形——高优 client → 中优 server → 低优 driver，配对律沿
+/// READABLE 向）：hi(32) 睡 endA_c:READABLE（等回复）→ 受捐 = 持
+/// endA_s:SEND 的 mid(16)；mid 睡 endB_c:READABLE（等原料）→ 受捐 =
+/// 持 endB_s:SEND 的 low(0)——两跳链，low 须经 mid 的实时 `pi_inherited`
+/// 到 32（J2 链式面的延迟对照形）。三段：
+/// - **PL-1 链建立**：字段断言（mid/low 双双 pi==eff==32，hi 自身 0）。
+/// - **PL-2 解链三跳（界本体）**：low 醒（SLEEPQ→真 RQ）→ 重推后**环上
+///   仍 32**（形 B——runnable 持有者不丢提升）→ 移入驱动环出选必是
+///   low（eff 32 压过 inf(8)——**无 slice 等待** = 延迟界的机制面）；
+///   mid 同理；hi 终选。三跳 cycles 实测打串口（报告面不设墙——TCG
+///   宿主速率敏感，LOADGEN A3 判例；只留 100ms 失控护栏）。
+/// - **PL-3 无 PI 负控（确定性反转证明）**：同拓扑但 donor 只等用户位
+///   （`donor_edge` 五拒之一 → 零边）→ low 醒后入环 eff 0 → 出选 =
+///   inf(8)。boot 探针形态下同一拓扑会挂死（低优持有者永不获 CPU），
+///   ktest 手驱把它折成可断言的「干扰者先出选」。
+///
+/// ktest 纪律（sched::init 前、单核）：睡眠者经 `sleepq_insert` 手搭 +
+/// `pi::recompute()` 直调（J 段同款——钩子此时未注册）；形 B 的环上
+/// 受捐走**真 PER_CPU_RQ**（`rq_insert_kt`/`rq_unlink_kt`，J8 同款），
+/// 出选走本地 `Runqueue`（LOADGEN 同款——真 RQ 无 pick 出口）。
+fn test_pilat() {
+    use alloc::boxed::Box;
+    use berry_hal_aarch64::timer::{cntfrq, cntvct};
+    use berry_sched::{
+        class_of_task, sleepq_insert, sleepq_unlink, Fair, Runqueue, SchedClass, Task, Topo,
+    };
+    use crate::channel::ChannelEnd;
+    use crate::handle::{
+        HandleTable, KernelObj, ObjRef, ObjType, RIGHT_RECV, RIGHT_SEND, SIGNAL_READABLE,
+    };
+
+    /// 占位入口（手搭任务永不执行；halt 兜底——J 段同款）。
+    extern "C" fn pl_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    /// 手搭睡眠者：J 段 `sleeper` 同款（prio 双落、入 SLEEPQ 后返回）。
+    fn pl_sleeper(name: &'static [u8], prio: i32, obj: usize, signals: u64, tag: usize)
+        -> &'static mut Task {
+        let mut t = Task::new_kernel(pl_dummy, 0, name);
+        t.prio_base = prio;
+        t.prio_effective = prio;
+        t.proc_tag = tag;
+        t.wait_obj = obj;
+        t.wait_signals = signals;
+        t.wait_deadline = u64::MAX;
+        let t: &'static mut Task = Box::leak(t);
+        sleepq_insert(t);
+        t
+    }
+
+    /// 私有 handle 表（J 段 `priv_table` 同款；裸指针兼作 proc_tag）。
+    fn pl_table() -> usize {
+        Box::leak(Box::new(HandleTable::new())) as *mut HandleTable as usize
+    }
+
+    /// 建端点入表（J 段 `chan_end` 同款），返回 ObjRef 地址。
+    fn pl_end(ht: usize, rights: crate::handle::Rights) -> usize {
+        // SAFETY: ht 来自 pl_table 的 leak 常驻表——ktest 单核顺序访问。
+        let ht = unsafe { &mut *(ht as *mut HandleTable) };
+        let h = ht
+            .insert(
+                KernelObj::Channel(ChannelEnd::try_unpaired(false).expect("PILAT：建端点")),
+                rights,
+            )
+            .expect("PILAT：端点进表");
+        ht.get_raw(h, ObjType::Channel, 0).expect("PILAT：取端点").0.as_ptr() as usize
+    }
+
+    /// 配对（J 段 `pair_up` 同款）。
+    fn pl_pair(a: usize, b: usize) {
+        let a = core::ptr::NonNull::new(a as *mut ObjRef).expect("PILAT：端点 A 指针");
+        let b = core::ptr::NonNull::new(b as *mut ObjRef).expect("PILAT：端点 B 指针");
+        // SAFETY: 两端各自刚 insert + get_raw——鲜活且互不重复。
+        unsafe { ChannelEnd::pair(a, b) };
+    }
+
+    /// ns → 周期（LOADGEN `ns2cyc` 同口径）。
+    fn ns2cyc(ns: u64, freq: u64) -> u64 {
+        ns.saturating_mul(freq) / 1_000_000_000
+    }
+
+    // —— PL-1 链建立：三私有表（hi=endA_c:RECV；mid=endB_c:RECV+endA_s:SEND；
+    //         low=endB_s:SEND）——表分隔即链精确性（共表会喷洒成单跳）。——
+    let ht_hi = pl_table();
+    let ht_mid = pl_table();
+    let ht_low = pl_table();
+    let ea_c = pl_end(ht_hi, RIGHT_RECV); // client 端（hi 收回复）
+    let ea_s = pl_end(ht_mid, RIGHT_SEND); // server 端（mid 发回复）
+    pl_pair(ea_c, ea_s);
+    let eb_c = pl_end(ht_mid, RIGHT_RECV); // mid 收原料
+    let eb_s = pl_end(ht_low, RIGHT_SEND); // low 供原料
+    pl_pair(eb_c, eb_s);
+    let hi = pl_sleeper(b"pl_hi", 32, ea_c, SIGNAL_READABLE, ht_hi);
+    let mid = pl_sleeper(b"pl_mid", 16, eb_c, SIGNAL_READABLE, ht_mid);
+    let low = pl_sleeper(b"pl_low", 0, 0, 1 << 33, ht_low); // 纯睡（CS 模拟）
+    crate::pi::recompute();
+    assert_eq!(mid.pi_inherited, 32, "PILAT：PL-1 mid 须受捐 32（hi 的边）");
+    assert_eq!(mid.prio_effective, 32, "PILAT：PL-1 mid eff 须 32");
+    assert_eq!(low.pi_inherited, 32, "PILAT：PL-1 low 须经链到 32（两跳继承）");
+    assert_eq!(low.prio_effective, 32, "PILAT：PL-1 low eff 须 32");
+    assert_eq!(hi.pi_inherited, 0, "PILAT：PL-1 hi（donor，不持 peer）须 0");
+
+    // —— PL-2 解链三跳：本地驱动环（LOADGEN 同款机械）+ 真 RQ 形 B 面 ——
+    let mut rq = Runqueue::new();
+    let topo = Topo::single();
+    // 干扰者：prio 8 长自旋（「无 PI 须等整片」的形态面）；只进本地环
+    //（不进真 RQ = 零 PI 面）。
+    let mut inf = Task::new_kernel(pl_dummy, 0, b"pl_inf");
+    inf.prio_base = 8;
+    inf.prio_effective = 8;
+    let inf: &'static mut Task = Box::leak(inf);
+    // LAST_VCT 打底 + 干扰者入环（LOADGEN 首子单元口径——先打底后入环）。
+    Fair.tick(inf, &mut rq);
+    class_of_task(inf).enqueue(inf, &mut rq);
+
+    // 跳 1（low 解锁——CS 完工醒）：摘 SLEEPQ → 真 RQ 入环（形 B 面）→
+    // 重推断言（环上仍 32）→ 摘真 RQ（冻结随行）→ 本地环入座 → 出选。
+    let t0 = cntvct();
+    sleepq_unlink(low);
+    berry_sched::rq_insert_kt(low);
+    crate::pi::recompute();
+    assert_eq!(low.pi_inherited, 32, "PILAT：PL-2 跳 1 low 环上须保 32（形 B）");
+    assert_eq!(low.prio_effective, 32, "PILAT：PL-2 跳 1 low 环上 eff 须 32");
+    berry_sched::rq_unlink_kt(low);
+    class_of_task(low).enqueue(low, &mut rq);
+    // SAFETY: pick 产物（在环、本段驱动器拥有）。
+    let p1 = Fair.pick_next_filtered(&rq, &topo, core::ptr::null_mut())
+        .expect("PILAT：PL-2 跳 1 环非空须有出选");
+    assert!(core::ptr::eq(p1 as *const Task, low as *const Task),
+            "PILAT：PL-2 跳 1 出选须是 low（32 压过 inf(8)——无 slice 等待）");
+    let t1 = cntvct();
+
+    // 跳 2（low 发原料 → mid 醒）：low 出环（发完即睡到下轮）。
+    class_of_task(low).dequeue(low, &mut rq);
+    sleepq_unlink(mid);
+    berry_sched::rq_insert_kt(mid);
+    crate::pi::recompute(); // hi 仍睡 → 形 B：mid 环上保 32
+    assert_eq!(mid.pi_inherited, 32, "PILAT：PL-2 跳 2 mid 环上须保 32（形 B）");
+    assert_eq!(mid.prio_effective, 32, "PILAT：PL-2 跳 2 mid 环上 eff 须 32");
+    berry_sched::rq_unlink_kt(mid);
+    class_of_task(mid).enqueue(mid, &mut rq);
+    // SAFETY: 同上。
+    let p2 = Fair.pick_next_filtered(&rq, &topo, core::ptr::null_mut())
+        .expect("PILAT：PL-2 跳 2 环非空须有出选");
+    assert!(core::ptr::eq(p2 as *const Task, mid as *const Task),
+            "PILAT：PL-2 跳 2 出选须是 mid（链第二跳先于干扰者）");
+    let t2 = cntvct();
+
+    // 跳 3（mid 发回复 → hi 醒）：mid 出环（发完回等待位）。
+    class_of_task(mid).dequeue(mid, &mut rq);
+    sleepq_unlink(hi);
+    crate::pi::recompute(); // donor 全退场——hi 以自身 base 32 出选
+    class_of_task(hi).enqueue(hi, &mut rq);
+    // SAFETY: 同上。
+    let p3 = Fair.pick_next_filtered(&rq, &topo, core::ptr::null_mut())
+        .expect("PILAT：PL-2 跳 3 环非空须有出选");
+    assert!(core::ptr::eq(p3 as *const Task, hi as *const Task),
+            "PILAT：PL-2 跳 3 出选须是 hi（三跳内终选——延迟界的机器形态）");
+    let t3 = cntvct();
+    class_of_task(hi).dequeue(hi, &mut rq);
+
+    // inf 全程零出选已被三跳身份断言连带证明（每次出选都不是它）。
+    class_of_task(inf).dequeue(inf, &mut rq);
+    assert_eq!(rq.len(), 0, "PILAT：PL-2 收口本地环须空");
+    let freq = cntfrq();
+    let chain_cyc = t3 - t0;
+    berry_hal_aarch64::uart_puts(b"PILAT-K chain_cyc=");
+    berry_hal_aarch64::uart_put_dec(chain_cyc);
+    berry_hal_aarch64::uart_puts(b"\n");
+    assert!(chain_cyc < ns2cyc(100_000_000, freq),
+            "PILAT：PL-2 三跳解链须在失控护栏内（{}cyc）", chain_cyc);
+
+    // —— PL-3 无 PI 负控：同拓扑但 donor 只等用户位（donor_edge 五拒之一
+    //         → 零边零提升）→ low 醒后入环 eff 0 → 出选 = inf(8)。——
+    let ht_hi3 = pl_table();
+    let ht_mid3 = pl_table();
+    let ht_low3 = pl_table();
+    let e3a = pl_end(ht_hi3, RIGHT_RECV);
+    let e3b = pl_end(ht_mid3, RIGHT_SEND);
+    pl_pair(e3a, e3b);
+    let e3c = pl_end(ht_mid3, RIGHT_RECV);
+    let e3d = pl_end(ht_low3, RIGHT_SEND);
+    pl_pair(e3c, e3d);
+    let hi3 = pl_sleeper(b"pl3_hi", 32, e3a, 1 << 34, ht_hi3); // 只等用户位
+    let mid3 = pl_sleeper(b"pl3_mid", 16, e3c, 1 << 34, ht_mid3);
+    let low3 = pl_sleeper(b"pl3_low", 0, 0, 1 << 33, ht_low3);
+    crate::pi::recompute();
+    assert_eq!(mid3.pi_inherited, 0, "PILAT：PL-3 用户位等待零边（mid）");
+    assert_eq!(low3.pi_inherited, 0, "PILAT：PL-3 用户位等待零边（low）");
+    // low 醒（无提升）入环与 inf 同台——出选须是 inf（确定性反转证明）。
+    sleepq_unlink(low3);
+    class_of_task(low3).enqueue(low3, &mut rq);
+    class_of_task(inf).enqueue(inf, &mut rq);
+    // SAFETY: 同上。
+    let p4 = Fair.pick_next_filtered(&rq, &topo, core::ptr::null_mut())
+        .expect("PILAT：PL-3 环非空须有出选");
+    assert!(core::ptr::eq(p4 as *const Task, inf as *const Task),
+            "PILAT：PL-3 无 PI 时出选须是 inf（低优持有者被反转压后）");
+    // 清场：本地环 / SLEEPQ 双空（真 RQ 三跳内已配平；表与任务体 leak
+    // 不回收——ktest 语境同 spawn 政策）。
+    class_of_task(inf).dequeue(inf, &mut rq);
+    class_of_task(low3).dequeue(low3, &mut rq);
+    sleepq_unlink(mid3);
+    sleepq_unlink(hi3);
+    assert_eq!(rq.len(), 0, "PILAT：收口本地环须空");
+    berry_sched::for_each_sleeper(|_| panic!("PILAT：清场后 SLEEPQ 须空"));
+
+    berry_hal_aarch64::uart_puts(b"PILAT-K ok\n");
+}
+
 /// 4-3c：intent 随消息传播（ADR #42 五件套，`berry_sched::intent`；ktest 在
 /// `sched::init` 前跑 → 无 CURRENT/SLEEPQ 干扰，纯函数面 K0–K8 直测
 /// settle/snapshot + 三道帽 + 每消息重导；K9 走真 SVC 验 channel_create
@@ -9287,12 +9507,22 @@ fn test_eas_place() {
 // （sub-unit 完成数）。sub-unit = 250µs（可打断粒度近似——组间同口径，
 // A/B 差异不由此 knob 引入）。
 
-/// CP-06 A/B 组配置：slack（纳秒，CP-11 第三键同域）× band（interactive/
-/// utility 两带包络开关——「band=on(interactive/utility 差异化)」）。
+/// CP-06 A/B 组配置：slack（纳秒，CP-11 第三键同域）× band 轴。band 轴
+/// 三档（CP-14 四带 A/B 复测起）：`Off` = 零带 / `Two` = ×2 现役基线
+/// （interactive+utility 两带包络——R4/R5 基线口径）/ `Four` = ×4 全开
+/// （2026-11-17 CP-09 EAS M2 批次 LC/BG 激活后的复测轴：LC/BG 按表行形
+/// 显式 configure，burst 过载源〔INTENT_BACKGROUND〕进 BG 带执法）。
+#[derive(Clone, Copy)]
+enum LgBandMode {
+    Off,
+    Two,
+    Four,
+}
+
 struct LgGroup {
     tag: &'static [u8],
     slack_ns: u64,
-    band: bool,
+    band: LgBandMode,
 }
 
 /// 单任务驱动器账本（Task 字段不含 harness 数据——平行数组记账）。
@@ -9316,7 +9546,10 @@ struct LgSlot {
     lat: alloc::vec::Vec<u64>,
 }
 
-/// CP-06 首份 A/B 数据：负载生成器 + 四组对比 + 串口汇总行。
+/// CP-06 首份 A/B 数据：负载生成器 + 六组对比 + 串口汇总行（A1-A4 =
+/// CP-06 原四组〔slack × band 两档〕零漂移；A5/A6 = CP-14 四带 A/B 复测
+/// 组〔band=Four〕——×2→×4 全开后「四带 vs 两带 vs 零带」三组对比的
+/// 数据面）。
 fn test_loadgen() {
     use berry_hal_aarch64::timer::{arm_at, cval, cntfrq, cntvct, mask, ticks_to_ns};
     use berry_sched::{
@@ -9325,6 +9558,7 @@ fn test_loadgen() {
         sleepq_unlink, throttle_all, timer_slack_defer, timer_slack_ns,
         tighten_deadline, unthrottle_all, util_reset, Fair, Runqueue, SchedClass, Task,
         Topo, UTIL_NR_CPU, INTENT_BACKGROUND, INTENT_INTERACTIVE, INTENT_UTILITY,
+        INTENT_LATENCY_CRITICAL,
     };
 
     /// 占位入口（负载任务永不执行——驱动器同步代跑；halt 兜底，同 M4F）。
@@ -9359,6 +9593,16 @@ fn test_loadgen() {
     const IA_QUOTA_NS: u64 = 20_000_000;
     const UT_QUOTA_NS: u64 = 20_000_000;
     const BAND_PERIOD_NS: u64 = 60_000_000;
+    // —— 四带组（A5/A6，CP-14 四带 A/B 复测）的 LC/BG 包络：与表行懒武装
+    //    形同源（quota = 本带 quantum_ns、period = 本带 latency_target_ns
+    //    ——〔iprofile/src/lib.rs〕INTENT_BAND_TABLE 表行 [1]/[4]）。LC
+    //    5ms/1ms：组内无 LC 载荷——武装受理面（band_on 断言），行为面
+    //    恒等；BG 40ms/250ms：burst 过载源进带执法——期占率帽 16%，
+    //    「过载源让路给 interactive/utility」即四带 vs 两带的主差分面。
+    const LC_QUOTA_NS: u64 = 5_000_000;
+    const LC_PERIOD_NS: u64 = 1_000_000;
+    const BG_QUOTA_NS: u64 = 40_000_000;
+    const BG_PERIOD_NS: u64 = 250_000_000;
 
     const IA_NAMES: [&[u8]; N_EACH] = [b"lgIA0", b"lgIA1", b"lgIA2", b"lgIA3"];
     const UT_NAMES: [&[u8]; N_EACH] = [b"lgUT0", b"lgUT1", b"lgUT2", b"lgUT3"];
@@ -9475,6 +9719,8 @@ fn test_loadgen() {
         oneshot_cyc: u64,
         thr_ut: u32,
         thr_ia: u32,
+        /// background 带限流次数（A5/A6 四带组——burst 过载源执法面）。
+        thr_bk: u32,
         /// 各型实跑 CPU 周期（spin 实测累计——吞吐/对账面）。
         ran_ia: u64,
         ran_ut: u64,
@@ -9496,20 +9742,34 @@ fn test_loadgen() {
         let defer_cyc = ns2cyc_local(SLACK_NS, freq);
 
         // 1) 组配置：timer_slack（真全局面）+ band 包络（真 configure）。
+        //    本组武装集（翻期扫/带记账/收口三面共用——Off 空、Two 恰
+        //    IA/UT〔R4/R5 基线口径〕、Four 恰 LC/IA/UT/BG〔×4 全开形〕）。
         set_timer_slack_ns(g.slack_ns);
         let now0 = cntvct();
-        if g.band {
+        let armed: &[u8] = match g.band {
+            LgBandMode::Off => &[],
+            LgBandMode::Two => &[INTENT_INTERACTIVE, INTENT_UTILITY],
+            LgBandMode::Four => &[
+                INTENT_LATENCY_CRITICAL,
+                INTENT_INTERACTIVE,
+                INTENT_UTILITY,
+                INTENT_BACKGROUND,
+            ],
+        };
+        for b in armed {
+            let (quota, period) = match *b {
+                INTENT_LATENCY_CRITICAL => (LC_QUOTA_NS, LC_PERIOD_NS),
+                INTENT_BACKGROUND => (BG_QUOTA_NS, BG_PERIOD_NS),
+                INTENT_UTILITY => (UT_QUOTA_NS, BAND_PERIOD_NS),
+                _ => (IA_QUOTA_NS, BAND_PERIOD_NS),
+            };
             assert!(
-                configure(INTENT_INTERACTIVE, ns2cyc_local(IA_QUOTA_NS, freq),
-                          ns2cyc_local(BAND_PERIOD_NS, freq), now0),
-                "LOADGEN：{} 组 interactive 带武装须受理", lg_tag_str(g)
+                configure(*b, ns2cyc_local(quota, freq),
+                          ns2cyc_local(period, freq), now0),
+                "LOADGEN：{} 组带 {:#x} 武装须受理", lg_tag_str(g), b
             );
-            assert!(
-                configure(INTENT_UTILITY, ns2cyc_local(UT_QUOTA_NS, freq),
-                          ns2cyc_local(BAND_PERIOD_NS, freq), now0),
-                "LOADGEN：{} 组 utility 带武装须受理", lg_tag_str(g)
-            );
-        } else {
+        }
+        if let LgBandMode::Off = g.band {
             assert!(!berry_sched::band_on(INTENT_INTERACTIVE),
                     "LOADGEN：{} 组前置 interactive 带须关", lg_tag_str(g));
             assert!(!berry_sched::band_on(INTENT_UTILITY),
@@ -9548,7 +9808,7 @@ fn test_loadgen() {
         // 3) 驱动主环：到期唤醒 → band 翻期 → pick → 首切记账 → 跑一个
         //    sub-unit → 真记账 → band 记账 → 轮次结算。
         let cap = now0 + ns2cyc_local(GROUP_CAP_NS, freq);
-        let (mut thr_ut, mut thr_ia, mut unthr) = (0u32, 0u32, 0u32);
+        let (mut thr_ut, mut thr_ia, mut thr_bk, mut unthr) = (0u32, 0u32, 0u32, 0u32);
         loop {
             let now = cntvct();
             assert!(now < cap, "LOADGEN：{} 组超安全墙（驱动器疑似失速）", lg_tag_str(g));
@@ -9567,14 +9827,13 @@ fn test_loadgen() {
                     class_of_task(t).enqueue(t, &mut rq);
                 }
             }
-            // (2) band 周期翻转（事件驱动——消费点顺带，零额外定时器）。
-            if g.band {
-                for b in [INTENT_INTERACTIVE, INTENT_UTILITY] {
-                    if period_check(b, cntvct()) {
-                        let n = unthrottle_all(b, &rq);
-                        if n > 0 {
-                            unthr += 1;
-                        }
+            // (2) band 周期翻转（事件驱动——消费点顺带，零额外定时器；
+            //     LC 无载荷成员恒零解限——翻期扫 inert，受理面已在武装步）。
+            for b in armed {
+                if period_check(*b, cntvct()) {
+                    let n = unthrottle_all(*b, &rq);
+                    if n > 0 {
+                        unthr += 1;
                     }
                 }
             }
@@ -9583,7 +9842,10 @@ fn test_loadgen() {
                 Fair.pick_next_filtered(&rq, &topo, core::ptr::null_mut())
                     .map(|n| n as *mut Task);
             let Some(next_ptr) = picked else {
-                // 环空（burst 恒在环 → 理论不可达；防御推进一个 unit）。
+                // 无可出选者（Four 组可达：burst 被 BG 带限流 + utility
+                // 限流/睡眠 + interactive 睡眠三态叠加的空窗——CP-14 四带
+                // 组 wall 含此类空转窗〔ranIA+ranUT+ranBK < wall 的差额〕；
+                // Off/Two 组 burst 恒可出选 → 不可达。防御推进一个 unit）。
                 let tgt = cntvct() + unit_cyc;
                 while cntvct() < tgt {
                     core::hint::spin_loop();
@@ -9622,14 +9884,20 @@ fn test_loadgen() {
             //     账本——EEVDF 出选序由此真分化）。
             Fair.tick(next, &mut rq);
             // (7) band 记账（consume 越线 → throttle_all 环执法——真 API）。
-            if g.band && s.kind <= 1 {
-                let b = if s.kind == 0 { INTENT_INTERACTIVE } else { INTENT_UTILITY };
+            //     Four 组 burst（kind 2）额外进 BG 带——过载源让路执法面。
+            let consume_band = match (g.band, s.kind) {
+                (LgBandMode::Two, 0) | (LgBandMode::Four, 0) => Some(INTENT_INTERACTIVE),
+                (LgBandMode::Two, 1) | (LgBandMode::Four, 1) => Some(INTENT_UTILITY),
+                (LgBandMode::Four, 2) => Some(INTENT_BACKGROUND),
+                _ => None,
+            };
+            if let Some(b) = consume_band {
                 if consume(b, delta) {
                     throttle_all(b, &rq);
-                    if s.kind == 0 {
-                        thr_ia += 1;
-                    } else {
-                        thr_ut += 1;
+                    match s.kind {
+                        0 => thr_ia += 1,
+                        1 => thr_ut += 1,
+                        _ => thr_bk += 1,
                     }
                 }
             }
@@ -9673,10 +9941,10 @@ fn test_loadgen() {
 
         // 4) band 收口（test_band 纪律：先 unthrottle 清环上位再 configure(0)）
         //    + burst 出环 + 环/队复核对账。
-        for b in [INTENT_INTERACTIVE, INTENT_UTILITY] {
-            if berry_sched::band_on(b) {
-                unthrottle_all(b, &rq);
-                assert!(!configure(b, 0, 0, 0), "LOADGEN：{} 组带收口须关", lg_tag_str(g));
+        for b in armed {
+            if berry_sched::band_on(*b) {
+                unthrottle_all(*b, &rq);
+                assert!(!configure(*b, 0, 0, 0), "LOADGEN：{} 组带收口须关", lg_tag_str(g));
             }
         }
         for s in slots.iter_mut() {
@@ -9754,7 +10022,8 @@ fn test_loadgen() {
                 "LOADGEN：{} 组分位序须单调", lg_tag_str(g));
         // 差分断言：slack>0 → utility p50 ≥ 顺延量（数学下界：检出时刻 ≥
         // 顺延后 deadline = due + defer）；交互恒零顺延（p50 上界）；band on
-        // → utility 必限流（配额 < 组总额）、interactive 恒不越额。
+        // → utility 必限流（配额 < 组总额）、interactive 恒不越额；Four 组
+        // background（burst 过载源）必越线——16% 期占率帽 vs 组占有 ~60%。
         let bound5ms = ns2cyc_local(5_000_000, freq);
         let bound70ms = ns2cyc_local(70_000_000, freq);
         if g.slack_ns > 0 {
@@ -9764,22 +10033,27 @@ fn test_loadgen() {
             assert!(ut_p50 <= defer_cyc + bound70ms,
                     "LOADGEN：{} 组 utility p50 须 ≤ 顺延+限流期上界", lg_tag_str(g));
         } else {
-            assert!(ut_p50 <= if g.band { bound70ms } else { bound5ms },
+            assert!(ut_p50 <= if let LgBandMode::Off = g.band { bound5ms } else { bound70ms },
                     "LOADGEN：{} 组 utility p50 须在无顺延上界内", lg_tag_str(g));
         }
         assert!(ia_p50 <= bound5ms,
                 "LOADGEN：{} 组 interactive p50 须 ≤5ms（零顺延+零限流）", lg_tag_str(g));
-        if g.band {
+        if let LgBandMode::Off = g.band {
+            assert!(thr_ut == 0 && thr_ia == 0 && thr_bk == 0,
+                    "LOADGEN：{} 组 band 关态须零执法", lg_tag_str(g));
+        } else {
             assert!(thr_ut >= 1, "LOADGEN：{} 组 utility 配额须越线（差异化效果）", lg_tag_str(g));
             assert!(thr_ia == 0, "LOADGEN：{} 组 interactive 配额须不越线（零牺牲）", lg_tag_str(g));
             assert!(unthr >= 1, "LOADGEN：{} 组限流须被翻期解除（进度面）", lg_tag_str(g));
-        } else {
-            assert!(thr_ut == 0 && thr_ia == 0,
-                    "LOADGEN：{} 组 band 关态须零执法", lg_tag_str(g));
+            if let LgBandMode::Four = g.band {
+                assert!(thr_bk >= 1,
+                        "LOADGEN：{} 组 background 配额须越线（过载源让路——四带差分）",
+                        lg_tag_str(g));
+            }
         }
 
         LgOut { ia_p50, ia_p99, ut_p50, ut_p99, burst_units, wall_cyc: wall,
-                oneshot_cyc: oneshot_med, thr_ut, thr_ia, ran_ia, ran_ut, ran_bk }
+                oneshot_cyc: oneshot_med, thr_ut, thr_ia, thr_bk, ran_ia, ran_ut, ran_bk }
     }
 
     /// 组名 &str 投影（断言消息用——uart 行仍用原 tag 字节）。
@@ -9787,12 +10061,15 @@ fn test_loadgen() {
         core::str::from_utf8(g.tag).unwrap_or("?")
     }
 
-    // —— 四组 A/B（任务书口径）：A1 基线 / A2 band / A3 slack / A4 双开 ——
+    // —— 六组 A/B：A1-A4 = CP-06 原四组（零漂移基线）；A5/A6 = CP-14
+    //    四带复测组（band=Four——×4 全开 vs ×2 vs 零带三组对比）。——
     let groups = [
-        LgGroup { tag: b"A1", slack_ns: 0, band: false },
-        LgGroup { tag: b"A2", slack_ns: 0, band: true },
-        LgGroup { tag: b"A3", slack_ns: SLACK_NS, band: false },
-        LgGroup { tag: b"A4", slack_ns: SLACK_NS, band: true },
+        LgGroup { tag: b"A1", slack_ns: 0, band: LgBandMode::Off },
+        LgGroup { tag: b"A2", slack_ns: 0, band: LgBandMode::Two },
+        LgGroup { tag: b"A3", slack_ns: SLACK_NS, band: LgBandMode::Off },
+        LgGroup { tag: b"A4", slack_ns: SLACK_NS, band: LgBandMode::Two },
+        LgGroup { tag: b"A5", slack_ns: 0, band: LgBandMode::Four },
+        LgGroup { tag: b"A6", slack_ns: SLACK_NS, band: LgBandMode::Four },
     ];
     berry_hal_aarch64::uart_puts(b"KTEST LOADGEN fmt lat=us wall=ms burst=units oneshot=us\n");
     let mut outs: alloc::vec::Vec<LgOut> = alloc::vec::Vec::new();
@@ -9803,7 +10080,12 @@ fn test_loadgen() {
         berry_hal_aarch64::uart_puts(b" slack=");
         berry_hal_aarch64::uart_put_dec(g.slack_ns / 1_000_000);
         berry_hal_aarch64::uart_puts(b"ms band=");
-        berry_hal_aarch64::uart_puts(if g.band { b"on" } else { b"off" });
+        // A1-A4 标签零漂移（off/on 与 R4/R5 同字面）；Four 组 = on4。
+        berry_hal_aarch64::uart_puts(match g.band {
+            LgBandMode::Off => b"off",
+            LgBandMode::Two => b"on",
+            LgBandMode::Four => b"on4",
+        });
         berry_hal_aarch64::uart_puts(b" interactive p50=");
         berry_hal_aarch64::uart_put_dec(cyc2us(o.ia_p50));
         berry_hal_aarch64::uart_puts(b" p99=");
@@ -9828,6 +10110,10 @@ fn test_loadgen() {
         berry_hal_aarch64::uart_put_dec(cyc2us(o.ran_bk) / 1000);
         berry_hal_aarch64::uart_puts(b"ms freq=");
         berry_hal_aarch64::uart_put_dec(freq);
+        // 行尾追加字段（CP-14 四带复测）：A1-A4 前缀逐位同 R4/R5（thrBK
+        // 对其恒 0——band 关态/两带组 burst 均不进带执法）。
+        berry_hal_aarch64::uart_puts(b" thrBK=");
+        berry_hal_aarch64::uart_put_dec(o.thr_bk as u64);
         berry_hal_aarch64::uart_puts(b"\n");
         outs.push(o);
     }
@@ -9835,7 +10121,8 @@ fn test_loadgen() {
     // —— 数据汇总行（A/B 对比四联——CP-06 报告的数据面）——
     /// cmp 行：label + 取值闭包（延迟行 µs 换算，burst 行原值）。
     fn cmp_row(label: &[u8], outs: &[LgOut], get: fn(&LgOut) -> u64, to_us: bool) {
-        let tags: [&[u8]; 4] = [b"A1", b"A2", b"A3", b"A4"];
+        let tags: [&[u8]; 6] = [b"A1", b"A2", b"A3", b"A4", b"A5", b"A6"];
+        assert_eq!(tags.len(), outs.len(), "LOADGEN：cmp 行组数须对齐");
         berry_hal_aarch64::uart_puts(b"KTEST LOADGEN cmp ");
         berry_hal_aarch64::uart_puts(label);
         for (tag, o) in tags.into_iter().zip(outs.iter()) {

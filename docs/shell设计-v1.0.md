@@ -83,7 +83,7 @@ P5 第一刀 = PL011 **RX 中断**（`开发体验.md` §3 既定前置），其
 
 bsh 交互循环天然管道化：从 fd0 逐字节读、经 editor 状态机、全部输出走 fd1——不依赖任何终端专属原语。因此 `SpawnSpec.stdin_feed`（feeder 泵喂字节）加 `stdout` 私有对端（channel 收集）即构成「任意程序以哑终端形态驱动 bsh」的完整契约：提示符 `bsh> `、命令回显行与命令结果行混流同一 stdout 字节流，驱动方收流即得全部终端语义。契约由 bsh `term_selftest` 自验钉板（`TERM ok n=2`，rootfs 相标记）：spawn 子 bsh（`--no-selftest` 跳过自验链直进交互循环）喂两命令，私有 stdout 收齐提示符 ×2/回显行/两结果行后 terminate(130) 收口。
 
-GUI 终端应用（berry-term）与键盘链的挂账显式移交波3（明细见[命令行体验刀实施设计](../.agents/plans/2026-11-15-命令行体验刀实施设计.md)契约 4，本节管道契约即 berry-term 的地基）。进展注（2026-11-16）：宿主 `berry console` 串口直连已落（chardev socket + `berry console` 子命令——宿主终端直进 bsh，CLI-first 设计 v1.9 §8）；wmd 半边已拆（波3 批A 起：焦点表/属主事件通道/表变更广播/OP_WM_SUBSCRIBE 落地），inputd 单订阅与物理键盘链（QEMU 键盘设备/认领门/Key·Text 出向帧/泵解码）仍锁；.bap GUI 授能经 [ui] 门 v1 换轨实质已解（APP_SLOTS 扩容前置在册）；berry-term 本体待波3 输入底座收口。
+GUI 终端应用（berry-term）与键盘链的挂账显式移交波3（明细见[命令行体验刀实施设计](../.agents/plans/2026-11-15-命令行体验刀实施设计.md)契约 4，本节管道契约即 berry-term 的地基）。进展注（2026-11-16）：宿主 `berry console` 串口直连已落（chardev socket + `berry console` 子命令——宿主终端直进 bsh，CLI-first 设计 v1.9 §8）；wmd 半边已拆（波3 批A 起：焦点表/属主事件通道/表变更广播/OP_WM_SUBSCRIBE 落地），inputd 单订阅与物理键盘链（QEMU 键盘设备/认领门/Key·Text 出向帧/泵解码）仍锁；.bap GUI 授能经 [ui] 门 v1 换轨实质已解（APP_SLOTS 扩容前置在册）；berry-term 本体待波3 输入底座收口。进展注（2026-11-17）：键盘物理链四件与 berry-term v1 已落（[终端优化刀笔记](../.agents/notes/implemented/2026-11-17-命令行终端优化-键盘物理链与berry-term.md)——QEMU virtio-keyboard + inputd 多设备分类认领 + KeyPump 翻译出向 + appshell on_key 分流；berry-term 持久子 bsh 通道上桌 dock，APP_SLOTS 9→10 同批）；inputd 焦点门控分发仍开放。
 
 ## 3. 命令三梯队
 
