@@ -152,6 +152,15 @@ pub fn single_waiter(queue: &[WaiterDesc], obj: usize, set_signals: u64) -> Opti
     found
 }
 
+// ---- P1/P2-1 等待键路由判定律单源（W3-Q75——sched.rs 键桶散列/真键
+// 判据/计数三形分账/PI donor 门/双零门控迁此；原子 fetch/KEY_HEADS
+// 裸链留壳 sched 侧）----
+
+pub mod keyroute;
+#[cfg(test)]
+#[path = "keyroute_tests.rs"]
+mod keyroute_tests;
+
 #[cfg(test)]
 extern crate alloc;
 
