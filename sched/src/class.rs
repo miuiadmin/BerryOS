@@ -77,7 +77,7 @@ pub type RoundRobin = Fair;
 // 消费即唯一事实源（wqmatch/iprofile 同款纪律）。
 use berry_sliceface::{
     fair_rearm_vd, period_due, replenish as replenish_budget, slice_virtual as slice_virtual_of,
-    tick_account, throttle_admissible, DeadlineState,
+    tick_account, throttle_admissible, DeadlineState, SCALE,
 };
 // W3-Q11：deadline 带优先级常量单源 berry-sliceface——本模块 re-export
 // （lib.rs `pub use class::PRIO_DEADLINE` 消费链不变，band.rs 同）。
@@ -95,6 +95,50 @@ fn slice_virtual(t: &Task) -> u64 {
     // W3-Q11：虚拟片换算单源 berry-sliceface（grant×SCALE/weight 下限 1，
     // host 钉板 slice_virtual_law）。
     slice_virtual_of(hal::timer::slice_cycles(), t.prio_effective)
+}
+
+/// ns → CNTVCT 周期数（M4 并线：带参数 ns → 账面周期数的唯一换算点
+/// ——`hal::timer::ticks_to_ns` 的逆式，u128 中间积防溢；freq==0 → 0
+/// 防御面 = 配额/期长 0 = 不武装，方向安全）。
+fn ns_to_cycles(ns: u64) -> u64 {
+    let f = hal::timer::cntfrq() as u128;
+    if f == 0 {
+        return 0;
+    }
+    ((ns as u128) * f / 1_000_000_000) as u64
+}
+
+/// 带权重直入的虚拟片（`slice_virtual` 的 raw-weight 形——M4 并线）：
+/// `weight_of_prio` 域 [SCALE, CAP]（基线 1024 起）表达不了带包络中
+/// <1024 的下档权重（utility 64..512 / interactive 低界 256），故按
+/// **同一数学**（`grant × SCALE / weight`、整除取整抬 1、u128 中间积）
+/// 直算。律漂移由 ktest `BANDM4` M4G 数值断言（`vd−vr == grant×SCALE/w`
+/// 在 w 整除 SCALE 时整数精确）钉住。
+fn slice_virtual_weight(grant: u64, weight: u32) -> u64 {
+    let s = grant as u128 * SCALE as u128 / (weight.max(1) as u128);
+    (s as u64).max(1)
+}
+
+/// 带级预算的 delta 预读（M4 并线——`Fair::tick` 记账基准的**只读孪生**：
+/// 读同一 last_vct 槽 + CNTVCT 现值算同一 delta，**不写基准**；
+/// `Fair::tick` 随后的正规读/写自会得出同值——两者差 = 两次 cntvct 读
+/// 之间的指令数，微秒以下）。`last == 0`（首拍无基准）→ 0，同
+/// `Fair::tick` 律。
+fn peek_tick_delta() -> u64 {
+    let now = hal::timer::cntvct();
+    // SAFETY: 只读不写（不消费基准位）；IRQ 上下文本核顺序访问契约同
+    // Fair::tick（per-CPU 槽 / 回落位单核窗）。
+    let last = unsafe {
+        match hal::smp::last_vct_slot() {
+            Some(p) => p.read_volatile(),
+            None => (&raw const LAST_VCT).read_volatile(),
+        }
+    };
+    if last == 0 {
+        0
+    } else {
+        now.wrapping_sub(last)
+    }
 }
 
 /// 环上平均虚拟时间（EEVDF 的 V 的工程近似；**O(1)**——S2b+ 从全环扫描改
@@ -437,8 +481,10 @@ impl Fair {
 // ---- M4 带实例化（ADR #42 第二段——class_fair 按 intent 实例化带实例；
 // 调度优化终窗 2026-11-15 骨架落，2026-11-16 首批 band 激活——两带现役、
 // 参数差异生效；2026-11-16 集成面收口〔06 号 §5 任务①〕——class 赋值面
-// `class_of_task` 接通 spawn→调度原语六点；trait 行为差异化仍凭 M4
-// 入场券入场）----
+// `class_of_task` 接通 spawn→调度原语六点；2026-11-16 第五刀 M4 并线
+// 〔R4 语义审计链 1 补刀——「分派通、行为差异=0」的最后一毫米〕：trait
+// 行为差异化落地〔tick 带参数 + 四 API 执法并线；enqueue 纯委托保
+// 首选序——见 trait impl doc〕）----
 //
 // 立法约束（ADR #42 / 重议触发器表「class_fair 单实例 → ×N 带实例」条）：
 // - **只许按 intent 实例化同一 `SchedClass` trait、禁改签名**——本段零
@@ -450,23 +496,28 @@ impl Fair {
 //   0x04 background 首批外、0x05 MAINTENANCE 编码冻结不启用、0x00
 //   UNSPECIFIED 无专带（XNU 式顶档待定档）——词汇单源
 //   `berry_iprofile::band_enabled`（×4 全集随入场券逐批开）。
-// - **入场券未过前 band 执法不并线**（v1 遥测实证 + loadgen + 尾延迟断言
-//   + 空闲核金丝雀；`调点调度-v1.2.md` §7）——故 [`FairBand`] 的 trait
-//   行为与 [`Fair`] **逐位一致**（全方法委托 unit `Fair`）：集成面收口后
-//   立的是「带实例按任务分派」的 assignment 面（[`class_of_task`]），
-//   带间严格序/每带预算包络/deadline-server 兜底/事件驱动记账全不实装
-//   （`band.rs` 预算包络骨架与执法开关分立的同款纪律）。
+// - **入场券证据面已过、第五刀并线**：loadgen 四组真差异双 run 复现
+//   （R4 审计链 3：ut_p50 758→10776〔slack〕、p99 1507→37916〔band〕
+//   双日志复现）后，trait 行为差异化落地——[`FairBand`] 的 tick 按带
+//   参数执法（quantum/权重/latency_target 三轴进热路径），带预算四
+//   API（`band.rs`）经 [`FairBand::consume`] 等包装并线；enqueue 保持
+//   纯委托（首选序零漂移——见 trait impl doc 的编舞实证）；unit
+//   [`Fair`] 路径逐位不动（unit 任务零漂移——`band_period_sweep` 无
+//   武装槽早退、`TaskClass::grant_cycles` 的 Unit 臂返全局 slice）。
 // - 数值不写死：[`IntentBand`] 表 = 骨架缺省基线（推断值，锚 = 手表表
 //   权重包络 + 现役 SLICE_HZ quantum 锚——见 `berry-iprofile` 表注）；
-//   M4 真数字经启动配置参数表覆盖（ADR #42「数字进启动配置不写死」）。
+//   M4 真数字经启动配置参数表覆盖（ADR #42「数字进启动配置不写死」）
+//   ——显式 configure 优先于懒武装（已武装槽不覆写）。
 
 use berry_iprofile::IntentBand;
 
-/// class_fair 的**参数化带实例**（M4 骨架）：与 [`Fair`] 同一 fair 语义
-/// （带内 EEVDF），携带 id + 一份 [`IntentBand`] 带参数。trait 方法全数
-/// 委托现役 unit `Fair`——**行为零漂移**（入场券未过，带差异化行为不
-/// 实装）；带参数此刻只落字段，M4 并线时成为 weight/quantum/
-/// latency_target 的消费源。
+/// class_fair 的**参数化带实例**（M4 并线形）：与 [`Fair`] 同一 fair 语义
+/// （带内 EEVDF——逐任务记账委托 unit `Fair` 单源），携带 id + 一份
+/// [`IntentBand`] 带参数。**第五刀（2026-11-16）起带参数真消费**：
+/// quantum_ns → 片授予（[`TaskClass::grant_cycles`〕/VD 重臂 grant）+
+/// 带配额（[`Self::consume`] 懒武装 quota）；latency_target_ns → 带预算
+/// 期长（[`Self::period_check`]）；low/high_weight → 限流/解限流与片耗尽
+/// 的 VD 重臂权重（替代全局 prio_effective）。
 ///
 /// 构造走 [`class_fair_intent`] 工厂（按 intent 档建带）或 [`FairBand::new`]
 /// （显式带参数——M4 启动配置覆盖路径的入口形状）。
@@ -476,8 +527,8 @@ pub struct FairBand {
     /// 首批 = 0x02/0x03，`band_of_intent` 门保证；`new` 显式路径的域执法归
     /// 调用方〔启动配置面，band_id_of_intent 判〕）。
     pub band_id: u8,
-    /// 本带参数（骨架位：字段落位 + host 可测面 `berry-iprofile`；热路径
-    /// 消费随 M4 并线）。
+    /// 本带参数（M4 并线消费源：quantum/权重包络/latency_target 三轴
+    /// 全部进热路径——见本类型 doc 与 [`Self::consume`] 族）。
     pub band: IntentBand,
 }
 
@@ -493,6 +544,147 @@ impl FairBand {
     /// M4 入场券纪律）。
     pub fn yield_slice_return(&self, t: &mut Task, rq: &Runqueue) {
         Fair.yield_slice_return(t, rq)
+    }
+
+    // —— M4 并线（第五刀·R4 语义审计链 1 补刀）：带参数执法面——
+    // band.rs 四 API（consume/period_check/throttle_all/unthrottle_all）
+    // 的带参数包装：quota = quantum_ns（替代 unit Fair 的全局 slice 锚）、
+    // 期长 = latency_target_ns、限流/解限流 VD 重臂权重 = low/high_weight
+    // （替代全局 prio_effective）。带预算槽**懒武装**——首消费时按表行
+    // configure；显式 configure（启动配置/ktest 手驱）优先，已武装不覆写。——
+
+    /// 本带 quantum 的周期数（片授予〔`TaskClass::grant_cycles`〕与带
+    /// 配额〔`Self::consume` 懒武装〕的共用换算源）。
+    pub fn quantum_cycles(&self) -> u64 {
+        ns_to_cycles(self.band.quantum_ns)
+    }
+
+    /// 本带 latency_target 的周期数（带预算期长——`Self::period_check`
+    /// 判到期的参数源）。
+    pub fn period_cycles(&self) -> u64 {
+        ns_to_cycles(self.band.latency_target_ns)
+    }
+
+    /// 带预算槽懒武装：未武装才 configure（quota = 本带 quantum、period =
+    /// 本带 latency_target）。已武装槽不覆写——启动配置/ktest 显式
+    /// configure 优先（重配即清账翻期语义归 `band::configure` 单源）。
+    pub fn arm(&self, now: u64) -> bool {
+        if crate::band::band_on(self.band_id) {
+            return true;
+        }
+        crate::band::configure(self.band_id, self.quantum_cycles(), self.period_cycles(), now)
+    }
+
+    /// 带配额微记账（四 API·consume）：`delta` 周期数记入本带本期账——
+    /// **quota = 本带 `quantum_ns`**（band 特有配额，替代 unit Fair 的
+    /// 全局 slice 锚）。**CBS 期内律**：只记本期内的周期数——`delta`
+    /// 先剪辑到 `now − period_start`（period_start = deadline − period，
+    /// deadline 恒未来首期故剪辑界 ≤ period），跨期（旧期）部分不记入
+    /// 新期账。没有本律时：翻期面粒度（tick/sweep 间隔）> period 的带
+    /// （interactive 10ms 配额/8ms 期 vs 100ms tick）会把跨期运行累计进
+    /// 单期账 → quota>period 的不可越线带被误越线（ktest M4G 实测抓到
+    /// ——6 次假越线）；有本律则该类带任何记账粒度下恒不越线。返
+    /// true = 本期**首**越线（调用方随后 [`Self::throttle_all`]——记账
+    /// 与环执法分两步，同 `band::consume` 契约）。判定律/原子账单源
+    /// `band::consume`（此处只携参 + 剪辑）。
+    pub fn consume(&self, delta: u64) -> bool {
+        let now = hal::timer::cntvct();
+        if !self.arm(now) {
+            return false;
+        }
+        let credited = match crate::band::state(self.band_id) {
+            Some(s) if s.period > 0 => {
+                let in_period = now.saturating_sub(s.deadline.saturating_sub(s.period));
+                delta.min(in_period)
+            }
+            _ => delta,
+        };
+        crate::band::consume(self.band_id, credited)
+    }
+
+    /// 带翻期判（四 API·period_check）：到期判 = **本带
+    /// `latency_target_ns`**（band 特有延迟目标作预算期长）。返 true =
+    /// 已翻期（调用方随后 [`Self::unthrottle_all`]）。翻期数学/CAS 防双翻
+    /// 单源 `band::period_check`。
+    pub fn period_check(&self, now: u64) -> bool {
+        if !self.arm(now) {
+            return false;
+        }
+        crate::band::period_check(self.band_id, now)
+    }
+
+    /// 带级限流（四 API·throttle）：环扫置 HELD_THROTTLE + 带成员 VD 按
+    /// **`band.low_weight`** 重臂（被限流者垫后——带权重替代全局
+    /// prio_effective 的消费点）。deadline 任务豁免（`band_member`）。
+    pub fn throttle_all(&self, rq: &Runqueue) -> usize {
+        let n = crate::band::throttle_all(self.band_id, rq);
+        if n > 0 {
+            self.rearm_members_vd(rq, self.band.low_weight);
+        }
+        n
+    }
+
+    /// 带级解限流（四 API·unthrottle）：环扫清 HELD_THROTTLE + 带成员
+    /// VD 按 **`band.high_weight`** 重臂（回场竞争给早截止——高权带回场
+    /// 不排尾）。
+    pub fn unthrottle_all(&self, rq: &Runqueue) -> usize {
+        let n = crate::band::unthrottle_all(self.band_id, rq);
+        if n > 0 {
+            self.rearm_members_vd(rq, self.band.high_weight);
+        }
+        n
+    }
+
+    /// 本带当前 VD 重臂权重：带限流期 = low_weight（垫后）、正常 =
+    /// high_weight（`state().throttled` 镜像——首越线置/翻期清）。
+    fn vd_weight(&self) -> u32 {
+        let throttled =
+            crate::band::state(self.band_id).map(|s| s.throttled).unwrap_or(false);
+        if throttled {
+            self.band.low_weight
+        } else {
+            self.band.high_weight
+        }
+    }
+
+    /// 单任务片耗尽 VD 重臂（带参数形）：grant = 本带 quantum、weight =
+    /// 带权重（[`Self::vd_weight`]）——`Fair::tick` 的全局 grant/权重
+    /// 重臂被本形覆写（enqueue 面不覆写——首选序零漂移，见 trait impl
+    /// doc）。
+    fn rearm_vd(&self, t: &mut Task) {
+        t.vdeadline = t
+            .vruntime
+            .saturating_add(slice_virtual_weight(self.quantum_cycles(), self.vd_weight()));
+    }
+
+    /// 环扫带成员 VD 重臂（throttle/unthrottle 包装的权重消费步——§A136
+    /// 走查同 `band.rs` 环扫；deadline 任务经 `band_member` 豁免；幂等
+    /// ——被限流者 vruntime 冻结〔不跑不记〕，重复重臂同值）。
+    ///
+    /// # Safety 契约（同 `band::throttle_all`）
+    /// rq 环节点有效且在环；屏蔽窗内调用（tick / pick_next 语境）。
+    fn rearm_members_vd(&self, rq: &Runqueue, w: u32) {
+        let Some(h) = rq.head() else { return };
+        let grant = self.quantum_cycles();
+        // SAFETY: 环上任务均调度器拥有且在环；调用侧屏蔽窗内（同 pick）。
+        unsafe {
+            let mut cur = h;
+            loop {
+                let p = cur.as_ptr();
+                if crate::band::band_member(
+                    (*p).intent_effective,
+                    (*p).prio_effective,
+                    self.band_id,
+                ) {
+                    (*p).vdeadline =
+                        (*p).vruntime.saturating_add(slice_virtual_weight(grant, w));
+                }
+                cur = (*p).rq_next.get().expect("环上节点必有 next");
+                if cur == h {
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -513,13 +705,27 @@ pub fn class_fair_intent(intent: u8) -> Option<FairBand> {
     berry_iprofile::band_of_intent(intent).map(|band| FairBand::new(intent, band))
 }
 
-/// 带实例的 trait 面：全方法委托现役 unit [`Fair`]（同一实现的第二实例形
-/// ——「同一 trait ×N 实例」的最小落体；行为逐位等价，等 M4 入场券后再
-/// 分化）。`priority()` 现返 0 与 `Fair` 同值——带间严格序映射到既有
-/// `priority() -> i32` 是 M4 并线面的第一步（届时按带 id 差异化，签名
-/// 不动）。
+/// 带实例的 trait 面：**第五刀 M4 并线起 tick 行为差异化**——逐任务
+/// EEVDF 记账仍委托 unit [`Fair`]（单源：slice 递减/vruntime/Σ 账本
+/// /util 面零复制），差异叠加三处：①片耗尽的 VD 重臂走**带参数**
+/// （grant = 本带 quantum、weight = 带包络——替代全局 slice_cycles/
+/// prio_effective）；②tick 内自翻期（本带到期即翻 + 解限——事件驱动
+/// 清账，CBS 期内律见 [`Self::consume`] 注）；③带预算执法
+/// （[`Self::consume`] 首越线 → [`Self::throttle_all`]）。dequeue/
+/// pick_next/priority 仍纯委托（生产 pick 是队列级
+/// `Fair::pick_next_filtered` 不经本面；`priority()` 返 0——带间严格序
+/// 映射到既有签名仍归后续刀）。
+///
+/// **enqueue 特例保持纯委托**（零漂移）：入环 VD 若按带权重重臂，会改
+/// 变新任务的首选序（utility 偏移 40ms virt < unit 100ms virt → 后 spawn
+/// 的 utility 任务反超先跑）——boot 结算链等隐式编舞依赖 spawn 序
+/// （ktest 实证：it_sinkA 抢到 it_mid 前 → 非阻塞 recv 空
+/// `ERR_AGAIN`）。带权重只在**竞争路径**消费（片耗尽/限流/解限重臂）
+/// ——秒回任务（入环即出选跑完）不受扰动，差异化作用于真正烧 CPU 的
+/// 带任务。
 impl SchedClass for FairBand {
     fn enqueue(&self, t: &mut Task, rq: &mut Runqueue) {
+        // 纯委托（零漂移）——VD 带参数重臂不在此面，见本 impl doc。
         Fair.enqueue(t, rq)
     }
     fn dequeue(&self, t: &mut Task, rq: &mut Runqueue) {
@@ -529,26 +735,49 @@ impl SchedClass for FairBand {
         Fair.pick_next(rq, topo)
     }
     fn tick(&self, t: &mut Task, rq: &mut Runqueue) {
-        Fair.tick(t, rq)
+        // 带级 delta 预读（Fair.tick 记账基准的只读孪生——带账与任务账
+        // 同 delta 口径，见 peek_tick_delta 注）。
+        let delta = peek_tick_delta();
+        Fair.tick(t, rq);
+        // ① quantum 差异化：片耗尽 VD 重臂走带参数（grant = 本带
+        // quantum / weight = 带包络——Fair.tick 的全局重臂被覆写；门与
+        // Fair.tick 同款 fair_rearm_vd）。
+        if t.slice_left == 0 && fair_rearm_vd(t.prio_effective, is_deadline(t)) {
+            self.rearm_vd(t);
+        }
+        // ② 带预算执法·自翻期：本带到期即翻 + 解限（事件驱动——记账前
+        // 清账，防 sweep/tick 粒度下的跨期累积；CBS 期内律见 consume 注）。
+        // 入口扫 [`band_period_sweep`] 仍是全限流带的兜底翻期面。
+        if self.period_check(hal::timer::cntvct()) {
+            self.unthrottle_all(rq);
+        }
+        // ③ 带预算执法·记账：consume（quota = 本带 quantum）首越线 →
+        // throttle_all（low_weight VD 重臂）。
+        if self.consume(delta) {
+            self.throttle_all(rq);
+        }
     }
     fn priority(&self) -> i32 {
         Fair.priority()
     }
 }
 
-// ---- M4 集成面收口（06 号 §5「水通管道」任务①，2026-11-16）：class 赋值
-// 面单源——intent → class 实例的最后一环 ----
+// ---- M4 集成面收口（06 号 §5「水通管道」任务①，2026-11-16）+ 第五刀
+// 行为并线（同日·R4 语义审计链 1 补刀）：class 赋值面单源——intent →
+// class 实例的最后一环，及带参数的热路径消费 ----
 //
 // 链路（管道闭合）：manifest 声明 intent → svcmgr 透传 → kernel spawn
 // 落 intent（`spawn_intent` intent 参数 / EL0 thread attr 双落
 // `intent_effective`）→ **[`class_of_task`] 分派（本段）** → 调度原语消费
 // （`sched.rs` 六点）。带键 = `intent_effective`（§11「band 不加 attr
 // 字段——intent 即带键」）：零 Task 新字段，intent 结算借入改档后下一次
-// 分派自然跟随。现役集（首批 0x02/0x03）走 [`FairBand`]（带参数自
+// 原语调用自然跟随。现役集（首批 0x02/0x03）走 [`FairBand`]（带参数自
 // `INTENT_BAND_TABLE` 表行分化），首批外档/未声明回落现役单带 [`Fair`]
-// （行为零漂移）。trait 行为仍逐位一致（全委托 unit Fair——M4 入场券
-// 纪律不变）：本环闭合的是「带实例按任务分派」的 assignment 面，热路径
-// per-band quantum/权重执法仍归 M4 并线面（`调点调度-v1.2.md` §7）。
+// （行为零漂移）。第五刀起 FairBand 的 tick 真消费带参数
+// （quantum/权重/latency_target 三轴），带预算四 API 并线
+// （[`FairBand::consume`] 族——enqueue 纯委托保首选序，见 trait impl
+// doc）；unit Fair 单带路径逐位不动（`grant_cycles` Unit 臂 = 全局
+// slice、[`band_period_sweep`] 无武装槽早退）。
 
 /// 任务的 class 实例（M4 集成面）：unit [`Fair`] 或带实例 [`FairBand`] 的
 /// 二元分派——[`class_of_task`] 的返回值。`Copy` 零分配（IRQ 热路径——
@@ -607,6 +836,18 @@ impl TaskClass {
         }
     }
 
+    /// 授片量（per-task 分派——M4 并线第五刀）：`Unit` = 全局
+    /// `slice_cycles`（**零漂移**——现役所有非 band 任务不受影响）；
+    /// `Band` = 本带 quantum_ns 的周期数（band 特有配额替代全局片——
+    /// `sched.rs` 八授片点消费，interactive 短片/ utility 长片的
+    /// 差异化源头）。
+    pub fn grant_cycles(&self) -> u64 {
+        match self {
+            TaskClass::Unit => hal::timer::slice_cycles(),
+            TaskClass::Band(b) => b.quantum_cycles(),
+        }
+    }
+
     /// 带参数投影（`Unit` = None）——ktest spawn 面断言与诊断面消费。
     pub fn band(&self) -> Option<IntentBand> {
         match self {
@@ -632,5 +873,33 @@ pub fn class_of_task(t: &Task) -> TaskClass {
     match class_fair_intent(t.intent_effective) {
         Some(band) => TaskClass::Band(band),
         None => TaskClass::Unit,
+    }
+}
+
+/// **M4 并线·带翻期扫**（`sched::tick` 入口的兜底消费点——第五刀）：
+/// 逐武装槽 `period_check` → 翻期即解限流。挂 tick 入口的原因：带预算
+/// 越线后全员限流 → 无带任务可作出选/被 tick → [`FairBand::tick`] 面
+/// 不可达 → 翻期必须有不依赖「当前任务是带任务」的兜底点，否则带级
+/// **永久饿死**。解限流走 [`FairBand::unthrottle_all`]（high_weight VD
+/// 重臂）；显式 configure 武装的无带实例槽（ktest 手驱先例——如
+/// INTEG 的 X=0x01）回落 raw 面。无武装槽时 8 次冷读早退——unit 单带
+/// 负载零语义差（执法面只作用于带任务）。
+///
+/// 【推】SMP 限制：翻期 CAS 单赢家只解**本核**环成员——跨核限流位
+/// 残留归 SMP lazy-pick 执法刀（`band.rs`「SMP §3」同纪律）；单核
+/// QEMU 主验面无此窗。
+pub(crate) fn band_period_sweep(rq: &Runqueue) {
+    let now = hal::timer::cntvct();
+    for b in 0u8..(crate::band::BAND_SLOTS as u8) {
+        if !crate::band::band_on(b) {
+            continue;
+        }
+        if crate::band::period_check(b, now) {
+            if let Some(fb) = class_fair_intent(b) {
+                fb.unthrottle_all(rq);
+            } else {
+                crate::band::unthrottle_all(b, rq);
+            }
+        }
     }
 }
