@@ -7,6 +7,10 @@ name = "berry-aokface"
 version = "0.2.0"
 
 [[package]]
+name = "berry-balface"
+version = "0.2.0"
+
+[[package]]
 name = "berry-bandface"
 version = "0.2.0"
 
@@ -169,6 +173,7 @@ dependencies = [
 name = "berry-sched"
 version = "0.2.0"
 dependencies = [
+ "berry-balface",
  "berry-bandface",
  "berry-em",
  "berry-emface",
