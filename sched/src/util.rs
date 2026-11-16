@@ -112,13 +112,17 @@ pub fn cpu_util(cpu: usize) -> u32 {
 pub use berry_emface::OVERUTIL_THRESHOLD;
 
 /// 指定核是否 overutilized（EAS 回退判据——任一核超阈值即整个调度域
-/// 回退）。判据 = `cpu_util > 域最高容量 × 80%`（严格大于——恰在阈值
-/// 上不算，滞回带留 §7 裁决后续接）——比较律单源 `berry_emface::
-/// overutil_judgment`（EM 未注册钳 1 保守回退在彼处收口）。
+/// 回退）。判据 = `cpu_util > 本 CPU 所在域最高容量 × 80%`（严格大于
+/// ——恰在阈值上不算，滞回带留 §7 裁决后续接）——比较律单源
+/// `berry_emface::overutil_judgment`（EM 未注册钳 1 保守回退在彼处
+/// 收口）。容量基准按**实际 CPU 所在域**取（[`crate::em::
+/// em_max_capacity_of_cpu`]——CP-09 EAS M2 修域 0 硬编码：多域大小核
+/// 拓扑下各域容量各异，小核 CPU 按域 0（大核）容量判会漏判 over；
+/// 单域 QEMU 零漂移——CPU0/1 同在域 0）。
 ///
 /// 越界 cpu → util 0 → 恒 false（同 [`cpu_util`] 口径）。
 pub fn overutilized(cpu: usize) -> bool {
-    overutil_judgment(cpu_util(cpu), crate::em::em_max_capacity(0))
+    overutil_judgment(cpu_util(cpu), crate::em::em_max_capacity_of_cpu(cpu))
 }
 
 /// 全域 overutilized（任一核超 → true——Linux EAS 全域回退口径：

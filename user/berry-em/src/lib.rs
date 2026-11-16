@@ -30,9 +30,10 @@
 //! ① struct em_perf_state{performance, frequency, power, cost, flags}——
 //! performance = 该频点 CPU 容量、frequency = kHz（与 CPUFreq 一致）、
 //! power = 该级功耗（单 CPU 或设备口径，可含静态）；BerryOS
-//! EmPoint{capacity, freq_khz, power_mw} 三件同构；cost 域不落——cost =
-//! 10×power×fmax/freq 是内核 EAS 的系数化实现，本面用原始三点直接算，
-//! 系数化留 CP-09 接线窗裁。
+//! EmPoint{capacity, freq_khz, power_mw} 三件同构；cost = power×1024/
+//! capacity 的效率系数（Linux 同名域同构）——**派生列不落形状**（CP-09
+//! EAS M2 落 [`em_cost_of`] 派生读面，EmPoint 三字段形状不动——berry-emface
+//! 单源零扩）。
 //! ② compute_energy 语义（sched-energy.rst §4 Example 2 逐数可复算）：
 //! **域级 OPP 由域内 max_util 定**（em_pd_get_efficient_state——最低够用
 //! 档，capacity ≥ max_util 即止），域能耗 = Σ 域内 CPU util/OPP 容量 ×
@@ -170,6 +171,24 @@ pub fn capacity_for_util(d: &EmDomain, util: u32) -> u32 {
 #[inline]
 pub fn spare_capacity(domain_max_cap: u32, util: u32) -> u32 {
     domain_max_cap.saturating_sub(util)
+}
+
+/// **cost 派生列**（CP-09 EAS M2——EAS 决策的效率指标；Linux
+/// `em_perf_state.cost` 同构：功耗按容量归一的系数化）：`cost =
+/// power_mw × 1024 / capacity`（u64 中间积零溢出，整数 floor）。
+///
+/// 语义 = 该频点每单位（1/1024 满格）util 的功耗系数——cost 越低 = 该
+/// OPP 越能效（同等产出更省电）；Linux EAS 用 cost 做 overutil 判定基准
+/// 与选核效率比较（本面消费面 = CP-09 后续接线，读面先钉板）。与域能耗律
+/// 的关系：`domain_energy_uw` 的被档系数 = sum_util × power×1000/capacity
+/// = sum_util × cost × 1000/1024——cost 即 [`energy_of`] 幂系数的 1024
+/// 尺度提取（floor 各自独立，数值不互推）。capacity 0 档钳 1 防除零
+/// （同 [`energy_of`] 纪律——零容量档能量记账无意义；[`EmPoint::ZERO`]
+/// cost = 0）。**派生列不落形状**：EmPoint 三字段（berry-emface 单源）
+/// 不动——存储零扩、读面恒一致（power/capacity 同源无第二事实）。
+#[inline]
+pub fn em_cost_of(p: &EmPoint) -> u64 {
+    (p.power_mw as u64 * 1024) / p.capacity.max(1) as u64
 }
 
 // ---- 能量律（EAS compute_energy 最简形）----
@@ -436,6 +455,50 @@ mod tests {
         assert_eq!(spare_capacity(1024, 300), 724);
         assert_eq!(spare_capacity(1024, 2000), 0, "余量饱和下界 0");
         assert_eq!(spare_capacity(512, 512), 0);
+    }
+
+    /// cost 派生列（CP-09 EAS M2）：QEMU 表逐位钉值（5×1024/400=12.8 →
+    /// 12 等）+ Linux 对照表 + 零容量钳 1 防御 + u32 顶值不溢出 + 派生
+    /// 一致性（cost 与 power/capacity 比值弱同序——floor 单调）。
+    #[test]
+    fn cost_derived_column() {
+        // QEMU 表（单/双核同点）：三档 cost 12/20/50。
+        for d in [&QEMU_VIRT_DUAL, &QEMU_VIRT_SINGLE] {
+            let costs: [u64; 3] = core::array::from_fn(|i| em_cost_of(&d.points[i]));
+            assert_eq!(costs, [12, 20, 50], "QEMU 三点 cost（5120/400·15360/750·51200/1024 floor）");
+        }
+        // Linux Example 2 对照表：little 301/450/600、big 800/1066/1700。
+        let (little, big) = linux_example_tables();
+        let lc: [u64; 3] = core::array::from_fn(|i| em_cost_of(&little.points[i]));
+        let bc: [u64; 3] = core::array::from_fn(|i| em_cost_of(&big.points[i]));
+        assert_eq!(lc, [301, 450, 600], "little cost（50·150·300 ×1024/170·341·512）");
+        assert_eq!(bc, [800, 1066, 1700], "big cost（400·800·1700 ×1024/512·768·1024）");
+        // 零容量钳 1：ZERO 点 cost 0（power 0）；零容量正功耗点钳 1 分母
+        // （能量记账无意义档的防御面——同 energy_of 纪律）。
+        assert_eq!(em_cost_of(&EmPoint::ZERO), 0);
+        assert_eq!(em_cost_of(&pt(100_000, 5, 0)), 5 * 1024, "capacity 0 钳 1");
+        // u32 顶值不溢出（u64 中间积）：power=u32::MAX、capacity=1 → 顶值。
+        assert_eq!(em_cost_of(&pt(1_000_000, u32::MAX, 1)), u32::MAX as u64 * 1024);
+        // 派生一致性：cost 与 power/capacity 比值弱同序（floor 单调——
+        // 比值小者 cost 不大；等比值可等 cost）。
+        let pts = [
+            QEMU_VIRT_DUAL.points[0],
+            QEMU_VIRT_DUAL.points[1],
+            QEMU_VIRT_DUAL.points[2],
+            little.points[1],
+            big.points[0],
+        ];
+        for w in pts.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let le = (a.power_mw as u64) * b.capacity as u64 <= (b.power_mw as u64) * a.capacity as u64;
+            if le {
+                assert!(em_cost_of(&a) <= em_cost_of(&b), "比值序 {a:?} ≤ {b:?} 须 cost 弱同序");
+            }
+        }
+        // 能效语义锚：QEMU 表内低频点最能效（每单位产出功耗最低）——
+        // cost 随频点单调升（功耗超线性 > 容量亚线性）。
+        assert!(em_cost_of(&QEMU_VIRT_DUAL.points[0]) < em_cost_of(&QEMU_VIRT_DUAL.points[1]));
+        assert!(em_cost_of(&QEMU_VIRT_DUAL.points[1]) < em_cost_of(&QEMU_VIRT_DUAL.points[2]));
     }
 
     /// Linux Example 2 数值锚（sched-energy.rst §4 三案例逐数复算）：任务

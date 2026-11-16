@@ -498,18 +498,19 @@ impl Fair {
 // `class_of_task` 接通 spawn→调度原语六点；2026-11-16 第五刀 M4 并线
 // 〔R4 语义审计链 1 补刀——「分派通、行为差异=0」的最后一毫米〕：trait
 // 行为差异化落地〔tick 带参数 + 四 API 执法并线；enqueue 纯委托保
-// 首选序——见 trait impl doc〕）----
+// 首选序——见 trait impl doc〕；2026-11-17 CP-09 EAS M2 批次〔06 号 §2
+// Top-3 ③〕——四带全开：LC(0x01)/BG(0x04) 入列，现役集 ×2→×4----
 //
 // 立法约束（ADR #42 / 重议触发器表「class_fair 单实例 → ×N 带实例」条）：
 // - **只许按 intent 实例化同一 `SchedClass` trait、禁改签名**——本段零
 //   trait 改动、零既有签名改动；现役单带 [`Fair`] 原样保留（`RoundRobin`
 //   别名与全部既有调用点零漂移）。
-// - 首批现役带集 = 0x02 interactive / 0x03 utility（M4 首批激活——最小
-//   可验对：两带 quantum/权重包络/latency_target 参数差异经
-//   [`class_fair_intent`] 工厂生效，ktest `BANDM4` 断言）；0x01 LC /
-//   0x04 background 首批外、0x05 MAINTENANCE 编码冻结不启用、0x00
-//   UNSPECIFIED 无专带（XNU 式顶档待定档）——词汇单源
-//   `berry_iprofile::band_enabled`（×4 全集随入场券逐批开）。
+// - 现役带集 = 四带全开 0x01–0x04（M4 首批 ×2 于 2026-11-17 升 ×4——
+//   LC/BG 激活，06 号 §2 Top-3 ③；四带 quantum/权重包络/latency_target
+//   参数差异经 [`class_fair_intent`] 工厂生效，ktest `BANDM4` 断言）；
+//   0x05 MAINTENANCE 编码冻结不启用、0x00 UNSPECIFIED 无专带（XNU 式
+//   顶档待定档）——词汇单源 `berry_iprofile::band_enabled`（ADR #42 ×4
+//   终态自此兑现）。
 // - **入场券证据面已过、第五刀并线**：loadgen 四组真差异双 run 复现
 //   （R4 审计链 3：ut_p50 758→10776〔slack〕、p99 1507→37916〔band〕
 //   双日志复现）后，trait 行为差异化落地——[`FairBand`] 的 tick 按带
@@ -538,7 +539,7 @@ use berry_iprofile::IntentBand;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FairBand {
     /// 带 id = intent 档编码（带键 = intent，§11；工厂路径恒现役集——
-    /// 首批 = 0x02/0x03，`band_of_intent` 门保证；`new` 显式路径的域执法归
+    /// 四带 0x01–0x04，`band_of_intent` 门保证；`new` 显式路径的域执法归
     /// 调用方〔启动配置面，band_id_of_intent 判〕）。
     pub band_id: u8,
     /// 本带参数（M4 并线消费源：quantum/权重包络/latency_target 三轴
@@ -703,7 +704,7 @@ impl FairBand {
 }
 
 /// **class_fair_intent 工厂**：按 intent 档建 [`FairBand`] 带实例——查
-/// `berry_iprofile::band_of_intent`（首批现役集 0x02/0x03 → 该档带参数
+/// `berry_iprofile::band_of_intent`（现役集四带 0x01–0x04 → 该档带参数
 /// 行；首批外档/保留域 → `None` = 无带，调用方回落现役单带 [`Fair`]，
 /// 缺省行为零漂移）。
 ///
@@ -803,7 +804,7 @@ impl SchedClass for FairBand {
 // `intent_effective`）→ **[`class_of_task`] 分派（本段）** → 调度原语消费
 // （`sched.rs` 六点）。带键 = `intent_effective`（§11「band 不加 attr
 // 字段——intent 即带键」）：零 Task 新字段，intent 结算借入改档后下一次
-// 原语调用自然跟随。现役集（首批 0x02/0x03）走 [`FairBand`]（带参数自
+// 原语调用自然跟随。现役集（四带 0x01–0x04）走 [`FairBand`]（带参数自
 // `INTENT_BAND_TABLE` 表行分化），首批外档/未声明回落现役单带 [`Fair`]
 // （行为零漂移）。第五刀起 FairBand 的 tick 真消费带参数
 // （quantum/权重/latency_target 三轴），带预算四 API 并线
@@ -820,7 +821,7 @@ pub enum TaskClass {
     /// 现役单带（未声明 intent/首批外档/保留域——与 `Fair` 逐位等价，
     /// 缺省行为零漂移）。
     Unit,
-    /// 带实例（现役集 0x02/0x03——`class_fair_intent` 工厂产物，带参数
+    /// 带实例（现役集四带 0x01–0x04——`class_fair_intent` 工厂产物，带参数
     /// 携表行 quantum/权重包络/latency_target）。
     Band(FairBand),
 }
@@ -891,7 +892,7 @@ impl TaskClass {
 
 /// **class 赋值面单源**（M4 集成面收口）：task → class 实例——
 /// `intent_effective`（§11 带键）经 [`class_fair_intent`] 工厂查表：现役
-/// 集（首批 0x02/0x03）→ [`TaskClass::Band`]（表行带参数）；其余/未声明
+/// 集（四带 0x01–0x04）→ [`TaskClass::Band`]（表行带参数）；其余/未声明
 /// → [`TaskClass::Unit`]（现役单带，缺省行为零漂移）。**动态派生、零
 /// 缓存**：intent 结算借入改档（`sched::intent`）或 EL0 attr spawn 后落
 /// 档后，下一次调度原语调用自然改带——「spawn 时 band 赋值」与「运行期
