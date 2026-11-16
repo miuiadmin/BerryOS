@@ -24,12 +24,17 @@
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-/// 时间片频率（每秒切片数）。10Hz → 每 100ms 一 tick（slice=6.25M cycles @62.5MHz）。
-/// 调小→切片长（切换少、开销低）；调大→更公平但切换多。Step 6 demo 以此驱动抢占。
-/// G5（§1.6-补）起这是**缺省值**——产品镜像可经 boot-params
-/// `sched_slice_hz` 覆盖（[`set_slice_hz`]；override 语义 = §1.6-3
-/// 「缺省归上游编译期常量」）。
-pub const SLICE_HZ: u64 = 10;
+// W3-Q31 重放：滴答账判定律单源迁 berry-tickface（host 可测钉板——
+// tick→ns 倒数乘-移对/快慢双路/S-6 夹取/slice 预算/回绕窗增量五面）。
+// 本模块机械壳 re-export 消费（寄存器臂 mrs/msr、原子 static、static mut
+// 留壳——判定律零第二实现；编译期 const 钉板随迁单源侧）。
+pub use berry_tickface::{
+    arm_slice_clamp, ns_fast_path, ns_reciprocal_for, ns_slow_path, vct_delta,
+    NS_FAST_DOMAIN_TICKS, NS_MUL_CAP,
+};
+
+/// 时间片频率（每秒切片数）——单源在 berry-tickface（re-export 面）。
+pub use berry_tickface::SLICE_HZ;
 
 /// G5（§1.6-补）：产品级 slice 频率覆盖（boot-params `sched_slice_hz`，
 /// 域 [16,1024] 执法归解析端 kernel/src/bootparams.rs）。0 = 缺席（用
@@ -48,12 +53,8 @@ static mut SLICE: u64 = 0;
 // 单写者、此后只读——免 unsafe 面（规则/01「外层包安全 API」），aarch64
 // 对齐 64 位读即单条 ldr，零额外成本。
 
-/// 快路适用域上界：tick < 2^52（@62.5MHz ≈ 2.35 年单调 uptime；24MHz ≈
-/// 6.1 年）。与 mul 上界（[`NS_MUL_CAP`]）联立保证快路单乘无溢。
-const NS_FAST_DOMAIN_TICKS: u64 = 1 << 52;
-
-/// mul 上界 = 2^(64-52)：`tick < 2^52 ∧ mul < 2^12 ⇒ tick·mul < 2^64`。
-const NS_MUL_CAP: u64 = 1 << 12;
+/// 快路适用域上界 / mul 上界——单源在 berry-tickface（[`NS_FAST_DOMAIN_TICKS`]
+/// / [`NS_MUL_CAP`] re-export；doc 与域证明见彼处）。
 
 /// 倒数对乘子（0 = 未预计算：init 前 / 频率异常——[`ticks_to_ns`] 走精确
 /// 慢路，语义与旧两除式逐位一致）。
@@ -148,11 +149,11 @@ pub unsafe fn arm_slice() {
     let now = cntvct();
     let want = now + SLICE;
     let cur = cval();
-    // S-6：deadline 单调夹取——只在「更早」方向移动已编程截止。
-    if cur > now && cur < want {
-        return;
+    // W3-Q31 重放：S-6 deadline 单调夹取判定单源 berry-tickface（host
+    // 钉板 arm_slice_clamp——只在「更早」方向移动已编程截止）。
+    if let Some(w) = arm_slice_clamp(now, cur, want) {
+        unsafe { arm_at(w) };
     }
-    unsafe { arm_at(want) };
 }
 
 /// 屏蔽 CNTV 中断（IMASK=1，ENABLE 保持）——tickless idle 用。倒计仍在跑，但中断不投。
@@ -225,34 +226,6 @@ pub fn cntfrq() -> u64 {
     v
 }
 
-/// 给定 CNTFRQ 预计算 tick→ns 倒数乘-移对：`(tick·mul) >> shift ≈
-/// tick·1e9/freq`。取最大 shift（精度最优）且 mul < [`NS_MUL_CAP`]（与
-/// [`NS_FAST_DOMAIN_TICKS`] 联立保证快路域内单乘无溢）。mul = round(2^shift·
-/// 1e9/freq)（round-half-up）→ 每 tick 误差 ≤ 半 ulp ≤ 0.5ns——「<1ns/tick」
-/// 合同对任意频率构造成立；ns/tick 二进精准的频率（QEMU virt 62.5MHz = 16ns）
-/// 误差恰 0。freq==0 / >1GHz（ns/tick < 1，现实 CNTFRQ 1–100MHz 外的防御
-/// 面）→ (0,0)（只走慢路）。纯 const fn：不写 static，编译期可独立钉板。
-const fn ns_reciprocal_for(freq: u64) -> (u64, u32) {
-    if freq == 0 || freq > 1_000_000_000 {
-        return (0, 0);
-    }
-    // 最大 shift 判据（全整数，免 u128）：round(2^s·1e9/f) ≤ CAP−1
-    //   ⟺ 2^s·1e9/f < CAP − 1/2 ⟺ 2^s·2e9 < f·(2·CAP−1)。
-    // 溢界：s ≤ 43 ⇒ 2^s·2e9 ≤ 8.8e18 < 2^64（循环界 44 即防溢界）；
-    // f ≤ 1e9 ⇒ f·(2·CAP−1) < 8.2e12 同无溢（freq 守卫已锁）。
-    let bound = freq * (2 * NS_MUL_CAP - 1);
-    let mut s: u32 = 0;
-    while s < 44 && (1u64 << s) * 2_000_000_000 < bound {
-        s += 1;
-    }
-    if s == 0 {
-        return (0, 0); // round(1e9/f) ≥ CAP（频率 <244Hz）：快路给不出精度，弃
-    }
-    let num = (1u64 << (s - 1)) * 1_000_000_000;
-    // s−1 ≤ 42 ⇒ num ≤ 4.4e18，+freq/2 ≤ +5e8——无溢。
-    ((num + freq / 2) / freq, s - 1)
-}
-
 /// CNTVCT 周期 → 纳秒（`syscall::vct_ns`（intent 双帽/相对 deadline）与
 /// S4-b 区间计费结算的共用换算源）。快路 = 预计算乘-移（1 mul + 1 shift，
 /// 除法消解）；慢路（init 前 / tick 超域 / 频率异常）= 原两除精确式（先商
@@ -261,51 +234,10 @@ const fn ns_reciprocal_for(freq: u64) -> (u64, u32) {
 /// ≤ 0.5ns（半 ulp）。freq==0 → 0（旧契约：帽不触发，方向安全）。
 pub fn ticks_to_ns(ticks: u64) -> u64 {
     let mul = NS_MUL.load(Ordering::Relaxed);
-    if mul != 0 && ticks < NS_FAST_DOMAIN_TICKS {
-        // 域内无溢：tick < 2^52 ∧ mul < 2^12 ⇒ 乘积 < 2^64。
-        return (ticks * mul) >> NS_SHIFT.load(Ordering::Relaxed);
-    }
+    let shift = NS_SHIFT.load(Ordering::Relaxed);
     let freq = cntfrq();
-    if freq == 0 {
-        return 0;
-    }
-    (ticks / freq) * 1_000_000_000 + ((ticks % freq) * 1_000_000_000) / freq
+    berry_tickface::ticks_to_ns(ticks, mul, shift, freq)
 }
-
-// 编译期钉板（const 求值，零运行时成本）：QEMU virt CNTFRQ=62.5MHz 的
-// 倒数对 = (2048,7)（16ns/tick 二进精准——误差恰 0）；全域快慢两路逐位
-// 一致（密集 0..4096 + 对数抽样至域界 2^52−1，乘积全程无溢即顺带实证）；
-// 24MHz 非二进频率钉 (2667,6) 且每 tick 误差 ≤ 0.5ns（|mul·f − 1e9·2^s|
-// ≤ f/2 的 round-half-up 构造性质）；异常频率防御面 → (0,0)。
-const _: () = {
-    let (mul, shift) = ns_reciprocal_for(62_500_000);
-    assert!(mul == 2048 && shift == 7, "QEMU virt reciprocal pair");
-    const FQ: u64 = 62_500_000;
-    let mut t: u64 = 0;
-    while t < 4096 {
-        let e = (t / FQ) * 1_000_000_000 + ((t % FQ) * 1_000_000_000) / FQ;
-        assert!((t * mul) >> shift == e, "dense equivalence");
-        t += 1;
-    }
-    t = 1;
-    while t < NS_FAST_DOMAIN_TICKS {
-        let e = (t / FQ) * 1_000_000_000 + ((t % FQ) * 1_000_000_000) / FQ;
-        assert!((t * mul) >> shift == e, "log-sweep equivalence");
-        t = t * 2 + 12345;
-    }
-    t = NS_FAST_DOMAIN_TICKS - 1;
-    let e = (t / FQ) * 1_000_000_000 + ((t % FQ) * 1_000_000_000) / FQ;
-    assert!((t * mul) >> shift == e, "domain-edge equivalence");
-    let (m24, s24) = ns_reciprocal_for(24_000_000);
-    assert!(m24 == 2667 && s24 == 6, "24MHz reciprocal pair");
-    let lhs = m24 * 24_000_000;
-    let rhs = 1_000_000_000u64 << s24;
-    let d = if lhs > rhs { lhs - rhs } else { rhs - lhs };
-    assert!(2 * d <= 24_000_000, "24MHz per-tick error <= 0.5ns");
-    let (m0, s0) = ns_reciprocal_for(0);
-    let (m2g, s2g) = ns_reciprocal_for(2_000_000_000);
-    assert!(m0 == 0 && s0 == 0 && m2g == 0 && s2g == 0, "abnormal freq guard");
-};
 
 /// 一个时间片的周期数（`FREQ / SLICE_HZ`；[`init`](fn.init.html) 后有效）。
 /// 时间片授予量（grant）的唯一来源——class 层不再持有 tick 数常量。
