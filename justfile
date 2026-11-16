@@ -711,6 +711,16 @@ test-host:
     # 回绕窗增量，host 24 测；判定律单源，arch/aarch64 timer.rs 机械壳
     # re-export + sched class.rs tick 记账 delta 消费）。
     cargo test -p berry-tickface --target {{host}}
+    # W3-Q67：berry-svcface（SVC 入口锁类位集与号→锁类注册表纯函数面
+    # ——类位集六常量对 sched HELD_* 位值组装律〔host 可测形，与 kernel
+    # main 编译期断言双执法〕/42 号注册表全表往返/未注册号 NONE 默认/
+    # NONE 实装号归零律/REAPQ 位只在 ALL 档/敌意 0..=255 全域零 panic
+    # 钉板；常量单源迁此，HAL kern_lock.rs re-export 消费）。
+    cargo test -p berry-svcface --target {{host}}
+    # W3-Q67 执法件：三方对拍（install() 42 行 ↔ svcface REGISTRY ↔ NR
+    # 常量域）——reg() 字面量漂移（改 kernel 落类忘同步注册表）文本级
+    # 咬合，正负例验证（负例 = 单项类替换即咬出）。
+    python3 tools/svc_registry_check.py
     # W3-Q14：berry-emface（EM 表形状执法 + util EWMA 窗口数学纯函数面
     # ——em_shape_ok 六拒面/em_domain_from 装配不变量/极值首尾投影/
     # window_state 翻窗三态判序/ewma_fold 折叠·收敛·死区·钳位/
@@ -972,6 +982,14 @@ test-host:
     # 上被动覆盖，门禁自身坏 = 平像静默劣化。合成双段 ELF（gap 零填 + bss
     # 尾零 + 页取整 + 确定性）+ 8 拒面（elf2pe --selftest 同位纪律）。
     python3 tools/elf2flat.py --selftest
+    # W1 接线（彻底 Rust 化轨道 b 层 #8 首刀）：elf2flat Rust 件 lib 纯面
+    # 测试（双段钉板 + 8 拒面 + Rust 侧短输入面 + synth 模式重导——与
+    # Python oracle 字节级对拍见 docs/彻底Rust化计划-v1.0.md §5 五步；本刀
+    # 落位第 2/3/4 步：Rust 件 + 对拍（scratch 对拍 PASS 背书）+ 接线，
+    # 产链换轨（justfile build-user 六处 python3 → rust bin）留二刀）。
+    # 独立小工作区（tools/berry 同款形态），根 .cargo/config.toml 锁
+    # build.target=aarch64-unknown-none 故必须显式 --target {{host}}。
+    cargo test --manifest-path tools/elf2flat/Cargo.toml --target {{host}}
     # Q1 续挖（a-3 U4 纪律同款）：pwrcls 门禁自检——smoke B4 掉电相三 boot
     # 的采样断言（A/B 档分类 + Boot C 后必 clean）与毒环注入都吃本件，此前
     # 只在 smoke 产物链上被动覆盖，门禁自身坏 = 掉电相静默劣化。

@@ -14,10 +14,22 @@ name = "berry-emface"
 version = "0.2.0"
 
 [[package]]
+name = "berry-iprofile"
+version = "0.2.0"
+
+[[package]]
+name = "berry-polface"
+version = "0.2.0"
+dependencies = [
+ "berry-iprofile",
+]
+
+[[package]]
 name = "berry-power"
 version = "0.2.0"
 dependencies = [
  "berry-emface",
+ "berry-polface",
  "berry-pwproto",
 ]
 

@@ -39,6 +39,12 @@ mod status_icons;
 #[path = "wallpaper.rs"]
 mod wallpaper;
 
+/// 全量 SVG 位图库（tools/svg2icons.py 生成：Material Icons + OH
+/// sysResource + OH systemui，Apache-2.0；66×66 二值 ARGB rodata 直供，
+/// 零堆零 RPC——与 app 稠密域正交的独立 id 域）。
+#[path = "icon_data/mod.rs"]
+mod icon_data;
+
 #[cfg(not(test))]
 use alloc::boxed::Box;
 use alloc::format;
@@ -67,6 +73,55 @@ pub fn wallpaper_top_rows(rows: u32) -> (&'static [u32], u32) {
     let n = (wallpaper::WALLPAPER_W as usize) * (h as usize);
     (&wallpaper::WALLPAPER_PX[..n.min(wallpaper::WALLPAPER_PX.len())], wallpaper::WALLPAPER_W)
 }
+
+// —— 位图库 id 域（icon_data 独立稠密域；rodata 直供不占 PX_CAP 堆账） ——
+
+/// 位图库 id 域基（0xFD00..0xFD00+ICON_DATA.len()——u16 域内与 app
+/// 稠密域（0..~20）及 WALLPAPER 特例（0xFFFE）三向正交）。
+pub const BITMAP_ID_BASE: u16 = 0xFD00;
+
+/// 位图库 id 域上界钉板：域宽必须在 WALLPAPER 特例之下（编译期执法，
+/// 图标库扩容越界即炸——loud not silent）。
+const _: () = assert!(
+    BITMAP_ID_BASE as usize + icon_data::ICON_DATA.len() < WALLPAPER as usize,
+    "icon_data id 域越过 WALLPAPER 特例"
+);
+
+/// 位图名 → 位图库 id（`BITMAP_ID_BASE` 起稠密；未知名 = None）。
+/// 建树侧「位图优先、程序化内建面兜底」的查询面（desktop dock 位 /
+/// scene 状态栏位消费）。
+pub fn bitmap_id(name: &str) -> Option<u16> {
+    icon_data::ICON_DATA
+        .iter()
+        .position(|&(n, _, _, _)| n == name)
+        .map(|i| BITMAP_ID_BASE + i as u16)
+}
+
+/// 位图库域条目直查（(name, px, w, h)；域外 = None）——IconSource 供件
+/// 与 scene spec 面共用。
+pub fn bitmap_entry(id: u16) -> Option<(&'static str, &'static [u32], u32, u32)> {
+    if id < BITMAP_ID_BASE {
+        return None;
+    }
+    icon_data::ICON_DATA.get((id - BITMAP_ID_BASE) as usize).copied()
+}
+
+/// dock 四位的位图库优先名（OH sysRes 资产；缺名回退 DOCK_FACE_IDS
+/// 分段面——位图优先序在 desktop.rs 建树侧）。
+pub const DOCK_BITMAP_NAMES: [&str; 4] = [
+    "oh_ic_person_fill",
+    "oh_ohos_ic_normal_white_grid_image",
+    "oh_ohos_ic_normal_white_grid_txt",
+    "oh_ohos_ic_public_email",
+];
+
+/// 状态栏三位的位图库优先名：前两位 OH systemui 官方 signal/wifi 面；
+/// 第三位空串 = 电池走程序化 BATTERY 面（电量真值动态面，不入静态库）。
+pub const STATUS_BITMAP_NAMES: [&str; 3] = [
+    "oh_ic_statusbar_signal_full",
+    "oh_ic_statusbar_wifi_full",
+    "",
+];
 
 /// 内建状态/dock 图标 id（建树侧直建 Icon 节点；位于 app 图标稠密域
 /// 前缀——app 稠密 id 实从 13 起（finish_entry 按 faces.len() 赋号），
@@ -607,6 +662,9 @@ impl IconSource for ShellIcons {
         if id == WALLPAPER {
             return Some(WALLPAPER_DIM);
         }
+        if let Some((_, _, w, h)) = bitmap_entry(id) {
+            return Some((w, h));
+        }
         let f = faces().get(id as usize)?;
         Some((f.w, f.h))
     }
@@ -614,6 +672,9 @@ impl IconSource for ShellIcons {
     fn pixels(&self, id: u16) -> Option<&[u32]> {
         if id == WALLPAPER {
             return Some(&wallpaper::WALLPAPER_PX);
+        }
+        if let Some((_, px, _, _)) = bitmap_entry(id) {
+            return Some(px);
         }
         let f = faces().get(id as usize)?;
         Some(&f.px)
