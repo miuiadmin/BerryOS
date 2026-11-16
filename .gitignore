@@ -134,3 +134,4 @@ smoke-wt-*/
 # W3 lane 隔离构建缓存目录（#208/#216 判例：.target-* 构建产物不入库；
 # base 重写反复剥落本规则，随刀补回）
 /.target-*/
+.plugins/
