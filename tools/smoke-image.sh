@@ -633,7 +633,7 @@ RX_FIFO=""
 
 fail7() {
   echo "smoke-image: FAIL: $1" >&2
-  echo "---- 串口日志尾部（$LOG7）----" >&2
+  echo "---- 串口日志尾部（${LOG7}）----" >&2
   tail -40 "$LOG7" >&2
   echo "--------------------------------" >&2
   exit 1
@@ -649,13 +649,13 @@ run_boot7() {
   LOG7=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-image7-${tag}.XXXXXX")
   RUN_DIR7=$(mktemp -d "${TMPDIR:-/tmp}/berryos-smoke-image7-${tag}.XXXXXX")
   python3 -c "import sys; sys.stdout.buffer.write(b'\xff'*(64<<20))" > "$RUN_DIR7/vars.fd" \
-    || fail7 "vars.fd 生成失败（$tag）"
+    || fail7 "vars.fd 生成失败（${tag}）"
   RX_FIFO=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-image7-fifo.XXXXXX")
   rm -f "$RX_FIFO"
-  mkfifo "$RX_FIFO" || fail7 "mkfifo 失败（$tag）"
+  mkfifo "$RX_FIFO" || fail7 "mkfifo 失败（${tag}）"
   ( sleep $((deadline + 120)) ) > "$RX_FIFO" &
   RX_HOLDER=$!
-  echo "smoke-image: 阶段 8 boot（$tag）启动（$*）"
+  echo "smoke-image: 阶段 8 boot（${tag}）启动（$*）"
   "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic \
     -pflash "$AAVMF_CODE" -pflash "$RUN_DIR7/vars.fd" \
     -drive if=none,file="$IMAGE",format=raw,id=bb \
@@ -675,7 +675,7 @@ run_boot7() {
     done
     [ -z "$missing" ] && break
     [ $(( $(date +%s) - t0 )) -gt "$deadline" ] \
-      && fail7 "阶段 8（$tag）标记 ${deadline}s 未到齐，缺：$missing"
+      && fail7 "阶段 8（${tag}）标记 ${deadline}s 未到齐，缺：$missing"
     sleep 1
   done
   kill "$QEMU_PID" 2>/dev/null
@@ -692,7 +692,7 @@ run_boot7() {
     rm -f "$LOG7"
     LOG7=""
   fi
-  echo "smoke-image: 阶段 8（$tag）${#BOOT7_MARKERS[@]}/${#BOOT7_MARKERS[@]} 标记到齐"
+  echo "smoke-image: 阶段 8（${tag}）${#BOOT7_MARKERS[@]}/${#BOOT7_MARKERS[@]} 标记到齐"
 }
 
 # boot k6-det（tiered:vrr + det）：TEST 档 admissible（165/180）+ DET 位级
