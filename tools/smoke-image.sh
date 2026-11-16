@@ -152,11 +152,12 @@ print(f"smoke-image: manifest platform_revision={level} == abi.toml level"
 PYEOF
 
 # 帽：EFI 链 + 内核全标记 V-3 实测 ~115s（TCG），360s ≈ 3x 余量（帽只兜
-# 结构性挂死，不赌快）。金丝雀在 ktest 毕即开始出现，标记到齐后通常即刻满足。
-# B-1 起 +B1 ok n=4（bench1 spawn + ~8.6k SVC ≈ +5-10s TCG）——360s 帽不动。
-# C-3 起 +PS/BC（ps + berryctl 三拉起 = 两 musl spawn + 4 RPC ≈ +10-20s
-# TCG）——360s 帽不动。
-DEADLINE_BOOT=360
+# 结构性挂死，不赌快）。金丝雀在 ktest 毕即开始出现，标记族随刀线膨胀
+# （FRZCYC/PWRDEG/FRZLOG 等深睡三族 + 满表探测环），CI 服务器 TCG ~10×
+# 本地——smoke.sh boot 帽已同判例升 900（commit 898c8b47d），本姊妹面
+# 同步：900 只兜挂死不赌快（run 43887609355 实证缺 VMO/HANDLE/POLICY/
+# ktest done 全链标记 = TCG 慢速下 360 帽内跑不完，非结构性病）。
+DEADLINE_BOOT=900
 DEADLINE_CANARY=120
 DEADLINE_RX=60
 
