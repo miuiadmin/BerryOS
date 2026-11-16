@@ -10,9 +10,13 @@
 //! `proc_tag` 的 crate 边界纪律）。
 //!
 //! **默认全关**：槽初值 quota/period = 0 = 该带不设包络——`consume` 恒
-//! false、`throttle_all` 零扫描，与接口缺席逐位等价（v1.2 §7 入场券〔v1
-//! 遥测实证 + loadgen + 尾延迟断言〕未过前 band 执法不并线；本刀 = 机制
-//! 先行，执法开关在启动配置 [`configure`]，trait 签名零改动）。
+//! false、`throttle_all` 零扫描，与接口缺席逐位等价。2026-11-16 第五刀
+//! M4 并线（R4 语义审计链 1 补刀）：执法经 `class.rs::FairBand` 四 API
+//! 包装进热路径——带参数（quantum/latency_target）**懒武装**（首消费时
+//! configure，见 `FairBand::arm`）；显式 configure（启动配置/ktest 手驱）
+//! 优先，已武装槽不覆写。生产消费点 = `FairBand::tick`（consume→
+//! throttle_all）+ `sched::tick` 入口扫 `class::band_period_sweep`
+//! （period_check→unthrottle_all——带全限流时的翻期兜底）。
 //!
 //! **SMP 安全账面**（v1.3 §5 预研建议③ / `调度器SMP部署设计-v1.0.md` §3
 //! 「SMP band 计账」）：热路径两热字——consumed/deadline——自 S6-k 单核

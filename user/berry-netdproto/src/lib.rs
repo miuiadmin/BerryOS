@@ -31,8 +31,9 @@
 //!   约定）；应答 `[st u8][addr 4B]` = [`REPLY_LEN`] 5 B（恰长，尾随拒）
 //! - TCP 三 op（T-d，`docs/TCP栈设计草案.md` §8）：OPEN `[op][port u16 LE]`
 //!   3B（port 0 拒）/ ROUNDTRIP `[op][dlen u8][data]` = 2+dlen（dlen ∈
-//!   1..=[`TCP_DATA_MAX`] = berry-tcp MSS 通告值——对端遵守我方通告，回显
-//!   单段不超帽）/ CLOSE `[op]` 1B；应答按形状分两形：**1B `[st]`**（OPEN/
+//!   1..=[`TCP_DATA_MAX`] = RPC 单 op 载荷帽——inline 通道几何定值，与
+//!   berry-tcp MSS 解耦：op 载荷可拆多段在途（分段归 vnet/berry-tcp），
+//!   回显严格等长但可多段）/ CLOSE `[op]` 1B；应答按形状分两形：**1B `[st]`**（OPEN/
 //!   CLOSE 应答 + 一切非 OK 错误应答）与 **`[st][dlen][data]`**（仅
 //!   ROUNDTRIP 成功，回传服务端**真实收到的字节**——对拍归 client，驱动不
 //!   知道期望答案，DNS「addr 该是多少归 svcmgr」同款分工）。单会话独占：
@@ -82,9 +83,24 @@ pub const ST_BUSY: u8 = 3;
 /// 服务面足够且请求帧 2+64=66B ≪ inline 帽 256B 的安全子集。
 pub const NAME_MAX: usize = 64;
 
-/// TCP 单段数据帽（字节）= berry-tcp MSS 通告值（对端遵守我方通告，回显
-/// 单段不超帽）。
-pub const TCP_DATA_MAX: usize = 128;
+/// 通道 inline 帽镜像（kernel chanface `CHAN_MSG_MAX` 单源同值——本库零依赖
+/// 不可 import kernel 侧，镜像值 + 下方断言族机器钉：后续抬 `TCP_DATA_MAX`
+/// 先过通道几何，真源抬值时镜像同批改（ksproto 断言族先例同款）。
+pub const CHAN_MSG_MAX: usize = 256;
+
+/// TCP 单 op 载荷帽（字节，二刀 128→250）——inline 通道几何定值：会话形请求
+/// `[op][dlen][data][sid u32]` = 6+dlen ≤ [`CHAN_MSG_MAX`] ⇒ dlen ≤ 250 恰满
+/// 域。与 berry-tcp MSS 解耦：op 载荷在 TCP 层可拆多段在途（分段归
+/// vnet/berry-tcp 发送面），回显严格等长（可多段）。
+pub const TCP_DATA_MAX: usize = 250;
+
+// inline 几何断言族（二刀 P2 机器钉）：一切帧形 ≤ 通道帽——会话形请求
+// [op][dlen][data][sid u32] = 6+TCP_DATA_MAX ≤ CHAN_MSG_MAX（恰满式）；
+// 请求/应答帽符号派生自动跟随。超帽即编译期炸响（A-4 const assert 同族）。
+const _: () = assert!(6 + TCP_DATA_MAX <= CHAN_MSG_MAX);
+const _: () = assert!(REQ_LEN_MAX <= CHAN_MSG_MAX);
+const _: () = assert!(TCP_REP_MAX <= CHAN_MSG_MAX);
+const _: () = assert!(REQ_S_LEN_MAX <= CHAN_MSG_MAX);
 
 /// 请求线上长度上界（DNS 2+NAME_MAX 与 TCP ROUNDTRIP 2+TCP_DATA_MAX 取大）。
 pub const REQ_LEN_MAX: usize = 2 + TCP_DATA_MAX;
@@ -921,7 +937,7 @@ mod tests {
         );
     }
 
-    /// dlen 帽：恰 128 收 / 0 拒 / 129 拒（编码/解析两侧对称）。
+    /// dlen 帽：恰 TCP_DATA_MAX 收 / 0 拒 / +1 拒（编码/解析两侧对称）。
     #[test]
     fn tcp_dlen_cap_boundaries() {
         let full = [7u8; TCP_DATA_MAX];
@@ -940,6 +956,24 @@ mod tests {
         );
         assert_eq!(encode_tcp_request(&mut out, TcpReq::Roundtrip { data: b"" }), None);
         assert_eq!(parse_tcp_request(&[OP_TCP_ROUNDTRIP, 0]), None);
+    }
+
+    /// 二刀几何钉：dlen=250 会话形恰满 CHAN_MSG_MAX（[op][dlen][250B]
+    /// [sid u32] = 256）编解码往返；dlen=251 编码拒/解析拒（越帽）。
+    #[test]
+    fn tcp_s_dlen_250_fills_inline_cap() {
+        let full = [5u8; TCP_DATA_MAX];
+        assert_eq!(full.len(), 250);
+        let mut out = [0u8; REQ_S_LEN_MAX];
+        let n = encode_tcp_s_request(&mut out, TcpSReq::Roundtrip { data: &full }, 7).unwrap();
+        assert_eq!(n, CHAN_MSG_MAX); // 会话形恰满：2+250+4=256
+        assert_eq!(
+            parse_tcp_s_request(&out[..n]),
+            Some((TcpSReq::Roundtrip { data: &full[..] }, 7))
+        );
+        let over = [5u8; TCP_DATA_MAX + 1];
+        assert_eq!(encode_tcp_s_request(&mut out, TcpSReq::Roundtrip { data: &over }, 7), None);
+        assert_eq!(parse_tcp_s_request(&[OP_TCP_ROUNDTRIP, 251]), None); // dlen 越帽
     }
 
     /// TCP 请求 out 不足/空 out：None 不截断（含 Close 的 1B 面）。

@@ -226,7 +226,8 @@ pub fn shot(args: ShotArgs) -> Result<()> {
     if args.json {
         println!(
             "{}",
-            json!({"v":1,"t":"shot.start","run":run.path(),"image":image,"profile":profile.id})
+            json!({"v":1,"t":"shot.start","run":run.path(),"image":image,"profile":profile.id,
+                   "data_disk": qemu::data_disk_plan(&profile.id).map(|p| p.display().to_string())})
         );
     }
     let mut child = qemu::spawn_image(
@@ -909,9 +910,11 @@ pub fn device_start(args: DeviceStartArgs) -> Result<()> {
     // note from the CLI process itself, before the flags go anywhere.
     vnc_cfg::maybe_security_note(args.vnc_spec.as_deref());
     let json_out = args.json;
+    let profile_id = args.profile.clone();
     let (run, pid) = device_start_run(args)?;
     if json_out {
-        println!("{}", json!({"v":1,"t":"device.start","run":run,"pid":pid}));
+        println!("{}", json!({"v":1,"t":"device.start","run":run,"pid":pid,
+               "data_disk": qemu::data_disk_plan(&profile_id).map(|p| p.display().to_string())}));
     } else {
         println!("device: {}", run.display());
     }
@@ -1167,6 +1170,28 @@ fn print_cleanup_line(run: &str, kept: Option<bool>) {
 /// index.jsonl 的第一个读方（四轮审计挂账收敛）：从尾向头找该 run id
 /// 最近一条 run.end 行取其 kept 值；文件缺席/无匹配行/字段缺席容错
 /// None（索引容忍不全——宿主崩溃必漏 end 行，枚举以扫目录兜底）。
+/// berry 进程探活（cleanup 守卫内核，五轮后抽纯函数可测）：`/bin/kill -0`
+/// 同 uid 下进程在 = exit 0（macOS 无 /proc 的可移植形态）。pid 0 一律死
+/// （meta 缺/坏的残目录语义）。
+pub(crate) fn berry_pid_alive(berry_pid: u64) -> bool {
+    #[cfg(unix)]
+    {
+        berry_pid != 0
+            && std::process::Command::new("kill")
+                .arg("-0")
+                .arg(berry_pid.to_string())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
 fn read_end_kept(run_id: &str) -> Option<bool> {
     let idx = run_dir::home().join("run").join("index.jsonl");
     let text = std::fs::read_to_string(idx).ok()?;
@@ -1210,16 +1235,7 @@ fn cleanup_one(run: &Path) -> Result<(u64, Option<bool>)> {
     let berry_pid = meta.get("pid").and_then(|v| v.as_u64()).unwrap_or(0);
     #[cfg(unix)]
     {
-        let alive = berry_pid != 0
-            && std::process::Command::new("kill")
-                .arg("-0")
-                .arg(berry_pid.to_string())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-        if alive {
+        if berry_pid_alive(berry_pid) {
             return Err(BerryError::device(format!(
                 "run {} belongs to a live berry session (pid {berry_pid}); stop it before cleanup",
                 run.display()
@@ -2012,9 +2028,26 @@ pub fn vnc_web(
                 open_hint(open_browser(&url));
             }
             std::io::stdout().flush().ok();
+            // 输入拦截器装配（2026-11-16）：run 有 qmp.sock 即启用；客机几何按
+            // meta 的 profile 取渲染尺寸（QMP abs 值域 0..32767 需要缩放分母）。
+            let qmp_inject = run.join("qmp-inject.sock");
+            let qmp_sock = if qmp_inject.exists() { qmp_inject } else { run.join("qmp.sock") };
+            let (gw, gh) = std::fs::read(run.join("meta.json"))
+                .ok()
+                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+                .and_then(|m| {
+                    m.get("profile")
+                        .and_then(|p| p.as_str())
+                        .and_then(|id| crate::profile::get(id).ok())
+                        .map(|pr| (pr.render_w, pr.render_h))
+                })
+                .unwrap_or((1, 1));
             let upstream = crate::web::LanUpstream {
                 dial: vnc_cfg::addr_host(dial, ws_port),
                 tls: upstream_tls,
+                qmp_sock: qmp_sock.exists().then_some(qmp_sock),
+                guest_w: gw,
+                guest_h: gh,
             };
             return crate::web::serve(
                 &root,
@@ -2374,7 +2407,10 @@ pub(crate) fn find_run(id: Option<&str>) -> Result<PathBuf> {
                 .metadata()
                 .and_then(|m| m.modified())
                 .unwrap_or(std::time::UNIX_EPOCH);
-            let has_vnc = vnc_endpoint(&p).is_ok();
+            // 五轮挂账收敛：残留 sock 探活——QEMU 退出后 unix sock 文件
+            // 残留但 connect 拒，死 run 不再进 best_vnc 候选（TCP 端口形态
+            // 不预探——会占连接；维持端点文件判定）。
+            let has_vnc = vnc_endpoint(&p).is_ok() && vnc_reachable(&p);
             if has_vnc && best_vnc.as_ref().is_none_or(|(bt, _)| t > *bt) {
                 best_vnc = Some((t, p.clone()));
             }
@@ -2401,6 +2437,28 @@ pub(crate) fn find_run(id: Option<&str>) -> Result<PathBuf> {
             BerryError::env("no run directory found")
                 .with_hint("start one with `berry shell` / `berry run`")
         })
+}
+
+/// unix sock 探活：connect 预探（QEMU 在 = 握手成；死后残留文件 = 拒连）。
+pub(crate) fn vnc_reachable(run: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        let sock = run.join("vnc.sock");
+        if sock.exists() {
+            // 六轮 F1 副作用缓解：QEMU VNC 监听 backlog=1——探活 connect+close
+            // 占 accept 队列的 <0.5ms 窗内本连接自身可能吃 ECONNREFUSED
+            //（背靠背实测 29/40）——refused 时延时 2ms 重试一次再判死，防
+            // 活 run 被瞬时误滤。副作用注记：探活会让 QEMU 发一对
+            // vnc.connected/disconnected 事件进 events.jsonl（accept 即发，
+            // 无真会话对应）——消费侧知悉即可。
+            return std::os::unix::net::UnixStream::connect(&sock).is_ok()
+                || {
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                    std::os::unix::net::UnixStream::connect(&sock).is_ok()
+                };
+        }
+    }
+    true
 }
 
 pub(crate) fn vnc_endpoint(run: &Path) -> Result<Endpoint> {
@@ -2497,27 +2555,32 @@ mod find_run_tests {
     use super::*;
     use std::time::{Duration, SystemTime};
 
-    /// 造一个 run 候选目录：meta.json 在 = 合法候选；vnc.sock 在 = vnc 级
-    /// 候选；mtime 钉到 base+off 秒（目录 mtime 是排序键，set_modified
-    /// 免真实时间流逝的偶发）。
+    /// 造一个 run 候选目录：meta.json 在 = 合法候选；vnc 桌 = 真监听 unix
+    /// socket（六轮审计 F1 实抓：普通文件假 sock 被 vnc_reachable 的
+    /// connect 预探判 ENOTSOCK → vnc 级候选永远选不出、断言必败且 panic
+    /// 泄漏 BERRY_HOME 连环污染 env 测试）；mtime 钉到 base+off 秒（目录
+    /// mtime 是排序键，set_modified 免真实时间流逝的偶发）。返回 (目录,
+    /// listener)——listener 须持有到断言后（drop 即 socket 消失）。
     fn mk_run(
         root: &Path,
         name: &str,
         off: u64,
         meta: bool,
         vnc: bool,
-    ) -> PathBuf {
+    ) -> (PathBuf, Option<std::os::unix::net::UnixListener>) {
         let d = root.join(name);
         std::fs::create_dir_all(&d).unwrap();
         if meta {
             std::fs::write(d.join("meta.json"), "{}").unwrap();
         }
+        let mut listener = None;
         if vnc {
-            std::fs::write(d.join("vnc.sock"), "").unwrap();
+            let l = std::os::unix::net::UnixListener::bind(d.join("vnc.sock")).unwrap();
+            listener = Some(l);
         }
         let t = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000 + off);
         std::fs::File::open(&d).unwrap().set_modified(t).unwrap();
-        d
+        (d, listener)
     }
 
     fn tmp_home(tag: &str) -> PathBuf {
@@ -2533,8 +2596,8 @@ mod find_run_tests {
         let _g = crate::run_dir::ENV_LOCK.lock().unwrap();
         let tmp = tmp_home("vnc-wins");
         let root = tmp.join("run");
-        let older_vnc = mk_run(&root, "100-a", 100, true, true);
-        let _newer = mk_run(&root, "200-b", 200, true, false);
+        let (older_vnc, _l) = mk_run(&root, "100-a", 100, true, true);
+        let (_newer, _nl) = mk_run(&root, "200-b", 200, true, false);
         assert_eq!(find_run(None).unwrap(), older_vnc);
         std::env::remove_var("BERRY_HOME");
         let _ = std::fs::remove_dir_all(&tmp);
@@ -2545,8 +2608,8 @@ mod find_run_tests {
         let _g = crate::run_dir::ENV_LOCK.lock().unwrap();
         let tmp = tmp_home("fallback");
         let root = tmp.join("run");
-        let _older = mk_run(&root, "100-a", 100, true, false);
-        let newer = mk_run(&root, "200-b", 200, true, false);
+        let (_older, _ol) = mk_run(&root, "100-a", 100, true, false);
+        let (newer, _nl) = mk_run(&root, "200-b", 200, true, false);
         assert_eq!(find_run(None).unwrap(), newer);
         std::env::remove_var("BERRY_HOME");
         let _ = std::fs::remove_dir_all(&tmp);
@@ -2557,9 +2620,9 @@ mod find_run_tests {
         let _g = crate::run_dir::ENV_LOCK.lock().unwrap();
         let tmp = tmp_home("no-meta");
         let root = tmp.join("run");
-        let older = mk_run(&root, "100-a", 100, true, false);
+        let (older, _ol) = mk_run(&root, "100-a", 100, true, false);
         // 更新的目录无 meta.json（残目录）：被滤，不夺回落位。
-        let _newest_nometa = mk_run(&root, "300-c", 300, false, false);
+        let (_newest_nometa, _nnl) = mk_run(&root, "300-c", 300, false, false);
         assert_eq!(find_run(None).unwrap(), older);
         std::env::remove_var("BERRY_HOME");
         let _ = std::fs::remove_dir_all(&tmp);
@@ -2571,6 +2634,62 @@ mod find_run_tests {
         let tmp = tmp_home("empty");
         assert!(find_run(None).is_err());
         std::env::remove_var("BERRY_HOME");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
+
+// ---- 五轮后收敛批：cleanup 探活内核的纯函数护栏。----
+#[cfg(test)]
+mod berry_alive_tests {
+    use super::berry_pid_alive;
+
+    #[test]
+    fn pid_zero_is_dead() {
+        // meta 缺/坏的残目录语义：pid 0 一律死（可清）。
+        assert!(!berry_pid_alive(0));
+    }
+
+    #[test]
+    fn live_and_dead_process() {
+        // unix：起 sleep 子进程当活 pid；杀掉收尸后当死 pid。
+        #[cfg(unix)]
+        {
+            use std::process::{Command, Stdio};
+            let mut child = Command::new("sleep")
+                .arg("30")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn sleep");
+            let pid = child.id() as u64;
+            assert!(berry_pid_alive(pid), "活子进程应判活");
+            child.kill().expect("kill");
+            child.wait().expect("wait");
+            assert!(!berry_pid_alive(pid), "已收尸子进程应判死");
+        }
+    }
+}
+
+// ---- 六轮审计 F1 收敛：vnc_reachable 探活的纯文件系统三例。----
+#[cfg(test)]
+mod vnc_reachable_tests {
+    use super::*;
+
+    #[test]
+    fn live_socket_true_dead_file_false_absent_true() {
+        let tmp = std::env::temp_dir().join(format!("berry-vncreach-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // 无 vnc.sock：TCP 形态语义——不预探，恒 true。
+        assert!(vnc_reachable(&tmp));
+        // 活 listener：connect 握手成 → true。
+        let _l = std::os::unix::net::UnixListener::bind(tmp.join("vnc.sock")).unwrap();
+        assert!(vnc_reachable(&tmp));
+        // 死残留（普通文件冒充）：connect 得 ENOTSOCK → false。
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("vnc.sock"), "").unwrap();
+        assert!(!vnc_reachable(&tmp));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

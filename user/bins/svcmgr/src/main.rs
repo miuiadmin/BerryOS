@@ -1108,18 +1108,23 @@ fn run_rootfs_child(console: Handle) {
     // ---- CP-08 闭合：PM 双服务（berry-power/berry-thermal）预拉起——vnet
     // 后（10 号 §2.5 几何阻断解除后的消费端 arm：D3 帽 128→160KiB + pager
     // 钉位 0x1E000→0x28000 扩容刀让出的 .bss 面）。bin 形态 = 起机自检后
-    // park 常驻（berry-power dry-run 诊断行自打走 stdout；berry-thermal
-    // 过检静默——真实通道/帽/票/发布位全留窗，berry-power main.rs 窗表）
-    // ⇒ 拉起零行为变化（不写任何帽/票/发布位；park 10s 睡环零产出）。
-    // spawn 形态照 simbattery 先例（musl std 档 8 页栈 + demand 路
-    // force_eager=false）；通道端点 gift 随分端执法刀立法（窗 1/2 注）
-    // ⇒ extras 空、stdin /dev/null 语义（vprobe 同款 None/None）。失败
-    // 隔离 = eco_skip 可见降级不阻 boot（vblk 同款）；常驻不 reap。**不
-    // 入 ps 账本**：psproto NAME_MAX=8 装不下全名（berry-power=11B）且
-    // PS_MAX=18 GUI 形恰容零余量——账本/通道面归分端执法刀（thr 先例：
-    // PS ok n= 零漂移）；拉起成功观测行走 eco_note（`eco: VER ok` 同族
-    // 非标记）。cpio 缺席（裸跑档/裁剪镜像）= 静默跳过零扰动（主走查
-    // 未知名算术跳过，a-1 先例）。
+    // park 常驻（berry-power dry-run + policy4 诊断行自打走 stdout；
+    // berry-thermal 过检静默——真实通道/帽/票/发布位全留窗，berry-power
+    // main.rs 窗表）⇒ 拉起零行为变化（不写任何帽/票/发布位；park 10s 睡
+    // 环零产出）。spawn 形态照 simbattery 先例（musl std 档 8 页栈 +
+    // demand 路 force_eager=false）；**POLICY4 刀（v3 四动作激活）：berry
+    // -power 改递 stdin（空喂+EOF——vblk/vnet 同款 `Some(&[])` 形态）**：
+    // 唯一目的 = 触发 berry-exec 自描述对条件装配（stdin 在位 → gift[2]
+    // = 自身 Process handle〔MANAGE|DUPLICATE〕）——berry-power 0x83
+    // policy_bind 四动作提交的授权面（15 号 EAS-PA 刀留窗①前半落位；
+    // 自持 handle 过 MANAGE 门，bsh 子进程同款权利形态非新权类）。服
+    // 务本体不读 stdin（EOF 滞队无害）。berry-thermal 维持 None（无策略
+    // 注入面）。失败隔离 = eco_skip 可见降级不阻 boot（vblk 同款）；常驻
+    // 不 reap。**不入 ps 账本**：psproto NAME_MAX=8 装不下全名
+    // （berry-power=11B）且 PS_MAX=18 GUI 形恰容零余量——账本/通道面归
+    // 分端执法刀（thr 先例：PS ok n= 零漂移）；拉起成功观测行走 eco_note
+    // （`eco: VER ok` 同族非标记）。cpio 缺席（裸跑档/裁剪镜像）= 静默跳
+    // 过零扰动（主走查未知名算术跳过，a-1 先例）。
     if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/berry-power") {
         match spawn_rootfs_elf(
             H_ROOTFS,
@@ -1129,7 +1134,9 @@ fn run_rootfs_child(console: Handle) {
                 data_len,
                 stdout: console,
                 stack_pages: 8, // musl std 档（SpawnSpec 注；simbattery 同款）
-                stdin_feed: None, // /dev/null 语义（服务不读 stdin——vprobe 同款）
+                // POLICY4：空喂+EOF——不为喂数据，为触发 gift[2] 自描述
+                // 对装配（policy_bind MANAGE 授权面，上方段注）。
+                stdin_feed: Some(&[]),
                 stdin_handle: None,
                 args: &[],
                 extra_gifts: &[], // 通道端点随分端执法刀（窗 1/2 注）

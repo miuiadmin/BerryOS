@@ -83,6 +83,8 @@ enum Cmd {
     Vnc(VncCmd),
     /// Print version.
     Version,
+    /// 打印 home() 根路径（recipe/脚本消费——justfile 侧消除 home() 逻辑复制）。
+    Home,
 }
 
 #[derive(Parser, Debug)]
@@ -866,6 +868,12 @@ fn dispatch(cli: Cli) -> Result<()> {
         },
         Some(Cmd::Version) => {
             commands::version(cli.json);
+            Ok(())
+        }
+        Some(Cmd::Home) => {
+            // 单源出口：run 目录/数据盘/vars 持久位的根（BERRY_HOME 覆写
+            // 与 Windows LOCALAPPDATA 分支只活在这里——justfile 勿再复制）。
+            println!("{}", berry::run_dir::home().display());
             Ok(())
         }
         None => {

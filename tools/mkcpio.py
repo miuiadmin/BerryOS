@@ -753,6 +753,21 @@ def main() -> int:
     print(f"mkcpio: {out_path} {len(blob)}B x{len(parsed)} 条目")
     print(f"mkcpio: .berryver {berryver.decode()}")
     if split_mib is not None:
+        # P3 治理（2026-11-16 跨分卷评估）：产卷 Σ 超装载总帽时产链 loud
+        # ——超帽此前绕道内核端 vol_admit 拒（ROOTFS vmo=none 间接症状/裸
+        # 跑静默降级），产链口 = 离因果最近的 fail-loud 位。总帽 128MiB 的
+        # 单源在内核 berry_rootface（vol_admit）——Python 侧字面量注释指
+        # 认（双写纪律：改帽必两处同批；跨语言零机械对拍为已知取舍——漂移
+        # 双向有下游兜底：Python 松→内核 vol_admit 拒→ROOTFS vmo=none→
+        # smoke 门红；Python 紧→构建红。rootface 测试已接 just test-host）
+        TOTAL_CAP_MIB = 128  # = kernel berry_rootface ROOTFS_TOTAL_MAX
+        if len(blob) > TOTAL_CAP_MIB * 1024 * 1024:
+            n_over = (len(blob) + split_mib * 1024 * 1024 - 1) // (split_mib * 1024 * 1024)
+            sys.stderr.write(
+                f"mkcpio: FAIL: 归档 {len(blob)}B 超装载总帽 {TOTAL_CAP_MIB}MiB"
+                f"（将产 {n_over} 卷——内核 vol_admit 必拒、ROOTFS vmo=none；"
+                f"消费端帽单源见 berry_rootface）\n")
+            return 1
         # 单档照常落盘（既有消费面零扰动）；编号卷旁路产出（A1 §3.3——
         # 卷帽 = 单卷暂存缓冲帽，§3.1 单卷 32MiB 帽同口径的消费端铺垫）。
         vol_bytes = split_mib * 1024 * 1024

@@ -72,13 +72,16 @@ static CRT0_SEED: unsafe extern "C" fn() = berry_libc::berry_crt0_anchor;
 /// 队列深（vblk 同档：2 的幂、整环落一页；QEMU virtio-net QueueNumMax
 /// 远大于此）。
 const QSIZE: u16 = 16;
-/// rx 缓冲数（= qsize：每缓冲一描述符整收一帧）。
-const RX_BUFS: usize = 16;
-/// rx 缓冲幅：12B net 头 + ≤244B 帧（T-c TCP 扩容：帧开销 66（vnet_hdr
-/// + eth + IP + TCP 头）+ MSS 128 = 194 上限 + 选项余量；16×256 = 4096
-/// 恰满 RX_BUF_PAGE 单页——DMA 四页排布零重排，「rx 单描述符整收」几何
-/// 结论不变）。消费侧 tcp.rs const assert 机器钉住（T-c ③）。
-pub(crate) const RX_BUF_SZ: usize = 256;
+/// rx 缓冲数（= 每趟可挂收帧数；1ms 轮询泵每趟清空 used + 发送面停等
+/// 128B 段，5×1600B/泵并发收帧容量非瓶颈）。
+const RX_BUFS: usize = 5;
+/// rx 缓冲幅：12B net 头 + ≤1514B 满以太帧（首刀入站大段容忍抬升
+/// 256→1600：SLIRP 不读我方 MSS/WINDOW 通告、按 MTU 拼段，对端单写
+/// >128B 即拼出 ~1500B 帧——旧 256B 在 DMA 收帧 len 检查即丢 = 入站
+/// 黑洞第一道闸，NET-01 §3.3 三例实证）。5×1600=8000 ≤ RX_BUF_PAGE
+/// 8192——「rx 缓冲带单页内、单描述符整收一帧」几何结论保持（旧
+/// 16×256=4096 排布退役）。消费侧 tcp.rs const assert 机器钉住。
+pub(crate) const RX_BUF_SZ: usize = 1600;
 /// DMA VMO 几何：页 0 rx ring / 页 1 tx ring / 页 2 rx 缓冲带 / 页 3 tx
 /// 缓冲（各结构单页内——desc 地址域不跨页，vblk 同前提）。
 const DMA_LEN: u64 = 16384;
@@ -141,9 +144,11 @@ static mut TXRING: [u8; 4096] = [0; 4096];
 /// used 环设备拥有）。
 static mut RXSTAGE: [u8; 4096] = [0; 4096];
 /// 帧暂存尺寸常量（静态数组与 tcp.rs 消费侧 const assert 同源——T-c ③）。
-pub(crate) const IOB_SZ: usize = 512;
-/// 帧暂存（tx 组 12B 头 + 帧 / rx 收帧；512 ≥ 12+186——TCP 段最大帧 =
-/// eth 14 + IP 20 + 段 152（头 20 + MSS 选项 4 + 载荷 128））。
+/// 首刀与 RX_BUF_SZ 同步抬升 512→1600：rx 收帧整帧读入（recv_frame 的
+/// vmo_read len ≤ RX_BUF_SZ 必须装下，tcp.rs const assert 钉住）；tx 面
+/// 最大 12+186B 远低此线。收发共用一张 IOB（单线程独占窗纪律）。
+pub(crate) const IOB_SZ: usize = 1600;
+/// 帧暂存（tx 组 12B 头 + 帧 / rx 收帧——rx 整帧读入须 ≥ RX_BUF_SZ）。
 static mut IOB: [u8; IOB_SZ] = [0; IOB_SZ];
 
 /// DMA VMO + 双环几何（vblk Dma 同形扩双队列）。
@@ -505,7 +510,7 @@ fn refill_rx(d: &mut Dma, regs: *mut u32, id: u16) {
 fn tx_send(d: &Dma, regs: *mut u32, frame_len: usize) {
     // SAFETY: 单线程独占窗（同 vblk 惯例）。
     let ring: &mut [u8; 4096] = unsafe { &mut *core::ptr::addr_of_mut!(TXRING) };
-    let iob: &mut [u8; 512] = unsafe { &mut *core::ptr::addr_of_mut!(IOB) };
+    let iob: &mut [u8; crate::IOB_SZ] = unsafe { &mut *core::ptr::addr_of_mut!(IOB) };
     let total = vio::NET_HDR_SZ + frame_len;
     if total > iob.len() {
         println!("vnet: tx 帧超幅 {}B", total);
@@ -591,7 +596,7 @@ fn recv_frame(d: &mut Dma, regs: *mut u32, deadline: u64) -> Option<&'static [u8
                 trap();
             }
             // SAFETY: 帧读入静态 IOB 后经 'static 视图返出（即用即弃）。
-            let iob: &mut [u8; 512] = unsafe { &mut *core::ptr::addr_of_mut!(IOB) };
+            let iob: &mut [u8; crate::IOB_SZ] = unsafe { &mut *core::ptr::addr_of_mut!(IOB) };
             if berry_vmo_read(
                 d.vmo,
                 iob.as_mut_ptr(),
@@ -604,7 +609,7 @@ fn recv_frame(d: &mut Dma, regs: *mut u32, deadline: u64) -> Option<&'static [u8
             d.rx_harvested = d.rx_harvested.wrapping_add(1);
             // id 已过 < RX_BUFS 界检——u32→u16 收窄安全。
             refill_rx(d, regs, id as u16);
-            let iob: &[u8; 512] = unsafe { &*core::ptr::addr_of!(IOB) };
+            let iob: &[u8; crate::IOB_SZ] = unsafe { &*core::ptr::addr_of!(IOB) };
             return Some(&iob[vio::NET_HDR_SZ..len as usize]);
         }
         let mut now = now();
@@ -626,9 +631,9 @@ fn recv_frame(d: &mut Dma, regs: *mut u32, deadline: u64) -> Option<&'static [u8
 fn arp_roundtrip(d: &mut Dma, regs: *mut u32, mac: &[u8; 6]) -> [u8; 6] {
     {
         // SAFETY: 单线程独占窗。
-        let iob: &mut [u8; 512] = unsafe { &mut *core::ptr::addr_of_mut!(IOB) };
+        let iob: &mut [u8; crate::IOB_SZ] = unsafe { &mut *core::ptr::addr_of_mut!(IOB) };
         if np::encode_eth(&mut iob[vio::NET_HDR_SZ..], &BROADCAST_MAC, mac, np::ET_ARP).is_none() {
-            trap(); // 42B 帧恒在 512 内；防御面
+            trap(); // 42B 帧恒在 IOB_SZ 内；防御面
         }
         if np::encode_arp(
             &mut iob[vio::NET_HDR_SZ + np::ETH_HDR_SZ..],
@@ -680,7 +685,7 @@ fn icmp_roundtrip(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) 
     }
     {
         // SAFETY: 单线程独占窗。
-        let iob: &mut [u8; 512] = unsafe { &mut *core::ptr::addr_of_mut!(IOB) };
+        let iob: &mut [u8; crate::IOB_SZ] = unsafe { &mut *core::ptr::addr_of_mut!(IOB) };
         if np::encode_eth(&mut iob[vio::NET_HDR_SZ..], gw_mac, mac, np::ET_IPV4).is_none() {
             trap();
         }
@@ -770,7 +775,7 @@ fn dns_roundtrip(
     }
     {
         // SAFETY: 单线程独占窗。
-        let iob: &mut [u8; 512] = unsafe { &mut *core::ptr::addr_of_mut!(IOB) };
+        let iob: &mut [u8; crate::IOB_SZ] = unsafe { &mut *core::ptr::addr_of_mut!(IOB) };
         if np::encode_eth(&mut iob[vio::NET_HDR_SZ..], gw_mac, mac, np::ET_IPV4).is_none() {
             return DnsRes::Bad;
         }
@@ -846,7 +851,8 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
     }
     let mut msg = [0u8; 256];
     // 一只缓冲两面按 op 出长度：DNS 应答 5B 前缀 / TCP ROUNDTRIP 应答
-    // [st][dlen][data≤128] = TCP_REP_MAX 130B。
+    // [st][dlen][data≤TCP_DATA_MAX] = TCP_REP_MAX 252B（二刀 250 抬升后
+    // 符号派生自动跟随；msg 256 = CHAN_MSG_MAX 通道帽恰容会话形 256）。
     let mut rep = [0u8; ndp::TCP_REP_MAX];
     let mut hs = [0 as Handle; 6]; // 随行收口容量 = CHAN_HND_MAX（T-1 4→6；协议 0/富余丢弃）
     // TCP 单会话独占（草案 §8）：None = 无会话；OPEN 建 / CLOSE 弃——
@@ -1175,10 +1181,10 @@ fn tcp_op(
             };
             match s2.roundtrip(d, regs, mac, gw_mac, table, data, rt, now() + TCPS_RT_CAP_NS) {
                 tcp::RtRes::Ok(n) => (ndp::ST_OK, n),
-                // Timeout 会话保命——但 in-flight 占位未清：后续 ROUNDTRIP
-                // 恒 ST_BAD（berry-tcp send 门控 inflight=Some 即拒；迟到
-                // ACK 躺 rx 环无人收割——serve 循环 op 之外不驱动会话），
-                // 唯 CLOSE 可收口（shutdown 的 FIN 覆盖单槽 + step 真收帧）。
+                // Timeout 会话保命——但在途环占用未清：后续 ROUNDTRIP
+                // 恒 ST_BAD（roundtrip 入口在途环先验即拒；迟到 ACK 躺
+                // rx 环无人收割——serve 循环 op 之外不驱动会话），唯
+                // CLOSE 可收口（shutdown 的 FIN 排队尾 + 队头重发清偿）。
                 tcp::RtRes::Timeout => (ndp::ST_TIMEOUT, 0),
                 tcp::RtRes::Bad => (ndp::ST_BAD, 0),
             }
