@@ -593,6 +593,47 @@ fn scaffold_bottom_slot_pins_product_geometry_and_rejects_zero() {
         Err(UiError::NodeBad)
     );
 
+    // Edge-to-edge color continuity: safe reserves are painted with app chrome
+    // while interactive AppBar/body/bottom content remains inset.
+    {
+        let mut edge = Scaffold::with_back_bottom_safe(
+            &mut ui,
+            root,
+            &context,
+            b"Edge",
+            103,
+            104,
+            bottom_h,
+            117,
+            108,
+        )
+        .unwrap();
+        let _ = edge;
+        ui.layout();
+        let mut scratch = Vec::new();
+        let mut encoder = CommandEncoder::new();
+        ui.paint(&mut scratch, &mut encoder);
+        let display = encoder.finish();
+        let stride = 1080 * 4;
+        let mut frame = vec![0u8; stride * 1920];
+        let desc = TextureDesc::new(1080, 1920, stride, TextureFormat::Rgbx).unwrap();
+        let pass = PassDescriptor::clear(0, 0, 0);
+        Queue::new().submit(&display, &mut frame, &desc, &pass).unwrap();
+        let pixel = |x: usize, y: usize| {
+            let off = y * stride + x * 4;
+            (frame[off + 2], frame[off + 1], frame[off])
+        };
+        let surface = (
+            context.theme.colors.surface.r,
+            context.theme.colors.surface.g,
+            context.theme.colors.surface.b,
+        );
+        assert_eq!(pixel(540, 0), surface, "camera cutout extension");
+        assert_eq!(pixel(540, 180), surface, "AppBar chrome");
+        assert_eq!(pixel(540, 1815), surface, "bottom slot chrome");
+        assert_eq!(pixel(540, 1919), surface, "navigation inset extension");
+    }
+
     // Oversized insets saturate to zero instead of panicking or underflowing.
     let mut compact = Ui::<32>::new(800, 600);
     let compact_context = ctx(800, 600);

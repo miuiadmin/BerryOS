@@ -206,19 +206,13 @@ impl Scaffold {
             },
         )?;
         if safe_top != 0 {
+            // Edge-to-edge inset extension: the app bar color continues under
+            // the camera/status cutout while all interactive AppBar content
+            // remains below `safe_top`.
             add(
                 ui,
                 root,
-                ViewSpec {
-                    kind: ViewKind::Col,
-                    key: 0,
-                    props: Props::Col(ColProps {
-                        gap: 0,
-                        w: None,
-                        h: Some(safe_top),
-                        cross: CrossAlign::Stretch,
-                    }),
-                },
+                panel_spec(ctx.theme.colors.surface, None, Some(safe_top), 0, 0, 0),
             )?;
         }
         let app_bar = if large {
@@ -266,19 +260,14 @@ impl Scaffold {
             None => None,
         };
         if safe_bottom != 0 {
+            // The app's bottom chrome color continues beneath the transparent
+            // navigation overlay. Interactive body/bottom content stays above
+            // this reserve, so three-button or floating-bar layouts remain
+            // lifted by the authoritative safe inset.
             add(
                 ui,
                 root,
-                ViewSpec {
-                    kind: ViewKind::Col,
-                    key: 0,
-                    props: Props::Col(ColProps {
-                        gap: 0,
-                        w: None,
-                        h: Some(safe_bottom),
-                        cross: CrossAlign::Stretch,
-                    }),
-                },
+                panel_spec(ctx.theme.colors.surface, None, Some(safe_bottom), 0, 0, 0),
             )?;
         }
         Ok(Self { root, app_bar, body, bottom, body_h })

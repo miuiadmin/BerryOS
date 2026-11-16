@@ -1,6 +1,7 @@
 Type: standard
 Version: 1.14.0
-Status: current
+Status: superseded
+Superseded-by: [BerryUI-TriPlatformControls-v1.15.md](BerryUI-TriPlatformControls-v1.15.md)
 Updated: 2026-11-16
 
 # BerryUI 三方共性控件、浮层、P1 基础件与AOSP导航资产

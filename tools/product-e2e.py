@@ -410,6 +410,7 @@ def run_recents(rig: ProductRig) -> None:
     progress_h, desktop_h, app_h, recents_h, selected_h = histograms
     desktop_status = rig.region_hist(desktop, 0, 0, WIDTH, 117)
     desktop_nav = rig.region_hist(desktop, 0, HEIGHT - 108, WIDTH, 108)
+    app_status = rig.region_hist(app, 0, 0, WIDTH, 117)
     app_nav = rig.region_hist(app, 0, HEIGHT - 108, WIDTH, 108)
     text = rig.text()
     checks = {
@@ -421,11 +422,12 @@ def run_recents(rig: ProductRig) -> None:
         and recents_h[(36, 44, 54)] > 100_000,
         "selected_restored": sum(selected_h.values()) > 0
         and selected_h[(0, 0, 0)] < 1_000_000,
-        "android_status_overlay": desktop_status[(255, 255, 255)] > 5_000
-        and sum(desktop_status.values()) > 100_000,
-        "android_nav_overlay": 15_000 < desktop_nav[(255, 255, 255)] < 25_000
-        and 15_000 < app_nav[(255, 255, 255)] < 25_000
-        and desktop_nav[(0, 0, 0)] < 20_000,
+        "transparent_status_overlay": 6_000 < desktop_status[(27, 37, 64)] < 8_000
+        and 6_000 < app_status[(27, 37, 64)] < 8_000,
+        "floating_nav_overlay": 15_000 < desktop_nav[(27, 37, 64)] < 22_000
+        and 15_000 < app_nav[(27, 37, 64)] < 22_000
+        and desktop_nav[(0, 0, 0)] < 1_000
+        and app_nav[(255, 255, 255)] > 90_000,
         "edge_to_edge_app": "WMAPPFRAME ok owner=2 immersive=0" in text,
         "software_ltpo": "VGPULTPO ok hz=60" in text
         and "VGPULTPO ok hz=1" in text

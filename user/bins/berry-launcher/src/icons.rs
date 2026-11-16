@@ -529,6 +529,9 @@ fn horiz_rgb565(
 const OVERLAY_MAX_W: usize = 1920;
 const STATUS_CLOCK: &[u8] = b"12:00";
 
+/// High-contrast system glyph tint for both light app chrome and wallpaper.
+const SYSTEM_INK: u32 = 0x1B2540;
+
 fn blit_argb(
     row: &mut [u32], x0: usize, y0: usize, w: usize, h: usize, face: &[u32],
 ) {
@@ -545,9 +548,9 @@ fn blit_argb(
             let x = x0 + x;
             let Some(dst) = row.get_mut(x) else { continue };
             let inv = 255 - sa;
-            let sr = u32::from((src >> 16) & 0xFF);
-            let sg = u32::from((src >> 8) & 0xFF);
-            let sb = u32::from(src & 0xFF);
+            let sr = (SYSTEM_INK >> 16) & 0xFF;
+            let sg = (SYSTEM_INK >> 8) & 0xFF;
+            let sb = SYSTEM_INK & 0xFF;
             let dr = u32::from((*dst >> 16) & 0xFF);
             let dg = u32::from((*dst >> 8) & 0xFF);
             let db = u32::from(*dst & 0xFF);
@@ -568,9 +571,6 @@ pub fn write_system_status_overlay(vmo: Handle, w: u32, h: u32) -> bool {
         return false;
     }
     let mut row = [0u32; OVERLAY_MAX_W];
-    for value in row.iter_mut().take(w) {
-        *value = 0x6600_0000;
-    }
     if h >= 45 {
         let y = (h - 45) / 2;
         blit_argb(&mut row, 72, y, status_icons::SIGNAL_W as usize, status_icons::SIGNAL_H as usize, &status_icons::SIGNAL_PX);
@@ -598,7 +598,7 @@ pub fn write_system_status_overlay(vmo: Handle, w: u32, h: u32) -> bool {
                     }
                     let old = row[x];
                     let a = u32::from(alpha).max(u32::from((old >> 24) & 0xFF));
-                    row[x] = (a << 24) | 0xFFFF_FF;
+                    row[x] = (a << 24) | SYSTEM_INK;
                 }
             }
         }
@@ -620,9 +620,6 @@ pub fn write_system_navigation_overlay(vmo: Handle, w: u32, h: u32) -> bool {
         return false;
     }
     let mut row = [0u32; OVERLAY_MAX_W];
-    for value in row.iter_mut().take(w) {
-        *value = 0xD800_0000;
-    }
     if h >= 80 {
         for (id, x0) in [
             (NAV_ICON_BACK, 144usize),

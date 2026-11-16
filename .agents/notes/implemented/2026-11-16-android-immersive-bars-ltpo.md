@@ -56,12 +56,16 @@ QEMU 硬上界仍为 60Hz。真实 SUBMIT 立即升档并重排远期低频 slot
 
 ## Consequences
 
+> 2026-11-16 追记：本笔记的 alpha scrim 是第一版过渡方案，已被
+> [透明悬浮系统栏与Safe区色延伸](2026-11-16-transparent-floating-system-bars.md)
+> 修正。现行两栏背景 alpha=0，Scaffold 负责 safe区应用色延伸。
+
 Product e2e recents 现在断言：
 
 - `WMSYSOVERLAY` 两个真实系统栏源。
 - 普通 BerryDemo `WMAPPFRAME immersive=0`，即 edge-to-edge 但非沉浸隐藏。
 - 桌面状态/导航与 APP 导航的 AOSP 白色 glyph 像素区间。
-- 桌面导航背景非纯黑，证明 scrim 透明。
+- 桌面导航无系统黑块，三键直接悬浮在壁纸/应用底色上。
 - `VGPULTPO` 真实出现 60、30、1Hz。
 
 Photos explicit immersive、HOME/BACK 恢复、TASK 全屏 Recents 和 frame-cache replay 均保持。LTPO 真实硬件 mode-set、状态栏实时 RTC/电量/网络真值仍后置。

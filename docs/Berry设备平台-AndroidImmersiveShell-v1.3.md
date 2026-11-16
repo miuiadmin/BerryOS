@@ -1,6 +1,7 @@
 Type: standard
 Version: 1.3.0
-Status: current
+Status: superseded
+Superseded-by: [Berry设备平台-TransparentFloatingShell-v1.4.md](Berry设备平台-TransparentFloatingShell-v1.4.md)
 Updated: 2026-11-16
 
 # Berry 设备平台-AndroidImmersiveShell-v1.3：Edge-to-Edge 系统栏与三大金刚
