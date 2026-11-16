@@ -151,6 +151,13 @@ pub struct Conn {
     /// 对端通告窗口记账（二刀发送窗消费）：握手及此后一切携 ACK 段更新；
     /// send 门控「在途 + 新段 ≤ snd_wnd」——零窗停发，窗更新 ACK 解锁。
     pub snd_wnd: u16,
+    /// 窗新鲜度左沿（F72 护栏，RFC793 SND.WL1/SND.WL2）：最近一次采纳的
+    /// 窗更新所据段序号——`seg.seq` 更新（或相等且 `seg.ack` 不旧于 wl2）
+    /// 才覆写 `snd_wnd`，迟到/乱序段不回缩窗。SLIRP 恒 65535 域为理论面，
+    /// 护栏廉价保持（多 op 在途 ACK 面扩大顺带收口）。
+    pub snd_wl1: u32,
+    /// 窗新鲜度右沿（F72，同上——`seg.ack` 侧）。
+    pub snd_wl2: u32,
     /// 在途环（定槽 FIFO，环头 = 最老未确认段）。
     tx: [Option<TxSlot>; TX_SLOTS],
     tx_head: usize,
@@ -212,6 +219,8 @@ impl Conn {
             window: WINDOW,
             peer_mss: None,
             snd_wnd: WINDOW,
+            snd_wl1: 0,
+            snd_wl2: 0,
             tx: [None; TX_SLOTS],
             tx_head: 0,
             tx_len: 0,
@@ -234,6 +243,8 @@ impl Conn {
             window: WINDOW,
             peer_mss: None,
             snd_wnd: WINDOW,
+            snd_wl1: 0,
+            snd_wl2: 0,
             tx: [None; TX_SLOTS],
             tx_head: 0,
             tx_len: 0,
@@ -258,6 +269,8 @@ impl Conn {
             window: WINDOW,
             peer_mss: syn.mss,
             snd_wnd: syn.window, // 握手消费对端窗（SYN 面通告；第三步 ACK 再刷新）
+            snd_wl1: syn.seq, // F72 基线：SYN 无 ACK 位，wl2 = 0（此后携 ACK 段按护栏推进）
+            snd_wl2: 0,
             tx: [None; TX_SLOTS],
             tx_head: 0,
             tx_len: 0,
@@ -386,7 +399,9 @@ impl Conn {
         {
             self.snd_una = self.snd_iss.wrapping_add(1);
             self.rcv_nxt = seg.seq.wrapping_add(1);
-            self.snd_wnd = seg.window; // 握手消费对端窗（二刀发送窗消费）
+            self.snd_wnd = seg.window; // 握手消费对端窗（二刀发送窗消费；F72 基线同立）
+            self.snd_wl1 = seg.seq;
+            self.snd_wl2 = seg.ack;
             if let Some(m) = seg.mss {
                 self.peer_mss = Some(m);
             }
@@ -425,29 +440,46 @@ impl Conn {
         let mut deliver: Option<&[u8]> = None;
         let mut ack_out = false;
 
-        // ① ACK：snd_una 单调推进（序号域远离回绕，max 即够）——有任何覆盖
-        //    进度即退避归零；snd_wnd 记账（一切携 ACK 段，窗更新语义）；ACK
-        //    覆盖段尾的槽从环头弹出（跨段覆盖一次弹多头；straddling 段保槽
-        //    整段重发）。
+        // ① ACK（四刀 P13 域上界 + P72 新鲜度护栏）：SEG.ACK ≤ SND.NXT
+        //    违约（幻 ACK 越 snd_nxt）整段 ① 拒——不推进 snd_una、不弹槽、
+        //    不采纳窗（RFC793 不可接受 ACK 面；幻 ACK 弹未发槽/spuriously
+        //    推进的已知限制收口，多 op 在途放大该面）。合法域内：有任何
+        //    覆盖进度即退避归零；窗更新过 F72 护栏（seg.seq 更新，或相等
+        //    且 seg.ack 不旧于 wl2——迟到/乱序段不回缩窗）；ACK 覆盖段尾
+        //    的槽从环头弹出（跨段覆盖一次弹多头；straddling 段保槽整段重发）。
         if seg.flags.ack {
-            if seg.ack > self.snd_una {
-                self.snd_una = seg.ack;
-                self.rto_backoff = 0;
-            }
-            self.snd_wnd = seg.window;
-            while self.tx_len > 0 {
-                let covered = match self.tx[self.tx_head] {
-                    Some(TxSlot::Syn) => seg.ack >= self.snd_iss.wrapping_add(1),
-                    Some(TxSlot::Data { seq, len }) => seg.ack >= seq.wrapping_add(len),
-                    Some(TxSlot::Fin { seq }) => seg.ack >= seq.wrapping_add(1),
-                    None => false,
-                };
-                if !covered {
-                    break; // 环头 straddling：保槽（部分 ACK）
+            let ack_le_nxt = self.snd_nxt.wrapping_sub(seg.ack) < 0x8000_0000;
+            if ack_le_nxt {
+                if seg.ack != self.snd_una
+                    && seg.ack.wrapping_sub(self.snd_una) < 0x8000_0000
+                {
+                    self.snd_una = seg.ack;
+                    self.rto_backoff = 0;
                 }
-                self.tx[self.tx_head] = None;
-                self.tx_head = (self.tx_head + 1) % TX_SLOTS;
-                self.tx_len -= 1;
+                // RFC793 序号比较：d ∈ (0, 2^31) = seg.seq 严格更新。
+                let d = seg.seq.wrapping_sub(self.snd_wl1);
+                let seq_newer = d != 0 && d < 0x8000_0000;
+                let seq_eq = d == 0;
+                let ack_ge_wl2 = seg.ack.wrapping_sub(self.snd_wl2) < 0x8000_0000;
+                if seq_newer || (seq_eq && ack_ge_wl2) {
+                    self.snd_wnd = seg.window;
+                    self.snd_wl1 = seg.seq;
+                    self.snd_wl2 = seg.ack;
+                }
+                while self.tx_len > 0 {
+                    let covered = match self.tx[self.tx_head] {
+                        Some(TxSlot::Syn) => seg.ack >= self.snd_iss.wrapping_add(1),
+                        Some(TxSlot::Data { seq, len }) => seg.ack >= seq.wrapping_add(len),
+                        Some(TxSlot::Fin { seq }) => seg.ack >= seq.wrapping_add(1),
+                        None => false,
+                    };
+                    if !covered {
+                        break; // 环头 straddling：保槽（部分 ACK）
+                    }
+                    self.tx[self.tx_head] = None;
+                    self.tx_head = (self.tx_head + 1) % TX_SLOTS;
+                    self.tx_len -= 1;
+                }
             }
         }
 

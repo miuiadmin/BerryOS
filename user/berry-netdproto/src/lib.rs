@@ -44,6 +44,11 @@
 //!   尾随）；新 op LISTEN/ACCEPT/POLL 无 v1 形各自恰长执法；应答 sid 形
 //!   `[st][sid u32 LE]` 与 poll 形 `[st][flags u8][rbytes u16 LE]` 仅新 op
 //!   使用（Open/Roundtrip/Close 会话化应答复用 v1 两形）。
+//! - RT 请求序号形（四刀流水线）：session-0 ROUNDTRIP 请求/应答各增 +1B
+//!   尾随 seq u8 旁路形（[`encode_rt_seq_request`]；应答经
+//!   [`encode_tcp_reply`]/[`parse_tcp_reply`] 的 seq 出参）——K 窗流水线的
+//!   迟到/错配应答配对面；载荷域纯净（seq 字节不进回显流）。窗深
+//!   [`RT_PIPE_K`] 双侧共源；无 seq 请求恒无 seq 应答（旧消费者零漂移）。
 //!
 //! **应答烘焙线不变量**：未知 st 拒；DNS 面**非 OK 状态必须携带全零 addr**、
 //! TCP 面**非 OK 状态必须不携 data**（编码/解析两侧对称执法——线上不存在
@@ -97,16 +102,35 @@ pub const TCP_DATA_MAX: usize = 250;
 // inline 几何断言族（二刀 P2 机器钉）：一切帧形 ≤ 通道帽——会话形请求
 // [op][dlen][data][sid u32] = 6+TCP_DATA_MAX ≤ CHAN_MSG_MAX（恰满式）；
 // 请求/应答帽符号派生自动跟随。超帽即编译期炸响（A-4 const assert 同族）。
+// 四刀 P1 扩族：RT seq 形请求 [op][dlen][data][seq u8] = 3+TCP_DATA_MAX 与
+// seq 形应答 TCP_REP_MAX+1 同帽钉（两钉）。
 const _: () = assert!(6 + TCP_DATA_MAX <= CHAN_MSG_MAX);
 const _: () = assert!(REQ_LEN_MAX <= CHAN_MSG_MAX);
 const _: () = assert!(TCP_REP_MAX <= CHAN_MSG_MAX);
 const _: () = assert!(REQ_S_LEN_MAX <= CHAN_MSG_MAX);
+const _: () = assert!(RT_SEQ_REQ_MAX <= CHAN_MSG_MAX);
+const _: () = assert!(TCP_REP_MAX + 1 <= CHAN_MSG_MAX);
 
 /// 请求线上长度上界（DNS 2+NAME_MAX 与 TCP ROUNDTRIP 2+TCP_DATA_MAX 取大）。
 pub const REQ_LEN_MAX: usize = 2 + TCP_DATA_MAX;
 
 /// TCP 应答线上长度上界（`[st][dlen][TCP_DATA_MAX]`）。
 pub const TCP_REP_MAX: usize = 2 + TCP_DATA_MAX;
+
+/// session-0 RT 请求 seq 形线上长度上界（四刀 P1：`[op][dlen][data][seq u8]`
+/// = 3+TCP_DATA_MAX = 253 ≤ CHAN_MSG_MAX）。尾随 seq 形与尾随 session 形
+/// 同族旁路：载荷域纯净（回显流不掺配对字节——echo 逐字节契约不破）。
+pub const RT_SEQ_REQ_MAX: usize = 3 + TCP_DATA_MAX;
+
+/// RT seq 形应答线上长度上界（`[st][dlen][data][seq]` 同 3+TCP_DATA_MAX；
+/// 2B `[st][seq]` 形结构性更短——vnet serve 应答缓冲取本值）。
+pub const RT_SEQ_REP_MAX: usize = 3 + TCP_DATA_MAX;
+
+/// RT 流水线窗深（四刀）：libc Client 臂 K 窗与 vnet session-0 挂起 op 队列
+/// 的共源几何定值——K=2 恰满 berry-tcp 在途环（2×TCP_DATA_MAX=500 ≤
+/// TX_SLOTS×MSS=512，vnet tcp.rs 消费侧 const assert 机器钉）；回绕距
+/// u8 全域 256 ≫ K 无歧义。双侧（libc TCP_PIPE_K / vnet RT_K）必同值。
+pub const RT_PIPE_K: usize = 2;
 
 /// 应答线上长度。
 pub const REPLY_LEN: usize = 5;
@@ -208,11 +232,16 @@ pub enum TcpReq<'a> {
 }
 
 /// TCP 应答（解析产物；data 借用原缓冲——回显真实字节，对拍归 client）。
+/// 四刀 P1 扩 `seq` 出参：session-0 RT 的 seq 形应答携原请求尾随 seq
+/// （`[st][seq]` 2B / `[st][dlen][data][seq]` 3+dlen）——无 seq 请求 →
+/// 无 seq 应答（v1 两形零漂移，旧消费者永不见 seq 形）。
 #[derive(Debug, PartialEq, Eq)]
 pub struct TcpReply<'a> {
     pub st: u8,
     /// 仅 ROUNDTRIP 成功非空；OPEN/CLOSE 应答与一切非 OK 应答恒空。
     pub data: &'a [u8],
+    /// seq 形应答的请求配对号（v1 两形恒 None）。
+    pub seq: Option<u8>,
 }
 
 /// TCP 面 st 合法域（含 [`ST_BUSY`]；DNS 面编码器不收 BUSY——无会话语义）。
@@ -289,43 +318,54 @@ pub fn parse_tcp_request(buf: &[u8]) -> Option<TcpReq<'_>> {
 }
 
 /// 编码 TCP 应答。形状按携数据与否分两形：空 data（OPEN/CLOSE 应答 + 一切
-/// 非 OK）= 1B `[st]`；携 data（仅 OK）= `[st][dlen][data]`。烘焙线不变量：
-/// 未知 st → None；**非 OK 状态携 data → None**（与 DNS addr 烘焙线同族——
-/// 线上不存在「超时了但带回显」的歧义形态）；data 越帽 / out 太短 → None。
-pub fn encode_tcp_reply(out: &mut [u8], st: u8, data: &[u8]) -> Option<usize> {
+/// 非 OK）= 1B `[st]`；携 data（仅 OK）= `[st][dlen][data]`。四刀 P1 扩
+/// `seq` 形（session-0 RT 应答专属）：`[st][seq]` 2B / `[st][dlen][data][seq]`
+/// ——ST_BUSY 背压应答必携原 seq（客户端同 seq 退避重发）；v1 消费者传
+/// `None` 走 v1 两形。烘焙线不变量：未知 st → None；**非 OK 状态携 data →
+/// None**（与 DNS addr 烘焙线同族——线上不存在「超时了但带回显」的歧义
+/// 形态）；data 越帽 / out 太短 → None。
+pub fn encode_tcp_reply(out: &mut [u8], st: u8, data: &[u8], seq: Option<u8>) -> Option<usize> {
     if !tcp_st_known(st) {
         return None;
     }
     if st != ST_OK && !data.is_empty() {
         return None;
     }
+    if st == ST_OK && data.is_empty() && seq.is_some() {
+        return None; // OK 空数据（DRAIN 零收成）恒 v1 1B 形——seq 2B 形域外
+    }
     if data.is_empty() {
-        let m = out.get_mut(..1)?;
+        let n = if seq.is_some() { 2 } else { 1 };
+        let m = out.get_mut(..n)?;
         m[0] = st;
-        Some(1)
+        if let Some(s) = seq {
+            m[1] = s;
+        }
+        Some(n)
     } else {
         if data.len() > TCP_DATA_MAX {
             return None;
         }
-        let total = 2 + data.len();
+        let total = 2 + data.len() + usize::from(seq.is_some());
         let m = out.get_mut(..total)?;
         m[0] = st;
         m[1] = data.len() as u8;
-        m[2..].copy_from_slice(data);
+        m[2..2 + data.len()].copy_from_slice(data);
+        if let Some(s) = seq {
+            m[2 + data.len()] = s;
+        }
         Some(total)
     }
 }
 
-/// 解析 TCP 应答：1B `[st]` 形（一切 st）或 `[st][dlen][data]` 形（仅 OK——
-/// 非 OK 携 data = 烘焙线违约拒）；dlen 0（2B 形非法）/ 越帽 / 与 buf 长度
-/// 不符 / 未知 st → None。
-pub fn parse_tcp_reply(buf: &[u8]) -> Option<TcpReply<'_>> {
+/// v1 两形解析（seq 形消解的基座：1B `[st]` 或 2+dlen 恰长）。
+fn parse_tcp_reply_v1(buf: &[u8]) -> Option<TcpReply<'_>> {
     let st = *buf.first()?;
     if !tcp_st_known(st) {
         return None;
     }
     if buf.len() == 1 {
-        return Some(TcpReply { st, data: &[] });
+        return Some(TcpReply { st, data: &[], seq: None });
     }
     let dlen = *buf.get(1)? as usize;
     if dlen == 0 || dlen > TCP_DATA_MAX {
@@ -337,7 +377,45 @@ pub fn parse_tcp_reply(buf: &[u8]) -> Option<TcpReply<'_>> {
     if st != ST_OK {
         return None; // 烘焙线：非 OK 恒不携 data
     }
-    Some(TcpReply { st, data: buf.get(2..)? })
+    Some(TcpReply { st, data: buf.get(2..)?, seq: None })
+}
+
+/// 解析 TCP 应答：v1 两形（1B `[st]` / `[st][dlen][data]` 仅 OK）优先恰长，
+/// 再试 +1 尾随 seq 形（`[st][seq]` / `[st][dlen][data][seq]`——session 尾随
+/// 先例同款；长度歧义结构上不存在：两形 dlen 同字节权威，v1 需 2+dlen、
+/// seq 形需 3+dlen 恒不相等，2B 形的 v1 读法 dlen=0 恒拒）；烘焙线（非 OK
+/// 携 data 拒 / dlen 0 或越帽 / 与 buf 长度不符 / 未知 st）双形共执法。
+pub fn parse_tcp_reply(buf: &[u8]) -> Option<TcpReply<'_>> {
+    if let Some(r) = parse_tcp_reply_v1(buf) {
+        return Some(r);
+    }
+    if buf.len() < 2 {
+        return parse_tcp_reply_v1(buf); // 1B/空：v1 面执法定夺（含 None）
+    }
+    let seq = *buf.last()?;
+    let r = parse_tcp_reply_v1(&buf[..buf.len() - 1]).map(|r| TcpReply { seq: Some(seq), ..r })?;
+    if r.st == ST_OK && r.data.is_empty() {
+        return None; // OK 空数据恒 v1 1B 形（与编码侧对称——2B seq 形域外）
+    }
+    Some(r)
+}
+
+/// 编码 session-0 RT 请求 seq 形（四刀 P1，libc K 窗专用）：
+/// `[op][dlen][data][seq u8]` = 3+dlen ≤ [`RT_SEQ_REQ_MAX`]。尾随 seq 与
+/// 尾随 session 互斥（命名 RT 携 seq = 3+dlen+4 = 257 > CHAN_MSG_MAX 几何
+/// 阻死——无此 API 面，互操作矩阵单测钉）。None 契约：data 空/越帽 /
+/// out 太短。
+pub fn encode_rt_seq_request(out: &mut [u8], data: &[u8], seq: u8) -> Option<usize> {
+    if data.is_empty() || data.len() > TCP_DATA_MAX {
+        return None;
+    }
+    let total = 3 + data.len();
+    let m = out.get_mut(..total)?;
+    m[0] = OP_TCP_ROUNDTRIP;
+    m[1] = data.len() as u8;
+    m[2..2 + data.len()].copy_from_slice(data);
+    m[2 + data.len()] = seq;
+    Some(total)
 }
 
 // ---------- TCP 会话化面（A2-2 段①：协议层）----------
@@ -513,12 +591,16 @@ fn append_session(out: &mut [u8], base: usize, session: u32) -> Option<usize> {
 
 /// 解析会话化请求：v1 恰长形 → session 0（v1 解析器原样复用）；+4B 尾随
 /// 形 → 尾随 sid ∈ 1..=MAX（0 = 野值——该用 v1 形；越帽 = 野值）+ 去尾
-/// 后 v1 解析必须过。新 op 各自恰长执法（同 v1 面全部尾随/截断拒）。
-pub fn parse_tcp_s_request(buf: &[u8]) -> Option<(TcpSReq<'_>, u32)> {
+/// 后 v1 解析必须过。四刀 P1 扩第三形：ROUNDTRIP 的 +1B 尾随 seq 形
+/// （session-0 专属——`[op][dlen][data][seq u8]`，出参 `Some(seq)`；命名
+/// 会话形永不携 seq，257 > CHAN_MSG_MAX 几何阻死）。三形消解序 = v1 恰长
+/// → −4B sid → −1B seq（同字节 dlen 权威，结构上互斥无歧义——单测钉板）。
+/// 新 op 各自恰长执法（同 v1 面全部尾随/截断拒）。
+pub fn parse_tcp_s_request(buf: &[u8]) -> Option<(TcpSReq<'_>, u32, Option<u8>)> {
     match *buf.first()? {
-        OP_TCP_OPEN | OP_TCP_ROUNDTRIP | OP_TCP_CLOSE => {
+        OP_TCP_OPEN | OP_TCP_CLOSE => {
             if let Some(r) = parse_tcp_request(buf) {
-                return Some((r.into(), 0)); // v1 恰长形
+                return Some((r.into(), 0, None)); // v1 恰长形
             }
             let n = buf.len().checked_sub(4)?;
             let sid = u32::from_le_bytes(buf.get(n..)?.try_into().ok()?);
@@ -526,7 +608,31 @@ pub fn parse_tcp_s_request(buf: &[u8]) -> Option<(TcpSReq<'_>, u32)> {
                 return None; // 尾随 sid 野值
             }
             let r = parse_tcp_request(buf.get(..n)?)?;
-            Some((r.into(), sid))
+            Some((r.into(), sid, None))
+        }
+        OP_TCP_ROUNDTRIP => {
+            if let Some(r) = parse_tcp_request(buf) {
+                return Some((r.into(), 0, None)); // v1 恰长形
+            }
+            // −4B 尾随 sid 形（命名会话）：前缀解析失败**落到** seq 形——用户
+            // 数据可构造「尾 4B 恰似合法 sid」的 seq 形帧，`?` 早退会误吞。
+            if buf.len() >= 4 {
+                if let Some(t) = buf.get(buf.len() - 4..) {
+                    if let Ok(b) = <[u8; 4]>::try_from(t) {
+                        let sid = u32::from_le_bytes(b);
+                        if sid != 0 && sid <= TCP_SESSIONS_MAX {
+                            if let Some(r) = buf.get(..buf.len() - 4).and_then(parse_tcp_request) {
+                                return Some((r.into(), sid, None));
+                            }
+                        }
+                    }
+                }
+            }
+            // −1B 尾随 seq 形（session-0 专属）。
+            let seq = *buf.last()?;
+            let body = buf.get(..buf.len().checked_sub(1)?)?;
+            let r = parse_tcp_request(body)?;
+            Some((r.into(), 0, Some(seq)))
         }
         OP_TCP_LISTEN => {
             if buf.len() != 3 {
@@ -536,7 +642,7 @@ pub fn parse_tcp_s_request(buf: &[u8]) -> Option<(TcpSReq<'_>, u32)> {
             if port == 0 {
                 return None;
             }
-            Some((TcpSReq::Listen { port }, 0))
+            Some((TcpSReq::Listen { port }, 0, None))
         }
         OP_TCP_ACCEPT => {
             if buf.len() != 5 {
@@ -546,11 +652,11 @@ pub fn parse_tcp_s_request(buf: &[u8]) -> Option<(TcpSReq<'_>, u32)> {
             if sid == 0 || sid > TCP_SESSIONS_MAX {
                 return None;
             }
-            Some((TcpSReq::Accept, sid))
+            Some((TcpSReq::Accept, sid, None))
         }
         OP_TCP_POLL => {
             if buf.len() == 1 {
-                return Some((TcpSReq::Poll, 0)); // 默认会话
+                return Some((TcpSReq::Poll, 0, None)); // 默认会话
             }
             if buf.len() != 5 {
                 return None;
@@ -559,7 +665,7 @@ pub fn parse_tcp_s_request(buf: &[u8]) -> Option<(TcpSReq<'_>, u32)> {
             if sid == 0 || sid > TCP_SESSIONS_MAX {
                 return None;
             }
-            Some((TcpSReq::Poll, sid))
+            Some((TcpSReq::Poll, sid, None))
         }
         OP_TCP_DRAIN => {
             if buf.len() != 5 {
@@ -569,7 +675,7 @@ pub fn parse_tcp_s_request(buf: &[u8]) -> Option<(TcpSReq<'_>, u32)> {
             if sid == 0 || sid > TCP_SESSIONS_MAX {
                 return None;
             }
-            Some((TcpSReq::Drain, sid))
+            Some((TcpSReq::Drain, sid, None))
         }
         _ => None,
     }
@@ -969,7 +1075,7 @@ mod tests {
         assert_eq!(n, CHAN_MSG_MAX); // 会话形恰满：2+250+4=256
         assert_eq!(
             parse_tcp_s_request(&out[..n]),
-            Some((TcpSReq::Roundtrip { data: &full[..] }, 7))
+            Some((TcpSReq::Roundtrip { data: &full[..] }, 7, None))
         );
         let over = [5u8; TCP_DATA_MAX + 1];
         assert_eq!(encode_tcp_s_request(&mut out, TcpSReq::Roundtrip { data: &over }, 7), None);
@@ -995,11 +1101,11 @@ mod tests {
     #[test]
     fn tcp_reply_wire_pinned() {
         let mut out = [0u8; TCP_REP_MAX];
-        let n = encode_tcp_reply(&mut out, ST_TIMEOUT, b"").unwrap();
+        let n = encode_tcp_reply(&mut out, ST_TIMEOUT, b"", None).unwrap();
         assert_eq!(&out[..n], &[ST_TIMEOUT]);
-        let n = encode_tcp_reply(&mut out, ST_BUSY, b"").unwrap();
+        let n = encode_tcp_reply(&mut out, ST_BUSY, b"", None).unwrap();
         assert_eq!(&out[..n], &[ST_BUSY]);
-        let n = encode_tcp_reply(&mut out, ST_OK, b"abc").unwrap();
+        let n = encode_tcp_reply(&mut out, ST_OK, b"abc", None).unwrap();
         assert_eq!(&out[..n], &[ST_OK, 3, b'a', b'b', b'c']);
     }
 
@@ -1008,26 +1114,26 @@ mod tests {
     #[test]
     fn tcp_reply_roundtrip() {
         let mut out = [0u8; TCP_REP_MAX];
-        let n = encode_tcp_reply(&mut out, ST_OK, b"").unwrap();
+        let n = encode_tcp_reply(&mut out, ST_OK, b"", None).unwrap();
         assert_eq!(n, 1);
-        assert_eq!(parse_tcp_reply(&out[..n]), Some(TcpReply { st: ST_OK, data: &[] }));
+        assert_eq!(parse_tcp_reply(&out[..n]), Some(TcpReply { st: ST_OK, data: &[], seq: None }));
 
-        let n = encode_tcp_reply(&mut out, ST_BUSY, b"").unwrap();
+        let n = encode_tcp_reply(&mut out, ST_BUSY, b"", None).unwrap();
         assert_eq!(n, 1);
-        assert_eq!(parse_tcp_reply(&out[..n]), Some(TcpReply { st: ST_BUSY, data: &[] }));
+        assert_eq!(parse_tcp_reply(&out[..n]), Some(TcpReply { st: ST_BUSY, data: &[], seq: None }));
 
         // A3-3：NODEV 入域（deviceless serve 对 OPEN 也答此码——B4 拓扑
         // 真值；1B 形合法、非 OK 恒不携 data 对称面）。
-        let n = encode_tcp_reply(&mut out, ST_NODEV, b"").unwrap();
+        let n = encode_tcp_reply(&mut out, ST_NODEV, b"", None).unwrap();
         assert_eq!(n, 1);
-        assert_eq!(parse_tcp_reply(&out[..n]), Some(TcpReply { st: ST_NODEV, data: &[] }));
-        assert_eq!(encode_tcp_reply(&mut out, ST_NODEV, b"x"), None);
+        assert_eq!(parse_tcp_reply(&out[..n]), Some(TcpReply { st: ST_NODEV, data: &[], seq: None }));
+        assert_eq!(encode_tcp_reply(&mut out, ST_NODEV, b"x", None), None);
 
-        let n = encode_tcp_reply(&mut out, ST_OK, b"echo!").unwrap();
+        let n = encode_tcp_reply(&mut out, ST_OK, b"echo!", None).unwrap();
         assert_eq!(n, 2 + 5);
         assert_eq!(
             parse_tcp_reply(&out[..n]),
-            Some(TcpReply { st: ST_OK, data: b"echo!" })
+            Some(TcpReply { st: ST_OK, data: b"echo!", seq: None })
         );
     }
 
@@ -1036,8 +1142,8 @@ mod tests {
     #[test]
     fn tcp_reply_non_ok_empty_data_invariant() {
         let mut out = [0u8; TCP_REP_MAX];
-        assert_eq!(encode_tcp_reply(&mut out, ST_TIMEOUT, b"x"), None);
-        assert_eq!(encode_tcp_reply(&mut out, ST_BUSY, b"x"), None);
+        assert_eq!(encode_tcp_reply(&mut out, ST_TIMEOUT, b"x", None), None);
+        assert_eq!(encode_tcp_reply(&mut out, ST_BUSY, b"x", None), None);
         assert_eq!(parse_tcp_reply(&[ST_TIMEOUT, 1, b'x']), None);
         assert_eq!(parse_tcp_reply(&[ST_BUSY, 1, b'x']), None);
     }
@@ -1048,10 +1154,10 @@ mod tests {
         assert_eq!(parse_tcp_reply(&[]), None);
         assert_eq!(parse_tcp_reply(&[ST_OK, 2, b'a']), None); // dlen 与实长不符
         assert_eq!(parse_tcp_reply(&[ST_OK, 0]), None); // dlen=0（2B 形非法）
-        assert_eq!(parse_tcp_reply(&[ST_OK, 1, b'a', 0]), None); // 尾随
+        assert_eq!(parse_tcp_reply(&[ST_OK, 1, b'a', 0, 0]), None); // 尾随（4B 的 [st][1][a][x] 自四刀起 = 合法 seq 形）
         assert_eq!(parse_tcp_reply(&[ST_OK, TCP_DATA_MAX as u8 + 1, b'a']), None); // dlen 越帽
         assert_eq!(parse_tcp_reply(&[0xFF]), None); // 未知 st
-        assert_eq!(encode_tcp_reply(&mut [0u8; 8][..], 0xFF, b""), None);
+        assert_eq!(encode_tcp_reply(&mut [0u8; 8][..], 0xFF, b"", None), None);
     }
 
     /// 应答恰满 128B 帽收 + out 不足/空 out None 不截断。
@@ -1059,19 +1165,19 @@ mod tests {
     fn tcp_reply_cap_and_out_boundaries() {
         let full = [9u8; TCP_DATA_MAX];
         let mut out = [0u8; TCP_REP_MAX];
-        let n = encode_tcp_reply(&mut out, ST_OK, &full).unwrap();
+        let n = encode_tcp_reply(&mut out, ST_OK, &full, None).unwrap();
         assert_eq!(n, TCP_REP_MAX);
         match parse_tcp_reply(&out[..n]) {
-            Some(TcpReply { st, data }) => {
+            Some(TcpReply { st, data, seq: _ }) => {
                 assert_eq!(st, ST_OK);
                 assert_eq!(data, &full[..]);
             }
             other => panic!("cap-len reply must parse: {other:?}"),
         }
         let mut small = [0u8; 3];
-        assert_eq!(encode_tcp_reply(&mut small, ST_OK, b"abcd"), None);
+        assert_eq!(encode_tcp_reply(&mut small, ST_OK, b"abcd", None), None);
         let mut empty: [u8; 0] = [];
-        assert_eq!(encode_tcp_reply(&mut empty, ST_OK, b""), None);
+        assert_eq!(encode_tcp_reply(&mut empty, ST_OK, b"", None), None);
     }
 
     /// DNS 面 st 域不含 BUSY（无会话语义——两对编码器 st 域分面钉板）。
@@ -1092,33 +1198,51 @@ mod tests {
         for sid in [0u32, 5, TCP_SESSIONS_MAX] {
             let n = encode_tcp_s_request(&mut out, TcpSReq::Open { port: 18080 }, sid).unwrap();
             assert_eq!(n, 3 + if sid == 0 { 0 } else { 4 });
-            assert_eq!(parse_tcp_s_request(&out[..n]), Some((TcpSReq::Open { port: 18080 }, sid)));
+            assert_eq!(
+            parse_tcp_s_request(&out[..n]),
+            Some((TcpSReq::Open { port: 18080 }, sid, None))
+        );
 
             let n = encode_tcp_s_request(&mut out, TcpSReq::Roundtrip { data: b"abcd" }, sid).unwrap();
             assert_eq!(n, 6 + if sid == 0 { 0 } else { 4 });
             assert_eq!(
                 parse_tcp_s_request(&out[..n]),
-                Some((TcpSReq::Roundtrip { data: b"abcd" }, sid))
+                Some((TcpSReq::Roundtrip { data: b"abcd" }, sid, None))
             );
 
             let n = encode_tcp_s_request(&mut out, TcpSReq::Close, sid).unwrap();
             assert_eq!(n, 1 + if sid == 0 { 0 } else { 4 });
-            assert_eq!(parse_tcp_s_request(&out[..n]), Some((TcpSReq::Close, sid)));
+            assert_eq!(
+            parse_tcp_s_request(&out[..n]),
+            Some((TcpSReq::Close, sid, None))
+        );
         }
         let n = encode_tcp_s_request(&mut out, TcpSReq::Listen { port: 18081 }, 0).unwrap();
         assert_eq!(n, 3);
-        assert_eq!(parse_tcp_s_request(&out[..n]), Some((TcpSReq::Listen { port: 18081 }, 0)));
+        assert_eq!(
+            parse_tcp_s_request(&out[..n]),
+            Some((TcpSReq::Listen { port: 18081 }, 0, None))
+        );
 
         let n = encode_tcp_s_request(&mut out, TcpSReq::Accept, 5).unwrap();
         assert_eq!(n, 5);
-        assert_eq!(parse_tcp_s_request(&out[..n]), Some((TcpSReq::Accept, 5)));
+        assert_eq!(
+            parse_tcp_s_request(&out[..n]),
+            Some((TcpSReq::Accept, 5, None))
+        );
 
         let n = encode_tcp_s_request(&mut out, TcpSReq::Poll, 0).unwrap();
         assert_eq!(n, 1);
-        assert_eq!(parse_tcp_s_request(&out[..n]), Some((TcpSReq::Poll, 0)));
+        assert_eq!(
+            parse_tcp_s_request(&out[..n]),
+            Some((TcpSReq::Poll, 0, None))
+        );
         let n = encode_tcp_s_request(&mut out, TcpSReq::Poll, 5).unwrap();
         assert_eq!(n, 5);
-        assert_eq!(parse_tcp_s_request(&out[..n]), Some((TcpSReq::Poll, 5)));
+        assert_eq!(
+            parse_tcp_s_request(&out[..n]),
+            Some((TcpSReq::Poll, 5, None))
+        );
     }
 
     /// **零漂移钉板**：session 0 的三 op 编码输出与 v1 编码器逐字节恒等
@@ -1210,7 +1334,10 @@ mod tests {
             encode_tcp_s_request(&mut out, TcpSReq::Listen { port: u16::MAX }, 0),
             Some(3)
         );
-        assert_eq!(parse_tcp_s_request(&[OP_TCP_LISTEN, 0xFF, 0xFF]), Some((TcpSReq::Listen { port: u16::MAX }, 0)));
+        assert_eq!(
+            parse_tcp_s_request(&[OP_TCP_LISTEN, 0xFF, 0xFF]),
+            Some((TcpSReq::Listen { port: u16::MAX }, 0, None))
+        );
         assert_eq!(encode_tcp_s_request(&mut out, TcpSReq::Listen { port: 80 }, 3), None);
         assert_eq!(parse_tcp_s_request(&[OP_TCP_LISTEN, 0x50, 0, 3, 0, 0, 0]), None);
         assert_eq!(parse_tcp_s_request(&[OP_TCP_LISTEN, 0x50]), None); // 截断
@@ -1255,7 +1382,7 @@ mod tests {
         // NODEV 不在此：A3-3 入域（deviceless serve 对 OPEN 也答此码——
         // B4 掉电相 bsh skt client 腿的确定性跳过信号，connect→ENODEV）。
         for st in [ST_EAGAIN, ST_NOSESSION, ST_FULL] {
-            assert_eq!(encode_tcp_reply(&mut out, st, b""), None);
+            assert_eq!(encode_tcp_reply(&mut out, st, b"", None), None);
             assert_eq!(parse_tcp_reply(&[st]), None);
         }
     }
@@ -1395,9 +1522,10 @@ mod tests {
         let n = encode_tcp_s_request(&mut out, TcpSReq::Roundtrip { data: &full }, TCP_SESSIONS_MAX).unwrap();
         assert_eq!(n, REQ_S_LEN_MAX);
         match parse_tcp_s_request(&out[..n]) {
-            Some((TcpSReq::Roundtrip { data }, sid)) => {
+            Some((TcpSReq::Roundtrip { data }, sid, seq)) => {
                 assert_eq!(data, &full[..]);
                 assert_eq!(sid, TCP_SESSIONS_MAX);
+                assert_eq!(seq, None);
             }
             other => panic!("cap-len sessioned roundtrip must parse: {other:?}"),
         }
@@ -1425,7 +1553,10 @@ mod tests {
         for sid in [1u32, TCP_SESSIONS_MAX] {
             let n = encode_tcp_s_request(&mut out, TcpSReq::Drain, sid).unwrap();
             assert_eq!(n, 5);
-            assert_eq!(parse_tcp_s_request(&out[..n]), Some((TcpSReq::Drain, sid)));
+            assert_eq!(
+            parse_tcp_s_request(&out[..n]),
+            Some((TcpSReq::Drain, sid, None))
+        );
         }
         // session 0 双侧拒
         assert_eq!(encode_tcp_s_request(&mut out, TcpSReq::Drain, 0), None);
@@ -1439,5 +1570,159 @@ mod tests {
         // out 不足
         let mut small = [0u8; 4];
         assert_eq!(encode_tcp_s_request(&mut small, TcpSReq::Drain, 1), None);
+    }
+
+    // ---------- RT 请求序号形（四刀 P1）----------
+
+    /// seq 形请求往返 + wire 钉板：`[op][dlen][data][seq u8]`——恰满 250B
+    /// 载荷 = RT_SEQ_REQ_MAX 253 ≤ CHAN_MSG_MAX；尾随位/端序漂移在此炸响。
+    #[test]
+    fn rt_seq_request_roundtrip_and_wire_pinned() {
+        let mut out = [0u8; RT_SEQ_REQ_MAX];
+        let n = encode_rt_seq_request(&mut out, b"xy", 7).unwrap();
+        assert_eq!(n, 3 + 2);
+        assert_eq!(&out[..n], &[OP_TCP_ROUNDTRIP, 2, b'x', b'y', 7]);
+        assert_eq!(
+            parse_tcp_s_request(&out[..n]),
+            Some((TcpSReq::Roundtrip { data: b"xy" }, 0, Some(7)))
+        );
+
+        let full = [5u8; TCP_DATA_MAX];
+        let n = encode_rt_seq_request(&mut out, &full, 0xAB).unwrap();
+        assert_eq!(n, RT_SEQ_REQ_MAX); // 3+250 = 253 恰满
+        assert_eq!(out[n - 1], 0xAB);
+        assert_eq!(
+            parse_tcp_s_request(&out[..n]),
+            Some((TcpSReq::Roundtrip { data: &full[..] }, 0, Some(0xAB)))
+        );
+
+        // None 契约：空/越帽/out 太短。
+        assert_eq!(encode_rt_seq_request(&mut out, b"", 1), None);
+        let over = [5u8; TCP_DATA_MAX + 1];
+        assert_eq!(encode_rt_seq_request(&mut out, &over, 1), None);
+        let mut small = [0u8; 3];
+        assert_eq!(encode_rt_seq_request(&mut small, b"abcd", 1), None);
+        // seq 全域滚动（0 与 255 皆合法值——回绕距 256 ≫ K）。
+        assert_eq!(encode_rt_seq_request(&mut out, b"a", 0).unwrap(), 4);
+        assert_eq!(encode_rt_seq_request(&mut out, b"a", 255).unwrap(), 4);
+    }
+
+    /// seq 形应答往返 + wire 钉板：`[st][dlen][data][seq]`（仅 OK）与
+    /// `[st][seq]` 2B 形（非 OK——ST_BUSY 背压必携原 seq）。
+    #[test]
+    fn rt_seq_reply_roundtrip_and_wire_pinned() {
+        let mut out = [0u8; TCP_REP_MAX + 1];
+        let n = encode_tcp_reply(&mut out, ST_OK, b"abc", Some(9)).unwrap();
+        assert_eq!(n, 3 + 3);
+        assert_eq!(&out[..n], &[ST_OK, 3, b'a', b'b', b'c', 9]);
+        assert_eq!(
+            parse_tcp_reply(&out[..n]),
+            Some(TcpReply { st: ST_OK, data: b"abc", seq: Some(9) })
+        );
+
+        let n = encode_tcp_reply(&mut out, ST_BUSY, b"", Some(0x5A)).unwrap();
+        assert_eq!(&out[..n], &[ST_BUSY, 0x5A]);
+        assert_eq!(
+            parse_tcp_reply(&out[..n]),
+            Some(TcpReply { st: ST_BUSY, data: &[], seq: Some(0x5A) })
+        );
+        let n = encode_tcp_reply(&mut out, ST_TIMEOUT, b"", Some(255)).unwrap();
+        assert_eq!(
+            parse_tcp_reply(&out[..n]),
+            Some(TcpReply { st: ST_TIMEOUT, data: &[], seq: Some(255) })
+        );
+
+        // 恰满：250B 回显 + seq = 253 ≤ CHAN_MSG_MAX。
+        let full = [7u8; TCP_DATA_MAX];
+        let n = encode_tcp_reply(&mut out, ST_OK, &full, Some(1)).unwrap();
+        assert_eq!(n, 3 + TCP_DATA_MAX);
+        match parse_tcp_reply(&out[..n]) {
+            Some(TcpReply { st, data, seq }) => {
+                assert_eq!(st, ST_OK);
+                assert_eq!(data, &full[..]);
+                assert_eq!(seq, Some(1));
+            }
+            other => panic!("cap-len seq reply must parse: {other:?}"),
+        }
+
+        // 烘焙线（seq 形同执法）：非 OK 携 data 拒 / OK 空数据 2B 形拒 /
+        // 未知 st 拒 / dlen 0 或越帽拒 / 尾随截断拒。
+        assert_eq!(encode_tcp_reply(&mut out, ST_TIMEOUT, b"x", Some(1)), None);
+        assert_eq!(parse_tcp_reply(&[ST_TIMEOUT, 1, b'x', 1]), None);
+        assert_eq!(encode_tcp_reply(&mut out, ST_OK, b"", Some(1)), None);
+        assert_eq!(parse_tcp_reply(&[ST_OK, 0]), None); // v1 dlen=0 与 seq 0 形双拒
+        assert_eq!(parse_tcp_reply(&[0xFF, 1]), None);
+        assert_eq!(parse_tcp_reply(&[ST_OK, 251, b'a', 1]), None);
+        assert_eq!(parse_tcp_reply(&[ST_OK, 2, b'a', 1, 0, 9]), None); // 尾随（5B 的 [st][2][a][x][y] = 合法 seq 形）
+        assert_eq!(parse_tcp_reply(&[ST_OK, 2, b'a']), None); // 截断
+        assert_eq!(parse_tcp_reply(&[]), None);
+    }
+
+    /// 三形互斥钉板（长度歧义消解）：v1 恰长 / −4B sid / −1B seq 对同一帧
+    /// 至多一形可解——同字节 dlen 权威；「尾 4B 恰似合法 sid」的 seq 形帧
+    /// （用户数据可构造）不被 sid 形误吞。
+    #[test]
+    fn rt_three_form_disambiguation() {
+        // v1 形优先：2+dlen 恰长永不落尾随形。
+        let v1 = [OP_TCP_ROUNDTRIP, 2, b'x', b'y'];
+        assert_eq!(parse_tcp_s_request(&v1), Some((TcpSReq::Roundtrip { data: b"xy" }, 0, None)));
+        assert_eq!(parse_tcp_reply(&[ST_OK, 2, b'x', b'y']), Some(TcpReply { st: ST_OK, data: b"xy", seq: None }));
+
+        // sid 形：6+dlen（dlen 同字节）与 seq 形 3+dlen 恒不相等——同帧无双解。
+        let mut f = [0u8; 10];
+        f[0] = OP_TCP_ROUNDTRIP;
+        f[1] = 4;
+        f[2..6].copy_from_slice(b"abcd");
+        f[6..10].copy_from_slice(&3u32.to_le_bytes());
+        assert_eq!(
+            parse_tcp_s_request(&f),
+            Some((TcpSReq::Roundtrip { data: b"abcd" }, 3, None))
+        );
+
+        // 「尾 4B 恰似合法 sid」的 seq 形帧：[op][4][d0..d3][seq]，其中
+        // d1..d3+seq = [k,0,0,0]（k ∈ 1..=8）——sid 形前缀解析失败必须落到
+        // seq 形（`?` 早退误吞形态的单测钉板）。
+        let mut g = [0u8; 7];
+        g[0] = OP_TCP_ROUNDTRIP;
+        g[1] = 4;
+        g[2..6].copy_from_slice(&[0xAA, 5, 0, 0]);
+        g[6] = 0;
+        assert_eq!(
+            parse_tcp_s_request(&g),
+            Some((TcpSReq::Roundtrip { data: &[0xAA, 5, 0, 0] }, 0, Some(0)))
+        );
+
+        // legacy 面零接触：seq 形在 v1 解析器全拒（零漂移面的反向）。
+        let mut out = [0u8; RT_SEQ_REQ_MAX];
+        let n = encode_rt_seq_request(&mut out, b"xy", 5).unwrap();
+        assert_eq!(parse_tcp_request(&out[..n]), None);
+    }
+
+    /// named RT 携 seq 的 257>256 几何阻死钉：编码面无此 API（结构上产
+    /// 不出）；解析面对手搓 257B 帧（seq 形 + 4B 尾随 sid——超通道帽，线
+    /// 上结构性不可达）恒 None——服务端面流水线届时先解通道帽再谈。
+    #[test]
+    fn rt_seq_plus_session_geometrically_blocked() {
+        assert_eq!(RT_SEQ_REQ_MAX + 4, 257);
+        assert!(RT_SEQ_REQ_MAX + 4 > CHAN_MSG_MAX);
+        let full = [9u8; TCP_DATA_MAX];
+        let mut f = [0u8; 257];
+        f[0] = OP_TCP_ROUNDTRIP;
+        f[1] = full.len() as u8;
+        f[2..2 + full.len()].copy_from_slice(&full);
+        f[2 + full.len()] = 0x42; // seq
+        f[3 + full.len()..].copy_from_slice(&3u32.to_le_bytes()); // sid 尾随
+        assert_eq!(parse_tcp_s_request(&f), None);
+        // 应答面对称：TCP_REP_MAX + seq + sid 同超帽（253+1+4=258）。
+        assert!(TCP_REP_MAX + 1 + 4 > CHAN_MSG_MAX);
+    }
+
+    /// RT_PIPE_K 几何钉：K=2 恰满 berry-tcp 环（2×250=500 ≤ 4×128=512，
+    /// vnet tcp.rs 消费侧 const assert 同值单源）；回绕距 256 ≫ K。
+    #[test]
+    fn rt_pipe_k_geometry_pinned() {
+        assert_eq!(RT_PIPE_K, 2);
+        assert!(RT_PIPE_K * TCP_DATA_MAX <= 4 * 128);
+        assert!(RT_PIPE_K < 256);
     }
 }
