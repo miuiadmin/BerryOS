@@ -757,7 +757,9 @@ def main() -> int:
         # ——超帽此前绕道内核端 vol_admit 拒（ROOTFS vmo=none 间接症状/裸
         # 跑静默降级），产链口 = 离因果最近的 fail-loud 位。总帽 128MiB 的
         # 单源在内核 berry_rootface（vol_admit）——Python 侧字面量注释指
-        # 认（双写纪律：改帽必两处同批，rootface host 钉板是对拍面）。
+        # 认（双写纪律：改帽必两处同批；跨语言零机械对拍为已知取舍——漂移
+        # 双向有下游兜底：Python 松→内核 vol_admit 拒→ROOTFS vmo=none→
+        # smoke 门红；Python 紧→构建红。rootface 测试已接 just test-host）
         TOTAL_CAP_MIB = 128  # = kernel berry_rootface ROOTFS_TOTAL_MAX
         if len(blob) > TOTAL_CAP_MIB * 1024 * 1024:
             n_over = (len(blob) + split_mib * 1024 * 1024 - 1) // (split_mib * 1024 * 1024)
