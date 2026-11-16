@@ -16,7 +16,7 @@
 # bash tools/fwcfg-check.sh）。
 
 version = 1
-updated = "2026-11-15"
+updated = "2026-11-16"
 namespace = "opt/berry/"
 
 # —— rootfs 递送族（file / cpio 字节流；两键并在 rootfs0 优先）——
@@ -168,3 +168,10 @@ kind = "string"
 injectors = ["（无仓内注入方——A/B 收割手拼 -fw_cfg 专递，rwake 同款；复现配方单源 = research/调度彻底计划/13-首份AB报告-loadgen.md）"]
 consumer = "kernel/src/main.rs 载荷生成门 LOADGEN_PROBE_NAME（在位才 spawn loadgen 探针；坏值 fail loud 诊断行整门跳过）"
 polarity = "在位且值合法（s=<ns>;b=<0|1>，分号分隔）才 spawn；缺席零扰动"
+
+[[keys]]
+name = "bootmode"
+kind = "string"
+injectors = ["（无仓内注入方——手拼 -fw_cfg 专递 string=verbose，rwake 同款；ux 刀 1/splash 半随净增量重放入链，漏登记由 #400 复活的 fwcfg-check 抓获补记）"]
+consumer = "kernel/src/main.rs boot splash 模式门 + kernel/src/splash.rs（双模式渲染）"
+polarity = "值 verbose=Linux 式滚日志（uart 镜像上屏）；缺席/他值=iOS 式开机动画（缺省臂）"
