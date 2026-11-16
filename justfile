@@ -1168,6 +1168,7 @@ test-host:
     # serve_bind/_accept_loop 复用同一段，被测 = 产线本体非影子副本）。
     python3 tools/echod.py --selftest
     python3 tools/evsclient.py --selftest
+    python3 tools/svg2icons.py --selftest
     # SDK-2 P0-1：berry-crypto（.sig 信封 v1 TLV + 信任账本 TOML + 水位比较器
     # + RFC 8032 向量门空转框架——对选型零敏感件先行，26 号 §3-2；原语本体 =
     # P0-2 另刀，向量门不过不合入；P0 合入 = 闸 B，24 号 §4.2 终核三条）。
