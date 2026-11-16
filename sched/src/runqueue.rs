@@ -2,6 +2,7 @@
 
 use crate::spin::SpinLock;
 use crate::task::Task;
+use berry_ringface::ilist::RingStore;
 use core::cell::Cell;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
@@ -172,24 +173,21 @@ impl Runqueue {
             return 0;
         };
         // SAFETY: 环走查同款不变式（§A136 形状：先访当前节点、后判回
-        // head）；调用方契约保证走查期间无并发出/入环。
-        unsafe {
-            let mut cur = h;
-            let mut sum: u128 = 0;
-            loop {
-                sum += (*cur.as_ptr()).vruntime as u128;
-                cur = (*cur.as_ptr())
-                    .rq_next
-                    .get()
-                    .expect("resync: on-ring node must have next");
-                if cur == h {
-                    break;
-                }
-            }
-            let s = sum.min(u64::MAX as u128) as u64;
-            self.sum_vruntime.store(s, Ordering::Relaxed);
-            s
-        }
+        // head）；调用方契约保证走查期间无并发出/入环。W3-Q53 起走查
+        // 累加单源 berry_ringface::ilist::run_resync（host 钉板——步
+        // 数帽/先访后判/断链响亮）；物理臂 = Cell 链接字读（RqStore）。
+        let (steps, sum) = unsafe {
+            berry_ringface::ilist::run_resync(
+                &mut RqStore,
+                Some(h.as_ptr() as usize),
+                |id| (*(id as *mut Task)).vruntime,
+                RING_WALK_CAP,
+            )
+        };
+        let _ = steps; //（帽执法已在 run_resync 内 assert——执行器语义）
+        let s = sum.min(u64::MAX as u128) as u64;
+        self.sum_vruntime.store(s, Ordering::Relaxed);
+        s
     }
 
     /// 环完整性走查（复盘雷 2 残留诊断）：从 head 沿 `rq_next` 走一圈须回到
@@ -291,9 +289,13 @@ impl Runqueue {
 
     /// 把 `task` 插到环尾（head 的前驱）——新任务排到最后被 pick。
     ///
+    /// W3-Q53：接线律单源 `berry_ringface::ilist`（形状分流 + 写回集）；
+    /// 本体只剩物理臂——`Cell` 链接字读写适配 + 账本三件（len/
+    /// sum_vruntime/DL_ON_RING）随线增减。
+    ///
     /// # Safety
-    /// `task` 须当前不在任何 runqueue 上（`rq_prev`/`rq_next` 均为 `None`），且
-    /// 在被摘下前地址保持稳定（调度器拥有其 `Box`）。
+    /// `task` 须当前不在任何 runqueue 上（`rq_prev`/`rq_next` 均为
+    /// `None`），且在被摘下前地址保持稳定（调度器拥有其 `Box`）。
     pub(crate) unsafe fn link_back(&self, task: NonNull<Task>) {
         let t = task.as_ptr();
         // 入环执法断言（复盘雷 2 残留诊断）：对在环者再 link_back 是唯一能把
@@ -301,28 +303,28 @@ impl Runqueue {
         // 被劈出者 Ready 却永不被 pick——30s 长跑五任务静默失联的确诊机制）。
         // 契约此前只有文档零执法；断言把静默分裂变成当场、带位置的响亮失败。
         // 成本 = 两次 load + branch（IRQ 屏蔽热路径、零分配纪律不破）。
+        // W3-Q53：判据单源 `ringface::ilist::linkable`（host 钉板四态全
+        // 表——双 None 唯一可入环）。
         assert!(
-            (*t).rq_prev.get().is_none() && (*t).rq_next.get().is_none(),
+            berry_ringface::ilist::linkable(&berry_ringface::ilist::NodeLinks::new(
+                (*t).rq_prev.get().map(|p| p.as_ptr() as usize),
+                (*t).rq_next.get().map(|p| p.as_ptr() as usize)
+            )),
             "link_back: task already in-ring (ring-split hazard)"
         );
-        match self.head.get() {
-            None => {
-                // 单元素环：prev=next=self。
-                (*t).rq_prev.set(Some(task));
-                (*t).rq_next.set(Some(task));
-                self.head.set(Some(task));
-            }
-            Some(head) => {
-                let h = head.as_ptr();
-                let prev = (*h).rq_prev.get().expect("环非空 → head 有前驱");
-                let p = prev.as_ptr();
-                // 在 prev 与 head 之间插入 task（成为新尾）。head 不变。
-                (*p).rq_next.set(Some(task));
-                (*t).rq_prev.set(Some(prev));
-                (*t).rq_next.set(Some(head));
-                (*h).rq_prev.set(Some(task));
-            }
-        }
+        // SAFETY: 调用方契约（不在环、地址稳定）；接线写回集单源执行器，
+        // 物理臂 = Cell 链接字（见 RqStore 适配器注释）。违约（在环者）
+        // 由执行器 panic 响亮失败——返回值恒 Some（新环头）。
+        let new_head = berry_ringface::ilist::run_link(
+            &mut RqStore,
+            self.head.get().map(|h| h.as_ptr() as usize),
+            task.as_ptr() as usize,
+        );
+        self.head.set(new_head.map(|id| {
+            // SAFETY: 执行器写回的 id 均为本环在环者（调用方契约——环
+            // 上任务均调度器拥有）。
+            NonNull::new_unchecked(id as *mut Task)
+        }));
         // 单写者（本队列 RQ 锁窗内）——load+store 免 fetch_add（ldadd 会破
         // 与 Cell 形的指令等价；全序由锁提供，原子性只为读不撕裂）。
         self.len.store(self.len.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
@@ -343,30 +345,29 @@ impl Runqueue {
     /// 把 `task` 从环上摘下（任意位置）。若 `task == head`，游标前移到 `next`。
     /// 不在环上（`rq_prev==None`）则幂等返回。
     ///
+    /// W3-Q53：摘链律单源 `berry_ringface::ilist::run_unlink`（形状分流
+    /// 含两元环陷阱判据 + 写回集）；本体只剩物理臂 + 账本三件。
+    ///
     /// # Safety
     /// 同 [`link_back`]。
     pub(crate) unsafe fn unlink(&self, task: NonNull<Task>) {
         let t = task.as_ptr();
-        let Some(prev) = (*t).rq_prev.get() else {
-            return; // 不在环上
-        };
-        let next = (*t).rq_next.get().expect("环上必同时有 next");
-
-        if prev == task && next == task {
-            // 单元素环 → 空。判据必须锚定 task 自身：两元环 {X,Y} 上
-            // X.rq_prev == X.rq_next == Y，旧判据 `prev == next` 同样为真——
-            // 会误走空环分支把 head 清 None，幸存者 Y 带 stale 链静默失联
-            // （P4 收官审计实踩；现矩阵常驻环 ≥6 打不中，矩阵收缩即踩中）。
-            self.head.set(None);
-        } else {
-            (*prev.as_ptr()).rq_next.set(Some(next));
-            (*next.as_ptr()).rq_prev.set(Some(prev));
-            if self.head.get() == Some(task) {
-                self.head.set(Some(next));
-            }
+        // 幂等早退（不在环上）：先记在环与否——run_unlink 内形状分流同判。
+        let on_ring = (*t).rq_prev.get().is_some();
+        // SAFETY: 调用方契约同 link_back（环上任务均调度器拥有、地址
+        // 稳定）；摘链写回集单源执行器，物理臂 = Cell 链接字。
+        let new_head = berry_ringface::ilist::run_unlink(
+            &mut RqStore,
+            self.head.get().map(|h| h.as_ptr() as usize),
+            task.as_ptr() as usize,
+        );
+        if !on_ring {
+            return; // 零写回零出账（幂等早退——同旧形）
         }
-        (*t).rq_prev.set(None);
-        (*t).rq_next.set(None);
+        self.head.set(new_head.map(|id| {
+            // SAFETY: 执行器写回 id = 本环节点（调用方契约）。
+            NonNull::new_unchecked(id as *mut Task)
+        }));
         // 同 link_back：len 单写者 load+store（RQ 锁窗内——len 的写点全在
         // 锁窗，单写者前提成立）。Σvruntime 出账 = 摘线时刻该任务的
         // vruntime（与入账/后续 tick 入账同额反向）；RMW（多写者——与
@@ -443,6 +444,55 @@ impl Runqueue {
                     return false; // 整圈扫完
                 }
             }
+        }
+    }
+}
+
+/// W3-Q53：`RingStore` 的 sched 物理臂适配器——id 域即 `*mut Task` 地址
+/// 值，`load_*`/`store_*` 包 `Cell<Option<NonNull<Task>>>` 链接字的
+/// 读写（`run_link`/`run_unlink` 单源执行器的消费面）。零字段（链接
+/// 字均在节点自身——与队列无涉）。
+///
+/// # Safety 契约（由 `link_back`/`unlink` 的调用方契约承载）
+/// 传入的 id 均为本队列在环任务的地址（调度器拥有其 `Box`、地址稳定
+/// 至摘下）——store 写裸指针字段即原手写接线段的机械重放。
+struct RqStore;
+
+impl RingStore for RqStore {
+    fn load_prev(&mut self, id: usize) -> Option<usize> {
+        // SAFETY: id = 调用方契约内的在环任务地址（见结构注）。
+        unsafe {
+            (*(id as *mut Task))
+                .rq_prev
+                .get()
+                .map(|p| p.as_ptr() as usize)
+        }
+    }
+    fn load_next(&mut self, id: usize) -> Option<usize> {
+        // SAFETY: 同上。
+        unsafe {
+            (*(id as *mut Task))
+                .rq_next
+                .get()
+                .map(|p| p.as_ptr() as usize)
+        }
+    }
+    fn store_prev(&mut self, id: usize, v: Option<usize>) {
+        // SAFETY: 同上；写回集由单源执行器决定（本适配器零判定）。
+        unsafe {
+            (*(id as *mut Task)).rq_prev.set(v.map(|p| {
+                // SAFETY: 执行器写回的 id 均为在环任务地址（非空）。
+                NonNull::new_unchecked(p as *mut Task)
+            }))
+        }
+    }
+    fn store_next(&mut self, id: usize, v: Option<usize>) {
+        // SAFETY: 同 store_prev。
+        unsafe {
+            (*(id as *mut Task)).rq_next.set(v.map(|p| {
+                // SAFETY: 同上。
+                NonNull::new_unchecked(p as *mut Task)
+            }))
         }
     }
 }

@@ -2164,9 +2164,10 @@ static WAIT_ANY_WAITERS: AtomicU32 = AtomicU32::new(0);
 
 /// 桶号：乘法散列（Fibonacci hashing）取高 6 位——`>> 58` 已落 [0,64)，
 /// `% WAIT_BUCKETS` 保险钉域（改桶数时防越界）。
+/// 桶号（W3-Q75 单源 = `berry_wqmatch::keyroute::wait_bucket`）。
 #[inline]
 fn wait_bucket(key: usize) -> usize {
-    (key.wrapping_mul(0x9E3779B97F4A7C15) >> 58) as usize % WAIT_BUCKETS
+    berry_wqmatch::keyroute::wait_bucket(key)
 }
 
 /// 睡眠者入队计数（+1）——[`SleepQueue::insert_sorted`] 入口调。
@@ -2174,13 +2175,15 @@ fn wait_bucket(key: usize) -> usize {
 /// 谓词 PureSleep 键门恒 false）——不计数，减一处假阳性源。
 #[inline]
 fn wait_count_add(obj: usize) {
-    if obj == 0 {
-        return; // 纯睡者不在任何唤醒集内
-    }
-    if obj == WAIT_ANY {
-        WAIT_ANY_WAITERS.fetch_add(1, Ordering::Relaxed);
-    } else {
-        WAIT_HASH[wait_bucket(obj)].count.fetch_add(1, Ordering::Relaxed);
+    // W3-Q75 分账判定单源 = keyroute::count_kind（原子 fetch 留壳）。
+    match berry_wqmatch::keyroute::count_kind(obj) {
+        berry_wqmatch::keyroute::CountKind::Skip => {}
+        berry_wqmatch::keyroute::CountKind::AnySentinel => {
+            WAIT_ANY_WAITERS.fetch_add(1, Ordering::Relaxed);
+        }
+        berry_wqmatch::keyroute::CountKind::Bucket(b) => {
+            WAIT_HASH[b].count.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -2189,13 +2192,15 @@ fn wait_count_add(obj: usize) {
 /// 睡眠多轮换键者每轮 block_current 先重写 wait_obj 再入队，逐轮配对）。
 #[inline]
 fn wait_count_sub(obj: usize) {
-    if obj == 0 {
-        return;
-    }
-    if obj == WAIT_ANY {
-        WAIT_ANY_WAITERS.fetch_sub(1, Ordering::Relaxed);
-    } else {
-        WAIT_HASH[wait_bucket(obj)].count.fetch_sub(1, Ordering::Relaxed);
+    // W3-Q75 分账判定单源（与 wait_count_add 同判据——加减恒对称）。
+    match berry_wqmatch::keyroute::count_kind(obj) {
+        berry_wqmatch::keyroute::CountKind::Skip => {}
+        berry_wqmatch::keyroute::CountKind::AnySentinel => {
+            WAIT_ANY_WAITERS.fetch_sub(1, Ordering::Relaxed);
+        }
+        berry_wqmatch::keyroute::CountKind::Bucket(b) => {
+            WAIT_HASH[b].count.fetch_sub(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -2205,8 +2210,11 @@ fn wait_count_sub(obj: usize) {
 /// 锁交接即计数可见性边界——无跨核 staleness 漏醒面。
 #[inline]
 fn wait_gate_clear(obj: usize) -> bool {
-    WAIT_ANY_WAITERS.load(Ordering::Relaxed) == 0
-        && WAIT_HASH[wait_bucket(obj)].count.load(Ordering::Relaxed) == 0
+    // W3-Q75 双零门控判定单源（原子读留壳——两计数读出后入判）。
+    berry_wqmatch::keyroute::gate_clear(
+        WAIT_ANY_WAITERS.load(Ordering::Relaxed),
+        WAIT_HASH[wait_bucket(obj)].count.load(Ordering::Relaxed),
+    )
 }
 
 // ---- per-key 同键兄弟链（P2-1：有等待者的同键链扫描——O(同桶) 替全扫）----
@@ -2237,9 +2245,14 @@ fn wait_gate_clear(obj: usize) -> bool {
 // 点全在 SQ 锁窗内（单核屏蔽窗无竞态；SMP 实验态锁交接即可见性边界
 // ——WAIT_HASH 同论证）。
 
-/// 键桶数（与 P1 [`WAIT_BUCKETS`] 同数钉死——桶号复用 `wait_bucket`）。
+/// 键桶数（与 P1 [`WAIT_BUCKETS`] 同数钉死——桶号复用 `wait_bucket`；
+/// W3-Q75 三方执法：crate 散列域 = WAIT_BUCKETS 桶数镜像）。
 const KEY_BUCKETS: usize = 64;
 const _: () = assert!(KEY_BUCKETS == WAIT_BUCKETS, "键链桶数须与计数桶对齐");
+const _: () = assert!(
+    WAIT_BUCKETS == berry_wqmatch::keyroute::WAIT_BUCKETS,
+    "计数桶数须与 keyroute 单源桶域对齐"
+);
 
 /// 桶空初值（const 具名件——数组重复表达式免 Copy 的稳定形；P1
 /// `ZERO_WAIT_BUCKET` 同款）。
@@ -2251,11 +2264,12 @@ const NIL_KEY_HEAD: Cell<Option<NonNull<Task>>> = Cell::new(None);
 static mut KEY_HEADS: [Cell<Option<NonNull<Task>>>; KEY_BUCKETS] =
     [NIL_KEY_HEAD; KEY_BUCKETS];
 
-/// 真键判据：入同键链的键形（0 纯睡 / WAIT_ANY 哨兵不入——见块注）。
-/// 与 [`wait_count_add`]/[`wait_count_sub`] 的真键分账分支逐字对称。
+/// 真键判据：W3-Q75 单源 = `berry_wqmatch::keyroute::key_chainable`
+///（0 纯睡 / WAIT_ANY 哨兵不入——见块注；与 [`wait_count_add`]/
+/// [`wait_count_sub`] 的真键分账分支逐字对称）。
 #[inline]
 fn key_chainable(obj: usize) -> bool {
-    obj != 0 && obj != WAIT_ANY
+    berry_wqmatch::keyroute::key_chainable(obj)
 }
 
 // ---- P2 PI 重推门控计数（消费者 = kernel/src/pi.rs 全图重推入口）----
@@ -2293,9 +2307,11 @@ static PI_DERIVED_WAITERS: AtomicU32 = AtomicU32::new(0);
 /// ② `pi_inherited != 0` 的睡眠者数（冻结 boost 清零面；重推尾回写）。
 static PI_BOOSTED_SLEEPERS: AtomicU32 = AtomicU32::new(0);
 
-/// 派生位掩码（ABI 冻结值 SIGNAL_READABLE=1 / SIGNAL_WRITABLE=2——sched
-/// crate 不依赖 kernel handle 模块，本地镜像同值；freeze_precheck 同款）。
+/// 派生位掩码（ABI 冻结值 SIGNAL_READABLE=1 / SIGNAL_WRITABLE=2）。
+/// W3-Q75 起值单源 = `berry_wqmatch::keyroute::SIG_DERIVED`（donor 判据
+/// 消费面）；此处保留 const assert 执法镜像同值。
 const SIG_DERIVED: u64 = 1 | 2;
+const _: () = assert!(SIG_DERIVED == berry_wqmatch::keyroute::SIG_DERIVED);
 
 /// 睡眠者入队 PI 计数（+1）——[`SleepQueue::insert_sorted`] 入口调（与
 /// [`wait_count_add`] 同点）。donor 面判据 = 派生位请求**且**单一真对象键
@@ -2304,10 +2320,11 @@ const SIG_DERIVED: u64 = 1 | 2;
 /// 分支同源）。
 #[inline]
 fn pi_count_add(obj: usize, signals: u64, pi: i32) {
-    if obj != 0 && obj != WAIT_ANY && signals & SIG_DERIVED != 0 {
+    // W3-Q75 donor/boost 判定单源（原子 fetch 留壳）。
+    if berry_wqmatch::keyroute::pi_donor_candidate(obj, signals) {
         PI_DERIVED_WAITERS.fetch_add(1, Ordering::Relaxed);
     }
-    if pi != 0 {
+    if berry_wqmatch::keyroute::pi_boost_counted(pi) {
         PI_BOOSTED_SLEEPERS.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -2316,10 +2333,11 @@ fn pi_count_add(obj: usize, signals: u64, pi: i32) {
 /// [`wait_count_sub`] 同点；字段稳定性见上块注释，判据与入队逐字对称）。
 #[inline]
 fn pi_count_sub(obj: usize, signals: u64, pi: i32) {
-    if obj != 0 && obj != WAIT_ANY && signals & SIG_DERIVED != 0 {
+    // W3-Q75 判定单源（与 pi_count_add 逐字对称——同判据加减配平）。
+    if berry_wqmatch::keyroute::pi_donor_candidate(obj, signals) {
         PI_DERIVED_WAITERS.fetch_sub(1, Ordering::Relaxed);
     }
-    if pi != 0 {
+    if berry_wqmatch::keyroute::pi_boost_counted(pi) {
         PI_BOOSTED_SLEEPERS.fetch_sub(1, Ordering::Relaxed);
     }
 }
@@ -2329,8 +2347,11 @@ fn pi_count_sub(obj: usize, signals: u64, pi: i32) {
 /// 双趟全扫）。消费者 = `kernel/src/pi.rs::recompute_locked` 入口；读点
 /// 恒在 SQ 窗内（钩子五发射点 + 自持窗手动面），与计数写点同窗。
 pub fn pi_recompute_needed() -> bool {
-    PI_DERIVED_WAITERS.load(Ordering::Relaxed) != 0
-        || PI_BOOSTED_SLEEPERS.load(Ordering::Relaxed) != 0
+    // W3-Q75 双零门控判定单源（原子读留壳）。
+    berry_wqmatch::keyroute::pi_gate_needed(
+        PI_DERIVED_WAITERS.load(Ordering::Relaxed),
+        PI_BOOSTED_SLEEPERS.load(Ordering::Relaxed),
+    )
 }
 
 /// 重推尾部重数回写（[`PI_BOOSTED_SLEEPERS`] 的第三收口点）：全图重推刚
