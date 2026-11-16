@@ -20,7 +20,6 @@ members = [
     "kernel",
     "lkface",
     "mm",
-    "numface",
     "piface",
     "polface",
     "rootface",
@@ -28,7 +27,6 @@ members = [
     "safeck",
     "sched",
     "sliceface",
-    "billface",
     "susface",
     "telface",
     "tickface",
@@ -40,15 +38,14 @@ members = [
     "psface",
     "fwcfgface",
     "svcface",
-    "wakeface",]
     "wakeface",
+    "billface",
+    "numface",
     "memface",
-]
-    "wakeface",
     "dmface",
-    "aokface",]
-    "wakeface",
-    "wsrcface",]
+    "aokface",
+    "wsrcface",
+]
 resolver = "2"
 [workspace.package]
 edition = "2021"
