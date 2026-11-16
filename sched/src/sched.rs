@@ -3665,7 +3665,9 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
         if hal::smp::par_enabled() {
             let (hb0, hb1, _) = hal::smp::diag_readout();
             let tot = hb0 + hb1;
-            if tot / 500 != HB_LAST.swap(tot, Ordering::Relaxed) / 500 {
+            // W3-Q82：折叠门单源 berry_balface::heartbeat_due（swap 换出值投影）。
+            let hb_prev = HB_LAST.swap(tot, Ordering::Relaxed);
+            if berry_balface::heartbeat_due(tot, hb_prev) {
                 hal::kern_lock::with_print_lock(|| {
                     hal::uart_puts(b"hb c0=");
                     hal::uart_put_dec(hb0);
@@ -3681,16 +3683,20 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
             // 断供」：尸末年龄持续爬升的 stuck 行 = 永久丢醒（跨核唤醒丢失）
             // 候选；出现一两次即消失 = 慢链路非死锁。窗纪律同 expire_timeouts
             // （SQ 自旋锁跨核互斥）；采集在窗内、打印在窗外——不新增锁序边。
-            if tot / 2500 != STUCK_LAST.swap(tot, Ordering::Relaxed) / 2500 {
+            // W3-Q82：折叠门单源 berry_balface::stuck_scan_due；点名帽单源
+            // STUCK_MAX（本地 const 摘除——同值迁移非新语义）。
+            let st_prev = STUCK_LAST.swap(tot, Ordering::Relaxed);
+            if berry_balface::stuck_scan_due(tot, st_prev) {
                 let freq = hal::timer::cntfrq();
                 let now = hal::timer::cntvct();
-                const STUCK_MAX: usize = 8;
+                use berry_balface::STUCK_MAX;
                 let mut hits = [(0usize, 0usize, 0usize, 0u64); STUCK_MAX];
                 let mut n_hits = 0usize;
                 let phys = sq_lock();
                 for_each_sleeper(|t| {
                     let age = now.saturating_sub(t.wait_since);
-                    if age > freq * 10 && n_hits < STUCK_MAX {
+                    // W3-Q82：高龄判单源 berry_balface::stuck_aged（乘域同形）。
+                    if berry_balface::stuck_aged(age, freq) && n_hits < STUCK_MAX {
                         hits[n_hits] =
                             (t.name.as_ptr() as usize, t.name.len(), t.wait_obj, age / freq);
                         n_hits += 1;
@@ -3735,7 +3741,8 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
             // 且对核显著更重时才拉一任务。若两核各自已有可轮转负载仍持续
             // 按 K=2 拉取，会把服务/子进程反复迁移，SMP TCG 下形成 20 万+
             // 切换与 KL 争用（run6 实录），rootfs 后段 FAT/DIR/DF 族超时。
-            if mine <= 1 && theirs >= mine + 2 {
+            // W3-Q82：拉取门单源 berry_balface::pull_due（近空闲补偿联合判）。
+            if berry_balface::pull_due(mine, theirs) {
                 // SAFETY: 调用契约面扩张（第三调用点）：IRQ 屏蔽 ✓、本核
                 // RQ 窗未开（rq_lock 在后）✓、preempt_count==0（PRINT_LOCK
                 // 持窗已让）✓——与 idle/park 两点的差异仅「本核出选非
@@ -4029,10 +4036,12 @@ unsafe fn try_steal_one() -> Option<*mut Task> {
     let mut victim = None;
     loop {
         let p = cur.as_ptr();
-        if (*p).spread
-            && (*p).ttbr0 != 0
-            && crate::class::eligible(core::ptr::null_mut(), p)
-        {
+        // W3-Q82：victim 过滤单源 berry_balface::steal_filter（三值合取）。
+        if berry_balface::steal_filter(
+            (*p).spread,
+            (*p).ttbr0,
+            crate::class::eligible(core::ptr::null_mut(), p),
+        ) {
             victim = Some(cur);
             break;
         }

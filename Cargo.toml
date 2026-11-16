@@ -3,7 +3,7 @@ exclude = ["user/berry-em"]
 members = [
     "arch/aarch64",
     "bandface",
-    "billface",
+    "balface",
     "chanface",
     "dpgface",
     "dtbface",
