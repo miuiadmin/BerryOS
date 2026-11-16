@@ -234,7 +234,10 @@ WHITELIST=(
   # fwcfgface/susface 补账（2026-11-16 本刀实捕：#299/#307 合入后白名单
   # 笔未随刀——check-members 门被 base 重写剥落故两连漏无人咬；接线重放
   # 即红，红分支实捕定谳）
-  fwcfgface susface memface
+  fwcfgface susface
+  # balface 补账（2026-11-16 本刀重放接线实捕：W3-Q82 #273 首开件白名单
+  # 笔未随刀——check-members 门红分支实捕定谳，同 fwcfgface 判例）
+  balface
   # psface 补账（2026-11-16 本刀 rebase 进 #362 后门再咬：W3-Q72 合入后
   # 白名单笔未随刀——接线恢复后门第一次真执法实捕）
   psface
