@@ -153,6 +153,9 @@ pub fn run() {
     // 配额/真出选/真醒源读/真翻期回场——SMPLZ 同款；切换舞蹈本体归
     // boot/smoke 面）。末位新号纪律——ktest done 前；sched::init 前跑。
     test_throttle_yield();
+    // cbox 刀1（黑匣子崩溃记录表）排液窗数学钉板——main 线增量（末位新号
+    // 纪律——ktest done 前；定义在文件尾）。
+    test_cbox();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
     test_exc();
@@ -11128,4 +11131,104 @@ fn test_throttle_yield() {
     assert_eq!(rq.len(), 0, "THRYLD：收口环须空");
 
     berry_hal_aarch64::uart_puts(b"THRYLD ok n=4\n");
+}
+
+/// cbox 排液窗数学（审计二轮 [4]）：`first = total - stored + 1` 环形窗与
+/// `(s-1) % SLOTS` 槽映射的边界——此面差一会发出错 seq 记录、decode 照过、
+/// 标记照打、静默上船。纯内核内可测（on_fault 伪造帧直灌，无需真异常注入）。
+/// **污染隔离**：黑匣子是生产面——ktest_save/restore 快存恢复，用例不留痕
+/// （否则 battery 窗会把测试记录照实落账）。
+fn test_cbox() {
+    use crate::cbox::{self, CboxHdr, REC_MAGIC};
+    use berry_hal_aarch64::trap::{TrapFrame, KIND_EL0};
+
+    fn frame(pc: u64) -> TrapFrame {
+        TrapFrame {
+            regs: [0; 31],
+            esr: 0x9200_0046,
+            far: pc,
+            elr: pc,
+            spsr: 0,
+            sp: 0x7000,
+        }
+    }
+
+    /// 全量排液进定长缓冲（12B 头 + ≤8×104B = 844，ABI 0x42 定长同源），
+    /// 返回 (头, 实拷字节, 记录区)。头/记录回读走 `copy_nonoverlapping`
+    ///（字节偏移不保证对齐——read_volatile 未对齐 = UB，拷进对齐临时才是
+    /// 规范化读）。
+    fn drain(total: u32) -> (CboxHdr, usize, [u8; 12 + 8 * 104]) {
+        let mut buf = [0u8; 12 + 8 * 104];
+        let mut n = 0usize;
+        cbox::drain_with(total, &mut |s: &[u8]| {
+            buf[n..n + s.len()].copy_from_slice(s);
+            n += s.len();
+        });
+        let mut hdr = CboxHdr { ver: 0, total: 0, stored: 0 };
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                buf.as_ptr(),
+                &mut hdr as *mut CboxHdr as *mut u8,
+                core::mem::size_of::<CboxHdr>(),
+            );
+        }
+        (hdr, n, buf)
+    }
+
+    /// 缓冲内第 k 条记录回读（对齐临时形）。
+    fn rec_at(b: &[u8; 12 + 8 * 104], k: usize) -> cbox::CboxRec {
+        let mut r = cbox::REC_ZERO_FOR_KTEST;
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                b[12 + k * 104..].as_ptr(),
+                &mut r as *mut cbox::CboxRec as *mut u8,
+                core::mem::size_of::<cbox::CboxRec>(),
+            );
+        }
+        r
+    }
+
+    let saved = cbox::ktest_save();
+
+    // A. 空表：头 only（total=0 早退——12B 头零记录）。
+    cbox::ktest_restore(0, [cbox::REC_ZERO_FOR_KTEST; 8]);
+    let (h, n, _) = drain(0);
+    assert_eq!((h.total, h.stored), (0, 0), "CBOX：空表头");
+    assert_eq!(n, 12, "CBOX：空表恰 12B");
+
+    // B. 单条：stored=1、first=1（无轮转）。
+    cbox::ktest_restore(0, [cbox::REC_ZERO_FOR_KTEST; 8]);
+    unsafe { cbox::on_fault(KIND_EL0, &frame(0x2000)) };
+    let (h, n, b) = drain(1);
+    assert_eq!((h.total, h.stored, n), (1, 1, 12 + 104), "CBOX：单条头");
+    let r = rec_at(&b, 0);
+    assert!(r.magic == REC_MAGIC && r.seq == 1 && r.pc == 0x2000, "CBOX：单条记录");
+
+    // C. 恰满 8 条（无轮转边界）：first=1..=8 全量。
+    cbox::ktest_restore(0, [cbox::REC_ZERO_FOR_KTEST; 8]);
+    for i in 0..8u32 {
+        unsafe { cbox::on_fault(KIND_EL0, &frame(0x3000 + i as u64)) };
+    }
+    let (h, n, _) = drain(8);
+    assert_eq!((h.total, h.stored, n), (8, 8, 12 + 8 * 104), "CBOX：恰满");
+
+    // D. 9 条（轮转 +1）：stored 夹 8、窗 first=2..=9（seq 1 已被覆盖，逐条
+    // seq/槽映射对号——pc 编码序号即轮转见证）。
+    unsafe { cbox::on_fault(KIND_EL0, &frame(0x3008)) };
+    assert_eq!(cbox::drain_total(), 9, "CBOX：写序 9");
+    let (h, n, b) = drain(9);
+    assert_eq!((h.total, h.stored, n), (9, 8, 12 + 8 * 104), "CBOX：轮转头");
+    for k in 0..8usize {
+        let s = (k + 2) as u32; // 期望 seq
+        let r = rec_at(&b, k);
+        assert!(r.magic == REC_MAGIC && r.seq == s, "CBOX：窗序 seq={s}");
+        assert_eq!(r.pc, 0x3000 + (s - 1) as u64, "CBOX：轮转槽映射 seq={s}");
+    }
+
+    // E. 锚越界夹取（防御面）：total=15 > now=9 → 等价 drain(9)。
+    let (h2, n2, _) = drain(15);
+    assert_eq!((h2.total, h2.stored, n2), (9, 8, 12 + 8 * 104), "CBOX：锚夹取");
+
+    cbox::ktest_restore(saved.0, saved.1);
+    berry_hal_aarch64::uart_puts(b"CBOXK ok\n");
 }

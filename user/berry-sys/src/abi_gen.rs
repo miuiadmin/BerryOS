@@ -3,8 +3,8 @@
 //! 守卫 = `just abi-check`（`tools/gen_abi.py --check`，挂 build/smoke 前置）。
 //! 与内核侧 `kernel/src/abi_gen.rs` 同源生成（两端 u32/u64 类型约定见
 //! `tools/gen_abi.py` 头注——那是 ABI 决策不是漂移）。
-//! 预算四元组（生成器执法，ADR #11 帽）：nr_total=39 / nr_defined=43 /
-//! nr_registered=42 / nr_ceiling=45（口径与内核侧头注同源同值）。
+//! 预算四元组（生成器执法，ADR #11 帽）：nr_total=40 / nr_defined=44 /
+//! nr_registered=43 / nr_ceiling=45（口径与内核侧头注同源同值）。
 
 use crate::{Handle, Rights, Status, Time};
 
@@ -179,6 +179,8 @@ pub(crate) mod nr {
     /// 面，同 0x61/0x87）；EWMA 槽 Relaxed 原子读（统计信号无序角色）。消费端 =
     /// berry-power UtilTrack::ingest_snapshot（折叠数学单源 berry-emface）。
     pub(crate) const SCHED_UTIL_SNAPSHOT: usize = 0x40;
+    /// cbox 刀 1（`plans/cbox/design.md`）：异常 fatal 路径（EL0 kill 链 / EL1 halt 前）RAM 记录表的用户态排液口。无 right 门（诊断几何面——`process_get_exit_code` need=0 惯例）；表读写面零结构锁（seqlock 快照），syscall 整体走 SVC_CLASS_TABLE 在册取锁（同全体 syscall）。（2026-11-16 跨根并回：main 显示线 cbox 刀 1 并入调度线）
+    pub(crate) const CBOX_DRAIN: usize = 0x42;
     pub(crate) const CHANNEL_CREATE: usize = 0x51;
     pub(crate) const CHANNEL_SEND: usize = 0x52;
     pub(crate) const CHANNEL_RECV: usize = 0x53;

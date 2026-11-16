@@ -19,6 +19,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "berry-cbox"
+version = "0.1.0"
+
+[[package]]
 name = "berry-fbcon"
 version = "0.2.0"
 
@@ -55,6 +59,7 @@ version = "0.2.0"
 dependencies = [
  "berry-appproto",
  "berry-appshell",
+ "berry-cbox",
  "berry-gfx",
  "berry-guiproto",
  "berry-layout",

@@ -60,6 +60,7 @@ pub mod paint;
 pub mod pattern;
 pub mod theme;
 pub mod resample;
+pub mod step;
 pub mod swipe;
 pub mod telemetry;
 // arena 内嵌本文件（Node/槽表私有——§6）；NodeId 在 desc.rs 公开。
@@ -429,9 +430,13 @@ const _: () = assert!(
 const _: () = assert!(layout::CAP == 2 * MAX_NODES, "layout::CAP = 2*MAX_NODES（D10 单源）");
 const _: () = assert!(paint::ORDER_CAP == 2 * MAX_NODES, "paint::ORDER_CAP = 2*MAX_NODES（D10 单源）");
 
-/// 默认软 vsync 周期（≈60Hz）——`set_vsync` 前的 rate_hint/expected 轨
-/// 兜底值（协商倒数注入前的确定值，embedder 可覆写）。
-const DEFAULT_VSYNC_PERIOD_NS: u64 = 16_666_666;
+/// 回退缺省 vsync 周期（60Hz 档表值）——**仅无服务端信息时**的兜底
+///（`set_vsync` 前的 rate_hint/expected 轨确定值）。周期真值单源在
+/// guifbd 软面板档位表（刷新率体系规范 §3.4/§4-5——R1 率通路单源）；
+/// embedder 应在连接后以 PANEL_CAPS 应答注入 `set_vsync`，本值只服务
+/// 注入前的过渡帧与旧服务端（launcher 刀1 起已注入；值 = 表内 60Hz 档
+/// 16_666_667，与旧 16_666_666 差 1ns 无感知迁移）。
+const DEFAULT_VSYNC_PERIOD_NS: u64 = 16_666_667;
 
 /// 槽索引空值（§3.1——`u32::MAX`；pub(crate) 供各子模组树走查共用）。
 pub(crate) const NONE: u32 = u32::MAX;
@@ -2546,7 +2551,13 @@ impl<const N: usize> Ui<N> {
             // 0：无提交的帧无帧率话语权（frame.rs 字段注/对齐条 12）。
             return frame::FrameOutcome::skipped(expected);
         }
-        frame::FrameOutcome { drew, damage: dmg, expected_present_ns: expected, rate_hint_hz: self.rate_hz() }
+        frame::FrameOutcome {
+            drew,
+            damage: dmg,
+            expected_present_ns: expected,
+            deadline_ns: expected,
+            rate_hint_hz: self.rate_hz(),
+        }
     }
 
     pub fn frame_phase(&self) -> frame::FramePhase {
@@ -2644,6 +2655,26 @@ impl<const N: usize> Ui<N> {
         // 背压重同步：显示服务报的**剩余信用**是真值源（outstanding =
         // MAX − remaining；未知应答不猜测——对齐条 8）。
         self.credits.on_presented(credits_remaining);
+    }
+
+    pub fn note_frame_timing(
+        &mut self,
+        seq: u32,
+        presented_ns: u64,
+        refresh_ns: u32,
+        status: u8,
+        credits_remaining: u8,
+    ) {
+        // P3 呈现回执消费（刀4——遥测第一个读者）：回执周期 = 呈现服务
+        // 单源真相，先纠本地 vsync 基再走 note_presented 同轨回填。
+        // 采纳面：LTPO 切档后 embedder 的静态 estimate 过期是 jank 误判
+        // 主源（60↔120 切档 deadline 差一倍）；actual 轨用回执拍点而非
+        // embedder 本地读钟——呈现时刻单源化。refresh_ns=0 = 服务端无
+        // 真相值（防御面）——不采纳，仅回填。
+        if refresh_ns != 0 {
+            self.vsync_period_ns = refresh_ns as u64;
+        }
+        self.note_presented(seq, presented_ns, status, credits_remaining);
     }
 
     pub fn vote_hint(&self) -> frame::VoteBallot {

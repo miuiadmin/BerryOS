@@ -331,6 +331,22 @@ pub unsafe fn init() {
     core::arch::asm!("isb", options(nostack, preserves_flags));
 }
 
+/// cbox kind：EL0 sync（用户任务 fault，走 G1.5 kill 链）。
+pub const KIND_EL0: u8 = 1;
+/// cbox kind：EL1 sync（内核 fault，halt 前）。
+pub const KIND_EL1: u8 = 2;
+
+/// cbox 黑匣子镜像（fatal 路径；槽未注册/早期 boot = no-op）。零锁零分配——
+/// 槽内实现（内核 cbox 模块）自守异常上下文纪律。恢复路径（BRK/期望故障/
+/// canary/demand 探针）不调——非崩溃面。
+fn cbox_record(kind: u8, tf: &TrapFrame) {
+    // SAFETY: 同步异常上下文；boot 后槽恒定只读。
+    if let Some(f) = unsafe { crate::cbox_hook() } {
+        // SAFETY: 回调契约（零分配零锁零 uart；帧只读借用）。
+        unsafe { f(kind, tf as *const TrapFrame) };
+    }
+}
+
 /// current-EL SPx 同步异常入口（asm 调）。
 ///
 /// # Safety（FFI）
@@ -374,11 +390,15 @@ pub extern "C" fn exception_sync(tf: &mut TrapFrame) {
                 tf.elr = tf.elr.wrapping_add(4);
                 return;
             }
+            // cbox 黑匣子镜像（halt 前——刀1 双钩之一；恢复路径已全数早退）。
+            cbox_record(KIND_EL1, tf);
             dump(tf, ec);
             uart_puts(b"  -> fatal, halt\n");
             halt();
         }
         _ => {
+            // cbox 黑匣子镜像（halt 前——刀1 双钩之一）。
+            cbox_record(KIND_EL1, tf);
             dump(tf, ec);
             uart_puts(b"  -> fatal, halt\n");
             halt();
@@ -441,6 +461,8 @@ pub extern "C" fn exception_sync_el0(tf: &mut TrapFrame) {
             // sched.rs switch_away_forever_with 按位收口放锁。EL0 任务在跑
             // ⟹ CURRENT 非空（位必落）；槽未装 + halt 兜底窗 = 全核冻结面，
             // 不放。
+            // cbox 黑匣子镜像先于取锁（零锁零分配——异常纪律不破锁序窗）。
+            cbox_record(KIND_EL0, tf);
             crate::kern_lock::svc_enter();
             dump_el0(tf, ec);
             uart_puts(b"  -> user fault (G1.5: kill current task)\n");

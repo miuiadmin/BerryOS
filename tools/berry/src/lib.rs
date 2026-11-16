@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod control;
+pub mod crashlog;
 pub mod device;
 pub mod display;
 pub mod doctor;
@@ -13,6 +14,7 @@ pub mod qemu;
 pub mod qmp;
 pub mod qr;
 pub mod run_dir;
+pub mod symbolize;
 pub mod tls;
 pub mod vnc_cfg;
 pub mod web;

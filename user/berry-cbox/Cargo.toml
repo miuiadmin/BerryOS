@@ -1,0 +1,15 @@
+[package]
+name = "berry-cbox"
+version = "0.1.0"
+edition = "2021"
+# cbox 刀 2（.agents/plans/cbox/design.md）：黑匣子账本行格式 + 排液快照
+# 解码纯函数 crate，`berry-appproto`/`berry-layout` 先例（「解析器即产品」）
+# ——`cfg_attr(not(test), no_std)`：库本体 no_std（svcmgr 在
+# aarch64-unknown-none 下消费），test 构建放开 std 仅为默认测试挂具。
+# 三消费 = svcmgr（battery + 监督面落盘，本工作区成员）+ berry-launcher
+# （init 落账，独立小工作区编 musl target，同 stdhello 不入 members）
+# + 刀 3 宿主 `berry crash-log`（FAT 镜像直读后的行解析/指纹聚合）。
+description = "BerryOS cbox: pure decoder/formatter/merger for the crash-ledger (CBOX.LOG) line format and drain snapshots"
+license = "Apache-2.0"
+
+[dependencies]
