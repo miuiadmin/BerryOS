@@ -38,7 +38,7 @@ ATTEMPT_CAP_S = int(os.environ.get("BERRY_EVS_ATTEMPT_CAP_S", "45"))  # 单尝�
 RETRY_SLEEP_S = 2
 
 PAYLOADS = [
-    bytes((i * 7 + 3) & 0xFF for i in range(64)),
+    bytes((i * 7 + 3) & 0xFF for i in range(250)),
     bytes((i * 11 + 5) & 0xFF for i in range(24)),
 ]
 
@@ -127,16 +127,16 @@ def selftest() -> int:
     import threading
 
     # ① 载荷黄金哈希（与 bsh main.rs EVS_PAYLOAD_0/1 同源定值对账）。
-    want0 = bytes((i * 7 + 3) & 0xFF for i in range(64))
+    want0 = bytes((i * 7 + 3) & 0xFF for i in range(250))
     want1 = bytes((i * 11 + 5) & 0xFF for i in range(24))
-    assert len(PAYLOADS) == 2 and len(PAYLOADS[0]) == 64 and len(PAYLOADS[1]) == 24, (
-        "selftest: PAYLOADS 形状漂（应 64B/24B 两连接——A2-3 §3.4）"
+    assert len(PAYLOADS) == 2 and len(PAYLOADS[0]) == 250 and len(PAYLOADS[1]) == 24, (
+        "selftest: PAYLOADS 形状漂（应 250B/24B 两连接——A2-3 §3.4 + 四刀 F76）"
     )
     assert PAYLOADS[0] == want0, "selftest: conn0 载荷漂（(i*7+3)&0xff ×64）"
     assert PAYLOADS[1] == want1, "selftest: conn1 载荷漂（(i*11+5)&0xff ×24）"
     g0 = hashlib.sha256(PAYLOADS[0]).hexdigest()
     g1 = hashlib.sha256(PAYLOADS[1]).hexdigest()
-    assert g0 == "39e3d7b6b5d075d37d053ad89b24b41bef4f3c29760c84447cab3f3be1882241", (
+    assert g0 == "0f18a2e0dee3487f7033ff88871236df0aa4ae20fc2435320920284672e5dd56", (
         f"selftest: conn0 黄金哈希漂 {g0}"
     )
     assert g1 == "40b374c7c9cb2c11959424fe31a8b2d7783d990143590a861452bd8a69e1a25e", (
@@ -202,7 +202,7 @@ def selftest() -> int:
                 if not b:
                     break
                 got += b
-                if len(got) >= 24:  # 两载荷皆 ≤64B，收齐即回
+                if len(got) >= 24:  # 两载荷最小 24B，收齐即回（250B 首读即满）
                     break
             conn.sendall(bytes(got))
 

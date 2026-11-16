@@ -134,6 +134,7 @@ pub fn run(args: RunArgs) -> Result<()> {
     let memory = args.memory.unwrap_or(profile::default_profile().memory_mib);
     let mut run = RunDir::create("run", args.keep)?;
     let serial = run.file("serial.log");
+    let serial_sock = run.file("serial.sock");
     let log = run.file("qemu.log");
     if args.json {
         println!(
@@ -143,7 +144,7 @@ pub fn run(args: RunArgs) -> Result<()> {
     }
     // 取舍注记（三轮审计 C3）：spawn 失败的 ? 早退不 keep_fail——目录
     // 仅 meta.json 半成品；QEMU 起后的失败保留见下方 keep_fail 各臂。
-    let mut child = qemu::spawn_kernel(&qemu, &kernel, &serial, &log, accel, memory)?;
+    let mut child = qemu::spawn_kernel(&qemu, &kernel, &serial, &serial_sock, &log, accel, memory)?;
     let mut tail = Tail::open(&serial);
     let deadline = Instant::now() + args.timeout;
     let mut stdout = std::io::stdout();
@@ -221,6 +222,7 @@ pub fn shot(args: ShotArgs) -> Result<()> {
     let mut run = RunDir::create("shot", args.keep)?;
     let vars = qemu::vars_store(run.path(), 64)?;
     let serial = run.file("serial.log");
+    let serial_sock = run.file("serial.sock");
     let log = run.file("qemu.log");
     let (vnc, qmp_ep) = endpoints(&run);
     if args.json {
@@ -236,6 +238,7 @@ pub fn shot(args: ShotArgs) -> Result<()> {
         &firmware,
         &vars,
         &serial,
+        &serial_sock,
         &log,
         &vnc,
         &qmp_ep,
@@ -2379,6 +2382,321 @@ pub fn logs(run: Option<&str>, tail: usize, follow: bool, json: bool) -> Result<
     Ok(())
 }
 
+/// `berry console [--run <id>]`——宿主终端接进客机串口控制台（bsh）。
+/// 不走 control.sock：直连 run 的 serial.sock 数据面（README 控制面节
+/// 同注；screenshot 的 VNC 兜底同族——attach 数据端点，不经控制面）。
+pub fn console(run: Option<&str>) -> Result<()> {
+    // 非 Unix 诚实拒（先于 find_run——拒绝不需要解析 run）：件1 的串口
+    // chardev socket 是 unix path 形态，非 Unix 平台维持 -serial file:
+    // 单向落盘（qemu.rs machine_args 注记）——serial.sock 永不出现，
+    // chardev TCP 化跟进前无从接入。
+    #[cfg(not(unix))]
+    let _ = run;
+    #[cfg(not(unix))]
+    return Err(BerryError::env(
+        "console is not supported yet on this platform (serial chardev TCP pending)",
+    )
+    .with_hint("非 Unix 维持 -serial file: 单向落盘；chardev TCP 化后跟进"));
+    #[cfg(unix)]
+    return console_attach(&find_run(run)?);
+}
+
+// ---- 件2 主链（unix）：前置检查 → 独占锁 → 连接（拒连重试）→ TTY
+// ---- raw → 双向泵 → join + 恢复终端 + 一行收尾。
+#[cfg(unix)]
+fn console_attach(run: &Path) -> Result<()> {
+    use std::io::Read as _;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let sock = run.join("serial.sock");
+    if !sock.exists() {
+        // 件1 前起的老 run：QEMU 起于 -serial file:，从无 serial.sock。
+        return Err(BerryError::env(format!(
+            "run {} 起于旧 -serial file: 形态，无 console 端点",
+            run.display()
+        ))
+        .with_hint(format!(
+            "重启该 run（berry device restart --run {}）即以 chardev 形态重生出 serial.sock",
+            run.display()
+        )));
+    }
+    // 锁先于连接：防两个 console 赛跑抢连（后者只会成为不被服务的僵尸）。
+    let _lock = lock_console(run)?;
+    let stream = connect_serial(&sock)?;
+    // try_clone 先于 raw：clone 失败的 ? 早退不带终端副作用（raw 之后
+    // 的路径再无 ? ——恢复收敛在主链收尾处）。
+    let wsock = stream.try_clone()?;
+    let saved_tty = stdin_raw();
+
+    let exit = Arc::new(AtomicBool::new(false));
+    // 写泵：stdin 逐字节读 → socket 写。读到 0x04（Ctrl-D，bsh 语义的
+    // 退出键）或 EOF → 置退出旗标并 shutdown socket 读端——读泵的阻塞
+    // read 立即返 0 收尾（QEMU 不会因我们停写而关连接，不主动断读端
+    // 读泵会挂到 QEMU 死）。
+    let wexit = Arc::clone(&exit);
+    let writer = std::thread::spawn(move || {
+        let mut wsock = wsock;
+        let mut stdin = std::io::stdin();
+        let mut b = [0u8; 1];
+        loop {
+            if wexit.load(Ordering::SeqCst) {
+                break;
+            }
+            match stdin.read(&mut b) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    if b[0] == 0x04 {
+                        break;
+                    }
+                    if wsock.write_all(&b).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+        wexit.store(true, Ordering::SeqCst);
+        let _ = wsock.shutdown(std::net::Shutdown::Read);
+    });
+    // 读泵：socket 块读 → stdout 写 + flush。Ok(0)/Err（对端断：QEMU
+    // 退出或原地重启）→ 置退出旗标。
+    let rexit = Arc::clone(&exit);
+    let reader = std::thread::spawn(move || {
+        let mut stream = stream;
+        let mut out = std::io::stdout();
+        let mut buf = [0u8; 4096];
+        loop {
+            match stream.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if out.write_all(&buf[..n]).is_err() || out.flush().is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+        rexit.store(true, Ordering::SeqCst);
+    });
+    // 主线程收尾：join 双泵 → 恢复终端 → 一行退场注记。余量（如实）：
+    // QEMU 先死而 stdin 空闲时 writer 卡在 tty 阻塞读——最后一键任何
+    // 字节即收尾（旗标短路/写死 socket 得错退）或 Ctrl-D 直退；std 无
+    // 带超时 join，此边界接受。
+    let _ = reader.join();
+    let _ = writer.join();
+    restore_tty(&saved_tty);
+    eprintln!("console: disconnected（run 继续运行；berry logs 可查历史）");
+    Ok(())
+}
+
+// ---- 件2 第 2 步：run 目录 console.lock 独占锁。chardev 单活客户端，
+// ---- 第二连接只是不被服务的僵尸（qemu.rs serial_chardev_args 注记）
+// ---- ——flock 把静默僵尸升格为显式拒绝。锁文件生命周期 = 命令进程持
+// ---- fd 到退出（drop 关 fd 即释放；0 长文件留 run 目录无害，cleanup
+// ---- 随 run 删）。
+#[cfg(unix)]
+fn lock_console(run: &Path) -> Result<std::fs::File> {
+    use std::os::fd::AsRawFd;
+    let lock = run.join("console.lock");
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&lock)?;
+    // 拿不到先复探再定性（3×50ms）：close 后的锁释放可有 vnode 级滞后
+    // （macOS 并行负载下实测偶发）——前会话刚退、紧接重进时瞬时
+    // EWOULDBLOCK 会误报「已有会话」。复探仍拒才是真持有（真持有方
+    // 多等 100ms 才收拒，换报错可信度）。
+    for attempt in 0..3 {
+        // SAFETY: flock 只对我们自己 open 的 fd 施加 LOCK_EX|LOCK_NB
+        // ——不阻塞、不写文件、不碰他进程的锁（拿不到返
+        // -1/EWOULDBLOCK）。
+        let rc = unsafe {
+            console_ffi::flock(f.as_raw_fd(), console_ffi::LOCK_EX | console_ffi::LOCK_NB)
+        };
+        if rc == 0 {
+            return Ok(f);
+        }
+        if attempt < 2 {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    Err(BerryError::device(format!(
+        "console session already active for {} (console.lock held)",
+        run.display()
+    ))
+    .with_hint("另一个终端正持该 run 的 console；在那边 Ctrl-D 退出后再来"))
+}
+
+// ---- 件2 第 3 步：连接 serial.sock。chardev socket backlog=1 有偶发
+// ---- 拒连窗（件1 侦察实证 5 连 4 即成）——0.5s sleep 重试 ≤8 次仍败
+// ---- 才报错。重试参数可注入是单测面（生产 8×500ms 不可入测）。
+#[cfg(unix)]
+fn connect_serial(sock: &Path) -> Result<std::os::unix::net::UnixStream> {
+    connect_with_retry(sock, 8, Duration::from_millis(500))
+}
+
+#[cfg(unix)]
+fn connect_with_retry(
+    sock: &Path,
+    retries: u32,
+    delay: Duration,
+) -> Result<std::os::unix::net::UnixStream> {
+    let mut last = String::new();
+    for attempt in 0..=retries {
+        if attempt > 0 {
+            std::thread::sleep(delay);
+        }
+        match std::os::unix::net::UnixStream::connect(sock) {
+            Ok(s) => return Ok(s),
+            Err(e) => last = e.to_string(),
+        }
+    }
+    Err(BerryError::device(format!(
+        "cannot connect to console endpoint {} ({last})",
+        sock.display()
+    ))
+    .with_hint(
+        "serial.sock 在但拒连——run 可能已死（berry device status 复核）或 backlog 偶发窗（已 8×0.5s 重试）",
+    ))
+}
+
+// ---- 件2 第 4 步：TTY raw（仅 stdin 是 TTY 时——std::io::IsTerminal；
+// ---- 管道驱动面跳过：EOF 即退出，无行编辑可扰）。Ctrl-C 注记：raw
+// ---- 模式下 0x03 是字节转发——ISIG 清位后宿主 tty 不再把它变 SIGINT
+// ---- 截杀本进程，字节直达客机 bsh 行编辑（bsh Ctrl-C 杀链真语义）；
+// ---- 本命令自己的退出键是 Ctrl-D（0x04，写泵识别即断开）。保存原
+// ---- termios 退出恢复。写法贴 windows_console.rs 房内 FFI 先例。
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn stdin_raw() -> Option<termios_ffi::Termios> {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        return None;
+    }
+    let mut t = termios_ffi::zeroed();
+    // SAFETY: tcgetattr 只往我们的 Termios 镜像里写（fd 0 读取语义，
+    // 无副作用）。
+    if unsafe { termios_ffi::tcgetattr(0, &mut t) } != 0 {
+        return None;
+    }
+    let saved = t;
+    termios_ffi::set_raw(&mut t);
+    // SAFETY: tcsetattr 把改后的镜像写回 fd 0（TCSANOW 立即生效）。
+    // 失败不致命——退化为行缓冲，console 仍可用。
+    if unsafe { termios_ffi::tcsetattr(0, termios_ffi::TCSANOW, &t) } != 0 {
+        return None;
+    }
+    Some(saved)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn restore_tty(saved: &Option<termios_ffi::Termios>) {
+    let Some(saved) = saved else { return };
+    // SAFETY: 写回 tcgetattr 存下的原值（尽力而为——进程随后即退，
+    // 极端残留 raw 态的坏终端可 `reset` 修）。
+    unsafe { let _ = termios_ffi::tcsetattr(0, termios_ffi::TCSANOW, saved); }
+}
+
+// 其他 Unix 宿主（非 macOS/Linux）：termios 镜像未手写，不开 raw——
+// console 仍通（行缓冲+回显的代价），诚实降级。
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
+fn stdin_raw() -> Option<std::convert::Infallible> {
+    None
+}
+
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
+fn restore_tty(_saved: &Option<std::convert::Infallible>) {}
+
+// ---- 件2 的 FFI 面（写法贴 windows_console.rs:13-24 房内先例：显式
+// ---- #[link] + extern 块、调用点逐处 SAFETY 注记）。std 无 flock 与
+// ---- termios——run 独占锁与 TTY raw 直链 libc。
+#[cfg(unix)]
+mod console_ffi {
+    // flock(2) 选项位（macOS/Linux 同值）：LOCK_EX 独占、LOCK_NB 拿不
+    // 到即返 -1（EWOULDBLOCK）不挂起。
+    pub const LOCK_EX: i32 = 2;
+    pub const LOCK_NB: i32 = 4;
+
+    #[link(name = "c")]
+    extern "C" {
+        pub fn flock(fd: i32, operation: i32) -> i32;
+    }
+}
+
+// termios 最小镜像（件2 第 4 步）：按宿主布局手写——macOS aarch64 与
+// Linux glibc 两形。safe 面只动 c_lflag 与 c_cc[VMIN/VTIME]，其余字段
+// 由 tcgetattr/tcsetattr 经裸指针原样往返（编译器看不见该访问面，整
+// 结构 allow(dead_code)）。
+#[cfg(all(unix, any(target_os = "macos", target_os = "linux")))]
+mod termios_ffi {
+    // tcsetattr 动作位：立即生效（两平台同值 0）。
+    pub const TCSANOW: i32 = 0;
+
+    // macOS 布局：tcflag_t=u64 ×4 + c_cc[20]（NCCS=20）+ speed ×2。
+    // c_cc 下标：VMIN=16 VTIME=17；c_lflag 位：ICANON=0x100 ECHO=0x8
+    // ISIG=0x40。
+    #[cfg(target_os = "macos")]
+    #[allow(dead_code)]
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct Termios {
+        pub c_iflag: u64,
+        pub c_oflag: u64,
+        pub c_cflag: u64,
+        pub c_lflag: u64,
+        pub c_cc: [u8; 20],
+        pub c_ispeed: u64,
+        pub c_ospeed: u64,
+    }
+
+    // Linux glibc 布局：tcflag_t=u32 ×4 + c_line + c_cc[32]（NCCS=32）
+    // + speed ×2。c_cc 下标：VMIN=6 VTIME=5；c_lflag 位：ICANON=0x2
+    // ECHO=0x8 ISIG=0x1。
+    #[cfg(target_os = "linux")]
+    #[allow(dead_code)]
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct Termios {
+        pub c_iflag: u32,
+        pub c_oflag: u32,
+        pub c_cflag: u32,
+        pub c_lflag: u32,
+        pub c_line: u8,
+        pub c_cc: [u8; 32],
+        pub c_ispeed: u32,
+        pub c_ospeed: u32,
+    }
+
+    #[link(name = "c")]
+    extern "C" {
+        pub fn tcgetattr(fd: i32, t: *mut Termios) -> i32;
+        pub fn tcsetattr(fd: i32, action: i32, t: *const Termios) -> i32;
+    }
+
+    pub fn zeroed() -> Termios {
+        // SAFETY: 全零位模式对纯整型/字节数组结构有效（tcgetattr 随后
+        // 整体覆写）。
+        unsafe { std::mem::zeroed() }
+    }
+
+    /// raw 语义（件2 规格）：c_lflag 清 ICANON|ECHO，c_cc[VMIN]=1
+    /// c_cc[VTIME]=0（逐字节即时读）。ISIG 一并清——Ctrl-C（0x03）在
+    /// raw 模式是字节转发，宿主 tty 不得把它变 SIGINT 截杀本进程
+    /// （语义注记见 stdin_raw）。
+    pub fn set_raw(t: &mut Termios) {
+        #[cfg(target_os = "macos")]
+        {
+            t.c_lflag &= !(0x0000_0100 | 0x0000_0008 | 0x0000_0040);
+            t.c_cc[16] = 1; // VMIN
+            t.c_cc[17] = 0; // VTIME
+        }
+        #[cfg(target_os = "linux")]
+        {
+            t.c_lflag &= !(0x2 | 0x8 | 0x1);
+            t.c_cc[6] = 1; // VMIN
+            t.c_cc[5] = 0; // VTIME
+        }
+    }
+}
+
 pub(crate) fn find_run(id: Option<&str>) -> Result<PathBuf> {
     if let Some(id) = id {
         let p = if Path::new(id).is_dir() {
@@ -2690,6 +3008,82 @@ mod vnc_reachable_tests {
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(tmp.join("vnc.sock"), "").unwrap();
         assert!(!vnc_reachable(&tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
+
+// ---- 件2 护栏：可单测面 = 锁语义（flock 锁在 open file description
+// ---- 上，同进程两个独立 open 的 fd 即互斥——无需跨进程 mock）与
+// ---- 前置/连接参数面（旧形态报错、重试注入）。socket 泵与 TTY raw
+// ---- 需真 QEMU/真终端，不可单测——如实记，验证走实机交互冒烟。
+#[cfg(all(unix, test))]
+mod console_tests {
+    use super::*;
+    use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn console_lock_excludes_second_holder_until_drop() {
+        let tmp = std::env::temp_dir().join(format!("berry-console-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let l1 = lock_console(&tmp).unwrap();
+        // 第二持有者（独立 open 的 fd）：LOCK_EX|LOCK_NB 必拒。
+        let err = lock_console(&tmp).unwrap_err();
+        assert!(err.message.contains("already active"), "{}", err.message);
+        assert!(err.hint.is_some_and(|h| h.contains("console")));
+        // drop 关 fd 即释放：可重取（console.lock 文件留存无害）。close
+        // 后的释放可有 vnode 级滞后（macOS 并行负载下实测偶发）——复探
+        // ≤2s，语义断言「最终可重取」而非瞬时。
+        drop(l1);
+        let mut l2 = None;
+        for _ in 0..200 {
+            match lock_console(&tmp) {
+                Ok(f) => {
+                    l2 = Some(f);
+                    break;
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        let _l2 = l2.expect("drop 释放后 2s 内应可重取 console.lock");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn old_style_run_without_sock_errors_with_restart_hint() {
+        let tmp = std::env::temp_dir().join(format!("berry-console-old-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("meta.json"), "{}").unwrap();
+        let err = console_attach(&tmp).unwrap_err();
+        assert!(err.message.contains("无 console 端点"), "{}", err.message);
+        let hint = err.hint.unwrap();
+        assert!(hint.contains("restart"), "{hint}");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn connect_retry_dead_sock_fails_after_injected_retries() {
+        let tmp = std::env::temp_dir().join(format!("berry-console-dead-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // 普通文件冒充 sock（run 死后残留形态）：connect 必拒——重试
+        // 2×1ms 快速失败（生产 8×0.5s 的参数面不可入测，形态面等价）。
+        std::fs::write(tmp.join("serial.sock"), "").unwrap();
+        let err =
+            connect_with_retry(&tmp.join("serial.sock"), 2, Duration::from_millis(1)).unwrap_err();
+        assert!(err.message.contains("cannot connect"), "{}", err.message);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn connect_retry_live_listener_first_attempt() {
+        let tmp = std::env::temp_dir().join(format!("berry-console-live-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let _l = UnixListener::bind(tmp.join("serial.sock")).unwrap();
+        // 活 listener：0 次重试参数下首连即成（不 sleep）。
+        connect_with_retry(&tmp.join("serial.sock"), 0, Duration::from_millis(0)).unwrap();
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }
