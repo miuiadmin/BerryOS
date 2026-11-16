@@ -1,6 +1,6 @@
 //! Channel 端点对（3-4b；`IPC设计.md` §2 同步端点、能力模型 §3）。
 //!
-//! v1 语义 = **非阻塞有界队列**（syscall 主体不可抢占 → 无阻塞路径）：
+//! v1 语义 = **非阻塞有界队列**（syscall 主体经段级 preempt_disable 包络维持不可抢占（G3 全抢占后非天然性质）→ 无阻塞路径）：
 //! - `send`：门控 RIGHT_SEND，消息压**对端**队列；满 → -EBUSY；
 //! - `recv`：门控 RIGHT_RECV，从**本端**队列弹；空 → -EAGAIN；
 //!   ——send/recv 本身 v1 恒非阻塞；**阻塞等空/满走 `object_wait_one`**

@@ -1038,12 +1038,24 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                     berry_sched::set_timer_slack_ns(slack);
                 }
                 None => {
-                    berry_hal_aarch64::uart_puts(b"LOADGEN: bad cfg (want s=<ns>;b=<0|1>)\n");
+                    berry_hal_aarch64::uart_puts(b"LOADGEN: bad cfg (want s=<ns>;b=<0|1|2>)\n");
                 }
             }
         } else {
             berry_hal_aarch64::uart_puts(b"LOADGEN: cfg read fail\n");
         }
+    }
+
+    // CP-14 修订项（06 号 §1·02 号 §③ G 卡收编）：PI 三任务链延迟探针——
+    // 配置早读。fw_cfg 具名键 `opt/berry/pilat` 在位才武装（rt/loadgen 同款
+    // 「机制不是自律」；值面不解析——探针无配置轴，键在即全配置）。早读
+    // 两件事：PILAT_ARMED 置位（spawn 块的自证）+ 测量档 slice_hz（与
+    // loadgen 探针同值 100Hz——缺省 10Hz 的 100ms 唤醒量化窗会把 30ms 级
+    // 链周期信号整吃进量化窗；探针 boot 内部可比）。
+    if berry_hal_aarch64::fwcfg::find_file(PILAT_PROBE_NAME).is_some() {
+        PILAT_ARMED.store(true, core::sync::atomic::Ordering::Relaxed);
+        // SAFETY: boot 单线程、init 前（set_slice_hz 契约）。
+        unsafe { berry_hal_aarch64::timer::set_slice_hz(PILAT_SLICE_HZ) };
     }
 
     // Phase 2a Step 5：IRQ 派发钩子 + timer 管线（规律 tick，**不从 IRQ 调 switch**）。
@@ -2137,11 +2149,13 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         // 之下）；载荷全 prio 0——「被延迟本身就是待测的调度延迟」（§10）。
         berry_sched::spawn_with_tag(task_lg_master, evs[0], b"lg_master", 8,
                                     ht_lg as *mut HandleTable as usize);
-        // b 臂分派：b=1 = spawn_intent（intent→band 分派面——现役带
-        // interactive/utility，[band] 行自证）；b=0 = plain spawn（缺省
-        // UNSPECIFIED：无带、无 slack 资格——两臂同代码路径，差只在 intent
-        // 声明面，A/B 可归因）。
-        if band {
+        // b 臂分派：b≥1 = sleeper 走 spawn_intent（intent→band 分派面，
+        // [band] 行自证）；b=0 = plain spawn（缺省 UNSPECIFIED：无带、无
+        // slack 资格——臂间同代码路径，差只在 intent 声明面，A/B 可归因）。
+        // b=2 追加：过载源 lg_bu 落 BACKGROUND 带（四带全开轴——BG 带
+        // quantum 40ms/权重 1..64/latency 250ms 对过载源的执法面；b<2 时
+        // 两臂同形 UNSPECIFIED——13/14 号口径保真）。
+        if band >= 1 {
             berry_sched::spawn_intent(task_lg_slp, 0, b"lg_ia0",
                                       berry_sched::INTENT_INTERACTIVE);
             berry_sched::spawn_intent(task_lg_slp, 1, b"lg_ia1",
@@ -2156,16 +2170,91 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
             berry_sched::spawn(task_lg_slp, 2, b"lg_ut0");
             berry_sched::spawn(task_lg_slp, 3, b"lg_ut1");
         }
-        // 过载源两臂同形（UNSPECIFIED——b 臂语义差只在 sleeper 的 intent 面）。
-        berry_sched::spawn(task_lg_bu, 0, b"lg_bu0");
-        berry_sched::spawn(task_lg_bu, 0, b"lg_bu1");
+        if band == 2 {
+            berry_sched::spawn_intent(task_lg_bu, 0, b"lg_bu0",
+                                      berry_sched::INTENT_BACKGROUND);
+            berry_sched::spawn_intent(task_lg_bu, 0, b"lg_bu1",
+                                      berry_sched::INTENT_BACKGROUND);
+        } else {
+            berry_sched::spawn(task_lg_bu, 0, b"lg_bu0");
+            berry_sched::spawn(task_lg_bu, 0, b"lg_bu1");
+        }
         // 门控自证行（SOAK gate on 同款）：行在 ⟺ 载荷已 spawn + 配置生效。
         berry_hal_aarch64::uart_puts(b"LOADGEN gate on s=");
         berry_hal_aarch64::uart_put_dec(LG_SLACK_NS.load(core::sync::atomic::Ordering::Relaxed));
         berry_hal_aarch64::uart_puts(b" b=");
-        berry_hal_aarch64::uart_put_dec(if band { 1 } else { 0 });
+        berry_hal_aarch64::uart_put_dec(band as u64);
         berry_hal_aarch64::uart_puts(b" slice_hz=");
         berry_hal_aarch64::uart_put_dec(LG_SLICE_HZ);
+        berry_hal_aarch64::uart_puts(b"\n");
+    }
+
+    // ---- CP-14 修订项（06 号 §1·02 号 §③ G 卡收编）：PI 三任务链延迟探针
+    //      spawn（配置早读在 timer::init 前；报告 = research/调度彻底计划/
+    //      17-PI三任务链延迟.md）----
+    // 服务链形三任务 + 干扰者，全真 SVC：pl_hi(32) wait_one(endA_c:READABLE)
+    // 等回复（donor）；pl_mid(16) 持 endA_s:SEND + endB_c:RECV——等原料时是
+    // donor、持回复端时是受捐者（两跳链的中继）；pl_low(0) 持 endB_s:SEND
+    //（「锁」= 原料供给权；thread_sleep 模拟 CS 周期 = 每轮绝对锚）；
+    // pl_inf(8) 长自旋干扰者（无 PI 时低优持有者被其压后 = 无界反转的
+    // 反例源）。三私有表分隔 = 链两跳精确（共表会被粗粒度喷洒成单跳）。
+    // 测量 = pl_hi 每轮 t_req（入 wait 前）→ t_grant（收到回复）的全程
+    // 延迟；界门 = period + 6×slice（忙核唤醒粒度 1 slice + 三跳调度余
+    // 量，02 号 §⑤「PI 链式有界」的数据面）。门控同 rt 块形：缺席 =
+    // run/smoke 零扰动，EFI 路天然缺席。
+    if PILAT_ARMED.load(core::sync::atomic::Ordering::Relaxed) {
+        let ht_hi: &'static mut HandleTable =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        let ht_mid: &'static mut HandleTable =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        let ht_low: &'static mut HandleTable =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(HandleTable::new()));
+        let h_a_c = ht_hi
+            .insert(KernelObj::Channel(ChannelEnd::try_unpaired(false).expect("main: 建 endA_c")),
+                    RIGHT_RECV)
+            .expect("main: endA_c 进 hi 表");
+        let h_a_s = ht_mid
+            .insert(KernelObj::Channel(ChannelEnd::try_unpaired(false).expect("main: 建 endA_s")),
+                    RIGHT_SEND)
+            .expect("main: endA_s 进 mid 表");
+        let h_b_c = ht_mid
+            .insert(KernelObj::Channel(ChannelEnd::try_unpaired(false).expect("main: 建 endB_c")),
+                    RIGHT_RECV)
+            .expect("main: endB_c 进 mid 表");
+        let h_b_s = ht_low
+            .insert(KernelObj::Channel(ChannelEnd::try_unpaired(false).expect("main: 建 endB_s")),
+                    RIGHT_SEND)
+            .expect("main: endB_s 进 low 表");
+        let (p_a_c, p_a_s) = (
+            ht_hi.get_raw(h_a_c, ObjType::Channel, 0).expect("main: 取 endA_c").0,
+            ht_mid.get_raw(h_a_s, ObjType::Channel, 0).expect("main: 取 endA_s").0,
+        );
+        // SAFETY: 两端刚 insert + get_raw 过（在表、类型 Channel）——pair 互钉。
+        unsafe { ChannelEnd::pair(p_a_c, p_a_s) };
+        let (p_b_c, p_b_s) = (
+            ht_mid.get_raw(h_b_c, ObjType::Channel, 0).expect("main: 取 endB_c").0,
+            ht_low.get_raw(h_b_s, ObjType::Channel, 0).expect("main: 取 endB_s").0,
+        );
+        // SAFETY: 同上。
+        unsafe { ChannelEnd::pair(p_b_c, p_b_s) };
+        // spawn 序无关（四任务 prio 互异，出选序由 eff 决定）；arg 打包
+        //（spawn 单 usize 参）：hi = h_a_c；mid = (h_a_s << 32) | h_b_c；
+        // low = h_b_s；inf = 0。
+        berry_sched::spawn_with_tag(task_pilat_low, h_b_s as usize, b"pl_low", 0,
+                                    ht_low as *mut HandleTable as usize);
+        berry_sched::spawn_with_tag(task_pilat_mid,
+                                    ((h_a_s as usize) << 32) | h_b_c as usize,
+                                    b"pl_mid", 16, ht_mid as *mut HandleTable as usize);
+        berry_sched::spawn_with(task_pilat_inf, 0, b"pl_inf", 8);
+        berry_sched::spawn_with_tag(task_pilat_hi, h_a_c as usize, b"pl_hi", 32,
+                                    ht_hi as *mut HandleTable as usize);
+        // 门控自证行（SOAK gate on 同款）：行在 ⟺ 四任务已 spawn + 档已生效。
+        berry_hal_aarch64::uart_puts(b"PILAT gate on rounds=");
+        berry_hal_aarch64::uart_put_dec(PILAT_ROUNDS as u64);
+        berry_hal_aarch64::uart_puts(b" period_ms=");
+        berry_hal_aarch64::uart_put_dec(PILAT_PERIOD_MS);
+        berry_hal_aarch64::uart_puts(b" slice_hz=");
+        berry_hal_aarch64::uart_put_dec(PILAT_SLICE_HZ);
         berry_hal_aarch64::uart_puts(b"\n");
     }
 
@@ -4638,7 +4727,7 @@ const _: () = {
 ///   随样本序线性涨——量出的是**漂移**不是**延迟**（对调度器的错误指控；
 ///   4·slice 档同 boot 实测 p50=4M = 真实唤醒延迟 ≤1 tick）。再锚后每样本
 ///   回到「δ 未来请求的唤醒延迟」语义（短档量出的正是定时器粒度本身
-///   ——tier-1 p50 ≈ 1 slice 量级是 v1 的诚实答案，arm-to-nearest-deadline
+///   ——tier-1 p50 ≈ 1 slice 量级是 v1 的诚实答案，arm-to-nearest-deadline（已落地 2026-11-15 oneshot 三件套，R-1 三档塌缩 33×）
 ///   （优化议程挂账）落地后该值应塌缩，本基准即其验收面）。
 /// - oversleep = wake_vct − deadline，`checked_sub` 负值 panic（提前醒 = 再睡
 ///   循环破损 bug——L0 严格执法，R-0 on_wake 负延迟 panic 同款；正常统计
@@ -4763,7 +4852,11 @@ const LG_CAP: usize = 128;
 
 /// A/B 配置（boot 早窗解析 fw_cfg 值落地；spawn 块与任务体读此）。
 static LG_SLACK_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-static LG_BAND_ARM: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// b 臂档位（CP-09 EAS M2 四带全开后扩：0 = 无 intent 基线 / 1 = 两带
+///（sleeper 落 interactive/utility——13/14 号口径）/ 2 = 四带（过载源
+/// lg_bu 改落 BACKGROUND 带——18 号四带复测轴；LC 带本探针无对应
+/// 载荷，留带专项）。
+static LG_BAND_ARM: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 static LG_ARMED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// 采样面：写方 = 本类 sleeper（游标 fetch_add 单赢家槽写，Relaxed 纯计数
@@ -4793,12 +4886,13 @@ fn lg_ms_cycles(ms: u64) -> u64 {
 }
 
 /// 解析 loadgen 配置值 `s=<u64>,b=<0|1>`（fw_cfg string 字节；严格拒面）。
-fn lg_parse_cfg(b: &[u8]) -> Option<(u64, bool)> {
+fn lg_parse_cfg(b: &[u8]) -> Option<(u64, u8)> {
     let s = core::str::from_utf8(b).ok()?.trim_end();
     let (a, c) = s.split_once(';')?;
     let band = match c.strip_prefix("b=")? {
-        "0" => false,
-        "1" => true,
+        "0" => 0,
+        "1" => 1,
+        "2" => 2, // 四带全开臂（CP-09 EAS M2 后：burst→BACKGROUND 带——18 号复测轴）
         _ => return None,
     };
     Some((a.strip_prefix("s=")?.parse().ok()?, band))
@@ -4959,6 +5053,236 @@ extern "C" fn task_lg_master(arg: usize) -> ! {
         berry_hal_aarch64::uart_puts(b"LOADGEN ok\n");
     });
     exit_current()
+}
+
+// ---- CP-14 修订项：PI 三任务链延迟探针（spawn 块见上方 loadgen 块后；
+//      配置早读见 timer::init 前；报告 = research/调度彻底计划/
+//      17-PI三任务链延迟.md）----
+
+/// 探针的 fw_cfg 具名项名（LOADGEN_PROBE_NAME 同款「两侧对读维护」纪律）。
+const PILAT_PROBE_NAME: &str = "opt/berry/pilat";
+
+/// 测量档 slice 频率（LG_SLICE_HZ 同值同因——100Hz/10ms 换唤醒量化分辨率；
+/// 缺省 10Hz 的 100ms 量化窗会吃掉 30ms 级链周期信号）。
+const PILAT_SLICE_HZ: u64 = 100;
+
+/// 轮数（样本量；p99 = 最近秩——n<100 时与 max 重合是诚实上界）。
+const PILAT_ROUNDS: usize = 40;
+/// 低优 driver 周期（每轮链生产间隔 = 测量节拍器；> slice 保证量化窗不吃
+/// 周期信号）。
+const PILAT_PERIOD_MS: u64 = 30;
+/// 开跑宽限（PI/INTENT/FAST/AIDEMO 等 boot 验收对收尾——16/32 档若在
+/// 测量窗内会以同权 FIFO 加噪）。
+const PILAT_GRACE_MS: u64 = 1000;
+/// 干扰者起转延迟（pl_low 首跑窗：读钟 + 落座首轮睡眠。无此窗 pl_low
+///（prio 0）永不首跑 = 探针挂死——inf(8) 恒压 prio 0）。
+const PILAT_INF_DELAY_MS: u64 = 100;
+/// 每轮 wait 帽（链断 = 超时 -ETIMEDOUT → 断言红，fail loud）。
+const PILAT_CAP_MS: u64 = 10_000;
+
+/// 探针武装位（早读置位 / spawn 块消费）。
+static PILAT_ARMED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// 收工旗（hi 统计完置位；inf 自旋出口）。
+static PILAT_END: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// 低/中收工计数（Release 写 / hi Acquire 等待——序发布同 LG_DONE 族）。
+static PILAT_LOW_DONE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static PILAT_MID_DONE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+/// 链解析时间戳（ns；写方 = 对应任务 send 前一刻，读方 = hi 统计段）。
+static PILAT_LO_SEND: [core::sync::atomic::AtomicU64; PILAT_ROUNDS] =
+    [const { core::sync::atomic::AtomicU64::new(0) }; PILAT_ROUNDS];
+static PILAT_MID_SEND: [core::sync::atomic::AtomicU64; PILAT_ROUNDS] =
+    [const { core::sync::atomic::AtomicU64::new(0) }; PILAT_ROUNDS];
+
+/// pl_low（prio 0，持 endB_s:SEND——「锁」持有者/链尾）：每轮睡到绝对锚
+///（grace + (r+1)·period——CS 周期模拟）→ 记 send 前时刻 → 发一条原料
+///（唤醒 mid）。醒时 PI 链已建（hi/mid 双双挂队）→ eff 32 → preempt
+/// inf(8) 即刻出选 = 被测机制；无 PI 则被 inf 压后 = 无界反转反例。
+extern "C" fn task_pilat_low(arg: usize) -> ! {
+    use crate::syscall::{NR_CHANNEL_SEND, NR_CLOCK_READ, NR_THREAD_SLEEP};
+    let h_b_s = arg as u32;
+    let work = *b"PLW\0";
+    let mut now: u64 = 0;
+    // SAFETY: svc 同步异常；now 为本任务私有栈变量（内核高半）。
+    let pnow = core::ptr::addr_of_mut!(now) as u64;
+    assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "pl_low: clock_read");
+    let t0 = now;
+    let period_ns = PILAT_PERIOD_MS * 1_000_000;
+    let grace_ns = PILAT_GRACE_MS * 1_000_000;
+    for r in 0..PILAT_ROUNDS {
+        let d = t0 + grace_ns + (r as u64 + 1) * period_ns;
+        assert_eq!(svc4(NR_THREAD_SLEEP as u64, d, 0, 0), 0,
+                   "pl_low: thread_sleep 第 {} 轮（CS 周期）", r + 1);
+        assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "pl_low: clock_read");
+        PILAT_LO_SEND[r].store(now, core::sync::atomic::Ordering::Relaxed);
+        assert_eq!(svc6(NR_CHANNEL_SEND as u64, h_b_s as u64,
+                        work.as_ptr() as u64, 4, 0, 0, 0), 0,
+                   "pl_low: send 原料第 {} 轮（唤醒 mid）", r + 1);
+    }
+    PILAT_LOW_DONE.store(1, core::sync::atomic::Ordering::Release);
+    berry_sched::exit_current()
+}
+
+/// pl_mid（prio 16，链中继）：wait_one(endB_c:READABLE) 等原料（donor——
+/// 受捐对象 = 持 endB_s 的 pl_low）→ recv → 记 reply 前时刻 → send 回复
+///（唤醒 pl_hi）。持 endA_s:SEND = pl_hi 的受捐面；醒后形 B 环上保 32。
+extern "C" fn task_pilat_mid(arg: usize) -> ! {
+    use crate::syscall::{NR_CHANNEL_RECV, NR_CHANNEL_SEND, NR_CLOCK_READ, NR_OBJECT_WAIT_ONE};
+    let h_b_c = arg as u32;
+    let h_a_s = (arg >> 32) as u32;
+    let reply = *b"PLR\0";
+    let mut now: u64 = 0;
+    // SAFETY: 同 pl_low。
+    let pnow = core::ptr::addr_of_mut!(now) as u64;
+    let mut observed: u64 = 0;
+    let pobs = core::ptr::addr_of_mut!(observed) as u64;
+    let mut buf = [0u8; 8];
+    let mut hs = [0u32; 4];
+    let (mut n, mut nh): (u64, u64);
+    for r in 0..PILAT_ROUNDS {
+        assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "pl_mid: clock_read");
+        assert_eq!(svc6(NR_OBJECT_WAIT_ONE as u64, h_b_c as u64,
+                        crate::handle::SIGNAL_READABLE,
+                        now + PILAT_CAP_MS * 1_000_000, pobs, 0, 0), 0,
+                   "pl_mid: wait 原料第 {} 轮（超时 = 链断）", r + 1);
+        assert!(observed & crate::handle::SIGNAL_READABLE != 0,
+                "pl_mid: observed 须含 READABLE");
+        n = 8;
+        nh = 4;
+        assert_eq!(svc6(NR_CHANNEL_RECV as u64, h_b_c as u64, buf.as_mut_ptr() as u64,
+                        core::ptr::addr_of_mut!(n) as u64, hs.as_mut_ptr() as u64,
+                        core::ptr::addr_of_mut!(nh) as u64, 0), 0,
+                   "pl_mid: recv 原料第 {} 轮", r + 1);
+        assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "pl_mid: clock_read");
+        PILAT_MID_SEND[r].store(now, core::sync::atomic::Ordering::Relaxed);
+        assert_eq!(svc6(NR_CHANNEL_SEND as u64, h_a_s as u64,
+                        reply.as_ptr() as u64, 4, 0, 0, 0), 0,
+                   "pl_mid: send 回复第 {} 轮（唤醒 pl_hi）", r + 1);
+    }
+    PILAT_MID_DONE.store(1, core::sync::atomic::Ordering::Release);
+    berry_sched::exit_current()
+}
+
+/// pl_inf（prio 8，干扰者）：起转延迟后长自旋至收工旗——「无 PI 时低优
+/// 持有者被中优干扰者压后 = 无界反转」的反例源；PI 生效时被链头 32 档
+/// 恒压（每跳解锁即刻 preempt）。
+extern "C" fn task_pilat_inf(_arg: usize) -> ! {
+    use crate::syscall::{NR_CLOCK_READ, NR_THREAD_SLEEP};
+    let mut now: u64 = 0;
+    // SAFETY: 同 pl_low。
+    let pnow = core::ptr::addr_of_mut!(now) as u64;
+    assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "pl_inf: clock_read");
+    assert_eq!(svc4(NR_THREAD_SLEEP as u64,
+                    now + PILAT_INF_DELAY_MS * 1_000_000, 0, 0), 0,
+               "pl_inf: 起转延迟（pl_low 首跑窗）");
+    while !PILAT_END.load(core::sync::atomic::Ordering::Acquire) {
+        core::hint::spin_loop();
+    }
+    berry_sched::exit_current()
+}
+
+/// pl_hi（prio 32，链头 donor + 报告者）：grace 宽限后进入测量环——每轮
+/// 记 t_req（入 wait 前）→ wait_one(endA_c:READABLE) 睡（阻塞 = 请求入队，
+/// PI 边即刻闭合）→ 被回复唤醒 → recv → 记 t_grant；lat = t_grant − t_req。
+/// 全轮完成后有界等低/中收工（自旋会被片到时 tick 切开让它们退场）→
+/// 统计 + 界断言（max ≤ period + 6×slice）+ 串口四行 → 置 END → 退。
+extern "C" fn task_pilat_hi(arg: usize) -> ! {
+    use crate::syscall::{NR_CHANNEL_RECV, NR_CLOCK_READ, NR_OBJECT_WAIT_ONE, NR_THREAD_SLEEP};
+    let h_a_c = arg as u32;
+    let mut now: u64 = 0;
+    // SAFETY: 同 pl_low。
+    let pnow = core::ptr::addr_of_mut!(now) as u64;
+    assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "pl_hi: clock_read");
+    let grace_ns = PILAT_GRACE_MS * 1_000_000;
+    assert_eq!(svc4(NR_THREAD_SLEEP as u64, now + grace_ns, 0, 0), 0,
+               "pl_hi: 宽限睡眠（boot 验收对收尾）");
+    let mut observed: u64 = 0;
+    let pobs = core::ptr::addr_of_mut!(observed) as u64;
+    let mut buf = [0u8; 8];
+    let mut hs = [0u32; 4];
+    let (mut n, mut nh): (u64, u64);
+    let mut lat = [0u64; PILAT_ROUNDS];
+    let mut t_grant = [0u64; PILAT_ROUNDS];
+    for r in 0..PILAT_ROUNDS {
+        assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "pl_hi: clock_read");
+        let t_req = now;
+        assert_eq!(svc6(NR_OBJECT_WAIT_ONE as u64, h_a_c as u64,
+                        crate::handle::SIGNAL_READABLE,
+                        t_req + PILAT_CAP_MS * 1_000_000, pobs, 0, 0), 0,
+                   "pl_hi: wait 回复第 {} 轮（超时 = 链断/反转未闭合）", r + 1);
+        assert!(observed & crate::handle::SIGNAL_READABLE != 0,
+                "pl_hi: observed 须含 READABLE");
+        n = 8;
+        nh = 4;
+        assert_eq!(svc6(NR_CHANNEL_RECV as u64, h_a_c as u64, buf.as_mut_ptr() as u64,
+                        core::ptr::addr_of_mut!(n) as u64, hs.as_mut_ptr() as u64,
+                        core::ptr::addr_of_mut!(nh) as u64, 0), 0,
+                   "pl_hi: recv 回复第 {} 轮", r + 1);
+        assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "pl_hi: clock_read");
+        t_grant[r] = now;
+        lat[r] = now.saturating_sub(t_req);
+    }
+    // 收工序（r1-r3 实跑定谳的形态）：环因果完备——LO_SEND[r]/MID_SEND[r]
+    // 在「产生 hi 第 r 轮 grant 的那次 send」之前落账（store→send→wake→
+    // hi 续行，同核上下文切换为界），hi 走完第 40 轮即可全量读环，**不等**
+    // 低/中的 DONE 旗：三任务尾段（DONE.store+exit）须等 hi 让出 CPU 才
+    // 跑——hi 自旋等旗 = 检查点外的最高 eff 垄断（tick 重选恒 hi），
+    // 且 inf(8) 恒压回落到 0 的 pl_low——r1 实跑即此挂死。正序 = 统计 →
+    // 断言 → 串口 → 置 END（inf 自旋出口读它）→ 退场；随后 mid(16) 续
+    // 行收尾、inf 见 END 退出、pl_low(0) 终选——全链自然解。
+    /// 最近秩分位（permille 千分位；v 已升序——拷贝排序面 320B 栈）。
+    fn pct(v: &[u64], permille: u64) -> u64 {
+        let rank = ((permille * v.len() as u64 + 999) / 1000).clamp(1, v.len() as u64);
+        v[(rank - 1) as usize]
+    }
+    let period_ns = PILAT_PERIOD_MS * 1_000_000;
+    let slice_ns = 1_000_000_000 / PILAT_SLICE_HZ;
+    lat.sort_unstable();
+    let (mn, p50, p99, mx) = (lat[0], pct(&lat, 500), pct(&lat, 990), lat[PILAT_ROUNDS - 1]);
+    assert!(lat.iter().all(|l| *l >= 1_000),
+            "PILAT：lat 值域须 ≥1µs（零延迟 = 未真阻塞）");
+    assert!(p50 >= period_ns / 2,
+            "PILAT：p50 须 ≥ period/2（poll-hit = 同步破绽）");
+    assert!(mx <= period_ns + 6 * slice_ns,
+            "PILAT：max 须 ≤ period+6×slice（{}ns > 界 {}ns——链延迟越界）",
+            mx, period_ns + 6 * slice_ns);
+    // 链解析分量：低优 send → 高优 grant（两跳 + 调度开销 = 界的动态半边）。
+    let mut res = [0u64; PILAT_ROUNDS];
+    for r in 0..PILAT_ROUNDS {
+        let lo = PILAT_LO_SEND[r].load(core::sync::atomic::Ordering::Acquire);
+        assert!(lo > 0 && t_grant[r] >= lo, "PILAT：res[{}] 时序破绽", r);
+        res[r] = t_grant[r] - lo;
+    }
+    res.sort_unstable();
+    let (res_p50, res_p99) = (pct(&res, 500), pct(&res, 990));
+    // 串口四行（G43 拼行包络；µs = ns/1000）。
+    berry_hal_aarch64::kern_lock::with_print_lock(|| {
+        berry_hal_aarch64::uart_puts(b"PILAT lat min=");
+        berry_hal_aarch64::uart_put_dec(mn / 1000);
+        berry_hal_aarch64::uart_puts(b" p50=");
+        berry_hal_aarch64::uart_put_dec(p50 / 1000);
+        berry_hal_aarch64::uart_puts(b" p99=");
+        berry_hal_aarch64::uart_put_dec(p99 / 1000);
+        berry_hal_aarch64::uart_puts(b" max=");
+        berry_hal_aarch64::uart_put_dec(mx / 1000);
+        berry_hal_aarch64::uart_puts(b" n=");
+        berry_hal_aarch64::uart_put_dec(PILAT_ROUNDS as u64);
+        berry_hal_aarch64::uart_puts(b" us\n");
+        berry_hal_aarch64::uart_puts(b"PILAT res p50=");
+        berry_hal_aarch64::uart_put_dec(res_p50 / 1000);
+        berry_hal_aarch64::uart_puts(b" p99=");
+        berry_hal_aarch64::uart_put_dec(res_p99 / 1000);
+        berry_hal_aarch64::uart_puts(b" us (low_send-hi_grant)\n");
+        berry_hal_aarch64::uart_puts(b"PILAT bound period_us=");
+        berry_hal_aarch64::uart_put_dec(PILAT_PERIOD_MS * 1000);
+        berry_hal_aarch64::uart_puts(b" slice_us=");
+        berry_hal_aarch64::uart_put_dec(slice_ns / 1000);
+        berry_hal_aarch64::uart_puts(b" max_cap_us=");
+        berry_hal_aarch64::uart_put_dec((period_ns + 6 * slice_ns) / 1000);
+        berry_hal_aarch64::uart_puts(b"\n");
+        berry_hal_aarch64::uart_puts(b"PILAT ok\n");
+    });
+    PILAT_END.store(true, core::sync::atomic::Ordering::Release);
+    berry_sched::exit_current()
 }
 
 // ---- 方案 B：rwake 真 sleep/wake 唤醒基准（HDR 第二个真实消费者；boot 门控

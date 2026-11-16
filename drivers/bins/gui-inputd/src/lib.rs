@@ -34,12 +34,17 @@ use berry_guiproto::Sample;
 use berry_virtio::input::VirtioInputEvent;
 
 use berry_guiproto::{
-    encode_pointer_event, PointerEvent, BUTTON_L, BUTTON_M, BUTTON_R, INPUT_SAMPLES_MAX,
-    PE_FL_SYNTHESIZED, PHASE_CANCEL, PHASE_DOWN, PHASE_MOVE, PHASE_UP, PRESSURE_UNAVAILABLE,
+    encode_pointer_event, PointerEvent, BUTTON_L, BUTTON_M, BUTTON_R, DEV_KEYBOARD,
+    INPUT_SAMPLES_MAX, PE_FL_SYNTHESIZED, PHASE_CANCEL, PHASE_DOWN, PHASE_MOVE, PHASE_UP,
+    PRESSURE_UNAVAILABLE,
 };
 use berry_virtio::input::{
     ABS_X, ABS_Y, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, BTN_TOUCH, EV_ABS, EV_KEY, EV_SYN,
-    SYN_DROPPED, SYN_REPORT,
+    SYN_DROPPED, SYN_REPORT, KEY_0, KEY_1, KEY_9, KEY_A, KEY_APOSTROPHE, KEY_BACKSLASH,
+    KEY_BACKSPACE, KEY_COMMA, KEY_DOT, KEY_ENTER, KEY_EQUAL, KEY_ESC, KEY_GRAVE, KEY_KPENTER,
+    KEY_L, KEY_LEFTALT, KEY_LEFTBRACE, KEY_LEFTCTRL, KEY_LEFTSHIFT, KEY_MINUS, KEY_P,
+    KEY_Q, KEY_RIGHTBRACE, KEY_RIGHTCTRL, KEY_RIGHTSHIFT, KEY_SEMICOLON, KEY_SLASH, KEY_SPACE,
+    KEY_TAB, KEY_Z, KEY_M,
 };
 
 /// 批累积帽（采样数）：常态批 ≤ 数采样；32/批 = 事件风暴面——诚实截断
@@ -650,6 +655,185 @@ impl PointerPump {
     }
 }
 
+// ---- 键盘泵（与 PointerPump 平行不混道）----
+
+/// 键出向队列帽（`QUEUE_CAP` 同纪律：drain 消费节奏下的弹性容量；满则
+/// 丢新 + 计数——常驻输入源恒有消费方，帽只是防御面）。
+const KEY_QUEUE_CAP: usize = 32;
+
+/// 修正键位拼装：bit0=shift、bit1=ctrl、bit2=alt（字段整体读写；alt 位
+/// v1 维护不消费——为 Alt 组合词汇预留）。
+const MOD_SHIFT: u8 = 1 << 0;
+const MOD_CTRL: u8 = 1 << 1;
+const MOD_ALT: u8 = 1 << 2;
+
+/// 键盘泵：RawInputEvent 流（Linux EV_KEY 码）→ 出向字节流（US 布局
+/// 翻译、修正键感知）。与 [`PointerPump`] 平行不混道——键盘事件不进
+/// 手势状态机，指针事件不进翻译表；两泵在 gui-inputd serve 面汇流出向
+/// （serve_poll 混排，帧形见 [`key_frame`]）。
+///
+/// 词汇与语义：
+/// - 修正键（SHIFT×2 / CTRL×2 / ALT）：value 1/0 置/清位不出向（两枚
+///   物理 Shift 共享一个修正位、Ctrl 同理——不按键计数，双按住松一即清
+///   ，v1 已知简化）；
+/// - EV_KEY 主键 value=1：按表产**恰一个**出向字节（Ctrl+字母 →
+///   `c & 0x1F`、Shift 选双档上档字符）；value=0 吞掉（无按住态追踪
+///   ——重复字节靠设备重发不靠泵）；表外码 ignored 计数、value 非 0/1
+///   同 ignored（PointerPump §5.1 忽略计数同纪律）；
+/// - EV_SYN(SYN_REPORT)：**消费不聚合**——键字节在按压时刻已入队，批界
+///   对键无语义（与 PointerPump 的关批聚合相对）；其余 SYN code 落
+///   ignored；
+/// - 其余 ev_type（EV_ABS/EV_REL 等——键盘设备不该发）：ignored 计数。
+///
+/// [`post_char`] 直喂出向字节（DEV_TEXT 注入面）：绕过翻译表，字节原样
+/// 入队，修正键态不影响——ASCII 恒原样（消灭旧 INJECT 把 ASCII 当 EV_KEY
+/// code 的码域碰撞形态：'a'=97 撞 KEY_RIGHTCTRL）。
+pub struct KeyPump {
+    mods: u8,
+    // 输出队列（FIFO 环——出向字节）
+    queue: [u8; KEY_QUEUE_CAP],
+    q_head: usize,
+    q_len: usize,
+    // 诊断计数（§5.1 忽略计数 + 丢弃诚实面）
+    ignored: u64,
+    dropped_bytes: u64,
+}
+
+impl KeyPump {
+    pub fn new() -> Self {
+        KeyPump {
+            mods: 0,
+            queue: [0; KEY_QUEUE_CAP],
+            q_head: 0,
+            q_len: 0,
+            ignored: 0,
+            dropped_bytes: 0,
+        }
+    }
+
+    /// 喂原始事件（一个 wire 事件一次调用；语义见类型注）。
+    pub fn feed(&mut self, ev: RawInputEvent) {
+        match (ev.ev_type, ev.code) {
+            (EV_KEY, KEY_LEFTSHIFT | KEY_RIGHTSHIFT) => self.set_mod(MOD_SHIFT, ev.value),
+            (EV_KEY, KEY_LEFTCTRL | KEY_RIGHTCTRL) => self.set_mod(MOD_CTRL, ev.value),
+            (EV_KEY, KEY_LEFTALT) => self.set_mod(MOD_ALT, ev.value),
+            (EV_KEY, code) => match ev.value {
+                1 => match translate_key(code, self.mods) {
+                    Some(b) => self.enqueue(b),
+                    None => self.ignored += 1,
+                },
+                0 => {} // 释放吞掉（无按住态追踪面）
+                _ => self.ignored += 1,
+            },
+            (EV_SYN, SYN_REPORT) => {} // 批界消费不聚合（见类型注）
+            _ => self.ignored += 1,
+        }
+    }
+
+    /// 直喂出向字节（DEV_TEXT 注入面——翻译表旁路，见类型注）。
+    pub fn post_char(&mut self, b: u8) {
+        self.enqueue(b);
+    }
+
+    /// 待取字节数。
+    pub fn pending(&self) -> usize {
+        self.q_len
+    }
+
+    /// 取走 pending 出向字节：至多填满 `out`，返回写入数（剩余留队——
+    /// serve_poll 批帽共享，溢出字节留队下轮）。
+    pub fn drain(&mut self, out: &mut [u8]) -> usize {
+        let n = out.len().min(self.q_len);
+        for i in 0..n {
+            out[i] = self.queue[self.q_head];
+            self.q_head = (self.q_head + 1) % KEY_QUEUE_CAP;
+        }
+        self.q_len -= n;
+        n
+    }
+
+    fn set_mod(&mut self, bit: u8, value: i32) {
+        match value {
+            1 => self.mods |= bit,
+            0 => self.mods &= !bit,
+            _ => self.ignored += 1,
+        }
+    }
+
+    fn enqueue(&mut self, b: u8) {
+        if self.q_len == KEY_QUEUE_CAP {
+            self.dropped_bytes += 1; // 丢新 + 计数（QUEUE_CAP 同纪律）
+            return;
+        }
+        self.queue[(self.q_head + self.q_len) % KEY_QUEUE_CAP] = b;
+        self.q_len += 1;
+    }
+}
+
+impl Default for KeyPump {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// QWERTY 首排小写档（`KEY_Q..=KEY_P` 下标序——Linux 码 QWERTY 序与
+/// ASCII 不连号，查表不外推）。
+const ROW_QWERTY: [u8; 10] = [b'q', b'w', b'e', b'r', b't', b'y', b'u', b'i', b'o', b'p'];
+/// 家排小写档（`KEY_A..=KEY_L`）。
+const ROW_HOME: [u8; 9] = [b'a', b's', b'd', b'f', b'g', b'h', b'j', b'k', b'l'];
+/// 末排小写档（`KEY_Z..=KEY_M`）。
+const ROW_BOTTOM: [u8; 7] = [b'z', b'x', b'c', b'v', b'b', b'n', b'm'];
+/// 数字行上档（下标 0..8 = `KEY_1..=KEY_9`、下标 9 = `KEY_0`——US 布局
+/// `!@#$%^&*()`）。
+const SHIFT_DIGITS: [u8; 10] = [b'!', b'@', b'#', b'$', b'%', b'^', b'&', b'*', b'(', b')'];
+
+/// US 布局键翻译（修正键应用后；表外码 None——ignored 计数归调用面）。
+/// Ctrl 只作用于字母（`c & 0x1F`，小写基、Shift 不改果）；Shift 选主键区
+/// 双档上档；Alt 不参与（v1 无 Alt 组合词汇）。
+fn translate_key(code: u16, mods: u8) -> Option<u8> {
+    let shift = mods & MOD_SHIFT != 0;
+    let ctrl = mods & MOD_CTRL != 0;
+    let letter = if (KEY_Q..=KEY_P).contains(&code) {
+        Some(ROW_QWERTY[(code - KEY_Q) as usize])
+    } else if (KEY_A..=KEY_L).contains(&code) {
+        Some(ROW_HOME[(code - KEY_A) as usize])
+    } else if (KEY_Z..=KEY_M).contains(&code) {
+        Some(ROW_BOTTOM[(code - KEY_Z) as usize])
+    } else {
+        None
+    };
+    if let Some(c) = letter {
+        return Some(if ctrl { c & 0x1f } else if shift { c - 32 } else { c });
+    }
+    match code {
+        KEY_1..=KEY_9 => Some(if shift {
+            SHIFT_DIGITS[(code - KEY_1) as usize]
+        } else {
+            b'1' + (code - KEY_1) as u8
+        }),
+        KEY_0 => Some(if shift { SHIFT_DIGITS[9] } else { b'0' }),
+        // 控制键字节（US 终端惯例——Shift 无上档）。
+        KEY_ESC => Some(0x1b),
+        KEY_BACKSPACE => Some(0x08),
+        KEY_TAB => Some(0x09),
+        KEY_ENTER | KEY_KPENTER => Some(0x0a),
+        KEY_SPACE => Some(b' '),
+        // 符号键 US 双档（下档/上档）。
+        KEY_MINUS => Some(if shift { b'_' } else { b'-' }),
+        KEY_EQUAL => Some(if shift { b'+' } else { b'=' }),
+        KEY_LEFTBRACE => Some(if shift { b'{' } else { b'[' }),
+        KEY_RIGHTBRACE => Some(if shift { b'}' } else { b']' }),
+        KEY_SEMICOLON => Some(if shift { b':' } else { b';' }),
+        KEY_APOSTROPHE => Some(if shift { b'"' } else { b'\'' }),
+        KEY_GRAVE => Some(if shift { b'~' } else { b'`' }),
+        KEY_BACKSLASH => Some(if shift { b'|' } else { b'\\' }),
+        KEY_COMMA => Some(if shift { b'<' } else { b',' }),
+        KEY_DOT => Some(if shift { b'>' } else { b'.' }),
+        KEY_SLASH => Some(if shift { b'?' } else { b'/' }),
+        _ => None,
+    }
+}
+
 /// 泵事件 → 协议 wire（编码单源：转 `PointerEvent` 后走 berry-guiproto
 /// `encode_pointer_event`——phase/flags/buttons 值域校验在那侧，坏域 None）。
 pub fn encode_pump_event(out: &mut [u8], ev: &PumpEvent) -> Option<usize> {
@@ -674,6 +858,28 @@ pub fn encode_pump_event(out: &mut [u8], ev: &PumpEvent) -> Option<usize> {
         history_len: ev.history_len,
     };
     encode_pointer_event(out, &pe)
+}
+
+/// 键帧构装（serve_poll 出向混排单源）：键字节 → [`PumpEvent`] 键帧。
+/// 覆载约定：`device_id = DEV_KEYBOARD`、**x = 翻译后字节**（y=0——键无
+/// 坐标语义；窗位注记 wm_annotate 对键帧无意义，serve 面跳过）；其余
+/// 字段恒定：phase=PHASE_DOWN、buttons/flags/pointer_id=0、
+/// pressure=PRESSURE_UNAVAILABLE、零 history。全字段在 berry-guiproto
+/// encode 值域内（host 单测钉 encode/parse 往返）；ts 取调用侧混排时刻。
+pub fn key_frame(ts_ns: u64, byte: u8) -> PumpEvent {
+    PumpEvent {
+        phase: PHASE_DOWN,
+        device_id: DEV_KEYBOARD,
+        buttons: 0,
+        flags: 0,
+        pointer_id: 0,
+        timestamp_ns: ts_ns,
+        x: byte as u32,
+        y: 0,
+        pressure: PRESSURE_UNAVAILABLE,
+        history_len: 0,
+        history: [ZERO_SAMPLE; INPUT_SAMPLES_MAX - 1],
+    }
 }
 
 // ---- host 单测（§8.3——FakeSource 喂确定性序列 + 状态谓词断言）----
@@ -1344,5 +1550,254 @@ mod tests {
         let mut bad = *src;
         bad.history_len = INPUT_SAMPLES_MAX;
         assert!(encode_pump_event(&mut buf, &bad).is_none());
+    }
+
+    // ---- KeyPump（键盘泵——与 PointerPump 平行面；KEY_A 进 PointerPump
+    // 依旧 ignored 的钉板见上 pump_unknown_ignored_counted，两泵不混道）----
+
+    use berry_virtio::input::{KEY_H, KEY_N, KEY_W}; // 仅测面用（生产 import 不收——防非测构建 unused 警告）
+
+    /// 键事件速记（ts 恒定——键泵不消费 ts，帧 ts 在 serve 混排侧打点）。
+    fn kev(code: u16, value: i32) -> RawInputEvent {
+        RawInputEvent { ts_ns: MS, ev_type: EV_KEY, code, value }
+    }
+
+    /// 键 drain 全部并断言字节序列。
+    fn take_k(p: &mut KeyPump, want: &[u8]) {
+        let mut out = [0u8; KEY_QUEUE_CAP];
+        let k = p.drain(&mut out);
+        assert_eq!(k, want.len(), "键 drain 数：期望 {} 实得 {}", want.len(), k);
+        assert_eq!(&out[..k], want);
+    }
+
+    #[test]
+    fn keypump_letter_rows_and_shift_combo() {
+        // 三排小写档（排界抽查：Q/P、A/L、Z/M + 排内中段 W/H/N）+ Shift
+        // 大写档；释放事件（修正键与主键）全吞掉不出向。
+        let mut p = KeyPump::new();
+        p.feed(kev(KEY_Q, 1));
+        p.feed(kev(KEY_P, 1));
+        p.feed(kev(KEY_A, 1));
+        p.feed(kev(KEY_L, 1));
+        p.feed(kev(KEY_Z, 1));
+        p.feed(kev(KEY_M, 1));
+        p.feed(syn(9)); // 批界消费不聚合——不产不吞
+        take_k(&mut p, b"qpalzm");
+        assert_eq!(p.ignored, 0);
+
+        p.feed(kev(KEY_LEFTSHIFT, 1));
+        p.feed(kev(KEY_W, 1));
+        p.feed(kev(KEY_H, 1));
+        p.feed(kev(KEY_N, 1));
+        take_k(&mut p, b"WHN");
+        p.feed(kev(KEY_LEFTSHIFT, 0));
+        p.feed(kev(KEY_W, 1));
+        take_k(&mut p, b"w");
+
+        // 释放吞掉：主键释放 / 修正键置清全零字节。
+        p.feed(kev(KEY_W, 0));
+        p.feed(kev(KEY_RIGHTSHIFT, 1));
+        p.feed(kev(KEY_RIGHTSHIFT, 0));
+        assert_eq!(p.pending(), 0);
+    }
+
+    #[test]
+    fn keypump_digit_row_and_symbol_pairs() {
+        // 数字行 1234567890 / Shift !@#$%^&*()；符号行 US 双档全表
+        //（下档、上档各过一遍）。
+        let mut p = KeyPump::new();
+        for code in KEY_1..=KEY_9 {
+            p.feed(kev(code, 1));
+        }
+        p.feed(kev(KEY_0, 1));
+        take_k(&mut p, b"1234567890");
+
+        p.feed(kev(KEY_LEFTSHIFT, 1));
+        for code in KEY_1..=KEY_9 {
+            p.feed(kev(code, 1));
+        }
+        p.feed(kev(KEY_0, 1));
+        take_k(&mut p, b"!@#$%^&*()");
+        p.feed(kev(KEY_LEFTSHIFT, 0));
+
+        p.feed(kev(KEY_MINUS, 1));
+        p.feed(kev(KEY_EQUAL, 1));
+        p.feed(kev(KEY_LEFTBRACE, 1));
+        p.feed(kev(KEY_RIGHTBRACE, 1));
+        p.feed(kev(KEY_SEMICOLON, 1));
+        p.feed(kev(KEY_APOSTROPHE, 1));
+        p.feed(kev(KEY_GRAVE, 1));
+        p.feed(kev(KEY_BACKSLASH, 1));
+        p.feed(kev(KEY_COMMA, 1));
+        p.feed(kev(KEY_DOT, 1));
+        p.feed(kev(KEY_SLASH, 1));
+        take_k(&mut p, b"-=[];'`\\,./");
+
+        p.feed(kev(KEY_LEFTSHIFT, 1));
+        p.feed(kev(KEY_MINUS, 1));
+        p.feed(kev(KEY_EQUAL, 1));
+        p.feed(kev(KEY_LEFTBRACE, 1));
+        p.feed(kev(KEY_RIGHTBRACE, 1));
+        p.feed(kev(KEY_SEMICOLON, 1));
+        p.feed(kev(KEY_APOSTROPHE, 1));
+        p.feed(kev(KEY_GRAVE, 1));
+        p.feed(kev(KEY_BACKSLASH, 1));
+        p.feed(kev(KEY_COMMA, 1));
+        p.feed(kev(KEY_DOT, 1));
+        p.feed(kev(KEY_SLASH, 1));
+        take_k(&mut p, b"_+{}:\"~|<>?");
+    }
+
+    #[test]
+    fn keypump_control_keys() {
+        // 控制键字节：Enter/KPEnter→0x0A、Backspace→0x08、Tab→0x09、
+        // Esc→0x1B、Space→0x20（Shift 无上档）。
+        let mut p = KeyPump::new();
+        p.feed(kev(KEY_ENTER, 1));
+        p.feed(kev(KEY_KPENTER, 1));
+        p.feed(kev(KEY_BACKSPACE, 1));
+        p.feed(kev(KEY_TAB, 1));
+        p.feed(kev(KEY_ESC, 1));
+        p.feed(kev(KEY_SPACE, 1));
+        p.feed(kev(KEY_LEFTSHIFT, 1));
+        p.feed(kev(KEY_SPACE, 1)); // Shift+Space 仍空格
+        take_k(&mut p, &[0x0a, 0x0a, 0x08, 0x09, 0x1b, 0x20, 0x20]);
+    }
+
+    #[test]
+    fn keypump_ctrl_letter_control_codes() {
+        // Ctrl+字母 → c&0x1F（小写基）；Ctrl+Shift 不改果；Ctrl 松开回
+        // 普通档；Ctrl 对非字母不生效。
+        let mut p = KeyPump::new();
+        p.feed(kev(KEY_LEFTCTRL, 1));
+        p.feed(kev(KEY_A, 1));
+        p.feed(kev(KEY_Z, 1));
+        take_k(&mut p, &[0x01, 0x1a]);
+        p.feed(kev(KEY_LEFTSHIFT, 1));
+        p.feed(kev(KEY_A, 1)); // Ctrl+Shift+A = 同一控制码
+        take_k(&mut p, &[0x01]);
+        p.feed(kev(KEY_LEFTCTRL, 0));
+        p.feed(kev(KEY_A, 1)); // Ctrl 已松、Shift 在 → 大写
+        take_k(&mut p, b"A");
+        p.feed(kev(KEY_LEFTCTRL, 1));
+        p.feed(kev(KEY_SPACE, 1)); // 非字母不吃 Ctrl
+        take_k(&mut p, b" ");
+    }
+
+    #[test]
+    fn keypump_unknown_and_wild_values_ignored() {
+        // 表外码按压 ignored；表外码释放吞掉；野 value（2=autorepeat）
+        // ignored——修正键野 value 不动位；非键盘事件面全 ignored。
+        let mut p = KeyPump::new();
+        p.feed(kev(0x200, 1));
+        assert_eq!(p.pending(), 0);
+        assert_eq!(p.ignored, 1);
+        p.feed(kev(0x200, 0));
+        assert_eq!(p.ignored, 1);
+        p.feed(kev(KEY_A, 2));
+        assert_eq!(p.ignored, 2);
+        p.feed(kev(KEY_LEFTSHIFT, 2));
+        p.feed(kev(KEY_A, 1));
+        take_k(&mut p, b"a");
+        p.feed(ev(9, EV_ABS, ABS_X, 100));
+        p.feed(ev(10, EV_SYN, SYN_DROPPED, 0));
+        // 非 REPORT 的 SYN 码（DROPPED 等）不在消费面——同 unknown 计
+        // ignored（吞而不产字节，但进诊断计数）。
+        assert_eq!(p.ignored, 5);
+    }
+
+    #[test]
+    fn keypump_post_char_passthrough() {
+        // post_char 直通：绕过翻译表、修正键态不影响、字节原样（含非
+        // ASCII 值域 0xff）。
+        let mut p = KeyPump::new();
+        p.feed(kev(KEY_LEFTSHIFT, 1));
+        p.post_char(b'a');
+        p.post_char(b'A');
+        p.post_char(0xff);
+        take_k(&mut p, &[b'a', b'A', 0xff]);
+    }
+
+    #[test]
+    fn keypump_code_domain_collision_pin() {
+        // 码域碰撞钉板：KEY_RIGHTCTRL=97 与 ASCII 'a' 同值——右 Ctrl 是
+        // 独立修正键，按下（含完整 press+SYN 批形态）不得译出 'a'（旧
+        // DEV_TEXT 把 ASCII 直当 EV_KEY code 的同族风险形态）。
+        let mut p = KeyPump::new();
+        assert_eq!(KEY_RIGHTCTRL, 97);
+        assert_eq!(KEY_RIGHTCTRL as u8, b'a');
+        p.feed(kev(KEY_RIGHTCTRL, 1));
+        p.feed(syn(2));
+        assert_eq!(p.pending(), 0);
+        p.feed(kev(KEY_A, 1)); // 右 Ctrl 在席：控制码 0x01，非 'a' 非 97
+        take_k(&mut p, &[0x01]);
+        p.feed(kev(KEY_RIGHTCTRL, 0));
+        p.feed(kev(KEY_A, 1)); // 松开后回小写
+        take_k(&mut p, b"a");
+    }
+
+    #[test]
+    fn keypump_queue_cap_and_drain_fifo() {
+        // 队帽 32：溢出丢新 + 计数；drain 帽在 out.len()、剩余留队
+        //（serve_poll 批帽共享的留队语义）；FIFO 序 + 环回。
+        let mut p = KeyPump::new();
+        for i in 0u8..40 {
+            p.post_char(i);
+        }
+        assert_eq!(p.pending(), 32);
+        assert_eq!(p.dropped_bytes, 8);
+        let mut out = [0u8; 8];
+        assert_eq!(p.drain(&mut out), 8);
+        assert_eq!(out, [0u8, 1, 2, 3, 4, 5, 6, 7]); // 丢新：0..31 在队
+        let mut big = [0u8; 64];
+        assert_eq!(p.drain(&mut big), 24);
+        assert_eq!(big[23], 31);
+        assert_eq!(p.drain(&mut big), 0);
+        assert_eq!(p.pending(), 0);
+        p.post_char(0xaa); // 环回：排空后再灌再排
+        p.post_char(0xbb);
+        take_k(&mut p, &[0xaa, 0xbb]);
+    }
+
+    #[test]
+    fn keypump_fake_source_sequence() {
+        // FakeSource 喂真批形态（QEMU virtio-keyboard 缓冲到 SYN 投递）：
+        // Shift+a 完整批 + 释放批 → 恰 'A' 一字节；pop-feed 循环即 serve
+        // 回环的收割形态（C-4 FakeSrc 同法）。
+        let mut src = FakeSource::new();
+        src.push(kev(KEY_LEFTSHIFT, 1));
+        src.push(kev(KEY_A, 1));
+        src.push(syn(3));
+        src.push(kev(KEY_A, 0));
+        src.push(kev(KEY_LEFTSHIFT, 0));
+        src.push(syn(4));
+        let mut p = KeyPump::new();
+        while let Some(e) = src.pop() {
+            p.feed(e);
+        }
+        take_k(&mut p, b"A");
+        assert_eq!(p.ignored, 0);
+    }
+
+    #[test]
+    fn key_frame_wire_roundtrip() {
+        // 键帧全字段过 berry-guiproto encode 值域校验（guiproto §encode
+        // 单源）+ parse 对拍闭环：覆载约定 device_id=DEV_KEYBOARD、x=字节。
+        for &b in &[0x01, 0x08, 0x0a, 0x1b, 0x20, b'a', b'Z', 0x7f, 0xff] {
+            let ev = key_frame(1234, b);
+            assert_eq!(ev.x, b as u32);
+            let mut buf = [0u8; 80];
+            let n = encode_pump_event(&mut buf, &ev).unwrap();
+            let pe = parse_pointer_event(&buf[..n]).unwrap();
+            assert_eq!(pe.device_id, DEV_KEYBOARD);
+            assert_eq!(pe.phase, PHASE_DOWN);
+            assert_eq!((pe.x, pe.y), (b as u32, 0));
+            assert_eq!(pe.buttons, 0);
+            assert_eq!(pe.flags, 0);
+            assert_eq!(pe.pointer_id, 0);
+            assert_eq!(pe.timestamp_ns, 1234);
+            assert_eq!(pe.pressure, PRESSURE_UNAVAILABLE);
+            assert_eq!(pe.history_len, 0);
+        }
     }
 }

@@ -305,6 +305,13 @@ pub fn spawn_image(
     }
     if tablet {
         cmd.arg("-device").arg("virtio-tablet-device");
+        // 键盘与 tablet 同门（输入设备家族）：tablet 关则键盘亦关——headless
+        // 形零漂移（B4 掉电相 park 语义不变）。设备名只用全名
+        // virtio-keyboard-device（mmio 传输形）——`virtio-keyboard` 是 PCI
+        // 别名陷阱，与 virtio-gpu-pci 同理（见下方 gpu 注）。force-legacy
+        // 不是该设备的属性，传输层 legacy 已被上面的 -global 关掉（05 号
+        // §1.2 定谳形态，gpu 同款）。
+        cmd.arg("-device").arg("virtio-keyboard-device");
     }
     // virtio-gpu 恒挂：guifbd 双后端的 vgpu 相设备面（svcmgr 映第二窗成功
     // 发 'w' → guifbd 扫窗起 vgpu；无 gpu 相发 'n' 落 ramfb，缺省安全——

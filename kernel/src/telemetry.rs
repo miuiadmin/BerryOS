@@ -10,7 +10,7 @@
 //! prev 运行时长 → 运行时长分布）、任务 id（名字 FNV-1a 稳定哈希）、切换
 //! 原因分型、是否切入 idle（→ util）。**唤醒事件已随 4-0 落地**（唤醒环：
 //! block→wake 延迟即「唤醒模式」分布数据，经 [`set_wake_hook`] 注册的
-//! [`on_wake`]）。**消费路径留 v3**（`telemetry_open` 映射环给 trace 服务/
+//! [`on_wake`]）。**消费路径分两步**：`telemetry_open`(0x84) 已翻真 klog 快照首域（berry_telemetry_klog_snapshot——bsh dmesg 消费）；SwitchRec/WakeRec 映射环读口留 v3（trace 服务/
 //! AI 策略服务）；v1 读点 = watchdog 存活性断言（环在涨、vct 单调、延迟
 //! 非负）。
 //!

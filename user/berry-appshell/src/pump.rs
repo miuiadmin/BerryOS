@@ -9,7 +9,8 @@
 //! （create/commit/map）→ glyph scratch 堆置 → set_vsync + wake 起振
 //! → loop {
 //!   hooks.on_head（时钟续摆/armed 复位等应用特化）
-//!   → input 泵（上轮 INPUT_POLL 应答收 + push_pointer；再挂下一轮）
+//!   → input 泵（上轮 INPUT_POLL 应答收 + push_pointer/键盘帧 on_key
+//!     分流；再挂下一轮）
 //!   → ui.pump_input → hooks.on_msgs（Click/翻页分发）
 //!   → hooks.on_tick（snap 动画步进）
 //!   → render_frame（跳过帧不提交——damage 空集零 SUBMIT 零 RPC）
@@ -163,6 +164,15 @@ pub trait HostHooks {
             ui.set_vsync(c.current_period_ns as u64, c.current_phase_ns as u64);
         }
     }
+
+    /// 键事件回调（inputd 键盘帧出向覆载面——INPUT_POLL 批内 PointerEvent
+    /// 帧 device_id = DEV_KEYBOARD 分流至此：`code` = 翻译后出向字节、
+    /// `ts_ns` = CNTVCT 时间戳，口径见 guiproto DEV_KEYBOARD 分注）。v1
+    /// 单订阅者模型：键随 INPUT_POLL 到唯一轮询壳应用（本 pump 即唯一
+    /// 消费者）；inputd 不查 wmd 焦点表——焦点门控分发是波 3 后续挂账，
+    /// 非本批面。默认空实现：launcher 形态不收键零改零警；GUI 终端类应用
+    /// 覆写收键。
+    fn on_key(&mut self, _ui: &mut UiMain, _code: u8, _ts_ns: u64) {}
 }
 
 /// pump 装配参数。
@@ -333,6 +343,15 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
                         }
                         for i in 0..view.count() {
                             if let Some(ev) = view.event(i) {
+                                // —— 键盘帧覆载分流（guiproto DEV_KEYBOARD
+                                //    出向分注）：device_id = 键盘 = 键事件
+                                //    （x = 翻译后字节），交 hooks.on_key 跳过
+                                //    指针路径（否则读成 (x=keycode, y=0)
+                                //    幻影按下）。
+                                if ev.device_id == gp::DEV_KEYBOARD {
+                                    hooks.on_key(ui, ev.x as u8, ev.timestamp_ns);
+                                    continue;
+                                }
                                 let pe = PtrEvent::from_wire(
                                     ev.phase,
                                     ev.pointer_id,

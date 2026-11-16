@@ -357,12 +357,16 @@ build-user:
     # `app <id> gui deferred` 行——W4-RECON §1.7 铁律），同批已落；smoke
     # APP/APPUI 计数零漂（n=9/n=8 仍打，语义随裁决 B 两支化），PS 行数随
     # appdemo 不再 boot 拉起而 -1（前缀断言面零扰动）——W4-VERIFY.md 落账。
-    for c in settings files photos camera contacts messages browser; do
+    # 终端刀 +1：berry-term（TERMINAL——GUI 终端首件，settings 镜像骨架 +
+    # 行环/行编辑器/持久子 bsh/启动管道自检四件）入 build/spec 两循环；恰
+    # 满 APP_SLOTS=10 第 10 槽（svcmgr 已参数化 n≥10 十位入拼），smoke
+    # APP 计数 n=9→10、APPUI n=8→9（标记面随迁）。
+    for c in settings files photos camera contacts messages browser berry-term; do
         CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
             cargo build --release --manifest-path "bins/$c/Cargo.toml" \
             --target aarch64-unknown-linux-musl
     done
-    for spec in SETTINGS:settings FILES:files PHOTOS:photos CAMERA:camera CONTACTS:contacts MMS:messages BROWSER:browser; do
+    for spec in SETTINGS:settings FILES:files PHOTOS:photos CAMERA:camera CONTACTS:contacts MMS:messages BROWSER:browser TERMINAL:berry-term; do
         id=${spec%%:*}; c=${spec##*:}
         mkdir -p "userbins/app-stage/$id/bin"
         cp "bins/$c/manifest.toml" "userbins/app-stage/$id/"
@@ -1545,7 +1549,7 @@ smoke-image: image
 # 逐字节 = `BERRYOS-GUI8-SMOKE-V1\n`；错/缺 payload 一律 fail closed）+
 # 256M + ramfb + display fw_cfg 800x600@60 + virtio-blk + virtio-tablet +
 # QMP unix sock：
-#   Boot A：等基础 5 + boot 批 `app APPDEMO up` → `launcher: click ready`
+#   Boot A：等基础 5 + boot 批 `app APPDEMO gui deferred`（裁决 B 入册不拉起）→ 点击后 `app APPDEMO up` 恰 1 + `launcher: click ready`
 #           强制在席（缺席 FAIL，不 sleep 回退）→ QMP 单击 APPDEMO 格 →
 #           精确 CLICK ok n=1×1 / LAYOUTW ok×1 / LAYOUT ok×0；新增
 #           `app APPDEMO up`×1、APPQUIET×0；宿主 LAYOUT.JSN 恰 109 canonical
