@@ -979,14 +979,14 @@ fn phantom_ack_beyond_snd_nxt_rejected() {
     assert_eq!(c.tx_inflight(), 0);
 }
 
-// ─── 五刀②：tx_retx_floor 暂存紧缩弃置水印（vnet tx_compact 权威源）───
+// ─── 五刀②：tx_retx_floor 暂存紧缩弃置水印（vnet post_account 紧缩臂权威源）───
 // 裁决 2 钉死族：floor 恒取环头 Data 段首——straddling 保段 + RTO 整段重发
 // 下 snd_una 会切掉仍需重发的段前缀，防后人「优化」回 snd_una。
 
 #[test]
 fn tx_retx_floor_empty_ring_returns_snd_nxt() {
     // ① 环空 → snd_nxt（无数据重发引用）：握手后基线与弹尽后同形——环空 =
-    // floor==snd_nxt 的紧缩特例（vnet tx_compact 旧「环空失效」臂的逐字节
+    // floor==snd_nxt 的紧缩特例（vnet 紧缩前的旧「环空失效」臂的逐字节
     // 等价面）。
     let mut c = established();
     assert_eq!(c.tx_retx_floor(), 1001);

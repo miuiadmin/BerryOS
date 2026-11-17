@@ -212,7 +212,7 @@ impl Conn {
         }
     }
 
-    /// 暂存紧缩弃置水印的权威源（五刀②，vnet `tx_compact` 用）：环头 Data 段
+    /// 暂存紧缩弃置水印的权威源（五刀②，vnet post_account 紧缩臂用）：环头 Data 段
     /// 的**段首** seq——部分覆盖（straddling）ACK 保槽 + RTO 整段重发取段首
     /// （`on_rto` 环头 Data 臂）语义下，**绝不取 `snd_una`**：部分覆盖 ACK
     /// 已推进 snd_una 时取它会切掉仍需重发的段前缀、击重发臂（五刀 plan
