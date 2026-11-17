@@ -3245,33 +3245,17 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
     // 迁移即能力委托，授予方去 TRANSFER 位的 handle 不得随消息转发第三方
     //（Zircon `zx_channel_write` 对随行 handle 的 ZX_RIGHT_TRANSFER 同款门）。
     // 死值 -EBADF（探活语义不变）、活值缺位 -EACCES。rights 附着槽上随
-    // handle 走，但 HandleTable 无类型无关查询面（`alive` 只回 bool、
-    // `get_raw` 先验类型）——按在册类型逐一 `get_raw(need=0)` 探测，命中者
-    // 即出槽 rights 且探活内联（全类型未命中 = 死值）。类型表 = KernelObj
-    // 全变体镜像（新增对象类型须同步）；7 次定点查表 × nhandles ≤ 4，较
-    // `holder_has` 的 64 槽全扫更廉，热路径成本可忽略。
+    // handle 走——W3-Q91 起经类型无关探针 [`HandleTable::rights_of`]（查表
+    // +代号校验即出槽 rights 全集，探活内联）**单查折叠**：旧形态按在册
+    // 类型逐一 `get_raw(need=0)` 探测（7 类型 × CHAN_HND_MAX=8 最坏 56 次查
+    // 表），两路径语义逐位等价（死值同 -EBADF、活值同 rights——判定律单源
+    // `berry_hdlface::probe::probe_transfer_ok`，host 钉板对拍在册）；旧注释
+    // 「HandleTable 无类型无关查询面」与 rights_of 在册事实相抵，随本刀
+    // 翻正（02 号 IPC 审计机会四）。
     for i in 0..nhandles {
-        let mut hit: Option<Rights> = None;
-        for ty in [
-            ObjType::Process,
-            ObjType::Thread,
-            ObjType::Vmo,
-            ObjType::Vmar,
-            ObjType::Channel,
-            ObjType::Event,
-            ObjType::SuspendToken,
-        ] {
-            if let Ok((_, rights)) = t.get_raw(hvals[i], ty, 0) {
-                hit = Some(rights);
-                break;
-            }
-        }
-        match hit {
-            // 全类型未命中 = 死值（alive 语义内联于探测）
-            None => return ERR_BAD_HANDLE as i64,
-            // 活值缺 TRANSFER 位 = 无迁移资格（能力委托流转受控面）
-            Some(r) if r & RIGHT_TRANSFER == 0 => return ERR_ACCESS_DENIED as i64,
-            _ => {}
+        let probe = t.rights_of(hvals[i]).map(|r| r as u32);
+        if let Some(e) = berry_hdlface::probe::probe_transfer_ok(probe) {
+            return e as i64;
         }
     }
     // 数组内重复预检（W3-Q9 单源判据——循环体见函数注释原子序论证）。
@@ -3752,25 +3736,13 @@ extern "C" fn sys_object_signal(tf: &mut TrapFrame) -> i64 {
 /// 四类型链、AM-1.5 起五类型链）：Event → Channel → Process → Thread →
 /// SuspendToken（wait 不需权利位，need=0）。全拒回**首个**（Event 的）
 /// 错误——与 4-2 的两类型链语义逐字一致（-EBADF/-EACCES 原样透传）。
+/// W3-Q91 起折叠为**类型无关单查**：`rights_of`（查表+代号校验）出对象
+/// 槽后一次 `obj_type()` 判 waitable（词表单源 `berry_hdlface::probe`，
+/// host 钉板）——旧五链每枚 2-5 次完整查表（含 ObjRef 解引用×类型比对
+/// ）压为 1 次；词表外类型同码拒（-EBADF），行为逐位一致（02 号 IPC
+/// 审计机会四）。
 fn wait_get(t: &HandleTable, h: crate::handle::Handle) -> Result<NonNull<ObjRef>, i32> {
-    match t.get_raw(h, ObjType::Event, 0) {
-        Ok((o, _)) => Ok(o),
-        Err(e) => match t.get_raw(h, ObjType::Channel, 0) {
-            Ok((o, _)) => Ok(o),
-            Err(_) => match t.get_raw(h, ObjType::Process, 0) {
-                Ok((o, _)) => Ok(o),
-                Err(_) => match t.get_raw(h, ObjType::Thread, 0) {
-                    Ok((o, _)) => Ok(o),
-                    // AM-1.5：token 持有者（am）经既有 wait_face 收
-                    // wake-pending 通知——零新 syscall。
-                    Err(_) => match t.get_raw(h, ObjType::SuspendToken, 0) {
-                        Ok((o, _)) => Ok(o),
-                        Err(_) => Err(e),
-                    },
-                },
-            },
-        },
-    }
+    t.get_waitable(h)
 }
 
 /// `object_wait_one(h, signals, deadline, *observed)`（4-1 阻塞化；4-2 扩
