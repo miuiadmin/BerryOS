@@ -86,7 +86,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | 0x54 | `event_create` | 建事件对象 | v1 | — |
 | 0x55 | `futex_wait` | 用户态同步（pthread 基础） | v2 | — |
 | 0x56 | `futex_wake` | 唤醒等待者 | v2 | — |
-| 0x57 | `channel_recv_n` | 排空式批量收消息（02 号 IPC 审计机会五：唤醒粒度与收割粒度失配——wait_many 一次醒，排空型消费者〔console/netd〕原逐发 syscall 重复付 SVC 入口结构锁窗 + caller_table + get_raw 门控 + 参数 I/O 全套窗）。`channel_recv_n(ch, msgs, k_max, *n_recv)`：内部循环既有 recv 原子序，每消息语义逐条保持（intent 结算/billing/insert_ref 入表 per-message），仅入口/门控/WRITABLE 唤醒摊到 k 条；返回 0 = 成功（实收数走 `*n_recv` 出参，0 = 队空 poll 语义同形）。`msgs` = 定长槽位数组（每槽 `nbytes:u64, nhandles:u64` 头 + 载荷/handle 值区，槽距 = 头 16 + 256 载荷 + 8×4 handle 值 = 304B）；`k_max ∈ 1..=16`（0 或超帽 -EINVAL no-panic 前置）。同步往返型服务（echo/talker）无收益不强制迁移 | v1 | 2026-11-18 |
+| 0x57 | `channel_recv_n` | 排空式批量收消息（02 号 IPC 审计机会五：唤醒粒度与收割粒度失配——wait_many 一次醒，排空型消费者〔console/netd〕原逐发 syscall 重复付 SVC 入口结构锁窗 + caller_table + get_raw 门控 + 参数 I/O 全套窗）。`channel_recv_n(ch, msgs, k_max, *n_recv)`：内部循环既有 recv 原子序，每消息语义逐条保持（intent 结算/billing/insert_ref 入表 per-message），仅入口/门控/WRITABLE 唤醒摊到 k 条（唤醒自批量收尾一次广播——`recv_n_wake_needed` 门：弹 0 条不唤醒，纯广播一次覆盖全部腾槽）；返回 0 = 成功（实收数走 `*n_recv` 出参，0 = 队空 poll 语义同形）。`msgs` = 定长槽位数组（每槽 `nbytes:u64, nhandles:u64` 头 + 载荷/handle 值区，槽距 = 头 16 + 256 载荷 + 8×4 handle 值 = 304B）；`k_max ∈ 1..=16`（0 或超帽 -EINVAL no-panic 前置）。同步往返型服务（echo/talker）无收益不强制迁移 | v1 | 2026-11-18 |
 | **时间 / 定时器** |||||
 | 0x61 | `clock_read` | 读单调/壁钟 | v1 | — |
 | 0x62 | `timer_create` | 建定时器对象 | v2 | — |

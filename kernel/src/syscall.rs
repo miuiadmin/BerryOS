@@ -3487,7 +3487,7 @@ unsafe fn recv_rollback(t: &mut HandleTable, endp: NonNull<ObjRef>, msg: Message
 /// 容量读与容量门、出参段全量预扫（SEC-C）、`_pt`/`_span` 在持。
 ///
 /// 返回 `Err(e)` = 该条消息消费失败（调用方回滚该条并返回错误码——
-/// 批量面 = 已成功的 i-1 条**已消费不回滚**（intent 已结算、唤醒已发，
+/// 批量面 = 已成功的 i-1 条**已消费不回滚**（intent 已结算、腾槽唤醒收尾照发，
 /// 语义与逐条 recv 到第 i 条失败完全一致）；`Ok(())` = 该条消费完成。
 ///
 /// `slot` = 本条消息的出参窗基址：单发 recv = 三出参独立地址
@@ -3539,30 +3539,33 @@ fn recv_consume_one(
         return Err(e);
     }
     // SAFETY: 本端门控过；单核禁切（g3-1c-2 段守卫在持）。
+    // W3-Q97 复审修（A 案摊销）：WRITABLE 唤醒自本结算面剥出——单发/
+    // 批量同构：消费窗内恒免唤醒，调用方尾段 PT 锁窗外收尾一次
+    // `wake_matching`（单发 = 成功路径无条件；批量 = `recv_n_wake_needed`
+    // (got)` 门）。语义等价律：S-3b b-1 纯广播定谳 + PreemptSpan 全窗
+    // 禁切 ⇒ 窗内 k 次与 1 次终态等价（窗内无并发观察者）。
     unsafe { recv_settle_one(self_ptr, &mut msg) };
     Ok(())
 }
 
-/// recv 每消息结算面（billing + intent + WRITABLE 唤醒；W3-Q97 自
-/// `sys_channel_recv` 尾段抽出——单发/批量共用，语义单源）：
-/// - 4-2：本端弹出一条 → 对端队列腾出一个槽 → 对端 WRITABLE 置位，
-///   唤醒等「对端未满」的睡眠者（A 的可写性由 B 的队列决定——键 =
-///   对端 ObjRef 地址；仅成功路径唤醒：回滚路径状态全复原，唤醒即
-///   虚假）。S-3b b-1 定谳：纯广播——公平/上限不进唤醒选择器（判词详
-///   `berry_sched::wake_matching` 文档）。
+/// recv 每消息结算面（billing + intent；W3-Q97 自 `sys_channel_recv`
+/// 尾段抽出——单发/批量共用，语义单源；**不含 WRITABLE 唤醒**——复审修
+/// A 案：唤醒摊到调用方收尾一次，本面只留每消息必结算项）：
 /// - 4-3c slowpath 记账：dequeue 即结算 intent（每消息重导——借入/
 ///   opt-out/超帽的语义与遥测见 `berry_sched::intent`；CURRENT 无效
 ///   则跳过不记）。
 /// - 1.1/S4-b：recv 侧——记跨域计数 + 设区间计费起点（domain +
 ///   CNTVCT 戳；send 侧〔server 回复时〕算差 → 记 client 域）。
+/// - 4-2 唤醒律（消费方尾段统一执行，非本面）：本端弹出一条 → 对端
+///   队列腾出一个槽 → 对端 WRITABLE 置位，唤醒等「对端未满」的睡眠者
+///   （A 的可写性由 B 的队列决定——键 = 对端 ObjRef 地址；仅成功路径
+///   唤醒：回滚路径状态全复原，唤醒即虚假）。S-3b b-1 定谳：纯广播
+///   ——公平/上限不进唤醒选择器（判词详 `berry_sched::wake_matching`
+///   文档）。
 ///
 /// SAFETY: `self_ptr` 须为本端在表对象（get_raw 门控过）；单核禁切
 /// 上下文（g3-1c-2：调用点均在 recv 原子段守卫内）。
 unsafe fn recv_settle_one(self_ptr: NonNull<ObjRef>, msg: &mut Message) {
-    // SAFETY: 本端门控过、互钉在活；只读对端指针。
-    if let Some(peer) = (*self_ptr.as_ptr()).obj.as_channel().and_then(|e| e.peer()) {
-        berry_sched::wake_matching(peer.as_ptr() as usize, SIGNAL_WRITABLE);
-    }
     // 4-3c slowpath 记账。SAFETY: 本端门控过；只读 no_intent 标志。
     let opt_out = (*self_ptr.as_ptr()).obj.as_channel().map_or(false, |e| e.no_intent());
     // 1.1/S4-b：recv 侧——记跨域计数 + 设区间计费起点。
@@ -3689,6 +3692,13 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
     // drop(msg) 退役（Message 定长内联，自然 drop 同效：无堆动作不碰 refs）。
     drop(_pt); // W3-Q92 收窗：此后零用户内存触点——PT 锁不带进唤醒链（SQ/RQ 锁序零新边）
     drop(_span); // g3-1c-2 段终点（回滚链毕）：原子段收口配平
+    // W3-Q97 复审修（A 案摊销）：4-2 WRITABLE 唤醒收尾一次（消费窗内免
+    // 唤醒——唤醒自 recv_settle_one 剥出；成功路径无条件，时序/锁序与
+    // 剥出前基线逐位一致：PT 锁窗外、段收口后）。SAFETY: 本端门控过、
+    // 互钉在活；只读对端指针。
+    if let Some(peer) = unsafe { (*self_ptr.as_ptr()).obj.as_channel() }.and_then(|e| e.peer()) {
+        berry_sched::wake_matching(peer.as_ptr() as usize, SIGNAL_WRITABLE);
+    }
     // 段出口检查点（g3-1c-2，f4 裁决对称 = WRITABLE wake 链后、返回前）：
     // 拷贝窗内被双门挡下的切换诉求在唤醒链全毕后兑现（论据同 send 尾注）；
     // 探峰合法 ⇔ RQ 位在集（0x2E ✓，§A126 定谳）；段内错误路径早退由
@@ -3706,9 +3716,11 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
 /// 实收条数——每槽头回写该条的实际 `nbytes`/`nhandles`）。
 ///
 /// **每消息语义逐条保持**（机会五裁案）：批量循环体 = `recv_consume_one`
-/// （与单发 recv 完全同函数——intent 结算/billing/insert_ref 入表/
-/// WRITABLE 唤醒 per-message），仅 SVC 入口/caller_table/get_raw 门控/
-/// PT 锁获取摊到 k 条。容量语义 = 槽内**满形预储**（每槽按
+/// （与单发 recv 完全同函数——intent 结算/billing/insert_ref 入表
+/// per-message），仅 SVC 入口/caller_table/get_raw 门控/PT 锁获取/
+/// WRITABLE 唤醒摊到 k 条（复审修 A 案：唤醒自 `recv_settle_one` 剥出，
+/// 批量收尾由 [`recv_n_wake_needed`]`(got)` 门控单发一次——纯广播一次
+/// 覆盖全部腾槽，S-3b b-1 定谳）。容量语义 = 槽内**满形预储**（每槽按
 /// `CHAN_MSG_MAX`/`CHAN_HND_MAX` 满形预扫——不做逐条 in-out 容量读：
 /// 批量面的容量契约简化为「槽距即容量」，单发 recv 的 in-out 容量语义
 /// （不足 -EINVAL）不进批量面——满形槽恒容得下任何合法消息，该错误
@@ -3717,12 +3729,13 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
 /// 原子序（g3-1c-2：一个 PreemptSpan 覆盖整个批量窗）：门控 → 全窗
 /// write 预扫（k 槽 × 304B + `*n_recv` 槽——SEC-C：载荷拷出**前**收口
 /// 全部 fault 面）→ 循环 k 次 { pop（空即断）→ 令牌入表 → 槽内回写 →
-/// 结算/唤醒 } → `*n_recv` 回写。**中途失败语义**：第 i 条
+/// 结算 } → `*n_recv` 回写 → 收尾一次 WRITABLE 唤醒（`recv_n_wake_needed` 门）。
+/// **中途失败语义**：第 i 条
 /// `recv_consume_one` Err = 该条回滚压回（消息原样），前 i-1 条已消费
-/// **不回滚**（intent 已结算/唤醒已发——与逐条 recv 到第 i 条失败完全
+/// **不回滚**（intent 已结算、腾槽唤醒收尾照发——与逐条 recv 到第 i 条失败完全
 /// 一致），`*n_recv` = i-1，返回错误码（调用方按需重试第 i 条）。
 extern "C" fn sys_channel_recv_n(tf: &mut TrapFrame) -> i64 {
-    use berry_chanface::{recv_n_k_legal, recv_n_slot_legal, RECV_N_SLOT_STRIDE};
+    use berry_chanface::{recv_n_k_legal, recv_n_slot_legal, recv_n_wake_needed, RECV_N_SLOT_STRIDE};
     let (h, msgs, k_max, n_recvp) = (
         tf.regs[1] as u32,
         tf.regs[2],
@@ -3800,7 +3813,20 @@ extern "C" fn sys_channel_recv_n(tf: &mut TrapFrame) -> i64 {
         ret = e as i64; // 出参写失败：消息已消费——调用方重试态自理（同 event_create 政策）
     }
     drop(_pt);
-    drop(_span);
+    drop(_span); // g3-1c-2 段终点（回滚链毕）：原子段收口配平（与单发同构）
+    // W3-Q97 复审修（A 案摊销）：4-2 WRITABLE 唤醒收尾一次——批量窗内
+    // recv_consume_one 恒免唤醒（唤醒自 recv_settle_one 剥出），此处由
+    // `recv_n_wake_needed(got)` 门控单发一次（弹 >0 条 → 对端腾 got 槽 →
+    // 纯广播一次覆盖全部腾槽——S-3b b-1 定谳；弹 0 条〔队空即返〕不唤醒
+    // ——无槽腾出，唤醒即虚假，单发 recv 空队早退同律）。等价律：PreemptSpan
+    // 全窗禁切 ⇒ 窗内 k 次与 1 次终态等价（窗内无并发观察者）；失败路径
+    // got>0 也照发（前 got 条已消费腾槽，唤醒真实非虚假）。锁序 = 单发
+    // 同构：PT 锁窗外、段收口后。SAFETY: 本端门控过、互钉在活；只读对端指针。
+    if recv_n_wake_needed(got) {
+        if let Some(peer) = unsafe { (*self_ptr.as_ptr()).obj.as_channel() }.and_then(|e| e.peer()) {
+            berry_sched::wake_matching(peer.as_ptr() as usize, SIGNAL_WRITABLE);
+        }
+    }
     // 段出口检查点（g3-1c-2，f4 裁决同单发 recv：WRITABLE wake 链后、返回前）；
     // 探峰合法 ⇔ RQ 位在集（0x2E ✓，§A126 定谳）。
     berry_sched::preempt_checkpoint();
