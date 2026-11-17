@@ -104,6 +104,9 @@ __pycache__/
 # elf2pe 宿主工具独立 target（test-host 接线 cargo test 默认落此处，
 # 同款防全局 target-dir 覆盖漂移口径）
 /tools/elf2pe/cargo-target/
+# mkfat 宿主工具独立 target（彻底 Rust 化轨道 b 层 #8 刀序第二位首刀，
+# test-host 接线与 CLI 对拍构建共用，防产物入库）
+/tools/mkfat/cargo-target/
 
 # berry 宿主工具截图产物（berry shot 默认输出 / 窗口 Cmd-S）
 /shot.png
