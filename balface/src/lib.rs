@@ -143,6 +143,61 @@ pub fn wake_migrate_gate(home_util: u32, other_util: u32) -> bool {
     home_util > WAKE_MIGRATE_UTIL && other_util < WAKE_SPARE_UTIL
 }
 
+// ---- per-CPU 计数器路由/求和/跨点判定律（04 号调度审计机会三，W3-Q96）----
+//
+// [`sched.rs`] 四个最高频计数器（IRQ_TICKS/SWITCHES/SWITCHES_TT/
+// PREEMPT_CKPT_HITS）原为单 `static AtomicU64`——SMP 参与态下双核对同一
+// cache line 做 Relaxed RMW，忙对稳态（两核各跑一个分时任务）每 tick +
+// 每 switch + 每 syscall 至少四次跨核行乒乓（04 号审计「SMP 经典反模式」
+// 判词）。per-CPU 化 = 写侧按 `cpu_id()` 写本核槽（LB_TICKS `[AtomicU64; 2]`
+// 判例同款，sched.rs）、读侧求和。本面钉「槽怎么路由、和怎么读、跨点
+// 怎么判」的数定律；原子槽物理臂留 sched（同域界纪律）。
+//
+// 语义保持三律（读侧全为快照/增长型断言，无等值比较依赖——审计原文
+// 机会三「风险与守卫」节论证）：
+// - watchdog `switches > last`（增长型）与 soakmon 周期采样：求和快照安全
+//   （两槽和有 ns 级非原子窗，增长型断言不受影响）；
+// - G1.5 `tel >= switches_tt`（klock 窗内同窗双快照）：求和后仍同窗；
+// - `switches=` 打印频度按全局和（SOAK_PRINT_EVERY 跨点判定读和——本面
+//   `soak_crossed` 钉板该数学）。
+
+/// per-CPU 槽数（SMP 双核 K=2——与 `LB_TICKS`/`SmpCpu` 槽位制同宽）。
+pub const PERCPU_SLOTS: usize = 2;
+
+/// soak 打点跨点周期（与 sched.rs `bump_switches` 的 SOAK_PRINT_EVERY
+/// 同值冻结——改值须两侧同改，此常量是 host 钉板锚）。
+pub const SOAK_PRINT_EVERY: u64 = 10000;
+
+/// 槽路由：核号 → 本核槽下标。K=2 下恒 `cpu & 1`（防御域外核号——
+/// 硬件口径下 cpu_id 只产 0/1，`& 1` 与直索引逐位一致；域外值（如
+/// 测试注灾 7）钉到 1 而非 panic——IRQ 上下文不 panic 纪律）。
+#[inline]
+pub fn slot_of(cpu: usize) -> usize {
+    cpu & (PERCPU_SLOTS - 1)
+}
+
+/// 读侧求和：per-CPU 槽快照求和（读者面 = watchdog/G1.5/soakmon/fa，
+/// 全为增长型/下界断言——快照语义，两槽非原子窗安全）。
+/// `add` 注入读函数（物理臂留 sched：`|s| s.load(Relaxed)`）。
+#[inline]
+pub fn slots_sum<F: Fn(usize) -> u64>(read: F) -> u64 {
+    let mut sum: u64 = 0;
+    for i in 0..PERCPU_SLOTS {
+        sum = sum.wrapping_add(read(i));
+    }
+    sum
+}
+
+/// soak 打点跨点判定：本次递增后的全局和是否恰跨过打印点
+/// （`sum % SOAK_PRINT_EVERY == 0`——打印频度按全局和，跨点者打行；
+/// 与旧全局计数器语义逐位一致：旧 `sw % 10000 == 0` 的 sw 即全局和）。
+/// 零值排除：旧形态 sw = fetch_add 返回 +1 恒 ≥ 1（判前必先递增），
+/// 0 非跨点（防 boot 前窗求和快照读 0 误打行——与旧语义对齐钉板）。
+#[inline]
+pub fn soak_crossed(sum: u64) -> bool {
+    sum != 0 && sum % SOAK_PRINT_EVERY == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,4 +437,71 @@ mod tests {
             assert_eq!(v < WAKE_SPARE_UTIL, v < 768, "spare @ {v}");
         }
     }
+
+    // ---- per-CPU 计数器路由/求和/跨点判定律（W3-Q96）----
+
+    #[test]
+    fn percpu_slot_routes_all_cpu_ids() {
+        // 硬件域全域：cpu_id 只产 0/1，直索引逐位一致。
+        assert_eq!(slot_of(0), 0);
+        assert_eq!(slot_of(1), 1);
+        // 域外防御：钉到低位槽而非 panic（IRQ 上下文不 panic 纪律）。
+        assert_eq!(slot_of(2), 0);
+        assert_eq!(slot_of(7), 1);
+        assert_eq!(slot_of(usize::MAX), 1);
+        // K=2 宽度钉板：槽常数与 LB_TICKS 槽位制同宽。
+        assert_eq!(PERCPU_SLOTS, 2);
+    }
+
+    #[test]
+    fn percpu_sum_folds_all_slots() {
+        // 全零态求和 = 0；单槽贡献独立；双槽叠加；空读面恒 0。
+        assert_eq!(slots_sum(|_| 0), 0);
+        assert_eq!(slots_sum(|s| if s == 0 { 41 } else { 0 }), 41);
+        assert_eq!(slots_sum(|s| if s == 1 { 7 } else { 0 }), 7);
+        assert_eq!(slots_sum(|_| 41), 82);
+        // 大值不溢出常态域（u64 两槽和）；回绕防御形（wrapping——与
+        // 旧单计数器 u64 语义同宽，溢出面非本刀语义变化）。
+        assert_eq!(slots_sum(|_| u64::MAX / 2), u64::MAX - 1);
+    }
+
+    #[test]
+    fn percpu_soak_cross_points_align_old_semantics() {
+        // 跨点判定与旧全局计数器逐位一致：恰 10000/20000 跨点。
+        assert!(!soak_crossed(0));
+        assert!(!soak_crossed(1));
+        assert!(!soak_crossed(9999));
+        assert!(soak_crossed(10000));
+        assert!(!soak_crossed(10001));
+        assert!(soak_crossed(20000));
+        // 常量冻结锚：与 sched.rs SOAK_PRINT_EVERY 同值（2026-11-17
+        // 降频定谳 100→10000——G1/S-6 里程碑已过，金丝雀语义在 10000
+        // 档完整保留）。
+        assert_eq!(SOAK_PRINT_EVERY, 10000);
+    }
+
+    #[test]
+    fn percpu_partition_invariant_under_interleaving() {
+        // 分槽不分割全局语义：任意两槽分配形态下，逐次递增后求和的
+        // 跨点序 = 旧单计数器跨点序（每 10000 次递增恰一次跨点——
+        // 分槽只改写路径不改计数语义的端到端钉板）。
+        let mut slots = [0u64; 2];
+        let mut crossings = 0;
+        let mut expected = 0;
+        // 模拟 25000 次递增，交替打在两槽（最坏伪共享拆除后形态）。
+        for i in 0..25000u64 {
+            let s = slot_of((i % 2) as usize);
+            slots[s] += 1;
+            let sum = slots[0] + slots[1];
+            if soak_crossed(sum) {
+                crossings += 1;
+            }
+            expected += 1;
+            // 旧语义对拍：单计数器递增到 expected 时的跨点判定。
+            assert_eq!(soak_crossed(sum), expected % SOAK_PRINT_EVERY == 0,
+                "divergence at {expected}");
+        }
+        assert_eq!(crossings, 2); // 10000/20000 两点。
+    }
+
 }

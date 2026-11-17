@@ -14,6 +14,7 @@ use crate::spin::SpinLock;
 use crate::task::{
     Task, TaskState, WakeReason, HELD_RQ0, HELD_RQ1, HELD_REAPQ, HELD_SQ, HELD_TABLE,
 };
+use berry_balface::PERCPU_SLOTS;
 use berry_hal_aarch64 as hal;
 use core::cell::Cell;
 use core::ptr::{addr_of, addr_of_mut, NonNull};
@@ -23,11 +24,17 @@ use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering}
 /// （rearm 对、无 EOIR 饿死——plan R4/R5）；停增即管线坏。
 /// S-2 E0 前置件 A12：原子化（写点全在 KERN_LOCK 锁窗，读侧锁外——Relaxed 无
 /// 序角色、仅计数；同时执法 static mut 别名 UB）。
-static IRQ_TICKS: AtomicU64 = AtomicU64::new(0);
+/// W3-Q96 per-CPU 化（04 号调度审计机会三）：`[AtomicU64; 2]` 双槽分行——
+/// 写侧按 `cpu_id()` 打本核槽（LB_TICKS 判例同款），SMP 忙对稳态双核不再
+/// 对同一 cache line RMW。计数语义不变（两槽和 = 旧单计数器值；无模块外
+/// 读者，模块内无等值依赖）。
+static IRQ_TICKS: [AtomicU64; PERCPU_SLOTS] = [const { AtomicU64::new(0) }; PERCPU_SLOTS];
 /// 上下文切换计数（六切换原语位共享递增——[`bump_switches`]）。里程碑金丝雀：
 /// 两任务在 timer slice 下分时 → 计数持续涨（≥数千 = G1 过关）；冻结在某值 =
 /// switch 坏（卡死/饿死）。A12 同上原子化。
-static SWITCHES: AtomicU64 = AtomicU64::new(0);
+/// W3-Q96 per-CPU 化同 IRQ_TICKS：双槽分行、写本核槽、读者（`switches()`/
+/// soakmon/watchdog）走求和快照（增长型断言安全——04 号审计机会三守卫论证）。
+static SWITCHES: [AtomicU64; PERCPU_SLOTS] = [const { AtomicU64::new(0) }; PERCPU_SLOTS];
 /// S-6 ③ 心跳诊断：上一行打点时的双核 ticks_pre 总数（跨 500 节流——
 /// [`on_irq_tick`] 心跳行用）。诊断面，定谳后随探针一并退役。
 static HB_LAST: AtomicU64 = AtomicU64::new(0);
@@ -41,7 +48,7 @@ static PULL_CNT: AtomicU64 = AtomicU64::new(0);
 /// SWITCHES 递增 + 金丝雀打印（S-6 ①：全域唯一递增/打印口径）。
 /// 全部十一个切换原语位（yield/exit/block 三函数的直切臂 + park 切点 + tick
 /// 抢占 + SGI resched 直切 + try_preempt 直切 + park/idle 两派发位）共享本
-/// helper：%SOAK_PRINT_EVERY 判定走**全局**计数——哪个位跨点哪个位打印。
+/// helper：跨点判定走**全局和**（balface::soak_crossed）——哪个位跨点哪个位打印。
 /// 沿革九十四发现①收口（两层）：打印若只挂 tick 抢占支（旧单点）SMP 稳态
 /// 忙对各占核时结构性冷；更深的洞 = **直切臂（出选有货即切）旧完全不计数**
 /// ——park 臂冷、直切臂热，漏计 = 金丝雀对 SMP 稳态主干结构性失明（S-6
@@ -54,15 +61,22 @@ static PULL_CNT: AtomicU64 = AtomicU64::new(0);
 /// 任务持 PRINT_LOCK 期不可达切换原语（with_print_lock 为作用域闭包、
 /// 窗内禁切）⇒ 无自死锁面。
 fn bump_switches() -> bool {
-    let sw = SWITCHES.fetch_add(1, Ordering::Relaxed) + 1;
+    // W3-Q96：本核槽递增（写侧分行——SMP 双核不对同一 cache line RMW），
+    // 判定与打印值走全局和（slot_of/slots_sum/soak_crossed 单源在
+    // berry-balface，host 钉板四测在册）。
+    let slot = berry_balface::slot_of(hal::smp::cpu_id());
+    SWITCHES[slot].fetch_add(1, Ordering::Relaxed);
+    let sw = berry_balface::slots_sum(|s| SWITCHES[s].load(Ordering::Relaxed));
     // bring-up 诊断（G1）：每 N 次切换打一行计数，证分时持续、计数不冻。
     // 2026-11-17 降频定谳（04 号调度审计机会二，G1/S-6 里程碑已过）：
     // 100→10000——每 100 切换的 PRINT_LOCK+UART 行是 IRQ 窗内周期性 µs 级
     // 尖峰（切换点可能在 IRQ 上下文），金丝雀语义（计数持续涨）在 10000
     // 档完整保留。计数面（SWITCHES 每 switch 递增）零变化；watchdog/
     // soakmon 走 `switches()` 计数器直读，与本打印频率解耦。
-    const SOAK_PRINT_EVERY: u64 = 10000;
-    if sw % SOAK_PRINT_EVERY == 0 {
+    // W3-Q96：sw 为双槽全局和快照——跨点判定语义与旧全局计数器逐位一致
+    //（balface::soak_crossed 钉板：分槽只改写路径不改跨点序）。周期常量
+    // 单源在 berry_balface::SOAK_PRINT_EVERY（本函数旧本地常量退役）。
+    if berry_balface::soak_crossed(sw) {
         // S-2 E0 打印面（草案 3.1-3）：金丝雀三段在 PRINT_LOCK 内拼行原子
         //（IRQ 屏蔽窗内调用——print 对不带 irqsave，纪律见 kern_lock 模块头）；
         // sw 快照供整除判定与打印同值。
@@ -174,7 +188,8 @@ fn assert_preempt_balanced(where_: &str) {
 /// g3-1d 观测面：真探形（len 门 + count==0 支）命中计数——递增点在
 /// try_preempt 之前 = **rq_lock 窗外**，无锁原子加（Relaxed 单指令序），
 /// 不引入任何锁序面（f4 g3-1d 预警①）；空探（len<=1 或计数>0 直返）不计。
-static PREEMPT_CKPT_HITS: AtomicU64 = AtomicU64::new(0);
+static PREEMPT_CKPT_HITS: [AtomicU64; PERCPU_SLOTS] =
+    [const { AtomicU64::new(0) }; PERCPU_SLOTS];
 
 pub fn preempt_checkpoint() {
     // 04 号审计快赢（机会一①：len 门）：cur-in-ring 不变式（Running 常驻环
@@ -195,15 +210,17 @@ pub fn preempt_checkpoint() {
     let daif = hal::irq_save();
     hal::disable_irq();
     if preempt_count() == 0 {
-        PREEMPT_CKPT_HITS.fetch_add(1, Ordering::Relaxed);
+        // W3-Q96：本核槽递增（slot_of 单源）。
+        PREEMPT_CKPT_HITS[berry_balface::slot_of(hal::smp::cpu_id())].fetch_add(1, Ordering::Relaxed);
         try_preempt();
     }
     hal::irq_restore(daif);
 }
 
 /// g3-1d：检查点真探形命中数（boot 起累计；fa ktest 尾 `ckpt=` 字段打印）。
+/// W3-Q96 per-CPU 化：读侧求和快照（fa 断言 `ckpt >= 1` 为下界型，安全）。
 pub fn preempt_checkpoint_hits() -> u64 {
-    PREEMPT_CKPT_HITS.load(Ordering::Relaxed)
+    berry_balface::slots_sum(|s| PREEMPT_CKPT_HITS[s].load(Ordering::Relaxed))
 }
 
 /// G3-1c-1：PRINT_LOCK 窗 preempt 包络对（with_print_lock 的 enter/exit 槽
@@ -2026,15 +2043,18 @@ pub unsafe fn kill_all_tasks_by_pinned(
 ///——G1.5「遥测环存活」断言旧比 SWITCHES 的契约在 A12 扩面时即过期，
 /// S-6 复跑 3 实证踩中（total=456 < switches=457，park 事件先于断言落地）。
 /// 金丝雀（switches= 行）继续走 SWITCHES 原口径——park 语境切换也是活性。
-static SWITCHES_TT: AtomicU64 = AtomicU64::new(0);
+static SWITCHES_TT: [AtomicU64; PERCPU_SLOTS] =
+    [const { AtomicU64::new(0) }; PERCPU_SLOTS];
 
 pub fn switches() -> u64 {
-    SWITCHES.load(Ordering::Relaxed)
+    berry_balface::slots_sum(|s| SWITCHES[s].load(Ordering::Relaxed))
 }
 
 /// 任务↔任务切换数（遥测环分母——G1.5 断言比较面，详 [`SWITCHES_TT`] 注）。
+/// W3-Q96 per-CPU 化：读侧求和快照（G1.5 `tel >= switches_tt` 在 klock 窗
+/// 内同窗双快照——求和后仍同窗，配平语义保持）。
 pub fn switches_tt() -> u64 {
-    SWITCHES_TT.load(Ordering::Relaxed)
+    berry_balface::slots_sum(|s| SWITCHES_TT[s].load(Ordering::Relaxed))
 }
 
 // ---- 切换遥测钩子（3-4c；`可观测性设计.md` per-CPU 无锁环的注入点）----
@@ -2083,7 +2103,8 @@ unsafe fn note_switch(prev: *mut Task, next: *mut Task, kind: SwitchKind) {
     // S-6 ① 双计数器：非空臂 = 遥测环分母同点自增（环写与计数同窗——
     // G1.5 断言 tel >= switches_tt 的配平点；hook 缺席期（boot 前窗）也计
     //——telemetry::init 先于首个切换，实际不可达，防御性保持对称）。
-    SWITCHES_TT.fetch_add(1, Ordering::Relaxed);
+    // W3-Q96：本核槽递增（写侧分行）。
+    SWITCHES_TT[berry_balface::slot_of(hal::smp::cpu_id())].fetch_add(1, Ordering::Relaxed);
     // SAFETY: 两指针由调用点保证有效（刚做过状态写入）；IRQ 屏蔽路径。
     unsafe {
         let hook = SWITCH_HOOK;
@@ -3800,7 +3821,8 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
         return;
     }
     // SAFETY: IRQ 上下文；计数 Relaxed——无序角色，仅计数。
-    IRQ_TICKS.fetch_add(1, Ordering::Relaxed);
+    // W3-Q96：本核槽递增（slot_of 单源；无读者面，模块内诊断）。
+    IRQ_TICKS[berry_balface::slot_of(hal::smp::cpu_id())].fetch_add(1, Ordering::Relaxed);
     // S-2b 诊断面：per-CPU tick 计数（两核都计——PAR absent 时区分「副核
     // tick 死」vs「tick 活但派发不出」）。
     hal::smp::note_tick();
