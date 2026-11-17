@@ -329,6 +329,23 @@ fn copy_in_u64(caller_el1: bool, ptr: u64) -> Result<u64, i32> {
     Ok(unsafe { core::ptr::read_volatile(ptr as *const u64) })
 }
 
+/// 窗内读一个 u64（调用方**已持**本 AS PT 锁 + 解蔽窗——W3-Q92 recv 容量
+/// 双读并窗的消费面）：同 [`copy_in_u64`] 的走查 + volatile 读，锁窗由
+/// 调用方持有（同 [`copy_from_user_locked`] 纪律）。
+fn copy_in_u64_locked(caller_el1: bool, ptr: u64, last_page: &mut u64) -> Result<u64, i32> {
+    if !access_ok_window(caller_el1, ptr, 8, false, last_page) {
+        return Err(ERR_FAULT);
+    }
+    // SAFETY: 界检过（同 copy_in_u64——8 字节对齐风险由页粒度走查容许）。
+    Ok(unsafe { core::ptr::read_volatile(ptr as *const u64) })
+}
+
+/// 窗内写一个 u64 到调用方 out 指针（调用方**已持** PT 锁——W3-Q92 recv
+/// 出参并窗的消费面）：同 [`copy_out_u64`] 的走查 + 写，锁窗由调用方持有。
+fn copy_out_u64_locked(caller_el1: bool, ptr: u64, val: u64, last_page: &mut u64) -> Result<(), i32> {
+    copy_to_user_locked(caller_el1, ptr, &val.to_le_bytes(), last_page)
+}
+
 /// 写一个 u64 到调用方提供的 out 指针（ABI §8.3 各 `*out` 参数）。
 ///
 /// 界检：用户区 `[0x1000, 2^39)`（经当前 TTBR0 = 调用者自身表——EL0 syscall
@@ -3232,8 +3249,16 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
     };
     // 随行 handle 值拷入 + 全量预检（无副作用——失败 = 表零变化）。拷贝窗
     // （g3-1c-2）：走查 + 拷入同窗解蔽，段计数保 §A113。
+    // W3-Q92（02 号 IPC 审计机会一）：send 双拷窗并锁——hbuf/bbuf 两拷原各
+    // 带一次 PT 锁取放，并成**单一 PT 锁窗**贯穿（语句序/错误码/先序逐位
+    // 保持——bbuf 拷仍在 probe/distinct 之后；基建 = vmo 族 S-4 4-2 判例：
+    // `copy_from_user_locked` + `last_page` 同页缓存。send 全 read 相——
+    // 单缓存无读写相混面）。窗内 probe/distinct/take 均纯表操作零锁面，
+    // 不新增锁序边（KL 在身、PT 恒 KL 窗内取放——既有不变式）。
+    let _pt = if el1 { None } else { Some(crate::vmar::pt_lock_current()) };
+    let mut last_page = SAME_PAGE_NONE;
     let mut hbuf = [0u8; CHAN_HND_MAX * 4];
-    if let Err(e) = irq_window(|| copy_from_user(el1, handles, &mut hbuf[..nhandles * 4])) {
+    if let Err(e) = irq_window(|| copy_from_user_locked(el1, handles, &mut hbuf[..nhandles * 4], &mut last_page)) {
         return e as i64;
     }
     let mut hvals = [0u32; CHAN_HND_MAX];
@@ -3262,10 +3287,12 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
     if !berry_chanface::handles_distinct(&hvals[..nhandles]) {
         return ERR_INVALID_ARG as i64;
     }
+    // bbuf 拷入（W3-Q92 同窗——原独立第二 PT 锁窗并掉，语句位/错误面不变）。
     let mut bbuf = [0u8; CHAN_MSG_MAX];
-    if let Err(e) = irq_window(|| copy_from_user(el1, bytes, &mut bbuf[..nbytes])) {
+    if let Err(e) = irq_window(|| copy_from_user_locked(el1, bytes, &mut bbuf[..nbytes], &mut last_page)) {
         return e as i64;
     }
+    drop(_pt); // W3-Q92 收窗：此后零用户内存触点——PT 锁不带进 take/push/唤醒链（锁序零新边）
     // 全量 take（bounded ≤4——占位数组免堆分配；slice 进消息只取前 n 项）。
     let mut toks: [(NonNull<ObjRef>, Rights); CHAN_HND_MAX] = [(NonNull::dangling(), 0); CHAN_HND_MAX];
     for i in 0..nhandles {
@@ -3482,51 +3509,58 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
             None => return ERR_AGAIN as i64, // 非阻塞：空即返（阻塞等消息 = wait_one READABLE，4-2）
         }
     };
-    let cap_bytes = match irq_window(|| copy_in_u64(el1, nbytesp)) {
-        Ok(v) => v as usize,
-        Err(e) => {
-            // SAFETY: 见 recv_rollback 契约（endp 门控过、msg 刚 pop、无令牌入表）。
-            unsafe { recv_rollback(t, self_ptr, msg, &[]) };
-            return e as i64;
+    // W3-Q92（02 号 IPC 审计机会一）：recv 用户参数 I/O 合并单窗——容量
+    // 双读 + 出参段全量预扫 + 载荷/新值/双 u64 回写原 10 次 walk_leaf、
+    // 6 次 PT 锁取放、6 次 irq_window 开包（copy_in_u64×2/access_ok×4/
+    // copy_to_user×3/copy_out_u64×2 各自带窗），并成**单一 PT 锁窗 + 单一
+    // 解蔽窗**贯穿收尾（基建 = vmo 族 S-4 4-2 判例：`access_ok_window` 同页
+    // 缓存 + `copy_*_locked` 族——10 次走查里 8 次本就是重复验同页）。
+    // 语义逐位保持：容量读错/容量门拒/预扫拒/拷出/回写各步的**错误码与
+    // 回滚面不变**（回滚臂 `recv_rollback` 语义契约零触碰）——拷贝窗物理
+    // 并窗，段守卫（g3-1c-2）与 §A113 walk+store 同窗铁律原样成立（窗更
+    // 大、窗数更少）。中段表操作（insert_ref 令牌入表）零用户内存触点，
+    // 留窗外（表无锁面不进 PT 窗——锁序不变式：窗内可达面不新增锁类）。
+    let _pt = if el1 { None } else { Some(crate::vmar::pt_lock_current()) };
+    // 权限相分离（SEC-C 保持）：`last_page` 同页缓存**不分读写权限**——读相
+    // （容量双读）与写相（预扫/拷出/回写）须各持独立缓存：若共用，读走查
+    // 缓存页会使写走查被跳过（RO 页读得过、写不过——正是预扫要抓的缺口
+    // 形状；写被跳过 → 原始 store 落 RO 页 = EL1 权限 fault）。vmo 族先例
+    // 单窗单权限相（read/write 各一窗）无此面；本号读写双相 → 双缓存。
+    let mut lp_read = SAME_PAGE_NONE; // 读相：容量双读（nbytesp/nhandlesp 同页时第二读免走查）
+    let mut lp_write = SAME_PAGE_NONE; // 写相：预扫四段 + 尾段三写（同页免重复走查——全部 write=true 相）
+    // 前半（容量双读）：
+    let caps = irq_window(|| -> Result<(usize, usize), i32> {
+        let cap_bytes = copy_in_u64_locked(el1, nbytesp, &mut lp_read)? as usize;
+        let cap_hnd = copy_in_u64_locked(el1, nhandlesp, &mut lp_read)? as usize;
+        if !berry_chanface::recv_capacity_legal(msg.nbytes, msg.nhandles, cap_bytes, cap_hnd) {
+            return Err(ERR_INVALID_ARG);
         }
-    };
-    let cap_hnd = match irq_window(|| copy_in_u64(el1, nhandlesp)) {
-        Ok(v) => v as usize,
-        Err(e) => {
-            // SAFETY: 同上。
-            unsafe { recv_rollback(t, self_ptr, msg, &[]) };
-            return e as i64;
-        }
-    };
-    if !berry_chanface::recv_capacity_legal(msg.nbytes, msg.nhandles, cap_bytes, cap_hnd) {
-        // SAFETY: 同上。
+        Ok((cap_bytes, cap_hnd))
+    });
+    if let Err(e) = caps {
+        // SAFETY: 同上（容量读/容量门失败——无令牌入表）。
         unsafe { recv_rollback(t, self_ptr, msg, &[]) };
-        return ERR_INVALID_ARG as i64;
+        return e as i64;
     }
-    // 安全修复（recv 窥探缺口）：载荷拷出**前**预扫全部出参段——access_ok
-    // write 走查 = copy_to_user 同一页走查逻辑。原序 = bytes 先拷、
-    // handles/nbytes/nhandles 后写：任一后写 fault 触发 recv_rollback 压回
-    // 队首，载荷已落用户 = 同一消息可被无限次「窥探」（发送方以为未送达）
-    // + 队列槽钉死（DoS）。预扫任一失败 → 载荷零拷出即 -EFAULT（消息压回
-    // = 未消费原样）。nbytes/nhandles 槽的 write 预扫不可省：上方
-    // copy_in_u64 只验过**读**（RO 页读得过、写不过——正是原缺口形状）。
-    // 预扫是 fail-fast 纯走查（同 sys_vmo_read 前置注，非安全边界）：预扫
-    // 过 → 调用者自身无并发（v1 单核 + 段禁切）下后续出参写不再 fault，
-    // recv_rollback 收口面只剩他核 TOCTOU / insert_ref 资源面（最后防线）。
-    if !access_ok(el1, bytes, msg.nbytes as u64, true)
-        || !access_ok(el1, handles, (msg.nhandles * 4) as u64, true)
-        || !access_ok(el1, nbytesp, 8, true)
-        || !access_ok(el1, nhandlesp, 8, true)
-    {
+    // 预扫面（同窗）：四段 write 走查（bytes/handles/nbytesp/nhandlesp）——
+    // 原 4 次独立 access_ok 并成同窗 4 段 span_pages 流。
+    // SEC-C（recv 窥探缺口，安全修复语义保持）：载荷拷出**前**预扫全部出参
+    // 段——否则载荷已落用户、后续出参写才 fault → 回滚压回 = 同一消息可被
+    // 无限次窥探 + 队列槽钉死（DoS）。nbytesp/nhandlesp 槽的 write 预扫
+    // 不可省：上方容量读只验过**读**（RO 页读得过、写不过——正是原缺口
+    // 形状）。预扫任一失败 → 载荷零拷出即 -EFAULT（消息压回 = 未消费原样）。
+    let prescan_ok = irq_window(|| {
+        access_ok_window(el1, bytes, msg.nbytes as u64, true, &mut lp_write)
+            && access_ok_window(el1, handles, (msg.nhandles * 4) as u64, true, &mut lp_write)
+            && access_ok_window(el1, nbytesp, 8, true, &mut lp_write)
+            && access_ok_window(el1, nhandlesp, 8, true, &mut lp_write)
+    });
+    if !prescan_ok {
         // SAFETY: 同上（无令牌入表；载荷未拷出——用户侧零可见副作用）。
         unsafe { recv_rollback(t, self_ptr, msg, &[]) };
         return ERR_FAULT as i64;
     }
-    if let Err(e) = irq_window(|| copy_to_user(el1, bytes, &msg.bytes[..msg.nbytes])) {
-        // SAFETY: 同上。
-        unsafe { recv_rollback(t, self_ptr, msg, &[]) };
-        return e as i64;
-    }
+    // 载荷拷出随 W3-Q92 移入尾段同窗（原独立拷出窗退役）。
     // 令牌入调用者表（新值收集；任一失败全量回滚——表里已入的 take 回）。
     let mut newvals = [0u32; CHAN_HND_MAX];
     for i in 0..msg.nhandles {
@@ -3544,21 +3578,21 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
     for i in 0..n {
         obuf[i * 4..i * 4 + 4].copy_from_slice(&newvals[i].to_le_bytes());
     }
-    if let Err(e) = irq_window(|| copy_to_user(el1, handles, &obuf[..n * 4])) {
-        // SAFETY: 同上（回滚含 take 回已入表的 n 个令牌）。
+    // W3-Q92 尾段：载荷/新值/双 u64 回写全走同窗 `_locked` 族（窗 = 上方
+    // 单一 PT 锁窗；错误码与回滚面逐位保持）。
+    let tail = irq_window(|| -> Result<(), i32> {
+        copy_to_user_locked(el1, bytes, &msg.bytes[..msg.nbytes], &mut lp_write)?;
+        copy_to_user_locked(el1, handles, &obuf[..n * 4], &mut lp_write)?;
+        copy_out_u64_locked(el1, nbytesp, msg.nbytes as u64, &mut lp_write)?;
+        copy_out_u64_locked(el1, nhandlesp, n as u64, &mut lp_write)?;
+        Ok(())
+    });
+    if let Err(e) = tail {
+        // SAFETY: 同上（回滚含 take 回已入表的 n 个令牌——位置号即条数）。
         unsafe { recv_rollback(t, self_ptr, msg, &newvals[..n]) };
         return e as i64;
     }
-    if let Err(e) = irq_window(|| copy_out_u64(el1, nbytesp, msg.nbytes as u64)) {
-        // SAFETY: 同上。
-        unsafe { recv_rollback(t, self_ptr, msg, &newvals[..n]) };
-        return e as i64;
-    }
-    if let Err(e) = irq_window(|| copy_out_u64(el1, nhandlesp, n as u64)) {
-        // SAFETY: 同上。
-        unsafe { recv_rollback(t, self_ptr, msg, &newvals[..n]) };
-        return e as i64;
-    }
+    drop(_pt); // W3-Q92 收窗：此后零用户内存触点——PT 锁不带进唤醒链（SQ/RQ 锁序零新边）
     drop(_span); // g3-1c-2 段终点（回滚链毕）：原子段收口配平
     // 4-2：本端弹出一条 → 对端队列腾出一个槽 → 对端 WRITABLE 置位，唤醒等
     //「对端未满」的睡眠者（A 的可写性由 B 的队列决定——键 = 对端 ObjRef 地址；
