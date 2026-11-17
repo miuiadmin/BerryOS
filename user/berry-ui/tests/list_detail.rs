@@ -21,6 +21,7 @@ fn rect(w: Option<u32>, h: Option<u32>) -> ViewSpec {
             bg: Color { r: 10, g: 20, b: 30 },
             w,
             h,
+            radius: 0,
         }),
     }
 }
@@ -687,6 +688,7 @@ fn deferred_kinds_and_mismatched_kind_props_reject() {
                     bg: Color { r: 1, g: 2, b: 3 },
                     w: None,
                     h: None,
+                    radius: 0,
                 }),
             },
         )

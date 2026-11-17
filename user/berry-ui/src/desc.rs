@@ -231,11 +231,16 @@ pub struct ClipProps {
 }
 
 /// 矩形叶子属性：`None` = 尺寸随父（layout 分配）。
+///
+/// 刀 3（OH 形）：`radius` = 圆角半径（px；0 = 直角）。wire 面 radius
+/// **不在 props 定长域**（保 V1 golden 11B 零漂移）——走 flags bit4
+/// 扩展块（2B LE，radius>0 ⟺ 块在；0 无块）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RectProps {
     pub bg: Color,
     pub w: Option<u32>,
     pub h: Option<u32>,
+    pub radius: u16,
 }
 
 /// 抗锯齿圆叶属性（bounding box 正方形；w/h 缺一即尺寸随父）。
@@ -1110,8 +1115,11 @@ pub const FLAG_HAS_SIZE: u8 = 1 << 1;
 pub const FLAG_HAS_A11Y: u8 = 1 << 2;
 /// flags bit3 = has_align（cross u8——仅 Col/Row）。
 pub const FLAG_HAS_ALIGN: u8 = 1 << 3;
+/// 刀 3（OH 形）：radius 扩展块位——Rect 圆角（radius>0 ⟺ 块在；0 无块
+/// = V1 流零漂移）。块 = 2B LE，序在 ALIGN 后（扩展块尾）。
+pub const FLAG_HAS_RADIUS: u8 = 1 << 4;
 /// flags 已知位掩码（bit4+ → UnknownFlags 拒——绊线改钉 0x10）。
-pub const FLAG_KNOWN: u8 = FLAG_HAS_KEY | FLAG_HAS_SIZE | FLAG_HAS_A11Y | FLAG_HAS_ALIGN;
+pub const FLAG_KNOWN: u8 = FLAG_HAS_KEY | FLAG_HAS_SIZE | FLAG_HAS_A11Y | FLAG_HAS_ALIGN | FLAG_HAS_RADIUS;
 
 /// size 块/定长域 `Option<u32>` 的 wire 哨兵（「未定」档——与 Rect 的
 /// OPT_NONE 同值同义，GUI-6 起升 pub 单源名）。
@@ -1932,6 +1940,7 @@ fn parse_props(kind: ViewKind, src: &[u8]) -> Result<(Props, usize), AstError> {
                     bg: Color { r: src[0], g: src[1], b: src[2] },
                     w: if w == OPT_NONE { None } else { Some(w) },
                     h: if h == OPT_NONE { None } else { Some(h) },
+                    radius: 0,
                 }),
                 11,
             ))
@@ -2587,6 +2596,24 @@ pub(crate) fn parse_node(
     if flags & FLAG_HAS_ALIGN != 0 {
         props = apply_align_block(kind, props, &src[pos..], &mut pos)?;
     }
+    // 刀 3：radius 块（扩展块尾——ALIGN 后）。仅 Rect 合法；2B LE；
+    // radius=0 空载块非规范形拒（块在 ⟺ 有义）。
+    if flags & FLAG_HAS_RADIUS != 0 {
+        if !matches!(kind, ViewKind::Rect) {
+            return Err(AstError::UnknownProp { kind, got: FLAG_HAS_RADIUS });
+        }
+        if src.len() < pos + 2 {
+            return Err(AstError::Truncated);
+        }
+        let radius = u16::from_le_bytes([src[pos], src[pos + 1]]);
+        if radius == 0 {
+            return Err(AstError::UnknownProp { kind, got: FLAG_HAS_RADIUS });
+        }
+        if let Props::Rect(p) = &mut props {
+            p.radius = radius;
+        }
+        pos += 2;
+    }
     Ok((ViewSpec { kind, key, props }, pos, a11y))
 }
 
@@ -2775,6 +2802,10 @@ fn emit_node(
     if has_align {
         flags |= FLAG_HAS_ALIGN;
     }
+    let has_radius = matches!(&n.props, Props::Rect(p) if p.radius > 0);
+    if has_radius {
+        flags |= FLAG_HAS_RADIUS;
+    }
     let mut w = 0usize;
     let base = *cursor;
     let seg = &mut out[base..];
@@ -2816,6 +2847,12 @@ fn emit_node(
             _ => crate::layout::CrossAlign::Stretch,
         };
         w += put_u8(&mut seg[w..], cross_to_u8(cross))?;
+    }
+    // 刀 3：radius 块（扩展块尾——ALIGN 后；radius>0 ⟺ 块在）。
+    if has_radius {
+        if let Props::Rect(p) = &n.props {
+            w += put_u16le(&mut seg[w..], p.radius)?;
+        }
     }
     w += put_u8(&mut seg[w..], children as u8)?;
     *cursor += w;

@@ -650,6 +650,31 @@ pub const BG_DISABLED: Color = Color { r: 0xF2, g: 0xF2, b: 0xF2 };
 /// 禁用态前景/细件弱化灰（38% 灰系——主树既有弱化灰同值族，文档化近似）。
 pub const FG_DISABLED: Color = Color { r: 0x9E, g: 0x9E, b: 0x9E };
 
+// ---------- components.rs 装配 token（主线刀 3 组件层同值收编） ----------
+
+pub const COMPONENT_PAGE_BG: Color = Color { r: 0xF1, g: 0xF3, b: 0xF5 };
+pub const COMPONENT_CARD_BG: Color = Color { r: 0xFF, g: 0xFF, b: 0xFF };
+pub const COMPONENT_TEXT_PRIMARY: Color = Color { r: 0x18, g: 0x24, b: 0x31 };
+pub const COMPONENT_TEXT_SECONDARY: Color = Color { r: 0x66, g: 0x6F, b: 0x7A };
+pub const COMPONENT_DIVIDER: Color = Color { r: 0xE5, g: 0xE8, b: 0xEB };
+pub const COMPONENT_CARD_PRESSED_BG: Color = Color { r: 0xCC, g: 0xCC, b: 0xCC };
+pub const COMPONENT_ACCENT: Color = Color { r: 0x00, g: 0x7D, b: 0xFF };
+pub const COMPONENT_ON_ACCENT: Color = Color { r: 0xFF, g: 0xFF, b: 0xFF };
+pub const COMPONENT_BLACK: Color = Color { r: 0, g: 0, b: 0 };
+
+/// no-alpha 渲染面的半透明等价预混：`fg` 按 `alpha/255` 混入 `under`。
+pub fn mix_under(fg: Color, under: Color, alpha: u8) -> Color {
+    let a = u16::from(alpha);
+    let mix_ch = |f: u8, u: u8| -> u8 {
+        ((u16::from(f) * a + u16::from(u) * (255 - a)) / 255) as u8
+    };
+    Color {
+        r: mix_ch(fg.r, under.r),
+        g: mix_ch(fg.g, under.g),
+        b: mix_ch(fg.b, under.b),
+    }
+}
+
 // ---------- 组件色板（light 档——旧 paint.rs「组件 v1 固定色板」同值迁入） ----------
 //
 // 维八暗色刀迁移面：下列常量自 paint.rs 迁入（light 档值逐色不变——

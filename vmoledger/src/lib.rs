@@ -404,6 +404,171 @@ impl DemandLedger {
     }
 }
 
+/// read/write 三道门判序（W3-Q78 单源；原 kernel/src/vmo.rs read/write
+/// 两处内联逐字对齐——判序即正确性：mmio 拒先于 bounds 先于 committed，
+/// 换序会把设备窗口的 `-ENOTSUP` 折成越界/未提交误码）。
+///
+/// 纯判定零副作用：物理拷贝由调用方在 [`walk_copy`] 推进环里执行。
+pub fn copy_gate(led: &PageLedger, offset: usize, len: usize) -> Result<(), VmoError> {
+    if led.is_mmio() {
+        return Err(VmoError::NotSupported);
+    }
+    check_bounds(led.size(), offset, len)?;
+    led.ensure_committed(offset, len)
+}
+
+/// read/write 分段推进执行器（W3-Q78 单源；kernel 物理拷贝闭包注入——
+/// `copy(dst, src, n)` 语义 = `copy_nonoverlapping`，推进律单源：
+/// `pos` 步进 = 每步页内剩余与窗尾取小，环恰在窗尾收敛（§A136 同律）。
+///
+/// 前置：[`copy_gate`] 已过（本函数不重查——先查后拷，不留半截副作用）。
+pub fn walk_copy<F>(led: &PageLedger, offset: usize, buf_len: usize, mut copy: F)
+where
+    F: FnMut(usize, usize, usize),
+{
+    let mut pos = offset;
+    while pos < offset + buf_len {
+        let (pa, off, n) = led.page_span(pos, (offset + buf_len) - pos);
+        copy(pa, off, n);
+        pos += n;
+    }
+}
+
+#[cfg(test)]
+mod rw_tests {
+    use super::*;
+
+    /// 模型页账本：3 页，pa = 0x1000_0000 起连续。
+    fn ledger3() -> PageLedger {
+        let mut led = PageLedger::new_anon(3 * PAGE_SIZE).unwrap();
+        for p in 0..3 {
+            led.mark_committed(p, Some(0x1000_0000 + p * PAGE_SIZE));
+        }
+        led
+    }
+
+    fn mmio_ledger() -> PageLedger {
+        PageLedger::new_mmio(PAGE_SIZE, PAGE_SIZE).unwrap()
+    }
+
+    #[test]
+    fn gate_order_mmio_before_bounds_before_committed() {
+        // 判序钉板：mmio VMO 上越界 + 未提交并存 → NotSupported（mmio 门最前）。
+        assert_eq!(copy_gate(&mmio_ledger(), 0, usize::MAX), Err(VmoError::NotSupported));
+        // 匿名 VMO 越界且未提交并存 → OutOfRange（bounds 先于 committed）。
+        let led = PageLedger::new_anon(PAGE_SIZE).unwrap();
+        assert_eq!(copy_gate(&led, 0, 2 * PAGE_SIZE), Err(VmoError::OutOfRange));
+        // 全过形。
+        let led = ledger3();
+        assert_eq!(copy_gate(&led, 0, 3 * PAGE_SIZE), Ok(()));
+    }
+
+    #[test]
+    fn gate_pass_through_each_law() {
+        let mut led = ledger3();
+        // 零长窗在尾界外一点 → OutOfRange（零长不豁免界检）。
+        assert_eq!(copy_gate(&led, 3 * PAGE_SIZE + 1, 0), Err(VmoError::OutOfRange));
+        // 溢出卷回拒。
+        assert_eq!(copy_gate(&led, usize::MAX, 1), Err(VmoError::OutOfRange));
+        // 未提交页拒（中页挖空）。
+        let mut led = PageLedger::new_anon(3 * PAGE_SIZE).unwrap();
+        led.mark_committed(0, Some(0x1000));
+        led.mark_committed(2, Some(0x3000));
+        assert_eq!(copy_gate(&led, 0, 3 * PAGE_SIZE), Err(VmoError::NotCommitted));
+        // 已提交页零长窗尾界 → Ok。
+        assert_eq!(copy_gate(&led, 3 * PAGE_SIZE, 0), Ok(()));
+    }
+
+    #[test]
+    fn walk_segments_page_aligned_and_contiguous() {
+        let led = ledger3();
+        let mut segs = Vec::new();
+        walk_copy(&led, 0, 3 * PAGE_SIZE, |pa, off, n| segs.push((pa, off, n)));
+        // 三整页段、页内偏移 0、恰页大。
+        assert_eq!(segs, vec![
+            (0x1000_0000, 0, PAGE_SIZE),
+            (0x1000_0000 + PAGE_SIZE, 0, PAGE_SIZE),
+            (0x1000_0000 + 2 * PAGE_SIZE, 0, PAGE_SIZE),
+        ]);
+        // 覆盖律：段和恰 = buf_len。
+        assert_eq!(segs.iter().map(|s| s.2).sum::<usize>(), 3 * PAGE_SIZE);
+    }
+
+    #[test]
+    fn walk_unaligned_head_tail_split() {
+        let led = ledger3();
+        let mut segs = Vec::new();
+        // 头 100 字节偏移、跨三页窗：首段 = 页内剩余、中段整页、尾段恰残量。
+        walk_copy(&led, 100, 2 * PAGE_SIZE + 55, |pa, off, n| segs.push((pa, off, n)));
+        assert_eq!(segs.len(), 3);
+        assert_eq!(segs[0], (0x1000_0000, 100, PAGE_SIZE - 100));
+        assert_eq!(segs[1], (0x1000_0000 + PAGE_SIZE, 0, PAGE_SIZE));
+        assert_eq!(segs[2], (0x1000_0000 + 2 * PAGE_SIZE, 0, 155));
+        assert_eq!(segs.iter().map(|s| s.2).sum::<usize>(), 2 * PAGE_SIZE + 55);
+    }
+
+    #[test]
+    fn walk_zero_len_no_calls() {
+        let led = ledger3();
+        let mut calls = 0;
+        walk_copy(&led, 0, 0, |_, _, _| calls += 1);
+        assert_eq!(calls, 0);
+        // 尾界零长同样零调用（门已过，环体不进）。
+        walk_copy(&led, 3 * PAGE_SIZE, 0, |_, _, _| calls += 1);
+        assert_eq!(calls, 0);
+    }
+
+    #[test]
+    fn walk_single_byte_and_full_span() {
+        let led = ledger3();
+        let mut segs = Vec::new();
+        walk_copy(&led, 0, 1, |pa, off, n| segs.push((pa, off, n)));
+        assert_eq!(segs, vec![(0x1000_0000, 0, 1)]);
+        // 全幅单页窗（页内偏移不落 0）。
+        let mut segs = Vec::new();
+        walk_copy(&led, 4095, 1, |pa, off, n| segs.push((pa, off, n)));
+        assert_eq!(segs, vec![(0x1000_0000, 4095, 1)]);
+        // 末页末字节。
+        let mut segs = Vec::new();
+        walk_copy(&led, 3 * PAGE_SIZE - 1, 1, |pa, off, n| segs.push((pa, off, n)));
+        assert_eq!(segs, vec![(0x1000_0000 + 2 * PAGE_SIZE, PAGE_SIZE - 1, 1)]);
+    }
+
+    #[test]
+    fn gate_law_mirror_kernel_read_write() {
+        // 对拍律：copy_gate 判序 == kernel read/write 原内联三行（注释锚——
+        // kernel 侧换单源后本测即文档化契约，行为零漂移由 test_host 全量守）。
+        let led = ledger3();
+        // kernel read(0, 3*PAGE_SIZE) 形：gate 过 + walk 全幅。
+        assert!(copy_gate(&led, 0, 3 * PAGE_SIZE).is_ok());
+        // mmio read 恒 NotSupported——不论窗口形状。
+        for (off, len) in [(0, 0), (0, 1), (PAGE_SIZE, 0), (0, usize::MAX)] {
+            assert_eq!(copy_gate(&mmio_ledger(), off, len), Err(VmoError::NotSupported),
+                       "mmio gate ({off},{len})");
+        }
+    }
+
+    #[test]
+    fn walk_pos_never_exceeds_end_invariant() {
+        // 推进不变量：敌意 buf_len 全域扫描（1..=2 页 + 1），段和恰等、
+        // 末段不越窗尾——环收敛律（§A136）。
+        let led = ledger3();
+        for len in 1..=(2 * PAGE_SIZE + 1) {
+            let mut total = 0;
+            let mut last_end = 0;
+            walk_copy(&led, 0, len, |pa, off, n| {
+                assert!(n > 0 && n <= PAGE_SIZE, "n 域违律 ({len}): {n}");
+                assert!(off + n <= PAGE_SIZE, "页内越界 ({len}): off={off} n={n}");
+                assert!(pa >= 0x1000_0000 && pa < 0x1000_0003_0000, "pa 出域 ({len}): {pa:#x}");
+                last_end = total + n;
+                total += n;
+            });
+            assert_eq!(total, len, "段和恰等 ({len})");
+            assert_eq!(last_end, len, "末段恰收窗尾 ({len})");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

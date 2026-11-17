@@ -108,7 +108,7 @@ impl TextArea {
             ViewSpec {
                 kind: ViewKind::Rect,
                 key: 0,
-                props: Props::Rect(RectProps { bg: selected, w: Some(0), h: Some(line_h) }),
+                props: Props::Rect(RectProps { bg: selected, w: Some(0), h: Some(line_h), radius: 0 }),
             },
         )?;
         let sel_band = ui.add(
@@ -116,7 +116,7 @@ impl TextArea {
             ViewSpec {
                 kind: ViewKind::Rect,
                 key: 0,
-                props: Props::Rect(RectProps { bg: selected, w: Some(0), h: Some(0) }),
+                props: Props::Rect(RectProps { bg: selected, w: Some(0), h: Some(0), radius: 0 }),
             },
         )?;
         let sel_tail = ui.add(
@@ -124,7 +124,7 @@ impl TextArea {
             ViewSpec {
                 kind: ViewKind::Rect,
                 key: 0,
-                props: Props::Rect(RectProps { bg: selected, w: Some(0), h: Some(line_h) }),
+                props: Props::Rect(RectProps { bg: selected, w: Some(0), h: Some(line_h), radius: 0 }),
             },
         )?;
         let value_text = ui.add(
@@ -144,6 +144,7 @@ impl TextArea {
                     bg: ctx.theme.colors.primary,
                     w: Some(0),
                     h: Some(line_h),
+                    radius: 0,
                 }),
             },
         )?;

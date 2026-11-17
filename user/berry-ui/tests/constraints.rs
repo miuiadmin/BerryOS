@@ -18,6 +18,7 @@ fn rect(w: Option<u32>, h: Option<u32>) -> ViewSpec {
             bg: Color { r: 1, g: 2, b: 3 },
             w,
             h,
+            radius: 0,
         }),
     }
 }

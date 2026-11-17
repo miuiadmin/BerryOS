@@ -390,12 +390,14 @@ pub extern "C" fn exception_sync(tf: &mut TrapFrame) {
                 tf.elr = tf.elr.wrapping_add(4);
                 return;
             }
+            // cbox 黑匣子镜像（halt 前——刀1 双钩之一；恢复路径已全数早退）。
             cbox_record(KIND_EL1, tf);
             dump(tf, ec);
             uart_puts(b"  -> fatal, halt\n");
             halt();
         }
         _ => {
+            // cbox 黑匣子镜像（halt 前——刀1 双钩之一）。
             cbox_record(KIND_EL1, tf);
             dump(tf, ec);
             uart_puts(b"  -> fatal, halt\n");
@@ -723,8 +725,10 @@ fn put_reg(i: usize, v: u64) {
 }
 
 /// 两位十进制（寄存器下标 0..30）。
+///
+/// 装配律单源 berry-numface（W3-Q83）——本函数只留发射循环。
 fn dec2(n: u8) {
-    const D: &[u8; 10] = b"0123456789";
-    let buf = [D[(n / 10) as usize], D[(n % 10) as usize]];
-    uart_puts(&buf);
+    let mut buf = [0u8; 2];
+    let w = berry_numface::write_dec2(n, &mut buf);
+    uart_puts(&buf[..w]);
 }

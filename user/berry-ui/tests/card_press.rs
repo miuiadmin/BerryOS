@@ -36,8 +36,7 @@ fn card_press_changes_paint_and_offset_without_relayout() {
                 props: Props::Rect(RectProps {
                     bg: Color { r: 9, g: 19, b: 29 },
                     w: None,
-                    h: Some(40),
-                }),
+                    h: Some(40),radius: 0}),
             },
         )
         .unwrap();
@@ -131,8 +130,7 @@ fn card_click_has_visual_only_and_foreign_messages_are_ignored() {
                 props: Props::Rect(RectProps {
                     bg: Color { r: 1, g: 2, b: 3 },
                     w: Some(20),
-                    h: Some(20),
-                }),
+                    h: Some(20),radius: 0}),
             },
         )
         .unwrap();

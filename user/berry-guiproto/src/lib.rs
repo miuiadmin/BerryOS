@@ -6708,8 +6708,6 @@ mod tests {
         assert_ne!(WM_EVT_BACK, WM_EVT_TABLE);
         assert_ne!(WM_EVT_TABLE, WM_EVT_BACK_ACK);
         assert_ne!(WM_EVT_BACK, WM_EVT_BACK_ACK);
-    }
-
     // ---------- 刀3 仲裁器决策表（规范 §6.3 A1-A11——每条一正一负 + 组合钉板）----------
     use super::arbiter::*;
 
@@ -7438,6 +7436,7 @@ mod tests {
         assert_eq!(g.lfc_k(), 0);
     }
 }
+}
 
 #[cfg(test)]
 mod recents_tests {
@@ -7487,4 +7486,5 @@ mod recents_tests {
         bad = vec![ST_EAGAIN];
         assert_eq!(parse_wm_recent_owners_rep(&bad), Some(Err(ST_EAGAIN)));
     }
+
 }

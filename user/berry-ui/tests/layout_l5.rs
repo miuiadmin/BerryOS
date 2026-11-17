@@ -142,8 +142,7 @@ fn wrap_registration_lifecycle_and_reject_faces_are_loud() {
                 props: Props::Rect(berry_ui::desc::RectProps {
                     bg: Color { r: 1, g: 2, b: 3 },
                     w: Some(10),
-                    h: Some(10),
-                }),
+                    h: Some(10),radius: 0}),
             },
         )
         .unwrap();
@@ -350,8 +349,7 @@ fn grid_projection_uses_one_track_not_full_grid_content_width() {
                 props: Props::Rect(RectProps {
                     bg: Color { r: 1, g: 2, b: 3 },
                     w: Some(48),
-                    h: Some(16),
-                }),
+                    h: Some(16),radius: 0}),
             },
         )
         .unwrap();

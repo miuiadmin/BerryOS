@@ -239,6 +239,8 @@ def four_tuple(d: dict) -> tuple:
 # 单源裁决；新加零 handle 号须同步进单（理由随行注记）。
 NO_GATE_SYSCALLS = {
     "handle_close",           # 表槽收口：close 不需权利（Zircon 同形）
+    "cbox_drain",             # 诊断几何面 need=0 惯例（同 process_get_exit_code；
+                             # 2026-11-16 跨根并回自 main 显示线 cbox 刀1）
     "handle_replace",         # 槽位原子换：类型门无权利门
     "object_wait_one",        # 等待不需权利（12 位 rights 表无 WAIT）
     "object_wait_many",       # 同上

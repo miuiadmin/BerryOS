@@ -365,8 +365,7 @@ fn ui_damage_clipped_to_viewport() {
                 props: Props::Rect(RectProps {
                     bg: Color { r: 1, g: 2, b: 3 },
                     w: Some(100),
-                    h: Some(16),
-                }),
+                    h: Some(16), radius: 0 }),
             },
         )
         .unwrap();

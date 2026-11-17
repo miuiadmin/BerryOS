@@ -20,6 +20,7 @@ fn rect_spec(key: u64, w: u32) -> ViewSpec {
             bg: Color { r: 1, g: 2, b: 3 },
             w: Some(w),
             h: Some(20),
+            radius: 0,
         }),
     }
 }
@@ -32,6 +33,7 @@ fn flex_rect_spec(key: u64) -> ViewSpec {
             bg: Color { r: 4, g: 5, b: 6 },
             w: None,
             h: None,
+            radius: 0,
         }),
     }
 }
@@ -58,6 +60,7 @@ fn flex_stream(width: u32) -> Vec<u8> {
             bg: Color { r: 4, g: 5, b: 6 },
             w: None,
             h: None,
+            radius: 0,
         }),
     )
     .unwrap();
@@ -78,6 +81,7 @@ fn keyed_stream(children: &[(u64, u32)]) -> Vec<u8> {
                 bg: Color { r: 7, g: 8, b: 9 },
                 w: Some(width),
                 h: Some(20),
+                radius: 0,
             }),
         )
         .unwrap();

@@ -172,27 +172,27 @@ polarity = "在位且值合法（s=<ns>;b=<0|1>，分号分隔）才 spawn；缺
 [[keys]]
 name = "panel-model"
 kind = "string"
-injectors = ["tools/smoke-image.sh 刀6 双 boot 段（tiered:vrr + freerange:per_frame 实注）；亦可手拼 -fw_cfg 专递"]
-consumer = "kernel/src/main.rs panel_cfg_req（tiered|tiered:vrr|freerange|freerange:per_frame；缺省 tiered）"
+injectors = ["tools/smoke-image.sh 刀6 双 boot 段（tiered:vrr + freerange:per_frame 实注）；亦可手拼 -fw_cfg 专递——2026-11-16 跨根并回自 main 显示线 refresh 刀2/刀6"]
+consumer = "kernel/src/main.rs panel_cfg_req（tiered|tiered:vrr|freerange|freerange:per_frame；缺省 tiered；刀6 后缀抬 A8 LFC/P6 逐帧位）"
 polarity = "在位且值合法才覆写缺省；非法 loud 回退缺省 + PANEL model fail 诊断行"
 
 [[keys]]
 name = "panel-mode"
 kind = "string"
-injectors = ["tools/smoke-image.sh 刀6 双 boot 段（det 实注）；亦可手拼 -fw_cfg 专递"]
-consumer = "kernel/src/main.rs panel_cfg_req（free|det|det:SEED；缺省 free；HOST_LOCK 在册未接线）"
+injectors = ["tools/smoke-image.sh 刀6 双 boot 段（det 实注）；亦可手拼 -fw_cfg 专递——跨根并回自 main refresh 刀2"]
+consumer = "kernel/src/main.rs panel_cfg_req（free|det|det:SEED；缺省 free；HOST_LOCK 在册未接线——刀3 仲裁器）"
 polarity = "在位且值合法才覆写缺省；非法 loud 回退缺省 + PANEL mode fail 诊断行"
 
 [[keys]]
 name = "panel-fault"
 kind = "string"
-injectors = ["tools/smoke-image.sh 刀6 双 boot 段（det 实注）；亦可手拼 -fw_cfg 专递"]
-consumer = "kernel/src/main.rs panel_cfg_req（D,J,S 十进制 CSV：丢帧千分比/抖动 ns/切档丢帧数）"
+injectors = ["tools/smoke-image.sh 刀6 双 boot 段（det 实注）；亦可手拼 -fw_cfg 专递——跨根并回自 main refresh 刀2"]
+consumer = "kernel/src/main.rs panel_cfg_req（D,J,S 十进制 CSV：丢帧千分比 0..=1000/抖动 ns/切档丢帧 0..=16）"
 polarity = "零域 = 缺省态；非法 loud 回退缺省 + PANEL fault fail 诊断行；任一 panel 旋钮非缺省打 PANEL cfg 证据行"
 
 [[keys]]
 name = "bootmode"
 kind = "string"
-injectors = ["（无产链注入方——手拼 -fw_cfg 专递 string=verbose；berry CLI bootmode 档待后续刀接回）"]
-consumer = "bootloader/berryboot/app/src/lib.rs + kernel/src/main.rs bootmode_verbose_req（双端 split-first 解析同一 verbose 词）"
-polarity = "值 verbose=装载滚日志 + vgpud verbose BootProgress 面；缺席/他值=BerryOS Logo 与白色胶囊缺省面"
+injectors = ["（无仓内注入方——手拼 -fw_cfg 专递 string=verbose，rwake 同款；注入方待补：波1 钦定 berry CLI --boot-mode 未落地，挂账波1 合并刀 B（acad332ba 弃置半成品））"]
+consumer = "bootloader/berryboot/app/src/lib.rs + kernel/src/main.rs bootmode_verbose_req + kernel/src/splash.rs（同一 verbose 词三端一致）"
+polarity = "值 verbose=装载滚日志与 vgpud verbose BootProgress 面；缺席/他值=BerryOS Logo 与白色胶囊缺省面"

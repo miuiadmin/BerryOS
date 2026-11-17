@@ -1087,6 +1087,21 @@ pub fn current_asid() -> u16 {
     if cur.is_null() { 0 } else { unsafe { (*cur).asid } }
 }
 
+/// cbox（黑匣子）读面：当前任务调试名。空态（boot 早期 CURRENT null / 副核
+/// park）= None——调用方落 `(boot)` 类占位名。读侧契约同 [`current_task`]
+/// （屏蔽窗/锁窗内读；cbox 钩子在异常入口 PSTATE.I=1 下调用，满足）。
+pub fn current_task_name() -> Option<&'static [u8]> {
+    // SAFETY: 读侧契约同 current_task（见上）；空指针判空先行。
+    let p = unsafe { current_task() };
+    if p.is_null() {
+        None
+    } else {
+        // SAFETY: 指针来自调度器钉入槽（活跃任务，生命周期至退出回收）；
+        // name 是 &'static [u8] 只读域。
+        Some(unsafe { (*p).name })
+    }
+}
+
 /// 当前任务钉住的 Process 对象键（C-4b `process_terminate` 的自杀判别用）：
 /// `Task.pinned` 只读透传（写点 = [`try_spawn_user`] 装配期，F-E1 前移）。
 /// 0 = 无（内核任务 / boot 裸表用户进程 / ktest 期 CURRENT=null）——调用方
@@ -1611,21 +1626,6 @@ pub unsafe extern "C" fn user_fault_exit() -> ! {
     // Plan B：fault 杀也走退出钩子（Process 置 Exited——exit_code 0 是诚实
     // 注释面：杀因观察缺位，码面留给 v2 get_info）；码 0 与旧 exit_current 同。
     switch_away_forever_with(0)
-}
-
-/// cbox（黑匣子）读面：当前任务调试名。空态（boot 早期 CURRENT null / 副核
-/// park）= None——调用方落 `(boot)` 类占位名。读侧契约同 [`current_task`]
-/// （屏蔽窗/锁窗内读；cbox 钩子在异常入口 PSTATE.I=1 下调用，满足）。
-pub fn current_task_name() -> Option<&'static [u8]> {
-    // SAFETY: 读侧契约同 current_task（见上）；空指针判空先行。
-    let p = unsafe { current_task() };
-    if p.is_null() {
-        None
-    } else {
-        // SAFETY: 指针来自调度器钉入槽（活跃任务，生命周期至退出回收）；
-        // name 是 &'static [u8] 只读域。
-        Some(unsafe { (*p).name })
-    }
 }
 
 /// c-2c slice 2a 执法面：EXIT_HOOK 三调用点前置断言——结构位（bits1-4）
@@ -2830,13 +2830,47 @@ pub fn block_current(obj: usize, signals: u64, deadline_vct: u64) -> WakeReason 
 /// IRQ 屏蔽窗内 + **SQ 锁已持**（c-2a 起两路调用方都在窗内）；`t` 当前在
 /// SLEEPQ 上（调用方契约同 `SleepQueue::unlink`——对不在队者调用会扬掉
 /// 整队）。
+/// F4 wake 重放：任务唤醒时条件性重评选核（SMP-01 §3.4 遗留修，2026-11-16）。
+///
+/// 设计律（与 [`crate::policy::placement_hint_ungated`] 头注同源）：
+/// - **负载动机迁移**（非能量判据）：触发门 = home 核 util > 80%（1024 归一）；
+/// - **容量门**：对核 util < 75%（spare > 25%）才迁——不足则留 home；
+/// - **不吃 overutil 让位**（wake 面的触发条件恰是 home 过载——若沿用
+///   overutil 门控则重放结构性死火；Linux 平行律：overutil 时 EAS 退场，
+///   但 wake 路负载均衡照常工作）；
+/// - **防乒乓**：迁移后改写 `home_cpu`（下次 wake 从新 home 出发）；
+/// - **单核零改**（`par_enabled` 门控内）；
+/// - **无 band 差异**（v1——所有带同等适用；band 感知迁移归后续刀）。
+///
+/// 返回目标核号（home 或对核）。
+unsafe fn eas_wake_pick(p: *mut Task) -> usize {
+    let home = (*p).home_cpu as usize;
+    if !hal::smp::par_enabled() {
+        return home; // 单核零改——恒回 home
+    }
+    let other = 1 - home;
+    // 触发门：home 核 util > 80%（1024 归一 → > 819）
+    if crate::util::cpu_util(home) <= 819 {
+        return home; // home 不忙——不迁（防乒乓）
+    }
+    // 容量门：对核 util < 75%（spare > 25% → util < 768）
+    if crate::util::cpu_util(other) >= 768 {
+        return home; // 对核也不闲——无处可去
+    }
+    // 双门都过 → 迁移 + 随迁改写 home（下次 wake 从新 home 出发）
+    (*p).home_cpu = other as u8;
+    other
+}
+
 unsafe fn wake_one_inner(t: NonNull<Task>) {
     // SAFETY: 契约如上；SLEEPQ 单核顺序访问。
     unsafe {
         let p = t.as_ptr();
         sleepq().unlink(t);
         (*p).wakeup.set(WakeReason::Signaled);
-        enqueue_with_kick(&mut *p, (*p).home_cpu as usize); // 置 Ready + 回 home 队入环
+        // F4：wake 重放——条件性重评目标核（原：恒 home_cpu）。
+        let cpu = eas_wake_pick(p);
+        enqueue_with_kick(&mut *p, cpu); // 置 Ready + 入目标核队入环
         note_wake(p, WakeReason::Signaled);
     }
 }
@@ -4219,6 +4253,51 @@ pub unsafe fn park_recheck() {
 
 // ---- S-3b 步 b-2（子案 §9.6）：偷取初版 + A7 IDLE 合流 ----
 
+// ---- band 感知偷取（本刀：SMP-01「band 偷取」遗留收口）----
+//
+// 缺口：try_steal_one 的 victim 过滤（W3-Q82 `berry_balface::steal_filter`
+// 三值合取）不看带——utility 任务可能被偷到 interactive 密集核（挤占
+// 响应敏感负载的供给），interactive 任务也可能被偷离原核（丢响应局部性）。
+// 修法 = 偷取时**优先偷与目标核带分布兼容的任务**（三档偏好序，见
+// [`steal_band_rank`]）：
+// - utility(0x03) → interactive 密集核：降优先（兜底档——比偷 interactive
+//   或空手而归优，仍可选）；
+// - interactive(0x02)：通常不偷（留原核保响应——末档兜底）；
+// - 其余（unit/无带/utility → 非密集核）：带兼容，见首即偷。
+// 「interactive 密集」判据 = 目标核（偷取目的地 = 本核）环上两现役带
+// 在环数比较（`int > util`——cur-in-ring 不变量使当前任务在计，
+// throttled/frozen 在环保留也在计 = 潜在 interactive 负载；空环〔idle
+// 偷取常态〕= 0>0 假 = 不密集——空闲核无响应供给之争，utility 入住无害）。
+
+/// 偷取候选的带兼容档（[`steal_band_rank`] 返回值——越小越优）。
+pub const STEAL_RANK_COMPAT: u8 = 0;
+/// utility → interactive 密集核：降优先（第二档——环扫完无兼容者时的
+/// 兜底 victim）。
+pub const STEAL_RANK_DEPRIOR: u8 = 1;
+/// interactive：通常不偷（留原核保响应——末档兜底，只有它时才偷）。
+pub const STEAL_RANK_PROTECT: u8 = 2;
+
+/// **band 感知偷取决策面（纯决策——ktest 钉板对象，`eas_pick_place`
+/// 同款纪律）**：候选任务带 id × 目标核环带分布（int/util 在环数）→
+/// 偷取偏好档。带 id 取 [`class_of_task`] 派生值（`FairBand::band_id`
+/// 单源；非带任务 = 0 走兼容档）。密集判据 `tgt_int > tgt_util`。
+pub fn steal_band_rank(band: u8, tgt_int: usize, tgt_util: usize) -> u8 {
+    match band {
+        crate::intent::INTENT_INTERACTIVE => STEAL_RANK_PROTECT,
+        crate::intent::INTENT_UTILITY if tgt_int > tgt_util => STEAL_RANK_DEPRIOR,
+        _ => STEAL_RANK_COMPAT,
+    }
+}
+
+/// 任务的现役带 id（[`class_of_task`] 单源派生——intent_effective 查表；
+/// 非带任务〔unit/首批外档〕= 0）。偷取 band 感知面的读带臂。
+fn band_of_task(t: &Task) -> u8 {
+    match class_of_task(t) {
+        TaskClass::Band(fb) => fb.band_id,
+        TaskClass::Unit => 0,
+    }
+}
+
 /// 偷取初版（义务②）：本核出选 None 后扫对核环，摘首 eligible 有表任务。
 /// F-E2 双过滤：①有地址空间者才偷（`ttbr0 != 0`——**无表**内核任务永不
 /// 跨核（内核串行纪元不变量），被此臂滤出；带表内核任务（task_a/task_b
@@ -4230,11 +4309,16 @@ pub unsafe fn park_recheck() {
 /// 双向对称。无乒乓：偷到即**随迁改写 home**（`place()` 注的 b-2 唯一改写点
 /// ——此后 wake/expire 再入队回新家核，迁移粘性）；**摘环即回插本核环**
 /// （体尾 F-E2 补——出选臂 pick「留环只推游标」，偷来者同形，绝无裸跑）。
+/// band 感知（本刀）：victim 选择按 [`steal_band_rank`] 三档偏好序——环扫
+/// 全程取**最小档**（同档环序先者胜——严格更优才替换，旧「首 eligible」
+/// 公平性保形）；兼容档（0）见首即定（无带/unit 负载零漂移——boot
+/// task_a/task_b 等旧形逐位不变）。
 ///
 /// # Safety
 /// IRQ 屏蔽 + 独立远端 RQ 真锁窗（3-1b 起无 KL 包络——窗口正确性自足）；
 /// 本核出选已 None 且**本核 RQ 窗已闭**（调用契约：先 pick 放锁后
-/// 偷——两调用面 idle_loop/park_recheck 均在 rq_unlock 之后）。
+/// 偷——两调用面 idle_loop/park_recheck 均在 rq_unlock 之后；带分布快照
+/// 的本核短锁窗在远端窗**之前**开闭——仍绝不双持）。
 /// 环手术锁形 = §3 特则「**只持远端**」（c-2b slice 5 真锁包络）：远端
 /// 扫描+摘环一窗 → 放远端 → 无归属窗 → 回插本核再取本地——**绝不双持**
 /// （F-L1「双持一律核号升序」特则本路径构造性不触发——无归属窗单点入队
@@ -4246,11 +4330,40 @@ unsafe fn try_steal_one() -> Option<*mut Task> {
     let me = hal::smp::cpu_id();
     let other = 1 - me;
     let src = rq_of(other);
+    // —— band 感知前置：目标核（本核 = 偷取目的地）带分布快照 ——
+    // 本核 RQ 短锁窗内数环上两现役带在环数（判据与容忍度见节注）。
+    // 快照后放锁再开远端窗——绝不双持；密集是软偏好输入，快照-扫描
+    // 间隙对核唤醒入环的竞态最多翻转边界档（int==util）一档，容忍。
+    let (tgt_int, tgt_util) = {
+        let phys = rq_lock_of(me);
+        let mut ni = 0usize;
+        let mut nu = 0usize;
+        if let Some(h) = rq_of(me).head() {
+            let mut cur = h;
+            loop {
+                let p = cur.as_ptr();
+                match band_of_task(&*p) {
+                    crate::intent::INTENT_INTERACTIVE => ni += 1,
+                    crate::intent::INTENT_UTILITY => nu += 1,
+                    _ => {}
+                }
+                // SAFETY: 环上节点必有 next（锁窗内无并发出/入环）。
+                let next =
+                    (*p).rq_next.get().expect("steal dens: on-ring node must have next");
+                if next == h {
+                    break; // 整圈数完
+                }
+                cur = next;
+            }
+        }
+        rq_unlock_of(me, phys);
+        (ni, nu)
+    };
     // —— 远端窗（只持远端）：对核环扫描（has_eff_above_filtered 同款走查
-    // 形）：首过双过滤者即 victim；整圈无货 None。扫描与摘环同窗——victim
-    // 定型到 unlink 原子，防扫描后摘环前被对核 pick/出队抢走。断链形态由
-    // link/unlink 入口断言执法（环不变式），走查「环上必有 next」与
-    // ring_check 同口径。
+    // 形）：band 感知三档选优——兼容档见首即定（早退），否则整圈取最小档。
+    // 扫描与摘环同窗——victim 定型到 unlink 原子，防扫描后摘环前被对核
+    // pick/出队抢走。断链形态由 link/unlink 入口断言执法（环不变式），
+    // 走查「环上必有 next」与 ring_check 同口径。
     let phys = rq_lock_of(other);
     let Some(h) = src.head() else {
         rq_unlock_of(other, phys); // 对核空环——窗闭
@@ -4258,6 +4371,7 @@ unsafe fn try_steal_one() -> Option<*mut Task> {
     };
     let mut cur = h;
     let mut victim = None;
+    let mut victim_rank = u8::MAX;
     loop {
         let p = cur.as_ptr();
         // W3-Q82：victim 过滤单源 berry_balface::steal_filter（三值合取）。
@@ -4266,8 +4380,14 @@ unsafe fn try_steal_one() -> Option<*mut Task> {
             (*p).ttbr0,
             crate::class::eligible(core::ptr::null_mut(), p),
         ) {
-            victim = Some(cur);
-            break;
+            let r = steal_band_rank(band_of_task(&*p), tgt_int, tgt_util);
+            if r < victim_rank {
+                victim = Some(cur);
+                victim_rank = r;
+                if r == STEAL_RANK_COMPAT {
+                    break; // 带兼容见首即定——无带负载零漂移（旧形逐位）
+                }
+            }
         }
         // SAFETY: 环上节点必有 next（锁窗内无并发出/入环）。
         let next = (*p).rq_next.get().expect("steal scan: on-ring node must have next");

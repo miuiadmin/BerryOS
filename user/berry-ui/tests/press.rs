@@ -21,7 +21,7 @@ fn rect_spec(c: Color, w: u32, h: u32) -> ViewSpec {
     ViewSpec {
         kind: ViewKind::Rect,
         key: 0,
-        props: Props::Rect(RectProps { bg: c, w: Some(w), h: Some(h) }),
+        props: Props::Rect(RectProps { bg: c, w: Some(w), h: Some(h), radius: 0 }),
     }
 }
 

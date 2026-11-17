@@ -19,6 +19,7 @@ fn rect(_parent: NodeId, h: u32) -> ViewSpec {
             bg: Color { r: 20, g: 30, b: 40 },
             w: None,
             h: Some(h),
+            radius: 0,
         }),
     }
 }

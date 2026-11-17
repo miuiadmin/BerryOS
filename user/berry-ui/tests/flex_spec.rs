@@ -23,6 +23,7 @@ fn rect() -> ViewSpec {
             bg: Color { r: 10, g: 20, b: 30 },
             w: None,
             h: None,
+            radius: 0,
         }),
     }
 }
@@ -35,6 +36,7 @@ fn fixed_rect(w: u32, h: u32) -> ViewSpec {
             bg: Color { r: 1, g: 2, b: 3 },
             w: Some(w),
             h: Some(h),
+            radius: 0,
         }),
     }
 }

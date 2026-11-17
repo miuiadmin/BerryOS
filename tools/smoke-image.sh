@@ -71,17 +71,6 @@
 #   8. VER 哨兵执法（标准 §1 构建标识轨道，审计洞①闭环）：`eco: VER ok`
 #      在席 + `eco: VER mix` 缺席——EFI 相（GOP 相门）是 VER 行唯一实现
 #      场，混合构建 loud 行命中即红。
-#   9. 刷新率刀6 双 boot 形态面（阶段 8，K-6 起）：主 boot 收摊后串行两
-#      次独立 boot，fw_cfg 旋钮换面板形态——boot `k6-det`（tiered:vrr +
-#      det）断言 `PANEL cfg model=tiered:vrr mode=det`（证据行含尾
-#      ` seed=0`，断言取前缀子串）+ k6t 位级整倍/T5 不变性 + A8 LFC
-#      （`PANELARB lfc k=` engagement 换行）；boot `k6-p6f`
-#      （freerange:per_frame）断言 `PANEL cfg model=freerange:per_frame
-#      mode=free` + k6f 逐帧锁相。deadline 分 boot：det 相 park 走网格
-#      快（360s 同主相）；per_frame 相 idle 重扫 1Hz——k4t 101 + k4s 18 +
-#      k6h 202 park + k6p/k6f ≈ 460s worst → 600s。两 boot 共用 GFX ok
-#      总伞（guest 段内断言全过才打）+ 各自 PANEL cfg 证据行（内核
-#      panel_cfg_req——任一旋钮非缺省即打，形态错配即 FAIL loud）。
 #
 # UTM 手动点验四条（同镜像、UI 无法 CI——清单正文见 docs/开发体验.md §L3）：
 #   ① 插盘：UTM 新建 ARM64 虚机（UEFI）驱动器挂 berryos.img；
@@ -164,12 +153,11 @@ print(f"smoke-image: manifest platform_revision={level} == abi.toml level"
       "（三方联动第一方 ok）")
 PYEOF
 
-# 帽：EFI 链 + 内核全标记 V-3 实测 ~115s（TCG），360s ≈ 3x 余量（帽只兜
-# 结构性挂死，不赌快）。金丝雀在 ktest 毕即开始出现，标记到齐后通常即刻满足。
-# B-1 起 +B1 ok n=4（bench1 spawn + ~8.6k SVC ≈ +5-10s TCG）——360s 帽不动。
-# C-3 起 +PS/BC（ps + berryctl 三拉起 = 两 musl spawn + 4 RPC ≈ +10-20s
-# TCG）——360s 帽不动。
-DEADLINE_BOOT=900
+# 帽：EFI 链 + 内核全标记 + 真实 BerryUI boot-probe 批。标记族随刀线
+# 膨胀（FRZCYC/PWRDEG/FRZLOG 深睡三族、满表探测环与 GUI app 生命周期），
+# CI/宿主争用 TCG 下旧 360/600/900 帽均已实证跑不完；1800 只兜结构性挂死，
+# 不赌快。计数以 ECO_MARKERS 数组单源为准。
+DEADLINE_BOOT=1800
 DEADLINE_CANARY=120
 DEADLINE_RX=60
 
@@ -315,7 +303,7 @@ KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL o
 # 防误配。裸 grep -qF 足够——"WM ok" 与现役标记互非子串（最近形
 # BENCHWAKE n=/MANY ok/WAIT ok 均不含）。GFX/GFXF 语义零漂移：present/hdi
 # 调用点仅换端经 wmd 中继（op 编码与断言零改动——guifbd 字节不动）。时
-# 序：wmd 一 spawn ≈+5-10s TCG，实测链 ~115s；合并 BerryUI 真实 boot-probe 批后低载也需长窗，并行 QEMU 主机负载下用 900s 帽——DEADLINE_BOOT=900s
+# 序：wmd 一 spawn ≈+5-10s TCG，实测链 ~115s；合并 BerryUI 真实 boot-probe 批后低载也需长窗，合并 BerryUI/Berry Room app 批与并行 QEMU 负载下用 1800s 帽——DEADLINE_BOOT=1800s
 # 帽不动。LAUNCH 双（GUI-8 段③）：launcher 常驻进程自测——首帧呈现回执
 # 过链 LAUNCH ok + 合成 swipe 两轮翻页各落一帧 PAGE ok n=2（frameloop.rs
 # Selftest 状态机——**每进程**恰一次；svcmgr 一次重启帽重拉后两标记可在
@@ -357,21 +345,17 @@ KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL o
 # 四枚小写 `gfx: k4`/`launcher: telem` 词头独有，与现役标记（含大写
 # GFX/GFXF/LAUNCH 族）互非子串。
 # K-6 起 +k6 三枚 + P5C 一枚（刀6 刷新率体系主 boot 面——k6t/k6l/k6f
-# 形态专属段归阶段 8 双 boot 断言，主 boot 只断无条件段）：`gfx: k6p
-# n=4`（P2 四探——挂起/迟到即呈/squash 判弃/P5 定点提交）、`gfx: k6h
-# hz=`（240/480 产品档拍点门——两行取前缀式）、`P5C ok latch=`（guifbd
-# 定点提交 latch 证据行——k6p ④ 首个 slot-commit 起打）。k6 词头与 k4
-# 族互异，P5C 词头在册唯一，两两互非子串。+CBOX ok n=（cbox 挂账刀
-# ——refresh 侧合流带件，词头 C-B-O-X 现役唯一）。
-# 合流计数：生态 49 = wip 41（CLI/TERM/FROZEN/WAKE/TOMB + 计数锁数）+
-# refresh 8（CBOX + 刀4 四枚 + K-6 四枚）。
+# 形态专属段归阶段 7 双 boot 断言，主 boot 只断无条件段）：`gfx: k6p
+# 刀4 起刷新率/遥测四枚小写证据行与 K-6/P5 三枚主 boot 证据行全保；
+# CBOX 与 BerryUI/Berry Room app 生命周期标记随产品线并入。词头互异，
+# 带参族取前缀式；完整计数与顺序以 ECO_MARKERS 数组单源为准。
 ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=" "APPUI ok n=" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok" "TAB ok" "INT ok" "POLL ok" "PS ok n=" "BC ok" "THR ok" "DPGP ok" "DPGS ok n=4" "DPGN ok n=4" "FROZEN ok n=1" "WAKE ok n=1" "TOMB ok n=1" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "CLI ok n=" "TERM ok n=" "FBW ok" "FBSERVE ok" "GFX ok" "GFXF ok n=" "WM ok" "LAUNCH ok" "PAGE ok n=" "CBOX ok n=" "gfx: k4a hz=" "gfx: k4t p99=" "gfx: k4s n=" "launcher: telem f=" "gfx: k6p n=4" "gfx: k6h hz=" "P5C ok latch=" "CJKPROBE ok n=2" "BROWSER up" "BROWSERWIN ok" "BROWSERFRAME ok" "BROWSERPROBE ok" "BROWSERDESTROY ok" "BROWSEREXIT ok" "WMCONN ok id=1" "WMCONN ok id=2" "WMDENY ok" "WMSDENY ok" "WMORPHAN ok id=" "WM2FRAME ok n=2" "WMDEAD ok id=1 wins=0" "WMDEAD ok id=2 wins=1" "WMDTY ok n=1" "WMCONN ok id=3" "BERRYDEMO up" "WMCONN ok id=4" "BERRYDEMOWIN ok" "BERRYDEMOFRAME ok" "BERRYDEMOPROBE ok" "BERRYDEMODESTROY ok" "BERRYDEMOEXIT ok" "WMCONN ok id=5" "WMCONN ok id=6" "CONTACTS up" "CONTACTSWIN ok" "CONTACTSLIST ok n=" "CONTACTSLOCAL ok n=4" "CONTACTSFRAME ok" "CONTACTSPROBE ok" "CONTACTSDESTROY ok" "CONTACTSEXIT ok" "WMCONN ok id=7" "FILES up" "FILESWIN ok" "FILESLIST ok n=" "FILESSEL ok i=" "FILESFRAME ok" "FILESPROBE ok" "FILESDESTROY ok" "FILESEXIT ok" "WMCONN ok id=8" "PHOTOS up" "PHOTOSWIN ok" "PHOTOSLIST ok n=" "PHOTOSLOCAL ok n=5000" "PHOTOSFRAME ok" "PHOTOSPROBE ok" "PHOTOSDESTROY ok" "PHOTSEXIT ok" "WMCONN ok id=9" "SETTINGS up" "SETTINGSWIN ok" "SETTINGSFRAME ok" "SETTINGSGEOM ok" "SETTINGSPROBE ok" "SETTINGSDESTROY ok" "SETTINGSEXIT ok" "WMCONN ok id=10" "UITEST up" "UITESTROOM ok" "UITESTWIN ok w=" "UITESTFRAME ok" "UITESTPROBE ok" "UITESTDESTROY ok" "UITESTEXIT ok")
 
 LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")
 RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")
-# 阶段 8 双 boot 的独立日志/临时目录（run_boot8 内赋值；cleanup 兜中途中止）。
-LOG8=""
-RUN_DIR8=""
+# 阶段 7 双 boot 的独立日志/临时目录（run_boot7 内赋值；cleanup 兜中途中止）。
+LOG7=""
+RUN_DIR7=""
 QEMU_PID=""
 RX_FIFO=""
 RX_HOLDER=""
@@ -391,14 +375,14 @@ cleanup() {
   [ -n "$RX_FIFO" ] && rm -f "$RX_FIFO"
   if [ "$rc" -eq 0 ]; then
     rm -rf "$RUN_DIR"
-    [ -n "$RUN_DIR8" ] && rm -rf "$RUN_DIR8"
+    [ -n "$RUN_DIR7" ] && rm -rf "$RUN_DIR7"
   else
-    echo "smoke-image: 现场目录保留：$RUN_DIR${RUN_DIR8:+ $RUN_DIR8}" >&2
+    echo "smoke-image: 现场目录保留：$RUN_DIR" >&2
   fi
   if [ -n "${SMOKE_KEEP_LOG:-}" ] || [ "$rc" -ne 0 ]; then
-    echo "smoke-image: 串口日志保留：$LOG${LOG8:+ $LOG8}" >&2
+    echo "smoke-image: 串口日志保留：$LOG${LOG7:+ $LOG7}" >&2
   else
-    rm -f "$LOG" "$LOG8"
+    rm -f "$LOG" "$LOG7"
   fi
 }
 trap 'cleanup $?' EXIT
@@ -464,7 +448,11 @@ RX_HOLDER=$!
 
 echo "smoke-image: QEMU 启动（AAVMF + ${IMAGE}——零 -kernel / 零 fw_cfg）"
 # 与 justfile run-efi 同参（不挂 virtio——EFI 路无 virtio 面；ramfb 供 GOP）。
-"$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic \
+# 合并 BerryUI/Berry Room app 族后 rootfs ≈43MiB；128M 下 EFI 保留 +
+# initrd 后 VMO 40MiB 全量 commit ktest 已实测 NoFrames；192M 仍会在
+# DPGN 子进程装配面 NoFrames/句柄资源不足（eco: dpgn sp3 实证）。验证拓扑抬
+# 256M，产品镜像内存与 1080×1920@60 约束不变。
+"$QEMU" -machine virt -cpu cortex-a72 -m 256M -nographic \
   -pflash "$AAVMF_CODE" -pflash "$RUN_DIR/vars.fd" \
   -drive if=none,file="$IMAGE",format=raw,id=bb \
   -device qemu-xhci -device usb-storage,drive=bb \
@@ -523,7 +511,7 @@ grep -m1 'BerryOS boot' "$LOG" | grep -Eq 'BerryOS boot [0-9]+\.[0-9]+\.[0-9]+ \
 grep -m1 'BerryOS boot' "$LOG" | grep -q 'nogit' \
   && fail "boot banner ident 为 nogit：nogit 标识产物不得对外发布/进发布链（版本管理标准 §6——无归因能力的构建仅限本地调试）；实得：$(grep -m1 'BerryOS boot' "$LOG")"
 if [ "${SMOKE_PHASES:-all}" = "boot" ]; then
-  echo "smoke-image: 引导面标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 32 + banner 形态 + ident 非 nogit；SMOKE_PHASES=boot 分层 CI 轻面，生态 49 + VER 哨兵 + RX + sim 面 + 刀6 双 boot 留快机全链）"
+  echo "smoke-image: 引导面标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 32 + banner 形态 + ident 非 nogit；SMOKE_PHASES=boot 分层 CI 轻面，生态 49 + VER 哨兵 + RX + sim 面留快机全链）"
   cleanup 2>/dev/null || true
   exit 0
 fi
@@ -652,51 +640,51 @@ QEMU_PID=""
 RX_HOLDER=""
 RX_FIFO=""
 
-fail8() {
+fail7() {
   echo "smoke-image: FAIL: $1" >&2
-  echo "---- 串口日志尾部（$LOG8）----" >&2
-  tail -40 "$LOG8" >&2
+  echo "---- 串口日志尾部（${LOG7}）----" >&2
+  tail -40 "$LOG7" >&2
   echo "--------------------------------" >&2
   exit 1
 }
 
-# run_boot8 <tag> <deadline_s> <qemu 附加参...>：单 boot 起停 + 聚焦标记
-# 等待循环（BOOT8_MARKERS 全局数组——bash 3.2 无数组传参面）。fw_cfg 字符串
+# run_boot7 <tag> <deadline_s> <qemu 附加参...>：单 boot 起停 + 聚焦标记
+# 等待循环（BOOT7_MARKERS 全局数组——bash 3.2 无数组传参面）。fw_cfg 字符串
 # 旋钮走内核 panel_cfg_req 既有解析（opt/berry/panel-model / panel-mode）。
 # vars.fd 每 boot 新产 blank（同主相理由——不继承陈旧 BootOrder）。
-run_boot8() {
+run_boot7() {
   local tag="$1" deadline="$2"
   shift 2
-  LOG8=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-image8-${tag}.XXXXXX")
-  RUN_DIR8=$(mktemp -d "${TMPDIR:-/tmp}/berryos-smoke-image8-${tag}.XXXXXX")
-  python3 -c "import sys; sys.stdout.buffer.write(b'\xff'*(64<<20))" > "$RUN_DIR8/vars.fd" \
-    || fail8 "vars.fd 生成失败（$tag）"
-  RX_FIFO=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-image8-fifo.XXXXXX")
+  LOG7=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-image7-${tag}.XXXXXX")
+  RUN_DIR7=$(mktemp -d "${TMPDIR:-/tmp}/berryos-smoke-image7-${tag}.XXXXXX")
+  python3 -c "import sys; sys.stdout.buffer.write(b'\xff'*(64<<20))" > "$RUN_DIR7/vars.fd" \
+    || fail7 "vars.fd 生成失败（${tag}）"
+  RX_FIFO=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-image7-fifo.XXXXXX")
   rm -f "$RX_FIFO"
-  mkfifo "$RX_FIFO" || fail8 "mkfifo 失败（$tag）"
+  mkfifo "$RX_FIFO" || fail7 "mkfifo 失败（${tag}）"
   ( sleep $((deadline + 120)) ) > "$RX_FIFO" &
   RX_HOLDER=$!
-  echo "smoke-image: 阶段 8 boot（$tag）启动（$*）"
-  "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic \
-    -pflash "$AAVMF_CODE" -pflash "$RUN_DIR8/vars.fd" \
+  echo "smoke-image: 阶段 8 boot（${tag}）启动（$*）"
+  "$QEMU" -machine virt -cpu cortex-a72 -m 256M -nographic \
+    -pflash "$AAVMF_CODE" -pflash "$RUN_DIR7/vars.fd" \
     -drive if=none,file="$IMAGE",format=raw,id=bb \
     -device qemu-xhci -device usb-storage,drive=bb \
     -device ramfb \
     "$@" \
-    < "$RX_FIFO" > "$LOG8" 2>&1 &
+    < "$RX_FIFO" > "$LOG7" 2>&1 &
   QEMU_PID=$!
   local t0 missing m
   t0=$(date +%s)
   while :; do
     kill -0 "$QEMU_PID" 2>/dev/null \
-      || fail8 "QEMU 提前退出（$tag 固件/引导崩溃？）；日志尾部：$(tail -5 "$LOG8" | tr '\n' ' ')"
+      || fail7 "QEMU 提前退出（$tag 固件/引导崩溃？）；日志尾部：$(tail -5 "$LOG7" | tr '\n' ' ')"
     missing=""
-    for m in "${BOOT8_MARKERS[@]}"; do
-      grep -qF -- "$m" "$LOG8" || missing="${missing:+$missing }$m"
+    for m in "${BOOT7_MARKERS[@]}"; do
+      grep -qF -- "$m" "$LOG7" || missing="${missing:+$missing }$m"
     done
     [ -z "$missing" ] && break
     [ $(( $(date +%s) - t0 )) -gt "$deadline" ] \
-      && fail8 "阶段 8（$tag）标记 ${deadline}s 未到齐，缺：$missing"
+      && fail7 "阶段 8（${tag}）标记 ${deadline}s 未到齐，缺：$missing"
     sleep 1
   done
   kill "$QEMU_PID" 2>/dev/null
@@ -707,20 +695,20 @@ run_boot8() {
   QEMU_PID=""
   RX_HOLDER=""
   RX_FIFO=""
-  rm -rf "$RUN_DIR8"
-  RUN_DIR8=""
+  rm -rf "$RUN_DIR7"
+  RUN_DIR7=""
   if [ -z "${SMOKE_KEEP_LOG:-}" ]; then
-    rm -f "$LOG8"
-    LOG8=""
+    rm -f "$LOG7"
+    LOG7=""
   fi
-  echo "smoke-image: 阶段 8（$tag）${#BOOT8_MARKERS[@]}/${#BOOT8_MARKERS[@]} 标记到齐"
+  echo "smoke-image: 阶段 8（${tag}）${#BOOT7_MARKERS[@]}/${#BOOT7_MARKERS[@]} 标记到齐"
 }
 
 # boot k6-det（tiered:vrr + det）：TEST 档 admissible（165/180）+ DET 位级
 # 整倍面 + T5 不变性 + A8 LFC engagement。`PANELARB lfc k=` 是 k 0→N 换行
 # （k 变更即打——engagement 证据，值无关断言）；k6t 断言取 `gfx: k6t n=3`
 # 前缀式（打印行含 a=/b=/c= 实值）。
-BOOT8_MARKERS=(
+BOOT7_MARKERS=(
   "PANEL cfg model=tiered:vrr mode=det"
   "BerryOS boot"
   "ktest done"
@@ -734,13 +722,13 @@ BOOT8_MARKERS=(
   "gfx: k6l hz="
   "PANELARB lfc k="
 )
-run_boot8 k6-det 360 \
+run_boot7 k6-det 360 \
   -fw_cfg name=opt/berry/panel-model,string=tiered:vrr \
   -fw_cfg name=opt/berry/panel-mode,string=det
 
 # boot k6-p6f（freerange:per_frame）：P6 逐帧扫描锁相——latch == 请求拍点
 # （无网格钳制；网格面板会钳到 ≤target 格点——k6f 残差门即判别面）。
-BOOT8_MARKERS=(
+BOOT7_MARKERS=(
   "PANEL cfg model=freerange:per_frame mode=free"
   "BerryOS boot"
   "ktest done"
@@ -752,7 +740,7 @@ BOOT8_MARKERS=(
   "gfx: k6h hz="
   "gfx: k6f p99="
 )
-run_boot8 k6-p6f 660 \
+run_boot7 k6-p6f 660 \
   -fw_cfg name=opt/berry/panel-model,string=freerange:per_frame
 
 echo "smoke-image: PASS（EFI 十段恰一次 + 接续 src=handoff + 裸相 32 + banner 形态 + ident 非 nogit + 生态 49 + VER 哨兵 ok 在席/mix 零席 + 字节对拍 + 金丝雀严格递增 + RX 注入后活性复验 + sim 面零计数 + 刀6 双 boot 形态面）"

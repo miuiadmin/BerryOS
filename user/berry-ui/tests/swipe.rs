@@ -16,7 +16,7 @@ fn rect_spec(w: u32, h: u32) -> ViewSpec {
     ViewSpec {
         kind: ViewKind::Rect,
         key: 0,
-        props: Props::Rect(RectProps { bg: Color { r: 1, g: 2, b: 3 }, w: Some(w), h: Some(h) }),
+        props: Props::Rect(RectProps { bg: Color { r: 1, g: 2, b: 3 }, w: Some(w), h: Some(h), radius: 0 }),
     }
 }
 
@@ -344,6 +344,7 @@ fn pager_node_budget_exact_and_launcher_margin() {
 }
 
 // —— 维三最小刀第二刀：松手吸附可配置（默认 QuadOut 零变化）——
+
 /// 帧步（弹簧子步同源——每 tick 恰一子步）。
 const SPRING_FRAME_NS: u64 = 16_000_000;
 
@@ -360,11 +361,9 @@ fn snap_default_quadout_zero_change() {
     // 默认档行为零变化：velocity 非零（-600）仍走 QuadOut 240ms 定长
     // 时间线——起拍持 from、中点值级（Q16.16 定点 interp 单源钉板：
     // t=0.5 → eased=49152 → (-70·49152)>>16 = -53 → -83）、精确终点、
-    // 到期即毕再 tick 零开销。AP3 融合后 QuadOut 时长按档整帧量化——
-    // 此处钉「档未协商」（period 0）退化直通 240ms，历史值级钉板逐字
-    // 保持；量化生效面另测（snap_duration_quantized_to_frames）。
+    // 到期即毕再 tick 零开销。
     let (mut ui, mut pager, track) = pager3();
-    ui.set_vsync(0, 0); // 未协商档：quantize_duration_ns 直通 SNAP_DUR_NS
+    ui.set_vsync(0, 0); // 档未协商 → AP3 整帧量化直通：本测钉板未量化 240ms 定长线（量化面由 snap_duration_quantized_to_frames 单钉）
     release_to_page1(&mut pager, &mut ui, track, -600);
     let t0 = 1_000u64;
     assert!(pager.tick(&mut ui, t0), "吸附起拍帧");

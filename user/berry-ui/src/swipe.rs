@@ -50,24 +50,21 @@ pub const DOT_OFF: berry_gfx::cmd::Color = berry_gfx::cmd::Color { r: 128, g: 12
 
 /// 松手吸附档（可配置——默认 [`SnapMode::QuadOut`] 行为零变化）：
 /// - `QuadOut` = 既有固定 QuadOut 240ms 定长时间线（默认档——velocity
-///   不参与，历史钉板逐字保持）；时长 = AP3（§9）整帧量化：起拍按当前
-///   档周期定格（240ms → 60Hz 15 帧 / 120Hz 29 帧），尾拍无小数帧抖动；
-///   档未协商（period 0）退化直通 240ms。
+///   不参与，历史钉板逐字保持）。
 /// - `VelocitySpring` = 松手速度**非零**时切 [`SpringProp`] 定点弹簧、
 ///   以松手速度入参（速度续接主干——OH springMotion / iOS
 ///   interpolatingSpring 等价物；预设 Smooth = 近临界无过冲档）；速度
-///   为零（含 Cancel）回落 QuadOut。弹簧自持积分不吃整帧量化（dt 连续
-///   采样——量化会折叠首步速度）。
+///   为零（含 Cancel）回落 QuadOut。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SnapMode {
     QuadOut,
     VelocitySpring,
 }
 
-/// 吸附态（一次至多一条）：QuadOut 定长时间线（起拍 = 首次 tick；
-/// `dur_ns` = AP3 整帧量化时长，首次 tick 按当前档周期定格，0 = 未定）
-/// 或 SpringProp 弹簧（自持积分态）。目标页在 `begin_snap` 即裁定进
-/// `self.page`/圆点——此处只余轨迹簿记。
+/// 吸附态（一次至多一条）：QuadOut 定长时间线（起拍 = 首次 tick）或
+/// SpringProp 弹簧（自持积分态）。目标页在 `begin_snap` 即裁定进
+/// `self.page`/圆点——此处只余轨迹簿记。QuadOut 的 `dur_ns` = AP3
+/// 整帧量化时长（首次 tick 按当前档周期定格；0 = 未定）。
 enum Snap {
     QuadOut {
         from: i32,
@@ -210,6 +207,7 @@ impl SwipePager {
                     kind: ViewKind::Rect,
                     key: 0,
                     props: Props::Rect(RectProps {
+                        radius: 0,
                         bg: if i == 0 { DOT_ON } else { DOT_OFF },
                         w: Some(DOT_SIZE),
                         h: None, // 随行（行 h=DOT_SIZE 定值 → 16×16）
@@ -328,13 +326,12 @@ impl SwipePager {
     }
 
     /// 吸附推进（帧循环调；无吸附 → false 零开销）。QuadOut 起拍 =
-    /// 首次 tick 的 now_ns（Msg 无时戳位——§7.4 时钟缝的 tick 补面），
-    /// 时长 = AP3（§9）整帧量化：起拍按当前档周期定格（240ms → 60Hz
-    /// 15 帧 / 120Hz 29 帧），尾拍无小数帧抖动；档未协商（period 0）
-    /// 退化直通 240ms。Spring 首步 dt=0 持初值（同式起拍、不吃量化——
-    /// 弹簧速度续接主干，量化会折叠首步速度）；完成帧应用精确 `to` 终点
+    /// 首次 tick 的 now_ns（Msg 无时戳位——§7.4 时钟缝的 tick 补面）；
+    /// Spring 首步 dt=0 持初值（同式起拍）；完成帧应用精确 `to` 终点
     /// （QuadOut 定长到期 / Spring 双阈值收敛吸附——与 anim::tick 完成
-    /// 语义同式）。
+    /// 语义同式）。QuadOut 时长 = AP3（§9 刀6）整帧量化：起拍按当前档
+    /// 周期定格（240ms → 60Hz 档 15 帧 / 120Hz 档 29 帧），尾拍无小数
+    /// 帧抖动；档未协商（period 0）退化直通 240ms。
     pub fn tick<const N: usize>(&mut self, ui: &mut Ui<N>, now_ns: u64) -> bool {
         let (v, done) = match &mut self.snap {
             None => return false,
@@ -429,13 +426,23 @@ impl SwipePager {
         if let Some(d) = self.dots[prev] {
             let _ = ui.set_props(
                 d,
-                Props::Rect(RectProps { bg: DOT_OFF, w: Some(DOT_SIZE), h: None }),
+                Props::Rect(RectProps {
+                    bg: DOT_OFF,
+                    w: Some(DOT_SIZE),
+                    h: None,
+                    radius: 0,
+                })
             );
         }
         if let Some(d) = self.dots[cur] {
             let _ = ui.set_props(
                 d,
-                Props::Rect(RectProps { bg: DOT_ON, w: Some(DOT_SIZE), h: None }),
+                Props::Rect(RectProps {
+                    bg: DOT_ON,
+                    w: Some(DOT_SIZE),
+                    h: None,
+                    radius: 0,
+                }),
             );
         }
         self.dot_on = self.page;

@@ -14,7 +14,7 @@ fn rect(bg: Color, w: Option<u32>, h: Option<u32>) -> ViewSpec {
     ViewSpec {
         kind: ViewKind::Rect,
         key: 0,
-        props: Props::Rect(RectProps { bg, w, h }),
+        props: Props::Rect(RectProps { bg, w, h, radius: 0}),
     }
 }
 
@@ -82,7 +82,7 @@ fn layout_dump_is_preorder_geometry_and_dirty_truth() {
     }
 
     // 纯着色变：几何/dirty 语义可见，A 的 paint_dirty 置位但 relayout 为 0。
-    ui.set_props(a, Props::Rect(RectProps { bg: Color { r: 9, g: 9, b: 9 }, w: Some(20), h: Some(10) }))
+    ui.set_props(a, Props::Rect(RectProps { bg: Color { r: 9, g: 9, b: 9 }, w: Some(20), h: Some(10), radius: 0}))
         .unwrap();
     let mut paint = [blank(root); 8];
     assert_eq!(ui.layout_dump(&mut paint).unwrap(), 5);

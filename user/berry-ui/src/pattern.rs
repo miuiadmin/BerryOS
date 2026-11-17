@@ -323,7 +323,7 @@ pub fn divider_v<const N: usize>(
     parent: NodeId,
     color: Color,
 ) -> Result<NodeId, UiError> {
-    ui.add(parent, vspec(ViewKind::Rect, Props::Rect(RectProps { bg: color, w: Some(DIVIDER_H), h: None })))
+    ui.add(parent, vspec(ViewKind::Rect, Props::Rect(RectProps { radius: 0,  bg: color, w: Some(DIVIDER_H), h: None })))
 }
 
 /// 叠放容器（主树 Stack kind 直载——内在 = 子 max×max、子各自
@@ -363,7 +363,7 @@ pub fn app_bar<const N: usize>(
     )?;
     let layers = stack(ui, frame)?;
     // 面层（零内在 w/h None——stack max 铁则；终值吃满 stack 分配）。
-    ui.add(layers, vspec(ViewKind::Rect, Props::Rect(RectProps { bg: t.bg_page, w: None, h: None })))?;
+    ui.add(layers, vspec(ViewKind::Rect, Props::Rect(RectProps { radius: 0,  bg: t.bg_page, w: None, h: None })))?;
     let bar = ui.add(
         layers,
         vspec(ViewKind::Row, Props::Row(RowProps {
@@ -416,7 +416,7 @@ pub fn top_bar<const N: usize>(
         vspec(ViewKind::Col, Props::Col(ColProps { gap: 0, w: None, h: Some(TOPBAR_H), cross: CrossAlign::Stretch })),
     )?;
     let layers = stack(ui, frame)?;
-    ui.add(layers, vspec(ViewKind::Rect, Props::Rect(RectProps { bg: t.bg_page, w: None, h: None })))?;
+    ui.add(layers, vspec(ViewKind::Rect, Props::Rect(RectProps { radius: 0,  bg: t.bg_page, w: None, h: None })))?;
     let bar = ui.add(
         layers,
         vspec(ViewKind::Row, Props::Row(RowProps { gap: 0, w: None, h: Some(TOPBAR_H), cross: CrossAlign::Center })),
@@ -651,7 +651,7 @@ fn restyle_cell<const N: usize>(
     idle_fg: Color,
 ) {
     let bg = if on { active_bg } else { idle_bg };
-    let _ = ui.set_props(c.bg, Props::Rect(RectProps { bg, w: None, h: None }));
+    let _ = ui.set_props(c.bg, Props::Rect(RectProps { radius: 0,  bg, w: None, h: None }));
     let fg = if on { active_fg } else { idle_fg };
     if let (Some(i), Some(id)) = (c.icon, c.icon_id) {
         let sz = c.icon_sz;
@@ -730,7 +730,7 @@ pub fn tab_bar<const N: usize>(
         let cell = stack(ui, frame)?;
         let bg = ui.add(
             cell,
-            vspec(ViewKind::Rect, Props::Rect(RectProps {
+            vspec(ViewKind::Rect, Props::Rect(RectProps { radius: 0,
                 bg: if on { dim_accent(*t) } else { t.bg_page },
                 w: None,
                 h: None, // 面层零内在（stack max 铁则）
@@ -816,7 +816,7 @@ pub fn seg<const N: usize>(
         let cell = stack(ui, frame)?;
         let bg = ui.add(
             cell,
-            vspec(ViewKind::Rect, Props::Rect(RectProps {
+            vspec(ViewKind::Rect, Props::Rect(RectProps { radius: 0,
                 bg: if on { t.brand } else { t.bg_comp },
                 w: None,
                 h: None, // 面层零内在（stack max 铁则）
@@ -868,7 +868,7 @@ pub fn step<const N: usize>(
         } else {
             ui.add(
                 frame,
-                vspec(ViewKind::Rect, Props::Rect(RectProps {
+                vspec(ViewKind::Rect, Props::Rect(RectProps { radius: 0,
                     bg: if i == current { t.brand } else { t.bg_comp },
                     w: Some(STEP_DOT),
                     h: Some(STEP_DOT),
@@ -879,7 +879,7 @@ pub fn step<const N: usize>(
         if i + 1 < steps {
             ui.add(
                 frame,
-                vspec(ViewKind::Rect, Props::Rect(RectProps {
+                vspec(ViewKind::Rect, Props::Rect(RectProps { radius: 0,
                     bg: t.font_secondary,
                     w: Some(STEP_LINE_W),
                     h: Some(STEP_LINE_H),
@@ -954,7 +954,7 @@ pub fn bottom_tabs<const N: usize>(
         let cell = stack(ui, frame)?;
         let bg = ui.add(
             cell,
-            vspec(ViewKind::Rect, Props::Rect(RectProps {
+            vspec(ViewKind::Rect, Props::Rect(RectProps { radius: 0,
                 bg: if on { dim_accent(*t) } else { t.bg_page },
                 w: None,
                 h: None, // 面层零内在（stack max 铁则）
@@ -1185,7 +1185,7 @@ impl SwipeItem {
         // 动作层底色（显式定尺寸——meas 撑起 Stack 内在）。
         ui.add(
             actions,
-            vspec(ViewKind::Rect, Props::Rect(RectProps { bg: t.bg_comp, w: Some(SWIPE_REVEAL_W), h: Some(LISTITEM_H) })),
+            vspec(ViewKind::Rect, Props::Rect(RectProps { radius: 0,  bg: t.bg_comp, w: Some(SWIPE_REVEAL_W), h: Some(LISTITEM_H) })),
         )?;
         let w = width as i32;
         let _ = ui.set_offset(layer, w, 0);
@@ -1718,7 +1718,7 @@ impl Sheet {
         )?;
         let inner = ui.add(panel, vspec(ViewKind::Stack, Props::Stack(StackProps { align: StackAlign::Start })))?;
         // 面板底面（定高 meas 撑起 inner 内在；终值吃满 inner 分配）。
-        ui.add(inner, vspec(ViewKind::Rect, Props::Rect(RectProps { bg: t.bg_comp, w: None, h: Some(height) })))?;
+        ui.add(inner, vspec(ViewKind::Rect, Props::Rect(RectProps { radius: 0,  bg: t.bg_comp, w: None, h: Some(height) })))?;
         let content = ui.add(
             inner,
             vspec(ViewKind::Col, Props::Col(ColProps { gap: 0, w: None, h: None, cross: CrossAlign::Stretch })),
@@ -1878,7 +1878,7 @@ impl Drawer {
             vspec(ViewKind::Col, Props::Col(ColProps { gap: 0, w: Some(width), h: Some(height), cross: CrossAlign::Stretch })),
         )?;
         let inner = ui.add(panel, vspec(ViewKind::Stack, Props::Stack(StackProps { align: StackAlign::Start })))?;
-        ui.add(inner, vspec(ViewKind::Rect, Props::Rect(RectProps { bg: t.bg_comp, w: None, h: Some(height) })))?;
+        ui.add(inner, vspec(ViewKind::Rect, Props::Rect(RectProps { radius: 0,  bg: t.bg_comp, w: None, h: Some(height) })))?;
         let panel_content = ui.add(
             inner,
             vspec(ViewKind::Col, Props::Col(ColProps { gap: 0, w: None, h: None, cross: CrossAlign::Stretch })),
@@ -2192,7 +2192,7 @@ mod tests {
     }
 
     fn rect(bg: Color, w: Option<u32>, h: Option<u32>) -> ViewSpec {
-        vspec(ViewKind::Rect, Props::Rect(RectProps { bg, w, h }))
+        vspec(ViewKind::Rect, Props::Rect(RectProps { radius: 0,  bg, w, h }))
     }
 
     /// 几何常量 @3x 值级（vp→px 单源表完整性门）。
@@ -3053,6 +3053,7 @@ pub fn bottom_tabs_slots(
                 bg: Color { r: 0xFF, g: 0xFF, b: 0xFF },
                 w: Some(vp_w),
                 h: Some(BOTTOMTABS_H),
+                radius: 0,
             }),
         },
     )?;
@@ -3096,6 +3097,7 @@ pub fn bottom_tabs_slots(
                         bg: Color { r: 0x00, g: 0x7D, b: 0xFF },
                         w: Some(vp_w / slots.len() as u32),
                         h: Some(2 * DENSITY),
+                        radius: 0,
                     }),
                 },
             )?;

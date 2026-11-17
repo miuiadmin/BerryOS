@@ -1,0 +1,3 @@
+# 独立小工作区产物（tools/elf2flat 同款口径；test-host 接线无显式
+# CARGO_TARGET_DIR 时 cargo 默认落此处，防产物入库）。
+/target/

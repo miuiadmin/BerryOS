@@ -447,6 +447,15 @@ jobs:
   # 依赖增量 no-op）。回放态（BCTS_FROZEN=bcts@*.toml）上线后本步加 env 切换。
   bcts:
     needs: smoke
+    # CI 分级（2026-11-16 owner A 案定案）：PR 门只跑 smoke（~10-15min），
+    # bcts 全相（30-40min）仅 base push 形跑——单 runner 串行吞吐 2 run/h
+    # 被 lane 推量 4-6/h 永久挤兑（近 30 run 25 cancelled），PR 等不到绿
+    # → reviewer 合并门深堵（快车道八件挂 CI 信号零合并）。PR 面剥 bcts
+    # 后 PR 门吞吐翻倍；base push 跑 bcts 保留全相回归网（合并后 base
+    # 仍被八跑全相 + 91 标记对账覆盖，洞口=合并窗口内的 PR 面无全相——
+    # 按合并纪律 PR 面有 smoke 绿 + reviewer 四门兜底）。workflow_dispatch
+    # 手动兜底不受限（任意 head 可全相取证，#325 判例通道保留）。
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: [self-hosted, linux-x64, brew]
     # 自托管 TCG 八跑全相估 30-40min（本机 TCG 1800s 截停史外推 + build 暖面）
     # ——帽 60min 只兜结构性挂死不赌快（帽哲学同 SMOKE_DEADLINE_BOOT 注）。

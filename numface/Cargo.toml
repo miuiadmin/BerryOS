@@ -1,0 +1,16 @@
+[package]
+name = "berry-numface"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+
+[lib]
+name = "berry_numface"
+path = "src/lib.rs"
+
+# W3-Q83：UART 整数格式化族纯面（u64→十进制 ASCII/hex16 小写/hex8 大写/
+# 两位十进制/键值行装配）——零依赖纯函数，host 可测钉板；HAL 消费壳四点
+# 单源（uart.rs put_dec/put_hex64 + trap.rs put_kv·put_reg·dec2 +
+# psci.rs put_hex32_upper——发射面 uart_putc/uart_puts 留 HAL），形态抄
+# berry-balface / berry-bandface。
+[dependencies]

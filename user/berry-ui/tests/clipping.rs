@@ -37,7 +37,7 @@ fn rect(bg: Color, w: Option<u32>, h: Option<u32>) -> ViewSpec {
     ViewSpec {
         kind: ViewKind::Rect,
         key: 0,
-        props: Props::Rect(RectProps { bg, w, h }),
+        props: Props::Rect(RectProps { bg, w, h, radius: 0 }),
     }
 }
 

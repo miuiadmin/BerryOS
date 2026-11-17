@@ -179,7 +179,7 @@ pub(crate) mod nr {
     /// 面，同 0x61/0x87）；EWMA 槽 Relaxed 原子读（统计信号无序角色）。消费端 =
     /// berry-power UtilTrack::ingest_snapshot（折叠数学单源 berry-emface）。
     pub(crate) const SCHED_UTIL_SNAPSHOT: usize = 0x40;
-    /// cbox 刀 1（`plans/cbox/design.md`）：异常 fatal 路径（EL0 kill 链 / EL1 halt 前）RAM 记录表的用户态排液口。无 right 门（诊断几何面——`process_get_exit_code` need=0 惯例）；表读写面零结构锁（seqlock 快照），syscall 整体走 SVC_CLASS_TABLE 在册取锁（同全体 syscall）。
+    /// cbox 刀 1（`plans/cbox/design.md`）：异常 fatal 路径（EL0 kill 链 / EL1 halt 前）RAM 记录表的用户态排液口。无 right 门（诊断几何面——`process_get_exit_code` need=0 惯例）；表读写面零结构锁（seqlock 快照），syscall 整体走 SVC_CLASS_TABLE 在册取锁（同全体 syscall）。（2026-11-16 跨根并回：main 显示线 cbox 刀 1 并入调度线）
     pub(crate) const CBOX_DRAIN: usize = 0x42;
     pub(crate) const CHANNEL_CREATE: usize = 0x51;
     pub(crate) const CHANNEL_SEND: usize = 0x52;

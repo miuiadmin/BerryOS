@@ -77,6 +77,14 @@ GUI 验证相（`probe.on`）保留真实 app boot-probe 批；产品相无 prob
 
 内核自检按运行时能力而非机器标签判：FPSR NZCV 探测在写入图样之后执行，`dpg_press` 与 ktest/bench 共用 `opt/berry/noktest` 生产门。GUI8/product e2e 注入该键只跳过宿主时序校准，不断 GUI 真链；真实 BerryUI boot-probe 批在合并语料下可超旧 420s，GUI8 双 boot 帽升 900s。
 
+### 第三层主线追平
+
+`origin/main` 再前进到 f932d39（svcface、memface、billface、Rust elf2flat/elf2pe 与 splash 重放）。第三层合线保留这些主件，同时守住 GUI 产品真源：Berry Room 仍是普通 GUI app 唯一宿主，wmd/launcher/app 直接实现取 GUI 侧；主线 ux/syspages 双入口桌面与 direct `*-app` 壳不回放。`RectProps.radius` 是主线 wire add-only 位，BerryUI 全调用面以 `radius: 0` 显式钉直角旧像，圆角语义只在主线组件圆角处生效。guifbd 恢复纯 host lib 后端面（13 测），但 guest 产品入口仍是单一 guifbd bin，不恢复双合成真源。
+
+第三层合并曾把 vnet/gui-inputd 的主线上下文重复拼回 svcmgr 后段，形成两个 tablet 消费者；首个消费者持空 WM 表快照，产品点击被其吃掉而无 `WMROUTE`。裁决是保留前移后的单 vnet/gui-inputd arm，删除后段重复块——输入设备一消费者是产品点击链的结构不变量，不是可并行服务。同刀还修了 boot-probe 后端选择：`vgpu_progress_cli` 在交给 wmd 后会被清零，gfxdemo 不能再用它判断拓扑；先落 `vgpu_backend` 真值，vgpu 验证相不再误走 ramfb refresh-guest，`WMDEAD/WMDTY` 生命周期恢复。
+
+第三层合并的 rootfs 因 BerryUI/Berry Room app 族升至约 43MiB。smoke-image 验证拓扑在 128MiB 下先触发 VMO ktest `NoFrames`，升 256MiB；DPGN 负序子进程改为在 GUI 服务/app 批装配前执行，避免 launcher 监督与 app 批临时句柄挤占本表预算；真实 app 批在 TCG 与并行 QEMU 下超 900s，boot 帽升 1800s。上述都是验证拓扑与排序裁决，产品镜像内存和 1080×1920@60 约束不变。
+
 ## Alternatives considered
 
 - 直接把 GUI 分支推 main：main 有 51 个独立提交，会丢 refresh/CBOX/调度线，拒绝。
@@ -86,7 +94,7 @@ GUI 验证相（`probe.on`）保留真实 app boot-probe 批；产品相无 prob
 
 ## Consequences
 
-合并树通过 `just check`、docs guard、writable globals、gui boundary、SDK/design ledger、berry-guiproto + BerryUI host、gui-wmd host 与 product e2e all。GUI8 vgpu 在 refresh guest 职责分离后复跑。BootProgress 现行标准升 v1.3，记录 op9 与 fbinfo 第 10 域。
+第三层合并树通过 `just check`、`just test-host`、Curia strict、fwcfg/ABI/design ledger、product e2e all（recents/frame-cache/shell-press）与 `just smoke-image`（256MiB 验证拓扑、1800s 帽：163/163 主标记、字节对拍、RX 活性复验与刀6双 boot全过）。GUI8 vgpu Boot A 在后端真值修复后通过：十个 WM session、BerryDemo/Browser/Contacts/Files/Photos/Settings/UITEST 生命周期、WM focus/config/occlusion 矩阵、真实 CLICK/SWIPE/LAYOUTW 与 canonical 109B 读回全绿。BootProgress 现行标准升 v1.3，记录 op9 与 fbinfo 第 10 域。
 
 ## Related
 

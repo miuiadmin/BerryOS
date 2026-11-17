@@ -10,7 +10,7 @@ use berry_ui::sdk::{ReapplyStat, SETTLE_DERIVE_MAX, KEYED_DEPTH_MAX, Ui};
 use berry_gfx::font::FontSize;
 
 fn rect(w: u32) -> Props {
-    Props::Rect(RectProps { bg: Color { r: 1, g: 2, b: 3 }, w: Some(w), h: Some(20) })
+    Props::Rect(RectProps { bg: Color { r: 1, g: 2, b: 3 }, w: Some(w), h: Some(20), radius: 0 })
 }
 
 fn text() -> Props {

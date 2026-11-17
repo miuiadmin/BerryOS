@@ -1084,7 +1084,7 @@ pub fn init() {
     // AM-2b 真链路自验（载形乙）：压力自验任务的自有 AS + 多页 demand 区间
     //（连续供给等待载体——复用同一 dpg_pager 供给链）+ 压力 Event 消费
     // handle（`am2b_pressure_ktest_handle` 插取 bootstrap 表——ktest 收场
-    // drain 后的 boot 稳定窗，此后无 drain 作废面；任务侧真 SVC 全链消费）。
+    // drain 后的 boot 稳定窗，此后无 drain 作役面；任务侧真 SVC 全链消费）。
     // 对象先泄漏后映射（Region.vmo 指针存对象地址——上方同款正序）。
     //
     // noktest 门（2026-11-13 判例）：dpg_press 校准断言（θ_p 占空比阈）按
@@ -1093,7 +1093,7 @@ pub fn init() {
     // 同链）。ktest/bench 已进 noktest 门（main.rs 同款键）；本臂同收——
     // 生产 boot 只保生产机制本体（dpg_pager/dpg_faulter），压力校准属
     // 开发自检面。
-    if berry_hal_aarch64::fwcfg::find_file(crate::NOKTEST_PROBE_NAME).is_none() {
+    if berry_hal_aarch64::fwcfg::find_file(crate::DPG_NOKTEST_PROBE_NAME).is_none() {
         let vmo_p: &'static mut Vmo =
             alloc::boxed::Box::leak(alloc::boxed::Box::new(
                 Vmo::create_demand(PRESS_PAGES * PAGE_SIZE).expect("dpg: 建压力自验 demand VMO"),

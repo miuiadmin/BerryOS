@@ -571,6 +571,7 @@ pub fn build(ui: &mut UiMain, layout: &OwnedLayout, reg: &[AppEntry]) -> Result<
                 bg: RECENTS_BG,
                 w: Some(vp_w),
                 h: Some(vp_h),
+                radius: 0,
             }),
         },
     )?;

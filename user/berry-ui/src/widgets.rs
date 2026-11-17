@@ -1064,6 +1064,7 @@ impl TextField {
                     bg: ctx.theme.state(InteractionState::Selected).background,
                     w: Some(0),
                     h: Some(line_h),
+                    radius: 0,
                 }),
             },
         )?;
@@ -1082,6 +1083,7 @@ impl TextField {
                     bg: ctx.theme.colors.primary,
                     w: Some(0),
                     h: Some(line_h),
+                    radius: 0,
                 }),
             },
         )?;
@@ -1519,6 +1521,7 @@ pub fn divider<const N: usize>(
                 bg: ctx.theme.colors.outline,
                 w: None,
                 h: Some(ctx.metrics.stroke(StrokeToken::Thin)),
+                radius: 0,
             }),
         },
     )
@@ -2174,7 +2177,7 @@ impl Switch {
             ViewSpec {
                 kind: ViewKind::Rect,
                 key: 0,
-                props: Props::Rect(RectProps { bg: state.background, w: Some(spacer_w), h: Some(1) }),
+                props: Props::Rect(RectProps { bg: state.background, w: Some(spacer_w), h: Some(1), radius: 0 }),
             },
         )?;
         let thumb_id = add(
@@ -2374,6 +2377,7 @@ impl Checkbox {
                     bg: if checked { visual.content } else { visual.border },
                     w: Some(size),
                     h: Some(size),
+                    radius: 0,
                 }),
             },
         )?;
@@ -2707,7 +2711,7 @@ impl Slider {
             ViewSpec {
                 kind: ViewKind::Rect,
                 key: 0,
-                props: Props::Rect(RectProps { bg: ctx.theme.colors.surface, w: Some(leading), h: Some(1) }),
+                props: Props::Rect(RectProps { bg: ctx.theme.colors.surface, w: Some(leading), h: Some(1), radius: 0 }),
             },
         )?;
         let thumb_id = add(
@@ -2861,7 +2865,7 @@ impl ProgressIndicator {
             ViewSpec {
                 kind: ViewKind::Rect,
                 key: 0,
-                props: Props::Rect(RectProps { bg: ctx.theme.colors.primary, w: Some(fill_w.min(width)), h: Some(height) }),
+                props: Props::Rect(RectProps { bg: ctx.theme.colors.primary, w: Some(fill_w.min(width)), h: Some(height), radius: 0 }),
             },
         )?;
         add(
@@ -2870,7 +2874,7 @@ impl ProgressIndicator {
             ViewSpec {
                 kind: ViewKind::Rect,
                 key: 0,
-                props: Props::Rect(RectProps { bg: ctx.theme.colors.surface_variant, w: Some(width.saturating_sub(fill_w.min(width))), h: Some(height) }),
+                props: Props::Rect(RectProps { bg: ctx.theme.colors.surface_variant, w: Some(width.saturating_sub(fill_w.min(width))), h: Some(height), radius: 0 }),
             },
         )?;
         Ok(Self { panel, track, fill })

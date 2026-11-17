@@ -70,7 +70,7 @@ use berry_ui::desc::{
 };
 use berry_ui::layout::CrossAlign;
 use berry_ui::pattern::{self, ItemState, NavHost};
-use berry_ui::theme::{self, Theme, Tokens};
+use berry_ui::theme::{self, ThemeMode, Tokens};
 use berry_ui::{
     IconSource, Msg, NodeId, ProportionalTextMetrics, UiError, UiMain, ROLE_BUTTON,
     ROLE_LIST_ITEM,
@@ -1024,7 +1024,7 @@ fn build_chat(ui: &mut UiMain, a: &mut App, c: usize) -> Result<(), UiError> {
 
     let page = pattern::stack(ui, a.nav_root)?;
     // 不透明页底（NavHost 滑入期页下内容不可透——app_bar 面层语同款）。
-    ui.add(page, vspec(ViewKind::Rect, Props::Rect(RectProps { bg: t.bg_page, w: None, h: None })))?;
+    ui.add(page, vspec(ViewKind::Rect, Props::Rect(RectProps { bg: t.bg_page, w: None, h: None, radius: 0 })))?;
     // 滚动层（Scroll kind——Stack `_` 摆位吃满页 = 视口帽）。
     let scroll = ui.add(page, vspec(ViewKind::Scroll, Props::Scroll(ScrollProps { content_height: 0, offset_y: 0 })))?;
     let msg_col = ui.add(
@@ -1051,7 +1051,7 @@ fn build_chat(ui: &mut UiMain, a: &mut App, c: usize) -> Result<(), UiError> {
     let input_stack = pattern::stack(ui, chrome)?;
     ui.add(
         input_stack,
-        vspec(ViewKind::Rect, Props::Rect(RectProps { bg: t.bg_page, w: None, h: None })),
+        vspec(ViewKind::Rect, Props::Rect(RectProps { bg: t.bg_page, w: None, h: None, radius: 0 })),
     )?;
     let input_col = ui.add(
         input_stack,
@@ -1170,7 +1170,7 @@ fn build_chat(ui: &mut UiMain, a: &mut App, c: usize) -> Result<(), UiError> {
 /// Err = 容量/文本域违例 fail 收口。
 fn build_all(ui: &mut UiMain) -> Result<App, UiError> {
     let (vp_w, vp_h) = ui.viewport();
-    let t = Tokens::pick(Theme::Light);
+    let t = Tokens::pick(ThemeMode::Light);
     let root = ui.root();
     let mut nav = NavHost::new();
     let nav_root = nav.attach(ui, root)?;

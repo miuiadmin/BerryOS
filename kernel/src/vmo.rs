@@ -165,48 +165,41 @@ impl Vmo {
     }
 
     /// 经内核 direct map 读已提交区（字节粒度；先查后拷——不留半截副作用）。
+    /// W3-Q78 起三道门判序 + 分段推进单源 `berry_vmoledger::copy_gate`/
+    /// `walk_copy`（判序即正确性：mmio 拒先于 bounds 先于 committed）。
     pub fn read(&self, offset: usize, out: &mut [u8]) -> Result<(), VmoError> {
-        if self.ledger.is_mmio() {
-            return Err(VmoError::NotSupported); // 设备读不可经拷贝语义中介
-        }
-        berry_vmoledger::check_bounds(self.ledger.size(), offset, out.len())?;
-        self.ledger.ensure_committed(offset, out.len())?;
-        let mut pos = offset;
-        while pos < offset + out.len() {
-            let (pa, off, n) = self.ledger.page_span(pos, (offset + out.len()) - pos);
-            // SAFETY: 独占物理页经 direct map 只读；页已提交（ensure_committed 过）。
+        berry_vmoledger::copy_gate(&self.ledger, offset, out.len())?;
+        let mut done = 0usize;
+        berry_vmoledger::walk_copy(&self.ledger, offset, out.len(), |pa, off, n| {
+            // SAFETY: 独占物理页经 direct map 只读；页已提交（copy_gate 过）。
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     phys_to_virt(pa + off) as *const u8,
-                    out.as_mut_ptr().add(pos - offset),
+                    out.as_mut_ptr().add(done),
                     n,
                 );
             }
-            pos += n;
-        }
+            done += n;
+        });
         Ok(())
     }
 
     /// 经内核 direct map 写已提交区（字节粒度；同上，先查后拷）。
+    /// W3-Q78 起三道门判序 + 分段推进单源（read 同款）。
     pub fn write(&mut self, offset: usize, data: &[u8]) -> Result<(), VmoError> {
-        if self.ledger.is_mmio() {
-            return Err(VmoError::NotSupported);
-        }
-        berry_vmoledger::check_bounds(self.ledger.size(), offset, data.len())?;
-        self.ledger.ensure_committed(offset, data.len())?;
-        let mut pos = offset;
-        while pos < offset + data.len() {
-            let (pa, off, n) = self.ledger.page_span(pos, (offset + data.len()) - pos);
-            // SAFETY: 独占物理页经 direct map 写；页已提交。
+        berry_vmoledger::copy_gate(&self.ledger, offset, data.len())?;
+        let mut done = 0usize;
+        berry_vmoledger::walk_copy(&self.ledger, offset, data.len(), |pa, off, n| {
+            // SAFETY: 独占物理页经 direct map 写；页已提交（copy_gate 过）。
             unsafe {
                 core::ptr::copy_nonoverlapping(
-                    data.as_ptr().add(pos - offset),
+                    data.as_ptr().add(done),
                     phys_to_virt(pa + off) as *mut u8,
                     n,
                 );
             }
-            pos += n;
-        }
+            done += n;
+        });
         Ok(())
     }
 

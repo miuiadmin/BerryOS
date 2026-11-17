@@ -16,8 +16,7 @@ fn rect() -> ViewSpec {
         props: Props::Rect(RectProps {
             bg: Color { r: 10, g: 20, b: 30 },
             w: None,
-            h: None,
-        }),
+            h: None,radius: 0}),
     }
 }
 
@@ -28,8 +27,7 @@ fn fixed_rect(w: u32, h: u32) -> ViewSpec {
         props: Props::Rect(RectProps {
             bg: Color { r: 1, g: 2, b: 3 },
             w: Some(w),
-            h: Some(h),
-        }),
+            h: Some(h),radius: 0}),
     }
 }
 
@@ -209,8 +207,7 @@ fn flex_registration_rejects_ineligible_nodes_and_props() {
     ui.set_props(flexible, Props::Rect(RectProps {
         bg: Color { r: 1, g: 2, b: 3 },
         w: Some(10),
-        h: Some(10),
-    }))
+        h: Some(10),radius: 0}))
     .unwrap();
     assert_eq!(ui.flex_iter().count(), 0);
     assert!(ui.set_flex(flexible, 1).is_err());

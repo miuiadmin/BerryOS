@@ -40,7 +40,7 @@ fn rect(w: Option<u32>, h: Option<u32>) -> ViewSpec {
     ViewSpec {
         kind: ViewKind::Rect,
         key: 0,
-        props: Props::Rect(RectProps { bg: bg(1, 2, 3), w, h }),
+        props: Props::Rect(RectProps { bg: bg(1, 2, 3), w, h, radius: 0 }),
     }
 }
 
@@ -107,7 +107,7 @@ fn props_diff_bit_mapping() {
     use berry_ui::mask::{props_diff, ChangeMask as M};
 
     // Rect：w/h→W/H（GEOM）；bg→BG（PAINT）
-    let r = |w, h, c| Props::Rect(RectProps { bg: bg(c, c, c), w, h });
+    let r = |w, h, c| Props::Rect(RectProps { bg: bg(c, c, c), w, h, radius: 0 });
     assert_eq!(props_diff(&r(Some(1), None, 1), &r(Some(2), None, 1)), M::W);
     assert_eq!(props_diff(&r(None, Some(1), 1), &r(None, Some(2), 1)), M::H);
     assert_eq!(props_diff(&r(Some(1), Some(1), 1), &r(Some(1), Some(1), 2)), M::BG);
@@ -236,7 +236,7 @@ fn absorbed_geom_change_truncates_before_top() {
     ui.layout();
     ui.drain_damage();
 
-    ui.set_props(tgt, Props::Rect(RectProps { bg: bg(1, 2, 3), w: Some(30), h: Some(10) }))
+    ui.set_props(tgt, Props::Rect(RectProps { bg: bg(1, 2, 3), w: Some(30), h: Some(10), radius: 0 }))
         .unwrap(); // w 20→30 = W 位（GEOM）
     let stat = ui.layout();
     let d = ui.drain_damage();
@@ -396,7 +396,7 @@ fn bench_paint_only_churn() {
         ui.set_text(t1, if k % 2 == 0 { b"bb" } else { b"aa" }).unwrap();
         ui.set_props(
             r,
-            Props::Rect(RectProps { bg: bg((k % 2) as u8, 2, 3), w: Some(20), h: Some(10) }),
+            Props::Rect(RectProps { bg: bg((k % 2) as u8, 2, 3), w: Some(20), h: Some(10), radius: 0 }),
         )
         .unwrap();
         let stat = ui.layout();
@@ -454,7 +454,7 @@ fn bench_frame_pipeline_damage_adds() {
         ui.set_text(t1, if k % 2 == 0 { b"bb" } else { b"aa" }).unwrap();
         ui.set_props(
             r,
-            Props::Rect(RectProps { bg: bg((k % 2) as u8, 2, 3), w: Some(20), h: Some(10) }),
+            Props::Rect(RectProps { bg: bg((k % 2) as u8, 2, 3), w: Some(20), h: Some(10), radius: 0 }),
         )
         .unwrap();
         now += 1_000_000;
@@ -510,7 +510,7 @@ fn bench_churn_large_tree() {
         let target = rects[k % BENCH_LARGE_RECTS];
         ui.set_props(
             target,
-            Props::Rect(RectProps { bg: bg((k % 2) as u8, 2, 3), w: Some(20), h: Some(10) }),
+            Props::Rect(RectProps { bg: bg((k % 2) as u8, 2, 3), w: Some(20), h: Some(10), radius: 0 }),
         )
         .unwrap();
         let stat = ui.layout();

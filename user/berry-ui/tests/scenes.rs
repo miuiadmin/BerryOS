@@ -118,7 +118,7 @@ fn divider_spec(thickness: u32) -> ViewSpec {
 fn full_bg(ui: &mut UiMain, parent: NodeId, w: u32, h: u32) -> NodeId {
     ui.add(
         parent,
-        vspec(ViewKind::Rect, Props::Rect(RectProps { bg: BG_PAGE, w: Some(w), h: Some(h) })),
+        vspec(ViewKind::Rect, Props::Rect(RectProps { bg: BG_PAGE, w: Some(w), h: Some(h), radius: 0 })),
     )
     .unwrap()
 }
@@ -732,7 +732,7 @@ fn scene2_naive_col_sandwich_breaks() {
         .unwrap();
     ui.add(
         tabs,
-        vspec(ViewKind::Rect, Props::Rect(RectProps { bg: BG_PAGE, w: Some(360), h: Some(0) })),
+        vspec(ViewKind::Rect, Props::Rect(RectProps { bg: BG_PAGE, w: Some(360), h: Some(0), radius: 0 })),
     )
     .unwrap();
     ui.layout();
@@ -873,7 +873,7 @@ fn scene2_build() -> (UiMain, Scene2) {
         .unwrap();
     ui.add(
         tabs,
-        vspec(ViewKind::Rect, Props::Rect(RectProps { bg: BG_PAGE, w: Some(W), h: Some(0) })),
+        vspec(ViewKind::Rect, Props::Rect(RectProps { bg: BG_PAGE, w: Some(W), h: Some(0), radius: 0 })),
     )
     .unwrap();
     ui.set_offset(tabs, 0, (H - 48) as i32).unwrap();

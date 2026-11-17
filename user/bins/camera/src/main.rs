@@ -70,7 +70,7 @@ use berry_ui::desc::{
 };
 use berry_ui::layout::CrossAlign;
 use berry_ui::pattern::{self, TOPBAR_H};
-use berry_ui::theme::{Theme, Tokens};
+use berry_ui::theme::{ThemeMode, Tokens};
 use berry_ui::{damage, frame, hit, metrics, UiError, UiMain, ROLE_BUTTON, ROLE_IMAGE, ROLE_TEXT};
 
 // 链接种子（fsmgr/guifbd/berry-launcher/settings/photos 同款）：rlib/LTO
@@ -657,7 +657,7 @@ fn text_spec(text: &[u8], fg: Color, scale: FontSize) -> Result<ViewSpec, UiErro
 
 /// 定尺寸 Rect spec（网格线/控制带底/白闪特效共用——非卡片拼装）。
 fn rect_spec(bg: Color, w: u32, h: u32) -> ViewSpec {
-    vspec(ViewKind::Rect, Props::Rect(RectProps { bg, w: Some(w), h: Some(h) }))
+    vspec(ViewKind::Rect, Props::Rect(RectProps { bg, w: Some(w), h: Some(h), radius: 0 }))
 }
 
 /// 应用运行态（建树一次落定；帧循环只换字/重生成/增删白闪节点）。
@@ -759,7 +759,7 @@ fn hud_button(
     cap_w: u32,
 ) -> Result<(NodeId, NodeId, NodeId), UiError> {
     let st = pattern::stack(ui, parent)?;
-    let chip = ui.add(st, vspec(ViewKind::Rect, Props::Rect(RectProps { bg: t.bg_comp, w: None, h: None })))?;
+    let chip = ui.add(st, vspec(ViewKind::Rect, Props::Rect(RectProps { bg: t.bg_comp, w: None, h: None, radius: 0 })))?;
     let col = ui.add(
         st,
         vspec(ViewKind::Col, Props::Col(ColProps {
@@ -983,7 +983,7 @@ fn main() {
 
     // —— 供件（slab 启动期一次堆置：取景 360×640 ≈ 0.9 MiB 可变 +
     //    快门环 168² 静态；快门环底带色 = theme token 同值预热）。
-    let t = Tokens::pick(Theme::Dark); // 相机 HUD 暗档（theme.rs 双档单源）
+    let t = Tokens::pick(ThemeMode::Dark); // 相机 HUD 暗档（theme.rs 双档单源）
     let scene_slab: &'static mut [u32] = Box::leak(vec![0u32; SCENE_PX].into_boxed_slice());
     let scene_ptr = scene_slab.as_mut_ptr();
     let shutter_slab: &'static mut [u32] = Box::leak(vec![0u32; SHUTTER_PX].into_boxed_slice());
@@ -1231,7 +1231,7 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, mut app: App) -> ! {
                 Msg::DragEnd { node, .. } => {
                     if let Some(chip) = app.chip_of(*node) {
                         let bg = app.t.bg_comp;
-                        let _ = ui.set_props(chip, Props::Rect(RectProps { bg, w: None, h: None }));
+                        let _ = ui.set_props(chip, Props::Rect(RectProps { bg, w: None, h: None, radius: 0 }));
                         if let Err(e) = press_rebind(ui, &app) {
                             eprintln!("camera: press rebind err={e:?}");
                         }

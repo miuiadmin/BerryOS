@@ -65,7 +65,7 @@ impl IconSource for FullVpSrc {
 }
 
 fn rect_spec(bg: Color, w: u32, h: u32) -> ViewSpec {
-    ViewSpec { kind: ViewKind::Rect, key: 0, props: Props::Rect(RectProps { bg, w: Some(w), h: Some(h) }) }
+    ViewSpec { kind: ViewKind::Rect, key: 0, props: Props::Rect(RectProps { bg, w: Some(w), h: Some(h), radius: 0}) }
 }
 
 fn image_spec() -> ViewSpec {
@@ -95,8 +95,8 @@ fn build_scene() -> (UiMain, berry_ui::NodeId, berry_ui::NodeId) {
 
 /// 同一改色施加（两路径共用——参考帧与被测帧渲染同一最终场景）。
 fn recolor(ui: &mut UiMain, a: berry_ui::NodeId, b: berry_ui::NodeId) {
-    ui.set_props(a, Props::Rect(RectProps { bg: C_A2, w: Some(24), h: Some(12) })).unwrap();
-    ui.set_props(b, Props::Rect(RectProps { bg: C_B2, w: Some(24), h: Some(12) })).unwrap();
+    ui.set_props(a, Props::Rect(RectProps { bg: C_A2, w: Some(24), h: Some(12), radius: 0})).unwrap();
+    ui.set_props(b, Props::Rect(RectProps { bg: C_B2, w: Some(24), h: Some(12), radius: 0})).unwrap();
 }
 
 fn fb_word(fb: &[u8], x: usize, y: usize) -> u32 {
@@ -211,7 +211,7 @@ fn single_rect_and_full_frames_have_no_bracket() {
     // 单矩形增量帧：同样零括号。
     let (mut ui, a, _) = build_scene();
     ui.drain_damage();
-    ui.set_props(a, Props::Rect(RectProps { bg: C_A2, w: Some(24), h: Some(12) })).unwrap();
+    ui.set_props(a, Props::Rect(RectProps { bg: C_A2, w: Some(24), h: Some(12), radius: 0})).unwrap();
     assert_eq!(ui.damage().count, 1);
     let mut scr = [GlyphPos { ch: 0, x: 0, y: 0 }; 16];
     let mut enc = CommandEncoder::new();

@@ -25,22 +25,58 @@
 #![no_main]
 
 use berry_sys::{
-    berry_channel_recv, berry_channel_send, berry_clock_read, berry_event_create,
-    berry_handle_close, berry_handle_duplicate, berry_object_signal, berry_object_wait_many,
-    berry_object_wait_one,
-    berry_pager_supply_mapped, berry_pager_supply_mapped_table, berry_pager_supply_pages,
-    berry_process_create, berry_process_get_exit_code, berry_process_start,
-    berry_process_suspend, berry_sched_getattr,
-    berry_process_terminate, berry_thread_create, berry_thread_sleep, berry_thread_start,
-    berry_vmar_map, berry_vmar_unmap, berry_vmo_commit, berry_vmo_create, berry_vmo_get_size,
-    berry_vmo_read, berry_vmo_write, berry_cbox_drain, Handle, PagerWindow,
     BERRY_ERR_ACCESS_DENIED,
-    BERRY_ERR_AGAIN, BERRY_ERR_BAD_HANDLE, BERRY_ERR_BAD_STATE, BERRY_ERR_BUSY,
-    BERRY_ERR_INVALID_ARG, BERRY_ERR_TIMEDOUT, CLOCK_MONOTONIC, RIGHT_DUPLICATE, RIGHT_MANAGE,
-    SIGNAL_WAKE_PENDING,
+    BERRY_ERR_AGAIN,
+    BERRY_ERR_BAD_HANDLE,
+    BERRY_ERR_BAD_STATE,
+    BERRY_ERR_BUSY,
+    BERRY_ERR_INVALID_ARG,
+    BERRY_ERR_TIMEDOUT,
     BERRY_PLATFORM_LEVEL,
-    RIGHT_READ, RIGHT_RECV, RIGHT_SEND, RIGHT_TRANSFER, RIGHT_WRITE, SIGNAL_READABLE,
-    SIGNAL_TERMINATED, SIGNAL_WRITABLE, VMO_OPT_DEMAND,
+    CLOCK_MONOTONIC,
+    Handle,
+    PagerWindow,
+    RIGHT_DUPLICATE,
+    RIGHT_MANAGE,
+    RIGHT_READ,
+    RIGHT_RECV,
+    RIGHT_SEND,
+    RIGHT_TRANSFER,
+    RIGHT_WRITE,
+    SIGNAL_READABLE,
+    SIGNAL_TERMINATED,
+    SIGNAL_WAKE_PENDING,
+    SIGNAL_WRITABLE,
+    VMO_OPT_DEMAND,
+    berry_cbox_drain,
+    berry_channel_recv,
+    berry_channel_send,
+    berry_clock_read,
+    berry_event_create,
+    berry_handle_close,
+    berry_handle_duplicate,
+    berry_object_signal,
+    berry_object_wait_many,
+    berry_object_wait_one,
+    berry_pager_supply_mapped,
+    berry_pager_supply_mapped_table,
+    berry_pager_supply_pages,
+    berry_process_create,
+    berry_process_get_exit_code,
+    berry_process_start,
+    berry_process_suspend,
+    berry_process_terminate,
+    berry_sched_getattr,
+    berry_thread_create,
+    berry_thread_sleep,
+    berry_thread_start,
+    berry_vmar_map,
+    berry_vmar_unmap,
+    berry_vmo_commit,
+    berry_vmo_create,
+    berry_vmo_get_size,
+    berry_vmo_read,
+    berry_vmo_write,
 };
 // A-2：拉起链换轨 berry-exec（「不长第二套」——spawn_rootfs_elf/channel_pair
 // 迁出，bsh 的 run 同链消费；行为逐字等价）。P6 A-1：cpio_find 供 fsmgr
@@ -77,8 +113,9 @@ use berry_guiproto as gp;
 use berry_appproto as appp;
 // A-8b：vnet 常驻服务 client 端保活槽（单线程 svcmgr，Relaxed 足够）。
 // X-3c-3：pager 寄存表三宽原子（bool/usize/i64——槽 handshake 见 [`PagerReq`]）。
-// AtomicU64 = LAUNCHER_INIT_UNTIL（gen-2 init 窗闸，now() 纳秒宽）。
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+
+// AtomicU64 = LAUNCHER_INIT_UNTIL（gen-2 init 窗闸，now() 纳秒宽）。
 
 /// echo 服务镜像（G-eco-b 编译产物；echo1/echo2 共用同一份字节——asm 同款）。
 const ECHO_BIN: &[u8] = include_bytes!("../../../userbins/echo.bin");
@@ -476,7 +513,7 @@ pub extern "C" fn _start(console: Handle, env: usize) -> ! {
     // 供给先行实锚）④身份验（异 VMO → -EINVAL + 正调自愈 join 7）。
     // 镜像内嵌零 rootfs 依赖 = 裸跑/EFI 路同打；链内坏面 = eco 降级行 +
     // 标记缺失（smoke FAIL 兜底）。----
-    dpgn_selftest(console);
+    // DPGN 已前置到 run_rootfs_child 服务装配前（GUI 验证相句柄预算）。
 
     // ---- G4-3 C-full：缺页 soak 满配 N=15（`DPGF ok n=15` + C-4 回卷
     // `DPGF2 ok n=3`）——16 槽登记恰满 + K=8 溢出首压 + CONC-1 真跨核 +
@@ -994,6 +1031,12 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
         line[n] = b'\n';
         send_retry(console, line.as_ptr(), n + 1);
     };
+    // GUI 验证相的 app 批完成后，launcher/app 监督与常驻 GUI 服务的临时
+    // 句柄仍占本表预算；DPGN 负序是资源轻的内核面自验，前置到服务装配前
+    // 保持“四早退负序”验收不随产品语料膨胀降级（标记顺序无恰次断言）。
+    if boot_probe {
+        dpgn_selftest(console);
+    }
     // SAFETY: boot 后本进程独占步进窗；顺序写/读，单线程（G-eco-c 同款口径）。
     let step: &mut [u8] = unsafe {
         core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(STEP_WIN) as *mut u8, 512)
@@ -1681,6 +1724,9 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
     // before gfxdemo: gfxdemo is the first real SUBMIT consumer and would
     // otherwise share one present reply queue with this dup alias. Product
     // topology has no gfxdemo consumer and keeps the dup through fsmgr/vnet.
+    // 后端真值先落位：handoff 会把 boot-probe 形的 progress 端清零，不能
+    // 再用该局部值判 gfxdemo 是否走 refresh-guest（vgpu 形误降 ramfb 面）。
+    let vgpu_backend = vgpu_present_cli != 0;
     if boot_probe {
         vgpu_progress_handoff(&mut vgpu_progress_cli);
     }
@@ -1722,7 +1768,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                     stdin_handle: None,
                     // ramfb/guifbd runs mainline refresh guest probes; vgpu
                     // probe topology stays on the async GUI8 WM/DMA path.
-                    args: if vgpu_progress_cli == 0 {
+                    args: if !vgpu_backend {
                         &[b"--refresh-guest"]
                     } else {
                         &[]
@@ -1913,9 +1959,9 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
         }
     }
     // ---- P6 A-8b / GUI-4 段②：vnet 常驻网络服务 + gui-inputd 预拉段
-    // 在本树（wip/sched-1.1 超集）已前移（见上 bin/vnet /
-    // bin/gui-inputd arm）——refresh 侧同段为重复，弃（双侧功能全保：
-    // 各一份在册）。
+    // 在本树已前移（见上 bin/vnet / bin/gui-inputd arm）——refresh 侧
+    // 同段为重复，弃（双侧功能全保：各一份在席）。双 inputd 会同时消费
+    // 同一 virtio-tablet，产品点击被无表快照实例吃掉（2026-11-17 实证）。
     // ---- GUI-8 段②：berry-launcher（桌面）装配 arm——inputd 后、stdhello
     // 前（草案 §2.3 序重排）。**D3 追认论证**（scout S3-F3）：launcher 仍
     // 在 gfxdemo 阻塞 reap 之后（单 wm 客户端序——gfxdemo 先活后死、

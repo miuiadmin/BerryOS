@@ -163,14 +163,27 @@ pub fn status_group_widths(
     (left_w, right_w, flex)
 }
 
-/// 状态栏 Icon spec（内建 id；宽高来自 OH 资产真值，不做运行时缩放）。
-fn status_icon_spec(id: u16) -> Result<ViewSpec, UiError> {
-    let (w, h) = match id {
+/// 状态栏图标源尺寸（id → (w, h)）：内建三面走 OH 资产真值；位图库域
+///（bitmap_id 命中的 66×66 方源）等比缩至状态栏图标高 45——布局宽与
+/// 渲染 spec 共用同一真相源（两口径不分叉）。
+fn status_dims(id: u16) -> (u32, u32) {
+    match id {
         icons::STATUS_SIGNAL => icons::STATUS_SIGNAL_DIM,
         icons::STATUS_WIFI => icons::STATUS_WIFI_DIM,
         icons::STATUS_BATTERY => icons::STATUS_BATTERY_DIM,
+        _ => (icons::STATUS_SIGNAL_DIM.1, icons::STATUS_SIGNAL_DIM.1),
+    }
+}
+
+/// 状态栏 Icon spec（内建 id 或位图库 id；宽高见 [`status_dims`]，
+/// 不做运行时缩放）。
+fn status_icon_spec(id: u16) -> Result<ViewSpec, UiError> {
+    match id {
+        icons::STATUS_SIGNAL | icons::STATUS_WIFI | icons::STATUS_BATTERY => {}
+        _ if icons::bitmap_entry(id).is_some() => {}
         _ => return Err(UiError::NodeBad),
-    };
+    }
+    let (w, h) = status_dims(id);
     Ok(ViewSpec {
         kind: ViewKind::Icon,
         key: 0,
@@ -238,12 +251,18 @@ pub fn build_status_bar(
     let sim_w = SIM_TAG.len() as u32 * a.tag_size.cell_w() as u32;
     let utc_w = a.utc_text.len() as u32 * a.tag_size.cell_w() as u32;
     let status_icon_gap = status_icon_gap(a.big);
+    // 状态栏前两位位图库优先（OH systemui 官方 signal/wifi 面）；缺名
+    // 回退程序化内建面——第三位电池恒程序化（STATUS_BITMAP_NAMES[2] 空）。
+    let sig_id =
+        icons::bitmap_id(icons::STATUS_BITMAP_NAMES[0]).unwrap_or(icons::STATUS_SIGNAL);
+    let wifi_id =
+        icons::bitmap_id(icons::STATUS_BITMAP_NAMES[1]).unwrap_or(icons::STATUS_WIFI);
     let (left_w, right_w, status_flex) = status_group_widths(
         a.vp_w,
         status_pad,
         status_icon_gap,
-        icons::STATUS_SIGNAL_DIM.0,
-        icons::STATUS_WIFI_DIM.0,
+        status_dims(sig_id).0,
+        status_dims(wifi_id).0,
         sim_w,
         icons::STATUS_BATTERY_DIM.0,
         time_w,
@@ -291,12 +310,12 @@ pub fn build_status_bar(
             }),
         },
     )?;
-    let sig = ui.add(left_group, status_icon_spec(icons::STATUS_SIGNAL)?)?;
+    let sig = ui.add(left_group, status_icon_spec(sig_id)?)?;
     // 模拟值 a11y 退位（GUI 实证 NodeFull 判例）：模拟器无真值源，信号/
     // WiFi/电池三个模拟值无读屏价值——视觉保留、a11y 不入表（32 帽让位
     // 给波3-件⑤ tabs 三键；「模拟值退位优先于扩帽」先例）。clock 真值
     // 保留（REALTIME 在场，读屏有价值）。
-    let wifi = ui.add(left_group, status_icon_spec(icons::STATUS_WIFI)?)?;
+    let wifi = ui.add(left_group, status_icon_spec(wifi_id)?)?;
     // SIM 角标不占 a11y 槽（模拟态如实标注由左组两 icon 的
     //「simulated」label 承载）。
     ui.add(left_group, text_spec(SIM_TAG, TEXT_FG, a.tag_size)?)?;

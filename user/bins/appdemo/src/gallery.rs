@@ -50,7 +50,7 @@ use berry_ui::desc::{
 };
 use berry_ui::layout::CrossAlign;
 use berry_ui::pattern::{self, DragReorder, NavHost, Refresh, Seg, Sheet, SwipeItem, TabBar, Drawer};
-use berry_ui::theme::{self, Theme, Tokens};
+use berry_ui::theme::{self, ThemeMode, Tokens};
 use berry_ui::{IconSource, NodeId, Props, UiError, UiMain, ViewKind, ViewSpec};
 
 // ---------------------------------------------------------------------------
@@ -337,7 +337,7 @@ fn text_spec(fg: Color, scale: FontSize, bytes: &[u8]) -> Result<ViewSpec, UiErr
 /// 定尺寸/随父 Rect spec（theme token 色板展示与叠层语专用——零卡片
 /// 拼装：Card 视觉一律 pattern::card/list_item）。
 fn rect_spec(bg: Color, w: Option<u32>, h: Option<u32>) -> ViewSpec {
-    vspec(ViewKind::Rect, Props::Rect(RectProps { bg, w, h }))
+    vspec(ViewKind::Rect, Props::Rect(RectProps { bg, w, h, radius: 0 }))
 }
 
 /// Row spec。
@@ -961,7 +961,7 @@ struct SectionOut {
 /// fail 收口。
 pub fn build_all(ui: &mut UiMain) -> Result<Gallery, UiError> {
     let (vp_w, vp_h) = ui.viewport();
-    let t = Tokens::pick(Theme::Light);
+    let t = Tokens::pick(ThemeMode::Light);
     let root = ui.root();
 
     // 页 stack（滚动层 + 铬层叠放）。

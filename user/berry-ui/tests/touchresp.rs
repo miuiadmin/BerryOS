@@ -24,7 +24,7 @@ const P: u64 = 16_666_666; // 60Hz（launcher VSYNC_NS 同值）
 const C_BG: Color = Color { r: 1, g: 2, b: 3 };
 
 fn rect_spec(c: Color, w: u32, h: u32) -> ViewSpec {
-    ViewSpec { kind: ViewKind::Rect, key: 0, props: Props::Rect(RectProps { bg: c, w: Some(w), h: Some(h) }) }
+    ViewSpec { kind: ViewKind::Rect, key: 0, props: Props::Rect(RectProps { bg: c, w: Some(w), h: Some(h), radius: 0 }) }
 }
 
 /// A′ 树（press.rs 同形）：Root → A(30×30) @ (0,0)，press_map 自映射。
