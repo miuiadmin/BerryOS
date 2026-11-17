@@ -2,7 +2,7 @@
 
 > **性质**：计划文档（用户令「补充彻底 Rust 计划」定稿）· 预 ADR #86 候选
 > **采集日期**：2026-11-12 · **证据基座**：`research/彻底Rust化研究/01-03 号`（README 为入口）
-> **状态**：实施中——独立件先行：elf2flat 已五步全闭换轨（b598e5bbf Rust 件 + 8d8a2f3ed 产线换轨，[补档笔记](../.agents/notes/implemented/2026-11-17-elf2flat产链Rust换轨补档.md)）、elf2pe Rust 件在位（2a342d813，产链换轨挂二刀）；主刀序 §4 未动，边界件开放问题 §7 仍开
+> **状态**：实施中——独立件先行：elf2flat 已五步全闭换轨（b598e5bbf Rust 件 + 8d8a2f3ed 产线换轨，[补档笔记](../.agents/notes/implemented/2026-11-17-elf2flat产链Rust换轨补档.md)）、elf2pe 已换轨现役（2a342d813 Rust 件 + 3a07d5a42 产链换轨二刀、f04563276 Python 降格 oracle——本计划漏记换轨已闭，车队窗遗漏审查 2026-11-17 补账）；主刀序 §4 未动，边界件开放问题 §7 仍开
 
 ---
 
@@ -11,7 +11,7 @@
 | 层 | 面 | 现状 | 计入「彻底」 |
 |---|---|---|---|
 | a | 内核 + 用户态服务 | ✅ 全 Rust（day-one） | ✅（已达成） |
-| **b** | **产线工具（OEM/SDK 交付面）** | **七件中六件 Python** | ✅ **宣称边界** |
+| **b** | **产线工具（OEM/SDK 交付面）** | **七件中六件 Python**（立稿 2026-11-12 时点口径；elf2flat/elf2pe 其后换轨，余量见 §2 表） | ✅ **宣称边界** |
 | c | 测试门禁（smoke/docs_guard/bench 等约 28 件） | Python/bash | ❌ 显式豁免（Fuchsia《Language Policy》同口径：政策只管设备上生产软件，开发工具明文豁免） |
 | d | CI/一次性/历史件 | bash/py 混 | ❌ 永久豁免 |
 
@@ -32,7 +32,7 @@
 | 6 | berry_assemble | py | ~1400行 | L− | 消费全族 |
 | 7 | bcts-run | sh+5段py | ~1300行 | M | 认证面——OEM 拿走单语言件 |
 | 8 | elf2flat | ✅Rust(2026-11-16) | — | — | 已换轨:Rust 件 b598e5bbf(#393,五步 2/3/4)+产线换轨 8d8a2f3ed(第 5/5 步,build-user 六处,py 降格 oracle 改名 `elf2flat_oracle.py`) |
-| 9 | elf2pe | py(Rust 件在位) | — | — | Rust 件 2a342d813 已落(字节级对拍口径);产链换轨挂二刀(justfile Python 件现役不动) | BerryBoot 产线 |
+| 9 | elf2pe | ✅Rust(2026-11-17) | — | — | 已换轨:Rust 件 2a342d813(字节级对拍口径)+产线换轨 3a07d5a42(justfile 现役件,立法注释在换轨处)+f04563276 py 降格 oracle 改名 `elf2pe_oracle.py`——本计划漏记换轨已闭,车队窗遗漏审查 2026-11-17 补账;BerryBoot 产线 |
 | 10 | gen_abi | py | ~500行 | M | 边界件（abi 产线伴生,归属 §7 裁） |
 | 11 | berry-ld | ld脚本+py | — | S 或路线裁 | rustc 原生 linker 配置实验刀先裁（§7） |
 
@@ -61,7 +61,7 @@ mkcpio → mkfat → mkimage → mkapp → gensourceindex → berry_assemble →
 
 ## §6 验收线(机器可执法)
 
-`tools/` b 层清单内 `.py` 计数 = 0(docs_guard 扩一 G 规则或 CI grep——随首刀落)。进度(2026-11-17):elf2flat 已出列(oracle 改名入豁免区),现役 b 层 `.py` 计 10,验收线随末件生效。
+`tools/` b 层清单内 `.py` 计数 = 0(docs_guard 扩一 G 规则或 CI grep——随首刀落)。进度(2026-11-17):elf2flat/elf2pe 已出列(oracle 改名入豁免区),现役 b 层 `.py` 计 9(车队窗遗漏审查 2026-11-17 补账),验收线随末件生效。
 
 ## §7 开放问题(随首刀裁)
 
