@@ -6763,8 +6763,9 @@ fn test_deadline() {
     assert!(picked.slice_left == 100,
             "DL：B2 解冻后须授新预算 slice（期望 100，实际 {}）", picked.slice_left);
 
-    // DL-B3：04 号审计附记一（2026-11-17）filtered 面钉板——生产 8 出选点
-    // 全走 pick_next_filtered（sched/src/class.rs），解冻 lazy_unthrottle
+    // DL-B3：04 号审计附记一（2026-11-17）filtered 面钉板——生产出选点
+    // 走 pick_next_filtered（七点）与 pick_next_preempt（机会一②起 try_preempt
+    // 一点），解冻 lazy_unthrottle
     // 若只在 trait pick_next 面则预算耗尽的 deadline 任务在生产面永久不可
     // 出选；双写修法（filtered 头部亦解冻）后本段直钉生产执法面。B2 的
     // pick 已消费 rq2（游标推进 + tb 已解冻 + fair 陪跑在环会顶掉负控
