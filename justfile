@@ -1149,6 +1149,14 @@ test-host:
     # 换轨二刀后本行 = 产链现役件门禁（build-user 走本 bin）。独立小工作
     # 区，须显式 --target {{host}}。
     cargo test --manifest-path tools/mkcpio/Cargo.toml --target {{host}}
+    # W1（彻底 Rust 化轨道 b 层 #8 刀序第二位）：mkfat Rust 件 lib 纯面
+    # 测试（FAT12/16 编码往返/默认盘烘焙簇锚/--put 嵌套目录链回读/SPC
+    # 自适应/total 域/拒面全谱）+ CLI 与 Python 现役件字节级对拍（合成
+    # puts 三面：--put 整盘 + 默认盘裸调 + FAT16 8MiB → 双方产物 sha256
+    # 恒等，Python 在席时执行；缺席打 skip 纯面钉板兜底）。独立小工作区，
+    # 须显式 --target {{host}}；产链现役件仍 Python（justfile 601/931/934/
+    # 1768 行），换轨归二刀。
+    cargo test --manifest-path tools/mkfat/Cargo.toml --target {{host}}
     # V-3：mkimage MBR 薄面自检（CHS 向量 + 表项钉板——卷编码面归
     # mkfat --selftest，单编码器纪律不在此长第二套）。
     python3 tools/mkimage.py --selftest
