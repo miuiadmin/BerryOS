@@ -100,7 +100,7 @@ pub const BTN_TOUCH: u16 = 0x14a;
 // ---- EV_KEY code：KEY_* 键盘空间（值域 = linux/input-event-codes.h 冻结
 // 值；消费面 = gui-inputd 键盘泵的 US 布局翻译表。码值与 ASCII 无关——
 // KEY_A=30 非 'a'=97，勿混（KEY_RIGHTCTRL=97 恰与 'a' 码域碰撞的钉板
-// 见 input_tests）。修正键四枚 + 主键区全排 + 两 Enter。----
+// 见 input_tests）。修正键四枚 + 主键区全排 + 两 Enter + 上下箭头两枚。----
 
 /// ESC。
 pub const KEY_ESC: u16 = 1;
@@ -189,6 +189,12 @@ pub const KEY_KPENTER: u16 = 96;
 /// 右 Ctrl（修正键；=97 与 ASCII 'a' 码域碰撞——翻译面按修正键优先，
 /// 不得译出字母，钉板见 input_tests）。
 pub const KEY_RIGHTCTRL: u16 = 97;
+/// 上箭头（消费面 = gui-inputd 键盘泵的箭头序列表——出向 ESC `[` `A`
+/// 三帧单字节；值 103 = linux/input-event-codes.h 冻结值）。
+pub const KEY_UP: u16 = 103;
+/// 下箭头（同 [`KEY_UP`]——出向 ESC `[` `B`；LEFT/RIGHT/HOME/END 不冻
+/// ——出向无消费语义，见 gui-inputd translate_seq 注）。
+pub const KEY_DOWN: u16 = 108;
 
 /// EV_ABS code：多点槽序号（v1 忽略计数——多点留位）。
 pub const ABS_MT_SLOT: u16 = 0x2f;
