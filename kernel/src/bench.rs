@@ -52,8 +52,9 @@ const PAGE: usize = 1 << 12;
 
 /// 基准项计数（`BENCH ok n=` 的定值——增删基准项时同步改这里、smoke 两处
 /// 标记表（markers.sh/smoke-image.sh）、bench.py 的 _iter_table 与表头注释、
-/// bcts 冻结件滚新（计数面零增减的 bcts@N 滚新——主线收））。
-const N_METRICS: usize = 8;
+/// bcts 冻结件滚新（计数面零增减的 bcts@N 滚新——主线收）。
+/// W3-Q98（2026-11-18）：8→9——send_recv_pair 入（02 号 IPC 审计落选三）。
+const N_METRICS: usize = 9;
 
 // ---- S-2（设计 §12）常量 ----
 
@@ -98,7 +99,11 @@ pub fn run() {
     // pick_scan（04 号审计基线缺口，2026-11-17）：Fair 出选面纯函数成本——
     // 与上六项同窗（ktest 后、timer/sched init 前干净窗）。
     bench_pick_scan();
-    // AM 原子观测对（非标记行）：紧随七项官方基准后、churn 前——七行
+    // send_recv_pair（02 号 IPC 审计落选三随 W3-Q98 刀 b 收口，2026-11-18）：
+    // IPC 主路径 icount 首项——svc 直调 send+recv 往返（无随行 handle、8B
+    // 载荷最小形），与上七项同窗。
+    bench_send_recv_pair();
+    // AM 原子观测对（非标记行）：紧随八项官方基准后、churn 前——八行
     // `BENCH,` + BENCHCHURN/BENCHXH 的既有 boot 形状零扰动（`BENCH ok`
     // 收尾行已迁 run_sched_epoch 纪元尾恒发——本窗不再打）。
     bench_am_pair();
@@ -321,6 +326,86 @@ fn bench_pick_scan() {
         acc = acc.wrapping_add(p as *mut Task as usize);
     });
     assert_ne!(acc, 0, "bench: pick_scan 出选指针累计（防死存储消除）");
+}
+
+/// send_recv_pair（02 号 IPC 审计落选三，随 W3-Q98 刀 b 收口）：IPC 主路径
+/// icount 首项——一对 channel 端点上 1024 轮 send+recv 往返（svc 直调面，
+/// 与 ktest H2 同形：无随行 handle、8B 载荷最小形——载荷 nbytes 恒 8，队列
+/// 每轮净空 = send 恒快路满检过 + recv 恒真弹）。对象经 `channel_create`
+/// 建对（bootstrap 表），测毕两端 close 清场。**口径注**：EL1 svc 直调 =
+/// SVC 入口 + 门控 + 拷贝链全链（无 EL0 页表走查——icount 通道值面是
+/// 指令数代理，EL1 高半直映免走查是既有形态，与 handle_evt 同窗同判）；
+/// WRITABLE/READABLE 唤醒链稳态零等待者 = wake_matching 空桶 O(1) 早退
+/// 在数内（recv 后对端恒空——4-4 检查链 fastpath 判定每轮进 miss 支但
+/// 空桶近零开销）。**迭代数 1024**：与 handle_evt 同档（send/recv 往返
+/// 单轮成本 ~数百指令，总量在 boot 帽内）。
+fn bench_send_recv_pair() {
+    // 静态缓冲（S-2 同款纪律：boot 窗单线程 IRQ 屏蔽，raw 指针触碰）。
+    static mut C0: u64 = 0;
+    static mut C1: u64 = 0;
+    static mut SBUF: [u8; 8] = [0x58; 8];
+    static mut RBUF: [u8; 8] = [0; 8];
+    static mut NB: u64 = 8;
+    static mut NH: u64 = 0;
+    static mut HND: [u32; 4] = [0; 4];
+    // SAFETY: 出参槽写 u64 槽低半（bench 窗单线程）。
+    unsafe { C0 = 0; C1 = 0; }
+    assert_eq!(
+        svc4(
+            NR_CHANNEL_CREATE as u64,
+            0,
+            &raw mut C0 as u64,
+            &raw mut C1 as u64,
+        ),
+        0,
+        "bench: send_recv_pair channel_create"
+    );
+    let (hc0, hc1) = (unsafe { C0 } as u32, unsafe { C1 } as u32);
+    assert_ne!(hc0, 0, "bench: send_recv_pair end0");
+    assert_ne!(hc1, 0, "bench: send_recv_pair end1");
+    bench(b"send_recv_pair", 1024, || {
+        // 静态缓冲 raw 指针地址取值（safe：无解引用，仅取址转 u64 传参；
+        // svc6/svc4 为安全直调面——ktest H2 同款）。boot 窗单线程 IRQ 屏蔽
+        // （S-2 纪律）保证静态缓冲读写无竞争。
+        assert_eq!(
+            svc6(
+                NR_CHANNEL_SEND as u64,
+                hc0 as u64,
+                &raw const SBUF as u64,
+                8,
+                0,
+                0,
+                0,
+            ),
+            0,
+            "bench: send_recv_pair send"
+        );
+        assert_eq!(
+            svc6(
+                NR_CHANNEL_RECV as u64,
+                hc1 as u64,
+                &raw mut RBUF as u64,
+                &raw mut NB as u64,
+                &raw mut HND as u64,
+                &raw mut NH as u64,
+                0,
+            ),
+            0,
+            "bench: send_recv_pair recv"
+        );
+    });
+    // 读回形状断言（防死存储消除 + recv 语义钉板）：8B 载荷逐字节同源。
+    // SAFETY: 只读比对。
+    assert_eq!(
+        unsafe { *(&raw const RBUF) },
+        unsafe { *(&raw const SBUF) },
+        "bench: send_recv_pair 读回载荷须逐字节同源"
+    );
+    // SAFETY: 同上。
+    unsafe { NB = 8; NH = 0; }
+    // 清场：两端 close（互钉环泄漏——channel.rs 安全向政策，xh 面同款）。
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hc0 as u64, 0, 0), 0, "bench: send_recv_pair close end0");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hc1 as u64, 0, 0), 0, "bench: send_recv_pair close end1");
 }
 
 // ---- switch_pair：调度器纪元基准窗（run_sched_epoch）----

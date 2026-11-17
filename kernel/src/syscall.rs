@@ -50,7 +50,7 @@
 //! 睡眠者。signal 门控 RIGHT_SIGNAL；wait 不需权利位（12 位 rights 表无 WAIT
 //! 位，持有 handle 即可查）。
 
-use crate::channel::{Message, CHAN_HND_MAX, CHAN_MSG_MAX, ChannelEnd};
+use crate::channel::{Message, CHAN_HND_MAX, ChannelEnd};
 use crate::event::Event;
 use crate::handle::{
     HandleTable, KernelObj, ObjRef, ObjType, Rights, ERR_ACCESS_DENIED, ERR_AGAIN, ERR_BAD_HANDLE,
@@ -3287,9 +3287,22 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
     if !berry_chanface::handles_distinct(&hvals[..nhandles]) {
         return ERR_INVALID_ARG as i64;
     }
-    // bbuf 拷入（W3-Q92 同窗——原独立第二 PT 锁窗并掉，语句位/错误面不变）。
-    let mut bbuf = [0u8; CHAN_MSG_MAX];
-    if let Err(e) = irq_window(|| copy_from_user_locked(el1, bytes, &mut bbuf[..nbytes], &mut last_page)) {
+    // W3-Q98（02 号机会三刀 b）：载荷拷入**直达尾槽**——满检已过，尾槽此刻
+    // 必空且单核禁切窗内无插队（g3-1c-2 段守卫在持）；user→槽位 bytes 单拷贝
+    // 直达，bbuf 中转拷贝（copy_from_slice 第二跳）消除。语义逐位保持：
+    // 错误面同（源 fault = -EFAULT 早退，槽残句/qlen 不动 = 队列零变化——
+    // 残句仅本端点内部可见，用户无观察面：旧形 bbuf 是栈变量同样残句、
+    // 满检过后此槽必不被 recv 触达）；语句序不动（拷贝仍在 probe/distinct
+    // 之后、take 之前——原子序注全链保持）。W3-Q92 单 PT 锁窗纪律不动：
+    // 拷贝窗走查+直达拷出同窗解蔽。
+    // SAFETY: peer 互钉在活；满检（queue_full 拒）+ 禁切窗保尾槽空且稳定。
+    let slot = unsafe {
+        let Some(peer_end) = (*peer_ptr.as_ptr()).obj.as_channel_mut() else {
+            return ERR_BAD_HANDLE as i64; // 上面刚解包过——不可达防御面
+        };
+        peer_end.tail_slot()
+    };
+    if let Err(e) = irq_window(|| copy_from_user_locked(el1, bytes, &mut slot.bytes[..nbytes], &mut last_page)) {
         return e as i64;
     }
     drop(_pt); // W3-Q92 收窗：此后零用户内存触点——PT 锁不带进 take/push/唤醒链（锁序零新边）
@@ -3306,18 +3319,18 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
             }
         }
     }
-    // 定长内联消息（3b3 H2 try 化：曾在此双 Box 分配——take 之后 OOM 即 abort
-    // 于迁移中途；内联 + 队列预储后 send 全链零分配）。
-    let mut msg = Message::new();
-    msg.bytes[..nbytes].copy_from_slice(&bbuf[..nbytes]);
-    msg.nbytes = nbytes;
-    msg.handles[..nhandles].copy_from_slice(&toks[..nhandles]);
-    msg.nhandles = nhandles;
+    // W3-Q98（机会三刀 b 续）：消息构造**就地槽位**——nbytes/toks/meta/billing
+    // 直写预占尾槽（bytes 已在上方单拷贝直达；3b3 H2 零分配纪律不动——
+    // 槽位属队列预储容量）。旧形 Message::new + 双 copy_from_slice（bbuf→msg
+    // 中转 + msg→push 槽位 440B struct move 第三跳）全消。
+    slot.nbytes = nbytes;
+    slot.handles[..nhandles].copy_from_slice(&toks[..nhandles]);
+    slot.nhandles = nhandles;
     // 4-3c：消息头快照发送者 intent_effective（ADR #42 五件套——fastpath 增量
     // = 一次结构体填充；记账/帽判定全在 recv 结算 slowpath，「fastpath 零记账」）。
     // CURRENT 无效（ktest/init 前语境）→ 零值头（UNSPECIFIED 首手）照常发送。
     if let Some((meta, snap)) = berry_sched::intent_snapshot_current(vct_ns()) {
-        msg.meta = meta;
+        slot.meta = meta;
         if snap == berry_sched::SnapOut::Capped {
             // 每跳预算帽：降级为不传播（消息头已装自己的 declared）+ 计数 + trace。
             crate::telemetry::intent_budget_capped();
@@ -3326,7 +3339,7 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
     }
     // 1.1/S4：受益者付费——send 侧快照发送者域 ID（= Task.pinned）。
     // 零分配（纯填字段）；recv 侧可读（S4 只记不罚——telemetry 计数）。
-    msg.billing.domain_id = berry_sched::current_pinned() as u64;
+    slot.billing.domain_id = berry_sched::current_pinned() as u64;
     // 1.1/S4-b 区间计费终末：本任务是 server（此前 recv 设过区间起点）→
     // 算差 → 记 client 域账户 → 清起点。Wall-clock 近似（穿插任务混入
     // ——精确 per-task CPU 需 TCB 扩字段，S5-c 后再议）。
@@ -3377,7 +3390,8 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
         None
     };
     // SAFETY: peer_ptr 互钉在活；队列有界（满检过——单核禁切无插队 g3-1c-2
-    // 段守卫；双核结构锁窗）。
+    // 段守卫；双核结构锁窗）。W3-Q98：尾槽已由上方 slot 直拷构造，此处仅
+    // commit（len +1）——旧形 440B struct move 的 push 全消。
     unsafe {
         let Some(peer_end) = (*peer_ptr.as_ptr()).obj.as_channel_mut() else {
             // 上面刚解包过——不可达防御面（消息泄漏，安全向）。c-2a：若义务④
@@ -3387,7 +3401,7 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
             }
             return ERR_BAD_HANDLE as i64;
         };
-        peer_end.push(msg);
+        peer_end.push_tail_commit();
     }
     drop(_span); // g3-1c-2 段终点（push 毕）：原子段收口配平
     match waiter {
