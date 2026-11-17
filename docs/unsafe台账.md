@@ -42,14 +42,14 @@
 <!-- UNSAFE-AUDIT:SUMMARY:BEGIN -->
 | 目录 | .rs 文件数 | 总行数 | unsafe 非空行 | 密度 |
 |------|-----------|--------|--------------|------|
-| kernel/ | 31 | 36163 | 2256 | 6.24% |
+| kernel/ | 31 | 36209 | 2256 | 6.23% |
 | mm/ | 7 | 2368 | 4 | 0.17% |
 | sched/ | 15 | 8865 | 1819 | 20.52% |
 | ipc/ | 0 | 0 | 0 | — |
 | arch/ | 23 | 7317 | 1054 | 14.40% |
-| **合计** | 76 | 54713 | 5133 | **9.38%** |
+| **合计** | 76 | 54759 | 5133 | **9.37%** |
 
-- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 41776，unsafe 非空行 4373，密度 10.47%（生产面口径）
+- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 41822，unsafe 非空行 4373，密度 10.46%（生产面口径）
 - 分类计数：页表 63 | 上下文切换 35 | MMIO 163 | 分配器 16 | 硬件原子 0 | 其它 854
 - 类型计数：block 981 | fn 146 | impl 2 | extern 2（另有类型签名位提及 15 处——只计不登记，防双计）
 - 对标：Android ~4%（unsafe 行占 Rust 总行比，Google 2025-11）；本表为跨度非空行口径（偏高估），见 §一
@@ -336,12 +336,12 @@
 | kernel/src/cbox.rs | 241 | block | 其它 | unsafe { core::ptr::read_volatile(&tbl[i]) }; } (CBOX_NEXT.load( |
 | kernel/src/cbox.rs | 248 | block | 其它 | unsafe { &mut *addr_of_mut!(CBOX_TBL) }; for i in 0..SLOTS { // |
 | kernel/src/cbox.rs | 251 | block | 其它 | unsafe { core::ptr::write_volatile(&mut tbl[i], saved[i]) }; } C |
-| kernel/src/channel.rs | 155 | block | 其它 | unsafe { (*owner.as_ptr()).retain() }; true } /// AM-1.5：清由 `own |
-| kernel/src/channel.rs | 171 | block | 其它 | unsafe { ObjRef::release(owner) }; true } /// opt-out 标志（recv 结算 |
-| kernel/src/channel.rs | 185 | fn | 其它 | unsafe fn pair(a: NonNull<ObjRef>, b: NonNull<ObjRef>) { // SAFE |
-| kernel/src/channel.rs | 188 | block | 其它 | unsafe { (*a.as_ptr()).obj.as_channel_mut().unwrap().peer = Some |
-| kernel/src/channel.rs | 249 | block | 其它 | unsafe { ObjRef::release(peer) }; } // AM-1.5 冻结属主标配平：正常序 thaw 清 |
-| kernel/src/channel.rs | 255 | block | 其它 | unsafe { ObjRef::release(owner) }; } } } |
+| kernel/src/channel.rs | 177 | block | 其它 | unsafe { (*owner.as_ptr()).retain() }; true } /// AM-1.5：清由 `own |
+| kernel/src/channel.rs | 193 | block | 其它 | unsafe { ObjRef::release(owner) }; true } /// opt-out 标志（recv 结算 |
+| kernel/src/channel.rs | 207 | fn | 其它 | unsafe fn pair(a: NonNull<ObjRef>, b: NonNull<ObjRef>) { // SAFE |
+| kernel/src/channel.rs | 210 | block | 其它 | unsafe { (*a.as_ptr()).obj.as_channel_mut().unwrap().peer = Some |
+| kernel/src/channel.rs | 295 | block | 其它 | unsafe { ObjRef::release(peer) }; } // AM-1.5 冻结属主标配平：正常序 thaw 清 |
+| kernel/src/channel.rs | 301 | block | 其它 | unsafe { ObjRef::release(owner) }; } } } |
 | kernel/src/dpg.rs | 131 | fn | 其它 | unsafe extern "C" fn probe(esr: usize, far: usize) -> bool { // |
 | kernel/src/dpg.rs | 155 | block | 其它 | unsafe { (*root).demand_region_at(far).is_none() } { hal::kern_l |
 | kernel/src/dpg.rs | 267 | fn | 其它 | unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool { |
