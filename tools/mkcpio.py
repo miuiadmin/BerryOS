@@ -4,6 +4,16 @@
 垫料面 X-3c 起垫 4096（见 `entry()`，GNU cpio 的 4 垫步进不再兼容；
 宿主侧对读 = mkapp `_cpio_entries` 单源）。
 
+**换轨二刀（2026-11-17，b 层 #8 刀序首位）**：产链 CLI 现役件 = Rust
+（`tools/mkcpio`，#435 首刀——justfile build-user 走 `cargo-target/
+<host>/release/mkcpio` bin）；本文件**不退役**——是六处模块 import 的
+图根（mkapp/tlsscan/bench/smoke-dpgsoak 的 `entry`/`build_archive`、
+berry_assemble/gensourceindex 的 `load_manifest`，单编码器纪律），
+保留形态 = 模块面现役 + CLI 对拍 oracle（elf2flat/elf2pe 的 *_oracle.py
+同位纪律；差异点 = 本件模块面仍被 import 故不改名）。对拍背书：真产链
+形态（--manifest rootfs-manifest.toml + --split 32 真构建树 44.6MB/
+63 条目）→ 主档+双卷 sha256 6/6 恒等 + stdout 行全等 + .berryver 同烙印。
+
 用法：mkcpio.py <out.cpio> name=path [name=path ...] [--split <MiB>]
               [--manifest <rootfs-manifest.toml>]
   - name 归档内路径（如 bin/hello），path 本地文件（ELF 本体，非平像）；
