@@ -252,7 +252,7 @@ C2h：attach RES 新 host 失败保留旧 host；VNC 重连失败按旧 profile 
 - 控制面（`control.sock`/`control.token`）与 QMP 不随 VNC 暴露：对外只有 RFB 端点（TCP/ws），控制面仍本机 0600。
 - VNC 网页壳页（wave9）的交互验证有 headless 硬边界：全屏真行为（headless 权限拒）、真 OSK 弹出与 IME 组合输入（软键盘按键级转发为上限，组合输入不翻译）、真机触摸手势、<500px 像素级观感、断线重连中间态时序——自动化以 URL 参数初值（`view_only=1`/`resize`）+ body 状态类 + 按钮在位断言替代，点击链路留有头验证。
 - LAN 远程桌面（wave10 建/wave11 扩）安全与 TLS 边界：明文 http 页 + 经典 DES 端到端是弱防线（LAN 假定可信，仅同 Wi-Fi 场景用）；TLS run 自 wave11 起 `--lan` 可用（http 页 + 上游 rustls wss 腿，`--ca`/`--insecure` 语义见第十一波段），`--lan --tls` 显式组合仍 rc=2 互斥拒（https 页绑 0.0.0.0 撞手机自签证书墙，架构性死路维持）；无口令 run 一律拒。
-- LAN 平台与验证边界（wave10）：Linux/Windows 的 LAN 地址解析分支未实机验证（纯函数面已单测，解析不出回退 127.0.0.1 + 一次性警告，`--host` 显式兜底）；QR 在深底终端的极性反转依赖解码器容错（macOS Vision 实证可读）；真机扫码与触摸手感属人验面（headless 通道等价性已证）；底栏导航键的客机语义以代点客机自身导航条为上限（wave10 晚修订：客机无键盘设备，标准 keysym 注入实测零效果），真客机级导航语义待客机 GUI 波次生长。
+- LAN 平台与验证边界（wave10）：Linux/Windows 的 LAN 地址解析分支未实机验证（纯函数面已单测，解析不出回退 127.0.0.1 + 一次性警告，`--host` 显式兜底）；QR 在深底终端的极性反转依赖解码器容错（macOS Vision 实证可读）；真机扫码与触摸手感属人验面（headless 通道等价性已证）；底栏导航键的客机语义以代点客机自身导航条为上限（wave10 晚修订：客机无键盘设备，标准 keysym 注入实测零效果；2026-11-17 终端刀追记：客机已挂 virtio-keyboard，gui-inputd 键盘认领 + KeyPump 翻译链在册，VNC keysym→virtio-keyboard 路由未实测——代点面板等价性暂维持），真客机级导航语义待客机 GUI 波次生长。
 
 ## 测试
 
