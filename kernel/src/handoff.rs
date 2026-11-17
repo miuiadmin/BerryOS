@@ -3,7 +3,7 @@
 //! handoff 物理指针**，内核按 `magic` 判别（DTB 魔数 0xD00D_FEED 大端序，
 //! 与 HANDOFF_MAGIC 互不碰撞）——QEMU `-kernel` 直加载路径 x0=0 照旧兼容。
 //!
-//! **双镜像纪律**（同 `docs/系统调用ABI设计.md` §8 abi_gen.rs kernel/berry-sys
+//! **双镜像纪律**（同 `docs/系统调用ABI设计-v1.0.md` §8 abi_gen.rs kernel/berry-sys
 //! 双面镜像精神）：本结构与 `bootloader/berryboot/app/src/lib.rs` 的
 //! `BerryHandoff` 逐字段同步——**改任一侧必须同步另一侧**，两侧各带同一张
 //! const assert 偏移表（编译期炸响，漂移无法静默上线）。
@@ -13,11 +13,11 @@
 //!   （内核 ELF 自描述，span 由装载器按 PT_LOAD 认领）。
 //! - 刀 4 填：memmap_*（GetMemoryMap 快照，EBS 前最后一份）。
 //! - 留位零值（裁决 B）：`gop_*` V-6a 起由 BerryBoot 填（banner 期
-//!   QueryMode 事实快照——`docs/VM里程碑设计草案.md` §4 V-6 fbcon 数据
+//!   QueryMode 事实快照——`docs/VM里程碑设计草案-v1.0.md` §4 V-6 fbcon 数据
 //!   源，全零 = 无此物）+ `cmdline_*`（留位零值待 V-1d+）。
 //!   零值 = 「无此物」：pa=0 且 len=0 双字段共同判定，禁只看 pa。
 //!
-//! v1 扩面（A1-3b，`docs/容量工程前置-A1设计草案.md` §3.2.1）：init 递送从
+//! v1 扩面（A1-3b，`docs/容量工程前置-A1设计草案-v1.0.md` §3.2.1）：init 递送从
 //! 单 blob（`init_blob_*`）升级**分段描述符数组**——BerryBoot 按目标段
 //! （8MiB）逐段 AllocatePages 页钉，绕开「固件给不出大连续段」的地形墙；
 //! 描述符数组随 handoff **同页 @128**（32×16B+128B=640B < 4KiB 单页自含，

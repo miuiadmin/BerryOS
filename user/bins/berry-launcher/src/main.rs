@@ -1,4 +1,4 @@
-//! berry-launcher —— GUI-8 桌面 launcher（docs/GUI-8实施设计草案.md §4
+//! berry-launcher —— GUI-8 桌面 launcher（docs/GUI-8实施设计草案-v1.0.md §4
 //! 段③；前身 = gui3 前置 wiring 刀 v0 park 骨架）。
 //!
 //! **模块树（段③ W1 起）**：

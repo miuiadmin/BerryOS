@@ -166,8 +166,15 @@ polarity = "死键收编：内核常量在、产链无注入——加注入面�
 name = "loadgen"
 kind = "string"
 injectors = ["（无仓内注入方——A/B 收割手拼 -fw_cfg 专递，rwake 同款；复现配方单源 = research/调度彻底计划/13-首份AB报告-loadgen.md）"]
-consumer = "kernel/src/main.rs 载荷生成门 LOADGEN_PROBE_NAME（在位才 spawn loadgen 探针；坏值 fail loud 诊断行整门跳过）"
-polarity = "在位且值合法（s=<ns>;b=<0|1>，分号分隔）才 spawn；缺席零扰动"
+consumer = "kernel/src/main.rs 载荷生成门 LOADGEN_PROBE_NAME（在位才 spawn loadgen 探针；坏值 fail loud 诊断行整门跳过；b=2 四带臂 = 18 号复测轴）"
+polarity = "在位且值合法（s=<ns>;b=<0|1|2>，分号分隔）才 spawn；缺席零扰动"
+
+[[keys]]
+name = "pilat"
+kind = "string"
+injectors = ["（无仓内注入方——G 卡收割手拼 -fw_cfg 专递，rwake 同款；复现配方单源 = research/调度彻底计划/17-PI三任务链延迟.md）"]
+consumer = "kernel/src/main.rs PI 三任务链延迟探针门 PILAT_PROBE_NAME（在位才 spawn 四任务组 + set_slice_hz(100) 测量档早读；值面不解析——键在即全配置）"
+polarity = "在位才 spawn；缺席 = run/smoke 零扰动（EFI 路天然缺席）"
 
 [[keys]]
 name = "panel-model"

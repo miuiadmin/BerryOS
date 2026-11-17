@@ -1,4 +1,4 @@
-//! berry-ui 动画推进（GUI-3——`docs/GUI-3实施设计草案.md` §3.7：
+//! berry-ui 动画推进（GUI-3——`docs/GUI-3实施设计草案-v1.0.md` §3.7：
 //! Transform/Layout 分型 day-one，为 v2 服务端动画/合成留缝——钦定面）。
 //!
 //! - [`AnimProp::OffsetX`]/[`AnimProp::OffsetY`] = **Transform 型**：落

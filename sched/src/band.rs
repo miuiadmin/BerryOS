@@ -303,6 +303,11 @@ pub fn nearest_throttle_wake() -> Option<u64> {
 /// # Safety 契约（调用方）
 /// rq 环节点有效且在环；屏蔽窗内调用（tick / pick_next 语境——同
 /// `lazy_unthrottle_deadlines`）。包络关 / 带越界 → 0 零扫描。
+/// SMP 面（F3，SMP-01 §3.3）：生产 tick 路径（`FairBand::tick` /
+/// `band_period_sweep`）的调用须另在本核 RQ 锁窗内——对核 `try_steal_one`
+/// 持本环锁 unlink（半摘节点 next 暂 None / 残子环自旋），免锁走查读撕
+/// 态；tick 面用 `sched::try_rq_lock` 非阻塞窗（永不等待 ⇒ 永不 wedge）。
+/// 本函数自身不取锁（ktest 本地环免锁直调不变）。
 pub fn throttle_all(band: u8, rq: &Runqueue) -> usize {
     if !band_on(band) {
         return 0;

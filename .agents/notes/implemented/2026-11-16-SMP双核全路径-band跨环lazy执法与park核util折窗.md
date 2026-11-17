@@ -27,7 +27,7 @@ SMP-01 双核全路径验证(research/调度深度调研/SMP-01-双核全路径�
 - 带任务跨核执法缝隙与残留饿死窗闭合;深 park 醒后首扫自愈(SGI 醒 → park_recheck → pick 扫 → 残留清)。
 - 已知代价:残留愈合路径成员 VD 仍是 low_weight 重臂值(不重臂 high_weight),EEVDF vruntime 前进兜底不饿死,回场优势损失在 band.rs 注明示。
 - 验证:单核与 -smp 2 双形态 boot 全绿(SMPLZ ok/ktest done/SMP ok ncores=2/PAR ok/steal/pull),ktest 段与基线 diff 仅时序噪声;docs_guard PASS、writable_globals ok(零新增 static mut)。
-- 遗留:F3(band tick 面环扫无锁 vs 对核偷取的撕裂窗)归 CP-05/BAND-S 锁面裁决;CP-03 SMPBENCH/CP-05 BAND-S 专项验收相未落。
+- 遗留:F3(band tick 面环扫无锁 vs 对核偷取的撕裂窗)已于 2026-11-17 以 try 非阻塞锁窗收口(见[2026-11-17-SMP遗留F3收口-band环扫try锁窗.md](2026-11-17-SMP遗留F3收口-band环扫try锁窗.md));CP-03 SMPBENCH/CP-05 BAND-S 专项验收相未落。
 - 事故记录:与 B 面观测会话并行施工期间,sched.rs 两处 park 钩子被一次外部 git 操作瞬时覆盖(15:49),发觉后重落并全量重建重验——同文件多会话施工须每步 grep 自证 + 构建前 touch 强制重编。
 
 ## Related

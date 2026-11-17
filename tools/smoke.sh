@@ -602,6 +602,10 @@ echo "smoke: QEMU 启动（rootfs 相：fw_cfg rootfs 卷（A1-3b 多卷名）+ 
 # tablet 追加在 blk/net 之后取更低槽 = 既有设备槽位零漂移——槽位注记见
 # justfile run-rootfs；B4 三 boot 不挂：掉电相无输入面，gui-inputd park
 # 优雅降级、INPUT ok 自然缺席不设门）。
+# 命令行终端刀（2026-11-17）：四相追挂 virtio-keyboard-device——gui-inputd
+# 分类认领门（指针恰 1 + 键盘至多 1，keyboard 无则 kb=none 降级）每 boot
+# 实跑；键盘倒序建取更低槽，tablet 槽位仍零漂移。gui8-smoke 不挂（触摸
+# 交互几何面，键盘非其验证面）。
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \
   $FWCFG \
   -global virtio-mmio.force-legacy=false \
@@ -609,6 +613,7 @@ echo "smoke: QEMU 启动（rootfs 相：fw_cfg rootfs 卷（A1-3b 多卷名）+ 
   -device virtio-blk-device,drive=drv0 \
   -netdev user,id=n0,hostfwd=tcp::18081-:18081,hostfwd=tcp::18082-:18082,hostfwd=tcp::18083-:18083 -device virtio-net-device,netdev=n0 \
   -device virtio-tablet-device,id=tab0 \
+  -device virtio-keyboard-device,id=kb0 \
   < /dev/null > "$LOG" 2>&1 &
 QEMU_PID=$!
 
@@ -689,7 +694,7 @@ QEMU_PID=$!
 # 虚拟 DNS 10.0.2.3 → 宿主 /etc/hosts，离线确定无外网依赖）往返对拍全过
 # 才打——「驱动服务化」网络版分层活证——rootfs 相第 18 标记（状态谓词，
 # 无竞速面；60s 应答帽盖 vnet 自验尾巴 + 服务端 20s DNS 帽，帽不押时序）。
-# TCP ok echo= = **最小 TCP 客户端全链**（T-c，`docs/TCP栈设计草案.md`）：
+# TCP ok echo= = **最小 TCP 客户端全链**（T-c，`docs/TCP栈设计草案-v1.0.md`）：
 # vnet 自验（NET ok）后、转常驻服务前，guest 主动 connect SLIRP 宿主
 # echod（10.0.2.2:18080）——berry-tcp 状态机（握手/序号/RTO/TIME_WAIT
 # 纯函数）+ tcp.rs IO 驱动：三次握手（我方 MSS 128 通告）→ 64B pattern
@@ -697,7 +702,7 @@ QEMU_PID=$!
 # 可靠交付/连接拆除三阶段全在用户态**，零内核 TCP——rootfs 相第 19 标记
 # （状态谓词；对端 echod 由本相前脚本拉起，pcap 实证 SLIRP 遵守我方
 # MSS：64B 回显单段不分片；无竞速面）。
-# TCPS ok echo= = **TCP 服务化消费链**（T-d，`docs/TCP栈设计草案.md` §7）：
+# TCPS ok echo= = **TCP 服务化消费链**（T-d，`docs/TCP栈设计草案-v1.0.md` §7）：
 # svcmgr 作 client 经 berry-netdproto TCP 三 op 严格串行 RPC——
 # OPEN(18080)（在席会话 ST_BUSY 单会话独占）→ ROUNDTRIP(64B pattern) 逐
 # 字节对拍 → CLOSE（TIME_WAIT 收口）三步全 ST_OK 才打；与 vnet 自验
@@ -712,8 +717,8 @@ QEMU_PID=$!
 # （manifest.id ↔ 文件名、manifest.entry ↔ 包内条目名）→ spawn_rootfs_elf
 #（console=true 直打 / false 私有对端 + EOF 收集）→ reap 真码 0——**全部
 # 槽全过才打**（任一降级 = `eco: app <id> <why>` 行 + 标记缺失 loud）——
-# rootfs 相第 21 标记（确定性状态谓词：n ≤ APP_SLOTS=10 两位零填充；裸跑
-# app_n==0 零扰动）。
+# rootfs 相第 21 标记（确定性状态谓词：n ≤ APP_SLOTS=10——写面宽度参数化
+#（< 10 单数字、≥ 10 两位）；裸跑 app_n==0 零扰动）。
 # DIR ok n= = **RAM 目录树 v2 五 op 全链**（C-0 刀 4）：bsh dir_selftest
 # 自驱——MKDIR `bdir` → 多段 PUT/GET（`bdir/n.bin` 64B 逐字节全等）→
 # READDIR 恰一名 → LOOKUP 命中 → STAT 双面（TYPE_DIR 子项数/TYPE_FILE
@@ -756,7 +761,7 @@ QEMU_PID=$!
 # grep/find/which 挂账另刀（docs/挂账-C2c深坑件.md）。链序契约同 U2 排
 # fat 族前（EFI 路无盘亦打 U3——smoke-image ECO 14 同面）——rootfs 相第
 # 27 标记（状态谓词，无竞速面）。
-# B-1：B1 ok n=4（EL0 用户态基准验收——docs/基准与压力测试设计.md §8）：
+# B-1：B1 ok n=4（EL0 用户态基准验收——docs/基准与压力测试设计-v1.0.md §8）：
 # bsh bench1_selftest spawn bin/bench1（stdhello 同链 std 面，四项基准
 # sys_null/sys_vmo_rw4k/ipc_enqueue8/evt_signal 全 syscall 自造 = 零新
 # 管道）→ 私有通道收齐 BENCH1 行 → **格式断言**（行数恰 4 + 名字-iters
@@ -966,8 +971,9 @@ QEMU_PID=$!
 # icons/<stem>.byi 条目（BYI1 头校验：magic/ver/flags/尺寸帽）；views
 # 声明 ↔ views/ 条目在场；未声明 ⇔ 零条目 = mkapp 交叉门禁（§5.3 ⑥）
 # 的运行时镜像。ui_decl>0 且 ui_ok==ui_decl 才打——**与 APP ok 独立判**
-# （失败隔离双向：ui 坏不挡启动，启动坏不抹 ui 验证）。n= 单数字位
-# （APP_SLOTS<10 const assert）；n=1 = APPDEMO（APPQUIET 无 [ui] 不计）。
+# （失败隔离双向：ui 坏不挡启动，启动坏不抹 ui 验证）。n= 宽度参数化
+#（APP_SLOTS<100 const assert；< 10 单数字、≥ 10 两位——n=1 = APPDEMO
+# 单 app 拓扑形，APPQUIET 无 [ui] 不计）。
 # 纯 appd 扫描面 = 零新盘面/零新 syscall，链位置紧随 APP ok 行后；EFI
 # 路同打（appd 同二进制）。“APPUI ok” 与现役标记两两互非子串（现役无
 # `XAPPUI ok` 形态在册）。
@@ -1032,11 +1038,11 @@ fi
 # park 形 GUI app，boot 批改「[ui] 入册不拉起」（svcmgr 裁决 B，W4-RECON
 # §1.7 铁律：常驻形由 boot 批拉起 = app_reap_tail 永等 = `APP ok` 缺失）。
 # rootfs 相新证据 = 逐 [ui] 槽 `app <id> gui deferred` 记账行（svcmgr 打，
-# 8 槽全在 = 入册面完整；任一缺席已由 `APP ok n=` 谓词兜底 FAIL，此处逐
+# 9 槽全在 = 入册面完整；任一缺席已由 `APP ok n=` 谓词兜底 FAIL，此处逐
 # 行断 = 失败可归因到具体 app）。console=true 的串口能力面证据随迁 GUI
 # 形（gui8-smoke 点击 spawn 的 `app APPDEMO up`/`fs ok` 行——launcher
 # SPAWN 路径 console 同接线）。
-for id in APPDEMO SETTINGS FILES PHOTOS CAMERA CONTACTS MMS BROWSER; do
+for id in APPDEMO SETTINGS FILES PHOTOS CAMERA CONTACTS MMS BROWSER TERMINAL; do
   grep -q "app $id gui deferred" "$LOG" \
     || fail "app $id gui deferred 缺失（裁决 B 入册记账——boot 批未见 [ui] 槽入册；查 eco: app 行）"
 done
@@ -1106,6 +1112,7 @@ SIM_SOCK="$QMP_DIR/sim1"   # sim-S1 serial1（与 QMP 同临时目录统一 clea
   -device virtio-blk-device,drive=drv0 \
   -netdev user,id=n0,hostfwd=tcp::18081-:18081,hostfwd=tcp::18082-:18082,hostfwd=tcp::18083-:18083 -device virtio-net-device,netdev=n0 \
   -device virtio-tablet-device,id=tab0 \
+  -device virtio-keyboard-device,id=kb0 \
   -serial mon:stdio \
   -serial unix:"$SIM_SOCK",server=on,wait=off \
   -qmp unix:"$QMP_SOCK",server=on,wait=off \
@@ -1505,6 +1512,7 @@ echo "smoke: QEMU 启动（FAT 子目录相：fixture 盘 disk_dirs.img + FIFO s
   -device virtio-blk-device,drive=drv0 \
   -netdev user,id=n0,hostfwd=tcp::18081-:18081,hostfwd=tcp::18082-:18082,hostfwd=tcp::18083-:18083 -device virtio-net-device,netdev=n0 \
   -device virtio-tablet-device,id=tab0 \
+  -device virtio-keyboard-device,id=kb0 \
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 t6=$(date +%s)
@@ -1585,6 +1593,7 @@ echo "smoke: QEMU 启动（FAT 持久化相：复用已写盘 + FIFO stdin + vir
   -device virtio-blk-device,drive=drv0 \
   -netdev user,id=n0,hostfwd=tcp::18081-:18081,hostfwd=tcp::18082-:18082,hostfwd=tcp::18083-:18083 -device virtio-net-device,netdev=n0 \
   -device virtio-tablet-device,id=tab0 \
+  -device virtio-keyboard-device,id=kb0 \
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 t6=$(date +%s)
@@ -1631,7 +1640,7 @@ echo "smoke: FAT 持久化到齐（跨 boot 读回 f42t + M3DEMO T3.TXT 交互 c
 # 恢复终验）——
 # 掉电模拟 = SIGKILL 直杀 QEMU（cache.writeback=off 下已完成扇区已在宿主
 # 盘、在途扇区蒸发 = **扇区间**撕裂前缀；扇区内撕裂 = 真机面不在本相覆盖，
-# 见 docs/FAT写路径原子性评估-2026-10.md）。三 boot 均无 netdev：vnet 无
+# 见 docs/FAT写路径原子性评估-2026-10-v1.0.md）。三 boot 均无 netdev：vnet 无
 # net 槽 = trap 干净自死（NET 族标记自然缺席不设门——EFI 路设备缺席优雅
 # 降级同款先例）；bsh 的 fat 族自验（fat→fatw→df 相邻三连）不依赖 net。
 # 盘重造 + LBA0 印章（vblk 自验读它）——每次 run 从确定性盘起。

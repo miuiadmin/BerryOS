@@ -1,4 +1,4 @@
-//! berry-ui 命中检测 + 手势 referee（GUI-3——`docs/GUI-3实施设计草案.md`
+//! berry-ui 命中检测 + 手势 referee（GUI-3——`docs/GUI-3实施设计草案-v1.0.md`
 //! §3.6；ADR #52 Msg-only：引擎产 `MsgBuf`、app 的 update 消费，引擎内
 //! 零闭包零回调副作用）。
 //!

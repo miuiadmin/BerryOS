@@ -1,4 +1,4 @@
-/* G-eco 用户程序平像链接脚本（docs/G-eco编译侧设计草案.md D1/D2）：
+/* G-eco 用户程序平像链接脚本（docs/G-eco编译侧设计草案-v1.0.md D1/D2）：
    基址 0x1000 = 内核 user.rs 的 USER_CODE_VA（UserProcess::build 恒映在
    0x1000，链接基址 == 加载基址，绝对寻址/adrp 全部成立）。.text.entry
    首位保证 _start 落镜像第一指令。无 PIE/动态段（v1 固定基址）。

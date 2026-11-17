@@ -2486,27 +2486,40 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
             }
         }
         if ok == app_n {
-            // 带参形态防子串混叠（`BLKD ok n=` 同款）；n ≤ APP_SLOTS → 恒
-            // 两位零填充（TCPS_PATTERN 定值钉板同款编译期拦）。
-            const _: () = assert!(APP_SLOTS < 100, "APP ok n= 2 位形态");
+            // 带参形态防子串混叠（`BLKD ok n=` 同款）；n ≤ APP_SLOTS → 宽度
+            // 参数化（< 10 单数字、≥ 10 两位——TERMINAL 入册起 n=10 十位
+            // 入拼；抬 APP_SLOTS ≥ 100 前再扩带参宽度，b'0'+n/10 溢出
+            // ASCII 数字域——TCPS_PATTERN 定值钉板同款编译期拦）。
+            const _: () = assert!(APP_SLOTS < 100, "APP ok n= 两位数字形态");
             let mut line = [0u8; 12];
             line[..9].copy_from_slice(b"APP ok n=");
-            line[9] = b'0' + (ok / 10) as u8;
-            line[10] = b'0' + (ok % 10) as u8;
-            line[11] = b'\n';
-            send_retry(console, line.as_ptr(), line.len());
+            let mut w = 9;
+            if ok >= 10 {
+                line[w] = b'0' + (ok / 10) as u8;
+                w += 1;
+            }
+            line[w] = b'0' + (ok % 10) as u8;
+            w += 1;
+            line[w] = b'\n';
+            send_retry(console, line.as_ptr(), w + 1);
         }
         if ui_decl > 0 && ui_ok == ui_decl {
             // GUI-7（rootfs 相 45→46）：`APPUI ok n=`——ui 面全验过才打
             // （任一 Bad = 标记缺失 = smoke FAIL，`APP ok` 同款确定性状态
-            // 谓词）。14B 行、n 恒两位零填充——APP_SLOTS < 100 双钉板。
-            const _: () = assert!(APP_SLOTS < 100, "APPUI ok n= 2 位形态");
+            // 谓词）。宽度参数化同 `APP ok`（< 10 单数字、≥ 10 两位）
+            // ——APP_SLOTS < 100 双钉板。
+            const _: () = assert!(APP_SLOTS < 100, "APPUI ok n= 两位数字形态");
             let mut line = [0u8; 14];
             line[..11].copy_from_slice(b"APPUI ok n=");
-            line[11] = b'0' + (ui_ok / 10) as u8;
-            line[12] = b'0' + (ui_ok % 10) as u8;
-            line[13] = b'\n';
-            send_retry(console, line.as_ptr(), line.len());
+            let mut w = 11;
+            if ui_ok >= 10 {
+                line[w] = b'0' + (ui_ok / 10) as u8;
+                w += 1;
+            }
+            line[w] = b'0' + (ui_ok % 10) as u8;
+            w += 1;
+            line[w] = b'\n';
+            send_retry(console, line.as_ptr(), w + 1);
         }
     }
     // ---- app-1 段 a-1：freeze-first 自验（tomb_selftest——APPTOMB 走
@@ -5232,7 +5245,7 @@ const DNS_OK: &[u8] = b"DNS ok addr=127.0.0.1\n";
 /// blk_rpc 同款纪律）。
 const DNS_REPLY_CAP: u64 = 120 * 1_000_000_000;
 
-/// rootfs 相第 20 标记（T-d，`docs/TCP栈设计草案.md` §7）：vnet TCP 三 op
+/// rootfs 相第 20 标记（T-d，`docs/TCP栈设计草案-v1.0.md` §7）：vnet TCP 三 op
 /// 服务消费自验——OPEN(18080) → ROUNDTRIP 64B 逐字节对拍 → CLOSE 三步全
 /// ST_OK 才打。**与 vnet 自验标记 `TCP ok echo=` 互非子串**（第 4 字符
 /// 'S' vs ' '——自验走 `Sess` 直连、本标记走 netdproto RPC 服务链，「栈

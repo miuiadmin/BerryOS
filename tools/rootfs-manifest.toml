@@ -48,7 +48,7 @@ version = 1
 # CP-08 装配件（04 号复核 §6-5/§6-6）：PM 双服务 bin——berry-power（电源
 # 中枢：频率帽聚合/充电限流票仲裁/util EWMA/pwproto 会话纯核在 lib +
 # bin 自检壳 park 常驻）与 berry-thermal（热治理仲裁引擎 + 自检/park
-# 壳）。**svcmgr 预拉 arm 已落**（CP-08 闭合：svcmgr/src/main.rs:1108 PM
+# 壳）。**svcmgr 预拉 arm 已落**（CP-08 闭合：svcmgr 源 PM（spawn 段行号随刀漂移；POLICY4 刀后 berry-power 每 boot 真提交一条四动作条目+policy4 诊断行，非纯 park 零行为；stdin_feed 装配 gift[2] 自描述对过 MANAGE 门）——系统审计 S4 2026-11-17 随刀
 # 双服务预拉起——D3 帽 128→160KiB + pager 钉位 0x1E000→0x28000 扩容刀让
 # 出的 .bss 面；拉起即 park 常驻，不写任何帽/票/发布位 = 零行为变化）；
 # 通道端点 gift 与 ps 账本面随分端执法刀留窗。musl 链 = build-user PM 段

@@ -2,7 +2,7 @@
 name = "berry-gfx"
 version.workspace = true
 edition = "2021"
-# GUI-2 段①（docs/GUI里程碑规划-2026-10.md GUI-2 行 + ADR #51）：pass 形态
+# GUI-2 段①（docs/GUI里程碑规划-2026-10-v1.0.md GUI-2 行 + ADR #51）：pass 形态
 # 图形 API + soft 光栅核纯函数 crate，host 测试先行（berry-virtio/berry-fbcon
 # 「纯函数 crate 化先 host 测」纪律）。钦定：WebGPU 形态语义子集 day-one
 # 六件套——pass 唯一合成边界（loadOp/storeOp/dirty rect）/Caps/着色器=

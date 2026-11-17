@@ -118,7 +118,7 @@ v0 范围（最小可用，不做镜像全产线）——对照九步（设计�
   （product 键 add-only 随组装工具版本化，§1.1——两档都拒，文案分档防误诊）。
 
 常量对账锚（mkapp ↔ berry-manifest 镜像同款义务——改上游常量须同步此处）：
-  APP_SLOTS=9 / 六档 intent 词表 / ID_MAX=24 同规（product.name）/ lineage
+  APP_SLOTS=10 / 六档 intent 词表 / ID_MAX=24 同规（product.name）/ lineage
   1..=16B [a-z0-9-]（SDK-2 §二，mkapp SEC_RE 同款）/ caps 闭集 console/fs/net
   （CAPS_KEYS——V15 白名单值域，两源 = berry-manifest Sec::Caps × mkapp
   [capabilities] 键集）；数值域两源 = 设计文档
@@ -149,7 +149,7 @@ DEFAULT_BASE = os.path.join(ROOT, "rootfs-manifest.toml")    # V13 平台基座�
 DEFAULT_USER_DIR = os.path.join(REPO, "user")                # 基座表 path 的相对基准
 
 # ---- 帽与词表（对账锚：user/berry-manifest 常量段 + 设计文档 §1.3/§1.4 表）----
-APP_SLOTS = 9          # berry-manifest APP_SLOTS（设计文档 §1.4 引 :120；mkapp 镜像同款）
+APP_SLOTS = 10         # berry-manifest APP_SLOTS（设计文档 §1.4 引 :120；mkapp 镜像同款）
 NAME_MAX = 24          # product.name 帽（ID_MAX 同规，§1.4）
 VENDOR_MAX = 16        # product.vendor lineage 帽（SDK-2 §二轨道）
 BOARDS = ("qemu-virt",)                    # v0 板表单值（§1.4；板表=平台仓数据文件）
@@ -1110,9 +1110,9 @@ min_power_atomicity = "p0"        # v1 只 p0 可组（词表 {p0,p1,p2} 先立�
 
 [product.apps]                    # —— 预装集：基座表 app/ 条目 ⊆ 筛选 ——
 preset = [
-  "app/SETTINGS.bap", "app/FILES.bap", "app/PHOTOS.bap", "app/CAMERA.bap",
+  "app/SETTINGS.bap", "app/FILES.bap", "app/PHOTOS.bap",
   "app/CONTACTS.bap", "app/MMS.bap", "app/BROWSER.bap", "app/APPDEMO.bap",
-  "app/APPQUIET.bap",
+  "app/APPQUIET.bap", "app/BERRYDEMO.bap", "app/UITEST.bap",
 ]
 
 [product.apps.priv_grants]        # —— 特权白名单（V15 步②：只授 preset 预装件）——
@@ -1407,7 +1407,7 @@ def selftest() -> int:
             ("preset 查重", 'preset = ["app/A.bap"]',
              'preset = ["app/A.bap", "app/A.bap"]', "条目重复"),
             ("preset 越 APP_SLOTS 帽", 'preset = ["app/A.bap"]',
-             "preset = [" + ", ".join(f'"app/X{i}.bap"' for i in range(10)) + "]",
+             "preset = [" + ", ".join(f'"app/X{i}.bap"' for i in range(11)) + "]",
              "APP_SLOTS"),
             ("branding 包内不存在", 'wallpaper = "assets/wallpaper.byi"',
              'wallpaper = "assets/missing.byi"', "包内不存在"),

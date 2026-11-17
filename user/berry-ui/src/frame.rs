@@ -1,4 +1,4 @@
-//! berry-ui 帧循环态（GUI-3——`docs/GUI-3实施设计草案.md` §3.8：验收②
+//! berry-ui 帧循环态（GUI-3——`docs/GUI-3实施设计草案-v1.0.md` §3.8：验收②
 //! 主体 + 软 vsync；ADR #53 三态停帧 RUN/SETTLE/IDLE + FPS
 //! expected/actual 双轨）。
 //!

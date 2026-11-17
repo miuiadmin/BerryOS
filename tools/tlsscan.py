@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 r"""tlsscan——rootfs TLS lint 门 + census 审计（T-1 §1，
-docs/T-1实施设计草案.md；崩因背景见 docs/法证-TLS原位方案崩因归因.md）。
+docs/T-1实施设计草案-v1.0.md；崩因背景见 docs/法证-TLS原位方案崩因归因.md）。
 
 用法：
   tlsscan.py --check <rootfs.cpio>   FAIL 门（挂 justfile build-user 的

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# BerryOS S-1 soak 长跑通道体（docs/基准与压力测试设计.md §11）——`just soak <分钟数>` 的实现。
+# BerryOS S-1 soak 长跑通道体（docs/基准与压力测试设计-v1.0.md §11）——`just soak <分钟数>` 的实现。
 #
 # 做五件事：
 #   1. 复刻 run-rootfs 全量 QEMU 环境（-fw_cfg rootfs + virtio-blk/net + echod

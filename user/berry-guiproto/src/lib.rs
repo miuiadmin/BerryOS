@@ -4,7 +4,7 @@
 //! 收官：VOTE scene 字节改携 berry_intent 六档值，`Intent` 判别值经其
 //! 镜像 sched/src/intent.rs 单源转发，禁第三份手抄）。
 //!
-//! 拓扑（docs/GUI-4实施设计草案.md §2）：**三域 = 三对独立 channel**，不是
+//! 拓扑（docs/GUI-4实施设计草案-v1.0.md §2）：**三域 = 三对独立 channel**，不是
 //! 一个 op 空间——能力即权限（客户端拿不到它域 channel 端点就结构性发不了
 //! 它域 op，微内核纪律，替代「op 层鉴权」的第二套机制）：
 //! - **present 域**（op 1..6）：应用 → gui-wmd 代理（GUI-5 换手，ADR #61：
@@ -218,10 +218,20 @@ pub const OP_INPUT_INJECT: u8 = 0x25;
 /// 窗口层：服务层（软键盘 softime 等——压 SYSTEM 之上、独立合成带）。
 pub const WM_LAYER_SERVICE: u8 = 2;
 
-/// input 域设备类（PointerEvent.device_id 高位带——v1 device_id = 0 恒
-/// 触屏；键盘/文本注入事件的 dev_kind 字节值域）：触摸屏。
+/// input 域设备类（PointerEvent.device_id 高位带——指针帧 v1 device_id
+/// = 0 恒触屏；键盘/文本注入事件的 dev_kind 字节值域；DEV_KEYBOARD 另
+/// 有 INPUT_POLL 出向覆载义，见其分注）：触摸屏。
 pub const DEV_POINTER: u8 = 0;
-/// 键盘（key 事件：code = ASCII 可打印字节或控制键）。
+/// 键盘（key 事件）。code 两域双口径（原单口径注「code = ASCII 可打印
+/// 字节或控制键」只对出向成立，本批分注澄清）：
+/// - 入向 OP_INPUT_INJECT：code = Linux input 码（gui-inputd EV_KEY
+///   feed 泵同词汇——非 BerryOS 私码；softime 镜像 KEY_BACKSPACE=14/
+///   KEY_ENTER=28，user/berry-softime/src/lib.rs）。
+/// - 出向覆载 INPUT_POLL：inputd 把键盘事件借 PointerEvent 32B 定长帧
+///   出向——device_id = DEV_KEYBOARD 时 x = 翻译后出向字节（ASCII 可
+///   打印 + 控制码 0x0A 回车/0x08 退格/0x09 Tab/0x1B Esc + Ctrl 组合码
+///   `c and 0x1F`）、phase = PHASE_DOWN、其余字段 0/合法占位；v1 只发
+///   按下（release 不上 wire）。
 pub const DEV_KEYBOARD: u8 = 1;
 /// 文本提交（IME 提交面——payload = ASCII 字节串）。
 pub const DEV_TEXT: u8 = 2;

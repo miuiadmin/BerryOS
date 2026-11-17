@@ -1,4 +1,4 @@
-//! bench1 —— B-1 EL0 用户态基准（docs/基准与压力测试设计.md §8；stdhello
+//! bench1 —— B-1 EL0 用户态基准（docs/基准与压力测试设计-v1.0.md §8；stdhello
 //! 同链：musl target + berry-libc shim + berry-sys 直调）。
 //!
 //! 四项基准（单进程自足——vmo/channel/event 经 syscall 自造，零新管道）：

@@ -1,4 +1,4 @@
-//! layout_io —— 布局读写面（GUI-8 段③ W1，docs/GUI-8实施设计草案.md
+//! layout_io —— 布局读写面（GUI-8 段③ W1，docs/GUI-8实施设计草案-v1.0.md
 //! §4 段③「布局读写」+ §3-裁决四-b fs 让位序；波3-件⑦ 起文件 I/O
 //! 半程走 appshell::conf——本模块只留 LAYOUT.JSN schema 与桌面语义）。
 //!

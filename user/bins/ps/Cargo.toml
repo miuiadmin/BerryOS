@@ -5,7 +5,7 @@ name = "ps"
 version = "0.2.0"
 edition = "2021"
 
-# C-3 段①（docs/VM里程碑设计草案.md §C-3）：进程表查询客户端——svcmgr
+# C-3 段①（docs/VM里程碑设计草案-v1.0.md §C-3）：进程表查询客户端——svcmgr
 # 拉起账本的渲染面。musl std 独立小工作区（grep/stdhello 同链），deps =
 # berry-libc（gift2_h 读 env 块 gift[2] = svcmgr 预建查询端 ps_b）+
 # berry-sys（channel/wait/clock 直调，bsh 同款）+ berry-psproto（协议）。

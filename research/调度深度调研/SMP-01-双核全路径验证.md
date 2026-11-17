@@ -2,7 +2,7 @@
 
 Type: survey
 Status: current
-Updated: 2026-11-16
+Updated: 2026-11-17
 
 > 定位:七轮审计(基线全绿/2138 测零败)后的「新鲜视角」A 面任务——不依赖旧审计结论,直接读代码、跑 `-smp 2` 双核 QEMU、找问题、修 sched 可修面。覆盖:par_enabled 门下特性生效面审计、双核 boot/ktest/LOADGEN 实证、问题清单、两件最小修复(band 跨核 lazy 执法 + parked 核 util 折窗)与 SMPLZ ktest 钉板。
 > 方法:sched/src 全 13 模块通读(sched.rs 4180/class.rs 925/band.rs 374/runqueue.rs 525/class 族余件)+ kernel/src/ktest.rs 现役断言面对照 + arch/aarch64/src/smp.rs 与 kernel/src/main.rs boot 时序;实跑 = QEMU virt cortex-a72 TCG 单核与 `-smp 2` 双核各多轮(日志 out/logs/smp01-*.log 在册,基线副本 out/kernels/smp01-baseline);门禁 docs_guard PASS + writable_globals 85 条 ok。
@@ -17,7 +17,7 @@ Updated: 2026-11-16
 |---|---|---|---|
 | F1 | band 带预算**记账已全局原子但环执法单环**:越线核只 throttle 自己的环、翻期 CAS 赢家只解自己的环;残留成员使输家核 pick 恒 None → 深 park(mask CNTV)无 tick → 永不再争夺 CAS = 结构性无限饿死,且残留者仍占环长污染 place() K=2 深度判据 | 正确性(SMP 专属) | **已修**:band.rs `lazy_enforce` + class.rs pick 扫描门(§4.1) |
 | F2 | parked 核 util EWMA 冻结(深 park 无 tick = 折叠永不发生),冻结值喂 `any_overutilized`(EAS 全域回退门)与 `eas_place` utils 快照——忙核 util>819 后全员退出 → 恒 overutil → EAS 整域死亡直到该核再跑任务(结构性可能永不) | 正确性/降级(SMP 专属) | **已修**:util.rs `util_idle_fold` + sched.rs 两 park 入口(§4.2) |
-| F3 | band tick 面环扫(`FairBand::tick` 的 throttle/unthrottle、`band_period_sweep`)不持本地 RQ 锁,与对核 `try_steal_one`(持本环 RQ 锁 unlink)存在走查撕裂窗——§A113 族 | 竞态(低概率,预存) | 未修,归 CP-05/BAND-S 锁面裁决(tick 禁取 RQ 锁的 wedge 判例在案,§3.3) |
+| F3 | band tick 面环扫(`FairBand::tick` 的 throttle/unthrottle、`band_period_sweep`)不持本地 RQ 锁,与对核 `try_steal_one`(持本环 RQ 锁 unlink)存在走查撕裂窗——§A113 族 | 竞态(低概率,预存) | **已修**(2026-11-17 F3 刀:`sched::try_rq_lock` 非阻塞窗——锁可用→扫环、不可用→跳本轮,永不阻塞故永不 wedge,§3.3) |
 | F4 | EAS 选核机会主义窗口窄:place() 只在 spawn 调用,wake/expire 恒回 home(迁移粘性)——负载形态变化后无重放 | 设计 v1 定谳 | 记录,归 EAS v2(§3.4) |
 | F5 | 被限流的 cur 垄断者(单任务独占核)跑到自然让点:pick None 不发生切换,THROTTLE 位只挡「再出选」不挡「继续跑」 | 单核同形(非 SMP 退化) | 已修(§3.5,2026-11-16 F5 刀) |
 | F6 | smoke-smp 八相无 FairBand/EAS/slack/oneshot 任何专项相;计划 CP-03(SMPBENCH)/CP-05(BAND-S)未落——07 号「SMP 专属验收相零命中」复核**成立** | 验收缺口 | 本刀补决策面钉板(SMPLZ)+双核 boot 零回归;专项相归计划线(§5) |
@@ -85,9 +85,11 @@ smoke-smp 八相全量(tools/smoke-smp.sh)本轮未能起跑:同机 QEMU 字段�
 
 深 park(mask CNTV)无 tick ⇒ `util_tick_window` 折叠永不发生(util.rs:69-92 只在 tick 面)⇒ EWMA 冻结在最后值。两个跨核读者受害:`any_overutilized`(util.rs:127,EAS 全域回退门)——核忙至 util>819 后任务全退 → 深 park → 冻结值使全域恒 overutil → `policy::placement_hint` 恒 0(policy.rs:474)且 `eas_place` 恒 None(eas_pick_place 的 overutil 门,sched.rs:833-841)——EAS 整域死亡;`eas_place` 的 utils 快照(sched.rs:854)同受冻结失真。单核形态无此面(idle_loop 单核分支 park 前无跨核读者)——SMP 专属。
 
-### 3.3 F3:band tick 面环扫与对核偷取的撕裂窗(未修,归 CP-05)
+### 3.3 F3:band tick 面环扫与对核偷取的撕裂窗(已修,2026-11-17 try 锁窗)
 
-`FairBand::tick` 的 throttle_all/unthrottle_all 与 tick 入口 `band_period_sweep` 都在**不持本地 RQ 锁**的屏蔽窗内扫本环(band.rs:245-267/277-297 的 Safety 契约只写「屏蔽窗内」);而对核 `try_steal_one` 持本环 RQ 锁 unlink(sched.rs:4054-4102,run_unlink 对被摘节点双字清 None,ringface/src/ilist.rs:193-209)——扫走查的 `.expect("环上节点必有 next")` 可能读到撕态。修法直觉是「tick 面把 band 扫收入本核 RQ 锁窗」,但 tick 取 RQ 锁有实测 wedge 判例(SVC 窗入口预持 RQ0+RQ1 跨核忙等 + tick 抢锁成环,sched.rs:3667-3675 沿革注)——**本刀不碰**,归 CP-05/BAND-S 相的锁面统一裁决(本刀的 lazy 面在 pick 调用者已持的本核 RQ 锁窗内执行,恰是安全侧)。
+`FairBand::tick` 的 throttle_all/unthrottle_all 与 tick 入口 `band_period_sweep` 都在**不持本地 RQ 锁**的屏蔽窗内扫本环(band.rs:245-267/277-297 的 Safety 契约只写「屏蔽窗内」);而对核 `try_steal_one` 持本环 RQ 锁 unlink(sched.rs:4054-4102,run_unlink 对被摘节点双字清 None,ringface/src/ilist.rs:193-209)——扫走查的 `.expect("环上节点必有 next")` 可能读到撕态。修法直觉是「tick 面把 band 扫收入本核 RQ 锁窗」,但 tick 取 RQ 锁有实测 wedge 判例(SVC 窗入口预持 RQ0+RQ1 跨核忙等 + tick 抢锁成环,sched.rs:3667-3675 沿革注)——**F1 轮不碰**,归 CP-05/BAND-S 相的锁面统一裁决(F1 轮的 lazy 面在 pick 调用者已持的本核 RQ 锁窗内执行,恰是安全侧)。
+
+**修复(2026-11-17 F3 刀,sched/ 内五文件,决策记录见 `.agents/notes/implemented/2026-11-17-SMP遗留F3收口-band环扫try锁窗.md`)**:try_lock 非阻塞形态绕开 wedge 判例——`SpinLock::try_acquire`(TTAS 同源 CAS 去自旋回廊)→ `Runqueue::try_lock_acquire` → `sched::rq_try_acquire`(lockdep 只记成功物理取)+ `try_rq_lock_of`(位感知退化与 rq_lock_of 对称)+ pub `try_rq_lock`/`try_rq_unlock`(pi_rq_lock 先例形态)。两个 tick 调用点同面收口:①tick 入口 `band_period_sweep` 整体入 try 窗,失败跳过整轮(「镜真位真」自洽,下轮追上);②`FairBand::tick` 的 unthrottle/throttle 环执法步(含 rearm_members_vd 走查)各自入 try 窗,period_check/consume 原子记账留窗外照常落账(跳环扫不跳记账——consume 首越线全局恰一次)。**永不阻塞 ⇒ 永不加入忙等环 ⇒ 永不 wedge**(失败是「迟一轮」不是「死」);跳过的兜底链 = 幂等追认(锁窗 ns 级 vs tick 边界)+ F1 lazy_enforce 的 pick 扫描补位。单核无对核持有者 try 恒成功,行为逐位零漂移(ktest THRYLD/BANDM4 的「越线 tick 须置位」断言即现役钉板;ktest 期先于 timer::init/enable_irq,无同核重入面)。
 
 ### 3.4 F4:EAS 机会主义窗口窄(记录)
 
@@ -131,7 +133,7 @@ B 面会话(OBS-01)与本刀同时在 sched/ 施工:15:23-15:24 其落 stats 钩
 
 ## 五、遗留与移交
 
-- **F3**(band tick 面环扫锁窗):归 CP-05/BAND-S——需先裁决「tick 面取本核 RQ 锁」与 wedge 判例的共存边界(或把 tick 入口 band_period_sweep 挪入既有 rq_lock 窗内并重验 LB 相)。
+- **F3**(band tick 面环扫锁窗):已于 2026-11-17 收口——`sched::try_rq_lock` 非阻塞窗(锁可用→扫环、不可用→跳本轮;永不阻塞故永不 wedge,兜底 = lazy_enforce pick 面),详见 §3.3 修复段与决策记录;CP-05/BAND-S 的锁序全局裁决若另立方案可再议,但 tick 面免锁 band 环扫已不存在。
 - **专项验收相**:CP-03 SMPBENCH(跨核唤醒延迟 p50/p99 对拍)与 CP-05 BAND-S(超卖窗上界 = 一 slice 内每核各一份 delta,进断言)未落;本刀 SMPLZ 只钉决策面。
 - **F4**:EAS v2(wake 路重放)v2 议;F5(限流 monopolist 强制让点)已于 2026-11-16 F5 刀收口(§3.5)。
 - **smoke-smp 八相全量**:本轮受同机 QEMU 字段占用未跑,待字段空闲补跑(相 1 形态已离线成立)。

@@ -1,4 +1,4 @@
-//! berry-ui 消费侧重采样最终一跳（GUI-3——`docs/GUI-3实施设计草案.md`
+//! berry-ui 消费侧重采样最终一跳（GUI-3——`docs/GUI-3实施设计草案-v1.0.md`
 //! §3.9；语义逐条对齐 gui-inputd `resample_to_vsync`（I:168）——本模块
 //! 是**消费侧镜像**，两处常量同引 berry-guiproto 单源，不长第二套）。
 //!

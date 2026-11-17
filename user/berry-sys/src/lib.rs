@@ -13,7 +13,7 @@
 //! QEMU image. Status: experimental (0.1.0) — the API moves with the
 //! kernel ABI. Repo docs are mostly zh-CN.
 //!
-//! 合约源 = `docs/系统调用ABI设计.md` §8.3（原型）+ §8.4（本镜像的规范文本）。
+//! 合约源 = `docs/系统调用ABI设计-v1.0.md` §8.3（原型）+ §8.4（本镜像的规范文本）。
 //! 调用约定：ARM64 `SVC #0`，`x0` = syscall 号，`x1..x6` ≤ 6 参，返回 `x0`
 //! （`Status`：0 = Ok，负 = 错误码）。**用户程序不直接写编号**——编号是
 //! `nr` 模块私有常量，只在本文件封 `svc` 时出现（§8.3 头注）。

@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
-"""elf2pe——静态 ELF（AArch64）→ PE32+ EFI 应用转换器（V-0a 刀 1，配对
-消费端 = QEMU AAVMF 固件 DXE 加载器；elf2flat 同纪律：确定性、无时刻输入）。
+# 2026-11-17 系统审计 S5 孪生指针随换轨落地收口：本件已更名降格 oracle（对拍取证专用），
+# 产链现役件 = tools/elf2pe/（彻底 Rust 化计划 §2 #9 产链换轨二刀）。
+"""elf2pe oracle——对拍取证专用（彻底 Rust 化轨道 b 层 #8 三刀换轨）。
+
+产链现役件 = tools/elf2pe（Rust 独立小工作区，#421 首刀件）；本件已降格：
+转换核逐字保留，selftest 照跑守语义钉板，Rust 件有疑时拿本件复算对拍（与
+elf2flat_oracle.py 降格同款纪律，#413 判例）——不进产链，不降豁免表
+（selftest_guard 零豁免契约不动，接线即纪律）。
+
+原始身份（V-0a 刀 1，配对消费端 = QEMU AAVMF 固件 DXE 加载器；elf2flat
+同纪律：确定性、无时刻输入）。
 
 为什么存在（路线修正记录，详 史 → docs/阶段沿革.md V-0a 条目）：VM 草案
 原定 `staticlib + rust-lld -flavor link /subsystem:efi_application`——
@@ -11,7 +20,7 @@ target + 仓库自带工具链——保留；链接形态改为「ELF 全链接 
 
 管线：cargo（staticlib）→ rust-lld -flavor ld 静态全链接（--emit-relocs
 保留重定位元数据 + 自带 berryboot.ld 钉单 .img 节 @ vaddr 0x1000、
---image-base 0）→ elf2pe.py 出 PE32+。
+--image-base 0）→ elf2pe（Rust 现役件）出 PE32+。
 
 布局不变量（转换器的前提，链接脚本执法）：
   - 单一 alloc 节 .img @ 0x1000（RWE 合一，W^X 拆分留 V-1+）；
@@ -22,10 +31,10 @@ target + 仓库自带工具链——保留；链接形态改为「ELF 全链接 
     PREL*）在均匀基址平移下不变——忽略；白名单外类型一律 loud FAIL
     （对本仓纪律：静默错比崩更糟）。
 
-用法：elf2pe.py <in.elf> <out.efi>
+用法：elf2pe_oracle.py <in.elf> <out.efi>
   转换后恒回读自断言（machine=ARM64 / subsystem=EFI app / entry 落
-  .img 内 / .reloc 块尺寸闭合），并打一行机器可读摘要。挂 build-boot。
-自检：elf2pe.py --selftest——内存合成最小 ELF（含 ABS64/CALL26/未知型
+  .img 内 / .reloc 块尺寸闭合），并打一行机器可读摘要。
+自检：elf2pe_oracle.py --selftest——内存合成最小 ELF（含 ABS64/CALL26/未知型
 RELA）走全链转换，字节级钉板断言 + 负样本（未知重定位型须拒）。挂
 just test-host 前置（与 mkapp --selftest 同位）。
 

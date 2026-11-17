@@ -19,6 +19,6 @@ BerryOS POSIX 信号面纯函数底座（A7-4 协同式投递）。
 零依赖、no_std core、任意 host 可跑单元测试。消费者 =
 berry-libc `signal.rs`。
 
-设计文档：`docs/事件循环A7-4信号面实施设计草案.md`（仓内 zh-CN）。
+设计文档：`docs/事件循环A7-4信号面实施设计草案-v1.0.md`（仓内 zh-CN）。
 
 License: Apache-2.0

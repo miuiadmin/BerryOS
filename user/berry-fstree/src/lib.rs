@@ -1,5 +1,5 @@
 //! berry-fstree —— fsmgr RAM overlay 目录树纯函数库（C-0 刀 2，
-//! `docs/VM里程碑设计草案.md` §C-0；`berry-fsproto`（协议/帽常量单源）/
+//! `docs/VM里程碑设计草案-v1.0.md` §C-0；`berry-fsproto`（协议/帽常量单源）/
 //! `berry-fatfs`（纯函数先例）之后的「存储结构面」纯函数 crate：v1 平面表
 //! `Vec<(名, 内容)>` 升 **NUL 分段路径树**）。
 //!

@@ -1,4 +1,4 @@
-//! netprobe —— A5 std::net guest 对拍件（`docs/事件循环A5设计草案.md` §3.2）
+//! netprobe —— A5 std::net guest 对拍件（`docs/事件循环A5设计草案-v1.0.md` §3.2）
 //!
 //! spawn gift 面（bsh `net_gifts` 三元 → env 块 gift[6] → libc `GIFT_H[4]`）
 //! 下经**未修改的 Rust std::net** 打 SLIRP 可达回显服务：

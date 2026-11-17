@@ -641,6 +641,26 @@ unsafe fn rq_acquire(idx: usize) {
     rq_of(idx).lock_acquire();
 }
 
+/// 指定核 RQ 锁物理**非阻塞**取（F3——SMP-01 §3.3）：单次 CAS，失败即
+/// 返 `false`（不自旋）。lockdep 只在成功后记——失败未持锁，不记（「只在
+/// 物理取放点调」纪律的成功面形态）。
+///
+/// # Safety
+/// 同 [`rq_acquire`]（IRQ 屏蔽；`idx` ∈ {0,1}）。
+#[inline]
+unsafe fn rq_try_acquire(idx: usize) -> bool {
+    if !rq_of(idx).try_lock_acquire() {
+        return false;
+    }
+    #[cfg(feature = "lockdep")]
+    hal::lockdep::acquire(if idx == 0 {
+        hal::lockdep::CLASS_RQ0
+    } else {
+        hal::lockdep::CLASS_RQ1
+    });
+    true
+}
+
 /// 指定核 RQ 锁物理放。
 ///
 /// # Safety
@@ -654,6 +674,69 @@ unsafe fn rq_release(idx: usize) {
         hal::lockdep::CLASS_RQ1
     });
     rq_of(idx).lock_release();
+}
+
+// ---- F3（SMP-01 §3.3，2026-11-17 收口）：RQ 锁 try 面——tick 面 band 环扫
+// 的非阻塞锁窗（永不阻塞 ⇒ 永不 wedge）----
+
+/// **非阻塞**取指定核 RQ 锁（F3——SMP-01 §3.3 收口）：tick 面 band 环扫
+/// （tick 入口 `band_period_sweep` 与 `FairBand::tick` 的 throttle_all/
+/// unthrottle_all）的锁窗形态。缺口背景：三面此前都在**不持本环 RQ 锁**
+/// 的屏蔽窗内扫环，与对核 `try_steal_one`（持本环 RQ 锁 unlink——被摘
+/// 节点 prev/next 双字清 `None`，ringface `run_unlink`）存在走查撕裂窗
+/// （§A113 族：免锁走查可读到半摘节点——`rq_next` 暂 `None`/游标已前移
+/// ，环走查断言或提前截断均撕态）。直觉修法「tick 面把 band 扫收入
+/// `rq_lock` 阻塞窗」被 wedge 判例否决：SVC 窗入口预持双 RQ 跨核忙等，
+/// tick（IRQ 上下文）自旋抢锁 = 与对核「持锁等本核」成环——实测双核对
+/// spin（RQ0/RQ1 锁地址对 0x…a68/0x…ab0，7.7K 切换即 wedge；`Fair::tick`
+/// 调用点注沿革一八五）。本 try 形去掉自旋：**锁可用 → 持有 → 扫环
+/// （安全）；不可用 → 立即让路跳过本轮**——永不等待 = 永不加入忙等环 =
+/// 永不 wedge（失败是「迟一轮」不是「死」）。
+///
+/// 跳过为何可接受：①band 执法是幂等追认制——本锁的持有窗都是 ns 级
+/// 临界段（偷取/pick 的 RQ 窗），连续跨多个 tick 边界全失败测度趋零，
+/// 下轮 tick 重扫即追上（锁窗与 tick 边界不同尺度）；②F1 lazy 执法兜底
+/// （`band.rs::lazy_enforce`）已在本核出选的 pick 扫描（`Fair::
+/// scan_filtered`——生产八调用点全在本核 RQ 锁窗内）逐节点双向对账：
+/// 限流补位/翻期清残留不依赖 tick 环扫（SMP-01 §4.1）；③单核无对核持有
+/// 者，try 恒成功——单核行为逐位零漂移（ktest THRYLD「越线 tick 须置位
+/// cur 限流位」/BANDM4 断言即此钉板）。
+///
+/// 返回 `None` = 未得锁（调用方跳过本轮）；`Some(phys)` = 已持锁，`phys`
+/// 语义与配对放锁同 [`rq_lock_of`]（`true` = 物理取·held 位已记；`false`
+/// = 位感知退化——外层窗已持，扫环同样安全）。退化支在 tick 语境结构性
+/// 不可达（RQ 窗恒 IRQ 屏蔽 ⇒ 打断者必不在窗内）——留作与 [`rq_lock_of`]
+/// 的对称防御。
+///
+/// # Safety
+/// 同 [`rq_lock_of`]（IRQ 屏蔽；`cpu` ∈ {0,1}；窗内禁切换、不可重入）。
+#[inline]
+unsafe fn try_rq_lock_of(cpu: usize) -> Option<bool> {
+    if held_test(held_rq_bit(cpu)) {
+        return Some(false); // 位已置——外层逻辑持有，物理退化（c-2c 同款）
+    }
+    if !rq_try_acquire(cpu) {
+        return None; // 对核/他窗持有——非阻塞让路（wedge 判例：tick 面禁等待）
+    }
+    held_mark(held_rq_bit(cpu), true);
+    Some(true)
+}
+
+/// 本核 RQ 锁 try 窗（[`try_rq_lock_of`] 的按核分诊便捷形——`rq_lock` 的
+/// try 对应物）。**class 面出口**：`FairBand::tick` 的环执法两步经此入窗
+/// （`pi_rq_lock` 同款安全包装形态——契约全在 doc，调用上下文 = tick
+/// 〔IRQ 屏蔽〕或 ktest 单线程窗〔timer/IRQ 未启、TPIDR=0 → 核 0 无竞争〕
+/// ）。返回值/跳过语义见 [`try_rq_lock_of`]。
+pub fn try_rq_lock() -> Option<bool> {
+    // SAFETY: 契约如上（调用语境 IRQ 屏蔽/单线程等价；本核号分诊）。
+    unsafe { try_rq_lock_of(hal::smp::cpu_id()) }
+}
+
+/// 配对 [`try_rq_lock`]（`phys=false` 退化窗不触——物理持有归外层，语义
+/// 同 [`pi_rq_unlock`]）。
+pub fn try_rq_unlock(phys: bool) {
+    // SAFETY: 同上。
+    unsafe { rq_unlock(phys) }
 }
 
 /// 初始化调度器：`current = &IDLE_TASK`。须在 `spawn` / `yield_now` 前、`mm::init`
@@ -910,8 +993,8 @@ unsafe fn enqueue_with_kick(task: &mut Task, cpu: usize) {
     //（MMIO 非阻塞、不触环——窗最小化）。
     let phys = rq_lock_of(cpu);
     // M4 集成面收口（06 号 §5 水通管道·任务①）：class 赋值面——按
-    // `intent_effective` 分派带实例（现役集 0x02/0x03 → FairBand，其余
-    // unit Fair；`class_of_task` 单源）。spawn 与唤醒（wake_one_inner）
+    // `intent_effective` 分派带实例（现役集四带 0x01–0x04 → FairBand，
+    // 其余 unit Fair；`class_of_task` 单源）。spawn 与唤醒（wake_one_inner）
     // 共用本点，动态派生零缓存（FairBand 全委托 Fair——行为零漂移）。
     let cls = class_of_task(task);
     cls.enqueue(task, rq_of(cpu));
@@ -1269,7 +1352,7 @@ pub fn thaw_by_pinned(pinned: usize) {
 ///
 /// **M4 集成面（06 号 §5「水通管道」任务①收口，2026-11-16）**：task→band
 /// 赋值在此闭合——intent 双落后 [`enqueue_with_kick`] 经 [`class_of_task`]
-/// 按带分派（现役集 0x02/0x03 → [`crate::class::FairBand`] 带实例〔表行
+/// 按带分派（现役集四带 0x01–0x04 → [`crate::class::FairBand`] 带实例〔表行
 /// quantum/权重包络〕+ boot 串口 `[band]` 行；其余档 unit Fair 零漂移）。
 /// 策略覆盖通道 = `policy::band_of`（v3 `policy_bind` 写路）仍归 v3。
 pub fn spawn_intent(entry: extern "C" fn(usize) -> !, arg: usize, name: &'static [u8],
@@ -2849,13 +2932,15 @@ unsafe fn eas_wake_pick(p: *mut Task) -> usize {
         return home; // 单核零改——恒回 home
     }
     let other = 1 - home;
-    // 触发门：home 核 util > 80%（1024 归一 → > 819）
-    if crate::util::cpu_util(home) <= 819 {
-        return home; // home 不忙——不迁（防乒乓）
-    }
-    // 容量门：对核 util < 75%（spare > 25% → util < 768）
-    if crate::util::cpu_util(other) >= 768 {
-        return home; // 对核也不闲——无处可去
+    // F4 双门单源 berry_balface::wake_migrate_gate（W3-Q87）：触发门
+    // home util > 819（80%·1024）+ 容量门对核 util < 768（spare > 25%）
+    // ——恰界/判序/防乒乓律 host 钉板在 balface；util 原子读与
+    // home_cpu 改写（物理臂）留此壳。
+    if !berry_balface::wake_migrate_gate(
+        crate::util::cpu_util(home),
+        crate::util::cpu_util(other),
+    ) {
+        return home; // 双门任一不过——不迁（防乒乓/无处可去）
     }
     // 双门都过 → 迁移 + 随迁改写 home（下次 wake 从新 home 出发）
     (*p).home_cpu = other as u8;
@@ -3771,7 +3856,15 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
     // 全员限流后无带任务可 tick/pick，翻期由本入口兜底（防带级永久饿死，
     // 见 class::band_period_sweep 注）；无武装槽 8 冷读早退，unit 单带
     // 负载零语义差。IRQ 上下文 = band 环扫的屏蔽窗契约语境（band.rs 同款）。
-    crate::class::band_period_sweep(rq());
+    // F3（SMP-01 §3.3）：环扫收入 try_rq_lock 非阻塞窗——撕裂窗收口（对核
+    // try_steal_one 持本环 RQ 锁 unlink，免锁走查可读半摘节点撕态）。
+    // 失败跳过本轮：下轮 tick 追上（幂等追认制）+ F1 lazy_enforce 在
+    // pick 扫描窗内兜底；永不阻塞 ⇒ 永不 wedge（判例见 try_rq_lock_of
+    // 注——tick 面禁自旋等锁）。单核无竞争恒成功，零漂移。
+    if let Some(phys) = try_rq_lock() {
+        crate::class::band_period_sweep(rq());
+        rq_unlock(phys);
+    }
     // 忙核 arm-to-nearest-deadline（本刀）·件二：**超时唤醒出口检查点**——
     // G3-1c 检查点族（「严格更高 eff 直切」）覆盖了 SVC 尾/UART RX/SGI 一切
     // 唤醒出口，唯超时唤醒（本处 expire 摘队）出口无检查点：唤醒者只入

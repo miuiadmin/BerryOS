@@ -85,6 +85,10 @@ GUI 验证相（`probe.on`）保留真实 app boot-probe 批；产品相无 prob
 
 第三层合并的 rootfs 因 BerryUI/Berry Room app 族升至约 43MiB。smoke-image 验证拓扑在 128MiB 下先触发 VMO ktest `NoFrames`，升 256MiB；DPGN 负序子进程改为在 GUI 服务/app 批装配前执行，避免 launcher 监督与 app 批临时句柄挤占本表预算；真实 app 批在 TCG 与并行 QEMU 下超 900s，boot 帽升 1800s。上述都是验证拓扑与排序裁决，产品镜像内存和 1080×1920@60 约束不变。
 
+### 第四层主线追平
+
+验证期间 `origin/main` 又前进到 e0d23d8（SMP try-lock、CP-09 EAS M2 四带、PI 三任务链、Rust elf2pe 产线二刀、调度/API 文档与 bcts@3）。第四层合线保留这些主件与 berry-term 源码，但 berry-term 仍是 direct libc/WM 帧 loop，未迁 Berry Room；按「Berry Room 是普通 GUI app 唯一宿主」裁决，源码入库、产品 rootfs/assemble preset 暂不入册，dock 仍归 MMS，待终端 Berry Room 化后再占产品槽。gui-inputd 保留 GUI 侧 KeyEvent→wmd 权威路由，主线 key_frame 翻译面不重复入服务；`OP_INPUT_INJECT` 仍按让先落者律取 0x25。主线 desktop 沉浸三键/BottomTabs 改动不回放，产品权威仍是 wmd 透明 SYSTEM overlay + AOSP nav glyph。
+
 ## Alternatives considered
 
 - 直接把 GUI 分支推 main：main 有 51 个独立提交，会丢 refresh/CBOX/调度线，拒绝。
@@ -94,7 +98,7 @@ GUI 验证相（`probe.on`）保留真实 app boot-probe 批；产品相无 prob
 
 ## Consequences
 
-第三层合并树通过 `just check`、`just test-host`、Curia strict、fwcfg/ABI/design ledger、product e2e all（recents/frame-cache/shell-press）与 `just smoke-image`（256MiB 验证拓扑、1800s 帽：163/163 主标记、字节对拍、RX 活性复验与刀6双 boot全过）。GUI8 vgpu Boot A 在后端真值修复后通过：十个 WM session、BerryDemo/Browser/Contacts/Files/Photos/Settings/UITEST 生命周期、WM focus/config/occlusion 矩阵、真实 CLICK/SWIPE/LAYOUTW 与 canonical 109B 读回全绿。BootProgress 现行标准升 v1.3，记录 op9 与 fbinfo 第 10 域。
+第四层合并树通过 `just check`、`just test-host`、Curia strict、fwcfg/ABI/design ledger、product e2e all（recents/frame-cache/shell-press）、GUI8 vgpu Boot A 与 `just smoke-image`（256MiB 验证拓扑、1800s 帽：163/163 主标记、字节对拍、RX 活性复验与刀6双 boot全过）。GUI8 vgpu Boot A 覆盖十个 WM session、BerryDemo/Browser/Contacts/Files/Photos/Settings/UITEST 生命周期、WM focus/config/occlusion 矩阵、真实 CLICK/SWIPE/LAYOUTW 与 canonical 109B 读回。BootProgress 现行标准升 v1.3，记录 op9 与 fbinfo 第 10 域。
 
 ## Related
 

@@ -125,7 +125,7 @@ build-user:
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path bins/fail/Cargo.toml \
         --target aarch64-unknown-linux-musl
-    # B-1（docs/基准与压力测试设计.md §8）：bench1——EL0 用户态四项微基准
+    # B-1（docs/基准与压力测试设计-v1.0.md §8）：bench1——EL0 用户态四项微基准
     # （sys_null/sys_vmo_rw4k/ipc_enqueue8/evt_signal；stdhello 同链 std 面，
     # vmo/channel/event 全 syscall 自造 = 零新管道）；bsh bench1_selftest
     # spawn + 私有通道收齐格式断言后打 `B1 ok n=4`（rootfs 相第 28 标记）。
@@ -1112,7 +1112,8 @@ test-host:
     # W1 三刀（彻底 Rust 化轨道 b 层 #8）：elf2pe Rust 件 lib 纯面测试
     # （合成 ELF 全链钉板 + §A90 r_offset 槽位律回归 + 拒面 + 真实
     # berryboot.elf 对 oracle 字节级对拍〔在位时〕——elf2flat 同位纪律；
-    # 产链换轨留二刀，Python elf2pe.py 现役不动）。
+    # 产链已换轨（elf2flat 二刀同款）：build-boot 走 Rust bin，Python 版
+    # 降格 elf2pe_oracle.py 对拍取证专用）。
     cargo test --manifest-path tools/elf2pe/Cargo.toml --target {{ host }}
     # Q1 续挖（a-3 U4 纪律同款）：pwrcls 门禁自检——smoke B4 掉电相三 boot
     # 的采样断言（A/B 档分类 + Boot C 后必 clean）与毒环注入都吃本件，此前
@@ -1155,7 +1156,11 @@ test-host:
     # 证书结构钉板 + 拒面（非正权/空 classes/非法 JSON/exit-code 契约）。
     python3 tools/starvation_check.py --selftest
 
-    python3 tools/elf2pe.py --selftest
+    # elf2pe 换轨二刀后双形态（elf2flat 同位纪律）：产链现役件 = Rust
+    # （上方 cargo test tools/elf2pe）；Python 版已降格 elf2pe_oracle.py
+    # ——selftest 照跑守语义钉板，Rust 件有疑时拿本件复算对拍，不降豁免表
+    # （selftest_guard 零豁免契约不动）。
+    python3 tools/elf2pe_oracle.py --selftest
     python3 tools/mkfat.py --selftest
     # A1-3a/3b：mkcpio --split 切分面守卫（重装恒等/恰整数倍/单卷/命名/
     # 拒面/陈卷清理）——rootfs 多卷产链（build-user --split 32）的编码
@@ -1430,14 +1435,14 @@ test-oneshot:
 size: build
     python3 tools/size.py {{ KERNEL }}
 
-# B-0 性能基准单口（docs/基准与压力测试设计.md）：QEMU 裸跑收割 BENCH 行 +
+# B-0 性能基准单口（docs/基准与压力测试设计-v1.0.md）：QEMU 裸跑收割 BENCH 行 +
 # 基线对拍（tools/bench_baseline.txt，宽松因子 3x 拦数量级劣化）。改内核后
 # 刷新基线：python3 tools/bench.py --update（diff 随源入册）。严格确定性
 # 断言（churn 泄漏金丝雀/标记到齐）已挂 just smoke 永绿红线——本口只管数值。
 bench: build
     python3 tools/bench.py
 
-# R-1 实时基准单口（docs/基准与压力测试设计.md §10）：cyclictest 式 oversleep
+# R-1 实时基准单口（docs/基准与压力测试设计-v1.0.md §10）：cyclictest 式 oversleep
 # 三档（slice/4、slice、4·slice）× 32 样本。fw_cfg 具名项 opt/berry/rt 门控
 # （缺席 = run/smoke 零扰动——公约 7：~34s 采样循环不进常规 boot；EFI 路
 # 无 fw_cfg 具名文件 = smoke-image 亦天然缺席）；裸跑等 RT ok n=96，帽 120s；
@@ -1446,7 +1451,7 @@ bench: build
 bench-rt: build
     python3 tools/bench.py --rt
 
-# B-2 -icount 确定性通道单口（docs/基准与压力测试设计.md §13）：QEMU 追加
+# B-2 -icount 确定性通道单口（docs/基准与压力测试设计-v1.0.md §13）：QEMU 追加
 # 定值 `-icount shift=1,sleep=off`——周期数变指令数代理（shift=1 虚拟时钟
 # ≈0.125 cyc/instr），与 TCG 实时基线**不可比、分文件**
 # tools/bench_baseline_icount.txt（跨机/跨 QEMU 版本亦不可比，CI 首跑自立）。
@@ -1458,7 +1463,7 @@ bench-rt: build
 bench-icount: build
     python3 tools/bench.py --icount
 
-# S-1 soak 长跑单口（docs/基准与压力测试设计.md §11）：内核常驻任务 soakmon
+# S-1 soak 长跑单口（docs/基准与压力测试设计-v1.0.md §11）：内核常驻任务 soakmon
 # 每 60s vct（本机实测 ≈60s wall——CNTVCT ≈1.0x，历史半率机型 ≈120s，规划
 # 按半率保守）打心跳 v2.1 行 `SOAK t= sw= sw0= sw1= park0= park1= pages=
 # lost= churn=`（单核面 sw1/park1 恒零自证 + churn 无载荷恒 0 不入断言），
@@ -1483,7 +1488,7 @@ bench-icount: build
 soak minutes="60": build
     {{ BASH }} tools/soak.sh {{ quote(minutes) }}
 
-# S-5d 双核满载 soak 单口（docs/SMP-S5实施设计草案.md §2 D1/D2/D4）：soak.sh
+# S-5d 双核满载 soak 单口（docs/SMP-S5实施设计草案-v1.0.md §2 D1/D2/D4）：soak.sh
 # 全量形态 + `-smp 2` + 双 fw_cfg 门控（opt/berry/soak 心跳 v2.1 九字段 +
 # opt/berry/soakload = 内核门控 EL0 churn 舰队 root 家核 + 2 写者 spread→
 # CPU1——sw1 双臂断言物理源（严格递增 ∧ Δsw1 ≥320/拍载荷活性主判〔口径 =
@@ -1580,7 +1585,7 @@ run-x86: build-x86
 smoke-x86: build-x86
     {{ BASH }} tools/smoke-x86.sh "{{ X86_KERNEL }}"
 
-# S-2b 副核参与冒烟——八相（`SMP-S2实施设计草案.md` §5.1 起源双相，现
+# S-2b 副核参与冒烟——八相（`docs/SMP-S2实施设计草案-v1.0.md` §5.1 起源双相，现
 # 八相——计数陈账 sim-S3 顺手矫正）：相 1 裸相（32 标记 + SMP 握手）+
 # 相 2 rootfs 生态相（51 标记 + EVS/SKT 对拍
 # client + PAR absent d1 副核参与活证——真并行 witness 归 S-3）。
@@ -1608,7 +1613,7 @@ smoke-image: image
 # 逐字节 = `BERRYOS-GUI8-SMOKE-V1\n`；错/缺 payload 一律 fail closed）+
 # 256M + ramfb + display fw_cfg 800x600@60 + virtio-blk + virtio-tablet +
 # QMP unix sock：
-#   Boot A：等基础 5 + boot 批 `app APPDEMO up` → `launcher: click ready`
+#   Boot A：等基础 5 + boot 批 `app APPDEMO gui deferred`（裁决 B 入册不拉起）→ 点击后 `app APPDEMO up` 恰 1 + `launcher: click ready`
 #           强制在席（缺席 FAIL，不 sleep 回退）→ QMP 单击 APPDEMO 格 →
 #           精确 CLICK ok n=1×1 / LAYOUTW ok×1 / LAYOUT ok×0；新增
 #           `app APPDEMO up`×1、APPQUIET×0；宿主 LAYOUT.JSN 恰 109 canonical
@@ -1674,7 +1679,7 @@ product-e2e:
 # 构建链四步（路线修正记录 → docs/阶段沿革.md V-0a 条目）：cargo staticlib
 # （builtin aarch64-unknown-none，免 nightly）→ rust-lld 静态全链接
 # （--emit-relocs 保留重定位 + berryboot.ld 钉单 .img @0x1000、--image-base
-# 0 ⇒ RVA==vaddr）→ elf2pe.py 转 PE32+（AArch64 EFI application；「staticlib
+# 0 ⇒ RVA==vaddr）→ elf2pe（Rust 现役件，b 层 #8 三刀换轨）转 PE32+（AArch64 EFI application；「staticlib
 # + lld COFF 直链」在 stable 实测死路，故走 ELF 全链接+转换）。产物全在
 # bootloader/berryboot/out/（gitignored）。V-3 起造盘段移交 `just image`
 #（mkimage.py MBR + FAT16 整盘——单口吸收，V-1c 8MiB FAT12 盘约定随
@@ -1699,9 +1704,19 @@ AAVMF_VARS := env_var_or_default("AAVMF_VARS", "/opt/homebrew/share/qemu/edk2-ar
 RUST_LLD := `bash tools/paths.sh rust-lld`
 
 # BerryBoot 构建链（EFI 应用——V-3 起纯 EFI 产链；造盘段已吸收进 just image）
+# elf2pe 换轨（彻底 Rust 化轨道 b 层 #8 三刀）：产链现役件 = tools/elf2pe
+# （Rust 独立小工作区，#421 首刀件）；Python 版已降格 elf2pe_oracle.py
+# （对拍取证专用，不进产链）。注意：本配方 `cd bootloader/berryboot` 后
+# 相对路径失效——elf2pe bin 在 cd 前先编（cwd=仓库根，elf2flat build-user
+# 同款纪律：ROOT_ABS 取 $(pwd)、CARGO_TARGET_DIR 显式钉防全局 target-dir
+# 覆盖漂移、显式 --target host 顶根 config 锁的 build.target）。
 build-boot:
     #!/bin/sh
     set -e
+    ELF2PE="$(pwd)/tools/elf2pe/cargo-target/{{ host }}/release/elf2pe"
+    CARGO_TARGET_DIR="$(pwd)/tools/elf2pe/cargo-target" \
+        cargo build --release --manifest-path tools/elf2pe/Cargo.toml \
+        --target {{ host }}
     cd {{ BOOT_DIR }}
     # GUI-0 修复轮：根 .cargo/config.toml 的 -fp-armv8,-neon 旗经 config 发现
     # 向上吃到这里——但那是内核 SIMD-free 合同（kernel 限定）；BerryBoot 是
@@ -1714,7 +1729,7 @@ build-boot:
         -z max-page-size=4096 -z noseparate-code \
         -T berryboot.ld -e efi_main --image-base 0 \
         -o out/berryboot.elf cargo-target/{{ BOOT_TARGET }}/release/libberryboot.a
-    python3 ../../tools/elf2pe.py out/berryboot.elf out/BERRYBOOT.EFI
+    "$ELF2PE" out/berryboot.elf out/BERRYBOOT.EFI
 
 # V-3 `just image` 单口：MBR + 单 FAT16 分区整盘镜像（吸收 build-boot 造盘
 # 段）。mkimage.py = MBR 薄层（LBA 假几何 255H/63S，protective CHS 自洽即可

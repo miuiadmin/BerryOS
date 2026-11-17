@@ -2,7 +2,7 @@
 name = "berry-ui"
 version.workspace = true
 edition = "2021"
-# GUI-3（docs/GUI-3实施设计草案.md §6 冻结契约 + ADR #52/#53）：自研
+# GUI-3（docs/GUI-3实施设计草案-v1.0.md §6 冻结契约 + ADR #52/#53）：自研
 # berry-ui 声明式框架的引擎内核——保留树 arena + 布局 + 脏区合并 +
 # 遮挡剔除渲染 + 输入手势 referee + 动画表 + 三态停帧帧循环（RUN/
 # SETTLE/IDLE）+ 双轨遥测，纯 host crate（内核零接触、smoke 零注册、

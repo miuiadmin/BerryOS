@@ -325,15 +325,16 @@ KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL o
 # 无拓扑降级门，失败即 park loud。裸 grep -qF 足够——"CLI ok"与
 # "CLK ok"位 3 I≠K 互非子串（正反两向）、"TERM ok"词头 T-E-R-M 现役
 # 唯一（FROZEN/FRZCYC 不含；markers.sh 注互指）。
-# 刀 A 计数锁数：APP ok n=9 / APPUI ok n=8 由前缀通配改锁实数（诚实计数
-# ——app 槽集唯一确定：9 = APPDEMO/SETTINGS/FILES/PHOTOS/CAMERA/CONTACTS/
-# MMS/BROWSER 八枚 [ui]（裁决 B：boot 批入册不拉起，gui deferred 记账入
-# ok）+ APPQUIET（console=false 批拉起形）；APPUI = 前述 [ui] 八枚资产面）。
+# 刀 A 计数锁数（TERMINAL 刀滚新）：APP ok n=10 / APPUI ok n=9 锁实数（诚实
+# 计数——app 槽集唯一确定：10 = APPDEMO/SETTINGS/FILES/PHOTOS/CAMERA/
+# CONTACTS/MMS/BROWSER/TERMINAL 九枚 [ui]（裁决 B：boot 批入册不拉起，
+# gui deferred 记账入 ok）+ APPQUIET（console=false 批拉起形）；APPUI =
+# 前述 [ui] 九枚资产面）。
 # **加/减应用槽随动契约**（同批改齐，漏一即 smoke FAIL 指认到行）：① 本行
 # 两计数；② tools/markers.sh ROOTFS_MARKERS 同对；③ tools/gui8-smoke.py
-# MARK_APP_N9 锚；④ tools/smoke.sh + tools/smoke-smp.sh 逐槽 `app <id> gui
-# deferred` 名单；⑤ justfile 七槽 spec 清单；⑥ 槽位数破 10 先扩
-# berry-manifest APP_SLOTS + svcmgr `APP ok n=` 单数字位编译断言带参宽度。
+# MARK_APP_N10 锚；④ tools/smoke.sh + tools/smoke-smp.sh 逐槽 `app <id> gui
+# deferred` 名单；⑤ justfile spec 清单；⑥ 槽位数破 100 再扩
+# berry-manifest APP_SLOTS + svcmgr `APP ok n=` 两位数字编译断言带参宽度。
 # PS ok n= 保持前缀（boot 批进程组合随批次语义浮动，非槽位单源）；CLI/FS/
 # GFXF/PAGE n= 前缀 = 步数单源在产侧（bsh/fserv/gfxdemo/launcher），宿主
 # 断言侧不双写计数。

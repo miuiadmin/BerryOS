@@ -223,8 +223,9 @@ def four_tuple(d: dict) -> tuple:
     """预算四元组（刀 1 前置 #8，PM-17 终审 §4）：(nr_total, nr_defined,
     nr_registered, nr_ceiling)。nr_total = v1 在册行数；nr_defined = v1+1.1
     常量层在册（abi_gen `pub const NR_` 计数面）；nr_registered = 其中
-    implemented 行数（= 已挂派发号数——在册未实现号恒 -ENOTSUP 回落不挂
-    reg）；nr_ceiling = ADR #11 号面帽。load() 执法 nr_defined ≤ 帽。"""
+    implemented 行数（v1+1.1 口径的已挂派发数——在册未实现号恒 -ENOTSUP
+    回落不挂 reg；另有 v3 提前实现号〔0x83/0x84〕字面量挂派发不计入，
+    内核 install() 实际 reg() 数 = 本值 + v3 提前实现数）；nr_ceiling = ADR #11 号面帽。load() 执法 nr_defined ≤ 帽。"""
     defined = const_rows(d)
     registered = [s for s in defined if s.get("implemented", True)]
     return (d["meta"]["nr_total"], len(defined), len(registered), d["meta"]["nr_ceiling"])
@@ -239,8 +240,6 @@ def four_tuple(d: dict) -> tuple:
 # 单源裁决；新加零 handle 号须同步进单（理由随行注记）。
 NO_GATE_SYSCALLS = {
     "handle_close",           # 表槽收口：close 不需权利（Zircon 同形）
-    "cbox_drain",             # 诊断几何面 need=0 惯例（同 process_get_exit_code；
-                             # 2026-11-16 跨根并回自 main 显示线 cbox 刀1）
     "handle_replace",         # 槽位原子换：类型门无权利门
     "object_wait_one",        # 等待不需权利（12 位 rights 表无 WAIT）
     "object_wait_many",       # 同上
@@ -263,7 +262,7 @@ NO_GATE_SYSCALLS = {
     "telemetry_open",         # 零 handle（系统级遥测读面——klog 字节环是串口
                               # 镜像非对象内容，sched_util_snapshot 同族口径；
                               # 阶段五第 16 步 v3 号翻真，add-only op 域只读）
-    "cbox_drain",             # 零 handle（黑匣子排液读面——诊断几何，快照非
+    "cbox_drain",             # 诊断几何面 need=0 惯例零 handle（同 process_get_exit_code；黑匣子排液读面——快照非
                               # 消费、记录永驻槽位轮转；process_get_exit_code
                               # need=0 同惯例；cbox 刀 1，plans/cbox/design.md）
 }

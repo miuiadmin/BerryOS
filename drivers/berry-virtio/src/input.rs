@@ -1,5 +1,5 @@
 //! virtio-input 设备类编解码（GUI-4 段①，virtio 规范 §5.8；实施依据 =
-//! docs/GUI-4实施设计草案.md §4/§6-I2）。
+//! docs/GUI-4实施设计草案-v1.0.md §4/§6-I2）。
 //!
 //! 消费者 = gui-inputd（drivers/bins/gui-inputd，v1 唯一）——eventq(q0)
 //! dequeue 的 8B 事件流经 `get_input_event` 逐个解码；config 查询区 union
@@ -88,9 +88,6 @@ pub const ABS_X: u16 = 0x00;
 /// EV_ABS code：Y 轴（向下为正）。
 pub const ABS_Y: u16 = 0x01;
 
-/// EV_KEY code：主键盘字母 A（P2 键盘设备识别与 QMP 真链锚）。
-pub const KEY_A: u16 = 0x1e;
-
 /// EV_KEY/BTN_* 分界：BTN_MISC（0x100）起是按钮空间，不是 KEY_* 键盘。
 pub const BTN_MISC: u16 = 0x100;
 
@@ -102,6 +99,99 @@ pub const BTN_RIGHT: u16 = 0x111;
 pub const BTN_MIDDLE: u16 = 0x112;
 /// EV_KEY code：触摸接触（平板形态的接触判据——QEMU virtio-tablet 发它）。
 pub const BTN_TOUCH: u16 = 0x14a;
+
+// ---- EV_KEY code：KEY_* 键盘空间（值域 = linux/input-event-codes.h 冻结
+// 值；消费面 = gui-inputd 键盘泵的 US 布局翻译表。码值与 ASCII 无关——
+// KEY_A=30 非 'a'=97，勿混（KEY_RIGHTCTRL=97 恰与 'a' 码域碰撞的钉板
+// 见 input_tests）。修正键四枚 + 主键区全排 + 两 Enter。----
+
+/// ESC。
+pub const KEY_ESC: u16 = 1;
+/// 数字行 1..9（US 布局首行左段）。
+pub const KEY_1: u16 = 2;
+pub const KEY_2: u16 = 3;
+pub const KEY_3: u16 = 4;
+pub const KEY_4: u16 = 5;
+pub const KEY_5: u16 = 6;
+pub const KEY_6: u16 = 7;
+pub const KEY_7: u16 = 8;
+pub const KEY_8: u16 = 9;
+pub const KEY_9: u16 = 10;
+/// 数字行 0（行尾）。
+pub const KEY_0: u16 = 11;
+/// `-` / Shift `_`。
+pub const KEY_MINUS: u16 = 12;
+/// `=` / Shift `+`。
+pub const KEY_EQUAL: u16 = 13;
+/// 退格（出向 0x08）。
+pub const KEY_BACKSPACE: u16 = 14;
+/// 制表（出向 0x09）。
+pub const KEY_TAB: u16 = 15;
+/// 字母行首 Q..P（QWERTY 序，10 键）。
+pub const KEY_Q: u16 = 16;
+pub const KEY_W: u16 = 17;
+pub const KEY_E: u16 = 18;
+pub const KEY_R: u16 = 19;
+pub const KEY_T: u16 = 20;
+pub const KEY_Y: u16 = 21;
+pub const KEY_U: u16 = 22;
+pub const KEY_I: u16 = 23;
+pub const KEY_O: u16 = 24;
+pub const KEY_P: u16 = 25;
+/// `[` / Shift `{`。
+pub const KEY_LEFTBRACE: u16 = 26;
+/// `]` / Shift `}`。
+pub const KEY_RIGHTBRACE: u16 = 27;
+/// 主回车（出向 0x0A）。
+pub const KEY_ENTER: u16 = 28;
+/// 左 Ctrl（修正键）。
+pub const KEY_LEFTCTRL: u16 = 29;
+/// 家排 A..L（ASDFGHJKL 序，9 键）。
+pub const KEY_A: u16 = 30;
+pub const KEY_S: u16 = 31;
+pub const KEY_D: u16 = 32;
+pub const KEY_F: u16 = 33;
+pub const KEY_G: u16 = 34;
+pub const KEY_H: u16 = 35;
+pub const KEY_J: u16 = 36;
+pub const KEY_K: u16 = 37;
+pub const KEY_L: u16 = 38;
+/// `;` / Shift `:`。
+pub const KEY_SEMICOLON: u16 = 39;
+/// `'` / Shift `"`。
+pub const KEY_APOSTROPHE: u16 = 40;
+/// 反引号 `` ` `` / Shift `~`。
+pub const KEY_GRAVE: u16 = 41;
+/// 左 Shift（修正键）。
+pub const KEY_LEFTSHIFT: u16 = 42;
+/// `\` / Shift `|`。
+pub const KEY_BACKSLASH: u16 = 43;
+/// 末行 Z..M（ZXCVBNM 序，7 键）。
+pub const KEY_Z: u16 = 44;
+pub const KEY_X: u16 = 45;
+pub const KEY_C: u16 = 46;
+pub const KEY_V: u16 = 47;
+pub const KEY_B: u16 = 48;
+pub const KEY_N: u16 = 49;
+pub const KEY_M: u16 = 50;
+/// `,` / Shift `<`。
+pub const KEY_COMMA: u16 = 51;
+/// `.` / Shift `>`。
+pub const KEY_DOT: u16 = 52;
+/// `/` / Shift `?`。
+pub const KEY_SLASH: u16 = 53;
+/// 右 Shift（修正键）。
+pub const KEY_RIGHTSHIFT: u16 = 54;
+/// 空格（出向 0x20——无上档）。Linux 表位 57，落在 RIGHTSHIFT(54)/
+/// LEFTALT(56) 之外的非连号区——**不是** 32（32 是 KEY_D 字母中段）。
+pub const KEY_SPACE: u16 = 57;
+/// 左 Alt（修正键——v1 维护态不参与翻译）。
+pub const KEY_LEFTALT: u16 = 56;
+/// 小键盘 Enter（与 KEY_ENTER 同译 0x0A）。
+pub const KEY_KPENTER: u16 = 96;
+/// 右 Ctrl（修正键；=97 与 ASCII 'a' 码域碰撞——翻译面按修正键优先，
+/// 不得译出字母，钉板见 input_tests）。
+pub const KEY_RIGHTCTRL: u16 = 97;
 
 /// EV_ABS code：多点槽序号（v1 忽略计数——多点留位）。
 pub const ABS_MT_SLOT: u16 = 0x2f;
@@ -469,5 +559,40 @@ mod input_tests {
             (ABS_MT_SLOT, ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_TRACKING_ID, REL_WHEEL),
             (0x2f, 0x35, 0x36, 0x39, 0x08)
         );
+    }
+
+    #[test]
+    fn key_consts_frozen() {
+        // KEY_* 空间冻结值对拍 linux/input-event-codes.h（BTN_* 钉板同款）。
+        // 断续码位：56（LEFTALT）与 96/97（KPENTER/RIGHTCTRL）之间的
+        // KEY_CAPSLOCK=58 等不在表——按需再冻，勿连号外推。
+        assert_eq!(
+            (KEY_ESC, KEY_0, KEY_MINUS, KEY_EQUAL, KEY_BACKSPACE, KEY_TAB),
+            (1, 11, 12, 13, 14, 15)
+        );
+        // 数字行 1..9 连号段。
+        assert_eq!((KEY_1, KEY_9), (2, 10));
+        // 字母三排连号段（Q..P / A..L / Z..M）。
+        assert_eq!((KEY_Q, KEY_P), (16, 25));
+        assert_eq!((KEY_A, KEY_L), (30, 38));
+        assert_eq!((KEY_Z, KEY_M), (44, 50));
+        assert_eq!(
+            (KEY_LEFTBRACE, KEY_RIGHTBRACE, KEY_ENTER, KEY_LEFTCTRL),
+            (26, 27, 28, 29)
+        );
+        assert_eq!(
+            (KEY_SEMICOLON, KEY_APOSTROPHE, KEY_GRAVE, KEY_LEFTSHIFT, KEY_BACKSLASH),
+            (39, 40, 41, 42, 43)
+        );
+        assert_eq!(
+            (KEY_COMMA, KEY_DOT, KEY_SLASH, KEY_RIGHTSHIFT, KEY_LEFTALT),
+            (51, 52, 53, 54, 56)
+        );
+        // 空格表位在 54/56 之外（57——非连号区，勿并入上 tuple 外推）。
+        assert_eq!(KEY_SPACE, 57);
+        assert_eq!((KEY_KPENTER, KEY_RIGHTCTRL), (96, 97));
+        // 码域碰撞钉板：KEY_RIGHTCTRL=97 恰是 ASCII 'a'——消费面（键盘泵）
+        // 按 Linux 码解释不得落 ASCII 语义。
+        assert_eq!(KEY_RIGHTCTRL as u8, b'a');
     }
 }
