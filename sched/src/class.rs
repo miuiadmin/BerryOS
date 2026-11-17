@@ -427,6 +427,12 @@ impl Fair {
         _topo: &Topo,
         my_cur: *mut Task,
     ) -> Option<&mut Task> {
+        // S5-c lazy unthrottle（04 号审计附记一收口——2026-11-17）：与
+        // trait `pick_next` 同头调用——生产八个出选点全走本函数（pick_next
+        // 仅 ktest 直调），此前 deadline 任务预算限流后生产无解冻路径。
+        // dl_on_ring 门 0 时零成本（一次 Relaxed 读 + 早退），v1 常态全员
+        // fair 门常闭；语义与 pick_next 侧逐位一致（同函数单源）。
+        unsafe { lazy_unthrottle_deadlines(rq) };
         let chosen = self.scan_filtered(rq, my_cur)?;
         // SAFETY: scan_filtered 契约（KERN_LOCK 窗内、节点在环）。
         unsafe { rq.advance_past(chosen) };
