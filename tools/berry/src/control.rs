@@ -685,7 +685,7 @@ fn dispatch(
     pub(crate) fn passwd_warn_event(err: &str) -> Value {
         json!({"v":1,"t":"action","action":"vnc.passwd_warn","error":err,"source":"control"})
     }
-    fn code_name(code: i32) -> &'static str {
+    pub(crate) fn code_name(code: i32) -> &'static str {
     match code {
         2 => "E_USAGE",
         3 => "E_NO_SESSION",
@@ -830,5 +830,68 @@ mod tests {
         assert!(v2.to_string().contains("secret-pw-canary"));
         // ^ documents the contract honestly: the event is a passthrough of
         // the QMP text, and that text carries only expire-timer state.
+    }
+
+    // decode: the CLI's view of one server line. ok=true unwraps result
+    // (missing result -> Null, not an error); ok=false preserves the
+    // server's exit code name and hint verbatim.
+    #[test]
+    fn decode_ok_result_and_missing_result() {
+        let v = decode(r#"{"v":1,"id":1,"ok":true,"result":{"expire":"never"}}"#).unwrap();
+        assert_eq!(v["expire"], "never");
+        let n = decode(r#"{"v":1,"id":1,"ok":true}"#).unwrap();
+        assert!(n.is_null(), "ok without result -> Null");
+    }
+
+    #[test]
+    fn decode_error_maps_code_names_and_hint() {
+        let e = decode(
+            r#"{"v":1,"id":1,"ok":false,"code":"E_USAGE","message":"no auth","hint":"restart with --vnc-pass"}"#,
+        )
+        .unwrap_err();
+        assert_eq!(e.code, 2, "E_USAGE -> 2");
+        assert_eq!(e.message, "no auth");
+        assert_eq!(e.hint.as_deref(), Some("restart with --vnc-pass"));
+        // Every wire code name round-trips to its stable exit code.
+        for (name, code) in [
+            ("E_USAGE", 2),
+            ("E_NO_SESSION", 3),
+            ("E_TIMEOUT", 4),
+            ("E_BUSY", 5),
+            ("E_DEVICE", 6),
+            ("E_PROTOCOL", 7),
+        ] {
+            let line = format!(r#"{{"v":1,"ok":false,"code":"{name}","message":"m"}}"#);
+            assert_eq!(decode(&line).unwrap_err().code, code, "{name}");
+        }
+        // Unknown code falls back to E_DEVICE(6); code_name() covers the
+        // mirror direction (host side), E_INTERNAL for anything else.
+        let f = decode(r#"{"v":1,"ok":false,"code":"E_WEIRD","message":"m"}"#).unwrap_err();
+        assert_eq!(f.code, 6);
+        assert_eq!(common::code_name(2), "E_USAGE");
+        assert_eq!(common::code_name(9), "E_INTERNAL");
+        assert_eq!(common::code_name(42), "E_INTERNAL");
+    }
+
+    #[test]
+    fn decode_bad_json_is_protocol_error() {
+        let e = decode("not json").unwrap_err();
+        assert_eq!(e.code, 7, "E_PROTOCOL");
+    }
+
+    // is_up: presence of either endpoint marker file (socket or port file).
+    #[test]
+    fn is_up_by_socket_or_port_file() {
+        let tmp = std::env::temp_dir().join(format!("berry-isup-{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(!is_up(&tmp));
+        std::fs::write(tmp.join("control.sock"), b"").unwrap();
+        assert!(is_up(&tmp), "control.sock 在即 up");
+        std::fs::remove_file(tmp.join("control.sock")).unwrap();
+        assert!(!is_up(&tmp));
+        std::fs::write(tmp.join("control.port"), b"1").unwrap();
+        assert!(is_up(&tmp), "control.port 在即 up");
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }

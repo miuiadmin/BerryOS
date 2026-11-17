@@ -63,7 +63,7 @@ type berry_time uint64
 #   BERRY_ERR_OUT_OF_RANGE = -34
 #   BERRY_ERR_FAULT = -14
 
-# ---- syscall 入口（§4 编号表全量在册；v1 40 号、已实现 39；
+# ---- syscall 入口（§4 编号表全量在册；v1 41 号、已实现 40；
 #      a1..a6 ↔ ARM64 SVC x1..x6 全宽占位参——参数面待 §8.3 原型层（v2 挂账）补）----
 
 # **handle / 通用对象**
@@ -217,6 +217,9 @@ event_create(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 futex_wait(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x56 futex_wake（v2·已实现）——唤醒等待者
 futex_wake(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x57 channel_recv_n（v1）——排空式批量收消息（02 号 IPC 审计机会五：唤醒粒度与收割粒度失配——wait_many 一次醒，排空型消费者〔console/netd〕原逐发 syscall 重复付 SVC 入口结构锁窗 + caller_table + get_raw 门控 + 参数 I/O 全套窗）。`channel_recv_n(ch, msgs, k_max, *n_recv)`：内部循环既有 recv 原子序，每消息语义逐条保持（intent 结算/billing/insert_ref 入表 per-message），仅入口/门控/WRITABLE 唤醒摊到 k 条（唤醒自批量收尾一次广播——`recv_n_wake_needed` 门：弹 0 条不唤醒，纯广播一次覆盖全部腾槽）；返回 0 = 成功（实收数走 `*n_recv` 出参，0 = 队空 poll 语义同形）。`msgs` = 定长槽位数组（每槽 `nbytes:u64, nhandles:u64` 头 + 载荷/handle 值区，槽距 = 头 16 + 256 载荷 + 8×4 handle 值 = 304B）；`k_max ∈ 1..=16`（0 或超帽 -EINVAL no-panic 前置）。同步往返型服务（echo/talker）无收益不强制迁移
+#   note: W3-Q97 add-only 加号（先例 0x21/0x23/0x24/0x83/0x84/0x88）：排空式批量 recv。槽距常量 `RECV_N_SLOT_STRIDE` = 304B（berry-chanface recvn 模块单源，kernel/user 两端消费——头 16B〔nbytes/nhandles 出参〕+ 载荷 256B〔CHAN_MSG_MAX〕+ handle 值 32B〔CHAN_HND_MAX×4〕）；批量帽 RECV_N_MAX = 16（2×CHAN_DEPTH——队列深两倍，一次批量窗必能排空任意满队）。判据面 = chanface recvn host 钉板（k 域/槽地址/唤醒判）。
+channel_recv_n(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **时间 / 定时器**
 # 0x61 clock_read（v1）——读单调/壁钟

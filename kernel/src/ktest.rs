@@ -1622,7 +1622,7 @@ fn test_syscall() {
     //    对象面全链；EL0「两进程对答」正向验收在 user_spawner/user_child）。
     use crate::channel::CHAN_MSG_MAX;
     use crate::handle::{RIGHT_RECV, RIGHT_SEND};
-    use crate::syscall::{NR_CHANNEL_CREATE, NR_CHANNEL_RECV, NR_CHANNEL_SEND};
+    use crate::syscall::{NR_CHANNEL_CREATE, NR_CHANNEL_RECV, NR_CHANNEL_RECV_N, NR_CHANNEL_SEND};
     static mut HBUF: [u8; 320] = [0; 320]; // send 源 / recv 目的（超限值只作参数不拷）
     static mut H_NB: u64 = 0; // *nbytes in-out（进 = 容量、出 = 实际）
     static mut H_NH: u64 = 0; // *nhandles in-out
@@ -1834,6 +1834,160 @@ fn test_syscall() {
         -22,
         "SYSCALL：随行数组重复值须 -EINVAL"
     );
+    // H-RN. W3-Q97 批量 recv（0x57 channel_recv_n，机会五）：排空语义 + 出参
+    //       槽距 + 判据负例。槽形 = 头 16B（nbytes/nhandles u64 出参）+ 256B
+    //       载荷 + 32B handle 值区 = 304B/槽（RECV_N_SLOT_STRIDE 单源
+    //       berry-chanface；本处按 ABI 冻结值 304 钉板——漂移先红）。
+    use berry_chanface::{RECV_N_MAX, RECV_N_SLOT_STRIDE};
+    static mut RNBUF: [u8; 16 * 304] = [0; 16 * 304]; // 16 槽满形窗（RECV_N_MAX 帽）
+    static mut RN_GOT: u64 = 0; // *n_recv 出参
+
+    // RN1. 判据负例：k=0 / k 超帽 / 出参槽坏址（零/未对齐）→ -EINVAL（no-panic
+    //      前置，先于门控与任何用户内存触达）。k 域合法但 handle 坏 → -EBADF。
+    // SAFETY: svc 同步异常；RN 系列静态均本函数私有。
+    unsafe { RN_GOT = 0 };
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV_N as u64, hc0 as u64, &raw mut RNBUF as u64, 0,
+             &raw mut RN_GOT as u64, 0, 0),
+        -22,
+        "SYSCALL：recv_n k=0 须 -EINVAL（收零条无语义）"
+    );
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV_N as u64, hc0 as u64, &raw mut RNBUF as u64,
+             (RECV_N_MAX + 1) as u64, &raw mut RN_GOT as u64, 0, 0),
+        -22,
+        "SYSCALL：recv_n k 超帽须 -EINVAL"
+    );
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV_N as u64, hc0 as u64, &raw mut RNBUF as u64, 4, 4, 0, 0),
+        -22,
+        "SYSCALL：recv_n 出参槽零址须 -EINVAL"
+    );
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV_N as u64, hc0 as u64, &raw mut RNBUF as u64, 4, 5, 0, 0),
+        -22,
+        "SYSCALL：recv_n 出参槽未 8 对齐须 -EINVAL"
+    );
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV_N as u64, 999, &raw mut RNBUF as u64, 4,
+             &raw mut RN_GOT as u64, 0, 0),
+        -9,
+        "SYSCALL：recv_n 坏 handle 须 -EBADF"
+    );
+    // 坏址窗预扫：msgs 指向 EL1 不认的用户址 → -EFAULT（SEC-C 全窗预扫，零拷出）。
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV_N as u64, hc0 as u64, 0x4000_0000, 4,
+             &raw mut RN_GOT as u64, 0, 0),
+        -14,
+        "SYSCALL：recv_n 窗坏址须 -EFAULT（SEC-C 预扫）"
+    );
+
+    // RN2. 排空往返：新端点对灌 5 条（载荷各带序号），k=16 帽下一次 recv_n
+    //      排空全收：*n_recv=5、每槽头 nbytes/nhandles 逐槽对、载荷逐槽比对；
+    //      再 recv_n → *n_recv=0（队空 poll 语义，返回 0 非错误）。
+    // SAFETY: 同上。
+    unsafe { OUT = 0; CHILD_OUT = 0 };
+    assert_eq!(
+        svc4(NR_CHANNEL_CREATE as u64, 0, &raw mut OUT as u64, &raw mut CHILD_OUT as u64),
+        0,
+        "SYSCALL：channel_create（RN fixture）"
+    );
+    let (hr0, hr1) = (unsafe { OUT } as u32, unsafe { CHILD_OUT } as u32);
+    for i in 0..5u64 {
+        // SAFETY: 同上（HBUF 复用为 send 源）。
+        unsafe { HBUF[..8].copy_from_slice(&(PATTERN + i).to_le_bytes()) };
+        assert_eq!(
+            svc6(NR_CHANNEL_SEND as u64, hr0 as u64, &raw const HBUF as u64, 8, 0, 0, 0),
+            0,
+            "SYSCALL：recv_n 前置 send ×5"
+        );
+    }
+    // SAFETY: 同上（RNBUF 预清全零——残留即「载荷未回写」面裸奔）。
+    unsafe { RNBUF = [0; 16 * 304]; RN_GOT = u64::MAX };
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV_N as u64, hr1 as u64, &raw mut RNBUF as u64, 16,
+             &raw mut RN_GOT as u64, 0, 0),
+        0,
+        "SYSCALL：recv_n 排空窗返回 0"
+    );
+    assert_eq!(unsafe { RN_GOT }, 5, "SYSCALL：recv_n 须回写实收 5 条");
+    for i in 0..5u64 {
+        let slot = unsafe { &RNBUF[(i as usize) * RECV_N_SLOT_STRIDE..] };
+        let nb = u64::from_le_bytes(slot[..8].try_into().unwrap());
+        let nh = u64::from_le_bytes(slot[8..16].try_into().unwrap());
+        let pay = u64::from_le_bytes(slot[16..24].try_into().unwrap());
+        assert_eq!(nb, 8, "SYSCALL：recv_n 槽{i} nbytes 须回写 8");
+        assert_eq!(nh, 0, "SYSCALL：recv_n 槽{i} nhandles 须回写 0");
+        assert_eq!(pay, PATTERN + i, "SYSCALL：recv_n 槽{i} 载荷序号须逐槽对");
+    }
+    // SAFETY: 同上。
+    unsafe { RN_GOT = u64::MAX };
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV_N as u64, hr1 as u64, &raw mut RNBUF as u64, 16,
+             &raw mut RN_GOT as u64, 0, 0),
+        0,
+        "SYSCALL：排空后 recv_n 空队返回 0（poll 语义）"
+    );
+    assert_eq!(unsafe { RN_GOT }, 0, "SYSCALL：空队 recv_n 须回写 0");
+
+    // RN3. k 截断面：灌 6 条、k=4 → 实收恰 4（k 上界先于队空断），余 2 条在队
+    //      （后续单发 recv 可收——跨 ABI 混用面）。close 随行 handle 面
+    //      （HRN-h）随消息迁移走通：VMO 令牌过通道、recv_n 槽值区落新值。
+    let hv9 = ht
+        .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE).expect("ktest：装配 VMO（可信语境）")), RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER)
+        .expect("SYSCALL：insert hv9（RN handle 面）");
+    // SAFETY: 同上。
+    unsafe { H_HND = [hv9, 0, 0, 0, 0, 0, 0, 0]; HBUF[..8].copy_from_slice(&PATTERN.to_le_bytes()) };
+    assert_eq!(
+        svc6(NR_CHANNEL_SEND as u64, hr0 as u64, &raw const HBUF as u64, 8,
+             &raw const H_HND as u64, 1, 0),
+        0,
+        "SYSCALL：recv_n 前置 send（带随行 handle）"
+    );
+    for _ in 0..5 {
+        // SAFETY: 同上。
+        unsafe { HBUF[..8].copy_from_slice(&(PATTERN + 1).to_le_bytes()) };
+        assert_eq!(
+            svc6(NR_CHANNEL_SEND as u64, hr0 as u64, &raw const HBUF as u64, 8, 0, 0, 0),
+            0,
+            "SYSCALL：recv_n 前置 send ×5（凑 6 条）"
+        );
+    }
+    // SAFETY: 同上。
+    unsafe { RNBUF = [0; 16 * 304]; RN_GOT = u64::MAX };
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV_N as u64, hr1 as u64, &raw mut RNBUF as u64, 4,
+             &raw mut RN_GOT as u64, 0, 0),
+        0,
+        "SYSCALL：recv_n k=4 截断窗返回 0"
+    );
+    assert_eq!(unsafe { RN_GOT }, 4, "SYSCALL：k=4 须实收恰 4（k 先于队空断）");
+    // SAFETY: 同上。
+    unsafe { HBUF = [0; 320]; H_NB = 8; H_NH = 8 };
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV as u64, hr1 as u64, &raw mut HBUF as u64,
+             &raw mut H_NB as u64, &raw mut H_HND as u64, &raw mut H_NH as u64, 0),
+        0,
+        "SYSCALL：截断后单发 recv 收第 5 条（跨 ABI 混用）"
+    );
+    // 随行 handle 落新值：槽 0 handle 值区（头 16 + 载荷 256 偏移处 u32）非零
+    // 且为合法新 handle（原值 hv9 已被 take）。
+    // SAFETY: 只读比对（RNBUF 槽 0 值区）。
+    let newh = unsafe {
+        u32::from_le_bytes(RNBUF[16 + 256..16 + 256 + 4].try_into().unwrap())
+    };
+    assert_ne!(newh, 0, "SYSCALL：recv_n 槽 0 handle 值区须落新值");
+    assert_ne!(newh, hv9, "SYSCALL：随行迁移须落新值非原值");
+    assert!(
+        ht.get(newh, ObjType::Vmo, RIGHT_READ).is_ok(),
+        "SYSCALL：recv_n 新值三门控可查（rights 随令牌走）"
+    );
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, newh as u64, 0, 0), 0, "SYSCALL：close RN 迁移值");
+    // 清场（RN fixture 两端 + H7 残余——hgd/hc0/hc1 互钉环泄漏，安全向；
+    // hr0/hr1 余 1 条消息在队随对象同沉）。
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hr0 as u64, 0, 0), 0, "SYSCALL：close hr0");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hr1 as u64, 0, 0), 0, "SYSCALL：close hr1");
+
     // 清场（两端 close → 互钉环泄漏，安全向）。
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hgd as u64, 0, 0), 0, "SYSCALL：close hgd");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hc0 as u64, 0, 0), 0, "SYSCALL：close hc0");
