@@ -44,8 +44,10 @@ berry-virtio = { path = "../../../drivers/berry-virtio" }
 
 # guest 面依赖（musl/linux 侧才在场——gui-inputd 同款门控）：crt0/交接
 # stdin/park（host `cargo test --lib` 只建 lib 纯面，bin 不连 berry-libc）。
+# heap-4m：波3 批B 带缓存 boot 一次性分配贴 1MiB 悬崖（紧凑档 800×160×4×4
+# =1.95MiB、big 档 1080 宽=2.64MiB，均超默认 1MiB 堆——提档同 launcher 先例）。
 [target.'cfg(target_os = "linux")'.dependencies]
-berry-libc = { path = "../../berry-libc" }
+berry-libc = { path = "../../berry-libc", features = ["heap-4m"] }
 
 [profile.release]
 opt-level = "z"

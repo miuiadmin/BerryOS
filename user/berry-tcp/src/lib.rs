@@ -212,6 +212,19 @@ impl Conn {
         }
     }
 
+    /// 暂存紧缩弃置水印的权威源（五刀②，vnet `tx_compact` 用）：环头 Data 段
+    /// 的**段首** seq——部分覆盖（straddling）ACK 保槽 + RTO 整段重发取段首
+    /// （`on_rto` 环头 Data 臂）语义下，**绝不取 `snd_una`**：部分覆盖 ACK
+    /// 已推进 snd_una 时取它会切掉仍需重发的段前缀、击重发臂（五刀 plan
+    /// 裁决 2）。环空或头为 Syn|Fin → `snd_nxt`（无数据重发引用；环空 =
+    /// floor==snd_nxt 的紧缩特例）。只读，不改状态。
+    pub fn tx_retx_floor(&self) -> u32 {
+        match self.tx_head_slot() {
+            Some(TxSlot::Data { seq, .. }) => seq,
+            _ => self.snd_nxt,
+        }
+    }
+
     /// 主动打开：SynSent + 发 SYN。ISS 由调用方给定（确定性测试需要控制；
     /// vnet 侧可取时钟/计数）。
     pub fn open(iss: u32) -> (Conn, EvOut<'static>) {

@@ -85,21 +85,45 @@ SHIM
   leg "rustc 缺席拒" "$PNO" 1 stderr "rustc 不可用" rust-lld
   leg "未知子命令 usage 拒" "$PB" 2 stderr "usage" bogus-subcommand
 
-  # source 形态：只定义函数零副作用（CLI 卫兵不触发），三函数齐且无杂音。
+  # —— mkfat 面（脚本副本入沙箱：repo 解析随 BASH_SOURCE 落 $SELF/root——
+  # 直用 $0 真仓路径会让腿触真仓 tools/mkfat 真编译，lockdep/dpgsoak 同款
+  # 副本纪律）。垫片：cargo 恒绿/恒红两形态 + 复用 fakehost rustc。
+  mkdir -p "$SELF/root/tools"
+  cp "$0" "$SELF/root/tools/paths.sh"
+  S="$SELF/root/tools/paths.sh"
+  mkdir -p "$SELF/bin_mkcargo" "$SELF/bin_mkfail"
+  cp "$SELF/bin/rustc" "$SELF/bin_mkcargo/rustc"
+  cp "$SELF/bin/rustc" "$SELF/bin_mkfail/rustc"
+  printf '#!/bin/sh\nexit 0\n' > "$SELF/bin_mkcargo/cargo"; chmod +x "$SELF/bin_mkcargo/cargo"
+  printf '#!/bin/sh\nexit 1\n' > "$SELF/bin_mkfail/cargo"; chmod +x "$SELF/bin_mkfail/cargo"
+  leg "mkfat Rust 件缺席拒（沙箱无 tools/mkfat）" \
+    "$SELF/bin_mkcargo:/usr/bin:/bin" 1 stderr "缺 tools/mkfat/Cargo.toml" mkfat
+  # 绿腿沙箱布置：tools/mkfat 工作区在席 + 预置产物件（先编后用 + 钉位断言面）。
+  mkdir -p "$SELF/root/tools/mkfat/cargo-target/fakehost/release"
+  printf '#!/bin/sh\n' > "$SELF/root/tools/mkfat/Cargo.toml"
+  printf '#!/bin/sh\n' > "$SELF/root/tools/mkfat/cargo-target/fakehost/release/mkfat"
+  chmod +x "$SELF/root/tools/mkfat/cargo-target/fakehost/release/mkfat"
+  leg "mkfat 解析（先编后用 + cargo-target/fakehost 钉位）" \
+    "$SELF/bin_mkcargo:/usr/bin:/bin" 0 stdout "cargo-target/fakehost/release/mkfat" mkfat
+  leg "mkfat 编译失败拒（cargo build 红即 loud）" \
+    "$SELF/bin_mkfail:/usr/bin:/bin" 1 stderr "mkfat 编译失败" mkfat
+  leg "mkfat rustc 缺席拒" "$PNO" 1 stderr "rustc 不可用（mkfat 解析）" mkfat
+
+  # source 形态：只定义函数零副作用（CLI 卫兵不触发），四函数齐且无杂音。
   rc=0
   ( PATH="$PB" HOME="$SELF/home" bash -c \
-    'source "$1" && printf "%s\n" "$(declare -F berryos_target_dir berryos_kernel berryos_rust_lld | wc -l | tr -d " ")"' \
+    'source "$1" && printf "%s\n" "$(declare -F berryos_target_dir berryos_kernel berryos_rust_lld berryos_mkfat | wc -l | tr -d " ")"' \
     _ "$S" ) >"$SELF/out.log" 2>&1 || rc=$?
   legs=$((legs+1)); why=""
   [ "$rc" = 0 ] || why="rc 期望 0 实得 ${rc}"
-  if [ -z "$why" ] && [ "$(cat "$SELF/out.log")" != 3 ]; then
-    why="函数计数期望 3 实得 $(cat "$SELF/out.log")"
+  if [ -z "$why" ] && [ "$(cat "$SELF/out.log")" != 4 ]; then
+    why="函数计数期望 4 实得 $(cat "$SELF/out.log")"
   fi
   if [ -n "$why" ]; then
-    fails=$((fails+1)); echo "paths.sh selftest 腿红：source 形态三函数（${why}）" >&2
+    fails=$((fails+1)); echo "paths.sh selftest 腿红：source 形态四函数（${why}）" >&2
     tail -4 "$SELF/out.log" >&2
   else
-    echo "paths.sh selftest 腿绿：source 形态三函数"
+    echo "paths.sh selftest 腿绿：source 形态四函数"
   fi
 
   echo "paths.sh --selftest: ${legs} 腿，${fails} 红"
@@ -144,6 +168,26 @@ berryos_rust_lld() {
   printf '%s\n' "$lld"
 }
 
+# mkfat Rust 件单源解析（换轨第二波，b 层 #8 刀序第二位续）：独立冒烟族
+# （smoke.sh/smoke-smp/soak/smoke-lockdep/smoke-dpgsoak）的造盘位统一走本
+# 函数——先编后用 + CARGO_TARGET_DIR 钉 tools/mkfat/cargo-target（justfile
+# run-rootfs/test-host 守卫/desktop 三产链位同款纪律）。stdout 契约 = 单行
+# bin 绝对路径；编译诊断走 stderr 不污染 stdout（下游 $( ) 捕获面）。
+berryos_mkfat() {
+  local repo host bin
+  repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || return 1
+  host="$(rustc -vV 2>/dev/null | sed -n 's/^host: //p')"
+  [[ -n "$host" ]] || { echo "paths.sh: rustc 不可用（mkfat 解析）" >&2; return 1; }
+  [[ -f "$repo/tools/mkfat/Cargo.toml" ]] \
+    || { echo "paths.sh: 缺 tools/mkfat/Cargo.toml（mkfat Rust 件缺席）" >&2; return 1; }
+  ( cd "$repo" && CARGO_TARGET_DIR="$repo/tools/mkfat/cargo-target" \
+      cargo build --release --manifest-path tools/mkfat/Cargo.toml --target "$host" ) >/dev/null \
+    || { echo "paths.sh: mkfat 编译失败（cargo build tools/mkfat）" >&2; return 1; }
+  bin="$repo/tools/mkfat/cargo-target/$host/release/mkfat"
+  [[ -x "$bin" ]] || { echo "paths.sh: mkfat 产物缺席：$bin" >&2; return 1; }
+  printf '%s\n' "$bin"
+}
+
 # 直接执行时按参数出路径；被 source 时不做任何事（只定义函数）。
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   case "${1:-}" in
@@ -151,6 +195,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     kernel-release) berryos_kernel release ;;
     target-dir)     berryos_target_dir ;;
     rust-lld)       berryos_rust_lld ;;
-    *) echo "usage: $0 {kernel|kernel-release|target-dir|rust-lld}" >&2; exit 2 ;;
+    mkfat)          berryos_mkfat ;;
+    *) echo "usage: $0 {kernel|kernel-release|target-dir|rust-lld|mkfat}" >&2; exit 2 ;;
   esac
 fi

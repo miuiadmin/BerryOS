@@ -2703,7 +2703,7 @@ extern "C" fn sys_thread_yield(_tf: &mut TrapFrame) -> i64 {
 /// 内容，gen_abi `NO_GATE_SYSCALLS` 在册豁免）。
 ///
 /// 锁类 TABLE（仅 KL）：EWMA 槽 Relaxed 原子读（统计信号无序角色，同
-/// `sched.rs::IRQ_TICKS` 先例）零共享串行面；copy_out 链走查调用方页表
+/// `sched.rs::LB_TICKS` 先例——`IRQ_TICKS` 2026-11-17 机会三退役）零共享串行面；copy_out 链走查调用方页表
 /// = §A113 读者面（同 0x61 clock_read/0x87 signal_take 升档论证）。
 extern "C" fn sys_sched_util_snapshot(tf: &mut TrapFrame) -> i64 {
     let (ptr, count) = (tf.regs[1], tf.regs[2]);

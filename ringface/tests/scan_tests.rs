@@ -130,6 +130,24 @@ fn adversarial_matrix() {
         let start = next() as usize % n;
         let a = scan_once(&ring, start, avg, &is_cur);
         let b = two_pass_ref(&ring, start, avg, &is_cur);
+        // 04 号审计机会一②（2026-11-17）chosen-in-max-band 等价律：!
+        // PURE_EEVDF 形下 chosen 必在扫描集最高带——chosen.eff ≥ 全体
+        // eligible 节点 eff（双圈合一门控形 Fair::pick_next_preempt「胜者
+        // eff 严格更高律」的数学证书钉板：门控行读胜者 eff > threshold
+        // ⟺ 旧探峰存在性，前提即 chosen-in-max-band——此处逐例执法）。
+        if !PURE_EEVDF {
+            if let Some(c) = a {
+                for j in 0..n {
+                    assert!(
+                        !berry_ringface::eligible(&ring[j], is_cur[j])
+                            || ring[c].prio_effective >= ring[j].prio_effective,
+                        "chosen-in-max-band 律破：chosen[{c}].eff {} < eligible[{j}].eff {}",
+                        ring[c].prio_effective,
+                        ring[j].prio_effective
+                    );
+                }
+            }
+        }
         cases += 1;
         if a != b {
             mismatches += 1;

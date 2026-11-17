@@ -19,7 +19,7 @@ Updated: 2026-11-16
 
 ### 1.1 计数面载体:stats.rs(新模块)
 
-- **静态账**(sched/src/stats.rs:38-52):`BAND_PICKS`/`BAND_RUNTIME`(`[AtomicU64; BAND_SLOTS]` 镜像 band.rs 表形)+ `INTENT_PICKS`(`[AtomicU64; 8]`,键 = intent_effective 编码)。跨核一份全局账(band.rs `CONSUMED` 同裁决——带级观测是系统级信号非 per-CPU 决策输入);Relaxed 纯计数(IRQ_TICKS/LB_TICKS 同口径),原子 static 免入册 writable_globals(band.rs:78-81 A12 纪律)。
+- **静态账**(sched/src/stats.rs:38-52):`BAND_PICKS`/`BAND_RUNTIME`(`[AtomicU64; BAND_SLOTS]` 镜像 band.rs 表形)+ `INTENT_PICKS`(`[AtomicU64; 8]`,键 = intent_effective 编码)。跨核一份全局账(band.rs `CONSUMED` 同裁决——带级观测是系统级信号非 per-CPU 决策输入);Relaxed 纯计数(LB_TICKS 同口径;`IRQ_TICKS` 已于 2026-11-17 机会三退役),原子 static 免入册 writable_globals(band.rs:78-81 A12 纪律)。
 - **读出口**(stats.rs:88-107):`band_picks`/`band_runtime`/`intent_picks`,lib.rs:58-60 re-export——telemetry/DUMP 消费面预留。
 - **记账点**(消费面单源,别处不重复记账):
   - pick 记账:`Fair::pick_next_filtered`(sched/src/class.rs:433-436)——**生产出选唯一路径**。任务书原文「FairBand 每次 pick 时记录」,但新鲜视角直读发现:生产 pick 是队列级扫描(`FairBand::pick_next` 是 ktest 直调委托面,生产不经它——class.rs:714-717 自注「生产 pick 是队列级 Fair::pick_next_filtered 不经本面」),挂 FairBand::pick_next 会结构性零命中。八个生产调用点(sched.rs yield:1376/exit:1567/block 重验:2616/try_preempt:2994/park 派发:3319/tick 抢占:3771/SGI:3868/park 重查:3936)全经 pick_next_filtered,故挂此单点即全覆盖。

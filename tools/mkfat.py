@@ -4,7 +4,9 @@
 
 换轨二刀后角色（b 层 #8 刀序第二位）：justfile 产链位已切 Rust 件
 （tools/mkfat——run-rootfs 造盘/test-host 双 fixture 守卫/desktop 数据盘）；
-本件保双面：①模块面现役（mkimage.py/pwrcls.py import build_volume_puts
+换轨第二波（独立冒烟族八处造盘位）续切 paths.sh berryos_mkfat 单源——
+smoke.sh ×4/smoke-smp/soak/smoke-lockdep/smoke-dpgsoak 走先编后用同款
+bin。本件保双面：①模块面现役（mkimage.py/pwrcls.py import build_volume_puts
 等——FAT 编码单源）；②CLI oracle（Rust 件有疑时复算对拍）+ fixture 重产
 责任面（--fixture/--fixture16 重产 + --selftest 语义钉板）。双件漂移由
 test-host 的 cargo test oracle 对拍腿 + --check-fixture{,16} 守卫双向咬合。

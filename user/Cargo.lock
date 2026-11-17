@@ -190,6 +190,10 @@ name = "berry-tcp"
 version = "0.2.0"
 
 [[package]]
+name = "berry-termio"
+version = "0.2.0"
+
+[[package]]
 name = "berry-tls"
 version = "0.2.0"
 

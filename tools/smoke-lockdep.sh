@@ -122,6 +122,10 @@ if [ -z "$KERNEL" ] || [ ! -f "$KERNEL" ]; then
   exit 2
 fi
 
+# mkfat Rust 件单源解析（换轨第二波）：smoke.sh 同款 source 面。自检腿沙箱
+# 只复制本件不复制 paths.sh——上面 exit 0 之后的执行面才到本行，腿不触。
+source "$SCRIPT_DIR/paths.sh"
+
 # 镜像面自证：default 面二进制 marker 串编译消除——前置直拒（陈旧产物/
 # 面错配零歧义，G-eco-b「陈旧产物静默上线」同族防线）。
 if ! strings "$KERNEL" | grep -q 'LOCKDEP selftest ok'; then
@@ -248,8 +252,14 @@ done
 [ -n "$FWCFG" ] || FWCFG="-fw_cfg name=opt/berry/rootfs,file=$ROOT/rootfs.cpio"
 
 # 盘名专属 disk.lockdep.img + LBA0 印章（smoke-smp 同款：防覆写兄弟线活盘）。
+# mkfat 换轨第二波：造盘位切 Rust 件（paths.sh berryos_mkfat 单源，smoke.sh 同款）。
 DISK="$ROOT/disk.lockdep.img"
-python3 "$SCRIPT_DIR/mkfat.py" "$DISK" || {
+MKFAT=$(berryos_mkfat) || {
+  echo "smoke-lockdep: FAIL——mkfat 解析失败" >&2
+  keep_log keep
+  exit 1
+}
+"$MKFAT" "$DISK" || {
   echo "smoke-lockdep: FAIL——mkfat 造盘失败（${DISK}）" >&2
   keep_log keep
   exit 1

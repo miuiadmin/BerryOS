@@ -5,7 +5,9 @@
 //! - `neg!`：返 -1 + 置 errno（errno 取值跟 C 族语义：路径族 ENOENT、
 //!   桩族 ENOSYS、fd 族 EBADF……）；
 //! - `ok!`：成功谎报（无竞争锁族/特权空转/信号安装）；
-//! - 少数签名敏感的（environ/posix_spawnp/getaddrinfo）手写——
+//! - 少数签名敏感的（environ 族/getenv、posix_spawnp、getaddrinfo）手写
+//!   ——processargs v1.1 起 setenv/unsetenv 入 environ 族真身（env 静态区
+//!   紧致重建，见文末）——
 //!   T-1 起 syscall/futex、sem、pthread key/生命周期族迁 `futex.rs`/
 //!   `pthread.rs` 真身；A7-1 起 mmap/munmap 匿名档真身迁 `mmap.rs`
 //!   （vmo/vmar_map 桥，docs/事件循环A7设计草案-v1.0.md §3.1）——此处只剩
@@ -301,8 +303,9 @@ ok!(
     setgid,
     setgroups,
     setpgid,
-    setenv,
-    unsetenv,
+    // processargs v1.1（2026-11-17）：setenv/unsetenv 摘出 ok! 谎报桶——
+    // 真身见文末 environ 面（env 静态区紧致重建；桩册变动 api-diff 通告
+    // 随主线）。
     sigaltstack,
     pthread_rwlock_rdlock,
     pthread_rwlock_wrlock,
@@ -745,14 +748,157 @@ pub extern "C" fn poll(fds: *mut PollFd, nfds: u64, _timeout: c_int) -> c_int {
     ready
 }
 
-// —— environ/getenv（空环境：environ = NULL 表）——
+// —— environ 面（processargs v1.1 真身）——
+// boot 第二收落静态区（io.rs 的 ENV_STR/ENV_PTR/ENV_LEN）；environ 基指针
+// boot 尾恒置位（空表 = NULL 终结数组——dormant 形态观察面与旧空桩等价：
+// vars_os 零行、getenv 恒 NULL）。写面 = 静态区紧致重建：先在栈暂存窗
+// 全量组装、成功才一步写回（失败旧表完好）；environ 基指针恒定不动——
+// 重建只换 ENV_STR 内容与 ENV_PTR 表项，std::env::vars_os 迭代器安全。
+// 帽 256B/16 项如实文档化（无堆无增长，静态纪律；满 = -1+ENOMEM POSIX
+// 形档，动态扩容挂账 9）。旧档（environ=NULL/getenv 恒 null/setenv/
+// unsetenv ok! 谎报）全退役。
 
 #[no_mangle]
 pub static mut environ: *mut *mut c_char = ptr::null_mut();
 
+/// 项命中键：项 = KEY=VALUE 形且 KEY 段字节相等（getenv/setenv/unsetenv
+/// 同一比较纪律，单源不立第二套）。
+unsafe fn env_entry_matches(e: *mut c_char, key: &[u8]) -> bool {
+    let ent = core::slice::from_raw_parts(e, crate::strmem::strlen(e));
+    ent.len() > key.len() && ent[key.len()] == b'=' && &ent[..key.len()] == key
+}
+
+/// 静态区紧致重建（唯一写纪律）：保留不命中 key 的项、（Some 时）尾追加
+/// 新 KEY=VALUE 项。栈暂存窗（nstr/offs）组装成功才写回 ENV_STR/ENV_PTR/
+/// ENV_LEN——满（16 项/256B）返 -1+ENOMEM，失败副作用零；environ 基指针
+/// 不动。
+unsafe fn env_rebuild(key: &[u8], new: Option<&[u8]>) -> c_int {
+    let mut nstr = [0u8; 256];
+    let mut offs = [0usize; 16];
+    let (mut no, mut nc) = (0usize, 0usize);
+    for i in 0..crate::io::ENV_LEN {
+        let e = crate::io::ENV_PTR[i];
+        if e.is_null() {
+            break;
+        }
+        if env_entry_matches(e, key) {
+            continue;
+        }
+        let l = crate::strmem::strlen(e);
+        if no + l + 1 > nstr.len() || nc >= offs.len() {
+            crate::set_errno(crate::ENOMEM);
+            return -1;
+        }
+        let ent = core::slice::from_raw_parts(e, l);
+        nstr[no..no + l].copy_from_slice(ent);
+        offs[nc] = no;
+        nc += 1;
+        no += l + 1;
+    }
+    if let Some(v) = new {
+        // 新项 KEY=VALUE\0（含内嵌 NUL 不可达：name/value 是 C 串）。
+        let el = key.len() + 1 + v.len() + 1;
+        if no + el > nstr.len() || nc >= offs.len() {
+            crate::set_errno(crate::ENOMEM);
+            return -1;
+        }
+        offs[nc] = no;
+        nstr[no..no + key.len()].copy_from_slice(key);
+        nstr[no + key.len()] = b'=';
+        nstr[no + key.len() + 1..no + key.len() + 1 + v.len()].copy_from_slice(v);
+        nc += 1;
+    }
+    crate::io::ENV_STR = nstr;
+    for i in 0..nc {
+        crate::io::ENV_PTR[i] = crate::io::ENV_STR.as_mut_ptr().add(offs[i]);
+    }
+    crate::io::ENV_PTR[nc] = ptr::null_mut();
+    crate::io::ENV_LEN = nc;
+    0
+}
+
+/// getenv：ENV_PTR 线性扫（键前缀 + '=' 位比对），命中返值内指针——指向
+/// ENV_STR 静态区（调用方只读，C 惯例不改写）；缺席 NULL。v1.1 前恒 null
+/// 桩退役。
 #[no_mangle]
-pub extern "C" fn getenv(_name: *const c_char) -> *mut c_char {
+pub extern "C" fn getenv(name: *const c_char) -> *mut c_char {
+    if name.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: 单线程（lib.rs ABI 口径）；ENV_* 写点在 boot/本面，同线程。
+    unsafe {
+        let key = core::slice::from_raw_parts(name, crate::strmem::strlen(name));
+        for i in 0..crate::io::ENV_LEN {
+            let e = crate::io::ENV_PTR[i];
+            if e.is_null() {
+                break;
+            }
+            if env_entry_matches(e, key) {
+                return e.add(key.len() + 1);
+            }
+        }
+    }
     ptr::null_mut()
+}
+
+/// setenv：同名项存在且 overwrite=0 → 幂等 0；否则重建（同名项全剔后尾
+/// 追加新值项——同名唯一，消费面无先后歧义）。非法名（null/空/含 '='）
+/// → -1+EINVAL（musl 同律；value null 防御同拒）。
+#[no_mangle]
+pub extern "C" fn setenv(
+    name: *const c_char,
+    value: *const c_char,
+    overwrite: c_int,
+) -> c_int {
+    if name.is_null() || value.is_null() {
+        crate::set_errno(crate::EINVAL);
+        return -1;
+    }
+    // SAFETY: 同上；name/value 是调用方 NUL 终结 C 串。
+    unsafe {
+        let klen = crate::strmem::strlen(name);
+        let key = core::slice::from_raw_parts(name, klen);
+        if klen == 0 || key.contains(&b'=') {
+            crate::set_errno(crate::EINVAL);
+            return -1;
+        }
+        let mut exists = false;
+        for i in 0..crate::io::ENV_LEN {
+            if crate::io::ENV_PTR[i].is_null() {
+                break;
+            }
+            if env_entry_matches(crate::io::ENV_PTR[i], key) {
+                exists = true;
+                break;
+            }
+        }
+        if exists && overwrite == 0 {
+            return 0;
+        }
+        let vlen = crate::strmem::strlen(value);
+        let val = core::slice::from_raw_parts(value, vlen);
+        env_rebuild(key, Some(val))
+    }
+}
+
+/// unsetenv：剔除同名项（缺席也 0——POSIX 幂等；纯剔除无追加）。非法名
+/// 同 setenv 档 EINVAL。
+#[no_mangle]
+pub extern "C" fn unsetenv(name: *const c_char) -> c_int {
+    if name.is_null() {
+        crate::set_errno(crate::EINVAL);
+        return -1;
+    }
+    // SAFETY: 同 setenv。
+    unsafe {
+        let klen = crate::strmem::strlen(name);
+        let key = core::slice::from_raw_parts(name, klen);
+        if klen == 0 || key.contains(&b'=') {
+            crate::set_errno(crate::EINVAL);
+            return -1;
+        }
+        env_rebuild(key, None)
+    }
 }
 
 // —— strerror 面 ——

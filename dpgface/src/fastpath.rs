@@ -2,10 +2,12 @@
 //!
 //! **动机**：`dpg_pager` 供给毕唤 faulter 后的 `berry_sched::try_preempt()`
 //! 直切（dpg.rs:575）是 P0-1 线1d 的 dpg 形——但其判序律（①`sched::init`
-//! 前 CURRENT null 早退护栏 → ②`has_eff_above_filtered` 只读探峰〔幻影
-//! 出选防线：环上无严格更高者根本不 pick——`pick_next` 选中即
-//! `advance_past` 消耗 head 槽位，「出选后不切走」= 幻影出选，重复性 IPC
-//! 节奏会把真实出选相位锁死在固定节点集结构性饿死，4-6 实测〕→ ③严格
+//! 前 CURRENT null 早退护栏 → ②出选门控〔幻影出选防线：环上无严格更高者
+//! 零副作用返——`pick_next` 选中即`advance_past` 消耗 head 槽位，「出选后
+//! 不切走」= 幻影出选，重复性 IPC节奏会把真实出选相位锁死在固定节点集
+//! 结构性饿死，4-6 实测；04 号审计机会一②（2026-11-17）起物理面 =
+//! `Fair::pick_next_preempt` 单圈门控形——旧 `has_eff_above_filtered`
+//! 只读探峰圈已并入出选圈退役〕→ ③严格
 //! 更高才切〔§A43 同层 FIFO 不插队〕）只活在 sched crate 的 unsafe 物理
 //! 臂里，host 测不可达。本模块把「给定当前任务纯投影 + 环快照的直切
 //! 资格」抽成纯函数钉板。
@@ -13,7 +15,7 @@
 //! 与 sched 物理臂的关系：`try_preempt` 的 RQ 锁窗/`context_switch` 舞蹈
 //! /`CURRENT` 原子读留 sched（纪律不变）——本面只钉判序；消费点
 //! `kernel/src/dpg.rs` 供给唤醒点（线1d）的资格注释锚与本面判序一致性
-//! 由测试向量冻结（sched `has_eff_above_filtered`/`pick_next_filtered`
+//! 由测试向量冻结（sched `Fair::pick_next_preempt` 门控形
 //! 的过滤谓词 = `berry_ringface::eligible` 单源，本面直引——零第二实现）。
 //!
 //! **供给临界段收口序**（同任务行）：dpg_pager 的 `supply_page` + magic
@@ -41,8 +43,10 @@ pub struct PreemptCtx<'a> {
     /// 仅注释执法〕，下行探峰解引用会直接挂死在 boot 期、难归因——null
     /// 早退把违约显形为「无直切」；正常运行期恒非 null）。
     pub cur: Option<TaskDesc>,
-    /// 本核 runqueue 环快照（host 测任意序；sched 侧由
-    /// `has_eff_above_filtered` 环走查产出同序输入）。
+    /// 本核 runqueue 环快照（host 测任意序；sched 侧消费面 =
+    /// `Fair::pick_next_preempt` 门控形单圈扫描的同一节点集——04 号审计
+    /// 机会一②（2026-11-17）双圈合一：`has_eff_above_filtered` 环走查
+    /// 退役，判序并入出选单圈）。
     pub ring: &'a [TaskDesc],
     /// 环上各节点「是当前任务」旗（与 `ring` 等长；sched 侧 = 指针等值
     /// 判——`t as *mut Task == my_cur`；环上 RUNNING 且非 cur 者被
@@ -53,8 +57,9 @@ pub struct PreemptCtx<'a> {
 /// 判序第一门：CURRENT null 早退（`sched::init` 前护栏）。
 ///
 /// 与 sched 侧 `if cur.is_null() { return false; }` 逐字对齐——**先于**
-/// 探峰（解引用 `(*cur).prio_effective` 在后：null 时探峰入参不可构造，
-/// 违约显形为无直切而非挂死）。
+/// 出选门控（解引用 `(*cur).prio_effective` 在后〔机会一②起 sched 物理面
+/// = `Fair::pick_next_preempt` 阈值自读——null 时入参不可构造，
+/// 违约显形为无直切而非挂死〕）。
 #[inline]
 pub fn cur_null_early_out(cur: Option<TaskDesc>) -> bool {
     cur.is_none()
@@ -67,8 +72,11 @@ pub fn cur_null_early_out(cur: Option<TaskDesc>) -> bool {
 /// 判序第二门：只读探峰——环上是否存在 `prio_effective` **严格高于**
 /// `cur` 的 eligible 任务。
 ///
-/// 与 sched `Runqueue::has_eff_above_filtered` 判序逐字对齐：空环恒
-/// false；`eligible` 过滤（Running-elsewhere/HELD_FROZEN/HELD_THROTTLE）
+/// 与 sched `Fair::pick_next_preempt` 门控形对齐——04 号审计机会一②
+/// （2026-11-17）双圈合一：`Runqueue::has_eff_above_filtered` 探峰退役
+/// 后，本存在性判据的 sched 侧承载即门控形胜者 eff 严格更高律（存在律
+/// 在门控形由构造性成立——门过即有严格更高者）。空环恒 false；
+/// `eligible` 过滤（Running-elsewhere/HELD_FROZEN/HELD_THROTTLE）
 /// 叠加在严格更高比较前——被过滤者不参与竞争。**不动游标不做出选**
 /// （纯只读一圈 O(n)）——不可能切走时零副作用返回，这是幻影出选防线
 /// 的「探」半边。
@@ -97,13 +105,15 @@ pub fn has_eff_above(ctx: &PreemptCtx) -> bool {
 /// 直切资格合判：三判序单源。
 ///
 /// ①`cur_none` → false（护栏早退）；②无严格更高 eligible → false
-/// （探峰防线——不 pick 不消耗 head）；③有严格更高 → true（§A43：
-/// 同层 FIFO 不插队——**严格**更高才切，等值不切）。
+/// （出选门控防线——不 pick 不消耗 head；机会一②（2026-11-17）起
+/// sched 物理面 = `Fair::pick_next_preempt` 扫尾门控形）；③有严格更高
+/// → true（§A43：同层 FIFO 不插队——**严格**更高才切，等值不切）。
 ///
 /// sched `try_preempt` 的完整判序投影（出选/切换舞蹈留物理臂）：
-/// `pick_next_filtered` 出选后在窗内再验 `next.prio_effective >
-/// cur.prio_effective`——本面以 ② 的存在性判据等价钉板（出选集 ==
-/// 探峰集：S-3b 同 eligible 门，出选者必严格更高，窗内再验恒真——
+/// `Fair::pick_next_preempt` 单圈出选 + 扫尾门控行读胜者 pre-apply
+/// eff，过门后再经调用方守卫验 `next.prio_effective >
+/// cur.prio_effective`——本面以 ② 的存在性判据等价钉板（门控集 ==
+/// 出选集：S-3b 同 eligible 门，出选者必严格更高，守卫再验恒真——
 /// 防线语义「出选后不切走不可能发生」由 ② 的不存在性短路保证）。
 #[inline]
 pub fn try_preempt_eligible(ctx: &PreemptCtx) -> bool {

@@ -1095,6 +1095,7 @@ fn run_rootfs_child(console: Handle) {
                 mmio_va: VIRTIO_MMIO_VA,
                 intent: 0,
                 force_eager: true,
+                env: &[],
             },
         ) {
             Ok(_child) => {
@@ -1158,6 +1159,7 @@ fn run_rootfs_child(console: Handle) {
                 mmio_va: VIRTIO_MMIO_VA,
                 intent: 0,
                 force_eager: true,
+                env: &[],
             },
         ) {
             Ok(_child) => {
@@ -1220,6 +1222,7 @@ fn run_rootfs_child(console: Handle) {
                 mmio_va: 0,
                 intent: 0,
                 force_eager: false, // demand 路（simbattery 同款；pager 供页）
+                env: &[],
             },
         ) {
             Ok(_child) => {
@@ -1246,6 +1249,7 @@ fn run_rootfs_child(console: Handle) {
                 mmio_va: 0,
                 intent: 0,
                 force_eager: false, // demand 路（simbattery 同款；pager 供页）
+                env: &[],
             },
         ) {
             Ok(_child) => {
@@ -1304,6 +1308,7 @@ fn run_rootfs_child(console: Handle) {
                 mmio_va: FB_VA,
                 intent: 0,
                 force_eager: true,
+                env: &[],
             },
         ) {
             Ok(_child) => {
@@ -1426,6 +1431,7 @@ fn run_rootfs_child(console: Handle) {
                     mmio_va: 0,
                     intent: 0,
                     force_eager: true,
+                    env: &[],
                 },
             ) {
                 Ok(_child) => {
@@ -1547,6 +1553,7 @@ fn run_rootfs_child(console: Handle) {
                 mmio_va: VIRTIO_MMIO_VA,
                 intent: 0,
                 force_eager: true,
+                env: &[],
             },
         ) {
             Ok(_child) => {
@@ -1617,6 +1624,7 @@ fn run_rootfs_child(console: Handle) {
                     mmio_va: 0,
                     intent: 0,
                     force_eager: false,
+                    env: &[],
                 },
             ) {
                 Ok(child) => {
@@ -1749,6 +1757,7 @@ fn run_rootfs_child(console: Handle) {
                 mmio_va: 0,
                 intent: 0,
                 force_eager: true,
+                env: &[],
             },
         ) {
             Ok(_) => {
@@ -1914,6 +1923,7 @@ fn run_rootfs_child(console: Handle) {
                 mmio_va: 0,
                 intent: 0,
                 force_eager: false,
+                env: &[],
             },
         ) {
             Ok(child) => {
@@ -1984,6 +1994,7 @@ fn run_rootfs_child(console: Handle) {
                             mmio_va: 0,
                             intent: 0,
                             force_eager: false,
+                            env: &[],
                         },
                     ) {
                         // hello 常驻（10s 周期睡眠不回收）——入账。
@@ -2055,6 +2066,7 @@ fn run_rootfs_child(console: Handle) {
                             // 注册方案「即回 eager 时代 10s 即完」）。瞬态足迹
                             // <0.5MiB 且终验后即 reap——128MiB 预算内零险。
                             force_eager: true,
+                            env: &[],
                         },
                     ) {
                         Err(()) => eco_skip(b"elf bad"),
@@ -2131,6 +2143,7 @@ fn run_rootfs_child(console: Handle) {
                                 mmio_va: 0,
                                 intent: 0,
                                 force_eager: false,
+                                env: &[],
                             },
                         ) {
                             Ok(_) => ps_reg(b"simbattery", psp::STATE_ALIVE, 0),
@@ -2171,6 +2184,7 @@ fn run_rootfs_child(console: Handle) {
                                 mmio_va: VIRTIO_MMIO_VA,
                                 intent: 0,
                                 force_eager: false,
+                                env: &[],
                             },
                         ) {
                             Ok(child) => {
@@ -2446,6 +2460,7 @@ fn run_rootfs_child(console: Handle) {
                 mmio_va: 0,
                 intent: 0,
                 force_eager: true,
+                env: &[],
             },
         )
         .is_err()
@@ -2821,6 +2836,7 @@ fn ps_selftest(console: Handle) {
             mmio_va: 0,
             intent: 0,
             force_eager: false,
+            env: &[],
         },
     ) {
         Ok(c) => c,
@@ -3090,6 +3106,7 @@ fn bc_run_sub(console: Handle, sub: &[u8], data_off: u64, data_len: u64) -> Opti
             mmio_va: 0,
             intent: 0,
             force_eager: false,
+            env: &[],
         },
     ) {
         Ok(c) => c,
@@ -4548,6 +4565,7 @@ fn dpgx_spawn_parked(data_off: u64, data_len: u64, console: Handle) -> Option<Dp
             mmio_va: 0,
             intent: 0,
             force_eager: false,
+            env: &[],
         },
     ) {
         Ok(c) => c,
@@ -4795,6 +4813,7 @@ fn x5_spawn_parked(
             mmio_va: 0,
             intent: 0,
             force_eager: false,
+            env: &[],
         },
     ) {
         Ok(c) => c,
@@ -5968,6 +5987,7 @@ fn uu_run(console: Handle, fs_a: Handle, name: &[u8], args: &[&[u8]]) -> Option<
             // eager 瞬态足迹 ~330KiB——128MiB 预算内零险（X-5 常驻豁免同款
             // 面；uu 非长命常驻，槽位/pager 键竞速反而净减）。
             force_eager: true,
+            env: &[],
         },
     ) {
         Ok(c) => c,
@@ -6406,6 +6426,7 @@ fn p3_sig_guard(console: Handle, id: &[u8], bap_off: u64, bap_len: u64, step: &m
             intent: 0,
             // 短命测试族缺省 demand（X-5 家族常径；像 ~26KB 小窗走查）。
             force_eager: false,
+            env: &[],
         },
     ) {
         Err(()) => {
@@ -6745,6 +6766,7 @@ fn app_launch(
             // 0 = 零漂（berry-exec 该值才发 setattr）。
             intent: man.intent as u8,
             force_eager: false,
+            env: &[],
         },
     ) {
         Err(()) => {
@@ -7074,6 +7096,7 @@ fn tomb_selftest(console: Handle, step: &mut [u8], mf: &mut [u8], icons: &mut [U
             mmio_va: 0,
             intent: 0,
             force_eager: false,
+            env: &[],
         },
     ) {
         Ok(c) => c,
@@ -7439,6 +7462,7 @@ fn tomb_selftest(console: Handle, step: &mut [u8], mf: &mut [u8], icons: &mut [U
             mmio_va: 0,
             intent: 0,
             force_eager: false,
+            env: &[],
         },
     ) {
         Ok(c) => c,
@@ -7655,6 +7679,7 @@ fn launcher_assemble(console: Handle, fs_gift: Handle) -> bool {
             mmio_va: 0,
             intent: 0,
             force_eager: false,
+            env: &[],
         },
     ) {
         Ok(child) => {
