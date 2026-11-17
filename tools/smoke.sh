@@ -952,7 +952,8 @@ QEMU_PID=$!
 # 带参拒 ②uptime `up <N>s` 数值域+带参拒 ③sleep 1s 时钟差分 [1s,30s]
 # TCG 宽带+拒面四连（缺失/非数字/负数/超 60s 帽）+sleep 0 域内放行
 # ④type 三分支逐字节对拍（内建档 echo/bin 档 hello——int_selftest 同款
-# 依赖/not-found 档码 1 空数据）+缺参拒+BUILTINS 单源六新内建在册
+# 依赖/not-found 档码 1 空数据）+缺参拒+BUILTINS 单源新内建在册（体验刀
+# 六名 + 完善刀 unset 七名）
 # ⑤history 两条目 `N  cmd` 环回读+空环空输出+带参拒；完善刀（2026-11-17）
 # 四步：⑥`>>` 三态 RAM 树三跑 ⑦`||` 链对拍+左结合判别形 ⑧unset 五断言
 # ⑨管道切词对拍+带参真码链；TERM 三步：⓪spawn

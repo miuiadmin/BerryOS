@@ -1572,7 +1572,7 @@ smoke-x86: build-x86
 
 # S-2b 副核参与冒烟——八相（`docs/SMP-S2实施设计草案-v1.0.md` §5.1 起源双相，现
 # 八相——计数陈账 sim-S3 顺手矫正）：相 1 裸相（32 标记 + SMP 握手）+
-# 相 2 rootfs 生态相（51 标记 + EVS/SKT 对拍
+# 相 2 rootfs 生态相（标记数随 markers.sh 单源，现 56 + EVS/SKT 对拍
 # client + PAR absent d1 副核参与活证——真并行 witness 归 S-3）。
 # 断言面：`SMP ok ncores=2` 按相各恰一次 + 标记与 smoke.sh 计数对拍机器
 # 守卫 + 金丝雀按相严格递增；时限 = 单核 ×2（双核 MTTCG 0.61x 吞吐），
@@ -1586,14 +1586,14 @@ smoke-smp: build build-user
 # V-4 img-boot 独立冒烟（M-G1 关卡；smoke-x86 同款形态——不并入主 smoke，
 # ARM64 五跑零扰动，M-G1 收官时另裁升第六跑）。零 -kernel / 零 fw_cfg：AAVMF
 # 挂 berryos.img 自举全链——EFI 十段恰一次 + 接续 src=handoff + 裸相 32 +
-# EFI 路生态 36 + kfile/init 字节对拍 + 金丝雀严格递增 + RX 注入 + 注入后
+# EFI 路生态（随 smoke-image.sh ECO 单源，现 51）+ kfile/init 字节对拍 + 金丝雀严格递增 + RX 注入 + 注入后
 # 活性复验。镜像/固件路径经参注入（单一事实源——smoke-x86 先例）。已挂 CI
 #（ci.yml 步：Ubuntu 侧经 AAVMF_CODE/AAVMF_VARS 环境变量覆盖 brew 默认路径）。
 smoke-image: image
     {{BASH}} tools/smoke-image.sh "{{IMAGE}}" "{{AAVMF_CODE}}" "{{AAVMF_VARS}}"
 
 # GUI-8 段④ EFI GUI 交互相双 boot 冒烟（独立关卡；**不并入 smoke-image**，
-# 冻结十段/生态 36 断言面零改动）。拓扑 = AAVMF + out/berryos.img + 独立
+# 冻结十段/生态（随 smoke-image.sh ECO 单源，现 51）断言面零改动）。拓扑 = AAVMF + out/berryos.img + 独立
 # mkfat FAT12 数据盘（LBA0 `BERRYOSVBLK!` + 根 `GUI8.SMK`，payload 必须
 # 逐字节 = `BERRYOS-GUI8-SMOKE-V1\n`；错/缺 payload 一律 fail closed）+
 # 256M + ramfb + display fw_cfg 800x600@60 + virtio-blk + virtio-tablet +

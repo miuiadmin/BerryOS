@@ -376,7 +376,7 @@ kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 QEMU_PID=""
 
-# ============ 相 2：rootfs 生态相（50 标记 + 对拍 client + PAR 活证） ============
+# ============ 相 2：rootfs 生态相（标记数随 markers.sh 单源，现 56 + 对拍 client + PAR 活证） ============
 
 # rootfs 卷前置检查（§5.1 随迁件②：justfile smoke-smp 已挂 build-user 依赖；
 # 手跑裸脚本时缺产物 = loud 快败，不烧 840s DEADLINE 才红）。
