@@ -25,4 +25,4 @@ icount 通道 vmo_commit1p 1683→396（−76.5%，超出研究文档 −25%+ �
 ## Related
 
 - 机会出处与证据：[01-内存管理.md](../../../research/内核深度进化/01-内存管理.md) 机会 1（Top-1）
-- 同批快赢：调度诊断退役一金丝雀与integrity-check降频10000（实施笔未随刀入库，事实承载见 commit 0ea3d11a——sched/src/sched.rs SOAK_PRINT_EVERY 100→10000 + integrity_check 消费点注；沿革[二百九十四](../../../docs/阶段沿革.md)）、[preempt-checkpoint-len门控](2026-11-17-preempt-checkpoint-len门控-SVC尾检查点免锁前置过滤.md)
+- 同批快赢：调度诊断退役一金丝雀与integrity-check降频10000（实施笔未随刀入库，事实承载见 commit 0ea3d11a——sched/src/sched.rs SOAK_PRINT_EVERY 100→10000 + integrity_check 消费点注；沿革[五百四十三](../../../docs/阶段沿革.md)〔原二百九十四，2026-11-17 让号 W2-Q97〕）、[preempt-checkpoint-len门控](2026-11-17-preempt-checkpoint-len门控-SVC尾检查点免锁前置过滤.md)
