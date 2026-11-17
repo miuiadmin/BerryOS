@@ -1,7 +1,7 @@
 # 调度器 API 参考
 
 > 版本：v1.12（2026-11-17 升版：SMP-01 F3/F4 + CP-09 EAS M2 随迁——v1.11 对拍时点 b046aeb2 后三笔改 sched/src pub fn 面：0d02a3db〔F3 锁面收口〕spin.rs `try_acquire`〔4→5〕+ sched.rs `try_rq_lock`/`try_rq_unlock`〔84→86——band tick 环扫撕裂窗非阻塞 RQ 锁，可用→扫/不可用→跳过永不 wedge〕、c1f695be〔F4 wake 重放+band 偷取〕sched.rs `steal_band_rank`〔86→87——F4 band 感知偷取排序，STEAL_RANK_COMPAT/DEPRIOR/PROTECT 三常量锚〕+ policy.rs `placement_hint_ungated`〔16→17——F4 ungated 直读出口，消费面接线在途〕、dcf359c5〔CP-09 EAS M2+四带全开〕em.rs `em_max_capacity_of_cpu`〔6→7——overutil 域修：本核相对本域容量，修域 0 硬编码〕，合计 175→181（六 fn 全 safe 非 const，const 4/unsafe 8/extern "C" 4 不变）；2026-11-17 系统审计 S2 补录五条〔steal_band_rank/try_rq_lock/try_rq_unlock/placement_hint_ungated/SpinLock::try_acquire——34cbd255b 后漏同步〕已并入本版口径，其头注滚新 180 系漏计 CP-09 `em_max_capacity_of_cpu` 同窗竞速，本版勘正 181；v1.11：2026-11-16 升版：跨根收口随迁〔c3717d95c——origin/main 显示线并回 wip/sched-1.1，2026-11-16〕——v1.10 对拍时点 85434cb6d 后四笔改 sched/src pub fn 面：e648147a〔第五轮终验 FairBand 四 API 行为差异化〕class.rs +8 fn〔8→16——`FairBand::quantum_cycles`/`period_cycles`/`arm`/`consume`/`period_check`/`throttle_all`/`unthrottle_all` + `TaskClass::grant_cycles`〕、5131ebcd〔SMP 全路径+可观测性〕band.rs +3 fn〔7→10——`any_armed`/`nearest_throttle_wake` 于 02634905 补、`lazy_enforce`〕+ stats.rs 新档 3 fn〔OBS-01 观测面，第 14 文件〕+ util.rs +1 fn〔7→8——`util_idle_fold`〕+ sched.rs +1 fn〔`current_task_name`，cbox 读面 037ea2e1〕、02634905〔F5+F6〕sched.rs +1 fn〔82→84——`throttle_yield_due`〕，合计 158→175（十七 fn 全 safe 非 const，const 4/unsafe 8/extern "C" 4 不变；对象口径 13→14 文件）；v1.10：水通管道随迁〔10297ac22，63fbca1c9 合流入 base〕——06 号 §5「水通管道」双管道首接：class.rs 新增 `class_of_task`〔class 赋值面单源——`intent_effective` 经 `class_fair_intent` 工厂查表动态派生 `TaskClass`，零缓存〕+ `FairBand::yield_slice_return`/`TaskClass::yield_slice_return`/`TaskClass::band` 三 fn〔4→8〕；sched.rs 新增 `eas_pick_place`〔纯决策面，ktest 钉板对象〕/`eas_place`〔现役面收集+决策——place() 的 SMP 消费面〕双 fn〔80→82〕，合计 152→158（六 fn 全 safe 非 const，const 4/unsafe 8/extern "C" 4 不变）；连带收口 `class_fair_intent` 条目——集成面已接（水通管道任务①），现役集口径改首批 0x02/0x03）；v1.9：2026-11-16 升版：调度深水区收官 timer slack 随迁〔988944e09〕——`intent.rs` 新增 `set_timer_slack_ns`/`timer_slack_ns`/`timer_slack_defer` 三 fn〔CP-11 §3.8 系统缺省 timer slack：boot-params 第三键存取双 fn + LATE-only 顺延判定律消费面，4→7〕，合计 149→152（三 fn 全 safe 非 const，const 4/unsafe 8/extern "C" 4 不变）；v1.8：2026-11-15 升版：A 线审计 §4 漏登收口——补登 `sched/src/oneshot.rs`（第 13 文件，`tighten_deadline` 1 fn〔c3022903b 忙核 arm-to-nearest-deadline 收紧律，lib.rs:53 已 `pub use`；v1.7 升版时该件在途未并故缺席〕），对象口径 12→13 文件、合计 148→149（sched.rs 80 逐文件口径不变——「12 文件 148」系 oneshot 缺席非虚计，非逐文件重算差）；v1.7：2026-11-15 升版：调度终窗 idle 闭合+M4 骨架〔01cd881b〕——`spawn_user_env` 新 fn〔sched.rs 79→80，boot env 旗标面 x1 递 EL0 服务〕+ `try_prepare_user`/`try_spawn_user` 签名扩 `arg1` 参 + `band_of`〔policy.rs 15→16，band 选择位读出口——v1 恒 `BAND_SEL_NONE` 纯预留〕+ `FairBand::new`/`class_fair_intent`〔class.rs 2→4，Intent M4 带实例工厂〕，合计 144→148、const 3→4；v1.6：P2-2 退出异步化〔9791a99〕新增 `set_reap_post_hook` 单 fn（sched.rs 78→79）——`reap_drain` 尾钩子槽，kernel 侧 pending ht-drain 队列的异步排水入口，合计 143→144；v1.5：PI 形 B 修复〔42a794e0〕新增 `pi_rq_lock`/`pi_rq_unlock`/`for_each_runnable`/`rq_insert_kt`/`rq_unlink_kt` 五 fn（sched.rs 73→78）+ G5 bootparams〔345739e1〕新增 `set_intent_default`/`intent_default` 双 fn（intent.rs 2→4），合计 136→143；v1.4：daa5ef7e perf(pi) 全图重推门控新增 `pi_recompute_needed`/`pi_boost_recount` 双计数闸门 fn，sched.rs 71→73、合计 134→136；v1.3：W3-Q16 HDR 形状与分位数学外迁随迁——`bucket_of`/`bucket_upper`/`Hdr`/`CpuHdr` 等 12 项转 re-export 单源 `berry_hdrface`，hdr.rs 20→8 机械壳，计数 146→134；v1.2：W3-Q13 `intent_valid` 外迁随迁 147→146）｜ 对象：`sched/` crate（`berry-sched`，14 文件）｜ 审计口径：**181 个 `pub fn`**（v1.12 勘正：2026-11-17 系统审计 S2 滚新 180 漏计 CP-09 `em_max_capacity_of_cpu`〔dcf359c5 同窗竞速〕，本版机提复算 181；含 `pub const fn` / `pub unsafe fn` / `pub unsafe extern "C" fn`，逐文件机提 + 人工核对 + sched/ 14 文件全量复核〔v1.12 重数：`grep -oE 'pub (const |unsafe )*(extern "C" )?fn'` 逐文件=10/16/7/8/7/0/1/17/7/87/5/3/5/8 合计 181；初估 132 为低估）
-> 事实源 = 源码 doc 注释首行（提取时点 2026-11-08，2026-11-11 增量对拍至 daa5ef7e，2026-11-13 增量对拍至 f44c2ba8/HEAD，2026-11-15 增量对拍至 01cd881b/HEAD，2026-11-15 v1.8 补登对拍至 4f673f206/HEAD——oneshot.rs 全量复核，2026-11-16 v1.9 增量对拍至 988944e09/HEAD——intent.rs timer slack 三 fn 全量复核，2026-11-16 v1.10 增量对拍至 85434cb6d/HEAD——水通管道六 fn + class_fair_intent 集成面收口全量复核，2026-11-16 v1.11 增量对拍至 HEAD〔b046aeb2 基线〕——跨根收口四笔〔e648147a/5131ebcd/02634905/037ea2e1〕十七 fn 全量复核，2026-11-17 v1.12 增量对拍至 HEAD〔a11977b8 基线〕——F3/F4/CP-09 三笔六 fn 全量复核）；本文是影抄不是立法——签名冲突时以 `sched/src/` 为准并回改本文。
+> 事实源 = 源码 doc 注释首行（提取时点 2026-11-08，2026-11-11 增量对拍至 daa5ef7e，2026-11-13 增量对拍至 f44c2ba8/HEAD，2026-11-15 增量对拍至 01cd881b/HEAD，2026-11-15 v1.8 补登对拍至 4f673f206/HEAD——oneshot.rs 全量复核，2026-11-16 v1.9 增量对拍至 988944e09/HEAD——intent.rs timer slack 三 fn 全量复核，2026-11-16 v1.10 增量对拍至 85434cb6d/HEAD——水通管道六 fn + class_fair_intent 集成面收口全量复核，2026-11-16 v1.11 增量对拍至 HEAD〔b046aeb2 基线〕——跨根收口四笔〔e648147a/5131ebcd/02634905/037ea2e1〕十七 fn 全量复核，2026-11-17 v1.12 增量对拍至 HEAD〔a11977b8 基线〕——F3/F4/CP-09 三笔六 fn 全量复核，**补录块四签名凭空拼形 2026-11-17 车队窗遗漏审查〔wf_c99667d9-89a〕捕获按源回改**——详见补录节勘正注）；本文是影抄不是立法——签名冲突时以 `sched/src/` 为准并回改本文。
 
 ## 使用方法
 
@@ -723,16 +723,18 @@ per-band picks/runtime + per-intent picks 计数面（OBS-01，5131ebcd——SMP
 
 ### 补录（2026-11-17 系统审计 S2——34cbd255b 后漏同步五条；v1.12 已并入统计口径，em 域修条目归 §四）
 
-### `steal_band_rank(band: usize) -> u32`
+> **签名勘正（2026-11-17 车队窗遗漏审查 wf_c99667d9-89a 捕获）**：本补录块原四条签名（`steal_band_rank`/`try_rq_lock`/`try_rq_unlock`/`placement_hint_ungated`）系按名凭空拼形——各 fn 自引入笔起源码从未长成所抄形状（`git show` 逐笔核对坐实），已按 `sched/src/` 现行签名回改；v1.12 头注「六 fn 全量复核」对补录块失实，同批勘正。两条正确者（`SpinLock::try_acquire`、§四 `em_max_capacity_of_cpu`）复核维持。
+
+### `steal_band_rank(band: u8, tgt_int: usize, tgt_util: usize) -> u8`
 > sched | F4 band 感知偷取的 band 级排序（STEAL_RANK_COMPAT/DEPRIOR/PROTECT 三常量锚）——偷取候选环排序单源。
 
-### `try_rq_lock(cpu: usize) -> bool`
+### `try_rq_lock() -> Option<bool>`
 > sched | F3 非阻塞 RQ 锁（band tick 环扫撕裂窗治理）：可用→扫 / 不可用→跳过，永不 wedge。
 
-### `try_rq_unlock(cpu: usize)`
+### `try_rq_unlock(phys: bool)`
 > sched | `try_rq_lock` 的配对解锁。
 
-### `placement_hint_ungated(cpu: usize, hint: usize) -> usize`
+### `placement_hint_ungated(task_key: u64) -> u8`
 > policy | F4 ungated 直读出口。〔审计注：写面在库、声称的消费点 eas_wake_pick 实未读 hint——读面接线不存在，现状如实；接线与否归调度 owner 裁量〕
 
 ### `SpinLock::try_acquire(&self) -> bool`

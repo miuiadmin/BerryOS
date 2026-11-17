@@ -9,7 +9,7 @@
 //! EFI_SUCCESS，ConOut 全程活——与 BerryBoot 的 EBS 后直写复杂度无涉）。
 //!
 //! 产链 = build.sh（berryboot 镜像复刻：staticlib → rust-lld 单 .img →
-//! elf2pe.py → out/BERRYDUMP.EFI）；部署 = FAT 卷 `\EFI\BOOT\BOOTAA64.EFI`
+//! tools/elf2pe → out/BERRYDUMP.EFI）；部署 = FAT 卷 `\EFI\BOOT\BOOTAA64.EFI`
 //! （可移动介质默认路径，与 BerryBoot 同形）。独立 workspace（不进
 //! berryboot members——dump 工具编译错不得耦合进 `just build-boot`/
 //! `just image` 主链；berry-efi 跨 workspace path dep 合法——纯数据 crate

@@ -855,8 +855,10 @@ pub fn topo_smp_online() {
 ///   + 2 → 改道对核（「4-burst 第 3 个直接路由」语义；len 读 =
 ///   AtomicUsize 免锁读——c-2b slice 3 Q3 收口：C20 后表锁语境合法无
 ///   逆序边，K=2 启发式容忍跨核近似值）。
-/// 只在 spawn 调（新放语义）；wake/expire 再入队回 home 不改道（防 sleeper
-/// 被唤醒方弹核）；b-2 偷取迁移时随迁改写 home。
+/// 只在 spawn 调（新放语义）；wake/expire 再入队——expire 恒回 home；wake
+/// 自 F4（2026-11-17，[`eas_wake_pick`]）起双门（触发 819/容量 768）条件
+/// 性迁核，防 sleeper 被唤醒方弹核由双门承接（F4 前恒 home 不改道）；b-2
+/// 偷取迁移时随迁改写 home。
 fn place(task: &Task) -> usize {
     if task.ttbr0 == 0 || task.pinned == 0 || !task.spread || !hal::smp::par_enabled() {
         return 0;
