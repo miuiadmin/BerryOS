@@ -120,3 +120,39 @@ pub fn route(size: usize, align: usize) -> Option<Route> {
 pub fn dealloc_route(size: usize, align: usize) -> Option<Route> {
     route(size, align)
 }
+
+/// realloc 原位返回资格（内核深度进化审计 01 号机会 4）：新旧 Layout
+/// 路由到同一 slab class 或同一 buddy 阶时，旧块物理上已足够大且对齐
+/// 覆盖——拷贝纯属浪费，`GlobalAlloc::realloc` 覆写直接原指针返回。
+///
+/// 返回 `Some(true)` = 原位合法（块自足，`realloc` 应原样返回 `ptr`）；
+/// `Some(false)` = 必须搬移（新旧块不同 class/阶，落默认「新分配＋拷贝
+/// ＋释放」路径）；`None` = 新布局零大小（调用方不应到达的防御面，
+/// `realloc` 应退化为 `dealloc`）。
+///
+/// 判据单源自 [`route`]：slab 臂比较 `class`（slots 由 class 决定，无
+/// 需另比）；Pages 臂比较 `order`（`npages` 可不同——`2^order` 窗内
+/// 尾页闲置是既有分配语义，扩容未越阶即自足）。
+///
+/// 合同依据：`alloc::alloc::GlobalAlloc::realloc` 文档语义——新块
+/// 「fits in the same block」时原位返回是 allocator 合同内合法优化；
+/// `new_align` 抬 class 的情形由 `effective_size = max(size, align)`
+/// 天然覆盖（align 落入 class 判据）。
+pub fn realloc_inplace(
+    old_size: usize,
+    old_align: usize,
+    new_size: usize,
+    new_align: usize,
+) -> Option<bool> {
+    match (route(old_size, old_align), route(new_size, new_align)) {
+        (Some(Route::Slab { class: oc, .. }), Some(Route::Slab { class: nc, .. })) => Some(oc == nc),
+        (Some(Route::Pages { order: oo, .. }), Some(Route::Pages { order: no, .. })) => {
+            Some(oo == no)
+        }
+        // 零大小防御面（新旧任一 size == 0 → route None——Layout 非零
+        // 不变量外的防御，调用方不应到达）：None 交调用方落防御路径。
+        (None, _) | (_, None) => None,
+        // 跨臂（slab↔pages）必搬移：块物理形态不同（页池 vs slab 槽）。
+        _ => Some(false),
+    }
+}

@@ -853,6 +853,14 @@ test-host:
     # gop 四非零门/fmt≤2 钉板，host 12 测；判定律单源，kernel handoff.rs
     # 判定段换消费，raw 解引用留壳）。
     cargo test -p berry-hofface --target {{host}}
+    # W3-Q89：berry-heapface（slab 堆路由算术纯面 + realloc 原位资格
+    # ——内核深度进化审计 01 号机会 4 落地：同 slab class/同 buddy 阶
+    # 原指针直返〔Vec push 增长 24B→32B/600B→1024B 同 class 热面省
+    # 整块搬运〕，跨 class/跨阶/跨臂/slab↔pages 搬移/零大小防御 None，
+    # host 12 测〔8 旧 + 4 新：同 class 原位/pages 阶窗/防御与 align/
+    # 全域一致性对拍〕；realloc_inplace 单源，kernel heap.rs realloc
+    # 覆写消费〔Q39 遗留 test-host 接线随刀补〕）。
+    cargo test -p berry-heapface --target {{host}}
     # W3-Q84：berry-dmface（fw_cfg display 模式请求解析纯面——五门判定
     # 链：size 域 (0,32]/UTF-8/trim NUL+ASCII 空白/@ 后缀截断/WxH u32
     # 十进制域，host 6 测；parse_display_mode 单源，kernel main.rs

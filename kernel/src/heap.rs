@@ -28,7 +28,7 @@ use alloc::alloc::{GlobalAlloc, Layout};
 use alloc::boxed::Box;
 use berry_hal_aarch64::{uart_put_dec, uart_put_hex64, uart_puts};
 use berry_heapface::{
-    class_index, dealloc_route, route, Route, PAGE_SIZE, SLAB_CLASSES,
+    class_index, dealloc_route, realloc_inplace, route, Route, PAGE_SIZE, SLAB_CLASSES,
 };
 use berry_mm::va::{phys_to_virt, virt_to_phys, PAGE_SHIFT};
 use core::cell::UnsafeCell;
@@ -107,6 +107,46 @@ unsafe impl GlobalAlloc for SlabHeap {
             }
             // 零大小 dealloc：无账可还（Layout 非零不变量下不到达；loud 不吞）。
             None => uart_puts(b"heap: dealloc zero-size layout\n"),
+        }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // 原位快路径（内核深度进化审计 01 号机会 4）：新旧布局路由到同一
+        // slab class / 同一 buddy 阶时块自足，原指针直返——省「新分配＋
+        // memcpy＋释放」整链（Rust 默认 realloc 走该链）。Vec push 增长
+        // （24B→32B/600B→1024B 同 class）是全系统热面；判定律单源
+        // berry_heapface::realloc_inplace（host 钉板），本臂只做物理分派。
+        // SAFETY: ptr 必须来自本分配器先前的 alloc/realloc（GlobalAlloc
+        // 合同）；判定只读 layout 数值，不触 *ptr。接口无 new_align——
+        // 新块沿用旧块对齐（alloc crate 合同），判据同源无第二实现。
+        match realloc_inplace(layout.size(), layout.align(), new_size, layout.align()) {
+            // 同 class/阶：块自足（容量 ≥ new_size 且对齐覆盖），零拷贝直返。
+            Some(true) => ptr,
+            // 需搬移或防御面（new_size == 0）：落「新分配＋拷贝＋释放」
+            // 默认链——与 std 默认 realloc 语义一致。
+            _ => {
+                // Layout 构造失败（new_size 溢出 isize）按 OOM 返 null 不
+                // panic（3b3 H2 同纪律；调用方合同下不到达）。
+                let new_layout = match Layout::from_size_align(new_size, layout.align()) {
+                    Ok(nl) => nl,
+                    Err(_) => return core::ptr::null_mut(),
+                };
+                let new_ptr = unsafe { self.alloc(new_layout) };
+                if new_ptr.is_null() {
+                    return core::ptr::null_mut();
+                }
+                // SAFETY: 两块均来自本分配器且不同块（非重叠）；收缩取
+                // min 截断、增长拷旧块全长——realloc 合同。
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        ptr,
+                        new_ptr,
+                        core::cmp::min(layout.size(), new_size),
+                    );
+                    self.dealloc(ptr, layout);
+                }
+                new_ptr
+            }
         }
     }
 }
