@@ -5349,7 +5349,8 @@ const S5C_PROBE_NAME: &str = "opt/berry/s5cprobe";
 /// 探针不动 set_slice_hz）。
 const S5C_PERIOD_MS: u64 = 400;
 /// 每期预算（CBS 形：budget ≪ period）。口径注记：解冻后的再分派走
-/// sched.rs 八授片点（`slice_left = grant_cycles()`）整片覆盖——dl 预算面
+/// sched.rs 八授片点（Band 可达——另 idle 臂 Unit 授片不出带）
+/// （`slice_left = grant_cycles()`）整片覆盖——dl 预算面
 /// 真生效域只有改档后首片（首 tick 即燃尽入限流），此后每期实跑 ≈ 一个
 /// tick 片（100ms @ 10Hz），占空比 ≈ slice/period ≈ 25% 而非本值的 0.5%；
 /// stall 判读（隙 > period/2）不受影响。这是现状调度器的授片/预算交互

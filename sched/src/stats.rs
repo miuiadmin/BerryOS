@@ -21,8 +21,10 @@
 //!   park 派发族全经此；`SchedClass::pick_next` 是 ktest 直调面不经此，
 //!   生产不可达——记「调度器出选决策」而非「上下文切换」，picked==prev
 //!   的续选也计〔出选决策确已发生〕）。
-//! - runtime：`class.rs::FairBand::tick`——delta 口径 = `peek_tick_delta`
-//!   （与 `Fair::tick` 记账同一基准的只读孪生，微秒以下差）。unit Fair
+//! - runtime：`class.rs::FairBand::tick`——delta 口径 = `peek_tick_delta_at`
+//!   （与 `Fair::tick` 记账同一基准的只读孪生；04 号审计机会四②
+//!   （2026-11-17）起 now 自 tick 入口单读线程化下发——与 `Fair::tick`
+//!   正规读的差 = 两次 cntvct 读之间的指令窗，微秒以下）。unit Fair
 //!   路径零触碰（unit 任务零漂移纪律）。
 //!
 //! 【推】runtime 账面粒度 = tick 采样（片边界 + oneshot 提前醒），非全量
