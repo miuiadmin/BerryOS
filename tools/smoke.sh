@@ -574,7 +574,10 @@ done
 # 永不写——A-6 起卷面有 FATW/RW.TXT 落盘写，保留区与卷面仍零交集）。
 # P6 A-6：-drive 全线 cache.writeback=off——QEMU 由 SIGTERM 终止，writeback
 # 模式可能不刷页缓存；本相盘随后重造无持久化需求，但与 RX/持久化相统一。
-python3 tools/mkfat.py disk.img || fail "mkfat 造盘失败"
+# mkfat 换轨第二波：造盘位切 Rust 件（paths.sh berryos_mkfat 单源——先编后
+# 用 + cargo-target 钉位；Python mkfat.py 保模块面/oracle，见 justfile 注）。
+MKFAT=$(berryos_mkfat) || fail "mkfat 解析失败"
+"$MKFAT" disk.img || fail "mkfat 造盘失败"
 printf 'BERRYOSVBLK!' | dd of=disk.img conv=notrunc status=none
 # T-c：宿主 TCP 回显服务（vnet TCP 自验的对端——guest 主动 connect 10.0.2.2
 # 由 SLIRP 转发宿主 127.0.0.1:18080）。三相共用（每相一个连接、用完被动
@@ -1096,7 +1099,7 @@ RX_HOLDER=$!
 # 簇位（8）与根目录槽位；vblk LBA1/BLKD LBA5 仍在保留区）。**本相写过的
 # 盘直接喂阶段 5**（持久化相不再重造）——cache.writeback=off 保证
 # SIGTERM 终止前扇区已同步落宿主盘。
-python3 tools/mkfat.py disk.img || fail "mkfat 造盘失败"
+"$MKFAT" disk.img || fail "mkfat 造盘失败"
 printf 'BERRYOSVBLK!' | dd of=disk.img conv=notrunc status=none
 # A2-3：本相（及子目录/持久化相）每次 boot 各跑一遍 evs_selftest——client
 # 每相一实例（上相已收清，重起零残留）。
@@ -1504,7 +1507,7 @@ wait "$QEMU_PID" 2>/dev/null
 sleep 3
 rotate_log
 FX_BIN=$(mktemp "${TMPDIR:-/tmp}/berryos-fx.XXXXXX")
-python3 tools/mkfat.py disk_dirs.img --fixture "$FX_BIN" || fail "mkfat 造目录盘失败"
+"$MKFAT" disk_dirs.img --fixture "$FX_BIN" || fail "mkfat 造目录盘失败"
 rm -f "$FX_BIN"
 printf 'BERRYOSVBLK!' | dd of=disk_dirs.img conv=notrunc status=none
 evs_client_start
@@ -1681,7 +1684,7 @@ echo "smoke: FAT 持久化到齐（跨 boot 读回 f42t + M3DEMO T3.TXT 交互 c
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 rotate_log
-python3 tools/mkfat.py disk.pwr.img || fail "mkfat 造掉电盘失败"
+"$MKFAT" disk.pwr.img || fail "mkfat 造掉电盘失败"
 printf 'BERRYOSVBLK!' | dd of=disk.pwr.img conv=notrunc status=none
 echo "smoke: QEMU 启动（B4 掉电 Boot A：新文件窗采样，无 netdev）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \

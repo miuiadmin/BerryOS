@@ -394,7 +394,9 @@ done
 
 # 盘名专属 disk.smp.img（§5.1 盘/端口行：防覆写兄弟线活盘；每跑重造 = 跨
 # run 零残留）。LBA0 印章 = vblk LBA0 对拍锚（smoke.sh 同款）。
-python3 tools/mkfat.py disk.smp.img || fail "mkfat 造盘失败（disk.smp.img）"
+# mkfat 换轨第二波：造盘位切 Rust 件（paths.sh berryos_mkfat 单源，smoke.sh 同款）。
+MKFAT=$(berryos_mkfat) || fail "mkfat 解析失败"
+"$MKFAT" disk.smp.img || fail "mkfat 造盘失败（disk.smp.img）"
 printf 'BERRYOSVBLK!' | dd of=disk.smp.img conv=notrunc status=none
 
 # lsof 四端口让场（§5.1：18080-18083 任一 LISTEN = 兄弟线正用端口族——
