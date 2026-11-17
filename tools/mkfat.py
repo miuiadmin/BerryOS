@@ -2,6 +2,13 @@
 """mkfat——确定性 FAT12 造盘器（P6 A-5，配对消费端 `user/berry-fatfs`
 解析 crate + fsmgr FAT 只读层；mkcpio 同纪律：同输入同字节，AI 测试友好化）。
 
+换轨二刀后角色（b 层 #8 刀序第二位）：justfile 产链位已切 Rust 件
+（tools/mkfat——run-rootfs 造盘/test-host 双 fixture 守卫/desktop 数据盘）；
+本件保双面：①模块面现役（mkimage.py/pwrcls.py import build_volume_puts
+等——FAT 编码单源）；②CLI oracle（Rust 件有疑时复算对拍）+ fixture 重产
+责任面（--fixture/--fixture16 重产 + --selftest 语义钉板）。双件漂移由
+test-host 的 cargo test oracle 对拍腿 + --check-fixture{,16} 守卫双向咬合。
+
 用法：mkfat.py <out.img> [--fixture <path>] [--put <local>:<fat_path> ...]
   - <out.img>：整盘 2048 扇区 × 512B = 1MiB——布局 = [16 扇区 vblk 测试
     保留区][FAT12 卷 @ LBA16]（LBA0 印章 / LBA1 vblk 自验 / LBA5 BLKD 自验

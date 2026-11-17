@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """mkimage——确定性整盘镜像打包（V-3：MBR + 单 FAT16 分区，VM 草案 §V-3；
 SEC-02 A1 产链缝三件——research/SEC-01 §4.5 件 3/4/5，2026-10-30）。
+换轨二刀（b 层 #8 刀序第三位，2026-11-17）：产链现役件 = Rust bin
+（tools/mkimage——just image 配方先编后用）；本件不退役——模块面现役
+（gensourceindex import build_image/load_source_instance，FAT 走 mkfat
+单编码器）+ CLI 对拍 oracle（test-host 挂双侧，Rust 件有疑时拿本件复算）。
 
 用法：mkimage.py <out.img> --efi <BERRYBOOT.EFI> --hello <hello.txt>
               --kernel <kernel.elf> --initrd <rootfs.cpio> [--size-mib N]

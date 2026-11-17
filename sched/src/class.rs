@@ -67,11 +67,6 @@ pub struct Fair;
 ///   竞争。PI boost 经 weight 影响 VD（软优先——高权→短 VD→常先但不保证）。
 ///   deadline 带语义失效（绝对截止期 VD 与 fair VD 尺度不可比——需 v2
 ///   归一化）。**仅实验用——v1 测试全按 S2a 假设构建**。
-/// 双圈合一判例（04 号审计机会一②，2026-11-17）：抢占门控
-/// [`Fair::pick_next_preempt`] 读**胜者自身 eff**——best_eff 恒 i32::MIN 的
-/// ScanAcc 导出形在 pure 下门恒死不可用；合并形顺带消除 pure 形幻影 head
-/// 消耗（EEVDF 胜者不过门即零副作用返，不再判后弃——行为差异仅实验轨，
-/// v1 恒 false）。
 pub use berry_ringface::scan::PURE_EEVDF;
 
 /// 兼容别名：既有调用点仍以 `RoundRobin` 指类型（1.1/S2 语义已是 Fair）。
@@ -125,14 +120,13 @@ fn slice_virtual_weight(grant: u64, weight: u32) -> u64 {
 }
 
 /// 带级预算的 delta 预读（M4 并线——`Fair::tick` 记账基准的**只读孪生**：
-/// 读同一 last_vct 槽 + 调用方传入的 `now` 算同一 delta，**不写基准**；
-/// 04 号审计机会四②（2026-11-17）起自读 CNTVCT 退役——`now` 由
-/// `FairBand::tick` 入口单读线程化下发，`Fair::tick` 随后的正规读/写
-/// 自会得出同值——两者差 = tick 入口读与 `Fair::tick` 读（两次 cntvct
-/// 读）之间的指令数，微秒以下）。`last == 0`（首拍无基准）→ 0，同
+/// 读同一 last_vct 槽 + CNTVCT 现值算同一 delta，**不写基准**；
+/// `Fair::tick` 随后的正规读/写自会得出同值——两者差 = 两次 cntvct 读
+/// 之间的指令数，微秒以下）。`last == 0`（首拍无基准）→ 0，同
 /// `Fair::tick` 律。
-fn peek_tick_delta_at(now: u64) -> u64 {
-    // SAFETY: 只读不写（不消费基准位）；IRQ 上下本文核顺序访问契约同
+fn peek_tick_delta() -> u64 {
+    let now = hal::timer::cntvct();
+    // SAFETY: 只读不写（不消费基准位）；IRQ 上下文本核顺序访问契约同
     // Fair::tick（per-CPU 槽 / 回落位单核窗）。
     let last = unsafe {
         match hal::smp::last_vct_slot() {
@@ -163,12 +157,9 @@ fn avg_vruntime(rq: &Runqueue) -> Option<u64> {
 }
 
 /// S5-c lazy unthrottle：扫环上被冻结的 deadline 任务——`cntvct() ≥ vdeadline`
-/// 者周期到：解冻（清 HELD_THROTTLE）+ 重臂 vdeadline（+= duration_hint_ns =
-/// period_cycles）+ 授新预算 slice（preempt_threshold）。CBS 同形语义注
-///（04 号审计附记一审查轮，2026-11-17）：「每期至多 budget CPU 时长」只在
-/// 解冻/首片成立——八个生产授片点（Band 可达——另 idle 臂 Unit 授片不出带，正典见 TaskClass::grant_cycles 注）派发尾 `slice_left = grant_cycles()` 整片
-/// 覆盖（s5cprobe S5C_BUDGET_MS 注同款事实），此后每期实跑 ≈ 一授片；
-/// budget→真运行帽待预算授片分派刀（grant 面按 class 分派）。
+/// 者周期到：解冻（清 HELD_FROZEN）+ 重臂 vdeadline（+= duration_hint_ns =
+/// period_cycles）+ 授新预算 slice（preempt_threshold）。CBS 同形语义：
+/// 每期至多 budget CPU 时长；超了等下期。
 ///
 /// S5-c 计数门：头部先查 [`crate::runqueue::dl_on_ring`]（全域在环
 /// deadline 任务账本）——0 时整圈扫描跳过（一次 Relaxed 原子读替代
@@ -178,9 +169,7 @@ fn avg_vruntime(rq: &Runqueue) -> Option<u64> {
 /// 任务 ⟹ 扫描必然空手——跳过零语义差。
 ///
 /// # Safety
-/// rq 环节点有效；调用侧屏蔽窗（两个调用面：trait `Fair::pick_next`
-/// 直调面与 `pick_inner` 生产共体面〔pick_next_filtered / pick_next_preempt
-/// 两出选口——04 号审计附记一双写 + 机会一②双圈合一，2026-11-17〕）。
+/// rq 环节点有效；调用侧屏蔽窗（pick_next 语境）。
 unsafe fn lazy_unthrottle_deadlines(rq: &Runqueue) {
     // 快路径：全域环上无 deadline 任务（含本环）——零扫描。
     if crate::runqueue::dl_on_ring() == 0 {
@@ -256,15 +245,9 @@ impl SchedClass for Fair {
     fn pick_next(&self, rq: &Runqueue, _topo: &Topo) -> Option<&mut Task> {
         // S5-c lazy unthrottle：周期到的冻结 deadline 任务——解冻 + 重臂
         // vdeadline（+= period，存 duration_hint_ns）+ 授新预算 slice。
-        // 零额外定时器：出选高频路径的顺带扫（is_deadline 一比较快
+        // 零额外定时器：pick_next 高频调用的顺带扫（is_deadline 一比较快
         // 路过；冻结位零任务直接跳过）。S5-c 计数门起环上无 deadline 任务
         // （全域账本 0）时函数头即返——整圈扫描跳过。
-        // 双面分工（04 号审计附记一修复，2026-11-17；机会一②同日刷新）：
-        // 本 trait 面调用 = ktest 直调面（DL-B2 钉板原样绿）；生产出选点
-        // 走 `pick_next_filtered`（七点）与 `pick_next_preempt`（try_preempt
-        // 一点，机会一②双圈合一），两者经 pick_inner 头部同款调用（生产
-        // 出选不经本面，本面亦不落入 pick_inner——直调 scan_filtered）：
-        // 各面结构不交、无双重调用路径。
         unsafe { lazy_unthrottle_deadlines(rq) };
         let chosen = self.scan_filtered(rq, core::ptr::null_mut())?;
         // SAFETY: scan_filtered 契约（环上节点在环、调用侧屏蔽窗）。
@@ -335,10 +318,8 @@ impl SchedClass for Fair {
         }
         // S5-c 预算执法：deadline 任务的 slice = 预算尺寸（spawn 时由
         // preempt_threshold 设定）。slice 耗尽 = 本期预算用完 → throttle
-        //（HELD_THROTTLE 置位 → eligible 过滤 → 不再出选）。周期到 →
-        // lazy_unthrottle（出选面扫——trait pick_next 与
-        // pick_next_filtered 双面，2026-11-17 起生产面=后者，04 号审计
-        // 附记一）解冻 + 重臂 + 新预算。
+        //（HELD_FROZEN 置位 → eligible 过滤 → 不再出选）。周期到 →
+        // lazy_unthrottle（pick_next 面扫）解冻 + 重臂 + 新预算。
         // W3-Q11：准入三与门单源 berry-sliceface（host 钉板 throttle_gate）。
         if throttle_admissible(
             t.prio_effective,
@@ -440,116 +421,79 @@ impl Fair {
     /// 带内：优先 `vruntime <= avg`（eligible）者，键 `(vdeadline, vruntime)`；
     /// 同键保持 head 侧先见（`advance_past` 推进游标 = 等权 FIFO 轮转）。
     /// 带内无 eligible 时取最小键（不空转）。
-    ///
-    /// 04 号审计机会一②（2026-11-17）双圈合一：内部改走 [`Self::pick_inner`]
-    /// 共体（gate=None 恒出选形），签名与行为逐位冻结——七生产位 + ktest
-    /// 三族依赖（原第八生产位 try_preempt 迁 [`Self::pick_next_preempt`]）。
     pub fn pick_next_filtered(
         &self,
         rq: &Runqueue,
         _topo: &Topo,
         my_cur: *mut Task,
     ) -> Option<&mut Task> {
-        let t = self.pick_inner(rq, my_cur, None)?;
-        // OBS-01（06 号 §5 观测维补面）：出选记账——intent 全档 + 带任务
-        // per-band（生产出选路径 = 本函数 + pick_next_preempt 两面，均经
-        // pick_inner 头部先行解冻〔S5-c，04 号审计附记一，2026-11-17〕；
-        // `SchedClass::pick_next` 是 ktest 直调面不经此）。Relaxed 纯计数
-        //（stats.rs 纪律）。
-        crate::stats::note_pick(t);
-        Some(t)
-    }
-
-    /// 抢占单圈门控形出选（04 号审计机会一②（2026-11-17）双圈合一——
-    /// Plan A 定案）：内部 [`Self::pick_inner`] 带 `gate = Some(阈值)`，阈值
-    /// = `(*my_cur).prio_effective` 本函数现读一次。**契约：`my_cur` 非空**
-    /// ——调用方 [`crate::sched::try_preempt`] 的 null 早退护栏保证（本函数
-    /// 解引用 my_cur，null 传入即背约）。
-    ///
-    /// 双圈合一：旧形 = `Runqueue::has_eff_above_filtered` 只读探峰一圈 +
-    /// 命中后 `pick_next_filtered` 出选一圈（同环两圈）；本函数探峰与出选
-    /// 合一半圈——scan_filtered 出选后**扫尾门控**行读出选者 eff，miss 零
-    /// 副作用（advance/apply/note_pick 全在扫尾门后）。`has_eff_above_filtered`
-    /// 退役（原唯一消费者 = try_preempt）。性能口径：v1 门闭态 miss 路与
-    /// 旧形同为一圈；DL_ON_RING>0 形态 miss 路 = 解冻走查 + 扫描两圈且每
-    /// 节点较旧探峰贵（旧形 miss 仅探峰一圈）——但命中路旧形可达三圈
-    /// （探峰+解冻+扫描）收敛为两圈，净口径按形态记（审查轮勘正）。
-    ///
-    /// 等价证书（!PURE_EEVDF）：出选者必在最高带 ⟹ 门控行读出选者
-    /// （pre-apply）eff > 阈值 ⟺ 旧探峰「存在 eligible 严格更高」存在性
-    /// 判定（同一快照——RQ 锁窗内环不并发改写）。
-    ///
-    /// 裁决口径：零语义变化主张只限 v1 默认形态（门闭 = 无带武装 +
-    /// `dl_on_ring()==0`）；armed/dl 形态两处方向性偏差文档化接受——S5-c
-    /// lazy 面设计意图方向：
-    /// ① miss 路幂等跑 lazy 面（旧探峰圈不含解冻；解冻进探峰面后刚到期
-    ///    DL 任务立即可见——S5-c 探序 ≤1 片延迟挂账随刀闭合）；
-    /// ② 幻影窗构造性消灭（旧 armed 形探峰命中后扫描期 lazy_enforce 可降
-    ///    出选者资格 → try_preempt 严格更高守卫拒切 → 游标白耗一格 +
-    ///    note_pick 虚计；门控 pre-apply 读把这些 miss 全变零副作用——
-    ///    省游标白耗 + note_pick 虚计）。
-    pub fn pick_next_preempt(
-        &self,
-        rq: &Runqueue,
-        _topo: &Topo,
-        my_cur: *mut Task,
-    ) -> Option<&mut Task> {
-        // SAFETY: 契约如上（my_cur 非 null——try_preempt null 早退护栏）。
-        let th = unsafe { (*my_cur).prio_effective };
-        let t = self.pick_inner(rq, my_cur, Some(th))?;
-        // OBS-01 出选记账同 pick_next_filtered（生产出选路径两面之一）；
-        // 过门后才到——miss 零虚计。
-        crate::stats::note_pick(t);
-        Some(t)
-    }
-
-    /// 私有共享出选体（04 号审计机会一②（2026-11-17）抽取）：头部 S5-c
-    /// 解冻 → `scan_filtered` 出选 →（gate=Some 时扫尾门控行）→
-    /// `advance_past` + `policy::apply`。**不含 note_pick**——两调用方各自
-    /// 补（pick_next_filtered 恒补；pick_next_preempt 过门后补）。
-    ///
-    /// `gate = Some(th)`（抢占门控形）：出选者 `(*chosen).prio_effective`
-    /// `<= th` 即返 None——**零副作用**（advance/apply 均未触）。读点必须在
-    /// `advance_past` 与 `policy::apply` **之前**（pre-apply 值）：读
-    /// post-apply 值会在负权重策略形破坏幻影防线（apply 降 eff 后门控与
-    /// 调用方守卫两道判定错位）。等价证书见 [`Self::pick_next_preempt`]。
-    fn pick_inner(
-        &self,
-        rq: &Runqueue,
-        my_cur: *mut Task,
-        gate: Option<i32>,
-    ) -> Option<&mut Task> {
-        // S5-c lazy unthrottle 接入生产出选面（04 号审计附记一修复，
-        // 2026-11-17）：解冻原只在 trait `Fair::pick_next` 头部调用，而
-        // 生产出选点全走 pick_next_filtered——deadline 任务（EL0 spawn 期
-        // policy=3 可达，syscall.rs spawn 面）预算耗尽被 `Fair::tick` 置
-        // HELD_THROTTLE 后在生产永久不可出选。修法已裁=双写：trait 面调用
-        // 保留（ktest 直调面，DL-B2 钉板原样绿），生产面头部新增同款调用
-        //（机会一②双圈合一起本共体承载两出选口——pick_next_filtered /
-        // pick_next_preempt）——生产出选不经 trait 面、本共体亦不回调
-        // trait 面，两面结构不交、无双重调用路径；dl_on_ring()==0 早退门
-        // 在 lazy_unthrottle_deadlines 自身头部，此处不重复设门。
-        // SAFETY: 生产调用点全在本核 RQ 锁 + IRQ 屏蔽窗内（判据同
-        // scan_filtered 的 SAFETY 注与 sched.rs `try_rq_lock` 注「生产八
-        // 调用点全在本核 RQ 锁窗内」立法句），与紧随其后的 scan_filtered
-        // 同窗同节点集，访问形态严格弱于既有扫描。
+        // S5-c lazy unthrottle（04 号审计附记一收口——2026-11-17）：与
+        // trait `pick_next` 同头调用——生产八个出选点全走本函数（pick_next
+        // 仅 ktest 直调），此前 deadline 任务预算限流后生产无解冻路径。
+        // dl_on_ring 门 0 时零成本（一次 Relaxed 读 + 早退），v1 常态全员
+        // fair 门常闭；语义与 pick_next 侧逐位一致（同函数单源）。
         unsafe { lazy_unthrottle_deadlines(rq) };
         let chosen = self.scan_filtered(rq, my_cur)?;
-        if let Some(th) = gate {
-            // 扫尾门控行（pre-apply 值——读点纪律见本函数 doc）：出选者
-            // eff 不严格高于阈值即不出选。
-            // SAFETY: chosen 在环（scan_filtered 契约）；本窗内只读。
-            let eff = unsafe { (*chosen.as_ptr()).prio_effective };
-            if eff <= th {
-                // 零副作用返 None（幻影防线扫尾门）：advance/apply 均未触
-                // ——游标不消耗（note_pick 在调用方、过门后才到）。
-                return None;
-            }
-        }
         // SAFETY: scan_filtered 契约（KERN_LOCK 窗内、节点在环）。
         unsafe { rq.advance_past(chosen) };
         let t = unsafe { &mut *chosen.as_ptr() };
         crate::policy::apply(t);
+        // OBS-01（06 号 §5 观测维补面）：出选记账——intent 全档 + 带任务
+        // per-band（生产出选唯一路径 = 本函数；`SchedClass::pick_next`
+        // 是 ktest 直调面不经此）。Relaxed 纯计数（stats.rs 纪律）。
+        crate::stats::note_pick(t);
+        Some(t)
+    }
+
+    /// W3-Q93（04 机会一② 双圈合一）：try_preempt 专用出选面——
+    /// 「带门探峰 + 出选」单圈合成。
+    ///
+    /// 旧形（sched.rs try_preempt）：`has_eff_above_filtered` 只读探峰一圈
+    /// （早退）→ true 时 `pick_next_filtered` 二圈扫描出选。合一后本函数
+    /// 一次扫描（解冻 → 单圈 → 带门 → 出选三件套），语义逐位等价：
+    /// - 「环上存在 eligible 且 eff 严格高于 v」⟺ 单圈累加器的
+    ///   `best_eff > v`（[`berry_ringface::scan::ScanAcc::best_eff`] 单源
+    ///   ——零第二实现，host 钉板 best_eff_above_gate_matches_reference
+    ///   3000 例对拍）；
+    /// - 门假（无更高带）不出选、不消耗 head 槽位——幻影出选防线语义
+    ///   逐位保持（旧 has_eff_above false 早退同义）；
+    /// - 门真出选者 = `pick_next_filtered` 出选者（同一扫描单源 +
+    ///   advance_past + policy::apply + note_pick 三件套）。
+    ///
+    /// **语义差异面（审计明示接受）**：解冻时序前移——旧形探峰 false 时
+    /// 不经 pick_next_filtered 头部、不解冻；合一后解冻发生在扫描前
+    /// （S5-c 头部同源），探峰假也解冻。方向 = 解冻面扩大（限流 deadline
+    /// 任务自愈更早），04 号审计附记一（正确性缺口）收口面的加强非削弱；
+    /// dl_on_ring 门 0 时零成本，v1 常态零行为差。
+    ///
+    /// PURE_EEVDF 实验形（v1 恒 false）：带比较恒假 → best_eff 恒哨兵
+    /// i32::MIN → 带门对一切有限 v 恒假——直切语义本就随 pure 形失效
+    /// （同带竞争无「严格更高」），本函数仅 v1 生产形消费。
+    pub fn pick_next_if_above(
+        &self,
+        rq: &Runqueue,
+        _topo: &Topo,
+        my_cur: *mut Task,
+        v: i32,
+    ) -> Option<&mut Task> {
+        debug_assert!(!PURE_EEVDF, "pure 形带门退化，本面仅 v1 生产形消费");
+        // S5-c 解冻头部与 pick_next_filtered 同源（见彼注）。
+        unsafe { lazy_unthrottle_deadlines(rq) };
+        let (best, best_eff) = self.scan_with_eff(rq, my_cur);
+        // 带门（旧 has_eff_above_filtered 探峰谓词的累加器内形）：
+        // 无 eligible 带严格高于 v ⟹ 必不直切 ⟹ 不消耗 head 槽位
+        //（幻影出选防线逐位保持——best_eff 哨兵 i32::MIN 覆盖空环/
+        // 全过滤两形，旧探峰空环返 false 同义）。
+        if best_eff <= v {
+            return None;
+        }
+        let chosen = best?;
+        // SAFETY: scan_with_eff 契约同 scan_filtered（KERN_LOCK 窗内、
+        // 节点在环）。
+        unsafe { rq.advance_past(chosen) };
+        let t = unsafe { &mut *chosen.as_ptr() };
+        crate::policy::apply(t);
+        crate::stats::note_pick(t);
         Some(t)
     }
 
@@ -573,7 +517,21 @@ impl Fair {
     /// S2b PURE 开关：`!PURE_EEVDF &&` 门使带比较恒假 → 所有任务同带，
     /// 只剩 EEVDF 分支（旧 `in_band` 恒 true 同义；const 折叠零运行时开销）。
     fn scan_filtered(&self, rq: &Runqueue, my_cur: *mut Task) -> Option<NonNull<Task>> {
-        let h = rq.head()?;
+        self.scan_with_eff(rq, my_cur).0
+    }
+
+    /// [`ScanAcc::best_eff`](berry_ringface::scan::ScanAcc::best_eff) 伴生
+    /// 导形（W3-Q93）：同一单圈走查额外带出累加器最高 eligible 带——
+    /// `pick_next_if_above` 带门的唯一数据源（零第二扫描）。
+    fn scan_with_eff(
+        &self,
+        rq: &Runqueue,
+        my_cur: *mut Task,
+    ) -> (Option<NonNull<Task>>, i32) {
+        // 空环：无走查即返（哨兵 i32::MIN = 旧探峰空环 false 同义）。
+        let Some(h) = rq.head() else {
+            return (None, i32::MIN);
+        };
         let avg = avg_vruntime(rq).unwrap_or(0);
         // W3-Q51：三分支带序状态机骨架单源 berry-ringface::scan::ScanAcc
         //（host 钉板：带序重置/退化带首见/过滤前置/PURE_EEVDF 两形/敌意
@@ -601,7 +559,7 @@ impl Fair {
                     break;
                 }
             }
-            acc.best()
+            (acc.best(), acc.best_eff())
         }
     }
 }
@@ -688,21 +646,6 @@ impl FairBand {
         ns_to_cycles(self.band.quantum_ns)
     }
 
-    /// quantum 的武装槽镜像优先形（04 号审计机会四①（2026-11-17））：
-    /// [`crate::band::quota_cycles_of`] 命中 → 槽 quota 镜像（免每授片
-    /// 一次 cntfrq MRS + u128 软除法——数十指令）；未武装 / 越界 → 回落
-    /// 现算 [`Self::quantum_cycles`]。两值恒等（镜像一致性依据 = quota
-    /// 唯一写点 configure + 表行 ns 与 cntfrq 运行期恒定，见
-    /// `quota_cycles_of` doc；显式 configure 下授片跟随槽 quota 的语义
-    /// 变化同彼处明示）。私有——消费面三处（`TaskClass::grant_cycles`
-    /// Band 臂 / [`Self::rearm_vd`] / [`Self::rearm_members_vd`]）；
-    /// [`Self::arm`] 不动 = 写点保持现算（「现算 → configure → 槽镜像」
-    /// 数据流单向——可达路径上镜像恒 None，arm 时刻写入的 quota 即镜像
-    /// 源头）。
-    fn quantum_cached(&self) -> u64 {
-        crate::band::quota_cycles_of(self.band_id).unwrap_or_else(|| self.quantum_cycles())
-    }
-
     /// 本带 latency_target 的周期数（带预算期长——`Self::period_check`
     /// 判到期的参数源）。
     pub fn period_cycles(&self) -> u64 {
@@ -724,18 +667,15 @@ impl FairBand {
     /// 全局 slice 锚）。**CBS 期内律**：只记本期内的周期数——`delta`
     /// 先剪辑到 `now − period_start`（period_start = deadline − period，
     /// deadline 恒未来首期故剪辑界 ≤ period），跨期（旧期）部分不记入
-    /// 新期账；**窗口端点 = delta 端点**（04 号审计机会四②（2026-11-17）
-    /// 收口——`now` 形参与 [`Self::period_check`] 同参：剪辑界与到期判
-    /// 同一时间戳 ⇒「剪辑界 > period」的理论窗构造性消灭〔不变式收紧〕
-    /// ；原各点自读时的语义差 = 亚 µs 级指令窗 vs 最小期 1ms，方向单边
-    /// 保守——见 `FairBand::tick` 入口注）。没有本律时：翻期面粒度
-    /// （tick/sweep 间隔）> period 的带（interactive 10ms 配额/8ms 期 vs
-    /// 100ms tick）会把跨期运行累计进单期账 → quota>period 的不可越线带
-    /// 被误越线（ktest M4G 实测抓到——6 次假越线）；有本律则该类带任何
-    /// 记账粒度下恒不越线。返 true = 本期**首**越线（调用方随后
-    /// [`Self::throttle_all`]——记账与环执法分两步，同 `band::consume`
-    /// 契约）。判定律/原子账单源 `band::consume`（此处只携参 + 剪辑）。
-    pub fn consume(&self, delta: u64, now: u64) -> bool {
+    /// 新期账。没有本律时：翻期面粒度（tick/sweep 间隔）> period 的带
+    /// （interactive 10ms 配额/8ms 期 vs 100ms tick）会把跨期运行累计进
+    /// 单期账 → quota>period 的不可越线带被误越线（ktest M4G 实测抓到
+    /// ——6 次假越线）；有本律则该类带任何记账粒度下恒不越线。返
+    /// true = 本期**首**越线（调用方随后 [`Self::throttle_all`]——记账
+    /// 与环执法分两步，同 `band::consume` 契约）。判定律/原子账单源
+    /// `band::consume`（此处只携参 + 剪辑）。
+    pub fn consume(&self, delta: u64) -> bool {
+        let now = hal::timer::cntvct();
         if !self.arm(now) {
             return false;
         }
@@ -801,7 +741,7 @@ impl FairBand {
     fn rearm_vd(&self, t: &mut Task) {
         t.vdeadline = t
             .vruntime
-            .saturating_add(slice_virtual_weight(self.quantum_cached(), self.vd_weight()));
+            .saturating_add(slice_virtual_weight(self.quantum_cycles(), self.vd_weight()));
     }
 
     /// 环扫带成员 VD 重臂（throttle/unthrottle 包装的权重消费步——§A136
@@ -812,7 +752,7 @@ impl FairBand {
     /// rq 环节点有效且在环；屏蔽窗内调用（tick / pick_next 语境）。
     fn rearm_members_vd(&self, rq: &Runqueue, w: u32) {
         let Some(h) = rq.head() else { return };
-        let grant = self.quantum_cached();
+        let grant = self.quantum_cycles();
         // SAFETY: 环上任务均调度器拥有且在环；调用侧屏蔽窗内（同 pick）。
         unsafe {
             let mut cur = h;
@@ -882,22 +822,9 @@ impl SchedClass for FairBand {
         Fair.pick_next(rq, topo)
     }
     fn tick(&self, t: &mut Task, rq: &mut Runqueue) {
-        // tick 入口单读 now（04 号审计机会四②（2026-11-17）——带 tick
-        // 路径四次 CNTVCT 读归二）：带面三消费点（delta 预读 / 自翻期 /
-        // 记账剪辑）共用一份时间戳；`Fair::tick` 委托内的 last_vct 基准读
-        // 保持原位——它是**写点**（记账基准前推），不并入本读。
-        // 语义差（不写「零语义变化」）：入口读与原各点自读间的指令窗
-        // （亚 µs 级 vs 最小期 1ms）使恰边界翻期/首越线可迟一拍，方向
-        // 单边保守——限流多持一会儿、记账只少不多、封顶下一拍 sweep/tick
-        // 补翻（例外：懒武装首臂 deadline 锚随入口读前移一指令窗，首次
-        // 解限可早一拍——一次性、每带仅首臂、同亚 µs 量级，审查轮补记）（[`band_period_sweep`] + lazy_enforce 双兜底在席 = 与
-        // try_rq_lock 失败跳环扫同类已接受偏差）；反向收益 = consume 剪辑
-        // 与 period_check 同参，「剪辑界 > period」理论窗消灭（不变式收紧
-        // ——见 [`Self::consume`] 注）。
-        let now = hal::timer::cntvct();
         // 带级 delta 预读（Fair.tick 记账基准的只读孪生——带账与任务账
-        // 同 delta 口径，见 peek_tick_delta_at 注）。
-        let delta = peek_tick_delta_at(now);
+        // 同 delta 口径，见 peek_tick_delta 注）。
+        let delta = peek_tick_delta();
         // OBS-01：per-band runtime 累积（delta 口径同上；unit Fair 路径
         // 零触碰——unit 任务零漂移纪律）。
         crate::stats::note_runtime(self.band_id, delta);
@@ -918,7 +845,7 @@ impl SchedClass for FairBand {
         // pick 面兜底）——跳的是环扫不是记账：period_check 的原子翻期在
         // 窗外照常落账。永不阻塞 ⇒ 永不 wedge（tick 面禁自旋等锁判例见
         // sched::try_rq_lock_of 注）。
-        if self.period_check(now) {
+        if self.period_check(hal::timer::cntvct()) {
             if let Some(phys) = crate::sched::try_rq_lock() {
                 self.unthrottle_all(rq);
                 crate::sched::try_rq_unlock(phys);
@@ -928,7 +855,7 @@ impl SchedClass for FairBand {
         // throttle_all（low_weight VD 重臂）。环扫同入 F3 try 窗（②同款：
         // consume 的原子记账/越线镜像位在窗外已落，try 失败只迟置环上位
         // ——出选扫描的 lazy_enforce 补位，至多迟一个片）。
-        if self.consume(delta, now) {
+        if self.consume(delta) {
             if let Some(phys) = crate::sched::try_rq_lock() {
                 self.throttle_all(rq);
                 crate::sched::try_rq_unlock(phys);
@@ -1016,15 +943,13 @@ impl TaskClass {
 
     /// 授片量（per-task 分派——M4 并线第五刀）：`Unit` = 全局
     /// `slice_cycles`（**零漂移**——现役所有非 band 任务不受影响）；
-    /// `Band` = 武装槽 quota 镜像优先（04 号审计机会四①（2026-11-17）——
-    /// [`FairBand::quantum_cached`]），未武装回落现算——懒武装路径两值恒等；显式 configure 下授片跟随槽 quota（语义变化明示见 quota_cycles_of doc）（band
-    /// 特有配额替代全局片）。消费面 = `sched.rs` 八 Band 可达授片点 +
-    /// idle 授片（Unit——`sched.rs::on_irq_tick` idle 臂 intent 0 不出带
-    /// ），interactive 短片/ utility 长片的差异化源头。
+    /// `Band` = 本带 quantum_ns 的周期数（band 特有配额替代全局片——
+    /// `sched.rs` 八授片点消费，interactive 短片/ utility 长片的
+    /// 差异化源头）。
     pub fn grant_cycles(&self) -> u64 {
         match self {
             TaskClass::Unit => hal::timer::slice_cycles(),
-            TaskClass::Band(b) => b.quantum_cached(),
+            TaskClass::Band(b) => b.quantum_cycles(),
         }
     }
 

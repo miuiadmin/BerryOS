@@ -5,7 +5,7 @@
 //! 带序重置/退化带/敌意输入零 panic/PURE_EEVDF 开关两形。
 
 use berry_ringface::scan::{ScanAcc, PURE_EEVDF};
-use berry_ringface::{TaskDesc, BLOCKED, EXITED, HELD_FROZEN, HELD_THROTTLE, READY, RUNNING};
+use berry_ringface::{eligible, TaskDesc, BLOCKED, EXITED, HELD_FROZEN, HELD_THROTTLE, READY, RUNNING};
 
 fn desc(state: u8, held: u8, prio: i32, vrt: u64, vd: u64) -> TaskDesc {
     TaskDesc::new(state, held, prio, vrt, vd)
@@ -304,4 +304,113 @@ fn scan_eevdf_lag_priority_in_band() {
     assert_eq!(scan_once(&ring, 0, 200, &is_cur), Some(0), "双落后纯键");
     // 双超前 → 纯键比较（EEVDF 无 lag 补偿档差）。
     assert_eq!(scan_once(&ring, 0, 0, &is_cur), Some(1), "==avg 算落后");
+}
+
+// —— W3-Q93：best_eff 带门访问器（try_preempt 双圈合一的探峰单源）——
+// 值域律 + 与「旧 has_eff_above_filtered 两圈形」参考实现逐例对拍 +
+// best_eff > i32::MIN ⟹ best.is_some() 不变式。
+
+/// 参考实现 = 旧 sched has_eff_above_filtered 的纯值域形（独立两圈：
+/// 先全环探「存在 eligible 且 eff > v」）。
+fn has_above_ref(ring: &[TaskDesc], is_cur: &[bool], v: i32) -> bool {
+    ring.iter()
+        .zip(is_cur)
+        .any(|(d, &c)| eligible(d, c) && d.prio_effective > v)
+}
+
+#[test]
+fn best_eff_sentinel_and_band_law() {
+    // 空前缀哨兵：初值 i32::MIN = 旧探峰空环/全过滤返 false 同义。
+    let acc = ScanAcc::<usize>::new();
+    assert_eq!(acc.best_eff(), i32::MIN);
+    assert!(acc.best().is_none());
+    // 全过滤前缀（RUNNING/FROZEN/THROTTLE）：哨兵不动。
+    let mut acc = ScanAcc::new();
+    let filtered = [
+        desc(RUNNING, 0, 5, 0, 0),
+        desc(READY, HELD_FROZEN, 5, 0, 0),
+        desc(READY, HELD_THROTTLE, 7, 0, 0),
+    ];
+    for (i, d) in filtered.iter().enumerate() {
+        acc.offer(d, i, false, 0);
+    }
+    assert_eq!(acc.best_eff(), i32::MIN, "全过滤前缀带哨兵不动");
+    assert!(acc.best().is_none());
+    // 带门正例：最高 eligible 带 = best_eff（同带更低键不夺门）。
+    let mut acc = ScanAcc::new();
+    let ring = [
+        desc(READY, 0, 10, 0, 0),
+        desc(READY, 0, 30, 99, 999), // 更高带键最差仍夺门
+        desc(READY, 0, 10, 0, 0),
+    ];
+    for (i, d) in ring.iter().enumerate() {
+        acc.offer(d, i, false, 0);
+    }
+    assert_eq!(acc.best_eff(), 30);
+    assert_eq!(acc.best(), Some(1), "更高带整带压制同带键优者");
+}
+
+#[test]
+fn best_eff_above_gate_matches_reference() {
+    // 「best_eff() > v」⟺ 旧探峰谓词——全域采样对拍（含 v 恰界两侧）。
+    let mut seed = 0x5eed_0000_0093_0000u64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let states = [READY, RUNNING, BLOCKED, EXITED];
+    let helds = [0u8, HELD_FROZEN, HELD_THROTTLE, HELD_FROZEN | HELD_THROTTLE];
+    let prios = [i32::MIN, -1, 0, 5, 999, 1000, i32::MAX];
+    let vs = [i32::MIN, -1, 0, 5, 999, 1000, i32::MAX - 1, i32::MAX];
+    let mut cases = 0usize;
+    let mut mismatches = 0usize;
+    for _ in 0..3000 {
+        let n = 1 + (next() as usize % 5);
+        let ring: Vec<TaskDesc> = (0..n)
+            .map(|_| {
+                desc(
+                    states[(next() as usize) % states.len()],
+                    helds[(next() as usize) % helds.len()],
+                    prios[(next() as usize) % prios.len()],
+                    (next() % 200) as u64,
+                    (next() % 200) as u64,
+                )
+            })
+            .collect();
+        let is_cur: Vec<bool> = (0..n).map(|_| next() % 2 == 0).collect();
+        let v = vs[(next() as usize) % vs.len()];
+        let mut acc = ScanAcc::new();
+        for (i, d) in ring.iter().enumerate() {
+            acc.offer(d, i, is_cur[i], 100);
+        }
+        let gate = acc.best_eff() > v;
+        let reference = has_above_ref(&ring, &is_cur, v);
+        cases += 1;
+        if gate != reference {
+            mismatches += 1;
+        }
+        // 不变式：带哨兵越出 ⟹ 必有出选者（best 与门同前缀）。
+        if acc.best_eff() > i32::MIN {
+            assert!(acc.best().is_some(), "best_eff 越哨兵须有出选者");
+        }
+    }
+    assert_eq!(mismatches, 0, "best_eff 带门与探峰参考实现 {cases} 例须全一致");
+}
+
+#[test]
+fn best_eff_pure_eevdf_sentinel_law() {
+    // PURE_EEVDF 开形：带比较恒假 → best_eff 恒哨兵（v1 恒 false 生产不经
+    // 此；实验轨道门退化 = 双圈合一不适用于 pure 形的编译期根因记录）。
+    let mut acc = ScanAcc::new();
+    let ring = [
+        desc(READY, 0, 10, 0, 0),
+        desc(READY, 0, 1000, 5, 5),
+    ];
+    for (i, d) in ring.iter().enumerate() {
+        acc.offer_with(d, i, false, 50, true);
+    }
+    assert_eq!(acc.best_eff(), i32::MIN, "pure 形带门恒哨兵（带比较恒假）");
+    assert!(acc.best().is_some(), "pure 形仍按纯键出选");
 }

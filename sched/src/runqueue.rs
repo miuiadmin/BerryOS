@@ -427,6 +427,14 @@ impl Runqueue {
         let next = berry_ringface::advance_past(node, Some(next)).expect("环上节点必有 next");
         self.head.set(Some(next)); // 单元素环时 next==node，游标不变（保持指向它）
     }
+
+    // 过滤版只读探峰（S-2b；S-3b 改形）——W3-Q93（04 机会一② 双圈合一）
+    // 退役：唯一生产消费点 try_preempt 改走 `Fair::pick_next_if_above`
+    // 单圈（解冻 → 扫描 → 带门 → 出选；带门 = `ScanAcc::best_eff > v`
+    // 单源——本函数谓词的累加器内形，ringface host 钉板
+    // `best_eff_above_gate_matches_reference` 参考实现即本函数纯值域形，
+    // 3000 例对拍在册）。幻影出选防线语义在 pick_next_if_above 带门
+    // 延续（门假不消耗 head 槽位）。
 }
 
 /// W3-Q53：`RingStore` 的 sched 物理臂适配器——id 域即 `*mut Task` 地址

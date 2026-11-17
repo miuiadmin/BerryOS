@@ -594,12 +594,20 @@ run-smp: build
 # 二者 = 零漂移）。serial0 显式钉 mon:stdio（-nographic 隐式默认的显式形
 # ——防唯一 -serial 被解释为 serial0 吞走 console）。注入 client 连
 # /tmp/berryos-sim1.sock（M3 smoke 面同路径）；boot 标记 `SIM gate on`。
+# mkfat 换轨二刀（b 层 #8 刀序第二位）：产链位切 Rust 件——先编后用 +
+# CARGO_TARGET_DIR 钉 tools/mkfat/cargo-target（elf2flat/mkcpio 同款
+# 纪律）；Python mkfat.py 保模块面（mkimage/pwrcls import 单编码器）+
+# oracle 对拍（test-host 挂双侧）。
 run-rootfs: build
     #!/bin/sh
     set -e
     set -o pipefail
     test -f rootfs.cpio || { echo "缺 rootfs.cpio（G-eco 编译侧产出）"; exit 1; }
-    python3 tools/mkfat.py disk.img
+    HOST=$(rustc -vV | sed -n 's/^host: //p')
+    CARGO_TARGET_DIR="$PWD/tools/mkfat/cargo-target" \
+        cargo build --release --manifest-path tools/mkfat/Cargo.toml \
+        --target "$HOST"
+    "$PWD/tools/mkfat/cargo-target/$HOST/release/mkfat" disk.img
     printf 'BERRYOSVBLK!' | dd of=disk.img conv=notrunc status=none
     # sim-S1：残留 socket 清理（QEMU 字段协议——server=on 对残文件 bind 拒）。
     rm -f /tmp/berryos-sim1.sock
@@ -871,6 +879,14 @@ test-host:
     # gop 四非零门/fmt≤2 钉板，host 12 测；判定律单源，kernel handoff.rs
     # 判定段换消费，raw 解引用留壳）。
     cargo test -p berry-hofface --target {{host}}
+    # W3-Q89：berry-heapface（slab 堆路由算术纯面 + realloc 原位资格
+    # ——内核深度进化审计 01 号机会 4 落地：同 slab class/同 buddy 阶
+    # 原指针直返〔Vec push 增长 24B→32B/600B→1024B 同 class 热面省
+    # 整块搬运〕，跨 class/跨阶/跨臂/slab↔pages 搬移/零大小防御 None，
+    # host 12 测〔8 旧 + 4 新：同 class 原位/pages 阶窗/防御与 align/
+    # 全域一致性对拍〕；realloc_inplace 单源，kernel heap.rs realloc
+    # 覆写消费〔Q39 遗留 test-host 接线随刀补〕）。
+    cargo test -p berry-heapface --target {{host}}
     # W3-Q84：berry-dmface（fw_cfg display 模式请求解析纯面——五门判定
     # 链：size 域 (0,32]/UTF-8/trim NUL+ASCII 空白/@ 后缀截断/WxH u32
     # 十进制域，host 6 测；parse_display_mode 单源，kernel main.rs
@@ -929,10 +945,14 @@ test-host:
     # 响应/event/config 编解码 + uapi 常量两源钉板，02 号 §3.1/§3.2；
     # 传输接线归 B1-c）。
     cargo test --manifest-path user/Cargo.toml -p berry-gpuproto --target {{host}}
-    python3 tools/mkfat.py --check-fixture user/berry-fatfs/tests/volume_fixture.bin
+    # mkfat 换轨二刀：fixture 守卫切 Rust 件（先编后用——cargo-target 钉位
+    # 纪律同 elf2flat/mkcpio；oracle 对拍腿在 tools/mkfat cargo test 行内，
+    # Python 侧漂移同被咬）。守卫语义钉板：改 mkfat 忘重产 fixture 即红。
+    CARGO_TARGET_DIR="$PWD/tools/mkfat/cargo-target" cargo build --release --manifest-path tools/mkfat/Cargo.toml --target {{host}}
+    "$PWD/tools/mkfat/cargo-target/{{host}}/release/mkfat" --check-fixture user/berry-fatfs/tests/volume_fixture.bin
     # V-2：FAT16 双宽基准同位守卫（--check-fixture16——一卷一宽双 fixture，
     # 漂移即 FAIL 带 --fixture16 重产提示）。
-    python3 tools/mkfat.py --check-fixture16 user/berry-fatfs/tests/volume_fixture_fat16.bin
+    "$PWD/tools/mkfat/cargo-target/{{host}}/release/mkfat" --check-fixture16 user/berry-fatfs/tests/volume_fixture_fat16.bin
     cargo test --manifest-path user/Cargo.toml -p berry-fatfs --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-netproto --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-netdproto --target {{host}}
@@ -1127,6 +1147,10 @@ test-host:
     # ——selftest 照跑守语义钉板，Rust 件有疑时拿本件复算对拍，不降豁免表
     # （selftest_guard 零豁免契约不动）。
     python3 tools/elf2pe_oracle.py --selftest
+    # mkfat 换轨二刀后双形态（elf2flat/elf2pe/mkcpio 同位纪律）：产链
+    # 现役件 = Rust（上方 cargo test tools/mkfat）；Python 版不降格改名
+    # ——模块面现役（mkimage/pwrcls import build_volume_puts 单编码器），
+    # selftest 照跑守 Python 侧语义钉板 + fixture 重产责任面。
     python3 tools/mkfat.py --selftest
     # A1-3a/3b：mkcpio --split 切分面守卫（重装恒等/恰整数倍/单卷/命名/
     # 拒面/陈卷清理）——rootfs 多卷产链（build-user --split 32）的编码
@@ -1148,14 +1172,32 @@ test-host:
     cargo test --manifest-path tools/mkcpio/Cargo.toml --target {{host}}
     # W1（彻底 Rust 化轨道 b 层 #8 刀序第二位）：mkfat Rust 件 lib 纯面
     # 测试（FAT12/16 编码往返/默认盘烘焙簇锚/--put 嵌套目录链回读/SPC
-    # 自适应/total 域/拒面全谱）+ CLI 与 Python 现役件字节级对拍（合成
-    # puts 三面：--put 整盘 + 默认盘裸调 + FAT16 8MiB → 双方产物 sha256
-    # 恒等，Python 在席时执行；缺席打 skip 纯面钉板兜底）。独立小工作区，
-    # 须显式 --target {{host}}；产链现役件仍 Python（justfile 601/931/934/
-    # 1768 行），换轨归二刀。
+    # 自适应/total 域/拒面全谱）+ CLI 与 Python 件字节级对拍（合成 puts
+    # 三面：--put 整盘 + 默认盘裸调 + FAT16 8MiB → 双方产物 sha256 恒等；
+    # 二刀新增守卫/重产四面：--check-fixture{,16} 输出行+漂移红面 rc、
+    # --fixture{,16} 重产字节恒等并 = 在册基准、互斥拒面 rc 同形——
+    # Python 在席时执行；缺席打 skip 纯面钉板兜底）。独立小工作区，须
+    # 显式 --target {{host}}。换轨二刀后本行 = 产链现役件门禁（run-rootfs/
+    # test-host 守卫/desktop 走本 bin）；下方 mkfat.py --selftest = Python
+    # oracle 语义钉板（模块面现役：mkimage/pwrcls import）。
     cargo test --manifest-path tools/mkfat/Cargo.toml --target {{host}}
+    # W1（彻底 Rust 化轨道 b 层 #8 刀序第三位首刀）：mkimage Rust 件 lib 纯面
+    # 测试（CHS 向量/MBR 双表项黄金字节含 0xDA 预留槽/manifest v1 黄金字节
+    # +PR 单源 abi.toml 绊线+key_hash/name 拒面/整盘装配确定性+FAT 段与
+    # mkfat 直产零漂移（path 依赖单编码器纪律）/源实例与验签两件组装面/
+    # sha256 FIPS 180-4 标准向量——WIP 期三常量笔误（K[25]/K[59]/h[2]）
+    # + CLI 与 Python 现役件 oracle 字节级对拍（整盘+manifest
+    # 三面：9MiB 合成四件套/96MiB 默认盘/key-hash 注入，sha256 与 stdout
+    # 全等；Python 缺席 skip 纯面钉板兜底）。独立小工作区，须显式
+    # --target {{host}}。换轨二刀后本行 = 产链现役件门禁（image 配方
+    # 走本 bin）；下方 mkimage.py --selftest = Python oracle 语义钉板
+    # （模块面现役：gensourceindex import build_image——单编码器纪律）。
+    cargo test --manifest-path tools/mkimage/Cargo.toml --target {{host}}
     # V-3：mkimage MBR 薄面自检（CHS 向量 + 表项钉板——卷编码面归
-    # mkfat --selftest，单编码器纪律不在此长第二套）。
+    # mkfat --selftest，单编码器纪律不在此长第二套）。换轨二刀后双形态
+    # （elf2flat/mkcpio 同位纪律）：产链现役件 = Rust（上行 cargo test
+    # tools/mkimage）；Python 版不降格改名——模块面现役（gensourceindex
+    # import）+ CLI 对拍 oracle，selftest 照跑守 Python 侧语义钉板。
     python3 tools/mkimage.py --selftest
     # K-3：size.py ADRP 解码器向量自检（--assert-flip 扩面的门禁自身坏 =
     # smoke/build-release 断言静默劣化，同 a-3 U4 纪律门禁化）。
@@ -1717,7 +1759,16 @@ image: build build-boot
     test -f {{KERNEL}} || { echo "kernel ELF 缺失（{{KERNEL}}）——先 just build"; exit 1; }
     test -f rootfs.cpio || { echo "rootfs.cpio 缺失——先 just build-user"; exit 1; }
     mkdir -p out
-    python3 tools/mkimage.py {{IMAGE}} \
+    # mkimage 换轨二刀（b 层 #8 刀序第三位）：产链位切 Rust 件——先编后用
+    # + CARGO_TARGET_DIR 钉 tools/mkimage/cargo-target（elf2flat/mkcpio/
+    # mkfat 同款纪律）；Python mkimage.py 不退役——gensourceindex import
+    # build_image/load_source_instance 模块面（FAT 走 mkfat 单编码器）+
+    # CLI 对拍 oracle（test-host 挂双侧，tools/mkimage cargo test 行）。
+    HOST=$(rustc -vV | sed -n 's/^host: //p')
+    CARGO_TARGET_DIR="$PWD/tools/mkimage/cargo-target" \
+        cargo build --release --manifest-path tools/mkimage/Cargo.toml \
+        --target "$HOST"
+    "$PWD/tools/mkimage/cargo-target/$HOST/release/mkimage" {{IMAGE}} \
         --efi {{BOOT_EFI}} \
         --hello {{BOOT_DIR}}/hello.txt \
         --kernel {{KERNEL}} \
@@ -1778,7 +1829,12 @@ desktop: berry-build
     DATA="$BERRY_ROOT/data/desktop.img"
     mkdir -p "$BERRY_ROOT/data"
     if [ ! -f "$DATA" ]; then
-        python3 tools/mkfat.py "$DATA"
+        # mkfat 换轨二刀：产链位切 Rust 件（先编后用，cargo-target 钉位
+        # 纪律同 elf2flat/mkcpio；字节恒等由 test-host oracle 对拍腿背书）。
+        CARGO_TARGET_DIR="$PWD/tools/mkfat/cargo-target" \
+            cargo build --release --manifest-path tools/mkfat/Cargo.toml \
+            --target "$HOST"
+        "$PWD/tools/mkfat/cargo-target/$HOST/release/mkfat" "$DATA"
         printf 'BERRYOSVBLK!' | dd of="$DATA" conv=notrunc status=none
     fi
     # display fw_cfg 是 gui 位真值源：不传则 guifbd console 不静音、桌面被日志盖。

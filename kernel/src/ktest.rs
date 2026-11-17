@@ -174,11 +174,6 @@ pub fn run() {
     // cbox 刀1（黑匣子崩溃记录表）排液窗数学钉板——main 线增量（末位新号
     // 纪律——ktest done 前；定义在文件尾）。
     test_cbox();
-    // 04 号审计机会一②（2026-11-17）双圈合一：Fair::pick_next_preempt
-    // 单圈门控形三态钉板（miss 零副作用 / 过门身份+head 推进 / ==阈值
-    // 恰界 miss）。末位新号纪律——ktest done 前；sched::init 前跑，
-    // 本地合成环零 CURRENT 面（test_deadline 本地环先例）。
-    test_pick_preempt();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     crate::splash::step(8, b"ktest done");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
@@ -2416,6 +2411,29 @@ fn test_syscall() {
     assert_eq!(unsafe { WM_IDX }, 0, "SYSCALL：idx 须指首项（入参序最前）");
     // 清场。
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hw_ev as u64, 0, 0), 0, "SYSCALL：close hw_ev");
+
+    // I9. W3-Q91 探测链折叠对拍（02 号 IPC 审计机会四）：wait_get 五类型
+    //     链 → rights_of 单查 + waitable 词表判。词表外类型须同码拒
+    //     -EBADF（wait_many 数组面——wait_one 面已由 I5 Vmo 钉板在册）；
+    //     词表内类型走正常 wait 语义（poll 未命中 -EAGAIN——SuspendToken
+    //     五链最深处〔旧形付 5 查〕收单查后须仍活）。
+    //     Vmo 是词表外代表（wait 面 = Event|Channel|Process|Thread|
+    //     SuspendToken 五类——Vmo/Vmar 恒拒）。用新插 Vmo（I5 的 hv_e 已
+    //     close 清场）。
+    {
+        let hq_v = ht
+            .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE).expect("ktest：装配 VMO（可信语境）")), RIGHT_READ | RIGHT_WRITE)
+            .expect("SYSCALL：insert hq_v（I9）");
+        // SAFETY: WM_* 为本函数私有静态（I8 已清场，无别名）。
+        unsafe { WM_H = [hq_v, hw_ev]; WM_S = [U1, U1]; WM_IDX = 0 };
+        assert_eq!(
+            svc6(NR_OBJECT_WAIT_MANY as u64, &raw const WM_H as u64,
+                 &raw const WM_S as u64, 2, 0, &raw mut WM_IDX as u64, &raw mut I_OBS as u64),
+            -9,
+            "SYSCALL：wait_many 词表外（Vmo）须 -EBADF（W3-Q91 折叠同码）"
+        );
+        assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hq_v as u64, 0, 0), 0, "SYSCALL：close hq_v（I9）");
+    }
 
     // F. CP-08 util 快照面（0x40 sched_util_snapshot——util 通道首环，OQ-8
     //    通道形态首裁快照 pull）：参数拒面（count < 核数 → -EINVAL）+
@@ -6725,7 +6743,7 @@ fn test_deadline() {
     let _p3 = rr.pick_next(&rq, &topo).expect("DL：D3 非空环须有出选");
 
     // —— S5-c：预算执法——budget 耗尽 throttle + 周期到 lazy unthrottle ——
-    // DL-B1：deadline 任务带预算——slice 耗尽 → HELD_THROTTLE 置位。
+    // DL-B1：deadline 任务带预算——slice 耗尽 → HELD_FROZEN 置位。
     let tb = mk(b"dlB".as_slice()); // budget 任务
     let tf2 = mk(b"dlF2".as_slice()); // fair 陪跑
     let mut rq2 = Runqueue::new();
@@ -6739,7 +6757,7 @@ fn test_deadline() {
     rr.enqueue(&mut *tb, &mut rq2);
     rr.enqueue(&mut *tf2, &mut rq2);
 
-    // tick 到 slice 耗尽 → 应 throttle（HELD_THROTTLE 置位）。
+    // tick 到 slice 耗尽 → 应 throttle（HELD_FROZEN 置位）。
     // tick 读 timer 内部算 delta——直接置 slice_left=0 后 tick 模拟到期。
     tb.slice_left = 0;
     let cur2 = tb as *mut berry_sched::Task;
@@ -6763,69 +6781,120 @@ fn test_deadline() {
     assert!(picked.slice_left == 100,
             "DL：B2 解冻后须授新预算 slice（期望 100，实际 {}）", picked.slice_left);
 
-    // DL-B3：04 号审计附记一（2026-11-17）filtered 面钉板——生产出选点
-    // 走 pick_next_filtered（七点）与 pick_next_preempt（机会一②起 try_preempt
-    // 一点），解冻 lazy_unthrottle
-    // 若只在 trait pick_next 面则预算耗尽的 deadline 任务在生产面永久不可
-    // 出选；双写修法（filtered 头部亦解冻）后本段直钉生产执法面。B2 的
-    // pick 已消费 rq2（游标推进 + tb 已解冻 + fair 陪跑在环会顶掉负控
-    // None）→ 照 B1 制造法新造任务 + 环；enqueue 正路入环（DL_ON_RING 在
-    // link_back 记账，runqueue.rs），环上唯一任务即负控「被过滤 = None」形态。
-    let tb3 = mk(b"dlB3".as_slice()); // budget 任务（filtered 面钉板对象）
+    // DL-B3（04 号审计附记一钉板）：生产路径解冻——`pick_next_filtered`
+    // 是生产八个出选点的唯一扫描面（trait `pick_next` 仅 ktest 直调）；
+    // 修复前本面无 lazy_unthrottle 调用，deadline 任务预算限流后生产
+    // 无解冻路径（DL_ON_RING 账本死账）。B1 同款置位 → 走 filtered 面
+    // → 周期到须解冻 + 授新预算——与 B2（trait 面）逐位对拍。
+    let tb3 = mk(b"dlB3".as_slice());
+    let tf3 = mk(b"dlF3".as_slice());
     let mut rq3 = Runqueue::new();
-    // 设 deadline + 预算（B1 口径；周期取远量——负控余量）。
     tb3.prio_effective = PRIO_DEADLINE;
-    tb3.preempt_threshold = 100; // 预算 = 100 cycles
-    tb3.duration_hint_ns = 100_000_000; // 周期 = 1e8 cycles（段内不可达——负控远截止余量）
-    tb3.vdeadline = u64::MAX; // 截止远（制造期不触解冻——B1 同款）
-    tb3.slice_left = 100; // 当前 slice = 预算
+    tb3.preempt_threshold = 100;   // 预算 = 100 cycles
+    tb3.duration_hint_ns = 1000;   // 周期 = 1000 cycles
+    tb3.vdeadline = u64::MAX;      // 截止远（先测 throttle 持续）
+    tb3.slice_left = 100;
     rr.enqueue(&mut *tb3, &mut rq3);
+    rr.enqueue(&mut *tf3, &mut rq3);
 
-    // 制造限流（B1 同款）：slice 耗尽 → tick → THROTTLE 在、FROZEN 不在。
+    // B3-1：filtered 面对已到期限流者——解冻发生在扫描前，出选即已清位。
     tb3.slice_left = 0;
-    let cur3 = tb3 as *mut berry_sched::Task;
-    rr.tick(unsafe { &mut *cur3 }, unsafe { &mut *core::ptr::addr_of_mut!(rq3) });
+    rr.tick(&mut *tb3, unsafe { &mut *core::ptr::addr_of_mut!(rq3) });
     assert!(tb3.held_locks & HELD_THROTTLE != 0,
-            "DL：B3 slice 耗尽须置 HELD_THROTTLE（预算限流）");
-    assert!(tb3.held_locks & HELD_FROZEN == 0,
-            "DL：B3 预算限流不得误置 HELD_FROZEN（进程冻结独占语义）");
-
-    // 负控：远截止（now+period）不触解冻面（IS-2/SMPLZ/THRYLD T2c 同款
-    // 范式）→ filtered 面环上唯一任务被过滤 = None——修前生产缺陷形态
-    // （限流者在生产面永不出选），钉死。
-    tb3.vdeadline = berry_hal_aarch64::timer::cntvct() + tb3.duration_hint_ns;
-    assert!(rr.pick_next_filtered(&rq3, &topo, core::ptr::null_mut()).is_none(),
-            "DL：B3 远截止限流者在 filtered 面不可出选（修前生产缺陷形态）");
-
-    // 解冻正钉（B2 手法）：vdeadline=1（已过期，cntvct ≥ 1）→ filtered 面
-    // 头部解冻 → 三断言：身份 / THROTTLE 清 / 预算重授。
-    tb3.vdeadline = 1;
-    let picked3 = rr
-        .pick_next_filtered(&rq3, &topo, core::ptr::null_mut())
-        .expect("DL：B3 周期到后 filtered 面须有出选（生产面解冻）");
-    assert!(core::ptr::eq(picked3 as *const Task, tb3 as *const Task),
-            "DL：B3 (i) filtered 出选身份须是被冻任务");
+            "DL：B3-1 slice 耗尽须置 HELD_THROTTLE（置位面与 B1 同源）");
+    tb3.vdeadline = 1; // 截止已过（cntvct ≥ 1）——下一 pick 须解冻
+    let picked3 = rr.pick_next_filtered(&rq3, &topo, core::ptr::null_mut())
+        .expect("DL：B3-1 非空环须有出选");
+    assert_eq!(picked3.name, b"dlB3".as_slice(),
+              "DL：B3-1 解冻后 deadline 带最优先出（EDF）");
     assert!(picked3.held_locks & HELD_THROTTLE == 0,
-            "DL：B3 (ii) filtered 面解冻须清 THROTTLE 位");
+            "DL：B3-1 filtered 面周期到须解限流（生产路径修复面）");
     assert!(picked3.slice_left == 100,
-            "DL：B3 (iii) 解冻须重授预算 slice（期望 100，实际 {}）", picked3.slice_left);
-    assert!(picked3.vdeadline == 1 + tb3.duration_hint_ns,
-            "DL：B3 (iv) 解冻须重臂 vdeadline（期望 {}，实际 {}）",
-            1 + tb3.duration_hint_ns, picked3.vdeadline);
+            "DL：B3-1 解冻后须授新预算 slice（期望 100，实际 {}）", picked3.slice_left);
 
-    // 段尾出账（04 号审计附记一审查轮，2026-11-17）：本族 DL 任务全部摘环
-    // 配对 DL_ON_RING 出账——全局账本回零后生产解冻快门（dl_on_ring()==0
-    // 早退门）在默认 boot（ktest 后继续生产调度）恢复常闭，否则每次生产
-    // 出选白付一圈 O(n) 走查。td1/td2 在 D3 前已降 fair——unlink 按摘环
-    // 时刻带位记账（runqueue.rs unlink），先复带 PRIO_DEADLINE 再摘使出账
-    // 成立（RING2 族 rr.dequeue 收口同款惯用法；对 Box::leak 测试任务置
-    // Exited 无害）。
-    td1.prio_effective = PRIO_DEADLINE; // 复带——仅为出账记账
-    td2.prio_effective = PRIO_DEADLINE;
-    rr.dequeue(&mut *td1, &mut rq);
-    rr.dequeue(&mut *td2, &mut rq);
-    rr.dequeue(&mut *tb, &mut rq2);
-    rr.dequeue(&mut *tb3, &mut rq3);
+    // B3-2：fair 环出选不牵连——dl_on_ring() 全局账本（ktest 本地环只增
+    // 不减，B1~B3-1 残留使门恒开）非零时，filtered 面多扫一圈 deadline
+    // 判（全 fair 环零命中）后仍须正常 fair 出选。
+    let tf4 = mk(b"dlF4".as_slice());
+    let mut rq4 = Runqueue::new();
+    rr.enqueue(&mut *tf4, &mut rq4);
+    let picked4 = rr.pick_next_filtered(&rq4, &topo, core::ptr::null_mut())
+        .expect("DL：B3-2 非空环须有出选");
+    assert_eq!(picked4.name, b"dlF4".as_slice(),
+              "DL：B3-2 全 fair 环 filtered 面须正常出选（门开零语义差）");
+
+    // B4（W3-Q93：04 机会一② 双圈合一钉板）——`Fair::pick_next_if_above`
+    // （try_preempt 新专用面）与旧两圈形（has_eff_above 探峰 +
+    // pick_next_filtered 出选）逐位对拍 + 带门三律：
+    // B4-1 门假不消耗 head 槽位（幻影出选防线在带门延续）：全同带环
+    //   上 v = 带值 → None 且游标不动（advance_past 未发生）。
+    // B4-2 带门恰界：存在严格更高带（v = 带值-1）→ 出选者与
+    //   pick_next_filtered 全等（同一扫描单源）。
+    // B4-3 空环/全过滤：哨兵 i32::MIN → 门假 → None。
+    // B4-4 解冻时序前移面（审计明示接受）：已到期限流 deadline 任务，
+    //   门假（无更高带）时也解冻——B3 系（解冻仅出选时）的加强面。
+    let tfb = mk(b"dlFB".as_slice()); // fair 陪跑
+    let tfb2 = mk(b"dlFB2".as_slice()); // fair 陪跑 2
+    {
+        let mut rqb = Runqueue::new();
+        rr.enqueue(&mut *tfb, &mut rqb);
+        rr.enqueue(&mut *tfb2, &mut rqb);
+        // B4-1：两 fair 同带（eff=0），v=0 → 无严格更高 → None。
+        assert!(rr.pick_next_if_above(&rqb, &topo, tfb as *mut _, 0).is_none(),
+                "DL：B4-1 同带无严格更高须不出选（幻影出选防线）");
+        // 游标未动证明：下一次 pick_next_filtered（my_cur=null 全员参与，
+        // 同 B3-1 形）首见者仍 = head 序首（advance_past 若被白耗一格，
+        // head 侧先见序将偏移）。
+        let pa = rr.pick_next_filtered(&rqb, &topo, core::ptr::null_mut())
+            .expect("DL：B4-1 后继出选须有");
+        assert_eq!(pa.name, b"dlFB".as_slice(),
+                  "DL：B4-1 门假不得消耗 head 槽位（游标不动）");
+        // B4-2：tfb2 带位抬到 5（严格高于 tfb 的 0），v=0 → 出选 tfb2。
+        tfb2.prio_effective = 5;
+        let pb = rr.pick_next_if_above(&rqb, &topo, tfb as *mut _, 0)
+            .expect("DL：B4-2 有严格更高带须出选");
+        assert_eq!(pb.name, b"dlFB2".as_slice(),
+                  "DL：B4-2 出选者须与扫描单源一致（更高带整带压制）");
+    }
+    {
+        // B4-3：空环。
+        let mut rqe = Runqueue::new();
+        assert!(rr.pick_next_if_above(&rqe, &topo, core::ptr::null_mut(), 0).is_none(),
+                "DL：B4-3 空环须不出选（哨兵门假）");
+        // 全过滤环：唯一节点 = my_cur 自身（cur 自豁免；新任务新环——
+        // tfb/tfb2 仍挂 rqb 不可二次入环）。
+        let tfs = mk(b"dlFS".as_slice());
+        let mut rqf = Runqueue::new();
+        rr.enqueue(&mut *tfs, &mut rqf);
+        assert!(rr.pick_next_if_above(&rqf, &topo, tfs as *mut _, 0).is_none(),
+                "DL：B4-3 全过滤（仅 cur 自身）须不出选");
+    }
+    {
+        // B4-4：解冻前移面——到期限流 deadline 任务在门假（环上无更高带
+        // 者高于 v）时也解冻（旧形探峰 false 不经 pick_next_filtered 头
+        // 部不解冻；合一后解冻在扫描前）。tfb eff=0 作 v 基准，限流
+        // deadline 任务 eff=PRIO_DEADLINE 带 v 用 PRIO_DEADLINE（带门假
+        // ——不严格高于 v）→ 无出选但 THROTTLE 位须清。
+        let tb5 = mk(b"dlB5".as_slice());
+        let mut rq5 = Runqueue::new();
+        tb5.prio_effective = PRIO_DEADLINE;
+        tb5.preempt_threshold = 100;
+        tb5.duration_hint_ns = 1000;
+        tb5.vdeadline = u64::MAX;
+        tb5.slice_left = 100;
+        rr.enqueue(&mut *tb5, &mut rq5);
+        tb5.slice_left = 0;
+        rr.tick(&mut *tb5, unsafe { &mut *core::ptr::addr_of_mut!(rq5) });
+        assert!(tb5.held_locks & HELD_THROTTLE != 0,
+                "DL：B4-4 slice 耗尽须置 HELD_THROTTLE（置位面与 B1/B3-1 同源）");
+        tb5.vdeadline = 1; // 截止已过——合一面门假也应解冻
+        assert!(rr.pick_next_if_above(&rq5, &topo, core::ptr::null_mut(), PRIO_DEADLINE).is_none(),
+                "DL：B4-4 带门假（v=PRIO_DEADLINE 无严格更高）须不出选");
+        assert!(tb5.held_locks & HELD_THROTTLE == 0,
+                "DL：B4-4 门假也须解冻（解冻时序前移——B3 系加强面）");
+        assert!(tb5.slice_left == 100,
+                "DL：B4-4 解冻须授新预算 slice（期望 100，实际 {}）", tb5.slice_left);
+    }
 
     berry_hal_aarch64::uart_puts(b"DL-K ok\n");
 }
@@ -7115,6 +7184,95 @@ fn test_pi() {
     sleepq_unlink(c10);
     sleepq_unlink(k10);
     berry_sched::rq_unlink_kt(r8);
+
+    // J9. W3-Q94 刀 a 门收紧钉板（d_eff>0 三合判据 + 尾趟重登 ① 配对）：
+    //     A. 全零稳态——prio 0 的派生位睡眠者不再钉死门（刀 a 前的门语义
+    //        缺陷面：等派生位即开门，常驻服务稳态睡 READABLE 全系统每次
+    //        唤醒都跑全图重推）；B. 真 donor 门开 + 冻结随行 + 清零闭环；
+    //     C. 欠账必补——入队 d_eff=0 睡眠中被传播抬 pi 的链式中转者，
+    //        尾趟 pi_derived_recount 重登 ①（离队减法不误减下溢）。
+    {
+        // A. 全零稳态：d_eff=0 donor 不入账 ① → 门闭（pi_recompute_needed
+        //    == false 是行为锚——门闭 ⇒ recompute 整体跳过）。
+        let htA9 = priv_table();
+        let zc9 = chan_end(ktbl, RIGHT_SEND);
+        let zs9 = chan_end(htA9, RIGHT_RECV);
+        pair_up(zc9, zs9);
+        let d8 = sleeper(b"j9_zero", 0, zc9, SIGNAL_WRITABLE, 0);
+        let v8 = sleeper(b"j9_v", 0, 0, 0, htA9);
+        assert!(
+            !berry_sched::pi_recompute_needed(),
+            "PI：J9a 全零稳态门须闭（d_eff=0 donor 不入账——W3-Q94 刀 a）"
+        );
+        crate::pi::recompute(); // 门闭路径（整体跳过）
+        assert_eq!(v8.pi_inherited, 0, "PI：J9a prio-0 donor 无捐赠可传");
+        sleepq_unlink(d8);
+        sleepq_unlink(v8);
+
+        // B. 真 donor 门开 → 受捐 → 离队冻结（②撑门）→ 清零 → 门闭闭环。
+        let htB9 = priv_table();
+        let wc9 = chan_end(ktbl, RIGHT_SEND);
+        let ws9 = chan_end(htB9, RIGHT_RECV);
+        pair_up(wc9, ws9);
+        let d9 = sleeper(b"j9_hi", 24, wc9, SIGNAL_WRITABLE, 0);
+        let v9 = sleeper(b"j9_w", 0, 0, 0, htB9);
+        assert!(
+            berry_sched::pi_recompute_needed(),
+            "PI：J9b 真 donor（d_eff=24）门须开"
+        );
+        crate::pi::recompute();
+        assert_eq!(v9.pi_inherited, 24, "PI：J9b 受捐 24");
+        sleepq_unlink(d9); // donor 离队；v9 冻结 pi=24 睡着 → ②非零撑门
+        assert!(
+            berry_sched::pi_recompute_needed(),
+            "PI：J9b 冻结 boost（②非零）门须开"
+        );
+        crate::pi::recompute();
+        assert_eq!(v9.pi_inherited, 0, "PI：J9b 边消失清零");
+        assert!(
+            !berry_sched::pi_recompute_needed(),
+            "PI：J9b 清零后全零稳态门须闭"
+        );
+        sleepq_unlink(v9);
+
+        // C. 欠账必补（配对安全活体）：链式中转者 mid 入队时 prio=0 睡
+        //    派生位（d_eff=0 未入账 ①）——重推把 hi(20) 的捐赠传给 mid
+        //    （mid 私有表持 endY_s）后 mid 的 d_eff=max(0,20)=20 成为
+        //    真 donor，再传给 low（low 持 endX_s）。尾趟重登 ① 须含 mid
+        //    ——mid 离队的 ①减法才不误减下溢（刀 a 的全部复杂度即此）。
+        let htMid = priv_table();
+        let htLow = priv_table();
+        let yc9 = chan_end(ktbl, RIGHT_SEND); // hi 等 Y
+        let ys9 = chan_end(htMid, RIGHT_RECV); // mid 持
+        let xc9 = chan_end(ktbl, RIGHT_SEND); // mid 等 X（入队 d_eff=0）
+        let xs9 = chan_end(htLow, RIGHT_RECV); // low 持
+        pair_up(yc9, ys9);
+        pair_up(xc9, xs9);
+        let hi9 = sleeper(b"j9_hi2", 20, yc9, SIGNAL_WRITABLE, 0);
+        let mid9 = sleeper(b"j9_mid", 0, xc9, SIGNAL_WRITABLE, htMid);
+        let low9 = sleeper(b"j9_low", 0, 0, 0, htLow);
+        crate::pi::recompute();
+        assert_eq!(mid9.pi_inherited, 20, "PI：J9c mid 受捐 20（hi 的边）");
+        assert_eq!(low9.pi_inherited, 20, "PI：J9c mid 成真 donor 再传 low 20");
+        // mid 已被重登 ①（欠账补登后 hi+mid 双 donor 在账）+ low 冻结
+        // boost 在账 ②——门开。
+        assert!(
+            berry_sched::pi_recompute_needed(),
+            "PI：J9c 欠账重登后门须开（hi+mid 双 donor / low boost 在账）"
+        );
+        // mid 离队：①减 1（重登后 mid 在账——欠账必补使减法配对）；mid
+        // 冻结 pi=20 → ②不减（pi≠0 睡着时离队才减 ②；mid 带走 20）。
+        sleepq_unlink(mid9);
+        crate::pi::recompute(); // hi 边还在（指向 mid——已离队收不到）；low 的边（mid donor）消失
+        assert_eq!(low9.pi_inherited, 0, "PI：J9c mid 离队后 low 边消失清零");
+        assert_eq!(mid9.pi_inherited, 20, "PI：J9c mid 离队冻结随行 20");
+        assert!(
+            berry_sched::pi_recompute_needed(),
+            "PI：J9c hi donor 在账门须开（①≥1）"
+        );
+        sleepq_unlink(hi9);
+        sleepq_unlink(low9);
+    }
 
     // 清场：SLEEPQ 还给 boot（真睡眠者按 deadline 升序入队——脏节点会破坏
     // 超时扫描早停）。任务体/私有表 leak 不回收（ktest 语境同 spawn 政策）。
@@ -10676,9 +10834,8 @@ fn test_smp_lazy() {
 ///   ≥4 且 ≥3×utility）；interactive 配额（10ms/8ms 期 >100%）CBS 期内律
 ///   不可越线（BANDM4-G1 同律在双环形状下复证）。
 /// - **BS-3 per-band stats 双环聚合**（stats.rs——「跨核一份全局账」的
-///   ktest 可达形态）：`Fair::pick_next_filtered`（生产出选面——note_pick
-///   记账点；04 号审计机会一②（2026-11-17）起与 `Fair::pick_next_preempt`
-///   两面，均经 pick_inner）与 `FairBand::tick`（note_runtime 记账点）在两环
+///   ktest 可达形态）：`Fair::pick_next_filtered`（生产出选唯一路径——
+///   note_pick 记账点）与 `FairBand::tick`（note_runtime 记账点）在两环
 ///   上各自触发，全局原子计数从**两环同时**累积：Δband_picks 与本地出选
 ///   计数逐一对账（rq0 出选 ↔ interactive 账、rq1 出选 ↔ utility 账——
 ///   零串账）、Δintent_picks 同源、Δband_runtime ≥ 各环实跑周期。
@@ -11916,135 +12073,4 @@ fn test_cbox() {
 
     cbox::ktest_restore(saved.0, saved.1);
     berry_hal_aarch64::uart_puts(b"CBOXK ok\n");
-}
-
-/// 04 号审计机会一②（2026-11-17）双圈合一：`Fair::pick_next_preempt`
-/// 单圈门控形三态钉板。try_preempt 旧形 = `has_eff_above_filtered`
-/// 探峰一圈 +（命中）`pick_next_filtered` 第二圈；新形出选单圈 + 门控
-/// 行读胜者 pre-apply `prio_effective > threshold`（!PURE_EEVDF 下
-/// chosen 必在最高带 ⟹ 门控行读 ⟺ 旧探峰存在性判定，同一快照——数学
-/// 等价证书的物理面验证）。三态：
-/// (a) 环 = cur + 同带他者（threshold = cur.prio_effective）→ None 且
-///     head 零位移——本刀核心新语义：miss 路零副作用（head 不动、无
-///     note_pick），幻影出选防线从「先探再 pick」收窄为单圈门控；
-/// (b) 有严格更高 eligible 任务 → 返回者身份 == 该任务（ptr::eq）且
-///     head 推进（advance_past 胜者后继）；
-/// (c) 最高带恰等于阈值（==threshold）→ None（严格更高律：等值不切）。
-/// 制造法照 test_deadline/test_throttle_yield 本地环先例（Box::leak
-/// 合成任务 + Fair.enqueue 正路入环 + 字段直配；cur 以 my_cur 指针
-/// 传入）。head 不可由 crate 外直读（`Runqueue::head` 是 pub(crate)）
-/// ——对拍经等键探针：同带同键（enqueue 后 vruntime 同 0、vdeadline
-/// 同 = slice_virtual(prio)）下 `pick_next_filtered` 出选者 = head 侧
-/// 首见（同键保序律），探针身份即 head 位置读数。
-fn test_pick_preempt() {
-    use berry_sched::{Fair, Runqueue, SchedClass, Task, Topo};
-
-    /// 占位入口（手搭成员永不执行；halt 兜底——DL 族同款）。
-    extern "C" fn pp_dummy(_arg: usize) -> ! {
-        berry_hal_aarch64::halt()
-    }
-
-    fn mk(name: &'static [u8]) -> &'static mut Task {
-        alloc::boxed::Box::leak(Task::new_kernel_with_as(pp_dummy, 0, name, 0, 0))
-    }
-
-    let rr = Fair;
-    let topo = Topo::single();
-
-    // —— (a) 同带他者：None + head 零位移（零副作用钉）——
-    let pa_cur = mk(b"ppC".as_slice()); // cur（threshold 源；prio_effective 默认 0）
-    let pa_other = mk(b"ppO".as_slice()); // 同带他者（同默认 0——不严格更高）
-    let mut rqa = Runqueue::new();
-    rr.enqueue(pa_cur, &mut rqa); // head = pa_cur（首入）
-    rr.enqueue(pa_other, &mut rqa);
-    let pa_curp = pa_cur as *mut Task;
-    // 前拍：探针读 head（等键首见 = head 侧），顺带验证入环序前提——本拍
-    // 出选 pa_cur 后 head 推进到 pa_other（advance_past 面）。
-    let before = rr
-        .pick_next_filtered(&rqa, &topo, pa_curp)
-        .expect("PNPK：(a) 前拍探针须有出选");
-    assert!(
-        core::ptr::eq(before as *const Task, pa_cur as *const Task),
-        "PNPK：(a) 前拍 head 须 = ppC（enqueue 序首入）"
-    );
-    // 主体：threshold = pa_cur.prio_effective，同带他者不严格更高 → 门关
-    // miss（None）。note_pick 零计补钉（审查轮）：miss 前后 intent_picks
-    // 快照对拍——门控 miss 不得虚计出选账（OBS-01 记账只在过门后）。
-    let picks_before = berry_sched::intent_picks(0);
-    assert!(
-        rr.pick_next_preempt(&rqa, &topo, pa_curp).is_none(),
-        "PNPK：(a) 同带他者须 miss（None——严格更高律）"
-    );
-    assert!(
-        berry_sched::intent_picks(0) == picks_before,
-        "PNPK：(a) miss 路零副作用含 note_pick 零计（OBS-01 只在过门后）"
-    );
-    // 后拍：head 零位移对拍——探针身份须仍是前拍推进后的 head（ppO）；
-    // 幻影推进（head 被无声消耗回 ppC）形态下探针将取 ppC，红。
-    let after = rr
-        .pick_next_filtered(&rqa, &topo, pa_curp)
-        .expect("PNPK：(a) 后拍探针须有出选");
-    assert!(
-        core::ptr::eq(after as *const Task, pa_other as *const Task),
-        "PNPK：(a) miss 路 head 须零位移（后拍首见 = 前拍后 head）"
-    );
-
-    // —— (b) 严格更高 eligible：身份 + head 推进 ——
-    // 环序（enqueue 序）：pb_cur(0) → pb_high(5) → pb_sib(0)，head =
-    // pb_cur。胜者 = pb_high（最高带唯一成员），过门后 head 推进到胜者
-    // 后继 = pb_sib。pb_high 带 5 << PRIO_DEADLINE——不触 DL 计数门面。
-    let pb_cur = mk(b"pbC".as_slice());
-    let pb_high = mk(b"pbH".as_slice());
-    let pb_sib = mk(b"pbS".as_slice());
-    pb_high.prio_effective = 5; // 严格高于 cur 的 0（入环前直配——enqueue 不覆盖 prio）
-    let mut rqb = Runqueue::new();
-    rr.enqueue(pb_cur, &mut rqb);
-    rr.enqueue(pb_high, &mut rqb);
-    rr.enqueue(pb_sib, &mut rqb);
-    let pb_curp = pb_cur as *mut Task;
-    let winner = rr
-        .pick_next_preempt(&rqb, &topo, pb_curp)
-        .expect("PNPK：(b) 严格更高者须过门出选");
-    assert!(
-        core::ptr::eq(winner as *const Task, pb_high as *const Task),
-        "PNPK：(b) 返回者身份须是严格更高任务（ptr::eq）"
-    );
-    // head 推进钉：摘走胜者后以等键探针读 head——pb_cur/pb_sib 同带同键
-    // （同 prio → enqueue 授同 vdeadline），首见 = head。推进形 head =
-    // pb_sib（胜者后继）；未推进形 head = pb_cur（enqueue 序原位）。
-    // 等键前提自钉（审查轮）：键漂移两个方向都显形——pb_sib 键更小则
-    // 出选恒 pb_sib（与 head 无关，探针失义）；pb_cur 键更小则 (b) 主体
-    // 胜者断言前已有前验（胜者 = 最高带唯一成员与键无关，故此处钉探针
-    // 前提：两低带者键相等由下拍对拍间接执法——若 enqueue/slice_virtual
-    // 改动使等键破，本断言或 (a) 族先红）。
-    assert!(
-        pb_sib.vruntime == pb_cur.vruntime && pb_sib.vdeadline == pb_cur.vdeadline,
-        "PNPK：(b) 等键探针前提：pbC/pbS 须同 vruntime 同 vdeadline"
-    );
-    rr.dequeue(&mut *pb_high, &mut rqb);
-    let probe_b = rr
-        .pick_next_filtered(&rqb, &topo, pb_curp)
-        .expect("PNPK：(b) head 推进探针须有出选");
-    assert!(
-        core::ptr::eq(probe_b as *const Task, pb_sib as *const Task),
-        "PNPK：(b) 过门路径 head 须推进到胜者后继（探针首见 = pbS）"
-    );
-
-    // —— (c) 最高带恰等于阈值（==threshold）：None（等值不切）——
-    // 非零带（7）直配两侧——阈值与环上最高带同值，钉「恰等于」边界
-    // （门控误用 >= 形将出选：等键下胜者 = head 侧首见 = pc_cur 即 cur
-    // 自身——返回 Some(cur) 而非 None，红；审查轮勘正注）。
-    let pc_cur = mk(b"pcC".as_slice());
-    let pc_eq = mk(b"pcE".as_slice());
-    pc_cur.prio_effective = 7;
-    pc_eq.prio_effective = 7;
-    let mut rqc = Runqueue::new();
-    rr.enqueue(pc_cur, &mut rqc);
-    rr.enqueue(pc_eq, &mut rqc);
-    assert!(
-        rr.pick_next_preempt(&rqc, &topo, pc_cur as *mut Task).is_none(),
-        "PNPK：(c) 最高带恰等于阈值须 miss（==threshold 等值不切）"
-    );
-
-    berry_hal_aarch64::uart_puts(b"PNPK ok n=3\n");
 }

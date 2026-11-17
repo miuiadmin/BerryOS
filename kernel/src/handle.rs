@@ -587,6 +587,23 @@ impl HandleTable {
         Ok(self.lookup(h)?.1)
     }
 
+    /// **wait 面取对象**（W3-Q91——`wait_get` 五类型链折叠为单查）：查表 +
+    /// 代号校验出对象槽，一次 `obj_type()` 判 waitable（词表单源
+    /// `berry_hdlface::probe::waitable`，host 钉板）。词表外类型 →
+    /// [`ERR_BAD_HANDLE`]（与旧五链「全拒回首个（Event 的）错误」语义逐位
+    /// 一致——need=0 下旧链的拒源只有 -EBADF 一种，类型不符即该码）。
+    /// 旧形态每枚 2-5 次完整查表（每个类型一次 lookup + ObjRef 解引用 +
+    /// 类型比对），本面 1 次（02 号 IPC 审计机会四）。
+    pub fn get_waitable(&self, h: Handle) -> Result<NonNull<ObjRef>, i32> {
+        let (obj, _) = self.lookup(h)?;
+        // SAFETY: 槽在表、gen 匹配 → 指针有效；类型只读探测。
+        let r = unsafe { &*obj.as_ptr() };
+        if !berry_hdlface::probe::waitable(r.obj.obj_type() as u8) {
+            return Err(ERR_BAD_HANDLE); // 词表外 = 类型不符按坏 handle（ABI §8.2 注）
+        }
+        Ok(obj)
+    }
+
     /// 查表（gen 校验）：槽空 / 越界 / 代号不符 / **预留位非零** →
     /// [`ERR_BAD_HANDLE`]。
     fn lookup(&self, h: Handle) -> Result<(NonNull<ObjRef>, Rights), i32> {
