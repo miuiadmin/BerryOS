@@ -67,13 +67,17 @@
 //! + 命令行体验刀六件：clear / uname / uptime / sleep / type / history
 //!（单源 [`BUILTINS`]；`--no-selftest` argv 旗 = 子 bsh 跳链直进交互循环
 //!——term_selftest 哑终端驱动面）+ v2 B3 第 20 件 unset（变量生命周期
-//!闭环——赋值/覆盖/撤销）。（Plan B v0.5：`exit` 经 std::process::exit
+//!闭环——赋值/覆盖/撤销）+ export 面刀第 21 件 export（全导出语义——
+//! vars 单表即导出集，赋值/覆盖/撤销/传递子进程四环闭合）。（Plan B
+//! v0.5：`exit` 经 std::process::exit
 //! → libc `exit` → 0x33 真退出）。`run` 后 `reap()` 完整回收子进程（Plan B
 //! 前「每次 run 泄漏一个 park 中的子进程」的旧常态退役）。
 //!
 //! P5 v0 收官（`docs/shell设计-v1.0.md` §2.3/§2.5）：**环境变量**（shell 局部变量表 +
-//! `$NAME`/`$?` 展开 + `env` 内建；子进程 env 传递 defer v2——argv 块无 env
-//! 面，POSIX `export` 语义随之）+ **`&&`/`||` 短路链**（v2 B2 起 `||` 入链：
+//! `$NAME`/`$?` 展开 + `env` 内建；子进程 env 传递已落——processargs v1.1
+//! bootstrap 通道第二消息（spawn 产点组 [`build_export_set`] 全导出集喂
+//! spec.env）+ `export` 第 21 内建（裸形/`-p` 与 env 同渲染、`K=V` 赋值
+//! 形、`K` 幂等确认）+ interactive 入口 environ 播种）+ **`&&`/`||` 短路链**（v2 B2 起 `||` 入链：
 //! 原始文本边界扫描产 (段,操作符) 序列，`&&` 需 status==0、`||` 需
 //! status!=0，跳过段不求值不碰 status、左结合；`|` 优先级更高：先切
 //! `&&`/`||`、各 part 再分派处理 `|`；每 part **执行时**才展开变量——
@@ -330,11 +334,12 @@ fn main() {
     //    gift spawn），排 fat 族前（EFI 路无盘亦打 SIG）；无拓扑降级门
     //    （失败即 park loud）。
     sig_selftest();
-    // —— 命令行体验刀 + v2 B 域：内建与 v2 语义四件自验（`CLI ok n=10` =
-    //    rootfs 相第 55 标记；B 域起 6→10——⑥ `>>`/⑦ `||`/⑧ unset/⑨
-    //    管道参数四族步）。链序契约同 U2/MMP/CLK/SIG——⑥ 走 RAM 树 fs
-    //    面（u4 先例同款，非盘面）、⑨ 走 spawn（bin/fail/true/echo/grep
-    //    现档），排 fat 族之前（EFI 路无盘亦打 CLI——smoke-image ECO
+    // —— 命令行体验刀 + v2 B 域 + export 面刀：内建与语义步自验（`CLI ok
+    //    n=11` = rootfs 相第 55 标记；B 域起 6→10——⑥ `>>`/⑦ `||`/⑧
+    //    unset/⑨ 管道参数四族步；export 面刀 ⑩ 第 21 内建步 10→11）。
+    //    链序契约同 U2/MMP/CLK/SIG——⑥ 走 RAM 树 fs
+    //    面（u4 先例同款，非盘面）、⑨⑩ 走 spawn（bin/fail/true/echo/grep
+    //    /env 现档），排 fat 族之前（EFI 路无盘亦打 CLI——smoke-image ECO
     //    canon 同面）；无拓扑降级门（失败即 park loud）。
     cli_selftest();
     // —— 命令行体验刀 + v2 B6：哑终端管道契约钉板（`TERM ok n=3` = rootfs
@@ -432,6 +437,17 @@ fn rc_load(vars: &mut Vec<(String, String)>) {
 /// selftest 哑终端驱动面）与常规链尾路径共用同一台机器；`vars`/`status`
 /// 由调用方持有（`$?` 跨链尾→交互语义零漂移）。恒不返回（无限循环）。
 fn interactive(vars: &mut Vec<(String, String)>, status: &mut i32) -> ! {
+    // export 面刀 B4：environ → vars 播种（继承链闭环——子 bsh `echo $K`/
+    // `env` 可见、which 的 PATH 来源链通）。vars_os 按首个 '=' 切键值、无
+    // '=' 项其内跳过、插入序保持；先于 rc_load——rc 后载同名尾置覆盖胜出
+    // （get_var rev 语义自然成立）。boot 自验链零播种副作用（不进
+    // interactive；svcmgr 恒空 env → environ 空 → 零行）。
+    for (k, v) in std::env::vars_os() {
+        vars.push((
+            k.to_string_lossy().into_owned(),
+            v.to_string_lossy().into_owned(),
+        ));
+    }
     // M2 第 9 步：BSHRC.CFG 装载（静默——见 rc_load 头注；常规链尾与
     // --no-selftest 两路径同机生效）。
     rc_load(vars);
@@ -803,6 +819,7 @@ fn int_selftest() {
         mmio_va: 0,
         intent: 0,
         force_eager: false,
+        env: &[],
     };
     let child = match spawn_rootfs_elf(rootfs_h(), &spec) {
         Ok(c) => c,
@@ -2283,6 +2300,7 @@ fn nets_selftest() {
         &["10.0.2.2", "18080"],
         &[g.0, g.1, g.2],
         NETS_CAP_NS,
+        &[],
     ) {
         Some(r) => r,
         None => {
@@ -2319,6 +2337,7 @@ fn nets_selftest() {
         &["localhost", "18080"],
         &[g.0, g.1, g.2],
         NETS_CAP_NS,
+        &[],
     ) {
         Some(r) => r,
         None => {
@@ -3234,6 +3253,7 @@ fn sig_selftest() {
         mmio_va: 0,
         intent: 0,
         force_eager: false,
+        env: &[],
     };
     let child = match spawn_rootfs_elf(rootfs_h(), &spec) {
         Ok(c) => c,
@@ -3373,6 +3393,38 @@ fn assignment_of(s: &str) -> Option<(&str, &str)> {
     }
 }
 
+/// 变量名白名单整串校验（export 面刀 B1）：`[A-Za-z_][A-Za-z0-9_]*` 全串
+/// 匹配——`export K` 幂等确认形的入参闸（assignment_of 的名扫描段独立成
+/// 布尔面）。
+fn is_var_name(s: &str) -> bool {
+    let b = s.as_bytes();
+    !b.is_empty() && (b[0].is_ascii_alphabetic() || b[0] == b'_')
+        && b[1..].iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_')
+}
+
+/// 全导出集装配（export 面刀 B2，spawn 产点共用）：rev-unique 同名最新
+/// 胜出（get_var rev 找最新语义同源）、序按最后赋值先后。产物 = 预拼
+/// `KEY=VALUE` 字节串（String 无内嵌 NUL 面——env_blob 内嵌 NUL 断言按
+/// 构造不触）。全导出语义：vars 单表即导出集、无局部/导出二分——env
+/// 内建显示面（render_cmd 全表含覆盖史）与本函数（子件实收面 = 去重
+/// 导出集）分属显示与装配两语义（POSIX 偏差三笔记面）。
+fn build_export_set(vars: &[(String, String)]) -> Vec<Vec<u8>> {
+    let mut out: Vec<Vec<u8>> = Vec::new();
+    // rev 扫描先见同名最新值——已收名（KEY= 尾界判等，前缀名 A/AB 不误撞）
+    // 的旧值跳过；收集完翻回 = 按最后赋值先后的正序。
+    for (k, v) in vars.iter().rev() {
+        if out.iter().any(|e| e.starts_with(k.as_bytes()) && e[k.len()] == b'=') {
+            continue;
+        }
+        let mut e = k.as_bytes().to_vec();
+        e.push(b'=');
+        e.extend_from_slice(v.as_bytes());
+        out.push(e);
+    }
+    out.reverse();
+    out
+}
+
 /// `$NAME` / `$?` 展开（未定义变量 → 空串，sh 惯例；无 `${}`/引号/转义面
 /// ——v1）。按字节扫描：多字节 UTF-8 连续字节 ≥0x80 不撞 ASCII 语法位。
 fn expand(s: &str, vars: &[(String, String)], status: i32) -> String {
@@ -3483,7 +3535,9 @@ fn run_line(
 }
 
 /// 单段命令：trim → 赋值形检测（**原始文本**；值展开后落表——`RC=$?`）→
-/// unset 检测（v2 B3，同层——变量删减需 &mut vars）→ `|` 管道检测
+/// unset 检测（v2 B3，同层——变量删减需 &mut vars）→ export 前缀检测
+/// （export 面刀 B1，同层——赋值/确认两形需 &mut vars，裸形落 render_cmd）
+/// → `|` 管道检测
 /// （**原始文本**——展开结果只是数据、永不产操作符）→ `>`/`>>` 重定向
 /// 检测（原始文本，P6 A-1/B1）→ 展开（用**进入时**的 `$?`）→ 分派
 /// （render_cmd）。返回段状态码：0 成功 / 2 usage / 126 spawn failed /
@@ -3521,6 +3575,33 @@ fn exec_one(
         }
         return 0;
     }
+    // export 前缀臂（export 面刀 B1 第 21 内建；原始 trimmed 段上检测，与
+    // 赋值/unset 同层）。三形：`export K=V` = 赋值（assignment_of 同法切
+    // 名值——名字段经其白名单、值 expand 后尾置覆盖，**值域可含 `|`/`>`**
+    // ——`export K=V > f` 与 `A=1 > f` 同形记面：不落管道/重定向）；
+    // `export K`（合法名，is_var_name 白名单）= 幂等确认 0（未赋值保持
+    // 未赋值——POSIX「标记导出」在全导出语义下坍缩，偏差记面）；杂形
+    // usage 2。**列显形与重定向/管道形不入本臂**：裸 `export`/`export -p`
+    // 与含 `>`/`|` 的形（`export > f`、`export -p > f`——B1 承诺与
+    // `env > f` 同走 do_redirect）直落后续检测，由 render_cmd 的
+    // export/export -p 精确匹配产列显数据字节（审查轮 critical 修复：
+    // 初版把这些形当杂形拒 usage 2 违诺）。`export K > f` 落重定向臂后
+    // render_cmd 无 `export K` 匹配 → 裸名派发 127（记面——杂形如实）。
+    if let Some(rest) = raw.strip_prefix("export ") {
+        let rest = rest.trim();
+        if let Some((name, value)) = assignment_of(rest) {
+            let value = expand(value, vars, *status);
+            vars.push((name.to_string(), value));
+            return 0;
+        }
+        if !rest.is_empty() && rest != "-p" && !rest.contains('>') && !rest.contains('|') {
+            if is_var_name(rest) {
+                return 0;
+            }
+            writeln!(out, "usage: export K=V | export K | export（列显）").unwrap();
+            return 2;
+        }
+    }
     // 管道（原始文本上检测，优先于内建名匹配——`a | b` 整体不是内建名）。
     // 若在展开后文本上重解析：`P=a|b` 后 `echo $P` 被值里的 | 切成管道误报
     // usage、`P=hexyl|hexyl` 后裸 `$P` 会把变量值当语法执行（对抗审查实抓）。
@@ -3548,16 +3629,16 @@ fn exec_one(
 /// 执法（名单或文案单边漂移即红）。分发序本身仍是 render_cmd 的 if-else
 /// （行为面独立——名单只答「是不是内建」）。
 const BUILTINS: &[&str] = &[
-    "help", "exit", "env", "echo", "run", "cat", "ls", "mkdir", "rm", "cd", "pwd",
+    "help", "exit", "env", "export", "echo", "run", "cat", "ls", "mkdir", "rm", "cd", "pwd",
     "inputpoll", "clear", "uname", "uptime", "sleep", "type", "history", "dmesg", "unset",
 ];
 
 /// help 文案三行（A60：192B 控制台原子消息帽——单行装不下全清单，逐条
 /// 拆行各 ≤192B；命令行体验刀 12→19 内建（dmesg 追补第 19 件）后再拆第三行，同帽纪律；
-/// v2 B 域起补 `||`/`>>`/unset 语法面）。与
+/// v2 B 域起补 `||`/`>>`/unset 语法面；export 面刀第 21 件 export K=V）。与
 /// [`BUILTINS`] 的名单一致性由 cli_selftest ④ 执法（每名必须出现）。
 const HELP_LINES: [&str; 3] = [
-    "bsh 内建：help | echo <text> | env | run <name> | cat <file> | ls | ls <dir> | mkdir <dir> | rm <path> | cd <dir> | pwd | inputpoll",
+    "bsh 内建：help | echo <text> | env | export K=V | run <name> | cat <file> | ls | ls <dir> | mkdir <dir> | rm <path> | cd <dir> | pwd | inputpoll",
     "…续：| clear | uname | uptime | sleep <s> | type <name> | history | dmesg | unset <name> | A | B（rootfs 管道，段可带参）| A && B | A || B | A > file | A >> file | exit",
     "……续：| 裸名 = bin/<name> 派发（C-2a uu 家族）",
 ];
@@ -3589,9 +3670,11 @@ fn render_cmd(
         out.flush().unwrap();
         // → libc exit → EOF + berry_process_exit(0x33)
         std::process::exit(0)
-    } else if cmd == "env" {
+    } else if cmd == "env" || cmd == "export" || cmd == "export -p" {
         // P5 v0：变量表回显（插入序；覆盖写的旧值也列——get 取最新，回显
-        // 面向人不做去重）。
+        // 面向人不做去重）。export 面刀 B1：裸 `export`/`export -p`（POSIX
+        // 习惯别名）同臂同渲染——一真相零新代码（裁决 6），⑩a 逐字节同
+        // 断言执法。
         let mut d = Vec::new();
         for (k, v) in vars.iter() {
             d.extend_from_slice(k.as_bytes());
@@ -3610,7 +3693,11 @@ fn render_cmd(
         writeln!(out, "usage: run <name>").unwrap();
         (Vec::new(), 2)
     } else if let Some(rest) = cmd.strip_prefix("run ") {
-        run_output(rest.trim(), &[], out)
+        // export 面刀 B3：导出集两段装配（owned 预拼 + 借用切片，局部生命
+        // 周期覆盖 spawn 调用）喂 run_output 的 env 参。
+        let env_kv = build_export_set(vars);
+        let env_set: Vec<&[u8]> = env_kv.iter().map(|e| e.as_slice()).collect();
+        run_output(rest.trim(), &[], &env_set, out)
     } else if cmd == "cat" {
         writeln!(out, "usage: cat <file>").unwrap();
         (Vec::new(), 2)
@@ -3740,7 +3827,11 @@ fn render_cmd(
             }
         };
         if cpio_find(rootfs_h(), format!("bin/{}", name).as_bytes()).is_some() {
-            run_output(name, &rest, out)
+            // export 面刀 B3：派发臂同接真值（与 `run ` 臂同集——裸名子件
+            // 与 run 子件环境面同形）。
+            let env_kv = build_export_set(vars);
+            let env_set: Vec<&[u8]> = env_kv.iter().map(|e| e.as_slice()).collect();
+            run_output(name, &rest, &env_set, out)
         } else {
             writeln!(out, "bsh: {}: not found", cmd).unwrap();
             (Vec::new(), 127)
@@ -3753,10 +3844,16 @@ fn render_cmd(
 /// musl 128KiB 口径，盖住 clap 级栈深）→ 收齐 EOF → **数据字节返回**交调用
 /// 方定向；警告照打 `out`（stderr 语义）。子进程无 stdin（env 块单 gift，
 /// libc /dev/null 语义——read 即 EOF）。`args` = argv[1..]（C-2a 起：
-/// `run` 恒空片、PATH 派发带余词——cp/mv 双操作数走这条）。返回 (数据,
-/// 状态码)：127 not found / 126 spawn failed / 2 usage / 其余 = 子真码
-/// （reap Err → 1——真码源 0x3A）。
-fn run_output(name: &str, args: &[&str], out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
+/// `run` 恒空片、PATH 派发带余词——cp/mv 双操作数走这条）。export 面刀
+/// B3 起 `env` = 导出集切片（两调用方 build_export_set 组——空片零发第二
+/// 消息零漂移）。返回 (数据, 状态码)：127 not found / 126 spawn failed /
+/// 2 usage / 其余 = 子真码（reap Err → 1——真码源 0x3A）。
+fn run_output(
+    name: &str,
+    args: &[&str],
+    env: &[&[u8]],
+    out: &mut std::io::Stdout,
+) -> (Vec<u8>, i32) {
     if name.is_empty() || name.contains([' ', '/']) {
         writeln!(out, "usage: run <name>").unwrap();
         return (Vec::new(), 2);
@@ -3796,6 +3893,7 @@ fn run_output(name: &str, args: &[&str], out: &mut std::io::Stdout) -> (Vec<u8>,
         mmio_va: 0,
         intent: 0,
         force_eager: false,
+        env,
     };
     let (data, code) = if let Ok(child) = spawn_rootfs_elf(rootfs_h(), &spec) {
         // C-4b：交互态 = 前台 Ctrl-C 武装（collect_fg 三项等待）；boot 自验
@@ -4893,7 +4991,7 @@ fn m3demo_selftest(vars: &mut Vec<(String, String)>, status: &mut i32) {
         },
         PipeSeg { name: "grep", args: &["beta"] },
     ];
-    match pipe_capture(&segs, None) {
+    match pipe_capture(&segs, None, &[]) {
         Ok((o, c)) if c == 0 && o.data == b"m3 beta\n" && o.eof && o.dropped == 0 => {}
         Ok((o, c)) => m3_bad(3, c, &o),
         Err(PipeFail::NotFound(n)) => m3_fail(3, &format!("{} not found", n)),
@@ -4970,9 +5068,10 @@ fn prompt_after_ctrl_c(d: &[u8]) -> bool {
     }
 }
 
-/// 命令行体验刀（`CLI ok n=10` = rootfs 相第 55 标记；v2 B 域起 6→10）：
-/// 六内建行为面 + v2 四族步自验——render_cmd 直调（与交互/重定向同一渲染
-/// 面；诊断/usage 打真 stdout = stderr 语义）。十步全过才打；败 eprintln
+/// 命令行体验刀（`CLI ok n=11` = rootfs 相第 55 标记；v2 B 域起 6→10、
+/// export 面刀 10→11）：
+/// 六内建行为面 + v2 四族步 + export 步自验——render_cmd 直调（与交互/重定向同一渲染
+/// 面；诊断/usage 打真 stdout = stderr 语义）。十一步全过才打；败 eprintln
 /// + park（标记缺失 → smoke FAIL 兜底）：
 /// ⓪ clear——`\x1b[2J\x1b[H` 7B 逐字节精确对拍 + 带参照打幂等面；
 /// ① uname——`BerryOS aarch64 ` 前缀 + 非空版本单行（libc `.berryver` 单源）+ 带参拒；
@@ -4996,7 +5095,12 @@ fn prompt_after_ctrl_c(d: &[u8]) -> bool {
 ///    同名项全清 + 裸 unset 0 + 未定义名静默 0；
 /// ⑨ 管道参数面（B4）——split_pipe_seg 纯函数对拍（多词/空段拒/名含
 ///    `/` 拒/`|` 拒）+ do_pipe 直调（展开注入 `|` 拒 usage 2 + 带参双段
-///    grep -q 真码链 0/1，零输出手法）。
+///    grep -q 真码链 0/1，零输出手法）；
+/// ⑩ export（export 面刀 B1/B3）——三面：语义纯面（`export __X=7` 赋值
+///    等价 + 裸列显与 env 渲染逐字节同（裁决 6 执法）+ 非法名拒 2）+
+///    run_capture_env 显式端到端（env={"__E=1"} 恰一行精确等值——传递链
+///    全通证）+ do_pipe 真实路径端到端（`env | grep -q __E` 码 0 /
+///    `__NOPE` 码 1——run/管道产点接线活证，⑨ 先例零新机器）。
 fn cli_selftest() {
     fn render(cmd: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
         render_cmd(cmd, &[], 0, out, &[])
@@ -5075,7 +5179,7 @@ fn cli_selftest() {
     if render("type", &mut out).1 != 2 {
         fails.push("④ type 缺参未拒");
     }
-    for b in ["clear", "uname", "uptime", "sleep", "type", "history", "unset"] {
+    for b in ["clear", "uname", "uptime", "sleep", "type", "history", "unset", "export"] {
         if !BUILTINS.contains(&b) {
             fails.push("④ BUILTINS 单源缺新内建");
         }
@@ -5236,11 +5340,73 @@ fn cli_selftest() {
         }
     }
 
+    // ⑩ export（export 面刀）：三面——⑩a 语义纯面 / ⑩b 显式端到端 /
+    //    ⑩c 真实路径端到端。__E/__X/__NOPE（⑦⑧ 已在用的同形变量名，
+    //    非新词面）与现役标记及 RX 断言族互非
+    //    子串（canon 机查已复核）；断言只建立在子件应答上（展开造内容消
+    //    回声纪律不破）。
+    {
+        // ⑩a 语义纯面：局部 vv 三断言（赋值等价 / 列显同渲染 / 非法名拒）。
+        let mut vv: Vec<(String, String)> = Vec::new();
+        let mut st = 0i32;
+        if exec_one("export __X=7", &mut vv, &mut st, &mut out, &[]) != 0 {
+            fails.push("⑩a export K=V 码 != 0");
+        }
+        if expand("$__X", &vv, 0) != "7" {
+            fails.push("⑩a export 赋值等价破缺（$__X != 7）");
+        }
+        let (de, _) = render_cmd("env", &vv, 0, &mut out, &[]);
+        let (dx, _) = render_cmd("export", &vv, 0, &mut out, &[]);
+        if de != dx {
+            fails.push("⑩a export 列显与 env 渲染非逐字节同（裁决 6 破缺）");
+        }
+        let (dp, _) = render_cmd("export -p", &vv, 0, &mut out, &[]);
+        if dp != dx {
+            fails.push("⑩a export -p 列显非同渲染（-p 匹配臂破缺——`export -p > f` 重定向链断）");
+        }
+        // 重定向不入 usage 臂（审查 critical 钉板）：`export > __exf` 必落
+        // 重定向臂写入列显内容（RAM 树 ⑥ 同款零盘面）；usage 2 或文件缺席
+        // = 臂序回归。
+        run_line("export > __exf", &mut vv, &mut st, &mut out, &[]);
+        let good = match get_file("__exf") {
+            Ok(d) => String::from_utf8_lossy(&d).contains("__X=7"),
+            Err(_) => false,
+        };
+        if !good {
+            fails.push("⑩a export > f 未落列显（重定向臂序回归——critical 复发）");
+        }
+        if unlink_of("__exf").is_err() {
+            fails.push("⑩a RAM 树清场失败（残留 __exf）");
+        }
+        if exec_one("export 9BAD=x", &mut vv, &mut st, &mut out, &[]) != 2 {
+            fails.push("⑩a export 非法名未拒（码 != 2）");
+        }
+    }
+    // ⑩b 显式端到端：run_capture_env 直传 env={"__E=1"}——传递链全通证
+    //    （bsh 组装→berry-exec 发送→libc boot 解析→environ→std vars_os→
+    //    uucore print_all）；uu env 无命令面输出恰一行精确等值。
+    match run_capture_env("env", None, &[], &[b"__E=1"]) {
+        Some((o, c)) if c == 0 && o.data == b"__E=1\n" && o.eof && o.dropped == 0 => {}
+        Some(_) => fails.push("⑩b run_capture_env 输出破缺（!= __E=1\\n）"),
+        None => fails.push("⑩b env 档未命中"),
+    }
+    // ⑩c 真实路径端到端：vv 含 __E=1 经 do_pipe 走 run/管道产点——子件
+    //    env 列含 __E（命中 0）/不含 __NOPE（无命中 1）。
+    {
+        let vv: Vec<(String, String)> = vec![("__E".to_string(), "1".to_string())];
+        if do_pipe("env | grep -q __E", &vv, 0, &mut out) != 0 {
+            fails.push("⑩c 管道导出集命中码 != 0（产点接线破缺）");
+        }
+        if do_pipe("env | grep -q __NOPE", &vv, 0, &mut out) != 1 {
+            fails.push("⑩c 管道导出集无命中码 != 1");
+        }
+    }
+
     if !fails.is_empty() {
         eprintln!("bsh: cli selftest bad: {:?}", fails);
         berry_libc::park();
     }
-    println!("CLI ok n=10");
+    println!("CLI ok n=11");
 }
 
 /// 命令行体验刀（`TERM ok n=3` = rootfs 相第 56 标记；v2 B 域起 2→3）——哑
@@ -5297,6 +5463,7 @@ fn term_selftest() {
         mmio_va: 0,
         intent: 0,
         force_eager: false,
+        env: &[],
     };
     let child = match spawn_rootfs_elf(rootfs_h(), &spec) {
         Ok(c) => c,
@@ -5447,7 +5614,11 @@ fn do_pipe(cmd: &str, vars: &[(String, String)], status: i32, out: &mut std::io:
         .zip(args_all.iter())
         .map(|(n, a)| PipeSeg { name: n, args: a.as_slice() })
         .collect();
-    let code = match pipe_capture(&segs, None) {
+    // export 面刀 B3：导出集在段装配处预组一次（owned + 借用切片两段、
+    // 局部生命周期覆盖 spawn），全段同集传入（POSIX 管道同形）。
+    let env_kv = build_export_set(vars);
+    let env_set: Vec<&[u8]> = env_kv.iter().map(|e| e.as_slice()).collect();
+    let code = match pipe_capture(&segs, None, &env_set) {
         Ok((o, c)) => {
             out.write_all(&o.data).unwrap();
             if !o.eof && !o.killed {
@@ -5493,6 +5664,8 @@ enum PipeFail {
 /// gift[0]）、后段 stdin = 读端（`stdin_handle`，被 env send take 迁进子表）；
 /// 末段 stdout = 采集对。EOF 链 = 消息层约定（d-3b）：前段 exit → libc
 /// `send_stdout_eof` → 后段 read 收 0 → 逐级传导 → 末段 EOF 上采集端。
+/// export 面刀 B3 起 `env` = 全段同集的导出集切片（do_pipe 装配处预组；
+/// 自验调用方恒 `&[]` 零漂移）。
 ///
 /// **顺序纪律：先 collect 末段再 reap 全部**——反序死锁：前段堵满管（无
 /// 读者时 WRITABLE 永不来）、末段堵满采集队（父未收）时，父先 reap 前段
@@ -5506,6 +5679,7 @@ enum PipeFail {
 fn pipe_capture(
     segs: &[PipeSeg],
     first_feed: Option<&[u8]>,
+    env: &[&[u8]],
 ) -> Result<(RunOut, i32), PipeFail> {
     // fail-fast：全段查档（拼错名 = 零 spawn 零泄漏）。
     let mut found: Vec<(String, (u64, u64))> = Vec::with_capacity(segs.len());
@@ -5557,6 +5731,7 @@ fn pipe_capture(
             mmio_va: 0,
             intent: 0,
             force_eager: false,
+            env,
         };
         match spawn_rootfs_elf(rootfs_h(), &spec) {
             Ok(c) => children.push(c),
@@ -5661,7 +5836,7 @@ fn pipe_selftest() {
         PipeSeg { name: "hexyl", args: &["--color=never"] },
         PipeSeg { name: "hexyl", args: &["--color=never"] },
     ];
-    let piped = match pipe_capture(&segs, Some(pat)) {
+    let piped = match pipe_capture(&segs, Some(pat), &[]) {
         Ok((o, _)) => o,
         Err(PipeFail::NotFound(n)) => {
             eprintln!("bsh: pipe selftest: {} not found", n);
@@ -5808,7 +5983,7 @@ fn u2_selftest(vars: &mut Vec<(String, String)>, status: &mut i32) {
         PipeSeg { name: "echo", args: &["berry", "u2"] },
         PipeSeg { name: "cat", args: &[] },
     ];
-    match pipe_capture(&segs, Some(&[])) {
+    match pipe_capture(&segs, Some(&[]), &[]) {
         Ok((o, c)) if c == 0 && o.data == echo_ref && o.eof && o.dropped == 0 => {}
         Ok((o, c)) => {
             eprintln!(
@@ -5891,7 +6066,7 @@ fn u3_selftest() {
         PipeSeg { name: "sort", args: &[] },
         PipeSeg { name: "uniq", args: &[] },
     ];
-    match pipe_capture(&segs4, Some(U3_SORT_FEED)) {
+    match pipe_capture(&segs4, Some(U3_SORT_FEED), &[]) {
         Ok((o, c)) if c == 0 && o.data == b"alpha\nbravo\ncharlie\ndelta\n" && o.eof && o.dropped == 0 => {}
         Ok((o, c)) => u3_bad(4, c, &o),
         Err(PipeFail::NotFound(n)) => {
@@ -5909,7 +6084,7 @@ fn u3_selftest() {
         PipeSeg { name: "cut", args: &["-c", "2-3"] },
         PipeSeg { name: "tr", args: &["a-z", "A-Z"] },
     ];
-    match pipe_capture(&segs45, Some(U3_CUT_FEED)) {
+    match pipe_capture(&segs45, Some(U3_CUT_FEED), &[]) {
         Ok((o, c)) if c == 0 && o.data == b"BC\nZ\nEL\n" && o.eof && o.dropped == 0 => {}
         Ok((o, c)) => u3_bad(5, c, &o),
         Err(PipeFail::NotFound(n)) => {
@@ -5929,7 +6104,7 @@ fn u3_selftest() {
         PipeSeg { name: "uniq", args: &[] },
         PipeSeg { name: "wc", args: &["-l"] },
     ];
-    match pipe_capture(&segs6, Some(U3_SORT_FEED)) {
+    match pipe_capture(&segs6, Some(U3_SORT_FEED), &[]) {
         Ok((o, c)) if c == 0 && o.data == b"4\n" && o.eof && o.dropped == 0 => {}
         Ok((o, c)) => u3_bad(6, c, &o),
         Err(PipeFail::NotFound(n)) => {
@@ -6066,10 +6241,11 @@ const U4_GREP_FILE: &[u8] = b"alpha\nbravo\ncharlie\nbravo\n";
 /// U2/U3/B1——排 fat 族之前（EFI 路无盘亦打 U4，smoke-image ECO 同面；
 /// fs 步走 RAM 树 + run_capture_fs gift 四元，/etc/mtab 由 fsmgr 启动
 /// 预建 EFI 路同在）。
-/// 步② 弱断言锚 environ=NULL（berry-libc 空环境档）：uu_env 无命令面
-/// print_all_env_vars 遍历 environ——NULL 表零行 + setenv ok! 桩不写真
-/// 状态 → 恒空出（setenv/environ 落真时本步常量改 "U4V=zz\n" 收编设值
-/// 打印面）。步① head -c 是 fd 克隆面的端到端活证（stdin
+/// 步② 精确等值（export 面刀翻转——原弱断言锚的 environ=NULL/setenv ok!
+/// 桩双前提已落真）：uu_env 无命令面 print_all_env_vars 遍历 environ——
+/// run_capture 恒空 env 下子件 environ 恰为 setenv 真身追加的 "U4V=zz"
+/// 一行（musl std 环境读面符号别名残验若红在此 loud）。步① head -c 是
+/// fd 克隆面的端到端活证（stdin
 /// try_clone_to_owned → fcntl F_DUPFD_CLOEXEC → 别名槽 → 同一条流读回
 /// ；stream_position 撞 ESPIPE 走缓冲回退路——Segment 2 设计闭环）。
 /// 步④ 期望值按自写 grep 实测口径（FILE 参数恒带名前缀——GNU 单文件
@@ -6090,9 +6266,10 @@ fn u4_selftest() {
         Some((o, c)) => u4_bad(1, c, &o),
         None => u4_fail(1, "head not found"),
     }
-    // 步 ②：env U4V=zz——弱断言（空出 + 真码 0；environ=NULL 锚，见头注）。
+    // 步 ②：env U4V=zz——精确等值（恒空 env + setenv 真身追加恰一行；
+    // 见头注）。
     match run_capture("env", None, &["U4V=zz"]) {
-        Some((o, c)) if c == 0 && o.data.is_empty() && o.eof && o.dropped == 0 => {}
+        Some((o, c)) if c == 0 && o.data == b"U4V=zz\n" && o.eof && o.dropped == 0 => {}
         Some((o, c)) => u4_bad(2, c, &o),
         None => u4_fail(2, "env not found"),
     }
@@ -6145,7 +6322,7 @@ fn u4_selftest() {
         PipeSeg { name: "cat", args: &[] },
         PipeSeg { name: "grep", args: &["-c", "bravo"] },
     ];
-    match pipe_capture(&segs5, Some(U4_GREP_FILE)) {
+    match pipe_capture(&segs5, Some(U4_GREP_FILE), &[]) {
         Ok((o, c)) if c == 0 && o.data == b"2\n" && o.eof && o.dropped == 0 => {}
         Ok((o, c)) => u4_bad(5, c, &o),
         Err(PipeFail::NotFound(n)) => u4_fail(5, &format!("{} not found", n)),
@@ -6301,7 +6478,7 @@ fn run_capture_fs_cap(
     // gift[2] 前要求 stdin 在位（berry-exec 断言）——空 feeder 占位（EOF
     // 留队无害：df/du 不读 stdin，fsmgr dummy 同款）。
     let stdin = stdin.or(Some(&[] as &[u8]));
-    run_capture_gifts_cap(name, stdin, args, &[rootfs_dup, fs_dup], cap_ns)
+    run_capture_gifts_cap(name, stdin, args, &[rootfs_dup, fs_dup], cap_ns, &[])
 }
 
 fn run_capture_gifts(
@@ -6310,17 +6487,32 @@ fn run_capture_gifts(
     args: &[&str],
     gifts: &[Handle],
 ) -> Option<(RunOut, i32)> {
-    run_capture_gifts_cap(name, stdin, args, gifts, TIMEOUT_NS)
+    run_capture_gifts_cap(name, stdin, args, gifts, TIMEOUT_NS, &[])
+}
+
+/// run_capture 的 env 直传版（export 面刀 B3，裁决 8：显式参——存量
+/// run_capture 族签名与调用点零漂）：gifts 恒空 + 显式 env 片喂 spec（
+/// 自验步与后续刀复用；空片 = 零发第二消息，观察面与 run_capture 恒等）。
+fn run_capture_env(
+    name: &str,
+    stdin: Option<&[u8]>,
+    args: &[&str],
+    env: &[&[u8]],
+) -> Option<(RunOut, i32)> {
+    run_capture_gifts_cap(name, stdin, args, &[], TIMEOUT_NS, env)
 }
 
 /// [`run_capture_gifts`] 的宽帽版（C-5）——collect 帽经参传入（见
-/// [`collect_cap`]）。
+/// [`collect_cap`]）。export 面刀 B3 起 `env` = 显式导出集切片（裁决 8：
+/// 存量包装 [`run_capture`]/[`run_capture_fs`] 恒 `&[]` 零漂移，显式面走
+/// [`run_capture_env`]）。
 fn run_capture_gifts_cap(
     name: &str,
     stdin: Option<&[u8]>,
     args: &[&str],
     gifts: &[Handle],
     cap_ns: u64,
+    env: &[&[u8]],
 ) -> Option<(RunOut, i32)> {
     let full = format!("bin/{}", name);
     let (data_off, data_len) = cpio_find(rootfs_h(), full.as_bytes())?;
@@ -6340,6 +6532,7 @@ fn run_capture_gifts_cap(
         mmio_va: 0,
         intent: 0,
         force_eager: false,
+        env,
     };
     let child = match spawn_rootfs_elf(rootfs_h(), &spec) {
         Ok(c) => c,

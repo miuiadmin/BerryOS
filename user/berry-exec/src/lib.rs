@@ -15,10 +15,13 @@
 //! - 段幅前置 `ELF_MAP_MAX`（复盘雷 8）：巨段在几何层即降级；
 //! - 栈与映像之间隔**保护页**（`stack_va = base + len + PAGE_SIZE`）——栈用
 //!   穿 = 干净 D-abort（hexyl 栈溢出实踩，d-3c）；
-//! - env 块 gift 位语义（libc `berry_libc_boot` 镜像）：[0] = stdout 端
-//!   RIGHT_SEND dup、[1] = stdin 读端、[2..] = extra_gifts（A-2：rootfs VMO
-//!   READ dup；P6 A-1：fsmgr 端/fs 客户端端；A2-3：netd 服务端端）。**随行
-//!   handle 被 send take**——调用方需保留原值者先 duplicate；
+//! - env 块 gift 位语义（libc `berry_libc_boot` 镜像，前缀紧致律）：[0] =
+//!   stdout 端 RIGHT_SEND dup、[1] = stdin 读端、[2]/[3] = T-1 自描述对
+//!   （self_proc/self_vmar）、[4..] = extra_gifts（≤4：rootfs VMO READ dup/
+//!   fsmgr 服务端端/fs 客户端端/netd 服务端端/input 端）。**随行 handle 被
+//!   send take**——调用方需保留原值者先 duplicate；processargs v1.1 起 env
+//!   不占 gift 槽，走 bootstrap 通道第二条消息（见 [`spawn_rootfs_elf`]
+//!   协议头注）；
 //! - **回收（Plan B v0.5）**：成功返 [`ChildHandles`]，调用方收完输出后
 //!   `reap()`（wait TERMINATED →（X-3c：demand 槽注销先于 close）→ unmap×3
 //!   〔+零尾域〕 → close×5〔+zvmo〕——P6 A-2 起含 MMIO 窗口）
@@ -358,11 +361,13 @@ pub struct SpawnSpec<'a> {
     /// argv[1..] 追加项列表（hexyl 的 `--color=never` 单参 / C-2a 起 uu 家族
     /// cp/mv 的双操作数走这条）。空片 = 无参。
     pub args: &'a [&'a [u8]],
-    /// env 块 gift[2..]（A2-3 起切片 ≤3 项）：[2] = rootfs VMO READ dup
-    /// （bsh 的 run 流式取 ELF）/ P6 的 fsmgr 服务端端 fs_b；[3] = fs 客户
-    /// 端端（bsh 的 `>`/`cat`/`ls`，P6 A-1）；[4] = netd 服务端端（bsh 的
-    /// EVS 自验，A2-3）。**全被 send take**，调用方保留原值者先 duplicate。
-    /// 空片 = 老两/三元 gift（hello/stdhello/hexyl）。
+    /// env 块 gift[4..4+len]（≤4 项——[2]/[3] 是 T-1 自描述对固定位，前缀
+    /// 紧致律尾段，按位语义见装配段注释）：[4] = rootfs VMO READ dup（bsh
+    /// 的 run 流式取 ELF）/ fsmgr 服务端端 fs_b（P6 A-1，同槽多产面）；
+    /// [5] = fs 客户端端（bsh 的 `>`/`cat`/`ls`，P6 A-1）；[6] = netd 服务
+    /// 端端（bsh 的 EVS 自验，A2-3）；[7] = input 端（GUI-4 段②，svcmgr
+    /// 预拉分种）。**全被 send take**，调用方保留原值者先 duplicate。
+    /// 空片 = 无 extras（nhandles ∈ {1} ∪ {4..=8} 单调门控）。
     pub extra_gifts: &'a [Handle],
     /// MMIO 物理窗口 VMO（P6 A-2，boot 授能面——virtio-mmio 窗口）：Some 时
     /// 在栈页之后把它映到 [`VIRTIO_MMIO_VA`]（rights 恰 READ|WRITE，v1
@@ -391,15 +396,25 @@ pub struct SpawnSpec<'a> {
     /// INPUT 步挂死）。短命测试族保持 demand（X-5 足迹收益主体）；dpg 自
     /// 测族子必须 false（0x21 测试本体）。
     pub force_eager: bool,
+    /// 导出环境变量集（processargs v1.1 消息二）：每项 = 完整预拼 KEY=VALUE
+    /// 字节串，续装律单源 `berry_argv::env_blob`（帽 256B = CHAN_MSG_MAX
+    /// 恰满、整项或零项单调截断）；**非空才发送**——argv send 之后、
+    /// process_start 之前以 0 句柄压进同一条 bootstrap 通道（子侧 berry-libc
+    /// boot 非阻塞 recv 探测，-EAGAIN = 确定无）。空片 = 现行为零漂：消息流
+    /// 逐字节恒等、无第二条 send（`args` 字段同款空片惯例）。
+    pub env: &'a [&'a [u8]],
 }
 
 /// rootfs ELF 流式拉起（页铺平单 VMO，同 `tools/elf2flat.py` 语义）：
 /// ELF 首窗 `elf_head` 解析（**跨度按 p_memsz**——std RW 段 memsz 含静态堆
 /// + .bss；入口入映像检在装载端拦）→ 子 VMO `[floor页(min), +ceil页(span))`
 /// 一次 commit/map → 各段文件字节按 4KiB 泵窗从 rootfs VMO 直送子 VMO 相对
-/// 偏移（**ELF 本体永不整档驻留**）→ 栈页映其上（隔一页保护页）→ **env 块**
-/// （d-3a，BerryOS processargs v1）：channel 建 env 对 → `send(env_s,
-/// argv0\0…, [stdout 端别名, (stdin 端), (extra_gifts…)])`（能力随消息迁移）→
+/// 偏移（**ELF 本体永不整档驻留**）→ 栈页映其上（隔一页保护页）→
+/// **bootstrap 通道交接**（d-3a，BerryOS processargs v1.1 两条消息制——
+/// 通道级 add-only）：channel 建 env 对 → 消息一 `send(env_s, argv0\0…,
+/// [stdout 端别名, (stdin 端), (self_proc/self_vmar 自描述对),
+/// (extra_gifts…)])`（能力随消息迁移；env 有无两态下逐字节恒形）→
+/// 消息二（[`SpawnSpec::env`] 非空才发：KEY=VALUE\0 续装串、0 句柄）→
 /// `process_start(bootstrap=env_c)`——子进程入口 x0 = env 端，close 原值必
 /// -EBADF（迁移自证）。
 ///
@@ -421,6 +436,7 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
         mmio_va,
         intent,
         force_eager,
+        env,
     } = spec;
     assert!(
         stdin_feed.is_none() || stdin_handle.is_none(),
@@ -804,6 +820,22 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
     let plen = berry_argv::argv_blob(&mut blob, name, args);
     if berry_channel_send(env_s, blob.as_ptr(), plen, gift.as_ptr(), nhandles) != 0 {
         trap();
+    }
+    // —— processargs v1.1 消息二（env 消息，条件发送）：argv send 之后、
+    //    process_start 之前压队（确定性先行——产侧全序完成后子进程才执行
+    //    首指令，子侧 recv#2 的 -EAGAIN 是「确定无」而非「未到」）。仅
+    //    spec.env 非空时发送：payload = KEY=VALUE\0 续装串（组装律单源
+    //    berry-argv::env_blob）、0 句柄（hello null+0 现役先例）；
+    //    CHAN_DEPTH=8 容两票零 -EBUSY，失败照 syscall 面自陷纪律。空导出
+    //    集零发送——不传 env 的调用面消息流与 v1 逐字节恒等（G1 零漂移）。
+    if !env.is_empty() {
+        let mut ebuf = [0u8; berry_argv::ENV_BLOB_SZ];
+        let elen = berry_argv::env_blob(&mut ebuf, env);
+        // 组装 0 字节（全空项/首项整截断）不压空消息——与空导出集同观察面
+        //（审查轮收紧：0B/0 句柄消息对通道队列是可观察态）。
+        if elen > 0 && berry_channel_send(env_s, ebuf.as_ptr(), elen, core::ptr::null(), 0) != 0 {
+            trap();
+        }
     }
     if berry_process_start(hp, ht, h.entry as usize, saddr + stack_len as usize, env_c) != 0 {
         trap();

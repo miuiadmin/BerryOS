@@ -518,6 +518,7 @@ fn pipe_selftest() {
         mmio_va: 0,
         intent: 0,
         force_eager: false,
+        env: &[],
     };
     let child = match spawn_rootfs_elf(rootfs_h(), &spec) {
         Ok(c) => c,
@@ -631,6 +632,7 @@ fn try_spawn_child() -> Result<Child, &'static str> {
         mmio_va: 0,
         intent: 0,
         force_eager: false,
+        env: &[],
     };
     let child = match spawn_rootfs_elf(rootfs_h(), &spec) {
         Ok(c) => c,

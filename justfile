@@ -883,7 +883,7 @@ test-host:
     cargo test --manifest-path user/Cargo.toml -p berry-winplan --target {{host}}
     # argv blob 组装律纯面（自 berry-exec env 块组装段外迁，winplan 同款
     # 纪律）：argv0 截 191 律 + 整参或零参单调截断 + 恰满边界 + wire
-    # 钉板，host 5 测。
+    # 钉板，host 11 测（argv 5 + env 六族——export 面刀扩）。
     cargo test --manifest-path user/Cargo.toml -p berry-argv --target {{host}}
     # spawn 几何前置门纯面（自 berry-exec process_create 前置段外迁，winplan
     # 同款纪律）：映幅帽 ELF_MAP_MAX 恰帽边界 + 栈顶 USER_TOP 恰顶/+1 页 +
