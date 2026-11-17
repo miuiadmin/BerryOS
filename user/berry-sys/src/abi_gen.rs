@@ -3,8 +3,8 @@
 //! 守卫 = `just abi-check`（`tools/gen_abi.py --check`，挂 build/smoke 前置）。
 //! 与内核侧 `kernel/src/abi_gen.rs` 同源生成（两端 u32/u64 类型约定见
 //! `tools/gen_abi.py` 头注——那是 ABI 决策不是漂移）。
-//! 预算四元组（生成器执法，ADR #11 帽）：nr_total=40 / nr_defined=44 /
-//! nr_registered=43 / nr_ceiling=45（口径与内核侧头注同源同值）。
+//! 预算四元组（生成器执法，ADR #11 帽）：nr_total=41 / nr_defined=45 /
+//! nr_registered=44 / nr_ceiling=45（口径与内核侧头注同源同值）。
 
 use crate::{Handle, Rights, Status, Time};
 
@@ -186,6 +186,8 @@ pub(crate) mod nr {
     pub(crate) const CHANNEL_RECV: usize = 0x53;
     /// 3-4c 落地：`options` 恒 0（非 0 → -EINVAL），授 SIGNAL|DUPLICATE。
     pub(crate) const EVENT_CREATE: usize = 0x54;
+    /// W3-Q97 add-only 加号（先例 0x21/0x23/0x24/0x83/0x84/0x88）：排空式批量 recv。槽距常量 `RECV_N_SLOT_STRIDE` = 304B（berry-chanface recvn 模块单源，kernel/user 两端消费——头 16B〔nbytes/nhandles 出参〕+ 载荷 256B〔CHAN_MSG_MAX〕+ handle 值 32B〔CHAN_HND_MAX×4〕）；批量帽 RECV_N_MAX = 16（2×CHAN_DEPTH——队列深两倍，一次批量窗必能排空任意满队）。判据面 = chanface recvn host 钉板（k 域/槽地址/唤醒判）。
+    pub(crate) const CHANNEL_RECV_N: usize = 0x57;
     pub(crate) const CLOCK_READ: usize = 0x61;
     /// SEC-01 §4.5 件 11（2026-10）：号位按在册模式冻结预留（度量链零实现——底料 SEC-3；防 ABI 冻结后再挤号）；ktest B 段「在册未实现真号」-ENOTSUP 样本挂 kernel 解冻（ktest.rs 兄弟 WIP 冻结中；沿用既有纪律勿拿未知号 0x99 冒充——二者 -ENOTSUP 成因不同）。
     // 在册未实现：无 berry_* wrapper 消费（§8.3 原型层 v2 挂账）——豁免 dead_code。
