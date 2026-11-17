@@ -932,8 +932,9 @@ def build_plan(prod: Product, items: list, n_base: int, pr: int, level: int,
         f" <{len(items)} 条 name=path·见上清单> --split {prod.rootfs_split_mib}"
         f"（单编码器复用，禁第二份 newc 逻辑——产链换轨二刀后现役 = Rust bin）")
     lines.append(
-        f"berry-assemble: mkimage 参数集（步⑦）: python3 tools/mkimage.py"
-        f" out/{prod.name}.img --efi <配方注入位> --hello <配方注入位>"
+        f"berry-assemble: mkimage 参数集（步⑦）: tools/mkimage/cargo-target/"
+        f"<host>/release/mkimage out/{prod.name}.img --efi <配方注入位>"
+        f" --hello <配方注入位>"
         f" --kernel <配方注入位> --initrd <配方注入位>"
         f" --size-mib {prod.image_size_mib}"
         + (f" --source-instance {prod.source_instance}"
