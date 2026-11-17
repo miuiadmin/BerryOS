@@ -16,6 +16,40 @@ fn python_available() -> bool {
     repo_root().join("tools/mkimage.py").exists()
 }
 
+/// 先编后用 + 产物轮询（build-then-poll，共享工作树竞态加固——mkfat 同款
+/// 2026-11-18 实抓根因）：test-host 与并行 bot 流水线同用本 cargo-target
+/// 时，另一 cargo 的 unlink→hardlink 窗口可令产物瞬时缺席。修 = 缺席不即
+/// 红——短轮询等对方落链，仍缺席再重建兜底，三轮穷尽才红；真 build 失败
+/// 仍即红（不吞真错）。
+fn build_then_poll(repo: &std::path::Path, cargo_target: &std::path::Path, host: &str) -> PathBuf {
+    let bin = cargo_target.join(host).join("release").join("mkimage");
+    for attempt in 0..3 {
+        if attempt > 0 {
+            eprintln!("mkimage: 产物缺席第 {attempt} 轮——重建（共享工作树竞态兜底）");
+        }
+        let build = std::process::Command::new("cargo")
+            .args(["build", "--release", "--manifest-path", "tools/mkimage/Cargo.toml",
+                   "--target", host, "--target-dir"])
+            .arg(cargo_target)
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        if !build.status.success() {
+            panic!("Rust mkimage build 失败：{}", String::from_utf8_lossy(&build.stderr));
+        }
+        for _ in 0..20 {
+            if bin.exists() {
+                return bin;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+    panic!(
+        "Rust mkimage 产物在 build 成功 + 3×1s 轮询重建后仍缺席：{}（并行流水线持续占用 cargo-target，或产物路径漂移）",
+        bin.display()
+    );
+}
+
 fn fixture_puts() -> Vec<(Vec<u8>, Vec<u8>)> {
     vec![
         (
@@ -313,15 +347,7 @@ fn oracle_byte_parity() {
             .unwrap()
     };
     let cargo_target = repo.join("tools/mkimage/cargo-target");
-    let build = std::process::Command::new("cargo")
-        .args(["build", "--release", "--manifest-path", "tools/mkimage/Cargo.toml",
-               "--target", &host, "--target-dir"])
-        .arg(&cargo_target)
-        .current_dir(&repo)
-        .output()
-        .unwrap();
-    assert!(build.status.success(), "Rust mkimage build 失败：{}", String::from_utf8_lossy(&build.stderr));
-    let rust_bin = cargo_target.join(&host).join("release").join("mkimage");
+    let rust_bin = build_then_poll(&repo, &cargo_target, &host);
 
     let run = |bin: &std::path::Path, out: &std::path::Path, size: &str| {
         std::process::Command::new(bin)
