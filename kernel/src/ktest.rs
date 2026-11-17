@@ -2412,6 +2412,29 @@ fn test_syscall() {
     // 清场。
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hw_ev as u64, 0, 0), 0, "SYSCALL：close hw_ev");
 
+    // I9. W3-Q91 探测链折叠对拍（02 号 IPC 审计机会四）：wait_get 五类型
+    //     链 → rights_of 单查 + waitable 词表判。词表外类型须同码拒
+    //     -EBADF（wait_many 数组面——wait_one 面已由 I5 Vmo 钉板在册）；
+    //     词表内类型走正常 wait 语义（poll 未命中 -EAGAIN——SuspendToken
+    //     五链最深处〔旧形付 5 查〕收单查后须仍活）。
+    //     Vmo 是词表外代表（wait 面 = Event|Channel|Process|Thread|
+    //     SuspendToken 五类——Vmo/Vmar 恒拒）。用新插 Vmo（I5 的 hv_e 已
+    //     close 清场）。
+    {
+        let hq_v = ht
+            .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE).expect("ktest：装配 VMO（可信语境）")), RIGHT_READ | RIGHT_WRITE)
+            .expect("SYSCALL：insert hq_v（I9）");
+        // SAFETY: WM_* 为本函数私有静态（I8 已清场，无别名）。
+        unsafe { WM_H = [hq_v, hw_ev]; WM_S = [U1, U1]; WM_IDX = 0 };
+        assert_eq!(
+            svc6(NR_OBJECT_WAIT_MANY as u64, &raw const WM_H as u64,
+                 &raw const WM_S as u64, 2, 0, &raw mut WM_IDX as u64, &raw mut I_OBS as u64),
+            -9,
+            "SYSCALL：wait_many 词表外（Vmo）须 -EBADF（W3-Q91 折叠同码）"
+        );
+        assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hq_v as u64, 0, 0), 0, "SYSCALL：close hq_v（I9）");
+    }
+
     // F. CP-08 util 快照面（0x40 sched_util_snapshot——util 通道首环，OQ-8
     //    通道形态首裁快照 pull）：参数拒面（count < 核数 → -EINVAL）+
     //    快照真值面（泵一窗满账 CPU0 → ewma 128、CPU1 未记账 0 → svc 读
