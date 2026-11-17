@@ -993,7 +993,10 @@ fn sock_send_pipe(fd: c_int, buf: *const u8, n: usize) -> ssize_t {
                 let Some(op) = win[i].as_mut() else { continue };
                 let t = now();
                 if op.busy_since == 0 {
-                    op.busy_since = t;
+                    // now() 读失败返 0 与哨兵同值——t.max(1) 消除首样本
+                    // 恰采 0 时的记账顺延面（F107；持续读失败形态由收割
+                    // 帽快速 bail 兜底，无 liveness 洞）。
+                    op.busy_since = t.max(1);
                 } else if t >= op.busy_since + BUSY_CAP_NS {
                     return bail(sent, crate::EIO);
                 }
