@@ -23,9 +23,9 @@ FS/U1/U2/U3/B1/U4/TAB/INT/POLL/MMP/CLK/SIG/PS/BC/THR/EXIT 均结构性缺席）�
   - 等基础 5 + boot 批 `app APPDEMO gui deferred`（裁决 B：boot 批对
     [ui] app 入册不拉起——桌面就绪锚 = LAUNCH/PAGE 基础 5 本体）；
   - guifbd 带合成两标记（批B）：`BANDC ok` / `BANDR ok n=` 全日志各恰
-    一次（BANDR 首重放可晚至点击 spawn 后，故门在停机后全量日志上计数，
-    非 boot 期等待。WMSUB 已随 wm 客户端面收线摘除——共享 wm 队列双消费
-    者应答互截，对抗审查 CONFIRMED，交接撤回）；
+    一次（两标记同拍落印于 guifbd 首次带缓存 seed——BANDC 打印后随批
+    执行幂等自验证重放触发 BANDR，远早于点击；门在停机后全量日志上
+    计数，非 boot 期等待）；
   - `launcher: click ready` **强制在席恰一次**（缺席即 FAIL，不 sleep
     回退——这是 QMP 注入前的状态谓词门）；
   - QMP 三批注入（abs → btn down → btn up）单击 APPDEMO 格中心；
@@ -845,7 +845,7 @@ def verify_boot_a_click(
             log_path,
         )
     # 批B guifbd 带合成两标记（guest.rs one-shot latch 对拍）：全日志各恰
-    # 一次；BANDR 首重放可晚至点击 spawn 后的首个 app 提交，故门在停机后
+    # 一次；两标记 boot 期 seed 自验证拍同批落印（见 :25 注），门在停机后
     # 全量日志上计数（非 boot 期等待）。
     _require_exact_count(text, MARK_BANDC, 1, "boot A click", log_path)
     _require_exact_count(text, MARK_BANDR, 1, "boot A click", log_path)
@@ -1734,8 +1734,8 @@ def self_test(args) -> int:
             raise SmokeError("CLICK 正则误吞 n=10")
 
         # 裁决 B 形：boot 批 deferral 行（非 up 行）+ 点击后恰 1 up 行；
-        # 批B 形：guifbd 两标记（BANDC 带 cache 首 seed 排 boot 侧；BANDR
-        # 首重放可晚至点击 spawn 后的首个 app 提交——排最后）。
+        # 批B 形：guifbd 两标记 boot 期 seed 自验证拍同批落印（样本按现网
+        # 时序排布：seed 排 boot 侧，BANDR 随 BANDC 之后）。
         fake_a = (
             f"{MARK_APP_DEMO_DEFERRED}\n"
             f"{MARK_LAYOUTW}\n"

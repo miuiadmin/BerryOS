@@ -32,8 +32,8 @@
 //!    分类——快照本地查表零 RPC）/[`plan_bands`]（快照带集规划：3 窗口
 //!    带槽 + 底常量 fallback 槽）/[`band_replay_plan`]（SERVICE→SYSTEM
 //!    定序的 damage∩带 重放计划——FULL 帧恒触发）/[`replay_rows_u32`]
-//!    （A==0 透明键跳写的行重放）。guest 侧缓存写入与重放接线在批B 后续
-//!    实施段消费（本面先落 host 可测纯逻辑）。
+//!    （A==0 透明键跳写的行重放）。guest 侧缓存写入与重放已随批B 接线
+//!    消费（本面 host 可测纯逻辑）。
 //!
 //! 纯函数纪律（berry-virtio/berry-gpuproto 同款）：零分配、零 unsafe、
 //! 编不出就拒绝（None）不截断。
@@ -335,8 +335,8 @@ pub const BAND_H_CAP: u32 = 160;
 /// 重放）。
 pub const BAND_CACHE_BYTES_MAX: usize = 4 << 20;
 /// 系统面 surface_id marker（wire SUBMIT 既有 u32 域的本地语义分档，非
-/// 协议号——launcher 全提交带系统带视觉）。guest.rs 同名本地 const 在批B
-/// 后续实施段接线时并指此处收口单源。
+/// 协议号——launcher 全提交带系统带视觉）。批B 过渡语义：SysFace 档不裁
+/// + seed 带缓存；0xFFFF 值域退役归批C（launcher 切 wid 提交后）。
 pub const SYS_SURFACE_ID: u32 = 0xFFFF;
 
 /// surface 分类产物（SPEC-batchB §1 语义表——blit 面「裁剪 / 带缓存写入 /

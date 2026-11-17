@@ -70,8 +70,11 @@
 //!    → Ramfb 缺省安全。
 //! 2. **后端分派**：交接 'w' → 扫 32 槽找 did=16（vprobe 形态，S1 实录
 //!    §2.2）——找到 → vgpu 后端（初始化链 + 帧提交钩子 + `FB ok vgpu`
-//!    标记）；没找到 → **Ramfb 零漂移**（现役路径逐字节不变——无设备相
-//!    无新输出无新 syscall 面〔交接读除外，零可见差〕）。
+//!    标记）；没找到 → **Ramfb 零漂移**（b1bc 迁移期形态：现役路径逐字
+//!    节不变、无设备相无新输出无新 syscall 面〔交接读除外，零可见差〕；
+//!    波3 批B 起带裁剪/缓存/重放为两后端等价的新功能面〔ramfb 相同执
+//!    法、BANDC/BANDR 新输出〕——红线现行语义 = vgpu 钩子面 None 恒短
+//!    路零开销）。
 //! 3. **vgpu 后端**（[`Vgpu`]）：初始化链 = INIT_SEQ 四命令（GET_DISPLAY_INFO
 //!    → CREATE_2D → ATTACH_BACKING → SET_SCANOUT——纯面提交序钉板）；资源
 //!    backing = **fb 窗同一物理段**（RamDxe AllocatePages 连续 DRAM——
@@ -88,8 +91,10 @@
 //!    脏区上报/init 首推/SUBMIT FULL）。发车/回执拆分：发车 = publish
 //!    全批 + 单次门铃不等回执；回执 = [`Vgpu::reap`] 下帧发车前收（2-deep
 //!    ——上帧设备处理与本帧 CPU 工作重叠；FLUSH 头置 FLAG_FENCE，QEMU 2D
-//!    即答路径回执回显 fence_id 作批身份正向锚）。ramfb 红线零漂移：全部
-//!    改动在 vgpu 分支内。
+//!    即答路径回执回显 fence_id 作批身份正向锚）。ramfb 红线零漂移：本段
+//!    （B1-b/c vgpu 迁移块）全部改动在 vgpu 分支内；批B 起带缓存/带重放
+//!    是两后端等价的新功能面（ramfb 相照跑缓存 seed 与重放——属设计内
+//!    行为变更非漂移，见下方批B 段与笔记）。
 //!
 //! **波3 批B（guifbd 带合成 v1）**：带缓存/带重放 + surface 分类（lib
 //! `classify_surface` 六档）驱动裁剪 / 带缓存双写（bounce 同拍抄录 + 补
@@ -445,10 +450,11 @@ struct Srv<'a> {
     vgpu: Option<Vgpu>,
     /// SUBMIT 行弹舱（vmo_read 行读出 → 直写 fb；帽 = ROW_BOUNCE_MAX）。
     bounce: [u8; ROW_BOUNCE_MAX],
-    // —— 波3 批B：wm 客户端面 + 带缓存/带重放 ——
-    /// wm 面全状态（§2.2 状态机 + 本地快照——全部迁移只在 wm_poll）。
+    // —— 波3 批B：wm 快照持有者 + 带缓存/带重放 ——
+    /// wm 快照（恒空——客户端面收线见 `WmFace` 注；wid 全归 AppCompat）。
     wm: WmFace,
-    /// 当前带集（`plan_bands` 产物——快照每次更新重算；Disabled 后冻结）。
+    /// 当前带集（`plan_bands` 产物——boot 拍一次落值；wm 面另刀接入后改
+    /// 快照更新拍重算）。
     bands: [Option<BandPlan>; BAND_SLOTS],
     /// 带缓存（boot 一次性堆分配——Box::leak 常驻段，绝不能入 Srv/栈
     /// 32KiB；None = 带面禁用：裁剪与现网行为不变，仅无缓存/重放）。
