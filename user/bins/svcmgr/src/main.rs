@@ -1780,10 +1780,13 @@ fn run_rootfs_child(console: Handle) {
             }
         }
     }
-    // ---- cbox 刀 2：电池自检落账（battery）——fsmgr Ok 后、vnet 前的机械
-    // 唯一 fs client 窗（fs 端点集刚建：本表持 fs_a_h/fs_client，vnet/
-    // launcher/app 全未起——fsproto 严格串行无请求号，机制性排除交叠非
-    // 时序赌目）。期望 n≥1（boot 期 rogue 自验件确定性 fault 在册）；fs
+    // ---- cbox 刀 2：电池自检落账（battery）——fsmgr Ok 后、launcher 前的机械
+    // 唯一 fs client 窗（fs 端点集刚建：本表持 fs_a_h/fs_client；vnet 已起
+    // 〔F122 前移臂，vblk 后〕但 gift 面＝net_b 单枚零 fs 端，能力模型下结构性
+    // 不可发 fsproto 请求；launcher/app 未起——fsproto 严格串行无请求号，
+    // 机制性排除交叠非时序赌目；论证前提随 F122 滚新：保护事实从「vnet
+    // 未起」升格为「vnet 零 fs 端持有」的端点持有性形态）。期望 n≥1（boot
+    // 期 rogue 自验件确定性 fault 在册）；fs
     // 缺席形 fs_client==0 = eco 降级行、不发标记；RAM-only 形（EFI 冒烟
     // 路）fsmgr 照起：账本落 RAM 树、标记照发——盘面真值验收走主路
     //（spec 验证节）。----
@@ -1795,8 +1798,8 @@ fn run_rootfs_child(console: Handle) {
     }
     // （F122 收敛：vnet／gui-inputd 旧位预拉臂已删——P1-1 前移臂（vblk 后）
     // 与 GUI-4 段②前移臂（wmd 后）为正源；旧位双臂致每次 boot 双拉
-    // vnet＋双 gui-inputd 共享同 MMIO,后起者复位设备、先起者 TX 落空
-    // 超时 trap——红绿链 NET ok×2 实抓,flaky 源。详见六轮 survey F122。）
+    // vnet＋双 gui-inputd 共享同 MMIO，后起者复位设备、先起者 TX 落空
+    // 超时 trap——红绿链 NET ok×2 实抓，flaky 源。详见六轮 survey F122。）
     // ---- GUI-8 段②：berry-launcher（桌面）装配 arm——inputd 后、stdhello
     // 前（草案 §2.3 序重排）。**D3 追认论证**（scout S3-F3）：launcher 仍
     // 在 gfxdemo 阻塞 reap 之后（单 wm 客户端序——gfxdemo 先活后死、
@@ -5408,8 +5411,9 @@ fn app_gui_deferred(console: Handle, id: &[u8]) {
 // 会话编排：排液 → 读账本 → boot id → 合并去重 → 分片 PUT staging +
 // TRUNC 收口 → 读回对拍。落账窗安全论证（fsproto 严格串行无请求号 ⇒
 // 唯一活跃客户纪律）：
-// - battery：fsmgr Ok 后、vnet 前的机械唯一 client 窗（fs 端点集刚建，
-//   vnet/launcher/app 全未起——机制性排除交叠，非时序赌目）；
+// - battery：fsmgr Ok 后、launcher 前的机械唯一 client 窗（fs 端点集刚建，
+//   vnet 已起〔F122 前移臂〕但零 fs 端持有，launcher/app 未起——机制性
+//   排除交叠，非时序赌目）；
 // - 死亡面：门控「死者是最后一个活 app」（表空 = 无并发 fs client；
 //   launcher 在 app 相位结构上不写 fs——layout RMW 只在 init）；
 // - launcher init（berry-launcher 侧自落账）：自身会话，catch 自身重启
