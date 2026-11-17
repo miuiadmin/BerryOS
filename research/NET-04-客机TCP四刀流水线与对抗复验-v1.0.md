@@ -4,6 +4,7 @@
 > **定位**：[四刀 plan](../.agents/plans/2026-11-16-客机tcp四刀流水线.md)（承 [NET-01](NET-01-客机TCP栈深研与裁决-v1.0.md)/[NET-02 首刀](NET-02-客机TCP首刀落地与对抗复验-v1.0.md)/[NET-03 二刀](NET-03-客机TCP二刀吞吐与对抗复验-v1.0.md) + 2026-11-16 probe 裁决）的实施波证据链——量子栈四拆（libc K 窗 / vnet serve 多 op 化+arm 门容量化 / netdproto seq 配对 / tx 批量完成）、顺带批（F72 窗新鲜度护栏 / ACK 域上界 / EVS 250B 入标记链）、吞吐 A/B 与对抗复验数据、八 op 语义域保持取证。
 > **证据分级**：沿用 NET-01 口径——【证】= 本波实跑输出/一手行号；【走】= 走查；【界】= 工具边界。
 > **物理基础**（probe 裁决，wire 直测定谳）：SLIRP 对 guest 侧通告窗恒 65535 无 WScale——NET-03 §2「snd_wnd=128」证伪；真闸 = 客机内同步等待/唤醒量子栈（tx_send 逐帧同步 + 泵收帧唤醒滞后 24-270ms + 通道逐跳串行），wire RTT 0.12-0.3ms 可忽略。证据原件 /tmp/berry-adv/probe-W.pcap（22328B）/probe-W-marks.pcap/probeW-serial.log。
+> **证据件现状（2026-11-17 注）**：/tmp/berry-adv/ 全目录已被宿主清理灭失（F78 预警的 macOS 周期清理兑现）——本篇与 [NET-03](NET-03-客机TCP二刀吞吐与对抗复验-v1.0.md) 所引 probe pcap/毒臂日志/burst 诊断件（tcptest.adv）等原件不可再取，量测结论一律按「以复跑为准」口径处理（[四刀与合并事件遗漏检查](../.agents/research/2026-11-17-四刀与合并事件遗漏检查.md) F94 面）。
 
 ---
 
