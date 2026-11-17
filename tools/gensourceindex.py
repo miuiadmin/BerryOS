@@ -151,8 +151,8 @@ DIGEST_LEN = 32                 # SHA-512/256 摘要长（同上）
 ID_MAX = 24                     # berry-manifest ID_MAX（lib.rs :136 同源）
 LINEAGE_MAX = 16                # mkapp SEC_RE 帽（berry_assemble VENDOR_MAX 同锚）
 VER_SEG_MAX = 999               # 三值版本段域（mkapp VER_RE 0..=999 同源）
-ENTRIES_MAX = 64                # 条目数帽（**推断**——24 号未设帽；APP_SLOTS=9
-                                # 基座 + OEM 三包预装余量上取整）
+ENTRIES_MAX = 64                # 条目数帽（**推断**——24 号未设帽；APP_SLOTS=10
+                                # 基座（2026-11-17 终端刀滚新）+ OEM 三包预装余量上取整）
 CERT_ACTIVE = "active"          # v1 恒值（v1.2 §二 :42–43；词表 add-only）
 CERT_MAX = 16                   # cert_status 长帽（**推断**——lineage 同量级）
 SRC_LABEL = b"BSRC-TOP"         # 签名覆盖域分隔标签（BSIG-TOP 同精神，推断）
