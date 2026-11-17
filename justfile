@@ -395,7 +395,24 @@ build-user:
     # V13（ADR #82 预埋刀）：58 条 name=rootfs 硬编映射外化
     # tools/rootfs-manifest.toml（平台基座自描述——加 bin 只改该表；
     # mkcpio --manifest 加载/拒面见其头注）。--split 32 与出档路径留配方。
-    python3 ../tools/mkcpio.py ../rootfs.cpio \
+    # mkcpio 换轨二刀（彻底 Rust 化轨道 b 层 #8 刀序首位，§5 钉板五步第
+    # 5 步）：产链现役件 = tools/mkcpio（Rust 独立小工作区，#435 首刀件）
+    # ——elf2flat 换轨二刀同款纪律：先编后用；CARGO_TARGET_DIR 显式钉
+    # tools/mkcpio/cargo-target（防全局 target-dir 覆盖漂移，elf2flat 同款）。
+    # 注意：本块在 `cd user` 之后执行，相对路径失效——cargo build 与产物
+    # 定位一律走 $ROOT_ABS 绝对路径（ROOT_ABS 在 cd 前已取仓库根；
+    # build-boot 的 elf2pe 同坑纪律）。
+    # Python 版 mkcpio.py 不改名退役——它是六处模块 import 的图根
+    # （mkapp/tlsscan/bench/smoke-dpgsoak 的 entry/build_archive、
+    # berry_assemble/gensourceindex 的 load_manifest，单编码器纪律），
+    # 保留 = 模块面现役 + CLI 对拍 oracle（真产链形态对拍背书：--manifest
+    # rootfs-manifest.toml + --split 32 真构建树 44.6MB/63 条目 → 主档+
+    # 双卷 sha256 6/6 恒等 + stdout 行全等 + .berryver 同烙印）。
+    CARGO_TARGET_DIR="$ROOT_ABS/tools/mkcpio/cargo-target" \
+        cargo build --release --manifest-path "$ROOT_ABS/tools/mkcpio/Cargo.toml" \
+        --target "$HOST_TRIPLE"
+    MKCPIO="$ROOT_ABS/tools/mkcpio/cargo-target/$HOST_TRIPLE/release/mkcpio"
+    "$MKCPIO" ../rootfs.cpio \
         --manifest ../tools/rootfs-manifest.toml \
         --split 32
     # A1-3b（余量刀）：mkcpio --split 32 = 主路恒走多卷产链——≈28MiB
@@ -1110,13 +1127,19 @@ test-host:
     # 拒面/陈卷清理）——rootfs 多卷产链（build-user --split 32）的编码
     # 单源执法，改 mkcpio 必跑。2026-11-11 W1 去重：A1-3a/3b 两刀各接线
     # 一次致同命令跑两遍（实抓），保留单次覆盖面零损失。
+    # 换轨二刀后双形态（elf2flat/elf2pe 同位纪律）：产链现役件 = Rust
+    # （下方 cargo test tools/mkcpio）；Python 版 mkcpio.py 降格 = 模块
+    # import 图根（mkapp/tlsscan/bench/smoke-dpgsoak/berry_assemble/
+    # gensourceindex 六处，单编码器纪律——不退役）+ CLI 对拍 oracle
+    # ——selftest 照跑守语义钉板，Rust 件有疑时拿本件复算对拍，不降豁免
+    # 表（selftest_guard 零豁免契约不动）。
     python3 tools/mkcpio.py --selftest-split
     # W1（彻底 Rust 化轨道 b 层 #8 刀序首位）：mkcpio Rust 件 lib 纯面
     # 测试（垫页几何走查/重装恒等/卷命名/陈卷清理/manifest 拒面/伴生
     # .sig 收编）+ CLI 与 Python 现役件字节级对拍（合成条目集 → 双方
     # 归档 sha256 恒等，Python 在席时执行；缺席打 skip 纯面钉板兜底）——
-    # elf2flat/elf2pe 首刀同位纪律：产链现役件仍是 Python（mkcpio.py），
-    # 二刀换轨时再换 build-user 配方。独立小工作区，须显式 --target {{host}}。
+    # 换轨二刀后本行 = 产链现役件门禁（build-user 走本 bin）。独立小工作
+    # 区，须显式 --target {{host}}。
     cargo test --manifest-path tools/mkcpio/Cargo.toml --target {{host}}
     # V-3：mkimage MBR 薄面自检（CHS 向量 + 表项钉板——卷编码面归
     # mkfat --selftest，单编码器纪律不在此长第二套）。
