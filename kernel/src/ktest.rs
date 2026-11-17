@@ -6758,6 +6758,48 @@ fn test_deadline() {
     assert!(picked.slice_left == 100,
             "DL：B2 解冻后须授新预算 slice（期望 100，实际 {}）", picked.slice_left);
 
+    // DL-B3（04 号审计附记一钉板）：生产路径解冻——`pick_next_filtered`
+    // 是生产八个出选点的唯一扫描面（trait `pick_next` 仅 ktest 直调）；
+    // 修复前本面无 lazy_unthrottle 调用，deadline 任务预算限流后生产
+    // 无解冻路径（DL_ON_RING 账本死账）。B1 同款置位 → 走 filtered 面
+    // → 周期到须解冻 + 授新预算——与 B2（trait 面）逐位对拍。
+    let tb3 = mk(b"dlB3".as_slice());
+    let tf3 = mk(b"dlF3".as_slice());
+    let mut rq3 = Runqueue::new();
+    tb3.prio_effective = PRIO_DEADLINE;
+    tb3.preempt_threshold = 100;   // 预算 = 100 cycles
+    tb3.duration_hint_ns = 1000;   // 周期 = 1000 cycles
+    tb3.vdeadline = u64::MAX;      // 截止远（先测 throttle 持续）
+    tb3.slice_left = 100;
+    rr.enqueue(&mut *tb3, &mut rq3);
+    rr.enqueue(&mut *tf3, &mut rq3);
+
+    // B3-1：filtered 面对已到期限流者——解冻发生在扫描前，出选即已清位。
+    tb3.slice_left = 0;
+    rr.tick(&mut *tb3, unsafe { &mut *core::ptr::addr_of_mut!(rq3) });
+    assert!(tb3.held_locks & HELD_THROTTLE != 0,
+            "DL：B3-1 slice 耗尽须置 HELD_THROTTLE（置位面与 B1 同源）");
+    tb3.vdeadline = 1; // 截止已过（cntvct ≥ 1）——下一 pick 须解冻
+    let picked3 = rr.pick_next_filtered(&rq3, &topo, core::ptr::null_mut())
+        .expect("DL：B3-1 非空环须有出选");
+    assert_eq!(picked3.name, b"dlB3".as_slice(),
+              "DL：B3-1 解冻后 deadline 带最优先出（EDF）");
+    assert!(picked3.held_locks & HELD_THROTTLE == 0,
+            "DL：B3-1 filtered 面周期到须解限流（生产路径修复面）");
+    assert!(picked3.slice_left == 100,
+            "DL：B3-1 解冻后须授新预算 slice（期望 100，实际 {}）", picked3.slice_left);
+
+    // B3-2：fair 环出选不牵连——dl_on_ring() 全局账本（ktest 本地环只增
+    // 不减，B1~B3-1 残留使门恒开）非零时，filtered 面多扫一圈 deadline
+    // 判（全 fair 环零命中）后仍须正常 fair 出选。
+    let tf4 = mk(b"dlF4".as_slice());
+    let mut rq4 = Runqueue::new();
+    rr.enqueue(&mut *tf4, &mut rq4);
+    let picked4 = rr.pick_next_filtered(&rq4, &topo, core::ptr::null_mut())
+        .expect("DL：B3-2 非空环须有出选");
+    assert_eq!(picked4.name, b"dlF4".as_slice(),
+              "DL：B3-2 全 fair 环 filtered 面须正常出选（门开零语义差）");
+
     berry_hal_aarch64::uart_puts(b"DL-K ok\n");
 }
 
