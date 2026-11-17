@@ -3,13 +3,13 @@
 > 版本：**1.0**（v1.0）｜2026-11-16｜文件名 `NET-03-客机TCP二刀吞吐与对抗复验-v1.0.md`
 > **定位**：[二刀 plan](../.agents/plans/2026-11-16-客机tcp二刀吞吐.md)（承 [NET-01](NET-01-客机TCP栈深研与裁决-v1.0.md)/[NET-02 首刀](NET-02-客机TCP首刀落地与对抗复验-v1.0.md)）的实施波证据链——参数裁决落地（含 MSS 不抬的再诠释）、吞吐前后对比与模型对账（验收线未达的如实记录与根因实证）、对抗复验数据、八 op 语义域保持取证；另载 NET-01 §5.1-1 量级结论的增量修正与四刀路线边界。
 > **证据分级**：沿用 NET-01 口径——【证】= 本波实跑输出/一手行号；【走】= 走查；【界】= 工具边界。
-> **代码面现势（先读）**：二刀五件代码未随任何 commit 落库——08:01 rebase/stash 风波卷离后已恢复：tag `tcp-knives-1-2-backup` 钉悬空快照 `4e638bd6b`（等价件 `078d911df`/`ca4fad911`），五路径 checkout 回树与快照逐字一致，berry-tcp 51/51 + netdproto 43/43 复验绿（2026-11-16 三路复跑）；落账归 owner、恢复实况与核对细节见 §7（本篇行号与门复跑仍锚快照态，fix 波增量见 §7 末条）。
+> **代码面现势（先读，2026-11-17 翻新）**：二刀五件已随 `18388fb54` 落库（两刀恢复落账——含 F73 泵注释与 F77 三测增量，终门 berry-tcp 53/53 + netdproto 43/43 + netproto 24/24 + harness 19/19 绿），本篇与二刀 plan/note/survey 过程件已随 `5391d43b4` 落账，两笔均已推 origin/wip/sched-1.1——「未随任何 commit 落库」旧态解除。此前 08:01 rebase/stash 风波卷离与恢复实况（tag `tcp-knives-1-2-backup` 钉悬空快照 `4e638bd6b`、等价件 `078d911df`/`ca4fad911`）见 §7；本篇行号仍锚快照态（fix 波增量见 §7 末条）。
 
 ---
 
 ## 0. 总判断
 
-二刀按 [plan](../.agents/plans/2026-11-16-客机tcp二刀吞吐.md) 落地：RPC 载荷帽 TCP_DATA_MAX 128→250（inline 几何恰满）、MSS=128 不动、在途环 TX_SLOTS=4 定槽 FIFO（Syn/Data/Fin 三形统一）、Go-Back-N 队头重发 + 部分 ACK 弹槽、发送窗消费（snd_wnd 记账 + 零窗停发）、重传载荷源 Sess.tx 暂存（修 trap 面真重发）。宿主门全绿（berry-tcp 51/netdproto 43/netproto 24 + harness 19/19 含 4 新臂）+ 五标记链正牌全绿。**吞吐验收线未达（如实记差）**：客户端 4KB 最佳 706 B/s < 850 门，交错同窗基线对拍 1.23× < 1.8× 门，服务端 16KB 最佳 547 B/s 逼近 550 未稳跨——根因实证为 QEMU SLIRP 对 guest 侧通告窗 128B（snd_wnd=128，在途恒帽 1×MSS），多段在途逻辑在 harness 合成窗全绿但在活链无窗可用，模型「250B/op 单 RTT」前提在 SLIRP 域不成立。能力面提升真实：压满准入两栈对照（基线 4KB 突发即 wedge vs 二刀 DRAIN 收口）+ 多段在途/部分 ACK/close 排队/零窗停发四能力钉板。**代码面未落库**：五件已 checkout 回工作树（与 tag 快照逐字一致，见 §7）待 owner 落账。
+二刀按 [plan](../.agents/plans/2026-11-16-客机tcp二刀吞吐.md) 落地：RPC 载荷帽 TCP_DATA_MAX 128→250（inline 几何恰满）、MSS=128 不动、在途环 TX_SLOTS=4 定槽 FIFO（Syn/Data/Fin 三形统一）、Go-Back-N 队头重发 + 部分 ACK 弹槽、发送窗消费（snd_wnd 记账 + 零窗停发）、重传载荷源 Sess.tx 暂存（修 trap 面真重发）。宿主门全绿（berry-tcp 51/netdproto 43/netproto 24 + harness 19/19 含 4 新臂）+ 五标记链正牌全绿。**吞吐验收线未达（如实记差）**：客户端 4KB 最佳 706 B/s < 850 门，交错同窗基线对拍 1.23× < 1.8× 门，服务端 16KB 最佳 547 B/s 逼近 550 未稳跨——根因实证为 QEMU SLIRP 对 guest 侧通告窗 128B（snd_wnd=128，在途恒帽 1×MSS），多段在途逻辑在 harness 合成窗全绿但在活链无窗可用，模型「250B/op 单 RTT」前提在 SLIRP 域不成立。能力面提升真实：压满准入两栈对照（基线 4KB 突发即 wedge vs 二刀 DRAIN 收口）+ 多段在途/部分 ACK/close 排队/零窗停发四能力钉板。**代码面已落库**（2026-11-16 `18388fb54` 五件 + `5391d43b4` 过程件，均已推 origin——见头部「先读」与 §7 落账条翻新）。
 
 ## 1. 参数裁决落地：MSS 不抬的再诠释
 
@@ -80,5 +80,5 @@ NET-01 §5.1-1 断言「三刀合取才进 10KB/s 域」（吞吐模型条），
 
 - **事件与恢复实况**【证】：二刀五件（berry-tcp src lib.rs 577 行 + tests/state.rs 878 行、netdproto src、vnet tcp.rs 1438 行 + main.rs；与首刀三件两刀同裹去重共五件）在 2026-11-16 08:01 并行 rebase/stash 风波中被卷离工作树——风波后 HEAD 仍两刀皆无（netdproto TCP_DATA_MAX=128、berry-tcp 无 TX_SLOTS）。恢复已完成：轻量 tag `tcp-knives-1-2-backup` 钉住悬空 WIP 快照 `4e638bd6b`（08:01:20 stash 形，base 81057ef95；等价件 `078d911df`/`ca4fad911` 与之 TCP 内容逐字同），五路径 `git checkout 4e638bd6b -- user/berry-tcp user/berry-netdproto drivers/bins/vnet/src/tcp.rs drivers/bins/vnet/src/main.rs` 摘取回树（摘取即首刀+二刀两波同回），工作树五路径与快照 diff 零行（逐字一致，恢复后多路复核）。
 - **恢复核对**【证】：锚点三钉在位（tests/state.rs 51 测、netdproto TCP_DATA_MAX=250 及 6+250 ≤ CHAN_MSG_MAX 断言族、vnet Sess.tx/tx_seq0）；berry-tcp 51/51 + netdproto 43/43 三路复绿（2026-11-16 恢复后复跑）；sm-harness h19 对活树 path 依赖 `tx_inflight`——树卷离即编译炸（loud 非假绿），是恢复态的独立旁证。四路 sweep 与恢复完整性对拍清单见 [两刀遗漏检查 survey](../.agents/research/2026-11-16-tcp两刀遗漏检查.md)。
-- **待办（落账归 owner）**：五件与本篇、二刀 plan/note 均未 commit——落账前工作树是唯一载体（tag 只钉快照不保树，stash/reset/clean 风波即再卷），紧急落账建议（显式路径三批）在 survey 裁决节；tag 处置（push 第二保险或落账后退役）同归 owner。落账后重走 berry-build + 五标记链再取吞吐数字——本篇门面与量测结论均取得于快照态，恢复后以复跑为准（五标记链复跑与吞吐重取尚未兑现）。
+- **落账已兑现（2026-11-16 09:40/09:41，2026-11-17 翻新）**：五件随 `18388fb54` 落库（含 F73 注释 + F77 三测增量；终门 berry-tcp 53/53 + netdproto 43/43 + netproto 24/24 + harness 19/19 绿），本篇、二刀 plan/note 与第四轮 survey 过程件随 `5391d43b4` 落账，两笔均已推 origin/wip/sched-1.1——旧「落账前工作树是唯一载体」风险解除。tag 处置（push 第二保险或退役）仍归 owner。门面复跑由四刀波承接（[NET-04](NET-04-客机TCP四刀流水线与对抗复验-v1.0.md) §0/§4 门面：五标记链全绿）；本篇吞吐记差数字按「以复跑为准」口径仍锚快照态，根因已由四刀 probe 证伪并改判（§2 与 NET-04 §2）。
 - **fix 波增量（2026-11-16，survey F73/F77）**：恢复核对后树面新增两处可归因差异——vnet tcp.rs connect/shutdown 两泵注释补明「泵期交付字节被静默丢弃」取舍（行为零改动）、berry-tcp state.rs 补 F77 三臂（TimeWait 收 RST 第四臂 + 数据段捎带窗更新 + 缩窗限在途两新测，51 → 53 测全绿）；此后工作树 vs tag 快照的 diff 不再为零，恢复点核对基线以 tag 快照（51 测）为准。

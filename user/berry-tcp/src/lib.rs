@@ -23,6 +23,11 @@
 //!   ——ACK+数据+FIN 同段也只回一个 ACK。
 //! - 序号回绕 v1 不做专门处理：一律 wrapping 算术防溢出 panic（ABI §8.0「永不 panic」
 //!   同族纪律），echo 场景（64B 单会话）远离 2^32 回绕点。
+//! - RFC793 已知偏差（F89 钉板，SLIRP 恒 65535 窗域下全为理论面）：① 窗采纳无
+//!   `seg.ack ≥ snd_una` 下界——旧 ACK + 新 seq 段可改窗（RFC793 不可接受 ACK 不
+//!   采窗）；② 弹槽（`on_seg_open` ①）与 LastAck 覆盖判定用非回绕 `>=`（序号域
+//!   4GB 内不可达，其余比较均 wrapping 式）；③ 窗新鲜度等值采纳（同 seq 同 ack
+//!   仍采窗、重复段携缩窗可回缩）系有意为之——零窗重开需之，理由见 `on_seg_open`。
 #![no_std]
 
 /// 最大段长（通告 + 收取帽）：RX_BUF_SZ 256 − 帧开销 66 = 190 上限内留余量（草案 §5；
@@ -460,6 +465,13 @@ impl Conn {
                 let d = seg.seq.wrapping_sub(self.snd_wl1);
                 let seq_newer = d != 0 && d < 0x8000_0000;
                 let seq_eq = d == 0;
+                // 等值采纳面（F89 钉板）：RFC793 原文为 SND.WL2 < SEG.ACK
+                // 严格小于，此处取「不旧于」（含等值）是有意偏差——对端
+                // 零窗重开等「同 seq 同 ack 新窗」段必须采纳（本 crate 无
+                // persist 探测，严格 < 会把重开窗丢弃到 seq 推进为止）；
+                // 陈旧段已被 seq_newer/ack_ge_wl2 护栏挡在门外。残余面：
+                // 同 seq 同 ack 的重复段携更小窗仍会覆写（可回缩）——
+                // SLIRP 恒窗域结构性不可达，记 crate 头注已知限制。
                 let ack_ge_wl2 = seg.ack.wrapping_sub(self.snd_wl2) < 0x8000_0000;
                 if seq_newer || (seq_eq && ack_ge_wl2) {
                     self.snd_wnd = seg.window;

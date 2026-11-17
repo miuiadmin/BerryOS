@@ -194,6 +194,12 @@ const CAP_SLOW_NS: u64 = 90_000_000_000;
 /// 阻塞循环轮询节拍（accept-wait/data-wait——bsh evs 1s 同款）。
 const POLL_TICK_NS: u64 = 1_000_000_000;
 
+/// Client 臂 BUSY 全局帽（F87 liveness 收口）：单 op 自首次 ST_BUSY 起持续
+/// 背压超此时长 → bail EIO。对齐 vnet 侧 op 帽 TCPS_RT_CAP_NS=60s 的语义
+/// ——服务端 60s 内必给终局（OK/TIMEOUT），持续 BUSY 超窗 = ops 环占死/
+/// 对抗背压迫使客户端弃写（此前无帽形：退避 1s 重发无限循环，send 永不返）。
+const BUSY_CAP_NS: u64 = 60_000_000_000;
+
 fn now() -> u64 {
     let mut t = 0u64;
     // 失败 t=0 → 帽值退化为「now+帽」下界，无害。
@@ -817,13 +823,16 @@ struct PipeOp {
     got: usize,
     /// ST_BUSY 退避重发时刻（0 = 无待重发）。
     retry_dl: u64,
+    /// 首次 ST_BUSY 时刻（0 = 从未背压；F87 全局帽起算点——重发-再 BUSY
+    /// 循环不顺延，仅 ST_OK 收割清零）。
+    busy_since: u64,
     echo: [u8; ndp::TCP_DATA_MAX],
 }
 
 /// `send(2)` / write 链尾（sock_send）：按 kind 分形——
 /// - Client：legacy RT（session-0）分片 ≤TCP_DATA_MAX 走 **K 窗流水线**
 ///   （四刀 P2：issue/harvest 两相——K 个 op 在途、应答按 seq 配对收割、
-///   陈值弃、BUSY 同 seq 退避重发帽内；回显按 op 序入槽缓冲——每 op 应答
+///   陈值弃、BUSY 同 seq 退避重发＋持续背压 60s 全局帽到 EIO（F87）；回显按 op 序入槽缓冲——每 op 应答
 ///   仍严格等长携本 op 回显，ROUNDTRIP 对外语义零漂移）；缓冲余量不足
 ///   → 部分写返回（首片即不足 = EAGAIN——读写节奏面，容量 = K×250）；
 /// - Server：命名 RT 纯发送臂（应答不携数据，A3-1 案②）；
@@ -918,7 +927,7 @@ fn sock_send_pipe(fd: c_int, buf: *const u8, n: usize) -> ssize_t {
             let i = (head + inflight) % TCP_PIPE_K;
             let mut echo = [0u8; ndp::TCP_DATA_MAX];
             echo[..chunk].copy_from_slice(data);
-            win[i] = Some(PipeOp { seq, len: chunk, got: 0, retry_dl: 0, echo });
+            win[i] = Some(PipeOp { seq, len: chunk, got: 0, retry_dl: 0, busy_since: 0, echo });
             inflight += 1;
             sent += chunk;
         }
@@ -974,12 +983,24 @@ fn sock_send_pipe(fd: c_int, buf: *const u8, n: usize) -> ssize_t {
                 }
                 op.echo[..op.len].copy_from_slice(r.data);
                 op.got = op.len;
+                op.busy_since = 0;
             }
             ndp::ST_BUSY => {
                 // 环/op 容量背压：同 seq 退避重发（1s 节拍，收割帽内）。
-                if let Some(op) = win[i].as_mut() {
-                    op.retry_dl = now() + POLL_TICK_NS;
+                // F87 liveness 帽：自首次 BUSY 起 60s 仍持续背压（vnet 侧
+                // ops 环占死/对抗形——TIMEOUT 终局被占死吞掉）→ bail，send
+                // 不再无限退避。
+                let Some(op) = win[i].as_mut() else { continue };
+                let t = now();
+                if op.busy_since == 0 {
+                    // now() 读失败返 0 与哨兵同值——t.max(1) 消除首样本
+                    // 恰采 0 时的记账顺延面（F107；持续读失败形态由收割
+                    // 帽快速 bail 兜底，无 liveness 洞）。
+                    op.busy_since = t.max(1);
+                } else if t >= op.busy_since + BUSY_CAP_NS {
+                    return bail(sent, crate::EIO);
                 }
+                op.retry_dl = t + POLL_TICK_NS;
                 continue;
             }
             st => {

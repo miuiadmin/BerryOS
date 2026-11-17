@@ -151,3 +151,13 @@ smoke-wt-*/
 # base 重写反复剥落本规则，随刀补回）
 /.target-*/
 .plugins/
+
+# 并行会话隔离 target 族与验证残渣(2026-11-17 四刀 survey F103 收口:
+# 仓库根 target-<tag> 形态构建缓存/user 工作区默认 target/根 userbins
+# 产物/toxproxy 会话日志——均不入库;此前逐目录堆积 27+ 目录污染 status)
+/target-*/
+/user/target/
+/userbins/
+/user/cargo-target-*/
+/px-*.log
+/user/target-*/
