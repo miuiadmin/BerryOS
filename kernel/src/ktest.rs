@@ -6823,6 +6823,79 @@ fn test_deadline() {
     assert_eq!(picked4.name, b"dlF4".as_slice(),
               "DL：B3-2 全 fair 环 filtered 面须正常出选（门开零语义差）");
 
+    // B4（W3-Q93：04 机会一② 双圈合一钉板）——`Fair::pick_next_if_above`
+    // （try_preempt 新专用面）与旧两圈形（has_eff_above 探峰 +
+    // pick_next_filtered 出选）逐位对拍 + 带门三律：
+    // B4-1 门假不消耗 head 槽位（幻影出选防线在带门延续）：全同带环
+    //   上 v = 带值 → None 且游标不动（advance_past 未发生）。
+    // B4-2 带门恰界：存在严格更高带（v = 带值-1）→ 出选者与
+    //   pick_next_filtered 全等（同一扫描单源）。
+    // B4-3 空环/全过滤：哨兵 i32::MIN → 门假 → None。
+    // B4-4 解冻时序前移面（审计明示接受）：已到期限流 deadline 任务，
+    //   门假（无更高带）时也解冻——B3 系（解冻仅出选时）的加强面。
+    let tfb = mk(b"dlFB".as_slice()); // fair 陪跑
+    let tfb2 = mk(b"dlFB2".as_slice()); // fair 陪跑 2
+    {
+        let mut rqb = Runqueue::new();
+        rr.enqueue(&mut *tfb, &mut rqb);
+        rr.enqueue(&mut *tfb2, &mut rqb);
+        // B4-1：两 fair 同带（eff=0），v=0 → 无严格更高 → None。
+        assert!(rr.pick_next_if_above(&rqb, &topo, tfb as *mut _, 0).is_none(),
+                "DL：B4-1 同带无严格更高须不出选（幻影出选防线）");
+        // 游标未动证明：下一次 pick_next_filtered（my_cur=null 全员参与，
+        // 同 B3-1 形）首见者仍 = head 序首（advance_past 若被白耗一格，
+        // head 侧先见序将偏移）。
+        let pa = rr.pick_next_filtered(&rqb, &topo, core::ptr::null_mut())
+            .expect("DL：B4-1 后继出选须有");
+        assert_eq!(pa.name, b"dlFB".as_slice(),
+                  "DL：B4-1 门假不得消耗 head 槽位（游标不动）");
+        // B4-2：tfb2 带位抬到 5（严格高于 tfb 的 0），v=0 → 出选 tfb2。
+        tfb2.prio_effective = 5;
+        let pb = rr.pick_next_if_above(&rqb, &topo, tfb as *mut _, 0)
+            .expect("DL：B4-2 有严格更高带须出选");
+        assert_eq!(pb.name, b"dlFB2".as_slice(),
+                  "DL：B4-2 出选者须与扫描单源一致（更高带整带压制）");
+    }
+    {
+        // B4-3：空环。
+        let mut rqe = Runqueue::new();
+        assert!(rr.pick_next_if_above(&rqe, &topo, core::ptr::null_mut(), 0).is_none(),
+                "DL：B4-3 空环须不出选（哨兵门假）");
+        // 全过滤环：唯一节点 = my_cur 自身（cur 自豁免；新任务新环——
+        // tfb/tfb2 仍挂 rqb 不可二次入环）。
+        let tfs = mk(b"dlFS".as_slice());
+        let mut rqf = Runqueue::new();
+        rr.enqueue(&mut *tfs, &mut rqf);
+        assert!(rr.pick_next_if_above(&rqf, &topo, tfs as *mut _, 0).is_none(),
+                "DL：B4-3 全过滤（仅 cur 自身）须不出选");
+    }
+    {
+        // B4-4：解冻前移面——到期限流 deadline 任务在门假（环上无更高带
+        // 者高于 v）时也解冻（旧形探峰 false 不经 pick_next_filtered 头
+        // 部不解冻；合一后解冻在扫描前）。tfb eff=0 作 v 基准，限流
+        // deadline 任务 eff=PRIO_DEADLINE 带 v 用 PRIO_DEADLINE（带门假
+        // ——不严格高于 v）→ 无出选但 THROTTLE 位须清。
+        let tb5 = mk(b"dlB5".as_slice());
+        let mut rq5 = Runqueue::new();
+        tb5.prio_effective = PRIO_DEADLINE;
+        tb5.preempt_threshold = 100;
+        tb5.duration_hint_ns = 1000;
+        tb5.vdeadline = u64::MAX;
+        tb5.slice_left = 100;
+        rr.enqueue(&mut *tb5, &mut rq5);
+        tb5.slice_left = 0;
+        rr.tick(&mut *tb5, unsafe { &mut *core::ptr::addr_of_mut!(rq5) });
+        assert!(tb5.held_locks & HELD_THROTTLE != 0,
+                "DL：B4-4 slice 耗尽须置 HELD_THROTTLE（置位面与 B1/B3-1 同源）");
+        tb5.vdeadline = 1; // 截止已过——合一面门假也应解冻
+        assert!(rr.pick_next_if_above(&rq5, &topo, core::ptr::null_mut(), PRIO_DEADLINE).is_none(),
+                "DL：B4-4 带门假（v=PRIO_DEADLINE 无严格更高）须不出选");
+        assert!(tb5.held_locks & HELD_THROTTLE == 0,
+                "DL：B4-4 门假也须解冻（解冻时序前移——B3 系加强面）");
+        assert!(tb5.slice_left == 100,
+                "DL：B4-4 解冻须授新预算 slice（期望 100，实际 {}）", tb5.slice_left);
+    }
+
     berry_hal_aarch64::uart_puts(b"DL-K ok\n");
 }
 

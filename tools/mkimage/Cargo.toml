@@ -1,0 +1,27 @@
+[package]
+name = "mkimage"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+description = "BerryOS 确定性整盘镜像打包（mkimage.py Rust 首刀，彻底 Rust 化轨道 b 层 #8 刀序第三位）"
+
+[lib]
+name = "mkimage"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mkimage"
+path = "src/main.rs"
+
+# 零外部依赖纪律（W1 lane：禁新外部依赖）——纯 std + 同仓 path 依赖 mkfat
+# （FAT 编码单源：Python 侧 mkimage.py import mkfat 的 Rust 对偶面，研究
+# 底稿 01 §六刀序明示「后续件全部在 Rust 侧复用同一 crate」）。与
+# tools/elf2flat、tools/mkcpio、tools/mkfat 同款独立小工作区形态（根
+# .cargo/config.toml 锁 build.target=aarch64-unknown-none，宿主件靠
+# --manifest-path + 显式 --target 走 host 面）。
+[dependencies]
+mkfat = { path = "../mkfat" }
+
+# 独立小工作区标记（tools/mkfat 同款形态——根 workspace 自动上溯在此截断）
+[workspace]
