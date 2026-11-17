@@ -1832,7 +1832,13 @@ pub fn set_reap_post_hook(f: fn()) {
 /// 兜底语义零漂（回收仍是资源回收非正确性关卡，只是 SMP 下容量须盖住
 /// 排水饥饿窗内的退出突发）。
 static mut REAPQ: [*mut Task; REAPQ_CAP] = [core::ptr::null_mut(); REAPQ_CAP];
-static mut REAPQ_LEN: usize = 0;
+/// REAPQ 占用槽数（04 号审计机会五②，2026-11-17 原子化免锁门）。锁窗内
+/// 写点 = [`reapq_push`] fetch_add（先槽后计数）与 [`reap_drain`] 排水清零；
+/// 锁窗外读者 = [`reap_drain`] 入口免锁门（Relaxed，正确性注见彼处）。
+/// A12 纪律：原子 static（非 static mut），WAIT_HASH 同款口径（IRQ_TICKS
+/// 已退役——04 号审计机会三），免入册 writable_globals（该门禁只执法
+/// static mut / UnsafeCell 直写形态）。
+static REAPQ_LEN: AtomicUsize = AtomicUsize::new(0);
 static mut REAPQ_WARNED: usize = 0;
 const REAPQ_CAP: usize = 256;
 /// REAPQ 互斥锁（S-3c c-2a 落形 → **c-2b slice 2 取放启用**；持有位 =
@@ -1852,9 +1858,15 @@ unsafe fn reapq_push(t: *mut Task) {
         held_mark(HELD_REAPQ, true);
     }
     let mut loud = false;
-    if REAPQ_LEN < REAPQ_CAP {
-        REAPQ[REAPQ_LEN] = t;
-        REAPQ_LEN += 1;
+    // 先槽后计数（04 号审计机会五②，2026-11-17）：窗内程序序 = 槽写先落、
+    // fetch_add 后涨——计数所示槽数必已写（免锁门读者读非零只引入慢路径；
+    // 跨核可见性以 REAPQ 锁交接为界，权威形在 drain 窗内重读）。Relaxed
+    // 全家 = 家法先例（WAIT_HASH/LB_TICKS 同款），不加 Release——正确性
+    // 边界是锁窗，门读漏由一拍有界漏读兜底（正确性注见 reap_drain 门）。
+    let n = REAPQ_LEN.load(Ordering::Relaxed);
+    if n < REAPQ_CAP {
+        REAPQ[n] = t;
+        REAPQ_LEN.fetch_add(1, Ordering::Relaxed);
     } else if REAPQ_WARNED < 4 {
         REAPQ_WARNED += 1;
         loud = true;
@@ -1884,22 +1896,36 @@ pub fn reap_drain() {
     // 分配（「IRQ 上下文不碰分配器」铁则不破——释放非分配）。
     unsafe {
         let phys = !held_test(HELD_REAPQ); // 位感知退化（c-2c slice 2a）
-        if phys {
-            reapq_acquire();
-            held_mark(HELD_REAPQ, true);
-        }
-        let n = REAPQ_LEN;
-        for i in 0..n {
-            let p = REAPQ[i];
-            REAPQ[i] = core::ptr::null_mut();
-            if !p.is_null() {
-                drop(alloc::boxed::Box::from_raw(p));
+        // 免锁空门（04 号审计机会五②，2026-11-17）：门读在锁窗外 Relaxed
+        // ——单边漏读：清零写点唯一 = CPU0 自身 drain ⇒ 零假阳性（观察到
+        // 的 0 必为真空或初值）；唯一漏读形 = 跨核 push 恰落门后——一拍
+        // 有界，下一排水点兜底（yield 尾/idle 环顶每拍必到）。深 park
+        // 滞留面沿用 cap 256 既有契约，门不扩面。门只罩锁窗段：
+        // REAP_POST_HOOK 恒调（分支汇合后）——HT_DRAINQ 32/拍分块尾账
+        // 与 REAPQ 失耦，吞钩子 = 静默期无界滞留，违 process.rs
+        // 「滞后上界 = 一个收割周期」不变式。
+        if REAPQ_LEN.load(Ordering::Relaxed) == 0 {
+            // 空门短路——免 REAPQ 锁对（真空无竞争面）。
+        } else {
+            if phys {
+                reapq_acquire();
+                held_mark(HELD_REAPQ, true);
             }
-        }
-        REAPQ_LEN = 0;
-        if phys {
-            held_mark(HELD_REAPQ, false);
-            reapq_release();
+            // 权威重读（Acquire——与锁外 Relaxed 门读配对的双检形）：
+            // 门读可为旧非零，锁窗内（push/drain 两写者全持锁）定真值。
+            let n = REAPQ_LEN.load(Ordering::Acquire);
+            for i in 0..n {
+                let p = REAPQ[i];
+                REAPQ[i] = core::ptr::null_mut();
+                if !p.is_null() {
+                    drop(alloc::boxed::Box::from_raw(p));
+                }
+            }
+            REAPQ_LEN.store(0, Ordering::Relaxed);
+            if phys {
+                held_mark(HELD_REAPQ, false);
+                reapq_release();
+            }
         }
     }
     // P2-2 退出异步化：REAP 排水尾钩子（REAPQ 锁窗外、本函数所有调用点共用
@@ -4413,7 +4439,18 @@ unsafe fn try_steal_one() -> Option<*mut Task> {
     // 本核 RQ 短锁窗内数环上两现役带在环数（判据与容忍度见节注）。
     // 快照后放锁再开远端窗——绝不双持；密集是软偏好输入，快照-扫描
     // 间隙对核唤醒入环的竞态最多翻转边界档（int==util）一档，容忍。
-    let (tgt_int, tgt_util) = {
+    // 空环早退（04 号审计机会五①，2026-11-17）：len()==0 空判-only 免锁
+    // 门——空形白付的是锁对而非走查（head None 走查本就零迭代），门砍的
+    // 正是取放锁。门读 = rq.len()（AtomicUsize Relaxed 免锁读——runqueue
+    // Q3 跨核读者先例，place()/tick 拉取门同款在职形；head Cell 裸读是
+    // 跨核无锁窗形式数据竞争，不用）。判据钉死空判-only：tick 拉取门
+    // 独占者形 mine==1 的密度仍承重——扩成「恒跳快照」即破带偏好语义。
+    // 两向无害：读旧非零 → 门不开，锁窗照旧逐位同形；读旧零 → (0,0)
+    // 定义值，仅差 utility 候选一档软偏好——与既有快照-扫描间隙容忍
+    // 同族。全冻结环 len>0 门不开，冻结计数语义保留。
+    let (tgt_int, tgt_util) = if rq_of(me).len() == 0 {
+        (0, 0)
+    } else {
         let phys = rq_lock_of(me);
         let mut ni = 0usize;
         let mut nu = 0usize;
