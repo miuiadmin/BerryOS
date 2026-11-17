@@ -46,6 +46,9 @@ mod freeze;
 // W3-Q97：批量 recv（channel_recv_n）纯函数面——批量窗资格与界判定律
 // （机会五 02 号 IPC 审计：排空式批量 recv ABI，add-only 新号）。
 mod recvn;
+// W3-Q95：定容环形队列机械（02 号机会三刀 a——Vec remove(0)/insert(0)
+// 的 O(n) memmove 换 O(1) 环形槽步进；序语义与 Vec FIFO 逐位等价）。
+mod ring;
 
 pub use freeze::{
     clear_frozen_ok, frozen_pair_sound, mark_frozen_ok, pop_ok, push_front_ok, push_ok,
@@ -53,6 +56,8 @@ pub use freeze::{
 pub use recvn::{
     recv_n_k_legal, recv_n_slot_legal, recv_n_wake_needed, RECV_N_MAX, RECV_N_SLOT_STRIDE,
 };
+
+pub use ring::{ring_advance, ring_next_head, ring_ok, ring_slot_of, ring_tail_of};
 
 // ---- 界常量（单源：自 kernel/src/channel.rs 迁此，kernel re-export；
 // 改值 = ABI 事故，host test 字面值钉板先红）----

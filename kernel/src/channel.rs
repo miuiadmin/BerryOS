@@ -21,16 +21,19 @@
 //! 只做端点/消息本体，分层决策在调用方。
 
 use crate::handle::{ObjRef, Rights};
-use alloc::vec::Vec;
+use alloc::boxed::Box;
 use core::ptr::NonNull;
 
 // W3-Q9：界常量与队列资格判单源迁 berry-chanface（判据纯函数面，host
 // 可测钉板）；本文件 re-export 保持 crate 内路径稳定（hdlface 同款纪律）。
 // W3-Q49：冻结面配对判与队列序守卫单源迁 freeze 模块（mark/clear 资格 +
-// push/pop/push_front 不变量）；物理 retain/release 与 Vec 机械留壳。
+// push/pop/push_front 不变量）；物理 retain/release 与存储机械留壳。
+// W3-Q95：定容环形机械单源迁 ring 模块（槽映射/步进/不变量判），本文件
+// 消费同一函数组驱动 Box<[Message; DEPTH]> 存储（02 号机会三刀 a）。
 pub use berry_chanface::{
     clear_frozen_ok, mark_frozen_ok, pop_ok, push_front_ok, push_ok,
-    queue_full_of, queue_readable, CHAN_DEPTH, CHAN_HND_MAX, CHAN_MSG_MAX,
+    queue_full_of, queue_readable, ring_next_head, ring_ok, ring_slot_of,
+    ring_tail_of, CHAN_DEPTH, CHAN_HND_MAX, CHAN_MSG_MAX,
 };
 
 /// 单条消息 inline 字节上限（IPC设计 §2：内联载荷 ≤256B；更大走共享 VMO）。
@@ -104,7 +107,20 @@ pub struct ChannelEnd {
     /// close 走 None 分支，不碰任何指针）。
     peer: Option<NonNull<ObjRef>>,
     /// 本端收件队列（对端 send 压这里；本端 recv 从这里弹）。
-    queue: Vec<Message>,
+    ///
+    /// W3-Q95（02 号机会三刀 a）：`Vec<Message>` → 定容环形
+    /// `Box<[Message; CHAN_DEPTH]>` + head/len。旧形 pop `remove(0)`/
+    /// 回滚 `insert(0)` 是队首 O(n) memmove——3b3 H2 定长内联后 Message
+    /// ≈440B，满队 recv 一次搬 ~3.1KB；环形化后三机械全 O(1) 槽步进。
+    /// **序语义逐位等价**（chanface ring 模块 Vec 对拍钉板）：pop 头出、
+    /// push 尾进、push_front 复原名。容量/READABLE 判据（W3-Q9）与序
+    /// 守卫（W3-Q49）全吃 len，消费面零改动。tail 不另存（经
+    /// `ring_tail_of(head, len)` 导出）——可漂移状态少一份。
+    queue: Box<[Message; CHAN_DEPTH]>,
+    /// 环形头槽（pop 端；`ring_ok` 不变量：恒 < DEPTH）。
+    head: usize,
+    /// 在队元素数（容量门/READABLE/序守卫的单源计数）。
+    qlen: usize,
     /// 4-3c opt-out（五件套之 4，QNX `_NTO_CHF_FIXED_PRIORITY` 等价）：
     /// `channel_create` options bit0——置位端 recv **不结算 intent**（固定优先级
     /// server 逃生门）。对称建对 API 下「通道级」语义 = 两端同置、双向皆不传播。
@@ -127,12 +143,18 @@ impl ChannelEnd {
     /// 可用；唯一调用方 `sys_channel_create` 建对后立刻配对，无中间观察窗口）。
     /// **队列预储 [`CHAN_DEPTH`] 容量**（3b3 审查 H2 try 化：send 压队列/recv
     /// 回滚 push_front 曾在 take 之后分配——OOM abort 于迁移中途；预储后运行
-    /// 期零增长）。预储失败返 None（调用方折 -ENOMEM，先于一切入表——零回滚面）。
-    /// `no_intent` = opt-out 标志（见字段注）。
+    /// 期零增长）。预储失败返 None（调用方折 -ENOMEM，先于一切入表——零回滚
+    /// 面）。`no_intent` = opt-out 标志（见字段注）。
+    ///
+    /// W3-Q95：预储形态 = `try_box(from_fn(|_| Message::new()))`——单次
+    /// 定容分配（等价旧 `try_reserve_exact(CHAN_DEPTH)` 的预储语义，尺寸
+    /// 恒 DEPTH×sizeof(Message)；`array::from_fn` 逐槽构造绕开 Message
+    /// 非 Copy（`[expr; N]` 数组语法要 Copy）；装箱走 [`crate::heap::try_box`]
+    /// fallible 面（3b3 H2 同款——`Box::new` 分配失败 abort 违 ABI §8.0
+    /// 永不 panic，try_box 失败折 None 同旧 try 语义）。
     pub fn try_unpaired(no_intent: bool) -> Option<Self> {
-        let mut queue = Vec::new();
-        queue.try_reserve_exact(CHAN_DEPTH).ok()?;
-        Some(Self { peer: None, queue, no_intent, frozen_owner: None })
+        let queue = crate::heap::try_box(core::array::from_fn(|_| Message::new()))?;
+        Some(Self { peer: None, queue, head: 0, qlen: 0, no_intent, frozen_owner: None })
     }
 
     /// AM-1.5 冻结属主标（send 热路径唯一新增分支的测试位；`None` = 未冻结）。
@@ -201,42 +223,66 @@ impl ChannelEnd {
 
     /// 队列是否已满（send 前置检查 → -EBUSY）。
     pub fn queue_full(&self) -> bool {
-        queue_full_of(self.queue.len())
+        queue_full_of(self.qlen)
     }
 
     /// 队列是否有消息（wait 面 READABLE 信号状态——4-2 内核派生位）。
     pub fn has_message(&self) -> bool {
-        queue_readable(self.queue.len())
+        queue_readable(self.qlen)
+    }
+
+    /// 在队元素数（W3-Q95：环形计数单源——判据/守卫/遍历全吃它）。
+    pub fn qlen(&self) -> usize {
+        self.qlen
     }
 
     /// 压一条消息进**本端**队列（send 侧实际调的是对端的这个方法）。
     /// 守卫判据单源 = [`berry_chanface::push_ok`]（W3-Q49——容量不变量
-    /// 钉板；release 行为零变化：前置 `queue_full` 已挡，保旧无条件 push）。
+    /// 钉板；W3-Q95 环形化后同判据执法：满拒前置 `queue_full` 已挡，
+    /// 此处为不变量防御面）。机械 = tail 槽写入 + len +1（O(1)——旧
+    /// Vec push 同为 O(1)，本刀收益面在 pop/push_front 两条）。
     pub fn push(&mut self, msg: Message) {
-        debug_assert!(push_ok(self.queue.len()));
-        self.queue.push(msg);
+        debug_assert!(push_ok(self.qlen) && ring_ok(self.head, self.qlen));
+        let tail = ring_tail_of(self.head, self.qlen);
+        self.queue[tail] = msg;
+        self.qlen += 1;
     }
 
     /// 窥视队首消息（recv 先看后取：所有失败路径不破坏消息）。
+    /// W3-Q95：`Vec::first()` → 环形槽寻址（`ring_slot_of(head, 0)`）。
     pub fn front(&self) -> Option<&Message> {
-        self.queue.first()
+        if pop_ok(self.qlen) {
+            Some(&self.queue[ring_slot_of(self.head, 0)])
+        } else {
+            None
+        }
     }
 
     /// 弹出队首（recv 全部成功路径的收尾；令牌已被调用方收割）。
     /// 守卫判据单源 = [`berry_chanface::pop_ok`]（W3-Q49——空拒律钉板；
-    /// 调用方契约已窥视非空，保旧无条件 remove(0)）。
+    /// 调用方契约已窥视非空）。W3-Q95：`Vec::remove(0)`（O(n) memmove，
+    /// 满队 ~3.1KB）→ 队首槽读出 + 置空 + head 步进（O(1) 槽步进——
+    /// 02 号机会三刀 a 的主收益点）；槽内置空防旧令牌 alias。
     pub fn pop(&mut self) -> Message {
-        debug_assert!(pop_ok(self.queue.len()));
-        self.queue.remove(0) // 深度 ≤8：O(n) 可忽略
+        debug_assert!(pop_ok(self.qlen) && ring_ok(self.head, self.qlen));
+        let slot = ring_slot_of(self.head, 0);
+        let msg = core::mem::replace(&mut self.queue[slot], Message::new());
+        self.head = ring_next_head(self.head);
+        self.qlen -= 1;
+        msg
     }
 
     /// 消息压回**队首**（recv 失败回滚专用——消费路径的任一中途失败须保序
     /// 复原，FIFO 语义下不能从队尾补回）。守卫判据单源 =
     /// [`berry_chanface::push_front_ok`]（W3-Q49——回滚容量不变量钉板：
-    /// 刚弹出一条必腾一空位，压回不越界）。
+    /// 刚弹出一条必腾一空位，压回不越界）。W3-Q95：`Vec::insert(0)`
+    /// （O(n) memmove）→ head 环形退一 + 槽写入（O(1)——回滚路径的
+    /// 同款收益）。
     pub fn push_front(&mut self, msg: Message) {
-        debug_assert!(push_front_ok(self.queue.len()));
-        self.queue.insert(0, msg);
+        debug_assert!(push_front_ok(self.qlen) && ring_ok(self.head, self.qlen));
+        self.head = (self.head + CHAN_DEPTH - 1) % CHAN_DEPTH; // 环形退一（head>0 保）
+        self.queue[ring_slot_of(self.head, 0)] = msg;
+        self.qlen += 1;
     }
 }
 
