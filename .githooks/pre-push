@@ -6,11 +6,26 @@
 [ "$BERRYOS_ALLOW_CROSSROOT" = "1" ] && exit 0
 zero=0000000000000000000000000000000000000000
 
+# 全亲两两核（F92）：任一对无共同祖先 → 返 0（命中）。$@ = 全部亲 OID。
+crossroot_pair() {
+  while [ $# -ge 2 ]; do
+    p1=$1
+    shift
+    for p2 in "$@"; do
+      [ -z "$(git merge-base "$p1" "$p2" </dev/null 2>/dev/null)" ] && return 0
+    done
+  done
+  return 1
+}
+
 while read -r lref lsha rref rsha; do
   [ "$rref" = "refs/heads/main" ] || continue
   [ "$lsha" = "$zero" ] && continue
   if [ "$rsha" = "$zero" ]; then
-    range="$lsha --not --all"
+    # 远端 main 新建（rsha=zero）：全史皆新落地——不设排除。--not --all 会把
+    # 本地已 ref 的可达（含被推 lref 自身）整体排除 → 闸空转（2026-11-17 二次
+    # 活测实抓补齐）。含 owner 授权跨根笔的线建 main 会命中拒——走逃生阀。
+    range="$lsha"
   else
     range="$rsha..$lsha"
   fi
@@ -22,17 +37,17 @@ while read -r lref lsha rref rsha; do
       set -- $pline
       shift
       [ $# -ge 2 ] || continue
-      p1=$1; p2=$2
-      [ -z "$(git merge-base "$p1" "$p2" </dev/null 2>/dev/null)" ] && echo "$m"
+      crossroot_pair "$@" && echo "$m"
     done | head -3
   )
   if [ -n "$bad" ]; then
     cat >&2 <<'EOF'
 [berryos-guard] 拒绝：本次推送将把跨根合并提交送上 refs/heads/main。
 
-main 与 wip/sched-1.1 无共同祖先，收口合并是 owner 专属动作，不经 local main 直推。
+main 与 wip/sched-1.1 曾为两棵不相关历史，2026-11-16 已由 owner 跨根收口合并（两线
+自此共史）；此后新的无共同祖先合并即异常动作，不经 local main 直推。
 lane 正确路径：工作推 wip/sched-1.1；跨线内容走净增量重放。
-owner 确要收口：BERRYOS_ALLOW_CROSSROOT=1 git push
+owner 确要跨线收口：BERRYOS_ALLOW_CROSSROOT=1 git push
 判例：.agents/notes/implemented/2026-11-16-跨根合并防线与判例.md
 EOF
     exit 1

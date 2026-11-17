@@ -276,12 +276,35 @@ impl Sess {
         self.rx_len += del.len();
     }
 
-    /// 挂臂对账 + 发送暂存失效 + TIME_WAIT 按状态重挂（原 step 尾内联段，
-    /// 段③ 提取——表槽会话喂完后同口径收账）。环空（全 ACK 收口）即暂存
-    /// 失效——下一 op 首段重立基点。
+    /// 挂臂对账 + 发送暂存紧缩 + TIME_WAIT 按状态重挂（原 step 尾内联段，
+    /// 段③ 提取——表槽会话喂完后同口径收账）。
+    ///
+    /// 暂存紧缩（五刀②）：ACK 已覆盖前缀即弃置、基点前移——占用从「纪元
+    /// 高水位」变「未确认在途字节」（echo 相第 3 op 起重回 ACK 步调的结构
+    /// 解锁件，NET-04 §2）。弃置水印取 berry-tcp 权威重发源
+    /// [`bt::Conn::tx_retx_floor`]（环头 Data 段首——straddling 部分覆盖
+    /// ACK 保段 + RTO 整段重发下，snd_una 会切掉仍需重发的段前缀，绝不取，
+    /// 五刀 plan 裁决 2；裁决由 state.rs tx_retx_floor_straddling 臂钉死）。
+    /// 环空或环头 Syn|Fin ⇒ floor==snd_nxt ⇒ N≥tx_len 整体失效——旧
+    /// 「环空失效」臂成为紧缩特例（行为对数据面逐字节等价；头为 Fin 形
+    /// 旧臂保守残留、新臂顺带清数据尾——Fin 无载荷重发不读暂存，安全）；
+    /// FIN 占序号的 +1 面以 N≥tx_len 分支整体失效处理（非 assert）。两处
+    /// F121 闸的 staged=snd_nxt−tx_seq0 随基点自动受益（前移即准入重开）。
+    /// memmove ≤ TX_CAP=512B，post_account 每收 ACK 步一次，单线程可忽略。
     fn post_account(&mut self) {
-        if self.conn.tx_inflight() == 0 {
-            self.tx_len = 0;
+        let floor = self.conn.tx_retx_floor();
+        let d = floor.wrapping_sub(self.tx_seq0);
+        if self.tx_len != 0 {
+            if d < self.tx_len as u32 {
+                // 部分紧缩：floor 在基点与有效尾之间——左移未确认尾。
+                let (n, keep) = (d as usize, self.tx_len - d as usize);
+                self.tx.copy_within(n..n + keep, 0);
+                self.tx_seq0 = floor;
+                self.tx_len = keep;
+            } else {
+                // 覆盖到尾（含环空/Syn|Fin 头/FIN+1 面）：整体失效。
+                self.tx_len = 0;
+            }
         }
         if let Some(a) = &self.arm {
             if arm_settled(&self.conn, a) {

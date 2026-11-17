@@ -1,8 +1,8 @@
 # 彻底 Rust 化计划 v1.0
 
-> **性质**：计划文档（用户令「补充彻底 Rust 计划」定稿）· 预 ADR 候选——升册号段以 [架构决策](架构决策.md) 在册下一可用号为起点、与其它预 ADR 候线错开后再领号（本稿原记 #86 与 11-13 立稿的显示线〔`显示与加速体系设计-v1.1.md` 头注「号段自 #86 起」〕双占，2026-11-15 二轮审计 G 号登记「未按让先落者律错开」；调度线 v1.2 已先让号。**归属方向两读**：按让先落者律本稿 11-12 首占应保号，按既成指认链〔索引 :135 + 调度 v1.2 让号锚〕显示线占 #86——裁决归 owner，裁前本稿不领号，双占以本声明消解；沿革五百四十九）
+> **性质**：计划文档（用户令「补充彻底 Rust 计划」定稿）· 预 ADR #86 候选
 > **采集日期**：2026-11-12 · **证据基座**：`research/彻底Rust化研究/01-03 号`（README 为入口）
-> **状态**：实施中——独立件先行：elf2flat 已五步全闭换轨（b598e5bbf Rust 件 + 8d8a2f3ed 产线换轨，[补档笔记](../.agents/notes/implemented/2026-11-17-elf2flat产链Rust换轨补档.md)）、elf2pe 已换轨现役（2a342d813 Rust 件 + 3a07d5a42 产线换轨二刀、f04563276 Python 降格 oracle——本计划漏记换轨已闭，车队窗遗漏审查 2026-11-17 补账）、mkcpio 已全闭换轨（55afb366 Rust 件首刀〔刀序首位〕+ b4718d50 产线换轨〔build-user mkcpio 步 python3→Rust bin〕，2026-11-17）+ mkfat 已全闭换轨（d5d3d328 Rust 件首刀〔刀序第二位〕+ c1dcd5560 产线换轨二刀〔justfile 四处产链位切 Rust bin〕，2026-11-17）；主刀序 §4 前两档已闭，余五档未动，边界件开放问题 §7 仍开
+> **状态**：实施中——独立件先行：elf2flat 已五步全闭换轨（b598e5bbf Rust 件 + 8d8a2f3ed 产线换轨，[补档笔记](../.agents/notes/implemented/2026-11-17-elf2flat产链Rust换轨补档.md)）、elf2pe 已换轨现役（2a342d813 Rust 件 + 3a07d5a42 产链换轨二刀、f04563276 Python 降格 oracle——本计划漏记换轨已闭，车队窗遗漏审查 2026-11-17 补账）；主刀序 §4 未动，边界件开放问题 §7 仍开
 
 ---
 
@@ -11,7 +11,7 @@
 | 层 | 面 | 现状 | 计入「彻底」 |
 |---|---|---|---|
 | a | 内核 + 用户态服务 | ✅ 全 Rust（day-one） | ✅（已达成） |
-| **b** | **产线工具（OEM/SDK 交付面）** | **七件中三件纯 Python**（立稿 2026-11-12 时点口径；elf2flat/elf2pe/mkcpio/mkfat 其后换轨，余量见 §2 表） | ✅ **宣称边界** |
+| **b** | **产线工具（OEM/SDK 交付面）** | **七件中六件 Python**（立稿 2026-11-12 时点口径；elf2flat/elf2pe 其后换轨，余量见 §2 表） | ✅ **宣称边界** |
 | c | 测试门禁（smoke/docs_guard/bench 等约 28 件） | Python/bash | ❌ 显式豁免（Fuchsia《Language Policy》同口径：政策只管设备上生产软件，开发工具明文豁免） |
 | d | CI/一次性/历史件 | bash/py 混 | ❌ 永久豁免 |
 
@@ -24,8 +24,8 @@
 | # | 件 | 现语言 | 规模 | 代价 | 备注 |
 |---|---|---|---|---|---|
 | 0 | berry-sign | ✅Rust | — | — | 已在位（berry-crypto bin） |
-| 1 | mkcpio | ✅Rust(2026-11-17) | — | — | 已换轨:Rust 件 55afb366(刀序首位首刀,lib+CLI 独立小工作区,垫页几何/重装恒等/拒面 13 型/伴生 .sig 收编四性质+CLI 对拍字节级恒等)+接线 9166fd01(test-host 2518→2531)+产线换轨 b4718d50(build-user mkcpio 步 python3→Rust bin,刀序首位收口);Python `mkcpio.py` 不退役——六处模块 import 图根(mkapp/tlsscan/bench/smoke-dpgsoak 的 entry/build_archive、berry_assemble/gensourceindex 的 load_manifest,单编码器纪律)保模块面+CLI 对拍 oracle |
-| 2 | mkfat | ✅Rust(2026-11-17) | — | — | 已换轨:Rust 件 d5d3d328(首刀,刀序第二位:lib+CLI 独立小工作区,build_volume FAT12/build_volume_puts EFI 引导卷 FAT12/16 双宽+SPC 自适应+fat_path_comps 8.3 拒面全谱+7 测含 CLI 对 Python 现役件字节级对拍三面 sha256 恒等)+产线换轨二刀 c1dcd5560(justfile 四处产链位 python3→Rust bin——run-rootfs 造盘+test-host 双 fixture 守卫+desktop 数据盘,先编后用 cargo-target 钉位纪律;Rust CLI 补 --check-fixture{,16} 守卫与 --fixture{,16} 重产全模式面,oracle 守卫/重产对拍测 2538→2539);Python `mkfat.py` 不退役——mkimage/pwrcls import 模块面现役(FAT 编码单源)+CLI oracle+fixture 重产责任面 |
+| 1 | mkcpio | py | ~700行 | M | **刀序首位**——被 4 处复用（单编码器 import 图根） |
+| 2 | mkfat | py | ~600行 | M+ | 被 mkimage 依赖 |
 | 3 | mkimage | py | ~1100行 | M+ | 伴生件依赖前两件 |
 | 4 | mkapp | py | ~2620行 | **L** | BYI1 编码+签名集成全谱（可能 L+） |
 | 5 | gensourceindex | py | ~900行 | M | 惰性 import mkapp/mkcpio |
@@ -61,7 +61,7 @@ mkcpio → mkfat → mkimage → mkapp → gensourceindex → berry_assemble →
 
 ## §6 验收线(机器可执法)
 
-`tools/` b 层清单内 `.py` 计数 = 0(docs_guard 扩一 G 规则或 CI grep——随首刀落)。进度(2026-11-17):elf2flat/elf2pe 已出列(oracle 改名入豁免区),mkcpio CLI 产线已换轨(b4718d50)但 `mkcpio.py` 保模块面不改名(六处 import 图根)计数不动,mkfat 产线已换轨(c1dcd5560,四处产链位切 Rust bin)但 `mkfat.py` 同理保模块面(mkimage/pwrcls import 图根)计数不动——现役 b 层 `.py` 计 9(mkcpio.py/mkfat.py 模块面保名不计入出列,验收线口径不变),验收线随末件生效。
+`tools/` b 层清单内 `.py` 计数 = 0(docs_guard 扩一 G 规则或 CI grep——随首刀落)。进度(2026-11-17):elf2flat/elf2pe 已出列(oracle 改名入豁免区),现役 b 层 `.py` 计 9(车队窗遗漏审查 2026-11-17 补账),验收线随末件生效。
 
 ## §7 开放问题(随首刀裁)
 

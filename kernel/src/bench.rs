@@ -5,10 +5,13 @@
 //! 运行：单线程、IRQ 屏蔽、分配器已活——零调度噪声，纯子系统成本。
 //!
 //! 三条产出线：
-//! 1. **微基准**（`BENCH,<name>,<iters>,<cyc_per_op>` 机器可读行 × 6）——
+//! 1. **微基准**（`BENCH,<name>,<iters>,<cyc_per_op>` 机器可读行 × 8）——
 //!    计时 = CNTVCT **原始周期数**。口径纪律（测试策略 §7）：TCG 下 CNTV
 //!    推进 ≈ CNTFRQ/2，绝对值只做**同机同 QEMU 的相对比较**（基线对拍在
 //!    宿主侧 `tools/bench.py`，宽松因子门禁）；内核只出数不做门禁。
+//!    七项在 `run()` 的 boot 干净窗（ktest 后、timer/sched init 前）；
+//!    switch_pair 在 `run_sched_epoch()` 的调度器纪元窗（sched init 后、
+//!    telemetry::init 前——04 号审计基线缺口两项，2026-11-17）。
 //! 2. **churn 泄漏金丝雀**（`BENCHCHURN ok frame=0 vmo=0 handle=0`）——
 //!    确定性**严格断言**：反复创建/销毁后 `mm::allocated_pages()` 水位与
 //!    handle 表在用槽数必须精确归位，泄漏 ≠ 0 → panic。这属于「主干永远
@@ -17,9 +20,13 @@
 //!    设计 §12）——资源到顶时**错误码回、不 panic、可恢复**的确定性边界
 //!    断言：ABI §8.0「永不 panic」承诺的耗尽版执法（全过才打，L0）。
 //!
-//! 收尾行 `BENCH ok n=6` 是 smoke 裸相关卡标记（标记清单单一事实源 =
-//! `tools/smoke.sh`）。EL0 视角的 syscall/IPC 路径基准（含 SVC 陷阱开销）
-//! 留 B-1 用户态基准程序（rootfs 生态）——内核内测不了异常级往返。
+//! 收尾行 `BENCH ok n=8` 自 `run()` 尾迁至 `run_sched_epoch()` 纪元尾恒发
+//!（04 号审计基线缺口刀，2026-11-17——须在最后一行 BENCH 之后：bench.py
+//! 的 len==done_n 收割契约按本行截尾；门缺席 = 仅缺 switch_pair 行、
+//! trailer 照发），是 smoke 裸相关卡标记（标记清单单一事实源 =
+//! `tools/markers.sh`，bcts 冻结件随字面滚新归主线）。EL0 视角的 syscall/IPC
+//! 路径基准（含 SVC 陷阱开销）留 B-1 用户态基准程序（rootfs 生态）——内核
+//! 内测不了异常级往返。
 
 // 与 ktest 同款豁免：基准/金丝雀路径的 expect 表达「不可能失败」——失败即
 // panic = 主干红线（见模块文档），不是可恢复路径。
@@ -44,8 +51,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 const PAGE: usize = 1 << 12;
 
 /// 基准项计数（`BENCH ok n=` 的定值——增删基准项时同步改这里、smoke 两处
-/// 标记表与 bench.py 的表头注释）。
-const N_METRICS: usize = 6;
+/// 标记表（markers.sh/smoke-image.sh）、bench.py 的 _iter_table 与表头注释、
+/// bcts 冻结件滚新（计数面零增减的 bcts@N 滚新——主线收））。
+const N_METRICS: usize = 8;
 
 // ---- S-2（设计 §12）常量 ----
 
@@ -87,8 +95,12 @@ pub fn run() {
     bench_vmo_commit1p();
     bench_vmo_rw4k();
     bench_handle_evt();
-    // AM 原子观测对（非标记行）：紧随六项官方基准后、churn 前——六行
-    // `BENCH,` + BENCHCHURN/BENCHXH/`BENCH ok n=6` 的既有 boot 形状零扰动。
+    // pick_scan（04 号审计基线缺口，2026-11-17）：Fair 出选面纯函数成本——
+    // 与上六项同窗（ktest 后、timer/sched init 前干净窗）。
+    bench_pick_scan();
+    // AM 原子观测对（非标记行）：紧随七项官方基准后、churn 前——七行
+    // `BENCH,` + BENCHCHURN/BENCHXH 的既有 boot 形状零扰动（`BENCH ok`
+    // 收尾行已迁 run_sched_epoch 纪元尾恒发——本窗不再打）。
     bench_am_pair();
     churn_frame();
     churn_vmo();
@@ -96,12 +108,10 @@ pub fn run() {
     // 收尾关卡行：三项 churn 金丝雀全部严格断言过了才走到这里（delta 恒 0，
     // 非 0 即已在上面 panic——本行是状态谓词，非竞速面）。
     uart_puts(b"BENCHCHURN ok frame=0 vmo=0 handle=0\n");
-    // S-2 六面耗尽/恢复（boot 输出序：BENCHCHURN 行后、BENCH 收尾行前——
-    // 设计 §12；全过才打 BENCHXH，任一断言破 = panic = smoke FAIL）。
+    // S-2 六面耗尽/恢复（boot 输出序：BENCHCHURN 行后——设计 §12；全过才打
+    // BENCHXH，任一断言破 = panic = smoke FAIL）。BENCH ok 收尾行自此不在
+    // 本窗（迁 run_sched_epoch——调度器纪元尾恒发，见模块头注）。
     xh_run();
-    uart_puts(b"BENCH ok n=");
-    uart_put_dec(N_METRICS as u64);
-    uart_puts(b"\n");
 }
 
 /// 计时循环骨架：`iters` 次 `f`，打一行 `BENCH,<name>,<iters>,<cyc_per_op>`。
@@ -256,6 +266,155 @@ fn bench_fa<F: FnMut()>(name: &[u8], iters: u32, mut f: F) {
     uart_put_dec(per);
     uart_puts(b",");
     uart_put_dec(acc);
+    uart_puts(b"\n");
+}
+
+// =========================================================================================
+// 04 号审计基线缺口（2026-11-17）：pick_scan / switch_pair 两项补面
+// =========================================================================================
+
+/// **pick_scan**（04 号审计基线缺口，2026-11-17）：`Fair::pick_next_filtered`
+/// 单圈合并扫描的纯函数成本——本地 `Runqueue` + 20 枚合成 unit 带任务直接
+/// 出选（不真切上下文、不真跑任务体、不占生产环）。环长 20 = 审计附记二
+/// 常态值（128 是 `RING_WALK_CAP` 断言帽非生产形；混合带〔FairBand 分派〕
+/// 变体挂账另刀）。setup 同 ktest POLICY 族先例：`Box::leak` + `Fair::
+/// enqueue` 正路入环 + vr=i/vd=i+1000 定值铺展 + `resync_vruntime_sum`
+/// 直改后洗账（S2b+ 账本调和纪律）；一枚置 Running 作 `my_cur`（is_cur
+/// 参选分支——生产 pick 调用形，ktest Y1 同款）。泄漏面：20×(TCB+16KiB
+/// 栈) 有界不还（ktest POLICY 同款先例——bench 窗无回收点；churn 金丝雀
+/// 的水位基线全在本函数之后取，不受染）。防死存储消除：累计出选指针
+/// （bench_am_pair 断言先例），尾断言非零。
+fn bench_pick_scan() {
+    use berry_sched::{Fair, Runqueue, SchedClass, Task, TaskState, Topo};
+
+    /// 占位入口（pick 只选不切——永不执行；halt 兜底防未定义行为）。
+    extern "C" fn ps_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    const RING_N: usize = 20;
+    let mut rq = Runqueue::new();
+    let rr = Fair;
+    let topo = Topo::single();
+    let mut my_cur: *mut Task = core::ptr::null_mut();
+    for i in 0..RING_N as u64 {
+        let mut t = Task::new_kernel_with_as(ps_dummy, i as usize, b"ps".as_slice(), 0, 0);
+        t.vruntime = i; // vr=i / vd=i+1000 定值铺展（eligible 与 ineligible 两态全覆盖）
+        t.vdeadline = i + 1000;
+        let t: &'static mut Task = alloc::boxed::Box::leak(t);
+        rr.enqueue(t, &mut rq);
+        if i == 0 {
+            my_cur = t as *mut Task;
+            t.state = TaskState::Running; // my_cur 参选形（生产 pick 调用先例 ktest Y1）
+        }
+    }
+    rq.resync_vruntime_sum(); // 直改 vruntime 后洗账
+    let mut acc: usize = 0;
+    bench(b"pick_scan", 1024, || {
+        // SAFETY: boot 窗单线程 + IRQ 屏蔽 = pick_inner 调用契约（KERN_LOCK 窗
+        // 的串行等价）——ktest 直调面同判据；my_cur 在环（Running 参选形）。
+        // 每迭代 = 一次真实出选（advance_past 游标推进 + policy 空表零写 +
+        // stats 记账——与生产面同路径）。
+        let p = rr
+            .pick_next_filtered(&rq, &topo, my_cur)
+            .expect("bench: pick_scan 出选");
+        acc = acc.wrapping_add(p as *mut Task as usize);
+    });
+    assert_ne!(acc, 0, "bench: pick_scan 出选指针累计（防死存储消除）");
+}
+
+// ---- switch_pair：调度器纪元基准窗（run_sched_epoch）----
+
+/// sbench 门控键（fw_cfg 具名项——pilat 同款「值面不解析：键在即全配置」；
+/// bench.py 的 icount 族 qemu_cmd 恒递此键 = 基线面恒全八行；trace-dual
+/// 两臂红线禁递〔TRACE_CAP 证书面 = 前调度器纪元项——见 bench.py 常量注〕；
+/// smoke/生产 boot 缺席 = 门缺席仅缺 switch_pair 行，trailer 恒 n=8）。
+const SBENCH_PROBE_NAME: &str = "opt/berry/sbench";
+
+/// switch_pair 唤醒位（USER_SIGNAL_BITS 登记位 1<<53——裸键族共用一位先例
+/// = dpg 1<<51；不经 Event 对象，登记 = 防撞/去重面）。
+const SB_BIT: u64 = 1 << 53;
+
+/// 测量者 A 的唤醒键（零大小静态地址裸键——dpg.rs FAULT_KEY/PAGER_KEY
+/// 先例；只等用户位 → donor_edge 派生位门前置返 None，永不解引用）。
+static SB_KEY_A: u8 = 0;
+/// 伙伴 B 的唤醒键（同上——两键互异 = wake_matching 键门精确对传）。
+static SB_KEY_B: u8 = 0;
+
+/// 测量者 A（prio 8——先被出选）：`bench(b"switch_pair", N, …)` 体每迭代
+/// = 唤醒对端 + 自阻塞 = **一完整任务对切换环**（A→B 与 B→A 各一次真切换
+/// ——4-3b 起唤醒方不切换，切换全部发生在 block_current 的出选切点）。
+/// wake/block 返回值不检（测量体最小形）：握手破 = 双方互睡挂死 = boot
+/// 帽红（fail-loud by timeout，无静默错数面）。测毕收尾：唤醒 B（其第 N
+/// 轮 block 醒来出环自灭）→ A `exit_current` 自灭——B 的 exit 的
+/// pick-None 臂切回 IDLE（boot 上下文）续行。
+extern "C" fn sb_task_a(_arg: usize) -> ! {
+    bench(b"switch_pair", 128, || {
+        let _ = berry_sched::wake_matching(&SB_KEY_B as *const u8 as usize, SB_BIT);
+        let _ = berry_sched::block_current(&SB_KEY_A as *const u8 as usize, SB_BIT, u64::MAX);
+    });
+    let _ = berry_sched::wake_matching(&SB_KEY_B as *const u8 as usize, SB_BIT);
+    berry_sched::exit_current()
+}
+
+/// 伙伴 B（prio 0）：对称循环——A 首轮 wake 落空（B 尚未入睡，O(1) 空桶
+/// 早退无害；B 由 A 的自阻塞出选上场），第 2 轮起每 wake 恰唤醒 1。
+extern "C" fn sb_task_b(_arg: usize) -> ! {
+    for _ in 0..128 {
+        let _ = berry_sched::wake_matching(&SB_KEY_A as *const u8 as usize, SB_BIT);
+        let _ = berry_sched::block_current(&SB_KEY_B as *const u8 as usize, SB_BIT, u64::MAX);
+    }
+    berry_sched::exit_current()
+}
+
+/// **调度器纪元基准窗**（04 号审计基线缺口，2026-11-17）：switch_pair——
+/// berry_sched::init 与 telemetry::init 之间的唯一槽位（调度器已在 + 遥测
+/// 钩子未注册 = TRACE_CAP 0.0 结构性零面 + boot DAIF 屏蔽窗）。收尾行
+/// `BENCH ok n=8` 自 `run()` 尾迁此恒发（须在最后一行 BENCH 之后——
+/// bench.py 的 len==done_n 收割契约按本行截尾）。
+///
+/// **boot 手递首切**：spawn A/B 后 `yield_now_keep_irq` 让出一次（idle_loop
+/// 「有活」支从 IDLE 让出的同款舞蹈；**keep_irq 形** = 出口保持 IRQ 屏蔽
+/// ——本窗仍在 boot DAIF 屏蔽段，plain `yield_now` 的出口解蔽会打破后续
+/// spawn 块的屏蔽态前置）。A/B 测毕 exit_current 自灭，环空后 exit 的
+/// pick-None 臂切回 IDLE_TASK.ctx = boot 在 yield 行下续行（顺带 reap_drain
+/// 回收 A/B 的 Task Box 与 16KiB 栈——零泄漏面）。
+///
+/// **迭代数 128**：避开 100 倍数（bump_switches 金丝雀打印不落窗——现行
+/// SOAK_PRINT_EVERY=10000，纪元总切换 ≈ 2N+O(1) ≈ 259 ≪ 10000，结构性
+/// 无行；非 100 倍数为旧 100 档时代的保守带）。
+///
+/// **口径陷阱记名**：内核任务对是切换热路径的**下界形**——无 SVC 往返
+/// 〔归 B-1〕、无 TTBR0/ASID churn〔A/B 均无地址空间，activate_if_changed
+/// 恒空转；真实用户任务对的页表切换不在本行口径内〕、FPSIMD 全量照付
+/// 〔GUI-0 起切换无条件保存恢复 q0..q31+FPCR/FPSR，含在数内〕——防「EL0
+/// ping-pong 收益 = 此行收益」过度外推。
+///
+/// **锁纪律**：全程 boot DAIF 屏蔽（A/B 继承屏蔽态运行、从不解蔽），故
+/// 任务体不带 klock 包络（lat 先例的 klock_exit 会解蔽 = 破窗）；block/
+/// wake 的 KERN_LOCK 位=0 直调面（幂等跳过——exit_current 直调同款）。
+///
+/// **配对悬账（主线收）**：sched `note_switch` 的 SWITCHES_TT 在钩子缺席
+/// 期也计（「实际不可达」防御支——本纪元使其可达），G1.5 的
+/// `tel >= switches_tt` 断言将差本纪元切换数（≈259）；须随本刀在 sched
+/// 侧配对修复（tt 计数移入钩子在位分支，或 telemetry::init 注册时重基）。
+pub fn run_sched_epoch() {
+    // noktest 生产形态整窗跳（P0-4 合并一门同款：ktest/bench 相互独立但
+    // 生产 boot 同跳——零 BENCH 行零 trailer，与旧 noktest 形状逐位一致）。
+    if berry_hal_aarch64::fwcfg::find_file(crate::NOKTEST_PROBE_NAME).is_some() {
+        return;
+    }
+    if berry_hal_aarch64::fwcfg::find_file(SBENCH_PROBE_NAME).is_some() {
+        // 先 B 后 A：A prio 8 恒先出选（次序无关紧要，记 spawn 序备查）。
+        berry_sched::spawn_with(sb_task_b, 0, b"sb_b", 0);
+        berry_sched::spawn_with(sb_task_a, 0, b"sb_a", 8);
+        // 手递首切（见函数头注——keep_irq 形；A/B 自灭后环空回 boot 续行）。
+        berry_sched::yield_now_keep_irq();
+    }
+    // 收尾关卡行恒发（门缺席 = 仅缺 switch_pair 行；严格后于最后一行 BENCH
+    // ——switch_pair 行由 A 在纪元内打毕、本行在其后）。
+    uart_puts(b"BENCH ok n=");
+    uart_put_dec(N_METRICS as u64);
     uart_puts(b"\n");
 }
 
