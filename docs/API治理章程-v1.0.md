@@ -18,6 +18,9 @@
 冻结面 = L0+L1（ADR #55 两冻结面）。**勿升格**：Rust crate 源码层不冻结
 （iOS 三份合同课：只冻二进制 ABI 层，源码层靠 semver 演化——SDK-03 原则 5）。
 
+> **L3 登记例·processargs v1.1**（2026-11-17 export 面刀）：spawn bootstrap 通道的进程参数块——消息一 argv blob（v1 现行，恒形不变）＋消息二 env（KEY=VALUE\0 续装、帽 256B/16 项、仅非空且组装非零字节时发送、0 句柄）、子侧以非阻塞 recv `-EAGAIN` 探测缺席；通道级 add-only：不传 env 的旧调用方消息流逐字节恒等、自定入口（hello/berry-verify）结构性不可见。详律单源在 `user/berry-argv` crate 头注（组装律）与 `user/berry-exec`/`user/berry-libc` 头注（产/收时序）——本节只登记分级与纪律，不双写格式。
+
+
 ## 二、行为变更双轨制（细则 = SDK-2-双轨与演化纪律设计）
 
 1. **兼容语义轨**：后台/省电策略、存储与权限语义、调度默认值类变更，

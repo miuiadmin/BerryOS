@@ -7,15 +7,18 @@ version = "0.2.0"
 edition = "2021"
 
 # GUI 终端应用（TERMINAL）——settings/files 同链第三件真 GUI app：黑底
-# 定容行环（24 行 × 64B）+ 行编辑器 + 持久子 bsh（stdin_handle 通道模型
-# ——键盘行经 GUI 输入面抵达，Enter 整行发通道；stdout 私有对端回流进
-# 行环）。链与形态 = settings 镜像（musl std + berry-libc shim + CRT0
-# 链接种子 + berry-ld 链，构建行见 justfile build-user 的 RUSTFLAGS 形）；
-# wm 门控走 wm_present_h()（fs+ui 礼物布局——files 先例，wm_cli_h 的
-# GIFT_H[0] 位对 wants_fs 程序承载 rootfs VMO，不可用）。
+# 定容行环（24 行 × 64B）+ 持久子 bsh 哑终端（2026-11-17 终端刀：本地
+# 第二编辑器退役——键盘任意字节透传子 stdin，显示单源 = 子回显字节经
+# berry-termio TermCore 解释器；子退出自动 respawn + 三击熔断）。链与
+# 形态 = settings 镜像（musl std + berry-libc shim + CRT0 链接种子 +
+# berry-ld 链，构建行见 justfile build-user 的 RUSTFLAGS 形）；wm 门控
+# 走 wm_present_h()（fs+ui 礼物布局——files 先例，wm_cli_h 的 GIFT_H[0]
+# 位对 wants_fs 程序承载 rootfs VMO，不可用）。
 #
 # 与 settings 五件差异：+ berry-exec（spawn_rootfs_elf/cpio_find/
-# channel_pair——子 bsh 拉起与管道面，bsh/guifbd/svcmgr 同依赖）。
+# channel_pair——子 bsh 拉起与管道面，bsh/guifbd/svcmgr 同依赖）
+# + berry-termio（哑终端显示核纯面——行环/尾段/回显字节解释器/软换行/
+# 视图计算，host 单测护栏在彼侧 crate）。
 license = "Apache-2.0"
 
 [workspace]
@@ -27,6 +30,7 @@ berry-exec = { path = "../../berry-exec" }
 berry-guiproto = { path = "../../berry-guiproto" }
 berry-ui = { path = "../../berry-ui" }
 berry-gfx = { path = "../../berry-gfx" }
+berry-termio = { path = "../../berry-termio" }
 
 [profile.release]
 opt-level = "z"

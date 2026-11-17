@@ -181,20 +181,33 @@ fn recompute_locked() {
     // 尾趟：刷在队者 + 本核在环者 effective。环上者同刷——boost 只有落进
     // prio_effective 才被 pick/try_preempt 消费（形 B 的行为出口即此；公式
     // 与 pick 侧 policy::apply 同一：max(base + 策略权重, pi_inherited)，
-    // weight_of 免锁读——RQ 窗内合法）。纯字段算术不触表。顺带重数 pi≠0
-    // 在队者个数回写门控计数乙（P2 第三收口点：重推是在队者 pi_inherited
-    // 唯一写者，写尾即精确对账；**环上受捐者不进计数**——计数语义 = 睡眠
-    // 者清零面，环上 boost 的清零由「donor 在队 ⇒ ①非零 ⇒ 门开」罩住，
-    // 门闭冻结随行经 pi_count_add 于入睡时重新入账，口径闭环）。
+    // weight_of 免锁读——RQ 窗内合法）。纯字段算术不触表。顺带重数回写
+    // 两门控计数（P2 第三收口点**双扩展**——W3-Q94 刀 a）：② pi≠0 在队者
+    // 个数（重推是在队者 pi_inherited 唯一写者，写尾即精确对账）与
+    // ① donor 判据命中数（入队同款判据 keyroute 单源——d_eff 此刻含本
+    // 轮传播终值，入队 d_eff=0 睡眠中被抬 pi 者在此补登；**环上受捐者不
+    // 进两计数**——计数语义 = 睡眠者面，环上 boost 的清零由「donor 在队
+    // ⇒ ①非零 ⇒ 门开」罩住，门闭冻结随行经 pi_count_add 于入睡时重新
+    // 入账，口径闭环）。
     let boosted = Cell::new(0u32);
+    let donors = Cell::new(0u32);
     berry_sched::for_each_sleeper(|t| {
         berry_sched::refresh_effective(t);
         if t.pi_inherited != 0 {
             boosted.set(boosted.get() + 1);
         }
+        // W3-Q94 判定单源（入队同款三合判据——d_eff 与传播环同构）。
+        if berry_wqmatch::keyroute::pi_donor_candidate(
+            t.wait_obj,
+            t.wait_signals,
+            t.prio_effective.max(t.pi_inherited),
+        ) {
+            donors.set(donors.get() + 1);
+        }
     });
     berry_sched::for_each_runnable(|t| berry_sched::refresh_effective(t));
     berry_sched::pi_boost_recount(boosted.get());
+    berry_sched::pi_derived_recount(donors.get());
     // RQ 窗闭（后于 KL 子窗——开窗序的严格逆）。
     berry_sched::pi_rq_unlock(rq_phys);
 }

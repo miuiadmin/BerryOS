@@ -110,8 +110,13 @@ dependencies = [
  "berry-guiproto",
  "berry-libc",
  "berry-sys",
+ "berry-termio",
  "berry-ui",
 ]
+
+[[package]]
+name = "berry-termio"
+version = "0.2.0"
 
 [[package]]
 name = "berry-tls"

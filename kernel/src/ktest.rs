@@ -7185,6 +7185,95 @@ fn test_pi() {
     sleepq_unlink(k10);
     berry_sched::rq_unlink_kt(r8);
 
+    // J9. W3-Q94 刀 a 门收紧钉板（d_eff>0 三合判据 + 尾趟重登 ① 配对）：
+    //     A. 全零稳态——prio 0 的派生位睡眠者不再钉死门（刀 a 前的门语义
+    //        缺陷面：等派生位即开门，常驻服务稳态睡 READABLE 全系统每次
+    //        唤醒都跑全图重推）；B. 真 donor 门开 + 冻结随行 + 清零闭环；
+    //     C. 欠账必补——入队 d_eff=0 睡眠中被传播抬 pi 的链式中转者，
+    //        尾趟 pi_derived_recount 重登 ①（离队减法不误减下溢）。
+    {
+        // A. 全零稳态：d_eff=0 donor 不入账 ① → 门闭（pi_recompute_needed
+        //    == false 是行为锚——门闭 ⇒ recompute 整体跳过）。
+        let htA9 = priv_table();
+        let zc9 = chan_end(ktbl, RIGHT_SEND);
+        let zs9 = chan_end(htA9, RIGHT_RECV);
+        pair_up(zc9, zs9);
+        let d8 = sleeper(b"j9_zero", 0, zc9, SIGNAL_WRITABLE, 0);
+        let v8 = sleeper(b"j9_v", 0, 0, 0, htA9);
+        assert!(
+            !berry_sched::pi_recompute_needed(),
+            "PI：J9a 全零稳态门须闭（d_eff=0 donor 不入账——W3-Q94 刀 a）"
+        );
+        crate::pi::recompute(); // 门闭路径（整体跳过）
+        assert_eq!(v8.pi_inherited, 0, "PI：J9a prio-0 donor 无捐赠可传");
+        sleepq_unlink(d8);
+        sleepq_unlink(v8);
+
+        // B. 真 donor 门开 → 受捐 → 离队冻结（②撑门）→ 清零 → 门闭闭环。
+        let htB9 = priv_table();
+        let wc9 = chan_end(ktbl, RIGHT_SEND);
+        let ws9 = chan_end(htB9, RIGHT_RECV);
+        pair_up(wc9, ws9);
+        let d9 = sleeper(b"j9_hi", 24, wc9, SIGNAL_WRITABLE, 0);
+        let v9 = sleeper(b"j9_w", 0, 0, 0, htB9);
+        assert!(
+            berry_sched::pi_recompute_needed(),
+            "PI：J9b 真 donor（d_eff=24）门须开"
+        );
+        crate::pi::recompute();
+        assert_eq!(v9.pi_inherited, 24, "PI：J9b 受捐 24");
+        sleepq_unlink(d9); // donor 离队；v9 冻结 pi=24 睡着 → ②非零撑门
+        assert!(
+            berry_sched::pi_recompute_needed(),
+            "PI：J9b 冻结 boost（②非零）门须开"
+        );
+        crate::pi::recompute();
+        assert_eq!(v9.pi_inherited, 0, "PI：J9b 边消失清零");
+        assert!(
+            !berry_sched::pi_recompute_needed(),
+            "PI：J9b 清零后全零稳态门须闭"
+        );
+        sleepq_unlink(v9);
+
+        // C. 欠账必补（配对安全活体）：链式中转者 mid 入队时 prio=0 睡
+        //    派生位（d_eff=0 未入账 ①）——重推把 hi(20) 的捐赠传给 mid
+        //    （mid 私有表持 endY_s）后 mid 的 d_eff=max(0,20)=20 成为
+        //    真 donor，再传给 low（low 持 endX_s）。尾趟重登 ① 须含 mid
+        //    ——mid 离队的 ①减法才不误减下溢（刀 a 的全部复杂度即此）。
+        let htMid = priv_table();
+        let htLow = priv_table();
+        let yc9 = chan_end(ktbl, RIGHT_SEND); // hi 等 Y
+        let ys9 = chan_end(htMid, RIGHT_RECV); // mid 持
+        let xc9 = chan_end(ktbl, RIGHT_SEND); // mid 等 X（入队 d_eff=0）
+        let xs9 = chan_end(htLow, RIGHT_RECV); // low 持
+        pair_up(yc9, ys9);
+        pair_up(xc9, xs9);
+        let hi9 = sleeper(b"j9_hi2", 20, yc9, SIGNAL_WRITABLE, 0);
+        let mid9 = sleeper(b"j9_mid", 0, xc9, SIGNAL_WRITABLE, htMid);
+        let low9 = sleeper(b"j9_low", 0, 0, 0, htLow);
+        crate::pi::recompute();
+        assert_eq!(mid9.pi_inherited, 20, "PI：J9c mid 受捐 20（hi 的边）");
+        assert_eq!(low9.pi_inherited, 20, "PI：J9c mid 成真 donor 再传 low 20");
+        // mid 已被重登 ①（欠账补登后 hi+mid 双 donor 在账）+ low 冻结
+        // boost 在账 ②——门开。
+        assert!(
+            berry_sched::pi_recompute_needed(),
+            "PI：J9c 欠账重登后门须开（hi+mid 双 donor / low boost 在账）"
+        );
+        // mid 离队：①减 1（重登后 mid 在账——欠账必补使减法配对）；mid
+        // 冻结 pi=20 → ②不减（pi≠0 睡着时离队才减 ②；mid 带走 20）。
+        sleepq_unlink(mid9);
+        crate::pi::recompute(); // hi 边还在（指向 mid——已离队收不到）；low 的边（mid donor）消失
+        assert_eq!(low9.pi_inherited, 0, "PI：J9c mid 离队后 low 边消失清零");
+        assert_eq!(mid9.pi_inherited, 20, "PI：J9c mid 离队冻结随行 20");
+        assert!(
+            berry_sched::pi_recompute_needed(),
+            "PI：J9c hi donor 在账门须开（①≥1）"
+        );
+        sleepq_unlink(hi9);
+        sleepq_unlink(low9);
+    }
+
     // 清场：SLEEPQ 还给 boot（真睡眠者按 deadline 升序入队——脏节点会破坏
     // 超时扫描早停）。任务体/私有表 leak 不回收（ktest 语境同 spawn 政策）。
     berry_sched::for_each_sleeper(|_| panic!("PI：清场后 SLEEPQ 须空"));

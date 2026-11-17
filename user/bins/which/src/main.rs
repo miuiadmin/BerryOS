@@ -18,7 +18,8 @@ fn main() {
         eprintln!("usage: which NAME...");
         std::process::exit(2);
     }
-    // PATH 拆分；getenv 空环境（environ = NULL 表）→ 默认 /bin。
+    // PATH 拆分；PATH 未设（空环境或未导出——environ 真身已落，export/BSHRC
+// 传递后即真值）→ 默认 /bin。
     let path_env = std::env::var("PATH").unwrap_or_else(|_| "/bin".to_string());
     let dirs: Vec<&str> = path_env.split(':').filter(|s| !s.is_empty()).collect();
     let dirs = if dirs.is_empty() { vec!["/bin"] } else { dirs };

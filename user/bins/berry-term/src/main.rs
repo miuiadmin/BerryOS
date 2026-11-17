@@ -1,10 +1,21 @@
 //! berry-term —— GUI 终端应用（TERMINAL；settings/files 后第三件真 GUI
 //! app，GUI 终端首件）。骨架 = settings 镜像，四件终端面叠加。
 //!
-//! **使命**：黑底终端页 + 持久子 bsh——用户键盘行经 GUI 输入面抵达
-//! （inputd 键帧出向覆载：device_id = DEV_KEYBOARD、x = 翻译后字节），
-//! 本地行编辑（退格/提交），Enter 整行 + `\n` 发子 stdin 通道；子 stdout
-//! 私有对端回流进 24 行定容行环，滚动 = 行环推进 + 变化行 set_text 重排。
+//! **使命**：黑底终端页 + 持久子 bsh 的**哑终端**宿主（2026-11-17 终端刀：
+//! 显示单源 = 子 bsh 回显字节，本地第二编辑器退役）。用户键盘任意字节经
+//! GUI 输入面抵达（inputd 键帧出向覆载：device_id = DEV_KEYBOARD、
+//! x = 翻译后字节）后一视同仁透传子 stdin 通道（0x03 Ctrl-C/0x08 退格/
+//! 0x0A Enter/0x09 Tab/0x1B Esc/可打印零本地语义——Ctrl-C 由子 feed 循环
+//! Interrupt 臂〔交互态〕或 collect_fg 杀链〔前台态〕处理，两路径在子侧
+//! 互斥立法；空行 Enter 照发 `\n`——子 bsh 空行仅重显 prompt）；子 stdout
+//! 私有对端回流经 berry-termio `TermCore` 回显字节解释器（`\n` 切行、
+//! `\b` 删尾、`\r` 丢弃、`ESC[2J` 清屏、`ESC[H` 等其它 finals 吞——覆盖集
+//! = bsh 回显词汇表：纯文本＋`\n`＋BS-空格-BS 三连＋clear 7B＋`^C\n`＋
+//! PROMPT 重显，逐臂核实封闭）进 24 行定容行环，滚动 = 行环推进 + 变化行
+//! set_text 重排。编辑语义单源 = 子 bsh editor——Tab 补全后 Enter 提交
+//! 本地旧值、clear 环显示错叠、prompt 不接续、历史显示缺失四族双编辑器
+//! 失步降解面同根一次收口。每键一往返的通道延迟诚实文档化（本机异步
+//! 消息，子输出即醒即收——显示变更的醒源全在子回显，键自身不 wake）。
 //!
 //! **链形态** = settings 镜像（musl std + berry-libc shim + CRT0 链接种子
 //! + berry-ld 链）：wm 门控 → WM_GETINFO 几何 → UiMain Box::leak +
@@ -18,47 +29,67 @@
 //! **键盘面**：appshell pump.rs 的 HostHooks::on_key 同签名消费面
 //! `(&mut self, ui, code, ts_ns)`——本 crate 不依赖 berry-appshell（settings
 //! 镜像自持帧循环，稳态 wait_many 需第三路子 stdout，pump 的 n≤2 等待面
-//! 放不下），DEV_KEYBOARD 帧分流点内联（pump.rs :346 同形）。
+//! 放不下），DEV_KEYBOARD 帧分流点内联（pump.rs :346 同形）；键帧消费 =
+//! 单字节透传子 stdin（哑终端——无编辑分支）。
 //!
 //! **终端四件**：
 //! 1. 渲染：app 掌整帧底色（黑底 CLEAR_BG——settings 同位先例）；定容
 //!    行环 24 行 × 每行 64B（= berry-ui TEXT_INLINE 现行值，逐行 Text
 //!    节点 Col 叠行；节点预算 24 行 + 输入行 + chrome ≈ 27 ≪
-//!    MAX_NODES=512）；滚动 = 行环推进后对变化行 set_text 重排（本表
-//!    drawn 副本去重——同文跳过零冗余脏帧）。
-//! 2. 行编辑器（app 自持约 60 行）：字节缓冲 + 0x08 退一格 + 0x0A 提交；
-//!    Esc(0x1B)/Tab(0x09) 透传进流；其余控制码忽略（Ctrl 组合字节入忽略
-//!    档——inputd translate 的 c&0x1F 形态，v1 无消费者）；箭头等扩展码
-//!    inputd 表外翻译 None 不出向，天然忽略。**超长行截断策略**：行环单
-//!    行超 64B 截前 64B（v1 无软换行——行宽预算 64 × cell_w 恰满 800px
-//!    调试档/1080px 大档）；输入缓冲帽 63B（+自绘光标 1B = 64B 恰满）。
-//!    **历史环 v2 挂账不做**（上/下箭头取回历史——等 inputd 扩展码出向）。
-//! 3. 持久子 bsh：启动 spawn 一次（`--no-selftest` 跳自验链直进交互循环
-//!    ——term_selftest 铁律：不带旗 = TCG 分钟级自验 + term 链无界递归）；
-//!    stdin = `stdin_handle` 通道端直传（feeder 模型反面——本 app 长命
-//!    持续发键，非一次性泵尽；端被 env send take，本表留对端 in_s 发送）；
-//!    stdout = 私有对端；stack_pages=16（svcmgr 拉起 bsh 现值先例）；
-//!    extra_gifts = rootfs/fs 双 dup（fs_gifts——term_selftest 同参）。
-//!    子退出（EOF 零长消息/对端异常）→ 行环加一行
-//!    `berry-term: bsh exited`，v1 不重启（监督重启归 svcmgr app 域）。
+//!    MAX_NODES=512；25 行 × cell_h 在 800×600 调试档（S8x16）= 400px、
+//!    1080×1920 大档（S16x32）= 800px，双档 viewport 内收敛）；滚动 =
+//!    行环推进后对变化行 set_text 重排（本表 drawn 副本去重——同文跳过
+//!    零冗余脏帧）。**软换行**：完成行超 64B 按 64B 切多物理行入环；
+//!    尾段缓冲 TAIL_MAX=320（prompt 5B + bsh 行帽 256B 全容——输入行
+//!    不再截 64B）；视图 = 环行居上 + 尾段前 K-1 块居下（K =
+//!    ceil((尾段长+1)/64)，bsh 词汇表下 ≤5；可见历史随 K 收缩——环满时
+//!    顶掉最老行保尾段可见）+ 末块 + 自绘光标作输入行（INPUT_FG；a11y
+//!    ROLE_TEXT 登记位在输入行节点）。
+//! 2. 尾段字节解释器（T2/T3 纯面 = berry-termio `TermCore`，T7）：行环/
+//!    尾段/feed 解释器/软换行/视图计算全在纯 crate（host 单测护栏）；
+//!    本文件只持 drawn 渲染副本与 UI 胶水（wake/child_send/wait_many
+//!    不进纯 crate）。TEXT_INLINE/MAX_NODES 零触碰。
+//! 3. 持久子 bsh + 自动 respawn：启动 spawn 一次（`--no-selftest` 跳自验
+//!    链直进交互循环——term_selftest 铁律：不带旗 = TCG 分钟级自验 +
+//!    term 链无界递归）；stdin = `stdin_handle` 通道端直传（feeder 模型
+//!    反面——本 app 长命持续发键，非一次性泵尽；端被 env send take，
+//!    本表留对端 in_s 发送）；stdout = 私有对端；stack_pages=16（svcmgr
+//!    拉起 bsh 现值先例）；extra_gifts = rootfs/fs 双 dup（fs_gifts——
+//!    term_selftest 同参）。子退出（EOF 零长消息/对端异常）→ 行环加一行
+//!    `berry-term: bsh exited` + 记死亡时点；**Dead 态 2s 冷却后自动
+//!    respawn**（成功打 `berry-term: respawn`；失败打诊断行续 2s 退避
+//!    不杀页面；respawn 到期点并入稳态 deadline）；子存活 <2s 即死记一
+//!    击（自然寿命死亡清零陈账），**三击熔断**——停自动重启、打
+//!    `berry-term: respawn circuit broken (enter to restart)` 常驻行，
+//!    Enter 手动重启并清零计数（熔断恢复路径）。归属：bsh 是 berry-term
+//!    的内部实现资源（try_spawn_child 内部建制、Child 句柄自洽），其生死
+//!    管理归 berry-term 自身；svcmgr app_supervise 监督的是 app 进程
+//!    本体的崩溃重启——两层监督对象不同，不翻「app 监督归 svcmgr」裁决。
 //! 4. 启动管道自检：帧循环前 spawn 一次性子 bsh（stdin_feed 静态
-//!    `echo berryterm\nuname\n`）——term_collect 式早退谓词收齐四断言
-//!    （提示符 ×2/命令回显行/berryterm 结果行/BerryOS aarch64 结果行），
-//!    过则 `berry-term: pipe ok`；不过 park（诊断行写明缺哪个断言）。
-//!    自检子 terminate(130)+reap 收口（term_selftest 先例形）。
+//!    `echo berryterm\nuname\nclear\n\x03`）——term_collect 式早退谓词
+//!    收齐五断言（提示符 ×2/命令回显行/berryterm 结果行/BerryOS aarch64
+//!    结果行/`^C\n`），收集流另整流喂一份 TermCore 断言（clear 序列消化
+//!    后旧内容不在可见行集、`^C` 中断行在册、尾段以 prompt 收尾——哑
+//!    终端解释器端到端自执法），过则 `berry-term: pipe ok`；不过 park
+//!    （诊断行写明缺哪个断言）。自检子 terminate(130)+reap 收口
+//!    （term_selftest 先例形）。
 //!
 //! **稳态 wait_many 至多 3 路**：帧回调 hw + 输入 hi（条件）+ 子 stdout
 //! out_s（条件）——settings n≤2 面的第三路扩展（子输出即醒即收，不赌
-//! IDLE 帽）。
+//! IDLE 帽）；deadline = min(next_wakeup, IDLE 帽, respawn 到期点〔待
+//! 重启死亡在席时〕）。
 //!
 //! **输出面**：manifest console=false → stdout 走 svcmgr 私有对（drain 归
 //! app_supervise）；全部 println/eprintln 为诊断面，不构成串口标记。
 //! 首帧呈现回执打一行 `berry-term: first frame`。
 //!
-//! **v1 降解面**：输入行独立成行（子 prompt「bsh> 」在上一行——本地
-//! 编辑行不接续 prompt 后渲染；Enter 后子回显行回流自证）；`\r`/UTF-8
-//! 多字节序列不 special-case（域外字节渲染等宽缺省空格面）；无指针交互
-//! （纯键盘页——pointer 帧照 push 进引擎，无命中目标零效果）。
+//! **v1 降解面**：每键一通道往返（哑终端固有——子回显即醒即收，无本地
+//! 即时反馈）；prompt 接续自然成立（子 prompt 与回显输入同驻尾段，输入
+//! 行 = 尾段末块 + 光标——「输入行独立成行＋Enter 回流自证」旧观感已随
+//! 哑终端化退役）；`\r`/UTF-8 多字节序列不 special-case（域外字节渲染
+//! 等宽缺省空格面）；ESC 序列词汇表外一律吞（通用 ANSI 屏模型已砍单）；
+//! 尾段满 320B 丢后续字节（bsh 词汇表上限 261B，正常路径不可达）；无
+//! 指针交互（纯键盘页——pointer 帧照 push 进引擎，无命中目标零效果）。
 
 use berry_exec::{channel_pair, cpio_find, spawn_rootfs_elf, ChildHandles, SpawnSpec};
 use berry_gfx::cmd::{Color, CommandEncoder, GlyphPos, Rect as GfxRect};
@@ -75,6 +106,7 @@ use berry_sys::{
     BERRY_ERR_AGAIN, BERRY_ERR_BUSY, BERRY_ERR_TIMEDOUT, CLOCK_MONOTONIC, RIGHT_READ,
     RIGHT_RECV, RIGHT_SEND, RIGHT_TRANSFER, RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
+use berry_termio::{TermCore, LINE_MAX, TERM_ROWS};
 use berry_ui::desc::{ColProps, TextProps, TextStyle};
 use berry_ui::hit::PtrEvent;
 use berry_ui::layout::CrossAlign;
@@ -108,17 +140,10 @@ const SCRATCH_GLYPHS: usize = 1024;
 /// 终端整帧清屏底色（黑底——settings CLEAR_BG 同位先例的终端档）。
 const CLEAR_BG: (u8, u8, u8) = (0x00, 0x00, 0x00);
 
-/// 行环可见行数（节点预算：24 行 + 输入行 + chrome ≈ 27 ≪ MAX_NODES=512；
-/// 25 行 × cell_h 在 800×600 调试档（S8x16）= 400px、1080×1920 大档
-/// （S16x32）= 800px，双档 viewport 内收敛）。
-const TERM_ROWS: usize = 24;
-
-/// 单行字节帽 = berry-ui `TEXT_INLINE` 现行值 64（TextBuf loud 拒面）。
-/// 超长行截前 64B（v1 无软换行——见模块头注「超长行截断策略」）。
-const LINE_MAX: usize = 64;
-
-/// 输入缓冲帽（63B + 自绘光标 1B = 64B 恰满单 Text 帽）。
-const EDIT_MAX: usize = LINE_MAX - 1;
+// 行环行数/单行字节帽单源 = berry-termio（TERM_ROWS=24——节点预算
+// 24 行 + 输入行 + chrome ≈ 27 ≪ MAX_NODES=512；LINE_MAX=64 = berry-ui
+// `TEXT_INLINE` 现行值，TextBuf loud 拒面；另 TAIL_MAX=320 尾段帽）——
+// 显示核纯面与本表消费同源，不两套。
 
 /// 行环总收容帽（自检收集环同值——子输出整场字节上界，防无界 Vec）。
 const COLLECT_MAX: usize = 32 * 1024;
@@ -129,6 +154,16 @@ const COLLECT_TIMEOUT_NS: u64 = 10 * 1_000_000_000;
 /// 子 bsh 栈页数（term_selftest 先例值：svcmgr 拉起 bsh 现值 16 页——
 /// musl std 大程序口径）。
 const CHILD_STACK_PAGES: u64 = 16;
+
+/// 子死自动 respawn 冷却（T5：Dead 态 2s 后自动重启；respawn 失败同值
+/// 续退避——pending 重臂不杀页面）。
+const RESPAWN_COOLDOWN_NS: u64 = 2 * 1_000_000_000;
+
+/// 子「存活 <2s 即死」判定窗（T5：快速死亡记一击——三击熔断的击数口径）。
+const CHILD_MIN_LIFE_NS: u64 = 2 * 1_000_000_000;
+
+/// 熔断击数（T5：三击——停自动重启，Enter 手动恢复）。
+const RESPAWN_BREAK_STRIKES: u32 = 3;
 
 /// 行环文本前景（近白微绿；对 CLEAR_BG 高对比）。
 const ROW_FG: Color = Color { r: 0xD8, g: 0xE6, b: 0xDA };
@@ -291,34 +326,12 @@ fn build(ui: &mut UiMain) -> Result<(Page, FontSize), UiError> {
     Ok((Page { rows, input }, scale))
 }
 
-/// 键动作（on_key 的返程——帧循环侧执行通道发送）。
-enum KeyAct {
-    /// 无操作（忽略的控制码/空缓冲退格）。
-    Ignored,
-    /// 显示面变更（编辑缓冲进/退——需重排输入行）。
-    Edited,
-    /// 透传字节进流（Esc/Tab）。
-    Pass(u8),
-    /// 提交（编辑缓冲成行——帧循环侧组 `行+\n` 发通道）。
-    Submit,
-}
-
-/// 终端状态（行环 + 尾段 + 行编辑器 + 上帧渲染副本）。
+/// 终端状态（显示核纯面 + 上帧渲染副本——core 归 berry-termio〔行环/
+/// 尾段/回显字节解释器/软换行/视图计算，T7 host 单测护栏〕，drawn 归
+/// 本表 UI 胶水）。
 struct Term {
-    /// 行环内容（`head` 起逻辑序；满环后 head 推进顶掉最老行）。
-    rows: [[u8; LINE_MAX]; TERM_ROWS],
-    /// 各行有效长。
-    lens: [usize; TERM_ROWS],
-    /// 最老行物理下标。
-    head: usize,
-    /// 在册行数（0..=TERM_ROWS）。
-    used: usize,
-    /// 无 `\n` 尾段（活动行——子 prompt「bsh> 」等无换行输出的驻留位）。
-    tail: [u8; LINE_MAX],
-    tail_len: usize,
-    /// 行编辑器字节缓冲（Enter 提交发通道）。
-    ed: [u8; EDIT_MAX],
-    ed_len: usize,
+    /// 行环/尾段/feed 解释器/视图计算（哑终端显示核）。
+    core: TermCore,
     /// 上帧渲染副本（24 行 + 输入行——同文跳过 set_text，零冗余脏帧）。
     drawn: [[u8; LINE_MAX]; TERM_ROWS + 1],
     drawn_len: [usize; TERM_ROWS + 1],
@@ -327,114 +340,32 @@ struct Term {
 impl Term {
     fn new() -> Term {
         Term {
-            rows: [[0u8; LINE_MAX]; TERM_ROWS],
-            lens: [0usize; TERM_ROWS],
-            head: 0,
-            used: 0,
-            tail: [0u8; LINE_MAX],
-            tail_len: 0,
-            ed: [0u8; EDIT_MAX],
-            ed_len: 0,
+            core: TermCore::new(),
             drawn: [[0u8; LINE_MAX]; TERM_ROWS + 1],
             drawn_len: [0usize; TERM_ROWS + 1],
         }
     }
 
-    /// 行环推进（单行入环；超 64B 截前 64B——见模块头注截断策略）。
+    /// 完成行入环（诊断行直入；软换行切块在纯面）。
     fn push_line(&mut self, bytes: &[u8]) {
-        let n = bytes.len().min(LINE_MAX);
-        if self.used < TERM_ROWS {
-            let idx = (self.head + self.used) % TERM_ROWS;
-            self.rows[idx][..n].copy_from_slice(&bytes[..n]);
-            self.lens[idx] = n;
-            self.used += 1;
-        } else {
-            // 满环：head 位即被顶掉的最老行（覆写 + 推进）。
-            self.rows[self.head][..n].copy_from_slice(&bytes[..n]);
-            self.lens[self.head] = n;
-            self.head = (self.head + 1) % TERM_ROWS;
-        }
+        self.core.push_line(bytes);
     }
 
-    /// 子输出喂流：按 `\n` 切行入环；无换行残余驻尾段（活动行续写）。
+    /// 子输出喂流（回显字节解释器——`\n`/`\b`/`\r`/ESC 状态机全在纯面）。
     fn feed(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            if b == b'\n' {
-                let (t, n) = (self.tail, self.tail_len);
-                self.push_line(&t[..n]);
-                self.tail_len = 0;
-            } else if self.tail_len < LINE_MAX {
-                self.tail[self.tail_len] = b;
-                self.tail_len += 1;
-            }
-            // 尾段超 64B 丢弃后续字节（截断策略同push_line——前 64B 保真）。
-        }
+        self.core.feed(bytes);
     }
 
-    /// 键事件消费（HostHooks::on_key 同签名——appshell pump.rs 键帧分流
-    /// 点的内联消费面；`code` = inputd 翻译后字节）：可打印进缓冲、
-    /// 0x08 退一格、0x0A 提交、Esc/Tab 透传、其余控制码忽略。显示面变
-    /// 更即 wake（键响应零等待下一拍）。
-    fn on_key(&mut self, ui: &mut UiMain, code: u8, _ts_ns: u64) -> KeyAct {
-        match code {
-            0x0A => {
-                // Enter 提交：缓冲成行（调用方组 `\n` 发通道）；子回显行
-                // 回流后输入行清空即见（bsh 交互编辑器自带回显）。
-                if self.ed_len == 0 {
-                    return KeyAct::Ignored; // 空行 Enter：不发（bsh 空行仅重显 prompt）
-                }
-                ui.wake(now());
-                KeyAct::Submit
-            }
-            0x08 => {
-                if self.ed_len > 0 {
-                    self.ed_len -= 1;
-                    ui.wake(now());
-                    KeyAct::Edited
-                } else {
-                    KeyAct::Ignored
-                }
-            }
-            0x1B | 0x09 => KeyAct::Pass(code), // Esc/Tab 透传（子编辑器的补全/中断面）
-            c if c >= 0x20 => {
-                if self.ed_len < EDIT_MAX {
-                    self.ed[self.ed_len] = c;
-                    self.ed_len += 1;
-                    ui.wake(now());
-                    KeyAct::Edited
-                } else {
-                    KeyAct::Ignored // 缓冲满：丢弃（帽 63B 见模块头注）
-                }
-            }
-            _ => KeyAct::Ignored, // 其余控制码（Ctrl 组合字节等）忽略
-        }
-    }
-
-    /// 可见行内容（屏顶起第 `vi` 行）：逻辑行序 = 完整行 + 尾段居末；满环
-    /// 且有尾段时顶掉最老行保尾段可见（prompt 恒在屏）。
-    fn view_line(&self, vi: usize) -> &[u8] {
-        let start = if self.used == TERM_ROWS && self.tail_len > 0 { 1 } else { 0 };
-        let li = vi + start;
-        if li < self.used {
-            let idx = (self.head + li) % TERM_ROWS;
-            &self.rows[idx][..self.lens[idx]]
-        } else if li == self.used && self.tail_len > 0 {
-            &self.tail[..self.tail_len]
-        } else {
-            &[]
-        }
-    }
-
-    /// 行环 + 输入行 → 树同步（变化行 set_text；drawn 副本去重）。返回
-    /// 是否有变更（调用方据此 wake——feed/on_key 路已各自 wake，此处返值
-    /// 为防御面）。行内容先拷本地再比对（view_line 借 self——与 drawn 写
+    /// 行环 + 尾段块 + 输入行 → 树同步（变化行 set_text；drawn 副本去重）。
+    /// 返回是否有变更（调用方据此 wake——醒源在子回显路径，此处返值为
+    /// 防御面）。行内容先拷本地再比对（view_row 借 self——与 drawn 写
     /// 互斥，借毕即放）。
     fn sync(&mut self, ui: &mut UiMain, page: &Page) -> bool {
         let mut dirty = false;
         for vi in 0..TERM_ROWS {
             let mut tmp = [0u8; LINE_MAX];
             let n = {
-                let b = self.view_line(vi);
+                let b = self.core.view_row(vi);
                 let n = b.len();
                 tmp[..n].copy_from_slice(b);
                 n
@@ -448,11 +379,13 @@ impl Term {
                 dirty = true;
             }
         }
-        // 输入行：缓冲 + 自绘光标（帽 63+1=64 恰满）。
+        // 输入行 = 尾段末块 + 自绘光标（哑终端：子 prompt 与回显输入同驻
+        // 尾段——prompt 接续自然成立；末块 + 光标 ≤ 64B 恒成立〔K 构造律〕）。
         let mut buf = [0u8; LINE_MAX];
-        buf[..self.ed_len].copy_from_slice(&self.ed[..self.ed_len]);
-        buf[self.ed_len] = CURSOR;
-        let n = self.ed_len + 1;
+        let blk = self.core.input_block();
+        buf[..blk.len()].copy_from_slice(blk);
+        buf[blk.len()] = CURSOR;
+        let n = blk.len() + 1;
         if buf[..n] != self.drawn[TERM_ROWS][..self.drawn_len[TERM_ROWS]] {
             if let Err(e) = ui.set_text(page.input, &buf[..n]) {
                 fail(&format!("input set_text err={e:?}"));
@@ -496,13 +429,32 @@ fn count_sub(hay: &[u8], needle: &[u8]) -> usize {
     hay.windows(needle.len()).filter(|w| *w == needle).count()
 }
 
-/// 自检早退谓词（term_selftest `term_ready` 同形）：四断言物证全在席
-/// （第二提示符在第一结果行之后——谓词必经两命令全链）。
+/// 子串首现位置（None = 不在席——`^C` 后 prompt 重显判据用）。
+fn find_sub(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len()).position(|w| w == needle)
+}
+
+/// `^C\n` 之后 prompt 已重显在流（审查轮补：`^C\n` 与其后的 `bsh> ` 可能
+/// 分属两条通道消息——谓词只看 `^C\n` 会在重显消息抵达前早退收场，⓪b
+/// 探针三「尾段以 prompt 收尾」恒假 → boot 期误 park。判据 = 首现
+/// `^C\n` 之后再有一处 `bsh> `）。
+fn prompt_after_ctrl_c(d: &[u8]) -> bool {
+    match find_sub(d, b"^C\n") {
+        None => false,
+        Some(i) => has_sub(&d[i + 3..], b"bsh> "),
+    }
+}
+
+/// 自检早退谓词（term_selftest `term_ready` 同形）：五断言物证全在席
+/// （第二提示符在第一结果行之后——谓词必经两命令全链；T6 增 `^C\n` 后
+/// prompt 重显在流——必经 clear + Ctrl-C 全链，且消 `^C\n` 与重显分属
+/// 两条消息的早退竞速——重显不入流则 ⓪b 探针三恒假误 park）。
 fn term_ready(d: &[u8]) -> bool {
     count_sub(d, b"bsh> ") >= 2
         && has_sub(d, b"echo berryterm")
         && has_sub(d, b"\nberryterm\n")
         && has_sub(d, b"BerryOS aarch64")
+        && prompt_after_ctrl_c(d)
 }
 
 /// 自检收集环（term_selftest `term_collect` 同形）：四断言齐即收的早退
@@ -537,8 +489,10 @@ fn term_collect(h: Handle, data: &mut [u8; COLLECT_MAX]) -> usize {
 }
 
 /// 启动管道自检（模块头注件 4——term_selftest 镜像）：一次性子 bsh 喂
-/// `echo berryterm\nuname\n`，四断言齐即收 → terminate(130)+reap 收口。
-/// 过则 `berry-term: pipe ok`；不过 park（诊断行写明缺哪个断言）。
+/// `echo berryterm\nuname\nclear\n\x03`，五断言齐即收 → terminate(130)+
+/// reap 收口；收集流另整流喂一份 TermCore 断言（T6 扩探针——哑终端解释
+/// 器端到端自执法）。过则 `berry-term: pipe ok`；不过 park（诊断行写明
+/// 缺哪个断言）。
 fn pipe_selftest() {
     let full = b"bin/bsh";
     let Some((data_off, data_len)) = cpio_find(rootfs_h(), full) else {
@@ -556,7 +510,7 @@ fn pipe_selftest() {
         data_len,
         stdout: out_c,
         stack_pages: CHILD_STACK_PAGES,
-        stdin_feed: Some(b"echo berryterm\nuname\n"),
+        stdin_feed: Some(b"echo berryterm\nuname\nclear\n\x03"),
         stdin_handle: None,
         args: &args,
         extra_gifts: &[rootfs_dup, fs_dup],
@@ -564,6 +518,7 @@ fn pipe_selftest() {
         mmio_va: 0,
         intent: 0,
         force_eager: false,
+        env: &[],
     };
     let child = match spawn_rootfs_elf(rootfs_h(), &spec) {
         Ok(c) => c,
@@ -594,6 +549,22 @@ fn pipe_selftest() {
     }
     if !has_sub(data, b"BerryOS aarch64") {
         fails.push("uname result missing");
+    }
+    // ⓪b T6 扩探针：收集流整流喂一份 TermCore——哑终端解释器端到端自
+    // 执法。喂流解剖（clear 链定序）：…「bsh> clear」行 → ESC[2J 清屏
+    // （含该行）→ ESC[H 吞 → prompt 驻尾段 → `^C` 追加成「bsh> ^C」行 →
+    // prompt 重显驻尾段。三断言：旧内容不在可见行集、`^C` 中断行在册、
+    // 尾段以 prompt 收尾。纯面计算，零额外通道面。
+    let mut core = TermCore::new();
+    core.feed(data);
+    if (0..TERM_ROWS).any(|vi| has_sub(core.view_row(vi), b"berryterm")) {
+        fails.push("stale rows after clear");
+    }
+    if !(0..TERM_ROWS).any(|vi| core.view_row(vi) == b"bsh> ^C") {
+        fails.push("^C line missing");
+    }
+    if !core.tail().ends_with(b"bsh> ") {
+        fails.push("tail not at prompt");
     }
     // ① EOF 收口：子恒驻（feeder EOF 后空读续读不退）——terminate 非 0 =
     // 已退（哑终端契约破）；reap 真码 130（POSIX 128+SIGINT 惯例）。
@@ -627,18 +598,22 @@ struct Child {
     dead: bool,
 }
 
-/// 持久子 bsh spawn（模块头注件 3）：stdin_handle 通道端直传（env send
+/// 持久子 bsh spawn（模块头注件 3；T5 抽 Result 变体——boot 首次 Err 仍
+/// fail 收口〔main 调用方〕、respawn 路径 Err 打诊断行续退避不杀页面
+///〔`try_respawn` 调用方〕）：stdin_handle 通道端直传（env send
 /// take 迁交——子 STDIN_H recv 面；本表留对端 in_s）；stdout 私有对端
 /// （spawn 内部 dup RIGHT_SEND 交付，原值 out_c 留本表即关——term_
-/// selftest 收口同款）；`--no-selftest` + fs 双礼物 + stack 16 页。
-fn spawn_child() -> Child {
+/// selftest 收口同款）；`--no-selftest` + fs 双礼物 + stack 16 页。Err
+/// 文案 = boot fail 面现行三态（bsh not found / fs gift dup failed /
+/// bsh spawn failed）。
+fn try_spawn_child() -> Result<Child, &'static str> {
     let full = b"bin/bsh";
     let Some((data_off, data_len)) = cpio_find(rootfs_h(), full) else {
-        fail("bsh not found");
+        return Err("bsh not found");
     };
     let (rootfs_dup, fs_dup) = match fs_gifts() {
         Some(g) => g,
-        None => fail("fs gift dup failed"),
+        None => return Err("fs gift dup failed"),
     };
     let (in_s, in_c) = channel_pair();
     let (out_s, out_c) = channel_pair();
@@ -657,6 +632,7 @@ fn spawn_child() -> Child {
         mmio_va: 0,
         intent: 0,
         force_eager: false,
+        env: &[],
     };
     let child = match spawn_rootfs_elf(rootfs_h(), &spec) {
         Ok(c) => c,
@@ -667,13 +643,52 @@ fn spawn_child() -> Child {
             let _ = berry_handle_close(in_c); // Err 面 in_c 未被 take（显式补关）
             let _ = berry_handle_close(out_c);
             let _ = berry_handle_close(out_s);
-            fail("bsh spawn failed");
+            return Err("bsh spawn failed");
         }
     };
     // out_c 原值留本表（stdout 内部 dup 交付子表）——spawn 后即关；in_c
     // 已迁移（子表 STDIN_H），本表零副本。
     let _ = berry_handle_close(out_c);
-    Child { in_s, out_s, proc: Some(child), dead: false }
+    Ok(Child { in_s, out_s, proc: Some(child), dead: false })
+}
+
+/// 子监督态（T5：自动 respawn + 三击熔断——bsh 是 berry-term 的内部实现
+/// 资源，生死管理归本 app；svcmgr app_supervise 监督 app 进程本体，两层
+/// 监督对象不同）。
+struct Super {
+    /// 上次 spawn 时点（存活 <CHILD_MIN_LIFE_NS 即死记一击）。
+    spawned_at: u64,
+    /// 待重启死亡时点（None = 子活 / 熔断态；Some = 2s 冷却后自动
+    /// respawn）。
+    pending: Option<u64>,
+    /// 快速死亡连击（≥RESPAWN_BREAK_STRIKES 熔断；自然寿命死亡清零）。
+    strikes: u32,
+    /// 熔断态（停自动重启；Enter 手动重启清零恢复）。
+    broken: bool,
+}
+
+/// respawn 尝试（冷却到自动 / 熔断态 Enter 手动共用）：成功打
+/// `berry-term: respawn` 诊断行、刷新 spawned_at、清 pending；失败打失败
+/// 行、pending 重臂 now（2s 后再试——续退避不杀页面；手动路径熔断已先
+/// 清，失败后回落自动退避节奏——pending 态 Enter 静默，键路只在熔断态
+/// 响应 Enter，再试须待自动 respawn 或再熔断）。strikes/broken 不动——
+/// 连击记账归 mark_child_dead（自动 respawn 成功不清零陈账，三击熔断
+/// 语义才成立）；熔断恢复的清零归手动路径调用方。
+fn try_respawn(term: &mut Term, sup: &mut Super) -> Option<Child> {
+    match try_spawn_child() {
+        Ok(c) => {
+            term.push_line(b"berry-term: respawn");
+            sup.spawned_at = now();
+            sup.pending = None;
+            Some(c)
+        }
+        Err(why) => {
+            let msg = format!("berry-term: respawn failed: {why}");
+            term.push_line(msg.as_bytes());
+            sup.pending = Some(now());
+            None
+        }
+    }
 }
 
 /// 通道发送（子 stdin 写点——rpc_send 的通道形：-EBUSY 阻塞等 WRITABLE
@@ -745,8 +760,12 @@ fn main() {
     //    首帧前黑屏为 v1 已知观感，自检行/pipe ok 走诊断面）。
     pipe_selftest();
 
-    // —— 持久子 bsh（自检过后 spawn 一次——模块头注件 3）。
-    let child = spawn_child();
+    // —— 持久子 bsh（自检过后 spawn 一次——模块头注件 3；boot 首 spawn
+    //    Err 仍 fail 收口〔现行语义〕，respawn 路径见 try_respawn）。
+    let child = match try_spawn_child() {
+        Ok(c) => c,
+        Err(why) => fail(why),
+    };
 
     // —— 帧循环（常驻义务——永不返回）。
     run(hw, input_h(), ui, page, child);
@@ -754,8 +773,9 @@ fn main() {
 
 /// 帧循环 + 输入 + 子 stdout 收割（settings `run` 的第三路扩展形：wait
 /// many 至多 3 路 [hw, hi, out_s]；渲染/SUBMIT/回调/RELEASE/vote 全照
-/// settings 食谱）。键帧（DEV_KEYBOARD）分流进行编辑器（pump.rs 分流点
-/// 同形）；指针帧照 push（无命中目标，零效果——预留面）。
+/// settings 食谱）。键帧（DEV_KEYBOARD）整帧字节透传子 bsh stdin（哑终
+/// 端化 T1——本地编辑器已退役，pump.rs 分流点同形）；指针帧照 push
+/// （无命中目标，零效果——预留面）。
 fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, page: Page, child_in: Child) -> ! {
     // —— present GETINFO 轻断言（settings 同形）。
     let mut req = [0u8; 256];
@@ -843,6 +863,9 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, page: Page, child_in:
 
     let mut term = Term::new();
     let mut child = child_in;
+    // T5 监督态（boot 子 spawn 毗邻 run 入口——spawned_at 就近取 now）。
+    let mut sup =
+        Super { spawned_at: now(), pending: None, strikes: 0, broken: false };
     let mut last_vote: Option<berry_ui::frame::VoteBallot> = None; // 票面变化才发
     let mut presented: u64 = 0; // FRAME_CALLBACK 过链计数（首帧诊断门）
     let mut buf_id: u32 = 1; // SUBMIT buffer 代际
@@ -855,8 +878,20 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, page: Page, child_in:
     loop {
         let t_now = now();
 
+        // —— T5 自动 respawn：Dead 态 2s 冷却到（熔断态除外——Enter 手动
+        //    恢复）；失败续退避（try_respawn 内 pending 重臂）。
+        if child.dead && !sup.broken {
+            if let Some(died_at) = sup.pending {
+                if t_now >= died_at.saturating_add(RESPAWN_COOLDOWN_NS) {
+                    if let Some(c) = try_respawn(&mut term, &mut sup) {
+                        child = c;
+                    }
+                }
+            }
+        }
+
         // —— 真实输入（settings 段④ 同形）：先收上一轮 INPUT_POLL 应答，
-        //    再挂下一轮 poll。键帧（DEV_KEYBOARD）分流进行编辑器（appshell
+        //    再挂下一轮 poll。键帧（DEV_KEYBOARD）分流进行透传（appshell
         //    pump.rs 分流点同形——x = 翻译后字节）；指针帧 push 进引擎。
         if hi != 0 && input_pending {
             let mut nb = input_buf.len();
@@ -878,30 +913,29 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, page: Page, child_in:
                         for i in 0..view.count() {
                             if let Some(ev) = view.event(i) {
                                 if ev.device_id == gp::DEV_KEYBOARD {
-                                    // 键帧：on_key 消费（编辑器进/退/提交/
-                                    // 透传——通道发送在本块执行）。
-                                    let act = term.on_key(ui, ev.x as u8, ev.timestamp_ns);
-                                    match act {
-                                        KeyAct::Submit => {
-                                            // 行 + \n 发通道（遇 EBUSY 等可写
-                                            // 再发——child_send 契约）。
-                                            let mut line = [0u8; EDIT_MAX + 1];
-                                            line[..term.ed_len]
-                                                .copy_from_slice(&term.ed[..term.ed_len]);
-                                            line[term.ed_len] = b'\n';
-                                            if !child.dead
-                                                && !child_send(child.in_s, &line[..term.ed_len + 1])
+                                    // 键帧：哑终端透传（T1）——任意字节一
+                                    // 视同仁发子 stdin（0x03/0x08/0x0A/0x09/
+                                    // 0x1B/可打印零本地语义；空行 Enter 照发
+                                    // `\n`——子 bsh 空行仅重显 prompt；遇
+                                    // EBUSY 等可写再发——child_send 契约）。
+                                    // 显示变更的醒源全在子回显（out_s 即醒
+                                    // 即收）——键自身不 wake。
+                                    let b = ev.x as u8;
+                                    if child.dead {
+                                        // 熔断态 Enter = 手动重启（T5 恢复
+                                        // 路径——清零计数后重试；失败回落
+                                        // 自动退避节奏）；其余键静默丢弃。
+                                        if sup.broken && b == b'\n' {
+                                            sup.strikes = 0;
+                                            sup.broken = false;
+                                            if let Some(c) =
+                                                try_respawn(&mut term, &mut sup)
                                             {
-                                                mark_child_dead(&mut term, &mut child);
-                                            }
-                                            term.ed_len = 0;
-                                        }
-                                        KeyAct::Pass(b) => {
-                                            if !child.dead && !child_send(child.in_s, &[b]) {
-                                                mark_child_dead(&mut term, &mut child);
+                                                child = c;
                                             }
                                         }
-                                        KeyAct::Edited | KeyAct::Ignored => {}
+                                    } else if !child_send(child.in_s, &[b]) {
+                                        mark_child_dead(&mut term, &mut child, &mut sup);
                                     }
                                     continue;
                                 }
@@ -962,7 +996,7 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, page: Page, child_in:
                 if s == 0 {
                     if nb == 0 {
                         // EOF：子退出（libc send_stdout_eof 收口约定）。
-                        mark_child_dead(&mut term, &mut child);
+                        mark_child_dead(&mut term, &mut child, &mut sup);
                         break;
                     }
                     term.feed(&out_msg[..nb]);
@@ -970,7 +1004,7 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, page: Page, child_in:
                 }
                 if s != BERRY_ERR_AGAIN {
                     eprintln!("berry-term: child stdout err={s}");
-                    mark_child_dead(&mut term, &mut child);
+                    mark_child_dead(&mut term, &mut child, &mut sup);
                     break;
                 }
                 break; // EAGAIN = 排空毕
@@ -1108,7 +1142,14 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, page: Page, child_in:
         //    min(next_wakeup, now+IDLE 帽)；子输出即醒即收不赌 IDLE 帽。
         //    条件路紧凑装填（n = 有效前缀——0 句柄禁入等待集）。
         let cap = now() + IDLE_CAP_NS;
-        let deadline = ui.next_wakeup().map_or(cap, |t| t.min(cap));
+        let mut deadline = ui.next_wakeup().map_or(cap, |t| t.min(cap));
+        // respawn 到期点并入（T5）：待重启死亡在席时 min 加冷却到期点
+        //（冷却到即醒走自动 respawn，不赌 IDLE 帽/next_wakeup）。
+        if !sup.broken {
+            if let Some(died_at) = sup.pending {
+                deadline = deadline.min(died_at.saturating_add(RESPAWN_COOLDOWN_NS));
+            }
+        }
         let mut hs = [0 as Handle; 3];
         let ss = [SIGNAL_READABLE, SIGNAL_READABLE, SIGNAL_READABLE];
         hs[0] = hw;
@@ -1131,16 +1172,19 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, page: Page, child_in:
 }
 
 /// 子死收口（EOF/挂断/发送链断共用）：行环加退出行 + best-effort reap +
-/// 通道面收口（out_s 置 0 出等待集；in_s 关——后续键静默丢弃）。
-/// v1 不重启（模块头注件 3）。
-fn mark_child_dead(term: &mut Term, child: &mut Child) {
+/// 通道面收口（out_s 置 0 出等待集；in_s 关——后续键静默丢弃）+ T5 监督
+/// 记账：存活 <2s 的快速死亡记一击（自然寿命死亡清零陈账——长命证明
+/// 电路健康，防跨小时陈账误熔断）；三击熔断——停自动重启、打常驻诊断行
+/// （Enter 手动恢复）；否则记 pending 死亡时点（2s 冷却后自动 respawn）。
+fn mark_child_dead(term: &mut Term, child: &mut Child, sup: &mut Super) {
     if child.dead {
         return; // 幂等（收割/发送两路可能先后触发）
     }
     child.dead = true;
+    let t = now();
     term.push_line(b"berry-term: bsh exited");
     // 通道收口：out_s 即关（EOF 后队列空——关不丢数据）；in_s 即关（子
-    // 已死，后续行/透传字节静默丢弃）。
+    // 已死，后续透传字节静默丢弃）。
     let _ = berry_handle_close(child.out_s);
     child.out_s = 0;
     let _ = berry_handle_close(child.in_s);
@@ -1152,6 +1196,19 @@ fn mark_child_dead(term: &mut Term, child: &mut Child) {
             Ok(_) => {}
             Err(()) => eprintln!("berry-term: child reap failed (bounded leak)"),
         }
+    }
+    // T5 监督记账。
+    if t.saturating_sub(sup.spawned_at) < CHILD_MIN_LIFE_NS {
+        sup.strikes += 1;
+    } else {
+        sup.strikes = 0;
+    }
+    if sup.strikes >= RESPAWN_BREAK_STRIKES {
+        sup.broken = true;
+        sup.pending = None;
+        term.push_line(b"berry-term: respawn circuit broken (enter to restart)");
+    } else {
+        sup.pending = Some(t);
     }
 }
 

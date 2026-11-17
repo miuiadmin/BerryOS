@@ -358,7 +358,8 @@ build-user:
     # APP/APPUI 计数零漂（n=9/n=8 仍打，语义随裁决 B 两支化），PS 行数随
     # appdemo 不再 boot 拉起而 -1（前缀断言面零扰动）——W4-VERIFY.md 落账。
     # 终端刀 +1：berry-term（TERMINAL——GUI 终端首件，settings 镜像骨架 +
-    # 行环/行编辑器/持久子 bsh/启动管道自检四件）入 build/spec 两循环；恰
+    # 行环与回显字节解释器（berry-termio 纯 crate）/持久子 bsh 哑终端/
+    # 启动管道自检与自动 respawn 四件面）入 build/spec 两循环；恰
     # 满 APP_SLOTS=10 第 10 槽（svcmgr 已参数化 n≥10 十位入拼），smoke
     # APP 计数 n=9→10、APPUI n=8→9（标记面随迁）。
     for c in settings files photos camera contacts messages browser berry-term; do
@@ -898,7 +899,7 @@ test-host:
     cargo test --manifest-path user/Cargo.toml -p berry-winplan --target {{host}}
     # argv blob 组装律纯面（自 berry-exec env 块组装段外迁，winplan 同款
     # 纪律）：argv0 截 191 律 + 整参或零参单调截断 + 恰满边界 + wire
-    # 钉板，host 5 测。
+    # 钉板，host 11 测（argv 5 + env 六族——export 面刀扩）。
     cargo test --manifest-path user/Cargo.toml -p berry-argv --target {{host}}
     # spawn 几何前置门纯面（自 berry-exec process_create 前置段外迁，winplan
     # 同款纪律）：映幅帽 ELF_MAP_MAX 恰帽边界 + 栈顶 USER_TOP 恰顶/+1 页 +
@@ -986,6 +987,10 @@ test-host:
     # C-4：berry-complete（bsh Tab 补全纯函数面——token 切分四形/前缀
     # 匹配唯一·多候选·零命中/排序去重/列示字节，host 10 测）。
     cargo test --manifest-path user/Cargo.toml -p berry-complete --target {{host}}
+    # T7（终端刀 2026-11-17）：berry-termio（berry-term 哑终端显示核纯面
+    # ——行环/尾段/回显字节解释器/软换行/视图计算，host 19 测＝lib 17 +
+    # pipe_selftest 流仿真 2）。
+    cargo test --manifest-path user/Cargo.toml -p berry-termio --target {{host}}
     # A2-1：berry-poll（多路等待聚合器纯函数面——wait_many n≤16 翻越：
     # 批切分 + poll-first 收割到干 + 分段阻塞轮转 + LT/非阻塞/唤醒三免费
     # 语义，host 13 测）。
@@ -1181,14 +1186,18 @@ test-host:
     # +PR 单源 abi.toml 绊线+key_hash/name 拒面/整盘装配确定性+FAT 段与
     # mkfat 直产零漂移（path 依赖单编码器纪律）/源实例与验签两件组装面/
     # sha256 FIPS 180-4 标准向量——WIP 期三常量笔误（K[25]/K[59]/h[2]）
-    # 全由此面咬出）+ CLI 与 Python 现役件 oracle 字节级对拍（整盘+manifest
+    # + CLI 与 Python 现役件 oracle 字节级对拍（整盘+manifest
     # 三面：9MiB 合成四件套/96MiB 默认盘/key-hash 注入，sha256 与 stdout
     # 全等；Python 缺席 skip 纯面钉板兜底）。独立小工作区，须显式
-    # --target {{host}}。产链现役件仍 Python mkimage.py（首刀不动产链），
-    # 二刀换轨再切 image 配方。
+    # --target {{host}}。换轨二刀后本行 = 产链现役件门禁（image 配方
+    # 走本 bin）；下方 mkimage.py --selftest = Python oracle 语义钉板
+    # （模块面现役：gensourceindex import build_image——单编码器纪律）。
     cargo test --manifest-path tools/mkimage/Cargo.toml --target {{host}}
     # V-3：mkimage MBR 薄面自检（CHS 向量 + 表项钉板——卷编码面归
-    # mkfat --selftest，单编码器纪律不在此长第二套）。
+    # mkfat --selftest，单编码器纪律不在此长第二套）。换轨二刀后双形态
+    # （elf2flat/mkcpio 同位纪律）：产链现役件 = Rust（上行 cargo test
+    # tools/mkimage）；Python 版不降格改名——模块面现役（gensourceindex
+    # import）+ CLI 对拍 oracle，selftest 照跑守 Python 侧语义钉板。
     python3 tools/mkimage.py --selftest
     # K-3：size.py ADRP 解码器向量自检（--assert-flip 扩面的门禁自身坏 =
     # smoke/build-release 断言静默劣化，同 a-3 U4 纪律门禁化）。
@@ -1605,7 +1614,7 @@ smoke-x86: build-x86
 
 # S-2b 副核参与冒烟——八相（`docs/SMP-S2实施设计草案-v1.0.md` §5.1 起源双相，现
 # 八相——计数陈账 sim-S3 顺手矫正）：相 1 裸相（32 标记 + SMP 握手）+
-# 相 2 rootfs 生态相（51 标记 + EVS/SKT 对拍
+# 相 2 rootfs 生态相（标记数随 markers.sh 单源，现 56 + EVS/SKT 对拍
 # client + PAR absent d1 副核参与活证——真并行 witness 归 S-3）。
 # 断言面：`SMP ok ncores=2` 按相各恰一次 + 标记与 smoke.sh 计数对拍机器
 # 守卫 + 金丝雀按相严格递增；时限 = 单核 ×2（双核 MTTCG 0.61x 吞吐），
@@ -1619,14 +1628,14 @@ smoke-smp: build build-user
 # V-4 img-boot 独立冒烟（M-G1 关卡；smoke-x86 同款形态——不并入主 smoke，
 # ARM64 五跑零扰动，M-G1 收官时另裁升第六跑）。零 -kernel / 零 fw_cfg：AAVMF
 # 挂 berryos.img 自举全链——EFI 十段恰一次 + 接续 src=handoff + 裸相 32 +
-# EFI 路生态 36 + kfile/init 字节对拍 + 金丝雀严格递增 + RX 注入 + 注入后
+# EFI 路生态（随 smoke-image.sh ECO 单源，现 51）+ kfile/init 字节对拍 + 金丝雀严格递增 + RX 注入 + 注入后
 # 活性复验。镜像/固件路径经参注入（单一事实源——smoke-x86 先例）。已挂 CI
 #（ci.yml 步：Ubuntu 侧经 AAVMF_CODE/AAVMF_VARS 环境变量覆盖 brew 默认路径）。
 smoke-image: image
     {{BASH}} tools/smoke-image.sh "{{IMAGE}}" "{{AAVMF_CODE}}" "{{AAVMF_VARS}}"
 
 # GUI-8 段④ EFI GUI 交互相双 boot 冒烟（独立关卡；**不并入 smoke-image**，
-# 冻结十段/生态 36 断言面零改动）。拓扑 = AAVMF + out/berryos.img + 独立
+# 冻结十段/生态（随 smoke-image.sh ECO 单源，现 51）断言面零改动）。拓扑 = AAVMF + out/berryos.img + 独立
 # mkfat FAT12 数据盘（LBA0 `BERRYOSVBLK!` + 根 `GUI8.SMK`，payload 必须
 # 逐字节 = `BERRYOS-GUI8-SMOKE-V1\n`；错/缺 payload 一律 fail closed）+
 # 256M + ramfb + display fw_cfg 800x600@60 + virtio-blk + virtio-tablet +
@@ -1750,7 +1759,16 @@ image: build build-boot
     test -f {{KERNEL}} || { echo "kernel ELF 缺失（{{KERNEL}}）——先 just build"; exit 1; }
     test -f rootfs.cpio || { echo "rootfs.cpio 缺失——先 just build-user"; exit 1; }
     mkdir -p out
-    python3 tools/mkimage.py {{IMAGE}} \
+    # mkimage 换轨二刀（b 层 #8 刀序第三位）：产链位切 Rust 件——先编后用
+    # + CARGO_TARGET_DIR 钉 tools/mkimage/cargo-target（elf2flat/mkcpio/
+    # mkfat 同款纪律）；Python mkimage.py 不退役——gensourceindex import
+    # build_image/load_source_instance 模块面（FAT 走 mkfat 单编码器）+
+    # CLI 对拍 oracle（test-host 挂双侧，tools/mkimage cargo test 行）。
+    HOST=$(rustc -vV | sed -n 's/^host: //p')
+    CARGO_TARGET_DIR="$PWD/tools/mkimage/cargo-target" \
+        cargo build --release --manifest-path tools/mkimage/Cargo.toml \
+        --target "$HOST"
+    "$PWD/tools/mkimage/cargo-target/$HOST/release/mkimage" {{IMAGE}} \
         --efi {{BOOT_EFI}} \
         --hello {{BOOT_DIR}}/hello.txt \
         --kernel {{KERNEL}} \
