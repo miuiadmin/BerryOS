@@ -4,7 +4,7 @@
 # 是否升第六跑）。零 -kernel / 零 fw_cfg：AAVMF 固件 + out/berryos.img 挂盘
 # （qemu-xhci + usb-storage）启动——「盘自己把自己拉起来」的全链自动验收。
 #
-# 断言面（ EFI 十段/接续形态源自 V-3 收官 run；生态 51 = 对抗审查保留日志
+# 断言面（ EFI 十段/接续形态源自 V-3 收官 run；生态 52 = 对抗审查保留日志
 # 标记普查实证面（B-1 起 +B1 ok n=4；C-2c 挂账刀起 +U4 ok——深坑六件执行
 # 面八步；C-4 起 +TAB ok——编辑器九步 + 真源两钉，零 fs 盘面 EFI 路可达；
 # T-1 起 +THR ok——进程内多线程消费面，thrchild 镜像内嵌 svcmgr 零
@@ -37,9 +37,11 @@
 #   2. 内核接续恰一次：HANDOFF ok ver= / MMAP ok segs= / ROOTFS ok
 #      **src=handoff**（handoff 源专属形态——fw_cfg/DTB 路不通于此）；
 #   3. 裸相 32 标记（与 smoke.sh 同一清单——内核行为零漂移的证据；B-0 起
-#      + BENCH ok n=6 微基准/churn 金丝雀关卡行；R-0 起 + BENCHWAKE n=
+#      + BENCH ok n=8（04 号审计基线缺口刀起 n=6→n=8——pick_scan/switch_pair
+#      两项收口，trailer 迁调度器纪元尾恒发）微基准/churn 金丝雀关卡行；
+#      R-0 起 + BENCHWAKE n=
 #      唤醒延迟直方图形状行；S-2 起 + BENCHXH ok 资源耗尽/恢复六面行）+ EFI 路
-#      生态 51 标记（rootfs hello / ECO / STD 双 / FILE / HEXYL / BSH /
+#      生态 52 标记（rootfs hello / ECO / STD 双 / FILE / HEXYL / BSH /
 #      EXIT / APP / APPUI / PIPE / FS / U1 / U2 / U3 / B1 / U4 / TAB / INT /
 #      POLL / PS / BC / THR / DPGP / DPGS / DPGN / MMP / CLK / SIG / CLI /
 #      TERM / FBW / FBSERVE /
@@ -186,8 +188,8 @@ CONT_MARKERS=("HANDOFF ok ver=" "MMAP ok segs=" "ROOTFS ok src=handoff")
 # per-source 唤醒记账行；sim-S2 A2 起 +FRZCYC ok r=2 freeze/thaw 循环行；
 # sim-S3 起 +PSCI susp=0（EFI 路探测行带原因后缀——子串可 grep）+
 # PWRDEG ok d=1（ktest 在 EFI 路照跑，两行都在））。
-KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "FP ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=6" "BENCHWAKE n=" "G1.5 ok" "WAKESRC acct=" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok" "DPG ok" "FRZCYC ok r=2" "PSCI susp=0" "PWRDEG ok d=1")
-# EFI 路生态 51（对抗审查保留日志逐标记普查实证——健康 boot 各恰一次为
+KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "FP ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=8" "BENCHWAKE n=" "G1.5 ok" "WAKESRC acct=" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok" "DPG ok" "FRZCYC ok r=2" "PSCI susp=0" "PWRDEG ok d=1")
+# EFI 路生态 52（对抗审查保留日志逐标记普查实证——健康 boot 各恰一次为
 # 日志观察面，本脚本断言为 grep -cF 存在性 ≥1；除
 # WM ok 与 LAUNCH 双（GUI-5/GUI-8 起 EFI 专属）外与 smoke.sh rootfs 相断言
 # canon 同面，EFI
@@ -354,10 +356,12 @@ KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL o
 # 批B 起 +guifbd 带合成两枚（one-shot latch 首现恰一次——对齐 guest.rs
 # 打印面）：`BANDC ok`（带缓存首 seed——任一槽 ≥1 行）、`BANDR ok n=`
 # （首重放写数行——带 n= 后缀形，对齐 telem f= 条目式；BANDC 无后缀）。
-# WMSUB 已摘：wm 客户端面收线（共享 wm 队列双消费者应答互截——批B 对
-# 抗审查 CONFIRMED，'m' 交接撤回）。BANDC/BANDR 词头在册唯一；rootfs 相
+# wm 订阅私有通道刀起 +WMSUB ok 一枚（批B 摘牌复活：彼时因共享 wm 队列
+# 双消费者应答互截收线摘牌，私有通道正拓扑落成后回归）：guifbd 经
+# svcmgr 静默窗代发订阅的私有通道收到首个快照真值即打——one-shot latch
+# 恰一次，count=0 空表也算面活。WMSUB/BANDC/BANDR 词头在册唯一；rootfs 相
 # smoke.sh 不加——guifbd 不在其门内，规避 markers.sh 三处同步纪律。
-ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=10" "APPUI ok n=9" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok" "TAB ok" "INT ok" "POLL ok" "PS ok n=" "BC ok" "THR ok" "DPGP ok" "DPGS ok n=4" "DPGN ok n=4" "FROZEN ok n=1" "WAKE ok n=1" "TOMB ok n=1" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "CLI ok n=" "TERM ok n=" "FBW ok" "FBSERVE ok" "GFX ok" "GFXF ok n=" "WM ok" "LAUNCH ok" "PAGE ok n=" "CBOX ok n=" "gfx: k4a hz=" "gfx: k4t p99=" "gfx: k4s n=" "launcher: telem f=" "gfx: k6p n=4" "gfx: k6h hz=" "P5C ok latch=" "BANDC ok" "BANDR ok n=")
+ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=10" "APPUI ok n=9" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok" "TAB ok" "INT ok" "POLL ok" "PS ok n=" "BC ok" "THR ok" "DPGP ok" "DPGS ok n=4" "DPGN ok n=4" "FROZEN ok n=1" "WAKE ok n=1" "TOMB ok n=1" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "CLI ok n=" "TERM ok n=" "FBW ok" "FBSERVE ok" "GFX ok" "GFXF ok n=" "WM ok" "LAUNCH ok" "PAGE ok n=" "CBOX ok n=" "gfx: k4a hz=" "gfx: k4t p99=" "gfx: k4s n=" "launcher: telem f=" "gfx: k6p n=4" "gfx: k6h hz=" "P5C ok latch=" "BANDC ok" "BANDR ok n=" "WMSUB ok")
 
 LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")
 RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")
@@ -464,14 +468,14 @@ echo "smoke-image: QEMU 启动（AAVMF + ${IMAGE}——零 -kernel / 零 fw_cfg�
   < "$RX_FIFO" > "$LOG" 2>&1 &
 QEMU_PID=$!
 
-# —— 阶段 1：全部标记到齐（EFI 十段 + 接续 3 + 裸相 32 + 生态 51 = 96）——
+# —— 阶段 1：全部标记到齐（EFI 十段 + 接续 3 + 裸相 32 + 生态 52 = 97）——
 # EFI 段/接续用 ERE 固定串混合面，统一进一个等待循环（到齐是状态谓词，
 # 阶段间无独立验收语义；缺失清单在超时 fail 文案里分组可见）。
 # —— 分相断言集（CI 分层用）：SMOKE_PHASES=boot 时只验引导面——
 # EFI 十段 + 接续 3 + 裸相 32 = 45 标记（引导链完整验收面，慢 runner
-# TCG 可达——run 42624077761 实证到齐）；生态 51 服务链 wall-clock 慢机
+# TCG 可达——run 42624077761 实证到齐）；生态 52 服务链 wall-clock 慢机
 # 跑不完（同 run 实证 360s 帽缺 HE XYL/BSH/APP 族），只进全链相。
-# 未设或非 boot = 原 96 全面行为不变。
+# 未设或非 boot = 全量 97 行为不变。
 if [ "${SMOKE_PHASES:-all}" = "boot" ]; then
   P1_MARKERS=("${EFI_FIXED[@]}" "${CONT_MARKERS[@]}" "${KERNEL_MARKERS[@]}")
   ALL_COUNT=$(( ${#EFI_FIXED[@]} + ${#EFI_ERE[@]} + ${#CONT_MARKERS[@]} + ${#KERNEL_MARKERS[@]} ))
@@ -512,11 +516,11 @@ grep -m1 'BerryOS boot' "$LOG" | grep -Eq 'BerryOS boot [0-9]+\.[0-9]+\.[0-9]+ \
 grep -m1 'BerryOS boot' "$LOG" | grep -q 'nogit' \
   && fail "boot banner ident 为 nogit：nogit 标识产物不得对外发布/进发布链（版本管理标准 §6——无归因能力的构建仅限本地调试）；实得：$(grep -m1 'BerryOS boot' "$LOG")"
 if [ "${SMOKE_PHASES:-all}" = "boot" ]; then
-  echo "smoke-image: 引导面标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 32 + banner 形态 + ident 非 nogit；SMOKE_PHASES=boot 分层 CI 轻面，生态 51 + VER 哨兵 + RX + sim 面留快机全链）"
+  echo "smoke-image: 引导面标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 32 + banner 形态 + ident 非 nogit；SMOKE_PHASES=boot 分层 CI 轻面，生态 52 + VER 哨兵 + RX + sim 面留快机全链）"
   cleanup 2>/dev/null || true
   exit 0
 fi
-echo "smoke-image: 全标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 32 + 生态 51)"
+echo "smoke-image: 全标记 ${ALL_COUNT}/${ALL_COUNT} 到齐（EFI 十段 + 接续 + 裸相 32 + 生态 52)"
 
 # —— VER 哨兵执法（版本管理标准 §1 构建标识轨道；审计洞①「哨兵哑火」闭环）——
 # EFI 相是 `eco: VER` 行唯一实现场：svcmgr ver_check 门 = H_FB 在席（fb
@@ -743,4 +747,4 @@ BOOT7_MARKERS=(
 run_boot7 k6-p6f 660 \
   -fw_cfg name=opt/berry/panel-model,string=freerange:per_frame
 
-echo "smoke-image: PASS（EFI 十段恰一次 + 接续 src=handoff + 裸相 32 + banner 形态 + ident 非 nogit + 生态 51 + VER 哨兵 ok 在席/mix 零席 + 字节对拍 + 金丝雀严格递增 + RX 注入后活性复验 + sim 面零计数 + 刀6 双 boot 形态面）"
+echo "smoke-image: PASS（EFI 十段恰一次 + 接续 src=handoff + 裸相 32 + banner 形态 + ident 非 nogit + 生态 52 + VER 哨兵 ok 在席/mix 零席 + 字节对拍 + 金丝雀严格递增 + RX 注入后活性复验 + sim 面零计数 + 刀6 双 boot 形态面）"

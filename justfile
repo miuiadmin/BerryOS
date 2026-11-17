@@ -756,7 +756,10 @@ test-host:
     cargo test -p berry-hdlface --target {{host}}
     # W3-Q9：berry-chanface（channel 队列资格判纯函数面——send 参数上限
     # 律/数组内无重复/容量门/READABLE·WRITABLE 派生位键律钉板，host 8 测；
-    # 判据单源，kernel syscall.rs/channel.rs 消费）。
+    # 判据单源，kernel syscall.rs/channel.rs 消费。W3-Q49 freeze 模块
+    # （mark/clear 资格 + 序守卫）+9。W3-Q95 ring 模块（02 号机会三刀 a
+    # 环形机械：不变量/槽映射/Vec 模型对拍〔全序列 + 全相位环绕 + 伪随机
+    # 500 步〕/容量门复用律）+6——chanface 23 测。
     cargo test -p berry-chanface --target {{host}}
     # W3-Q6：berry-itally（intent 档位计数/通胀计数遥测纯函数面——档位
     # 直方六槽/保留域收敛/borrowed==Σ借入不变量/tele: 行格式（纯 ASCII、
@@ -1414,7 +1417,7 @@ test-host:
     # 沙箱：G-ver-3 对拍绿/不匹配红点名/无 version 红/git_ident 缺席红/
     # 段作用域防串号/零 tag 豁免/非 git 豁免）。发版门形态改坏可被咬合。
     {{BASH}} tools/ver-check.sh --selftest
-    # W1 接线（D-审计 §4.3「从未跑过」面）：guifbd lib 单测 13 测
+    # W1 接线（D-审计 §4.3「从未跑过」面）：guifbd lib 单测 23 测
     # （B1-b/c vgpu 后端纯面——后端分派/INDIRECT 链/ATTACH 段/提交序）入
     # host 台账。独立小工作区（空 [workspace] escape），berry-libc
     # 按 target_os=linux 门控故 host 编译零 libc shim 连接；此前仅
@@ -1628,14 +1631,14 @@ smoke-smp: build build-user
 # V-4 img-boot 独立冒烟（M-G1 关卡；smoke-x86 同款形态——不并入主 smoke，
 # ARM64 五跑零扰动，M-G1 收官时另裁升第六跑）。零 -kernel / 零 fw_cfg：AAVMF
 # 挂 berryos.img 自举全链——EFI 十段恰一次 + 接续 src=handoff + 裸相 32 +
-# EFI 路生态（随 smoke-image.sh ECO 单源，现 51）+ kfile/init 字节对拍 + 金丝雀严格递增 + RX 注入 + 注入后
+# EFI 路生态（随 smoke-image.sh ECO 单源，现 52）+ kfile/init 字节对拍 + 金丝雀严格递增 + RX 注入 + 注入后
 # 活性复验。镜像/固件路径经参注入（单一事实源——smoke-x86 先例）。已挂 CI
 #（ci.yml 步：Ubuntu 侧经 AAVMF_CODE/AAVMF_VARS 环境变量覆盖 brew 默认路径）。
 smoke-image: image
     {{BASH}} tools/smoke-image.sh "{{IMAGE}}" "{{AAVMF_CODE}}" "{{AAVMF_VARS}}"
 
 # GUI-8 段④ EFI GUI 交互相双 boot 冒烟（独立关卡；**不并入 smoke-image**，
-# 冻结十段/生态（随 smoke-image.sh ECO 单源，现 51）断言面零改动）。拓扑 = AAVMF + out/berryos.img + 独立
+# 冻结十段/生态（随 smoke-image.sh ECO 单源，现 52）断言面零改动）。拓扑 = AAVMF + out/berryos.img + 独立
 # mkfat FAT12 数据盘（LBA0 `BERRYOSVBLK!` + 根 `GUI8.SMK`，payload 必须
 # 逐字节 = `BERRYOS-GUI8-SMOKE-V1\n`；错/缺 payload 一律 fail closed）+
 # 256M + ramfb + display fw_cfg 800x600@60 + virtio-blk + virtio-tablet +

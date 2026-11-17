@@ -617,6 +617,126 @@ mod tests {
         assert_eq!(p.closed.len(), c0 + 1, "随行 close");
     }
 
+    // —— 订阅者通道 RPC 面（TABLE_GET 即答——wm 订阅私有通道刀） ——
+
+    /// 正例：订阅端投 TABLE_GET → sweep_evt 即答全表快照（与 wm_srv 通道
+    /// 同刻 TABLE_GET 真值逐域一致）。
+    #[test]
+    fn sub_channel_table_get_immediate_snapshot_reply() {
+        let (mut t, mut p) = mk_table();
+        let mut f = [0u8; 8];
+        let n = gp::encode_wm_subscribe_req(&mut f);
+        let re = wm(&mut t, &mut p, CH_WM, &f[..n]);
+        assert_eq!(re.gifted.expect("SUBSCRIBE gift 应答").1.len(), 1);
+        let sub_srv = p.created[0].0;
+        // 系统顶带 + AVOID_SYS 应用窗：快照应携避让推导后的有效几何。
+        let (_sys, _, _) = create_win(&mut t, &mut p, gp::WM_LAYER_SYSTEM, 0, 30, false);
+        let (app, _, _) = create_win(&mut t, &mut p, gp::WM_LAYER_APP, 0, 600, true);
+        let truth = table_get(&mut t, &mut p);
+        let mut g = [0u8; 8];
+        let gn = gp::encode_wm_table_get_req(&mut g);
+        let r0 = p.replies.len();
+        p.inject(sub_srv, &g[..gn]);
+        t.sweep_evt(&mut p);
+        assert_eq!(p.replies.len(), r0 + 1, "恰一条即答");
+        assert_eq!(p.replies[r0].0, sub_srv, "应答落在订阅者通道");
+        let s = match gp::parse_wm_snapshot_rep(&p.replies[r0].1) {
+            Some(Ok(s)) => s,
+            other => panic!("快照解析失败: {:?}", other.map(|r| r.err())),
+        };
+        assert_eq!(s, truth, "快照与建窗状态一致");
+        assert_eq!((entry(&s, app).y, entry(&s, app).h), (30, 570), "避让有效几何回显");
+        // 同一 sweep 多帧 TABLE_GET：drain 逐帧各答。
+        p.inject(sub_srv, &g[..gn]);
+        p.inject(sub_srv, &g[..gn]);
+        t.sweep_evt(&mut p);
+        assert_eq!(p.replies.len(), r0 + 3, "逐帧即答");
+        // RPC 面不扰事件面：后续表变更广播仍达订阅端。
+        let (_w3, _, _) = create_win(&mut t, &mut p, gp::WM_LAYER_APP, 0, 600, false);
+        let ver = table_get(&mut t, &mut p).version;
+        let evts = p.events_on(sub_srv);
+        assert_eq!(evts.len(), 3, "三窗广播全达");
+        assert_eq!(gp::parse_wm_evt_table(evts[2]), Some(ver), "广播仍达");
+    }
+
+    /// 负例：畸形 TABLE_GET（截断 4B 内/空帧）静默忽略——零应答零关闭，
+    /// 订阅关系存活（后续广播仍达）。
+    #[test]
+    fn sub_channel_malformed_table_get_silent_and_alive() {
+        let (mut t, mut p) = mk_table();
+        let mut f = [0u8; 8];
+        let n = gp::encode_wm_subscribe_req(&mut f);
+        let re = wm(&mut t, &mut p, CH_WM, &f[..n]);
+        assert_eq!(re.gifted.expect("SUBSCRIBE gift 应答").1.len(), 1);
+        let sub_srv = p.created[0].0;
+        let (r0, c0) = (p.replies.len(), p.closed.len());
+        p.inject(sub_srv, &[gp::OP_WM_TABLE_GET, 0xEE]);
+        p.inject(sub_srv, &[gp::OP_WM_TABLE_GET, 0, 0]);
+        p.inject(sub_srv, &[]);
+        t.sweep_evt(&mut p);
+        assert_eq!(p.replies.len(), r0, "零应答");
+        assert_eq!(p.closed.len(), c0, "零关闭");
+        // 存活证：表变更广播仍达订阅端。
+        let (_w1, _, _) = create_win(&mut t, &mut p, gp::WM_LAYER_APP, 0, 600, false);
+        let ver = table_get(&mut t, &mut p).version;
+        let evts = p.events_on(sub_srv);
+        assert_eq!(evts.len(), 1, "广播恰一帧");
+        assert_eq!(gp::parse_wm_evt_table(evts[0]), Some(ver), "订阅存活");
+    }
+
+    /// 负例：非 TABLE_GET 帧（0x90 事件帧回投 + GETINFO 合法形）同静默
+    /// ——订阅者通道不答 GETINFO（快照 12B 头已携 disp_w/h）；静默后通道
+    /// 未受害（真 TABLE_GET 仍即答）。
+    #[test]
+    fn sub_channel_non_get_frames_and_getinfo_silent() {
+        let (mut t, mut p) = mk_table();
+        let mut f = [0u8; 8];
+        let n = gp::encode_wm_subscribe_req(&mut f);
+        let re = wm(&mut t, &mut p, CH_WM, &f[..n]);
+        assert_eq!(re.gifted.expect("SUBSCRIBE gift 应答").1.len(), 1);
+        let sub_srv = p.created[0].0;
+        let (r0, c0) = (p.replies.len(), p.closed.len());
+        let mut e = [0u8; 8];
+        let en = gp::encode_wm_evt_back(&mut e, 7);
+        p.inject(sub_srv, &e[..en]);
+        let mut gi = [0u8; 8];
+        let gin = gp::encode_wm_getinfo_req(&mut gi);
+        p.inject(sub_srv, &gi[..gin]);
+        t.sweep_evt(&mut p);
+        assert_eq!(p.replies.len(), r0, "零应答（GETINFO 也不答）");
+        assert_eq!(p.closed.len(), c0, "零关闭");
+        let mut g = [0u8; 8];
+        let gn = gp::encode_wm_table_get_req(&mut g);
+        p.inject(sub_srv, &g[..gn]);
+        t.sweep_evt(&mut p);
+        assert_eq!(p.replies.len(), r0 + 1, "通道未受害");
+        assert!(matches!(gp::parse_wm_snapshot_rep(&p.replies[r0].1), Some(Ok(_))));
+    }
+
+    /// 负例：属主通道投 TABLE_GET → 属主臂零应答（现律钉板）；同一
+    /// drain 内 BACK_ACK 照常消费。
+    #[test]
+    fn owner_channel_table_get_stays_silent() {
+        let (mut t, mut p) = mk_table();
+        let (_w1, _, Some(srv1)) = create_win(&mut t, &mut p, gp::WM_LAYER_APP, 0, 600, false)
+        else {
+            panic!("应建联事件通道")
+        };
+        assert_eq!(back_req(&mut t, &mut p), gp::ST_OK);
+        assert!(t.back_deadline().is_some(), "兜底槽武装");
+        let mut g = [0u8; 8];
+        let gn = gp::encode_wm_table_get_req(&mut g);
+        let mut ack = [0u8; 1];
+        let _ = gp::encode_wm_back_ack(&mut ack);
+        let (r0, c0) = (p.replies.len(), p.closed.len());
+        p.inject(srv1, &g[..gn]);
+        p.inject(srv1, &ack);
+        t.sweep_evt(&mut p);
+        assert_eq!(p.replies.len(), r0, "属主臂 TABLE_GET 零应答");
+        assert_eq!(p.closed.len(), c0, "零关闭");
+        assert!(t.back_deadline().is_none(), "BACK_ACK 照常解除兜底");
+    }
+
     // —— TABLE_WAIT 冻结语义钉板（① 波3设计 §9 立法） ——
 
     #[test]
