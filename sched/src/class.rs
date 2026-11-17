@@ -157,9 +157,12 @@ fn avg_vruntime(rq: &Runqueue) -> Option<u64> {
 }
 
 /// S5-c lazy unthrottle：扫环上被冻结的 deadline 任务——`cntvct() ≥ vdeadline`
-/// 者周期到：解冻（清 HELD_FROZEN）+ 重臂 vdeadline（+= duration_hint_ns =
-/// period_cycles）+ 授新预算 slice（preempt_threshold）。CBS 同形语义：
-/// 每期至多 budget CPU 时长；超了等下期。
+/// 者周期到：解冻（清 HELD_THROTTLE）+ 重臂 vdeadline（+= duration_hint_ns =
+/// period_cycles）+ 授新预算 slice（preempt_threshold）。CBS 同形语义注
+///（04 号审计附记一审查轮，2026-11-17）：「每期至多 budget CPU 时长」只在
+/// 解冻/首片成立——八个生产授片点派发尾 `slice_left = grant_cycles()` 整片
+/// 覆盖（s5cprobe S5C_BUDGET_MS 注同款事实），此后每期实跑 ≈ 一授片；
+/// budget→真运行帽待预算授片分派刀（grant 面按 class 分派）。
 ///
 /// S5-c 计数门：头部先查 [`crate::runqueue::dl_on_ring`]（全域在环
 /// deadline 任务账本）——0 时整圈扫描跳过（一次 Relaxed 原子读替代
@@ -169,7 +172,9 @@ fn avg_vruntime(rq: &Runqueue) -> Option<u64> {
 /// 任务 ⟹ 扫描必然空手——跳过零语义差。
 ///
 /// # Safety
-/// rq 环节点有效；调用侧屏蔽窗（pick_next 语境）。
+/// rq 环节点有效；调用侧屏蔽窗（两个出选面：trait `Fair::pick_next`
+/// 直调面与 `Fair::pick_next_filtered` 生产面——04 号审计附记一修复，
+/// 2026-11-17 起双面）。
 unsafe fn lazy_unthrottle_deadlines(rq: &Runqueue) {
     // 快路径：全域环上无 deadline 任务（含本环）——零扫描。
     if crate::runqueue::dl_on_ring() == 0 {
@@ -245,9 +250,14 @@ impl SchedClass for Fair {
     fn pick_next(&self, rq: &Runqueue, _topo: &Topo) -> Option<&mut Task> {
         // S5-c lazy unthrottle：周期到的冻结 deadline 任务——解冻 + 重臂
         // vdeadline（+= period，存 duration_hint_ns）+ 授新预算 slice。
-        // 零额外定时器：pick_next 高频调用的顺带扫（is_deadline 一比较快
+        // 零额外定时器：出选高频路径的顺带扫（is_deadline 一比较快
         // 路过；冻结位零任务直接跳过）。S5-c 计数门起环上无 deadline 任务
         // （全域账本 0）时函数头即返——整圈扫描跳过。
+        // 双面分工（04 号审计附记一修复，2026-11-17）：本 trait 面调用 =
+        // ktest 直调面（DL-B2 钉板原样绿）；生产八个出选点全走
+        // `Fair::pick_next_filtered`，其头部另有同款调用（生产出选不经
+        // 本面，本面亦不落入 pick_next_filtered——直调 scan_filtered）：
+        // 两面结构不交、无双重调用路径。
         unsafe { lazy_unthrottle_deadlines(rq) };
         let chosen = self.scan_filtered(rq, core::ptr::null_mut())?;
         // SAFETY: scan_filtered 契约（环上节点在环、调用侧屏蔽窗）。
@@ -318,8 +328,10 @@ impl SchedClass for Fair {
         }
         // S5-c 预算执法：deadline 任务的 slice = 预算尺寸（spawn 时由
         // preempt_threshold 设定）。slice 耗尽 = 本期预算用完 → throttle
-        //（HELD_FROZEN 置位 → eligible 过滤 → 不再出选）。周期到 →
-        // lazy_unthrottle（pick_next 面扫）解冻 + 重臂 + 新预算。
+        //（HELD_THROTTLE 置位 → eligible 过滤 → 不再出选）。周期到 →
+        // lazy_unthrottle（出选面扫——trait pick_next 与
+        // pick_next_filtered 双面，2026-11-17 起生产面=后者，04 号审计
+        // 附记一）解冻 + 重臂 + 新预算。
         // W3-Q11：准入三与门单源 berry-sliceface（host 钉板 throttle_gate）。
         if throttle_admissible(
             t.prio_effective,
@@ -427,6 +439,20 @@ impl Fair {
         _topo: &Topo,
         my_cur: *mut Task,
     ) -> Option<&mut Task> {
+        // S5-c lazy unthrottle 接入生产出选面（04 号审计附记一修复，
+        // 2026-11-17）：解冻原只在 trait `Fair::pick_next` 头部调用，而
+        // 生产八个出选点全走本函数——deadline 任务（EL0 spawn 期
+        // policy=3 可达，syscall.rs spawn 面）预算耗尽被 `Fair::tick` 置
+        // HELD_THROTTLE 后在生产永久不可出选。修法已裁=双写：trait 面调用
+        // 保留（ktest 直调面，DL-B2 钉板原样绿），本函数头部新增同款调用
+        //（生产唯一出选路径）——生产出选不经 trait 面、本函数亦不回调
+        // trait 面，两面结构不交、无双重调用路径；dl_on_ring()==0 早退门
+        // 在函数自身头部，此处不重复设门。
+        // SAFETY: 八个生产调用点全在本核 RQ 锁 + IRQ 屏蔽窗内（判据同
+        // scan_filtered 的 SAFETY 注与 sched.rs `try_rq_lock` 注「生产八
+        // 调用点全在本核 RQ 锁窗内」立法句），与紧随其后的 scan_filtered
+        // 同窗同节点集，访问形态严格弱于既有扫描。
+        unsafe { lazy_unthrottle_deadlines(rq) };
         let chosen = self.scan_filtered(rq, my_cur)?;
         // SAFETY: scan_filtered 契约（KERN_LOCK 窗内、节点在环）。
         unsafe { rq.advance_past(chosen) };
@@ -434,7 +460,9 @@ impl Fair {
         crate::policy::apply(t);
         // OBS-01（06 号 §5 观测维补面）：出选记账——intent 全档 + 带任务
         // per-band（生产出选唯一路径 = 本函数；`SchedClass::pick_next`
-        // 是 ktest 直调面不经此）。Relaxed 纯计数（stats.rs 纪律）。
+        // 是 ktest 直调面不经此；S5-c 解冻自 04 号审计附记一修复
+        //（2026-11-17）起在本函数头部先行发生）。Relaxed 纯计数
+        //（stats.rs 纪律）。
         crate::stats::note_pick(t);
         Some(t)
     }

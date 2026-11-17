@@ -267,7 +267,7 @@ EEVDF+EDF 混合调度核：spawn 家族、freeze/thaw、抢占控制、SLEEPQ �
 > class | yield 片归还（moss `yield_slice` 语义的 BerryOS 形态）——让出者不得带片优势。
 
 ### `pick_next_filtered(&self, rq: &Runqueue, _topo: &Topo, my_cur: *mut Task) -> Option<&mut Task>`（`Fair` 固有方法）
-> class | 过滤版出选（S-2b inherent 方法——trait 冻结不动）；带内无 eligible 时取最小键。
+> class | 过滤版出选（S-2b inherent 方法——trait 冻结不动）；头部先 S5-c lazy unthrottle（04 号审计附记一，2026-11-17：生产出选唯一路径，deadline 限流解冻在此面发生——dl_on_ring 门常闭时零扫描）；带内无 eligible 时取最小键。
 
 ### `FairBand::new(band_id: u8, band: IntentBand) -> FairBand` `const`
 > class | 显式带参数构造（M4 启动配置覆盖路径入口形状——数字进启动配置，不写死；band_id 域执法归调用方）。

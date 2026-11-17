@@ -6720,7 +6720,7 @@ fn test_deadline() {
     let _p3 = rr.pick_next(&rq, &topo).expect("DL：D3 非空环须有出选");
 
     // —— S5-c：预算执法——budget 耗尽 throttle + 周期到 lazy unthrottle ——
-    // DL-B1：deadline 任务带预算——slice 耗尽 → HELD_FROZEN 置位。
+    // DL-B1：deadline 任务带预算——slice 耗尽 → HELD_THROTTLE 置位。
     let tb = mk(b"dlB".as_slice()); // budget 任务
     let tf2 = mk(b"dlF2".as_slice()); // fair 陪跑
     let mut rq2 = Runqueue::new();
@@ -6734,7 +6734,7 @@ fn test_deadline() {
     rr.enqueue(&mut *tb, &mut rq2);
     rr.enqueue(&mut *tf2, &mut rq2);
 
-    // tick 到 slice 耗尽 → 应 throttle（HELD_FROZEN 置位）。
+    // tick 到 slice 耗尽 → 应 throttle（HELD_THROTTLE 置位）。
     // tick 读 timer 内部算 delta——直接置 slice_left=0 后 tick 模拟到期。
     tb.slice_left = 0;
     let cur2 = tb as *mut berry_sched::Task;
@@ -6757,6 +6757,69 @@ fn test_deadline() {
             "DL：B2 周期到后 lazy_unthrottle 须解限流（清 THROTTLE 位）");
     assert!(picked.slice_left == 100,
             "DL：B2 解冻后须授新预算 slice（期望 100，实际 {}）", picked.slice_left);
+
+    // DL-B3：04 号审计附记一（2026-11-17）filtered 面钉板——生产 8 出选点
+    // 全走 pick_next_filtered（sched/src/class.rs），解冻 lazy_unthrottle
+    // 若只在 trait pick_next 面则预算耗尽的 deadline 任务在生产面永久不可
+    // 出选；双写修法（filtered 头部亦解冻）后本段直钉生产执法面。B2 的
+    // pick 已消费 rq2（游标推进 + tb 已解冻 + fair 陪跑在环会顶掉负控
+    // None）→ 照 B1 制造法新造任务 + 环；enqueue 正路入环（DL_ON_RING 在
+    // link_back 记账，runqueue.rs），环上唯一任务即负控「被过滤 = None」形态。
+    let tb3 = mk(b"dlB3".as_slice()); // budget 任务（filtered 面钉板对象）
+    let mut rq3 = Runqueue::new();
+    // 设 deadline + 预算（B1 口径；周期取远量——负控余量）。
+    tb3.prio_effective = PRIO_DEADLINE;
+    tb3.preempt_threshold = 100; // 预算 = 100 cycles
+    tb3.duration_hint_ns = 100_000_000; // 周期 = 1e8 cycles（段内不可达——负控远截止余量）
+    tb3.vdeadline = u64::MAX; // 截止远（制造期不触解冻——B1 同款）
+    tb3.slice_left = 100; // 当前 slice = 预算
+    rr.enqueue(&mut *tb3, &mut rq3);
+
+    // 制造限流（B1 同款）：slice 耗尽 → tick → THROTTLE 在、FROZEN 不在。
+    tb3.slice_left = 0;
+    let cur3 = tb3 as *mut berry_sched::Task;
+    rr.tick(unsafe { &mut *cur3 }, unsafe { &mut *core::ptr::addr_of_mut!(rq3) });
+    assert!(tb3.held_locks & HELD_THROTTLE != 0,
+            "DL：B3 slice 耗尽须置 HELD_THROTTLE（预算限流）");
+    assert!(tb3.held_locks & HELD_FROZEN == 0,
+            "DL：B3 预算限流不得误置 HELD_FROZEN（进程冻结独占语义）");
+
+    // 负控：远截止（now+period）不触解冻面（IS-2/SMPLZ/THRYLD T2c 同款
+    // 范式）→ filtered 面环上唯一任务被过滤 = None——修前生产缺陷形态
+    // （限流者在生产面永不出选），钉死。
+    tb3.vdeadline = berry_hal_aarch64::timer::cntvct() + tb3.duration_hint_ns;
+    assert!(rr.pick_next_filtered(&rq3, &topo, core::ptr::null_mut()).is_none(),
+            "DL：B3 远截止限流者在 filtered 面不可出选（修前生产缺陷形态）");
+
+    // 解冻正钉（B2 手法）：vdeadline=1（已过期，cntvct ≥ 1）→ filtered 面
+    // 头部解冻 → 三断言：身份 / THROTTLE 清 / 预算重授。
+    tb3.vdeadline = 1;
+    let picked3 = rr
+        .pick_next_filtered(&rq3, &topo, core::ptr::null_mut())
+        .expect("DL：B3 周期到后 filtered 面须有出选（生产面解冻）");
+    assert!(core::ptr::eq(picked3 as *const Task, tb3 as *const Task),
+            "DL：B3 (i) filtered 出选身份须是被冻任务");
+    assert!(picked3.held_locks & HELD_THROTTLE == 0,
+            "DL：B3 (ii) filtered 面解冻须清 THROTTLE 位");
+    assert!(picked3.slice_left == 100,
+            "DL：B3 (iii) 解冻须重授预算 slice（期望 100，实际 {}）", picked3.slice_left);
+    assert!(picked3.vdeadline == 1 + tb3.duration_hint_ns,
+            "DL：B3 (iv) 解冻须重臂 vdeadline（期望 {}，实际 {}）",
+            1 + tb3.duration_hint_ns, picked3.vdeadline);
+
+    // 段尾出账（04 号审计附记一审查轮，2026-11-17）：本族 DL 任务全部摘环
+    // 配对 DL_ON_RING 出账——全局账本回零后生产解冻快门（dl_on_ring()==0
+    // 早退门）在默认 boot（ktest 后继续生产调度）恢复常闭，否则每次生产
+    // 出选白付一圈 O(n) 走查。td1/td2 在 D3 前已降 fair——unlink 按摘环
+    // 时刻带位记账（runqueue.rs unlink），先复带 PRIO_DEADLINE 再摘使出账
+    // 成立（RING2 族 rr.dequeue 收口同款惯用法；对 Box::leak 测试任务置
+    // Exited 无害）。
+    td1.prio_effective = PRIO_DEADLINE; // 复带——仅为出账记账
+    td2.prio_effective = PRIO_DEADLINE;
+    rr.dequeue(&mut *td1, &mut rq);
+    rr.dequeue(&mut *td2, &mut rq);
+    rr.dequeue(&mut *tb, &mut rq2);
+    rr.dequeue(&mut *tb3, &mut rq3);
 
     berry_hal_aarch64::uart_puts(b"DL-K ok\n");
 }

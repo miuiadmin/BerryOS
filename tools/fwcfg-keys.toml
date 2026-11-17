@@ -177,6 +177,13 @@ consumer = "kernel/src/main.rs PI 三任务链延迟探针门 PILAT_PROBE_NAME�
 polarity = "在位才 spawn；缺席 = run/smoke 零扰动（EFI 路天然缺席）"
 
 [[keys]]
+name = "s5cprobe"
+kind = "string"
+injectors = ["（无仓内注入方——手拼 -fw_cfg 专递，pilat 同款；判读法单源 = kernel/src/main.rs 探针体段头注）"]
+consumer = "kernel/src/main.rs S5-c deadline 解冻端到端复活链探针门 S5C_PROBE_NAME（04 号审计附记一；在位才 spawn task_s5c_dl/task_s5c_fair 两任务组；值面不解析；判读 = S5C-DLP ok/FAIL 行手 grep）"
+polarity = "在位才 spawn；缺席 = run/smoke 零扰动（EFI 路天然缺席）"
+
+[[keys]]
 name = "panel-model"
 kind = "string"
 injectors = ["tools/smoke-image.sh 刀6 双 boot 段（tiered:vrr + det 实注）；亦可手拼 -fw_cfg 专递——2026-11-16 跨根并回自 main 显示线 refresh 刀2/刀6"]

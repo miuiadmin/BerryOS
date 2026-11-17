@@ -252,8 +252,11 @@ static mut PER_CPU_RQ: [Runqueue; 2] = [Runqueue::new(), Runqueue::new()];
 /// EAS 面 v2+）。
 static mut TOPO: Topo = Topo::single();
 /// 调度类（round-robin，G0/G1 默认）。M4 集成面起 = **队列级**消费位
-/// （`pick_next_filtered` 三调用点——混合带同环出选的扫描面，不经
-/// per-task 分派）+ [`class_of_task`] 分派的回落臂（unit Fair 本体）。
+/// （`pick_next_filtered` 八调用点——混合带同环出选的扫描面，不经
+/// per-task 分派；04 号审计附记一核对（2026-11-17）：yield_now_impl /
+/// switch_away_forever_with / block_current / try_preempt / idle_loop /
+/// on_irq_tick / on_sgi_resched / park_recheck）+ [`class_of_task`]
+/// 分派的回落臂（unit Fair 本体）。
 static RR: Fair = Fair;
 
 /// idle / 初始任务 = `rust_main` 的活上下文（boot 栈 `__stack_top`）。**不分配栈**
