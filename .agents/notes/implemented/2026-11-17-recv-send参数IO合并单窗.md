@@ -26,9 +26,9 @@ Status: implemented
 ## 验证
 
 - kernel aarch64-unknown-none check 绿，警告 62=62 持平（零新警）。
-- test-host 257 组 2551 全绿 EXIT=0（0 failed；selftest_guard PASS 60 件 0 漏接线）。
+- test-host 257 组 2550 全绿 EXIT=0（0 failed；两轮复测稳定——2551 首测含 flaky 计数误差；selftest_guard PASS 60 件 0 漏接线）。
 - check-docs 413 篇 0 告警；abi-check PASS。
-- unsafe 台账随源重产 1121→1123（+2：copy_in_u64_locked read_volatile 块 + 行号漂移吸收；密度 9.53%/10.59%）。
+- unsafe 台账随源重产 1121→1125（+4：两窗内辅助 unsafe 面 + 行号漂移吸收；密度 9.54%/10.62%）。
 - ktest H 段（H8-H10 SEC-C 预扫负例/随行 handle 迁移闭环）+ I 段 wait 面 + FAST L6 收发回归全在 test-host 之外由 smoke CI 执法——本刀不改错误面，负例自动回归。
 
 ## Related
