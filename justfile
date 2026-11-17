@@ -1119,6 +1119,13 @@ test-host:
     # 单源执法，改 mkcpio 必跑。2026-11-11 W1 去重：A1-3a/3b 两刀各接线
     # 一次致同命令跑两遍（实抓），保留单次覆盖面零损失。
     python3 tools/mkcpio.py --selftest-split
+    # W1（彻底 Rust 化轨道 b 层 #8 刀序首位）：mkcpio Rust 件 lib 纯面
+    # 测试（垫页几何走查/重装恒等/卷命名/陈卷清理/manifest 拒面/伴生
+    # .sig 收编）+ CLI 与 Python 现役件字节级对拍（合成条目集 → 双方
+    # 归档 sha256 恒等，Python 在席时执行；缺席打 skip 纯面钉板兜底）——
+    # elf2flat/elf2pe 首刀同位纪律：产链现役件仍是 Python（mkcpio.py），
+    # 二刀换轨时再换 build-user 配方。独立小工作区，须显式 --target {{host}}。
+    cargo test --manifest-path tools/mkcpio/Cargo.toml --target {{host}}
     # V-3：mkimage MBR 薄面自检（CHS 向量 + 表项钉板——卷编码面归
     # mkfat --selftest，单编码器纪律不在此长第二套）。
     python3 tools/mkimage.py --selftest

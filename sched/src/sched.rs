@@ -41,7 +41,7 @@ static PULL_CNT: AtomicU64 = AtomicU64::new(0);
 /// SWITCHES 递增 + 金丝雀打印（S-6 ①：全域唯一递增/打印口径）。
 /// 全部十一个切换原语位（yield/exit/block 三函数的直切臂 + park 切点 + tick
 /// 抢占 + SGI resched 直切 + try_preempt 直切 + park/idle 两派发位）共享本
-/// helper：%100 判定走**全局**计数——哪个位跨点哪个位打印。
+/// helper：%SOAK_PRINT_EVERY 判定走**全局**计数——哪个位跨点哪个位打印。
 /// 沿革九十四发现①收口（两层）：打印若只挂 tick 抢占支（旧单点）SMP 稳态
 /// 忙对各占核时结构性冷；更深的洞 = **直切臂（出选有货即切）旧完全不计数**
 /// ——park 臂冷、直切臂热，漏计 = 金丝雀对 SMP 稳态主干结构性失明（S-6
@@ -56,7 +56,12 @@ static PULL_CNT: AtomicU64 = AtomicU64::new(0);
 fn bump_switches() -> bool {
     let sw = SWITCHES.fetch_add(1, Ordering::Relaxed) + 1;
     // bring-up 诊断（G1）：每 N 次切换打一行计数，证分时持续、计数不冻。
-    const SOAK_PRINT_EVERY: u64 = 100;
+    // 2026-11-17 降频定谳（04 号调度审计机会二，G1/S-6 里程碑已过）：
+    // 100→10000——每 100 切换的 PRINT_LOCK+UART 行是 IRQ 窗内周期性 µs 级
+    // 尖峰（切换点可能在 IRQ 上下文），金丝雀语义（计数持续涨）在 10000
+    // 档完整保留。计数面（SWITCHES 每 switch 递增）零变化；watchdog/
+    // soakmon 走 `switches()` 计数器直读，与本打印频率解耦。
+    const SOAK_PRINT_EVERY: u64 = 10000;
     if sw % SOAK_PRINT_EVERY == 0 {
         // S-2 E0 打印面（草案 3.1-3）：金丝雀三段在 PRINT_LOCK 内拼行原子
         //（IRQ 屏蔽窗内调用——print 对不带 irqsave，纪律见 kern_lock 模块头）；
@@ -166,12 +171,27 @@ fn assert_preempt_balanced(where_: &str) {
 /// 零行为变更步（g3-1b）：现役 SVC 全程 IRQ 屏蔽 ⇒ 单核 rq 状态窗内
 /// 不可变 ⇒ 探峰恒空 = 纯空探（无直切）；g3-1c 域解蔽后本检查点真承重。
 ///
-/// g3-1d 观测面：真探形（count==0 支）命中计数——递增点在 try_preempt
-/// 之前 = **rq_lock 窗外**，无锁原子加（Relaxed 单指令序），不引入任何
-/// 锁序面（f4 g3-1d 预警①）；空探（计数>0 直返）不计。
+/// g3-1d 观测面：真探形（len 门 + count==0 支）命中计数——递增点在
+/// try_preempt 之前 = **rq_lock 窗外**，无锁原子加（Relaxed 单指令序），
+/// 不引入任何锁序面（f4 g3-1d 预警①）；空探（len<=1 或计数>0 直返）不计。
 static PREEMPT_CKPT_HITS: AtomicU64 = AtomicU64::new(0);
 
 pub fn preempt_checkpoint() {
+    // 04 号审计快赢（机会一①：len 门）：cur-in-ring 不变式（Running 常驻环
+    //——`class.rs` `Fair` 结构注；pick 不摘任务，仅 block/exit 动环）下本核
+    // len<=1 ⟹ 环上至多 cur 自己 ⟹ eligible 集（my_cur 自豁免 + Running
+    // 排除）恒空 ⟹ 探峰必空、必不直切——整段（DAIF 往返 + 计数 RMW + RQ
+    // 锁对 + O(n) 环扫）跳过，零行为变化（空探本就无副作用）。判例 =
+    // `on_sgi_resched` 的 len>=2 出选门（彼在 RQ 锁窗内、替探峰；此处
+    // Relaxed 免锁前置过滤——`runqueue.rs` `len` 的跨核读者口径）：读到
+    // 假阳（len 实已回落）走到下方锁窗探峰自然落空；读到假阴（跨核新
+    // 入队未可见）漏看的他者由 `enqueue_with_kick` 窗外 SGI 唤醒戳兜底
+    // → `on_sgi_resched` 出选，不丢切换。单任务 SVC 尾常态 = 每调用省
+    // 1 全局原子 RMW + RQ 锁对 + O(n) 扫描。
+    // SAFETY: rq() 取本核 per-CPU 队列引用；此处只读 len，无环手术。
+    if unsafe { rq().len() } <= 1 {
+        return;
+    }
     let daif = hal::irq_save();
     hal::disable_irq();
     if preempt_count() == 0 {
@@ -835,8 +855,10 @@ pub fn topo_smp_online() {
 ///   + 2 → 改道对核（「4-burst 第 3 个直接路由」语义；len 读 =
 ///   AtomicUsize 免锁读——c-2b slice 3 Q3 收口：C20 后表锁语境合法无
 ///   逆序边，K=2 启发式容忍跨核近似值）。
-/// 只在 spawn 调（新放语义）；wake/expire 再入队回 home 不改道（防 sleeper
-/// 被唤醒方弹核）；b-2 偷取迁移时随迁改写 home。
+/// 只在 spawn 调（新放语义）；wake/expire 再入队——expire 恒回 home；wake
+/// 自 F4（2026-11-17，[`eas_wake_pick`]）起双门（触发 819/容量 768）条件
+/// 性迁核，防 sleeper 被唤醒方弹核由双门承接（F4 前恒 home 不改道）；b-2
+/// 偷取迁移时随迁改写 home。
 fn place(task: &Task) -> usize {
     if task.ttbr0 == 0 || task.pinned == 0 || !task.spread || !hal::smp::par_enabled() {
         return 0;
@@ -3363,7 +3385,8 @@ pub fn last_killed() -> &'static [u8] {
 /// 孤儿段」对 pick 完全不可见——smoke 标记全部分裂前打完，30s 长跑五任务
 /// 静默失联由此漏网。本检查对账两笔：①runqueue 走查步数 == len 记账
 ///（步数 < len = 孤儿段；到帽 = 断链）；②SLEEPQ 链走计数 == len 记账。
-/// 消费点 = `on_irq_tick` 金丝雀分支（每 100 切换一次，O(n) 极小）与 ktest。
+/// 消费点 = `on_irq_tick` 金丝雀分支（随 `bump_switches` 跨点——2026-11-17
+/// 起每 10000 切换一次，04 号审计机会二降频；O(n) 极小）与 ktest。
 /// **零分配、成功路径零输出**；违约即 panic 带时刻响亮失败（失败路径才
 /// 格式化）。调用契约：IRQ 上下文（环/队变更屏蔽窗的串行等价）。
 fn integrity_check() {

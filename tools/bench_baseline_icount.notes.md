@@ -98,3 +98,11 @@ trace-dual + lat + reject-trio + testhost（同目录 20261105-0930~0931 批）�
 环境注记：宿主多会话并发（在场 QEMU 2-5 pids 波动，串行守卫两轮 900s 等空超时后于窗口期完成全部轮次）；会话中 owner 并行提交 d8f2254e/87c06016（berry-ui 面——kernel/ 与全部路径依赖 crate 零改动，基线仍对现役 kernel 面有效；后续重建仅 ident 串随之变，同长度数据面零布局效应）。
 
 
+## 快赢③ DC ZVA 清零臂基线刷新（2026-11-17，prove 五跑 max_dev 0.000%）
+
+背景：快赢③（04 号+01 号审计三快赢之一）——`zero_frame`（`kernel/src/vmo.rs`）4KiB 清零从 `write_bytes`→8B GPR memset 循环（512 迭代/页）改 DC ZVA 专用臂（CTR_EL0.DZ 探测 + DminLine 行步进 + GPR 回退，非 SIMD 不破 mem.rs 合同）——一切 commit/缺页供给/建表路径同沾。
+
+新值归因：vmo_commit1p 1683→396（−76.5%）＝设计内算法增量（64 条 dc zva + 环骨架替代 512 迭代 GPR 环，反汇编核证 zero_frame 内 `mrs CTR_EL0`/`tbz #0x1a`/`dc zva` 环在位）；frame_alloc4k 37→37 逐值不动＝buddy 路径零清零面佐证；frame_alloc64k 82→37＝4-2/4-3 在册布局骰轨道对 {37,82} 回摆（zero_frame 代码量变化重掷镜像布局）；handle_evt 274→288（+14）＝tick 相位族（S-2a 同族：boot 指令流变短 → 测量窗内 tick 边沿落位重掷；handle_evt 查表面不进 zero_frame，非代码因果）；vmo_rw4k 6948→6945（−3）＝同相位族微量；cntvct_pair 0→0 观测锚不动。
+
+烘焙与验证：prove 五跑 verdict=exact max_dev=0.000%（值 {0,37,37,288,396,6945}；BENCHWAKE 五跑逐字节同 n=551 max=86009764；回执 icount-prove-20261117-115759-37998）→ ICOUNT_TOL=0.0 维持；`--trace-dual --update` 双份一次刷新（on=off 六项 delta 全 +0——结构性零足迹保住；回执 icount-20261117-115919-48375 / icount-off-20261117-120033-48375 / trace-dual-20261117-120033-48375）；复验单跑 L2 对拍过（ICOUNT_TOL=0.0 六项全在界内，回执 icount-20261117-120204-49314）。ktest 全绿随 boot 结构性背书（FRAME/FP/VMO/HEAP/ASPACE ok 在席，FP canary 直验新清零路径 SIMD-free）。首跑对拍（旧基线四项出界红）回执 icount-20261117-115045-6019。
+
