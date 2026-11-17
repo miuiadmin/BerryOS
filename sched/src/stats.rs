@@ -7,8 +7,8 @@
 //!   stuck 诊断行同政策，但本面是**长期观测面**非排障探针，不随定谳退役
 //!   ——06 号「跨核唤醒上界不可测」的补面第一步）。
 //! - **Relaxed 原子、IRQ 热路径零锁零分配**：写点 = pick/tick 热路径
-//!   （屏蔽窗/锁窗内），fetch_add 单指令序无同步角色（`IRQ_TICKS`/
-//!   `LB_TICKS` 同款口径）；读点 = 串口行拼装。原子 static（非
+//!   （屏蔽窗/锁窗内），fetch_add 单指令序无同步角色（`LB_TICKS` 同款
+//!   口径；`IRQ_TICKS` 机会三〔2026-11-17〕已退役）；读点 = 串口行拼装。原子 static（非
 //!   `static mut`）免入册 `tools/writable_globals.txt`（`band.rs::
 //!   DEADLINES` 注同款 A12 纪律）。
 //! - **跨核一份全局账**：与 `band.rs::CONSUMED` 同裁决——per-band 计数

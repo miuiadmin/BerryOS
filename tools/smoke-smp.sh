@@ -27,8 +27,9 @@
 #      互不子串、断言面零碰撞，单核相 TX 恒 0 主 smoke 零漂移）。
 #   2. 相 1 裸相 32 标记 / 相 2 rootfs 相 56 标记全部出现（与主 smoke 同面
 #      ——标记数组与 smoke.sh 运行时计数对拍，见下方机器守卫）。
-#   3. switches 金丝雀 ≥3 条严格递增**按相**（任核 tick 命中 100 倍数即整行
-#      持 PRINT_LOCK 打印——两核交替打印不破坏数值序列单调，§5.2）。
+#   3. switches 金丝雀 ≥3 条严格递增**按相**（任核本核槽命中 10000 倍数即整行
+#      持 PRINT_LOCK 打印两槽和——序列单调不减为主态〔严格递增；等值残边
+#      在对核同窗跨点+锁争用下理论可达，见 sched.rs bump_switches 注〕，§5.2）。
 #   4. 相 2 专属：`ROOTFS vmo=none` 拒 + `app APPDEMO up` + EVS/SKT 宿主
 #      对拍 client 完成行 + **PAR 副核参与活证**（裁决翻转 2026-10-31：E0
 #      无 IPI + park 派发限频下真并行 witness 归 S-3——验收面 = PAR absent
@@ -365,11 +366,11 @@ echo "smoke-smp: 相 1 SMP 握手 + boot 标记 ${#MARKERS[@]}/${#MARKERS[@]} �
 canary_check "相 1" "$DEADLINE_CANARY"
 
 # S-3c c-2c KL 争用观测（非门禁）：每相末条金丝雀 kl=（C20 收缩前后对照基线）。
-# 门控相（4-8）常缺 = 设计内：canary 仅在相内全局切换过 SOAK_PRINT_EVERY=100
-# 倍数时打行——门控压测相总切换 <100 无行可取（S-5f 相 8 留档串口全程
-# 0 行 canary 实证）；观测面非门禁，缺 ≠ 断链。
+# 门控相（4-8）常缺 = 设计内：canary 仅在相内本核槽切换过 SOAK_PRINT_EVERY=10000（2026-11-17 机会二降频+机会三 per-CPU 化后=本核槽判定/打印全局和；旧 100 值陈账随两刀滚新）
+# 倍数时打行——门控压测相本核槽切换 <10000 无行可取（S-5f 相 8 留档串口
+# 全程 0 行 canary 实证系旧 100 档期证据）；观测面非门禁，缺 ≠ 断链。
 kl_last=$(grep -o ' kl=[0-9]*' "$LOG" | tail -1 | cut -d= -f2)
-echo "smoke-smp: 相 1 KL 争用观测（非门禁）：kl=${kl_last:-缺(切换<100)}"
+echo "smoke-smp: 相 1 KL 争用观测（非门禁）：kl=${kl_last:-缺(本核槽<10000)}"
 
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
@@ -472,11 +473,11 @@ fi
 canary_check "相 2" "$DEADLINE_CANARY"
 
 # S-3c c-2c KL 争用观测（非门禁）：每相末条金丝雀 kl=（C20 收缩前后对照基线）。
-# 门控相（4-8）常缺 = 设计内：canary 仅在相内全局切换过 SOAK_PRINT_EVERY=100
-# 倍数时打行——门控压测相总切换 <100 无行可取（S-5f 相 8 留档串口全程
-# 0 行 canary 实证）；观测面非门禁，缺 ≠ 断链。
+# 门控相（4-8）常缺 = 设计内：canary 仅在相内本核槽切换过 SOAK_PRINT_EVERY=10000（2026-11-17 机会二降频+机会三 per-CPU 化后=本核槽判定/打印全局和；旧 100 值陈账随两刀滚新）
+# 倍数时打行——门控压测相本核槽切换 <10000 无行可取（S-5f 相 8 留档串口
+# 全程 0 行 canary 实证系旧 100 档期证据）；观测面非门禁，缺 ≠ 断链。
 kl_last=$(grep -o ' kl=[0-9]*' "$LOG" | tail -1 | cut -d= -f2)
-echo "smoke-smp: 相 2 KL 争用观测（非门禁）：kl=${kl_last:-缺(切换<100)}"
+echo "smoke-smp: 相 2 KL 争用观测（非门禁）：kl=${kl_last:-缺(本核槽<10000)}"
 
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
@@ -534,11 +535,11 @@ lb_n=$(echo "$lb_line" | grep -o 'n=[0-9]*' | cut -d= -f2)
   || fail "LB n=${lb_n:-缺} ≠ 4（收割计数漂移——LB_CHILD_N 三面钉同值）"
 
 # S-3c c-2c KL 争用观测（非门禁）：每相末条金丝雀 kl=（C20 收缩前后对照基线）。
-# 门控相（4-8）常缺 = 设计内：canary 仅在相内全局切换过 SOAK_PRINT_EVERY=100
-# 倍数时打行——门控压测相总切换 <100 无行可取（S-5f 相 8 留档串口全程
-# 0 行 canary 实证）；观测面非门禁，缺 ≠ 断链。
+# 门控相（4-8）常缺 = 设计内：canary 仅在相内本核槽切换过 SOAK_PRINT_EVERY=10000（2026-11-17 机会二降频+机会三 per-CPU 化后=本核槽判定/打印全局和；旧 100 值陈账随两刀滚新）
+# 倍数时打行——门控压测相本核槽切换 <10000 无行可取（S-5f 相 8 留档串口
+# 全程 0 行 canary 实证系旧 100 档期证据）；观测面非门禁，缺 ≠ 断链。
 kl_last=$(grep -o ' kl=[0-9]*' "$LOG" | tail -1 | cut -d= -f2)
-echo "smoke-smp: 相 3 KL 争用观测（非门禁）：kl=${kl_last:-缺(切换<100)}"
+echo "smoke-smp: 相 3 KL 争用观测（非门禁）：kl=${kl_last:-缺(本核槽<10000)}"
 
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
@@ -579,11 +580,11 @@ asidr_n=$(echo "$asidr_line" | grep -o 'n=[0-9]*' | cut -d= -f2)
   || fail "ASIDR n=${asidr_n:-缺} < 1（全核回执零前进——回卷 quiesce 回执链断：查 SGI #2 面/对飞记录）"
 
 # S-3c c-2c KL 争用观测（非门禁）：每相末条金丝雀 kl=（C20 收缩前后对照基线）。
-# 门控相（4-8）常缺 = 设计内：canary 仅在相内全局切换过 SOAK_PRINT_EVERY=100
-# 倍数时打行——门控压测相总切换 <100 无行可取（S-5f 相 8 留档串口全程
-# 0 行 canary 实证）；观测面非门禁，缺 ≠ 断链。
+# 门控相（4-8）常缺 = 设计内：canary 仅在相内本核槽切换过 SOAK_PRINT_EVERY=10000（2026-11-17 机会二降频+机会三 per-CPU 化后=本核槽判定/打印全局和；旧 100 值陈账随两刀滚新）
+# 倍数时打行——门控压测相本核槽切换 <10000 无行可取（S-5f 相 8 留档串口
+# 全程 0 行 canary 实证系旧 100 档期证据）；观测面非门禁，缺 ≠ 断链。
 kl_last=$(grep -o ' kl=[0-9]*' "$LOG" | tail -1 | cut -d= -f2)
-echo "smoke-smp: 相 4 KL 争用观测（非门禁）：kl=${kl_last:-缺(切换<100)}"
+echo "smoke-smp: 相 4 KL 争用观测（非门禁）：kl=${kl_last:-缺(本核槽<10000)}"
 
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
@@ -630,11 +631,11 @@ tlbs_n=$(echo "$tlbs_line" | grep -o 'n=[0-9]*' | cut -d= -f2)
   || fail "TLBS n=${tlbs_n:-缺} != 10（双轮 canary 命中不齐 = 有写入成功 = stale 残留 = shootdown 断链：查 SGI #2 广播/收端 vmalle1/unmap/decommit/Drop 路径——变异标定记录见判例）"
 
 # S-3c c-2c KL 争用观测（非门禁）：每相末条金丝雀 kl=（C20 收缩前后对照基线）。
-# 门控相（4-8）常缺 = 设计内：canary 仅在相内全局切换过 SOAK_PRINT_EVERY=100
-# 倍数时打行——门控压测相总切换 <100 无行可取（S-5f 相 8 留档串口全程
-# 0 行 canary 实证）；观测面非门禁，缺 ≠ 断链。
+# 门控相（4-8）常缺 = 设计内：canary 仅在相内本核槽切换过 SOAK_PRINT_EVERY=10000（2026-11-17 机会二降频+机会三 per-CPU 化后=本核槽判定/打印全局和；旧 100 值陈账随两刀滚新）
+# 倍数时打行——门控压测相本核槽切换 <10000 无行可取（S-5f 相 8 留档串口
+# 全程 0 行 canary 实证系旧 100 档期证据）；观测面非门禁，缺 ≠ 断链。
 kl_last=$(grep -o ' kl=[0-9]*' "$LOG" | tail -1 | cut -d= -f2)
-echo "smoke-smp: 相 5 KL 争用观测（非门禁）：kl=${kl_last:-缺(切换<100)}"
+echo "smoke-smp: 相 5 KL 争用观测（非门禁）：kl=${kl_last:-缺(本核槽<10000)}"
 
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
@@ -677,11 +678,11 @@ alloc_n=$(echo "$alloc_line" | grep -o 'n=[0-9]*' | cut -d= -f2)
   || fail "ALLOC n=${alloc_n:-缺} != 320（churn 轮数不齐 = err 早断或超时——guest assert 行带 errs/dones/水位三元定位）"
 
 # S-3c c-2c KL 争用观测（非门禁）：每相末条金丝雀 kl=（C20 收缩前后对照基线）。
-# 门控相（4-8）常缺 = 设计内：canary 仅在相内全局切换过 SOAK_PRINT_EVERY=100
-# 倍数时打行——门控压测相总切换 <100 无行可取（S-5f 相 8 留档串口全程
-# 0 行 canary 实证）；观测面非门禁，缺 ≠ 断链。
+# 门控相（4-8）常缺 = 设计内：canary 仅在相内本核槽切换过 SOAK_PRINT_EVERY=10000（2026-11-17 机会二降频+机会三 per-CPU 化后=本核槽判定/打印全局和；旧 100 值陈账随两刀滚新）
+# 倍数时打行——门控压测相本核槽切换 <10000 无行可取（S-5f 相 8 留档串口
+# 全程 0 行 canary 实证系旧 100 档期证据）；观测面非门禁，缺 ≠ 断链。
 kl_last=$(grep -o ' kl=[0-9]*' "$LOG" | tail -1 | cut -d= -f2)
-echo "smoke-smp: 相 6 KL 争用观测（非门禁）：kl=${kl_last:-缺(切换<100)}"
+echo "smoke-smp: 相 6 KL 争用观测（非门禁）：kl=${kl_last:-缺(本核槽<10000)}"
 
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
@@ -719,11 +720,11 @@ ht_n=$(echo "$ht_line" | grep -o 'n=[0-9]*' | cut -d= -f2)
   || fail "HT n=${ht_n:-缺} != 320（风暴轮数不齐——guest assert 行带 errs/dones 定位）"
 
 # S-3c c-2c KL 争用观测（非门禁）：每相末条金丝雀 kl=（C20 收缩前后对照基线）。
-# 门控相（4-8）常缺 = 设计内：canary 仅在相内全局切换过 SOAK_PRINT_EVERY=100
-# 倍数时打行——门控压测相总切换 <100 无行可取（S-5f 相 8 留档串口全程
-# 0 行 canary 实证）；观测面非门禁，缺 ≠ 断链。
+# 门控相（4-8）常缺 = 设计内：canary 仅在相内本核槽切换过 SOAK_PRINT_EVERY=10000（2026-11-17 机会二降频+机会三 per-CPU 化后=本核槽判定/打印全局和；旧 100 值陈账随两刀滚新）
+# 倍数时打行——门控压测相本核槽切换 <10000 无行可取（S-5f 相 8 留档串口
+# 全程 0 行 canary 实证系旧 100 档期证据）；观测面非门禁，缺 ≠ 断链。
 kl_last=$(grep -o ' kl=[0-9]*' "$LOG" | tail -1 | cut -d= -f2)
-echo "smoke-smp: 相 7 KL 争用观测（非门禁）：kl=${kl_last:-缺(切换<100)}"
+echo "smoke-smp: 相 7 KL 争用观测（非门禁）：kl=${kl_last:-缺(本核槽<10000)}"
 
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
@@ -762,11 +763,11 @@ pp_b=$(echo "$pp_line" | grep -o 'b=[0-9]*' | cut -d= -f2)
   || fail "PP a=${pp_a:-缺} b=${pp_b:-缺} != 320/320（对打轮数不齐——guest assert 行带 errs/单面缺轮定位）"
 
 # S-3c c-2c KL 争用观测（非门禁）：每相末条金丝雀 kl=（C20 收缩前后对照基线）。
-# 门控相（4-8）常缺 = 设计内：canary 仅在相内全局切换过 SOAK_PRINT_EVERY=100
-# 倍数时打行——门控压测相总切换 <100 无行可取（S-5f 相 8 留档串口全程
-# 0 行 canary 实证）；观测面非门禁，缺 ≠ 断链。
+# 门控相（4-8）常缺 = 设计内：canary 仅在相内本核槽切换过 SOAK_PRINT_EVERY=10000（2026-11-17 机会二降频+机会三 per-CPU 化后=本核槽判定/打印全局和；旧 100 值陈账随两刀滚新）
+# 倍数时打行——门控压测相本核槽切换 <10000 无行可取（S-5f 相 8 留档串口
+# 全程 0 行 canary 实证系旧 100 档期证据）；观测面非门禁，缺 ≠ 断链。
 kl_last=$(grep -o ' kl=[0-9]*' "$LOG" | tail -1 | cut -d= -f2)
-echo "smoke-smp: 相 8 KL 争用观测（非门禁）：kl=${kl_last:-缺(切换<100)}"
+echo "smoke-smp: 相 8 KL 争用观测（非门禁）：kl=${kl_last:-缺(本核槽<10000)}"
 
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null

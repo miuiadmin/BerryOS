@@ -19,7 +19,7 @@
 //! 并发纪律：per-CPU 槽（v1 = 2 核，同 [`crate::runqueue::Topo::capacity`]
 //! 定长数组口径），本核 IRQ 上下文单写者 + 跨核读者（PM/遥测）——纯原子
 //! 静态（无 `static mut`，不入 `tools/writable_globals.txt` 册）；Relaxed
-//! 全序（统计信号无序角色，同 `sched.rs::IRQ_TICKS` 先例）。
+//! 全序（统计信号无序角色，同 `sched.rs::LB_TICKS` 先例——`IRQ_TICKS` 已于 2026-11-17 机会三退役）。
 //!
 //! W3-Q14：EWMA 常量与窗口折叠/翻窗判序/overutil 阈值判定律单源已迁
 //! `berry-emface`（host 可测钉板）；本模块保留 per-CPU 原子槽机械，

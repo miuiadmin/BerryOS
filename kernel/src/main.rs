@@ -6182,7 +6182,7 @@ const SOAK_PROBE_NAME: &str = "opt/berry/soak";
 ///（S-5d 心跳 v2 八字段 + S-5e M1 v2.1 追加第 9 字段——端到端防假绿）。
 ///
 /// - 九字段全是现成计数器直读（`berry_sched::switches` = switches=N 金丝雀
-///   同源标量；`smp::sw_park_readout` = S-5a per-CPU sw/park 四数〔跨核
+///   两槽和快照〔2026-11-17 机会三起 switches() 求和〕；`smp::sw_park_readout` = S-5a per-CPU sw/park 四数〔跨核
 ///   volatile 单字读，谓词为严格递增/有界增量断言，无需一致快照〕；
 ///   `mm::frames().allocated_pages` = B-0/S-2 对账口径（D24 起
 ///   O(1) 水位原子读，口径由 buddy 对拍测试钉板）；`uart::rx_lost` =

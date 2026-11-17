@@ -30,7 +30,7 @@ EEVDF+EDF 混合调度核：spawn 家族、freeze/thaw、抢占控制、SLEEPQ �
 > sched | 抢占检查点（无 doc——实义：len<=1 门 + count==0 门双前置〔0ea3d11ad 机会一①/③——空探零锁零扫描零全局行触达〕+ IRQ 保存 + 计数为零时 `try_preempt`，g3-1d 真探形）。
 
 ### `preempt_checkpoint_hits() -> u64`
-> sched | g3-1d：检查点真探形命中数（boot 起累计；fa ktest 尾 `ckpt=` 字段打印）。
+> sched | g3-1d：检查点真探形命中数（boot 起累计；fa ktest 尾 `ckpt=` 字段打印；机会三〔2026-11-17〕起 per-CPU 两槽求和快照——读者须 ≥/增长型，禁等值比较）。
 
 ### `print_window_enter()`
 > sched | G3-1c-1：PRINT_LOCK 窗 preempt 包络对（enter/exit 槽）。
@@ -150,10 +150,10 @@ EEVDF+EDF 混合调度核：spawn 家族、freeze/thaw、抢占控制、SLEEPQ �
 > sched | 回收退出任务的 Task Box + 内核栈（16KiB/个；idle_loop 稳态与 yield 切回尾调）。P2-2 起尾部（REAPQ 锁窗外）追调 [`REAP 后处理钩子`](#set_reap_post_hookf-fn)（未注册空过）。
 
 ### `switches() -> u64`
-> sched | 总切换数（含 park 事件；金丝雀 `switches=` 行口径）。
+> sched | 总切换数（含 park 事件；金丝雀 `switches=` 行口径；机会三〔2026-11-17〕起 per-CPU 两槽求和快照——读者须 ≥/增长型，禁等值比较）。
 
 ### `switches_tt() -> u64`
-> sched | 任务↔任务切换数（遥测环分母——G1.5 断言比较面）。
+> sched | 任务↔任务切换数（遥测环分母——G1.5 断言比较面；机会三〔2026-11-17〕起 per-CPU 两槽求和快照，与 telemetry 两环求和对称）。
 
 ### `set_switch_hook(hook: Option<SwitchHook>)`
 > sched | 注册/注销切换钩子。仅 boot 期（IRQ 屏蔽、首个切换发生前）调用。
