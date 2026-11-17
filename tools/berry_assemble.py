@@ -927,9 +927,10 @@ def build_plan(prod: Product, items: list, n_base: int, pr: int, level: int,
             f"p3_sig_guard 装载守卫锚消费面同路径约定；bootseed 正式形随 "
             f"P3 策略刀，词表外出现即拒）")
     lines.append(
-        f"berry-assemble: mkcpio 参数集（步⑥）: python3 tools/mkcpio.py <out.cpio>"
+        f"berry-assemble: mkcpio 参数集（步⑥）: tools/mkcpio/cargo-target/"
+        f"<host>/release/mkcpio <out.cpio>"
         f" <{len(items)} 条 name=path·见上清单> --split {prod.rootfs_split_mib}"
-        f"（单编码器复用，禁第二份 newc 逻辑）")
+        f"（单编码器复用，禁第二份 newc 逻辑——产链换轨二刀后现役 = Rust bin）")
     lines.append(
         f"berry-assemble: mkimage 参数集（步⑦）: python3 tools/mkimage.py"
         f" out/{prod.name}.img --efi <配方注入位> --hello <配方注入位>"
