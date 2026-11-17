@@ -1071,11 +1071,15 @@ impl RtPipe {
     }
 
     /// 只清挂起 op 环（完成队列保留——CLOSE 收口期完成的 op 应答仍由
-    /// serve 循环头 drain 送出，seq 配对无次序约束）。
+    /// serve 循环头 drain 送出，seq 配对无次序约束）。`ops_len` 随槽同
+    /// 归零——不变量「ops_len = Some 槽数」在此破则 stale 期 `busy()` 恒真
+    /// 空转 + [`RtPipe::poll`] 的 `unwrap` 对 None 槽 panic（下轮 OPEN 的
+    /// `reset()` 才自愈）。
     pub(crate) fn reset_ops(&mut self) {
         self.ops = [None; ndp::RT_PIPE_K];
         self.ops_head = 0;
         self.ops_tail = 0;
+        self.ops_len = 0;
     }
 
     fn olen(&self) -> usize {
@@ -1129,6 +1133,18 @@ impl RtPipe {
     /// 入环即注册（四刀 P8 session-0 RT 臂）：环容量准入（空槽 ≥
     /// ceil(len/MSS) + op 槽空——`Err(ST_BUSY)` 背压，客户端同 seq 重发）
     /// → 分批入环（批量 tx）→ 注册挂起 op。`Err(ST_BAD)` = 会话态不可用。
+    ///
+    /// 暂存容量无 [`Sess::send_data`] 同款闸的跨层不变量（F88 钉板，五刀②
+    /// 暂存紧缩动此边界前必读）：`post_account` 仅在 berry-tcp 在途环全 ACK
+    /// （`conn.tx_inflight()==0`）时失效暂存——键于在途环而非本 op 环，K 窗
+    /// 多 op 并发在途时暂存跨 op 连续（基点不因单 op 完成重立，头注同款）；
+    /// 单次 write() 在其全部 op 应答后才返回（应答=收割 ⇒ snd_una 累积覆盖
+    /// ⇒ 收割泵步尾 post_account 复位），故跨 write() 的 issue 起于新基点；
+    /// 一个未复位纪元内连续暂存 ≤ K×TCP_DATA_MAX ≤ TX_CAP（:121 编译期
+    /// 几何钉）——五刀② 紧缩 TX_CAP 时下界是 K×TCP_DATA_MAX（500），
+    /// 不是单 op 跨度。错误路径由 RTO 死亡（3+6+12s 三连重发后第 4 次
+    /// 24s 到期弃链 ≈ 45s）< op 帽 60s 兜住；防御窗门拒（准入过检仍拒）
+    /// 下 BUSY 重发会把同内容错位重暂存——echo 流错位而非 trap。
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn enqueue(
         &mut self,
@@ -1518,11 +1534,9 @@ impl TcpMux {
             // 归泵前把 snd_nxt−tx_seq0 推过 TX_CAP——act_q Data 臂的暂存
             // 越界 trap 即崩（echo 相 16KB 连发 3 op 必中）。环有空槽 ≠
             // 暂存有余位：暂存容不下下一片时泵等环空（post_account 环空
-            // 即失效暂存、下次入环基点重立），帽内；ACK 跟得上时零等待
-            // ——入环即答时序不受扰。
-            // 暂存余位：暂存容不下下一片时泵等环空（post_account 环空
             // 即失效暂存、下次入环基点重立——tx_len==0 时暂存空、tx_seq0
-            // 陈值不算在途）,帽内;ACK 跟得上时零等待——入环即答时序不受扰。
+            // 陈值不算在途），帽内；ACK 跟得上时零等待——入环即答时序
+            // 不受扰。
             let staged = if s.tx_len == 0 {
                 0
             } else {
