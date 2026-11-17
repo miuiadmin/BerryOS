@@ -668,14 +668,8 @@ pub fn build_tab_bar(
         // 紧凑 @1x 镜像：48px 条 / 24px 图标 / S8x16 标签 / 2px 顶指示
         // 条 / brand 染色——结构与 pattern 同构（big/compact 双档同律，
         // desktop.rs 既有双档纪律）。
-        ui.add(
-            inst,
-            ViewSpec {
-                kind: ViewKind::Rect,
-                key: 0,
-                props: Props::Rect(RectProps { bg: CARD_BG, w: Some(vp_w), h: Some(bar_h), radius: 0 }),
-            },
-        )?;
+        // 白底 Rect 已撤（沉浸规范 §6 第 5 项）——条不再铺 CARD_BG 底，
+        // 与 big 档撤底同律；Row 透明满宽承载页位。
         let row = ui.add(
             inst,
             ViewSpec {
