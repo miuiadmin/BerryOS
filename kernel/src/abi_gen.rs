@@ -3,8 +3,8 @@
 //! 守卫 = `just abi-check`（`tools/gen_abi.py --check`，挂 build/smoke 前置）。
 //! 消费：`syscall.rs` / `handle.rs` 经 `pub use` 转发，既有路径
 //! （`crate::syscall::NR_*`、`crate::handle::RIGHT_*` 等）零改动。
-//! 预算四元组（生成器执法，ADR #11 帽）：nr_total=40（v1 在册）/
-//! nr_defined=44（v1+1.1 常量层）/ nr_registered=43（已挂派发）/
+//! 预算四元组（生成器执法，ADR #11 帽）：nr_total=41（v1 在册）/
+//! nr_defined=45（v1+1.1 常量层）/ nr_registered=44（已挂派发）/
 //! nr_ceiling=45（nr_defined ≤ 帽 = `tools/gen_abi.py` load 执法）。
 
 use crate::handle::Rights;
@@ -17,7 +17,7 @@ use crate::handle::Rights;
 #[allow(dead_code)]
 pub const BERRY_PLATFORM_LEVEL: u32 = 1;
 
-// ---- syscall 号（ABI §4 编号表；v1 40 号在册、39 已实现）----
+// ---- syscall 号（ABI §4 编号表；v1 41 号在册、40 已实现）----
 // 在册未实现：0x85 berry_attest（派发回落 -ENOTSUP，永不 panic）
 pub const NR_HANDLE_CLOSE: usize = 0x01;
 pub const NR_HANDLE_DUPLICATE: usize = 0x02;
@@ -102,6 +102,8 @@ pub const NR_CHANNEL_SEND: usize = 0x52;
 pub const NR_CHANNEL_RECV: usize = 0x53;
 /// 3-4c 落地：`options` 恒 0（非 0 → -EINVAL），授 SIGNAL|DUPLICATE。
 pub const NR_EVENT_CREATE: usize = 0x54;
+/// W3-Q97 add-only 加号（先例 0x21/0x23/0x24/0x83/0x84/0x88）：排空式批量 recv。槽距常量 `RECV_N_SLOT_STRIDE` = 304B（berry-chanface recvn 模块单源，kernel/user 两端消费——头 16B〔nbytes/nhandles 出参〕+ 载荷 256B〔CHAN_MSG_MAX〕+ handle 值 32B〔CHAN_HND_MAX×4〕）；批量帽 RECV_N_MAX = 16（2×CHAN_DEPTH——队列深两倍，一次批量窗必能排空任意满队）。判据面 = chanface recvn host 钉板（k 域/槽地址/唤醒判）。
+pub const NR_CHANNEL_RECV_N: usize = 0x57;
 pub const NR_CLOCK_READ: usize = 0x61;
 /// SEC-01 §4.5 件 11（2026-10）：号位按在册模式冻结预留（度量链零实现——底料 SEC-3；防 ABI 冻结后再挤号）；ktest B 段「在册未实现真号」-ENOTSUP 样本挂 kernel 解冻（ktest.rs 兄弟 WIP 冻结中；沿用既有纪律勿拿未知号 0x99 冒充——二者 -ENOTSUP 成因不同）。
 pub const NR_BERRY_ATTEST: usize = 0x85;
