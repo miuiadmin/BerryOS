@@ -43,9 +43,15 @@
 // 不变量）——owner 以 id 代（NonNull 纯投影，物理 retain/release 留壳
 // kernel），与既有容量门（W3-Q9）同 crate 分模块（hdlface lifecycle 同款）。
 mod freeze;
+// W3-Q97：批量 recv（channel_recv_n）纯函数面——批量窗资格与界判定律
+// （机会五 02 号 IPC 审计：排空式批量 recv ABI，add-only 新号）。
+mod recvn;
 
 pub use freeze::{
     clear_frozen_ok, frozen_pair_sound, mark_frozen_ok, pop_ok, push_front_ok, push_ok,
+};
+pub use recvn::{
+    recv_n_k_legal, recv_n_slot_legal, recv_n_wake_needed, RECV_N_MAX, RECV_N_SLOT_STRIDE,
 };
 
 // ---- 界常量（单源：自 kernel/src/channel.rs 迁此，kernel re-export；
