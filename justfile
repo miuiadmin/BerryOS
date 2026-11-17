@@ -1179,6 +1179,17 @@ test-host:
     # test-host 守卫/desktop 走本 bin）；下方 mkfat.py --selftest = Python
     # oracle 语义钉板（模块面现役：mkimage/pwrcls import）。
     cargo test --manifest-path tools/mkfat/Cargo.toml --target {{host}}
+    # W1（彻底 Rust 化轨道 b 层 #8 刀序第三位首刀）：mkimage Rust 件 lib 纯面
+    # 测试（CHS 向量/MBR 双表项黄金字节含 0xDA 预留槽/manifest v1 黄金字节
+    # +PR 单源 abi.toml 绊线+key_hash/name 拒面/整盘装配确定性+FAT 段与
+    # mkfat 直产零漂移（path 依赖单编码器纪律）/源实例与验签两件组装面/
+    # sha256 FIPS 180-4 标准向量——WIP 期三常量笔误（K[25]/K[59]/h[2]）
+    # 全由此面咬出）+ CLI 与 Python 现役件 oracle 字节级对拍（整盘+manifest
+    # 三面：9MiB 合成四件套/96MiB 默认盘/key-hash 注入，sha256 与 stdout
+    # 全等；Python 缺席 skip 纯面钉板兜底）。独立小工作区，须显式
+    # --target {{host}}。产链现役件仍 Python mkimage.py（首刀不动产链），
+    # 二刀换轨再切 image 配方。
+    cargo test --manifest-path tools/mkimage/Cargo.toml --target {{host}}
     # V-3：mkimage MBR 薄面自检（CHS 向量 + 表项钉板——卷编码面归
     # mkfat --selftest，单编码器纪律不在此长第二套）。
     python3 tools/mkimage.py --selftest
