@@ -63,7 +63,7 @@ pub fn recv_n_slot_legal(addr: usize) -> bool {
     addr != 0 && addr % 8 == 0
 }
 
-use crate::{CHAN_DEPTH, CHAN_HND_MAX, CHAN_MSG_MAX};
+use crate::{CHAN_HND_MAX, CHAN_MSG_MAX};
 
 // ---- 表驱动测试（host 钉板——判定律边界值/单调性/混淆面逐条钉）----
 
