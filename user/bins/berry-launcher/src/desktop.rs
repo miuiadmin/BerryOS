@@ -127,7 +127,8 @@ const DOCK_SLOTS: usize = 4;
 pub(crate) const ROLE_LIST: u8 = 6;
 
 /// 桌面格按压面初始底色（刀 B）：OH 壁纸网格区深青黑近似（伪装透明）。
-const CELL_FACE_BG: Color = Color { r: 0x04, g: 0x2E, b: 0x33 };
+/// 退役（owner 2026-11-17 沉浸裁定）：桌面格底块撤——保留常量供回退参考。
+// const CELL_FACE_BG_RETIRED: Color = Color { r: 0x04, g: 0x2E, b: 0x33 };
 // 导航键按压面底色已退役（P0-① 裁决 2026-11-17：撤 Rect 底块，白符号
 // 直浮壁纸——.agents/plans/2026-11-17-图标透明与系统栏跟随综合裁决.md）。
 
@@ -542,14 +543,8 @@ pub fn build(
             // 容子——原 item Col 挂 press_face 下必炸（boot 实证 BadParent
             // park）。改 cell(Pad) 双子叠加：Pad 对所有子同位 (inset,inset)
             // 全幅分配 = 叠加语义。Rect 先插 = 底层；Col 后插 = 盖上。
-            let press_face = ui.add(
-                cell,
-                ViewSpec {
-                    kind: ViewKind::Rect,
-                    key: 0,
-                    props: Props::Rect(RectProps { w: None, h: None, bg: CELL_FACE_BG, radius: 0 }),
-                },
-            )?;
+            // 沉浸裁定（owner 2026-11-17）：桌面格底块撤——图标直接浮在
+            // 壁纸上（与导航键透明化同理，Rect 不透明覆写盖壁纸）。
             let item = ui.add(
                 cell,
                 ViewSpec {
@@ -584,7 +579,7 @@ pub fn build(
             let label_node = ui.add(item, text_spec(pn.label, LABEL_FG, label_size)?)?;
             slots[p][s] = Some(Slot {
                 cell,
-                press_face: Some(press_face),
+                press_face: None, // 沉浸：底块撤，无按压面
                 label_node,
                 icon: icon_node,
                 app: pn.app,
