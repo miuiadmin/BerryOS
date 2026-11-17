@@ -266,7 +266,7 @@ impl Vmar {
     pub fn allocate(&mut self, vaddr: usize, len: usize) -> Result<Vmar, VmarError> {
         self.check_slot(vaddr, len)?;
         // regions 预留先于 push（3b3 H2）：失败点落在纯校验后、零副作用。
-        self.regions.try_reserve_exact(1).map_err(|_| VmarError::NoMem)?;
+        self.regions.try_reserve(1).map_err(|_| VmarError::NoMem)?;
         self.regions.push(Region {
             start: vaddr,
             len,
@@ -322,7 +322,7 @@ impl Vmar {
         }
         // regions 预留前置到一切副作用之前（3b3 H2）：若在收尾 push 时才失败，
         // 叶已填 + track_map 已加——须整链回滚；前置后失败点全在纯校验区。
-        self.regions.try_reserve_exact(1).map_err(|_| VmarError::NoMem)?;
+        self.regions.try_reserve(1).map_err(|_| VmarError::NoMem)?;
         // 填叶（nG=1 内建于 page_descriptor；AP 按权限 OR 上）。filled 计已写
         // 叶数：中途建表失败时 0..filled 页叶已入表而 regions 未登记——残留
         // PTE 是查不到区间的有效翻译（unmap/protect 永远 NotMapped、同 VA
@@ -411,7 +411,7 @@ impl Vmar {
         if vmo_offset.checked_add(len).map_or(true, |end| end > vmo.size()) {
             return Err(VmarError::OutOfBounds);
         }
-        self.regions.try_reserve_exact(1).map_err(|_| VmarError::NoMem)?;
+        self.regions.try_reserve(1).map_err(|_| VmarError::NoMem)?;
         self.regions.push(Region {
             start: vaddr,
             len,
