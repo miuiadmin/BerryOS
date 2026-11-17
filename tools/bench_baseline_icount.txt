@@ -15,5 +15,7 @@ cntvct_pair,4096,0
 frame_alloc4k,1024,37
 frame_alloc64k,256,37
 handle_evt,1024,288
+pick_scan,1024,125
+switch_pair,128,301
 vmo_commit1p,256,396
 vmo_rw4k,128,6945

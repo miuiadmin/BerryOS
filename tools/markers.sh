@@ -14,8 +14,10 @@
 # +WAKESRC——per-source 唤醒记账 G1.5 单行，尾随 G1.5 ok；sim-S2 A2 起
 # +FRZCYC——ktest freeze/thaw 两轮循环（SUS-NEG 之后、BL-OVF 之前）；
 # sim-S3 起 +PSCI susp=0——boot 期 PSCI 深睡探测（EFI/EL2 门与 TCG
-# FEATURES 拒三路同打）+PWRDEG——ktest 深睡降级证据链（ktest done 前））。
-MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "FP ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=6" "BENCHWAKE n=" "G1.5 ok" "WAKESRC acct=" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok" "DPG ok" "FRZCYC ok r=2" "PSCI susp=0" "PWRDEG ok d=1")
+# FEATURES 拒三路同打）+PWRDEG——ktest 深睡降级证据链（ktest done 前）。
+# 04 号审计基线缺口刀起 BENCH ok n=6→n=8（pick_scan/switch_pair 两项
+# 收口；trailer 迁调度器纪元尾恒发——字面变动，计数面零增减）。
+MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "FP ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=8" "BENCHWAKE n=" "G1.5 ok" "WAKESRC acct=" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok" "DPG ok" "FRZCYC ok r=2" "PSCI susp=0" "PWRDEG ok d=1")
 
 # rootfs 相 56 标记（G4-3 B 刀 +DPGN ok n=4——0x21 四早退负序（门/对齐/
 # commit/身份验各断精确 errno）；C-lite +DPGS ok n=4——缺页风暴 N=4；G4-2

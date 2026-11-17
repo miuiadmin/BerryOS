@@ -106,3 +106,10 @@ trace-dual + lat + reject-trio + testhost（同目录 20261105-0930~0931 批）�
 
 烘焙与验证：prove 五跑 verdict=exact max_dev=0.000%（值 {0,37,37,288,396,6945}；BENCHWAKE 五跑逐字节同 n=551 max=86009764；回执 icount-prove-20261117-115759-37998）→ ICOUNT_TOL=0.0 维持；`--trace-dual --update` 双份一次刷新（on=off 六项 delta 全 +0——结构性零足迹保住；回执 icount-20261117-115919-48375 / icount-off-20261117-120033-48375 / trace-dual-20261117-120033-48375）；复验单跑 L2 对拍过（ICOUNT_TOL=0.0 六项全在界内，回执 icount-20261117-120204-49314）。ktest 全绿随 boot 结构性背书（FRAME/FP/VMO/HEAP/ASPACE ok 在席，FP canary 直验新清零路径 SIMD-free）。首跑对拍（旧基线四项出界红）回执 icount-20261117-115045-6019。
 
+## [2026-11-18 icount 基线刀] 六旧项不动 + pick_scan/switch_pair 两项入册（08→125 归因 + 覆写保全修 + 帽校准）
+
+- 04 号审计「基线缺口与建议」两项落地：pick_scan（bench 前置窗合成环 20 节点×1024 次 pick_next_filtered）=125、switch_pair（调度器纪元 block/wake 对×128）=301——worktree 换基树（icount-baseline@1e7872196）五跑 prove verdict=exact 逐值同。
+- **108→125 归因**：换基前主树（我方五刀 sched 形）测 108，换基后（origin W3-Q93 探峰出选双圈合一形）125——两线同名刀的扫描形态指令差，确定性通道如实记两值；旧六项跨换基逐位同（0/37/37/288/396/6945——pick 路径外零漂移）。
+- **trace-dual 覆写保全修（审查轮实抓）**：--trace-dual --update 曾以 sbench=False 臂剥掉 on 家族基线的 switch_pair 行（L2 永不设防）——落盘改「实测 ∪ 现册门控行」并立法定形序「--icount --update 终形」。
+- **BOOT_TIMEOUT_ICOUNT 120→1800 帽校准**：静场实测 43s/118.6s/136.7s（三回执在档，骑旧帽线随机截杀）+ 争用态单靴可至 10 分钟级（诊断靴在案）——执法语义不变（真挂死仍帽内 loud），体量与争用态校准。
+- B-0 实时通道同批收 pick_scan=39（switch_pair 门控缺席不进 B-0 面）。

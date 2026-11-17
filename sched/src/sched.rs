@@ -2083,11 +2083,16 @@ unsafe fn note_switch(prev: *mut Task, next: *mut Task, kind: SwitchKind) {
     // S-6 ① 双计数器：非空臂 = 遥测环分母同点自增（环写与计数同窗——
     // G1.5 断言 tel >= switches_tt 的配平点；hook 缺席期（boot 前窗）也计
     //——telemetry::init 先于首个切换，实际不可达，防御性保持对称）。
-    SWITCHES_TT.fetch_add(1, Ordering::Relaxed);
+    // icount 基线刀（2026-11-18）配对修：计数移入钩子在位分支——sbench 门控的
+    // 调度器纪元（sched::init↔telemetry::init 窗）使「hook 缺席期也计」从防御支
+    // 变可达（纪元 ≈259 次任务↔任务切换入分母而环零记录，watchdog G1.5 断言
+    // 在 --icount/--prove 形态确定性红）；两计数同窗语义不变（钩子在位时环写与
+    // 计数仍同点），hook 缺席期分母零计=断言面单调更强。
     // SAFETY: 两指针由调用点保证有效（刚做过状态写入）；IRQ 屏蔽路径。
     unsafe {
         let hook = SWITCH_HOOK;
         if let Some(h) = hook {
+            SWITCHES_TT.fetch_add(1, Ordering::Relaxed);
             h(&*prev, &*next, kind);
         }
     }
