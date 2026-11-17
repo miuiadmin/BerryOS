@@ -51,7 +51,7 @@ berry> ls | grep boot
         等两个 Job 结束
 ```
 
-重定向 `>` 同理（`/svc/fs` 的 handle 传给子进程当 stdout）；v2（2026-11-17 完善刀）起 `>>` 追加与 `||` 链在席——追加走「读旧＋拼接＋整写回」（libc 无 O_APPEND/SEEK_END 游标外寻，v1 文档化缺口绕开）、`||` 与 `&&` 统一为 `(段, 操作符)` 左起闸（跳过段不求值不碰 status）。**Ctrl-C 不用 Unix 信号**——v1 落地形态（C-4b，2026-10-28）：shell 前台等待（`collect_fg` wait_many 挂 stdin 项）收 0x03 → 回显 `^C` + 对**自己持有的 child handle** 直调 `process_terminate(130)`（128+SIGINT 惯例码；杀的权限 = 持有 Process handle + MANAGE 门控，纯能力模型不破）→ TERMINATED 项收口（被杀者零长 EOF 永不到达——kill 不走 libc exit 族的 EOF 缺口面）；前台期其余键进 typeahead 缓冲不丢键。原草案「signal 一个 Event/Job 对象 → 监督服务处置」留 v2（监督服务/进程组面；管道全段杀 v1 已由 kill 集覆盖）。
+重定向 `>` 同理（`/svc/fs` 的 handle 传给子进程当 stdout）；v2（2026-11-17 完善刀）起 `>>` 追加与 `||` 链在席——追加走「读旧＋拼接＋整写回」（libc 无 O_APPEND/SEEK_END 游标外寻，v1 文档化缺口绕开）、`||` 与 `&&` 统一为 `(段, 操作符)` 左起闸（跳过段不求值不碰 status）；管道各段同刀起带参数（`cat X | grep Y` 形——段切词首词为名、余词为 args，`PipeSeg.args` 交互面首次启用；内建不进管道、段仍只走 bin/ spawn 的政策不变）。**Ctrl-C 不用 Unix 信号**——v1 落地形态（C-4b，2026-10-28）：shell 前台等待（`collect_fg` wait_many 挂 stdin 项）收 0x03 → 回显 `^C` + 对**自己持有的 child handle** 直调 `process_terminate(130)`（128+SIGINT 惯例码；杀的权限 = 持有 Process handle + MANAGE 门控，纯能力模型不破）→ TERMINATED 项收口（被杀者零长 EOF 永不到达——kill 不走 libc exit 族的 EOF 缺口面）；前台期其余键进 typeahead 缓冲不丢键。原草案「signal 一个 Event/Job 对象 → 监督服务处置」留 v2（监督服务/进程组面；管道全段杀 v1 已由 kill 集覆盖）。
 
 ### 2.3 内建命令（为什么 cd 不可能是外部程序）
 
@@ -70,7 +70,7 @@ berry> ls | grep boot
 | `dmesg` | 内核日志快照（0x84 telemetry_open op=0 薄包装，4KiB 尾帽，失败诊断行码 1，数据字节可重定向——阶段五第 17 步第 19 件） |
 | `unset <name>` | 变量表删名（余词空白分词逐名全删；裸形/未定义名静默 0，POSIX 形；名字面不展开——`unset $A` 按字面名，v1 记面；与赋值同优先层故不落重定向/管道——记面。完善刀 2026-11-17 第 20 件：补齐赋值/覆盖/撤销的生命周期闭环） |
 
-六件行为面由 bsh `cli_selftest` 自验钉板（`CLI ok n=6`，rootfs 相标记——六步：clear 7B 逐字节对拍/uname 前缀/uptime 数值域/sleep 1s 时钟差分 + 0/60 双闭边界/type 三分支 + help↔BUILTINS 互钉/history 环回读）。
+行为面由 bsh `cli_selftest` 自验钉板（`CLI ok n=10`，rootfs 相标记——前缀式步数单源在 bsh）：体验刀六步（clear 7B 逐字节对拍/uname 前缀/uptime 数值域/sleep 1s 时钟差分 + 0/60 双闭边界/type 三分支 + help↔BUILTINS 互钉/history 环回读）+ 完善刀四步（⑥`>>` 三态 RAM 树三跑 ⑦`||` 链对拍与左结合判别形 ⑧unset 五断言 ⑨管道切词对拍 + 带参真码链）。
 
 ### 2.4 串口行编辑
 
@@ -82,7 +82,7 @@ P5 第一刀 = PL011 **RX 中断**（`开发体验.md` §3 既定前置），其
 
 ### 2.5 管道驱动契约（终端同源面）
 
-bsh 交互循环天然管道化：从 fd0 逐字节读、经 editor 状态机、全部输出走 fd1——不依赖任何终端专属原语。因此 `SpawnSpec.stdin_feed`（feeder 泵喂字节）加 `stdout` 私有对端（channel 收集）即构成「任意程序以哑终端形态驱动 bsh」的完整契约：提示符 `bsh> `、命令回显行与命令结果行混流同一 stdout 字节流，驱动方收流即得全部终端语义。契约由 bsh `term_selftest` 自验钉板（`TERM ok n=2`，rootfs 相标记）：spawn 子 bsh（`--no-selftest` 跳过自验链直进交互循环）喂两命令，私有 stdout 收齐提示符 ×2/回显行/两结果行后 terminate(130) 收口。
+bsh 交互循环天然管道化：从 fd0 逐字节读、经 editor 状态机、全部输出走 fd1——不依赖任何终端专属原语。因此 `SpawnSpec.stdin_feed`（feeder 泵喂字节）加 `stdout` 私有对端（channel 收集）即构成「任意程序以哑终端形态驱动 bsh」的完整契约：提示符 `bsh> `、命令回显行与命令结果行混流同一 stdout 字节流，驱动方收流即得全部终端语义。契约由 bsh `term_selftest` 自验钉板（`TERM ok n=3`，rootfs 相标记——前缀式步数单源在 bsh）：spawn 子 bsh（`--no-selftest` 跳过自验链直进交互循环）喂两命令 + 尾字节 `\x03`，私有 stdout 收齐提示符/回显行/两结果行/`^C` 回显与 prompt 重显（收集谓词钉「`^C` 后 prompt 已入流」——消 `^C\n` 与重显分属两条通道消息的早退竞速）后 terminate(130) 收口。
 
 GUI 终端应用（berry-term）与键盘链的挂账显式移交波3（明细见[命令行体验刀实施设计](../.agents/plans/2026-11-15-命令行体验刀实施设计.md)契约 4，本节管道契约即 berry-term 的地基）。进展注（2026-11-16）：宿主 `berry console` 串口直连已落（chardev socket + `berry console` 子命令——宿主终端直进 bsh，CLI-first 设计 v1.9 §8）；wmd 半边已拆（波3 批A 起：焦点表/属主事件通道/表变更广播/OP_WM_SUBSCRIBE 落地），inputd 单订阅与物理键盘链（QEMU 键盘设备/认领门/Key·Text 出向帧/泵解码）仍锁；.bap GUI 授能经 [ui] 门 v1 换轨实质已解（APP_SLOTS 扩容前置在册）；berry-term 本体待波3 输入底座收口。进展注（2026-11-17）：键盘物理链四件与 berry-term v1 已落（[终端优化刀笔记](../.agents/notes/implemented/2026-11-17-命令行终端优化-键盘物理链与berry-term.md)——QEMU virtio-keyboard + inputd 多设备分类认领 + KeyPump 翻译出向 + appshell on_key 分流；berry-term 持久子 bsh 通道上桌 dock，APP_SLOTS 9→10 同批）；inputd 焦点门控分发仍开放。进展注（2026-11-17 完善刀）：bsh v2 语义四件（`>>`/`||`/unset/管道参数面——本节上方与 §2.3 在册）+ berry-term 哑终端化（本地第二编辑器退役，显示单源=子回显字节——「不长第二套」以删除兑现）+ 上/下箭头历史打通（KeyPump 三帧单字节 ESC 序列出向，guiproto/内核/bsh editor 四面零改）+ 子退出自动 respawn（三击熔断 + Enter 手动恢复）+ berry-termio 纯 crate host 单测护栏——明细见[完善刀笔记](../.agents/notes/implemented/2026-11-17-命令行终端与shell完善刀.md)。
 
