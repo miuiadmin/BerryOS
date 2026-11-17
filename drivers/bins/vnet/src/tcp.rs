@@ -1195,6 +1195,11 @@ impl RtPipe {
             );
             return Err(ndp::ST_BUSY);
         }
+        // 整 op 口径系结构必然（F123 成文，与 send_data 段片形 :1571 相对）：
+        // 本函数注册 SessOp 覆盖整 op 长度、RTO 重发按 (seq−tx_seq0) 跨全
+        // op 跨度切暂存、echo 记账按 op.len——三面都要求暂存 all-or-nothing
+        // （要么全入要么 BUSY），段片形部分入暂存会破 op 语义；send_data
+        // 无 op 注册故可逐段闸＋阻塞泵等。
         let mut q = TxBatch::new();
         let mut off = 0usize;
         while off < data.len() {
