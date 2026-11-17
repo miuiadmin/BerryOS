@@ -42,16 +42,16 @@
 <!-- UNSAFE-AUDIT:SUMMARY:BEGIN -->
 | 目录 | .rs 文件数 | 总行数 | unsafe 非空行 | 密度 |
 |------|-----------|--------|--------------|------|
-| kernel/ | 31 | 35466 | 2233 | 6.30% |
+| kernel/ | 31 | 35506 | 2257 | 6.36% |
 | mm/ | 7 | 2368 | 4 | 0.17% |
 | sched/ | 15 | 8739 | 1830 | 20.94% |
 | ipc/ | 0 | 0 | 0 | — |
 | arch/ | 23 | 7317 | 1054 | 14.40% |
-| **合计** | 76 | 53890 | 5121 | **9.50%** |
+| **合计** | 76 | 53930 | 5145 | **9.54%** |
 
-- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 41297，unsafe 非空行 4363，密度 10.56%（生产面口径）
-- 分类计数：页表 63 | 上下文切换 35 | MMIO 163 | 分配器 13 | 硬件原子 0 | 其它 852
-- 类型计数：block 977 | fn 145 | impl 2 | extern 2（另有类型签名位提及 15 处——只计不登记，防双计）
+- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 41337，unsafe 非空行 4387，密度 10.61%（生产面口径）
+- 分类计数：页表 63 | 上下文切换 35 | MMIO 163 | 分配器 16 | 硬件原子 0 | 其它 852
+- 类型计数：block 979 | fn 146 | impl 2 | extern 2（另有类型签名位提及 15 处——只计不登记，防双计）
 - 对标：Android ~4%（unsafe 行占 Rust 总行比，Google 2025-11）；本表为跨度非空行口径（偏高估），见 §一
 <!-- UNSAFE-AUDIT:SUMMARY:END -->
 
@@ -381,11 +381,14 @@
 | kernel/src/heap.rs | 57 | impl | 分配器 | unsafe impl GlobalAlloc for SlabHeap { unsafe fn alloc(&self, la |
 | kernel/src/heap.rs | 58 | fn | 分配器 | unsafe fn alloc(&self, layout: Layout) -> *mut u8 { match route( |
 | kernel/src/heap.rs | 88 | fn | 分配器 | unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) { match d |
-| kernel/src/heap.rs | 121 | block | 分配器 | unsafe { alloc::alloc::alloc(layout) } as *mut T; if ptr.is_null |
-| kernel/src/heap.rs | 126 | block | 分配器 | unsafe { ptr.write(val) }; // SAFETY: 该块按全局分配器 + for_value 布局分配， |
-| kernel/src/heap.rs | 129 | block | 分配器 | unsafe { Box::from_raw(ptr) }) } // ---- freelist（侵入式：槽首存 next 指 |
-| kernel/src/heap.rs | 134 | fn | 分配器 | unsafe fn pop(fl: &mut [*mut u8; SLAB_CLASSES.len()], ci: usize) |
-| kernel/src/heap.rs | 143 | fn | 分配器 | unsafe fn push(fl: &mut [*mut u8; SLAB_CLASSES.len()], ci: usize |
+| kernel/src/heap.rs | 113 | fn | 分配器 | unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: |
+| kernel/src/heap.rs | 134 | block | 分配器 | unsafe { self.alloc(new_layout) }; if new_ptr.is_null() { return |
+| kernel/src/heap.rs | 140 | block | 分配器 | unsafe { core::ptr::copy_nonoverlapping( ptr, new_ptr, core::cmp |
+| kernel/src/heap.rs | 161 | block | 分配器 | unsafe { alloc::alloc::alloc(layout) } as *mut T; if ptr.is_null |
+| kernel/src/heap.rs | 166 | block | 分配器 | unsafe { ptr.write(val) }; // SAFETY: 该块按全局分配器 + for_value 布局分配， |
+| kernel/src/heap.rs | 169 | block | 分配器 | unsafe { Box::from_raw(ptr) }) } // ---- freelist（侵入式：槽首存 next 指 |
+| kernel/src/heap.rs | 174 | fn | 分配器 | unsafe fn pop(fl: &mut [*mut u8; SLAB_CLASSES.len()], ci: usize) |
+| kernel/src/heap.rs | 183 | fn | 分配器 | unsafe fn push(fl: &mut [*mut u8; SLAB_CLASSES.len()], ci: usize |
 | kernel/src/ktest.rs | 247 | block | 其它 | unsafe { OUT = 0 }; assert_eq!( svc4(NR_CLOCK_READ as u64, 0, &r |
 | kernel/src/ktest.rs | 253 | block | 其它 | unsafe { OUT }; assert!(t1 > 0, "SYSCALL：clock_read 应得正纳秒"); ass |
 | kernel/src/ktest.rs | 261 | block | 其它 | unsafe { OUT } >= t1, "SYSCALL：单调钟不单调"); // D. handle 门控全链路（EL1 |
