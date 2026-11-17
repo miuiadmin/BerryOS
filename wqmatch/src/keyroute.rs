@@ -73,12 +73,19 @@ pub fn count_kind(obj: usize) -> CountKind {
 }
 
 /// PI donor 判据（pi_count_add/sub 的 donor 面判定段单源）：真对象键
-/// （哨兵多对象等待者被 crate 键门恒拒，§A34 常驻服务 wait_many 稳态
+///（哨兵多对象等待者被 crate 键门恒拒，§A34 常驻服务 wait_many 稳态
 /// 形态不钉死门控）∧ 请求派生位（READABLE|WRITABLE——channel 派生
-/// 唤醒面）。
+/// 唤醒面）∧ **d_eff > 0**（W3-Q94 门收紧·刀 a）：prio 0 的 donor 恒无
+/// 捐赠可传——传播环 `d_eff > cand.pi_inherited` 在 d_eff=0 时恒假，
+/// 全零稳态〔v1 常态〕门即常闭。d_eff = max(prio_effective,
+/// pi_inherited)，与传播环取值同构——睡眠期 prio_effective 冻结〔写者
+/// = 重推尾趟/pick 面 apply，后者只对 runnable〕、pi_inherited 写者 =
+/// 重推本体 ⇒ d_eff 睡眠期 0→正 唯一路径 = 重推传播 ⇒ 必伴随尾趟，
+/// 尾趟重登 ①（pi_derived_recount）即闭环——欠账方向被 recount 语义
+/// 消灭。配对安全〔欠账必补〕论证见 sched.rs PI_DERIVED_WAITERS 块注）。
 #[inline]
-pub fn pi_donor_candidate(obj: usize, signals: u64) -> bool {
-    key_chainable(obj) && signals & SIG_DERIVED != 0
+pub fn pi_donor_candidate(obj: usize, signals: u64, d_eff: i32) -> bool {
+    key_chainable(obj) && signals & SIG_DERIVED != 0 && d_eff > 0
 }
 
 /// PI boost 计数判据（pi≠0 冻结 boost 清零面——重推尾回写配对）。
@@ -101,4 +108,18 @@ pub fn gate_clear(any_waiters: u32, bucket_count: u32) -> bool {
 #[inline]
 pub fn pi_gate_needed(derived_waiters: u32, boosted_sleepers: u32) -> bool {
     derived_waiters != 0 || boosted_sleepers != 0
+}
+
+/// 重推尾趟重登计数 ①（W3-Q94 刀 a 第三收口点扩展）：逐睡眠者累加
+/// donor 判据命中数——与入队点判据**逐字同一**（真键 ∧ 派生位 ∧
+/// d_eff>0）。价值 = 配对安全：入队时 d_eff=0 未入账、睡眠中被传播
+/// 抬 pi 后 d_eff>0 的睡眠者，由重推尾趟（pi_inherited 唯一写者的
+/// 写尾）重登——「欠账必补」消灭出队误减 ①的下溢面。d_eff 语义与
+/// 传播环同构（max(prio_effective, pi_inherited)——清零趟刚跑完，
+/// 此处 pi_inherited 已是本轮终值）。
+#[inline]
+pub fn pi_derived_recount_pi(obj: usize, signals: u64, d_eff: i32, acc: &mut u32) {
+    if pi_donor_candidate(obj, signals, d_eff) {
+        *acc += 1;
+    }
 }
