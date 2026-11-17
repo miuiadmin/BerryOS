@@ -13,7 +13,7 @@
 # 史档/勘误记事 → tools/bench_baseline_icount.notes.md（--update 不触史，2026-11-04 m1 迁移）。
 cntvct_pair,4096,0
 frame_alloc4k,1024,37
-frame_alloc64k,256,82
-handle_evt,1024,274
-vmo_commit1p,256,1683
-vmo_rw4k,128,6948
+frame_alloc64k,256,37
+handle_evt,1024,288
+vmo_commit1p,256,396
+vmo_rw4k,128,6945

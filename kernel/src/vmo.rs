@@ -20,6 +20,7 @@
 use berry_mm::frame::FrameAllocator;
 use berry_mm::va::{phys_to_virt, PAGE_SHIFT, PAGE_SIZE};
 use berry_vmoledger::{DemandLedger, PageLedger};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 pub use berry_vmoledger::VmoError;
 
@@ -278,7 +279,79 @@ impl Drop for Vmo {
 pub(crate) fn zero_frame(fa: &mut FrameAllocator) -> Result<usize, VmoError> {
     let pfn = fa.alloc().map_err(|_| VmoError::NoFrames)?;
     let pa = pfn << PAGE_SHIFT;
-    // SAFETY: 独占新分配帧（尚无别名引用）；Normal WB。
-    unsafe { core::ptr::write_bytes(phys_to_virt(pa) as *mut u8, 0, PAGE_SIZE) };
+    // SAFETY: 独占新分配帧（尚无别名引用）；Normal WB 直映（清零臂前提，
+    // 见 `zero_page_4k` 合同注）。
+    unsafe { zero_page_4k(phys_to_virt(pa) as *mut u8) };
     Ok(pa)
+}
+
+// ---- 4KiB 专用清零臂（快赢 ③：DC ZVA 主档 + GPR 回退，2026-11-17）----
+//
+// 为什么：旧路径 `write_bytes` → 本仓 memset（`kernel/src/mem.rs:35`）＝
+// 8B GPR 循环 512 迭代/页——旧 icount 基线（改前，2026-11-17）里
+// vmo_commit1p=1683、清零占大头（`research/内核深度进化/01-内存管理.md`
+// 机会 1）。DC ZVA（Data Cache Zero by VA，ARMv8 系统指令）按缓存行零化：
+// 64B 行下 64 指令零完 4KiB——落地实测 vmo_commit1p 1683→396。
+// 非 SIMD——不碰 FP/NEON 寄存器，内核 SIMD-free 合同（`kernel/src/mem.rs`
+// 头注 + ktest `test_fp` ③-b canary）不破。
+//
+// 语义前提（`zero_frame` 三个调用点结构性成立：vmo commit 页 / vmar
+// `new_root` / `next_table` 均 fresh-from-buddy）：①帧独占无别名；②页
+// 4KiB 对齐 + 行整除 4096（探测门保证）→ 行序列恰覆页内不越页；③Normal
+// WB + inner-shareable 直映（`kernel/src/vmar.rs` 匿名页属性同款）——ZVA
+// 零化至一致性点（PoC），shareable 域内对全体核可见，与 memset 版读写
+// 语义逐字节等价。
+//
+// 探测：CTR_EL0.DZ（bit 26）＝1 才启用（0 时 DC ZVA 是 UNDEFINED）；行
+// 大小 = 4 << CTR_EL0.DminLine（bits[19:16]，Linux `dminline` 同式）。DZ=0
+// 或行不整除 4096 → GPR 回退（`write_bytes` → 本仓 memset，旧路径原样）。
+// 本内核 QEMU virt/cortex-a72 形态恒 DZ=1、行 64B；陷出面（HCR_EL2.TID5
+// 域拦 CTR_EL0 读）需在席 hypervisor——裸金属形态不在场。
+
+/// DC ZVA 探测缓存：0 = 未探测；`NO_ZVA` = 已探测不可用；其他 = 行字节数。
+/// 惰性首探落在 boot 单线程窗（首个 `zero_frame` = 建表/建 VMO 期）；SMP
+/// 起核后并发首探是良性竞态——同型 CPU 写同值（Relaxed 足够：值只依赖
+/// 只读 CTR_EL0，无跨序依赖面）。
+static ZVA_PROBE: AtomicUsize = AtomicUsize::new(0);
+/// 「已探测、不可用」哨兵（防不可用形态每调重探 mrs）。
+const NO_ZVA: usize = usize::MAX;
+
+/// 探测并缓存 DC ZVA 行字节数（不可用 = `NO_ZVA`）。
+fn zva_probe_cached() -> usize {
+    let cached = ZVA_PROBE.load(Ordering::Relaxed);
+    if cached != 0 {
+        return cached;
+    }
+    // SAFETY: ctr_el0 只读系统寄存器，EL1 直读无副作用（陷出面注见上）。
+    let ctr: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, ctr_el0", out(reg) ctr, options(nostack, preserves_flags));
+    }
+    let dz = ctr >> 26 & 1;
+    let line = 4usize << ((ctr >> 16) & 0xF);
+    let v = if dz == 1 && PAGE_SIZE % line == 0 { line } else { NO_ZVA };
+    ZVA_PROBE.store(v, Ordering::Relaxed);
+    v
+}
+
+/// 4KiB 页专用清零：DC ZVA 主档（行步进环）+ GPR 回退档（旧 `write_bytes`
+/// 路径原样）。调用方合同：`va` 4KiB 对齐、独占、Normal WB 直映——
+/// `zero_frame` 是唯一调用点，前提继承帧分配语义。
+///
+/// SAFETY: `va` 须指向独占可写的 4KiB Normal WB 页（直映）。
+unsafe fn zero_page_4k(va: *mut u8) {
+    let line = zva_probe_cached();
+    if line != NO_ZVA {
+        // SAFETY: 页对齐 + line 整除 PAGE_SIZE（探测门）→ 恰覆页内；dc zva
+        // 写内存（PoC 零化）不碰栈与 NZCV。
+        let mut p = va;
+        let end = va.add(PAGE_SIZE);
+        while p < end {
+            core::arch::asm!("dc zva, {0}", in(reg) p, options(nostack, preserves_flags));
+            p = p.add(line);
+        }
+    } else {
+        // SAFETY: 同旧 write_bytes 合同（GPR 回退——mem.rs 整数 memset）。
+        core::ptr::write_bytes(va, 0, PAGE_SIZE);
+    }
 }
