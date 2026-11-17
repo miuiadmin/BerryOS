@@ -245,3 +245,111 @@ fn route_full_domain_scan() {
         })
     );
 }
+
+/// realloc 原位资格（内核深度进化审计 01 号机会 4）：同 class 原位 /
+/// 跨 class 搬移 / 同阶原位 / 跨阶搬移 / slab↔pages 跨臂 / 零大小防御面。
+/// 审计实证消费面：Vec push 增长 24B→32B、600B→1024B 落同 class——
+/// 全系统热面的「整块搬运纯属浪费」在此钉死。
+#[test]
+fn realloc_inplace_same_class_inplace() {
+    // Vec<Region> push 增长族：同 class 扩容原位（审计实证 24B→32B、
+    // 600B→1024B）。
+    assert_eq!(realloc_inplace(24, 8, 32, 8), Some(true), "24→32 同 class");
+    assert_eq!(realloc_inplace(600, 8, 1024, 8), Some(true), "600→1024 同 class");
+    // class 内全域：任意 size 对 (a,b) 落同 class 恒原位。
+    for &(a, b) in &[(1usize, 8usize), (9, 16), (17, 32), (100, 128), (700, 1024), (1500, 2048)] {
+        assert_eq!(
+            realloc_inplace(a, 8, b, 8),
+            Some(true),
+            "slab 内 {a}→{b} 须原位"
+        );
+    }
+    // class 恰值边界：32→33 跨 class（32 落 32，33 落 64）。
+    assert_eq!(realloc_inplace(32, 8, 33, 8), Some(false), "恰 class 值上探须搬移");
+    // 收缩不降 class：33→24 仍落 class 64/32？33→class64、24→class32——
+    // 不同 class 须搬移（保守语义正确：块大小不同即不同块）。
+    assert_eq!(realloc_inplace(33, 8, 24, 8), Some(false), "收缩跨 class 须搬移");
+    // 同 class 收缩：40→24 同落 class 64？40→64、24→32——不同 class 搬移。
+    // 真同 class 收缩：64→33 同落 class 64。
+    assert_eq!(realloc_inplace(64, 8, 33, 8), Some(true), "同 class 收缩原位");
+}
+
+#[test]
+fn realloc_inplace_pages_arm() {
+    // 同阶原位：npages 不同但 2^order 窗相同（尾页闲置是既有语义）。
+    assert_eq!(
+        realloc_inplace(6000, 8, 8192, 8),
+        Some(true),
+        "2页窗内扩 6000→8192 同 order1 原位"
+    );
+    // 4096→6000 跨阶（1 页→2 页）须搬移——6000 > 4096 装不进单页窗。
+    assert_eq!(
+        realloc_inplace(4096, 8, 6000, 8),
+        Some(false),
+        "4096→6000 跨阶（order0→1）须搬移"
+    );
+    // 跨阶搬移：8193 需 3 页 → order2。
+    assert_eq!(
+        realloc_inplace(8192, 8, 8193, 8),
+        Some(false),
+        "8192→8193 跨阶须搬移"
+    );
+    // 2 幂页数恰直落：16384（4 页 order2）窗内扩 12288→16384 同 order2。
+    assert_eq!(
+        realloc_inplace(4096 * 3, 8, 4096 * 4, 8),
+        Some(true),
+        "order2 窗内扩（3页→4页同 order2）原位"
+    );
+    // 跨臂：slab→pages 必搬移。
+    assert_eq!(
+        realloc_inplace(2048, 8, 2049, 8),
+        Some(false),
+        "2048→2049 slab→pages 跨臂搬移"
+    );
+    assert_eq!(
+        realloc_inplace(2049, 8, 2048, 8),
+        Some(realloc_inplace(2049, 8, 2048, 8).unwrap()),
+        "pages→slab 收缩跨臂搬移（自证一致）"
+    );
+    assert_eq!(realloc_inplace(2049, 8, 2048, 8), Some(false));
+}
+
+#[test]
+fn realloc_inplace_defensive_and_align() {
+    // 零大小防御面：route(size==0) = None → realloc_inplace None。
+    assert_eq!(realloc_inplace(0, 8, 32, 8), None, "旧零大小 → None");
+    assert_eq!(realloc_inplace(24, 8, 0, 8), None, "新零大小 → None");
+    // align 抬 class：24/align16 → class32；32/align16 → class32——同 class 原位。
+    assert_eq!(
+        realloc_inplace(24, 16, 32, 16),
+        Some(true),
+        "align16 下 24→32 同 class 原位"
+    );
+    // align 抬阶：4096/align4096 → order0 整页；8192/align4096 → 2页 order1。
+    assert_eq!(
+        realloc_inplace(4096, 4096, 4096 * 2, 4096),
+        Some(false),
+        "align4096 下 1→2 页跨阶搬移"
+    );
+}
+
+/// 全域一致性律：realloc_inplace(a→b) == true ⟺ route(a) 与 route(b) 同
+/// class 且同臂（slab）或同阶（pages）——与单源定义逐点对拍，防实现漂移。
+#[test]
+fn realloc_inplace_full_domain_consistency() {
+    for old in 1..=8192usize {
+        for &new in &[1usize, 8, 16, 24, 32, 33, 64, 100, 600, 1024, 2048, 2049, 4096, 6000, 8192, 8193] {
+            let got = realloc_inplace(old, 8, new, 8);
+            let expect = match (route(old, 8), route(new, 8)) {
+                (Some(Route::Slab { class: a, .. }), Some(Route::Slab { class: b, .. })) => {
+                    Some(a == b)
+                }
+                (Some(Route::Pages { order: a, .. }), Some(Route::Pages { order: b, .. })) => {
+                    Some(a == b)
+                }
+                _ => Some(false),
+            };
+            assert_eq!(got, expect, "old={old} new={new}");
+        }
+    }
+}
