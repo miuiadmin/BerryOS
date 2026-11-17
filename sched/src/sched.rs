@@ -2422,12 +2422,22 @@ fn key_chainable(obj: usize) -> bool {
 // 全量成本。本对计数把「重推可能改动任何字段」压成两个**精确**必要条件：
 //
 // - [`PI_DERIVED_WAITERS`]：等内核派生位（READABLE/WRITABLE）且挂单一
-//   真对象键（obj ∉ {0 纯睡, WAIT_ANY 哨兵}）的睡眠者数——捐赠边
-//   **donor 侧必要条件**（`pi::donor_edge` 首门 = 派生位请求 + 键门拒
-//   哨兵/纯睡；§A40 不变量「派生位等待 ⟹ wait_obj 必是真 channel
-//   ObjRef」）。零 ⇒ 队上无任何 donor ⇒ 不动点零传播——受捐面（持 peer
-//   端点者）再多也无边可走，故受捐侧无需独立计数。哨兵排除让 §A34
-//   常驻服务的 wait_many 稳态形态不钉死门控。
+//   真对象键（obj ∉ {0 纯睡, WAIT_ANY 哨兵}）且 d_eff>0（W3-Q94 刀 a
+//   门收紧——d_eff = max(prio_effective, pi_inherited)，判据单源
+//   keyroute）的睡眠者数——捐赠边 **donor 侧必要条件**（`pi::donor_edge`
+//   首门 = 派生位请求 + 键门拒哨兵/纯睡；d_eff=0 时传播环
+//   `d_eff > cand.pi_inherited` 恒假——prio 0 donor 恒无捐赠可传，全零
+//   稳态〔v1 常态〕门即常闭。§A40 不变量「派生位等待 ⟹ wait_obj 必是
+//   真 channel ObjRef」）。零 ⇒ 队上无任何 donor ⇒ 不动点零传播——
+//   受捐面（持 peer 端点者）再多也无边可走，故受捐侧无需独立计数。
+//   哨兵排除让 §A34 常驻服务的 wait_many 稳态形态不钉死门控。
+//   **配对安全（欠账必补）**：入队点 d_eff=0 未入账的睡眠者，睡眠中
+//   d_eff 0→正 的唯一路径 = 重推传播写 pi_inherited（prio_effective
+//   睡眠期冻结——写者 = 重推尾趟 refresh_effective/pick 面 apply，后者
+//   只对 runnable；prio_base 睡眠期零写者——sched_setattr 只写
+//   sched_attr 影子、deadline 路写点在 spawn 前），而重推必跑尾趟重登
+//   ①（`pi_derived_recount`，与 ② recount 同点）——出队减 ① 基于
+//   重登后的计数，永不误减下溢。
 // - [`PI_BOOSTED_SLEEPERS`]：`pi_inherited != 0` 的睡眠者数——冻结 boost
 //   的**清零面**（重推首趟清在队者受捐额；零 ⇒ 清零趟空转）。队上任务的
 //   `pi_inherited` 唯一写者 = 重推本体（清零 + 传播；唤醒冻结只带走值不
@@ -2459,12 +2469,16 @@ const _: () = assert!(SIG_DERIVED == berry_wqmatch::keyroute::SIG_DERIVED);
 /// 睡眠者入队 PI 计数（+1）——[`SleepQueue::insert_sorted`] 入口调（与
 /// [`wait_count_add`] 同点）。donor 面判据 = 派生位请求**且**单一真对象键
 /// （obj ∉ {0 纯睡, WAIT_ANY 哨兵}——哨兵多对象等待者被 crate 键门恒拒，
-/// §A34 常驻服务的 wait_many 稳态形态不钉死门控；两键排除与 wait_count
-/// 分支同源）。
+/// §A34 常驻服务的 wait_many 稳态形态不钉死门控）**且 d_eff>0**（W3-Q94
+/// 刀 a 门收紧：prio 0 donor 恒无捐赠可传——判据单源 keyroute）。d_eff
+/// 入队时值 = max(prio_effective, pi_inherited)；**配对安全**：睡眠期
+/// d_eff 0→正 唯一路径 = 重推传播写 pi_inherited（prio_effective 睡眠期
+/// 冻结——写者 = 重推尾趟/pick 面 apply 只对 runnable），而重推必跑尾趟
+/// 重登 ①（[`pi_derived_recount`]）——欠账必补，出队减 ①永不误减下溢。
 #[inline]
-fn pi_count_add(obj: usize, signals: u64, pi: i32) {
-    // W3-Q75 donor/boost 判定单源（原子 fetch 留壳）。
-    if berry_wqmatch::keyroute::pi_donor_candidate(obj, signals) {
+fn pi_count_add(obj: usize, signals: u64, pi: i32, eff: i32) {
+    // W3-Q75 判定单源 + W3-Q94 d_eff 门（原子 fetch 留壳）。
+    if berry_wqmatch::keyroute::pi_donor_candidate(obj, signals, pi.max(eff)) {
         PI_DERIVED_WAITERS.fetch_add(1, Ordering::Relaxed);
     }
     if berry_wqmatch::keyroute::pi_boost_counted(pi) {
@@ -2475,9 +2489,9 @@ fn pi_count_add(obj: usize, signals: u64, pi: i32) {
 /// 睡眠者离队 PI 计数（-1）——[`SleepQueue::unlink`] 尾调（与
 /// [`wait_count_sub`] 同点；字段稳定性见上块注释，判据与入队逐字对称）。
 #[inline]
-fn pi_count_sub(obj: usize, signals: u64, pi: i32) {
-    // W3-Q75 判定单源（与 pi_count_add 逐字对称——同判据加减配平）。
-    if berry_wqmatch::keyroute::pi_donor_candidate(obj, signals) {
+fn pi_count_sub(obj: usize, signals: u64, pi: i32, eff: i32) {
+    // W3-Q75 判定单源 + W3-Q94 d_eff 门（与 pi_count_add 逐字对称——同判据加减配平）。
+    if berry_wqmatch::keyroute::pi_donor_candidate(obj, signals, pi.max(eff)) {
         PI_DERIVED_WAITERS.fetch_sub(1, Ordering::Relaxed);
     }
     if berry_wqmatch::keyroute::pi_boost_counted(pi) {
@@ -2502,6 +2516,18 @@ pub fn pi_recompute_needed() -> bool {
 /// 仅 SQ 窗内调用（重推本体所在窗）。
 pub fn pi_boost_recount(n: u32) {
     PI_BOOSTED_SLEEPERS.store(n, Ordering::Relaxed);
+}
+
+/// 重推尾趟重登计数 ①（[`PI_DERIVED_WAITERS`] 的第三收口点扩展——W3-Q94
+/// 刀 a）：清零趟 + 传播趟跑完后逐睡眠者按**入队同款判据**（keyroute 单源：
+/// 真键 ∧ 派生位 ∧ d_eff>0，d_eff = max(prio_effective, pi_inherited)——
+/// 此刻 pi_inherited 已是本轮终值）重数回写。价值 = 配对安全：入队 d_eff=0
+/// 未入账、睡眠中被传播抬 pi 的睡眠者在此补登——「欠账必补」消灭出队
+/// 误减 ①的下溢面（性能语义：计数只可能短暂虚高至下一趟重推，门常开
+/// 方向劣化 = 性能损失非正确性损失——与 ② recount 同款）。仅 SQ 窗内
+/// 调用（重推本体所在窗）。
+pub fn pi_derived_recount(n: u32) {
+    PI_DERIVED_WAITERS.store(n, Ordering::Relaxed);
 }
 
 /// SLEEPQ 互斥锁（S-3c c-2a：锁族落形 + SQ 窗先行——§3 七层冻结锁序最顶层）。
@@ -2579,7 +2605,7 @@ impl SleepQueue {
         wait_count_add((*t).wait_obj);
         // P2 PI 门控计数：入队 +1（wait_signals 此刻已是入睡值——block_
         // current 四写先于本函数；与 unlink 尾部 -1 对称）。
-        pi_count_add((*t).wait_obj, (*t).wait_signals, (*t).pi_inherited);
+        pi_count_add((*t).wait_obj, (*t).wait_signals, (*t).pi_inherited, (*t).prio_effective);
         // 从头找第一个 `deadline > 新者` 的节点，插它前面；到尾则插尾。
         let mut cur = self.head.get();
         let before = loop {
@@ -2690,7 +2716,7 @@ impl SleepQueue {
         wait_count_sub((*t).wait_obj);
         // P2 PI 门控计数：离队 -1（wait_obj/wait_signals/pi_inherited 均离
         // 队时值——前两者同 P1 稳定论证，pi = 冻结随行值，配对经重推尾回写）。
-        pi_count_sub((*t).wait_obj, (*t).wait_signals, (*t).pi_inherited);
+        pi_count_sub((*t).wait_obj, (*t).wait_signals, (*t).pi_inherited, (*t).prio_effective);
     }
 }
 
