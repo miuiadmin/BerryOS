@@ -389,7 +389,8 @@ build-user:
     # app/<ID>.bap 整包条目（'a' < 'b' 排序在 bin/ 前；a-1 阶段 svcmgr
     # 主走查对未知名算术跳过 = 零消费、零行为变化——appd 消费随 a-2）。
     # app-1 D1（调和书）：APPTOMB 打包出 app/ 前缀改 selftest/ 专用位
-    # ——不入 bap_scan 收集 = 不占 APP_SLOTS（9/9 恰满，入册必挤 SETTINGS
+    # ——不入 bap_scan 收集 = 不占 APP_SLOTS（app-1 时点 9/9 恰满、
+    # 2026-11-17 终端刀后现役 10 槽；入册必挤 SETTINGS
     # = APP ok 静默漂 8），tomb_selftest 走 cpio 直查，白名单立法退役。
     # V13（ADR #82 预埋刀）：58 条 name=rootfs 硬编映射外化
     # tools/rootfs-manifest.toml（平台基座自描述——加 bin 只改该表；
