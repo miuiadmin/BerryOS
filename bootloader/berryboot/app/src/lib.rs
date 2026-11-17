@@ -4,7 +4,7 @@
 //! KERNEL.ELF 整档读入、V-0a 的 SFS 开卷读原样保留）。
 //!
 //! 形态：`crate-type=staticlib` → rust-lld 静态全链接（berryboot.ld 单 .img
-//! @0x1000 + --image-base 0 + --emit-relocs）→ tools/elf2pe.py 转 PE32+
+//! @0x1000 + --image-base 0 + --emit-relocs）→ tools/elf2pe 转 PE32+
 //! （AArch64 EFI application）→ mkfat --put 造 \EFI\BOOT\BOOTAA64.EFI 引导盘
 //! → QEMU AAVMF 可移介质默认路径自动拉起。
 //!

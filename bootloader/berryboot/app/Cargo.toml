@@ -4,7 +4,7 @@ name = "berryboot"
 # 规则/14；berry-efi 同批同值）。升版 = 逐 crate 手同步（本工作区两件）。
 version = "0.2.0"
 edition = "2021"
-description = "BerryBoot EFI 引导应用（V-0a）——staticlib 出 ELF，tools/elf2pe.py 转 PE32+"
+description = "BerryBoot EFI 引导应用（V-0a）——staticlib 出 ELF，tools/elf2pe 转 PE32+"
 license = "Apache-2.0"
 
 [lib]

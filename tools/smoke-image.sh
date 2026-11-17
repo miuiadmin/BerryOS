@@ -448,7 +448,7 @@ mkfifo "$RX_FIFO" || fail "mkfifo 失败"
 RX_HOLDER=$!
 
 echo "smoke-image: QEMU 启动（AAVMF + ${IMAGE}——零 -kernel / 零 fw_cfg）"
-# 与 justfile run-efi 同参（不挂 virtio——EFI 路无 virtio 面；ramfb 供 GOP）。
+# 与 justfile run-efi 同参除 -m（本路 256M——债 G 修复 74a1e40c6；run-efi 仍 128M）——不挂 virtio（EFI 路无 virtio 面）；ramfb 供 GOP。
 "$QEMU" -machine virt -cpu cortex-a72 -m 256M -nographic \
   -pflash "$AAVMF_CODE" -pflash "$RUN_DIR/vars.fd" \
   -drive if=none,file="$IMAGE",format=raw,id=bb \
