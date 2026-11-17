@@ -252,10 +252,12 @@ static mut PER_CPU_RQ: [Runqueue; 2] = [Runqueue::new(), Runqueue::new()];
 /// EAS 面 v2+）。
 static mut TOPO: Topo = Topo::single();
 /// 调度类（round-robin，G0/G1 默认）。M4 集成面起 = **队列级**消费位
-/// （`pick_next_filtered` 八调用点——混合带同环出选的扫描面，不经
+/// （`pick_next_filtered` 调用点——混合带同环出选的扫描面，不经
 /// per-task 分派；04 号审计附记一核对（2026-11-17）：yield_now_impl /
 /// switch_away_forever_with / block_current / try_preempt / idle_loop /
-/// on_irq_tick / on_sgi_resched / park_recheck）+ [`class_of_task`]
+/// on_irq_tick / on_sgi_resched / park_recheck 八点——其中 try_preempt 自
+/// 04 号审计机会一②（2026-11-17）双圈合一起改走 `pick_next_preempt`）
+/// + [`class_of_task`]
 /// 分派的回落臂（unit Fair 本体）。
 static RR: Fair = Fair;
 
@@ -3135,14 +3137,16 @@ pub unsafe fn fast_wake_locked(t: NonNull<Task>) {
 /// 抢占」在 fastpath 的例外出口）；否则原样返回（同层 FIFO：等/低优先等待者
 /// 不因 IPC 插队——4-3a 语义）。返回是否真的发生直切。
 ///
-/// **幻影出选防线（4-6 修）**：先 [`Runqueue::has_eff_above`] 只读探峰——环上
-/// 无严格更高者**根本不调 `pick_next`** 再判不切。`pick_next` 不是纯查询：选中
-/// 即 `advance_past` 消耗 head 槽位——「出选后不切走」= 幻影出选，游标被白耗
-/// 一格。稳态矩阵全员 eff 相同（4-3a 同层）时每条 fastpath send 都幻影消耗一格，
-/// 而真实出选（block/yield/tick）只认 head——重复性 IPC 节奏会把真实出选相位
-/// 锁死在环上固定节点集，其余节点**结构性饿死**（4-6 实测：echo 服务被饿死
-/// 永久冻结——出选:切入 = 29:1，其 client svcmgr 10s 等超时自陷）。
-/// 探峰是只读一圈 O(n)，n = 环长；不可能切走时零副作用返回。
+/// **幻影出选防线（4-6 修；2026-11-17 起单圈门控形——04 号审计机会一②）**：
+/// [`Fair::pick_next_preempt`] 一圈出选 + 扫尾门控——环上无严格更高者（门
+/// 不过）零副作用返回（advance/apply/note_pick 全不触），不消耗 head 槽位。
+/// `pick_next` 不是纯查询：选中即 `advance_past` 消耗 head 槽位——「出选后
+/// 不切走」= 幻影出选，游标被白耗一格。稳态矩阵全员 eff 相同（4-3a 同层）
+/// 时每条 fastpath send 都幻影消耗一格，而真实出选（block/yield/tick）只认
+/// head——重复性 IPC 节奏会把真实出选相位锁死在环上固定节点集，其余节点
+/// **结构性饿死**（4-6 实测：echo 服务被饿死永久冻结——出选:切入 = 29:1，
+/// 其 client svcmgr 10s 等超时自陷）。门控与出选合一半圈 O(n)，n = 环长；
+/// 不可能切走时零副作用返回。
 ///
 /// **调用方保证 IRQ 屏蔽窗**（SVC 天然满足；内核任务自行 `disable_irq`）——
 /// 协议同 [`block_current`]：可从 syscall 主体中途切走（当前任务留在其内核
@@ -3151,35 +3155,43 @@ pub unsafe fn fast_wake_locked(t: NonNull<Task>) {
 /// telemetry 专用计数器区分）。
 pub fn try_preempt() -> bool {
     // SAFETY: 契约如上；CURRENT/本核 runqueue 顺序访问。
-    // W3-Q59：本判序三门（null 护栏/has_eff_above 探峰〔幻影出选防线〕/
-    // 严格更高才切）的纯值域钉板 = berry_dpgface::fastpath（dpg.rs 线1d
-    // 消费面锚；探峰过滤谓词 = berry_ringface::eligible 单源直引——零
-    // 第二实现）。物理臂（RQ 锁窗/出选/切换舞蹈）留此。
+    // W3-Q59：本判序三门（null 护栏/出选门控〔幻影出选防线〕/严格更高才切）
+    // 的纯值域钉板 = berry_dpgface::fastpath（dpg.rs 线1d
+    // 消费面锚；门控过滤谓词 = berry_ringface::eligible 单源直引——零
+    // 第二实现；04 号审计机会一②（2026-11-17）起物理面探峰圈并入出选圈，
+    // 值域律不动——等价证书见 class.rs pick_next_preempt 注）。物理臂
+    //（RQ 锁窗/出选/切换舞蹈）留此。
     unsafe {
         assert_preempt_balanced("try_preempt");
         let cur = current_task();
         // ktest 护栏（复盘雷 3）：`sched::init` 前 CURRENT=null——fastpath 若在
         // 手搭睡眠者在队时被走到（ktest 纪律明令禁止、但仅注释执法），下行的
-        // has_eff_above 解引用会直接挂死在 boot 期、难归因。null 早退把违约
+        // 出选门控解引用（pick_next_preempt 读 (*my_cur).prio_effective）会
+        // 直接挂死在 boot 期、难归因。null 早退把违约
         // 显形为「无直切」；正常运行期 CURRENT 恒非 null（SVC/IRQ 上下文），
         // 本分支零成本。
         if cur.is_null() {
             return false;
         }
-        // S-3b：探峰集 == 出选集（同 eligible 门）；PickFilter 退役改形。
-        // 幻影出选防线：环上无严格更高 eff → 必不直切 → 不消耗 head 槽位。
-        // RQ 窗（c-2b）：探峰走查 + 出选 + 状态定形同窗（探峰也是环读——
+        // 04 号审计机会一②（2026-11-17）双圈合一（Plan A 定案）：旧形两圈
+        //（has_eff_above_filtered 只读探峰 + 命中后 pick_next_filtered 出选）
+        // 改单圈门控形——RR.pick_next_preempt 一圈出选 + 扫尾门控；探峰与
+        // 出选合一半圈、miss 零副作用（advance/apply/note_pick 全在扫尾门
+        // 后），has_eff_above_filtered 退役（原唯一消费者 = 本函数）。
+        // S-3b：门控集 == 出选集（同 eligible 门）；PickFilter 退役改形。
+        // 幻影出选防线：环上无严格更高 eff → 门返 None → 必不直切 → 不消耗
+        // head 槽位。S5-c 探序 ≤1 片延迟挂账随刀闭合：解冻进探峰面
+        //（pick_inner 头部 lazy_unthrottle 先于扫描），刚到期 DL 任务立即可见。
+        // RQ 窗（c-2b）：门控行读 + 出选 + 状态定形同窗（环读——
         // 终态无锁走查可读到摘环中的 stale 链接）；切换舞蹈在窗外。
         let phys = rq_lock();
         let mut go: Option<*mut Task> = None;
-        if rq().has_eff_above_filtered((*cur).prio_effective, cur) {
-            if let Some(next) = RR.pick_next_filtered(rq(), topo(), cur) {
-                let next_ptr: *mut Task = next;
-                if next_ptr != cur && (*next_ptr).prio_effective > (*cur).prio_effective {
-                    (*cur).state = TaskState::Ready;
-                    (*next_ptr).state = TaskState::Running;
-                    go = Some(next_ptr);
-                }
+        if let Some(next) = RR.pick_next_preempt(rq(), topo(), cur) {
+            let next_ptr: *mut Task = next;
+            if next_ptr != cur && (*next_ptr).prio_effective > (*cur).prio_effective {
+                (*cur).state = TaskState::Ready;
+                (*next_ptr).state = TaskState::Running;
+                go = Some(next_ptr);
             }
         }
         rq_unlock(phys);
@@ -4396,8 +4408,8 @@ unsafe fn try_steal_one() -> Option<*mut Task> {
         rq_unlock_of(me, phys);
         (ni, nu)
     };
-    // —— 远端窗（只持远端）：对核环扫描（has_eff_above_filtered 同款走查
-    // 形）：band 感知三档选优——兼容档见首即定（早退），否则整圈取最小档。
+    // —— 远端窗（只持远端）：对核环扫描（`crate::class::eligible` 过滤本体
+    // 同款走查形）：band 感知三档选优——兼容档见首即定（早退），否则整圈取最小档。
     // 扫描与摘环同窗——victim 定型到 unlink 原子，防扫描后摘环前被对核
     // pick/出队抢走。断链形态由 link/unlink 入口断言执法（环不变式），
     // 走查「环上必有 next」与 ring_check 同口径。

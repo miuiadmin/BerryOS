@@ -174,6 +174,11 @@ pub fn run() {
     // cbox 刀1（黑匣子崩溃记录表）排液窗数学钉板——main 线增量（末位新号
     // 纪律——ktest done 前；定义在文件尾）。
     test_cbox();
+    // 04 号审计机会一②（2026-11-17）双圈合一：Fair::pick_next_preempt
+    // 单圈门控形三态钉板（miss 零副作用 / 过门身份+head 推进 / ==阈值
+    // 恰界 miss）。末位新号纪律——ktest done 前；sched::init 前跑，
+    // 本地合成环零 CURRENT 面（test_deadline 本地环先例）。
+    test_pick_preempt();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     crate::splash::step(8, b"ktest done");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
@@ -10670,8 +10675,9 @@ fn test_smp_lazy() {
 ///   ≥4 且 ≥3×utility）；interactive 配额（10ms/8ms 期 >100%）CBS 期内律
 ///   不可越线（BANDM4-G1 同律在双环形状下复证）。
 /// - **BS-3 per-band stats 双环聚合**（stats.rs——「跨核一份全局账」的
-///   ktest 可达形态）：`Fair::pick_next_filtered`（生产出选唯一路径——
-///   note_pick 记账点）与 `FairBand::tick`（note_runtime 记账点）在两环
+///   ktest 可达形态）：`Fair::pick_next_filtered`（生产出选面——note_pick
+///   记账点；04 号审计机会一②（2026-11-17）起与 `Fair::pick_next_preempt`
+///   两面，均经 pick_inner）与 `FairBand::tick`（note_runtime 记账点）在两环
 ///   上各自触发，全局原子计数从**两环同时**累积：Δband_picks 与本地出选
 ///   计数逐一对账（rq0 出选 ↔ interactive 账、rq1 出选 ↔ utility 账——
 ///   零串账）、Δintent_picks 同源、Δband_runtime ≥ 各环实跑周期。
@@ -11909,4 +11915,135 @@ fn test_cbox() {
 
     cbox::ktest_restore(saved.0, saved.1);
     berry_hal_aarch64::uart_puts(b"CBOXK ok\n");
+}
+
+/// 04 号审计机会一②（2026-11-17）双圈合一：`Fair::pick_next_preempt`
+/// 单圈门控形三态钉板。try_preempt 旧形 = `has_eff_above_filtered`
+/// 探峰一圈 +（命中）`pick_next_filtered` 第二圈；新形出选单圈 + 门控
+/// 行读胜者 pre-apply `prio_effective > threshold`（!PURE_EEVDF 下
+/// chosen 必在最高带 ⟹ 门控行读 ⟺ 旧探峰存在性判定，同一快照——数学
+/// 等价证书的物理面验证）。三态：
+/// (a) 环 = cur + 同带他者（threshold = cur.prio_effective）→ None 且
+///     head 零位移——本刀核心新语义：miss 路零副作用（head 不动、无
+///     note_pick），幻影出选防线从「先探再 pick」收窄为单圈门控；
+/// (b) 有严格更高 eligible 任务 → 返回者身份 == 该任务（ptr::eq）且
+///     head 推进（advance_past 胜者后继）；
+/// (c) 最高带恰等于阈值（==threshold）→ None（严格更高律：等值不切）。
+/// 制造法照 test_deadline/test_throttle_yield 本地环先例（Box::leak
+/// 合成任务 + Fair.enqueue 正路入环 + 字段直配；cur 以 my_cur 指针
+/// 传入）。head 不可由 crate 外直读（`Runqueue::head` 是 pub(crate)）
+/// ——对拍经等键探针：同带同键（enqueue 后 vruntime 同 0、vdeadline
+/// 同 = slice_virtual(prio)）下 `pick_next_filtered` 出选者 = head 侧
+/// 首见（同键保序律），探针身份即 head 位置读数。
+fn test_pick_preempt() {
+    use berry_sched::{Fair, Runqueue, SchedClass, Task, Topo};
+
+    /// 占位入口（手搭成员永不执行；halt 兜底——DL 族同款）。
+    extern "C" fn pp_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    fn mk(name: &'static [u8]) -> &'static mut Task {
+        alloc::boxed::Box::leak(Task::new_kernel_with_as(pp_dummy, 0, name, 0, 0))
+    }
+
+    let rr = Fair;
+    let topo = Topo::single();
+
+    // —— (a) 同带他者：None + head 零位移（零副作用钉）——
+    let pa_cur = mk(b"ppC".as_slice()); // cur（threshold 源；prio_effective 默认 0）
+    let pa_other = mk(b"ppO".as_slice()); // 同带他者（同默认 0——不严格更高）
+    let mut rqa = Runqueue::new();
+    rr.enqueue(pa_cur, &mut rqa); // head = pa_cur（首入）
+    rr.enqueue(pa_other, &mut rqa);
+    let pa_curp = pa_cur as *mut Task;
+    // 前拍：探针读 head（等键首见 = head 侧），顺带验证入环序前提——本拍
+    // 出选 pa_cur 后 head 推进到 pa_other（advance_past 面）。
+    let before = rr
+        .pick_next_filtered(&rqa, &topo, pa_curp)
+        .expect("PNPK：(a) 前拍探针须有出选");
+    assert!(
+        core::ptr::eq(before as *const Task, pa_cur as *const Task),
+        "PNPK：(a) 前拍 head 须 = ppC（enqueue 序首入）"
+    );
+    // 主体：threshold = pa_cur.prio_effective，同带他者不严格更高 → 门关
+    // miss（None）。note_pick 零计补钉（审查轮）：miss 前后 intent_picks
+    // 快照对拍——门控 miss 不得虚计出选账（OBS-01 记账只在过门后）。
+    let picks_before = berry_sched::intent_picks(0);
+    assert!(
+        rr.pick_next_preempt(&rqa, &topo, pa_curp).is_none(),
+        "PNPK：(a) 同带他者须 miss（None——严格更高律）"
+    );
+    assert!(
+        berry_sched::intent_picks(0) == picks_before,
+        "PNPK：(a) miss 路零副作用含 note_pick 零计（OBS-01 只在过门后）"
+    );
+    // 后拍：head 零位移对拍——探针身份须仍是前拍推进后的 head（ppO）；
+    // 幻影推进（head 被无声消耗回 ppC）形态下探针将取 ppC，红。
+    let after = rr
+        .pick_next_filtered(&rqa, &topo, pa_curp)
+        .expect("PNPK：(a) 后拍探针须有出选");
+    assert!(
+        core::ptr::eq(after as *const Task, pa_other as *const Task),
+        "PNPK：(a) miss 路 head 须零位移（后拍首见 = 前拍后 head）"
+    );
+
+    // —— (b) 严格更高 eligible：身份 + head 推进 ——
+    // 环序（enqueue 序）：pb_cur(0) → pb_high(5) → pb_sib(0)，head =
+    // pb_cur。胜者 = pb_high（最高带唯一成员），过门后 head 推进到胜者
+    // 后继 = pb_sib。pb_high 带 5 << PRIO_DEADLINE——不触 DL 计数门面。
+    let pb_cur = mk(b"pbC".as_slice());
+    let pb_high = mk(b"pbH".as_slice());
+    let pb_sib = mk(b"pbS".as_slice());
+    pb_high.prio_effective = 5; // 严格高于 cur 的 0（入环前直配——enqueue 不覆盖 prio）
+    let mut rqb = Runqueue::new();
+    rr.enqueue(pb_cur, &mut rqb);
+    rr.enqueue(pb_high, &mut rqb);
+    rr.enqueue(pb_sib, &mut rqb);
+    let pb_curp = pb_cur as *mut Task;
+    let winner = rr
+        .pick_next_preempt(&rqb, &topo, pb_curp)
+        .expect("PNPK：(b) 严格更高者须过门出选");
+    assert!(
+        core::ptr::eq(winner as *const Task, pb_high as *const Task),
+        "PNPK：(b) 返回者身份须是严格更高任务（ptr::eq）"
+    );
+    // head 推进钉：摘走胜者后以等键探针读 head——pb_cur/pb_sib 同带同键
+    // （同 prio → enqueue 授同 vdeadline），首见 = head。推进形 head =
+    // pb_sib（胜者后继）；未推进形 head = pb_cur（enqueue 序原位）。
+    // 等键前提自钉（审查轮）：键漂移两个方向都显形——pb_sib 键更小则
+    // 出选恒 pb_sib（与 head 无关，探针失义）；pb_cur 键更小则 (b) 主体
+    // 胜者断言前已有前验（胜者 = 最高带唯一成员与键无关，故此处钉探针
+    // 前提：两低带者键相等由下拍对拍间接执法——若 enqueue/slice_virtual
+    // 改动使等键破，本断言或 (a) 族先红）。
+    assert!(
+        pb_sib.vruntime == pb_cur.vruntime && pb_sib.vdeadline == pb_cur.vdeadline,
+        "PNPK：(b) 等键探针前提：pbC/pbS 须同 vruntime 同 vdeadline"
+    );
+    rr.dequeue(&mut *pb_high, &mut rqb);
+    let probe_b = rr
+        .pick_next_filtered(&rqb, &topo, pb_curp)
+        .expect("PNPK：(b) head 推进探针须有出选");
+    assert!(
+        core::ptr::eq(probe_b as *const Task, pb_sib as *const Task),
+        "PNPK：(b) 过门路径 head 须推进到胜者后继（探针首见 = pbS）"
+    );
+
+    // —— (c) 最高带恰等于阈值（==threshold）：None（等值不切）——
+    // 非零带（7）直配两侧——阈值与环上最高带同值，钉「恰等于」边界
+    // （门控误用 >= 形将出选：等键下胜者 = head 侧首见 = pc_cur 即 cur
+    // 自身——返回 Some(cur) 而非 None，红；审查轮勘正注）。
+    let pc_cur = mk(b"pcC".as_slice());
+    let pc_eq = mk(b"pcE".as_slice());
+    pc_cur.prio_effective = 7;
+    pc_eq.prio_effective = 7;
+    let mut rqc = Runqueue::new();
+    rr.enqueue(pc_cur, &mut rqc);
+    rr.enqueue(pc_eq, &mut rqc);
+    assert!(
+        rr.pick_next_preempt(&rqc, &topo, pc_cur as *mut Task).is_none(),
+        "PNPK：(c) 最高带恰等于阈值须 miss（==threshold 等值不切）"
+    );
+
+    berry_hal_aarch64::uart_puts(b"PNPK ok n=3\n");
 }
