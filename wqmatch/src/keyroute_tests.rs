@@ -87,15 +87,66 @@ fn count_kind_three_forms() {
 
 #[test]
 fn pi_donor_candidate_gates() {
-    // 三门独立：真键门 × 派生位门。
-    assert!(pi_donor_candidate(1, 1), "真键 + READABLE");
-    assert!(pi_donor_candidate(1, 2), "真键 + WRITABLE");
-    assert!(pi_donor_candidate(1, 3), "真键 + 双派生位");
-    assert!(pi_donor_candidate(1, 0xF_0000_0003), "高位无关——派生位相交即过");
-    assert!(!pi_donor_candidate(1, 0), "真键 + 零信号（纯超时睡）拒");
-    assert!(!pi_donor_candidate(1, 4), "非派生位（bit2+）拒");
-    assert!(!pi_donor_candidate(0, 3), "纯睡拒（键门先于位门）");
-    assert!(!pi_donor_candidate(crate::WAIT_ANY, 3), "哨兵拒（多对象不钉 donor）");
+    // 四门独立：真键门 × 派生位门 × d_eff 门（W3-Q94 刀 a 起三门合取）。
+    assert!(pi_donor_candidate(1, 1, 32), "真键 + READABLE + d_eff=32");
+    assert!(pi_donor_candidate(1, 2, 1), "真键 + WRITABLE + d_eff=1 恰界过");
+    assert!(pi_donor_candidate(1, 3, i32::MAX), "真键 + 双派生位 + 极值");
+    assert!(pi_donor_candidate(1, 0xF_0000_0003, 40), "高位无关——派生位相交即过");
+    // d_eff 门（刀 a 新面）：d_eff=0 恒拒——prio 0 donor 恒无捐赠可传。
+    assert!(!pi_donor_candidate(1, 3, 0), "d_eff=0 拒（全零稳态门闭合面）");
+    assert!(!pi_donor_candidate(1, 3, -5), "d_eff 负值拒（>0 严格门）");
+    // 键门/位门维持（W3-Q75 语义面）：与 d_eff 门独立——d_eff>0 不救坏键/坏位。
+    assert!(!pi_donor_candidate(1, 0, 32), "真键 + 非零 d_eff + 零信号（纯超时睡）拒");
+    assert!(!pi_donor_candidate(1, 4, 32), "非派生位（bit2+）拒——d_eff 不救位门");
+    assert!(!pi_donor_candidate(0, 3, 32), "纯睡拒（键门先于位门/d_eff 门）");
+    assert!(!pi_donor_candidate(crate::WAIT_ANY, 3, 32), "哨兵拒（多对象不钉 donor）");
+}
+
+/// W3-Q94 刀 a：d_eff = max(prio_effective, pi_inherited) 与传播环取值
+/// 同构——pi_inherited 单独抬 d_eff 过门（入队 eff=0、睡眠中被传播的
+/// 欠账形态；配对靠重推尾趟 pi_derived_recount 补登）。
+#[test]
+fn pi_donor_d_eff_pi_component() {
+    // eff=0 但 pi>0：d_eff = max(0, pi) = pi > 0 过门（传播环同构）。
+    assert!(pi_donor_candidate(1, 3, 0.max(8)), "eff=0/pi=8 → d_eff=8 过门");
+    assert!(!pi_donor_candidate(1, 3, 0.max(0)), "eff=0/pi=0 → d_eff=0 拒");
+    // eff 主导：pi=0 但 eff>0 同过（冻结 boost 清零后 base 仍高的 donor）。
+    assert!(pi_donor_candidate(1, 3, 16.max(0)), "eff=16/pi=0 过门");
+    // 逐点对拍：d_eff 判据 == max(eff, pi) > 0（四象限全表）。
+    for eff in [0i32, 1, 16, -3, i32::MIN, i32::MAX] {
+        for pi in [0i32, 1, 8, -1, i32::MIN, i32::MAX] {
+            let expected = pi > 0 || eff > 0;
+            assert_eq!(
+                pi_donor_candidate(1, 3, eff.max(pi)),
+                expected,
+                "eff={eff} pi={pi}"
+            );
+        }
+    }
+}
+
+/// W3-Q94 刀 a 第三收口点扩展：pi_derived_recount_pi 累加器与入队判据
+/// 逐字同源（同一函数消费）——全表对拍 + 全零稳态门闭合端到端。
+#[test]
+fn pi_derived_recount_accumulates() {
+    // 全零稳态（v1 常态）：全员 d_eff=0 → 计数 0 → 门闭。
+    let mut acc = 0u32;
+    pi_derived_recount_pi(0x1000, 2 /* WRITABLE */, 0, &mut acc);
+    pi_derived_recount_pi(0x2000, 1 /* READABLE */, 0, &mut acc);
+    assert_eq!(acc, 0, "全零稳态：计数恒 0（门闭）");
+    // 真 donor 命中累加；坏键/坏位/d_eff=0 不计。
+    let mut acc = 0u32;
+    pi_derived_recount_pi(0x1000, 2 /* WRITABLE */, 32, &mut acc);
+    pi_derived_recount_pi(0x2000, 1 /* READABLE */, 0, &mut acc);
+    pi_derived_recount_pi(0, 2 /* WRITABLE */, 32, &mut acc);
+    pi_derived_recount_pi(crate::WAIT_ANY, 3, 32, &mut acc);
+    assert_eq!(acc, 1, "恰一真 donor（32 优先）命中");
+    // 多 donor 全计（多客户端服务形态）。
+    let mut acc = 0u32;
+    for eff in [1, 8, 36, 40] {
+        pi_derived_recount_pi(0x1000 + eff as usize, 2 /* WRITABLE */, eff, &mut acc);
+    }
+    assert_eq!(acc, 4, "四 donor 全计（多客户端阻塞 WRITABLE 形态）");
 }
 
 #[test]
