@@ -1159,16 +1159,14 @@ impl RtPipe {
     /// ceil(len/MSS) + op 槽空——`Err(ST_BUSY)` 背压，客户端同 seq 重发）
     /// → 分批入环（批量 tx）→ 注册挂起 op。`Err(ST_BAD)` = 会话态不可用。
     ///
-    /// 暂存容量跨层不变量（F88 钉板＋F121 容量闸，五刀② 暂存紧缩动此
-    /// 边界前必读）：`post_account` 仅在 berry-tcp 在途环全 ACK（`conn.
-    /// tx_inflight()==0`）时失效暂存——键于在途环而非本 op 环，tx_len 高
-    /// 水位跨 write() 纪元存续：write() 成功返回=全 op 应答 ⇒ 环空 ⇒ 基点
-    /// 重立；错误 bail=旧纪元存续，下一 write() 的 op 落旧基点连续暂存
-    /// （客户端 read 清 res_pending 后准入即重开——F105 构造：尾段迟 ACK
-    /// 时第三 op 暂存可越 TX_CAP）。故暂存余量由入口容量闸（F121）执法：
-    /// staged+len > TX_CAP 即 BUSY 背压（同 seq 重发，客户端 60s 帽 F87
-    /// 兜底——二者组成完整背压环）；五刀② 紧缩 TX_CAP 须保
-    /// K×TCP_DATA_MAX ≤ 新值，否则稳态 BUSY 风暴。错误路径由 RTO 死亡
+    /// 暂存容量跨层不变量（F88 钉板＋F121 容量闸＋五刀② 紧缩后语义，
+    /// 动此边界前必读）：`post_account` 每收 ACK 按
+    /// [`bt::Conn::tx_retx_floor`]（环头 Data 段首）部分紧缩——占用 =
+    /// 未确认在途字节（snd_nxt−tx_seq0），高水位不再跨纪元存续；
+    /// floor≥tx_seq0+tx_len（环空／环头 Syn|Fin／FIN+1 面）时整体失效。
+    /// F121 闸按在途字节执法，ACK 推进即部分解闸（echo 门解锁件），
+    /// 环空为全解特例；五刀② 紧缩 TX_CAP 须保 K×TCP_DATA_MAX ≤ 新值
+    /// （编译期钉 :121），否则稳态 BUSY 风暴。错误路径由 RTO 死亡
     /// （3+6+12s 三连重发后第 4 次 24s 到期弃链 ≈ 45s）< op 帽 60s 兜住；
     /// 防御窗门拒（准入过检仍拒）下 BUSY 重发会把同内容错位重暂存——
     /// 浅偏移=echo 流错位；深偏移（纪元内已发 ≥263B）的越界 trap 形态
@@ -1197,15 +1195,16 @@ impl RtPipe {
             );
             return Err(ndp::ST_BUSY);
         }
-        // 暂存容量闸（F121，非阻塞形——与环容量 BUSY 同轨）：tx_len 高水位
-        // 跨 write() 纪元存续——客户端 read 清 res_pending 后新 op 准入重开，
-        // 而旧纪元未复位（尾段未全 ACK ⇒ tx_inflight>0 ⇒ post_account 不失
-        // 效、tx_seq0 基点保留），新 op 落旧基点连暂存可越 TX_CAP 击 act_q
-        // Data 臂防御 trap（构造：A/B 双 op 满环 500B → A 完成+回显被应用
-        // read 收走 → C 准入重开落 off=500 暂存至 628>512）。环/op 有空槽 ≠
-        // 暂存有余位：不足即 BUSY——同 seq 退避重发（客户端 60s 全局帽 F87
-        // 兜底，二者组成完整背压环）；环内 ACK 推进致环空后 post_account
-        // 失效暂存、基点重立，重发即过。
+        // 暂存容量闸（F121，非阻塞形——与环容量 BUSY 同轨）：F105 构造
+        // （紧缩前形态）——客户端 read 清 res_pending 后新 op 准入重开，
+        // 而旧纪元尾段未全 ACK 时基点不前移，新 op 落旧基点连暂存可越
+        // TX_CAP 击 act_q Data 臂防御 trap（构造：A/B 双 op 满环 500B → A
+        // 完成+回显被应用
+        // read 收走 → C 准入重开落 off=500 暂存至 628>512——紧缩前形态；
+        // 紧缩后 ACK 推进即部分解闸，此构造的暂存量已被在途字节界住）。
+        // 环/op 有空槽 ≠ 暂存有余位：不足即 BUSY——同 seq 退避重发（客户端
+        // 60s 全局帽 F87 兜底，二者组成完整背压环）；ACK 推进使部分紧缩
+        // 腾位、环空为全解特例，重发即过。
         let staged = if sess.tx_len == 0 {
             0
         } else {
@@ -1587,10 +1586,10 @@ impl TcpMux {
             // 暂存容量闸（verify 波实抓）：入环即答后命名 RT 连发可在 ACK
             // 归泵前把 snd_nxt−tx_seq0 推过 TX_CAP——act_q Data 臂的暂存
             // 越界 trap 即崩（echo 相 16KB 连发 3 op 必中）。环有空槽 ≠
-            // 暂存有余位：暂存容不下下一片时泵等环空（post_account 环空
-            // 即失效暂存、下次入环基点重立——tx_len==0 时暂存空、tx_seq0
-            // 陈值不算在途），帽内；ACK 跟得上时零等待——入环即答时序
-            // 不受扰。
+            // 暂存有余位：暂存容不下下一片时泵等位（五刀② 紧缩后 ACK 推进
+            // 即部分紧缩腾位解闸，环空整体失效为全解特例——tx_len==0 时
+            // 暂存空、tx_seq0 陈值不算在途），帽内；ACK 跟得上时零等待
+            // ——入环即答时序不受扰。
             let staged = if s.tx_len == 0 {
                 0
             } else {
