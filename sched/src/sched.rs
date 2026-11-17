@@ -3193,16 +3193,22 @@ pub fn try_preempt() -> bool {
         // 幻影出选防线：环上无严格更高 eff → 必不直切 → 不消耗 head 槽位。
         // RQ 窗（c-2b）：探峰走查 + 出选 + 状态定形同窗（探峰也是环读——
         // 终态无锁走查可读到摘环中的 stale 链接）；切换舞蹈在窗外。
+        //
+        // W3-Q93（04 机会一② 双圈合一）：旧形「has_eff_above_filtered
+        // 探峰一圈（早退）→ true 时 pick_next_filtered 出选二圈」换
+        // `pick_next_if_above` 单圈（解冻 → 扫描 → 带门 → 出选三件套）。
+        // 语义逐位等价：带门 = 旧探峰谓词的累加器内单源形（ScanAcc::
+        // best_eff > v，host 钉板 3000 例对拍）；门假不消耗 head 槽位
+        //（幻影出选防线保持）。差异面 = 解冻时序前移（探峰假也解冻，
+        // 见 pick_next_if_above 注——解冻面扩大，正确性方向）。
         let phys = rq_lock();
         let mut go: Option<*mut Task> = None;
-        if rq().has_eff_above_filtered((*cur).prio_effective, cur) {
-            if let Some(next) = RR.pick_next_filtered(rq(), topo(), cur) {
-                let next_ptr: *mut Task = next;
-                if next_ptr != cur && (*next_ptr).prio_effective > (*cur).prio_effective {
-                    (*cur).state = TaskState::Ready;
-                    (*next_ptr).state = TaskState::Running;
-                    go = Some(next_ptr);
-                }
+        if let Some(next) = RR.pick_next_if_above(rq(), topo(), cur, (*cur).prio_effective) {
+            let next_ptr: *mut Task = next;
+            if next_ptr != cur && (*next_ptr).prio_effective > (*cur).prio_effective {
+                (*cur).state = TaskState::Ready;
+                (*next_ptr).state = TaskState::Running;
+                go = Some(next_ptr);
             }
         }
         rq_unlock(phys);
