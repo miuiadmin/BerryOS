@@ -1284,6 +1284,13 @@ fn run_rootfs_child(console: Handle) {
     // stdin → 字节滞队无害，版本混布安全）。
     let mut present_cli: Handle = 0;
     let mut hdi_cli: Handle = 0;
+    // wm 订阅私有通道刀（plan: .agents/plans/2026-11-17-wm订阅私有通道RPC面.md
+    // §2）：guifbd 交接对写端升格**函数域**——原 guifbd arm 块局部作用域止于
+    // 本 arm（S4 勘察坑），下方 wmd arm 代发块要经它投 'm'+订阅者事件通道
+    // cli 端。0 = guifbd 未起/Err 路 → 代发块判零跳过（幂等守卫，批B 形态）；
+    // Ok 路落值后不 close 不清零——guifbd 侧收 'm' 后 close 的是对端读端，
+    // 本写端随 wmd arm 门常驻表内（boot 一次性投递，无第二读者面）。
+    let mut guifbd_fx_a: Handle = 0;
     if berry_vmo_get_size(H_FB, &mut msz) != 0 {
         eco_skip(b"fb absent");
     } else if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/guifbd") {
@@ -1341,6 +1348,12 @@ fn run_rootfs_child(console: Handle) {
                     // （缺省安全）；单行诊断非标记。
                     eco_skip(b"fb handoff");
                 }
+                // wm 订阅私有通道刀：交接对写端升格函数域落值（下方 wmd arm
+                // 代发块消费——'m'+handle 即本通道第二条消息，'w'/'n' 已被
+                // guifbd 首读吃掉恰序在后）。fb handoff send 失败路原柄仍活
+                // 不 close，照落——代发块自身失败面 loud 跳过，不依赖此处
+                // 分流。
+                guifbd_fx_a = fbx_a;
             }
             Err(()) => {
                 // Err 全在 env send 前——H_FBINFO/H_FBPIPE 未被 take 仍在
@@ -1457,6 +1470,77 @@ fn run_rootfs_child(console: Handle) {
                         trap();
                     }
                     WMD_CLI_DUP.store(w_dup, Ordering::Relaxed);
+                    // —— wm 订阅私有通道 RPC 面刀（plan: .agents/plans/
+                    // 2026-11-17-wm订阅私有通道RPC面.md §2）：svcmgr 代发
+                    // WM_SUBSCRIBE——guifbd 不持 wm 客户端端（共享队列互截
+                    // 面：同端点第二消费者应答互截两路，笔记
+                    // 2026-11-17-波3批B-guifbd带合成v1与wm面收线实抓），
+                    // 订阅者事件通道由本块代办拉起，cli 端经 guifbd 交接对
+                    // 随 'm' 投递——guifbd 表跟随面即该通道唯一客户端，
+                    // 「单 wm 客户端前提」由此结构性成立。
+                    // 静默窗 = 机制性排除交叠（stdhello 预拉同款注释先例，
+                    // 下方 C-1 刀 3 段）：本块至 gfxdemo take w_cli 前是 wm
+                    // 队列唯一在途方——wmd 全部出站帧均请求触发、广播只发
+                    // 属主/订阅者事件通道，请求-应答严格串行零混流面。
+                    // 守卫继承：本块整体在 wmd arm 门（present_cli≠0 ∧
+                    // cpio gui-wmd 在席）内——rootfs 相结构性零新行零新
+                    // 句柄。源 = w_dup 常驻 dup 源**现 dup**（w_cli 原柄留
+                    // 给 gfxdemo take；掩码照上方四权，dup 失败 trap 同先
+                    // 例）。
+                    let mut sub_dup: Handle = 0;
+                    if berry_handle_duplicate(w_dup, RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER | RIGHT_DUPLICATE, &mut sub_dup) != 0 {
+                        trap();
+                    }
+                    // RPC（wm_subscribe_rpc，blk_rpc 先例形态）→ fbx 投递；
+                    // 全失败面（发送败/帽到/非 OK ack/畸形/投递败）= loud
+                    // 一行 + 跳过投递**零新 panic**——guifbd 侧 AwaitHandle
+                    // 10s 帽自落 Disabled，WMSUB 门缺失交 smoke 兜底。
+                    let mut loud = false;
+                    match wm_subscribe_rpc(sub_dup) {
+                        Ok(sub_cli) => {
+                            let mut delivered = false;
+                            if guifbd_fx_a != 0 {
+                                // 投递帧 = 1B 'm' + 随行恰 1 handle
+                                //（EBUSY → wait WRITABLE 重试，blk_rpc 形）。
+                                // 随行权面现场核：随行 handle 须持 TRANSFER
+                                //——内核 sys_channel_create 两端恒授 SEND|
+                                // RECV|DUPLICATE|TRANSFER 全权，wmd subscribe
+                                // 应答的 cli 端即其 channel_create 产端、权
+                                // 随行迁移足额，直接可发无需再 dup 补位。
+                                let tag = b"m";
+                                let hs = [sub_cli];
+                                loop {
+                                    let s = berry_channel_send(guifbd_fx_a, tag.as_ptr(), tag.len(), hs.as_ptr(), 1);
+                                    if s == 0 {
+                                        delivered = true;
+                                        break;
+                                    }
+                                    if s != BERRY_ERR_BUSY {
+                                        break;
+                                    }
+                                    wait(guifbd_fx_a, SIGNAL_WRITABLE);
+                                }
+                            }
+                            if !delivered {
+                                // 未被 take（守卫跳过/EBUSY 让位/错码）——
+                                // 收口防表槽泄漏（wmd 侧订阅关系随 srv 端
+                                // 长存，广播对满队即丢无害）。
+                                let _ = berry_handle_close(sub_cli);
+                                loud = true;
+                            }
+                        }
+                        Err(()) => {
+                            loud = true;
+                        }
+                    }
+                    if loud {
+                        let m = b"wmsub: sub fail\n";
+                        send_retry(console, m.as_ptr(), m.len());
+                    }
+                    // sub_dup 使命毕收口（wm 端点对象经 w_cli gfxdemo take
+                    // 与 WMD_CLI_DUP 常驻源保活；关失败 = 系统级异常面，
+                    // boot 一次性泄漏 1 槽可忍，失败路零 trap 纪律优先）。
+                    let _ = berry_handle_close(sub_dup);
                 }
                 Err(()) => {
                     ps_reg(b"gui-wmd", psp::STATE_SPAWNFAIL, 0);
@@ -5374,6 +5458,49 @@ fn blk_rpc(h: Handle, op: u8, sector: u64, vmo: Handle) -> Result<u8, ()> {
         return Err(());
     }
     parse_reply(&rep[..nb]).ok_or(())
+}
+
+/// wm 订阅代发 RPC（wm 订阅私有通道刀——blk_rpc 先例形态）：4B
+/// WM_SUBSCRIBE 请求 send（EBUSY → wait WRITABLE 重试；wm 域 op 零随行
+/// handle 合同）→ 60s 应答帽 wait READABLE（BLKD_REPLY_CAP 同值——wmd 子
+/// 未进 serve 循环的迟到 ack 由帽覆盖，TCG 慢靴裕量）→ recv 开 handle
+/// 出参窗。ack 合同 = 恰 1B ST_OK + 恰 1 handle（订阅者事件通道 cli 端）
+/// → Ok(cli)；其余一切面（发送败/帽到/非 OK ack/畸形）→ Err——畸形面
+/// 随行 handle 全收口丢弃（ps 自验先例）。recv 窗按 ABI 满额（256B/8
+/// 枚 = CHAN_MSG_MAX/CHAN_HND_MAX）：任何帧形态必被整体消费，零「窗小
+/// 回滚滞队」毒化后续读者（gfxdemo）面。
+fn wm_subscribe_rpc(h: Handle) -> Result<Handle, ()> {
+    let mut req = [0u8; 4];
+    let n = gp::encode_wm_subscribe_req(&mut req);
+    loop {
+        let s = berry_channel_send(h, req.as_ptr(), n, core::ptr::null(), 0);
+        if s == 0 {
+            break;
+        }
+        if s != BERRY_ERR_BUSY {
+            // 非 EBUSY 失败（请求未入队）——Err（wmd 未见请求，零订阅侧残留）。
+            return Err(());
+        }
+        wait(h, SIGNAL_WRITABLE);
+    }
+    let mut obs = 0u64;
+    if berry_object_wait_one(h, SIGNAL_READABLE, now() + BLKD_REPLY_CAP, &mut obs) != 0 {
+        return Err(());
+    }
+    let mut rep = [0u8; 256];
+    let mut rh = [0 as Handle; 8];
+    let mut nb = rep.len();
+    let mut nh = rh.len();
+    if berry_channel_recv(h, rep.as_mut_ptr(), &mut nb, rh.as_mut_ptr(), &mut nh) != 0 {
+        return Err(());
+    }
+    if nb == 1 && rep[0] == gp::ST_OK && nh == 1 {
+        return Ok(rh[0]);
+    }
+    for i in 0..nh {
+        let _ = berry_handle_close(rh[i]);
+    }
+    Err(())
 }
 
 /// eco 降级行（run_rootfs_child 内 `eco_skip` 闭包的独立 fn 版——A-8c 的

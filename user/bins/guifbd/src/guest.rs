@@ -32,7 +32,8 @@
 //!
 //! 段③（GUI-2 消费侧首刀）：present/hdi 域**服务端真身**——serve 循环
 //! 升格三路（present→hdi→console 确定性轮询，全 EAGAIN 才
-//! `berry_object_wait_many` n=3 并等；deadline = min(下次软 vsync 点,
+//! `berry_object_wait_many` 并等〔wm 面刀起第四路 + n=4——见下方批B 段
+//! 复活注〕；deadline = min(下次软 vsync 点,
 //! now+10s) **进调用本身**——parked 应答不靠醒后补查，最迟迟答 = 一个
 //! 空闲帽；每轮 poll 前重置 nb/nh 容量——漏重置 = 恒 -EINVAL 死循环）。
 //! present 六 op v1 = **blit-at-SUBMIT**（处理内同步 damage 裁剪 CPU
@@ -103,17 +104,22 @@
 //! 毕、vgpu 钩子前，SERVICE→SYSTEM 序，A==0 跳写）；带缓存 boot 一次性
 //! 堆分配（`band_cache_bytes` 4MiB 门，失败禁用带面零回归——**绝不能入
 //! Srv/栈：guifbd 栈仅 32KiB**）。标记 `BANDC ok` / `BANDR ok` 各恰一次
-//! （one-shot latch）。wm 客户端面**收线**（批B 对抗审查 CONFIRMED：
+//! （one-shot latch）。wm 客户端面曾**收线**（批B 对抗审查 CONFIRMED：
 //! dup(WMD_CLI_DUP) 与 launcher/gfxdemo/[ui] apps 同属一条 ChannelEnd，
 //! wmd 应答无相关性 ID、单 FIFO 先 recv 者得，双消费者应答互截——交接
 //! 已撤回，快照恒空 = 一切 wid 按 AppCompat 保守档、带集 = fallback 底
-//! 带；wm 订阅私有通道 RPC 面另刀复活，须开 gui-wmd 面）。
+//! 带）；wm 订阅私有通道 RPC 面刀（2026-11-18）已**复活**该面：svcmgr
+//! 代发 WM_SUBSCRIBE 后经交接对投 'm'+订阅者事件通道 cli 端，guifbd 即
+//! 该私有通道唯一客户端（「单 wm 客户端」前提结构性恢复），Table 通知
+//! 驱动 TABLE_GET 异步拉表、快照真值接入 classify/plan_bands（WinBand/
+//! WinApp/Hidden 档随表激活）、`WMSUB ok` 首快照真值接入拍 latch——
+//! 因果与合同见 plan .agents/plans/2026-11-17-wm订阅私有通道RPC面.md。
 
 use berry_exec::{FB_VA, VIRTIO_MMIO_SLOTS, VIRTIO_MMIO_STRIDE, VIRTIO_MMIO_VA};
 use berry_fbcon::font::{self, GLYPH_H};
 use berry_fbcon::render::{Fbcon, PixelFormat};
 use berry_guiproto as gp;
-use berry_libc::io::{gift2_h, gift3_h, hdi_srv_h, present_srv_h, read};
+use berry_libc::io::{gift2_h, gift3_h, hdi_srv_h, present_srv_h, read, stdin_h};
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_event_create,
     berry_handle_close, berry_object_signal, berry_object_wait_many, berry_object_wait_one,
@@ -171,6 +177,11 @@ fn boot_panel_tier(cfg: &gp::softpanel::PanelCfg, boot_hz: u16) -> (u16, u64) {
 const IDLE_CAP_NS: u64 = 10 * 1_000_000_000;
 /// 应答 send -EBUSY 重臂帽（gui-inputd `SEND_REARM_NS` 同款）。
 const SEND_REARM_NS: u64 = 10 * 1_000_000_000;
+/// wm 'm' 交接等待帽（AwaitHandle 态终界）：svcmgr wmsub 代发在 boot 走查
+/// 窗同步完成（gfxdemo arm 前），帽到 = 代发失败/未达面——close stdin +
+/// Disabled loud 一次降级（快照恒 fallback 真值，WMSUB 门缺失交 smoke
+/// 兜底）。
+const WM_AWAIT_CAP_NS: u64 = 10 * 1_000_000_000;
 /// vblank event 信号位（用户半默认位——跨进程契约：客户端 REG_VBLANK 前
 /// 自建 event 并在同位等待；bsh/bench1 家族先例，不登记内核
 /// USER_SIGNAL_BITS——用户私有位无内核模板面）。
@@ -340,16 +351,50 @@ struct Slot {
     commit_target: u64,
 }
 
-/// 批B wm 快照持有者（现恒空——wm 客户端面收线：dup(WMD_CLI_DUP) 与
-/// launcher/gfxdemo/[ui] apps 同属一条 ChannelEnd，wmd 应答无相关性 ID、
-/// 单 FIFO 先 recv 者得，双消费者应答互截〔批B 对抗审查 CONFIRMED，
-/// 2026-11-17〕——交接已撤回；快照恒 count=0 = 一切 wid 按 AppCompat
-/// 保守档、带集 = fallback 底带。wm 订阅私有通道 RPC 面（wmd sweep_evt
-/// 应答订阅者 TABLE_GET）另刀复活，届时快照接真值）。
+/// wm 私有通道三态（无 Subscribing 中间态——订阅由 svcmgr wmsub 代发
+/// 〔wmd arm Ok 路静默窗，gui-wmd subscribe 应答的 cli 端经 guifbd 交接
+/// 对随 'm' 投递〕，guifbd 只收不发 WM_SUBSCRIBE）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WmPrivState {
+    /// 等 'm' 交接（serve 循环非阻塞收 stdin；10s 帽到 → Disabled）。
+    AwaitHandle,
+    /// 已接订阅者事件通道：drain 通知/应答 + dirty 拉表。
+    Active,
+    /// 终态降级（帽到/畸形/防御面）——无臂；快照冻结在最后真值（从未
+    /// 接入 = 恒空，classify 全归 AppCompat、带集 = fallback 底带）。
+    Disabled,
+}
+
+/// wm 表跟随面（私有通道 RPC 版——批B 收线面复活）：svcmgr 代发
+/// WM_SUBSCRIBE 后经 guifbd 交接对（stdin 通道）投 'm'+订阅者事件通道
+/// cli 端，本服务即该通道唯一客户端——「单 wm 客户端」前提结构性成立，
+/// 批B 共享队列双消费者互截面（dup(WMD_CLI_DUP) 应答互截）不复存在
+/// （史与因果：plan .agents/plans/2026-11-17-wm订阅私有通道RPC面.md）。
+/// Table 通知驱动 TABLE_GET 异步拉表（单飞 inflight 门）；快照真值接入
+/// classify/plan_bands——WinBand/WinApp/Hidden 档随表激活；`WMSUB ok`
+/// 首快照真值接入拍 latch 恰一次（count=0 空表也算面活，打点属主在
+/// guifbd）。
 struct WmFace {
-    /// 快照表（前 count 项有效；恒空至 wm 面另刀接入）。
+    /// 快照表（前 count 项有效；首快照接入前恒空）。
     entries: [gp::WmEntry; gp::WM_WINDOWS_MAX],
     count: usize,
+    /// 订阅者事件通道 cli 端（Active 起；随 'm' 交接迁入，持全四权直接
+    /// 收发）。
+    evt: Handle,
+    state: WmPrivState,
+    /// 已接入快照的表版本（Table(v) ≠ version → dirty；wmd 恒发 ≥1）。
+    version: u32,
+    /// TABLE_GET 已发未答（单飞门——至多一请求在途；应答全量真值幂等，
+    /// 迟到应答照接）。
+    get_inflight: bool,
+    /// 表已脏待拉（'m' 接入拍 + Table 通知拍置位；应答拍/发送拍清）。
+    dirty: bool,
+    /// AwaitHandle 10s 帽（Srv::new 起算，绝对 ns）。
+    await_deadline_ns: u64,
+    /// `WMSUB ok` one-shot latch。
+    wmsub_latched: bool,
+    /// 畸形/错误应答 loud 一次位（不刷屏；下拍 Table 通知再臂自愈）。
+    bad_rep_loud: bool,
 }
 
 /// 刀6 P2 在途帧（深度 1 管线——SUBMIT 记帧、latch 拍呈现；spec §7-P2：
@@ -451,10 +496,11 @@ struct Srv<'a> {
     /// SUBMIT 行弹舱（vmo_read 行读出 → 直写 fb；帽 = ROW_BOUNCE_MAX）。
     bounce: [u8; ROW_BOUNCE_MAX],
     // —— 波3 批B：wm 快照持有者 + 带缓存/带重放 ——
-    /// wm 快照（恒空——客户端面收线见 `WmFace` 注；wid 全归 AppCompat）。
+    /// wm 表跟随面（私有通道版——见 `WmFace` 注；Disabled/未接入 = 快照
+    /// 恒空，wid 全归 AppCompat）。
     wm: WmFace,
-    /// 当前带集（`plan_bands` 产物——boot 拍一次落值；wm 面另刀接入后改
-    /// 快照更新拍重算）。
+    /// 当前带集（`plan_bands` 产物——双调用点：boot 拍 fallback 底带起步
+    /// + 快照接入拍随真值重算）。
     bands: [Option<BandPlan>; BAND_SLOTS],
     /// 带缓存（boot 一次性堆分配——Box::leak 常驻段，绝不能入 Srv/栈
     /// 32KiB；None = 带面禁用：裁剪与现网行为不变，仅无缓存/重放）。
@@ -526,12 +572,21 @@ impl<'a> Srv<'a> {
             gui,
             vgpu,
             bounce: [0; ROW_BOUNCE_MAX],
-            // 批B：wm 快照恒空（客户端面收线——见 WmFace 注）；带集 =
-            // fallback 底带（band_replan boot 拍一次落值）；缓存 None 时
-            // 双写/重放全短路（带面禁用零回归）。
+            // wm 面：AwaitHandle 起步（'m'+订阅者 cli 端由 svcmgr boot 走查
+            // 窗投递交接——poll_wm 臂接收），10s 帽同拍起算；带集 = fallback
+            // 底带（band_replan boot 拍——快照接入拍重算是双调用点之二）；
+            // 缓存 None 时双写/重放全短路（带面禁用零回归）。
             wm: WmFace {
                 entries: [wm_entry_zero(); gp::WM_WINDOWS_MAX],
                 count: 0,
+                evt: 0,
+                state: WmPrivState::AwaitHandle,
+                version: 0,
+                get_inflight: false,
+                dirty: false,
+                await_deadline_ns: now_ns() + WM_AWAIT_CAP_NS,
+                wmsub_latched: false,
+                bad_rep_loud: false,
             },
             bands: [None; BAND_SLOTS],
             band_cache,
@@ -539,8 +594,9 @@ impl<'a> Srv<'a> {
             bandc_latched: false,
             bandr_latched: false,
         };
-        // 批B：boot 拍落带集（wm 快照恒空 = fallback 底带；wm 面另刀接入
-        // 后改快照更新拍重算）。
+        // boot 拍落带集（fallback 底带起步——快照真值接入拍〔wm_drain〕
+        // 重算是 band_replan 双调用点之二；窗口期 WinApp 重放可能读到旧
+        // 窗带像素，v1 接受——下次 SysFace/WinBand 提交 A 位恒写覆盖自愈）。
         srv.band_replan();
         srv
     }
@@ -1033,9 +1089,183 @@ impl<'a> Srv<'a> {
         true
     }
 
-    /// 带集重算（boot 拍一次落值——wm 快照恒空（收线）= fallback 底带；
-    /// wm 面另刀接入后改快照更新拍重算；lib `plan_bands` 纯函数；warn
-    /// 任一真 = 超带高/带数帽 loud 一次）。
+    /// wm 私有通道轮询（serve 第四路；**死锁红线**：SUBMIT/COMMIT 处理
+    /// 路径内零 wm 通道 send/recv/wait——本臂与下属全部 wm 面只在 serve
+    /// 循环）。AwaitHandle = 'm' 交接接收 + 帽检查；Active = drain 通知/
+    /// 应答 + dirty 拉表；Disabled 无臂。返回本拍是否处理过（处理过 =
+    /// 回环顶重询，poll-first 无丢唤醒）。
+    fn poll_wm(&mut self) -> bool {
+        let acted = match self.wm.state {
+            WmPrivState::AwaitHandle => self.wm_await(),
+            WmPrivState::Active => self.wm_drain(),
+            WmPrivState::Disabled => false,
+        };
+        self.wm_pull(); // Active 拉表臂（内部三重门自守；新转入同拍首拉）
+        acted
+    }
+
+    /// wm 'm' 交接接收（AwaitHandle 态——poll_wm 臂内）：非阻塞
+    /// `berry_channel_recv(stdin_h(), …双出参)`（read(0) 桩无 handle 出参
+    /// 窗，交接字节 'w'/'n' 已被 boot 首读吃掉——'m' 是交接通道内第二条
+    /// 消息恰序在后）。收到 'm'+恰 1 handle（svcmgr wmsub 代发合同）→
+    /// evt 落值 + close stdin + 转 Active + dirty 即刻首拉；10s 帽到/畸形
+    /// → close stdin + Disabled loud 一次。
+    fn wm_await(&mut self) -> bool {
+        if now_ns() >= self.wm.await_deadline_ns {
+            self.wm_disable("await cap");
+            return true;
+        }
+        let hstdin = stdin_h();
+        if hstdin == 0 {
+            // 老 spawn 面（env 块无 stdin 通道端——handle 0 恒非法值）：
+            // 'm' 不可达，本臂零 recv（-EBADF trap 面）；10s 帽到自落
+            // Disabled（版本混布防御：Ramfb + fallback 带照跑）。
+            return false;
+        }
+        let mut msg = [0u8; 256];
+        let mut hout = [0u32; 8];
+        let mut nb = msg.len();
+        let mut nh = hout.len();
+        let s = berry_channel_recv(
+            hstdin,
+            msg.as_mut_ptr(),
+            &mut nb,
+            hout.as_mut_ptr(),
+            &mut nh,
+        );
+        if s == BERRY_ERR_AGAIN {
+            return false;
+        }
+        if s != 0 {
+            trap(); // 非 -EAGAIN 错码 = 交接通道链断（boot 定值接线，真死亡面）
+        }
+        if nb == 1 && msg[0] == b'm' && nh == 1 {
+            // 随行 handle 持全四权（内核 channel_create 两端恒授、权随消息
+            // 令牌迁移）——直接可收发，无需先 dup。
+            self.wm.evt = hout[0];
+            self.wm.state = WmPrivState::Active;
+            self.wm.dirty = true;
+            let _ = berry_handle_close(stdin_h()); // 交接通道使命毕（无第二读者面）
+            return true;
+        }
+        // 畸形（非 'm' tag / 零/多 handle——svcmgr 合同下双重不可达角）：
+        // 随行 handle 收口丢弃 + Disabled。
+        close_all(&hout[..nh]);
+        self.wm_disable("handoff bad");
+        true
+    }
+
+    /// wm 事件通道 drain（Active 态——通知+应答同通道同 FIFO）。帧判别先
+    /// `parse_wm_evt` 后 `parse_wm_snapshot_rep`（执法域不相交：事件帧首
+    /// 字节 0x90..=0x92、快照应答首字节 ST_OK=0，两解析器互斥拒对方帧）。
+    /// Table(v) ≠ version → dirty（同版本 = 已是真值，幂等无操作）；
+    /// Back/BackAck 防御忽略（guifbd 非返回键消费面）；快照 Ok → 全量真值
+    /// 落值（迟到应答接——幂等无害）+ band_replan + `WMSUB ok` latch 恰
+    /// 一次；Err/None → loud 一次不重拉（下拍 Table 通知再臂自愈）。返回
+    /// 是否处理过帧。
+    fn wm_drain(&mut self) -> bool {
+        let evt = self.wm.evt;
+        let mut acted = false;
+        loop {
+            let mut msg = [0u8; 256];
+            let mut hout = [0u32; 8];
+            let mut nb = msg.len();
+            let mut nh = hout.len();
+            let s = berry_channel_recv(evt, msg.as_mut_ptr(), &mut nb, hout.as_mut_ptr(), &mut nh);
+            if s == BERRY_ERR_AGAIN {
+                break;
+            }
+            if s != 0 {
+                trap(); // 非 -EAGAIN 错码 = evt 通道链断（boot 定值接线）
+            }
+            if nh > 0 {
+                // 本通道合同零随行 handle（wmd 只发 5B 事件/快照帧）——防御
+                // 收口（拒收面 close 随行纪律）。
+                close_all(&hout[..nh]);
+            }
+            acted = true;
+            match gp::parse_wm_evt(&msg[..nb]) {
+                Some(gp::WmEvt::Table(v)) => {
+                    if v != self.wm.version {
+                        self.wm.dirty = true;
+                    }
+                }
+                Some(_) => {} // Back/BackAck 防御忽略
+                None => match gp::parse_wm_snapshot_rep(&msg[..nb]) {
+                    Some(Ok(snap)) => {
+                        self.wm.entries = snap.entries;
+                        self.wm.count = snap.count;
+                        self.wm.version = snap.version;
+                        self.wm.get_inflight = false;
+                        self.band_replan();
+                        if !self.wm.wmsub_latched {
+                            self.wm.wmsub_latched = true;
+                            println!("WMSUB ok");
+                        }
+                    }
+                    _ => {
+                        // Err（1B 错误应答——本通道不可能形）/ None（畸形）：
+                        // inflight 清位 + loud 一次 + 不重拉。
+                        self.wm.get_inflight = false;
+                        if !self.wm.bad_rep_loud {
+                            self.wm.bad_rep_loud = true;
+                            eprintln!("guifbd: wm rep bad");
+                        }
+                    }
+                },
+            }
+        }
+        acted
+    }
+
+    /// wm 拉表臂（Active 态）：dirty ∧ !inflight → TABLE_GET 发 evt 通道。
+    /// BUSY → 留拍重试（poll-first 自愈，不等 WRITABLE——通知+应答同队列，
+    /// wmd serve 循环每轮 sweep drain 本通道即腾位）；他错码 = 防御 Disabled
+    /// 降级（v1 通道无对端死面，理论不可达）。
+    fn wm_pull(&mut self) {
+        if self.wm.state != WmPrivState::Active || !self.wm.dirty || self.wm.get_inflight {
+            return;
+        }
+        let mut req = [0u8; 4];
+        let n = gp::encode_wm_table_get_req(&mut req);
+        let s = berry_channel_send(self.wm.evt, req.as_ptr(), n, core::ptr::null(), 0);
+        if s == 0 {
+            self.wm.dirty = false;
+            self.wm.get_inflight = true;
+        } else if s != BERRY_ERR_BUSY {
+            self.wm_disable("send bad");
+        }
+        // EBUSY：留拍重试（dirty 保持，下轮 poll_wm 再臂）
+    }
+
+    /// wm 面终态降级（Disabled loud 一次，幂等）：AwaitHandle 相 close
+    /// stdin、Active 相 close evt。快照冻结在最后真值（从未接入 = 恒空）
+    /// ——classify/带集回退该真值（fallback 底带起步形态）。
+    fn wm_disable(&mut self, why: &str) {
+        if self.wm.state == WmPrivState::Disabled {
+            return;
+        }
+        match self.wm.state {
+            WmPrivState::AwaitHandle => {
+                let _ = berry_handle_close(stdin_h());
+            }
+            WmPrivState::Active => {
+                let _ = berry_handle_close(self.wm.evt);
+                self.wm.evt = 0;
+            }
+            WmPrivState::Disabled => {}
+        }
+        self.wm.state = WmPrivState::Disabled;
+        self.wm.dirty = false;
+        self.wm.get_inflight = false;
+        eprintln!("guifbd: wm face off ({})", why);
+    }
+
+    /// 带集重算（双调用点：Srv::new boot 拍 fallback 底带起步 + wm 快照
+    /// 接入拍〔wm_drain〕随真值重算；lib `plan_bands` 纯函数；warn 任一
+    /// 真 = 超带高/带数帽 loud 一次）。快照重排带槽后旧缓存内容不失效
+    /// ——下次 SysFace/WinBand 提交 A 位恒写覆盖自愈（窗口期 WinApp 重放
+    /// 可能读到旧窗带像素，v1 接受）。
     fn band_replan(&mut self) {
         let (_, band_bot) = band_geometry(self.w, self.h);
         let (bands, warn, _total) = plan_bands(
@@ -1098,9 +1328,9 @@ impl<'a> Srv<'a> {
             println!("BANDC ok");
             // seed 自验证拍（BANDR 触发源）：对刚 seed 的行域跑一次真实
             // band_replay（幂等——同像素回写零视觉漂移），每靴确定性验证
-            // plan/rows/写全链。应用触发的重放不在此证：现树 launcher 与
-            // spawn 应用共享 wm 队列应答互截（既有缺陷，appdemo GETINFO
-            // 吞错应答即 park），app 首帧链随 wm 私有通道刀解锁后再证。
+            // plan/rows/写全链。应用触发的重放不在此证：launcher 与 spawn
+            // 应用共享 wm 队列应答互截仍在（urgent 缺陷另刀根治——本刀只
+            // 治 guifbd 接线），app 首帧链随该刀解锁后再证。
             let mut rects = [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX];
             let n = wrote_n.min(gp::DAMAGE_MAX);
             for (i, &(x, ry, rw, rh)) in wrote_rects[..n].iter().enumerate() {
@@ -1114,7 +1344,8 @@ impl<'a> Srv<'a> {
     /// 另 BANDC 首拍 seed 自验证同走此路）：lib `band_replay_plan` 对原始
     /// targets 求交（FULL 恒触发），逐带行 cache→fb（A==0 跳写在
     /// `replay_rows_u32`）。首写数 ≥1 打 `BANDR ok n=`（恰一次——现树
-    /// 首触发 = seed 自验证拍；app 提交触发随 wm 私有通道刀解锁）。
+    /// 首触发 = seed 自验证拍；app 提交触发随 launcher×apps 共享队列互截
+    /// 根治另刀解锁）。
     fn band_replay(&mut self, targets: &[gp::Rect], full: bool) {
         let Some(cache) = self.band_cache.as_deref_mut() else { return };
         let bands = self.bands; // Copy 数组——避开与 cache 借用冲突
@@ -2788,10 +3019,13 @@ pub(crate) fn main() {
         }
     };
     let mut srv = Srv::new(con, w, h, stride, gui, vgpu, panel_cfg, boot_hz, band_cache);
-    // —— 三路 serve：present→hdi→console 确定性轮询；全 EAGAIN 才
-    // wait_many n=3 并等。deadline = min(下次软 vsync 点, now+10s) **进
-    // 调用本身**（A1-a——醒来后补查不够：parked 最长迟答 10s 且 smoke
-    // 抓不住）；命中/到点皆回环顶三路重询（poll-first 无丢唤醒）。
+    // —— 四路 serve：present→hdi→console→wm 确定性轮询；全 EAGAIN 才
+    // wait_many n=4 并等。deadline = min(下次软 vsync 点, now+10s,
+    // wm 'm' 交接帽) **进调用本身**（A1-a——醒来后补查不够：parked 最长
+    // 迟答 10s 且 smoke 抓不住）；命中/到点皆回环顶四路重询（poll-first
+    // 无丢唤醒）。wm 槽：AwaitHandle 态 = stdin（'m' 到达可读）、Active
+    // 态 = 订阅者事件通道（通知+应答同队列恒 READABLE——BUSY 留拍重试
+    // 自愈，不做 WRITABLE 臂）、Disabled 态无槽（n=3 回落）。
     // 零唤醒不变量：无未决请求 = 无主动 send（IDLE 面结构先行）。
     loop {
         srv.tick_vsync();
@@ -2804,6 +3038,9 @@ pub(crate) fn main() {
             continue;
         }
         if srv.poll_console(hpipe) {
+            continue;
+        }
+        if srv.poll_wm() {
             continue;
         }
         let t = now_ns();
@@ -2834,14 +3071,27 @@ pub(crate) fn main() {
                 deadline = w;
             }
         }
-        let hs = [hpresent, hhdi, hpipe];
-        let sigs = [SIGNAL_READABLE, SIGNAL_READABLE, SIGNAL_READABLE];
+        // wm 'm' 交接帽臂（AwaitHandle 态——10s 帽到点自醒落 Disabled；
+        // 他态无此臂）。
+        if srv.wm.state == WmPrivState::AwaitHandle && srv.wm.await_deadline_ns < deadline {
+            deadline = srv.wm.await_deadline_ns;
+        }
+        // wm 等待槽（Disabled = 无活柄——关柄入 wait 集 = 整体 -EBADF
+        // trap，禁入；n 随态回落，Disabled 相恰 = 批B 前三路形态）。
+        let hwm = match srv.wm.state {
+            WmPrivState::AwaitHandle => stdin_h(),
+            WmPrivState::Active => srv.wm.evt,
+            WmPrivState::Disabled => 0,
+        };
+        let hs = [hpresent, hhdi, hpipe, hwm];
+        let sigs = [SIGNAL_READABLE, SIGNAL_READABLE, SIGNAL_READABLE, SIGNAL_READABLE];
+        let wn = if hwm != 0 { 4 } else { 3 };
         let mut idx = 0usize;
         let mut obs = 0u64;
         let s = berry_object_wait_many(
             hs.as_ptr(),
             sigs.as_ptr(),
-            3,
+            wn,
             deadline,
             &mut idx,
             &mut obs,

@@ -4,7 +4,7 @@
 
 为什么单独立脚本（不并回 smoke-image.sh）
 ----------------------------------------
-冻结相 smoke-image 的断言面是「EFI 十段恰一次 + 裸相 32 + 生态 41（历史注释值曾 36/39 随刀漂移；CLI/TERM 链位 fat park 前照打，不属缺席族）+ 字节
+冻结相 smoke-image 的断言面是「EFI 十段恰一次 + 裸相 32 + 生态 52（历史注释值曾 36/39 随刀漂移；CLI/TERM 链位 fat park 前照打，不属缺席族）+ 字节
 对拍 + 金丝雀」，其 QEMU 拓扑**结构性无 virtio**（不挂 blk/tablet/QMP）。
 交互相需要另一套拓扑（FAT12 数据盘 + virtio-tablet + QMP unix sock）和
 另一套标记族（fs 端点让给 launcher 后 bsh 在 fs_selftest park，ECO 缺席族里
@@ -22,10 +22,11 @@ FS/U1/U2/U3/B1/U4/TAB/INT/POLL/MMP/CLK/SIG/PS/BC/THR/EXIT 均结构性缺席）�
   virtio-blk + virtio-tablet + QMP。
   - 等基础 5 + boot 批 `app APPDEMO gui deferred`（裁决 B：boot 批对
     [ui] app 入册不拉起——桌面就绪锚 = LAUNCH/PAGE 基础 5 本体）；
-  - guifbd 带合成两标记（批B）：`BANDC ok` / `BANDR ok n=` 全日志各恰
-    一次（两标记同拍落印于 guifbd 首次带缓存 seed——BANDC 打印后随批
-    执行幂等自验证重放触发 BANDR，远早于点击；门在停机后全量日志上
-    计数，非 boot 期等待）；
+  - guifbd 标记三枚恰一：`BANDC ok` / `BANDR ok n=`（批B 带合成——首
+    带缓存 seed 同拍落印，BANDC 打印后随批执行幂等自验证重放触发
+    BANDR，远早于点击）+ `WMSUB ok`（wm 订阅私有通道刀——guifbd 首次
+    快照真值接入 one-shot latch）；门在停机后全量日志上计数，非 boot
+    期等待，均零序锚（WMSUB 跨通道无协议序，纯恰一计数）；
   - `launcher: click ready` **强制在席恰一次**（缺席即 FAIL，不 sleep
     回退——这是 QMP 注入前的状态谓词门）；
   - QMP 三批注入（abs → btn down → btn up）单击 APPDEMO 格中心；
@@ -104,14 +105,17 @@ RE_CLICK_N1 = r"CLICK ok n=1(?![0-9])"
 # Boot B 读回标记：n 固定 2（canonical 双 cell）。
 RE_LAYOUT_N2 = r"LAYOUT ok n=2(?![0-9])"
 
-# —— 批B guifbd 带合成标记（guest.rs one-shot latch：首现打印恰一次）——
-# BANDC/BANDR 是批B 新增打印（带缓存首 seed / 首重放 ≥1 像素）。只进
+# —— guifbd one-shot latch 标记（guest.rs 首现打印恰一次）——
+# BANDC/BANDR 是批B 带合成打印（带缓存首 seed / 首重放 ≥1 像素）。只进
 # Boot A 腿，Boot B / 常态隔离腿不设门（SPEC 裁决：对照腿不要求）。
-# WMSUB 已摘：wm 客户端面收线（共享 wm 队列双消费者应答互截——批B
-# 对抗审查 CONFIRMED，'m' 交接撤回）。
+# WMSUB 在册（wm 订阅私有通道刀复活——批B 曾因共享 wm 队列双消费者应答
+# 互截摘牌，私有通道正拓扑落成后回归）：guifbd 经 svcmgr 静默窗代发订阅
+# 的私有通道收到首个快照真值即打恰一次（count=0 空表也算面活）。门 = 纯
+# 恰一计数零序锚（S4 证 FBSERVE 序锚从未存在且跨通道无协议序）。
 MARK_BANDC = "BANDC ok"
 # BANDR 打印形带写数后缀（`BANDR ok n=<writes>`），断言取 n= 前缀形。
 MARK_BANDR = "BANDR ok n="
+MARK_WMSUB = "WMSUB ok"
 
 # —— 数据盘约定（与 tools/smoke.sh / just desktop 同源）——
 DISK_SEAL = b"BERRYOSVBLK!"
@@ -801,7 +805,7 @@ def verify_boot_a_click(
     """Boot A 点击后精确验收：1/1/0 + 新 APPDEMO 恰一 + 零 APPQUIET。
 
     计数与顺序任一不符都 FAIL（重复点击/双 spawn/顺序倒置不得假绿）。
-    批B 面：guifbd 带合成两标记（BANDC/BANDR）全日志恰一。
+    guifbd 面：三标记（BANDC/BANDR/WMSUB）全日志恰一。
     """
     n_click = len(re.findall(RE_CLICK_N1, text))
     if n_click != 1:
@@ -844,11 +848,13 @@ def verify_boot_a_click(
             f"boot A click: 新增 {MARK_APP_DEMO_UP!r} 不在 click ready 之后",
             log_path,
         )
-    # 批B guifbd 带合成两标记（guest.rs one-shot latch 对拍）：全日志各恰
-    # 一次；两标记 boot 期 seed 自验证拍同批落印（见 :25 注），门在停机后
-    # 全量日志上计数（非 boot 期等待）。
+    # guifbd 三标记（guest.rs one-shot latch 对拍）：全日志各恰一次。
+    # BANDC/BANDR boot 期 seed 自验证拍同批落印（见 :25 注）；WMSUB = wm
+    # 私有通道首快照接入拍——纯恰一计数零序锚（跨通道无协议序，不设顺
+    # 序断言）。门在停机后全量日志上计数（非 boot 期等待）。
     _require_exact_count(text, MARK_BANDC, 1, "boot A click", log_path)
     _require_exact_count(text, MARK_BANDR, 1, "boot A click", log_path)
+    _require_exact_count(text, MARK_WMSUB, 1, "boot A click", log_path)
 
 
 def verify_boot_b(text: str, log_path: Path | None = None) -> None:
@@ -1266,7 +1272,7 @@ def run_dual_boot(args) -> int:
         log(
             "boot A: 精确计数 CLICK×1 LAYOUTW×1 LAYOUT×0；"
             f"新增 {MARK_APP_DEMO_UP}×1、APPQUIET×0；"
-            "guifbd BANDC/BANDR×1（批B）"
+            "guifbd BANDC/BANDR/WMSUB×1"
         )
 
         verify_data_disk(disk)
@@ -1734,11 +1740,12 @@ def self_test(args) -> int:
             raise SmokeError("CLICK 正则误吞 n=10")
 
         # 裁决 B 形：boot 批 deferral 行（非 up 行）+ 点击后恰 1 up 行；
-        # 批B 形：guifbd 两标记 boot 期 seed 自验证拍同批落印（样本按现网
-        # 时序排布：seed 排 boot 侧，BANDR 随 BANDC 之后）。
+        # guifbd 形：三标记 boot 侧落印（样本按现网时序拟真排布：WMSUB
+        # 随首快照先落，BANDC/BANDR seed 对随后——门只计恰一数不锚序）。
         fake_a = (
             f"{MARK_APP_DEMO_DEFERRED}\n"
             f"{MARK_LAYOUTW}\n"
+            f"{MARK_WMSUB}\n"
             f"{MARK_BANDC}\n"
             f"{MARK_CLICK_READY}\n"
             f"{MARK_CLICK}\n"
@@ -1814,7 +1821,7 @@ def self_test(args) -> int:
                 0,
             ),
         )
-        # 批B 负样本：两标记计数面。
+        # 负样本：标记计数面（BANDC/WMSUB 各缺与重复两枚）。
         expect_error(
             "Boot A 缺 BANDC",
             lambda: verify_boot_a_click(
@@ -1827,10 +1834,22 @@ def self_test(args) -> int:
                 fake_a + MARK_BANDC + "\n", pos_a, 0, 0
             ),
         )
+        expect_error(
+            "Boot A 缺 WMSUB",
+            lambda: verify_boot_a_click(
+                fake_a.replace(MARK_WMSUB + "\n", ""), pos_a, 0, 0
+            ),
+        )
+        expect_error(
+            "Boot A 重复 WMSUB",
+            lambda: verify_boot_a_click(
+                fake_a + MARK_WMSUB + "\n", pos_a, 0, 0
+            ),
+        )
         log(
             "self-test: Boot A 精确断言 ok（1/1/0 + deferral×1 + "
             "APPDEMO up 恰 1；重复/错序/缺 ready/boot 批拉起/APPQUIET "
-            "均 FAIL；批B BANDC/BANDR 恰 1）"
+            "均 FAIL；guifbd 三标记 BANDC/BANDR/WMSUB 各恰 1）"
         )
 
         fake_b = (

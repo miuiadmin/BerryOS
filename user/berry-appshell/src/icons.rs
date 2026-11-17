@@ -347,9 +347,10 @@ const NAV_ARMED_BG: u32 = 0xFF7A_1F1F;
 /// 符号白（TEXT_FG 同值系）。
 const NAV_GLYPH_FG: u32 = 0xFFF0_F0F4;
 
-/// 导航符号形（back = 左向实心三角；home = 圆环；power = 缺口圆环 +
-/// 顶部竖线——电源通用形；recents = 双矩形叠层——多任务通用形；
-/// rotate = 带三角头的圆弧箭头——旋转通用形）。
+/// 导航符号形（back/home/recents = 安卓 12 Material You 同形——沉浸
+/// 规范 §5：back = 细 chevron ‹；home = 实心圆 ●；recents = 空心
+/// 圆角方 □；power = 缺口圆环 + 顶部竖线——电源通用形；rotate = 带三角
+/// 头的圆弧箭头——旋转通用形，后两者保留原始几何供未来复用）。
 #[derive(Clone, Copy)]
 pub(crate) enum NavGlyph {
     Back,
@@ -363,25 +364,36 @@ pub(crate) enum NavGlyph {
 pub(crate) fn nav_glyph_covers(g: NavGlyph, x: i32, y: i32) -> bool {
     let c = NAV_SRC_PX as i32 / 2; // 33
     match g {
-        // 左向实心三角：顶点 (12,c)，上 (52,10)，下 (52,56)——叉积同号
-        // 内测试（边长 40px，2x 放大后 80px 视觉面）。
+        // 细 chevron ‹（安卓 12 Material You 同形）：顶点 (38,c)，臂端
+        // x=20 上 (20,c-18) 下 (20,c+18)；命中 = 点到任一线段距离 ≤ 4
+        //（带宽 ~4px）。整数面（no_std 免浮点）：垂足在段内时
+        // d² ≤ 16 ⟺ ap2·ab2 − dot² ≤ 16·ab2，段外取端点距离平方。
         NavGlyph::Back => {
-            let (ax, ay) = (12, c);
-            let (bx, by) = (52, 10);
-            let (cx, cy) = (52, 2 * c - 10);
-            let d1 = (bx - ax) * (y - ay) - (by - ay) * (x - ax);
-            let d2 = (cx - bx) * (y - by) - (cy - by) * (x - bx);
-            let d3 = (ax - cx) * (y - cy) - (ay - cy) * (x - cx);
-            let neg = d1 < 0 || d2 < 0 || d3 < 0;
-            let pos = d1 > 0 || d2 > 0 || d3 > 0;
-            !(neg && pos)
+            let hit_seg = |ax: i32, ay: i32, bx: i32, by: i32| -> bool {
+                let (abx, aby) = (bx - ax, by - ay);
+                let (apx, apy) = (x - ax, y - ay);
+                let dot = (apx as i64) * (abx as i64) + (apy as i64) * (aby as i64);
+                let ab2 = (abx as i64) * (abx as i64) + (aby as i64) * (aby as i64);
+                if dot <= 0 {
+                    // 垂足在起点外：最近点 = 顶点。
+                    return (apx as i64) * (apx as i64) + (apy as i64) * (apy as i64) <= 16;
+                }
+                if dot >= ab2 {
+                    // 垂足在终点外：最近点 = 臂端。
+                    let (bpx, bpy) = (x - bx, y - by);
+                    return (bpx as i64) * (bpx as i64) + (bpy as i64) * (bpy as i64) <= 16;
+                }
+                let ap2 = (apx as i64) * (apx as i64) + (apy as i64) * (apy as i64);
+                ap2 * ab2 - dot * dot <= 16 * ab2
+            };
+            hit_seg(38, c, 20, c - 18) || hit_seg(38, c, 20, c + 18)
         }
-        // 圆环：中心 (c, c+2)，外 r=21 内 r=12（带宽 9px）。
+        // 实心圆 ●（安卓 12 Material You 同形）：中心 (c,c) r=14——
+        // d² ≤ 196。
         NavGlyph::Home => {
             let dx = x - c;
-            let dy = y - (c + 2);
-            let d2 = dx * dx + dy * dy;
-            (144..=441).contains(&d2)
+            let dy = y - c;
+            dx * dx + dy * dy <= 196
         }
         // 电源形：中心 (c, c+4) 圆环外 r=20 内 r=13，顶部 70° 开口
         //（与竖向夹角 <35° 的环段不画）；竖线 x∈[c-4,c+4] y∈[c-25,c-7]。
@@ -399,13 +411,13 @@ pub(crate) fn nav_glyph_covers(g: NavGlyph, x: i32, y: i32) -> bool {
             }
             (x >= c - 4) && (x <= c + 4) && (y >= c - 25) && (y <= c - 7)
         }
-        // 多任务形：两枚圆角矩形斜叠（后卡右上偏移 +9，前卡左下）——
-        // 现代多任务通用形。命中 = 任一卡内且不在两卡重叠角内。
+        // 空心圆角方 □（安卓 12 Material You 同形）：中心 (c,c)，外边
+        // 24×24 带宽 6px 的边框区域——命中 = |dx|≤12 且 |dy|≤12 且
+        //（|dx|>6 或 |dy|>6），内芯（两向皆 ≤6）镂空。
         NavGlyph::Recents => {
-            let in_rect = |x0: i32, y0: i32| {
-                x >= x0 && x < x0 + 24 && y >= y0 && y < y0 + 28
-            };
-            in_rect(c - 21, c - 14) || in_rect(c - 3, c - 14 + 9)
+            let dx = (x - c).abs();
+            let dy = (y - c).abs();
+            dx <= 12 && dy <= 12 && (dx > 6 || dy > 6)
         }
         // 旋转形：3/4 圆弧（右下象限缺口）+ 弧末端三角箭头——屏幕旋转
         // 通用形。弧心 (c, c) 外 r=20 内 r=12；缺口 = 与 +x 向夹角在
@@ -723,37 +735,45 @@ mod tests {
         // 圆角外 = 透明。
         assert_eq!(at(&back, 0, 0), 0);
         assert_eq!(at(&back, S - 1, S - 1), 0);
-        // 域内符号白（底块透明后非 0 即符号像素——(33,33) 三角内）。
+        // 域内符号白（底块透明后非 0 即符号像素——(33,33) 在 chevron
+        // 顶点带宽内：到上臂线段距离²=12.5 ≤ 16）。
         assert_ne!(at(&back, S / 2, S / 2), 0);
-        // Back = 左向三角：左中点符号白，右缘外底块透明。
-        assert_eq!(at(&back, 13, 33), NAV_GLYPH_FG);
+        // Back = 细 chevron ‹：顶点 (38,33) 白，顶点右外底块透明。
+        assert_eq!(at(&back, 38, 33), NAV_GLYPH_FG);
         assert_eq!(at(&back, 60, 33), 0);
-        // Home 圆环：环带白、环心底块透明。
+        // Home 实心圆：圆心白、外缘（r=16 > 14）底块透明。
         let home = nav_face(NavGlyph::Home, NAV_BASE_BG);
-        assert_eq!(at(&home, 33, 14), NAV_GLYPH_FG); // 外缘上带
-        assert_eq!(at(&home, 33, 35), 0); // 环心
+        assert_eq!(at(&home, 33, 33), NAV_GLYPH_FG); // 圆心
+        assert_eq!(at(&home, 33, 33 - 16), 0); // 圆外
         // Power 顶部开口：正上环位不画（底块透明）、竖线段在位（band 外
         // y=13 ∈ [c-25,c-7] 段）。
         let power = nav_face(NavGlyph::Power, NAV_BASE_BG);
         assert_eq!(at(&power, 33, 33 + 4 - 19), 0); // 开口段
         assert_eq!(at(&power, 33, 13), NAV_GLYPH_FG); // 竖线段（band 外）
-        // Recents：卡中心白。
+        // Recents 空心方：左边框（|dx|=12）白、内芯镂空底块透明。
         let recents = nav_face(NavGlyph::Recents, NAV_BASE_BG);
-        assert_eq!(at(&recents, 33 - 21 + 12, 33 - 14 + 9 + 14), NAV_GLYPH_FG);
+        assert_eq!(at(&recents, 33 - 12, 33), NAV_GLYPH_FG);
+        assert_eq!(at(&recents, 33, 33), 0);
     }
 
-    /// nav_glyph_covers 纯几何真值探针（三角内/外、圆环带内外、电源
-    /// 开口段/竖线段）。
+    /// nav_glyph_covers 纯几何真值探针（chevron 带内外、实心圆内外、
+    /// 空心方边框/内芯/框外、电源开口段/竖线段）。
     #[test]
     fn nav_glyph_cover_probes() {
         let c = NAV_SRC_PX as i32 / 2;
-        // Back 三角：内部、外部。
-        assert!(nav_glyph_covers(NavGlyph::Back, 20, c));
-        assert!(!nav_glyph_covers(NavGlyph::Back, 60, c));
-        // Home 环：带内（r≈16）、心内（r≈4）、带外（r≈24）。
-        assert!(nav_glyph_covers(NavGlyph::Home, c + 16, c + 2));
-        assert!(!nav_glyph_covers(NavGlyph::Home, c, c + 2));
-        assert!(!nav_glyph_covers(NavGlyph::Home, c + 24, c + 2));
+        // Back 细 chevron：顶点、上臂中点在；臂端左外、顶点右外在。
+        assert!(nav_glyph_covers(NavGlyph::Back, 38, c)); // 顶点 (38,c)
+        assert!(nav_glyph_covers(NavGlyph::Back, 29, c - 9)); // 上臂中点
+        assert!(!nav_glyph_covers(NavGlyph::Back, 13, c)); // 臂端 x=20 左外
+        assert!(!nav_glyph_covers(NavGlyph::Back, 45, c)); // 顶点右外
+        // Home 实心圆：圆心、r=10 内在；r=15 出（196 < 225）。
+        assert!(nav_glyph_covers(NavGlyph::Home, c, c));
+        assert!(nav_glyph_covers(NavGlyph::Home, c + 10, c));
+        assert!(!nav_glyph_covers(NavGlyph::Home, c + 15, c));
+        // Recents 空心方：边框（|dx|=12）在、内芯（0,0）空、框外（14）出。
+        assert!(nav_glyph_covers(NavGlyph::Recents, c - 12, c));
+        assert!(!nav_glyph_covers(NavGlyph::Recents, c, c));
+        assert!(!nav_glyph_covers(NavGlyph::Recents, c - 14, c));
         // Power：侧带在、顶部开口段出、竖线在（band 外段）。
         assert!(nav_glyph_covers(NavGlyph::Power, c + 17, c + 4));
         assert!(!nav_glyph_covers(NavGlyph::Power, c, c + 4 - 18));

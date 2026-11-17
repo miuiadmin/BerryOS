@@ -24,7 +24,8 @@
 //!   事件，兜底网只剩新槽——旧窗 ACK 迟到按 wid 失配忽略）。
 //! - **subs**：无窗订阅者事件通道（OP_WM_SUBSCRIBE——guifbd 表快照
 //!   「通知驱动 + 异步拉取」面，波3设计 §4）；与属主通道同收表变更
-//!   广播。静态定容帽 [`WM_EVT_SUBS_MAX`]。
+//!   广播。静态定容帽 [`WM_EVT_SUBS_MAX`]。订阅者通道 = 表跟随 RPC
+//!   面（TABLE_GET 即答；TABLE_WAIT 冻结律不动——即答非驻留）。
 //! - **有效几何不变量式避让**：任何 CREATE/DESTROY/SET（含系统层窗
 //!   变更）触发受影响表项重算 O(N)（N≤15 零成本）——AVOID_SYS 旗标窗
 //!   对 layer=SYSTEM **可见**窗求差集写有效几何（**SERVICE 不挖坑**——
@@ -547,7 +548,11 @@ impl WmTable {
     }
 
     /// 事件通道非阻塞收割（serve 循环每轮顶调用）：属主通道收 BACK_ACK
-    /// （余帧型/订阅者来帧一律忽略 drain——坏客户端不得杀服务）。
+    /// （余帧型一律忽略——TABLE_GET 也不答：事件通道无请求相关性，乱答
+    /// 毒化对端；坏客户端不得杀服务）；订阅者通道 = 表跟随 RPC 面——
+    /// TABLE_GET 即答全表快照（[`send_snapshot`] 阻塞应答，与 wm_srv
+    /// 应答同律；即答非驻留，TABLE_WAIT 冻结律不动），畸形/非 TABLE_GET
+    /// 帧静默忽略，GETINFO 也不答（快照 12B 头已携 disp_w/h——窄面）。
     pub fn sweep_evt<P: Port>(&mut self, p: &mut P) {
         let mut buf = [0u8; 256];
         let mut i = 0;
@@ -566,7 +571,12 @@ impl WmTable {
         }
         let mut s = 0;
         while s < self.subs_n {
-            while p.recv_nowait(self.subs[s], &mut buf).is_some() {}
+            let h = self.subs[s];
+            while let Some(n) = p.recv_nowait(h, &mut buf) {
+                if gp::parse_wm_table_get_req(&buf[..n]).is_some() {
+                    self.send_snapshot(p, h);
+                }
+            }
             s += 1;
         }
     }
