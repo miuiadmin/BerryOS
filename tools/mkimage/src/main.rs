@@ -1,6 +1,7 @@
-//! CLI 壳——与 Python 版 main() 参数面/输出行对齐（首刀：--selftest 分发
-//! + 造盘主路径）。换轨二刀（b 层 #8 刀序第三位）：justfile image 配方
-//! 切本件后，Python mkimage.py 降格对拍 oracle。
+//! CLI 壳——与 Python 版 main() 参数面/输出行对齐。换轨二刀（b 层 #8
+//! 刀序第三位）已落：justfile image 配方切本件（先编后用 + cargo-target
+//! 钉位纪律），Python mkimage.py 保模块面（gensourceindex import）+
+//! CLI 对拍 oracle（test-host 挂双侧）。
 //!
 //! 用法：mkimage <out.img> --efi <EFI> --hello <hello.txt> --kernel <elf>
 //!             --initrd <rootfs.cpio> [--size-mib N] [--key-hash <64hex>]

@@ -1184,14 +1184,18 @@ test-host:
     # +PR 单源 abi.toml 绊线+key_hash/name 拒面/整盘装配确定性+FAT 段与
     # mkfat 直产零漂移（path 依赖单编码器纪律）/源实例与验签两件组装面/
     # sha256 FIPS 180-4 标准向量——WIP 期三常量笔误（K[25]/K[59]/h[2]）
-    # 全由此面咬出）+ CLI 与 Python 现役件 oracle 字节级对拍（整盘+manifest
+    # + CLI 与 Python 现役件 oracle 字节级对拍（整盘+manifest
     # 三面：9MiB 合成四件套/96MiB 默认盘/key-hash 注入，sha256 与 stdout
     # 全等；Python 缺席 skip 纯面钉板兜底）。独立小工作区，须显式
-    # --target {{host}}。产链现役件仍 Python mkimage.py（首刀不动产链），
-    # 二刀换轨再切 image 配方。
+    # --target {{host}}。换轨二刀后本行 = 产链现役件门禁（image 配方
+    # 走本 bin）；下方 mkimage.py --selftest = Python oracle 语义钉板
+    # （模块面现役：gensourceindex import build_image——单编码器纪律）。
     cargo test --manifest-path tools/mkimage/Cargo.toml --target {{host}}
     # V-3：mkimage MBR 薄面自检（CHS 向量 + 表项钉板——卷编码面归
-    # mkfat --selftest，单编码器纪律不在此长第二套）。
+    # mkfat --selftest，单编码器纪律不在此长第二套）。换轨二刀后双形态
+    # （elf2flat/mkcpio 同位纪律）：产链现役件 = Rust（上行 cargo test
+    # tools/mkimage）；Python 版不降格改名——模块面现役（gensourceindex
+    # import）+ CLI 对拍 oracle，selftest 照跑守 Python 侧语义钉板。
     python3 tools/mkimage.py --selftest
     # K-3：size.py ADRP 解码器向量自检（--assert-flip 扩面的门禁自身坏 =
     # smoke/build-release 断言静默劣化，同 a-3 U4 纪律门禁化）。
@@ -1753,7 +1757,16 @@ image: build build-boot
     test -f {{KERNEL}} || { echo "kernel ELF 缺失（{{KERNEL}}）——先 just build"; exit 1; }
     test -f rootfs.cpio || { echo "rootfs.cpio 缺失——先 just build-user"; exit 1; }
     mkdir -p out
-    python3 tools/mkimage.py {{IMAGE}} \
+    # mkimage 换轨二刀（b 层 #8 刀序第三位）：产链位切 Rust 件——先编后用
+    # + CARGO_TARGET_DIR 钉 tools/mkimage/cargo-target（elf2flat/mkcpio/
+    # mkfat 同款纪律）；Python mkimage.py 不退役——gensourceindex import
+    # build_image/load_source_instance 模块面（FAT 走 mkfat 单编码器）+
+    # CLI 对拍 oracle（test-host 挂双侧，tools/mkimage cargo test 行）。
+    HOST=$(rustc -vV | sed -n 's/^host: //p')
+    CARGO_TARGET_DIR="$PWD/tools/mkimage/cargo-target" \
+        cargo build --release --manifest-path tools/mkimage/Cargo.toml \
+        --target "$HOST"
+    "$PWD/tools/mkimage/cargo-target/$HOST/release/mkimage" {{IMAGE}} \
         --efi {{BOOT_EFI}} \
         --hello {{BOOT_DIR}}/hello.txt \
         --kernel {{KERNEL}} \
