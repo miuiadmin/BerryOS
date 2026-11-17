@@ -90,6 +90,19 @@
 //!    ——上帧设备处理与本帧 CPU 工作重叠；FLUSH 头置 FLAG_FENCE，QEMU 2D
 //!    即答路径回执回显 fence_id 作批身份正向锚）。ramfb 红线零漂移：全部
 //!    改动在 vgpu 分支内。
+//!
+//! **波3 批B（guifbd 带合成 v1）**：带缓存/带重放 + surface 分类（lib
+//! `classify_surface` 六档）驱动裁剪 / 带缓存双写（bounce 同拍抄录 + 补
+//! 不透明键 0xFF——guifbd blit 是无透明语义的原样字节拷，已呈现即不透
+//! 明；批C 真 ARGB 生产者落地时由该刀翻转补键规则）/ 带重放（CPU blit
+//! 毕、vgpu 钩子前，SERVICE→SYSTEM 序，A==0 跳写）；带缓存 boot 一次性
+//! 堆分配（`band_cache_bytes` 4MiB 门，失败禁用带面零回归——**绝不能入
+//! Srv/栈：guifbd 栈仅 32KiB**）。标记 `BANDC ok` / `BANDR ok` 各恰一次
+//! （one-shot latch）。wm 客户端面**收线**（批B 对抗审查 CONFIRMED：
+//! dup(WMD_CLI_DUP) 与 launcher/gfxdemo/[ui] apps 同属一条 ChannelEnd，
+//! wmd 应答无相关性 ID、单 FIFO 先 recv 者得，双消费者应答互截——交接
+//! 已撤回，快照恒空 = 一切 wid 按 AppCompat 保守档、带集 = fallback 底
+//! 带；wm 订阅私有通道 RPC 面另刀复活，须开 gui-wmd 面）。
 
 use berry_exec::{FB_VA, VIRTIO_MMIO_SLOTS, VIRTIO_MMIO_STRIDE, VIRTIO_MMIO_VA};
 use berry_fbcon::font::{self, GLYPH_H};
@@ -109,9 +122,11 @@ use berry_sys::{
 use berry_gpuproto as vgp;
 use berry_virtio as vio;
 use guifbd::{
-    attach_entry, backend_from_handoff, batch_resps_ok, chain_put, frame_flush_batch,
-    rects_clip_into, Backend, ChainEnt, CHAIN_MAX, ACMD_OFF, ACMD_SZ, AIND_OFF, ARESP_OFF, CMD_OFF,
-    DMA_BUF_OFF, DMA_RING_OFF, FLUSH_RECT_MAX, FRAME_CMD_MAX, IND_OFF, RESP_CAP, RESP_OFF,
+    attach_entry, backend_from_handoff, band_cache_bytes, band_replay_plan, batch_resps_ok,
+    chain_put, classify_surface, frame_flush_batch, plan_bands, rects_clip_into, replay_rows_u32,
+    Backend, BandPlan, ChainEnt, SurfaceClass, BAND_H_CAP, BAND_SLOTS, CHAIN_MAX, ACMD_OFF,
+    ACMD_SZ, AIND_OFF, ARESP_OFF, CMD_OFF, DMA_BUF_OFF, DMA_RING_OFF, FLUSH_RECT_MAX,
+    FRAME_CMD_MAX, IND_OFF, RESP_CAP, RESP_OFF,
 };
 
 /// 批矩形帽互钉：lib 批形状常量 = wire damage 帽（两 crate 均冻结——值
@@ -157,9 +172,8 @@ const SEND_REARM_NS: u64 = 10 * 1_000_000_000;
 const VBLANK_SIG: u64 = 1 << 32;
 /// token 环深（FRAME_CALLBACK 校验窗口——单客户端 v1 足够覆盖在途 8 帧）。
 const TOKEN_RING: usize = 8;
-/// 波3-件② 系统面 surface_id marker（launcher 提交带系统带视觉不裁剪；
-/// 0 = 应用面裁系统带。非协议号——SUBMIT 既有 u32 域的本地语义分档）。
-const SYS_SURFACE_ID: u32 = 0xFFFF;
+// 波3-件② 系统面 surface_id marker（0xFFFF）单源已收 lib.rs `SYS_SURFACE_ID`
+//（批B 接线：分类入 lib `classify_surface`，本模块不再持有本地副本）。
 
 /// 行弹舱帽（= ramfb stride 800×4；启动门执法——越帽说明几何非 ramfb
 /// 基线，blit 行弹越界 = 未定义行为，宁可不起服务）。
@@ -186,6 +200,33 @@ fn px(stride: usize, x: usize, y: usize) -> u32 {
     // SAFETY: FB_VA 映射幅 = ceil_page(stride×h)（boot create_mmio 双页
     // 对齐执法）；调用点全部来自 boot info VMO 的几何界内坐标。
     unsafe { core::ptr::read_volatile((FB_VA as usize + off) as *const u32) }
+}
+
+/// 兼容档带几何单源（AppCompat 裁剪 + [`Srv::band_replan`] fallback 底带
+/// 共此——批B 前散在 blit_and_sample 内联）。几何镜像 launcher 实值单源：
+/// big 档 band_top=117px = appshell scene.rs:34 OH_STATUS_H 39vp×
+/// OH_DENSITY(:31)=3、band_bot=135px = desktop.rs:151 NAV_BAR_H_BIG；紧凑
+/// 档 44/44px = scene.rs:130 紧凑 44 / desktop.rs:146 NAV_KEY_PX=44。互指
+/// 防漂移——改值须与 launcher 真源双侧同步。满档判据同源 vp>=600×1800。
+fn band_geometry(w: usize, h: usize) -> (usize, usize) {
+    let big = w >= 600 && h >= 1800;
+    if big { (117, 135) } else { (44, 44) }
+}
+
+/// 快照表项零值（WmFace 定容数组初始化——count 前缀外恒零，非语义面）。
+fn wm_entry_zero() -> gp::WmEntry {
+    gp::WmEntry {
+        id: 0,
+        parent: 0,
+        group: 0,
+        x: 0,
+        y: 0,
+        w: 0,
+        h: 0,
+        layer: 0,
+        z: 0,
+        flags: 0,
+    }
 }
 
 /// 蜂格全对拍：字形 GLYPH_H×8 位图逐像素（bit = glyph[y] & (0x80>>x)，
@@ -294,6 +335,18 @@ struct Slot {
     commit_target: u64,
 }
 
+/// 批B wm 快照持有者（现恒空——wm 客户端面收线：dup(WMD_CLI_DUP) 与
+/// launcher/gfxdemo/[ui] apps 同属一条 ChannelEnd，wmd 应答无相关性 ID、
+/// 单 FIFO 先 recv 者得，双消费者应答互截〔批B 对抗审查 CONFIRMED，
+/// 2026-11-17〕——交接已撤回；快照恒 count=0 = 一切 wid 按 AppCompat
+/// 保守档、带集 = fallback 底带。wm 订阅私有通道 RPC 面（wmd sweep_evt
+/// 应答订阅者 TABLE_GET）另刀复活，届时快照接真值）。
+struct WmFace {
+    /// 快照表（前 count 项有效；恒空至 wm 面另刀接入）。
+    entries: [gp::WmEntry; gp::WM_WINDOWS_MAX],
+    count: usize,
+}
+
 /// 刀6 P2 在途帧（深度 1 管线——SUBMIT 记帧、latch 拍呈现；spec §7-P2：
 /// 帧呈现于 ≤ target_present_ns 的最大拍点，latch 已过 = 即时呈现的迟到
 /// 诚实形）。`token == 0` = P5 COMMIT 面（无回执域——COMMIT wire 无 token
@@ -308,9 +361,10 @@ struct PendingFrame {
     /// damage 快照（rects 从 SUBMIT 消息拷出——消息缓冲复用）。
     rects: [gp::Rect; gp::DAMAGE_MAX],
     rect_count: usize,
-    /// 波3-件② 带合成面：系统面 marker（SYS_SURFACE_ID）不裁剪、应用面
-    /// 0 裁系统带——latch 呈现时随行进 blit_and_sample 共尾。
-    surface_id: u32,
+    /// 波3 批B 带合成面：surface 分类（lib `classify_surface` 六档——SUBMIT
+    /// 入途时按本地快照分类随行；P5 面 = InternalRefresh）——latch 呈现时
+    /// 随行进 blit_and_sample 共尾。
+    class: SurfaceClass,
     /// latch 拍点（绝对 ns；serve deadline min 臂 + 到点即呈现）。
     latch_ns: u64,
     /// UNSQUASHABLE 位（新 P2 到席时不可压弃——ST_BUSY 挡新帧）。
@@ -391,6 +445,20 @@ struct Srv<'a> {
     vgpu: Option<Vgpu>,
     /// SUBMIT 行弹舱（vmo_read 行读出 → 直写 fb；帽 = ROW_BOUNCE_MAX）。
     bounce: [u8; ROW_BOUNCE_MAX],
+    // —— 波3 批B：wm 客户端面 + 带缓存/带重放 ——
+    /// wm 面全状态（§2.2 状态机 + 本地快照——全部迁移只在 wm_poll）。
+    wm: WmFace,
+    /// 当前带集（`plan_bands` 产物——快照每次更新重算；Disabled 后冻结）。
+    bands: [Option<BandPlan>; BAND_SLOTS],
+    /// 带缓存（boot 一次性堆分配——Box::leak 常驻段，绝不能入 Srv/栈
+    /// 32KiB；None = 带面禁用：裁剪与现网行为不变，仅无缓存/重放）。
+    band_cache: Option<&'static mut [u32]>,
+    /// plan_bands warn loud 一次位（超带高/带数帽）。
+    band_warn_loud: bool,
+    /// `BANDC ok` one-shot latch（带缓存首 seed——任一槽 ≥1 行恰一次）。
+    bandc_latched: bool,
+    /// `BANDR ok n=` one-shot latch（首重放写数 ≥1 恰一次）。
+    bandr_latched: bool,
 }
 
 impl<'a> Srv<'a> {
@@ -403,13 +471,14 @@ impl<'a> Srv<'a> {
         vgpu: Option<Vgpu>,
         cfg: gp::softpanel::PanelCfg,
         boot_hz: u16,
+        band_cache: Option<&'static mut [u32]>,
     ) -> Self {
         // 语义层校验/回退先走（loud 诊断行在 boot_panel_tier），SoftPanel
         // 构造内自查表落周期——period 首值不外传；仲裁器同 boot 档起（A11
         // 无票缺省 = 平台表达档）。
         let (hz, _) = boot_panel_tier(&cfg, boot_hz);
         let arb = gp::arbiter::Arbiter::new(&cfg, hz);
-        Srv {
+        let mut srv = Srv {
             con,
             w,
             h,
@@ -451,7 +520,23 @@ impl<'a> Srv<'a> {
             gui,
             vgpu,
             bounce: [0; ROW_BOUNCE_MAX],
-        }
+            // 批B：wm 快照恒空（客户端面收线——见 WmFace 注）；带集 =
+            // fallback 底带（band_replan boot 拍一次落值）；缓存 None 时
+            // 双写/重放全短路（带面禁用零回归）。
+            wm: WmFace {
+                entries: [wm_entry_zero(); gp::WM_WINDOWS_MAX],
+                count: 0,
+            },
+            bands: [None; BAND_SLOTS],
+            band_cache,
+            band_warn_loud: false,
+            bandc_latched: false,
+            bandr_latched: false,
+        };
+        // 批B：boot 拍落带集（wm 快照恒空 = fallback 底带；wm 面另刀接入
+        // 后改快照更新拍重算）。
+        srv.band_replan();
+        srv
     }
 
     /// 软 vsync 排点（无点在案时；REG_VBLANK 使能 / parked wait 共用）。
@@ -622,10 +707,10 @@ impl<'a> Srv<'a> {
     fn latch_fire(&mut self, now: u64) {
         let pf = self.pending.take().unwrap();
         let (presented_ns, seq) = self.present_stamp(now);
-        // 带裁剪/vgpu 钩子统一在 blit_and_sample 共尾——surface_id 随行
-        //（P2 latch 呈现与应用面同口径裁剪）。
+        // 带裁剪/vgpu 钩子/带缓存双写/带重放统一在 blit_and_sample 共尾
+        //——surface 分类随行（P2 latch 呈现与 SUBMIT 即时面同口径）。
         let (read_ok, all_pass, n_pass) =
-            self.blit_and_sample(pf.vmo, pf.full, &pf.rects, pf.rect_count, pf.surface_id);
+            self.blit_and_sample(pf.vmo, pf.full, &pf.rects, pf.rect_count, pf.class);
         if !read_ok {
             // 读失败 = loud + 诚实弃帧（不 trap——单客户端槽复用竞态是已
             // 知面）：环记 DISCARDED、parked callback 答弃、parked release
@@ -942,6 +1027,128 @@ impl<'a> Srv<'a> {
         true
     }
 
+    /// 带集重算（boot 拍一次落值——wm 快照恒空（收线）= fallback 底带；
+    /// wm 面另刀接入后改快照更新拍重算；lib `plan_bands` 纯函数；warn
+    /// 任一真 = 超带高/带数帽 loud 一次）。
+    fn band_replan(&mut self) {
+        let (_, band_bot) = band_geometry(self.w, self.h);
+        let (bands, warn, _total) = plan_bands(
+            &self.wm.entries,
+            self.wm.count,
+            self.w as u32,
+            self.h as u32,
+            band_bot as u32,
+        );
+        if warn.iter().any(|&w| w) && !self.band_warn_loud {
+            self.band_warn_loud = true;
+            eprintln!("guifbd: band plan warn (over cap)");
+        }
+        self.bands = bands;
+    }
+
+    /// 带缓存行抄录（SysFace/WinBand 路——blit 行循环内同拍调用）：行区间
+    /// [x0,x1) ∩ 各带槽 rect 非空 → bounce 像素 u32 入缓存 + **补不透明键
+    /// 0xFF**（guifbd blit 是无透明语义的原样字节拷——凡落 fb 行的像素已
+    /// 呈现即不透明；berry-gfx pack 已丢 X 位且现网生产者全族 X 恒 0，不补
+    /// 键则缓存全 A==0、重放恒零写。补键后重放像素集与原 fb 像素集严格一
+    /// 致（零漂移）；批C 真 ARGB 生产者落地时由该刀翻转补键规则）。布局
+    /// = slot×BAND_H_CAP×fb_w + 带内行×fb_w + 列——列取 fb 绝对 x。
+    /// 任一槽 ≥1 行首写打 `BANDC ok`（恰一次）。
+    fn band_cache_row(&mut self, x0: usize, x1: usize, y: usize) {
+        let Some(cache) = self.band_cache.as_deref_mut() else { return };
+        let w = self.w;
+        let bands = self.bands; // Copy 数组——避开与 cache 借用冲突
+        let mut wrote = false;
+        let mut wrote_rects =
+            [(0u32, 0u32, 0u32, 0u32); BAND_SLOTS]; // (x, y, w, h)——本拍 seed 域
+        let mut wrote_n = 0usize;
+        for (slot, b) in bands.iter().enumerate() {
+            let Some(b) = b else { continue };
+            let (bx, by, bw, bh) =
+                (b.rect.x as usize, b.rect.y as usize, b.rect.w as usize, b.rect.h as usize);
+            // 行命中带行域（带高 ≤ BAND_H_CAP 由 plan_bands 形态帽保证）。
+            if y < by || y >= by + bh || y - by >= BAND_H_CAP as usize {
+                continue;
+            }
+            let cx0 = x0.max(bx);
+            let cx1 = x1.min(bx + bw);
+            if cx1 <= cx0 {
+                continue;
+            }
+            let row = &mut cache[slot * BAND_H_CAP as usize * w + (y - by) * w..][..w];
+            for cx in cx0..cx1 {
+                let p = &self.bounce[(cx - x0) * 4..(cx - x0) * 4 + 4];
+                row[cx] = 0xFF00_0000 | u32::from_le_bytes([p[0], p[1], p[2], p[3]]);
+                wrote = true;
+            }
+            if wrote_n < wrote_rects.len() {
+                wrote_rects[wrote_n] =
+                    (cx0 as u32, y as u32, (cx1 - cx0) as u32, 1);
+                wrote_n += 1;
+            }
+        }
+        if wrote && !self.bandc_latched {
+            self.bandc_latched = true;
+            println!("BANDC ok");
+            // seed 自验证拍（BANDR 触发源）：对刚 seed 的行域跑一次真实
+            // band_replay（幂等——同像素回写零视觉漂移），每靴确定性验证
+            // plan/rows/写全链。应用触发的重放不在此证：现树 launcher 与
+            // spawn 应用共享 wm 队列应答互截（既有缺陷，appdemo GETINFO
+            // 吞错应答即 park），app 首帧链随 wm 私有通道刀解锁后再证。
+            let mut rects = [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX];
+            let n = wrote_n.min(gp::DAMAGE_MAX);
+            for (i, &(x, ry, rw, rh)) in wrote_rects[..n].iter().enumerate() {
+                rects[i] = gp::Rect { x, y: ry, w: rw, h: rh };
+            }
+            self.band_replay(&rects, false);
+        }
+    }
+
+    /// 带重放（AppCompat/WinApp 路——CPU blit 毕、vgpu submit_frame 前；
+    /// 另 BANDC 首拍 seed 自验证同走此路）：lib `band_replay_plan` 对原始
+    /// targets 求交（FULL 恒触发），逐带行 cache→fb（A==0 跳写在
+    /// `replay_rows_u32`）。首写数 ≥1 打 `BANDR ok n=`（恰一次——现树
+    /// 首触发 = seed 自验证拍；app 提交触发随 wm 私有通道刀解锁）。
+    fn band_replay(&mut self, targets: &[gp::Rect], full: bool) {
+        let Some(cache) = self.band_cache.as_deref_mut() else { return };
+        let bands = self.bands; // Copy 数组——避开与 cache 借用冲突
+        let mut plan =
+            [(0usize, gp::Rect { x: 0, y: 0, w: 0, h: 0 }); BAND_SLOTS * gp::DAMAGE_MAX + 2];
+        let n = band_replay_plan(
+            targets,
+            targets.len(),
+            full,
+            self.w as u32,
+            self.h as u32,
+            &bands,
+            &mut plan,
+        );
+        let mut writes = 0usize;
+        for &(slot, r) in &plan[..n] {
+            let Some(b) = bands[slot].as_ref() else { continue };
+            let band_y = b.rect.y as usize;
+            let (rx, ry) = (r.x as usize, r.y as usize);
+            for y in ry..ry + r.h as usize {
+                let off = slot * BAND_H_CAP as usize * self.w + (y - band_y) * self.w + rx;
+                let src = &cache[off..off + r.w as usize];
+                // SAFETY: dst = fb 行切片（y<self.h、rx+r.w≤w 由 plan 界内
+                // 保证；映射幅 = ceil_page(stride×h)——blit 行循环同口径；
+                // 逐像素覆写无别名：cache 是独立堆段非 fb 映射）。
+                let dst = unsafe {
+                    core::slice::from_raw_parts_mut(
+                        (FB_VA as usize + y * self.stride + rx * 4) as *mut u32,
+                        r.w as usize,
+                    )
+                };
+                writes += replay_rows_u32(dst, src);
+            }
+        }
+        if writes > 0 && !self.bandr_latched {
+            self.bandr_latched = true;
+            println!("BANDR ok n={}", writes);
+        }
+    }
+
     /// present 域分发：七 op（刀4 起 + FRAME_TIMING）；一切拒面 close 随行
     /// handle 后 1B 应答（A3-b——send 即 take，不 close 即泄漏）。
     fn handle_present(&mut self, ch: Handle, msg: &[u8], hs: &[Handle]) {
@@ -1237,10 +1444,11 @@ impl<'a> Srv<'a> {
         let token = self.submit_seq;
         if latch_ns <= now {
             // —— 即时呈现（P1 特例）：blit + 抽样 + 回执环 + 应答 ——
-            // （带裁剪/vgpu 钩子统一在 blit_and_sample 共尾——surface_id
-            // 随行传入。）
+            // （带裁剪/vgpu 钩子/带缓存/带重放统一在 blit_and_sample 共尾
+            //——分类先于可变借用落局部。）
+            let class = classify_surface(surface_id, &self.wm.entries, self.wm.count);
             let (read_ok, all_pass, n_pass) =
-                self.blit_and_sample(hvmo, full, &rects, rect_count, surface_id);
+                self.blit_and_sample(hvmo, full, &rects, rect_count, class);
             if !read_ok {
                 let _ = berry_handle_close(hvmo);
                 st_rep(ch, gp::ST_BAD);
@@ -1275,13 +1483,16 @@ impl<'a> Srv<'a> {
         self.squash_pending();
         let mut rcopy = [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX];
         rcopy[..rect_count].copy_from_slice(&rects[..rect_count]);
+        // 批B：入途时按本地快照分类（latch 呈现时快照可能已推进——分类
+        // 冻结在入途拍 = 与应答同拍语义；错分一拍自愈）。
+        let class = classify_surface(surface_id, &self.wm.entries, self.wm.count);
         self.pending = Some(PendingFrame {
             token,
             vmo: hvmo,
             full,
             rects: rcopy,
             rect_count,
-            surface_id,
+            class,
             latch_ns,
             unsquashable: flags & gp::SUBMIT_F_UNSQUASHABLE != 0,
         });
@@ -1292,17 +1503,18 @@ impl<'a> Srv<'a> {
         send_rep(ch, &out[..n]);
     }
 
-    /// damage 裁剪 CPU blit + 7 点抽样对拍（P1 即时面与 P2 latch 呈现面
-    /// 共尾；波3-件② 带合成 v1 裁剪在共尾内统一执法）。返回 (读成败,
-    /// 抽样全过, 过数)：读失败 = 致命（即时面拒帧/latch 面弃帧——调用方
-    /// 分面处置）；抽样失配 = 验证仪表 loud 不拦。
+    /// damage 裁剪 CPU blit + 带缓存双写 + 带重放 + 7 点抽样对拍（P1 即时
+    /// 面与 P2 latch 呈现面共尾；波3 批B 分类口径在共尾内统一执法——lib
+    /// `classify_surface` 六档）。返回 (读成败, 抽样全过, 过数)：读失败 =
+    /// 致命（即时面拒帧/latch 面弃帧——调用方分面处置）；抽样失配 = 验证
+    /// 仪表 loud 不拦。
     fn blit_and_sample(
         &mut self,
         hvmo: Handle,
         full: bool,
         rects: &[gp::Rect; gp::DAMAGE_MAX],
         rect_count: usize,
-        surface_id: u32,
+        class: SurfaceClass,
     ) -> (bool, bool, usize) {
         let fullrect = gp::Rect { x: 0, y: 0, w: self.w as u32, h: self.h as u32 };
         let targets: &[gp::Rect] = if full {
@@ -1310,51 +1522,49 @@ impl<'a> Srv<'a> {
         } else {
             &rects[..rect_count]
         };
-        // 波3-件② 带合成 v1 兼容档：surface_id=0（应用面）提交裁剪系统
-        // 带——顶部状态栏带 + 底部导航条带（几何镜像 launcher 实值单源：
-        // big 档 band_top=117px = appshell scene.rs:34 OH_STATUS_H
-        // 39vp×OH_DENSITY(:31)=3、band_bot=135px = desktop.rs:151
-        // NAV_BAR_H_BIG；紧凑档 44/44px = scene.rs:130 紧凑 44/
-        // desktop.rs:146 NAV_KEY_PX=44。互指防漂移——改值须与 launcher
-        // 真源双侧同步。满档判据同源 vp>=600×1800）。应用全屏提交不再
-        // 覆盖系统带 → 状态栏/导航条视觉常驻（owner 投诉「应用进去了
-        // 状态栏没了」v1 根治）。
-        // surface_id=0xFFFF = 系统面 marker（launcher 提交自带带视觉）
-        // 不裁剪。裁剪只动 damage 面：blit 与抽样（②）同用裁后集，
+        // 波3 批B 分类分档（SPEC §1 语义表）：AppCompat（surface_id=0 或
+        // wid 不在快照）保守保护带——Y 裁带逐字保留（几何单源
+        // `band_geometry`，撤裁剪归批C；应用全屏提交不再覆盖系统带 → 状态
+        // 栏/导航条视觉常驻）；Hidden 空集呈现（blit 面=空集、记账照常）；
+        // 余档原样不裁。裁剪只动 damage 面：blit 与抽样（②）同用裁后集，
         // 抽样点恒落裁后 rect 内 → 与 fb 对拍口径不变。
-        let big = self.w >= 600 && self.h >= 1800;
-        let (band_top, band_bot) = if big { (117usize, 135usize) } else { (44, 44) };
-        let sys_surface = surface_id == SYS_SURFACE_ID;
+        let (band_top, band_bot) = band_geometry(self.w, self.h);
         let mut clipped_storage = [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX + 1];
         let mut clipped_n = 0usize;
-        let final_targets: &[gp::Rect] = if sys_surface {
-            targets
-        } else {
-            for r in targets {
-                let mut y0 = r.y as usize;
-                let mut y1 = (r.y as usize + r.h as usize).min(self.h);
-                if y1 <= y0 || y0 >= self.h {
-                    continue;
+        let final_targets: &[gp::Rect] = match class {
+            SurfaceClass::AppCompat => {
+                for r in targets {
+                    let mut y0 = r.y as usize;
+                    let mut y1 = (r.y as usize + r.h as usize).min(self.h);
+                    if y1 <= y0 || y0 >= self.h {
+                        continue;
+                    }
+                    // 裁顶带（全宽带：与 rect 求交即弃 y<band_top 段）
+                    if y0 < band_top {
+                        y0 = band_top;
+                    }
+                    // 裁底带
+                    if y1 > self.h - band_bot {
+                        y1 = self.h - band_bot;
+                    }
+                    if y1 <= y0 {
+                        continue; // rect 全在带内 = 空集跳过
+                    }
+                    if clipped_n < clipped_storage.len() {
+                        clipped_storage[clipped_n] =
+                            gp::Rect { x: r.x, y: y0 as u32, w: r.w, h: (y1 - y0) as u32 };
+                        clipped_n += 1;
+                    }
                 }
-                // 裁顶带（全宽带：与 rect 求交即弃 y<band_top 段）
-                if y0 < band_top {
-                    y0 = band_top;
-                }
-                // 裁底带
-                if y1 > self.h - band_bot {
-                    y1 = self.h - band_bot;
-                }
-                if y1 <= y0 {
-                    continue; // rect 全在带内 = 空集跳过
-                }
-                if clipped_n < clipped_storage.len() {
-                    clipped_storage[clipped_n] =
-                        gp::Rect { x: r.x, y: y0 as u32, w: r.w, h: (y1 - y0) as u32 };
-                    clipped_n += 1;
-                }
+                &clipped_storage[..clipped_n]
             }
-            &clipped_storage[..clipped_n]
+            SurfaceClass::Hidden => &[], // 空集呈现：blit/缓存/重放/上传全空
+            _ => targets,
         };
+        // 批B 带缓存双写面（SysFace/WinBand 路）：行落 fb 后同拍从 bounce
+        // 抄录（保 A 位——fb pack 已丢 alpha 禁从 fb 抓；缓存像素 = 客户端
+        // 原始 ARGB u32）。
+        let cache_write = matches!(class, SurfaceClass::SysFace | SurfaceClass::WinBand);
         for r in final_targets {
             let x0 = r.x as usize;
             let y0 = r.y as usize;
@@ -1380,14 +1590,26 @@ impl<'a> Srv<'a> {
                         len,
                     );
                 }
+                if cache_write {
+                    self.band_cache_row(x0, x1, y);
+                }
             }
+        }
+        // 批B 带重放（AppCompat/WinApp 路）：CPU blit 毕、vgpu submit_frame
+        // 前——重放区 ⊆ 原始 damage 界（band_replay_plan 对**原始 targets**
+        // 求交、FULL 帧恒触发保 marker 确定性）→ vgpu 上传集（下方传原始
+        // rects）自然覆盖。SERVICE→SYSTEM 定序与 A==0 跳写在 lib 纯函数。
+        if matches!(class, SurfaceClass::AppCompat | SurfaceClass::WinApp) {
+            self.band_replay(targets, full);
         }
         // B1-b/v2：vgpu 帧提交钩子——blit 落 fb 后、抽样前（设备侧上传与
         // px() 抽样对拍独立；v2 per-rect：SUBMIT 矩形集直通设备上传——
         // v1 收到矩形但 flush_full 丢弃的接线收口。ramfb 相 None 恒短路
-        // 零开销）。
-        if let Some(v) = self.vgpu.as_mut() {
-            v.submit_frame(full, rects, rect_count);
+        // 零开销）。批B Hidden 档跳过——上传原始 rects 会复活已隐藏窗像素。
+        if !matches!(class, SurfaceClass::Hidden) {
+            if let Some(v) = self.vgpu.as_mut() {
+                v.submit_frame(full, rects, rect_count);
+            }
         }
         // ② 抽样对拍（交叉核验强于复算期望——§7-⑤）：SAMPLE_N 点全落
         // damage 并集内（第 i 点取 final_targets[i%K]——A5-b），px() 读回 vs
@@ -1548,15 +1770,17 @@ impl<'a> Srv<'a> {
                             // 即时呈现：槽 VMO 全幅 blit + 呈现时戳 +
                             // P5C 一次性证据 + 谱系抬高（无 token 域——
                             // 回执环不记，帧时序查询面不适用 P5）。
-                            // P5 面（hdi 槽呈现）无 surface 域——按系统面
-                            // 口径 SYS_SURFACE_ID 不裁带（refresh 语义逐字
-                            // 保真；带裁剪是 present 域 surface 语义）。
+                            // P5 面（hdi 槽呈现）无 surface 域——refresh
+                            // 语义逐字保真：不裁带（带裁剪是 present 域
+                            // surface 语义）。批B 起显式传 InternalRefresh
+                            //（不再冒用 0xFFFF 值域）：槽内容属任意应用
+                            // ——不写带缓存（防 P5 污染）、不重放。
                             let (read_ok, all_pass, n_pass) = self.blit_and_sample(
                                 self.slots[slot as usize].vmo,
                                 true,
                                 &[gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX],
                                 0,
-                                SYS_SURFACE_ID,
+                                SurfaceClass::InternalRefresh,
                             );
                             if read_ok {
                                 let (presented_ns, _seq) = self.present_stamp(now);
@@ -1589,9 +1813,10 @@ impl<'a> Srv<'a> {
                             full: true,
                             rects: [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX],
                             rect_count: 0,
-                            // P5 面（hdi 槽呈现）无 surface 域——系统面口径
-                            // 不裁带（latch 共尾与即时面同口径）。
-                            surface_id: SYS_SURFACE_ID,
+                            // P5 面（hdi 槽呈现）无 surface 域——不裁带
+                            //（refresh 语义逐字保真；InternalRefresh 口径
+                            // 同即时面：不缓存不重放）。
+                            class: SurfaceClass::InternalRefresh,
                             latch_ns,
                             unsquashable: false,
                         });
@@ -2533,7 +2758,30 @@ pub(crate) fn main() {
         eprintln!("guifbd: no fb pipe gift");
         berry_libc::park();
     }
-    let mut srv = Srv::new(con, w, h, stride, gui, vgpu, panel_cfg, boot_hz);
+    // —— 批B：带缓存 boot 一次性堆分配（SPEC §3——**绝不能入 Srv/栈**：
+    // guifbd 栈仅 32KiB〔svcmgr stack_pages:8〕bounce 已占 16KiB。Box::leak
+    // 常驻段先例 launcher main.rs；超 4MiB 门或分配失败 → 带面禁用 loud，
+    // 裁剪与现网行为不变〔仅无缓存/重放〕）——
+    let band_cache: Option<&'static mut [u32]> = match band_cache_bytes(w as u32) {
+        Some(bytes) => {
+            let mut v: Vec<u32> = Vec::new();
+            match v.try_reserve_exact(bytes / 4) {
+                Ok(()) => {
+                    v.resize(bytes / 4, 0);
+                    Some(Box::leak(v.into_boxed_slice()))
+                }
+                Err(_) => {
+                    eprintln!("guifbd: band cache alloc fail {}B", bytes);
+                    None
+                }
+            }
+        }
+        None => {
+            eprintln!("guifbd: band cache over gate, disabled");
+            None
+        }
+    };
+    let mut srv = Srv::new(con, w, h, stride, gui, vgpu, panel_cfg, boot_hz, band_cache);
     // —— 三路 serve：present→hdi→console 确定性轮询；全 EAGAIN 才
     // wait_many n=3 并等。deadline = min(下次软 vsync 点, now+10s) **进
     // 调用本身**（A1-a——醒来后补查不够：parked 最长迟答 10s 且 smoke

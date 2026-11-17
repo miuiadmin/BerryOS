@@ -2,9 +2,9 @@
 //! `research/显示与加速体系设计/02-...-v1.0.md` §6 刀序 B1-b/c）。
 //!
 //! lib/bin 双面 crate（gui-inputd 先例）：本文件 = **无 syscall 的可测面**
-//! （host `cargo test`——只依赖 berry-gpuproto/berry-virtio 两纯 crate）；
-//! guest 入口（真 virtio-gpu 设备链 + berry-libc/berry-sys syscall 面）在
-//! `src/main.rs` 壳 + `src/guest.rs`。纯面三件：
+//! （host `cargo test`——依赖 berry-gpuproto/berry-guiproto/berry-virtio
+//! 三纯 crate）；guest 入口（真 virtio-gpu 设备链 + berry-libc/berry-sys
+//! syscall 面）在 `src/main.rs` 壳 + `src/guest.rs`。纯面五件：
 //!
 //! 1. **后端分派**（[`backend_from_handoff`]）：boot 探测的交接协议——
 //!    svcmgr 预拉 guifbd 后把 virtio-mmio 窗映进子空间 `VIRTIO_MMIO_VA`
@@ -28,12 +28,19 @@
 //!    （回执桶延迟消费校验）。协议定谳：FLUSH/TRANSFER 每命令恰一矩形
 //!    （uapi 无 N-rect 数组形）——「FLUSH 带矩形数组」不在协议面，包络
 //!    是合法同构形（Linux `virtgpu_plane.c` 同款）。
+//! 5. **带合成 v1 纯面**（波3 批B）：[`classify_surface`]（surface 六档
+//!    分类——快照本地查表零 RPC）/[`plan_bands`]（快照带集规划：3 窗口
+//!    带槽 + 底常量 fallback 槽）/[`band_replay_plan`]（SERVICE→SYSTEM
+//!    定序的 damage∩带 重放计划——FULL 帧恒触发）/[`replay_rows_u32`]
+//!    （A==0 透明键跳写的行重放）。guest 侧缓存写入与重放接线在批B 后续
+//!    实施段消费（本面先落 host 可测纯逻辑）。
 //!
 //! 纯函数纪律（berry-virtio/berry-gpuproto 同款）：零分配、零 unsafe、
 //! 编不出就拒绝（None）不截断。
 
 #![cfg_attr(not(test), no_std)]
 
+use berry_guiproto as gp;
 use berry_gpuproto as vgp;
 use berry_virtio as vio;
 
@@ -312,8 +319,246 @@ pub fn batch_resps_ok(resps: &[u8], n: usize, fence_id: u64) -> bool {
 }
 
 // ==========================================================================
+// 波3 批B 带合成 v1 纯面（SPEC-batchB §1/§3/§4——surface 分类 / 带集规划 /
+// 重放计划 / 行重放；快照为本地状态零 RPC，guest 侧后续实施段接线消费）
+// ==========================================================================
+
+/// 带缓存槽数：3 窗口带槽（快照序）+ 1 底常量 fallback 带（[`plan_bands`]
+/// 布局——槽 3 恒归 fallback，窗口带永不越槽 2）。
+pub const BAND_SLOTS: usize = 4;
+/// 单带高帽（px）：盖 guest 侧 big 档 band_top 117 / band_bot 135 留余量；
+/// 超帽窗（如 softimed 全高 780px）不进带集——[`plan_bands`] warn 置位、
+/// guest 侧 loud 一次。
+pub const BAND_H_CAP: u32 = 160;
+/// 带缓存总量启动门（4MiB）：boot 一次性堆分配前经 [`band_cache_bytes`]
+/// 执法，超门或分配失败 → 带面禁用 loud（裁剪与现网行为不变，仅无缓存/
+/// 重放）。
+pub const BAND_CACHE_BYTES_MAX: usize = 4 << 20;
+/// 系统面 surface_id marker（wire SUBMIT 既有 u32 域的本地语义分档，非
+/// 协议号——launcher 全提交带系统带视觉）。guest.rs 同名本地 const 在批B
+/// 后续实施段接线时并指此处收口单源。
+pub const SYS_SURFACE_ID: u32 = 0xFFFF;
+
+/// surface 分类产物（SPEC-batchB §1 语义表——blit 面「裁剪 / 带缓存写入 /
+/// 带重放」三档语义的单源裁决；快照为本地状态，分类零 RPC）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SurfaceClass {
+    /// surface_id==[`SYS_SURFACE_ID`]（launcher 全提交）——不裁、写带缓存
+    /// （原始 targets∩带.rect，从 bounce 抄录）、不重放。
+    SysFace,
+    /// guest 内部 hdi COMMIT refresh 面（槽内容属任意应用）——不裁、不写
+    /// 带缓存（防 P5 槽污染）、不重放；仅由内部调用点显式传入，
+    /// [`classify_surface`] 永不返回本值。
+    InternalRefresh,
+    /// surface_id==0 或 wid 不在快照——保守保护带：Y 裁带（现网兼容档原样
+    /// 保留）、不缓存、重放（原始 targets∩带.rect，FULL 帧恒触发）。
+    AppCompat,
+    /// wid∈快照 ∧ vis ∧ layer∈{SYSTEM,SERVICE}——不裁、写该窗带槽、不重放
+    /// （带帧自缓存自呈现）。
+    WinBand,
+    /// wid∈快照 ∧ vis ∧ layer==APP——不裁、不缓存、重放（窗化应用
+    /// edge-to-edge 可行）。
+    WinApp,
+    /// wid∈快照 ∧ !vis——空 targets 呈现（blit 面=空集恒 pass，token/
+    /// credits/held 记账照常、正常 8B ack）。
+    Hidden,
+}
+
+/// wire surface_id → 分类。0xFFFF 值域档先于 wid 查表（id 恰 0xFFFF 的窗
+/// 不冒领系统面）；wid 不在快照按 AppCompat（保守保护带——快照滞后一拍
+/// 错分 = 新鲜度窗口 v1 语义，下帧自愈）。count 为快照有效前缀长。
+pub fn classify_surface(surface_id: u32, entries: &[gp::WmEntry], count: usize) -> SurfaceClass {
+    if surface_id == SYS_SURFACE_ID {
+        return SurfaceClass::SysFace;
+    }
+    if surface_id == 0 {
+        return SurfaceClass::AppCompat;
+    }
+    for e in entries.iter().take(count.min(entries.len())) {
+        if e.id as u32 != surface_id {
+            continue;
+        }
+        if e.flags & gp::WM_WIN_F_VISIBLE == 0 {
+            return SurfaceClass::Hidden;
+        }
+        return match e.layer {
+            gp::WM_LAYER_SYSTEM | gp::WM_LAYER_SERVICE => SurfaceClass::WinBand,
+            _ => SurfaceClass::WinApp, // APP 层；未知层值 wire 已双侧执法，防御档按窗呈现
+        };
+    }
+    SurfaceClass::AppCompat
+}
+
+/// 单带槽计划（[`plan_bands`] 产物——guest 侧缓存写入与重放的几何真值）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BandPlan {
+    /// 带源层（WM_LAYER_SYSTEM/WM_LAYER_SERVICE；fallback 底带记 SYSTEM——
+    /// 重放序随 SYSTEM 组）。
+    pub layer: u8,
+    /// 带矩形（fb 界内半开 [x,x+w)×[y,y+h)：窗口带 = 窗有效几何∩fb；fallback
+    /// 带 = (0, fb_h−band_bot, fb_w, band_bot)）。
+    pub rect: gp::Rect,
+    /// true = 第 4 槽底常量 fallback 带（批C 底窗落成后自然被覆盖而退役）。
+    pub fallback: bool,
+}
+
+/// 带集规划（纯函数）：快照序扫候选窗（vis ∧ layer∈{SYSTEM,SERVICE} ∧
+/// rect∩fb≠∅），形态帽内（窗自身 h≤[`BAND_H_CAP`] ∧ w≤fb_w）依序占前
+/// 3 槽；底常量带 (0, fb_h−band_bot, fb_w, band_bot) 与已选带零重叠时占
+/// 第 4 槽 fallback（退化 band_bot——0 或 ≥fb_h——不建）。
+///
+/// warn（按候选序槽位，任一 true = guest 侧 loud 一次）：warn[i<3] = 快照
+/// 序第 i 个候选因高/宽帽被拒；warn[3] = 候选序越 warn 数组（第 5+ 候选
+/// 超帽）与窗口槽耗尽（超 3 带截断）的合并旗。返回（槽位数组、warn、
+/// 选中带总数）。
+pub fn plan_bands(
+    entries: &[gp::WmEntry],
+    count: usize,
+    fb_w: u32,
+    fb_h: u32,
+    band_bot: u32,
+) -> ([Option<BandPlan>; BAND_SLOTS], [bool; BAND_SLOTS], u8) {
+    let mut bands: [Option<BandPlan>; BAND_SLOTS] = [None; BAND_SLOTS];
+    let mut warn = [false; BAND_SLOTS];
+    let mut n_win = 0usize; // 已占窗口带槽数（≤3——槽 3 恒归 fallback）
+    let mut cand = 0usize; // 候选序（vis∧层∧∩fb 已成立者，快照序）
+    for e in entries.iter().take(count.min(entries.len())) {
+        if e.flags & gp::WM_WIN_F_VISIBLE == 0
+            || (e.layer != gp::WM_LAYER_SYSTEM && e.layer != gp::WM_LAYER_SERVICE)
+        {
+            continue; // vis / 层过滤：隐藏窗与 APP 层不带化（非候选、零 warn）
+        }
+        // 窗有效几何∩fb（u64 和防溢出；WmEntry x/y/w/h 为 u16 无负值）。
+        let x0 = e.x as u32;
+        let y0 = e.y as u32;
+        let x1 = ((e.x as u64 + e.w as u64).min(fb_w as u64)) as u32;
+        let y1 = ((e.y as u64 + e.h as u64).min(fb_h as u64)) as u32;
+        if x0 >= fb_w || y0 >= fb_h || x1 <= x0 || y1 <= y0 {
+            continue; // rect∩fb 空集：全界外窗不带化（非候选、零 warn）
+        }
+        // 候选成立——形态帽按窗自身 w/h 执法（非裁后值：帽的是窗不是交域）。
+        if e.h as u32 > BAND_H_CAP || e.w as u32 > fb_w {
+            warn[cand.min(BAND_SLOTS - 1)] = true;
+            cand += 1;
+            continue;
+        }
+        if n_win < BAND_SLOTS - 1 {
+            bands[n_win] = Some(BandPlan {
+                layer: e.layer,
+                rect: gp::Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 },
+                fallback: false,
+            });
+            n_win += 1;
+        } else {
+            warn[BAND_SLOTS - 1] = true; // 超 3 带截断：快照序前 3 优先
+        }
+        cand += 1;
+    }
+    // 底常量 fallback 带：与已选带零重叠才占第 4 槽。
+    if band_bot > 0 && band_bot < fb_h {
+        let fr = gp::Rect { x: 0, y: fb_h - band_bot, w: fb_w, h: band_bot };
+        let overlap = bands[..n_win].iter().flatten().any(|b| rect_isect(&b.rect, &fr).is_some());
+        if !overlap {
+            bands[BAND_SLOTS - 1] = Some(BandPlan {
+                layer: gp::WM_LAYER_SYSTEM,
+                rect: fr,
+                fallback: true,
+            });
+        }
+    }
+    let total = n_win + usize::from(bands[BAND_SLOTS - 1].is_some());
+    (bands, warn, total as u8)
+}
+
+/// 带重放计划（纯函数）：定序 SERVICE 窗口带 → SYSTEM 窗口带与 fallback
+/// （各自槽序，「序即正确性」——后画压先画，服务面视觉恒压系统面）；每带
+/// ×每条 damage 求交（交域再裁回 fb 界——带矩形本 ⊆ fb，双保险零漂移），
+/// 非空即出 (slot, rect) 对——slot = bands 槽位（guest 侧读该槽缓存行）。
+/// full=true 时 damage 视为单全屏 rect（FULL 帧恒触发重放——保 marker
+/// 确定性；重放区⊆原始 damage 界 → vgpu 上传集自然覆盖）。返回写出条数。
+pub fn band_replay_plan(
+    damage: &[gp::Rect],
+    damage_n: usize,
+    full: bool,
+    fb_w: u32,
+    fb_h: u32,
+    bands: &[Option<BandPlan>; BAND_SLOTS],
+    out: &mut [(usize, gp::Rect); BAND_SLOTS * gp::DAMAGE_MAX + 2],
+) -> usize {
+    // damage 帽：wire 帽 DAMAGE_MAX 双保险（out 容量公式的前提——越帽截
+    // 断不越界；guest 侧恒 ≤帽）。
+    let n = if full { 1 } else { damage_n.min(damage.len()).min(gp::DAMAGE_MAX) };
+    let fb_rect = gp::Rect { x: 0, y: 0, w: fb_w, h: fb_h };
+    let mut written = 0usize;
+    for pass in 0..2 {
+        for (si, b) in bands.iter().enumerate() {
+            let Some(b) = b else { continue };
+            let svc = b.layer == gp::WM_LAYER_SERVICE;
+            if (pass == 0) != svc {
+                continue; // 两遍定序：pass 0 只 SERVICE，pass 1 收 SYSTEM 与 fallback
+            }
+            for di in 0..n {
+                let r = if full { fb_rect } else { damage[di] };
+                if let Some(hit) = rect_isect(&r, &b.rect).and_then(|c| rect_isect(&c, &fb_rect)) {
+                    out[written] = (si, hit);
+                    written += 1;
+                }
+            }
+        }
+    }
+    written
+}
+
+/// 带缓存行重放（u32 ARGB 逐像素）：A==0（`p>>24==0`——1-bit 透明键，
+/// berry-gfx raster.rs argb_blit 同律）跳写保底穿透，A!=0 覆写原值（无
+/// blend——半透也是不透明覆盖）；返回实际写入数（guest 侧「重放 ≥1 像素」
+/// marker 判据）。长度不等按短者（调用方保证同长行切片——带行几何由
+/// [`BandPlan::rect`] 单源，防御档不 panic）。
+pub fn replay_rows_u32(dst: &mut [u32], src: &[u32]) -> usize {
+    let mut n = 0usize;
+    for (d, &s) in dst.iter_mut().zip(src.iter()) {
+        if s >> 24 == 0 {
+            continue; // A==0：透明键跳写（底穿透）
+        }
+        *d = s;
+        n += 1;
+    }
+    n
+}
+
+/// 带缓存总量（boot 一次性堆分配字节数）：fb_w × [`BAND_H_CAP`] × 4B ×
+/// [`BAND_SLOTS`]。fb_w==0（几何未就绪）或超 [`BAND_CACHE_BYTES_MAX`] 门
+/// → None（guest 侧带面禁用 loud——裁剪与现网行为不变，仅无缓存/重放）。
+pub fn band_cache_bytes(fb_w: u32) -> Option<usize> {
+    let bytes = fb_w as u64 * BAND_H_CAP as u64 * 4 * BAND_SLOTS as u64;
+    if bytes == 0 || bytes > BAND_CACHE_BYTES_MAX as u64 {
+        return None;
+    }
+    Some(bytes as usize)
+}
+
+/// 两半开矩形求交（u64 和防 u32 溢出——wire damage 的 w/h 为任意 u32）；
+/// 空集 → None。交域宽/高 < min(两矩形宽/高) ≤ u32 域，落回 u32 安全。
+fn rect_isect(a: &gp::Rect, b: &gp::Rect) -> Option<gp::Rect> {
+    let x0 = a.x.max(b.x);
+    let y0 = a.y.max(b.y);
+    let x1 = (a.x as u64 + a.w as u64).min(b.x as u64 + b.w as u64);
+    let y1 = (a.y as u64 + a.h as u64).min(b.y as u64 + b.h as u64);
+    if x1 <= x0 as u64 || y1 <= y0 as u64 {
+        return None;
+    }
+    Some(gp::Rect {
+        x: x0,
+        y: y0,
+        w: (x1 - x0 as u64) as u32,
+        h: (y1 - y0 as u64) as u32,
+    })
+}
+
+// ==========================================================================
 // host 测试（B1-b/c 刀面：后端状态机 / INDIRECT 链构造 / ATTACH 单段 /
-// 提交序——协议编解码本体已在 berry-gpuproto B1-a 冻结，此处测后端语义）
+// 提交序——协议编解码本体已在 berry-gpuproto B1-a 冻结，此处测后端语义；
+// 波3 批B 刀面：带合成 v1 纯面——分类/带集/重放序/行重放）
 // ==========================================================================
 
 #[cfg(test)]
@@ -637,5 +882,274 @@ mod tests {
         assert!(!batch_resps_ok(&bucket[..3 * 24], 4, 42));
         assert!(!batch_resps_ok(&bucket, 0, 42));
         assert!(!batch_resps_ok(&bucket, FRAME_CMD_MAX + 1, 42));
+    }
+
+    // —— 波3 批B 带合成 v1 测试（分类/带集/重放序/行重放——纯逻辑零 QEMU）——
+
+    /// 快照表项构造助手（x/y/w/h 即有效几何域——WmEntry 语义）。
+    fn wm_ent(id: u16, layer: u8, flags: u8, x: u16, y: u16, w: u16, h: u16) -> gp::WmEntry {
+        gp::WmEntry { id, parent: 0, group: 0, x, y, w, h, layer, z: 0, flags }
+    }
+
+    #[test]
+    fn classify_surface_six_classes() {
+        // 语义表六类（SPEC-batchB §5 矩阵 1）：0xFFFF 值域档优先于 wid 查表
+        // （id 恰 0xFFFF 的窗不冒领）；InternalRefresh 为内部调用点专值，
+        // classify 永不产出——枚举六变体互异自证。
+        let entries = [
+            wm_ent(7, gp::WM_LAYER_SYSTEM, gp::WM_WIN_F_VISIBLE, 0, 0, 800, 100),
+            wm_ent(9, gp::WM_LAYER_SERVICE, gp::WM_WIN_F_VISIBLE, 0, 0, 800, 44),
+            wm_ent(11, gp::WM_LAYER_APP, gp::WM_WIN_F_VISIBLE, 0, 0, 800, 400),
+            wm_ent(13, gp::WM_LAYER_APP, 0, 0, 0, 800, 400), // APP 隐藏窗
+            wm_ent(0xFFFF, gp::WM_LAYER_SYSTEM, gp::WM_WIN_F_VISIBLE, 0, 0, 800, 40),
+        ];
+        assert_eq!(classify_surface(SYS_SURFACE_ID, &entries, 5), SurfaceClass::SysFace);
+        assert_eq!(classify_surface(0, &entries, 5), SurfaceClass::AppCompat);
+        assert_eq!(classify_surface(999, &entries, 5), SurfaceClass::AppCompat); // 未知 wid
+        assert_eq!(classify_surface(0x1_0000, &entries, 5), SurfaceClass::AppCompat); // u16 域外
+        assert_eq!(classify_surface(7, &entries, 5), SurfaceClass::WinBand); // SYSTEM 层
+        assert_eq!(classify_surface(9, &entries, 5), SurfaceClass::WinBand); // SERVICE 层
+        assert_eq!(classify_surface(11, &entries, 5), SurfaceClass::WinApp);
+        assert_eq!(classify_surface(13, &entries, 5), SurfaceClass::Hidden); // vis=false
+        // 快照有效前缀（count=0 = 空快照 → 一切 wid 走 AppCompat）。
+        assert_eq!(classify_surface(9, &entries, 0), SurfaceClass::AppCompat);
+        let six = [
+            SurfaceClass::SysFace,
+            SurfaceClass::InternalRefresh,
+            SurfaceClass::AppCompat,
+            SurfaceClass::WinBand,
+            SurfaceClass::WinApp,
+            SurfaceClass::Hidden,
+        ];
+        for i in 0..six.len() {
+            for j in (i + 1)..six.len() {
+                assert_ne!(six[i], six[j]);
+            }
+        }
+    }
+
+    #[test]
+    fn plan_bands_filters_and_caps() {
+        // 选取门四连（SPEC-batchB §5 矩阵 2）：vis 过滤、层过滤（APP 不带化）、
+        // 高帽（780px softimed 形态 → 拒 + warn[候选序 0]）、宽帽（w>fb_w →
+        // 拒 + warn[候选序 1]）、全界外（rect∩fb=∅ → 静默跳零 warn）。band_bot=0
+        // 隔离 fallback 面。
+        let entries = [
+            wm_ent(1, gp::WM_LAYER_SERVICE, 0, 0, 0, 800, 44),               // !vis：跳
+            wm_ent(2, gp::WM_LAYER_APP, gp::WM_WIN_F_VISIBLE, 0, 0, 800, 100), // APP 层：跳
+            wm_ent(3, gp::WM_LAYER_SERVICE, gp::WM_WIN_F_VISIBLE, 0, 0, 800, 780), // 高超帽
+            wm_ent(4, gp::WM_LAYER_SYSTEM, gp::WM_WIN_F_VISIBLE, 0, 0, 900, 100), // 宽超 fb_w
+            wm_ent(5, gp::WM_LAYER_SYSTEM, gp::WM_WIN_F_VISIBLE, 900, 0, 100, 100), // 全界外
+        ];
+        let (bands, warn, n) = plan_bands(&entries, 5, 800, 600, 0);
+        assert_eq!(bands, [None; BAND_SLOTS]);
+        assert_eq!(n, 0);
+        assert_eq!(warn, [true, true, false, false]); // 界外/过滤不算候选
+        // 正选：两窗依快照序占槽 0/1；触底带窗与 fallback 重叠 → 第 4 槽退役。
+        let entries = [
+            wm_ent(6, gp::WM_LAYER_SERVICE, gp::WM_WIN_F_VISIBLE, 0, 0, 800, 44),
+            wm_ent(7, gp::WM_LAYER_SYSTEM, gp::WM_WIN_F_VISIBLE, 0, 556, 800, 44),
+        ];
+        let (bands, warn, n) = plan_bands(&entries, 2, 800, 600, 44);
+        assert_eq!(warn, [false; BAND_SLOTS]);
+        assert_eq!(n, 2);
+        assert_eq!(bands[0].unwrap().rect, gp::Rect { x: 0, y: 0, w: 800, h: 44 });
+        assert_eq!(bands[0].unwrap().layer, gp::WM_LAYER_SERVICE);
+        assert!(!bands[0].unwrap().fallback);
+        assert_eq!(bands[1].unwrap().rect, gp::Rect { x: 0, y: 556, w: 800, h: 44 });
+        assert!(bands[3].is_none()); // 窗带 y 556..600 ∩ fallback 556..600 非空
+    }
+
+    #[test]
+    fn plan_bands_overflow_truncates() {
+        // 超 3 带截断：4 形态合格候选只取快照序前 3，warn[3] 置位（SPEC-batchB
+        // §5 矩阵 2；band_bot=0 隔离 fallback）。
+        let entries = [
+            wm_ent(1, gp::WM_LAYER_SYSTEM, gp::WM_WIN_F_VISIBLE, 0, 0, 400, 40),
+            wm_ent(2, gp::WM_LAYER_SERVICE, gp::WM_WIN_F_VISIBLE, 400, 0, 400, 40),
+            wm_ent(3, gp::WM_LAYER_SYSTEM, gp::WM_WIN_F_VISIBLE, 0, 40, 400, 40),
+            wm_ent(4, gp::WM_LAYER_SERVICE, gp::WM_WIN_F_VISIBLE, 400, 40, 400, 40),
+        ];
+        let (bands, warn, n) = plan_bands(&entries, 4, 800, 600, 0);
+        assert_eq!(n, 3);
+        assert_eq!(bands[0].unwrap().layer, gp::WM_LAYER_SYSTEM);
+        assert_eq!(bands[1].unwrap().layer, gp::WM_LAYER_SERVICE);
+        assert_eq!(bands[2].unwrap().layer, gp::WM_LAYER_SYSTEM);
+        assert!(bands[3].is_none());
+        assert_eq!(warn, [false, false, false, true]);
+    }
+
+    #[test]
+    fn plan_bands_fallback_activation_and_retirement() {
+        // 底常量 fallback：空快照 = fallback-only（第 4 槽恰为
+        // (0, fb_h−band_bot, fb_w, band_bot)）；零重叠（含半开邻接）激活、
+        // 一像素重叠退役；退化 band_bot（0 / ≥fb_h）不建。
+        let empty: [gp::WmEntry; 0] = [];
+        let (bands, warn, n) = plan_bands(&empty, 0, 1080, 1920, 135);
+        assert_eq!(n, 1);
+        assert_eq!(warn, [false; BAND_SLOTS]);
+        let fb = bands[3].unwrap();
+        assert!(fb.fallback);
+        assert_eq!(fb.layer, gp::WM_LAYER_SYSTEM);
+        assert_eq!(fb.rect, gp::Rect { x: 0, y: 1920 - 135, w: 1080, h: 135 });
+        // 顶带窗与底带零重叠 → fallback 仍占第 4 槽。
+        let entries = [wm_ent(1, gp::WM_LAYER_SYSTEM, gp::WM_WIN_F_VISIBLE, 0, 0, 1080, 117)];
+        let (bands, _, n) = plan_bands(&entries, 1, 1080, 1920, 135);
+        assert_eq!(n, 2);
+        assert!(bands[3].is_some());
+        // 半开邻接（窗 y 1670..1785 vs 底带 1785..1920）零重叠 → 激活。
+        let entries = [wm_ent(2, gp::WM_LAYER_SYSTEM, gp::WM_WIN_F_VISIBLE, 0, 1670, 1080, 115)];
+        let (bands, _, _) = plan_bands(&entries, 1, 1080, 1920, 135);
+        assert!(bands[3].is_some());
+        // 一像素重叠（窗 y 1670..1786 vs 底带 1785..1920）→ 退役。
+        let entries = [wm_ent(3, gp::WM_LAYER_SYSTEM, gp::WM_WIN_F_VISIBLE, 0, 1670, 1080, 116)];
+        let (bands, _, _) = plan_bands(&entries, 1, 1080, 1920, 135);
+        assert!(bands[3].is_none());
+        // 退化 band_bot：0 与 ≥fb_h 都不建。
+        let (b0, _, n0) = plan_bands(&empty, 0, 800, 600, 0);
+        assert_eq!(n0, 0);
+        assert!(b0[3].is_none());
+        let (bh, _, _) = plan_bands(&empty, 0, 800, 600, 600);
+        assert!(bh[3].is_none());
+    }
+
+    #[test]
+    fn plan_bands_clips_window_rect_into_fb() {
+        // 部分越界窗：rect∩fb 非空仍入槽，槽内 rect = 裁回 fb 界的交域；
+        // 形态帽按窗自身 w/h 执法（h=300 帽外——裁后 100 也不收）。
+        let entries = [wm_ent(1, gp::WM_LAYER_SERVICE, gp::WM_WIN_F_VISIBLE, 700, 550, 50, 100)];
+        let (bands, warn, n) = plan_bands(&entries, 1, 800, 600, 44);
+        assert_eq!(warn, [false; BAND_SLOTS]);
+        assert_eq!(n, 1);
+        assert_eq!(bands[0].unwrap().rect, gp::Rect { x: 700, y: 550, w: 50, h: 50 });
+        assert!(bands[3].is_none()); // 裁后仍触底带区 → fallback 退役
+        // 窗自身高超帽（裁后 h=100 在帽内）：拒 + warn[0]，仅 fallback 存活。
+        let entries = [wm_ent(2, gp::WM_LAYER_SERVICE, gp::WM_WIN_F_VISIBLE, 0, 500, 800, 300)];
+        let (bands, warn, n) = plan_bands(&entries, 1, 800, 600, 44);
+        assert_eq!(n, 1); // fallback-only
+        assert!(bands[0].is_none());
+        assert!(bands[3].unwrap().fallback);
+        assert_eq!(warn, [true, false, false, false]);
+    }
+
+    #[test]
+    fn band_replay_plan_orders_service_before_system() {
+        // 定序「序即正确性」（frame_flush_batch 先例）：SERVICE 槽先于
+        // SYSTEM 槽，fallback 槽随 SYSTEM 组殿后——后画压先画。
+        let bands = [
+            Some(BandPlan { layer: gp::WM_LAYER_SYSTEM, rect: gp::Rect { x: 0, y: 0, w: 800, h: 40 }, fallback: false }),
+            Some(BandPlan { layer: gp::WM_LAYER_SERVICE, rect: gp::Rect { x: 0, y: 40, w: 800, h: 40 }, fallback: false }),
+            None,
+            Some(BandPlan { layer: gp::WM_LAYER_SYSTEM, rect: gp::Rect { x: 0, y: 556, w: 800, h: 44 }, fallback: true }),
+        ];
+        let damage = [gp::Rect { x: 0, y: 0, w: 800, h: 600 }];
+        let mut out = [(0usize, gp::Rect { x: 0, y: 0, w: 0, h: 0 }); BAND_SLOTS * gp::DAMAGE_MAX + 2];
+        let n = band_replay_plan(&damage, 1, false, 800, 600, &bands, &mut out);
+        assert_eq!(n, 3);
+        assert_eq!(out[0].0, 1); // SERVICE 槽 1 先
+        assert_eq!(out[1].0, 0); // SYSTEM 窗口带槽 0 次
+        assert_eq!(out[2].0, 3); // fallback 槽 3 随 SYSTEM 序殿后
+        assert_eq!(out[0].1, gp::Rect { x: 0, y: 40, w: 800, h: 40 });
+        assert_eq!(out[2].1, gp::Rect { x: 0, y: 556, w: 800, h: 44 });
+    }
+
+    #[test]
+    fn band_replay_plan_full_frame_always_triggers() {
+        // FULL 帧恒触发（damage 视为单全屏 rect——无视 damage_n=0）：每 Some
+        // 带恰出 1 条整带 rect；零带 plan（带面禁用形）= 0 条；非 FULL 与带
+        // 零交 = 0 条。
+        let bands = [
+            Some(BandPlan { layer: gp::WM_LAYER_SYSTEM, rect: gp::Rect { x: 0, y: 0, w: 800, h: 40 }, fallback: false }),
+            None,
+            None,
+            Some(BandPlan { layer: gp::WM_LAYER_SYSTEM, rect: gp::Rect { x: 0, y: 556, w: 800, h: 44 }, fallback: true }),
+        ];
+        let mut out = [(0usize, gp::Rect { x: 0, y: 0, w: 0, h: 0 }); BAND_SLOTS * gp::DAMAGE_MAX + 2];
+        let no: [gp::Rect; 0] = [];
+        let n = band_replay_plan(&no, 0, true, 800, 600, &bands, &mut out);
+        assert_eq!(n, 2);
+        assert_eq!(out[0], (0, gp::Rect { x: 0, y: 0, w: 800, h: 40 }));
+        assert_eq!(out[1], (3, gp::Rect { x: 0, y: 556, w: 800, h: 44 }));
+        let empty_bands = [None; BAND_SLOTS];
+        assert_eq!(band_replay_plan(&no, 0, true, 800, 600, &empty_bands, &mut out), 0);
+        let mid = [gp::Rect { x: 0, y: 300, w: 800, h: 100 }];
+        assert_eq!(band_replay_plan(&mid, 1, false, 800, 600, &bands, &mut out), 0);
+    }
+
+    #[test]
+    fn band_replay_plan_intersection_shapes() {
+        // damage∩带求交形态（v2_rects_clip_into_shapes 先例）：部分重叠取交
+        // 域、带序内 damage 保序、u32 溢出域（w=u32::MAX）不炸且裁回界内、
+        // damage_n 之外的条目不参与。
+        let bands = [
+            Some(BandPlan { layer: gp::WM_LAYER_SERVICE, rect: gp::Rect { x: 100, y: 0, w: 600, h: 40 }, fallback: false }),
+            None,
+            None,
+            None,
+        ];
+        let damage = [
+            gp::Rect { x: 0, y: 0, w: 300, h: 20 },          // 左交：x 100..300
+            gp::Rect { x: 600, y: 10, w: u32::MAX, h: 40 },  // 溢出域：交 x 600..700
+            gp::Rect { x: 0, y: 500, w: 800, h: 50 },        // 零交
+        ];
+        let mut out = [(0usize, gp::Rect { x: 0, y: 0, w: 0, h: 0 }); BAND_SLOTS * gp::DAMAGE_MAX + 2];
+        let n = band_replay_plan(&damage, 2, false, 800, 600, &bands, &mut out);
+        assert_eq!(n, 2); // damage_n=2：第 3 条不参与
+        assert_eq!(out[0], (0, gp::Rect { x: 100, y: 0, w: 200, h: 20 }));
+        assert_eq!(out[1], (0, gp::Rect { x: 600, y: 10, w: 100, h: 30 }));
+        // damage_n=3：第 3 条与带零交 → 仍 2 条。
+        assert_eq!(band_replay_plan(&damage, 3, false, 800, 600, &bands, &mut out), 2);
+    }
+
+    #[test]
+    fn replay_rows_u32_sentinel() {
+        // 哨兵缓冲（berry-gfx icon_format.rs 形态蓝本）：A=0 透明键底穿透
+        // （保底值不触——RGB 非零也跳，键在 A 位）、A!=0 一律覆写原值（半透
+        // 也是不透明覆盖——1-bit 键非 blend）、返回写数 = 非 A=0 像素数。
+        let mut dst = [0xDEAD_BEEFu32; 8];
+        let src = [
+            0x0000_0000, // A=0：跳
+            0x00FF_0000, // A=0（RGB 非零也跳）
+            0x8000_FF00, // 半透：原值覆写
+            0xFFFF_FFFF, // 不透明
+            0x0100_0000, // A 最小非零值：覆写
+            0x0000_00FF, // A=0：跳
+            0xFF00_00FF,
+            0xAB12_3456,
+        ];
+        let n = replay_rows_u32(&mut dst, &src);
+        assert_eq!(n, 5);
+        assert_eq!(dst[0], 0xDEAD_BEEF); // 底穿透
+        assert_eq!(dst[1], 0xDEAD_BEEF);
+        assert_eq!(dst[2], 0x8000_FF00);
+        assert_eq!(dst[3], 0xFFFF_FFFF);
+        assert_eq!(dst[4], 0x0100_0000);
+        assert_eq!(dst[5], 0xDEAD_BEEF);
+        assert_eq!(dst[6], 0xFF00_00FF);
+        assert_eq!(dst[7], 0xAB12_3456);
+        // 全透行：0 写、底全穿透。
+        let all_t = [0x00FF_FFFFu32; 4];
+        let mut d4 = [7u32; 4];
+        assert_eq!(replay_rows_u32(&mut d4, &all_t), 0);
+        assert_eq!(d4, [7, 7, 7, 7]);
+        // 长度不等按短者（防御档不 panic）。
+        let mut d2 = [0u32; 2];
+        assert_eq!(replay_rows_u32(&mut d2, &[0xFF00_0000; 3]), 2);
+        assert_eq!(d2, [0xFF00_0000; 2]);
+    }
+
+    #[test]
+    fn band_cache_bytes_gate() {
+        // 容量边界（SPEC-batchB §5 矩阵 5）：ramfb 800 与 big 1080 两档在
+        // 4MiB 门内；临界 fb_w=1638 恰入（4,193,280）、1639 越门 → None（带
+        // 面禁用降级）；fb_w=0（几何未就绪）拒。
+        assert_eq!(band_cache_bytes(800), Some(800 * 160 * 4 * 4));
+        assert_eq!(band_cache_bytes(1080), Some(1080 * 160 * 4 * 4));
+        assert_eq!(band_cache_bytes(1638), Some(4_193_280));
+        assert_eq!(band_cache_bytes(1639), None);
+        assert_eq!(band_cache_bytes(0), None);
+        assert_eq!(BAND_SLOTS, 4);
+        assert_eq!(BAND_H_CAP, 160);
+        assert_eq!(BAND_CACHE_BYTES_MAX, 4 << 20);
     }
 }
