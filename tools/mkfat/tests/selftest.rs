@@ -463,3 +463,110 @@ fn run_oracle_byte_parity() -> Option<()> {
     let _ = std::fs::remove_dir_all(&td);
     Some(())
 }
+
+#[test]
+fn oracle_guard_regen_parity() {
+    let _ = run_oracle_guard_regen_parity();
+}
+
+/// 换轨二刀新增面（产链现役件切 Rust 后的双侧钉板）：fixture 守卫
+/// （--check-fixture/--check-fixture16）与基准重产（--fixture/--fixture16）
+/// 四面 Rust↔Python 输出/字节全等——守卫提示行、互斥拒面 rc、产物字节。
+/// 双件任一侧漂移（改 lib 忘对齐 mkfat.py，或反之下次 Python 面改动）本测即咬。
+fn run_oracle_guard_regen_parity() -> Option<()> {
+    if !python_available() {
+        eprintln!("mkfat: tools/mkfat.py 缺席——守卫/重产对拍 skip（纯面钉板兜底）");
+        return None;
+    }
+    let repo = repo_root();
+    let td = std::env::temp_dir().join(format!("mkfat-guard-parity-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&td);
+    std::fs::create_dir_all(&td).unwrap();
+    let host = {
+        let (_, o, _) = run_cmd(&["rustc", "-vV"], &repo);
+        o.lines().find_map(|l| l.strip_prefix("host: ").map(str::to_string)).unwrap_or_default()
+    };
+    // 先编后用（与 oracle_byte_parity 同款）：测试并行跑时本测可能先于另一测
+    // 的 build 步起跑——自带 build 步消竞态（增量编译，第二次近零耗时）。
+    let cargo_target = repo.join("tools/mkfat/cargo-target");
+    let (ok, _, err) = run_cmd(
+        &[
+            "cargo",
+            "build",
+            "--release",
+            "--manifest-path",
+            "tools/mkfat/Cargo.toml",
+            "--target",
+            &host,
+            "--target-dir",
+            cargo_target.to_str().unwrap(),
+        ],
+        &repo,
+    );
+    assert!(ok, "Rust mkfat build 失败：{err}");
+    let rust_bin = cargo_target.join(&host).join("release").join("mkfat");
+    assert!(rust_bin.exists(), "Rust mkfat 产物缺席：{}", rust_bin.display());
+    let rb = rust_bin.to_str().unwrap();
+    // 面 1/2：守卫四面（双基准 + 双漂移红面）输出行与 rc 全等。
+    let fx12 = "user/berry-fatfs/tests/volume_fixture.bin";
+    let fx16 = "user/berry-fatfs/tests/volume_fixture_fat16.bin";
+    for (guard, fx) in [("--check-fixture", fx12), ("--check-fixture16", fx16)] {
+        let (pok, pout, _) = run_cmd(&["python3", "tools/mkfat.py", guard, fx], &repo);
+        let (rok, rout, _) = run_cmd(&[rb, guard, fx], &repo);
+        assert!(pok && rok, "守卫 {guard} 双侧非零 rc");
+        assert_eq!(pout, rout, "守卫 {guard} 输出行漂移（Rust≠Python）");
+    }
+    // 漂移红面：截短基准 → 双侧 FAIL 同 rc=1 同行（路径段临时替换）。
+    let short12 = td.join("short12.bin");
+    std::fs::write(&short12, b"truncated").unwrap();
+    let s12 = short12.to_str().unwrap();
+    let (pok, pout, _) = run_cmd(&["python3", "tools/mkfat.py", "--check-fixture", s12], &repo);
+    let (rok, rout, _) = run_cmd(&[rb, "--check-fixture", s12], &repo);
+    assert!(!pok && !rok, "漂移守卫未红（双侧 rc 应=1）");
+    assert_eq!(pout, rout, "漂移守卫 FAIL 行漂移");
+    // 面 3/4：基准重产四面字节恒等 + 重产件与 tracked 基准恒等（Rust 侧
+    // 自证：--fixture 双写产物前缀 = 在册 fixture；--fixture16 同）。
+    let pd = td.join("py-dirs.img");
+    let pf = td.join("py-fx.bin");
+    let (ok, _, err) = run_cmd(
+        &["python3", "tools/mkfat.py", pd.to_str().unwrap(), "--fixture", pf.to_str().unwrap()],
+        &repo,
+    );
+    assert!(ok, "Python --fixture 跑挂：{err}");
+    let rd = td.join("rs-dirs.img");
+    let rf = td.join("rs-fx.bin");
+    let (ok, _, err) = run_cmd(&[rb, rd.to_str().unwrap(), "--fixture", rf.to_str().unwrap()], &repo);
+    assert!(ok, "Rust --fixture 跑挂：{err}");
+    assert_eq!(std::fs::read(&pd).unwrap(), std::fs::read(&rd).unwrap(), "--fixture 目录盘整盘对拍破");
+    assert_eq!(std::fs::read(&pf).unwrap(), std::fs::read(&rf).unwrap(), "--fixture 前缀对拍破");
+    let tracked = std::fs::read(repo.join(fx12)).unwrap();
+    assert_eq!(std::fs::read(&rf).unwrap(), tracked, "Rust --fixture 重产件 ≠ 在册基准（drift！）");
+    let p16f = td.join("py16.bin");
+    let (ok, _, err) = run_cmd(&["python3", "tools/mkfat.py", "--fixture16", p16f.to_str().unwrap()], &repo);
+    assert!(ok, "Python --fixture16 跑挂：{err}");
+    let r16f = td.join("rs16.bin");
+    let (ok, _, err) = run_cmd(&[rb, "--fixture16", r16f.to_str().unwrap()], &repo);
+    assert!(ok, "Rust --fixture16 跑挂：{err}");
+    assert_eq!(std::fs::read(&p16f).unwrap(), std::fs::read(&r16f).unwrap(), "--fixture16 对拍破");
+    assert_eq!(std::fs::read(&r16f).unwrap(), std::fs::read(repo.join(fx16)).unwrap(), "Rust --fixture16 重产件 ≠ 在册基准（drift！）");
+    // 面 5：互斥拒面 rc=2 双侧同形。
+    for args in [
+        vec!["--check-fixture16", "--check-fixture", "x"],
+        vec!["--check-fixture"],
+        vec!["--put", "a:b", "--fixture", "c", "out.img"],
+    ] {
+        let (pok, _, perr) = run_cmd(
+            &["python3", "tools/mkfat.py"].iter().copied().chain(args.iter().copied()).collect::<Vec<_>>(),
+            &repo,
+        );
+        let (rok, _, _) = run_cmd(
+            &[rb].iter().copied().chain(args.iter().copied()).collect::<Vec<_>>(),
+            &repo,
+        );
+        assert_eq!(pok, rok, "拒面 {args:?} rc 漂移（py={pok} rs={rok}：{perr}）");
+        assert!(!rok, "拒面 {args:?} 未拒");
+    }
+    eprintln!("mkfat: oracle 守卫/重产四面对拍 PASS（含漂移红面与互斥拒面）");
+    let _ = std::fs::remove_dir_all(&td);
+    Some(())
+}
