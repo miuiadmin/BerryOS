@@ -1311,15 +1311,19 @@ impl<'a> Srv<'a> {
             &rects[..rect_count]
         };
         // 波3-件② 带合成 v1 兼容档：surface_id=0（应用面）提交裁剪系统
-        // 带——顶部状态栏带 + 底部导航条带（几何镜像 launcher desktop.rs
-        // 常量：big 档 132/190px、紧凑档 44/44px；满档判据同源
-        // vp>=600×1800）。应用全屏提交不再覆盖系统带 → 状态栏/导航条
-        // 视觉常驻（owner 投诉「应用进去了状态栏没了」v1 根治）。
+        // 带——顶部状态栏带 + 底部导航条带（几何镜像 launcher 实值单源：
+        // big 档 band_top=117px = appshell scene.rs:34 OH_STATUS_H
+        // 39vp×OH_DENSITY(:31)=3、band_bot=135px = desktop.rs:151
+        // NAV_BAR_H_BIG；紧凑档 44/44px = scene.rs:130 紧凑 44/
+        // desktop.rs:146 NAV_KEY_PX=44。互指防漂移——改值须与 launcher
+        // 真源双侧同步。满档判据同源 vp>=600×1800）。应用全屏提交不再
+        // 覆盖系统带 → 状态栏/导航条视觉常驻（owner 投诉「应用进去了
+        // 状态栏没了」v1 根治）。
         // surface_id=0xFFFF = 系统面 marker（launcher 提交自带带视觉）
         // 不裁剪。裁剪只动 damage 面：blit 与抽样（②）同用裁后集，
         // 抽样点恒落裁后 rect 内 → 与 fb 对拍口径不变。
         let big = self.w >= 600 && self.h >= 1800;
-        let (band_top, band_bot) = if big { (132usize, 190usize) } else { (44, 44) };
+        let (band_top, band_bot) = if big { (117usize, 135usize) } else { (44, 44) };
         let sys_surface = surface_id == SYS_SURFACE_ID;
         let mut clipped_storage = [gp::Rect { x: 0, y: 0, w: 0, h: 0 }; gp::DAMAGE_MAX + 1];
         let mut clipped_n = 0usize;

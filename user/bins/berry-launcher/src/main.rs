@@ -144,7 +144,7 @@ fn main() {
 
     // —— 刀 5（2026-11-15）：状态栏系统窗立法（owner「应用进去了状态栏
     //    也要显示」）——GUI-8 裁决 e 有限翻案：launcher 不再裸占全屏单窗，
-    //    改注册双窗——① SYSTEM 层状态栏窗（0,0,w,39px：顶部常驻带，wmd
+    //    改注册双窗——① SYSTEM 层状态栏窗（0,0,w,117px：顶部常驻带，wmd
     //    表内 layer=SYSTEM 且 vis=SHOW）② APP 层桌面窗（AVOID_SYS——有效
     //    几何自动从状态栏下沿起）。应用窗（appdemo 同款 AVOID_SYS）的
     //    有效几何同样被状态栏窗裁顶 = 应用画面永不覆盖状态栏（像素面仍
@@ -154,7 +154,10 @@ fn main() {
     let mut req = [0u8; 256];
     let mut rep = [0u8; 256];
     let mut rhs = [0 as Handle; 8];
-    let sys_h: u16 = 39; // OH_STATUS_H（OH phone 档同值）
+    // 像素域真值：appshell scene.rs:34 OH_STATUS_H=39vp × scene.rs:31
+    // OH_DENSITY=3 = 117px（与 desktop 画态 scene.rs:130 同式；guifbd
+    // guest.rs 裁带 band_top 互指此值——改值双侧同步）。
+    let sys_h: u16 = 117; // 波3-件⑤前 vp 值 39 误入像素域，裁决 0aeb01814 修正
     {
         let creq = gp::WmCreateReq {
             layer: gp::WM_LAYER_SYSTEM,
