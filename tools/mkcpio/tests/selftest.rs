@@ -222,20 +222,36 @@ fn run_oracle_byte_parity() -> Option<()> {
     let bap = td.join("app.bap");
     std::fs::write(&bap, [0x33u8; 9]).unwrap();
     std::fs::write(td.join("app.bap.sig"), [0x44u8; 21]).unwrap();
-    // Rust CLI：先 build 再跑（cargo-target 形态与产链一致）。
+    // Rust CLI：先 build 再跑。--target-dir 显式钉 tools/mkcpio/cargo-target：
+    // 旗标优先于任何 CARGO_TARGET_DIR 环境与默认值，三种环境（本地全局
+    // target-dir / CI 净仓默认 target/ / 产链钉值）产物路径恒定可寻——
+    // elf2flat 同款纪律（justfile 侧钉 env，此处测试内嵌套 build 钉旗标，
+    // 二刀产链换轨时 justfile 亦钉同路径）。
     let repo = repo_root();
     let host = {
         let (_, o, _) = run_cmd(&["rustc", "-vV"], &repo);
         o.lines().find_map(|l| l.strip_prefix("host: ").map(str::to_string)).unwrap_or_default()
     };
+    let cargo_target = repo.join("tools/mkcpio/cargo-target");
     let (ok, _, err) = run_cmd(
-        &["cargo", "build", "--release", "--manifest-path", "tools/mkcpio/Cargo.toml", "--target", &host],
+        &[
+            "cargo",
+            "build",
+            "--release",
+            "--manifest-path",
+            "tools/mkcpio/Cargo.toml",
+            "--target",
+            &host,
+            "--target-dir",
+            cargo_target.to_str().unwrap(),
+        ],
         &repo,
     );
     if !ok {
         panic!("Rust mkcpio build 失败：{err}");
     }
-    let rust_bin = repo.join(format!("tools/mkcpio/cargo-target/{host}/release/mkcpio"));
+    let rust_bin = cargo_target.join(&host).join("release").join("mkcpio");
+    assert!(rust_bin.exists(), "Rust mkcpio 产物缺席：{}", rust_bin.display());
     let args_spec = |out: &str| vec![
         out.to_string(),
         format!("bin/aa={}", f1.display()),
