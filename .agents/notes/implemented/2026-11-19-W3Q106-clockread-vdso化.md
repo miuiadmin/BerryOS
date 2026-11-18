@@ -39,3 +39,13 @@ Status: implemented
 - REALTIME epoch + seqlock 更新点 = v2 扩展（页布局 add-only 预留 seq 域）。
 - libc 高层消费（事件循环/动画类）走 berry_clock_read 自然受益，无逐点改造义务。
 - Q105 撞号避让：#498 已占用 W3-Q105（G1.5 悬账收口），本件改号 W3-Q106。
+
+## 追刀：发布面守卫十一连扩容（run 44360602853 红根）
+
+CI smoke `sdk-publish-guard` 硬门 2b 拦截 `berry-sys/Cargo.toml:25 berry-vdsoface = { path = … }` path-only 线（本件引入）。修法三面：
+
+- manifest 双写形：`berry-vdsoface = { path = "../berry-vdsoface", version = "0.2.0" }`（版本段随 workspace 单源 0.2.0）。
+- vdsoface 正式入发布族（第 11 crate）：Cargo.toml 补 description/repository/readme 三键 + README.md 本体（strmem 同款纯函数面文风）；硬门 1 清单 / path-only 反扫清单 / pc 定值（=0）扩至十一 manifest；档② 完整 package 清单 berry-sys 移出（有内部依赖后 verification build 须 registry 可解析——fsclient B6 判例同款降 --list）、vdsoface 入；档③ --list 增 berry-sys。
+- 同步律全链：dw 正向线 +1（sys→vdsoface）；sdk-publish.yml 依赖序九连（vdsoface 首）；应用开发指南 §9/§9.1 十一连口径 + publish 序 + 名占预检清单（顺带清偿 base 滞后：文档八连口径未含 lifecycle/strmem 两 crate）。
+
+本地自证：守卫六门全绿（GATE1/2-dw/2b/pc）+ `cargo package -p berry-vdsoface` verification build 过（仅 B2 已知噪声）+ `cargo package --list -p berry-sys` 干净。

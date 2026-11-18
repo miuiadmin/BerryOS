@@ -13,5 +13,8 @@ edition = "2021"
 # 锁 aarch64-unknown-none 跨 workspace 边界命中——berryboot/fbcon 同款
 # gotcha）。
 license = "Apache-2.0"
+description = "BerryOS vDSO data-page layout and ticks-to-ns conversion as pure functions (frozen-ABI magic/freq/seq fields, seqlock-ready predicate), host-testable single source"
+repository = "https://github.com/miuiadmin/BerryOS"
+readme = "README.md"
 
 [dependencies]
