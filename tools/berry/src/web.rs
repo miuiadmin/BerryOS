@@ -2388,7 +2388,16 @@ mod tests {
             use std::io::Read;
             let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
             s.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
-            write!(s, "GET {path} HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+            // The refuse path (serve_listener) writes the 503 and closes
+            // WITHOUT reading the request: our GET bytes sit unread in the
+            // server's receive buffer at close() time, which turns the
+            // close into an RST that can beat this write — EPIPE here
+            // means "the server already answered or reset us", not a
+            // probe bug. Swallow it, read whatever arrived; an empty
+            // string is a valid transient both polling loops retry on.
+            // (Race first caught live 2026-11-19: ~2/14 single runs, and
+            // berry runs twice per test-host chain → ~25% chain flake.)
+            let _ = write!(s, "GET {path} HTTP/1.1\r\nHost: x\r\n\r\n");
             let mut buf = String::new();
             let _ = s.read_to_string(&mut buf);
             buf

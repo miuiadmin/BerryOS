@@ -1,0 +1,1603 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NOTICE - platform/frameworks/base - Git at Google</title>
+
+  <link rel="icon" href="/+static/favicon.ico" sizes="any">
+  <link rel="icon" type="image/svg+xml" href="/+static/favicon.svg">
+  <link rel="icon" type="image/png" sizes="32x32" href="/+static/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/+static/favicon-16x16.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/+static/apple-touch-icon.png">
+  <link rel="stylesheet" href="/+static/base.css" type="text/css">
+  
+    <link rel="stylesheet" href="/+static/prettify/prettify.css" type="text/css">
+  
+  
+    
+    
+      <!-- default customHeadTagPart -->
+    
+  
+  
+    <script nonce="uh0tpLLN8q9UVfP7frkGJw">// Copyright (C) 2026 Google Inc. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+(function() {
+  try {
+    let t = localStorage.getItem('gitiles-theme');
+    if (!t) {
+      const m = document.cookie.match(/(?:^|; )gitiles-theme=([^;]*)/);
+      if (m) {
+        t = decodeURIComponent(m[1]);
+      }
+    }
+    if (t === 'dark' || t === 'light') {
+      document.documentElement.setAttribute('data-theme', t);
+    }
+  } catch (e) {}
+})();
+</script>
+  
+</head>
+<body class="Site">
+  
+    <header class="Site-header">
+      <div class="Header">
+        
+    
+      
+    
+      <style>
+        .Header-image--dark {
+          display: none;
+        }
+        html[data-theme="dark"] .Header-image--light {
+          display: none;
+        }
+        html[data-theme="dark"] .Header-image--dark {
+          display: inline-block;
+        }
+        @media (prefers-color-scheme: dark) {
+          :root:not([data-theme="light"]) .Header-image--light {
+            display: none;
+          }
+          :root:not([data-theme="light"]) .Header-image--dark {
+            display: inline-block;
+          }
+        }
+      </style>
+      <a class="Header-image" href="/">
+        <img class="Header-image--light"
+             src="//www.gstatic.com/images/branding/lockups/2x/lockup_git_color_108x24dp.png"
+             width="108" height="24"
+             alt="Google Git">
+        <img class="Header-image--dark"
+             src="//www.gstatic.com/images/branding/lockups/2x/lockup_git_light_color_108x24dp.png"
+             width="108" height="24"
+             alt="Google Git">
+      </a>
+    
+    
+  
+    
+    
+  
+
+        <div class="Header-menu">
+          
+            <a class="Header-menuItem" href="https://accounts.google.com/AccountChooser?faa=1&amp;continue=https://android.googlesource.com/login/platform/frameworks/base/%2B/refs/tags/android-15.0.0_r1/NOTICE">Sign in</a>
+            
+          
+          
+    
+  
+          
+    <button class="Header-menuItem Header-themeToggle" id="gitiles-theme-toggle" type="button" title="Toggle theme (Auto / Dark / Light)" aria-label="Toggle theme">
+      <span class="Header-themeIcon" aria-hidden="true">&#9681;</span>
+      <span class="Header-themeLabel">Theme</span>
+    </button>
+    <script nonce="uh0tpLLN8q9UVfP7frkGJw">// Copyright (C) 2026 Google Inc. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+(function() {
+  function getTheme() {
+    try {
+      const t = localStorage.getItem('gitiles-theme');
+      if (t) {
+        return t;
+      }
+    } catch (e) {}
+    try {
+      const m = document.cookie.match(/(?:^|; )gitiles-theme=([^;]*)/);
+      if (m) {
+        return decodeURIComponent(m[1]);
+      }
+    } catch (e) {}
+    return 'auto';
+  }
+
+  function applyTheme(theme) {
+    if (theme === 'dark' || theme === 'light') {
+      document.documentElement.setAttribute('data-theme', theme);
+    } else {
+      document.documentElement.removeAttribute('data-theme');
+    }
+  }
+
+  function updateButton(btn, theme) {
+    const icon = btn.querySelector('.Header-themeIcon');
+    const label = btn.querySelector('.Header-themeLabel');
+    if (theme === 'dark') {
+      if (icon) {
+        icon.textContent = '\u263E';
+      }
+      if (label) {
+        label.textContent = 'Dark';
+      }
+      btn.title = 'Theme: Dark (click to switch to Light)';
+    } else if (theme === 'light') {
+      if (icon) {
+        icon.textContent = '\u2600';
+      }
+      if (label) {
+        label.textContent = 'Light';
+      }
+      btn.title = 'Theme: Light (click to switch to Auto)';
+    } else {
+      if (icon) {
+        icon.textContent = '\u25D1';
+      }
+      if (label) {
+        label.textContent = 'Auto';
+      }
+      btn.title = 'Theme: Auto (click to switch to Dark)';
+    }
+    btn.setAttribute('aria-label', btn.title);
+  }
+
+  function initToggle() {
+    const btn = document.getElementById('gitiles-theme-toggle');
+    if (!btn) {
+      return;
+    }
+    const current = getTheme();
+    updateButton(btn, current);
+    btn.onclick = function() {
+      const cur = getTheme();
+      const next = (cur === 'auto') ? 'dark' : ((cur === 'dark') ? 'light' : 'auto');
+      applyTheme(next);
+      try {
+        localStorage.setItem('gitiles-theme', next);
+      } catch (e) {}
+      try {
+        document.cookie = 'gitiles-theme=' + encodeURIComponent(next) + ';path=/;max-age=31536000;SameSite=Lax';
+      } catch (e) {}
+      updateButton(btn, next);
+    };
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initToggle);
+  } else {
+    initToggle();
+  }
+})();
+</script>
+  
+        </div>
+      </div>
+    </header>
+    
+    
+  
+  
+  <div class="Site-content">
+    <div class="Container">
+      
+    <div class="Breadcrumbs"><a class="Breadcrumbs-crumb" href="/?format=HTML">android</a><span class="Breadcrumbs-sep">/</span><a class="Breadcrumbs-crumb" href="/platform/">platform</a><span class="Breadcrumbs-sep">/</span><a class="Breadcrumbs-crumb" href="/platform/frameworks/">frameworks</a><span class="Breadcrumbs-sep">/</span><a class="Breadcrumbs-crumb" href="/platform/frameworks/base/">base</a><span class="Breadcrumbs-sep">/</span><a class="Breadcrumbs-crumb" href="/platform/frameworks/base/+/refs/tags/android-15.0.0_r1">refs/tags/android-15.0.0_r1</a><span class="Breadcrumbs-sep">/</span><a class="Breadcrumbs-crumb" href="/platform/frameworks/base/+/refs/tags/android-15.0.0_r1/">.</a><span class="Breadcrumbs-sep">/</span><span class="Breadcrumbs-crumb">NOTICE</span></div>
+  
+      
+      
+      
+    <div class="u-sha1 u-monospace BlobSha1">blob: 4e699635e0418df49ba5b11631d001ad6a641ca6 [<a href="/platform/frameworks/base/+/refs/tags/android-15.0.0_r1/NOTICE">file</a>]</div>
+    
+      
+        <table class="FileContents">
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="1"></td>
+            <td class="FileContents-lineContents" id="1"><span class="pln">   =========================================================================</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="2"></td>
+            <td class="FileContents-lineContents" id="2"><span class="pln">   ==  NOTICE file corresponding to the section 4 d of                    ==</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="3"></td>
+            <td class="FileContents-lineContents" id="3"><span class="pln">   ==  the Apache License, Version 2.0,                                   ==</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="4"></td>
+            <td class="FileContents-lineContents" id="4"><span class="pln">   ==  in this case for the Android-specific code.                        ==</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="5"></td>
+            <td class="FileContents-lineContents" id="5"><span class="pln">   =========================================================================</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="6"></td>
+            <td class="FileContents-lineContents" id="6"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="7"></td>
+            <td class="FileContents-lineContents" id="7"><span class="pln">Android Code</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="8"></td>
+            <td class="FileContents-lineContents" id="8"><span class="pln">Copyright 2005-2008 The Android Open Source Project</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="9"></td>
+            <td class="FileContents-lineContents" id="9"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="10"></td>
+            <td class="FileContents-lineContents" id="10"><span class="pln">This product includes software developed as part of</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="11"></td>
+            <td class="FileContents-lineContents" id="11"><span class="pln">The Android Open Source Project (http://source.android.com).</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="12"></td>
+            <td class="FileContents-lineContents" id="12"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="13"></td>
+            <td class="FileContents-lineContents" id="13"><span class="pln">   =========================================================================</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="14"></td>
+            <td class="FileContents-lineContents" id="14"><span class="pln">   ==  NOTICE file corresponding to the section 4 d of                    ==</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="15"></td>
+            <td class="FileContents-lineContents" id="15"><span class="pln">   ==  the Apache License, Version 2.0,                                   ==</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="16"></td>
+            <td class="FileContents-lineContents" id="16"><span class="pln">   ==  in this case for Apache Commons code.                              ==</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="17"></td>
+            <td class="FileContents-lineContents" id="17"><span class="pln">   =========================================================================</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="18"></td>
+            <td class="FileContents-lineContents" id="18"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="19"></td>
+            <td class="FileContents-lineContents" id="19"><span class="pln">Apache Commons</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="20"></td>
+            <td class="FileContents-lineContents" id="20"><span class="pln">Copyright 1999-2006 The Apache Software Foundation</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="21"></td>
+            <td class="FileContents-lineContents" id="21"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="22"></td>
+            <td class="FileContents-lineContents" id="22"><span class="pln">This product includes software developed at</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="23"></td>
+            <td class="FileContents-lineContents" id="23"><span class="pln">The Apache Software Foundation (http://www.apache.org/).</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="24"></td>
+            <td class="FileContents-lineContents" id="24"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="25"></td>
+            <td class="FileContents-lineContents" id="25"><span class="pln">   =========================================================================</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="26"></td>
+            <td class="FileContents-lineContents" id="26"><span class="pln">   ==  NOTICE file corresponding to the section 4 d of                    ==</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="27"></td>
+            <td class="FileContents-lineContents" id="27"><span class="pln">   ==  the Apache License, Version 2.0,                                   ==</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="28"></td>
+            <td class="FileContents-lineContents" id="28"><span class="pln">   ==  in this case for Jakarta Commons Logging.                          ==</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="29"></td>
+            <td class="FileContents-lineContents" id="29"><span class="pln">   =========================================================================</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="30"></td>
+            <td class="FileContents-lineContents" id="30"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="31"></td>
+            <td class="FileContents-lineContents" id="31"><span class="pln">Jakarta Commons Logging (JCL)</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="32"></td>
+            <td class="FileContents-lineContents" id="32"><span class="pln">Copyright 2005,2006 The Apache Software Foundation.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="33"></td>
+            <td class="FileContents-lineContents" id="33"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="34"></td>
+            <td class="FileContents-lineContents" id="34"><span class="pln">This product includes software developed at</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="35"></td>
+            <td class="FileContents-lineContents" id="35"><span class="pln">The Apache Software Foundation (http://www.apache.org/).</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="36"></td>
+            <td class="FileContents-lineContents" id="36"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="37"></td>
+            <td class="FileContents-lineContents" id="37"><span class="pln">   =========================================================================</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="38"></td>
+            <td class="FileContents-lineContents" id="38"><span class="pln">   ==  NOTICE file corresponding to the section 4 d of                    ==</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="39"></td>
+            <td class="FileContents-lineContents" id="39"><span class="pln">   ==  the Apache License, Version 2.0,                                   ==</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="40"></td>
+            <td class="FileContents-lineContents" id="40"><span class="pln">   ==  in this case for the Nuance code.                                  ==</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="41"></td>
+            <td class="FileContents-lineContents" id="41"><span class="pln">   =========================================================================</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="42"></td>
+            <td class="FileContents-lineContents" id="42"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="43"></td>
+            <td class="FileContents-lineContents" id="43"><span class="pln">These files are Copyright 2007 Nuance Communications, but released under</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="44"></td>
+            <td class="FileContents-lineContents" id="44"><span class="pln">the Apache2 License.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="45"></td>
+            <td class="FileContents-lineContents" id="45"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="46"></td>
+            <td class="FileContents-lineContents" id="46"><span class="pln">   =========================================================================</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="47"></td>
+            <td class="FileContents-lineContents" id="47"><span class="pln">   ==  NOTICE file corresponding to the section 4 d of                    ==</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="48"></td>
+            <td class="FileContents-lineContents" id="48"><span class="pln">   ==  the Apache License, Version 2.0,                                   ==</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="49"></td>
+            <td class="FileContents-lineContents" id="49"><span class="pln">   ==  in this case for the Media Codecs code.                            ==</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="50"></td>
+            <td class="FileContents-lineContents" id="50"><span class="pln">   =========================================================================</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="51"></td>
+            <td class="FileContents-lineContents" id="51"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="52"></td>
+            <td class="FileContents-lineContents" id="52"><span class="pln">Media Codecs</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="53"></td>
+            <td class="FileContents-lineContents" id="53"><span class="pln">These files are Copyright 1998 - 2009 PacketVideo, but released under</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="54"></td>
+            <td class="FileContents-lineContents" id="54"><span class="pln">the Apache2 License.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="55"></td>
+            <td class="FileContents-lineContents" id="55"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="56"></td>
+            <td class="FileContents-lineContents" id="56"><span class="pln">   =========================================================================</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="57"></td>
+            <td class="FileContents-lineContents" id="57"><span class="pln">   ==  NOTICE file corresponding to the section 4 d of                    ==</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="58"></td>
+            <td class="FileContents-lineContents" id="58"><span class="pln">   ==  the Apache License, Version 2.0,                                   ==</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="59"></td>
+            <td class="FileContents-lineContents" id="59"><span class="pln">   ==  in this case for the mDnsResponder code.                           ==</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="60"></td>
+            <td class="FileContents-lineContents" id="60"><span class="pln">   =========================================================================</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="61"></td>
+            <td class="FileContents-lineContents" id="61"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="62"></td>
+            <td class="FileContents-lineContents" id="62"><span class="pln">mDnsResponder TXTRecord</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="63"></td>
+            <td class="FileContents-lineContents" id="63"><span class="pln">This file is Copyright 2004 Apple Computer, Inc.  but released under</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="64"></td>
+            <td class="FileContents-lineContents" id="64"><span class="pln">the Apache2 License.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="65"></td>
+            <td class="FileContents-lineContents" id="65"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="66"></td>
+            <td class="FileContents-lineContents" id="66"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="67"></td>
+            <td class="FileContents-lineContents" id="67"><span class="pln">   =========================================================================</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="68"></td>
+            <td class="FileContents-lineContents" id="68"><span class="pln">   ==  NOTICE file corresponding to the section 4 d of                    ==</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="69"></td>
+            <td class="FileContents-lineContents" id="69"><span class="pln">   ==  the Apache License, Version 2.0,                                   ==</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="70"></td>
+            <td class="FileContents-lineContents" id="70"><span class="pln">   ==  in this case for the TagSoup code.                                 ==</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="71"></td>
+            <td class="FileContents-lineContents" id="71"><span class="pln">   =========================================================================</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="72"></td>
+            <td class="FileContents-lineContents" id="72"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="73"></td>
+            <td class="FileContents-lineContents" id="73"><span class="pln">This file is part of TagSoup and is Copyright 2002-2008 by John Cowan.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="74"></td>
+            <td class="FileContents-lineContents" id="74"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="75"></td>
+            <td class="FileContents-lineContents" id="75"><span class="pln">TagSoup is licensed under the Apache License,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="76"></td>
+            <td class="FileContents-lineContents" id="76"><span class="pln">Version 2.0.  You may obtain a copy of this license at</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="77"></td>
+            <td class="FileContents-lineContents" id="77"><span class="pln">http://www.apache.org/licenses/LICENSE-2.0 .  You may also have</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="78"></td>
+            <td class="FileContents-lineContents" id="78"><span class="pln">additional legal rights not granted by this license.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="79"></td>
+            <td class="FileContents-lineContents" id="79"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="80"></td>
+            <td class="FileContents-lineContents" id="80"><span class="pln">TagSoup is distributed in the hope that it will be useful, but</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="81"></td>
+            <td class="FileContents-lineContents" id="81"><span class="pln">unless required by applicable law or agreed to in writing, TagSoup</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="82"></td>
+            <td class="FileContents-lineContents" id="82"><span class="pln">is distributed on an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="83"></td>
+            <td class="FileContents-lineContents" id="83"><span class="pln">OF ANY KIND, either express or implied; not even the implied warranty</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="84"></td>
+            <td class="FileContents-lineContents" id="84"><span class="pln">of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="85"></td>
+            <td class="FileContents-lineContents" id="85"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="86"></td>
+            <td class="FileContents-lineContents" id="86"><span class="pln">   =========================================================================</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="87"></td>
+            <td class="FileContents-lineContents" id="87"><span class="pln">   ==  NOTICE file corresponding to the section 4 d of                    ==</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="88"></td>
+            <td class="FileContents-lineContents" id="88"><span class="pln">   ==  the Apache License, Version 2.0,                                   ==</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="89"></td>
+            <td class="FileContents-lineContents" id="89"><span class="pln">   ==  in this case for Additional Codecs code.                           ==</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="90"></td>
+            <td class="FileContents-lineContents" id="90"><span class="pln">   =========================================================================</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="91"></td>
+            <td class="FileContents-lineContents" id="91"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="92"></td>
+            <td class="FileContents-lineContents" id="92"><span class="pln">Additional Codecs</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="93"></td>
+            <td class="FileContents-lineContents" id="93"><span class="pln">These files are Copyright 2003-2010 VisualOn, but released under</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="94"></td>
+            <td class="FileContents-lineContents" id="94"><span class="pln">the Apache2 License.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="95"></td>
+            <td class="FileContents-lineContents" id="95"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="96"></td>
+            <td class="FileContents-lineContents" id="96"><span class="pln">  =========================================================================</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="97"></td>
+            <td class="FileContents-lineContents" id="97"><span class="pln">  ==  NOTICE file corresponding to the section 4 d of                    ==</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="98"></td>
+            <td class="FileContents-lineContents" id="98"><span class="pln">  ==  the Apache License, Version 2.0,                                   ==</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="99"></td>
+            <td class="FileContents-lineContents" id="99"><span class="pln">  ==  in this case for the Audio Effects code.                           ==</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="100"></td>
+            <td class="FileContents-lineContents" id="100"><span class="pln">  =========================================================================</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="101"></td>
+            <td class="FileContents-lineContents" id="101"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="102"></td>
+            <td class="FileContents-lineContents" id="102"><span class="pln">Audio Effects</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="103"></td>
+            <td class="FileContents-lineContents" id="103"><span class="pln">These files are Copyright (C) 2004-2010 NXP Software and</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="104"></td>
+            <td class="FileContents-lineContents" id="104"><span class="pln">Copyright (C) 2010 The Android Open Source Project, but released under</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="105"></td>
+            <td class="FileContents-lineContents" id="105"><span class="pln">the Apache2 License.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="106"></td>
+            <td class="FileContents-lineContents" id="106"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="107"></td>
+            <td class="FileContents-lineContents" id="107"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="108"></td>
+            <td class="FileContents-lineContents" id="108"><span class="pln">                               Apache License</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="109"></td>
+            <td class="FileContents-lineContents" id="109"><span class="pln">                           Version 2.0, January 2004</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="110"></td>
+            <td class="FileContents-lineContents" id="110"><span class="pln">                        http://www.apache.org/licenses/</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="111"></td>
+            <td class="FileContents-lineContents" id="111"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="112"></td>
+            <td class="FileContents-lineContents" id="112"><span class="pln">   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="113"></td>
+            <td class="FileContents-lineContents" id="113"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="114"></td>
+            <td class="FileContents-lineContents" id="114"><span class="pln">   1. Definitions.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="115"></td>
+            <td class="FileContents-lineContents" id="115"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="116"></td>
+            <td class="FileContents-lineContents" id="116"><span class="pln">      &quot;License&quot; shall mean the terms and conditions for use, reproduction,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="117"></td>
+            <td class="FileContents-lineContents" id="117"><span class="pln">      and distribution as defined by Sections 1 through 9 of this document.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="118"></td>
+            <td class="FileContents-lineContents" id="118"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="119"></td>
+            <td class="FileContents-lineContents" id="119"><span class="pln">      &quot;Licensor&quot; shall mean the copyright owner or entity authorized by</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="120"></td>
+            <td class="FileContents-lineContents" id="120"><span class="pln">      the copyright owner that is granting the License.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="121"></td>
+            <td class="FileContents-lineContents" id="121"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="122"></td>
+            <td class="FileContents-lineContents" id="122"><span class="pln">      &quot;Legal Entity&quot; shall mean the union of the acting entity and all</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="123"></td>
+            <td class="FileContents-lineContents" id="123"><span class="pln">      other entities that control, are controlled by, or are under common</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="124"></td>
+            <td class="FileContents-lineContents" id="124"><span class="pln">      control with that entity. For the purposes of this definition,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="125"></td>
+            <td class="FileContents-lineContents" id="125"><span class="pln">      &quot;control&quot; means (i) the power, direct or indirect, to cause the</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="126"></td>
+            <td class="FileContents-lineContents" id="126"><span class="pln">      direction or management of such entity, whether by contract or</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="127"></td>
+            <td class="FileContents-lineContents" id="127"><span class="pln">      otherwise, or (ii) ownership of fifty percent (50%) or more of the</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="128"></td>
+            <td class="FileContents-lineContents" id="128"><span class="pln">      outstanding shares, or (iii) beneficial ownership of such entity.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="129"></td>
+            <td class="FileContents-lineContents" id="129"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="130"></td>
+            <td class="FileContents-lineContents" id="130"><span class="pln">      &quot;You&quot; (or &quot;Your&quot;) shall mean an individual or Legal Entity</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="131"></td>
+            <td class="FileContents-lineContents" id="131"><span class="pln">      exercising permissions granted by this License.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="132"></td>
+            <td class="FileContents-lineContents" id="132"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="133"></td>
+            <td class="FileContents-lineContents" id="133"><span class="pln">      &quot;Source&quot; form shall mean the preferred form for making modifications,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="134"></td>
+            <td class="FileContents-lineContents" id="134"><span class="pln">      including but not limited to software source code, documentation</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="135"></td>
+            <td class="FileContents-lineContents" id="135"><span class="pln">      source, and configuration files.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="136"></td>
+            <td class="FileContents-lineContents" id="136"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="137"></td>
+            <td class="FileContents-lineContents" id="137"><span class="pln">      &quot;Object&quot; form shall mean any form resulting from mechanical</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="138"></td>
+            <td class="FileContents-lineContents" id="138"><span class="pln">      transformation or translation of a Source form, including but</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="139"></td>
+            <td class="FileContents-lineContents" id="139"><span class="pln">      not limited to compiled object code, generated documentation,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="140"></td>
+            <td class="FileContents-lineContents" id="140"><span class="pln">      and conversions to other media types.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="141"></td>
+            <td class="FileContents-lineContents" id="141"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="142"></td>
+            <td class="FileContents-lineContents" id="142"><span class="pln">      &quot;Work&quot; shall mean the work of authorship, whether in Source or</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="143"></td>
+            <td class="FileContents-lineContents" id="143"><span class="pln">      Object form, made available under the License, as indicated by a</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="144"></td>
+            <td class="FileContents-lineContents" id="144"><span class="pln">      copyright notice that is included in or attached to the work</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="145"></td>
+            <td class="FileContents-lineContents" id="145"><span class="pln">      (an example is provided in the Appendix below).</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="146"></td>
+            <td class="FileContents-lineContents" id="146"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="147"></td>
+            <td class="FileContents-lineContents" id="147"><span class="pln">      &quot;Derivative Works&quot; shall mean any work, whether in Source or Object</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="148"></td>
+            <td class="FileContents-lineContents" id="148"><span class="pln">      form, that is based on (or derived from) the Work and for which the</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="149"></td>
+            <td class="FileContents-lineContents" id="149"><span class="pln">      editorial revisions, annotations, elaborations, or other modifications</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="150"></td>
+            <td class="FileContents-lineContents" id="150"><span class="pln">      represent, as a whole, an original work of authorship. For the purposes</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="151"></td>
+            <td class="FileContents-lineContents" id="151"><span class="pln">      of this License, Derivative Works shall not include works that remain</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="152"></td>
+            <td class="FileContents-lineContents" id="152"><span class="pln">      separable from, or merely link (or bind by name) to the interfaces of,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="153"></td>
+            <td class="FileContents-lineContents" id="153"><span class="pln">      the Work and Derivative Works thereof.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="154"></td>
+            <td class="FileContents-lineContents" id="154"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="155"></td>
+            <td class="FileContents-lineContents" id="155"><span class="pln">      &quot;Contribution&quot; shall mean any work of authorship, including</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="156"></td>
+            <td class="FileContents-lineContents" id="156"><span class="pln">      the original version of the Work and any modifications or additions</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="157"></td>
+            <td class="FileContents-lineContents" id="157"><span class="pln">      to that Work or Derivative Works thereof, that is intentionally</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="158"></td>
+            <td class="FileContents-lineContents" id="158"><span class="pln">      submitted to Licensor for inclusion in the Work by the copyright owner</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="159"></td>
+            <td class="FileContents-lineContents" id="159"><span class="pln">      or by an individual or Legal Entity authorized to submit on behalf of</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="160"></td>
+            <td class="FileContents-lineContents" id="160"><span class="pln">      the copyright owner. For the purposes of this definition, &quot;submitted&quot;</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="161"></td>
+            <td class="FileContents-lineContents" id="161"><span class="pln">      means any form of electronic, verbal, or written communication sent</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="162"></td>
+            <td class="FileContents-lineContents" id="162"><span class="pln">      to the Licensor or its representatives, including but not limited to</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="163"></td>
+            <td class="FileContents-lineContents" id="163"><span class="pln">      communication on electronic mailing lists, source code control systems,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="164"></td>
+            <td class="FileContents-lineContents" id="164"><span class="pln">      and issue tracking systems that are managed by, or on behalf of, the</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="165"></td>
+            <td class="FileContents-lineContents" id="165"><span class="pln">      Licensor for the purpose of discussing and improving the Work, but</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="166"></td>
+            <td class="FileContents-lineContents" id="166"><span class="pln">      excluding communication that is conspicuously marked or otherwise</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="167"></td>
+            <td class="FileContents-lineContents" id="167"><span class="pln">      designated in writing by the copyright owner as &quot;Not a Contribution.&quot;</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="168"></td>
+            <td class="FileContents-lineContents" id="168"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="169"></td>
+            <td class="FileContents-lineContents" id="169"><span class="pln">      &quot;Contributor&quot; shall mean Licensor and any individual or Legal Entity</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="170"></td>
+            <td class="FileContents-lineContents" id="170"><span class="pln">      on behalf of whom a Contribution has been received by Licensor and</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="171"></td>
+            <td class="FileContents-lineContents" id="171"><span class="pln">      subsequently incorporated within the Work.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="172"></td>
+            <td class="FileContents-lineContents" id="172"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="173"></td>
+            <td class="FileContents-lineContents" id="173"><span class="pln">   2. Grant of Copyright License. Subject to the terms and conditions of</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="174"></td>
+            <td class="FileContents-lineContents" id="174"><span class="pln">      this License, each Contributor hereby grants to You a perpetual,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="175"></td>
+            <td class="FileContents-lineContents" id="175"><span class="pln">      worldwide, non-exclusive, no-charge, royalty-free, irrevocable</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="176"></td>
+            <td class="FileContents-lineContents" id="176"><span class="pln">      copyright license to reproduce, prepare Derivative Works of,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="177"></td>
+            <td class="FileContents-lineContents" id="177"><span class="pln">      publicly display, publicly perform, sublicense, and distribute the</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="178"></td>
+            <td class="FileContents-lineContents" id="178"><span class="pln">      Work and such Derivative Works in Source or Object form.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="179"></td>
+            <td class="FileContents-lineContents" id="179"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="180"></td>
+            <td class="FileContents-lineContents" id="180"><span class="pln">   3. Grant of Patent License. Subject to the terms and conditions of</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="181"></td>
+            <td class="FileContents-lineContents" id="181"><span class="pln">      this License, each Contributor hereby grants to You a perpetual,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="182"></td>
+            <td class="FileContents-lineContents" id="182"><span class="pln">      worldwide, non-exclusive, no-charge, royalty-free, irrevocable</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="183"></td>
+            <td class="FileContents-lineContents" id="183"><span class="pln">      (except as stated in this section) patent license to make, have made,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="184"></td>
+            <td class="FileContents-lineContents" id="184"><span class="pln">      use, offer to sell, sell, import, and otherwise transfer the Work,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="185"></td>
+            <td class="FileContents-lineContents" id="185"><span class="pln">      where such license applies only to those patent claims licensable</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="186"></td>
+            <td class="FileContents-lineContents" id="186"><span class="pln">      by such Contributor that are necessarily infringed by their</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="187"></td>
+            <td class="FileContents-lineContents" id="187"><span class="pln">      Contribution(s) alone or by combination of their Contribution(s)</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="188"></td>
+            <td class="FileContents-lineContents" id="188"><span class="pln">      with the Work to which such Contribution(s) was submitted. If You</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="189"></td>
+            <td class="FileContents-lineContents" id="189"><span class="pln">      institute patent litigation against any entity (including a</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="190"></td>
+            <td class="FileContents-lineContents" id="190"><span class="pln">      cross-claim or counterclaim in a lawsuit) alleging that the Work</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="191"></td>
+            <td class="FileContents-lineContents" id="191"><span class="pln">      or a Contribution incorporated within the Work constitutes direct</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="192"></td>
+            <td class="FileContents-lineContents" id="192"><span class="pln">      or contributory patent infringement, then any patent licenses</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="193"></td>
+            <td class="FileContents-lineContents" id="193"><span class="pln">      granted to You under this License for that Work shall terminate</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="194"></td>
+            <td class="FileContents-lineContents" id="194"><span class="pln">      as of the date such litigation is filed.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="195"></td>
+            <td class="FileContents-lineContents" id="195"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="196"></td>
+            <td class="FileContents-lineContents" id="196"><span class="pln">   4. Redistribution. You may reproduce and distribute copies of the</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="197"></td>
+            <td class="FileContents-lineContents" id="197"><span class="pln">      Work or Derivative Works thereof in any medium, with or without</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="198"></td>
+            <td class="FileContents-lineContents" id="198"><span class="pln">      modifications, and in Source or Object form, provided that You</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="199"></td>
+            <td class="FileContents-lineContents" id="199"><span class="pln">      meet the following conditions:</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="200"></td>
+            <td class="FileContents-lineContents" id="200"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="201"></td>
+            <td class="FileContents-lineContents" id="201"><span class="pln">      (a) You must give any other recipients of the Work or</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="202"></td>
+            <td class="FileContents-lineContents" id="202"><span class="pln">          Derivative Works a copy of this License; and</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="203"></td>
+            <td class="FileContents-lineContents" id="203"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="204"></td>
+            <td class="FileContents-lineContents" id="204"><span class="pln">      (b) You must cause any modified files to carry prominent notices</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="205"></td>
+            <td class="FileContents-lineContents" id="205"><span class="pln">          stating that You changed the files; and</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="206"></td>
+            <td class="FileContents-lineContents" id="206"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="207"></td>
+            <td class="FileContents-lineContents" id="207"><span class="pln">      (c) You must retain, in the Source form of any Derivative Works</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="208"></td>
+            <td class="FileContents-lineContents" id="208"><span class="pln">          that You distribute, all copyright, patent, trademark, and</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="209"></td>
+            <td class="FileContents-lineContents" id="209"><span class="pln">          attribution notices from the Source form of the Work,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="210"></td>
+            <td class="FileContents-lineContents" id="210"><span class="pln">          excluding those notices that do not pertain to any part of</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="211"></td>
+            <td class="FileContents-lineContents" id="211"><span class="pln">          the Derivative Works; and</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="212"></td>
+            <td class="FileContents-lineContents" id="212"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="213"></td>
+            <td class="FileContents-lineContents" id="213"><span class="pln">      (d) If the Work includes a &quot;NOTICE&quot; text file as part of its</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="214"></td>
+            <td class="FileContents-lineContents" id="214"><span class="pln">          distribution, then any Derivative Works that You distribute must</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="215"></td>
+            <td class="FileContents-lineContents" id="215"><span class="pln">          include a readable copy of the attribution notices contained</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="216"></td>
+            <td class="FileContents-lineContents" id="216"><span class="pln">          within such NOTICE file, excluding those notices that do not</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="217"></td>
+            <td class="FileContents-lineContents" id="217"><span class="pln">          pertain to any part of the Derivative Works, in at least one</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="218"></td>
+            <td class="FileContents-lineContents" id="218"><span class="pln">          of the following places: within a NOTICE text file distributed</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="219"></td>
+            <td class="FileContents-lineContents" id="219"><span class="pln">          as part of the Derivative Works; within the Source form or</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="220"></td>
+            <td class="FileContents-lineContents" id="220"><span class="pln">          documentation, if provided along with the Derivative Works; or,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="221"></td>
+            <td class="FileContents-lineContents" id="221"><span class="pln">          within a display generated by the Derivative Works, if and</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="222"></td>
+            <td class="FileContents-lineContents" id="222"><span class="pln">          wherever such third-party notices normally appear. The contents</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="223"></td>
+            <td class="FileContents-lineContents" id="223"><span class="pln">          of the NOTICE file are for informational purposes only and</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="224"></td>
+            <td class="FileContents-lineContents" id="224"><span class="pln">          do not modify the License. You may add Your own attribution</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="225"></td>
+            <td class="FileContents-lineContents" id="225"><span class="pln">          notices within Derivative Works that You distribute, alongside</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="226"></td>
+            <td class="FileContents-lineContents" id="226"><span class="pln">          or as an addendum to the NOTICE text from the Work, provided</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="227"></td>
+            <td class="FileContents-lineContents" id="227"><span class="pln">          that such additional attribution notices cannot be construed</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="228"></td>
+            <td class="FileContents-lineContents" id="228"><span class="pln">          as modifying the License.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="229"></td>
+            <td class="FileContents-lineContents" id="229"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="230"></td>
+            <td class="FileContents-lineContents" id="230"><span class="pln">      You may add Your own copyright statement to Your modifications and</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="231"></td>
+            <td class="FileContents-lineContents" id="231"><span class="pln">      may provide additional or different license terms and conditions</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="232"></td>
+            <td class="FileContents-lineContents" id="232"><span class="pln">      for use, reproduction, or distribution of Your modifications, or</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="233"></td>
+            <td class="FileContents-lineContents" id="233"><span class="pln">      for any such Derivative Works as a whole, provided Your use,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="234"></td>
+            <td class="FileContents-lineContents" id="234"><span class="pln">      reproduction, and distribution of the Work otherwise complies with</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="235"></td>
+            <td class="FileContents-lineContents" id="235"><span class="pln">      the conditions stated in this License.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="236"></td>
+            <td class="FileContents-lineContents" id="236"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="237"></td>
+            <td class="FileContents-lineContents" id="237"><span class="pln">   5. Submission of Contributions. Unless You explicitly state otherwise,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="238"></td>
+            <td class="FileContents-lineContents" id="238"><span class="pln">      any Contribution intentionally submitted for inclusion in the Work</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="239"></td>
+            <td class="FileContents-lineContents" id="239"><span class="pln">      by You to the Licensor shall be under the terms and conditions of</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="240"></td>
+            <td class="FileContents-lineContents" id="240"><span class="pln">      this License, without any additional terms or conditions.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="241"></td>
+            <td class="FileContents-lineContents" id="241"><span class="pln">      Notwithstanding the above, nothing herein shall supersede or modify</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="242"></td>
+            <td class="FileContents-lineContents" id="242"><span class="pln">      the terms of any separate license agreement you may have executed</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="243"></td>
+            <td class="FileContents-lineContents" id="243"><span class="pln">      with Licensor regarding such Contributions.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="244"></td>
+            <td class="FileContents-lineContents" id="244"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="245"></td>
+            <td class="FileContents-lineContents" id="245"><span class="pln">   6. Trademarks. This License does not grant permission to use the trade</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="246"></td>
+            <td class="FileContents-lineContents" id="246"><span class="pln">      names, trademarks, service marks, or product names of the Licensor,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="247"></td>
+            <td class="FileContents-lineContents" id="247"><span class="pln">      except as required for reasonable and customary use in describing the</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="248"></td>
+            <td class="FileContents-lineContents" id="248"><span class="pln">      origin of the Work and reproducing the content of the NOTICE file.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="249"></td>
+            <td class="FileContents-lineContents" id="249"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="250"></td>
+            <td class="FileContents-lineContents" id="250"><span class="pln">   7. Disclaimer of Warranty. Unless required by applicable law or</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="251"></td>
+            <td class="FileContents-lineContents" id="251"><span class="pln">      agreed to in writing, Licensor provides the Work (and each</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="252"></td>
+            <td class="FileContents-lineContents" id="252"><span class="pln">      Contributor provides its Contributions) on an &quot;AS IS&quot; BASIS,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="253"></td>
+            <td class="FileContents-lineContents" id="253"><span class="pln">      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="254"></td>
+            <td class="FileContents-lineContents" id="254"><span class="pln">      implied, including, without limitation, any warranties or conditions</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="255"></td>
+            <td class="FileContents-lineContents" id="255"><span class="pln">      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="256"></td>
+            <td class="FileContents-lineContents" id="256"><span class="pln">      PARTICULAR PURPOSE. You are solely responsible for determining the</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="257"></td>
+            <td class="FileContents-lineContents" id="257"><span class="pln">      appropriateness of using or redistributing the Work and assume any</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="258"></td>
+            <td class="FileContents-lineContents" id="258"><span class="pln">      risks associated with Your exercise of permissions under this License.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="259"></td>
+            <td class="FileContents-lineContents" id="259"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="260"></td>
+            <td class="FileContents-lineContents" id="260"><span class="pln">   8. Limitation of Liability. In no event and under no legal theory,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="261"></td>
+            <td class="FileContents-lineContents" id="261"><span class="pln">      whether in tort (including negligence), contract, or otherwise,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="262"></td>
+            <td class="FileContents-lineContents" id="262"><span class="pln">      unless required by applicable law (such as deliberate and grossly</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="263"></td>
+            <td class="FileContents-lineContents" id="263"><span class="pln">      negligent acts) or agreed to in writing, shall any Contributor be</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="264"></td>
+            <td class="FileContents-lineContents" id="264"><span class="pln">      liable to You for damages, including any direct, indirect, special,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="265"></td>
+            <td class="FileContents-lineContents" id="265"><span class="pln">      incidental, or consequential damages of any character arising as a</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="266"></td>
+            <td class="FileContents-lineContents" id="266"><span class="pln">      result of this License or out of the use or inability to use the</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="267"></td>
+            <td class="FileContents-lineContents" id="267"><span class="pln">      Work (including but not limited to damages for loss of goodwill,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="268"></td>
+            <td class="FileContents-lineContents" id="268"><span class="pln">      work stoppage, computer failure or malfunction, or any and all</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="269"></td>
+            <td class="FileContents-lineContents" id="269"><span class="pln">      other commercial damages or losses), even if such Contributor</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="270"></td>
+            <td class="FileContents-lineContents" id="270"><span class="pln">      has been advised of the possibility of such damages.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="271"></td>
+            <td class="FileContents-lineContents" id="271"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="272"></td>
+            <td class="FileContents-lineContents" id="272"><span class="pln">   9. Accepting Warranty or Additional Liability. While redistributing</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="273"></td>
+            <td class="FileContents-lineContents" id="273"><span class="pln">      the Work or Derivative Works thereof, You may choose to offer,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="274"></td>
+            <td class="FileContents-lineContents" id="274"><span class="pln">      and charge a fee for, acceptance of support, warranty, indemnity,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="275"></td>
+            <td class="FileContents-lineContents" id="275"><span class="pln">      or other liability obligations and/or rights consistent with this</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="276"></td>
+            <td class="FileContents-lineContents" id="276"><span class="pln">      License. However, in accepting such obligations, You may act only</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="277"></td>
+            <td class="FileContents-lineContents" id="277"><span class="pln">      on Your own behalf and on Your sole responsibility, not on behalf</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="278"></td>
+            <td class="FileContents-lineContents" id="278"><span class="pln">      of any other Contributor, and only if You agree to indemnify,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="279"></td>
+            <td class="FileContents-lineContents" id="279"><span class="pln">      defend, and hold each Contributor harmless for any liability</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="280"></td>
+            <td class="FileContents-lineContents" id="280"><span class="pln">      incurred by, or claims asserted against, such Contributor by reason</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="281"></td>
+            <td class="FileContents-lineContents" id="281"><span class="pln">      of your accepting any such warranty or additional liability.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="282"></td>
+            <td class="FileContents-lineContents" id="282"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="283"></td>
+            <td class="FileContents-lineContents" id="283"><span class="pln">   END OF TERMS AND CONDITIONS</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="284"></td>
+            <td class="FileContents-lineContents" id="284"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="285"></td>
+            <td class="FileContents-lineContents" id="285"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="286"></td>
+            <td class="FileContents-lineContents" id="286"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="287"></td>
+            <td class="FileContents-lineContents" id="287"><span class="pln">UNICODE, INC. LICENSE AGREEMENT - DATA FILES AND SOFTWARE</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="288"></td>
+            <td class="FileContents-lineContents" id="288"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="289"></td>
+            <td class="FileContents-lineContents" id="289"><span class="pln">Unicode Data Files include all data files under the directories</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="290"></td>
+            <td class="FileContents-lineContents" id="290"><span class="pln">http://www.unicode.org/Public/, http://www.unicode.org/reports/,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="291"></td>
+            <td class="FileContents-lineContents" id="291"><span class="pln">and http://www.unicode.org/cldr/data/ . Unicode Software includes any</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="292"></td>
+            <td class="FileContents-lineContents" id="292"><span class="pln">source code published in the Unicode Standard or under the directories</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="293"></td>
+            <td class="FileContents-lineContents" id="293"><span class="pln">http://www.unicode.org/Public/, http://www.unicode.org/reports/, and</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="294"></td>
+            <td class="FileContents-lineContents" id="294"><span class="pln">http://www.unicode.org/cldr/data/.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="295"></td>
+            <td class="FileContents-lineContents" id="295"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="296"></td>
+            <td class="FileContents-lineContents" id="296"><span class="pln">NOTICE TO USER: Carefully read the following legal agreement. BY</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="297"></td>
+            <td class="FileContents-lineContents" id="297"><span class="pln">DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING UNICODE INC.&#39;S DATA</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="298"></td>
+            <td class="FileContents-lineContents" id="298"><span class="pln">FILES (&quot;DATA FILES&quot;), AND/OR SOFTWARE (&quot;SOFTWARE&quot;), YOU UNEQUIVOCALLY</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="299"></td>
+            <td class="FileContents-lineContents" id="299"><span class="pln">ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE TERMS AND CONDITIONS OF</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="300"></td>
+            <td class="FileContents-lineContents" id="300"><span class="pln">THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT DOWNLOAD, INSTALL, COPY,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="301"></td>
+            <td class="FileContents-lineContents" id="301"><span class="pln">DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="302"></td>
+            <td class="FileContents-lineContents" id="302"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="303"></td>
+            <td class="FileContents-lineContents" id="303"><span class="pln">COPYRIGHT AND PERMISSION NOTICE</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="304"></td>
+            <td class="FileContents-lineContents" id="304"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="305"></td>
+            <td class="FileContents-lineContents" id="305"><span class="pln">Copyright © 1991-2008 Unicode, Inc. All rights reserved. Distributed</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="306"></td>
+            <td class="FileContents-lineContents" id="306"><span class="pln">under the Terms of Use in http://www.unicode.org/copyright.html.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="307"></td>
+            <td class="FileContents-lineContents" id="307"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="308"></td>
+            <td class="FileContents-lineContents" id="308"><span class="pln">Permission is hereby granted, free of charge, to any person obtaining</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="309"></td>
+            <td class="FileContents-lineContents" id="309"><span class="pln">a copy of the Unicode data files and any associated documentation (the</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="310"></td>
+            <td class="FileContents-lineContents" id="310"><span class="pln">&quot;Data Files&quot;) or Unicode software and any associated documentation (the</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="311"></td>
+            <td class="FileContents-lineContents" id="311"><span class="pln">&quot;Software&quot;) to deal in the Data Files or Software without restriction,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="312"></td>
+            <td class="FileContents-lineContents" id="312"><span class="pln">including without limitation the rights to use, copy, modify, merge,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="313"></td>
+            <td class="FileContents-lineContents" id="313"><span class="pln">publish, distribute, and/or sell copies of the Data Files or Software,</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="314"></td>
+            <td class="FileContents-lineContents" id="314"><span class="pln">and to permit persons to whom the Data Files or Software are furnished to</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="315"></td>
+            <td class="FileContents-lineContents" id="315"><span class="pln">do so, provided that (a) the above copyright notice(s) and this permission</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="316"></td>
+            <td class="FileContents-lineContents" id="316"><span class="pln">notice appear with all copies of the Data Files or Software, (b) both the</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="317"></td>
+            <td class="FileContents-lineContents" id="317"><span class="pln">above copyright notice(s) and this permission notice appear in associated</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="318"></td>
+            <td class="FileContents-lineContents" id="318"><span class="pln">documentation, and (c) there is clear notice in each modified Data File</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="319"></td>
+            <td class="FileContents-lineContents" id="319"><span class="pln">or in the Software as well as in the documentation associated with the</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="320"></td>
+            <td class="FileContents-lineContents" id="320"><span class="pln">Data File(s) or Software that the data or software has been modified.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="321"></td>
+            <td class="FileContents-lineContents" id="321"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="322"></td>
+            <td class="FileContents-lineContents" id="322"><span class="pln">THE DATA FILES AND SOFTWARE ARE PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="323"></td>
+            <td class="FileContents-lineContents" id="323"><span class="pln">ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="324"></td>
+            <td class="FileContents-lineContents" id="324"><span class="pln">OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="325"></td>
+            <td class="FileContents-lineContents" id="325"><span class="pln">OF THIRD PARTY RIGHTS. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="326"></td>
+            <td class="FileContents-lineContents" id="326"><span class="pln">INCLUDED IN THIS NOTICE BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="327"></td>
+            <td class="FileContents-lineContents" id="327"><span class="pln">OR CONSEQUENTIAL DAMAGES, OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="328"></td>
+            <td class="FileContents-lineContents" id="328"><span class="pln">OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="329"></td>
+            <td class="FileContents-lineContents" id="329"><span class="pln">OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="330"></td>
+            <td class="FileContents-lineContents" id="330"><span class="pln">OR PERFORMANCE OF THE DATA FILES OR SOFTWARE.</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="331"></td>
+            <td class="FileContents-lineContents" id="331"></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="332"></td>
+            <td class="FileContents-lineContents" id="332"><span class="pln">Except as contained in this notice, the name of a copyright holder</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="333"></td>
+            <td class="FileContents-lineContents" id="333"><span class="pln">shall not be used in advertising or otherwise to promote the sale, use</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="334"></td>
+            <td class="FileContents-lineContents" id="334"><span class="pln">or other dealings in these Data Files or Software without prior written</span></td>
+          </tr>
+          <tr class="u-pre u-monospace FileContents-line">
+            <td class="u-lineNum u-noSelect FileContents-lineNum" data-line-number="335"></td>
+            <td class="FileContents-lineContents" id="335"><span class="pln">authorization of the copyright holder.</span></td>
+          </tr>
+        </table>
+        <script nonce="uh0tpLLN8q9UVfP7frkGJw">
+          for (let lineNumEl of document.querySelectorAll('td.u-lineNum')) {
+            lineNumEl.onclick = () => {
+              window.location.hash =
+                  `#${lineNumEl.getAttribute('data-line-number')}`;
+            };
+          }
+        </script>
+      
+      
+    
+    
+  
+      
+      
+    </div>
+  </div>
+  
+    
+      <footer class="Site-footer">
+    <div class="Footer">
+      <span class="Footer-poweredBy">Powered by <a href="https://gerrit.googlesource.com/gitiles/">Gitiles</a>| <a href="https://policies.google.com/privacy">Privacy</a>| <a href="https://policies.google.com/terms">Terms</a></span>
+      <span class="Footer-formats"><a class="u-monospace Footer-formatsItem" href="?format=TEXT">txt</a> <a class="u-monospace Footer-formatsItem" href="?format=JSON">json</a></span>
+    </div>
+    
+  </footer>
+    
+    
+  
+
+  
+</body>
+</html>
