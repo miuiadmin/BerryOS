@@ -202,8 +202,8 @@ pub fn current_asid() -> u16 {
 // P6 A-2 起加 ATTR_DEVICE/SH_NONE：用户侧 MMIO 窗口叶（Device-nGnRnE + 不
 // 共享——内核直映 MMIO 同款，见 mmu.rs）。
 pub use paging::{
-    page_descriptor, table_descriptor, AP_RO, AP_USER_RW, ATTR_DEVICE, ATTR_NORMAL, SH_INNER,
-    SH_NONE,
+    page_descriptor, table_descriptor, AP_RO, AP_USER_RO, AP_USER_RW, ATTR_DEVICE, ATTR_NORMAL,
+    SH_INNER, SH_NONE,
 };
 
 // ---- IRQ 派发回调（HAL→上层，函数指针槽反转）----

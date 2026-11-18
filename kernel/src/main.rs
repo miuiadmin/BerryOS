@@ -41,6 +41,7 @@ mod syscall;
 mod sysver; // VER：版本身份 VMO（运行时查询面——boot 编译期成像 + 第 9 插只读交付）
 mod telemetry;
 mod user;
+mod vdso; // W3-Q106：vDSO 数据页（clock_read MONOTONIC 零 syscall 化内核半）
 mod vmar;
 mod vmo;
 
@@ -900,6 +901,13 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // freeze_syscalls_table 的 # Safety 合同）。
     // SAFETY: boot 单线程 DAIF 屏蔽窗；只动 boot 页表项与完成标记。
     unsafe { berry_hal_aarch64::freeze_syscalls_table() };
+
+    // W3-Q106：vDSO 数据页成像——必须先于 ktest::run（SYSCALL 用例直调
+    // NR_PROCESS_CREATE → sys_process_create 装配 AS）与一切用户 AS 装配；
+    // CNTFRQ 快照是纯 MRS 读（timer.rs cntfrq），无 timer::init 依赖，故
+    // 可与 syscall::install 同窗（原置 timer::init 后 = boot 序破约，
+    // smoke 实跑 PANIC 定谳）。
+    vdso::init(mm::frames());
 
     //（S-2a E0 历史注：sched 舞蹈锁原语槽 set_klock_ops 在下方 park 块前
     // 安装；同批的「①位 置/清器 KLOCK_FLAG 槽」已随 S-4 判例 klock_enter

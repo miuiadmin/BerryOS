@@ -1553,10 +1553,15 @@ extern "C" fn sys_process_create(tf: &mut TrapFrame) -> i64 {
     }
     // 帧耗尽折 -ENOMEM（3b3 H1：new_root 曾内嵌 expect——EL0 一次 process_create
     // 即可让内核 panic 停机）。
-    let vmar = match Vmar::new_root(crate::mm::frames(), crate::aspace::alloc_asid()) {
+    let mut vmar = match Vmar::new_root(crate::mm::frames(), crate::aspace::alloc_asid()) {
         Ok(v) => v,
         Err(e) => return vme(e) as i64,
     };
+    // W3-Q106：vDSO 数据页映入生产 AS（失败同 new_root 折 -ENOMEM 回滚——
+    // vmar 正常 drop 放表树帧，vDSO VMO 永生 static 不受影响）。
+    if let Err(e) = crate::vdso::map_into(crate::mm::frames(), &mut vmar) {
+        return vme(e) as i64;
+    }
     let (ttbr0, asid) = (vmar.ttbr0_pa(), vmar.asid());
     let hv = match t.insert(
         KernelObj::Vmar(vmar),
