@@ -3,24 +3,24 @@
 Type: spec
 Status: active
 Updated: 2026-11-18
-Version: 1.0.0
+Version: 1.1.0
 
 一句话说明：`i18n-a11y`（由网络加密校时与时区服务 `timed`、零拷贝国际化本地化库 `berry-i18n`、双向复杂文本整形器与系统无障碍守护进程 `a11yd` 组成）是 BerryOS 走向全球市场与兑现科技人文包容的基石——确保任何时区、任何书写方向、以及视障/听障/运动障碍用户都能一等无差别地使用整个系统。
 
 ## 背景
 
-[整机生态十维盲区全景审计](../../research/2026-11-18-整机生态十维盲区全景审计.md) 指出：现役系统时间仅由静态起点加单调时钟合成（无 RTC 持久化与网络授时、无 IANA 时区与夏令时转换），UI 与文本管线仅假设中英文从左向右（LTR）静态字符串（缺复数/日期货币本地化与阿拉伯语/希伯来语 RTL 镜像），且无障碍语义树尚无读屏器（Screen Reader）与辅助交互消费者。本规格依据 [整机十维缺失拼图全栈终态架构裁决](../../notes/proposed/2026-11-18-整机十维缺失拼图全栈终态架构裁决.md)，立定零性能损耗的全球化与无障碍系统级契约。
+[整机生态十维盲区全景审计](../../research/2026-11-18-整机生态十维盲区全景审计.md) 指出：现役系统时间仅由静态起点加单调时钟合成（无 RTC 持久化与网络授时、无 IANA 时区与夏令时转换），UI 与文本管线仅假设中英文从左向右（LTR）静态字符串（缺复数/日期货币本地化与阿拉伯语/希伯来语 RTL 镜像），且无障碍语义树尚无读屏器（Screen Reader）与辅助交互消费者。本规格依据 [整机十维缺失拼图全栈终态架构裁决](../../notes/proposed/2026-11-18-整机十维缺失拼图全栈终态架构裁决.md) 与 [全系统 31 模块终态合龙总纲与 ABI 号段总表](../2026-11-18-全系统31模块终态合龙总纲与ABI号段总表.md)，立定零性能损耗的全球化与无障碍系统级契约。
 
 ## 范围
 
-- **覆盖**：硬件 RTC（PL031 / 真机 PMIC RTC）+ 安全网络时间协议（NTS, RFC 8915）渐进频偏校准守护进程 `timed` 与全局只读共享 IANA 时区数据库 VMO（`tzdb.vmo`）；零拷贝编译期校验本地化资源包格式 `.blp` 与 `berry-i18n`（CLDR 复数规则、单位/数字/货币/多历法格式化、免重启热切换）；Unicode UAX #9 双向文本算法（BiDi）、复杂文字连字整形（HarfBuzz 子集等价纯 Rust 整形核）与逻辑方向（`InlineStart`/`InlineEnd`）自动 RTL 布局镜像；系统级无障碍服务 `a11yd`（神经网络 TTS 读屏、探索式触摸手势重写、实时语音字幕 Live Captions、开关控制与合成器硬件级色觉滤镜/视口放大镜）。
+- **覆盖**：硬件 RTC（PL031 / 真机 PMIC RTC）+ 安全网络时间协议（NTS, RFC 8915）渐进频偏校准守护进程 `timed`（独占 `0x64 berry_clock_adjust` 壁钟校准原语）与全局只读共享 IANA 时区数据库 VMO（`tzdb.vmo`）；零拷贝编译期校验本地化资源包格式 `.blp` 与 `berry-i18n`（CLDR 复数规则、单位/数字/货币/多历法格式化、免重启热切换）；Unicode UAX #9 双向文本算法（BiDi）、复杂文字连字整形（HarfBuzz 子集等价纯 Rust 整形核）与逻辑方向（`InlineStart`/`InlineEnd`）自动 RTL 布局镜像；系统级无障碍服务 `a11yd`（神经网络 TTS 读屏、探索式触摸手势重写、实时语音字幕 Live Captions、开关控制与合成器硬件级色觉滤镜/视口放大镜）。
 - **不覆盖**：字形贝塞尔轮廓最终瓦片光栅化（归 [gfx 总体设计](../gfx/design.md)）；端侧 TTS 与 ASR 模型底层张量算子推理（归 [ai-runtime 总体设计](../ai-runtime/design.md) `airtd`）。
 
 ## 契约
 
 ### 一、抗篡改安全授时（`timed`）与共享只读时区库契约
 
-1. **单调守恒与渐进斜率校准（Slew vs Step）**：`CLOCK_MONOTONIC` 永远严格单调递增不回跳；`timed` 启动初期读取硬件电池后备 RTC（模拟器读取宿主挂钟同步通道）建立初始 `CLOCK_REALTIME`，联网后经带 TLS 密钥协商认证的 **NTS（Network Time Security）** 获取权威 UTC（防止恶意路由器篡改系统时间绕过 X.509 证书有效期校验！）。当偏差 $< 500\text{ms}$ 时采用平滑斜率微调（Slew）避免日志与分布式事务时间戳倒退；跨时区漫游经 Wi-Fi/基站国家码自动提示切换。
+1. **单调守恒与渐进斜率校准（Slew vs Step，绑定 `0x64 berry_clock_adjust`）**：`CLOCK_MONOTONIC` 永远严格单调递增不回跳；`timed` 启动初期读取硬件电池后备 RTC（模拟器读取宿主挂钟同步通道），凭独占持有的 `TimeResourceCap` 调用新增内核原语 `0x64 berry_clock_adjust(time_res, offset_ns, slew_ppm_q16, flags)` 建立初始 `CLOCK_REALTIME`，联网后经带 TLS 密钥协商认证的 **NTS（Network Time Security）** 获取权威 UTC（防止恶意路由器篡改系统时间绕过 X.509 证书有效期校验！）。当偏差 $< 500\text{ms}$ 时通过 `slew_ppm_q16`（最大斜率微调 $\pm 500\text{ppm}$）平滑追赶而绝不令 `CLOCK_REALTIME` 发生跳变倒退；非特权进程调用 `0x64` 一律硬拒 `-EACCES`。
 2. **零解析全系统共享 `tzdb.vmo`**：系统将编译压缩后的 IANA 时区跳变表与当前活跃时区标识驻留在一块全局只读共享内存页；任何应用调用本地时间转换无需发起跨进程 IPC 或打开文件系统读取 `/usr/share/zoneinfo`，纯用户态二分查找即可在 $< 50\text{ns}$ 内算出任意历史/未来时刻的夏令时偏移，且 `tzdb` 可随轻量数据OTA热更新。
 
 ### 二、零拷贝多语言包（`.blp`）与 RTL 双向镜像契约

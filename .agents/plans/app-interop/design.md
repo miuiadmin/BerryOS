@@ -3,7 +3,7 @@
 Type: spec
 Status: active
 Updated: 2026-11-18
-Version: 1.0.0
+Version: 1.1.0
 
 一句话说明：`app-interop`（由零偷窥剪贴板与拖拽仲裁器、结构化意图与系统选择器 `intentd`、统一通知中心 `notifyd`、后台任务与定时唤醒经纪人 `workmgr`、沙箱化 Web 引擎 `berry-webview` 及 WASI 0.2 组件运行时 `berry-wasm` 组成）是打破应用孤岛并快速繁荣生态的核心枢纽——在严守纯 Capability 零越权底线的同时提供丝滑的跨应用流转与跨语言应用运行能力。
 
@@ -53,13 +53,20 @@ sequenceDiagram
    - DOM/CSS 排版输出直接编译为 `gfx` 2.0 硬件加速 `SceneStream` 原语（共享系统字体图集与 GPU 着色管线），支撑 [browser](../../../user/bins/browser) 打开真实现代网页及混合开发界面。
 2. **WASI 0.2 WebAssembly 组件模型一等公民运行时（`berry-wasm`）**：
    - WebAssembly Component Model（WIT 接口定义 + WASI 0.2）采用与 BerryOS 微内核完全同构的**纯句柄无全局命名空间 Capability 模型**；
-   - 内置纯 Rust 编写的 AOT（安装期由系统编译服务提前编译为受边界保护的原生机器码并签名缓存至 `/data/dalvik-equiv-aot/`）与极速解释器双模引擎：使 Rust、C/C++、Go、Zig、TypeScript/AssemblyScript 编写的跨平台命令行工具、AI Agent 技能插件与轻量小程序无需重写系统底层适配即可在 `< 3ms` 内冷启动运行，并通过 WIT 强类型绑定直接消费 `ui-sdk`、`netd` 与 `airtd` 能力。
+   - 内置纯 Rust 编写的 AOT（安装期由系统隔离编译服务 `aotd` 提前编译为受边界保护的原生机器码并签名缓存至 `/data/pkg/aot/`）与极速解释器双模引擎：使 Rust、C/C++、Go、Zig、TypeScript/AssemblyScript 编写的跨平台命令行工具、AI Agent 技能插件与轻量小程序无需重写系统底层适配即可在 `< 3ms` 内冷启动运行，并通过 WIT 强类型绑定直接消费 `ui-sdk`、`netd` 与 `airtd` 能力。
+
+### 五、严格硬件 `W^X` 下的进程外隔离编译服务（`aotd` / `jitd`）契约
+
+为与 [mm 总体设计](../mm/design.md) 的硬件 `W^X` 铁律（禁止同一进程自写自执或任意将可写页翻转为可执行页）100% 咬合，彻底阻断恶意网页/脚本利用 JIT 喷射（JIT Spraying）构造 ROP/JOP 攻击链：
+
+1. **客户端沙箱永久禁止动态可执行升权**：`berry-webview` 渲染沙箱进程与普通 `berry-wasm` 宿主进程完全不具备创建或升级 `RIGHT_EXECUTE` 代码页的能力；小规模热启动阶段直接走高速零特权字节码解释器。
+2. **进程外无网编译、PoU 缓存同步与只读密封移交**：当 `pkgmgr` 安装 Wasm 组件或网页热点函数达到编译阈值时，将中间字节码移交零网络、零文件系统的独立隔离编译服务进程 `aotd` / `jitd`——编译器在私有可写 VMO 生成带软件沙箱边界检查（SFI）与 BTI 落点标记的机器码后，依次调用 `0x1D berry_vmo_cache_op(vmo, CACHE_SYNC_ICACHE)` 完成四步 PoU 指令缓存一致性同步、调用 `0x1E berry_vmo_seal(vmo, SEAL_WRITE)` 永久不可逆锁死内容，最后经 `0x02 handle_duplicate` 剥离写权仅将只读可执行句柄（`RIGHT_READ | RIGHT_MAP | RIGHT_EXECUTE`）传回运行沙箱映射为 `UserRx`。
 
 ## 验收标准
 
 1. **剪贴板反偷窥验证**：恶意测试应用切至前台并尝试在无真实用户点击 `PasteButton` 的情况下获取剪贴板数据，100% 拿不到任何句柄；用户点击 `PasteButton` 后目标应用精确收到单次只读数据且 60 秒敏感自动擦除生效。
 2. **后台唤醒归零验证**：安装 20 个注册了后台周期同步的测试应用并切入息屏待机，在非统一维护窗口期内应用引发的 CPU 定时器唤醒次数 = 0；到达 RTC 精确闹钟时刻系统误差 $\le 500\text{ms}$ 准时唤醒响铃。
-3. **Web 站点隔离与 Wasm 组件验收**：`browser-app` 在隔离渲染沙箱内成功加载渲染包含现代 Flex/Grid CSS 与 HTTPS 请求的网页；第三方 WIT 标准 WASI 0.2 组件经 AOT 编译在 `< 5ms` 内启动并受限于显式授予的单个目录句柄运行。
+3. **Web 站点隔离、Wasm 组件与 `W^X` 防护验收**：`browser` 在隔离渲染沙箱内成功加载渲染包含现代 Flex/Grid CSS 与 HTTPS 请求的网页，渲染沙箱尝试自行调用 `vmar_protect(..., UserRx)` 100% 被内核拦截；第三方 WIT 标准 WASI 0.2 组件经 `aotd` 密封代码页在 `< 5ms` 内安全启动。
 
 ## 适用边界
 
