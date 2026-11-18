@@ -80,6 +80,12 @@
 
 **快照速启（QuickBoot Snapshot）**：宿主模拟器基于镜像内容哈希缓存桌面就绪基准 VM 状态、实现 `< 500ms` 瞬时亮屏唤醒并同步实时时钟的启动机制。_Avoid_: 每次冷跑固件自检
 
+**连续曲率超椭圆（Continuous Squircle）**：曲率二阶连续（$G^2$）的圆角轮廓曲线（Apple `CALayerCornerCurve.continuous` 等价隐式场 $(|x|/a)^n + (|y|/b)^n \le 1$），全系统严禁使用曲率突变的传统正圆弧圆角。_Avoid_: 正圆角、阶梯内缩圆角
+
+**四阶增艳毛玻璃（Vibrancy Material）**：由「降采样 Dual-Kawase 模糊 + 色彩饱和度矩阵提拉（`1.8x`）+ 明暗语义纱幕 + `0.5pt` 高光微晶内描边与前景 Vibrancy 透色混色」组成的 iOS 光学半透明材质管线。_Avoid_: 单纯高斯模糊、死灰半透明色块
+
+**灵动岛实时胶囊（Dynamic Island）**：位于状态栏正中的自适应超椭圆交互胶囊——静默态为紧凑纯黑胶囊，后台存在计时、媒体播放、录屏、传输或 AI 语义代操作时以临界阻尼弹簧实时生长为双槽摘要或展开控制卡片。_Avoid_: 静态刘海块、常驻横幅条
+
 ## 存储、安全与救援
 
 **按需只读根卷（BerryROFS）**：4KiB 页对齐压缩并内嵌块级 SHA-256 Merkle 校验树的只读系统根文件系统，取代全量吃内存的 `rootfs.cpio`。_Avoid_: 内存盘 cpio、未验签裸 squashfs
