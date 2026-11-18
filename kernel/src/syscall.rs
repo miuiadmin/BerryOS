@@ -50,7 +50,7 @@
 //! 睡眠者。signal 门控 RIGHT_SIGNAL；wait 不需权利位（12 位 rights 表无 WAIT
 //! 位，持有 handle 即可查）。
 
-use crate::channel::{Message, CHAN_HND_MAX, ChannelEnd};
+use crate::channel::{Message, CHAN_HND_MAX, CHAN_MSG_MAX, ChannelEnd};
 use crate::event::Event;
 use crate::handle::{
     HandleTable, KernelObj, ObjRef, ObjType, Rights, ERR_ACCESS_DENIED, ERR_AGAIN, ERR_BAD_HANDLE,
