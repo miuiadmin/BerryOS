@@ -75,29 +75,29 @@ fn el1_wraparound_rejected() {
 
 #[test]
 fn leaf_ap_read_write_matrix() {
-    // AP ∈ {00,01,10,11} × {read,write} 全表
-    // 00 = EL1 专属读写
-    assert!(leaf_admits(0b00 << 6, false));
-    assert!(leaf_admits(0b00 << 6, true));
-    // 01 = EL0/EL1 共享读写
+    // ARMv8-A Stage-1 AP[2:1] ∈ {00,01,10,11} × {read(write=false), write(write=true)} 全表
+    // 00 = EL1 RW / EL0 None：EL0 调用方读写均拒（防混淆代理人）
+    assert!(!leaf_admits(0b00 << 6, false));
+    assert!(!leaf_admits(0b00 << 6, true));
+    // 01 = EL1/EL0 RW（UserRw）：读写均过
     assert!(leaf_admits(0b01 << 6, false));
     assert!(leaf_admits(0b01 << 6, true));
-    // 10 = EL1 只读：写拒读过
-    assert!(leaf_admits(0b10 << 6, false));
+    // 10 = EL1 RO / EL0 None：EL0 调用方读写均拒
+    assert!(!leaf_admits(0b10 << 6, false));
     assert!(!leaf_admits(0b10 << 6, true));
-    // 11 = EL0 专属：读写均拒
-    assert!(!leaf_admits(0b11 << 6, false));
+    // 11 = EL1/EL0 RO（UserRo / UserRx）：读过、写拒
+    assert!(leaf_admits(0b11 << 6, false));
     assert!(!leaf_admits(0b11 << 6, true));
 }
 
 #[test]
 fn leaf_ap_ignores_other_bits() {
-    // AP 位域外位不干扰（desc 低位有效位/地址位任意）
-    let base = 0x00FF_FFFF_FFFF_F000u64; // 典型叶：地址位 + AF 等
+    // AP 位域外位（含 PXN/UXN 高位、地址位、AF）不干扰
+    let base = (1u64 << 54) | (1u64 << 53) | 0x0000_FFFF_FFFF_F003u64;
     for ap in 0..4u64 {
         let d = base | (ap << 6);
-        assert_eq!(leaf_admits(d, false), ap != 0b11);
-        assert_eq!(leaf_admits(d, true), ap < 0b10);
+        assert_eq!(leaf_admits(d, false), ap == 0b01 || ap == 0b11);
+        assert_eq!(leaf_admits(d, true), ap == 0b01);
     }
 }
 

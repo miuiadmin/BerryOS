@@ -184,12 +184,17 @@ pub fn sync_icache_pou(kva: usize, len: usize) {
     mmu::sync_icache_pou(kva, len);
 }
 
+/// F0-2：返回各核当前在 `TTBR0_EL1` 激活的 ASID 快照（供 ASID 分配器钉死防撞）。
+pub fn active_cpu_asids() -> [u16; 2] {
+    mmu::active_cpu_asids()
+}
+
 // 描述符构造导出（2b-2 起内核侧填用户页表用；boot 建表在 crate 内部直接用）。
 // P6 A-2 起加 ATTR_DEVICE/SH_NONE：用户侧 MMIO 窗口叶（Device-nGnRnE + 不
-// 共享——内核直映 MMIO 同款，见 mmu.rs）。
+// 共享——内核直映 MMIO 同款，见 mmu.rs）。F0-2 起加 AP_USER_RO/PXN/UXN。
 pub use paging::{
-    page_descriptor, table_descriptor, AP_RO, AP_USER_RW, ATTR_DEVICE, ATTR_NORMAL, SH_INNER,
-    SH_NONE,
+    page_descriptor, table_descriptor, AP_RO, AP_USER_RO, AP_USER_RW, ATTR_DEVICE, ATTR_NORMAL,
+    PXN, SH_INNER, SH_NONE, UXN,
 };
 
 // ---- IRQ 派发回调（HAL→上层，函数指针槽反转）----

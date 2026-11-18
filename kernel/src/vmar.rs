@@ -37,8 +37,8 @@ const IDX_MASK: usize = 0x1ff;
 const TABLE_BIT: u64 = 1 << 1;
 /// 描述符里的输出地址掩码（bits[47:12]；PA < 4GiB 绰绰有余）。
 const ADDR_MASK: u64 = 0x0000_FFFF_FFFF_F000;
-/// AP 字段（bits[7:6]）掩码——protect 改权用。
-const AP_MASK: u64 = 0b11 << 6;
+/// AP + PXN + UXN 权限位总掩码——`protect` 改权时一次性清旧置新。
+const PERM_MASK: u64 = (0b11 << 6) | hal::PXN | hal::UXN;
 
 // ---- per-AS 页表自旋锁（S-4 4-2；SMP-S4 草案 §2 4-2①④ + §3.1）----
 
@@ -108,29 +108,39 @@ pub(crate) fn pt_lock_current() -> PtGuard {
     pt_lock(hal::current_asid())
 }
 
-/// 映射权限（v1 三档；AP 编码见 `paging.rs`——Rw=00 仅 EL1 读写、Ro=10 只读、
-/// UserRw=01 EL0/EL1 读写——2b-4 首个 EL0 用户页。UserRo=11 留 v2 按需）。
+/// 映射权限（F0-2 四态硬件 W^X + SMEP `PXN` 矩阵）：
+/// - `Rw` / `Ro`：仅 EL1 访问，强制 `PXN | UXN` 不可执行；
+/// - `UserRo`：`AP=11`（EL0 只读），强制 `PXN | UXN` 不可执行；
+/// - `UserRw`：`AP=01`（EL0 读写），强制 `PXN | UXN` 不可执行（严格 W^X 数据/栈页）；
+/// - `UserRx`：`AP=11`（EL0 只读可执行），强制 `PXN`（SMEP：禁 EL1 执行用户代码页）；
+/// - `UserRwxCompat`：过渡期平铺镜像兼容态（`AP=01 | PXN`），待 F5-2 标准 PIE ELF 段级
+///   装载落地后退役，但仍强制置 `PXN = 1` 阻断 EL1 ret2usr。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Perm {
     Rw,
     Ro,
+    UserRo,
     UserRw,
+    UserRx,
+    UserRwxCompat,
 }
 
 impl Perm {
-    /// AP 位（OR 进 `page_descriptor`；默认 AP_EL1_RW=0 故 Rw 直接加 0）。
-    fn ap(self) -> u64 {
+    /// 合成页表叶描述符权限位（`AP[2:1] | PXN | UXN`）。
+    pub const fn pte_bits(self) -> u64 {
         match self {
-            Perm::Rw => 0,
-            Perm::Ro => hal::AP_RO,
-            Perm::UserRw => hal::AP_USER_RW,
+            Perm::Rw => hal::PXN | hal::UXN,
+            Perm::Ro => hal::AP_RO | hal::PXN | hal::UXN,
+            Perm::UserRo => hal::AP_USER_RO | hal::PXN | hal::UXN,
+            Perm::UserRw => hal::AP_USER_RW | hal::PXN | hal::UXN,
+            Perm::UserRx => hal::AP_USER_RO | hal::PXN,
+            Perm::UserRwxCompat => hal::AP_USER_RW | hal::PXN,
         }
     }
 
-    /// 本权限是否允许 EL0 取指执行（F0-1：用于门控装叶前的 PoU 指令缓存同步；
-    /// F0-2 落地四态 W^X 后将收窄至显式可执行档 `UserRx`）。
+    /// 本权限是否允许 EL0 取指执行（门控装叶与 `protect` 提权时的 PoU 指令缓存同步）。
     pub const fn allows_exec(self) -> bool {
-        matches!(self, Perm::UserRw)
+        matches!(self, Perm::UserRx | Perm::UserRwxCompat)
     }
 }
 
@@ -262,6 +272,11 @@ impl Vmar {
         self.asid
     }
 
+    /// 本 Vmar 是否为拥有独立表根与 ASID 的根区间（区别于 `allocate` 切出的共享 ASID 子区间）。
+    pub const fn is_root(&self) -> bool {
+        self.base == PAGE_SIZE && self.len == USER_VA_TOP - PAGE_SIZE
+    }
+
     /// 激活本 AS（TTBR0+CONTEXTIDR+按号失效，见 HAL）。
     pub fn activate(&self) {
         hal::activate_aspace(self.l1_pa, self.asid);
@@ -371,7 +386,7 @@ impl Vmar {
             }
             // SAFETY: 槽位属本表树独占；volatile 防重排。
             unsafe {
-                slot.write_volatile(hal::page_descriptor(pa, attr, sh) | perm.ap());
+                slot.write_volatile(hal::page_descriptor(pa, attr, sh) | perm.pte_bits());
             }
             filled += 1;
         }
@@ -496,11 +511,11 @@ impl Vmar {
         if perm.allows_exec() {
             hal::sync_icache_pou(phys_to_virt(pa), PAGE_SIZE);
         }
-        let ap = perm.ap();
+        let pte_bits = perm.pte_bits();
         // SAFETY: 槽位属本表树独占；volatile 防重排。匿名 demand 页 = Normal
         // WB + inner-shareable（eager map 同款——demand VMO 无 MMIO 后备）。
         unsafe {
-            slot.write_volatile(hal::page_descriptor(pa, hal::ATTR_NORMAL, hal::SH_INNER) | ap);
+            slot.write_volatile(hal::page_descriptor(pa, hal::ATTR_NORMAL, hal::SH_INNER) | pte_bits);
         }
         // SAFETY: 特权指令；EL1。表写入对页表走查可见。
         unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_flags)) };
@@ -571,13 +586,25 @@ impl Vmar {
         // per-AS PT 锁（S-4 4-2①），整方法串行（同 map）。
         let _pt = pt_lock(self.asid);
         let idx = self.find_mapped(vaddr, len)?;
+        let is_mmio = {
+            // SAFETY: Mapped Region 的 vmo 指针由映射钉计数保证存活。
+            unsafe { (*self.regions[idx].vmo).is_mmio() }
+        };
+        if is_mmio && perm.allows_exec() {
+            return Err(VmarError::NotMapped);
+        }
+        let sync_pou = !is_mmio && perm.allows_exec();
         for i in 0..len / PAGE_SIZE {
             let va = vaddr + i * PAGE_SIZE;
             if let Some(slot) = self.l3_slot_peek(va) {
                 // SAFETY: 槽位属本表树独占。
                 unsafe {
                     let e = slot.read_volatile();
-                    slot.write_volatile((e & !AP_MASK) | perm.ap());
+                    if sync_pou && (e & 1) != 0 {
+                        let pa = (e & ADDR_MASK) as usize;
+                        hal::sync_icache_pou(phys_to_virt(pa), PAGE_SIZE);
+                    }
+                    slot.write_volatile((e & !PERM_MASK) | perm.pte_bits());
                 }
             }
         }
@@ -826,6 +853,11 @@ impl Drop for Vmar {
                 // regions）；与 unmap 的收 Demand 区间同款记账。
                 unsafe { (*r.vmo).untrack_demand(r.len) };
             }
+        }
+        // F0-2：根 Vmar 销毁时在 Inner Shareable 域失效该 ASID 的残留 TLB 并归还活跃位图。
+        if self.is_root() && self.asid != 0 {
+            hal::tlbi_aside1(self.asid);
+            crate::aspace::free_asid(self.asid);
         }
         if !held {
             hal::kern_lock::kern_release();

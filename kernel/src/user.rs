@@ -1750,10 +1750,18 @@ pub struct UserProcess {
     /// sp0（16 对齐；多页镜像时 = 动态栈顶，见 `build`——单页程序恒
     /// `USER_STACK_TOP`，`spawn_user` 调用方从这取、别再读常量）。
     pub stack_top: usize,
-    /// 地址空间根（good 的被 boot 取走进引导表；其余泄漏持有）。
+    /// 地址空间根（good 的被 boot 取走进引导表；其余随 `Drop` 永久常驻不误放 ASID）。
     pub vmar: Option<Vmar>,
-    /// code/data/stack 三 Vmo（Region 指针有效性依托；见结构体注释）。
-    _vmos: [Vmo; 3],
+    /// code/data/stack 三 Vmo（固定堆址常驻，保证 `Region.vmo` 裸指针永不因栈搬移悬垂）。
+    _vmos: &'static mut [Vmo; 3],
+}
+
+impl Drop for UserProcess {
+    fn drop(&mut self) {
+        // boot 级常驻用户任务无 `Process` 对象托管生存期，局部变量离开 `rust_main` 块时
+        // 严禁析构其根 `Vmar`（否则会提前归还在跑任务的活跃 ASID）。
+        core::mem::forget(self.vmar.take());
+    }
 }
 
 impl UserProcess {
@@ -1788,20 +1796,25 @@ impl UserProcess {
         let mut stack_vmo = Vmo::create(PAGE_SIZE).expect("user: 装 stack VMO（boot 可信语境）");
         stack_vmo.commit(fa, 0, PAGE_SIZE).expect("user: commit stack");
 
-        vmar.map(fa, &mut code_vmo, USER_CODE_VA, 0, code_len, Perm::UserRw)
+        // F0-2：先将三张 VMO 锚定到固定 `'static` 堆槽再调 `vmar.map`，根除原先在栈上取
+        // `&mut Vmo` 记入 `Region.vmo` 后按值搬移结构体导致的悬垂裸指针；数据页与栈页立即
+        // 启用严格 `Perm::UserRw`（`PXN=1, UXN=1`）。
+        let vmos = alloc::boxed::Box::leak(alloc::boxed::Box::new([
+            code_vmo, data_vmo, stack_vmo,
+        ]));
+        vmar.map(fa, &mut vmos[0], USER_CODE_VA, 0, code_len, Perm::UserRwxCompat)
             .expect("user: map code");
-        vmar.map(fa, &mut data_vmo, data_va, 0, PAGE_SIZE, Perm::UserRw)
+        vmar.map(fa, &mut vmos[1], data_va, 0, PAGE_SIZE, Perm::UserRw)
             .expect("user: map data");
-        vmar.map(fa, &mut stack_vmo, stack_base, 0, PAGE_SIZE, Perm::UserRw)
+        vmar.map(fa, &mut vmos[2], stack_base, 0, PAGE_SIZE, Perm::UserRw)
             .expect("user: map stack");
 
-        // 表树对页表走查可见（map 内 dsb ish）；三 Vmo 进结构体（见结构体注释）。
         Self {
             ttbr0_pa: vmar.ttbr0_pa(),
             asid,
             stack_top: stack_base + PAGE_SIZE,
             vmar: Some(vmar),
-            _vmos: [code_vmo, data_vmo, stack_vmo],
+            _vmos: vmos,
         }
     }
 }

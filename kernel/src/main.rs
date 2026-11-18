@@ -6335,17 +6335,8 @@ extern "C" fn task_soakmon(arg: usize) -> ! {
 /// cpu_do_idle 同款；TCG 实测 wfe 立返拖垮主核吞吐——S-1 铁律）。
 #[no_mangle]
 pub unsafe extern "C" fn secondary_main() -> ! {
-    // S-2b 修复：换离低半早期栈（__boot_stack_top）到高半静态栈——必须在
-    // 任何调用/IRQ 之前（本函数 `-> !`，旧帧弃置无害）。此后本核全部栈
-    // 访问（探测环帧/tick IRQ 帧/park 存档帧）都在高半：主表与用户表均映，
-    // park 帧恢复后读栈不再依赖低半映射（2b-2 退役；风暴雷详注见 smp.rs
-    // `SMP_SEC_STACK`）。
-    {
-        let top = berry_hal_aarch64::smp::sec_stack_top();
-        // SAFETY: 特权寄存器写；副核 DAIF 屏蔽窗内单线程；nostack——只改
-        // 寄存器不访问内存（此刻旧栈仍在低半可用，但本指令不触栈）。
-        unsafe { core::arch::asm!("mov sp, {0}", in(reg) top, options(nostack)) };
-    }
+    // S-2b + F0-2：高半 `.bss` 副核栈已在 `.Lsmp_final` `blr` 进入本函数前切妥（消除
+    // Rust 函数序言在换栈前压旧栈/只读段的 UB 窗口）。
     // SAFETY: 特权寄存器写；副核 DAIF 窗内单线程。
     // （排障期哨兵 enter/init ok 已随 C1 复活验证回收——bring-up 窗口 =
     // UART 单写者纪律窗，副核静默是 SMP ok 完整落行的前提，勿在此窗加打印。）

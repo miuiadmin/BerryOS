@@ -55,8 +55,8 @@ use crate::event::Event;
 use crate::handle::{
     HandleTable, KernelObj, ObjRef, ObjType, Rights, ERR_ACCESS_DENIED, ERR_AGAIN, ERR_BAD_HANDLE,
     ERR_BUSY, ERR_BAD_STATE, ERR_FAULT, ERR_INVALID_ARG, ERR_NOT_FOUND, ERR_NOT_SUPPORTED,
-    ERR_NO_MEMORY, ERR_OUT_OF_RANGE, ERR_TIMEDOUT, RIGHT_DUPLICATE, RIGHT_MANAGE, RIGHT_MAP,
-    RIGHT_TRANSFER, RIGHT_INSPECT,
+    ERR_NO_MEMORY, ERR_OUT_OF_RANGE, ERR_TIMEDOUT, RIGHT_DUPLICATE, RIGHT_EXECUTE, RIGHT_MANAGE,
+    RIGHT_MAP, RIGHT_TRANSFER, RIGHT_INSPECT,
     RIGHT_READ, RIGHT_RECV, RIGHT_SEND, RIGHT_SIGNAL, RIGHT_WRITE, SIGNAL_READABLE,
     SIGNAL_TERMINATED, SIGNAL_WRITABLE,
 };
@@ -676,10 +676,15 @@ extern "C" fn sys_vmo_create(tf: &mut TrapFrame) -> i64 {
     // G4-2：demand 位附加 SET_POLICY（§5-① 裁决——demand VMO 首消费，
     // 0x21 双验之一；默认面权利集逐位不变）+ TRANSFER（Zircon 默认携位）。
     let rights = if demand {
-        RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_DUPLICATE | RIGHT_SET_POLICY
+        RIGHT_READ
+            | RIGHT_WRITE
+            | RIGHT_EXECUTE
+            | RIGHT_MAP
+            | RIGHT_DUPLICATE
+            | RIGHT_SET_POLICY
             | RIGHT_TRANSFER
     } else {
-        RIGHT_READ | RIGHT_WRITE | RIGHT_MAP | RIGHT_DUPLICATE | RIGHT_TRANSFER
+        RIGHT_READ | RIGHT_WRITE | RIGHT_EXECUTE | RIGHT_MAP | RIGHT_DUPLICATE | RIGHT_TRANSFER
     };
     match t.insert(KernelObj::Vmo(vmo), rights) {
         Ok(h) => match copy_out_u32(el1, out, h) {
@@ -915,59 +920,65 @@ extern "C" fn sys_vmar_map(tf: &mut TrapFrame) -> i64 {
         tf.regs[5] as usize,
         tf.regs[6] as Rights,
     );
-    if rights & !(RIGHT_READ | RIGHT_WRITE) != 0 {
+    if rights & !(RIGHT_READ | RIGHT_WRITE | RIGHT_EXECUTE) != 0 {
         return ERR_INVALID_ARG as i64;
     }
-    if rights != RIGHT_READ | RIGHT_WRITE {
-        return ERR_NOT_SUPPORTED as i64;
+    // F0-2 严格 W^X 铁律：严禁同时请求 WRITE 与 EXECUTE。
+    if (rights & (RIGHT_WRITE | RIGHT_EXECUTE)) == (RIGHT_WRITE | RIGHT_EXECUTE) {
+        return ERR_INVALID_ARG as i64;
     }
+    let need_vmo_rights = if rights == RIGHT_READ {
+        RIGHT_MAP | RIGHT_READ
+    } else if rights == (RIGHT_READ | RIGHT_EXECUTE) {
+        RIGHT_MAP | RIGHT_READ | RIGHT_EXECUTE
+    } else if rights == (RIGHT_READ | RIGHT_WRITE) {
+        RIGHT_MAP | RIGHT_READ | RIGHT_WRITE
+    } else {
+        return ERR_NOT_SUPPORTED as i64;
+    };
     let el1 = caller_is_el1(tf);
     let req = match copy_in_u64(el1, vaddrp) {
         Ok(v) => v,
         Err(e) => return e as i64,
     };
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
-    // 双对象同借：两 get_raw 类型门控互异 → 必不同对象 → &mut 无别名（论证
-    // 见 HandleTable::get_raw 文档）。
     let vr = match t.get_raw(vh, ObjType::Vmar, RIGHT_MAP) {
         Ok((o, _)) => o,
         Err(e) => return e as i64,
     };
-    // VMO 门控逐位要求（3b3 M6）：映射产出可读 UserRw 叶 → READ 必须在句柄上，
-    // 否则 duplicate 合法收紧掉 READ 后仍能经映射读（READ 权逃逸）。v1 恒
-    // READ|WRITE 映射，故等价 MAP|READ|WRITE；UserRo 映射留 v2 再按权限拆。
-    let vo = match t.get_raw(oh, ObjType::Vmo, RIGHT_MAP | RIGHT_READ | RIGHT_WRITE) {
+    let vo = match t.get_raw(oh, ObjType::Vmo, need_vmo_rights) {
         Ok((o, _)) => o,
         Err(e) => return e as i64,
     };
-    // SAFETY: 指针经 get_raw 门控；类型互异保证对象互异；单核 IRQ 屏蔽。
+    // SAFETY: 指针经 get_raw 门控；类型互异保证对象互异；KL 窗串行。
     let pair = unsafe {
         ((*vr.as_ptr()).obj.as_vmar_mut(), (*vo.as_ptr()).obj.as_vmo_mut())
     };
     let (Some(vmar), Some(vmo)) = pair else {
-        return ERR_BAD_HANDLE as i64; // 类型门控后不可达；防御面
+        return ERR_BAD_HANDLE as i64;
     };
-    // G4-2（§5-① 裁决）：demand VMO 对象级分流——登记 Demand 区间不填叶
-    //（首触缺页走 EL0 探针 → 0x21 供给）；eager VMO 原路径逐位不变（全
-    // 提交执法点在 `Vmar::map` 内）。perm 同为 UserRw（供给叶取区间登记权）。
-    // demand 分支另登记 asid 反查表（§5-④——探针第一段 TTBR0 现读 asid →
-    // root Vmar 的唯一来源）；**先登记后映射**：登记失败零副作用早返。映射
-    // 失败留幂等残项（同 (asid, root) 重试 map 复占同槽）——G4-2 修批后
-    // 语义改口（MECH-3 翻案）：残项**不再是终身占位**（`Vmar::Drop` 注销面
-    // 已落，槽随对象销毁可回收），stale 残项最坏 = 探针 stage-2 region 查
-    // miss → 原杀链。
+    if vmo.is_mmio() && (rights & RIGHT_EXECUTE) != 0 {
+        return ERR_INVALID_ARG as i64;
+    }
+    let perm = if rights == RIGHT_READ {
+        Perm::UserRo
+    } else if rights == (RIGHT_READ | RIGHT_EXECUTE) {
+        Perm::UserRx
+    } else if vmo.is_mmio() {
+        Perm::UserRw
+    } else {
+        Perm::UserRwxCompat
+    };
     let r = if vmo.is_demand() {
         match crate::vmar::register_demand_root(vmar.asid(), vmar as *mut Vmar) {
-            Ok(()) => vmar.map_demand(vmo, req as usize, voff, len, Perm::UserRw),
-            // 满表 = 供给面不可达（静默丢 = demand 页死循环杀链）→ 拒映射；
-            // 异 root 同 asid = 装配面不变量破（防御拒）。
+            Ok(()) => vmar.map_demand(vmo, req as usize, voff, len, perm),
             Err(crate::vmar::DemandRootError::Full) => return ERR_NO_MEMORY as i64,
             Err(crate::vmar::DemandRootError::OwnerConflict) => {
                 return ERR_NOT_SUPPORTED as i64
             }
         }
     } else {
-        vmar.map(crate::mm::frames(), vmo, req as usize, voff, len, Perm::UserRw)
+        vmar.map(crate::mm::frames(), vmo, req as usize, voff, len, perm)
     };
     match r {
         Ok(va) => match copy_out_u64(el1, vaddrp, va as u64) {
@@ -1446,12 +1457,22 @@ extern "C" fn sys_vmar_unmap(tf: &mut TrapFrame) -> i64 {
 extern "C" fn sys_vmar_protect(tf: &mut TrapFrame) -> i64 {
     let (vh, rights, vaddr, len) =
         (tf.regs[1] as u32, tf.regs[2] as Rights, tf.regs[3] as usize, tf.regs[4] as usize);
-    if rights & !(RIGHT_READ | RIGHT_WRITE) != 0 {
+    if rights & !(RIGHT_READ | RIGHT_WRITE | RIGHT_EXECUTE) != 0 {
         return ERR_INVALID_ARG as i64;
     }
-    if rights != RIGHT_READ | RIGHT_WRITE {
-        return ERR_NOT_SUPPORTED as i64;
+    // F0-2 严格 W^X 铁律：严禁同时赋予 WRITE 与 EXECUTE。
+    if (rights & (RIGHT_WRITE | RIGHT_EXECUTE)) == (RIGHT_WRITE | RIGHT_EXECUTE) {
+        return ERR_INVALID_ARG as i64;
     }
+    let perm = if rights == RIGHT_READ {
+        Perm::UserRo
+    } else if rights == (RIGHT_READ | RIGHT_EXECUTE) {
+        Perm::UserRx
+    } else if rights == (RIGHT_READ | RIGHT_WRITE) {
+        Perm::UserRwxCompat
+    } else {
+        return ERR_NOT_SUPPORTED as i64;
+    };
     match caller_table(tf) {
         Ok(t) => match t.get_raw(vh, ObjType::Vmar, RIGHT_MANAGE) {
             Ok((obj, _)) => {
@@ -1459,7 +1480,7 @@ extern "C" fn sys_vmar_protect(tf: &mut TrapFrame) -> i64 {
                 let Some(vmar) = (unsafe { &mut (*obj.as_ptr()).obj }).as_vmar_mut() else {
                     return ERR_BAD_HANDLE as i64;
                 };
-                match vmar.protect(vaddr, len, Perm::UserRw) {
+                match vmar.protect(vaddr, len, perm) {
                     Ok(()) => 0,
                     Err(e) => vme(e) as i64,
                 }
@@ -1555,11 +1576,16 @@ extern "C" fn sys_process_create(tf: &mut TrapFrame) -> i64 {
     if crate::process::process_live() >= crate::process::PROCESS_MAX {
         return ERR_NO_MEMORY as i64;
     }
-    // 帧耗尽折 -ENOMEM（3b3 H1：new_root 曾内嵌 expect——EL0 一次 process_create
-    // 即可让内核 panic 停机）。
-    let vmar = match Vmar::new_root(crate::mm::frames(), crate::aspace::alloc_asid()) {
+    // F0-2：ASID 耗尽诚实返 -ENOMEM（绝不撞号）；建表失败时立即归还刚取出的 ASID。
+    let Some(new_asid) = crate::aspace::try_alloc_asid() else {
+        return ERR_NO_MEMORY as i64;
+    };
+    let vmar = match Vmar::new_root(crate::mm::frames(), new_asid) {
         Ok(v) => v,
-        Err(e) => return vme(e) as i64,
+        Err(e) => {
+            crate::aspace::free_asid(new_asid);
+            return vme(e) as i64;
+        }
     };
     let (ttbr0, asid) = (vmar.ttbr0_pa(), vmar.asid());
     let hv = match t.insert(

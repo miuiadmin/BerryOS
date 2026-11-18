@@ -425,17 +425,42 @@ fn test_syscall() {
     // 映射中 close 拒（悬空 PTE 防线）；unmap 后即放行。
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hv as u64, 0, 0), -16,
         "SYSCALL：映射中 close 须 -EBUSY");
+    // F0-2：protect 支持 UserRo(1) / UserRx(5) / UserRw(3)，严格拒绝 R|W|X(7) 与外位(8)。
     assert_eq!(
-        svc6(NR_VMAR_PROTECT as u64, hvm as u64, 1, crate::aspace::USER_VA as u64,
+        svc6(NR_VMAR_PROTECT as u64, hvm as u64, 1 /* READ */, crate::aspace::USER_VA as u64,
              PAGE_SIZE as u64, 0, 0),
-        -95,
-        "SYSCALL：protect 缺 WRITE 须 -ENOTSUP（v1 只支持 R|W）"
+        0,
+        "SYSCALL：protect READ(UserRo) 须成功"
     );
     assert_eq!(
-        svc6(NR_VMAR_PROTECT as u64, hvm as u64, 5, crate::aspace::USER_VA as u64,
+        svc6(NR_VMAR_PROTECT as u64, hvm as u64, 5 /* READ|EXEC */, crate::aspace::USER_VA as u64,
+             PAGE_SIZE as u64, 0, 0),
+        0,
+        "SYSCALL：protect READ|EXECUTE(UserRx) 须成功"
+    );
+    assert_eq!(
+        svc6(NR_VMAR_PROTECT as u64, hvm as u64, 7 /* R|W|X */, crate::aspace::USER_VA as u64,
+             PAGE_SIZE as u64, 0, 0),
+        -22,
+        "SYSCALL：protect R|W|X 违背 W^X 须拒 -EINVAL"
+    );
+    assert_eq!(
+        svc6(NR_VMAR_PROTECT as u64, hvm as u64, 0, crate::aspace::USER_VA as u64,
+             PAGE_SIZE as u64, 0, 0),
+        -95,
+        "SYSCALL：protect 空权限须 -ENOTSUP"
+    );
+    assert_eq!(
+        svc6(NR_VMAR_PROTECT as u64, hvm as u64, 8 /* RIGHT_MAP 外位 */, crate::aspace::USER_VA as u64,
              PAGE_SIZE as u64, 0, 0),
         -22,
         "SYSCALL：protect 外位 rights 须 -EINVAL"
+    );
+    assert_eq!(
+        svc6(NR_VMAR_PROTECT as u64, hvm as u64, 3 /* READ|WRITE */, crate::aspace::USER_VA as u64,
+             PAGE_SIZE as u64, 0, 0),
+        0,
+        "SYSCALL：protect 恢复 READ|WRITE 须成功"
     );
     assert_eq!(
         svc6(NR_VMAR_UNMAP as u64, hvm as u64, 0x9000, PAGE_SIZE as u64, 0, 0, 0),
@@ -3344,6 +3369,66 @@ fn test_vmo() {
     assert_eq!(dv, MAGIC, "VMO：supply_page_init 预填内容经 VA 立即可读");
     root.unmap(DVA, PAGE_SIZE).expect("VMO：unmap DVA");
     drop(dvmo);
+
+    // H. F0-2：TTBR1 `.rodata` 只读、直映区 `PXN` 不可执行、用户页 `SMEP(PXN)` 与 ASID 位图归还验证。
+    static KRO_SENTINEL: u64 = 0x524F_4441_5441_4F4B;
+    let kro_va = (&raw const KRO_SENTINEL) as usize;
+    hal::trap::arm_expected_fault(kro_va);
+    // SAFETY: 期望写只读 `.rodata` 触发 EL1 Permission D-abort 并自动跳过恢复。
+    unsafe { core::ptr::write_volatile(kro_va as *mut u64, 0) };
+    assert!(!hal::trap::fault_armed(), "VMO：TTBR1 .rodata 写操作必须触发硬件只读异常");
+    assert_eq!(
+        unsafe { core::ptr::read_volatile(kro_va as *const u64) },
+        0x524F_4441_5441_4F4B,
+        "VMO：.rodata 拒写后原值不变"
+    );
+
+    let nx_pfn = fa.alloc().expect("VMO：alloc NX 探针帧");
+    let nx_kva = berry_mm::va::phys_to_virt(nx_pfn * PAGE_SIZE);
+    // SAFETY: 独占直映物理帧写入 A64 `ret` 指令（0xD65F03C0）。
+    unsafe { core::ptr::write_volatile(nx_kva as *mut u32, 0xD65F_03C0) };
+    hal::sync_icache_pou(nx_kva, 4);
+    hal::trap::arm_expected_iabort(nx_kva);
+    // SAFETY: 期望跳转 `PXN=1` 直映帧触发 EL1 Instruction Abort 并经 x30 恢复。
+    unsafe {
+        core::arch::asm!(
+            "blr {0}",
+            in(reg) nx_kva,
+            out("x30") _,
+            options(nostack, preserves_flags),
+        );
+    }
+    assert!(!hal::trap::iabort_armed(), "VMO：EL1 跳 TTBR1 直映区必须触发 PXN 取指异常");
+    fa.free(nx_pfn, 0).expect("VMO：free NX 探针帧");
+
+    let mut rx_vmo = Vmo::create(PAGE_SIZE).expect("VMO：create rx_vmo");
+    rx_vmo.commit(fa, 0, PAGE_SIZE).expect("VMO：commit rx_vmo");
+    rx_vmo.write(0, &0xD65F_03C0u32.to_le_bytes()).expect("VMO：write ret");
+    root.map(fa, &mut rx_vmo, DVA, 0, PAGE_SIZE, Perm::UserRx).expect("VMO：map UserRx");
+    hal::trap::arm_expected_fault(DVA);
+    // SAFETY: UserRx 页（AP=11）拒写，期望 D-abort。
+    unsafe { core::ptr::write_volatile(DVA as *mut u32, 0) };
+    assert!(!hal::trap::fault_armed(), "VMO：UserRx 页写操作必须触发只读异常");
+    hal::trap::arm_expected_iabort(DVA);
+    // SAFETY: UserRx 页强制置 PXN=1（SMEP），EL1 跳用户代码页必须触发 I-abort。
+    unsafe {
+        core::arch::asm!(
+            "blr {0}",
+            in(reg) DVA,
+            out("x30") _,
+            options(nostack, preserves_flags),
+        );
+    }
+    assert!(!hal::trap::iabort_armed(), "VMO：EL1 跳 UserRx 用户页必须触发 SMEP(PXN) 异常");
+    root.unmap(DVA, PAGE_SIZE).expect("VMO：unmap UserRx");
+    drop(rx_vmo);
+
+    let t_asid1 = crate::aspace::alloc_asid();
+    let t_asid2 = crate::aspace::alloc_asid();
+    assert_ne!(t_asid1, 0);
+    assert_ne!(t_asid1, t_asid2);
+    crate::aspace::free_asid(t_asid1);
+    crate::aspace::free_asid(t_asid2);
 
     // 收尾：回内核空表（与 idle/无 AS 任务的 ttbr0=0 状态对齐）。
     hal::activate_aspace(0, 0);
