@@ -1,7 +1,8 @@
 Type: standard
 Version: 1.4.0
-Status: current
-Updated: 2026-11-16
+Status: superseded
+Superseded-by: [iOS视觉与流体交互复刻标准-v1.0.md](iOS视觉与流体交互复刻标准-v1.0.md)
+Updated: 2026-11-18
 
 # Berry设备平台-TransparentFloatingShell-v1.4：透明悬浮系统栏与安全区
 

@@ -3,17 +3,17 @@
 Type: spec
 Status: active
 Updated: 2026-11-18
-Version: 2.0.0
+Version: 2.1.0
 
-一句话说明：`ui-sdk` 定义 BerryOS 面向系统与第三方开发者的完整客户端技术栈（`berry-gfx` v2、`berry-text`、`berry-ui` v2、`softimed`、动态 `Vmar` 页堆与 `berry-sdk`）——以抗锯齿 8-bit 混合光栅、UTF-8/CJK 矢量字体排版、统一 `vp` 细粒度信号响应式组件树与零样板异步应用框架，彻底终结双轨控件分裂、静态容量硬墙与底层样板代码负担。
+一句话说明：`ui-sdk` 定义 BerryOS 面向系统与第三方开发者的完整客户端技术栈（`berry-gfx` v2、`berry-text`、`berry-ui` v2、`imed`、动态 `Vmar` 页堆与 `berry-sdk`）——以 $G^2$ 超椭圆抗锯齿与四阶 Vibrancy 光栅、SF 等价 UTF-8/CJK 矢量排印、一比一复刻 iOS 18 / iPadOS 18 的响应式组件树与零样板异步框架，彻底终结双轨控件分裂、廉价拼凑感与底层样板负担。
 
 ## 背景
 
-如 [GUI 与 SDK 及启动模拟器全栈深研](../../research/2026-11-18-GUI与SDK及启动模拟器全栈深研.md) 第三节所揭示，现役客户端栈存在五大瓶颈：`berry-gfx` 仅支持 1-bit 透明键与逐像素标量 `put_px`；文字仅限 95 个 ASCII 1-bit 点阵字模且无输入法守护进程；`berry-ui` 原生 41 `ViewKind` 写死 1x 物理像素迫使业务转向 3,114 行 `pattern.rs` 双轨拼装，且受困于 `512` 节点、`64B` 文本、`8` 输入框与 `256KiB` 静态 BSS 堆硬帽；`berry-appshell` 事件循环锁死 2 枚句柄迫使终端等应用重写全套帧循环。依据 [图形合成与 SDK 及模拟器终态架构裁决](../../notes/proposed/2026-11-18-图形合成与SDK及模拟器终态架构裁决.md)，本规格定义客户端五层 crate 族的内部总体契约；跨模块公共规范见 [GUI 合成与 SDK 终态标准](../../../docs/GUI合成与SDK终态标准-v2.0.md)。
+如 [GUI 与 SDK 及启动模拟器全栈深研](../../research/2026-11-18-GUI与SDK及启动模拟器全栈深研.md) 第三节所揭示，现役客户端栈存在五大瓶颈：`berry-gfx` 仅支持 1-bit 透明键与逐像素标量 `put_px`；文字仅限 95 个 ASCII 1-bit 点阵字模且无输入法守护进程；`berry-ui` 原生 41 `ViewKind` 写死 1x 物理像素迫使业务转向 3,114 行 `pattern.rs` 双轨拼装，且受困于 `512` 节点、`64B` 文本、`8` 输入框与 `256KiB` 静态 BSS 堆硬帽；`berry-appshell` 事件循环锁死 2 枚句柄迫使终端等应用重写全套帧循环。依据 [图形合成与 SDK 及模拟器终态架构裁决](../../notes/proposed/2026-11-18-图形合成与SDK及模拟器终态架构裁决.md) 与 [全面复刻 iOS 18 视觉与流体交互范式裁决](../../notes/proposed/2026-11-18-全面复刻iOS18视觉与流体交互范式裁决.md)，本规格定义客户端五层 crate 族的内部总体契约；跨模块公共标准与像素级视觉参数见 [GUI 合成与 SDK 终态标准](../../../docs/GUI合成与SDK终态标准-v2.0.md) 及 [iOS 视觉与流体交互复刻标准](../../../docs/iOS视觉与流体交互复刻标准-v1.0.md)。
 
 ## 范围
 
-- **覆盖**：客户端 SDK 分层拓扑；`berry-gfx` v2 预乘色彩模型、抗锯齿圆角/阴影/渐变原语与 Span+SIMD 光栅执行器；`berry-text` TrueType/OpenType 轮廓解析、LRU 灰度字形图集与 UTF-8/CJK 多行排版；`berry-ui` v2 细粒度信号状态（`Signal` / `Computed`）、单遍 Flex/Grid/`Insets` 约束布局、统一 `vp` 主题系统、开放 `Widget` 扩展接口与 `.bui` TLV 热重载同构、全手势识别与 `VirtualList`；`softimed` 输入法服务与组合文本协议；`berry-libc` 动态 `Vmar` 堆分配器；`berry-sdk` 基于 `Port` 的统一异步 `AppLoop`、`#[berry_sdk::app]` 宏、生命周期状态持久化及开发者友好的打包工具链。
+- **覆盖**：客户端 SDK 分层拓扑；`berry-gfx` v2 预乘色彩模型、抗锯齿圆角/阴影/渐变原语与 Span+SIMD 光栅执行器；`berry-text` TrueType/OpenType 轮廓解析、LRU 灰度字形图集与 UTF-8/CJK 多行排版；`berry-ui` v2 细粒度信号状态（`Signal` / `Computed`）、单遍 Flex/Grid/`Insets` 约束布局、统一 `vp` 主题系统、开放 `Widget` 扩展接口与 `.bui` TLV 热重载同构、全手势识别与 `VirtualList`；`imed` 输入法服务与组合文本协议；`berry-libc` 动态 `Vmar` 堆分配器；`berry-sdk` 基于 `Port` 的统一异步 `AppLoop`、`#[berry_sdk::app]` 宏、生命周期状态持久化及开发者友好的打包工具链。
 - **不覆盖**：跨进程窗口合成与全局手势拦截（归 [compositor 总体设计](../compositor/design.md)）；内核 `Port` / `ProcessArgs v2` / PIE ELF 底层机制（归 [meihe 总体设计](../meihe/design.md) 与 [ipc 总体设计](../ipc/design.md)）。
 
 ## 契约
@@ -36,7 +36,7 @@ L1–L3 全部保持 `#![no_std]` + `alloc` 纯内存计算与 100% 宿主机 `c
 
 1. **一等预乘 Alpha 色彩契约**：标准像素格式统一为小端 `Premultiplied BGRA8888 / RGBA8888`（`r, g, b <= a`）。提供无分支整数预乘转换与 Porter-Duff `Src` / `SrcOver` 双模式；不透明图元（`a == 255`）在命令编码期自动静态降级为 `Src` 直写快路径，零混合损耗。
 2. **核心渲染命令集（紧凑定长/切片借用编码）**：
-   - `FillRect` / `FillRRect`：支持四角独立半径 `[r_tl, r_tr, r_br, r_bl]`、描边宽度 `stroke_w`（内外半宽有向距离场 `SDF` 计算）及边缘 1px 亚像素解析覆盖率抗锯齿（256 级 Alpha 权重，彻底废除 `TRUE_CORNERS` 开关与阶梯锯齿）；
+   - `FillRect` / `FillSquircle`：淘汰曲率突变的传统正圆弧，全量采用 $G^2$ 连续曲率超椭圆（Continuous Squircle，$n = 4.0 / 4.5$，遵循同心圆角律 $R_{\text{inner}} = \max(R_{\text{outer}} - p, 4\text{pt})$）、支持四角独立半径、描边宽度 `stroke_w`（含 `0.5pt` 微晶高光内描边）及边缘 1px 亚像素解析覆盖率抗锯齿（256 级 Alpha 权重，彻底废除 `TRUE_CORNERS` 开关与阶梯锯齿）；
    - `DrawBoxShadow`：基于误差函数分段多项式近似的解析圆角矩形高斯阴影（`blur_radius`、`spread`、`offset`），单遍直接生成平滑阴影 Alpha 场，无需离屏模糊缓冲；
    - `PaintBrush`：支持纯色 `Solid(Color)`、双点/多色标 `LinearGradient` 与 `RadialGradient`（Q16 定点插值 + 有序抖动防色带）；
    - `DrawGlyphMask`：消费 `berry-text` 产出的 8-bit 灰度覆盖率掩码 `(mask: &[u8], w, h, stride)` 与前景色执行 `SrcOver` 着色混合；
@@ -63,14 +63,14 @@ L1–L3 全部保持 `#![no_std]` + `alloc` 纯内存计算与 100% 宿主机 `c
    - `Flex`（`Row`/`Col`）完整实现 `flex_grow`、`flex_shrink`、`flex_basis`、`justify_content`（含 `SpaceBetween`/`SpaceAround`）、`align_items`、`gap` 与多行 `flex_wrap`；`Spacer` 即 `flex_grow: 1.0` 的标准弹性节点；
    - `SafeArea` 容器自动消费合成器下发的四边 `Insets { status_top, nav_bottom, cutout_left, cutout_right, ime_bottom }`，支持背景色/列表内容贯通至屏幕物理边缘（Edge-to-Edge）而交互控件自动内缩避让；
    - 内置标准窗口宽度断点 `WindowSizeClass`：`Compact (< 600vp)`、`Medium (600..840vp)`、`Expanded (>= 840vp)`，令同一份应用代码自适应手机竖屏（底部 `NavigationBar`）与平板/横屏桌面（侧边 `NavigationRail` + 双栏主从视图 `NavigationSplitView`）。
-4. **开放 `Widget` Trait 与 `VirtualList` / 完备手势**：
-   - 开放 `pub trait Widget { fn measure(&mut self, ...); fn layout(&mut self, ...); fn paint(&self, ...); fn on_event(&mut self, ...); fn semantics(&self, ...); }`，将 [UI 组件清单与实施规划](../../../docs/UI组件清单与实施规划-v1.0.md) 规划的标准控件库（按钮、开关、滑块、单复选、分段器、导航栏、页栈 `NavStack`、卡片、对话框、底部抽屉 `BottomSheet`、菜单、吐司、单多行文本编辑器、日期时间滚轮、自定义画布 `Canvas`）与第三方自定义控件统一为一等公民。
-   - **`VirtualList` 与物理惯性滚动**：滚动容器内置按像素摩擦指数衰减的物理惯性滚动（Fling）与边界弹簧回弹（Overscroll Bounce）；`VirtualList` 仅实例化当前视口可见区加前后 1 屏缓冲区的行节点并循环复用槽位，支持 100,000 行数据在 `< 64` 活跃节点与 120fps 下丝滑滚动。
-   - **完整手势竞技场**：原生支持 `Tap`、`DoubleTap`、`LongPress`（默认 500ms 定时触发）、方向锁定 `Pan/Drag`、`Swipe` 与双指 `Pinch/Scale`。
+4. **开放 `Widget` Trait、纯正 iOS 18 标准控件库与流体物理滚动**：
+   - 开放 `pub trait Widget { fn measure(&mut self, ...); fn layout(&mut self, ...); fn paint(&self, ...); fn on_event(&mut self, ...); fn semantics(&self, ...); }`，严格依据 [iOS 视觉与流体交互复刻标准](../../../docs/iOS视觉与流体交互复刻标准-v1.0.md) 打造纯正 UIKit/SwiftUI 等价控件库：支持随滚动折叠入 `ChromeMaterial` 毛玻璃的 `34pt` 大标题 `UINavigationBar`、`InsetGroupedList`（`10pt` 超椭圆分组卡 + 对齐正文起点的 `0.33pt` 极细分割线 + `29×29pt` 彩色圆角行首标）、按住圆球弹性拉伸的 `51×31pt` `UISwitch`、`UISegmentedControl`、底部 `ChromeMaterial` `UITabBar`、驱动父窗 `0.92x` 纵深微缩的 `UISheet`、背景全屏模糊浮出的 `UIContextMenu` 以及宽屏（`>= 600pt`）自动展开的 `UISplitView`。
+   - **`VirtualList` 与 UIKit 原装物理滚动**：滚动容器严格实装 `UIScrollView` 对数橡皮筋越界公式 $d' = (1 - \frac{1}{0.55 d / D + 1}) D$、每毫秒 `0.998` 指数衰减惯性（Fling）与松手投射终点判定；`VirtualList` 仅实例化当前视口可见区加前后 1 屏缓冲区的行节点并循环复用槽位，支持 100,000 行数据在 `< 64` 活跃节点与 120fps 下丝滑滚动。
+   - **完整手势竞技场**：原生支持 `Tap`、`DoubleTap`、`LongPress`（默认 500ms 触发 `ContextMenu` 预览）、全屏左边缘交互式侧滑返回（`InteractivePop`）、方向锁定 `Pan/Drag`、`Swipe` 与双指 `Pinch/Scale`。
 
-### 五、`softimed` 输入法、动态 `Vmar` 页堆与零样板 `berry-sdk`
+### 五、`imed` iOS 风格输入法、动态 `Vmar` 页堆与零样板 `berry-sdk`
 
-1. **端到端输入法闭环（`softimed`）**：新建无网络权限独立沙箱服务 `user/bins/softimed`（持有 `PA_COMP_IME` 能力），内置中英文双态虚拟键盘（QWERTY 符号盘 + 紧凑双拼/全拼词库引擎与候选词栏）。当应用内 `TextInput` 获得焦点时，`berry-sdk` 自动上报 `{ input_type, action_label, cursor_screen_rect }`；用户敲击软键盘时，`softimed` 实时发送 `Preedit { text, cursor }` 在光标处渲染带下划线的未上屏拼音串，选词后发送 `Commit { text }` 写入 UTF-8 汉字，软键盘升起期间 `SafeArea` 以弹簧动画平滑上推焦点输入框防遮挡。
+1. **端到端 iOS 质感输入法闭环（`imed`）**：新建无网络权限独立沙箱服务 `user/bins/imed`（持有 `PA_COMP_IME` 能力），复刻 iOS 系统键盘外观（`ThickMaterial` 磨砂底座、纯白/`#4A4A4C` 微投影圆角键帽、按下时键帽上方弹出放大预览气泡 Key Callout、顶部 `ChromeMaterial` 拼音候选词横滑栏与右下角系统蓝确认键）。当应用内 `TextInput` 获得焦点时，`berry-sdk` 自动上报 `{ input_type, action_label, cursor_screen_rect }`；用户敲击软键盘时，`imed` 实时发送 `Preedit { text, cursor }` 渲染带下划线未上屏拼音串，选词后发送 `Commit { text }` 写入 UTF-8 汉字，软键盘升起期间 `SafeArea` 以临界阻尼弹簧平滑上推焦点输入框防遮挡。
 2. **基于 `Port` 的统一异步 `AppLoop` 与动态 `Vmar` 页堆**：
    - `berry-sdk` 封装单一内核 `Port`，提供 `AppCtx` 注册任意数量的自定义 IPC `Channel`、单次/周期高精度 `Timer`、异步文件/网络 `async/await` 任务唤醒句柄及子进程管道（彻底解决 `berry-term` 等多源 I/O 应用的复用痛点），耗时文件/网络等待期间主循环持续响应 120fps 触控动画，**严禁阻塞 UI 渲染线程**。
    - 重写 [alloc.rs](../../../user/berry-libc/src/alloc.rs) 取代固定 `256KiB` 静态 `.bss` 堆：小对象走分箱 Slab 按需从私有 `HeapVmar` 映射零填充页，大对象直接独立 `vmar_map` 并在释放时立即 `vmar_unmap` 100% 归还内核物理帧，使进程初始堆物理页降为 `0` 且上限随 `Job` 配额弹性伸缩。

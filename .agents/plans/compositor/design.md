@@ -3,13 +3,13 @@
 Type: spec
 Status: active
 Updated: 2026-11-18
-Version: 2.0.0
+Version: 2.1.0
 
-一句话说明：`compositor`（`berry-compositor`）是 BerryOS 的统一显示呈现、离屏表面合成与输入焦点路由服务——合流并取代过渡期分离的 `guifbd` 与 `gui-wmd`，通过每客户端独立能力会话、双/三缓冲零拷贝交换链、8-bit 预乘 Alpha 与实时模糊场景图合成器以及内建手势/焦点路由器，兑现 60–480Hz 锁拍零撕裂多窗体验。
+一句话说明：`compositor`（`berry-compositor`）是 BerryOS 的统一显示呈现、离屏表面合成与输入焦点路由服务——合流并取代过渡期分离的 `guifbd` 与 `gui-wmd`，通过每客户端独立能力会话、双/三缓冲零拷贝交换链、8-bit 预乘 Alpha 与 `1.8x` 增艳四阶 Vibrancy 毛玻璃场景图合成器以及内建手势/焦点路由器，兑现 60–480Hz 锁拍零撕裂 iOS 18 / iPadOS 18 多窗体验。
 
 ## 背景
 
-如 [GUI 与 SDK 及启动模拟器全栈深研](../../research/2026-11-18-GUI与SDK及启动模拟器全栈深研.md) 所示，现役分离架构（`gui-wmd` 管几何表并单线程阻塞中继、`guifbd` 单帧缓冲直写加顶底带缓存重放）存在共享通道互截、每窗强制全屏 8.29MB 内存膨胀、无法支持浮窗移动与遮挡恢复、无窗口级转场动画、以及输入命中仅记账不路由等根本缺陷。依据 [图形合成与 SDK 及模拟器终态架构裁决](../../notes/proposed/2026-11-18-图形合成与SDK及模拟器终态架构裁决.md) 与底座 [meihe 总体设计](../meihe/design.md) 及 [ipc 总体设计](../ipc/design.md) 的 `Port` / `channel_call` / `Interrupt` 原语，本规格定义 `compositor` 的内部总体契约；跨模块公共标准见 [GUI 合成与 SDK 终态标准](../../../docs/GUI合成与SDK终态标准-v2.0.md)，刷新率仲裁与面板时序细则见 [刷新率体系规范](../../../docs/刷新率体系规范-v1.0.md)。
+如 [GUI 与 SDK 及启动模拟器全栈深研](../../research/2026-11-18-GUI与SDK及启动模拟器全栈深研.md) 所示，现役分离架构（`gui-wmd` 管几何表并单线程阻塞中继、`guifbd` 单帧缓冲直写加顶底带缓存重放）存在共享通道互截、每窗强制全屏 8.29MB 内存膨胀、无法支持浮窗移动与遮挡恢复、无窗口级转场动画、以及输入命中仅记账不路由等根本缺陷。依据 [图形合成与 SDK 及模拟器终态架构裁决](../../notes/proposed/2026-11-18-图形合成与SDK及模拟器终态架构裁决.md)、[全面复刻 iOS 18 视觉与流体交互范式裁决](../../notes/proposed/2026-11-18-全面复刻iOS18视觉与流体交互范式裁决.md) 与底座 [meihe 总体设计](../meihe/design.md) 及 [ipc 总体设计](../ipc/design.md) 的 `Port` / `channel_call` / `Interrupt` 原语，本规格定义 `compositor` 的内部总体契约；跨模块公共标准见 [GUI 合成与 SDK 终态标准](../../../docs/GUI合成与SDK终态标准-v2.0.md) 与 [iOS 视觉与流体交互复刻标准](../../../docs/iOS视觉与流体交互复刻标准-v1.0.md)，刷新率仲裁与面板时序细则见 [刷新率体系规范](../../../docs/刷新率体系规范-v1.0.md)。
 
 ## 范围
 
@@ -41,7 +41,7 @@ flowchart LR
 
 1. **三类能力工厂端点**（由 `rootmgr` / `appd` 按 manifest 与组件身份经 `ProcessArgs v2` 授予，绝不共享客户端端点）：
    - `PA_COMP_APP`（普通应用会话）：调用 `CONNECT` 铸造专属 `SessionChannel` 挂入 `main_port`（`key = session_id`）。仅允许创建 `Layer::App` 及其子浮窗（`Popup`/`Subsurface`，受父窗裁剪或锚定），仅可操作自身 `owner == session_id` 的表面，越权操作一律返 `-EACCES`。
-   - `PA_COMP_IME`（输入法专用会话，仅授 `softimed`）：允许创建单枚 `Layer::InputMethod` 表面，订阅当前焦点窗口的 `TextInputState` 并向当前焦点会话定向注入 `Preedit` / `Commit` 文本事件。
+   - `PA_COMP_IME`（输入法专用会话，仅授 `imed`）：允许创建单枚 `Layer::InputMethod` 表面，订阅当前焦点窗口的 `TextInputState` 并向当前焦点会话定向注入 `Preedit` / `Commit` 文本事件。
    - `PA_COMP_SHELL`（系统壳层特权会话，仅授 `berry-shell` 与早期 `bootsplashd`）：允许创建 `Layer::Wallpaper`、`Layer::SystemBar`、`Layer::Overlay`、`Layer::BootSplash` 表面，允许注册系统级全局手势区域，允许订阅脱敏窗口列表与只读引用窗口表面纹理（供多任务卡片实时渲染），允许驱动窗口级开闭/多任务过渡变换矩阵与发出焦点切换、`RequestBack`、`RequestClose` 指令。
 2. **断连原子自愈**：任意客户端进程退出或崩溃触发内核置位 `SIGNAL_PEER_CLOSED`，`compositor` 在本拍立即解除该会话下全部窗口与交换链 `UserRo` 映射、关闭 VMO 句柄、将原窗口屏幕占区记入全局 `damage`、自动按 Z 序回退键盘焦点至下一可见顶层窗，并在配置了退出淡出动画时保留最后已提交帧执行 150ms 缩退动画后再释放物理页——全程零孤儿窗口、零句柄与内存泄漏。
 
@@ -59,7 +59,7 @@ flowchart LR
 2. **合成器侧零重绘几何变换**：每个 `SurfaceNode` 持有合成属性 `{ dst_rect, clip_rect, corner_radius_px, opacity: u8, scale_q16: (u32, u32), translate: (i32, i32), backdrop_blur_radius: u8, shadow_elevation: u8 }`。窗口打开图标展开、返回手势跟手缩小、多任务卡片排列与旋转切屏均只修改 `SurfaceNode` 合成属性，客户端无需重新光栅化内容。
 3. **两遍无冗余合成算法（在每个 VSync `latch` 拍点执行）**：
    - **第一遍（自顶向下遮挡剔除与脏区求交）**：汇总本拍所有变更表面的新旧屏幕包围盒为全局 `ScreenDamage`（上限 16 矩形，超帽按最小面积增量合并）；按 Z 序从顶层向底层扫描节点，对 `opacity == 255 && scale == 1.0 && corner_radius == 0` 的窗口累加其 `opaque_region` 进入 `CoveredSet`；任何底层节点（含桌面壁纸）的可见重绘域 `vis = node_bounds ∩ ScreenDamage - CoveredSet` 若为空集则 **100% 跳过采样**（全屏不透明应用在前台时，底层桌面与壁纸合成开销恒为 `0`）。
-   - **第二遍（自底向上 Span/SIMD 混合入后备扫描缓冲）**：维护双后备扫描缓冲（`ScanoutBuf[0..2]`），仅对 `ScreenDamage` 矩形集合按 Z 序自底向上执行：背景模糊节点先对底层已合成区域执行 2-pass 半分辨率 Dual-Kawase 模糊，随后绘制解析圆角阴影，最后按行 Span 执行不透明 `memcpy` 或 AArch64 NEON 四像素并行预乘 `SrcOver` Alpha 混合（`out = src + dst * (255 - src.a) / 255`）及圆角边缘 8-bit 覆盖率遮罩。
+   - **第二遍（自底向上 Span/SIMD 混合与 iOS 18 四阶 Vibrancy 合成入后备扫描缓冲）**：维护双后备扫描缓冲（`ScanoutBuf[0..2]`），仅对 `ScreenDamage` 矩形集合按 Z 序自底向上执行：背景材质节点严格执行「1/4 降采样 Dual-Kawase 模糊 + `1.8x` 饱和度矩阵增益 + Light/Dark 语义纱幕 + `0.5pt` 超椭圆微晶内描边」四阶管线；随后按模式（Light 双层柔和阴影 / Dark 零外阴影纯灰度抬升）处理投影，最后按行 Span 执行不透明 `memcpy` 或 AArch64 NEON 四像素并行预乘 `SrcOver` Alpha 混合及 $G^2$ 连续曲率超椭圆（Squircle）边缘 8-bit 覆盖率遮罩（含 `large` Sheet 模态升起时的父窗口 `0.92x` 纵深微缩与 `10pt` 顶圆角裁剪）。
 4. **原子扫描提交与动态显示热切换**：
    - `virtio-gpu` 2D 后端：将已合成的 `ScreenDamage` 矩形批编码为异步 `TRANSFER_TO_HOST_2D` + `RESOURCE_FLUSH` 门铃提交（双缓冲交替 `SET_SCANOUT` 或单主扫描面锁拍更新），启用 `cursorq (q1)` 硬件光标平面使鼠标移动零主表面合成开销；
    - 动态模式切换：监听 `virtio-gpu` 配置变更中断或宿主控制令，读取新 `pmodes`/`EDID` 重建后备扫描缓冲，向全体活跃会话广播 `Evt::DisplayMetricsChanged { disp_w, disp_h, density_q8, refresh_hz, safe_insets }`，等待顶层可见会话提交新尺寸首帧（帽 100ms 超时以等比缩放旧帧平滑过渡）后原子切换 `SET_SCANOUT`，全程**免重启**。
@@ -70,7 +70,7 @@ flowchart LR
 2. **三级确定性输入路由**：
    - **第一级（系统全局手势拦截器 System Gesture Arena）**：触控 `DOWN` 落在屏幕边缘热区（底部 `gesture_inset` 上滑回桌面/悬停进多任务、左右边缘向内滑动触发预测性返回 `PredictiveBack`、顶部状态栏下拉呼出控制中心）时，先进入 `Tentative` 观察窗（位移 `< slop` 前暂存或带可取消标记转发）；一旦越过方向斜率阈值被系统手势赢取，立即向原命中应用发送 `PointerEvent::Cancel`（确保应用按钮按压态干净复位），并将后续 `Move`/`Up` 实时喂给 `berry-shell` 驱动 120Hz 跟手窗口动画。
    - **第二级（指针命中与粘滞捕获 Pointer Capture）**：非系统手势的 `DOWN` 事件在场景图自顶向下执行圆角与裁剪区精确命中（跳过 `input_passthrough` 图层），锁定 `(pointer_id -> target_session, target_surface)`，将屏幕坐标经窗口逆变换折算为表面局部坐标投递；后续 `MOVE` 与 `UP` 严格粘滞投递至锁定表面，绝不泄露给任何后台进程。
-   - **第三级（键盘与 IME 唯一焦点门控）**：全局任意时刻至多一个 `focused_surface`；物理键盘按键（系统级快捷键如音量/截屏/切换应用先由 `berry-shell` 拦截）与 `softimed` 提交的文本事件 **100% 仅投递给当前 `focused_surface` 所属会话**；当焦点表面声明 `ime_wanted = true` 时自动通知 `softimed` 升起键盘并向焦点窗口动态更新底部 `ime_inset`。
+   - **第三级（键盘与 IME 唯一焦点门控）**：全局任意时刻至多一个 `focused_surface`；物理键盘按键（系统级快捷键如音量/截屏/切换应用先由 `berry-shell` 拦截）与 `imed` 提交的文本事件 **100% 仅投递给当前 `focused_surface` 所属会话**；当焦点表面声明 `ime_wanted = true` 时自动通知 `imed` 升起键盘并向焦点窗口动态更新底部 `ime_inset`。
 
 ## 验收标准
 

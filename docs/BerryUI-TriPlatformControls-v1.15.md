@@ -1,7 +1,8 @@
 Type: standard
 Version: 1.15.0
-Status: current
-Updated: 2026-11-16
+Status: superseded
+Superseded-by: [iOS视觉与流体交互复刻标准-v1.0.md](iOS视觉与流体交互复刻标准-v1.0.md)
+Updated: 2026-11-18
 
 # BerryUI 三方共性控件、浮层、P1 基础件与Safe区色延伸
 
