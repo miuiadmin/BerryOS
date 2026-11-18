@@ -1286,4 +1286,182 @@ pub(crate) mod tests {
         assert_eq!(e.code, 7, "inner DES failure over TLS is rc=7: {e}");
         assert!(e.message.contains("auth failed"), "{e}");
     }
+
+    // ------------------------------------------------------------------
+    // Pixel format / wire-format pure faces (W1-Q25 十刀).
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn pixel_format_parse_fields_and_rejects() {
+        // Canonical 32bpp little-endian true-colour block (the ServerInit
+        // layout rfb_tail hands in): every field lands where the wire says.
+        let b = [
+            32u8, 8, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0,
+        ];
+        let pf = PixelFormat::parse(&b).unwrap();
+        assert_eq!(pf.bpp, 32);
+        assert!(!pf.big_endian);
+        assert!(pf.true_color);
+        assert_eq!((pf.rmax, pf.gmax, pf.bmax), (255, 255, 255));
+        assert_eq!((pf.rshift, pf.gshift, pf.bshift), (16, 8, 0));
+        // Big-endian flag is b[2], true-colour flag is b[3]; maxes are BE u16.
+        let b = [32u8, 8, 1, 1, 0, 31, 0, 63, 0, 31, 11, 5, 0, 0, 0, 0];
+        let pf = PixelFormat::parse(&b).unwrap();
+        assert!(pf.big_endian);
+        assert_eq!((pf.rmax, pf.gmax, pf.bmax), (31, 63, 31));
+        // Rejects: short buffer, colour-map, unsupported bpp (4/24).
+        let short = BerryError::protocol("").code;
+        let e = PixelFormat::parse(&b[..15]).unwrap_err();
+        assert_eq!(e.code, short);
+        assert!(e.message.contains("short pixel format"));
+        let mut cm = b;
+        cm[3] = 0;
+        let e = PixelFormat::parse(&cm).unwrap_err();
+        assert_eq!(e.code, 7);
+        assert!(e.message.contains("colour-map"));
+        for bad_bpp in [4u8, 24] {
+            let mut bb = b;
+            bb[0] = bad_bpp;
+            let e = PixelFormat::parse(&bb).unwrap_err();
+            assert_eq!(e.code, 7, "bpp={bad_bpp}");
+            assert!(e.message.contains("unsupported bpp"));
+        }
+    }
+
+    #[test]
+    fn pixel_format_bytes_per_pixel() {
+        let mk = |bpp: u8| PixelFormat {
+            bpp,
+            big_endian: false,
+            true_color: true,
+            rmax: 255,
+            gmax: 255,
+            bmax: 255,
+            rshift: 16,
+            gshift: 8,
+            bshift: 0,
+        };
+        assert_eq!(mk(8).bytes(), 1);
+        assert_eq!(mk(16).bytes(), 2);
+        assert_eq!(mk(32).bytes(), 4);
+    }
+
+    #[test]
+    fn pixel_32bpp_big_endian() {
+        let pf = PixelFormat {
+            bpp: 32,
+            big_endian: true,
+            true_color: true,
+            rmax: 255,
+            gmax: 255,
+            bmax: 255,
+            rshift: 16,
+            gshift: 8,
+            bshift: 0,
+        };
+        // BE wire bytes 00 11 22 33 -> value 0x00112233 -> r=0x11 g=0x22 b=0x33.
+        assert_eq!(pf.pixel(&[0x00, 0x11, 0x22, 0x33]), 0x0011_2233);
+    }
+
+    #[test]
+    fn pixel_8bpp_greyscale() {
+        let pf = PixelFormat {
+            bpp: 8,
+            big_endian: false,
+            true_color: true,
+            rmax: 255,
+            gmax: 255,
+            bmax: 255,
+            rshift: 0,
+            gshift: 0,
+            bshift: 0,
+        };
+        // All three channels read the same byte: greyscale passthrough.
+        assert_eq!(pf.pixel(&[0x00]), 0x0000_0000);
+        assert_eq!(pf.pixel(&[0x80]), 0x0080_8080);
+        assert_eq!(pf.pixel(&[0xff]), 0x00ff_ffff);
+    }
+
+    #[test]
+    fn channel_scale_math() {
+        // Identity bands: max=255 and max=0 clamp straight through.
+        assert_eq!(scale(200, 255), 200);
+        assert_eq!(scale(255, 255), 255);
+        assert_eq!(scale(300, 255), 300.min(255));
+        assert_eq!(scale(7, 0), 7);
+        // General max: round-half-up via (v*255 + max/2) / max.
+        assert_eq!(scale(15, 15), (15 * 255 + 7) / 15); // == 255, full scale
+        assert_eq!(scale(8, 15), (8 * 255 + 7) / 15); // == 136
+        assert_eq!(scale(0, 63), 0);
+        assert_eq!(scale(63, 63), 255);
+        // 565 green max 63 midpoints land on the same rounding law.
+        assert_eq!(scale(31, 63), (31 * 255 + 31) / 63);
+        // Monotone across the band (no fold-back artefacts).
+        let mut prev = 0u32;
+        for v in 0..=31u32 {
+            let s = scale(v, 31);
+            assert!(s >= prev, "scale({v},31)={s} < prev {prev}");
+            prev = s;
+        }
+    }
+
+    #[test]
+    fn framebuffer_request_wire_format() {
+        // FramebufferUpdateRequest: type 3, incremental byte, then four
+        // BE u16 fields (x, y, w, h) — 10 bytes total.
+        let m = request(0, 0, 0, 1024, 768);
+        assert_eq!(m.len(), 10);
+        assert_eq!(&m[..2], &[3, 0]);
+        assert_eq!(&m[2..], &[0, 0, 0, 0, 0x04, 0x00, 0x03, 0x00]);
+        let m = request(1, 300, 40, 640, 480);
+        assert_eq!(&m[..2], &[3, 1]);
+        assert_eq!(&m[2..4], 300u16.to_be_bytes());
+        assert_eq!(&m[4..6], 40u16.to_be_bytes());
+        assert_eq!(&m[6..8], 640u16.to_be_bytes());
+        assert_eq!(&m[8..10], 480u16.to_be_bytes());
+        // u32 -> u16 field truncation is the wire contract (QEMU treats
+        // the request as u16 domains); pin the cast so drift is visible.
+        let m = request(0, 0x1_0002, 0, 0x1_0005, 0);
+        assert_eq!(&m[2..4], 2u16.to_be_bytes());
+        assert_eq!(&m[6..8], 5u16.to_be_bytes());
+        assert_eq!(&m[8..10], 0u16.to_be_bytes());
+    }
+
+    #[test]
+    fn read_exact_error_classification() {
+        struct FailingRead(std::io::ErrorKind);
+        impl std::io::Read for FailingRead {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::from(self.0))
+            }
+        }
+        // WouldBlock/TimedOut classify as timeout (rc=4) …
+        for kind in [
+            std::io::ErrorKind::WouldBlock,
+            std::io::ErrorKind::TimedOut,
+        ] {
+            let mut s = FailingRead(kind);
+            let mut buf = [0u8; 4];
+            let e = read_exact(&mut s, &mut buf).unwrap_err();
+            assert_eq!(e.code, 4, "kind={kind:?}: {e}");
+            assert!(e.message.contains("timeout"));
+        }
+        // … everything else (here: a hard IO error) as protocol (rc=7).
+        let mut s = FailingRead(std::io::ErrorKind::ConnectionReset);
+        let mut buf = [0u8; 4];
+        let e = read_exact(&mut s, &mut buf).unwrap_err();
+        assert_eq!(e.code, 7, "{e}");
+        assert!(e.message.contains("VNC read"));
+        // Early EOF on a real reader is protocol too, not timeout.
+        let mut s = std::io::Cursor::new([0u8; 2]);
+        let mut buf = [0u8; 4];
+        let e = read_exact(&mut s, &mut buf).unwrap_err();
+        assert_eq!(e.code, 7, "{e}");
+    }
+
+    #[test]
+    fn auth_kind_display_names() {
+        assert_eq!(AuthKind::None.as_str(), "none");
+        assert_eq!(AuthKind::Vnc.as_str(), "vnc");
+    }
 }
