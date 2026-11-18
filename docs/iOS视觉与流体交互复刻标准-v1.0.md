@@ -37,7 +37,7 @@ Version: 1.0.0
    1. **降采样 Dual-Kawase 模糊**：对正下方已合成背景执行等效高斯标准差 $\sigma$ 的平滑模糊；
    2. **饱和度矩阵提拉（Saturation Boost）**：在保持感知亮度前提下对色度通道乘以增益系数 $S$（默认 `1.8x`），使壁纸与底层色彩透过磨砂层依然通透鲜活；
    3. **明暗语义纱幕（Tint Veil）**：按 Light / Dark 模式执行预乘 `SrcOver` 叠色；
-   4. **微晶高光内描边與前景 Vibrancy 透色**：沿超椭圆内缘绘制 `0.5pt` 高光细边（Light `rgba(255,255,255,0.45)` / Dark `rgba(255,255,255,0.14)`）；浮层上的次级标签与分割线启用 `PlusDarker`（Light）/ `PlusLighter`（Dark）Vibrancy 混合，实时吸收背景冷暖色调。
+   4. **微晶高光内描边与前景 Vibrancy 透色**：沿超椭圆内缘绘制 `0.5pt` 高光细边（Light `rgba(255,255,255,0.45)` / Dark `rgba(255,255,255,0.14)`）；浮层上的次级标签与分割线启用 `PlusDarker`（Light）/ `PlusLighter`（Dark）Vibrancy 混合，实时吸收背景冷暖色调。
 2. **五档系统标准材质锁定值**：
 
 | 材质档位 | 适用部件 | 模糊 $\sigma$ | 饱和度增益 $S$ | Light 纱幕 RGBA | Dark 纱幕 RGBA |
