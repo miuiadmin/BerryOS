@@ -4283,7 +4283,8 @@ pub fn install() {
     // 降档 SQ_RQ 无表档（`nearest_deadline` KL-only 读面收口 SQ——SLEEPQ
     // 全触面纯 SQ 串行，该号免 KL；死锁论证见常量注）。
     use berry_hal_aarch64::kern_lock::{
-        SVC_CLASS_ALL, SVC_CLASS_RQ_TABLE, SVC_CLASS_SQ_RQ, SVC_CLASS_SQ_RQ_TABLE,
+        SVC_CLASS_ALL, SVC_CLASS_NONE, SVC_CLASS_RQ_TABLE, SVC_CLASS_SQ_RQ,
+        SVC_CLASS_SQ_RQ_TABLE,
         SVC_CLASS_TABLE,
     };
     berry_sched::set_exit_hook(task_exit_hook);
@@ -4302,13 +4303,13 @@ pub fn install() {
     reg(NR_OBJECT_WAIT_ONE, sys_object_wait_one, SVC_CLASS_SQ_RQ_TABLE);
     reg(NR_OBJECT_WAIT_MANY, sys_object_wait_many, SVC_CLASS_SQ_RQ_TABLE);
     reg(NR_OBJECT_SIGNAL, sys_object_signal, SVC_CLASS_SQ_RQ_TABLE);
-    // —— TABLE：clock_read（0x61）——CNTVCT 硬件读零共享，但出参 copy_out 链
-    // 经 access_ok→walk_leaf 无锁走查本进程页表：同进程兄弟线程（spread 分置
-    // 对核）或父进程持 vmar 句柄的跨核 unmap/protect（ALL 类写者）与本读者
-    // 无共同串行化点——TLBI 落在走查与 store 间即 EL1 D-abort→halt（§A113
-    // 读者面）。升 TABLE 持 KL 与页表写者互斥；NONE 落类是对抗审查双镜坐实
-    // 的本刀漏审回改，NONE 实装号归零（仅默认槽/越界号）。
-    reg(NR_CLOCK_READ, sys_clock_read, SVC_CLASS_TABLE);
+    // —— NONE：clock_read（0x61）——W3-Q100 自 TABLE 降档（03 号审计机会
+    // 二）：CNTVCT/CNTFRQ 硬件读零共享，rtc 注入面（EPOCH_S/BOOT_MONO_NS
+    // Relaxed 原子）无锁需求；出参 copy_out 链 = §A113 读者面，S-4 4-2 起
+    // 走查与 store 同一 per-AS PT 锁窗（跨核 unmap/protect 写者同窗互斥，
+    // §A115 四问复审——KL 后继义务已偿清）。NONE 旧禁令（「copy 链禁落
+    // NONE」）系 PT 锁前时代的 §A113 判例，判据已随源复审。
+    reg(NR_CLOCK_READ, sys_clock_read, SVC_CLASS_NONE);
     // —— TABLE（0x20，仅 KL）：vmo/vmar 十一号——S-4 4-2 自 ALL（0x3E）降档，
     // 判例 §A115 四问逐项过：①读者面 = 本组号自身 copy 链（vmo_read/write、
     // vmar_map in/out 等）与他核页表写者——KL 保留即互斥不失，且本刀起 copy
@@ -4360,9 +4361,11 @@ pub fn install() {
     reg(NR_SCHED_GETATTR, sys_sched_getattr, SVC_CLASS_TABLE);
     // —— RQ+TABLE：yield（pick/requeue + 切换舞蹈；表位保守对称）——
     reg(NR_THREAD_YIELD, sys_thread_yield, SVC_CLASS_RQ_TABLE);
-    // —— TABLE：CP-08 util 快照读（0x40——EWMA 槽 Relaxed 原子读零共享
-    //    面；copy_out 链走查调用方页表 = §A113 读者面，同 0x61/0x87）。
-    reg(NR_SCHED_UTIL_SNAPSHOT, sys_sched_util_snapshot, SVC_CLASS_TABLE);
+    // —— NONE：CP-08 util 快照读（0x40——W3-Q100 自 TABLE 降档）：EWMA 槽
+    //    Relaxed 原子读零共享面（统计信号无序角色）；copy_out 链 = §A113
+    //    读者面，S-4 4-2 起 per-AS PT 锁同窗——§A115 四问复审落 NONE
+    //    （同 0x61/0x87）。
+    reg(NR_SCHED_UTIL_SNAPSHOT, sys_sched_util_snapshot, SVC_CLASS_NONE);
     reg(NR_CHANNEL_CREATE, sys_channel_create, SVC_CLASS_ALL);
     // —— SQ+RQ+TABLE：send/recv（fastpath sq_phys 外提已备，slice 2a）——
     reg(NR_CHANNEL_SEND, sys_channel_send, SVC_CLASS_SQ_RQ_TABLE);
@@ -4374,14 +4377,16 @@ pub fn install() {
     reg(NR_EVENT_CREATE, sys_event_create, SVC_CLASS_ALL);
     // A7-4 段②：信号面两号（0x86/0x87——协同式用户态投递，内核只管跨进程
     // 位置位与取走；handler 本体见 sys_process_terminate 后）。0x86 = 表查 +
-    // 目标 pending 原子（不唤醒目标）；0x87 = current pending 自面原子，但
-    // 出参 copy_out 链走查本进程页表（§A113 读者面，同 0x61）——升 TABLE。
+    // 目标 pending 原子（不唤醒目标）——TABLE 在册；0x87 = current pending
+    // 自面原子，出参 copy_out 链 = §A113 读者面——S-4 4-2 起 per-AS PT 锁
+    // 同窗，W3-Q100 §A115 四问复审降 NONE（同 0x61）。
     reg(NR_SIGNAL_SEND, sys_signal_send, SVC_CLASS_TABLE);
-    reg(NR_SIGNAL_TAKE, sys_signal_take, SVC_CLASS_TABLE);
+    reg(NR_SIGNAL_TAKE, sys_signal_take, SVC_CLASS_NONE);
     // —— TABLE：桌面UX刀D 关机最小闭环（0x88 power_off）。零参数零出参零
     //    表触达；TABLE（仅 KL）= 保守档：UART 诊断行 + PSCI 缓存原子读在
-    //    SVC 屏蔽窗内自安全（「NONE 实装号归零」纪律——clock_read :3863
-    //    同款升档论证）；成功路不归（整机下电），失败路正常返还解锁。
+    //    SVC 屏蔽窗内自安全（NONE 落类须过 §A115 四问后继审计——0x88 触
+    //    UART/PSCI 诊断面未过审，保守留 TABLE）；成功路不归（整机下电），
+    //    失败路正常返还解锁。
     reg(NR_POWER_OFF, sys_power_off, SVC_CLASS_TABLE);
     // —— TABLE：S6-b 策略注入最小 COMMIT 面。0x83 policy_bind 在 abi.toml §4
     // 在册但 stage=v3——abi_gen 常量层只产 v1/1.1 行（gen_abi.py defined 集），
