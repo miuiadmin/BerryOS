@@ -1,14 +1,17 @@
-# Shell 设计（bsh 与命令行生态）
+# Shell 设计（bsh 与命令行生态）（v1.0）
 
-> 版本：**1.0**（v1.0）｜2026-11-06
+Type: standard
+Status: current
+Updated: 2026-11-18
+Version: 1.0.1
 
 > 回答三件事：**用什么 shell、配哪些命令、管道怎么实现**。
-> 先拆一个常见误解：内核不需要"支持 shell"——shell 只是一个普通用户态程序，干的活就是一个死循环（读一行 → 解析 → 起子进程 → 等它跑完）。bash / zsh / fish 全是这个循环，只是语法与功能不同。
-> 里程碑挂钩 `路线图-v1.2.md` P5（"UART 上交互式 shell"）；体验侧展开见 `开发体验.md` §3；进程创建/handle 传递见 `系统调用ABI设计-v1.0.md` §6。
+> 本标准规定现行生效的 `bsh` v1/v2 命令行、内建命令与管道契约；终端优先（CLI-First）全栈闭环演进目标（用户态伪终端 `ptyd / consoled / berry-vt / bmux`、`ProcessArgs v2` 全双工流式继承与 `/svc` 服务发现、`bsh` 3.0 词法/AST 脚本与 `Job + SuspendToken` 作业控制、`sandbox` 能力裁剪及 `bed / less / btop / lscap / btrace / bdbg` 完整工具链）分别见 [pty 总体设计](../.agents/plans/pty/design.md)、[bsh 总体设计](../.agents/plans/bsh/design.md) 与 [cli-suite 总体设计](../.agents/plans/cli-suite/design.md)。
+> **v1.0.1 修订（2026-11-18）**：升格 Curia `Type: standard`；补齐第 21 内建 `export` 与 `processargs v1.1` 环境变量传递现状，明确 v1/v2 外部命令缓冲执行与 `gift` 传递的适用边界，并将 3.0 全栈终端演进统一锚定至对应模块总体设计。
 
 ## 0. 分层：bash/zsh 到底站在哪
 
-```
+```text
 ┌─ shell 程序（bash / zsh / 我们的 bsh）   ← 只是应用程序
 ├─ 命令（ls / grep / cat …）                ← 也是应用程序
 ├─ POSIX 兼容库（libc 层）                   ← 把 open/write 翻译成 berry_*（经 channel 走 /svc/fs 等）
@@ -19,106 +22,67 @@
 
 ## 1. 为什么不搬 bash/zsh（三个硬理由）
 
-1. **协议不洁**：bash 是 GPLv3，"GPL 只看思路"铁律直接否决（zsh 协议宽松，但见下条）。
-2. **语义不兼容**：bash 每执行一条外部命令都要 `fork()`——**v1 无 fork**（`系统调用ABI设计-v1.0.md` §6：`posix_spawn` → `process_create` + handle 传递），bash 在我们这连第一条命令都跑不起来；zsh 还叠加全套信号 / 作业控制 / 终端 termios 依赖。
-3. **过重**：bash 十几万行；bsh v0 预计 <2000 行。
+1. **协议不洁**：bash 是 GPLv3，「GPL 只看思路」铁律直接否决（zsh 协议宽松，但见下条）。
+2. **语义不兼容**：bash 每执行一条外部命令都要 `fork()`——**v1 无 fork**（[系统调用 ABI 设计](系统调用ABI设计-v1.0.md) §6：`posix_spawn` → `process_create` + handle 传递），bash 在我们这连第一条命令都跑不起来；zsh 还叠加全套信号 / 作业控制 / 终端 termios 依赖。
+3. **过重**：bash 十几万行；自研轻量化结构更契合微内核能力模型。
 
-**方案：自研 `bsh`（Rust）**——学 POSIX sh 的**肌肉记忆**（管道、重定向、`&&`、环境变量、`$()`），不搬实现。这正是"人无我有，人有我强"：操作习惯跟人家一样顺手，底层是纯能力 / channel 语义。参考对照：Redox 的 **ion shell**（Rust 先例，MIT，可进 `reference/` 对照；已过 `架构综合纲领.md` 排除 8 问——用户态程序、不碰内核中心、无 GPL）。
+**方案：自研 `bsh`（Rust）**——学 POSIX sh 的**肌肉记忆**（管道、重定向、`&&`、环境变量、`$()`），不搬实现。操作习惯保持顺手，底层是纯能力 / channel 语义。参考对照：Redox 的 **ion shell**（Rust 先例，MIT；已过 [架构综合纲领](架构综合纲领.md) 排除 8 问——用户态程序、不碰内核中心、无 GPL）。
 
-## 2. bsh 设计要点
+## 2. bsh 现行契约
 
 ### 2.1 起子进程：无 fork 的等价物
 
-```
-berry> run hello
+```text
+bsh> run hello
      └─ process_create("hello")          ← ABI §6，posix_spawn 的等价物
         bootstrap handle = stdio channel 端点 + 必要能力
         process_start(...)
-        等 Job 对象
+        等进程结束并 reap 回收
 ```
 
-外部程序从 bootstrap 拿到自己的 stdio（channel 端点）与初始能力，**不需要 fork 继承任何东西**——能力显式给，血缘不传递。
+外部程序从 `bootstrap` 通道拿到自己的 stdio（channel 端点）、`argv`、`env`（`processargs v1.1` 第二消息）与初始能力，**不需要 fork 继承任何东西**——能力显式授予，血缘不隐式传递。现行 v1/v2 下单命令 `run_output` 采用私有输出通道收集至进程退出后回写（子进程 `stdin` 为空 EOF）；全双工实时 `PtySlave` 继承与 `ProcessArgs v2` 类型化能力表见 [bsh 总体设计](../.agents/plans/bsh/design.md)。
 
-### 2.2 管道：channel 即 pipe（微内核世界观的兑现）
+### 2.2 管道、重定向与中断：channel 即 pipe
 
-Unix 的 `ls | grep` 靠 fork + pipe + dup2。我们没有 fork，也**不需要内核 pipe 对象**：
+Unix 的 `ls | grep` 靠 `fork + pipe + dup2`。BerryOS 没有 `fork`，也**不需要内核 pipe 对象**：
 
-```
-berry> ls | grep boot
+```text
+bsh> cat a.txt | grep boot
      └─ shell: channel_create() → c0/c1
-        process_create("ls",   bootstrap = c1 写端)   ← 当 stdout
+        process_create("cat",  bootstrap = c1 写端)   ← 当 stdout
         process_create("grep", bootstrap = c0 读端)   ← 当 stdin
-        等两个 Job 结束
+        等全部管道段结束并取末段真退出码
 ```
 
-重定向 `>` 同理（`/svc/fs` 的 handle 传给子进程当 stdout）。**Ctrl-C 不用 Unix 信号**——v1 落地形态（C-4b，2026-10-28）：shell 前台等待（`collect_fg` wait_many 挂 stdin 项）收 0x03 → 回显 `^C` + 对**自己持有的 child handle** 直调 `process_terminate(130)`（128+SIGINT 惯例码；杀的权限 = 持有 Process handle + MANAGE 门控，纯能力模型不破）→ TERMINATED 项收口（被杀者零长 EOF 永不到达——kill 不走 libc exit 族的 EOF 缺口面）；前台期其余键进 typeahead 缓冲不丢键。原草案「signal 一个 Event/Job 对象 → 监督服务处置」留 v2（监督服务/进程组面；管道全段杀 v1 已由 kill 集覆盖）。
+- **短路链与重定向**：支持 `&&` 与 `||` 左结合短路链（跳过段不求值、不改 `$?`；操作符识别均在变量展开前的原始文本上执行，防止变量值注入语法操作符）；支持 `>` 覆写与 `>>` 追加；管道各段支持空白分词带参（`PipeSeg.args`，现行仅派发 `bin/` 外部程序，内建进管道与引号/脚本语法演进见 [bsh 总体设计](../.agents/plans/bsh/design.md)）。
+- **Ctrl-C 杀链**：前台等待期（`collect_fg` `wait_many` 挂 `stdin` 项）收到 `0x03` → 回显 `^C` + 对持有的子进程句柄直调 `process_terminate(130)`（`128 + SIGINT` 惯例码，受 `RIGHT_MANAGE` 门控）→ 等待 `SIGNAL_TERMINATED` 收口；前台期其余按键进入 `TYPEAHEAD` 缓冲不丢键。整棵 `Job` 树原子清剿与 `Ctrl-Z` `SuspendToken` 作业控制见 [bsh 总体设计](../.agents/plans/bsh/design.md)。
 
-### 2.3 内建命令（为什么 cd 不可能是外部程序）
+### 2.3 内建命令（21 件现役单源）
 
-`cd` 改的是 shell 自己进程的状态，`type`/`exit`/环境变量赋值同理——这些必须是 shell 内建。判据一句话：**改 shell 自己状态的，进 shell；干活的，独立程序**。
+改 shell 自身进程状态的命令必须是内建；名单由 `const BUILTINS` 单源维护（`type` 身份查询、`HELP_LINES` 互钉自检与 `Tab` 补全候选同表消费），现役共 21 件：`help`、`exit`、`env`、`export`、`echo`、`run`、`cat`、`ls`、`mkdir`、`rm`、`cd`、`pwd`、`inputpoll`、`clear`、`uname`、`uptime`、`sleep`、`type`、`history`、`dmesg`、`unset`。非内建裸命令名自动按 `bin/<name>` 查 `rootfs` 派发并透传参数与导出环境变量集。
 
-内建名单单源 `const BUILTINS`（`type` 身份查询与 Tab 补全候选两处消费同表；help 文案由 `HELP_LINES` 承载并经 cli_selftest 逐名互钉断言执法）。既有十二件（help/exit/env/echo/run/cat/ls/mkdir/rm/cd/pwd/inputpoll）之外，命令行体验刀（2026-11-15）补齐六件（另 dmesg 为阶段五后追补，现役共 19 件）：
+### 2.4 行编辑与哑终端管道契约
 
-| 命令 | 行为 |
-|------|------|
-| `clear` | 输出 ANSI 清屏+光标归位序列（7B），消费面 = 宿主终端模拟器；带参照打幂等（参数忽略照发） |
-| `uname` | 单行 `BerryOS aarch64 <版本>`（版本源 = libc `uname` 的 `.berryver` 烙印 semver，ADR #83 查询面单源）；带参拒 |
-| `uptime` | 单行 `up <N>s`（CLOCK_MONOTONIC 秒，boot 起算）；带参拒 |
-| `sleep <s>` | 阻塞 `<s>` 秒（100ms 步进 usleep 环，v1 无长睡原语；不可打断——无异步信号抢占面）；缺失/非数字/负数/超 60s 帽均 usage 2 |
-| `type <name>` | 身份三档：内建表命中 `is a shell builtin`、rootfs 命中 `is /bin/<name>`、`not found`（码 1）；v1 单名字面（多词整串作一名，不分词） |
-| `history` | 回显 editor 历史环（8×256B newest-first，编号随会话重排）逐行 `N  cmd`；历史属交互循环 editor 状态，非交互调用方空环 |
-| `dmesg` | 内核日志快照（0x84 telemetry_open op=0 薄包装，4KiB 尾帽，失败诊断行码 1，数据字节可重定向——阶段五第 17 步第 19 件） |
+- **行编辑归属在用户态 `bsh`**：内核 `console` 仅作字节缓冲透传；回显、退格、上下键历史召回（8×256B 环）、`Ctrl-U` 清行与 `Tab` 补全（内建表 ∪ `rootfs` `bin/` + 目录视图，纯算法位于 `user/berry-complete`）均在 `bsh` `editor.rs` 内完成。二维自由光标、`4096` 条持久历史与 `Ctrl-R` 搜索演进见 [bsh 总体设计](../.agents/plans/bsh/design.md)。
+- **哑终端同源驱动**：`bsh` 交互循环仅依赖 `fd 0` 逐字节读与 `fd 1` 字节流写；宿主机 `berry console`（见 [Berry 设备平台 CLI-first 设计](Berry设备平台-CLI-first设计-v1.9.md)）与客机 `berry-term`（纯解释核 `user/berry-termio`）均以纯字节透传方式驱动子 `bsh`，物理消除双份行缓冲失步。伪终端 `ptyd` 与 `berry-vt` 全屏协议栈演进见 [pty 总体设计](../.agents/plans/pty/design.md)。
 
-六件行为面由 bsh `cli_selftest` 自验钉板（`CLI ok n=6`，rootfs 相标记——六步：clear 7B 逐字节对拍/uname 前缀/uptime 数值域/sleep 1s 时钟差分 + 0/60 双闭边界/type 三分支 + help↔BUILTINS 互钉/history 环回读）。
+## 3. 命令三梯队与演进锚点
 
-### 2.4 串口行编辑
+| 梯队 | 命令 | 来源与状态 | 说明 |
+|------|------|------------|------|
+| **基础文件与文本** | `cd/ls/cat/echo/pwd/env/mkdir/rm/cp/mv/rmdir/touch/head/tail/cut/tr/sort/uniq/wc/date/df/du/true/false` + `grep/find/which/hexyl` | `bsh` 内建 + `uutils` 裁剪集 + 自研（已在册 [rootfs-manifest.toml](../tools/rootfs-manifest.toml)） | 满足日常文件管理与流过滤；全屏编辑器 `bed` 与分页器 `less` 见 [cli-suite 总体设计](../.agents/plans/cli-suite/design.md) |
+| **系统与网络** | `ps / run / berryctl / dmesg`（现役）；`btop / free / vmstat / ip / ping / dig / nc / curl / bscp / bsshd`（演进） | 自研 | 现役 `ps/berryctl` 依赖启动期 `gift`；迁入 `/svc` 服务发现与网络套件规格见 [cli-suite 总体设计](../.agents/plans/cli-suite/design.md) |
+| **微内核独有诊断** | `sandbox / lscap / btrace / bdbg / cboxctl` | 自研（架构差异化核心） | 能力沙箱裁剪、句柄与 Channel 拓扑透视、实时 syscall/IPC 追踪与在机交互断点调试，规格见 [bsh 总体设计](../.agents/plans/bsh/design.md) 与 [cli-suite 总体设计](../.agents/plans/cli-suite/design.md) |
 
-P5 第一刀 = PL011 **RX 中断**（`开发体验.md` §3 既定前置），其上是自写 mini-readline：退格 / 上下键历史 / Tab 补全（命令名 + 路径）。不引 ncurses，串口 raw 模式够用。
+**AI 与自动化友好铁律**：系统查询与诊断类 CLI（`berryctl / ps / free / lscap / btrace / cboxctl / ip`）面向演进统一提供 `--json` 纯净标准输出（诊断告警走 `stderr`），Schema 遵守 add-only 兼容策略。
 
-**归属裁定与兑现（C-4，2026-10-28）**：原留档「Tab 补全 defer v2——补全需 rootfs 知识」经 C-4 **提前兑现且不破微内核纪律**——console（内核）无 rootfs/fs 知识，行编辑归属整体迁 bsh：console 退化为逐字节透传，echo/退格/历史/Ctrl-U/Tab 补全全部在 bsh `editor.rs`（std 版 mini-readline，语义逐字对齐内核时代形态）。Tab 候选源 = bsh 自持能力：内建命令表 ∪ rootfs `bin/`（cpio 枚举）+ libc 目录视图（`opendir`/`readdir`）——**内核零新面**。切分/匹配/三态消费（Unique 补全/Ambiguous 公共增量+列示/None 静默）收敛在 `user/berry-complete` 纯函数 crate（host 10 测）。**C-4r 吸收环（同日回归修复）**：逐字节透传首版的转发吸收面只有「通道 8 深 + 1B pending」≈ 4.5s 打字流——bsh 忙窗（如 `run fail` 的 spawn+reap 数秒，TCG 宿主高载更长）内后续字节被覆盖丢弃，且 `rx_pop_all` 突发多字节只存活末字节（smoke RX 相段 d 三行零间歇注入实录两连败，f42t 缺失）；修法 = console 侧 128B 字节级 FIFO 环（纯缓冲、零行/编辑语义——归属裁定不破），环满丢新计数 `fdrop=`，bsh-stdin WRITABLE 项仅环非空时入列（A-2 恒满足项纪律保持），复刻四段全过（f42t 落串口 + fdrop=0 全程）。
+## 4. 版本与兼容
 
-**Ctrl-C 杀链（C-4b，2026-10-28）**：editor 喂 0x03 → 清行 + 游标回 live（不入历史）→ `Flow::Interrupt("^C\n")`——feed 循环期（无前台子进程）= 作废当前行 + prompt 重显；前台期由 `collect_fg` 收键处理（两路径互斥不重入）。ESC 序列状态机两态（esc=1 已见 ESC / esc=2 CSI 参数区）中收 0x03 = **复位状态机后落下**直达 Interrupt（不吞字节——真终端的 CSI 中断语义）；交互杀真面 = smoke RX 相 g 段注入（`run hello` 前台 + 0x03 → terminate 130 → typeahead 回放 `echo i$?t` 断言 `i130t`，展开造内容防回声）。
+- **MAJOR**：破坏既有内建命令退出码契约（`0 / 2 / 126 / 127 / 130`）或移除既有 `--json` 字段。
+- **MINOR**：新增内建命令、扩展语法能力（引号、控制流、作业控制）、新增 CLI 工具与 `--json` 字段。
+- **PATCH**：错误文案澄清、边界说明与跨文档链接同步。
 
-### 2.5 管道驱动契约（终端同源面）
+## 5. 适用边界
 
-bsh 交互循环天然管道化：从 fd0 逐字节读、经 editor 状态机、全部输出走 fd1——不依赖任何终端专属原语。因此 `SpawnSpec.stdin_feed`（feeder 泵喂字节）加 `stdout` 私有对端（channel 收集）即构成「任意程序以哑终端形态驱动 bsh」的完整契约：提示符 `bsh> `、命令回显行与命令结果行混流同一 stdout 字节流，驱动方收流即得全部终端语义。契约由 bsh `term_selftest` 自验钉板（`TERM ok n=2`，rootfs 相标记）：spawn 子 bsh（`--no-selftest` 跳过自验链直进交互循环）喂两命令，私有 stdout 收齐提示符 ×2/回显行/两结果行后 terminate(130) 收口。
-
-GUI 终端应用（berry-term）与键盘链的挂账显式移交波3（明细见[命令行体验刀实施设计](../.agents/plans/2026-11-15-命令行体验刀实施设计.md)契约 4，本节管道契约即 berry-term 的地基）。进展注（2026-11-16）：宿主 `berry console` 串口直连已落（chardev socket + `berry console` 子命令——宿主终端直进 bsh，CLI-first 设计 v1.9 §8）；wmd 半边已拆（波3 批A 起：焦点表/属主事件通道/表变更广播/OP_WM_SUBSCRIBE 落地），inputd 单订阅与物理键盘链（QEMU 键盘设备/认领门/Key·Text 出向帧/泵解码）仍锁；.bap GUI 授能经 [ui] 门 v1 换轨实质已解（APP_SLOTS 扩容前置在册）；berry-term 本体待波3 输入底座收口。进展注（2026-11-17）：键盘物理链四件与 berry-term v1 已落（[终端优化刀笔记](../.agents/notes/implemented/2026-11-17-命令行终端优化-键盘物理链与berry-term.md)——QEMU virtio-keyboard + inputd 多设备分类认领 + KeyPump 翻译出向 + appshell on_key 分流；berry-term 持久子 bsh 通道上桌 dock，APP_SLOTS 9→10 同批）；inputd 焦点门控分发仍开放。
-
-## 3. 命令三梯队
-
-| 梯队 | 命令 | 来源 | 说明 |
-|------|------|------|------|
-| **基础** | cd/ls/cat/echo/pwd/env/mkdir/rm/cp/mv/head/tail/grep/wc | **uutils/coreutils（MIT，Rust 版 coreutils）交叉编译** | 常规命令一个不用自己写；`cd`/`type` 是 shell 内建；G-eco 关的选型逻辑（不依赖 fork/信号的单体工具）同源 |
-| **开发** | ps / run / ktest / berryctl | 自研 | `ps` 看任务/进程/Job 树；`ktest` 跑关卡（smoke 的串口断言同源） |
-| **独有（人无我有）** | **berryctl**（handle/能力树查看、遥测环 dump、AI 策略注入与回滚）、**powertop**（谁在挡住深睡）、**trace**、affinity/taskset（AI 放置） | 自研 | Linux 的 `ps` 看不到能力树和策略状态——**CLI 的差异化全在这梯队**；亦即三条钦定原则的 CLI 落点 |
-
-**AI 友好化落点**：berryctl/ps/trace 全部 `--json` 机器可读输出 day-one（默认人类可读）——AI agent 在 shell 里跑命令、读结构化结果、做判断，不靠正则刮人类文案。
-
-BusyBox 的"单二进制多命令"只作思路参考（GPLv2，不搬代码）；uutils 按 feature 裁剪单命令构建，体积可控。
-
-## 4. 兼容边界（期望管理）
-
-- ✅ **源码级**：ripgrep/hexyl 这类不依赖 fork/信号的单体 Rust 工具，交叉编译就跑（P4 G-eco 关的硬验收）。
-- ✅ 简单 POSIX sh 语法脚本，bsh 能跑个大概（v0 语法子集内）。
-- ❌ bash 脚本、`configure` 那种重度 shell+fork 的：远期，不进承诺。
-- ❌ 现成 macOS/Linux 二进制：永远不跑（不背 Linux ABI 包袱）。
-
-## 5. 阶段化目标
-
-| 时点 | 内容 | 验收 |
-|------|------|------|
-| P5 第一刀 | PL011 RX 中断 + mini-readline（**已落地 2026-10，A-1/A-2 两步**：A-1 = UART RX 面 + GIC SPI 33 + console 三项 wait_many，`RX ok` = smoke 交互相标记；A-2 = 键盘行转发端 + bsh 挂载。mini-readline（P5 v0 收官补齐）= console 行编辑归属：退格/上下键历史（8×96B newest-first 环 + ESC 序列状态机）/Ctrl-U，Tab 补全当时 defer v2（补全需 rootfs 知识）；**C-4（2026-10-28）兑现**：行编辑归属迁 bsh（console 退化逐字节透传），Tab 补全 = 内建 ∪ rootfs bin/ + 目录视图三态面，`TAB ok` = rootfs 相标记（见 §2.4 归属裁定）；smoke RX 相注入退格 + `ESC[A` 召回双验；**C-4b（2026-10-28）补 Ctrl-C 前台杀链**：collect_fg 收 0x03 → process_terminate(130) + TERMINATED 收口 → `$?`=130，smoke RX 相 g 段注入验） | 串口双向：能打字回显、历史（smoke 三跑注入序列断言） |
-| P5 v0 | bsh：内建命令 + `run` 外部程序 + 环境变量 + `&&`（**已落地 2026-10**：环境变量 = shell 局部 vars + `$NAME`/`$?` 展开 + `env` 内建（子进程 env 传递 defer v2——argv 块无 env 面，`export` 随之）；`&&` = 切行短路 + 每段执行时展开（`A=1 && echo $A` 求值序）；状态码 sh 惯例 0/2/126/127/子真码——真码源 = **0x3A `process_get_exit_code`（P5 扩号，ABI 单源管线首次真实扩号 28→29）**，`ChildHandles::reap` 改 `Result<i32>`；`fail`（exit 42）= rootfs 确定性非零源；自验 = and_selftest 三步断言 + smoke `EXIT ok` 强化 code==0） | 串口跑 `run hello`（`开发体验.md` §3 场景成真；bsh `&&` 自验内嵌 `run fail` 真码 42） |
-| P5 v0.5 | channel 管道 `\|`（已落地 2026-10：`PIPE ok` = rootfs 相第 10 标记，bsh 三跑对拍自验）；重定向 `>` 依赖 FS（/svc/fs），随 P6 | `hexyl \| hexyl` 端到端 |
-| P6 | uutils 文件命令全家 + berryctl/powertop/trace 三件套 + `>` 重定向（A-1 最小面已落地 2026-10：fsmgr RAM-fs 服务 + berry-fsproto 协议 + bsh `>`/cat/ls，`FS ok n=` = rootfs 相第 11 标记；**2026-10-23 注：P6 已收官，uutils 全家与 berryctl/powertop/trace 三件套未随 P6 落地——滑移 M-VM（M-G3「CLI 可用」站，C-2 拆步，见 `VM里程碑设计草案-v1.0.md`）；后记：uu 23 件与 berryctl 后经 C-2 系/装配链入 rootfs（tools/rootfs-manifest.toml 单源），powertop/trace 仍缺**） | `berryctl --json` 遥测可读 |
-| P6 后·命令行体验刀（2026-11-15） | 六内建（clear/uname/uptime/sleep/type/history，§2.3）+ 哑终端管道契约钉板（§2.5，`TERM ok n=2`）+ `--no-selftest` 子 bsh 直进交互面 | `CLI ok n=6` / `TERM ok n=2`（rootfs 相第 55/56 标记，EFI 路亦打） |
-| 远期 | 更丰富脚本语法；受限 fork（v3+ 探索）后评估更多 POSIX 面 | — |
-
-## 6. 与既有文档的挂钩
-
-- `路线图-v1.2.md` P5：本文是"shell + 基础命令"里程碑的展开。
-- `开发体验.md` §3：`berry>` 提示符、`berryctl test run G3` 的出处在此定名。
-- `系统调用ABI设计-v1.0.md` §6：process_create / handle 传递 = 起子进程的 ABI 根基；§8.5 稳定性行政策同样约束 shell 的消息格式（berryctl 与各命令的 `--json` schema 按 add-only 管理）。
-- `IPC设计-v1.0.md`：channel 当 pipe 的语义来源；Ctrl-C 原草案的 Event 中转未走（C-4b v1 落地 = process_terminate 直杀，见 §2.2）。
-- `可观测性设计-v1.0.md`：trace 命令 = 遥测环的人机/AI 双面出口。
+- **源码级兼容而非二进制兼容**：标准 Rust / POSIX C 单体工具针对 BerryOS `libc` 交叉编译即可运行；**永久不直接运行现成 Linux / macOS 二进制**（不背异构内核 ABI 包袱）。
+- **现行 v1/v2 已知边界**：在 [pty 总体设计](../.agents/plans/pty/design.md)、[bsh 总体设计](../.agents/plans/bsh/design.md) 与 [cli-suite 总体设计](../.agents/plans/cli-suite/design.md) 按 [终端与命令行全栈闭环五波十八刀实施计划](../.agents/plans/2026-11-18-终端与命令行全栈闭环五波十八刀实施计划.md) 落码前，外部命令尚无交互式 `stdin`、内建尚未进管道、`ps/berryctl` 在交互终端尚未接通 `/svc` 自动寻址。
