@@ -911,7 +911,7 @@ pub(crate) fn connect_retry(endpoint: &Endpoint, timeout: Duration) -> Result<St
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -959,7 +959,7 @@ mod tests {
         b
     }
 
-    fn server_write(s: &mut std::net::TcpStream, b: &[u8]) {
+    pub(crate) fn server_write(s: &mut std::net::TcpStream, b: &[u8]) {
         use std::io::Write;
         s.write_all(b).unwrap();
         s.flush().unwrap();
@@ -1001,7 +1001,8 @@ mod tests {
     }
 
     /// Spawn a scripted RFB peer; returns the port to dial.
-    fn spawn_rfb(script: impl FnOnce(std::net::TcpStream) + Send + 'static) -> u16 {
+    // Shared with ram.rs's scanout tests (single fake-RFB source).
+    pub(crate) fn spawn_rfb(script: impl FnOnce(std::net::TcpStream) + Send + 'static) -> u16 {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = l.local_addr().unwrap().port();
         std::thread::spawn(move || {
