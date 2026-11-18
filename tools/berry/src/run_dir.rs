@@ -263,4 +263,89 @@ mod run_dir_tests {
         std::env::remove_var("BERRY_HOME");
         std::fs::remove_dir_all(&tmp).ok();
     }
+
+    #[test]
+    fn create_writes_meta_and_run_id_shape() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let tmp = std::env::temp_dir().join(format!("berry-run-meta-{}", std::process::id()));
+        std::env::set_var("BERRY_HOME", &tmp);
+        std::fs::remove_dir_all(&tmp).ok();
+        {
+            let run = RunDir::create("meta", false).unwrap();
+            let name = run.path().file_name().unwrap().to_string_lossy().into_owned();
+            // id 形状 = <stamp>-<pid>-<label>：stamp 是数字开头，中段带本进程 pid。
+            assert!(name.starts_with(|c: char| c.is_ascii_digit()), "stamp 开头: {name}");
+            assert!(name.contains(&format!("-{}-meta", std::process::id())), "{name}");
+            // file() 就是 path.join；meta.json 在 Drop 前就在盘上。
+            assert_eq!(run.file("x"), run.path().join("x"));
+            let b = std::fs::read(run.file("meta.json")).unwrap();
+            let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+            assert_eq!(v["v"], 1);
+            assert_eq!(v["label"], "meta");
+            assert_eq!(v["pid"], std::process::id() as u64);
+            assert!(v["started"].is_string());
+        }
+        std::env::remove_var("BERRY_HOME");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn tail_incremental_and_late_file() {
+        let tmp = std::env::temp_dir().join(format!("berry-tail-{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(&tmp).unwrap();
+        let f = tmp.join("serial.log");
+        // 文件晚到：open 时缺席 -> read_new 空且不崩；出现后从 0 起读。
+        let mut t = Tail::open(&f);
+        assert!(t.read_new().is_empty());
+        std::fs::write(&f, b"boot v1\n").unwrap();
+        assert_eq!(t.read_new(), b"boot v1\n");
+        assert!(t.contains("boot"));
+        assert!(!t.contains("power"));
+        // 追加只回新字节；累计文本含全部。
+        use std::io::Write;
+        let mut fh = std::fs::OpenOptions::new().append(true).open(&f).unwrap();
+        fh.write_all(b"power on\n").unwrap();
+        assert_eq!(t.read_new(), b"power on\n");
+        assert!(t.contains("power"));
+        assert_eq!(t.text(), "boot v1\npower on\n");
+        // tail_text 边界：短于 max 全量；长于 max 恰取尾部 max 字节。
+        assert_eq!(t.tail_text(100), "boot v1\npower on\n");
+        assert_eq!(t.tail_text(4), " on\n");
+        // 空针恒命中（实现契约）；零读 Tail 文本为空。
+        assert!(t.contains(""));
+        assert_eq!(Tail::open(&f).text(), "");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn state_roundtrip_and_corrupt() {
+        let tmp = std::env::temp_dir().join(format!("berry-state-{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert_eq!(read_state(&tmp), None, "无 state.json -> None");
+        write_state(&tmp, "running");
+        assert_eq!(read_state(&tmp).as_deref(), Some("running"));
+        write_state(&tmp, "crashed");
+        assert_eq!(read_state(&tmp).as_deref(), Some("crashed"), "末写胜出");
+        // 坏 JSON 容忍为缺席（崩溃恢复路径不吃二次错）。
+        std::fs::write(tmp.join("state.json"), b"{not json").unwrap();
+        assert_eq!(read_state(&tmp), None);
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn wait_for_file_hit_and_bounded_timeout() {
+        let tmp = std::env::temp_dir().join(format!("berry-wait-{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(&tmp).unwrap();
+        let f = tmp.join("marker");
+        std::fs::write(&f, b"x").unwrap();
+        wait_for_file(&f, Duration::from_millis(50)).unwrap();
+        let miss = tmp.join("absent");
+        let e = wait_for_file(&miss, Duration::from_millis(120)).unwrap_err();
+        assert_eq!(e.code, 4, "超时出口码");
+        assert!(e.message.contains("absent"), "报文点名路径: {}", e.message);
+        std::fs::remove_dir_all(&tmp).ok();
+    }
 }

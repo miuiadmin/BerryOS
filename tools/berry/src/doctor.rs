@@ -206,3 +206,138 @@ pub fn cmd(as_json: bool) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::run_dir::ENV_LOCK;
+    use std::path::Path;
+
+    // doctor 的推演面全在 collect() 依赖真机环境（QEMU/固件在席与否），
+    // 可钉板的是纯输出层：data_disk JSON 形状与 ok() 判据；真机依赖面
+    // （qemu/accel/fwcfg 推演）不在单测范围。
+
+    #[test]
+    fn ok_requires_qemu_and_firmware() {
+        let mk = |qemu: bool, fw: bool| Report {
+            host: "aarch64-macos".into(),
+            version: "0.0.0-test".into(),
+            qemu: qemu.then(|| (PathBuf::from("/usr/local/bin/qemu-system-aarch64"), "11.0.0".into())),
+            accel: "hvf".into(),
+            firmware: fw.then(|| PathBuf::from("/opt/AAVMF_CODE.fd")),
+            image: None,
+            kernel: None,
+            home: PathBuf::from("/tmp/berry-home"),
+            fwcfg: vec![],
+            data_disk: DataDiskReport {
+                env: None,
+                dir: PathBuf::from("/tmp/berry-home/data"),
+                disks: vec![],
+                profiles: vec![],
+            },
+        };
+        assert!(!mk(false, false).ok(), "全缺 -> not ok");
+        assert!(!mk(true, false).ok(), "有 qemu 缺 firmware -> not ok");
+        assert!(!mk(false, true).ok(), "缺 qemu 有 firmware -> not ok");
+        assert!(mk(true, true).ok(), "双在席 -> ok");
+        // image/kernel 在席与否不影响 ok()（运行时才需要）。
+        let mut r = mk(true, true);
+        r.image = Some(PathBuf::from("/tmp/img"));
+        r.kernel = Some(PathBuf::from("/tmp/kernel"));
+        assert!(r.ok());
+    }
+
+    #[test]
+    fn data_disk_json_shape() {
+        let r = Report {
+            host: "x".into(),
+            version: "0".into(),
+            qemu: None,
+            accel: "unknown".into(),
+            firmware: None,
+            image: None,
+            kernel: None,
+            home: PathBuf::from("/h"),
+            fwcfg: vec![],
+            data_disk: DataDiskReport {
+                env: Some("off".into()),
+                dir: PathBuf::from("/h/data"),
+                disks: vec!["desktop.img".into(), "phone.img".into()],
+                profiles: vec![
+                    ("default", None),
+                    ("desktop", Some(PathBuf::from("/h/data/desktop.img"))),
+                ],
+            },
+        };
+        let v = r.data_disk_json();
+        assert_eq!(v["env"], "off");
+        assert_eq!(v["dir"], "/h/data");
+        assert_eq!(v["disks"][0], "desktop.img");
+        assert_eq!(v["disks"][1], "phone.img");
+        assert_eq!(v["profiles"][0]["id"], "default");
+        assert!(v["profiles"][0]["disk"].is_null(), "无盘 -> null");
+        assert_eq!(v["profiles"][1]["id"], "desktop");
+        assert_eq!(v["profiles"][1]["disk"], "/h/data/desktop.img");
+        // env 未设时是 null 不是空串（JSON 形状钉板）。
+        let mut r2 = r;
+        r2.data_disk.env = None;
+        assert!(r2.data_disk_json()["env"].is_null());
+    }
+
+    // collect() 在受控 BERRY_HOME 下的数据盘目录扫描：只收 .img、排序、
+    // env 直读；BERRY_DATA_DISK 未设时逐 profile 的盘 = 在席即挂。
+    // QEMU/固件/镜像推演面依赖宿主真环境，不在钉板范围（ok() 判据
+    // 单测已覆盖）。
+    #[test]
+    fn collect_data_disk_scan_under_controlled_home() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let tmp = std::env::temp_dir().join(format!("berry-doctor-{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(tmp.join("data")).unwrap();
+        std::env::set_var("BERRY_HOME", &tmp);
+        std::env::remove_var("BERRY_DATA_DISK");
+        std::fs::write(tmp.join("data/phone.img"), b"x").unwrap();
+        std::fs::write(tmp.join("data/desktop.img"), b"x").unwrap();
+        std::fs::write(tmp.join("data/readme.txt"), b"x").unwrap();
+        std::fs::write(tmp.join("data/nested"), b"x").unwrap();
+        // 目录而非文件：不收。
+        std::fs::create_dir_all(tmp.join("data/dir.img")).unwrap();
+        let r = collect();
+        let dd = &r.data_disk;
+        assert_eq!(dd.dir, tmp.join("data"));
+        assert_eq!(dd.disks, vec!["desktop.img".to_string(), "phone.img".to_string()]);
+        assert!(dd.env.is_none());
+        // home() 尊重 BERRY_HOME（doctor 的 home 字段同源）。
+        assert_eq!(r.home, tmp);
+        // 逐 profile 推演与 data_disk_plan 同源：desktop.img 在席 -> Some，
+        // 其余 profile 缺席 -> None；清单含全六 profile。
+        assert_eq!(dd.profiles.len(), crate::profile::PROFILES.len());
+        for (id, disk) in &dd.profiles {
+            match *id {
+                "desktop" => assert!(disk.is_some(), "desktop.img 在席即挂"),
+                "default" => assert!(disk.is_none(), "default.img 缺席无盘"),
+                _ => {}
+            }
+        }
+        // off 显式关：全 profile 无盘。
+        std::env::set_var("BERRY_DATA_DISK", "off");
+        let r2 = collect();
+        assert_eq!(r2.data_disk.env.as_deref(), Some("off"));
+        assert!(r2.data_disk.profiles.iter().all(|(_, d)| d.is_none()));
+        std::env::remove_var("BERRY_DATA_DISK");
+        std::env::remove_var("BERRY_HOME");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn size_mib_floors_and_missing() {
+        assert_eq!(size_mib(Path::new("/nonexistent-berry-test")), 0);
+        let tmp = std::env::temp_dir().join(format!("berry-sizemib-{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(&tmp).unwrap();
+        let f = tmp.join("img");
+        std::fs::write(&f, vec![0u8; (3 << 20) + 1]).unwrap();
+        assert_eq!(size_mib(&f), 3, "地板除法：3MiB+1B -> 3");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+}

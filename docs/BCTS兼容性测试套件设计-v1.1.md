@@ -8,7 +8,10 @@
 > v0 载体已落（2026-11-11：runner `tools/bcts-run.sh` ＋ 首冻件 `tools/bcts/frozen/bcts@0.toml`
 > 91 标记件 ＋ just 配方与命令速览登记——bcts@1 滚新随命令行体验刀 88→90、bcts@2 滚新随
 > #355 刀 A/C 90→91〔rootfs 54→56＋RX 2→3〕、bcts@3 滚新随 4b6e2ff3 命令行终端刀
-> 〔TERMINAL 入册——APP 计数十位入拼/APPUI 九枚资产面/槽位 9→10；计数面零增减 91 随持〕）。
+> 〔TERMINAL 入册——APP 计数十位入拼/APPUI 九枚资产面/槽位 9→10；计数面零增减 91 随持〕、
+> bcts@4 滚新随 5673b16c8 债清偿刀〔149ff182e 终端完善刀 BENCH ok n=6→n=8 漏随刀补；
+> 计数面零增减 91 随持〕、bcts@5 滚新随 W3-Q98〔e96965320——bench send_recv_pair
+> 入九项基线面，BENCH 通道 n=8→n=9；计数面零增减 91 随持〕）。
 > **升版**：v1.1（2026-11-11）＝26 号终裁收口刀——示例口径统一 u32 整数形（21 号 P2-7 ＋
 > 26 号 §6-④ 遗留清账）；Tier 1 冻结态全量回放补证（26 号 §6-③）记入修订记录。
 > **基座**：API治理章程 §一（L0–L2 承诺面唯一口径）· 规则/07 测试纪律（markers.sh 单源）·
@@ -46,7 +49,7 @@ Q4 裁定原文：「BCTS 立为独立于 G0–G5 的认证套件」（12 号 §
 
 | 级 | 面 | 承诺 | 进 BCTS |
 |---|---|---|---|
-| L0 | syscall C-ABI（abi.toml 单源，v1 40 号在册、nr_ceiling=45） | 永久冻结、只加号不回收（ADR #55） | ✅ Tier 1 |
+| L0 | syscall C-ABI（abi.toml 单源，v1 41 号在册、nr_ceiling=45） | 永久冻结、只加号不回收（ADR #55） | ✅ Tier 1 |
 | L1 | 服务 wire 协议 | add-only + per-interface version（ADR #54/#59） | ✅ Tier 2 |
 | L2 | 公开库 API（berry-sys/libc/gfx/ui 及协议 crate 族） | semver + N=3 废弃窗口 | ✅ Tier 3 |
 | L3/L4 | 系统内部 API / 工具输出 | 零承诺 | **不进**（测零承诺面 = 制造伪契约；Hyrum 纪律同构，04 号 §4.1-1，:194） |
@@ -137,7 +140,7 @@ Q4 边界明留「发布节奏数值随 #84 立项稿」（12 号 §2.4，:77）
 
 | Tier | 承诺面 | v0/v1 形态 | 最小件数下限（机器执法） | 开通条件 |
 |---|---|---|---|---|
-| 1 | L0 syscall 面 ＋ 装载谓词 | 现役 smoke 断言冻结化 ＋ abi-check 五面逐字节 | **91 标记件**（口径见下；bcts@3 滚新后现值——88→90〔bcts@1〕→91〔bcts@2，#355〕→91 随持〔bcts@3，4b6e2ff3 计数面零增减〕） | 本稿开工即通（v0） |
+| 1 | L0 syscall 面 ＋ 装载谓词 | 现役 smoke 断言冻结化 ＋ abi-check 五面逐字节 | **91 标记件**（口径见下；bcts@5 滚新后现值——88→90〔bcts@1〕→91〔bcts@2，#355〕→91 随持〔bcts@3/@4/@5，计数面零增减〕） | 本稿开工即通（v0） |
 | 2 | L1 wire 契约 conformance | 槽位合同四件套之④用例集 | 每开放槽位 ≥ 合同④件全集；每对外 L1 接口五类用例各 ≥1（注 a）；计数随 #83 落数 | #83 落册 ＋ 首槽开放（Q8） |
 | 3 | L2 行为面 | berry-sys/libc/gfx/ui 行为 ＋ 三 host 门禁 | N=3 窗口内存续 L2 API 每 API ≥1 断言（推断）；门禁恒在（注 b） | Tier 2 后随 V13；全覆盖同刀 |
 
@@ -155,8 +158,15 @@ Q4 边界明留「发布节奏数值随 #84 立项稿」（12 号 §2.4，:77）
 基础集 86 三源一致；RX 2 = markers.sh 实测 ＋ 规则/07:23 逐段描述。取宽口径 88 的
 理由：`just smoke` 八跑是回放执行单元（规则/07:23），冻结件按执行单元整体冻结。
 （现值注：bcts@1 起滚新——rootfs 54→56〔命令行体验刀〕、RX 2→3〔刀 C BATT 门〕
-＝ 91 件 = 裸相 32 ＋ rootfs 56 ＋ RX 3，冻结件 bcts@3/`TIER1_FLOOR_LIVE` 单源
-（bcts@2 → bcts@3 滚新随 4b6e2ff3 TERMINAL 入册刀，计数 91 随持）。）
+＝ 91 件 = 裸相 32 ＋ rootfs 56 ＋ RX 3，冻结件 bcts@5/`TIER1_FLOOR_LIVE` 单源
+（bcts@2 → bcts@3 滚新随 4b6e2ff3 TERMINAL 入册刀，计数 91 随持；bcts@3 → bcts@4
+滚新随 5673b16c8 债清偿刀——149ff182e 终端完善刀 markers.sh BENCH ok n=6→n=8
+活树滚新而冻结件漏随刀，add-only 补 bcts@4（BENCH n=8/frozen_at 锚 dd7e2488b
+同树 markers blob 5b98b3dbab2c），计数 91 随持；bcts@4 → bcts@5 滚新随 W3-Q98
+e96965320——bench send_recv_pair 入九项基线面（BENCH 通道 n=8→n=9，markers.sh/
+smoke-image.sh/smoke.sh 三处活树单源同批滚新），计数面零增减 91 随持
+〔frozen_at 锚 d13db8897 同树 markers blob 6034d51568f2〕；bcts@3/bcts@4 保留在档
+回放旧工件仍可用）。
 其中「L0 syscall 面」对应裸相 boot 链标记族（`SYSCALL ok`/`ktest done` 等）＋
 abi-check；「装载谓词」对应 appd 装载链（`APP ok n=`/`APPUI ok n=`——
 `docs/应用规范-v1.0.md:382` 现役定义：装→起→真退出→reap 真码 0 全槽过）。
@@ -175,7 +185,7 @@ EFI 相（smoke-image，32＋39）与 smoke-x86（7）为独立关卡（规则/0
 2. **compat 轨登记联动**：凡 `docs/API行为变更登记表.md` 登记条（双轨 §一）引发的
    语义变更，登记条须带 BCTS 用例号——Tier 2 起挂 CI；v0 先记账不挡合入（推断，待窗口）。
 3. **新 L0 号准入**：设计值 = 新 syscall 号入册须附 Tier 1 用例位（smoke 族新增标记即
-   天然满足）；词表预算审计（剩 5 号，40/45）另册——07 号 §7-4 的收口提案。
+   天然满足）；词表预算审计（剩 4 号，41/45）另册——07 号 §7-4 的收口提案。
 
 ### 3.4 开通时点与认证的分级兑现
 
@@ -257,8 +267,8 @@ bcts: build
 - **守卫两层**：冻结时（发版侧核条目数 ≥ 下限才准冻结——防「冻结的就是空集」）＋
   回放时（清单条目数 < 下限 = 拒跑）。
 - **覆盖率报表**：冻结件按 L0/L1/L2 机器可读清单算「已测/未测」并给测试作者指路
-  （PlaSA dashboard 同构，07 号 §1.5，:115）；v0 只出 L0 面（40 号逐号对账表，
-  以 `tools/abi.toml` 单源为准——随 nr_total 滚新，采集时点 implemented=39）；L1/L2 面报表随 V14。
+  （PlaSA dashboard 同构，07 号 §1.5，:115）；v0 只出 L0 面（41 号逐号对账表，
+  以 `tools/abi.toml` 单源为准——随 nr_total 滚新，采集时点 implemented=40）；L1/L2 面报表随 V14。
 
 ### 4.5 迁移路径与闸位
 
@@ -346,7 +356,7 @@ Q4 补裁原文（12 号:74）：谁跑 = OEM 自测 ＋ 平台裁决；第三�
 
 | # | 基线（不得砍/不得改） | 核验位 |
 |---|---|---|
-| 1 | L0 syscall 全集实现（在册 40 号、nr_ceiling=45 只加不删；禁「支持 30 个号」子集设备） | Tier 1 ＋ abi-check |
+| 1 | L0 syscall 全集实现（在册 41 号、nr_ceiling=45 只加不删；禁「支持 30 个号」子集设备） | Tier 1 ＋ abi-check |
 | 2 | L1 已发布接口全集（替换实现须说全量契约，禁「实现 fsproto 的一半」） | Tier 2 conformance |
 | 3 | 最小系统应用集与卸载语义（SETTINGS/FILES/CAMERA 不可卸载、分发渠道不可卸载） | Tier 1 装载谓词族 |
 | 4 | 能力词表不裁剪不私扩（G0 词表全网一致；特权只走系统签名＋白名单一条路） | 基线核（认证元数据） |

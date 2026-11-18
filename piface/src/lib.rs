@@ -221,6 +221,67 @@ pub fn propagate(sleepers: &[Sleeper], holders: &[HolderFace]) -> Vec<i32> {
     pi // 三律之 2：轮帽外按已达值返回
 }
 
+/// 传播相静态边缓存形（W3-Q99——02 号机会二刀 b 的值域钉板）：与
+/// [`propagate`] 输入输出同契约，内芯换「首跳建边缓存 + 余跳只迭代边
+/// 对」——与 kernel 侧 `pi.rs` 缓存形逐律对齐（对拍面：**两形终态须逐位
+/// 一致**，改任一侧语义 = 改内核行为，须双侧同步）。
+///
+/// 结构镜像 kernel 侧 [`PI_EDGE_CAP`] 溢出回退语义：本值域面以 `cap`
+/// 参数暴露（kernel 侧 = 64 const；host 钉板可注小 cap 触发回退路径
+/// 对拍）。溢出时**整趟**回退 [`propagate`] 原路径——与 kernel 侧
+/// `cached = false` 分支同构。
+pub fn propagate_cached(
+    sleepers: &[Sleeper],
+    holders: &[HolderFace],
+    cap: usize,
+) -> Vec<i32> {
+    assert_eq!(sleepers.len(), holders.len(), "下标一一对应契约");
+    // 建相趟：收集真边 (donor 下标, cand 下标)——判据与原路径内层逐字
+    // 同源（donor_edge 判 donor + holder_has 判 cand），纯收集零应用。
+    let mut edges: Vec<(usize, usize)> = Vec::new();
+    let mut overflow = false;
+    'collect: for (di, donor) in sleepers.iter().enumerate() {
+        let Some((peer, need)) =
+            donor_edge(donor.key, donor.wait_signals, donor.obj_kind, donor.peer)
+        else {
+            continue;
+        };
+        for (ci, _) in sleepers.iter().enumerate() {
+            if holders[ci].holder_has(peer, need) {
+                if edges.len() == cap {
+                    overflow = true; // 溢出：弃缓存整趟回退
+                    break 'collect;
+                }
+                edges.push((di, ci));
+            }
+        }
+    }
+    if overflow || cap == 0 {
+        // 溢出 / cap==0 恒回退原路径（kernel 侧 cached=false 分支同构；
+        // host 钉板 cap==0 = 强制走回退分支的对拍专设）。
+        return propagate(sleepers, holders);
+    }
+    if edges.is_empty() {
+        // 无真边：零跳即不动点，两形终态 = 输入原值。
+        return sleepers.iter().map(|s| s.pi_inherited).collect();
+    }
+    let mut pi: Vec<i32> = sleepers.iter().map(|s| s.pi_inherited).collect();
+    for _ in 0..PI_MAX_HOPS {
+        let mut changed = false;
+        for &(di, ci) in &edges {
+            let d_eff = sleepers[di].prio_effective.max(pi[di]);
+            if d_eff > pi[ci] {
+                pi[ci] = d_eff;
+                changed = true;
+            }
+        }
+        if !changed {
+            break; // 不动点：再无传播
+        }
+    }
+    pi
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -671,5 +732,143 @@ mod tests {
         assert_eq!(WaitKey::from_raw(0), WaitKey::PureSleep);
         assert_eq!(WaitKey::from_raw(WAIT_ANY), WaitKey::Any);
         assert_eq!(WaitKey::from_raw(0xdeadbeef), WaitKey::Obj(0xdeadbeef));
+    }
+
+    // ---- W3-Q99（02 号机会二刀 b）：propagate_cached 缓存形对拍钉板 ----
+    // 铁律：缓存形与原形（propagate）终态在全部拓扑族上逐位一致；溢出
+    // 回退分支（cap 触发）与原形亦逐位一致——kernel 侧 PI_EDGE_CACHE
+    // 的语义对拍面。
+
+    #[test]
+    fn test_propagate_cached_parity_inversion() {
+        // 经典反转：缓存形（宽 cap）与原形逐位一致。
+        let (sleepers, holders) = inversion_pair(7, 9, RIGHT_RECV, 9, 3);
+        assert_eq!(
+            propagate_cached(&sleepers, &holders, 64),
+            propagate(&sleepers, &holders)
+        );
+        assert_eq!(propagate_cached(&sleepers, &holders, 64), vec![0, 9]);
+    }
+
+    #[test]
+    fn test_propagate_cached_parity_chain_two_hops() {
+        // 链式两跳（C→B→A）：两形一致。
+        let e1 = 0x11;
+        let e1_peer = 0x21;
+        let e2 = 0x12;
+        let e2_peer = 0x22;
+        let sleepers = vec![
+            Sleeper { key: WaitKey::Obj(e2), wait_signals: SIGNAL_WRITABLE, obj_kind: ObjKind::Channel, peer: Some(e2_peer), prio_effective: 9, pi_inherited: 0 },
+            Sleeper { key: WaitKey::Obj(e1), wait_signals: SIGNAL_WRITABLE, obj_kind: ObjKind::Channel, peer: Some(e1_peer), prio_effective: 4, pi_inherited: 0 },
+            Sleeper { key: WaitKey::PureSleep, wait_signals: 0, obj_kind: ObjKind::Other, peer: None, prio_effective: 2, pi_inherited: 0 },
+        ];
+        let holders = vec![
+            HolderFace::new(), // C：无持有面
+            HolderFace::from_pairs(&[(e2_peer, RIGHT_RECV)]), // B 持 C 所等 peer
+            HolderFace::from_pairs(&[(e1_peer, RIGHT_RECV)]), // A 持 B 所等 peer
+        ];
+        assert_eq!(
+            propagate_cached(&sleepers, &holders, 64),
+            propagate(&sleepers, &holders)
+        );
+        assert_eq!(propagate_cached(&sleepers, &holders, 64), vec![0, 9, 9]);
+    }
+
+    #[test]
+    fn test_propagate_cached_parity_no_edge() {
+        // 无真边（right 不配对）：两形一致（零传播——缓存形零跳即不动点）。
+        let (sleepers, holders) = inversion_pair(7, 9, RIGHT_SEND, 9, 3);
+        assert_eq!(
+            propagate_cached(&sleepers, &holders, 64),
+            propagate(&sleepers, &holders)
+        );
+    }
+
+    #[test]
+    fn test_propagate_cached_overflow_fallback_parity() {
+        // 溢出回退：cap=1 装不下两条真边 → 回退原路径，终态与原形一致
+        //（kernel 侧 cached=false 分支同构）。
+        let end = 0x31;
+        let peer = 0x41;
+        let sleepers = vec![
+            Sleeper { key: WaitKey::Obj(end), wait_signals: SIGNAL_WRITABLE, obj_kind: ObjKind::Channel, peer: Some(peer), prio_effective: 9, pi_inherited: 0 },
+            Sleeper { key: WaitKey::PureSleep, wait_signals: 0, obj_kind: ObjKind::Other, peer: None, prio_effective: 3, pi_inherited: 0 },
+            Sleeper { key: WaitKey::PureSleep, wait_signals: 0, obj_kind: ObjKind::Other, peer: None, prio_effective: 5, pi_inherited: 0 },
+        ];
+        let holders = vec![
+            HolderFace::new(),
+            HolderFace::from_pairs(&[(peer, RIGHT_RECV)]),
+            HolderFace::from_pairs(&[(peer, RIGHT_RECV)]),
+        ];
+        // cap=64 缓存形：两受捐者都收 9。
+        assert_eq!(propagate_cached(&sleepers, &holders, 64), vec![0, 9, 9]);
+        // cap=1 溢出：回退原路径，终态不变。
+        assert_eq!(
+            propagate_cached(&sleepers, &holders, 1),
+            propagate(&sleepers, &holders)
+        );
+        // cap=0 恒回退分支（对拍专设）。
+        assert_eq!(
+            propagate_cached(&sleepers, &holders, 0),
+            propagate(&sleepers, &holders)
+        );
+    }
+
+    #[test]
+    fn test_propagate_cached_parity_self_donation_ring() {
+        // 持有环（A 持 e1 睡 e2、B 持 e2 睡 e1）：max 单调有界、轮帽兜底
+        // ——两形一致（含环中间态同序：边应用序 = 建相发现序 = 原内层序）。
+        let e1 = 0x51;
+        let e1_peer = 0x61;
+        let e2 = 0x52;
+        let e2_peer = 0x62;
+        let sleepers = vec![
+            Sleeper { key: WaitKey::Obj(e1), wait_signals: SIGNAL_WRITABLE, obj_kind: ObjKind::Channel, peer: Some(e1_peer), prio_effective: 6, pi_inherited: 0 },
+            Sleeper { key: WaitKey::Obj(e2), wait_signals: SIGNAL_WRITABLE, obj_kind: ObjKind::Channel, peer: Some(e2_peer), prio_effective: 8, pi_inherited: 0 },
+        ];
+        let holders = vec![
+            HolderFace::from_pairs(&[(e2_peer, RIGHT_RECV)]),
+            HolderFace::from_pairs(&[(e1_peer, RIGHT_RECV)]),
+        ];
+        assert_eq!(
+            propagate_cached(&sleepers, &holders, 64),
+            propagate(&sleepers, &holders)
+        );
+        assert_eq!(propagate_cached(&sleepers, &holders, 64), vec![8, 8]);
+    }
+
+    #[test]
+    fn test_propagate_cached_deep_chain_hop_cap_parity() {
+        // 深链 9 跳 > 轮帽 8：到帽按已达值——两形一致（含「链尾差一跳保
+        // 持 0」的帽语义）。
+        let mut sleepers = Vec::new();
+        let mut holders = Vec::new();
+        let peer_of = |i: usize| 0x100 + i * 0x10;
+        // **反序链**（帽语义钉板前提）：数组序 = [L9..L0, H]——donor 扫描
+        // 序与链传播方向（H→L0→…→L9）相反，每轮恰推进一跳（同轮实时
+        // 可见律的正序链会单轮穿全链，钉不到轮帽）。L_i 等 peer_of(i+1)
+        //（边 → 持有者 L_{i+1}）、持 peer_of(i) 的 RECV；L9 纯睡持
+        // peer_of(9)；H 等 peer_of(0)。基数：H=9、L 全 0。
+        for k in 0..10u32 {
+            let i = 9 - k as usize; // 数组序 k = L_{9-k}
+            if k == 0 {
+                sleepers.push(Sleeper { key: WaitKey::PureSleep, wait_signals: 0, obj_kind: ObjKind::Other, peer: None, prio_effective: 0, pi_inherited: 0 });
+            } else {
+                sleepers.push(Sleeper { key: WaitKey::Obj(peer_of(i + 1)), wait_signals: SIGNAL_WRITABLE, obj_kind: ObjKind::Channel, peer: Some(peer_of(i + 1)), prio_effective: 0, pi_inherited: 0 });
+            }
+            holders.push(HolderFace::from_pairs(&[(peer_of(i), RIGHT_RECV)]));
+        }
+        sleepers.push(Sleeper { key: WaitKey::Obj(peer_of(0)), wait_signals: SIGNAL_WRITABLE, obj_kind: ObjKind::Channel, peer: Some(peer_of(0)), prio_effective: 9, pi_inherited: 0 });
+        holders.push(HolderFace::new()); // H（下标 10）：无持有面
+        let a = propagate(&sleepers, &holders);
+        let b = propagate_cached(&sleepers, &holders, 64);
+        assert_eq!(a, b);
+        // 帽语义锚点：第 k 轮达 L_{k-1}；轮帽 8 ⇒ L7（下标 2）恰达、
+        // L8（下标 1）/L9（下标 0）差一/两跳按已达值 0。
+        assert_eq!(a[10], 0); // H：无人向其捐赠
+        assert_eq!(a[9], 9); // L0：第 1 轮即达
+        assert_eq!(a[2], 9); // L7：第 8 轮恰达帽内末位
+        assert_eq!(a[1], 0); // L8：需第 9 轮 > 帽 → 按已达值（0）
+        assert_eq!(a[0], 0); // L9：链尾
     }
 }

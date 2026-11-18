@@ -60,6 +60,8 @@ kernel/src/mm.rs::FRAME_BMAPS	page-table
 kernel/src/mm.rs::FRAME_FREE	page-table
 kernel/src/mm.rs::FRAME_ORDER	page-table
 kernel/src/mm.rs::FRAME_SUMS	page-table
+kernel/src/pi.rs::PI_EDGE_CACHE	other
+kernel/src/pi.rs::PI_EDGE_LEN	other
 kernel/src/process.rs::HT_DRAINQ	other
 kernel/src/process.rs::HT_DRAINQ_LEN	other
 kernel/src/process.rs::HT_DRAINQ_WARNED	other

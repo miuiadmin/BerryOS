@@ -1306,7 +1306,12 @@ fn run_rootfs_child(console: Handle) {
                 data_off,
                 data_len,
                 stdout: console,
-                stack_pages: 8,
+                // 12 页=48KiB：wm 私有通道刀起 serve 臂新增 wm_await/wm_drain
+                // 两 ~300B 栈帧 + WmFace 扩域，批B 的 32KiB 贴线态被推过
+                // （终判实抓：guifbd 静默早死、present 零应答→wmd 启动序②
+                // 300s 帽 trap 级联——栈溢出零输出形态）。+16KiB DRAM 换零
+                // 贴线。
+                stack_pages: 12,
                 stdin_feed: None,
                 stdin_handle: Some(fbx_b), // B1-b+c：交接对读端（被 send take 迁入）
                 args: &[],
@@ -1447,7 +1452,7 @@ fn run_rootfs_child(console: Handle) {
                     env: &[],
                 },
             ) {
-                Ok(_child) => {
+                Ok(child) => {
                     ps_reg(b"gui-wmd", psp::STATE_ALIVE, 0); // 常驻（不 reap——vblk 同款）
                     // wmd 客户端端仅此落值（兼作下方 gfxdemo arm 的 spawn Ok
                     // 标志——present_cli 0 值跳过同款）；push_cli 交 inputd
@@ -1494,7 +1499,9 @@ fn run_rootfs_child(console: Handle) {
                     // RPC（wm_subscribe_rpc，blk_rpc 先例形态）→ fbx 投递；
                     // 全失败面（发送败/帽到/非 OK ack/畸形/投递败）= loud
                     // 一行 + 跳过投递**零新 panic**——guifbd 侧 AwaitHandle
-                    // 10s 帽自落 Disabled，WMSUB 门缺失交 smoke 兜底。
+                    // 70s 帽（> 本 RPC 60s 帽 + 余量——审查 CONFIRMED 钉
+                    // 「guifbd 禁用恒晚于 svcmgr 放弃」）自落 Disabled，
+                    // WMSUB 门缺失交 smoke 兜底。
                     let mut loud = false;
                     match wm_subscribe_rpc(sub_dup) {
                         Ok(sub_cli) => {
@@ -1531,6 +1538,49 @@ fn run_rootfs_child(console: Handle) {
                         }
                         Err(()) => {
                             loud = true;
+                            // 迟到 ack 收割（对抗审查 CONFIRMED）：超时路的
+                            // 在途 SUBSCRIBE 已驻 wmd 队列不可撤——迟到 ack
+                            //（1B ST_OK + 随行恰 1 handle）若不收，会落共享
+                            // wm 队列毒化下一个 wm 客户端首应答（gfxdemo
+                            // GETINFO 互截——本刀立项所杀缺陷类在自身超时
+                            // 面复活）。收割 = 等 {sub_dup READABLE, wmd 子
+                            // TERMINATED}（wmd 死则孤儿物理不可能再产生），
+                            // READABLE 即全窗收丢弃（随行 handle 全 close 收
+                            // 口）；有界二帽 60s——收割窗后残余面收窄至
+                            // 120s 连续停顿角（TCG 极端形态，挂账即档）。
+                            let hs = [sub_dup, child.hp];
+                            let sigs = [SIGNAL_READABLE, SIGNAL_TERMINATED];
+                            let reap_by = now() + BLKD_REPLY_CAP;
+                            loop {
+                                let mut idx = 0usize;
+                                let mut obs = 0u64;
+                                if berry_object_wait_many(
+                                    hs.as_ptr(),
+                                    sigs.as_ptr(),
+                                    2,
+                                    reap_by,
+                                    &mut idx,
+                                    &mut obs,
+                                ) != 0
+                                {
+                                    break; // 二帽到——残余面收窄挂账
+                                }
+                                if idx == 1 {
+                                    break; // wmd 已死——孤儿不可再产生
+                                }
+                                let mut rep = [0u8; 256];
+                                let mut rh = [0 as Handle; 8];
+                                let mut nb = rep.len();
+                                let mut nh = rh.len();
+                                if berry_channel_recv(sub_dup, rep.as_mut_ptr(), &mut nb, rh.as_mut_ptr(), &mut nh) != 0 {
+                                    break;
+                                }
+                                // 随行 handle 全收口丢弃（畸形/迟到 ack 的
+                                // gift 订阅端一并防泄漏——ps 自验先例）。
+                                for i in 0..nh {
+                                    let _ = berry_handle_close(rh[i]);
+                                }
+                            }
                         }
                     }
                     if loud {
