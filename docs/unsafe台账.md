@@ -46,10 +46,10 @@
 | mm/ | 7 | 2368 | 4 | 0.17% |
 | sched/ | 15 | 8865 | 1819 | 20.52% |
 | ipc/ | 0 | 0 | 0 | — |
-| arch/ | 23 | 7475 | 1088 | 14.56% |
-| **合计** | 76 | 55773 | 5268 | **9.45%** |
+| arch/ | 23 | 7483 | 1087 | 14.53% |
+| **合计** | 76 | 55781 | 5267 | **9.44%** |
 
-- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 42362，unsafe 非空行 4468，密度 10.55%（生产面口径）
+- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 42370，unsafe 非空行 4467，密度 10.54%（生产面口径）
 - 分类计数：页表 74 | 上下文切换 35 | MMIO 163 | 分配器 16 | 硬件原子 0 | 其它 902
 - 类型计数：block 1037 | fn 149 | impl 2 | extern 2（另有类型签名位提及 15 处——只计不登记，防双计）
 - 对标：Android ~4%（unsafe 行占 Rust 总行比，Google 2025-11）；本表为跨度非空行口径（偏高估），见 §一
@@ -107,34 +107,34 @@
 | arch/aarch64/src/lib.rs | 97 | block | MMIO | unsafe { gic::init() }; } /// 高半别名自校验（2b-2 起只走高半——低半身份已退役）：RAM 魔 |
 | arch/aarch64/src/lib.rs | 119 | fn | 页表 | unsafe fn probe_asid_field_roundtrip() { // SAFETY: 调用点合同见函数注（ru |
 | arch/aarch64/src/lib.rs | 121 | block | 页表 | unsafe { mmu::probe_asid_field_roundtrip() }; } /// 北极星审计修：探针结果只 |
-| arch/aarch64/src/lib.rs | 138 | fn | 页表 | unsafe fn freeze_syscalls_table() { // SAFETY: 调用点合同见上（rust_main |
-| arch/aarch64/src/lib.rs | 140 | block | 页表 | unsafe { mmu::freeze_syscalls_table() }; } /// W3-Q104：固化完成标记只读透 |
-| arch/aarch64/src/lib.rs | 153 | block | 页表 | unsafe { mmu::activate_ttbr0(ttbr0_pa, asid) }; } /// P0-3（ASID |
-| arch/aarch64/src/lib.rs | 165 | block | 页表 | unsafe { mmu::activate_ttbr0_keep_tlb(ttbr0_pa, asid) }; } /// 2 |
-| arch/aarch64/src/lib.rs | 172 | block | 页表 | unsafe { mmu::retire_low_half() }; } /// 全量 ASID 失效（ASID 分配器回卷时调 |
-| arch/aarch64/src/lib.rs | 178 | block | 页表 | unsafe { mmu::flush_all_asid() }; } /// 2b-3：按 ASID 失效 TLB——Vmar |
-| arch/aarch64/src/lib.rs | 185 | block | 页表 | unsafe { mmu::tlbi_aside1(asid) }; } /// 3-2：读当前 TTBR0_EL1 表基 PA |
-| arch/aarch64/src/lib.rs | 224 | block | 其它 | unsafe { IRQ_DISPATCH = Some(f) }; } /// 取已注册的 IRQ 派发回调（`excepti |
-| arch/aarch64/src/lib.rs | 231 | fn | 其它 | unsafe fn irq_dispatch() -> Option<IrqDispatch> { IRQ_DISPATCH } |
-| arch/aarch64/src/lib.rs | 246 | block | 其它 | unsafe { SGI_DISPATCH = Some(f) }; } /// 取已注册的 SGI 派发回调（`excepti |
-| arch/aarch64/src/lib.rs | 253 | fn | 其它 | unsafe fn sgi_dispatch() -> Option<SgiDispatch> { SGI_DISPATCH } |
-| arch/aarch64/src/lib.rs | 271 | block | 其它 | unsafe { USER_FAULT_EXIT = Some(f) }; } /// 取已注册的用户故障击杀回调（`excep |
-| arch/aarch64/src/lib.rs | 278 | fn | 其它 | unsafe fn user_fault_exit() -> Option<UserFaultExit> { USER_FAUL |
-| arch/aarch64/src/lib.rs | 297 | block | 其它 | unsafe { CBOX_HOOK = Some(f) }; } /// 取已注册的崩溃记录钩子（trap.rs fatal |
-| arch/aarch64/src/lib.rs | 305 | fn | 其它 | unsafe fn cbox_hook() -> Option<CboxHook> { CBOX_HOOK } // ---- |
-| arch/aarch64/src/lib.rs | 336 | block | 其它 | unsafe { DEMAND_FAULT_PROBE = Some(f) }; } /// 注册 EL0 臂按需调页探针（注册 |
-| arch/aarch64/src/lib.rs | 342 | block | 其它 | unsafe { DEMAND_FAULT_PROBE_EL0 = Some(f) }; } /// 取已注册的按需调页探针（` |
-| arch/aarch64/src/lib.rs | 350 | fn | 其它 | unsafe fn demand_fault_probe(esr: usize, far: usize) -> bool { / |
-| arch/aarch64/src/lib.rs | 353 | block | 其它 | unsafe { f(esr, far) }, None => false, } } /// 取 EL0 臂探针（`except |
-| arch/aarch64/src/lib.rs | 363 | fn | 其它 | unsafe fn demand_fault_probe_el0(esr: usize, far: usize) -> bool |
-| arch/aarch64/src/lib.rs | 366 | block | 其它 | unsafe { f(esr, far) }, None => false, } } // ---- G3-1b 落点①：sys |
-| arch/aarch64/src/lib.rs | 385 | block | 其它 | unsafe { SVC_EXIT_CHECKPOINT = Some(f) }; } /// 解蔽 IRQ（`daifclr |
-| arch/aarch64/src/lib.rs | 391 | block | MMIO | unsafe { core::arch::asm!("msr daifclr, #2", options(nostack, pr |
-| arch/aarch64/src/lib.rs | 399 | block | MMIO | unsafe { core::arch::asm!("mrs {}, daif", out(reg) daif, options |
-| arch/aarch64/src/lib.rs | 407 | block | MMIO | unsafe { core::arch::asm!("msr daif, {}", in(reg) daif, options( |
-| arch/aarch64/src/lib.rs | 413 | block | MMIO | unsafe { core::arch::asm!("msr daifset, #2", options(nostack, pr |
-| arch/aarch64/src/lib.rs | 419 | block | MMIO | unsafe { core::arch::asm!("wfi", options(nostack, preserves_flag |
-| arch/aarch64/src/lib.rs | 427 | block | MMIO | unsafe { core::arch::asm!("wfi") }; } } |
+| arch/aarch64/src/lib.rs | 139 | fn | 页表 | unsafe fn freeze_syscalls_table() { // SAFETY: 调用点合同见上（rust_main |
+| arch/aarch64/src/lib.rs | 141 | block | 页表 | unsafe { mmu::freeze_syscalls_table() }; } /// W3-Q104：固化完成标记只读透 |
+| arch/aarch64/src/lib.rs | 154 | block | 页表 | unsafe { mmu::activate_ttbr0(ttbr0_pa, asid) }; } /// P0-3（ASID |
+| arch/aarch64/src/lib.rs | 166 | block | 页表 | unsafe { mmu::activate_ttbr0_keep_tlb(ttbr0_pa, asid) }; } /// 2 |
+| arch/aarch64/src/lib.rs | 173 | block | 页表 | unsafe { mmu::retire_low_half() }; } /// 全量 ASID 失效（ASID 分配器回卷时调 |
+| arch/aarch64/src/lib.rs | 179 | block | 页表 | unsafe { mmu::flush_all_asid() }; } /// 2b-3：按 ASID 失效 TLB——Vmar |
+| arch/aarch64/src/lib.rs | 186 | block | 页表 | unsafe { mmu::tlbi_aside1(asid) }; } /// 3-2：读当前 TTBR0_EL1 表基 PA |
+| arch/aarch64/src/lib.rs | 225 | block | 其它 | unsafe { IRQ_DISPATCH = Some(f) }; } /// 取已注册的 IRQ 派发回调（`excepti |
+| arch/aarch64/src/lib.rs | 232 | fn | 其它 | unsafe fn irq_dispatch() -> Option<IrqDispatch> { IRQ_DISPATCH } |
+| arch/aarch64/src/lib.rs | 247 | block | 其它 | unsafe { SGI_DISPATCH = Some(f) }; } /// 取已注册的 SGI 派发回调（`excepti |
+| arch/aarch64/src/lib.rs | 254 | fn | 其它 | unsafe fn sgi_dispatch() -> Option<SgiDispatch> { SGI_DISPATCH } |
+| arch/aarch64/src/lib.rs | 272 | block | 其它 | unsafe { USER_FAULT_EXIT = Some(f) }; } /// 取已注册的用户故障击杀回调（`excep |
+| arch/aarch64/src/lib.rs | 279 | fn | 其它 | unsafe fn user_fault_exit() -> Option<UserFaultExit> { USER_FAUL |
+| arch/aarch64/src/lib.rs | 298 | block | 其它 | unsafe { CBOX_HOOK = Some(f) }; } /// 取已注册的崩溃记录钩子（trap.rs fatal |
+| arch/aarch64/src/lib.rs | 306 | fn | 其它 | unsafe fn cbox_hook() -> Option<CboxHook> { CBOX_HOOK } // ---- |
+| arch/aarch64/src/lib.rs | 337 | block | 其它 | unsafe { DEMAND_FAULT_PROBE = Some(f) }; } /// 注册 EL0 臂按需调页探针（注册 |
+| arch/aarch64/src/lib.rs | 343 | block | 其它 | unsafe { DEMAND_FAULT_PROBE_EL0 = Some(f) }; } /// 取已注册的按需调页探针（` |
+| arch/aarch64/src/lib.rs | 351 | fn | 其它 | unsafe fn demand_fault_probe(esr: usize, far: usize) -> bool { / |
+| arch/aarch64/src/lib.rs | 354 | block | 其它 | unsafe { f(esr, far) }, None => false, } } /// 取 EL0 臂探针（`except |
+| arch/aarch64/src/lib.rs | 364 | fn | 其它 | unsafe fn demand_fault_probe_el0(esr: usize, far: usize) -> bool |
+| arch/aarch64/src/lib.rs | 367 | block | 其它 | unsafe { f(esr, far) }, None => false, } } // ---- G3-1b 落点①：sys |
+| arch/aarch64/src/lib.rs | 386 | block | 其它 | unsafe { SVC_EXIT_CHECKPOINT = Some(f) }; } /// 解蔽 IRQ（`daifclr |
+| arch/aarch64/src/lib.rs | 392 | block | MMIO | unsafe { core::arch::asm!("msr daifclr, #2", options(nostack, pr |
+| arch/aarch64/src/lib.rs | 400 | block | MMIO | unsafe { core::arch::asm!("mrs {}, daif", out(reg) daif, options |
+| arch/aarch64/src/lib.rs | 408 | block | MMIO | unsafe { core::arch::asm!("msr daif, {}", in(reg) daif, options( |
+| arch/aarch64/src/lib.rs | 414 | block | MMIO | unsafe { core::arch::asm!("msr daifset, #2", options(nostack, pr |
+| arch/aarch64/src/lib.rs | 420 | block | MMIO | unsafe { core::arch::asm!("wfi", options(nostack, preserves_flag |
+| arch/aarch64/src/lib.rs | 428 | block | MMIO | unsafe { core::arch::asm!("wfi") }; } } |
 | arch/aarch64/src/lockdep.rs | 69 | block | 其它 | unsafe { let (d, f) = (*depth, *floor); let view = core::slice:: |
 | arch/aarch64/src/lockdep.rs | 88 | block | 其它 | unsafe { let (d, f) = (*depth, *floor); let view = core::slice:: |
 | arch/aarch64/src/lockdep.rs | 106 | block | 其它 | unsafe { *floor = *depth }; } /// IRQ 地板收回（`exception_irq` 出口）：断 |
@@ -169,21 +169,21 @@
 | arch/aarch64/src/mmu.rs | 380 | fn | 页表 | unsafe fn retire_low_half() { if !RETIRE_IDENTITY { return; } ac |
 | arch/aarch64/src/mmu.rs | 391 | fn | 页表 | unsafe fn flush_all_asid() { asm!("tlbi vmalle1is", options(nost |
 | arch/aarch64/src/mmu.rs | 403 | fn | 页表 | unsafe fn flush_local_all() { asm!("tlbi vmalle1", options(nosta |
-| arch/aarch64/src/mmu.rs | 438 | fn | 页表 | unsafe fn freeze_syscalls_table() { // 镜像布局：VMA - KERNEL_VA_BASE |
-| arch/aarch64/src/mmu.rs | 453 | block | 页表 | unsafe { (&raw const *l1.add(1)).read_volatile() }; debug_assert |
-| arch/aarch64/src/mmu.rs | 464 | block | 页表 | unsafe { (&raw const (*l2).0[l2_idx]).read_volatile() }; debug_a |
-| arch/aarch64/src/mmu.rs | 477 | block | 页表 | unsafe { (&raw mut (*l3).0[i]).write_volatile(page_descriptor_ke |
-| arch/aarch64/src/mmu.rs | 488 | block | 页表 | unsafe { dsb_ish() }; unsafe { (&raw mut (*l2).0[l2_idx]).write_ |
-| arch/aarch64/src/mmu.rs | 489 | block | 页表 | unsafe { (&raw mut (*l2).0[l2_idx]).write_volatile(table_descrip |
-| arch/aarch64/src/mmu.rs | 490 | block | 页表 | unsafe { dsb_ish() }; unsafe { flush_all_asid() }; } #[inline(al |
-| arch/aarch64/src/mmu.rs | 491 | block | 页表 | unsafe { flush_all_asid() }; } #[inline(always)] unsafe fn write |
-| arch/aarch64/src/mmu.rs | 495 | fn | 页表 | unsafe fn write_mair_el1(v: u64) { asm!("msr mair_el1, {0}", in( |
-| arch/aarch64/src/mmu.rs | 499 | fn | 页表 | unsafe fn write_tcr_el1(v: u64) { asm!("msr tcr_el1, {0}", in(re |
-| arch/aarch64/src/mmu.rs | 503 | fn | 页表 | unsafe fn write_ttbr0_el1(v: u64) { asm!("msr ttbr0_el1, {0}", i |
-| arch/aarch64/src/mmu.rs | 507 | fn | 页表 | unsafe fn write_ttbr1_el1(v: u64) { asm!("msr ttbr1_el1, {0}", i |
-| arch/aarch64/src/mmu.rs | 511 | fn | 页表 | unsafe fn write_sctlr_el1(v: u64) { asm!("msr sctlr_el1, {0}", i |
-| arch/aarch64/src/mmu.rs | 515 | fn | 页表 | unsafe fn isb() { asm!("isb", options(nostack, preserves_flags)) |
-| arch/aarch64/src/mmu.rs | 519 | fn | 页表 | unsafe fn dsb_ish() { asm!("dsb ish", options(nostack, preserves |
+| arch/aarch64/src/mmu.rs | 442 | fn | 页表 | unsafe fn freeze_syscalls_table() { // 镜像布局：VMA - KERNEL_VA_BASE |
+| arch/aarch64/src/mmu.rs | 457 | block | 页表 | unsafe { (&raw const *l1.add(1)).read_volatile() }; debug_assert |
+| arch/aarch64/src/mmu.rs | 468 | block | 页表 | unsafe { (&raw const (*l2).0[l2_idx]).read_volatile() }; debug_a |
+| arch/aarch64/src/mmu.rs | 484 | block | 页表 | unsafe { (&raw mut (*l3).0[i]).write_volatile(page_descriptor_ke |
+| arch/aarch64/src/mmu.rs | 495 | block | 页表 | unsafe { dsb_ish() }; unsafe { (&raw mut (*l2).0[l2_idx]).write_ |
+| arch/aarch64/src/mmu.rs | 496 | block | 页表 | unsafe { (&raw mut (*l2).0[l2_idx]).write_volatile(table_descrip |
+| arch/aarch64/src/mmu.rs | 497 | block | 页表 | unsafe { dsb_ish() }; unsafe { flush_all_asid() }; } #[inline(al |
+| arch/aarch64/src/mmu.rs | 498 | block | 页表 | unsafe { flush_all_asid() }; } #[inline(always)] unsafe fn write |
+| arch/aarch64/src/mmu.rs | 502 | fn | 页表 | unsafe fn write_mair_el1(v: u64) { asm!("msr mair_el1, {0}", in( |
+| arch/aarch64/src/mmu.rs | 506 | fn | 页表 | unsafe fn write_tcr_el1(v: u64) { asm!("msr tcr_el1, {0}", in(re |
+| arch/aarch64/src/mmu.rs | 510 | fn | 页表 | unsafe fn write_ttbr0_el1(v: u64) { asm!("msr ttbr0_el1, {0}", i |
+| arch/aarch64/src/mmu.rs | 514 | fn | 页表 | unsafe fn write_ttbr1_el1(v: u64) { asm!("msr ttbr1_el1, {0}", i |
+| arch/aarch64/src/mmu.rs | 518 | fn | 页表 | unsafe fn write_sctlr_el1(v: u64) { asm!("msr sctlr_el1, {0}", i |
+| arch/aarch64/src/mmu.rs | 522 | fn | 页表 | unsafe fn isb() { asm!("isb", options(nostack, preserves_flags)) |
+| arch/aarch64/src/mmu.rs | 526 | fn | 页表 | unsafe fn dsb_ish() { asm!("dsb ish", options(nostack, preserves |
 | arch/aarch64/src/pl061.rs | 64 | block | MMIO | unsafe { *core::ptr::addr_of_mut!(PL061_NOTIFY) = Some(f) }; } / |
 | arch/aarch64/src/pl061.rs | 72 | block | MMIO | unsafe { if mmio::read(PL061 + GPIO_MIS) & PIN_MASK == 0 { retur |
 | arch/aarch64/src/pl061.rs | 94 | fn | MMIO | unsafe fn pl061_init() { mmio::write(PL061 + GPIO_ICR, PIN_MASK) |

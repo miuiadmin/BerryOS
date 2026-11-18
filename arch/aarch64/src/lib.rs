@@ -128,8 +128,9 @@ pub fn asid_tlb_untrusted() -> bool {
 
 // ---- W3-Q104（03 号分派审计机会五 5b）：SYSCALLS 派发表固化 ----
 
-/// W3-Q104：把 SYSCALLS 派发表所在 2MiB 块拆 4KiB 叶、表页（含邻伴）置
-/// EL1 只读（W^X 分派面固化）。窗位合同：`syscall::install` 毕、
+/// W3-Q104：把 SYSCALLS 派发表所在 2MiB 块拆 4KiB 叶、**仅表页本体**置
+/// EL1 只读（W^X 分派面固化；表整页独占，不冻邻页——布局漂移教训见
+/// `mmu::freeze_syscalls_table` 头注）。窗位合同：`syscall::install` 毕、
 /// smp_bringup/arm_slice/enable_irq 前的 boot 单线程 DAIF 屏蔽窗调用一次
 ///（详见 `mmu::freeze_syscalls_table`）。
 ///

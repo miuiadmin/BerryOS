@@ -415,12 +415,16 @@ pub fn syscalls_table_ro() -> bool {
     SYSCALLS_RO.load(Ordering::Relaxed)
 }
 
-/// 把 `SYSCALLS` 派发表所在 2MiB 块拆成 4KiB 叶、仅该表页（含防跨界的
-/// 邻伴页）置 **EL1 只读**，其余 510 页逐位保真原块 RW——函数指针表
-/// W^X 固化（`research/内核深度进化/03-syscall分派审计.md` 机会五 5b：
-/// boot 期 [`crate::syscall::install`] 填毕、终生只读却留可写页的分派面
-/// 关死；此后任何写 = D-abort(current-EL) 权限错 fatal——ktest 期望
-/// 故障探针正向断言之）。
+/// 把 `SYSCALLS` 派发表所在 2MiB 块拆成 4KiB 叶、**仅表页本体**置
+/// **EL1 只读**（表 = 256 槽 × 16B 恰一整页，#[repr(C, align(4096))]
+/// wrapper 保证页对齐 + 整页独占），其余 511 页逐位保真原块 RW——函数
+/// 指针表 W^X 固化（`research/内核深度进化/03-syscall分派审计.md`
+/// 机会五 5b：boot 期 [`crate::syscall::install`] 填毕、终生只读却留
+/// 可写页的分派面关死；此后任何写 = D-abort(current-EL) 权限错
+/// fatal——ktest 期望故障探针正向断言之）。
+/// R490 三轮：**不冻邻页**——邻页静态量随链接布局漂移换人（两轮 smoke
+/// 红：debug 布局冻住 ktest EBUF、CI 布局冻住 KLOG_SNAP_STAGE 区带写
+/// 者），「邻页无运行期写者」论断不可靠；表整页独占后冻本页即完备。
 ///
 /// 为什么必须拆块：高半内核映射是 L2 2MiB **块描述符**（`build_boot_pt`），
 /// AP 位长在块上——直接改块权限 = 整个 2MiB（`.data`/`.bss` 同块全体静态
@@ -465,15 +469,18 @@ pub unsafe fn freeze_syscalls_table() {
     debug_assert_eq!(old_block & 0x3, 0b01, "拆分目标须是有效块描述符");
     let block_pa = (old_block & !0x1F_FFFF) as usize;
 
-    // 512 叶：表页与前后邻页 RO（表 4KiB 恰容 256 槽×16B，但链接漂移可能
-    // 使邻页承载表尾/表头——邻伴一并固化，代价 = 邻页静态量失写；邻页在
-    // .bss/.data 尾带（SYSCALLS 是 align(4096) 大静态，邻居全是同类 boot
-    // 期写毕即弃面，实测无运行期写者，ktest 冻结后全量 boot 绿即执法）。
+    // 512 叶：**只冻表页本体**（表 = 256 槽 × 16B = 4096B，#[repr(C,
+    // align(4096))] wrapper 保证页对齐 + 整页独占——R490 二轮前置），其余
+    // 511 页逐位保真原块 RW。**禁邻页盲冻**（R490 三轮教训）：邻页静态量
+    // 随链接布局漂移换人（debug 布局 = ktest EBUF/HBUF/RNBUF，CI 布局 =
+    // syscall::KLOG_SNAP_STAGE 区带），「邻页无运行期写者」论断不可靠——
+    // 盲冻邻页 = 随机杀 boot（两轮 smoke 红 + reviewer 本地 QEMU 实证）。
+    // 表本页整页独占后写者唯一 = install（boot 单线程窗，freeze 之前），
+    // 冻本页即安全闭环。
     let tgt_pf = spa >> 12;
     for i in 0..PTES_PER_TABLE {
         let pf = (block_pa >> 12) + i;
-        let ro = pf == tgt_pf || pf + 1 == tgt_pf || pf == tgt_pf + 1;
-        let ap = if ro { AP_RO } else { AP_EL1_RW };
+        let ap = if pf == tgt_pf { AP_RO } else { AP_EL1_RW };
         unsafe {
             (&raw mut (*l3).0[i]).write_volatile(page_descriptor_kernel(pf << 12, ap));
         }
