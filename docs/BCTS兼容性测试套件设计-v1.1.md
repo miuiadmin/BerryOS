@@ -142,7 +142,7 @@ Q4 边界明留「发布节奏数值随 #84 立项稿」（12 号 §2.4，:77）
 
 | Tier | 承诺面 | v0/v1 形态 | 最小件数下限（机器执法） | 开通条件 |
 |---|---|---|---|---|
-| 1 | L0 syscall 面 ＋ 装载谓词 | 现役 smoke 断言冻结化 ＋ abi-check 五面逐字节 | **91 标记件**（口径见下；bcts@5 滚新后现值——88→90〔bcts@1〕→91〔bcts@2，#355〕→91 随持〔bcts@3/@4/@5，计数面零增减〕） | 本稿开工即通（v0） |
+| 1 | L0 syscall 面 ＋ 装载谓词 | 现役 smoke 断言冻结化 ＋ abi-check 五面逐字节 | **91 标记件**（口径见下；bcts@6 滚新后现值——88→90〔bcts@1〕→91〔bcts@2，#355〕→91 随持〔bcts@3/@4/@5/@6，计数面零增减〕） | 本稿开工即通（v0） |
 | 2 | L1 wire 契约 conformance | 槽位合同四件套之④用例集 | 每开放槽位 ≥ 合同④件全集；每对外 L1 接口五类用例各 ≥1（注 a）；计数随 #83 落数 | #83 落册 ＋ 首槽开放（Q8） |
 | 3 | L2 行为面 | berry-sys/libc/gfx/ui 行为 ＋ 三 host 门禁 | N=3 窗口内存续 L2 API 每 API ≥1 断言（推断）；门禁恒在（注 b） | Tier 2 后随 V13；全覆盖同刀 |
 
@@ -167,7 +167,11 @@ Q4 边界明留「发布节奏数值随 #84 立项稿」（12 号 §2.4，:77）
 同树 markers blob 5b98b3dbab2c），计数 91 随持；bcts@4 → bcts@5 滚新随 W3-Q98
 e96965320——bench send_recv_pair 入九项基线面（BENCH 通道 n=8→n=9，markers.sh/
 smoke-image.sh/smoke.sh 三处活树单源同批滚新），计数面零增减 91 随持
-〔frozen_at 锚 d13db8897 同树 markers blob 6034d51568f2〕；bcts@3/bcts@4 保留在档
+〔frozen_at 锚 d13db8897 同树 markers blob 6034d51568f2〕；bcts@5 → bcts@6 滚新随
+W3-Q102——bench svc_roundtrip 入十项基线面（BENCH 通道 n=9→n=10，markers.sh/
+smoke-image.sh/smoke.sh 三处活树单源 + bench.py _iter_table 同批滚新），计数面
+零增减 91 随持〔frozen_at 锚 f24b2d745 同树 markers blob c3525c71ede3〕；
+bcts@3/bcts@4/bcts@5 保留在档
 回放旧工件仍可用）。
 其中「L0 syscall 面」对应裸相 boot 链标记族（`SYSCALL ok`/`ktest done` 等）＋
 abi-check；「装载谓词」对应 appd 装载链（`APP ok n=`/`APPUI ok n=`——
