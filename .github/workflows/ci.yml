@@ -192,13 +192,13 @@ jobs:
       #    不可本地全链（tarball 生成即剥 path → registry 解析前置，--no-verify
       #    也不绕，B6 实证）——只跑 --list（registry-free，E1 实证）保文件清单
       #    干净面。叶子发布后本档升级为完整 package（另刀回填，勿现在改）。
-      - name: sdk-publish-guard（SDK-1b 十 crate 发布面守卫）
+      - name: sdk-publish-guard（SDK-1b 十一 crate 发布面守卫）
         working-directory: user
         run: |
           set -eu
           # —— 硬门 1：十 crate 元数据齐备（version/description/license/
           #    repository/readme 字段 + README 本体在位）。
-          for c in berry-sys berry-tls berry-netdproto berry-fsproto berry-mmap berry-signal berry-lifecycle berry-strmem berry-fsclient berry-libc; do
+          for c in berry-sys berry-tls berry-netdproto berry-fsproto berry-mmap berry-signal berry-lifecycle berry-strmem berry-vdsoface berry-fsclient berry-libc; do
             m="$c/Cargo.toml"
             grep -q '^version.workspace = true$' "$m" || { echo "::error file=$m::version 应为 version.workspace = true（迁移步骤 1 继承形）"; exit 1; }
             grep -q '^description = ' "$m"         || { echo "::error file=$m::缺 description"; exit 1; }
@@ -220,6 +220,9 @@ jobs:
           }
           dw berry-fsclient/Cargo.toml berry-sys
           dw berry-fsclient/Cargo.toml berry-fsproto
+          # W3-Q106：sys 第 1 条内部依赖（vDSO 页布局/换算单源——magic/freq/
+          # seq 冻结 ABI + ticks→ns；libc clock fast path 消费）。
+          dw berry-sys/Cargo.toml berry-vdsoface
           dw berry-fsclient/Cargo.toml berry-netdproto
           dw berry-libc/Cargo.toml berry-sys
           dw berry-libc/Cargo.toml berry-fsclient
@@ -238,7 +241,7 @@ jobs:
           # libc strmem.rs 薄 #[no_mangle] 壳消费）。
           dw berry-libc/Cargo.toml berry-strmem
           # —— 硬门 2b：path 依赖反向执法（双镜头审查 F1，2026-10-30）。
-          #    dw() 只正向钉十一条已知线在位；此处反向兜两条：
+          #    dw() 只正向钉十二条已知线在位；此处反向兜两条：
           #    ① path-only 形零容忍——任何「有 path 无 version」依赖线当场红
           #       （防未来加线/改形去 version 静默过 CI、爆在 publish
           #       当天「path dependency without a version」）；
@@ -249,16 +252,17 @@ jobs:
               berry-sys/Cargo.toml berry-tls/Cargo.toml berry-netdproto/Cargo.toml \
               berry-fsproto/Cargo.toml berry-mmap/Cargo.toml berry-signal/Cargo.toml \
               berry-lifecycle/Cargo.toml berry-strmem/Cargo.toml \
+              berry-vdsoface/Cargo.toml \
               berry-fsclient/Cargo.toml berry-libc/Cargo.toml
           then
-            echo "::error::发布族十 manifest 存在 path-only 依赖线（= { path = … } 无 version）"
+            echo "::error::发布族十一 manifest 存在 path-only 依赖线（= { path = … } 无 version）"
             exit 1
           fi
           pc() {  # pc <manifest> <期望 path 行数>（grep -c 零命中退出码 1，|| true 吞）
             n=$(grep -cE '= \{ path = ' "$1" || true)
             [ "$n" = "$2" ] || { echo "::error file=$1::path 依赖线计数 $n ≠ 期望 $2（加线/改形须同步 dw/pc 定值）"; exit 1; }
           }
-          pc berry-sys/Cargo.toml 0
+          pc berry-sys/Cargo.toml 1
           pc berry-tls/Cargo.toml 0
           pc berry-netdproto/Cargo.toml 0
           pc berry-fsproto/Cargo.toml 0
@@ -266,16 +270,18 @@ jobs:
           pc berry-signal/Cargo.toml 0
           pc berry-lifecycle/Cargo.toml 0
           pc berry-strmem/Cargo.toml 0
+          pc berry-vdsoface/Cargo.toml 0
           pc berry-fsclient/Cargo.toml 3
           pc berry-libc/Cargo.toml 8
-          # —— 档 ②：八叶子完整 package（含 verification build；rustflags
+          # —— 档 ②：九叶子完整 package（含 verification build；rustflags
           #    -fp-armv8/-neon 弃用告警为已知噪声（基线 B2），非失败）。
-          for c in berry-sys berry-tls berry-netdproto berry-fsproto berry-mmap berry-signal berry-lifecycle berry-strmem; do
+          for c in berry-tls berry-netdproto berry-fsproto berry-mmap berry-signal berry-lifecycle berry-strmem berry-vdsoface; do
             echo "::group::cargo package -p $c"
             cargo package -p "$c"
             echo "::endgroup::"
           done
-          # —— 档 ③：中/顶层 --list（registry-free 文件清单干净面）。
+          # —— 档 ③：中/顶层（sys/fsclient/libc）--list（registry-free 文件清单干净面）。
+          cargo package --list -p berry-sys
           cargo package --list -p berry-fsclient
           cargo package --list -p berry-libc
 

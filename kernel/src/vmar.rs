@@ -108,13 +108,15 @@ pub(crate) fn pt_lock_current() -> PtGuard {
     pt_lock(hal::current_asid())
 }
 
-/// 映射权限（v1 三档；AP 编码见 `paging.rs`——Rw=00 仅 EL1 读写、Ro=10 只读、
-/// UserRw=01 EL0/EL1 读写——2b-4 首个 EL0 用户页。UserRo=11 留 v2 按需）。
+/// 映射权限（v1 三档 + W3-Q106 vDSO 四档；AP 编码见 `paging.rs`——Rw=00 仅
+/// EL1 读写、Ro=10 只读、UserRw=01 EL0/EL1 读写、UserRo=11 EL0/EL1 只读
+/// ——原「留 v2 按需」由 vDSO 数据页兑现）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Perm {
     Rw,
     Ro,
     UserRw,
+    UserRo,
 }
 
 impl Perm {
@@ -124,6 +126,7 @@ impl Perm {
             Perm::Rw => 0,
             Perm::Ro => hal::AP_RO,
             Perm::UserRw => hal::AP_USER_RW,
+            Perm::UserRo => hal::AP_USER_RO,
         }
     }
 }
