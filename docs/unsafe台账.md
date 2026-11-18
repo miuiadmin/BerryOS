@@ -46,10 +46,10 @@
 | mm/ | 7 | 2368 | 4 | 0.17% |
 | sched/ | 15 | 8865 | 1819 | 20.52% |
 | ipc/ | 0 | 0 | 0 | — |
-| arch/ | 23 | 7455 | 1088 | 14.59% |
-| **合计** | 76 | 55753 | 5268 | **9.45%** |
+| arch/ | 23 | 7464 | 1088 | 14.58% |
+| **合计** | 76 | 55762 | 5268 | **9.45%** |
 
-- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 42342，unsafe 非空行 4468，密度 10.55%（生产面口径）
+- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 42351，unsafe 非空行 4468，密度 10.55%（生产面口径）
 - 分类计数：页表 74 | 上下文切换 35 | MMIO 163 | 分配器 16 | 硬件原子 0 | 其它 902
 - 类型计数：block 1037 | fn 149 | impl 2 | extern 2（另有类型签名位提及 15 处——只计不登记，防双计）
 - 对标：Android ~4%（unsafe 行占 Rust 总行比，Google 2025-11）；本表为跨度非空行口径（偏高估），见 §一
@@ -229,9 +229,9 @@
 | arch/aarch64/src/smp.rs | 902 | block | MMIO | unsafe { crate::gic::send_sgi(crate::gic::SGI_RESCHEDULE, crate: |
 | arch/aarch64/src/smp.rs | 917 | block | MMIO | unsafe { crate::gic::send_sgi(crate::gic::SGI_RESCHEDULE, crate: |
 | arch/aarch64/src/smp.rs | 939 | block | MMIO | unsafe { crate::gic::send_sgi(crate::gic::SGI_RESCHEDULE, crate: |
-| arch/aarch64/src/syscall.rs | 55 | block | 其它 | unsafe { (*(&raw mut SYSCALLS))[nr] = (h, class) }; } /// 派发入口（` |
-| arch/aarch64/src/syscall.rs | 71 | block | 其它 | unsafe { *(&raw const SYSCALLS).cast::<(Handler, u8)>().add(nr) |
-| arch/aarch64/src/syscall.rs | 93 | block | 其它 | unsafe { crate::SVC_EXIT_CHECKPOINT } { checkpoint(); } tf.regs[ |
+| arch/aarch64/src/syscall.rs | 64 | block | 其它 | unsafe { (*(&raw mut SYSCALLS)).0[nr] = (h, class) }; } /// 派发入口 |
+| arch/aarch64/src/syscall.rs | 80 | block | 其它 | unsafe { *(&raw const SYSCALLS).cast::<(Handler, u8)>().add(nr) |
+| arch/aarch64/src/syscall.rs | 102 | block | 其它 | unsafe { crate::SVC_EXIT_CHECKPOINT } { checkpoint(); } tf.regs[ |
 | arch/aarch64/src/task.rs | 361 | fn | 上下文切换 | unsafe fn context_switch(prev: *mut TaskContext, next: *const Ta |
 | arch/aarch64/src/task.rs | 364 | block | 上下文切换 | unsafe { switch_no_fp(prev, next) } // 快路径——省 ~130cy } else { un |
 | arch/aarch64/src/task.rs | 366 | block | 上下文切换 | unsafe { switch_full(prev, next) } // 全量——保 FP 状态 } } /// 任务入口误返 |
