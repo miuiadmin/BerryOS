@@ -28,6 +28,12 @@
 //! 恒 None 直通——原始坐标保真；位移 0.41·vp_w > 0.4·vp_w 翻页阈 +
 //! 速度环远超 500px/s fling 阈，双判据同向）各落定 → `PAGE ok n=2`。
 //!
+//! **自测门**（I3 性能止血）：`smoke ∨ 壁钟注入缺席` 才跑——gui8 三靴
+//!（A 双靴/B 常态对照/--normal-boot 常态隔离）与 smoke-image EFI 靴全在
+//! 断言面且全无 `opt/berry/rtc` 注入（PAGE ok 照打）；宿主 berry 真实
+//! 交互路恒注 rtc → WaitFirst 短路 Done，开机零 swipe——两轮 swipe 与
+//! 真实输入同队列相撞的开机「点不动」窗消失（判据全账见 [`run`] 头注）。
+//!
 //! **段④ 点击面（真实输入 → APP_SPAWN）**：`Msg::Click` 槽命中 →
 //! `app_cli_h()!=0` 时真发 APP_SPAWN；**首例 ok 回执恰一次**打 `CLICK
 //! ok n=1`——**仅当 `smoke` 为真**（main 经 GUI8.SMK 精确载荷判定）。
@@ -65,11 +71,13 @@ const CLEAR_BG: (u8, u8, u8) = (0x10, 0x18, 0x28);
 /// 兜底 loud；不 fail 挂死：桌面常驻义务优先于自测件）。
 const SETTLE_CAP_NS: u64 = 5 * 1_000_000_000;
 
-/// 自测状态机（boot 一次性走完 → Done 常驻）。
+/// 自测状态机（boot 一次性走完 → Done 常驻；门控见 [`run`] 头注——
+/// 真实交互 boot 在 WaitFirst 即短路 Done，状态机不推进）。
 #[derive(Clone, Copy)]
 enum Selftest {
     /// 首帧在途——presented>0 时注入第一轮 swipe（LAUNCH ok 已由
-    /// on_presented 打出——首帧 FRAME_CALLBACK 过链即打）。
+    /// on_presented 打出——首帧 FRAME_CALLBACK 过链即打）；自测门
+    /// 关（真实交互 boot）即短路 Done。
     WaitFirst,
     /// 第一轮 swipe 收敛中（pc = 注入时已呈现数基线；page()==1 且 snap
     /// 停（tick false）且再有一帧呈现 = 落定）。
@@ -128,6 +136,10 @@ struct LoopHost {
     desktop: Desktop,
     /// 冒烟模式（段④ 两标记的唯一门）。
     smoke: bool,
+    /// 自测门（I3）：`smoke ∨ 壁钟注入缺席`——run 构造期一次定格
+    ///（判据全账见 [`run`] 头注；真实交互 boot = false → WaitFirst
+    /// 短路 Done）。
+    selftest: bool,
     /// input gift 在场（run 参数定格——hi 后续在 pump 内可因输入面失效
     /// 置 0，门仍真）。
     has_input: bool,
@@ -153,8 +165,17 @@ struct LoopHost {
 
 /// 帧循环入口（签名 = W2 冻结面——`hw` = wm 客户端端柄（wm/present 同
 /// 端混流，ADR #61 中继），`ui` = 泄堆 arena，`desktop` = 静态面句柄，
-/// `smoke` = main 单次读取的 GUI8.SMK 精确载荷判定——只门控段④两标记，
-/// 不改点击/帧链行为）。
+/// `smoke` = main 单次读取的 GUI8.SMK 精确载荷判定——门控段④两标记 +
+/// 自测门两臂之一，不改点击/帧链行为）。
+///
+/// **自测门判据（I3 前置核实定谳，2026-11-18 现场核树）**：`PAGE ok
+/// n=2` 的全部断言面 = gui8 靴 A（SMK 在）+ 靴 B 与 `--normal-boot`
+/// 常态隔离靴（无 SMK）+ smoke-image EFI 靴（零 fw_cfg 无数据盘）——
+/// GUI8.SMK 旗**不覆盖**后三形态，`!smoke → Done` 一刀会炸两门。四形态
+/// 拓扑结构性无壁钟注入（gui8 仅注 `opt/berry/display`；EFI 路零
+/// fw_cfg → `CLOCK_REALTIME` 恒 -ENOTSUP），宿主 berry 真实交互路恒注
+/// `opt/berry/rtc`（qemu.rs fwcfg 表，SystemTime 可读即有值）——门取
+/// 两臂之或 `smoke ∨ 壁钟不可读`：冒烟形态照打，真实桌面短路。
 pub fn run(
     hw: Handle,
     hi: Handle,
@@ -162,10 +183,13 @@ pub fn run(
     desktop: Desktop,
     smoke: bool,
 ) -> ! {
+    let mut rt0 = 0u64;
+    let selftest = smoke || berry_clock_read(CLOCK_REALTIME, &mut rt0) != 0;
     let mut host = LoopHost {
         hw,
         desktop,
         smoke,
+        selftest,
         has_input: hi != 0,
         spawn_ok: 0,
         launched: false,
@@ -319,7 +343,13 @@ impl appshell::pump::HostHooks for LoopHost {
         // —— 自测状态机（boot 一次性；标记字节精确）——
         match self.st {
             Selftest::WaitFirst => {
-                if presented > 0 {
+                if !self.selftest {
+                    // 门控短路（I3）：真实交互 boot（非冒烟 ∧ 壁钟在场）
+                    // 不自测——两轮 swipe 与真实输入同队列相撞的开机
+                    // 「点不动」窗整体消失。LAUNCH ok/telem 不受影响
+                    //（on_presented 面）；PAGE ok 在此形态无断言面。
+                    self.st = Selftest::Done;
+                } else if presented > 0 {
                     inject_swipe(ui, t_now);
                     self.st = Selftest::Settle1 { pc: presented, deadline: t_now + SETTLE_CAP_NS };
                 }

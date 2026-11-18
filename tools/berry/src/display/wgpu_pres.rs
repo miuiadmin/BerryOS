@@ -6,7 +6,8 @@
 //! K=8×(16×10)/帧 p50 25µs（0.15% 帧预算）、全帧 1080×1920 最坏 606–650µs
 //! （3.9% 预算）；行重排无收益（内部 chunked 逐行重排自带）。
 //!
-//! 呈现链：共享图替身/VNC 帧写入 GPU 纹理 → 采样 blit（最近/线性）→ surface。
+//! 呈现链：共享图替身/VNC 帧写入 GPU 纹理 → letterbox 缩放采样（目标矩形
+//! 经 uniform 下发，scale::fit 单源几何）→ overlay alpha 合成 → surface。
 //! softbuffer 路径保留为 fallback（wgpu 适配器缺席时自动降级，零行为漂移）。
 
 use crate::display::frame::Frame;
@@ -14,6 +15,100 @@ use std::sync::Arc;
 
 /// 单帧 damage 矩形上限（guifbd DAMAGE_MAX 同值，user/berry-ui/src/damage.rs K≤8）。
 pub const DAMAGE_MAX: usize = 8;
+
+/// 采样器 + blit 管线 + 几何 uniform 缓冲构建（new 与 headless 静态验证
+/// 测试共用单源——WGSL 语法/BGL 绑定错配在此即被 wgpu/naga 校验层拦截）。
+fn build_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+) -> (wgpu::Sampler, wgpu::RenderPipeline, wgpu::Buffer) {
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("berry-blit-sampler"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("berry-blit"),
+        source: wgpu::ShaderSource::Wgsl(SHADER_BLIT.into()),
+    });
+    let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("berry-blit-bgl"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    multisampled: false,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    multisampled: false,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(64),
+                },
+                count: None,
+            },
+        ],
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("berry-blit-pl"),
+        bind_group_layouts: &[Some(&bgl)],
+        immediate_size: 0,
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("berry-blit-pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(format.into())],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    });
+    let params_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("berry-blit-params"),
+        size: 64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    (sampler, pipeline, params_buf)
+}
 
 /// 一帧的增量载荷：脏矩形集 + 各自在共享图中的偏移。
 /// 消费者（VNC FrameUpdate / β-1 UpdateMap）产矩形流，本骨架按 15 号 §2.2
@@ -41,9 +136,11 @@ pub struct WgpuPresenter {
     overlay: Option<wgpu::Texture>,
     overlay_size: (u32, u32),
     sampler: wgpu::Sampler,
-    /// blit 管线（WGSL：采样 + alpha 强制 1.0——15 号 §2.3 同款）。
+    /// blit 管线（WGSL：letterbox 采样客帧 + overlay alpha 合成）。
     pipeline: wgpu::RenderPipeline,
     bind_group: Option<wgpu::BindGroup>,
+    /// letterbox/overlay 几何 uniform（target rect + surface 尺寸，每帧直写）。
+    params_buf: wgpu::Buffer,
 }
 
 impl WgpuPresenter {
@@ -93,76 +190,7 @@ impl WgpuPresenter {
         };
         surface.configure(&device, &config);
 
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("berry-blit-sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("berry-blit"),
-            source: wgpu::ShaderSource::Wgsl(SHADER_BLIT.into()),
-        });
-        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("berry-blit-bgl"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                },
-            ],
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("berry-blit-pl"),
-            bind_group_layouts: &[Some(&bgl)],
-            immediate_size: 0,
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("berry-blit-pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(config.format.into())],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let (sampler, pipeline, params_buf) = build_pipeline(&device, config.format);
 
         Some(Self {
             adapter: adapter_name,
@@ -177,6 +205,7 @@ impl WgpuPresenter {
             sampler,
             pipeline,
             bind_group: None,
+            params_buf,
         })
     }
 
@@ -213,6 +242,9 @@ impl WgpuPresenter {
             return;
         }
         self.ensure_overlay(w, h);
+        // overlay 尺寸变化换了纹理对象：绑定组同步重建（否则 present 裸拿
+        // 旧组或 None，窗口 resize 后首帧错误降级 softbuffer）。
+        self.rebuild_bind_group();
         let Some(ov) = self.overlay.as_ref() else { return };
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -229,7 +261,6 @@ impl WgpuPresenter {
             },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
-        // overlay 尺寸变化时 bind group 重建（纹理对象换了）。
     }
 
     /// damage 增量上传（K≤8 矩形/帧——每矩形独立直配切片，~3µs/矩形）。
@@ -272,8 +303,10 @@ impl WgpuPresenter {
         }
     }
 
-    /// 呈现一帧（blit 到 surface + present）。窗口几何变化时先 reconfigure。
-    pub fn present(&mut self, window: &winit::window::Window) -> bool {
+    /// 呈现一帧（blit 到 surface + present）。`rect` = 客帧 letterbox 目标
+    /// 矩形（窗口像素坐标 x,y,w,h——scale::fit 单源产物，与 softbuffer 段
+    /// fit 几何语义一致，pointer 映射同源）。窗口几何变化时先 reconfigure。
+    pub fn present(&mut self, window: &winit::window::Window, rect: (u32, u32, u32, u32)) -> bool {
         let size = window.inner_size();
         let (w, h) = (size.width.max(1), size.height.max(1));
         if w != self.config.width || h != self.config.height {
@@ -284,7 +317,15 @@ impl WgpuPresenter {
         // overlay 与 surface 同尺寸（窗口几何变化即重建）。
         if self.overlay_size != (w, h) {
             self.ensure_overlay(w, h);
+            self.rebuild_bind_group();
         }
+        // letterbox/overlay 几何 uniform（2×vec4：target rect + surface 尺寸）。
+        let params: [[f32; 4]; 2] = [
+            [rect.0 as f32, rect.1 as f32, rect.2 as f32, rect.3 as f32],
+            [w as f32, h as f32, 0.0, 0.0],
+        ];
+        self.queue
+            .write_buffer(&self.params_buf, 0, bytemuck::cast_slice(&params));
         let Some(bind) = self.bind_group.as_ref() else { return false };
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) => f,
@@ -386,43 +427,89 @@ impl WgpuPresenter {
                         &ov.create_view(&Default::default()),
                     ),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.params_buf.as_entire_binding(),
+                },
             ],
         }));
     }
 }
 
 const SHADER_BLIT: &str = r#"
-struct VsOut {
-    @builtin(position) pos: vec4<f32>,
-    @location(0) uv: vec2<f32>,
+struct Params {
+    /// 客帧 letterbox 目标矩形（窗口像素，左上原点）：x, y, w, h。
+    rect: vec4<f32>,
+    /// surface 尺寸（窗口像素）：w, h（zw 保留）。
+    surface: vec4<f32>,
 };
 
+@group(0) @binding(0) var samp: sampler;
+@group(0) @binding(1) var tex: texture_2d<f32>;
+@group(0) @binding(2) var overlay: texture_2d<f32>;
+@group(0) @binding(3) var<uniform> params: Params;
+
 @vertex
-fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
-    // 全屏三角形（blit 不需要顶点缓冲）；uv y 翻转（纹理 v=0 在顶）。
+fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
+    // 全屏三角形（覆盖整个 surface；letterbox 与采样均按片元坐标在 fs 算）。
     var p = array<vec2<f32>, 3>(
         vec2<f32>(-1.0, -3.0),
         vec2<f32>(-1.0,  1.0),
         vec2<f32>( 3.0,  1.0),
     );
-    var u = array<vec2<f32>, 3>(
-        vec2<f32>(0.0, 2.0),
-        vec2<f32>(0.0, 0.0),
-        vec2<f32>(2.0, 0.0),
-    );
-    var out: VsOut;
-    out.pos = vec4<f32>(p[vi], 0.0, 1.0);
-    out.uv = u[vi];
-    return out;
+    return vec4<f32>(p[vi], 0.0, 1.0);
 }
-
-@group(0) @binding(0) var samp: sampler;
-@group(0) @binding(1) var tex: texture_2d<f32>;
 
 @fragment
-fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    var c = textureSample(tex, samp, in.uv);
+fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    // 片元坐标（像素，左上原点；pos.xy 含 0.5 像素中心偏移，天然对心采样）。
+    let px = pos.xy;
+    let r = params.rect;
+    // 客帧采样：目标矩形内线性缩放；clamp + max 防退化矩形除零（矩形外
+    // 采样值不进合成）。textureSample 须在统一控制流——分支压到 select。
+    let guv = clamp((px - r.xy) / max(r.zw, vec2<f32>(1.0, 1.0)), vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0));
+    var c = textureSample(tex, samp, guv);
     c.a = 1.0; // alpha 强制 1.0（15 号 §2.3 同款——X 通道未定义）
-    return c;
+    // overlay 采样：窗口全幅（工具栏/菜单/tooltip 按屏幕坐标覆盖）。
+    let ouv = clamp(px / max(params.surface.xy, vec2<f32>(1.0, 1.0)), vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0));
+    let o = textureSample(overlay, samp, ouv);
+    // letterbox 外底色 0x0010_1418（softbuffer 段 scale::render 填充色同源）；
+    // overlay 在底色之上 straight-alpha 合成（alpha 0=透底/客帧，255=覆盖）。
+    let bg = vec3<f32>(0.0627451, 0.07843137, 0.09411765);
+    let inside = px.x >= r.x && px.y >= r.y && px.x < r.x + r.z && px.y < r.y + r.w;
+    let base = select(bg, c.rgb, inside);
+    return vec4<f32>(mix(base, o.rgb, o.a), 1.0);
 }
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// headless 静态验证：无窗口建 Metal 设备过一遍采样器/shader/BGL/管线
+    /// 构建（letterbox+overlay 改刀守护网——WGSL 语法或绑定错配在校验层
+    /// 即挂红，不必等原生窗口首帧）。无 Metal 宿主跳过（不挂红）。
+    #[test]
+    fn shader_and_pipeline_validate_headless() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::METAL,
+            flags: wgpu::InstanceFlags::default(),
+            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+            backend_options: wgpu::BackendOptions::default(),
+            display: None,
+        });
+        let adapter = match pollster::block_on(instance.request_adapter(&Default::default())) {
+            Ok(a) => a,
+            Err(_) => return,
+        };
+        let device = match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("berry-wgpu-test"),
+            ..Default::default()
+        })) {
+            Ok((device, _queue)) => device,
+            Err(_) => return,
+        };
+        let (_sampler, _pipeline, _params) =
+            build_pipeline(&device, wgpu::TextureFormat::Bgra8Unorm);
+    }
+}

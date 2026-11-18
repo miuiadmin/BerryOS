@@ -57,6 +57,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::error::{BerryError, Result};
+use crate::qmp::QmpInjector;
 
 /// Header budget per request (request line + headers); anything bigger is a
 /// bad request. noVNC loads assets with plain browser requests, well below.
@@ -707,49 +708,6 @@ pub struct LanUpstream {
     pub qmp_sock: Option<PathBuf>,
     pub guest_w: u32,
     pub guest_h: u32,
-}
-
-/// 一个代理连接的 QMP 注入器：惰性连 run/qmp-inject.sock（QMP unix
-/// 服务端支持多客户端），capabilities 一次，之后每个 PointerEvent 一条
-/// input-send-event。无排空线程（QMP 事件通知小而稀疏，内核 socket 缓冲
-/// 足以容纳；持有克隆的排空线程会让连接永不关闭 → fd 泄漏）。
-struct QmpInjector {
-    sock: Option<std::os::unix::net::UnixStream>,
-}
-
-impl QmpInjector {
-    fn connect(path: &Path) -> Option<Self> {
-        use std::io::{BufRead, BufReader, Write};
-        let mut s = std::os::unix::net::UnixStream::connect(path).ok()?;
-        let mut r = BufReader::new(s.try_clone().ok()?);
-        let mut line = String::new();
-        r.read_line(&mut line).ok()?; // greeting
-        writeln!(s, "{{\"execute\":\"qmp_capabilities\"}}").ok()?;
-        s.flush().ok()?;
-        line.clear();
-        r.read_line(&mut line).ok()?;
-        if !line.contains("return") {
-            return None;
-        }
-        Some(QmpInjector { sock: Some(s) })
-    }
-
-    fn pointer(&mut self, x: u16, y: u16, buttons: u8, gw: u32, gh: u32) {
-        use std::io::Write;
-        let Some(s) = self.sock.as_mut() else { return };
-        let sx = (u64::from(x) * 32767 / u64::from(gw.max(1))).min(32767);
-        let sy = (u64::from(y) * 32767 / u64::from(gh.max(1))).min(32767);
-        let down = buttons & 1 != 0;
-        let msg = format!(
-            "{{\"execute\":\"input-send-event\",\"arguments\":{{\"events\":[\
-             {{\"type\":\"abs\",\"data\":{{\"axis\":\"x\",\"value\":{sx}}}}},\
-             {{\"type\":\"abs\",\"data\":{{\"axis\":\"y\",\"value\":{sy}}}}},\
-             {{\"type\":\"btn\",\"data\":{{\"down\":{down},\"button\":\"left\"}}}}]}}}}\n"
-        );
-        if writeln!(s, "{msg}").is_err() || s.flush().is_err() {
-            self.sock = None;
-        }
-    }
 }
 
 /// 解析浏览器→上游字节流开头的 ws 客户端帧（恒 mask）。返回

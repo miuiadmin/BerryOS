@@ -194,6 +194,49 @@ fn draw_tooltip(buf: &mut [u32], width: u32, height: u32, hover: usize) {
     draw_text(buf, width, height, x + 5, y + 3, text);
 }
 
+/// UI u32 面 → RGBA 字节面（overlay 纹理载荷）。UI 面写 0x00RRGGBB
+/// （softbuffer 语义，R 在高 16 位）；alpha 统一按覆盖写——ui 面零值 =
+/// 未覆盖（透客帧/底色），非零 = 覆盖 255（UI 写色当前无纯零色）。
+fn ui_to_rgba(ui: &[u32], rgba: &mut [u8]) {
+    for (i, &px) in ui.iter().enumerate() {
+        let o = i * 4;
+        rgba[o] = ((px >> 16) & 0xFF) as u8;
+        rgba[o + 1] = ((px >> 8) & 0xFF) as u8;
+        rgba[o + 2] = (px & 0xFF) as u8;
+        rgba[o + 3] = if px != 0 { 0xFF } else { 0x00 };
+    }
+}
+
+/// 交互层重绘（wgpu overlay 路）：持久缓冲复用，仅尺寸变化重分配；层序
+/// 与 softbuffer 段一致（工具栏恒绘 + 非 menu 态 tooltip + menu 态菜单）。
+/// 调用方按 overlay 状态签名 gating——签名不变即整层零重绘零上传。
+fn redraw_overlay(
+    ui: &mut Vec<u32>,
+    rgba: &mut Vec<u8>,
+    sw: u32,
+    sh: u32,
+    armed: bool,
+    hover: Option<usize>,
+    menu_open: bool,
+    profile_id: &str,
+) {
+    let n = sw as usize * sh as usize;
+    ui.clear();
+    ui.resize(n, 0);
+    rgba.clear();
+    rgba.resize(n * 4, 0);
+    draw_toolbar(ui, sw, sh, armed, hover);
+    if !menu_open {
+        if let Some(h) = hover {
+            draw_tooltip(ui, sw, sh, h);
+        }
+    }
+    if menu_open {
+        draw_menu(ui, sw, sh, profile_id);
+    }
+    ui_to_rgba(ui, rgba);
+}
+
 /// Base window-open factor per panel class, in logical-point terms.
 ///
 /// Tall panels (>1200) open smaller because they are clamped by screen height
@@ -435,6 +478,15 @@ struct App {
     surface: Option<Surface<Arc<Window>, Arc<Window>>>,
     last_frame: Option<Frame>,
     last_fit: Option<Fit>,
+    /// 客帧序号（poll_frame 收帧递增）与已上传序号——客帧不变跳 upload_full。
+    frame_seq: u64,
+    uploaded_seq: u64,
+    /// overlay/UI 持久面（I1 止血：稳态零分配，仅尺寸变化重分配）。
+    ui_buf: Vec<u32>,
+    rgba_buf: Vec<u8>,
+    /// overlay 状态签名（尺寸/hover/menu/power_armed/profile）——变化才
+    /// 重绘交互层并重传 overlay 纹理。
+    overlay_sig: Option<(u32, u32, Option<usize>, bool, bool, &'static str)>,
     cursor: Option<(f64, f64)>,
     mouse_down: bool,
     mods: ModifiersState,
@@ -485,6 +537,11 @@ impl App {
             surface: None,
             last_frame: None,
             last_fit: None,
+            frame_seq: 0,
+            uploaded_seq: 0,
+            ui_buf: Vec::new(),
+            rgba_buf: Vec::new(),
+            overlay_sig: None,
             cursor: None,
             mouse_down: false,
             mods: ModifiersState::empty(),
@@ -510,6 +567,7 @@ impl App {
         match self.session.source_mut().try_next_frame() {
             Some(frame) => {
                 self.last_frame = Some(frame);
+                self.frame_seq += 1;
                 true
             }
             None => false,
@@ -518,44 +576,45 @@ impl App {
 
     fn draw(&mut self) {
         // B1-b 壳半：wgpu 主路——客帧 + 交互层（overlay alpha 合成）GPU 呈现。
-        // 交互层绘制函数（draw_toolbar/menu/tooltip）沿用 CPU 实现，产物转
-        // RGBA 写 overlay 纹理（alpha 0=透客帧/255=覆盖），shader 内合成。
+        // I1 止血：fit 走 scale::fit 单源（与 softbuffer 段同公式同参数），
+        // letterbox 几何经 uniform 下发 shader，pointer 映射与渲染几何同源；
+        // 客帧不变跳 upload_full，overlay 签名不变跳重绘重传（稳态零分配）。
         if let (Some(p), Some(w)) = (self.wgpu.as_mut(), self.window.as_ref()) {
             if let Some(frame) = self.last_frame.as_ref() {
                 let size = w.inner_size();
                 if size.width > 0 && size.height > 0 {
                     let (sw, sh) = (size.width, size.height);
-                    // 交互层 CPU 面复用：先绘 softbuffer 形态的 u32 面，再转
-                    // RGBA（alpha：交互层覆盖区 255——工具栏底/按钮/菜单面，
-                    // 其余 0 透客帧）。
-                    let mut ui = vec![0u32; (sw * sh) as usize];
-                    let bar_top = sh.saturating_sub(TOOLBAR_H);
-                    if self.menu_open {
-                        draw_menu(&mut ui, sw, sh, self.profile.id);
-                    } else {
-                        // 工具栏底条（覆盖区 alpha 255）。
-                        for y in bar_top..sh {
-                            let s = (y * sw) as usize;
-                            ui[s..s + sw as usize].fill(0xFF00_0000 | 0x181C20);
-                        }
-                        draw_toolbar(&mut ui, sw, sh, self.power_armed.is_some(), self.hover);
-                        if let Some(h) = self.hover {
-                            draw_tooltip(&mut ui, sw, sh, h);
-                        }
+                    let integer = matches!(self.scale, ScaleMode::Integer(_));
+                    let guest_h = sh.saturating_sub(TOOLBAR_H).max(1);
+                    let fit = scale::fit(frame.width, frame.height, sw, guest_h, integer);
+                    let sig = (
+                        sw,
+                        sh,
+                        self.hover,
+                        self.menu_open,
+                        self.power_armed.is_some(),
+                        self.profile.id,
+                    );
+                    if self.overlay_sig.as_ref() != Some(&sig) {
+                        redraw_overlay(
+                            &mut self.ui_buf,
+                            &mut self.rgba_buf,
+                            sw,
+                            sh,
+                            self.power_armed.is_some(),
+                            self.hover,
+                            self.menu_open,
+                            self.profile.id,
+                        );
+                        p.upload_overlay(&self.rgba_buf, sw, sh);
+                        self.overlay_sig = Some(sig);
                     }
-                    // u32 面 → RGBA 字节面（alpha 位在 u32 高 8 位——UI 面
-                    // 绘制函数只写 0x00RRGGBB，故 alpha 统一在此按覆盖区写）。
-                    let mut rgba = Vec::with_capacity(ui.len() * 4);
-                    for px in ui {
-                        let a = (px >> 24) & 0xFF;
-                        let r = px & 0xFF;
-                        let g = (px >> 8) & 0xFF;
-                        let b = (px >> 16) & 0xFF;
-                        rgba.extend_from_slice(&[r as u8, g as u8, b as u8, a as u8]);
+                    if self.uploaded_seq != self.frame_seq {
+                        p.upload_full(frame);
+                        self.uploaded_seq = self.frame_seq;
                     }
-                    p.upload_full(frame);
-                    p.upload_overlay(&rgba, sw, sh);
-                    if p.present(w) {
+                    if p.present(w, (fit.x, fit.y, fit.w, fit.h)) {
+                        self.last_fit = Some(fit);
                         return;
                     }
                 }
@@ -979,6 +1038,9 @@ impl App {
                             self.serial = None; // 新 run 从零 tail
                             self.rotating = false;
                             self.last_frame = None;
+                            // 旋转翻转几何：旧 fit 坐标系随之失效，与新帧
+                            // 同批清（不清 = 新帧首绘前 pointer 拿错位映射）。
+                            self.last_fit = None;
                             if let Some(w) = &self.window {
                                 w.request_redraw();
                             }
@@ -1318,5 +1380,48 @@ mod default_size_tests {
         assert_eq!(base_window_factor(ScaleMode::Fit, 960), 0.9);
         assert_eq!(base_window_factor(ScaleMode::Fit, 2250), 0.55);
         assert_eq!(base_window_factor(ScaleMode::Integer(2), 2250), 2.0);
+    }
+}
+
+#[cfg(test)]
+mod overlay_tests {
+    use super::*;
+
+    /// I1 ③：UI 面 0x00RRGGBB（R 高 16 位）→ RGBA 字节序正确——旧实现
+    /// r/b 互换（纯红渲染成蓝）；alpha 按覆盖写（非零=255，零=透）。
+    #[test]
+    fn ui_to_rgba_channel_order_and_alpha_coverage() {
+        let ui = [0x00FF_0000, 0x00E8_ECF0, 0x0000_0000];
+        let mut rgba = [0u8; 12];
+        ui_to_rgba(&ui, &mut rgba);
+        assert_eq!(&rgba[0..4], &[0xFF, 0x00, 0x00, 0xFF], "纯红保持红且覆盖");
+        assert_eq!(&rgba[4..8], &[0xE8, 0xEC, 0xF0, 0xFF], "文字前景色字节序");
+        assert_eq!(&rgba[8..12], &[0x00, 0x00, 0x00, 0x00], "零值=透客帧");
+    }
+
+    /// I1 ④：持久缓冲复用——首绘定容、同签名重绘幂等（无残留）、缩窗
+    /// 后长度跟随；工具栏底条为覆盖区（alpha 255）而客帧区透（alpha 0）。
+    #[test]
+    fn redraw_overlay_persistent_buffer_and_coverage() {
+        let (mut ui, mut rgba) = (Vec::new(), Vec::new());
+        redraw_overlay(&mut ui, &mut rgba, 480, 1000, false, None, false, "phone");
+        let n = 480usize * 1000;
+        assert_eq!(ui.len(), n);
+        assert_eq!(rgba.len(), n * 4);
+        // 工具栏底条首行左端：底条色 0x0018_1C20 → RGBA [18,1C,20,FF]。
+        let bar = (1000 - TOOLBAR_H) as usize * 480 * 4;
+        assert_eq!(&rgba[bar..bar + 4], &[0x18, 0x1C, 0x20, 0xFF]);
+        // 客帧区左上角未覆盖 = 透。
+        assert_eq!(&rgba[0..4], &[0, 0, 0, 0]);
+        // 同签名重绘：中段取样与首绘一致（clear+resize 不残留旧帧内容）。
+        let mid = 500 * 480 * 4;
+        let before = rgba[mid..mid + 8].to_vec();
+        redraw_overlay(&mut ui, &mut rgba, 480, 1000, false, None, false, "phone");
+        assert_eq!(&rgba[mid..mid + 8], &before[..]);
+        // 缩窗（320x240，armed+hover+menu 全态）：长度跟随新尺寸。
+        redraw_overlay(&mut ui, &mut rgba, 320, 240, true, Some(3), true, "phone");
+        assert_eq!(ui.len(), 320 * 240);
+        assert_eq!(rgba.len(), 320 * 240 * 4);
+        assert_eq!(ui[0], 0, "menu 浮于工具栏上方，左上角仍在透区");
     }
 }

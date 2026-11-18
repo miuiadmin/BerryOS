@@ -438,7 +438,15 @@ fn boot_runtime(
         let qmp = Arc::new(Mutex::new(qmp));
         let source: Box<dyn ScreenSource> = if let Some(info) = fb {
             let input = VncInput::connect(vnc)?;
-            Box::new(RamSource::open(ram_path.unwrap_or(std::path::Path::new("")), info, input)?)
+            // 原生指针 QMP 注入面（I2）：qmp 端点同目录 qmp-inject.sock
+            // （spawn 建端；路径推导单源在 qemu::inject_sock_path）。
+            let inject = qemu::inject_sock_path(qmp_ep);
+            Box::new(RamSource::open(
+                ram_path.unwrap_or(std::path::Path::new("")),
+                info,
+                input,
+                inject.as_deref(),
+            )?)
         } else {
             wait_endpoint(vnc, Duration::from_secs(5))?;
             Box::new(VncSource::connect(vnc)?)

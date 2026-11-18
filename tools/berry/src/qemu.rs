@@ -198,6 +198,19 @@ fn log_stdio(cmd: &mut Command, log: &Path) -> Result<()> {
     Ok(())
 }
 
+/// 注入专用 QMP socket 路径：qmp 端点同目录的兄弟文件 qmp-inject.sock
+/// （仅 unix 端点形态存在）。spawn 建端（spawn_image 内）与 berry 侧
+/// 连接方（device.rs 原生指针注入）共用此单源推导。
+pub(crate) fn inject_sock_path(qmp: &Endpoint) -> Option<std::path::PathBuf> {
+    #[cfg(unix)]
+    if let Endpoint::Unix(p) = qmp {
+        return Some(p.with_file_name("qmp-inject.sock"));
+    }
+    #[cfg(not(unix))]
+    let _ = qmp;
+    None
+}
+
 pub fn spawn_kernel(
     qemu: &Qemu,
     kernel: &Path,
@@ -263,12 +276,10 @@ pub fn spawn_image(
     }
     cmd.arg("-vnc").arg(vnc.qemu_vnc()?);
     cmd.arg("-qmp").arg(qmp.qemu_qmp());
-    // 注入专用 QMP：run/qmp.sock 被 broker 独占，LAN /ws 输入拦截器需要
-    // 自己的通道（RFB PointerEvent → QMP input-send-event）。同目录
-    // qmp-inject.sock，多客户端 unix 服务端，本机 0600 run 目录边界内。
-    #[cfg(unix)]
-    if let crate::net::Endpoint::Unix(p) = qmp {
-        let inj = p.with_file_name("qmp-inject.sock");
+    // 注入专用 QMP：run/qmp.sock 被 broker 独占，输入注入面（LAN /ws
+    // 拦截器与原生指针主路）需要自己的通道（PointerEvent → QMP
+    // input-send-event）。多客户端 unix 服务端，本机 0600 run 目录边界内。
+    if let Some(inj) = inject_sock_path(qmp) {
         cmd.arg("-qmp")
             .arg(format!("unix:{},server=on,wait=off", inj.display()));
     }

@@ -1822,7 +1822,8 @@ impl<'a> Srv<'a> {
                 }
                 // SAFETY: 目标界内（上取 min(w,h) 裁剪；映射幅 =
                 // ceil_page(stride×h)——px() 同口径）；len ≤ ROW_BOUNCE_MAX
-                // （x1-x0 ≤ w=800）。
+                // （x1-x0 ≤ w=1088——ramfb 32 对齐宽上限，kernel main.rs
+                // 对齐定谳）。
                 unsafe {
                     core::ptr::copy_nonoverlapping(
                         self.bounce.as_ptr(),
@@ -2999,7 +3000,8 @@ pub(crate) fn main() {
         berry_libc::park();
     }
     // —— 批B：带缓存 boot 一次性堆分配（SPEC §3——**绝不能入 Srv/栈**：
-    // guifbd 栈仅 32KiB〔svcmgr stack_pages:8〕bounce 已占 16KiB。Box::leak
+    // guifbd 栈 48KiB〔svcmgr stack_pages:12——wm 私有通道刀起 8→12 页，
+    // 32KiB 贴线态终判实抓〕bounce 已占 16KiB。Box::leak
     // 常驻段先例 launcher main.rs；超 4MiB 门或分配失败 → 带面禁用 loud，
     // 裁剪与现网行为不变〔仅无缓存/重放〕）——
     let band_cache: Option<&'static mut [u32]> = match band_cache_bytes(w as u32) {

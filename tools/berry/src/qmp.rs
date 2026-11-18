@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -345,6 +346,123 @@ impl Drop for QmpClient {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 会话级指针注入器（I2 止血：原 web.rs LAN 拦截器抽出共用）
+// ---------------------------------------------------------------------------
+
+/// QMP 指针注入器：连 run/qmp-inject.sock（QMP unix 服务端，多客户端），
+/// capabilities 一次，之后每个 PointerEvent 一条 input-send-event（abs
+/// 值域 0..32767 + left btn）。两类持有者共用：LAN /ws 代理拦截器（每代理
+/// 连接一个，连不上落纯字节管道）与 RamSource 原生指针主路（首个指针事件
+/// 才连，失联退 RFB msg5 保底）。无排空线程——正确性依据（对抗审查活体
+/// 饱和探针实证，QEMU 11.0.3 monitor.c）：QMP 监视器把未写出的响应暂存
+/// **无界用户态 outbuf**（monitor_flush_locked）且**永不因输出积压停读
+/// 输入**（suspend 仅由请求队列准入触发），故不读响应不阻塞写路径（百
+/// 万事件零超时实测）；残余代价 = QEMU 侧 RSS 每事件 ~65B 缓存爬坡、断
+/// 连即释放——pointer() 内的顺手有界排水（drain_pending）持续清空本端
+/// 接收队列使 QEMU 得以及时冲刷，把爬坡压在内核缓冲量级。持有克隆的专
+/// 职排空线程会让连接永不关闭 → fd 泄漏（既有设计取舍维持）。
+pub struct QmpInjector {
+    sock: Option<std::os::unix::net::UnixStream>,
+    /// 排水用非阻塞克隆（connect 时 try_clone+置 O_NONBLOCK——只读丢弃，
+    /// 不触碰阻塞写路径与其 2s 守护；克隆随 sock 同生命周期 drop）。
+    drain: Option<std::os::unix::net::UnixStream>,
+}
+
+impl QmpInjector {
+    /// 连接（无超时——LAN 拦截器旧形态原样，浏览器路行为零漂移）。
+    pub fn connect(path: &Path) -> Option<Self> {
+        Self::connect_guarded(path, None)
+    }
+
+    /// 连接并协商 capabilities；`guard` 在场时对 greeting/回读与后续写
+    /// 全程设该超时（原生窗口路在 UI 线程连/写——QEMU 卡死守护：超时
+    /// 即 None/失联，调用方走 RFB 保底，窗口不冻结）。任一步失败返回
+    /// None（调用方自选降级面）。
+    pub fn connect_guarded(path: &Path, guard: Option<Duration>) -> Option<Self> {
+        use std::io::{BufRead, BufReader, Write};
+        let mut s = std::os::unix::net::UnixStream::connect(path).ok()?;
+        if let Some(d) = guard {
+            s.set_read_timeout(Some(d)).ok()?;
+            s.set_write_timeout(Some(d)).ok()?;
+        }
+        let mut r = BufReader::new(s.try_clone().ok()?);
+        let mut line = String::new();
+        r.read_line(&mut line).ok()?; // greeting
+        writeln!(s, "{{\"execute\":\"qmp_capabilities\"}}").ok()?;
+        s.flush().ok()?;
+        line.clear();
+        r.read_line(&mut line).ok()?;
+        if !line.contains("return") {
+            return None;
+        }
+        // 排水克隆（对抗审查卫生项）：非阻塞只读副本，pointer() 内顺手
+        // 清空本端接收队列——QMP 每命令一条 {"return":{}} 同步响应，无人
+        // 读则 QEMU 侧无界 outbuf 持续爬坡（见结构体注）；克隆失败不致命
+        // （排水面退化缺席，正确性不受影响）。
+        let drain = s.try_clone().ok().map(|d| {
+            let _ = d.set_nonblocking(true);
+            d
+        });
+        Some(QmpInjector { sock: Some(s), drain })
+    }
+
+    /// 发一枚 PointerEvent（报文见 `pointer_msg`，与 LAN 拦截器旧实现
+    /// 逐字节同式）。返回 false = 注入路未连/已失联（调用方走保底）；
+    /// 写失败即置 sock=None 永久哑化，与 LAN 拦截器旧语义一致。
+    pub fn pointer(&mut self, x: u16, y: u16, buttons: u8, gw: u32, gh: u32) -> bool {
+        use std::io::Write;
+        self.drain_pending();
+        let Some(s) = self.sock.as_mut() else { return false };
+        let msg = pointer_msg(x, y, buttons, gw, gh);
+        if writeln!(s, "{msg}").is_err() || s.flush().is_err() {
+            self.sock = None;
+            return false;
+        }
+        true
+    }
+
+    /// 有界顺手排水（≤64KiB/调用，非阻塞——WouldBlock 即止）：清空本端
+    /// 接收队列里的同步响应/异步事件残留，让 QEMU 得以及时把 outbuf 冲
+    /// 进内核（见结构体注的 RSS 爬坡抑制）。读错误不置 sock=None（排水
+    /// 面失败与写路径失联是两回事——克隆与主柄同底 fd，ECONNRESET 等终
+    /// 态错会随后在写路径如实报出）。
+    fn drain_pending(&mut self) {
+        use std::io::Read;
+        let Some(d) = self.drain.as_mut() else { return };
+        let mut buf = [0u8; 4096];
+        let mut budget = 16; // 16×4KiB = 64KiB 帽
+        loop {
+            match d.read(&mut buf) {
+                Ok(0) => return,
+                Ok(_) => {
+                    budget -= 1;
+                    if budget == 0 {
+                        return;
+                    }
+                }
+                Err(_) => return, // WouldBlock/临时面——下拍再来
+            }
+        }
+    }
+}
+
+/// PointerEvent → input-send-event 报文：客机像素坐标缩放到 abs 值域
+/// 0..32767（分母取 max(1) 防零除），btn 只表达 left 位。行内续行转义
+/// 使各事件无缝拼接，报文自带一个换行（写侧 writeln 再补一个——QMP 的
+/// 逐行 JSON 解析忽略空行，与既有浏览器路线上字节一致）。
+fn pointer_msg(x: u16, y: u16, buttons: u8, gw: u32, gh: u32) -> String {
+    let sx = (u64::from(x) * 32767 / u64::from(gw.max(1))).min(32767);
+    let sy = (u64::from(y) * 32767 / u64::from(gh.max(1))).min(32767);
+    let down = buttons & 1 != 0;
+    format!(
+        "{{\"execute\":\"input-send-event\",\"arguments\":{{\"events\":[\
+         {{\"type\":\"abs\",\"data\":{{\"axis\":\"x\",\"value\":{sx}}}}},\
+         {{\"type\":\"abs\",\"data\":{{\"axis\":\"y\",\"value\":{sy}}}}},\
+         {{\"type\":\"btn\",\"data\":{{\"down\":{down},\"button\":\"left\"}}}}]}}}}\n"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,6 +528,96 @@ mod tests {
             err.message,
             "QMP set_password: GenericError: parameter connected must be keep"
         );
+    }
+
+    /// 注入报文钉板（迁出 web.rs 的零漂移锚）：中点坐标缩放、left 按下沿、
+    /// 事件无缝拼接与自带换行——与 LAN 拦截器旧实现逐字节同式。
+    #[test]
+    fn injector_pointer_msg_shape() {
+        let m = pointer_msg(480, 500, 1, 960, 1000);
+        assert_eq!(
+            m,
+            "{\"execute\":\"input-send-event\",\"arguments\":{\"events\":[\
+             {\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":16383}},\
+             {\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":16383}},\
+             {\"type\":\"btn\",\"data\":{\"down\":true,\"button\":\"left\"}}]}}\n"
+        );
+    }
+
+    /// 边沿：满幅/零轴钳位与松键 up 沿（x=gw 恰 32767，y=0 恰 0）。
+    #[test]
+    fn injector_pointer_msg_edges() {
+        let m = pointer_msg(1000, 0, 0, 1000, 500);
+        assert!(
+            m.contains("\"axis\":\"x\",\"value\":32767")
+                && m.contains("\"axis\":\"y\",\"value\":0")
+                && m.contains("\"down\":false"),
+            "{m}"
+        );
+    }
+
+    /// 注入器全链路（假 unix QMP 服务端，零 QEMU 秒级自测）：greeting →
+    /// qmp_capabilities → pointer 报文落线——迁出共用后握手与报文面的
+    /// 网络级锚。服务器读完报文即关——注入器写侧失联自哑化（后续
+    /// pointer=false）一并钉住。
+    #[test]
+    fn injector_handshake_and_pointer_roundtrip() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let path = std::env::temp_dir().join(format!(
+            "berry-qmp-inj-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let p2 = path.clone();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            s.write_all(br#"{"QMP":{"version":{"qemu":{"micro":3}},"capabilities":[]}}"#)
+                .unwrap();
+            s.write_all(b"\n").unwrap();
+            let mut r = BufReader::new(s.try_clone().unwrap());
+            let mut line = String::new();
+            r.read_line(&mut line).unwrap();
+            assert!(line.contains("qmp_capabilities"), "{line}");
+            s.write_all(br#"{"return":{},"id":1}"#).unwrap();
+            s.write_all(b"\n").unwrap();
+            // 读 pointer 报文并钉形状，然后关停（此时客户端首写必已
+            // 入队——服务器还没关，写不可能先于本读返回失败）。
+            let mut line = String::new();
+            r.read_line(&mut line).unwrap();
+            assert!(line.contains("input-send-event"), "{line}");
+            assert!(line.contains("\"axis\":\"x\",\"value\":16383"), "{line}");
+            assert!(line.contains("\"down\":true"), "{line}");
+            let _ = s.shutdown(std::net::Shutdown::Both);
+            let mut sink = Vec::new();
+            let mut buf = [0u8; 64];
+            loop {
+                match s.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => sink.extend_from_slice(&buf[..n]),
+                }
+            }
+        });
+        let mut inj = QmpInjector::connect_guarded(&p2, Some(Duration::from_millis(50)))
+            .expect("handshake must negotiate");
+        // 服务器此刻阻塞在读上：首写必成功入队且被读到（守护超时只在
+        // 写会阻塞时起效，此写即时完成）。
+        assert!(inj.pointer(480, 500, 1, 960, 1000), "QMP 路存活");
+        // 服务器已关：写失败 → 哑化 → 永久 false。写超时守护防缓冲满
+        // 阻塞死等（循环量 8× 于缓冲容量，EPIPE/超时必先到——收敛有界）。
+        for _ in 0..512 {
+            if !inj.pointer(1, 1, 0, 960, 1000) {
+                break;
+            }
+        }
+        assert!(!inj.pointer(1, 1, 0, 960, 1000), "失联后永久哑化");
+        drop(inj);
+        server.join().unwrap();
+        let _ = std::fs::remove_file(&p2);
     }
 
     /// Network-level pump round-trip against a scripted fake QMP server on
