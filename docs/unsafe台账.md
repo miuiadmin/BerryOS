@@ -46,10 +46,10 @@
 | mm/ | 7 | 2368 | 4 | 0.17% |
 | sched/ | 15 | 8865 | 1819 | 20.52% |
 | ipc/ | 0 | 0 | 0 | — |
-| arch/ | 23 | 7320 | 1054 | 14.40% |
-| **合计** | 76 | 55579 | 5226 | **9.40%** |
+| arch/ | 23 | 7331 | 1054 | 14.38% |
+| **合计** | 76 | 55590 | 5226 | **9.40%** |
 
-- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 42200，unsafe 非空行 4433，密度 10.50%（生产面口径）
+- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 42211，unsafe 非空行 4433，密度 10.50%（生产面口径）
 - 分类计数：页表 63 | 上下文切换 35 | MMIO 163 | 分配器 16 | 硬件原子 0 | 其它 899
 - 类型计数：block 1025 | fn 147 | impl 2 | extern 2（另有类型签名位提及 15 处——只计不登记，防双计）
 - 对标：Android ~4%（unsafe 行占 Rust 总行比，Google 2025-11）；本表为跨度非空行口径（偏高估），见 §一
@@ -88,17 +88,17 @@
 | arch/aarch64/src/gic.rs | 274 | block | MMIO | unsafe { enable_spi(r_irq, r_prio, r_target, r_cfg) }; return tr |
 | arch/aarch64/src/kern_lock.rs | 68 | block | 其它 | unsafe { NAME_HOOK = Some(f) }; } /// 打印互斥锁（整条消息粒度）。 static PRIN |
 | arch/aarch64/src/kern_lock.rs | 110 | block | MMIO | unsafe { core::slice::from_raw_parts(p as *const u8, l) }; crate |
-| arch/aarch64/src/kern_lock.rs | 153 | block | 其它 | unsafe { NAME_HOOK } { let (p, l) = h(); KL_HELD_TAG_PTR.store(p |
-| arch/aarch64/src/kern_lock.rs | 216 | block | 其它 | unsafe { SVC_WINDOW = Some(f) }; } /// SVC 入口按类包络（slice 2b 真行为变更 |
-| arch/aarch64/src/kern_lock.rs | 229 | block | 其它 | unsafe { SVC_WINDOW } { // SAFETY: 槽在 boot 单线程期注册；f 是 C-ABI fn 指 |
-| arch/aarch64/src/kern_lock.rs | 231 | block | 其它 | unsafe { f(class, true) }; } if class & SVC_CLASS_TABLE != 0 { k |
-| arch/aarch64/src/kern_lock.rs | 246 | block | 其它 | unsafe { SVC_WINDOW } { // SAFETY: 同上。 unsafe { f(class, false) |
-| arch/aarch64/src/kern_lock.rs | 248 | block | 其它 | unsafe { f(class, false) }; } } /// SVC 入口包络（全量形）：EL0 fault kill |
-| arch/aarch64/src/kern_lock.rs | 334 | block | MMIO | unsafe { core::arch::asm!("mrs {}, daif", out(reg) daif, options |
-| arch/aarch64/src/kern_lock.rs | 344 | block | MMIO | unsafe { core::arch::asm!("mrs {}, daif", out(reg) daif, options |
-| arch/aarch64/src/kern_lock.rs | 360 | block | 其它 | unsafe { PREEMPT_ENVELOPE = Some((enter, exit)) }; } #[inline] f |
-| arch/aarch64/src/kern_lock.rs | 366 | block | 其它 | unsafe { PREEMPT_ENVELOPE } { e(); } } #[inline] fn preempt_exit |
-| arch/aarch64/src/kern_lock.rs | 374 | block | 其它 | unsafe { PREEMPT_ENVELOPE } { x(); } } /// 拼行 API（G44）：整条消息在 PRI |
+| arch/aarch64/src/kern_lock.rs | 163 | block | 其它 | unsafe { NAME_HOOK } { let (p, l) = h(); KL_HELD_TAG_PTR.store(p |
+| arch/aarch64/src/kern_lock.rs | 227 | block | 其它 | unsafe { SVC_WINDOW = Some(f) }; } /// SVC 入口按类包络（slice 2b 真行为变更 |
+| arch/aarch64/src/kern_lock.rs | 240 | block | 其它 | unsafe { SVC_WINDOW } { // SAFETY: 槽在 boot 单线程期注册；f 是 C-ABI fn 指 |
+| arch/aarch64/src/kern_lock.rs | 242 | block | 其它 | unsafe { f(class, true) }; } if class & SVC_CLASS_TABLE != 0 { k |
+| arch/aarch64/src/kern_lock.rs | 257 | block | 其它 | unsafe { SVC_WINDOW } { // SAFETY: 同上。 unsafe { f(class, false) |
+| arch/aarch64/src/kern_lock.rs | 259 | block | 其它 | unsafe { f(class, false) }; } } /// SVC 入口包络（全量形）：EL0 fault kill |
+| arch/aarch64/src/kern_lock.rs | 345 | block | MMIO | unsafe { core::arch::asm!("mrs {}, daif", out(reg) daif, options |
+| arch/aarch64/src/kern_lock.rs | 355 | block | MMIO | unsafe { core::arch::asm!("mrs {}, daif", out(reg) daif, options |
+| arch/aarch64/src/kern_lock.rs | 371 | block | 其它 | unsafe { PREEMPT_ENVELOPE = Some((enter, exit)) }; } #[inline] f |
+| arch/aarch64/src/kern_lock.rs | 377 | block | 其它 | unsafe { PREEMPT_ENVELOPE } { e(); } } #[inline] fn preempt_exit |
+| arch/aarch64/src/kern_lock.rs | 385 | block | 其它 | unsafe { PREEMPT_ENVELOPE } { x(); } } /// 拼行 API（G44）：整条消息在 PRI |
 | arch/aarch64/src/klog_ring.rs | 61 | block | 其它 | unsafe { &mut (*core::ptr::addr_of_mut!(KLOG_RINGS))[cpu] }; // |
 | arch/aarch64/src/klog_ring.rs | 68 | block | 其它 | unsafe { (*core::ptr::addr_of_mut!(r.buf))[slot] = c }; } /// 快照 |
 | arch/aarch64/src/klog_ring.rs | 81 | block | 其它 | unsafe { &(*core::ptr::addr_of!(KLOG_RINGS))[cpu.min(KLOG_NCPUS |
