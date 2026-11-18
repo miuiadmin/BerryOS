@@ -6391,7 +6391,7 @@ pub unsafe extern "C" fn secondary_main() -> ! {
         // 对岸，免锁）。
         berry_hal_aarch64::smp::par_sample(0, false);
         if berry_hal_aarch64::smp::par_enabled() {
-            match berry_sched::nearest_deadline() {
+            match berry_sched::nearest_deadline_park() {
                 // SAFETY: 本核 CVAL 编程到 SLEEPQ 最近 deadline（绝对截止，
                 // 过期即醒由回环 expire 承接）；屏蔽窗内。
                 Some(d) => unsafe { berry_hal_aarch64::timer::arm_at(d) },

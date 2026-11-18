@@ -452,7 +452,7 @@ def qemu_preflight(wait_s: float | None = None) -> None:
 def run_once(kernel: str, el0: bool = False) -> dict[str, int]:
     """QEMU 跑到收尾标记，收割 {name: cyc_per_op}。
 
-    el0=False：裸跑到 BENCH ok（B-0 内核七项——switch_pair 由 sbench 门控
+    el0=False：裸跑到 BENCH ok（B-0 内核九项——switch_pair 由 sbench 门控
     结构性缺席，trailer 恒 n=10 走交集对账）。
     el0=True：run-rootfs 形态（-fw_cfg rootfs 递送；无盘无网——B-1 无网络
     面，echod 免挂）跑到 `B1 ok n=4`（bsh selftest 链尾），收割 bsh relay
@@ -1264,7 +1264,8 @@ def run_icount(kernel: str, trace_off: bool = False,
         raise SystemExit("bench.py: done 标记已在而 BENCH ok 行缺席——时序假设"
                          "「done 标记严格后于 BENCH ok」被打破，门禁面不可收割")
     if len(metrics) != done_n:
-        # 交集语义（SBENCH_GATED 注）：sbench=False 调用面（trace-dual 两臂）
+        # 交集语义（SBENCH_GATED 注；审查轮角落注：陌生名行恰顶替门控缺席且计数相等
+        # 时静默绿——已知角落，门控集单元素+行名审计可查，不为它加行名白名单）：sbench=False 调用面（trace-dual 两臂）
         # 的 switch_pair 行结构性缺席——缺席项恰为门控集才放行；sbench=True
         # 而缺行 = 真破面，照旧红。
         missing = set(_iter_table()) - set(metrics)
@@ -2182,7 +2183,18 @@ def main() -> None:
                 for b in bad:
                     print(f"bench.py: FAIL {b}", file=sys.stderr)
                 raise SystemExit(1)
-            save_baseline_icount(metrics_on)
+            # 门控行保全（icount 基线刀审查轮修）：trace-dual 双臂 sbench=False
+            # （switch_pair 恒缺席），若直写 on 家族基线会把 --icount --update 落入的
+            # 门控行剥掉（实抓：switch_pair 行被抹=L2 永不设防）。保已入册门控行：
+            # on 家族落盘 = 双臂实测 ∪ 现册中属门控集（SBENCH_GATED）的行。
+            merged_on = dict(metrics_on)
+            try:
+                for k, v in load_baseline_icount().items():
+                    if k in SBENCH_GATED and k not in merged_on:
+                        merged_on[k] = v
+            except FileNotFoundError:
+                pass
+            save_baseline_icount(merged_on)
             save_baseline_icount_off(metrics_off)
             print(f"bench.py: 双份基线已刷新 → "
                   f"{BASELINE_ICOUNT.relative_to(REPO)} + "

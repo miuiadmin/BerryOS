@@ -1498,7 +1498,7 @@ bench-rt: build
 # 定值 `-icount shift=1,sleep=off`——周期数变指令数代理（shift=1 虚拟时钟
 # ≈0.125 cyc/instr），与 TCG 实时基线**不可比、分文件**
 # tools/bench_baseline_icount.txt（跨机/跨 QEMU 版本亦不可比，CI 首跑自立）。
-# boot 时序全变 → 只跑 bench 收割（六行 BENCH 门禁面 + BENCHWAKE 观测行），
+# boot 时序全变 → 只跑 bench 收割（十行 BENCH 门禁面（icount 基线刀 2026-11-18 两项入册 + W3-Q98/Q102 再两项随迁） + BENCHWAKE 观测行），
 # 不用于功能面。L2 紧门禁形态（精确相等/±5%）由五跑证明烘焙为 bench.py
 # ICOUNT_TOL 常量；证明可重验：
 #   python3 tools/bench.py --icount --prove

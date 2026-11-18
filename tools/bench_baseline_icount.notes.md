@@ -106,6 +106,21 @@ trace-dual + lat + reject-trio + testhost（同目录 20261105-0930~0931 批）�
 
 烘焙与验证：prove 五跑 verdict=exact max_dev=0.000%（值 {0,37,37,288,396,6945}；BENCHWAKE 五跑逐字节同 n=551 max=86009764；回执 icount-prove-20261117-115759-37998）→ ICOUNT_TOL=0.0 维持；`--trace-dual --update` 双份一次刷新（on=off 六项 delta 全 +0——结构性零足迹保住；回执 icount-20261117-115919-48375 / icount-off-20261117-120033-48375 / trace-dual-20261117-120033-48375）；复验单跑 L2 对拍过（ICOUNT_TOL=0.0 六项全在界内，回执 icount-20261117-120204-49314）。ktest 全绿随 boot 结构性背书（FRAME/FP/VMO/HEAP/ASPACE ok 在席，FP canary 直验新清零路径 SIMD-free）。首跑对拍（旧基线四项出界红）回执 icount-20261117-115045-6019。
 
+## [2026-11-18 icount 基线刀] 六旧项不动 + pick_scan/switch_pair 两项入册（08→125 归因 + 覆写保全修 + 帽校准）
+
+- 04 号审计「基线缺口与建议」两项落地：pick_scan（bench 前置窗合成环 20 节点×1024 次 pick_next_filtered）=125、switch_pair（调度器纪元 block/wake 对×128）=301——worktree 换基树（icount-baseline@1e7872196）五跑 prove verdict=exact 逐值同。
+- **108→125 归因**：换基前主树（我方五刀 sched 形）测 108，换基后（origin W3-Q93 探峰出选双圈合一形）125——两线同名刀的扫描形态指令差，确定性通道如实记两值；旧六项跨换基逐位同（0/37/37/288/396/6945——pick 路径外零漂移）。
+- **trace-dual 覆写保全修（审查轮实抓）**：--trace-dual --update 曾以 sbench=False 臂剥掉 on 家族基线的 switch_pair 行（L2 永不设防）——落盘改「实测 ∪ 现册门控行」并立法定形序「--icount --update 终形」。
+- **BOOT_TIMEOUT_ICOUNT 120→1800 帽校准**：静场实测 43s/118.6s/136.7s（三回执在档，骑旧帽线随机截杀）+ 争用态单靴可至 10 分钟级（诊断靴在案）——执法语义不变（真挂死仍帽内 loud），体量与争用态校准。
+- B-0 实时通道同批收 pick_scan=39（switch_pair 门控缺席不进 B-0 面）。
+
+## [2026-11-18 深 park 醒源刀] 布局骰四项 + pick_scan 内联位移重烘
+
+- 醒源刀（nearest_dl_throttle_wake+T5）改镜像布局：buddy 族两项换轨（frame_alloc4k 37→127 / frame_alloc64k 37→233）+vmo_commit1p 396→485（内含 4k 分配近邻继承：+89 vs alloc4k +90 差 1——同族非严格 1:1，S-4 4-3 同族判据）；pick_scan 125→131（+4.8%=共享代码内联位移，pick 路径本刀零改动——对照项 switch_pair 301 逐位不动佐证切换舞蹈无染）；cntvct_pair/handle_evt/vmo_rw4k 不动。五跑 prove verdict=exact（回执 icount-prove-20261118-082131）。
+
+## [2026-11-18 深 park 醒源刀·风暴修轮] 布局骰二项再滚
+
+- 审查轮修（两形分离+T5 补强+兜底臂）再改镜像：alloc4k 127→412 / vmo_commit1p 485→771（+359 vs alloc4k +285——近邻继承族再滚，非 1:1）；alloc64k/pick_scan/switch_pair/handle_evt/vmo_rw4k 逐位不动（上轮值稳）。五跑 prove verdict=exact（回执 icount-prove-20261118-091942）。buddy 轨道对族第三次换轨（S-4 4-2/4-3 同族惯例）。
 
 ## 十项基线自立 + G1.5 配对悬账收口（2026-11-18，prove 五跑 max_dev 0.000%）
 
@@ -114,3 +129,11 @@ trace-dual + lat + reject-trio + testhost（同目录 20261105-0930~0931 批）�
 新值归因：frame_alloc4k 37→82 / frame_alloc64k 37→82 = 在册布局骰轨道族（{37,82} 对，11-15 notes 先例——zero_frame 后代码量变化重掷镜像布局）；vmo_commit1p 396→441（+11.4%）= 11-17 基线笔后树前进的指令流漂移（berry error/frame 六刀等 boot 面变化）；handle_evt 288 / vmo_rw4k 6945 / cntvct_pair 0 观测锚不动；四新项首录：pick_scan=125 / send_recv_pair=1168 / svc_roundtrip=50 / switch_pair=304（修复后 310→304 = SWITCHES_TT 移分支的小指令流差）。
 
 烘焙与验证：prove 五跑 verdict=exact max_dev=0.000%（十项全 0 漂移；BENCHWAKE 五跑逐字节同 n=694 max=89131406；回执 icount-prove-20261118-200021-37298）→ ICOUNT_TOL=0.0 维持；`--icount --update` 立基十项；复验单跑 L2 对拍过（回执 icount-20261118-200705 系列）。boot→done 57.2s/43.2s wall（修复前 1800s 帽超时）。
+
+## [2026-11-19 三刀重落地] switch_pair 真指令增量 +5 与 buddy 族滚回旧轨
+
+- 机会三/四/五①②重落地（K3→K4→K5 一批）：**switch_pair 301→306（+5）=K3 分槽的真实指令增量**（cpu_id 读+槽变址入 note_switch/bump_switches 计数路径——确定性通道首次量化单刀真成本，勘察预告兑现）；buddy 族三项滚回旧轨（alloc4k 412→37 / alloc64k 233→37 / vmo_commit1p 771→396——布局骰第四掷恰回 v1.14 前值，轨道对族往返形态）；pick_scan 131 逐位稳。五跑 prove verdict=exact（回执 icount-prove-20261119-032315）。
+
+## [2026-11-19 merge-icount 合并树] 十项终档
+
+- origin/wip/sched-1.1@1008dcdc7 × icount-baseline 合并树终档：我方八项逐位保持（pick_scan 131/switch_pair 306——合并指令流对测径零污染的实证）；origin 侧 W3-Q98/Q102 两新项入册（send_recv_pair 1168/svc_roundtrip 50）；alloc64k 37→127（布局骰第五掷，孤项）。五跑 prove verdict=exact（回执 icount-prove-20261119-070911）。
