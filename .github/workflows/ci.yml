@@ -350,7 +350,7 @@ jobs:
       # + 注入段，帽内余量 ~3x。
       - name: img-boot 冒烟（M-G1 gate）
         # 分层 CI：img-boot 同款 boot 轻面（PR #43）——EFI 十段+接续+裸相 32
-        # 45 标记慢机可达（服务器实测绿），生态随 smoke-image.sh ECO_MARKERS 单源（现 51）服务链留快机。
+        # 45 标记慢机可达（服务器实测绿），生态随 smoke-image.sh ECO_MARKERS 单源（现 52）服务链留快机。
         env:
           SMOKE_PHASES: boot
           # 自托管 Linux：非 root 下 Linuxbrew QEMU 沙箱拒读 prefix 外路径

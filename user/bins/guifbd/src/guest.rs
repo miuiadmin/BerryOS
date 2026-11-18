@@ -177,11 +177,14 @@ fn boot_panel_tier(cfg: &gp::softpanel::PanelCfg, boot_hz: u16) -> (u16, u64) {
 const IDLE_CAP_NS: u64 = 10 * 1_000_000_000;
 /// 应答 send -EBUSY 重臂帽（gui-inputd `SEND_REARM_NS` 同款）。
 const SEND_REARM_NS: u64 = 10 * 1_000_000_000;
-/// wm 'm' 交接等待帽（AwaitHandle 态终界）：svcmgr wmsub 代发在 boot 走查
-/// 窗同步完成（gfxdemo arm 前），帽到 = 代发失败/未达面——close stdin +
-/// Disabled loud 一次降级（快照恒 fallback 真值，WMSUB 门缺失交 smoke
-/// 兜底）。
-const WM_AWAIT_CAP_NS: u64 = 10 * 1_000_000_000;
+/// wm 'm' 交接等待帽（AwaitHandle 态终界）。**必须 > svcmgr 代发全窗**
+/// （BLKD_REPLY_CAP=60s + 投递余量——对抗审查 CONFIRMED：10s 帽下 ack
+/// 落 (10,60]s 窗时 svcmgr 投递「成功」而本端已 Disabled——svcmgr 侧
+/// loud 被绕过 + 订阅 handle 令牌滞死端泄漏 + wmd 订阅槽烧死；70s 钉
+/// 「guifbd 禁用恒晚于 svcmgr 放弃」后，迟到面只剩 svcmgr loud 先行的
+/// 真失败路）。帽到 = 代发失败/未达面——close stdin + Disabled loud 一
+/// 次降级（快照恒 fallback 真值，WMSUB 门缺失交 smoke 兜底）。
+const WM_AWAIT_CAP_NS: u64 = 70 * 1_000_000_000;
 /// vblank event 信号位（用户半默认位——跨进程契约：客户端 REG_VBLANK 前
 /// 自建 event 并在同位等待；bsh/bench1 家族先例，不登记内核
 /// USER_SIGNAL_BITS——用户私有位无内核模板面）。
