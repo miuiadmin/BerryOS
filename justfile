@@ -833,6 +833,14 @@ test-host:
     # 〔spread ∧ ttbr0!=0 ∧ eligible〕，host 13 测；判定律单源，sched.rs
     # 五点消费）。
     cargo test -p berry-balface --target {{host}}
+    # W3-Q36：berry-lkface（lockdep 检查面纯函数——rank 七类全序表/
+    # check_acquire 三检判序/check_release 两臂/check_irq_exit 配平判
+    # + W3-Q101 kl_diag_gate 门律四象限真值表〔与字面 || 恰等对拍〕+
+    # KL_SPIN_BARK_MASK 2^23 迁册冻结，host 15 测；判定律单源，HAL
+    # kern_lock.rs lockdep 面 + kern_acquire 诊断门消费。#305 入库起
+    # 未接线 test-host（base 预存缺口），W3-Q103 随刀补线——「有 host
+    # 测零自动执法 = 静默腐烂」判例族（Q89 heapface 同款先例）。
+    cargo test -p berry-lkface --target {{host}}
 
     # W3-Q83：berry-numface（UART 整数格式化族纯面钉板——u64 十进制〔无前
     # 导/0 单位/20 位极值〕+ 固定 16 位小写 hex〔trap dump 形〕+ 8 位大写
