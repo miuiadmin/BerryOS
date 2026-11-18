@@ -3,7 +3,7 @@
 Type: spec
 Status: active
 Updated: 2026-11-18
-Version: 1.0.0
+Version: 1.1.0
 
 一句话说明：`pty` 定义 BerryOS 纯用户态伪终端守护进程（`ptyd`）、物理控制台驱动中枢（`consoled`）、零依赖终端转义与屏幕网格引擎（`berry-vt`）以及单链路多窗终端复用器（`bmux`）——以「共享无锁 `IoRing VMO` 双工数据面 + 纯能力 `PtyMaster/PtySlave` 控制面」彻底取代内核 `task_console` 逐字节转发模型，支撑全屏编辑器、实时监控 TUI 与多会话并发操作。
 
@@ -32,7 +32,12 @@ flowchart LR
 1. **内核 `task_console` 退役与前后台日志硬隔离**：
    - 内核仅在早期单核引导段与 EL1 Panic / `ramoops` 落盘路径直写物理 UART；进入用户态 `rootmgr` 后，PL011 MMIO 页与 GIC SPI #33 `Interrupt` 能力移交用户态 `consoled` 独占驱动（零内核轮询线程）。
    - 系统守护进程（`rootmgr`、`devmgr`、`fsmgr`、`netd` 等）的 `stdout/stderr` 统一绑定至日志收集端写入环形缓冲（由 `dmesg` / `dmesg -w` 读取），**严禁任何非当前会话进程向活跃物理终端直写字节**，从根源消灭后台打印撕裂全屏编辑器与 `btop` 界面的顽疾。
-2. **宿主自动几何握手与高速批量收发**：`consoled` 启动或重连时通过非侵入式 CSI 查询序列（`\x1b[18t` / `\x1b[6n` 带 80ms 超时回退默认 `80x24`）或宿主机 `berry console` 控制帧实时同步宿主窗口 `Winsize { cols, rows }`，并以 FIFO 满批 DMA/寄存器突发读写取代单字节调用，支撑 `> 10MiB/s` 虚拟控制台吞吐。
+2. **宿主自动几何握手、带外缩放（`WINCH`）与二进制分帧多路复用**：
+   - **双通道自适应传输**：在 QEMU / 模拟器环境下，`consoled` 优先挂载第二路 `virtio-console` 控制端口（`berry-ctlport`），将宿主窗口实时 `Winsize { cols, rows }` 变更事件与 `bscp` 文件传输帧同可见字符流物理隔离；在仅有一条物理 UART 线的裸机或极简串口拓扑下，自动回退至 OSC 私有转义分帧——`\x1b]777;winsize;<cols>;<rows>\x07` 实时投递窗口缩放、`\x1b]778;bscp;<b64/escaped>;<crc32c>\x07` 承载免乱码二进制收发，辅以启动期 `\x1b[18t`（80ms 超时回退 `80x24`）初态探测；
+   - 数据面以 FIFO 满批 DMA/寄存器突发读写取代单字节调用，支撑 `> 10MiB/s` 虚拟控制台吞吐；在 `dev` 解锁模式下配合 [hal 总体设计](../hal/design.md) 的硬件 UART `BREAK + 单键` 内核级紧急诊断钩子，保证即便用户态全冻仍可从串口导出全核栈与锁账。
+3. **无头纯终端极速启动模式（`boot.mode = headless`）**：
+   - 当引导参数显式携带 `headless=1`，或硬件枚举发现无 GOP/virtio-gpu 显示表面、无指针输入设备（`virtio-tablet` 缺席）时，`rootmgr` 自动切入纯终端无头启动曲线——**彻底跳过 `bootsplashd`、`berry-compositor`、`berry-shell`、`imed` 与 GUI 预拉应用，绝不因缺显示或缺鼠标而阻塞停机**；
+   - 无头启动链仅拉起 `rootmgr -> devmgr/fsmgr/netd + consoled + ptyd -> bmux/bsh`（远程按需挂 `bsshd`），冷启动直达可交互 `bsh>` 耗时 **`< 150ms`**、系统常驻物理内存占用 **`< 8MiB`**，在图形栈演进期或服务器/边缘网关/AI 沙箱场景下独立提供 100% 完整系统体验。
 
 ### 二、`ptyd` 伪终端主从能力模型与共享环协议
 
@@ -56,7 +61,7 @@ flowchart LR
    - **备用屏幕缓冲（Alternate Screen `?1049h / ?1049l`）**：`bed`、`less`、`btop` 打开时切入备用屏，退出时瞬间无损还原此前 Shell 屏幕内容与光标位置；
    - **括号粘贴模式（Bracketed Paste `?2004h / ?2004l`）**：多行代码粘贴进 `bsh` 或 `bed` 时包裹 `\x1b[200~ ... \x1b[201~`，防止粘贴文本中的换行误触发逐行盲目执行或自动缩进错乱；
    - **键盘扩展协议**：支持标准 xterm 修饰键编码（`Ctrl/Alt/Shift + 方向键/Home/End/PgUp/PgDn/Delete/F1..F12`）与鼠标滚轮/点击上报（SGR `1006` 模式，供 `bmux` 分屏点击、`less` 滚轮翻页与 `bed` 定位光标使用）。
-2. **脏格差分发射器（Diff Renderer）**：内置双缓冲 `CellGrid`，UI 工具只需绘制目标网格，`berry-vt` 自动对比上一帧仅发射最小字节数的增量 ANSI 序列，保证在 115200 波特率物理串口下翻页与刷新依然丝滑不卡顿。
+2. **全栈同源字符列宽核（`faces/utf8width`）与脏格差分发射器（Diff Renderer）**：下沉零依赖 `no_std` 纯核 `faces/utf8width`（单源承载 Unicode 东亚宽字符、组合音标 0 宽与控制符列宽表），由 `berry-vt`、`berry-line`、`bed`、`less` 与 `berry-libc` `wcwidth()` 五处统一调用，根绝中文路径或注释下的光标错位残影；内置双缓冲 `CellGrid`，自动对比上一帧仅发射最小字节数的增量 ANSI 序列，保证在 115200 波特率物理串口下翻页与刷新依然丝滑不卡顿。
 
 ### 四、`bmux`：单串口/单连接多窗终端复用器契约
 

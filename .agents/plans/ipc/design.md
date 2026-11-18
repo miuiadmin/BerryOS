@@ -3,7 +3,7 @@
 Type: spec
 Status: active
 Updated: 2026-11-18
-Version: 2.0.0
+Version: 2.0.1
 
 一句话说明：`ipc` 是莓核（Meihe）的对象句柄、进程间通信、多路事件通知与层次化能力沙箱子系统——通过 `ChannelShared` 无环双端、`Port` 侵入式观察者链、`channel_call` 同带定向让片、真共享 VMO 环形通道，以及 `Job` 树配额 + 内联 `Badge` + `RevokeEpoch` 纪元撤销，实现微秒级零惊群通信与不可绕过的纯能力安全边界。
 
@@ -48,7 +48,8 @@ Version: 2.0.0
 1. **`ChannelShared` 无环控制块与死活状态机**：
    - `channel_create` 仅分配单个 `PinnedObj<ChannelShared>`，内含两套单向定长环形缓冲 `RingQueue<MessageSlot, 16>`（按实际 `nbytes` 与 `nhandles` 切片拷贝，零整包预清零、零 `Vec::remove(0)` 搬移）、双端打开句柄计数 `open_cnt: [AtomicU32; 2]`、双端观察者链 `observers: [ObserverList; 2]` 与单把 `ObjStateLock`（Rank 50）；`HandleTable` 用 `SlotState::flags` bit0 标记本句柄代表端 `0` 还是端 `1`；
    - 某端最后一个句柄关闭（`open_cnt[side].fetch_sub(1) == 1`）时：在 `ObjStateLock` 下清退该端无人再读的入站队列残留消息（自动 `release` 消息内随行句柄，零泄漏），对另一端置派生信号 `SIGNAL_PEER_CLOSED (1 << 4)`，唤醒另一端所有阻塞线程、`call_waiters` 与 `Port` 观察者；当 `open_cnt[0] == 0 && open_cnt[1] == 0` 时，`PinnedObj` 引用归零当场释放 `ChannelShared`；
-   - **死端错误码契约**：对 `peer_closed` 的通道执行 `channel_send` 或 `channel_call` 立即返回 `BERRY_ERR_DEAD (-52)`；执行 `channel_recv` 时若本端环内仍有对端临终前发出的消息则正常返回消息，环空后返回 `BERRY_ERR_DEAD (-52)`。
+   - **死端错误码与强杀管道 `EOF` 唤醒契约**：对 `peer_closed` 的通道执行 `channel_send` 或 `channel_call` 立即返回 `BERRY_ERR_DEAD (-52)`；执行 `channel_recv` 时若本端环内仍有对端临终前发出的消息则正常返回消息，环空后返回 `BERRY_ERR_DEAD (-52)`。当上游进程自愿退出或被 `process_terminate` / `job_kill` 强杀时，内核 `Teardown-Before-Drain` 执行 `HandleTable::drain()` 关闭其持有的全部通道与共享 `IoRing` 关联句柄，必定同步触发 `SIGNAL_PEER_CLOSED` 唤醒下游管道与伪终端读者立即返回 `0 (EOF)`，根除被杀进程无用户态 `exit` 导致的下游永久挂死。
+   - **内核对象类型（`ObjType`）2.0 权威扩编**：在既有 `1..=12`（至 `SuspendToken = 12`）基础上，统一锁定新增对象枚举值：`Port = 13`、`Epoch = 14`、`Pager = 15`、`Bti = 16`、`Pmt = 17`、`Guest = 18`、`Vcpu = 19`，供 `0x07 object_get_info` 与终端 `lscap` 单源识别。
 2. **`ObjType::Port` 与侵入式观察者链（废除 `WAIT_ANY` 哨兵）**：
    - 可等待内核对象（`ChannelShared` 双端、`Event`、`Process`、`Thread`、`SuspendToken`、`Interrupt`、`Timer`）统一内嵌 16B `ObserverList` 头；
    - **异步端口路径**：`object_wait_async(obj_h, port_h, key, signals, options)`（支持 `WAIT_ASYNC_ONCE = 0` 单次自动摘除与 `WAIT_ASYNC_EDGE = 1` 边沿持续投递）分配或复用绑定槽挂入目标 `ObserverList`；目标对象信号跃迁满足 `observed & signals != 0` 时，在 `ObjStateLock` 内直接向目标 `Port` 的环形就绪队列压入 32B 定长包并唤醒 `port_wait` 等待者：
@@ -94,10 +95,11 @@ PortPacket 布局（32B，#[repr(C)]，编译期 offset_of 断言钉死）：
 | `0x30` | `berry_job_create` | `(parent_job, options, *out)` | `parent_job`: `MANAGE` | `-EBADF`、`-EACCES`、`-EINVAL`（超深 8 层）、`-ENOMEM` |
 | `0x43` | `berry_job_set_quota` | `(job, max_procs, max_ram_bytes)` | `job`: `SET_POLICY \| MANAGE` | `-EBADF`、`-EACCES`、`-EINVAL`（大于父限额） |
 | `0x44` | `berry_job_kill` | `(job)` | `job`: `MANAGE` | `-EBADF`、`-EACCES` |
-| `0x57` | `berry_channel_call` | `(ch, args_ptr, deadline, *actual_bytes, *actual_handles)` | `ch`: `SEND \| RECV`（`args_ptr` 指 `ChannelCallArgs` `#[repr(C)]` 结构体） | `-EBADF`、`-EACCES`、`-EDEAD(-52)`、`-ETIMEDOUT`、`-EFAULT` |
-| `0x58` | `berry_port_create` | `(options, *out)` | 无 | `-EINVAL`、`-ENOMEM` |
+| `0x58` | `berry_port_create` | `(options, *out)` | 无（受所属 `Job` 配额约束） | `-EINVAL`、`-ENOMEM` |
 | `0x59` | `berry_object_wait_async` | `(handle, port, key, signals, options)` | `port`: `WRITE`；`handle`: 有效存活句柄 | `-EBADF`、`-EACCES`、`-EDEAD(-52)`、`-EINVAL` |
 | `0x5A` | `berry_port_wait` | `(port, deadline, *out_packet)` | `port`: `READ` | `-EBADF`、`-EACCES`、`-EAGAIN`、`-ETIMEDOUT`、`-EFAULT` |
+| `0x5B` | `berry_channel_reply` | `(reply_token, bytes_ptr, n_b, hdls_ptr, n_h)` | 一次性事务 `ReplyToken` | `-EBADF`、`-EDEAD(-52)`、`-EINVAL`、`-EFAULT` |
+| `0x5C` | `berry_channel_call` | `(ch, args_ptr, deadline, *actual_bytes, *actual_handles)` | `ch`: `SEND \| RECV`（避让已用 `0x57 channel_recv_n`；`args_ptr` 指 `ChannelCallArgs`） | `-EBADF`、`-EACCES`、`-EDEAD(-52)`、`-ETIMEDOUT`、`-EFAULT` |
 
 ## 验收标准
 

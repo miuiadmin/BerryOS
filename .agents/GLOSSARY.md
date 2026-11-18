@@ -134,6 +134,20 @@
 
 **企业双域隔离（Work Profile）**：在同一物理设备上基于独立 CE 加密密钥与 UID 隔离划分出的企业办公沙箱，强制执行防复制外泄（DLP）与远程擦除。_Avoid_: 简单应用双开
 
-**伪终端守护（ptyd）**：提供符合 POSIX 语义的虚拟主从伪终端（Master/Slave PTY），支持 ANSI/VT100 终端序列与窗口尺寸变更事件广播。_Avoid_: 裸串口直接桥接
+**伪终端守护（ptyd）**：以一对能力句柄 `(PtyMasterCap, PtySlaveCap)` 加双 `64KiB` 共享 `IoRing VMO` 提供全双工流、行规（Raw/Cooked/Echo/ISIG）与窗口缩放（`WINCH`）通知的纯用户态终端服务。_Avoid_: 内核态 TTY、裸串口直接桥接
 
-**终端多路复用器（bmux）**：BerryOS 原生终端多窗多面板分屏会话复用器，支持会话持久分离与挂载。_Avoid_: 必须依赖外部 tmux 移植
+**控制台守护（consoled）**：持内核 `Interrupt` 对象在用户态驱动物理 PL011 / `virtio-console`、承载带外控制口 `berry-ctlport` 并将后台守护进程日志隔离于活跃终端之外的系统服务。_Avoid_: 内核 `task_console` 线程、全局混流串口
+
+**终端协议纯核（berry-vt）**：零依赖 `no_std` 表驱动 VT100/xterm-256color/TrueColor 转义解析、备用屏幕缓冲（`?1049h`）、括号粘贴（`?2004h`）与脏格差分发射引擎。_Avoid_: 各工具私写转义正则解析
+
+**终端多路复用器（bmux）**：BerryOS 原生终端多窗多面板分屏会话复用器，支持单串口多任务并发及断线后台保活重连（`detach / attach`）。_Avoid_: 必须依赖外部 tmux 移植
+
+**服务能力目录（ServiceDir）**：挂载于 `/svc`、由 `rootmgr` 向受控会话签发并支持按需建立每客户端独占会话通道或由 `bsh sandbox` 细粒度裁剪的能力寻址目录。_Avoid_: 位置写死的 `GIFT_H` 静态槽、全局无鉴权命名表
+
+**全屏终端编辑器（bed）**：基于 `berry-vt` 与 Rope 缓冲、支持无模式与 `--vi` 双键位、语法着色及 `.swp` 掉电零丢稿恢复的轻量机内代码文本编辑器。_Avoid_: 搬运重型 C 编辑器
+
+**能力句柄透视器（lscap）**：实时导出目标进程句柄槽位、对象类型（`1..=19`）、64 位 Rights、内联 Badge 及 Channel 对端连接拓扑的微内核独有诊断命令。_Avoid_: 仅能看普通文件的传统 `lsof`
+
+**系统调用与 IPC 追踪器（btrace）**：基于调试异常通道与无锁追踪环，在终端内实时解码打印目标进程 `berry_*` 系统调用、Channel RPC 协议帧及尾延迟直方图的在机诊断工具。_Avoid_: 依赖 `ptrace` 的传统 `strace`
+
+**在机命令行调试器（bdbg）**：凭 `ProcessDebugCap` 与 `berry-unwind` 在纯串口或远程终端内直接执行软件断点、硬件数据观察点与符号化栈回溯的交互式调试器。_Avoid_: 只能依赖宿主机外部 IDE 联调

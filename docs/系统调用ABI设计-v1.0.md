@@ -3,9 +3,10 @@
 Type: standard
 Status: current
 Updated: 2026-11-18
-Version: 1.0.1
+Version: 1.0.2
 
-> 决策依据见 [架构决策](架构决策.md) #11、#14、#20、#28。本文件为现行对外冻结系统调用 ABI 标准（常量单源 = `tools/abi.toml`）；莓核 2.0 拟新增的 add-only 扩展号位（`Port`、`channel_call`、`Job`、`handle_mint`、`Interrupt`）在落码前以 [ipc 总体设计](../.agents/plans/ipc/design.md) 与 [hal 总体设计](../.agents/plans/hal/design.md) 为预登记规格。
+> 决策依据见 [架构决策](架构决策.md) #11、#14、#20、#28。本文件为现行对外冻结系统调用 ABI 标准（常量单源 = `tools/abi.toml`）；莓核 2.0 拟新增的 add-only 扩展号位（`Port`、`channel_call`、`Job`、`handle_mint`、`Interrupt`）在落码前以 [全系统 40 模块终态合龙总纲](../.agents/plans/2026-11-18-全系统31模块终态合龙总纲与ABI号段总表.md)、[ipc 总体设计](../.agents/plans/ipc/design.md) 与 [hal 总体设计](../.agents/plans/hal/design.md) 为预登记规格。
+> **v1.0.2 修订（2026-11-18）**：在 §8.2 `berry_obj_type` 下锁定平台 ABI v2 新增七类内核对象唯一枚举号（`13..=19`：`Port / Epoch / Pager / Bti / Pmt / Guest / Vcpu`），为 `0x07 object_get_info` 与终端 `lscap` 提供单一类型权威。
 > **v1.0.1 修订（2026-11-18）**：升格 Curia `Type: standard`；§8.2 `berry_obj_type` 补齐 `BERRY_OBJ_SUSPEND_TOKEN = 12`；§8.3/§8.4 对齐 `user/berry-sys/src/lib.rs` 补齐全部 15 个已上线 syscall 原型与跨界 `#[repr(C)]` 结构（`0x21`/`0x23`/`0x24`/`0x3B`/`0x3C..0x40`/`0x42`/`0x83`/`0x84`/`0x86..0x88`），修正 `vmo_create` 128MiB 上限与 `thread_exit` 多线程语义注记。
 
 ## 1. 规模：中等偏上（总数 ~30–45，v1 核心 ~26）
@@ -218,6 +219,10 @@ enum berry_obj_type {
     BERRY_OBJ_PROCESS = 1, BERRY_OBJ_THREAD, BERRY_OBJ_VMO, BERRY_OBJ_VMAR,
     BERRY_OBJ_CHANNEL, BERRY_OBJ_EVENT, BERRY_OBJ_EVENTPAIR, BERRY_OBJ_INTERRUPT,
     BERRY_OBJ_RESOURCE, BERRY_OBJ_TIMER, BERRY_OBJ_JOB, BERRY_OBJ_SUSPEND_TOKEN,
+    /* ABI v2 预锁定枚举号（13..=19，严禁挪作他用）：
+     * BERRY_OBJ_PORT = 13, BERRY_OBJ_EPOCH = 14, BERRY_OBJ_PAGER = 15,
+     * BERRY_OBJ_BTI  = 16, BERRY_OBJ_PMT   = 17, BERRY_OBJ_GUEST = 18,
+     * BERRY_OBJ_VCPU = 19 */
 };
 
 /* rights 位（对照 `能力模型设计-v1.0.md` §2） */
