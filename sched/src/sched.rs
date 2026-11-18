@@ -2101,14 +2101,21 @@ unsafe fn note_switch(prev: *mut Task, next: *mut Task, kind: SwitchKind) {
         return;
     }
     // S-6 ① 双计数器：非空臂 = 遥测环分母同点自增（环写与计数同窗——
-    // G1.5 断言 tel >= switches_tt 的配平点；hook 缺席期（boot 前窗）也计
-    //——telemetry::init 先于首个切换，实际不可达，防御性保持对称）。
+    // G1.5 断言 tel >= switches_tt 的配平点）。**钩子在位才计**（04 号
+    // sbench 纪元刀自记的「配对悬账」收口，2026-11-18：钩子缺席窗
+    // 〔run_sched_epoch 纪元——telemetry::init 前〕的切换环结构性零写，
+    // 缺席期也计则 icount 通道（恒递 sbench 键）boot 尾 G1.5 必炸
+    // 〔total=990 < switches_tt=1249，差恰纪元 ≈259 切换〕；计数下移到
+    // 钩子分支内 = 分母与环写同生同灭，配平律在所有断言窗恒成立。
+    // trace_off 面注释：钩子在位早退（on_switch 头）——tt 照计而环零写，
+    // 但 G1.5 断言块随记录面整体让位（user.rs 同步门），无比对面。
     // W3-Q96：本核槽递增（写侧分行）。
-    SWITCHES_TT[berry_balface::slot_of(hal::smp::cpu_id())].fetch_add(1, Ordering::Relaxed);
     // SAFETY: 两指针由调用点保证有效（刚做过状态写入）；IRQ 屏蔽路径。
     unsafe {
         let hook = SWITCH_HOOK;
         if let Some(h) = hook {
+            SWITCHES_TT[berry_balface::slot_of(hal::smp::cpu_id())]
+                .fetch_add(1, Ordering::Relaxed);
             h(&*prev, &*next, kind);
         }
     }
