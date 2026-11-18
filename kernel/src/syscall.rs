@@ -87,10 +87,14 @@ pub use crate::abi_gen::{
     NR_POWER_OFF, NR_SIGNAL_SEND, NR_SIGNAL_TAKE, NR_THREAD_CREATE, NR_THREAD_EXIT,
     NR_THREAD_SLEEP,
     NR_THREAD_START, NR_VMAR_ALLOCATE, NR_VMAR_MAP,
-    NR_VMAR_PROTECT, NR_VMAR_UNMAP, NR_VMO_COMMIT, NR_VMO_CREATE, NR_VMO_DECOMMIT,
+    NR_VMAR_PROTECT, NR_VMAR_UNMAP, NR_VMO_CACHE_OP, NR_VMO_COMMIT, NR_VMO_CREATE, NR_VMO_DECOMMIT,
     NR_VMO_GET_PHYS, NR_VMO_GET_SIZE, NR_VMO_READ, NR_VMO_WRITE,
 };
-use crate::abi_gen::{CLOCK_MONOTONIC, CLOCK_REALTIME, ERR_E2BIG, RIGHT_SET_POLICY, VMO_OPT_DEMAND};
+use crate::abi_gen::{
+    CLOCK_MONOTONIC, CLOCK_REALTIME, ERR_E2BIG, RIGHT_SET_POLICY, VMO_CACHE_OP_CLEAN,
+    VMO_CACHE_OP_CLEAN_INVALIDATE, VMO_CACHE_OP_INVALIDATE, VMO_OPT_CONTIGUOUS, VMO_OPT_DEMAND,
+    VMO_OPT_PINNED,
+};
 
 /// 用户 VA 合法区（Vmar root 覆盖 `[0x1000, 2^39)`，0 页 NULL 保卫——
 /// `内存管理设计.md` §4；copy_out 的界检同源）。W3-Q70：值域常量单源迁
@@ -643,10 +647,17 @@ pub fn soakload_churn_readout() -> u64 {
 /// `size` 上限 [`VMO_MAX_SIZE`]（防 EL0 巨参推爆堆——no-panic）。
 extern "C" fn sys_vmo_create(tf: &mut TrapFrame) -> i64 {
     let (size, options, out) = (tf.regs[1] as usize, tf.regs[2], tf.regs[3]);
-    if options & !VMO_OPT_DEMAND != 0 {
+    let legal_opts = VMO_OPT_DEMAND | VMO_OPT_CONTIGUOUS | VMO_OPT_PINNED;
+    if options & !legal_opts != 0 {
         return ERR_INVALID_ARG as i64;
     }
     let demand = options & VMO_OPT_DEMAND != 0;
+    let contiguous = options & VMO_OPT_CONTIGUOUS != 0;
+    let pinned = options & VMO_OPT_PINNED != 0;
+    // F0-4：按需缺页 VMO 与创建期锁死连续/钉死物理页互斥。
+    if demand && (contiguous || pinned) {
+        return ERR_INVALID_ARG as i64;
+    }
     if size == 0 {
         return ERR_INVALID_ARG as i64;
     }
@@ -658,18 +669,19 @@ extern "C" fn sys_vmo_create(tf: &mut TrapFrame) -> i64 {
         return e as i64;
     }
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
-    // per-Process VMO 配额帽（Medium 缺口收口，`process.rs` 帽常量注）：本表
-    // 在册 VMO handle 数 ≥ 帽先拒 -ENOMEM——fail-fast 先于 create 的页记账
-    // 分配（128MiB VMO 记账 Vec ≈ 576KiB/个，无帽单进程循环 create 可把共享
-    // 堆耗到全机 -ENOMEM）。记账 = `count_type` 表扫描（S5.12 token 帽同款；
-    // 随 close/take/drain/迁移天然配平，sidecar 计数器在跨表迁移下失配——
-    // `pager_load` 同口径）。admission 只查不写（沿革 #109 纪律）。
     if t.count_type(ObjType::Vmo) >= crate::process::MAX_VMO_PER_PROC {
         return ERR_NO_MEMORY as i64;
     }
-    // create try 化（3b3 H2）：NoMem → -ENOMEM（原 create 内嵌 vec! 双分配，
-    // OOM abort 曾是 EL0 可触发 panic）。
-    let vmo = match if demand { Vmo::create_demand(size) } else { Vmo::create(size) } {
+    let vmo_res = if demand {
+        Vmo::create_demand(size)
+    } else if contiguous {
+        Vmo::create_contiguous_global(size)
+    } else if pinned {
+        Vmo::create_pinned(size)
+    } else {
+        Vmo::create(size)
+    };
+    let vmo = match vmo_res {
         Ok(v) => v,
         Err(e) => return voe(e) as i64,
     };
@@ -891,6 +903,36 @@ extern "C" fn sys_vmo_get_phys(tf: &mut TrapFrame) -> i64 {
             Err(e) => e as i64,
         },
         None => ERR_BAD_STATE as i64, // 未提交页：无后备（MMIO 恒有——page_pa 恒 Some）
+    }
+}
+
+/// `vmo_cache_op(vmo, op, offset, len)`（0x1C，F0-4）：非一致性 DMA PoC 数据缓存维护。
+/// 门控：`CLEAN` 需 `RIGHT_READ`；`INVALIDATE` / `CLEAN_INVALIDATE` 需 `RIGHT_WRITE`。
+extern "C" fn sys_vmo_cache_op(tf: &mut TrapFrame) -> i64 {
+    let (h, op, off, len) = (
+        tf.regs[1] as u32,
+        tf.regs[2],
+        tf.regs[3] as usize,
+        tf.regs[4] as usize,
+    );
+    let (need_rights, clean_only) = match op {
+        VMO_CACHE_OP_CLEAN => (RIGHT_READ, true),
+        VMO_CACHE_OP_INVALIDATE | VMO_CACHE_OP_CLEAN_INVALIDATE => (RIGHT_WRITE, false),
+        _ => return ERR_INVALID_ARG as i64,
+    };
+    let Ok(t) = caller_table(tf) else {
+        return ERR_BAD_HANDLE as i64;
+    };
+    let vmo = match t.get(h, ObjType::Vmo, need_rights) {
+        Ok((obj, _)) => match obj.as_vmo() {
+            Some(v) => v,
+            None => return ERR_BAD_HANDLE as i64,
+        },
+        Err(e) => return e as i64,
+    };
+    match vmo.cache_op(clean_only, off, len) {
+        Ok(()) => 0,
+        Err(e) => voe(e) as i64,
     }
 }
 
@@ -4156,6 +4198,7 @@ pub fn install() {
     reg(NR_VMO_WRITE, sys_vmo_write, SVC_CLASS_TABLE);
     reg(NR_VMO_GET_SIZE, sys_vmo_get_size, SVC_CLASS_TABLE);
     reg(NR_VMO_GET_PHYS, sys_vmo_get_phys, SVC_CLASS_TABLE);
+    reg(NR_VMO_CACHE_OP, sys_vmo_cache_op, SVC_CLASS_TABLE);
     reg(NR_VMAR_MAP, sys_vmar_map, SVC_CLASS_TABLE);
     reg(NR_VMAR_UNMAP, sys_vmar_unmap, SVC_CLASS_TABLE);
     reg(NR_VMAR_PROTECT, sys_vmar_protect, SVC_CLASS_TABLE);

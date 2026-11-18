@@ -56,9 +56,10 @@
 use berry_exec::{VIRTIO_MMIO_SLOTS, VIRTIO_MMIO_STRIDE, VIRTIO_MMIO_VA};
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
-    berry_object_wait_one, berry_thread_sleep, berry_vmo_commit, berry_vmo_create,
+    berry_object_wait_one, berry_thread_sleep, berry_vmo_cache_op, berry_vmo_create,
     berry_vmo_get_phys, berry_vmo_read, berry_vmo_write, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BUSY,
-    CLOCK_MONOTONIC, SIGNAL_READABLE, SIGNAL_WRITABLE,
+    CLOCK_MONOTONIC, SIGNAL_READABLE, SIGNAL_WRITABLE, VMO_CACHE_OP_CLEAN, VMO_CACHE_OP_INVALIDATE,
+    VMO_OPT_CONTIGUOUS, VMO_OPT_PINNED,
 };
 use berry_virtio as vio;
 // A-4：服务协议 + env 块 gift[2] 服务端端（fsmgr 同槽惯例）。
@@ -239,12 +240,14 @@ fn setup_queue(regs: *mut u32) -> Dma {
         None => trap(), // qsize=16 恒成立；防御面（布局几何是编译期已知）
     };
     let mut vmo = 0 as Handle;
-    if berry_vmo_create(DMA_LEN, 0, &mut vmo) != 0 || vmo == 0 {
-        println!("vblk: vmo_create 失败");
-        trap();
-    }
-    if berry_vmo_commit(vmo, 0, DMA_LEN) != 0 {
-        println!("vblk: commit 失败");
+    if berry_vmo_create(
+        DMA_LEN,
+        (VMO_OPT_CONTIGUOUS | VMO_OPT_PINNED) as u32,
+        &mut vmo,
+    ) != 0
+        || vmo == 0
+    {
+        println!("vblk: vmo_create(CONTIGUOUS|PINNED) 失败");
         trap();
     }
     // 页后备 PA（已 commit——NotCommitted 面不可达，防御行）。
@@ -303,7 +306,9 @@ fn blk_op(d: &Dma, regs: *mut u32, typ: u32, sector: u64, wr_data: Option<&[u8]>
         iob[vio::BLK_HDR_SZ..vio::BLK_HDR_SZ + w.len()].copy_from_slice(w);
     }
     iob[(STATUS_OFF - BUF_PAGE) as usize] = 0xff;
-    if berry_vmo_write(d.vmo, iob.as_ptr(), BUF_PAGE, iob.len() as usize) != 0 {
+    if berry_vmo_write(d.vmo, iob.as_ptr(), BUF_PAGE, iob.len() as usize) != 0
+        || berry_vmo_cache_op(d.vmo, VMO_CACHE_OP_CLEAN, BUF_PAGE, iob.len() as u64) != 0
+    {
         trap();
     }
     // —— ring 页：三描述符链（hdr→data→status；读方向 data 置 WRITE）。
@@ -323,7 +328,9 @@ fn blk_op(d: &Dma, regs: *mut u32, typ: u32, sector: u64, wr_data: Option<&[u8]>
         }
         old.wrapping_add(1)
     };
-    if berry_vmo_write(d.vmo, ring.as_ptr(), RING_PAGE, 4096) != 0 {
+    if berry_vmo_write(d.vmo, ring.as_ptr(), RING_PAGE, 4096) != 0
+        || berry_vmo_cache_op(d.vmo, VMO_CACHE_OP_CLEAN, RING_PAGE, 4096) != 0
+    {
         trap();
     }
     // 发布屏障（publish() 调用方契约）：此前一切 Normal 写（缓冲页 + ring
@@ -343,7 +350,10 @@ fn blk_op(d: &Dma, regs: *mut u32, typ: u32, sector: u64, wr_data: Option<&[u8]>
     let deadline = now + POLL_CAP_NS;
     loop {
         let mut u = [0u8; 2];
-        if berry_vmo_read(d.vmo, u.as_mut_ptr(), RING_PAGE + d.lay.used_off as u64 + 2, 2) != 0 {
+        let used_idx_off = RING_PAGE + d.lay.used_off as u64 + 2;
+        if berry_vmo_cache_op(d.vmo, VMO_CACHE_OP_INVALIDATE, used_idx_off, 2) != 0
+            || berry_vmo_read(d.vmo, u.as_mut_ptr(), used_idx_off, 2) != 0
+        {
             trap();
         }
         if u[0] as u16 | (u[1] as u16) << 8 == expect {
@@ -358,18 +368,20 @@ fn blk_op(d: &Dma, regs: *mut u32, typ: u32, sector: u64, wr_data: Option<&[u8]>
         }
     }
     let mut st = [0u8; 1];
-    if berry_vmo_read(d.vmo, st.as_mut_ptr(), STATUS_OFF, 1) != 0 || st[0] != 0 {
+    if berry_vmo_cache_op(d.vmo, VMO_CACHE_OP_INVALIDATE, STATUS_OFF, 1) != 0
+        || berry_vmo_read(d.vmo, st.as_mut_ptr(), STATUS_OFF, 1) != 0
+        || st[0] != 0
+    {
         println!("vblk: sector {} status={:#x}", sector, st[0]);
         trap();
     }
-    // 整洁面：中断状态确认（poll 模型下设备侧 INT_SOURCE 已置——ACK 清之，
-    // 防 config change 位滞留误导后续驱动）。
     let isr = rd(regs, vio::mmio::INT_STATUS);
     if isr != 0 {
         wr(regs, vio::mmio::INT_ACK, isr);
     }
-    // —— 读方向：收回数据面。
-    if typ == vio::BLK_T_IN && berry_vmo_read(d.vmo, iob.as_mut_ptr(), BUF_PAGE, iob.len() as usize) != 0
+    if typ == vio::BLK_T_IN
+        && (berry_vmo_cache_op(d.vmo, VMO_CACHE_OP_INVALIDATE, BUF_PAGE, iob.len() as u64) != 0
+            || berry_vmo_read(d.vmo, iob.as_mut_ptr(), BUF_PAGE, iob.len() as usize) != 0)
     {
         trap();
     }

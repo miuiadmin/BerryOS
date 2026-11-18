@@ -17,9 +17,11 @@
 //! 只需 `dsb ish` 保证表写入对页表遍历可见，再置 `sctlr_el1 = M|C|I`、`isb`。
 
 use crate::paging::*;
-use crate::{GICD_BASE, KERNEL_VA_BASE, RAM_BASE, RAM_TOP, UART0_BASE, VIRTIO_MMIO0_PA};
+use crate::{
+    GICD_BASE, KERNEL_VA_BASE, RAM_BASE, RAM_TOP, UART0_BASE, VIRTIO_MMIO0_PA, VIRTIO_MMIO_LEN,
+};
 use berry_asidface::{tcr_as_config, ASID_SHIFT};
-use berry_memface::{cache_line_span, ctr_pou_plan, IcachePolicy};
+use berry_memface::{cache_line_span, ctr_dmin_line, ctr_pou_plan, IcachePolicy};
 use core::arch::asm;
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 
@@ -551,6 +553,97 @@ pub(crate) fn sync_icache_pou(kva: usize, len: usize) {
     } else {
         // SAFETY: DIC=1 免显式失效 I-cache，但本核后续取指仍须上下文同步。
         unsafe { isb() };
+    }
+}
+
+#[inline]
+fn read_ctr_cached() -> u64 {
+    let mut ctr = CTR_CACHE.load(Ordering::Relaxed);
+    if ctr == u64::MAX {
+        // SAFETY: ctr_el0 为只读缓存类型寄存器，EL1 直读无副作用。
+        unsafe { asm!("mrs {0}, ctr_el0", out(reg) ctr, options(nostack, preserves_flags)) };
+        CTR_CACHE.store(ctr, Ordering::Relaxed);
+    }
+    ctr
+}
+
+/// F0-4：DMA 发送前将数据缓存脏行推至一致性点 PoC（`dc cvac` + `dsb sy`）。
+pub(crate) fn cache_poc_clean(kva: usize, len: usize) {
+    if len == 0 {
+        return;
+    }
+    let dline = ctr_dmin_line(read_ctr_cached());
+    if let Some((mut p, end)) = cache_line_span(kva, len, dline) {
+        while p < end {
+            // SAFETY: kva 属内核有效 Normal WB 直映窗口，dc cvac 将脏缓存行刷至 PoC。
+            unsafe { asm!("dc cvac, {0}", in(reg) p, options(nostack, preserves_flags)) };
+            p += dline;
+        }
+    }
+    // SAFETY: 全系统屏障，确保缓存行写回在后续设备门铃 MMIO 写之前对外部总线可见。
+    unsafe { asm!("dsb sy", options(nostack, preserves_flags)) };
+}
+
+/// F0-4：DMA 接收/双向缓冲清理并失效至一致性点 PoC（`dc civac` + `dsb sy`；用 `civac` 而非裸 `ivac`
+/// 防止非缓存行对齐边界丢弃相邻 CPU 脏字节）。
+pub(crate) fn cache_poc_clean_invalidate(kva: usize, len: usize) {
+    if len == 0 {
+        return;
+    }
+    let dline = ctr_dmin_line(read_ctr_cached());
+    if let Some((mut p, end)) = cache_line_span(kva, len, dline) {
+        while p < end {
+            // SAFETY: kva 属内核有效 Normal WB 直映窗口，dc civac 先刷脏再失效该行。
+            unsafe { asm!("dc civac, {0}", in(reg) p, options(nostack, preserves_flags)) };
+            p += dline;
+        }
+    }
+    // SAFETY: 全系统屏障，确保缓存失效先于后续 CPU 读完成。
+    unsafe { asm!("dsb sy", options(nostack, preserves_flags)) };
+}
+
+/// F0-4：MMIO 窗口销毁时的内核级 VirtIO `STATUS = 0` 自动复位防线。
+///
+/// 扫描 `[pa_base, pa_base + size)` 与板级 `[VIRTIO_MMIO0_PA, +VIRTIO_MMIO_LEN)` 的交集内所有
+/// `0x200` 对齐传输槽：若 `MagicValue == 0x74726976`（`"virt"`）、`DeviceID != 0` 且当前 `Status != 0`，
+/// 立即经 `KERNEL_VA_BASE` Device-nGnRnE 高半直映写 `Status = 0` 并 `dsb sy`，切断崩溃驱动遗留的异步 DMA。
+pub(crate) fn reset_virtio_mmio_window(pa_base: usize, size: usize) {
+    const SLOT_STRIDE: usize = 0x200;
+    const VIRTIO_MAGIC: u32 = 0x7472_6976;
+    const OFF_DEVICE_ID: usize = 0x008;
+    const OFF_STATUS: usize = 0x070;
+
+    let Some(pa_end) = pa_base.checked_add(size) else {
+        return;
+    };
+    let win_start = pa_base.max(VIRTIO_MMIO0_PA);
+    let win_end = pa_end.min(VIRTIO_MMIO0_PA + VIRTIO_MMIO_LEN);
+    if win_start >= win_end {
+        return;
+    }
+    let mut slot_pa = (win_start + SLOT_STRIDE - 1) & !(SLOT_STRIDE - 1);
+    let mut did_reset = false;
+    while slot_pa + SLOT_STRIDE <= win_end {
+        let base_kva = KERNEL_VA_BASE + slot_pa;
+        // SAFETY: KERNEL_L2_LOW 已将 [0, 0x4000_0000) 映射为 EL1 Device-nGnRnE；32 位对齐寄存器访问。
+        unsafe {
+            let magic = (base_kva as *const u32).read_volatile();
+            if magic == VIRTIO_MAGIC {
+                let dev_id = ((base_kva + OFF_DEVICE_ID) as *const u32).read_volatile();
+                if dev_id != 0 {
+                    let status_ptr = (base_kva + OFF_STATUS) as *mut u32;
+                    if status_ptr.read_volatile() != 0 {
+                        status_ptr.write_volatile(0);
+                        did_reset = true;
+                    }
+                }
+            }
+        }
+        slot_pa += SLOT_STRIDE;
+    }
+    if did_reset {
+        // SAFETY: 全系统屏障，确保 VirtIO 复位写立即送达设备总线。
+        unsafe { asm!("dsb sy", options(nostack, preserves_flags)) };
     }
 }
 

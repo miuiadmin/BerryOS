@@ -184,6 +184,21 @@ pub fn sync_icache_pou(kva: usize, len: usize) {
     mmu::sync_icache_pou(kva, len);
 }
 
+/// F0-4：DMA 发送前将数据缓存脏行推至 PoC（`dc cvac` + `dsb sy`）。
+pub fn cache_poc_clean(kva: usize, len: usize) {
+    mmu::cache_poc_clean(kva, len);
+}
+
+/// F0-4：DMA 接收/双向缓冲清理并失效至 PoC（`dc civac` + `dsb sy`）。
+pub fn cache_poc_clean_invalidate(kva: usize, len: usize) {
+    mmu::cache_poc_clean_invalidate(kva, len);
+}
+
+/// F0-4：MMIO 窗口销毁时自动将交集内活跃 VirtIO 槽复位（`STATUS = 0`）。
+pub fn reset_virtio_mmio_window(pa_base: usize, size: usize) {
+    mmu::reset_virtio_mmio_window(pa_base, size);
+}
+
 /// F0-2：返回各核当前在 `TTBR0_EL1` 激活的 ASID 快照（供 ASID 分配器钉死防撞）。
 pub fn active_cpu_asids() -> [u16; 2] {
     mmu::active_cpu_asids()

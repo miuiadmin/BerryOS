@@ -228,6 +228,8 @@ fn dczid_block_size_law() {
 fn ctr_pou_plan_law() {
     // Cortex-A72 典型值（0x8444_C004）：IDC=0, DIC=0, DminLine=4(64B), L1Ip=0b11(PIPT), IminLine=4(64B)。
     let a72 = ctr_pou_plan(0x8444_C004);
+    assert_eq!(ctr_dmin_line(0x8444_C004), 64);
+    assert_eq!(ctr_dmin_line(0xB005_C005), 128);
     assert_eq!(
         a72,
         PouSyncPlan {

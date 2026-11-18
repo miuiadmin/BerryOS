@@ -26,6 +26,11 @@ type berry_time uint64
 # options 位（未知位一律 -EINVAL；scope = 归属 syscall——同值异 scope 不冲突，DOC-6 修：旧裸值两条 1 << 0 无注记）:
 #   CHAN_OPT_NO_INTENT = 1 << 0  (0x1)（scope: channel_create）
 #   VMO_OPT_DEMAND = 1 << 0  (0x1)（scope: vmo_create）
+#   VMO_OPT_CONTIGUOUS = 1 << 1  (0x2)（scope: vmo_create）
+#   VMO_OPT_PINNED = 1 << 2  (0x4)（scope: vmo_create）
+#   VMO_CACHE_OP_CLEAN = 1 << 0  (0x1)（scope: vmo_cache_op）
+#   VMO_CACHE_OP_INVALIDATE = 1 << 1  (0x2)（scope: vmo_cache_op）
+#   VMO_CACHE_OP_CLEAN_INVALIDATE = 1 << 2  (0x4)（scope: vmo_cache_op）
 # rights 位（berry_rights；权限在 handle 不在对象）:
 #   BERRY_RIGHT_READ = 1 << 0  (0x1)
 #   BERRY_RIGHT_WRITE = 1 << 1  (0x2)
@@ -63,7 +68,7 @@ type berry_time uint64
 #   BERRY_ERR_OUT_OF_RANGE = -34
 #   BERRY_ERR_FAULT = -14
 
-# ---- syscall 入口（§4 编号表全量在册；v1 40 号、已实现 39；
+# ---- syscall 入口（§4 编号表全量在册；v1 41 号、已实现 40；
 #      a1..a6 ↔ ARM64 SVC x1..x6 全宽占位参——参数面待 §8.3 原型层（v2 挂账）补）----
 
 # **handle / 通用对象**
@@ -110,6 +115,9 @@ vmo_get_size(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x1B vmo_get_phys（v1）——查字节物理地址（出参 `*pa` = 所在页后备 PA + 页内偏移；匿名 VMO 该页须已 commit，MMIO 窗口 = pa_base+offset；门控仅类型 need=0，同 get_size 几何惯例；PA 是 u64 出参 8 字节宽）
 #   note: P6 A-3（用户态 DMA 面：virtqueue 描述符地址是 guest PA，驱动须能查自己 VMO 页的后备；无 IOMMU 板上 PA 披露面 = 已授 MMIO 窗口的设备本可 DMA 全内存，v1 接受并文档化——IOMMU/SMMU 随 `安全与硬件隔离设计-v1.0.md`）。
 vmo_get_phys(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x1C vmo_cache_op（v1）——VMO 数据缓存 PoC 一致性维护（F0-4 用户态非一致性 DMA 面：入参 vmo + op〔CLEAN/INVALIDATE/CLEAN_INVALIDATE〕+ offset + len；CLEAN 需 RIGHT_READ，INVALIDATE/CLEAN_INVALIDATE 需 RIGHT_WRITE）
+#   note: F0-4（DMA 缓存同步：按 CTR_EL0.DminLine 对已提交物理页直映地址执行 `dc cvac` / `dc civac` + `dsb sy`）。
+vmo_cache_op(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **pager**
 # 0x21 pager_supply_pages（v1）——用户态 pager 给 demand VMO 供给一页：入参 vmo（目标，须持 RIGHT_SET_POLICY）+ src（源 VMO 句柄，0 = 填零页）+ src_off（源内页偏移）

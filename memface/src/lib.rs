@@ -160,6 +160,12 @@ pub const fn dczid_block_size(dczid: u64, page_size: usize) -> Option<usize> {
     Some(block)
 }
 
+/// 提取 `CTR_EL0.DminLine`（bits[19:16]）对应的最小数据缓存行字节宽（`4 << DminLine`），
+/// 供 F0-4 DMA PoC 缓存维护（`dc cvac` / `dc civac`）无视 `IDC` 位恒定步进。
+pub const fn ctr_dmin_line(ctr: u64) -> usize {
+    4usize << (((ctr >> 16) & 0xF) as u32)
+}
+
 /// 解码 `CTR_EL0`（ARM DDI 0487 D24.2.41）：
 /// - `IDC`（bit 28）：`0` 需按 `DminLine`（bits[19:16]）执行 `dc cvau`；
 /// - `DIC`（bit 29）：`0` 需按 `IminLine`（bits[3:0]）失效指令缓存；

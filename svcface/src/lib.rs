@@ -107,6 +107,7 @@ pub const REGISTRY: &[(u8, u8)] = &[
     (0x15, SVC_CLASS_TABLE), // vmo_write
     (0x1A, SVC_CLASS_TABLE), // vmo_get_size
     (0x1B, SVC_CLASS_TABLE), // vmo_get_phys
+    (0x1C, SVC_CLASS_TABLE), // vmo_cache_op（F0-4 DMA PoC 缓存维护）
     (0x16, SVC_CLASS_TABLE), // vmar_map
     (0x17, SVC_CLASS_TABLE), // vmar_unmap
     (0x18, SVC_CLASS_TABLE), // vmar_protect
@@ -246,7 +247,7 @@ mod tests {
     /// 表规模与形状：45 号在册、无重复号（cbox 刀 1 0x42 + 阶段五遥测 0x84）。
     #[test]
     fn registry_shape() {
-        assert_eq!(REGISTRY.len(), 45);
+        assert_eq!(REGISTRY.len(), 46);
         assert!(nrs_unique());
     }
 
@@ -309,7 +310,7 @@ mod tests {
         assert_eq!(class_of(0x83), SVC_CLASS_TABLE); // policy_bind
         assert_eq!(class_of(0x37), SVC_CLASS_SQ_RQ); // thread_sleep
         assert_eq!(class_of(0x3F), SVC_CLASS_SQ_RQ); // thread_yield
-        for nr in [0x11u8, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B] {
+        for nr in [0x11u8, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C] {
             assert_eq!(class_of(nr), SVC_CLASS_TABLE, "vmo/vmar {nr:#04x}");
         }
         for nr in [0x31u8, 0x33, 0x34, 0x36, 0x3B, 0x51, 0x54] {

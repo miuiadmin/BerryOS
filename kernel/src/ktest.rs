@@ -176,6 +176,8 @@ pub fn run() {
     test_cbox();
     // F0-3：异常 DAIF 保存/恢复守卫、TLB shootdown 对飞自解与独立第 5 层 ALLOC_LOCK 自检。
     test_f0_3();
+    // F0-4：VMO_OPT_CONTIGUOUS 物理连续阶块、0x1C vmo_cache_op 权限门控与 VirtIO 自动复位自检。
+    test_f0_4();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     crate::splash::step(8, b"ktest done");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
@@ -320,8 +322,8 @@ fn test_syscall() {
     //     「options≠0 须拒」升「未知位须拒」+ bit0 受纳正测（建毕即 close）。
     assert_eq!(svc6(NR_VMO_CREATE as u64, 0, 0, &raw mut OUT as u64, 0, 0, 0), -22,
         "SYSCALL：vmo_create size=0 须 -EINVAL");
-    assert_eq!(svc6(NR_VMO_CREATE as u64, PAGE_SIZE as u64, 2, &raw mut OUT as u64, 0, 0, 0), -22,
-        "SYSCALL：vmo_create options 未知位须 -EINVAL（bit0=DEMAND 已激活）");
+    assert_eq!(svc6(NR_VMO_CREATE as u64, PAGE_SIZE as u64, 8, &raw mut OUT as u64, 0, 0, 0), -22,
+        "SYSCALL：vmo_create options 未知位须 -EINVAL（bit0=DEMAND / bit1=CONTIGUOUS / bit2=PINNED 已激活）");
     assert_eq!(
         svc6(NR_VMO_CREATE as u64, PAGE_SIZE as u64, 0x1_0000_0001,
              &raw mut OUT as u64, 0, 0, 0),
@@ -12253,4 +12255,184 @@ fn test_f0_3() {
         base_pages,
         "F0-3: Vmo::Drop 经 ALLOC_LOCK 回收后页数未归位"
     );
+}
+
+/// F0-4：验证 `VMO_OPT_CONTIGUOUS | VMO_OPT_PINNED` 5 页物理连续阶块分配/整阶零泄漏归还、
+/// `decommit` `-ENOTSUP` 防拆块、`0x1C vmo_cache_op` 读写权限门控及 MMIO `Drop` VirtIO 自动复位。
+fn test_f0_4() {
+    use crate::abi_gen::{
+        ERR_ACCESS_DENIED, ERR_INVALID_ARG, ERR_NOT_SUPPORTED, NR_HANDLE_CLOSE,
+        NR_HANDLE_DUPLICATE, NR_VMO_CACHE_OP, NR_VMO_COMMIT, NR_VMO_CREATE, NR_VMO_DECOMMIT,
+        NR_VMO_GET_PHYS, VMO_CACHE_OP_CLEAN, VMO_CACHE_OP_CLEAN_INVALIDATE,
+        VMO_CACHE_OP_INVALIDATE, VMO_OPT_CONTIGUOUS, VMO_OPT_DEMAND, VMO_OPT_PINNED,
+    };
+    use crate::handle::RIGHT_READ;
+    use berry_mm::va::PAGE_SIZE;
+
+    // 1. DEMAND 与 CONTIGUOUS 互斥须拒 -EINVAL。
+    let mut bad_h: u32 = 0;
+    assert_eq!(
+        svc4(
+            NR_VMO_CREATE as u64,
+            PAGE_SIZE as u64,
+            VMO_OPT_DEMAND | VMO_OPT_CONTIGUOUS,
+            &raw mut bad_h as u64,
+        ),
+        ERR_INVALID_ARG as i64,
+        "F0-4: DEMAND|CONTIGUOUS 须拒 -EINVAL"
+    );
+
+    // 2. 5 页（20KiB = vnet DMA 几何）CONTIGUOUS|PINNED：占 order=3（8 页），5 页 PA 严格差 4096B。
+    let base_pages = crate::mm::allocated_pages();
+    let mut hv: u32 = 0;
+    assert_eq!(
+        svc4(
+            NR_VMO_CREATE as u64,
+            (5 * PAGE_SIZE) as u64,
+            VMO_OPT_CONTIGUOUS | VMO_OPT_PINNED,
+            &raw mut hv as u64,
+        ),
+        0,
+        "F0-4: vmo_create(5p, CONTIGUOUS|PINNED)"
+    );
+    assert_eq!(
+        crate::mm::allocated_pages(),
+        base_pages + 8,
+        "F0-4: 5 页连续块应占 order=3（8 页）"
+    );
+    let mut pa0: u64 = 0;
+    assert_eq!(
+        svc4(NR_VMO_GET_PHYS as u64, hv as u64, 0, &raw mut pa0 as u64),
+        0,
+        "F0-4: get_phys(0)"
+    );
+    for i in 1..5u64 {
+        let mut pai: u64 = 0;
+        assert_eq!(
+            svc4(
+                NR_VMO_GET_PHYS as u64,
+                hv as u64,
+                i * PAGE_SIZE as u64,
+                &raw mut pai as u64,
+            ),
+            0,
+            "F0-4: get_phys({i})"
+        );
+        assert_eq!(
+            pai,
+            pa0 + i * PAGE_SIZE as u64,
+            "F0-4: 第 {i} 页物理地址必须与首页严格连续"
+        );
+    }
+
+    // 3. commit 幂等 0（不额外吃页），decommit 拒 -ENOTSUP。
+    assert_eq!(
+        svc4(NR_VMO_COMMIT as u64, hv as u64, 0, (5 * PAGE_SIZE) as u64),
+        0,
+        "F0-4: 连续 VMO 幂等 commit 须成功"
+    );
+    assert_eq!(
+        crate::mm::allocated_pages(),
+        base_pages + 8,
+        "F0-4: 幂等 commit 不得额外分配物理页"
+    );
+    assert_eq!(
+        svc4(NR_VMO_DECOMMIT as u64, hv as u64, 0, PAGE_SIZE as u64),
+        ERR_NOT_SUPPORTED as i64,
+        "F0-4: 连续/钉死 VMO 禁止 decommit"
+    );
+
+    // 4. 0x1C vmo_cache_op：跨页 CLEAN / INVALIDATE / CLEAN_INVALIDATE 全通；只读句柄拒 INVALIDATE。
+    assert_eq!(
+        svc6(
+            NR_VMO_CACHE_OP as u64,
+            hv as u64,
+            VMO_CACHE_OP_CLEAN,
+            8192,
+            8000,
+            0,
+            0,
+        ),
+        0,
+        "F0-4: vmo_cache_op(CLEAN, 跨页 8000B)"
+    );
+    assert_eq!(
+        svc6(
+            NR_VMO_CACHE_OP as u64,
+            hv as u64,
+            VMO_CACHE_OP_INVALIDATE,
+            8192,
+            8000,
+            0,
+            0,
+        ),
+        0,
+        "F0-4: vmo_cache_op(INVALIDATE, 跨页 8000B)"
+    );
+    assert_eq!(
+        svc6(
+            NR_VMO_CACHE_OP as u64,
+            hv as u64,
+            VMO_CACHE_OP_CLEAN_INVALIDATE,
+            0,
+            4096,
+            0,
+            0,
+        ),
+        0,
+        "F0-4: vmo_cache_op(CLEAN_INVALIDATE)"
+    );
+    let mut h_ro: u32 = 0;
+    assert_eq!(
+        svc4(
+            NR_HANDLE_DUPLICATE as u64,
+            hv as u64,
+            RIGHT_READ,
+            &raw mut h_ro as u64,
+        ),
+        0,
+        "F0-4: dup READ-only"
+    );
+    assert_eq!(
+        svc6(
+            NR_VMO_CACHE_OP as u64,
+            h_ro as u64,
+            VMO_CACHE_OP_CLEAN,
+            0,
+            64,
+            0,
+            0,
+        ),
+        0,
+        "F0-4: READ-only 句柄允许 CLEAN"
+    );
+    assert_eq!(
+        svc6(
+            NR_VMO_CACHE_OP as u64,
+            h_ro as u64,
+            VMO_CACHE_OP_INVALIDATE,
+            0,
+            64,
+            0,
+            0,
+        ),
+        ERR_ACCESS_DENIED as i64,
+        "F0-4: READ-only 句柄必须拒绝 INVALIDATE（-EACCES）"
+    );
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, h_ro as u64, 0, 0), 0);
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hv as u64, 0, 0), 0);
+    assert_eq!(
+        crate::mm::allocated_pages(),
+        base_pages,
+        "F0-4: 关闭连续 VMO 后 8 页阶块须完整归还伙伴分配器（0 页泄漏）"
+    );
+
+    // 5. MMIO 窗口 Drop 自动复位路径（有在席设备时把非零 STATUS 清回 0；空槽安全无操作）。
+    {
+        let _mmio = crate::vmo::Vmo::create_mmio(
+            berry_hal_aarch64::VIRTIO_MMIO0_PA,
+            berry_hal_aarch64::VIRTIO_MMIO_LEN,
+        )
+        .expect("F0-4: create_mmio");
+    }
 }

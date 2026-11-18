@@ -132,6 +132,11 @@ pub struct PageLedger {
     /// `mapcnt` 照建（track/untrack/any_mapped 悬空 PTE 防线对设备窗口
     /// 同样成立）。
     mmio_pa: Option<usize>,
+    /// F0-4：物理连续阶块记账 `Some((pa_base, order))`（`VMO_OPT_CONTIGUOUS` 由 `alloc_order`
+    /// 一次弹出 `1 << order` 页并钉死直至对象销毁，禁止中途逐页 `decommit` 撕裂阶块）。
+    contig_block: Option<(usize, u8)>,
+    /// F0-4：DMA 钉死位（`VMO_OPT_PINNED` 或 `VMO_OPT_CONTIGUOUS` 置真时拒绝 `decommit`）。
+    pinned: bool,
     /// 每页后备 PA；`None` = 未提交。索引 = offset / PAGE_SIZE。
     pages: Vec<Option<usize>>,
     /// 每页映射计数（vmar `map` +1 / `unmap` -1，3-2）。**悬空 PTE 防线**：
@@ -158,9 +163,65 @@ impl PageLedger {
         Ok(Self {
             size: npages * PAGE_SIZE,
             mmio_pa: None,
+            contig_block: None,
+            pinned: false,
             pages,
             mapcnt,
         })
+    }
+
+    /// 建物理连续且钉死的匿名 DMA 记账（F0-4：`pa_base` 为 `alloc_order(order)` 头页物理地址，
+    /// `[0..npages)` 创建即全量登记 `Some(pa_base + i * PAGE_SIZE)`，`commit` 幂等空过、`decommit` 拒 `NotSupported`）。
+    pub fn new_contiguous(size: usize, pa_base: usize, order: u8) -> Result<Self, VmoError> {
+        if size == 0 {
+            return Err(VmoError::OutOfRange);
+        }
+        if pa_base % PAGE_SIZE != 0 {
+            return Err(VmoError::Unaligned);
+        }
+        let npages = size.div_ceil(PAGE_SIZE);
+        let Some(block_pages) = 1usize.checked_shl(order as u32) else {
+            return Err(VmoError::OutOfRange);
+        };
+        if npages > block_pages {
+            return Err(VmoError::OutOfRange);
+        }
+        let mut pages = Vec::new();
+        pages.try_reserve_exact(npages).map_err(|_| VmoError::NoMem)?;
+        for i in 0..npages {
+            pages.push(Some(pa_base + i * PAGE_SIZE));
+        }
+        let mut mapcnt = Vec::new();
+        mapcnt.try_reserve_exact(npages).map_err(|_| VmoError::NoMem)?;
+        mapcnt.resize(npages, 0);
+        Ok(Self {
+            size: npages * PAGE_SIZE,
+            mmio_pa: None,
+            contig_block: Some((pa_base, order)),
+            pinned: true,
+            pages,
+            mapcnt,
+        })
+    }
+
+    /// 置 DMA 钉死标志（`VMO_OPT_PINNED`）。
+    pub fn set_pinned(&mut self) {
+        self.pinned = true;
+    }
+
+    /// 是否钉死（`VMO_OPT_PINNED` / `VMO_OPT_CONTIGUOUS`）。
+    pub fn is_pinned(&self) -> bool {
+        self.pinned
+    }
+
+    /// 是否物理连续阶块后备。
+    pub fn is_contiguous(&self) -> bool {
+        self.contig_block.is_some()
+    }
+
+    /// MMIO 物理窗口区间 `(pa_base, size)`（供 `Vmo::Drop` 执行 VirtIO 自动复位防线）。
+    pub fn mmio_pa_range(&self) -> Option<(usize, usize)> {
+        self.mmio_pa.map(|pa| (pa, self.size))
     }
 
     /// 建 MMIO 窗口记账（P6 A-2，boot-only）：`pages` 恒空、`mapcnt` 照建。
@@ -185,6 +246,8 @@ impl PageLedger {
         Ok(Self {
             size: npages * PAGE_SIZE,
             mmio_pa: Some(pa_base),
+            contig_block: None,
+            pinned: true,
             pages: Vec::new(),
             mapcnt,
         })
@@ -274,7 +337,7 @@ impl PageLedger {
         offset: usize,
         len: usize,
     ) -> Result<(PageRange, Vec<(usize, usize)>), VmoError> {
-        if self.mmio_pa.is_some() {
+        if self.mmio_pa.is_some() || self.pinned {
             return Err(VmoError::NotSupported);
         }
         if offset % PAGE_SIZE != 0 || len % PAGE_SIZE != 0 {
@@ -324,15 +387,27 @@ impl PageLedger {
         self.mapcnt.iter().any(|&c| c > 0)
     }
 
+    /// F0-4 连续阶块销毁回收判：仅在全块零残留映射（`!any_mapped()`）时返回 `Some((pa_base, order))`
+    /// 供内核以整阶 `fa.free(pa_base >> PAGE_SHIFT, order)` 一次归还；若仍有残留映射则安全泄漏不拆块。
+    pub fn contig_drop_block(&self) -> Option<(usize, usize)> {
+        let (pa_base, order) = self.contig_block?;
+        if self.any_mapped() {
+            None
+        } else {
+            Some((pa_base, order as usize))
+        }
+    }
+
     /// 对象销毁回收判（Drop 面）：归还 mapcnt==0 的已提交页、**仍被映射的
     /// 页泄漏不还**（悬空 PTE 防线的最后一环）。返回 (页号, PA) 迭代面
-    /// ——kernel 臂执行还帧。
+    /// ——kernel 臂执行还帧。连续阶块 VMO 走 [`contig_drop_block`] 整阶归还，此处恒空防 order-0 双还。
     pub fn droppable_pages(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        let is_contig = self.contig_block.is_some();
         self.pages
             .iter()
             .enumerate()
-            .filter(|&(page, backing)| {
-                backing.is_some() && self.mapcnt[page] == 0
+            .filter(move |&(page, backing)| {
+                !is_contig && backing.is_some() && self.mapcnt[page] == 0
             })
             .map(|(page, backing)| (page, backing.expect("filter 已筛 Some")))
     }
@@ -878,5 +953,45 @@ mod tests {
         assert_eq!(r.last(), 4);
         assert_eq!(r.count(), 3);
         assert_eq!(r.iter().collect::<Vec<_>>(), vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn contiguous_and_pinned_ledger_laws() {
+        // 5 页（20KiB = vnet DMA 几何）配 order=3（8 页阶块）：创建即全提交且物理连续，
+        // commit 幂等放行，decommit 拒 NotSupported，droppable_pages 为空防 order-0 误还，
+        // 未映射时 contig_drop_block 返回整块 (pa_base, 3)，映射中返回 None 守悬空 PTE 防线。
+        let base_pa = 0x4200_0000;
+        let mut c = PageLedger::new_contiguous(5 * KIB4, base_pa, 3).unwrap();
+        assert!(c.is_contiguous() && c.is_pinned());
+        assert_eq!(c.size(), 5 * KIB4);
+        for i in 0..5 {
+            assert_eq!(c.page_pa(i), Some(base_pa + i * KIB4));
+        }
+        assert_eq!(c.page_pa(5), None);
+        // 幂等 commit 资格过（全页均已 Some，调用方零新分配）。
+        assert_eq!(c.commit_pages(0, 5 * KIB4).unwrap().count(), 5);
+        // decommit 一律拒 NotSupported。
+        assert_eq!(c.decommit_pages(0, KIB4), Err(VmoError::NotSupported));
+        assert_eq!(c.droppable_pages().count(), 0);
+        assert_eq!(c.contig_drop_block(), Some((base_pa, 3)));
+        // 映射一页后 contig_drop_block 拒绝拆块。
+        c.track_map(KIB4, KIB4);
+        assert_eq!(c.contig_drop_block(), None);
+        c.untrack_map(KIB4, KIB4);
+        assert_eq!(c.contig_drop_block(), Some((base_pa, 3)));
+
+        // 非对齐基或阶块容量不足显式拒。
+        assert_eq!(
+            PageLedger::new_contiguous(5 * KIB4, base_pa + 0x100, 3).err(),
+            Some(VmoError::Unaligned)
+        );
+        assert_eq!(
+            PageLedger::new_contiguous(5 * KIB4, base_pa, 2).err(),
+            Some(VmoError::OutOfRange)
+        );
+
+        // MMIO 区间查询供内核 VirtIO 自动复位使用。
+        let m = PageLedger::new_mmio(0x0A00_0000, 4 * KIB4).unwrap();
+        assert_eq!(m.mmio_pa_range(), Some((0x0A00_0000, 4 * KIB4)));
     }
 }

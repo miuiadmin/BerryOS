@@ -19,6 +19,7 @@
 
 use berry_mm::frame::FrameAllocator;
 use berry_mm::va::{phys_to_virt, PAGE_SHIFT, PAGE_SIZE};
+use berry_mm::MAX_ORDER;
 use berry_vmoledger::{DemandLedger, PageLedger};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -90,6 +91,65 @@ impl Vmo {
         let mut v = Self::create(size)?;
         v.demand = true;
         Ok(v)
+    }
+
+    /// 建钉死匿名 VMO（F0-4 `VMO_OPT_PINNED`：禁止中途 `decommit`）。
+    pub fn create_pinned(size: usize) -> Result<Self, VmoError> {
+        let mut v = Self::create(size)?;
+        v.ledger.set_pinned();
+        Ok(v)
+    }
+
+    /// 建物理连续且钉死的 DMA VMO（F0-4 `VMO_OPT_CONTIGUOUS`）：
+    /// 按 `npages.next_power_of_two()` 计算伙伴阶 `order`，经 `ALLOC_LOCK` 一次弹出物理连续块，
+    /// 在锁外用 `DC ZVA` 清零整块后完成全页预提交记账；`Vec` 预留失败时自动将整阶块退回伙伴分配器。
+    pub fn create_contiguous_global(size: usize) -> Result<Self, VmoError> {
+        if size == 0 {
+            return Err(VmoError::OutOfRange);
+        }
+        let npages = size.div_ceil(PAGE_SIZE);
+        let Some(block_pages) = npages.checked_next_power_of_two() else {
+            return Err(VmoError::OutOfRange);
+        };
+        let order = block_pages.trailing_zeros() as usize;
+        if order > MAX_ORDER {
+            return Err(VmoError::NoFrames);
+        }
+        let pfn = crate::mm::with_frames(|fa| fa.alloc_order(order))
+            .map_err(|_| VmoError::NoFrames)?;
+        let pa_base = pfn << PAGE_SHIFT;
+        for i in 0..block_pages {
+            // SAFETY: 刚弹出的独占连续物理页块尚无任何外部别名，锁外逐页清零安全。
+            unsafe { zero_page_4k(phys_to_virt(pa_base + i * PAGE_SIZE) as *mut u8) };
+        }
+        match PageLedger::new_contiguous(size, pa_base, order as u8) {
+            Ok(ledger) => Ok(Self {
+                ledger,
+                demand_pins: DemandLedger::default(),
+                demand: false,
+                zfod: false,
+            }),
+            Err(e) => {
+                crate::mm::with_frames(|fa| {
+                    let _ = fa.free(pfn, order);
+                });
+                Err(e)
+            }
+        }
+    }
+
+    /// 对已提交匿名页区间执行 PoC 数据缓存维护（F0-4 `0x1C vmo_cache_op`）。
+    pub fn cache_op(&self, clean_only: bool, offset: usize, len: usize) -> Result<(), VmoError> {
+        berry_vmoledger::copy_gate(&self.ledger, offset, len)?;
+        berry_vmoledger::walk_copy(&self.ledger, offset, len, |pa, off, n| {
+            let kva = phys_to_virt(pa + off);
+            if clean_only {
+                berry_hal_aarch64::cache_poc_clean(kva, n);
+            } else {
+                berry_hal_aarch64::cache_poc_clean_invalidate(kva, n);
+            }
+        });
+        Ok(())
     }
 
     /// 按需后备？（fault 探针分派用：demand 区间的缺页走 pager 协议。）
@@ -296,6 +356,20 @@ impl Drop for Vmo {
     /// MMIO 窗口后备（P6 A-2）：`pages` 恒空 → 还帧面天然零动作——设备 PA 从
     /// 不进帧记账，无「还设备页进 buddy」面。
     fn drop(&mut self) {
+        // F0-4：未残留映射的 MMIO 窗口销毁时，自动将交集内活跃 VirtIO 槽写 STATUS=0 复位，阻断遗留异步 DMA。
+        if let Some((pa_base, size)) = self.ledger.mmio_pa_range() {
+            if !self.ledger.any_mapped() {
+                berry_hal_aarch64::reset_virtio_mmio_window(pa_base, size);
+            }
+            return;
+        }
+        // F0-4：物理连续阶块 VMO 在全无映射时整阶归还伙伴分配器（严禁拆成 order-0 双还）。
+        if let Some((pa_base, order)) = self.ledger.contig_drop_block() {
+            crate::mm::with_frames(|fa| {
+                let _ = fa.free(pa_base >> PAGE_SHIFT, order);
+            });
+            return;
+        }
         // F0-3：经第 5 层 ALLOC_LOCK 归还无映射页，消除 HT_DRAINQ 异步析构与并发分配的数据竞争。
         crate::mm::with_frames(|fa| {
             for (_page, pa) in self.ledger.droppable_pages() {
