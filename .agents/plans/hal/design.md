@@ -3,7 +3,7 @@
 Type: spec
 Status: active
 Updated: 2026-11-18
-Version: 2.0.1
+Version: 2.1.0
 
 一句话说明：`hal` 是莓核（Meihe）的跨架构硬件抽象与平台可靠性底座——以零 `unsafe` 契约层 `berry-hal` 统合 `aarch64` 与 `x86_64`，提供 GICv2/GICv3 双栈自适应与 `EOImode=1` 硬件分离式用户态中断直通、SMMUv3 设备 DMA 隔离与缓存维护，以及跨热重启存活的 16KiB `ramoops` 持久崩溃黑匣子。
 
@@ -64,10 +64,13 @@ Version: 2.0.1
 1. **DMA 物理与缓存契约**：
    - `vmo_create` 传 `VMO_OPT_CONTIGUOUS`（需携设备 `Resource` 授权句柄经 `0x73 map_device_memory` 或扩展授权）：从 `BuddyAllocator` 分配物理连续页块，并在 `FrameRefTable` 置 `FRAME_PINNED` 永不换出；
    - 新增缓存维护操作 `berry_vmo_cache_op(vmo_h, op, offset, len)`（`CACHE_CLEAN = 1` 用于 CPU 写完交设备 DMA 读；`CACHE_INVALIDATE = 2` 用于设备 DMA 写完交 CPU 读，要求缓存行对齐否则返 `-EINVAL`；`CACHE_CLEAN_INVALIDATE = 3`），消除真机非一致性外设的数据静默损坏。
-2. **SMMUv3 设备域（`DeviceDomain`）隔离契约**：
-   - 启动期扫描 DTB `arm,smmu-v3`（或 ACPI `IORT`）：若平台在席 SMMUv3，内核初始化全局命令队列（CMDQ）、事件队列（EVENTQ）与两级流表（Stream Table）；
-   - `devmgr` 为用户态驱动授权设备时，按设备 `StreamID` 建立独立 `SmmuDomain`（默认全部未授权 IOVA/PA 拦截阻断）；驱动仅能将自身持 `RIGHT_READ | RIGHT_WRITE` 的 DMA `Vmo` 调用绑定接口注册入本设备 `SmmuDomain` 的 IO 页表；
-   - 驱动崩溃或卸载时，`SmmuDomain::Drop` 先拆除流表项（STE 置 Abort）并刷 `CMD_CFGI_STE` + `CMD_TLBI_NH_ASID` 同步完成，**确认硬件停止一切在途 DMA 后**才释放 DMA `Vmo` 的 `FRAME_PINNED` 物理帧，彻底封死用户态驱动经 DMA 改写 EL1 内核或他进程内存的旁路。
+2. **SMMUv3 设备域（`ObjType::Bti(16) / Pmt(17)`）与分层硬件资源树（`0x76`）契约**：
+   - **分层硬件资源切分（`0x76 berry_resource_create`）**：内核仅向 `rootmgr` 交付单枚根 `RootResource`，由其与 `devmgr` 经 `berry_resource_create(parent_res, kind, base, len, *out_res)`（门控 `RIGHT_MANAGE`）派生非重叠子区间句柄，覆盖八大资源类 `Mmio / Irq / Iommu / Power / Time / Perf / Trace / Hyp`，根除任何全局无门控特权系统调用；
+   - **SMMUv3 隔离与 `berry_bti_pin`（`0x74 / 0x75`）**：启动期扫描 DTB `arm,smmu-v3`（或 ACPI `IORT`）初始化全局 CMDQ/EVENTQ 与两级流表；`devmgr` 调 `0x74 berry_bti_create(iommu_res, stream_id, *out_bti)` 建立默认全拒的 `SmmuDomain`；驱动持 `RIGHT_PIN_DMA (1<<14)` 的 `Vmo` 调 `0x75 berry_bti_pin(bti, vmo, offset, size, perms, *out_iova, *out_pmt)` 将物理页映射进设备 IO 页表并获取 `ObjType::Pmt(17)` 钉页令牌；
+   - **零 UAF 析构序**：当驱动主动关闭 `Pmt` 或崩溃触发 `Pmt::Drop / Bti::Drop` 时，内核严格先拆除 IO 页表/STE 并执行 `CMD_CFGI_STE + CMD_TLBI_NH_ASID` 硬件同步屏障，**确认硬件彻底终止一切在途 DMA 后**才清除 `FrameRefTable` 的 `FRAME_PINNED` 位归还物理帧。
+3. **内核高精度定时器对象（`ObjType::Timer(10)`：`0x62 / 0x63`）与客机硬件虚拟化窄口（`0x77..0x79`）**：
+   - **`berry_timer_create`（`0x62`）与 `berry_timer_set`（`0x63`）**：每核维护侵入式最小堆管理活跃 `Timer` 对象，结合 `berry-slackface` 在 `[deadline, deadline + slack]` 窗口内合并邻近唤醒点后编程 `ArchTimer::arm_oneshot_abs`，到期置位 `SIGNAL_TIMER_SIGNALED (1<<5)` 并直投绑定 `Port`（保持空闲核 Tickless 深睡不被零散定时器打碎）；
+   - **EL2 / VMX 微虚机硬件窄口（`0x77 berry_guest_create`、`0x78 berry_vcpu_create`、`0x79 berry_vcpu_run`）**：受 `HypResourceCap` 门控，HAL 仅提供 Stage-2 / EPT 客机物理地址（IPA）页表容器与 `vCPU` 寄存器世界切换，一切虚拟外设仿真 100% 留在用户态 `vmm`（见 [compat 总体设计](../compat/design.md)）。
 
 ### 四、16KiB `ramoops` 持久崩溃黑匣子与启动显示脱核
 

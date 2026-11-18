@@ -3,7 +3,7 @@
 Type: spec
 Status: active
 Updated: 2026-11-18
-Version: 2.2.0
+Version: 2.3.0
 
 一句话说明：`emulator`（`tools/berry` 设备平台）定义 BerryOS 在 macOS、Linux 与 Windows 宿主机上的虚拟化启动、Xcode iOS Simulator 同款超椭圆钛金属外框窗口、120fps 零拷贝 GPU 呈现、液态玻璃倾角光场与触控波纹仿真、双架构同构硬件加速、亚秒级快照速启与全栈开发调试桥接的终态架构。
 
@@ -58,7 +58,10 @@ flowchart LR
    - 收敛 `spawn_kernel` 与 `spawn_image` 为统一的 `VmSpec` 构建器：`spawn_kernel` 同样经过 `fwcfg_plan` 单源注入 `opt/berry/accel`、`rtc` 与显示参数（根除 HVF 直启漏键崩溃）；
    - 启动前执行静态拓扑自检（`TopologyValidator`）：自动保证 `virtio-mmio.force-legacy=false`、`virtio-gpu-device` 严格先于 `ramfb` 声明、GUI 模式必配 `virtio-tablet-device` + `virtio-keyboard-device`、`simdev=1` 必配第二路字符通道——任何不满足拓扑不变量的组合在宿主进程创建前立即给出精确人类可读与 `--json` 错误提示，绝不放任客机进入静默黑屏或内核 D-abort。
    - **单二进制自包含资产初始化**：在 `berry` 二进制内直接链接纯 Rust `berry-fatfs` / `mkfat` 格式化核；首次运行 `berry shell` 发现 `~/.berry/data/<profile>.img` 缺席时，毫秒级自动在本地创建并盖章合规 FAT 数据盘，彻底消除对外部 Python 脚本与 `just desktop` 预热步骤的隐性依赖。
-   - **全平台双向控制台**：Windows 平台串口控制通道采用本地回环命名管道或 `127.0.0.1:0` 随机高端口带令牌鉴权套接字，使 `berry console`、`berry logs -f` 在 macOS/Linux/Windows 三端行为 100% 一致。
+   - **全平台双向控制台与无头纯终端模式（`--boot-mode headless`）**：
+     - 统一复用既有 `fw_cfg` 键 `opt/berry/bootmode`（[fwcfg-keys.toml](../../../tools/fwcfg-keys.toml) 单源扩充 `string=headless`，与既有 `verbose` 同键正交）；当传入 `berry run/console --boot-mode headless` 时，`TopologyValidator` 自动豁免显示设备与 `virtio-tablet` 强制门，QEMU 以纯无头 `-display none` 在 `< 150ms` 内直达客机 `consoled + ptyd + bsh`（见 [pty 总体设计](../pty/design.md)）；
+     - `berry console` 默认自动挂载第二路 `virtio-console` 控制端口 `berry-ctlport`：宿主终端触发 `SIGWINCH` 时实时向客机推送最新 `Winsize { cols, rows }`，拦截客机 `bmux/bed` 发出的 OSC 52 剪贴板序列同步至宿主系统剪贴板，并在 Windows/macOS/Linux 三端保持 100% 一致体验；
+     - 配套终端协作子命令：`berry push <host_path> <guest_path>` 与 `berry pull <guest_path> <host_path>` 经 `berry-ctlport` 对接客机 `bscp` 实现 0.2 秒免重打镜像文件互传；`berry ssh [cmd]` 自动桥接/转发至客机 `bsshd` 加密远程多路终端会话（见 [cli-suite 总体设计](../cli-suite/design.md)）。
 
 ### 四、亚秒级 QuickBoot 快照速启与生产力桥接
 
