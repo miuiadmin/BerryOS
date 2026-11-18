@@ -37,7 +37,8 @@
 #   2. 内核接续恰一次：HANDOFF ok ver= / MMAP ok segs= / ROOTFS ok
 #      **src=handoff**（handoff 源专属形态——fw_cfg/DTB 路不通于此）；
 #   3. 裸相 32 标记（与 smoke.sh 同一清单——内核行为零漂移的证据；B-0 起
-#      + BENCH ok n=8（04 号审计基线缺口刀起 n=6→n=8——pick_scan/switch_pair
+#      + BENCH ok n=9（04 号 n=6→n=8 pick_scan/switch_pair；W3-Q98 n=8→n=9
+#        send_recv_pair——02 号 IPC 审计落选三）
 #      两项收口，trailer 迁调度器纪元尾恒发）微基准/churn 金丝雀关卡行；
 #      R-0 起 + BENCHWAKE n=
 #      唤醒延迟直方图形状行；S-2 起 + BENCHXH ok 资源耗尽/恢复六面行）+ EFI 路
@@ -188,7 +189,7 @@ CONT_MARKERS=("HANDOFF ok ver=" "MMAP ok segs=" "ROOTFS ok src=handoff")
 # per-source 唤醒记账行；sim-S2 A2 起 +FRZCYC ok r=2 freeze/thaw 循环行；
 # sim-S3 起 +PSCI susp=0（EFI 路探测行带原因后缀——子串可 grep）+
 # PWRDEG ok d=1（ktest 在 EFI 路照跑，两行都在））。
-KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "FP ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=8" "BENCHWAKE n=" "G1.5 ok" "WAKESRC acct=" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok" "DPG ok" "FRZCYC ok r=2" "PSCI susp=0" "PWRDEG ok d=1")
+KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "FP ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=9" "BENCHWAKE n=" "G1.5 ok" "WAKESRC acct=" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok" "DPG ok" "FRZCYC ok r=2" "PSCI susp=0" "PWRDEG ok d=1")
 # EFI 路生态 52（对抗审查保留日志逐标记普查实证——健康 boot 各恰一次为
 # 日志观察面，本脚本断言为 grep -cF 存在性 ≥1；除
 # WM ok 与 LAUNCH 双（GUI-5/GUI-8 起 EFI 专属）外与 smoke.sh rootfs 相断言

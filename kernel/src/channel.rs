@@ -274,14 +274,34 @@ impl ChannelEnd {
 
     /// 消息压回**队首**（recv 失败回滚专用——消费路径的任一中途失败须保序
     /// 复原，FIFO 语义下不能从队尾补回）。守卫判据单源 =
-    /// [`berry_chanface::push_front_ok`]（W3-Q49——回滚容量不变量钉板：
-    /// 刚弹出一条必腾一空位，压回不越界）。W3-Q95：`Vec::insert(0)`
+    /// [`berry_chanface::push_front_ok`]（W3-Q49——回滚容量不变量钉板：刚
+    /// 弹出一条必腾一空位，压回不越界）。W3-Q95：`Vec::insert(0)`
     /// （O(n) memmove）→ head 环形退一 + 槽写入（O(1)——回滚路径的
     /// 同款收益）。
     pub fn push_front(&mut self, msg: Message) {
         debug_assert!(push_front_ok(self.qlen) && ring_ok(self.head, self.qlen));
         self.head = (self.head + CHAN_DEPTH - 1) % CHAN_DEPTH; // 环形退一（head>0 保）
         self.queue[ring_slot_of(self.head, 0)] = msg;
+        self.qlen += 1;
+    }
+
+    /// W3-Q98（02 号机会三刀 b）：**预占尾槽**——满检过后的 send 侧专用面。
+    /// 返回尾槽的可变借用，调用方在其上直拷构造（user→槽位 bytes 单拷贝
+    /// 直达，bbuf 中转消）；失败路径不 commit 即自然回滚（槽内容丢弃、
+    /// qlen 不动 = 队列零变化——与旧形「bbuf 局部变量被丢」逐位等价）。
+    /// 守卫判据/槽寻址单源 = [`berry_chanface`] ring 模块（W3-Q95 同款）。
+    /// 调用方契约：成功路径须接 [`Self::push_tail_commit`]（len +1 收口）；
+    /// 预占与 commit 之间不得重入本端点任何队列方法（单核 IRQ 屏蔽窗内
+    /// 结构性成立——sys_channel_send 的 PreemptSpan 全程在持）。
+    pub fn tail_slot(&mut self) -> &mut Message {
+        debug_assert!(push_ok(self.qlen) && ring_ok(self.head, self.qlen));
+        &mut self.queue[ring_tail_of(self.head, self.qlen)]
+    }
+
+    /// W3-Q98：预占尾槽的**收尾提交**——仅 len +1（槽内容已由调用方写入）。
+    /// 守卫 = [`berry_chanface::push_ok`]（不变量防御面——满检前置已挡）。
+    pub fn push_tail_commit(&mut self) {
+        debug_assert!(push_ok(self.qlen) && ring_ok(self.head, self.qlen));
         self.qlen += 1;
     }
 }

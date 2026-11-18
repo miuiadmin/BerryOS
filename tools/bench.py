@@ -32,8 +32,9 @@
   在内核侧 L0；跨机绝对值不可比承 B-2 纪律）。行嵌矩阵流中段（prio 8 抢
   占打印）——BENCHRT 同款非锚定收割。
 - --icount（B-2）：裸跑 QEMU 追加定值 `-icount shift=1,sleep=off` 与
-  `opt/berry/sbench` 门键（基线面恒全八行——04 号审计基线缺口两项收口，
-  2026-11-17），等 boot 尾 `BENCHWAKE n=`（非锚定），双面收割——八行
+  `opt/berry/sbench` 门键（基线面恒全九行——04 号两项 + W3-Q98
+  send_recv_pair，2026-11-18），等 boot 尾 `BENCHWAKE n=`（非锚定），
+  双面收割——九行
   BENCH（行锚定）= L2 门禁面 + BENCHWAKE 整行 = R-0 观测面（§13「依赖」
   段，观测不动门禁）。三条语义
   （设计 §13，防误用）：①CNTV 推进绑指令数（shift=1 虚拟时钟 = 每指令 2ns，
@@ -191,7 +192,7 @@ ICOUNT_ARGS = ["-icount", "shift=1,sleep=off"]
 # 04 号审计基线缺口两项（2026-11-17）：pick_scan 进 boot 干净窗（恒发）+
 # switch_pair 进调度器纪元（fw_cfg `opt/berry/sbench` 门控——键在才 spawn
 # 测量对）。**icount 族 qemu_cmd 恒递此键**（run_icount 默认 sbench=True
-# = --icount/--prove 通道基线面恒全八行）；**trace-dual 两臂红线禁递**
+# = --icount/--prove 通道基线面恒全九行）；**trace-dual 两臂红线禁递**
 # （sbench=False 显式关——TRACE_CAP 证书面 = 前调度器纪元项，switch_pair
 # 属调度器纪元，入面即触发「迁纪元须重标定」义务，见 TRACE_CAP 注）；
 # smoke/生产 boot 缺席 = 门缺席仅缺 switch_pair 行，trailer 恒 n=8。
@@ -238,7 +239,7 @@ TRACE_CAP = 0.0
 
 # L2 紧门禁形态（**单一事实源**——基线文件头注释与设计文档 §13 只做镜像
 # 引用，执法点唯一在此常量；防双源漂移 = P6 A-5 基准漂移雷教训）：
-#   0.0  = 各项逐值精确相等（八项；五跑证明 verdict=exact 时合法）
+#   0.0  = 各项逐值精确相等（九项；五跑证明 verdict=exact 时合法）
 #   0.05 = ±5% **双侧带** [base×0.95, base×1.05]（证明得 drift 时的降级档
 #          ——确定性通道里向「好」漂移同样 = 指令流变了 = 异常，与 L1 单侧
 #          只拦劣化（下方 cyc > old * factor）刻意不同）
@@ -1507,9 +1508,11 @@ def save_baseline_icount_off(metrics: dict[str, int]) -> None:
 
 def _iter_table() -> dict[str, int]:
     """B-0 基准项 → 迭代数（与 bench.rs 定值镜像——漂移只影响基线可读性，对拍按名）。
-    八项（04 号审计基线缺口刀起，2026-11-17）：pick_scan = boot 干净窗直调
+    九项（W3-Q98 起含 send_recv_pair，2026-11-18）：pick_scan = boot 干净窗直调
     出选面；switch_pair = 调度器纪元门控行（sbench 键缺席的通道结构性缺席
-    ——交集对账容差集 SBENCH_GATED 恰含此名）。"""
+    ——交集对账容差集 SBENCH_GATED 恰含此名）；send_recv_pair = svc 直调
+    IPC 主路径往返（02 号 IPC 审计落选三——新增项基线缺席时门禁只提示
+    不红，`--icount --update` 自立）。"""
     return {
         "cntvct_pair": 4096,
         "frame_alloc4k": 1024,
@@ -1519,6 +1522,7 @@ def _iter_table() -> dict[str, int]:
         "handle_evt": 1024,
         "pick_scan": 1024,
         "switch_pair": 128,
+        "send_recv_pair": 1024,
     }
 
 

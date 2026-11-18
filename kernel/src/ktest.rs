@@ -2220,6 +2220,60 @@ fn test_syscall() {
         "SYSCALL：清场后 channel 计数须回落帽下（不污后续段）"
     );
 
+    // H12. W3-Q98 回归面（02 号机会三刀 b）：send 载荷**源** fault——载荷直拷
+    //      尾槽后源坏址须 -EFAULT 且**队列零变化**（尾槽残句不可见：qlen 不动、
+    //      后续正常收发不受污染）。旧形 bbuf 栈中转此路径无覆盖（载荷源 fault
+    //      无 SEC 负例），刀 b 把拷贝目的地从栈变量移进队列尾槽，补钉板：
+    //      ①坏源 send → -EFAULT；②recv 仍 -EAGAIN（队空——残句未 commit）；
+    //      ③好源 send → 正常收到（尾槽被复用，残句被覆盖）。
+    // SAFETY: 同上（OUT/CHILD_OUT 为本函数私有静态）。
+    unsafe { OUT = 0; CHILD_OUT = 0 };
+    assert_eq!(
+        svc4(NR_CHANNEL_CREATE as u64, 0, &raw mut OUT as u64, &raw mut CHILD_OUT as u64),
+        0,
+        "SYSCALL：channel_create（H12 刀 b 回归）"
+    );
+    let (hy0, hy1) = (unsafe { OUT } as u32, unsafe { CHILD_OUT } as u32);
+    // ① 坏源（0x4000_0000——EL1 面只认内核高半直映区，必拒——H10 同址判例）。
+    // SAFETY: 同上。
+    unsafe { H_NB = 8; H_NH = 0 };
+    assert_eq!(
+        svc6(NR_CHANNEL_SEND as u64, hy0 as u64, 0x4000_0000, 8, 0, 0, 0),
+        -14,
+        "SYSCALL：坏源 send 须 -EFAULT（刀 b 源 fault）"
+    );
+    // ② 队列零变化：recv 仍 -EAGAIN（尾槽残句未 commit 不可见）。
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV as u64, hy1 as u64, &raw mut HBUF as u64,
+             &raw mut H_NB as u64, &raw mut H_HND as u64, &raw mut H_NH as u64, 0),
+        -11,
+        "SYSCALL：源 fault 后队列须零变化（-EAGAIN 钉板）"
+    );
+    // ③ 好源直发同端：正常收到（尾槽复用、残句被覆盖——PATTERN 比对）。
+    // SAFETY: 同上。
+    unsafe { HBUF[..8].copy_from_slice(&PATTERN.to_le_bytes()); H_NB = 8; H_NH = 0 };
+    assert_eq!(
+        svc6(NR_CHANNEL_SEND as u64, hy0 as u64, &raw const HBUF as u64, 8, 0, 0, 0),
+        0,
+        "SYSCALL：源 fault 后正常 send（刀 b 尾槽复用）"
+    );
+    unsafe { HBUF = [0; 320]; H_NB = 8; H_NH = 0 };
+    assert_eq!(
+        svc6(NR_CHANNEL_RECV as u64, hy1 as u64, &raw mut HBUF as u64,
+             &raw mut H_NB as u64, &raw mut H_HND as u64, &raw mut H_NH as u64, 0),
+        0,
+        "SYSCALL：源 fault 后正常 recv（同端收得）"
+    );
+    assert_eq!(
+        unsafe { u64::from_le_bytes(HBUF[..8].try_into().unwrap()) },
+        PATTERN,
+        "SYSCALL：尾槽复用后载荷须精确（残句覆盖钉板）"
+    );
+    assert_eq!(unsafe { H_NH }, 0, "SYSCALL：H12 零随行 handle");
+    // 清场（互钉环泄漏，安全向）。
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hy0 as u64, 0, 0), 0, "SYSCALL：close hy0（H12）");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hy1 as u64, 0, 0), 0, "SYSCALL：close hy1（H12）");
+
     // I. 3-4c event 三号：位掩码语义 + SIGNAL 权利面；4-1 wait_one 阻塞化后
     //    deadline≠0 → 到点未命中 -ETIMEDOUT（ktest 在 sched::init 前不能睡，
     //    用远古时刻 deadline=1 验「已过点立即返」路径；真睡的 EL0 正向验收 =
