@@ -342,6 +342,15 @@ pub(crate) fn current_ttbr0_pa() -> usize {
     ttbr as usize & 0x0000_FFFF_FFFF_F000
 }
 
+/// 读当前 TTBR1_EL1 内核表基 PA（bits[47:12]；W3-Q104 freeze_syscalls_table
+/// walk 用——高半 .text 不得静态引用 `.bss.boot` 低半表符号，见该函数内注释）。
+pub(crate) fn current_ttbr1_pa() -> usize {
+    let ttbr: u64;
+    // SAFETY: 特权读；EL1，无副作用。
+    unsafe { asm!("mrs {0}, ttbr1_el1", out(reg) ttbr, options(nostack, preserves_flags)) };
+    ttbr as usize & 0x0000_FFFF_FFFF_F000
+}
+
 /// S-4 4-2：当前 ASID——syscall copy 链读者解析 per-AS PT 锁的键；demand
 /// 探针（`dpg::probe`）asid 反查同源。与 [`current_ttbr0_pa`] 同一激活窗
 /// （EL0 syscall 不切 AS，天然 = 调用者 ASID，同窗一致键）。
@@ -424,19 +433,30 @@ pub fn syscalls_table_ro() -> bool {
 /// 拓扑（表项写毕经 `dsb ish` 才切 L2 项），无共享窗。
 ///
 /// # Safety
-/// boot 单线程调用一次；只写 boot 页表项（`SPLIT_L3_SYSCALLS` 专表）与
-/// `SYSCALLS_RO` 标记，不触碰任何运行期数据。
+/// boot 单线程调用一次；只写页表项（RAM L2 目标槽 + `SPLIT_L3_SYSCALLS`
+/// 专表，高半 .bss）与 `SYSCALLS_RO` 标记，不触碰任何运行期数据。
 pub unsafe fn freeze_syscalls_table() {
     // 镜像布局：VMA - KERNEL_VA_BASE == LMA（linker 脚本）。
     let sva = (&raw const crate::syscall::SYSCALLS) as usize;
     debug_assert_eq!(sva & 0xFFF, 0, "SYSCALLS 须 4KiB 对齐");
     let spa = sva - KERNEL_VA_BASE;
     let l2_idx = (spa >> 21) & L2_INDEX_MASK;
-    let l2 = &raw mut BOOT_L2_RAM;
 
-    // 分裂专表（低半 .bss.boot——boot asm 已清零；与四张 boot 表同窗，
-    // 表基即 PA 无需 virt_to_phys）。
-    #[link_section = ".bss.boot"]
+    // RAM L2 表基：**运行期从 TTBR1_EL1 walk**（L1[1] → 下级表基 PA），不从
+    // `BOOT_L2_RAM` 符号直取——该表落 `.bss.boot` 低半（VMA==PA），高半
+    // .text 的静态引用必发 ADRP±4GiB 断链（R490 判例：rust-lld
+    // `R_AARCH64_ADR_PREL_PG_HI21 out of range`，CI-light 不编目标机的双盲
+    // 面）。KERNEL_L1[1] 与 BOOT_L1[1] 同指该表（build_boot_pt），TTBR1 写入
+    // 值即其 PA——walk 零静态引用、零额外真值源。walk 读经高半直映别名。
+    let l1_pa = current_ttbr1_pa();
+    let l1 = (l1_pa + KERNEL_VA_BASE) as *const u64;
+    let l2_desc = unsafe { (&raw const *l1.add(1)).read_volatile() };
+    debug_assert_eq!(l2_desc & 0x3, 0b11, "L1[1] 须是有效表描述符");
+    let l2 = (((l2_desc & 0x0000_FFFF_FFFF_F000) as usize) + KERNEL_VA_BASE) as *mut L2Table;
+
+    // 分裂专表（高半普通 .bss——boot asm 开 MMU 前按 PA 清零主体 .bss，
+    // 调用时已零；挂表时 VMA−KERNEL_VA_BASE 折算 PA。**不得**学四张 boot
+    // 表落 .bss.boot 低半：高半 .text 的 ADRP 引用断链〔R490 链接红根因〕）。
     static mut SPLIT_L3_SYSCALLS: L3Table = L3Table([0; PTES_PER_TABLE]);
     let l3 = &raw mut SPLIT_L3_SYSCALLS;
 
@@ -462,7 +482,7 @@ pub unsafe fn freeze_syscalls_table() {
     // 先 L3 后 L2（walk 见表项时叶已就绪——无窗口），再屏障 + 全量 TLB
     // 失效（旧块项是 global，须 vmalle1is 家族）。
     unsafe { dsb_ish() };
-    unsafe { (&raw mut (*l2).0[l2_idx]).write_volatile(table_descriptor(l3 as usize)) };
+    unsafe { (&raw mut (*l2).0[l2_idx]).write_volatile(table_descriptor(l3 as usize - KERNEL_VA_BASE)) };
     unsafe { dsb_ish() };
     unsafe { flush_all_asid() };
     SYSCALLS_RO.store(true, Ordering::Release);
