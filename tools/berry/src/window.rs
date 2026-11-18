@@ -1730,3 +1730,195 @@ mod toolbar_clip_tests {
         assert_eq!(buf[(by - 1) * w as usize + 290], 0x0018_1C20, "above band stays bar");
     }
 }
+
+#[cfg(test)]
+mod window_deep_tests {
+    use super::*;
+
+    // —— 工具栏命中水平几何边界族 ——
+
+    /// 按钮左右缘精确包容：x=bx 含、x=bx+bw 排（开区间右缘归下一
+    /// 间隙/按钮）；相邻按钮间隙中点 None（间隙 6px 无死区误吞）。
+    #[test]
+    fn toolbar_hit_horizontal_edges_and_gaps() {
+        let (w, h) = (480u32, 200u32);
+        let btns = toolbar_buttons(w);
+        let by = (h - TOOLBAR_H + 8) as f64;
+        for (i, (bx, bw)) in btns.iter().enumerate() {
+            assert_eq!(toolbar_hit(w, h, *bx as f64, by + 16.0), Some(i), "left edge btn {i}");
+            assert_eq!(
+                toolbar_hit(w, h, (*bx + *bw - 1) as f64, by + 16.0),
+                Some(i),
+                "last inside col btn {i}"
+            );
+            assert_eq!(
+                toolbar_hit(w, h, (*bx + *bw) as f64, by + 16.0),
+                None,
+                "right edge exclusive btn {i}"
+            );
+        }
+        // Gap midpoint between button 0 and 1 (6px gap): dead.
+        let (b0, bw) = btns[0];
+        let gap_mid = (b0 + bw + 3) as f64;
+        assert_eq!(toolbar_hit(w, h, gap_mid, by + 16.0), None, "gap midpoint");
+    }
+
+    /// 纵向带精确边界：y=by 含（按钮顶含）、y=by+32 排（按钮底开）；
+    /// y=by-0.01 仍按钮带（浮点锚在带内）。
+    #[test]
+    fn toolbar_hit_vertical_edges() {
+        let (w, h) = (480u32, 200u32);
+        let (bx, bw) = toolbar_buttons(w)[0];
+        let bar_top = h - TOOLBAR_H;
+        let by = bar_top + 8;
+        assert_eq!(toolbar_hit(w, h, (bx + 1) as f64, by as f64), Some(0), "top edge in");
+        assert_eq!(
+            toolbar_hit(w, h, (bx + 1) as f64, (by + 31) as f64),
+            Some(0),
+            "bottom-1 in"
+        );
+        assert_eq!(toolbar_hit(w, h, (bx + 1) as f64, (by + 32) as f64), None, "bottom edge out");
+        assert_eq!(
+            toolbar_hit(w, h, (bx + bw / 2) as f64, (by - 1) as f64),
+            None,
+            "one above button band"
+        );
+    }
+
+    /// 窄窗锚点饱和下的命中语义：width=300 时 6 槽仍生成，右缘越界
+    /// 按钮起点 x 落在界内前缀段（左锚 0）照常命中——退化几何不误吞。
+    #[test]
+    fn toolbar_hit_narrow_window_partial_buttons() {
+        let (w, h) = (300u32, 200u32);
+        let btns = toolbar_buttons(w);
+        assert_eq!(btns[0].0, 0, "saturated anchor at 0");
+        // Buttons 0..=3 start in-bounds; each center still hit-testable.
+        for i in 0..4usize {
+            let (bx, bw) = btns[i];
+            assert!(bx < w, "btn {i} in-bounds prefix");
+            let by = (h - TOOLBAR_H + 8) as f64;
+            let x = (bx + bw / 2) as f64;
+            let hit = toolbar_hit(w, h, x, by + 16.0);
+            if x < w as f64 {
+                assert_eq!(hit, Some(i), "visible center btn {i}");
+            }
+        }
+        // Off-screen button rect is still hit-testable in coordinate space:
+        // toolbar_hit does NOT screen-clip button rects (the window simply
+        // never delivers clicks past its edge). Pin the real contract —
+        // button 5 starts at 330 on a 300-wide window, its center 360 hits.
+        let (b5, bw5) = btns[5];
+        assert!(b5 >= w, "btn 5 rect starts off right edge");
+        let x5 = (b5 + bw5 / 2) as f64;
+        assert_eq!(
+            toolbar_hit(w, h, x5, (h - TOOLBAR_H + 24) as f64),
+            Some(5),
+            "off-screen rect stays hit-testable (no screen clip)"
+        );
+    }
+
+    // —— tooltip 深面 ——
+
+    /// tooltip 左钳位：SH0T 按钮（最左，bx=0 饱和锚时）泡宽 tw+10 恒
+    /// <= 半宽锚，x 不下溢不 panic；右缘同理被 min 拉回——左右双缘全
+    /// 界内（泡行不越界）。
+    #[test]
+    fn draw_tooltip_left_clamp_and_bounds() {
+        // Narrow window forces anchor 0 for button 0; SCREENSHOT tip is the
+        // widest (10 chars → tw=120, bw_tip=130).
+        let (w, h) = (300u32, 200u32);
+        let mut buf = vec![0u32; (w * h) as usize];
+        draw_tooltip(&mut buf, w, h, 0);
+        let tip = 0x002A_3036;
+        let ty = (h - TOOLBAR_H - 26) as usize;
+        // Full 20-row band must be drawn and every painted pixel in-bounds
+        // by construction (no panic). Count per-row painted columns.
+        let mut rows_painted = 0;
+        for y in ty..(ty + 20).min(h as usize) {
+            if (0..w as usize).any(|x| buf[y * w as usize + x] == tip) {
+                rows_painted += 1;
+            }
+        }
+        assert!(rows_painted >= 19, "left-clamped tip paints {rows_painted}/20 rows");
+        // Right side: WEB/BROWSER on a window narrower than the anchor
+        // push → clamp keeps x + bw_tip <= width.
+        let (w2, h2) = (360u32, 200u32);
+        let mut buf2 = vec![0u32; (w2 * h2) as usize];
+        draw_tooltip(&mut buf2, w2, h2, 5);
+        let mut painted2 = 0;
+        let ty2 = (h2 - TOOLBAR_H - 26) as usize;
+        for y in ty2..(ty2 + 20).min(h2 as usize) {
+            if (0..w2 as usize).any(|x| buf2[y * w2 as usize + x] == tip) {
+                painted2 += 1;
+            }
+        }
+        assert!(painted2 >= 19, "right-clamped tip paints {painted2}/20 rows");
+    }
+
+    /// 泡内文本可见：hover 0（SCREENSHOT）泡带内至少一个前景像素
+    /// （泡不只画底不画字）。
+    #[test]
+    fn draw_tooltip_renders_text_inside() {
+        let (w, h) = (480u32, 200u32);
+        let mut buf = vec![0u32; (w * h) as usize];
+        draw_tooltip(&mut buf, w, h, 0);
+        let fg = 0x00E8_ECF0;
+        let ty = (h - TOOLBAR_H - 26) as usize;
+        let has_text = (ty..(ty + 20).min(h as usize)).any(|y| {
+            (0..w as usize).any(|x| buf[y * w as usize + x] == fg)
+        });
+        assert!(has_text, "tooltip band contains text pixels");
+    }
+
+    // —— 字形位图逐字母钉板 ——
+
+    /// 字形表内容钉板：每字母全 7 行位图逐字节锁死（15 字母 × 7 行）。
+    /// 表值漂移即红——比「非全零」更强的防回归：字形是视觉契约。
+    #[test]
+    fn glyph_bitmaps_exact() {
+        let expect: &[(char, [u8; 7])] = &[
+            ('S', [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110]),
+            ('H', [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001]),
+            ('O', [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110]),
+            ('T', [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100]),
+            ('B', [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110]),
+            ('F', [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000]),
+            ('U', [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110]),
+            ('L', [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111]),
+            ('R', [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001]),
+            ('E', [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111]),
+            ('C', [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110]),
+            ('I', [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111]),
+            ('N', [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001]),
+            ('P', [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000]),
+            ('W', [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001]),
+        ];
+        for (ch, rows) in expect {
+            for r in 0..7 {
+                assert_eq!(glyph(*ch, r), rows[r], "glyph {ch} row {r}");
+            }
+        }
+    }
+
+    // —— default_window_size 饱和/退化面 ——
+
+    /// panel 维度 0：max(1) 守卫防除零，factor 钳 0.2 后 0*w 仍落
+    /// 320x240 地板；不 panic。
+    #[test]
+    fn default_window_size_zero_panel() {
+        let (w, h) = default_window_size(0, 0, 0.9, Some((800, 600, 1.0)));
+        assert_eq!((w, h), (320, 240), "zero panel floors");
+        // None-monitor path: raw factor on zero panel → floors too.
+        assert_eq!(default_window_size(0, 960, 0.9, None), (320, 864));
+    }
+
+    /// monitor 物理面退化（0x0）：除后 clamp 极小 → factor 地板 0.2，
+    /// 尺寸地板兜底；不除零不 panic。
+    #[test]
+    fn default_window_size_degenerate_monitor() {
+        let (w, h) = default_window_size(540, 960, 0.9, Some((0, 0, 1.0)));
+        assert_eq!((w, h), (320, 240));
+        // Huge integer factor without monitor: no clamp, direct scale.
+        assert_eq!(default_window_size(300, 200, 8.0, None), (2400, 1600));
+    }
+}
