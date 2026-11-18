@@ -86,6 +86,11 @@ pub(crate) fn split_host_port(a: &str) -> std::result::Result<(String, u16), cra
         return Ok((format!("[{host}]"), port));
     }
     let (host, port) = a.rsplit_once(':').ok_or_else(bad)?;
+    if host.is_empty() {
+        // 空主机（":5900"）在 QEMU -vnc 语义 = 全接口监听——静默错绑面，
+        // 按「error instead of silent misbind」拒（同 5899 下界形）。
+        return Err(bad());
+    }
     let port: u16 = port.parse().map_err(|_| bad())?;
     Ok((host.to_string(), port))
 }
@@ -196,6 +201,80 @@ mod tests {
         assert_eq!(
             Endpoint::Unix("/tmp/x.sock".into()).qemu_vnc().unwrap(),
             "unix:/tmp/x.sock"
+        );
+    }
+
+    /// split_host_port 边界全家桶：括号 IPv6 保留原拼写（QEMU argv 对读
+    /// 契约）、非括号 rsplit_once 形、各坏形全拒（错误而非静默错绑）。
+    #[test]
+    fn split_host_port_boundaries() {
+        // 括号 IPv6：host 原样保留含括号——qemu_vnc 输出与 -vnc 接受的
+        // 拼写一致（display() 同源）。
+        assert_eq!(
+            split_host_port("[::1]:5971").unwrap(),
+            ("[::1]".to_string(), 5971)
+        );
+        assert_eq!(
+            split_host_port("[fe80::1%25lo0]:5900").unwrap(),
+            ("[fe80::1%25lo0]".to_string(), 5900)
+        );
+        // IPv4 + rsplit_once 形（右冒号优先——主机含冒号时取最右）。
+        assert_eq!(
+            split_host_port("127.0.0.1:5971").unwrap(),
+            ("127.0.0.1".to_string(), 5971)
+        );
+        // 非 IPv4 主机名。
+        assert_eq!(
+            split_host_port("localhost:5901").unwrap(),
+            ("localhost".to_string(), 5901)
+        );
+        // 括号 IPv6 括号面坏形。
+        for bad in [
+            "localhost",           // 无端口分隔
+            ":5900",               // 空主机（QEMU 语义 = 全接口监听，拒）
+            "localhost:",          // 空端口
+            "localhost:http",      // 非数字端口
+            "localhost:65536",     // u16 越界
+            "[::1",                // 括号未闭合
+            "[::1]5900",           // ] 后缺 :
+            "[::1]:x",             // 括号形非数字端口
+        ] {
+            assert!(
+                split_host_port(bad).is_err(),
+                "split_host_port({bad:?}) should reject"
+            );
+        }
+        // 端口 0 在解析层合法（u16 域内）——不可表达性由 qemu_vnc 层拒
+        //（<5900 下界），分层各司其职。
+        assert_eq!(
+            split_host_port("localhost:0").unwrap(),
+            ("localhost".to_string(), 0)
+        );
+        assert!(Endpoint::Tcp("localhost:0".into()).qemu_vnc().is_err());
+    }
+
+    /// qemu_qmp 端点拼写：TCP 形 server=on,wait=off 后缀与 Unix 形同构。
+    #[test]
+    fn qemu_qmp_endpoint_spelling() {
+        assert_eq!(
+            Endpoint::Tcp("127.0.0.1:4444".into()).qemu_qmp(),
+            "tcp:127.0.0.1:4444,server=on,wait=off"
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            Endpoint::Unix("/tmp/qmp.sock".into()).qemu_qmp(),
+            "unix:/tmp/qmp.sock,server=on,wait=off"
+        );
+    }
+
+    /// display() 人类可读形：TCP 原串、Unix 原路径。
+    #[test]
+    fn endpoint_display() {
+        assert_eq!(Endpoint::Tcp("10.0.0.2:5901".into()).display(), "10.0.0.2:5901");
+        #[cfg(unix)]
+        assert_eq!(
+            Endpoint::Unix("/tmp/v.sock".into()).display(),
+            "/tmp/v.sock"
         );
     }
 }

@@ -19,7 +19,7 @@
 //!   [`HELD_TABLE_BIT`]：sched `task.rs` HELD_* 位值的**判据面镜像**（非
 //!   第二实现——host 侧拿不到 berry-sched，此处钉「类位集对 sched 位值的
 //!   组装律」，与 kernel main.rs 编译期断言同一语义的 host 可测形）。
-//! - [`REGISTRY`]：45 号注册表（`(nr, class)` 对——与 kernel `install()`
+//! - [`REGISTRY`]：46 号注册表（`(nr, class)` 对——与 kernel `install()`
 //!   逐行对应；`0x83 policy_bind` 字面量号同款入册）。
 //! - [`class_of`]：号→类查询——注册表线性扫（45 项，boot 期注册语义的
 //!   纯投影；**未注册号 → [`SVC_CLASS_NONE`]**，与 HAL 派发表默认槽
@@ -141,6 +141,9 @@ pub const REGISTRY: &[(u8, u8)] = &[
     (0x51, SVC_CLASS_ALL),          // channel_create
     (0x52, SVC_CLASS_SQ_RQ_TABLE),  // channel_send
     (0x53, SVC_CLASS_SQ_RQ_TABLE),  // channel_recv
+    // W3-Q97 批量 recv（机会五）：锁类与单发 recv 完全同面（同
+    // caller_table/get_raw/PT 窗/wake_matching），同类挂法。
+    (0x57, SVC_CLASS_SQ_RQ_TABLE),  // channel_recv_n
     (0x54, SVC_CLASS_ALL),          // event_create
     // —— 信号面（A7-4：0x86 表查 + pending 原子；0x87 copy_out 链升 TABLE）——
     (0x86, SVC_CLASS_TABLE), // signal_send
@@ -243,10 +246,10 @@ mod tests {
         }
     }
 
-    /// 表规模与形状：45 号在册、无重复号（cbox 刀 1 0x42 + 阶段五遥测 0x84）。
+    /// 表规模与形状：46 号在册、无重复号（W3-Q97 批量 recv 0x57 入册）。
     #[test]
     fn registry_shape() {
-        assert_eq!(REGISTRY.len(), 45);
+        assert_eq!(REGISTRY.len(), 46);
         assert!(nrs_unique());
     }
 
