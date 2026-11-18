@@ -949,3 +949,225 @@ mod weak_face_tests {
         std::env::remove_var("BERRY_DEMO_FACE");
     }
 }
+
+// ---- W1-Q26 十九刀：spawn_image argv 拼装面钉板——真 spawn 路唯一入口，
+// ---- 单源子面（fwcfg_plan/data_disk_plan/serial_chardev_args）各有护栏，
+// ---- 但总装序契约零直测：外 VNC 先于内（QMP set_password 只作用于首个
+// ---- 声明的 server）、gpu 先于 ramfb（VNC 面向先声明图形设备）、TLS
+// ---- object、memory-backend 形态。经 fake-qemu 脚本捕获 argv
+// ---- （read_version 测试同款先例），不跑真 QEMU。
+#[cfg(unix)]
+#[cfg(test)]
+mod spawn_image_argv_tests {
+    use super::*;
+    use crate::run_dir::ENV_LOCK;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn tmp_dir(tag: &str) -> PathBuf {
+        let tmp = std::env::temp_dir().join(format!("berry-spawnimg-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        tmp
+    }
+
+    fn fake_qemu(tmp: &Path) -> Qemu {
+        let sh = tmp.join("fake-qemu");
+        // argv 捕获到 argv.txt（shell 分隔符安全：NUL 分隔无转义面），
+        // exit 0 模拟 spawn 成功。
+        std::fs::write(
+            &sh,
+            "#!/bin/sh\ncd \"$(dirname \"$0\")\"\nprintf '%s\\0' \"$@\" > argv.txt\nexit 0\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&sh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        Qemu {
+            path: sh,
+            version: "fake".to_string(),
+        }
+    }
+
+    fn read_argv(tmp: &Path) -> Vec<String> {
+        let raw = std::fs::read(tmp.join("argv.txt")).unwrap();
+        raw.split(|&b| b == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| String::from_utf8_lossy(s).to_string())
+            .collect()
+    }
+
+    fn pos(args: &[String], needle: &str) -> usize {
+        args.iter()
+            .position(|a| a.contains(needle))
+            .unwrap_or_else(|| panic!("argv missing {needle}: {args:?}"))
+    }
+
+    /// 基础形：全可选件缺席 + tablet 关 + 无数据盘（BERRY_DATA_DISK=off
+    /// 钉死，防宿主缺省盘渗入）+ BERRY_NO_VGPU 未设。
+    fn spawn_base(tmp: &Path, image_name: &str) -> Vec<String> {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::set_var("BERRY_DATA_DISK", "off");
+        std::env::remove_var("BERRY_NO_VGPU");
+        let r = spawn_image(
+            &fake_qemu(tmp),
+            &tmp.join(image_name),
+            &tmp.join("fw.fd"),
+            &tmp.join("vars.fd"),
+            &tmp.join("serial.log"),
+            &tmp.join("serial.sock"),
+            &tmp.join("spawn.log"),
+            &Endpoint::Unix(tmp.join("vnc.sock")),
+            &Endpoint::Unix(tmp.join("qmp.sock")),
+            Accel::Tcg,
+            256,
+            false,
+            None,
+            "testprof",
+            None,
+            None,
+            None,
+        );
+        std::env::remove_var("BERRY_DATA_DISK");
+        let mut child = r.unwrap();
+        child.wait().unwrap();
+        read_argv(tmp)
+    }
+
+    #[test]
+    fn base_shape_and_conditional_absents() {
+        let tmp = tmp_dir("base");
+        let args = spawn_base(&tmp, "berryos.img");
+        // 机器面：virt（无 memory-backend）、accel/cpu/m 三元组、headless。
+        assert!(args.contains(&"-machine".to_string()));
+        assert!(!args.iter().any(|a| a.starts_with("virt,memory-backend")));
+        let i = pos(&args, "-accel");
+        assert_eq!(&args[i + 1], "tcg");
+        assert_eq!(&args[i + 2], "-cpu");
+        assert_eq!(&args[i + 1], "tcg");
+        assert!(args.windows(2).any(|w| w == ["-cpu", "cortex-a72"]));
+        assert!(args.windows(2).any(|w| w == ["-m", "256M"]));
+        assert!(args.windows(2).any(|w| w == ["-display", "none"]));
+        assert!(args.windows(2).any(|w| w == ["-monitor", "none"]));
+        // 串口 chardev 双向化 + logfile 契约面（console 刀件1）。
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "-chardev" && w[1].starts_with("socket,id=ser0,path=")));
+        assert!(args.windows(2).any(|w| w == ["-serial", "chardev:ser0"]));
+        // VNC/QMP 内端点形 + 注入 QMP 派生 sock（Unix qmp 端点面）。
+        assert!(args.windows(2).any(|w| w[0] == "-vnc" && w[1] == format!("unix:{}", tmp.join("vnc.sock").display())));
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "-qmp" && w[1] == format!("unix:{},server=on,wait=off", tmp.join("qmp.sock").display())));
+        assert!(args.windows(2).any(|w| w[0] == "-qmp" && w[1] == format!("unix:{},server=on,wait=off", tmp.join("qmp-inject.sock").display())));
+        // 双 pflash：fw 只读、vars 可写。
+        assert!(args.windows(2).any(|w| w[0] == "-drive" && w[1].contains("if=pflash,format=raw,readonly=on,file=")));
+        assert!(args.windows(2).any(|w| w[0] == "-drive" && w[1] == format!("if=pflash,format=raw,file={}", tmp.join("vars.fd").display())));
+        // raw/qcow2 回落：无扩展名 → raw。
+        assert!(args.windows(2).any(|w| w[0] == "-drive" && w[1].contains(&format!("file={},format=raw,id=bb,snapshot=on", tmp.join("berryos.img").display()))));
+        // USB 栈。
+        assert!(args.windows(2).any(|w| w == ["-device", "qemu-xhci"]));
+        assert!(args.windows(2).any(|w| w == ["-device", "usb-storage,drive=bb"]));
+        // 数据盘显式关 + 无 ram_backend：无 id=dd 挂载、无 -object。
+        assert!(!args.iter().any(|a| a.contains("id=dd")));
+        assert!(!args.iter().any(|a| a.starts_with("-object")));
+        // tablet 关：键盘/平板双缺。
+        assert!(!args.iter().any(|a| a.contains("tablet")));
+        assert!(!args.iter().any(|a| a.contains("keyboard")));
+        // 图形设备序契约：gpu 先于 ramfb（VNC 面向先声明图形设备）。
+        assert!(pos(&args, "virtio-gpu-device") < pos(&args, "ramfb"));
+        // fwcfg：noktest 恒注、display 缺席（None）、accel 缺席（TCG）。
+        assert!(args.windows(2).any(|w| w[0] == "-fw_cfg" && w[1] == "name=opt/berry/noktest,string=1"));
+        assert!(!args.iter().any(|a| a.contains("opt/berry/display")));
+        assert!(!args.iter().any(|a| a.contains("opt/berry/accel")));
+        assert!(args.iter().any(|a| a.contains("opt/berry/rtc")));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn qcow2_and_fwcfg_display_value() {
+        let tmp = tmp_dir("qcow2");
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::set_var("BERRY_DATA_DISK", "off");
+        std::env::remove_var("BERRY_NO_VGPU");
+        let r = spawn_image(
+            &fake_qemu(&tmp),
+            &tmp.join("disk.qcow2"),
+            &tmp.join("fw.fd"),
+            &tmp.join("vars.fd"),
+            &tmp.join("serial.log"),
+            &tmp.join("serial.sock"),
+            &tmp.join("spawn.log"),
+            &Endpoint::Unix(tmp.join("vnc.sock")),
+            &Endpoint::Unix(tmp.join("qmp.sock")),
+            Accel::Hvf,
+            512,
+            false,
+            Some("480x1000@60"),
+            "testprof",
+            None,
+            None,
+            None,
+        );
+        std::env::remove_var("BERRY_DATA_DISK");
+        let mut child = r.unwrap();
+        child.wait().unwrap();
+        let args = read_argv(&tmp);
+        // qcow2 扩展名 → format=qcow2。
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "-drive" && w[1].contains(&format!("file={},format=qcow2,id=bb,snapshot=on", tmp.join("disk.qcow2").display()))));
+        // 硬件加速档：accel 键注值 + cpu host + accel hvf。
+        assert!(args.windows(2).any(|w| w == ["-accel", "hvf"]));
+        assert!(args.windows(2).any(|w| w == ["-cpu", "host"]));
+        assert!(args.windows(2).any(|w| w[0] == "-fw_cfg" && w[1] == "name=opt/berry/accel,string=hvf"));
+        // display 档注值原样。
+        assert!(args.windows(2).any(|w| w[0] == "-fw_cfg" && w[1] == "name=opt/berry/display,string=480x1000@60"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn full_option_face() {
+        let tmp = tmp_dir("full");
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::set_var("BERRY_DATA_DISK", "off");
+        std::env::remove_var("BERRY_NO_VGPU");
+        let ram = tmp.join("shared.ram");
+        std::fs::write(&ram, b"RAM").unwrap();
+        let tls = tmp.join("tlsdir");
+        std::fs::create_dir_all(&tls).unwrap();
+        let r = spawn_image(
+            &fake_qemu(&tmp),
+            &tmp.join("berryos.img"),
+            &tmp.join("fw.fd"),
+            &tmp.join("vars.fd"),
+            &tmp.join("serial.log"),
+            &tmp.join("serial.sock"),
+            &tmp.join("spawn.log"),
+            &Endpoint::Unix(tmp.join("vnc.sock")),
+            &Endpoint::Unix(tmp.join("qmp.sock")),
+            Accel::Tcg,
+            128,
+            true,
+            None,
+            "testprof",
+            Some(&ram),
+            Some("0.0.0.0:5901"),
+            Some(&tls),
+        );
+        std::env::remove_var("BERRY_DATA_DISK");
+        let mut child = r.unwrap();
+        child.wait().unwrap();
+        let args = read_argv(&tmp);
+        // memory-backend：machine 绑定 + object 形态（size 同步、share=on）。
+        assert!(args.windows(2).any(|w| w == ["-machine", "virt,memory-backend=mem"]));
+        assert!(args.windows(2).any(|w| w[0] == "-object" && w[1] == format!("memory-backend-file,id=mem,size=128M,mem-path={},share=on", ram.display())));
+        // TLS creds object（verify-peer=off 开发档）。
+        assert!(args.windows(2).any(|w| w[0] == "-object" && w[1] == format!("tls-creds-x509,id=vnc-tls,dir={},endpoint=server,verify-peer=off", tls.display())));
+        // 外 VNC 先于内 VNC（QMP set_password 只作用于首个声明 server）。
+        assert!(pos(&args, "0.0.0.0:5901") < pos(&args, &format!("unix:{}", tmp.join("vnc.sock").display())));
+        // tablet 开：平板 + 键盘同门双挂。
+        assert!(args.windows(2).any(|w| w == ["-device", "virtio-tablet-device"]));
+        assert!(args.windows(2).any(|w| w == ["-device", "virtio-keyboard-device"]));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
