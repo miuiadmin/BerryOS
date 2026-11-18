@@ -31,8 +31,18 @@ extern "C" fn sys_unimplemented(_tf: &mut TrapFrame) -> i64 {
 /// (`sys_unimplemented`, NONE) 初始化，真语义槽由内核 boot 期 [`install`] 填）。
 /// 类位集语义 → [`crate::kern_lock::svc_enter_class`]（slice 2b：NONE 号零锁
 /// 直达；默认槽 NONE——未知/未实现号不取任何锁）。
-static mut SYSCALLS: [(Handler, u8); NR_MAX + 1] =
+///
+/// W3-Q104：本表 boot 期填毕后由 [`crate::mmu::freeze_syscalls_table`]
+/// 固化为 EL1 只读（W^X 分派面）——`pub(crate)` 只为 mmu 取表地址做页级
+/// 固化，**禁任何新增写点**（写 = D-abort fatal，ktest 正向断言执法）。
+pub(crate) static mut SYSCALLS: [(Handler, u8); NR_MAX + 1] =
     [(sys_unimplemented as Handler, crate::kern_lock::SVC_CLASS_NONE); NR_MAX + 1];
+
+/// W3-Q104：派发表基址（**只读语义**）——ktest 探针 arm 期望故障槽用；
+/// 调用方禁经此指针写表（固化后写 = D-abort 权限错 fatal，正向断言面）。
+pub fn table_addr() -> usize {
+    (&raw const SYSCALLS) as usize
+}
 
 /// 注册语义 handler + 入口锁类（内核 `rust_main` 在 `enable_irq` 前调用；v1
 /// 真号见 `kernel/src/syscall.rs` 的 NR_* 常量组；类常量 = `kern_lock::SVC_CLASS_*`）。

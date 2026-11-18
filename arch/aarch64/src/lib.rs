@@ -121,9 +121,28 @@ pub unsafe fn probe_asid_field_roundtrip() {
     unsafe { mmu::probe_asid_field_roundtrip() };
 }
 
-/// 北极星审计修：探针结果只读透传（关卡行/诊断面）。
+/// 北极星审计修：探针结果只读透传（关卡行/诊断面用）。
 pub fn asid_tlb_untrusted() -> bool {
     mmu::asid_tlb_untrusted()
+}
+
+// ---- W3-Q104（03 号分派审计机会五 5b）：SYSCALLS 派发表固化 ----
+
+/// W3-Q104：把 SYSCALLS 派发表所在 2MiB 块拆 4KiB 叶、表页（含邻伴）置
+/// EL1 只读（W^X 分派面固化）。窗位合同：`syscall::install` 毕、
+/// smp_bringup/arm_slice/enable_irq 前的 boot 单线程 DAIF 屏蔽窗调用一次
+///（详见 `mmu::freeze_syscalls_table`）。
+///
+/// # Safety
+/// 见 `mmu::freeze_syscalls_table`（boot 单线程窗；只动 boot 页表项）。
+pub unsafe fn freeze_syscalls_table() {
+    // SAFETY: 调用点合同见上（rust_main 单线程窗）。
+    unsafe { mmu::freeze_syscalls_table() };
+}
+
+/// W3-Q104：固化完成标记只读透传（ktest 自证用）。
+pub fn syscalls_table_ro() -> bool {
+    mmu::syscalls_table_ro()
 }
 
 /// 2b-2：激活任务地址空间——TTBR0 ← 表+ASID、CONTEXTIDR、`tlbi aside1is`

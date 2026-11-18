@@ -28,7 +28,7 @@ pub const SH_NONE: u64 = 0;
 pub const SH_INNER: u64 = 0b11 << 8;
 
 /// AP bits[7:6]=00：仅 EL1 读写（EL0 不可访问）。Phase 2 用户页放宽到 AP=01。
-const AP_EL1_RW: u64 = 0 << 6;
+pub const AP_EL1_RW: u64 = 0 << 6;
 
 /// AP bits[7:6]=10：EL1 只读——Vmar `protect` 降权用（2b-3）。2b-4 用户页另用
 /// 01（EL0/EL1 读写）/ 11（EL0/EL1 只读），编码已预留此处对齐。
@@ -67,4 +67,14 @@ const NG: u64 = 1 << 11;
 #[inline(always)]
 pub const fn page_descriptor(pa: usize, attr: u64, shareability: u64) -> u64 {
     (pa as u64) | VALID | TABLE_OR_PAGE | attr | AP_EL1_RW | shareability | AF | NG
+}
+
+/// W3-Q104：构造内核高半 4KiB **页描述符**（L3 叶子，块拆分用）——与
+/// [`block_descriptor`](ATTR_NORMAL/SH_INNER 形) 属性逐位同源，仅粒度 4KiB；
+/// AP 与 nG（global，参与按号失效面与块面一致）由调用方传入。禁执行位
+/// （UXN/PXN）不设——与既有内核映射语义一致（NX 留 v2 安全批，paging.rs
+/// 头注既定）。
+#[inline(always)]
+pub const fn page_descriptor_kernel(pa: usize, ap: u64) -> u64 {
+    (pa as u64) | VALID | TABLE_OR_PAGE | ATTR_NORMAL | SH_INNER | AF | ap
 }

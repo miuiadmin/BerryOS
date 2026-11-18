@@ -209,6 +209,38 @@ fn test_syscall() {
     assert_eq!(svc4(0xFE, 0x5a, 0, 0), -95, "SYSCALL：0xFE 调试槽须已退役");
     assert_eq!(svc4(0xFF, 0x75, 0, 0), -95, "SYSCALL：0xFF 调试槽须已退役");
 
+    // A0. W3-Q104：SYSCALLS 派发表固化 RO 正向断言——①标记在位（rust_main
+    //     install() 毕即冻结，ktest 在其后）；②真写探针：arm 期望故障槽后
+    //     volatile 写表头（Far = 表 VMA）→ D-abort 权限错被槽捕获恢复
+    //     （ELR+=4 恰跨过 str）→ 槽已消费 = 写确实被硬件拒绝。若固化缺失
+    //     （页仍 RW），写静默成功、槽仍武装 → 断言失败——「有固化零执法
+    //     = 静默腐烂」防线。
+    assert!(
+        berry_hal_aarch64::syscalls_table_ro(),
+        "SYSCALL：W3-Q104 冻结标记须在位（rust_main install 毕即冻结）"
+    );
+    berry_hal_aarch64::trap::arm_expected_fault(berry_hal_aarch64::syscall::table_addr());
+    // SAFETY: 预期同步异常（期望故障槽已 arm，FAR 命中即恢复）；值无意义。
+    unsafe {
+        core::ptr::write_volatile(
+            berry_hal_aarch64::syscall::table_addr() as *mut u64,
+            0xDead_BEEF_Dead_BEEF,
+        );
+    }
+    assert!(
+        !berry_hal_aarch64::trap::fault_armed(),
+        "SYSCALL：对固化表写入居然没 fault——W3-Q104 固化没生效"
+    );
+    // 表头值未变（写被硬件拦）：默认槽 handler 指针首 u64 与 sys_unimplemented
+    // 等值断言不可移植（链接地址），改证「读回 ≠ 探针载荷」——若写竟落盘，
+    // 首槽函数指针被砸 = 后续任何 0x00 号派发必炸，B 段样本即是现成执法。
+    assert_ne!(
+        // SAFETY: 只读表头（已固化只读页，读无副作用）。
+        unsafe { (berry_hal_aarch64::syscall::table_addr() as *const u64).read_volatile() },
+        0xDead_BEEF_Dead_BEEF,
+        "SYSCALL：固化表头不可被写穿"
+    );
+
     // B. 未知号（越界 0x99）一律 -ENOTSUP 存活——3-1 撤「畸形号杀」政策的
     //    EL1 侧正向断言。**「未实现真号」样本 0x35 已随 T-1 thread_start 实现
     //    退役**（样本断言会打到真 handler）；亦勿拿不在册的 0x38/0x39 冒充——
