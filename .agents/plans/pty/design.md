@@ -3,7 +3,7 @@
 Type: spec
 Status: active
 Updated: 2026-11-18
-Version: 1.1.0
+Version: 1.1.1
 
 一句话说明：`pty` 定义 BerryOS 纯用户态伪终端守护进程（`ptyd`）、物理控制台驱动中枢（`consoled`）、零依赖终端转义与屏幕网格引擎（`berry-vt`）以及单链路多窗终端复用器（`bmux`）——以「共享无锁 `IoRing VMO` 双工数据面 + 纯能力 `PtyMaster/PtySlave` 控制面」彻底取代内核 `task_console` 逐字节转发模型，支撑全屏编辑器、实时监控 TUI 与多会话并发操作。
 
@@ -35,8 +35,8 @@ flowchart LR
 2. **宿主自动几何握手、带外缩放（`WINCH`）与二进制分帧多路复用**：
    - **双通道自适应传输**：在 QEMU / 模拟器环境下，`consoled` 优先挂载第二路 `virtio-console` 控制端口（`berry-ctlport`），将宿主窗口实时 `Winsize { cols, rows }` 变更事件与 `bscp` 文件传输帧同可见字符流物理隔离；在仅有一条物理 UART 线的裸机或极简串口拓扑下，自动回退至 OSC 私有转义分帧——`\x1b]777;winsize;<cols>;<rows>\x07` 实时投递窗口缩放、`\x1b]778;bscp;<b64/escaped>;<crc32c>\x07` 承载免乱码二进制收发，辅以启动期 `\x1b[18t`（80ms 超时回退 `80x24`）初态探测；
    - 数据面以 FIFO 满批 DMA/寄存器突发读写取代单字节调用，支撑 `> 10MiB/s` 虚拟控制台吞吐；在 `dev` 解锁模式下配合 [hal 总体设计](../hal/design.md) 的硬件 UART `BREAK + 单键` 内核级紧急诊断钩子，保证即便用户态全冻仍可从串口导出全核栈与锁账。
-3. **无头纯终端极速启动模式（`boot.mode = headless`）**：
-   - 当引导参数显式携带 `headless=1`，或硬件枚举发现无 GOP/virtio-gpu 显示表面、无指针输入设备（`virtio-tablet` 缺席）时，`rootmgr` 自动切入纯终端无头启动曲线——**彻底跳过 `bootsplashd`、`berry-compositor`、`berry-shell`、`imed` 与 GUI 预拉应用，绝不因缺显示或缺鼠标而阻塞停机**；
+3. **无头纯终端极速启动模式（`opt/berry/bootmode=headless`）**：
+   - 统一复用既有 `fw_cfg` 键 `opt/berry/bootmode`（扩充枚举值 `headless`，与宿主机 [emulator 总体设计](../emulator/design.md) `--boot-mode headless` 单源对拍）：当引导参数指定 `bootmode=headless`，或硬件枚举发现无 GOP/virtio-gpu 显示表面、无指针输入设备（`virtio-tablet` 缺席）时，`rootmgr` 自动切入纯终端无头启动曲线——**彻底跳过 `bootsplashd`、`berry-compositor`、`berry-shell`、`imed` 与 GUI 预拉应用，绝不因缺显示或缺鼠标而阻塞停机**；
    - 无头启动链仅拉起 `rootmgr -> devmgr/fsmgr/netd + consoled + ptyd -> bmux/bsh`（远程按需挂 `bsshd`），冷启动直达可交互 `bsh>` 耗时 **`< 150ms`**、系统常驻物理内存占用 **`< 8MiB`**，在图形栈演进期或服务器/边缘网关/AI 沙箱场景下独立提供 100% 完整系统体验。
 
 ### 二、`ptyd` 伪终端主从能力模型与共享环协议

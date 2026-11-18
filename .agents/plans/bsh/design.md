@@ -3,7 +3,7 @@
 Type: spec
 Status: active
 Updated: 2026-11-18
-Version: 1.1.0
+Version: 1.2.0
 
 一句话说明：`bsh` 3.0 是 BerryOS 的主力命令行交互外壳与系统脚本语言——以「`ProcessArgs v2` 全双工流式启动 + `berry-line` 二维 UTF-8 编辑器 + 完整词法/AST 脚本引擎 + 基于 `Job` 与 `SuspendToken` 的微内核原生作业控制 + 一行式 `sandbox` 能力裁剪」，在不引入 Unix `fork` 包袱的前提下交付超越传统 POSIX sh 的丝滑操控体验。
 
@@ -33,6 +33,13 @@ Version: 1.1.0
 3. **相对/绝对路径直跑与跨卷 `$PATH` 搜索契约**：
    - 彻底废除旧版「命令名含 `/` 一律报 `127 not found` 且只查 `rootfs.cpio` `bin/`」的限制：凡首词含 `/`（如 `./build.sh`、`../tools/check`、`/userdata/home/bin/my_cli`），直接基于 `PA_CWD_DIR` 或根挂载视图解析目标文件并校验可执行位；
    - 不含 `/` 的外部命令依次检索函数表 → 内建表 → 按 `:` 分隔遍历环境变量 `$PATH`（默认 `/userdata/home/bin:/bin`），无缝跨越可写持久化 `BerryFS` 与只读 `BerryROFS` 拉起 ELF 二进制或 `#! /bin/bsh` 脚本。
+4. **`berry-libc` 标准库支撑面与登录标准环境契约（让第三方 Rust/C CLI 零改跑通）**：
+   - **`posix_spawn` 与 Rust `std::process::Command` 原生映射**：`berry-libc` 将 `posix_spawn_file_actions_t`（`adddup2 / addopen / addclose`）直接编译为 `ProcessArgs v2` 的 `PA_FD` 映射表，使标准 Rust 程序调用 `Command::new(...).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()` 无需修改一行源码即可原生运行；
+   - **进程内流与多路事件统一桥接 `Port`**：实装 `pipe() / pipe2(O_CLOEXEC | O_NONBLOCK)`（创建一对流式通道/环形描述符）、`dup() / dup2() / fcntl(F_DUPFD_CLOEXEC, F_SETFL)`、`chmod()`（落盘 `BerryFS` Inode `S_IXUSR 0100` 可执行位），并将 `poll() / ppoll() / select() / epoll` 底层统一构建在内核 `ObjType::Port(13)` 之上，单次等待即可同时复用 `PtySlave`、管道、文件、`netd` 套接字与 `Timer`（淘汰旧版仅认套接字且 1s 轮询的残缺实现）；
+   - **终端控制与标准环境变量四件套**：`berry-libc` 基于 `PA_PTY_CTL` 完整实装 `isatty()`、`tcgetattr() / tcsetattr()`、`ioctl(TIOCGWINSZ / TIOCSWINSZ)` 并支持将 `SIGNAL_PTY_WINCH` 派发为用户态 `SIGWINCH` 处理器；登录会话默认播种 `TERM=xterm-256color`、`LANG=C.UTF-8`、`HOME=/userdata/home`、`PATH=/userdata/home/bin:/bin`。
+5. **双级终端会话与无 SUID 提权模型（`OperatorSession` 与 `elevate`）**：
+   - 物理串口（`dev` 解锁模式）或持管理员密钥登录的 `bsshd` 会话进入 `OperatorSession`（持完整管理 `/svc`）；普通用户登录仅获基础 `/svc/{fs,net,pty}` 与自身 `/data/user/<uid>` 凭据加密（CE）目录句柄；
+   - **永久废除传统 Unix `SUID root` 二进制位**：普通会话需执行系统管理操作时，调用 `elevate <cmd>` 向 `rootmgr` 交互验证管理员凭据（口令或密钥签名），验证通过后由 `rootmgr` 在干净环境与独立审计 `Job` 下派生单次受控管理进程，从架构根源消灭环境变量/描述符劫持提权漏洞。
 
 ### 二、`berry-line`：现代 UTF-8 多行交互编辑器与智能补全契约
 

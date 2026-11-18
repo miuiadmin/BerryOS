@@ -3,7 +3,7 @@
 Type: spec
 Status: active
 Updated: 2026-11-18
-Version: 2.0.0
+Version: 2.1.0
 
 一句话说明：`meihe`（莓核）是 BerryOS 的唯一 EL1/Ring0 特权微内核——以「可注入的机制/策略分离 + 硬件信任边界」为单一中心，统合四层无环 Crate 拓扑、八秩无全局大锁 16 核并发模型、安全内核基元（生产面 `unsafe` ≤ 3.0%）与五大形式化模型检验不变量，作为全核演进的顶层架构宪法。
 
@@ -82,6 +82,8 @@ flowchart BT
 3. **16 核无阻塞 RCU 策略表与每核本地排空**：
    - `sched::policy` 快照池容量定死为 `const SNAP_SLOTS: usize = MAX_CORES + 2`（即 **18 槽**）；读者在 `PreemptPin` 决策窗内设 `HAZARD[cpu] = active_idx`、出窗立即执行 `HAZARD[cpu].store(SLOT_NONE, Release)`；由于至多 16 核在读 + 1 个当前 `ACTIVE` 槽 ≤ 17 槽，写者 `publish()` 在 `POLICY_LOCK` 下恒能在 18 槽中 O(1) 命中至少 1 个绝对空闲槽，**数学上 100% 无饥饿、无阻塞、零满槽 panic**；
    - 死亡线程栈回收（`REAPQ`）与退出进程表异步清理（`HT_DRAINQ`）全部实例化于 `PerCpu`，任何核产生退出实体均推入本核队列并在本核 `idle`/`yield`/周期检查点就地释放，消除 CPU0 单核排空瓶颈。
+4. **跨界扩展系统调用的微内核窄腰边界（调试、采样、随机数与受限态）**：
+   - 遵从「机制极薄入核、协议与策略全留用户态」铁律，合龙总纲登记的四族跨界原语在莓核内部仅保留最小特权状态机：① **调试与追踪组（`0x41`、`0x45..0x49`）**仅负责 `RIGHT_DEBUG` 门控下的异常冻结包投递、寄存器读写、CoW 断点页替换及每核 PMU/Syscall 无锁环形 VMO 采样写入（DWARF 符号与 RSP 协议全归 [devtools 总体设计](../devtools/design.md) 与 `bdbg`）；② **受限态切换组（`0x4A berry_restricted_enter` / `0x4B berry_restricted_kick`）**仅在 `Task` TCB 绑定一页 `state_vmo` 执行同线程 Normal/Restricted 双寄存器组切换并将受限态 `SVC` 原样反射回用户态 `linux_runner`，**内核零行 Linux 系统调用翻译代码**（见 [compat 总体设计](../compat/design.md)）；③ **硬件熵源口（`0x89 berry_cprng_draw`）**仅提供每核无锁 ChaCha20 CSPRNG（由 `RNDR` / 中断抖动周期重播，见 [security 总体设计](../security/design.md)）。
 
 ### 四、五大形式化模型检验不变量（TLA+ / `loom` 契约）
 

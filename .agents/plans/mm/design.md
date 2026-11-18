@@ -3,7 +3,7 @@
 Type: spec
 Status: active
 Updated: 2026-11-18
-Version: 2.0.0
+Version: 2.1.0
 
 一句话说明：`mm` 是莓核（Meihe）的内存管理与弹性调页子系统——提供动态大物理地址空间、每核无争用页帧与对象弹匣、65,536 位 ASID 位图与无死锁 TLB 一致性、硬件强制 W^X 与内核栈守卫页、确定性进程退出全量回收，以及从 L0 可弃缓存到 L3 墓碑真回收的五级内存弹性闭环。
 
@@ -83,7 +83,7 @@ Version: 2.0.0
 1. **`Vmar` 区间能力完备化**：
    - 将线性 `Vec<Region>` 升级为按 `base_va` 排序的无重叠区间树（`BTreeMap<usize, Region>` 或侵入式红黑树），查询与插入 `O(log M)`；
    - **自动选址与 ASLR**：当 `vmar_map` / `vmar_allocate` 传入 `*vaddr == 0`（无 `VMAR_OPT_SPECIFIC`）时，在可用空洞中结合硬件熵源（`RNDR` / `CNTVCT` 混合种子）随机偏移选址并回写 `*vaddr`；
-   - **子区间拆分**：`vmar_unmap(vaddr, len)` 与 `vmar_protect(rights, vaddr, len)` 支持对已映射 `Region` 的前缀、后缀或中段做精确拆分（1 段拆 2 段或 3 段），同步更新拆分段对应的 `Vmo` 页范围 `mapcnt`；
+   - **子区间拆分与映射自省（`0x1F berry_vmar_query`）**：`vmar_unmap(vaddr, len)` 与 `vmar_protect(rights, vaddr, len)` 支持对已映射 `Region` 的前缀、后缀或中段做精确拆分（1 段拆 2 段或 3 段），同步更新拆分段对应的 `Vmo` 页范围 `mapcnt`；新增 `0x1F berry_vmar_query(vmar_h, va, *out_info)`（门控 `RIGHT_INSPECT`），持 `VmarLock` 在区间树中 $O(\log M)$ 查找包含 `va` 的活跃映射并写出 48B `#[repr(C)] VmarRegionInfo { base_va: u64, len: u64, vmo_koid: u64, vmo_offset: u64, perms: u32, flags: u32, rsvd: u64 }`（未命中返 `-ENOENT`），供调试器 `bdbg`、栈展开器与分配器精确自省；
    - `Vmar::allocate` 全程持本空间 `VmarLock`（Rank 30），消除无锁修改区间表的竞态。
 2. **Teardown-Before-Drain 退出三步铁律**：
    - 任何进程进入终结清理（自愿 `process_exit`、最后线程 `thread_exit`、`process_terminate`、`job_kill` 或 EL0 未捕获故障强杀），由所在核本地排空路径严格按以下三步执行：
@@ -101,8 +101,10 @@ Version: 2.0.0
      - `bits [63:56]`：保留标志（如脏位镜像）。
 2. **VMO 创建选项与写时复制（`vmo_create_child`）**：
    - `vmo_create(size, options, *out)` 正式支持正交位：`VMO_OPT_DEMAND (1<<0)`、`VMO_OPT_DISCARDABLE (1<<1)`（仅纯匿名合法）、`VMO_OPT_ZFOD (1<<2)`（显式零填充按需页，**废除单页零供给自动污染整对象的旧 `mark_zfod`**）、`VMO_OPT_CONTIGUOUS (1<<3)`（需设备 `Resource` 授权，Buddy 按阶分配连续物理帧并置 `FRAME_PINNED`）；
-   - 新增 add-only `vmo_create_child(parent_vmo, options, offset, size, *out)`（`VMO_CHILD_COW = 1<<0`）：持父 `VmoLock` 将区间内已提交叶标为 `CowShared`、`FrameRefTable[pfn].fetch_add(1)`，并将映射该父 VMO 的可写 PTE 降为只读（`AP_USER_RO`）后执行一次 `tlbi`；任一侧写触发 Permission Fault 时，若 `FrameRefTable[pfn] > 1` 则从 PCP 取新帧拷入 4KiB、原帧 `fetch_sub(1)`、重映射为 `UserRw`；若 `FrameRefTable[pfn] == 1`（对端已先分裂或释放）则原地升回 `UserRw` 免拷贝。
-3. **五级内存回收内核机制接口**：
+   - 新增 add-only `vmo_create_child(parent_vmo, options, offset, size, *out)`（`VMO_CHILD_COW = 1<<0`）：持父 `VmoLock` 将区间内已提交叶标为 `CowShared`、`FrameRefTable[pfn].fetch_add(1)`，并将映射该父 VMO 的可写 PTE 降为只读（`AP_USER_RO`）后执行一次 `tlbi`；任一侧写触发 Permission Fault 时，若 `FrameRefTable[pfn] > 1` 则从 PCP 取新帧拷入 4KiB、原帧 `fetch_sub(1)`、重映射为 `UserRw`；若 `FrameRefTable[pfn] == 1`（对端已先分裂或释放）则原地升回 `UserRw` 免拷贝；
+   - **不可逆内存封存（`0x1E berry_vmo_seal`）**：要求句柄持 `RIGHT_MANAGE`，持 `VmoLock`（Rank 40）校验：若请求置 `SEAL_WRITE (1<<0)` 且当前 `writable_mapcnt > 0`（任意地址空间仍存活跃可写映射），立即返回 `-EBUSY` 拒绝封存；校验通过后单调不可逆置位 `vmo.seals |= seal_flags`（支持 `SEAL_WRITE | SEAL_GROW (1<<1) | SEAL_SHRINK (1<<2) | SEAL_EXEC (1<<3)`），此后任何 `vmo_write`、带 `WRITE` 的 `vmar_map/protect` 或尺寸变更一律硬拒 `-EACCES`，为进程外编译器 `aotd` 交付严格满足硬件 `W^X` 的只读可执行代码 VMO 提供内核数学保证。
+3. **多文件系统独立调页器（`0x25 berry_pager_create`）与五级内存回收闭环**：
+   - **一等 `ObjType::Pager(15)` 异步端口投递**：新增 `0x25 berry_pager_create(port_h, key, options, *out_pager)`（要求 `port_h` 持 `RIGHT_WRITE`），允许 `BerryROFS`、`BerryFS` 与压缩换出守护进程各自创建独立调页器并绑定其专属后备 `Vmo`；目标 `Vmo` 发生缺页时，内核不再挤占单一全局 `svcmgr` 槽池，而是直接向关联 `Pager` 的 `Port` 投递 `PortPacket { key, kind = PAGER_REQ, payload = fault_pgoff | flags }` 并将缺页线程挂入该 `Pager` 等待链（同时建立 `Task -> Pager` 跨核 PI 边），服务端经 `0x21/0x23/0x24` 供给页帧即精准唤醒；
    - **内联按需根与看门狗全覆盖**：移除全局 16 槽 `DEMAND_ROOTS` 硬顶，在 `Vmar` 内直接持有按需区间计数；`dpg` 槽池扩至 64 槽并按绑定 `pager` 分离唤醒通道，`EOVERFLOW_KEY` 排队等待与槽内等待共享同一个 **30 秒绝对截止期看门狗**（严禁 `u64::MAX` 无限死等）；
    - **L0 `VMO_OPT_DISCARDABLE`**：`Vmo` 维护 `lock_count: u32`；`vmo_commit` 递增锁计数（若期间曾被内核摘页则返回特定状态位提示调用方重建缓存），`vmo_decommit` 递减锁计数并将 `lock_count == 0 && total_mapcnt == 0` 的 VMO 挂入全局 `DISCARD_LRU`；PMM 触发低水位时自动按 LRU 摘除其已提交帧归还 PCP；
    - **L1 `0x22 pager_op_range(pager_vmo, op, offset, len)`**：激活在册 `0x22` 号，支持 `PAGER_OP_EVICT = 1`（内核校验目标页无 `FRAME_PINNED`、解映关联只读/冻结进程 PTE、刷 TLB、将页状态标为 `SwappedOut` 并归还物理帧给 PCP；后续解冻访问自然走既有 `dpg` 缺页供给链恢复）与 `PAGER_OP_FAIL = 2`（pager 显式通知读盘/解压不可恢复错误，唤醒等待中的缺页线程令其精确触发故障退出，无需干等 30 秒看门狗）。

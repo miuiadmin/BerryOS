@@ -3,7 +3,7 @@
 Type: spec
 Status: active
 Updated: 2026-11-18
-Version: 2.0.1
+Version: 2.1.0
 
 一句话说明：`ipc` 是莓核（Meihe）的对象句柄、进程间通信、多路事件通知与层次化能力沙箱子系统——通过 `ChannelShared` 无环双端、`Port` 侵入式观察者链、`channel_call` 同带定向让片、真共享 VMO 环形通道，以及 `Job` 树配额 + 内联 `Badge` + `RevokeEpoch` 纪元撤销，实现微秒级零惊群通信与不可绕过的纯能力安全边界。
 
@@ -73,21 +73,34 @@ PortPacket 布局（32B，#[repr(C)]，编译期 offset_of 断言钉死）：
    - 兑现 [架构综合纲领](../../../docs/架构综合纲领.md) 第 4 轴硬约束：定义统一 64B 缓存行对齐头 `SharedRingHdr { magic: u32, ver: u16, slot_size: u16, capacity: u32, flags: u32, head: AtomicU64, tail: AtomicU64, dropped: AtomicU64, ... }`（驻留共享 VMO 首缓存行，数据槽紧随其后）；
    - 新增遥测/策略环映射出口（如 `telemetry_open` 扩展返回只读共享 VMO 句柄，PM `util` 环与 `policy` 环同构），用户态 `berry-power` 与 `advisor` 直接 `vmar_map` 零系统调用、零拷贝读取实时指标。
 
-### 四、跨 16 核、跨原语有界增量优先级继承（Incremental PI）
+### 四、跨 16 核增量 PI、物理统一 Futex（`0x55/0x56`）与对象内省（`0x07`）
 
-1. **显式等待边替代全表盲扫**：每个阻塞中的 `Task` 维护显式等待目标 `blocked_on: Option<PiEdge>`，覆盖三类原语：
+1. **显式等待边替代全表盲扫**：每个阻塞中的 `Task` 维护显式等待目标 `blocked_on: Option<PiEdge>`，覆盖四类原语：
    - **Channel 边**：通道维护当前绑定服务端执行者指针（最近在该端 `recv` 或绑定监听 `Port` 的服务线程/进程池主线程），客户端阻塞在满队列 `WRITABLE` 或 `channel_call` 应答等待时指向该服务端；
    - **Port 边**：阻塞在 `port_wait` 的工作线程登记为该 `Port` 的活跃消费者，挂入该 `Port` 的通道收到高优阻塞请求时沿 `Port` 边传导；
-   - **Pager（`dpg`）边**：高优线程发生按需缺页阻塞在 `DpgSlot` 时，边指向该按需 `Vmo` 绑定的用户态 `pager` 服务线程。
+   - **Pager（`dpg`）边**：高优线程发生按需缺页阻塞在 `DpgSlot` / `Pager` 时，边指向该按需 `Vmo` 绑定的用户态 `pager` 服务线程；
+   - **Futex 边**：持 PI 模式的用户态互斥锁等待线程指向当前原子字记录的锁属主线程 TID。
 2. **跨核增量传播协议（≤8 跳）**：
    - 当线程 `T` 阻塞在边 `T -> Owner` 且 `T` 的有效调度序（`(class_rank, prio_effective, -intent_effective)`）高于 `Owner` 时，沿 `blocked_on` 链向后走查最多 `PI_MAX_HOPS = 8` 跳（遇环或达 8 跳安全终止不 panic）；
    - 若某跳受捐者 `Owner` 正处于任意核 `cpu ∈ 0..online_cpus()` 的 `RQ[cpu]` 上，持该核 `RunqueueLock`（Rank 70）原地抬升其 `pi_inherited` 与借入 `intent_effective`，若 `Owner` 在远端核就绪且新有效序高于该核当前运行线程，立即向 `cpu` 发送 `SGI_RESCHEDULE` 触发远核抢占；
-   - 当服务端完成应答/`pager` 完成供给时，清退对应捐赠槽并重取剩余等待者最高值立即回落。
+   - 当服务端完成应答/`pager` 完成供给或互斥锁释放时，清退对应捐赠槽并重取剩余等待者最高值立即回落。
+3. **用户态快速同步原语（`0x55 berry_futex_wait` / `0x56 berry_futex_wake`）**：
+   - 校验用户指针 4 字节对齐且可读；通过 `Vmar` 查询该虚拟页后备——若属跨进程共享 `Vmo` 则生成物理统一键 `FutexKey::Shared { vmo_koid, byte_offset }`（跨进程映射不同虚拟地址亦精确命中同一锁），若属进程私有匿名页则生成快速键 `FutexKey::Private { aspace_koid, va }`；
+   - 散列落入 64 桶 `SleepBucketLock`（Rank 60），在桶锁保护下经 `PAN` 安全窗口执行单次原子 32 位比较：若 `*addr != expected` 立即解锁返回 `-EAGAIN`（绝无丢唤醒竞态），相等则挂入桶链阻塞至 `berry_futex_wake(addr, count)` 或 `deadline` 到期，作为 `berry-libc` `pthread` 与 Rust `std::sync` 的零系统调用无争用底座。
+4. **统一内核对象内省契约（`0x07 berry_object_get_info`）**：
+   - 签名：`berry_object_get_info(handle, topic, buf, cap, *actual)`（门控 `RIGHT_INSPECT`；缓冲不足返 `-ENOMEM` 并回写所需总字节至 `*actual`，全部输出结构 `#[repr(C)]` 尾部垫零防信息泄露），锁定六大权威 `topic` 供 `ps / free / btop / lscap` 零猜测消费：
+     - `INFO_HANDLE_BASIC (1)`：返回 `{ koid, related_koid, obj_type (1..=19), rights: u64, badge: u64 }`（40B）；
+     - `INFO_PROCESS_STATS (2)`：返回进程状态、退出码、线程数、所属 `job_koid`、累计 CPU 纳秒与常驻物理页 `rss_bytes`；
+     - `INFO_PROCESS_HANDLES (3)`：批量导出目标进程句柄表的 `CapInfoRec { slot, gen, obj_type, rights, badge, koid, peer_koid, queue_len }` 数组（`lscap` 单一数据源）；
+     - `INFO_JOB_STATS (4)`：导出 `Job` 当前 `ram_bytes_used / max`、`live_procs / max`、子树累计能耗 `energy_uj` 与子 `Job` Koid 列表；
+     - `INFO_VMO_INFO (5)`：导出 `size_bytes`、`committed_bytes`、`share_count`、`seals`、`pager_koid` 与创建标志；
+     - `INFO_KMEM_STATS (6)`（需 `root_job` 或诊断 `Resource` 的 `RIGHT_INSPECT`）：导出 `MemstatRec { total_pages, free_buddy_pages, pcp_pages, slab_pages, vmo_pages, discardable_pages, wired_pages }`（`free / vmstat` 单一数据源）。
 
-### 五、新增 Add-Only 系统调用契约总表（预登记 `tools/abi.toml`）
+### 五、新增与激活系统调用契约总表（预登记 `tools/abi.toml`）
 
 | 拟定号位 | 符号名 | C-ABI 参数签名（≤6 参） | 所需权利门控 | 核心错误码 |
 |---|---|---|---|---|
+| `0x07` | `berry_object_get_info` | `(handle, topic, buf, cap, *actual)` | `handle`: `INSPECT`（`KMEM_STATS` 需根 `Job`/诊断资源） | `-EBADF`、`-EACCES`、`-EINVAL`、`-ENOMEM`、`-EFAULT` |
 | `0x08` | `berry_handle_mint` | `(src, rights, badge, epoch, *out)` | `src`: `DUPLICATE`（铸非零 `badge` 另需 `SET_POLICY`）；`epoch≠0`: `MANAGE` | `-EBADF`、`-EACCES`、`-EINVAL`、`-ENOMEM` |
 | `0x09` | `berry_epoch_create` | `(options, *out)` | 无（受所属 `Job` 对象配额约束） | `-EINVAL`、`-ENOMEM` |
 | `0x0A` | `berry_epoch_revoke` | `(epoch)` | `epoch`: `MANAGE` | `-EBADF`、`-EACCES` |
@@ -95,6 +108,8 @@ PortPacket 布局（32B，#[repr(C)]，编译期 offset_of 断言钉死）：
 | `0x30` | `berry_job_create` | `(parent_job, options, *out)` | `parent_job`: `MANAGE` | `-EBADF`、`-EACCES`、`-EINVAL`（超深 8 层）、`-ENOMEM` |
 | `0x43` | `berry_job_set_quota` | `(job, max_procs, max_ram_bytes)` | `job`: `SET_POLICY \| MANAGE` | `-EBADF`、`-EACCES`、`-EINVAL`（大于父限额） |
 | `0x44` | `berry_job_kill` | `(job)` | `job`: `MANAGE` | `-EBADF`、`-EACCES` |
+| `0x55` | `berry_futex_wait` | `(addr, expected, deadline)` | 当前用户地址空间 4B 对齐可读页 | `-EAGAIN`、`-ETIMEDOUT`、`-EINVAL`、`-EFAULT` |
+| `0x56` | `berry_futex_wake` | `(addr, count)` | 当前用户地址空间 4B 对齐可读页 | `-EINVAL`、`-EFAULT` |
 | `0x58` | `berry_port_create` | `(options, *out)` | 无（受所属 `Job` 配额约束） | `-EINVAL`、`-ENOMEM` |
 | `0x59` | `berry_object_wait_async` | `(handle, port, key, signals, options)` | `port`: `WRITE`；`handle`: 有效存活句柄 | `-EBADF`、`-EACCES`、`-EDEAD(-52)`、`-EINVAL` |
 | `0x5A` | `berry_port_wait` | `(port, deadline, *out_packet)` | `port`: `READ` | `-EBADF`、`-EACCES`、`-EAGAIN`、`-ETIMEDOUT`、`-EFAULT` |

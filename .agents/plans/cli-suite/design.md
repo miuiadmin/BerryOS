@@ -3,7 +3,7 @@
 Type: spec
 Status: active
 Updated: 2026-11-18
-Version: 1.1.0
+Version: 1.2.0
 
 一句话说明：`cli-suite` 定义 BerryOS 在纯命令行环境下的完整自给工具链——涵盖 `/svc` 能力服务发现与虚拟挂载层级、全屏编辑器 `bed` 与零拷贝分页器 `less`、微内核独有能力/IPC/源码级在机调试套件（`btop / lscap / btrace / bdbg / cboxctl`）、网络与免重启传文件套件（`ip / ping / dig / nc / curl / bscp / bsshd`）以及全工具统一的 `--json` 机器可读输出契约。
 
@@ -35,7 +35,7 @@ Version: 1.1.0
 1. **`bed`：轻量全屏 UTF-8 文本与代码编辑器**：
    - 基于 [pty 总体设计](../pty/design.md) 的 `berry-vt` 网格、共享 `faces/utf8width` 宽字符核与备用屏幕缓冲构建，纯 Rust 零外部 C 依赖，二进制体积 `< 120KiB`；
    - **双模友好**：默认提供直觉无模式快捷键（`Ctrl-S` 原子保存、`Ctrl-Q` 退出未存二次确认、`Ctrl-F` 增量正则查找、`Ctrl-H` 交互替换、`Ctrl-G` 跳行、`Ctrl-Z / Ctrl-Y` 无限持久撤销重做树、`Tab / Shift-Tab` 块缩进），同时支持一键开启 `--vi` 模态键位（`Normal / Insert / Visual / :w :q :s`）照顾资深系统工程师肌肉记忆；
-   - **大文件与防丢稿保障**：采用 Rope / Piece-Table 内存结构，毫秒级打开 `10MiB` 源码或日志；内置 Rust、Shell（`.sh`）、TOML、JSON、C 词法着色与行号标尺；编辑期间每 5 秒将增量日志写入 `/userdata/home/.cache/bed/<hash>.swp`，即使进程被强杀或断电重启，`bed -r` 亦可零字节丢失恢复草稿。
+   - **大文件与防丢稿保障**：采用 Rope / Piece-Table 内存结构，毫秒级打开 `10MiB` 源码或日志；内置 Rust、Shell（`.sh`）、TOML、JSON、C 词法着色与行号标尺；编辑期间每 5 秒将增量日志写入 `/userdata/home/.cache/bed/<hash>.swp`，即使进程被强杀或断电重启，`bed -r` 亦可零字节丢失恢复草稿；同时 `bed` 与 `bmux` 选中复制时默认同步发射 OSC 52（`\x1b]52;c;<base64>\x07`）序列，一键直通宿主机系统剪贴板。
 2. **`less`：零拷贝大文件分页与实时追尾器**：
    - 对普通文件直接映射只读 VMO（无需将整份数千万行日志读入堆内存，打开耗时 `O(1)`），对管道 `stdin` 采用分块增量流式缓存；
    - 支持 `j/k/Up/Down` 逐行、`Space/b/PgDn/PgUp` 翻页、`g/G` 首尾跳转、`/pattern` 与 `?pattern` 正向反向高亮正则搜索（`n/N` 跳转）、以及 **`F` 键实时追尾模式**（等价 `tail -f`，按 `Ctrl-C` 随时退回静态翻阅而不退出分页器）。
@@ -95,6 +95,10 @@ flowchart TD
    - `timedatectl [status | set-tz <zone> | sync] [--json]`：对接 `timed` 查看与校准 RTC/NTS 壁钟及共享时区。
 4. **内核白盒自检与锁/内存剖析（`kctl`）**：
    - `kctl [ktest [suite] | lockstat | slabinfo | buddyinfo] [--json]`：受 `dev` 调试能力门控，支持在机按需触发内核自检套件、导出八秩 `LockRank` 持锁争用统计以及 Buddy 阶分布与 Slab 每档弹匣碎片详情。
+5. **会话身份、无 SUID 提权与机内离线文档（`whoami / id / elevate / man`）**：
+   - `whoami` 与 `id [--json]`：实时展示当前终端会话绑定的用户 UID、会话等级（`Operator` 或 `Standard`）、所属 `Job` 配额与可见 `/svc` 能力集摘要；
+   - `elevate <cmd> [args...]`：对接 [bsh 总体设计](../bsh/design.md) 无 SUID 提权协议，验证管理员凭据后向 `rootmgr` 申请干净环境单次受控管理会话；
+   - `man [<section>] <topic>`：直接流式解压读取 `/usr/share/man/`（`BerryROFS` 只读内建，涵盖全部系统命令、内建语法与 `berry_*` 系统调用速查页）并交由 `less` 彩色高亮分页展示，使开发者在断网纯串口环境下亦可零障碍查阅全套手册。
 
 ### 六、全工具统一命令行人机工程与 `--json` 契约
 
