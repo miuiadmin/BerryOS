@@ -3327,3 +3327,139 @@ mod expect_step_file_tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }
+
+// ---- W1-Q26 十八刀（run 定位决策面增量）：显式 id 三态（目录 id 命中/
+// ---- 绝对路径直用/缺席 env 码 + 拼路径文案）+ 死 sock 集成面（占位普通
+// ---- 文件 vnc.sock 探活拒——不进 best_vnc、回落最新死 run）+
+// ---- vnc_endpoint 三态（sock 优先/port 次之/双缺 env 码带路径）+
+// ---- vnc_reachable 三态（listen 真/占位文件假/无 sock 恒真）。
+// ---- 既有 find_run_tests 已覆盖枚举回落四面（vnc 优先/回落最新/
+// ---- no-meta 滤/空 root 拒），本模块只补零测增量面。
+#[cfg(test)]
+mod run_locate_tests {
+    use super::{find_run, vnc_endpoint, vnc_reachable};
+    use crate::run_dir::ENV_LOCK;
+    use std::io::Write as _;
+    use std::os::unix::net::UnixListener;
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, SystemTime};
+
+    fn tmp_home(tag: &str) -> PathBuf {
+        let tmp = std::env::temp_dir().join(format!(
+            "berry-runloc-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(tmp.join("run")).unwrap();
+        std::env::set_var("BERRY_HOME", &tmp);
+        tmp
+    }
+
+    fn cleanup(tmp: &Path) {
+        std::env::remove_var("BERRY_HOME");
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    /// run 目录（meta.json 在）+ mtime 钉 base+off 秒（set_modified 免
+    /// 真实时间流逝偶发——find_run_tests 同款纪律）。
+    fn mk_run(root: &Path, name: &str, off: u64) -> PathBuf {
+        let d = root.join(name);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("meta.json"), b"{}").unwrap();
+        let t = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000 + off);
+        std::fs::File::open(&d).unwrap().set_modified(t).unwrap();
+        d
+    }
+
+    /// 显式 id 三态：run 根下 id 直命中；绝对路径形态直用（is_dir 门）；
+    /// 缺席 env 码 3 且消息带拼出的完整路径。
+    #[test]
+    fn explicit_id_dir_path_and_missing() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let tmp = tmp_home("explicit");
+        let r1 = mk_run(&tmp.join("run"), "r1", 100);
+        assert_eq!(find_run(Some("r1")).unwrap(), r1, "id 形态拼 run 根");
+        assert_eq!(
+            find_run(Some(r1.to_str().unwrap())).unwrap(),
+            r1,
+            "目录路径直用"
+        );
+        let e = find_run(Some("nope")).unwrap_err();
+        assert_eq!(e.code, 3, "{}", e.message);
+        assert!(e.message.contains("run not found"), "{}", e.message);
+        assert!(
+            e.message.contains(tmp.join("run").join("nope").to_str().unwrap()),
+            "拼路径入文案: {}",
+            e.message
+        );
+        cleanup(&tmp);
+    }
+
+    /// 死 sock 集成面：QEMU 崩溃现场形态——vnc.sock 残留为普通文件，
+    /// 探活 connect 拒 → 不进 best_vnc 候选，回落最新死 run。
+    #[test]
+    #[cfg(unix)]
+    fn stale_socket_file_falls_back_to_newest() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let tmp = tmp_home("stale");
+        let root = tmp.join("run");
+        let r1 = mk_run(&root, "100-a", 100);
+        let r2 = mk_run(&root, "200-b", 200);
+        // r1 造残留死 sock（占位普通文件——connect ENOTSOCK/ECONNREFUSED）。
+        // 写 sock 后 r1 目录 mtime 滚到当下（最新）——探活拒后它仍该走
+        // best_any 回落路径胜出，正钉「死 sock 不夺回落位」的字面行为。
+        std::fs::write(r1.join("vnc.sock"), b"stale").unwrap();
+        assert!(!vnc_reachable(&r1), "占位文件 sock 探活必拒");
+        assert_eq!(find_run(None).unwrap(), r1, "死 sock 回落最新死 run（写后最新）");
+        cleanup(&tmp);
+    }
+
+    /// vnc_endpoint 三态：unix sock 文件优先；vnc.port 次之（trim 生效）；
+    /// 双缺 env 码且消息带 run 路径。
+    #[test]
+    #[cfg(unix)]
+    fn vnc_endpoint_sock_port_absent() {
+        let tmp = std::env::temp_dir().join(format!("berry-vncep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let e = vnc_endpoint(&tmp).unwrap_err();
+        assert_eq!(e.code, 3, "{}", e.message);
+        assert!(e.message.contains("no VNC endpoint"), "{}", e.message);
+        assert!(e.message.contains(tmp.to_str().unwrap()), "{}", e.message);
+        // vnc.port 形态：TCP 端点（尾换行 trim 后拼 127.0.0.1:5944）。
+        let mut f = std::fs::File::create(tmp.join("vnc.port")).unwrap();
+        writeln!(f, "5944").unwrap();
+        drop(f);
+        match vnc_endpoint(&tmp) {
+            Ok(crate::net::Endpoint::Tcp(a)) => assert_eq!(a, "127.0.0.1:5944"),
+            other => panic!("port 形态应产 TCP 端点: {other:?}"),
+        }
+        // vnc.sock 在席优先于 port（判序 sock → port）。
+        std::fs::write(tmp.join("vnc.sock"), b"").unwrap();
+        match vnc_endpoint(&tmp) {
+            Ok(crate::net::Endpoint::Unix(p)) => assert_eq!(p, tmp.join("vnc.sock")),
+            other => panic!("sock 形态应产 Unix 端点: {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// vnc_reachable 三态：listen 中的 sock 探活命中真；占位普通文件假；
+    /// 无 sock 文件恒真（TCP/无端点形态不预探）。
+    #[test]
+    #[cfg(unix)]
+    fn vnc_reachable_listen_placeholder_absent() {
+        let tmp = std::env::temp_dir().join(format!("berry-vncre-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(vnc_reachable(&tmp), "无 sock 文件不预探恒真");
+        std::fs::write(tmp.join("vnc.sock"), b"stale").unwrap();
+        assert!(!vnc_reachable(&tmp), "普通文件 sock 必拒");
+        std::fs::remove_file(tmp.join("vnc.sock")).unwrap();
+        let _l = UnixListener::bind(tmp.join("vnc.sock")).unwrap();
+        assert!(vnc_reachable(&tmp), "listen 中的 sock 探活命中");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
