@@ -1,8 +1,12 @@
-# 系统调用 ABI 设计
+# 系统调用 ABI 设计（v1.0）
 
-> 版本：**1.0**（v1.0）｜2026-11-06
+Type: standard
+Status: current
+Updated: 2026-11-18
+Version: 1.0.1
 
-> 决策依据见 `架构决策.md` #11、#14、#20、#28。本文件给出**具体编号表**（验证规模）、补齐缺口（pager/futex/异常/namespace）、写明 **POSIX 子集边界**。
+> 决策依据见 [架构决策](架构决策.md) #11、#14、#20、#28。本文件为现行对外冻结系统调用 ABI 标准（常量单源 = `tools/abi.toml`）；莓核 2.0 拟新增的 add-only 扩展号位（`Port`、`channel_call`、`Job`、`handle_mint`、`Interrupt`）在落码前以 [ipc 总体设计](../.agents/plans/ipc/design.md) 与 [hal 总体设计](../.agents/plans/hal/design.md) 为预登记规格。
+> **v1.0.1 修订（2026-11-18）**：升格 Curia `Type: standard`；§8.2 `berry_obj_type` 补齐 `BERRY_OBJ_SUSPEND_TOKEN = 12`；§8.3/§8.4 对齐 `user/berry-sys/src/lib.rs` 补齐全部 15 个已上线 syscall 原型与跨界 `#[repr(C)]` 结构（`0x21`/`0x23`/`0x24`/`0x3B`/`0x3C..0x40`/`0x42`/`0x83`/`0x84`/`0x86..0x88`），修正 `vmo_create` 128MiB 上限与 `thread_exit` 多线程语义注记。
 
 ## 1. 规模：中等偏上（总数 ~30–45，v1 核心 ~26）
 
@@ -213,7 +217,7 @@ typedef uint64_t berry_time_t;     /* 纳秒；单调钟 / 壁钟由 clock_id �
 enum berry_obj_type {
     BERRY_OBJ_PROCESS = 1, BERRY_OBJ_THREAD, BERRY_OBJ_VMO, BERRY_OBJ_VMAR,
     BERRY_OBJ_CHANNEL, BERRY_OBJ_EVENT, BERRY_OBJ_EVENTPAIR, BERRY_OBJ_INTERRUPT,
-    BERRY_OBJ_RESOURCE, BERRY_OBJ_TIMER, BERRY_OBJ_JOB,
+    BERRY_OBJ_RESOURCE, BERRY_OBJ_TIMER, BERRY_OBJ_JOB, BERRY_OBJ_SUSPEND_TOKEN,
 };
 
 /* rights 位（对照 `能力模型设计-v1.0.md` §2） */
@@ -315,8 +319,8 @@ berry_status_t berry_vmo_create(uint64_t size, uint32_t options, berry_handle_t 
                                /* v1：bit0 = VMO_OPT_DEMAND（G4-2 demand 后备，
                                   附加授 SET_POLICY）；options 寄存器全宽 u64 执法
                                   ——未知位（含高 32 位）一律 -EINVAL（MECH-2 修；
-                                  本原型 u32 镜像零扩展恒合法）；size ∈ (0, 16MiB]，
-                                  超限 -ENOMEM（no-panic 防线） */
+                                  本原型 u32 镜像零扩展恒合法）；size ∈ (0, 128MiB]
+                                  （A1-2 由 16MiB 扩容），超限 -ENOMEM（no-panic 防线） */
 berry_status_t berry_vmo_commit(berry_handle_t vmo, uint64_t offset, uint64_t len);
 berry_status_t berry_vmo_decommit(berry_handle_t vmo, uint64_t offset, uint64_t len);
                                /* 映射中页 -EBUSY（悬空 PTE 防线，先 unmap） */
@@ -353,6 +357,20 @@ berry_status_t berry_vmar_protect(berry_handle_t vmar, berry_rights_t rights,
 berry_status_t berry_vmar_allocate(berry_handle_t vmar, uint32_t options,
                                uintptr_t *vaddr, size_t len,
                                berry_handle_t *child);
+
+/* —— 按需调页（pager，0x21/0x23/0x24） —— */
+typedef struct {
+    berry_handle_t dv;   /* 目标 demand VMO（须持 RIGHT_SET_POLICY） */
+    berry_handle_t sv;   /* 源 VMO（0 = 零页供给） */
+    int64_t        delta;/* 源页偏移 = 目标页偏移 + delta（页对齐） */
+} berry_pager_window_t;  /* 16B，#[repr(C)] */
+
+berry_status_t berry_pager_supply_pages(berry_handle_t vmo, berry_handle_t src,
+                                        uint64_t src_off);
+berry_status_t berry_pager_supply_mapped(berry_handle_t vmo, berry_handle_t src,
+                                         int64_t delta);
+berry_status_t berry_pager_supply_mapped_table(const berry_pager_window_t *tbl,
+                                               uint32_t n); /* n∈[1,32]，count-wins；缺页等待 30s 看门狗超时杀 */
 
 /* —— 进程 / 线程 —— */
 /* 3-3 修正（发布前，v1 落地实测）：加 root Vmar 第二出参（Zircon
@@ -401,10 +419,49 @@ berry_status_t berry_thread_start(berry_handle_t thread, uintptr_t entry,
                                   arg 落新线程 x0（与首线程 bootstrap 对称
                                   ——pthread 层递 (fn, arg) 的载体）；线程入口
                                   不得返回（返回 = fault 杀兜底） */
-berry_status_t berry_thread_exit(void);                         /* Plan B v0.5
-                               已实现：v1 单线程 ⇒ 等价 process_exit(0)
-                               （Zircon last-thread 语义，多线程留 v2） */
+berry_status_t berry_thread_exit(void);                         /* Plan B v0.5 / T-1
+                               已实现：非末线程仅终止当前线程并唤醒 Thread 等待者；
+                               最后一条活线程退出等价 process_exit(0)（Zircon last-thread 语义） */
 berry_status_t berry_thread_sleep(berry_time_t deadline);     /* nanosleep 等价 */
+
+/* —— 调度 1.1（0x3C–0x3F）与遥测/诊断（0x40/0x42/0x83/0x84） —— */
+typedef struct {
+    uint32_t size;          /* 56B */
+    uint16_t version;       /* 1 */
+    uint16_t flags;
+    uint32_t weight;
+    uint8_t  policy;
+    uint8_t  intent;
+    uint8_t  freeze_clock;
+    uint8_t  reserved0;
+    uint64_t min_ns;
+    uint64_t max_ns;
+    uint64_t deadline_ns;
+    uint64_t budget_ns;
+    uint64_t period_ns;
+} berry_sched_attr_t;
+
+typedef struct {
+    uint64_t key;
+    int32_t  weight;
+    uint8_t  placement;
+    uint8_t  epp_flags;
+    uint16_t _rsv;
+} berry_policy_entry_t;     /* 16B */
+
+berry_status_t berry_sched_setattr(berry_handle_t target, const berry_sched_attr_t *attr);
+berry_status_t berry_sched_getattr(berry_handle_t target, berry_sched_attr_t *attr);
+berry_status_t berry_process_suspend(berry_handle_t target, uint32_t options,
+                                     berry_handle_t *token);
+berry_status_t berry_thread_yield(void);
+berry_status_t berry_sched_util_snapshot(uint32_t *util, size_t count);
+berry_status_t berry_cbox_drain(uint8_t *buf, uint32_t cap, uint32_t *out_len);
+berry_status_t berry_policy_bind(berry_handle_t auth, uint64_t op,
+                                 const berry_policy_entry_t *tbl, uint64_t count,
+                                 uint64_t gen, uint64_t rsv);
+berry_status_t berry_policy_status(berry_handle_t auth, uint64_t *packed,
+                                   uint64_t *self_key);
+berry_status_t berry_telemetry_klog_snapshot(uint8_t *buf, size_t len); /* 0x84 op=0 */
 
 /* —— IPC / event —— */
 berry_status_t berry_channel_create(uint32_t options,
@@ -442,8 +499,11 @@ berry_status_t berry_event_create(uint32_t options, berry_handle_t *out);
                                /* 3-4c v1：options 须 0（非 0 -EINVAL）；
                                   授 SIGNAL|DUPLICATE；出生信号全零 */
 
-/* —— 时间 —— */
+/* —— 时间 / 信号 / 电源 —— */
 berry_status_t berry_clock_read(uint32_t clock_id, berry_time_t *out);
+berry_status_t berry_signal_send(berry_handle_t process, uint32_t sig);
+berry_status_t berry_signal_take(uint64_t *pending);
+berry_status_t berry_power_off(void);
 ```
 
 **v1 计数 = 40**（handle/object 6 + VMO/Vmar 11（含 0x1A `vmo_get_size`，G-eco；0x1B `vmo_get_phys`，P6）+ 进程线程 9（含 0x3A `process_get_exit_code`，P5；0x3B `process_terminate`，C-4b）+ channel/event 4 + clock 1 + pager 3（0x21 `pager_supply_pages`，G4-2 v2 号激活——阻塞收货首形，demand VMO 供给；0x23 `pager_supply_mapped`，G4-4 门 C 裁 A add-only——delta 恒等选源，X-3b 挂派发已实现；0x24 `pager_supply_mapped_table`，X-6 刀① add-only——`PagerWindow{dv,sv,delta}` 16B×N=32 表批 count-wins 多窗一次收货）+ 安全/证明预留 1（0x85 `berry_attest`，SEC-01 件 11——在册未实现恒 `-ENOTSUP`）+ 信号 2（0x86 `signal_send` / 0x87 `signal_take`，A7-4 门 C 裁定 A add-only——已实现）+ 电源 1（0x88 `power_off`，桌面UX刀D add-only——PSCI SYSTEM_OFF 经 HVC，`off_supported` probe 缓存门，v1 无门控随 I3 正规化）+ 调度遥测 1（0x40 `sched_util_snapshot`，CP-08 util 通道首环 add-only——per-CPU util EWMA 快照 pull 读，OQ-8 通道形态首裁快照先行、共享环随 CP-10 叠加）+ cbox 1（0x42 `cbox_drain`，cbox 刀1 add-only——黑匣子崩溃记录排液口，12B 头+104B/条 seq 升序全量快照，跨根并回））——真语义 39 已逐刀 add-only 扩出「~26」预算带（0x35/0x1A/0x1B/0x3A/0x3B/0x86/0x87/0x21/0x23/0x24/0x88/0x40/0x42），另 1 号为预留位。`object_get_info / futex / timer / 设备 / namespace` 留到 v2/v3（pager 三号已入 v1；0x22 `pager_op_range` 仍 v3）。
@@ -486,16 +546,32 @@ extern "C" {
     pub fn berry_vmar_allocate(vmar: Handle, options: u32, vaddr: *mut usize, len: usize,
                              child: *mut Handle) -> Status;
 
+    pub fn berry_pager_supply_pages(vmo: Handle, src: Handle, src_off: u64) -> Status;
+    pub fn berry_pager_supply_mapped(vmo: Handle, src: Handle, delta: i64) -> Status;
+    pub fn berry_pager_supply_mapped_table(tbl: *const PagerWindow, n: u32) -> Status;
+
     pub fn berry_process_create(job: Handle, options: u32,
                               process: *mut Handle, vmar: *mut Handle) -> Status;
     pub fn berry_process_start(process: Handle, thread: Handle, entry: usize, sp: usize,
                              bootstrap: Handle) -> Status;
     pub fn berry_process_exit(code: i32) -> ! ;
     pub fn berry_process_get_exit_code(process: Handle, code: *mut i32) -> Status;
+    pub fn berry_process_terminate(process: Handle, code: i32) -> Status;
+    pub fn berry_process_suspend(target: Handle, options: u32, token: *mut Handle) -> Status;
     pub fn berry_thread_create(process: Handle, options: u32, out: *mut Handle) -> Status;
     pub fn berry_thread_start(thread: Handle, entry: usize, sp: usize, arg: usize) -> Status;
     pub fn berry_thread_exit() -> ! ;
     pub fn berry_thread_sleep(deadline: Time) -> Status;
+    pub fn berry_thread_yield() -> Status;
+
+    pub fn berry_sched_setattr(target: Handle, attr: *const SchedAttr) -> Status;
+    pub fn berry_sched_getattr(target: Handle, attr: *mut SchedAttr) -> Status;
+    pub fn berry_sched_util_snapshot(util: *mut u32, count: usize) -> Status;
+    pub fn berry_cbox_drain(buf: *mut u8, cap: u32, out_len: *mut u32) -> Status;
+    pub fn berry_policy_bind(auth: Handle, op: u64, tbl: *const PolicyEntry,
+                           count: u64, gen: u64, rsv: u64) -> Status;
+    pub fn berry_policy_status(auth: Handle, packed: *mut u64, self_key: *mut u64) -> Status;
+    pub fn berry_telemetry_klog_snapshot(buf: *mut u8, len: usize) -> Status;
 
     pub fn berry_channel_create(options: u32, out0: *mut Handle, out1: *mut Handle) -> Status;
     pub fn berry_channel_send(ch: Handle, bytes: *const u8, nbytes: usize,
@@ -505,6 +581,9 @@ extern "C" {
     pub fn berry_event_create(options: u32, out: *mut Handle) -> Status;
 
     pub fn berry_clock_read(clock_id: u32, out: *mut Time) -> Status;
+    pub fn berry_signal_send(process: Handle, sig: u32) -> Status;
+    pub fn berry_signal_take(pending: *mut u64) -> Status;
+    pub fn berry_power_off() -> Status;
 }
 ```
 
