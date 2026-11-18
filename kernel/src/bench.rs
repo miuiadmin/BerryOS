@@ -528,10 +528,11 @@ extern "C" fn sb_task_b(_arg: usize) -> ! {
 /// 任务体不带 klock 包络（lat 先例的 klock_exit 会解蔽 = 破窗）；block/
 /// wake 的 KERN_LOCK 位=0 直调面（幂等跳过——exit_current 直调同款）。
 ///
-/// **配对悬账（主线收）**：sched `note_switch` 的 SWITCHES_TT 在钩子缺席
-/// 期也计（「实际不可达」防御支——本纪元使其可达），G1.5 的
-/// `tel >= switches_tt` 断言将差本纪元切换数（≈259）；须随本刀在 sched
-/// 侧配对修复（tt 计数移入钩子在位分支，或 telemetry::init 注册时重基）。
+/// **配对悬账已收（2026-11-18）**：sched `note_switch` 的 SWITCHES_TT
+/// 原在钩子缺席期也计（「实际不可达」防御支——本纪元使其可达），
+/// icount 通道（恒递 sbench 键）boot 尾 G1.5 必炸（total=990 <
+/// switches_tt=1249，差恰本纪元 ≈259 切换）。修复 = tt 计数移入
+/// `SWITCH_HOOK` 在位分支（分母与环写同生同灭）——本头注留档。
 pub fn run_sched_epoch() {
     // noktest 生产形态整窗跳（P0-4 合并一门同款：ktest/bench 相互独立但
     // 生产 boot 同跳——零 BENCH 行零 trailer，与旧 noktest 形状逐位一致）。
