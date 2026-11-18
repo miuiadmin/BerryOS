@@ -8500,11 +8500,18 @@ fn test_band_m4() {
             // (5) 真记账（per-task tick——FairBand 差异化热路径：VD 带
             //     参数重臂 + consume→throttle_all 带预算执法）。
             let is_ia = next.intent_effective == INTENT_INTERACTIVE;
+            let run_end = cntvct();
             class_of_task(&*next).tick(&mut *next, &mut rq);
             if next.slice_left == 0 {
                 if is_ia {
                     exh_ia += 1;
-                } else {
+                } else if run_end.wrapping_sub(run_start) <= ns2cyc(G1_SPIN_NS) {
+                    // TCG 慢宿主免疫（2026-11-17 BANDM4 判例）：spin 跑段
+                    // 被 TCG 线程停顿超射时，单次 tick 记账会把「超射多跑
+                    // 的墙钟」当片耗尽记账——假证据（slice 语义 = 调度窗
+                    // 内预算，非 spin 墙钟）。真燃尽判据 = 跑段不超射时
+                    //（HVF/真机正常态）slice_left 归零；超射轮弃记
+                    //（IA 臂不受影响：10ms 片 12ms 跑段恒真燃尽）。
                     exh_ut += 1;
                 }
             }
