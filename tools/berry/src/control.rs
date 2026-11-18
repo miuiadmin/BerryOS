@@ -237,7 +237,7 @@ mod common {
         }
         Ok(())
     }
-fn dispatch(
+pub(crate) fn dispatch(
     op: &str,
     args: &Value,
     qmp: &Arc<Mutex<QmpClient>>,
@@ -893,5 +893,350 @@ mod tests {
         std::fs::write(tmp.join("control.port"), b"1").unwrap();
         assert!(is_up(&tmp), "control.port 在即 up");
         std::fs::remove_dir_all(&tmp).ok();
+    }
+}
+// ---- W1-Q26 十五刀（control dispatch 面）：scripted fake-QMP + fake-VNC
+// ---- 首次直测 dispatch 全 op 面（此前仅 decode/is_up/passwd_warn 纯面）。
+// ---- 覆盖：hello 全能力表钉板 / stats 容错（meta 缺失·QMP 失败降级
+// ---- unknown）/ status vnc 字段拼装（dial_host 通配→回环映射）/
+// ---- power reboot 状态与审计事件 / stop 全链 / logs·events 尾窗 /
+// ---- display list·set / shortcut 转发树 / key 未知键拒绝 /
+// ---- vnc_passwd 参数互斥矩阵与空密码拒绝（QMP 不触达）。
+// ---- 服务器线程 = qmp.rs fake-QMP scripted 先例复用（零真 QEMU）。
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+    use common::dispatch;
+    use serde_json::{json, Value};
+    use std::io::{BufRead, BufReader, Write as _};
+    use std::path::PathBuf;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
+
+    /// 每请求起一个 fake-QMP：回一条 `{"return": ...}` 后立即关连接。
+    /// dispatch 的每个 op 至多同步执行一条 QMP 命令（互斥锁串行），
+    /// 所以逐请求接受即可覆盖全部路径而无需长连接泵。
+    fn fake_qmp_listener() -> (u16, std::sync::mpsc::Receiver<String>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut s = match stream {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                // QMP greeting first (QmpClient::connect negotiates on it).
+                if s
+                    .write_all(b"{\"QMP\":{\"version\":{\"qemu\":{\"micro\":3}},\"capabilities\":[]}}\n")
+                    .is_err()
+                {
+                    continue;
+                }
+                // Serve one reply per request line until EOF: dispatch 在同
+                // 一连接上顺序执行多条 QMP 命令（connect 握手 + 各 op）。
+                // 回复 id 必须回显请求 id——QmpClient 按 id 路由 pending。
+                let mut r = BufReader::new(s.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    match r.read_line(&mut line) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                    let _ = tx.send(line.clone());
+                    let id = serde_json::from_str::<Value>(&line)
+                        .ok()
+                        .and_then(|v| v.get("id").cloned())
+                        .unwrap_or(Value::Null);
+                    let reply = format!(r#"{{"return":{{}},"id":{}}}"#, id);
+                    if s.write_all(reply.as_bytes()).is_err()
+                        || s.write_all(b"\n").is_err()
+                    {
+                        break;
+                    }
+                }
+            }
+        });
+        (port, rx)
+    }
+
+    fn fake_qmp_client(port: u16) -> Arc<Mutex<QmpClient>> {
+        let c = QmpClient::connect(&Endpoint::Tcp(format!("127.0.0.1:{port}")))
+            .expect("fake qmp handshake");
+        Arc::new(Mutex::new(c))
+    }
+
+    /// 死 VNC 端口（bind 不监听）：VNC-touching ops 的连接失败路径。
+    fn dead_vnc() -> Endpoint {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        Endpoint::Tcp(format!("127.0.0.1:{}", l.local_addr().unwrap().port()))
+        // listener drop = 端口关闭，connect 会拒。
+    }
+
+    fn temp_run() -> PathBuf {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let d = std::env::temp_dir().join(format!(
+            "berry-ctl-dispatch-{}-{}-{}",
+            std::process::id(),
+            seq,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn hello_capability_table_pinned() {
+        let (port, _rx) = fake_qmp_listener();
+        let qmp = fake_qmp_client(port);
+        let run = temp_run();
+        let stop = Arc::new(AtomicBool::new(false));
+        let v = dispatch("hello", &json!({}), &qmp, &dead_vnc(), &run, &stop).unwrap();
+        assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
+        let caps = v["capabilities"].as_array().unwrap();
+        assert_eq!(
+            caps.len(),
+            16,
+            "capability table must stay pinned (add op = update this)"
+        );
+        for op in [
+            "hello", "status", "stats", "power", "stop", "logs", "display",
+            "shortcut", "events", "screenshot", "key", "tap", "swipe", "text",
+            "vnc", "vnc_passwd",
+        ] {
+            assert!(
+                caps.iter().any(|c| c == op),
+                "capability {op} missing"
+            );
+        }
+        std::fs::remove_dir_all(&run).ok();
+    }
+
+    #[test]
+    fn stats_meta_missing_and_qmp_failure_degrade() {
+        // 空 run 目录：meta.json 缺失 -> 字段全 Null；活 fake QMP 回
+        // 空 return -> query_status 无 status 字段 -> state "unknown"
+        // （stats 路不向调用方报错）。
+        let (port, _rx) = fake_qmp_listener();
+        let qmp = fake_qmp_client(port);
+        let run = temp_run();
+        let stop = Arc::new(AtomicBool::new(false));
+        let v = dispatch("stats", &json!({}), &qmp, &dead_vnc(), &run, &stop).unwrap();
+        assert_eq!(v["state"], "unknown", "meta 缺失 + 无 status 字段 -> unknown");
+        assert!(v["profile"].is_null());
+        assert!(v["memory_mib"].is_null());
+        assert_eq!(v["run"], run.display().to_string());
+        assert_eq!(v["stop_requested"], false);
+        std::fs::remove_dir_all(&run).ok();
+    }
+
+    #[test]
+    fn status_vnc_object_assembly_from_run_dir() {
+        // vnc.listen 存在时 status 拼装 host/port/uri/bind 四件；
+        // 通配 bind 0.0.0.0 → dial 127.0.0.1（dial_host 契约）。
+        let (port, _rx) = fake_qmp_listener();
+        let qmp = fake_qmp_client(port);
+        let run = temp_run();
+        crate::vnc_cfg::write_listen(&run, "0.0.0.0", 5901, None, false).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let v = dispatch("status", &json!({}), &qmp, &dead_vnc(), &run, &stop).unwrap();
+        assert_eq!(v["vnc"]["host"], "127.0.0.1", "wildcard maps to loopback");
+        assert_eq!(v["vnc"]["port"], 5901);
+        assert_eq!(v["vnc"]["uri"], "vnc://127.0.0.1:5901");
+        assert_eq!(v["vnc"]["bind"], "0.0.0.0:5901");
+        std::fs::remove_dir_all(&run).ok();
+    }
+
+    #[test]
+    fn power_reboot_state_and_audit_event() {
+        let (port, _rx) = fake_qmp_listener();
+        let qmp = fake_qmp_client(port);
+        let run = temp_run();
+        let stop = Arc::new(AtomicBool::new(false));
+        let v = dispatch(
+            "power",
+            &json!({"action": "reboot"}),
+            &qmp,
+            &dead_vnc(),
+            &run,
+            &stop,
+        )
+        .unwrap();
+        assert_eq!(v["state"], "rebooting");
+        // state.json 与 events.jsonl 落盘
+        let state: Value = serde_json::from_slice(
+            &std::fs::read(run.join("state.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(state["state"], "rebooting");
+        let events = std::fs::read_to_string(run.join("events.jsonl")).unwrap();
+        assert!(events.contains("\"action\":\"power.reboot\""));
+        assert!(events.contains("\"source\":\"control\""));
+        std::fs::remove_dir_all(&run).ok();
+    }
+
+    #[test]
+    fn logs_and_events_tail_window() {
+        // serial.log 5 行 tail=2 -> 后 2 行；events.jsonl 3 行 tail=0 默认 100 -> 全量。
+        let (port, _rx) = fake_qmp_listener();
+        let qmp = fake_qmp_client(port);
+        let run = temp_run();
+        std::fs::write(run.join("serial.log"), "l1\nl2\nl3\nl4\nl5\n").unwrap();
+        std::fs::write(run.join("events.jsonl"), "e1\ne2\ne3\n").unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let logs = dispatch("logs", &json!({"tail": 2}), &qmp, &dead_vnc(), &run, &stop).unwrap();
+        let arr = logs["lines"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0], "l4");
+        assert_eq!(arr[1], "l5");
+        // tail 超过行数 -> 全量（saturating_sub 起点 0）
+        let all = dispatch("logs", &json!({"tail": 99}), &qmp, &dead_vnc(), &run, &stop).unwrap();
+        assert_eq!(all["lines"].as_array().unwrap().len(), 5);
+        // events 默认 tail=100
+        let ev = dispatch("events", &json!({}), &qmp, &dead_vnc(), &run, &stop).unwrap();
+        assert_eq!(ev["lines"].as_array().unwrap().len(), 3);
+        std::fs::remove_dir_all(&run).ok();
+    }
+
+    #[test]
+    fn display_list_matches_profile_table_and_set_unknown_rejects() {
+        let (port, _rx) = fake_qmp_listener();
+        let qmp = fake_qmp_client(port);
+        let run = temp_run();
+        let stop = Arc::new(AtomicBool::new(false));
+        let v = dispatch("display", &json!({"action": "list"}), &qmp, &dead_vnc(), &run, &stop)
+            .unwrap();
+        let profiles = v["profiles"].as_array().unwrap();
+        assert_eq!(profiles.len(), crate::profile::PROFILES.len());
+        for (entry, p) in profiles.iter().zip(crate::profile::PROFILES.iter()) {
+            assert_eq!(entry["id"], p.id);
+            assert_eq!(entry["memory_mib"], p.memory_mib);
+        }
+        // set unknown -> E_ENV(3)（profile::get 的 env 码位）+ next-profile 不落盘
+        let e = dispatch(
+            "display",
+            &json!({"action": "set", "profile": "no-such-profile"}),
+            &qmp,
+            &dead_vnc(),
+            &run,
+            &stop,
+        )
+        .unwrap_err();
+        assert_eq!(e.code, 3);
+        assert!(!run.join("next-profile").exists());
+        std::fs::remove_dir_all(&run).ok();
+    }
+
+    #[test]
+    fn shortcut_forwards_to_sibling_ops() {
+        // resolution -> 从 meta.profile 读回 profile 面；fullscreen -> 拒。
+        let (port, _rx) = fake_qmp_listener();
+        let qmp = fake_qmp_client(port);
+        let run = temp_run();
+        std::fs::write(
+            run.join("meta.json"),
+            serde_json::to_vec(&json!({"profile": "phone"})).unwrap(),
+        )
+        .unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let v = dispatch(
+            "shortcut",
+            &json!({"action": "resolution"}),
+            &qmp,
+            &dead_vnc(),
+            &run,
+            &stop,
+        )
+        .unwrap();
+        assert_eq!(v["profile"], "phone");
+        assert!(v["render_w"].is_u64());
+        let e = dispatch(
+            "shortcut",
+            &json!({"action": "fullscreen"}),
+            &qmp,
+            &dead_vnc(),
+            &run,
+            &stop,
+        )
+        .unwrap_err();
+        assert_eq!(e.code, 2);
+        assert!(e.message.contains("window-only"));
+        std::fs::remove_dir_all(&run).ok();
+    }
+
+    #[test]
+    fn key_unknown_qcode_rejected_before_vnc() {
+        // 未知键在 VNC 连接前拒绝：dead_vnc 端口若被触达会连接失败报
+        // E_DEVICE(6)，而参数错应为 E_USAGE(2)——码位即序证明。
+        let (port, _rx) = fake_qmp_listener();
+        let qmp = fake_qmp_client(port);
+        let run = temp_run();
+        let stop = Arc::new(AtomicBool::new(false));
+        let e = dispatch(
+            "key",
+            &json!({"code": "definitely-not-a-qcode"}),
+            &qmp,
+            &dead_vnc(),
+            &run,
+            &stop,
+        )
+        .unwrap_err();
+        assert_eq!(e.code, 2, "unknown key is usage error, not device error");
+        assert!(e.message.contains("definitely-not-a-qcode"));
+        std::fs::remove_dir_all(&run).ok();
+    }
+
+    #[test]
+    fn vnc_passwd_arg_matrix_rejected_before_qmp_and_vnc() {
+        // expire 与 password/generate 互斥、三者全缺、空密码：
+        // 三形态都在触达 QMP/VNC 前拒绝（fake QMP 回任意 return 也不会
+        // 被走到 set_password——若走到，事件/落盘会出现，断言其缺席）。
+        let (port, _rx) = fake_qmp_listener();
+        let qmp = fake_qmp_client(port);
+        let run = temp_run();
+        let stop = Arc::new(AtomicBool::new(false));
+        // expire + password 互斥
+        let e = dispatch(
+            "vnc_passwd",
+            &json!({"expire": "60", "password": "x"}),
+            &qmp,
+            &dead_vnc(),
+            &run,
+            &stop,
+        )
+        .unwrap_err();
+        assert_eq!(e.code, 2);
+        // 三缺
+        let e = dispatch("vnc_passwd", &json!({}), &qmp, &dead_vnc(), &run, &stop).unwrap_err();
+        assert_eq!(e.code, 2);
+        // 空密码
+        let e = dispatch(
+            "vnc_passwd",
+            &json!({"password": ""}),
+            &qmp,
+            &dead_vnc(),
+            &run,
+            &stop,
+        )
+        .unwrap_err();
+        assert_eq!(e.code, 2);
+        assert!(!run.join("vnc.pass").exists(), "no pass file on rejection");
+        std::fs::remove_dir_all(&run).ok();
+    }
+
+    #[test]
+    fn unsupported_op_is_usage_error() {
+        let (port, _rx) = fake_qmp_listener();
+        let qmp = fake_qmp_client(port);
+        let run = temp_run();
+        let stop = Arc::new(AtomicBool::new(false));
+        let e = dispatch("no-such-op", &json!({}), &qmp, &dead_vnc(), &run, &stop).unwrap_err();
+        assert_eq!(e.code, 2);
+        assert!(e.message.contains("no-such-op"));
+        std::fs::remove_dir_all(&run).ok();
     }
 }
