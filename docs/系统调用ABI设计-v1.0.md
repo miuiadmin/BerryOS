@@ -3,9 +3,10 @@
 Type: standard
 Status: current
 Updated: 2026-11-18
-Version: 1.0.1
+Version: 1.0.2
 
-> 决策依据见 [架构决策](架构决策.md) #11、#14、#20、#28。本文件为现行对外冻结系统调用 ABI 标准（常量单源 = `tools/abi.toml`）；莓核 2.0 拟新增的 add-only 扩展号位（`Port`、`channel_call`、`Job`、`handle_mint`、`Interrupt`）在落码前以 [ipc 总体设计](../.agents/plans/ipc/design.md) 与 [hal 总体设计](../.agents/plans/hal/design.md) 为预登记规格。
+> 决策依据见 [架构决策](架构决策.md) #11、#14、#20、#28。本文件为现行对外冻结系统调用 ABI 标准（常量单源 = `tools/abi.toml`）；莓核 2.0 拟新增的 add-only 扩展号位（`Port`、`channel_call`、`Job`、`handle_mint`、`Interrupt`）在落码前以 [全系统 40 模块终态合龙总纲](../.agents/plans/2026-11-18-全系统31模块终态合龙总纲与ABI号段总表.md)、[ipc 总体设计](../.agents/plans/ipc/design.md) 与 [hal 总体设计](../.agents/plans/hal/design.md) 为预登记规格。
+> **v1.0.2 修订（2026-11-18）**：在 §8.2 `berry_obj_type` 下锁定平台 ABI v2 新增七类内核对象唯一枚举号（`13..=19`：`Port / Epoch / Pager / Bti / Pmt / Guest / Vcpu`），为 `0x07 object_get_info` 与终端 `lscap` 提供单一类型权威。
 > **v1.0.1 修订（2026-11-18）**：升格 Curia `Type: standard`；§8.2 `berry_obj_type` 补齐 `BERRY_OBJ_SUSPEND_TOKEN = 12`；§8.3/§8.4 对齐 `user/berry-sys/src/lib.rs` 补齐全部 15 个已上线 syscall 原型与跨界 `#[repr(C)]` 结构（`0x21`/`0x23`/`0x24`/`0x3B`/`0x3C..0x40`/`0x42`/`0x83`/`0x84`/`0x86..0x88`），修正 `vmo_create` 128MiB 上限与 `thread_exit` 多线程语义注记。
 
 ## 1. 规模：中等偏上（总数 ~30–45，v1 核心 ~26）
@@ -56,7 +57,6 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | 0x19 | `vmar_allocate` | 建子区间 | v1 | 2026-10-15 |
 | 0x1A | `vmo_get_size` | 查容量（出参 `*size`，**页对齐**——create 即取整非 blob 实长；门控仅类型不查权利位 need=0，同 wait「等待不需权利」；G-eco svcmgr 消费 rootfs 需要 cpio 总长） | v1 | — |
 | 0x1B | `vmo_get_phys` | 查字节物理地址（出参 `*pa` = 所在页后备 PA + 页内偏移；匿名 VMO 该页须已 commit，MMIO 窗口 = pa_base+offset；门控仅类型 need=0，同 get_size 几何惯例；PA 是 u64 出参 8 字节宽） | v1 | 2026-11-12 |
-| 0x1C | `vmo_cache_op` | VMO 数据缓存 PoC 一致性维护（F0-4 用户态非一致性 DMA 面：入参 vmo + op〔CLEAN/INVALIDATE/CLEAN_INVALIDATE〕+ offset + len；CLEAN 需 RIGHT_READ，INVALIDATE/CLEAN_INVALIDATE 需 RIGHT_WRITE） | v1 | 2026-11-18 |
 | **pager** |||||
 | 0x21 | `pager_supply_pages` | 用户态 pager 给 demand VMO 供给一页：入参 vmo（目标，须持 RIGHT_SET_POLICY）+ src（源 VMO 句柄，0 = 填零页）+ src_off（源内页偏移） | v1 | 2026-11-06 |
 | 0x22 | `pager_op_range` | 脏页/换出通知 | v3 | — |
@@ -219,6 +219,10 @@ enum berry_obj_type {
     BERRY_OBJ_PROCESS = 1, BERRY_OBJ_THREAD, BERRY_OBJ_VMO, BERRY_OBJ_VMAR,
     BERRY_OBJ_CHANNEL, BERRY_OBJ_EVENT, BERRY_OBJ_EVENTPAIR, BERRY_OBJ_INTERRUPT,
     BERRY_OBJ_RESOURCE, BERRY_OBJ_TIMER, BERRY_OBJ_JOB, BERRY_OBJ_SUSPEND_TOKEN,
+    /* ABI v2 预锁定枚举号（13..=19，严禁挪作他用）：
+     * BERRY_OBJ_PORT = 13, BERRY_OBJ_EPOCH = 14, BERRY_OBJ_PAGER = 15,
+     * BERRY_OBJ_BTI  = 16, BERRY_OBJ_PMT   = 17, BERRY_OBJ_GUEST = 18,
+     * BERRY_OBJ_VCPU = 19 */
 };
 
 /* rights 位（对照 `能力模型设计-v1.0.md` §2） */
@@ -507,7 +511,7 @@ berry_status_t berry_signal_take(uint64_t *pending);
 berry_status_t berry_power_off(void);
 ```
 
-**v1 计数 = 41**（handle/object 6 + VMO/Vmar 12（含 0x1A `vmo_get_size`，G-eco；0x1B `vmo_get_phys`，P6；0x1C `vmo_cache_op`，F0-4）+ 进程线程 9（含 0x3A `process_get_exit_code`，P5；0x3B `process_terminate`，C-4b）+ channel/event 4 + clock 1 + pager 3（0x21 `pager_supply_pages`，G4-2 v2 号激活——阻塞收货首形，demand VMO 供给；0x23 `pager_supply_mapped`，G4-4 门 C 裁 A add-only——delta 恒等选源，X-3b 挂派发已实现；0x24 `pager_supply_mapped_table`，X-6 刀① add-only——`PagerWindow{dv,sv,delta}` 16B×N=32 表批 count-wins 多窗一次收货）+ 安全/证明预留 1（0x85 `berry_attest`，SEC-01 件 11——在册未实现恒 `-ENOTSUP`）+ 信号 2（0x86 `signal_send` / 0x87 `signal_take`，A7-4 门 C 裁定 A add-only——已实现）+ 电源 1（0x88 `power_off`，桌面UX刀D add-only——PSCI SYSTEM_OFF 经 HVC，`off_supported` probe 缓存门，v1 无门控随 I3 正规化）+ 调度遥测 1（0x40 `sched_util_snapshot`，CP-08 util 通道首环 add-only——per-CPU util EWMA 快照 pull 读，OQ-8 通道形态首裁快照先行、共享环随 CP-10 叠加）+ cbox 1（0x42 `cbox_drain`，cbox 刀1 add-only——黑匣子崩溃记录排液口，12B 头+104B/条 seq 升序全量快照，跨根并回））——真语义 40 已逐刀 add-only 扩出「~26」预算带（0x35/0x1A/0x1B/0x1C/0x3A/0x3B/0x86/0x87/0x21/0x23/0x24/0x88/0x40/0x42），另 1 号为预留位。`object_get_info / futex / timer / 设备 / namespace` 留到 v2/v3（pager 三号已入 v1；0x22 `pager_op_range` 仍 v3）。
+**v1 计数 = 40**（handle/object 6 + VMO/Vmar 11（含 0x1A `vmo_get_size`，G-eco；0x1B `vmo_get_phys`，P6）+ 进程线程 9（含 0x3A `process_get_exit_code`，P5；0x3B `process_terminate`，C-4b）+ channel/event 4 + clock 1 + pager 3（0x21 `pager_supply_pages`，G4-2 v2 号激活——阻塞收货首形，demand VMO 供给；0x23 `pager_supply_mapped`，G4-4 门 C 裁 A add-only——delta 恒等选源，X-3b 挂派发已实现；0x24 `pager_supply_mapped_table`，X-6 刀① add-only——`PagerWindow{dv,sv,delta}` 16B×N=32 表批 count-wins 多窗一次收货）+ 安全/证明预留 1（0x85 `berry_attest`，SEC-01 件 11——在册未实现恒 `-ENOTSUP`）+ 信号 2（0x86 `signal_send` / 0x87 `signal_take`，A7-4 门 C 裁定 A add-only——已实现）+ 电源 1（0x88 `power_off`，桌面UX刀D add-only——PSCI SYSTEM_OFF 经 HVC，`off_supported` probe 缓存门，v1 无门控随 I3 正规化）+ 调度遥测 1（0x40 `sched_util_snapshot`，CP-08 util 通道首环 add-only——per-CPU util EWMA 快照 pull 读，OQ-8 通道形态首裁快照先行、共享环随 CP-10 叠加）+ cbox 1（0x42 `cbox_drain`，cbox 刀1 add-only——黑匣子崩溃记录排液口，12B 头+104B/条 seq 升序全量快照，跨根并回））——真语义 39 已逐刀 add-only 扩出「~26」预算带（0x35/0x1A/0x1B/0x3A/0x3B/0x86/0x87/0x21/0x23/0x24/0x88/0x40/0x42），另 1 号为预留位。`object_get_info / futex / timer / 设备 / namespace` 留到 v2/v3（pager 三号已入 v1；0x22 `pager_op_range` 仍 v3）。
 
 ### 8.4 Rust FFI 镜像（`user/berry-sys`，raw 绑定）
 

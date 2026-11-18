@@ -3,7 +3,7 @@
 Type: spec
 Status: active
 Updated: 2026-11-18
-Version: 1.0.0
+Version: 1.1.0
 
 一句话说明：`cli-suite` 定义 BerryOS 在纯命令行环境下的完整自给工具链——涵盖 `/svc` 能力服务发现与虚拟挂载层级、全屏编辑器 `bed` 与零拷贝分页器 `less`、微内核独有能力/IPC/源码级在机调试套件（`btop / lscap / btrace / bdbg / cboxctl`）、网络与免重启传文件套件（`ip / ping / dig / nc / curl / bscp / bsshd`）以及全工具统一的 `--json` 机器可读输出契约。
 
@@ -23,18 +23,19 @@ Version: 1.0.0
 1. **`ServiceDir` 能力寻址（根治 `no svcmgr gift`）**：
    - `rootmgr` 维护只读受控能力目录 `/svc`，交互式登录会话默认经 `PA_SVC_DIR` 获得标准交互服务集句柄；任何客户端调用 `berry_svc::connect("/svc/<name>")` 发送 `SVC_OPEN(name, flags)`，目标守护进程当场创建一枚**每客户端独占会话 `Channel`**（绑定至服务端 `Port`）交回客户端，彻底消灭多进程抢同一共享客户端端点的竞态与一次性 `gift` 断链：
    - 标准服务注册表：`/svc/proc`（进程/Job/内存/能力快照查询与管理）、`/svc/fs`（VFS 根挂载会话）、`/svc/net`（`netd` 套接字工厂）、`/svc/pty`（`ptyd` 伪终端分配）、`/svc/trace`（`traced` 追踪环与 `klog` 实时订阅）、`/svc/power`（电源状态、重启与 `PSCI` 关机）、`/svc/cbox`（崩溃账本与 `ramoops` 读取）、`/svc/debug`（受 `dev` 解锁或 `debuggable` 门控的 `ProcessDebugCap` 签发口）。
-2. **清晰统一的终端目录树契约**：
-   - `/` 与 `/bin`、`/etc`、`lib`：挂载只读按需调页 `BerryROFS`；
-   - `/userdata`（含 `/userdata/home` 默认 `$HOME`、`/userdata/var/log` 持久日志）：挂载写时复制崩溃原子 `BerryFS`，所有配置文件（`.bshrc`）、历史记录（`.bsh_history`）与用户脚本跨掉电重启持久留存；
+2. **清晰统一的终端目录树契约（对齐全系统存储总纲）**：
+   - `/` 与 `/bin`、`/etc`、`/lib`：挂载只读按需调页 `BerryROFS`；
+   - `/data/system_de/log/`：挂载写时复制崩溃原子 `BerryFS` 设备级加密（DE）系统持久日志目录；
+   - `/userdata/home`（默认交互 `$HOME`）：挂载 `BerryFS` 命令行工作区，配置文件（`.bshrc`）、历史记录（`.bsh_history`）、个人可执行目录（`bin/`）与编辑器崩溃恢复目录（`.cache/bed/`）跨掉电重启持久留存；
    - `/tmp` 与 `/run`：挂载弹性可回收 `tmpfs`；
    - `/dev`：用户态虚拟设备节点——`/dev/null`、`/dev/zero`、`/dev/urandom`（对接硬件 CSPRNG）、`/dev/tty`（当前进程 `PA_PTY_CTL` 投影）、`/dev/kmsg`（只读内核日志流）。
 
 ### 二、终端生产力三件套（`bed`、`less`、`bscp`）契约
 
 1. **`bed`：轻量全屏 UTF-8 文本与代码编辑器**：
-   - 基于 [pty 总体设计](../pty/design.md) 的 `berry-vt` 网格与备用屏幕缓冲构建，纯 Rust 零外部 C 依赖，二进制体积 `< 120KiB`；
+   - 基于 [pty 总体设计](../pty/design.md) 的 `berry-vt` 网格、共享 `faces/utf8width` 宽字符核与备用屏幕缓冲构建，纯 Rust 零外部 C 依赖，二进制体积 `< 120KiB`；
    - **双模友好**：默认提供直觉无模式快捷键（`Ctrl-S` 原子保存、`Ctrl-Q` 退出未存二次确认、`Ctrl-F` 增量正则查找、`Ctrl-H` 交互替换、`Ctrl-G` 跳行、`Ctrl-Z / Ctrl-Y` 无限持久撤销重做树、`Tab / Shift-Tab` 块缩进），同时支持一键开启 `--vi` 模态键位（`Normal / Insert / Visual / :w :q :s`）照顾资深系统工程师肌肉记忆；
-   - **大文件与防丢稿保障**：采用 Rope / Piece-Table 内存结构，毫秒级打开 `10MiB` 源码或日志；内置 Rust、Shell（`.sh`）、TOML、JSON、C 词法着色与行号标尺；编辑期间每 5 秒将增量日志写入 `/userdata/tmp/.bed.<hash>.swp`，即使进程被强杀或断电重启，`bed -r` 亦可零字节丢失恢复草稿。
+   - **大文件与防丢稿保障**：采用 Rope / Piece-Table 内存结构，毫秒级打开 `10MiB` 源码或日志；内置 Rust、Shell（`.sh`）、TOML、JSON、C 词法着色与行号标尺；编辑期间每 5 秒将增量日志写入 `/userdata/home/.cache/bed/<hash>.swp`，即使进程被强杀或断电重启，`bed -r` 亦可零字节丢失恢复草稿。
 2. **`less`：零拷贝大文件分页与实时追尾器**：
    - 对普通文件直接映射只读 VMO（无需将整份数千万行日志读入堆内存，打开耗时 `O(1)`），对管道 `stdin` 采用分块增量流式缓存；
    - 支持 `j/k/Up/Down` 逐行、`Space/b/PgDn/PgUp` 翻页、`g/G` 首尾跳转、`/pattern` 与 `?pattern` 正向反向高亮正则搜索（`n/N` 跳转）、以及 **`F` 键实时追尾模式**（等价 `tail -f`，按 `Ctrl-C` 随时退回静态翻阅而不退出分页器）。
@@ -79,7 +80,23 @@ flowchart TD
 2. **远程加密多路终端守护进程（`bsshd`）**：
    - 以不足 2,000 行纯 Rust 基于 `berry-netsec`（双向 Ed25519 公钥认证 + TLS 1.3 / QUIC 加密流）与 `ptyd` 实现轻量安全远程 Shell 服务：支持多客户端并发登录开启独立 `bsh` 会话、窗口缩放同步、`bscp` 加密文件收发与单命令远程执行（`berry ssh root@<ip> "btop --json"`），彻底摆脱串口单线束缚。
 
-### 五、全工具统一命令行人机工程与 `--json` 契约
+### 五、系统服务、包管理、归档校验、外设电源与内核白盒运维套件契约
+
+为保证纯命令行环境下不留任何系统管理盲区，补齐以下四组运维控制命令（全部支持 `--json`）：
+
+1. **守护进程与软件包管理（`svcctl`、`pkg`）**：
+   - `svcctl [list | status | start | stop | restart] [<svc>] [--json]`：经 `/svc/proc` 对接 `rootmgr` 查询各系统守护进程健康状态、重启代数、所属 `Job` 配额并执行受控启停重启；
+   - `pkg [list | info | install | remove | verify] <file.bap | app_id> [--json]`：经 `/svc/pkg` 对接 [pkgmgr 总体设计](../pkgmgr/design.md)，在纯终端内直接完成 `.bap` 包流式 Merkle 验签安装、查询与零残留卸载。
+2. **流式归档压缩与完整性校验（`tar`、`zstd`、`sha256sum`）**：
+   - 纯 Rust 流式实现标准 USTAR/PAX 归档 `tar`（`-c / -x / -t / -z`）、高吞吐 `zstd` 压缩解压与 `sha256sum`（复用 `berry-crypto` 硬件加速摘要），支撑日志打包外传与脚本产物完整性核验。
+3. **外设中断、电源能耗与时钟管理（`lsdev`、`lsirq`、`powerctl`、`timedatectl`）**：
+   - `lsdev [--json]` 与 `lsirq [--json]`：对接 `devmgr` 列出已枚举的 DTB/PCIe/VirtIO/USB 设备、SMMUv3 `Bti` 隔离域状态及每条 GIC Split-EOI 中断线的触发计数与绑定驱动进程；
+   - `powerctl [off | reboot | suspend | battery | energy] [--json]`：对接 [power-thermal 总体设计](../power-thermal/design.md) `powerd` 触发 1 秒五阶段优雅关机/重启、S3 深睡或查询每服务能耗账本；
+   - `timedatectl [status | set-tz <zone> | sync] [--json]`：对接 `timed` 查看与校准 RTC/NTS 壁钟及共享时区。
+4. **内核白盒自检与锁/内存剖析（`kctl`）**：
+   - `kctl [ktest [suite] | lockstat | slabinfo | buddyinfo] [--json]`：受 `dev` 调试能力门控，支持在机按需触发内核自检套件、导出八秩 `LockRank` 持锁争用统计以及 Buddy 阶分布与 Slab 每档弹匣碎片详情。
+
+### 六、全工具统一命令行人机工程与 `--json` 契约
 
 1. **标准旗标三件套**：仓内所有自研 CLI 工具必须统一支持 `-h / --help`（零副作用打印用法退出 `0`）、`-V / --version`（打印 `.berryver` 构建号）与 `--json`（适用于一切查询、统计与诊断类工具）。
 2. **`--json` 纯净流铁律**：一旦指定 `--json`，`stdout` **只允许输出严格合法的 UTF-8 JSON 对象或每行一条 JSONL**（字段遵循 add-only 兼容演进），一切人类提示、警告与报错一律走 `stderr`，配合统一退出码（`0` 成功 / `1` 一般错误 / `2` 参数用法错 / `77` 权限或能力不足 / `124` 超时 / `130` `Ctrl-C` 中断），让 Shell 脚本管道与 AI Agent 零正则解析即可精确操控整台操作系统。

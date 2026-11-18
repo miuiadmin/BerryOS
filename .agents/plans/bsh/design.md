@@ -3,7 +3,7 @@
 Type: spec
 Status: active
 Updated: 2026-11-18
-Version: 1.0.0
+Version: 1.1.0
 
 一句话说明：`bsh` 3.0 是 BerryOS 的主力命令行交互外壳与系统脚本语言——以「`ProcessArgs v2` 全双工流式启动 + `berry-line` 二维 UTF-8 编辑器 + 完整词法/AST 脚本引擎 + 基于 `Job` 与 `SuspendToken` 的微内核原生作业控制 + 一行式 `sandbox` 能力裁剪」，在不引入 Unix `fork` 包袱的前提下交付超越传统 POSIX sh 的丝滑操控体验。
 
@@ -28,11 +28,15 @@ Version: 1.0.0
    - `PA_SELF (kind = 5, arg = Proc | Vmar | Job)`：进程自描述句柄三件套（支撑 `pthread_create`、`mmap` 与子进程再派生）。
 2. **全双工实时流式执行（根治 `run_output` 死寂与失聪）**：
    - 在交互终端直接执行外部命令（如 `bed main.sh`、`less /var/log/klog`、`ping 1.1.1.1`、`btop`）时，`bsh` 将当前终端的 `PtySlave` 读写句柄直接作为 `PA_FD(0/1/2)` 授予子进程，子进程敲键即收、产字即显，**零 `bsh` 中间拷贝、零退出前缓冲延迟**；
-   - 在多段管道 `cmd1 | cmd2 | cmd3` 中，相邻段间绑定 `64KiB` 流式 `IoRing` / 通道对，全段并发启动、边产边消，上游写满自动背压睡眠，下游提前退出时上游写端立即收 `SIGNAL_PEER_CLOSED`（映射为退出码 `141 / EPIPE` 干净终止，绝不死等）。
+   - 在多段管道 `cmd1 | cmd2 | cmd3` 中，相邻段间绑定 `64KiB` 流式 `IoRing` / 通道对，全段并发启动、边产边消，上游写满自动背压睡眠；
+   - **管道早退（`SIGPIPE -> 141`）与被杀 `EOF` 双向闭环**：当下游（如 `head -n 5`）读够提前退出关闭读端时，上游 `berry-libc` `write()` 收到 `BERRY_ERR_DEAD (-52)` 除设置 `errno = EPIPE` 外，若进程未显式设置 `signal(SIGPIPE, SIG_IGN)`，默认立即触发进程以退出码 `141`（`128 + SIGPIPE`）干净收敛，防止 `dmesg | head` 类上游无限空跑；反之当上游崩溃或被 `job_kill` 强杀时，内核 `Teardown-Before-Drain` 关闭写端句柄必定触发 `SIGNAL_PEER_CLOSED` 唤醒下游读者立即返回 `0 (EOF)`。
+3. **相对/绝对路径直跑与跨卷 `$PATH` 搜索契约**：
+   - 彻底废除旧版「命令名含 `/` 一律报 `127 not found` 且只查 `rootfs.cpio` `bin/`」的限制：凡首词含 `/`（如 `./build.sh`、`../tools/check`、`/userdata/home/bin/my_cli`），直接基于 `PA_CWD_DIR` 或根挂载视图解析目标文件并校验可执行位；
+   - 不含 `/` 的外部命令依次检索函数表 → 内建表 → 按 `:` 分隔遍历环境变量 `$PATH`（默认 `/userdata/home/bin:/bin`），无缝跨越可写持久化 `BerryFS` 与只读 `BerryROFS` 拉起 ELF 二进制或 `#! /bin/bsh` 脚本。
 
 ### 二、`berry-line`：现代 UTF-8 多行交互编辑器与智能补全契约
 
-1. **全光标与多行编辑**：支持完整 UTF-8 字素簇（Grapheme）宽度计算（ASCII 1 列、CJK 宽字符 2 列），提供自由光标移动（`Left/Right`、`Ctrl-Left/Right` 按词跳、`Home/Ctrl-A`、`End/Ctrl-E`）、行中插入与删除（`Backspace`、`Delete/Ctrl-D`）、剪切环（`Ctrl-K` 删至行尾、`Ctrl-U` 删至行首、`Ctrl-W` 删前词、`Ctrl-Y` 粘贴）、清屏重绘（`Ctrl-L`）、括号粘贴安全收容以及未闭合引号/管道/代码块自动折入次行续写（提示符切换 `... > `）。
+1. **全光标与多行编辑**：复用 `faces/utf8width` 单源字素簇（Grapheme）宽度表（ASCII 1 列、CJK 宽字符 2 列，与 `berry-vt` 逐格同源对齐），提供自由光标移动（`Left/Right`、`Ctrl-Left/Right` 按词跳、`Home/Ctrl-A`、`End/Ctrl-E`）、行中插入与删除（`Backspace`、`Delete/Ctrl-D`）、剪切环（`Ctrl-K` 删至行尾、`Ctrl-U` 删至行首、`Ctrl-W` 删前词、`Ctrl-Y` 粘贴）、清屏重绘（`Ctrl-L`）、括号粘贴安全收容以及未闭合引号/管道/代码块自动折入次行续写（提示符切换 `... > `）。
 2. **持久化历史与实时检索**：默认保留 `4096` 条去重历史并原子追加落盘至 `/userdata/home/.bsh_history`；输入前缀后按 `Up/Down` 自动按当前前缀过滤历史，按 `Ctrl-R` 进入交互式反向子串/模糊匹配搜索预览。
 3. **实时语法提示与多维 Tab 补全**：敲击过程中实时以颜色区分合法命令/内建（绿色）、不存在的命令（红色）、字符串字面量（黄色）与选项旗标（青色）；`Tab` 补全引擎覆盖命令名（内建 + 函数 + `/bin` + `$PATH`）、文件路径（自动转义空格并补目录 `/`）、`$VAR` 环境变量名以及核心命令（`berryctl`、`sandbox`、`ip`、`bdbg`）的子命令与 `--flag` 候选网格展示。
 

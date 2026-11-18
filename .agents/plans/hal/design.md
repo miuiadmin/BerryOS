@@ -3,7 +3,7 @@
 Type: spec
 Status: active
 Updated: 2026-11-18
-Version: 2.0.0
+Version: 2.0.1
 
 一句话说明：`hal` 是莓核（Meihe）的跨架构硬件抽象与平台可靠性底座——以零 `unsafe` 契约层 `berry-hal` 统合 `aarch64` 与 `x86_64`，提供 GICv2/GICv3 双栈自适应与 `EOImode=1` 硬件分离式用户态中断直通、SMMUv3 设备 DMA 隔离与缓存维护，以及跨热重启存活的 16KiB `ramoops` 持久崩溃黑匣子。
 
@@ -56,7 +56,7 @@ Version: 2.0.0
      2. **用户态驱动绑定的外设 SPI（`ObjType::Interrupt`）**：
         - 创建与绑定：设备管理服务持设备 `Resource` 句柄调用 `0x71 berry_interrupt_create(res_h, spi_id, trigger_mode, *out_irq_h)`（内核校验该 SPI 未被他人独占认领，配置触发极性并使能），驱动再调用 `0x72 berry_interrupt_bind(irq_h, port_or_event_h, key)`；
         - **中断到达热路径（零 `GICD` MMIO 访问！）**：CPU 陷入 `exception_irq` → 读 `IAR` 获 `spi_id` → 写 `EOIR`（**仅降低本 CPU 当前运行优先级，允许其他高优/同级中断正常抢占；但该 `spi_id` 在 GIC 内部维持 Active 状态，硬件自动抑制该线重投，无需写 `ICENABLER`！**）→ 内核向绑定的 `Port` 压入 `PortPacket(kind = INTERRUPT, payload = cntvct)`（或置位 `Event`）并触发唤醒检查点；
-        - **用户态驱动处理与确认**：驱动从 `Port` 醒来（零定时轮询），读写设备 MMIO 寄存器排空中断条件后，调用 `0x74 berry_interrupt_ack(irq_h)` → 内核校验该 `Interrupt` 处于 `PendingAck` 态后，执行单条 `ArchIrq::deactivate(spi_id)`（写 `ICC_DIR_EL1` / `GICC_DIR`），GIC 硬件释放 Active 态并在电平仍高时无缝投递下一拍；
+        - **用户态驱动处理与确认**：驱动从 `Port` 醒来（零定时轮询），读写设备 MMIO 寄存器排空中断条件后，调用 `0x7A berry_interrupt_ack(irq_h)`（避让 `0x74 berry_bti_create` 号位，与 `0x71 berry_interrupt_create`、`0x72 berry_interrupt_bind` 组成无碰撞三元组） → 内核校验该 `Interrupt` 处于 `PendingAck` 态后，执行单条 `ArchIrq::deactivate(spi_id)`（写 `ICC_DIR_EL1` / `GICC_DIR`），GIC 硬件释放 Active 态并在电平仍高时无缝投递下一拍；
         - **故障自愈**：若持有 `Interrupt` 对象的驱动进程中途崩溃退出，`Interrupt::Drop` 自动在 `GICD_ICENABLER` 屏蔽该 SPI 线，若处于 `PendingAck` 则补发一次 `deactivate` 清净 GIC Active 位，归还池槽供重启后的新代驱动干净重绑。
 
 ### 三、DMA 硬件信任后盾：连续锁页、缓存维护与 SMMUv3 骨架
@@ -92,6 +92,9 @@ Version: 2.0.0
 2. **启动画面脱核与逆向依赖出清**：
    - 将点阵字形纯数据表下沉至 `faces/fbfont/`，彻底移除 `kernel -> ../user/berry-fbcon` 与 `sched -> ../user/berry-em` 两条跨层逆向依赖；
    - EL1 内核仅保留极简早期异常文本控制台（崩溃紧急输出用）与 `BerryHandoff` GOP 帧缓冲物理窗口铸造（以 `MMIO VMO` 交付用户态 `guifbd`），原 1,393 行平滑追针与圆角进度条动画迁归早期用户态显示服务。
+3. **开发态紧急串口逃生钩子（类 Magic SysRq，防用户态全冻失联）**：
+   - 当日常 UART0 移交用户态 `consoled`（见 [pty 总体设计](../pty/design.md)）后，为防止用户态全局死锁或高优实时线程霸核导致串口失联，在 `dev` 解锁引导模式下，HAL 保留对物理 UART 硬件 `BREAK` 条件（PL011 `UARTDR.BE = 1`，QEMU 串口 `Ctrl-A B` 触发）加后续 1 字节命令码的中断级零分配直判钩子：
+   - 命令集：`t`（经跨核 NMI/高优 SGI 转储全部在线核当前 EL1/EL0 寄存器与 FP 调用栈）、`l`（打印每核 `LockdepState` 八秩持锁链与活跃 PI 等待边）、`m`（打印 Buddy/PCP/Slab/Job 物理页账本水位）、`r`（立即封存现场至 `ramoops` 刷缓存并执行 `system_reset_warm()`）；生产 `locked` 模式下该钩子物理关闭，零安全旁路。
 
 ## 验收标准
 
