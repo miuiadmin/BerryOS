@@ -39,8 +39,8 @@ use crate::handle::{
 use crate::ktest::{svc4, svc6};
 use crate::mm;
 use crate::syscall::{
-    NR_CHANNEL_CREATE, NR_CHANNEL_RECV, NR_CHANNEL_SEND, NR_HANDLE_CLOSE, NR_VMO_CREATE,
-    VMO_MAX_SIZE,
+    NR_CHANNEL_CREATE, NR_CHANNEL_RECV, NR_CHANNEL_SEND, NR_CLOCK_READ, NR_HANDLE_CLOSE,
+    NR_VMO_CREATE, VMO_MAX_SIZE,
 };
 use crate::vmo::Vmo;
 use berry_hal_aarch64::timer::cntvct;
@@ -51,10 +51,14 @@ use core::sync::atomic::{AtomicU64, Ordering};
 const PAGE: usize = 1 << 12;
 
 /// 基准项计数（`BENCH ok n=` 的定值——增删基准项时同步改这里、smoke 两处
-/// 标记表（markers.sh/smoke-image.sh）、bench.py 的 _iter_table 与表头注释、
-/// bcts 冻结件滚新（计数面零增减的 bcts@N 滚新——主线收）。
+/// 标记表（markers.sh/smoke-image.sh）、smoke.sh 头注计数、bench.py 的
+/// _iter_table 与表头注释、bcts 冻结件滚新（计数面零增减的 bcts@N 滚新
+/// ——主线收）。
 /// W3-Q98（2026-11-18）：8→9——send_recv_pair 入（02 号 IPC 审计落选三）。
-const N_METRICS: usize = 9;
+/// W3-Q102（2026-11-18）：9→10——svc_roundtrip 入（03 号 syscall 分派审计
+/// 测量面建议——分派包络〔帧存取+锁类+尾检查〕的确定性对拍面，此前该
+/// 包络只有 B-1 墙钟通道的间接影子）。
+const N_METRICS: usize = 10;
 
 // ---- S-2（设计 §12）常量 ----
 
@@ -103,7 +107,14 @@ pub fn run() {
     // IPC 主路径 icount 首项——svc 直调 send+recv 往返（无随行 handle、8B
     // 载荷最小形），与上七项同窗。
     bench_send_recv_pair();
-    // AM 原子观测对（非标记行）：紧随八项官方基准后、churn 前——八行
+    // svc_roundtrip（03 号 syscall 分派审计测量面建议，W3-Q102，2026-11-18）：
+    // 分派包络 icount 首项——svc 直调 0x61 clock_read 最小平凡号往返
+    // （TABLE 类全锁面 + PT 锁 copy_out 窗 + 尾三查全走），与上八项同窗。
+    // 该包络此前零 deterministic 覆盖（审计 §「测量缺口」：唯 B-1 墙钟
+    // sys_vmo_rw4k 间接受其影响）——本行入册后任何包络刀（03 号机会一/二/
+    // 四/五族）的指令流变化都有 L2 对拍锚。
+    bench_svc_roundtrip();
+    // AM 原子观测对（非标记行）：紧随十项官方基准后、churn 前——十行
     // `BENCH,` + BENCHCHURN/BENCHXH 的既有 boot 形状零扰动（`BENCH ok`
     // 收尾行已迁 run_sched_epoch 纪元尾恒发——本窗不再打）。
     bench_am_pair();
@@ -218,6 +229,44 @@ fn bench_handle_evt() {
 /// （原始差值累计后一次整除——CNTVCT 粒度噪声在 8192 样本上摊薄）。
 /// `fetch_add` 行 − `cntvct_only` 行 = 计时对自身成本之外的 RMW 净开销；
 /// frozen_owner 判空 = 单条本位分支（亚周期级），以差值地板覆盖不另设行。
+/// svc_roundtrip（W3-Q102；03 号分派审计 §测量面建议）：分派包络基准——
+/// EL1 `svc #0` 打 **0x61 clock_read**（TABLE 类最小平凡号）一次完整往返：
+/// 帧保存/恢复 + 派发表查 + kern_acquire/release 全对 + PT 锁 copy_out 窗
+/// + dispatch 尾三查（sched_exit_check/roll_quiesce_check/exit checkpoint）。
+/// 这是包络面的 **deterministic 对拍锚**（icount 通道逐指令计数——与
+/// send_recv_pair 同族：任何包络刀改动必显形为基线漂移，L2 门禁对拍）。
+/// 迭代 512：clock_read 每次 2 次 MRS + 除法，TCG 下单次往返数十周期级，
+/// 与 handle_evt/pick_scan 同量级档（基线可读性，对拍按名不按量）。
+fn bench_svc_roundtrip() {
+    // 静态出参槽（S-2 同款纪律：boot 窗单线程 IRQ 屏蔽，raw 指针传参——
+    // EL1 直映分支 copy_out 写回即落本槽）。
+    static mut OUT: u64 = 0;
+    // SAFETY: 窗内单线程独占（bench 全族同款前置）。
+    unsafe { OUT = 0 }
+    // 前置正确性钉板（一次真往返：状态 0 + 出参单调正——ktest SYSCALL C 段
+    // 同款断言的 bench 侧最小形；坏 = 后续测量数字全部无意义，fail loud）。
+    assert_eq!(
+        svc4(NR_CLOCK_READ as u64, 0, &raw mut OUT as u64, 0),
+        0,
+        "bench: svc_roundtrip clock_read 前置状态"
+    );
+    assert!(unsafe { OUT } > 0, "bench: svc_roundtrip clock_read 出参须正");
+    bench(b"svc_roundtrip", 512, || {
+        // SAFETY: svc 同步异常；dispatch 只回写 x0（svc4 契约）；出参槽
+        // 窗内独占。错误码断言在环外钉（环内零分支最小形——包络本体的
+        // 测量不掺比较指令）。
+        unsafe { core::ptr::write_volatile(&raw mut OUT, 0) };
+        assert_eq!(
+            svc4(NR_CLOCK_READ as u64, 0, &raw mut OUT as u64, 0),
+            0,
+            "bench: svc_roundtrip clock_read 状态"
+        );
+    });
+    // 读回断言（防死存储消除 + handler 真执行钉板——send_recv_pair 同款）。
+    // SAFETY: 只读比对。
+    assert!(unsafe { *(&raw const OUT) } > 0, "bench: svc_roundtrip 出参终值须正");
+}
+
 fn bench_am_pair() {
     // 局部安全原子（非 static mut——零 unsafe 台账面；独占缓存行无从谈起
     // 独占，但本窗口无第二写者 = 无假共享）。
