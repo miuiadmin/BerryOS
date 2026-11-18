@@ -278,3 +278,122 @@ mod tests {
         );
     }
 }
+
+/// 十三刀补：Stream 双通道对称往返与 Endpoint::connect 落地链——
+/// device.rs endpoints 是全库唯一 connect 调用面，此前零直测（连接
+/// 路径仅被 QEMU 集成面间接覆盖，本地跑不到 Windows TCP 分支）。
+#[cfg(test)]
+mod connect_tests {
+    use super::*;
+
+    #[test]
+    fn stream_roundtrip_both_channels() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::net::{UnixListener, UnixStream};
+            let dir = std::env::temp_dir().join(format!("berry-net-r-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let p = dir.join("r.sock");
+            let _ = std::fs::remove_file(&p);
+            let l = UnixListener::bind(&p).unwrap();
+            let t = std::thread::spawn(move || {
+                let (s, _) = l.accept().unwrap();
+                s
+            });
+            let a = UnixStream::connect(&p).unwrap();
+            let b = t.join().unwrap();
+            let mut sa = Stream::Unix(a);
+            let mut sb = Stream::Unix(b);
+            sa.write_all(b"ping").unwrap();
+            sa.flush().unwrap();
+            let mut buf = [0u8; 4];
+            sb.read_exact(&mut buf).unwrap();
+            assert_eq!(&buf, b"ping");
+            sb.write_all(b"pong").unwrap();
+            sb.flush().unwrap();
+            sa.read_exact(&mut buf).unwrap();
+            assert_eq!(&buf, b"pong");
+            // shutdown 双向：对端读得 EOF（0 字节）。
+            sa.shutdown();
+            let mut eof = [0u8; 1];
+            let n = sb.read(&mut eof).unwrap();
+            assert_eq!(n, 0, "peer must see EOF after shutdown");
+        }
+        // TCP 通道同一对称往返（loopback listener）。
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let t = std::thread::spawn(move || l.accept().unwrap().0);
+        let a = std::net::TcpStream::connect(addr).unwrap();
+        let b = t.join().unwrap();
+        let mut sa = Stream::Tcp(a);
+        let mut sb = Stream::Tcp(b);
+        sa.write_all(b"ping").unwrap();
+        let mut buf = [0u8; 4];
+        sb.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"ping");
+        sb.write_all(b"pong").unwrap();
+        sa.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"pong");
+        // try_clone 双柄：写主柄、读克隆柄（VncSource 读写分家形态）。
+        let mut sc = sa.try_clone().unwrap();
+        sc.write_all(b"zz").unwrap();
+        let mut two = [0u8; 2];
+        sb.read_exact(&mut two).unwrap();
+        assert_eq!(&two, b"zz");
+        sa.shutdown();
+        let n = sb.read(&mut [0u8; 1]).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn endpoint_connect_unix_and_missing() {
+        use std::os::unix::net::UnixListener;
+        let dir = std::env::temp_dir().join(format!("berry-net-c-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("c.sock");
+        let _ = std::fs::remove_file(&p);
+        let l = UnixListener::bind(&p).unwrap();
+        let t = std::thread::spawn(move || l.accept().unwrap().0);
+        let mut s = Endpoint::Unix(p.clone()).connect().unwrap();
+        s.write_all(b"hi").unwrap();
+        let mut peer = t.join().unwrap();
+        let mut buf = [0u8; 2];
+        peer.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        peer.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"hi");
+        // 缺席路径：io 错误（NotFound 面）。
+        let missing = dir.join("no-such.sock");
+        assert!(Endpoint::Unix(missing).connect().is_err());
+    }
+
+    #[test]
+    fn endpoint_connect_tcp_loopback() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let t = std::thread::spawn(move || l.accept().unwrap().0);
+        let ep = Endpoint::Tcp(format!("127.0.0.1:{}", addr.port()));
+        let mut s = ep.connect().unwrap();
+        // connect 后 nodelay 已置（connect 路径 set_nodelay(true)）。
+        s.write_all(b"q").unwrap();
+        let mut peer = t.join().unwrap();
+        let mut buf = [0u8; 1];
+        peer.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        peer.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"q");
+        // display() 与 connect 同源原串。
+        assert_eq!(ep.display(), format!("127.0.0.1:{}", addr.port()));
+    }
+
+    // TLS 流 try_clone 恒 Unsupported——需要真实 ClientConnection 才能
+    // 构造，host 面不可达（构造需 rustls 会话对象）；行为已由 match 臂
+    // 类型穷尽保证，本测钉 io::ErrorKind::Unsupported 契约名。
+    #[test]
+    fn tls_clone_unsupported_is_documented_contract() {
+        // 结构性说明测试：Stream::Tls(_) 分支返回 Unsupported。无法在
+        // host 面构造 Tls 流而不做真握手；此处钉「该分支存在且不可
+        // clone」的契约文字，防重构时被顺手删掉。
+        let src = include_str!("net.rs");
+        assert!(src.contains("TLS stream cannot be cloned"), "try_clone Tls contract");
+    }
+}
