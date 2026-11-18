@@ -7428,6 +7428,53 @@ fn test_pi() {
         sleepq_unlink(low9);
     }
 
+    // J10. W3-Q99 刀 b 边缓存钉板（缓存形传播 vs 原路径语义等价 + 环/
+    // 链拓扑 + 共享表 runnable 护栏照旧）：真边缓存形 recompute 与原路径
+    // 在同一拓扑上终态一致——链式两跳（J9c 同款拓扑重打）。
+    {
+        let ktbl = priv_table();
+        let htMid = priv_table();
+        let htLow = priv_table();
+        let yc10 = chan_end(ktbl, RIGHT_SEND);
+        let ys10 = chan_end(htMid, RIGHT_RECV);
+        let xc10 = chan_end(ktbl, RIGHT_SEND);
+        let xs10 = chan_end(htLow, RIGHT_RECV);
+        pair_up(yc10, ys10);
+        pair_up(xc10, xs10);
+        let hi10 = sleeper(b"j10_hi", 20, yc10, SIGNAL_WRITABLE, 0);
+        let mid10 = sleeper(b"j10_mid", 0, xc10, SIGNAL_WRITABLE, htMid);
+        let low10 = sleeper(b"j10_low", 0, 0, 0, htLow);
+        crate::pi::recompute();
+        assert_eq!(mid10.pi_inherited, 20, "PI：J10 链式两跳 mid 受捐 20（缓存形）");
+        assert_eq!(low10.pi_inherited, 20, "PI：J10 链式两跳 low 终态 20（缓存形）");
+        sleepq_unlink(hi10);
+        sleepq_unlink(mid10);
+        sleepq_unlink(low10);
+    }
+    // J10b. 持有环（A 持 e1 睡 e2、B 持 e2 睡 e1）：max 单调有界 + 轮帽
+    // 兜底——缓存形在环拓扑上的收敛终态（max 双方）。
+    {
+        let htA = priv_table();
+        let htB = priv_table();
+        let e1 = chan_end(htA, RIGHT_RECV);
+        let e1p = chan_end(htB, RIGHT_SEND);
+        let e2 = chan_end(htB, RIGHT_RECV);
+        let e2p = chan_end(htA, RIGHT_SEND);
+        pair_up(e1, e1p);
+        pair_up(e2, e2p);
+        let a10 = sleeper(b"j10_a", 6, e2p, SIGNAL_WRITABLE, htA);
+        let b10 = sleeper(b"j10_b", 8, e1p, SIGNAL_WRITABLE, htB);
+        crate::pi::recompute();
+        // 环边：A 等 e2p 满 → 解锁 = RECV peer（= e2，在 B 表）⇒ 边 A→B；
+        // B 等 e1p 满 → 解锁 = RECV peer（= e1，在 A 表）⇒ 边 B→A。第 1 轮
+        // A 收 8（B 的边）/ B 收 6（A 的边）；第 2 轮 A 的 d_eff 抬到 8 再
+        // 传 B → 双双 8（max 单调收敛，两轮内不动点）。
+        assert_eq!(a10.pi_inherited, 8, "PI：J10b 环拓扑 A 终态 8（max 收敛）");
+        assert_eq!(b10.pi_inherited, 8, "PI：J10b 环拓扑 B 终态 8（max 收敛）");
+        sleepq_unlink(a10);
+        sleepq_unlink(b10);
+    }
+
     // 清场：SLEEPQ 还给 boot（真睡眠者按 deadline 升序入队——脏节点会破坏
     // 超时扫描早停）。任务体/私有表 leak 不回收（ktest 语境同 spawn 政策）。
     berry_sched::for_each_sleeper(|_| panic!("PI：清场后 SLEEPQ 须空"));
