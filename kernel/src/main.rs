@@ -895,6 +895,13 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // 必须先于 ktest::run（SYSCALL 用例）与一切用户进程。
     syscall::install();
 
+    // W3-Q106：vDSO 数据页成像——必须先于 ktest::run（SYSCALL 用例直调
+    // NR_PROCESS_CREATE → sys_process_create 装配 AS）与一切用户 AS 装配；
+    // CNTFRQ 快照是纯 MRS 读（timer.rs cntfrq），无 timer::init 依赖，故
+    // 可与 syscall::install 同窗（原置 timer::init 后 = boot 序破约，
+    // smoke 实跑 PANIC 定谳）。
+    vdso::init(mm::frames());
+
     //（S-2a E0 历史注：sched 舞蹈锁原语槽 set_klock_ops 在下方 park 块前
     // 安装；同批的「①位 置/清器 KLOCK_FLAG 槽」已随 S-4 判例 klock_enter
     // 改道全谱 SVC 窗退役——位面收编 svc_window，见 kern_lock.rs klock_enter 注。）
@@ -1071,10 +1078,6 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // Phase 2a Step 5：IRQ 派发钩子 + timer 管线（规律 tick，**不从 IRQ 调 switch**）。
     // SAFETY: EL1、启动单线程、仅一次：缓存 CNTFRQ/算 SLICE（不武装）。
     unsafe { berry_hal_aarch64::timer::init() };
-
-    // W3-Q106：vDSO 数据页成像（timer::init 后 = CNTFRQ 已可快照；首用户
-    // AS 装配前——map_into 的 boot 序契约）。
-    vdso::init(mm::frames());
 
     // 2b-2：两忙循环任务各挂一个私有地址空间——timer 抢占切任务 = 切 TTBR0/ASID
     // （switch 路径真 churn），任务体每次打印节流点自证私有页内容（隔离金丝雀）。

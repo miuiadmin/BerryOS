@@ -29,8 +29,9 @@ use berry_vdsoface::{VDSO_MAGIC, VDSO_OFF_FREQ, VDSO_OFF_SEQ, VDSO_PAGE, VDSO_VA
 /// 「永生」论证：Region 指针永不悬空，unmap 只减 mapcnt 不销毁对象）。
 static mut VDSO_VMO: Option<Vmo> = None;
 
-/// boot 期建页（timer::init 之后、首个用户 AS 装配之前；DAIF 屏蔽单线程
-/// 窗——与 `sysver` 成像同款 boot 语境）。
+/// boot 期建页（syscall::install 后、ktest::run 与首个用户 AS 装配之前；
+/// DAIF 屏蔽单线程窗——与 `sysver` 成像同款 boot 语境。CNTFRQ 快照是纯 MRS
+/// 读，无 timer::init 依赖——boot 序详见 main.rs 调用点注）。
 ///
 /// 页内容：magic + freq 快照 + seq=0 + 余零。失败 = expect 炸响（boot 可信
 /// 语境——一页帧都拿不到的机器没有继续的意义，`UserProcess::build` 同款
