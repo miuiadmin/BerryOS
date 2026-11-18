@@ -42,16 +42,16 @@
 <!-- UNSAFE-AUDIT:SUMMARY:BEGIN -->
 | 目录 | .rs 文件数 | 总行数 | unsafe 非空行 | 密度 |
 |------|-----------|--------|--------------|------|
-| kernel/ | 31 | 36931 | 2345 | 6.35% |
+| kernel/ | 31 | 36980 | 2349 | 6.35% |
 | mm/ | 7 | 2368 | 4 | 0.17% |
 | sched/ | 15 | 8865 | 1819 | 20.52% |
 | ipc/ | 0 | 0 | 0 | — |
 | arch/ | 23 | 7320 | 1054 | 14.40% |
-| **合计** | 76 | 55484 | 5222 | **9.41%** |
+| **合计** | 76 | 55533 | 5226 | **9.41%** |
 
 - 剔除 ktest.rs/bench.rs（测试/基准面）：总行 42200，unsafe 非空行 4433，密度 10.50%（生产面口径）
-- 分类计数：页表 63 | 上下文切换 35 | MMIO 163 | 分配器 16 | 硬件原子 0 | 其它 895
-- 类型计数：block 1021 | fn 147 | impl 2 | extern 2（另有类型签名位提及 15 处——只计不登记，防双计）
+- 分类计数：页表 63 | 上下文切换 35 | MMIO 163 | 分配器 16 | 硬件原子 0 | 其它 899
+- 类型计数：block 1025 | fn 147 | impl 2 | extern 2（另有类型签名位提及 15 处——只计不登记，防双计）
 - 对标：Android ~4%（unsafe 行占 Rust 总行比，Google 2025-11）；本表为跨度非空行口径（偏高估），见 §一
 <!-- UNSAFE-AUDIT:SUMMARY:END -->
 
@@ -305,27 +305,31 @@
 | kernel/src/aspace.rs | 81 | block | 页表 | unsafe { let slot = &raw mut ASIDS; if (*slot).is_none() { *slot |
 | kernel/src/aspace.rs | 129 | block | 页表 | unsafe { (USER_VA as *const u64).read_volatile() } } /// 经当前 TTB |
 | kernel/src/aspace.rs | 135 | block | 页表 | unsafe { (USER_VA as *mut u64).write_volatile(v) }; } } |
-| kernel/src/bench.rs | 183 | block | 其它 | unsafe { &*core::ptr::addr_of!(SRC) }; let dst: &mut [u8] = unsa |
-| kernel/src/bench.rs | 184 | block | 其它 | unsafe { &mut *core::ptr::addr_of_mut!(DST) }; let mut vmo = Vmo |
-| kernel/src/bench.rs | 352 | block | 其它 | unsafe { C0 = 0; C1 = 0; } assert_eq!( svc4( NR_CHANNEL_CREATE a |
-| kernel/src/bench.rs | 363 | block | 其它 | unsafe { C0 } as u32, unsafe { C1 } as u32); assert_ne!(hc0, 0, |
-| kernel/src/bench.rs | 363 | block | 其它 | unsafe { C1 } as u32); assert_ne!(hc0, 0, "bench: send_recv_pair |
-| kernel/src/bench.rs | 400 | block | 其它 | unsafe { *(&raw const RBUF) }, unsafe { *(&raw const SBUF) }, "b |
-| kernel/src/bench.rs | 401 | block | 其它 | unsafe { *(&raw const SBUF) }, "bench: send_recv_pair 读回载荷须逐字节同源 |
-| kernel/src/bench.rs | 405 | block | 其它 | unsafe { NB = 8; NH = 0; } // 清场：两端 close（互钉环泄漏——channel.rs 安全向政 |
-| kernel/src/bench.rs | 542 | block | 其它 | unsafe { &*core::ptr::addr_of!(BUF) }; let base = mm::frames().a |
-| kernel/src/bench.rs | 615 | block | 其它 | unsafe { XH_C0 = 0; XH_C1 = 0; } assert_eq!( svc4( NR_CHANNEL_CR |
-| kernel/src/bench.rs | 626 | block | 其它 | unsafe { XH_C0 } as u32, unsafe { XH_C1 } as u32); assert_ne!(hc |
-| kernel/src/bench.rs | 626 | block | 其它 | unsafe { XH_C1 } as u32); assert_ne!(hc0, 0, "bench: xh 预热端点 0 须 |
-| kernel/src/bench.rs | 637 | block | 其它 | unsafe { &mut *core::ptr::addr_of_mut!(XH_HS) }; for h in hs.ite |
-| kernel/src/bench.rs | 761 | block | 其它 | unsafe { XH_VOUT = 0; } assert_eq!( svc6( NR_VMO_CREATE as u64, |
-| kernel/src/bench.rs | 775 | block | 其它 | unsafe { XH_VOUT } as u32; assert_ne!(hv, 0, "bench: xh vmo 帽边界 |
-| kernel/src/bench.rs | 859 | block | 其它 | unsafe { XH_NB = XH_MSG; XH_NH = 4; } assert_eq!( svc6( NR_CHANN |
-| kernel/src/bench.rs | 876 | block | 其它 | unsafe { XH_NB }, XH_MSG, "bench: xh recv 字节数回写"); assert_eq!(un |
-| kernel/src/bench.rs | 877 | block | 其它 | unsafe { XH_RBUF[0] }, 0x58, "bench: xh recv 载荷首字节"); assert_eq! |
-| kernel/src/bench.rs | 878 | block | 其它 | unsafe { XH_NH }, 0, "bench: xh recv handle 数回写"); } // 恢复面：排空后再 |
-| kernel/src/bench.rs | 896 | block | 其它 | unsafe { XH_NB = XH_MSG; XH_NH = 4; } assert_eq!( svc6( NR_CHANN |
-| kernel/src/bench.rs | 926 | block | 其它 | unsafe { XH_NB = XH_MSG; XH_NH = 4; } assert_eq!( svc6( NR_CHANN |
+| kernel/src/bench.rs | 194 | block | 其它 | unsafe { &*core::ptr::addr_of!(SRC) }; let dst: &mut [u8] = unsa |
+| kernel/src/bench.rs | 195 | block | 其它 | unsafe { &mut *core::ptr::addr_of_mut!(DST) }; let mut vmo = Vmo |
+| kernel/src/bench.rs | 245 | block | 其它 | unsafe { OUT = 0 } // 前置正确性钉板（一次真往返：状态 0 + 出参单调正——ktest SYSCALL |
+| kernel/src/bench.rs | 253 | block | 其它 | unsafe { OUT } > 0, "bench: svc_roundtrip clock_read 出参须正"); ben |
+| kernel/src/bench.rs | 258 | block | 其它 | unsafe { core::ptr::write_volatile(&raw mut OUT, 0) }; assert_eq |
+| kernel/src/bench.rs | 267 | block | 其它 | unsafe { *(&raw const OUT) } > 0, "bench: svc_roundtrip 出参终值须正") |
+| kernel/src/bench.rs | 401 | block | 其它 | unsafe { C0 = 0; C1 = 0; } assert_eq!( svc4( NR_CHANNEL_CREATE a |
+| kernel/src/bench.rs | 412 | block | 其它 | unsafe { C0 } as u32, unsafe { C1 } as u32); assert_ne!(hc0, 0, |
+| kernel/src/bench.rs | 412 | block | 其它 | unsafe { C1 } as u32); assert_ne!(hc0, 0, "bench: send_recv_pair |
+| kernel/src/bench.rs | 449 | block | 其它 | unsafe { *(&raw const RBUF) }, unsafe { *(&raw const SBUF) }, "b |
+| kernel/src/bench.rs | 450 | block | 其它 | unsafe { *(&raw const SBUF) }, "bench: send_recv_pair 读回载荷须逐字节同源 |
+| kernel/src/bench.rs | 454 | block | 其它 | unsafe { NB = 8; NH = 0; } // 清场：两端 close（互钉环泄漏——channel.rs 安全向政 |
+| kernel/src/bench.rs | 591 | block | 其它 | unsafe { &*core::ptr::addr_of!(BUF) }; let base = mm::frames().a |
+| kernel/src/bench.rs | 664 | block | 其它 | unsafe { XH_C0 = 0; XH_C1 = 0; } assert_eq!( svc4( NR_CHANNEL_CR |
+| kernel/src/bench.rs | 675 | block | 其它 | unsafe { XH_C0 } as u32, unsafe { XH_C1 } as u32); assert_ne!(hc |
+| kernel/src/bench.rs | 675 | block | 其它 | unsafe { XH_C1 } as u32); assert_ne!(hc0, 0, "bench: xh 预热端点 0 须 |
+| kernel/src/bench.rs | 686 | block | 其它 | unsafe { &mut *core::ptr::addr_of_mut!(XH_HS) }; for h in hs.ite |
+| kernel/src/bench.rs | 810 | block | 其它 | unsafe { XH_VOUT = 0; } assert_eq!( svc6( NR_VMO_CREATE as u64, |
+| kernel/src/bench.rs | 824 | block | 其它 | unsafe { XH_VOUT } as u32; assert_ne!(hv, 0, "bench: xh vmo 帽边界 |
+| kernel/src/bench.rs | 908 | block | 其它 | unsafe { XH_NB = XH_MSG; XH_NH = 4; } assert_eq!( svc6( NR_CHANN |
+| kernel/src/bench.rs | 925 | block | 其它 | unsafe { XH_NB }, XH_MSG, "bench: xh recv 字节数回写"); assert_eq!(un |
+| kernel/src/bench.rs | 926 | block | 其它 | unsafe { XH_RBUF[0] }, 0x58, "bench: xh recv 载荷首字节"); assert_eq! |
+| kernel/src/bench.rs | 927 | block | 其它 | unsafe { XH_NH }, 0, "bench: xh recv handle 数回写"); } // 恢复面：排空后再 |
+| kernel/src/bench.rs | 945 | block | 其它 | unsafe { XH_NB = XH_MSG; XH_NH = 4; } assert_eq!( svc6( NR_CHANN |
+| kernel/src/bench.rs | 975 | block | 其它 | unsafe { XH_NB = XH_MSG; XH_NH = 4; } assert_eq!( svc6( NR_CHANN |
 | kernel/src/bootparams.rs | 331 | block | MMIO | unsafe { hal::timer::set_slice_hz(hz as u64) }; } if let Some(co |
 | kernel/src/cbox.rs | 118 | fn | 其它 | unsafe extern "C" fn on_fault(kind: u8, tf: *const TrapFrame) { |
 | kernel/src/cbox.rs | 140 | block | 其它 | unsafe { &mut (*tbl)[slot] }; // seqlock 开写：先抬奇（排液方见奇即跳）；fence 防 |
