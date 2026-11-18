@@ -1009,7 +1009,8 @@ stage = "v1"
     # （nr_total/defined/registered 各 +1，帽 45 不动——abi_gen 头注同值单源）。
     # main 合流 2/2：refresh 0x42 cbox_drain 并入后再滚新——39/43/42→40/44/43
     # （nr_total/defined/registered 各 +1，帽 45 不动）。
-    check("在册四元组口径", (nt, nd, nr, nc) == (40, 44, 43, 45),
+    # F0-4 0x1C vmo_cache_op 加号：40/44/43 → 41/45/44（帽 45 满额对齐）。
+    check("在册四元组口径", (nt, nd, nr, nc) == (41, 45, 44, 45),
           f"got {(nt, nd, nr, nc)}")
     check("在册 wakesrc 空闲段活算", next_free_wakesrc(
         {w["name"]: eval_expr(w["expr"]) for w in real["wakesrc"]}) == 0x08)

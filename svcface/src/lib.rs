@@ -40,7 +40,7 @@ pub const SVC_CLASS_NONE: u8 = 0x00;
 pub const SVC_CLASS_TABLE: u8 = 0x20;
 /// wait/send 族（0x01/0x04/0x05/0x06/0x52/0x53/0x21/0x23/0x24）：SQ+RQ+表。
 pub const SVC_CLASS_SQ_RQ_TABLE: u8 = 0x2E;
-/// thread_sleep 单号（0x37）：SQ+RQ 双核升序、无表无 KL（slice 3-1a 降档）。
+/// sleep/yield 双号（0x37/0x3F）：SQ+RQ 双核升序、无表无 KL（0x3F 尾段 `reap_drain` 顺向取 REAPQ→TABLE，禁预持 TABLE 防 4→3 逆序）。
 pub const SVC_CLASS_SQ_RQ: u8 = 0x0E;
 /// start 双号（0x32/0x35）：RQ 双核升序 + 表。
 pub const SVC_CLASS_RQ_TABLE: u8 = 0x2C;
@@ -107,6 +107,7 @@ pub const REGISTRY: &[(u8, u8)] = &[
     (0x15, SVC_CLASS_TABLE), // vmo_write
     (0x1A, SVC_CLASS_TABLE), // vmo_get_size
     (0x1B, SVC_CLASS_TABLE), // vmo_get_phys
+    (0x1C, SVC_CLASS_TABLE), // vmo_cache_op（F0-4 DMA PoC 缓存维护）
     (0x16, SVC_CLASS_TABLE), // vmar_map
     (0x17, SVC_CLASS_TABLE), // vmar_unmap
     (0x18, SVC_CLASS_TABLE), // vmar_protect
@@ -131,7 +132,7 @@ pub const REGISTRY: &[(u8, u8)] = &[
     (0x3C, SVC_CLASS_TABLE),      // sched_setattr
     (0x3D, SVC_CLASS_TABLE),      // sched_getattr
     (0x3E, SVC_CLASS_TABLE),      // process_suspend（表门控 + freeze 扫描）
-    (0x3F, SVC_CLASS_RQ_TABLE),   // thread_yield（pick/requeue + 切换舞蹈）
+    (0x3F, SVC_CLASS_SQ_RQ),      // thread_yield（无表零指针；尾段 reap_drain 取 REAPQ(3)→TABLE(4)，严禁入口预持 TABLE(4) 逆序）
     // —— TABLE：CP-08 util 快照读（0x40——EWMA 槽 Relaxed 原子读零共享面；
     //    copy_out 链走查调用方页表 = §A113 读者面，同 0x61/0x87）。
     (0x40, SVC_CLASS_TABLE),      // sched_util_snapshot
@@ -246,7 +247,7 @@ mod tests {
     /// 表规模与形状：45 号在册、无重复号（cbox 刀 1 0x42 + 阶段五遥测 0x84）。
     #[test]
     fn registry_shape() {
-        assert_eq!(REGISTRY.len(), 45);
+        assert_eq!(REGISTRY.len(), 46);
         assert!(nrs_unique());
     }
 
@@ -308,14 +309,15 @@ mod tests {
         assert_eq!(class_of(0x88), SVC_CLASS_TABLE); // power_off
         assert_eq!(class_of(0x83), SVC_CLASS_TABLE); // policy_bind
         assert_eq!(class_of(0x37), SVC_CLASS_SQ_RQ); // thread_sleep
-        for nr in [0x11u8, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B] {
+        assert_eq!(class_of(0x3F), SVC_CLASS_SQ_RQ); // thread_yield
+        for nr in [0x11u8, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C] {
             assert_eq!(class_of(nr), SVC_CLASS_TABLE, "vmo/vmar {nr:#04x}");
         }
         for nr in [0x31u8, 0x33, 0x34, 0x36, 0x3B, 0x51, 0x54] {
             assert_eq!(class_of(nr), SVC_CLASS_ALL, "create/exit/kill {nr:#04x}");
         }
-        for nr in [0x32u8, 0x35, 0x3F] {
-            assert_eq!(class_of(nr), SVC_CLASS_RQ_TABLE, "start/yield {nr:#04x}");
+        for nr in [0x32u8, 0x35] {
+            assert_eq!(class_of(nr), SVC_CLASS_RQ_TABLE, "start {nr:#04x}");
         }
         for nr in [0x01u8, 0x04, 0x05, 0x06, 0x21, 0x23, 0x24, 0x52, 0x53] {
             assert_eq!(class_of(nr), SVC_CLASS_SQ_RQ_TABLE, "wait/send {nr:#04x}");

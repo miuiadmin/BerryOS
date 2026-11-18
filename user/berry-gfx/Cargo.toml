@@ -20,8 +20,3 @@ license = "Apache-2.0"
 # 像素共识单源：glyph 快速路径与 fbcon 蜂格渲染逐字节对拍共用同一份
 # 8×16 点阵字体表（FONT 95 字形，genfbfont.py 生成勿手改）。
 berry-fbcon = { path = "../berry-fbcon" }
-# CJK A2 页 zlib 解压（GUI 真实系统化 Phase 4）：no_std slice decoder，
-# 不启 alloc/deflate 面；Zlib/MIT 双许可均在 deny.toml allowlist。
-miniz_oxide = { version = "0.9", default-features = false }
-# 单页 CJK 缓存的 Sync 静态锁：no_std spin mutex，避免 UnsafeCell 直写。
-spin = { version = "0.10", default-features = false, features = ["spin_mutex"] }

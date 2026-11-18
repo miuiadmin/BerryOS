@@ -15,7 +15,7 @@ use berry_ui::desc::{
     CheckProps, ColProps, Props, SliderProps, TextBuf, ToggleProps, ViewSpec,
 };
 use berry_ui::layout::CrossAlign;
-use berry_ui::theme::{self, ThemeMode as Theme, Tokens, TRACK_OFF, TRACK_OFF_DARK};
+use berry_ui::theme::{self, Theme, Tokens, TRACK_OFF, TRACK_OFF_DARK};
 use berry_ui::{NodeId, UiMain, ViewKind};
 
 const SCRATCH_GLYPHS: usize = 64;

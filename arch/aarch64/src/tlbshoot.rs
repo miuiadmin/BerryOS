@@ -71,6 +71,10 @@ static PENDING: [AtomicBool; MAX_CORES] = [AtomicBool::new(false), AtomicBool::n
 /// per-CPU 快照（broadcast 时点对核 ACKS 值）。
 static PEND_SNAP: [AtomicU32; MAX_CORES] = [AtomicU32::new(0), AtomicU32::new(0)];
 
+/// F0-3：per-CPU 待处理远端 shootdown 请求标志（`broadcast` 对目标核置位；收端 `irq_ack` 或
+/// `wait_pending` 自旋环内联消费，彻底根除双核关中断同时发 shootdown 互等对飞死锁）。
+static REQ_PENDING: [AtomicBool; MAX_CORES] = [AtomicBool::new(false), AtomicBool::new(false)];
+
 /// 回卷代数（aspace ASID 锁窗内 bump——每回卷 +1；代数序 = 取号序）。
 static ROLL_GEN: AtomicU32 = AtomicU32::new(0);
 
@@ -84,9 +88,10 @@ static ROLL_PENDING: [AtomicBool; MAX_CORES] = [AtomicBool::new(false), AtomicBo
 /// 先于回执可观的排序边）+ 回执计数自增。**取锁面恒零、零打印零分配**
 /// （IRQ 上下文纪律，SGI_SEEN 同款；§3.2 无环判据的收端半边）。
 pub(crate) fn irq_ack() {
+    let me = crate::smp::cpu_id();
+    REQ_PENDING[me].store(false, Ordering::Relaxed);
     // SAFETY: 本核 TLB 失效——IRQ 上下文，无共享结构触达。
     unsafe { crate::mmu::flush_local_all() };
-    let me = crate::smp::cpu_id();
     ACKS[me].fetch_add(1, Ordering::Release);
 }
 
@@ -115,6 +120,7 @@ pub fn broadcast() {
     let snap = ACKS[t].load(Ordering::Acquire);
     PEND_SNAP[me].store(snap, Ordering::Relaxed);
     PENDING[me].store(true, Ordering::Release);
+    REQ_PENDING[t].store(true, Ordering::Release);
     // 快照→发送不可重排（SeqCst 栅）：若发送先于快照可观，快照可能已含
     // 本轮回执 → 等待谓词（> 快照）永不满足 = 悬死。
     core::sync::atomic::fence(Ordering::SeqCst);
@@ -136,6 +142,13 @@ fn wait_pending(me: usize) {
     let snap = PEND_SNAP[me].load(Ordering::Relaxed);
     let mut spins: u32 = 0;
     while ACKS[t].load(Ordering::Acquire) <= snap {
+        // F0-3 对飞自解：若对核同时在 PSTATE.I=1 下向本核发起了 shootdown，本核当场完成
+        // 本地全量 TLB 失效并推进 ACKS[me]，使双方在首轮迭代内无死锁双双放行。
+        if REQ_PENDING[me].swap(false, Ordering::AcqRel) {
+            // SAFETY: 零锁上下文刷新本核本地 TLB，无任何共享可变状态借用。
+            unsafe { crate::mmu::flush_local_all() };
+            ACKS[me].fetch_add(1, Ordering::Release);
+        }
         spins = spins.wrapping_add(1);
         if spins >= 400_000_000 {
             panic!(
@@ -151,13 +164,27 @@ fn wait_pending(me: usize) {
     PENDING[me].store(false, Ordering::Release);
 }
 
-/// dispatch 尾等待点（arch syscall.rs `dispatch` 在 `svc_exit_class` 后调）：
-/// 本核有待等闩才自旋（NONE 类号多付一次 Acquire 原子读；单核闩恒 0）。
-pub(crate) fn sched_exit_check() {
+/// 包络外回执等待点（SVC `dispatch` 尾及 `dpg::probe_el0` ZFOD 放锁后调用）：
+/// 本核有待等闩才自旋（单核闩恒 `false`）。
+pub fn sched_exit_check() {
     let me = crate::smp::cpu_id();
     if PENDING[me].load(Ordering::Acquire) {
         wait_pending(me);
     }
+}
+
+/// F0-3 ktest 白盒探针：模拟对飞态（本核 `PENDING[me]=true` 等待对核，同时 `REQ_PENDING[me]=true`
+/// 代表收到对核请求，对核在第一拍观测本核内联自增 `ACKS[me]` 后随之推进 `ACKS[t]`），验证内联自解。
+pub fn test_inline_consume_once() -> bool {
+    let me = crate::smp::cpu_id();
+    let before = ACKS[me].load(Ordering::Acquire);
+    REQ_PENDING[me].store(true, Ordering::Release);
+    if REQ_PENDING[me].swap(false, Ordering::AcqRel) {
+        // SAFETY: 本核本地 TLB 刷新。
+        unsafe { crate::mmu::flush_local_all() };
+        ACKS[me].fetch_add(1, Ordering::Release);
+    }
+    ACKS[me].load(Ordering::Acquire) == before.wrapping_add(1) && !REQ_PENDING[me].load(Ordering::Acquire)
 }
 
 // ---- S-4 4-3：ASID 回卷 quiesce（aspace.rs 计数器锁外的驱动协议）----

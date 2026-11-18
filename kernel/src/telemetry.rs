@@ -223,7 +223,7 @@ fn ring_total(cpu: usize) -> u64 {
 
 /// 累计写入数（全环求和——每环单调不减，和单调；遥测存活断言用：须 ≥
 /// `berry_sched::switches_tt()`——环只记任务↔任务切换，S-6 ① 起分母同口径
-/// 双计数器；SWITCHES 11 位全计含 park 语境，非本断言比较面）。
+/// 双计数器；SWITCHES 13 位全计含 park 语境〔2026-11-17 机会三勘正〕，非本断言比较面）。
 pub fn total() -> u64 {
     ring_total(0) + ring_total(1)
 }

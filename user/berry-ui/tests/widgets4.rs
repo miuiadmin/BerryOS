@@ -40,7 +40,7 @@ fn glyphs(dl: &DisplayList) -> Vec<(u8, i32, i32)> {
     for c in dl.iter() {
         if let Cmd::DrawGlyphRun { run } = c {
             for g in run.glyphs {
-                out.push((g.ch as u8, g.x, g.y));
+                out.push((g.ch, g.x, g.y));
             }
         }
     }

@@ -978,3 +978,64 @@ fn phantom_ack_beyond_snd_nxt_rejected() {
     assert_eq!(c.snd_una, 1129);
     assert_eq!(c.tx_inflight(), 0);
 }
+
+// ─── 五刀②：tx_retx_floor 暂存紧缩弃置水印（vnet post_account 紧缩臂权威源）───
+// 裁决 2 钉死族：floor 恒取环头 Data 段首——straddling 保段 + RTO 整段重发
+// 下 snd_una 会切掉仍需重发的段前缀，防后人「优化」回 snd_una。
+
+#[test]
+fn tx_retx_floor_empty_ring_returns_snd_nxt() {
+    // ① 环空 → snd_nxt（无数据重发引用）：握手后基线与弹尽后同形——环空 =
+    // floor==snd_nxt 的紧缩特例（vnet 紧缩前的旧「环空失效」臂的逐字节
+    // 等价面）。
+    let mut c = established();
+    assert_eq!(c.tx_retx_floor(), 1001);
+    c.send(64);
+    c.on_seg(&ack_seg(1065)); // 整段覆盖弹尽
+    assert_eq!(c.tx_inflight(), 0);
+    assert_eq!(c.snd_nxt, 1065);
+    assert_eq!(c.tx_retx_floor(), 1065);
+}
+
+#[test]
+fn tx_retx_floor_follows_head_pop_to_second_seg() {
+    // ② 双段在途 + 首段整 ACK 弹槽 → floor 随环头推进到第二段段首。
+    let mut c = established();
+    c.send(128); // [1001,1129)
+    c.send(122); // [1129,1251)
+    assert_eq!(c.tx_retx_floor(), 1001);
+    c.on_seg(&ack_seg(1129)); // 恰覆盖首段尾 → 弹槽
+    assert_eq!(c.tx_inflight(), 1);
+    assert_eq!(c.tx_retx_floor(), 1129);
+}
+
+#[test]
+fn tx_retx_floor_straddling_pinned_to_head_seg_seq() {
+    // ③ straddling 裁决臂（防「优化」回 snd_una 的判据臂，改错必炸）：
+    // 双段在途 + 部分 ACK 只覆盖首段一部分 → 首段保槽、RTO 自段首整段重发
+    // → floor = 首段段首 **≠ snd_una**——紧缩到 snd_una 会切掉仍需重发的
+    // 段前缀、击重发臂。
+    let mut c = established();
+    c.send(128); // [1001,1129)
+    c.send(122); // [1129,1251)
+    c.on_seg(&ack_seg(1050)); // 只确认首段前 49B：straddling 保槽
+    assert_eq!(c.snd_una, 1050);
+    assert_eq!(c.tx_inflight(), 2);
+    assert_ne!(c.snd_una, 1001);
+    assert_eq!(c.tx_retx_floor(), 1001, "floor=环头段首，非 snd_una");
+    // 段首即重发引用源：on_rto 环头 Data 臂自 1001 整段重发。
+    assert_eq!(c.on_rto().action, Action::Data { seq: 1001, len: 128 });
+}
+
+#[test]
+fn tx_retx_floor_fin_head_returns_snd_nxt() {
+    // ④ 头为 Fin 形：数据段弹尽后 FIN 成环头——无数据重发引用 → snd_nxt
+    // （FIN 自身的重发面由 on_rto Fin 臂持有，不属数据紧缩域）。
+    let mut c = established();
+    c.send(64); // [1001,1065)
+    c.close(); // FIN seq=1065 排队尾，snd_nxt=1066
+    c.on_seg(&ack_seg(1065)); // 数据段弹出 → 环头=Fin{1065}
+    assert_eq!(c.inflight_kind(), 3);
+    assert_eq!(c.tx_retx_floor(), 1066);
+    assert_eq!(c.tx_retx_floor(), c.snd_nxt);
+}

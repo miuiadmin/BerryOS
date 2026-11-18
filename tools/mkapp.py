@@ -160,8 +160,6 @@ VERSION_MAX = 16
 ENTRY_MAX = 32
 STACK_PAGES_MIN = 1
 STACK_PAGES_MAX = 64
-AUTHORIZED_SURFACE_ESCAPE = {"UITEST"}
-
 INTENTS = (
     "unspecified",
     "latency_critical",
@@ -260,8 +258,6 @@ class M:
         self.version = app["version"]
         self.entry = app["entry"]
         self.console = caps["console"]
-        self.wm = caps.get("wm", False)
-        self.surface_escape = caps.get("surface_escape", False)
         self.has_runtime = runtime is not None
         self.stack_pages = runtime["stack_pages"] if runtime else 8
         self.intent = app["intent"]
@@ -324,10 +320,6 @@ class M:
             out += f'fs = ["{self.fs}"]\n'
         if self.net:
             out += f'net = ["{self.net}"]\n'
-        if self.wm:
-            out += "wm = true\n"
-        if self.surface_escape:
-            out += "surface_escape = true\n"
         if self.has_runtime:
             out += f"\n[runtime]\nstack_pages = {self.stack_pages}\n"
         if self.sec:
@@ -523,22 +515,14 @@ def check_manifest_text(text: str) -> M:
                 )
 
     caps = doc["capabilities"]
-    if not {"console"} <= set(caps) or set(caps) - {
-        "console", "wm", "surface_escape", "fs", "net",
-    }:
-        raise Reject("manifest: [capabilities] 键集应为 console(+wm/surface_escape/fs/net)")
+    if not {"console"} <= set(caps) or set(caps) - {"console", "fs", "net"}:
+        raise Reject("manifest: [capabilities] 键集应为 console(+fs/net)",
+                     code="manifest.capabilities.keys", where="capabilities",
+                     expected="console（+fs/net）")
     if type(caps["console"]) is not bool:
-        raise Reject("manifest: console 应为 bool")
-    if type(caps.get("wm", False)) is not bool:
-        raise Reject("manifest: wm 应为 bool")
-    if type(caps.get("surface_escape", False)) is not bool:
-        raise Reject("manifest: surface_escape 应为 bool")
-    if caps.get("surface_escape", False) and not caps.get("wm", False):
-        raise Reject("manifest: surface_escape 需要 wm=true")
-    if caps.get("surface_escape", False) and app["id"] not in AUTHORIZED_SURFACE_ESCAPE:
-        raise Reject(
-            f"manifest: surface_escape 未授权 app {app['id']}（allowlist={sorted(AUTHORIZED_SURFACE_ESCAPE)}）"
-        )
+        raise Reject("manifest: console 应为 bool",
+                     code="manifest.capabilities.console",
+                     where="capabilities.console", expected="bool")
     for key, vocab in (("fs", FS_SCOPES), ("net", NET_SCOPES)):
         if key in caps:
             v = caps[key]
@@ -1148,7 +1132,7 @@ def build(out_path: str, app_dir: str, *, emit: bool = True) -> dict:
     # 产包摘要行（宿主侧可见性，无消费面）；SDK-1a 尾随增量在场才打
     line = (
         f"mkapp: {out_path} {len(blob)}B {m.id} v{m.version} "
-        f"console={'true' if m.console else 'false'} wm={'true' if m.wm else 'false'} "
+        f"console={'true' if m.console else 'false'} "
         f"stack={m.stack_pages} intent={m.intent}"
     )
     result = {
@@ -1622,10 +1606,6 @@ BASE = (
 # 人读面钉板（刀7 起；P1 回放腿实装后首钉 2026-11-11）：selftest 主体
 # stdout 归一化（tempdir → <TD>）后与此逐字节比对；人读输出任何漂移
 # （文案/顺序/增删行）即 FAIL。verdict/钉板对拍行另打（不在板内）。
-# 重钉记录（GUI-main 二层合并：Berry Room wm/surface_escape 能力面回嵌——
-# 拒面 +2、正形 +1、build 摘要恒增 wm=<bool>，2026-11-16 如实 add-only 重钉）：
-#   ⑧ 本合并增量：surface-escape-unauthorized / surface-escape-without-wm /
-#      f5-surface-escape；摘要行 wm=false 三处。
 # 重钉记录（P1 遗留账清偿刀，回放腿首跑如实重钉）：
 #   ① 历史欠账：旧板自钉定后对拍腿从未执行（buf 无消费者——静默缺陷），
 #     实测含 GUI-7 图标源规格 warn 行 14 条（mkapp: warn icon …——负样本
@@ -1673,8 +1653,6 @@ SELFTEST_BASELINE = """\
   selftest 拒（预期） : sec-missing-integrator
   selftest 拒（预期） : sec-value-space
   selftest 拒（预期） : sec-value-17b
-  selftest 拒（预期） : surface-escape-unauthorized
-  selftest 拒（预期） : surface-escape-without-wm
   selftest 拒（预期） : ui-no-prefix
   selftest 拒（预期） : ui-wrong-prefix
   selftest 拒（预期） : ui-bare-prefix
@@ -1706,7 +1684,6 @@ SELFTEST_BASELINE = """\
   selftest 过（预期） : f2-fs id=X
   selftest 过（预期） : f3-net id=X
   selftest 过（预期） : f4-security id=X
-  selftest 过（预期） : f5-surface-escape id=UITEST
   selftest 过（预期） : f6-kitchen-sink id=KITCHEN
   selftest 过（预期） : f7-ui-kitchen-sink id=KITCHEN
   selftest 过（预期） : f7b-ui-icon-only id=X
@@ -1741,17 +1718,17 @@ mkapp: warn icon icon.png 1x1 < 108 源规格（规范 §3.3：建议 108×108 �
 mkapp: warn icon icon.png 1x1 < 108 源规格（规范 §3.3：建议 108×108 居中 + ≥18px 裕量，过小源放大即糊）
   selftest 拒（预期） : enc-trns
 mkapp: <TD>/myapp 脚手架四件就绪（MYAPP；构建步骤见 <TD>/myapp/README.md）
-mkapp: <TD>/MYAPP.bap 28672B MYAPP v0.1.0 console=true wm=false stack=8 intent=utility compat=0.1.0..0.1.0 abi_revision=1
+mkapp: <TD>/MYAPP.bap 28672B MYAPP v0.1.0 console=true stack=8 intent=utility compat=0.1.0..0.1.0 abi_revision=1
 mkapp: <TD>/MYAPP.bap OK 28672B entries=3 digests=ok
   selftest 过（预期） : new-build-check-roundtrip id=MYAPP
   selftest 过（预期） : stamp-in-package abi_revision=1
-mkapp: <TD>/MYAPP.bap 28672B MYAPP v0.1.0 console=true wm=false stack=8 intent=utility compat=0.1.0..0.1.0 abi_revision=2
+mkapp: <TD>/MYAPP.bap 28672B MYAPP v0.1.0 console=true stack=8 intent=utility compat=0.1.0..0.1.0 abi_revision=2
 mkapp: <TD>/MYAPP.bap OK 28672B entries=3 digests=ok
   selftest 过（预期） : stamp-explicit-override abi_revision=2
 mkapp: <TD>/LEGACY.bap OK 20480B entries=2 digests=n/a
   selftest 过（预期） : legacy-2entry-check digests=n/a
 mkapp: warn icon icon.png 2x2 < 108 源规格（规范 §3.3：建议 108×108 居中 + ≥18px 裕量，过小源放大即糊）
-mkapp: <TD>/APPUI.bap 45056B APPUI v0.1.0 console=true wm=false stack=8 intent=utility abi_revision=1 icons=1 views=1
+mkapp: <TD>/APPUI.bap 45056B APPUI v0.1.0 console=true stack=8 intent=utility abi_revision=1 icons=1 views=1
 mkapp: <TD>/APPUI.bap OK 45056B entries=5 digests=ok
   selftest 过（预期） : ui-build-check-roundtrip icons+views 在包
   selftest 拒（预期） : ui-stage-no-icons
@@ -2110,11 +2087,6 @@ def selftest() -> int:
         'views = "views/main.bui"\n'
     )
     f7b = f0 + '\n[ui]\nicon = "icons/icon.byi"\n'
-    f5 = BASE.replace(
-        'id = "APPDEMO"', 'id = "UITEST"'
-    ).replace(
-        "console = true\n", "console = true\nwm = true\nsurface_escape = true\n"
-    )
     # 同意面先落件二 F8：[agent-actions] 尾增（居 [ui] 后 = F0–F7 字节
     # 零漂移）；键 kebab-case 文档序、值三档词。
     f8 = f7 + (
@@ -2189,8 +2161,6 @@ def selftest() -> int:
         # ---- GUI-7 新增拒面（[ui] 值域/产面 .byi 后缀/空节/定序；值变异
         # 在规范位上——门删则 canonical 重发射与输入恒等 → 样本被放行 →
         # selftest FAIL，同 SDK-1a 词表样本手法钉得住门）----
-        ("surface-escape-unauthorized", f5.replace('id = "UITEST"', 'id = "X"')),
-        ("surface-escape-without-wm", f5.replace("wm = true\n", "")),
         ("ui-no-prefix", f7b.replace("icons/icon.byi", "icon.byi")),
         ("ui-wrong-prefix", f7b.replace("icons/icon.byi", "bin/icon.byi")),
         ("ui-bare-prefix", f7b.replace("icons/icon.byi", "icons/")),
@@ -2272,7 +2242,6 @@ def selftest() -> int:
         ("f2-fs", f2),
         ("f3-net", f3),
         ("f4-security", f4),
-        ("f5-surface-escape", f5),
         ("f6-kitchen-sink", f6),
         ("f7-ui-kitchen-sink", f7),
         ("f7b-ui-icon-only", f7b),

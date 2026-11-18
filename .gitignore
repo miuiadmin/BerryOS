@@ -105,6 +105,9 @@ __pycache__/
 # elf2pe 宿主工具独立 target（test-host 接线 cargo test 默认落此处，
 # 同款防全局 target-dir 覆盖漂移口径）
 /tools/elf2pe/cargo-target/
+# mkfat 宿主工具独立 target（彻底 Rust 化轨道 b 层 #8 刀序第二位首刀，
+# test-host 接线与 CLI 对拍构建共用，防产物入库）
+/tools/mkfat/cargo-target/
 
 # berry 宿主工具截图产物（berry shot 默认输出 / 窗口 Cmd-S）
 /shot.png
@@ -149,3 +152,16 @@ smoke-wt-*/
 # base 重写反复剥落本规则，随刀补回）
 /.target-*/
 .plugins/
+
+# 并行会话隔离 target 族与验证残渣(2026-11-17 四刀 survey F103 收口:
+# 仓库根 target-<tag> 形态构建缓存/user 工作区默认 target/根 userbins
+# 产物/toxproxy 会话日志——均不入库;此前逐目录堆积 27+ 目录污染 status)
+/target-*/
+/user/target/
+/userbins/
+/user/cargo-target-*/
+/px-*.log
+/user/target-*/
+# mkimage 宿主工具独立 target（彻底 Rust 化轨道 b 层 #8 刀序第三位首刀，
+# tools/mkfat 同款纪律）
+/tools/mkimage/cargo-target/

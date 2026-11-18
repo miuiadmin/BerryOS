@@ -1,23 +1,47 @@
 #!/bin/sh
 # BerryOS 跨根合并闸（commit 层）——防线详见 .agents/notes/implemented/2026-11-16-跨根合并防线与判例.md
-# 背景：main（根 f7eb5535）与 wip/sched-1.1（根 afd68392）无共同祖先。整树合并是 owner 专属动作。
-# 本闸：MERGE_HEAD 在场且与 HEAD 无共同祖先 → 拒绝提交。owner 逃生阀 BERRYOS_ALLOW_CROSSROOT=1。
+# 背景：main（根 f7eb5535）与 wip/sched-1.1（根 afd68392）曾为无共同祖先双线，2026-11-16 已由
+# owner 跨根收口合并（两线自此共史，AGENTS.md 规则 10）——本闸拦此后任何新的无共同祖先合并。
+# 本闸：MERGE_HEAD 在场且亲集（HEAD + MERGE_HEAD 全行）中任两亲无共同祖先 → 拒绝提交。
+# owner 逃生阀 BERRYOS_ALLOW_CROSSROOT=1。
+# MERGE_HEAD 在八爪合并（3+ 亲）时一行一 OID——与 HEAD 合成一亲集全亲两两核（F92）；
+# 只逐行对 HEAD 核会漏「行间互不相关、各自与 HEAD 相关」形态——两原始根
+# f7eb5535/afd68392 在 2026-11-16 收口后即此形（2026-11-17 二次活测实抓补齐）。
 # 旧 .git/hooks/pre-commit 的 Curia 文档关卡在此逐字节保留（原钩子随 core.hooksPath 切换而退役）。
+
+# 全亲两两核（F92）：任一对无共同祖先 → 返 0（命中）。$@ = 全部亲（OID 或 rev 名）。
+crossroot_pair() {
+  while [ $# -ge 2 ]; do
+    p1=$1
+    shift
+    for p2 in "$@"; do
+      [ -z "$(git merge-base "$p1" "$p2" </dev/null 2>/dev/null)" ] && return 0
+    done
+  done
+  return 1
+}
 
 mh=$(git rev-parse --git-path MERGE_HEAD)
 if [ -f "$mh" ] && [ "$BERRYOS_ALLOW_CROSSROOT" != "1" ]; then
-  m=$(cat "$mh" 2>/dev/null)
-  if [ -n "$m" ] && [ -z "$(git merge-base HEAD "$m" 2>/dev/null)" ]; then
+  # 亲集 = HEAD + MERGE_HEAD 全行。
+  # || [ -n "$m" ]：封无尾换行末行缝（read 填变量但返非零，循环体不执行——
+  # stock git 每亲一行必带尾换行不可达，手改 MERGE_HEAD 可构造；POSIX 通用写法）。
+  set --
+  while read -r m || [ -n "$m" ]; do
+    [ -n "$m" ] || continue
+    set -- "$@" "$m"
+  done < "$mh"
+  if [ $# -ge 1 ] && crossroot_pair HEAD "$@"; then
     cat >&2 <<'EOF'
-[berryos-guard] 拒绝：这是跨根合并（HEAD 与 MERGE_HEAD 无共同祖先）。
+[berryos-guard] 拒绝：这是无共同祖先合并（HEAD 与 MERGE_HEAD 亲集内存在两亲无共同祖先）。
 
-main 与 wip/sched-1.1 是两棵不相关历史。整树硬合 = 348 个 add/add 冲突，
-是 owner 专属的收口动作，lane 一律禁止。正确做法：
+main 与 wip/sched-1.1 曾为两棵不相关历史，2026-11-16 已由 owner 跨根收口合并
+（两线自此共史）。此后任何新的无共同祖先合并都是异常动作，一律禁止。正确做法：
   1. 立即回安全态：git merge --abort
-  2. lane 的职责是把工作推 wip/sched-1.1，勿直接动 main
-  3. 跨线内容走净增量重放（实测冲突面 348→35）
+  2. lane 的职责是把工作推 wip/sched-1.1
+  3. 跨线内容走净增量重放（历史判例：冲突面 348→35）
 判例与数据：.agents/notes/implemented/2026-11-16-跨根合并防线与判例.md
-owner 确要收口：BERRYOS_ALLOW_CROSSROOT=1 git commit
+owner 确要跨线收口：BERRYOS_ALLOW_CROSSROOT=1 git commit
 EOF
     exit 1
   fi

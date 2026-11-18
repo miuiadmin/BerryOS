@@ -65,7 +65,7 @@ pub use util::{
     UTIL_WINDOW_HZ, UTIL_WINDOW_VCT_REF,
 };
 pub use sched::{
-    block_current, current_asid, current_pinned, current_tag, current_task_name, exit_current,
+    block_current, current_pinned, current_tag, current_task_name, exit_current,
     exit_current_with, fast_wake_locked,
     find_single_waiter, find_single_waiter_locked, for_each_runnable, for_each_sleeper, freeze_by_pinned,
     freeze_by_thread, freeze_precheck_by_pinned, freeze_precheck_by_thread,
@@ -76,11 +76,12 @@ pub use sched::{
     lb_stats,
     eas_pick_place, eas_place,
     steal_band_rank, STEAL_RANK_COMPAT, STEAL_RANK_DEPRIOR, STEAL_RANK_PROTECT,
-    on_irq_tick, on_sgi_resched, park_recheck, pi_boost_recount, pi_recompute_needed,
+    on_irq_tick, on_sgi_resched, park_recheck, pi_boost_recount, pi_derived_recount,
+    pi_recompute_needed,
     pi_rq_lock, pi_rq_unlock, preempt_checkpoint, preempt_checkpoint_hits, preempt_count, preempt_disable,
     preempt_enable, print_window_enter, print_window_exit,
     nearest_deadline, refresh_effective, reap_drain, throttle_yield_due,
-    set_exit_hook, set_lb_match, set_reply_handoff, set_reply_handoff_proc, set_reap_post_hook,
+    set_exit_hook, set_lb_match, set_reap_post_hook,
     set_klock_ops, set_sleepq_hook, sq_lock, sq_unlock,
     set_switch_hook, set_wake_hook, sleepq_insert,
     sleepq_insertable, sleepq_unlink, rq_insert_kt, rq_unlink_kt, spawn, spawn_as, spawn_as_spread, spawn_intent, spawn_user, spawn_user_env, spawn_with,

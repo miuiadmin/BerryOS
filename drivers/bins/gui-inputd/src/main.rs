@@ -1,9 +1,11 @@
 //! gui-inputd —— GUI-4 段① I3 guest 入口：virtio-input 用户态输入服务
-//! （常驻，实施依据 = docs/GUI-4实施设计草案.md §5.2）。
+//! （常驻，实施依据 = docs/GUI-4实施设计草案-v1.0.md §5.2）。
 //!
 //! vnet/vblk 同链（musl target + berry-libc shim；MMIO 窗口经
 //! `SpawnSpec::mmio_vmo` 映到 [`VIRTIO_MMIO_VA`]，berry-exec 单源）。扫 32
-//! 槽按设备类（did=18）认领**恰一个** input 设备 → modern v2 协商（仅
+//! 槽按设备类（did=18）**分类认领**：指针类（config EV_BITS(EV_ABS) 位图
+//! ABS_X+ABS_Y 双位在场——virtio-tablet）恰一台 + 键盘类（绝对轴缺席
+//! ——virtio-keyboard）至多一台 → modern v2 协商（仅
 //! VERSION_1——virtio-input 设备特性位为零，规范 §5.8.3）→ config ABS_INFO
 //! 读 X/Y 校准域（**以设备自述为准**，勿硬编 32767——§4.2）→ eventq(q0)
 //! always-posted 预投 16×8B 读缓冲（QEMU 逐描述符一事件——`get_input_event`
@@ -24,11 +26,11 @@
 //! nh != 0 → ST_BAD 分流不 trap——P6 A-4）；服务端永不主动 send（应答
 //! 均为请求受激）。用户态进程自有 handle 表——私有表铁律天然满足。
 //!
-//! **GUI-5（docs/GUI-5实施设计草案.md §3 #10）**：serve 升格两路
+//! **GUI-5（docs/GUI-5实施设计草案-v1.0.md §3 #10）**：serve 升格两路
 //! poll-first——wmd 推送端在席（`wm_push_h()`≠0，EFI 链 wmd 起）时并监
 //! wm 表快照通道：WM_TABLE_WAIT 串行 park-应答循环（快照静态缓存 +
-//! 超龄三层失效 Q11）+ legacy direct poll 的 `wm_hit_test` 内存旁注
-//!（Q9 单源；Phase 3 真路由已上收 wmd——inputd 向 wmd 转原始全局事件）
+//! 超龄三层失效 Q11）+ drain 后逐事件 `wm_hit_test` **内存旁注**（Q9
+//! 单源驻 berry-guiproto；Q10 粘滞锁定；Q16——INPUT_POLL 恒为泵唯一
 //! drain 者，旁注非第二消费、不进 wire）。==0（rootfs 相 wmd 未起）时
 //! 两路面/旁注/步进睡改形全门控——单通道现行为逐字节保留（46 标记面
 //! 零漂移的构造保证）。
@@ -51,27 +53,27 @@ mod guest {
     use berry_libc::io::{gift2_h, wm_push_h};
     use berry_sys::{
         berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
-        berry_object_wait_many, berry_object_wait_one, berry_thread_sleep, berry_vmo_commit,
-        berry_vmo_create, berry_vmo_get_phys, berry_vmo_read, berry_vmo_write, Handle,
-        BERRY_ERR_AGAIN, BERRY_ERR_BUSY, CLOCK_MONOTONIC, SIGNAL_READABLE, SIGNAL_WRITABLE,
+        berry_object_wait_many, berry_object_wait_one, berry_thread_sleep, berry_vmo_create,
+        berry_vmo_get_phys, berry_vmo_read, berry_vmo_write, Handle, BERRY_ERR_AGAIN,
+        BERRY_ERR_BUSY, CLOCK_MONOTONIC, SIGNAL_READABLE, SIGNAL_WRITABLE, VMO_OPT_CONTIGUOUS,
+        VMO_OPT_PINNED,
     };
     use berry_virtio as vio;
     use gui_inputd::{
-        classify_input_device, raw_from_wire, AbsCal, InputDeviceKind, KeyPump, PointerPump,
-        PumpConfig, PumpEvent, ScreenGeom,
+        key_frame, raw_from_wire, AbsCal, KeyPump, PointerPump, PumpConfig, PumpEvent, ScreenGeom,
     };
 
     // 链接种子（vprobe/vnet 同款）：无引用则 berry-libc 的 crt0 不进链接。
     #[used]
     static CRT0_SEED: unsafe extern "C" fn() = berry_libc::berry_crt0_anchor;
 
-    /// 队列深（Phase 0：16→64。ring 仍 <4KiB、64×8B 缓冲仍一页内）。
-    const QSIZE: u16 = 64;
+    /// 队列深（vnet/vblk 同档：2 的幂、整环落一页）。
+    const QSIZE: u16 = 16;
     /// eventq 读缓冲数（= qsize）：每缓冲一描述符恰容一事件（QEMU
     /// virtio_input_send 逐描述符取一元素——8B 恰长是最优投递形态）。
     const EVT_BUF_SZ: usize = vio::input::INPUT_EVENT_SZ;
-    /// DMA VMO 几何：页 0 event ring / 页 1 事件缓冲带（64×8B——结构分页
-    /// vnet 惯例；缓冲带只用页首 512B，清晰优先于字节节省）。
+    /// DMA VMO 几何：页 0 event ring / 页 1 事件缓冲带（16×8B——结构分页
+    /// vnet 惯例；缓冲带只用页首 128B，清晰优先于字节节省）。
     const DMA_LEN: u64 = 8192;
     const RING_PAGE: u64 = 0;
     const BUF_PAGE: u64 = 4096;
@@ -82,16 +84,14 @@ mod guest {
     /// INPUT_POLL 阻塞服务帽：30s（< client 侧会话帽 90s——「服务帽 <
     /// client 帽」纪律；到点 ST_EAGAIN 而非自陷）。
     const POLL_BLOCK_CAP_NS: u64 = 30_000_000_000;
-    /// serve 空闲心跳 tick：16ms（超时 = 心跳非死线——回环顶重查 used 环
-    /// 后重臂续等）。tick 同时是 **无消费窗口的设备层收割节奏**。产品桌面
-    /// 的首次触摸/按键不能平均先等 50ms、最坏 100ms；16ms 对齐呈现帧期，
-    /// 让 press 反馈与首帧同量级。eventq 预投 QSIZE=64 缓冲，空闲期超过
-    /// 64 事件/tick 仍会丢批尾；离散转移零丢的结构性根治仍是 v2 IRQ 面。
-    const SVC_TICK_NS: u64 = 16_000_000;
-    /// 交互活动期的设备收割节奏。活动后短窗改 500µs 轮询，静默 200ms 再
-    /// 回落 16ms 心跳（结构根治仍归 v2 IRQ）。
-    const INPUT_ACTIVE_TICK_NS: u64 = 500_000;
-    const INPUT_ACTIVE_WINDOW_NS: u64 = 200_000_000;
+    /// serve 空闲心跳 tick：100ms（超时 = 心跳非死线——回环顶重查 used 环
+    /// 后重臂续等；P6 A-3 echo 同款语义，段② 按消费节奏可调）。tick 同时是
+    /// **无消费窗口的设备层收割节奏**：eventq 预投 QSIZE=16 缓冲、QEMU
+    /// virtio_input_send 逐事件取描述符，耗尽即丢批尾——空闲期输入超过
+    /// 16 事件/tick 时尾部被设备静默丢弃（press 送达而 release 丢弃可致泵
+    /// 接触态滞留，至下次真实接触自愈）；100ms = 160 事件/s 窗口，覆盖
+    /// 注入/人工形态。离散转移零丢的结构性根治 = v2 IRQ 面（§5.2-5 注）。
+    const SVC_TICK_NS: u64 = 100_000_000;
     /// 应答 send EBUSY 重臂帽：10s（vnet 同档）。
     const SEND_REARM_NS: u64 = 10_000_000_000;
     /// GUI-5：wmd 推送快照超龄帽（Q11-②——age 超此值视同缺席，旁注降级
@@ -132,29 +132,15 @@ mod guest {
         history: [ZERO_SAMPLE; gp::INPUT_SAMPLES_MAX - 1],
         history_len: 0,
     };
-    const ZERO_KEY: gp::KeyEvent = gp::KeyEvent {
-        timestamp_ns: 0,
-        code: 0,
-        action: 0,
-        modifiers: 0,
-        device_id: 0,
-    };
-
-    /// P2 键盘设备面（没有键盘 = None；tablet 恒必须）。
-    struct Keyboard {
-        regs: *mut u32,
-        d: Dma,
-        pump: KeyPump,
-    }
 
     /// ring 暂存页（初始建制专用——单线程独占窗；refill 走字节粒度
     /// vmo_write 不经此页，vnet RXSTAGE 同款）。
     static mut RINGSTAGE: [u8; 4096] = [0; 4096];
 
-    /// 已认领设备的寄存器基（trap 整洁面用——单线程进程、认领后恒定；
-    /// null = 未认领：find 面自陷时设备尚未到手，无队列可撤）。
-    static mut CLAIMED_TABLET_REGS: *mut u32 = core::ptr::null_mut();
-    static mut CLAIMED_KEYBOARD_REGS: *mut u32 = core::ptr::null_mut();
+    /// 已认领设备的寄存器基 ×2（trap 整洁面用——单线程进程、认领后恒定；
+    /// null = 该槽未认领：find 面自陷时设备尚未到手，无队列可撤。槽 0 =
+    /// tablet、槽 1 = 键盘——键盘缺席/降级时保持 null）。
+    static mut CLAIMED_REGS: [*mut u32; 2] = [core::ptr::null_mut(); 2];
 
     /// DMA 面（vnet Dma 同款纯 VMO 机制——从不进任何地址空间）。
     struct Dma {
@@ -168,18 +154,42 @@ mod guest {
         posted: u16,
     }
 
+    /// 键盘第二实例面（分类认领的键盘类槽；`None` = 缺席/降级——serve/
+    /// serve_poll 两处第二台 harvest 都门控在这个 Option 上）。
+    struct KbDev {
+        d: Dma,
+        regs: *mut u32,
+    }
+
+    /// 收割喂泵抽象：环收割协议（used 环对账/回填/完成项契约执法）对两台
+    /// 设备同一份——只有「事件给谁消化」不同（PointerPump 手势状态机 /
+    /// KeyPump 键翻译），泵类型经本 trait 参数化，harvest 单源不复制。
+    trait EventPump {
+        fn feed(&mut self, ev: gui_inputd::RawInputEvent);
+    }
+
+    impl EventPump for PointerPump {
+        fn feed(&mut self, ev: gui_inputd::RawInputEvent) {
+            PointerPump::feed(self, ev); // 内建方法单发（防 trait 递归）
+        }
+    }
+
+    impl EventPump for KeyPump {
+        fn feed(&mut self, ev: gui_inputd::RawInputEvent) {
+            KeyPump::feed(self, ev);
+        }
+    }
+
     pub(super) fn run() {
-        let (tab_slot, kbd_slot) = match find_input_devices() {
-            Some(x) => x,
+        let (slot, kslot) = match find_input_devices() {
+            Some(s) => s,
             None => berry_libc::park(), // 诊断行已在 find 内打——优雅退出
         };
-        let regs = mmio(tab_slot);
+        let regs = mmio(slot);
         // SAFETY: 单线程进程；认领后恒定（trap() 的整洁面读它）。
-        unsafe {
-            core::ptr::write_volatile(core::ptr::addr_of_mut!(CLAIMED_TABLET_REGS), regs)
-        };
+        unsafe { core::ptr::write_volatile(core::ptr::addr_of_mut!(CLAIMED_REGS[0]), regs) };
         if !negotiate(regs) {
-            println!("gui-inputd: tablet 协商拒绝（无 VERSION_1/复位超时）；park");
+            println!("gui-inputd: 协商拒绝（无 VERSION_1/复位超时）；park");
             berry_libc::park();
         }
         let (ax, ay) = match (
@@ -203,106 +213,136 @@ mod guest {
             delivery: gp::DELIVERY_BATCHED,
         });
         let mut d = setup_dma();
+        // eventq = q0（规范 §5.8.6；statusq q1 v1 不建）。DRIVER_OK 前先挂
+        // 缓冲——设备从此有缓冲可写。
         setup_queue(regs, 0, d.ring_pa, &d.lay);
         post_events(&mut d);
-        driver_ok(regs);
-
-        let mut keyboard = match kbd_slot {
-            Some(slot) => {
-                let kregs = mmio(slot);
-                // SAFETY: 同 tablet，认领后恒定。
-                unsafe {
-                    core::ptr::write_volatile(
-                        core::ptr::addr_of_mut!(CLAIMED_KEYBOARD_REGS),
-                        kregs,
-                    );
-                }
-                if !negotiate(kregs) {
-                    println!("gui-inputd: keyboard 协商拒绝；park");
-                    berry_libc::park();
-                }
-                let mut kd = setup_dma();
-                setup_queue(kregs, 0, kd.ring_pa, &kd.lay);
-                post_events(&mut kd);
-                driver_ok(kregs);
-                Some(Keyboard {
-                    regs: kregs,
-                    d: kd,
-                    pump: KeyPump::new(u16::try_from(slot + 1).unwrap_or(1)),
-                })
-            }
-            None => None,
-        };
-
-        let kdesc = match kbd_slot {
-            Some(slot) => slot,
-            None => usize::MAX,
-        };
-        println!(
-            "INPUTDEV ok tab={} kb={} q={}x{}B cal=x[{},{}) y[{},{})",
-            tab_slot, kdesc, QSIZE, EVT_BUF_SZ, ax.min, ax.max, ay.min, ay.max
-        );
-        serve(&mut d, regs, &mut pump, keyboard.as_mut());
-    }
-
-    fn driver_ok(regs: *mut u32) {
         wr(
             regs,
             vio::mmio::STATUS,
             vio::ST_ACKNOWLEDGE | vio::ST_DRIVER | vio::ST_FEATURES_OK | vio::ST_DRIVER_OK,
         );
+        // 初始填充后的 kick（规范整洁面；dmb 先行——整页写在门铃前排序）。
         // SAFETY: 纯屏障指令，无内存操作数。
         unsafe { core::arch::asm!("dmb ish") };
         wr(regs, vio::mmio::Q_NOTIFY, 0);
+        // 键盘第二实例（分类认领的键盘类槽）：全序与 tablet 同形（二次
+        // negotiate / 独立 8KiB VMO 的 setup_dma / setup_queue / post_events
+        // / DRIVER_OK + kick）。**协商拒绝 = 降级无键盘面**（诊断行 + kb
+        // 维持 None），不 park 整个输入服务——键盘是辅助设备，指针链不
+        // 受牵连；CLAIMED_REGS[1] 只在 DRIVER_OK 写入前登基（此后设备才
+        // 拥有环——trap 整洁面从这一刻起须能撤它）。
+        let mut kb: Option<KbDev> = None;
+        if let Some(ks) = kslot {
+            let regs2 = mmio(ks);
+            if negotiate(regs2) {
+                let mut d2 = setup_dma();
+                setup_queue(regs2, 0, d2.ring_pa, &d2.lay);
+                post_events(&mut d2);
+                // SAFETY: 单线程进程；认领后恒定（trap() 的整洁面读它）。
+                unsafe { core::ptr::write_volatile(core::ptr::addr_of_mut!(CLAIMED_REGS[1]), regs2) };
+                wr(
+                    regs2,
+                    vio::mmio::STATUS,
+                    vio::ST_ACKNOWLEDGE | vio::ST_DRIVER | vio::ST_FEATURES_OK | vio::ST_DRIVER_OK,
+                );
+                // SAFETY: 纯屏障指令，无内存操作数。
+                unsafe { core::arch::asm!("dmb ish") };
+                wr(regs2, vio::mmio::Q_NOTIFY, 0);
+                kb = Some(KbDev { d: d2, regs: regs2 });
+            } else {
+                println!("gui-inputd: 键盘槽 {} 协商拒绝——降级无键盘面", ks);
+            }
+        }
+        // up 行保留「gui-inputd: up」字样（tools/smoke.sh fail 文案引用）；
+        // 行尾扩注键盘认领态（两台设备分类认领的对外自述）。
+        if let Some(ks) = kslot.filter(|_| kb.is_some()) {
+            println!(
+                "gui-inputd: up slot={} q={}x{}B cal=x[{},{}) y[{},{}) kb=slot {}",
+                slot, QSIZE, EVT_BUF_SZ, ax.min, ax.max, ay.min, ay.max, ks
+            );
+        } else {
+            println!(
+                "gui-inputd: up slot={} q={}x{}B cal=x[{},{}) y[{},{}) kb=none",
+                slot, QSIZE, EVT_BUF_SZ, ax.min, ax.max, ay.min, ay.max
+            );
+        }
+        let mut kpump = KeyPump::new();
+        serve(&mut d, regs, kb.as_mut(), &mut pump, &mut kpump);
     }
 
-    /// 扫 32 槽识别 P2 拓扑：恰一个 tablet（EV_ABS X/Y 在场）+ 0..=1 个
-    /// keyboard。其它 input 设备按 Unknown fail closed，不猜测。
+    /// 扫 32 槽按设备类**分类认领**（vnet find_device 对称面；did=18 按类
+    /// 分流——net/block 槽合法同席不算）。分类探测 = config EV_BITS(EV_ABS)
+    /// 位图查 ABS_X+ABS_Y 双位（`has_abs_xy`）：在场 = 指针类（tablet），
+    /// 缺席 = 键盘类（keyboard——QEMU virtio-keyboard 无绝对轴）。执法面：
+    /// 指针类**恰 1**（0/多 = 优雅退出，诊断行原句）、键盘类**至多 1**
+    /// （多出打诊断行忽略不 park）。版本检查对每个被认领槽各自执行。
+    /// **None = 优雅退出**（设备缺席/多设备歧义/legacy 传输层——诊断行 +
+    /// park，§5.2-5）；坏 magic = 窗口破坏（系统级）→ trap loud（vnet
+    /// 同口径）。返回 `(tablet_slot, Option<kb_slot>)`。
     fn find_input_devices() -> Option<(usize, Option<usize>)> {
+        // SAFETY: 窗口经 spawn 映射（Device-nGnRnE）；逐字 volatile；只读
+        // ID 头（写面在协商序内；分类探测的 config 写在 claims 决出后）。
         let base = VIRTIO_MMIO_VA as *const u32;
-        let mut tab: Option<usize> = None;
-        let mut tab_n = 0usize;
-        let mut kbd: Option<usize> = None;
-        let mut kbd_n = 0usize;
-        let mut other = 0usize;
+        let mut hits = [0usize; VIRTIO_MMIO_SLOTS];
+        let mut n = 0usize;
         for slot in 0..VIRTIO_MMIO_SLOTS {
-            let regs = unsafe { base.add(slot * (VIRTIO_MMIO_STRIDE / 4)) } as *mut u32;
+            let regs = unsafe { base.add(slot * (VIRTIO_MMIO_STRIDE / 4)) };
             if unsafe { core::ptr::read_volatile(regs) } != vio::mmio::MAGIC_VAL {
                 println!("gui-inputd: slot {} bad magic", slot);
                 trap();
             }
             let did = unsafe { core::ptr::read_volatile(regs.add(vio::mmio::DEVICE_ID / 4)) };
-            if did != vio::mmio::DEVICE_ID_INPUT {
-                continue;
-            }
-            let ver = unsafe { core::ptr::read_volatile(regs.add(vio::mmio::VERSION / 4)) };
-            if ver != vio::mmio::VERSION_MODERN {
-                println!("gui-inputd: slot {} ver={}（legacy 不支）；park", slot, ver);
-                return None;
-            }
-            match input_device_kind(regs) {
-                InputDeviceKind::Pointer => {
-                    tab_n += 1;
-                    tab = Some(slot);
-                }
-                InputDeviceKind::Keyboard => {
-                    kbd_n += 1;
-                    kbd = Some(slot);
-                }
-                InputDeviceKind::Unknown => {
-                    other += 1;
-                    println!("gui-inputd: slot {} 未识别 input 设备；park", slot);
-                }
+            if did == vio::mmio::DEVICE_ID_INPUT {
+                hits[n] = slot;
+                n += 1;
             }
         }
-        if tab_n != 1 || kbd_n > 1 || other != 0 {
-            println!(
-                "gui-inputd: input slots tab={} kb={} other={}（须 tab=1 kb=0..=1）；park",
-                tab_n, kbd_n, other
-            );
+        // 逐槽分类：指针类计位（须恰 1）、键盘类取首台（多余忽略打诊断）。
+        let mut n_tablet = 0usize;
+        let mut tablet = 0usize;
+        let mut kb: Option<usize> = None;
+        for i in 0..n {
+            let slot = hits[i];
+            if has_abs_xy(mmio(slot)) {
+                n_tablet += 1;
+                tablet = slot;
+            } else if kb.is_none() {
+                kb = Some(slot);
+            } else {
+                println!("gui-inputd: slot {} 键盘类多出（至多 1）——忽略", slot);
+            }
+        }
+        if n_tablet != 1 {
+            println!("gui-inputd: input slots = {}（须恰 1）；park", n_tablet);
             return None;
         }
-        Some((tab.unwrap(), if kbd_n == 1 { kbd } else { None }))
+        // 版本检查（modern v2）对每个被认领槽各自执行（tablet + kb）。
+        if !check_modern(tablet) {
+            return None;
+        }
+        if let Some(ks) = kb {
+            // 键盘是增强面（协商拒绝同口径）：legacy 键盘槽降级忽略，不连坐
+            // tablet 指针服务。
+            let regs = mmio(ks);
+            let ver = unsafe { core::ptr::read_volatile(regs.add(vio::mmio::VERSION / 4)) };
+            if ver != vio::mmio::VERSION_MODERN {
+                println!("gui-inputd: 键盘槽 {} ver={}（legacy 不支）——降级无键盘面", ks, ver);
+                kb = None;
+            }
+        }
+        Some((tablet, kb))
+    }
+
+    /// 版本检查（单槽）：legacy 传输层 = 优雅退出（诊断行 + false）。
+    fn check_modern(slot: usize) -> bool {
+        let regs = mmio(slot);
+        let ver = unsafe { core::ptr::read_volatile(regs.add(vio::mmio::VERSION / 4)) };
+        if ver != vio::mmio::VERSION_MODERN {
+            println!("gui-inputd: slot {} ver={}（legacy 不支）；park", slot, ver);
+            return false;
+        }
+        true
     }
 
     /// 占用槽的寄存器基（u32 字指针——偏移一律 `/4` 进字单位）。
@@ -310,46 +350,6 @@ mod guest {
         (VIRTIO_MMIO_VA + (slot * VIRTIO_MMIO_STRIDE) as u64) as *mut u32
     }
 
-    fn read_config_bytes(regs: *mut u32, select: u8, subsel: u8, out: &mut [u8]) -> Option<usize> {
-        cfg_wr8(regs, vio::mmio::CONFIG, select);
-        cfg_wr8(regs, vio::mmio::CONFIG + 1, subsel);
-        let size = cfg_rd8(regs, vio::mmio::CONFIG + 2) as usize;
-        if size > out.len() {
-            return None;
-        }
-        // Apple HVF 对 SIMD/合并型 MMIO load 的 syndrome 不带 ISV，QEMU 11
-        // 会在 hvf_handle_exception 断言。union 区从 CONFIG+8 起 4 字节对齐，
-        // 显式按对齐 u32 读再拆 LE 字节，避开无 ISV 的字节读循环。
-        let mut off = 0usize;
-        while off < size {
-            let word = cfg_rd32(regs, vio::mmio::CONFIG + 8 + off);
-            let bytes = word.to_le_bytes();
-            let n = (size - off).min(4);
-            out[off..off + n].copy_from_slice(&bytes[..n]);
-            off += n;
-        }
-        Some(size)
-    }
-
-    fn input_device_kind(regs: *mut u32) -> InputDeviceKind {
-        let mut abs = [0u8; 128];
-        let mut key = [0u8; 128];
-        let abs_n = read_config_bytes(
-            regs,
-            vio::input::INPUT_CFG_SEL_EV_BITS,
-            vio::input::EV_ABS as u8,
-            &mut abs,
-        )
-        .unwrap_or(0);
-        let key_n = read_config_bytes(
-            regs,
-            vio::input::INPUT_CFG_SEL_EV_BITS,
-            vio::input::EV_KEY as u8,
-            &mut key,
-        )
-        .unwrap_or(0);
-        classify_input_device(&abs[..abs_n], &key[..key_n])
-    }
     fn rd(regs: *mut u32, off: usize) -> u32 {
         // SAFETY: 窗口已映射；对齐 u32 volatile 读。
         unsafe { core::ptr::read_volatile((regs as *const u32).add(off / 4)) }
@@ -372,20 +372,18 @@ mod guest {
     /// 自陷：读未映射地址 → D-abort(lower) → `user_fault_exit` 只死自己
     /// （vprobe/vnet 同款——链断 loud）。
     ///
-    /// **整洁面先行**（A-7 host-writer 同类残面）：设备已认领则 STATUS=0
-    /// 复位撤 avail 队列再自陷——trap 只死自己，但 DRIVER_OK 下 avail 环
-    /// 仍指向 DMA VMO 帧时，后续宿主输入事件会让设备继续向这些帧 DMA
-    /// 8B；进程死后 VMO 归还 buddy = 设备写已回收帧、静默腐化无关进程
-    /// （vnet 退出复位同款）。回读帽 = 定次自旋（QEMU 同步即 0；clock/
-    /// sleep 可能正是 trap 成因，不依赖两者）；复位失败不拦死路。
+    /// **整洁面先行**（A-7 host-writer 同类残面）：已认领设备（两槽各查
+    /// ——tablet + 键盘，null 槽跳过）则 STATUS=0 复位撤 avail 队列再自陷
+    /// ——trap 只死自己，但 DRIVER_OK 下 avail 环仍指向 DMA VMO 帧时，
+    /// 后续宿主输入事件会让设备继续向这些帧 DMA 8B；进程死后 VMO 归还
+    /// buddy = 设备写已回收帧、静默腐化无关进程（vnet 退出复位同款）。
+    /// 回读帽 = 定次自旋（QEMU 同步即 0；clock/sleep 可能正是 trap 成因，
+    /// 不依赖两者）；复位失败不拦死路。
     #[cold]
     fn trap() -> ! {
-        // SAFETY: 单线程进程；CLAIMED_REGS 认领后恒定。
-        let regs = [
-            unsafe { core::ptr::read_volatile(core::ptr::addr_of!(CLAIMED_TABLET_REGS)) },
-            unsafe { core::ptr::read_volatile(core::ptr::addr_of!(CLAIMED_KEYBOARD_REGS)) },
-        ];
-        for regs in regs {
+        // SAFETY: 单线程进程；CLAIMED_REGS 认领后恒定（两槽各自判 null）。
+        let claimed = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(CLAIMED_REGS)) };
+        for regs in claimed {
             if !regs.is_null() {
                 wr(regs, vio::mmio::STATUS, 0);
                 for _ in 0..1_000_000 {
@@ -457,11 +455,6 @@ mod guest {
         unsafe { core::ptr::read_volatile((regs as *const u8).add(off)) }
     }
 
-    fn cfg_rd32(regs: *mut u32, off: usize) -> u32 {
-        // SAFETY: CONFIG+8 起 4 字节对齐；HVF 需要 GPR 宽存取的 ISV。
-        unsafe { core::ptr::read_volatile((regs as *const u32).add(off / 4)) }
-    }
-
     fn cfg_wr8(regs: *mut u32, off: usize, v: u8) {
         // SAFETY: 同上；单字节 volatile 写。
         unsafe { core::ptr::write_volatile((regs as *mut u8).add(off), v) }
@@ -478,30 +471,49 @@ mod guest {
             return None; // 恰长执法（§4.3——size 域撒谎早拒）
         }
         let mut buf = [0u8; 20];
-        let mut off = 0usize;
-        while off < buf.len() {
-            let word = cfg_rd32(regs, vio::mmio::CONFIG + 8 + off);
-            let bytes = word.to_le_bytes();
-            let n = (buf.len() - off).min(4);
-            buf[off..off + n].copy_from_slice(&bytes[..n]);
-            off += n;
+        for i in 0..20 {
+            buf[i] = cfg_rd8(regs, vio::mmio::CONFIG + 8 + i);
         }
         vio::input::parse_input_absinfo(&buf)
+    }
+
+    /// 分类探测（认领门多设备分类）：config EV_BITS(EV_ABS) 位图里
+    /// ABS_X+ABS_Y 双位在场 = 指针类（tablet）；缺席 = 键盘类（QEMU
+    /// virtio-keyboard 无绝对轴，size=0 即双位缺席）。位判走
+    /// `bitmap_test` 单源（LSB-first，越图幅恒 false——「键盘类」与「位图
+    /// 短」同判，分类面天然免疫 size 野值）；size 越出 union 128B 窗 =
+    /// 设备面野值，钳到窗幅（窗口外字节不读）。
+    fn has_abs_xy(regs: *mut u32) -> bool {
+        cfg_wr8(regs, vio::mmio::CONFIG, vio::input::INPUT_CFG_SEL_EV_BITS);
+        cfg_wr8(regs, vio::mmio::CONFIG + 1, vio::input::EV_ABS as u8);
+        let size = cfg_rd8(regs, vio::mmio::CONFIG + 2) as usize;
+        if size == 0 {
+            return false;
+        }
+        let n = if size > 128 { 128 } else { size };
+        let mut bm = [0u8; 128];
+        for i in 0..n {
+            bm[i] = cfg_rd8(regs, vio::mmio::CONFIG + 8 + i);
+        }
+        vio::input::bitmap_test(&bm[..n], vio::input::ABS_X)
+            && vio::input::bitmap_test(&bm[..n], vio::input::ABS_Y)
     }
 
     /// DMA VMO + 几何（vnet setup_dma 同款）：页 0 ring PA / 页 1 缓冲带 PA。
     fn setup_dma() -> Dma {
         let lay = match vio::RingLayout::new(QSIZE as usize) {
             Some(l) => l,
-            None => trap(), // qsize=64 仍在一页 ring 内；防御面
+            None => trap(), // qsize=16 恒成立；防御面
         };
         let mut vmo = 0 as Handle;
-        if berry_vmo_create(DMA_LEN, 0, &mut vmo) != 0 || vmo == 0 {
-            println!("gui-inputd: vmo_create 失败");
-            trap();
-        }
-        if berry_vmo_commit(vmo, 0, DMA_LEN) != 0 {
-            println!("gui-inputd: commit 失败");
+        if berry_vmo_create(
+            DMA_LEN,
+            (VMO_OPT_CONTIGUOUS | VMO_OPT_PINNED) as u32,
+            &mut vmo,
+        ) != 0
+            || vmo == 0
+        {
+            println!("gui-inputd: vmo_create(CONTIGUOUS|PINNED) 失败");
             trap();
         }
         let mut ring_pa = 0u64;
@@ -539,12 +551,18 @@ mod guest {
         }
     }
 
-    /// 挂 64 个事件读缓冲（页 1 逐 8B 一格，DESC_F_WRITE——设备写；QEMU
+    /// 挂 16 个事件读缓冲（页 1 逐 8B 一格，DESC_F_WRITE——设备写；QEMU
     /// virtio_input_send 逐描述符取一元素，8B 恰长 = 最优投递）：RINGSTAGE
     /// 零基组 desc 表 + avail 环 → 整页落盘（vnet post_rx 同形）。
     fn post_events(d: &mut Dma) {
         // SAFETY: 单线程独占窗；RINGSTAGE 首次使用即零基。
         let ring: &mut [u8; 4096] = unsafe { &mut *core::ptr::addr_of_mut!(RINGSTAGE) };
+        // avail.idx 复位起点：RINGSTAGE 是两台设备共用的建制暂存页——首台
+        // 建制后 idx 残留 16，第二台若续跑（16→32），其首次 refill 会把
+        // idx 写回 17 = 自由运行计数倒退（设备面违约）。每次建制独立从 0
+        // 起点记账（desc 表与 avail.ring 槽位随后全量重写，无需另复位）。
+        ring[d.lay.avail_off + 2] = 0;
+        ring[d.lay.avail_off + 3] = 0;
         for i in 0..QSIZE as usize {
             let addr = d.buf_pa + (i * EVT_BUF_SZ) as u64;
             let _ = vio::put_desc(
@@ -595,8 +613,9 @@ mod guest {
     /// 达形态，vnet 同款「诊断与被测同源」纪律）→ 逐完成项读 8B 缓冲 →
     /// **ts_ns = dequeue 时刻打点**（规范无设备时间戳——Linux evdev 同款）
     /// → `raw_from_wire` → 泵 feed → 同 id 回填。无完成即返（非阻塞）。
-    fn harvest(d: &mut Dma, regs: *mut u32, pump: &mut PointerPump) -> usize {
-        let mut harvested = 0usize;
+    /// 泵类型参数化（`EventPump`——tablet 喂 PointerPump / 键盘喂
+    /// KeyPump），环收割协议单源不复制。
+    fn harvest<P: EventPump>(d: &mut Dma, regs: *mut u32, pump: &mut P) {
         loop {
             let mut u2 = [0u8; 2];
             if berry_vmo_read(d.vmo, u2.as_mut_ptr(), RING_PAGE + d.lay.used_off as u64 + 2, 2)
@@ -606,7 +625,7 @@ mod guest {
             }
             let idx = u16::from_le_bytes([u2[0], u2[1]]);
             if idx == d.harvested {
-                return harvested;
+                return;
             }
             let i = (d.harvested % QSIZE) as usize;
             let mut u8b = [0u8; 8];
@@ -639,65 +658,7 @@ mod guest {
             let ts = now();
             pump.feed(raw_from_wire(ts, wire_ev));
             d.harvested = d.harvested.wrapping_add(1);
-            harvested += 1;
             refill_event(d, regs, id as u16);
-        }
-    }
-
-    /// P2：收割 virtio-keyboard eventq → KeyPump。DMA/used 契约与 tablet
-    /// 同源；事件解释（KEY_* / BTN_* / repeat / modifiers）归 KeyPump。
-    fn harvest_keys(k: &mut Keyboard) -> usize {
-        let mut harvested = 0usize;
-        loop {
-            let mut u2 = [0u8; 2];
-            if berry_vmo_read(
-                k.d.vmo,
-                u2.as_mut_ptr(),
-                RING_PAGE + k.d.lay.used_off as u64 + 2,
-                2,
-            ) != 0
-            {
-                trap();
-            }
-            let idx = u16::from_le_bytes([u2[0], u2[1]]);
-            if idx == k.d.harvested {
-                return harvested;
-            }
-            let i = (k.d.harvested % QSIZE) as usize;
-            let mut u8b = [0u8; 8];
-            if berry_vmo_read(
-                k.d.vmo,
-                u8b.as_mut_ptr(),
-                RING_PAGE + k.d.lay.used_off as u64 + 4 + (i as u64) * 8,
-                8,
-            ) != 0
-            {
-                trap();
-            }
-            let id = vio::get_u32(&u8b, 0).unwrap_or(u32::MAX);
-            let len = vio::get_u32(&u8b, 4).unwrap_or(u32::MAX);
-            if id >= QSIZE as u32 || len != EVT_BUF_SZ as u32 {
-                println!("gui-inputd: kb 坏完成项 id={} len={}", id, len);
-                trap();
-            }
-            let mut eb = [0u8; 8];
-            if berry_vmo_read(
-                k.d.vmo,
-                eb.as_mut_ptr(),
-                BUF_PAGE + id as u64 * EVT_BUF_SZ as u64,
-                8,
-            ) != 0
-            {
-                trap();
-            }
-            let wire_ev = match vio::input::get_input_event(&eb, 0) {
-                Some(e) => e,
-                None => trap(),
-            };
-            k.pump.feed(raw_from_wire(now(), wire_ev));
-            k.d.harvested = k.d.harvested.wrapping_add(1);
-            harvested += 1;
-            refill_event(&mut k.d, k.regs, id as u16);
         }
     }
 
@@ -738,76 +699,6 @@ mod guest {
             contact_minor: 0,
             history: hist,
             history_len: e.history_len,
-        }
-    }
-
-    /// Phase 3：自主 drain → INPUT_ROUTE 原始事件帧 → wmd。这里不做
-    /// owner 裁决（wmd 权威表才是路由源）；本函数与 legacy INPUT_POLL
-    /// 共用泵唯一 drain 纪律——serve 单线程串行调用，不构成第二消费者。
-    fn route_wmd(d: &mut Dma, regs: *mut u32, pump: &mut PointerPump, push: Handle) {
-        let _ = harvest(d, regs, pump);
-        let mut evs = [ZERO_PE; gp::INPUT_EVENTS_MAX];
-        let k = pump.drain(&mut evs[..]);
-        if k == 0 {
-            return;
-        }
-        let mut wes = [ZERO_WPE; gp::INPUT_EVENTS_MAX];
-        for (dst, src) in wes.iter_mut().zip(evs.iter()).take(k) {
-            // 旁注仅诊断；wire 保持原始全局坐标，owner/local 化归 wmd。
-            wm_annotate(src);
-            *dst = to_wire(src);
-        }
-        let mut frame = [0u8; gp::INPUT_ROUTE_MAX];
-        let n = match gp::encode_input_route_req(&mut frame, &wes[..k]) {
-            Some(n) => n,
-            None => trap(),
-        };
-        let deadline = now() + SEND_REARM_NS;
-        loop {
-            let st = berry_channel_send(push, frame.as_ptr(), n, core::ptr::null(), 0);
-            if st == 0 {
-                return;
-            }
-            if st != BERRY_ERR_BUSY {
-                println!("gui-inputd: route send 失败 {}", st);
-                trap();
-            }
-            let mut obs = 0u64;
-            if berry_object_wait_one(push, SIGNAL_WRITABLE, deadline, &mut obs) != 0 {
-                eprintln!("INPUTROUTE bad send-busy");
-                return;
-            }
-        }
-    }
-
-    /// P2：KeyPump drain → 0x23 KEY_ROUTE → wmd。wmd 按 focus + Surface
-    /// input_classes 裁决；inputd 不做第二套路由策略。
-    fn route_keys_wmd(k: &mut Keyboard, push: Handle) {
-        let mut evs = [ZERO_KEY; gp::INPUT_KEY_EVENTS_MAX];
-        let n = k.pump.drain(&mut evs);
-        if n == 0 {
-            return;
-        }
-        let mut frame = [0u8; gp::INPUT_KEY_ROUTE_MAX];
-        let len = match gp::encode_input_key_route_req(&mut frame, &evs[..n]) {
-            Some(len) => len,
-            None => trap(),
-        };
-        let deadline = now() + SEND_REARM_NS;
-        loop {
-            let st = berry_channel_send(push, frame.as_ptr(), len, core::ptr::null(), 0);
-            if st == 0 {
-                return;
-            }
-            if st != BERRY_ERR_BUSY {
-                println!("gui-inputd: key route send 失败 {}", st);
-                trap();
-            }
-            let mut obs = 0u64;
-            if berry_object_wait_one(push, SIGNAL_WRITABLE, deadline, &mut obs) != 0 {
-                eprintln!("KEYROUTE bad send-busy");
-                return;
-            }
         }
     }
 
@@ -1035,7 +926,7 @@ mod guest {
         }
     }
 
-    /// INPUT_POLL 阻塞服务（§5.2-4）：收割 → drain，泵有货即应答（≤
+    /// INPUT_POLL 阻塞服务（§5.2-4）：收割 → drain，任一泵有货即应答（≤
     /// max_events 事件）；否则 1ms 步进续割，30s 帽到点 ST_EAGAIN（1B
     /// 非 OK 应答——协议烘焙线）。k ≤ 3 ≤ INPUT_EVENTS_MAX 恒可编——
     /// encode None 结构性不可达（防御 trap）。
@@ -1046,11 +937,18 @@ mod guest {
     /// 回环顶，本处只借它做步进钟不双消费；deadline = min(步进, 轮询死线)
     /// 防睡过 30s 帽）；`push == 0`（rootfs 相 wmd 未起）时 thread_sleep
     /// 现形逐字节保留——wait_many 空转 = 活锁自旋。
+    ///
+    /// 键出向混排：KeyPump drain 出的字节逐个经 `key_frame` 构键帧（帧形
+    /// 单源在 lib——device_id=DEV_KEYBOARD、x=字节），与指针事件**同批**进
+    /// encode_input_events_rep；批帽共享（请求 max_events 截断，溢出字节
+    /// 留队下轮）；指针事件先填位、键帧补余位。键帧不做 wm_annotate
+    /// （窗位注记对键无意义——键无坐标手势面）。
     fn serve_poll(
         d: &mut Dma,
         regs: *mut u32,
+        kb: &mut Option<&mut KbDev>,
         pump: &mut PointerPump,
-        mut keyboard: Option<&mut Keyboard>,
+        kpump: &mut KeyPump,
         h: Handle,
         push: Handle,
         max_events: u8,
@@ -1059,18 +957,32 @@ mod guest {
         let deadline = now() + POLL_BLOCK_CAP_NS;
         let mut evs = [ZERO_PE; gp::INPUT_EVENTS_MAX];
         loop {
-            let _ = harvest(d, regs, pump);
-            if let Some(k) = keyboard.as_deref_mut() {
-                let _ = harvest_keys(k);
+            harvest(d, regs, pump);
+            if let Some(k) = kb.as_deref_mut() {
+                harvest(&mut k.d, k.regs, kpump);
             }
+            // 出向混排：指针事件先填位，键帧补余位（一帧一字节）。
             let k = pump.drain(&mut evs[..max_events as usize]);
-            if k > 0 {
+            let mut total = k;
+            if total < max_events as usize {
+                let mut kbuf = [0u8; gp::INPUT_EVENTS_MAX];
+                let m = kpump.drain(&mut kbuf[..max_events as usize - total]);
+                for i in 0..m {
+                    evs[total + i] = key_frame(now(), kbuf[i]);
+                }
+                total += m;
+            }
+            if total > 0 {
                 let mut wes = [ZERO_WPE; gp::INPUT_EVENTS_MAX];
                 for i in 0..k {
                     wm_annotate(&evs[i]);
                     wes[i] = to_wire(&evs[i]);
                 }
-                match gp::encode_input_events_rep(rep, &wes[..k]) {
+                // 键帧旁路 wm_annotate（见函数注）。
+                for i in k..total {
+                    wes[i] = to_wire(&evs[i]);
+                }
+                match gp::encode_input_events_rep(rep, &wes[..total]) {
                     Some(n) => send_rep(h, &rep[..n]),
                     None => trap(), // ≤3 事件恒 ≤ INPUT_REP_MAX；防御面
                 }
@@ -1103,7 +1015,8 @@ mod guest {
 
     /// 常驻服务循环（§5.2-4 调度铁律面；GUI-5 升格**两路 poll-first**）：
     /// gift 端点缺席 = 装配面缺席——诊断 + park（§5.2-5 优雅退出）。
-    /// 路① input 域（既有——SUBSCRIBE/INPUT_POLL 分派零扰动）→ 路② wmd
+    /// 路① input 域（既有——SUBSCRIBE/INPUT_POLL 分派零扰动；键盘第二台
+    /// 收割在回环顶与 serve_poll 各一处，喂 KeyPump）→ 路② wmd
     /// 推送（WAIT 应答到达：快照存储 + age 打点 + 立刻重臂
     /// WAIT(new_version)；EBUSY 重臂 10s = `send_rep` 形）；全 EAGAIN 才
     /// wait_many n=1|2 并等（**wm_push_h()==0 → n=1 现单通道路径逐字节
@@ -1114,8 +1027,9 @@ mod guest {
     fn serve(
         d: &mut Dma,
         regs: *mut u32,
+        kb: Option<&mut KbDev>,
         pump: &mut PointerPump,
-        mut keyboard: Option<&mut Keyboard>,
+        kpump: &mut KeyPump,
     ) -> ! {
         let h = gift2_h();
         if h == 0 {
@@ -1139,55 +1053,14 @@ mod guest {
         // push 路收口同口径（快照应答零随行 + 富余）
         let mut phs = [0 as Handle; 4];
         let mut sub_delivery: Option<u8> = None;
-        let mut drop_reported = false;
-        let mut drop_seen = 0u64;
-        let mut key_drop_reported = false;
-        let mut key_drop_seen = 0u64;
-        let mut input_active_until = 0u64;
+        // serve 内 kb 以 `&mut Option<&mut KbDev>` 持有（serve_poll 每次取
+        // 重借用，回环顶的收割面共用同一门控）。
+        let mut kb = kb;
         loop {
-            let pointer_events = harvest(d, regs, pump); // tick 心跳的消费点
-            let mut key_events = 0usize;
-            if let Some(k) = keyboard.as_deref_mut() {
-                key_events = harvest_keys(k);
-            }
-            if pointer_events + key_events != 0 {
-                input_active_until = now() + INPUT_ACTIVE_WINDOW_NS;
-            }
-            // 丢事件证据：启动打一次零基线；后续只在计数变化时打 bad 行。
-            // GUI8 burst 相据此既可断言基线，也可抓 eventq/pump 溢出。
-            if push != 0 {
-                route_wmd(d, regs, pump, push);
-                // A single harvest can contain a whole pointer burst while each
-                // INPUT_ROUTE wire frame carries at most three events. Drain to
-                // empty in this turn (EBUSY naturally waits for wmd) instead of
-                // leaving the remainder to a later polling heartbeat.
-                while pump.pending() != 0 {
-                    route_wmd(d, regs, pump, push);
-                }
-                if let Some(k) = keyboard.as_deref_mut() {
-                    route_keys_wmd(k, push);
-                    while k.pump.pending() != 0 {
-                        route_keys_wmd(k, push);
-                    }
-                }
-            }
-            if let Some(k) = keyboard.as_deref() {
-                let drops = k.pump.dropped();
-                if drops != key_drop_seen {
-                    eprintln!("INPUTKEYDROPS bad n={drops}");
-                    key_drop_seen = drops;
-                } else if !key_drop_reported {
-                    println!("INPUTKEYDROPS ok n={drops}");
-                    key_drop_reported = true;
-                }
-            }
-            let drops = pump.dropped_events();
-            if drops != drop_seen {
-                eprintln!("INPUTDROPS bad n={drops}");
-                drop_seen = drops;
-            } else if !drop_reported {
-                println!("INPUTDROPS ok n={drops}");
-                drop_reported = true;
+            harvest(d, regs, pump); // 空闲期收割（tick 心跳的消费点）
+            if let Some(k) = kb.as_deref_mut() {
+                // 第二台收割喂 KeyPump（键盘 eventq——同 tick 心跳消费点）
+                harvest(&mut k.d, k.regs, kpump);
             }
             // —— 路①：input 域（既有分派零扰动）
             let mut nb = msg.len();
@@ -1227,49 +1100,46 @@ mod guest {
                         }
                     },
                     gp::OP_INPUT_POLL => match gp::parse_input_poll_req(&msg[..nb]) {
-                        Some(max) => serve_poll(
-                            d,
-                            regs,
-                            pump,
-                            keyboard.as_deref_mut(),
-                            h,
-                            push,
-                            max,
-                            &mut rep,
-                        ),
+                        Some(max) => serve_poll(d, regs, &mut kb, pump, kpump, h, push, max, &mut rep),
                         None => {
                             let n = gp::encode_status_rep(&mut rep, gp::ST_BAD);
                             send_rep(h, &rep[..n]);
                         }
                     },
-                    // 波3-件⑥：软键盘/注入源与真实输入同一事件面——
-                    // DEV_KEYBOARD（1B keycode）/DEV_TEXT（ASCII 串）转
-                    // EV_KEY press+release+SYN_REPORT 批 feed 泵，与
-                    // virtio-tablet 事件同队 drain（wm_hit_test 旁注同路
-                    // ——注入点击 = 真实点击语义）。
+                    // 波3-件⑥：软键盘/注入源与真实输入同一事件面——喂
+                    // **KeyPump**（virtio-keyboard 同泵；出向与指针事件在
+                    // serve_poll 同批混排 drain）：
+                    // - DEV_KEYBOARD：1B Linux keycode（softime 词汇——
+                    //   berry-softime KEY_* 冻结值，非 BerryOS 私码）过表
+                    //   翻译，批形态与真机键批同构（press+SYN+release+SYN
+                    //   ——修正键码则只动位不出向，语义同真机）；
+                    // - DEV_TEXT：ASCII 串逐字节 post_char 直喂出向——
+                    //   **不走 EV_KEY code 面**（旧实现 `code: b as u16`
+                    //   把 ASCII 直当 Linux 码 = 码域碰撞形态：'a'=97 撞
+                    //   KEY_RIGHTCTRL，本刀消灭）。
                     gp::OP_INPUT_INJECT => match gp::parse_input_inject_req(&msg[..nb]) {
                         Some((dk, payload)) if dk == gp::DEV_KEYBOARD && !payload.is_empty() => {
                             let ts = now();
                             let code = payload[0] as u16;
-                            pump.feed(gui_inputd::RawInputEvent {
+                            kpump.feed(gui_inputd::RawInputEvent {
                                 ts_ns: ts,
                                 ev_type: vio::input::EV_KEY,
                                 code,
                                 value: 1,
                             });
-                            pump.feed(gui_inputd::RawInputEvent {
+                            kpump.feed(gui_inputd::RawInputEvent {
                                 ts_ns: ts,
                                 ev_type: vio::input::EV_SYN,
                                 code: vio::input::SYN_REPORT,
                                 value: 0,
                             });
-                            pump.feed(gui_inputd::RawInputEvent {
+                            kpump.feed(gui_inputd::RawInputEvent {
                                 ts_ns: ts,
                                 ev_type: vio::input::EV_KEY,
                                 code,
                                 value: 0,
                             });
-                            pump.feed(gui_inputd::RawInputEvent {
+                            kpump.feed(gui_inputd::RawInputEvent {
                                 ts_ns: ts,
                                 ev_type: vio::input::EV_SYN,
                                 code: vio::input::SYN_REPORT,
@@ -1279,32 +1149,8 @@ mod guest {
                             send_rep(h, &rep[..n]);
                         }
                         Some((dk, payload)) if dk == gp::DEV_TEXT && !payload.is_empty() => {
-                            let ts = now();
                             for &b in payload {
-                                pump.feed(gui_inputd::RawInputEvent {
-                                    ts_ns: ts,
-                                    ev_type: vio::input::EV_KEY,
-                                    code: b as u16,
-                                    value: 1,
-                                });
-                                pump.feed(gui_inputd::RawInputEvent {
-                                    ts_ns: ts,
-                                    ev_type: vio::input::EV_SYN,
-                                    code: vio::input::SYN_REPORT,
-                                    value: 0,
-                                });
-                                pump.feed(gui_inputd::RawInputEvent {
-                                    ts_ns: ts,
-                                    ev_type: vio::input::EV_KEY,
-                                    code: b as u16,
-                                    value: 0,
-                                });
-                                pump.feed(gui_inputd::RawInputEvent {
-                                    ts_ns: ts,
-                                    ev_type: vio::input::EV_SYN,
-                                    code: vio::input::SYN_REPORT,
-                                    value: 0,
-                                });
+                                kpump.post_char(b);
                             }
                             let n = gp::encode_status_rep(&mut rep, gp::ST_OK);
                             send_rep(h, &rep[..n]);
@@ -1363,16 +1209,11 @@ mod guest {
             let n = if push != 0 { 2 } else { 1 };
             let mut idx = usize::MAX;
             let mut obs = 0u64;
-            let tick_ns = if now() < input_active_until {
-                INPUT_ACTIVE_TICK_NS
-            } else {
-                SVC_TICK_NS
-            };
             let _ = berry_object_wait_many(
                 items.as_ptr(),
                 sigs.as_ptr(),
                 n,
-                now() + tick_ns,
+                now() + SVC_TICK_NS,
                 &mut idx,
                 &mut obs,
             );

@@ -1,8 +1,7 @@
 //! berry-ui 布局引擎（GUI-3——`docs/GUI-3实施设计草案-v1.0.md` §3.3）。
 //!
 //! - **单遍自顶向下**：容器分配子界——Col/Row 累进游标 + gap；Pad 四
-//!   向内缩；Panel = 可绘背景 + padding/gap 的纵向内容容器；Root =
-//!   viewport 持有者。叶子尺寸 = 定值（`Option<u32>`，
+//!   向内缩；Root = viewport 持有者。叶子尺寸 = 定值（`Option<u32>`，
 //!   None = 随父——主轴 None 的 Rect 折内在 0，十字轴 None = 吃满容
 //!   器分配）或内在（Text = `len × cell`——`FontSize::cell_w/cell_h`
 //!   单源，ch u8 字节推进）。
@@ -20,7 +19,7 @@
 use crate::damage::{i64_to_i32_sat, u32_to_i32_sat, u64_to_u32_sat, DamageSet, RectI};
 use crate::desc::{Orientation, Props, ViewKind};
 use crate::metrics::{IconSource, TextMetrics};
-use crate::{FlexEntry, Node};
+use crate::Node;
 
 /// 布局产出统计（§6 冻结字段）：`measured` = 重测内在尺寸的节点数
 /// （缓存有效性的断言面——0 = 全缓存命中）；`placed` = 重摆 x/y/w/h
@@ -41,120 +40,15 @@ pub enum CrossAlign {
     Stretch,
 }
 
-/// 根播种约束（GUI-14 L1 最小面）。v1 measure 仍约束盲；本约束只影响
-/// Root 的 intrinsic、Root place avail 与终值三处。`Viewport` = 现状；
-/// `Tight` = 精确盒；`Loose` = 子包络 × payload 上限；`Infinite` = 子
-/// 包络不设上限。damage clip 恒用真实 viewport，不用约束盒。
+/// 容器约束（GUI-6 D9 立缝）：v1 只接 `Viewport`（= 现状根调用形态）；
+/// 其余三档 debug_assert loud + 按 Viewport 处理（案 1 layout.rs v2
+/// 接实现——独立刀，本刀零预埋）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Constraints {
     Viewport,
     Tight { w: u32, h: u32 },
     Loose { w: u32, h: u32 },
     Infinite,
-}
-
-/// LAYOUT-L4 四元组约束。`min <= max` 是结构不变量；非法构造 loud
-/// 拒，不做静默 normalize。字段私有，消费面只经代数方法。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BoxConstraints {
-    min_w: u32,
-    max_w: u32,
-    min_h: u32,
-    max_h: u32,
-}
-
-impl BoxConstraints {
-    /// 构造约束盒；任一轴 min > max 返回 [`crate::UiError::NodeBad`]。
-    pub fn new(
-        min_w: u32,
-        max_w: u32,
-        min_h: u32,
-        max_h: u32,
-    ) -> Result<Self, crate::UiError> {
-        if min_w > max_w || min_h > max_h {
-            return Err(crate::UiError::NodeBad);
-        }
-        Ok(Self { min_w, max_w, min_h, max_h })
-    }
-
-    pub const fn tight(w: u32, h: u32) -> Self {
-        Self { min_w: w, max_w: w, min_h: h, max_h: h }
-    }
-
-    pub const fn loose(max_w: u32, max_h: u32) -> Self {
-        Self { min_w: 0, max_w, min_h: 0, max_h }
-    }
-
-    pub const fn infinite() -> Self {
-        Self { min_w: 0, max_w: u32::MAX, min_h: 0, max_h: u32::MAX }
-    }
-
-    pub const fn min(&self) -> (u32, u32) {
-        (self.min_w, self.min_h)
-    }
-
-    pub const fn max(&self) -> (u32, u32) {
-        (self.max_w, self.max_h)
-    }
-
-    pub const fn is_tight(&self) -> bool {
-        self.min_w == self.max_w && self.min_h == self.max_h
-    }
-
-    pub const fn is_infinite(&self) -> bool {
-        self.max_w == u32::MAX && self.max_h == u32::MAX
-    }
-
-    /// sizes up：把 intrinsic extent 独立夹入四元组。
-    pub const fn fit(&self, w: u32, h: u32) -> (u32, u32) {
-        (
-            if w < self.min_w {
-                self.min_w
-            } else if w > self.max_w {
-                self.max_w
-            } else {
-                w
-            },
-            if h < self.min_h {
-                self.min_h
-            } else if h > self.max_h {
-                self.max_h
-            } else {
-                h
-            },
-        )
-    }
-
-    /// constraints down：扣除 padding/gap/固定占位。min 下折 0，max 饱和减。
-    pub const fn deflate(&self, w: u32, h: u32) -> Self {
-        Self {
-            min_w: self.min_w.saturating_sub(w),
-            max_w: self.max_w.saturating_sub(w),
-            min_h: self.min_h.saturating_sub(h),
-            max_h: self.max_h.saturating_sub(h),
-        }
-    }
-
-    /// 两盒相交；空盒返 None。
-    pub fn intersect(&self, other: Self) -> Option<Self> {
-        let min_w = self.min_w.max(other.min_w);
-        let max_w = self.max_w.min(other.max_w);
-        let min_h = self.min_h.max(other.min_h);
-        let max_h = self.max_h.min(other.max_h);
-        (min_w <= max_w && min_h <= max_h).then(|| Self { min_w, max_w, min_h, max_h })
-    }
-}
-
-impl Constraints {
-    /// L1 四档 → L4 四元组构造糖；damage clip 仍单独持真实 viewport。
-    pub(crate) fn to_box(self, vp_w: u32, vp_h: u32) -> BoxConstraints {
-        match self {
-            Self::Viewport => BoxConstraints::tight(vp_w, vp_h),
-            Self::Tight { w, h } => BoxConstraints::tight(w, h),
-            Self::Loose { w, h } => BoxConstraints::loose(w, h),
-            Self::Infinite => BoxConstraints::infinite(),
-        }
-    }
 }
 
 /// 走查/位图容量：`2 * MAX_NODES` 常量表达式（D10 单源——MAX_NODES=512
@@ -178,8 +72,8 @@ pub(crate) fn dmg_clip_add(damage: &mut DamageSet, r: &RectI, vp: &RectI) {
 /// `None` 天然跳过，此处不消费（removal 面的旧界 damage 在 Ui::remove
 /// 侧先行入账）。`tm`/`icons` = D28 供给（Text 臂经 `tm.measure` 走缝
 /// ——Monospace 逐位复刻现状；icons 段C Image/Icon 叶 dims 消费，本段
-/// 占位）；`cs` = 根播种约束（L1 四档全实现——仅影响 Root intrinsic、
-/// Root avail 与终值；damage clip 恒真实 viewport）。
+/// 占位）；`cs` = D9 约束档，v1 只接 Viewport（其余三档 debug_assert
+/// loud 后按 Viewport 处理——案 1 v2 接实现）。
 pub(crate) fn relayout(
     nodes: &mut [Option<Node>],
     vp_w: u32,
@@ -188,11 +82,14 @@ pub(crate) fn relayout(
     freed: &[u32],
     tm: &dyn TextMetrics,
     icons: &dyn IconSource,
-    cs: BoxConstraints,
-    flex: &[Option<FlexEntry>],
-    wrap: &mut [Option<crate::TextWrapEntry>],
+    cs: Constraints,
 ) -> LayoutStat {
     let _ = freed;
+    if !matches!(cs, Constraints::Viewport) {
+        // D9：v1 只接 Viewport——非 Viewport 档 = 调用面漂移（案 1 未
+        // 落），loud 后按 Viewport 保守处理（不静默吞）。
+        debug_assert!(false, "Constraints 非 Viewport 档未实现（案 1 v2）: {cs:?}");
+    }
     // 根 = 唯一 parent==NONE 的存活 Root
     let mut root = u32::MAX;
     for (i, o) in nodes.iter().enumerate() {
@@ -218,7 +115,7 @@ pub(crate) fn relayout(
         changed: [false; CAP],
         measured: 0,
     };
-    measure(nodes, root, vp_w, vp_h, cs, wrap, tm, icons, &mut mctx, oversize, 0);
+    measure(nodes, root, vp_w, vp_h, tm, icons, &mut mctx, oversize, 0);
     if oversize {
         // 病态巨 arena：位图覆盖不住的槽全部按「已重测」保守处理
         for b in mctx.recomputed.iter_mut() {
@@ -234,12 +131,6 @@ pub(crate) fn relayout(
 
     // ③ 摆放（前序）：force ∨ 自身重测 → 重摆 + 新旧界 damage
     let vp_rect = RectI::new(0, 0, u32_to_i32_sat(vp_w), u32_to_i32_sat(vp_h));
-    // Root 播种盒：四元组已在 intrinsic Root 臂 fit；Tight/min=max
-    // 自然覆盖子包络，Loose/Infinite 取 clamp 后包络。meas==placed 同源。
-    let (root_w, root_h) = nodes[root as usize]
-        .as_ref()
-        .map(|n| (n.meas_w, n.meas_h))
-        .unwrap_or((0, 0));
     let mut placed = 0u32;
     place(
         nodes,
@@ -248,10 +139,9 @@ pub(crate) fn relayout(
         0,
         0,
         0,
-        u32_to_i32_sat(root_w),
-        u32_to_i32_sat(root_h),
+        u32_to_i32_sat(vp_w),
+        u32_to_i32_sat(vp_h),
         false,
-        flex,
         &mctx.recomputed,
         &old_abs,
         &vp_rect,
@@ -278,8 +168,6 @@ fn measure(
     slot: u32,
     vp_w: u32,
     vp_h: u32,
-    cs: BoxConstraints,
-    wrap: &mut [Option<crate::TextWrapEntry>],
     tm: &dyn TextMetrics,
     icons: &dyn IconSource,
     mctx: &mut MeasCtx,
@@ -290,54 +178,26 @@ fn measure(
         return false; // 父/子链环防御
     }
     let idx = slot as usize;
-    let Some(node) = nodes.get(idx).and_then(|o| o.as_ref()) else { return false };
-    if !node.alive {
+    let Some(n) = nodes.get(idx).and_then(|o| o.as_ref()) else { return false };
+    if !n.alive {
         return false;
     }
-    // Node/Props 均 Copy；先复制父投影所需值，结束 immutable arena borrow
-    // 后才能递归传 `&mut nodes`。
-    let n = *node;
     // 子先（后序）——链走查带环防御
     let mut child_affected = false;
-    let mut child_count = 0usize;
-    let mut count_cur = n.first_child;
-    while count_cur != u32::MAX && child_count <= nodes.len() {
-        let Some(c) = nodes.get(count_cur as usize).and_then(|o| o.as_ref()) else { break };
-        if !c.alive {
-            break;
-        }
-        child_count += 1;
-        count_cur = c.next_sib;
-    }
-    let mut child_index = 0usize;
     let mut cur = n.first_child;
     let mut guard = 0usize;
     while cur != u32::MAX && guard <= nodes.len() {
         guard += 1;
         let Some(c) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else { break };
         let next = c.next_sib;
-        let child_box = child_measure_box(&n, cs, child_index, child_count);
-        child_index += 1;
-        child_affected |= measure(
-            nodes,
-            cur,
-            vp_w,
-            vp_h,
-            child_box,
-            wrap,
-            tm,
-            icons,
-            mctx,
-            oversize,
-            hops + 1,
-        );
+        child_affected |= measure(nodes, cur, vp_w, vp_h, tm, icons, mctx, oversize, hops + 1);
         cur = next;
     }
     let dirty = nodes[idx].as_ref().map(|n| n.layout_dirty).unwrap_or(false);
     if !dirty && !child_affected && !oversize {
         return false; // 全缓存命中
     }
-    let (w, h) = intrinsic(nodes, idx, vp_w, vp_h, cs, wrap, tm, icons);
+    let (w, h) = intrinsic(nodes, idx, vp_w, vp_h, tm, icons);
     let n = nodes[idx].as_mut().unwrap();
     let changed = n.meas_w != w || n.meas_h != h;
     n.meas_w = w;
@@ -362,120 +222,28 @@ fn measure(
     }
 }
 
-/// Root 子包络（stack 语义：宽/高各取 max，非 Col 的 Σ 高）。Loose/
-/// Infinite 的 shrink-wrap 基准；Stretch 型子（None/None）内在为 0 是
-/// v1 约束盲 measure 的已文档 wart——调用方需 HAS_SIZE 或内在叶。
-fn child_extent(nodes: &[Option<Node>], first: u32) -> (u32, u32) {
-    let mut w = 0u32;
-    let mut h = 0u32;
-    let mut cur = first;
-    let mut guard = 0usize;
-    while cur != u32::MAX && guard <= nodes.len() {
-        guard += 1;
-        let Some(c) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else { break };
-        if !c.alive {
-            break;
-        }
-        w = w.max(c.meas_w);
-        h = h.max(c.meas_h);
-        cur = c.next_sib;
-    }
-    (w, h)
-}
-
 /// 内在尺寸（读子 meas——后序保证已新鲜）。Text 臂经 `tm.measure` 走
 /// 供给缝（D8：scale id 与 desc wire 域同序——Monospace 供件逐位复刻
 /// `len × cell_w` 现状，换件面 = GUI-2 增件⑧）；Image/Icon 叶经
 /// `icons.dims`（§4.3）。Col/Row/Grid 的 w/h Some 折入内在（§4.1 定尺寸
 /// 覆盖一切——父游标推进/聚合/Start·Center 自身_extent 单源用 meas）。
-/// LAYOUT-L5 constraints down：父容器把自身 incoming box 投影给子节点。
-/// 本刀只有 wrap Text 消费 `max_w`；无 wrap 树的测量结果与 L4 逐字节
-/// 等价。固定 w/h 遵循“定尺寸覆盖一切”，先覆盖再扣 padding/gap。
-pub(crate) fn child_measure_box(
-    parent: &Node,
-    incoming: BoxConstraints,
-    child_index: usize,
-    child_count: usize,
-) -> BoxConstraints {
-    match &parent.props {
-        Props::Root => BoxConstraints::loose(incoming.max_w, incoming.max_h),
-        Props::Pad(p) => incoming.deflate(
-            p.all.saturating_mul(2),
-            p.all.saturating_mul(2),
-        ),
-        Props::Panel(p) => {
-            let inset = p.padding.saturating_mul(2);
-            let max_w = p.w.map(|w| w.saturating_sub(inset)).unwrap_or(incoming.max_w.saturating_sub(inset));
-            let max_h = p.h.map(|h| h.saturating_sub(inset)).unwrap_or(incoming.max_h.saturating_sub(inset));
-            BoxConstraints::loose(max_w, max_h)
-        }
-        Props::Col(p) => BoxConstraints::loose(p.w.unwrap_or(incoming.max_w), u32::MAX),
-        Props::Row(p) => BoxConstraints::loose(u32::MAX, p.h.unwrap_or(incoming.max_h)),
-        Props::Grid(p) => {
-            // 子盒 = 单个 track，而非整格容器扣 gap。place 面行主序等分
-            // 轨道；measure 面必须同口径，否则 wrap Text 会跨格溢出。
-            let cols = u32::from(p.cols.max(1));
-            let rows_needed = ((child_count as u32).saturating_add(cols - 1)) / cols;
-            let rows = rows_needed.max(1);
-            let gw = p.gap.saturating_mul(cols - 1);
-            let gh = p.gap.saturating_mul(rows - 1);
-            let content_w = p.w.unwrap_or(incoming.max_w).saturating_sub(gw);
-            let content_h = p.h.unwrap_or(incoming.max_h).saturating_sub(gh);
-            let _ = child_index;
-            BoxConstraints::loose(content_w / cols, content_h / rows)
-        }
-        Props::Clip(p) => BoxConstraints::loose(
-            p.w.unwrap_or(incoming.max_w),
-            p.h.unwrap_or(incoming.max_h),
-        ),
-        // 叶子无子；保守回传 loose incoming。
-        _ => BoxConstraints::loose(incoming.max_w, incoming.max_h),
-    }
-}
-
 fn intrinsic(
     nodes: &[Option<Node>],
     idx: usize,
     vp_w: u32,
     vp_h: u32,
-    cs: BoxConstraints,
-    wrap: &mut [Option<crate::TextWrapEntry>],
     tm: &dyn TextMetrics,
     icons: &dyn IconSource,
 ) -> (u32, u32) {
-    let _ = (vp_w, vp_h);
     let n = match nodes[idx].as_ref() {
         Some(n) => n,
         None => return (0, 0),
     };
     match &n.props {
-        Props::Root => {
-            let (ew, eh) = child_extent(nodes, n.first_child);
-            cs.fit(ew, eh)
-        }
-        // Clip 内在尺寸随子内容（作为 Col/Row 子时的主轴请求）；终值
-        // 仍吃父 avail，port = 自身布局 bounds。
-        Props::Clip(p) => {
-            let (cw, ch, _) = child_agg(nodes, n.first_child, true);
-            let w = p.w.map(|v| v as u64).unwrap_or(cw);
-            let h = p.h.map(|v| v as u64).unwrap_or(ch);
-            (u64_to_u32_sat(w), u64_to_u32_sat(h))
-        }
+        Props::Root => (vp_w, vp_h),
         Props::Rect(p) => (p.w.unwrap_or(0), p.h.unwrap_or(0)),
-        Props::Circle(p) => (p.w.unwrap_or(0), p.h.unwrap_or(0)),
         Props::Text(p) => {
-            let id = crate::desc::NodeId(((n.gen as u32) << 16) | (idx as u32 & 0xFFFF));
-            let enabled = wrap.iter().flatten().any(|e| e.node == id && e.enabled);
-            let scale = crate::desc::scale_to_u8(p.style.scale);
-            if enabled {
-                let measured = tm.measure_with_box(p.text.as_bytes(), scale, cs.max_w);
-                if let Some(entry) = wrap.iter_mut().flatten().find(|e| e.node == id) {
-                    entry.last_max_w = cs.max_w;
-                }
-                measured
-            } else {
-                tm.measure(p.text.as_bytes(), scale)
-            }
+            tm.measure(p.text.as_bytes(), crate::desc::scale_to_u8(p.style.scale))
         }
         Props::Col(p) => {
             let (w, mut h, k) = child_agg(nodes, n.first_child, true);
@@ -540,15 +308,6 @@ fn intrinsic(
                 .saturating_add(g * used_cols.saturating_sub(1) as u64);
             let h: u64 = row_h[..rows_needed].iter().map(|v| *v as u64).sum::<u64>()
                 .saturating_add(g * rows_needed.saturating_sub(1) as u64);
-            let w = p.w.map(|v| v as u64).unwrap_or(w);
-            let h = p.h.map(|v| v as u64).unwrap_or(h);
-            (u64_to_u32_sat(w), u64_to_u32_sat(h))
-        }
-        Props::Panel(p) => {
-            let (mut w, mut h, k) = child_agg(nodes, n.first_child, true);
-            w = w.saturating_add(2u64 * p.padding as u64);
-            h = h.saturating_add(2u64 * p.padding as u64)
-                .saturating_add(p.gap as u64 * k.saturating_sub(1).max(0) as u64);
             let w = p.w.map(|v| v as u64).unwrap_or(w);
             let h = p.h.map(|v| v as u64).unwrap_or(h);
             (u64_to_u32_sat(w), u64_to_u32_sat(h))
@@ -829,8 +588,7 @@ fn snapshot(
 
 /// 节点终值尺寸（给定容器分配 avail）：十字轴随父、主轴内在——
 /// Rect None 随父、Text 内在、Col/Row 主轴内在十字轴吃满、Pad/Root
-/// 整体吃满分配；Panel 宽随父、高随内容，定值覆盖 avail。段C
-/// （§4.1/§4.3）：Col/Row/Grid 的 HAS_SIZE 定尺寸
+/// 整体吃满分配。段C（§4.1/§4.3）：Col/Row/Grid 的 HAS_SIZE 定尺寸
 /// 优先于 avail（定尺寸覆盖一切）；Grid = 随父型子（Col 同形——十字
 /// 吃 avail、纵轴内在）；Image/Icon = 内在型叶恒内在（Some 定值 /
 /// None = dims 折入 meas），**不吃 avail**（§4.1 豁免行——十字轴拉
@@ -838,15 +596,7 @@ fn snapshot(
 fn final_size(n: &Node, avail_w: i32, avail_h: i32) -> (i32, i32) {
     match &n.props {
         Props::Root => (avail_w, avail_h),
-        Props::Clip(p) => (
-            p.w.map(u32_to_i32_sat).unwrap_or(avail_w),
-            p.h.map(u32_to_i32_sat).unwrap_or(avail_h),
-        ),
         Props::Rect(p) => (
-            p.w.map(u32_to_i32_sat).unwrap_or(avail_w),
-            p.h.map(u32_to_i32_sat).unwrap_or(avail_h),
-        ),
-        Props::Circle(p) => (
             p.w.map(u32_to_i32_sat).unwrap_or(avail_w),
             p.h.map(u32_to_i32_sat).unwrap_or(avail_h),
         ),
@@ -861,10 +611,6 @@ fn final_size(n: &Node, avail_w: i32, avail_h: i32) -> (i32, i32) {
         ),
         Props::Pad(_) => (avail_w, avail_h),
         Props::Grid(p) => (
-            p.w.map(u32_to_i32_sat).unwrap_or(avail_w),
-            p.h.map(u32_to_i32_sat).unwrap_or(u32_to_i32_sat(n.meas_h)),
-        ),
-        Props::Panel(p) => (
             p.w.map(u32_to_i32_sat).unwrap_or(avail_w),
             p.h.map(u32_to_i32_sat).unwrap_or(u32_to_i32_sat(n.meas_h)),
         ),
@@ -941,236 +687,6 @@ fn final_size(n: &Node, avail_w: i32, avail_h: i32) -> (i32, i32) {
     }
 }
 
-/// L3 orientation-aware eligible 面：父 Row 消费水平主轴、父 Col 消费
-/// 纵主轴。叶子维持 L2 双 None 契约；容器 pane 只开放“transposed主轴
-/// None”形态——Row 中 Col/Grid/Panel、Col 中 Row。同向嵌套的主轴是
-/// intrinsic，不入slot，写/读侧同源拒。
-pub(crate) fn flex_eligible_props(
-    nodes: &[Option<Node>],
-    idx: usize,
-    props: &Props,
-) -> bool {
-    let Some(child) = nodes.get(idx).and_then(|o| o.as_ref()) else {
-        return false;
-    };
-    let parent_kind = nodes.get(child.parent as usize)
-        .and_then(|o| o.as_ref())
-        .map(|p| p.kind);
-    let horizontal = matches!(parent_kind, Some(ViewKind::Row));
-    let vertical = matches!(parent_kind, Some(ViewKind::Col));
-    let parent_ok = horizontal || vertical;
-    // kind+props 成对匹配：防 builder 误配（Row kind + Rect props 等）
-    // 进入 flex 读侧。
-    match (child.kind, props) {
-        (ViewKind::Rect, Props::Rect(p))
-            if parent_ok && p.w.is_none() && p.h.is_none() => true,
-        (ViewKind::Circle, Props::Circle(p))
-            if parent_ok && p.w.is_none() && p.h.is_none() => true,
-        (ViewKind::Col, Props::Col(p)) if horizontal && p.w.is_none() => true,
-        (ViewKind::Grid, Props::Grid(p)) if horizontal && p.w.is_none() => true,
-        (ViewKind::Panel, Props::Panel(p)) if horizontal && p.w.is_none() => true,
-        (ViewKind::Row, Props::Row(p)) if vertical && p.h.is_none() => true,
-        _ => false,
-    }
-}
-
-/// 活 flex spec（slot/gen/alive/eligible 四重对拍；残项不参与）。
-fn flex_spec_of(
-    nodes: &[Option<Node>],
-    flex: &[Option<FlexEntry>],
-    slot: u32,
-) -> Option<crate::FlexSpec> {
-    let n = nodes.get(slot as usize).and_then(|o| o.as_ref())?;
-    if !n.alive {
-        return None;
-    }
-    let id = crate::NodeId((((n.gen as u32) << 16) | (slot & 0xFFFF)) as u32);
-    let eligible = flex_eligible_props(nodes, slot as usize, &n.props);
-    flex
-        .iter()
-        .flatten()
-        .find(|e| e.node == id)
-        .map(|e| crate::FlexSpec {
-            grow: e.weight,
-            shrink: e.shrink,
-            basis: e.basis,
-        })
-        .filter(|_| eligible)
-}
-
-/// L6a place 期 flex 主轴分配。`slots[i]` 对应第一次兄弟走查中第 i 个
-/// 活 flex 子；第二次走查必须保持同一 sibling order。
-#[derive(Clone, Copy)]
-struct FlexSlots {
-    slots: [i32; crate::FLEX_MAX],
-}
-
-impl FlexSlots {
-    fn none() -> Self {
-        Self { slots: [0; crate::FLEX_MAX] }
-    }
-}
-
-/// basis/grow/shrink 单源分配：
-///
-/// - base = Px 或 Auto(子主轴 meas)；unregistered 子 base = meas。
-/// - 正余量按 grow cumulative-prefix floor 精确分完。
-/// - 负余量若 shrink pool 非零，按 shrink×base 比例收缩；单子超额即
-///   冻结并重分配，最多 FLEX_MAX 轮。
-/// - L2 sugar(basis=0, shrink=0) 数学退化为旧 flex_space 分配。
-fn flex_slots(
-    nodes: &[Option<Node>],
-    flex: &[Option<FlexEntry>],
-    first: u32,
-    vertical: bool,
-    container: i32,
-    gap: u32,
-) -> FlexSlots {
-    if !flex.iter().flatten().next().is_some() {
-        return FlexSlots::none(); // 无登记树保持原单走查性能面。
-    }
-
-    let mut bases = [0u64; crate::FLEX_MAX];
-    let mut grows = [0u16; crate::FLEX_MAX];
-    let mut shrinks = [0u16; crate::FLEX_MAX];
-    let mut active = [false; crate::FLEX_MAX];
-    let mut count = 0usize;
-    let mut sibling_count = 0i64;
-    let mut base_sum = 0i64;
-    let mut cur = first;
-    let mut guard = 0usize;
-    while cur != u32::MAX && guard <= nodes.len() {
-        guard += 1;
-        let Some(c) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else { break };
-        if !c.alive {
-            break;
-        }
-        let next = c.next_sib;
-        let meas = if vertical { c.meas_h } else { c.meas_w } as u64;
-        match flex_spec_of(nodes, flex, cur) {
-            Some(spec) if count < crate::FLEX_MAX => {
-                let base = match spec.basis {
-                    crate::FlexBasis::Px(value) => value as u64,
-                    crate::FlexBasis::Auto => meas,
-                };
-                bases[count] = base;
-                grows[count] = spec.grow;
-                shrinks[count] = spec.shrink;
-                active[count] = spec.shrink > 0;
-                base_sum = base_sum.saturating_add(base as i64);
-                count += 1;
-            }
-            Some(_) => {
-                // 结构性不可达（FLEX_MAX 写入帽）；防御时仍计入 sibling/gap。
-                debug_assert!(
-                    false,
-                    "flex entries exceeded FLEX_MAX without table expansion"
-                );
-            }
-            None => {
-                base_sum = base_sum.saturating_add(meas as i64);
-            }
-        }
-        sibling_count += 1;
-        cur = next;
-    }
-
-    let gaps = gap as i64 * (sibling_count - 1).max(0);
-    let free = (container as i64)
-        .saturating_sub(gaps)
-        .saturating_sub(base_sum);
-    let mut result = [0i32; crate::FLEX_MAX];
-
-    if free >= 0 {
-        let total_grow: u64 = grows[..count].iter().map(|v| u64::from(*v)).sum();
-        if total_grow > 0 {
-            let mut cumulative = 0u64;
-            let mut previous_target = 0u64;
-            for i in 0..count {
-                cumulative += u64::from(grows[i]);
-                let target = free as u64 * cumulative / total_grow;
-                let share = target.saturating_sub(previous_target);
-                previous_target = target;
-                // grow=0 的子在此轮 share=0，保留 base。
-                result[i] = i32::try_from(bases[i].saturating_add(share))
-                    .unwrap_or(i32::MAX);
-            }
-        } else {
-            for (slot, base) in result.iter_mut().zip(bases.iter()).take(count) {
-                *slot = i32::try_from(*base).unwrap_or(i32::MAX);
-            }
-        }
-        return FlexSlots { slots: result };
-    }
-
-    // free < 0：CSS 7.2 型 capped proportional shrink + freeze loop。
-    let deficit = u64::try_from(free.saturating_neg()).unwrap_or(u64::MAX);
-    let mut takes = [0u64; crate::FLEX_MAX];
-    let mut remaining = deficit;
-    let mut passes = 0usize;
-    while remaining > 0 && passes < crate::FLEX_MAX {
-        passes += 1;
-        let total_factor: u128 = (0..count)
-            .filter(|&i| active[i])
-            .map(|i| u128::from(shrinks[i]) * u128::from(bases[i]))
-            .sum::<u128>();
-        if total_factor == 0 {
-            break;
-        }
-        let mut cumulative = 0u128;
-        let mut previous_target = 0u128;
-        let mut proposed = takes;
-        let mut froze = false;
-        for i in 0..count {
-            if !active[i] {
-                continue;
-            }
-            cumulative += u128::from(shrinks[i]) * u128::from(bases[i]);
-            let target = u128::from(remaining) * cumulative / total_factor;
-            let increment = target.saturating_sub(previous_target);
-            previous_target = target;
-            let candidate = takes[i].saturating_add(u64::try_from(increment).unwrap_or(u64::MAX));
-            proposed[i] = candidate;
-            if candidate > bases[i] {
-                froze = true;
-            }
-        }
-        if froze {
-            // 本轮有子冻结时，未冻结子的“比例预分配”不能保留——它与冻结
-            // 子的 base 相加可能超过 deficit。回滚未冻结子到上一轮，再对
-            // 剩余 active 子重分配；冻结子保 base。
-            for i in 0..count {
-                if active[i] {
-                    proposed[i] = if proposed[i] > bases[i] {
-                        bases[i]
-                    } else {
-                        takes[i]
-                    };
-                }
-            }
-        }
-        takes = proposed;
-        if froze {
-            for i in 0..count {
-                if active[i] && takes[i] >= bases[i] {
-                    active[i] = false;
-                }
-            }
-        }
-        let taken: u64 = takes[..count].iter().copied().sum();
-        remaining = deficit.saturating_sub(taken);
-        if !froze {
-            break;
-        }
-    }
-
-    for i in 0..count {
-        let slot = bases[i].saturating_sub(takes[i]);
-        result[i] = i32::try_from(slot).unwrap_or(i32::MAX);
-    }
-    FlexSlots { slots: result }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn place(
     nodes: &mut [Option<Node>],
@@ -1182,7 +698,6 @@ fn place(
     avail_w: i32,
     avail_h: i32,
     force: bool,
-    flex: &[Option<FlexEntry>],
     recomputed: &[bool; CAP],
     old_abs: &[Option<RectI>; CAP],
     vp: &RectI,
@@ -1205,7 +720,7 @@ fn place(
         let Some(n0) = nodes.get(idx).and_then(|o| o.as_ref()) else { return };
         let ncx = cx + n0.x as i64 + n0.ox as i64;
         let ncy = cy + n0.y as i64 + n0.oy as i64;
-        place_children(nodes, slot, ncx, ncy, false, flex, recomputed, old_abs, vp, damage, placed, hops);
+        place_children(nodes, slot, ncx, ncy, false, recomputed, old_abs, vp, damage, placed, hops);
         return;
     }
     *placed += 1;
@@ -1227,7 +742,7 @@ fn place(
     let nb = RectI::new(i64_to_i32_sat(ncx), i64_to_i32_sat(ncy), w, h);
     dmg_clip_add(damage, &nb, vp);
     // 子分配语境变 = 本节点几何变 ∨ 本节点重测（gap/all 等分配面属性）
-    place_children(nodes, slot, ncx, ncy, geom_changed || rec, flex, recomputed, old_abs, vp, damage, placed, hops);
+    place_children(nodes, slot, ncx, ncy, geom_changed || rec, recomputed, old_abs, vp, damage, placed, hops);
 }
 
 /// 子分配（kind 分派）：Root/Pad 内缩整给、Col/Row 游标累进 + §4.1 十
@@ -1240,7 +755,6 @@ fn place_children(
     ncx: i64,
     ncy: i64,
     force_kids: bool,
-    flex: &[Option<FlexEntry>],
     recomputed: &[bool; CAP],
     old_abs: &[Option<RectI>; CAP],
     vp: &RectI,
@@ -1268,15 +782,13 @@ fn place_children(
                 let next = c.next_sib;
                 place(
                     nodes, cur, ncx, ncy, inset, inset, i64_to_i32_sat(cw), i64_to_i32_sat(ch),
-                    force_kids, flex, recomputed, old_abs, vp, damage, placed, hops + 1,
+                    force_kids, recomputed, old_abs, vp, damage, placed, hops + 1,
                 );
                 cur = next;
             }
         }
         Props::Col(p) => {
             let gap = p.gap as i64;
-            let allocation = flex_slots(nodes, flex, first, true, h, p.gap);
-            let mut flex_index = 0usize;
             let mut cursor: i64 = 0;
             let mut cur = first;
             let mut guard = 0usize;
@@ -1284,17 +796,7 @@ fn place_children(
                 guard += 1;
                 let Some(c) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else { break };
                 let next = c.next_sib;
-                if !c.alive {
-                    break;
-                }
-                let ch_h = match flex_spec_of(nodes, flex, cur) {
-                    Some(_) => {
-                        let value = allocation.slots[flex_index];
-                        flex_index += 1;
-                        value
-                    }
-                    None => u32_to_i32_sat(c.meas_h), // 主轴请求 = 子内在（None 折 0）
-                };
+                let ch_h = u32_to_i32_sat(c.meas_h); // 主轴请求 = 子内在（None 折 0）
                 // §4.1 十字档：Stretch = 现状拉满（零漂）；Start/Center =
                 // 子内在宽为 avail（随父型子消费——内在型叶 Text/Image/
                 // Icon 豁免不吃 avail），Center 摆位 (可用-内在)/2（可负
@@ -1309,7 +811,7 @@ fn place_children(
                 };
                 place(
                     nodes, cur, ncx, ncy, x_off, i64_to_i32_sat(cursor), aw, ch_h, force_kids,
-                    flex, recomputed, old_abs, vp, damage, placed, hops + 1,
+                    recomputed, old_abs, vp, damage, placed, hops + 1,
                 );
                 cursor += ch_h as i64 + gap;
                 cur = next;
@@ -1317,8 +819,6 @@ fn place_children(
         }
         Props::Row(p) => {
             let gap = p.gap as i64;
-            let allocation = flex_slots(nodes, flex, first, false, w, p.gap);
-            let mut flex_index = 0usize;
             let mut cursor: i64 = 0;
             let mut cur = first;
             let mut guard = 0usize;
@@ -1326,17 +826,7 @@ fn place_children(
                 guard += 1;
                 let Some(c) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else { break };
                 let next = c.next_sib;
-                if !c.alive {
-                    break;
-                }
-                let cw = match flex_spec_of(nodes, flex, cur) {
-                    Some(_) => {
-                        let value = allocation.slots[flex_index];
-                        flex_index += 1;
-                        value
-                    }
-                    None => u32_to_i32_sat(c.meas_w),
-                };
+                let cw = u32_to_i32_sat(c.meas_w);
                 // §4.1 十字档镜像（Row 十字 = 纵轴）：Start/Center 以子内
                 // 在高为 avail、Center 纵向居中
                 let m_h = u32_to_i32_sat(c.meas_h);
@@ -1349,29 +839,9 @@ fn place_children(
                 };
                 place(
                     nodes, cur, ncx, ncy, i64_to_i32_sat(cursor), y_off, cw, ah, force_kids,
-                    flex, recomputed, old_abs, vp, damage, placed, hops + 1,
+                    recomputed, old_abs, vp, damage, placed, hops + 1,
                 );
                 cursor += cw as i64 + gap;
-                cur = next;
-            }
-        }
-        Props::Panel(p) => {
-            let inset = u32_to_i32_sat(p.padding);
-            let cw = (w as i64 - 2 * inset as i64).max(0);
-            let mut cursor = inset as i64;
-            let mut cur = first;
-            let mut guard = 0usize;
-            while cur != u32::MAX && guard <= nodes.len() {
-                guard += 1;
-                let Some(c) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else { break };
-                let next = c.next_sib;
-                let child_h = u32_to_i32_sat(c.meas_h);
-                place(
-                    nodes, cur, ncx, ncy, inset, i64_to_i32_sat(cursor),
-                    i64_to_i32_sat(cw), child_h, force_kids, flex, recomputed, old_abs, vp,
-                    damage, placed, hops + 1,
-                );
-                cursor += child_h as i64 + p.gap as i64;
                 cur = next;
             }
         }
@@ -1432,7 +902,7 @@ fn place_children(
                     i64_to_i32_sat(cell_x + dx),
                     i64_to_i32_sat(cell_y + dy),
                     aw, ah, force_kids,
-                    flex, recomputed, old_abs, vp, damage, placed, hops + 1,
+                    recomputed, old_abs, vp, damage, placed, hops + 1,
                 );
                 i += 1;
                 cur = next;
@@ -1455,7 +925,7 @@ fn place_children(
                 let Some(c) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else { break };
                 let next = c.next_sib;
                 place(
-                    nodes, cur, ncx, ncy, 0, crate::TABS_BAR_H, w, content_h, force_kids, flex,
+                    nodes, cur, ncx, ncy, 0, crate::TABS_BAR_H, w, content_h, force_kids,
                     recomputed, old_abs, vp, damage, placed, hops + 1,
                 );
                 cur = next;
@@ -1474,7 +944,7 @@ fn place_children(
                 let Some(c) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else { break };
                 let next = c.next_sib;
                 place(
-                    nodes, cur, ncx, ncy, 0, i64_to_i32_sat(-off), w, h, force_kids, flex,
+                    nodes, cur, ncx, ncy, 0, i64_to_i32_sat(-off), w, h, force_kids,
                     recomputed, old_abs, vp, damage, placed, hops + 1,
                 );
                 cur = next;
@@ -1497,7 +967,7 @@ fn place_children(
                 let next = c.next_sib;
                 let ch_h = u32_to_i32_sat(c.meas_h);
                 place(
-                    nodes, cur, ncx, ncy, 0, i64_to_i32_sat(cursor), w, ch_h, force_kids, flex,
+                    nodes, cur, ncx, ncy, 0, i64_to_i32_sat(cursor), w, ch_h, force_kids,
                     recomputed, old_abs, vp, damage, placed, hops + 1,
                 );
                 cursor += ch_h as i64;
@@ -1518,18 +988,14 @@ fn place_children(
                 let next = c.next_sib;
                 place(
                     nodes, cur, ncx, ncy, 0, i64_to_i32_sat(i.saturating_mul(ih)), w,
-                    i64_to_i32_sat(ih), force_kids, flex,
+                    i64_to_i32_sat(ih), force_kids,
                     recomputed, old_abs, vp, damage, placed, hops + 1,
                 );
                 i += 1;
                 cur = next;
             }
         }
-
-        // Root / Clip：viewport/裁剪 port 整给——子各自 (0,0) 起满幅。
-        // 其余 props 已在上文 exhaustive 分派；防御空臂仅保编译全匹配。
-        Props::Stack(_) | Props::Card(_) | Props::Refresh(_)
-        | Props::Clip(_) | Props::Root => {
+        _ => {
             let mut cur = first;
             let mut guard = 0usize;
             while cur != u32::MAX && guard <= nodes.len() {
@@ -1537,12 +1003,11 @@ fn place_children(
                 let Some(c) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else { break };
                 let next = c.next_sib;
                 place(
-                    nodes, cur, ncx, ncy, 0, 0, w, h, force_kids, flex, recomputed, old_abs, vp, damage,
+                    nodes, cur, ncx, ncy, 0, 0, w, h, force_kids, recomputed, old_abs, vp, damage,
                     placed, hops + 1,
                 );
                 cur = next;
             }
         }
-        _ => {}
     }
 }

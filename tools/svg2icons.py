@@ -13,8 +13,10 @@
 （ICON_DATA: &[(&str, &[u32], u32, u32)] 全量注册表——icons::bitmap_id 消费）。
 
 用法：
-  python3 tools/svg2icons.py            # 重产 icon_data/（硬依赖 resvg + PIL）
-  python3 tools/svg2icons.py --selftest # 结构钉板自检（零依赖面）
+  python3 tools/svg2icons.py --build     # 重产 icon_data/（硬依赖 resvg + PIL + /tmp/icons-src 在席）
+  python3 tools/svg2icons.py --selftest  # 结构钉板自检（零依赖面）
+无参或未知参数只报 usage 退出，不再隐式 build；--build 前置源资产守卫——
+/tmp/icons-src 缺席或无 .svg 即拒绝覆写（防空壳清库，已实发过一次）。
 """
 import re
 import subprocess
@@ -96,6 +98,13 @@ def emit_group(name: str, entries) -> str:
 
 
 def build():
+    # 门一（源资产守卫）：源目录在席且至少含一个 .svg 才允许动产物；
+    # 缺席即拒绝覆写退出——曾因无守卫 + 参数静默落入 build 清空过 icon_data。
+    if not (SRC.is_dir() and any(SRC.rglob('*.svg'))):
+        raise SystemExit(
+            f'svg2icons: 源资产 {SRC} 缺席或无 .svg 文件——拒绝覆写 {OUT}。\n'
+            f'  先跑 tools/fetch_material.py 重建源资产，再 --build。'
+        )
     OUT.mkdir(parents=True, exist_ok=True)
     cache_root = SRC / 'raster'
     total, skipped, seen = 0, [], {}
@@ -160,7 +169,28 @@ def selftest() -> int:
     return 0
 
 
-if __name__ == '__main__':
-    if len(sys.argv) > 1 and sys.argv[1] == '--selftest':
-        raise SystemExit(selftest())
+USAGE = f'''用法：
+  python3 tools/svg2icons.py --build     # 重产 {OUT}（需 resvg + PIL + {SRC} 源资产在席）
+  python3 tools/svg2icons.py --selftest  # 结构钉板自检（零依赖面）
+无参不再隐式 build；源目录缺席时 --build 拒绝覆写（防空壳清库）。'''
+
+
+def main(argv) -> int:
+    # 门二（分发宽容化）：strip 前导 '-' 后匹配 selftest/build；
+    # 无参或任何其他参数报 usage 退出，绝不静默落入 build。
+    if len(argv) != 2:
+        print(USAGE, file=sys.stderr)
+        return 2
+    flag = argv[1].lstrip('-').lower()
+    if flag == 'selftest':
+        return selftest()
+    if flag != 'build':
+        print(f'svg2icons: 未知参数 {argv[1]!r}', file=sys.stderr)
+        print(USAGE, file=sys.stderr)
+        return 2
     build()
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main(sys.argv))

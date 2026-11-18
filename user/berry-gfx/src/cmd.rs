@@ -5,7 +5,7 @@
 //! v1 操作集边界（规划钦定最小面，防过度设计）：fill_rect / line /
 //! blit（纹理内区域拷贝）/ glyph-run / draw_image（段②：单色位图图像/
 //! 图标——与字形同一位法、任意几何；ARGB 彩色面——BYI1 解码产物的
-//! 绘制消费口，A 位 8-bit straight alpha 混合）/ present——fbcon 六原语超集 +
+//! 绘制消费口，A 位 1-bit 透明键）/ present——fbcon 六原语超集 +
 //! 文本/图像位；AA/宽色域/compute/3D 可后补。
 //!
 //! 坐标域：全 i32。[`Rect`] 负宽/负高 = 非法（push 期 loud 拒
@@ -80,8 +80,8 @@ pub struct PaintDesc {
 /// 直映射点阵索引，无整形引擎——文字三段解耦的第一段在此最薄）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GlyphPos {
-    /// Unicode 码点（v1 常用面 = ASCII；HD A8 另携桌面中文标签子集）。
-    pub ch: u32,
+    /// 字节码点（v1 图集面 = 8×16 点阵 ASCII，与 fbcon 同域）。
+    pub ch: u8,
     /// 字形左上角像素 x。
     pub x: i32,
     /// 字形左上角像素 y。
@@ -144,16 +144,17 @@ pub enum ImageSrc<'a> {
     /// 切片，`px.len()` 必须 `== w*h`（submit 期恰长硬门同 [`ImageSrc::Bits`]
     /// ——`ImagePixelMismatch`）。
     ///
-    /// **A 位 = 8-bit straight alpha**：`A==0` 跳过不写；`1..=255`
-    /// 与目标逐通道混合，RGB 非预乘。[`Cmd::DrawImage`] 的 `fg/bg`
-    /// 参数对本变体不适用（像素自带色与覆盖率）。
+    /// **A 位 = 1-bit 透明键**：`A==0` 跳过不写（透明）、`A!=0` 一律
+    /// 不透明覆盖 RGB——这不是 blend（半透明混合留位；与 mono 面
+    /// `bg=None` 透明底同族先例）。[`Cmd::DrawImage`] 的 `fg/bg` 参数
+    /// 对本变体不适用（像素自带色，绘制忽略）。
     Argb {
         w: u32,
         h: u32,
         px: &'a [u32],
     },
     /// ARGB 最近邻缩放面：源 `sw×sh` 借用像素按请求几何 `dw×dh`
-    /// 回放期最近邻采样（无 float；alpha 与 RGB 同步采样）。
+    /// 回放期采样（v1 无 float/无 blend——透明键语义与 Argb 同律）。
     /// 源恰长门同 Argb；`dw/h` 零值在 submit 期拒绝。
     ScaledArgb {
         sw: u32,
@@ -162,21 +163,13 @@ pub enum ImageSrc<'a> {
         dh: u32,
         px: &'a [u32],
     },
-    /// ARGB 双线性缩放面（图标/Dock 抗锯齿边；预乘四采样，Q8 定点）。
+    /// ARGB 双线性缩放面（壁纸等全不透明大面；Q8 定点，无 float）。
     SmoothArgb {
         sw: u32,
         sh: u32,
         dw: u32,
         dh: u32,
         px: &'a [u32],
-    },
-    /// RGB565 双线性缩放面（不透明壁纸专用；2B/px 控 rootfs 常驻面）。
-    SmoothRgb565 {
-        sw: u32,
-        sh: u32,
-        dw: u32,
-        dh: u32,
-        px: &'a [u16],
     },
 }
 
@@ -212,14 +205,6 @@ impl core::fmt::Debug for ImageSrc<'_> {
                 .field("dh", dh)
                 .field("px", &px.len())
                 .finish(),
-            ImageSrc::SmoothRgb565 { sw, sh, dw, dh, px } => f
-                .debug_struct("ImageSrc::SmoothRgb565")
-                .field("sw", sw)
-                .field("sh", sh)
-                .field("dw", dw)
-                .field("dh", dh)
-                .field("px", &px.len())
-                .finish(),
         }
     }
 }
@@ -230,17 +215,6 @@ pub enum Cmd<'a> {
     /// 矩形填充（回放期裁剪到 纹理界 ∩ dirty 区）。
     FillRect {
         rect: Rect,
-        paint: PaintDesc,
-    },
-    /// 抗锯齿圆填充（`rect` 必须为正方形；圆半径 = 边长/2）。
-    FillCircle {
-        rect: Rect,
-        paint: PaintDesc,
-    },
-    /// 抗锯齿圆角矩形填充；radius 由回放期夹到宽高半值。
-    FillRoundRect {
-        rect: Rect,
-        radius: u32,
         paint: PaintDesc,
     },
     /// 整数 Bresenham 线（无浮点；端点任意 i32，出界裁剪）。巨跨度
@@ -264,7 +238,7 @@ pub enum Cmd<'a> {
     /// 语义按变体分派：单色面（`Bits`/`Icon`）走 `raster::mono_blit`
     /// 共核——着墨位 fg、零位 bg（`None` = 透明不写），像素语义与
     /// glyph-run 同一条；ARGB 面（`Argb`）走 `raster::argb_blit`——
-    /// 像素自带色，`fg/bg` 不适用（A 位 8-bit straight alpha，见变体注）。
+    /// 像素自带色，`fg/bg` 不适用（A 位 1-bit 透明键，见变体注）。
     DrawImage {
         src: ImageSrc<'a>,
         x: i32,
@@ -272,16 +246,27 @@ pub enum Cmd<'a> {
         fg: Color,
         bg: Option<Color>,
     },
-    /// 压入嵌套裁剪窗。与当前 pass dirty/外层 clip 求交，直到对应
-    /// [`Cmd::PopClip`]；栈深由 Queue 定容执法。用于 BerryUI ScrollView /
-    /// SwipePager 等 retained 子树裁剪，不改变命令自身几何。
-    PushClip { rect: Rect },
-    /// 弹出一层 [`Cmd::PushClip`]。DisplayList 结束时栈必须归零。
-    PopClip,
     /// 呈现（**flip 留位**）：soft 后端 = no-op——命令直接写进目标
     /// 缓冲，整帧已直写，无可「翻」；真后端（双缓冲/virtio-gpu）在此
     /// 承接页翻转/提交，`rect` = 损伤区提示。
     Present { rect: Rect },
+    /// 圆角矩形填充（波 2 横向原语③——add-only 新变体，[`Cmd::FillRect`]
+    /// 语义零漂移）：四角同半径 `radius`（px）；回放期 `radius` 钳
+    /// `min(w,h)/2` 与 raster LUT 帽（见 `raster` 模块）后按**行 LUT 内缩**
+    /// 逐行铺——圆区外不写、无 AA（整数行内缩，`radius_row_inset` 单源）。
+    /// `radius == 0` 与 FillRect 逐像素等价（走本变体亦无罚）。
+    FillRectRounded {
+        rect: Rect,
+        radius: u32,
+        paint: PaintDesc,
+    },
+    /// 裁剪栈压入（波 2 横向原语④——add-only 新变体）：回放期把当前
+    /// clip 与 `rect` 求交压栈（空交 = 零矩形 clip，后续绘制结构性
+    /// no-op）；配对 [`Cmd::PopClip`] 弹回。嵌套深度帽在回放侧
+    /// （`queue` 模块 CLIP_STACK_MAX=8——超帽 push 折 no-op + loud 防御）。
+    PushClip { rect: Rect },
+    /// 裁剪栈弹出（配对 [`Cmd::PushClip`]；空栈弹出 = no-op 防御）。
+    PopClip,
 }
 
 /// 显示列表录入错误（loud——零分配定容与先验执法的两个拒面）。
@@ -348,58 +333,21 @@ impl Default for DisplayList<'_> {
 /// 语义 = DisplayList.push 的薄包装（同一拒面原样透传）。
 pub struct CommandEncoder<'a> {
     list: DisplayList<'a>,
-    clips: [Rect; 17],
-    clip_depth: usize,
 }
 
 impl<'a> CommandEncoder<'a> {
     pub fn new() -> CommandEncoder<'a> {
-        CommandEncoder { list: DisplayList::new(), clips: [Rect::new(0, 0, 1, 1); 17], clip_depth: 0 }
-    }
-
-    /// Current recording-time clip, if any.
-    pub fn open_clips(&self) -> usize {
-        self.clip_depth
-    }
-
-    pub fn effective_clip(&self) -> Option<Rect> {
-        (self.clip_depth != 0).then(|| self.clips[self.clip_depth - 1])
+        CommandEncoder { list: DisplayList::new() }
     }
 
     /// 通用录入（类型化方法的兜底口——命令形态新变体优先走这里）。
     pub fn record(&mut self, cmd: Cmd<'a>) -> Result<(), CmdError> {
-        if self.list.len() + self.clip_depth >= MAX_CMDS {
-            return Err(CmdError::Full);
-        }
         self.list.push(cmd)
     }
 
     /// 矩形填充。
     pub fn fill_rect(&mut self, rect: Rect, color: Color) -> Result<(), CmdError> {
         self.record(Cmd::FillRect { rect, paint: PaintDesc { color } })
-    }
-
-    /// 抗锯齿圆填充（正方形 bounding box；半径 = 边长/2）。
-    pub fn fill_circle(&mut self, rect: Rect, color: Color) -> Result<(), CmdError> {
-        self.record(Cmd::FillCircle { rect, paint: PaintDesc { color } })
-    }
-
-    /// 抗锯齿圆角矩形填充。
-    /// Compatibility name for the advanced-main paint corpus: the only
-    /// rounded-rect primitive remains the AA FillRoundRect command.
-    pub fn fill_rect_rounded(
-        &mut self,
-        rect: Rect,
-        radius: i32,
-        color: Color,
-    ) -> Result<(), CmdError> {
-        self.fill_round_rect(rect, radius.max(0) as u32, color)
-    }
-
-    pub fn fill_round_rect(
-        &mut self, rect: Rect, radius: u32, color: Color,
-    ) -> Result<(), CmdError> {
-        self.record(Cmd::FillRoundRect { rect, radius, paint: PaintDesc { color } })
     }
 
     /// 整数线。
@@ -437,43 +385,32 @@ impl<'a> CommandEncoder<'a> {
         self.record(Cmd::DrawImage { src, x, y, fg, bg })
     }
 
-    /// 压入嵌套裁剪窗（与回放期当前 clip 求交）。
-    pub fn push_clip(&mut self, rect: Rect) -> Result<(), CmdError> {
-        if self.clip_depth >= self.clips.len() {
-            return Err(CmdError::Full);
-        }
-        // Reserve one slot for the matching PopClip before opening a span;
-        // a full command budget must never leave a dangling clip.
-        if self.list.len() + 2 > MAX_CMDS {
-            return Err(CmdError::Full);
-        }
-        self.list.push(Cmd::PushClip { rect })?;
-        let effective = match self.effective_clip() {
-            Some(parent) => parent
-                .intersect(&rect)
-                .unwrap_or_else(|| Rect::new(rect.x, rect.y, 0, 0)),
-            None => rect,
-        };
-        self.clips[self.clip_depth] = effective;
-        self.clip_depth += 1;
-        Ok(())
-    }
-
-    /// 弹出一层嵌套裁剪窗。
-    pub fn pop_clip(&mut self) -> Result<(), CmdError> {
-        self.list.push(Cmd::PopClip)?;
-        self.clip_depth = self.clip_depth.saturating_sub(1);
-        Ok(())
-    }
-
     /// 呈现（soft no-op / flip 留位）。
     pub fn present(&mut self, rect: Rect) -> Result<(), CmdError> {
         self.record(Cmd::Present { rect })
     }
 
-    /// 当前已录命令数（producer 预留 Clip Pop / Present 尾槽用）。
-    pub fn len(&self) -> usize {
-        self.list.len()
+    /// 圆角矩形填充（波 2 横向原语③）：`radius` px，四角同半径；零半径
+    /// = FillRect 同义。语义/裁剪纪律与 [`CommandEncoder::fill_rect`] 同
+    /// （回放期裁到 clip ∩ 纹理界；圆区外不写）。
+    pub fn fill_rect_rounded(
+        &mut self,
+        rect: Rect,
+        radius: u32,
+        color: Color,
+    ) -> Result<(), CmdError> {
+        self.record(Cmd::FillRectRounded { rect, radius, paint: PaintDesc { color } })
+    }
+
+    /// 裁剪栈压入（波 2 横向原语④）：与 [`CommandEncoder::present`] 间
+    /// 可任意交错；配对 [`CommandEncoder::pop_clip`]。
+    pub fn push_clip(&mut self, rect: Rect) -> Result<(), CmdError> {
+        self.record(Cmd::PushClip { rect })
+    }
+
+    /// 裁剪栈弹出。
+    pub fn pop_clip(&mut self) -> Result<(), CmdError> {
+        self.record(Cmd::PopClip)
     }
 
     /// 终结为不可变显示列表（记录/回放分离的形态面：记录期结束）。
@@ -489,18 +426,18 @@ impl Default for CommandEncoder<'_> {
 }
 
 /// 命令携带矩形的提取（BadRect 先验的执法点；无矩形命令返 None）。
+/// 波 2 add-only 扩臂：FillRectRounded/PushClip 携 rect（负宽高同拒）；
+/// PopClip 无矩形。
 fn rect_of<'a>(cmd: &'a Cmd<'_>) -> Option<&'a Rect> {
     match cmd {
-        Cmd::FillRect { rect, .. }
-        | Cmd::FillCircle { rect, .. }
-        | Cmd::FillRoundRect { rect, .. } => Some(rect),
+        Cmd::FillRect { rect, .. } => Some(rect),
         Cmd::Blit { src, .. } => Some(src),
-        Cmd::PushClip { rect } => Some(rect),
         Cmd::Present { rect } => Some(rect),
-        Cmd::PopClip
-        | Cmd::DrawLine { .. }
-        | Cmd::DrawGlyphRun { .. }
-        | Cmd::DrawImage { .. } => None,
+        Cmd::FillRectRounded { rect, .. } => Some(rect),
+        Cmd::PushClip { rect } => Some(rect),
+        Cmd::DrawLine { .. } | Cmd::DrawGlyphRun { .. } | Cmd::DrawImage { .. } | Cmd::PopClip => {
+            None
+        }
     }
 }
 
@@ -570,6 +507,37 @@ mod tests {
         assert!(matches!(it.next(), Some(Cmd::DrawLine { .. })));
         assert!(matches!(it.next(), Some(Cmd::Blit { .. })));
         assert!(matches!(it.next(), Some(Cmd::Present { .. })));
+        assert!(it.next().is_none());
+    }
+
+    // —— 波 2 add-only 新变体：圆角填充/裁剪栈的 rect 门与编码器面 ——
+    #[test]
+    fn rounded_and_clip_cmd_rect_gates() {
+        let mut dl = DisplayList::new();
+        let c = Color { r: 9, g: 8, b: 7 };
+        // 负宽/高矩形 → BadRect（FillRectRounded/PushClip 与既有三命令同律）。
+        assert_eq!(
+            dl.push(Cmd::FillRectRounded { rect: Rect::new(0, 0, -1, 4), radius: 4, paint: PaintDesc { color: c } }),
+            Err(CmdError::BadRect)
+        );
+        assert_eq!(
+            dl.push(Cmd::PushClip { rect: Rect::new(0, 0, 4, -1) }),
+            Err(CmdError::BadRect)
+        );
+        // PopClip 无矩形可先验——任何形态可录。
+        assert!(dl.push(Cmd::PopClip).is_ok());
+        assert_eq!(dl.len(), 1, "拒面零录入（两条 BadRect 不入表）");
+        // 编码器类型化面 → finish 内容与顺序保真。
+        let mut enc = CommandEncoder::new();
+        enc.fill_rect_rounded(Rect::new(1, 2, 30, 30), 24, c).unwrap();
+        enc.push_clip(Rect::new(0, 0, 10, 10)).unwrap();
+        enc.pop_clip().unwrap();
+        let dl = enc.finish();
+        assert_eq!(dl.len(), 3);
+        let mut it = dl.iter();
+        assert!(matches!(it.next(), Some(Cmd::FillRectRounded { radius: 24, .. })));
+        assert!(matches!(it.next(), Some(Cmd::PushClip { .. })));
+        assert!(matches!(it.next(), Some(Cmd::PopClip)));
         assert!(it.next().is_none());
     }
 

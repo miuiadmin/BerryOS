@@ -165,6 +165,35 @@ pub fn band_on(band: u8) -> bool {
     unsafe { armed(&*s) }
 }
 
+/// 武装槽的 quota 周期数镜像（04 号审计机会四①（2026-11-17））：该带在
+/// 执法（armed 单源判——quota∧period 均正，同 [`band_on`]）→
+/// `Some(quota)`；越界 / 未武装 → None。只读冷配置字段，屏蔽窗契约同
+/// [`band_on`]（quota/period 唯一写点 = [`configure`] 启动面，slot 契约）。
+///
+/// 镜像一致性依据：quota 唯一写点 = [`configure`]（重配面收口义务「先
+/// [`unthrottle_all`] 清环上残留限流位，再 configure」——见其 doc），且
+/// 消费侧的表行 quantum_ns 与 cntfrq 运行期恒定 ⇒ 槽值 == 现算值
+/// （`ns_to_cycles(quantum_ns)`）逐位——消费方（class.rs 私有
+/// `FairBand::quantum_cached`）据此免每授片一次 cntfrq MRS + u128 软除法
+/// （数十指令）。**语义变化明示**：显式 configure 后授片跟随**槽 quota**
+/// ——与 `FairBand::arm`「显式 configure 优先（已武装槽不覆写）」同向，
+/// 授片与 [`consume`] 执法同源（同一 quota 判越线）；未来 M4 启动配置
+/// 覆盖路径（`FairBand::new` 显式参数面）接入时须记名本跟随语义。全树
+/// 零外部直连（class.rs 私有 `quantum_cached` 唯一消费者）——不进
+/// lib.rs re-export。
+pub fn quota_cycles_of(band: u8) -> Option<u64> {
+    let Some(s) = slot(band) else { return None };
+    // SAFETY: 只读冷配置字段（quota/period）；屏蔽窗内无并发写（slot 契约）。
+    // 单趟读定门（审查轮收口）：quota/period 各读一次、以**同一次读到的值**
+    // 定门与返回——杜绝「armed 门过、返回值二次读撞 configure(0) 清零窗」的
+    // Some(0) 撕裂形（跨核重配竞态下读旧读新皆有界，但 Some(0) 越出记档口径）。
+    unsafe {
+        let b = &*s;
+        let (q, p) = (b.quota, b.period);
+        (q > 0 && p > 0).then_some(q)
+    }
+}
+
 /// 槽快照拷出（ktest / telemetry 观测面；越界 → None）。**真账合并读**：
 /// consumed/deadline 取自全局原子账（槽内同名字段已退化为镜像）。读序 = deadline Acquire 先行、consumed Relaxed 后随——与 [`period_check`] 翻
 /// 期「清账先行 + deadline CAS(Release)」配对：见新期 deadline 必见新账

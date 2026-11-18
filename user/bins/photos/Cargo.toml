@@ -1,18 +1,36 @@
 [package]
 name = "photos"
-version = "0.1.0"
+# L-SYS 0.2.0：字面版本不走 workspace 继承（musl 链独立小工作区，版本治理
+# 规则/14；user/bins 同批同值——settings/appstub/gfxdemo/berry-launcher
+# 同款）。升版 = 逐 crate 手同步。
+version = "0.2.0"
 edition = "2021"
-# GUI F8 迁移 Photos：真实 PATTERN.BIN READDIR/STAT/GET 与 5000B 校验
-# 继续走 berry-fsclient；WM/页面状态视觉归 Berry Room + BerryUI。
+
+# 波 4 第三件（.agents/plans/2026-11-15-波4预制应用翻新实施设计.md §2.4；
+# 侦察/对账底册 = worktree 根 W4-RECON.md）：PHOTOS 真 GUI 应用——
+# appstub 秒退壳替换。页面树 = TopBar(Photos) + Seg(All/Favorites) +
+# 三列缩略网格（Card kind + LISTITEM_RADIUS 单源圆角）→ 全幅看片页
+#（SwipePager 翻片 + 顶行 icon_button Back/Star/Delete）。
+#
+# 模式件消费纪律（波 4 铁律）：卡片 = Card kind（pattern.rs 配方面），
+# 条目/分段 = pattern::seg，按压 = 引擎 set_press_map（PRESSED_BG 单源）
+# ——应用零手拼 Rect 卡、零手写 press 字面量；文案全 ASCII。
+#
+# 链与形态 = settings crate 镜像（波 4 首件先例，W4-RECON §1）：独立
+# 小工作区（空 [workspace] escape user 根 workspace）+ musl target +
+# berry-libc shim + berry-ld 链，构建行照 justfile build-user APPTOMB
+# 段 RUSTFLAGS 形。持久化 PHOTOS.JSN 走 launcher layout_io 食谱
+#（fs 词授权 → fs gift；缺席/坏读自愈 + 写失败非致命）。
 license = "Apache-2.0"
 
 [workspace]
 
 [dependencies]
-berry-fsclient = { path = "../../berry-fsclient" }
+berry-libc = { path = "../../berry-libc" }
+berry-sys = { path = "../../berry-sys" }
+berry-guiproto = { path = "../../berry-guiproto" }
+berry-ui = { path = "../../berry-ui" }
 berry-gfx = { path = "../../berry-gfx" }
-berry-room = { path = "../../berry-room" }
-berry-ui = { path = "../../berry-ui", features = ["guest-font-vmo"] }
 
 [profile.release]
 opt-level = "z"

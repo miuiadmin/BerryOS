@@ -30,17 +30,9 @@
 use std::sync::OnceLock;
 
 use berry_appproto as ap;
-use berry_gfx::font::FontSize;
 use berry_gfx::icon::{decode, IconError};
 use berry_layout::ID_MAX;
-use berry_libc::io::self_vmar_h;
-use berry_sys::{
-    berry_handle_close, berry_vmar_map, berry_vmo_commit, berry_vmo_create,
-    berry_vmo_write, Handle, RIGHT_READ, RIGHT_WRITE,
-};
-use berry_ui::navigation::{
-    NavigationIconSource, NAV_ICON_BACK, NAV_ICON_HOME, NAV_ICON_TASK,
-};
+use berry_sys::Handle;
 use berry_ui::IconSource;
 
 use crate::{rpc_recv, rpc_send};
@@ -53,6 +45,9 @@ mod wallpaper;
 
 /// 内建状态/dock 图标 id（desktop 直建 Icon 节点；位于 app 图标稠密域
 /// 前缀，app id 从 7 起——launcher 是唯一消费者，契约不外泄）。
+pub const STATUS_SIGNAL: u16 = 0;
+pub const STATUS_WIFI: u16 = 1;
+pub const STATUS_BATTERY: u16 = 2;
 /// 静态壁纸源 id（稠密 app 域外的唯一固定特例——rodata 直供零堆）。
 pub const WALLPAPER: u16 = 0xFFFE;
 pub const WALLPAPER_DIM: (u32, u32) = (wallpaper::WALLPAPER_W, wallpaper::WALLPAPER_H);
@@ -67,6 +62,9 @@ pub const DOCK1_DIM: (u32, u32) = (status_icons::DOCK1_W, status_icons::DOCK1_H)
 pub const DOCK2_DIM: (u32, u32) = (status_icons::DOCK2_W, status_icons::DOCK2_H);
 pub const DOCK3_DIM: (u32, u32) = (status_icons::DOCK3_W, status_icons::DOCK3_H);
 pub const DOCK_DIMS: [(u32, u32); 4] = [DOCK0_DIM, DOCK1_DIM, DOCK2_DIM, DOCK3_DIM];
+pub const STATUS_SIGNAL_DIM: (u32, u32) = (status_icons::SIGNAL_W, status_icons::SIGNAL_H);
+pub const STATUS_WIFI_DIM: (u32, u32) = (status_icons::WIFI_W, status_icons::WIFI_H);
+pub const STATUS_BATTERY_DIM: (u32, u32) = (status_icons::BATTERY_W, status_icons::BATTERY_H);
 const BUILTIN_FACES: usize = 7;
 const _: () = assert!(BUILTIN_FACES == 7, "状态三 + dock 四内建面钉板");
 
@@ -290,7 +288,7 @@ fn pull(app_h: Handle) -> Option<&'static [AppEntry]> {
     }
 
     // 通用图标 fallback：无 [ui] 图标的 app（测试控制件/系统件）不再
-    // 裸 label 浮在桌面；给一枚中性圆角 tile（48×48，8-bit alpha），
+    // 裸 label 浮在桌面；给一枚中性圆角 tile（48×48，1-bit alpha），
     // app 域/APPUI 记账不受影响。
     let generic_id = faces.len() as u16;
     faces.push(generic_face());
@@ -341,9 +339,9 @@ fn finish_entry(entries: &mut Vec<AppEntry>, faces: &mut Vec<IconFace>, px_used:
     });
 }
 
-/// 通用图标面（无图标 app 的 fallback；中性石板底 + 白环，8-bit alpha）。
+/// 通用图标面（无图标 app 的 fallback；中性石板底 + 白环，1-bit alpha）。
 fn generic_face() -> IconFace {
-    // 108px 源：目标 162px 由 SmoothArgb 1.5x 双线性采样（省 1MiB 堆）。
+    // 108px 源：目标 162px 由 ScaledArgb 1.5x 采样（省 1MiB 堆）。
     const S: usize = 108;
     let mut px = vec![0u32; S * S];
     let mut y = 0usize;
@@ -380,266 +378,6 @@ pub struct LauncherIcons;
 
 static ICONS: LauncherIcons = LauncherIcons;
 
-struct WallpaperCache {
-    w: u32,
-    h: u32,
-    px: &'static [u32],
-    _vmo: Handle,
-}
-
-const WALLPAPER_VA: usize = 0x5200_0000;
-
-static WALLPAPER_CACHE: OnceLock<WallpaperCache> = OnceLock::new();
-
-/// 把官方 RGB565 壁纸按当前视口一次性双线性预缩放成不透明 ARGB。
-/// Swipe 每帧 damage 包络结构性覆盖全宽；无缓存时同一 2.07M 像素
-/// 双线性采样会在每个动画帧重复执行。缓存是视觉等价换内存（约 8.3MiB@1080p）。
-pub fn prime_wallpaper(vp_w: u32, vp_h: u32) {
-    if WALLPAPER_CACHE.get().is_some() || vp_w == 0 || vp_h == 0 {
-        return;
-    }
-    let pixels = vp_w as usize * vp_h as usize;
-    let Some(len) = (pixels * 4).checked_add(0xfff).map(|v| v & !0xfff) else {
-        return;
-    };
-    let mut vmo: Handle = 0;
-    if berry_vmo_create(len as u64, 0, &mut vmo) != 0
-        || vmo == 0
-        || berry_vmo_commit(vmo, 0, len as u64) != 0
-    {
-        let _ = berry_handle_close(vmo);
-        return;
-    }
-    let hv = self_vmar_h();
-    let mut va = WALLPAPER_VA;
-    if hv == 0
-        || berry_vmar_map(hv, 0, vmo, 0, &mut va, len, RIGHT_READ | RIGHT_WRITE) != 0
-        || va != WALLPAPER_VA
-    {
-        let _ = berry_handle_close(vmo);
-        return;
-    }
-    // SAFETY: [WALLPAPER_VA, +len) 刚按页映射并 commit；launcher 终身持有
-    // vmo 与映射，px 只取前 w*h 像素，不含页尾。
-    let out: &mut [u32] = unsafe { core::slice::from_raw_parts_mut(va as *mut u32, pixels) };
-    smooth_wallpaper_into_argb(out, vp_w, vp_h);
-    let px: &'static [u32] = unsafe { core::slice::from_raw_parts(va as *const u32, pixels) };
-    let _ = WALLPAPER_CACHE.set(WallpaperCache {
-        w: vp_w,
-        h: vp_h,
-        px,
-        _vmo: vmo,
-    });
-}
-
-fn smooth_wallpaper_into_argb(out: &mut [u32], dw: u32, dh: u32) {
-    const MAX_W: usize = 1280;
-    const SW: u32 = wallpaper::WALLPAPER_W;
-    const SH: u32 = wallpaper::WALLPAPER_H;
-    if dw as usize > MAX_W || out.len() < dw as usize * dh as usize {
-        return;
-    }
-
-    let unpack = |v: u16| -> (u8, u8, u8) {
-        let r5 = u32::from((v >> 11) & 0x1F);
-        let g6 = u32::from((v >> 5) & 0x3F);
-        let b5 = u32::from(v & 0x1F);
-        (
-            ((r5 * 255 + 15) / 31) as u8,
-            ((g6 * 255 + 31) / 63) as u8,
-            ((b5 * 255 + 15) / 31) as u8,
-        )
-    };
-    let mut xs0 = [0u16; MAX_W];
-    let mut xs1 = [0u16; MAX_W];
-    let mut fxs = [0u8; MAX_W];
-    for i in 0..dw as usize {
-        let cx = ((2 * i as i64 + 1) * SW as i64 * 65536 / (2 * dw as i64)) - 32768;
-        let x0 = (cx / 65536).clamp(0, (SW - 1) as i64) as usize;
-        let x1 = (x0 + 1).min((SW - 1) as usize);
-        xs0[i] = x0 as u16;
-        xs1[i] = x1 as u16;
-        fxs[i] = ((cx - x0 as i64 * 65536).max(0) / 256) as u8;
-    }
-    let mut row0 = [(0u8, 0u8, 0u8); MAX_W];
-    let mut row1 = [(0u8, 0u8, 0u8); MAX_W];
-    let mut cached0 = usize::MAX;
-    let mut cached1 = usize::MAX;
-    for y in 0..dh as usize {
-        let cy = ((2 * y as i64 + 1) * SH as i64 * 65536 / (2 * dh as i64)) - 32768;
-        let y0 = (cy / 65536).clamp(0, (SH - 1) as i64) as usize;
-        let y1 = (y0 + 1).min((SH - 1) as usize);
-        let fy = ((cy - y0 as i64 * 65536).max(0) / 256) as u32;
-        if cached0 != y0 {
-            let base = y0 * SW as usize;
-            for i in 0..dw as usize {
-                row0[i] = horiz_rgb565(&wallpaper::WALLPAPER_PX, base, xs0[i], xs1[i], fxs[i], unpack);
-            }
-            cached0 = y0;
-        }
-        if cached1 != y1 {
-            if y1 == y0 {
-                row1 = row0;
-            } else {
-                let base = y1 * SW as usize;
-                for i in 0..dw as usize {
-                    row1[i] = horiz_rgb565(&wallpaper::WALLPAPER_PX, base, xs0[i], xs1[i], fxs[i], unpack);
-                }
-            }
-            cached1 = y1;
-        }
-        let inv_y = 256 - fy;
-        let dst_row = y * dw as usize;
-        for i in 0..dw as usize {
-            let (r0, g0, b0) = row0[i];
-            let (r1, g1, b1) = row1[i];
-            let r = (u32::from(r0) * inv_y + u32::from(r1) * fy) >> 8;
-            let g = (u32::from(g0) * inv_y + u32::from(g1) * fy) >> 8;
-            let b = (u32::from(b0) * inv_y + u32::from(b1) * fy) >> 8;
-            out[dst_row + i] = 0xFF00_0000 | (r << 16) | (g << 8) | b;
-        }
-    }
-
-    overlay_product_navigation(out, dw as usize, dh as usize);
-}
-
-/// Product wallpaper no longer bakes the navigation band. The launcher-owned
-/// SYSTEM navigation overlay supplies its translucent scrim and AOSP glyphs.
-fn overlay_product_navigation(_out: &mut [u32], _dw: usize, _dh: usize) {}
-
-fn horiz_rgb565(
-    px: &[u16],
-    base: usize,
-    x0: u16,
-    x1: u16,
-    fx: u8,
-    unpack: impl Fn(u16) -> (u8, u8, u8),
-) -> (u8, u8, u8) {
-    let (r0, g0, b0) = unpack(px.get(base + x0 as usize).copied().unwrap_or(0));
-    let (r1, g1, b1) = unpack(px.get(base + x1 as usize).copied().unwrap_or(0));
-    let fx = u32::from(fx);
-    let inv = 256 - fx;
-    (
-        ((u32::from(r0) * inv + u32::from(r1) * fx) >> 8) as u8,
-        ((u32::from(g0) * inv + u32::from(g1) * fx) >> 8) as u8,
-        ((u32::from(b0) * inv + u32::from(b1) * fx) >> 8) as u8,
-    )
-}
-
-const OVERLAY_MAX_W: usize = 1920;
-const STATUS_CLOCK: &[u8] = b"12:00";
-
-/// High-contrast system glyph tint for both light app chrome and wallpaper.
-const SYSTEM_INK: u32 = 0x1B2540;
-
-fn blit_argb(
-    row: &mut [u32], x0: usize, y0: usize, w: usize, h: usize, face: &[u32],
-) {
-    for y in 0..h {
-        if y0 + y >= row.len() {
-            return;
-        }
-        for x in 0..w {
-            let src = face.get(y * w + x).copied().unwrap_or(0);
-            let sa = u32::from((src >> 24) & 0xFF);
-            if sa == 0 {
-                continue;
-            }
-            let x = x0 + x;
-            let Some(dst) = row.get_mut(x) else { continue };
-            let inv = 255 - sa;
-            let sr = (SYSTEM_INK >> 16) & 0xFF;
-            let sg = (SYSTEM_INK >> 8) & 0xFF;
-            let sb = SYSTEM_INK & 0xFF;
-            let dr = u32::from((*dst >> 16) & 0xFF);
-            let dg = u32::from((*dst >> 8) & 0xFF);
-            let db = u32::from(*dst & 0xFF);
-            let r = (sr * sa + dr * inv) / 255;
-            let g = (sg * sa + dg * inv) / 255;
-            let b = (sb * sa + db * inv) / 255;
-            let a = u32::from((*dst >> 24) & 0xFF).max(sa);
-            *dst = (a << 24) | (r << 16) | (g << 8) | b;
-        }
-    }
-}
-
-/// Build the transparent launcher-owned status overlay in a bar-local VMO.
-pub fn write_system_status_overlay(vmo: Handle, w: u32, h: u32) -> bool {
-    let w = w as usize;
-    let h = h as usize;
-    if w == 0 || h == 0 || w > OVERLAY_MAX_W {
-        return false;
-    }
-    let mut row = [0u32; OVERLAY_MAX_W];
-    if h >= 45 {
-        let y = (h - 45) / 2;
-        blit_argb(&mut row, 72, y, status_icons::SIGNAL_W as usize, status_icons::SIGNAL_H as usize, &status_icons::SIGNAL_PX);
-        blit_argb(&mut row, 72 + status_icons::SIGNAL_W as usize + 15, y, status_icons::WIFI_W as usize, status_icons::WIFI_H as usize, &status_icons::WIFI_PX);
-        blit_argb(&mut row, w.saturating_sub(72 + status_icons::BATTERY_W as usize), y, status_icons::BATTERY_W as usize, status_icons::BATTERY_H as usize, &status_icons::BATTERY_PX);
-    }
-    let atlas = FontSize::S32x48.atlas();
-    let cell_w = FontSize::S32x48.cell_w();
-    let cell_h = FontSize::S32x48.cell_h();
-    if h >= cell_h {
-        let x0 = w.saturating_sub(72 + STATUS_CLOCK.len() * cell_w);
-        let y0 = (h - cell_h) / 2;
-        for (index, byte) in STATUS_CLOCK.iter().enumerate() {
-            let Some(coverage) = atlas.coverage(*byte) else { continue };
-            for gy in 0..coverage.h {
-                for gx in 0..coverage.w {
-                    let alpha = coverage.coverage[gy * coverage.w + gx];
-                    if alpha == 0 {
-                        continue;
-                    }
-                    let x = x0 + index * cell_w + gx;
-                    let y = y0 + gy;
-                    if x >= w || y >= h {
-                        continue;
-                    }
-                    let old = row[x];
-                    let a = u32::from(alpha).max(u32::from((old >> 24) & 0xFF));
-                    row[x] = (a << 24) | SYSTEM_INK;
-                }
-            }
-        }
-    }
-    for y in 0..h {
-        let offset = u64::from(w as u32) * 4 * y as u64;
-        if berry_vmo_write(vmo, row.as_ptr().cast(), offset, w * 4) != 0 {
-            return false;
-        }
-    }
-    true
-}
-
-/// Build the translucent Android-style navigation overlay in a bar-local VMO.
-pub fn write_system_navigation_overlay(vmo: Handle, w: u32, h: u32) -> bool {
-    let w = w as usize;
-    let h = h as usize;
-    if w == 0 || h == 0 || w > OVERLAY_MAX_W {
-        return false;
-    }
-    let mut row = [0u32; OVERLAY_MAX_W];
-    if h >= 80 {
-        for (id, x0) in [
-            (NAV_ICON_BACK, 144usize),
-            (NAV_ICON_HOME, 504),
-            (NAV_ICON_TASK, 864),
-        ] {
-            if let Some(face) = NavigationIconSource.system_pixels(id) {
-                blit_argb(&mut row, x0, 8, 72, 72, face);
-            }
-        }
-    }
-    for y in 0..h {
-        let offset = u64::from(w as u32) * 4 * y as u64;
-        if berry_vmo_write(vmo, row.as_ptr().cast(), offset, w * 4) != 0 {
-            return false;
-        }
-    }
-    true
-}
-
 /// 供件引用（`&'static dyn`——供给槽生命周期面；unit static 即终身）。
 pub fn icon_source() -> &'static dyn IconSource {
     &ICONS
@@ -648,7 +386,7 @@ pub fn icon_source() -> &'static dyn IconSource {
 impl IconSource for LauncherIcons {
     fn dims(&self, id: u16) -> Option<(u32, u32)> {
         if id == WALLPAPER {
-            return WALLPAPER_CACHE.get().map(|c| (c.w, c.h)).or(Some(WALLPAPER_DIM));
+            return Some(WALLPAPER_DIM);
         }
         let faces = FACES.get().copied().unwrap_or(&[]);
         let f = faces.get(id as usize)?;
@@ -657,42 +395,14 @@ impl IconSource for LauncherIcons {
 
     fn pixels(&self, id: u16) -> Option<&[u32]> {
         if id == WALLPAPER {
-            return WALLPAPER_CACHE.get().map(|c| c.px);
+            return Some(&wallpaper::WALLPAPER_PX);
         }
         let faces = FACES.get().copied().unwrap_or(&[]);
         let f = faces.get(id as usize)?;
         Some(&f.px)
     }
 
-    fn pixels_rgb565(&self, id: u16) -> Option<&[u16]> {
-        if id == WALLPAPER && WALLPAPER_CACHE.get().is_none() {
-            return Some(&wallpaper::WALLPAPER_PX);
-        }
-        None
-    }
-
-    fn smooth_scale(&self, _id: u16) -> bool {
-        true
-    }
-}
-
-#[cfg(test)]
-mod wallpaper_tests {
-    use super::*;
-
-    #[test]
-    fn wallpaper_cache_is_opaque_and_viewport_sized() {
-        let mut px = vec![0; 8 * 7];
-        smooth_wallpaper_into_argb(&mut px, 8, 7);
-        assert_eq!(px.len(), 56);
-        assert!(px.iter().all(|p| p & 0xFF00_0000 == 0xFF00_0000));
-    }
-
-    #[test]
-    fn product_wallpaper_does_not_bake_navigation_overlay() {
-        let mut px = vec![0x1234_5678u32; 1080 * 1920];
-        let before = px.clone();
-        overlay_product_navigation(&mut px, 1080, 1920);
-        assert_eq!(px, before, "SYSTEM overlay owns navigation pixels");
+    fn smooth_scale(&self, id: u16) -> bool {
+        id == WALLPAPER
     }
 }

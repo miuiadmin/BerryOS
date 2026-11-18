@@ -202,3 +202,66 @@ fn frozen_anchors() {
     assert_eq!(memcmp_model(&a, &a, 3), 0);
     assert_ne!(memcmp_model(&a, &b, 3), 0);
 }
+
+// ---- F0-1：DCZID_EL0 与 CTR_EL0 PoU 同步解码律 ----
+
+#[test]
+fn dczid_block_size_law() {
+    // Cortex-A72：DZP=0, BS=4 → 64B 块。
+    assert_eq!(dczid_block_size(0x04, 4096), Some(64));
+    // Apple Silicon M 系常见 64B / 128B 零化块：BS=4 → 64B，BS=5 → 128B。
+    assert_eq!(dczid_block_size(0x05, 4096), Some(128));
+    // 最小合法块 BS=0 → 4B；整页块 BS=10 → 4096B。
+    assert_eq!(dczid_block_size(0x00, 4096), Some(4));
+    assert_eq!(dczid_block_size(0x0A, 4096), Some(4096));
+    // 回归防线 1：Hypervisor 置 DZP=1（0x14）禁止 DC ZVA 时必须回退 None（防 EL1 UNDEF）。
+    assert_eq!(dczid_block_size(0x14, 4096), None);
+    assert_eq!(dczid_block_size(0x10, 4096), None);
+    // 回归防线 2：块尺寸超过页大小（BS=11 → 8192B > 4096B）或 page_size=0 必须拒。
+    assert_eq!(dczid_block_size(0x0B, 4096), None);
+    assert_eq!(dczid_block_size(0x04, 0), None);
+    // 非 2 幂页长下不整除亦拒。
+    assert_eq!(dczid_block_size(0x04, 4000), None);
+}
+
+#[test]
+fn ctr_pou_plan_law() {
+    // Cortex-A72 典型值（0x8444_C004）：IDC=0, DIC=0, DminLine=4(64B), L1Ip=0b11(PIPT), IminLine=4(64B)。
+    let a72 = ctr_pou_plan(0x8444_C004);
+    assert_eq!(ctr_dmin_line(0x8444_C004), 64);
+    assert_eq!(ctr_dmin_line(0xB005_C005), 128);
+    assert_eq!(
+        a72,
+        PouSyncPlan {
+            d_clean_step: Some(64),
+            i_inval_step: Some(64),
+            icache_policy: IcachePolicy::Pipt,
+        }
+    );
+    // Neoverse / Apple M 系硬件全自动一致（IDC=1 bit28, DIC=1 bit29）：无需 dc cvau 与 ic ivau。
+    let coherent = ctr_pou_plan((1 << 28) | (1 << 29) | (0b11 << 14) | (4 << 16) | 4);
+    assert_eq!(coherent.d_clean_step, None);
+    assert_eq!(coherent.i_inval_step, None);
+    assert_eq!(coherent.icache_policy, IcachePolicy::Pipt);
+    // 半自动（IDC=1 免刷 D-cache，但 DIC=0 仍须失效 I-cache）+ VIPT（L1Ip=0b10）。
+    let vipt = ctr_pou_plan((1 << 28) | (0b10 << 14) | (4 << 16) | 3);
+    assert_eq!(
+        vipt,
+        PouSyncPlan {
+            d_clean_step: None,
+            i_inval_step: Some(32),
+            icache_policy: IcachePolicy::ViptOrAliasing,
+        }
+    );
+}
+
+#[test]
+fn cache_line_span_law() {
+    assert_eq!(cache_line_span(0x1000, 0x1000, 64), Some((0x1000, 0x2000)));
+    assert_eq!(cache_line_span(0x1007, 10, 64), Some((0x1000, 0x1040)));
+    assert_eq!(cache_line_span(0x1038, 16, 64), Some((0x1000, 0x1080)));
+    assert_eq!(cache_line_span(0x1038, 0, 64), Some((0x1038, 0x1038)));
+    assert_eq!(cache_line_span(0x1000, 64, 0), None);
+    assert_eq!(cache_line_span(0x1000, 64, 48), None);
+    assert_eq!(cache_line_span(usize::MAX - 16, 32, 64), None);
+}

@@ -333,6 +333,36 @@ global_asm!(
     "    msr sp_el0, x21",       // 用户栈顶
     "    msr elr_el1, x19",      // 用户入口 PC
     "    msr spsr_el1, xzr",     // EL0t、DAIF 全解蔽
+    // F0-1 入口寄存器洁净防线：清零 x2..x30，阻断首次进 EL0 时泄露内核指针与残值。
+    "    mov x2, xzr",
+    "    mov x3, xzr",
+    "    mov x4, xzr",
+    "    mov x5, xzr",
+    "    mov x6, xzr",
+    "    mov x7, xzr",
+    "    mov x8, xzr",
+    "    mov x9, xzr",
+    "    mov x10, xzr",
+    "    mov x11, xzr",
+    "    mov x12, xzr",
+    "    mov x13, xzr",
+    "    mov x14, xzr",
+    "    mov x15, xzr",
+    "    mov x16, xzr",
+    "    mov x17, xzr",
+    "    mov x18, xzr",
+    "    mov x19, xzr",
+    "    mov x20, xzr",
+    "    mov x21, xzr",
+    "    mov x22, xzr",
+    "    mov x23, xzr",
+    "    mov x24, xzr",
+    "    mov x25, xzr",
+    "    mov x26, xzr",
+    "    mov x27, xzr",
+    "    mov x28, xzr",
+    "    mov x29, xzr",
+    "    mov x30, xzr",
     "    eret",                  // 降 EL0，跳 entry(arg)；不归——任务死走 kill 路径
     ".size user_entry_trampoline, . - user_entry_trampoline",
 );

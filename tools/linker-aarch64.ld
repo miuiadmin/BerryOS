@@ -78,8 +78,12 @@ SECTIONS {
     . = ALIGN(4096);
     __kernel_end = .;
 
-    /* PA 侧镜像符号：boot 期（MMU 未开）清主体 .bss 用（asm ldr = 绝对值装载，
-       无 ADRP 范围问题）。 */
+    /* PA 侧镜像符号：boot 期（MMU 未开）清主体 .bss 及建 TTBR1 分段 W^X 页表用
+       （低半 PA 符号 bit63==0，满足 .text.boot ADRP 门禁）。 */
+    __text_start_pa = __text_start - KERNEL_VA_BASE;
+    __text_end_pa = __text_end - KERNEL_VA_BASE;
+    __rodata_start_pa = __rodata_start - KERNEL_VA_BASE;
+    __rodata_end_pa = __rodata_end - KERNEL_VA_BASE;
     __bss_start_pa = __bss_start - KERNEL_VA_BASE;
     __bss_end_pa = __bss_end - KERNEL_VA_BASE;
 

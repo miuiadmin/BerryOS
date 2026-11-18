@@ -298,12 +298,13 @@ fn bits_error_forms() {
     assert!(format!("{s:?}").contains("3"), "Icon Debug 打槽位");
 }
 
-// —— ARGB 彩色面：A 位 8-bit straight alpha + 出界裁剪 + fg/bg 不适用 ——
+// —— ARGB 彩色面：A 位 1-bit 透明键 + 出界裁剪 + fg/bg 不适用 ——
 //
 // 与 mono 面的分工：mono（Bits/Icon）= GlyphBits 一条位法 + fg/bg 着色；
 // Argb = 解码产物同序直用（BYI1 → decode → 绘制零转换），像素自带色。
-// A 位语义 = straight alpha（A==0 跳过 / 0..=255 与底色按通道混合）；
-// 半透红在 0xEE 底上渲染为 0x77F777，透明键让圆角/异形底可用。
+// A 位语义 = 1-bit 透明键（A==0 跳过 / A!=0 不透明覆盖）——**不是
+// blend**：半透红画出来是纯红（A=0x80 与 A=0xFF 同色覆盖，无混合），
+// v1 无 blend 铁律不破；透明键让真实图标的圆角/异形底可用。
 #[test]
 fn draw_image_argb_alpha_key_and_clip() {
     let d = desc16();
@@ -323,7 +324,7 @@ fn draw_image_argb_alpha_key_and_clip() {
     // 可见窗 2×2 @ (0,2)：源 (1,0)=红 (2,0)=蓝 / (1,1)=半透红 (2,1)=透明。
     assert_eq!(px(&fb, 0, 2), 0x00FF_0000, "源 col1 红（col0 出界裁掉）");
     assert_eq!(px(&fb, 1, 2), 0x0000_00FF, "源 col2 蓝");
-    assert_eq!(px(&fb, 0, 3), 0x00F7_7777, "半透红 straight-alpha 混合底色");
+    assert_eq!(px(&fb, 0, 3), 0x00FF_0000, "半透红 → 不透明红（A 只做非零键）");
     assert_eq!(px(&fb, 1, 3), 0xEEEE_EEEE, "A=0 透明键：底色穿透");
     // 区外/窗外全未触（fg/bg 未铺 = 不适用的活证）。
     assert_eq!(px(&fb, 0, 0), 0xEEEE_EEEE);
@@ -331,11 +332,11 @@ fn draw_image_argb_alpha_key_and_clip() {
     assert_eq!(px(&fb, 2, 3), 0xEEEE_EEEE, "A=0 + 窗内：穿透");
 }
 
-// —— ScaledArgb：非整数 1.5x 与 2x 最近邻采样、alpha 同步采样 ——
+// —— ScaledArgb：非整数 1.5x 与 2x 最近邻采样、透明键同律 ——
 #[test]
 fn draw_image_scaled_argb_nearest_and_guard() {
     let d = desc16();
-    // 2×2 → 4×2：列采样中心取整为 0,1,1,1；A=0 仍透明。
+    // 2×2 → 4×2：列采样中心取整为 0,1,1,1；A=0 仍透明键。
     let img: [u32; 4] = [
         0xFFFF_0000, 0x0000_0000, //
         0xFF00_FF00, 0xFF00_00FF,
@@ -420,29 +421,6 @@ fn draw_image_smooth_argb_bilinear() {
     assert_eq!(px(&fb, 2, 0), 0x0000_00FF);
 }
 
-// —— SmoothArgb 半透明采样：预乘避免透明底 RGB 渗黑 ——
-#[test]
-fn draw_image_smooth_argb_premultiplies_partial_alpha() {
-    let d = desc16();
-    let img: [u32; 2] = [0x80FF_0000, 0x0000_0000];
-    let mut fb = vec![0xEEu8; d.need_bytes()];
-    let mut enc = CommandEncoder::new();
-    enc.draw_image(
-        ImageSrc::SmoothArgb { sw: 2, sh: 1, dw: 3, dh: 1, px: &img },
-        0,
-        0,
-        WHITE,
-        None,
-    )
-    .unwrap();
-    let dl = enc.finish();
-    Queue::new().submit(&dl, &mut fb, &d, &PassDescriptor::load()).unwrap();
-    let mid = px(&fb, 1, 0);
-    assert_eq!(mid, 0x00F2_B2B2, "半透红仍保红相并混合 0xEE 底");
-    let (r, g, b) = ((mid >> 16) & 0xFF, (mid >> 8) & 0xFF, mid & 0xFF);
-    assert!(r > g && r > b, "中间像素不得被透明底拉黑");
-}
-
 // —— ARGB 恰长拒面：短/长切片 + 手搓 Cmd 旁路 + 巨参（先验后写）——
 #[test]
 fn draw_image_argb_pixel_mismatch() {
@@ -503,58 +481,4 @@ fn draw_image_argb_pixel_mismatch() {
     assert!(Queue::new().submit(&dl4, &mut fb2, &d, &PassDescriptor::load()).is_ok());
     // Debug 面可打（三变体齐——bits_error_forms 的 Argb 补位）。
     assert!(format!("{:?}", ImageSrc::Argb { w: 3, h: 2, px: &short }).contains("Argb"));
-}
-
-// —— RGB565 壁纸双线性：2→3 中点插值 + submit 恰长先验 ——
-#[test]
-fn draw_image_smooth_rgb565_bilinear_and_guard() {
-    let d = desc16();
-    let pxs: [u16; 2] = [0xF800, 0x001F];
-    let mut fb = vec![0xEEu8; d.need_bytes()];
-    let mut enc = CommandEncoder::new();
-    enc.draw_image(
-        ImageSrc::SmoothRgb565 { sw: 2, sh: 1, dw: 3, dh: 1, px: &pxs },
-        0,
-        0,
-        WHITE,
-        None,
-    )
-    .unwrap();
-    let dl = enc.finish();
-    Queue::new().submit(&dl, &mut fb, &d, &PassDescriptor::load()).unwrap();
-    assert_eq!(px(&fb, 0, 0), 0x00FF_0000);
-    assert_eq!(px(&fb, 1, 0), 0x007F_007F);
-    assert_eq!(px(&fb, 2, 0), 0x0000_00FF);
-
-    let mut enc = CommandEncoder::new();
-    enc.draw_image(
-        ImageSrc::SmoothRgb565 { sw: 2, sh: 1, dw: 3, dh: 1, px: &pxs[..1] },
-        0,
-        0,
-        WHITE,
-        None,
-    )
-    .unwrap();
-    let before = fb.clone();
-    let dl = enc.finish();
-    assert_eq!(
-        Queue::new().submit(&dl, &mut fb, &d, &PassDescriptor::load()),
-        Err(SubmitError::ImagePixelMismatch { index: 0 })
-    );
-    assert_eq!(fb, before);
-}
-
-// —— 抗锯齿圆：中心实心、角外穿透、边缘中间覆盖率 ——
-#[test]
-fn fill_circle_antialiases_edges() {
-    let d = desc16();
-    let mut fb = vec![0xEEu8; d.need_bytes()];
-    let mut enc = CommandEncoder::new();
-    enc.fill_circle(Rect::new(2, 2, 12, 12), WHITE).unwrap();
-    let dl = enc.finish();
-    Queue::new().submit(&dl, &mut fb, &d, &PassDescriptor::load()).unwrap();
-    assert_eq!(px(&fb, 8, 8), 0x00FF_FFFF, "圆心实心");
-    assert_eq!(px(&fb, 2, 2), 0xEEEE_EEEE, "bounding 角外穿透");
-    assert_ne!(px(&fb, 2, 8), 0x00FF_FFFF, "边缘不得硬边");
-    assert_ne!(px(&fb, 2, 8), 0xEEEE_EEEE, "边缘必须混合");
 }

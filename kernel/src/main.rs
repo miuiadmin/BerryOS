@@ -384,27 +384,6 @@ fn panel_cfg_req() -> (u64, u64) {
     (d7, d8)
 }
 
-/// Boot presentation face request. This mirrors BerryBoot's fw_cfg parser;
-/// absent, malformed, or unreadable means the default graphical capsule.
-fn bootmode_verbose_req() -> bool {
-    use berry_hal_aarch64::fwcfg;
-    let Some(e) = fwcfg::find_file("opt/berry/bootmode") else {
-        return false;
-    };
-    if e.size == 0 || e.size > 16 {
-        return false;
-    }
-    let mut buf = [0u8; 16];
-    if !fwcfg::read_to(&e, &mut buf[..e.size as usize]) {
-        return false;
-    }
-    let body = buf[..e.size as usize]
-        .split(|&b| b == 0 || b == b'\n' || b == b'\r')
-        .next()
-        .unwrap_or(&[]);
-    body.eq_ignore_ascii_case(b"verbose")
-}
-
 /// 内核 Rust 入口（由 HAL boot asm 的 `br rust_main` 调用——2b-1 起高半入口）。
 /// C-ABI 约定（ADR #18），符号名与 asm 精确匹配；首参 = 入口 x0（boot asm 的
 /// x19 抢救）——**双语义**（V-1a 分流）：EFI 路 = BerryHandoff PA（BerryBoot
@@ -472,7 +451,6 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // GUI P2：ramfb 手机档成功时置 1——随 fbinfo 第 6 域交 guifbd，
     // GUI 模式 console 只走串口/记账，不上屏盖桌面。
     let mut gui_mode = false;
-    let boot_face_verbose = bootmode_verbose_req();
     // 刀1（刷新率体系规范 §4-2）：@Hz 率域随 fbinfo 第 7 域交 guifbd 软面板
     //（ramfb_set 成功时才落值——几何回退则率域同回退 60；缺省 60）。
     let mut gui_hz: u16 = 60;
@@ -1080,6 +1058,15 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         unsafe { berry_hal_aarch64::timer::set_slice_hz(PILAT_SLICE_HZ) };
     }
 
+    // 04 号审计附记一（2026-11-17）：S5-c deadline 解冻端到端复活链探针——
+    // 配置早读。fw_cfg 具名键 `opt/berry/s5cprobe` 在位才武装（pilat 同款
+    // 「机制不是自律」；值面不解析——探针无配置轴，键在即全配置）。早读
+    // 只置 S5C_ARMED；不动 set_slice_hz（缺省 10Hz tick 足够：period ≥ 4
+    // tick 量化可容——预算面真口径见探针体 S5C_BUDGET_MS 注「授片覆盖」段）。
+    if berry_hal_aarch64::fwcfg::find_file(S5C_PROBE_NAME).is_some() {
+        S5C_ARMED.store(true, core::sync::atomic::Ordering::Relaxed);
+    }
+
     // Phase 2a Step 5：IRQ 派发钩子 + timer 管线（规律 tick，**不从 IRQ 调 switch**）。
     // SAFETY: EL1、启动单线程、仅一次：缓存 CNTFRQ/算 SLICE（不武装）。
     unsafe { berry_hal_aarch64::timer::init() };
@@ -1124,8 +1111,17 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
 
     // IRQ 此刻仍屏蔽（boot DAIF）；spawn 要求屏蔽态（alloc/enqueue 不可打断）。
     berry_sched::init();
-    // 3-4c 遥测环：注册切换钩子（init 后、首个切换前——rust_main 尾部的
-    // yield_now 即产生首条记录；watchdog 断言环在涨 + vct 单调）。
+    // 04 号审计基线缺口（2026-11-17）：switch_pair 调度器纪元基准窗——
+    // berry_sched::init 与 telemetry::init 之间的唯一槽位（调度器已在 +
+    // 遥测钩子未注册 = TRACE_CAP 0.0 结构性零面 + boot DAIF 屏蔽窗）。
+    // `BENCH ok` 收尾行自 bench::run() 尾迁至本纪元尾恒发（n=8；trailer 须
+    // 在最后一行 BENCH 之后——bench.py 的 len==done_n 收割契约）。纪元内
+    // 切换先于遥测注册 = G1.5 的 tel>=switches_tt 配平悬账（见 bench.rs
+    // run_sched_epoch 注）——配对修复主线收。
+    bench::run_sched_epoch();
+    // 3-4c 遥测环：注册切换钩子（init 后、首个**被记录**切换前——bench
+    // 纪元窗的切换在钩子注册前结构性零记录；rust_main 尾部的 yield_now
+    // 即产生首条记录；watchdog 断言环在涨 + vct 单调）。
     telemetry::init();
     // 4-3b PI：注册 SLEEPQ 变更钩子（block 睡下后 / wake 摘队后全图重推；
     // 与 telemetry 同位——均须在首个切换前）。
@@ -1860,13 +1856,16 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                         h_fb, 0x0001_0005,
                         "main: svcmgr 表 fb VMO 须第 5 插 0x0001_0005（编译侧硬编码）"
                     );
-                    // 几何 info VMO：80B = fb_pa/w/h/stride/fmt/gui/
-                    // refresh_hz + 软面板 cfg 两域 + bootface = 十域 u64 LE。
-                    // Mainline refresh 已占第 7..9 域，GUI verbose face 合线后
-                    // add-only 尾插为第 10 域 offset 72..80；guifbd 只读 72B，
-                    // svcmgr/vgpud 单独读 bootface 尾域。
+                    // 几何 info VMO：72B = fb_pa/w/h/stride/fmt/gui/refresh_hz
+                    // + 软面板 cfg 两域 = 九域 u64 LE（一页 VMO，create+
+                    // commit+write 三连——rootfs VMO 同款；第 7 域 = 刀1
+                    // 率通路尾插、第 8/9 域 = 刀2 软面板 cfg（model/mode/
+                    // seed + 故障旋钮，位布局 = guiproto
+                    // `softpanel::PanelCfg::pack_domains` 手镜像），add-only
+                    // 不重排——旧 guifbd 只读前 56B 无扰动，新 guifbd 读
+                    // 旧内核零页 = 0 → 缺省态）。
                     let (panel_d7, panel_d8) = panel_cfg_req();
-                    let mut info = [0u8; 80];
+                    let mut info = [0u8; 72];
                     info[0..8].copy_from_slice(&fb_pa.to_le_bytes());
                     info[8..16].copy_from_slice(&(w as u64).to_le_bytes());
                     info[16..24].copy_from_slice(&(h as u64).to_le_bytes());
@@ -1877,7 +1876,6 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
                     info[48..56].copy_from_slice(&(gui_hz as u64).to_le_bytes());
                     info[56..64].copy_from_slice(&panel_d7.to_le_bytes());
                     info[64..72].copy_from_slice(&panel_d8.to_le_bytes());
-                    info[72..80].copy_from_slice(&(boot_face_verbose as u64).to_le_bytes());
                     let mut ivmo =
                         vmo::Vmo::create(4096).expect("main: fbinfo Vmo create");
                     ivmo.commit(mm::frames(), 0, 4096)
@@ -2275,6 +2273,38 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
         berry_hal_aarch64::uart_put_dec(PILAT_PERIOD_MS);
         berry_hal_aarch64::uart_puts(b" slice_hz=");
         berry_hal_aarch64::uart_put_dec(PILAT_SLICE_HZ);
+        berry_hal_aarch64::uart_puts(b"\n");
+    }
+
+    // ---- 04 号审计附记一（2026-11-17）：S5-c deadline 解冻端到端复活链探针
+    //      spawn（配置早读在 timer::init 前；探针体在 pilat 任务体区后）----
+    // 被证链：deadline 任务预算燃尽 → Fair::tick 置 HELD_THROTTLE → 周期到
+    // → 生产出选面（Fair::pick_next_filtered 头部，2026-11-17 双写修复起）
+    // lazy_unthrottle_deadlines 解冻 → 复活续跑。ktest DL-B1/B2/B3 直调面
+    // 只证函数体（ktest 在 sched::init 前跑、无真调度循环），且现行生产载荷
+    // 零 deadline 任务（user/ 与 kernel/bins/ 无 SA_FLAG_POLICY 消费者）——
+    // 端到端证据只此一具。门控同 pilat 形：fw_cfg `opt/berry/s5cprobe` 在位
+    // 才 spawn，缺席 = run/smoke 零扰动，EFI 路天然缺席。
+    if S5C_ARMED.load(core::sync::atomic::Ordering::Relaxed) {
+        // s5c_dl 先 spawn（prio = PRIO_DEADLINE——**必须入环前就是 deadline**：
+        // DL_ON_RING 账本在 link_back 时刻按 is_deadline 计数（runqueue.rs
+        // 结构原语层），在途改档 fair→deadline 不重入环则账本恒 0 →
+        // lazy_unthrottle 的 dl_on_ring()==0 早退门常闭 → 解冻永不发生
+        // （探针首版即栽此坑：fair prio 8 入环+宽限后改档，跑出
+        // S5C-DLP FAIL dl-frozen iters=71088。生产无此形态——唯一 deadline
+        // 入口 apply_sched_attr_to_task 在 spawn 期、enqueue 前落字段）。
+        // 宽限窗内预算三字段为缺省（threshold=0 → 不受预算执法；
+        // duration_hint_ns=0 → 不触解冻面），任务体首拍即睡无影响；
+        // 醒后 klock 窗内补齐 vdeadline/period/budget 三件（见任务体注）。
+        // s5c_fair 看门狗 prio 0（dl 冻死时垄断在跑的观察者——dl 自己无法
+        // 自报 FAIL）。
+        berry_sched::spawn_with(task_s5c_dl, 0, b"s5c_dl", berry_sched::PRIO_DEADLINE);
+        berry_sched::spawn_with(task_s5c_fair, 0, b"s5c_fair", 0);
+        // 门控自证行（PILAT gate on 同款）：行在 ⟺ 两任务已 spawn + 档已生效。
+        berry_hal_aarch64::uart_puts(b"S5C gate on period_ms=");
+        berry_hal_aarch64::uart_put_dec(S5C_PERIOD_MS);
+        berry_hal_aarch64::uart_puts(b" budget_ms=");
+        berry_hal_aarch64::uart_put_dec(S5C_BUDGET_MS);
         berry_hal_aarch64::uart_puts(b"\n");
     }
 
@@ -4363,6 +4393,7 @@ const USER_SIGNAL_BITS: &[(u64, &str)] = &[
     (1 << 50, "lat 触发 Event 内部位（G3-5 候选① C 形常驻再触发——soakmon 拍后 signal+wake_matching；Event 落内核私有表不经 ABI object_signal 面，登记 = 防撞/去重面〔f4 F8 补〕）"),
     (1 << 51, "dpg 握手位（G4-1 demand 闭环——裸键族共用一位：内核 fault/pager/done 三键 + EL0 键化族 EFAULT×32〔X-5 扩池 8→32〕/EOVERFLOW/EPAGER〔G4-2 起、B-1 池化〕共 37 键；不经 Event 对象，登记 = 防撞/去重面）"),
     (1 << 52, "loadgen 哑 Event（CP-06 A/B 负载生成器——master/sleeper 轮询块与周期睡，永不置位，仅超时醒）"),
+    (1 << 53, "sbench 裸键族（04 号审计基线缺口 switch_pair——调度器纪元 A/B 门控 block/wake 往返对叫醒位；不经 Event 对象，登记 = 防撞/去重面）"),
 ];
 // 编译期执法：登记表不得重复位（挑位前查表 + 本断言 = 双保险）。
 const _: () = {
@@ -5305,6 +5336,231 @@ extern "C" fn task_pilat_hi(arg: usize) -> ! {
     berry_sched::exit_current()
 }
 
+// ---- 04 号审计附记一（2026-11-17）：S5-c deadline 解冻端到端复活链探针
+//      （spawn 块见上方 pilat 块后；配置早读见 timer::init 前）----
+// 判读法：`S5C-DLP ok stalls=N iters=M`（N≥2）= 复活链实证——每次确认
+// stall 的检测都发生在复活后（冻死的任务读不了钟），N≥2 即 ≥2 轮「燃尽
+// →限流→周期到→解冻→复活」；`S5C-DLP FAIL dl-frozen iters=M` = 附记一
+// 缺陷形态复现（dl 改档后燃尽即冻死、生产面永久不可出选——由 fair 陪跑
+// 看门狗代报）；`S5C-DLP FAIL cap iters=M` = 帽到而链未证的中间态（fail
+// loud）。探针写在修复未合入的树上也能编译，跑出 FAIL dl-frozen 正是探针
+// 的意义。探针是手动验证仪器非 smoke 门：FAIL 不 panic，判读靠人 grep 行。
+// 判读注意两条（审查轮补）：① FAIL dl-frozen 在 TCG 下有假报面——guest
+// 钟=墙钟（TCG 载荷 deadline 竞速判例），宿主停顿/重度争用 ≥3×period 时
+// iters 静态可超限，修复生效的树也会打该行：复跑分辨，勿单跑定谳；② 勿
+// 与 pilat/LOADGEN 同 boot 共开——s5c_dl 顶带（PRIO_DEADLINE）垄断同窗
+// 会污染彼探针测量（本探针独立 boot 跑）。
+
+/// 探针的 fw_cfg 具名项名（PILAT_PROBE_NAME 同款「两侧对读维护」纪律；
+/// 手跑专递 `-fw_cfg name=opt/berry/s5cprobe,string=1`）。
+const S5C_PROBE_NAME: &str = "opt/berry/s5cprobe";
+
+/// deadline 周期（≥ 4 tick @ 缺省 10Hz——period ≥ 4 tick 量化可容，故本
+/// 探针不动 set_slice_hz）。
+const S5C_PERIOD_MS: u64 = 400;
+/// 每期预算（CBS 形：budget ≪ period）。口径注记：解冻后的再分派走
+/// sched.rs 八授片点（Band 可达——另 idle 臂 Unit 授片不出带）
+/// （`slice_left = grant_cycles()`）整片覆盖——dl 预算面
+/// 真生效域只有改档后首片（首 tick 即燃尽入限流），此后每期实跑 ≈ 一个
+/// tick 片（100ms @ 10Hz），占空比 ≈ slice/period ≈ 25% 而非本值的 0.5%；
+/// stall 判读（隙 > period/2）不受影响。这是现状调度器的授片/预算交互
+/// 事实，非本探针引入。
+const S5C_BUDGET_MS: u64 = 2;
+/// 开跑宽限（PILAT_GRACE_MS 同因：boot 验收对收尾——dl 改档与看门狗
+/// 起检都在宽限后）。
+const S5C_GRACE_MS: u64 = 1000;
+/// 探针总帽（PILAT_CAP_MS 同因：fail loud 帽——帽到链未证由看门狗打
+/// FAIL cap 行，不留静默挂跑）。
+const S5C_CAP_MS: u64 = 10_000;
+/// 确认 stall 数门槛（≥2：第 2 次 stall 检测本身就落在第 2 轮复活后，
+/// 即链的两轮实证）。
+const S5C_STALLS_NEEDED: u64 = 2;
+
+/// 探针武装位（早读置位 / spawn 块消费）。
+static S5C_ARMED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// dl 任务迭代计数（dl 写 / fair 看门狗读——活性信号；Relaxed 纯计数，
+/// stats.rs 纪律）。
+static S5C_DL_ITERS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// 收工旗（dl ok 后 Release 置位 / 看门狗 Acquire 读——序发布同 PILAT_END）。
+static S5C_DONE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// s5c_dl（spawn 即 PRIO_DEADLINE 入环——DL_ON_RING 账本在 link_back 按
+/// 入环时刻位阶计数，在途改档不入账（首版教训见 spawn 块注）；宽限后 klock
+/// 窗内补齐预算三件——受害者）：改档窗 = 内核任务直调临界区
+/// klock_enter/klock_exit（F 位点先例，task_waker 同款——IRQ 屏蔽先于一切
+/// 取锁的次序铁则内置）+ for_each_runnable 找自己（Running 常驻环
+/// cur-in-ring、spread=false 恒家核——本核环必含自己；环走查改非链接字段
+/// = pi.rs recompute 尾趟先例，遍历契约「只读字段或写 prio_* 等非链接
+/// 字段」）。预算三件口径照 syscall.rs apply_sched_attr_to_task 生产写面：
+/// 绝对 vdeadline + period→duration_hint_ns + budget→preempt_threshold 且
+/// slice_left=budget（prio 双字段已由 spawn_with 落好——此处幂等重写无害；
+/// 陷阱：duration_hint_ns 名带 _ns 实存 CNTVCT cycles，vdeadline 同 cycles
+/// 口径）。测量环每拍：计数 + 读 CNTVCT 与上拍比隙 + 烧固定小功——隙 >
+/// period/2 判一次确认 stall（band 1000 之下无更高者、IRQ 窗短，长隙唯一
+/// 来源 = 预算限流）；stall 后循环仍在续跑 = 复活。≥2 次确认 stall 再跑
+/// 一段验计数续涨 → 打 ok 行 → 置 DONE → 睡死自净（勿 exit——v1 任务不
+/// 退出，task_a/b 注）。
+extern "C" fn task_s5c_dl(_arg: usize) -> ! {
+    use crate::syscall::{NR_CLOCK_READ, NR_THREAD_SLEEP};
+    let mut now: u64 = 0;
+    // SAFETY: svc 同步异常；now 为本任务私有栈变量（内核高半，copy_out 直拷）。
+    let pnow = core::ptr::addr_of_mut!(now) as u64;
+    assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "s5c_dl: clock_read");
+    // 宽限睡（绝对锚——pl_low 同法；SVC 语境天然屏蔽窗，睡/续行自动配对）。
+    assert_eq!(
+        svc4(NR_THREAD_SLEEP as u64, now + S5C_GRACE_MS * 1_000_000, 0, 0),
+        0,
+        "s5c_dl: 宽限睡眠（boot 验收对收尾）"
+    );
+    // cycles 口径换算（vdeadline/duration_hint_ns/slice 记账全用 CNTVCT
+    // 周期；ms×freq 量级 ≪ u64 无溢出——ns_to_vct 先商后余同因的宽式）。
+    let freq = berry_hal_aarch64::timer::cntfrq();
+    assert!(freq != 0, "s5c_dl: CNTFRQ 异常");
+    let period_vct = S5C_PERIOD_MS * freq / 1000;
+    let budget_vct = S5C_BUDGET_MS * freq / 1000;
+    // 自我改档窗（窗形态论据见函数头注）。
+    let mut armed = false;
+    berry_hal_aarch64::kern_lock::klock_enter();
+    berry_sched::for_each_runnable(|t| {
+        if !armed && t.name == b"s5c_dl".as_slice() {
+            armed = true;
+            t.prio_base = berry_sched::PRIO_DEADLINE;
+            t.prio_effective = berry_sched::PRIO_DEADLINE;
+            t.vdeadline = berry_hal_aarch64::timer::cntvct().saturating_add(period_vct);
+            t.duration_hint_ns = period_vct;
+            let b = budget_vct.min(i32::MAX as u64) as i32;
+            t.preempt_threshold = b;
+            t.slice_left = b as u64;
+        }
+    });
+    berry_hal_aarch64::kern_lock::klock_exit();
+    assert!(armed, "s5c_dl: 改档窗未在本核环上找到自己");
+    // 测量环：隙 > period/2 = 确认 stall；帽 = 链迟迟未证时退场（FAIL cap
+    // 行由看门狗侧打——dl 只管自己别无限烧 CPU）。
+    let half = period_vct / 2;
+    let cap_vct = S5C_CAP_MS * freq / 1000;
+    let t0 = berry_hal_aarch64::timer::cntvct();
+    let mut last = t0;
+    let mut stalls: u64 = 0;
+    let mut iters: u64 = 0;
+    let ok = loop {
+        // 烧固定小功 + 计数（Relaxed 纯计数——看门狗只看涨不看点位）。
+        for _ in 0..64 {
+            core::hint::spin_loop();
+        }
+        iters += 1;
+        S5C_DL_ITERS.store(iters, core::sync::atomic::Ordering::Relaxed);
+        let now2 = berry_hal_aarch64::timer::cntvct();
+        if now2.saturating_sub(last) > half {
+            // 确认 stall：本拍读数只能落在复活后——循环续跑即复活实证。
+            stalls += 1;
+            if stalls >= S5C_STALLS_NEEDED {
+                // 末次 stall 后计数续涨确认（此刻正在跑——再烧一段即证）。
+                for _ in 0..1000 {
+                    core::hint::spin_loop();
+                    iters += 1;
+                    S5C_DL_ITERS.store(iters, core::sync::atomic::Ordering::Relaxed);
+                }
+                break true;
+            }
+        }
+        last = now2;
+        if now2.saturating_sub(t0) > cap_vct {
+            break false;
+        }
+    };
+    if ok {
+        berry_hal_aarch64::kern_lock::with_print_lock(|| {
+            berry_hal_aarch64::uart_puts(b"S5C-DLP ok stalls=");
+            berry_hal_aarch64::uart_put_dec(stalls);
+            berry_hal_aarch64::uart_puts(b" iters=");
+            berry_hal_aarch64::uart_put_dec(iters);
+            berry_hal_aarch64::uart_puts(b"\n");
+        });
+        S5C_DONE.store(true, core::sync::atomic::Ordering::Release);
+    }
+    // 自净：睡死（勿 exit——v1 任务不退出）；每小时重锚续睡。
+    loop {
+        assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "s5c_dl: clock_read 自净");
+        assert_eq!(
+            svc4(NR_THREAD_SLEEP as u64, now + 3_600_000_000_000, 0, 0),
+            0,
+            "s5c_dl: 睡死自净"
+        );
+    }
+}
+
+/// s5c_fair（fair prio 0，陪跑 + 看门狗双职）：dl 冻死（附记一缺陷形态——
+/// HELD_THROTTLE 后生产面永久不可出选，dl 自己无法自报 FAIL）时本任务
+/// 垄断在跑，代行观察：dl 迭代计数静态超 3×period 且收工旗未置 → 打
+/// FAIL dl-frozen 行；帽到链未证 → 打 FAIL cap 行。任一收场后睡死自净
+///（勿 exit）。3×period 静态判据在固定树上不误报：dl 复活段间隔 ≈
+/// period − 片（< 3×period），计数每轮复活都在涨。
+extern "C" fn task_s5c_fair(_arg: usize) -> ! {
+    use crate::syscall::{NR_CLOCK_READ, NR_THREAD_SLEEP};
+    let mut now: u64 = 0;
+    // SAFETY: 同 s5c_dl。
+    let pnow = core::ptr::addr_of_mut!(now) as u64;
+    assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "s5c_fair: clock_read");
+    // 宽限同睡（dl 在宽限内未起跑——计数静态是设计态非冻死，起检须在
+    // 宽限后防误报；PILAT_INF_DELAY_MS 同因防挂死/误报）。
+    assert_eq!(
+        svc4(NR_THREAD_SLEEP as u64, now + S5C_GRACE_MS * 1_000_000, 0, 0),
+        0,
+        "s5c_fair: 宽限睡眠"
+    );
+    let freq = berry_hal_aarch64::timer::cntfrq();
+    assert!(freq != 0, "s5c_fair: CNTFRQ 异常");
+    let frozen_vct = 3 * S5C_PERIOD_MS * freq / 1000;
+    let cap_vct = S5C_CAP_MS * freq / 1000;
+    let t0 = berry_hal_aarch64::timer::cntvct();
+    let mut last_iters = S5C_DL_ITERS.load(core::sync::atomic::Ordering::Relaxed);
+    let mut last_change = t0;
+    loop {
+        // 降频小忙转（可被 tick 切——dl 复活段 band 1000 恒压本任务）。
+        for _ in 0..50_000 {
+            core::hint::spin_loop();
+        }
+        if S5C_DONE.load(core::sync::atomic::Ordering::Acquire) {
+            break;
+        }
+        let n = S5C_DL_ITERS.load(core::sync::atomic::Ordering::Relaxed);
+        let now2 = berry_hal_aarch64::timer::cntvct();
+        if n != last_iters {
+            last_iters = n;
+            last_change = now2;
+        }
+        if now2.saturating_sub(last_change) > frozen_vct {
+            // dl 计数静态超 3×period：改档后燃尽即冻死（或从未起跑）——
+            // 附记一缺陷形态，代报。
+            berry_hal_aarch64::kern_lock::with_print_lock(|| {
+                berry_hal_aarch64::uart_puts(b"S5C-DLP FAIL dl-frozen iters=");
+                berry_hal_aarch64::uart_put_dec(n);
+                berry_hal_aarch64::uart_puts(b"\n");
+            });
+            break;
+        }
+        if now2.saturating_sub(t0) > cap_vct {
+            // 帽到而链未证（dl 活着但 stall 不足等中间态）——fail loud。
+            berry_hal_aarch64::kern_lock::with_print_lock(|| {
+                berry_hal_aarch64::uart_puts(b"S5C-DLP FAIL cap iters=");
+                berry_hal_aarch64::uart_put_dec(n);
+                berry_hal_aarch64::uart_puts(b"\n");
+            });
+            break;
+        }
+    }
+    // 自净：睡死（勿 exit）；每小时重锚续睡。
+    loop {
+        assert_eq!(svc4(NR_CLOCK_READ as u64, 0, pnow, 0), 0, "s5c_fair: clock_read 自净");
+        assert_eq!(
+            svc4(NR_THREAD_SLEEP as u64, now + 3_600_000_000_000, 0, 0),
+            0,
+            "s5c_fair: 睡死自净"
+        );
+    }
+}
+
 // ---- 方案 B：rwake 真 sleep/wake 唤醒基准（HDR 第二个真实消费者；boot 门控
 // spawn 块见上方 dpg::init 后；设计 = docs/调点调度-v1.3.md §9 留刀 +
 // docs/调度器设计-v1.2.md §测量基础设施「boot 序列真 sleep/wake」（:403 留刀行））----
@@ -5937,7 +6193,7 @@ const SOAK_PROBE_NAME: &str = "opt/berry/soak";
 ///（S-5d 心跳 v2 八字段 + S-5e M1 v2.1 追加第 9 字段——端到端防假绿）。
 ///
 /// - 九字段全是现成计数器直读（`berry_sched::switches` = switches=N 金丝雀
-///   同源标量；`smp::sw_park_readout` = S-5a per-CPU sw/park 四数〔跨核
+///   两槽和快照〔2026-11-17 机会三起 switches() 求和〕；`smp::sw_park_readout` = S-5a per-CPU sw/park 四数〔跨核
 ///   volatile 单字读，谓词为严格递增/有界增量断言，无需一致快照〕；
 ///   `mm::frames().allocated_pages` = B-0/S-2 对账口径（D24 起
 ///   O(1) 水位原子读，口径由 buddy 对拍测试钉板）；`uart::rx_lost` =
@@ -5997,7 +6253,7 @@ extern "C" fn task_soakmon(arg: usize) -> ! {
         let sw = berry_sched::switches();
         // S-5d 心跳 v2（D4）：per-CPU sw/park 四数入行；S-5e M1 v2.1 追加 churn。
         let (sw0, sw1, park0, park1) = berry_hal_aarch64::smp::sw_park_readout();
-        let pages = mm::frames().allocated_pages() as u64;
+        let pages = mm::allocated_pages() as u64;
         let lost = berry_hal_aarch64::uart::rx_lost() as u64;
         // S-5e M1（心跳 v2.1）：载荷业务进度第 9 字段——调度/内存面照绿而
         // churn 冻结 = svc 恒败/gen 顶格/写者被杀，端到端假绿在此开口。
@@ -6079,17 +6335,8 @@ extern "C" fn task_soakmon(arg: usize) -> ! {
 /// cpu_do_idle 同款；TCG 实测 wfe 立返拖垮主核吞吐——S-1 铁律）。
 #[no_mangle]
 pub unsafe extern "C" fn secondary_main() -> ! {
-    // S-2b 修复：换离低半早期栈（__boot_stack_top）到高半静态栈——必须在
-    // 任何调用/IRQ 之前（本函数 `-> !`，旧帧弃置无害）。此后本核全部栈
-    // 访问（探测环帧/tick IRQ 帧/park 存档帧）都在高半：主表与用户表均映，
-    // park 帧恢复后读栈不再依赖低半映射（2b-2 退役；风暴雷详注见 smp.rs
-    // `SMP_SEC_STACK`）。
-    {
-        let top = berry_hal_aarch64::smp::sec_stack_top();
-        // SAFETY: 特权寄存器写；副核 DAIF 屏蔽窗内单线程；nostack——只改
-        // 寄存器不访问内存（此刻旧栈仍在低半可用，但本指令不触栈）。
-        unsafe { core::arch::asm!("mov sp, {0}", in(reg) top, options(nostack)) };
-    }
+    // S-2b + F0-2：高半 `.bss` 副核栈已在 `.Lsmp_final` `blr` 进入本函数前切妥（消除
+    // Rust 函数序言在换栈前压旧栈/只读段的 UB 窗口）。
     // SAFETY: 特权寄存器写；副核 DAIF 窗内单线程。
     // （排障期哨兵 enter/init ok 已随 C1 复活验证回收——bring-up 窗口 =
     // UART 单写者纪律窗，副核静默是 SMP ok 完整落行的前提，勿在此窗加打印。）
@@ -7252,7 +7499,7 @@ extern "C" fn task_alloc(arg: usize) -> ! {
             let r = berry_sched::block_current(arg, ALLOC_EV_BIT, deadline);
             berry_hal_aarch64::kern_lock::klock_exit();
             assert!(r == WakeReason::Timeout, "alloc: 沉降等待醒因非 Timeout");
-            let p = mm::frames().allocated_pages();
+            let p = mm::allocated_pages();
             if p == last {
                 stable += 1;
             } else {
@@ -7268,7 +7515,7 @@ extern "C" fn task_alloc(arg: usize) -> ! {
     let (_hp, _hv, hd) = storm_spawn_fleet("A", user_allocst_code(), STORM_WRITER_N, 0);
     // ② 基线：水位（fleet 帧已在——flag 门保证）+ per-CPU sw（写者已
     // thread_start，park 自旋不占内核态面）。
-    let pages_base = mm::frames().allocated_pages();
+    let pages_base = mm::allocated_pages();
     let (sw0_b, sw1_b, _, _) = berry_hal_aarch64::smp::sw_park_readout();
     // ③ 放行。
     let one: u8 = 1;
@@ -7293,7 +7540,7 @@ extern "C" fn task_alloc(arg: usize) -> ! {
     // 水位断言 = **带宽口径**：SMP EL0 形态全局水位无干净窗（常驻面 ±几帧
     // 波动 = 噪声底；S-5b 三跑实证），对账主信号 = churn 帧全泄（320 轮
     // × 1 帧 = ±320 量级）——带宽 64 = 常驻波动余量，主信号裕度 5×。
-    let pages_end = mm::frames().allocated_pages() as i64;
+    let pages_end = mm::allocated_pages() as i64;
     let delta = pages_end - pages_base as i64;
     assert!(
         delta.abs() <= 64,

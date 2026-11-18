@@ -1,0 +1,2 @@
+# 构建产物（mkfat/mkcpio 同款——CARGO_TARGET_DIR 钉本目录防全局串）
+cargo-target/

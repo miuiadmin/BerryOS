@@ -194,6 +194,12 @@ const CAP_SLOW_NS: u64 = 90_000_000_000;
 /// 阻塞循环轮询节拍（accept-wait/data-wait——bsh evs 1s 同款）。
 const POLL_TICK_NS: u64 = 1_000_000_000;
 
+/// Client 臂 BUSY 全局帽（F87 liveness 收口）：单 op 自首次 ST_BUSY 起持续
+/// 背压超此时长 → bail EIO。对齐 vnet 侧 op 帽 TCPS_RT_CAP_NS=60s 的语义
+/// ——服务端 60s 内必给终局（OK/TIMEOUT），持续 BUSY 超窗 = ops 环占死/
+/// 对抗背压迫使客户端弃写（此前无帽形：退避 1s 重发无限循环，send 永不返）。
+const BUSY_CAP_NS: u64 = 60_000_000_000;
+
 fn now() -> u64 {
     let mut t = 0u64;
     // 失败 t=0 → 帽值退化为「now+帽」下界，无害。
@@ -216,13 +222,75 @@ fn sleep_tick() {
 /// 帽等 READABLE → recv 原长。**超时不重发**：晚到应答滞留队列毒化下一
 /// 请求是 v1 设计面——四刀起 Client 臂 K 窗（[`sock_send`]）用 seq 配对
 /// 收割（陈值 = seq ∉ 在途集即弃），本单发壳供 DNS/OPEN/CLOSE/慢 op/
-/// Server 臂保持 v1 严格串行零漂移。netd gift 缺席（netd_h()==0）与链断
+/// Server 臂保持 v1 严格串行。**五刀①（2026-11-17）**：共享通道漂应答
+/// 的毒化面收口——K 窗与单发壳（[`netd_rpc_raw_valid`] 消费面）对非本
+/// 请求形状的外来消息弃置续收（帽内 ≤[`FOREIGN_DROP_MAX`] 条，弃置即
+/// 消费出通道）；同形陈应答（v1 无关联号）仍不可辨——bail 弃留的兄弟
+/// op 迟到应答每具误伤恰一次（跨套接字面，survey F147 口径），dup 通道
+/// 多消费者全偿归 wave10/14 债。netd gift 缺席（netd_h()==0）与链断
 /// 同返 None（调用方按 op 定 errno——gift 面由公开入口先查，此处 None 即
 /// 链断面）。A4-2 抽出：TcpSReq 包装层（[`netd_rpc`]）与 DNS 请求层
 /// （[`dns_query`]——请求形态非 TcpSReq）共用同一线上协议。
 fn netd_rpc_raw(req: &[u8], cap_ns: u64, rep: &mut [u8]) -> Option<usize> {
     netd_rpc_issue(req)?;
     netd_rpc_harvest(cap_ns, rep)
+}
+
+/// 外来应答弃置界（五刀①）：单发壳/K 窗收割弹出的消息若非本请求形状
+/// （他请求的迟到应答——共享 netd 通道 wave10/14 已知债的活性面，
+/// 2026-11-17 复现靴活体实证），弃置续收而非立即 EIO——帽内至多
+/// [`FOREIGN_DROP_MAX`] 条，超出 = 真病面（洪泛/协议破缺）loud 返 None。
+/// 弃置即消费：被弃应答出通道（对后续消费者的毒化面顺带清偿一条）。
+const FOREIGN_DROP_MAX: usize = 16;
+
+/// 单发壳的帽内外来弃置收割（五刀① P2）：issue 一次后帽内循环收割——
+/// 每条消息先经 `valid` 判形，非本请求形状弃置续收；链断/帽到/弃置越界
+/// 返 None。收割入 253B 满幅 scratch 再判形（vnet 烘焙线应答 ≤253——
+/// 小幅 rep 直读会被超幅外来消息 EINVAL 误判链断）。
+fn netd_rpc_raw_valid(
+    req: &[u8],
+    cap_ns: u64,
+    rep: &mut [u8],
+    valid: fn(&[u8]) -> bool,
+) -> Option<usize> {
+    netd_rpc_issue(req)?;
+    let dl = now() + cap_ns;
+    let mut scratch = [0u8; ndp::RT_SEQ_REP_MAX];
+    let mut dropped = 0usize;
+    loop {
+        let n = netd_rpc_harvest_dl(dl, &mut scratch)?;
+        if n > rep.len() {
+            // 过检帧超本请求应答幅（如 v1 面弹出 253B seq 形外来帧）——
+            // 截断会伪装成合法 v1 形落成功路（审查 P2 实抓），按外来弃置。
+            dropped += 1;
+            if dropped > FOREIGN_DROP_MAX {
+                return None;
+            }
+            continue;
+        }
+        if valid(&scratch[..n]) {
+            rep[..n].copy_from_slice(&scratch[..n]);
+            return Some(n);
+        }
+        dropped += 1;
+        if dropped > FOREIGN_DROP_MAX {
+            return None;
+        }
+    }
+}
+
+/// [`netd_rpc`] 的判形收割形（rpc_st/rpc_data/rpc_sid 消费面）。
+fn netd_rpc_valid(
+    req: ndp::TcpSReq<'_>,
+    session: u32,
+    cap_ns: u64,
+    rep: &mut [u8],
+    valid: fn(&[u8]) -> bool,
+) -> Option<usize> {
+    let mut buf = [0u8; ndp::REQ_S_LEN_MAX];
+    let n = ndp::encode_tcp_s_request(&mut buf, req, session)?;
+    // buf 前 n 字节已初始化（encode 产物）。
+    netd_rpc_raw_valid(&buf[..n], cap_ns, rep, valid)
 }
 
 /// RPC 发出相（四刀 P2 拆壳）：send 满队 -EBUSY 阻塞等 WRITABLE 重试
@@ -304,7 +372,9 @@ fn dns_query(name: &[u8]) -> Result<[u8; 4], c_int> {
         None => return Err(crate::EAI_NONAME), // 空/越帽——预检已拦，防御面
     };
     let mut rep = [0u8; ndp::REPLY_LEN];
-    let got = netd_rpc_raw(&req[..n], CAP_FAST_NS, &mut rep);
+    let got = netd_rpc_raw_valid(&req[..n], CAP_FAST_NS, &mut rep, |b| {
+        ndp::parse_reply(b).is_some()
+    });
     let r = got
         .and_then(|n| ndp::parse_reply(&rep[..n]))
         .ok_or(crate::EAI_NONAME)?; // 链断/畸形同路
@@ -315,10 +385,17 @@ fn dns_query(name: &[u8]) -> Result<[u8; 4], c_int> {
 }
 
 /// Tcp 形应答（OPEN / 命名 RT / DRAIN）的 st-only 消费：ST_OK → Ok；
-/// 非 OK → op 参数化 errno；RPC/parse 失败 → EIO（链断 loud）。
+/// 非 OK → op 参数化 errno；RPC/parse 失败 → EIO（链断 loud）。五刀①：
+/// 非 Tcp 形外来应答经 [`netd_rpc_valid`] 弃置续收——同形陈应答（v1 无
+/// 关联号）不可辨，维持 wave10/14 边界（头注见 [`netd_rpc_raw`]）。
 fn rpc_st(op: SockOp, req: ndp::TcpSReq<'_>, session: u32, cap_ns: u64) -> Result<(), c_int> {
     let mut rep = [0u8; ndp::TCP_REP_MAX];
-    let n = netd_rpc(req, session, cap_ns, &mut rep).ok_or(crate::EIO)?;
+    // 五刀①（审查收紧）：本面请求恒 v1 无 seq——seq 形应答结构性外来，
+    // 判形加 seq 必 None（否则 253B seq 帧经幅差截断可伪装 v1 落成功路）。
+    let n = netd_rpc_valid(req, session, cap_ns, &mut rep, |b| {
+        ndp::parse_tcp_reply(b).map_or(false, |r| r.seq.is_none())
+    })
+    .ok_or(crate::EIO)?;
     let r = ndp::parse_tcp_reply(&rep[..n]).ok_or(crate::EIO)?;
     if r.st == ndp::ST_OK {
         Ok(())
@@ -337,7 +414,11 @@ fn rpc_data(
     out: &mut [u8],
 ) -> Result<usize, c_int> {
     let mut rep = [0u8; ndp::TCP_REP_MAX];
-    let n = netd_rpc(req, session, cap_ns, &mut rep).ok_or(crate::EIO)?;
+    // 五刀①（审查收紧）：同 rpc_st——seq 形应答对本面结构性外来。
+    let n = netd_rpc_valid(req, session, cap_ns, &mut rep, |b| {
+        ndp::parse_tcp_reply(b).map_or(false, |r| r.seq.is_none())
+    })
+    .ok_or(crate::EIO)?;
     let r = ndp::parse_tcp_reply(&rep[..n]).ok_or(crate::EIO)?;
     if r.st != ndp::ST_OK {
         return Err(sock_rpc_errno(op, r.st));
@@ -351,7 +432,11 @@ fn rpc_data(
 /// sid；非 OK → op 参数化 errno。
 fn rpc_sid(op: SockOp, req: ndp::TcpSReq<'_>, session: u32, cap_ns: u64) -> Result<u32, c_int> {
     let mut rep = [0u8; ndp::SID_REP_LEN];
-    let n = netd_rpc(req, session, cap_ns, &mut rep).ok_or(crate::EIO)?;
+    let valid: fn(&[u8]) -> bool = match op {
+        SockOp::Listen => |b| ndp::parse_listen_reply(b).is_some(),
+        _ => |b| ndp::parse_accept_reply(b).is_some(),
+    };
+    let n = netd_rpc_valid(req, session, cap_ns, &mut rep, valid).ok_or(crate::EIO)?;
     let r = match op {
         SockOp::Listen => ndp::parse_listen_reply(&rep[..n]),
         _ => ndp::parse_accept_reply(&rep[..n]),
@@ -373,7 +458,12 @@ enum PollState {
 
 fn rpc_poll(session: u32) -> Result<PollState, c_int> {
     let mut rep = [0u8; ndp::POLL_REP_LEN];
-    let n = netd_rpc(ndp::TcpSReq::Poll, session, CAP_FAST_NS, &mut rep).ok_or(crate::EIO)?;
+    // 五刀①（审查补）：Server 臂最热收割面换免疫形——4B 小幅 rep 会被
+    // 超幅外来消息 EINVAL 回滚钉死队首（recv 恒 EIO/epoll 恒 POLLERR）。
+    let n = netd_rpc_valid(ndp::TcpSReq::Poll, session, CAP_FAST_NS, &mut rep, |b| {
+        ndp::parse_poll_reply(b).is_some()
+    })
+    .ok_or(crate::EIO)?;
     let r = ndp::parse_poll_reply(&rep[..n]).ok_or(crate::EIO)?;
     match r.st {
         ndp::ST_OK => Ok(PollState::Live {
@@ -817,13 +907,16 @@ struct PipeOp {
     got: usize,
     /// ST_BUSY 退避重发时刻（0 = 无待重发）。
     retry_dl: u64,
+    /// 首次 ST_BUSY 时刻（0 = 从未背压；F87 全局帽起算点——重发-再 BUSY
+    /// 循环不顺延，仅 ST_OK 收割清零）。
+    busy_since: u64,
     echo: [u8; ndp::TCP_DATA_MAX],
 }
 
 /// `send(2)` / write 链尾（sock_send）：按 kind 分形——
 /// - Client：legacy RT（session-0）分片 ≤TCP_DATA_MAX 走 **K 窗流水线**
 ///   （四刀 P2：issue/harvest 两相——K 个 op 在途、应答按 seq 配对收割、
-///   陈值弃、BUSY 同 seq 退避重发帽内；回显按 op 序入槽缓冲——每 op 应答
+///   陈值弃、BUSY 同 seq 退避重发＋持续背压 60s 全局帽到 EIO（F87）；回显按 op 序入槽缓冲——每 op 应答
 ///   仍严格等长携本 op 回显，ROUNDTRIP 对外语义零漂移）；缓冲余量不足
 ///   → 部分写返回（首片即不足 = EAGAIN——读写节奏面，容量 = K×250）；
 /// - Server：命名 RT 纯发送臂（应答不携数据，A3-1 案②）；
@@ -867,6 +960,9 @@ fn sock_send_pipe(fd: c_int, buf: *const u8, n: usize) -> ssize_t {
     // 下一窗）。
     let mut win: [Option<PipeOp>; TCP_PIPE_K] = [None; TCP_PIPE_K];
     let (mut head, mut inflight) = (0usize, 0usize);
+    // 五刀①：外来消息（非 Tcp 形/陈 seq）弃置计数——帽内续收，越界
+    // （> FOREIGN_DROP_MAX）= 洪泛/协议破缺真病面，loud bail。
+    let mut foreign = 0usize;
     /// 错误返回收口：已发部分 → 部分写；首片 → errno（在途 op 的迟到
     /// 应答按陈值弃——seq 收割面纪律，echo 不再入槽）。
     fn bail(sent: usize, errno: c_int) -> ssize_t {
@@ -918,7 +1014,7 @@ fn sock_send_pipe(fd: c_int, buf: *const u8, n: usize) -> ssize_t {
             let i = (head + inflight) % TCP_PIPE_K;
             let mut echo = [0u8; ndp::TCP_DATA_MAX];
             echo[..chunk].copy_from_slice(data);
-            win[i] = Some(PipeOp { seq, len: chunk, got: 0, retry_dl: 0, echo });
+            win[i] = Some(PipeOp { seq, len: chunk, got: 0, retry_dl: 0, busy_since: 0, echo });
             inflight += 1;
             sent += chunk;
         }
@@ -957,12 +1053,24 @@ fn sock_send_pipe(fd: c_int, buf: *const u8, n: usize) -> ssize_t {
         };
         let r = match ndp::parse_tcp_reply(&rep[..got]) {
             Some(r) => r,
-            None => return bail(sent, crate::EIO),
+            None => {
+                // 五刀①：非 Tcp 形外来应答（他请求迟到——共享通道活性面）
+                // 弃置续收，不 bail 本窗口；越界 = 真病面 loud。
+                foreign += 1;
+                if foreign > FOREIGN_DROP_MAX {
+                    return bail(sent, crate::EIO);
+                }
+                continue;
+            }
         };
         // seq 配对：命中在途 op 收割；陈值（∉ 在途集——迟到/无 seq 形）
-        // 弃置续收。
+        // 弃置续收（五刀① 起计入弃置界——陈值洪泛同 loud）。
         let hit = (0..TCP_PIPE_K).find(|&i| win[i].as_ref().map(|o| o.seq) == r.seq);
         let Some(i) = hit else {
+            foreign += 1;
+            if foreign > FOREIGN_DROP_MAX {
+                return bail(sent, crate::EIO);
+            }
             continue;
         };
         match r.st {
@@ -974,12 +1082,24 @@ fn sock_send_pipe(fd: c_int, buf: *const u8, n: usize) -> ssize_t {
                 }
                 op.echo[..op.len].copy_from_slice(r.data);
                 op.got = op.len;
+                op.busy_since = 0;
             }
             ndp::ST_BUSY => {
                 // 环/op 容量背压：同 seq 退避重发（1s 节拍，收割帽内）。
-                if let Some(op) = win[i].as_mut() {
-                    op.retry_dl = now() + POLL_TICK_NS;
+                // F87 liveness 帽：自首次 BUSY 起 60s 仍持续背压（vnet 侧
+                // ops 环占死/对抗形——TIMEOUT 终局被占死吞掉）→ bail，send
+                // 不再无限退避。
+                let Some(op) = win[i].as_mut() else { continue };
+                let t = now();
+                if op.busy_since == 0 {
+                    // now() 读失败返 0 与哨兵同值——t.max(1) 消除首样本
+                    // 恰采 0 时的记账顺延面（F107；持续读失败形态由收割
+                    // 帽快速 bail 兜底，无 liveness 洞）。
+                    op.busy_since = t.max(1);
+                } else if t >= op.busy_since + BUSY_CAP_NS {
+                    return bail(sent, crate::EIO);
                 }
+                op.retry_dl = t + POLL_TICK_NS;
                 continue;
             }
             st => {

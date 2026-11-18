@@ -1,4 +1,4 @@
-//! fail —— P5 `&&` 自验的确定性非零退出程序（`docs/shell设计-v1.0.md` v0）。
+//! fail —— P5 `&&` 自验的确定性非零退出程序（`docs/shell设计-v1.1.md` v0）。
 //!
 //! 契约：`exit(42)`——std `process::exit` → libc `exit` → **EOF 先行**
 //! （`send_stdout_eof`，收集方零长终点约定）→ `berry_process_exit(0x33)`

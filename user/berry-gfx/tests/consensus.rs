@@ -74,7 +74,7 @@ fn shape_str(s: &str, cols: usize) -> Vec<GlyphPos> {
             col = 0;
             row += 1;
         }
-        out.push(GlyphPos { ch: u32::from(b), x: (col * 8) as i32, y: (row * 16) as i32 });
+        out.push(GlyphPos { ch: b, x: (col * 8) as i32, y: (row * 16) as i32 });
         col += 1;
     }
     out
@@ -127,7 +127,7 @@ fn consensus_put_char_bgrx_multicolor() {
     // 坐标换算内联：x = col*8、y = row*16）。定位数据先备好再进 encoder。
     let per_cell: Vec<[GlyphPos; 1]> = cells
         .iter()
-        .map(|&(col, row, ch, _, _)| [GlyphPos { ch: u32::from(ch), x: (col * 8) as i32, y: (row * 16) as i32 }])
+        .map(|&(col, row, ch, _, _)| [GlyphPos { ch, x: (col * 8) as i32, y: (row * 16) as i32 }])
         .collect();
     let runs: Vec<(&[GlyphPos], Rgb, Rgb)> = per_cell
         .iter()
@@ -197,8 +197,8 @@ fn consensus_guards_are_real() {
     let fg = (255u8, 0, 0); // 非灰彩色：pack 翻转可区分
     let bg = (0x10u8, 0x20, 0x30);
     let positions = [
-        GlyphPos { ch: u32::from(b'A'), x: 0, y: 0 },
-        GlyphPos { ch: u32::from(b'#'), x: 8, y: 0 },
+        GlyphPos { ch: b'A', x: 0, y: 0 },
+        GlyphPos { ch: b'#', x: 8, y: 0 },
     ];
     let a = fbcon_render(w, h, stride, PixelFormat::Rgbx, |c| {
         c.clear(bg);

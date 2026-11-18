@@ -70,7 +70,7 @@ use berry_ui::desc::{
 };
 use berry_ui::layout::CrossAlign;
 use berry_ui::pattern::{self, ItemState, NavHost};
-use berry_ui::theme::{self, ThemeMode, Tokens};
+use berry_ui::theme::{self, Theme, Tokens};
 use berry_ui::{
     IconSource, Msg, NodeId, ProportionalTextMetrics, UiError, UiMain, ROLE_BUTTON,
     ROLE_LIST_ITEM,
@@ -1170,7 +1170,7 @@ fn build_chat(ui: &mut UiMain, a: &mut App, c: usize) -> Result<(), UiError> {
 /// Err = 容量/文本域违例 fail 收口。
 fn build_all(ui: &mut UiMain) -> Result<App, UiError> {
     let (vp_w, vp_h) = ui.viewport();
-    let t = Tokens::pick(ThemeMode::Light);
+    let t = Tokens::pick(Theme::Light);
     let root = ui.root();
     let mut nav = NavHost::new();
     let nav_root = nav.attach(ui, root)?;

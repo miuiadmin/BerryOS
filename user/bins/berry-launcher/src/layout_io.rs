@@ -42,7 +42,7 @@ use berry_layout::{emit, parse, Cell, Layout, CELL_MAX, ID_MAX, LAYOUT_BYTES_MAX
 
 use appshell::conf::{read_key, write_key, ConfKey, ReadOutcome};
 
-use crate::desktop::{is_test_app, GRID_COLS, PAGES, SLOTS_PER_PAGE};
+use crate::desktop::{GRID_COLS, PAGES, SLOTS_PER_PAGE};
 use crate::icons::AppEntry;
 
 /// 卷根布局文件（8.3 大写名单——fsmgr 单 FAT 卷根；CWD 默认根，bsh
@@ -110,25 +110,9 @@ const BLANK: OwnedCell = OwnedCell { app: [0; ID_MAX], app_len: 0, page: 0, row:
 ///（合法态——desktop 全占位格；emit 对 0 cell 拒 EmptyCells ⇒ `save`
 /// 静默跳过：无可持久化内容，W1 空注册表常态）。
 pub fn default_layout(reg: &[AppEntry]) -> OwnedLayout {
-    default_layout_with_tests(reg, true)
-}
-
-/// 常态官方桌面默认布局：验收 APPDEMO/APPQUIET 只保留在 GUI8 冒烟相，
-/// 产品默认布局过滤后**紧致重排**。过滤但保留原格会把 Berry Demo 推到
-/// 第 4 列，而产品 e2e/真实桌面契约都是第二列（首列 Browser）。
-pub fn product_default_layout(reg: &[AppEntry]) -> OwnedLayout {
-    default_layout_with_tests(reg, false)
-}
-
-fn default_layout_with_tests(reg: &[AppEntry], include_tests: bool) -> OwnedLayout {
     let mut l = OwnedLayout { cells: [BLANK; CELL_MAX], len: 0 };
-    for e in reg
-        .iter()
-        .filter(|e| include_tests || !is_test_app(e.id_bytes()))
-        .take(CELL_MAX)
-    {
+    for (i, e) in reg.iter().enumerate().take(CELL_MAX) {
         let id = e.id_bytes();
-        let i = l.len;
         let mut c = BLANK;
         c.app[..id.len()].copy_from_slice(id);
         c.app_len = id.len() as u8;
@@ -148,25 +132,18 @@ fn default_layout_with_tests(reg: &[AppEntry], include_tests: bool) -> OwnedLayo
 /// 假 = 原三约束面逐字节不变）。
 pub fn load(reg: &[AppEntry], smoke: bool, fs_ready: bool) -> OwnedLayout {
     if !fs_ready {
-        if smoke {
-            return default_layout(reg);
-        }
-        return product_default_layout(reg);
+        return default_layout(reg);
     }
     if smoke {
         return smoke_load(reg);
     }
     match read_key(&LAYOUT_KEY) {
-        ReadOutcome::Absent => heal(reg, None, smoke),
-        ReadOutcome::Oversize(n) => heal(reg, Some(format!("too big {n}")), smoke),
-        ReadOutcome::Failed(e) => heal(reg, Some(format!("read errno={e}")), smoke),
+        ReadOutcome::Absent => heal(reg, None),
+        ReadOutcome::Oversize(n) => heal(reg, Some(format!("too big {n}"))),
+        ReadOutcome::Failed(e) => heal(reg, Some(format!("read errno={e}"))),
         ReadOutcome::Bytes(b) => match parse(&b) {
             Ok(l) => owned_from(&l),
-            Err(e) => heal(
-                reg,
-                Some(format!("parse {} at {}", e.desc(), e.at())),
-                smoke,
-            ),
+            Err(e) => heal(reg, Some(format!("parse {} at {}", e.desc(), e.at()))),
         },
     }
 }
@@ -310,15 +287,11 @@ fn same_cells(a: &OwnedLayout, b: &OwnedLayout) -> bool {
 
 /// 回默认 + 重写自愈（`why` = 诊断前缀，None = 缺席常态零打印——首
 /// boot 无文件非异常；写失败在 `save` 内非致命收口）。
-fn heal(reg: &[AppEntry], why: Option<String>, smoke: bool) -> OwnedLayout {
+fn heal(reg: &[AppEntry], why: Option<String>) -> OwnedLayout {
     if let Some(w) = why {
         eprintln!("launcher: layout {w} -- default");
     }
-    let d = if smoke {
-        default_layout(reg)
-    } else {
-        product_default_layout(reg)
-    };
+    let d = default_layout(reg);
     save(&d);
     d
 }

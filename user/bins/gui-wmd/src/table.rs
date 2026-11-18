@@ -1,10 +1,11 @@
-//! 权威窗口表（GUI-5 §3 #5）——静态定容（guifbd `Srv` 先例：无堆分配、
-//! 无生长面）。服务状态四件：
+//! 权威窗口表（GUI-5 §3 #5 + 波3 焦点/返回路由/事件通道）——静态定容
+//! （guifbd `Srv` 先例：无堆分配、无生长面）。服务状态六件：
 //!
-//! - **entries**：两层窗（APP/SYSTEM）+ owner session + Z 序 +
-//!   parent/group 缝 + 单焦点；
-//!   表项携**有效几何**（AVOID_SYS 避让推导后——wire 回显面），申请几何
-//!   不回显但内部在案（重推导需要申请值，Q10 wire 语义钉板）。
+//! - **entries**：三层窗（APP/SYSTEM/SERVICE——波3 收宽 layer=2）+ Z 序 +
+//!   parent/group 缝 + 单焦点 + **属主事件通道**（波3：CREATE 应答随行
+//!   gift 通道端，表项记属主；DESTROY 关联关闭）；表项携**有效几何**
+//!   （AVOID_SYS 避让推导后——wire 回显面），申请几何不回显但内部在案
+//!   （重推导需要申请值，Q10 wire 语义钉板）。
 //! - **version**：`(epoch u8 << 24) | counter u24`，counter ∈ 1..=0xFFFFFF
 //!   跳 0 → **恒 ≥1**（空表初始化即 version≥1——冷启动 WAIT(0) 恒立即
 //!   答）；epoch = 启动 CNTVCT 派生 u8（无持久化下唯一跨启动区分源——
@@ -12,41 +13,49 @@
 //!   兜底闭环，Q11-③）。
 //! - **parked**：单车位 TABLE_WAIT（应答通道 + 其 last_seen）。**单车位
 //!   语义钉死（R2 备注⑦）：后到 WAIT 现答现快照并覆盖 parked 不排队**
-//!   ——位移者立即以现快照应答（防悬挂；v1 两客户端面各自严格串行 RPC
-//!   结构性不可达，后刀多客户端注意）；表变更向**当前** parked 应答
-//!   全表快照并清空（消息序 = 表序，无竞面）。
+//!   ——位移者立即以现快照应答（防悬挂）。**波3 立法（波3设计 §9）：
+//!   TABLE_WAIT 冻结、零新增驻留者**——表跟随一律走事件通道通知
+//!   （WM_EVENT_TABLE）+ TABLE_GET 快照；inputd 推送面（push_srv）仍是
+//!   唯一合法驻留者，新鲜度窗口（一次中继时长）接受为 v1 语义。
+//! - **pending_back**：波3 返回路由兜底单槽（目标窗 + 截止时刻，§3 R2）
+//!   ——OP_WM_BACK 向焦点窗属主投递 WM_EVENT_BACK 后武装；BACK_ACK 或
+//!   任何表变更解除；500ms 到点 wmd 兜底 DESTROY（表序内建 refocus 回
+//!   最末可见窗）。单槽语义同 parked：后到覆盖重臂不排队（位移者已收
+//!   事件，兜底网只剩新槽——旧窗 ACK 迟到按 wid 失配忽略）。
+//! - **subs**：无窗订阅者事件通道（OP_WM_SUBSCRIBE——guifbd 表快照
+//!   「通知驱动 + 异步拉取」面，波3设计 §4）；与属主通道同收表变更
+//!   广播。静态定容帽 [`WM_EVT_SUBS_MAX`]。订阅者通道 = 表跟随 RPC
+//!   面（TABLE_GET 即答；TABLE_WAIT 冻结律不动——即答非驻留）。
 //! - **有效几何不变量式避让**：任何 CREATE/DESTROY/SET（含系统层窗
 //!   变更）触发受影响表项重算 O(N)（N≤15 零成本）——AVOID_SYS 旗标窗
-//!   对 layer=SYSTEM **可见**窗求差集写有效几何（隐藏系统窗不挖坑——
-//!   与 hit-test 隐藏恒不中一致）；单矩形保形裁剪（四条剩余带取面积
-//!   最大者：状态栏顶条 → 应用窗自顶收缩；全覆盖 → w/h=0 恒不中）。
+//!   对 layer=SYSTEM **可见**窗求差集写有效几何（**SERVICE 不挖坑**——
+//!   波3设计 §5 裁决：软键盘暂态压顶，避让反致 APP 窗反复重排；层序
+//!   SERVICE>SYSTEM>APP 由 hit-test layer 降序天然覆盖）；单矩形保形
+//!   裁剪（四条剩余带取面积最大者：状态栏顶条 → 应用窗自顶收缩；
+//!   全覆盖 → w/h=0 恒不中）。
 //!
-//! 错误码面：id/parent 无效 ST_NOENT、表满 ST_FULL、跨 owner
-//! SET/DESTROY 为 ST_DENIED、野值已在 wire 层拒
-//! （guiproto parse 域执法——本表不做第二解析器）。
+//! I/O 全走 [`Port`] 缝（host 单测 mock 客户端面）；错误码面：id/parent
+//! 无效 ST_NOENT、表满 ST_FULL、野值已在 wire 层拒（guiproto parse 域
+//! 执法——本表不做第二解析器）。
 
+use crate::{Port, SendEvtStatus};
 use berry_guiproto as gp;
 use berry_sys::Handle;
 
-/// RUN-K1 host harness 供给缝：WmTable 的状态机与策略留在 lib 面；时钟、
-/// channel send、close、诊断与 fatal trap 由 guest/host 分别注入。guest
-/// 实现委托原 serve I/O；host 实现为确定性 recorder，不造第二权威。
-pub trait WmIo {
-    fn now_ns(&self) -> u64;
-    fn send(&self, channel: Handle, reply: &[u8]);
-    fn status(&self, channel: Handle, status: u8);
-    fn close_handles(&self, handles: &[Handle]);
-    fn diag_wrap_clear(&self);
-    fn trap(&self) -> !;
-}
+/// 无窗订阅者事件通道帽（静态定容纪律——guifbd 面实测 1 路，4 路 = 测试
+/// 与防御余量；满即 ST_FULL）。
+pub const WM_EVT_SUBS_MAX: usize = 4;
+
+/// 返回键兜底帽：WM_EVT_BACK 投递后无 BACK_ACK 且无表变更的容忍窗
+/// （波3设计 §3 R2——500ms 单槽软定时，进 serve 循环零新增线程）。
+pub const WMD_BACK_FALLBACK_NS: u64 = 500 * 1_000_000;
 
 /// 内部窗口项：申请几何（推导源）+ 有效几何（wire 回显面）分域携带——
-/// 表项只回显有效几何，重推导需要申请值在案。
+/// 表项只回显有效几何，重推导需要申请值在案。`evt` = 属主事件通道
+/// （wmd 侧端；None = 旧式/降级无通道窗——BACK 兜底直接 DESTROY）。
 #[derive(Clone, Copy)]
 struct Win {
     id: u16,
-    /// 拥有者 session id（Phase 1；CREATE 绑定，SET/DESTROY 同 owner 执法）。
-    owner: u16,
     parent: u16,
     group: u8,
     /// 申请几何（客户端 CREATE/SET 原值——有效几何的推导输入）。
@@ -57,14 +66,8 @@ struct Win {
     z: u8,
     vis: bool,
     avoid_sys: bool,
-    edge_to_edge: bool,
-    /// R3 per-window pending config event。None = 已 ack 或无待消费事件；
-    /// 新事件直接覆盖旧事件（last-one-wins），serial 由 [`Self::bump`] 统一
-    /// 落为本次表版本。
-    config: Option<gp::WmConfigEvent>,
-    /// Wayland “未 configure 不得 commit” 的 Berry teeth：CREATE 后为
-    /// false，精确 ACK 当前事件后 true；极端 serial 终局只清 pending。
-    config_synced: bool,
+    /// 属主事件通道（wmd 侧端）——CREATE 建联、DESTROY 关联关闭（波3 §3）。
+    evt: Option<Handle>,
 }
 
 /// 单矩形裁剪：C 减 S（半开矩形），保形取四条剩余带面积最大者（并列取
@@ -99,79 +102,31 @@ fn clip_rect(c: (u32, u32, u32, u32), s: (u32, u32, u32, u32)) -> (u32, u32, u32
     best
 }
 
-/// owner APP 窗口的布局指纹（cache/replay 计划面；不含像素）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OwnerWindow {
-    pub id: u16,
-    pub raw: (u16, u16, u16, u16),
-    pub eff: (u16, u16, u16, u16),
-}
-
-/// RUN-K1 合成裁剪产物：目标全屏矩形与 surface raw-local 源子矩形。
-/// 两组坐标必须成对产生，禁止先裁 source 再平移到 destination。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CompositeClip {
-    pub dst: gp::Rect,
-    pub src: gp::Rect,
-}
-
-/// 把 raw-local damage `rect` 平移到窗口原点 `dst_xy` 后裁到全屏。
-/// 返回 None 表示空交；右/下越界会同步缩短 source 子区间，防一行写穿
-/// 到下一屏幕行。
-pub fn composite_clip(
-    dst_xy: (u32, u32),
-    rect: gp::Rect,
-    screen_w: u32,
-    screen_h: u32,
-) -> Option<CompositeClip> {
-    let dst_x0 = (u64::from(dst_xy.0) + u64::from(rect.x)).min(u64::from(screen_w));
-    let dst_y0 = (u64::from(dst_xy.1) + u64::from(rect.y)).min(u64::from(screen_h));
-    let dst_x1 = (u64::from(dst_xy.0) + u64::from(rect.x) + u64::from(rect.w))
-        .min(u64::from(screen_w));
-    let dst_y1 = (u64::from(dst_xy.1) + u64::from(rect.y) + u64::from(rect.h))
-        .min(u64::from(screen_h));
-    if dst_x1 <= dst_x0 || dst_y1 <= dst_y0 {
-        return None;
-    }
-    let src_x = u32::try_from(dst_x0 - u64::from(dst_xy.0)).ok()?;
-    let src_y = u32::try_from(dst_y0 - u64::from(dst_xy.1)).ok()?;
-    Some(CompositeClip {
-        dst: gp::Rect {
-            x: dst_x0 as u32,
-            y: dst_y0 as u32,
-            w: (dst_x1 - dst_x0) as u32,
-            h: (dst_y1 - dst_y0) as u32,
-        },
-        src: gp::Rect {
-            x: src_x,
-            y: src_y,
-            w: (dst_x1 - dst_x0) as u32,
-            h: (dst_y1 - dst_y0) as u32,
-        },
-    })
-}
-
 pub struct WmTable {
     wins: [Win; gp::WM_WINDOWS_MAX],
     count: usize,
     focus: Option<u16>,
     version: u32,
     next_id: u16,
-    /// 单车位 TABLE_WAIT（应答通道 + 其 last_seen）。
+    /// 单车位 TABLE_WAIT（应答通道 + 其 last_seen）——波3 冻结面（见模块注）。
     parked: Option<(Handle, u32)>,
-    io: &'static dyn WmIo,
+    /// 返回路由兜底单槽（目标窗 + 截止时刻）——见模块注。
+    pending_back: Option<(u16, u64)>,
+    /// 无窗订阅者事件通道（定容数组，表序稳定）。
+    subs: [Handle; WM_EVT_SUBS_MAX],
+    subs_n: usize,
     disp_w: u16,
     disp_h: u16,
 }
 
 impl WmTable {
     /// 空表初始化：version = 新纪元 counter 1（恒 ≥1）；epoch = 启动
-    /// CNTVCT 派生 u8。
-    pub fn new(io: &'static dyn WmIo, disp_w: u16, disp_h: u16) -> Self {
-        let epoch = (io.now_ns() & 0xFF) as u8;
+    /// 时刻（`boot_ns`——单调钟现值由调用方注入，Port 缝外的唯一时间
+    /// 入参）派生 u8。
+    pub fn new(disp_w: u16, disp_h: u16, boot_ns: u64) -> Self {
+        let epoch = (boot_ns & 0xFF) as u8;
         let blank = Win {
             id: 0,
-            owner: 0,
             parent: 0,
             group: 0,
             req: (0, 0, 0, 0),
@@ -180,9 +135,7 @@ impl WmTable {
             z: 0,
             vis: false,
             avoid_sys: false,
-            edge_to_edge: false,
-            config: None,
-            config_synced: false,
+            evt: None,
         };
         WmTable {
             wins: [blank; gp::WM_WINDOWS_MAX],
@@ -191,69 +144,57 @@ impl WmTable {
             version: ((epoch as u32) << 24) | 1,
             next_id: 0,
             parked: None,
-            io,
+            pending_back: None,
+            subs: [0; WM_EVT_SUBS_MAX],
+            subs_n: 0,
             disp_w,
             disp_h,
         }
     }
 
     /// 表变更公共出口：version+1（counter 回绕跳 0——恒 ≥1 不变量）→ 向
-    /// 当前 parked 应答全表快照并清空。
-    fn bump(&mut self) {
+    /// 当前 parked 应答全表快照并清空 → 解除返回兜底槽（§3 R2「无表
+    /// 变更」条件——客户端以 DESTROY/SET 自证存活）→ 广播
+    /// WM_EVENT_TABLE（尽力而为）。
+    fn bump<P: Port>(&mut self, p: &mut P) {
         let counter = (self.version & 0x00FF_FFFF) + 1;
-        let wrapped = counter > 0x00FF_FFFF;
-        let mut epoch = self.version >> 24;
-        let counter = if wrapped { 1 } else { counter };
-        if wrapped && epoch < 0xFF {
-            // counter 回绕时抬 epoch：serial 在同一 wmd 纪元内保持不重复，
-            // inputd 的 WAIT 采用“!=”判新，无需大小比较。256 次 counter
-            // 回绕（≈2^32 次表变）才触及下方终局防御。
-            epoch += 1;
-        }
-        self.version = (epoch << 24) | counter;
-        if wrapped && epoch == 0xFF {
-            // 极端终局：只清已成旧 advisory pending，防旧 ACK 在 serial
-            // 值域重复后误中；本 bump 新事件保留并可 ACK。
-            for win in self.wins.iter_mut().take(self.count) {
-                // serial=0 是本 bump 刚生成的新事件：终局防御只清已成旧
-                // pending，不吞掉本次 CREATE/SET 的可恢复状态。
-                if win.config.map(|ev| ev.serial != 0).unwrap_or(false) {
-                    win.config = None;
-                }
-            }
-            self.io.diag_wrap_clear();
-        }
-        // 本次表变更新生成的事件先以 serial=0 占位，这里统一落成新表版本；
-        // 已存在的未 ack 旧事件不被无关 focus bump 改号。
-        for win in self.wins.iter_mut().take(self.count) {
-            if let Some(ev) = &mut win.config {
-                if ev.serial == 0 {
-                    ev.serial = self.version;
-                }
-            }
-        }
+        let counter = if counter > 0x00FF_FFFF { 1 } else { counter };
+        self.version = (self.version & 0xFF00_0000) | counter;
+        self.pending_back = None;
         if let Some((ch, _)) = self.parked.take() {
-            self.send_snapshot(ch);
+            self.send_snapshot(p, ch);
         }
+        self.broadcast_table(p);
     }
 
-    /// 生成/覆盖某窗 pending config（serial 暂 0，待 bump 统一赋值）。
-    fn mark_config(&mut self, i: usize, cause: u8) {
-        let win = &self.wins[i];
-        self.wins[i].config = Some(gp::WmConfigEvent {
-            serial: 0,
-            window_id: win.id,
-            cause,
-            visible: win.vis,
-            raw_x: win.req.0,
-            raw_y: win.req.1,
-            raw_w: win.req.2,
-            raw_h: win.req.3,
-            visible_x: win.eff.0,
-            visible_y: win.eff.1,
-            visible_w: win.eff.2,
-            visible_h: win.eff.3,
-        });
+    /// 表变更广播（波3 §3）：WM_EVENT_TABLE(version) 非阻塞单发到全部
+    /// 属主/订阅者通道——满即丢（真值恒经 TABLE_GET 快照，丢弃至多迟一
+    /// 拍）；余错码 = 通道病态 → 关闭拆除（属主降级无通道窗、订阅者摘
+    /// 除；内核 v1 无对端死亡检测，错码面实为防御）。
+    fn broadcast_table<P: Port>(&mut self, p: &mut P) {
+        let mut frame = [0u8; gp::WM_EVT_TABLE_LEN];
+        let n = gp::encode_wm_evt_table(&mut frame, self.version);
+        for i in 0..self.count {
+            let Some(h) = self.wins[i].evt else { continue };
+            if p.send_nowait(h, &frame[..n]) == SendEvtStatus::Dead {
+                p.close(h);
+                self.wins[i].evt = None;
+            }
+        }
+        let mut s = 0;
+        while s < self.subs_n {
+            let h = self.subs[s];
+            if p.send_nowait(h, &frame[..n]) == SendEvtStatus::Dead {
+                p.close(h);
+                // 摘除保序（表序稳定——wait 集构造确定性）。
+                for j in s..self.subs_n - 1 {
+                    self.subs[j] = self.subs[j + 1];
+                }
+                self.subs_n -= 1;
+                continue;
+            }
+            s += 1;
+        }
     }
 
     /// 快照现值（有效几何 + 焦点/可见旗标面）。
@@ -302,22 +243,25 @@ impl WmTable {
     }
 
     /// 应答快照（252B ≤ CHAN_MSG_MAX 256 单帧）。
-    fn send_snapshot(&self, ch: Handle) {
+    fn send_snapshot<P: Port>(&self, p: &mut P, ch: Handle) {
         let mut out = [0u8; gp::WM_REP_MAX];
         match gp::encode_wm_snapshot_rep(&mut out, &self.snapshot()) {
-            Some(n) => self.io.send(ch, &out[..n]),
-            None => self.io.trap(), // 表项值域由本表构造保证——防御面
+            Some(n) => p.send(ch, &out[..n]),
+            None => p.fail(), // 表项值域由本表构造保证——防御面
         }
+    }
+
+    /// 1B 状态应答（非 OK 烘焙线 + DESTROY/SET/FOCUS/BACK 成功形）。
+    fn st_rep<P: Port>(p: &mut P, ch: Handle, st: u8) {
+        let mut out = [0u8; 1];
+        let n = gp::encode_status_rep(&mut out, st);
+        p.send(ch, &out[..n]);
     }
 
     /// 有效几何重算（不变量式避让）：对每 AVOID_SYS 窗，申请几何依次减
     /// 全部**可见**系统层窗（表序确定性；自窗除外——SYSTEM 层携旗不
-    /// 自避）。
+    /// 自避；SERVICE 层不挖坑——波3 §5 裁决，覆盖语义）。
     fn recompute(&mut self) {
-        let mut before = [(0u16, 0u16, 0u16, 0u16); gp::WM_WINDOWS_MAX];
-        for (dst, src) in before.iter_mut().zip(self.wins.iter()).take(self.count) {
-            *dst = src.eff;
-        }
         for i in 0..self.count {
             if !self.wins[i].avoid_sys {
                 self.wins[i].eff = self.wins[i].req;
@@ -335,11 +279,9 @@ impl WmTable {
                 if s.id == my_id || s.layer != gp::WM_LAYER_SYSTEM || !s.vis {
                     continue;
                 }
-                // SYSTEM 层禁止 AVOID_SYS，其 eff≡req；直接消费 req 防御
-                // 未来推导面漂移。
                 let (nx, ny, nw, nh) = clip_rect(
                     (ex, ey, ew, eh),
-                    (s.req.0 as u32, s.req.1 as u32, s.req.2 as u32, s.req.3 as u32),
+                    (s.eff.0 as u32, s.eff.1 as u32, s.eff.2 as u32, s.eff.3 as u32),
                 );
                 ex = nx;
                 ey = ny;
@@ -347,195 +289,11 @@ impl WmTable {
                 eh = nh;
             }
             self.wins[i].eff = (ex as u16, ey as u16, ew as u16, eh as u16);
-            if self.wins[i].avoid_sys && self.wins[i].eff != before[i] {
-                self.mark_config(i, gp::WM_CONFIG_CAUSE_OCCLUSION);
-            }
         }
     }
 
     fn find(&self, id: u16) -> Option<usize> {
         (0..self.count).find(|&i| self.wins[i].id == id)
-    }
-
-    /// 当前表版本（focus bump 的快照证据面）。
-    pub fn version(&self) -> u32 {
-        self.version
-    }
-
-    /// P2 键盘焦点真值：当前 focus 窗的 (owner, window)。
-    pub fn focused(&self) -> Option<(u16, u16)> {
-        let id = self.focus?;
-        let i = self.find(id)?;
-        Some((self.wins[i].owner, id))
-    }
-
-    /// 可见全宽 APP 主体是否持有焦点。surface0 的桌面 repaint 不得覆盖它；
-    /// GUI8 右侧窄探测窗不是产品主体。HOME/BACK 隐藏 APP 会清焦，Recents
-    /// overlay 不清焦。
-    pub fn focused_app_owner(&self) -> Option<u16> {
-        let (owner, id) = self.focused()?;
-        // A full-screen SYSTEM overlay (Recents) takes the compositor body
-        // even though keyboard focus intentionally stays with the selected
-        // APP. Persistent bar overlays do not: EDGE_TO_EDGE app content must
-        // remain the active body beneath the transparent bars.
-        let system_body = self.wins.iter().take(self.count).any(|win| {
-            win.vis
-                && win.layer == gp::WM_LAYER_SYSTEM
-                && win.req.2 == self.disp_w
-                && win.req.3 == self.disp_h
-        });
-        if system_body {
-            return None;
-        }
-        let i = self.find(id)?;
-        let win = &self.wins[i];
-        (win.vis
-            && win.layer == gp::WM_LAYER_APP
-            && win.req.2 == self.disp_w
-            && win.eff.2 == self.disp_w)
-            .then_some(owner)
-    }
-
-    /// A visible full-display APP created without AVOID_SYS and without the
-    /// newer EDGE_TO_EDGE bar-overlap mode is an immersive product body. This
-    /// is diagnostic truth for the SYSTEM launcher; it does not mutate
-    /// visibility or reserve ownership here.
-    pub fn owner_is_immersive(&self, owner: u16) -> bool {
-        self.wins.iter().take(self.count).any(|win| {
-            win.owner == owner
-                && win.vis
-                && win.layer == gp::WM_LAYER_APP
-                && !win.avoid_sys
-                && !win.edge_to_edge
-                && win.req.2 == self.disp_w
-                && win.req.3 == self.disp_h
-        })
-    }
-
-    /// P3 click-to-focus：pointer DOWN 命中真实可见窗时接焦。桌面 miss
-    /// 不清焦（v1 无桌面窗对象，避免造 window=0 第二语义）；隐藏窗不参
-    /// hit-test。变更后 bump，让 WM_TABLE_WAIT 消费者看到 focused flag。
-    pub fn focus_from_pointer(&mut self, id: u16) -> bool {
-        let Some(i) = self.find(id) else { return false };
-        if !self.wins[i].vis
-            || self.wins[i].layer != gp::WM_LAYER_APP
-            || self.focus == Some(id)
-        {
-            return false;
-        }
-        self.focus = Some(id);
-        self.bump();
-        true
-    }
-
-    /// Phase 3 权威输入命中：返回 (owner, window_id, raw 窗口原点)。
-    /// 命中判定用 visible 矩形；坐标本地化用 raw 原点——R2 合约下 app
-    /// buffer 仍是 raw 窗口坐标，visible 顶部的 pointer y 必须保留遮挡
-    /// 偏移，才能读到正确 raw row。
-    pub fn hit_route(&self, x: u32, y: u32) -> Option<(u16, u16, u16, u16)> {
-        let mut entries = [gp::WmEntry {
-            id: 0, parent: 0, group: 0, x: 0, y: 0, w: 0, h: 0,
-            layer: gp::WM_LAYER_APP, z: 0, flags: 0,
-        }; gp::WM_WINDOWS_MAX];
-        for (dst, src) in entries.iter_mut().zip(self.wins.iter()).take(self.count) {
-            *dst = gp::WmEntry {
-                id: src.id, parent: src.parent, group: src.group,
-                x: src.eff.0, y: src.eff.1, w: src.eff.2, h: src.eff.3,
-                layer: src.layer, z: src.z,
-                flags: if src.vis { gp::WM_WIN_F_VISIBLE } else { 0 },
-            };
-        }
-        let id = gp::wm_hit_test(&entries[..self.count], x, y)?;
-        let i = self.find(id)?;
-        Some((self.wins[i].owner, id, self.wins[i].req.0, self.wins[i].req.1))
-    }
-
-    /// 输入锁定窗的 raw 几何原点（理由同 [`Self::hit_route`]）。
-    pub fn route_geometry(&self, owner: u16, id: u16) -> Option<(u16, u16)> {
-        let i = (0..self.count).find(|&i| {
-            self.wins[i].id == id && self.wins[i].owner == owner && self.wins[i].vis
-        })?;
-        Some((self.wins[i].req.0, self.wins[i].req.1))
-    }
-
-    /// present GETINFO 启动缓存尺寸；0x67 fit 检查的显示上限。
-    pub fn display_size(&self) -> (u32, u32) {
-        (u32::from(self.disp_w), u32::from(self.disp_h))
-    }
-
-    /// Safe insets for a configured surface. EDGE_TO_EDGE keeps raw geometry
-    /// full-screen and therefore cannot derive safe areas from raw-visible
-    /// subtraction; visible SYSTEM reserves are measured separately instead.
-    pub fn safe_insets(
-        &self,
-        owner: u16,
-        id: u16,
-    ) -> Option<(u16, u16, u16, u16)> {
-        let i = self.find(id)?;
-        if self.wins[i].owner != owner || !self.wins[i].vis {
-            return None;
-        }
-        let window = &self.wins[i];
-        if !window.edge_to_edge {
-            return Some(
-                gp::authority::SurfaceGeometry::new(window.req, window.eff)?
-                    .occlusion_insets(),
-            );
-        }
-        let (mut left, mut top, mut right, mut bottom) = (0u32, 0u32, 0u32, 0u32);
-        for system in self.wins.iter().take(self.count) {
-            if system.vis && system.layer == gp::WM_LAYER_SYSTEM {
-                let (sx, sy, sw, sh) = system.req;
-                let sx = u32::from(sx);
-                let sy = u32::from(sy);
-                let sx1 = sx.saturating_add(u32::from(sw));
-                let sy1 = sy.saturating_add(u32::from(sh));
-                if sx == 0 && sx1 < u32::from(self.disp_w) {
-                    left = left.max(sx1);
-                }
-                if sy == 0 && sy1 < u32::from(self.disp_h) {
-                    top = top.max(sy1);
-                }
-                if sx1 == u32::from(self.disp_w) && sx > 0 {
-                    right = right.max(u32::from(self.disp_w).saturating_sub(sx));
-                }
-                if sy1 == u32::from(self.disp_h) && sy > 0 {
-                    bottom = bottom.max(u32::from(self.disp_h).saturating_sub(sy));
-                }
-            }
-        }
-        Some((
-            u16::try_from(left).unwrap_or(u16::MAX),
-            u16::try_from(top).unwrap_or(u16::MAX),
-            u16::try_from(right).unwrap_or(u16::MAX),
-            u16::try_from(bottom).unwrap_or(u16::MAX),
-        ))
-    }
-
-    /// R3 config 同步门：Some(false) 表示窗口在册但未 ACK 当前配置。
-    /// Some(true) 不隐含可呈现（hidden/full-occluded 仍由双几何判定）。
-    pub fn config_ready(&self, owner: u16, id: u16) -> Option<bool> {
-        let i = (0..self.count).find(|&i| {
-            self.wins[i].id == id && self.wins[i].owner == owner
-        })?;
-        Some(self.wins[i].config_synced && self.wins[i].config.is_none())
-    }
-
-    /// R2 SUBMIT 双几何：raw = 申请/buffer 基准；visible = 遮挡后可呈现
-    /// /可命中域。全遮挡（visible w/h=0）不构造假几何，调用侧拒绝。
-    pub fn surface_geometry(
-        &self,
-        owner: u16,
-        id: u16,
-    ) -> Option<gp::authority::SurfaceGeometry> {
-        let i = (0..self.count).find(|&i| {
-            self.wins[i].id == id && self.wins[i].owner == owner && self.wins[i].vis
-        })?;
-        let w = &self.wins[i];
-        if !w.config_synced || w.config.is_some() {
-            return None;
-        }
-        gp::authority::SurfaceGeometry::new(w.req, w.eff)
     }
 
     /// id 分配（u16 单调回绕；跳 0 哨兵与在册 id——N≤15 恒可解）。
@@ -551,14 +309,11 @@ impl WmTable {
     /// 焦点归还：被摘窗若持焦点 → 表序（= 建序）最末可见窗接焦；无可见
     /// 窗 → 无焦点。
     fn refocus_after_removal(&mut self) {
-        self.focus = (0..self.count)
-            .rev()
-            .find(|&i| self.wins[i].vis && gp::authority::wm_policy_focus_allowed(self.wins[i].layer))
-            .map(|i| self.wins[i].id);
+        self.focus = (0..self.count).rev().find(|&i| self.wins[i].vis).map(|i| self.wins[i].id);
     }
 
     /// WM_GETINFO：能力/版本面（disp 自启动③ present GETINFO 缓存）。
-    fn getinfo(&self, ch: Handle) {
+    fn getinfo<P: Port>(&self, p: &mut P, ch: Handle) {
         let rep = gp::WmGetinfoRep {
             version_wm: gp::VER_WM,
             windows_max: gp::WM_WINDOWS_MAX as u8,
@@ -567,48 +322,29 @@ impl WmTable {
         };
         let mut out = [0u8; 12]; // = WM_GETINFO_REP_LEN（guiproto 私有——本地定容）
         let n = gp::encode_wm_getinfo_rep(&mut out, &rep);
-        self.io.send(ch, &out[..n]);
+        p.send(ch, &out[..n]);
     }
 
     /// WM_CREATE：parent≠0 须在册（ST_NOENT）；表满 ST_FULL；新窗默认
     /// 可见 + 接焦（CREATE 无 vis 域——显隐走 SET_F_VIS）；AVOID_SYS 旗
-    /// 驱动有效几何避让。应答 8B ack(window_id)。
-    fn create(&mut self, ch: Handle, owner: u16, client_type: u8,
-              req: gp::WmCreateReq) {
-        if !gp::authority::wm_create_layer_allowed(client_type, req.layer)
-            || !gp::authority::wm_create_flags_allowed(client_type, req.flags)
-        {
-            self.io.status(ch, gp::ST_DENIED);
-            return;
-        }
-        // find() 保持权威：parent id 不连续时不得用下标冒充。
-        let parent_owner = if req.parent == 0 {
-            None
-        } else {
-            match self.find(req.parent) {
-                Some(i) => Some(self.wins[i].owner),
-                None => {
-                    self.io.status(ch, gp::ST_NOENT);
-                    return;
-                }
-            }
-        };
-        // 拒绝路径不得消耗 alloc_id：父窗权限先以 prospective id=0 裁定
-        //（非零 parent 不可能等于尚未分配的新 id），表满也先于 id 分配。
-        if !gp::authority::wm_parent_allowed(req.parent, parent_owner, owner, 0) {
-            self.io.status(ch, gp::ST_DENIED);
+    /// 驱动有效几何避让。应答 8B ack(window_id) + 随行属主事件通道端
+    /// （波3 §3：CREATE 建联——gift 面随 ack 迁入客户端表）；内核通道
+    /// 资源拒绝时降级无通道窗（ack 零随行——BACK 兜底直接 DESTROY，
+    /// 返回语义仍正确）。
+    fn create<P: Port>(&mut self, p: &mut P, ch: Handle, req: gp::WmCreateReq) {
+        if req.parent != 0 && self.find(req.parent).is_none() {
+            Self::st_rep(p, ch, gp::ST_NOENT);
             return;
         }
         if self.count >= gp::WM_WINDOWS_MAX {
-            self.io.status(ch, gp::ST_FULL);
+            Self::st_rep(p, ch, gp::ST_FULL);
             return;
         }
         let id = self.alloc_id();
-        let new_index = self.count;
+        let gift = p.channel_create();
         let geom = (req.x, req.y, req.w, req.h);
         self.wins[self.count] = Win {
             id,
-            owner,
             parent: req.parent,
             group: req.group,
             req: geom,
@@ -617,35 +353,30 @@ impl WmTable {
             z: 0,
             vis: true,
             avoid_sys: req.flags & gp::WM_CREATE_F_AVOID_SYS != 0,
-            edge_to_edge: req.flags & gp::WM_CREATE_F_EDGE_TO_EDGE != 0,
-            config: None,
-            config_synced: false,
+            evt: gift.map(|(srv, _)| srv),
         };
         self.count += 1;
-        if gp::authority::wm_policy_focus_allowed(req.layer) {
-            self.focus = Some(id);
-        }
+        self.focus = Some(id);
         self.recompute();
-        // CREATE 后必有一条初始 config：Fuchsia “首次 Present 前可取
-        // LayoutInfo” 的 pull-once 对应面。若同表变更也触发了遮挡推导，
-        // CREATED 覆盖 OCCLUSION——初始状态本身已包含最终 visible bounds。
-        self.mark_config(new_index, gp::WM_CONFIG_CAUSE_CREATED);
-        self.bump();
+        self.bump(p);
         let mut out = [0u8; 8]; // = WM_CREATE_ACK_LEN（guiproto 私有——本地定容）
         let n = gp::encode_wm_create_ack(&mut out, id);
-        self.io.send(ch, &out[..n]);
+        match gift {
+            Some((_, cli)) => p.send_handles(ch, &out[..n], &[cli]),
+            None => p.send(ch, &out[..n]),
+        }
     }
 
-    /// WM_DESTROY：摘窗（表序移除保建序——hit-test 平局表序语义）；持
-    /// 焦点则归还；系统窗摘除 = 解除避让（recompute）。
-    fn destroy(&mut self, ch: Handle, owner: u16, id: u16) {
+    /// WM_DESTROY 摘窗（表序移除保建序——hit-test 平局表序语义）；持
+    /// 焦点则归还；系统窗摘除 = 解除避让（recompute）；属主事件通道
+    /// 关联关闭（波3 §3）。无应答形 = 兜底 DESTROY 内部复用（§3 R2
+    /// ——500ms 到点 wmd 自主摘窗，应答面归触发者）。
+    fn destroy_internal<P: Port>(&mut self, p: &mut P, id: u16) -> bool {
         let Some(i) = self.find(id) else {
-            self.io.status(ch, gp::ST_NOENT);
-            return;
+            return false;
         };
-        if self.wins[i].owner != owner {
-            self.io.status(ch, gp::ST_DENIED);
-            return;
+        if let Some(h) = self.wins[i].evt {
+            p.close(h);
         }
         for j in i..self.count - 1 {
             self.wins[j] = self.wins[j + 1];
@@ -655,32 +386,33 @@ impl WmTable {
             self.refocus_after_removal();
         }
         self.recompute();
-        self.bump();
-        self.io.status(ch, gp::ST_OK);
+        self.bump(p);
+        true
+    }
+
+    /// WM_DESTROY：摘窗 + 1B 应答（ST_OK/ST_NOENT）。
+    fn destroy<P: Port>(&mut self, p: &mut P, ch: Handle, id: u16) {
+        if self.destroy_internal(p, id) {
+            Self::st_rep(p, ch, gp::ST_OK);
+        } else {
+            Self::st_rep(p, ch, gp::ST_NOENT);
+        }
     }
 
     /// WM_SET：masked-out 槽位不动（「编什么收什么」——wire 层不清零，
-    /// 本表只应用掩内槽）；SET_F_VIS 显隐驱动焦点策略（SHOW 接焦 / HIDE
+    /// 本表只应用掩内槽）；SET_F_VIS显隐驱动焦点策略（SHOW 接焦 / HIDE
     /// 持焦则归还）；几何/Z 变更（含系统窗）触发重算。1B OK。
-    fn set(&mut self, ch: Handle, owner: u16, req: gp::WmSetReq) {
+    fn set<P: Port>(&mut self, p: &mut P, ch: Handle, req: gp::WmSetReq) {
         let Some(i) = self.find(req.window_id) else {
-            self.io.status(ch, gp::ST_NOENT);
+            Self::st_rep(p, ch, gp::ST_NOENT);
             return;
         };
-        if self.wins[i].owner != owner {
-            self.io.status(ch, gp::ST_DENIED);
-            return;
-        }
-        let old_req = self.wins[i].req;
-        let old_vis = self.wins[i].vis;
         if req.mask & gp::WM_SET_F_GEOM != 0 {
             self.wins[i].req = (req.x, req.y, req.w, req.h);
         }
         if req.mask & gp::WM_SET_F_VIS != 0 {
             self.wins[i].vis = req.vis == gp::WM_VIS_SHOW;
-            if self.wins[i].vis
-                && gp::authority::wm_policy_focus_allowed(self.wins[i].layer)
-            {
+            if self.wins[i].vis {
                 self.focus = Some(self.wins[i].id);
             } else if self.focus == Some(self.wins[i].id) {
                 self.refocus_after_removal();
@@ -689,392 +421,230 @@ impl WmTable {
         if req.mask & gp::WM_SET_F_Z != 0 {
             self.wins[i].z = req.z;
         }
-        let own_cause = if self.wins[i].req != old_req {
-            Some(gp::WM_CONFIG_CAUSE_GEOMETRY)
-        } else if self.wins[i].vis != old_vis {
-            Some(gp::WM_CONFIG_CAUSE_VISIBILITY)
-        } else {
-            None
-        };
         self.recompute();
-        if let Some(cause) = own_cause {
-            self.mark_config(i, cause);
-        }
-        self.bump();
-        self.io.status(ch, gp::ST_OK);
+        self.bump(p);
+        Self::st_rep(p, ch, gp::ST_OK);
     }
 
     /// WM_TABLE_GET：全表快照即答（无 version 门槛）。
-    fn table_get(&self, ch: Handle) {
-        self.send_snapshot(ch);
+    fn table_get<P: Port>(&self, p: &mut P, ch: Handle) {
+        self.send_snapshot(p, ch);
     }
 
     /// WM_TABLE_WAIT：version≠last_seen 立即答（≠非 >——纪元回退角由
     /// inputd 超龄重探测兜底，Q11-③，不依赖「必>」）；同 version 则 park
-    /// 单车位（后到覆盖不排队——位移者现答现快照防悬挂）。
-    pub fn wait(&mut self, ch: Handle, last_seen: u32) {
+    /// 单车位（后到覆盖不排队——位移者现答现快照防悬挂）。**波3 冻结面**
+    /// ——唯一合法驻留者 = inputd push 面，表跟随走事件通道（§9）。
+    pub fn wait<P: Port>(&mut self, p: &mut P, ch: Handle, last_seen: u32) {
         if self.version != last_seen {
-            self.send_snapshot(ch);
+            self.send_snapshot(p, ch);
             return;
         }
         if let Some((old_ch, _)) = self.parked.take() {
-            self.send_snapshot(old_ch);
+            self.send_snapshot(p, old_ch);
         }
         self.parked = Some((ch, last_seen));
     }
 
-    /// R3 WM_CONFIG_POLL：按表序返回该 owner 第一条 pending event；无事件
-    /// 返回 ST_EAGAIN。多窗 session 由 ACK 推进游标，避免排队状态机。
-    fn config_poll(&self, ch: Handle, owner: u16) {
-        let Some(ev) = self.wins.iter().take(self.count).find_map(|w| {
-            (w.owner == owner).then_some(w.config).flatten()
-        }) else {
-            self.io.status(ch, gp::ST_EAGAIN);
+    /// WM_FOCUS（波3 §3 焦点维护）：win≠0 = 授予（须在册且可见——持焦
+    /// 窗恒可见不变量，隐藏窗 ST_BAD 策略拒＝OP_INPUT_INJECT 拒面先例）；
+    /// win=0 = 让出（焦点清空不动他窗——wm_srv 共享面发送者不可辨，v1
+    /// 单焦点在席者即发送者的现实下语义正确，波2 编码注释口径）。
+    fn focus<P: Port>(&mut self, p: &mut P, ch: Handle, win: u16) {
+        if win == 0 {
+            self.focus = None;
+            self.bump(p);
+            Self::st_rep(p, ch, gp::ST_OK);
+            return;
+        }
+        match self.find(win) {
+            None => Self::st_rep(p, ch, gp::ST_NOENT),
+            Some(i) if !self.wins[i].vis => Self::st_rep(p, ch, gp::ST_BAD),
+            Some(_) => {
+                self.focus = Some(win);
+                self.bump(p);
+                Self::st_rep(p, ch, gp::ST_OK);
+            }
+        }
+    }
+
+    /// OP_WM_BACK（波3 §3 R2 wmd 侧）：路由到焦点窗——无焦点 ST_NOENT；
+    /// 无事件通道目标窗（旧式/降级）直接 DESTROY（返回语义仍正确）；
+    /// 有通道则非阻塞投递 WM_EVENT_BACK(wid) 并武装 500ms 单槽兜底
+    /// （满即丢同武装——投递失败网 = 兜底 DESTROY；通道病态 = 关闭降
+    /// 级 + 直接 DESTROY）。应答 ST_OK = 已受理（目标窗处理与兜底 =
+    /// wmd 自主面，wire 只管受理）。
+    fn back<P: Port>(&mut self, p: &mut P, ch: Handle) {
+        let Some(wid) = self.focus else {
+            Self::st_rep(p, ch, gp::ST_NOENT);
             return;
         };
-        let mut out = [0u8; 32]; // = WM_CONFIG_REP_LEN
-        match gp::encode_wm_config_event_rep(&mut out, &ev) {
-            Some(n) => self.io.send(ch, &out[..n]),
-            None => self.io.trap(), // 表内事件由 mark_config 构造——防御面
-        }
-    }
-
-    /// R3 WM_CONFIG_ACK：只接受当前 pending 精确 serial。事件被新配置覆盖
-    /// 后旧 ack 变 ST_DENIED；客户端必须重新 POLL 最新状态再 ACK。
-    fn config_ack(&mut self, ch: Handle, owner: u16, req: gp::WmConfigAckReq) {
-        let Some(i) = self.find(req.window_id) else {
-            self.io.status(ch, gp::ST_NOENT);
+        let Some(i) = self.find(wid) else {
+            Self::st_rep(p, ch, gp::ST_NOENT); // 焦点恒在表——防御面
             return;
         };
-        if self.wins[i].owner != owner {
-            self.io.status(ch, gp::ST_DENIED);
+        let Some(h) = self.wins[i].evt else {
+            self.destroy_internal(p, wid);
+            Self::st_rep(p, ch, gp::ST_OK);
             return;
-        }
-        match &self.wins[i].config {
-            Some(ev) if ev.serial == req.serial => {
-                self.wins[i].config = None;
-                self.wins[i].config_synced = true;
-                self.io.status(ch, gp::ST_OK);
-            }
-            _ => self.io.status(ch, gp::ST_DENIED),
-        }
-    }
-
-    /// session 死亡清理：若其 RPC 通道恰好 parked 在 TABLE_WAIT，先丢弃
-    /// parking 位，避免后续 bump 对已关 handle send 导致 wmd trap。
-    pub fn forget_parked(&mut self, ch: Handle) {
-        if let Some((parked, _)) = self.parked {
-            if parked == ch {
-                self.parked = None;
-            }
-        }
-    }
-
-    /// wm 域分发（session 面）：GETINFO/TABLE 只读无 owner 门；
-    /// CREATE 绑定当前 session；SET/DESTROY 必须 owner。
-    pub fn handle_wm(
-        &mut self,
-        ch: Handle,
-        owner: u16,
-        client_type: u8,
-        msg: &[u8],
-        hs: &[Handle],
-    ) {
-        if !hs.is_empty() {
-            self.io.close_handles(hs);
-            self.io.status(ch, gp::ST_BAD);
-            return;
-        }
-        match msg.first() {
-            Some(&gp::OP_WM_GETINFO) if gp::parse_wm_getinfo_req(msg).is_some() => self.getinfo(ch),
-            Some(&gp::OP_WM_CREATE) => match gp::parse_wm_create_req(msg) {
-                Some(req) => self.create(ch, owner, client_type, req),
-                None => self.io.status(ch, gp::ST_BAD),
-            },
-            Some(&gp::OP_WM_DESTROY) => match gp::parse_wm_destroy_req(msg) {
-                Some(id) => self.destroy(ch, owner, id),
-                None => self.io.status(ch, gp::ST_BAD),
-            },
-            Some(&gp::OP_WM_SET) => match gp::parse_wm_set_req(msg) {
-                Some(req) => self.set(ch, owner, req),
-                None => self.io.status(ch, gp::ST_BAD),
-            },
-            Some(&gp::OP_WM_TABLE_GET) if gp::parse_wm_table_get_req(msg).is_some() => {
-                self.table_get(ch)
-            }
-            Some(&gp::OP_WM_TABLE_WAIT) => match gp::parse_wm_table_wait_req(msg) {
-                Some(last_seen) => self.wait(ch, last_seen),
-                None => self.io.status(ch, gp::ST_BAD),
-            },
-            Some(&gp::OP_WM_TASK_SELECT) => match gp::parse_wm_task_select_req(msg) {
-                Some(req)
-                    if client_type == gp::WM_CLIENT_SYSTEM
-                        && self.task_select(req.owner).is_some() =>
-                {
-                    self.io.status(ch, gp::ST_OK)
-                }
-                Some(_) => self.io.status(ch, gp::ST_DENIED),
-                None => self.io.status(ch, gp::ST_BAD),
-            },
-            Some(&gp::OP_WM_RECENTS_GET)
-                if client_type == gp::WM_CLIENT_SYSTEM
-                    && gp::parse_wm_recents_get_req(msg).is_some() =>
-            {
-                let recents = self.recents_owners();
-                let mut out = [0u8; gp::WM_RECENTS_REP_HEAD + gp::WM_WINDOWS_MAX * 2];
-                match gp::encode_wm_recent_owners_rep(&mut out, &recents) {
-                    Some(n) => self.io.send(ch, &out[..n]),
-                    None => self.io.trap(),
-                }
-            }
-            Some(&gp::OP_WM_RECENTS_GET) => self.io.status(ch, gp::ST_DENIED),
-            Some(&gp::OP_WM_CONFIG_POLL) if gp::parse_wm_config_poll_req(msg).is_some() => {
-                self.config_poll(ch, owner)
-            }
-            Some(&gp::OP_WM_CONFIG_ACK) => match gp::parse_wm_config_ack_req(msg) {
-                Some(req) => self.config_ack(ch, owner, req),
-                None => self.io.status(ch, gp::ST_BAD),
-            },
-            _ => self.io.status(ch, gp::ST_BAD),
-        }
-    }
-
-    fn set_visible(&mut self, i: usize, vis: bool) -> bool {
-        if i >= self.count || self.wins[i].vis == vis {
-            return false;
-        }
-        self.wins[i].vis = vis;
-        self.mark_config(i, gp::WM_CONFIG_CAUSE_VISIBILITY);
-        true
-    }
-
-    fn change_complete(&mut self, changed: bool) -> bool {
-        if !changed {
-            return false;
-        }
-        if let Some((_, id)) = self.focused() {
-            let focus_hidden = self
-                .find(id)
-                .is_none_or(|i| !self.wins[i].vis || self.wins[i].layer != gp::WM_LAYER_APP);
-            if focus_hidden {
-                self.focus = None;
-            }
-        }
-        self.recompute();
-        self.bump();
-        true
-    }
-
-    fn app_owner_indexes(&self, owner: u16) -> [usize; gp::WM_WINDOWS_MAX] {
-        let mut out = [usize::MAX; gp::WM_WINDOWS_MAX];
-        let mut n = 0usize;
-        for i in 0..self.count {
-            if self.wins[i].layer == gp::WM_LAYER_APP && self.wins[i].owner == owner {
-                out[n] = i;
-                n += 1;
-            }
-        }
-        out
-    }
-
-    fn set_owner_visibility(&mut self, owner: u16, vis: bool) -> bool {
-        let indexes = self.app_owner_indexes(owner);
-        let mut changed = false;
-        for &i in indexes.iter() {
-            if i == usize::MAX {
-                break;
-            }
-            changed |= self.set_visible(i, vis);
-        }
-        changed
-    }
-
-    fn focus_owner(&mut self, owner: u16) -> bool {
-        let indexes = self.app_owner_indexes(owner);
-        let Some(i) = indexes.iter().copied().find(|&i| i != usize::MAX) else {
-            return false;
         };
-        self.focus = Some(self.wins[i].id);
-        true
-    }
-
-    /// System BACK (v1): hide the focused app owner and expose the desktop or
-    /// the next visible app. Apps with internal navigation still receive their
-    /// own keys first in a later revision; this is the global fallback.
-    pub fn navigation_back(&mut self) -> Option<u16> {
-        let owner = self.focused()?.0;
-        if !self.set_owner_visibility(owner, false) {
-            return None;
+        let mut frame = [0u8; gp::WM_EVT_BACK_LEN];
+        let n = gp::encode_wm_evt_back(&mut frame, wid);
+        if p.send_nowait(h, &frame[..n]) == SendEvtStatus::Dead {
+            p.close(h);
+            self.wins[i].evt = None;
+            self.destroy_internal(p, wid);
+            Self::st_rep(p, ch, gp::ST_OK);
+            return;
         }
-        self.change_complete(true);
-        Some(owner)
+        // Queued：已投递；Full：满即丢——两态同靠 500ms 兜底网武装。
+        // 单槽覆盖重臂（parked 同款——位移者旧槽 ACK 迟到按 wid 失配忽略）。
+        self.pending_back = Some((wid, p.now_ns() + WMD_BACK_FALLBACK_NS));
+        Self::st_rep(p, ch, gp::ST_OK);
     }
 
-    /// System HOME: hide every APP-layer owner. The desktop compositor's
-    /// surface_id=0 is not a WM window and remains visible by construction.
-    pub fn navigation_home(&mut self) -> usize {
-        let mut owners = [0u16; gp::WM_WINDOWS_MAX];
-        let mut n = 0usize;
-        for i in 0..self.count {
-            if self.wins[i].layer != gp::WM_LAYER_APP {
+    /// BACK_ACK 解除兜底（属主事件通道来帧——wid 失配（迟到/位移）忽略）。
+    fn on_back_ack(&mut self, wid: u16) {
+        if let Some((pw, _)) = self.pending_back {
+            if pw == wid {
+                self.pending_back = None;
+            }
+        }
+    }
+
+    /// 返回兜底截止时刻（None = 无在途 BACK——serve 循环 wait 帽计算面）。
+    pub fn back_deadline(&self) -> Option<u64> {
+        self.pending_back.map(|(_, dl)| dl)
+    }
+
+    /// 返回兜底软定时到点检查（serve 循环每轮顶调用）：到期 → wmd 兜底
+    /// DESTROY(目标窗)（表序内建 refocus 回最末可见窗；bump 内清槽 +
+    /// 广播——launcher 经事件通知/TABLE_GET 观察 refocus）。
+    pub fn on_back_tick<P: Port>(&mut self, p: &mut P, now: u64) {
+        if let Some((wid, dl)) = self.pending_back {
+            if now >= dl {
+                self.destroy_internal(p, wid);
+            }
+        }
+    }
+
+    /// WM_SUBSCRIBE（波3 §4/§9）：无窗跟随者订阅表变更事件通道——ack
+    /// 1B ST_OK + 随行恰 1 handle（订阅者客户端端）；帽满/内核资源拒绝
+    /// ST_FULL。
+    fn subscribe<P: Port>(&mut self, p: &mut P, ch: Handle) {
+        if self.subs_n >= WM_EVT_SUBS_MAX {
+            Self::st_rep(p, ch, gp::ST_FULL);
+            return;
+        }
+        let Some((srv, cli)) = p.channel_create() else {
+            Self::st_rep(p, ch, gp::ST_FULL);
+            return;
+        };
+        self.subs[self.subs_n] = srv;
+        self.subs_n += 1;
+        let mut out = [0u8; 1];
+        let n = gp::encode_status_rep(&mut out, gp::ST_OK);
+        p.send_handles(ch, &out[..n], &[cli]);
+    }
+
+    /// 事件通道非阻塞收割（serve 循环每轮顶调用）：属主通道收 BACK_ACK
+    /// （余帧型一律忽略——TABLE_GET 也不答：事件通道无请求相关性，乱答
+    /// 毒化对端；坏客户端不得杀服务）；订阅者通道 = 表跟随 RPC 面——
+    /// TABLE_GET 即答全表快照（[`send_snapshot`] 阻塞应答，与 wm_srv
+    /// 应答同律；即答非驻留，TABLE_WAIT 冻结律不动），畸形/非 TABLE_GET
+    /// 帧静默忽略，GETINFO 也不答（快照 12B 头已携 disp_w/h——窄面）。
+    pub fn sweep_evt<P: Port>(&mut self, p: &mut P) {
+        let mut buf = [0u8; 256];
+        let mut i = 0;
+        while i < self.count {
+            let Some(h) = self.wins[i].evt else {
+                i += 1;
                 continue;
+            };
+            let wid = self.wins[i].id;
+            while let Some(n) = p.recv_nowait(h, &mut buf) {
+                if matches!(gp::parse_wm_evt(&buf[..n]), Some(gp::WmEvt::BackAck)) {
+                    self.on_back_ack(wid);
+                }
             }
-            let owner = self.wins[i].owner;
-            if !owners[..n].contains(&owner) {
-                owners[n] = owner;
+            i += 1;
+        }
+        let mut s = 0;
+        while s < self.subs_n {
+            let h = self.subs[s];
+            while let Some(n) = p.recv_nowait(h, &mut buf) {
+                if gp::parse_wm_table_get_req(&buf[..n]).is_some() {
+                    self.send_snapshot(p, h);
+                }
+            }
+            s += 1;
+        }
+    }
+
+    /// 事件通道 wait 集（属主 + 订阅者，表序稳定——serve 循环
+    /// wait_many 拼装面；越窗截断由调用方短帽兜底）。
+    pub fn evt_handles(&self, out: &mut [Handle]) -> usize {
+        let mut n = 0;
+        for i in 0..self.count {
+            if let Some(h) = self.wins[i].evt {
+                if n < out.len() {
+                    out[n] = h;
+                    n += 1;
+                }
+            }
+        }
+        for s in 0..self.subs_n {
+            if n < out.len() {
+                out[n] = self.subs[s];
                 n += 1;
             }
         }
-        let mut changed = false;
-        for &owner in owners[..n].iter() {
-            changed |= self.set_owner_visibility(owner, false);
-        }
-        self.change_complete(changed);
         n
     }
 
-    /// System TASK: cycle to the next APP owner, hide other app owners, and
-    /// focus that owner's first window. This is the deterministic v1 task
-    /// switcher; a visual recents overlay can consume the same authority later.
-    pub fn navigation_task(&mut self) -> Option<u16> {
-        let mut owners = [0u16; gp::WM_WINDOWS_MAX];
-        let mut n = 0usize;
-        for i in 0..self.count {
-            if self.wins[i].layer != gp::WM_LAYER_APP {
-                continue;
-            }
-            let owner = self.wins[i].owner;
-            if !owners[..n].contains(&owner) {
-                owners[n] = owner;
-                n += 1;
-            }
+    /// wm 域分发（wm_srv 面）：九 op 之外（0x69..=0x7F 未定形）1B
+    /// ST_BAD；wm 域 op **零随行 handle**——非空即拒面 close。
+    pub fn handle_wm<P: Port>(&mut self, p: &mut P, ch: Handle, msg: &[u8], hs: &[Handle]) {
+        if !hs.is_empty() {
+            p.close_all(hs);
+            Self::st_rep(p, ch, gp::ST_BAD);
+            return;
         }
-        if n == 0 {
-            return None;
-        }
-        let current = self.focused().map(|(owner, _)| owner).or_else(|| {
-            owners[..n]
-                .iter()
-                .copied()
-                .find(|&owner| {
-                    self.app_owner_indexes(owner)
-                        .iter()
-                        .any(|&i| i != usize::MAX && self.wins[i].vis)
-                })
-        });
-        let next = match current {
-            Some(cur) => {
-                let pos = owners[..n].iter().position(|&o| o == cur)?;
-                owners[(pos + 1) % n]
+        match msg.first() {
+            Some(&gp::OP_WM_GETINFO) if gp::parse_wm_getinfo_req(msg).is_some() => {
+                self.getinfo(p, ch)
             }
-            None => owners[0],
-        };
-        let mut changed = false;
-        for &owner in owners[..n].iter() {
-            changed |= self.set_owner_visibility(owner, owner == next);
-        }
-        let focus_before = self.focus;
-        self.focus_owner(next);
-        let focus_changed = self.focus != focus_before;
-        self.change_complete(changed || focus_changed);
-        Some(next)
-    }
-
-    /// owner 的 APP 窗口几何快照（Recents frame cache/replay 的纯计划面）。
-    /// raw 变化代表 client buffer/stride 布局可能变化；eff 变化代表遮挡/
-    /// 可呈现域变化。两者都一致时，wmd 才允许重放缓存的真实帧。
-    pub fn owner_windows(&self, owner: u16) -> ([OwnerWindow; gp::WM_WINDOWS_MAX], usize) {
-        let mut out = [OwnerWindow {
-            id: 0,
-            raw: (0, 0, 0, 0),
-            eff: (0, 0, 0, 0),
-        }; gp::WM_WINDOWS_MAX];
-        let mut n = 0usize;
-        for win in self.wins.iter().take(self.count) {
-            if win.owner != owner || win.layer != gp::WM_LAYER_APP || n == out.len() {
-                continue;
+            Some(&gp::OP_WM_CREATE) => match gp::parse_wm_create_req(msg) {
+                Some(req) => self.create(p, ch, req),
+                None => Self::st_rep(p, ch, gp::ST_BAD),
+            },
+            Some(&gp::OP_WM_DESTROY) => match gp::parse_wm_destroy_req(msg) {
+                Some(id) => self.destroy(p, ch, id),
+                None => Self::st_rep(p, ch, gp::ST_BAD),
+            },
+            Some(&gp::OP_WM_SET) => match gp::parse_wm_set_req(msg) {
+                Some(req) => self.set(p, ch, req),
+                None => Self::st_rep(p, ch, gp::ST_BAD),
+            },
+            Some(&gp::OP_WM_TABLE_GET) if gp::parse_wm_table_get_req(msg).is_some() => {
+                self.table_get(p, ch)
             }
-            out[n] = OwnerWindow {
-                id: win.id,
-                raw: win.req,
-                eff: win.eff,
-            };
-            n += 1;
-        }
-        (out, n)
-    }
-
-    /// SYSTEM Recents owner 列表（表序去重；包含隐藏 owner——隐藏正是
-    /// recents 可恢复的真实状态，不代表任务不存在）。
-    pub fn recents_owners(&self) -> gp::WmRecentOwners {
-        let mut out = gp::WmRecentOwners {
-            owners: [0; gp::WM_WINDOWS_MAX],
-            count: 0,
-        };
-        for i in 0..self.count {
-            if self.wins[i].layer != gp::WM_LAYER_APP {
-                continue;
+            Some(&gp::OP_WM_TABLE_WAIT) => match gp::parse_wm_table_wait_req(msg) {
+                Some(last_seen) => self.wait(p, ch, last_seen),
+                None => Self::st_rep(p, ch, gp::ST_BAD),
+            },
+            Some(&gp::OP_WM_FOCUS) => match gp::parse_wm_focus_req(msg) {
+                Some(win) => self.focus(p, ch, win),
+                None => Self::st_rep(p, ch, gp::ST_BAD),
+            },
+            Some(&gp::OP_WM_BACK) => match gp::parse_wm_back_req(msg) {
+                Some(()) => self.back(p, ch),
+                None => Self::st_rep(p, ch, gp::ST_BAD),
+            },
+            Some(&gp::OP_WM_SUBSCRIBE) if gp::parse_wm_subscribe_req(msg).is_some() => {
+                self.subscribe(p, ch)
             }
-            let owner = self.wins[i].owner;
-            if !out.owners[..out.count].contains(&owner) {
-                out.owners[out.count] = owner;
-                out.count += 1;
-            }
+            _ => Self::st_rep(p, ch, gp::ST_BAD),
         }
-        out
-    }
-
-    /// SYSTEM Recents 选择 owner：显示并聚焦该 owner，隐藏其他 APP owner。
-    /// 选中 owner 的窗口抬到当前 APP 层最高 Z；SYSTEM 层仍在其上。
-    pub fn task_select(&mut self, owner: u16) -> Option<u16> {
-        let indexes = self.app_owner_indexes(owner);
-        if indexes.first() == Some(&usize::MAX) {
-            return None;
-        }
-        let mut changed = false;
-        let mut max_z = 0u8;
-        for win in self.wins.iter().take(self.count) {
-            if win.layer == gp::WM_LAYER_APP {
-                max_z = max_z.max(win.z);
-            }
-        }
-        for i in 0..self.count {
-            if self.wins[i].layer != gp::WM_LAYER_APP {
-                continue;
-            }
-            let selected = self.wins[i].owner == owner;
-            changed |= self.set_visible(i, selected);
-            if selected && self.wins[i].z != max_z {
-                self.wins[i].z = max_z;
-            }
-        }
-        if !self.focus_owner(owner) {
-            changed = true;
-        }
-        self.change_complete(changed);
-        Some(owner)
-    }
-
-    /// session 死亡清理：一次性摘除该 owner 全部窗口。返回清理数。
-    pub fn destroy_owned(&mut self, owner: u16) -> usize {
-        let mut removed = 0usize;
-        let mut i = 0usize;
-        while i < self.count {
-            if self.wins[i].owner != owner {
-                i += 1;
-                continue;
-            }
-            for j in i..self.count - 1 {
-                self.wins[j] = self.wins[j + 1];
-            }
-            self.count -= 1;
-            removed += 1;
-        }
-        if removed > 0 {
-            self.refocus_after_removal();
-            self.recompute();
-            self.bump();
-        }
-        removed
     }
 }

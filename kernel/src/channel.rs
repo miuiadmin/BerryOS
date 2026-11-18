@@ -120,10 +120,6 @@ pub struct ChannelEnd {
     /// v1 单主形，多冻结主共享端点的次主通知面是已知保守缺口（消息仍排队，
     /// 只是次主 token 持有者不被这一跳唤醒）。
     frozen_owner: Option<NonNull<ObjRef>>,
-    /// 最近在本端 recv 的 Process tag（0 = 未知）。只作为协作 reply handoff
-    /// 的通道亲和提示：发送方自愿 yield 时调度器可优先选该进程的 Ready
-    /// 任务；不参与唤醒语义、不改变公平优先级。
-    last_recv_proc: usize,
 }
 
 impl ChannelEnd {
@@ -136,17 +132,7 @@ impl ChannelEnd {
     pub fn try_unpaired(no_intent: bool) -> Option<Self> {
         let mut queue = Vec::new();
         queue.try_reserve_exact(CHAN_DEPTH).ok()?;
-        Some(Self { peer: None, queue, no_intent, frozen_owner: None, last_recv_proc: 0 })
-    }
-
-    /// 记录最近 recv 方 Process tag（含空队探测——服务 poll-first 也建立亲和）。
-    pub fn record_last_recv(&mut self, proc_tag: usize) {
-        self.last_recv_proc = proc_tag;
-    }
-
-    /// 最近 recv 方 Process tag（0 = 未知）。
-    pub fn last_recv_proc(&self) -> usize {
-        self.last_recv_proc
+        Some(Self { peer: None, queue, no_intent, frozen_owner: None })
     }
 
     /// AM-1.5 冻结属主标（send 热路径唯一新增分支的测试位；`None` = 未冻结）。

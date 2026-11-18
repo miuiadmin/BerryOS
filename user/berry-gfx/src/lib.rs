@@ -19,7 +19,7 @@
 //!
 //! # v1 操作集边界（规划钦定最小面，防过度设计）
 //!
-//! fill_rect / fill_circle / fill_round_rect / line / blit（纹理内区域拷贝）/ glyph-run / draw_image
+//! fill_rect / line / blit（纹理内区域拷贝）/ glyph-run / draw_image
 //! （段②：单色位图图像/图标——与字形同一位法）/ present——fbcon 六
 //! 原语超集 + 文本/图像位；AA/宽色域/compute/3D 可后补。像素语义
 //! 与 berry-fbcon `render.rs` 共识契约逐位同（u32 小端 `to_le_bytes`
@@ -42,12 +42,14 @@
 //! NN 放大共识测试）、图标格式 + ARGB 解码 + LRU 图集（[`icon`] BYI1
 //! `decode` 数据面 / [`icon`]/[`lru`] 图集面）、`draw_image` 命令面
 //! （[`cmd::ImageSrc`]——mono 位图/图标槽位 + **ARGB 彩色面**：解码
-//! 产物绘制消费口 [`cmd::ImageSrc::Argb`]，A 位 8-bit straight alpha，
-//! 与目标逐通道混合）。仍留位（本刀不做）：S2' icount 定标、
+//! 产物绘制消费口 [`cmd::ImageSrc::Argb`]，A 位 1-bit 透明键，无
+//! blend）。仍留位（本刀不做）：S2' icount 定标、
 //! berry-guiproto（submit/damage/frame_callback/vote 归 proto 层——
 //! 定形锚点留给真正的首个消费者）、guest gfxdemo + smoke 标记、双后端
 //! （soft ↔ virtio-gpu 共识）、**VMO-backed 纹理**（纹理缓冲的 VMO 借
-//! 用面——guest 侧 fb/VMO 映射的接驳口，随真后端/首个消费者定形）。
+//! 用面——guest 侧 fb/VMO 映射的接驳口，随真后端/首个消费者定形）、
+//! 半透明真 blend（ARGB 面 A 位目前只做 1-bit 透明键——`A==0` 跳过 /
+//! `A!=0` 不透明覆盖，混合语义随真后端定形）。
 #![cfg_attr(not(test), no_std)]
 
 pub mod caps;
@@ -59,4 +61,3 @@ pub mod lru;
 pub mod pass;
 pub mod queue;
 mod raster;
-pub mod surface;

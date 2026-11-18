@@ -3,7 +3,7 @@
 //!
 //! - **建树**（`attach`）：parent 下两件——页行 `Row`（w=viewport 定值、
 //!   h 随父）+ 页容器 `Col`×page_count（w=viewport 定值——页框 =
-//!   C1 起 track 外再套结构性 Clip port，越界页内容不外溢）+ 圆点行
+//!   viewport 全宽，v1 无 clip 挂账）+ 圆点行 `Row`（h=DOT_SIZE 定值）+
 //!   圆点 `Rect`×page_count（w=DOT_SIZE、h 随行）。app 经 `page_node`
 //!   向页容器填内容（GUI-8 launcher 接线面）。
 //! - **跟手**：DragMove 期 `Ui::set_offset(track)` 直写 ox（D31 Transform
@@ -23,9 +23,7 @@
 //! - 零 panic / 零分配 / 无浮点：offset 全 i32、判据阈值 i32 整数算术。
 
 use crate::anim::{self, AnimProp, Easing, SpringPreset, SpringProp};
-use crate::desc::{
-    Axis, ClipProps, ColProps, Msg, NodeId, Props, RectProps, RowProps, ViewKind, ViewSpec,
-};
+use crate::desc::{Axis, ColProps, Msg, NodeId, Props, RectProps, RowProps, ViewKind, ViewSpec};
 use crate::layout::CrossAlign;
 use crate::{Ui, UiError};
 
@@ -98,8 +96,6 @@ pub struct SwipePager {
     /// 最近 DragMove x（DragEnd 无坐标位——位移判据用）。
     drag_last_x: i32,
     /// 吸附态（一次至多一条）。
-    /// 现行亮圆点下标（update_dots 的差分基——页不变零写、页变恰动前后两点）。
-    dot_on: u8,
     snap: Option<Snap>,
     /// 松手吸附档（默认 [`SnapMode::QuadOut`]——行为零变化）。
     snap_mode: SnapMode,
@@ -126,7 +122,6 @@ impl SwipePager {
             base_ox: 0,
             drag_x0: 0,
             drag_last_x: 0,
-            dot_on: 0,
             snap: None,
             snap_mode: SnapMode::QuadOut,
         }
@@ -149,22 +144,14 @@ impl SwipePager {
     ) -> Result<NodeId, UiError> {
         let (vp_w, _vp_h) = ui.viewport();
         self.vp_w = vp_w;
-        let port = ui.add(
-            parent,
-            ViewSpec {
-                kind: ViewKind::Clip,
-                key: 0,
-                props: Props::Clip(ClipProps { w: Some(vp_w), h: None }),
-            },
-        )?;
         let track = ui.add(
-            port,
+            parent,
             ViewSpec {
                 kind: ViewKind::Row,
                 key: 0,
                 props: Props::Row(RowProps {
                     gap: 0,
-                    w: Some(vp_w), // 页框 = viewport 全宽；外层 Clip 负责横向 port
+                    w: Some(vp_w), // 页框 = viewport 全宽（v1 免 clip——§3 挂账）
                     h: None,
                     cross: CrossAlign::Stretch,
                 }),
@@ -217,7 +204,6 @@ impl SwipePager {
             self.dots[i as usize] = Some(d);
         }
         self.ox = 0;
-        self.dot_on = 0; // 新 dot 组第 0 点亮（建树单源）——差分基同步
         self.attached = true;
         Ok(track)
     }
@@ -320,8 +306,7 @@ impl SwipePager {
                 self.begin_snap(ui, self.page, 0);
                 true
             }
-            Msg::Press { .. } | Msg::Release { .. } | Msg::Click { .. }
-            | Msg::FocusIn { .. } | Msg::FocusOut { .. } => false,
+            Msg::Press { .. } | Msg::Release { .. } | Msg::Click { .. } => false,
         }
     }
 
@@ -379,7 +364,7 @@ impl SwipePager {
     /// offset 直写 + 镜像同步（track 死亡（app 误 remove）→ 静默拒：
     /// set_props 同族防御面——后续 Msg 全 no-op，不 panic）。
     fn apply_ox<const N: usize>(&mut self, ui: &mut Ui<N>, ox: i32) {
-        if ui.set_offset_sparse(self.track, ox, 0).is_ok() {
+        if ui.set_offset(self.track, ox, 0).is_ok() {
             self.ox = ox;
         }
     }
@@ -414,38 +399,15 @@ impl SwipePager {
     }
 
     /// 圆点直摆（paint-only props 变更——measured==0 面；死点静默跳过）。
-    /// 差分更新：页未变（回弹吸附/HOME 已在位）零写；页变恰动前后两点
-    /// （前亮转暗 + 新亮转亮）。整组重摆会让未变点也走 set_props 同界
-    /// 重绘入 damage——8 页时 8×16×16 白传输（审计修 ③）。
     fn update_dots<const N: usize>(&mut self, ui: &mut Ui<N>) {
-        if self.dot_on == self.page {
-            return;
-        }
-        let prev = self.dot_on as usize;
-        let cur = self.page as usize;
-        if let Some(d) = self.dots[prev] {
+        for i in 0..self.page_count as usize {
+            let Some(d) = self.dots[i] else { continue };
+            let bg = if i == self.page as usize { DOT_ON } else { DOT_OFF };
             let _ = ui.set_props(
                 d,
-                Props::Rect(RectProps {
-                    bg: DOT_OFF,
-                    w: Some(DOT_SIZE),
-                    h: None,
-                    radius: 0,
-                })
+                Props::Rect(RectProps { bg, w: Some(DOT_SIZE), h: None, radius: 0 }),
             );
         }
-        if let Some(d) = self.dots[cur] {
-            let _ = ui.set_props(
-                d,
-                Props::Rect(RectProps {
-                    bg: DOT_ON,
-                    w: Some(DOT_SIZE),
-                    h: None,
-                    radius: 0,
-                }),
-            );
-        }
-        self.dot_on = self.page;
     }
 
     /// 页域判定：点在全页带内（x ∈ [base, base+n×页宽)、y ∈ track 纵界

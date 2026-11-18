@@ -49,7 +49,6 @@ pub mod anim;
 pub mod components;
 pub mod damage;
 pub mod dep;
-pub mod diagnostic;
 pub mod desc;
 pub mod frame;
 pub mod hit;
@@ -57,34 +56,21 @@ pub mod layout;
 #[cfg(feature = "s7")]
 pub mod mask;
 pub mod metrics;
-pub mod navigation;
-pub mod pull_refresh;
-pub mod text_area;
-pub mod nav_stack;
-pub mod gesture;
 pub mod paint;
 // 波2 控件底座（六波方案步骤 3）：模式件 + 主题 token 两个新模块。
 pub mod pattern;
 pub mod theme;
 pub mod resample;
-pub mod sdk;
-pub mod sem;
 pub mod step;
 pub mod swipe;
 pub mod telemetry;
-pub mod text_input;
-pub mod text_wrap;
-pub mod widgets;
-pub mod utf8;
 // arena 内嵌本文件（Node/槽表私有——§6）；NodeId 在 desc.rs 公开。
 
 // 扁平面 re-export：门面签名里不限定模块路径的名字（§6 用法对齐）。
 pub use desc::{AstError, Axis, Msg, MsgBuf, NodeId, Props, TextBuf, ViewKind, ViewSpec};
 pub use metrics::{EmptyIconSource, IconSource, MonospaceTextMetrics, ProportionalTextMetrics, TextMetrics};
-pub use sem::{a11y_region_roundtrip, SemEntry, SEM_ACTION_ACTIVATE, SEM_ACTION_ADJUST, SEM_ACTION_FOCUS, SEM_ACTION_TEXT_EDIT, SEM_LABEL_MAX, SEM_MAX, SEM_STATE_CHECKED, SEM_STATE_DISABLED, SEM_STATE_SELECTED};
 
 use berry_gfx::cmd::{Color, CommandEncoder, GlyphPos};
-use berry_guiproto::surface::{encode_a11y_region, A11yRegion, A11Y_ACTION_FOCUS, A11Y_ROLE_GAME_REGION, A11Y_STATE_FOCUSED, A11Y_STATE_VISIBLE};
 use berry_guiproto::{FRAME_DISCARDED, FRAME_PRESENTED, PHASE_MOVE};
 use resample::Sample;
 
@@ -265,14 +251,12 @@ pub const TREE_DEPTH_MAX: u32 = 96;
 pub const A11Y_MAX: usize = 40; // 北极星审计：桌面树 a11y 实需 34（4状态+4dock+5键+1页+20格），01bb3e37a 同款
 
 /// a11y 角色常量域（wire u8；§6 冻结——枚举外的开放值域，host 可扩）。
-/// P0 起值域单源转发 BerrySession semantic sidecar：BerryUI 可扩展导出，
-/// 但 0..=5 的既有语义不得另抄第二份。
-pub const ROLE_NONE: u8 = berry_guiproto::surface::A11Y_ROLE_NONE;
-pub const ROLE_BUTTON: u8 = berry_guiproto::surface::A11Y_ROLE_BUTTON;
-pub const ROLE_TEXT: u8 = berry_guiproto::surface::A11Y_ROLE_TEXT;
-pub const ROLE_IMAGE: u8 = berry_guiproto::surface::A11Y_ROLE_IMAGE;
-pub const ROLE_TOGGLE: u8 = berry_guiproto::surface::A11Y_ROLE_TOGGLE;
-pub const ROLE_LIST_ITEM: u8 = berry_guiproto::surface::A11Y_ROLE_LIST_ITEM;
+pub const ROLE_NONE: u8 = 0;
+pub const ROLE_BUTTON: u8 = 1;
+pub const ROLE_TEXT: u8 = 2;
+pub const ROLE_IMAGE: u8 = 3;
+pub const ROLE_TOGGLE: u8 = 4;
+pub const ROLE_LIST_ITEM: u8 = 5;
 
 /// a11y 条目（D12：Node 冻结 19 字段无 a11y 位——侧表存 NodeId + 角色
 /// + 内联标签）。`node` 的 gen 位与 arena 三重对拍（发射面防悬空残项）。
@@ -340,70 +324,6 @@ impl EventBuf {
     pub fn is_empty(&self) -> bool {
         self.n == 0
     }
-}
-
-// ---------- component focus 侧表（GUI-14 C1） ----------
-
-/// component focusable 容量（与 a11y 侧表同帽；超表 → NodeFull loud）。
-pub const FOCUS_MAX: usize = 32;
-
-/// 可聚焦组件登记项：`node` 是语义焦点锚（Button/Switch panel），`visual`
-/// 是焦点变化时需要 invalidate 的视觉承载节点；禁用项保留在表中但不参与
-/// 导航，便于同一 widget 从 Disabled 恢复后无需重建顺序。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FocusEntry {
-    pub node: NodeId,
-    pub visual: Option<NodeId>,
-    pub enabled: bool,
-}
-
-// ---------- flex ratio 侧表（GUI-14 L2） ----------
-
-/// flex weight 侧表容量；超表 → NodeFull loud（D30 容量族）。
-pub const FLEX_MAX: usize = 32;
-
-/// 主轴比例分配登记项。叶子面 = Rect/Circle 双 None；L3 transposed
-/// pane 面 = Row 中 Col/Grid/Panel 主轴宽 None、Col 中 Row 主轴高 None。
-/// 使用前提是父 Row/Col 主轴已有确定终值。未固定时：叶子内在为 0 则
-/// 塌缩；有内在的 pane 会按权重重分其内在总量（不 shrink），不是拒面。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FlexEntry {
-    pub node: NodeId,
-    /// L2 兼容字段名；L6a 起等价于 `FlexSpec::grow`。
-    pub weight: u16,
-    pub shrink: u16,
-    pub basis: FlexBasis,
-}
-
-/// L6a flex 基准：`Auto` 读子主轴内在，`Px` 是确定基准。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FlexBasis {
-    Auto,
-    Px(u32),
-}
-
-/// L6a runtime-only flex 规格。`grow` 只消费正余量；`shrink` 只消费负
-/// 余量；两者可独立存在，但全零是死登记，写入面 loud 拒。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FlexSpec {
-    pub grow: u16,
-    pub shrink: u16,
-    pub basis: FlexBasis,
-}
-
-// ---------- LAYOUT-L5 text wrap 侧表 ----------
-
-/// text wrap 侧表容量；超表 → NodeFull loud（D30 容量族）。
-pub const TEXT_WRAP_MAX: usize = 32;
-
-/// runtime-only Text wrap 登记：不进 Node/Props/AST/wire。`last_max_w`
-/// 由最近一次 measure walk 写入，是 paint 复用同一 wrap plan 的缓存；
-/// 调用方只声明 `enabled`，宽上界来自 per-node incoming BoxConstraints。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TextWrapEntry {
-    pub node: NodeId,
-    pub enabled: bool,
-    pub last_max_w: u32,
 }
 
 // ---------- press_map 侧表（GUI-6 D18——段D） ----------
@@ -586,7 +506,6 @@ pub struct Ui<const N: usize> {
     /// 主题档运行态（维八暗色刀）：paint 双档取色单源——
     /// [`Ui::set_theme_mode`] 换档并置 FULL damage（`set_viewport` 同形）。
     theme: theme::Theme,
-    theme_mode: theme::ThemeMode,
     damage: damage::DamageSet,
     input_buf: [Option<hit::PtrEvent>; INPUT_BUF_MAX],
     input_n: usize,
@@ -614,18 +533,10 @@ pub struct Ui<const N: usize> {
     telem: telemetry::Telemetry,
     tm: &'static dyn metrics::TextMetrics, // D28 供给槽（默认 Monospace）
     icons: &'static dyn metrics::IconSource, // D28 供给槽（默认 Empty）
-    /// 运行期字形供件槽。默认 host 面用静态图集；guest-font-vmo 档由
-    /// Berry Room 注入系统 A8 VMO，避免 app 复制 CJK/HD 字表。
-    fonts: Option<&'static dyn metrics::FontSource>,
     a11y: [Option<A11yEntry>; A11Y_MAX], // a11y 侧表（D12——apply 落/encode 读）
-    sem: [Option<SemEntry>; SEM_MAX], // SEM-A1 runtime-only 语义旁表（不进 AST/wire）
-    focus: [Option<FocusEntry>; FOCUS_MAX], // component focusable 侧表
-    focused: Option<NodeId>, // 当前 component focus（窗口焦点仍在 wmd）
-    flex: [Option<FlexEntry>; FLEX_MAX], // L2 主轴比例侧表
-    wrap: [Option<TextWrapEntry>; TEXT_WRAP_MAX], // L5 runtime-only wrap 侧表
     press_map: [PressEntry; PRESS_MAP_MAX], // pressed 短路径表（D18——pump 期消费）
     press_map_n: usize,
-    input_focus: Option<NodeId>, // 输入焦点窗（批 D——Input/Edit 焦点环/caret 单源）
+    focus: Option<NodeId>, // 输入焦点窗（批 D——Input/Edit 焦点环/caret 单源）
     input_bufs: [Option<(NodeId, desc::TextBuf)>; INPUT_TEXT_MAX], // 输入内容侧表（批 D）
     input_buf_n: usize,
     widget_events: EventBuf, // 组件事件缓冲（widget_react 期产——take_events 消费）
@@ -641,13 +552,6 @@ static DEFAULT_ICON_SOURCE: EmptyIconSource = EmptyIconSource;
 
 fn pack_id(idx: usize, gen: u16) -> NodeId {
     NodeId(((gen as u32) << 16) | ((idx as u32) & 0xFFFF))
-}
-
-fn i32_to_u16_region(value: i32) -> Result<u16, UiError> {
-    if value < 0 || value > u16::MAX as i32 {
-        return Err(UiError::NodeBad);
-    }
-    Ok(value as u16)
 }
 
 fn clamp_u32(v: i64) -> u32 {
@@ -683,7 +587,6 @@ fn badge_width_class(c: u32) -> u32 {
 fn props_geom_equal(a: &Props, b: &Props) -> bool {
     match (a, b) {
         (Props::Root, Props::Root) => true,
-        (Props::Clip(a), Props::Clip(b)) => a.w == b.w && a.h == b.h,
         (Props::Rect(x), Props::Rect(y)) => x.w == y.w && x.h == y.h,
         (Props::Text(x), Props::Text(y)) => {
             x.style.scale == y.style.scale && x.text.as_bytes() == y.text.as_bytes()
@@ -702,9 +605,6 @@ fn props_geom_equal(a: &Props, b: &Props) -> bool {
                 && x.cross == y.cross
                 && x.w == y.w
                 && x.h == y.h
-        }
-        (Props::Panel(x), Props::Panel(y)) => {
-            x.padding == y.padding && x.gap == y.gap && x.w == y.w && x.h == y.h
         }
         (Props::Image(x), Props::Image(y)) => x.res == y.res && x.w == y.w && x.h == y.h,
         (Props::Icon(x), Props::Icon(y)) => x.id == y.id && x.w == y.w && x.h == y.h,
@@ -774,238 +674,6 @@ fn props_geom_equal(a: &Props, b: &Props) -> bool {
     }
 }
 
-/// RUN-K1 重应用统计：一次 keyed 调和的值级证据面。`rederives` 是本
-/// 次调用内树身份/几何推导轮数；当前实现单轮完成，恒 1。未来若引入
-/// re-entrant derive，必须保持 <= [`SETTLE_DERIVE_MAX`]。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ReapplyStat {
-    pub matched_clean: u32,
-    pub updated: u32,
-    pub moved: u32,
-    pub added: u32,
-    pub removed: u32,
-    pub rederives: u32,
-    pub fallback_full: bool,
-}
-
-/// RUN-K1 settle cap。GUI-15 E7 的上限不是给全树重建留余地，而是禁止
-/// 交互帧内无限 derive；当前单轮调和必须一次 settle。
-pub const SETTLE_DERIVE_MAX: u32 = 3;
-
-/// RUN-K1 只读调和计划。所有数组按 const N 定容，零分配；计划完成后
-/// 才允许修改 arena。
-struct KeyPlan<const N: usize> {
-    source_to_target: [u32; N],
-    source_add: [bool; N],
-    source_moved: [bool; N],
-    target_keep: [bool; N],
-    target_remove: [bool; N],
-    matched_clean: u32,
-    updated: u32,
-    moved: u32,
-    added: u32,
-    removed: u32,
-}
-
-/// RUN-K1 keyed 通道的实验期 source scratch 帽。`apply_desc` full oracle
-/// 仍支持 MAX_NODES=512；keyed 面先用固定 128 节点/24 层的小栈切片落地，
-/// 防止把 D29 32KB guest 栈预算扩大到 embedder 才发现溢出。
-const KEYED_SOURCE_MAX: usize = 128;
-pub const KEYED_DEPTH_MAX: u32 = 24;
-
-fn source_max_depth<const N: usize>(nodes: &[Option<Node>]) -> Result<u32, desc::AstError> {
-    let mut max_depth = 0u32;
-    for (_slot, option) in nodes.iter().enumerate() {
-        let Some(node) = option.as_ref() else { continue };
-        if !node.alive {
-            continue;
-        }
-        let mut depth = 1u32;
-        let mut parent = node.parent;
-        let mut hops = 0usize;
-        while parent != NONE && hops <= N {
-            hops += 1;
-            let Some(parent_node) = nodes.get(parent as usize).and_then(|o| o.as_ref()) else {
-                return Err(desc::AstError::Truncated);
-            };
-            depth += 1;
-            parent = parent_node.parent;
-        }
-        max_depth = max_depth.max(depth);
-    }
-    Ok(max_depth)
-}
-
-impl<const N: usize> KeyPlan<N> {
-    fn new() -> Self {
-        Self {
-            source_to_target: [NONE; N],
-            source_add: [false; N],
-            source_moved: [false; N],
-            target_keep: [false; N],
-            target_remove: [false; N],
-            matched_clean: 0,
-            updated: 0,
-            moved: 0,
-            added: 0,
-            removed: 0,
-        }
-    }
-}
-
-fn mark_source_add<const N: usize>(
-    nodes: &[Option<Node>],
-    slot: u32,
-    plan: &mut KeyPlan<N>,
-) -> u32 {
-    let Some(node) = nodes.get(slot as usize).and_then(|o| o.as_ref()) else {
-        return 0;
-    };
-    if plan.source_add[slot as usize] {
-        return 0;
-    }
-    plan.source_add[slot as usize] = true;
-    let mut count = 1u32;
-    let mut cur = node.first_child;
-    let mut hops = 0usize;
-    while cur != NONE && hops <= N {
-        hops += 1;
-        let next = nodes
-            .get(cur as usize)
-            .and_then(|o| o.as_ref())
-            .map(|n| n.next_sib)
-            .unwrap_or(NONE);
-        count += mark_source_add(nodes, cur, plan);
-        cur = next;
-    }
-    count
-}
-
-fn mark_target_remove<const N: usize>(
-    nodes: &[Option<Node>],
-    slot: u32,
-    plan: &mut KeyPlan<N>,
-) -> u32 {
-    let Some(node) = nodes.get(slot as usize).and_then(|o| o.as_ref()) else {
-        return 0;
-    };
-    if plan.target_remove[slot as usize] {
-        return 0;
-    }
-    plan.target_remove[slot as usize] = true;
-    let mut count = 1u32;
-    let mut cur = node.first_child;
-    let mut hops = 0usize;
-    while cur != NONE && hops <= N {
-        hops += 1;
-        let next = nodes
-            .get(cur as usize)
-            .and_then(|o| o.as_ref())
-            .map(|n| n.next_sib)
-            .unwrap_or(NONE);
-        count += mark_target_remove(nodes, cur, plan);
-        cur = next;
-    }
-    count
-}
-
-fn plan_keyed_node<const N: usize>(
-    source: &[Option<Node>],
-    source_slot: u32,
-    target: &[Option<Node>],
-    target_slot: u32,
-    plan: &mut KeyPlan<N>,
-) -> Result<(), desc::AstError> {
-    // 逐链扫描而不落 [u32; N] 子清单：D29 guest 栈预算按每层约 200B 设
-    // 计；若每层复制三个 N 长数组，N=512/depth=96 会放大到数百 KB。
-    // target_keep 即“本父下已匹配”标记，复用计划状态且消除死字段。
-    let source_head = source
-        .get(source_slot as usize)
-        .and_then(|o| o.as_ref())
-        .map(|n| n.first_child)
-        .unwrap_or(NONE);
-    let target_head = target
-        .get(target_slot as usize)
-        .and_then(|o| o.as_ref())
-        .map(|n| n.first_child)
-        .unwrap_or(NONE);
-
-    let mut source_cur = source_head;
-    let mut source_i = 0usize;
-    let mut source_hops = 0usize;
-    while source_cur != NONE && source_hops <= N {
-        source_hops += 1;
-        let Some(child) = source.get(source_cur as usize).and_then(|o| o.as_ref()) else {
-            return Err(desc::AstError::Truncated);
-        };
-        let next = child.next_sib;
-        let child_slot = source_cur;
-        let child_key = child.key;
-
-        let mut matched = false;
-        if child_key != 0 {
-            let mut target_cur = target_head;
-            let mut target_i = 0usize;
-            let mut target_hops = 0usize;
-            while target_cur != NONE && target_hops <= N {
-                target_hops += 1;
-                let Some(candidate) =
-                    target.get(target_cur as usize).and_then(|o| o.as_ref())
-                else {
-                    break;
-                };
-                let candidate_next = candidate.next_sib;
-                let candidate_slot = target_cur;
-                let already_matched =
-                    plan.target_keep.get(candidate_slot as usize).copied().unwrap_or(true);
-                if !already_matched && candidate.key == child_key {
-                    if candidate.kind != child.kind {
-                        return Err(desc::AstError::KeyKindMismatch { key: child_key });
-                    }
-                    plan.source_to_target[child_slot as usize] = candidate_slot;
-                    plan.target_keep[candidate_slot as usize] = true;
-                    let changed = candidate.props != child.props;
-                    if changed {
-                        plan.updated += 1;
-                    }
-                    if source_i != target_i {
-                        plan.source_moved[child_slot as usize] = true;
-                        plan.moved += 1;
-                    } else if !changed {
-                        plan.matched_clean += 1;
-                    }
-                    plan_keyed_node(source, child_slot, target, candidate_slot, plan)?;
-                    matched = true;
-                    break;
-                }
-                target_cur = candidate_next;
-                target_i += 1;
-            }
-        }
-        if !matched {
-            plan.added += mark_source_add(source, child_slot, plan);
-        }
-        source_cur = next;
-        source_i += 1;
-    }
-
-    let mut target_cur = target_head;
-    let mut target_hops = 0usize;
-    while target_cur != NONE && target_hops <= N {
-        target_hops += 1;
-        let Some(candidate) = target.get(target_cur as usize).and_then(|o| o.as_ref()) else {
-            break;
-        };
-        let next = candidate.next_sib;
-        let kept = plan.target_keep.get(target_cur as usize).copied().unwrap_or(false);
-        if !kept {
-            plan.removed += mark_target_remove(target, target_cur, plan);
-        }
-        target_cur = next;
-    }
-    Ok(())
-}
-
 impl<const N: usize> Ui<N> {
     pub fn new(viewport_w: u32, viewport_h: u32) -> Self {
         let mut free_stack = [0u32; N];
@@ -1022,8 +690,7 @@ impl<const N: usize> Ui<N> {
             root_slot: NONE,
             vp_w: viewport_w,
             vp_h: viewport_h,
-            theme: theme::Theme::light(),
-            theme_mode: theme::ThemeMode::Light, // 默认 light 档
+            theme: theme::Theme::Light, // 默认 light 档（旧行为零漂移）
             damage: damage::DamageSet::new(),
             input_buf: [None; INPUT_BUF_MAX],
             input_n: 0,
@@ -1049,13 +716,7 @@ impl<const N: usize> Ui<N> {
             telem: telemetry::Telemetry::new(),
             tm: &DEFAULT_TEXT_METRICS,
             icons: &DEFAULT_ICON_SOURCE,
-            fonts: None,
             a11y: [None; A11Y_MAX],
-            sem: [None; SEM_MAX],
-            focus: [None; FOCUS_MAX],
-            focused: None,
-            flex: [None; FLEX_MAX],
-            wrap: [None; TEXT_WRAP_MAX],
             press_map: [PressEntry {
                 trigger: NodeId(0),
                 visual: NodeId(0),
@@ -1063,7 +724,7 @@ impl<const N: usize> Ui<N> {
                 active: false,
             }; PRESS_MAP_MAX],
             press_map_n: 0,
-            input_focus: None,
+            focus: None,
             input_bufs: [None; INPUT_BUF_MAX],
             input_buf_n: 0,            widget_events: EventBuf::new(),
             lost_widget_events: 0,
@@ -1242,13 +903,8 @@ impl<const N: usize> Ui<N> {
         }
         self.deps.clear(); // 旧树 NodeId 全悬空——边表整清（dep 表侧单源）
         self.a11y = [None; A11Y_MAX]; // 同理整清（D12 侧表随树生命周期）
-        self.sem = [None; SEM_MAX]; // SEM-A1 runtime-only 语义随整树重建清空
-        self.focus = [None; FOCUS_MAX];
-        self.focused = None;
-        self.flex = [None; FLEX_MAX];
-        self.wrap = [None; TEXT_WRAP_MAX];
         self.press_map_n = 0; // 同理整清（D18 表随树生命周期——悬空 id 无还原义）
-        self.input_focus = None; // 输入焦点随树清（悬空 id 无义）
+        self.focus = None; // 焦点随树清（批 D——悬空 id 无义）
         self.input_bufs = [None; INPUT_BUF_MAX]; // 内容侧表同理整清
         self.input_buf_n = 0;
         self.widget_events = EventBuf::new(); // 同理整清（组件事件随树生命周期——旧 NodeId 悬空无义）
@@ -1282,16 +938,16 @@ impl<const N: usize> Ui<N> {
     /// 换主题档：色板随档换 → 全帧重画（FULL damage，`set_viewport`
     /// 同形）；幂等（同档重设零脏帧）。即时生效语义 = 调用方随后
     /// `wake` + 渲染一帧即换肤（settings 暗色开关消费面）。
-    pub fn set_theme_mode(&mut self, mode: theme::ThemeMode) {
-        if self.theme_mode != mode {
-            self.theme_mode = mode;
+    pub fn set_theme_mode(&mut self, mode: theme::Theme) {
+        if self.theme != mode {
+            self.theme = mode;
             self.damage.add_full();
         }
     }
 
     /// 当前主题档。
-    pub fn theme_mode(&self) -> theme::ThemeMode {
-        self.theme_mode
+    pub fn theme_mode(&self) -> theme::Theme {
+        self.theme
     }
 
     // —— 树构造（builder 入口①） ——
@@ -1344,11 +1000,11 @@ impl<const N: usize> Ui<N> {
             // ——desc.rs AST/builder 面本就按容器受理，此处白名单漏收是
             // 两面漂移，tlv6「Refresh = 容器正例对照」同源）。
             Some(ViewKind::Root) | Some(ViewKind::Col) | Some(ViewKind::Row) | Some(ViewKind::Pad)
-            | Some(ViewKind::Grid) | Some(ViewKind::Panel) | Some(ViewKind::Clip)
-            | Some(ViewKind::Stack) | Some(ViewKind::Tabs) | Some(ViewKind::Scroll)
-            | Some(ViewKind::List) | Some(ViewKind::Collapse) | Some(ViewKind::Card)
-            | Some(ViewKind::Refresh) => {}
-            // 叶带子显式列名（Rect/Text/Image/Icon 与组件叶）：容器位
+            | Some(ViewKind::Grid) | Some(ViewKind::Stack) | Some(ViewKind::Tabs)
+            | Some(ViewKind::Scroll) | Some(ViewKind::List) | Some(ViewKind::Collapse)
+            | Some(ViewKind::Card) | Some(ViewKind::Refresh) => {}
+            // 叶带子显式列名（Rect/Text 原有 + Image/Icon 新叶 + 组件七
+            // 件第二批的六叶——desc.rs AST 面「叶带子拒面」同律）：容器位
             // 传叶子 → BadParent。Grid 格满/零维先验在 Root-子检后（段C
             // 已落——AST/builder/add/set_props 三面同律齐）。
             Some(ViewKind::Rect) | Some(ViewKind::Text) | Some(ViewKind::Image)
@@ -1370,22 +1026,6 @@ impl<const N: usize> Ui<N> {
         }
         if spec.kind == ViewKind::Root {
             return Err(UiError::BadParent); // Root 不能为子
-        }
-        // RUN-K1：同父非零 key 唯一。builder 可分次构造，冲突在最低公共
-        // 入口先行拒绝；AST 面由 desc::build_node 单源同律执法。
-        if spec.key != 0 {
-            let mut cur = self.nodes[pidx].as_ref().map(|n| n.first_child).unwrap_or(NONE);
-            let mut hops = 0usize;
-            while cur != NONE && hops <= N {
-                hops += 1;
-                let Some(n) = self.nodes.get(cur as usize).and_then(|o| o.as_ref()) else {
-                    break;
-                };
-                if n.key == spec.key {
-                    return Err(UiError::NodeBad);
-                }
-                cur = n.next_sib;
-            }
         }
         // Grid spec 先验（§4.2 拒面 add 侧；AST/builder 面在 desc.rs 双
         // 拒）：零维 spec 拒——UiError 族冻结（D21），NodeBad 兼任。
@@ -1577,66 +1217,10 @@ impl<const N: usize> Ui<N> {
             w += 1;
         }
         self.input_buf_n = w;
-        if let Some(f) = self.input_focus {
+        if let Some(f) = self.focus {
             if list[..cnt].contains(&(f.0 & 0xFFFF)) {
-                self.input_focus = None;
+                self.focus = None;
             }
-        }
-
-        // SEM-A1 语义旁表同理：子树摘除/残项一并清，不悬挂。
-        let mut k = 0usize;
-        while k < SEM_MAX {
-            let hit = self.sem[k]
-                .as_ref()
-                .map(|e| list[..cnt].contains(&(e.node.0 & 0xFFFF)))
-                .unwrap_or(false);
-            if hit {
-                self.sem[k] = None;
-            }
-            k += 1;
-        }
-        // C1 focus 生命周期同理：子树语义锚清除；当前焦点若在被摘子树，
-        // component focus 归空（窗口焦点是否保留由 wmd 单独裁决）。
-        let mut k = 0usize;
-        while k < FOCUS_MAX {
-            let hit = self.focus[k]
-                .as_ref()
-                .map(|e| list[..cnt].contains(&(e.node.0 & 0xFFFF)))
-                .unwrap_or(false);
-            if hit {
-                self.focus[k] = None;
-            }
-            k += 1;
-        }
-        if let Some(node) = self.focused {
-            if list[..cnt].contains(&(node.0 & 0xFFFF)) {
-                self.focused = None;
-            }
-        }
-        // L2 flex 生命周期同理：子树登记随摘除清空；悬空残项在布局读侧
-        // 也有 gen 对拍双保险。
-        let mut k = 0usize;
-        while k < FLEX_MAX {
-            let hit = self.flex[k]
-                .as_ref()
-                .map(|e| list[..cnt].contains(&(e.node.0 & 0xFFFF)))
-                .unwrap_or(false);
-            if hit {
-                self.flex[k] = None;
-            }
-            k += 1;
-        }
-        // L5 wrap 生命周期同理：子树登记随摘除清空；paint 只经活性过滤。
-        let mut k = 0usize;
-        while k < TEXT_WRAP_MAX {
-            let hit = self.wrap[k]
-                .as_ref()
-                .map(|e| list[..cnt].contains(&(e.node.0 & 0xFFFF)))
-                .unwrap_or(false);
-            if hit {
-                self.wrap[k] = None;
-            }
-            k += 1;
         }
         Ok(())
     }
@@ -1690,7 +1274,6 @@ impl<const N: usize> Ui<N> {
                 .as_ref()
                 .map(|n| (&n.kind, &props)),
             Some((ViewKind::Root, Props::Root))
-                | Some((ViewKind::Clip, Props::Clip(_)))
                 | Some((ViewKind::Rect, Props::Rect(_)))
                 | Some((ViewKind::Text, Props::Text(_)))
                 | Some((ViewKind::Col, Props::Col(_)))
@@ -1747,8 +1330,6 @@ impl<const N: usize> Ui<N> {
                 | Some((ViewKind::Gauge, Props::Gauge(_)))
                 | Some((ViewKind::Qr, Props::Qr(_)))
                 | Some((ViewKind::DragReorder, Props::DragReorder(_)))
-                | Some((ViewKind::Circle, Props::Circle(_)))
-                | Some((ViewKind::Panel, Props::Panel(_)))
         );
         if !kind_ok {
             return Err(UiError::NodeBad);
@@ -1777,21 +1358,11 @@ impl<const N: usize> Ui<N> {
                 return Err(UiError::NodeBad);
             }
         }
-        // 组件值域先验：Slider/Progress/Step/Seg 的 permille/刻度/段域。
+        // 组件值域先验（Phase 2 两批）：Slider/Progress permille 域、
+        // Step 刻度域、Seg 段域——add 面同律（widget_value_ok 单源）；
+        // 违者 NodeBad loud。
         if !widget_value_ok(&props) {
             return Err(UiError::NodeBad);
-        }
-        // L2：flex 只允许双 None 的 Rect/Circle；离开 eligible 形态时摘除。
-        let flex_eligible = layout::flex_eligible_props(&self.nodes, idx, &props);
-        if !flex_eligible {
-            let node = pack_id(idx, self.nodes[idx].as_ref().map(|n| n.gen).unwrap_or(0));
-            let slot = self.flex.iter().position(|e| {
-                e.as_ref().is_some_and(|e| e.node == node)
-            });
-            if let Some(slot) = slot {
-                self.flex[slot] = None;
-                self.mark_flex_dirty(node);
-            }
         }
         let Some(old) = self.nodes[idx].as_ref().map(|n| n.props) else { return Err(UiError::NodeBad) };
         // B 面（S7 段E）：props_diff 位映射（§5 表单源）→ apply_change
@@ -1803,9 +1374,6 @@ impl<const N: usize> Ui<N> {
             if let Some(n) = self.nodes[idx].as_mut() {
                 n.props = props;
             }
-            if m.intersects(mask::ChangeMask::GEOM) {
-                self.mark_wrapped_descendants_dirty(idx as u32);
-            }
             self.apply_change(idx, m);
             Ok(())
         }
@@ -1816,9 +1384,6 @@ impl<const N: usize> Ui<N> {
             if let Some(n) = self.nodes[idx].as_mut() {
                 n.props = props;
                 n.paint_dirty = true;
-            }
-            if !geom_same {
-                self.mark_wrapped_descendants_dirty(idx as u32);
             }
             if geom_same {
                 self.damage_rect(old_r); // 纯着色：同界重绘
@@ -1920,230 +1485,11 @@ impl<const N: usize> Ui<N> {
         // 视图级重绘（old+new 界进 damage——bounds 含 ox/oy，当前界即两者锚）。
         let idx = self.slot_of(node)? as usize;
         let r = self.abs_rect_of(idx);
-        self.damage_node_rect(idx, r);
+        self.damage_rect(r);
         if let Some(n) = self.nodes[idx].as_mut() {
             n.paint_dirty = true;
         }
         Ok(())
-    }
-
-    /// Sparse translate damage for scrolling layers: record painted-leaf old/new
-    /// bounds instead of promoting a transparent container subtree to a full
-    /// port repaint. SwipePager uses this path for follow-finger and snap.
-    /// Bands write straight into `self.damage` via y±2 merging
-    /// (`DamageSet::add_row_band`) so two visible pages and repeated calls in
-    /// one frame (multiple MOVE msgs per pump batch) merge instead of
-    /// overflowing DAMAGE_MAX into FULL.
-    pub fn set_offset_sparse(
-        &mut self,
-        node: NodeId,
-        ox: i32,
-        oy: i32,
-    ) -> Result<(), UiError> {
-        let idx = self.slot_of(node)? as usize;
-        let (old_ox, old_oy) = {
-            let n = self.nodes[idx].as_ref().ok_or(UiError::NodeBad)?;
-            (n.ox, n.oy)
-        };
-        let (dx, dy) = (ox.saturating_sub(old_ox), oy.saturating_sub(old_oy));
-        let old_clip = self.clip_chain(idx);
-        Self::collect_sparse_offset(&self.nodes, idx, dx, dy, old_clip, &mut self.damage, 0);
-        if let Some(n) = self.nodes[idx].as_mut() {
-            n.ox = ox;
-            n.oy = oy;
-            n.paint_dirty = true;
-        }
-        let new_clip = self.clip_chain(idx);
-        if new_clip != old_clip {
-            Self::collect_sparse_offset(&self.nodes, idx, dx, dy, new_clip, &mut self.damage, 0);
-        }
-        Ok(())
-    }
-
-    /// Grid 页的稀疏平移 damage：Grid 直接子项按行带（y±2 合并）入
-    /// `out`（= 调用方 `self.damage`——跨页/跨调用同带并包络，见
-    /// `set_offset_sparse` 注）。SwipePager 的页是 Col→Grid→cells；
-    /// launcher 网格行间大空白保持不传输，避免两个可见页都退化成整页
-    /// 包络。非该形态回落 generic 包络。
-    fn add_sparse_grid_page_move(
-        nodes: &[Option<Node>],
-        page_slot: usize,
-        dx: i32,
-        clip: damage::RectI,
-        out: &mut damage::DamageSet,
-    ) -> bool {
-        let Some(page) = nodes.get(page_slot).and_then(|n| n.as_ref()) else {
-            return false;
-        };
-        if page.kind != ViewKind::Col {
-            return false;
-        }
-        let grid = page.first_child;
-        let Some(grid_node) = nodes.get(grid as usize).and_then(|n| n.as_ref()) else {
-            return false;
-        };
-        if grid == NONE || grid_node.kind != ViewKind::Grid {
-            return false;
-        }
-        let mut cell = grid_node.first_child;
-        let mut hops = 0usize;
-        while cell != NONE {
-            hops += 1;
-            if hops > nodes.len() {
-                return false;
-            }
-            let Some(cell_node) = nodes.get(cell as usize).and_then(|n| n.as_ref()) else {
-                return false;
-            };
-            let next = cell_node.next_sib;
-            let Some(r) = Self::painted_subtree_rect(nodes, cell as usize, 0) else {
-                cell = next;
-                continue;
-            };
-            let moved = damage::RectI::new(r.x.saturating_add(dx), r.y, r.w, r.h);
-            let inside = r.envelope(&moved).intersect(&clip);
-            if inside.is_empty() {
-                cell = next;
-                continue;
-            }
-            // 行带按 y±2 并入全集：同页同行 cell、跨页同带、同帧多次写
-            // 都合成一条；独立带数超 DAMAGE_MAX 时 add_row_band 落
-            // add_exact 帽 → 保守 FULL（不漏画方向）。
-            out.add_row_band(inside.to_wire());
-            cell = next;
-        }
-        true
-    }
-
-    fn collect_sparse_offset(
-        nodes: &[Option<Node>],
-        slot: usize,
-        dx: i32,
-        dy: i32,
-        clip: damage::RectI,
-        out: &mut damage::DamageSet,
-        depth: usize,
-    ) {
-        if depth > nodes.len() {
-            return;
-        }
-        let Some(node) = nodes.get(slot).and_then(|n| n.as_ref()) else {
-            return;
-        };
-        if !node.alive {
-            return;
-        }
-        // A scrolling track has few page children but many painted leaves.
-        // Aggregate leaves per direct child before DamageSet's 8-rect cap;
-        // otherwise a normal launcher page can degrade to FULL and defeat the
-        // sparse path.
-        if depth == 0 {
-            let mut child = node.first_child;
-            let mut hops = 0usize;
-            while child != NONE {
-                hops += 1;
-                if hops > nodes.len() {
-                    return;
-                }
-                let next = match nodes.get(child as usize).and_then(|n| n.as_ref()) {
-                    Some(c) if c.alive => c.next_sib,
-                    _ => return,
-                };
-                if Self::add_sparse_grid_page_move(nodes, child as usize, dx, clip, out) {
-                    child = next;
-                    continue;
-                }
-                if let Some(r) = Self::painted_subtree_rect(nodes, child as usize, 0) {
-                    let moved = damage::RectI::new(
-                        r.x.saturating_add(dx),
-                        r.y.saturating_add(dy),
-                        r.w,
-                        r.h,
-                    );
-                    let inside = r.envelope(&moved).intersect(&clip);
-                    out.add(inside.to_wire());
-                }
-                child = next;
-            }
-            return;
-        }
-        if matches!(
-            node.kind,
-            ViewKind::Rect
-                | ViewKind::Text
-                | ViewKind::Image
-                | ViewKind::Icon
-                | ViewKind::Circle
-                | ViewKind::Panel
-        ) {
-            if let Some(r) = anim::abs_rect(nodes, slot) {
-                let moved =
-                    damage::RectI::new(r.x.saturating_add(dx), r.y.saturating_add(dy), r.w, r.h);
-                let inside = r.envelope(&moved).intersect(&clip);
-                out.add(inside.to_wire());
-            }
-        }
-        let mut child = node.first_child;
-        let mut hops = 0usize;
-        while child != NONE {
-            hops += 1;
-            if hops > nodes.len() {
-                return;
-            }
-            let next = match nodes.get(child as usize).and_then(|n| n.as_ref()) {
-                Some(c) if c.alive => c.next_sib,
-                _ => return,
-            };
-            Self::collect_sparse_offset(nodes, child as usize, dx, dy, clip, out, depth + 1);
-            child = next;
-        }
-    }
-
-    fn painted_subtree_rect(
-        nodes: &[Option<Node>],
-        slot: usize,
-        depth: usize,
-    ) -> Option<damage::RectI> {
-        if depth > nodes.len() {
-            return None;
-        }
-        let node = nodes.get(slot).and_then(|n| n.as_ref())?;
-        if !node.alive {
-            return None;
-        }
-        let mut acc = if matches!(
-            node.kind,
-            ViewKind::Rect
-                | ViewKind::Text
-                | ViewKind::Image
-                | ViewKind::Icon
-                | ViewKind::Circle
-                | ViewKind::Panel
-        ) {
-            anim::abs_rect(nodes, slot)
-        } else {
-            None
-        };
-        let mut child = node.first_child;
-        let mut hops = 0usize;
-        while child != NONE {
-            hops += 1;
-            if hops > nodes.len() {
-                return acc;
-            }
-            let next = match nodes.get(child as usize).and_then(|n| n.as_ref()) {
-                Some(c) if c.alive => c.next_sib,
-                _ => return acc,
-            };
-            if let Some(r) = Self::painted_subtree_rect(nodes, child as usize, depth + 1) {
-                acc = Some(match acc {
-                    Some(old) => old.envelope(&r),
-                    None => r,
-                });
-            }
-            child = next;
-        }
-        acc
     }
 
     /// offset 公开面（GUI-6 D31）：内部走 anim Transform 同路径——直写
@@ -2152,19 +1498,13 @@ impl<const N: usize> Ui<N> {
     pub fn set_offset(&mut self, node: NodeId, ox: i32, oy: i32) -> Result<(), UiError> {
         let idx = self.slot_of(node)? as usize;
         let before = anim::subtree_abs_rect(&self.nodes, idx, 0);
-        let old_clip = self.clip_chain(idx);
         if let Some(n) = self.nodes[idx].as_mut() {
             n.ox = ox;
             n.oy = oy;
             n.paint_dirty = true;
         }
         let after = anim::subtree_abs_rect(&self.nodes, idx, 0);
-        let new_clip = self.clip_chain(idx);
-        let envelope = before.envelope(&after);
-        // 结构性 Clip 内平移只需 port 内旧新包络；若被裁剪节点自身移动
-        // 改变 port，则旧/新可见域分别入账（两矩形可能合并）。
-        self.damage_rect(envelope.intersect(&old_clip));
-        self.damage_rect(envelope.intersect(&new_clip));
+        self.damage_rect(before.envelope(&after));
         Ok(())
     }
 
@@ -2193,9 +1533,6 @@ impl<const N: usize> Ui<N> {
     pub fn take_a11y(&mut self, node: NodeId) -> bool {
         if let Some(e) = self.a11y.iter_mut().find(|e| e.as_ref().is_some_and(|e| e.node == node)) {
             *e = None;
-            // SEM overlay 依赖 a11y 薄面的 role/label；薄面摘除时连带清，
-            // 不留无单源的 resident 残项。
-            let _ = self.take_sem(node);
             true
         } else {
             false
@@ -2210,581 +1547,6 @@ impl<const N: usize> Ui<N> {
             .iter()
             .filter_map(|e| e.as_ref())
             .filter(|e| self.slot_of(e.node).is_ok())
-    }
-
-    // —— SEM-A1 runtime-only 语义旁表（导出面，不进 AST/wire） ——
-
-    /// 登记/覆写语义 overlay。节点必须已登记 legacy a11y（role/label
-    /// 单源）；未知词表、FOCUS 存储位、非法 UTF-8、value>64 或 range
-    /// 越界 loud 拒；表满 8 → NodeFull。
-    pub fn set_sem(&mut self, entry: SemEntry) -> Result<(), UiError> {
-        entry.validate()?;
-        self.slot_of(entry.node)?;
-        if !self.a11y_iter().any(|legacy| legacy.node == entry.node) {
-            return Err(UiError::NodeBad);
-        }
-        if let Some(slot) = self
-            .sem
-            .iter_mut()
-            .find(|e| e.as_ref().is_some_and(|e| e.node == entry.node))
-        {
-            *slot = Some(entry);
-            return Ok(());
-        }
-        let Some(slot) = self.sem.iter().position(|e| e.is_none()) else {
-            return Err(UiError::NodeFull);
-        };
-        self.sem[slot] = Some(entry);
-        Ok(())
-    }
-
-    /// 摘除语义条目；幂等。
-    pub fn take_sem(&mut self, node: NodeId) -> bool {
-        let Some(entry) = self.sem.iter_mut().find(|e| {
-            e.as_ref().is_some_and(|entry| entry.node == node)
-        }) else {
-            return false;
-        };
-        *entry = None;
-        true
-    }
-
-    /// 语义条目活性迭代（登记序；快照投影另按树前序）。
-    pub fn sem_iter(&self) -> impl Iterator<Item = &SemEntry> {
-        self.sem
-            .iter()
-            .filter_map(|e| e.as_ref())
-            .filter(|e| self.slot_of(e.node).is_ok())
-    }
-
-    /// 快照中的 P0 node_id（slot+1）。活性节点返回 id；悬空节点返回 None。
-    pub fn semantic_snapshot_id(&self, node: NodeId) -> Option<u32> {
-        let slot = self.slot_of(node).ok()? as u32;
-        Some(slot + 1)
-    }
-
-    /// 读取某节点 runtime 语义（P0 wire 无 value/range，本口是 host/app
-    /// 消费这些字段的唯一读面）。
-    pub fn sem_of(&self, node: NodeId) -> Option<SemEntry> {
-        self.sem_iter().find(|e| e.node == node).copied()
-    }
-
-    /// 当前活语义条目数。
-    pub fn semantic_count(&self) -> usize {
-        self.sem_iter().count()
-    }
-
-    /// 把 SEM + legacy a11y 并集投影为 P0 52B 记录。
-    ///
-    /// 规则：树前序；SEM wins；bounds = 绝对 bounds ∩ Clip 链，空界跳过；
-    /// FOCUS action / FOCUSED state 从 C1 表现场派生；parent = 最近已发射
-    /// 语义祖先；node_id = slot+1（raw NodeId 可为 0，不能直接进 P0）。
-    /// `merge_descendants` 只跳过后代语义，不改视觉/hit/focus。
-    pub fn sem_snapshot_into(
-        &self,
-        out: &mut [A11yRegion],
-    ) -> Result<usize, UiError> {
-        let mut slots = [NONE; N];
-        let mut slot_count = 0usize;
-        self.collect_sibs(self.root_slot, &mut slots, &mut slot_count);
-        let mut emitted = [false; N];
-        let mut count = 0usize;
-
-        for raw_slot in slots.iter().take(slot_count) {
-            let slot = *raw_slot as usize;
-            let Some(node) = self.nodes.get(slot).and_then(|option| option.as_ref()) else {
-                continue;
-            };
-            let node_id = pack_id(slot, node.gen);
-            let sem = self.sem_iter().find(|entry| entry.node == node_id);
-            let Some(legacy) = self.a11y_iter().find(|entry| entry.node == node_id) else {
-                continue;
-            };
-            if self.has_merge_semantic_ancestor(slot) {
-                continue;
-            }
-
-            let rect = self
-                .abs_rect_of(slot)
-                .intersect(&self.clip_chain(slot));
-            if rect.is_empty() {
-                continue;
-            }
-            let role = legacy.role;
-            let label = legacy.label.as_bytes();
-            if role > A11Y_ROLE_GAME_REGION || label.len() > sem::SEM_LABEL_MAX {
-                return Err(UiError::NodeBad);
-            }
-
-            let mut actions = sem.map(|e| e.actions).unwrap_or(0);
-            if self
-                .focus
-                .iter()
-                .flatten()
-                .any(|e| e.node == node_id && e.enabled)
-            {
-                actions |= A11Y_ACTION_FOCUS;
-            }
-            let mut state = sem.map(|e| e.state).unwrap_or(0) | A11Y_STATE_VISIBLE;
-            if self.focus_node() == Some(node_id) {
-                state |= A11Y_STATE_FOCUSED;
-            }
-
-            let parent_slot = self.nearest_emitted_semantic_slot(slot, &emitted);
-            let mut label_buf = [0u8; sem::SEM_LABEL_MAX];
-            label_buf[..label.len()].copy_from_slice(label);
-            let region = A11yRegion {
-                node_id: slot as u32 + 1,
-                parent_id: parent_slot.map(|parent| parent as u32 + 1).unwrap_or(0),
-                x: i32_to_u16_region(rect.x)?,
-                y: i32_to_u16_region(rect.y)?,
-                w: i32_to_u16_region(rect.w)?,
-                h: i32_to_u16_region(rect.h)?,
-                role,
-                actions,
-                state,
-                label_len: label.len() as u8,
-                label: label_buf,
-            };
-            let mut wire = [0u8; berry_guiproto::surface::A11Y_REGION_LEN];
-            if encode_a11y_region(&mut wire, &region).is_none() {
-                return Err(UiError::NodeBad);
-            }
-            if count >= out.len() {
-                return Err(UiError::NodeFull);
-            }
-            out[count] = region;
-            emitted[slot] = true;
-            count += 1;
-        }
-        Ok(count)
-    }
-
-    /// 视觉命中的语义目标：向上找最近 SEM/legacy a11y 锚。它不是第二命中
-    /// 权威，输入路由仍以 hit/wmd/C1 为准。
-    pub fn sem_at(&self, x: u32, y: u32) -> Option<NodeId> {
-        let mut node = self.node_at(x, y)?;
-        let mut hops = 0usize;
-        while hops <= N {
-            let slot = self.slot_of(node).ok()? as usize;
-            let Some(n) = self.nodes.get(slot).and_then(|option| option.as_ref()) else {
-                return None;
-            };
-            let has_semantic = self.sem_iter().any(|e| e.node == node)
-                || self.a11y_iter().any(|e| e.node == node);
-            if has_semantic {
-                return Some(node);
-            }
-            if n.parent == NONE {
-                return None;
-            }
-            let parent_node = self
-                .nodes
-                .get(n.parent as usize)
-                .and_then(|option| option.as_ref())?;
-            node = pack_id(n.parent as usize, parent_node.gen);
-            hops += 1;
-        }
-        None
-    }
-
-    fn has_merge_semantic_ancestor(&self, slot: usize) -> bool {
-        let Some(node) = self.nodes.get(slot).and_then(|option| option.as_ref()) else {
-            return false;
-        };
-        let mut parent = node.parent;
-        let mut hops = 0usize;
-        while parent != NONE && hops <= N {
-            let Some(parent_node) = self.nodes.get(parent as usize).and_then(|option| option.as_ref())
-            else {
-                return false;
-            };
-            let parent_id = pack_id(parent as usize, parent_node.gen);
-            if self
-                .sem_iter()
-                .any(|e| e.node == parent_id && e.merge_descendants)
-            {
-                return true;
-            }
-            parent = parent_node.parent;
-            hops += 1;
-        }
-        false
-    }
-
-    fn nearest_emitted_semantic_slot(&self, slot: usize, emitted: &[bool]) -> Option<usize> {
-        let Some(node) = self.nodes.get(slot).and_then(|option| option.as_ref()) else {
-            return None;
-        };
-        let mut parent = node.parent;
-        let mut hops = 0usize;
-        while parent != NONE && hops <= N {
-            let parent_slot = parent as usize;
-            let Some(parent_node) = self.nodes.get(parent_slot).and_then(|option| option.as_ref())
-            else {
-                return None;
-            };
-            let parent_id = pack_id(parent_slot, parent_node.gen);
-            let has_semantic = self.sem_iter().any(|e| e.node == parent_id)
-                || self.a11y_iter().any(|e| e.node == parent_id);
-            if has_semantic && emitted.get(parent_slot).copied().unwrap_or(false) {
-                return Some(parent_slot);
-            }
-            parent = parent_node.parent;
-            hops += 1;
-        }
-        None
-    }
-
-    // —— flex ratio（GUI-14 L2：固定主轴 Row/Col 的剩余空间比例分配） ——
-
-    /// L6a：登记/覆写完整 flex spec。L2/L3 eligibility 矩阵不变；全零
-    /// spec、悬空 id、不合规 kind/props/父位 → NodeBad，表满 → NodeFull。
-    pub fn set_flex_spec(
-        &mut self,
-        node: NodeId,
-        spec: FlexSpec,
-    ) -> Result<(), UiError> {
-        let idx = self.slot_of(node)? as usize;
-        if spec.grow == 0 && spec.shrink == 0 {
-            return Err(UiError::NodeBad);
-        }
-        let eligible = layout::flex_eligible_props(&self.nodes, idx, {
-            let Some(n) = self.nodes[idx].as_ref() else {
-                return Err(UiError::NodeBad);
-            };
-            &n.props
-        });
-        if !eligible {
-            return Err(UiError::NodeBad);
-        }
-        let entry = FlexEntry {
-            node,
-            weight: spec.grow,
-            shrink: spec.shrink,
-            basis: spec.basis,
-        };
-        if let Some(e) = self.flex.iter_mut().find(|e| {
-            e.as_ref().is_some_and(|e| e.node == node)
-        }) {
-            let changed = *e != Some(entry);
-            *e = Some(entry);
-            if changed {
-                self.mark_flex_dirty(node);
-            }
-            return Ok(());
-        }
-        let Some(slot) = self.flex.iter().position(|e| e.is_none()) else {
-            return Err(UiError::NodeFull);
-        };
-        self.flex[slot] = Some(entry);
-        self.mark_flex_dirty(node);
-        Ok(())
-    }
-
-    /// 读取 runtime-only flex spec；无登记返回 None。
-    pub fn flex_spec(&self, node: NodeId) -> Option<FlexSpec> {
-        let entry = self
-            .flex_iter()
-            .find(|entry| entry.node == node)
-            .copied()?;
-        Some(FlexSpec {
-            grow: entry.weight,
-            shrink: entry.shrink,
-            basis: entry.basis,
-        })
-    }
-
-    /// L2 冻结语法糖：`weight` 表示 grow、basis=0、不 shrink。
-    pub fn set_flex(&mut self, node: NodeId, weight: u16) -> Result<(), UiError> {
-        self.set_flex_spec(
-            node,
-            FlexSpec { grow: weight, shrink: 0, basis: FlexBasis::Px(0) },
-        )
-    }
-
-    /// 摘除 flex weight；幂等。摘除后需 layout 才收敛新几何。
-    pub fn take_flex(&mut self, node: NodeId) -> bool {
-        let Some(slot) = self.flex.iter().position(|e| {
-            e.as_ref().is_some_and(|e| e.node == node)
-        }) else {
-            return false;
-        };
-        self.flex[slot] = None;
-        self.mark_flex_dirty(node);
-        true
-    }
-
-    /// 活 flex 登记迭代（gen/alive 经 slot_of 过滤）。
-    pub fn flex_iter(&self) -> impl Iterator<Item = &FlexEntry> {
-        self.flex.iter().flatten().filter(|e| self.slot_of(e.node).is_ok())
-    }
-
-    /// LAYOUT-L5：登记/覆写 Text wrap。宽上界不在此声明；measure walk 按
-    /// per-node incoming BoxConstraints 派生，并在测量时写入
-    /// `last_max_w` 供 paint 使用同一断行计划。非 Text / 悬空 id →
-    /// NodeBad；表满 → NodeFull；幂等同值 no-op。
-    pub fn set_text_wrap(&mut self, node: NodeId, enabled: bool) -> Result<(), UiError> {
-        let idx = self.slot_of(node)?;
-        if !matches!(
-            self.nodes.get(idx).and_then(|o| o.as_ref().map(|n| n.kind)),
-            Some(ViewKind::Text)
-        ) {
-            return Err(UiError::NodeBad);
-        }
-        let existing = self
-            .wrap
-            .iter()
-            .find(|e| e.as_ref().is_some_and(|e| e.node == node))
-            .and_then(|e| e.as_ref().copied());
-        if let Some(old) = existing {
-            if old.enabled == enabled {
-                return Ok(());
-            }
-            if let Some(e) = self.wrap.iter_mut().find(|e| {
-                e.as_ref().is_some_and(|e| e.node == node)
-            }) {
-                *e = Some(TextWrapEntry { node, enabled, last_max_w: old.last_max_w });
-            }
-            self.mark_flex_dirty(node);
-            return Ok(());
-        }
-        let Some(slot) = self.wrap.iter().position(|e| e.is_none()) else {
-            return Err(UiError::NodeFull);
-        };
-        self.wrap[slot] = Some(TextWrapEntry { node, enabled, last_max_w: u32::MAX });
-        self.mark_flex_dirty(node);
-        Ok(())
-    }
-
-    /// 摘除 Text wrap；幂等。
-    pub fn take_text_wrap(&mut self, node: NodeId) -> bool {
-        let Some(slot) = self.wrap.iter().position(|e| {
-            e.as_ref().is_some_and(|e| e.node == node)
-        }) else {
-            return false;
-        };
-        self.wrap[slot] = None;
-        self.mark_flex_dirty(node);
-        true
-    }
-
-    /// 活性 wrap 登记迭代（gen/alive 过滤）。
-    pub fn text_wrap_iter(&self) -> impl Iterator<Item = &TextWrapEntry> {
-        self.wrap
-            .iter()
-            .flatten()
-            .filter(|e| self.slot_of(e.node).is_ok())
-    }
-
-    /// LAYOUT-L5：祖先几何/容器盒变化时，重标子树内 wrap Text。父节点
-    /// 自身 dirty 只会触发布局递归，不会自动重测缓存命中的叶子；wrap 叶
-    /// 子的 intrinsic 依赖 incoming max_w，因此必须显式加入重测链。
-    fn mark_wrapped_descendants_dirty(&mut self, ancestor: u32) {
-        let mut entries = [None; TEXT_WRAP_MAX];
-        let mut count = 0usize;
-        for entry in self.wrap.iter().flatten() {
-            if count < entries.len() {
-                entries[count] = Some(entry.node);
-                count += 1;
-            }
-        }
-        for node in entries[..count].iter().flatten().copied() {
-            let Ok(slot) = self.slot_of(node) else { continue };
-            let mut cur = slot as u32;
-            let mut hops = 0usize;
-            let mut hit = false;
-            while cur != NONE && hops <= N {
-                hops += 1;
-                if cur == ancestor {
-                    hit = true;
-                    break;
-                }
-                let Some(node) = self.nodes.get(cur as usize).and_then(|o| o.as_ref()) else {
-                    break;
-                };
-                cur = node.parent;
-            }
-            if hit {
-                self.mark_flex_dirty(node);
-            }
-        }
-    }
-
-    fn mark_flex_dirty(&mut self, node: NodeId) {
-        let Ok(idx) = self.slot_of(node) else { return };
-        let parent = self.nodes.get(idx).and_then(|o| o.as_ref()).map(|n| n.parent).unwrap_or(NONE);
-        if let Some(n) = self.nodes.get_mut(idx).and_then(|o| o.as_mut()) {
-            n.layout_dirty = true;
-        }
-        if parent != NONE {
-            self.mark_ancestors_dirty(parent);
-        }
-    }
-
-    // —— component focus（GUI-14 C1：树序一维导航；窗口焦点权威仍在 wmd） ——
-
-    /// 登记/覆写 focusable。`visual` 为 None 时焦点变化只 dirty 语义锚；
-    /// widget 通常传 panel 自身。Disabled 项可保留登记但不参与导航。
-    pub fn set_focusable(
-        &mut self, node: NodeId, visual: Option<NodeId>, enabled: bool,
-    ) -> Result<(), UiError> {
-        self.slot_of(node)?;
-        if let Some(v) = visual {
-            self.slot_of(v)?;
-        }
-        if self.focused == Some(node) && !enabled {
-            self.set_focus_internal(None);
-        }
-        if let Some(e) = self.focus.iter_mut().find(|e| {
-            e.as_ref().is_some_and(|e| e.node == node)
-        }) {
-            *e = Some(FocusEntry { node, visual, enabled });
-            return Ok(());
-        }
-        let Some(slot) = self.focus.iter().position(|e| e.is_none()) else {
-            return Err(UiError::NodeFull);
-        };
-        self.focus[slot] = Some(FocusEntry { node, visual, enabled });
-        Ok(())
-    }
-
-    /// 摘除 focusable；幂等。持焦时 component focus 归空并 dirty 视觉，
-    /// 但不合成 FocusOut——视觉属主必须在禁用/摘除路径同步还原 ring。
-    pub fn take_focusable(&mut self, node: NodeId) -> bool {
-        let Some(slot) = self.focus.iter().position(|e| {
-            e.as_ref().is_some_and(|e| e.node == node)
-        }) else {
-            return false;
-        };
-        self.focus[slot] = None;
-        if self.focused == Some(node) {
-            self.set_focus_internal(None);
-        }
-        true
-    }
-
-    /// focusable 活性迭代（按登记序，非导航序；导航序见
-    /// [`Self::focus_order_into`]）。
-    pub fn focus_iter(&self) -> impl Iterator<Item = &FocusEntry> {
-        self.focus.iter().flatten().filter(|e| self.slot_of(e.node).is_ok())
-    }
-
-    /// 当前 component focus 语义锚。
-    pub fn focus_node(&self) -> Option<NodeId> {
-        self.focused.filter(|n| self.slot_of(*n).is_ok())
-    }
-
-    /// 节点是否持 component focus（活性过滤）。
-    pub fn is_focused(&self, node: NodeId) -> bool {
-        self.focus_node() == Some(node)
-    }
-
-    /// a11y state 位：已登记 a11y 的节点返回 VISIBLE，焦点节点再 OR
-    /// FOCUSED。组件焦点不要求节点必然登记 a11y；未登记返 None。
-    pub fn a11y_state(&self, node: NodeId) -> Option<u8> {
-        if !self.a11y_iter().any(|e| e.node == node) {
-            return None;
-        }
-        let mut state = berry_guiproto::surface::A11Y_STATE_VISIBLE;
-        if self.is_focused(node) {
-            state |= berry_guiproto::surface::A11Y_STATE_FOCUSED;
-        }
-        Some(state)
-    }
-
-    /// 树前序 focusable 顺序写入 out，返回数量。禁用项不进序。
-    pub fn focus_order_into(&self, out: &mut [NodeId]) -> usize {
-        let mut slots = [NONE; N];
-        let mut n = 0usize;
-        self.collect_sibs(self.root_slot, &mut slots, &mut n);
-        let mut count = 0usize;
-        for slot in slots.iter().take(n) {
-            let Some(node) = self.nodes.get(*slot as usize).and_then(|o| o.as_ref()) else {
-                continue;
-            };
-            let id = pack_id(*slot as usize, node.gen);
-            if self.focus.iter().flatten().any(|e| e.node == id && e.enabled)
-                && count < out.len()
-            {
-                out[count] = id;
-                count += 1;
-            }
-        }
-        count
-    }
-
-    /// 显式聚焦指定 focusable。活但未登记/禁用 → 空 MsgBuf；悬空 →
-    /// NodeBad。成功且状态变化时输出 FocusOut（旧值存在）+ FocusIn。
-    pub fn focus_set(&mut self, node: NodeId) -> Result<desc::MsgBuf, UiError> {
-        self.slot_of(node)?;
-        if !self.focus.iter().flatten().any(|e| e.node == node && e.enabled) {
-            return Ok(desc::MsgBuf::new());
-        }
-        let mut out = desc::MsgBuf::new();
-        let old = self.focus_node();
-        if old == Some(node) {
-            return Ok(out);
-        }
-        if let Some(old) = old {
-            out.push(Msg::FocusOut { node: old }).map_err(|_| UiError::MsgFull)?;
-        }
-        self.set_focus_internal(Some(node));
-        out.push(Msg::FocusIn { node }).map_err(|_| UiError::MsgFull)?;
-        Ok(out)
-    }
-
-    /// 清空 component focus；输出 FocusOut。窗口焦点不受影响。
-    pub fn focus_clear(&mut self) -> desc::MsgBuf {
-        let mut out = desc::MsgBuf::new();
-        let Some(old) = self.focus_node() else { return out };
-        self.set_focus_internal(None);
-        let _ = out.push(Msg::FocusOut { node: old });
-        out
-    }
-
-    /// 树前序一维焦点导航（v1 环绕，对齐 Compose 1D Tab 语义）。
-    /// 零可焦项或唯一项自指 → 空 MsgBuf，不产生 FocusOut/In 抖动。
-    pub fn focus_move(&mut self, dir: desc::FocusDir) -> desc::MsgBuf {
-        let mut out = desc::MsgBuf::new();
-        let mut order = [NodeId(0); N];
-        let n = self.focus_order_into(&mut order);
-        if n == 0 {
-            return out;
-        }
-        let current = self.focus_node();
-        let target = match current.and_then(|cur| order[..n].iter().position(|x| *x == cur)) {
-            Some(i) => match dir {
-                desc::FocusDir::Next => order[(i + 1) % n],
-                desc::FocusDir::Prev => order[(i + n - 1) % n],
-            },
-            None => order[0],
-        };
-        if current == Some(target) {
-            return out;
-        }
-        if let Some(old) = current {
-            let _ = out.push(Msg::FocusOut { node: old });
-        }
-        self.set_focus_internal(Some(target));
-        let _ = out.push(Msg::FocusIn { node: target });
-        out
-    }
-
-    /// 内部落焦：dirty 旧/新语义锚与登记视觉锚。不产生事件。
-    fn set_focus_internal(&mut self, new: Option<NodeId>) {
-        let old = self.focused;
-        self.focused = new;
-        for node in [old, new].into_iter().flatten() {
-            let visual = self
-                .focus
-                .iter()
-                .flatten()
-                .find(|e| e.node == node)
-                .and_then(|e| e.visual)
-                .unwrap_or(node);
-            let _ = self.invalidate(visual);
-        }
     }
 
     // —— press_map 声明式 pressed 短路径（GUI-6 D18——§7.1） ——
@@ -2833,25 +1595,6 @@ impl<const N: usize> Ui<N> {
         }
         self.press_map_n = entries.len();
         Ok(())
-    }
-
-    /// 保持 trigger 的 pressed 视觉，不经过输入事件。用于 launcher 在
-    /// Click 后进入真实的 launching 状态：DOWN/UP 可能同批到达并在同一帧
-    /// 抵消，本 API 让嵌入器显式持有反馈直到真实结果到达。
-    pub fn hold_press(&mut self, trigger: NodeId) {
-        self.press_react(Msg::Press { node: trigger, x: 0, y: 0 });
-    }
-
-    /// 显式释放 [`Ui::hold_press`] 建立的 pressed 视觉。未持有时为 no-op；
-    /// 与普通 Release 一样恢复首次持有时保存的背景。
-    pub fn release_press(&mut self, trigger: NodeId) {
-        self.press_react(Msg::Release { node: trigger, x: 0, y: 0 });
-    }
-
-    /// 请求下一帧全屏重绘。SYSTEM 嵌入器在 WM 权威可见性变化后使用，
-    /// 清除被隐藏 app 遗留在合成 VMO 中的旧像素。
-    pub fn invalidate_full(&mut self) {
-        self.damage.add_full();
     }
 
     /// pump 期 pressed 反应（D18）：Press → visual 换 [`PRESSED_BG`] 底
@@ -2986,7 +1729,7 @@ impl<const N: usize> Ui<N> {
                 }
             }
             Msg::Click { .. } | Msg::DragStart { .. } | Msg::DragMove { .. }
-            | Msg::DragEnd { .. } | Msg::FocusIn { .. } | Msg::FocusOut { .. } => {}
+            | Msg::DragEnd { .. } => {}
         }
     }
 
@@ -2998,12 +1741,12 @@ impl<const N: usize> Ui<N> {
     pub fn set_focus(&mut self, node: Option<NodeId>) -> Result<(), UiError> {
         match node {
             None => {
-                if let Some(old) = self.input_focus {
+                if let Some(old) = self.focus {
                     if let Ok(i) = self.slot_of(old) {
                         self.damage_rect(self.abs_rect_of(i));
                     }
                 }
-                self.input_focus = None;
+                self.focus = None;
                 Ok(())
             }
             Some(id) => {
@@ -3015,14 +1758,14 @@ impl<const N: usize> Ui<N> {
                 if !ok {
                     return Err(UiError::NodeBad);
                 }
-                if let Some(old) = self.input_focus {
+                if let Some(old) = self.focus {
                     if old != id {
                         if let Ok(i) = self.slot_of(old) {
                             self.damage_rect(self.abs_rect_of(i));
                         }
                     }
                 }
-                self.input_focus = Some(id);
+                self.focus = Some(id);
                 self.damage_rect(self.abs_rect_of(idx));
                 Ok(())
             }
@@ -3031,7 +1774,7 @@ impl<const N: usize> Ui<N> {
 
     /// 当前焦点节点（无焦点 None）。
     pub fn focus(&self) -> Option<NodeId> {
-        self.input_focus
+        self.focus
     }
 
     /// 读输入内容（侧表——props 只载约束）。无内容空切片。
@@ -3087,7 +1830,7 @@ impl<const N: usize> Ui<N> {
 
     /// 焦点槽值（paint 焦点环查表单源——None = u32::MAX）。
     fn focus_slot(&self) -> u32 {
-        match self.input_focus {
+        match self.focus {
             Some(id) => id.0 & 0xFFFF,
             None => u32::MAX,
         }
@@ -3387,33 +2130,11 @@ impl<const N: usize> Ui<N> {
                     _ => {}
                 }
             }
-            Msg::Press { .. } | Msg::DragEnd { .. } | Msg::Cancel { .. }
-            | Msg::FocusIn { .. } | Msg::FocusOut { .. } => {}
+            Msg::Press { .. } | Msg::DragEnd { .. } | Msg::Cancel { .. } => {}
         }
     }
 
     // —— 供给槽（D28：门面 layout/render_frame 签名不变——槽取传下） ——
-
-    /// 文本度量供件换装（默认 [`MonospaceTextMetrics`]；换件后脏位重测
-    /// 生效——set_viewport 触发全量重测）。
-    pub fn set_text_metrics(&mut self, tm: &'static dyn TextMetrics) {
-        self.tm = tm;
-        // 供件换装会改变 intrinsic 与 wrap plan。即便新旧尺寸相同，断行
-        // 也可能不同；全树 layout/paint dirty + FULL damage 是单源收口。
-        let mut i = 0usize;
-        while i < N {
-            if let Some(n) = self.nodes[i].as_mut() {
-                n.layout_dirty = true;
-                n.paint_dirty = true;
-            }
-            i += 1;
-        }
-        self.damage.add_full();
-    }
-
-    pub(crate) fn text_metrics(&self) -> &'static dyn TextMetrics {
-        self.tm
-    }
 
     /// 文本内在宽（刀 2 状态栏对齐缝）：走当前度量供件（换装
     /// ProportionalTextMetrics 后 = 真实 advance）——供件侧单源，消费面
@@ -3422,62 +2143,21 @@ impl<const N: usize> Ui<N> {
         self.tm.measure(text, scale).0
     }
 
+    /// 文本度量供件换装（默认 [`MonospaceTextMetrics`]；换件后脏位重测
+    /// 生效——set_viewport 触发全量重测）。
+    pub fn set_text_metrics(&mut self, tm: &'static dyn TextMetrics) {
+        self.tm = tm;
+    }
+
     /// 图标/图片资源供件换装（默认 [`EmptyIconSource`]——dims 恒 None）。
     pub fn set_icon_source(&mut self, src: &'static dyn IconSource) {
         self.icons = src;
-    }
-
-    /// 运行期字形供件换装。guest-font-vmo 档必须注入；布局测量仍由
-    /// TextMetrics 单源负责。
-    pub fn set_font_source(&mut self, source: &'static dyn metrics::FontSource) {
-        self.fonts = Some(source);
     }
 
     pub fn bounds(&self, node: NodeId) -> Result<damage::RectI, UiError> {
         // 绝对界（含 ox/oy）。
         let idx = self.slot_of(node)? as usize;
         Ok(self.abs_rect_of(idx))
-    }
-
-    /// 节点有效结构性 Clip 链（含祖先与自身 Clip，再交 viewport）。
-    /// `bounds` 仍返回未裁剪视觉界；本口仅供诊断/精确 damage 消费。
-    pub fn clip_of(&self, node: NodeId) -> Result<damage::RectI, UiError> {
-        let idx = self.slot_of(node)? as usize;
-        Ok(self.clip_chain(idx))
-    }
-
-    fn clip_chain(&self, idx: usize) -> damage::RectI {
-        let mut clip = damage::RectI::new(
-            0,
-            0,
-            damage::u32_to_i32_sat(self.vp_w),
-            damage::u32_to_i32_sat(self.vp_h),
-        );
-        let mut cur = idx as u32;
-        let mut hops = 0usize;
-        while hops <= N {
-            let Some(n) = self.nodes.get(cur as usize).and_then(|option| option.as_ref()) else {
-                break;
-            };
-            if n.kind == desc::ViewKind::Clip {
-                let bounds = self.abs_rect_of(cur as usize);
-                clip = clip.intersect(&bounds);
-                if clip.is_empty() {
-                    return clip;
-                }
-            }
-            if n.parent == NONE {
-                break;
-            }
-            cur = n.parent;
-            hops += 1;
-        }
-        clip
-    }
-
-    fn damage_node_rect(&mut self, idx: usize, rect: damage::RectI) {
-        let clip = self.clip_chain(idx);
-        self.damage_rect(rect.intersect(&clip));
     }
 
     pub fn kind_of(&self, node: NodeId) -> Result<desc::ViewKind, UiError> {
@@ -3488,34 +2168,12 @@ impl<const N: usize> Ui<N> {
         }
     }
 
-    /// F2 布局诊断 dump：前序保留树 + 相对摆位 + 视觉绝对界 + dirty 位。
-    /// `out` 过小 → `NodeFull`，绝不静默截断。
-    pub fn layout_dump(
-        &self, out: &mut [diagnostic::LayoutDumpEntry],
-    ) -> Result<usize, UiError> {
-        diagnostic::layout(&self.nodes, self.root_slot, out)
-    }
-
-    /// F2 命中诊断 dump：逐点输出 topmost 节点与命中界。
-    pub fn hit_test_dump(
-        &self, points: &[(u32, u32)], out: &mut [diagnostic::HitDumpEntry],
-    ) -> Result<usize, UiError> {
-        diagnostic::hit_test(&self.nodes, self.root_slot, points, out)
-    }
-
     // —— 布局 / 脏区 ——
 
     pub fn layout(&mut self) -> layout::LayoutStat {
-        self.layout_with(layout::Constraints::Viewport)
-    }
-
-    /// 根播种约束布局（GUI-14 L1）。Pull-based 一次性面：不存上次
-    /// 约束；净树调用 = 文档化 no-op `{0,0}`。切换约束需调用方先经
-    /// 几何变更/set_viewport 制造 dirty。render_frame 发起的 relayout 请求
-    /// 仍为 Viewport；净树不自动恢复上次 layout_with 约束。
-    pub fn layout_with(&mut self, cs: layout::Constraints) -> layout::LayoutStat {
-        let bc = cs.to_box(self.vp_w, self.vp_h);
-        debug_assert!(bc.min().0 <= bc.max().0 && bc.min().1 <= bc.max().1);
+        // 脏子树重排；新界进 damage（freed = 当前空闲槽清单——removal 面
+        // 的陈旧缓存跳过依据）。GUI-6 D28：tm/icons 从供给槽取传（门面
+        // 签名不变）；D9：v1 只接 Viewport 档。
         layout::relayout(
             &mut self.nodes,
             self.vp_w,
@@ -3524,33 +2182,8 @@ impl<const N: usize> Ui<N> {
             &self.free_stack[..self.free_count],
             self.tm,
             self.icons,
-            bc,
-            &self.flex,
-            &mut self.wrap,
+            layout::Constraints::Viewport,
         )
-    }
-
-    /// LAYOUT-L4 四元组布局。与 `layout_with` 同为 pull-based 一次性面；
-    /// 不保存约束，净树 no-op，damage clip 恒真实 viewport。
-    pub fn layout_box(
-        &mut self,
-        bc: layout::BoxConstraints,
-    ) -> Result<layout::LayoutStat, UiError> {
-        if bc.min().0 > bc.max().0 || bc.min().1 > bc.max().1 {
-            return Err(UiError::NodeBad);
-        }
-        Ok(layout::relayout(
-            &mut self.nodes,
-            self.vp_w,
-            self.vp_h,
-            &mut self.damage,
-            &self.free_stack[..self.free_count],
-            self.tm,
-            self.icons,
-            bc,
-            &self.flex,
-            &mut self.wrap,
-        ))
     }
 
     pub fn damage(&self) -> &damage::DamageSet {
@@ -3579,12 +2212,10 @@ impl<const N: usize> Ui<N> {
             scratch,
             enc,
             self.icons, // D28 槽取传（门面签名不变）
-            self.tm,
-            &self.wrap,
             &self.pressed_snapshot(),
             self.focus_slot(),
             &self.input_texts_snapshot(),
-            &theme::Tokens::pick(self.theme_mode), // 双档取色
+            &theme::Tokens::pick(self.theme), // 双档取色（维八暗色刀）
         )
     }
 
@@ -3849,9 +2480,7 @@ impl<const N: usize> Ui<N> {
             &self.free_stack[..self.free_count],
             self.tm,
             self.icons,
-            layout::Constraints::Viewport.to_box(self.vp_w, self.vp_h),
-            &self.flex,
-            &mut self.wrap,
+            layout::Constraints::Viewport,
         );
         let drew = !self.damage.is_empty(); // 无 damage 不提交（对齐条 6）
         let report = if drew && self.root_slot != NONE {
@@ -3863,12 +2492,10 @@ impl<const N: usize> Ui<N> {
                 scratch,
                 enc,
                 self.icons, // D28 槽取传
-                self.tm,
-                &self.wrap,
                 &self.pressed_snapshot(),
                 self.focus_slot(),
                 &self.input_texts_snapshot(),
-                &theme::Tokens::pick(self.theme_mode), // 双档取色
+                &theme::Tokens::pick(self.theme), // 双档取色（维八暗色刀）
             )
         } else {
             paint::PaintReport { cmds: 0, drawn_px: 0, culled: 0, overdraw_x256: 0 }
@@ -4085,304 +2712,6 @@ impl<const N: usize> Ui<N> {
                 Err(e)
             }
         }
-    }
-
-    /// RUN-K1 keyed re-apply：先在临时 arena 解析/计划，成功后才修改当前
-    /// 树。key 匹配节点保持 `(slot, generation)`，focus/sem/flex/anim/dep
-    /// 等运行期侧表随 NodeId 存活；声明式 a11y 在末尾按 source 重建。
-    pub fn apply_desc_keyed(&mut self, src: &[u8]) -> Result<ReapplyStat, desc::AstError> {
-        // Pass 0：源树完整解析。当前树在此阶段零修改，因此非法源保持旧树。
-        let mut source = [None; KEYED_SOURCE_MAX];
-        let mut source_gens = [0u16; KEYED_SOURCE_MAX];
-        let mut source_root = NONE;
-        let mut source_a11y: [Option<A11yEntry>; A11Y_MAX] = [None; A11Y_MAX];
-        desc::apply_tree(
-            src,
-            &mut source,
-            &mut source_gens,
-            &mut source_root,
-            &mut source_a11y,
-        )?;
-        let source_live = source.iter().flatten().count() as u32;
-        let source_depth = source_max_depth::<KEYED_SOURCE_MAX>(&source)?;
-        if source_depth > KEYED_DEPTH_MAX {
-            return Err(desc::AstError::TooSmall {
-                need: source_depth as usize,
-                got: KEYED_DEPTH_MAX as usize,
-            });
-        }
-        // source scratch 与目标 arena 的 N 分域：先验最终节点数，避免
-        // source 前序 slot >= N 时误写 KeyPlan::<N>。
-        if source_live > N as u32 {
-            return Err(desc::AstError::TooSmall {
-                need: source_live as usize,
-                got: N,
-            });
-        }
-
-        // 当前空树没有可保身份：直接走 full oracle（源树已验合法）。
-        if self.root_slot == NONE {
-            self.apply_desc(src)?;
-            return Ok(ReapplyStat {
-                matched_clean: 0,
-                updated: 0,
-                moved: 0,
-                added: source_live,
-                removed: 0,
-                rederives: 1,
-                fallback_full: true,
-            });
-        }
-
-        let mut plan = KeyPlan::<N>::new();
-        let target_root = self.root_slot;
-        plan.source_to_target[source_root as usize] = target_root;
-        plan.target_keep[target_root as usize] = true;
-        let (root_source, root_target) = (
-            source[source_root as usize].as_ref(),
-            self.nodes[target_root as usize].as_ref(),
-        );
-        match (root_source, root_target) {
-            (Some(source_root_node), Some(target_root_node)) => {
-                if source_root_node.props != target_root_node.props
-                    || source_root_node.key != target_root_node.key
-                {
-                    plan.updated += 1;
-                } else {
-                    plan.matched_clean += 1;
-                }
-            }
-            _ => return Err(desc::AstError::Truncated),
-        }
-        plan_keyed_node(&source, source_root, &self.nodes, target_root, &mut plan)?;
-
-        let target_live = self.nodes.iter().flatten().count() as u32;
-        // 大 churn 时 full rebuild 是正确 oracle，不给低效 keyed 路径付
-        // side-table 全清 + 逐点调和的双重成本。
-        if plan.added + plan.removed >= target_live {
-            self.apply_desc(src)?;
-            return Ok(ReapplyStat {
-                matched_clean: 0,
-                updated: 0,
-                moved: 0,
-                added: source_live,
-                removed: target_live,
-                rederives: 1,
-                fallback_full: true,
-            });
-        }
-        let needed = target_live - plan.removed + plan.added;
-        if needed > N as u32 {
-            return Err(desc::AstError::TooSmall { need: needed as usize, got: N });
-        }
-        // a11y upsert 容量也必须先验：既有运行期条目不因 keyed 小改清空，
-        // source 新声明若需更多空槽，必须在修改 arena 前拒绝。
-        let mut free_a11y = self.a11y.iter().filter(|entry| entry.is_none()).count();
-        for existing in self.a11y.iter().flatten() {
-            let slot = (existing.node.0 & 0xFFFF) as usize;
-            if slot < N && plan.target_remove[slot] {
-                free_a11y += 1; // remove 阶段会连带清该子树 a11y
-            }
-        }
-        for entry in source_a11y.iter().flatten() {
-            let source_slot = (entry.node.0 & 0xFFFF) as usize;
-            let target_slot = plan.source_to_target[source_slot];
-            let existing_hit = if plan.source_add[source_slot] {
-                false
-            } else {
-                match self.nodes.get(target_slot as usize).and_then(|option| option.as_ref()) {
-                    Some(target_node) => {
-                        let target_id = pack_id(target_slot as usize, target_node.gen);
-                        self.a11y.iter().flatten().any(|existing| existing.node == target_id)
-                    }
-                    None => return Err(desc::AstError::Truncated),
-                }
-            };
-            if !existing_hit {
-                if free_a11y == 0 {
-                    return Err(desc::AstError::TooSmall {
-                        need: A11Y_MAX + 1,
-                        got: A11Y_MAX,
-                    });
-                }
-                free_a11y -= 1;
-            }
-        }
-
-        // Pass 2：先走既有 remove，复用全部侧表/代数/damage 生命周期。
-        for slot in 0..N {
-            if !plan.target_remove[slot] {
-                continue;
-            }
-            let Some(node) = self.nodes[slot].as_ref() else { continue };
-            if !node.alive {
-                continue;
-            }
-            let id = pack_id(slot, node.gen);
-            self.remove(id).map_err(|_| desc::AstError::Truncated)?;
-        }
-
-        // Pass 3：source 前序调和。matched 保持身份；added 走 add 单源。
-        self.reconcile_keyed_node(&source, source_root, target_root, &mut plan)?;
-
-        // Pass 4：source a11y 只 upsert，不整清。keyed re-apply 的职责是
-        // 保运行期侧表身份；widget/app 在树建立后登记的 a11y/sem 不能因
-        // 后续小改 AST 被抹掉。显式摘除仍走 take_a11y/take_sem。
-        for entry in source_a11y.iter().flatten() {
-            let source_slot = (entry.node.0 & 0xFFFF) as usize;
-            let target_slot = plan.source_to_target[source_slot] as usize;
-            let Some(target_node) = self.nodes.get(target_slot).and_then(|o| o.as_ref()) else {
-                return Err(desc::AstError::Truncated);
-            };
-            let target_id = pack_id(target_slot, target_node.gen);
-            let updated = A11yEntry {
-                node: target_id,
-                role: entry.role,
-                label: entry.label,
-            };
-            if let Some(slot) = self
-                .a11y
-                .iter_mut()
-                .find(|e| e.as_ref().is_some_and(|e| e.node == target_id))
-            {
-                *slot = Some(updated);
-            } else {
-                let Some(slot) = self.a11y.iter_mut().find(|e| e.is_none()) else {
-                    return Err(desc::AstError::TooSmall { need: A11Y_MAX + 1, got: A11Y_MAX });
-                };
-                *slot = Some(updated);
-            }
-        }
-
-        Ok(ReapplyStat {
-            matched_clean: plan.matched_clean,
-            updated: plan.updated,
-            moved: plan.moved,
-            added: plan.added,
-            removed: plan.removed,
-            rederives: 1,
-            fallback_full: false,
-        })
-    }
-
-    fn reconcile_keyed_node(
-        &mut self,
-        source: &[Option<Node>],
-        source_slot: u32,
-        parent_target: u32,
-        plan: &mut KeyPlan<N>,
-    ) -> Result<u32, desc::AstError> {
-        let Some(source_node) = source.get(source_slot as usize).and_then(|o| o.as_ref()) else {
-            return Err(desc::AstError::Truncated);
-        };
-        let is_add = plan.source_add[source_slot as usize];
-        let target_slot = if is_add {
-            let parent_id = match self.nodes.get(parent_target as usize).and_then(|o| o.as_ref()) {
-                Some(node) => pack_id(parent_target as usize, node.gen),
-                None => return Err(desc::AstError::Truncated),
-            };
-            let spec = desc::ViewSpec {
-                kind: source_node.kind,
-                key: source_node.key,
-                props: source_node.props,
-            };
-            let id = self
-                .add(parent_id, spec)
-                .map_err(|error| match error {
-                    UiError::NodeFull => desc::AstError::TooSmall { need: N + 1, got: N },
-                    UiError::BadParent => desc::AstError::BadParent,
-                    UiError::NodeBad if source_node.key != 0 => {
-                        desc::AstError::DuplicateKey { key: source_node.key }
-                    }
-                    _ => desc::AstError::UnknownProp { kind: source_node.kind, got: 0 },
-                })?;
-            let slot = (id.0 & 0xFFFF) as u32;
-            plan.source_to_target[source_slot as usize] = slot;
-            slot
-        } else {
-            plan.source_to_target[source_slot as usize]
-        };
-
-        if !is_add {
-            let id = match self.nodes.get(target_slot as usize).and_then(|o| o.as_ref()) {
-                Some(node) => pack_id(target_slot as usize, node.gen),
-                None => return Err(desc::AstError::Truncated),
-            };
-            if self.nodes[target_slot as usize].as_ref().map(|n| n.props)
-                != Some(source_node.props)
-            {
-                self.set_props(id, source_node.props).map_err(|error| match error {
-                    UiError::NodeBad => {
-                        desc::AstError::KeyKindMismatch { key: source_node.key }
-                    }
-                    _ => desc::AstError::UnknownProp { kind: source_node.kind, got: 0 },
-                })?;
-            }
-            if let Some(node) = self.nodes[target_slot as usize].as_mut() {
-                node.key = source_node.key;
-            }
-
-            // 先摘所有 matched 子，再按 source 序回链；unkeyed/新增子不
-            // 参与旧身份匹配。移动节点先收旧视觉界，回链后收新界。链式
-            // 走查同样不落 [u32; N] 子清单，保持 D29 每层小栈预算。
-            let mut child_cur = source_node.first_child;
-            let mut hops = 0usize;
-            while child_cur != NONE && hops <= N {
-                hops += 1;
-                let Some(child) = source.get(child_cur as usize).and_then(|o| o.as_ref()) else {
-                    return Err(desc::AstError::Truncated);
-                };
-                let next = child.next_sib;
-                let child_slot = child_cur;
-                if !plan.source_add[child_slot as usize] {
-                    let child_target = plan.source_to_target[child_slot as usize];
-                    if plan.source_moved[child_slot as usize] {
-                        let old_rect = self.abs_rect_of(child_target as usize);
-                        self.damage_rect(old_rect);
-                    }
-                    self.unlink(child_target as usize);
-                    // unlink 只摘邻接，不清被摘节点自身 next/prev；回链前
-                    // 必须归零，否则 link_child 的 tail 扫描会把旧 next 误
-                    // 当已在链尾，构造 self-cycle。
-                    if let Some(child) =
-                        self.nodes.get_mut(child_target as usize).and_then(|o| o.as_mut())
-                    {
-                        child.prev_sib = NONE;
-                        child.next_sib = NONE;
-                    }
-                }
-                child_cur = next;
-            }
-        }
-
-        let mut child_cur = source_node.first_child;
-        let mut hops = 0usize;
-        while child_cur != NONE && hops <= N {
-            hops += 1;
-            let Some(child) = source.get(child_cur as usize).and_then(|o| o.as_ref()) else {
-                return Err(desc::AstError::Truncated);
-            };
-            let next = child.next_sib;
-            let child_slot = child_cur;
-            let child_add = plan.source_add[child_slot as usize];
-            let child_target =
-                self.reconcile_keyed_node(source, child_slot, target_slot, plan)?;
-            if !child_add {
-                if let Some(child) =
-                    self.nodes.get_mut(child_target as usize).and_then(|o| o.as_mut())
-                {
-                    child.parent = target_slot;
-                }
-                self.link_child(target_slot as usize, child_target);
-                if plan.source_moved[child_slot as usize] {
-                    let new_rect = self.abs_rect_of(child_target as usize);
-                    self.damage_rect(new_rect);
-                    self.mark_ancestors_dirty(child_target);
-                }
-            }
-            child_cur = next;
-        }
-        Ok(target_slot)
     }
 
     // —— 依赖骨架（v1 记录不消费——失效仍视图级 Invalidate，裁决不跳步） ——

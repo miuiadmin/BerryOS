@@ -38,6 +38,11 @@ pub type Handle = u32;
 pub const SLOT_BITS: u32 = 16;
 /// 槽位号掩码（低 16 位）。
 pub const SLOT_MASK: u32 = (1 << SLOT_BITS) - 1;
+// W3-Q91：probe 模块（send 预检/wait_get 类型探测链折叠判据——02 号 IPC
+// 审计机会四；host 钉板，kernel syscall.rs 消费）。
+pub mod probe;
+
+pub use probe::{probe_transfer_ok, waitable};
 /// 代号位宽（bits [16, 30)；bit31 预留类型编码，v1 不写）。
 pub const GEN_BITS: u32 = 14;
 /// 代号掩码（bits [16, 30) 内 14 位）。

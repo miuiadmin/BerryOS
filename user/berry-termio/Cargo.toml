@@ -1,0 +1,13 @@
+[package]
+name = "berry-termio"
+version.workspace = true
+edition = "2021"
+# T7（2026-11-17 命令行终端与shell完善刀）：berry-term 哑终端化纯面 crate，
+# `berry-complete` 先例（「纯面外迁」纪律）——`cfg_attr(not(test), no_std)`
+# 且零依赖零 alloc（定长数组）：库本体 no_std，test 构建放开 std 仅为默认
+# 测试挂具。单消费 = berry-term 显示核（user/bins/berry-term 独立小工作区
+# path 依赖，musl target）；host 测试经 justfile test-host 显式行跑。
+description = "BerryOS terminal core: line ring / tail / echo byte interpreter / soft-wrap view primitives"
+license = "Apache-2.0"
+
+[dependencies]

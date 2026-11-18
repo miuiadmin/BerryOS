@@ -49,9 +49,10 @@
 use berry_exec::{VIRTIO_MMIO_SLOTS, VIRTIO_MMIO_STRIDE, VIRTIO_MMIO_VA};
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
-    berry_object_wait_one, berry_thread_sleep, berry_vmo_commit, berry_vmo_create,
+    berry_object_wait_one, berry_thread_sleep, berry_vmo_cache_op, berry_vmo_create,
     berry_vmo_get_phys, berry_vmo_read, berry_vmo_write, Handle, BERRY_ERR_AGAIN,
-    BERRY_ERR_BUSY, CLOCK_MONOTONIC, SIGNAL_READABLE, SIGNAL_WRITABLE,
+    BERRY_ERR_BUSY, CLOCK_MONOTONIC, SIGNAL_READABLE, SIGNAL_WRITABLE, VMO_CACHE_OP_CLEAN,
+    VMO_CACHE_OP_INVALIDATE, VMO_OPT_CONTIGUOUS, VMO_OPT_PINNED,
 };
 use berry_virtio as vio;
 // A-7：最小以太网/ARP/IPv4/ICMP-echo 编解码（「解析器即产品」第 5 例）。
@@ -82,13 +83,19 @@ const RX_BUFS: usize = 5;
 /// 8192——「rx 缓冲带单页内、单描述符整收一帧」几何结论保持（旧
 /// 16×256=4096 排布退役）。消费侧 tcp.rs const assert 机器钉住。
 pub(crate) const RX_BUF_SZ: usize = 1600;
-/// DMA VMO 几何：页 0 rx ring / 页 1 tx ring / 页 2 rx 缓冲带 / 页 3 tx
-/// 缓冲（各结构单页内——desc 地址域不跨页，vblk 同前提）。
-const DMA_LEN: u64 = 16384;
+/// F0-4 安全物理连续 DMA VMO 几何（5 页 = 20KiB，`VMO_OPT_CONTIGUOUS | VMO_OPT_PINNED`）：
+/// - 页 0 `[0, 4096)`：rx ring；
+/// - 页 1 `[4096, 8192)`：tx ring；
+/// - 页 2..3 `[8192, 16384)`：rx 缓冲带（两整页连续物理帧 = 8192B ≥ `5 × 1600B = 8000B`，彻底根除
+///   旧 16KiB 布局把偏移 8192 误当容量导致缓冲 2..4 越界写穿相邻物理页并踩踏 `TX_BUF_PAGE` 的致命破坏）；
+/// - 页 4 `[16384, 20480)`：tx 缓冲页（4096B）。
+const DMA_LEN: u64 = 20480;
 const RX_RING_PAGE: u64 = 0;
 const TX_RING_PAGE: u64 = 4096;
 const RX_BUF_PAGE: u64 = 8192;
-const TX_BUF_PAGE: u64 = 12288;
+const TX_BUF_PAGE: u64 = 16384;
+const _: () = assert!(RX_BUF_PAGE as usize + RX_BUFS * RX_BUF_SZ <= TX_BUF_PAGE as usize);
+const _: () = assert!(TX_BUF_PAGE + 4096 <= DMA_LEN);
 /// poll 帽：10s（SLIRP 应答在 ms 级——超帽 = 传输层/几何断了，loud）。
 const POLL_CAP_NS: u64 = 10_000_000_000;
 /// poll 步进：1ms 绝对 deadline 睡（让出 CPU，不空转烧 slice）。tcp.rs 段③
@@ -388,25 +395,30 @@ fn setup_dma() -> Dma {
         None => trap(), // qsize=16 恒成立；防御面（布局几何是编译期已知）
     };
     let mut vmo = 0 as Handle;
-    if berry_vmo_create(DMA_LEN, 0, &mut vmo) != 0 || vmo == 0 {
-        println!("vnet: vmo_create 失败");
+    if berry_vmo_create(
+        DMA_LEN,
+        (VMO_OPT_CONTIGUOUS | VMO_OPT_PINNED) as u32,
+        &mut vmo,
+    ) != 0
+        || vmo == 0
+    {
+        println!("vnet: vmo_create(CONTIGUOUS|PINNED) 失败");
         trap();
     }
-    if berry_vmo_commit(vmo, 0, DMA_LEN) != 0 {
-        println!("vnet: commit 失败");
-        trap();
-    }
-    // 页后备 PA（已 commit——NotCommitted 面不可达，防御行）。
+    // 校验 5 页物理连续后备 PA（跨页描述符缓冲 `rx_buf_pa + i * 1600` 的硬件前提）。
     let mut rx_ring_pa = 0u64;
     let mut tx_ring_pa = 0u64;
     let mut rx_buf_pa = 0u64;
+    let mut rx_buf_p2_pa = 0u64;
     let mut tx_buf_pa = 0u64;
     if berry_vmo_get_phys(vmo, RX_RING_PAGE, &mut rx_ring_pa) != 0
         || berry_vmo_get_phys(vmo, TX_RING_PAGE, &mut tx_ring_pa) != 0
         || berry_vmo_get_phys(vmo, RX_BUF_PAGE, &mut rx_buf_pa) != 0
+        || berry_vmo_get_phys(vmo, RX_BUF_PAGE + 4096, &mut rx_buf_p2_pa) != 0
         || berry_vmo_get_phys(vmo, TX_BUF_PAGE, &mut tx_buf_pa) != 0
+        || rx_buf_p2_pa != rx_buf_pa + 4096
     {
-        println!("vnet: get_phys 失败");
+        println!("vnet: get_phys / 连续性校验失败");
         trap();
     }
     Dma {
@@ -470,7 +482,15 @@ fn post_rx(d: &mut Dma) {
             trap(); // 布局几何恒在页内；防御面
         }
     }
-    if berry_vmo_write(d.vmo, ring.as_ptr(), RX_RING_PAGE, 4096) != 0 {
+    if berry_vmo_write(d.vmo, ring.as_ptr(), RX_RING_PAGE, 4096) != 0
+        || berry_vmo_cache_op(d.vmo, VMO_CACHE_OP_CLEAN, RX_RING_PAGE, 4096) != 0
+        || berry_vmo_cache_op(
+            d.vmo,
+            VMO_CACHE_OP_INVALIDATE,
+            RX_BUF_PAGE,
+            (RX_BUFS * RX_BUF_SZ) as u64,
+        ) != 0
+    {
         trap();
     }
     d.rx_posted = RX_BUFS as u16;
@@ -485,19 +505,26 @@ fn post_rx(d: &mut Dma) {
 /// （丢完成 → 假死）——字节粒度 vmo_write 只碰 avail 区是唯一安全窗
 /// （avail 环驱动拥有，desc/used 各归其主，virtio split ring 所有权分界）。
 fn refill_rx(d: &mut Dma, regs: *mut u32, id: u16) {
+    let buf_off = RX_BUF_PAGE + (id as u64) * (RX_BUF_SZ as u64);
+    if berry_vmo_cache_op(d.vmo, VMO_CACHE_OP_INVALIDATE, buf_off, RX_BUF_SZ as u64) != 0 {
+        trap();
+    }
     let slot = (d.rx_posted % d.lay.qsize as u16) as usize;
     let b = [id as u8, (id >> 8) as u8];
-    let off = RX_RING_PAGE + d.lay.avail_off as u64 + 4 + (slot as u64) * 2;
-    if berry_vmo_write(d.vmo, b.as_ptr(), off, 2) != 0 {
+    let slot_off = RX_RING_PAGE + d.lay.avail_off as u64 + 4 + (slot as u64) * 2;
+    if berry_vmo_write(d.vmo, b.as_ptr(), slot_off, 2) != 0
+        || berry_vmo_cache_op(d.vmo, VMO_CACHE_OP_CLEAN, slot_off, 2) != 0
+    {
         trap();
     }
     d.rx_posted = d.rx_posted.wrapping_add(1);
     let b = [d.rx_posted as u8, (d.rx_posted >> 8) as u8];
-    let off = RX_RING_PAGE + d.lay.avail_off as u64 + 2;
-    if berry_vmo_write(d.vmo, b.as_ptr(), off, 2) != 0 {
+    let idx_off = RX_RING_PAGE + d.lay.avail_off as u64 + 2;
+    if berry_vmo_write(d.vmo, b.as_ptr(), idx_off, 2) != 0
+        || berry_vmo_cache_op(d.vmo, VMO_CACHE_OP_CLEAN, idx_off, 2) != 0
+    {
         trap();
     }
-    // 发布屏障（publish 同款调用方契约）：avail 两写在门铃前排序。
     // SAFETY: 纯屏障指令，无内存操作数。
     unsafe { core::arch::asm!("dmb ish") };
     wr(regs, vio::mmio::Q_NOTIFY, 0);
@@ -522,7 +549,9 @@ fn tx_send(d: &Dma, regs: *mut u32, frame_len: usize) {
         trap(); // 调用方帧幅由常量约束（TCP 段最大 total ≤198B）；防御面
     }
     iob[..vio::NET_HDR_SZ].fill(0); // 非 checksum/gso 驱动恒零头（规范 §5.1.6）
-    if berry_vmo_write(d.vmo, iob.as_ptr(), TX_BUF_PAGE, total) != 0 {
+    if berry_vmo_write(d.vmo, iob.as_ptr(), TX_BUF_PAGE, total) != 0
+        || berry_vmo_cache_op(d.vmo, VMO_CACHE_OP_CLEAN, TX_BUF_PAGE, total as u64) != 0
+    {
         trap();
     }
     let _ = vio::put_desc(ring, &d.lay, 0, d.tx_buf_pa, total as u32, 0, 0);
@@ -533,7 +562,9 @@ fn tx_send(d: &Dma, regs: *mut u32, frame_len: usize) {
         }
         old.wrapping_add(1)
     };
-    if berry_vmo_write(d.vmo, ring.as_ptr(), TX_RING_PAGE, 4096) != 0 {
+    if berry_vmo_write(d.vmo, ring.as_ptr(), TX_RING_PAGE, 4096) != 0
+        || berry_vmo_cache_op(d.vmo, VMO_CACHE_OP_CLEAN, TX_RING_PAGE, 4096) != 0
+    {
         trap();
     }
     tx_kick_poll(d, regs, expect);
@@ -573,7 +604,9 @@ pub(crate) fn tx_flush_batch(d: &Dma, regs: *mut u32, q: &mut TxBatch) {
         // 每槽 12B virtio-net 头补零（stage_seg 只组帧本体）。
         iob[i * tcp::TX_FRAME_STEP..i * tcp::TX_FRAME_STEP + vio::NET_HDR_SZ].fill(0);
     }
-    if berry_vmo_write(d.vmo, iob.as_ptr(), TX_BUF_PAGE, total) != 0 {
+    if berry_vmo_write(d.vmo, iob.as_ptr(), TX_BUF_PAGE, total) != 0
+        || berry_vmo_cache_op(d.vmo, VMO_CACHE_OP_CLEAN, TX_BUF_PAGE, total as u64) != 0
+    {
         trap();
     }
     for i in 0..n {
@@ -596,7 +629,9 @@ pub(crate) fn tx_flush_batch(d: &Dma, regs: *mut u32, q: &mut TxBatch) {
         }
         old.wrapping_add(n as u16)
     };
-    if berry_vmo_write(d.vmo, ring.as_ptr(), TX_RING_PAGE, 4096) != 0 {
+    if berry_vmo_write(d.vmo, ring.as_ptr(), TX_RING_PAGE, 4096) != 0
+        || berry_vmo_cache_op(d.vmo, VMO_CACHE_OP_CLEAN, TX_RING_PAGE, 4096) != 0
+    {
         trap();
     }
     tx_kick_poll(d, regs, expect);
@@ -618,7 +653,10 @@ fn tx_kick_poll(d: &Dma, regs: *mut u32, expect: u16) {
     let deadline = now + POLL_CAP_NS;
     loop {
         let mut u = [0u8; 2];
-        if berry_vmo_read(d.vmo, u.as_mut_ptr(), TX_RING_PAGE + d.lay.used_off as u64 + 2, 2) != 0 {
+        let used_idx_off = TX_RING_PAGE + d.lay.used_off as u64 + 2;
+        if berry_vmo_cache_op(d.vmo, VMO_CACHE_OP_INVALIDATE, used_idx_off, 2) != 0
+            || berry_vmo_read(d.vmo, u.as_mut_ptr(), used_idx_off, 2) != 0
+        {
             trap();
         }
         if u[0] as u16 | (u[1] as u16) << 8 == expect {
@@ -649,17 +687,19 @@ fn tx_kick_poll(d: &Dma, regs: *mut u32, expect: u16) {
 fn recv_frame(d: &mut Dma, regs: *mut u32, deadline: u64) -> Option<&'static [u8]> {
     loop {
         let mut u = [0u8; 2];
-        if berry_vmo_read(d.vmo, u.as_mut_ptr(), RX_RING_PAGE + d.lay.used_off as u64 + 2, 2) != 0 {
+        let used_idx_off = RX_RING_PAGE + d.lay.used_off as u64 + 2;
+        if berry_vmo_cache_op(d.vmo, VMO_CACHE_OP_INVALIDATE, used_idx_off, 2) != 0
+            || berry_vmo_read(d.vmo, u.as_mut_ptr(), used_idx_off, 2) != 0
+        {
             trap();
         }
         if u[0] as u16 | (u[1] as u16) << 8 != d.rx_harvested {
-            // 四刀 P11：单完成项 8B 短读（used 环设备拥有——只读其一项，
-            // 替代整页 4096B 读入 RXSTAGE；burst 收帧时每帧省一次整页拷）。
-            // used 布局 = flags u16 + idx u16 + 项（id u32 + len u32 各 8B）。
             let i = (d.rx_harvested % d.lay.qsize as u16) as usize;
             let mut ent = [0u8; vio::USED_ENT];
             let ent_off = RX_RING_PAGE + d.lay.used_off as u64 + vio::USED_HDR as u64 + (i as u64) * vio::USED_ENT as u64;
-            if berry_vmo_read(d.vmo, ent.as_mut_ptr(), ent_off, ent.len()) != 0 {
+            if berry_vmo_cache_op(d.vmo, VMO_CACHE_OP_INVALIDATE, ent_off, ent.len() as u64) != 0
+                || berry_vmo_read(d.vmo, ent.as_mut_ptr(), ent_off, ent.len()) != 0
+            {
                 trap();
             }
             let id = u32::from_le_bytes([ent[0], ent[1], ent[2], ent[3]]);
@@ -673,12 +713,9 @@ fn recv_frame(d: &mut Dma, regs: *mut u32, deadline: u64) -> Option<&'static [u8
             }
             // SAFETY: 帧读入静态 IOB 后经 'static 视图返出（即用即弃）。
             let iob: &mut [u8; crate::IOB_SZ] = unsafe { &mut *core::ptr::addr_of_mut!(IOB) };
-            if berry_vmo_read(
-                d.vmo,
-                iob.as_mut_ptr(),
-                RX_BUF_PAGE + id as u64 * RX_BUF_SZ as u64,
-                len as usize,
-            ) != 0
+            let rx_off = RX_BUF_PAGE + id as u64 * RX_BUF_SZ as u64;
+            if berry_vmo_cache_op(d.vmo, VMO_CACHE_OP_INVALIDATE, rx_off, len as u64) != 0
+                || berry_vmo_read(d.vmo, iob.as_mut_ptr(), rx_off, len as usize) != 0
             {
                 trap();
             }

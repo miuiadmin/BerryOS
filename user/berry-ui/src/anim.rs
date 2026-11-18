@@ -366,7 +366,7 @@ pub(crate) fn abs_rect(nodes: &[Option<Node>], slot: usize) -> Option<RectI> {
 }
 
 /// 子树包络（含 ox/oy——Transform 动画的 damage 面）：自身界与全部后
-/// 代界的包络。无结构性 Clip 祖先时子视觉可溢出父界，偏移后整个子树随偏
+/// 代界的包络。v1 无 clip：子视觉可溢出父界，偏移后**整个子树**随偏
 /// 移走——只记节点自身界会漏子树尾影成残像素（修复轮 finding 10）。
 /// 防御语义：子失败/死槽/链环**非致命**——已累计包络保留、异常分支
 /// 丢弃（保守并入自身面，绝不 panic）；深度帽 > nodes.len() 返零矩形。
@@ -484,7 +484,7 @@ fn apply(
     match a.prop {
         AnimProp::OffsetX | AnimProp::OffsetY => {
             // Transform 型：paint 偏移不重排；damage = 新旧**子树包络**
-            //（子视觉随偏移走——自身界记账漏子树尾影，
+            //（v1 无 clip：子视觉随偏移走——自身界记账漏子树尾影，
             // §3.4 残像素对策 = subtree_abs_rect；包络经 D17 viewport
             // clip 折界内残片）。
             let before = subtree_abs_rect(nodes, slot, 0);

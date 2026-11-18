@@ -6,9 +6,8 @@ type = "app"
 intent = "utility"
 
 [capabilities]
-console = true
+console = false
 fs = ["rootfs"]
-wm = true
 
 [runtime]
 stack_pages = 64

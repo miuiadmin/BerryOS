@@ -37,6 +37,3 @@ berry-guiproto = { path = "../berry-guiproto" }
 # （不进 guest 产物/CI 主门）；kill criteria：B 面帧收益 < 20% → 面
 # 退场（feature 留册不留码路径）。
 s7 = []
-# F5 guest 字形 VMO 档：编译掉静态 FontAtlas32x48 fallback，客机必须
-# 注入 FontSource（Berry Room 系统 A8 VMO），避免 CJK/HD 静态表进 app。
-guest-font-vmo = []

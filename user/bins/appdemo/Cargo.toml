@@ -1,19 +1,31 @@
 [package]
 name = "appdemo"
-version = "0.1.0"
+# L-SYS 0.2.0：字面版本不走 workspace 继承（musl 链独立小工作区，版本治理
+# 规则/14；user/bins 22 件同批同值）。升版 = 逐 crate 手同步。
+version = "0.2.0"
 edition = "2021"
 
-# app-0 demo 双 app 之一（`docs/app-0实施设计草案.md` §4）：manifest
-# `console = true` + `[fs]` 授权。2026-11-07 真实系统化 Phase 0 改
-# no_std + berry-fsclient direct RPC：保留 argv0 / 两行标记 / mtab 23B
-# / EOF / exit(0) 五件验收，同时回收 std 链 rootfs 预算。
+# 波 4 §2.8：app-0 demo 秒退自验件（42 行）升格为控件画廊常驻演示——
+# berry-ui pattern.rs 模式件 + 引擎核心 ViewKind 的活体验收场（格子
+# 清单口径对齐 user/berry-ui/tests/gallery2.rs）。console/fs 自证面
+# 原序保留（`app APPDEMO up` / `app APPDEMO fs ok 23`），随后常驻帧
+# 循环永不退出（settings 垂直切片先例形态——wm 门控 + park 降级）。
+#
+# 链与形态 = settings/berry-launcher 镜像：独立小工作区（空 [workspace]
+# escape user 根）、musl target + berry-libc shim + berry-ld 链（构建行
+# 见 justfile build-user :301-312 APPDEMO 段）。deps 五件 = settings
+# 同批（含三偏差裁定：字面 version / +berry-libc crt0 与 env 块消费 /
+# +berry-guiproto wire 编解码——berry-ui 只引类型不 re-export 收发面）。
 license = "Apache-2.0"
 
 [workspace]
 
 [dependencies]
-berry-fsclient = { path = "../../berry-fsclient" }
+berry-libc = { path = "../../berry-libc" }
 berry-sys = { path = "../../berry-sys" }
+berry-guiproto = { path = "../../berry-guiproto" }
+berry-ui = { path = "../../berry-ui" }
+berry-gfx = { path = "../../berry-gfx" }
 
 [profile.release]
 opt-level = "z"

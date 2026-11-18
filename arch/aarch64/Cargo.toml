@@ -32,7 +32,7 @@ berry-psface = { path = "../../psface" }
 # host 钉板在 fwcfgface；无依赖传染（纯 no_std lib）。
 berry-fwcfgface = { path = "../../fwcfgface" }
 # W3-Q66：唤醒归因链判定律纯函数单源（GIC INTID→源映射/保存值域判/
-# 槽位钳位）——本 crate wake.rs 消费（src_of 号表锚参数化注入 +
+# 槽位钳位）——本 crate wake.rs 消费（src_of 号表锚参数化注入 + 
 # irq_exit 值域执法；asidface 迁 mmu.rs 面同款纪律；原子 cell/到达
 # 计数物理臂留壳）。
 # host 钉板在 wakeface；无依赖传染（纯 no_std lib）。
@@ -50,3 +50,7 @@ berry-tickface = { path = "../../tickface" }
 berry-numface = { path = "../../numface" }
 # W3-Q67：SVC 判定面纯函数单源（kern_lock.rs 消费 re-export；host 钉板在 svcface）。
 berry-svcface = { path = "../../svcface" }
+# F0-1：ARMv8 CTR_EL0 PoU 指令/数据一致性解码与缓存行跨度计算纯面单源。
+berry-memface = { path = "../../memface" }
+# F0-2：TCR_EL1.AS 动态位宽与 ASID_SHIFT=48 架构常量纯面单源。
+berry-asidface = { path = "../../asidface" }

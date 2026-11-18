@@ -27,7 +27,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-EXPECT_ENTRIES = 45
+EXPECT_ENTRIES = 46
 
 
 def parse_nr_consts() -> dict:

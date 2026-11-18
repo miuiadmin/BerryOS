@@ -3,7 +3,7 @@ name = "berry-fsproto"
 version.workspace = true
 edition = "2021"
 rust-version = "1.93"   # MSRV = musl 1.2.5 口径基线（Rust 2025-12 起 musl 目标；SDK-02 拍板①）
-# P6 A-1（docs/文件系统设计-v1.0.md §6 / docs/shell设计-v1.0.md P6 行）：fs 服务 RPC 协议
+# P6 A-1（docs/文件系统设计-v1.0.md §6 / docs/shell设计-v1.1.md P6 行）：fs 服务 RPC 协议
 # 纯函数 crate，`berry-loader` 先例（D5「解析器即产品」）——`cfg_attr(not(test),
 # no_std)`：库本体 no_std（用户态 workspace 成员在 aarch64-unknown-none 下
 # 构建），test 构建放开 std 仅为默认测试挂具。双消费：fsmgr（服务端）/

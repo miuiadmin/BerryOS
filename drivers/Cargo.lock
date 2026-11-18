@@ -11,13 +11,6 @@ name = "berry-blkproto"
 version = "0.2.0"
 
 [[package]]
-name = "berry-bootprogress"
-version = "0.1.0"
-dependencies = [
- "berry-fbcon",
-]
-
-[[package]]
 name = "berry-exec"
 version = "0.2.0"
 dependencies = [
@@ -27,10 +20,6 @@ dependencies = [
  "berry-sys",
  "berry-winplan",
 ]
-
-[[package]]
-name = "berry-fbcon"
-version = "0.2.0"
 
 [[package]]
 name = "berry-fsclient"
@@ -152,18 +141,6 @@ version = "0.2.0"
 dependencies = [
  "berry-blkproto",
  "berry-exec",
- "berry-libc",
- "berry-sys",
- "berry-virtio",
-]
-
-[[package]]
-name = "vgpud"
-version = "0.1.0"
-dependencies = [
- "berry-bootprogress",
- "berry-exec",
- "berry-guiproto",
  "berry-libc",
  "berry-sys",
  "berry-virtio",

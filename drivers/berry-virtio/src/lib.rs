@@ -18,7 +18,6 @@
 
 #![cfg_attr(not(test), no_std)]
 
-pub mod gpu;
 pub mod input;
 
 /// split 描述符表项：addr u64 + len u32 + flags u16 + next u16 = 16B（规范 §2.6.1）。

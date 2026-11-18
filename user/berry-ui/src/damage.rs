@@ -306,53 +306,6 @@ impl DamageSet {
         self.count = 0;
     }
 
-    /// 精确追加（不试并）：专供 SwipePager Grid 行带。调用方已把行带数
-    /// 控制在 K 帽内；超帽仍保守 FULL。普通 damage 继续走 `add` 的
-    /// 1.25 浪费帽合并，避免碎片命令放大。
-    pub fn add_exact(&mut self, r: Rect) {
-        self.adds = self.adds.saturating_add(1);
-        if self.full || r.w == 0 || r.h == 0 {
-            return;
-        }
-        if (self.count as usize) < berry_guiproto::DAMAGE_MAX {
-            self.rects[self.count as usize] = r;
-            self.count += 1;
-            return;
-        }
-        self.full = true;
-        self.count = 0;
-    }
-
-    /// 行带追加（y±2 同带并包络）：`set_offset_sparse` 的 Grid 行带专
-    /// 用入口。两可见页的同带（同 y 行）与同帧批内多次 offset 写都落
-    /// 进同一 DamageSet——本入口先与既有条目按「y 差 ≤2 且 bottom 差
-    /// ≤2」试并（包络替换，覆盖只多不少），5 行×2 页 / 多次 MOVE 累计
-    /// 不再破 `DAMAGE_MAX`=8 退 FULL。无可并带回落 `add_exact` 语义
-    ///（直挂；超帽保守 FULL——不漏画方向）。u64 下界比较与
-    /// `wire_intersects` 同口径（y+h 可越 u32 域）。
-    pub fn add_row_band(&mut self, r: Rect) {
-        self.adds = self.adds.saturating_add(1);
-        if self.full || r.w == 0 || r.h == 0 {
-            return;
-        }
-        let rb = r.y as u64 + r.h as u64;
-        for i in 0..self.count as usize {
-            let b = self.rects[i];
-            let bb = b.y as u64 + b.h as u64;
-            if (b.y as i64 - r.y as i64).abs() <= 2 && (bb as i64 - rb as i64).abs() <= 2 {
-                self.rects[i] = wire_envelope(&b, &r);
-                return;
-            }
-        }
-        if (self.count as usize) < berry_guiproto::DAMAGE_MAX {
-            self.rects[self.count as usize] = r;
-            self.count += 1;
-            return;
-        }
-        self.full = true;
-        self.count = 0;
-    }
-
     /// FULL 直置（动画 Transform/大改面——全屏重绘语义）。
     pub fn add_full(&mut self) {
         self.full = true;

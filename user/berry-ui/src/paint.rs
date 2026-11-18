@@ -54,7 +54,7 @@
 
 use crate::damage::{i64_to_i32_sat, DamageSet, RectI, RectSet};
 use crate::desc::{ButtonStyle, Orientation, Props, ViewKind};
-use crate::metrics::{IconSource, TextMetrics};
+use crate::metrics::IconSource;
 use crate::Node;
 use berry_gfx::cmd::{Color, CommandEncoder, GlyphPos, GlyphRun, ImageSrc, Rect as GfxRect};
 use berry_gfx::font::FontSize;
@@ -257,8 +257,6 @@ pub(crate) fn paint<'a>(
     scratch: &'a mut [GlyphPos],
     enc: &mut CommandEncoder<'a>,
     icons: &'a dyn IconSource,
-    tm: &'static dyn TextMetrics,
-    wrap: &[Option<crate::TextWrapEntry>],
     pressed: &PressedVis,
     focus_slot: u32,
     texts: &InputTexts,
@@ -300,15 +298,6 @@ pub(crate) fn paint<'a>(
     let mut rest: &'a mut [GlyphPos] = scratch;
 
     for d in dmgs[..n_dmgs].iter() {
-        // Partial-damage spans are raster-bracketed to their own dirty rect.
-        // FULL remains unbracketed so boot/full frames keep the legacy stream.
-        let mut bracket = false;
-        if !damage.full && n_dmgs > 1 {
-            bracket = enc.push_clip(GfxRect::new(d.x, d.y, d.w, d.h)).is_ok();
-            if bracket {
-                rep.cmds += 1;
-            }
-        }
         let mut covered: RectSet<COVERED_CAP> = RectSet::new();
         let mut order = [NONE; ORDER_CAP];
         let mut bnds = [RectI::new(0, 0, 0, 0); ORDER_CAP];
@@ -327,7 +316,7 @@ pub(crate) fn paint<'a>(
             // （N ≤ MAX_NODES=512 < ORDER_CAP/2）结构性不达此面——防御
             // 路径不设竞速断言，仅 offscreen 回归测试钉板行为。
             rep.culled = culled_before;
-            emit_walk_all(nodes, root, 0, 0, d, &vp_rect, icons, tm, wrap, pressed, focus_slot, texts, tokens, &mut rest, enc, &mut rep, 0);
+            emit_walk_all(nodes, root, 0, 0, d, &vp_rect, icons, pressed, focus_slot, texts, tokens, &mut rest, enc, &mut rep, 0);
         } else {
             // 发射 = 收集序之逆（前序 = 画家算法背到前）；MARK_PUSH/POP
             // 在逆序流里读作「PUSH 子树 POP」（收集序注见 cull_walk——
@@ -347,13 +336,10 @@ pub(crate) fn paint<'a>(
                         }
                     }
                     slot => {
-                        emit_node(nodes, slot, &bnds[k], &vp_rect, icons, tm, wrap, pressed, focus_slot, texts, tokens, &mut rest, enc, &mut rep);
+                        emit_node(nodes, slot, &bnds[k], &vp_rect, icons, pressed, focus_slot, texts, tokens, &mut rest, enc, &mut rep);
                     }
                 }
             }
-        }
-        if bracket && enc.pop_clip().is_ok() {
-            rep.cmds += 1;
         }
     }
 
@@ -433,7 +419,7 @@ fn cull_walk(
     let by = ey + n.y as i64 + n.oy as i64;
 
     // clip 子窗：空窗 → 子树整剪（不复发不标段）。
-    let clip_here = matches!(n.kind, ViewKind::Scroll | ViewKind::List | ViewKind::Clip);
+    let clip_here = matches!(n.kind, ViewKind::Scroll | ViewKind::List);
     let child_eff = if clip_here { d.intersect(&RectI::new(i64_to_i32_sat(bx), i64_to_i32_sat(by), n.w, n.h)) } else { *d };
     let mark_clip = clip_here && !child_eff.is_empty();
 
@@ -536,8 +522,6 @@ fn cull_walk(
         // 渲染面收口（return 分支仅剩纯容器）。
         | ViewKind::Gauge
         | ViewKind::Qr
-        | ViewKind::Circle
-        | ViewKind::Panel
         | ViewKind::DragReorder => {}
         ViewKind::Root
         | ViewKind::Col
@@ -547,7 +531,6 @@ fn cull_walk(
         | ViewKind::Scroll
         | ViewKind::List
         | ViewKind::Stack
-        | ViewKind::Clip
         | ViewKind::Spacer => return,
     }
     let b = RectI::new(i64_to_i32_sat(bx), i64_to_i32_sat(by), n.w, n.h);
@@ -585,8 +568,6 @@ fn emit_walk_all<'a>(
     d: &RectI,
     vp_rect: &RectI,
     icons: &'a dyn IconSource,
-    tm: &'static dyn TextMetrics,
-    wrap: &[Option<crate::TextWrapEntry>],
     pressed: &PressedVis,
     focus_slot: u32,
     texts: &InputTexts,
@@ -606,7 +587,7 @@ fn emit_walk_all<'a>(
     let bx = ex + n.x as i64 + n.ox as i64;
     let by = ey + n.y as i64 + n.oy as i64;
     let b = RectI::new(i64_to_i32_sat(bx), i64_to_i32_sat(by), n.w, n.h);
-    let clip_here = matches!(n.kind, ViewKind::Scroll | ViewKind::List | ViewKind::Clip);
+    let clip_here = matches!(n.kind, ViewKind::Scroll | ViewKind::List);
     let child_eff = if clip_here { d.intersect(&b) } else { *d };
 
     // 自身先（前序 = 画家算法背到前：先画者先发射）。容器无视觉内容不
@@ -647,13 +628,11 @@ fn emit_walk_all<'a>(
         // 可见叶列同源——回退走查路径同律收口）。
         | ViewKind::Gauge
         | ViewKind::Qr
-        | ViewKind::Circle
-        | ViewKind::Panel
         | ViewKind::DragReorder => {
             if b.intersect(d).is_empty() {
                 rep.culled += 1; // damage 外叶子
             } else {
-                emit_node(nodes, slot, &b, vp_rect, icons, tm, wrap, pressed, focus_slot, texts, tokens, rest, enc, rep);
+                emit_node(nodes, slot, &b, vp_rect, icons, pressed, focus_slot, texts, tokens, rest, enc, rep);
             }
         }
         ViewKind::Root
@@ -664,7 +643,6 @@ fn emit_walk_all<'a>(
         | ViewKind::Scroll
         | ViewKind::List
         | ViewKind::Stack
-        | ViewKind::Clip
         | ViewKind::Spacer => {}
     }
 
@@ -688,7 +666,7 @@ fn emit_walk_all<'a>(
             }
             match nodes.get(c as usize) {
                 Some(Some(ch)) if ch.alive => {
-                    emit_walk_all(nodes, c, bx, by, &child_eff, vp_rect, icons, tm, wrap, pressed, focus_slot, texts, tokens, rest, enc, rep, hops + 1);
+                    emit_walk_all(nodes, c, bx, by, &child_eff, vp_rect, icons, pressed, focus_slot, texts, tokens, rest, enc, rep, hops + 1);
                     c = ch.next_sib;
                 }
                 _ => return, // 链上死槽 = 树结构异常，防御放弃余段
@@ -715,8 +693,6 @@ fn emit_node<'a>(
     b: &RectI,
     vp_rect: &RectI,
     icons: &'a dyn IconSource,
-    tm: &'static dyn TextMetrics,
-    wrap: &[Option<crate::TextWrapEntry>],
     pressed: &PressedVis,
     focus_slot: u32,
     texts: &InputTexts,
@@ -726,15 +702,6 @@ fn emit_node<'a>(
     rep: &mut PaintReport,
 ) {
     let Some(n) = nodes.get(slot as usize).and_then(|o| o.as_ref()) else { return };
-    if enc.len() + enc.open_clips() >= berry_gfx::cmd::MAX_CMDS {
-        rep.culled += 1;
-        let mut stopped = b.intersect(vp_rect);
-        if let Some(clip) = enc.effective_clip() {
-            stopped = stopped.intersect(&RectI::new(clip.x, clip.y, clip.w, clip.h));
-        }
-        rep.drawn_px = rep.drawn_px.saturating_add(stopped.area());
-        return;
-    }
     match &n.props {
         Props::Rect(p) => {
             // 刀 3：radius>0 = 圆角带状分解（中带整宽 + 上下 r 行逐行
@@ -808,25 +775,6 @@ fn emit_node<'a>(
                 rep.cmds += ok;
             }
         }
-        Props::Circle(p) => {
-            if enc
-                .fill_circle(GfxRect::new(b.x, b.y, b.w, b.h), p.bg)
-                .is_ok()
-            {
-                rep.cmds += 1;
-            }
-        }
-        Props::Panel(p) => {
-            let rect = GfxRect::new(b.x, b.y, b.w, b.h);
-            let ok = if p.radius == 0 {
-                enc.fill_rect(rect, p.bg).is_ok()
-            } else {
-                enc.fill_rect_rounded(rect, p.radius as i32, p.bg).is_ok()
-            };
-            if ok {
-                rep.cmds += 1;
-            }
-        }
         Props::Image(p) => {
             // [paint-exempt] 黑色哨兵实参：Image 像素即色（ARGB 经 D28
             // icons 槽），fg 形参对此臂是死实参非视觉色（豁免清单 #1）。
@@ -838,65 +786,28 @@ fn emit_node<'a>(
             emit_image(icons, p.id, p.fg, p.w, p.h, b.x, b.y, enc, rep);
         }
         Props::Text(p) => {
-            let bytes = p.text.as_bytes();
-            let glyph_cap = crate::utf8::count(bytes).min(rest.len());
-            if glyph_cap > 0 {
-                if let Some(piece) = take_scratch(rest, glyph_cap) {
+            // run 截断到 scratch 余量（容量不足的尾部字形丢弃——调用
+            // 方 scratch 尺寸义务见 §7 用例）
+            let take = (p.text.len as usize).min(rest.len());
+            if take > 0 {
+                if let Some(piece) = take_scratch(rest, take) {
+                    // 逐字形累计推进（痛点⑥根修 03 号 §1.3-3）：推进量经
+                    // GlyphAtlas::advance——三档点阵缺省 = cell_w()，与旧
+                    // `i * cw` 等宽推进逐值恒等（零漂移）；HD 档覆写读
+                    // ADVANCE_HD 比例表（「i」9px 而非 32px——观感劣化
+                    // 根因消除）。测量面配套 = ProportionalTextMetrics
+                    //（metrics.rs，布局/渲染同源）。
                     let atlas = p.style.scale.atlas();
-                    let scale = crate::desc::scale_to_u8(p.style.scale);
-                    let line_h = p.style.scale.cell_h() as i64;
-                    let node_id = crate::desc::NodeId(
-                        ((n.gen as u32) << 16) | (slot & 0xFFFF),
-                    );
-                    let planned = wrap
-                        .iter()
-                        .flatten()
-                        .find(|entry| entry.node == node_id && entry.enabled)
-                        .map(|entry| {
-                            crate::text_wrap::plan(
-                                bytes,
-                                scale,
-                                entry.last_max_w,
-                                tm,
-                            )
-                        });
-                    let mut bi = 0usize;
-                    let mut gi = 0usize;
-                    let mut line = 0usize;
                     let mut x = b.x as i64;
-                    while bi < bytes.len() && gi < glyph_cap {
-                        if let Some(plan) = planned.as_ref() {
-                            while line + 1 < plan.len() && bi >= plan.start(line + 1) {
-                                line += 1;
-                                x = b.x as i64;
-                            }
-                        }
-                        let line_end = planned
-                            .as_ref()
-                            .map(|plan| plan.end(line))
-                            .unwrap_or(bytes.len());
-                        let (cp, step) = crate::utf8::next(&bytes[bi..])
-                            .unwrap_or((crate::utf8::REPLACEMENT, 1));
-                        let end = bi.saturating_add(step.max(1)).min(bytes.len());
-                        // Hard newlines and trailing spaces are line syntax,
-                        // not glyphs; the plan excludes both from line ends.
-                        if cp == 0x0A || (planned.is_some() && bi >= line_end) {
-                            bi = end;
-                            continue;
-                        }
-                        if gi >= piece.len() {
-                            break;
-                        }
-                        piece[gi] = GlyphPos {
-                            ch: cp,
+                    for i in 0..take {
+                        piece[i] = GlyphPos {
+                            ch: p.text.bytes[i],
                             x: i64_to_i32_sat(x),
-                            y: i64_to_i32_sat(b.y as i64 + line as i64 * line_h),
+                            y: b.y,
                         };
-                        x += atlas.advance(cp) as i64;
-                        bi = end;
-                        gi += 1;
+                        x += atlas.advance(p.text.bytes[i]) as i64;
                     }
-                    let glyphs: &'a [GlyphPos] = &piece[..gi];
+                    let glyphs: &'a [GlyphPos] = piece; // 冻结为共享——run 引用钉调用方缓冲
                     let run = GlyphRun {
                         atlas,
                         glyphs,
@@ -1578,11 +1489,7 @@ fn emit_node<'a>(
         // Root/Col/Row/Pad/Grid + 余容器：无视觉内容（子树各自发射）
         _ => {}
     }
-    let mut footprint = b.intersect(vp_rect);
-    if let Some(clip) = enc.effective_clip() {
-        footprint = footprint.intersect(&RectI::new(clip.x, clip.y, clip.w, clip.h));
-    }
-    rep.drawn_px = rep.drawn_px.saturating_add(footprint.area());
+    rep.drawn_px = rep.drawn_px.saturating_add(b.intersect(vp_rect).area());
 }
 
 // ---------- 组件件发射共核（原语组合小工具） ----------
@@ -1624,7 +1531,7 @@ fn fill_rounded(
         return;
     }
     let ok = if true_corners() && radius_px > 0 {
-        enc.fill_rect_rounded(GfxRect::new(x, y, w, h), radius_px as i32, c)
+        enc.fill_rect_rounded(GfxRect::new(x, y, w, h), radius_px, c)
     } else {
         enc.fill_rect(GfxRect::new(x, y, w, h), c)
     };
@@ -1714,8 +1621,8 @@ fn emit_widget_text<'a>(
     let mut x = x0 as i64 + (zone_w as i64 - text_w).max(0) / 2;
     let y = i64_to_i32_sat(y0 as i64 + (h as i64 - BUTTON_LABEL_H).max(0) / 2);
     for i in 0..take {
-        piece[i] = GlyphPos { ch: u32::from(bytes[i]), x: i64_to_i32_sat(x), y };
-        x += atlas.advance(u32::from(bytes[i])) as i64;
+        piece[i] = GlyphPos { ch: bytes[i], x: i64_to_i32_sat(x), y };
+        x += atlas.advance(bytes[i]) as i64;
     }
     let glyphs: &'a [GlyphPos] = piece;
     let run = GlyphRun { atlas, glyphs, fg, bg: None };
@@ -1893,7 +1800,7 @@ mod tests {
                 Cmd::FillRect { rect, paint } => {
                     Sum::Fill(rect.x, rect.y, rect.w, rect.h, packed(paint.color))
                 }
-                Cmd::FillRoundRect { rect, radius, paint } => {
+                Cmd::FillRectRounded { rect, radius, paint } => {
                     Sum::Rounded(rect.x, rect.y, rect.w, rect.h, *radius, packed(paint.color))
                 }
                 Cmd::PushClip { rect } => Sum::PushClip(rect.x, rect.y, rect.w, rect.h),
@@ -1969,14 +1876,12 @@ mod tests {
             &mut scr,
             &mut enc,
             &icons,
-            &crate::metrics::MonospaceTextMetrics,
-            &[],
             pressed,
             NONE,
             &InputTexts::empty(),
             // 内联测试面恒 light 档（旧固定色板行为的值级钉板——迁移后
             // light 档同值，本面即零漂移自证）。
-            &crate::theme::Tokens::pick(crate::theme::ThemeMode::Light),
+            &crate::theme::Tokens::pick(crate::theme::Theme::Light),
         );
         let dl = enc.finish();
         let d = TextureDesc::new(240, 300, FB_STRIDE, TextureFormat::Rgbx).unwrap();
@@ -2031,7 +1936,7 @@ mod tests {
     /// 测试面 light 档 token 组（旧固定色板行为的值级钉板——迁移后
     /// light 档同值，本面即零漂移自证）。
     fn tokens() -> crate::theme::Tokens {
-        crate::theme::Tokens::pick(crate::theme::ThemeMode::Light)
+        crate::theme::Tokens::pick(crate::theme::Theme::Light)
     }
 
     #[test]

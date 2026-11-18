@@ -95,6 +95,11 @@ if [ -z "$KERNEL" ] || [ ! -f "$KERNEL" ]; then
   echo "smoke-dpgsoak: 用法：$0 <内核 ELF>（just build 出）" >&2
   exit 2
 fi
+
+# mkfat Rust 件单源解析（换轨第二波）：smoke.sh 同款 source 面。自检腿沙箱
+# 只复制本件不复制 paths.sh——上面 exit 0 之后的执行面才到本行，腿不触。
+source "$SCRIPT_DIR/paths.sh"
+
 # 镜像面自证（smoke-lockdep:60 同款防线）：镜像须含 DPGF 串——build-user
 # 未跑/旧 userbins 烘的内核直拒，不烧帽才发现终态永缺。
 if ! strings "$KERNEL" | grep -q 'DPGF ok n=15'; then
@@ -208,8 +213,14 @@ p2_cleanup() {
 trap p2_cleanup EXIT
 
 # 盘名专属 disk.dpgf.img + LBA0 印章（smoke-lockdep 同款：防覆写兄弟线活盘）。
+# mkfat 换轨第二波：造盘位切 Rust 件（paths.sh berryos_mkfat 单源，smoke.sh 同款）。
 DISK="$ROOT/disk.dpgf.img"
-python3 "$SCRIPT_DIR/mkfat.py" "$DISK" || {
+MKFAT=$(berryos_mkfat) || {
+  echo "smoke-dpgsoak: FAIL——mkfat 解析失败" >&2
+  keep_log keep
+  exit 1
+}
+"$MKFAT" "$DISK" || {
   echo "smoke-dpgsoak: FAIL——mkfat 造盘失败（${DISK}）" >&2
   keep_log keep
   exit 1

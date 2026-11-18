@@ -50,7 +50,7 @@ use berry_ui::desc::{
 };
 use berry_ui::layout::CrossAlign;
 use berry_ui::pattern::{self, DragReorder, NavHost, Refresh, Seg, Sheet, SwipeItem, TabBar, Drawer};
-use berry_ui::theme::{self, ThemeMode, Tokens};
+use berry_ui::theme::{self, Theme, Tokens};
 use berry_ui::{IconSource, NodeId, Props, UiError, UiMain, ViewKind, ViewSpec};
 
 // ---------------------------------------------------------------------------
@@ -961,7 +961,7 @@ struct SectionOut {
 /// fail 收口。
 pub fn build_all(ui: &mut UiMain) -> Result<Gallery, UiError> {
     let (vp_w, vp_h) = ui.viewport();
-    let t = Tokens::pick(ThemeMode::Light);
+    let t = Tokens::pick(Theme::Light);
     let root = ui.root();
 
     // 页 stack（滚动层 + 铬层叠放）。

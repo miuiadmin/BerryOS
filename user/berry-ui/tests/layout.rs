@@ -263,24 +263,6 @@ fn a_face_same_text_still_full_relayout() {
 }
 
 #[test]
-fn utf8_equal_byte_length_different_width_remeasures() {
-    // 3B ASCII（3 码点）→ 1 个 CJK（3B/1 码点）：字节长同、内在宽 24→8。
-    // S7 不能把 equal-len 当纯 PAINT 短路；A 面本就全量重测。
-    let mut ui = Ui::<16>::new(100, 200);
-    let root = ui.root();
-    let c = ui.add(root, text(b"aaa", FontSize::S8x16)).unwrap();
-    ui.layout();
-    assert_eq!(ui.bounds(c).unwrap(), RectI::new(0, 0, 24, 16));
-    ui.set_text(c, "设".as_bytes()).unwrap();
-    let stat = ui.layout();
-    assert_eq!(ui.bounds(c).unwrap(), RectI::new(0, 0, 8, 16));
-    #[cfg(not(feature = "s7"))]
-    assert!(stat.measured >= 1, "A 面 set_text 全量重测基线");
-    #[cfg(feature = "s7")]
-    assert!(stat.measured >= 1, "UTF-8 equal-len 但内在宽变 → 必须重测");
-}
-
-#[test]
 fn set_viewport_full_relayout_and_full_damage() {
     let mut ui = Ui::<16>::new(100, 200);
     let root = ui.root();

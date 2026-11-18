@@ -31,6 +31,8 @@ pub use berry_trapface::{classify, ec_name, ec_of, far_relevant};
 /// 原 fatal 路径。调用方读回 [`fault_armed`] 判「确实 fault 了」（槽被消费 = 异常真
 /// 发生过；没 fault 反而是断言失败——映射没退役干净）。
 static EXPECTED_FAULT_FAR: AtomicUsize = AtomicUsize::new(0);
+/// 期望指令取指故障槽（F0-2 `PXN`/`SMEP` 硬件不可执行正向断言）：命中后 `ELR_EL1 ← x30(LR)` 返回调用点。
+static EXPECTED_IABORT_FAR: AtomicUsize = AtomicUsize::new(0);
 
 /// 武装期望故障（ktest 专用；单核、IRQ 屏蔽下 arm→触发之间无他人插队）。
 pub fn arm_expected_fault(far: usize) {
@@ -40,6 +42,16 @@ pub fn arm_expected_fault(far: usize) {
 /// 期望故障槽是否仍处于武装态（未武装 = 已被消费 = 异常确实发生过）。
 pub fn fault_armed() -> bool {
     EXPECTED_FAULT_FAR.load(Ordering::Acquire) != 0
+}
+
+/// 武装期望 EL1 指令中止故障（ktest `blr` 探针专用）。
+pub fn arm_expected_iabort(far: usize) {
+    EXPECTED_IABORT_FAR.store(far, Ordering::Release);
+}
+
+/// 期望指令中止槽是否仍处于武装态。
+pub fn iabort_armed() -> bool {
+    EXPECTED_IABORT_FAR.load(Ordering::Acquire) != 0
 }
 
 // ---- S-4 4-4②：期望故障槽 SMP 化（canary 专用 per-核多槽 + 静默恢复）----
@@ -391,6 +403,17 @@ pub extern "C" fn exception_sync(tf: &mut TrapFrame) {
                 return;
             }
             // cbox 黑匣子镜像（halt 前——刀1 双钩之一；恢复路径已全数早退）。
+            cbox_record(KIND_EL1, tf);
+            dump(tf, ec);
+            uart_puts(b"  -> fatal, halt\n");
+            halt();
+        }
+        berry_trapface::EC_IABORT_CURRENT => {
+            let want = EXPECTED_IABORT_FAR.swap(0, Ordering::AcqRel);
+            if want != 0 && tf.far as usize == want {
+                tf.elr = tf.regs[30];
+                return;
+            }
             cbox_record(KIND_EL1, tf);
             dump(tf, ec);
             uart_puts(b"  -> fatal, halt\n");

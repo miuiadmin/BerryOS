@@ -17,14 +17,13 @@
 //!   阻塞）——**段①唯一接线面**；
 //! - **hdi 域**（op 0x40..0x43）：REG_VBLANK / VBLANK_WAIT / PREPARE /
 //!   COMMIT——GUI-2 / virtio-gpu S1 挂账（§9-⑨），段①仅编解码 + 测试；
-//! - **wm 域**（op 0x60..=0x7F 互斥带，v1 十二 op 0x60..=0x6B，GUI-5 第四域）：
+//! - **wm 域**（op 0x60..=0x7F 互斥带，v1 六 op 0x60..0x65，GUI-5 第四域）：
 //!   gui-wmd 持权威窗口表（两层窗/Z 序/避让/parent·group/焦点）；**两对
 //!   channel 共享同一 op 空间**——wm 服务对（GETINFO/CREATE/DESTROY/SET/
 //!   TABLE_GET）+ wmd↔inputd 推送对（inputd 发 TABLE_WAIT，wmd park 至表
 //!   版本新于 last_seen 应答全表快照 ≤[`WM_REP_MAX`]）。TABLE_WAIT 携
 //!   last_seen = **库内首个带参阻塞请求**（vblank_wait 无参阻塞先例的带参
-//!   扩展——唤醒判据进 wire，立法注记）；P0 增 Surface Mode 协商 op
-//!   0x67（形态/语义旁车/safe area/scale，见 [`surface`]）。
+//!   扩展——唤醒判据进 wire，立法注记）。
 //!
 //! 每域独立**严格串行 RPC**（一请求一应答、队列深 1 用量，netdproto 同款
 //! 纪律）；服务端→客户端「推送」一律建模为**阻塞应答**（frame_callback /
@@ -59,13 +58,6 @@
 
 #![cfg_attr(not(test), no_std)]
 
-/// Berry Session Surface Mode / IME composition / a11y sidecar 协议（P0）。
-pub mod authority;
-pub mod insets;
-pub mod ltpo;
-pub mod surface;
-pub use ltpo::software_ltpo_hz;
-
 // ---------- op 表（三域）----------
 
 /// present 域：能力/版本/格式协商（per-interface version，Wayland 先例）。
@@ -80,52 +72,6 @@ pub const OP_RELEASE: u8 = 4;
 pub const OP_VOTE: u8 = 5;
 /// present 域：显示电源模式（低功耗缝）。
 pub const OP_POWER_MODE: u8 = 6;
-/// BOOT-P1：系统启动进度控制帧（svcmgr → 显示后端）。它不是 app 呈现
-/// 请求，不携带 surface/buffer；值域与 berry-bootprogress Stage/permille
-/// 镜像，且只在 gui-wmd 首帧前允许使用。
-pub const OP_BOOT_PROGRESS: u8 = 9;
-/// BootProgress stage 判别值（与 berry-bootprogress::Stage 声明序镜像）。
-pub const BOOT_STAGE_DISPLAY: u8 = 0;
-pub const BOOT_STAGE_VERIFY: u8 = 1;
-pub const BOOT_STAGE_KERNEL: u8 = 2;
-pub const BOOT_STAGE_RAMDISK: u8 = 3;
-pub const BOOT_STAGE_PREPARE: u8 = 4;
-pub const BOOT_STAGE_HANDOFF: u8 = 5;
-/// 进度真值 0..=1000 permille。
-pub const BOOT_PROGRESS_MAX: u16 = 1000;
-/// BootProgress milestone 判别值（与 berry-bootprogress::Milestone 镜像）。
-pub const BOOT_M_VGPU_READY: u8 = 1;
-pub const BOOT_M_PRESENT_BACKEND_READY: u8 = 2;
-pub const BOOT_M_WMD_SPAWNED: u8 = 3;
-pub const BOOT_M_INPUT_ARMED: u8 = 4;
-pub const BOOT_M_INPUTD_SPAWNED: u8 = 5;
-pub const BOOT_M_FSMGR_SPAWNED: u8 = 6;
-pub const BOOT_M_VNET_SPAWNED: u8 = 7;
-pub const BOOT_M_PROGRESS_CONTROL_HANDOFF: u8 = 8;
-pub const BOOT_M_SYSTEM_UI_CONNECTED: u8 = 9;
-pub const BOOT_M_FIRST_REAL_SUBMIT: u8 = 10;
-pub const BOOT_M_DESKTOP_HANDOFF: u8 = 11;
-pub const BOOT_M_MAX: u8 = 11;
-
-/// Stable milestone table mirrored from berry-bootprogress. Runtime code in
-/// this no_std protocol crate cannot depend on the loader-side truth crate;
-/// host tests cross-check the two tables byte-for-byte.
-pub const fn boot_milestone_triple(id: u8) -> Option<(u8, u16)> {
-    match id {
-        BOOT_M_VGPU_READY => Some((BOOT_STAGE_PREPARE, 450)),
-        BOOT_M_PRESENT_BACKEND_READY => Some((BOOT_STAGE_PREPARE, 500)),
-        BOOT_M_WMD_SPAWNED => Some((BOOT_STAGE_PREPARE, 520)),
-        BOOT_M_INPUT_ARMED => Some((BOOT_STAGE_PREPARE, 560)),
-        BOOT_M_INPUTD_SPAWNED => Some((BOOT_STAGE_PREPARE, 620)),
-        BOOT_M_FSMGR_SPAWNED => Some((BOOT_STAGE_PREPARE, 650)),
-        BOOT_M_VNET_SPAWNED => Some((BOOT_STAGE_PREPARE, 680)),
-        BOOT_M_PROGRESS_CONTROL_HANDOFF => Some((BOOT_STAGE_HANDOFF, 700)),
-        BOOT_M_SYSTEM_UI_CONNECTED => Some((BOOT_STAGE_HANDOFF, 800)),
-        BOOT_M_FIRST_REAL_SUBMIT => Some((BOOT_STAGE_HANDOFF, 900)),
-        BOOT_M_DESKTOP_HANDOFF => Some((BOOT_STAGE_HANDOFF, 1000)),
-        _ => None,
-    }
-}
 /// present 域：输入脉冲（刀3 A6 触摸加速触发面——4B 无参、ST_OK 应答；
 /// 任何持 present 端的观察者可发：v1 = 客户端输入环，inputd 直连挂
 /// extras 抬帽刀）。add-only：7 前此号空缺。
@@ -139,15 +85,6 @@ pub const OP_FRAME_TIMING: u8 = 8;
 pub const OP_INPUT_SUBSCRIBE: u8 = 0x20;
 /// input 域：拉事件批（可阻塞：阻塞到至少 1 个完整事件）。
 pub const OP_INPUT_POLL: u8 = 0x21;
-/// input 域内部路由帧（Phase 3）：inputd → wmd。头与 INPUT_POLL 事件批
-/// 同形，但它是请求而非应答；wmd 以权威 WM 表做 owner hit-test 后入
-/// per-session 输入队列。
-pub const OP_INPUT_ROUTE: u8 = 0x22;
-/// P2 input 域内部键盘路由帧（inputd → wmd）：PointerEvent 路由之外的
-/// add-only 独立批次，避免在既有 PointerEvent 帧内塞判别位。
-pub const OP_INPUT_KEY_ROUTE: u8 = 0x23;
-/// P2 app → wmd 键盘事件拉取（与 pointer INPUT_POLL 分 op 分队列）。
-pub const OP_INPUT_KEY_POLL: u8 = 0x24;
 /// hdi 域：注册 vblank 通知源（随行 1 个 Event handle）。
 pub const OP_REG_VBLANK: u8 = 0x40;
 /// hdi 域：等下一次 vblank（阻塞应答）。
@@ -177,43 +114,21 @@ pub const OP_WM_SET: u8 = 0x63;
 pub const OP_WM_TABLE_GET: u8 = 0x64;
 /// wm 域：等表变更快照（阻塞应答——携 last_seen 版本号，表已新立即答）。
 pub const OP_WM_TABLE_WAIT: u8 = 0x65;
-/// wm 域：建立 per-client session（Phase 1 多客户端所有权面）。请求在
-/// broker 通道上携带两枚 handle：[0] 客户端自建 session 通道对端，
-/// [1] self Process handle（死亡观察 / owner 清理）；应答携 session_id。
-pub const OP_WM_CONNECT: u8 = 0x66;
-/// wm 域：Surface Mode 协商（P0/ADR #67）。请求按 surface id 声明期望
-/// 形态与语义旁车；成功应答 = host 授予的安全区/scale/合约位，错误沿用
-/// 1B 状态。
-pub const OP_WM_SURFACE_MODE: u8 = 0x67;
-/// P1 内部 bootstrap op：svcmgr 在任何 app broker 端被 dup/赠出前，把
-/// per-boot Surface escape seed 预共享给 gui-wmd（9B，无随行 handle）。
-/// wmd 只接受一次；重复/迟到的 seed op 按普通 broker 非法帧 fail closed。
-pub const OP_WM_SURFACE_ESCAPE_SEED: u8 = 0x68;
-/// R1：svcmgr→wmd per-boot SYSTEM client seed 控制帧（add-only）。
-pub const OP_WM_SYSTEM_SEED: u8 = 0x69;
-/// R3：app session 非阻塞拉一条 per-window config event（无随行 handle）。
-pub const OP_WM_CONFIG_POLL: u8 = 0x6A;
-/// R3：确认已消费的 config event serial（错/旧 serial 拒绝）。
-pub const OP_WM_CONFIG_ACK: u8 = 0x6B;
-/// SYSTEM Recents：选择要恢复焦点的 APP owner（请求 6B；应答 1B）。
-pub const OP_WM_TASK_SELECT: u8 = 0x6C;
-/// SYSTEM Recents：拉最近 APP owner 列表（请求 4B；应答 4+2N 字节）。
-pub const OP_WM_RECENTS_GET: u8 = 0x6D;
-
-// ---------- 波2/波3 add-on（advanced main；op 按让先落者律重编号） ----------
 // ---------- 波2 输入焦点协议（六波方案步骤 3——add-only 扩面） ----------
 //
 // guiproto add-only 纪律：只增常量与新编解码函数，不动任何既有 op 的
 // 字节面；服务端执法（wmd/guifbd 侧）挂波3 接线。
 
 /// wm 域：焦点请求（客户端 → wmd：申请/让出焦点。payload `[op][win][r16]`）。
-pub const OP_WM_FOCUS: u8 = 0x6E;
+pub const OP_WM_FOCUS: u8 = 0x66;
 /// wm 域：返回键路由（导航窗 → wmd：路由到焦点窗；payload `[op][r24]`）。
-pub const OP_WM_BACK: u8 = 0x6F;
+pub const OP_WM_BACK: u8 = 0x67;
 /// input 域：授权注入（softime/测试 → gui-inputd：以真实输入同一事件面
-/// 注入键盘/文本事件；payload `[op][dev_kind][key/text...]`）。授权面
-/// （谁可注入）执法在 inputd 服务端。
-pub const OP_INPUT_INJECT: u8 = 0x25;
+/// 注入键盘/文本事件；payload `[op][dev_kind][key/text...]`——dev_kind =
+/// DEV_KEYBOARD 的 code = Linux input 码（EV_KEY 泵同词汇，softime 镜像；
+/// 与 INPUT_POLL 出向覆载的翻译后字节构成两域分注，见 DEV_KEYBOARD 注）。
+/// 授权面（谁可注入）执法在 inputd 服务端。
+pub const OP_INPUT_INJECT: u8 = 0x22;
 
 /// 窗口层：服务层（软键盘 softime 等——压 SYSTEM 之上、独立合成带）。
 pub const WM_LAYER_SERVICE: u8 = 2;
@@ -249,7 +164,7 @@ pub const DEV_TEXT: u8 = 2;
 /// 异步拉取」面，波3设计 §4）；ack = 1B ST_OK + 随行恰 1 handle（订阅者
 /// 事件通道客户端端）。表跟随纪律（波3设计 §9）：TABLE_WAIT 冻结零新增
 /// 驻留者，跟随一律走本通道通知 + TABLE_GET 快照。
-pub const OP_WM_SUBSCRIBE: u8 = 0x70;
+pub const OP_WM_SUBSCRIBE: u8 = 0x68;
 /// 事件帧型：返回键投递（wmd → 焦点窗属主；`[kind][wid u16][r]`——500ms
 /// 无 BACK_ACK 且无表变更则 wmd 兜底 DESTROY，wire 只管投递不管兜底）。
 pub const WM_EVT_BACK: u8 = 0x90;
@@ -261,23 +176,12 @@ pub const WM_EVT_BACK_ACK: u8 = 0x92;
 
 // ---------- wm 域值域（GUI-5；钦定位域未知位双侧拒）----------
 
-/// WM_CONNECT client_type：普通 app session。
-pub const WM_CLIENT_APP: u8 = 0;
-/// WM_CONNECT client_type：桌面/系统壳 session（权限位 v1 仅记账）。
-pub const WM_CLIENT_SYSTEM: u8 = 1;
-/// WM_CONNECT client_type 值域（R1 权威策略消费）。
-pub const fn wm_client_known(v: u8) -> bool {
-    v <= WM_CLIENT_SYSTEM
-}
 /// 窗口层：应用层（桌面/普通窗）。
 pub const WM_LAYER_APP: u8 = 0;
 /// 窗口层：系统层（状态栏等——压应用层任意 Z）。
 pub const WM_LAYER_SYSTEM: u8 = 1;
 /// CREATE flags：申请几何避让系统层（wmd 写有效几何进表，不变量式重推导）。
 pub const WM_CREATE_F_AVOID_SYS: u8 = 1 << 0;
-/// APP window keeps raw/full geometry while receiving SYSTEM bar safe insets
-/// through Surface Mode. SYSTEM windows reject this flag.
-pub const WM_CREATE_F_EDGE_TO_EDGE: u8 = 1 << 1;
 /// SET mask 位：几何四槽（x/y/w/h）。
 pub const WM_SET_F_GEOM: u8 = 1 << 0;
 /// SET mask 位：可见槽（vis）。
@@ -292,20 +196,6 @@ pub const WM_VIS_SHOW: u8 = 1;
 pub const WM_WIN_F_VISIBLE: u8 = 1 << 0;
 /// WmEntry flags 位：持焦点（wmd 单焦点窗策略面）。
 pub const WM_WIN_F_FOCUSED: u8 = 1 << 1;
-
-/// R3 config cause：窗口创建后的初始 pull-once 配置。
-pub const WM_CONFIG_CAUSE_CREATED: u8 = 0;
-/// R3 config cause：本窗 WM_SET_F_GEOM 改变 raw bounds。
-pub const WM_CONFIG_CAUSE_GEOMETRY: u8 = 1;
-/// R3 config cause：本窗 WM_SET_F_VIS 改变可见状态。
-pub const WM_CONFIG_CAUSE_VISIBILITY: u8 = 2;
-/// R3 config cause：可见 SYSTEM 窗使 AVOID_SYS effective bounds 变化。
-pub const WM_CONFIG_CAUSE_OCCLUSION: u8 = 3;
-
-/// R3 config cause 值域。
-pub const fn wm_config_cause_known(v: u8) -> bool {
-    v <= WM_CONFIG_CAUSE_OCCLUSION
-}
 
 // ---------- 状态码 / 值域 ----------
 
@@ -323,8 +213,6 @@ pub const ST_NOENT: u8 = 4;
 pub const ST_FULL: u8 = 5;
 /// 能力不支持（格式不在协商集等）。
 pub const ST_UNSUPPORTED: u8 = 6;
-/// 会话/所有权拒绝（非 owner 改删他人窗口等）。
-pub const ST_DENIED: u8 = 7;
 
 /// SUBMIT flags：整面 damage（K 必须为 0）。
 pub const SUBMIT_F_DAMAGE_FULL: u8 = 1 << 0;
@@ -346,47 +234,10 @@ pub const PHASE_HOVER_MOVE: u8 = 6;
 /// hover 离开（同上留位）。
 pub const PHASE_HOVER_EXIT: u8 = 7;
 
-/// 键盘动作：抬起。
-pub const KEY_ACTION_UP: u8 = 0;
-/// 键盘动作：按下。
-pub const KEY_ACTION_DOWN: u8 = 1;
-/// 键盘动作：设备自动重复。
-pub const KEY_ACTION_REPEAT: u8 = 2;
-
-/// 键盘修饰位：Shift。
-pub const KEY_MOD_SHIFT: u8 = 1 << 0;
-/// 键盘修饰位：Ctrl。
-pub const KEY_MOD_CTRL: u8 = 1 << 1;
-/// 键盘修饰位：Alt。
-pub const KEY_MOD_ALT: u8 = 1 << 2;
-/// BOOT-P1/system nav：host toolbar F1 → BACK。Linux evdev KEY_F1。
-pub const KEY_SYSTEM_BACK: u16 = 59;
-/// BOOT-P1/system nav：host toolbar F2 → HOME。Linux evdev KEY_F2。
-pub const KEY_SYSTEM_HOME: u16 = 60;
-/// BOOT-P1/system nav：host toolbar F3 → TASK。Linux evdev KEY_F3。
-pub const KEY_SYSTEM_TASK: u16 = 61;
-/// 键盘修饰位：Super。
-pub const KEY_MOD_SUPER: u8 = 1 << 3;
-/// v1 已定义键盘修饰位全集。
-pub const KEY_MOD_KNOWN: u8 =
-    KEY_MOD_SHIFT | KEY_MOD_CTRL | KEY_MOD_ALT | KEY_MOD_SUPER;
-
 /// PointerEvent flags：本事件含重采样点（消费侧标注回写面）。
 pub const PE_FL_RESAMPLED: u8 = 1 << 0;
 /// PointerEvent flags：合成事件（如 CANCEL）。
 pub const PE_FL_SYNTHESIZED: u8 = 1 << 1;
-/// PointerEvent flags：SYSTEM 导航改变了 WM 可见性，SYSTEM 嵌入器必须
-/// 全屏重绘以清除被隐藏 app 的旧像素。事件本体是 CANCEL，不参与命中。
-pub const PE_FL_SYSTEM_INVALIDATE: u8 = 1 << 2;
-/// PointerEvent flags：APP owner 第一次真实 frame 已合成。事件本体是
-/// CANCEL，x 携带 owner id；只发给 SYSTEM 嵌入器。
-pub const PE_FL_SYSTEM_APP_FRAME: u8 = 1 << 3;
-/// SYSTEM 导航 action：BACK。
-pub const SYSTEM_NAV_ACTION_BACK: u32 = 1;
-/// SYSTEM 导航 action：HOME。
-pub const SYSTEM_NAV_ACTION_HOME: u32 = 2;
-/// SYSTEM 导航 action：TASK / Recents。
-pub const SYSTEM_NAV_ACTION_TASK: u32 = 3;
 
 /// 左键（位域）。
 pub const BUTTON_L: u8 = 1 << 0;
@@ -493,16 +344,10 @@ pub const CREDITS_MAX: u8 = 2;
 pub const INPUT_SAMPLES_MAX: usize = 4;
 /// 单次 INPUT_POLL 应答事件数上限。
 pub const INPUT_EVENTS_MAX: usize = 3;
-/// 单次键盘路由 / 应答事件数上限（16B 事件 × 15 + 4B 头 = 244B 恰帽）。
-pub const INPUT_KEY_EVENTS_MAX: usize = 15;
 /// PREPARE/COMMIT slot 数上限。
 pub const HDI_SLOTS_MAX: u8 = 2;
 /// PANEL_CAPS 档位表条目数上限（全表 9 档 + 余量）。
 pub const PANEL_TIERS_MAX: usize = 16;
-
-/// HDI 用户半位 vblank/fence 信号位。fence 与 REG_VBLANK event 都在同一
-/// 位脉冲（clear+set），跨进程契约单源；勿在 guifbd/vgpud/测试客户端手写。
-pub const HDI_USER_SIGNAL: u64 = 1 << 32;
 
 /// present 域请求帧帽 = 24 + 16×8（SUBMIT 最坏）。
 pub const PRESENT_REQ_MAX: usize = 152;
@@ -512,12 +357,6 @@ pub const PRESENT_REP_MAX: usize = 24;
 pub const INPUT_EVT_MAX_LEN: usize = 80;
 /// INPUT_POLL 应答帧帽 = 4 + 3×80。
 pub const INPUT_REP_MAX: usize = 244;
-/// INPUT_ROUTE 请求帧帽（与 INPUT_POLL 应答同算术）。
-pub const INPUT_ROUTE_MAX: usize = 244;
-/// P2 KeyEvent 定长（ts u64 + code u16 + action/mod u8×2 + device u16 + r16）。
-pub const INPUT_KEY_EVENT_LEN: usize = 16;
-/// P2 键盘路由帧帽 = 4B 头 + 15×16B。
-pub const INPUT_KEY_ROUTE_MAX: usize = 244;
 /// hdi 域请求帧帽（PREPARE 请求 20B）。
 pub const HDI_REQ_MAX: usize = 20;
 /// hdi 域应答帧帽（VBLANK_WAIT 应答 16B；PANEL_CAPS 变长应答独帽见下）。
@@ -562,7 +401,7 @@ pub const RESAMPLE_MAX_PREDICTION_MS: u64 = 8;
 
 /// present 域版本（v2 = 刀4 增 OP_FRAME_TIMING 呈现回执查询——刷新率
 /// 体系规范 §7-P3）。
-pub const VER_PRESENT: u8 = 3;
+pub const VER_PRESENT: u8 = 2;
 /// input 域版本。
 pub const VER_INPUT: u8 = 1;
 /// hdi 域版本（v2 = 刀1 增 OP_PANEL_CAPS；v3 = 刀2 增 OP_VBLANK_TIMING
@@ -611,23 +450,14 @@ const WM_DESTROY_REQ_LEN: usize = 8;
 const WM_SET_REQ_LEN: usize = 20;
 /// WM_TABLE_WAIT 请求恰长 8B。
 const WM_TABLE_WAIT_REQ_LEN: usize = 8;
-/// WM_CONNECT 请求 / 应答均 8B（请求 client_type；应答 session_id）。
-const WM_CONNECT_REQ_LEN: usize = 8;
-const WM_CONNECT_REP_LEN: usize = 8;
 /// 窗口表快照定长头 / 表项单项宽。
 const WM_SNAP_HEAD: usize = 12;
 const WM_ENTRY_LEN: usize = 16;
-/// R3 WM_CONFIG_POLL 请求恰长 4B。
-const WM_CONFIG_POLL_REQ_LEN: usize = 4;
-/// R3 WM_CONFIG_ACK 请求恰长 12B。
-const WM_CONFIG_ACK_REQ_LEN: usize = 12;
-/// R3 WM_CONFIG_POLL 成功应答恰长 32B。
-const WM_CONFIG_REP_LEN: usize = 32;
 
 // ---------- 值域谓词（const fn——位域/域值双侧对称执法）----------
 
 const fn st_known(st: u8) -> bool {
-    st <= ST_DENIED
+    st <= ST_UNSUPPORTED
 }
 
 const fn phase_known(p: u8) -> bool {
@@ -635,7 +465,7 @@ const fn phase_known(p: u8) -> bool {
 }
 
 const fn pe_flags_known(f: u8) -> bool {
-    f & !(PE_FL_RESAMPLED | PE_FL_SYNTHESIZED | PE_FL_SYSTEM_INVALIDATE | PE_FL_SYSTEM_APP_FRAME) == 0
+    f & !(PE_FL_RESAMPLED | PE_FL_SYNTHESIZED) == 0
 }
 
 const fn buttons_known(b: u8) -> bool {
@@ -680,7 +510,7 @@ const fn wm_layer_known(l: u8) -> bool {
 }
 
 const fn wm_create_flags_known(f: u8) -> bool {
-    f & !(WM_CREATE_F_AVOID_SYS | WM_CREATE_F_EDGE_TO_EDGE) == 0
+    f & !WM_CREATE_F_AVOID_SYS == 0
 }
 
 /// SET mask 值域：mask=0（「空设置」非法定义在协议层——netdproto port 0 /
@@ -768,24 +598,6 @@ pub struct PointerEvent {
     /// 历史采样（前 `history_len` 项有效，oldest→newest）。
     pub history: [Sample; INPUT_SAMPLES_MAX - 1],
     pub history_len: usize,
-}
-
-/// P2 键盘事件。code 是 Linux evdev KEY_* 冻结值；action/modifiers 由
-/// gui-inputd 从 EV_KEY 流单源生成，app 不解析 virtio wire。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct KeyEvent {
-    pub timestamp_ns: u64,
-    pub code: u16,
-    pub action: u8,
-    pub modifiers: u8,
-    pub device_id: u16,
-}
-
-fn key_event_valid(ev: &KeyEvent) -> bool {
-    ev.code != 0
-        && ev.action <= KEY_ACTION_REPEAT
-        && ev.modifiers & !KEY_MOD_KNOWN == 0
-        && ev.device_id != 0
 }
 
 /// PointerEvent 帧长：`history_len` ∈ 0..=INPUT_SAMPLES_MAX-1 →
@@ -897,177 +709,6 @@ pub fn parse_pointer_event(buf: &[u8]) -> Option<PointerEvent> {
     })
 }
 
-fn key_batch_head(buf: &[u8], op: u8) -> Option<usize> {
-    if buf.len() <= INPUT_REP_HEAD || buf[0] != op || buf[2..4].iter().any(|&v| v != 0) {
-        return None;
-    }
-    let count = buf[1] as usize;
-    (count > 0 && count <= INPUT_KEY_EVENTS_MAX).then_some(count)
-}
-
-/// 编码 KeyEvent（恰 16B，LE；保留 u16 恒 0）。
-pub fn encode_key_event(out: &mut [u8], ev: &KeyEvent) -> Option<usize> {
-    if !key_event_valid(ev) || out.len() < INPUT_KEY_EVENT_LEN {
-        return None;
-    }
-    out[..8].copy_from_slice(&ev.timestamp_ns.to_le_bytes());
-    out[8..10].copy_from_slice(&ev.code.to_le_bytes());
-    out[10] = ev.action;
-    out[11] = ev.modifiers;
-    out[12..14].copy_from_slice(&ev.device_id.to_le_bytes());
-    out[14..16].fill(0);
-    Some(INPUT_KEY_EVENT_LEN)
-}
-
-/// 解析 KeyEvent：恰 16B、保留域 0、action/modifier/device 值域全执法。
-pub fn parse_key_event(buf: &[u8]) -> Option<KeyEvent> {
-    if buf.len() != INPUT_KEY_EVENT_LEN || buf[14..16].iter().any(|&v| v != 0) {
-        return None;
-    }
-    let mut ts = [0u8; 8];
-    ts.copy_from_slice(&buf[..8]);
-    let ev = KeyEvent {
-        timestamp_ns: u64::from_le_bytes(ts),
-        code: le16(buf, 8)?,
-        action: buf[10],
-        modifiers: buf[11],
-        device_id: le16(buf, 12)?,
-    };
-    key_event_valid(&ev).then_some(ev)
-}
-
-/// 编码 inputd → wmd 键盘路由请求：`[op][count u8][r16][count×KeyEvent]`。
-pub fn encode_input_key_route_req(
-    out: &mut [u8], events: &[KeyEvent],
-) -> Option<usize> {
-    if events.is_empty() || events.len() > INPUT_KEY_EVENTS_MAX {
-        return None;
-    }
-    let total = INPUT_REP_HEAD + events.len() * INPUT_KEY_EVENT_LEN;
-    if total > INPUT_KEY_ROUTE_MAX || out.len() < total {
-        return None;
-    }
-    out[0] = OP_INPUT_KEY_ROUTE;
-    out[1] = events.len() as u8;
-    out[2..4].fill(0);
-    let mut off = INPUT_REP_HEAD;
-    for ev in events {
-        let n = encode_key_event(&mut out[off..], ev)?;
-        off += n;
-    }
-    Some(off)
-}
-
-/// 键盘路由请求借用视图（逐事件惰性解析，wmd 零分配）。
-pub struct InputKeyRouteReq<'a> {
-    buf: &'a [u8],
-    count: usize,
-}
-
-impl InputKeyRouteReq<'_> {
-    pub fn count(&self) -> usize {
-        self.count
-    }
-
-    pub fn event(&self, i: usize) -> Option<KeyEvent> {
-        if i >= self.count {
-            return None;
-        }
-        let off = INPUT_REP_HEAD + i * INPUT_KEY_EVENT_LEN;
-        parse_key_event(&self.buf[off..off + INPUT_KEY_EVENT_LEN])
-    }
-}
-
-/// 解析键盘路由请求：空批/越帽/保留位非零/单事件畸形全拒。
-pub fn parse_input_key_route_req(buf: &[u8]) -> Option<InputKeyRouteReq<'_>> {
-    let count = key_batch_head(buf, OP_INPUT_KEY_ROUTE)?;
-    let total = INPUT_REP_HEAD + count * INPUT_KEY_EVENT_LEN;
-    if buf.len() != total {
-        return None;
-    }
-    let req = InputKeyRouteReq { buf, count };
-    // 逐事件预验：任一 KeyEvent 畸形则整帧拒绝，不让 wmd 静默跳过。
-    for i in 0..count {
-        req.event(i)?;
-    }
-    Some(req)
-}
-
-/// 编码键盘拉取请求（恰 4B；max_events ∈ 1..=INPUT_KEY_EVENTS_MAX）。
-pub fn encode_input_key_poll_req(out: &mut [u8], max_events: u8) -> usize {
-    out[0] = OP_INPUT_KEY_POLL;
-    out[1] = max_events;
-    out[2..4].fill(0);
-    4
-}
-
-/// 解析键盘拉取请求；值域同 pointer INPUT_POLL。
-pub fn parse_input_key_poll_req(buf: &[u8]) -> Option<u8> {
-    if buf.len() != 4 || buf[0] != OP_INPUT_KEY_POLL {
-        return None;
-    }
-    let max = buf[1];
-    (max >= 1 && max <= INPUT_KEY_EVENTS_MAX as u8 && buf[2..4].iter().all(|&v| v == 0))
-        .then_some(max)
-}
-
-/// 编码键盘事件批应答（头与 pointer 相同，事件换 KeyEvent）。
-pub fn encode_input_key_events_rep(
-    out: &mut [u8], events: &[KeyEvent],
-) -> Option<usize> {
-    if events.is_empty() || events.len() > INPUT_KEY_EVENTS_MAX {
-        return None;
-    }
-    let total = INPUT_REP_HEAD + events.len() * INPUT_KEY_EVENT_LEN;
-    if out.len() < total {
-        return None;
-    }
-    out[0] = ST_OK;
-    out[1] = events.len() as u8;
-    out[2..4].fill(0);
-    let mut off = INPUT_REP_HEAD;
-    for ev in events {
-        off += encode_key_event(&mut out[off..], ev)?;
-    }
-    Some(off)
-}
-
-/// 键盘事件批应答借用视图。
-pub struct InputKeyEventsRep<'a> {
-    buf: &'a [u8],
-    count: usize,
-}
-
-impl InputKeyEventsRep<'_> {
-    pub fn count(&self) -> usize {
-        self.count
-    }
-
-    pub fn event(&self, i: usize) -> Option<KeyEvent> {
-        if i >= self.count {
-            return None;
-        }
-        let off = INPUT_REP_HEAD + i * INPUT_KEY_EVENT_LEN;
-        parse_key_event(&self.buf[off..off + INPUT_KEY_EVENT_LEN])
-    }
-}
-
-/// 解析键盘事件批应答；空批仍按 1B ST_EAGAIN 烘焙线。
-pub fn parse_input_key_events_rep(
-    buf: &[u8],
-) -> Option<Result<InputKeyEventsRep<'_>, u8>> {
-    if buf.len() == 1 {
-        let st = buf[0];
-        return (st_known(st) && st != ST_OK).then_some(Err(st));
-    }
-    let count = key_batch_head(buf, ST_OK)?;
-    let total = INPUT_REP_HEAD + count * INPUT_KEY_EVENT_LEN;
-    if buf.len() != total {
-        return None;
-    }
-    Some(Ok(InputKeyEventsRep { buf, count }))
-}
-
 /// 事件流游标步进（私有）：读 `buf[off..]` 处 PointerEvent 的帧长
 /// （header sample_count 定长）；截断/计数野值 → None。
 fn event_span(buf: &[u8], off: usize) -> Option<usize> {
@@ -1116,24 +757,12 @@ pub enum PresentReq {
     },
     /// POWER_MODE：显示电源模式。
     PowerMode { mode: u8 },
-    /// BOOT-P1：系统启动进度控制帧（服务端渲染真实系统阶段；合线后 op9）。
-    BootProgress { stage: u8, permille: u16, milestone: u8 },
     /// INPUT_PULSE：输入活动脉冲（刀3 A6——无参，ST_OK 应答；触发仲裁器
     /// boost 窗，非投票面）。
     InputPulse,
     /// FRAME_TIMING：呈现回执查询（刀4 P3——8B 请求携 frame_token；命中
     /// → 28B 回执，未命中 → 1B ST_NOENT；非阻塞）。
     FrameTiming { frame_token: u32 },
-}
-
-impl PresentReq {
-    /// Construct the canonical BootProgress frame for a milestone id. This is
-    /// the only producer entry point; callers must not hand-assemble the
-    /// stage/permille/milestone triple.
-    pub fn milestone(id: u8) -> Option<Self> {
-        let (stage, permille) = boot_milestone_triple(id)?;
-        Some(Self::BootProgress { stage, permille, milestone: id })
-    }
 }
 
 /// 编码 present 域请求（None 契约：rect_count 越帽 / flags·scene·mode·
@@ -1236,25 +865,6 @@ pub fn encode_present_req(out: &mut [u8], req: &PresentReq) -> Option<usize> {
             m[2] = 0;
             m[3] = 0;
             Some(4)
-        }
-        PresentReq::BootProgress { stage, permille, milestone } => {
-            if *stage > BOOT_STAGE_HANDOFF
-                || *permille > BOOT_PROGRESS_MAX
-                || *milestone > BOOT_M_MAX
-                || (*milestone != 0
-                    && boot_milestone_triple(*milestone) != Some((*stage, *permille)))
-            {
-                return None;
-            }
-            let m = out.get_mut(..8)?;
-            m[0] = OP_BOOT_PROGRESS;
-            m[1] = *stage;
-            m[2] = *milestone;
-            m[3] = 0;
-            m[4..6].copy_from_slice(&permille.to_le_bytes());
-            m[6] = 0;
-            m[7] = 0;
-            Some(8)
         }
         PresentReq::InputPulse => {
             let m = out.get_mut(..4)?;
@@ -1360,23 +970,6 @@ pub fn parse_present_req(buf: &[u8]) -> Option<PresentReq> {
                 return None;
             }
             Some(PresentReq::PowerMode { mode })
-        }
-        OP_BOOT_PROGRESS => {
-            if buf.len() != 8 {
-                return None;
-            }
-            let stage = buf[1];
-            let permille = le16(buf, 4)?;
-            let milestone = buf[2];
-            if stage > BOOT_STAGE_HANDOFF
-                || permille > BOOT_PROGRESS_MAX
-                || milestone > BOOT_M_MAX
-                || (milestone != 0
-                    && boot_milestone_triple(milestone) != Some((stage, permille)))
-            {
-                return None;
-            }
-            Some(PresentReq::BootProgress { stage, permille, milestone })
         }
         OP_INPUT_PULSE => {
             if buf.len() != 4 {
@@ -1704,82 +1297,6 @@ pub fn parse_input_poll_req(buf: &[u8]) -> Option<u8> {
         return None;
     }
     Some(m)
-}
-
-/// 编码 INPUT_ROUTE 请求（inputd → wmd 内部帧；空批/越帽/总长越帽拒）。
-pub fn encode_input_route_req(out: &mut [u8], events: &[PointerEvent]) -> Option<usize> {
-    if events.is_empty() || events.len() > INPUT_EVENTS_MAX {
-        return None;
-    }
-    let mut total = INPUT_REP_HEAD;
-    for ev in events {
-        total += pointer_event_len(ev.history_len)?;
-    }
-    if total > INPUT_ROUTE_MAX {
-        return None;
-    }
-    let m = out.get_mut(..total)?;
-    m[0] = OP_INPUT_ROUTE;
-    m[1] = events.len() as u8;
-    m[2] = 0;
-    m[3] = 0;
-    let mut off = INPUT_REP_HEAD;
-    for ev in events {
-        off += encode_pointer_event(&mut m[off..], ev)?;
-    }
-    Some(off)
-}
-
-/// INPUT_ROUTE 请求借用视图（逐事件惰性解析——wmd 侧零分配）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InputRouteReq<'a> {
-    pub(crate) buf: &'a [u8],
-    pub(crate) count: u8,
-}
-
-impl<'a> InputRouteReq<'a> {
-    pub fn count(&self) -> usize {
-        self.count as usize
-    }
-
-    pub fn event(&self, i: usize) -> Option<PointerEvent> {
-        if i >= self.count as usize {
-            return None;
-        }
-        let mut off = 0usize;
-        for k in 0..=i {
-            let span = event_span(self.buf, off)?;
-            let end = off.checked_add(span)?;
-            if k == i {
-                return parse_pointer_event(self.buf.get(off..end)?);
-            }
-            off = end;
-        }
-        None
-    }
-}
-
-/// 解析 INPUT_ROUTE 请求：恰 4B 头 + count 个 PointerEvent；保留位、
-/// 截断与尾随字节双侧拒。
-pub fn parse_input_route_req(buf: &[u8]) -> Option<InputRouteReq<'_>> {
-    if buf.len() < INPUT_REP_HEAD || buf[0] != OP_INPUT_ROUTE {
-        return None;
-    }
-    let count = buf[1] as usize;
-    if count == 0 || count > INPUT_EVENTS_MAX || buf[2] != 0 || buf[3] != 0 {
-        return None;
-    }
-    let mut off = INPUT_REP_HEAD;
-    for _ in 0..count {
-        let span = event_span(buf, off)?;
-        let end = off.checked_add(span)?;
-        parse_pointer_event(buf.get(off..end)?)?;
-        off = end;
-    }
-    if off != buf.len() {
-        return None;
-    }
-    Some(InputRouteReq { buf: buf.get(INPUT_REP_HEAD..)?, count: count as u8 })
 }
 
 /// 编码 INPUT_POLL 事件批应答（`[st=0][count u8][r16][count 个
@@ -3330,8 +2847,7 @@ pub fn parse_wm_getinfo_rep(buf: &[u8]) -> Option<WmGetinfoRep> {
 pub struct WmCreateReq {
     /// [`WM_LAYER_APP`]/[`WM_LAYER_SYSTEM`]（值域双侧执法）。
     pub layer: u8,
-    /// [`WM_CREATE_F_AVOID_SYS`] / [`WM_CREATE_F_EDGE_TO_EDGE`] 位域
-    ///（未知位与双模式同设双侧拒）。
+    /// [`WM_CREATE_F_AVOID_SYS`] 位域（未知位双侧拒）。
     pub flags: u8,
     /// 父窗 id（0 = 无父——QNX 缝安全域聚合，v1 字段缝先占）。
     pub parent: u16,
@@ -3541,305 +3057,6 @@ pub fn parse_wm_table_wait_req(buf: &[u8]) -> Option<u32> {
         return None;
     }
     le32(buf, 4)
-}
-
-/// R3 config event（解析产物）。raw/visible 均为屏幕坐标；safe insets 由
-/// 消费侧从两者差集现场派生，不进第二存储真值。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WmConfigEvent {
-    /// 表版本 serial；同一窗新事件覆盖未 ack 旧事件（last-one-wins）。
-    pub serial: u32,
-    pub window_id: u16,
-    /// [`WM_CONFIG_CAUSE_*`]。
-    pub cause: u8,
-    /// 窗口可见状态（0/1；隐藏窗仍可有历史几何槽）。
-    pub visible: bool,
-    pub raw_x: u16,
-    pub raw_y: u16,
-    pub raw_w: u16,
-    pub raw_h: u16,
-    pub visible_x: u16,
-    pub visible_y: u16,
-    pub visible_w: u16,
-    pub visible_h: u16,
-}
-
-/// R3 ACK 请求。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WmConfigAckReq {
-    pub window_id: u16,
-    pub serial: u32,
-}
-
-fn wm_config_event_valid(ev: &WmConfigEvent) -> bool {
-    ev.serial != 0
-        && ev.window_id != 0
-        && wm_config_cause_known(ev.cause)
-}
-
-/// 编码 WM_CONFIG_POLL 请求（恰 4B 无参；buf 不足 = 调用方错，assert）。
-pub fn encode_wm_config_poll_req(out: &mut [u8]) -> usize {
-    assert!(out.len() >= WM_CONFIG_POLL_REQ_LEN, "guiproto: wm config poll req buf 不足");
-    out[0] = OP_WM_CONFIG_POLL;
-    out[1] = 0;
-    out[2] = 0;
-    out[3] = 0;
-    WM_CONFIG_POLL_REQ_LEN
-}
-
-/// 解析 WM_CONFIG_POLL 请求：恰 4B + op。
-pub fn parse_wm_config_poll_req(buf: &[u8]) -> Option<()> {
-    (buf.len() == WM_CONFIG_POLL_REQ_LEN
-        && buf[0] == OP_WM_CONFIG_POLL
-        && buf[1..4].iter().all(|&b| b == 0))
-    .then_some(())
-}
-
-/// 编码 WM_CONFIG_ACK 请求（恰 12B `[op][r24][window u16][r16][serial u32]`）。
-pub fn encode_wm_config_ack_req(out: &mut [u8], req: &WmConfigAckReq) -> Option<usize> {
-    if req.window_id == 0 || req.serial == 0 {
-        return None;
-    }
-    let m = out.get_mut(..WM_CONFIG_ACK_REQ_LEN)?;
-    m[0] = OP_WM_CONFIG_ACK;
-    m[1] = 0;
-    m[2] = 0;
-    m[3] = 0;
-    m[4..6].copy_from_slice(&req.window_id.to_le_bytes());
-    m[6] = 0;
-    m[7] = 0;
-    m[8..12].copy_from_slice(&req.serial.to_le_bytes());
-    Some(WM_CONFIG_ACK_REQ_LEN)
-}
-
-/// 解析 WM_CONFIG_ACK 请求；window/serial 0 与截断/尾随/错 op 拒绝。
-pub fn parse_wm_config_ack_req(buf: &[u8]) -> Option<WmConfigAckReq> {
-    if buf.len() != WM_CONFIG_ACK_REQ_LEN
-        || buf[0] != OP_WM_CONFIG_ACK
-        || buf[1..4].iter().any(|&b| b != 0)
-        || buf[6..8].iter().any(|&b| b != 0)
-    {
-        return None;
-    }
-    let window_id = le16(buf, 4)?;
-    let serial = le32(buf, 8)?;
-    (window_id != 0 && serial != 0).then_some(WmConfigAckReq { window_id, serial })
-}
-
-/// 编码 WM_CONFIG_POLL 成功应答（32B；错误沿用 1B status）。
-pub fn encode_wm_config_event_rep(
-    out: &mut [u8],
-    ev: &WmConfigEvent,
-) -> Option<usize> {
-    if !wm_config_event_valid(ev) {
-        return None;
-    }
-    let m = out.get_mut(..WM_CONFIG_REP_LEN)?;
-    m.fill(0);
-    m[0] = ST_OK;
-    m[1] = ev.cause;
-    m[2] = u8::from(ev.visible);
-    m[4..8].copy_from_slice(&ev.serial.to_le_bytes());
-    m[8..10].copy_from_slice(&ev.window_id.to_le_bytes());
-    m[12..14].copy_from_slice(&ev.raw_x.to_le_bytes());
-    m[14..16].copy_from_slice(&ev.raw_y.to_le_bytes());
-    m[16..18].copy_from_slice(&ev.raw_w.to_le_bytes());
-    m[18..20].copy_from_slice(&ev.raw_h.to_le_bytes());
-    m[20..22].copy_from_slice(&ev.visible_x.to_le_bytes());
-    m[22..24].copy_from_slice(&ev.visible_y.to_le_bytes());
-    m[24..26].copy_from_slice(&ev.visible_w.to_le_bytes());
-    m[26..28].copy_from_slice(&ev.visible_h.to_le_bytes());
-    Some(WM_CONFIG_REP_LEN)
-}
-
-/// 解析 WM_CONFIG_POLL 应答。空事件/权限等错误是合法 1B 状态，返回
-/// `Err(st)`；成功帧保留位非零、cause/visible 野值、serial/window 0 拒。
-pub fn parse_wm_config_event_rep(
-    buf: &[u8],
-) -> Option<Result<WmConfigEvent, u8>> {
-    if buf.len() == 1 {
-        let st = buf[0];
-        return (st_known(st) && st != ST_OK).then_some(Err(st));
-    }
-    if buf.len() != WM_CONFIG_REP_LEN || buf[0] != ST_OK {
-        return None;
-    }
-    if buf[3] != 0 || buf[10] != 0 || buf[11] != 0
-        || buf[28..32].iter().any(|&b| b != 0)
-    {
-        return None;
-    }
-    let cause = buf[1];
-    let visible = buf[2];
-    if !wm_config_cause_known(cause) || visible > 1 {
-        return None;
-    }
-    let ev = WmConfigEvent {
-        serial: le32(buf, 4)?,
-        window_id: le16(buf, 8)?,
-        cause,
-        visible: visible == 1,
-        raw_x: le16(buf, 12)?,
-        raw_y: le16(buf, 14)?,
-        raw_w: le16(buf, 16)?,
-        raw_h: le16(buf, 18)?,
-        visible_x: le16(buf, 20)?,
-        visible_y: le16(buf, 22)?,
-        visible_w: le16(buf, 24)?,
-        visible_h: le16(buf, 26)?,
-    };
-    wm_config_event_valid(&ev).then_some(Ok(ev))
-}
-
-/// 编码 WM_CONNECT 请求（broker 面；两枚随行 handle 由调用方传入
-/// `berry_channel_send`，不进字节帧）。
-pub fn encode_wm_connect_req(out: &mut [u8], client_type: u8) -> Option<usize> {
-    if client_type > WM_CLIENT_SYSTEM || out.len() < WM_CONNECT_REQ_LEN {
-        return None;
-    }
-    out[0] = OP_WM_CONNECT;
-    out[1] = client_type;
-    out[2] = 0;
-    out[3] = 0;
-    out[4..8].fill(0);
-    Some(WM_CONNECT_REQ_LEN)
-}
-
-/// 解析 WM_CONNECT 请求，返回 client_type。
-pub fn parse_wm_connect_req(buf: &[u8]) -> Option<u8> {
-    if buf.len() != WM_CONNECT_REQ_LEN
-        || buf[0] != OP_WM_CONNECT
-        || buf[1] > WM_CLIENT_SYSTEM
-        || buf[2..8].iter().any(|&v| v != 0)
-    {
-        return None;
-    }
-    Some(buf[1])
-}
-
-/// 编码 WM_CONNECT 成功应答（session_id != 0 由 wmd 分配）。
-pub fn encode_wm_connect_rep(out: &mut [u8], session_id: u16) -> Option<usize> {
-    if session_id == 0 || out.len() < WM_CONNECT_REP_LEN {
-        return None;
-    }
-    out[0] = ST_OK;
-    out[1] = 0;
-    out[2..4].copy_from_slice(&session_id.to_le_bytes());
-    out[4..8].fill(0);
-    Some(WM_CONNECT_REP_LEN)
-}
-
-/// 解析 WM_CONNECT 成功应答。
-pub fn parse_wm_connect_rep(buf: &[u8]) -> Option<u16> {
-    if buf.len() != WM_CONNECT_REP_LEN
-        || buf[0] != ST_OK
-        || buf[1] != 0
-        || buf[4..8].iter().any(|&v| v != 0)
-    {
-        return None;
-    }
-    let id = le16(buf, 2)?;
-    (id != 0).then_some(id)
-}
-
-/// SYSTEM Recents owner 选择请求。owner 0 非法；只有 SYSTEM session 可发。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WmTaskSelectReq {
-    pub owner: u16,
-}
-
-const WM_TASK_SELECT_REQ_LEN: usize = 6;
-const WM_RECENTS_GET_REQ_LEN: usize = 4;
-pub const WM_RECENTS_REP_HEAD: usize = 4;
-
-/// SYSTEM Recents owner 列表（表序去重；owner 数与本响应同源 WmTable）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WmRecentOwners {
-    pub owners: [u16; WM_WINDOWS_MAX],
-    pub count: usize,
-}
-
-pub fn encode_wm_task_select_req(out: &mut [u8], req: &WmTaskSelectReq) -> Option<usize> {
-    let m = out.get_mut(..WM_TASK_SELECT_REQ_LEN)?;
-    m[0] = OP_WM_TASK_SELECT;
-    m[1] = 0;
-    m[2] = 0;
-    m[3] = 0;
-    m[4..6].copy_from_slice(&req.owner.to_le_bytes());
-    Some(WM_TASK_SELECT_REQ_LEN)
-}
-
-pub fn parse_wm_task_select_req(buf: &[u8]) -> Option<WmTaskSelectReq> {
-    if buf.len() != WM_TASK_SELECT_REQ_LEN
-        || buf[0] != OP_WM_TASK_SELECT
-        || buf[1..4] != [0, 0, 0]
-    {
-        return None;
-    }
-    let owner = u16::from_le_bytes([buf[4], buf[5]]);
-    (owner != 0).then_some(WmTaskSelectReq { owner })
-}
-
-pub fn encode_wm_recents_get_req(out: &mut [u8]) -> Option<usize> {
-    let m = out.get_mut(..WM_RECENTS_GET_REQ_LEN)?;
-    m[0] = OP_WM_RECENTS_GET;
-    m[1] = 0;
-    m[2] = 0;
-    m[3] = 0;
-    Some(WM_RECENTS_GET_REQ_LEN)
-}
-
-pub fn parse_wm_recents_get_req(buf: &[u8]) -> Option<()> {
-    (buf.len() == WM_RECENTS_GET_REQ_LEN
-        && buf[0] == OP_WM_RECENTS_GET
-        && buf[1..4] == [0, 0, 0])
-        .then_some(())
-}
-
-pub fn encode_wm_recent_owners_rep(
-    out: &mut [u8],
-    recents: &WmRecentOwners,
-) -> Option<usize> {
-    if recents.count > WM_WINDOWS_MAX {
-        return None;
-    }
-    let total = WM_RECENTS_REP_HEAD + recents.count * 2;
-    let m = out.get_mut(..total)?;
-    m[0] = ST_OK;
-    m[1] = recents.count as u8;
-    m[2] = 0;
-    m[3] = 0;
-    for (i, owner) in recents.owners.iter().take(recents.count).enumerate() {
-        let off = WM_RECENTS_REP_HEAD + i * 2;
-        m[off..off + 2].copy_from_slice(&owner.to_le_bytes());
-    }
-    Some(total)
-}
-
-pub fn parse_wm_recent_owners_rep(buf: &[u8]) -> Option<Result<WmRecentOwners, u8>> {
-    let st = *buf.first()?;
-    if !st_known(st) {
-        return None;
-    }
-    if buf.len() == 1 {
-        return (st != ST_OK).then_some(Err(st));
-    }
-    if st != ST_OK {
-        return None;
-    }
-    let count = *buf.get(1)? as usize;
-    if count > WM_WINDOWS_MAX
-        || buf.len() != WM_RECENTS_REP_HEAD + count * 2
-        || buf.get(2..4)? != [0, 0]
-    {
-        return None;
-    }
-    let mut owners = [0u16; WM_WINDOWS_MAX];
-    for (i, slot) in owners.iter_mut().take(count).enumerate() {
-        let off = WM_RECENTS_REP_HEAD + i * 2;
-        *slot = u16::from_le_bytes([buf[off], *buf.get(off + 1)?]);
-    }
-    Some(Ok(WmRecentOwners { owners, count }))
 }
 
 /// 窗口表项（快照 16B 定宽，Q5）。x/y/w/h = **有效几何域**——避让裁剪后的
@@ -4218,7 +3435,6 @@ const _: () = assert!(PRESENT_REQ_MAX == 24 + 16 * DAMAGE_MAX);
 const _: () = assert!(PRESENT_REP_MAX == 24);
 const _: () = assert!(INPUT_EVT_MAX_LEN == 32 + 16 * (INPUT_SAMPLES_MAX - 1));
 const _: () = assert!(INPUT_REP_MAX == 4 + INPUT_EVENTS_MAX * INPUT_EVT_MAX_LEN);
-const _: () = assert!(INPUT_KEY_ROUTE_MAX == 4 + INPUT_KEY_EVENTS_MAX * INPUT_KEY_EVENT_LEN);
 const _: () = assert!(HDI_REQ_MAX == 20);
 const _: () = assert!(HDI_REP_MAX == 16);
 // 一切帧帽 ≤ CHAN_MSG_MAX = 256（kernel/src/channel.rs 单一事实源）。
@@ -4312,11 +3528,9 @@ mod tests {
         assert_eq!(RESAMPLE_MIN_DELTA_MS, 2);
         assert_eq!(RESAMPLE_MAX_DELTA_MS, 20);
         assert_eq!(RESAMPLE_MAX_PREDICTION_MS, 8);
-        // HDI fence/vblank 用户半位单源（guifbd/vgpud/svcmgr 共同导入）。
-        assert_eq!(HDI_USER_SIGNAL, 1 << 32);
         // 域版本钉板（hdi v3 = 刀2 OP_VBLANK_TIMING + PANEL_CAPS v2 stage；
-        // present v3 = 刀4 FRAME_TIMING + 合线后的 op9 BootProgress）。
-        assert_eq!((VER_PRESENT, VER_INPUT, VER_HDI), (3, 1, 3));
+        // present v2 = 刀4 OP_FRAME_TIMING）。
+        assert_eq!((VER_PRESENT, VER_INPUT, VER_HDI), (2, 1, 3));
         // wm 域帽钉板（GUI-5 §7 Q5——wm const assert 的可见镜像）。
         assert_eq!(WM_WINDOWS_MAX, 15);
         assert_eq!(WM_REQ_MAX, 20);
@@ -4553,7 +3767,7 @@ mod tests {
     fn frame_timing_wire_roundtrip_golden_and_rejects() {
         // 0x08 8B 请求面（与 FRAME_CALLBACK 同形）。
         assert_eq!(OP_FRAME_TIMING, 8);
-        assert_eq!(VER_PRESENT, 3, "present 域 v3 = FRAME_TIMING + BootProgress");
+        assert_eq!(VER_PRESENT, 2, "present 域 v2 = 刀4 OP_FRAME_TIMING");
         let mut buf = [0u8; 8];
         let n = encode_present_req(&mut buf, &PresentReq::FrameTiming { frame_token: 7 }).unwrap();
         assert_eq!(n, 8);
@@ -4657,38 +3871,6 @@ mod tests {
         tail[..n].copy_from_slice(&b2);
         assert_eq!(parse_release_rep(&tail), None);
         assert_eq!(parse_release_rep(&[ST_BAD]), None);
-    }
-
-    #[test]
-    fn release_zero_count_and_reclaimed_credits_wire_pinned() {
-        // vgpud「flip 完成即回收」语义的 wire 契约钉板：常态 RELEASE 排干
-        // pending 后 held 已被自动回收干净，应答是 count=0 的 4B 恰形
-        // （零随行 handle）；客户端不得假设「每次提交必对应一次归还」。
-        let mut buf = [0u8; 8];
-        let n = encode_release_rep(&mut buf, &[]).unwrap();
-        assert_eq!(n, 4);
-        assert_eq!(&buf[..4], &[ST_OK, 0, 0, 0]); // 黄金字节：无尾随
-        let rep = parse_release_rep(&buf[..n]).unwrap();
-        assert_eq!(rep.count, 0);
-        // 1B 截断 / 8B 尾随仍双侧拒（恰长执法不因 count=0 放宽）。
-        assert_eq!(parse_release_rep(&buf[..1]), None);
-        let mut t8 = [0u8; 8];
-        t8[..4].copy_from_slice(&buf[..4]);
-        assert_eq!(parse_release_rep(&t8), None);
-
-        // FRAME_CALLBACK credits 域边界：完成即回收后服务端常报满额
-        // CREDITS_MAX；0（全在途）同合法——双侧往返钉死。
-        for credits in [0u8, CREDITS_MAX] {
-            let rep = FrameDoneRep {
-                status: FRAME_PRESENTED,
-                credits,
-                present_seq: 7,
-                presented_ns: 0x0102_0304_0506_0708,
-            };
-            let mut out = [0u8; FRAME_DONE_REP_LEN];
-            let n = encode_frame_done_rep(&mut out, &rep);
-            assert_eq!(parse_frame_done_rep(&out[..n]).unwrap(), rep);
-        }
     }
 
     #[test]
@@ -4809,13 +3991,13 @@ mod tests {
     #[test]
     fn status_rep_domain_and_baking_line() {
         let mut out = [0u8; 1];
-        for st in [ST_OK, ST_BAD, ST_EAGAIN, ST_BUSY, ST_NOENT, ST_FULL, ST_UNSUPPORTED, ST_DENIED] {
+        for st in [ST_OK, ST_BAD, ST_EAGAIN, ST_BUSY, ST_NOENT, ST_FULL, ST_UNSUPPORTED] {
             assert_eq!(encode_status_rep(&mut out, st), 1);
             assert_eq!(parse_status_rep(&out), Some(st));
         }
         // 烘焙线：一切错误应答恒 1B、不携数据——多字节非 OK 形在
         // input_events_rep 面单独钉板（见 three_state 测试）。
-        assert_eq!(parse_status_rep(&[ST_DENIED + 1]), None);
+        assert_eq!(parse_status_rep(&[ST_UNSUPPORTED + 1]), None);
         assert_eq!(parse_status_rep(&[ST_OK, 0]), None);
         assert_eq!(parse_status_rep(&[]), None);
     }
@@ -4824,7 +4006,7 @@ mod tests {
     #[should_panic(expected = "guiproto")]
     fn encode_status_rep_rejects_unknown_st() {
         let mut out = [0u8; 1];
-        encode_status_rep(&mut out, ST_DENIED + 1);
+        encode_status_rep(&mut out, ST_UNSUPPORTED + 1);
     }
 
     #[test]
@@ -4851,96 +4033,6 @@ mod tests {
         assert_eq!(pointer_event_len(INPUT_SAMPLES_MAX - 1), Some(INPUT_EVT_MAX_LEN));
         assert_eq!(pointer_event_len(INPUT_SAMPLES_MAX), None);
         assert_eq!(pointer_event_len(9), None);
-    }
-
-    #[test]
-    fn key_event_roundtrip_wire_and_rejects() {
-        let ev = KeyEvent {
-            timestamp_ns: 0x0807_0605_0403_0201,
-            code: 30, // Linux KEY_A
-            action: KEY_ACTION_DOWN,
-            modifiers: KEY_MOD_SHIFT | KEY_MOD_CTRL,
-            device_id: 2,
-        };
-        let mut buf = [0u8; INPUT_KEY_EVENT_LEN];
-        assert_eq!(encode_key_event(&mut buf, &ev), Some(16));
-        let want: [u8; 16] = [
-            1, 2, 3, 4, 5, 6, 7, 8, //
-            30, 0, KEY_ACTION_DOWN, KEY_MOD_SHIFT | KEY_MOD_CTRL, //
-            2, 0, 0, 0,
-        ];
-        assert_eq!(buf, want);
-        assert_eq!(parse_key_event(&buf), Some(ev));
-
-        for mut bad in [
-            KeyEvent { code: 0, ..ev },
-            KeyEvent { action: KEY_ACTION_REPEAT + 1, ..ev },
-            KeyEvent { modifiers: KEY_MOD_KNOWN + 1, ..ev },
-            KeyEvent { device_id: 0, ..ev },
-        ] {
-            bad.timestamp_ns = 1;
-            assert_eq!(encode_key_event(&mut buf, &bad), None);
-        }
-        let mut reserved = want;
-        reserved[15] = 1;
-        assert_eq!(parse_key_event(&reserved), None);
-        assert_eq!(parse_key_event(&reserved[..15]), None);
-    }
-
-    #[test]
-    fn key_route_poll_roundtrip_and_caps() {
-        let ev = |code: u16, action: u8| KeyEvent {
-            timestamp_ns: u64::from(code) * 100 + u64::from(action),
-            code,
-            action,
-            modifiers: 0,
-            device_id: 2,
-        };
-        let events = [ev(30, KEY_ACTION_DOWN), ev(30, KEY_ACTION_UP)];
-        let mut buf = [0u8; INPUT_KEY_ROUTE_MAX];
-        let n = encode_input_key_route_req(&mut buf, &events).unwrap();
-        assert_eq!(n, INPUT_REP_HEAD + 2 * INPUT_KEY_EVENT_LEN);
-        let route = parse_input_key_route_req(&buf[..n]).unwrap();
-        assert_eq!(route.count(), 2);
-        assert_eq!(route.event(0), Some(events[0]));
-        assert_eq!(route.event(1), Some(events[1]));
-        assert_eq!(route.event(2), None);
-        assert!(parse_input_key_route_req(&buf[..n - 1]).is_none());
-        let mut corrupt = buf;
-        corrupt[INPUT_REP_HEAD + 15] = 1; // 事件保留位非 0
-        assert!(parse_input_key_route_req(&corrupt[..n]).is_none());
-        assert_eq!(encode_input_key_route_req(&mut buf, &[]), None);
-        let fifteen = [ev(1, KEY_ACTION_DOWN); INPUT_KEY_EVENTS_MAX];
-        assert!(encode_input_key_route_req(&mut buf, &fifteen).is_some());
-        let sixteen = [ev(1, KEY_ACTION_DOWN); INPUT_KEY_EVENTS_MAX + 1];
-        assert_eq!(encode_input_key_route_req(&mut buf, &sixteen), None);
-
-        let mut poll = [0u8; 4];
-        assert_eq!(encode_input_key_poll_req(&mut poll, 15), 4);
-        assert_eq!(parse_input_key_poll_req(&poll), Some(15));
-        poll[1] = 16;
-        assert_eq!(parse_input_key_poll_req(&poll), None);
-        poll[1] = 15;
-        assert_eq!(parse_input_key_poll_req(&poll), Some(15));
-        assert_eq!(parse_input_key_poll_req(&poll[..3]), None);
-        assert_eq!(parse_input_key_poll_req(&{
-            let mut b = poll.to_vec();
-            b.push(0);
-            b
-        }), None);
-        poll[0] = OP_INPUT_POLL;
-        assert_eq!(parse_input_key_poll_req(&poll), None);
-
-        let n = encode_input_key_events_rep(&mut buf, &events).unwrap();
-        let rep = parse_input_key_events_rep(&buf[..n]).unwrap().unwrap();
-        assert_eq!(rep.count(), 2);
-        assert_eq!(rep.event(1), Some(events[1]));
-        assert!(parse_input_key_events_rep(&buf[..n - 1]).is_none());
-        let eagain = [ST_EAGAIN];
-        assert!(matches!(
-            parse_input_key_events_rep(&eagain),
-            Some(Err(ST_EAGAIN))
-        ));
     }
 
     #[test]
@@ -5129,16 +4221,6 @@ mod tests {
         );
         // 尾随 / 错 op。
         assert_eq!(parse_input_poll_req(&[OP_INPUT_POLL, 1, 0, 0, 0]), None);
-        let ev = sample_ev(1, 9);
-        let mut route = [0u8; INPUT_ROUTE_MAX];
-        let rn = encode_input_route_req(&mut route, &[ev]).unwrap();
-        let parsed = parse_input_route_req(&route[..rn]).unwrap();
-        assert_eq!(parsed.count(), 1);
-        assert_eq!(parsed.event(0), Some(ev));
-        assert_eq!(parse_input_route_req(&{
-            let mut b = route; b[2] = 1; b
-        }), None);
-        assert_eq!(encode_input_route_req(&mut route, &[]), None);
         assert_eq!(parse_input_poll_req(&[OP_INPUT_SUBSCRIBE, 1, 0, 0]), None);
     }
 
@@ -5179,7 +4261,7 @@ mod tests {
         assert_eq!(parse_input_events_rep(&[ST_BUSY, 1, 0, 0]), None);
         assert_eq!(parse_input_events_rep(&[ST_FULL, 0xEE]), None);
         // 未知 st / 1B OK 形（成功必携 count ≥ 1）/ 空帧 → None。
-        assert_eq!(parse_input_events_rep(&[ST_DENIED + 1]), None);
+        assert_eq!(parse_input_events_rep(&[ST_UNSUPPORTED + 1]), None);
         assert_eq!(parse_input_events_rep(&[ST_OK]), None);
         assert_eq!(parse_input_events_rep(&[]), None);
         // count 0 / 越帽 / 头截断。
@@ -5848,9 +4930,6 @@ mod tests {
         let n = encode_wm_create_req(&mut buf, &cr).unwrap();
         assert_eq!(n, 16);
         assert_eq!(parse_wm_create_req(&buf[..n]), Some(cr));
-        let edge = WmCreateReq { flags: WM_CREATE_F_EDGE_TO_EDGE, ..cr };
-        let n = encode_wm_create_req(&mut buf, &edge).unwrap();
-        assert_eq!(parse_wm_create_req(&buf[..n]), Some(edge));
         let n = encode_wm_create_ack(&mut buf, 0x1234);
         assert_eq!(n, 8);
         assert_eq!(parse_wm_create_ack(&buf[..n]), Some(0x1234));
@@ -6077,8 +5156,8 @@ mod tests {
     fn wm_value_domain_reject_matrix() {
         // 值域拒矩阵（编码 + 解析对称；相异野值防互换静绿）。
         let mut buf = [0u8; WM_REP_MAX];
-        // CREATE：layer 野值 3（SERVICE=2 入域）；EDGE_TO_EDGE 占 bit1，
-        // 未知位拒点为 0x04。
+        // CREATE：layer 野值 3（波3 收宽：SERVICE=2 入域，拒点移钉 3）/
+        // flags 未知位 0x02。
         let good_create = WmCreateReq {
             layer: WM_LAYER_APP,
             flags: 0,
@@ -6095,11 +5174,11 @@ mod tests {
         let _ = encode_wm_create_req(&mut f, &good_create).unwrap();
         f[1] = 3;
         assert_eq!(parse_wm_create_req(&f), None);
-        let bad_flags = WmCreateReq { flags: WM_CREATE_F_AVOID_SYS | 0x04, ..good_create };
+        let bad_flags = WmCreateReq { flags: WM_CREATE_F_AVOID_SYS | 0x02, ..good_create };
         assert_eq!(encode_wm_create_req(&mut buf, &bad_flags), None);
         let mut f = [0u8; WM_CREATE_REQ_LEN];
         let _ = encode_wm_create_req(&mut f, &good_create).unwrap();
-        f[2] = 0x04;
+        f[2] = 0x02;
         assert_eq!(parse_wm_create_req(&f), None);
         // SET：mask=0 / mask 未知位 0x08 / vis 野值 2（vis 无条件执法——
         // masked-out 也拒，Q18）。
@@ -6190,7 +5269,7 @@ mod tests {
         assert_eq!(parse_wm_snapshot_rep(&[ST_BAD, 0, 0, 0]), None);
         assert_eq!(parse_wm_snapshot_rep(&[ST_FULL, 0xEE]), None);
         // 未知 st / 1B OK 形（成功必携 12B 头）/ 空帧 → None。
-        assert_eq!(parse_wm_snapshot_rep(&[ST_DENIED + 1]), None);
+        assert_eq!(parse_wm_snapshot_rep(&[ST_UNSUPPORTED + 1]), None);
         assert_eq!(parse_wm_snapshot_rep(&[ST_OK]), None);
         assert_eq!(parse_wm_snapshot_rep(&[]), None);
         // 头截断（2..12B OK 形非法）/ count=1 表项截断。
@@ -6204,16 +5283,6 @@ mod tests {
         // 保留位解析侧恒不校验（前向兼容锚——0xEE 塞槽仍解析）。
         let mut buf = [0u8; WM_REP_MAX];
         // GETINFO req r/r16。
-        let mut f = [0u8; WM_CONNECT_REQ_LEN];
-        assert_eq!(encode_wm_connect_req(&mut f, WM_CLIENT_SYSTEM), Some(WM_CONNECT_REQ_LEN));
-        assert_eq!(parse_wm_connect_req(&f), Some(WM_CLIENT_SYSTEM));
-        assert_eq!(parse_wm_connect_req(&{
-            let mut b = f; b[1] = WM_CLIENT_SYSTEM + 1; b
-        }), None);
-        let mut ack = [0u8; WM_CONNECT_REP_LEN];
-        assert_eq!(encode_wm_connect_rep(&mut ack, 0x1234), Some(WM_CONNECT_REP_LEN));
-        assert_eq!(parse_wm_connect_rep(&ack), Some(0x1234));
-        assert_eq!(encode_wm_connect_rep(&mut ack, 0), None);
         assert_eq!(parse_wm_getinfo_req(&[OP_WM_GETINFO, 0xEE, 0xEE, 0xEE]), Some(()));
         // TABLE_GET req r/r16。
         assert_eq!(parse_wm_table_get_req(&[OP_WM_TABLE_GET, 0xEE, 0xEE, 0xEE]), Some(()));
@@ -6405,91 +5474,6 @@ mod tests {
         let mut small = [0u8; 27];
         assert_eq!(encode_wm_snapshot_rep(&mut small, &snap), None);
     }
-    #[test]
-    fn present_boot_progress_roundtrip_and_value_faces() {
-        let mut buf = [0u8; 16];
-        let req = PresentReq::milestone(BOOT_M_DESKTOP_HANDOFF).unwrap();
-        let n = encode_present_req(&mut buf, &req).unwrap();
-        assert_eq!(
-            &buf[..n],
-            &[OP_BOOT_PROGRESS, BOOT_STAGE_HANDOFF, BOOT_M_DESKTOP_HANDOFF, 0, 0xe8, 0x03, 0, 0][..]
-        );
-        assert_eq!(parse_present_req(&buf[..n]), Some(req));
-        assert_eq!(
-            encode_present_req(&mut buf, &PresentReq::BootProgress {
-                stage: BOOT_STAGE_HANDOFF + 1,
-                permille: 0,
-                milestone: 0,
-            }),
-            None
-        );
-        assert_eq!(
-            encode_present_req(&mut buf, &PresentReq::BootProgress {
-                stage: 0,
-                permille: BOOT_PROGRESS_MAX + 1,
-                milestone: 0,
-            }),
-            None
-        );
-        assert_eq!(
-            encode_present_req(&mut buf, &PresentReq::BootProgress {
-                stage: 0,
-                permille: 0,
-                milestone: BOOT_M_MAX + 1,
-            }),
-            None
-        );
-        assert_eq!(
-            encode_present_req(&mut buf, &PresentReq::BootProgress {
-                stage: BOOT_STAGE_PREPARE,
-                permille: BOOT_PROGRESS_MAX,
-                milestone: BOOT_M_DESKTOP_HANDOFF,
-            }),
-            None
-        );
-        assert_eq!(
-            parse_present_req(&[
-                OP_BOOT_PROGRESS,
-                BOOT_STAGE_PREPARE,
-                BOOT_M_DESKTOP_HANDOFF,
-                0,
-                0xe8,
-                0x03,
-                0,
-                0
-            ]),
-            None
-        );
-        assert_eq!(
-            parse_present_req(&[OP_BOOT_PROGRESS, 0, BOOT_M_MAX + 1, 0, 0, 0, 0, 0]),
-            None
-        );
-        // Reserved bytes 3/6/7 remain forward-compatible and are not rejected.
-        assert_eq!(
-            parse_present_req(&[OP_BOOT_PROGRESS, 0, 0, 9, 0, 0, 9, 9]),
-            Some(PresentReq::BootProgress {
-                stage: 0,
-                permille: 0,
-                milestone: 0,
-            })
-        );
-        assert_eq!(parse_present_req(&[OP_BOOT_PROGRESS, 0, 0, 0, 0, 0]), None);
-    }
-
-    #[test]
-    fn boot_milestone_table_matches_bootprogress_truth() {
-        for id in 1..=BOOT_M_MAX {
-            let wire = boot_milestone_triple(id).unwrap();
-            let truth = berry_bootprogress::Milestone::from_id(id).unwrap();
-            assert_eq!(u16::from(wire.0), u16::from(truth.stage() as u8));
-            assert_eq!(wire.1, truth.permille());
-        }
-        assert_eq!(
-            berry_bootprogress::Milestone::from_id(BOOT_M_MAX + 1),
-            None
-        );
-    }
-
 
     #[test]
     fn wm_hit_test_groups() {
@@ -7446,55 +6430,4 @@ mod tests {
         assert_eq!(g.lfc_k(), 0);
     }
 }
-}
-
-#[cfg(test)]
-mod recents_tests {
-    use super::*;
-
-    #[test]
-    fn task_select_and_recent_owners_roundtrip() {
-        let mut b = [0u8; 64];
-        let req = WmTaskSelectReq { owner: 0x0304 };
-        let n = encode_wm_task_select_req(&mut b, &req).unwrap();
-        assert_eq!(&b[..n], &[OP_WM_TASK_SELECT, 0, 0, 0, 0x04, 0x03]);
-        assert_eq!(parse_wm_task_select_req(&b[..n]), Some(req));
-        let n = encode_wm_recents_get_req(&mut b).unwrap();
-        assert_eq!(&b[..n], &[OP_WM_RECENTS_GET, 0, 0, 0]);
-        assert_eq!(parse_wm_recents_get_req(&b[..n]), Some(()));
-        let mut owners = [0u16; WM_WINDOWS_MAX];
-        owners[0] = 2;
-        owners[1] = 5;
-        let recents = WmRecentOwners { owners, count: 2 };
-        let n = encode_wm_recent_owners_rep(&mut b, &recents).unwrap();
-        assert_eq!(&b[..n], &[ST_OK, 2, 0, 0, 2, 0, 5, 0]);
-        assert_eq!(parse_wm_recent_owners_rep(&b[..n]), Some(Ok(recents)));
-    }
-
-    #[test]
-    fn task_select_and_recent_owners_reject_matrix() {
-        let mut b = [0u8; 64];
-        let n = encode_wm_task_select_req(&mut b, &WmTaskSelectReq { owner: 1 }).unwrap();
-        let mut bad = b.to_vec();
-        bad[1] = 1;
-        assert_eq!(parse_wm_task_select_req(&bad[..n]), None);
-        bad[1] = 0;
-        bad[4] = 0;
-        bad[5] = 0;
-        assert_eq!(parse_wm_task_select_req(&bad[..n]), None);
-        assert_eq!(parse_wm_task_select_req(&bad[..n - 1]), None);
-        let mut owners = [0u16; WM_WINDOWS_MAX];
-        owners[0] = 1;
-        let recents = WmRecentOwners { owners, count: 1 };
-        let n = encode_wm_recent_owners_rep(&mut b, &recents).unwrap();
-        let mut bad = b.to_vec();
-        bad.truncate(n - 1);
-        assert_eq!(parse_wm_recent_owners_rep(&bad), None);
-        bad = b.to_vec();
-        bad.push(0);
-        assert_eq!(parse_wm_recent_owners_rep(&bad), None);
-        bad = vec![ST_EAGAIN];
-        assert_eq!(parse_wm_recent_owners_rep(&bad), Some(Err(ST_EAGAIN)));
-    }
-
 }

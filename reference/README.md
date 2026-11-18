@@ -32,13 +32,6 @@
 - 边界：**不是微内核、不是 aarch64、无 GUI、无 AI 调度**；内核含 VFS/网络/OCI/crypto，Linux ABI 规模巨大（约 11.3 万行 Rust 内核、HDAE 台账 1,033 个 unsafe 块）。只借语义与验证方法，不整搬内核代码；任何代码级借鉴须过 ADR #37 与排除 8 问并补 NOTICE。
 - 详细报告：`research/Ginux-调研-2026-11.md`（对照矩阵 / 可借 / 避雷 / 排除 8 问）。
 
-## SDK/UI 官方参考库（2026-11-11）
-
-- 目录：`reference/sdk-ui/`；入口读 `reference/sdk-ui/README.md`。
-- 用途：Android/AOSP、OpenHarmony/HarmonyOS、Apple、Microsoft/WinUI、Google/ChromeOS/Fuchsia、Flutter、GNOME/KDE 等 SDK、UI、输入、图形与设计规范的官方来源对照。
-- 形态：`sources.toml` 记录官方 URL、许可证、commit 钉版与稀疏拉取规则；`tools/fetch.py` 可重建本地 `cache/`；第三方 blobs 不入库。
-- 边界：Apple/Huawei/Material 3/Fluent 等无再利用许可的站点只链接不镜像；CC-BY-SA/GPL 内容不得复制进公开文档；细则见 `reference/sdk-ui/LICENSE-NOTES.md`。
-
 ## 协议提醒（按 11 号调研报告实测修正，2026-10-15）
 
 - 优先 **Rust OS（语言匹配 + 协议干净）**：Redox(MIT)、Theseus(MIT)、**zCore(MIT，可对照代码形状)**。

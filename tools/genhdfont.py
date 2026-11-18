@@ -5,7 +5,7 @@
   python3 tools/genhdfont.py [font.otf]
   python3 tools/genhdfont.py --selftest   # 门禁自检（拒面 + 结构钉板；PIL 在位时重产对拍）
 
-默认读取 `user/berry-gfx/fonts/NotoSansCJKsc-Regular-Desktop-ZH.otf`，写出
+默认读取 `user/berry-gfx/fonts/NotoSansCJKsc-Regular-ASCII.otf`，写出
 `user/berry-gfx/src/font_data_hd.rs`。设备仍只消费静态单色点阵；
 本脚本仅在宿主改字源/字号时手工运行，生成物随源入册。
 
@@ -54,7 +54,6 @@ CELL_H = 48
 FONT_SIZE = 34
 BASELINE = 38
 THRESHOLD = 128
-SS = 4
 REPO = Path(__file__).resolve().parent.parent
 
 
@@ -74,31 +73,11 @@ def glyph_rows(font: ImageFont.FreeTypeFont, ch: int) -> list[int]:
         rows.append(row)
     return rows
 
-def glyph_coverage(font_ss: ImageFont.FreeTypeFont, ch: int) -> list[int]:
-    # 4x supersampled box filter: preserve the HD glyph shape while exposing
-    # 8-bit anti-aliased coverage for guest-font-vmo consumers.
-    big_w, big_h = CELL_W * SS, CELL_H * SS
-    img = Image.new("L", (big_w, big_h), 0)
-    draw = ImageDraw.Draw(img)
-    advance = round(font_ss.getlength(chr(ch)))
-    x = max(0, (big_w - advance) // 2)
-    draw.text((x, BASELINE * SS), chr(ch), font=font_ss, fill=255, anchor="ls")
-    out: list[int] = []
-    for y in range(CELL_H):
-        for x in range(CELL_W):
-            total = 0
-            for sy in range(SS):
-                for sx in range(SS):
-                    total += img.getpixel((x * SS + sx, y * SS + sy))
-            out.append(total // (SS * SS))
-    return out
-
 
 def build(font_path: Path) -> str:
     if ImageFont is None:
         raise SystemExit("genhdfont: PIL 缺席（生成路径硬依赖）——brew/系统 python3 或 pip install pillow")
     font = ImageFont.truetype(str(font_path), FONT_SIZE)
-    font_ss = ImageFont.truetype(str(font_path), FONT_SIZE * SS)
     # 比例推进表：与 glyph_rows 内部同式（round(getlength)）——位图段的
     # 居中偏移消费同一 advance，本表把值另行烘焙（v1 曾算出即丢，03 号
     # §1.2-2 根因环②）。
@@ -107,10 +86,10 @@ def build(font_path: Path) -> str:
         assert 1 <= adv <= CELL_W, f"{ch!r} advance {adv} 越域 [1, {CELL_W}]——字号对字格溢出"
     lines = [
         "//! 本文件由 tools/genhdfont.py 生成——勿手改；改字源/字号后重跑生成器。",
-        "//! 字源：Noto Sans CJK SC Regular（ASCII + 桌面中文标签源）（SIL Open Font License 1.1）。",
+        "//! 字源：Noto Sans CJK SC Regular（ASCII 子集）（SIL Open Font License 1.1，见 fonts/OFL.txt）。",
         "//! 32×48 HD 档：ASCII 32..126，原生矢量光栅化（非 8×16 最近邻放大）",
         "//! 行序自上而下；每行 4 字节，MSB=最左列。",
-        "//! 产物格式 v3：v1 = 位图段；v2 = 比例推进；v3 = A8 覆盖面",
+        "//! 产物格式 v2：v1 = 仅 FONT_HD 位图段；v2 = 追加 ADVANCE_HD 比例",
         "//! 推进段（段序 = 码点 32..126 与 FONT_HD 同序；v1 段字节零漂移）。",
         "",
         "pub const CELL_W: usize = 32;",
@@ -118,7 +97,7 @@ def build(font_path: Path) -> str:
         "",
         "/// 产物格式版本位：1 = 仅位图段；2 = 追加 [`ADVANCE_HD`] advance 表。",
         "#[allow(dead_code)] // 格式自描述——Rust 消费面暂无，selftest 头钉执法",
-        "pub const FORMAT_VERSION: u16 = 3;",
+        "pub const FORMAT_VERSION: u16 = 2;",
         "",
         "pub static FONT_HD: [[u8; 192]; 95] = [",
     ]
@@ -130,17 +109,6 @@ def build(font_path: Path) -> str:
             f"0x{((v >> 24) & 0xff):02X}, 0x{((v >> 16) & 0xff):02X}, "
             f"0x{((v >> 8) & 0xff):02X}, 0x{v & 0xff:02X}" for v in vals
         )
-        label = "SP" if ch == 32 else chr(ch)
-        lines.append(f"    /* {ch:3} {label:>2} */ [{body}],")
-    lines.append("];")
-    # —— v3 追加段：4x 超采样 A8 覆盖面（guest-font-vmo 消费）。 ——
-    lines.append("")
-    lines.append(f"/// HD 抗锯齿覆盖面：ASCII 32..126，行主序 8-bit coverage。")
-    lines.append(f"pub static FONT_HD_A8: [[u8; {CELL_W * CELL_H}]; 95] = [")
-    for ch in range(32, 127):
-        vals = glyph_coverage(font_ss, ch)
-        assert len(vals) == CELL_W * CELL_H
-        body = ", ".join(f"0x{v:02X}" for v in vals)
         label = "SP" if ch == 32 else chr(ch)
         lines.append(f"    /* {ch:3} {label:>2} */ [{body}],")
     lines.append("];")
@@ -172,9 +140,6 @@ GOLDEN_SHA256 = "57ec8c95b3cbcde25643d6adcb4fdaab8330c0261e9b1918511de90aca1e6b1
 # 纪律有意识重钉。v2 首轮生成实测钉入（2026-11-13；位图段哈希零漂移）。
 GOLDEN_ADVANCE_SHA256 = "34cdbfb895f379feb9d6d95ba713e72c0eb9ac88af0b57b0f6bcb2a0ccdc2b2b"
 
-# A8 覆盖面独立黄金哈希（95×1536B 串接 sha256）：v3 新段首钉。
-GOLDEN_A8_SHA256 = "30f012b458bf760343ce9ea79832b35f0807cb2191e2e0dd9fb7f23d32aedaf5"
-
 _ENTRY = re.compile(r"/\*\s*(\d+)\s+(\S+)\s*\*/\s*\[([^\]]*)\]")
 _ADV_ENTRY = re.compile(r"pub static ADVANCE_HD: \[u8; 95\] = \[(.*?)\];", re.S)
 
@@ -191,10 +156,7 @@ def parse_artifact(text: str) -> list[tuple[int, str, list[int]]]:
     ):
         if pin not in text:
             raise ValueError(f"头钉漂移: {pin!r} 不在席")
-    font_m = re.search(r"pub static FONT_HD: \[\[u8; 192\]; 95\] = \[(.*?)\n\];", text, re.S)
-    if font_m is None:
-        raise ValueError("FONT_HD 段缺席")
-    entries = _ENTRY.findall(font_m.group(1))
+    entries = _ENTRY.findall(text)
     if len(entries) != 95:
         raise ValueError(f"形数 {len(entries)} ≠ 95")
     out: list[tuple[int, str, list[int]]] = []
@@ -285,7 +247,7 @@ def selftest() -> int:
     )
 
     # —— ADVANCE_HD 面钉板（v2 段）——
-    assert "pub const FORMAT_VERSION: u16 = 3;" in text, "FORMAT_VERSION 版本位缺席/漂移"
+    assert "pub const FORMAT_VERSION: u16 = 2;" in text, "FORMAT_VERSION 版本位缺席/漂移"
     adv = parse_advance(text)  # 拒面零容忍：段坏即抛
     adv_blob = bytes(adv)
     adv_got = hashlib.sha256(adv_blob).hexdigest()
@@ -302,21 +264,6 @@ def selftest() -> int:
     # 重现实证——排布面对拍的事实源）。
     bs = sum(adv[ord(c) - 32] for c in "Browser Settings")
     assert bs == 269, f"'Browser Settings' 比例累计 {bs} ≠ 269"
-
-    # —— FONT_HD_A8 面钉板（v3 段）——
-    a8_m = re.search(r"pub static FONT_HD_A8: \[\[u8; 1536\]; 95\] = \[(.*?)\n\];", text, re.S)
-    assert a8_m is not None, "FONT_HD_A8 段缺席（产物格式 < v3）"
-    a8_entries = _ENTRY.findall(a8_m.group(1))
-    assert len(a8_entries) == 95, f"A8 形数 {len(a8_entries)} ≠ 95"
-    a8_blob = b"".join(
-        bytes(int(t.strip(), 16) for t in body.split(",") if t.strip())
-        for _cp, _label, body in a8_entries
-    )
-    a8_got = hashlib.sha256(a8_blob).hexdigest()
-    assert a8_got == GOLDEN_A8_SHA256, (
-        f"A8 黄金哈希漂移 {a8_got}——重产后有意识更新 GOLDEN_A8_SHA256"
-    )
-    assert any(v != 0 and v != 255 for _cp, _label, body in a8_entries for v in [int(t, 16) for t in body.split(",") if t.strip()]), "A8 缺少中间覆盖率（AA 退化）"
 
     # —— 几何锚（矢量光栅化形态在席证明，非任意 192B 均可过） ——
     assert all(v == 0 for v in glyphs[32]), "SP 须全零"
@@ -384,7 +331,7 @@ def selftest() -> int:
     # —— PIL 重产对拍（在位才跑；缺席打 skip，黄金哈希已兜底） ——
     pil_note = "skip（PIL 缺席——黄金哈希兜底）"
     if ImageFont is not None:
-        font_path = REPO / "user/berry-gfx/fonts/NotoSansCJKsc-Regular-Desktop-ZH.otf"
+        font_path = REPO / "user/berry-gfx/fonts/NotoSansCJKsc-Regular-ASCII.otf"
         if font_path.exists():
             regen = build(font_path)
             assert regen == text, (
@@ -431,7 +378,7 @@ def selftest() -> int:
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "--selftest":
         return selftest()
-    arg = Path(sys.argv[1]) if len(sys.argv) > 1 else REPO / "user/berry-gfx/fonts/NotoSansCJKsc-Regular-Desktop-ZH.otf"
+    arg = Path(sys.argv[1]) if len(sys.argv) > 1 else REPO / "user/berry-gfx/fonts/NotoSansCJKsc-Regular-ASCII.otf"
     out = REPO / "user/berry-gfx/src/font_data_hd.rs"
     out.write_text(build(arg))
     print(f"genhdfont: {out} ({out.stat().st_size}B, Noto Sans CJK SC {FONT_SIZE}px → {CELL_W}×{CELL_H})")

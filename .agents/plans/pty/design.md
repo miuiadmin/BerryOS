@@ -3,7 +3,7 @@
 Type: spec
 Status: active
 Updated: 2026-11-18
-Version: 1.1.1
+Version: 1.2.0
 
 一句话说明：`pty` 定义 BerryOS 纯用户态伪终端守护进程（`ptyd`）、物理控制台驱动中枢（`consoled`）、零依赖终端转义与屏幕网格引擎（`berry-vt`）以及单链路多窗终端复用器（`bmux`）——以「共享无锁 `IoRing VMO` 双工数据面 + 纯能力 `PtyMaster/PtySlave` 控制面」彻底取代内核 `task_console` 逐字节转发模型，支撑全屏编辑器、实时监控 TUI 与多会话并发操作。
 
@@ -49,7 +49,8 @@ flowchart LR
    - 当全部 `PtySlaveCap` 句柄关闭时，主端立即收到 `SIGNAL_PEER_CLOSED`（映射为终端 `EOF / SIGHUP` 退出语义）；当 `PtyMasterCap` 关闭时，从端读返回 `0 (EOF)`、写返回 `-EPIPE` 并向关联前台 `Job` 广播挂断通知。
 3. **`PtyCtl` 行规（Line Discipline）与控制语义（纯用户态 `ptyface` 单源）**：
    - **`Termios` 紧凑模式集**：精准提炼现代终端必需的四位正交开关——`ICANON`（行缓冲编辑 vs 原始字节直通 Raw 模式）、`ECHO`（输入回显开关，密码输入关 `ECHO`）、`ISIG`（识别 `0x03 Ctrl-C` / `0x1A Ctrl-Z` / `0x1C Ctrl-\` 控制键 vs 透传原始键值给编辑器）、`ONLCR`（输出 `\n` 自动映射 `\r\n`）。
-   - **微内核原生前台信号路由**：当 `ISIG = 1` 且主端写入 `0x03 (VINTR)` 或 `0x1A (VSUSP)` 时，`ptyd` 不经 Unix 进程组广播，而是直接向当前绑定在该 PTY 上的 `fg_notify` 端口投递结构化控制包 `PtyEvent::Intr` / `PtyEvent::Susp`（由会话主控 `bsh` 立即对前台 `Job` 执行 `job_kill` 或 `process_suspend`）；全屏应用（`bed`、`less`、`btop`、`bsh` 自身 `berry-line` 编辑器）进入时置 `ICANON = 0, ECHO = 0`（编辑器按需保留或接管 `ISIG`），退出或崩溃（主控 `bsh` 在 `reap` 后自动兜底恢复初态 `Sanity Termios`）时必定复原终端状态，绝不留「盲打乱码死终端」。
+   - **前台作业能力绑定与信号路由（`PTY_SET_FOREGROUND_JOB`）**：会话主控 `bsh` 在派生或切换前台管道时，通过 `PtyCtl` 发起 `PTY_SET_FOREGROUND_JOB(job_handle)` 绑定当前活跃作业容器。当 `ISIG = 1` 且收到 `0x03 (VINTR)` 或 `0x1A (VSUSP)` 时，`ptyd` 直接向绑定 `Job` 实施级联 `job_kill(130)` 或 `process_suspend`；前台 `Job` 退出后，`ptyd` 自动回滚前台目标为会话根 Shell。
+   - **全屏异常崩溃与自动 Cooked 兜底**：全屏应用（`bed`、`less`、`btop`）进入时置 `ICANON = 0, ECHO = 0`；若子进程遭遇 SIGSEGV 崩溃或被强杀，`ptyd` 监听从端句柄生命周期，在检测到前台进程异常退出时，**自动在 1ms 内强制复位 Sanity Termios（`ICANON=1, ECHO=1, ISIG=1`）并切回主屏幕缓冲**，彻底消灭「程序崩溃后终端死锁乱码」的顽疾。
    - **窗口尺寸变更（`WINCH`）**：宿主缩放窗口触发 `PtyMaster::set_winsize(cols, rows)`，`ptyd` 原子更新共享头内的 `Winsize` 快照并置位从端 `SIGNAL_USER_0 (SIGNAL_PTY_WINCH)`；正在 `Port` 等待的全屏程序在 1 毫秒内感知新尺寸并重绘布局。
 
 ### 三、`berry-vt`：纯 `no_std` 终端协议解析与差异渲染核
@@ -69,6 +70,17 @@ flowchart LR
    - 支持最多 16 个窗口（Tab）与任意水平/垂直分屏（Pane），每个窗格背后挂载一对独立 `ptyd` 主从实例；
    - 默认前缀键 `Ctrl-B`（兼容主流 `tmux` 肌肉记忆：`c` 新建窗、`%` 左右分屏、`"` 上下分屏、`方向键` 切焦点、`z` 当前窗格全屏最大化、`[` 进入 `vi` 风格历史回滚复制模式、`d` 分离会话后台保活）；
    - **断线保活（Detach / Reattach）**：宿主断开 `berry console` 或网络闪断时，`bmux` 服务端会话及其中运行的长编译/压测/追踪任务毫发无损继续运行，重连后执行 `bmux attach` 瞬间恢复全部窗格现场；底部 1 行状态栏实时显示窗口列表、CPU/内存简报与时钟。
+
+---
+
+### 五、GUI 桌面终端渲染管线与 ANSI OSC 52 安全剪贴板规范
+
+1. **GUI 终端 `berry-term` 图元批处理管线（Glyph Atlas + Dirty Row Mask）**：
+   - 在图形桌面环境下，`berry-term` 严禁对每个字符生成独立的矢量 `SceneIR` 节点（防止 120Hz 下滚屏产生每秒数万个小对象冲垮合成器）；
+   - 确立「预焙字形图集（Glyph Atlas）+ 行级脏掩码（Dirty Row Mask）」渲染模型：单行未变更直接跳过；整屏大面积滚动时，切入 `SurfaceMode::Swapchain` 双缓冲快速 blit，CPU 开销稳定在 $\le 3\%$。
+2. **ANSI OSC 52 安全剪贴板拦截与 `PasteButton` 对齐**：
+   - 终端支持标准 OSC 52 转义（`\x1b]52;c;<base64>\x07`）以方便 CLI 编辑器与 Shell 与宿主系统剪贴板交互；
+   - **安全门禁**：`ptyd` 必须核验终端会话窗口处于前台激活焦点，且在最近 500ms 内存在物理按键输入时才允许执行写剪贴板；后台静默脚本或未获焦会话发起 OSC 52 写入一律静默丢弃并记录安全审计日志，杜绝剪贴板劫持。
 
 ## 验收标准
 

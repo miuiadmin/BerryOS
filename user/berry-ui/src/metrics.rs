@@ -7,9 +7,6 @@
 //!   比例供件（宽 = 逐字形 `GlyphAtlas::advance` 累计——与 paint 推进
 //!   同源；三档点阵下与等宽供件逐值恒等，HD 档为真实比例宽，痛点⑥
 //!   根修 03 号 §1.3-3）。
-//!   按 UTF-8 码点等宽测量（宽 = `codepoints × cell_w`、高 =
-//!   `cell_h`——`FontSize` 单源）；ASCII 与旧字节语义零漂，CJK 多字节
-//!   折一个全宽码点。
 //! - [`IconSource`]：图标/图片资源缝（dims 内在尺寸 + 解码后 ARGB 借用
 //!   ——LRU/解码编排留消费侧）；[`EmptyIconSource`] = 默认空供件（未
 //!   注册资源恒 None——空绘不炸的供给面）。
@@ -46,50 +43,20 @@ fn tier(scale: u8) -> FontSize {
 /// + HD 档）下等长**不再蕴含等宽**（"iii"≠"WWW"）——set_text 三态判据
 /// 已改经本缝比对内在宽（equal-len 且等宽才走纯 PAINT 分支），R2-8 面
 /// 由判据侧兜底而非供件侧假设。
-/// **v1 契约（R2-8 修订）**：同一字节序列测量恒等宽（确定性）；UTF-8
-/// 下**等字节长不再必然等宽**（1 个 CJK 与 3 个 ASCII 同为 3B）。S7
-/// `set_text` 的“等长换文 = 纯 PAINT”判据必须并列比较旧/新测量宽；
-/// 自定义供件（比例字体）同样不得只看字节长度。
 pub trait TextMetrics {
     fn measure(&self, text: &[u8], scale: u8) -> (u32, u32);
-
-    /// LAYOUT-L5 box-sensitive 测量：默认退化为无界 [`Self::measure`]，
-    /// 保持既有供件签名零级联。消费 wrap 的供件覆写本方法；`max_w`
-    /// 来自 measure walk 的 incoming BoxConstraints。
-    fn measure_with_box(&self, text: &[u8], scale: u8, _max_w: u32) -> (u32, u32) {
-        self.measure(text, scale)
-    }
 }
 
-/// 运行期字形供件。默认 host 面不走本 trait，直接使用 berry-gfx 静态
-/// 图集；`guest-font-vmo` feature 下 BerryUI 编译掉静态 HD fallback，
-/// 客机必须按字号档供给图集（S32 来自 Berry Room 系统 A8 VMO）。
-pub trait FontSource {
-    fn atlas(&self, scale: FontSize) -> Option<&'static dyn berry_gfx::font::GlyphAtlas>;
-}
-
-/// v1 等宽供件：`FontSize` 单源——宽 = `UTF-8 码点数 × cell_w`
-/// （u64 累计饱和 u32）、高 = `cell_h`。ASCII 与旧字节长度语义零漂；
-/// CJK UTF-8 三字节折一个全宽码点。
+/// v1 等宽供件：`FontSize` 单源——宽 = `len × cell_w`（u64 累计饱和
+/// u32）、高 = `cell_h`。逐位复刻 layout 现状 Text 内在测量（既有 layout
+/// 测试零漂移的生命线）。
 pub struct MonospaceTextMetrics;
 
 impl TextMetrics for MonospaceTextMetrics {
     fn measure(&self, text: &[u8], scale: u8) -> (u32, u32) {
         let fs = tier(scale);
-        let w = crate::utf8::count(text) as u64 * fs.cell_w() as u64;
+        let w = text.len() as u64 * fs.cell_w() as u64;
         (crate::damage::u64_to_u32_sat(w), fs.cell_h() as u32)
-    }
-
-    fn measure_with_box(&self, text: &[u8], scale: u8, max_w: u32) -> (u32, u32) {
-        let planned = crate::text_wrap::plan(text, scale, max_w, self);
-        crate::text_wrap::measure(text, scale, &planned, self)
-    }
-}
-
-impl MonospaceTextMetrics {
-    /// 供 paint/诊断复用的换行计划（与测量共用 text_wrap 单源）。
-    pub fn wrap_plan(&self, text: &[u8], scale: u8, max_w: u32) -> crate::text_wrap::WrapPlan {
-        crate::text_wrap::plan(text, scale, max_w, self)
     }
 }
 
@@ -107,11 +74,8 @@ impl TextMetrics for ProportionalTextMetrics {
         let fs = tier(scale);
         let atlas = fs.atlas();
         let mut w: u64 = 0;
-        let mut i = 0usize;
-        while i < text.len() {
-            let (cp, step) = crate::utf8::next(&text[i..]).unwrap_or((crate::utf8::REPLACEMENT, 1));
-            w += atlas.advance(cp) as u64;
-            i = i.saturating_add(step.max(1));
+        for &b in text {
+            w += atlas.advance(b) as u64;
         }
         (crate::damage::u64_to_u32_sat(w), fs.cell_h() as u32)
     }
@@ -129,10 +93,6 @@ impl TextMetrics for ProportionalTextMetrics {
 pub trait IconSource {
     fn dims(&self, id: u16) -> Option<(u32, u32)>;
     fn pixels(&self, id: u16) -> Option<&[u32]>;
-    /// RGB565 静态源（大面壁纸专用；缺省 None = 普通 ARGB 供给）。
-    fn pixels_rgb565(&self, _id: u16) -> Option<&[u16]> {
-        None
-    }
     /// 请求 SmoothArgb 缩放（大面壁纸；小图标默认保持最近邻硬边）。
     fn smooth_scale(&self, _id: u16) -> bool {
         false

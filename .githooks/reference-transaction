@@ -2,14 +2,28 @@
 # BerryOS 跨根合并闸（ref 层兜底）——防线详见 .agents/notes/implemented/2026-11-16-跨根合并防线与判例.md
 # 为什么需要本闸：pre-commit 不拦自动合并（无冲突的 git merge 不经过它），且 git commit --no-verify 可绕过。
 # 本闸在引用事务 prepared 阶段兜底：任何指向「跨根合并提交」的 ref 更新一律拒绝。
-# 跨根合并提交 = 多亲提交中存在相邻两亲无共同祖先（覆盖任意两条不相关历史，不写死根 OID）。
+# 跨根合并提交 = 多亲提交中存在任意两亲无共同祖先（全亲两两核——八爪 3+ 亲的不相关历史可藏
+# 第 3 亲，只查首两亲会漏，F92；不写死根 OID）。
 # owner 逃生阀：BERRYOS_ALLOW_CROSSROOT=1。
 
-# 状态判测兼容两种传法：新 git 走位置参数 $1（Apple Git 2.50 实测），老 git 走环境变量
+# 状态判测：git ≥2.28 恒以唯一位置参数传事务状态（Apple Git 2.50 实测）——不存在
+# 走环境变量的 git 版本；env 分支仅为非 git 调用方保留的防御面（两者皆缺即放行）。
 state="$REF_TRANSACTION_STATE"
 [ -n "$state" ] || state="$1"
 [ "$state" = "prepared" ] || exit 0
 [ "$BERRYOS_ALLOW_CROSSROOT" = "1" ] && exit 0
+
+# 全亲两两核（F92）：任一对无共同祖先 → 返 0（命中）。$@ = 全部亲 OID。
+crossroot_pair() {
+  while [ $# -ge 2 ]; do
+    p1=$1
+    shift
+    for p2 in "$@"; do
+      [ -z "$(git merge-base "$p1" "$p2" </dev/null 2>/dev/null)" ] && return 0
+    done
+  done
+  return 1
+}
 
 while read -r old new ref; do
   # 只守 refs/heads/* 与 refs/tags/*：ORIG_HEAD/AUTO_MERGE 等记账伪引用不拦
@@ -27,15 +41,14 @@ while read -r old new ref; do
   set -- $pline
   shift
   [ $# -ge 2 ] || continue
-  p1=$1; p2=$2
-  if [ -z "$(git merge-base "$p1" "$p2" </dev/null 2>/dev/null)" ]; then
+  if crossroot_pair "$@"; then
     short=$(printf '%s' "$new" | cut -c1-12)
     cat >&2 <<EOF
-[berryos-guard] 拒绝：ref $ref 将指向跨根合并提交 $short（两亲无共同祖先）。
+[berryos-guard] 拒绝：ref $ref 将指向跨根合并提交 $short（存在两亲无共同祖先）。
 
-main 与 wip/sched-1.1 无共同祖先，整树合并是 owner 专属动作（348 add/add 冲突判例在案）。
-若是误操作：git merge --abort 回安全态。
-owner 确要收口：BERRYOS_ALLOW_CROSSROOT=1 重试。
+main 与 wip/sched-1.1 曾为两棵不相关历史，2026-11-16 已由 owner 跨根收口合并（两线
+自此共史）；此后新的无共同祖先合并即异常动作。若是误操作：git merge --abort 回安全态。
+owner 确要跨线收口：BERRYOS_ALLOW_CROSSROOT=1 重试。
 判例：.agents/notes/implemented/2026-11-16-跨根合并防线与判例.md
 EOF
     exit 1

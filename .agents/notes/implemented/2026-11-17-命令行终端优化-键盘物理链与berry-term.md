@@ -20,7 +20,7 @@ Status: implemented
 - **出向混排与 INJECT 修正**：serve_poll 指针事件先填位、键帧补余位（批帽 INPUT_EVENTS_MAX=3 共享，溢出留队），键帧旁路 wm_annotate；INJECT 的 DEV_KEYBOARD 臂改喂 KeyPump（Linux 码过表）、DEV_TEXT 臂改 post_char 逐字节直喂——消灭原 `code: b as u16` 码域碰撞（ASCII 'a'=97 撞 KEY_RIGHTCTRL）。
 - **消费面**：appshell pump.rs 在 PtrEvent::from_wire 前按 device_id 分流调 `HostHooks::on_key`（默认空实现——launcher 等既有实现者零改零警）；guiproto 设备类注释段两域分注立法（纯注释零代码）。
 - **berry-term v1**（user/bins/berry-term/ 新 crate）：settings 骨架镜像（wm 门控用 wm_present_h——settings 的 wm_cli_h 在 fs+ui 礼物布局下失效）+ 终端四件：24 行×64B 定容行环逐行 Text 叠行（drawn 副本去重重排）、约 60 行行编辑器（0x08 退格/0x0A 提交/Esc/Tab 透传/箭头忽略）、持久子 bsh（stdin_handle 通道 + `--no-selftest` + fs 双礼物 + stack 16）、启动管道自检（静态喂 `echo berryterm\nuname` 四断言早退收集，过打 `berry-term: pipe ok`，不过 park；自检子 terminate+reap 收口）。子退出三态共用 mark_child_dead（EOF/链断/满队超时），v1 不重启。
-- **槽位/标记/上桌**：APP_SLOTS 9→10 三镜像（berry-manifest 常量/berry_assemble.py 镜像+样例 preset 第 10 条/svcmgr 标记写面自适应宽度 + const assert <100 双钉板）；APP ok n=10、APPUI ok n=9 五处滚新（markers/smoke/smoke-smp/smoke-image/gui8-smoke，rootfs 标记条数 56 不变）；bcts@3.toml 冻结滚新（add-only 惯例，bcts@2 原样在档，selftest 35/35）；dock 位 3 换项走 DOCK_FACE_IDS 分段回退面（MMS 形几何复刻占位——origin 侧 owner 2026-11-16 位图/BYI1 裁定把 DOCK_BITMAP_NAMES 四位全清空（位图 id 过渲染面 BadMagic 致桌面死），本刀初稿的 md_hardware_monitor 位图占位随 rebase 收编弃用，OH 视觉资产正式替换挂账 ADR #63）；gui8 canonical 109B 零改动（布局只取前二注册项，app/TERMINAL.bap 名序排后）。
+- **槽位/标记/上桌**：APP_SLOTS 9→10 三镜像 + justfile build/spec 两循环（berry-manifest 常量/berry_assemble.py 镜像+样例 preset 第 10 条/svcmgr 标记写面自适应宽度 + const assert <100 双钉板/build-user crate 循环 berry-term + mkapp spec 循环 TERMINAL:berry-term——markers.sh 随动契约第六点，遗漏审查补记）；APP ok n=10、APPUI ok n=9 五处滚新（markers/smoke/smoke-smp/smoke-image/gui8-smoke，rootfs 标记条数 56 不变）；bcts@3.toml 冻结滚新（add-only 惯例，bcts@2 原样在档，selftest 35/35）；dock 位 3 换项走 DOCK_FACE_IDS 分段回退面（MMS 形几何复刻占位——origin 侧 owner 2026-11-16 位图/BYI1 裁定把 DOCK_BITMAP_NAMES 四位全清空（位图 id 过渲染面 BadMagic 致桌面死），本刀初稿的 md_hardware_monitor 位图占位随 rebase 收编弃用，OH 视觉资产正式替换挂账 ADR #63）；gui8 canonical 109B 零改动（布局只取前二注册项，app/TERMINAL.bap 名序排后）。
 
 ## 裁决与判例
 
@@ -41,7 +41,7 @@ Status: implemented
 ## Related
 
 - [命令行体验刀实施设计](../../plans/2026-11-15-命令行体验刀实施设计.md)（契约 4 挂账源，本刀兑现其件 1/5/6）
-- [shell设计-v1.0](../../../docs/shell设计-v1.0.md) §2.5 进展注（挂账台账面）
+- [shell设计-v1.1](../../../docs/shell设计-v1.1.md) §2.5 进展注（挂账台账面）
 - [2026-11-15-命令行体验刀](2026-11-15-命令行体验刀.md)（管道契约钉板——berry-term 管道引擎的地基）
 - [2026-11-15-波4-settings真应用首件](2026-11-15-波4-settings真应用首件.md)（settings crate 范式——berry-term 骨架母版）
 - [2026-11-15-波3TabBar三页装配面](2026-11-15-波3TabBar三页装配面.md)（[ui] 门授能与 deferred 记账——TERMINAL 上桌前提）

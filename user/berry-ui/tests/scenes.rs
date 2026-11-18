@@ -227,7 +227,7 @@ fn glyphs(dl: &[Cmd]) -> Vec<(u8, i32, i32)> {
     for c in dl {
         if let Cmd::DrawGlyphRun { run } = c {
             for g in run.glyphs {
-                out.push((g.ch as u8, g.x, g.y));
+                out.push((g.ch, g.x, g.y));
             }
         }
     }
@@ -246,7 +246,7 @@ fn fills(dl: &[Cmd]) -> Vec<(i32, i32, i32, i32, Color)> {
 
 /// 圆角填充计数（Chip/Card 走 FillRectRounded——真圆角档）。
 fn rounded_count(dl: &[Cmd]) -> usize {
-    dl.iter().filter(|c| matches!(c, Cmd::FillRoundRect { .. })).count()
+    dl.iter().filter(|c| matches!(c, Cmd::FillRectRounded { .. })).count()
 }
 
 // —— 真圆角档（XA opt-in）切换串行化：进程级开关 + 还原守卫（paint.rs

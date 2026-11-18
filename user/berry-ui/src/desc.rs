@@ -27,10 +27,6 @@
 //!           （借来件批，tag 34..=40 add-only）：Collapse 5B / Chip
 //!           变长(6..=70) / Fab 变长(9..=73) / Card 8B / Gauge 5B /
 //!           Qr 12B / DragReorder 12B（u32 域全 LE）
-//! props  := kind 定长：Root·Clip 0B / Rect·Circle 11B / Text 变长
-//!           (6..=9+len) / Col·Row·Pad 4B / Image 10B / Icon 13B /
-//!           Grid 7B / Panel 23B
-//!           （GUI-6 §8.1 + F4 Panel）
 //! ```
 //!
 //! - `child_count` 是**树形走查域**（不属于节点本体）：[`parse_node`] 只
@@ -40,8 +36,7 @@
 //! - Col/Row/Pad 4B = gap/all u32 LE；Grid 7B = cols u8 + rows u8 +
 //!   gap u32 LE + cross u8（cross 在 props 块内——Grid 无 ALIGN 块，
 //!   §8.1 定长铁则）；Image 10B = res u16 LE + w/h 各 4B 哨兵对；
-//!   Icon 13B = id u16 LE + fg 3B + w/h 各 4B 哨兵对；Panel 23B =
-//!   bg 3B + w/h 哨兵对 + padding/gap/radius。
+//!   Icon 13B = id u16 LE + fg 3B + w/h 各 4B 哨兵对。
 //! - 扩展块序恒 SIZE→A11Y→ALIGN（§8 D5——解析/发射/builder 三面同序）；
 //!   size 块 8B = w/h 各 4B（`SIZE_NONE` 哨兵）；a11y 块 = role u8 +
 //!   len u8 + label ≤64B；align 块 1B = cross u8。**块在 ⟺ 有义**
@@ -124,7 +119,7 @@
 //!   文本超长 TextTooLong。渲染/布局/手势面同前四批不实现（挂
 //!   Phase 2）。
 //! - 块×kind 合法域（§8.2 表）：SIZE 容器通则 Col/Row/Grid 合法（Text/
-//!   Image/Icon/Panel 双源歧义拒——尺寸已在 props 定长域；Pad/Root 拒）；
+//!   Image/Icon 双源歧义拒——尺寸已在 props 定长域；Pad/Root 拒）；
 //!   ALIGN 仅 Col/Row；A11Y 全 kind 合法（落点 = Ui 侧 a11y 表，D12）。
 //! - 旧流（v1 六 kind、flags ∈ {0,1}）逐字节不变——bit1/2/3 立法对
 //!   不立块的流零扰动（GOLDEN_V1 守卫）。
@@ -171,8 +166,6 @@ pub struct NodeId(pub(crate) u32);
 /// `Collapse`（折叠组——子 = 折叠内容）/ `Card`（卡片——子 = 卡片
 /// 内容）+ 五新叶 `Chip/Fab/Gauge/Qr/DragReorder`（叶带子拒面同列
 /// ——数据层先行，视觉/交互挂 Phase 2）。
-/// 视图种类：`Root/Rect/Text`、容器 `Col/Row/Pad/Grid` 与叶
-/// `Image/Icon/Circle`（叶子带子 = AST 拒面；Circle = AA 圆点指示器）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewKind {
     Root,
@@ -216,18 +209,6 @@ pub enum ViewKind {
     Gauge,
     Qr,
     DragReorder,
-    Circle,
-    Panel,
-    /// C1 结构性裁剪容器：自身 bounds 即子树有效 port；基 props 无视觉字段。
-    Clip,
-}
-
-/// C1 结构性裁剪 port 尺寸：None = 吃父可用域；Some = 固定该轴。
-/// 只经 HAS_SIZE 扩展块入 AST，避免与既有 props 定长域双源。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ClipProps {
-    pub w: Option<u32>,
-    pub h: Option<u32>,
 }
 
 /// 矩形叶子属性：`None` = 尺寸随父（layout 分配）。
@@ -241,14 +222,6 @@ pub struct RectProps {
     pub w: Option<u32>,
     pub h: Option<u32>,
     pub radius: u16,
-}
-
-/// 抗锯齿圆叶属性（bounding box 正方形；w/h 缺一即尺寸随父）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CircleProps {
-    pub bg: Color,
-    pub w: Option<u32>,
-    pub h: Option<u32>,
 }
 
 /// 文本样式：fg 着墨 / bg 不透明衬底（`None` = 透明底）/ scale 字号档。
@@ -306,18 +279,6 @@ pub struct GridProps {
     pub cross: crate::layout::CrossAlign,
     pub w: Option<u32>,
     pub h: Option<u32>,
-}
-
-/// F4 可绘背景容器：纵向聚合子内容，四向 padding + 子间 gap，并可定宽高。
-/// 它是 Card/Button/ListItem/Scaffold 等组件的组合基元；bg 为不透明纯色。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PanelProps {
-    pub bg: Color,
-    pub w: Option<u32>,
-    pub h: Option<u32>,
-    pub padding: u32,
-    pub gap: u32,
-    pub radius: u32,
 }
 
 /// 位图叶子属性（res = 资源 id——内容供给走 D28 icon/image 资源缝；
@@ -796,8 +757,6 @@ pub struct DragReorderProps {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Props {
     Root,
-    /// Clip 容器可选 port 尺寸（基域 0B；w/h 经 HAS_SIZE 块加载）。
-    Clip(ClipProps),
     Rect(RectProps),
     Text(TextProps),
     Col(ColProps),
@@ -838,8 +797,6 @@ pub enum Props {
     Gauge(GaugeProps),
     Qr(QrProps),
     DragReorder(DragReorderProps),
-    Circle(CircleProps),
-    Panel(PanelProps),
 }
 
 /// builder 入口（入口①）的单节点描述：`key != 0` = 调和键（v1 仅随
@@ -908,15 +865,6 @@ pub enum Msg {
     /// 非拖收尾 = 0；i32 钳 ±32768）。
     DragEnd { node: NodeId, vx: i32, vy: i32 },
     Cancel { node: NodeId },
-    FocusIn { node: NodeId },
-    FocusOut { node: NodeId },
-}
-
-/// component focus 一维导航方向（与拖拽锁轴 [`Axis`] 分域）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FocusDir {
-    Next,
-    Prev,
 }
 
 /// 定容消息缓冲（MSG_MAX=8；满 → `UiError::MsgFull` loud——不自陷不静默丢）。
@@ -1019,12 +967,6 @@ pub enum AstError {
     /// {21,25,29,...,177}、DragReorder total_items > 0 时
     /// item_index >= total_items。`got` = 违规值。
     BadValue { kind: ViewKind, got: u32 },
-    /// RUN-K1：同父非零 key 重复。key 是 `(parent, key)` 身份域，重复即
-    /// 树身份歧义；不 last-wins、不按兄弟序隐式选择。
-    DuplicateKey { key: u64 },
-    /// RUN-K1：同父同 key 但 ViewKind 改变。key 的稳定身份不得跨控件种类
-    /// 复用；调和必须 loud reject 而非拆除重建。
-    KeyKindMismatch { key: u64 },
 }
 
 // ---------- TLV 格式常量（wire 值域——编解码双侧单源在此） ----------
@@ -1102,10 +1044,6 @@ pub const QR_MODULE_MAX: u32 = 177;
 pub(crate) fn qr_module_count_valid(m: u32) -> bool {
     (QR_MODULE_MIN..=QR_MODULE_MAX).contains(&m) && (m - QR_MODULE_MIN) % 4 == 0
 }
-pub const KIND_CIRCLE: u8 = 41;
-pub const KIND_PANEL: u8 = 42;
-/// C1 嵌套裁剪容器（props 基域 0B；尺寸走 HAS_SIZE；旧读端 kind<43 拒）。
-pub const KIND_CLIP: u8 = 43;
 
 /// flags bit0 = has_key（v1）。
 pub const FLAG_HAS_KEY: u8 = 1;
@@ -1183,9 +1121,6 @@ fn kind_to_u8(k: ViewKind) -> u8 {
         ViewKind::Gauge => KIND_GAUGE,
         ViewKind::Qr => KIND_QR,
         ViewKind::DragReorder => KIND_DRAG_REORDER,
-        ViewKind::Circle => KIND_CIRCLE,
-        ViewKind::Panel => KIND_PANEL,
-        ViewKind::Clip => KIND_CLIP,
     }
 }
 
@@ -1232,9 +1167,6 @@ fn kind_from_u8(v: u8) -> Option<ViewKind> {
         KIND_GAUGE => Some(ViewKind::Gauge),
         KIND_QR => Some(ViewKind::Qr),
         KIND_DRAG_REORDER => Some(ViewKind::DragReorder),
-        KIND_CIRCLE => Some(ViewKind::Circle),
-        KIND_PANEL => Some(ViewKind::Panel),
-        KIND_CLIP => Some(ViewKind::Clip),
         _ => None,
     }
 }
@@ -1604,16 +1536,8 @@ fn put_u64le(out: &mut [u8], v: u64) -> Result<usize, AstError> {
 pub(crate) fn encode_props(props: &Props, out: &mut [u8]) -> Result<usize, AstError> {
     let mut c = 0usize;
     match props {
-        Props::Root | Props::Clip(_) => {}
+        Props::Root => {}
         Props::Rect(p) => {
-            c += put_u8(&mut out[c..], p.bg.r)?;
-            c += put_u8(&mut out[c..], p.bg.g)?;
-            c += put_u8(&mut out[c..], p.bg.b)?;
-            c += put_u32le(&mut out[c..], p.w.unwrap_or(OPT_NONE))?;
-            c += put_u32le(&mut out[c..], p.h.unwrap_or(OPT_NONE))?;
-        }
-        // Circle 与 Rect 同定长域（kind 字节区分圆形 raster 面）。
-        Props::Circle(p) => {
             c += put_u8(&mut out[c..], p.bg.r)?;
             c += put_u8(&mut out[c..], p.bg.g)?;
             c += put_u8(&mut out[c..], p.bg.b)?;
@@ -1662,18 +1586,6 @@ pub(crate) fn encode_props(props: &Props, out: &mut [u8]) -> Result<usize, AstEr
             c += put_u8(&mut out[c..], p.fg.b)?;
             c += put_u32le(&mut out[c..], p.w.unwrap_or(SIZE_NONE))?;
             c += put_u32le(&mut out[c..], p.h.unwrap_or(SIZE_NONE))?;
-        }
-        // Panel 23B：bg3 + w/h 哨兵对 + padding/gap/radius。定尺寸在
-        // props 域，不吃 HAS_SIZE 块（与 Image/Icon 同一单源原则）。
-        Props::Panel(p) => {
-            c += put_u8(&mut out[c..], p.bg.r)?;
-            c += put_u8(&mut out[c..], p.bg.g)?;
-            c += put_u8(&mut out[c..], p.bg.b)?;
-            c += put_u32le(&mut out[c..], p.w.unwrap_or(SIZE_NONE))?;
-            c += put_u32le(&mut out[c..], p.h.unwrap_or(SIZE_NONE))?;
-            c += put_u32le(&mut out[c..], p.padding)?;
-            c += put_u32le(&mut out[c..], p.gap)?;
-            c += put_u32le(&mut out[c..], p.radius)?;
         }
         // Grid 7B：cols/rows/gap/cross（cross 在 props 块内——Grid 无
         // ALIGN 块；w/h 由 emit 侧 HAS_SIZE 块另载，不在此域）
@@ -1930,7 +1842,6 @@ fn parse_props(kind: ViewKind, src: &[u8]) -> Result<(Props, usize), AstError> {
     };
     match kind {
         ViewKind::Root => Ok((Props::Root, 0)),
-        ViewKind::Clip => Ok((Props::Clip(ClipProps { w: None, h: None }), 0)),
         ViewKind::Rect => {
             need(11)?;
             let w = u32at(3);
@@ -1941,19 +1852,6 @@ fn parse_props(kind: ViewKind, src: &[u8]) -> Result<(Props, usize), AstError> {
                     w: if w == OPT_NONE { None } else { Some(w) },
                     h: if h == OPT_NONE { None } else { Some(h) },
                     radius: 0,
-                }),
-                11,
-            ))
-        }
-        ViewKind::Circle => {
-            need(11)?;
-            let w = u32at(3);
-            let h = u32at(7);
-            Ok((
-                Props::Circle(CircleProps {
-                    bg: Color { r: src[0], g: src[1], b: src[2] },
-                    w: if w == OPT_NONE { None } else { Some(w) },
-                    h: if h == OPT_NONE { None } else { Some(h) },
                 }),
                 11,
             ))
@@ -2041,22 +1939,6 @@ fn parse_props(kind: ViewKind, src: &[u8]) -> Result<(Props, usize), AstError> {
                     h: if h == SIZE_NONE { None } else { Some(h) },
                 }),
                 13,
-            ))
-        }
-        ViewKind::Panel => {
-            need(23)?;
-            let w = u32at(3);
-            let h = u32at(7);
-            Ok((
-                Props::Panel(PanelProps {
-                    bg: Color { r: src[0], g: src[1], b: src[2] },
-                    w: if w == SIZE_NONE { None } else { Some(w) },
-                    h: if h == SIZE_NONE { None } else { Some(h) },
-                    padding: u32at(11),
-                    gap: u32at(15),
-                    radius: u32at(19),
-                }),
-                23,
             ))
         }
         // Grid 7B：零维拒（GridZeroDims——定长域读完再语义检，截断优先）
@@ -2617,11 +2499,11 @@ pub(crate) fn parse_node(
     Ok((ViewSpec { kind, key, props }, pos, a11y))
 }
 
-/// size 块落值（§8.2 合法域表）：Col/Row/Grid/Rect/Clip 合法、Image/
-/// Icon/Pad/Root 拒。Col/Row/Grid/Clip 块值落扩展字段；Rect 为容读折入面——
+/// size 块落值（§8.2 合法域表）：Col/Row/Grid/Rect 合法、Image/Icon/
+/// Pad/Root 拒。Col/Row/Grid 块值落扩展字段；**Rect 为容读折入面**——
 /// 尺寸本在 props 定长域，块值折入 RectProps（块胜），再编码归一为
 /// 无块形式（builder 面拒 Rect+size，保双入口收敛——见 DescBuilder::size）。
-/// Image/Icon/Panel 拒 = 双源歧义；Text 拒 = TextProps 满载 Node 冻结无落位；
+/// Image/Icon 拒 = 双源歧义；Text 拒 = TextProps 满载 Node 冻结无落位；
 /// Pad/Root = 无定尺寸语义。合法域检在长检前（`[Root, 0x02]` 两字节即
 /// 拒 UnknownProp——拒因可钉）。块 = w/h 各 u32 LE 哨兵对；**双 None =
 /// 空载块拒**（规范形：块在 ⟺ 任一 Some——块存在性可从 arena 推导，
@@ -2633,8 +2515,7 @@ fn apply_size_block(
     pos: &mut usize,
 ) -> Result<Props, AstError> {
     match kind {
-        ViewKind::Col | ViewKind::Row | ViewKind::Grid | ViewKind::Rect
-        | ViewKind::Circle | ViewKind::Clip => {}
+        ViewKind::Col | ViewKind::Row | ViewKind::Grid | ViewKind::Rect => {}
         _ => return Err(AstError::UnknownProp { kind, got: FLAG_HAS_SIZE }),
     }
     if src.len() < 8 {
@@ -2657,14 +2538,6 @@ fn apply_size_block(
             p.h = h;
         }
         Props::Grid(p) => {
-            p.w = w;
-            p.h = h;
-        }
-        Props::Circle(p) => {
-            p.w = w;
-            p.h = h;
-        }
-        Props::Clip(p) => {
             p.w = w;
             p.h = h;
         }
@@ -2780,7 +2653,6 @@ fn emit_node(
         Props::Col(p) => p.w.is_some() || p.h.is_some(),
         Props::Row(p) => p.w.is_some() || p.h.is_some(),
         Props::Grid(p) => p.w.is_some() || p.h.is_some(),
-        Props::Clip(p) => p.w.is_some() || p.h.is_some(),
         _ => false,
     };
     let has_align = match &n.props {
@@ -2822,8 +2694,7 @@ fn emit_node(
             Props::Col(p) => (p.w, p.h),
             Props::Row(p) => (p.w, p.h),
             Props::Grid(p) => (p.w, p.h),
-            Props::Clip(p) => (p.w, p.h),
-            // has_size 仅定尺寸容器真——防御（Rect 折入面不产块）
+            // has_size 仅 Col/Row/Grid 真——防御（Rect 折入面不产块）
             _ => (None, None),
         };
         w += put_u32le(&mut seg[w..], bw.unwrap_or(SIZE_NONE))?;
@@ -2966,7 +2837,6 @@ fn build_node(
             | ViewKind::Gauge
             | ViewKind::Qr
             | ViewKind::DragReorder
-            | ViewKind::Circle
     ) && cc > 0
     {
         return Err(AstError::BadParent); // 叶子带子拒面（Image/Icon 入列——D24；组件叶同列——Phase 1 + P1 + P0 尾四 + P1 尾五 + P2 借来件批）
@@ -2977,28 +2847,6 @@ fn build_node(
         let cells = gp.cols as u32 * gp.rows as u32;
         if cells < cc as u32 {
             return Err(AstError::GridNotFit { cols: gp.cols, rows: gp.rows, children: cc as u32 });
-        }
-    }
-    // RUN-K1 同父 key 唯一执法：build_node 按前序递归，先前子已入兄弟
-    // 链；此处只查非零 key，key=0 仍是无键透传面。
-    if let Some(parent) = parent {
-        if spec.key != 0 {
-            let mut cur = nodes
-                .get(parent as usize)
-                .and_then(|o| o.as_ref())
-                .map(|n| n.first_child)
-                .unwrap_or(u32::MAX);
-            let mut hops = 0usize;
-            while cur != u32::MAX && hops <= nodes.len() {
-                hops += 1;
-                let Some(n) = nodes.get(cur as usize).and_then(|o| o.as_ref()) else {
-                    break;
-                };
-                if n.key == spec.key {
-                    return Err(AstError::DuplicateKey { key: spec.key });
-                }
-                cur = n.next_sib;
-            }
         }
     }
     // 槽分配（确定性前序）
@@ -3200,9 +3048,8 @@ impl DescBuilder {
                     | ViewKind::Gauge
                     | ViewKind::Qr
                     | ViewKind::DragReorder
-                    | ViewKind::Circle
             ) {
-                return Err(AstError::BadParent); // 叶子不带子（含 Circle）
+                return Err(AstError::BadParent); // 叶子不带子（Image/Icon 入列——D24；组件叶同列——Phase 1 + P1 + P0 尾四 + P1 尾五 + P2 借来件批）
             }
             // Grid 父适配检：格满再开子 → GridNotFit（payload = 被拒子序号）
             if parent_kind == ViewKind::Grid {
@@ -3263,16 +3110,6 @@ impl DescBuilder {
         self.begin(ViewKind::Icon, key, &Props::Icon(*props))
     }
 
-    /// Panel 开层捷径（F4 组件 / AST 双入口共核）。
-    pub fn begin_panel(&mut self, key: u64, props: &PanelProps) -> Result<(), AstError> {
-        self.begin(ViewKind::Panel, key, &Props::Panel(*props))
-    }
-
-    /// C1 裁剪容器开层捷径（基 props 空；固定 port 用后续 `.size()`）。
-    pub fn begin_clip(&mut self, key: u64) -> Result<(), AstError> {
-        self.begin(ViewKind::Clip, key, &Props::Clip(ClipProps { w: None, h: None }))
-    }
-
     /// 块落前置检（当前层可落块 = 已 begin 且未开首子——占位字节即流尾；
     /// 阶段序由位值序执法：块位值 1/2/4 = SIZE/A11Y/ALIGN 递增，已有
     /// **同级或更后**块再落即拒——dup 与乱序（如 A11Y 后补 SIZE）同面）。
@@ -3307,11 +3144,11 @@ impl DescBuilder {
     /// size 块（w/h 各 u32 LE 哨兵对）。合法域 = Col/Row/Grid（§8.2 表
     /// 生产面：Rect 容读折入面在 builder **拒**——builder 产规范流，
     /// Rect+size 块再编码不可逐字节复原，破双入口收敛；Text/Image/Icon/
-    /// Panel/Pad/Root 拒 = 解析面同表）。双 None 空载块拒（规范形）。
+    /// Pad/Root 拒 = 解析面同表）。双 None 空载块拒（规范形）。
     pub fn size(&mut self, w: Option<u32>, h: Option<u32>) -> Result<(), AstError> {
         let (kind, at) = self.block_pre(BLK_SIZE)?;
         match kind {
-            ViewKind::Col | ViewKind::Row | ViewKind::Grid | ViewKind::Clip => {}
+            ViewKind::Col | ViewKind::Row | ViewKind::Grid => {}
             _ => return Err(AstError::UnknownProp { kind, got: FLAG_HAS_SIZE }),
         }
         if w.is_none() && h.is_none() {

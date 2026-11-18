@@ -88,9 +88,6 @@ pub const ABS_X: u16 = 0x00;
 /// EV_ABS code：Y 轴（向下为正）。
 pub const ABS_Y: u16 = 0x01;
 
-/// EV_KEY/BTN_* 分界：BTN_MISC（0x100）起是按钮空间，不是 KEY_* 键盘。
-pub const BTN_MISC: u16 = 0x100;
-
 /// EV_KEY code：左键（鼠标形态的接触判据——与 BTN_TOUCH 等价对待）。
 pub const BTN_LEFT: u16 = 0x110;
 /// EV_KEY code：右键（PointerEvent BUTTON_R 位）。
@@ -103,7 +100,7 @@ pub const BTN_TOUCH: u16 = 0x14a;
 // ---- EV_KEY code：KEY_* 键盘空间（值域 = linux/input-event-codes.h 冻结
 // 值；消费面 = gui-inputd 键盘泵的 US 布局翻译表。码值与 ASCII 无关——
 // KEY_A=30 非 'a'=97，勿混（KEY_RIGHTCTRL=97 恰与 'a' 码域碰撞的钉板
-// 见 input_tests）。修正键四枚 + 主键区全排 + 两 Enter。----
+// 见 input_tests）。修正键四枚 + 主键区全排 + 两 Enter + 上下箭头两枚。----
 
 /// ESC。
 pub const KEY_ESC: u16 = 1;
@@ -192,6 +189,12 @@ pub const KEY_KPENTER: u16 = 96;
 /// 右 Ctrl（修正键；=97 与 ASCII 'a' 码域碰撞——翻译面按修正键优先，
 /// 不得译出字母，钉板见 input_tests）。
 pub const KEY_RIGHTCTRL: u16 = 97;
+/// 上箭头（消费面 = gui-inputd 键盘泵的箭头序列表——出向 ESC `[` `A`
+/// 三帧单字节；值 103 = linux/input-event-codes.h 冻结值）。
+pub const KEY_UP: u16 = 103;
+/// 下箭头（同 [`KEY_UP`]——出向 ESC `[` `B`；LEFT/RIGHT/HOME/END 不冻
+/// ——出向无消费语义，见 gui-inputd translate_seq 注）。
+pub const KEY_DOWN: u16 = 108;
 
 /// EV_ABS code：多点槽序号（v1 忽略计数——多点留位）。
 pub const ABS_MT_SLOT: u16 = 0x2f;
@@ -552,8 +555,6 @@ mod input_tests {
         assert_eq!((EV_SYN, EV_KEY, EV_REL, EV_ABS, EV_MSC), (0, 1, 2, 3, 4));
         assert_eq!((SYN_REPORT, SYN_MT_REPORT, SYN_DROPPED), (0, 2, 3));
         assert_eq!((ABS_X, ABS_Y), (0, 1));
-        assert_eq!(KEY_A, 30);
-        assert_eq!(BTN_MISC, 0x100);
         assert_eq!((BTN_LEFT, BTN_RIGHT, BTN_MIDDLE, BTN_TOUCH), (0x110, 0x111, 0x112, 0x14a));
         assert_eq!(
             (ABS_MT_SLOT, ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_TRACKING_ID, REL_WHEEL),

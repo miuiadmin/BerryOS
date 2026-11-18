@@ -174,6 +174,10 @@ pub fn run() {
     // cbox 刀1（黑匣子崩溃记录表）排液窗数学钉板——main 线增量（末位新号
     // 纪律——ktest done 前；定义在文件尾）。
     test_cbox();
+    // F0-3：异常 DAIF 保存/恢复守卫、TLB shootdown 对飞自解与独立第 5 层 ALLOC_LOCK 自检。
+    test_f0_3();
+    // F0-4：VMO_OPT_CONTIGUOUS 物理连续阶块、0x1C vmo_cache_op 权限门控与 VirtIO 自动复位自检。
+    test_f0_4();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     crate::splash::step(8, b"ktest done");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
@@ -318,8 +322,8 @@ fn test_syscall() {
     //     「options≠0 须拒」升「未知位须拒」+ bit0 受纳正测（建毕即 close）。
     assert_eq!(svc6(NR_VMO_CREATE as u64, 0, 0, &raw mut OUT as u64, 0, 0, 0), -22,
         "SYSCALL：vmo_create size=0 须 -EINVAL");
-    assert_eq!(svc6(NR_VMO_CREATE as u64, PAGE_SIZE as u64, 2, &raw mut OUT as u64, 0, 0, 0), -22,
-        "SYSCALL：vmo_create options 未知位须 -EINVAL（bit0=DEMAND 已激活）");
+    assert_eq!(svc6(NR_VMO_CREATE as u64, PAGE_SIZE as u64, 8, &raw mut OUT as u64, 0, 0, 0), -22,
+        "SYSCALL：vmo_create options 未知位须 -EINVAL（bit0=DEMAND / bit1=CONTIGUOUS / bit2=PINNED 已激活）");
     assert_eq!(
         svc6(NR_VMO_CREATE as u64, PAGE_SIZE as u64, 0x1_0000_0001,
              &raw mut OUT as u64, 0, 0, 0),
@@ -425,17 +429,42 @@ fn test_syscall() {
     // 映射中 close 拒（悬空 PTE 防线）；unmap 后即放行。
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hv as u64, 0, 0), -16,
         "SYSCALL：映射中 close 须 -EBUSY");
+    // F0-2：protect 支持 UserRo(1) / UserRx(5) / UserRw(3)，严格拒绝 R|W|X(7) 与外位(8)。
     assert_eq!(
-        svc6(NR_VMAR_PROTECT as u64, hvm as u64, 1, crate::aspace::USER_VA as u64,
+        svc6(NR_VMAR_PROTECT as u64, hvm as u64, 1 /* READ */, crate::aspace::USER_VA as u64,
              PAGE_SIZE as u64, 0, 0),
-        -95,
-        "SYSCALL：protect 缺 WRITE 须 -ENOTSUP（v1 只支持 R|W）"
+        0,
+        "SYSCALL：protect READ(UserRo) 须成功"
     );
     assert_eq!(
-        svc6(NR_VMAR_PROTECT as u64, hvm as u64, 5, crate::aspace::USER_VA as u64,
+        svc6(NR_VMAR_PROTECT as u64, hvm as u64, 5 /* READ|EXEC */, crate::aspace::USER_VA as u64,
+             PAGE_SIZE as u64, 0, 0),
+        0,
+        "SYSCALL：protect READ|EXECUTE(UserRx) 须成功"
+    );
+    assert_eq!(
+        svc6(NR_VMAR_PROTECT as u64, hvm as u64, 7 /* R|W|X */, crate::aspace::USER_VA as u64,
+             PAGE_SIZE as u64, 0, 0),
+        -22,
+        "SYSCALL：protect R|W|X 违背 W^X 须拒 -EINVAL"
+    );
+    assert_eq!(
+        svc6(NR_VMAR_PROTECT as u64, hvm as u64, 0, crate::aspace::USER_VA as u64,
+             PAGE_SIZE as u64, 0, 0),
+        -95,
+        "SYSCALL：protect 空权限须 -ENOTSUP"
+    );
+    assert_eq!(
+        svc6(NR_VMAR_PROTECT as u64, hvm as u64, 8 /* RIGHT_MAP 外位 */, crate::aspace::USER_VA as u64,
              PAGE_SIZE as u64, 0, 0),
         -22,
         "SYSCALL：protect 外位 rights 须 -EINVAL"
+    );
+    assert_eq!(
+        svc6(NR_VMAR_PROTECT as u64, hvm as u64, 3 /* READ|WRITE */, crate::aspace::USER_VA as u64,
+             PAGE_SIZE as u64, 0, 0),
+        0,
+        "SYSCALL：protect 恢复 READ|WRITE 须成功"
     );
     assert_eq!(
         svc6(NR_VMAR_UNMAP as u64, hvm as u64, 0x9000, PAGE_SIZE as u64, 0, 0, 0),
@@ -2412,6 +2441,29 @@ fn test_syscall() {
     // 清场。
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hw_ev as u64, 0, 0), 0, "SYSCALL：close hw_ev");
 
+    // I9. W3-Q91 探测链折叠对拍（02 号 IPC 审计机会四）：wait_get 五类型
+    //     链 → rights_of 单查 + waitable 词表判。词表外类型须同码拒
+    //     -EBADF（wait_many 数组面——wait_one 面已由 I5 Vmo 钉板在册）；
+    //     词表内类型走正常 wait 语义（poll 未命中 -EAGAIN——SuspendToken
+    //     五链最深处〔旧形付 5 查〕收单查后须仍活）。
+    //     Vmo 是词表外代表（wait 面 = Event|Channel|Process|Thread|
+    //     SuspendToken 五类——Vmo/Vmar 恒拒）。用新插 Vmo（I5 的 hv_e 已
+    //     close 清场）。
+    {
+        let hq_v = ht
+            .insert(KernelObj::Vmo(Vmo::create(PAGE_SIZE).expect("ktest：装配 VMO（可信语境）")), RIGHT_READ | RIGHT_WRITE)
+            .expect("SYSCALL：insert hq_v（I9）");
+        // SAFETY: WM_* 为本函数私有静态（I8 已清场，无别名）。
+        unsafe { WM_H = [hq_v, hw_ev]; WM_S = [U1, U1]; WM_IDX = 0 };
+        assert_eq!(
+            svc6(NR_OBJECT_WAIT_MANY as u64, &raw const WM_H as u64,
+                 &raw const WM_S as u64, 2, 0, &raw mut WM_IDX as u64, &raw mut I_OBS as u64),
+            -9,
+            "SYSCALL：wait_many 词表外（Vmo）须 -EBADF（W3-Q91 折叠同码）"
+        );
+        assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hq_v as u64, 0, 0), 0, "SYSCALL：close hq_v（I9）");
+    }
+
     // F. CP-08 util 快照面（0x40 sched_util_snapshot——util 通道首环，OQ-8
     //    通道形态首裁快照 pull）：参数拒面（count < 核数 → -EINVAL）+
     //    快照真值面（泵一窗满账 CPU0 → ewma 128、CPU1 未记账 0 → svc 读
@@ -3015,24 +3067,9 @@ fn test_fp() {
         // vmentry 吞，读回来是 host 副本；MAIN 恢复断言与 OTHER 保存面断言
         // 的 fpsr 分量都据此跳（FPCR/q 断言保留，HVF 下均真）。
         let fpsr_skip = accel_fpsr_unreliable();
-        // Runtime NZCV probe: Apple HVF/bare metal may RAZ the four legacy
-        // flags even when the accelerator still reports FPSR reliable.
-        const FPSR_NZCV: u64 = 0xF000_0000;
-        // ② MAIN 侧装载自己的图样 → 两跳乒乓。NZCV 能力探测必须在写入
-        // 图样之后：HVF/裸金属的 legacy 位 RAZ/WI，写前读到的是现场值，
-        // 会把本平台误判成“NZCV 可保存”。
+        // ② MAIN 侧装载自己的图样 → 两跳乒乓。
         fpcr_write(FPCR_MAIN);
         fpsr_write(FPSR_MAIN);
-        let fpsr_main_expected = if fpsr_skip || fpsr_read() & FPSR_NZCV == 0 {
-            FPSR_MAIN & !FPSR_NZCV
-        } else {
-            FPSR_MAIN
-        };
-        let fpsr_other_expected = if fpsr_main_expected == FPSR_MAIN {
-            FP_FPSR_OTHER
-        } else {
-            FP_FPSR_OTHER & !FPSR_NZCV
-        };
         fp_canary_load((&raw const FP_PAT_MAIN).cast::<u128>());
         berry_hal_aarch64::task::context_switch(&raw mut FP_CTX_MAIN, &raw const FP_CTX_OTHER);
         // <- fp_ping_fn 切回 FP_CTX_MAIN 时续行于此。四面核验：
@@ -3040,7 +3077,7 @@ fn test_fp() {
         assert!(fp_snap_eq(&FP_PAT_MAIN), "FP：MAIN 的 q0..q7/q30/q31 经两跳 switch 后串味");
         let (fpcr1, fpsr1) = (fpcr_read(), fpsr_read());
         assert!(fpcr1 == FPCR_MAIN, "FP：MAIN 的 FPCR 未恢复");
-        assert!(fpsr_skip || fpsr1 == fpsr_main_expected, "FP：MAIN 的 FPSR 未恢复");
+        assert!(fpsr_skip || fpsr1 == FPSR_MAIN, "FP：MAIN 的 FPSR 未恢复");
         // SAFETY: 同窗读 FP_CTX_OTHER（raw 指针取共享引用；unsafe 归外层块）。
         let o: &TaskContext = &*(&raw const FP_CTX_OTHER);
         let other_saved = o.fp[0] == FP_PAT_OTHER[0]
@@ -3054,7 +3091,7 @@ fn test_fp() {
             && o.fp[30] == FP_PAT_OTHER[8]
             && o.fp[31] == FP_PAT_OTHER[9]
             && o.fpcr == FP_FPCR_OTHER
-            && (fpsr_skip || o.fpsr == fpsr_other_expected);
+            && (fpsr_skip || o.fpsr == FP_FPSR_OTHER);
         assert!(other_saved, "FP：OTHER 的 FP 态未随切出保存进其上下文");
         // ③-a 本仓 mem* 整数版覆写正确性直验（含 memmove 重叠两向 + memcmp 符号面
         // + bcmp 0/非 0 面）。
@@ -3307,6 +3344,95 @@ fn test_vmo() {
         a0,
         "VMO：drop 后帧账本精确归位（零泄漏——记帐双 Vec 一并归还）"
     );
+
+    // G. F0-1：DCZID_EL0 硬件探测 + supply_page_init「先填帧刷 PoU、后置有效叶 PTE」时序断言。
+    if let Some(bs) = crate::vmo::zva_block_size_probed() {
+        assert!(
+            bs >= 4 && bs.is_power_of_two() && PAGE_SIZE % bs == 0,
+            "VMO：DCZID_EL0 块大小必须为整除 4096 的 2 幂字节数"
+        );
+    }
+    let mut dvmo = Vmo::create_demand(PAGE_SIZE).expect("VMO：create_demand");
+    let root_l1 = root.ttbr0_pa();
+    const DVA: usize = 0x40_0000;
+    root.map_demand(&mut dvmo, DVA, 0, PAGE_SIZE, Perm::UserRw)
+        .expect("VMO：map_demand");
+    let mut pre_pte_unmapped = false;
+    root.supply_page_init(fa, DVA, |v, off| {
+        pre_pte_unmapped = crate::vmar::walk_leaf(root_l1, DVA).is_none();
+        v.write(off, &MAGIC.to_le_bytes()).expect("VMO：pre-PTE write");
+    })
+    .expect("VMO：supply_page_init");
+    assert!(pre_pte_unmapped, "VMO：init_before_pte 执行窗内叶 PTE 必须仍未生效");
+    assert!(
+        crate::vmar::walk_leaf(root_l1, DVA).is_some(),
+        "VMO：supply_page_init 返回后叶 PTE 必须已生效"
+    );
+    // SAFETY: DVA 已由 supply_page_init 映射进当前激活的 root。
+    let dv = unsafe { core::ptr::read_volatile(DVA as *const u64) };
+    assert_eq!(dv, MAGIC, "VMO：supply_page_init 预填内容经 VA 立即可读");
+    root.unmap(DVA, PAGE_SIZE).expect("VMO：unmap DVA");
+    drop(dvmo);
+
+    // H. F0-2：TTBR1 `.rodata` 只读、直映区 `PXN` 不可执行、用户页 `SMEP(PXN)` 与 ASID 位图归还验证。
+    static KRO_SENTINEL: u64 = 0x524F_4441_5441_4F4B;
+    let kro_va = (&raw const KRO_SENTINEL) as usize;
+    hal::trap::arm_expected_fault(kro_va);
+    // SAFETY: 期望写只读 `.rodata` 触发 EL1 Permission D-abort 并自动跳过恢复。
+    unsafe { core::ptr::write_volatile(kro_va as *mut u64, 0) };
+    assert!(!hal::trap::fault_armed(), "VMO：TTBR1 .rodata 写操作必须触发硬件只读异常");
+    assert_eq!(
+        unsafe { core::ptr::read_volatile(kro_va as *const u64) },
+        0x524F_4441_5441_4F4B,
+        "VMO：.rodata 拒写后原值不变"
+    );
+
+    let nx_pfn = fa.alloc().expect("VMO：alloc NX 探针帧");
+    let nx_kva = berry_mm::va::phys_to_virt(nx_pfn * PAGE_SIZE);
+    // SAFETY: 独占直映物理帧写入 A64 `ret` 指令（0xD65F03C0）。
+    unsafe { core::ptr::write_volatile(nx_kva as *mut u32, 0xD65F_03C0) };
+    hal::sync_icache_pou(nx_kva, 4);
+    hal::trap::arm_expected_iabort(nx_kva);
+    // SAFETY: 期望跳转 `PXN=1` 直映帧触发 EL1 Instruction Abort 并经 x30 恢复。
+    unsafe {
+        core::arch::asm!(
+            "blr {0}",
+            in(reg) nx_kva,
+            out("x30") _,
+            options(nostack, preserves_flags),
+        );
+    }
+    assert!(!hal::trap::iabort_armed(), "VMO：EL1 跳 TTBR1 直映区必须触发 PXN 取指异常");
+    fa.free(nx_pfn, 0).expect("VMO：free NX 探针帧");
+
+    let mut rx_vmo = Vmo::create(PAGE_SIZE).expect("VMO：create rx_vmo");
+    rx_vmo.commit(fa, 0, PAGE_SIZE).expect("VMO：commit rx_vmo");
+    rx_vmo.write(0, &0xD65F_03C0u32.to_le_bytes()).expect("VMO：write ret");
+    root.map(fa, &mut rx_vmo, DVA, 0, PAGE_SIZE, Perm::UserRx).expect("VMO：map UserRx");
+    hal::trap::arm_expected_fault(DVA);
+    // SAFETY: UserRx 页（AP=11）拒写，期望 D-abort。
+    unsafe { core::ptr::write_volatile(DVA as *mut u32, 0) };
+    assert!(!hal::trap::fault_armed(), "VMO：UserRx 页写操作必须触发只读异常");
+    hal::trap::arm_expected_iabort(DVA);
+    // SAFETY: UserRx 页强制置 PXN=1（SMEP），EL1 跳用户代码页必须触发 I-abort。
+    unsafe {
+        core::arch::asm!(
+            "blr {0}",
+            in(reg) DVA,
+            out("x30") _,
+            options(nostack, preserves_flags),
+        );
+    }
+    assert!(!hal::trap::iabort_armed(), "VMO：EL1 跳 UserRx 用户页必须触发 SMEP(PXN) 异常");
+    root.unmap(DVA, PAGE_SIZE).expect("VMO：unmap UserRx");
+    drop(rx_vmo);
+
+    let t_asid1 = crate::aspace::alloc_asid();
+    let t_asid2 = crate::aspace::alloc_asid();
+    assert_ne!(t_asid1, 0);
+    assert_ne!(t_asid1, t_asid2);
+    crate::aspace::free_asid(t_asid1);
+    crate::aspace::free_asid(t_asid2);
 
     // 收尾：回内核空表（与 idle/无 AS 任务的 ttbr0=0 状态对齐）。
     hal::activate_aspace(0, 0);
@@ -4079,10 +4205,9 @@ fn test_policy_perf() {
     // CNTVCT 差 < N（HVF 计数粒度/停走语义未定谳），整除截断为 0。宿主
     // 加速器语义非内核 bug（TCG 下差测正常）。性能差测断言在加速档降级
     // 为跳过（与 FP-FPSR 判例同法：`opt/berry/accel` 键门控）；TCG 全量。
-    if accel_fpsr_unreliable() || mn == 0 {
-        // avg=0 时三态差测无意义——无论加速器键是否在席，运行时计数粒度
-        // 已证明本窗不可测；打印诊断即过，TCG 正常计数仍走完整比值门。
-        berry_hal_aarch64::uart_puts(b"PP-4: skip (cntvct delta 0)\n");
+    if accel_fpsr_unreliable() {
+        // avg=0 时三态差测无意义——不 panic，打印诊断即过。
+        berry_hal_aarch64::uart_puts(b"PP-4: skip (accel cntvct delta 0)\n");
     } else {
         assert!(mn > 0, "PP-4：avg 须非零（CNTVCT 停走则差测无效）");
     let permille = (mx - mn) * 1000 / mn; // 千分比（整除门控不失真）
@@ -6774,6 +6899,121 @@ fn test_deadline() {
     assert!(picked.slice_left == 100,
             "DL：B2 解冻后须授新预算 slice（期望 100，实际 {}）", picked.slice_left);
 
+    // DL-B3（04 号审计附记一钉板）：生产路径解冻——`pick_next_filtered`
+    // 是生产八个出选点的唯一扫描面（trait `pick_next` 仅 ktest 直调）；
+    // 修复前本面无 lazy_unthrottle 调用，deadline 任务预算限流后生产
+    // 无解冻路径（DL_ON_RING 账本死账）。B1 同款置位 → 走 filtered 面
+    // → 周期到须解冻 + 授新预算——与 B2（trait 面）逐位对拍。
+    let tb3 = mk(b"dlB3".as_slice());
+    let tf3 = mk(b"dlF3".as_slice());
+    let mut rq3 = Runqueue::new();
+    tb3.prio_effective = PRIO_DEADLINE;
+    tb3.preempt_threshold = 100;   // 预算 = 100 cycles
+    tb3.duration_hint_ns = 1000;   // 周期 = 1000 cycles
+    tb3.vdeadline = u64::MAX;      // 截止远（先测 throttle 持续）
+    tb3.slice_left = 100;
+    rr.enqueue(&mut *tb3, &mut rq3);
+    rr.enqueue(&mut *tf3, &mut rq3);
+
+    // B3-1：filtered 面对已到期限流者——解冻发生在扫描前，出选即已清位。
+    tb3.slice_left = 0;
+    rr.tick(&mut *tb3, unsafe { &mut *core::ptr::addr_of_mut!(rq3) });
+    assert!(tb3.held_locks & HELD_THROTTLE != 0,
+            "DL：B3-1 slice 耗尽须置 HELD_THROTTLE（置位面与 B1 同源）");
+    tb3.vdeadline = 1; // 截止已过（cntvct ≥ 1）——下一 pick 须解冻
+    let picked3 = rr.pick_next_filtered(&rq3, &topo, core::ptr::null_mut())
+        .expect("DL：B3-1 非空环须有出选");
+    assert_eq!(picked3.name, b"dlB3".as_slice(),
+              "DL：B3-1 解冻后 deadline 带最优先出（EDF）");
+    assert!(picked3.held_locks & HELD_THROTTLE == 0,
+            "DL：B3-1 filtered 面周期到须解限流（生产路径修复面）");
+    assert!(picked3.slice_left == 100,
+            "DL：B3-1 解冻后须授新预算 slice（期望 100，实际 {}）", picked3.slice_left);
+
+    // B3-2：fair 环出选不牵连——dl_on_ring() 全局账本（ktest 本地环只增
+    // 不减，B1~B3-1 残留使门恒开）非零时，filtered 面多扫一圈 deadline
+    // 判（全 fair 环零命中）后仍须正常 fair 出选。
+    let tf4 = mk(b"dlF4".as_slice());
+    let mut rq4 = Runqueue::new();
+    rr.enqueue(&mut *tf4, &mut rq4);
+    let picked4 = rr.pick_next_filtered(&rq4, &topo, core::ptr::null_mut())
+        .expect("DL：B3-2 非空环须有出选");
+    assert_eq!(picked4.name, b"dlF4".as_slice(),
+              "DL：B3-2 全 fair 环 filtered 面须正常出选（门开零语义差）");
+
+    // B4（W3-Q93：04 机会一② 双圈合一钉板）——`Fair::pick_next_if_above`
+    // （try_preempt 新专用面）与旧两圈形（has_eff_above 探峰 +
+    // pick_next_filtered 出选）逐位对拍 + 带门三律：
+    // B4-1 门假不消耗 head 槽位（幻影出选防线在带门延续）：全同带环
+    //   上 v = 带值 → None 且游标不动（advance_past 未发生）。
+    // B4-2 带门恰界：存在严格更高带（v = 带值-1）→ 出选者与
+    //   pick_next_filtered 全等（同一扫描单源）。
+    // B4-3 空环/全过滤：哨兵 i32::MIN → 门假 → None。
+    // B4-4 解冻时序前移面（审计明示接受）：已到期限流 deadline 任务，
+    //   门假（无更高带）时也解冻——B3 系（解冻仅出选时）的加强面。
+    let tfb = mk(b"dlFB".as_slice()); // fair 陪跑
+    let tfb2 = mk(b"dlFB2".as_slice()); // fair 陪跑 2
+    {
+        let mut rqb = Runqueue::new();
+        rr.enqueue(&mut *tfb, &mut rqb);
+        rr.enqueue(&mut *tfb2, &mut rqb);
+        // B4-1：两 fair 同带（eff=0），v=0 → 无严格更高 → None。
+        assert!(rr.pick_next_if_above(&rqb, &topo, tfb as *mut _, 0).is_none(),
+                "DL：B4-1 同带无严格更高须不出选（幻影出选防线）");
+        // 游标未动证明：下一次 pick_next_filtered（my_cur=null 全员参与，
+        // 同 B3-1 形）首见者仍 = head 序首（advance_past 若被白耗一格，
+        // head 侧先见序将偏移）。
+        let pa = rr.pick_next_filtered(&rqb, &topo, core::ptr::null_mut())
+            .expect("DL：B4-1 后继出选须有");
+        assert_eq!(pa.name, b"dlFB".as_slice(),
+                  "DL：B4-1 门假不得消耗 head 槽位（游标不动）");
+        // B4-2：tfb2 带位抬到 5（严格高于 tfb 的 0），v=0 → 出选 tfb2。
+        tfb2.prio_effective = 5;
+        let pb = rr.pick_next_if_above(&rqb, &topo, tfb as *mut _, 0)
+            .expect("DL：B4-2 有严格更高带须出选");
+        assert_eq!(pb.name, b"dlFB2".as_slice(),
+                  "DL：B4-2 出选者须与扫描单源一致（更高带整带压制）");
+    }
+    {
+        // B4-3：空环。
+        let mut rqe = Runqueue::new();
+        assert!(rr.pick_next_if_above(&rqe, &topo, core::ptr::null_mut(), 0).is_none(),
+                "DL：B4-3 空环须不出选（哨兵门假）");
+        // 全过滤环：唯一节点 = my_cur 自身（cur 自豁免；新任务新环——
+        // tfb/tfb2 仍挂 rqb 不可二次入环）。
+        let tfs = mk(b"dlFS".as_slice());
+        let mut rqf = Runqueue::new();
+        rr.enqueue(&mut *tfs, &mut rqf);
+        assert!(rr.pick_next_if_above(&rqf, &topo, tfs as *mut _, 0).is_none(),
+                "DL：B4-3 全过滤（仅 cur 自身）须不出选");
+    }
+    {
+        // B4-4：解冻前移面——到期限流 deadline 任务在门假（环上无更高带
+        // 者高于 v）时也解冻（旧形探峰 false 不经 pick_next_filtered 头
+        // 部不解冻；合一后解冻在扫描前）。tfb eff=0 作 v 基准，限流
+        // deadline 任务 eff=PRIO_DEADLINE 带 v 用 PRIO_DEADLINE（带门假
+        // ——不严格高于 v）→ 无出选但 THROTTLE 位须清。
+        let tb5 = mk(b"dlB5".as_slice());
+        let mut rq5 = Runqueue::new();
+        tb5.prio_effective = PRIO_DEADLINE;
+        tb5.preempt_threshold = 100;
+        tb5.duration_hint_ns = 1000;
+        tb5.vdeadline = u64::MAX;
+        tb5.slice_left = 100;
+        rr.enqueue(&mut *tb5, &mut rq5);
+        tb5.slice_left = 0;
+        rr.tick(&mut *tb5, unsafe { &mut *core::ptr::addr_of_mut!(rq5) });
+        assert!(tb5.held_locks & HELD_THROTTLE != 0,
+                "DL：B4-4 slice 耗尽须置 HELD_THROTTLE（置位面与 B1/B3-1 同源）");
+        tb5.vdeadline = 1; // 截止已过——合一面门假也应解冻
+        assert!(rr.pick_next_if_above(&rq5, &topo, core::ptr::null_mut(), PRIO_DEADLINE).is_none(),
+                "DL：B4-4 带门假（v=PRIO_DEADLINE 无严格更高）须不出选");
+        assert!(tb5.held_locks & HELD_THROTTLE == 0,
+                "DL：B4-4 门假也须解冻（解冻时序前移——B3 系加强面）");
+        assert!(tb5.slice_left == 100,
+                "DL：B4-4 解冻须授新预算 slice（期望 100，实际 {}）", tb5.slice_left);
+    }
+
     berry_hal_aarch64::uart_puts(b"DL-K ok\n");
 }
 
@@ -7062,6 +7302,95 @@ fn test_pi() {
     sleepq_unlink(c10);
     sleepq_unlink(k10);
     berry_sched::rq_unlink_kt(r8);
+
+    // J9. W3-Q94 刀 a 门收紧钉板（d_eff>0 三合判据 + 尾趟重登 ① 配对）：
+    //     A. 全零稳态——prio 0 的派生位睡眠者不再钉死门（刀 a 前的门语义
+    //        缺陷面：等派生位即开门，常驻服务稳态睡 READABLE 全系统每次
+    //        唤醒都跑全图重推）；B. 真 donor 门开 + 冻结随行 + 清零闭环；
+    //     C. 欠账必补——入队 d_eff=0 睡眠中被传播抬 pi 的链式中转者，
+    //        尾趟 pi_derived_recount 重登 ①（离队减法不误减下溢）。
+    {
+        // A. 全零稳态：d_eff=0 donor 不入账 ① → 门闭（pi_recompute_needed
+        //    == false 是行为锚——门闭 ⇒ recompute 整体跳过）。
+        let htA9 = priv_table();
+        let zc9 = chan_end(ktbl, RIGHT_SEND);
+        let zs9 = chan_end(htA9, RIGHT_RECV);
+        pair_up(zc9, zs9);
+        let d8 = sleeper(b"j9_zero", 0, zc9, SIGNAL_WRITABLE, 0);
+        let v8 = sleeper(b"j9_v", 0, 0, 0, htA9);
+        assert!(
+            !berry_sched::pi_recompute_needed(),
+            "PI：J9a 全零稳态门须闭（d_eff=0 donor 不入账——W3-Q94 刀 a）"
+        );
+        crate::pi::recompute(); // 门闭路径（整体跳过）
+        assert_eq!(v8.pi_inherited, 0, "PI：J9a prio-0 donor 无捐赠可传");
+        sleepq_unlink(d8);
+        sleepq_unlink(v8);
+
+        // B. 真 donor 门开 → 受捐 → 离队冻结（②撑门）→ 清零 → 门闭闭环。
+        let htB9 = priv_table();
+        let wc9 = chan_end(ktbl, RIGHT_SEND);
+        let ws9 = chan_end(htB9, RIGHT_RECV);
+        pair_up(wc9, ws9);
+        let d9 = sleeper(b"j9_hi", 24, wc9, SIGNAL_WRITABLE, 0);
+        let v9 = sleeper(b"j9_w", 0, 0, 0, htB9);
+        assert!(
+            berry_sched::pi_recompute_needed(),
+            "PI：J9b 真 donor（d_eff=24）门须开"
+        );
+        crate::pi::recompute();
+        assert_eq!(v9.pi_inherited, 24, "PI：J9b 受捐 24");
+        sleepq_unlink(d9); // donor 离队；v9 冻结 pi=24 睡着 → ②非零撑门
+        assert!(
+            berry_sched::pi_recompute_needed(),
+            "PI：J9b 冻结 boost（②非零）门须开"
+        );
+        crate::pi::recompute();
+        assert_eq!(v9.pi_inherited, 0, "PI：J9b 边消失清零");
+        assert!(
+            !berry_sched::pi_recompute_needed(),
+            "PI：J9b 清零后全零稳态门须闭"
+        );
+        sleepq_unlink(v9);
+
+        // C. 欠账必补（配对安全活体）：链式中转者 mid 入队时 prio=0 睡
+        //    派生位（d_eff=0 未入账 ①）——重推把 hi(20) 的捐赠传给 mid
+        //    （mid 私有表持 endY_s）后 mid 的 d_eff=max(0,20)=20 成为
+        //    真 donor，再传给 low（low 持 endX_s）。尾趟重登 ① 须含 mid
+        //    ——mid 离队的 ①减法才不误减下溢（刀 a 的全部复杂度即此）。
+        let htMid = priv_table();
+        let htLow = priv_table();
+        let yc9 = chan_end(ktbl, RIGHT_SEND); // hi 等 Y
+        let ys9 = chan_end(htMid, RIGHT_RECV); // mid 持
+        let xc9 = chan_end(ktbl, RIGHT_SEND); // mid 等 X（入队 d_eff=0）
+        let xs9 = chan_end(htLow, RIGHT_RECV); // low 持
+        pair_up(yc9, ys9);
+        pair_up(xc9, xs9);
+        let hi9 = sleeper(b"j9_hi2", 20, yc9, SIGNAL_WRITABLE, 0);
+        let mid9 = sleeper(b"j9_mid", 0, xc9, SIGNAL_WRITABLE, htMid);
+        let low9 = sleeper(b"j9_low", 0, 0, 0, htLow);
+        crate::pi::recompute();
+        assert_eq!(mid9.pi_inherited, 20, "PI：J9c mid 受捐 20（hi 的边）");
+        assert_eq!(low9.pi_inherited, 20, "PI：J9c mid 成真 donor 再传 low 20");
+        // mid 已被重登 ①（欠账补登后 hi+mid 双 donor 在账）+ low 冻结
+        // boost 在账 ②——门开。
+        assert!(
+            berry_sched::pi_recompute_needed(),
+            "PI：J9c 欠账重登后门须开（hi+mid 双 donor / low boost 在账）"
+        );
+        // mid 离队：①减 1（重登后 mid 在账——欠账必补使减法配对）；mid
+        // 冻结 pi=20 → ②不减（pi≠0 睡着时离队才减 ②；mid 带走 20）。
+        sleepq_unlink(mid9);
+        crate::pi::recompute(); // hi 边还在（指向 mid——已离队收不到）；low 的边（mid donor）消失
+        assert_eq!(low9.pi_inherited, 0, "PI：J9c mid 离队后 low 边消失清零");
+        assert_eq!(mid9.pi_inherited, 20, "PI：J9c mid 离队冻结随行 20");
+        assert!(
+            berry_sched::pi_recompute_needed(),
+            "PI：J9c hi donor 在账门须开（①≥1）"
+        );
+        sleepq_unlink(hi9);
+        sleepq_unlink(low9);
+    }
 
     // 清场：SLEEPQ 还给 boot（真睡眠者按 deadline 升序入队——脏节点会破坏
     // 超时扫描早停）。任务体/私有表 leak 不回收（ktest 语境同 spawn 政策）。
@@ -11862,4 +12191,248 @@ fn test_cbox() {
 
     cbox::ktest_restore(saved.0, saved.1);
     berry_hal_aarch64::uart_puts(b"CBOXK ok\n");
+}
+
+/// F0-3：验证 `KlockIrqSaveGuard` / `TableIrqSaveGuard` 在关中断上下文不提前开中断、
+/// `tlbshoot::test_inline_consume_once()` 对飞内联消费自解、以及 `ALLOC_LOCK` 零泄漏往返。
+fn test_f0_3() {
+    use berry_mm::va::PAGE_SIZE;
+    let daif_before = berry_hal_aarch64::irq_save();
+    assert_ne!(
+        daif_before & 0x80,
+        0,
+        "F0-3: ktest 入口 DAIF.I 应处于屏蔽态"
+    );
+    {
+        let _kl = berry_hal_aarch64::kern_lock::klock_enter_irqsave();
+        assert!(
+            berry_hal_aarch64::kern_lock::kl_held(),
+            "F0-3: KlockIrqSaveGuard 窗内应持有 KL"
+        );
+        // 重入层：TableIrqSaveGuard 在 kl_held() 下零死锁退化。
+        let _tbl = berry_hal_aarch64::kern_lock::kern_acquire_irqsave_reentrant();
+    }
+    let daif_after_kl = berry_hal_aarch64::irq_save();
+    assert_eq!(
+        daif_after_kl & 0x80,
+        daif_before & 0x80,
+        "F0-3: KlockIrqSaveGuard 退出绝不可误清 DAIF.I（防止异常出口 ELR/SPSR 踩踏）"
+    );
+    {
+        let _tbl = berry_hal_aarch64::kern_lock::kern_acquire_irqsave_reentrant();
+    }
+    assert_eq!(
+        berry_hal_aarch64::irq_save() & 0x80,
+        daif_before & 0x80,
+        "F0-3: TableIrqSaveGuard 退出绝不可误清 DAIF.I"
+    );
+
+    assert!(
+        berry_hal_aarch64::tlbshoot::test_inline_consume_once(),
+        "F0-3: tlbshoot 对飞内联代消费推进 ACKS 失败"
+    );
+
+    let base_pages = crate::mm::allocated_pages();
+    {
+        let mut vmo = crate::vmo::Vmo::create(PAGE_SIZE * 2).expect("F0-3: Vmo::create");
+        vmo.commit_global(0, PAGE_SIZE * 2)
+            .expect("F0-3: commit_global");
+        assert_eq!(
+            crate::mm::allocated_pages(),
+            base_pages + 2,
+            "F0-3: commit_global 分配页数不符"
+        );
+        vmo.decommit_global(0, PAGE_SIZE)
+            .expect("F0-3: decommit_global");
+        assert_eq!(
+            crate::mm::allocated_pages(),
+            base_pages + 1,
+            "F0-3: decommit_global 退还页数不符"
+        );
+    }
+    assert_eq!(
+        crate::mm::allocated_pages(),
+        base_pages,
+        "F0-3: Vmo::Drop 经 ALLOC_LOCK 回收后页数未归位"
+    );
+}
+
+/// F0-4：验证 `VMO_OPT_CONTIGUOUS | VMO_OPT_PINNED` 5 页物理连续阶块分配/整阶零泄漏归还、
+/// `decommit` `-ENOTSUP` 防拆块、`0x1C vmo_cache_op` 读写权限门控及 MMIO `Drop` VirtIO 自动复位。
+fn test_f0_4() {
+    use crate::abi_gen::{
+        ERR_ACCESS_DENIED, ERR_INVALID_ARG, ERR_NOT_SUPPORTED, NR_HANDLE_CLOSE,
+        NR_HANDLE_DUPLICATE, NR_VMO_CACHE_OP, NR_VMO_COMMIT, NR_VMO_CREATE, NR_VMO_DECOMMIT,
+        NR_VMO_GET_PHYS, VMO_CACHE_OP_CLEAN, VMO_CACHE_OP_CLEAN_INVALIDATE,
+        VMO_CACHE_OP_INVALIDATE, VMO_OPT_CONTIGUOUS, VMO_OPT_DEMAND, VMO_OPT_PINNED,
+    };
+    use crate::handle::RIGHT_READ;
+    use berry_mm::va::PAGE_SIZE;
+
+    // 1. DEMAND 与 CONTIGUOUS 互斥须拒 -EINVAL。
+    let mut bad_h: u32 = 0;
+    assert_eq!(
+        svc4(
+            NR_VMO_CREATE as u64,
+            PAGE_SIZE as u64,
+            VMO_OPT_DEMAND | VMO_OPT_CONTIGUOUS,
+            &raw mut bad_h as u64,
+        ),
+        ERR_INVALID_ARG as i64,
+        "F0-4: DEMAND|CONTIGUOUS 须拒 -EINVAL"
+    );
+
+    // 2. 5 页（20KiB = vnet DMA 几何）CONTIGUOUS|PINNED：占 order=3（8 页），5 页 PA 严格差 4096B。
+    let base_pages = crate::mm::allocated_pages();
+    let mut hv: u32 = 0;
+    assert_eq!(
+        svc4(
+            NR_VMO_CREATE as u64,
+            (5 * PAGE_SIZE) as u64,
+            VMO_OPT_CONTIGUOUS | VMO_OPT_PINNED,
+            &raw mut hv as u64,
+        ),
+        0,
+        "F0-4: vmo_create(5p, CONTIGUOUS|PINNED)"
+    );
+    assert_eq!(
+        crate::mm::allocated_pages(),
+        base_pages + 8,
+        "F0-4: 5 页连续块应占 order=3（8 页）"
+    );
+    let mut pa0: u64 = 0;
+    assert_eq!(
+        svc4(NR_VMO_GET_PHYS as u64, hv as u64, 0, &raw mut pa0 as u64),
+        0,
+        "F0-4: get_phys(0)"
+    );
+    for i in 1..5u64 {
+        let mut pai: u64 = 0;
+        assert_eq!(
+            svc4(
+                NR_VMO_GET_PHYS as u64,
+                hv as u64,
+                i * PAGE_SIZE as u64,
+                &raw mut pai as u64,
+            ),
+            0,
+            "F0-4: get_phys({i})"
+        );
+        assert_eq!(
+            pai,
+            pa0 + i * PAGE_SIZE as u64,
+            "F0-4: 第 {i} 页物理地址必须与首页严格连续"
+        );
+    }
+
+    // 3. commit 幂等 0（不额外吃页），decommit 拒 -ENOTSUP。
+    assert_eq!(
+        svc4(NR_VMO_COMMIT as u64, hv as u64, 0, (5 * PAGE_SIZE) as u64),
+        0,
+        "F0-4: 连续 VMO 幂等 commit 须成功"
+    );
+    assert_eq!(
+        crate::mm::allocated_pages(),
+        base_pages + 8,
+        "F0-4: 幂等 commit 不得额外分配物理页"
+    );
+    assert_eq!(
+        svc4(NR_VMO_DECOMMIT as u64, hv as u64, 0, PAGE_SIZE as u64),
+        ERR_NOT_SUPPORTED as i64,
+        "F0-4: 连续/钉死 VMO 禁止 decommit"
+    );
+
+    // 4. 0x1C vmo_cache_op：跨页 CLEAN / INVALIDATE / CLEAN_INVALIDATE 全通；只读句柄拒 INVALIDATE。
+    assert_eq!(
+        svc6(
+            NR_VMO_CACHE_OP as u64,
+            hv as u64,
+            VMO_CACHE_OP_CLEAN,
+            8192,
+            8000,
+            0,
+            0,
+        ),
+        0,
+        "F0-4: vmo_cache_op(CLEAN, 跨页 8000B)"
+    );
+    assert_eq!(
+        svc6(
+            NR_VMO_CACHE_OP as u64,
+            hv as u64,
+            VMO_CACHE_OP_INVALIDATE,
+            8192,
+            8000,
+            0,
+            0,
+        ),
+        0,
+        "F0-4: vmo_cache_op(INVALIDATE, 跨页 8000B)"
+    );
+    assert_eq!(
+        svc6(
+            NR_VMO_CACHE_OP as u64,
+            hv as u64,
+            VMO_CACHE_OP_CLEAN_INVALIDATE,
+            0,
+            4096,
+            0,
+            0,
+        ),
+        0,
+        "F0-4: vmo_cache_op(CLEAN_INVALIDATE)"
+    );
+    let mut h_ro: u32 = 0;
+    assert_eq!(
+        svc4(
+            NR_HANDLE_DUPLICATE as u64,
+            hv as u64,
+            RIGHT_READ,
+            &raw mut h_ro as u64,
+        ),
+        0,
+        "F0-4: dup READ-only"
+    );
+    assert_eq!(
+        svc6(
+            NR_VMO_CACHE_OP as u64,
+            h_ro as u64,
+            VMO_CACHE_OP_CLEAN,
+            0,
+            64,
+            0,
+            0,
+        ),
+        0,
+        "F0-4: READ-only 句柄允许 CLEAN"
+    );
+    assert_eq!(
+        svc6(
+            NR_VMO_CACHE_OP as u64,
+            h_ro as u64,
+            VMO_CACHE_OP_INVALIDATE,
+            0,
+            64,
+            0,
+            0,
+        ),
+        ERR_ACCESS_DENIED as i64,
+        "F0-4: READ-only 句柄必须拒绝 INVALIDATE（-EACCES）"
+    );
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, h_ro as u64, 0, 0), 0);
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hv as u64, 0, 0), 0);
+    assert_eq!(
+        crate::mm::allocated_pages(),
+        base_pages,
+        "F0-4: 关闭连续 VMO 后 8 页阶块须完整归还伙伴分配器（0 页泄漏）"
+    );
+
+    // 5. MMIO 窗口 Drop 自动复位路径（有在席设备时把非零 STATUS 清回 0；空槽安全无操作）。
+    {
+        let _mmio = crate::vmo::Vmo::create_mmio(
+            berry_hal_aarch64::VIRTIO_MMIO0_PA,
+            berry_hal_aarch64::VIRTIO_MMIO_LEN,
+        )
+        .expect("F0-4: create_mmio");
+    }
 }

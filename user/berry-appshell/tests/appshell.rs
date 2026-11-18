@@ -4,14 +4,14 @@
 use berry_appshell::{dialog, menu, toast, toast_expired, scrim, TOAST_TTL_MS};
 use berry_gfx::cmd::Color;
 use berry_ui::desc::ViewKind;
-use berry_ui::theme::{ThemeMode, Tokens};
+use berry_ui::theme::{Theme, Tokens};
 use berry_ui::Ui;
 
 const W: u32 = 1080;
 const H: u32 = 1920;
 
 fn light() -> Tokens {
-    Tokens::pick(ThemeMode::Light)
+    Tokens::pick(Theme::Light)
 }
 
 #[test]

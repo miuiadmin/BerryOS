@@ -454,21 +454,17 @@ pub extern "C" fn _start(console: Handle, env: usize) -> ! {
         }
     }
 
-    // 产品镜像无 `probe.on`：服务/桌面照常装配，验收探针族全部跳过。
-    let boot_probe = cpio_find(H_ROOTFS, b"probe.on").is_some();
-
     // ---- G-eco-c/d：rootfs VMO 消费（流式步进 → ELF 泵送 → rootfs 程序）----
     // 裸跑（just run / smoke 相）无 rootfs：get_size -EBADF → 静默跳过，
     // 上述 4-5b/4-6 契约零扰动；带 rootfs（just run-rootfs / smoke rootfs
     // 相）→ hello + stdhello 各自拉起（`ECO ok` 第 24 标记 / 子自打
     // `STD ok`、`STD err ok`——G-eco-d d-1c）。
-    run_rootfs_child(console, boot_probe);
+    run_rootfs_child(console);
 
     // ---- P6 A-8c：vnet 服务消费自验（`DNS ok addr=127.0.0.1`，rootfs 相
     // 第 18 标记）。此刻 vnet 预拉已久（即便自验未毕，请求入队深度 8，
     // serve() 起来即收）；裸跑 NET_A==0 静默跳过零扰动。----
-    if boot_probe {
-        dns_selftest(console);
+    dns_selftest(console);
 
     // ---- T-d：TCP 服务化消费自验（`TCPS ok echo=64`，rootfs 相第 20 标记）
     // ——netdproto 三 op OPEN/ROUNDTRIP/CLOSE 经 vnet 常驻服务走一轮回显
@@ -513,7 +509,7 @@ pub extern "C" fn _start(console: Handle, env: usize) -> ! {
     // 供给先行实锚）④身份验（异 VMO → -EINVAL + 正调自愈 join 7）。
     // 镜像内嵌零 rootfs 依赖 = 裸跑/EFI 路同打；链内坏面 = eco 降级行 +
     // 标记缺失（smoke FAIL 兜底）。----
-    // DPGN 已前置到 run_rootfs_child 服务装配前（GUI 验证相句柄预算）。
+    dpgn_selftest(console);
 
     // ---- G4-3 C-full：缺页 soak 满配 N=15（`DPGF ok n=15` + C-4 回卷
     // `DPGF2 ok n=3`）——16 槽登记恰满 + K=8 溢出首压 + CONC-1 真跨核 +
@@ -533,7 +529,6 @@ pub extern "C" fn _start(console: Handle, env: usize) -> ! {
     // G4 X-5：同形帧、现役 musl 多段族版（hexyl/grep 双件两胎）——`x5.on`
     // 门（bench E2 臂 rootfs 专递；多段 k 表逐窗分解新路的首个现役差分面）。
     x5_foot(console);
-    }
 
     // ---- 稳态：节流 + 实证往返 + 'v'（每个 'v' = 一次 ECHO_REQ 往返）+
     // GUI-8 段② 双插面（裁决二/四-d，guifbd wait_many 多路先例）：app 域
@@ -827,13 +822,6 @@ static WMD_PUSH_B: AtomicU32 = AtomicU32::new(0);
 /// 续走 = 双读者应答互截违 D3——关门即装配门永闭，正确降级）。0 = wmd
 /// 未起，launcher 装配静默跳过（rootfs 形恒 0）。
 static WMD_CLI_DUP: AtomicU32 = AtomicU32::new(0);
-/// P1 Surface escape per-boot seed。0 = wmd 未起/未预共享；不进任何公开
-/// 常量或 app 包。svcmgr 在 WMD broker 端被 dup 给任何 app 前，用原始
-/// w_cli 完成 0x68 预共享并等待 wmd ack。
-static SURFACE_ESCAPE_SEED: AtomicU64 = AtomicU64::new(0);
-/// R1 per-boot SYSTEM client seed：仅传给 berry-launcher argv，wmd 侧在
-/// broker 面 0x69 预共享；APP 自报 WM_CLIENT_SYSTEM 无法通过。
-static SYSTEM_UI_SEED: AtomicU64 = AtomicU64::new(0);
 
 // ---- GUI-8 段②：app 域常驻 serve + launcher 监督（裁决二/四-d）----
 
@@ -866,10 +854,6 @@ static mut LAUNCHER_CHILD: Option<ChildHandles> = None;
 /// 帽后再生崩溃 = eco 行 loud 终报不再试（循环重启风暴比不重启更伤稳态
 /// ——kill criteria 5 的对面）。
 static LAUNCHER_RESTARTED: AtomicU32 = AtomicU32::new(0);
-
-/// P1 Surface escape 特权 allowlist（与 tools/mkapp.py / gui_guard.py 双侧
-/// 同步）：manifest 声明不足以授权，未列 app 运行期不铸 token。
-const SURFACE_ESCAPE_APPS: &[&[u8]] = &[b"UITEST"];
 
 /// SPAWN RPC 活子表帽（M-C）：GUI app 分钟级活期 × 4 槽 = 同时活 app 上
 /// 限；满表拒新不拒旧（洪泛面：launcher 端重复点击防抖归 launcher，本帽
@@ -1014,7 +998,7 @@ static mut TOMB_EPOCH: u64 = 0;
 /// `verify_hexyl`）+ best-effort reap。hello（10s 周期睡眠）/bsh（交互）
 /// 常驻不回收（句柄留存 = 有界泄漏，v1 政策）。
 /// 有 rootfs 而链断 = 打一行原因后跳过（可见降级，不静默吞）。
-fn run_rootfs_child(console: Handle, boot_probe: bool) {
+fn run_rootfs_child(console: Handle) {
     let mut cap = 0u64;
     if berry_vmo_get_size(H_ROOTFS, &mut cap) != 0 {
         return; // 裸跑：vmo=none → -EBADF，零扰动
@@ -1031,12 +1015,6 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
         line[n] = b'\n';
         send_retry(console, line.as_ptr(), n + 1);
     };
-    // GUI 验证相的 app 批完成后，launcher/app 监督与常驻 GUI 服务的临时
-    // 句柄仍占本表预算；DPGN 负序是资源轻的内核面自验，前置到服务装配前
-    // 保持“四早退负序”验收不随产品语料膨胀降级（标记顺序无恰次断言）。
-    if boot_probe {
-        dpgn_selftest(console);
-    }
     // SAFETY: boot 后本进程独占步进窗；顺序写/读，单线程（G-eco-c 同款口径）。
     let step: &mut [u8] = unsafe {
         core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(STEP_WIN) as *mut u8, 512)
@@ -1117,6 +1095,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                 mmio_va: VIRTIO_MMIO_VA,
                 intent: 0,
                 force_eager: true,
+                env: &[],
             },
         ) {
             Ok(_child) => {
@@ -1146,95 +1125,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
             }
         }
     }
-    // ---- GPU：vgpud 显示后端预拉（产品相；验证 TCG 拓扑不挂设备）----
-    // vgpud 成功走完 display info/create/attach/scanout/transfer/flush 后发
-    // ready；svcmgr 才把 present/hdi 客户端端交给 gui-wmd。设备缺席/自验
-    // 失败 = ready 超时，关闭客户端端并回落 guifbd/ramfb（后端选择在服务
-    // 端点装配层，不改 present 协议、不抬 handle 帽）。
-    let mut vgpu_present_cli: Handle = 0;
-    let mut vgpu_hdi_cli: Handle = 0;
-    let mut vgpu_progress_cli: Handle = 0;
-    let gpuhdi_on = cpio_find(H_ROOTFS, b"gpuhdi.on").is_some();
-    if !boot_probe || gpuhdi_on {
-        if berry_vmo_get_size(H_MMIO, &mut msz) == 0 {
-            if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/vgpud") {
-                let mut face_bytes = [0u8; 8];
-                let verbose_face = berry_vmo_read(
-                    H_FBINFO,
-                    face_bytes.as_mut_ptr(),
-                    72,
-                    face_bytes.len(),
-                ) == 0
-                    && u64::from_le_bytes(face_bytes) == 1;
-                let vgpu_args: &[&[u8]] = if verbose_face {
-                    &[b"--boot-face=verbose"]
-                } else {
-                    &[]
-                };
-                let (p_cli, p_srv) = channel_pair();
-                let (h_cli, h_srv) = channel_pair();
-                match spawn_rootfs_elf(
-                    H_ROOTFS,
-                    &SpawnSpec {
-                        name: b"bin/vgpud",
-                        data_off,
-                        data_len,
-                        stdout: console,
-                        stack_pages: 16,
-                        stdin_feed: Some(&[]),
-                        stdin_handle: None,
-                        args: vgpu_args,
-                        extra_gifts: &[p_srv, h_srv],
-                        mmio_vmo: Some(H_MMIO),
-                        mmio_va: VIRTIO_MMIO_VA,
-                        intent: 0,
-                        force_eager: true,
-                    },
-                ) {
-                    Ok(_child) => {
-                        ps_reg(b"vgpud", psp::STATE_ALIVE, 0); // 常驻不 reap（vblk 同款）
-                        if vgpu_ready(p_cli)
-                            && (cpio_find(H_ROOTFS, b"gpuhdi.on").is_none()
-                                || vgpu_hdi_selftest(h_cli, p_cli, console))
-                        {
-                            vgpu_present_cli = p_cli;
-                            vgpu_hdi_cli = h_cli;
-                            // BOOT-P1：保留私有 dup 只到 launcher 装配前；
-                            // app/wmd 呈现请求仍走原 p_cli 单一读者。
-                            if berry_handle_duplicate(
-                                p_cli,
-                                RIGHT_SEND | RIGHT_RECV,
-                                &mut vgpu_progress_cli,
-                            ) != 0
-                            {
-                                trap();
-                            }
-                            vgpu_boot_progress(vgpu_progress_cli, gp::BOOT_M_VGPU_READY);
-                        } else {
-                            // vgpud 已 park/自陷且服务端端在其表内；本侧关
-                            // 客户端端即呈现链无读者，下方回落 guifbd。
-                            if berry_handle_close(p_cli) != 0
-                                || berry_handle_close(h_cli) != 0
-                            {
-                                trap();
-                            }
-                        }
-                    }
-                    Err(()) => {
-                        ps_reg(b"vgpud", psp::STATE_SPAWNFAIL, 0);
-                        for h in [p_srv, p_cli, h_srv, h_cli] {
-                            if berry_handle_close(h) != 0 {
-                                trap();
-                            }
-                        }
-                        eco_skip(b"vgpud spawn");
-                    }
-                }
-            }
-        }
-    }
-    /* ---- advanced-main service topology below ---- */
-// ---- P6 A-8b：vnet（常驻网络服务）预拉起——vblk 后（P1-1 无依赖并行预拉位）----
+    // ---- P6 A-8b：vnet（常驻网络服务）预拉起——vblk 后（P1-1 无依赖并行预拉位）----
     // A-7 时 vnet 在主走查 arm 拉起（瞬态探针：`NET ok` 自打后 exit(0) +
     // svcmgr 阻塞 reap 回收）；A-8b 起自验毕转 serve() 常驻（berry-netdproto
     // DNS_QUERY RPC）⇒ 改预拉（主走查 arm 退役，条目自然跳过）。P1-1：
@@ -1268,13 +1159,11 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                 mmio_va: VIRTIO_MMIO_VA,
                 intent: 0,
                 force_eager: true,
+                env: &[],
             },
         ) {
             Ok(_child) => {
                 ps_reg(b"vnet", psp::STATE_ALIVE, 0); // 拉起即常驻（自验门成败都活——serve 常驻）
-                // VNET milestone is deferred until after the GUI/input/fs
-                // service chain: progress truth must stay monotonic even when
-                // advanced-main parallel prepull starts this service earlier.
                 // 常驻不 reap。`NET ok` 标记仍由 vnet 自打（自验在 serve()
                 // 前，rootfs 相第 17 标记零扰动）；DNS ok（A-8c）起本端
                 // 转 client 消费。
@@ -1333,6 +1222,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                 mmio_va: 0,
                 intent: 0,
                 force_eager: false, // demand 路（simbattery 同款；pager 供页）
+                env: &[],
             },
         ) {
             Ok(_child) => {
@@ -1359,6 +1249,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                 mmio_va: 0,
                 intent: 0,
                 force_eager: false, // demand 路（simbattery 同款；pager 供页）
+                env: &[],
             },
         ) {
             Ok(_child) => {
@@ -1388,11 +1279,19 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
     // 消费）；客户端端存函数局部变量（fresh 端非 dup）——GUI-5 起交紧随
     // 本 arm 的 gui-wmd 预拉 arm 换手迁移（ADR #61 端点换手；原直递
     // gfxdemo 形已退役）。0 = guifbd 未起 → wmd/gfxdemo arm 静默跳过。
-    let mut present_cli: Handle = vgpu_present_cli;
-    let mut hdi_cli: Handle = vgpu_hdi_cli;
-    if present_cli != 0 {
-        // vgpu 后端已接管 present/hdi；guifbd/ramfb 保持验证与回退路径。
-    } else if berry_vmo_get_size(H_FB, &mut msz) != 0 {
+    // B1-b+c（02 号 §3.2/§7）：vgpu 交接对第三对 (fbx_a, fbx_b)——stdin
+    // 面承载（spawn 后子读 1 字节 = 窗后映射完成的序保证；旧 guifbd 不读
+    // stdin → 字节滞队无害，版本混布安全）。
+    let mut present_cli: Handle = 0;
+    let mut hdi_cli: Handle = 0;
+    // wm 订阅私有通道刀（plan: .agents/plans/2026-11-17-wm订阅私有通道RPC面.md
+    // §2）：guifbd 交接对写端升格**函数域**——原 guifbd arm 块局部作用域止于
+    // 本 arm（S4 勘察坑），下方 wmd arm 代发块要经它投 'm'+订阅者事件通道
+    // cli 端。0 = guifbd 未起/Err 路 → 代发块判零跳过（幂等守卫，批B 形态）；
+    // Ok 路落值后不 close 不清零——guifbd 侧收 'm' 后 close 的是对端读端，
+    // 本写端随 wmd arm 门常驻表内（boot 一次性投递，无第二读者面）。
+    let mut guifbd_fx_a: Handle = 0;
+    if berry_vmo_get_size(H_FB, &mut msz) != 0 {
         eco_skip(b"fb absent");
     } else if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/guifbd") {
         // 两对 (本端, 交接端)：客户端端本表留（下方 gfxdemo arm 消费），
@@ -1407,7 +1306,12 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                 data_off,
                 data_len,
                 stdout: console,
-                stack_pages: 8,
+                // 12 页=48KiB：wm 私有通道刀起 serve 臂新增 wm_await/wm_drain
+                // 两 ~300B 栈帧 + WmFace 扩域，批B 的 32KiB 贴线态被推过
+                // （终判实抓：guifbd 静默早死、present 零应答→wmd 启动序②
+                // 300s 帽 trap 级联——栈溢出零输出形态）。+16KiB DRAM 换零
+                // 贴线。
+                stack_pages: 12,
                 stdin_feed: None,
                 stdin_handle: Some(fbx_b), // B1-b+c：交接对读端（被 send take 迁入）
                 args: &[],
@@ -1416,6 +1320,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                 mmio_va: FB_VA,
                 intent: 0,
                 force_eager: true,
+                env: &[],
             },
         ) {
             Ok(_child) => {
@@ -1448,6 +1353,12 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                     // （缺省安全）；单行诊断非标记。
                     eco_skip(b"fb handoff");
                 }
+                // wm 订阅私有通道刀：交接对写端升格函数域落值（下方 wmd arm
+                // 代发块消费——'m'+handle 即本通道第二条消息，'w'/'n' 已被
+                // guifbd 首读吃掉恰序在后）。fb handoff send 失败路原柄仍活
+                // 不 close，照落——代发块自身失败面 loud 跳过，不依赖此处
+                // 分流。
+                guifbd_fx_a = fbx_a;
             }
             Err(()) => {
                 // Err 全在 env send 前——H_FBINFO/H_FBPIPE 未被 take 仍在
@@ -1529,10 +1440,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                     data_off,
                     data_len,
                     stdout: console,
-                    // P2 KeyQueue 后 WmSessions 约 15KiB；加 serve 帧局
-                    // 部，8 页主栈无余量。16 页 = 64KiB，保持常驻服务
-                    // 失败隔离与后续 surface 状态余量。
-                    stack_pages: 16,
+                    stack_pages: 8,
                     stdin_feed: Some(&[]),
                     stdin_handle: None,
                     args: &[],
@@ -1541,31 +1449,17 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                     mmio_va: 0,
                     intent: 0,
                     force_eager: true,
+                    env: &[],
                 },
             ) {
-                Ok(_child) => {
+                Ok(child) => {
                     ps_reg(b"gui-wmd", psp::STATE_ALIVE, 0); // 常驻（不 reap——vblk 同款）
                     // wmd 客户端端仅此落值（兼作下方 gfxdemo arm 的 spawn Ok
                     // 标志——present_cli 0 值跳过同款）；push_cli 交 inputd
                     // arm（WMD_PUSH_B 留表即留命——EFI 相 inputd 未拉起则
                     // 恒滞 static 保活）。
-                    // P1：先在原始 broker 端预共享 per-boot seed 并等 ack，
-                    // 然后才建立可 dup 给 app 的 WMD_CLI_DUP。wmd 因此只接受
-                    // 一次 seed，app 无法用公开常量自铸。
-                    SURFACE_ESCAPE_SEED.store(
-                        share_surface_escape_seed(w_cli),
-                        Ordering::Relaxed,
-                    );
-                    SYSTEM_UI_SEED.store(
-                        share_system_ui_seed(w_cli),
-                        Ordering::Relaxed,
-                    );
                     wm_cli = w_cli;
                     WMD_PUSH_B.store(push_cli, Ordering::Relaxed);
-                    if vgpu_progress_cli != 0 {
-                        vgpu_boot_progress(vgpu_progress_cli, gp::BOOT_M_PRESENT_BACKEND_READY);
-                        vgpu_boot_progress(vgpu_progress_cli, gp::BOOT_M_WMD_SPAWNED);
-                    }
                     // GUI-8 段②：dup 一枚 wm 客户端端落 WMD_CLI_DUP 留表
                     // （SEND|RECV 双权利——bsh fs_a 同口径）——**常驻 dup 源**
                     // （NET_A 先例）：launcher 装配（下方新位 arm / 监督一次
@@ -1581,6 +1475,122 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                         trap();
                     }
                     WMD_CLI_DUP.store(w_dup, Ordering::Relaxed);
+                    // —— wm 订阅私有通道 RPC 面刀（plan: .agents/plans/
+                    // 2026-11-17-wm订阅私有通道RPC面.md §2）：svcmgr 代发
+                    // WM_SUBSCRIBE——guifbd 不持 wm 客户端端（共享队列互截
+                    // 面：同端点第二消费者应答互截两路，笔记
+                    // 2026-11-17-波3批B-guifbd带合成v1与wm面收线实抓），
+                    // 订阅者事件通道由本块代办拉起，cli 端经 guifbd 交接对
+                    // 随 'm' 投递——guifbd 表跟随面即该通道唯一客户端，
+                    // 「单 wm 客户端前提」由此结构性成立。
+                    // 静默窗 = 机制性排除交叠（stdhello 预拉同款注释先例，
+                    // 下方 C-1 刀 3 段）：本块至 gfxdemo take w_cli 前是 wm
+                    // 队列唯一在途方——wmd 全部出站帧均请求触发、广播只发
+                    // 属主/订阅者事件通道，请求-应答严格串行零混流面。
+                    // 守卫继承：本块整体在 wmd arm 门（present_cli≠0 ∧
+                    // cpio gui-wmd 在席）内——rootfs 相结构性零新行零新
+                    // 句柄。源 = w_dup 常驻 dup 源**现 dup**（w_cli 原柄留
+                    // 给 gfxdemo take；掩码照上方四权，dup 失败 trap 同先
+                    // 例）。
+                    let mut sub_dup: Handle = 0;
+                    if berry_handle_duplicate(w_dup, RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER | RIGHT_DUPLICATE, &mut sub_dup) != 0 {
+                        trap();
+                    }
+                    // RPC（wm_subscribe_rpc，blk_rpc 先例形态）→ fbx 投递；
+                    // 全失败面（发送败/帽到/非 OK ack/畸形/投递败）= loud
+                    // 一行 + 跳过投递**零新 panic**——guifbd 侧 AwaitHandle
+                    // 70s 帽（> 本 RPC 60s 帽 + 余量——审查 CONFIRMED 钉
+                    // 「guifbd 禁用恒晚于 svcmgr 放弃」）自落 Disabled，
+                    // WMSUB 门缺失交 smoke 兜底。
+                    let mut loud = false;
+                    match wm_subscribe_rpc(sub_dup) {
+                        Ok(sub_cli) => {
+                            let mut delivered = false;
+                            if guifbd_fx_a != 0 {
+                                // 投递帧 = 1B 'm' + 随行恰 1 handle
+                                //（EBUSY → wait WRITABLE 重试，blk_rpc 形）。
+                                // 随行权面现场核：随行 handle 须持 TRANSFER
+                                //——内核 sys_channel_create 两端恒授 SEND|
+                                // RECV|DUPLICATE|TRANSFER 全权，wmd subscribe
+                                // 应答的 cli 端即其 channel_create 产端、权
+                                // 随行迁移足额，直接可发无需再 dup 补位。
+                                let tag = b"m";
+                                let hs = [sub_cli];
+                                loop {
+                                    let s = berry_channel_send(guifbd_fx_a, tag.as_ptr(), tag.len(), hs.as_ptr(), 1);
+                                    if s == 0 {
+                                        delivered = true;
+                                        break;
+                                    }
+                                    if s != BERRY_ERR_BUSY {
+                                        break;
+                                    }
+                                    wait(guifbd_fx_a, SIGNAL_WRITABLE);
+                                }
+                            }
+                            if !delivered {
+                                // 未被 take（守卫跳过/EBUSY 让位/错码）——
+                                // 收口防表槽泄漏（wmd 侧订阅关系随 srv 端
+                                // 长存，广播对满队即丢无害）。
+                                let _ = berry_handle_close(sub_cli);
+                                loud = true;
+                            }
+                        }
+                        Err(()) => {
+                            loud = true;
+                            // 迟到 ack 收割（对抗审查 CONFIRMED）：超时路的
+                            // 在途 SUBSCRIBE 已驻 wmd 队列不可撤——迟到 ack
+                            //（1B ST_OK + 随行恰 1 handle）若不收，会落共享
+                            // wm 队列毒化下一个 wm 客户端首应答（gfxdemo
+                            // GETINFO 互截——本刀立项所杀缺陷类在自身超时
+                            // 面复活）。收割 = 等 {sub_dup READABLE, wmd 子
+                            // TERMINATED}（wmd 死则孤儿物理不可能再产生），
+                            // READABLE 即全窗收丢弃（随行 handle 全 close 收
+                            // 口）；有界二帽 60s——收割窗后残余面收窄至
+                            // 120s 连续停顿角（TCG 极端形态，挂账即档）。
+                            let hs = [sub_dup, child.hp];
+                            let sigs = [SIGNAL_READABLE, SIGNAL_TERMINATED];
+                            let reap_by = now() + BLKD_REPLY_CAP;
+                            loop {
+                                let mut idx = 0usize;
+                                let mut obs = 0u64;
+                                if berry_object_wait_many(
+                                    hs.as_ptr(),
+                                    sigs.as_ptr(),
+                                    2,
+                                    reap_by,
+                                    &mut idx,
+                                    &mut obs,
+                                ) != 0
+                                {
+                                    break; // 二帽到——残余面收窄挂账
+                                }
+                                if idx == 1 {
+                                    break; // wmd 已死——孤儿不可再产生
+                                }
+                                let mut rep = [0u8; 256];
+                                let mut rh = [0 as Handle; 8];
+                                let mut nb = rep.len();
+                                let mut nh = rh.len();
+                                if berry_channel_recv(sub_dup, rep.as_mut_ptr(), &mut nb, rh.as_mut_ptr(), &mut nh) != 0 {
+                                    break;
+                                }
+                                // 随行 handle 全收口丢弃（畸形/迟到 ack 的
+                                // gift 订阅端一并防泄漏——ps 自验先例）。
+                                for i in 0..nh {
+                                    let _ = berry_handle_close(rh[i]);
+                                }
+                            }
+                        }
+                    }
+                    if loud {
+                        let m = b"wmsub: sub fail\n";
+                        send_retry(console, m.as_ptr(), m.len());
+                    }
+                    // sub_dup 使命毕收口（wm 端点对象经 w_cli gfxdemo take
+                    // 与 WMD_CLI_DUP 常驻源保活；关失败 = 系统级异常面，
+                    // boot 一次性泄漏 1 槽可忍，失败路零 trap 纪律优先）。
+                    let _ = berry_handle_close(sub_dup);
                 }
                 Err(()) => {
                     ps_reg(b"gui-wmd", psp::STATE_SPAWNFAIL, 0);
@@ -1623,13 +1633,6 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
             }
         }
     }
-    if vgpu_progress_cli != 0 {
-        vgpu_boot_progress(vgpu_progress_cli, gp::BOOT_M_INPUT_ARMED);
-    }
-    // ---- GUI-4 段②：gui-inputd 预拉（virtio-tablet/keyboard 输入服务）。
-    // P3 起提前到 gfxdemo 之前：gfxdemo 双窗 click-to-focus 验收需要真实
-    // inputd→wmd 推送链已在席。门控两道：H_MMIO 在席 + cpio_find
-    // (H_ROOTFS, b"bin/gui-inputd")。
     // ---- GUI-4 段②：gui-inputd 预拉（virtio-tablet 输入服务）。门控同 vnet
     // 两道：H_MMIO 在席（EFI/裸拓扑缺席 → eco_skip(b"mmio absent") 静默
     // 零扰动）+ cpio_find(H_ROOTFS, b"bin/gui-inputd")。
@@ -1684,6 +1687,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                 mmio_va: VIRTIO_MMIO_VA,
                 intent: 0,
                 force_eager: true,
+                env: &[],
             },
         ) {
             Ok(_child) => {
@@ -1693,9 +1697,6 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                 // `gui-inputd: up slot=… cal=…` 诊断行（ABS 域真值源）由
                 // inputd 自打。
                 INPUT_A.store(in_a, Ordering::Relaxed);
-                if vgpu_progress_cli != 0 {
-                    vgpu_boot_progress(vgpu_progress_cli, gp::BOOT_M_INPUTD_SPAWNED);
-                }
                 // push_b 已被 take 迁入 inputd 表——static 清零防后续误用
                 // （fsmgr blk_cli 同款；已迁值不可 close）。
                 WMD_PUSH_B.store(0, Ordering::Relaxed);
@@ -1720,17 +1721,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
             }
         }
     }
-    // Probe topology intentionally hands the private progress dup to wmd
-    // before gfxdemo: gfxdemo is the first real SUBMIT consumer and would
-    // otherwise share one present reply queue with this dup alias. Product
-    // topology has no gfxdemo consumer and keeps the dup through fsmgr/vnet.
-    // 后端真值先落位：handoff 会把 boot-probe 形的 progress 端清零，不能
-    // 再用该局部值判 gfxdemo 是否走 refresh-guest（vgpu 形误降 ramfb 面）。
-    let vgpu_backend = vgpu_present_cli != 0;
-    if boot_probe {
-        vgpu_progress_handoff(&mut vgpu_progress_cli);
-    }
-    // ---- GUI-2 段③：gfxdemo（首个 gfx 消费者）预拉——wmd/inputd 后。
+    // ---- GUI-2 段③：gfxdemo（首个 gfx 消费者）预拉——紧随 wmd arm ----
     // 门 = wmd spawn Ok（wm_cli != 0——客户端端仅 Ok 路落值，兼作标志）
     // ∧ cpio_find(H_ROOTFS, b"bin/gfxdemo")。rootfs 相 guifbd 门已跳
     //（`fb absent`）→ 标志 0 → **静默跳过零新行**（inputd INPUT_A==0
@@ -1741,17 +1732,11 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
     // 客户端端已随 wmd arm 换手迁移（本 arm 不再触碰）；stdout=console
     //（`GFX ok` 全链断言过自打）；stdin Some(&[]) 占位（extras 非空须
     // stdin 槽在位——berry-exec assert）。**阻塞 reap 收退出码**
-    //（stdhello 预拉同形；berry-exec REAP_TIMEOUT 240s 在册）：零码零新行
+    //（stdhello 预拉同形；berry-exec REAP_TIMEOUT 30s 在册）：零码零新行
     //（GFX ok 归 gfxdemo 自打）；非零/Err 面 eco 行续走（失败隔离——标记
     // 缺失 = smoke FAIL 兜底）。**不 ps_reg**（thr 先例注记——瞬态验收件
     // 不入账，PS ok n= 零漂移）。
-    if wm_cli != 0 && !boot_probe {
-        // 产品桌面跳过 gfxdemo 验收件；WMD_CLI_DUP 已在 wmd Ok 路建好，
-        // launcher 继续用 dup 端。原 fresh wm_cli 无消费者，关闭防表滞留。
-        if berry_handle_close(wm_cli) != 0 {
-            trap();
-        }
-    } else if wm_cli != 0 {
+    if wm_cli != 0 {
         if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/gfxdemo") {
             match spawn_rootfs_elf(
                 H_ROOTFS,
@@ -1760,24 +1745,20 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                     data_off,
                     data_len,
                     stdout: console,
-                    // 32 页：GUI8/1080p 质量刀与 refresh k4/k6 统计面都在
-                    // gfxdemo main 帧内放大数组；取两侧最大帽，避免任何
-                    // probe 形写落保护页。
-                    stack_pages: 32,
+                    // 刀4 k4 统计面（T3/T6 双 101 帧对拍数组）把 main 帧推过
+                    // 8 页帽——guest 冒烟 EXCEPTION D-abort 实抓（写落保护页，
+                    // SP 低于栈底 0x150）；d-3c hexyl 同口径抬页（bsh/ps 同档
+                    // 16）。帧内大数组留栈走此路，不动 gfxdemo 源。
+                    stack_pages: 16,
                     stdin_feed: Some(&[]),
                     stdin_handle: None,
-                    // ramfb/guifbd runs mainline refresh guest probes; vgpu
-                    // probe topology stays on the async GUI8 WM/DMA path.
-                    args: if !vgpu_backend {
-                        &[b"--refresh-guest"]
-                    } else {
-                        &[]
-                    },
+                    args: &[],
                     extra_gifts: &[wm_cli],
                     mmio_vmo: None,
                     mmio_va: 0,
                     intent: 0,
                     force_eager: false,
+                    env: &[],
                 },
             ) {
                 Ok(child) => {
@@ -1910,14 +1891,11 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                 mmio_va: 0,
                 intent: 0,
                 force_eager: true,
+                env: &[],
             },
         ) {
             Ok(_) => {
                 ps_reg(b"fsmgr", psp::STATE_ALIVE, 0); // 拉起即常驻（FAT 降级不影响活性）
-                if vgpu_progress_cli != 0 {
-                    vgpu_boot_progress(vgpu_progress_cli, gp::BOOT_M_FSMGR_SPAWNED);
-                    vgpu_boot_progress(vgpu_progress_cli, gp::BOOT_M_VNET_SPAWNED);
-                }
                 fs_a_h = fs_a;
                 fs_client = fs_dup;
                 // blk_cli 已被 take 迁移（旧值必 -EBADF，勿关）——清零防
@@ -1945,10 +1923,13 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
             }
         }
     }
-    // ---- cbox 刀 2：电池自检落账（battery）——fsmgr Ok 后、vnet 前的机械
-    // 唯一 fs client 窗（fs 端点集刚建：本表持 fs_a_h/fs_client，vnet/
-    // launcher/app 全未起——fsproto 严格串行无请求号，机制性排除交叠非
-    // 时序赌目）。期望 n≥1（boot 期 rogue 自验件确定性 fault 在册）；fs
+    // ---- cbox 刀 2：电池自检落账（battery）——fsmgr Ok 后、launcher 前的机械
+    // 唯一 fs client 窗（fs 端点集刚建：本表持 fs_a_h/fs_client；vnet 已起
+    // 〔F122 前移臂，vblk 后〕但 gift 面＝net_b 单枚零 fs 端，能力模型下结构性
+    // 不可发 fsproto 请求；launcher/app 未起——fsproto 严格串行无请求号，
+    // 机制性排除交叠非时序赌目；论证前提随 F122 滚新：保护事实从「vnet
+    // 未起」升格为「vnet 零 fs 端持有」的端点持有性形态）。期望 n≥1（boot
+    // 期 rogue 自验件确定性 fault 在册）；fs
     // 缺席形 fs_client==0 = eco 降级行、不发标记；RAM-only 形（EFI 冒烟
     // 路）fsmgr 照起：账本落 RAM 树、标记照发——盘面真值验收走主路
     //（spec 验证节）。----
@@ -1958,10 +1939,10 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
             Err(_) => eco_line(console, b"cbox bat"),
         }
     }
-    // ---- P6 A-8b / GUI-4 段②：vnet 常驻网络服务 + gui-inputd 预拉段
-    // 在本树已前移（见上 bin/vnet / bin/gui-inputd arm）——refresh 侧
-    // 同段为重复，弃（双侧功能全保：各一份在席）。双 inputd 会同时消费
-    // 同一 virtio-tablet，产品点击被无表快照实例吃掉（2026-11-17 实证）。
+    // （F122 收敛：vnet／gui-inputd 旧位预拉臂已删——P1-1 前移臂（vblk 后）
+    // 与 GUI-4 段②前移臂（wmd 后）为正源；旧位双臂致每次 boot 双拉
+    // vnet＋双 gui-inputd 共享同 MMIO，后起者复位设备、先起者 TX 落空
+    // 超时 trap——红绿链 NET ok×2 实抓，flaky 源。详见六轮 survey F122。）
     // ---- GUI-8 段②：berry-launcher（桌面）装配 arm——inputd 后、stdhello
     // 前（草案 §2.3 序重排）。**D3 追认论证**（scout S3-F3）：launcher 仍
     // 在 gfxdemo 阻塞 reap 之后（单 wm 客户端序——gfxdemo 先活后死、
@@ -2002,13 +1983,6 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
     // 纪律注记：让位后 launcher = fs 唯一桌面读者（布局写在桌面态、app
     // 活时结构性无布局编辑——裁决四-b 相位互斥）；冻结相 launcher 零 fs
     // 零 app（[wm] park 形，bsh 全自验照跑）。
-    // Product topology closes the dup after fsmgr/vnet (m=6/m=7) but before
-    // launcher can trigger wmd's m=9/present traffic. This is the single
-    // handoff point; the probe-only early handoff above is the documented
-    // exception required by gfxdemo's first real SUBMIT.
-    if !boot_probe {
-        vgpu_progress_handoff(&mut vgpu_progress_cli);
-    }
     if WMD_CLI_DUP.load(Ordering::Relaxed) != 0 {
         // R1 判别器 v2：交互相（BLK_OK≠0 数据盘在位）才让位 fs；冻结相 0
         // 直传 = [wm] 截断形（assemble 前缀截断纪律自处）。rootfs 形
@@ -2050,12 +2024,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
     // 旗在此声明兼立（spawn Err 也不给 walk arm 双拉口——bsh_spawned
     // 同款纪律；恒真到 walk arm = 预拉必然先于 walk 执行）。
     let stdhello_spawned = true;
-    let stdhello_geom = if boot_probe {
-        cpio_find(H_ROOTFS, b"bin/stdhello")
-    } else {
-        None
-    };
-    if let Some((data_off, data_len)) = stdhello_geom {
+    if let Some((data_off, data_len)) = cpio_find(H_ROOTFS, b"bin/stdhello") {
         // d-3b 同款：feeder 泵 64B 确定性 pattern + EOF（read_to_end 残段
         // 缓冲面的活证）。
         const STDIN_DATA: [u8; 64] =
@@ -2088,6 +2057,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                 mmio_va: 0,
                 intent: 0,
                 force_eager: false,
+                env: &[],
             },
         ) {
             Ok(child) => {
@@ -2126,7 +2096,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
     // 个（单活跃客户——fsproto 严格串行无请求号，交叠即混流；bsh arm 在
     // 本 arm 之后，其 fs 自验与本窗口零交叠）。fsmgr 未起（fs_a_h==0）→
     // 静默跳过（rootfs 相 fsmgr 链断本就该 FAIL——U1 缺失 loud）。
-    if boot_probe && fs_a_h != 0 && u1_selftest(console, fs_a_h) {
+    if fs_a_h != 0 && u1_selftest(console, fs_a_h) {
         send_retry(console, U1_OK.as_ptr(), U1_OK.len());
     }
     while pos < cap {
@@ -2141,7 +2111,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                 let (name, data_off, data_len, next) = (s.name, s.data_off, s.data_len, s.next_off);
                 // 名字从步进窗借引用：下一轮 cpio_step 前用完（spawn 内的
                 // env 发送即消费点，之后只碰 ELF_WIN/PUMP_WIN）。
-                if boot_probe && name == "bin/hello" {
+                if name == "bin/hello" {
                     match spawn_rootfs_elf(
                         H_ROOTFS,
                         &SpawnSpec {
@@ -2158,6 +2128,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                             mmio_va: 0,
                             intent: 0,
                             force_eager: false,
+                            env: &[],
                         },
                     ) {
                         // hello 常驻（10s 周期睡眠不回收）——入账。
@@ -2181,7 +2152,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                     if !stdhello_spawned {
                         eco_skip(b"stdhello not pre-pulled");
                     }
-                } else if boot_probe && name == "bin/hexyl" {
+                } else if name == "bin/hexyl" {
                     // d-3c：D4 路线①最终验证——上游 main.rs 逐字未动的生态
                     // 程序。argv 追加 `--color=never`（0.17 默认 Color=Always
                     // 会打 ANSI 码；plain 输出 = 宿主同版管道对照可逐字比）
@@ -2229,6 +2200,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                             // 注册方案「即回 eager 时代 10s 即完」）。瞬态足迹
                             // <0.5MiB 且终验后即 reap——128MiB 预算内零险。
                             force_eager: true,
+                            env: &[],
                         },
                     ) {
                         Err(()) => eco_skip(b"elf bad"),
@@ -2247,7 +2219,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                     if berry_handle_close(out_s) != 0 {
                         trap();
                     }
-                } else if boot_probe && name == "bin/bsh" {
+                } else if name == "bin/bsh" {
                     // A-2：交互 shell bsh——**SDK-1a §1.2 起延后拉起**：本 arm
                     // 只记包内几何（data_off/data_len），spawn 整体挪到走查毕
                     // app 批之后的 `if let Some((off, len)) = bsh_geom` 段
@@ -2305,6 +2277,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                                 mmio_va: 0,
                                 intent: 0,
                                 force_eager: false,
+                                env: &[],
                             },
                         ) {
                             Ok(_) => ps_reg(b"simbattery", psp::STATE_ALIVE, 0),
@@ -2345,6 +2318,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                                 mmio_va: VIRTIO_MMIO_VA,
                                 intent: 0,
                                 force_eager: false,
+                                env: &[],
                             },
                         ) {
                             Ok(child) => {
@@ -2428,11 +2402,16 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
     // ---- app-0 a-2：.bap 启动批（收集槽全量拉起；`APP ok n=` = rootfs
     // 相第 21 标记）——确定性状态谓词：每槽 bap_scan → manifest parse →
     // 双守卫 → 拉起 → EOF/reap 真码 0，全过才打（任一降级 = 标记缺失 =
-    // smoke FAIL；裸跑 app_n==0 零扰动）。SDK-1a §1.2：批块先于 bsh 拉起
-    // （appd fs 授能传 fs_a_h——此刻仍持，app 批窗口 app 为 fs_a 队列唯一
-    // 活动客户端：app_launch 对 console=true 阻塞 reap、console=false
-    // collect_eof+reap，任一时刻至多一个 app 存活发 fs RPC）。
-    if app_n > 0 && boot_probe {
+    // smoke FAIL；裸跑 app_n==0 零扰动）。**裁决 B（波 4）后谓词两支**：
+    // 非 [ui] 槽 = 拉起 ∧ 退出真码 0（原形）；[ui] 槽 = 入册 + gui
+    // deferred 记账（拉起权归 launcher——常驻 park 形由 boot 批拉起 =
+    // app_reap_tail 永等，W4-RECON §1.7 铁律）。deferred 槽计入 ok
+    // （n=9 仍打——语义 = 拉起子集 ∧ deferred 子集全过）。SDK-1a §1.2：
+    // 批块先于 bsh 拉起（appd fs 授能传 fs_a_h——此刻仍持，app 批窗口
+    // app 为 fs_a 队列唯一活动客户端：app_launch 对 console=true 阻塞
+    // reap、console=false collect_eof+reap，任一时刻至多一个 app 存活
+    // 发 fs RPC）。
+    if app_n > 0 {
         let mut ok = 0usize;
         // GUI-7：ui 面独立谓词（与拉起成败解耦——失败隔离两方向：ui 元数据
         // 坏不拦拉起、拉起坏不抹 ui 验证；Absent 不计入 decl）。
@@ -2453,13 +2432,8 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
             let (launched, uface, tail) = app_launch(
                 console,
                 fs_a_h,
-                // GUI verification rootfs (`probe.on`) must run the real
-                // boot-probe app batch. Product images omit probe.on and skip
-                // this block; runtime desktop clicks keep deferral authority
-                // in the launcher.
-                false,
+                true, // 裁决 B：boot 批 [ui] app 入册不拉起（头注/W4-RECON §1.7）
                 &apps[i].id[..apps[i].id_len],
-                false,
                 apps[i].bap_off,
                 apps[i].bap_len,
                 step,
@@ -2620,6 +2594,7 @@ fn run_rootfs_child(console: Handle, boot_probe: bool) {
                 mmio_va: 0,
                 intent: 0,
                 force_eager: true,
+                env: &[],
             },
         )
         .is_err()
@@ -2995,6 +2970,7 @@ fn ps_selftest(console: Handle) {
             mmio_va: 0,
             intent: 0,
             force_eager: false,
+            env: &[],
         },
     ) {
         Ok(c) => c,
@@ -3264,6 +3240,7 @@ fn bc_run_sub(console: Handle, sub: &[u8], data_off: u64, data_len: u64) -> Opti
             mmio_va: 0,
             intent: 0,
             force_eager: false,
+            env: &[],
         },
     ) {
         Ok(c) => c,
@@ -4408,8 +4385,9 @@ fn dpg_bench(console: Handle) {
     const _: () = assert!(b" n=32"[3] == b'0' + DPGB_PAGES as u8 / 10
         && b" n=32"[4] == b'0' + DPGB_PAGES as u8 % 10);
     let mut line = [0u8; 160];
-    let mut i = 9usize;
+    let mut i = 0usize;
     line[..9].copy_from_slice(b"DPGB p50=");
+    i = 9;
     i = append_u64_dec(&mut line, i, lat[DPGB_PAGES / 2]);
     line[i..i + 5].copy_from_slice(b" p99=");
     i += 5;
@@ -4721,6 +4699,7 @@ fn dpgx_spawn_parked(data_off: u64, data_len: u64, console: Handle) -> Option<Dp
             mmio_va: 0,
             intent: 0,
             force_eager: false,
+            env: &[],
         },
     ) {
         Ok(c) => c,
@@ -4968,6 +4947,7 @@ fn x5_spawn_parked(
             mmio_va: 0,
             intent: 0,
             force_eager: false,
+            env: &[],
         },
     ) {
         Ok(c) => c,
@@ -5384,141 +5364,6 @@ fn roundtrip(h: Handle, buf: &mut [u8; 8], req: &[u8; 8]) {
     }
 }
 
-/// per-boot seed 终混：splitmix64 形 finalizer + 显式 label，避免两类
-/// seed 只差同源输入的线性混合。仍是 v1 过渡熵源，真熵刀前不宣称 CSPRNG。
-fn finalize_boot_seed(mut x: u64, label: u64) -> u64 {
-    x ^= label;
-    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    x ^ (x >> 31)
-}
-
-/// 生成并发送 per-boot Surface escape seed，阻塞等 wmd 1B OK 后返回。
-/// TCG 冷启动下 wmd 初始化可超过通用 10s 等待帽；seed 是 GUI 服务装配
-/// 硬前置，采用 RPC 同级 120s。
-/// 种子混合 wmd 启动时序与本地 handle 值；无公开常量可抄。
-fn share_surface_escape_seed(w_cli: Handle) -> u64 {
-    const CAP_NS: u64 = 120 * 1_000_000_000;
-    let t0 = now();
-    let mut seed = finalize_boot_seed(
-        t0 ^ u64::from(w_cli).rotate_left(32),
-        0x4553_4341_5045_5347,
-    );
-    if seed == 0 {
-        seed = 0x6D2B_79F5_24D5_C58D;
-    }
-    let mut req = [0u8; gp::surface::SURFACE_ESCAPE_SEED_REQ_LEN];
-    let n = match gp::surface::encode_wm_surface_escape_seed_req(
-        &mut req,
-        &seed.to_le_bytes(),
-    ) {
-        Some(n) => n,
-        None => trap(),
-    };
-    send_retry(w_cli, req.as_ptr(), n);
-    let mut rep = [0u8; 1];
-    let mut nb = 1usize;
-    let mut nh = 0usize;
-    loop {
-        let status = berry_channel_recv(
-            w_cli,
-            rep.as_mut_ptr(),
-            &mut nb,
-            core::ptr::null_mut(),
-            &mut nh,
-        );
-        if status == 0 {
-            break;
-        }
-        if status != BERRY_ERR_AGAIN {
-            trap();
-        }
-        let mut observed = 0u64;
-        if berry_object_wait_one(
-            w_cli,
-            SIGNAL_READABLE,
-            now() + CAP_NS,
-            &mut observed,
-        ) != 0
-        {
-            trap();
-        }
-    }
-    if nb != 1 || nh != 0 || rep[0] != gp::ST_OK {
-        trap();
-    }
-    seed
-}
-/// R1：生成并发送 per-boot SYSTEM client seed。与 escape seed 独立，避免
-/// APP escape token 被复用为 SYSTEM 身份；同样阻塞等 wmd 1B OK。
-fn share_system_ui_seed(w_cli: Handle) -> u64 {
-    const CAP_NS: u64 = 120 * 1_000_000_000;
-    // 独立时间样本 + 已铸 escape seed + 不同 label：escape token 持有者
-    // 不能由同一路线性式推出 SYSTEM seed。
-    let t1 = now();
-    let escape = SURFACE_ESCAPE_SEED.load(Ordering::Relaxed);
-    let mut seed = finalize_boot_seed(
-        t1 ^ escape.rotate_left(19) ^ u64::from(w_cli).rotate_left(41),
-        0x5359_5354_454D_5345,
-    );
-    if seed == 0 {
-        seed = 0x8B72_1E5A_3C9D_4017;
-    }
-    let mut req = [0u8; gp::surface::WM_SYSTEM_SEED_REQ_LEN];
-    let n = match gp::surface::encode_wm_system_seed_req(
-        &mut req,
-        &seed.to_le_bytes(),
-    ) {
-        Some(n) => n,
-        None => trap(),
-    };
-    send_retry(w_cli, req.as_ptr(), n);
-    let mut rep = [0u8; 1];
-    let mut nb = 1usize;
-    let mut nh = 0usize;
-    loop {
-        let status = berry_channel_recv(
-            w_cli,
-            rep.as_mut_ptr(),
-            &mut nb,
-            core::ptr::null_mut(),
-            &mut nh,
-        );
-        if status == 0 {
-            break;
-        }
-        if status != BERRY_ERR_AGAIN {
-            trap();
-        }
-        let mut observed = 0u64;
-        if berry_object_wait_one(
-            w_cli,
-            SIGNAL_READABLE,
-            now() + CAP_NS,
-            &mut observed,
-        ) != 0
-        {
-            trap();
-        }
-    }
-    if nb != 1 || nh != 0 || rep[0] != gp::ST_OK {
-        trap();
-    }
-    seed
-}
-
-/// u64 → 16 字符小写 hex argv（seed 内含 NUL，不能裸传）。
-fn seed_hex_arg(seed: u64) -> [u8; 16] {
-    let mut out = [0u8; 16];
-    for i in 0..16 {
-        let nibble = ((seed >> (4 * (15 - i))) & 0xf) as usize;
-        out[i] = b"0123456789abcdef"[nibble];
-    }
-    out
-}
-
-
 /// 发送（满 -EBUSY → wait WRITABLE 腾位重试；其余自陷）。
 fn send_retry(h: Handle, buf: *const u8, len: usize) {
     loop {
@@ -5559,228 +5404,6 @@ fn wait(h: Handle, signals: u64) {
         }
         trap();
     }
-}
-
-/// GPU2 诊断镜像专用 RPC（`gpuhdi.on` 在场才调用）。严格串行：send 可
-/// EBUSY 重试；3s 应答帽；返回 nb/nh，失败由调用方降级 guifbd。
-fn gpu_hdi_rpc(
-    h: Handle,
-    req: &[u8],
-    send_hs: &[Handle],
-    rep: &mut [u8; 32],
-    rhs: &mut [Handle; 2],
-) -> Option<(usize, usize)> {
-    let deadline = now() + 3_000_000_000;
-    loop {
-        let st = berry_channel_send(
-            h,
-            req.as_ptr(),
-            req.len(),
-            send_hs.as_ptr(),
-            send_hs.len(),
-        );
-        if st == 0 {
-            break;
-        }
-        if st != BERRY_ERR_BUSY {
-            return None;
-        }
-        let mut obs = 0u64;
-        if berry_object_wait_one(h, SIGNAL_WRITABLE, deadline, &mut obs) != 0 {
-            return None;
-        }
-    }
-    let mut obs = 0u64;
-    if berry_object_wait_one(h, SIGNAL_READABLE, deadline, &mut obs) != 0 {
-        return None;
-    }
-    let mut nb = rep.len();
-    let mut nh = rhs.len();
-    if berry_channel_recv(h, rep.as_mut_ptr(), &mut nb, rhs.as_mut_ptr(), &mut nh) != 0 {
-        return None;
-    }
-    Some((nb, nh))
-}
-
-/// Send the 700 permille control handoff, then close svcmgr's private dup.
-/// Setting the caller's handle to zero is the single-shot/lifecycle discipline.
-fn vgpu_progress_handoff(cli: &mut Handle) {
-    if *cli == 0 {
-        return;
-    }
-    vgpu_boot_progress(*cli, gp::BOOT_M_PROGRESS_CONTROL_HANDOFF);
-    if berry_handle_close(*cli) != 0 {
-        trap();
-    }
-    *cli = 0;
-}
-
-/// BOOT-P1：把 svcmgr 已完成的真实服务阶段送到当前呈现后端。该 RPC 在
-/// gui-wmd 首帧前使用；调用方持有私有 p_cli dup，不与 app present 竞争。
-fn vgpu_boot_progress(h: Handle, milestone: u8) -> bool {
-    let mut req = [0u8; 32];
-    let mut rep = [0u8; 32];
-    let mut rhs = [0 as Handle; 2];
-    let Some(n) = gp::encode_present_req(
-        &mut req,
-        &match gp::PresentReq::milestone(milestone) {
-            Some(request) => request,
-            None => return false,
-        },
-    ) else {
-        return false;
-    };
-    let Some((nb, nh)) = gpu_hdi_rpc(h, &req[..n], &[], &mut rep, &mut rhs) else {
-        return false;
-    };
-    nb == 1 && nh == 0 && rep[0] == gp::ST_OK
-}
-
-/// vgpud HDI 四 op 真链自验：REG_VBLANK(1) → VBLANK_WAIT → PREPARE →
-/// COMMIT fence → REG_VBLANK(0)。只在 `gpuhdi.on` 诊断 rootfs 中启用；
-/// 产品/验证镜像零调用零标记。full-size VMO 是 PREPARE 几何门的真值。
-fn vgpu_hdi_selftest(h: Handle, present: Handle, console: Handle) -> bool {
-    const SIG: u64 = gp::HDI_USER_SIGNAL;
-    // 几何来自 present GETINFO：产品为 1080×1920，GUI8 共识拓扑可为
-    // 800×600；HDI 自验不得把产品分辨率写死成全局假设。
-    let mut req = [0u8; 32];
-    let mut rep = [0u8; 32];
-    let mut rhs = [0 as Handle; 2];
-    let n = match gp::encode_present_req(&mut req, &gp::PresentReq::Getinfo) {
-        Some(n) => n,
-        None => return false,
-    };
-    let Some((nb, nh)) = gpu_hdi_rpc(present, &req[..n], &[], &mut rep, &mut rhs)
-    else {
-        return false;
-    };
-    let Some(info) = gp::parse_getinfo_rep(&rep[..nb]) else {
-        return false;
-    };
-    if nh != 0 || info.display_w == 0 || info.display_h == 0 {
-        return false;
-    }
-    let width = info.display_w;
-    let height = info.display_h;
-    let stride = width.saturating_mul(4);
-    // VMO size 面按 4KiB 向上取整：800×600×4 = 468.75 页，非整页长度
-    // 会被 VMO 创建面拒绝；PREPARE 几何门只要求 ≥ 线性帧长。
-    let len = ((stride as u64 * height as u64) + 4095) & !4095;
-
-    let mut req = [0u8; 32];
-    let mut rep = [0u8; 32];
-    let mut rhs = [0 as Handle; 2];
-    let mut ev = 0 as Handle;
-    if berry_event_create(0, &mut ev) != 0 || ev == 0 {
-        return false;
-    }
-    let n = gp::encode_reg_vblank_req(&mut req, 1);
-    let Some((nb, nh)) = gpu_hdi_rpc(h, &req[..n], &[ev], &mut rep, &mut rhs) else {
-        return false;
-    };
-    if nh != 0 || nb != 1 || rep[0] != gp::ST_OK {
-        return false;
-    }
-
-    let n = gp::encode_vblank_wait_req(&mut req);
-    let Some((nb, nh)) = gpu_hdi_rpc(h, &req[..n], &[], &mut rep, &mut rhs) else {
-        return false;
-    };
-    let Some(vb) = gp::parse_vblank_rep(&rep[..nb]) else {
-        return false;
-    };
-    if nh != 0 || vb.seq == 0 || vb.ts_ns == 0 {
-        return false;
-    }
-
-    let mut vmo = 0 as Handle;
-    let mut alias = 0 as Handle;
-    if berry_vmo_create(len, 0, &mut vmo) != 0
-        || vmo == 0
-        || berry_vmo_commit(vmo, 0, len) != 0
-        || berry_handle_duplicate(
-            vmo,
-            RIGHT_READ | RIGHT_TRANSFER | RIGHT_DUPLICATE,
-            &mut alias,
-        ) != 0
-        || alias == 0
-    {
-        let _ = berry_handle_close(vmo);
-        let _ = berry_handle_close(alias);
-        return false;
-    }
-    let preq = gp::PrepareReq {
-        flags: 0,
-        width: width,
-        height: height,
-        stride: stride,
-        format: gp::FMT_XRGB8888,
-    };
-    let n = gp::encode_prepare_req(&mut req, &preq);
-    let Some((nb, nh)) = gpu_hdi_rpc(h, &req[..n], &[alias], &mut rep, &mut rhs) else {
-        let _ = berry_handle_close(vmo);
-        return false;
-    };
-    let Some(slot) = gp::parse_prepare_rep(&rep[..nb]) else {
-        let _ = berry_handle_close(vmo);
-        return false;
-    };
-    if nh != 1 || rhs[0] == 0 {
-        for h in rhs[..nh].iter() {
-            let _ = berry_handle_close(*h);
-        }
-        let _ = berry_handle_close(vmo);
-        return false;
-    }
-    let fence = rhs[0];
-
-    let n = gp::encode_commit_req(&mut req, slot, 0);
-    let committed = match gpu_hdi_rpc(h, &req[..n], &[], &mut rep, &mut rhs) {
-        Some((nb, nh)) => nh == 0 && nb == 1 && rep[0] == gp::ST_OK,
-        None => false,
-    };
-    let mut observed = 0u64;
-    let signaled = committed
-        && berry_object_wait_one(fence, SIG, now() + 3_000_000_000, &mut observed) == 0
-        && observed & SIG != 0;
-    let _ = berry_handle_close(fence);
-    let _ = berry_handle_close(vmo);
-
-    // 关闭 vblank：协议宽收随行 event（无/1 均合法）；服务端收下即关。
-    let mut off = 0 as Handle;
-    let _ = berry_event_create(0, &mut off);
-    let n = gp::encode_reg_vblank_req(&mut req, 0);
-    let off_hs: &[Handle] = if off == 0 { &[] } else { &[off] };
-    let off_ok = match gpu_hdi_rpc(h, &req[..n], off_hs, &mut rep, &mut rhs) {
-        Some((nb, nh)) => nh == 0 && nb == 1 && rep[0] == gp::ST_OK,
-        None => false,
-    };
-    signaled && off_ok && {
-        let done = b"VGPUHDI ok vblank=1 fence=1 presented=1\n";
-        send_retry(console, done.as_ptr(), done.len());
-        true
-    }
-}
-
-/// 等待 vgpud 后端 ready（1B `V`）。设备缺席时 vgpud park，本等待到帽
-/// 即回落 guifbd；真实设备路径在启动毫秒级到达。
-fn vgpu_ready(h: Handle) -> bool {
-    let mut obs = 0u64;
-    if berry_object_wait_one(h, SIGNAL_READABLE, now() + 3_000_000_000, &mut obs) != 0 {
-        return false;
-    }
-    let mut buf = [0u8; 1];
-    let mut nb = buf.len();
-    let mut hh = [0 as Handle; 1];
-    let mut nh = hh.len();
-    if berry_channel_recv(h, buf.as_mut_ptr(), &mut nb, hh.as_mut_ptr(), &mut nh) != 0
-        || nh != 0
-        || nb != 1
-        || buf[0] != b'V'
-    {
-        return false;
-    }
-    true
 }
 
 /// now = clock_read（失败自陷）。
@@ -5887,6 +5510,49 @@ fn blk_rpc(h: Handle, op: u8, sector: u64, vmo: Handle) -> Result<u8, ()> {
     parse_reply(&rep[..nb]).ok_or(())
 }
 
+/// wm 订阅代发 RPC（wm 订阅私有通道刀——blk_rpc 先例形态）：4B
+/// WM_SUBSCRIBE 请求 send（EBUSY → wait WRITABLE 重试；wm 域 op 零随行
+/// handle 合同）→ 60s 应答帽 wait READABLE（BLKD_REPLY_CAP 同值——wmd 子
+/// 未进 serve 循环的迟到 ack 由帽覆盖，TCG 慢靴裕量）→ recv 开 handle
+/// 出参窗。ack 合同 = 恰 1B ST_OK + 恰 1 handle（订阅者事件通道 cli 端）
+/// → Ok(cli)；其余一切面（发送败/帽到/非 OK ack/畸形）→ Err——畸形面
+/// 随行 handle 全收口丢弃（ps 自验先例）。recv 窗按 ABI 满额（256B/8
+/// 枚 = CHAN_MSG_MAX/CHAN_HND_MAX）：任何帧形态必被整体消费，零「窗小
+/// 回滚滞队」毒化后续读者（gfxdemo）面。
+fn wm_subscribe_rpc(h: Handle) -> Result<Handle, ()> {
+    let mut req = [0u8; 4];
+    let n = gp::encode_wm_subscribe_req(&mut req);
+    loop {
+        let s = berry_channel_send(h, req.as_ptr(), n, core::ptr::null(), 0);
+        if s == 0 {
+            break;
+        }
+        if s != BERRY_ERR_BUSY {
+            // 非 EBUSY 失败（请求未入队）——Err（wmd 未见请求，零订阅侧残留）。
+            return Err(());
+        }
+        wait(h, SIGNAL_WRITABLE);
+    }
+    let mut obs = 0u64;
+    if berry_object_wait_one(h, SIGNAL_READABLE, now() + BLKD_REPLY_CAP, &mut obs) != 0 {
+        return Err(());
+    }
+    let mut rep = [0u8; 256];
+    let mut rh = [0 as Handle; 8];
+    let mut nb = rep.len();
+    let mut nh = rh.len();
+    if berry_channel_recv(h, rep.as_mut_ptr(), &mut nb, rh.as_mut_ptr(), &mut nh) != 0 {
+        return Err(());
+    }
+    if nb == 1 && rep[0] == gp::ST_OK && nh == 1 {
+        return Ok(rh[0]);
+    }
+    for i in 0..nh {
+        let _ = berry_handle_close(rh[i]);
+    }
+    Err(())
+}
+
 /// eco 降级行（run_rootfs_child 内 `eco_skip` 闭包的独立 fn 版——A-8c 的
 /// DNS 自验在 `_start` 语境（闭包作用域外）消费，形态逐字同源）。
 fn eco_line(console: Handle, why: &[u8]) {
@@ -5941,8 +5607,9 @@ fn app_gui_deferred(console: Handle, id: &[u8]) {
 // 会话编排：排液 → 读账本 → boot id → 合并去重 → 分片 PUT staging +
 // TRUNC 收口 → 读回对拍。落账窗安全论证（fsproto 严格串行无请求号 ⇒
 // 唯一活跃客户纪律）：
-// - battery：fsmgr Ok 后、vnet 前的机械唯一 client 窗（fs 端点集刚建，
-//   vnet/launcher/app 全未起——机制性排除交叠，非时序赌目）；
+// - battery：fsmgr Ok 后、launcher 前的机械唯一 client 窗（fs 端点集刚建，
+//   vnet 已起〔F122 前移臂〕但零 fs 端持有，launcher/app 未起——机制性
+//   排除交叠，非时序赌目）；
 // - 死亡面：门控「死者是最后一个活 app」（表空 = 无并发 fs client；
 //   launcher 在 app 相位结构上不写 fs——layout RMW 只在 init）；
 // - launcher init（berry-launcher 侧自落账）：自身会话，catch 自身重启
@@ -6497,6 +6164,7 @@ fn uu_run(console: Handle, fs_a: Handle, name: &[u8], args: &[&[u8]]) -> Option<
             // eager 瞬态足迹 ~330KiB——128MiB 预算内零险（X-5 常驻豁免同款
             // 面；uu 非长命常驻，槽位/pager 键竞速反而净减）。
             force_eager: true,
+            env: &[],
         },
     ) {
         Ok(c) => c,
@@ -6935,6 +6603,7 @@ fn p3_sig_guard(console: Handle, id: &[u8], bap_off: u64, bap_len: u64, step: &m
             intent: 0,
             // 短命测试族缺省 demand（X-5 家族常径；像 ~26KB 小窗走查）。
             force_eager: false,
+            env: &[],
         },
     ) {
         Err(()) => {
@@ -6989,7 +6658,6 @@ fn app_launch(
     fs_a: Handle,
     defer_gui: bool,
     id: &[u8],
-    runtime: bool,
     bap_off: u64,
     bap_len: u64,
     step: &mut [u8],
@@ -7041,9 +6709,8 @@ fn app_launch(
         return (false, UiFace::Absent, None);
     }
     // PS 账本门（见 AppSpawnTail.ledger）：只登记 console=true 的可观测
-    // app。wm app 的 boot-probe 是同步验收件（必退出），不占 PS_MAX；
-    // runtime APP_SPAWN 形仍是可观测常驻/用户可见进程，入账。
-    let ledger = man.console && !(man.wm && !runtime);
+    // app；静默占位 app 不占 PS_MAX/ps 渲染窗。
+    let ledger = man.console;
     // SDK-1a §5.2 步骤 1：compat min 装载期检查（ADR #55 工具链三值域的
     // 运行时执法点）。min > SDK_CURRENT = 本系统比包声称的最低线还老 →
     // loud 降级行拒拉（fsmgr diag("geom") 同式）；target/compile 是打包
@@ -7150,42 +6817,70 @@ fn app_launch(
             return (false, uface, None);
         }
     }
-    // GUI app：manifest `wm=true` 时 fresh dup WMD broker 客户端端。
-    // Berry Room 代 app 建立 WM/input session 并在 WM_CONNECT 请求里迁回
-    // wmd；本端只是 broker 入场券，不含 present/hdi 服务端能力。
-    let wants_wm = man.wm;
+    // —— GUI 通道授权（波 4 侦察 §二「GUI 通道授权缺位」的 v1 接线）：
+    //    [ui] 词在场的 app 追授 wm 客户端端 + inputd 端——launcher_
+    //    assemble 同源纪律（WMD_CLI_DUP/INPUT_A 常驻源**现 dup**，SEND|
+    //    RECV——wmd arm w_dup 同口径；TRANSFER = 随 env 块迁移的 send
+    //    预检保位）。门 = [ui] ∧ WMD_CLI_DUP≠0：manifest type 无 gui
+    //    分类（app/driver 两值域——ADR #82），[ui] 节 = 现行最近似的
+    //    GUI 判别位；rootfs 形/裸相 wmd 未起恒缺席（rootfs smoke 现状
+    //    零漂）。APPQUIET 无 [ui] 不入此面——其 lifecycle absent 探针
+    //    断言 GIFT_H[0]==0（berry-libc lifecycle.rs 零义务兼容律），槽
+    //    位一占即 assert 炸连坐 `APP ok n=`。console app（APPDEMO 带
+    //    [ui]）照授——app 侧无访问器即惰性无害（v1 统一简化）。波 4
+    //    裁决 A（`ui = ["wm","input"]` 能力词 + appshell crt0 位序立法）
+    //    落地时本面整体换轨退役。
+    let wants_gui = man.ui.is_some();
+    let wmd_src = WMD_CLI_DUP.load(Ordering::Relaxed);
+    let inp_src = INPUT_A.load(Ordering::Relaxed);
+    // slot 布局（前缀紧致律——berry-exec「零 0 洞」与 libc io.rs GIFT_H
+    // 按位落种的对偶）：wants_fs = [rootfs, fs] 双端不动（APPDEMO 面
+    // GIFT_H[0]/[1] 语义零漂），wm/input 尾追 [2]/[3]（input 固定位
+    // [3] = `input_h()`；wm 落 [2] 暂无 app 侧访问器 = 波 4 appshell
+    // 裁决 A 位）。!wants_fs = wm 落 [0]（`wm_cli_h()`——settings 链
+    // berry-launcher 镜像位）+ input 固定位 [3]，[1]/[2] 为占位端
+    // （wm 同源别名——零新授权面；input 到 [3] 需满前缀，洞 = send
+    // 预检 0 值 -EBADF 自陷；错位消费 = 对 wmd 发帧得错误应答 loud，
+    // 非对死通道的静默死等）。
     let mut wm_dup: Handle = 0;
-    if wants_wm {
-        let src = WMD_CLI_DUP.load(Ordering::Relaxed);
-        if src == 0 {
-            eco_app(console, id, b"wm none");
-            if wants_fs {
-                if berry_handle_close(rootfs_dup) != 0
-                    || berry_handle_close(fs_dup) != 0
-                {
+    let mut gui_ph: [Handle; 2] = [0; 2];
+    let mut in_dup: Handle = 0;
+    if wants_gui && wmd_src != 0 {
+        // inputd 端缺席（INPUT_A==0）= 尾截断：app 侧 input_h()==0 静态
+        // 页降级（launcher input 缺席截断同款），wm 面照授。
+        let mut bad = false;
+        if berry_handle_duplicate(wmd_src, RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER, &mut wm_dup) != 0 {
+            bad = true;
+        }
+        if !bad && !wants_fs {
+            for h in gui_ph.iter_mut() {
+                if berry_handle_duplicate(wmd_src, RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER, h) != 0 {
+                    bad = true;
+                    break;
+                }
+            }
+        }
+        if !bad && inp_src != 0 {
+            if berry_handle_duplicate(inp_src, RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER, &mut in_dup) != 0 {
+                bad = true;
+            }
+        }
+        if bad {
+            // 半途失败：已 dup 面（wm/占位/input）全量回收 + fs dup 连带
+            // （构建序反序——fs 半途失败关 rootfs_dup 同款）+ out 对
+            // （console=false 已分岔面）。loud 降级不拦系统：app 侧走
+            // 「wm absent」park 自述（fs "fs dup" 路同形）。
+            for h in [wm_dup, gui_ph[0], gui_ph[1], in_dup] {
+                if h != 0 && berry_handle_close(h) != 0 {
                     trap();
                 }
             }
-            if out_s != 0
-                && (berry_handle_close(out_s) != 0 || berry_handle_close(stdout) != 0)
-            {
-                trap();
-            }
-            return (false, uface, None);
-        }
-        if berry_handle_duplicate(
-            src,
-            RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER | RIGHT_DUPLICATE,
-            &mut wm_dup,
-        ) != 0 {
-            eco_app(console, id, b"wm dup");
             if wants_fs {
-                if berry_handle_close(rootfs_dup) != 0
-                    || berry_handle_close(fs_dup) != 0
-                {
+                if berry_handle_close(rootfs_dup) != 0 || berry_handle_close(fs_dup) != 0 {
                     trap();
                 }
             }
+            eco_app(console, id, b"gui dup"); // 7B ≤ 24B
             if out_s != 0
                 && (berry_handle_close(out_s) != 0 || berry_handle_close(stdout) != 0)
             {
@@ -7194,102 +6889,37 @@ fn app_launch(
             return (false, uface, None);
         }
     }
-    // P1 Surface escape 运行期 allowlist：未列 app 即使 manifest 声明也不铸
-    // token（防绕过宿主静态守卫的第三方 .bap 直接获取特权）。
-    if man.surface_escape && !SURFACE_ESCAPE_APPS.iter().any(|x| *x == id) {
-        if wants_fs
-            && (berry_handle_close(rootfs_dup) != 0 || berry_handle_close(fs_dup) != 0)
-        {
-            trap();
-        }
-        if wants_wm && berry_handle_close(wm_dup) != 0 {
-            trap();
-        }
-        if out_s != 0
-            && (berry_handle_close(out_s) != 0 || berry_handle_close(stdout) != 0)
-        {
-            trap();
-        }
-        eco_app(console, id, b"surface denied");
-        return (false, uface, None);
-    }
-
-    let surface_seed_value = SURFACE_ESCAPE_SEED.load(Ordering::Relaxed);
-    if man.surface_escape && surface_seed_value == 0 {
-        if wants_fs
-            && (berry_handle_close(rootfs_dup) != 0 || berry_handle_close(fs_dup) != 0)
-        {
-            trap();
-        }
-        if wants_wm && berry_handle_close(wm_dup) != 0 {
-            trap();
-        }
-        if out_s != 0
-            && (berry_handle_close(out_s) != 0 || berry_handle_close(stdout) != 0)
-        {
-            trap();
-        }
-        eco_app(console, id, b"surface seed");
-        return (false, uface, None);
-    }
-
-    // P1 Surface escape：svcmgr 按 manifest 铸一次性预载 token。sender 在
-    // 消息入队后即关；receiver 是 app 唯一可迁授权，Berry Room 在
-    // WM_CONNECT 随行交给 wmd 消费。普通 app 无 token，0x67 escape 恒拒。
-    let mut escape_token: Handle = 0;
-    if wants_wm && man.surface_escape {
-        let (token_sender, token_receiver) = channel_pair();
-        if berry_channel_send(
-            token_sender,
-            surface_seed_value.to_le_bytes().as_ptr(),
-            core::mem::size_of::<u64>(),
-            core::ptr::null(),
-            0,
-        ) != 0
-        {
-            let _ = berry_handle_close(token_sender);
-            let _ = berry_handle_close(token_receiver);
-            if wants_fs
-                && (berry_handle_close(rootfs_dup) != 0 || berry_handle_close(fs_dup) != 0)
-            {
-                trap();
+    // gift 数组前置绑定（E0716：字面数组临时值撑不过 SpawnSpec 借用窗）；
+    // 无 GUI 面 = 现 fs 双端（或零端）原形。前缀截断纪律（launcher_
+    // assemble / bsh netd-input 条款同源）：input 只随满前缀入列。
+    let mut gifts = [0 as Handle; 4];
+    let gifts: &[Handle] = if wants_fs {
+        gifts[0] = rootfs_dup;
+        gifts[1] = fs_dup;
+        if wm_dup != 0 {
+            gifts[2] = wm_dup;
+            if in_dup != 0 {
+                gifts[3] = in_dup;
+                &gifts[..4]
+            } else {
+                &gifts[..3]
             }
-            if berry_handle_close(wm_dup) != 0 {
-                trap();
-            }
-            if out_s != 0
-                && (berry_handle_close(out_s) != 0 || berry_handle_close(stdout) != 0)
-            {
-                trap();
-            }
-            eco_app(console, id, b"surface token");
-            return (false, uface, None);
+        } else {
+            &gifts[..2]
         }
-        if berry_handle_close(token_sender) != 0 {
-            trap();
+    } else if wm_dup != 0 {
+        gifts[0] = wm_dup;
+        gifts[1] = gui_ph[0];
+        gifts[2] = gui_ph[1];
+        if in_dup != 0 {
+            gifts[3] = in_dup;
+            &gifts[..4]
+        } else {
+            &gifts[..3]
         }
-        escape_token = token_receiver;
-    }
-
-    // gift 数组前置绑定（E0716：字面数组临时值撑不过 SpawnSpec 借用窗）。
-    // 前缀纪律：fs 双件 [rootfs,fs]、wm 与 escape token 随后；空前缀不引
-    // 用 0 洞。base 4 + fs2 + wm1 + token1 = 8，恰 CHAN_HND_MAX 总帽。
-    let mut extra_gifts = [0 as Handle; 4];
-    let mut extra_n = 0usize;
-    if wants_fs {
-        extra_gifts[extra_n] = rootfs_dup;
-        extra_gifts[extra_n + 1] = fs_dup;
-        extra_n += 2;
-    }
-    if wants_wm {
-        extra_gifts[extra_n] = wm_dup;
-        extra_n += 1;
-    }
-    if escape_token != 0 {
-        extra_gifts[extra_n] = escape_token;
-        extra_n += 1;
-    }
-    let extra_gifts = &extra_gifts[..extra_n];
+    } else {
+        &[]
+    };
     match spawn_rootfs_elf(
         H_ROOTFS,
         &SpawnSpec {
@@ -7298,16 +6928,14 @@ fn app_launch(
             data_len: sc.elf_len,
             stdout,
             stack_pages: man.stack_pages as u64,
-            // stdin 无数据面（hello/vprobe 同款）。SDK-1a/Browser：extras
-            // 非空时 `Some(&[])`——berry-exec 要求 stdin 槽在位，零长 feed
-            // = 纯占位。
-            stdin_feed: if extra_n > 0 { Some(&[]) } else { None },
+            // stdin 无数据面（hello/vprobe 同款——appdemo/appquiet 都不读
+            // fd0）。SDK-1a：extras 非空须 stdin 槽在位（berry-exec 契约
+            // :446-449 assert），零长 feed = 纯槽位占位无数据——判据从
+            // wants_fs 改 gifts 非空（GUI 面 !wants_fs 也须在席）。
+            stdin_feed: if gifts.is_empty() { None } else { Some(&[]) },
             stdin_handle: None,
-            // wm=true 的 boot 批仍是真实拉起，但携 `boot-probe` argv：
-            // Browser 走完整 WM/窗口/帧/destroy 后退出，避免常驻 app 卡
-            // 死同步 boot reap；桌面点击 runtime 形无该 argv，正常常驻。
-            args: if wants_wm && !runtime { &[b"boot-probe"] } else { &[] },
-            extra_gifts,
+            args: &[],
+            extra_gifts: gifts,
             mmio_vmo: None,
             mmio_va: 0,
             // Intent M4：manifest 声明值透传（六档 u8 判别值镜像
@@ -7315,6 +6943,7 @@ fn app_launch(
             // 0 = 零漂（berry-exec 该值才发 setattr）。
             intent: man.intent as u8,
             force_eager: false,
+            env: &[],
         },
     ) {
         Err(()) => {
@@ -7328,11 +6957,10 @@ fn app_launch(
                     trap();
                 }
             }
-            if wants_wm && berry_handle_close(wm_dup) != 0 {
-                trap();
-            }
-            if escape_token != 0 && berry_handle_close(escape_token) != 0 {
-                trap();
+            for h in [wm_dup, gui_ph[0], gui_ph[1], in_dup] {
+                if h != 0 && berry_handle_close(h) != 0 {
+                    trap();
+                }
             }
             if ledger {
                 ps_reg(id, psp::STATE_SPAWNFAIL, 0);
@@ -7345,7 +6973,7 @@ fn app_launch(
             }
         }
         Ok(child) => {
-            // SDK-1a/Browser：fs/wm dup 已被 take 随 env 块迁移（子表
+            // SDK-1a §5.2 步骤 7：fs 两 dup 已被 take 随 env 块迁移（子表
             // 所有）——本表勿关（旧值已失效，关 = -EBADF；bsh arm 同款
             // 注释义务）。GUI 四 dup（wm/占位 ×2/input）同律随 extras
             // take 迁入。
@@ -7645,6 +7273,7 @@ fn tomb_selftest(console: Handle, step: &mut [u8], mf: &mut [u8], icons: &mut [U
             mmio_va: 0,
             intent: 0,
             force_eager: false,
+            env: &[],
         },
     ) {
         Ok(c) => c,
@@ -8010,6 +7639,7 @@ fn tomb_selftest(console: Handle, step: &mut [u8], mf: &mut [u8], icons: &mut [U
             mmio_va: 0,
             intent: 0,
             force_eager: false,
+            env: &[],
         },
     ) {
         Ok(c) => c,
@@ -8202,19 +7832,6 @@ fn launcher_assemble(console: Handle, fs_gift: Handle) -> bool {
             &lgifts[..3]
         }
     };
-    let system_seed_value = SYSTEM_UI_SEED.load(Ordering::Relaxed);
-    if system_seed_value == 0 {
-        // wmd 已起则 seed 预共享必然完成；缺席是装配协议破缺，不允许
-        // launcher 以无特权形态降级。
-        trap();
-    }
-    let system_seed_arg = seed_hex_arg(system_seed_value);
-    let product_boot = cpio_find(H_ROOTFS, b"probe.on").is_none();
-    let launcher_args: &[&[u8]] = if product_boot {
-        &[system_seed_arg.as_slice(), b"product"]
-    } else {
-        &[system_seed_arg.as_slice()]
-    };
     match spawn_rootfs_elf(
         H_ROOTFS,
         &SpawnSpec {
@@ -8222,23 +7839,24 @@ fn launcher_assemble(console: Handle, fs_gift: Handle) -> bool {
             data_off,
             data_len,
             stdout: console,
-            // 128 页 = 512KB（2026-11-17 合并后实测定值：BerryUI 控件语料
-            // 并集让 `UiMain` 90KB + 壁纸重采样 14KB + `UiMain::new` 构造
-            // 中间体在 LTO 后仍落主栈；64 页在 `icons::prime_wallpaper`/
-            // `UiMain::new` 段以 SP==FAR 干净穿护页（两次同 PC 复现）。
-            // 常驻桌面进程用 direct SpawnSpec 抬栈；manifest app 域检
-            // 1..=64 不适用本 direct 装配面。
-            stack_pages: 128,
+            // 64 页 = 256KB（R5 实测定值——段③ 首验仪器定谳：8 页 32KB 下
+            // main+0x1c 序言即穿保护页 D-abort——`UiMain::new` 构造中间体
+            // LTO 后仍部分落栈 ~29KB + pre-main std 运行时；帧循环另有
+            // CommandEncoder 18KB/帧（gfxdemo 16 页先例无 berry-ui 链——刀4
+            // k4 统计面自 8 抬，见上方 gfxdemo arm 注）。
+            // bsh 32 页先例之上；manifest 域检 1..=64 顶格）。
+            stack_pages: 64,
             // 占位 dummy（空 feeder 立即 EOF；berry-exec assert：extras 非
             // 空须 stdin 槽在位——fsmgr/vnet 同款）。
             stdin_feed: Some(&[]),
             stdin_handle: None,
-            args: launcher_args,
+            args: &[],
             extra_gifts: lgifts,
             mmio_vmo: None,
             mmio_va: 0,
             intent: 0,
             force_eager: false,
+            env: &[],
         },
     ) {
         Ok(child) => {
@@ -8561,7 +8179,6 @@ fn app_serve_spawn(console: Handle, svc: Handle, id: &[u8]) {
                 FS_A.load(Ordering::Relaxed),
                 false, // SPAWN RPC 形：launcher 点击拉起，裁决 B deferral 不适用
                 id,
-                true,
                 off,
                 len,
                 step,

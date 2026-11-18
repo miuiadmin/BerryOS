@@ -11,7 +11,9 @@
 #      stdhello 经 musl target + berry-libc shim + 流式装载全链自打——
 #      G-eco-d d-1c）标记到齐——「rootfs 程序经全链跑通出字」的关卡化
 #      （裸跑相 rootfs 缺席 = svcmgr 静默降级，26 标记零扰动，两相互证；
-#      B-0 起裸相含 BENCH ok n=6——内核微基准 + churn 泄漏金丝雀关卡化；
+#      B-0 起裸相含 BENCH ok n=8（04 号审计基线缺口刀起 n=6→n=8——
+#      pick_scan/switch_pair 两项收口，trailer 迁调度器纪元尾恒发）——
+#      内核微基准 + churn 泄漏金丝雀关卡化；
 #      R-0 起含 BENCHWAKE n=——唤醒延迟直方图 boot 尾形状行；
 #      S-2 起含 BENCHXH ok——资源耗尽/恢复六面确定性关卡化；
 #      B-1 起含 B1 ok n=4——EL0 用户态四项微基准（bench1 spawn + bsh
@@ -574,7 +576,10 @@ done
 # 永不写——A-6 起卷面有 FATW/RW.TXT 落盘写，保留区与卷面仍零交集）。
 # P6 A-6：-drive 全线 cache.writeback=off——QEMU 由 SIGTERM 终止，writeback
 # 模式可能不刷页缓存；本相盘随后重造无持久化需求，但与 RX/持久化相统一。
-python3 tools/mkfat.py disk.img || fail "mkfat 造盘失败"
+# mkfat 换轨第二波：造盘位切 Rust 件（paths.sh berryos_mkfat 单源——先编后
+# 用 + cargo-target 钉位；Python mkfat.py 保模块面/oracle，见 justfile 注）。
+MKFAT=$(berryos_mkfat) || fail "mkfat 解析失败"
+"$MKFAT" disk.img || fail "mkfat 造盘失败"
 printf 'BERRYOSVBLK!' | dd of=disk.img conv=notrunc status=none
 # T-c：宿主 TCP 回显服务（vnet TCP 自验的对端——guest 主动 connect 10.0.2.2
 # 由 SLIRP 转发宿主 127.0.0.1:18080）。三相共用（每相一个连接、用完被动
@@ -947,19 +952,24 @@ QEMU_PID=$!
 # SIG）；无拓扑降级门，失败即 park loud。"SIG ok" 与现役标记两两互非子串
 # （现役无 `XSIG ok` 形态在册——前邻特例不需要）。
 # 命令行体验刀：+ CLI ok n= / + TERM ok n=——bsh 六内建（clear/uname/
-# uptime/sleep/type/history）行为面 + 哑终端管道契约钉板（CLI 六步：
-# ⓪clear `\x1b[2J\x1b[H` 11B 逐字节对拍+带参照打幂等 ①uname 前缀+
+# uptime/sleep/type/history）行为面 + 哑终端管道契约钉板（CLI 十步：
+# ⓪clear `\x1b[2J\x1b[H` 7B 逐字节对拍+带参照打幂等 ①uname 前缀+
 # 带参拒 ②uptime `up <N>s` 数值域+带参拒 ③sleep 1s 时钟差分 [1s,30s]
 # TCG 宽带+拒面四连（缺失/非数字/负数/超 60s 帽）+sleep 0 域内放行
 # ④type 三分支逐字节对拍（内建档 echo/bin 档 hello——int_selftest 同款
-# 依赖/not-found 档码 1 空数据）+缺参拒+BUILTINS 单源六新内建在册
-# ⑤history 两条目 `N  cmd` 环回读+空环空输出+带参拒；TERM 两步：⓪spawn
-# 子 bsh（--no-selftest 跳链直进交互循环+stdin_feed 喂两命令+fs_gifts
-# 四元同参 run_capture_fs 先例）私有 stdout 收齐 `bsh> `×2/回显行/
-# berryterm 结果行/BerryOS aarch64 结果行——提示符/回显/结果混流同一
+# 依赖/not-found 档码 1 空数据）+缺参拒+BUILTINS 单源新内建在册（体验刀
+# 六名 + 完善刀 unset 七名）
+# ⑤history 两条目 `N  cmd` 环回读+空环空输出+带参拒；完善刀（2026-11-17）
+# 四步：⑥`>>` 三态 RAM 树三跑 ⑦`||` 链对拍+左结合判别形 ⑧unset 五断言
+# ⑨管道切词对拍+带参真码链；TERM 三步：⓪spawn
+# 子 bsh（--no-selftest 跳链直进交互循环+stdin_feed 喂两命令+尾字节
+# \x03+fs_gifts 四元同参 run_capture_fs 先例）私有 stdout 收齐 `bsh> `/
+# 回显行/berryterm 结果行/BerryOS aarch64 结果行——提示符/回显/结果混流同一
 # 字节流（GUI 终端应用的地基契约）；①feeder EOF 后子 bsh 空读续读恒驻
-# → terminate(130)+reap 真码 130 收口（C-4b 先例））全过才打——rootfs 相
-# 第 55/56 标记，**命令行体验刀验收线**。CLI 前缀式 n=（步数单源在 bsh，
+# → terminate(130)+reap 真码 130 收口（C-4b 先例）；②`^C` 回显行在册+
+# prompt 重显在流（谓词钉「^C 后 prompt 已入流」——消收集早退竞速））
+# 全过才打——rootfs 相第 55/56 标记，**命令行体验刀验收线（步数前缀式单源在
+# bsh，完善刀 6→10/2→3 免改本块标记串）**。CLI 前缀式 n=（步数单源在 bsh，
 # FS ok n= 同款）；零 fs 盘面（render_cmd 直调+cpio 查档+usleep 补桩+
 # spawn 通用装配），链位置 sig 后 fat 族前（A 系契约位，EFI 路无盘亦打
 # CLI/TERM——smoke-image ECO canon 同面）；无拓扑降级门，失败即 park
@@ -1091,7 +1101,7 @@ RX_HOLDER=$!
 # 簇位（8）与根目录槽位；vblk LBA1/BLKD LBA5 仍在保留区）。**本相写过的
 # 盘直接喂阶段 5**（持久化相不再重造）——cache.writeback=off 保证
 # SIGTERM 终止前扇区已同步落宿主盘。
-python3 tools/mkfat.py disk.img || fail "mkfat 造盘失败"
+"$MKFAT" disk.img || fail "mkfat 造盘失败"
 printf 'BERRYOSVBLK!' | dd of=disk.img conv=notrunc status=none
 # A2-3：本相（及子目录/持久化相）每次 boot 各跑一遍 evs_selftest——client
 # 每相一实例（上相已收清，重起零残留）。
@@ -1499,7 +1509,7 @@ wait "$QEMU_PID" 2>/dev/null
 sleep 3
 rotate_log
 FX_BIN=$(mktemp "${TMPDIR:-/tmp}/berryos-fx.XXXXXX")
-python3 tools/mkfat.py disk_dirs.img --fixture "$FX_BIN" || fail "mkfat 造目录盘失败"
+"$MKFAT" disk_dirs.img --fixture "$FX_BIN" || fail "mkfat 造目录盘失败"
 rm -f "$FX_BIN"
 printf 'BERRYOSVBLK!' | dd of=disk_dirs.img conv=notrunc status=none
 evs_client_start
@@ -1676,7 +1686,7 @@ echo "smoke: FAT 持久化到齐（跨 boot 读回 f42t + M3DEMO T3.TXT 交互 c
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 rotate_log
-python3 tools/mkfat.py disk.pwr.img || fail "mkfat 造掉电盘失败"
+"$MKFAT" disk.pwr.img || fail "mkfat 造掉电盘失败"
 printf 'BERRYOSVBLK!' | dd of=disk.pwr.img conv=notrunc status=none
 echo "smoke: QEMU 启动（B4 掉电 Boot A：新文件窗采样，无 netdev）"
 "$QEMU" -machine virt -cpu cortex-a72 -m 128M -nographic -kernel "$KERNEL" \

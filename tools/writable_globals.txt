@@ -19,12 +19,16 @@ arch/aarch64/src/mmu.rs::BOOT_L1	page-table
 arch/aarch64/src/mmu.rs::BOOT_L2_LOW	page-table
 arch/aarch64/src/mmu.rs::BOOT_L2_RAM	page-table
 arch/aarch64/src/mmu.rs::KERNEL_L1	page-table
+arch/aarch64/src/mmu.rs::KERNEL_L2_LOW	page-table
+arch/aarch64/src/mmu.rs::KERNEL_L2_RAM	page-table
+arch/aarch64/src/mmu.rs::KERNEL_L3_IMG	page-table
 arch/aarch64/src/pl061.rs::PL061_NOTIFY	arch
 arch/aarch64/src/smp.rs::BOOT_EL	scheduler
 arch/aarch64/src/smp.rs::SMP_CPU0	scheduler
 arch/aarch64/src/smp.rs::SMP_CPU1	scheduler
 arch/aarch64/src/smp.rs::SMP_SEC_PARK_CTX	scheduler
 arch/aarch64/src/smp.rs::SMP_SEC_REPORT	scheduler
+arch/aarch64/src/smp.rs::SMP_SEC_STACK	scheduler
 arch/aarch64/src/syscall.rs::SYSCALLS	boot
 arch/aarch64/src/timer.rs::FREQ	scheduler
 arch/aarch64/src/timer.rs::SLICE	scheduler
@@ -84,7 +88,6 @@ sched/src/sched.rs::PER_CPU_RQ	scheduler
 sched/src/sched.rs::REAPQ	scheduler
 sched/src/sched.rs::REAPQ_LEN	scheduler
 sched/src/sched.rs::REAPQ_WARNED	scheduler
-sched/src/sched.rs::REPLY_HANDOFF	scheduler
 sched/src/sched.rs::REAP_POST_HOOK	scheduler
 sched/src/sched.rs::SLEEPQ	scheduler
 sched/src/sched.rs::SLEEPQ_HOOK	scheduler

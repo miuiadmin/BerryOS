@@ -427,6 +427,12 @@ impl Fair {
         _topo: &Topo,
         my_cur: *mut Task,
     ) -> Option<&mut Task> {
+        // S5-c lazy unthrottle（04 号审计附记一收口——2026-11-17）：与
+        // trait `pick_next` 同头调用——生产八个出选点全走本函数（pick_next
+        // 仅 ktest 直调），此前 deadline 任务预算限流后生产无解冻路径。
+        // dl_on_ring 门 0 时零成本（一次 Relaxed 读 + 早退），v1 常态全员
+        // fair 门常闭；语义与 pick_next 侧逐位一致（同函数单源）。
+        unsafe { lazy_unthrottle_deadlines(rq) };
         let chosen = self.scan_filtered(rq, my_cur)?;
         // SAFETY: scan_filtered 契约（KERN_LOCK 窗内、节点在环）。
         unsafe { rq.advance_past(chosen) };
@@ -435,6 +441,58 @@ impl Fair {
         // OBS-01（06 号 §5 观测维补面）：出选记账——intent 全档 + 带任务
         // per-band（生产出选唯一路径 = 本函数；`SchedClass::pick_next`
         // 是 ktest 直调面不经此）。Relaxed 纯计数（stats.rs 纪律）。
+        crate::stats::note_pick(t);
+        Some(t)
+    }
+
+    /// W3-Q93（04 机会一② 双圈合一）：try_preempt 专用出选面——
+    /// 「带门探峰 + 出选」单圈合成。
+    ///
+    /// 旧形（sched.rs try_preempt）：`has_eff_above_filtered` 只读探峰一圈
+    /// （早退）→ true 时 `pick_next_filtered` 二圈扫描出选。合一后本函数
+    /// 一次扫描（解冻 → 单圈 → 带门 → 出选三件套），语义逐位等价：
+    /// - 「环上存在 eligible 且 eff 严格高于 v」⟺ 单圈累加器的
+    ///   `best_eff > v`（[`berry_ringface::scan::ScanAcc::best_eff`] 单源
+    ///   ——零第二实现，host 钉板 best_eff_above_gate_matches_reference
+    ///   3000 例对拍）；
+    /// - 门假（无更高带）不出选、不消耗 head 槽位——幻影出选防线语义
+    ///   逐位保持（旧 has_eff_above false 早退同义）；
+    /// - 门真出选者 = `pick_next_filtered` 出选者（同一扫描单源 +
+    ///   advance_past + policy::apply + note_pick 三件套）。
+    ///
+    /// **语义差异面（审计明示接受）**：解冻时序前移——旧形探峰 false 时
+    /// 不经 pick_next_filtered 头部、不解冻；合一后解冻发生在扫描前
+    /// （S5-c 头部同源），探峰假也解冻。方向 = 解冻面扩大（限流 deadline
+    /// 任务自愈更早），04 号审计附记一（正确性缺口）收口面的加强非削弱；
+    /// dl_on_ring 门 0 时零成本，v1 常态零行为差。
+    ///
+    /// PURE_EEVDF 实验形（v1 恒 false）：带比较恒假 → best_eff 恒哨兵
+    /// i32::MIN → 带门对一切有限 v 恒假——直切语义本就随 pure 形失效
+    /// （同带竞争无「严格更高」），本函数仅 v1 生产形消费。
+    pub fn pick_next_if_above(
+        &self,
+        rq: &Runqueue,
+        _topo: &Topo,
+        my_cur: *mut Task,
+        v: i32,
+    ) -> Option<&mut Task> {
+        debug_assert!(!PURE_EEVDF, "pure 形带门退化，本面仅 v1 生产形消费");
+        // S5-c 解冻头部与 pick_next_filtered 同源（见彼注）。
+        unsafe { lazy_unthrottle_deadlines(rq) };
+        let (best, best_eff) = self.scan_with_eff(rq, my_cur);
+        // 带门（旧 has_eff_above_filtered 探峰谓词的累加器内形）：
+        // 无 eligible 带严格高于 v ⟹ 必不直切 ⟹ 不消耗 head 槽位
+        //（幻影出选防线逐位保持——best_eff 哨兵 i32::MIN 覆盖空环/
+        // 全过滤两形，旧探峰空环返 false 同义）。
+        if best_eff <= v {
+            return None;
+        }
+        let chosen = best?;
+        // SAFETY: scan_with_eff 契约同 scan_filtered（KERN_LOCK 窗内、
+        // 节点在环）。
+        unsafe { rq.advance_past(chosen) };
+        let t = unsafe { &mut *chosen.as_ptr() };
+        crate::policy::apply(t);
         crate::stats::note_pick(t);
         Some(t)
     }
@@ -459,7 +517,21 @@ impl Fair {
     /// S2b PURE 开关：`!PURE_EEVDF &&` 门使带比较恒假 → 所有任务同带，
     /// 只剩 EEVDF 分支（旧 `in_band` 恒 true 同义；const 折叠零运行时开销）。
     fn scan_filtered(&self, rq: &Runqueue, my_cur: *mut Task) -> Option<NonNull<Task>> {
-        let h = rq.head()?;
+        self.scan_with_eff(rq, my_cur).0
+    }
+
+    /// [`ScanAcc::best_eff`](berry_ringface::scan::ScanAcc::best_eff) 伴生
+    /// 导形（W3-Q93）：同一单圈走查额外带出累加器最高 eligible 带——
+    /// `pick_next_if_above` 带门的唯一数据源（零第二扫描）。
+    fn scan_with_eff(
+        &self,
+        rq: &Runqueue,
+        my_cur: *mut Task,
+    ) -> (Option<NonNull<Task>>, i32) {
+        // 空环：无走查即返（哨兵 i32::MIN = 旧探峰空环 false 同义）。
+        let Some(h) = rq.head() else {
+            return (None, i32::MIN);
+        };
         let avg = avg_vruntime(rq).unwrap_or(0);
         // W3-Q51：三分支带序状态机骨架单源 berry-ringface::scan::ScanAcc
         //（host 钉板：带序重置/退化带首见/过滤前置/PURE_EEVDF 两形/敌意
@@ -487,7 +559,7 @@ impl Fair {
                     break;
                 }
             }
-            acc.best()
+            (acc.best(), acc.best_eff())
         }
     }
 }

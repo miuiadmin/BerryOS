@@ -177,9 +177,16 @@ consumer = "kernel/src/main.rs PI 三任务链延迟探针门 PILAT_PROBE_NAME�
 polarity = "在位才 spawn；缺席 = run/smoke 零扰动（EFI 路天然缺席）"
 
 [[keys]]
+name = "s5cprobe"
+kind = "string"
+injectors = ["（无仓内注入方——手拼 -fw_cfg 专递，pilat 同款；判读法单源 = kernel/src/main.rs 探针体段头注）"]
+consumer = "kernel/src/main.rs S5-c deadline 解冻端到端复活链探针门 S5C_PROBE_NAME（04 号审计附记一；在位才 spawn task_s5c_dl/task_s5c_fair 两任务组；值面不解析；判读 = S5C-DLP ok/FAIL 行手 grep）"
+polarity = "在位才 spawn；缺席 = run/smoke 零扰动（EFI 路天然缺席）"
+
+[[keys]]
 name = "panel-model"
 kind = "string"
-injectors = ["tools/smoke-image.sh 刀6 双 boot 段（tiered:vrr + freerange:per_frame 实注）；亦可手拼 -fw_cfg 专递——2026-11-16 跨根并回自 main 显示线 refresh 刀2/刀6"]
+injectors = ["tools/smoke-image.sh 刀6 双 boot 段（tiered:vrr + det 实注）；亦可手拼 -fw_cfg 专递——2026-11-16 跨根并回自 main 显示线 refresh 刀2/刀6"]
 consumer = "kernel/src/main.rs panel_cfg_req（tiered|tiered:vrr|freerange|freerange:per_frame；缺省 tiered；刀6 后缀抬 A8 LFC/P6 逐帧位）"
 polarity = "在位且值合法才覆写缺省；非法 loud 回退缺省 + PANEL model fail 诊断行"
 
@@ -200,6 +207,13 @@ polarity = "零域 = 缺省态；非法 loud 回退缺省 + PANEL fault fail 诊
 [[keys]]
 name = "bootmode"
 kind = "string"
-injectors = ["（无仓内注入方——手拼 -fw_cfg 专递 string=verbose，rwake 同款；注入方待补：波1 钦定 berry CLI --boot-mode 未落地，挂账波1 合并刀 B（acad332ba 弃置半成品））"]
-consumer = "bootloader/berryboot/app/src/lib.rs + kernel/src/main.rs bootmode_verbose_req + kernel/src/splash.rs（同一 verbose 词三端一致）"
-polarity = "值 verbose=装载滚日志与 vgpud verbose BootProgress 面；缺席/他值=BerryOS Logo 与白色胶囊缺省面"
+injectors = ["（无仓内注入方——手拼 -fw_cfg 专递 string=verbose，rwake 同款；注入方待补：波1 钦定 berry CLI --boot-mode 未落地，挂账波1 合并刀 B（acad332ba 弃置半成品）；ux 刀 1/splash 半随净增量重放入链，漏登记由 #400 复活的 fwcfg-check 抓获补记）"]
+consumer = "kernel/src/main.rs boot splash 模式门 + kernel/src/splash.rs（双模式渲染）"
+polarity = "值 verbose=Linux 式滚日志（uart 镜像上屏）；缺席/他值=iOS 式开机动画（缺省臂）"
+
+[[keys]]
+name = "sbench"
+kind = "string"
+injectors = ["tools/bench.py（SBENCH_ARGS——icount 族 qemu_cmd 恒递 string=1；sbench=False 显式关=TRACE_CAP 证书面）"]
+consumer = "kernel/src/bench.rs（常量 SBENCH_PROBE_NAME——键在才 spawn switch_pair/pick_scan 测量对，04 号审计基线缺口两项）"
+polarity = "在位=switch_pair/pick_scan 两纪元项进 bench 面（BENCH ok n=8）；缺席=n=6 基线（两项结构性挡在外——调度器纪元门控）"

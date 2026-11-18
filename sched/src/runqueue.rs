@@ -428,88 +428,13 @@ impl Runqueue {
         self.head.set(Some(next)); // 单元素环时 next==node，游标不变（保持指向它）
     }
 
-    /// Explicit reply-handoff selector.
-    ///
-    /// Returns true only when `target` is on this ring, eligible, and no other
-    /// eligible task has a strictly higher effective priority. On success the
-    /// ring cursor is advanced past `target`, exactly as a normal pick would.
-    /// This is an opt-in cooperative yield to a just-woken RPC peer; it must not
-    /// bypass a higher-priority runnable task.
-    ///
-    /// # Safety
-    /// IRQ masked; caller holds this queue's RQ lock; `target` is scheduler-owned.
-    pub(crate) unsafe fn pick_handoff_filtered(
-        &self,
-        target: NonNull<Task>,
-        my_cur: *mut Task,
-    ) -> bool {
-        let Some(head) = self.head.get() else {
-            return false;
-        };
-        let target_ptr = target.as_ptr();
-        if !crate::class::eligible(my_cur, target_ptr) {
-            return false;
-        }
-        let target_priority = (*target_ptr).prio_effective;
-        let mut found = false;
-        let mut cur = head;
-        loop {
-            let cur_ptr = cur.as_ptr();
-            if cur == target {
-                found = true;
-            } else if crate::class::eligible(my_cur, cur_ptr)
-                && (*cur_ptr).prio_effective > target_priority
-            {
-                return false;
-            }
-            cur = (*cur_ptr)
-                .rq_next
-                .get()
-                .expect("on-ring task has next");
-            if cur == head {
-                break;
-            }
-        }
-        if !found {
-            return false;
-        }
-        self.advance_past(target);
-        true
-    }
-
-    /// 过滤版只读探峰（S-2b；S-3b 改形）：环上是否存在 `prio_effective` 严格
-    /// 高于 `v` 的 **eligible** 任务（叠加 [`crate::class::eligible`] Running
-    /// 排除门，至多一圈，不动游标、不做出选）。供 [`crate::sched::try_preempt`]
-    /// 的前置判定——「不可能切走就根本不 pick」（pick_next 会 `advance_past`
-    /// 消耗 head 槽位：出选后不切走 = 幻影出选，见 try_preempt 注释；S-2b 起
-    /// 全调用面走过滤版，无过滤版退役）。
-    pub(crate) fn has_eff_above_filtered(
-        &self,
-        v: i32,
-        my_cur: *mut Task,
-    ) -> bool {
-        let Some(h) = self.head.get() else {
-            return false; // 空环
-        };
-        // SAFETY: 同 has_eff_above——环上不变式 + KERN_LOCK 窗内单 pick（E0）。
-        unsafe {
-            let mut cur = h;
-            loop {
-                if crate::class::eligible(my_cur, cur.as_ptr())
-                    && (*cur.as_ptr()).prio_effective > v
-                {
-                    return true;
-                }
-                cur = (*cur.as_ptr())
-                    .rq_next
-                    .get()
-                    .expect("环上节点必有 next");
-                if cur == h {
-                    return false; // 整圈扫完
-                }
-            }
-        }
-    }
+    // 过滤版只读探峰（S-2b；S-3b 改形）——W3-Q93（04 机会一② 双圈合一）
+    // 退役：唯一生产消费点 try_preempt 改走 `Fair::pick_next_if_above`
+    // 单圈（解冻 → 扫描 → 带门 → 出选；带门 = `ScanAcc::best_eff > v`
+    // 单源——本函数谓词的累加器内形，ringface host 钉板
+    // `best_eff_above_gate_matches_reference` 参考实现即本函数纯值域形，
+    // 3000 例对拍在册）。幻影出选防线语义在 pick_next_if_above 带门
+    // 延续（门假不消耗 head 槽位）。
 }
 
 /// W3-Q53：`RingStore` 的 sched 物理臂适配器——id 域即 `*mut Task` 地址

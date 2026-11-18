@@ -288,6 +288,63 @@ pub fn klock_exit() {
     crate::enable_irq();
 }
 
+/// F0-3：保存/恢复 `DAIF` 的全谱锁 RAII 守卫（同步异常探针 `dpg::probe` / `probe_el0` 专用）。
+///
+/// 解决旧 `klock_enter`/`klock_exit` 在异常返回前无条件执行 `enable_irq()`（提前把 `PSTATE.I`
+/// 清 0，使 `eret` 前的 `ELR_EL1`/`SPSR_EL1` 暴露在嵌套时钟 IRQ 踩踏窗口下）的致命竞态：
+/// 入口先快照 `DAIF` 并屏蔽 IRQ，析构时先释放 `SVC_CLASS_ALL`，再精确恢复入口 `DAIF`（对
+/// EL0 异常探针维持 `PSTATE.I == 1` 直至 `eret` 原子落地）。
+pub struct KlockIrqSaveGuard {
+    saved_daif: u64,
+}
+
+#[inline]
+pub fn klock_enter_irqsave() -> KlockIrqSaveGuard {
+    let saved_daif = crate::irq_save();
+    crate::disable_irq();
+    svc_enter_class(SVC_CLASS_ALL);
+    KlockIrqSaveGuard { saved_daif }
+}
+
+impl Drop for KlockIrqSaveGuard {
+    #[inline]
+    fn drop(&mut self) {
+        svc_exit_class(SVC_CLASS_ALL);
+        crate::irq_restore(self.saved_daif);
+    }
+}
+
+/// F0-3：保存/恢复 `DAIF` 且支持同核 `kl_held()` 重入退化的 `TABLE(KERN_LOCK)` RAII 守卫
+/// （析构器 `Vmar::Drop` 等可在任意锁态/中断态触发的收口点专用）。
+pub struct TableIrqSaveGuard {
+    saved_daif: u64,
+    acquired: bool,
+}
+
+#[inline]
+pub fn kern_acquire_irqsave_reentrant() -> TableIrqSaveGuard {
+    let saved_daif = crate::irq_save();
+    crate::disable_irq();
+    let acquired = !kl_held();
+    if acquired {
+        kern_acquire();
+    }
+    TableIrqSaveGuard {
+        saved_daif,
+        acquired,
+    }
+}
+
+impl Drop for TableIrqSaveGuard {
+    #[inline]
+    fn drop(&mut self) {
+        if self.acquired {
+            kern_release();
+        }
+        crate::irq_restore(self.saved_daif);
+    }
+}
+
 // ---- PRINT_LOCK ----
 
 /// PRINT_LOCK 取锁（裸对——**不含 preempt 包络**：IRQ 语境调用者（tick go 支

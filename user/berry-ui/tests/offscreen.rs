@@ -13,7 +13,6 @@ use berry_gfx::pass::{LoadOp, PassDescriptor, StoreOp};
 use berry_gfx::queue::Queue;
 use berry_guiproto::Rect as WireRect;
 use berry_ui::damage::RectI;
-use berry_ui::diagnostic::{HitDumpEntry, LayoutDumpEntry};
 use berry_ui::desc::{
     ColProps, GridProps, IconProps, ImageProps, RectProps, RowProps, TextProps, TextStyle,
 };
@@ -125,38 +124,12 @@ fn build_col_scene() -> (UiMain, berry_ui::NodeId, berry_ui::NodeId, berry_ui::N
 
 #[test]
 fn golden_cmd_stream_col_scene() {
-    let (mut ui, r1, text, r2) = build_col_scene();
+    let (ui, r1, text, r2) = build_col_scene();
 
     // 布局值级锚：Col 竖排三段 (0,0/16/32)
     assert_eq!(ui.bounds(r1).unwrap(), RectI::new(0, 0, 64, 16));
     assert_eq!(ui.bounds(text).unwrap(), RectI::new(0, 16, 16, 16));
     assert_eq!(ui.bounds(r2).unwrap(), RectI::new(0, 32, 64, 16));
-
-    // F2 布局/命中 dump 与离屏 golden 场景同源：树形、绝对界、topmost
-    // 均由同一保留树供给，禁止测试侧另造第二份几何。
-    let root = ui.root();
-    let blank = LayoutDumpEntry {
-        id: root, parent: None, first_child: None, next_sibling: None,
-        kind: ViewKind::Root, key: 0, depth: 0, x: 0, y: 0, w: 0, h: 0,
-        bounds: RectI::new(0, 0, 0, 0), measured_w: 0, measured_h: 0,
-        layout_dirty: false, paint_dirty: false,
-    };
-    let mut dump = [blank; 5];
-    assert_eq!(ui.layout_dump(&mut dump).unwrap(), 5);
-    assert_eq!(
-        dump.map(|entry| entry.id),
-        [root, dump[0].first_child.unwrap(), r1, text, r2],
-        "dump 前序树形"
-    );
-    assert_eq!(dump[2].bounds, RectI::new(0, 0, 64, 16));
-    assert_eq!(dump[3].bounds, RectI::new(0, 16, 16, 16));
-    assert_eq!(dump[4].bounds, RectI::new(0, 32, 64, 16));
-    let points = [(8, 20), (32, 4), (32, 24)];
-    let mut hits = [HitDumpEntry { x: 0, y: 0, node: None, kind: None, bounds: None }; 3];
-    assert_eq!(ui.hit_test_dump(&points, &mut hits).unwrap(), 3);
-    assert_eq!(hits[0].node, Some(text));
-    assert_eq!(hits[1].node, Some(r1));
-    assert_eq!(hits[2].node, Some(dump[1].id), "Text 透明区落到 Col 容器而非 Root");
 
     let mut ui = ui;
     ui.wake(0); // FULL → 全树发射
@@ -184,9 +157,9 @@ fn golden_cmd_stream_col_scene() {
     match cmds[1] {
         Cmd::DrawGlyphRun { run } => {
             assert_eq!(run.glyphs.len(), 2);
-            assert_eq!(run.glyphs[0].ch, u32::from(b'A'));
+            assert_eq!(run.glyphs[0].ch, b'A');
             assert_eq!((run.glyphs[0].x, run.glyphs[0].y), (0, 16));
-            assert_eq!(run.glyphs[1].ch, u32::from(b'B'));
+            assert_eq!(run.glyphs[1].ch, b'B');
             assert_eq!((run.glyphs[1].x, run.glyphs[1].y), (8, 16));
             assert_eq!(run.fg, FG);
             assert_eq!(run.bg, None, "TextStyle.bg None 透传透明底");
@@ -206,47 +179,6 @@ fn golden_cmd_stream_col_scene() {
         Cmd::Present { rect } => assert_eq!((rect.x, rect.y, rect.w, rect.h), (0, 0, 64, 48)),
         other => panic!("cmd3 应为 Present，实为 {:?}", other),
     }
-}
-
-// ---------- UTF-8 CJK 标签：字节存储、码点测量/绘制同源 ----------
-#[test]
-fn utf8_cjk_label_layout_and_paint_codepoints() {
-    let mut ui = UiMain::new(W as u32, H as u32);
-    let root = ui.root();
-    let text = ui
-        .add(
-            root,
-            ViewSpec {
-                kind: ViewKind::Text,
-                key: 0,
-                props: Props::Text(TextProps {
-                    style: TextStyle { fg: FG, bg: None, scale: FontSize::S32x48 },
-                    text: TextBuf::new("设置".as_bytes()).unwrap(),
-                }),
-            },
-        )
-        .unwrap();
-    ui.layout();
-    // UTF-8 6B → 2 个全宽码点（不是 6 蜂格）。
-    assert_eq!(ui.bounds(text).unwrap(), RectI::new(0, 0, 64, 48));
-    ui.wake(0);
-    let mut scr = [GlyphPos { ch: 0, x: 0, y: 0 }; 16];
-    let mut enc = CommandEncoder::new();
-    let rep = ui.paint(&mut scr, &mut enc);
-    assert_eq!(rep.cmds, 2, "GlyphRun + Present");
-    let dl = enc.finish();
-    let mut seen = 0;
-    for cmd in dl.iter() {
-        if let Cmd::DrawGlyphRun { run } = cmd {
-            assert_eq!(run.glyphs.len(), 2);
-            assert_eq!(run.glyphs[0].ch, 0x8BBE);
-            assert_eq!(run.glyphs[1].ch, 0x7F6E);
-            assert_eq!((run.glyphs[0].x, run.glyphs[1].x), (0, 32));
-            assert!(run.atlas.coverage_cp(0x8BBE).is_some());
-            seen += 1;
-        }
-    }
-    assert_eq!(seen, 1);
 }
 
 // ---------- ② 逐像素 golden：soft 光栅共识 ----------
@@ -483,16 +415,8 @@ fn order_cap_overflow_falls_back_no_lost_leaves() {
     let rep = ui.paint(&mut scr, &mut enc);
     let dl = enc.finish();
 
-    assert_eq!(
-        rep.culled,
-        (OVERFLOW_NODES - berry_gfx::cmd::MAX_CMDS) as u32,
-        "回退重计 damage 外为 0；命令满帽后的 769 叶按截尾计 culled"
-    );
-    assert_eq!(
-        rep.drawn_px,
-        (OVERFLOW_NODES * 8) as u64,
-        "发射足迹全量——cmds 帽不减 drawn_px"
-    );
+    assert_eq!(rep.culled, 0, "回退重计：全叶 damage 内（溢出误计已回卷）");
+    assert_eq!(rep.drawn_px, (OVERFLOW_NODES * 8) as u64, "发射足迹全量——cmds 帽不减足迹");
     assert_eq!(rep.cmds, 256, "cmds 帽 = berry-gfx MAX_CMDS（Present 尾被帽弃）");
     assert_eq!(dl.len(), 256);
     assert_eq!(rep.overdraw_x256, 256, "1025×8 足迹恰满 1025×8 视口");
@@ -710,7 +634,7 @@ fn glyph_positions(dl: &berry_gfx::cmd::DisplayList) -> Vec<(u8, i32)> {
     for cmd in dl.iter() {
         if let Cmd::DrawGlyphRun { run } = cmd {
             for g in run.glyphs {
-                out.push((g.ch as u8, g.x));
+                out.push((g.ch, g.x));
             }
         }
     }
@@ -766,7 +690,7 @@ fn hd_proportional_glyph_positions_vs_monospace() {
     for (i, &(ch, gx)) in gp.iter().enumerate() {
         assert_eq!(ch, b"Browser Settings"[i], "字节序");
         assert_eq!(gx, x, "比例推进 x = Σ advance（{i}）");
-        x += atlas.advance(u32::from(ch)) as i32;
+        x += atlas.advance(ch) as i32;
     }
     assert_eq!(x, 269, "Σ advance = 269");
     assert_eq!(gp.last().unwrap().1, 253, "末字形 x = 269 - advance('s')=16");

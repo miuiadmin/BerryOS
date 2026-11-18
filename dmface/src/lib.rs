@@ -49,3 +49,4 @@ pub fn parse_display_mode(bytes: &[u8]) -> Option<(u32, u32)> {
 
 #[cfg(test)]
 mod tests;
+

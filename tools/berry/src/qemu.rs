@@ -198,6 +198,19 @@ fn log_stdio(cmd: &mut Command, log: &Path) -> Result<()> {
     Ok(())
 }
 
+/// 注入专用 QMP socket 路径：qmp 端点同目录的兄弟文件 qmp-inject.sock
+/// （仅 unix 端点形态存在）。spawn 建端（spawn_image 内）与 berry 侧
+/// 连接方（device.rs 原生指针注入）共用此单源推导。
+pub(crate) fn inject_sock_path(qmp: &Endpoint) -> Option<std::path::PathBuf> {
+    #[cfg(unix)]
+    if let Endpoint::Unix(p) = qmp {
+        return Some(p.with_file_name("qmp-inject.sock"));
+    }
+    #[cfg(not(unix))]
+    let _ = qmp;
+    None
+}
+
 pub fn spawn_kernel(
     qemu: &Qemu,
     kernel: &Path,
@@ -263,6 +276,13 @@ pub fn spawn_image(
     }
     cmd.arg("-vnc").arg(vnc.qemu_vnc()?);
     cmd.arg("-qmp").arg(qmp.qemu_qmp());
+    // 注入专用 QMP：run/qmp.sock 被 broker 独占，输入注入面（LAN /ws
+    // 拦截器与原生指针主路）需要自己的通道（PointerEvent → QMP
+    // input-send-event）。多客户端 unix 服务端，本机 0600 run 目录边界内。
+    if let Some(inj) = inject_sock_path(qmp) {
+        cmd.arg("-qmp")
+            .arg(format!("unix:{},server=on,wait=off", inj.display()));
+    }
     cmd.arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,readonly=on,file={}",
@@ -366,6 +386,14 @@ pub fn fwcfg_plan(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs().to_string())
         .ok();
+    // demo-face 总门（GUI 家族恒注 off = 演示舰队关停；BERRY_DEMO_FACE=on
+    // 逃生门保留舰队——对照/演示舰队本身的场景）。内核侧门
+    // DEMO_FACE_PROBE_NAME（kernel/src/main.rs）、svcmgr 侧
+    // USER_ENV_DEMO_OFF 由该键一并驱动。
+    let demo_face = match std::env::var("BERRY_DEMO_FACE") {
+        Ok(v) if v == "on" => None,
+        _ => Some("off".to_string()),
+    };
     vec![
         ("opt/berry/display", display_mode.map(|m| m.to_string()), true),
         (
@@ -374,6 +402,7 @@ pub fn fwcfg_plan(
             true,
         ),
         ("opt/berry/noktest", Some("1".to_string()), false),
+        ("opt/berry/demo-face", demo_face, true),
         ("opt/berry/rtc", rtc, true),
     ]
 }
@@ -607,9 +636,12 @@ mod fwcfg_plan_tests {
         assert_eq!(v[2].0, "opt/berry/noktest");
         assert_eq!(v[2].1.as_deref(), Some("1"));
         assert!(!v[2].2);
-        assert_eq!(v[3].0, "opt/berry/rtc");
+        assert_eq!(v[3].0, "opt/berry/demo-face");
+        assert_eq!(v[3].1.as_deref(), Some("off"));
         assert!(v[3].2);
-        assert_eq!(v.len(), 4);
+        assert_eq!(v[4].0, "opt/berry/rtc");
+        assert!(v[4].2);
+        assert_eq!(v.len(), 5);
     }
 
     #[test]
@@ -622,8 +654,9 @@ mod fwcfg_plan_tests {
         // display 给档：注 profile 几何串原样。
         let v = fwcfg_plan(Some("480x1000@60"), Accel::Tcg);
         assert_eq!(v[0].1.as_deref(), Some("480x1000@60"));
-        // rtc 在时间可读环境下总有值（epoch 秒，数值域粗校验）。
-        if let Some(rtc) = v[3].1.as_deref() {
+        // rtc 在时间可读环境下总有值（epoch 秒，数值域粗校验）——
+        // 索引 4（demo-face 插入后 rtc 后移）。
+        if let Some(rtc) = v[4].1.as_deref() {
             let secs: u64 = rtc.parse().unwrap();
             assert!(secs > 1_700_000_000);
         }

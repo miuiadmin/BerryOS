@@ -18,17 +18,8 @@ use crate::desc::{
 };
 use crate::TextBuf;
 use crate::Ui;
-pub use crate::theme::mix_under;
-
 use berry_gfx::cmd::Color;
 use berry_gfx::font::FontSize;
-
-pub use crate::theme::{
-    COMPONENT_ACCENT as ACCENT, COMPONENT_CARD_BG as CARD_BG,
-    COMPONENT_CARD_PRESSED_BG as CARD_PRESSED_BG, COMPONENT_DIVIDER as DIVIDER,
-    COMPONENT_ON_ACCENT as ON_ACCENT, COMPONENT_PAGE_BG as PAGE_BG,
-    COMPONENT_TEXT_PRIMARY as TEXT_PRIMARY, COMPONENT_TEXT_SECONDARY as TEXT_SECONDARY,
-};
 
 // —— OH 视觉 token（单源常量；消费方经 density 换算 px）——
 
@@ -43,10 +34,36 @@ pub const CARD_PAD_VP: u32 = 16;
 /// 列表卡间隙 12vp。
 pub const CARD_GAP_VP: u32 = 12;
 
+/// 页底色（OH 浅色页面背景）。
+pub const PAGE_BG: Color = Color { r: 0xF1, g: 0xF3, b: 0xF5 };
+/// 卡片底色（OH 白卡）。
+pub const CARD_BG: Color = Color { r: 0xFF, g: 0xFF, b: 0xFF };
+/// 主文本色（OH 黑字）。
+pub const TEXT_PRIMARY: Color = Color { r: 0x18, g: 0x24, b: 0x31 };
+/// 次文本色（OH 灰字）。
+pub const TEXT_SECONDARY: Color = Color { r: 0x66, g: 0x6F, b: 0x7A };
+/// 分隔线（OH 灰白线）。
+pub const DIVIDER: Color = Color { r: 0xE5, g: 0xE8, b: 0xEB };
+/// 按压态底色（20% 黑预混白卡）。
+pub const CARD_PRESSED_BG: Color = Color { r: 0xCC, g: 0xCC, b: 0xCC };
+
+/// 预混原语（刀 3）：`fg` 按 `alpha/255` 混入 `under`——no-alpha 渲染面
+/// （v1 纯不透明）的「半透明遮罩」等价实现。alpha=255 → fg；0 → under。
+pub fn mix_under(fg: Color, under: Color, alpha: u8) -> Color {
+    let a = alpha as u16;
+    let mix_ch = |f: u8, u: u8| -> u8 {
+        ((f as u16 * a + u as u16 * (255 - a)) / 255) as u8
+    };
+    Color {
+        r: mix_ch(fg.r, under.r),
+        g: mix_ch(fg.g, under.g),
+        b: mix_ch(fg.b, under.b),
+    }
+}
 
 /// 卡片按压底色（消费方背景自适应形）：20% 黑预混 `base`。
 pub fn card_pressed_bg(base: Color) -> Color {
-    mix_under(crate::theme::COMPONENT_BLACK, base, 51)
+    mix_under(Color { r: 0, g: 0, b: 0 }, base, 51)
 }
 
 /// 卡片容器 Spec（白底圆角 16vp；`pressed` = 按压态底色 20% 黑预混）。
@@ -206,6 +223,10 @@ pub fn add_list_item(
 
 /// OH/M3 主按钮高 40vp（M3 FilledButton 40dp 同值——三家合体归并点）。
 pub const BUTTON_H_VP: u32 = 40;
+/// OH 强调色 #007DFF（浅色）——按钮/选中态共用。
+pub const ACCENT: Color = Color { r: 0x00, g: 0x7D, b: 0xFF };
+/// 按钮白字。
+pub const ON_ACCENT: Color = Color { r: 0xFF, g: 0xFF, b: 0xFF };
 /// 开关轨道宽 52vp（OH Switch 52×28vp 官方值）。
 pub const SWITCH_W_VP: u32 = 52;
 /// 开关轨道高 28vp。

@@ -16,23 +16,21 @@
 //! | 1x | 8×16 | berry-fbcon `font::FONT` | `tools/genfbfont.py`（fbcon 单一事实源） |
 //! | 2x | 16×32 | [`font_data_s2::FONT_S2`] | 同生成器 NN 放大档 |
 //! | 3x | 24×48 | [`font_data_s3::FONT_S3`] | 同生成器 NN 放大档 |
-//! | HD | 32×48 | ASCII [`font_data_hd::FONT_HD`] + A8；CJK A2 页包 | `tools/genhdfont.py` + `tools/gencjkfont.py` |
 //!
 //! 契约名注记：规划草案的 `GlyphBitmap` 落地为 [`GlyphBits`]（「位图
 //! 视图」语义更准——同一位法三处消费：字形/图标/图像，不专属 glyph，
 //! 名字不撒谎）；草案的 `cell()` 几何口以 [`GlyphCell`] 组合形保留
 //! （`cell_w`/`cell_h` 拆分口为主面——单值消费点省结构解构）。
 //!
-//! 缓存注记：1x/2x/3x/HD-ASCII 为静态表直索引；HD-CJK 为 64 字/页 zlib
-//! A2 包，运行期只解压当前页到 24,576B 静态缓存（spin mutex + zero
-//! alloc）。图标 blob 解码产物另走 [`crate::lru`]；两者不混表。
+//! 缓存裁剪注记：三档皆**静态表直索引**（O(1) 数组下标、全表常驻 ~
+//! 1.5KB/档），无运行时字形缓存面——规划项「缓存」实指图标侧 blob
+//! 解码产物的 [`crate::lru`]（静态字形表直索引零成本，缓存它没有价值
+//! 面；「砍」的是不存在的成本，不是砍了功能）。
 
 #[path = "font_data_s2.rs"]
 mod font_data_s2;
 #[path = "font_data_s3.rs"]
 mod font_data_s3;
-#[path = "font_data_cjk.rs"]
-mod font_data_cjk;
 #[path = "font_data_hd.rs"]
 mod font_data_hd;
 
@@ -118,57 +116,6 @@ pub struct GlyphCell {
     pub h: usize,
 }
 
-/// 8-bit 覆盖率字形（HD 抗锯齿面；行主序、每像素 1字节 0..=255）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GlyphA8<'a> {
-    pub w: usize,
-    pub h: usize,
-    pub coverage: &'a [u8],
-}
-
-/// A2 压缩字形视图：每像素 2bit，解包后 coverage 只为 0/85/170/255。
-/// `guard` 持有单页静态缓存的 spin mutex 共享锁；soft 光栅语境锁无竞争。
-pub struct GlyphA2<'a> {
-    pub w: usize,
-    pub h: usize,
-    offset: usize,
-    guard: spin::MutexGuard<'a, (usize, [u8; font_data_cjk::CJK_PAGE_RAW_BYTES])>,
-}
-
-impl<'a> GlyphA2<'a> {
-    /// 防御采样：越界/短数据恒 0；MSB 起每 2bit 一像素。
-    pub fn coverage(&self, x: usize, y: usize) -> u8 {
-        if x >= self.w || y >= self.h {
-            return 0;
-        }
-        let idx = y * self.w + x;
-        let byte = match self.guard.1.get(self.offset + idx / 4) {
-            Some(&b) => b,
-            None => return 0,
-        };
-        // A2：每字节 4 像素，MSB 起两位一档（0/85/170/255）。
-        let level = (byte >> (6 - 2 * (idx % 4))) & 0x03;
-        level * 85
-    }
-}
-
-/// `coverage_cp` 的实际返回面：ASCII A8 直表或 CJK A2 页缓存。
-pub enum GlyphCoverage<'a> {
-    A8(GlyphA8<'a>),
-    A2(GlyphA2<'a>),
-}
-
-impl core::fmt::Debug for GlyphCoverage<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::A8(g) => f.debug_struct("GlyphCoverage::A8")
-                .field("w", &g.w).field("h", &g.h).finish_non_exhaustive(),
-            Self::A2(g) => f.debug_struct("GlyphCoverage::A2")
-                .field("w", &g.w).field("h", &g.h).finish_non_exhaustive(),
-        }
-    }
-}
-
 /// 字形图集：codepoint → 单色位图（几何随实现档位——见模块头三档表）。
 /// v1 三个静态实现（[`FontAtlas8x16`]/[`FontAtlas16x32`]/[`FontAtlas24x48`]）；
 /// 图标 LRU 图集走 `icon::IconAtlas` → `cmd::ImageSrc::Icon`（不混入
@@ -178,33 +125,23 @@ pub trait GlyphAtlas {
     fn cell_w(&self) -> usize;
     /// 字格像素高。
     fn cell_h(&self) -> usize;
-    /// Unicode 码点推进像素宽（缺省 = 等宽字格；比例图集覆写）。
-    fn advance(&self, _cp: u32) -> usize {
-        self.cell_w()
-    }
     /// 字格几何成对口（契约名保留——缺省实现组合两拆分口，三档静态
     /// 图集与自定义实现零改动获得）。
     fn cell(&self) -> GlyphCell {
         GlyphCell { w: self.cell_w(), h: self.cell_h() }
     }
+    /// 单字形水平推进量（像素）——排布面逐字形累计的载荷源。缺省 =
+    /// `cell_w()`：三档点阵（genfbfont 自绘等宽 art）的等宽语义**逐字节
+    /// 零漂移**（现役消费点不覆写即行为不变）；比例字体档（HD）覆写读
+    /// 烘焙 advance 表（`font_data_hd::ADVANCE_HD`，痛点⑥根修 03 号
+    /// §1.3-2）。位图几何不受影响——字形仍居中在字格内，只改推进量。
+    /// 域外字节（glyph 侧 `None`）同样返 `cell_w()`（等宽缺省——空格
+    /// 语义的推进与三档一致）。
+    fn advance(&self, _ch: u8) -> u32 {
+        self.cell_w() as u32
+    }
     /// 取字形位图。域外/缺字形返 `None`。
     fn glyph(&self, ch: u8) -> Option<GlyphBits<'_>>;
-    /// 取 8-bit 抗锯齿覆盖面；缺省 `None` = 图集只有 1-bit 位图。
-    fn coverage(&self, _ch: u8) -> Option<GlyphA8<'_>> {
-        None
-    }
-
-    /// Unicode 码点位图（默认折回 u8 ASCII 面——非 ASCII 图集返 None）。
-    fn glyph_cp(&self, cp: u32) -> Option<GlyphBits<'_>> {
-        let ch = u8::try_from(cp).ok()?;
-        self.glyph(ch)
-    }
-
-    /// Unicode 码点 A8 覆盖面（默认折回 u8 ASCII 面）。
-    fn coverage_cp(&self, cp: u32) -> Option<GlyphCoverage<'_>> {
-        let ch = u8::try_from(cp).ok()?;
-        self.coverage(ch).map(GlyphCoverage::A8)
-    }
 }
 
 /// 字号档位（段② genfbfont 三档；几何与档位一一对应——`atlas()` 直取
@@ -361,6 +298,16 @@ impl GlyphAtlas for FontAtlas32x48 {
     fn cell_h(&self) -> usize {
         font_data_hd::CELL_H
     }
+    /// 比例推进：读 `ADVANCE_HD` 烘焙表（Noto Sans CJK 真实 advance；
+    /// 「i」9px vs 字格 32px——等宽占格观感劣化的根修，03 号 §1.1）。
+    /// 域外回退 `cell_w()`（trait 缺省同语义——与 glyph None 空格语义
+    /// 成对：位图缺位画不出，推进不放大）。
+    fn advance(&self, ch: u8) -> u32 {
+        usize::from(ch)
+            .checked_sub(32)
+            .and_then(|i| font_data_hd::ADVANCE_HD.get(i))
+            .map_or(font_data_hd::CELL_W as u32, |&a| u32::from(a))
+    }
     fn glyph(&self, ch: u8) -> Option<GlyphBits<'static>> {
         let i = usize::from(ch).checked_sub(32)?;
         let g = font_data_hd::FONT_HD.get(i)?;
@@ -370,98 +317,6 @@ impl GlyphAtlas for FontAtlas32x48 {
             rows: g.as_slice(),
         })
     }
-    fn advance(&self, cp: u32) -> usize {
-        match u8::try_from(cp).ok().and_then(|ch| usize::from(ch).checked_sub(32)) {
-            Some(i) if i < font_data_hd::ADVANCE_HD.len() => {
-                usize::from(font_data_hd::ADVANCE_HD[i])
-            }
-            _ => font_data_hd::CELL_W,
-        }
-    }
-
-    fn coverage(&self, ch: u8) -> Option<GlyphA8<'static>> {
-        let i = usize::from(ch).checked_sub(32)?;
-        let a = font_data_hd::FONT_HD_A8.get(i)?;
-        Some(GlyphA8 {
-            w: font_data_hd::CELL_W,
-            h: font_data_hd::CELL_H,
-            coverage: a.as_slice(),
-        })
-    }
-
-    fn coverage_cp(&self, cp: u32) -> Option<GlyphCoverage<'static>> {
-        if let Ok(ch) = u8::try_from(cp) {
-            let i = usize::from(ch).checked_sub(32)?;
-            let a = font_data_hd::FONT_HD_A8.get(i)?;
-            return Some(GlyphCoverage::A8(GlyphA8 {
-                w: font_data_hd::CELL_W,
-                h: font_data_hd::CELL_H,
-                coverage: a.as_slice(),
-            }));
-        }
-
-        let table = &font_data_cjk::CJK_CODEPOINTS;
-        let mut lo = 0usize;
-        let mut hi = table.len();
-        while lo < hi {
-            let mid = (lo + hi) / 2;
-            match table[mid].cmp(&cp) {
-                core::cmp::Ordering::Less => lo = mid + 1,
-                core::cmp::Ordering::Greater => hi = mid,
-                core::cmp::Ordering::Equal => {
-                    let coverage = cjk_a2_coverage(mid)?;
-                    return Some(GlyphCoverage::A2(coverage));
-                }
-            }
-        }
-        None
-    }
-}
-
-/// Phase 4 CJK 单页缓存。spin mutex 使静态 Sync 且零分配；软光栅单线程
-/// 下锁无竞争，guardo 随 `GlyphA2` 存活到该字形绘制完成。
-static CJK_PAGE_CACHE: spin::Mutex<(usize, [u8; font_data_cjk::CJK_PAGE_RAW_BYTES])> =
-    spin::Mutex::new((usize::MAX, [0; font_data_cjk::CJK_PAGE_RAW_BYTES]));
-
-fn cjk_a2_coverage(index: usize) -> Option<GlyphA2<'static>> {
-    let page = index / font_data_cjk::CJK_PAGE_CHARS;
-    let slot = index % font_data_cjk::CJK_PAGE_CHARS;
-    let start = font_data_cjk::CJK_PAGE_OFFSETS.get(page).copied()? as usize;
-    let end = font_data_cjk::CJK_PAGE_OFFSETS.get(page + 1).copied()? as usize;
-    let input = font_data_cjk::CJK_A2_DATA.get(start..end)?;
-    let chars_left = font_data_cjk::CJK_CHAR_COUNT.saturating_sub(
-        page * font_data_cjk::CJK_PAGE_CHARS,
-    );
-    let glyph_count = chars_left.min(font_data_cjk::CJK_PAGE_CHARS);
-    let raw_len = glyph_count
-        .checked_mul(font_data_cjk::CJK_GLYPH_A2_BYTES)?;
-
-    let mut guard = CJK_PAGE_CACHE.lock();
-    if guard.0 != page {
-        let out = guard.1.get_mut(..raw_len)?;
-        let n = miniz_oxide::inflate::decompress_slice_iter_to_slice(
-            out,
-            Some(input).into_iter(),
-            true,
-            false,
-        )
-        .ok()?;
-        if n != raw_len {
-            return None;
-        }
-        guard.0 = page;
-    }
-    let begin = slot * font_data_cjk::CJK_GLYPH_A2_BYTES;
-    let finish = begin.checked_add(font_data_cjk::CJK_GLYPH_A2_BYTES)?;
-    if finish > raw_len {
-        return None;
-    }
-    Some(GlyphA2 {
-        w: font_data_hd::CELL_W,
-        h: font_data_hd::CELL_H,
-        offset: begin,
-        guard,
-    })
 }
 
 #[cfg(test)]
@@ -533,52 +388,45 @@ mod tests {
         }
     }
 
-    // —— Phase 4 CJK A2：生成期 golden + 码点表/页缓存结构性钉板 ——
+    // —— advance 载荷（痛点⑥根修 03 号 §1.3-2）：三档缺省零漂移 + HD 读表 ——
     #[test]
-    fn cjk_a2_golden_and_table_structure() {
-        let table = &font_data_cjk::CJK_CODEPOINTS;
-        assert_eq!(table.len(), font_data_cjk::CJK_CHAR_COUNT);
-        assert!(table.windows(2).all(|w| w[0] < w[1]), "码点必须严格升序");
-
-        assert!(font_data_cjk::CJK_PAGE_OFFSETS.windows(2).all(|w| w[0] < w[1]));
-
-        for gold in font_data_cjk::CJK_GOLDEN.iter() {
-            let idx = table.binary_search(&gold.cp).expect("golden cp in table");
-            assert_eq!(table[idx], gold.cp);
-            let coverage = FontAtlas32x48.coverage_cp(gold.cp).expect("A2 glyph");
-            let GlyphCoverage::A2(g) = coverage else {
-                panic!("CJK golden cp={:#x} 必须走 A2", gold.cp)
-            };
-            assert_eq!((g.w, g.h), (32, 48));
-            let mut bbox = [usize::MAX, usize::MAX, 0usize, 0usize];
-            let mut ink = 0usize;
-            let mut first = usize::MAX;
-            for y in 0..g.h {
-                for x in 0..g.w {
-                    let level = g.coverage(x, y);
-                    if level != 0 {
-                        ink += 1;
-                        first = first.min(y * g.w + x);
-                        bbox[0] = bbox[0].min(x);
-                        bbox[1] = bbox[1].min(y);
-                        bbox[2] = bbox[2].max(x);
-                        bbox[3] = bbox[3].max(y);
-                    }
-                }
+    fn advance_default_and_hd_table() {
+        // 三档点阵：缺省实现 = cell_w()——全 256 字节面零例外（现役消费
+        // 点不覆写行为不变的钉板；含域外字节同样回 cell_w）。
+        for (atlas, cw) in [
+            (&FontAtlas8x16 as &dyn GlyphAtlas, 8u32),
+            (&FontAtlas16x32 as &dyn GlyphAtlas, 16),
+            (&FontAtlas24x48 as &dyn GlyphAtlas, 24),
+        ] {
+            for ch in 0u8..=255 {
+                assert_eq!(atlas.advance(ch), cw, "等宽档 advance 须恒 cell_w ch={ch}");
             }
-            assert_eq!(bbox, gold.bbox, "bbox cp={:#x}", gold.cp);
-            assert_eq!(ink, gold.ink, "ink cp={:#x}", gold.cp);
-            assert_eq!(first, gold.first, "first cp={:#x}", gold.cp);
-            let head = [g.coverage(0, 0), g.coverage(1, 0)];
-            let tail = [g.coverage(30, 47), g.coverage(31, 47)];
-            assert_eq!(usize::from(head[0]), usize::from(gold.head) * 85);
-            assert_eq!(usize::from(tail[1]), usize::from(gold.tail) * 85);
-            let _ = tail[0]; // head/tail 生成值逐字节见 GOLDEN；此两锚覆盖行首行尾。
         }
-        // 强制跨页：首/中/尾三页先后取，验证单页缓存换页可复用。
-        for cp in [table[0], table[table.len() / 2], table[table.len() - 1]] {
-            assert!(FontAtlas32x48.coverage_cp(cp).is_some());
+        // HD 档：真实比例 advance（03 号 §1.1 表 = genhdfont 黄金锚同源）。
+        let hd = FontAtlas32x48;
+        for (ch, want) in [('i', 9u32), ('I', 10), ('r', 13), ('s', 16), ('e', 19),
+                           ('B', 22), ('W', 30), ('m', 31), (' ', 8)] {
+            assert_eq!(hd.advance(ch as u8), want, "{ch} advance");
         }
+        // 全表值域 1..=CELL_W + 索引对齐（advance 表与 FONT_HD 同序：抽验
+        // '@'=32 整格宽、'%'=31——值域极值在席）。
+        for i in 0usize..95 {
+            let a = hd.advance((32 + i) as u8);
+            assert!((1..=32).contains(&a), "advance 越域 i={i} a={a}");
+        }
+        assert_eq!(hd.advance(b'@'), 32);
+        assert_eq!(hd.advance(b'%'), 31);
+        // 域外：回 cell_w（与 glyph None 空格语义成对）。
+        for ch in [0u8, 9, 31, 127, 0x80, 0xFF] {
+            assert_eq!(hd.advance(ch), 32, "HD 域外回 cell_w ch={ch:#x}");
+        }
+        // 'Browser Settings' 累计对拍：等宽 16×32=512px vs 比例 269px
+        //（03 号 §1.1 实测重现实证——排布面对拍的事实源）。
+        let w: u32 = "Browser Settings".bytes().map(|b| hd.advance(b)).sum();
+        assert_eq!(w, 269, "'Browser Settings' 比例累计宽");
+        // trait 缺省口经 dyn 面可达（FontSize::atlas() 消费同路）。
+        assert_eq!(FontSize::S32x48.atlas().advance(b'i'), 9);
+        assert_eq!(FontSize::S8x16.atlas().advance(b'i'), 8);
     }
 
     // —— GlyphCell 契约口：trait 缺省实现与 FontSize 档位面同几何 ——

@@ -135,8 +135,14 @@
 # 门（berry-fsclient 先例）+ Host 绑定表注入 libc 面（berry-libc 不可
 # host cargo test）；纯函数面 host 测试。首消费者 = berry-launcher（musl
 # 独立小工作区 path 依赖，不入 bins 段），波 4 预制应用随后）。
+# 作业控制 v2 刀：berry-jobs（bsh 后台作业纯函数面——`&` 尾缀剥离全
+# 边缘/最低空位编号/%n 解析/四渲染行黄金字节，host 14 测；
+# berry-complete/berry-poll 镜像形态。单消费 = bsh（独立小工作区 path
+# 依赖，musl target，同 stdhello 不入 members——本 crate 零 syscall 面故
+# 入 members 挂 host 测试无碍）；job 表与 terminate/wait/reap 面 留 bsh）。
 members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-winplan", "berry-argv", "berry-strmem", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto", "berry-gpuproto",
-    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-layout", "berry-psproto", "berry-complete", "berry-tls", "berry-mmap", "berry-signal", "berry-fbcon", "berry-gfx", "berry-poll", "berry-guiproto", "berry-ui", "berry-room", "berry-appshell", "berry-softime", "berry-appproto", "berry-cbox", "berry-pwproto", "berry-lifecycle", "berry-crypto", "berry-spawngeo", "bins/abuser", "bins/berry-verify", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild", "bins/dpgp", "bins/policydemo"]
+    "berry-termio",
+    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-layout", "berry-psproto", "berry-complete", "berry-tls", "berry-mmap", "berry-signal", "berry-fbcon", "berry-gfx", "berry-poll", "berry-jobs", "berry-guiproto", "berry-ui", "berry-appshell", "berry-softime", "berry-appproto", "berry-cbox", "berry-pwproto", "berry-lifecycle", "berry-crypto", "berry-spawngeo", "bins/abuser", "bins/berry-verify", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild", "bins/dpgp", "bins/policydemo"]
 exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet", "bins/apptomb"]
 
 # cbox 刀 2：berry-cbox（黑匣子账本纯函数 crate，「解析器即产品」——排液

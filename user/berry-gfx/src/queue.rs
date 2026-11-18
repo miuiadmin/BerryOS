@@ -17,6 +17,11 @@ use crate::color::{DescError, TextureDesc};
 use crate::pass::{LoadOp, PassDescriptor};
 use crate::raster;
 
+/// 裁剪栈深度帽（波 2 横向原语④）：paint 侧嵌套 clip 容器的回放栈。
+/// UI 树嵌套裁剪（Scroll 内 Refresh 等）常态 ≤ 3 层；8 = 两倍余量。
+/// 超帽 push 折 no-op（保守：保持现 clip 不再收窄——多画不少画）。
+const CLIP_STACK_MAX: usize = 8;
+
 /// submit 拒面（全部先验后写——见模块头）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubmitError {
@@ -25,15 +30,9 @@ pub enum SubmitError {
     BufferTooSmall { need: usize, got: usize },
     /// dirty 矩形负宽/高（零字节落笔即拒）。
     BadDirtyRect,
-    /// FillCircle bounding box 非正方形（圆语义唯一形）。
-    CircleNotSquare { index: usize },
     /// Blit 源区越纹理界（`index` = 命令序号）。源区必须**整区**在界内
     /// ——半出界裁剪源 = 静默改语义，禁；零尺寸源恒放行（空操作）。
     BlitSrcOutOfBounds { index: usize },
-    /// PushClip/PopClip 栈失衡（多余 Pop 或结束时未归零）。
-    UnbalancedClip { index: usize },
-    /// PushClip 嵌套深超过 [`CLIP_STACK_MAX`]。
-    ClipStackFull { index: usize },
     /// DrawImage 位图畸形（`index` = 命令序号）。两族恰长铁律：
     /// `ImageSrc::Bits` 字面构造绕过 `GlyphBits::new` 的，`rows.len() !=
     /// h * 行字节`（短行 = 越界位静默错位、长行 = 尾字节静默丢弃）；
@@ -42,9 +41,6 @@ pub enum SubmitError {
     /// `bit()`/`get()` 防御采样兜）。
     ImagePixelMismatch { index: usize },
 }
-
-/// 嵌套裁剪栈帽（retained UI 的 ScrollView/SwipePager 嵌套层数余量）。
-pub const CLIP_STACK_MAX: usize = 16;
 
 /// 命令队列（soft 后端：submit = 同步整列表回放，无内态）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,29 +70,6 @@ impl Queue {
                 return Err(SubmitError::BadDirtyRect);
             }
         }
-        // Push/Pop 栈先验：半执行的 DisplayList 不动笔；多余 Pop、未归零
-        // 或超深都在写入前 loud 拒。
-        let mut clip_depth = 0usize;
-        for (i, cmd) in dl.iter().enumerate() {
-            match cmd {
-                Cmd::PushClip { .. } => {
-                    if clip_depth >= CLIP_STACK_MAX {
-                        return Err(SubmitError::ClipStackFull { index: i });
-                    }
-                    clip_depth += 1;
-                }
-                Cmd::PopClip => {
-                    if clip_depth == 0 {
-                        return Err(SubmitError::UnbalancedClip { index: i });
-                    }
-                    clip_depth -= 1;
-                }
-                _ => {}
-            }
-        }
-        if clip_depth != 0 {
-            return Err(SubmitError::UnbalancedClip { index: dl.len() });
-        }
         for (i, cmd) in dl.iter().enumerate() {
             match cmd {
                 Cmd::Blit { src, .. } => {
@@ -122,11 +95,9 @@ impl Queue {
                     }
                 }
                 Cmd::DrawImage {
-                    src: ImageSrc::ScaledArgb { sw, sh, dw, dh, px },
-                    ..
-                }
-                | Cmd::DrawImage {
-                    src: ImageSrc::SmoothArgb { sw, sh, dw, dh, px },
+                    src:
+                    ImageSrc::ScaledArgb { sw, sh, dw, dh, px }
+                    | ImageSrc::SmoothArgb { sw, sh, dw, dh, px },
                     ..
                 } => {
                     if *sw == 0
@@ -136,24 +107,6 @@ impl Queue {
                         || (*sw as u64) * (*sh as u64) != px.len() as u64
                     {
                         return Err(SubmitError::ImagePixelMismatch { index: i });
-                    }
-                }
-                Cmd::DrawImage {
-                    src: ImageSrc::SmoothRgb565 { sw, sh, dw, dh, px },
-                    ..
-                } => {
-                    if *sw == 0
-                        || *sh == 0
-                        || *dw == 0
-                        || *dh == 0
-                        || (*sw as u64) * (*sh as u64) != px.len() as u64
-                    {
-                        return Err(SubmitError::ImagePixelMismatch { index: i });
-                    }
-                }
-                Cmd::FillCircle { rect, .. } => {
-                    if rect.w != rect.h {
-                        return Err(SubmitError::CircleNotSquare { index: i });
                     }
                 }
                 Cmd::DrawImage { .. } => {}
@@ -163,36 +116,52 @@ impl Queue {
 
         // —— 屏障照跑：clip = 纹理界 ∩ dirty 区（None = 整帧）——
         let frame = Rect::new(0, 0, desc.w() as i32, desc.h() as i32);
-        let clip = match pass.dirty {
+        let base_clip = match pass.dirty {
             Some(d) => d.intersect(&frame).unwrap_or(Rect::new(0, 0, 0, 0)),
             None => frame,
         };
 
-        // load_op：Clear 只铺 clip（u32 pack 后走统一写口——padding 列
-        // 结构性不可达）；Load 不动。
+        // load_op：Clear 只铺 base_clip（u32 pack 后走统一写口——padding
+        // 列结构性不可达）；Load 不动。
         if let LoadOp::Clear { r, g, b } = pass.load_op {
             let px = desc.format().pack(r, g, b);
-            raster::fill_rect(target, desc, &clip, px, &clip);
+            raster::fill_rect(target, desc, &base_clip, px, &base_clip);
         }
 
-        // 逐命令回放（raster 内部逐像素裁到 当前 dirty∩嵌套 clip 栈）。
+        // 逐命令回放（raster 内部逐像素裁到 clip）。波 2 横向原语④：
+        // PushClip/PopClip 在本环维护**裁剪栈**——当前 clip = base ∩ 栈上
+        // 诸 rect 的逐层交集（空交 = 零矩形，后续绘制结构性 no-op）；
+        // 其余命令以收窄后的当前 clip 执行。栈深帽 [`CLIP_STACK_MAX`]
+        // ——超帽 push 折 no-op（保持现 clip 不再收窄）+ debug_assert
+        // loud；空栈 pop = no-op 防御（多弹不炸、不越 base 界）。
         let mut clip_stack = [Rect::new(0, 0, 0, 0); CLIP_STACK_MAX];
         let mut clip_depth = 0usize;
-        let mut current_clip = clip;
+        let mut cur_clip = base_clip;
         for cmd in dl.iter() {
             match cmd {
                 Cmd::PushClip { rect } => {
-                    clip_stack[clip_depth] = current_clip;
-                    clip_depth += 1;
-                    current_clip = current_clip
-                        .intersect(rect)
-                        .unwrap_or(Rect::new(0, 0, 0, 0));
+                    if clip_depth < CLIP_STACK_MAX {
+                        clip_stack[clip_depth] = cur_clip;
+                        clip_depth += 1;
+                        cur_clip = rect
+                            .intersect(&cur_clip)
+                            .unwrap_or(Rect::new(0, 0, 0, 0));
+                    } else {
+                        debug_assert!(
+                            false,
+                            "PushClip 超 CLIP_STACK_MAX={CLIP_STACK_MAX}（病态嵌套）"
+                        );
+                    }
                 }
                 Cmd::PopClip => {
-                    clip_depth -= 1;
-                    current_clip = clip_stack[clip_depth];
+                    if clip_depth > 0 {
+                        clip_depth -= 1;
+                        cur_clip = clip_stack[clip_depth];
+                    } else {
+                        debug_assert!(false, "PopClip 空栈（配对破缺）");
+                    }
                 }
-                _ => raster::exec(target, desc, cmd, &current_clip),
+                _ => raster::exec(target, desc, cmd, &cur_clip),
             }
         }
 
@@ -517,7 +486,7 @@ mod tests {
         let mut fb = vec![0u8; d.need_bytes()];
         let run = GlyphRun {
             atlas: &atlas,
-            glyphs: &[GlyphPos { ch: u32::from(b'K'), x: 2, y: 3 }],
+            glyphs: &[GlyphPos { ch: b'K', x: 2, y: 3 }],
             fg: WHITE,
             bg: Some(BLUE),
         };
@@ -536,7 +505,7 @@ mod tests {
         assert_eq!(px(&fb, 64, 1, 3), 0, "字形区外未触（清屏黑）");
         // 透明底：零位不写（衬底色穿透）。
         let mut fb2 = vec![0xEEu8; d.need_bytes()];
-        let run = GlyphRun { atlas: &atlas, glyphs: &[GlyphPos { ch: u32::from(b'K'), x: 2, y: 3 }], fg: WHITE, bg: None };
+        let run = GlyphRun { atlas: &atlas, glyphs: &[GlyphPos { ch: b'K', x: 2, y: 3 }], fg: WHITE, bg: None };
         let mut enc = CommandEncoder::new();
         enc.draw_glyph_run(run).unwrap();
         let dl = enc.finish();
@@ -546,7 +515,7 @@ mod tests {
         // 缺字形（'Z' 不在 FakeAtlas）：bg=Some → 全 bg 蜂格。
         let run = GlyphRun {
             atlas: &atlas,
-            glyphs: &[GlyphPos { ch: u32::from(b'Z'), x: 0, y: 0 }],
+            glyphs: &[GlyphPos { ch: b'Z', x: 0, y: 0 }],
             fg: WHITE,
             bg: Some(RED),
         };
@@ -564,6 +533,108 @@ mod tests {
     }
 
     // —— 与 berry-fbcon 蜂格路径逐字节共识（两套独立代码、像素必同）——
+    // —— 波 2 横向原语③：行 LUT 圆角填充的像素 golden（手算字面基准） ——
+    #[test]
+    fn fill_rounded_row_lut_golden() {
+        let d = desc16();
+        let mut fb = vec![0u8; d.need_bytes()];
+        let mut enc = CommandEncoder::new();
+        enc.fill_rect_rounded(Rect::new(0, 0, 8, 8), 4, RED).unwrap();
+        let dl = enc.finish();
+        Queue::new()
+            .submit(&dl, &mut fb, &d, &PassDescriptor::clear(0, 0, 0))
+            .unwrap();
+        // r=4 行内缩期望（radius_row_inset 公式手算）：
+        // y0/y7 内缩 4（空行）；y1/y6 内缩 2 → x∈[2,6)；
+        // y2..y5 内缩 1 → x∈[1,7)。行主序字面 golden 对拍。
+        let expect_row = |y: i32| -> (i32, i32) {
+            match y {
+                0 | 7 => (4, 4), // 空区间
+                1 | 6 => (2, 6),
+                _ => (1, 7),
+            }
+        };
+        for y in 0..8 {
+            let (x0, x1) = expect_row(y);
+            for x in 0..8 {
+                let inside = x >= x0 && x < x1;
+                let expect = if inside { 0x00FF_0000 } else { 0 };
+                assert_eq!(px(&fb, 64, x, y), expect, "@({x},{y})");
+            }
+        }
+        // 半径超 min(w,h)/2 → 钳到内切半圆（与显式 r=4 逐字节同）。
+        let mut fb2 = vec![0u8; d.need_bytes()];
+        let mut enc = CommandEncoder::new();
+        enc.fill_rect_rounded(Rect::new(0, 0, 8, 8), 9_999, RED).unwrap();
+        let dl = enc.finish();
+        Queue::new()
+            .submit(&dl, &mut fb2, &d, &PassDescriptor::clear(0, 0, 0))
+            .unwrap();
+        assert_eq!(fb[..], fb2[..], "半径钳 min(w,h)/2");
+        // radius=0 = FillRect 同义（整铺）。
+        let mut fb3 = vec![0u8; d.need_bytes()];
+        let mut enc = CommandEncoder::new();
+        enc.fill_rect_rounded(Rect::new(0, 0, 8, 8), 0, RED).unwrap();
+        let dl = enc.finish();
+        Queue::new()
+            .submit(&dl, &mut fb3, &d, &PassDescriptor::clear(0, 0, 0))
+            .unwrap();
+        for y in 0..8 {
+            for x in 0..8 {
+                assert_eq!(px(&fb3, 64, x, y), 0x00FF_0000);
+            }
+        }
+    }
+
+    // —— 波 2 横向原语④：回放裁剪栈——收窄/嵌套/空交/弹出还原 ——
+    #[test]
+    fn clip_stack_replay() {
+        let d = desc16();
+        let mut fb = vec![0u8; d.need_bytes()];
+        let mut enc = CommandEncoder::new();
+        enc.fill_rect(Rect::new(0, 0, 16, 16), WHITE).unwrap();
+        enc.push_clip(Rect::new(4, 4, 8, 8)).unwrap();
+        enc.fill_rect(Rect::new(0, 0, 16, 16), RED).unwrap(); // 只落 [4,12)²
+        enc.push_clip(Rect::new(0, 0, 6, 16)).unwrap(); // 嵌套：∩ = [4,6)×[4,12)
+        enc.fill_rect(Rect::new(0, 0, 16, 16), GREEN).unwrap(); // 只落 [4,6)×[4,12)
+        enc.pop_clip().unwrap(); // 回 [4,12)²
+        enc.push_clip(Rect::new(20, 20, 4, 4)).unwrap(); // 空交 → 零矩形
+        enc.fill_rect(Rect::new(0, 0, 16, 16), BLUE).unwrap(); // 结构性 no-op
+        enc.pop_clip().unwrap();
+        enc.pop_clip().unwrap(); // 回 base（整帧）
+        enc.fill_rect(Rect::new(0, 0, 2, 2), Color { r: 0xFF, g: 0x00, b: 0xFF }).unwrap();
+        let dl = enc.finish();
+        Queue::new()
+            .submit(&dl, &mut fb, &d, &PassDescriptor::clear(0, 0, 0))
+            .unwrap();
+        for y in 0..16 {
+            for x in 0..16 {
+                let expect: u32 = if x < 2 && y < 2 {
+                    0x00FF_00FF // 尾填紫（base 全开）
+                } else if (4..6).contains(&x) && (4..12).contains(&y) {
+                    0x0000_FF00 // 嵌套最内绿
+                } else if (4..12).contains(&x) && (4..12).contains(&y) {
+                    0x00FF_0000 // clip 内红
+                } else {
+                    0x00FF_FFFF // 白底
+                };
+                assert_eq!(px(&fb, 64, x, y), expect, "@({x},{y})");
+            }
+        }
+        // dirty 基口与 clip 栈叠加：dirty=(0,0,4,16) 时紫块只落 [0,2)。
+        let mut fb2 = vec![0u8; d.need_bytes()];
+        Queue::new()
+            .submit(
+                &dl,
+                &mut fb2,
+                &d,
+                &PassDescriptor::new(LoadOp::Clear { r: 0, g: 0, b: 0 }, StoreOp::Store, Some(Rect::new(0, 0, 4, 16))),
+            )
+            .unwrap();
+        assert_eq!(px(&fb2, 64, 0, 0), 0x00FF_00FF, "dirty ∩ clip 内照写");
+        assert_eq!(px(&fb2, 64, 5, 5), 0, "dirty 区外结构性不写");
+    }
+
     #[test]
     fn glyph_consensus_with_fbcon() {
         let (w, h, stride) = (64usize, 32usize, 256usize);
@@ -584,7 +655,7 @@ mod tests {
         let atlas = FontAtlas8x16;
         let run = GlyphRun {
             atlas: &atlas,
-            glyphs: &[GlyphPos { ch: u32::from(b'#'), x: 16, y: 16 }], // 蜂格 (2,1) = 像素 (16,16)
+            glyphs: &[GlyphPos { ch: b'#', x: 16, y: 16 }], // 蜂格 (2,1) = 像素 (16,16)
             fg: Color { r: 0x11, g: 0x22, b: 0x33 },
             bg: Some(Color { r: 0x44, g: 0x55, b: 0x66 }),
         };

@@ -3,8 +3,8 @@
 //! 守卫 = `just abi-check`（`tools/gen_abi.py --check`，挂 build/smoke 前置）。
 //! 与内核侧 `kernel/src/abi_gen.rs` 同源生成（两端 u32/u64 类型约定见
 //! `tools/gen_abi.py` 头注——那是 ABI 决策不是漂移）。
-//! 预算四元组（生成器执法，ADR #11 帽）：nr_total=40 / nr_defined=44 /
-//! nr_registered=43 / nr_ceiling=45（口径与内核侧头注同源同值）。
+//! 预算四元组（生成器执法，ADR #11 帽）：nr_total=41 / nr_defined=45 /
+//! nr_registered=44 / nr_ceiling=45（口径与内核侧头注同源同值）。
 
 use crate::{Handle, Rights, Status, Time};
 
@@ -66,6 +66,18 @@ pub const CHAN_OPT_NO_INTENT: u32 = 1 << 0;
 /// 门权）。映射走 vmar_map 对象级分流 map_demand（首触缺页由 EL0 pager 供给）。
 /// 其余位保留（非 0 尾 → -EINVAL，options 纪律）。
 pub const VMO_OPT_DEMAND: u32 = 1 << 0;
+/// `vmo_create` options bit1（F0-4）：物理连续 DMA 后备 VMO——创建时按 2 的幂阶
+/// 立即分配物理连续页块并清零钉死（禁止与 `VMO_OPT_DEMAND` 混用，禁止 `decommit`）。
+pub const VMO_OPT_CONTIGUOUS: u32 = 1 << 1;
+/// `vmo_create` options bit2（F0-4）：DMA 物理页钉死标志——置位对象禁止
+/// `vmo_decommit`（返 `-ENOTSUP`），直至句柄全关无映射销毁。
+pub const VMO_OPT_PINNED: u32 = 1 << 2;
+/// `vmo_cache_op` op bit0（F0-4）：DMA 发送前将数据缓存脏行刷至一致性点 PoC（`dc cvac` + `dsb sy`，需 `RIGHT_READ`）。
+pub const VMO_CACHE_OP_CLEAN: u32 = 1 << 0;
+/// `vmo_cache_op` op bit1（F0-4）：DMA 接收前失效数据缓存至 PoC（内核以 `dc civac` + `dsb sy` 保非对齐行安全，需 `RIGHT_WRITE`）。
+pub const VMO_CACHE_OP_INVALIDATE: u32 = 1 << 1;
+/// `vmo_cache_op` op bit2（F0-4）：DMA 双向缓冲刷脏并失效至 PoC（`dc civac` + `dsb sy`，需 `RIGHT_WRITE`）。
+pub const VMO_CACHE_OP_CLEAN_INVALIDATE: u32 = 1 << 2;
 /// `clock_read` 的 clock_id：单调钟（`berry_time_t` = 纳秒）。
 pub const CLOCK_MONOTONIC: u32 = 0;
 /// `clock_read` 的 clock_id：壁钟（宿主注入 epoch；未注入 → -ENOTSUP）。
@@ -125,6 +137,8 @@ pub(crate) mod nr {
     pub(crate) const VMO_GET_SIZE: usize = 0x1A;
     /// P6 A-3（用户态 DMA 面：virtqueue 描述符地址是 guest PA，驱动须能查自己 VMO 页的后备；无 IOMMU 板上 PA 披露面 = 已授 MMIO 窗口的设备本可 DMA 全内存，v1 接受并文档化——IOMMU/SMMU 随 `安全与硬件隔离设计-v1.0.md`）。
     pub(crate) const VMO_GET_PHYS: usize = 0x1B;
+    /// F0-4（DMA 缓存同步：按 CTR_EL0.DminLine 对已提交物理页直映地址执行 `dc cvac` / `dc civac` + `dsb sy`）。
+    pub(crate) const VMO_CACHE_OP: usize = 0x1C;
     /// G4-2 首形（§5-③ 裁决）＝阻塞收货：无武装缺页请求时 poll-first 后睡 pager
     /// 裸键，fault 探针武装 EL0 请求槽 + 唤醒即递送——ADR #9 缺页路径零分配。供给 =
     /// pt_lock 窗 commit + 填叶 + tlbi/broadcast（vmar_map 同款）+ 唤 faulter。

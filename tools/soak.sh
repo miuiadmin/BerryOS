@@ -199,7 +199,9 @@ validate_beats() {
 # 盘名 disk.soak.img 专属：smoke.sh/justfile run-rootfs 共写 repo 根 disk.img——
 # 并行窗口（smoke 头两相 echod 未起、端口空闲）下同名盘互毁 FAT 卷，专属名
 # 归零交集（对抗审查 finding 10）。
-python3 tools/mkfat.py disk.soak.img || { echo "soak: FAIL: mkfat 造盘失败" >&2; exit 1; }
+# mkfat 换轨第二波：造盘位切 Rust 件（paths.sh berryos_mkfat 单源，smoke.sh 同款）。
+MKFAT=$(berryos_mkfat) || { echo "soak: FAIL: mkfat 解析失败" >&2; exit 1; }
+"$MKFAT" disk.soak.img || { echo "soak: FAIL: mkfat 造盘失败" >&2; exit 1; }
 printf 'BERRYOSVBLK!' | dd of=disk.soak.img conv=notrunc status=none
 
 # —— echod：vnet TCP 自验对端（必抄，侦察 Q4 裁决）——缺席则 guest connect

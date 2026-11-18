@@ -3,13 +3,6 @@
 version = 4
 
 [[package]]
-name = "berry-bootprogress"
-version = "0.1.0"
-dependencies = [
- "berry-fbcon",
-]
-
-[[package]]
 name = "berry-crypto"
 version = "0.2.0"
 dependencies = [
@@ -18,10 +11,6 @@ dependencies = [
 
 [[package]]
 name = "berry-efi"
-version = "0.2.0"
-
-[[package]]
-name = "berry-fbcon"
 version = "0.2.0"
 
 [[package]]
@@ -36,7 +25,6 @@ version = "0.2.0"
 name = "berryboot"
 version = "0.2.0"
 dependencies = [
- "berry-bootprogress",
  "berry-crypto",
  "berry-efi",
  "berry-loader",

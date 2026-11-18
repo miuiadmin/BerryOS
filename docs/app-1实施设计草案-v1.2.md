@@ -97,7 +97,7 @@ RESUMED 回帧 → FROZEN ok n=1      appd reap + 记表（id 查重/epoch 序�
 | `FROZEN ok n=1` | rootfs 相（+2，EFI 同打） | **前置：boot 走查零 `eco: app too many`**；suspend 返 0 → 8s 窗零新增 beat → RESUME/RESUMED 帧恰收 |
 | `TOMB ok n=1` | 同上 | up → PAUSESV1 → saved c=N → reap0 → 记表 → relaunch → restored c=N+1 → reap1 → **表空** |
 
-- **打包位（结构性零漂移）**：APPTOMB 打包进 rootfs **非 `app/` 前缀**（selftest/ 专用位，tomb_selftest 走 cpio 直查）——**不入 bap_scan 收集 = 不占 APP_SLOTS（现役恰 9/9 满，入册必挤 SETTINGS 出表 = APP ok 静默漂 8 + launcher 少一瓦）**、APP_LIST 不可见、SPAWN 不可达——`APP ok n=`/`APPUI ok n=`/boot 批语义/APP_LIST 全零漂移，白名单 skip 立法不再需要。
+- **打包位（结构性零漂移）**：APPTOMB 打包进 rootfs **非 `app/` 前缀**（selftest/ 专用位，tomb_selftest 走 cpio 直查）——**不入 bap_scan 收集 = 不占 APP_SLOTS（时点恰 9/9 满——2026-11-17 终端刀抬帽 10；入册必挤 SETTINGS 出表 = APP ok 静默漂 8 + launcher 少一瓦）**、APP_LIST 不可见、SPAWN 不可达——`APP ok n=`/`APPUI ok n=`/boot 批语义/APP_LIST 全零漂移，白名单 skip 立法不再需要。
 - **canon 两两互非子串**：`FROZEN ok n=1`/`TOMB ok n=1` 对现役全表（103 字面含 FRZ ok n=2/FRZCYC/APP 族）grep -F 互查通过；**备胎 `APPFRZ ok n=1`/`TOMBST ok n=1` 均过全表；`APPTOMB ok n=1` 不可用**（含 `TOMB ok n=1` 子串）。落码字面以本表全形为准（短形仅谓词名）。
 - **连动 checklist（带落点）**：①markers.sh:23-24 数组尾 +2；②markers.sh:7 计数 51→53；③smoke.sh:245/:948/:1012 三处计数注释；④smoke-smp 数组自动继承（source 单源）——**SMP 面义务：段 b-2 收官实跑 `just smoke-smp` 钉板**（-EBUSY 重试已入 §3，不稳则两标记暂列观察项）；⑤smoke-image.sh:256 ECO 硬拷 +2 与 :132 计数；⑥规则/07:23 相构成表；⑦沿革五件套；⑦APP ok 语义复核（n 仍 =9）。
 - **预算**：tomb_selftest 串行增量 ≈15-17s（8s 窗主体）；rootfs 相 DEADLINE 现值 600s（smoke.sh:175；:976 的 420 为陈旧注释勿引）+ EFI 窗在案 ≈4.5 分钟——**段 a-1 首跑实测记录并钉板余量**。
@@ -110,7 +110,7 @@ RESUMED 回帧 → FROZEN ok n=1      appd reap + 记表（id 查重/epoch 序�
 | blob 头 | **12B 定长**（ver=0/hlen=12/rsv=0） | 本草案立法；v1 CRC 经 hlen 扩展；**追记（2026-11-10·app-2）**：v1 起升 32B（ver=1/hlen=32，前缀 12B 字段布局同位——app-2 草案 §3.1） |
 | pause deadline | 10s（appd 自**发出**起算，含投递等待） | 值同规范 §4.1-1、起算以本表为准；业界校准 iOS/UWP 5s——v2 按 intent 分档 |
 | 墓碑表 | RAM 8 槽；id 查重 upsert；epoch=全局记入序（↔立法「时间戳」） | v0 定值；真策略配额 v2 |
-| app 收集槽 APP_SLOTS | **9（现役恰满 9/9）**——APPTOMB 不入 `app/` 前缀零改 | 抬帽路线（连动双 const-assert/gui8-smoke n=9 锚）明确不取 |
+| app 收集槽 APP_SLOTS | **9（时点恰满 9/9；2026-11-17 终端刀抬帽 10）**——APPTOMB 不入 `app/` 前缀零改 | 抬帽路线当时明确不取（2026-11-17 终端刀实际抬帽 10——双 const-assert/gui8-smoke n=10 锚等连动面同批滚新） |
 | env extras（apptomb） | [4][5] 两枚，6/8 | 仅 selftest 通道装配 |
 | reap 绝对帽 | 30s 照旧 | deadline 10s ⊂ 30s |
 | smoke 墙钟 | rootfs 相 +15-17s 串行、EFI 同吃 | 段 b-2 核账 |

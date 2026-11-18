@@ -71,6 +71,18 @@ impl<T: Copy> ScanAcc<T> {
         self.best
     }
 
+    /// 当前已追踪的最高 eligible 带（W3-Q93：try_preempt 双圈合一消费——
+    /// 「环上存在 eligible 且 eff 严格高于 v」⟺ `best_eff() > v`，零第二
+    /// 实现——旧 sched `has_eff_above_filtered` 探峰谓词的累加器内单源形）。
+    ///
+    /// 值域律：初值 `i32::MIN` = 空前缀/全过滤（旧探峰空环返 false 同义）；
+    /// 有 eligible 前缀时 = 前缀最高带（与 [`Self::best`] 的选中带同源——
+    /// `best_eff() > i32::MIN` ⟹ `best().is_some()` 不变式）。PURE_EEVDF
+    /// 开形下带比较恒假、本值恒哨兵（实验轨道，v1 恒 false 不经此）。
+    pub fn best_eff(&self) -> i32 {
+        self.best_eff
+    }
+
     /// 逐元素三分支（scan_filtered 循环体单源）。
     ///
     /// `cand` = 候选者纯投影；`cand_node` = 候选者标识（直通存入累加器）；

@@ -55,6 +55,16 @@ static mut STACK_TOP: usize = 0;
 static mut ARGV_STR: [u8; 256] = [0; 256];
 static mut ARGV_PTR: [*const c_char; 17] = [ptr::null(); 17];
 
+// —— env 面（processargs v1.1 第二条消息）：静态落位（串区 256B + 16 槽 +
+//    NULL 终结，ARGV 面同款手法）——ENV_STR 存 NUL 终结 KEY=VALUE 续段、
+//    ENV_PTR 存项指针（environ 恒指向其基指针——boot 尾置位，空表 = 合法
+//    NULL 终结数组）；ENV_LEN = 现项计数（stubs.rs 的 setenv/unsetenv
+//    紧致重建面消费）。帽 256B/16 项如实文档化（无堆无增长，静态纪律；
+//    整项或零项单调截断——产侧 berry-argv::env_blob 同律，扩容挂账 9）。
+pub(crate) static mut ENV_STR: [u8; 256] = [0; 256];
+pub(crate) static mut ENV_PTR: [*mut c_char; 17] = [ptr::null_mut(); 17];
+pub(crate) static mut ENV_LEN: usize = 0;
+
 /// crt0 装配口：`_start` 汇编 `ldr x1, [BERRY_ARGV]` 取 argv 数组基址。
 #[no_mangle]
 pub static mut BERRY_ARGV: *const *const c_char = ptr::null();
@@ -62,12 +72,25 @@ pub static mut BERRY_ARGV: *const *const c_char = ptr::null();
 /// crt0 落种口（`_start` 汇编直调）：x0 = **env 通道端**（bootstrap），
 /// x1 = 初始栈顶（attr 谎报面数据源）。
 ///
-/// env 块协议（BerryOS processargs v1，Q2 之答——Zircon 同形的最小面）：
-/// svcmgr 在 `process_start` **前**把环境消息压进 env 端队列（确定性先行，
-/// 无竞速）——payload = NUL 分隔 argv 字节串（首项 = 程序名）、随行
-/// handles 按位语义：[0] = console 发端别名（stdout/stderr）、[1] = stdin
-/// 端（d-3b）。解析落 static 后返回 argc（argv 基址经 `BERRY_ARGV` 交汇编）。
-/// 协议破缺（recv 失败/无 handle）→ argc=0 + console=0：后续任何打印在
+/// env 块协议（BerryOS processargs v1.1，两条消息制——通道级 add-only：
+/// 消息一 v1 恒形，消息二可选追加）：产侧在 `process_start` **前**把消息
+/// 压进 env 端队列（确定性先行，无竞速）。消息一 payload = NUL 分隔
+/// argv 字节串（首项 = 程序名）、随行 handles 按位语义：[0] = console
+/// 发端别名（stdout/stderr）、[1] = stdin 端（d-3b）、[2]/[3] = T-1 自
+/// 描述对、[4..] = extras——env 有无两态下逐字节恒形。消息二（env 消息，
+/// 0 句柄）payload = KEY=VALUE\0 续装串（帽 256B、整项或零项单调截断），
+/// 仅产侧导出集非空时发送——对自定入口（hello/berry-verify 永不二次
+/// recv）结构性不可见，通道随子进程退出销毁。
+///
+/// 子侧两收：首收解析 argv 落 static 后返回 argc（argv 基址经
+/// `BERRY_ARGV` 交汇编）；尾随第二收（同窗复用 blob/hs）探测 env 消息
+/// ——非阻塞，返非 0（-EAGAIN = 产侧确定未发；其余错误码同桶防御）→
+/// 空环境继续 boot（env 非生存面不杀进程——与 argv 破缺 argc=0 自旋死
+/// 语义分档：argv 破缺 loud、env 缺席合法形）；返 0 → NUL 串逐项解析
+/// （无 '=' 项跳过）落 `ENV_STR`/`ENV_PTR`（16 项帽＋NULL 终结、整项
+/// 或零项截断同律），`environ` 恒置位＝`ENV_PTR` 基指针（空表 = 合法
+/// NULL 终结数组——post-boot environ 永非 NULL 不变式）。
+/// 协议破缺（首收失败/无 handle）→ argc=0 + console=0：后续任何打印在
 /// handle 0 上自旋死 → 标记缺失 = smoke FAIL 兜底（loud 不静默）。
 #[no_mangle]
 pub extern "C" fn berry_libc_boot(env: u32, sp0: usize) -> c_int {
@@ -140,6 +163,51 @@ pub extern "C" fn berry_libc_boot(env: u32, sp0: usize) -> c_int {
         }
         ARGV_PTR[argc] = ptr::null();
         BERRY_ARGV = ARGV_PTR.as_ptr();
+        // processargs v1.1 第二收（env 消息）：argv 解析落位后同窗复用
+        // （blob/hs）探测——空队 -EAGAIN = 产侧确定未发（bsh run/管道/
+        // run_capture 三产点已接真值、其余 spawn 点空导出集不发送；空队
+        // recv 纯查询、内核队列状态与产侧发送序逐字节恒等零漂；environ
+        // 指空 NULL 终结
+        // 数组，std::env::vars_os 首项即停零行、getenv 扫零项恒 NULL，
+        // uu env 无命令面输出与旧桩逐字节同）；其余错误码同桶防御降级空
+        // 环境（env 非生存面不杀进程——argc=0 自旋死是 argv 破缺的 loud
+        // 档，env 缺席是合法形，语义分档）。
+        nb = blob.len();
+        nh = hs.len();
+        if berry_channel_recv(env, blob.as_mut_ptr(), &mut nb, hs.as_mut_ptr(), &mut nh) == 0 {
+            // NUL 串逐项解析：无 '=' 项跳过（'=' 语义校验不在编码层——
+            // 产侧构造纪律 + 此处解析防御）；整项或零项单调截断——含
+            // NUL 放不下即停、其后不再装（产侧 env_blob 同律）。
+            let (mut ei, mut eo, mut ec) = (0usize, 0usize, 0usize);
+            while ei < nb && ec < 16 {
+                let start = ei;
+                while ei < nb && blob[ei] != 0 {
+                    ei += 1;
+                }
+                if ei >= nb {
+                    break; // 尾串无 NUL：不完整，丢弃（产侧恒补 NUL）
+                }
+                let item = &blob[start..ei];
+                ei += 1;
+                if !item.contains(&b'=') {
+                    continue; // 空项/无 '=' 项：跳过（编码面禁 \0\0 歧义——防御）
+                }
+                if eo + item.len() + 1 > ENV_STR.len() {
+                    break; // 整项或零项：装不下即停，其后不再装
+                }
+                ENV_STR[eo..eo + item.len()].copy_from_slice(item);
+                ENV_STR[eo + item.len()] = 0;
+                ENV_PTR[ec] = ENV_STR.as_mut_ptr().add(eo);
+                ec += 1;
+                eo += item.len() + 1;
+            }
+            ENV_PTR[ec] = ptr::null_mut();
+            ENV_LEN = ec;
+        }
+        // environ 恒置位（两分支同形）：空环境 = ENV_PTR[0] == NULL 的
+        // 合法 NULL 终结数组——post-boot environ 永非 NULL 不变式（POSIX
+        // 程序允许空表；旧 NULL 桩档退役）。
+        crate::stubs::environ = ENV_PTR.as_mut_ptr();
         argc as c_int
     }
 }

@@ -55,7 +55,7 @@ use crate::desc::{
 use crate::layout::CrossAlign;
 use crate::UiMain;
 use crate::swipe::{FLIP_VEL_PX_S, SNAP_DUR_NS};
-use crate::theme::{ON_ACCENT, Tokens};
+use crate::theme::Tokens;
 use crate::{Ui, UiError};
 
 /// OH phone 档密度（1080×1920 = 360×640vp @3x——几何单源）。
@@ -179,6 +179,10 @@ impl Default for NavStack {
 }
 
 // ---------- 波2 扩容：色派生与图标 id 约定 ----------
+
+/// 强调底上的前景字色（双主题 brand 均深——白字可读；源同值本地单
+/// 源，主树 theme 面 OnPrimary 档挂收编）。
+const ON_ACCENT: Color = Color { r: 255, g: 255, b: 255 };
 
 /// 淡强调底派生（active 页签/分段换底档）：brand 上页面底 12% 预混
 /// ——整数千分比零浮点、const 可编译期预算（源 `Palette::from_tokens`
@@ -730,7 +734,7 @@ pub fn tab_bar<const N: usize>(
         let cell = stack(ui, frame)?;
         let bg = ui.add(
             cell,
-            vspec(ViewKind::Rect, Props::Rect(RectProps { radius: 0,
+            vspec(ViewKind::Rect, Props::Rect(RectProps { radius: 0, 
                 bg: if on { dim_accent(*t) } else { t.bg_page },
                 w: None,
                 h: None, // 面层零内在（stack max 铁则）
@@ -816,7 +820,7 @@ pub fn seg<const N: usize>(
         let cell = stack(ui, frame)?;
         let bg = ui.add(
             cell,
-            vspec(ViewKind::Rect, Props::Rect(RectProps { radius: 0,
+            vspec(ViewKind::Rect, Props::Rect(RectProps { radius: 0, 
                 bg: if on { t.brand } else { t.bg_comp },
                 w: None,
                 h: None, // 面层零内在（stack max 铁则）
@@ -868,7 +872,7 @@ pub fn step<const N: usize>(
         } else {
             ui.add(
                 frame,
-                vspec(ViewKind::Rect, Props::Rect(RectProps { radius: 0,
+                vspec(ViewKind::Rect, Props::Rect(RectProps { radius: 0, 
                     bg: if i == current { t.brand } else { t.bg_comp },
                     w: Some(STEP_DOT),
                     h: Some(STEP_DOT),
@@ -879,7 +883,7 @@ pub fn step<const N: usize>(
         if i + 1 < steps {
             ui.add(
                 frame,
-                vspec(ViewKind::Rect, Props::Rect(RectProps { radius: 0,
+                vspec(ViewKind::Rect, Props::Rect(RectProps { radius: 0, 
                     bg: t.font_secondary,
                     w: Some(STEP_LINE_W),
                     h: Some(STEP_LINE_H),
@@ -954,7 +958,7 @@ pub fn bottom_tabs<const N: usize>(
         let cell = stack(ui, frame)?;
         let bg = ui.add(
             cell,
-            vspec(ViewKind::Rect, Props::Rect(RectProps { radius: 0,
+            vspec(ViewKind::Rect, Props::Rect(RectProps { radius: 0, 
                 bg: if on { dim_accent(*t) } else { t.bg_page },
                 w: None,
                 h: None, // 面层零内在（stack max 铁则）
@@ -1267,8 +1271,7 @@ impl SwipeItem {
                 self.begin_snap(ui, self.open);
                 true
             }
-            Msg::Press { .. } | Msg::Release { .. } | Msg::Click { .. }
-            | Msg::FocusIn { .. } | Msg::FocusOut { .. } => false,
+            Msg::Press { .. } | Msg::Release { .. } | Msg::Click { .. } => false,
         }
     }
 
@@ -1479,8 +1482,7 @@ impl DragReorder {
                 }
                 true
             }
-            Msg::Press { .. } | Msg::Release { .. } | Msg::Click { .. }
-            | Msg::FocusIn { .. } | Msg::FocusOut { .. } => false,
+            Msg::Press { .. } | Msg::Release { .. } | Msg::Click { .. } => false,
         }
     }
 
@@ -1778,8 +1780,7 @@ impl Sheet {
                 self.begin_slide(self.open);
                 true
             }
-            Msg::Press { .. } | Msg::Release { .. } | Msg::Click { .. }
-            | Msg::FocusIn { .. } | Msg::FocusOut { .. } => false,
+            Msg::Press { .. } | Msg::Release { .. } | Msg::Click { .. } => false,
         }
     }
 
@@ -1946,8 +1947,7 @@ impl Drawer {
                 self.begin_slide(self.open);
                 true
             }
-            Msg::Press { .. } | Msg::Release { .. } | Msg::Click { .. }
-            | Msg::FocusIn { .. } | Msg::FocusOut { .. } => false,
+            Msg::Press { .. } | Msg::Release { .. } | Msg::Click { .. } => false,
         }
     }
 
@@ -2097,8 +2097,7 @@ impl Refresh {
                 let _ = ui.set_offset(self.indicator, 0, -(REFRESH_IND as i32));
                 true
             }
-            Msg::Press { .. } | Msg::Release { .. } | Msg::Click { .. }
-            | Msg::FocusIn { .. } | Msg::FocusOut { .. } => false,
+            Msg::Press { .. } | Msg::Release { .. } | Msg::Click { .. } => false,
         }
     }
 
@@ -2157,7 +2156,7 @@ fn in_bounds<const N: usize>(ui: &Ui<N>, node: NodeId, x: u32, y: u32) -> bool {
 mod tests {
     use super::*;
     use crate::desc::Msg;
-    use crate::theme::{ThemeMode, Tokens as Tk};
+    use crate::theme::{Theme, Tokens as Tk};
     use crate::UiMain;
 
     fn page(key: u32) -> NavPage {
@@ -2166,7 +2165,7 @@ mod tests {
 
     /// 测试 token 组（light 档——主树 Tokens::pick 单源）。
     fn tok() -> Tokens {
-        Tokens::pick(ThemeMode::Light)
+        Tokens::pick(Theme::Light)
     }
 
     fn host() -> (UiMain, NodeId) {
@@ -3005,12 +3004,12 @@ mod tests {
 
     #[test]
     fn dim_accent_follows_tokens_both_themes() {
-        let l = dim_accent(Tokens::pick(ThemeMode::Light));
-        let d = dim_accent(Tokens::pick(ThemeMode::Dark));
+        let l = dim_accent(Tokens::pick(Theme::Light));
+        let d = dim_accent(Tokens::pick(Theme::Dark));
         // light：brand(0,125,255) 上 bg_page(241,243,245) 12% = (28,139,253)。
         assert_eq!(l, Color { r: 28, g: 139, b: 253 });
         assert_ne!(l, d, "派生随入参 token——dark 档各得其值（硬预混单档不可达）");
-        assert_ne!(d, Tokens::pick(ThemeMode::Dark).brand, "dim 档与原 brand 可区分");
+        assert_ne!(d, Tokens::pick(Theme::Dark).brand, "dim 档与原 brand 可区分");
     }
 
     // ----- 引入面整洁（未用 import 不落） -----
@@ -3018,7 +3017,7 @@ mod tests {
     #[test]
     fn tokens_type_alias_visible() {
         // 编译面自证：Tokens 经本模块 use 可达（主题适配 API 形态钉板）。
-        let t: Tk = Tokens::pick(ThemeMode::Light);
+        let t: Tk = Tokens::pick(Theme::Light);
         assert_eq!(t.brand, crate::theme::BRAND);
     }
 }
@@ -3090,8 +3089,21 @@ pub fn bottom_tabs_slots(
                 },
             )?;
         }
-        // 图标 24vp。
-            // 沉浸裁定（owner 2026-11-16）：白底 Rect 撤。
+        // 图标 24vp（43ee844d7 误删补回——撤白底 Rect 时 Icon 节点被
+        // 一并裹入删除，导致 big 档页签只剩文字无图标）。
+        let _tab_icon = ui.add(
+            cell,
+            ViewSpec {
+                kind: ViewKind::Icon,
+                key: 0,
+                props: Props::Icon(IconProps {
+                    id: t.icon,
+                    fg: Color { r: 0xFF, g: 0xFF, b: 0xFF },
+                    w: Some(24 * DENSITY),
+                    h: Some(24 * DENSITY),
+                }),
+            },
+        )?;
         // 标签 12vp（选中 = brand，未选 = 灰）。
         let label_color = if t.selected {
             Color { r: 0x00, g: 0x7D, b: 0xFF }
