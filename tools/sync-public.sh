@@ -272,9 +272,6 @@ WHITELIST=(
   rust-toolchain.toml
   justfile Cargo.toml Cargo.lock LICENSE
   README.md README.zh-CN.md .gitignore
-  # 合并批补账（2026-11-19 wip→main 大合龙：meihe/底座波新 face crate 族
-  # 白名单笔未随刀——sync-public --check-members 门红实捕，照 fwcfgface 判例补登）
-  asidface
 )
 
 # ---------- docs/ 内部排除（默认拒绝制的定向补丁） ----------

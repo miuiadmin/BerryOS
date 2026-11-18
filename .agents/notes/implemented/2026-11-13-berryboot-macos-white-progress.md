@@ -4,7 +4,7 @@ Status: implemented — 2026-11-13
 
 - Date: 2026-11-13
 - Type: decision
-- Related: [BerryBoot-BootProgress-P1-v1.0.md](../../../docs/BerryBoot-BootProgress-P1-v1.0.md), [Berry设备平台-CLI-first设计-v1.0.md](../../../docs/Berry设备平台-CLI-first设计-v1.0.md), [2026-11-13-mac-single-window-system-nav.md](2026-11-13-mac-single-window-system-nav.md)
+- Related: [BerryBoot-BootProgress-P1-v1.0.md](../../../docs/BerryBoot-BootProgress-P1-v1.0.md), [Berry设备平台-CLI-first设计-v1.9.md](../../../docs/Berry设备平台-CLI-first设计-v1.9.md), [2026-11-13-mac-single-window-system-nav.md](2026-11-13-mac-single-window-system-nav.md)
 
 ## Problem
 

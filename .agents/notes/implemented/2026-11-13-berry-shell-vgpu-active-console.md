@@ -4,7 +4,7 @@ Status: implemented — 2026-11-13
 
 - Date: 2026-11-13
 - Type: decision
-- Related: [Berry设备平台-CLI-first设计-v1.0.md](../../../docs/Berry设备平台-CLI-first设计-v1.0.md), [BerryMacEmulator-GPU2-v1.0.md](../../../docs/BerryMacEmulator-GPU2-v1.0.md), [berryboot-macos-white-progress.md](2026-11-13-berryboot-macos-white-progress.md)
+- Related: [Berry设备平台-CLI-first设计-v1.9.md](../../../docs/Berry设备平台-CLI-first设计-v1.9.md), [BerryMacEmulator-GPU2-v1.0.md](../../../docs/BerryMacEmulator-GPU2-v1.0.md), [berryboot-macos-white-progress.md](2026-11-13-berryboot-macos-white-progress.md)
 
 ## Problem
 

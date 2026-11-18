@@ -44,7 +44,6 @@ members = [
     "memface",
     "dmface",
     "aokface",
-    "asidface",
     "wsrcface",
 ]
 resolver = "2"

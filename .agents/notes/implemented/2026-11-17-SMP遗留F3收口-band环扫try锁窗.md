@@ -24,7 +24,7 @@ SMP-01 §3.3 定级的 F3:`FairBand::tick` 的 throttle_all/unthrottle_all 与 t
 
 - F3 撕裂窗闭合:tick 面一切 band 环扫(steal 的 unlink 对面)均在持锁窗内执行;SMP-01 §〇/§3.3/§五 的 F3 条目同批翻「已修」。
 - 延迟语义:对核持锁窗内 tick 到期的 band 执法至多迟一轮 tick(或至下一次 pick 的 lazy_enforce 兜底),F5 强制让点 + `nearest_throttle_wake` 醒源面下无饿死面。
-- 验证:单核 QEMU ktest 全绿(BANDM4 ok n=2/SMPLZ ok n=3/THRYLD ok n=4/LOADGEN/EASPROD/BENCH/ktest done;dpg.rs:1016 诊断 panic 为基线日志同形间歇项,f5-run-4..8 在案);`-smp 2` 双核 boot 见 SMP-01 §2 补记。
+- 验证:单核 QEMU ktest 全绿(BANDM4 ok n=2/SMPLZ ok n=3/THRYLD ok n=4〔2026-11-18 醒源刀后 n=5——T5 增逐任务面〕/LOADGEN/EASPROD/BENCH/ktest done;dpg.rs:1016 诊断 panic 为基线日志同形间歇项,f5-run-4..8 在案);`-smp 2` 双核 boot 见 SMP-01 §2 补记。
 - 零新增 static mut(writable_globals 面零变化);lockdep 语义保持(只在成功物理取放点记)。
 
 ## Related

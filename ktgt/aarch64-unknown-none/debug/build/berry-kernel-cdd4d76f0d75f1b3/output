@@ -1,5 +1,5 @@
 cargo:rustc-link-arg=-T/private/tmp/berry-merge/kernel/../tools/linker-aarch64.ld
 cargo:rerun-if-changed=/private/tmp/berry-merge/kernel/../tools/linker-aarch64.ld
 cargo:rerun-if-changed=../.git/HEAD
-cargo:rustc-env=BERRY_GIT_IDENT=G1-1216-gac934c29c-dirty
+cargo:rustc-env=BERRY_GIT_IDENT=G1-1388-geaa7b4bd9-dirty
 cargo:rustc-env=BERRY_RUSTC_VER=1.97.0

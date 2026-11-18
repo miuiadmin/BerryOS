@@ -1041,3 +1041,26 @@ fn parse_scale(s: &str) -> Result<ScaleMode> {
             .with_hint("fit | 1 | 2")),
     }
 }
+
+/// 十三刀补：main.rs 1043 行零测试破冰——parse_scale 接受梯与拒面
+/// （dispatch 面唯一可直测纯函数；bad 形态码位 2 + hint 词表钉板）。
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_scale_accepts_fit_one_two() {
+        assert!(matches!(parse_scale("fit").unwrap(), ScaleMode::Fit));
+        assert!(matches!(parse_scale("1").unwrap(), ScaleMode::Integer(1)));
+        assert!(matches!(parse_scale("2").unwrap(), ScaleMode::Integer(2)));
+        // 大小写敏感：FIT 非词表内形态。
+        let e = parse_scale("FIT").unwrap_err();
+        assert_eq!(e.code, 2);
+        assert!(e.hint.unwrap_or_default().contains("fit | 1 | 2"));
+        for bad in ["3", "0", "", " 1", "1x", "-1", "integer"] {
+            let e = parse_scale(bad).unwrap_err();
+            assert_eq!(e.code, 2, "bad={bad:?}");
+            assert!(e.hint.unwrap_or_default().contains("fit | 1 | 2"), "bad={bad:?}");
+        }
+    }
+}

@@ -118,7 +118,11 @@ fn lock_bark(what: &[u8], held_by: usize, since: u64) {
     crate::uart::uart_puts(b"\n");
 }
 
-/// KERN_LOCK 取锁（TTAS）。
+/// KERN_LOCK 取锁（TTAS）。03 号分派审计机会一 1a：诊断账面（KL_HELD_SINCE
+/// CNTVCT 读 + NAME_HOOK 持者点名间接调 + 三写）自无条件付移
+/// `争用臂 ∨ SMP 态` 门后（判律单源 `berry_lkface::kl_diag_gate`——单核
+/// 无争用时消费面唯一 `lock_bark` 首 par 门恒返，零消费零维护；SMP 态
+/// 恒维护保 bark 数据源新鲜；KL_HELD 镜像不动——`kl_held` 退化判据依赖）。
 #[inline]
 pub fn kern_acquire() {
     // G3-3 lockdep：物理取点记账（feature 关 = 编译消除；类 = TABLE——七类
@@ -128,15 +132,18 @@ pub fn kern_acquire() {
     // S-6 ③b：内层自旋超限（2^23 次）看门狗自报（非 wedge 态计数远够不到
     // ——争用突发 µs 量级；零漂移）。
     let mut bark_n = 0u32;
+    // 争用臂记账（本核本次取锁是否经 CAS 失败臂——诊断账面门输入）。
+    let mut contended = false;
     while KERN_LOCK
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
+        contended = true;
         KL_CONTENDED_CAS.fetch_add(1, Ordering::Relaxed);
         while KERN_LOCK.load(Ordering::Relaxed) {
             core::hint::spin_loop();
             bark_n = bark_n.wrapping_add(1);
-            if bark_n >= (1 << 23) {
+            if bark_n >= berry_lkface::KL_SPIN_BARK_MASK {
                 bark_n = 0;
                 lock_bark(
                     b"kern",
@@ -147,13 +154,17 @@ pub fn kern_acquire() {
         }
     }
     KL_HELD.store(crate::smp::cpu_id() + 1, Ordering::Relaxed);
-    KL_HELD_SINCE.store(crate::timer::cntvct(), Ordering::Relaxed);
-    // S-6 ③b：持者点名镜像（钩子未装窗 = boot 最早路径，(0,0) 空过）。
-    // SAFETY: boot 安装后只读。
-    if let Some(h) = unsafe { NAME_HOOK } {
-        let (p, l) = h();
-        KL_HELD_TAG_PTR.store(p, Ordering::Relaxed);
-        KL_HELD_TAG_LEN.store(l, Ordering::Relaxed);
+    // S-6 ③b：持锁诊断账面（SINCE 时间戳/持者点名镜像）门控维护——门律
+    // 单源 lkface（W3-Q101）；门关 = 单核无争用（bark 零消费），账面零写。
+    if berry_lkface::kl_diag_gate(contended, crate::smp::par_enabled()) {
+        KL_HELD_SINCE.store(crate::timer::cntvct(), Ordering::Relaxed);
+        // S-6 ③b：持者点名镜像（钩子未装窗 = boot 最早路径，(0,0) 空过）。
+        // SAFETY: boot 安装后只读。
+        if let Some(h) = unsafe { NAME_HOOK } {
+            let (p, l) = h();
+            KL_HELD_TAG_PTR.store(p, Ordering::Relaxed);
+            KL_HELD_TAG_LEN.store(l, Ordering::Relaxed);
+        }
     }
 }
 
@@ -185,11 +196,14 @@ pub fn kern_release() {
 /// SVC 入口锁类位集（S-3c c-2c slice 2b）：位值镜像 sched `task.rs` 的
 /// HELD_*（bit1=SQ 0x02 / bit2=RQ0 0x04 / bit3=RQ1 0x08 / bit4=REAPQ 0x10 /
 /// bit5=TABLE 0x20）；跨 crate 位对齐由 kernel main 编译期断言执法。
-/// 分类审计（34 号修正版落类表）= `docs/SMP-S3实施设计草案-v1.0.md`；NONE 类号
-/// （默认槽/越界号——实装号零）**完全不取任何锁**；凡含 copy_out/copy_in
-/// 出参链的号（walk_leaf 页表读者）或任何共享面禁落 NONE（§A113 读者面）。
+/// 分类审计（34 号修正版落类表）= `docs/SMP-S3实施设计草案-v1.0.md`；NONE 类
+/// 号**完全不取任何锁**（默认槽/越界号 + W3-Q100 后继审计白名单实装号
+/// 0x61/0x40/0x87）。实装号落 NONE 的前置 = §A115 四问 PT 锁后继审计
+/// （copy 链 §A113 读者义务由 per-AS PT 锁同窗接管〔S-4 4-2〕且 KL 无剩
+/// 余义务——svcface `NONE_DOWNGRADED_NRS` 白名单钉板执法）；未经复审的
+/// copy_out/copy_in 链或共享面号仍禁落 NONE。
 /// W3-Q67 起位集常量单源在 `berry_svcface`（host 可测纯面 crate——类位集
-/// 对 HELD_* 组装律/42 号注册表/NONE 归零律钉板）；此处 re-export 维持
+/// 对 HELD_* 组装律/注册表/NONE 后继审计律钉板）；此处 re-export 维持
 /// 既有引用路径零改动（kernel install()/trap.rs/main 断言面）。
 pub use berry_svcface::{
     SVC_CLASS_ALL, SVC_CLASS_NONE, SVC_CLASS_RQ_TABLE, SVC_CLASS_SQ_RQ,
@@ -286,63 +300,6 @@ pub fn klock_enter() {
 pub fn klock_exit() {
     svc_exit_class(SVC_CLASS_ALL);
     crate::enable_irq();
-}
-
-/// F0-3：保存/恢复 `DAIF` 的全谱锁 RAII 守卫（同步异常探针 `dpg::probe` / `probe_el0` 专用）。
-///
-/// 解决旧 `klock_enter`/`klock_exit` 在异常返回前无条件执行 `enable_irq()`（提前把 `PSTATE.I`
-/// 清 0，使 `eret` 前的 `ELR_EL1`/`SPSR_EL1` 暴露在嵌套时钟 IRQ 踩踏窗口下）的致命竞态：
-/// 入口先快照 `DAIF` 并屏蔽 IRQ，析构时先释放 `SVC_CLASS_ALL`，再精确恢复入口 `DAIF`（对
-/// EL0 异常探针维持 `PSTATE.I == 1` 直至 `eret` 原子落地）。
-pub struct KlockIrqSaveGuard {
-    saved_daif: u64,
-}
-
-#[inline]
-pub fn klock_enter_irqsave() -> KlockIrqSaveGuard {
-    let saved_daif = crate::irq_save();
-    crate::disable_irq();
-    svc_enter_class(SVC_CLASS_ALL);
-    KlockIrqSaveGuard { saved_daif }
-}
-
-impl Drop for KlockIrqSaveGuard {
-    #[inline]
-    fn drop(&mut self) {
-        svc_exit_class(SVC_CLASS_ALL);
-        crate::irq_restore(self.saved_daif);
-    }
-}
-
-/// F0-3：保存/恢复 `DAIF` 且支持同核 `kl_held()` 重入退化的 `TABLE(KERN_LOCK)` RAII 守卫
-/// （析构器 `Vmar::Drop` 等可在任意锁态/中断态触发的收口点专用）。
-pub struct TableIrqSaveGuard {
-    saved_daif: u64,
-    acquired: bool,
-}
-
-#[inline]
-pub fn kern_acquire_irqsave_reentrant() -> TableIrqSaveGuard {
-    let saved_daif = crate::irq_save();
-    crate::disable_irq();
-    let acquired = !kl_held();
-    if acquired {
-        kern_acquire();
-    }
-    TableIrqSaveGuard {
-        saved_daif,
-        acquired,
-    }
-}
-
-impl Drop for TableIrqSaveGuard {
-    #[inline]
-    fn drop(&mut self) {
-        if self.acquired {
-            kern_release();
-        }
-        crate::irq_restore(self.saved_daif);
-    }
 }
 
 // ---- PRINT_LOCK ----

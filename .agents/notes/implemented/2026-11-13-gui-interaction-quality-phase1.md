@@ -4,7 +4,7 @@ Status: implemented — 2026-11-13
 
 - Date: 2026-11-13
 - Type: decision
-- Related: [2026-11-13-gui-interaction-quality.md](../../plans/2026-11-13-gui-interaction-quality.md), [Berry设备平台-CLI-first设计-v1.0.md](../../../docs/Berry设备平台-CLI-first设计-v1.0.md), [BerryBoot-BootProgress-P1-v1.0.md](../../../docs/BerryBoot-BootProgress-P1-v1.0.md), [BerryMacEmulator-GPU2-v1.0.md](../../../docs/BerryMacEmulator-GPU2-v1.0.md)
+- Related: [2026-11-13-gui-interaction-quality.md](../../plans/2026-11-13-gui-interaction-quality.md), [Berry设备平台-CLI-first设计-v1.9.md](../../../docs/Berry设备平台-CLI-first设计-v1.9.md), [BerryBoot-BootProgress-P1-v1.0.md](../../../docs/BerryBoot-BootProgress-P1-v1.0.md), [BerryMacEmulator-GPU2-v1.0.md](../../../docs/BerryMacEmulator-GPU2-v1.0.md)
 
 ## Problem
 

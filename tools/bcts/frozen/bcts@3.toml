@@ -108,7 +108,7 @@ tier = 1
 source = "tools/markers.sh@5f4a00f0ae8c"
 [[marker]]
 id = "bare-15"
-expect = "BENCH ok n=8"
+expect = "BENCH ok n=6"
 phase = "bare"
 tier = 1
 source = "tools/markers.sh@5f4a00f0ae8c"

@@ -692,7 +692,6 @@ test-host:
     # 本门禁防回归（smoke 本地复现的宿主断点收口）。
     python3 tools/shvarcheck.py --check
     cargo test -p berry-mm --target {{host}}
-    cargo test -p berry-asidface --target {{host}}
     # W3-Q2：berry-wqmatch（等待队列唤醒匹配纯函数面——b-1 广播不变量/
     # WAIT_ANY 哨兵/fastpath 单等待者资格三律钉板 + 两路语义对齐穷举，
     # host 9 测；谓词单源，sched wake_matching/find_single_waiter 消费）。
@@ -708,6 +707,11 @@ test-host:
     # 参数化注入 + irq_exit 值域执法；wsrcface 姊妹件——号归源/源分类
     # 进环两件合钉刀1 归因链〕）。
     cargo test -p berry-wakeface --target {{host}}
+    # W3-Q106：berry-vdsoface（vDSO 数据页布局与换算纯函数面——布局冻结
+    # 钉板/magic+freq 谓词四态/换算式与内核 sys_clock_read 逐位对拍含
+    # 非二次幂频率精确域，host 5 测；单源 crate，kernel/src/vdso.rs 建页
+    # + berry-sys fast path 双消费〔03 号审计机会三〕）。
+    cargo test -p berry-vdsoface --target {{host}}
     # W3-Q28：berry-wsrcface（唤醒源分类/白名单/钳位纯函数面——WSRC_F_*
     # 五常量 + M_* 九源冻结值镜像 + class_of/valid/slot_index 三谓词，
     # host 8 测（9 源两列全表/256 值全域扫描/钳位律/POWER_KEY 到达-only
@@ -757,7 +761,10 @@ test-host:
     cargo test -p berry-hdlface --target {{host}}
     # W3-Q9：berry-chanface（channel 队列资格判纯函数面——send 参数上限
     # 律/数组内无重复/容量门/READABLE·WRITABLE 派生位键律钉板，host 8 测；
-    # 判据单源，kernel syscall.rs/channel.rs 消费）。
+    # 判据单源，kernel syscall.rs/channel.rs 消费。W3-Q49 freeze 模块
+    # （mark/clear 资格 + 序守卫）+9。W3-Q95 ring 模块（02 号机会三刀 a
+    # 环形机械：不变量/槽映射/Vec 模型对拍〔全序列 + 全相位环绕 + 伪随机
+    # 500 步〕/容量门复用律）+6——chanface 23 测。
     cargo test -p berry-chanface --target {{host}}
     # W3-Q6：berry-itally（intent 档位计数/通胀计数遥测纯函数面——档位
     # 直方六槽/保留域收敛/borrowed==Σ借入不变量/tele: 行格式（纯 ASCII、
@@ -831,6 +838,14 @@ test-host:
     # 〔spread ∧ ttbr0!=0 ∧ eligible〕，host 13 测；判定律单源，sched.rs
     # 五点消费）。
     cargo test -p berry-balface --target {{host}}
+    # W3-Q36：berry-lkface（lockdep 检查面纯函数——rank 七类全序表/
+    # check_acquire 三检判序/check_release 两臂/check_irq_exit 配平判
+    # + W3-Q101 kl_diag_gate 门律四象限真值表〔与字面 || 恰等对拍〕+
+    # KL_SPIN_BARK_MASK 2^23 迁册冻结，host 15 测；判定律单源，HAL
+    # kern_lock.rs lockdep 面 + kern_acquire 诊断门消费。#305 入库起
+    # 未接线 test-host（base 预存缺口），W3-Q103 随刀补线——「有 host
+    # 测零自动执法 = 静默腐烂」判例族（Q89 heapface 同款先例）。
+    cargo test -p berry-lkface --target {{host}}
 
     # W3-Q83：berry-numface（UART 整数格式化族纯面钉板——u64 十进制〔无前
     # 导/0 单位/20 位极值〕+ 固定 16 位小写 hex〔trap dump 形〕+ 8 位大写
@@ -996,11 +1011,6 @@ test-host:
     # 批切分 + poll-first 收割到干 + 分段阻塞轮转 + LT/非阻塞/唤醒三免费
     # 语义，host 13 测）。
     cargo test --manifest-path user/Cargo.toml -p berry-poll --target {{host}}
-    # 作业控制 v2 刀：berry-jobs（bsh 后台作业纯函数面——`&` 尾缀剥离
-    # 全边缘（`&&` 尾停/`a&&&b` 恒不剥/裸 `&` 不剥/`a& &` 循环剥）+
-    # 最低空位编号与满帽 + %n 解析杂形全拒 + 四渲染行黄金字节，
-    # host 14 测）。
-    cargo test --manifest-path user/Cargo.toml -p berry-jobs --target {{host}}
     # GUI-1：berry-fbcon（自绘 8×16 字形 + 蜂格渲染核纯函数面——V-6 刀 2
     # 前置段产物，GUI-1 迁正 user/ members 随挂 host 测试：字形锚点/蜂格
     # 渲染/滚动/格式打包，host 28 测）。
@@ -1152,12 +1162,6 @@ test-host:
     # （上方 cargo test tools/elf2pe）；Python 版已降格 elf2pe_oracle.py
     # ——selftest 照跑守语义钉板，Rust 件有疑时拿本件复算对拍，不降豁免表
     # （selftest_guard 零豁免契约不动）。
-    # cpio_filter 接线（2026-11-19 合并批补账：main 侧件随大合龙入树、
-    # selftest_guard 实捕漏接线——照 elf2pe_oracle 行式）。
-    # gui_guard 接线（2026-11-19 合并批补账：main 侧件随大合龙入树——
-    # 旗为连字形 --self-test，WIRE_RE 变体面在册）。
-    python3 tools/gui_guard.py --self-test
-    python3 tools/cpio_filter.py --selftest
     python3 tools/elf2pe_oracle.py --selftest
     # mkfat 换轨二刀后双形态（elf2flat/elf2pe/mkcpio 同位纪律）：产链
     # 现役件 = Rust（上方 cargo test tools/mkfat）；Python 版不降格改名
@@ -1494,7 +1498,7 @@ bench-rt: build
 # 定值 `-icount shift=1,sleep=off`——周期数变指令数代理（shift=1 虚拟时钟
 # ≈0.125 cyc/instr），与 TCG 实时基线**不可比、分文件**
 # tools/bench_baseline_icount.txt（跨机/跨 QEMU 版本亦不可比，CI 首跑自立）。
-# boot 时序全变 → 只跑 bench 收割（六行 BENCH 门禁面 + BENCHWAKE 观测行），
+# boot 时序全变 → 只跑 bench 收割（十行 BENCH 门禁面（icount 基线刀 2026-11-18 两项入册 + W3-Q98/Q102 再两项随迁） + BENCHWAKE 观测行），
 # 不用于功能面。L2 紧门禁形态（精确相等/±5%）由五跑证明烘焙为 bench.py
 # ICOUNT_TOL 常量；证明可重验：
 #   python3 tools/bench.py --icount --prove

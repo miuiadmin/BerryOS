@@ -57,7 +57,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::error::{BerryError, Result};
-use crate::qmp::QmpInjector;
 
 /// Header budget per request (request line + headers); anything bigger is a
 /// bad request. noVNC loads assets with plain browser requests, well below.
@@ -710,6 +709,49 @@ pub struct LanUpstream {
     pub guest_h: u32,
 }
 
+/// 一个代理连接的 QMP 注入器：惰性连 run/qmp-inject.sock（QMP unix
+/// 服务端支持多客户端），capabilities 一次，之后每个 PointerEvent 一条
+/// input-send-event。无排空线程（QMP 事件通知小而稀疏，内核 socket 缓冲
+/// 足以容纳；持有克隆的排空线程会让连接永不关闭 → fd 泄漏）。
+struct QmpInjector {
+    sock: Option<std::os::unix::net::UnixStream>,
+}
+
+impl QmpInjector {
+    fn connect(path: &Path) -> Option<Self> {
+        use std::io::{BufRead, BufReader, Write};
+        let mut s = std::os::unix::net::UnixStream::connect(path).ok()?;
+        let mut r = BufReader::new(s.try_clone().ok()?);
+        let mut line = String::new();
+        r.read_line(&mut line).ok()?; // greeting
+        writeln!(s, "{{\"execute\":\"qmp_capabilities\"}}").ok()?;
+        s.flush().ok()?;
+        line.clear();
+        r.read_line(&mut line).ok()?;
+        if !line.contains("return") {
+            return None;
+        }
+        Some(QmpInjector { sock: Some(s) })
+    }
+
+    fn pointer(&mut self, x: u16, y: u16, buttons: u8, gw: u32, gh: u32) {
+        use std::io::Write;
+        let Some(s) = self.sock.as_mut() else { return };
+        let sx = (u64::from(x) * 32767 / u64::from(gw.max(1))).min(32767);
+        let sy = (u64::from(y) * 32767 / u64::from(gh.max(1))).min(32767);
+        let down = buttons & 1 != 0;
+        let msg = format!(
+            "{{\"execute\":\"input-send-event\",\"arguments\":{{\"events\":[\
+             {{\"type\":\"abs\",\"data\":{{\"axis\":\"x\",\"value\":{sx}}}}},\
+             {{\"type\":\"abs\",\"data\":{{\"axis\":\"y\",\"value\":{sy}}}}},\
+             {{\"type\":\"btn\",\"data\":{{\"down\":{down},\"button\":\"left\"}}}}]}}}}\n"
+        );
+        if writeln!(s, "{msg}").is_err() || s.flush().is_err() {
+            self.sock = None;
+        }
+    }
+}
+
 /// 解析浏览器→上游字节流开头的 ws 客户端帧（恒 mask）。返回
 /// (整帧长, opcode, 载荷区间)；字节不足返回 None。
 fn parse_client_frame(buf: &[u8]) -> Option<(usize, u8, std::ops::Range<usize>)> {
@@ -734,7 +776,9 @@ fn parse_client_frame(buf: &[u8]) -> Option<(usize, u8, std::ops::Range<usize>)>
         off += 8;
     }
     let mask_len = if masked { 4 } else { 0 };
-    let total = off + mask_len + len;
+    // 长度域是浏览器可控输入：加法必须 checked——u64::MAX 档在 debug
+    // 直接 panic、release 回绕成假 total。溢出 = 帧拒收（None）。
+    let total = off.checked_add(mask_len)?.checked_add(len)?;
     if buf.len() < total {
         return None;
     }
@@ -1118,11 +1162,17 @@ fn head_lines(raw: &[u8]) -> impl Iterator<Item = &[u8]> {
 /// (port stripped, IPv6 brackets tolerated) — anything else is a rebind.
 fn host_header_ok(raw: &[u8]) -> bool {
     let Some(host) = header_value(raw, "host") else { return true };
-    let h = host.split(':').next().unwrap_or("").trim();
+    // Bracketed IPv6 first: a port split on the raw value would eat the
+    // address (`[::1]` -> `[`). Inside the brackets there is no port.
+    let host = host.trim();
+    let h = if let Some(rest) = host.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("")
+    } else {
+        host.split(':').next().unwrap_or("").trim()
+    };
     if h.is_empty() {
         return true;
     }
-    let h = h.trim_start_matches('[').trim_end_matches(']');
     h == "localhost" || h.ends_with(".localhost") || h.parse::<std::net::IpAddr>().is_ok()
 }
 
@@ -2869,5 +2919,173 @@ mod tests {
             Err(e) => panic!("a failed handshake must close, not error: {e}"),
         }
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// W1-Q25 十二刀：DNS-rebinding 门（host_header_ok）+ 头解析底座
+    /// （header_value/split_header）。安全面无直接单测——api_power 的
+    /// 端到端腿只钉 POST/凭证路径，Host 判定的接受梯与拒梯从未被
+    /// 钉板（改坏 = 回绑攻击面静默打开，无任何测试咬合）。
+    #[test]
+    fn host_header_rebind_gate_matrix() {
+        // 接受梯：无 Host 头 / 空值 / localhost 形 / IP 字面量（v4·带
+        // 端口·v6 裸与括号——端口剥离后判定）。
+        let head = |v: &str| format!("POST /api/power/off HTTP/1.1\r\n{v}\r\n");
+        assert!(host_header_ok(b"POST /api/power/off HTTP/1.1\r\n\r\n"), "no Host = ok");
+        assert!(host_header_ok(b"POST / HTTP/1.1\r\nHost:\r\n\r\n"), "empty value = ok");
+        assert!(host_header_ok(head("Host: localhost").as_bytes()));
+        assert!(host_header_ok(head("Host: localhost:8123").as_bytes()));
+        assert!(host_header_ok(head("Host: foo.localhost").as_bytes()));
+        assert!(host_header_ok(head("Host: 127.0.0.1").as_bytes()));
+        assert!(host_header_ok(head("Host: 127.0.0.1:8123").as_bytes()));
+        assert!(host_header_ok(head("Host: [::1]").as_bytes()));
+        assert!(host_header_ok(head("Host: [::1]:8123").as_bytes()));
+        assert!(host_header_ok(head("Host: ::1").as_bytes()));
+        assert!(host_header_ok(head("Host: 192.168.1.105").as_bytes()));
+        // 拒梯：任意可解析域名 = 回绑面（evil.com·子域伪装·localhost
+        // 前缀伪装非后缀·名字小写化的域名值同样拒）。
+        assert!(!host_header_ok(head("Host: evil.com").as_bytes()));
+        assert!(!host_header_ok(head("Host: evil.com:8123").as_bytes()));
+        assert!(!host_header_ok(head("Host: localhost.evil.com").as_bytes()));
+        assert!(!host_header_ok(head("Host: xlocalhost").as_bytes()));
+        assert!(!host_header_ok(head("host: Evil.Com").as_bytes()));
+        // 值两端空白剥离；请求行不是头（skip(1)），目标里含 host 字样
+        // 不参与判定。
+        assert!(host_header_ok(head("Host:   127.0.0.1  ").as_bytes()));
+        assert!(host_header_ok(b"GET /host/evil.com HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"));
+    }
+
+    /// W1-Q25 十二刀：header_value/split_header 底座——首值胜、名字
+    /// 大小写不敏感、冒号在名后切、值侧两端 trim、CRLF 兼容、请求行
+    /// （无冒号）跳过、缺失返回 None。
+    #[test]
+    fn header_value_parsing() {
+        let raw = b"POST / HTTP/1.1\r\nX-A: first\r\nX-A: second\r\nx-b: lower\r\n\r\n";
+        assert_eq!(header_value(raw, "x-a").as_deref(), Some("first"), "first value wins");
+        assert_eq!(header_value(raw, "X-B").as_deref(), Some("lower"), "name case-insensitive");
+        assert_eq!(header_value(raw, "x-missing"), None);
+        // 名侧带空格（"X-C :v"）：名 "X-C " 含尾空格 ≠ "x-c"——HTTP
+        /// 名后不该有空格，宽松解析只容忍值侧。
+        assert_eq!(header_value(b"POST / HTTP/1.1\r\nX-C :v\r\n\r\n", "x-c"), None);
+        // 值保留内部空白，仅两端 trim。
+        assert_eq!(header_value(b"GET / HTTP/1.1\r\nX-K: a b \r\n\r\n", "x-k").as_deref(), Some("a b"));
+        assert_eq!(header_value(b"GET /\r\n\r\n", "x-k"), None);
+        // LF-only 头（head_lines 兼容无 CR 行）。
+        assert_eq!(header_value(b"GET /\nX-L: v\n\n", "x-l").as_deref(), Some("v"));
+        // 请求行本身无冒号形态（纯斜杠目标）不炸不匹配。
+        assert_eq!(header_value(b"GET / HTTP/1.1\r\n\r\n", "get"), None);
+    }
+
+    /// W1-Q25 十二刀：ct_eq 常时比较底座——等长恒等/恒异、异长即假、
+    /// 首字节相同尾字节不同必须假（早退 bug 会漏成真——这就是该函数
+    /// 存在的全部意义）。
+    #[test]
+    fn constant_time_equality() {
+        assert!(ct_eq(b"", b""));
+        assert!(ct_eq(b"tok123", b"tok123"));
+        assert!(!ct_eq(b"tok123", b"tok124"), "last byte differs");
+        assert!(!ct_eq(b"aok123", b"tok123"), "first byte differs");
+        assert!(!ct_eq(b"tok12", b"tok123"), "length mismatch");
+        assert!(!ct_eq(b"tok123", b"tok12"));
+        // 单比特差也必须咬。
+        let a = [0x00u8, 0xff, 0x0f];
+        let b = [0x00u8, 0xff, 0x0e];
+        assert!(!ct_eq(&a, &b));
+    }
+
+    /// W1-Q25 十二刀：pct_encode RFC 3986 未保留 keep-list——保留集
+    /// 逐类恒等、其余逐字节 %HH 大写十六进制、多字节 UTF-8 逐字节
+    /// 编码（非逐字符）。
+    #[test]
+    fn pct_encode_keep_list() {
+        assert_eq!(pct_encode(""), "");
+        assert_eq!(pct_encode("AZaz09-._~"), "AZaz09-._~");
+        // 常见 URL 元字符全编码（noVNC path= 场景的真实载荷面）。
+        assert_eq!(pct_encode("ws://127.0.0.1:6001"), "ws%3A%2F%2F127.0.0.1%3A6001");
+        assert_eq!(pct_encode("a b&c#d"), "a%20b%26c%23d");
+        assert_eq!(pct_encode("p?w=1+2"), "p%3Fw%3D1%2B2");
+        // 非 ASCII：UTF-8 字节逐个 %HH（「中」= E4 B8 AD）。
+        assert_eq!(pct_encode("中"), "%E4%B8%AD");
+        // 输出只含 keep-list 与 %HH——不变量式全量断言。
+        for c in ["\u{0}", "\u{7f}", "\u{80}", "%", "[", "]"] {
+            let out = pct_encode(c);
+            assert!(
+                out.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~' | b'%')),
+                "char {c:?} encoded to {out:?}"
+            );
+        }
+    }
+
+    /// W1-Q25 十二刀：parse_client_frame/unmask_byte——LAN /ws 代理的
+    /// 帧感知拦截面（RFB PointerEvent 拦截、其余原样转发）的地基。
+    /// RFC 6455 客户端帧三档长度 + 掩码字节序 + 截断拒收。
+    #[test]
+    fn ws_client_frame_parsing_and_unmasking() {
+        // 7-bit 档：client 帧恒掩码（FIN+opcode=2，MASK=1，len=6）。
+        let mask = [0x0a, 0x0b, 0x0c, 0x0d];
+        let payload: Vec<u8> = [0x05u8, 0x00, 0x01, 0xe0, 0x02, 0x00]
+            .iter()
+            .enumerate()
+            .map(|(i, b)| b ^ mask[i % 4])
+            .collect();
+        let mut frame = vec![0x82, 0x86];
+        frame.extend_from_slice(&mask);
+        frame.extend_from_slice(&payload);
+        let (total, opcode, range) = parse_client_frame(&frame).unwrap();
+        assert_eq!(total, 12); // 2 头 + 4 掩码 + 6 载荷
+        assert_eq!(opcode, 2);
+        assert_eq!(range, 6..12);
+        // 解掩回 RFB PointerEvent：首字节 0x05、坐标大端。
+        assert_eq!(unmask_byte(&frame[..total], &range, 0), 0x05);
+        assert_eq!(unmask_byte(&frame[..total], &range, 1), 0x00);
+        assert_eq!(unmask_byte(&frame[..total], &range, 2), 0x01);
+        assert_eq!(unmask_byte(&frame[..total], &range, 3), 0xe0);
+        assert_eq!(unmask_byte(&frame[..total], &range, 4), 0x02);
+        // 掩码位翻转只影响对应 i%4 槽：mask[0]（帧偏移 2）翻转 → 字节 0 变、字节 1 不变。
+        let mut f2 = frame.clone();
+        f2[2] ^= 0xff;
+        let (_, _, r2) = parse_client_frame(&f2).unwrap();
+        assert_eq!(unmask_byte(&f2[..total], &r2, 0), 0x05 ^ 0xff);
+        assert_eq!(unmask_byte(&f2[..total], &r2, 1), 0x00);
+
+        // 126 档（16-bit 扩展长度）：len=200 载荷。
+        let len: u16 = 200;
+        let mut f = vec![0x82, 0x80 | 126];
+        f.extend_from_slice(&len.to_be_bytes());
+        f.extend_from_slice(&[1, 2, 3, 4]);
+        f.extend(std::iter::repeat_n(0u8, len as usize));
+        let (total, _, range) = parse_client_frame(&f).unwrap();
+        assert_eq!(total, 2 + 2 + 4 + 200);
+        assert_eq!(range, 8..208);
+        // 截断一字节即拒收（None，等更多数据——非 panic）。
+        assert!(parse_client_frame(&f[..f.len() - 1]).is_none());
+
+        // 127 档（64-bit）：小值（len=1）可解、掩码紧跟。
+        let mut f = vec![0x82, 0x80 | 127];
+        f.extend_from_slice(&1u64.to_be_bytes());
+        f.extend_from_slice(&[1, 2, 3, 4]);
+        f.push(0x7f);
+        let (total, _, range) = parse_client_frame(&f).unwrap();
+        assert_eq!(total, 2 + 8 + 4 + 1);
+        assert_eq!(range, 14..15);
+
+        // 无掩码客户端帧（协议违规但解析器容忍）：mask_len=0、载荷
+        // 直接跟在长度后、unmask_byte 原样透传。
+        let f = vec![0x82, 0x02, 0xaa, 0xbb];
+        let (total, opcode, range) = parse_client_frame(&f).unwrap();
+        assert_eq!(total, 4);
+        assert_eq!(opcode, 2);
+        assert_eq!(range, 2..4);
+        assert_eq!(unmask_byte(&f[..total], &range, 0), 0xaa);
+        assert!(parse_client_frame(&f[..3]).is_none());
+
+        // 长度头本身截断：各档半截头 None。
+        assert!(parse_client_frame(&[]).is_none());
+        assert!(parse_client_frame(&[0x82]).is_none());
+        assert!(parse_client_frame(&[0x82, 126]).is_none()); // 126 档无 2 字节
+        assert!(parse_client_frame(&[0x82, 127]).is_none()); // 127 档无 8 字节
+        // 127 档值超过 usize 表示域：溢出拒收。
+        let mut f = vec![0x82, 0x80 | 127];
+        f.extend_from_slice(&u64::MAX.to_be_bytes());
+        assert!(parse_client_frame(&f).is_none());
     }
 }
