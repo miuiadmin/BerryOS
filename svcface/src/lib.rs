@@ -24,9 +24,10 @@
 //! - [`class_of`]：号→类查询——注册表线性扫（45 项，boot 期注册语义的
 //!   纯投影；**未注册号 → [`SVC_CLASS_NONE`]**，与 HAL 派发表默认槽
 //!   `(sys_unimplemented, NONE)` 全表初始化同一律）。
-//! - [`NONE 号归零律`]由 [`none_registered`] 执法：注册表内不存在 NONE 类
-//!   项（「NONE 实装号归零」纪律——凡 copy_out/copy_in 链或任何共享面
-//!   禁落 NONE，§A113 读者面；默认槽/越界号是唯一 NONE 面）。
+//! - [`NONE 号后继审计律`]由 [`none_class_audited`] 执法：在册 NONE 实装
+//!   号集恰等 [`NONE_DOWNGRADED_NRS`] 白名单（W3-Q100 起 0x61/0x40/0x87
+//!   过 §A115 四问 PT 锁后继审计降档——copy 链 §A113 读者义务已由
+//!   per-AS PT 锁同窗接管；白名单外 NONE 实装号即违规）。
 //!
 //! 物理臂留壳（本面不钉的）：HAL `SYSCALLS` static mut 派发表本体、boot
 //! 单线程 `install()` 写入、dispatch 只读快照——那是「表怎么填」的机械，
@@ -34,7 +35,10 @@
 
 #![cfg_attr(not(test), no_std)]
 
-/// 纯表号（0x02/0x03/0x3A/0x61/0x86/0x87/0x88/0x83 等）：仅 KL。
+/// NONE（0x00）= 零锁零槽直达 handler。未注册/未实现/越界号默认；实装
+/// 号须过 §A115 四问 PT 锁后继审计才可落此档（W3-Q100 首批三平凡号
+/// 0x61/0x87/0x40——copy 链 §A113 读者义务已由 per-AS PT 锁同窗接管〔S-4
+/// 4-2〕，KL 再无剩余义务；归零律退役为后继审计律，见 [`none_downgraded_nrs`]）。
 pub const SVC_CLASS_NONE: u8 = 0x00;
 /// 纯表号（vmo/vmar 十一号 + attr/join/suspend/power/policy 等）：仅 KL。
 pub const SVC_CLASS_TABLE: u8 = 0x20;
@@ -98,7 +102,12 @@ pub const REGISTRY: &[(u8, u8)] = &[
     (0x04, SVC_CLASS_SQ_RQ_TABLE), // object_wait_one
     (0x05, SVC_CLASS_SQ_RQ_TABLE), // object_wait_many
     (0x06, SVC_CLASS_SQ_RQ_TABLE), // object_signal
-    (0x61, SVC_CLASS_TABLE),       // clock_read（copy_out 链 §A113 读者面升 TABLE）
+    // —— NONE：clock_read（0x61，W3-Q100 自 TABLE 降档）——CNTVCT/CNTFRQ
+    //    硬件读 + rtc 注入面（EPOCH_S/BOOT_MONO_NS Relaxed 原子，无锁需
+    //    求）零共享串行面；出参 copy_out_u64 链 = §A113 读者面，S-4 4-2 起
+    //    走查与 store 同一 per-AS PT 锁窗（跨核 unmap/protect 写者同窗互
+    //    斥）——KL 后继义务已偿清，§A115 四问复审落 NONE（03 号审计机会二）。
+    (0x61, SVC_CLASS_NONE),       // clock_read（PT 锁后继审计——W3-Q100 降档）
     // —— TABLE（0x20，仅 KL）：vmo/vmar 十一号（S-4 4-2 自 ALL 降档，§A115）——
     (0x11, SVC_CLASS_TABLE), // vmo_create
     (0x12, SVC_CLASS_TABLE), // vmo_commit
@@ -132,9 +141,11 @@ pub const REGISTRY: &[(u8, u8)] = &[
     (0x3D, SVC_CLASS_TABLE),      // sched_getattr
     (0x3E, SVC_CLASS_TABLE),      // process_suspend（表门控 + freeze 扫描）
     (0x3F, SVC_CLASS_RQ_TABLE),   // thread_yield（pick/requeue + 切换舞蹈）
-    // —— TABLE：CP-08 util 快照读（0x40——EWMA 槽 Relaxed 原子读零共享面；
-    //    copy_out 链走查调用方页表 = §A113 读者面，同 0x61/0x87）。
-    (0x40, SVC_CLASS_TABLE),      // sched_util_snapshot
+    // —— NONE：CP-08 util 快照读（0x40，W3-Q100 自 TABLE 降档）——EWMA 槽
+    //    Relaxed 原子读零共享串行面（统计信号无序角色，同 LB_TICKS 先例）；
+    //    copy_to_user 链 = §A113 读者面，S-4 4-2 起 per-AS PT 锁同窗——
+    //    §A115 四问复审落 NONE（同 0x61/0x87）。
+    (0x40, SVC_CLASS_NONE),      // sched_util_snapshot（W3-Q100 降档）
     // —— TABLE：cbox 刀 1 排液（0x42——黑匣子快照表读，copy_out 读者面 §A113）——
     (0x42, SVC_CLASS_TABLE),      // cbox_drain
     // —— channel/event 族 ——
@@ -145,9 +156,12 @@ pub const REGISTRY: &[(u8, u8)] = &[
     // caller_table/get_raw/PT 窗/wake_matching），同类挂法。
     (0x57, SVC_CLASS_SQ_RQ_TABLE),  // channel_recv_n
     (0x54, SVC_CLASS_ALL),          // event_create
-    // —— 信号面（A7-4：0x86 表查 + pending 原子；0x87 copy_out 链升 TABLE）——
+    // —— 信号面（A7-4：0x86 表查 + pending 原子；0x87 W3-Q100 降 NONE）——
     (0x86, SVC_CLASS_TABLE), // signal_send
-    (0x87, SVC_CLASS_TABLE), // signal_take
+    // —— NONE：signal_take（0x87，W3-Q100 自 TABLE 降档）——pending 取走
+    //    swap(0) Relaxed 原子零锁需求；出参 copy_out_u64 链 = §A113 读者面，
+    //    S-4 4-2 起 per-AS PT 锁同窗——§A115 四问复审落 NONE（同 0x61）。
+    (0x87, SVC_CLASS_NONE), // signal_take（W3-Q100 降档）
     // —— TABLE：阶段五遥测环读（0x84——klog 快照首域 copy_out 读者面 §A113）——
     (0x84, SVC_CLASS_TABLE),      // telemetry_open
 ];
@@ -166,18 +180,50 @@ pub const fn class_of(nr: u8) -> u8 {
     SVC_CLASS_NONE
 }
 
-/// NONE 实装号归零律：注册表内不存在 NONE 类项（「NONE 实装号归零」纪律
-/// ——凡 copy_out/copy_in 出参链〔walk_leaf 页表读者〕或任何共享面禁落
-/// NONE，§A113 读者面；默认槽/越界号是唯一 NONE 面）。
-pub const fn none_registered() -> bool {
+/// NONE 实装号后继审计律（W3-Q100 修订——原「归零律」为 S-4 4-2 PT 锁
+/// 落地前的保守面）：实装号落 NONE 须过 §A115 四问复审——①读者面数到
+/// 底（copy 链 §A113 页表读者义务由 per-AS PT 锁同窗接管 = S-4 4-2 判
+/// 例）；②共享面清点（KL 无剩余义务）；③锁序零新增边；④位感知判据
+/// 不依赖被撤锁。在册 NONE 实装号 = [`NONE_DOWNGRADED_NRS`] 白名单
+/// （逐号带判例注释），白名单外出现 NONE 项即违规。
+pub const NONE_DOWNGRADED_NRS: &[u8] = &[0x61, 0x40, 0x87];
+
+/// NONE 实装号恰等白名单律：注册表内 NONE 类号集 == [`NONE_DOWNGRADED_NRS`]
+/// （多一号少一号都红——降档须带判例入册，防静默扩散）。
+pub const fn none_class_audited() -> bool {
     let mut i = 0;
+    let mut seen = [false; NONE_DOWNGRADED_NRS.len()];
+    let mut none_cnt = 0;
     while i < REGISTRY.len() {
         if REGISTRY[i].1 == SVC_CLASS_NONE {
-            return false;
+            none_cnt += 1;
+            let mut j = 0;
+            let mut hit = false;
+            while j < NONE_DOWNGRADED_NRS.len() {
+                if REGISTRY[i].0 == NONE_DOWNGRADED_NRS[j] {
+                    if seen[j] {
+                        return false; // 白名单内重复
+                    }
+                    seen[j] = true;
+                    hit = true;
+                }
+                j += 1;
+            }
+            if !hit {
+                return false; // 白名单外 NONE 实装号
+            }
         }
         i += 1;
     }
-    true
+    // 白名单内每一号都必须在册（防「白名单写了但注册表丢了」的漂移）。
+    let mut j = 0;
+    while j < seen.len() {
+        if !seen[j] {
+            return false;
+        }
+        j += 1;
+    }
+    none_cnt == NONE_DOWNGRADED_NRS.len() as u8
 }
 
 /// 注册表号唯一律（无重复号——重复注册 = 后写覆盖前写，boot 期静默丢
@@ -253,10 +299,24 @@ mod tests {
         assert!(nrs_unique());
     }
 
-    /// NONE 实装号归零律：注册表零 NONE 项。
+    /// NONE 实装号后继审计律（W3-Q100）：在册 NONE 号集恰等白名单
+    /// 0x61/0x40/0x87（多一号少一号都红——§A115 四问复审是降档前置）。
     #[test]
-    fn no_installed_none_class() {
-        assert!(none_registered());
+    fn none_installed_class_audited() {
+        assert!(none_class_audited());
+    }
+
+    /// 白名单外敌意注入对拍（负例）：白名单 ±一号（0x61 换 0x42）或表内
+    /// 多一号 NONE，恰等律必红——执法面的执法面。
+    #[test]
+    fn none_audit_catches_drift() {
+        // 结构性对拍：class_of 对三白名单号返 NONE、对非白名单实装号不返 NONE。
+        for nr in NONE_DOWNGRADED_NRS {
+            assert_eq!(class_of(*nr), SVC_CLASS_NONE, "nr={nr:#04x} 须 NONE");
+        }
+        for nr in [0x42u8, 0x84, 0x86, 0x88] {
+            assert_ne!(class_of(nr), SVC_CLASS_NONE, "nr={nr:#04x} 不得 NONE");
+        }
     }
 
     /// class_of 全表往返：注册号恰返在册类、未注册号一律 NONE。
@@ -266,7 +326,7 @@ mod tests {
             assert_eq!(class_of(nr), class, "nr={nr:#04x} 往返失配");
         }
         // 未注册面：v1 预留 0x85 attest、调试槽退役位 0xFE/0xFF、随机空号
-        //（0x40 CP-08 util 通道入册后移出此列——SVC_CLASS_TABLE）。
+        //（0x61/0x40/0x87 W3-Q100 降档入册后移出此列——NONE 白名单）。
         for nr in [0x00u8, 0x07, 0x08, 0x10, 0x20, 0x25, 0x30, 0x38, 0x39,
             0x50, 0x55, 0x60, 0x62, 0x70, 0x80, 0x82, 0x85, 0x89,
             0x8A, 0x90, 0xA0, 0xFE, 0xFF] {
@@ -296,18 +356,22 @@ mod tests {
                 hit_cnt += 1;
             }
         }
-        // 恰 45 号命中、211 号 NONE（256-45）。
-        assert_eq!(hit_cnt, REGISTRY.len() as u16);
-        assert_eq!(none_cnt, 256 - REGISTRY.len() as u16);
+        // 恰 43 号非 NONE 命中、213 号 NONE（256-46+3 白名单降档——W3-Q100
+        // 后 NONE 面 = 未注册 210 号 + 白名单实装 3 号）。
+        let none_installed = (REGISTRY.len() - NONE_DOWNGRADED_NRS.len()) as u16;
+        assert_eq!(hit_cnt, none_installed);
+        assert_eq!(none_cnt, 256 - none_installed);
     }
 
-    /// 落类面锚点抽查（§A113/§A115 判例形状）：clock_read/signal_take/
-    /// power_off/policy_bind = TABLE；thread_sleep = SQ_RQ（无表无 KL）；
+    /// 落类面锚点抽查（§A113/§A115 判例形状）：W3-Q100 降档三平凡号
+    /// 0x61/0x87/0x40 = NONE（PT 锁后继审计）；signal_send/power_off/
+    /// policy_bind = TABLE；thread_sleep = SQ_RQ（无表无 KL）；
     /// vmo 十一号 = TABLE（S-4 降档后）；create 族四号 = ALL。
     #[test]
     fn anchor_classes() {
-        assert_eq!(class_of(0x61), SVC_CLASS_TABLE); // clock_read
-        assert_eq!(class_of(0x87), SVC_CLASS_TABLE); // signal_take
+        assert_eq!(class_of(0x61), SVC_CLASS_NONE); // clock_read（W3-Q100）
+        assert_eq!(class_of(0x87), SVC_CLASS_NONE); // signal_take（W3-Q100）
+        assert_eq!(class_of(0x40), SVC_CLASS_NONE); // util_snapshot（W3-Q100）
         assert_eq!(class_of(0x88), SVC_CLASS_TABLE); // power_off
         assert_eq!(class_of(0x83), SVC_CLASS_TABLE); // policy_bind
         assert_eq!(class_of(0x37), SVC_CLASS_SQ_RQ); // thread_sleep
