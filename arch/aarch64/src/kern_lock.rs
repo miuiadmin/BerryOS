@@ -118,7 +118,11 @@ fn lock_bark(what: &[u8], held_by: usize, since: u64) {
     crate::uart::uart_puts(b"\n");
 }
 
-/// KERN_LOCK 取锁（TTAS）。
+/// KERN_LOCK 取锁（TTAS）。03 号分派审计机会一 1a：诊断账面（KL_HELD_SINCE
+/// CNTVCT 读 + NAME_HOOK 持者点名间接调 + 三写）自无条件付移
+/// `争用臂 ∨ SMP 态` 门后（判律单源 `berry_lkface::kl_diag_gate`——单核
+/// 无争用时消费面唯一 `lock_bark` 首 par 门恒返，零消费零维护；SMP 态
+/// 恒维护保 bark 数据源新鲜；KL_HELD 镜像不动——`kl_held` 退化判据依赖）。
 #[inline]
 pub fn kern_acquire() {
     // G3-3 lockdep：物理取点记账（feature 关 = 编译消除；类 = TABLE——七类
@@ -128,15 +132,18 @@ pub fn kern_acquire() {
     // S-6 ③b：内层自旋超限（2^23 次）看门狗自报（非 wedge 态计数远够不到
     // ——争用突发 µs 量级；零漂移）。
     let mut bark_n = 0u32;
+    // 争用臂记账（本核本次取锁是否经 CAS 失败臂——诊断账面门输入）。
+    let mut contended = false;
     while KERN_LOCK
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
+        contended = true;
         KL_CONTENDED_CAS.fetch_add(1, Ordering::Relaxed);
         while KERN_LOCK.load(Ordering::Relaxed) {
             core::hint::spin_loop();
             bark_n = bark_n.wrapping_add(1);
-            if bark_n >= (1 << 23) {
+            if bark_n >= berry_lkface::KL_SPIN_BARK_MASK {
                 bark_n = 0;
                 lock_bark(
                     b"kern",
@@ -147,13 +154,17 @@ pub fn kern_acquire() {
         }
     }
     KL_HELD.store(crate::smp::cpu_id() + 1, Ordering::Relaxed);
-    KL_HELD_SINCE.store(crate::timer::cntvct(), Ordering::Relaxed);
-    // S-6 ③b：持者点名镜像（钩子未装窗 = boot 最早路径，(0,0) 空过）。
-    // SAFETY: boot 安装后只读。
-    if let Some(h) = unsafe { NAME_HOOK } {
-        let (p, l) = h();
-        KL_HELD_TAG_PTR.store(p, Ordering::Relaxed);
-        KL_HELD_TAG_LEN.store(l, Ordering::Relaxed);
+    // S-6 ③b：持锁诊断账面（SINCE 时间戳/持者点名镜像）门控维护——门律
+    // 单源 lkface（W3-Q101）；门关 = 单核无争用（bark 零消费），账面零写。
+    if berry_lkface::kl_diag_gate(contended, crate::smp::par_enabled()) {
+        KL_HELD_SINCE.store(crate::timer::cntvct(), Ordering::Relaxed);
+        // S-6 ③b：持者点名镜像（钩子未装窗 = boot 最早路径，(0,0) 空过）。
+        // SAFETY: boot 安装后只读。
+        if let Some(h) = unsafe { NAME_HOOK } {
+            let (p, l) = h();
+            KL_HELD_TAG_PTR.store(p, Ordering::Relaxed);
+            KL_HELD_TAG_LEN.store(l, Ordering::Relaxed);
+        }
     }
 }
 
