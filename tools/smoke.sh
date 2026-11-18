@@ -1669,7 +1669,7 @@ echo "smoke: FAT 持久化到齐（跨 boot 读回 f42t + M3DEMO T3.TXT 交互 c
 # 采样撞窗是概率事件，注入 = 每轮必达）+ 注入后分类必须 poison。
 # 已知缺口（如实入册，评估 §6）：Boot A/B 的 kill 前无活性复验——无输出
 # 挂死与合法采样不可区分（kernel panic 有 loud 串口、由标记帽兜）；
-# switches= 金丝雀每 50 切一行（1x ≈10s），18s/15s 窗内零增长断言在慢机
+# switches= 金丝雀每 50 切一行（1x ≈10s），18s/15s 窗内零增长断言在慢机〔陈账：机会二起 SOAK_PRINT_EVERY=10000〕
 # 上是假红，故不做。
 # Boot C（恢复终验）：毒环盘上全链重跑——fatw 覆写走恢复 commit（①collect
 # 走旧首簇即撞 Free 止步 → ②升序分配把旧首簇复用进新链头（smoke 单文

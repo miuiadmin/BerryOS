@@ -121,3 +121,7 @@ trace-dual + lat + reject-trio + testhost（同目录 20261105-0930~0931 批）�
 ## [2026-11-18 深 park 醒源刀·风暴修轮] 布局骰二项再滚
 
 - 审查轮修（两形分离+T5 补强+兜底臂）再改镜像：alloc4k 127→412 / vmo_commit1p 485→771（+359 vs alloc4k +285——近邻继承族再滚，非 1:1）；alloc64k/pick_scan/switch_pair/handle_evt/vmo_rw4k 逐位不动（上轮值稳）。五跑 prove verdict=exact（回执 icount-prove-20261118-091942）。buddy 轨道对族第三次换轨（S-4 4-2/4-3 同族惯例）。
+
+## [2026-11-19 三刀重落地] switch_pair 真指令增量 +5 与 buddy 族滚回旧轨
+
+- 机会三/四/五①②重落地（K3→K4→K5 一批）：**switch_pair 301→306（+5）=K3 分槽的真实指令增量**（cpu_id 读+槽变址入 note_switch/bump_switches 计数路径——确定性通道首次量化单刀真成本，勘察预告兑现）；buddy 族三项滚回旧轨（alloc4k 412→37 / alloc64k 233→37 / vmo_commit1p 771→396——布局骰第四掷恰回 v1.14 前值，轨道对族往返形态）；pick_scan 131 逐位稳。五跑 prove verdict=exact（回执 icount-prove-20261119-032315）。

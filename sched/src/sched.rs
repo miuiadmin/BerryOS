@@ -19,15 +19,24 @@ use core::cell::Cell;
 use core::ptr::{addr_of, addr_of_mut, NonNull};
 use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
-/// IRQ tick 计数（`on_irq_tick` 自增）。金丝雀：长跑中持续增长 = timer/EOIR 管线健康
-/// （rearm 对、无 EOIR 饿死——plan R4/R5）；停增即管线坏。
-/// S-2 E0 前置件 A12：原子化（写点全在 KERN_LOCK 锁窗，读侧锁外——Relaxed 无
-/// 序角色、仅计数；同时执法 static mut 别名 UB）。
-static IRQ_TICKS: AtomicU64 = AtomicU64::new(0);
-/// 上下文切换计数（六切换原语位共享递增——[`bump_switches`]）。里程碑金丝雀：
-/// 两任务在 timer slice 下分时 → 计数持续涨（≥数千 = G1 过关）；冻结在某值 =
-/// switch 坏（卡死/饿死）。A12 同上原子化。
-static SWITCHES: AtomicU64 = AtomicU64::new(0);
+/// per-CPU 计数槽（04 号审计机会三（2026-11-17））：跨核热计数器分核记账的缓存行独占壳。
+/// 形照 WaitBucket 判例：`#[repr(C, align(64))]` 单字段、逐槽对齐——硬约束。
+/// 禁退回 LB_TICKS 裸 `[AtomicU64; 2]` 形：两槽 8B 同缓存行共存 = 跨核 RMW 伪共享照旧、整刀收益归零（勘察头号暗礁）。
+#[repr(C, align(64))]
+struct Counter {
+    v: AtomicU64,
+}
+
+impl Counter {
+    /// 零初值（const fn——static 槽位数组初始化用；WaitBucket 的 ZERO 具名件同用途判例）。
+    const fn new() -> Self {
+        Counter { v: AtomicU64::new(0) }
+    }
+}
+
+/// 上下文切换计数（切换原语位共享递增——[`bump_switches`]，位谱勘正见彼注）。里程碑金丝雀：两任务在 timer slice 下分时 → 计数持续涨（≥数千 = G1 过关）；冻结在某值 = switch 坏（卡死/饿死）。
+/// 04 号审计机会三（2026-11-17）起 per-CPU 分槽：写侧本核槽 fetch_add（LB_TICKS 同款路由）、读侧两槽求和快照（[`switches`]）——拆掉同点跨核 RMW 的缓存行争用。
+static SWITCHES: [Counter; 2] = [Counter::new(), Counter::new()];
 /// S-6 ③ 心跳诊断：上一行打点时的双核 ticks_pre 总数（跨 500 节流——
 /// [`on_irq_tick`] 心跳行用）。诊断面，定谳后随探针一并退役。
 static HB_LAST: AtomicU64 = AtomicU64::new(0);
@@ -39,22 +48,25 @@ static STUCK_LAST: AtomicU64 = AtomicU64::new(0);
 static PULL_CNT: AtomicU64 = AtomicU64::new(0);
 
 /// SWITCHES 递增 + 金丝雀打印（S-6 ①：全域唯一递增/打印口径）。
-/// 全部十一个切换原语位（yield/exit/block 三函数的直切臂 + park 切点 + tick
-/// 抢占 + SGI resched 直切 + try_preempt 直切 + park/idle 两派发位）共享本
-/// helper：%SOAK_PRINT_EVERY 判定走**全局**计数——哪个位跨点哪个位打印。
+/// 全部十三个切换原语位共享本 helper（04 号审计机会三（2026-11-17）勘察勘正：实数 13 位/8 函数——旧注「十一位」漏了 on_irq_tick F5 限流让点的副核 park/idle 两臂）。
+/// 位谱：yield/exit/block 三函数各直切+park 双臂（6 位）+ tick 抢占 go 臂 + F5 让点副核 park/idle 两臂 + SGI resched 直切 + try_preempt 直切 + park/idle 两派发位。
+/// %SOAK_PRINT_EVERY 判定走**本核槽**计数（04 号审计机会三分槽起，旧「全局计数」口径退役）——本核槽跨点的位即打印位。
 /// 沿革九十四发现①收口（两层）：打印若只挂 tick 抢占支（旧单点）SMP 稳态
 /// 忙对各占核时结构性冷；更深的洞 = **直切臂（出选有货即切）旧完全不计数**
 /// ——park 臂冷、直切臂热，漏计 = 金丝雀对 SMP 稳态主干结构性失明（S-6
 /// 复跑 0/53K 切换字符实证）。A12「SWITCHES 计入金丝雀」至此全量兑现。
 /// 返回 true = 本次跨过打印点（调用方可据此做**锁窗已证面**的附带走查）。
+/// 分槽起返回语义 = 「本核槽跨界」布尔——integrity_check 两消费点频率微变（各核独立跨界，总量级不变）。
 ///
-/// SAFETY 契约（print_lock_raw 要求）：调用点 IRQ 屏蔽窗内——六位皆然
+/// SAFETY 契约（print_lock_raw 要求）：调用点 IRQ 屏蔽窗内——十三位皆然
 /// （切换原语锁窗/屏蔽窗，见各位注）。只取 PRINT_LOCK（与任务态
 /// with_print_lock 同锁——G43 拼行互斥保持），不触 RQ/SQ/REAPQ 结构锁；
 /// 任务持 PRINT_LOCK 期不可达切换原语（with_print_lock 为作用域闭包、
 /// 窗内禁切）⇒ 无自死锁面。
 fn bump_switches() -> bool {
-    let sw = SWITCHES.fetch_add(1, Ordering::Relaxed) + 1;
+    // 写侧 = 本核槽（LB_TICKS 同款路由；cpu_id() TPIDR==0 防御窗回落 0 槽 = 单核正确）。
+    // 判定走本核槽取模——禁每 switch 求两槽全局和（重新引入跨核 load 自 defeats 分核本意）。
+    let sw = SWITCHES[hal::smp::cpu_id() as usize].v.fetch_add(1, Ordering::Relaxed) + 1;
     // bring-up 诊断（G1）：每 N 次切换打一行计数，证分时持续、计数不冻。
     // 2026-11-17 降频定谳（04 号调度审计机会二，G1/S-6 里程碑已过）：
     // 100→10000——每 100 切换的 PRINT_LOCK+UART 行是 IRQ 窗内周期性 µs 级
@@ -64,11 +76,15 @@ fn bump_switches() -> bool {
     const SOAK_PRINT_EVERY: u64 = 10000;
     if sw % SOAK_PRINT_EVERY == 0 {
         // S-2 E0 打印面（草案 3.1-3）：金丝雀三段在 PRINT_LOCK 内拼行原子
-        //（IRQ 屏蔽窗内调用——print 对不带 irqsave，纪律见 kern_lock 模块头）；
-        // sw 快照供整除判定与打印同值。
+        //（IRQ 屏蔽窗内调用——print 对不带 irqsave，纪律见 kern_lock 模块头）。
+        // 04 号审计机会三分槽起判定/打印两值分离：整除判定 = 本核槽值（上方 sw），打印值 = 两槽求和快照（下方 sw_sum）。
+        // 宿主 smoke-smp awk 对 switches= 序列断言严格递增——打印面 = 全局和（逐槽单调 ⇒ 跨 PRINT_LOCK 序化读下和**非降**；严格递增为主态，等值残边在对核同窗跨点+锁争用下可达——下行注记，smoke-smp awk 严格门的理论红面）。
+        // 旧「整除判定与打印同值」性质显式放弃；等值残边：两核同窗各自跨点 + PRINT_LOCK 争用下相邻两行可逐位相等（审查轮勘正：非纯理论——对核持锁读和时本核跨界已落地、获锁后重读可同和，二核系统无第三递增者；实践量级远小于 TCG 抖动面且门控相 canary 常缺〔已录债〕，仅 -smp 量产窗暴露）。
         print_lock_raw();
+        let sw_sum = SWITCHES[0].v.load(Ordering::Relaxed)
+            + SWITCHES[1].v.load(Ordering::Relaxed);
         hal::uart_puts(b"switches=");
-        hal::uart_put_dec(sw);
+        hal::uart_put_dec(sw_sum);
         // S-3c c-2c 前置微刀：行尾拼 KL 争用计数（C20 收缩前后对照观测，
         // 非门禁）。kl_contention 经 hal 直调——with_print_lock 同款先例
         //（ops 槽只服务取放对，读数无语境约束）。
@@ -174,7 +190,8 @@ fn assert_preempt_balanced(where_: &str) {
 /// g3-1d 观测面：真探形（len 门 + count==0 支）命中计数——递增点在
 /// try_preempt 之前 = **rq_lock 窗外**，无锁原子加（Relaxed 单指令序），
 /// 不引入任何锁序面（f4 g3-1d 预警①）；空探（len<=1 或计数>0 直返）不计。
-static PREEMPT_CKPT_HITS: AtomicU64 = AtomicU64::new(0);
+/// 04 号审计机会三（2026-11-17）起 per-CPU 分槽（SVC 检查点两核各自热路径）——写本核槽、读两槽求和快照（[`preempt_checkpoint_hits`]）。
+static PREEMPT_CKPT_HITS: [Counter; 2] = [Counter::new(), Counter::new()];
 
 pub fn preempt_checkpoint() {
     // 04 号审计快赢（机会一①：len 门）：cur-in-ring 不变式（Running 常驻环
@@ -195,15 +212,19 @@ pub fn preempt_checkpoint() {
     let daif = hal::irq_save();
     hal::disable_irq();
     if preempt_count() == 0 {
-        PREEMPT_CKPT_HITS.fetch_add(1, Ordering::Relaxed);
+        // 04 号审计机会三（2026-11-17）分槽：写本核槽（LB_TICKS 同款路由，cpu_id() 防御窗回落 0 槽）。
+        PREEMPT_CKPT_HITS[hal::smp::cpu_id() as usize].v.fetch_add(1, Ordering::Relaxed);
         try_preempt();
     }
     hal::irq_restore(daif);
 }
 
 /// g3-1d：检查点真探形命中数（boot 起累计；fa ktest 尾 `ckpt=` 字段打印）。
+/// 04 号审计机会三（2026-11-17）分槽起 = 两槽 Relaxed load 求和快照（hb 行 tot=hb0+hb1 读时求和先例）。
+/// 快照语义：两槽和非原子 ns 窗（读 slot0 与 slot1 之间对核可再 bump）——读者全 ≥/增长型（fa ckpt>=1）安全，禁新增等值比较。
 pub fn preempt_checkpoint_hits() -> u64 {
-    PREEMPT_CKPT_HITS.load(Ordering::Relaxed)
+    PREEMPT_CKPT_HITS[0].v.load(Ordering::Relaxed)
+        + PREEMPT_CKPT_HITS[1].v.load(Ordering::Relaxed)
 }
 
 /// G3-1c-1：PRINT_LOCK 窗 preempt 包络对（with_print_lock 的 enter/exit 槽
@@ -1806,7 +1827,13 @@ pub fn set_reap_post_hook(f: fn()) {
 /// 兜底语义零漂（回收仍是资源回收非正确性关卡，只是 SMP 下容量须盖住
 /// 排水饥饿窗内的退出突发）。
 static mut REAPQ: [*mut Task; REAPQ_CAP] = [core::ptr::null_mut(); REAPQ_CAP];
-static mut REAPQ_LEN: usize = 0;
+/// REAPQ 占用槽数（04 号审计机会五②，2026-11-17 原子化免锁门）。锁窗内
+/// 写点 = [`reapq_push`] fetch_add（先槽后计数）与 [`reap_drain`] 排水清零；
+/// 锁窗外读者 = [`reap_drain`] 入口免锁门（Relaxed，正确性注见彼处）。
+/// A12 纪律：原子 static（非 static mut），WAIT_HASH 同款口径（IRQ_TICKS
+/// 已退役——04 号审计机会三），免入册 writable_globals（该门禁只执法
+/// static mut / UnsafeCell 直写形态）。
+static REAPQ_LEN: AtomicUsize = AtomicUsize::new(0);
 static mut REAPQ_WARNED: usize = 0;
 const REAPQ_CAP: usize = 256;
 /// REAPQ 互斥锁（S-3c c-2a 落形 → **c-2b slice 2 取放启用**；持有位 =
@@ -1826,9 +1853,15 @@ unsafe fn reapq_push(t: *mut Task) {
         held_mark(HELD_REAPQ, true);
     }
     let mut loud = false;
-    if REAPQ_LEN < REAPQ_CAP {
-        REAPQ[REAPQ_LEN] = t;
-        REAPQ_LEN += 1;
+    // 先槽后计数（04 号审计机会五②，2026-11-17）：窗内程序序 = 槽写先落、
+    // fetch_add 后涨——计数所示槽数必已写（免锁门读者读非零只引入慢路径；
+    // 跨核可见性以 REAPQ 锁交接为界，权威形在 drain 窗内重读）。Relaxed
+    // 全家 = 家法先例（WAIT_HASH/LB_TICKS 同款），不加 Release——正确性
+    // 边界是锁窗，门读漏由一拍有界漏读兜底（正确性注见 reap_drain 门）。
+    let n = REAPQ_LEN.load(Ordering::Relaxed);
+    if n < REAPQ_CAP {
+        REAPQ[n] = t;
+        REAPQ_LEN.fetch_add(1, Ordering::Relaxed);
     } else if REAPQ_WARNED < 4 {
         REAPQ_WARNED += 1;
         loud = true;
@@ -1858,22 +1891,36 @@ pub fn reap_drain() {
     // 分配（「IRQ 上下文不碰分配器」铁则不破——释放非分配）。
     unsafe {
         let phys = !held_test(HELD_REAPQ); // 位感知退化（c-2c slice 2a）
-        if phys {
-            reapq_acquire();
-            held_mark(HELD_REAPQ, true);
-        }
-        let n = REAPQ_LEN;
-        for i in 0..n {
-            let p = REAPQ[i];
-            REAPQ[i] = core::ptr::null_mut();
-            if !p.is_null() {
-                drop(alloc::boxed::Box::from_raw(p));
+        // 免锁空门（04 号审计机会五②，2026-11-17）：门读在锁窗外 Relaxed
+        // ——单边漏读：清零写点唯一 = CPU0 自身 drain ⇒ 零假阳性（观察到
+        // 的 0 必为真空或初值）；唯一漏读形 = 跨核 push 恰落门后——一拍
+        // 有界，下一排水点兜底（yield 尾/idle 环顶每拍必到）。深 park
+        // 滞留面沿用 cap 256 既有契约，门不扩面。门只罩锁窗段：
+        // REAP_POST_HOOK 恒调（分支汇合后）——HT_DRAINQ 32/拍分块尾账
+        // 与 REAPQ 失耦，吞钩子 = 静默期无界滞留，违 process.rs
+        // 「滞后上界 = 一个收割周期」不变式。
+        if REAPQ_LEN.load(Ordering::Relaxed) == 0 {
+            // 空门短路——免 REAPQ 锁对（真空无竞争面）。
+        } else {
+            if phys {
+                reapq_acquire();
+                held_mark(HELD_REAPQ, true);
             }
-        }
-        REAPQ_LEN = 0;
-        if phys {
-            held_mark(HELD_REAPQ, false);
-            reapq_release();
+            // 权威重读（Acquire——与锁外 Relaxed 门读配对的双检形）：
+            // 门读可为旧非零，锁窗内（push/drain 两写者全持锁）定真值。
+            let n = REAPQ_LEN.load(Ordering::Acquire);
+            for i in 0..n {
+                let p = REAPQ[i];
+                REAPQ[i] = core::ptr::null_mut();
+                if !p.is_null() {
+                    drop(alloc::boxed::Box::from_raw(p));
+                }
+            }
+            REAPQ_LEN.store(0, Ordering::Relaxed);
+            if phys {
+                held_mark(HELD_REAPQ, false);
+                reapq_release();
+            }
         }
     }
     // P2-2 退出异步化：REAP 排水尾钩子（REAPQ 锁窗外、本函数所有调用点共用
@@ -2019,22 +2066,25 @@ pub unsafe fn kill_all_tasks_by_pinned(
 }
 
 /// switches 金丝雀只读访问（watchdog / 遥测读；A12 原子化后锁外读合法）。
+/// 04 号审计机会三（2026-11-17）分槽起 = 两槽 Relaxed load 求和快照（hb 行 tot=hb0+hb1 / telemetry::total 两环求和先例）。
+/// 快照语义：两槽和非原子 ns 窗（读 slot0 与 slot1 之间对核可再 bump）——读者全 ≥/增长型（watchdog 严格增长 / SOAK sw 打印）安全，禁新增等值比较。
+pub fn switches() -> u64 {
+    SWITCHES[0].v.load(Ordering::Relaxed) + SWITCHES[1].v.load(Ordering::Relaxed)
+}
+
 /// 任务↔任务切换计数（S-6 ① 双计数器契约）：只在 [`note_switch`] 非空臂
 /// 单点自增 = 遥测环的精确分母（每次自增恰对应一次环写——hook 在场时）。
-/// 缘起：SWITCHES 自 A12/S-6 起计全部 11 位（含 park 语境 4 位——3 park
-/// 切点 + park 派发），而遥测环只记任务↔任务（note_switch 空参跳过发射）
+/// 缘起：SWITCHES 自 A12/S-6 起计全部 13 位（04 号审计机会三（2026-11-17）勘察勘正——含 park 语境 5 位：4 park 切点 + park 派发），而遥测环只记任务↔任务（note_switch 空参跳过发射）
 ///——G1.5「遥测环存活」断言旧比 SWITCHES 的契约在 A12 扩面时即过期，
 /// S-6 复跑 3 实证踩中（total=456 < switches=457，park 事件先于断言落地）。
 /// 金丝雀（switches= 行）继续走 SWITCHES 原口径——park 语境切换也是活性。
-static SWITCHES_TT: AtomicU64 = AtomicU64::new(0);
-
-pub fn switches() -> u64 {
-    SWITCHES.load(Ordering::Relaxed)
-}
+/// 04 号审计机会三（2026-11-17）起 per-CPU 分槽：写本核槽；G1.5 配平两侧对称（tel 本身已是两环求和，tt 侧同走求和快照契约不变）。
+static SWITCHES_TT: [Counter; 2] = [Counter::new(), Counter::new()];
 
 /// 任务↔任务切换数（遥测环分母——G1.5 断言比较面，详 [`SWITCHES_TT`] 注）。
+/// 04 号审计机会三分槽起 = 两槽求和快照（快照语义注见 [`switches`]——读者 ≥ 型安全，禁新增等值比较）。
 pub fn switches_tt() -> u64 {
-    SWITCHES_TT.load(Ordering::Relaxed)
+    SWITCHES_TT[0].v.load(Ordering::Relaxed) + SWITCHES_TT[1].v.load(Ordering::Relaxed)
 }
 
 // ---- 切换遥测钩子（3-4c；`可观测性设计.md` per-CPU 无锁环的注入点）----
@@ -2081,8 +2131,8 @@ unsafe fn note_switch(prev: *mut Task, next: *mut Task, kind: SwitchKind) {
         return;
     }
     // S-6 ① 双计数器：非空臂 = 遥测环分母同点自增（环写与计数同窗——
-    // G1.5 断言 tel >= switches_tt 的配平点；hook 缺席期（boot 前窗）也计
-    //——telemetry::init 先于首个切换，实际不可达，防御性保持对称）。
+    // G1.5 断言 tel >= switches_tt 的配平点；hook 缺席期零计语义见下方
+    // icount 配对修注）。
     // icount 基线刀（2026-11-18）配对修：计数移入钩子在位分支——sbench 门控的
     // 调度器纪元（sched::init↔telemetry::init 窗）使「hook 缺席期也计」从防御支
     // 变可达（纪元 ≈259 次任务↔任务切换入分母而环零记录，watchdog G1.5 断言
@@ -2092,7 +2142,8 @@ unsafe fn note_switch(prev: *mut Task, next: *mut Task, kind: SwitchKind) {
     unsafe {
         let hook = SWITCH_HOOK;
         if let Some(h) = hook {
-            SWITCHES_TT.fetch_add(1, Ordering::Relaxed);
+            // 04 号审计机会三（2026-11-17）分槽：写本核槽（LB_TICKS 同款路由，cpu_id() 防御窗回落 0 槽）。
+            SWITCHES_TT[hal::smp::cpu_id() as usize].v.fetch_add(1, Ordering::Relaxed);
             h(&*prev, &*next, kind);
         }
     }
@@ -2301,7 +2352,8 @@ const ZERO_WAIT_BUCKET: WaitBucket = WaitBucket {
 
 /// per-key 等待计数表（64 桶 static）。写点全在 SQ 锁窗内（SLEEPQ 两机械
 /// 函数收口），读点 = [`wake_matching_locked`] 门控（同窗）——A12 纪律：
-/// 原子 static（非 static mut），与 IRQ_TICKS/LB_TICKS 同款，免入册
+/// 原子 static（非 static mut），与 LB_TICKS 同款（IRQ_TICKS 已退役——04
+/// 号审计机会三），免入册
 /// writable_globals（该门禁只执法 static mut / UnsafeCell 直写形态）。
 static WAIT_HASH: [WaitBucket; WAIT_BUCKETS] = [ZERO_WAIT_BUCKET; WAIT_BUCKETS];
 
@@ -3424,8 +3476,9 @@ pub fn last_killed() -> &'static [u8] {
 /// 孤儿段」对 pick 完全不可见——smoke 标记全部分裂前打完，30s 长跑五任务
 /// 静默失联由此漏网。本检查对账两笔：①runqueue 走查步数 == len 记账
 ///（步数 < len = 孤儿段；到帽 = 断链）；②SLEEPQ 链走计数 == len 记账。
-/// 消费点 = `on_irq_tick` 金丝雀分支（随 `bump_switches` 跨点——2026-11-17
-/// 起每 10000 切换一次，04 号审计机会二降频；O(n) 极小）与 ktest。
+/// 消费点 = `on_irq_tick` 金丝雀分支（随 `bump_switches` 本核槽跨点——
+/// 2026-11-17 起每 10000 切换一次，04 号审计机会二降频；04 号审计机会三
+/// 分槽后 = 各核独立跨界，频率微变量级不变；O(n) 极小）与 ktest。
 /// **零分配、成功路径零输出**；违约即 panic 带时刻响亮失败（失败路径才
 /// 格式化）。调用契约：IRQ 上下文（环/队变更屏蔽窗的串行等价）。
 fn integrity_check() {
@@ -3806,8 +3859,9 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
     if !hal::smp::par_enabled() && hal::smp::cpu_id() != 0 {
         return;
     }
-    // SAFETY: IRQ 上下文；计数 Relaxed——无序角色，仅计数。
-    IRQ_TICKS.fetch_add(1, Ordering::Relaxed);
+    // 04 号审计机会三（2026-11-17）：全局 IRQ_TICKS 退役（write-only 零读者——每 tick 一发跨核共享 RMW 白付）。
+    // tick 诊断面已由分核影子承担：SmpCpu.ticks_pre（note_tick_entry，入口计数、含上方 gate 早退轮）+ SmpCpu.ticks（note_tick，下方）。
+    // 「pre 涨/ticks 冻 = 卡锁、同冻 = CNTV/IRQ 链死」金丝雀语义在分核面原样存活（hb 行走 ticks_pre 求和）。
     // S-2b 诊断面：per-CPU tick 计数（两核都计——PAR absent 时区分「副核
     // tick 死」vs「tick 活但派发不出」）。
     hal::smp::note_tick();
@@ -4070,7 +4124,8 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
             // 授片重编已由 timer::handle 的 rearm-before-EOIR 在 IRQ 入口覆盖
             // （同一中断上下文、微秒级差）——CVAL 已是满片终点，此处不再 arm。
             set_current(next_ptr);
-            // S-6 ①：递增+打印迁共享 helper（六位全域口径——沿革九十四发现①
+            // S-6 ①：递增+打印迁共享 helper（全域口径，13 位位谱见
+            // bump_switches 注——沿革九十四发现①
             // 收口；SMP 稳态忙对各占核时本支结构性冷，打印只挂此位 = 金丝雀
             // 0 条假败）。
             let crossed = bump_switches();
@@ -4168,7 +4223,8 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
 /// 与 [`on_irq_tick`] 分立（为何不共用 tick 槽）：无 `timer::handle`（无
 /// rearm——授片显式 `arm_slice`，同 [`try_preempt`]/yield/park_recheck 形）、
 /// 无 `RR.tick` 片记账（SGI 不减片）、无 `expire_timeouts`/`par_sample`/
-/// `IRQ_TICKS`（tick 语义面与遥测不稀释）。「SGI 不进 tick 槽」纪律（S-3a
+/// tick 计数（tick 语义面与遥测不稀释；全局 IRQ_TICKS 已退役——04 号审计
+/// 机会三，tick 诊断面归分核影子 SmpCpu.ticks/note_tick）。「SGI 不进 tick 槽」纪律（S-3a
 /// §9.5）不破——副核仍经 eret 回 park 环 `park_recheck` 单路径承接；本槽
 /// 仅 tickful 核（CPU0）进，副核被 gate 挡在锁窗之外零共享触达。
 ///
@@ -4414,7 +4470,18 @@ unsafe fn try_steal_one() -> Option<*mut Task> {
     // 本核 RQ 短锁窗内数环上两现役带在环数（判据与容忍度见节注）。
     // 快照后放锁再开远端窗——绝不双持；密集是软偏好输入，快照-扫描
     // 间隙对核唤醒入环的竞态最多翻转边界档（int==util）一档，容忍。
-    let (tgt_int, tgt_util) = {
+    // 空环早退（04 号审计机会五①，2026-11-17）：len()==0 空判-only 免锁
+    // 门——空形白付的是锁对而非走查（head None 走查本就零迭代），门砍的
+    // 正是取放锁。门读 = rq.len()（AtomicUsize Relaxed 免锁读——runqueue
+    // Q3 跨核读者先例，place()/tick 拉取门同款在职形；head Cell 裸读是
+    // 跨核无锁窗形式数据竞争，不用）。判据钉死空判-only：tick 拉取门
+    // 独占者形 mine==1 的密度仍承重——扩成「恒跳快照」即破带偏好语义。
+    // 两向无害：读旧非零 → 门不开，锁窗照旧逐位同形；读旧零 → (0,0)
+    // 定义值，仅差 utility 候选一档软偏好——与既有快照-扫描间隙容忍
+    // 同族。全冻结环 len>0 门不开，冻结计数语义保留。
+    let (tgt_int, tgt_util) = if rq_of(me).len() == 0 {
+        (0, 0)
+    } else {
         let phys = rq_lock_of(me);
         let mut ni = 0usize;
         let mut nu = 0usize;
