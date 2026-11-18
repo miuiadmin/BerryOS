@@ -11,7 +11,9 @@
 > 〔TERMINAL 入册——APP 计数十位入拼/APPUI 九枚资产面/槽位 9→10；计数面零增减 91 随持〕、
 > bcts@4 滚新随 5673b16c8 债清偿刀〔149ff182e 终端完善刀 BENCH ok n=6→n=8 漏随刀补；
 > 计数面零增减 91 随持〕、bcts@5 滚新随 W3-Q98〔e96965320——bench send_recv_pair
-> 入九项基线面，BENCH 通道 n=8→n=9；计数面零增减 91 随持〕）。
+> 入九项基线面，BENCH 通道 n=8→n=9；计数面零增减 91 随持〕、bcts@6 滚新随
+> W3-Q102〔svc_roundtrip 入十项基线面，BENCH 通道 n=9→n=10；计数面零增减
+> 91 随持〕）。
 > **升版**：v1.1（2026-11-11）＝26 号终裁收口刀——示例口径统一 u32 整数形（21 号 P2-7 ＋
 > 26 号 §6-④ 遗留清账）；Tier 1 冻结态全量回放补证（26 号 §6-③）记入修订记录。
 > **基座**：API治理章程 §一（L0–L2 承诺面唯一口径）· 规则/07 测试纪律（markers.sh 单源）·
@@ -140,7 +142,7 @@ Q4 边界明留「发布节奏数值随 #84 立项稿」（12 号 §2.4，:77）
 
 | Tier | 承诺面 | v0/v1 形态 | 最小件数下限（机器执法） | 开通条件 |
 |---|---|---|---|---|
-| 1 | L0 syscall 面 ＋ 装载谓词 | 现役 smoke 断言冻结化 ＋ abi-check 五面逐字节 | **91 标记件**（口径见下；bcts@5 滚新后现值——88→90〔bcts@1〕→91〔bcts@2，#355〕→91 随持〔bcts@3/@4/@5，计数面零增减〕） | 本稿开工即通（v0） |
+| 1 | L0 syscall 面 ＋ 装载谓词 | 现役 smoke 断言冻结化 ＋ abi-check 五面逐字节 | **91 标记件**（口径见下；bcts@6 滚新后现值——88→90〔bcts@1〕→91〔bcts@2，#355〕→91 随持〔bcts@3/@4/@5/@6，计数面零增减〕） | 本稿开工即通（v0） |
 | 2 | L1 wire 契约 conformance | 槽位合同四件套之④用例集 | 每开放槽位 ≥ 合同④件全集；每对外 L1 接口五类用例各 ≥1（注 a）；计数随 #83 落数 | #83 落册 ＋ 首槽开放（Q8） |
 | 3 | L2 行为面 | berry-sys/libc/gfx/ui 行为 ＋ 三 host 门禁 | N=3 窗口内存续 L2 API 每 API ≥1 断言（推断）；门禁恒在（注 b） | Tier 2 后随 V13；全覆盖同刀 |
 
@@ -158,14 +160,18 @@ Q4 边界明留「发布节奏数值随 #84 立项稿」（12 号 §2.4，:77）
 基础集 86 三源一致；RX 2 = markers.sh 实测 ＋ 规则/07:23 逐段描述。取宽口径 88 的
 理由：`just smoke` 八跑是回放执行单元（规则/07:23），冻结件按执行单元整体冻结。
 （现值注：bcts@1 起滚新——rootfs 54→56〔命令行体验刀〕、RX 2→3〔刀 C BATT 门〕
-＝ 91 件 = 裸相 32 ＋ rootfs 56 ＋ RX 3，冻结件 bcts@5/`TIER1_FLOOR_LIVE` 单源
+＝ 91 件 = 裸相 32 ＋ rootfs 56 ＋ RX 3，冻结件 bcts@6/`TIER1_FLOOR_LIVE` 单源
 （bcts@2 → bcts@3 滚新随 4b6e2ff3 TERMINAL 入册刀，计数 91 随持；bcts@3 → bcts@4
 滚新随 5673b16c8 债清偿刀——149ff182e 终端完善刀 markers.sh BENCH ok n=6→n=8
 活树滚新而冻结件漏随刀，add-only 补 bcts@4（BENCH n=8/frozen_at 锚 dd7e2488b
 同树 markers blob 5b98b3dbab2c），计数 91 随持；bcts@4 → bcts@5 滚新随 W3-Q98
 e96965320——bench send_recv_pair 入九项基线面（BENCH 通道 n=8→n=9，markers.sh/
 smoke-image.sh/smoke.sh 三处活树单源同批滚新），计数面零增减 91 随持
-〔frozen_at 锚 d13db8897 同树 markers blob 6034d51568f2〕；bcts@3/bcts@4 保留在档
+〔frozen_at 锚 d13db8897 同树 markers blob 6034d51568f2〕；bcts@5 → bcts@6 滚新随
+W3-Q102——bench svc_roundtrip 入十项基线面（BENCH 通道 n=9→n=10，markers.sh/
+smoke-image.sh/smoke.sh 三处活树单源 + bench.py _iter_table 同批滚新），计数面
+零增减 91 随持〔frozen_at 锚 f24b2d745 同树 markers blob c3525c71ede3〕；
+bcts@3/bcts@4/bcts@5 保留在档
 回放旧工件仍可用）。
 其中「L0 syscall 面」对应裸相 boot 链标记族（`SYSCALL ok`/`ktest done` 等）＋
 abi-check；「装载谓词」对应 appd 装载链（`APP ok n=`/`APPUI ok n=`——
