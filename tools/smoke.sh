@@ -11,9 +11,9 @@
 #      stdhello 经 musl target + berry-libc shim + 流式装载全链自打——
 #      G-eco-d d-1c）标记到齐——「rootfs 程序经全链跑通出字」的关卡化
 #      （裸跑相 rootfs 缺席 = svcmgr 静默降级，26 标记零扰动，两相互证；
-#      B-0 起裸相含 BENCH ok n=9（04 号 n=6→n=8 pick_scan/switch_pair；
-#      W3-Q98 n=8→n=9 send_recv_pair——02 号 IPC 审计落选三，trailer 形态
-#      不变）——
+#      B-0 起裸相含 BENCH ok n=10（04 号 n=6→n=8 pick_scan/switch_pair；
+#      W3-Q98 n=8→n=9 send_recv_pair + W3-Q102 n=9→n=10 svc_roundtrip
+#      ——02/03 号审计测量面收口，trailer 形态不变）——
 #      内核微基准 + churn 泄漏金丝雀关卡化；
 #      R-0 起含 BENCHWAKE n=——唤醒延迟直方图 boot 尾形状行；
 #      S-2 起含 BENCHXH ok——资源耗尽/恢复六面确定性关卡化；
