@@ -37,6 +37,9 @@ struct L1Table([u64; PTES_PER_TABLE]);
 /// L2 表（512 项，4KiB）。
 #[repr(C, align(4096))]
 struct L2Table([u64; PTES_PER_TABLE]);
+/// L3 表（512 项，4KiB；W3-Q104 块拆分用——叶描述符表与 L2 同构）。
+#[repr(C, align(4096))]
+struct L3Table([u64; PTES_PER_TABLE]);
 
 // boot.asm 先清 .bss.boot（__boot_bss_*）；静态零初始化 → NOLOAD 低半段。
 // 2b-2 低半退役后，这些表经 phys_to_virt(pa==va) 访问，规则不变。
@@ -339,6 +342,15 @@ pub(crate) fn current_ttbr0_pa() -> usize {
     ttbr as usize & 0x0000_FFFF_FFFF_F000
 }
 
+/// 读当前 TTBR1_EL1 内核表基 PA（bits[47:12]；W3-Q104 freeze_syscalls_table
+/// walk 用——高半 .text 不得静态引用 `.bss.boot` 低半表符号，见该函数内注释）。
+pub(crate) fn current_ttbr1_pa() -> usize {
+    let ttbr: u64;
+    // SAFETY: 特权读；EL1，无副作用。
+    unsafe { asm!("mrs {0}, ttbr1_el1", out(reg) ttbr, options(nostack, preserves_flags)) };
+    ttbr as usize & 0x0000_FFFF_FFFF_F000
+}
+
 /// S-4 4-2：当前 ASID——syscall copy 链读者解析 per-AS PT 锁的键；demand
 /// 探针（`dpg::probe`）asid 反查同源。与 [`current_ttbr0_pa`] 同一激活窗
 /// （EL0 syscall 不切 AS，天然 = 调用者 ASID，同窗一致键）。
@@ -393,7 +405,98 @@ pub(crate) unsafe fn flush_local_all() {
     dsb_ish();
 }
 
-// ---- 系统寄存器读写（unsafe 收敛地，裸 asm）----
+// ---- W3-Q104（03 号分派审计机会五 5b）：SYSCALLS 派发表固化 RO ----
+
+/// 固化完成标记（ktest 自证用；boot 窗内置位后恒 `true`）。
+static SYSCALLS_RO: AtomicBool = AtomicBool::new(false);
+
+/// SYSCALLS 表是否已固化只读（ktest 断言门自证用）。
+pub fn syscalls_table_ro() -> bool {
+    SYSCALLS_RO.load(Ordering::Relaxed)
+}
+
+/// 把 `SYSCALLS` 派发表所在 2MiB 块拆成 4KiB 叶、**仅表页本体**置
+/// **EL1 只读**（表 = 256 槽 × 16B 恰一整页，#[repr(C, align(4096))]
+/// wrapper 保证页对齐 + 整页独占），其余 511 页逐位保真原块 RW——函数
+/// 指针表 W^X 固化（`research/内核深度进化/03-syscall分派审计.md`
+/// 机会五 5b：boot 期 [`crate::syscall::install`] 填毕、终生只读却留
+/// 可写页的分派面关死；此后任何写 = D-abort(current-EL) 权限错
+/// fatal——ktest 期望故障探针正向断言之）。
+/// R490 三轮：**不冻邻页**——邻页静态量随链接布局漂移换人（两轮 smoke
+/// 红：debug 布局冻住 ktest EBUF、CI 布局冻住 KLOG_SNAP_STAGE 区带写
+/// 者），「邻页无运行期写者」论断不可靠；表整页独占后冻本页即完备。
+///
+/// 为什么必须拆块：高半内核映射是 L2 2MiB **块描述符**（`build_boot_pt`），
+/// AP 位长在块上——直接改块权限 = 整个 2MiB（`.data`/`.bss` 同块全体静态
+/// 量）一起失写，boot 必死。故插一张 L3 把该块劈成 512 张 4KiB 叶。
+///
+/// 时序合同：**只能在高半经 TTBR1 活跃时调**（`rust_main` 单线程 DAIF 屏
+/// 蔽尾窗、smp_bringup 前）——本函数对该块内代码/数据的取指与数据访问
+/// 走高半映射；低半身份已在 2b-2 退役（`retire_low_half` 在 boot 早期），
+/// 不存在低半走查面。副核 `bl enable_mmu` 消费表基只读，walk 到的即新
+/// 拓扑（表项写毕经 `dsb ish` 才切 L2 项），无共享窗。
+///
+/// # Safety
+/// boot 单线程调用一次；只写页表项（RAM L2 目标槽 + `SPLIT_L3_SYSCALLS`
+/// 专表，高半 .bss）与 `SYSCALLS_RO` 标记，不触碰任何运行期数据。
+pub unsafe fn freeze_syscalls_table() {
+    // 镜像布局：VMA - KERNEL_VA_BASE == LMA（linker 脚本）。
+    let sva = crate::syscall::table_addr();
+    debug_assert_eq!(sva & 0xFFF, 0, "SYSCALLS 须 4KiB 对齐");
+    let spa = sva - KERNEL_VA_BASE;
+    let l2_idx = (spa >> 21) & L2_INDEX_MASK;
+
+    // RAM L2 表基：**运行期从 TTBR1_EL1 walk**（L1[1] → 下级表基 PA），不从
+    // `BOOT_L2_RAM` 符号直取——该表落 `.bss.boot` 低半（VMA==PA），高半
+    // .text 的静态引用必发 ADRP±4GiB 断链（R490 判例：rust-lld
+    // `R_AARCH64_ADR_PREL_PG_HI21 out of range`，CI-light 不编目标机的双盲
+    // 面）。KERNEL_L1[1] 与 BOOT_L1[1] 同指该表（build_boot_pt），TTBR1 写入
+    // 值即其 PA——walk 零静态引用、零额外真值源。walk 读经高半直映别名。
+    let l1_pa = current_ttbr1_pa();
+    let l1 = (l1_pa + KERNEL_VA_BASE) as *const u64;
+    let l2_desc = unsafe { (&raw const *l1.add(1)).read_volatile() };
+    debug_assert_eq!(l2_desc & 0x3, 0b11, "L1[1] 须是有效表描述符");
+    let l2 = (((l2_desc & 0x0000_FFFF_FFFF_F000) as usize) + KERNEL_VA_BASE) as *mut L2Table;
+
+    // 分裂专表（高半普通 .bss——boot asm 开 MMU 前按 PA 清零主体 .bss，
+    // 调用时已零；挂表时 VMA−KERNEL_VA_BASE 折算 PA。**不得**学四张 boot
+    // 表落 .bss.boot 低半：高半 .text 的 ADRP 引用断链〔R490 链接红根因〕）。
+    static mut SPLIT_L3_SYSCALLS: L3Table = L3Table([0; PTES_PER_TABLE]);
+    let l3 = &raw mut SPLIT_L3_SYSCALLS;
+
+    // 旧块 PA（清 bits[20:0] 属性位；MMU 开前建表后表项稳定，volatile 防折叠）。
+    let old_block = unsafe { (&raw const (*l2).0[l2_idx]).read_volatile() };
+    debug_assert_eq!(old_block & 0x3, 0b01, "拆分目标须是有效块描述符");
+    let block_pa = (old_block & !0x1F_FFFF) as usize;
+
+    // 512 叶：**只冻表页本体**（表 = 256 槽 × 16B = 4096B，#[repr(C,
+    // align(4096))] wrapper 保证页对齐 + 整页独占——R490 二轮前置），其余
+    // 511 页逐位保真原块 RW。**禁邻页盲冻**（R490 三轮教训）：邻页静态量
+    // 随链接布局漂移换人（debug 布局 = ktest EBUF/HBUF/RNBUF，CI 布局 =
+    // syscall::KLOG_SNAP_STAGE 区带），「邻页无运行期写者」论断不可靠——
+    // 盲冻邻页 = 随机杀 boot（两轮 smoke 红 + reviewer 本地 QEMU 实证）。
+    // 表本页整页独占后写者唯一 = install（boot 单线程窗，freeze 之前），
+    // 冻本页即安全闭环。
+    let tgt_pf = spa >> 12;
+    for i in 0..PTES_PER_TABLE {
+        let pf = (block_pa >> 12) + i;
+        let ap = if pf == tgt_pf { AP_RO } else { AP_EL1_RW };
+        unsafe {
+            (&raw mut (*l3).0[i]).write_volatile(page_descriptor_kernel(pf << 12, ap));
+        }
+    }
+
+    // 标记先置后翻（翻转前单线程窗零观察者）：若 SYSCALLS_RO 恰链进 RO
+    // 三页窗，翻转后自写必 D-abort fatal——置位必须在权限翻转**前**完成。
+    SYSCALLS_RO.store(true, Ordering::Release);
+
+    // 先 L3 后 L2（walk 见表项时叶已就绪——无窗口），再屏障 + 全量 TLB
+    // 失效（旧块项是 global，须 vmalle1is 家族）。
+    unsafe { dsb_ish() };
+    unsafe { (&raw mut (*l2).0[l2_idx]).write_volatile(table_descriptor(l3 as usize - KERNEL_VA_BASE)) };
+    unsafe { dsb_ish() };
+    unsafe { flush_all_asid() };
+}
 
 #[inline(always)]
 unsafe fn write_mair_el1(v: u64) {
