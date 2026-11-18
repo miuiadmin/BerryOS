@@ -707,6 +707,11 @@ test-host:
     # 参数化注入 + irq_exit 值域执法；wsrcface 姊妹件——号归源/源分类
     # 进环两件合钉刀1 归因链〕）。
     cargo test -p berry-wakeface --target {{host}}
+    # W3-Q106：berry-vdsoface（vDSO 数据页布局与换算纯函数面——布局冻结
+    # 钉板/magic+freq 谓词四态/换算式与内核 sys_clock_read 逐位对拍含
+    # 非二次幂频率精确域，host 5 测；单源 crate，kernel/src/vdso.rs 建页
+    # + berry-sys fast path 双消费〔03 号审计机会三〕）。
+    cargo test -p berry-vdsoface --target {{host}}
     # W3-Q28：berry-wsrcface（唤醒源分类/白名单/钳位纯函数面——WSRC_F_*
     # 五常量 + M_* 九源冻结值镜像 + class_of/valid/slot_index 三谓词，
     # host 8 测（9 源两列全表/256 值全域扫描/钳位律/POWER_KEY 到达-only
