@@ -71,6 +71,7 @@ kernel/src/syscall.rs::KLOG_SNAP_STAGE	boot
 kernel/src/telemetry.rs::PRESSURE_OUTLET	telemetry
 kernel/src/telemetry.rs::SWITCH_RINGS	telemetry
 kernel/src/telemetry.rs::WAKE_RINGS	telemetry
+kernel/src/vdso.rs::VDSO_VMO	other
 sched/src/band.rs::BANDS	scheduler
 sched/src/class.rs::LAST_VCT	scheduler
 sched/src/em.rs::EM_TABLE	scheduler

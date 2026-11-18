@@ -1794,6 +1794,9 @@ impl UserProcess {
             .expect("user: map data");
         vmar.map(fa, &mut stack_vmo, stack_base, 0, PAGE_SIZE, Perm::UserRw)
             .expect("user: map stack");
+        // W3-Q106：vDSO 数据页（clock_read MONOTONIC 零 syscall 化——固定
+        // VA 只读映射；全局单页 VMO 共享，见 vdso.rs 权衡裁决）。
+        crate::vdso::map_into(fa, &mut vmar).expect("user: map vdso");
 
         // 表树对页表走查可见（map 内 dsb ish）；三 Vmo 进结构体（见结构体注释）。
         Self {

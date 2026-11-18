@@ -20,3 +20,6 @@ categories = ["api-bindings", "no-std", "os"]
 targets = ["aarch64-unknown-none", "aarch64-unknown-linux-musl"]
 
 [dependencies]
+# W3-Q106：vDSO 页布局/换算单源（berry_clock_read MONOTONIC fast path
+# 消费；内核侧 kernel/src/vdso.rs 同源建页——「不长第二套」）。
+berry-vdsoface = { path = "../berry-vdsoface" }

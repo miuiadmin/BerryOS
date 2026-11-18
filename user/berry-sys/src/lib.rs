@@ -739,9 +739,45 @@ pub extern "C" fn berry_event_create(options: u32, out: *mut Handle) -> Status {
 // —— 时间 ——
 
 /// 单调钟纳秒（`clock_id` 须 `CLOCK_MONOTONIC`）。
+///
+/// **W3-Q106 vDSO fast path**：MONOTONIC 读内核映射的只读 vDSO 数据页
+/// （固定 [`berry_vdsoface::VDSO_VA`]）+ EL0 直读 `cntvct_el0`
+/// （`CNTKCTL_EL1.EL0VCTEN` 自 B-1 已开）+ 页内 freq 换算（与内核
+/// `sys_clock_read` 逐位同式，单源 `berry-vdsoface`），**整号不陷 SVC**。
+/// 页未就绪（magic/freq 域异常——结构性不可达，防御面）或 `clock_id`
+/// 非 MONOTONIC（REALTIME 走 rtc 注入语义）→ 回落原 syscall 路径。
+/// 一体构建契约：本 crate 与内核同 image 组装（vDSO 页由同仓内核 boot 期
+/// 映入每个 AS）——「新用户态跑旧内核」不在支持面（crate 状态即
+/// "the API moves with the kernel ABI"）。
 #[no_mangle]
 pub extern "C" fn berry_clock_read(clock_id: u32, out: *mut Time) -> Status {
+    if clock_id == CLOCK_MONOTONIC {
+        if let Some(ns) = vdso_monotonic_ns() {
+            // SAFETY: out 契约同 syscall 路径（调用方供可写 Time 槽）。
+            unsafe { *out = ns };
+            return 0;
+        }
+    }
     unsafe { sys(nr::CLOCK_READ, clock_id as usize, out as usize, 0, 0, 0, 0) }
+}
+
+/// vDSO fast path 本体：读页头（magic+freq）→ `mrs cntvct_el0` → 同式换算。
+/// 页无效（旧页/未就绪）→ `None`（调用方回落 syscall）。
+#[inline]
+fn vdso_monotonic_ns() -> Option<Time> {
+    // SAFETY: 页由内核 boot 期映射（一体构建契约，见 berry_clock_read 注），
+    // 只读 16B 头 + 非对齐宽容（volatile 防 LLVM 假定重读合并）。
+    let head: [u8; 16] = unsafe { core::ptr::read_volatile(berry_vdsoface::VDSO_VA as *const [u8; 16]) };
+    if !berry_vdsoface::page_ready(head) {
+        return None;
+    }
+    let freq = u64::from_le_bytes([
+        head[8], head[9], head[10], head[11], head[12], head[13], head[14], head[15],
+    ]);
+    let ticks: u64;
+    // SAFETY: 只读计数器（EL0VCTEN 门自 kernel timer::init 已开）。
+    unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) ticks, options(nostack, preserves_flags)) };
+    berry_vdsoface::ticks_to_ns(ticks, freq)
 }
 
 // —— 信号（A7-4 段②，协同式用户态投递——libc `signal.rs` 消费）——
