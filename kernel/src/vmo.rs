@@ -145,6 +145,18 @@ impl Vmo {
         Ok(())
     }
 
+    /// 运行时安全提交（F0-3）：逐页经 `ALLOC_LOCK` 分配新物理帧并在锁外完成 `DC ZVA` 清零。
+    pub fn commit_global(&mut self, offset: usize, len: usize) -> Result<(), VmoError> {
+        let range = self.ledger.commit_pages(offset, len)?;
+        for page in range.iter() {
+            if self.ledger.page_pa(page).is_none() {
+                let pa = zero_frame_global()?;
+                self.ledger.mark_committed(page, Some(pa));
+            }
+        }
+        Ok(())
+    }
+
     /// 归还已提交页（3-2）：先整段验「全已提交且**无映射**」再逐页释放（先查后
     /// 动——不留半截副作用）。映射中的页拒绝（[`VmoError::Mapped`]）——先 unmap。
     pub fn decommit(
@@ -163,6 +175,23 @@ impl Vmo {
             // SAFETY: 该页独占（mapcnt==0 → 无映射别名）且 PA 来自 alloc。
             let _ = fa.free(pa >> PAGE_SHIFT, 0); // 元数据异常只泄漏不 panic
         }
+        Ok(())
+    }
+
+    /// 运行时安全归还（F0-3）：先在锁外收集待退页表（含 `Vec` 堆分配），再持 `ALLOC_LOCK` 借用遍历批量退还，
+    /// 锁释放后再在锁外析构临时 `Vec`（严禁在 `ALLOC_LOCK` 窗内触发 `SlabHeap::dealloc` 自重入）。
+    pub fn decommit_global(&mut self, offset: usize, len: usize) -> Result<(), VmoError> {
+        let (_, pas) = self.ledger.decommit_pages(offset, len)?;
+        crate::mm::with_frames(|fa| {
+            for &(page, _registered) in pas.iter() {
+                let pa = self
+                    .ledger
+                    .mark_decommitted(page)
+                    .expect("上已校验全提交");
+                debug_assert_eq!(Some(pa), Some(_registered));
+                let _ = fa.free(pa >> PAGE_SHIFT, 0);
+            }
+        });
         Ok(())
     }
 
@@ -267,10 +296,12 @@ impl Drop for Vmo {
     /// MMIO 窗口后备（P6 A-2）：`pages` 恒空 → 还帧面天然零动作——设备 PA 从
     /// 不进帧记账，无「还设备页进 buddy」面。
     fn drop(&mut self) {
-        for (_page, pa) in self.ledger.droppable_pages() {
-            // SAFETY: 独占页（无映射别名）；PA 来自 FrameAllocator::alloc。
-            let _ = crate::mm::frames().free(pa >> PAGE_SHIFT, 0);
-        }
+        // F0-3：经第 5 层 ALLOC_LOCK 归还无映射页，消除 HT_DRAINQ 异步析构与并发分配的数据竞争。
+        crate::mm::with_frames(|fa| {
+            for (_page, pa) in self.ledger.droppable_pages() {
+                let _ = fa.free(pa >> PAGE_SHIFT, 0);
+            }
+        });
     }
 }
 
@@ -281,6 +312,15 @@ pub(crate) fn zero_frame(fa: &mut FrameAllocator) -> Result<usize, VmoError> {
     let pa = pfn << PAGE_SHIFT;
     // SAFETY: 独占新分配帧（尚无别名引用）；Normal WB 直映（清零臂前提，
     // 见 `zero_page_4k` 合同注）。
+    unsafe { zero_page_4k(phys_to_virt(pa) as *mut u8) };
+    Ok(pa)
+}
+
+/// 运行时安全取零帧（F0-3）：仅在 `fa.alloc()` 瞬间持 `ALLOC_LOCK`，随后在锁外完成 `DC ZVA` 4KiB 清零。
+pub(crate) fn zero_frame_global() -> Result<usize, VmoError> {
+    let pfn = crate::mm::with_frames(|fa| fa.alloc()).map_err(|_| VmoError::NoFrames)?;
+    let pa = pfn << PAGE_SHIFT;
+    // SAFETY: 刚弹出的独占物理帧尚无任何外部可见别名，锁外直映清零安全无争用。
     unsafe { zero_page_4k(phys_to_virt(pa) as *mut u8) };
     Ok(pa)
 }

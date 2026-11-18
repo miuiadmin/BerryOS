@@ -711,7 +711,7 @@ extern "C" fn sys_vmo_commit(tf: &mut TrapFrame) -> i64 {
         Ok(t) => match t.get_raw(h, ObjType::Vmo, RIGHT_WRITE) {
             Ok((obj, _)) => {
                 let Some(vmo) = obj_vmo_mut(&obj) else { return ERR_BAD_HANDLE as i64 };
-                match vmo.commit(crate::mm::frames(), off, len) {
+                match vmo.commit_global(off, len) {
                     Ok(()) => 0,
                     Err(e) => voe(e) as i64,
                 }
@@ -730,7 +730,7 @@ extern "C" fn sys_vmo_decommit(tf: &mut TrapFrame) -> i64 {
         Ok(t) => match t.get_raw(h, ObjType::Vmo, RIGHT_WRITE) {
             Ok((obj, _)) => {
                 let Some(vmo) = obj_vmo_mut(&obj) else { return ERR_BAD_HANDLE as i64 };
-                match vmo.decommit(crate::mm::frames(), off, len) {
+                match vmo.decommit_global(off, len) {
                     Ok(()) => 0,
                     Err(e) => voe(e) as i64,
                 }
@@ -978,7 +978,7 @@ extern "C" fn sys_vmar_map(tf: &mut TrapFrame) -> i64 {
             }
         }
     } else {
-        vmar.map(crate::mm::frames(), vmo, req as usize, voff, len, perm)
+        vmar.map_global(vmo, req as usize, voff, len, perm)
     };
     match r {
         Ok(va) => match copy_out_u64(el1, vaddrp, va as u64) {
@@ -1408,7 +1408,7 @@ fn pager_supply_one(
     let mut write_err: Result<(), crate::vmo::VmoError> = Ok(());
     // SAFETY: root 常驻论证同上；dv_ptr 指针身份已验。
     if let Err(e) = unsafe {
-        (*root).supply_page_init(crate::mm::frames(), va, |vmo, page_off| {
+        (*root).supply_page_init_global(va, |vmo, page_off| {
             if has_src_bytes {
                 write_err = vmo.write(page_off, buf);
             }
@@ -1580,7 +1580,7 @@ extern "C" fn sys_process_create(tf: &mut TrapFrame) -> i64 {
     let Some(new_asid) = crate::aspace::try_alloc_asid() else {
         return ERR_NO_MEMORY as i64;
     };
-    let vmar = match Vmar::new_root(crate::mm::frames(), new_asid) {
+    let vmar = match Vmar::new_root_global(new_asid) {
         Ok(v) => v,
         Err(e) => {
             crate::aspace::free_asid(new_asid);
@@ -4190,7 +4190,9 @@ pub fn install() {
     reg(NR_SCHED_SETATTR, sys_sched_setattr, SVC_CLASS_TABLE);
     reg(NR_SCHED_GETATTR, sys_sched_getattr, SVC_CLASS_TABLE);
     // —— RQ+TABLE：yield（pick/requeue + 切换舞蹈；表位保守对称）——
-    reg(NR_THREAD_YIELD, sys_thread_yield, SVC_CLASS_RQ_TABLE);
+    // F0-3 lockdep 实抓修：0x3F 零表零指针，且尾段 reap_drain 需顺向取 REAPQ(rank 3) -> TABLE(rank 4)，
+    // 故与 0x37 同落 SVC_CLASS_SQ_RQ（严禁预持 TABLE 造成 4->3 逆序死锁）。
+    reg(NR_THREAD_YIELD, sys_thread_yield, SVC_CLASS_SQ_RQ);
     // —— TABLE：CP-08 util 快照读（0x40——EWMA 槽 Relaxed 原子读零共享
     //    面；copy_out 链走查调用方页表 = §A113 读者面，同 0x61/0x87）。
     reg(NR_SCHED_UTIL_SNAPSHOT, sys_sched_util_snapshot, SVC_CLASS_TABLE);

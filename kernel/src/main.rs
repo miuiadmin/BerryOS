@@ -6253,7 +6253,7 @@ extern "C" fn task_soakmon(arg: usize) -> ! {
         let sw = berry_sched::switches();
         // S-5d 心跳 v2（D4）：per-CPU sw/park 四数入行；S-5e M1 v2.1 追加 churn。
         let (sw0, sw1, park0, park1) = berry_hal_aarch64::smp::sw_park_readout();
-        let pages = mm::frames().allocated_pages() as u64;
+        let pages = mm::allocated_pages() as u64;
         let lost = berry_hal_aarch64::uart::rx_lost() as u64;
         // S-5e M1（心跳 v2.1）：载荷业务进度第 9 字段——调度/内存面照绿而
         // churn 冻结 = svc 恒败/gen 顶格/写者被杀，端到端假绿在此开口。
@@ -7499,7 +7499,7 @@ extern "C" fn task_alloc(arg: usize) -> ! {
             let r = berry_sched::block_current(arg, ALLOC_EV_BIT, deadline);
             berry_hal_aarch64::kern_lock::klock_exit();
             assert!(r == WakeReason::Timeout, "alloc: 沉降等待醒因非 Timeout");
-            let p = mm::frames().allocated_pages();
+            let p = mm::allocated_pages();
             if p == last {
                 stable += 1;
             } else {
@@ -7515,7 +7515,7 @@ extern "C" fn task_alloc(arg: usize) -> ! {
     let (_hp, _hv, hd) = storm_spawn_fleet("A", user_allocst_code(), STORM_WRITER_N, 0);
     // ② 基线：水位（fleet 帧已在——flag 门保证）+ per-CPU sw（写者已
     // thread_start，park 自旋不占内核态面）。
-    let pages_base = mm::frames().allocated_pages();
+    let pages_base = mm::allocated_pages();
     let (sw0_b, sw1_b, _, _) = berry_hal_aarch64::smp::sw_park_readout();
     // ③ 放行。
     let one: u8 = 1;
@@ -7540,7 +7540,7 @@ extern "C" fn task_alloc(arg: usize) -> ! {
     // 水位断言 = **带宽口径**：SMP EL0 形态全局水位无干净窗（常驻面 ±几帧
     // 波动 = 噪声底；S-5b 三跑实证），对账主信号 = churn 帧全泄（320 轮
     // × 1 帧 = ±320 量级）——带宽 64 = 常驻波动余量，主信号裕度 5×。
-    let pages_end = mm::frames().allocated_pages() as i64;
+    let pages_end = mm::allocated_pages() as i64;
     let delta = pages_end - pages_base as i64;
     assert!(
         delta.abs() <= 64,

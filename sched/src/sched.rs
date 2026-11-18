@@ -1610,7 +1610,7 @@ fn yield_now_impl(enable_irq_at_end: bool) {
     // 串行（c-2b slice 2；3-1b 起无 KL 包络——reap_drain 位感知自持 REAPQ
     // 窗，独立单锁面）。副核防御 yield 面不 drain（REAPQ 由 CPU0
     // idle/tick 消化）。
-    if hal::smp::cpu_id() == 0 {
+    if hal::smp::cpu_id() == 0 && unsafe { !held_test(HELD_TABLE) } {
         reap_drain();
     }
     if enable_irq_at_end {

@@ -174,6 +174,8 @@ pub fn run() {
     // cbox 刀1（黑匣子崩溃记录表）排液窗数学钉板——main 线增量（末位新号
     // 纪律——ktest done 前；定义在文件尾）。
     test_cbox();
+    // F0-3：异常 DAIF 保存/恢复守卫、TLB shootdown 对飞自解与独立第 5 层 ALLOC_LOCK 自检。
+    test_f0_3();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     crate::splash::step(8, b"ktest done");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
@@ -12187,4 +12189,68 @@ fn test_cbox() {
 
     cbox::ktest_restore(saved.0, saved.1);
     berry_hal_aarch64::uart_puts(b"CBOXK ok\n");
+}
+
+/// F0-3：验证 `KlockIrqSaveGuard` / `TableIrqSaveGuard` 在关中断上下文不提前开中断、
+/// `tlbshoot::test_inline_consume_once()` 对飞内联消费自解、以及 `ALLOC_LOCK` 零泄漏往返。
+fn test_f0_3() {
+    use berry_mm::va::PAGE_SIZE;
+    let daif_before = berry_hal_aarch64::irq_save();
+    assert_ne!(
+        daif_before & 0x80,
+        0,
+        "F0-3: ktest 入口 DAIF.I 应处于屏蔽态"
+    );
+    {
+        let _kl = berry_hal_aarch64::kern_lock::klock_enter_irqsave();
+        assert!(
+            berry_hal_aarch64::kern_lock::kl_held(),
+            "F0-3: KlockIrqSaveGuard 窗内应持有 KL"
+        );
+        // 重入层：TableIrqSaveGuard 在 kl_held() 下零死锁退化。
+        let _tbl = berry_hal_aarch64::kern_lock::kern_acquire_irqsave_reentrant();
+    }
+    let daif_after_kl = berry_hal_aarch64::irq_save();
+    assert_eq!(
+        daif_after_kl & 0x80,
+        daif_before & 0x80,
+        "F0-3: KlockIrqSaveGuard 退出绝不可误清 DAIF.I（防止异常出口 ELR/SPSR 踩踏）"
+    );
+    {
+        let _tbl = berry_hal_aarch64::kern_lock::kern_acquire_irqsave_reentrant();
+    }
+    assert_eq!(
+        berry_hal_aarch64::irq_save() & 0x80,
+        daif_before & 0x80,
+        "F0-3: TableIrqSaveGuard 退出绝不可误清 DAIF.I"
+    );
+
+    assert!(
+        berry_hal_aarch64::tlbshoot::test_inline_consume_once(),
+        "F0-3: tlbshoot 对飞内联代消费推进 ACKS 失败"
+    );
+
+    let base_pages = crate::mm::allocated_pages();
+    {
+        let mut vmo = crate::vmo::Vmo::create(PAGE_SIZE * 2).expect("F0-3: Vmo::create");
+        vmo.commit_global(0, PAGE_SIZE * 2)
+            .expect("F0-3: commit_global");
+        assert_eq!(
+            crate::mm::allocated_pages(),
+            base_pages + 2,
+            "F0-3: commit_global 分配页数不符"
+        );
+        vmo.decommit_global(0, PAGE_SIZE)
+            .expect("F0-3: decommit_global");
+        assert_eq!(
+            crate::mm::allocated_pages(),
+            base_pages + 1,
+            "F0-3: decommit_global 退还页数不符"
+        );
+    }
+    assert_eq!(
+        crate::mm::allocated_pages(),
+        base_pages,
+        "F0-3: Vmo::Drop 经 ALLOC_LOCK 回收后页数未归位"
+    );
 }

@@ -146,14 +146,12 @@ unsafe extern "C" fn probe(esr: usize, far: usize) -> bool {
     // 注销与对象释放都在 KL 窗内发生，他核注销须先取同把 KL）+ regions
     // 权威重验（变更方经 PT 锁嵌 KL 同序，锁外快查与入锁间的变更由本窗
     // 收口）。
-    hal::kern_lock::klock_enter();
+    let _kl = hal::kern_lock::klock_enter_irqsave();
     let Some(root) = vmar::demand_root(asid) else {
-        hal::kern_lock::klock_exit();
         return false; // stage-1 stale 命中折 None——原杀链
     };
     // SAFETY: root = 本 KL 窗内 fresh 查得（窗内活，见上）；region 查只读。
     if unsafe { (*root).demand_region_at(far).is_none() } {
-        hal::kern_lock::klock_exit();
         return false;
     }
     // 命中 = 提交路径：入深（G4-3 深度帽——此后至 block 前的活跃窗计深度）。
@@ -195,7 +193,7 @@ unsafe extern "C" fn probe(esr: usize, far: usize) -> bool {
     crate::telemetry::dpg_stall_fold(stall_now);
     // 醒 = 活跃窗重开（收尾段计深度——此窗内嵌套异常同样响雷）。
     depth_enter();
-    hal::kern_lock::klock_exit();
+    drop(_kl);
     assert!(
         matches!(r, berry_sched::WakeReason::Signaled),
         "dpg probe: 醒因非 Signaled（fault 键无超时/无他者——唤醒面破损）"
@@ -276,16 +274,14 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
     if vmar::demand_root(asid).is_none() {
         return false; // KL 外零锁快拒（rogue fault 不付全谱窗）
     }
-    hal::kern_lock::klock_enter();
+    let kl = hal::kern_lock::klock_enter_irqsave();
     // stage-2 根槽 fresh 重查（同 [`probe`]——窗内查得即窗内活；stale
     // 命中折 None → 原杀链）。
     let Some(root) = vmar::demand_root(asid) else {
-        hal::kern_lock::klock_exit();
         return false;
     };
     // SAFETY: root = 本 KL 窗内 fresh 查得（窗内活）；regions 权威重验在本窗。
     let Some((rvmo, _, _)) = (unsafe { (*root).demand_region_at(far) }) else {
-        hal::kern_lock::klock_exit();
         return false;
     };
     // P1-3 ZFOD 快路径：命中区间属**匿名零页** demand VMO（零臂供给学习
@@ -310,12 +306,14 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
         let va = far & !(PAGE_SIZE - 1);
         // SAFETY: root 窗内活；supply_page = pt_lock 嵌 KL 正序（pager
         // 供给窗同链），幂等（叶已在 → Ok 零动作）。
-        let r = unsafe { (*root).supply_page(mm::frames(), va) };
+        let r = unsafe { (*root).supply_page_global(va) };
         match r {
             Ok(()) => {
-                hal::kern_lock::klock_exit();
+                drop(kl);
+                // F0-3：ZFOD 直供在 PT 锁窗内广播了 TLB shootdown，放锁后在零锁窗口排干本核 PENDING 闩。
+                hal::tlbshoot::sched_exit_check();
                 depth_exit();
-                return true; // eret 重试命中新零叶（ELR 不动——同醒后重试形）
+                return true; // eret 重试命中新零叶（ELR 不动——同醒后重试形，全程维持 PSTATE.I=1）
             }
             // 直供失败（帧耗尽/建表失败）：KL 仍持，降级续走下方 pager
             // 武装链（= 快路径从未发生的原语义；pager 侧供给失败 fail
@@ -438,7 +436,7 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
         // 醒因门已滤——不可达（matches! 全集穷尽外的防御臂）。
         berry_sched::WakeReason::Pending => true,
     };
-    hal::kern_lock::klock_exit();
+    drop(kl);
     depth_exit();
     ok
 }
@@ -605,14 +603,14 @@ extern "C" fn dpg_pager(_arg: usize) -> ! {
         let (_vmo, _vmo_off, _base) = unsafe { (*root).demand_region_at(far) }
             .expect("dpg_pager: 请求 VA 已不在 demand 区间（unmap 竞窗）");
         let va = far & !(PAGE_SIZE - 1);
-        // F0-1：在叶 PTE 置有效之前写入 magic 并完成 PoU 缓存同步，消除半填页并发可见窗。
+        // F0-1 + F0-3：在叶 PTE 置有效之前写入 magic 并完成 PoU 缓存同步，且经 ALLOC_LOCK 安全提交建表。
         unsafe {
-            (*root).supply_page_init(mm::frames(), va, |vmo, page_off| {
+            (*root).supply_page_init_global(va, |vmo, page_off| {
                 vmo.write(page_off, &DPG_MAGIC.to_le_bytes())
                     .expect("dpg_pager: 写 magic 失败（供给页未提交？）");
             })
         }
-        .expect("dpg_pager: supply_page_init 失败（帧耗尽/建表失败——fail loud）");
+        .expect("dpg_pager: supply_page_init_global 失败（帧耗尽/建表失败——fail loud）");
         // 供给毕唤 faulter（KL 窗内 SQ 嵌套 = SVC 同构）。
         berry_sched::wake_matching(&FAULT_KEY as *const u8 as usize, DPG_WAKE_BIT);
         // P0-1 线1d fastpath 直切：唤醒只入环不抢占——被唤 faulter eff
@@ -631,6 +629,7 @@ extern "C" fn dpg_pager(_arg: usize) -> ! {
         // 判序律单源可测；sched 物理臂零改动（消费点锚）。
         berry_sched::try_preempt();
         hal::kern_lock::klock_exit();
+        hal::tlbshoot::sched_exit_check();
     }
 }
 

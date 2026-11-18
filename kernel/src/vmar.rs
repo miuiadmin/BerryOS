@@ -17,7 +17,7 @@
 //!
 //! 全 API 返回 `Result`（syscall 边界无 panic 纪律）。
 
-use crate::vmo::{zero_frame, Vmo};
+use crate::vmo::{zero_frame, zero_frame_global, Vmo};
 use alloc::vec::Vec;
 use berry_hal_aarch64 as hal;
 use berry_mm::frame::FrameAllocator;
@@ -262,6 +262,18 @@ impl Vmar {
         })
     }
 
+    /// 运行时安全建根 `Vmar`（F0-3：经 `ALLOC_LOCK` 取清零 L1 页表根帧）。
+    pub fn new_root_global(asid: u16) -> Result<Self, VmarError> {
+        let l1_pa = zero_frame_global().map_err(|_| VmarError::NoFrames)?;
+        Ok(Self {
+            l1_pa,
+            asid,
+            base: PAGE_SIZE,
+            len: USER_VA_TOP - PAGE_SIZE,
+            regions: Vec::new(),
+        })
+    }
+
     /// 表根 PA（`Task::ttbr0` / 激活用）。
     pub fn ttbr0_pa(&self) -> usize {
         self.l1_pa
@@ -403,6 +415,70 @@ impl Vmar {
         Ok(vaddr)
     }
 
+    /// 运行时安全映射（F0-3：持 `PT` 锁在外、按需经第 5 层 `ALLOC_LOCK` 申请中间页表帧与 `regions` 扩容，严守锁序）。
+    pub fn map_global(
+        &mut self,
+        vmo: &mut Vmo,
+        vaddr: usize,
+        vmo_offset: usize,
+        len: usize,
+        perm: Perm,
+    ) -> Result<usize, VmarError> {
+        let _pt = pt_lock(self.asid);
+        self.check_slot(vaddr, len)?;
+        if vmo_offset % PAGE_SIZE != 0 {
+            return Err(VmarError::Unaligned);
+        }
+        let npages = len / PAGE_SIZE;
+        let first_page = vmo_offset / PAGE_SIZE;
+        for i in 0..npages {
+            if vmo.page_pa(first_page + i).is_none() {
+                return Err(VmarError::VmoNotCommitted);
+            }
+        }
+        self.regions.try_reserve(1).map_err(|_| VmarError::NoMem)?;
+        let (attr, sh) = if vmo.is_mmio() {
+            (hal::ATTR_DEVICE, hal::SH_NONE)
+        } else {
+            (hal::ATTR_NORMAL, hal::SH_INNER)
+        };
+        let mut filled = 0;
+        for i in 0..npages {
+            let pa = vmo.page_pa(first_page + i).expect("上已校验");
+            let va = vaddr + i * PAGE_SIZE;
+            let slot = match self.l3_slot_create_global(va) {
+                Ok(slot) => slot,
+                Err(e) => {
+                    self.clear_leaves(vaddr, filled);
+                    // SAFETY: 特权指令；EL1。
+                    unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_flags)) };
+                    hal::tlbi_aside1(self.asid);
+                    hal::tlbshoot::broadcast();
+                    return Err(e);
+                }
+            };
+            if !vmo.is_mmio() && perm.allows_exec() {
+                hal::sync_icache_pou(phys_to_virt(pa), PAGE_SIZE);
+            }
+            // SAFETY: 槽位属本表树独占；volatile 防重排。
+            unsafe {
+                slot.write_volatile(hal::page_descriptor(pa, attr, sh) | perm.pte_bits());
+            }
+            filled += 1;
+        }
+        // SAFETY: 特权指令；EL1。
+        unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_flags)) };
+        vmo.track_map(vmo_offset, len);
+        self.regions.push(Region {
+            start: vaddr,
+            len,
+            kind: RegionKind::Mapped(perm),
+            vmo: vmo as *mut Vmo,
+            vmo_off: vmo_offset,
+        });
+        Ok(vaddr)
+    }
+
     /// 按需映射（G4-1）：登记 `RegionKind::Demand` 区间——**不查 commit、不填
     /// 叶、零帧分配**（中间表留待供给时按需建）。VMO 须 demand 后备
     /// （[`crate::vmo::Vmo::is_demand`]——混投 eager VMO 显式拒
@@ -524,6 +600,62 @@ impl Vmar {
         hal::tlbshoot::broadcast();
         // §5-⑥：mapcnt 记账起点 = 供给成功（unmap 的整体 untrack 对未供给
         // 页 saturating_sub 天然零动作——防线对 demand 区间自洽）。
+        vmo.track_map(page_off, PAGE_SIZE);
+        Ok(())
+    }
+
+    /// 运行时安全按需供给（F0-3：无预填零页臂）。
+    pub fn supply_page_global(&mut self, vaddr: usize) -> Result<(), VmarError> {
+        self.supply_page_init_global(vaddr, |_, _| {})
+    }
+
+    /// 运行时安全按需供给并预填物理帧（F0-3：持 `PT` 锁在外，内部经第 5 层 `ALLOC_LOCK` 提交与建表）。
+    pub fn supply_page_init_global(
+        &mut self,
+        vaddr: usize,
+        init_before_pte: impl FnOnce(&mut Vmo, usize),
+    ) -> Result<(), VmarError> {
+        let va = vaddr & !(PAGE_SIZE - 1);
+        let _pt = pt_lock(self.asid);
+        let idx = self.demand_index(va).ok_or(VmarError::NotMapped)?;
+        let (vmo, vmo_off) = {
+            // SAFETY: Region 的 vmo 指针有效性由 demand_pins 保证。
+            let r = &self.regions[idx];
+            (unsafe { &mut *r.vmo }, r.vmo_off)
+        };
+        if let Some(slot) = self.l3_slot_peek(va) {
+            // SAFETY: 只读表项。
+            if unsafe { slot.read_volatile() } & 1 != 0 {
+                return Ok(());
+            }
+        }
+        let page_off = vmo_off + (va - self.regions[idx].start);
+        vmo.commit_global(page_off, PAGE_SIZE).map_err(|e| match e {
+            crate::vmo::VmoError::NoFrames => VmarError::NoFrames,
+            crate::vmo::VmoError::NoMem => VmarError::NoMem,
+            _ => VmarError::NotMapped,
+        })?;
+        let pa = vmo.page_pa(page_off / PAGE_SIZE).expect("刚 commit_global 过");
+        let slot = self.l3_slot_create_global(va)?;
+        let perm = match self.regions[idx].kind {
+            RegionKind::Demand(p) => p,
+            _ => unreachable!("demand_index 已验 kind"),
+        };
+        init_before_pte(vmo, page_off);
+        if perm.allows_exec() {
+            hal::sync_icache_pou(phys_to_virt(pa), PAGE_SIZE);
+        }
+        let pte_bits = perm.pte_bits();
+        // SAFETY: 槽位属本表树独占；volatile 防重排。
+        unsafe {
+            slot.write_volatile(
+                hal::page_descriptor(pa, hal::ATTR_NORMAL, hal::SH_INNER) | pte_bits,
+            );
+        }
+        // SAFETY: 特权指令；EL1。
+        unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_flags)) };
+        hal::tlbi_aside1(self.asid);
+        hal::tlbshoot::broadcast();
         vmo.track_map(page_off, PAGE_SIZE);
         Ok(())
     }
@@ -687,6 +819,30 @@ impl Vmar {
         Ok(unsafe { Self::table_of(l3_pa).add((va >> 12) & IDX_MASK) })
     }
 
+    fn next_table_global(slot: *mut u64) -> Result<usize, VmarError> {
+        // SAFETY: 槽位属本表树独占；持 PT 锁。
+        let e = unsafe { slot.read_volatile() };
+        if e & TABLE_BIT != 0 {
+            Ok((e as usize) & ADDR_MASK as usize)
+        } else {
+            assert!(e == 0, "Vmar: 中间层出现非表描述符");
+            let pa = zero_frame_global().map_err(|_| VmarError::NoFrames)?;
+            // SAFETY: 同上。
+            unsafe { slot.write_volatile(hal::table_descriptor(pa)) };
+            Ok(pa)
+        }
+    }
+
+    fn l3_slot_create_global(&self, va: usize) -> Result<*mut u64, VmarError> {
+        let l2_pa = Self::next_table_global(unsafe {
+            Self::table_of(self.l1_pa).add((va >> 30) & IDX_MASK)
+        })?;
+        let l3_pa = Self::next_table_global(unsafe {
+            Self::table_of(l2_pa).add((va >> 21) & IDX_MASK)
+        })?;
+        Ok(unsafe { Self::table_of(l3_pa).add((va >> 12) & IDX_MASK) })
+    }
+
     /// 只读走查（不建表）：中间层缺失/无效 → `None`。unmap/protect 用。
     fn l3_slot_peek(&self, va: usize) -> Option<*mut u64> {
         let l1 = Self::table_of(self.l1_pa);
@@ -842,10 +998,8 @@ impl Drop for Vmar {
     /// 吸收：未持才物理取放（kern_acquire 非计数锁，同核重入自旋死锁——
     /// 门形 = kern_lock.rs 官方重入判据）。
     fn drop(&mut self) {
-        let held = hal::kern_lock::kl_held();
-        if !held {
-            hal::kern_lock::kern_acquire();
-        }
+        // F0-3：保存/恢复 DAIF 的可重入 TABLE 守卫，消除开中断态裸取 KERN_LOCK 的自死锁风险。
+        let _kl = hal::kern_lock::kern_acquire_irqsave_reentrant();
         deregister_demand_root(self.asid, self as *mut Vmar);
         for r in self.regions.iter() {
             if matches!(r.kind, RegionKind::Demand(_)) {
@@ -858,9 +1012,6 @@ impl Drop for Vmar {
         if self.is_root() && self.asid != 0 {
             hal::tlbi_aside1(self.asid);
             crate::aspace::free_asid(self.asid);
-        }
-        if !held {
-            hal::kern_lock::kern_release();
         }
     }
 }
