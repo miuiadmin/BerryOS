@@ -1464,4 +1464,321 @@ pub(crate) mod tests {
         assert_eq!(AuthKind::None.as_str(), "none");
         assert_eq!(AuthKind::Vnc.as_str(), "vnc");
     }
+
+    // ------------------------------------------------------------------
+    // W1-Q26 二十刀：Reader 解码路径 + 线格式写面首获直测。私有 Reader
+    // 状态机经 Unix socketpair 同步喂字节驱动（零 TCP 监听零 QEMU）——
+    // update/raw 的矩形落点与跨行 stride、DesktopSize resize、cursor 伪
+    // 编码消费、拒面族，run 的消息分派宽度，rfb_tail 的 ServerInit 域
+    // 校验，send_encodings_request/VncInput 的出向字节。
+    // ------------------------------------------------------------------
+
+    #[cfg(unix)]
+    fn unix_pair() -> (std::os::unix::net::UnixStream, Stream) {
+        let (a, b) = std::os::unix::net::UnixStream::pair().unwrap();
+        (a, Stream::Unix(b))
+    }
+
+    /// 32bpp BGRX LE reader over a fresh w×h frame（update/run 测试底座）。
+    #[cfg(unix)]
+    fn bgrx_reader(w: u32, h: u32) -> Reader {
+        let (_, dummy) = unix_pair();
+        Reader {
+            slot: Arc::new(Mutex::new(None)),
+            writer: Arc::new(Mutex::new(dummy)),
+            stop: Arc::new(AtomicBool::new(false)),
+            error: Arc::new(Mutex::new(None)),
+            pf: PixelFormat {
+                bpp: 32,
+                big_endian: false,
+                true_color: true,
+                rmax: 255,
+                gmax: 255,
+                bmax: 255,
+                rshift: 16,
+                gshift: 8,
+                bshift: 0,
+            },
+            frame: Frame::new(w, h),
+            seq: 0,
+            request_more: false,
+        }
+    }
+
+    /// ServerInit 载荷（w、h、规范 BGRX pf、名字）——rfb_server_init 同形。
+    #[cfg(unix)]
+    fn init_body(w: u16, h: u16, name: &[u8]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&w.to_be_bytes());
+        b.extend_from_slice(&h.to_be_bytes());
+        b.extend_from_slice(&[32, 8, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0]);
+        b.extend_from_slice(&(name.len() as u32).to_be_bytes());
+        b.extend_from_slice(name);
+        b
+    }
+
+    /// FramebufferUpdate 头（type 0 已被 run 消费）+ n 个矩形头。
+    #[cfg(unix)]
+    fn upd(n: u16, rects: &[u8]) -> Vec<u8> {
+        let mut b = vec![0u8, (n >> 8) as u8, n as u8];
+        b.extend_from_slice(rects);
+        b
+    }
+
+    #[cfg(unix)]
+    fn rect(x: u16, y: u16, w: u16, h: u16, enc: i32) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&x.to_be_bytes());
+        b.extend_from_slice(&y.to_be_bytes());
+        b.extend_from_slice(&w.to_be_bytes());
+        b.extend_from_slice(&h.to_be_bytes());
+        b.extend_from_slice(&enc.to_be_bytes());
+        b
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reader_raw_rect_placement_stride_seq_publish() {
+        // 双矩形一帧：2×1 @ (1,1) 钉行内偏移，1×2 @ (3,0) 钉跨行 stride；
+        // 未触碰像素保持零，seq 滚 1，slot 发布携带矩形的帧副本。
+        let (mut peer, mut cli) = unix_pair();
+        let mut r = bgrx_reader(4, 2);
+        // 线格式逐矩形交错：头→数据→头→数据（脚本首版头扎堆被首矩形
+        // 当数据吃掉——真实行为就是交错流）。
+        let mut msg = upd(2, &rect(1, 1, 2, 1, 0));
+        msg.extend_from_slice(&[0x33, 0x22, 0x11, 0x00]); // BGRX -> 0x00112233
+        msg.extend_from_slice(&[0x00, 0x00, 0xff, 0x00]); // -> 0x00ff0000
+        msg.extend_from_slice(&rect(3, 0, 1, 2, 0));
+        msg.extend_from_slice(&[0xff, 0x00, 0x00, 0x00]); // -> 0x000000ff ×2 行
+        msg.extend_from_slice(&[0xff, 0x00, 0x00, 0x00]);
+        peer.write_all(&msg).unwrap();
+        r.update(&mut cli).unwrap();
+        assert_eq!(r.frame.pixels.len(), 8);
+        assert_eq!(r.frame.pixels[1 * 4 + 1], 0x0011_2233, "行内偏移 x=1");
+        assert_eq!(r.frame.pixels[1 * 4 + 2], 0x00ff_0000);
+        assert_eq!(r.frame.pixels[0 * 4 + 3], 0x0000_00ff, "竖矩形首行");
+        assert_eq!(r.frame.pixels[1 * 4 + 3], 0x0000_00ff, "竖矩形次行（stride）");
+        assert_eq!(r.frame.pixels[0], 0, "未触碰像素保持零");
+        assert_eq!(r.seq, 1);
+        let published = r.slot.lock().unwrap().take().expect("update 发布帧");
+        assert_eq!((published.width, published.height, published.seq), (4, 2, 1));
+        assert_eq!(published.pixels[5], 0x0011_2233, "副本携带矩形内容");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reader_desktop_size_resize_and_rejects() {
+        // 合法 resize：几何滚新、缓冲重分配零填充。
+        let (mut peer, mut cli) = unix_pair();
+        let mut r = bgrx_reader(4, 2);
+        r.frame.pixels.fill(0xff);
+        peer.write_all(&upd(1, &rect(0, 0, 6, 2, -223))).unwrap();
+        r.update(&mut cli).unwrap();
+        assert_eq!((r.frame.width, r.frame.height), (6, 2));
+        assert_eq!(r.frame.pixels.len(), 12);
+        // Frame::resize 是 Vec::resize 扁平语义：前缀保内容、尾段零填充
+        // （QEMU 的 DesktopSize 后随全量 raw 矩形重画——非 2D 重排）。
+        assert!(r.frame.pixels[..8].iter().all(|&p| p == 0xff), "前缀保内容");
+        assert!(r.frame.pixels[8..].iter().all(|&p| p == 0), "尾段零填充");
+        // 退化/超 MAX_DIM 几何拒收。
+        for (w, h) in [(0u16, 2u16), (2, 0), (5000, 2), (2, 5000)] {
+            let (mut peer, mut cli) = unix_pair();
+            let mut r = bgrx_reader(4, 2);
+            peer.write_all(&upd(1, &rect(0, 0, w, h, -223))).unwrap();
+            let e = r.update(&mut cli).unwrap_err();
+            assert_eq!(e.code, 7, "w={w} h={h}: {e}");
+            assert!(e.message.contains("bad DesktopSize"), "{e}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reader_cursor_pseudo_encoding_consumed_and_bounded() {
+        // -239 伪编码：像素+掩码载荷读后即弃，帧缓冲零触碰。
+        let (mut peer, mut cli) = unix_pair();
+        let mut r = bgrx_reader(4, 2);
+        let mut msg = upd(1, &rect(0, 0, 2, 2, -239));
+        msg.extend_from_slice(&[0u8; 18]); // 2*2*4 像素 + ((2+7)/8)*2 掩码
+        peer.write_all(&msg).unwrap();
+        r.update(&mut cli).unwrap();
+        assert_eq!((r.frame.width, r.frame.height), (4, 2));
+        assert!(r.frame.pixels.iter().all(|&p| p == 0));
+        // 超界游标（4096×4096×4B + 掩码 > MAX_PIXELS*4）在读/分配前拒收。
+        let (mut peer, mut cli) = unix_pair();
+        let mut r = bgrx_reader(4, 2);
+        peer.write_all(&upd(1, &rect(0, 0, 4096, 4096, -239))).unwrap();
+        let e = r.update(&mut cli).unwrap_err();
+        assert_eq!(e.code, 7);
+        assert!(e.message.contains("cursor too large"), "{e}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reader_update_reject_faces() {
+        // 越界矩形：报文回显帧几何。
+        let (mut peer, mut cli) = unix_pair();
+        let mut r = bgrx_reader(4, 2);
+        peer.write_all(&upd(1, &rect(3, 0, 2, 1, 0))).unwrap(); // x+w=5>4
+        let e = r.update(&mut cli).unwrap_err();
+        assert_eq!(e.code, 7);
+        assert!(e.message.contains("outside"), "{e}");
+        // 零面积矩形静默 noop（无载荷读取无报错）。
+        let (mut peer, mut cli) = unix_pair();
+        let mut r = bgrx_reader(4, 2);
+        peer.write_all(&upd(1, &rect(0, 0, 0, 5, 0))).unwrap();
+        r.update(&mut cli).unwrap();
+        assert!(r.frame.pixels.iter().all(|&p| p == 0));
+        // >1024 矩形先拒于逐矩形解析。
+        let (mut peer, mut cli) = unix_pair();
+        let mut r = bgrx_reader(4, 2);
+        peer.write_all(&upd(1025, &[])).unwrap();
+        let e = r.update(&mut cli).unwrap_err();
+        assert_eq!(e.code, 7);
+        assert!(e.message.contains("too many rects"), "{e}");
+        // 未知编码带编号回显。
+        let (mut peer, mut cli) = unix_pair();
+        let mut r = bgrx_reader(4, 2);
+        peer.write_all(&upd(1, &rect(0, 0, 1, 1, 5))).unwrap();
+        let e = r.update(&mut cli).unwrap_err();
+        assert_eq!(e.code, 7);
+        assert!(e.message.contains("unsupported encoding 5"), "{e}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reader_run_bell_cuttext_then_unknown() {
+        // Bell（2）恰耗 1 字节、ServerCutText（3）恰耗 7 头 + 载荷——
+        // 尾随未知类型 9 的报文即两宽度的逐字节证明（错位必先炸别处）。
+        let (mut peer, mut cli) = unix_pair();
+        let mut r = bgrx_reader(4, 2);
+        let mut script = vec![2u8]; // Bell
+        script.extend_from_slice(&[3, 0, 0, 0, 0, 0, 0, 4]); // CutText len=4
+        script.extend_from_slice(b"abcd");
+        script.push(9);
+        peer.write_all(&script).unwrap();
+        let e = r.run(&mut cli).unwrap_err();
+        assert_eq!(e.code, 7);
+        assert!(e.message.contains("unknown message 9"), "{e}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reader_run_cuttext_too_long() {
+        let (mut peer, mut cli) = unix_pair();
+        let mut r = bgrx_reader(4, 2);
+        let mut script = vec![3u8, 0, 0, 0];
+        script.extend_from_slice(&0x10_0001u32.to_be_bytes()); // > 1<<20
+        peer.write_all(&script).unwrap();
+        let e = r.run(&mut cli).unwrap_err();
+        assert_eq!(e.code, 7);
+        assert!(e.message.contains("cut text too long"), "{e}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rfb_tail_valid_and_reject_faces() {
+        // 合法：4x2 + 规范 BGRX pf + 单字节名。
+        let (mut peer, mut cli) = unix_pair();
+        peer.write_all(&init_body(4, 2, b"t")).unwrap();
+        let (w, h, pf) = rfb_tail(&mut cli).unwrap();
+        assert_eq!((w, h), (4, 2));
+        assert_eq!(pf.bpp, 32);
+        assert_eq!((pf.rshift, pf.gshift, pf.bshift), (16, 8, 0));
+        // 退化/超 MAX_DIM 几何拒收。
+        for (gw, gh) in [(0u16, 2u16), (2, 0), (5000, 2), (2, 5000)] {
+            let (mut peer, mut cli) = unix_pair();
+            peer.write_all(&init_body(gw, gh, b"t")).unwrap();
+            let e = rfb_tail(&mut cli).unwrap_err();
+            assert_eq!(e.code, 7, "{gw}x{gh}: {e}");
+            assert!(e.message.contains("bad size"), "{e}");
+        }
+        // 名长超 4096 在读取前拒收（覆盖 name-len 域，非追加）。
+        let (mut peer, mut cli) = unix_pair();
+        let mut b = init_body(4, 2, b"");
+        b.truncate(20); // 头 20 字节（w/h/pf），name-len 域待写
+        b.extend_from_slice(&5000u32.to_be_bytes());
+        peer.write_all(&b).unwrap();
+        let e = rfb_tail(&mut cli).unwrap_err();
+        assert_eq!(e.code, 7);
+        assert!(e.message.contains("bad name length"), "{e}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn send_encodings_request_exact_wire() {
+        // SetEncodings（12B：type 2 + pad + count 2 + Raw 0 + DesktopSize
+        // -223）紧跟全量非增量请求（10B）——出向字节逐字钉板。
+        let (mut peer, mut cli) = unix_pair();
+        send_encodings_request(&mut cli, 1024, 768).unwrap();
+        let mut buf = [0u8; 22];
+        peer.read_exact(&mut buf).unwrap();
+        let mut want = vec![2u8, 0];
+        want.extend_from_slice(&2u16.to_be_bytes());
+        want.extend_from_slice(&0i32.to_be_bytes()); // Raw
+        want.extend_from_slice(&(-223i32).to_be_bytes()); // DesktopSize
+        want.extend_from_slice(&request(0, 0, 0, 1024, 768));
+        assert_eq!(&buf[..], &want[..]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn handshake_bad_version_and_refusal() {
+        // 非法版本横幅：不写任何后续即拒。
+        let (mut peer, mut cli) = unix_pair();
+        peer.write_all(b"XXX 003.008\n").unwrap();
+        let e = handshake_auth(&mut cli, None).unwrap_err();
+        assert_eq!(e.code, 7);
+        assert!(e.message.contains("bad version"), "{e}");
+        // n=0 + reason：拒绝文本逐字上浮（u32 长度 9 与 9 字节字面同长）。
+        let (mut peer, mut cli) = unix_pair();
+        peer.write_all(b"RFB 003.008\n").unwrap();
+        peer.write_all(&[0]).unwrap();
+        peer.write_all(&9u32.to_be_bytes()).unwrap();
+        peer.write_all(b"go away!!").unwrap();
+        let e = handshake_auth(&mut cli, None).unwrap_err();
+        assert_eq!(e.code, 7);
+        assert!(e.message.contains("refused: go away!!"), "{e}");
+        assert!(e.message.ends_with("go away!!"), "无残缺无多余: {e}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vnc_input_pointer_key_wire_and_size() {
+        // 输入面三报文逐字节：Pointer 6B / Key 8B 双态 + size()。
+        let (mut peer, cli) = unix_pair();
+        let mut inp = VncInput { stream: cli, width: 4, height: 2 };
+        assert_eq!(inp.size(), (4, 2));
+        inp.pointer(0x0102, 0x0304, 7).unwrap();
+        inp.key(0x41, true).unwrap();
+        inp.key(0x1b, false).unwrap();
+        let mut buf = [0u8; 22];
+        peer.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf[..6], &[5, 7, 0x01, 0x02, 0x03, 0x04]);
+        assert_eq!(&buf[6..14], &[4, 1, 0, 0, 0, 0, 0, 0x41]);
+        assert_eq!(&buf[14..], &[4, 0, 0, 0, 0, 0, 0, 0x1b]);
+    }
+
+    #[test]
+    fn connect_retry_success_and_bounded_failure() {
+        // 成功腿：活监听器首拨即中。
+        let port = spawn_rfb(|_s| {});
+        let ep = Endpoint::Tcp(format!("127.0.0.1:{port}"));
+        assert!(connect_retry(&ep, Duration::from_secs(2)).is_ok());
+        // 死端点：拒绝重试至预算耗尽，报文带端点显示形，耗时有界。
+        // （Stream 无 Debug：unwrap_err 不可用，match 提取——QmpClient 先例。）
+        let ep = Endpoint::Tcp("127.0.0.1:1".to_string());
+        let start = Instant::now();
+        let e = match connect_retry(&ep, Duration::from_millis(150)) {
+            Err(e) => e,
+            Ok(_) => panic!("dead port must not connect"),
+        };
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "预算有界，实耗 {:?}",
+            start.elapsed()
+        );
+        assert_eq!(e.code, 7);
+        assert!(e.message.contains("VNC connect"), "{e}");
+        assert!(e.message.contains("127.0.0.1:1"), "{e}");
+    }
 }

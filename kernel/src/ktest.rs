@@ -6983,7 +6983,7 @@ fn test_deadline() {
     let _p3 = rr.pick_next(&rq, &topo).expect("DL：D3 非空环须有出选");
 
     // —— S5-c：预算执法——budget 耗尽 throttle + 周期到 lazy unthrottle ——
-    // DL-B1：deadline 任务带预算——slice 耗尽 → HELD_FROZEN 置位。
+    // DL-B1：deadline 任务带预算——slice 耗尽 → HELD_THROTTLE 置位。
     let tb = mk(b"dlB".as_slice()); // budget 任务
     let tf2 = mk(b"dlF2".as_slice()); // fair 陪跑
     let mut rq2 = Runqueue::new();
@@ -6997,7 +6997,7 @@ fn test_deadline() {
     rr.enqueue(&mut *tb, &mut rq2);
     rr.enqueue(&mut *tf2, &mut rq2);
 
-    // tick 到 slice 耗尽 → 应 throttle（HELD_FROZEN 置位）。
+    // tick 到 slice 耗尽 → 应 throttle（HELD_THROTTLE 置位）。
     // tick 读 timer 内部算 delta——直接置 slice_left=0 后 tick 模拟到期。
     tb.slice_left = 0;
     let cur2 = tb as *mut berry_sched::Task;
@@ -11994,17 +11994,23 @@ fn test_slack_smp() {
 /// 2. on_irq_tick 片燃尽支出选 None 臂强制让点（CPU0 切 IDLE / 副核回
 ///    park；限流者在环保留 + Ready 化）；
 /// 3. 醒源护栏 nearest_deadline 并入限流带截止（band::
-///    nearest_throttle_wake）——停泊核翻期自醒，深 park 不饿死。
-/// 四段（真机械手驱——SMPLZ/BANDM4-G 同款）：T1 真 FairBand tick 烧穿
+///    nearest_throttle_wake）**与被限流 DL 逐任务 vdeadline**
+///    （nearest_dl_throttle_wake——S5-c 深 park 醒源刀，2026-11-18：
+///    挂账勘正落地，护栏由带级补齐到逐任务级）——停泊核翻期/到期自醒，
+///    深 park 不饿死。
+/// 五段（真机械手驱——SMPLZ/BANDM4-G 同款）：T1 真 FairBand tick 烧穿
 /// 配额置位 cur；T2 判据四面（限流垄断者须让点 / unit 垄断者续跑零漂移 /
 /// 限流者在环时他者出选 / S5-c deadline 位同判据）；T3 醒源 min 律；
-/// T4 翻期回场。切换舞蹈本体（真 IRQ 真切换）归 boot/smoke 面。
+/// T4 翻期回场；T5 S5-c 深 park 醒源钉板（真 PER_CPU_RQ 环上被限流 DL
+/// 的 min vdeadline + period=0 负控 + 无限流位负控）。切换舞蹈本体（真
+/// IRQ 真切换）归 boot/smoke 面。
 #[allow(clippy::unwrap_used)]
 fn test_throttle_yield() {
     use berry_sched::{
-        any_armed, class_of_task, configure, nearest_deadline, period_check, state,
-        throttle_yield_due, unthrottle_all, Fair, Runqueue, SchedClass, Task, Topo,
-        HELD_THROTTLE, INTENT_UNSPECIFIED, INTENT_UTILITY, PRIO_DEADLINE,
+        any_armed, class_of_task, configure, nearest_deadline, nearest_deadline_park, nearest_dl_throttle_wake,
+        period_check, rq_insert_kt, rq_unlink_kt, state, throttle_yield_due, unthrottle_all,
+        Fair, Runqueue, SchedClass, Task, Topo, HELD_THROTTLE, INTENT_UNSPECIFIED,
+        INTENT_UTILITY, PRIO_DEADLINE,
     };
     use berry_hal_aarch64::timer::{cntfrq, cntvct};
 
@@ -12147,7 +12153,102 @@ fn test_throttle_yield() {
     assert!(!any_armed(), "THRYLD：收口后须零武装带");
     assert_eq!(rq.len(), 0, "THRYLD：收口环须空");
 
-    berry_hal_aarch64::uart_puts(b"THRYLD ok n=4\n");
+    // —— T5. S5-c 深 park 醒源钉板（挂账勘正 2026-11-18 落地）：
+    //         nearest_dl_throttle_wake——被限流 DL 的逐任务 vdeadline 并入
+    //         nearest_deadline 成第三 min 源。手搭本地 Runqueue 对真环走查
+    //         不可见（勘察定谳）——限流 DL 须经 rq_insert_kt 入**真
+    //         PER_CPU_RQ**（J8/PILAT 同款；经 link_back 自动入 DL_ON_RING
+    //         账本），测毕 rq_unlink_kt 摘环出账与插入配平。置位面手设
+    //         （THROTTLE 写者律 T2c 已钉——本段钉读者过滤律）。——
+    let base5 = cntvct();
+    let v_near = base5 + period; // 近者（T1 period 口径——绝对 CNTVCT cycles）
+    let v_far = base5 + period * 2; // 远者
+    // 审查轮补强：远者先入（head 侧）、近者后入——min 持有者不在环首，
+    // 截断走查（只访首节点）将取 v_far ≠ v_near 必红（对走查完整性敏感）。
+    let t5b = mk(b"t5b".as_slice(), INTENT_UNSPECIFIED);
+    t5b.prio_effective = PRIO_DEADLINE;
+    t5b.duration_hint_ns = period;
+    t5b.vdeadline = v_far;
+    t5b.held_locks |= HELD_THROTTLE;
+    rq_insert_kt(t5b);
+    let t5a = mk(b"t5a".as_slice(), INTENT_UNSPECIFIED);
+    t5a.prio_effective = PRIO_DEADLINE;
+    t5a.duration_hint_ns = period; // 周期 > 0（arm 面滤件）
+    t5a.vdeadline = v_near;
+    t5a.held_locks |= HELD_THROTTLE;
+    rq_insert_kt(t5a);
+    // (a) 两 throttled DL 不同 vdeadline → min 律（近者出、且近者非环首）。
+    assert_eq!(
+        nearest_dl_throttle_wake(),
+        Some(v_near),
+        "THRYLD：T5a 环上被限流 DL 须取 min vdeadline（近者非环首——截断必红）"
+    );
+    // 三源合（风暴修后载体 = nearest_deadline_park——忙核 nearest_deadline
+    // 刻意不含第三源，见 sched.rs 风暴修注）：SLEEPQ 基线取 min（band 已收口
+    // 零武装；基线空态下 = 本函数值）。
+    assert_eq!(
+        nearest_deadline_park(),
+        Some(wake_base.map_or(v_near, |b| b.min(v_near))),
+        "THRYLD：T5a nearest_deadline 须并入逐任务 vdeadline（三源 min 律）"
+    );
+    // (b) duration_hint_ns=0 负控不臂：period=0 的一次性预算 DL 永不被
+    // dl_refill 解冻——漏滤并入其过期 vdeadline = arm_at 立即醒自旋活锁
+    //（设计红线负控；vdeadline 取深过去，漏滤即 min 塌到 1）。
+    let t5c = mk(b"t5c".as_slice(), INTENT_UNSPECIFIED);
+    t5c.prio_effective = PRIO_DEADLINE;
+    t5c.duration_hint_ns = 0;
+    t5c.vdeadline = 1;
+    t5c.held_locks |= HELD_THROTTLE;
+    rq_insert_kt(t5c);
+    assert_eq!(
+        nearest_dl_throttle_wake(),
+        Some(v_near),
+        "THRYLD：T5b period=0 限流 DL 不得入 min（负控不臂——防活锁滤版）"
+    );
+    // (c) 环上 DL 但无 THROTTLE 位 → None（非限流 DL 不 arm：停泊核每期
+    // 对别核在跑任务伪醒 = 功耗回归，移动优先红线负控）。
+    t5a.held_locks &= !HELD_THROTTLE;
+    t5b.held_locks &= !HELD_THROTTLE;
+    t5c.held_locks &= !HELD_THROTTLE;
+    assert_eq!(
+        nearest_dl_throttle_wake(),
+        None,
+        "THRYLD：T5c 环上 DL 无限流位须 None（仅带级醒源旧缺口不复发）"
+    );
+    // (d) 过期正控（审查轮补——本刀存在的核心理由钉板）：vd 深过去 +
+    // period>0 的限流 DL **必须入 min**——停泊核必须在已过期的 vdeadline 醒
+    // （错过=无界迟延复发）。区分正确修法（风暴修在忙核臂剔除第三源）与
+    // 错误修法（走查内滤掉过期值——那会让 T5a-d 全绿而深 park 债悄然回归）。
+    let t5d = mk(b"t5d".as_slice(), INTENT_UNSPECIFIED);
+    t5d.prio_effective = PRIO_DEADLINE;
+    t5d.duration_hint_ns = period; // >0：与 t5c 的 0 负控相对
+    t5d.vdeadline = 1; // 深过去
+    t5d.held_locks |= HELD_THROTTLE;
+    rq_insert_kt(t5d);
+    assert_eq!(
+        nearest_dl_throttle_wake(),
+        Some(1),
+        "THRYLD：T5d 过期 vd 须入 min（停泊核须在已过期 vdeadline 醒）"
+    );
+    assert_eq!(
+        nearest_deadline_park(),
+        Some(1),
+        "THRYLD：T5d park 三源合须取过期值（立即醒=当场回 pick 面解冻）"
+    );
+    rq_unlink_kt(t5d);
+
+    // 收口：真环摘线出账（DL_ON_RING fetch_sub 与插入 fetch_add 配平——
+    // 结构原语层对称；摘后真环无限流 DL，醒源复位 None）。
+    rq_unlink_kt(t5a);
+    rq_unlink_kt(t5b);
+    rq_unlink_kt(t5c);
+    assert_eq!(
+        nearest_dl_throttle_wake(),
+        None,
+        "THRYLD：T5 收口摘环后须 None（真环复位）"
+    );
+
+    berry_hal_aarch64::uart_puts(b"THRYLD ok n=5\n");
 }
 
 /// SMP-01「band 偷取」遗留修（本刀·2026-11-16）：偷取 band 感知决策面钉板

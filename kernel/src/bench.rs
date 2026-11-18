@@ -20,7 +20,7 @@
 //!    设计 §12）——资源到顶时**错误码回、不 panic、可恢复**的确定性边界
 //!    断言：ABI §8.0「永不 panic」承诺的耗尽版执法（全过才打，L0）。
 //!
-//! 收尾行 `BENCH ok n=8` 自 `run()` 尾迁至 `run_sched_epoch()` 纪元尾恒发
+//! 收尾行 `BENCH ok n=10` 自 `run()` 尾迁至 `run_sched_epoch()` 纪元尾恒发
 //!（04 号审计基线缺口刀，2026-11-17——须在最后一行 BENCH 之后：bench.py
 //! 的 len==done_n 收割契约按本行截尾；门缺席 = 仅缺 switch_pair 行、
 //! trailer 照发），是 smoke 裸相关卡标记（标记清单单一事实源 =
@@ -332,7 +332,7 @@ fn bench_fa<F: FnMut()>(name: &[u8], iters: u32, mut f: F) {
 /// 出选（不真切上下文、不真跑任务体、不占生产环）。环长 20 = 审计附记二
 /// 常态值（128 是 `RING_WALK_CAP` 断言帽非生产形；混合带〔FairBand 分派〕
 /// 变体挂账另刀）。setup 同 ktest POLICY 族先例：`Box::leak` + `Fair::
-/// enqueue` 正路入环 + vr=i/vd=i+1000 定值铺展 + `resync_vruntime_sum`
+/// enqueue` 正路入环 + vr=i 铺展（vd 由 enqueue 授）+ `resync_vruntime_sum`
 /// 直改后洗账（S2b+ 账本调和纪律）；一枚置 Running 作 `my_cur`（is_cur
 /// 参选分支——生产 pick 调用形，ktest Y1 同款）。泄漏面：20×(TCB+16KiB
 /// 栈) 有界不还（ktest POLICY 同款先例——bench 窗无回收点；churn 金丝雀
@@ -353,8 +353,8 @@ fn bench_pick_scan() {
     let mut my_cur: *mut Task = core::ptr::null_mut();
     for i in 0..RING_N as u64 {
         let mut t = Task::new_kernel_with_as(ps_dummy, i as usize, b"ps".as_slice(), 0, 0);
-        t.vruntime = i; // vr=i / vd=i+1000 定值铺展（eligible 与 ineligible 两态全覆盖）
-        t.vdeadline = i + 1000;
+        // vr=i 铺展（enqueue 会把落后 avg 者钳到 avg——首段 ineligible 尾段 eligible 两态覆盖）；
+        t.vdeadline = i + 1000; // 注：fair 任务 enqueue 授自身 vd（此值被覆写——审查轮勘正注，探针确定性不受影响）
         let t: &'static mut Task = alloc::boxed::Box::leak(t);
         rr.enqueue(t, &mut rq);
         if i == 0 {
@@ -460,9 +460,9 @@ fn bench_send_recv_pair() {
 // ---- switch_pair：调度器纪元基准窗（run_sched_epoch）----
 
 /// sbench 门控键（fw_cfg 具名项——pilat 同款「值面不解析：键在即全配置」；
-/// bench.py 的 icount 族 qemu_cmd 恒递此键 = 基线面恒全八行；trace-dual
+/// bench.py 的 icount 族 qemu_cmd 恒递此键 = 基线面恒全十行；trace-dual
 /// 两臂红线禁递〔TRACE_CAP 证书面 = 前调度器纪元项——见 bench.py 常量注〕；
-/// smoke/生产 boot 缺席 = 门缺席仅缺 switch_pair 行，trailer 恒 n=8）。
+/// smoke/生产 boot 缺席 = 门缺席仅缺 switch_pair 行，trailer 恒 n=10）。
 const SBENCH_PROBE_NAME: &str = "opt/berry/sbench";
 
 /// switch_pair 唤醒位（USER_SIGNAL_BITS 登记位 1<<53——裸键族共用一位先例
@@ -504,7 +504,7 @@ extern "C" fn sb_task_b(_arg: usize) -> ! {
 /// **调度器纪元基准窗**（04 号审计基线缺口，2026-11-17）：switch_pair——
 /// berry_sched::init 与 telemetry::init 之间的唯一槽位（调度器已在 + 遥测
 /// 钩子未注册 = TRACE_CAP 0.0 结构性零面 + boot DAIF 屏蔽窗）。收尾行
-/// `BENCH ok n=8` 自 `run()` 尾迁此恒发（须在最后一行 BENCH 之后——
+/// `BENCH ok n=10` 自 `run()` 尾迁此恒发（须在最后一行 BENCH 之后——
 /// bench.py 的 len==done_n 收割契约按本行截尾）。
 ///
 /// **boot 手递首切**：spawn A/B 后 `yield_now_keep_irq` 让出一次（idle_loop
