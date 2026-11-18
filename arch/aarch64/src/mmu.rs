@@ -479,13 +479,16 @@ pub unsafe fn freeze_syscalls_table() {
         }
     }
 
+    // 标记先置后翻（翻转前单线程窗零观察者）：若 SYSCALLS_RO 恰链进 RO
+    // 三页窗，翻转后自写必 D-abort fatal——置位必须在权限翻转**前**完成。
+    SYSCALLS_RO.store(true, Ordering::Release);
+
     // 先 L3 后 L2（walk 见表项时叶已就绪——无窗口），再屏障 + 全量 TLB
     // 失效（旧块项是 global，须 vmalle1is 家族）。
     unsafe { dsb_ish() };
     unsafe { (&raw mut (*l2).0[l2_idx]).write_volatile(table_descriptor(l3 as usize - KERNEL_VA_BASE)) };
     unsafe { dsb_ish() };
     unsafe { flush_all_asid() };
-    SYSCALLS_RO.store(true, Ordering::Release);
 }
 
 #[inline(always)]
