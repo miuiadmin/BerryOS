@@ -1369,33 +1369,19 @@ fn pager_supply_one(
         return ERR_INVALID_ARG as i64;
     }
     let va = far & !(PAGE_SIZE - 1);
-    // 供给窗（dpg_pager 同链搬进 SVC 面：pt_lock 嵌 KL 正序 + 幂等门 +
-    // 填叶 + dsb/tlbi/broadcast + track_map）。
-    // SAFETY: root 常驻论证同上；dv_ptr 指针身份已验。
-    if let Err(e) = unsafe { (*root).supply_page(crate::mm::frames(), va) } {
-        return vme(e) as i64;
-    }
-    // P1-3 ZFOD 学习点：零臂（sv=None——0x21/0x23/0x24 的 src=0）供给
-    // 成功 = pager 亲证「本 VMO 无内容后备」（零臂语义 = 供给页即清零
-    // 页）→ 置标志，此后本 VMO 的缺页走 `probe_el0` 内核直供快路径
-    // （供给页与零臂产物逐字节等价——`Vmo::zfod` 字段注「一 VMO 一种类」
-    // 契约）。有源臂（sv=Some）不置位——含源读失败形（DPGN ③
-    // -EBADSTATE：子恒唤收零页 exit 9，后续缺页仍走 pager 链零漂移）。
-    // SAFETY: dv_ptr 身份已验（Region 同体）；本函数 KL 契约窗内（与
-    // 探针读点同锁域串行）。
-    if sv.is_none() {
-        unsafe { &mut *dv_ptr }.mark_zfod();
-    }
+    // F0-1 先拷源缓冲、再在 `supply_page_init` 持 PT 锁且叶 PTE 置有效前完成目标帧写入与
+    // PoU 指令缓存同步：既彻底封死并发核在半填零页上取指/读脏指令行的窗口，又消解
+    // `sv == vd` 自源同柄时的 `&mut Vmo` 双重可变借用，同时完整保留 DPGN ③「源未提交时
+    // 仍供给零页唤醒受验子、本调用返 -EBADSTATE」契约。
+    let mut has_src_bytes = false;
+    let mut src_err: Option<i64> = None;
+    let buf = crate::dpg::supply_buf();
     if let Some(s) = sv {
-        // 源拷贝（防线 4：源页未提交 → read 报错拒——supply 链零缺页）。
-        // SAFETY: get_raw 门控；KL 全谱锁窗串行（0x21 SVC 入口类 KL 在身
-        // ——跨核供给者互斥；「单核屏蔽」论证退役，C3 口径同 :852 先例）。
-        let Some(src) = (unsafe { (*s.as_ptr()).obj.as_vmo_mut() }) else {
+        // SAFETY: get_raw 门控后以共享引用读源 VMO，读毕即释放借用，与下方 `&mut Vmo` 不交叠。
+        let Some(src) = (unsafe { (*s.as_ptr()).obj.as_vmo() }) else {
             return ERR_BAD_HANDLE as i64;
         };
         let toff = vmo_off + (va - base);
-        // 源偏选择：0x21 调用方钉死；0x23 恒等 delta 按请求页现算
-        //（下溢/溢出 checked 拒——页对齐 delta + 页对齐 toff ⇒ 页对齐 soff）。
         let soff = match sel {
             SrcOff::Fixed(s) => *s,
             SrcOff::Delta(d) => match toff.checked_add_signed(*d as isize) {
@@ -1403,14 +1389,33 @@ fn pager_supply_one(
                 None => return ERR_INVALID_ARG as i64,
             },
         };
-        let buf = crate::dpg::supply_buf();
-        if let Err(e) = src.read(soff, buf) {
-            return voe(e) as i64;
+        match src.read(soff, buf) {
+            Ok(()) => has_src_bytes = true,
+            Err(e) => src_err = Some(voe(e) as i64),
         }
-        // SAFETY: dv_ptr 身份已验（Region 同体）；供给窗已提交该页。
-        if let Err(e) = unsafe { &mut *dv_ptr }.write(toff, buf) {
-            return voe(e) as i64;
-        }
+    }
+    let mut write_err: Result<(), crate::vmo::VmoError> = Ok(());
+    // SAFETY: root 常驻论证同上；dv_ptr 指针身份已验。
+    if let Err(e) = unsafe {
+        (*root).supply_page_init(crate::mm::frames(), va, |vmo, page_off| {
+            if has_src_bytes {
+                write_err = vmo.write(page_off, buf);
+            }
+        })
+    } {
+        return vme(e) as i64;
+    }
+    if let Some(err) = src_err {
+        return err;
+    }
+    if let Err(e) = write_err {
+        return voe(e) as i64;
+    }
+    // P1-3 ZFOD 学习点：零臂（sv=None——0x21/0x23/0x24 的 src=0）供给
+    // 成功 = pager 亲证「本 VMO 无内容后备」→ 置标志，后续缺页走 `probe_el0` 直供。
+    // SAFETY: dv_ptr 身份已验（Region 同体）；本函数 KL 契约窗内。
+    if sv.is_none() {
+        unsafe { &mut *dv_ptr }.mark_zfod();
     }
     0
 }

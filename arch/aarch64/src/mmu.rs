@@ -18,8 +18,12 @@
 
 use crate::paging::*;
 use crate::{GICD_BASE, KERNEL_VA_BASE, RAM_BASE, RAM_TOP, UART0_BASE};
+use berry_memface::{cache_line_span, ctr_pou_plan, IcachePolicy};
 use core::arch::asm;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+/// `CTR_EL0` 惰性缓存（`u64::MAX` = 未探测；同型核只读系统寄存器幂等写）。
+static CTR_CACHE: AtomicU64 = AtomicU64::new(u64::MAX);
 
 /// 免失效激活档（P0-3 `activate_ttbr0_keep_tlb`）可信度：`true` = 虚拟化层
 /// 不环回 TTBR0 的 ASID 位域（QEMU HVF 实测形态——Hypervisor 自管 guest
@@ -391,6 +395,66 @@ pub(crate) unsafe fn flush_all_asid() {
 pub(crate) unsafe fn flush_local_all() {
     asm!("tlbi vmalle1", options(nostack, preserves_flags));
     dsb_ish();
+}
+
+/// F0-1：PoU 指令/数据缓存一致性同步（ARM DDI 0487 B2.4.4）。
+///
+/// 内核经高半直映 `kva`（`KERNEL_VA_BASE + pa`）写代码页或填零页后、向页表装入
+/// 可执行有效叶 PTE 之前调用：
+/// 1. `CTR_EL0.IDC == 0` 时按 `DminLine` 执行 `dc cvau` 将脏数据推至 PoU；
+/// 2. `dsb ish` 保数据写及 D-cache 清理对 Inner Shareable 域取指面可见；
+/// 3. `CTR_EL0.DIC == 0` 时失效 I-cache：`L1Ip == PIPT` 用 `ic ivau`（Inner
+///    Shareable 硬件广播），VIPT/别名形态用 `ic ialluis` 全集失效防跨 VA 色彩残留；
+/// 4. `dsb ish` + `isb` 收口。
+pub(crate) fn sync_icache_pou(kva: usize, len: usize) {
+    if len == 0 {
+        return;
+    }
+    let mut ctr = CTR_CACHE.load(Ordering::Relaxed);
+    if ctr == u64::MAX {
+        // SAFETY: ctr_el0 为只读缓存类型寄存器，EL1 直读无副作用。
+        unsafe { asm!("mrs {0}, ctr_el0", out(reg) ctr, options(nostack, preserves_flags)) };
+        CTR_CACHE.store(ctr, Ordering::Relaxed);
+    }
+    let plan = ctr_pou_plan(ctr);
+    if let Some(dline) = plan.d_clean_step {
+        if let Some((mut p, end)) = cache_line_span(kva, len, dline) {
+            while p < end {
+                // SAFETY: kva 属内核有效 Normal WB 直映窗口，dc cvau 仅刷缓存行到 PoU。
+                unsafe { asm!("dc cvau, {0}", in(reg) p, options(nostack, preserves_flags)) };
+                p += dline;
+            }
+        }
+    }
+    // SAFETY: 屏障指令，保证前序数据写与 dc cvau 在 Inner Shareable 域完结。
+    unsafe { dsb_ish() };
+    if let Some(iline) = plan.i_inval_step {
+        match plan.icache_policy {
+            IcachePolicy::Pipt => {
+                if let Some((mut p, end)) = cache_line_span(kva, len, iline) {
+                    while p < end {
+                        // SAFETY: PIPT 下按物理标记匹配，kva 与用户 VA 共享同一物理行且 IS 广播。
+                        unsafe {
+                            asm!("ic ivau, {0}", in(reg) p, options(nostack, preserves_flags))
+                        };
+                        p += iline;
+                    }
+                }
+            }
+            IcachePolicy::ViptOrAliasing => {
+                // SAFETY: EL1 特权全集指令缓存失效（Inner Shareable），消除高半 KVA 与低半 EL0 VA 异色别名。
+                unsafe { asm!("ic ialluis", options(nostack, preserves_flags)) };
+            }
+        }
+        // SAFETY: 屏障指令，等待 I-cache 失效广播完成并刷新本核取指流水线。
+        unsafe {
+            dsb_ish();
+            isb();
+        }
+    } else {
+        // SAFETY: DIC=1 免显式失效 I-cache，但本核后续取指仍须上下文同步。
+        unsafe { isb() };
+    }
 }
 
 // ---- 系统寄存器读写（unsafe 收敛地，裸 asm）----

@@ -73,6 +73,7 @@ version = "0.2.0"
 dependencies = [
  "berry-fwcfgface",
  "berry-lkface",
+ "berry-memface",
  "berry-numface",
  "berry-psface",
  "berry-svcface",

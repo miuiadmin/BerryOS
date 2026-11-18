@@ -602,19 +602,17 @@ extern "C" fn dpg_pager(_arg: usize) -> ! {
         // 在 KL 窗内 fresh 查——窗内查得即窗内活（注销/释放同窗互斥）。
         let root = vmar::demand_root(asid)
             .expect("dpg_pager: asid 反查失败（boot 装配 AS 恒登记——Box::leak 永不 Drop）");
-        let (vmo, vmo_off, base) = unsafe { (*root).demand_region_at(far) }
+        let (_vmo, _vmo_off, _base) = unsafe { (*root).demand_region_at(far) }
             .expect("dpg_pager: 请求 VA 已不在 demand 区间（unmap 竞窗）");
         let va = far & !(PAGE_SIZE - 1);
-        unsafe { (*root).supply_page(mm::frames(), va) }
-            .expect("dpg_pager: supply_page 失败（帧耗尽/建表失败——fail loud）");
-        // 数据面：供给页是清零页——写 magic（经 VMO direct map 写路径；
-        // faulter 经其 VA 读同 PA——跨核可见性 = 供给窗 dsb ish + tlbi/
-        // broadcast 在场〔supply_page 链〕，KL 全谱串行同 C3 口径）。
-        let off = vmo_off + (va - base);
-        // SAFETY: Region 的 vmo 指针有效性 = init 泄漏持有（boot 装配恒活）
-        // × demand 钉防线（G4-2 修批——handle 层销毁拒面第二分量）双保险。
-        unsafe { (*vmo).write(off, &DPG_MAGIC.to_le_bytes()) }
-            .expect("dpg_pager: 写 magic 失败（供给页未提交？）");
+        // F0-1：在叶 PTE 置有效之前写入 magic 并完成 PoU 缓存同步，消除半填页并发可见窗。
+        unsafe {
+            (*root).supply_page_init(mm::frames(), va, |vmo, page_off| {
+                vmo.write(page_off, &DPG_MAGIC.to_le_bytes())
+                    .expect("dpg_pager: 写 magic 失败（供给页未提交？）");
+            })
+        }
+        .expect("dpg_pager: supply_page_init 失败（帧耗尽/建表失败——fail loud）");
         // 供给毕唤 faulter（KL 窗内 SQ 嵌套 = SVC 同构）。
         berry_sched::wake_matching(&FAULT_KEY as *const u8 as usize, DPG_WAKE_BIT);
         // P0-1 线1d fastpath 直切：唤醒只入环不抢占——被唤 faulter eff

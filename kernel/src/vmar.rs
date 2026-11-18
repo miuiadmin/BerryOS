@@ -126,6 +126,12 @@ impl Perm {
             Perm::UserRw => hal::AP_USER_RW,
         }
     }
+
+    /// 本权限是否允许 EL0 取指执行（F0-1：用于门控装叶前的 PoU 指令缓存同步；
+    /// F0-2 落地四态 W^X 后将收窄至显式可执行档 `UserRx`）。
+    pub const fn allows_exec(self) -> bool {
+        matches!(self, Perm::UserRw)
+    }
 }
 
 /// Vmar 错误。
@@ -358,6 +364,11 @@ impl Vmar {
                     return Err(e);
                 }
             };
+            // F0-1：可执行 Normal 页在装入有效 PTE 之前完成 PoU 指令/数据缓存同步，
+            // 杜绝多核或物理帧复用场景取到陈旧 I-cache 行或未刷出的 D-cache 脏行。
+            if !vmo.is_mmio() && perm.allows_exec() {
+                hal::sync_icache_pou(phys_to_virt(pa), PAGE_SIZE);
+            }
             // SAFETY: 槽位属本表树独占；volatile 防重排。
             unsafe {
                 slot.write_volatile(hal::page_descriptor(pa, attr, sh) | perm.ap());
@@ -434,6 +445,24 @@ impl Vmar {
     /// 的竞窗 = 供给方拿 `Err` 自理）；建表/出帧失败 → `NoFrames`（pager
     /// fail loud 面）。
     pub fn supply_page(&mut self, fa: &mut FrameAllocator, vaddr: usize) -> Result<(), VmarError> {
+        self.supply_page_init(fa, vaddr, |_, _| {})
+    }
+
+    /// 供给一页并在装入有效 PTE 之前执行帧内预填闭包（F0-1）。
+    ///
+    /// 严格时序不变式（持 `pt_lock(self.asid)`）：
+    /// 1. 幂等探查 L3 PTE（已有效直接返 `Ok(())`）；
+    /// 2. `vmo.commit` 出零帧 + `l3_slot_create` 备妥叶槽（此时叶 PTE 仍为 `0` 不可翻译）；
+    /// 3. 调用 `init_before_pte(vmo, page_off)` 将源页内容拷入目标物理帧；
+    /// 4. 若区间允许取指，执行 `hal::sync_icache_pou` 刷净 D-cache 至 PoU 并失效 I-cache；
+    /// 5. 最后写入有效叶 PTE + `dsb ish` + TLB 维护 + `track_map`。
+    /// 由此消除「先装有效零页 PTE、再拷代码字节」的并发取指竞态与陈旧指令缓存窗口。
+    pub fn supply_page_init(
+        &mut self,
+        fa: &mut FrameAllocator,
+        vaddr: usize,
+        init_before_pte: impl FnOnce(&mut Vmo, usize),
+    ) -> Result<(), VmarError> {
         // 页内对齐收口（探针传 FAR 原值时容页中偏移）。
         let va = vaddr & !(PAGE_SIZE - 1);
         let _pt = pt_lock(self.asid);
@@ -459,11 +488,15 @@ impl Vmar {
         })?;
         let pa = vmo.page_pa(page_off / PAGE_SIZE).expect("刚 commit 过");
         let slot = self.l3_slot_create(fa, va)?;
-        // 供给叶 AP 位取区间登记权限（Demand 构造时定）。
-        let ap = match self.regions[idx].kind {
-            RegionKind::Demand(p) => p.ap(),
+        let perm = match self.regions[idx].kind {
+            RegionKind::Demand(p) => p,
             _ => unreachable!("demand_index 已验 kind"),
         };
+        init_before_pte(vmo, page_off);
+        if perm.allows_exec() {
+            hal::sync_icache_pou(phys_to_virt(pa), PAGE_SIZE);
+        }
+        let ap = perm.ap();
         // SAFETY: 槽位属本表树独占；volatile 防重排。匿名 demand 页 = Normal
         // WB + inner-shareable（eager map 同款——demand VMO 无 MMIO 后备）。
         unsafe {

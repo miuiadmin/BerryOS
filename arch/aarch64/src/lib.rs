@@ -178,6 +178,12 @@ pub fn current_asid() -> u16 {
     mmu::current_asid()
 }
 
+/// F0-1：PoU 指令/数据缓存一致性同步——内核经高半直映 `kva` 写代码页后、装入
+/// 有效可执行 PTE 前调用（`dc cvau` + `dsb ish` + `ic ivau`/`ic ialluis` + `dsb ish` + `isb`）。
+pub fn sync_icache_pou(kva: usize, len: usize) {
+    mmu::sync_icache_pou(kva, len);
+}
+
 // 描述符构造导出（2b-2 起内核侧填用户页表用；boot 建表在 crate 内部直接用）。
 // P6 A-2 起加 ATTR_DEVICE/SH_NONE：用户侧 MMIO 窗口叶（Device-nGnRnE + 不
 // 共享——内核直映 MMIO 同款，见 mmu.rs）。

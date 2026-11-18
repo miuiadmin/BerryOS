@@ -302,36 +302,52 @@ pub(crate) fn zero_frame(fa: &mut FrameAllocator) -> Result<usize, VmoError> {
 // 零化至一致性点（PoC），shareable 域内对全体核可见，与 memset 版读写
 // 语义逐字节等价。
 //
-// 探测：CTR_EL0.DZ（bit 26）＝1 才启用（0 时 DC ZVA 是 UNDEFINED）；行
-// 大小 = 4 << CTR_EL0.DminLine（bits[19:16]，Linux `dminline` 同式）。DZ=0
-// 或行不整除 4096 → GPR 回退（`write_bytes` → 本仓 memset，旧路径原样）。
-// 本内核 QEMU virt/cortex-a72 形态恒 DZ=1、行 64B；陷出面（HCR_EL2.TID5
-// 域拦 CTR_EL0 读）需在席 hypervisor——裸金属形态不在场。
+// 探测（F0-1 修）：读 `DCZID_EL0`（ARM DDI 0487 D24.2.42）而非 `CTR_EL0`——
+// `DCZID_EL0.DZP`（bit 4）＝0 才许执行 `DC ZVA`（置 1 时执行即 UNDEFINED），
+// 零化块大小 = `4 << DCZID_EL0.BS`（bits[3:0]），解码律单源在 `berry_memface`。
+// 禁止或块大小不整除 4096 → GPR 回退（`write_bytes` → 本仓整数 `memset`）。
 
-/// DC ZVA 探测缓存：0 = 未探测；`NO_ZVA` = 已探测不可用；其他 = 行字节数。
+/// DC ZVA 探测缓存：0 = 未探测；`NO_ZVA` = 已探测不可用；其他 = 零化块字节数。
 /// 惰性首探落在 boot 单线程窗（首个 `zero_frame` = 建表/建 VMO 期）；SMP
 /// 起核后并发首探是良性竞态——同型 CPU 写同值（Relaxed 足够：值只依赖
-/// 只读 CTR_EL0，无跨序依赖面）。
+/// 只读 `DCZID_EL0`，无跨序依赖面）。
 static ZVA_PROBE: AtomicUsize = AtomicUsize::new(0);
 /// 「已探测、不可用」哨兵（防不可用形态每调重探 mrs）。
 const NO_ZVA: usize = usize::MAX;
 
-/// 探测并缓存 DC ZVA 行字节数（不可用 = `NO_ZVA`）。
+/// 探测并缓存 `DC ZVA` 零化块字节数（不可用 = `NO_ZVA`）。
 fn zva_probe_cached() -> usize {
     let cached = ZVA_PROBE.load(Ordering::Relaxed);
     if cached != 0 {
         return cached;
     }
-    // SAFETY: ctr_el0 只读系统寄存器，EL1 直读无副作用（陷出面注见上）。
-    let ctr: u64;
+    // SAFETY: dczid_el0 为架构定义的块零化 ID 只读寄存器，EL1 直读无副作用。
+    let dczid: u64;
     unsafe {
-        core::arch::asm!("mrs {}, ctr_el0", out(reg) ctr, options(nostack, preserves_flags));
+        core::arch::asm!(
+            "mrs {}, dczid_el0",
+            out(reg) dczid,
+            options(nostack, preserves_flags)
+        );
     }
-    let dz = ctr >> 26 & 1;
-    let line = 4usize << ((ctr >> 16) & 0xF);
-    let v = if dz == 1 && PAGE_SIZE % line == 0 { line } else { NO_ZVA };
+    let v = berry_memface::dczid_block_size(dczid, PAGE_SIZE).unwrap_or(NO_ZVA);
     ZVA_PROBE.store(v, Ordering::Relaxed);
     v
+}
+
+/// 返回实测 `DC ZVA` 块大小（供 ktest 核验硬件探测结果；禁用态返 `None`）。
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) fn zva_block_size_probed() -> Option<usize> {
+    let v = zva_probe_cached();
+    (v != NO_ZVA).then_some(v)
+}
+
+/// 返回实测 `DC ZVA` 块大小（裸机 boot ktest 探针）。
+#[cfg(not(test))]
+pub(crate) fn zva_block_size_probed() -> Option<usize> {
+    let v = zva_probe_cached();
+    (v != NO_ZVA).then_some(v)
 }
 
 /// 4KiB 页专用清零：DC ZVA 主档（行步进环）+ GPR 回退档（旧 `write_bytes`

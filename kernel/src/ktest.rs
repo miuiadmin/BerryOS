@@ -3316,6 +3316,35 @@ fn test_vmo() {
         "VMO：drop 后帧账本精确归位（零泄漏——记帐双 Vec 一并归还）"
     );
 
+    // G. F0-1：DCZID_EL0 硬件探测 + supply_page_init「先填帧刷 PoU、后置有效叶 PTE」时序断言。
+    if let Some(bs) = crate::vmo::zva_block_size_probed() {
+        assert!(
+            bs >= 4 && bs.is_power_of_two() && PAGE_SIZE % bs == 0,
+            "VMO：DCZID_EL0 块大小必须为整除 4096 的 2 幂字节数"
+        );
+    }
+    let mut dvmo = Vmo::create_demand(PAGE_SIZE).expect("VMO：create_demand");
+    let root_l1 = root.ttbr0_pa();
+    const DVA: usize = 0x40_0000;
+    root.map_demand(&mut dvmo, DVA, 0, PAGE_SIZE, Perm::UserRw)
+        .expect("VMO：map_demand");
+    let mut pre_pte_unmapped = false;
+    root.supply_page_init(fa, DVA, |v, off| {
+        pre_pte_unmapped = crate::vmar::walk_leaf(root_l1, DVA).is_none();
+        v.write(off, &MAGIC.to_le_bytes()).expect("VMO：pre-PTE write");
+    })
+    .expect("VMO：supply_page_init");
+    assert!(pre_pte_unmapped, "VMO：init_before_pte 执行窗内叶 PTE 必须仍未生效");
+    assert!(
+        crate::vmar::walk_leaf(root_l1, DVA).is_some(),
+        "VMO：supply_page_init 返回后叶 PTE 必须已生效"
+    );
+    // SAFETY: DVA 已由 supply_page_init 映射进当前激活的 root。
+    let dv = unsafe { core::ptr::read_volatile(DVA as *const u64) };
+    assert_eq!(dv, MAGIC, "VMO：supply_page_init 预填内容经 VA 立即可读");
+    root.unmap(DVA, PAGE_SIZE).expect("VMO：unmap DVA");
+    drop(dvmo);
+
     // 收尾：回内核空表（与 idle/无 AS 任务的 ttbr0=0 状态对齐）。
     hal::activate_aspace(0, 0);
     berry_hal_aarch64::uart_puts(b"VMO ok\n");
