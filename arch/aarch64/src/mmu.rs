@@ -437,7 +437,7 @@ pub fn syscalls_table_ro() -> bool {
 /// 专表，高半 .bss）与 `SYSCALLS_RO` 标记，不触碰任何运行期数据。
 pub unsafe fn freeze_syscalls_table() {
     // 镜像布局：VMA - KERNEL_VA_BASE == LMA（linker 脚本）。
-    let sva = (&raw const crate::syscall::SYSCALLS) as usize;
+    let sva = crate::syscall::table_addr();
     debug_assert_eq!(sva & 0xFFF, 0, "SYSCALLS 须 4KiB 对齐");
     let spa = sva - KERNEL_VA_BASE;
     let l2_idx = (spa >> 21) & L2_INDEX_MASK;
