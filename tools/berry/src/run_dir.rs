@@ -60,6 +60,13 @@ impl RunDir {
         &self.path
     }
 
+    /// 测试构造器（W1-Q26 十六刀）：指向既有目录——endpoints 等 io 面只
+    /// 读 path/file，不动 index.jsonl；keep=true 防 Drop 删现场。
+    #[cfg(test)]
+    pub(crate) fn new_at(path: &Path) -> Self {
+        Self { path: path.to_path_buf(), keep: true }
+    }
+
     pub fn file(&self, name: &str) -> PathBuf {
         self.path.join(name)
     }
