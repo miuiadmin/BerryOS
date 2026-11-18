@@ -45,6 +45,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 磁盘预清（2026-11-17 run 44156980378 判例）：30G 盘被 _diag 日志 +
+      # _temp + /tmp 临时 rootfs 累积撑爆（No space left on device 炸 smoke
+      # 四跑）。run 前清三日龄诊断日志与过期临时件，保 run 期间瞬时空量。
+      - name: 磁盘预清（_diag/_temp//tmp 过期件）
+        run: |
+          set -x
+          find /home/runner/actions-runner/_diag -name '*.log' -mtime +2 -delete || true
+          rm -rf /home/runner/actions-runner/_work/_temp/* 2>/dev/null || true
+          find /tmp -maxdepth 1 \( -name 'berryos-*' -o -name 'qemu-*' \) -mtime +1 -delete 2>/dev/null || true
+          df -h / | tail -1
+
       # 规则与桥契约门禁（fail-fast）：AGENTS 行/字符帽 + 探针 + 锚点 + 上游三桥
       # 串 + 雷册锚点。纯 Python，无依赖，先于工具链安装跑——防入口文件
       # 膨胀悄悄吃掉每轮上下文。
@@ -435,6 +446,14 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+
+      # 磁盘预清（同 smoke job 步注）：bcts 八跑全相 rootfs 复跑瞬时吃盘更凶。
+      - name: 磁盘预清（_diag/_temp//tmp 过期件）
+        run: |
+          find /home/runner/actions-runner/_diag -name '*.log' -mtime +2 -delete || true
+          rm -rf /home/runner/actions-runner/_work/_temp/* 2>/dev/null || true
+          find /tmp -maxdepth 1 \( -name 'berryos-*' -o -name 'qemu-*' \) -mtime +1 -delete 2>/dev/null || true
+          df -h / | tail -1
 
       # 共享 target 缓存挂载（smoke job 同款，ci 上方同名步）：增量构建复用
       # 跨 run 编译产物。needs: smoke 序行 → 与 smoke job 无共享位并发写。
