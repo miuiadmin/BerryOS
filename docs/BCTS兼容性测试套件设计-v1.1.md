@@ -8,7 +8,9 @@
 > v0 载体已落（2026-11-11：runner `tools/bcts-run.sh` ＋ 首冻件 `tools/bcts/frozen/bcts@0.toml`
 > 91 标记件 ＋ just 配方与命令速览登记——bcts@1 滚新随命令行体验刀 88→90、bcts@2 滚新随
 > #355 刀 A/C 90→91〔rootfs 54→56＋RX 2→3〕、bcts@3 滚新随 4b6e2ff3 命令行终端刀
-> 〔TERMINAL 入册——APP 计数十位入拼/APPUI 九枚资产面/槽位 9→10；计数面零增减 91 随持〕）。
+> 〔TERMINAL 入册——APP 计数十位入拼/APPUI 九枚资产面/槽位 9→10；计数面零增减 91 随持〕、
+> bcts@4 滚新随 5673b16c8 债清偿刀〔149ff182e 终端完善刀 BENCH ok n=6→n=8 漏随刀补；
+> 计数面零增减 91 随持〕）。
 > **升版**：v1.1（2026-11-11）＝26 号终裁收口刀——示例口径统一 u32 整数形（21 号 P2-7 ＋
 > 26 号 §6-④ 遗留清账）；Tier 1 冻结态全量回放补证（26 号 §6-③）记入修订记录。
 > **基座**：API治理章程 §一（L0–L2 承诺面唯一口径）· 规则/07 测试纪律（markers.sh 单源）·
@@ -155,8 +157,11 @@ Q4 边界明留「发布节奏数值随 #84 立项稿」（12 号 §2.4，:77）
 基础集 86 三源一致；RX 2 = markers.sh 实测 ＋ 规则/07:23 逐段描述。取宽口径 88 的
 理由：`just smoke` 八跑是回放执行单元（规则/07:23），冻结件按执行单元整体冻结。
 （现值注：bcts@1 起滚新——rootfs 54→56〔命令行体验刀〕、RX 2→3〔刀 C BATT 门〕
-＝ 91 件 = 裸相 32 ＋ rootfs 56 ＋ RX 3，冻结件 bcts@3/`TIER1_FLOOR_LIVE` 单源
-（bcts@2 → bcts@3 滚新随 4b6e2ff3 TERMINAL 入册刀，计数 91 随持）。）
+＝ 91 件 = 裸相 32 ＋ rootfs 56 ＋ RX 3，冻结件 bcts@4/`TIER1_FLOOR_LIVE` 单源
+（bcts@2 → bcts@3 滚新随 4b6e2ff3 TERMINAL 入册刀，计数 91 随持；bcts@3 → bcts@4
+滚新随 5673b16c8 债清偿刀——149ff182e 终端完善刀 markers.sh BENCH ok n=6→n=8
+活树滚新而冻结件漏随刀，add-only 补 bcts@4（BENCH n=8/frozen_at 锚 dd7e2488b
+同树 markers blob 5b98b3dbab2c），计数 91 随持；bcts@3 保留在档回放旧工件仍可用）。
 其中「L0 syscall 面」对应裸相 boot 链标记族（`SYSCALL ok`/`ktest done` 等）＋
 abi-check；「装载谓词」对应 appd 装载链（`APP ok n=`/`APPUI ok n=`——
 `docs/应用规范-v1.0.md:382` 现役定义：装→起→真退出→reap 真码 0 全槽过）。
