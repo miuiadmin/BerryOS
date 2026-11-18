@@ -113,3 +113,11 @@ trace-dual + lat + reject-trio + testhost（同目录 20261105-0930~0931 批）�
 - **trace-dual 覆写保全修（审查轮实抓）**：--trace-dual --update 曾以 sbench=False 臂剥掉 on 家族基线的 switch_pair 行（L2 永不设防）——落盘改「实测 ∪ 现册门控行」并立法定形序「--icount --update 终形」。
 - **BOOT_TIMEOUT_ICOUNT 120→1800 帽校准**：静场实测 43s/118.6s/136.7s（三回执在档，骑旧帽线随机截杀）+ 争用态单靴可至 10 分钟级（诊断靴在案）——执法语义不变（真挂死仍帽内 loud），体量与争用态校准。
 - B-0 实时通道同批收 pick_scan=39（switch_pair 门控缺席不进 B-0 面）。
+
+## [2026-11-18 深 park 醒源刀] 布局骰四项 + pick_scan 内联位移重烘
+
+- 醒源刀（nearest_dl_throttle_wake+T5）改镜像布局：buddy 族两项换轨（frame_alloc4k 37→127 / frame_alloc64k 37→233）+vmo_commit1p 396→485（内含 4k 分配近邻继承：+89 vs alloc4k +90 差 1——同族非严格 1:1，S-4 4-3 同族判据）；pick_scan 125→131（+4.8%=共享代码内联位移，pick 路径本刀零改动——对照项 switch_pair 301 逐位不动佐证切换舞蹈无染）；cntvct_pair/handle_evt/vmo_rw4k 不动。五跑 prove verdict=exact（回执 icount-prove-20261118-082131）。
+
+## [2026-11-18 深 park 醒源刀·风暴修轮] 布局骰二项再滚
+
+- 审查轮修（两形分离+T5 补强+兜底臂）再改镜像：alloc4k 127→412 / vmo_commit1p 485→771（+359 vs alloc4k +285——近邻继承族再滚，非 1:1）；alloc64k/pick_scan/switch_pair/handle_evt/vmo_rw4k 逐位不动（上轮值稳）。五跑 prove verdict=exact（回执 icount-prove-20261118-091942）。buddy 轨道对族第三次换轨（S-4 4-2/4-3 同族惯例）。

@@ -157,7 +157,7 @@ fn avg_vruntime(rq: &Runqueue) -> Option<u64> {
 }
 
 /// S5-c lazy unthrottle：扫环上被冻结的 deadline 任务——`cntvct() ≥ vdeadline`
-/// 者周期到：解冻（清 HELD_FROZEN）+ 重臂 vdeadline（+= duration_hint_ns =
+/// 者周期到：解冻（清 HELD_THROTTLE）+ 重臂 vdeadline（+= duration_hint_ns =
 /// period_cycles）+ 授新预算 slice（preempt_threshold）。CBS 同形语义：
 /// 每期至多 budget CPU 时长；超了等下期。
 ///
@@ -318,7 +318,7 @@ impl SchedClass for Fair {
         }
         // S5-c 预算执法：deadline 任务的 slice = 预算尺寸（spawn 时由
         // preempt_threshold 设定）。slice 耗尽 = 本期预算用完 → throttle
-        //（HELD_FROZEN 置位 → eligible 过滤 → 不再出选）。周期到 →
+        //（HELD_THROTTLE 置位 → eligible 过滤 → 不再出选）。周期到 →
         // lazy_unthrottle（pick_next 面扫）解冻 + 重臂 + 新预算。
         // W3-Q11：准入三与门单源 berry-sliceface（host 钉板 throttle_gate）。
         if throttle_admissible(

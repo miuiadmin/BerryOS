@@ -13,9 +13,9 @@
 # 刷新：python3 tools/bench.py --trace-dual --update（on 家族文件随同刷）。
 # 史档/勘误记事 → tools/bench_baseline_icount.notes.md（on/off 家族共册）。
 cntvct_pair,4096,0
-frame_alloc4k,1024,37
-frame_alloc64k,256,37
+frame_alloc4k,1024,412
+frame_alloc64k,256,233
 handle_evt,1024,288
-pick_scan,1024,125
-vmo_commit1p,256,396
+pick_scan,1024,131
+vmo_commit1p,256,771
 vmo_rw4k,128,6945

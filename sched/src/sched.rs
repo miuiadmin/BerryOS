@@ -2835,7 +2835,9 @@ pub fn block_current(obj: usize, signals: u64, deadline_vct: u64) -> WakeReason 
             // 已在队」的截止）。SQ 窗（sq_phys）仍持——直接读队头（免
             // nearest_deadline 重锁的同核自死锁），收紧判同律单源
             // oneshot::tighten_deadline。IDLE/park 两臂零改（idle_loop /
-            // secondary_main park 环本就按最近 deadline arm_at）。
+            // secondary_main park 环本就按最近 deadline arm_at——带截止与
+            // S5-c 逐任务 vdeadline 两醒源同不入本臂：忙核 ≤1 片必有 pick
+            // 面 = lazy_unthrottle 兜底，深 park 形才需醒源）。
             // SAFETY: 同上（SQ 窗内只读队头；读 CNTVCT/CVAL + 写 CNTV）。
             unsafe {
                 let nearest = sleepq().head.get().map(|h| (*h.as_ptr()).wait_deadline);
@@ -3561,7 +3563,7 @@ pub fn idle_loop() -> ! {
                     // overutil 全域门/EAS 快照读者在跨核，契约见
                     // crate::util::util_idle_fold）。
                     crate::util::util_idle_fold(hal::smp::cpu_id());
-                    match nearest_deadline() {
+                    match nearest_deadline_park() {
                         // SAFETY: 本核 CVAL 编程到绝对 deadline（过期即醒，环
                         // 顶 expire 承接——tick 进 expire 后 pick 到期者即时
                         // 派发，RR.tick(IDLE) 片衰减边不再挡路）。
@@ -3594,7 +3596,7 @@ pub fn idle_loop() -> ! {
             reap_drain();
             // SAFETY: IRQ 已屏蔽；本核 runqueue/SLEEPQ 顺序访问。
             if unsafe { rq().is_empty() } {
-                match nearest_deadline() {
+                match nearest_deadline_park() {
                     // SAFETY: 本核 CVAL 编程到绝对 deadline（过期即醒——
                     // on_irq_tick expire 承接，醒即环顶重检派发到期者）。
                     Some(d) => unsafe { hal::timer::arm_at(d) },
@@ -3822,7 +3824,10 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
     // 后续路径（含 context_switch 支——切换后本帧不再续行）都带着收紧后的
     // CVAL 离场。cur==null 的 park 态 tick 亦过此臂——回环 park 环顶同值
     // 重臂幂等（「两核对同一 deadline 双 arm = 至多一次冗余醒」同款）。
-    // nearest_deadline 契约：IRQ 屏蔽 ✓、不持结构位 ✓（expire 的 SQ 窗已闭）。
+    // nearest_deadline 契约：IRQ 屏蔽 ✓、不持结构位 ✓（expire 的 SQ 窗已
+    // 闭）。三源全经本臂收紧（SLEEPQ/带截止/被限流 DL 逐任务 vdeadline
+    //——S5-c 深 park 醒源刀 2026-11-18，band 同待遇）；后者过期值的
+    // arm_at 立即醒由片尽 pick 面的 lazy_unthrottle 承接自愈。
     // SAFETY: IRQ 上下文（PSTATE.I=1）；读 CNTVCT/CVAL + 写 CNTV 系统寄存器。
     unsafe {
         let armed = hal::timer::cval();
@@ -4091,9 +4096,12 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
         }
         // F5 强制让点切换舞（判据/Ready 化在上方 RQ 窗内已毕）：限流 cur
         // 让出核——CPU0/单核切 IDLE_TASK、副核回 park 探测环。醒源护栏 =
-        // nearest_deadline 已并入限流带截止（band::nearest_throttle_wake）
-        //——停泊核在带翻期时刻自醒，tick 入口 band_period_sweep 翻期解限
-        // 后原任务回场；无此护栏深 park（mask CNTV 无 tick）= 让点变饿死。
+        // nearest_deadline 已并入限流带截止（band::nearest_throttle_wake，
+        // F5）**与被限流 DL 逐任务 vdeadline**（nearest_dl_throttle_wake，
+        // S5-c 深 park 醒源刀 2026-11-18——护栏由带级补齐到逐任务级）——
+        // 停泊核在带翻期/vdeadline 到期时刻自醒，tick 入口 band_period_
+        // sweep 翻期解限、park 环顶出选面 lazy_unthrottle 解冻后原任务
+        // 回场；无此护栏深 park（mask CNTV 无 tick）= 让点变饿死。
         if forced_yield {
             if hal::smp::cpu_id() != 0 {
                 // 副核：block/exit 的 pick-None park 臂同形——set_current(null)
@@ -4119,7 +4127,8 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
             // CPU0/单核：block/exit 的 pick-None 臂同形——切 IDLE_TASK。
             // idle_loop 承接后续：环非空（限流者在环保留）→「有活」热旋支
             // 每 tick 跑 band_period_sweep，翻期即解限回场；尽空则按
-            // nearest_deadline（含限流带截止）武装停泊。
+            // nearest_deadline（含限流带截止与被限流 DL 逐任务 vdeadline）
+            // 武装停泊。
             let idle = addr_of_mut!(IDLE_TASK);
             // 切 idle 同律授片不 arm（block/exit pick-None 臂——idle_loop
             // 自管武装，arm 反引入空 tick）。
@@ -4569,10 +4578,96 @@ unsafe fn dispatch_from_idle(next_ptr: *mut Task) {
     };
 }
 
+/// S5-c 深 park 醒源刀（2026-11-18）：本核 runqueue 环上被限流 deadline
+/// 任务（[`crate::task::HELD_THROTTLE`]）的最近 vdeadline——
+/// [`nearest_deadline`] 的第三 min 源。缺口形态（2026-11-17 S5-c 笔记挂账
+/// 勘正）：DL 预算燃尽置位后任务 Ready 在环全惰性（`eligible` 位过滤不可出选、
+/// `steal_filter` 含 eligible 判不可偷、限流中不可 block/exit），解冻唯一
+/// 通道 = 家核 pick 头 `lazy_unthrottle_deadlines`（class.rs 三出选面）；
+/// 家核停泊时 SLEEPQ 空且无武装带 ⇒ 两源皆 None ⇒ `mask()` 深 park——
+/// vdeadline 到期零醒源，复活迟至任意无关外源醒 = 无界迟延（F5 修前
+/// 同形态的逐任务半件）。
+///
+/// 只走**本核环**（定谳依据）：限流任务不可偷 + 复活唯一途径 = 家核 pick
+/// ——对核环上的限流 DL 本核无解冻权也无派发面，对核走查只添冗余 arm
+///（功耗负向，移动优先红线）；本核醒 ⇒ 恰是有权解冻并派发的核，零 SGI
+/// 零全局账零跨核竞态（停泊期环上 throttled 集不变，锁窗读无撕）。
+///
+/// 门与锁：头部 `dl_on_ring()==0` 早退（Relaxed 读——门常闭零成本，v1
+/// 全员 fair 零行为差；账本单边安全语义见 `DL_ON_RING` 字段注，本走查
+/// **不依赖门账双向性**——虚开只多一趟空走查）。门开则 [`try_rq_lock`]
+/// 非阻塞窗走查（F3 判例：tick 面禁阻塞自旋等锁——永不等待 ⇒ 永不
+/// wedge）；**try 失败跳过返 None**：锁竞争本身 = 环上有活动（跨核持本
+/// 环锁仅 try_steal_one unlink 与远核 enqueue_with_kick 两路，后者解锁后
+/// 必发 SGI_RESCHEDULE）= 家核醒着有 pick 面，醒源义务由活动面承接，下
+/// 次醒回环顶重走查闭环。
+///
+/// 过滤律逐位镜像 `lazy_unthrottle_deadlines` 四与门**前三**——deadline
+/// 带序（`prio_effective >= PRIO_DEADLINE`）+ HELD_THROTTLE 位 +
+/// `duration_hint_ns > 0`（名带 _ns 实存 period_cycles——命名漂移见
+/// sliceface `DeadlineState` 文档），**不判 now>=vdeadline**：醒源要的是
+/// 未来最近到期，过期者当场有 pick 面（park 环顶/tick 片尽）补——只取
+/// 值做 min。period=0 滤件是活锁红线：一次性预算 DL 永不被 dl_refill
+/// 解冻，漏滤并入其过期 vdeadline ⇒ arm_at 立即醒 ⇒ pick 仍不解冻 ⇒
+/// 回环同值再 arm 自旋（负控钉板 THRYLD T5）。
+///
+/// THROTTLED_ON_RING 第二账本不立（主线裁）：门开走查频度残留（对核
+/// 在跑 deadline 任务使本核 park 空走查）先以 dl_on_ring 门 + THROTTLE
+/// 位过滤落地，量化后再议。
+///
+/// 时域：返回绝对 CNTVCT cycles，与 SLEEPQ `wait_deadline` / band
+/// `nearest_throttle_wake` / `arm_at` 三面同域零换算。pub = ktest 决策面
+/// 钉板（THRYLD T5）；切换舞蹈本体（真 IRQ 真停泊自醒）归 boot/smoke 面。
+pub fn nearest_dl_throttle_wake() -> Option<u64> {
+    // 快路径：全域环上无 deadline 任务（含本环）——零取锁零扫描（门常闭
+    // 时一次 Relaxed 原子读；lazy_unthrottle_deadlines 头部同款门）。
+    if crate::runqueue::dl_on_ring() == 0 {
+        return None;
+    }
+    // F3 非阻塞窗（try 失败不返 None——审查轮勘正：「环上有活动=家核醒着」
+    // 论枚举不全：对核 try_steal_one 无 victim 扫描持本核锁期间、SVC 结构窗
+    // 放锁后无 SGI 两形态里本核恰在 park 前查→弃臂深 park=漏醒窗。改为有界
+    // 兜底臂：返 now+一个片（下一次 park 重查有真值机会）——比「漏臂至任意
+    // 外源醒」严格更优，一拍浅 park 功耗代价仅在锁竞争瞬态付）。
+    let phys = match try_rq_lock() {
+        Some(p) => p,
+        None => {
+            return Some(hal::timer::cntvct().saturating_add(hal::timer::slice_cycles()));
+        }
+    };
+    let mut best: Option<u64> = None;
+    let head = unsafe { rq().head() };
+    let mut cur = head;
+    while let Some(c) = cur {
+        let t = c.as_ptr();
+        // SAFETY: 本核 RQ 锁窗内环结构稳定（对核 try_steal_one 的 unlink
+        // 同窗串行）；环上任务均调度器拥有（pick 扫描同款不变式）；只读
+        // 字段（§A136：先访当前节点，再推进并判回 head）。
+        unsafe {
+            if (*t).prio_effective >= crate::class::PRIO_DEADLINE
+                && (*t).held_locks & crate::task::HELD_THROTTLE != 0
+                && (*t).duration_hint_ns > 0
+            {
+                let vd = (*t).vdeadline;
+                best = Some(best.map_or(vd, |x: u64| x.min(vd)));
+            }
+            cur = (*t).rq_next.get();
+        }
+        if cur == head {
+            break; // 环终止（尾节点处理后才判——§A136）
+        }
+    }
+    try_rq_unlock(phys);
+    best
+}
+
 /// 最近醒源时刻（S-3a tickless park 武装面——子案 §9.5 步 A）：SLEEPQ
-/// 队头截止与**限流带翻期截止**（F5，2026-11-16 起——`band::
-/// nearest_throttle_wake`）的 min。锁窗内读队头（与 [`expire_timeouts`]
-/// 同口径——升序队头即最近到期）。
+/// 队头截止、**限流带翻期截止**（F5，2026-11-16 起——`band::
+/// nearest_throttle_wake`）与**被限流 DL 逐任务 vdeadline**（S5-c 深 park
+/// 醒源刀，2026-11-18 起——[`nearest_dl_throttle_wake`]）三源的 min。锁窗
+/// 内读队头（与 [`expire_timeouts`] 同口径——升序队头即最近到期）；第三
+/// 源自持 try RQ 非阻塞窗（SQ 窗外分立开闭、不嵌套——integrity_check 三
+/// 窗先例）。
 ///
 /// 调用契约：IRQ 屏蔽窗内（secondary_main park 环天然满足）；**不持任何
 /// 结构位**（今日两处调用点皆 park 空态——CURRENT=null 恒真取；任务语境
@@ -4600,8 +4695,33 @@ pub fn nearest_deadline() -> Option<u64> {
     } else {
         None
     };
+    // S5-c 深 park 醒源刀（2026-11-18）：被限流 DL 逐任务 vdeadline 第三
+    // 源并入（`nearest_dl_throttle_wake`——dl_on_ring 门 + 本核环 try 窗
+    // 走查；在 SQ 窗外调取，RQ/SQ 两窗分立不嵌套）。缺此面深 park 形
+    // vdeadline 到期零醒源 = 无界迟延（F5 闭的是带级半件——本刀补逐任务
+    // 半件）；park 三武装点（idle_loop 双臂/secondary_main）与 tick 收紧
+    // 面经本单源自动继承（band F5 同待遇）。三域同为绝对 CNTVCT cycles
+    //（duration_hint_ns 名带 _ns 实存 cycles——命名漂移注）零换算。
     match (d, band_wake) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),
+    }
+}
+
+/// [`nearest_deadline`] 的停泊三源形（S5-c 深 park 醒源刀 2026-11-18；审查轮
+/// 风暴修定形）：追加 `nearest_dl_throttle_wake` 第三源——**只供 park 武装点**
+///（idle_loop 双臂/secondary_main）。忙核面（on_irq_tick 收紧臂/block_current
+/// 忙核臂）**刻意不并入**：被限流 DL 的过期 vdeadline 在 tick 臂会被
+/// `tighten_deadline` 无 d>now 门地写过去时刻 CVAL——timer::handle 重编
+/// now+SLICE 后收紧臂再挂过去值 → CNTV 电平重挂自旋（IRQ 风暴至多一片、每
+/// DL 周期复发——审查轮 wf_be55303c 实抓）；忙核复活本有「≤1 片必有片尽
+/// pick 面 = lazy_unthrottle 兜底」（block_current 臂同款裁决），并入零收益
+/// 纯风暴。深 park 形（mask CNTV）无 tick 面，过期 vd 的 arm_at 立即醒 =
+/// 停泊核当场回 pick 面解冻——正是本刀目的。
+pub fn nearest_deadline_park() -> Option<u64> {
+    let dl_wake = nearest_dl_throttle_wake();
+    match nearest_deadline() {
+        Some(a) => dl_wake.map_or(Some(a), |c: u64| Some(a.min(c))),
+        None => dl_wake,
     }
 }
