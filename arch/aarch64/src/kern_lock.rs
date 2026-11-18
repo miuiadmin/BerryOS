@@ -196,11 +196,14 @@ pub fn kern_release() {
 /// SVC 入口锁类位集（S-3c c-2c slice 2b）：位值镜像 sched `task.rs` 的
 /// HELD_*（bit1=SQ 0x02 / bit2=RQ0 0x04 / bit3=RQ1 0x08 / bit4=REAPQ 0x10 /
 /// bit5=TABLE 0x20）；跨 crate 位对齐由 kernel main 编译期断言执法。
-/// 分类审计（34 号修正版落类表）= `docs/SMP-S3实施设计草案-v1.0.md`；NONE 类号
-/// （默认槽/越界号——实装号零）**完全不取任何锁**；凡含 copy_out/copy_in
-/// 出参链的号（walk_leaf 页表读者）或任何共享面禁落 NONE（§A113 读者面）。
+/// 分类审计（34 号修正版落类表）= `docs/SMP-S3实施设计草案-v1.0.md`；NONE 类
+/// 号**完全不取任何锁**（默认槽/越界号 + W3-Q100 后继审计白名单实装号
+/// 0x61/0x40/0x87）。实装号落 NONE 的前置 = §A115 四问 PT 锁后继审计
+/// （copy 链 §A113 读者义务由 per-AS PT 锁同窗接管〔S-4 4-2〕且 KL 无剩
+/// 余义务——svcface `NONE_DOWNGRADED_NRS` 白名单钉板执法）；未经复审的
+/// copy_out/copy_in 链或共享面号仍禁落 NONE。
 /// W3-Q67 起位集常量单源在 `berry_svcface`（host 可测纯面 crate——类位集
-/// 对 HELD_* 组装律/42 号注册表/NONE 归零律钉板）；此处 re-export 维持
+/// 对 HELD_* 组装律/注册表/NONE 后继审计律钉板）；此处 re-export 维持
 /// 既有引用路径零改动（kernel install()/trap.rs/main 断言面）。
 pub use berry_svcface::{
     SVC_CLASS_ALL, SVC_CLASS_NONE, SVC_CLASS_RQ_TABLE, SVC_CLASS_SQ_RQ,
