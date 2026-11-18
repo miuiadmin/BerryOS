@@ -106,3 +106,11 @@ trace-dual + lat + reject-trio + testhost（同目录 20261105-0930~0931 批）�
 
 烘焙与验证：prove 五跑 verdict=exact max_dev=0.000%（值 {0,37,37,288,396,6945}；BENCHWAKE 五跑逐字节同 n=551 max=86009764；回执 icount-prove-20261117-115759-37998）→ ICOUNT_TOL=0.0 维持；`--trace-dual --update` 双份一次刷新（on=off 六项 delta 全 +0——结构性零足迹保住；回执 icount-20261117-115919-48375 / icount-off-20261117-120033-48375 / trace-dual-20261117-120033-48375）；复验单跑 L2 对拍过（ICOUNT_TOL=0.0 六项全在界内，回执 icount-20261117-120204-49314）。ktest 全绿随 boot 结构性背书（FRAME/FP/VMO/HEAP/ASPACE ok 在席，FP canary 直验新清零路径 SIMD-free）。首跑对拍（旧基线四项出界红）回执 icount-20261117-115045-6019。
 
+
+## 十项基线自立 + G1.5 配对悬账收口（2026-11-18，prove 五跑 max_dev 0.000%）
+
+背景：bench.rs 十项在册而基线文件仅六项（pick_scan/switch_pair/send_recv_pair/svc_roundtrip 四项缺席，门禁对缺席只提示不红）——QUEUE 尾「svc_roundtrip icount 基线 --update 自立」梯度件。首跑即炸出 **base 债实锤**：-icount boot 尾 KERNEL PANIC `user.rs:1892 G1.5 遥测环未跟上（total=990 < switches_tt=1249）`——根因 = 04 号 sbench 纪元刀自记的「配对悬账」（bench.rs run_sched_epoch 头注明文）：SWITCHES_TT 在钩子缺席期也计，而 icount 通道恒递 sbench 键 → 纪元窗 ≈259 切换计数照涨环零写 → BENCHWAKE 结构性缺席、基线无法自立。修复（本件携带）：SWITCHES_TT 计数移入 SWITCH_HOOK 在位分支（分母与环写同生同灭，配平律在所有断言窗恒成立）。
+
+新值归因：frame_alloc4k 37→82 / frame_alloc64k 37→82 = 在册布局骰轨道族（{37,82} 对，11-15 notes 先例——zero_frame 后代码量变化重掷镜像布局）；vmo_commit1p 396→441（+11.4%）= 11-17 基线笔后树前进的指令流漂移（berry error/frame 六刀等 boot 面变化）；handle_evt 288 / vmo_rw4k 6945 / cntvct_pair 0 观测锚不动；四新项首录：pick_scan=125 / send_recv_pair=1168 / svc_roundtrip=50 / switch_pair=304（修复后 310→304 = SWITCHES_TT 移分支的小指令流差）。
+
+烘焙与验证：prove 五跑 verdict=exact max_dev=0.000%（十项全 0 漂移；BENCHWAKE 五跑逐字节同 n=694 max=89131406；回执 icount-prove-20261118-200021-37298）→ ICOUNT_TOL=0.0 维持；`--icount --update` 立基十项；复验单跑 L2 对拍过（回执 icount-20261118-200705 系列）。boot→done 57.2s/43.2s wall（修复前 1800s 帽超时）。

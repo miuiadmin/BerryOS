@@ -1320,3 +1320,208 @@ mod default_size_tests {
         assert_eq!(base_window_factor(ScaleMode::Integer(2), 2250), 2.0);
     }
 }
+
+#[cfg(test)]
+mod window_pure_tests {
+    use super::*;
+
+    /// 字母表契约（glyph 15 字母 = SHOTBFULRECINPW 的并集）：凡出现在
+    /// 工具栏 label/tip 与 profile id 大写面里的字母，字形必须非全零；
+    /// 表外字符（含数字与 A/D/K 等）字形恒全零 = 静默空白。新增按钮或
+    /// profile 时若拼词用到表外字母，画面会静默缺字——本测就是这个
+    /// 契约的防回归钉板（表外空白集显式列出，防止误当缺陷）。
+    #[test]
+    fn glyph_alphabet_contract() {
+        let alphabet = "SHOTBFULRECINPW";
+        for ch in alphabet.chars() {
+            let any_set = (0..7).any(|r| glyph(ch, r) != 0);
+            assert!(any_set, "alphabet letter {ch} renders blank");
+        }
+        // 已知空白集：数字与未收录字母——结构上就是空白（非缺陷，
+        // 钉板防「数字怎么不显示」式回归误判）。
+        for ch in "0123456789ADGJKMQVXYZ".chars() {
+            for r in 0..7 {
+                assert_eq!(glyph(ch, r), 0, "blank set {ch} row {r}");
+            }
+        }
+    }
+
+    /// 每行 5 bit（高 3 位恒零）——5 列字形网格的结构不变量。
+    #[test]
+    fn glyph_rows_are_5bit() {
+        for ch in "SHOTBFULRECINPW".chars() {
+            for r in 0..7 {
+                assert_eq!(glyph(ch, r) >> 5, 0, "{ch} row {r} exceeds 5 bits");
+            }
+        }
+    }
+
+    /// draw_text 2x 像素放大落点：'S' 首行位图 0b01111 → col1..4 置色
+    /// （每列横跨 2px），col0 不置；纵向同理 2px。手算锚点。
+    #[test]
+    fn draw_text_pixel_placements() {
+        let (w, h) = (64u32, 32u32);
+        let mut buf = vec![0u32; (w * h) as usize];
+        draw_text(&mut buf, w, h, 10, 20, "S");
+        let fg = 0x00E8_ECF0;
+        // row0 = 0b01111: col 1..4 → px 12..=19, py 20..=21.
+        for py in [20usize, 21] {
+            for px in 12..20usize {
+                assert_eq!(buf[py * w as usize + px], fg, "set px {px},{py}");
+            }
+            // col0 (px 10,11) stays blank.
+            for px in [10usize, 11] {
+                assert_eq!(buf[py * w as usize + px], 0, "blank px {px},{py}");
+            }
+        }
+        // row1 = 0b10000: only col0 → px 10..11, py 22..23.
+        for py in [22usize, 23] {
+            for px in [10usize, 11] {
+                assert_eq!(buf[py * w as usize + px], fg, "row1 col0");
+            }
+        }
+        // char cell advance = 12px: second char 'H' starts at px 22.
+        let mut buf2 = vec![0u32; (w * h) as usize];
+        draw_text(&mut buf2, w, h, 10, 20, "SH");
+        for py in [20usize, 21] {
+            // 'H' row0 = 0b10001 → col0 (px 22,23) and col4 (px 30,31).
+            assert_eq!(buf2[py * w as usize + 22], fg);
+            assert_eq!(buf2[py * w as usize + 23], fg);
+            assert_eq!(buf2[py * w as usize + 30], fg);
+            assert_eq!(buf2[py * w as usize + 31], fg);
+            // px 24..30 (cols 1..3 of 'H') blank in row0.
+            for px in 24..30usize {
+                assert_eq!(buf2[py * w as usize + px], 0);
+            }
+        }
+    }
+
+    /// 越界裁剪：右/下边缘处 draw_text 不 panic、越界像素零写入、
+    /// 界内像素照常写入（buf 长度不受污染）。
+    #[test]
+    fn draw_text_clips_at_edges() {
+        let (w, h) = (33u32, 31u32);
+        let mut buf = vec![0u32; (w * h) as usize];
+        // 'S' at x=26: cols reach px 26+8=34 (clip) and 26..33 (in-bounds
+        // part of col1..2). Must not panic.
+        draw_text(&mut buf, w, h, 26, 20, "S");
+        assert_eq!(buf.len(), (w * h) as usize);
+        let fg = 0x00E8_ECF0;
+        // px 28..32 within row0 band (col1 spans px 28,29; col2 spans
+        // 30,31; px 32 is col3's first half — 33 wide so still inside).
+        assert_eq!(buf[20 * w as usize + 28], fg);
+        assert_eq!(buf[20 * w as usize + 31], fg);
+        assert_eq!(buf[20 * w as usize + 32], fg);
+        // Bottom edge: y=30 → rows 0-2 (py 30..35) partial; py 30 in.
+        let mut buf2 = vec![0u32; (w * h) as usize];
+        draw_text(&mut buf2, w, h, 4, 30, "S");
+        assert_eq!(buf2[30 * w as usize + 6], fg, "py=30 row0 visible");
+    }
+
+    /// 表外字符静默空白不 panic（字形 fallback = [0;7]）。
+    #[test]
+    fn draw_text_unknown_char_blank() {
+        let (w, h) = (64u32, 32u32);
+        let mut buf = vec![1u32; (w * h) as usize];
+        draw_text(&mut buf, w, h, 0, 0, "AZ9");
+        assert!(buf.iter().all(|p| *p == 1), "no pixel touched");
+    }
+
+    /// menu 几何：h = count*24+8（6 profiles → 152），右锚 8px 边距；
+    /// 小窗 saturating 贴边（width < 228 → x 饱和到 0，不回绕）。
+    #[test]
+    fn menu_rect_geometry_and_saturation() {
+        let count = crate::profile::PROFILES.len() as u32;
+        let (mx, my, mw, mh) = menu_rect(480, 1000);
+        assert_eq!(mw, 220);
+        assert_eq!(mh, count * 24 + 8);
+        assert_eq!(mx, 480 - 220 - 8);
+        assert_eq!(my, 1000 - TOOLBAR_H - (count * 24 + 8) - 8);
+        // Tall-window degenerate: menu top saturates at 0.
+        let (sx, sy, _, sh_) = menu_rect(480, 100);
+        assert_eq!((sx, sy, sh_), (252, 0, count * 24 + 8));
+        // Narrow window: x saturates at 0 (no wraparound).
+        let (nx, _, _, _) = menu_rect(100, 1000);
+        assert_eq!(nx, 0);
+    }
+
+    /// menu_hit 行边界：每 24px 一行自菜单顶起算（顶部 4px padding 归
+    /// row0）；底部 8px padding 带 None；越过行区 None。
+    #[test]
+    fn menu_hit_row_boundaries() {
+        let (w, h) = (480u32, 1000u32);
+        let count = crate::profile::PROFILES.len();
+        let (_, my, _, _) = menu_rect(w, h);
+        // Row i occupies [my+24i, my+24(i+1)); top padding folds into row0.
+        for i in 0..count {
+            let top = my + i as u32 * 24;
+            assert_eq!(menu_hit(w, h, 300.0, (top + 1) as f64), Some(i));
+        }
+        // Bottom 8px padding band: row index would be count → None.
+        let band_y = (my + (count as u32) * 24 + 4) as f64;
+        assert_eq!(menu_hit(w, h, 300.0, band_y), None);
+        // Above the menu and to the left: None.
+        assert_eq!(menu_hit(w, h, 5.0, (my - 1) as f64), None);
+    }
+
+    /// 工具栏纵向带：按钮带 [by, by+32) 命中，其下到 bar 底的 8px 间隙
+    /// 带 None；bar 顶边界线上方 None。
+    #[test]
+    fn toolbar_hit_vertical_band() {
+        let (w, h) = (480u32, 200u32);
+        let (bx, _) = toolbar_buttons(w)[0];
+        let bar_top = h - TOOLBAR_H;
+        let by = bar_top + 8;
+        // Inside button vertical band.
+        assert_eq!(toolbar_hit(w, h, (bx + 30) as f64, (by + 16) as f64), Some(0));
+        // 8px gap below buttons (by+32 .. bar bottom).
+        assert_eq!(
+            toolbar_hit(w, h, (bx + 30) as f64, (by + 32) as f64),
+            None,
+            "gap below buttons"
+        );
+        // Just above the bar: guest area.
+        assert_eq!(
+            toolbar_hit(w, h, (bx + 30) as f64, (bar_top - 1) as f64),
+            None
+        );
+        // Exactly at bar_top: still None — the 8px band above the buttons
+        // (bar_top..by) is dead space inside the bar.
+        assert_eq!(toolbar_hit(w, h, (bx + 30) as f64, bar_top as f64), None);
+    }
+
+    /// armed 态按钮 3 用确认红（现测只钉 hover 色，armed 色无钉板）；
+    /// armed 优先级高于 hover。
+    #[test]
+    fn draw_toolbar_armed_color_priority() {
+        let (w, h) = (480usize, 1000usize);
+        let mut buf = vec![0u32; w * h];
+        draw_toolbar(&mut buf, w as u32, h as u32, true, Some(3));
+        let (bx, _) = toolbar_buttons(w as u32)[3];
+        let by = h - TOOLBAR_H as usize + 8;
+        // Armed red beats hover gray on button 3.
+        assert_eq!(buf[by * w + (bx + 10) as usize], 0x008B_2E2E);
+        // Hover targets button 3 only; button 0 keeps its default fill.
+        assert_eq!(buf[by * w + (toolbar_buttons(w as u32)[0].0 + 10) as usize], 0x002C_3238);
+    }
+
+    /// tooltip 右缘钳位：WEB（最右按钮）BROWSER 泡在窄窗被
+    /// min(width - bw_tip) 拉回界内，不越界不 panic。
+    #[test]
+    fn draw_tooltip_edge_clamp() {
+        let (w, h) = (480u32, 200u32);
+        let mut buf = vec![0u32; (w * h) as usize];
+        draw_tooltip(&mut buf, w, h, 5);
+        let tip = 0x002A_3036;
+        let ty = h - TOOLBAR_H - 26;
+        // Tip band fully within bounds and actually drawn.
+        let row_hits = (ty..ty + 20)
+            .filter(|y| (0..w).any(|x| buf[(*y * w + x) as usize] == tip))
+            .count();
+        assert!(row_hits >= 19, "tooltip drawn in {row_hits}/20 rows");
+        // Out-of-range hover index: silent no-op.
+        let mut buf2 = vec![0u32; (w * h) as usize];
+        draw_tooltip(&mut buf2, w, h, 6);
+        assert!(buf2.iter().all(|p| *p == 0));
+    }
+}
