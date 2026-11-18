@@ -3,7 +3,7 @@
 Type: standard
 Status: current
 Updated: 2026-11-18
-Version: 1.0.1
+Version: 1.1.0
 
 > 回答三件事：**用什么 shell、配哪些命令、管道怎么实现**。
 > 本标准规定现行生效的 `bsh` v1/v2 命令行、内建命令与管道契约；终端优先（CLI-First）全栈闭环演进目标（用户态伪终端 `ptyd / consoled / berry-vt / bmux`、`ProcessArgs v2` 全双工流式继承与 `/svc` 服务发现、`bsh` 3.0 词法/AST 脚本与 `Job + SuspendToken` 作业控制、`sandbox` 能力裁剪及 `bed / less / btop / lscap / btrace / bdbg` 完整工具链）分别见 [pty 总体设计](../.agents/plans/pty/design.md)、[bsh 总体设计](../.agents/plans/bsh/design.md) 与 [cli-suite 总体设计](../.agents/plans/cli-suite/design.md)。
@@ -55,11 +55,12 @@ bsh> cat a.txt | grep boot
 ```
 
 - **短路链与重定向**：支持 `&&` 与 `||` 左结合短路链（跳过段不求值、不改 `$?`；操作符识别均在变量展开前的原始文本上执行，防止变量值注入语法操作符）；支持 `>` 覆写与 `>>` 追加；管道各段支持空白分词带参（`PipeSeg.args`，现行仅派发 `bin/` 外部程序，内建进管道与引号/脚本语法演进见 [bsh 总体设计](../.agents/plans/bsh/design.md)）。
-- **Ctrl-C 杀链**：前台等待期（`collect_fg` `wait_many` 挂 `stdin` 项）收到 `0x03` → 回显 `^C` + 对持有的子进程句柄直调 `process_terminate(130)`（`128 + SIGINT` 惯例码，受 `RIGHT_MANAGE` 门控）→ 等待 `SIGNAL_TERMINATED` 收口；前台期其余按键进入 `TYPEAHEAD` 缓冲不丢键。整棵 `Job` 树原子清剿与 `Ctrl-Z` `SuspendToken` 作业控制见 [bsh 总体设计](../.agents/plans/bsh/design.md)。
+- **`&` 后台作业（v2 过渡实现，2026-11-19）**：`run_line` 入口整行尾缀 `&` 剥离（原始文本纪律）后走 `exec_bg`——单段外部命令形异步拉起（`stdout` 直打 console、`stdin` 恒 EOF 即 `/dev/null` 语义），登记自持 job 表（`JOBS_MAX=8` 最低空位编号）并回显 `[n] cmd`、置 `$!`＝作业号；`jobs` 列示（下条命令前自动通报 `[n]+ Done(码)`）、`kill %n`＝`process_terminate(143)`＋1s 有界收割、`exit` 时活作业收杀 `terminate(129)`（本系统孤儿不可寻不可杀，放任＝永生占进程帽）。拒形：链/管道/重定向/内建（`run` 除外）/赋值——整链异步与 `fg`/`bg`/`wait`/`Ctrl-Z` 挂起随 [bsh 总体设计](../.agents/plans/bsh/design.md) 的 `Job` 树（届时本表 Superseded）。
+- **Ctrl-C 杀链**：前台等待期（`collect_fg` `wait_many` 挂 `stdin` 项）收到 `0x03` → 回显 `^C` + 对持有的子进程句柄直调 `process_terminate(130)`（`128 + SIGINT` 惯例码，受 `RIGHT_MANAGE` 门控）→ 等待 `SIGNAL_TERMINATED` 收口；前台期其余按键进入 `TYPEAHEAD` 缓冲不丢键；后台作业不进前台 kill 集（v2 过渡语义——`Job` 树整树清剿见总体设计）。整棵 `Job` 树原子清剿与 `Ctrl-Z` `SuspendToken` 作业控制见 [bsh 总体设计](../.agents/plans/bsh/design.md)。
 
-### 2.3 内建命令（21 件现役单源）
+### 2.3 内建命令（23 件现役单源）
 
-改 shell 自身进程状态的命令必须是内建；名单由 `const BUILTINS` 单源维护（`type` 身份查询、`HELP_LINES` 互钉自检与 `Tab` 补全候选同表消费），现役共 21 件：`help`、`exit`、`env`、`export`、`echo`、`run`、`cat`、`ls`、`mkdir`、`rm`、`cd`、`pwd`、`inputpoll`、`clear`、`uname`、`uptime`、`sleep`、`type`、`history`、`dmesg`、`unset`。非内建裸命令名自动按 `bin/<name>` 查 `rootfs` 派发并透传参数与导出环境变量集。
+改 shell 自身进程状态的命令必须是内建；名单由 `const BUILTINS` 单源维护（`type` 身份查询、`HELP_LINES` 互钉自检与 `Tab` 补全候选同表消费），现役共 23 件（2026-11-19 作业控制刀补 `jobs`/`kill` 第 22/23 件）：`help`、`exit`、`env`、`export`、`echo`、`run`、`cat`、`ls`、`mkdir`、`rm`、`cd`、`pwd`、`inputpoll`、`clear`、`uname`、`uptime`、`sleep`、`type`、`history`、`dmesg`、`unset`、`jobs`、`kill`。非内建裸命令名自动按 `bin/<name>` 查 `rootfs` 派发并透传参数与导出环境变量集。
 
 ### 2.4 行编辑与哑终端管道契约
 
@@ -85,4 +86,4 @@ bsh> cat a.txt | grep boot
 ## 5. 适用边界
 
 - **源码级兼容而非二进制兼容**：标准 Rust / POSIX C 单体工具针对 BerryOS `libc` 交叉编译即可运行；**永久不直接运行现成 Linux / macOS 二进制**（不背异构内核 ABI 包袱）。
-- **现行 v1/v2 已知边界**：在 [pty 总体设计](../.agents/plans/pty/design.md)、[bsh 总体设计](../.agents/plans/bsh/design.md) 与 [cli-suite 总体设计](../.agents/plans/cli-suite/design.md) 按 [终端与命令行全栈闭环五波十八刀实施计划](../.agents/plans/2026-11-18-终端与命令行全栈闭环五波十八刀实施计划.md) 落码前，外部命令尚无交互式 `stdin`、内建尚未进管道、`ps/berryctl` 在交互终端尚未接通 `/svc` 自动寻址。
+- **现行 v1/v2 已知边界**：在 [pty 总体设计](../.agents/plans/pty/design.md)、[bsh 总体设计](../.agents/plans/bsh/design.md) 与 [cli-suite 总体设计](../.agents/plans/cli-suite/design.md) 按 [终端与命令行全栈闭环五波十八刀实施计划](../.agents/plans/2026-11-18-终端与命令行全栈闭环五波十八刀实施计划.md) 落码前，外部命令尚无交互式 `stdin`、内建尚未进管道、`ps/berryctl` 在交互终端尚未接通 `/svc` 自动寻址。作业控制为 v2 用户态过渡面：`&` 仅单段外部命令形、`kill` 仅 `%n` 单形直杀（无信号旗标族）、`$!` 载作业号非真 pid、`fg`/`bg`/`wait`/`Ctrl-Z` 未落——终态见 [bsh 总体设计](../.agents/plans/bsh/design.md) `Job` 树。
