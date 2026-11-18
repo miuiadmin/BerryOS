@@ -1525,3 +1525,208 @@ mod window_pure_tests {
         assert!(buf2.iter().all(|p| *p == 0));
     }
 }
+
+#[cfg(test)]
+mod menu_draw_tests {
+    use super::*;
+
+    const BG: u32 = 0x0022_282E;
+    const HILITE: u32 = 0x0034_4A3A;
+    const FG: u32 = 0x00E8_ECF0;
+
+    fn row_band(i: usize) -> std::ops::Range<u32> {
+        let (_, my, _, _) = menu_rect(480, 1000);
+        let y = my + 4 + i as u32 * 24;
+        y..y + 22
+    }
+
+    /// 当前 profile 高亮带：命中行纵向 22px 全带高亮（取远离文本的右列
+    /// 佐证纯填充），非当前行同列为菜单底色——高亮只落在命中行。
+    #[test]
+    fn draw_menu_current_highlight_band_geometry() {
+        let (w, h) = (480u32, 1000u32);
+        let (mx, my, mw, _) = menu_rect(w, h);
+        let mut buf = vec![0u32; (w * h) as usize];
+        draw_menu(&mut buf, w, h, "phone");
+        let col = (mx + mw - 10) as usize; // beyond text extent, pure fill
+        let idx = crate::profile::PROFILES.iter().position(|p| p.id == "phone").unwrap();
+        for y in row_band(idx) {
+            assert_eq!(buf[y as usize * w as usize + col], HILITE, "row {y}");
+        }
+        for (i, _) in crate::profile::PROFILES.iter().enumerate() {
+            if i == idx {
+                continue;
+            }
+            let mid = row_band(i).start + 11;
+            assert_eq!(
+                buf[mid as usize * w as usize + col],
+                BG,
+                "non-current row {i} must stay background"
+            );
+        }
+        // Highlight band starts at my+4 (below the menu's top padding).
+        assert_eq!(buf[(row_band(idx).start - 1) as usize * w as usize + col], BG);
+        let _ = my;
+    }
+
+    /// 高亮带横向内缩 2px：[mx+2, mx+mw-2) 着色，mx+1 与 mx+mw-2 保持
+    /// 底色；行间 2px 间隙带保持底色（高亮不外溢不连行）。
+    #[test]
+    fn draw_menu_highlight_inset_and_gap_rows() {
+        let (w, h) = (480u32, 1000u32);
+        let (mx, _, mw, _) = menu_rect(w, h);
+        let mut buf = vec![0u32; (w * h) as usize];
+        draw_menu(&mut buf, w, h, "tablet");
+        let idx = crate::profile::PROFILES.iter().position(|p| p.id == "tablet").unwrap();
+        let mid = row_band(idx).start + 11;
+        let row = mid as usize * w as usize;
+        //远离文本列与近缘列都在带内（TABLET 文本宽 6*12=72 < mw-4-10）。
+        for x in [mx + 2, mx + 80, mx + mw - 3] {
+            assert_eq!(buf[row + x as usize], HILITE, "inside band at {x}");
+        }
+        assert_eq!(buf[row + (mx + 1) as usize], BG, "left inset");
+        assert_eq!(buf[row + (mx + mw - 2) as usize], BG, "right inset");
+        // 行间 2px 间隙（band end .. next band start）保持底色。
+        let gap_y = row_band(idx).end;
+        assert_eq!(buf[gap_y as usize * w as usize + (mx + 10) as usize], BG);
+    }
+
+    /// 每个 profile 行的 id 大写文本至少落一个前景像素（PHONE 全字母
+    /// 在字形表内；含表外字母的 id 如 DESKTOP 的 D/K 为空白但 E/S/T/O/P
+    /// 仍渲染——每行可见性逐一钉板）。
+    #[test]
+    fn draw_menu_text_pixels_per_profile_row() {
+        let (w, h) = (480u32, 1000u32);
+        let (mx, _, _, _) = menu_rect(w, h);
+        let mut buf = vec![0u32; (w * h) as usize];
+        draw_menu(&mut buf, w, h, "none-of-them");
+        for (i, p) in crate::profile::PROFILES.iter().enumerate() {
+            let band = row_band(i);
+            let has_fg = (band.start..band.end).any(|y| {
+                (mx + 10..mx + 150).any(|x| buf[y as usize * w as usize + x as usize] == FG)
+            });
+            assert!(has_fg, "profile {} renders no text pixels", p.id);
+        }
+    }
+
+    /// 退化几何裁剪：菜单矩形超出缓冲（宽 < 228、高 < 菜单高）时
+    /// saturating 贴 0 后逐像素钳界——不 panic、缓冲长度不变、可见区
+    /// 内照常填充（窄窗整行可见段全底色）。
+    #[test]
+    fn draw_menu_clips_when_menu_exceeds_buffer() {
+        let (w, h) = (100u32, 60u32);
+        assert_eq!(menu_rect(w, h).0, 0, "narrow saturates x to 0");
+        let mut buf = vec![0u32; (w * h) as usize];
+        draw_menu(&mut buf, w, h, "phone");
+        assert_eq!(buf.len(), (w * h) as usize);
+        for x in 0..w {
+            assert_eq!(buf[x as usize], BG, "row 0 fully covered at {x}");
+        }
+        // 底行 y=59：menu 高 152 钳到 60 后全高都在菜单内；phone
+        // （idx 2）高亮带 52..74 被钳到 60——底行落在带内应为高亮，
+        // 远离文本的右列佐证（菜单内缩 2px：col < mx+mw-2=98）。
+        let idx = crate::profile::PROFILES.iter().position(|p| p.id == "phone").unwrap();
+        let band_top = 4 + idx as u32 * 24;
+        assert!(h - 1 >= band_top && h - 1 < band_top + 22, "bottom row inside band");
+        assert_eq!(buf[((h - 1) * w + w - 2) as usize], HILITE, "clipped band tail visible");
+        // 带外行（y=3 顶部 padding）保持底色。
+        assert_eq!(buf[3 * w as usize + 50], BG);
+    }
+
+    /// menu_hit 边界包容性：x=mx 含、x=mx+mw 排、y=my 归 row0（顶部
+    /// padding 折入）、行界小数截断（23.99 → row0，24.0 → row1）、
+    /// y=my-1 排除。
+    #[test]
+    fn menu_hit_edge_inclusivity_and_fractional_rows() {
+        let (w, h) = (480u32, 1000u32);
+        let (mx, my, mw, _) = menu_rect(w, h);
+        assert_eq!(menu_hit(w, h, mx as f64, (my + 10) as f64), Some(0));
+        assert_eq!(
+            menu_hit(w, h, (mx + mw) as f64 - 0.01, (my + 10) as f64),
+            Some(0),
+            "just inside right edge"
+        );
+        assert_eq!(menu_hit(w, h, (mx + mw) as f64, (my + 10) as f64), None);
+        assert_eq!(menu_hit(w, h, (mx + 5) as f64, my as f64), Some(0));
+        assert_eq!(
+            menu_hit(w, h, (mx + 5) as f64, my as f64 + 23.99),
+            Some(0),
+            "fractional stays row0"
+        );
+        assert_eq!(
+            menu_hit(w, h, (mx + 5) as f64, (my + 24) as f64),
+            Some(1),
+            "exact boundary lands row1"
+        );
+        assert_eq!(menu_hit(w, h, (mx + 5) as f64, (my - 1) as f64), None);
+    }
+
+    /// current 无匹配 id：全菜单零高亮像素（HILITE 计数 = 0），底色与
+    /// 文本照常——菜单对未知 id 静默降级不点亮任何行。
+    #[test]
+    fn draw_menu_without_match_no_highlight() {
+        let (w, h) = (480u32, 1000u32);
+        let mut buf = vec![0u32; (w * h) as usize];
+        draw_menu(&mut buf, w, h, "no-such-profile");
+        assert!(
+            !buf.iter().any(|p| *p == HILITE),
+            "unmatched current must not highlight"
+        );
+        assert!(buf.iter().any(|p| *p == BG));
+    }
+
+    /// base_window_factor 1200 阈值边界：panel_h=1200 不触发 0.55 档
+    /// （严格大于才触发），1201 触发；Integer 模式不受 panel_h 影响。
+    #[test]
+    fn base_window_factor_threshold_boundary() {
+        assert_eq!(base_window_factor(ScaleMode::Fit, 1200), 0.9);
+        assert_eq!(base_window_factor(ScaleMode::Fit, 1201), 0.55);
+        assert_eq!(base_window_factor(ScaleMode::Integer(1), 2250), 1.0);
+        assert_eq!(base_window_factor(ScaleMode::Integer(3), 100), 3.0);
+    }
+
+    /// monitor scale_factor 退化守卫：0 与负值按 1.0 处理（物理像素即
+    /// 逻辑点），与显式 1.0 结果逐字相同——除零面被守卫拦死。
+    #[test]
+    fn default_window_size_degenerate_scale_factor() {
+        let expect = default_window_size(540, 960, 0.9, Some((1728, 1117, 1.0)));
+        assert_eq!(expect, (486, 864));
+        assert_eq!(
+            default_window_size(540, 960, 0.9, Some((1728, 1117, 0.0))),
+            expect,
+            "zero scale factor falls back to 1.0"
+        );
+        assert_eq!(
+            default_window_size(540, 960, 0.9, Some((1728, 1117, -2.0))),
+            expect,
+            "negative scale factor falls back to 1.0"
+        );
+    }
+}
+
+#[cfg(test)]
+mod toolbar_clip_tests {
+    use super::*;
+
+    /// 窄窗按钮越界裁剪：width=300 时按钮列锚点饱和到 0，第 5/6 枚按钮
+    /// 起点越过右缘 → 循环空区间零写入不 panic；部分可见按钮（第 4 枚
+    /// 264..300 段）照常填充；越界右缘列保持 bar 底色。
+    #[test]
+    fn draw_toolbar_clips_offscreen_buttons() {
+        let (w, h) = (300u32, 200u32);
+        let btns = toolbar_buttons(w);
+        assert_eq!(btns[0].0, 0, "saturating anchor");
+        assert!(btns[5].0 >= w, "last button starts off right edge");
+        let mut buf = vec![0u32; (w * h) as usize];
+        draw_toolbar(&mut buf, w, h, false, None);
+        assert_eq!(buf.len(), (w * h) as usize);
+        let by = (h - TOOLBAR_H + 8) as usize;
+        // Button 4 spans 264..324 — visible part 264..300 filled up to
+        // the last column (no off-screen write, no gap).
+        assert_eq!(buf[by * w as usize + 264], 0x002C_3238);
+        assert_eq!(buf[by * w as usize + 299], 0x002C_3238, "partial button filled to edge");
+        // Button 5 spans 330..390 — entirely off-screen; the button band
+        // above (bar_top..by) keeps the bar fill where buttons exist.
+        assert_eq!(buf[(by - 1) * w as usize + 290], 0x0018_1C20, "above band stays bar");
+    }
+}
