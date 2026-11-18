@@ -783,3 +783,169 @@ mod data_disk_tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }
+
+// ---- W1-Q25 五刀：qemu.rs 弱面深测——choose_accel 词表/Accel 双映射/
+// ---- create_vars blank 几何/resolve 双入口三分支/read_version 首数字
+// ---- token 解析/wait_for_path 双出口/fwcfg demo-face 环境门。env 触碰
+// ---- 件经 run_dir::ENV_LOCK 与既有 env 测试串行。
+#[cfg(test)]
+mod weak_face_tests {
+    use super::*;
+    use crate::run_dir::ENV_LOCK;
+
+    fn tmp_dir(tag: &str) -> PathBuf {
+        let tmp = std::env::temp_dir().join(format!("berry-qemu5-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        tmp
+    }
+
+    #[test]
+    fn choose_accel_matrix() {
+        // deterministic 恒 Tcg（冒烟确定性档——pref 不再被消费）。
+        assert_eq!(choose_accel("whatever", true).unwrap(), Accel::Tcg);
+        for (pref, want) in [
+            ("tcg", Accel::Tcg),
+            ("hvf", Accel::Hvf),
+            ("kvm", Accel::Kvm),
+            ("whpx", Accel::Whpx),
+        ] {
+            assert_eq!(choose_accel(pref, false).unwrap(), want, "{pref}");
+        }
+        // auto 解析为某合法档即过（具体值平台相关，不钉）。
+        choose_accel("auto", false).unwrap();
+        // 未知档：env 码 3 + 词表 hint + 原词回显。
+        let err = choose_accel("warp", false).unwrap_err();
+        assert_eq!(err.code, 3);
+        assert_eq!(err.hint.as_deref(), Some("auto | tcg | hvf | kvm | whpx"));
+        assert!(err.message.contains("warp"));
+    }
+
+    #[test]
+    fn accel_arg_and_cpu_mapping() {
+        assert_eq!(Accel::Tcg.as_arg(), "tcg");
+        assert_eq!(Accel::Hvf.as_arg(), "hvf");
+        assert_eq!(Accel::Kvm.as_arg(), "kvm");
+        assert_eq!(Accel::Whpx.as_arg(), "whpx");
+        // TCG 全仿真用 modeled core；三硬件后端直通 host。
+        assert_eq!(Accel::Tcg.cpu(), "cortex-a72");
+        assert_eq!(Accel::Hvf.cpu(), "host");
+        assert_eq!(Accel::Kvm.cpu(), "host");
+        assert_eq!(Accel::Whpx.cpu(), "host");
+    }
+
+    #[test]
+    fn create_vars_blank_geometry() {
+        let tmp = tmp_dir("vars");
+        let p = tmp.join("vars.fd");
+        create_vars(&p, 2).unwrap();
+        let data = std::fs::read(&p).unwrap();
+        // blank = 0xff × mib MiB，确定性干净启动的设计前提。
+        assert_eq!(data.len(), 2 * 1024 * 1024);
+        assert!(data.iter().all(|&b| b == 0xff));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_kernel_explicit_and_env() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let tmp = tmp_dir("kern");
+        let elf = tmp.join("kernel.elf");
+        std::fs::write(&elf, b"ELF").unwrap();
+        // 显式参数在席即用。
+        assert_eq!(resolve_kernel(Some(elf.clone())).unwrap(), elf);
+        // 显式参数缺席：env 码 3 + what 回显。
+        let missing = tmp.join("nope.elf");
+        let err = resolve_kernel(Some(missing.clone())).unwrap_err();
+        assert_eq!(err.code, 3);
+        assert!(err.message.contains("kernel not found"));
+        assert!(err.message.contains("nope.elf"));
+        // env 入口同两分支（在席即用 / 缺席报错）。
+        std::env::set_var("BERRY_KERNEL", &elf);
+        assert_eq!(resolve_kernel(None).unwrap(), elf);
+        std::env::set_var("BERRY_KERNEL", &missing);
+        assert!(resolve_kernel(None).is_err());
+        std::env::remove_var("BERRY_KERNEL");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_image_explicit_and_env() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let tmp = tmp_dir("img");
+        let img = tmp.join("berryos.img");
+        std::fs::write(&img, b"IMG").unwrap();
+        assert_eq!(resolve_image(Some(img.clone())).unwrap(), img);
+        let missing = tmp.join("nope.img");
+        let err = resolve_image(Some(missing.clone())).unwrap_err();
+        assert_eq!(err.code, 3);
+        assert!(err.message.contains("image not found"));
+        assert!(err.message.contains("nope.img"));
+        std::env::set_var("BERRY_IMAGE", &img);
+        assert_eq!(resolve_image(None).unwrap(), img);
+        std::env::set_var("BERRY_IMAGE", &missing);
+        assert!(resolve_image(None).is_err());
+        std::env::remove_var("BERRY_IMAGE");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_version_first_numeric_token() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tmp_dir("ver");
+        let mk = |name: &str, line: &str| {
+            let p = tmp.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\necho '{line}'\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p
+        };
+        // 首行首个数字起始 token = 版本号（跳过 "QEMU"/"emulator"/"version"）。
+        let sh = mk("fake-qemu", "QEMU emulator version 11.0.3 (v11.0.3-dirty)");
+        assert_eq!(read_version(&sh), "11.0.3");
+        // 首行无数字 token → unknown。
+        let sh2 = mk("fake-qemu-nodigit", "qemu emulator (no version here)");
+        assert_eq!(read_version(&sh2), "unknown");
+        // 不可执行（spawn Err 分支）→ unknown，不 panic。
+        let plain = tmp.join("not-executable");
+        std::fs::write(&plain, b"QEMU emulator version 11.0.3\n").unwrap();
+        assert_eq!(read_version(&plain), "unknown");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn wait_for_path_hit_and_timeout() {
+        let tmp = tmp_dir("wait");
+        let p = tmp.join("here");
+        std::fs::write(&p, b"x").unwrap();
+        assert!(wait_for_path(&p, Duration::from_millis(200)).is_ok());
+        // 缺席超时：timeout 码 4 + 路径回显（有界等待，不挂死）。
+        let absent = tmp.join("never");
+        let err = wait_for_path(&absent, Duration::from_millis(120)).unwrap_err();
+        assert_eq!(err.code, 4);
+        assert!(err.message.contains("never"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn fwcfg_demo_face_env_gate() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let idx = |v: &[(&'static str, Option<String>, bool)]| {
+            v.iter().position(|(n, _, _)| *n == "opt/berry/demo-face").unwrap()
+        };
+        // BERRY_DEMO_FACE=on：逃生门保留舰队——键条件性缺席。
+        std::env::set_var("BERRY_DEMO_FACE", "on");
+        let v = fwcfg_plan(None, Accel::Tcg);
+        let i = idx(&v);
+        assert_eq!(v[i].1, None);
+        assert!(v[i].2);
+        // 未设 / 非 on 值：恒注 off（演示舰队关停缺省态）。
+        std::env::remove_var("BERRY_DEMO_FACE");
+        let v = fwcfg_plan(None, Accel::Tcg);
+        assert_eq!(v[idx(&v)].1.as_deref(), Some("off"));
+        std::env::set_var("BERRY_DEMO_FACE", "yes");
+        let v = fwcfg_plan(None, Accel::Tcg);
+        assert_eq!(v[idx(&v)].1.as_deref(), Some("off"));
+        std::env::remove_var("BERRY_DEMO_FACE");
+    }
+}

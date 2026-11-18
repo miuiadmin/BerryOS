@@ -481,3 +481,93 @@ mod tests {
         server.join().unwrap();
     }
 }
+
+// ---- W1-Q25 五刀（qmp 面）：ReaderShared 路由纯面——take_earliest 最小
+// ---- id 序 / fail_all 全量通知 / finish 降级形态（error 缺 class·desc、
+// ---- return 缺席 Null 兜底）/ 迟到未知 id 零 panic / quit_now
+// ---- fire-and-forget 不等回复（teardown 不挂）。
+#[cfg(test)]
+mod weak_face_tests {
+    use super::*;
+
+    fn pending(tag: &str) -> (Pending, std::sync::mpsc::Receiver<Result<Value>>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (Pending { cmd: tag.to_string(), tx }, rx)
+    }
+
+    #[test]
+    fn take_earliest_min_id_order() {
+        let shared = ReaderShared::default();
+        for id in [7u64, 3, 9, 1] {
+            let (p, _rx) = pending(&format!("c{id}"));
+            shared.pending.lock().unwrap().insert(id, p);
+        }
+        // 无 id 回复兜底按最小 id 完成（wave-1 语义保持）。
+        assert_eq!(shared.take_earliest().unwrap().cmd, "c1");
+        assert_eq!(shared.take_earliest().unwrap().cmd, "c3");
+        // 空表 None，不 panic。
+        assert!(ReaderShared::default().take_earliest().is_none());
+    }
+
+    #[test]
+    fn fail_all_drains_and_notifies_every_waiter() {
+        let shared = ReaderShared::default();
+        let rxs: Vec<_> = [1u64, 2]
+            .into_iter()
+            .map(|id| {
+                let (p, rx) = pending("cmd");
+                shared.pending.lock().unwrap().insert(id, p);
+                rx
+            })
+            .collect();
+        shared.fail_all("QMP: connection closed".to_string());
+        // QEMU 退出/socket 断：每个 waiter 都收到同一关闭语义错误（协议码 7）。
+        for rx in &rxs {
+            let err = rx.recv().unwrap().unwrap_err();
+            assert_eq!(err.message, "QMP: connection closed");
+            assert_eq!(err.code, 7);
+        }
+        assert!(shared.pending.lock().unwrap().is_empty());
+        // 空表幂等，零 panic。
+        shared.fail_all("again".to_string());
+    }
+
+    #[test]
+    fn finish_error_defaults_and_return_null_fallback() {
+        // error 缺 class/desc：降级 "error"/""，不 panic。
+        let (p, rx) = pending("set_password");
+        let v: Value = serde_json::from_str(r#"{"error":{}}"#).unwrap();
+        finish(p, &v);
+        assert_eq!(
+            rx.recv().unwrap().unwrap_err().message,
+            "QMP set_password: error: "
+        );
+        // 成功回复缺 return：Value::Null 兜底（不丢回复通道）。
+        let (p, rx) = pending("query-status");
+        let v: Value = serde_json::from_str(r#"{"id":4}"#).unwrap();
+        finish(p, &v);
+        assert_eq!(rx.recv().unwrap().unwrap(), Value::Null);
+        // 正常 return 原样透传。
+        let (p, rx) = pending("query-status");
+        let v: Value = serde_json::from_str(r#"{"return":{"status":"paused"}}"#).unwrap();
+        finish(p, &v);
+        assert_eq!(rx.recv().unwrap().unwrap()["status"], "paused");
+    }
+
+    #[test]
+    fn late_error_for_unknown_id_is_dropped() {
+        // 已超时/未登记 id 的迟到错误回复：静默丢（读线程该分支零 panic）。
+        let shared = ReaderShared::default();
+        let v: Value =
+            serde_json::from_str(r#"{"error":{"class":"GenericError","desc":"late"},"id":42}"#)
+                .unwrap();
+        match classify(&v) {
+            Incoming::Response { id: Some(42), error: true } => {
+                assert!(shared.pending.lock().unwrap().remove(&42u64).is_none());
+            }
+            Incoming::Response { id, .. } => panic!("classify misrouted: id={id:?}"),
+            Incoming::Event(_) => panic!("classify misrouted response as event"),
+            Incoming::Other => panic!("classify misrouted response as other"),
+        }
+    }
+}
