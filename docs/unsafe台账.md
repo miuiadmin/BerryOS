@@ -42,12 +42,12 @@
 <!-- UNSAFE-AUDIT:SUMMARY:BEGIN -->
 | 目录 | .rs 文件数 | 总行数 | unsafe 非空行 | 密度 |
 |------|-----------|--------|--------------|------|
-| kernel/ | 31 | 37019 | 2357 | 6.37% |
+| kernel/ | 31 | 37065 | 2357 | 6.36% |
 | mm/ | 7 | 2368 | 4 | 0.17% |
 | sched/ | 15 | 8865 | 1819 | 20.52% |
 | ipc/ | 0 | 0 | 0 | — |
 | arch/ | 23 | 7432 | 1084 | 14.59% |
-| **合计** | 76 | 55684 | 5264 | **9.45%** |
+| **合计** | 76 | 55730 | 5264 | **9.45%** |
 
 - 剔除 ktest.rs/bench.rs（测试/基准面）：总行 42319，unsafe 非空行 4464，密度 10.55%（生产面口径）
 - 分类计数：页表 72 | 上下文切换 35 | MMIO 163 | 分配器 16 | 硬件原子 0 | 其它 902
@@ -717,29 +717,29 @@
 | kernel/src/ktest.rs | 10474 | block | 其它 | unsafe { &mut *s.t }; class_of_task(t).dequeue(t, &mut rq); // 出 |
 | kernel/src/ktest.rs | 10495 | block | 其它 | unsafe { arm_at(now + ms_cyc * 10) }; // 片终点状远臂（arm_slice 形） let |
 | kernel/src/ktest.rs | 10500 | block | 其它 | unsafe { arm_at(d) }; while cntvct() < d { core::hint::spin_loop |
-| kernel/src/ktest.rs | 10671 | block | 其它 | unsafe { mask() }; let mut residual = 0usize; let phys = pi_rq_l |
-| kernel/src/ktest.rs | 10775 | block | 其它 | unsafe { EP_HP = 0; EP_HV = 0 }; assert_eq!( svc5( NR_PROCESS_CR |
-| kernel/src/ktest.rs | 10788 | block | 其它 | unsafe { EP_HP } as u32, unsafe { EP_HV } as u32); assert_ne!(hp |
-| kernel/src/ktest.rs | 10788 | block | 其它 | unsafe { EP_HV } as u32); assert_ne!(hpp, 0, "EASPROD：process ha |
-| kernel/src/ktest.rs | 10792 | block | 其它 | unsafe { EP_PACKED = 0; EP_SELF_KEY = 0 }; assert_eq!( svc6( 0x8 |
-| kernel/src/ktest.rs | 10807 | block | 其它 | unsafe { EP_PACKED }, unsafe { EP_SELF_KEY }); // 双半区断言：打包侧按 ABI |
-| kernel/src/ktest.rs | 10807 | block | 其它 | unsafe { EP_SELF_KEY }); // 双半区断言：打包侧按 ABI 各截低 32（前序 SHD 族可留 >32 |
-| kernel/src/ktest.rs | 10845 | block | 其它 | unsafe { EP_TBL.placement = 2 }; let g = policy::gen(); assert_e |
-| kernel/src/ktest.rs | 10874 | block | 其它 | unsafe { EP_TBL.placement = 1 }; let g = policy::gen(); assert_e |
-| kernel/src/ktest.rs | 11196 | block | 其它 | unsafe { (&mut *(ptrs[0] as *mut Task), &mut *(ptrs[1] as *mut T |
-| kernel/src/ktest.rs | 11232 | block | 其它 | unsafe { for t in [&mut *(ptrs[0] as *mut Task), &mut *(ptrs[1] |
-| kernel/src/ktest.rs | 11290 | block | 其它 | unsafe { &mut *next_ptr }; next.slice_left = class_of_task(&*nex |
-| kernel/src/ktest.rs | 11325 | block | 其它 | unsafe { &mut *next_ptr }; next.slice_left = class_of_task(&*nex |
-| kernel/src/ktest.rs | 11570 | block | 其它 | unsafe { rq_unlink_kt(&mut *(sp_ptr as *mut Task)) }; // —— ES-2 |
-| kernel/src/ktest.rs | 11782 | block | 其它 | unsafe { &mut *(p as *mut Task) }); } let (tia, tua, tub) = unsa |
-| kernel/src/ktest.rs | 11784 | block | 其它 | unsafe { ( &mut *(ptrs[0] as *mut Task), &mut *(ptrs[1] as *mut |
-| kernel/src/ktest.rs | 11826 | block | 其它 | unsafe { sleepq_unlink(&mut *slots[i]) }; woken[i] = true; wake[ |
-| kernel/src/ktest.rs | 12254 | block | 其它 | unsafe { rq_unlink_kt(&mut *(p as *mut Task)) }; } berry_hal_aar |
-| kernel/src/ktest.rs | 12304 | block | 其它 | unsafe { core::ptr::copy_nonoverlapping( buf.as_ptr(), &mut hdr |
-| kernel/src/ktest.rs | 12317 | block | 其它 | unsafe { core::ptr::copy_nonoverlapping( b[12 + k * 104..].as_pt |
-| kernel/src/ktest.rs | 12337 | block | 其它 | unsafe { cbox::on_fault(KIND_EL0, &frame(0x2000)) }; let (h, n, |
-| kernel/src/ktest.rs | 12346 | block | 其它 | unsafe { cbox::on_fault(KIND_EL0, &frame(0x3000 + i as u64)) }; |
-| kernel/src/ktest.rs | 12353 | block | 其它 | unsafe { cbox::on_fault(KIND_EL0, &frame(0x3008)) }; assert_eq!( |
+| kernel/src/ktest.rs | 10717 | block | 其它 | unsafe { mask() }; let mut residual = 0usize; let phys = pi_rq_l |
+| kernel/src/ktest.rs | 10821 | block | 其它 | unsafe { EP_HP = 0; EP_HV = 0 }; assert_eq!( svc5( NR_PROCESS_CR |
+| kernel/src/ktest.rs | 10834 | block | 其它 | unsafe { EP_HP } as u32, unsafe { EP_HV } as u32); assert_ne!(hp |
+| kernel/src/ktest.rs | 10834 | block | 其它 | unsafe { EP_HV } as u32); assert_ne!(hpp, 0, "EASPROD：process ha |
+| kernel/src/ktest.rs | 10838 | block | 其它 | unsafe { EP_PACKED = 0; EP_SELF_KEY = 0 }; assert_eq!( svc6( 0x8 |
+| kernel/src/ktest.rs | 10853 | block | 其它 | unsafe { EP_PACKED }, unsafe { EP_SELF_KEY }); // 双半区断言：打包侧按 ABI |
+| kernel/src/ktest.rs | 10853 | block | 其它 | unsafe { EP_SELF_KEY }); // 双半区断言：打包侧按 ABI 各截低 32（前序 SHD 族可留 >32 |
+| kernel/src/ktest.rs | 10891 | block | 其它 | unsafe { EP_TBL.placement = 2 }; let g = policy::gen(); assert_e |
+| kernel/src/ktest.rs | 10920 | block | 其它 | unsafe { EP_TBL.placement = 1 }; let g = policy::gen(); assert_e |
+| kernel/src/ktest.rs | 11242 | block | 其它 | unsafe { (&mut *(ptrs[0] as *mut Task), &mut *(ptrs[1] as *mut T |
+| kernel/src/ktest.rs | 11278 | block | 其它 | unsafe { for t in [&mut *(ptrs[0] as *mut Task), &mut *(ptrs[1] |
+| kernel/src/ktest.rs | 11336 | block | 其它 | unsafe { &mut *next_ptr }; next.slice_left = class_of_task(&*nex |
+| kernel/src/ktest.rs | 11371 | block | 其它 | unsafe { &mut *next_ptr }; next.slice_left = class_of_task(&*nex |
+| kernel/src/ktest.rs | 11616 | block | 其它 | unsafe { rq_unlink_kt(&mut *(sp_ptr as *mut Task)) }; // —— ES-2 |
+| kernel/src/ktest.rs | 11828 | block | 其它 | unsafe { &mut *(p as *mut Task) }); } let (tia, tua, tub) = unsa |
+| kernel/src/ktest.rs | 11830 | block | 其它 | unsafe { ( &mut *(ptrs[0] as *mut Task), &mut *(ptrs[1] as *mut |
+| kernel/src/ktest.rs | 11872 | block | 其它 | unsafe { sleepq_unlink(&mut *slots[i]) }; woken[i] = true; wake[ |
+| kernel/src/ktest.rs | 12300 | block | 其它 | unsafe { rq_unlink_kt(&mut *(p as *mut Task)) }; } berry_hal_aar |
+| kernel/src/ktest.rs | 12350 | block | 其它 | unsafe { core::ptr::copy_nonoverlapping( buf.as_ptr(), &mut hdr |
+| kernel/src/ktest.rs | 12363 | block | 其它 | unsafe { core::ptr::copy_nonoverlapping( b[12 + k * 104..].as_pt |
+| kernel/src/ktest.rs | 12383 | block | 其它 | unsafe { cbox::on_fault(KIND_EL0, &frame(0x2000)) }; let (h, n, |
+| kernel/src/ktest.rs | 12392 | block | 其它 | unsafe { cbox::on_fault(KIND_EL0, &frame(0x3000 + i as u64)) }; |
+| kernel/src/ktest.rs | 12399 | block | 其它 | unsafe { cbox::on_fault(KIND_EL0, &frame(0x3008)) }; assert_eq!( |
 | kernel/src/main.rs | 219 | block | 其它 | unsafe { *(&raw mut ROOTFS_VOLS_LOADED) = vols.len() as u32 }; S |
 | kernel/src/main.rs | 425 | block | 其它 | unsafe { berry_hal_aarch64::probe_asid_field_roundtrip() }; // V |
 | kernel/src/main.rs | 497 | block | 其它 | unsafe { core::ptr::read_volatile(phys_to_virt(h.sig_slot_off as |
