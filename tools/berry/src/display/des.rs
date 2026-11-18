@@ -285,4 +285,194 @@ mod tests {
         assert_eq!(out, expect);
         assert_ne!(out, challenge);
     }
+
+    // ===== 九刀深测面（W1-Q25）：oracle 交叉/表形状/雪崩/弱密钥 =====
+
+    /// 逐块位翻转计数（雪崩度量）。
+    fn flips(a: &[u8; 8], b: &[u8; 8]) -> u32 {
+        a.iter()
+            .zip(b)
+            .map(|(x, y)| (x ^ y).count_ones())
+            .sum()
+    }
+
+    #[test]
+    fn des_oracle_vectors_openssl_crosscheck() {
+        // 三个独立计算向量（openssl enc -des-ecb -provider legacy 交叉，
+        // 2026-11-18 本机实算），钉住整条表/调度/Feistel 链不只两旧向量。
+        let key: [u8; 8] = hex("0000000000000000").try_into().unwrap();
+        let pt: [u8; 8] = hex("0000000000000000").try_into().unwrap();
+        assert_eq!(des_ecb_encrypt_block(&key, &pt).as_slice(), hex("8CA64DE9C1B123A7").as_slice());
+        let key: [u8; 8] = hex("FFFFFFFFFFFFFFFF").try_into().unwrap();
+        let pt: [u8; 8] = hex("FFFFFFFFFFFFFFFF").try_into().unwrap();
+        assert_eq!(des_ecb_encrypt_block(&key, &pt).as_slice(), hex("7359B2163E4EDC58").as_slice());
+        let key: [u8; 8] = hex("3000000000000000").try_into().unwrap();
+        let pt: [u8; 8] = hex("1000000000000001").try_into().unwrap();
+        assert_eq!(des_ecb_encrypt_block(&key, &pt).as_slice(), hex("958E6E627A05557B").as_slice());
+    }
+
+    #[test]
+    fn des_weak_key_zero_involution() {
+        // 弱密钥 0（PC-1 丢校验位后 56 位全零 ≡ 经典弱钥 0101..01）：
+        // E(E(x)) = x 对任意块成立——openssl 双重加密实算对拍锚。
+        let key = [0u8; 8];
+        for x in [
+            0x0123_4567_89ab_cdefu64,
+            0xdead_beef_cafe_babe,
+            0x0000_0000_0000_0001,
+            0xffff_ffff_ffff_ffff,
+        ] {
+            let pt = x.to_be_bytes();
+            let ct = des_ecb_encrypt_block(&key, &pt);
+            let back = des_ecb_encrypt_block(&key, &ct);
+            assert_eq!(back, pt, "weak-key involution broken at {x:#x}");
+        }
+    }
+
+    #[test]
+    fn des_table_permutation_shapes() {
+        // 表形状契约：IP/FP/P 是 1..N 的真置换（各恰一次）；PC1/PC2/E 是
+        // 无越界抽样（E 允许重复——扩张）。抄录错位（丢/重/越界）即红。
+        let mut seen = vec![false; 65];
+        for &v in &IP {
+            assert!((1..=64).contains(&v), "IP 越界 {v}");
+            assert!(!seen[v], "IP 重复 {v}");
+            seen[v] = true;
+        }
+        assert!(seen[1..=64].iter().all(|&s| s), "IP 缺位");
+        seen = vec![false; 65];
+        for &v in &FP {
+            assert!((1..=64).contains(&v), "FP 越界 {v}");
+            assert!(!seen[v], "FP 重复 {v}");
+            seen[v] = true;
+        }
+        assert!(seen[1..=64].iter().all(|&s| s), "FP 缺位");
+        seen = vec![false; 33];
+        for &v in &P {
+            assert!((1..=32).contains(&v), "P 越界 {v}");
+            assert!(!seen[v], "P 重复 {v}");
+            seen[v] = true;
+        }
+        assert!(seen[1..=32].iter().all(|&s| s), "P 缺位");
+        seen = vec![false; 65];
+        for &v in &PC1 {
+            assert!((1..=64).contains(&v), "PC1 越界 {v}");
+            assert!(!seen[v], "PC1 重复 {v}");
+            seen[v] = true;
+        }
+        assert_eq!(seen[1..=64].iter().filter(|&&s| s).count(), 56, "PC1 唯一数");
+        for &v in &PC2 {
+            assert!((1..=56).contains(&v), "PC2 越界 {v}");
+        }
+        assert_eq!(PC2.len(), 48);
+        for &v in &E {
+            assert!((1..=32).contains(&v), "E 越界 {v}");
+        }
+        // E 是 32→48 扩张：恰 16 个源位被取两次（48-32）。
+        let mut cnt = vec![0u32; 33];
+        for &v in &E {
+            cnt[v] += 1;
+        }
+        assert_eq!(cnt[1..=32].iter().filter(|&&c| c == 2).count(), 16, "E 双取样位数");
+        assert!(cnt[1..=32].iter().all(|&c| c >= 1), "E 每源位至少一次");
+    }
+
+    #[test]
+    fn des_pc1_drops_parity_bits() {
+        // 经典性质：PC-1 恰丢弃 8 的倍数位（每字节末位校验位）。
+        let set: std::collections::HashSet<usize> = PC1.iter().copied().collect();
+        for b in 1..=64 {
+            let is_parity = b % 8 == 0;
+            assert_eq!(
+                !set.contains(&b),
+                is_parity,
+                "位 {b} 校验位归属错（PC1 集 {}）",
+                if set.contains(&b) { "含" } else { "缺" }
+            );
+        }
+    }
+
+    #[test]
+    fn des_sbox_rows_are_permutations() {
+        // S 盒结构律：每盒每行是 0..16 的置换（无重无漏）。
+        for (bi, box_) in SBOX.iter().enumerate() {
+            for row in 0..4 {
+                let mut seen = [false; 16];
+                for col in 0..16 {
+                    let v = box_[row * 16 + col] as usize;
+                    assert!(v < 16, "S{bi} 行{row} 值越界 {v}");
+                    assert!(!seen[v], "S{bi} 行{row} 重复 {v}");
+                    seen[v] = true;
+                }
+                assert!(seen.iter().all(|&s| s), "S{bi} 行{row} 缺值");
+            }
+        }
+    }
+
+    #[test]
+    fn des_avalanche_single_bit_key() {
+        // 雪崩（密钥面）：非校验位单比特翻转 → 密文翻转 ≥15/64（完整性
+        // 律）；校验位（每字节末位，PC-1 丢弃）→ 零影响（结构契约）。
+        let pt: [u8; 8] = hex("0123456789ABCDEF").try_into().unwrap();
+        let base_key: [u8; 8] = hex("133457799BBCDFF1").try_into().unwrap();
+        let base_ct = des_ecb_encrypt_block(&base_key, &pt);
+        for bit in 0..64 {
+            let mut k = base_key;
+            k[bit / 8] ^= 1 << (7 - bit % 8);
+            let ct = des_ecb_encrypt_block(&k, &pt);
+            let f = flips(&base_ct, &ct);
+            if bit % 8 == 7 {
+                // 校验位：PC-1 丢弃 → 密文必须逐位不变。
+                assert_eq!(f, 0, "校验位 bit {bit} 不应影响密文");
+            } else {
+                assert!(
+                    (15..=49).contains(&f),
+                    "key bit {bit}: avalanche {f} 出界"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn des_avalanche_single_bit_plaintext() {
+        // 雪崩（明文面）：单比特明文翻转 → 密文翻转 ≥15/64。
+        let key: [u8; 8] = hex("133457799BBCDFF1").try_into().unwrap();
+        let base_pt: [u8; 8] = hex("0123456789ABCDEF").try_into().unwrap();
+        let base_ct = des_ecb_encrypt_block(&key, &base_pt);
+        for bit in 0..64 {
+            let mut p = base_pt;
+            p[bit / 8] ^= 1 << (7 - bit % 8);
+            let ct = des_ecb_encrypt_block(&key, &p);
+            let f = flips(&base_ct, &ct);
+            assert!(
+                (15..=49).contains(&f),
+                "pt bit {bit}: avalanche {f} 出界"
+            );
+        }
+    }
+
+    #[test]
+    fn des_shift_schedule_returns_home() {
+        // 轮转表律：16 轮总移位 = 28（恰一整圈 28 位寄存器）——C/D 经全
+        // 轮后回到初值；逐轮模拟与 key_schedule 内部一致（双算对拍）。
+        let total: u32 = SHIFTS.iter().sum();
+        assert_eq!(total, 28, "ΣSHIFTS 必须恰一圈");
+        let key: [u8; 8] = hex("133457799BBCDFF1").try_into().unwrap();
+        let keys = key_schedule(u64::from_be_bytes(key));
+        // 手工复算 16 子密钥（独立于被测实现的同源路径，钉 shift 边界
+        // `28 - s` 在 s∈{1,2} 两形态都不下溢）。
+        let mut cd = pick(u64::from_be_bytes(key), 64, &PC1);
+        for i in 0..16 {
+            let s = SHIFTS[i];
+            assert!(s == 1 || s == 2, "移位量仅 1/2，得 {s}");
+            let c = cd >> 28;
+            let d = cd & 0x0fff_ffff;
+            let c = ((c << s) | (c >> (28 - s))) & 0x0fff_ffff;
+            let d = ((d << s) | (d >> (28 - s))) & 0x0fff_ffff;
+            cd = (c << 28) | d;
+            assert_eq!(keys[i], pick(cd, 56, &PC2), "子密钥 {i} 手工/实现分岔");
+        }
+        // 全轮后 cd 回家（一圈 28 位）。
+        assert_eq!(cd, pick(u64::from_be_bytes(key), 64, &PC1));
+    }
 }
