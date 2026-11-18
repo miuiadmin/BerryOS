@@ -1017,13 +1017,18 @@ extern "C" fn dpg_press(arg: usize) -> ! {
         // F6（2026-11-17）第四形态降软：**慢速宿主**——QEMU TCG/HVF 形
         // 下宿主执行速度远慢于标定环境，单页 pager 供给往返墙钟被环境性
         // 放大（实测 Σ=12.9-33M cyc vs 阈 437500 = 30-75×，bcts 两 run +
-        // 本地 HVF 多跑同签名 panic；CI smoke job 快速窗内 wall < 1× 阈
+        // 本地 HVF 多跑同签名 panic；CI smoke 快速窗内 wall < 1× 阈
         // 不触发）。环境性放大与真标定漂移的区分 = 量级断层：供给链代码
         // 回归的漂移是常数级（2-10×），宿主慢速是整体执行速度级（30×+
         //，实证域 30-75× 与快速域 <1× 之间无重叠）——断层线取 10× 留
         // 三倍余量，其上视为环境性前提破走软路径（清位重冲 + x 记账
         //），其下保留单核静默形标定漂移检测，θ_p 语义与标定面零改动。
-        let slow_host = wall >= theta_w.saturating_mul(10);
+        // F6b（2026-11-17 晚修，BANDM4 判例连带）：断层线判据变量从 wall
+        // 改 rev_cyc（Σ 口径）——wall 是自证页墙钟和，rev_cyc 是折卷窗内
+        // 停顿累计（打印口径/环境放大语义面）；两变量在带执法在飞时解耦
+        //（回场 Burst 把停顿塞进折卷窗但自证页本身跑得快——实测 wall 3×
+        // / rev_cyc 12× 同时发生）。判据跟打印同变量，环境性放大按 Σ 判。
+        let slow_host = rev_cyc >= theta_w.saturating_mul(10);
         assert!(
             wall < theta_w || hal::smp::par_enabled() || berry_sched::any_armed() || slow_host,
             "dpg_press: 反向臂自证缺页墙钟 Σ={} ≥ θ_p·W={}（单核独占形：少量缺页即达压——单页供给停顿标定漂移，θ_p 误报判据前提破）",
