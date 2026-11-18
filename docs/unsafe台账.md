@@ -46,12 +46,12 @@
 | mm/ | 7 | 2368 | 4 | 0.17% |
 | sched/ | 15 | 8865 | 1819 | 20.52% |
 | ipc/ | 0 | 0 | 0 | — |
-| arch/ | 23 | 7432 | 1084 | 14.59% |
-| **合计** | 76 | 55730 | 5264 | **9.45%** |
+| arch/ | 23 | 7452 | 1088 | 14.60% |
+| **合计** | 76 | 55750 | 5268 | **9.45%** |
 
-- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 42319，unsafe 非空行 4464，密度 10.55%（生产面口径）
-- 分类计数：页表 72 | 上下文切换 35 | MMIO 163 | 分配器 16 | 硬件原子 0 | 其它 902
-- 类型计数：block 1035 | fn 149 | impl 2 | extern 2（另有类型签名位提及 15 处——只计不登记，防双计）
+- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 42339，unsafe 非空行 4468，密度 10.55%（生产面口径）
+- 分类计数：页表 74 | 上下文切换 35 | MMIO 163 | 分配器 16 | 硬件原子 0 | 其它 902
+- 类型计数：block 1037 | fn 149 | impl 2 | extern 2（另有类型签名位提及 15 处——只计不登记，防双计）
 - 对标：Android ~4%（unsafe 行占 Rust 总行比，Google 2025-11）；本表为跨度非空行口径（偏高估），见 §一
 <!-- UNSAFE-AUDIT:SUMMARY:END -->
 
@@ -164,24 +164,26 @@
 | arch/aarch64/src/mmu.rs | 294 | fn | 页表 | unsafe fn activate_ttbr0_regs(ttbr0_pa: usize, asid: u16) { let |
 | arch/aarch64/src/mmu.rs | 327 | fn | 页表 | unsafe fn activate_ttbr0_keep_tlb(ttbr0_pa: usize, asid: u16) { |
 | arch/aarch64/src/mmu.rs | 341 | block | 页表 | unsafe { asm!("mrs {0}, ttbr0_el1", out(reg) ttbr, options(nosta |
-| arch/aarch64/src/mmu.rs | 362 | block | 页表 | unsafe { asm!("mrs {0}, contextidr_el1", out(reg) cid, options(n |
-| arch/aarch64/src/mmu.rs | 371 | fn | 页表 | unsafe fn retire_low_half() { if !RETIRE_IDENTITY { return; } ac |
-| arch/aarch64/src/mmu.rs | 382 | fn | 页表 | unsafe fn flush_all_asid() { asm!("tlbi vmalle1is", options(nost |
-| arch/aarch64/src/mmu.rs | 394 | fn | 页表 | unsafe fn flush_local_all() { asm!("tlbi vmalle1", options(nosta |
-| arch/aarch64/src/mmu.rs | 429 | fn | 页表 | unsafe fn freeze_syscalls_table() { // 镜像布局：VMA - KERNEL_VA_BASE |
-| arch/aarch64/src/mmu.rs | 444 | block | 页表 | unsafe { (&raw const (*l2).0[l2_idx]).read_volatile() }; debug_a |
-| arch/aarch64/src/mmu.rs | 457 | block | 页表 | unsafe { (&raw mut (*l3).0[i]).write_volatile(page_descriptor_ke |
-| arch/aarch64/src/mmu.rs | 464 | block | 页表 | unsafe { dsb_ish() }; unsafe { (&raw mut (*l2).0[l2_idx]).write_ |
-| arch/aarch64/src/mmu.rs | 465 | block | 页表 | unsafe { (&raw mut (*l2).0[l2_idx]).write_volatile(table_descrip |
-| arch/aarch64/src/mmu.rs | 466 | block | 页表 | unsafe { dsb_ish() }; unsafe { flush_all_asid() }; SYSCALLS_RO.s |
-| arch/aarch64/src/mmu.rs | 467 | block | 页表 | unsafe { flush_all_asid() }; SYSCALLS_RO.store(true, Ordering::R |
-| arch/aarch64/src/mmu.rs | 472 | fn | 页表 | unsafe fn write_mair_el1(v: u64) { asm!("msr mair_el1, {0}", in( |
-| arch/aarch64/src/mmu.rs | 476 | fn | 页表 | unsafe fn write_tcr_el1(v: u64) { asm!("msr tcr_el1, {0}", in(re |
-| arch/aarch64/src/mmu.rs | 480 | fn | 页表 | unsafe fn write_ttbr0_el1(v: u64) { asm!("msr ttbr0_el1, {0}", i |
-| arch/aarch64/src/mmu.rs | 484 | fn | 页表 | unsafe fn write_ttbr1_el1(v: u64) { asm!("msr ttbr1_el1, {0}", i |
-| arch/aarch64/src/mmu.rs | 488 | fn | 页表 | unsafe fn write_sctlr_el1(v: u64) { asm!("msr sctlr_el1, {0}", i |
-| arch/aarch64/src/mmu.rs | 492 | fn | 页表 | unsafe fn isb() { asm!("isb", options(nostack, preserves_flags)) |
-| arch/aarch64/src/mmu.rs | 496 | fn | 页表 | unsafe fn dsb_ish() { asm!("dsb ish", options(nostack, preserves |
+| arch/aarch64/src/mmu.rs | 350 | block | 页表 | unsafe { asm!("mrs {0}, ttbr1_el1", out(reg) ttbr, options(nosta |
+| arch/aarch64/src/mmu.rs | 371 | block | 页表 | unsafe { asm!("mrs {0}, contextidr_el1", out(reg) cid, options(n |
+| arch/aarch64/src/mmu.rs | 380 | fn | 页表 | unsafe fn retire_low_half() { if !RETIRE_IDENTITY { return; } ac |
+| arch/aarch64/src/mmu.rs | 391 | fn | 页表 | unsafe fn flush_all_asid() { asm!("tlbi vmalle1is", options(nost |
+| arch/aarch64/src/mmu.rs | 403 | fn | 页表 | unsafe fn flush_local_all() { asm!("tlbi vmalle1", options(nosta |
+| arch/aarch64/src/mmu.rs | 438 | fn | 页表 | unsafe fn freeze_syscalls_table() { // 镜像布局：VMA - KERNEL_VA_BASE |
+| arch/aarch64/src/mmu.rs | 453 | block | 页表 | unsafe { (&raw const *l1.add(1)).read_volatile() }; debug_assert |
+| arch/aarch64/src/mmu.rs | 464 | block | 页表 | unsafe { (&raw const (*l2).0[l2_idx]).read_volatile() }; debug_a |
+| arch/aarch64/src/mmu.rs | 477 | block | 页表 | unsafe { (&raw mut (*l3).0[i]).write_volatile(page_descriptor_ke |
+| arch/aarch64/src/mmu.rs | 484 | block | 页表 | unsafe { dsb_ish() }; unsafe { (&raw mut (*l2).0[l2_idx]).write_ |
+| arch/aarch64/src/mmu.rs | 485 | block | 页表 | unsafe { (&raw mut (*l2).0[l2_idx]).write_volatile(table_descrip |
+| arch/aarch64/src/mmu.rs | 486 | block | 页表 | unsafe { dsb_ish() }; unsafe { flush_all_asid() }; SYSCALLS_RO.s |
+| arch/aarch64/src/mmu.rs | 487 | block | 页表 | unsafe { flush_all_asid() }; SYSCALLS_RO.store(true, Ordering::R |
+| arch/aarch64/src/mmu.rs | 492 | fn | 页表 | unsafe fn write_mair_el1(v: u64) { asm!("msr mair_el1, {0}", in( |
+| arch/aarch64/src/mmu.rs | 496 | fn | 页表 | unsafe fn write_tcr_el1(v: u64) { asm!("msr tcr_el1, {0}", in(re |
+| arch/aarch64/src/mmu.rs | 500 | fn | 页表 | unsafe fn write_ttbr0_el1(v: u64) { asm!("msr ttbr0_el1, {0}", i |
+| arch/aarch64/src/mmu.rs | 504 | fn | 页表 | unsafe fn write_ttbr1_el1(v: u64) { asm!("msr ttbr1_el1, {0}", i |
+| arch/aarch64/src/mmu.rs | 508 | fn | 页表 | unsafe fn write_sctlr_el1(v: u64) { asm!("msr sctlr_el1, {0}", i |
+| arch/aarch64/src/mmu.rs | 512 | fn | 页表 | unsafe fn isb() { asm!("isb", options(nostack, preserves_flags)) |
+| arch/aarch64/src/mmu.rs | 516 | fn | 页表 | unsafe fn dsb_ish() { asm!("dsb ish", options(nostack, preserves |
 | arch/aarch64/src/pl061.rs | 64 | block | MMIO | unsafe { *core::ptr::addr_of_mut!(PL061_NOTIFY) = Some(f) }; } / |
 | arch/aarch64/src/pl061.rs | 72 | block | MMIO | unsafe { if mmio::read(PL061 + GPIO_MIS) & PIN_MASK == 0 { retur |
 | arch/aarch64/src/pl061.rs | 94 | fn | MMIO | unsafe fn pl061_init() { mmio::write(PL061 + GPIO_ICR, PIN_MASK) |
