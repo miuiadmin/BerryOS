@@ -19,6 +19,7 @@ arch/aarch64/src/mmu.rs::BOOT_L1	page-table
 arch/aarch64/src/mmu.rs::BOOT_L2_LOW	page-table
 arch/aarch64/src/mmu.rs::BOOT_L2_RAM	page-table
 arch/aarch64/src/mmu.rs::KERNEL_L1	page-table
+arch/aarch64/src/mmu.rs::SPLIT_L3_SYSCALLS	page-table
 arch/aarch64/src/pl061.rs::PL061_NOTIFY	arch
 arch/aarch64/src/smp.rs::BOOT_EL	scheduler
 arch/aarch64/src/smp.rs::SMP_CPU0	scheduler

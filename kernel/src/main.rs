@@ -894,6 +894,13 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // 3-1：注册真 syscall 语义 handler（handle 三操作 + clock_read）进 HAL 表。
     // 必须先于 ktest::run（SYSCALL 用例）与一切用户进程。
     syscall::install();
+    // W3-Q104（03 号分派审计机会五 5b）：SYSCALLS 派发表固化只读——install
+    // 填毕（本行之上 = 全系统唯一写点）即冻结，此后写表 = D-abort 权限错
+    // fatal。窗位硬约束：ktest 之前（探针在 test_syscall 内正向断言）+
+    // smp_bringup/arm_slice/enable_irq 之前（boot 单线程 DAIF 屏蔽窗——
+    // freeze_syscalls_table 的 # Safety 合同）。
+    // SAFETY: boot 单线程 DAIF 屏蔽窗；只动 boot 页表项与完成标记。
+    unsafe { berry_hal_aarch64::freeze_syscalls_table() };
 
     // W3-Q106：vDSO 数据页成像——必须先于 ktest::run（SYSCALL 用例直调
     // NR_PROCESS_CREATE → sys_process_create 装配 AS）与一切用户 AS 装配；
