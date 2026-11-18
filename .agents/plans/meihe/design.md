@@ -3,7 +3,7 @@
 Type: spec
 Status: active
 Updated: 2026-11-18
-Version: 2.1.0
+Version: 2.2.0
 
 一句话说明：`meihe`（莓核）是 BerryOS 的唯一 EL1/Ring0 特权微内核——以「可注入的机制/策略分离 + 硬件信任边界」为单一中心，统合四层无环 Crate 拓扑、八秩无全局大锁 16 核并发模型、安全内核基元（生产面 `unsafe` ≤ 3.0%）与五大形式化模型检验不变量，作为全核演进的顶层架构宪法。
 
@@ -84,6 +84,10 @@ flowchart BT
    - 死亡线程栈回收（`REAPQ`）与退出进程表异步清理（`HT_DRAINQ`）全部实例化于 `PerCpu`，任何核产生退出实体均推入本核队列并在本核 `idle`/`yield`/周期检查点就地释放，消除 CPU0 单核排空瓶颈。
 4. **跨界扩展系统调用的微内核窄腰边界（调试、采样、随机数与受限态）**：
    - 遵从「机制极薄入核、协议与策略全留用户态」铁律，合龙总纲登记的四族跨界原语在莓核内部仅保留最小特权状态机：① **调试与追踪组（`0x41`、`0x45..0x49`）**仅负责 `RIGHT_DEBUG` 门控下的异常冻结包投递、寄存器读写、CoW 断点页替换及每核 PMU/Syscall 无锁环形 VMO 采样写入（DWARF 符号与 RSP 协议全归 [devtools 总体设计](../devtools/design.md) 与 `bdbg`）；② **受限态切换组（`0x4A berry_restricted_enter` / `0x4B berry_restricted_kick`）**仅在 `Task` TCB 绑定一页 `state_vmo` 执行同线程 Normal/Restricted 双寄存器组切换并将受限态 `SVC` 原样反射回用户态 `linux_runner`，**内核零行 Linux 系统调用翻译代码**（见 [compat 总体设计](../compat/design.md)）；③ **硬件熵源口（`0x89 berry_cprng_draw`）**仅提供每核无锁 ChaCha20 CSPRNG（由 `RNDR` / 中断抖动周期重播，见 [security 总体设计](../security/design.md)）。
+5. **调页死锁免疫、内核栈保护页与跨核 PI 推挤规约**：
+   - **Pager 服务端物理内存钉死（Zero-Fault Immunity）**：所有承载按需调页（`pager_create` / `0x21` / `0x23` / `0x24`）的服务端进程（`fsmgr`、`pkgmgr`），其代码段、全局数据段与服务线程栈必须在初始化完成时全量设置 `VMO_CONTIGUOUS | VMO_PINNED`，禁止按需换出；调页供给内核快路径严禁触发任何动态内存分配（Slab/Buddy），杜绝 Pager 自缺页导致的微内核环路死锁；
+   - **内核线程栈底 4KiB 保护页（Kernel Stack Guard Page）**：所有内核线程堆栈（16KiB）必须分配于独立的内核虚拟地址段，栈底 4KiB 物理帧强制置为未映射（Unmapped Guard Page）；任何深度递归导致的栈溢出将立即在硬件层触发同步 Translation Fault，转入黑匣子捕获栈帧，绝对阻断静默踩踏破坏相邻内核堆对象；
+   - **跨核优先级继承 `SGI_PRIO_BOOST` 无大锁异步推挤**：当 CPU A 上的高优线程通过 `channel_call` 阻塞于 CPU B 上的服务端线程时，CPU A 严禁直接获取 CPU B 的 `RunqueueLock`（杜绝跨核锁序死锁）；CPU A 原子更新目标任务的 `prio_boost` 字段并向 CPU B 发射 `SGI_PRIO_BOOST` 核间中断，由 CPU B 在本地安全调度检查点就地更新红黑树键值。
 
 ### 四、五大形式化模型检验不变量（TLA+ / `loom` 契约）
 
