@@ -3,7 +3,7 @@
 Type: spec
 Status: active
 Updated: 2026-11-18
-Version: 1.0.0
+Version: 1.1.0
 
 一句话说明：`devtools`（由内核纯能力调试异常通道、设备端轻量 `debugserver`、零分配符号展开库 `berry-unwind`、全栈硬件采样剖析器 `berry perf`、常驻追踪服务 `traced` 及实时界面检视器 `berry ui-inspect` 组成）是 BerryOS 的工程师与第三方应用开发者神兵利器——彻底告别「靠串口 `println` 盲猜并发死锁与性能热点」的原始时代。
 
@@ -50,6 +50,18 @@ sequenceDiagram
 ### 四、实时 GUI 场景树与渲染检视器（`berry ui-inspect`）契约
 
 1. **所见即所得三维图层与脏区透视**：针对开发态应用或模拟器会话，宿主运行 `berry ui-inspect` 即实时拉取 `ui-sdk` 组件状态树与合成器 `SceneIR` 图元树，支持鼠标悬停高亮任意控件的 `vp` 几何边距/弹性约束、一键开启合成器「16×16 脏瓦片闪烁热力图」、「过度绘制（Overdraw）伪彩图」与「慢帧归因标尺」，并在宿主侧实时微调圆角、模糊半径与弹簧刚度参数即时预览。
+
+### 五、调试与性能剖析内核 ABI 号位绑定契约
+
+与 [全系统 31 模块终态合龙总纲与 ABI 号段总表](../2026-11-18-全系统31模块终态合龙总纲与ABI号段总表.md) 保持单一源一致，锁定以下权利位、信号位与系统调用号位：
+
+- **新增权利与信号位**：`RIGHT_DEBUG = 1 << 12`（仅授开发态 `debugserver` 或崩溃/ANR 采样监督器）、`SIGNAL_EXCEPTION_PENDING = 1 << 7`。
+- **激活在册号位 `0x41`**：`berry_debug_bind_exception_channel(target_proc_or_thread, options, *out_ch)`（承接 `abi.toml` 预留 `0x41`），门控 `RIGHT_DEBUG`。
+- **扩展调试与剖析号段 `0x45..0x48`**：
+  - `0x45 berry_thread_read_state(thread, kind, buf, cap, *out_len)`：读取已挂起/异常态线程的通用寄存器、SIMD 寄存器或硬件调试状态，门控 `RIGHT_DEBUG`；
+  - `0x46 berry_thread_write_state(thread, kind, buf, len)`：更新寄存器、配置硬件执行断点 `DBGBVR_EL1` / 数据观察点 `DBGWVR_EL1` 或置位单步 `MDSCR_EL1.SS`，门控 `RIGHT_DEBUG`；
+  - `0x47 berry_process_vm_rw(proc, op, va, buf, len, *actual)`：调试器受控内存检视与软件断点 `BRK` 私有 CoW 影子页打补丁（不污染全局共享只读代码页，且自动完成 PoU 指令缓存同步），门控 `RIGHT_DEBUG`；
+  - `0x48 berry_pmu_sample_open(perf_res, config_ptr, *out_ring_vmo)`：受 `PerfResourceCap` 门控配置每核硬件 PMU 采样周期并导出只读样本环 VMO。
 
 ## 验收标准
 
