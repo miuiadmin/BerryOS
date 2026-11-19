@@ -16,8 +16,8 @@ frame_alloc4k,1024,37
 frame_alloc64k,256,127
 handle_evt,1024,288
 pick_scan,1024,131
-send_recv_pair,1024,1168
-svc_roundtrip,512,50
+send_recv_pair,1024,1160
+svc_roundtrip,512,46
 switch_pair,128,306
 vmo_commit1p,256,396
 vmo_rw4k,128,6945
