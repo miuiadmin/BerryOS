@@ -1383,6 +1383,17 @@ test-host:
     # （A/NXDOMAIN/压缩指针/畸形包）+ live UDP 闭环 13 腿；改 dns-stub.py
     # 或 bcts wrap 必跑。
     python3 tools/dns-stub.py --selftest
+    # W1 接线（2026-11-19；base fc99d2b79 GUI 合并批带入两件零接线实捕）：
+    # cpio_filter 门禁自检——mkcpio newc 归档确定性 marker 移除/追加（产品
+    # 桌面镜像与 GUI8 验证镜像共享 rootfs 条目的 probe.on/gpuhdi.on 分叉
+    # 面）；垫料解析/重复 remove/追加冲突 loud 拒面。改 cpio_filter.py 或
+    # 镜像 marker 分叉面必跑。
+    python3 tools/cpio_filter.py --selftest
+    # W1 接线（同批实捕）：gui_guard 门禁自检——F9 普通 app 边界静态守卫
+    # （wm=true 必依赖 berry-room/berry-ui、fs RPC 走 fsclient、源码禁
+    # syscall 面/WM RPC 解码/像素基元、nshfont 不得在场）；正样本 + 22 类
+    # 负样本 fail closed。改 gui_guard.py 或普通 app 授权面必跑。
+    python3 tools/gui_guard.py --self-test
     # W1 接线（#257 后继件；base 重写剥落重放）：bcts-parkprobe 门禁自检
     # ——berryos-smoke.* 串口日志 park 签名分类器（dns_park/churn_starve/
     # net_live/clean_boot 四分支钉板 + unreadable 负样本）；bcts 失败路径
