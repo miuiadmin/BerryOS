@@ -10,3 +10,4 @@
 | 03 | `03-syscall分派审计.md` | 诊断残留退役/KERN_LOCK 归零/SVC 包络测量——Top-5 |
 | 04 | `04-调度热路径审计.md` | preempt 门控/诊断退役/per-CPU 原子——Top-5 |
 | 05 | `05-base-overhaul回流接缝预研-W3面资产对撞审计.md` | base-overhaul 回流时 W3 face crate 群对撞四态定级＋回流义务清单 |
+| 07 | `07-vslotface归并裁定预备-三查判序两形恒等性对拍审计.md` | 回流义务 2 深化：三查判序两形 200k 样本恒等对拍＋退役/保留/迁移裁定 |
