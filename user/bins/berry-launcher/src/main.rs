@@ -150,10 +150,15 @@ fn main() {
     //    有效几何同样被状态栏窗裁顶 = 应用画面永不覆盖状态栏（像素面仍
     //    共享整屏 fb——launcher present 画状态栏像素，应用 present 画
     //    各自窗内容，v1 无合成器下以「避让几何 + 互不越界」为约）。
-    //    建窗失败 = fail loud（策略面破缺，桌面不应盲跑）。
+    //    建窗失败 = fail loud（策略面破缺，桌面不应盲跑）。K2 导航键排雷：
+    //    双 CREATE ack 的窗 id 存档 self_wins（[0]=状态栏 SYSTEM 窗、[1]=
+    //    APP 桌面窗；随行 evt handle 仍丢弃——evt 消费面归 I2 刀）——
+    //    back 键以自窗排除（wmd refocus 回落桌面窗后按 back = 自毁雷），
+    //    home 键 DESTROY 批只收非自窗应用窗。
     let mut req = [0u8; 256];
     let mut rep = [0u8; 256];
     let mut rhs = [0 as Handle; 8];
+    let mut self_wins = [0u16; 2];
     // 像素域真值：appshell scene.rs:34 OH_STATUS_H=39vp × scene.rs:31
     // OH_DENSITY=3 = 117px（与 desktop 画态 scene.rs:130 同式；guifbd
     // guest.rs 裁带 band_top 互指此值——改值双侧同步）。
@@ -176,7 +181,7 @@ fn main() {
         let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
         // 切片执法：parse 面按实长验（整缓冲 256B 恒拒——ACK_LEN 协议门）。
         match gp::parse_wm_create_ack(&rep[..n]) {
-            Some(id) if id != 0 => {}
+            Some(id) if id != 0 => self_wins[0] = id,
             _ => fail(&format!("syswin ack bad st={}", rep[0])),
         }
     }
@@ -197,7 +202,7 @@ fn main() {
         };
         let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
         match gp::parse_wm_create_ack(&rep[..n]) {
-            Some(id) if id != 0 => {}
+            Some(id) if id != 0 => self_wins[1] = id,
             _ => fail(&format!("deskwin ack bad st={}", rep[0])),
         }
     }
@@ -272,6 +277,7 @@ fn main() {
     };
     // 帧循环（W1 静默 park；LAUNCH ok/PAGE ok = W2 产物）。smoke = 段④
     // 两标记的唯一门（CLICK ok / launcher: click ready）；正常 boot 传
-    // false = 点击照常 spawn、零新标记。
-    frameloop::run(hw, input_h(), ui, desktop, smoke);
+    // false = 点击照常 spawn、零新标记。self_wins = 双 CREATE ack 窗 id
+    // 存档（K2——back/home 键自窗排除面）。
+    frameloop::run(hw, input_h(), ui, desktop, smoke, self_wins);
 }

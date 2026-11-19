@@ -10,9 +10,9 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
@@ -354,38 +354,40 @@ impl Drop for QmpClient {
 /// capabilities 一次，之后每个 PointerEvent 一条 input-send-event（abs
 /// 值域 0..32767 + left btn）。两类持有者共用：LAN /ws 代理拦截器（每代理
 /// 连接一个，连不上落纯字节管道）与 RamSource 原生指针主路（首个指针事件
-/// 才连，失联退 RFB msg5 保底）。无排空线程——正确性依据（对抗审查活体
-/// 饱和探针实证，QEMU 11.0.3 monitor.c）：QMP 监视器把未写出的响应暂存
-/// **无界用户态 outbuf**（monitor_flush_locked）且**永不因输出积压停读
-/// 输入**（suspend 仅由请求队列准入触发），故不读响应不阻塞写路径（百
-/// 万事件零超时实测）；残余代价 = QEMU 侧 RSS 每事件 ~65B 缓存爬坡、断
-/// 连即释放——pointer() 内的顺手有界排水（drain_pending）持续清空本端
-/// 接收队列使 QEMU 得以及时冲刷，把爬坡压在内核缓冲量级。持有克隆的专
-/// 职排空线程会让连接永不关闭 → fd 泄漏（既有设计取舍维持）。
+/// 才连，失联退 RFB msg5 保底）。失联（写失败）哑化后 ≥5s 节流重连
+/// （RETRY_AFTER）——QMP 楔死期每拍输入至多挂一次 guard 级尝试，QMP
+/// 恢复后注入自动复活。无排水面（S4 定谳撤除：try_clone 克隆共享 OFD，
+/// 排水侧 set_nonblocking 会连带把阻塞写路径置非阻塞，~35 事件即哑化——
+/// 排水污染实证）：正确性依据（对抗审查活体饱和探针实证，QEMU 11.0.3
+/// monitor.c）：QMP 监视器把未写出的响应暂存**无界用户态 outbuf**
+/// （monitor_flush_locked）且**永不因输出积压停读输入**（suspend 仅由
+/// 请求队列准入触发），故本端不读响应不阻塞写路径（百万事件零超时实
+/// 测）；残余代价 = QEMU 侧 RSS 按未冲刷响应量持续爬坡、断连即释放
+/// （接受面，如实记档）。
 pub struct QmpInjector {
     sock: Option<std::os::unix::net::UnixStream>,
-    /// 排水用非阻塞克隆（connect 时 try_clone+置 O_NONBLOCK——只读丢弃，
-    /// 不触碰阻塞写路径与其 2s 守护；克隆随 sock 同生命周期 drop）。
-    drain: Option<std::os::unix::net::UnixStream>,
+    /// 重连参数：socket 路径与守护超时（哑化自愈试连复用）。
+    path: PathBuf,
+    guard: Duration,
+    /// 下次允许试连的时刻；None = 无节流（建连在世或从未试连）。
+    retry_at: Option<Instant>,
 }
 
-impl QmpInjector {
-    /// 连接（无超时——LAN 拦截器旧形态原样，浏览器路行为零漂移）。
-    pub fn connect(path: &Path) -> Option<Self> {
-        Self::connect_guarded(path, None)
-    }
+/// 哑化后重连节流窗：距上次失败 ≥5s 才再试一次。QMP 楔死期每拍输入
+/// 一次 2s 级守护尝试过重（连打字都卡拍），5s 窗把尝试频率压到恢复
+/// 探测级——QMP 恢复后至多 5s 输入复活。
+const RETRY_AFTER: Duration = Duration::from_secs(5);
 
-    /// 连接并协商 capabilities；`guard` 在场时对 greeting/回读与后续写
-    /// 全程设该超时（原生窗口路在 UI 线程连/写——QEMU 卡死守护：超时
-    /// 即 None/失联，调用方走 RFB 保底，窗口不冻结）。任一步失败返回
-    /// None（调用方自选降级面）。
-    pub fn connect_guarded(path: &Path, guard: Option<Duration>) -> Option<Self> {
+impl QmpInjector {
+    /// 连接并协商 capabilities；对 greeting/回读与后续写全程设 `guard`
+    /// 超时（持有方在 UI/代理线程连写——QEMU 卡死守护：超时即 None/
+    /// 失联，调用方走降级面，线程不冻结）。任一步失败返回 None（调用
+    /// 方自选降级面）。成功者自带哑化后节流重连自愈（见结构体注）。
+    pub fn connect_guarded(path: &Path, guard: Duration) -> Option<Self> {
         use std::io::{BufRead, BufReader, Write};
         let mut s = std::os::unix::net::UnixStream::connect(path).ok()?;
-        if let Some(d) = guard {
-            s.set_read_timeout(Some(d)).ok()?;
-            s.set_write_timeout(Some(d)).ok()?;
-        }
+        s.set_read_timeout(Some(guard)).ok()?;
+        s.set_write_timeout(Some(guard)).ok()?;
         let mut r = BufReader::new(s.try_clone().ok()?);
         let mut line = String::new();
         r.read_line(&mut line).ok()?; // greeting
@@ -396,54 +398,54 @@ impl QmpInjector {
         if !line.contains("return") {
             return None;
         }
-        // 排水克隆（对抗审查卫生项）：非阻塞只读副本，pointer() 内顺手
-        // 清空本端接收队列——QMP 每命令一条 {"return":{}} 同步响应，无人
-        // 读则 QEMU 侧无界 outbuf 持续爬坡（见结构体注）；克隆失败不致命
-        // （排水面退化缺席，正确性不受影响）。
-        let drain = s.try_clone().ok().map(|d| {
-            let _ = d.set_nonblocking(true);
-            d
-        });
-        Some(QmpInjector { sock: Some(s), drain })
+        Some(QmpInjector {
+            sock: Some(s),
+            path: path.to_path_buf(),
+            guard,
+            retry_at: None,
+        })
+    }
+
+    /// 惰性形态（RamSource 原生路）：不建连，首个 pointer 事件才试连
+    /// （守护超时语义同 connect_guarded）；失败进入 ≥5s 节流重试，不占
+    /// UI 线程。
+    pub fn lazy(path: &Path, guard: Duration) -> Self {
+        QmpInjector {
+            sock: None,
+            path: path.to_path_buf(),
+            guard,
+            retry_at: None,
+        }
     }
 
     /// 发一枚 PointerEvent（报文见 `pointer_msg`，与 LAN 拦截器旧实现
-    /// 逐字节同式）。返回 false = 注入路未连/已失联（调用方走保底）；
-    /// 写失败即置 sock=None 永久哑化，与 LAN 拦截器旧语义一致。
+    /// 逐字节同式）。返回 false = 注入路哑化且未到重连窗（调用方走保
+    /// 底）；写失败即置 sock=None 哑化并挂 ≥5s 重连窗，逾窗后下一次事
+    /// 件试连一次——成功复活、失败续窗等下窗。
     pub fn pointer(&mut self, x: u16, y: u16, buttons: u8, gw: u32, gh: u32) -> bool {
         use std::io::Write;
-        self.drain_pending();
+        if self.sock.is_none() {
+            if let Some(t) = self.retry_at {
+                if Instant::now() < t {
+                    return false;
+                }
+            }
+            match Self::connect_guarded(&self.path, self.guard) {
+                Some(fresh) => *self = fresh,
+                None => {
+                    self.retry_at = Some(Instant::now() + RETRY_AFTER);
+                    return false;
+                }
+            }
+        }
         let Some(s) = self.sock.as_mut() else { return false };
         let msg = pointer_msg(x, y, buttons, gw, gh);
         if writeln!(s, "{msg}").is_err() || s.flush().is_err() {
             self.sock = None;
+            self.retry_at = Some(Instant::now() + RETRY_AFTER);
             return false;
         }
         true
-    }
-
-    /// 有界顺手排水（≤64KiB/调用，非阻塞——WouldBlock 即止）：清空本端
-    /// 接收队列里的同步响应/异步事件残留，让 QEMU 得以及时把 outbuf 冲
-    /// 进内核（见结构体注的 RSS 爬坡抑制）。读错误不置 sock=None（排水
-    /// 面失败与写路径失联是两回事——克隆与主柄同底 fd，ECONNRESET 等终
-    /// 态错会随后在写路径如实报出）。
-    fn drain_pending(&mut self) {
-        use std::io::Read;
-        let Some(d) = self.drain.as_mut() else { return };
-        let mut buf = [0u8; 4096];
-        let mut budget = 16; // 16×4KiB = 64KiB 帽
-        loop {
-            match d.read(&mut buf) {
-                Ok(0) => return,
-                Ok(_) => {
-                    budget -= 1;
-                    if budget == 0 {
-                        return;
-                    }
-                }
-                Err(_) => return, // WouldBlock/临时面——下拍再来
-            }
-        }
     }
 }
 
@@ -558,8 +560,9 @@ mod tests {
 
     /// 注入器全链路（假 unix QMP 服务端，零 QEMU 秒级自测）：greeting →
     /// qmp_capabilities → pointer 报文落线——迁出共用后握手与报文面的
-    /// 网络级锚。服务器读完报文即关——注入器写侧失联自哑化（后续
-    /// pointer=false）一并钉住。
+    /// 网络级锚。服务器读完报文即关——注入器写侧失联自哑化（哑化后
+    /// ≥5s 节流窗内后续 pointer=false 不试连；逾窗重连自愈另见
+    /// injector_reconnect_throttle_and_revival）。
     #[test]
     fn injector_handshake_and_pointer_roundtrip() {
         use std::io::{BufRead, BufReader, Read, Write};
@@ -602,22 +605,108 @@ mod tests {
                 }
             }
         });
-        let mut inj = QmpInjector::connect_guarded(&p2, Some(Duration::from_millis(50)))
+        let mut inj = QmpInjector::connect_guarded(&p2, Duration::from_millis(50))
             .expect("handshake must negotiate");
         // 服务器此刻阻塞在读上：首写必成功入队且被读到（守护超时只在
         // 写会阻塞时起效，此写即时完成）。
         assert!(inj.pointer(480, 500, 1, 960, 1000), "QMP 路存活");
-        // 服务器已关：写失败 → 哑化 → 永久 false。写超时守护防缓冲满
-        // 阻塞死等（循环量 8× 于缓冲容量，EPIPE/超时必先到——收敛有界）。
+        // 服务器已关：写失败 → 哑化挂 5s 窗 → 窗内 pointer=false。写超
+        // 时守护防缓冲满阻塞死等（循环量 8× 于缓冲容量，EPIPE/超时必先
+        // 到——收敛有界）。
         for _ in 0..512 {
             if !inj.pointer(1, 1, 0, 960, 1000) {
                 break;
             }
         }
-        assert!(!inj.pointer(1, 1, 0, 960, 1000), "失联后永久哑化");
+        assert!(!inj.pointer(1, 1, 0, 960, 1000), "失联哑化（节流窗内）");
         drop(inj);
         server.join().unwrap();
         let _ = std::fs::remove_file(&p2);
+    }
+
+    /// 重连节流钉板（K3 berry 韧性）：哑化后节流窗内事件不重试——新服
+    /// 务端已在同路径健康在听，若试连必成功，pointer=false 即未试；
+    /// 逾窗（retry_at 回拨模拟 ≥5s 流逝，窗值由 RETRY_AFTER 恒等断言
+    /// 钉死）重试一次成功复活——「QMP 恢复后输入自动复活」的网络级锚。
+    #[test]
+    fn injector_reconnect_throttle_and_revival() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        assert_eq!(RETRY_AFTER, Duration::from_secs(5), "节流窗=5s 钉板");
+        let path = std::env::temp_dir().join(format!(
+            "berry-qmp-throttle-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let guard = Duration::from_millis(500);
+        // 服务端 A：握一次手、读一拍后关停——制造客户端写路径失联哑化。
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let pa = path.clone();
+        let server_a = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            s.write_all(br#"{"QMP":{"version":{"qemu":{"micro":3}}},"capabilities":[]}}"#)
+                .unwrap();
+            s.write_all(b"\n").unwrap();
+            let mut r = BufReader::new(s.try_clone().unwrap());
+            let mut line = String::new();
+            r.read_line(&mut line).unwrap();
+            s.write_all(br#"{"return":{},"id":1}"#).unwrap();
+            s.write_all(b"\n").unwrap();
+            let mut line = String::new();
+            r.read_line(&mut line).unwrap();
+            let _ = s.shutdown(std::net::Shutdown::Both);
+            let mut sink = Vec::new();
+            let mut buf = [0u8; 64];
+            loop {
+                match s.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => sink.extend_from_slice(&buf[..n]),
+                }
+            }
+        });
+        let mut inj = QmpInjector::connect_guarded(&pa, guard).expect("handshake");
+        assert!(inj.pointer(1, 1, 0, 100, 100), "在世首拍");
+        for _ in 0..512 {
+            if !inj.pointer(1, 1, 0, 100, 100) {
+                break;
+            }
+        }
+        assert!(!inj.pointer(1, 1, 0, 100, 100), "失联哑化");
+        server_a.join().unwrap();
+        // 服务端 B：同路径新 QMP，健康在听——节流窗内的拍不得试连
+        // （A 的 listener 已随线程结束关闭，但 socket 文件残留，须先清
+        // 才能 bind——与既有 roundtrip 测试的清理先例同形）。
+        let _ = std::fs::remove_file(&path);
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let server_b = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            s.write_all(br#"{"QMP":{"version":{"qemu":{"micro":3}}},"capabilities":[]}}"#)
+                .unwrap();
+            s.write_all(b"\n").unwrap();
+            let mut r = BufReader::new(s.try_clone().unwrap());
+            let mut line = String::new();
+            r.read_line(&mut line).unwrap();
+            assert!(line.contains("qmp_capabilities"), "{line}");
+            s.write_all(br#"{"return":{},"id":1}"#).unwrap();
+            s.write_all(b"\n").unwrap();
+            let mut line = String::new();
+            r.read_line(&mut line).unwrap();
+            assert!(line.contains("input-send-event"), "{line}");
+            let _ = s.shutdown(std::net::Shutdown::Both);
+        });
+        assert!(
+            !inj.pointer(1, 1, 0, 100, 100),
+            "节流窗内不重试（B 在听，试连即 true）"
+        );
+        // 逾窗：回拨 retry_at 模拟 ≥5s 流逝。
+        inj.retry_at = Some(Instant::now() - RETRY_AFTER);
+        assert!(inj.pointer(1, 1, 0, 100, 100), "逾窗重连复活");
+        drop(inj);
+        server_b.join().unwrap();
+        let _ = std::fs::remove_file(&path);
     }
 
     /// Network-level pump round-trip against a scripted fake QMP server on
