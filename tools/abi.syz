@@ -26,11 +26,6 @@ type berry_time uint64
 # options 位（未知位一律 -EINVAL；scope = 归属 syscall——同值异 scope 不冲突，DOC-6 修：旧裸值两条 1 << 0 无注记）:
 #   CHAN_OPT_NO_INTENT = 1 << 0  (0x1)（scope: channel_create）
 #   VMO_OPT_DEMAND = 1 << 0  (0x1)（scope: vmo_create）
-#   VMO_OPT_CONTIGUOUS = 1 << 1  (0x2)（scope: vmo_create）
-#   VMO_OPT_PINNED = 1 << 2  (0x4)（scope: vmo_create）
-#   VMO_CACHE_OP_CLEAN = 1 << 0  (0x1)（scope: vmo_cache_op）
-#   VMO_CACHE_OP_INVALIDATE = 1 << 1  (0x2)（scope: vmo_cache_op）
-#   VMO_CACHE_OP_CLEAN_INVALIDATE = 1 << 2  (0x4)（scope: vmo_cache_op）
 # rights 位（berry_rights；权限在 handle 不在对象）:
 #   BERRY_RIGHT_READ = 1 << 0  (0x1)
 #   BERRY_RIGHT_WRITE = 1 << 1  (0x2)
@@ -115,9 +110,6 @@ vmo_get_size(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x1B vmo_get_phys（v1）——查字节物理地址（出参 `*pa` = 所在页后备 PA + 页内偏移；匿名 VMO 该页须已 commit，MMIO 窗口 = pa_base+offset；门控仅类型 need=0，同 get_size 几何惯例；PA 是 u64 出参 8 字节宽）
 #   note: P6 A-3（用户态 DMA 面：virtqueue 描述符地址是 guest PA，驱动须能查自己 VMO 页的后备；无 IOMMU 板上 PA 披露面 = 已授 MMIO 窗口的设备本可 DMA 全内存，v1 接受并文档化——IOMMU/SMMU 随 `安全与硬件隔离设计-v1.0.md`）。
 vmo_get_phys(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
-# 0x1C vmo_cache_op（v1）——VMO 数据缓存 PoC 一致性维护（F0-4 用户态非一致性 DMA 面：入参 vmo + op〔CLEAN/INVALIDATE/CLEAN_INVALIDATE〕+ offset + len；CLEAN 需 RIGHT_READ，INVALIDATE/CLEAN_INVALIDATE 需 RIGHT_WRITE）
-#   note: F0-4（DMA 缓存同步：按 CTR_EL0.DminLine 对已提交物理页直映地址执行 `dc cvac` / `dc civac` + `dsb sy`）。
-vmo_cache_op(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **pager**
 # 0x21 pager_supply_pages（v1）——用户态 pager 给 demand VMO 供给一页：入参 vmo（目标，须持 RIGHT_SET_POLICY）+ src（源 VMO 句柄，0 = 填零页）+ src_off（源内页偏移）
@@ -225,6 +217,9 @@ event_create(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 futex_wait(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x56 futex_wake（v2·已实现）——唤醒等待者
 futex_wake(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x57 channel_recv_n（v1）——排空式批量收消息（02 号 IPC 审计机会五：唤醒粒度与收割粒度失配——wait_many 一次醒，排空型消费者〔console/netd〕原逐发 syscall 重复付 SVC 入口结构锁窗 + caller_table + get_raw 门控 + 参数 I/O 全套窗）。`channel_recv_n(ch, msgs, k_max, *n_recv)`：内部循环既有 recv 原子序，每消息语义逐条保持（intent 结算/billing/insert_ref 入表 per-message），仅入口/门控/WRITABLE 唤醒摊到 k 条（唤醒自批量收尾一次广播——`recv_n_wake_needed` 门：弹 0 条不唤醒，纯广播一次覆盖全部腾槽）；返回 0 = 成功（实收数走 `*n_recv` 出参，0 = 队空 poll 语义同形）。`msgs` = 定长槽位数组（每槽 `nbytes:u64, nhandles:u64` 头 + 载荷/handle 值区，槽距 = 头 16 + 256 载荷 + 8×4 handle 值 = 304B）；`k_max ∈ 1..=16`（0 或超帽 -EINVAL no-panic 前置）。同步往返型服务（echo/talker）无收益不强制迁移
+#   note: W3-Q97 add-only 加号（先例 0x21/0x23/0x24/0x83/0x84/0x88）：排空式批量 recv。槽距常量 `RECV_N_SLOT_STRIDE` = 304B（berry-chanface recvn 模块单源，kernel/user 两端消费——头 16B〔nbytes/nhandles 出参〕+ 载荷 256B〔CHAN_MSG_MAX〕+ handle 值 32B〔CHAN_HND_MAX×4〕）；批量帽 RECV_N_MAX = 16（2×CHAN_DEPTH——队列深两倍，一次批量窗必能排空任意满队）。判据面 = chanface recvn host 钉板（k 域/槽地址/唤醒判）。
+channel_recv_n(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **时间 / 定时器**
 # 0x61 clock_read（v1）——读单调/壁钟
@@ -251,7 +246,7 @@ namespace_mount(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # **策略注入 / 遥测**（AI 调度，见 `AI调度设计-v1.0.md`）
 # 0x83 policy_bind（v3·已实现）——注册 AI 策略注入通道（共享环，SET_POLICY）
 policy_bind(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
-# 0x84 telemetry_open（v3·已实现）——打开遥测环（只读）。翻真首域（阶段五第 16 步）：op=0 klog 快照——telemetry_open(op, buf, len) 读内核日志字节环（per-CPU 双环 CPU 序拼接、环内旧→新、每环贡献最新 min(环内有效字节扣除 128B 热尾容错窗, 余量) 字节），返回实写字节数（0 = 两环皆空/读窗不稳的诚实空，常态 >0）；三拒面：op 域外 -ENOTSUP（SwitchRec/WakeRec 环读口随后续波次）、len=0 或超 16KiB 单读帽 -EINVAL、copy_out 失败 -EFAULT（已写段诚实保留）。零 handle 零权利位（系统级遥测读面——sched_util_snapshot 同族口径）
+# 0x84 telemetry_open（v3·已实现）——打开遥测环（只读）。翻真首域（阶段五第 16 步）：op=0 klog 快照——telemetry_open(op, buf, len) 读内核日志字节环（per-CPU 双环 CPU 序拼接、环内旧→新、每环贡献最新 min(环内有效字节扣除 128B 热尾容错窗, 余量) 字节），返回实写字节数（0 = 两环皆空/读窗不稳的诚实空，常态 >0）；三拒面：op 域外 -ENOTSUP（op 域 add-only 三档在册：op=1 memstat 定长 40B 五域〔2026-11-19 遥测刀、bsh free 消费〕；op=2 双族环快照〔2026-11-19 环读口刀——32B 轻头+每环 24B 段描述符+变长载荷，SwitchRec/WakeRec CPU 序段序旧→新整条截尾、逐环一致跨环尽力一致、降级段 count=0 total 照出，berryctl trace 消费〕）、len=0 或超 16KiB 单读帽 -EINVAL、copy_out 失败 -EFAULT（已写段诚实保留）。零 handle 零权利位（系统级遥测读面——sched_util_snapshot 同族口径）
 telemetry_open(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **安全 / 远程证明**（预留）

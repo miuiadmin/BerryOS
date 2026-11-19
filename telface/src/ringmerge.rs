@@ -33,6 +33,26 @@ pub fn span_cap(total: u64, len: usize) -> usize {
     }
 }
 
+/// 快照读向旋转律（op=2 环快照读窗内定位整段旧→新起点）：环几何
+/// （`total` 累计写入、`head` 下一写槽、容量 `len`）→
+/// `(count, start)`——段内旧→新第 i 条 = `recs[(start + i) % len]`。
+///
+/// - `count = min(total, len)`（同 [`span_cap`] 帽律——wrap 丢头）；
+/// - `total >= len`（已 wrap）：现存最旧条恰在 `head`（head 是下一写位 =
+///   覆写最旧位）→ `start = head % len`；
+/// - `total < len`（未 wrap）：条目按写入序占 `0..total` 槽 → `start = 0`。
+///
+/// kernel 消费点：`ring_snap_into`/`wake_ring_snap_into`（0x84 op=2 环
+/// 快照——seqlock 单版本窗内整段旧→新拷贝的定位律）。与 [`span_cap`]
+/// 邻位同域界（帽律 + 旋转律一具面；host 钉板四态：空/pre-wrap/wrap
+/// 旋转/恰满）。
+#[inline]
+pub fn fill_span(total: u64, head: usize, len: usize) -> (usize, usize) {
+    let count = span_cap(total, len);
+    let start = if total >= len as u64 { head % len } else { 0 };
+    (count, start)
+}
+
 /// 双流 vct 归并取第 `i` 条（0 = 最新；**新→旧序**——vct 大者先出）。
 ///
 /// 判定律（与 kernel 原 `last`/`wake_last` 逐字对齐，改此 = 改两环行为）：
@@ -119,6 +139,58 @@ mod tests {
         assert_eq!(span_cap(65, 64), 64, "wrap 丢头——帽住容量");
         assert_eq!(span_cap(u64::MAX, 64), 64, "敌意巨值安全截断");
         assert_eq!(span_cap(5, 0), 0, "零容量环恒空");
+    }
+
+    /// fill_span 四态钉板（op=2 环快照读窗定位律——空/pre-wrap/wrap 旋转/
+    /// 恰满；与 kernel ring_write 的 head 推进 `(head+1)%len` 语义对拍）。
+    #[test]
+    fn fill_span_four_states() {
+        // 空：total=0 → (0, 0)。
+        assert_eq!(fill_span(0, 0, 64), (0, 0));
+        // pre-wrap：3 笔写 → 槽 0..3（旧→新 0,1,2）、head=3 → (3, 0)
+        //——遍历 recs[0..3] 即旧→新。
+        assert_eq!(fill_span(3, 3, 64), (3, 0));
+        // 恰满：64 笔写 → 槽 0..64、head 归 0 → (64, 0)——最旧在槽 0
+        //（下一写即将覆写位），旧→新 = recs[0..64]。
+        assert_eq!(fill_span(64, 0, 64), (64, 0));
+        // wrap 旋转：65 笔写 → 写 #64 覆写槽 0、head=1 → (64, 1)——最旧
+        // 现存 = 写 #1（槽 1），遍历 recs[(1+i)%64] 至 recs[0] = 写 #64
+        //（最新）；最旧（写 #0）被淘汰（count 仍 64）。
+        assert_eq!(fill_span(65, 1, 64), (64, 1));
+        // 旋转遍历完整性：start=1 的 64 步恰好不重复扫过全部槽。
+        let mut seen = [false; 64];
+        let (_, start) = fill_span(65, 1, 64);
+        for i in 0..64 {
+            seen[(start + i) % 64] = true;
+        }
+        assert!(seen.iter().all(|&s| s), "wrap 旋转遍历须覆盖全部槽恰一次");
+        // 敌意 head 越界防御：head ≥ len 钳回域内（纯函数不信任调用方）。
+        assert_eq!(fill_span(128, 130, 64), (64, 2));
+    }
+
+    /// fill_span 与写入序模拟对拍：顺序写 N 条（head 依 (head+1)%len 推进），
+    /// 环内存量按 (count, start) 遍历 = 最近 min(N, len) 条写入序（旧→新）。
+    #[test]
+    fn fill_span_matches_write_simulation() {
+        for n in [0usize, 1, 63, 64, 65, 100, 128, 200] {
+            let len = 64;
+            let mut recs = [0u64; 64]; // 槽值 = 写入序号
+            let mut head = 0usize;
+            for i in 0..n {
+                recs[head] = i as u64;
+                head = (head + 1) % len;
+            }
+            let (count, start) = fill_span(n as u64, head, len);
+            assert_eq!(count, n.min(len), "count = min(total, len)（n={n}）");
+            let mut got = Vec::with_capacity(count);
+            for i in 0..count {
+                got.push(recs[(start + i) % len]);
+            }
+            // 写入序的最近 count 条（旧→新）。
+            let want: Vec<u64> =
+                (n.saturating_sub(count)..n).map(|i| i as u64).collect();
+            assert_eq!(got, want, "n={n}：旋转遍历须 = 最近 count 条写入序");
+        }
     }
 
     #[test]
