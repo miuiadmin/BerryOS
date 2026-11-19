@@ -238,6 +238,10 @@ WHITELIST=(
   # merge 解冲突时白名单笔被剥，CI light sync-public --check-members 腿红
   # run 43809528251 实锤——判例固化：解 merge 冲突后必核白名单笔未剥）
   fwcfgface susface memface
+  # arch/aarch64 补账（2026-11-19 镜像同步实捕：51f6d8fdc 追平笔带入
+  # workspace members 而白名单笔未随刀——check-members 门红分支实捕定谳，
+  # fwcfgface/balface/psface 判例同款纪律）
+  arch/aarch64
   # balface 补账（2026-11-16 本刀重放接线实捕：W3-Q82 #273 首开件白名单
   # 笔未随刀——check-members 门红分支实捕定谳，同 fwcfgface 判例）
   balface

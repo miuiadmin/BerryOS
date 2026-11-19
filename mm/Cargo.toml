@@ -8,6 +8,4 @@ license = "Apache-2.0"
 name = "berry_mm"
 path = "src/lib.rs"
 
-[dependencies]
-# F0-2：分代位图与在跑核钉死 ASID 分配器纯函数面单源。
-berry-asidface = { path = "../asidface" }
+# 无外部依赖：buddy 核心是纯 Rust，host 单测走 `cfg(test)` 链 std。

@@ -3,9 +3,9 @@
 Type: spec
 Status: active
 Updated: 2026-11-18
-Version: 2.0.0
+Version: 2.1.0
 
-一句话说明：`gfx`（承载于 `berry-gfx` v2 与纯数学核 `berry-gfxface`）是 BerryOS 的跨后端 2D 矢量、文本与材质渲染引擎——以「统一紧凑中间表示（SceneIR）+ 16×16 瓦片分箱管线 + 预乘色彩混合 + 解析抗锯齿 SDF + 实时毛玻璃 + 软硬双后端像素共识」取代早期纯标量无混合 v1 光栅器。
+一句话说明：`gfx`（承载于 `berry-gfx` v2 与纯数学核 `berry-gfxface`）是 BerryOS 的跨后端 2D 矢量、文本与液态玻璃光场渲染引擎——以「统一紧凑中间表示（SceneIR）+ 16×16 瓦片分箱管线 + 预乘色彩混合 + 超椭圆 SDF 解析抗锯齿 + 边缘折射与动态高光液态玻璃 + 软硬双后端像素共识」取代早期纯标量无混合 v1 光栅器。
 
 ## 背景
 
@@ -35,7 +35,7 @@ Version: 2.0.0
    - `PathFill / PathStroke`：二阶/三阶贝塞尔平坦化线段流 + 扫描线梯形面积精确 8-bit 覆盖率解析抗锯齿（Non-Zero / Even-Odd 填充规则，支持端点圆帽/方帽与斜接/圆接）；
    - `Brush`：纯色（`Solid`）、多色标线性渐变（`LinearGradient` + Bayer 4×4 抖动消除 8-bit 色带）、径向渐变（`RadialGradient`）与图像采样画刷（`ImageBrush`，支持最近邻与双线性带完整 8-bit Alpha 插值）；
    - `GlyphRun`：定位字形序列（含亚像素横向四分位偏移 `subpx_x ∈ {0, 1, 2, 3}`、字形图集句柄与前景画刷）；
-   - `BackdropBlur`：区域背景材质滤镜（模糊半径 `radius_px`、饱和度增益 `vibrancy_q8`、叠加色调 `tint: PremulRgba8` 与微噪点强度 `noise_q8`，一键合成磨砂/液态玻璃面板）。
+   - `BackdropBlur`（`LiquidGlass` 液态玻璃与光场材质滤镜）：融合 [iOS 与鸿蒙融合液态玻璃及光场交互标准](../../../docs/iOS与鸿蒙融合液态玻璃及光场交互标准-v2.0.md) 第二节，支持模糊半径 `radius_px`、超椭圆冠部边缘凸透镜折射强度 `refract_q8`、饱和度增益与环境色漫溢 `vibrancy_q8`、叠加色调 `tint: PremulRgba8`、随触点/指针坐标 `(light_x, light_y)` 实时衰减的镜面棱边高光与触控光场涟漪相位 `ripple_q8`（系统开启 `Reduce Transparency` 时自动短路为高对比不透明实心填充）。
 
 ### 三、16×16 瓦片分箱与 SIMD 光栅管线契约
 
