@@ -7,7 +7,7 @@
 //! 三元组（code/where/line——`--json` 信封消费面）。
 //!
 //! 与 Python 单源对齐义务：改任一侧必须同步另一侧并重钉黄金向量
-//! （13 accept 形 + 64 拒面，LOG.md 本轮条目存再钉命令）。
+//! （14 accept 形 + 64 拒面，LOG.md 本轮条目存再钉命令）。
 
 use crate::{ManifestView, Sec, Ui, Blob, INTENTS, RISK_TIERS, BLOB_KEYS, SEC_KEYS,
             SDK_CURRENT, ID_MAX, VERSION_MAX, ENTRY_MAX, STACK_PAGES_MIN,
@@ -61,6 +61,21 @@ pub struct Parsed {
 
 // ---- TOML 子集解析器（canonical 全集）----
 
+/// 串外 `#` 定位：返回首个不在双引号串内的 `#` 字节位（None = 串内 # 或
+/// 无 #）。canonical 值串无转义（`\` 解析层拒），故状态机只需双引号开关
+/// ——无escaped quote 面。
+fn outside_hash(line: &str) -> Option<usize> {
+    let mut in_str = false;
+    for (i, b) in line.bytes().enumerate() {
+        match b {
+            b'"' => in_str = !in_str,
+            b'#' if !in_str => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
 fn parse_toml_subset(text: &str) -> Result<Parsed, Reject> {
     let mut doc: Doc = Vec::new();
     let mut section_headers: Vec<String> = Vec::new();
@@ -72,9 +87,11 @@ fn parse_toml_subset(text: &str) -> Result<Parsed, Reject> {
         if t.is_empty() {
             continue;
         }
-        // 注释：canonical 不发射注释——在场即拒（canonical 形比较兜底前的
-        // 显式拒因；行尾注释与整行注释同拒）。
-        if t.starts_with('#') || line.contains('#') {
+        // 注释：canonical 不发射注释——串外 `#` 在场即拒（canonical 形比较
+        // 兜底前的显式拒因；行尾注释与整行注释同拒）。双引号串内 `#` 是
+        // 值字符（Python tomllib 同判——串内 # 不构成注释），走串外定位
+        // 豁免（#526 REJECT 修复：单源镜像对齐）。
+        if outside_hash(line).is_some() {
             return Err(Reject {
                 message: format!("manifest: TOML 解析失败： 行 {lineno} 注释非规范形（canonical 不发射注释）"),
                 code: "manifest.syntax.toml", where_: "manifest.toml", line: Some(lineno),
@@ -259,8 +276,6 @@ pub fn check_manifest_text(text: &str) -> Result<ManifestView<'static>, Reject> 
 
     // [app] 五键。
     let app_keys = section_keys(&doc, "app");
-    let want: Vec<&str> = app_keys.iter().copied().filter(|k| k != &"id").collect();
-    let _ = want;
     let expected = ["id", "version", "entry", "type", "intent"];
     let mut got: Vec<&str> = app_keys.clone();
     got.sort_unstable();
@@ -314,8 +329,6 @@ pub fn check_manifest_text(text: &str) -> Result<ManifestView<'static>, Reject> 
                 "manifest.compat.keys", "compat"));
         }
         if n_three == 3 {
-            let mut vs = [(0u32, u32::MAX, 0); 3];
-            let _ = vs;
             let mut triple = Vec::new();
             for k in three {
                 let v = get(&doc, &format!("compat.{k}")).unwrap();
@@ -525,10 +538,11 @@ pub fn check_manifest_text(text: &str) -> Result<ManifestView<'static>, Reject> 
 mod gate_tests {
     use super::*;
 
-    /// accept 13 形（Python 现役件 check_manifest_text 实收 2026-11-19——
-    /// canonical 全谱回喂：v0 旧形/词表/可选节组合/尾增节全谱/kitchen sink）。
-    /// 再钉命令与生成器：LOG.md 本轮条目（scratch/w1-mkapp-golden.py 同源）。
-    const ACCEPTS: [&str; 13] = [
+    /// accept 14 形（Python 现役件 check_manifest_text 实收 2026-11-19——
+    /// canonical 全谱回喂：v0 旧形/词表/可选节组合/尾增节全谱/kitchen sink/
+    /// 串内 # 值字符形）。再钉命令与生成器：LOG.md 本轮条目
+    /// （scratch/w1-mkapp-golden.py 同源）。
+    const ACCEPTS: [&str; 14] = [
         "[app]\nid = \"demo.app\"\nversion = \"0.1.0\"\nentry = \"bin/demo\"\ntype = \"app\"\nintent = \"utility\"\n\n[capabilities]\nconsole = false\n",
         "[app]\nid = \"demo.app\"\nversion = \"0.1.0\"\nentry = \"bin/demo\"\ntype = \"app\"\nintent = \"utility\"\n\n[capabilities]\nconsole = true\nfs = [\"rootfs\"]\nnet = [\"client\"]\n",
         "[app]\nid = \"demo.app\"\nversion = \"0.1.0\"\nentry = \"bin/demo\"\ntype = \"app\"\nintent = \"utility\"\n\n[capabilities]\nconsole = true\n\n[runtime]\nstack_pages = 16\n",
@@ -537,6 +551,9 @@ mod gate_tests {
         "[app]\nid = \"demo.app\"\nversion = \"0.1.0\"\nentry = \"bin/demo\"\ntype = \"app\"\nintent = \"utility\"\n\n[compat]\nabi_revision = 1\n\n[capabilities]\nconsole = false\n",
         "[app]\nid = \"demo.app\"\nversion = \"0.1.0\"\nentry = \"bin/demo\"\ntype = \"app\"\nintent = \"utility\"\n\n[compat]\nmin = \"0.1.0\"\ntarget = \"0.1.0\"\ncompile = \"0.1.0\"\nmin_level = 0\nabi_revision = 65535\n\n[capabilities]\nconsole = false\n",
         "[app]\nid = \"demo.app\"\nversion = \"0.1.0\"\nentry = \"bin/demo\"\ntype = \"app\"\nintent = \"utility\"\n\n[capabilities]\nconsole = false\n\n[security]\nprofile = \"standard\"\nkey_lineage = \"lineage-a\"\nintegrator = \"oem-1\"\n",
+        // #526 REJECT 修复新增形：串内 # = 值字符（Python tomllib 同判）。
+        // 对拍锚：Python M.check_manifest_text 收且 canonical 回发射字节恒等。
+        "[app]\nid = \"demo.app\"\nversion = \"0.1.0\"\nentry = \"bin/demo\"\ntype = \"app\"\nintent = \"utility\"\n\n[capabilities]\nconsole = false\n\n[ui]\nlabel = \"C# app\"\n",
         "[app]\nid = \"demo.app\"\nversion = \"0.1.0\"\nentry = \"bin/demo\"\ntype = \"app\"\nintent = \"utility\"\n\n[capabilities]\nconsole = false\n\n[ui]\nicon = \"icons/app.byi\"\nlabel = \"Main View\"\nviews = \"views/main\"\n",
         "[app]\nid = \"demo.app\"\nversion = \"0.1.0\"\nentry = \"bin/demo\"\ntype = \"app\"\nintent = \"utility\"\n\n[capabilities]\nconsole = false\n\n[ui]\nicon = \"icons/a.byi\"\n",
         "[app]\nid = \"demo.app\"\nversion = \"0.1.0\"\nentry = \"bin/demo\"\ntype = \"app\"\nintent = \"utility\"\n\n[capabilities]\nconsole = false\n\n[agent-actions]\nread-inbox = \"routine\"\nsend-msg = \"sensitive\"\nwipe-all = \"destructive\"\n",
@@ -556,7 +573,7 @@ mod gate_tests {
     }
 
     #[test]
-    fn golden_accepts_13_forms() {
+    fn golden_accepts_14_forms() {
         for (i, text) in ACCEPTS.iter().enumerate() {
             match check_manifest_text(text) {
                 Ok(v) => {
@@ -569,7 +586,7 @@ mod gate_tests {
 
     #[test]
     fn kitchen_sink_view_fields() {
-        let v = check_manifest_text(ACCEPTS[12]).unwrap();
+        let v = check_manifest_text(ACCEPTS[13]).unwrap();
         assert_eq!(v.id, "x.y-z_1");
         assert!(v.console);
         assert_eq!(v.fs, Some("rootfs"));
@@ -699,6 +716,35 @@ mod gate_tests {
         let e = check_manifest_text(&text).unwrap_err();
         assert_eq!(e.code, "manifest.syntax.toml");
         assert!(e.line.is_some(), "语法层行号应透传");
+    }
+
+    #[test]
+    fn hash_in_string_exempt_outside_rejected() {
+        // #526 REJECT 修复钉板：串内 # = 值字符（Python tomllib 同判）。
+        // 三收面：ui.label / blob.usage / 串内 # 行后续照常解析；两拒面：
+        // 行尾真注释（串闭合后 #）与整行注释仍解析层拒。
+        let in_str_label = m(BASE, &[("console = false\n", "console = false\n\n[ui]\nlabel = \"C# app\"\n")]);
+        let v = check_manifest_text(&in_str_label).unwrap();
+        assert_eq!(v.ui.as_ref().unwrap().label, Some("C# app"), "串内 # 应作值字符收");
+
+        let in_str_blob = m(BASE, &[("console = false\n", &format!(
+            "console = false\n\n[blob]\nlicense = \"MIT\"\norigin = \"o\"\nsha256 = \"{}\"\nsize = \"42\"\nusage = \"C# runtime helper\"\n", "b".repeat(64)))]);
+        let v = check_manifest_text(&in_str_blob).unwrap();
+        assert_eq!(v.blob.as_ref().unwrap().usage, "C# runtime helper");
+
+        // 串内 # 不影响后续行解析（状态机逐行独立——跨行不漏）。
+        let in_str_then_normal = m(BASE, &[("console = false\n", "console = false\n\n[ui]\nlabel = \"a#b\"\nviews = \"views/x\"\n")]);
+        let v = check_manifest_text(&in_str_then_normal).unwrap();
+        assert_eq!(v.ui.as_ref().unwrap().views, Some("views/x"));
+
+        let trailing_comment = m(BASE, &[("console = false\n", "console = false  # real comment\n")]);
+        let e = check_manifest_text(&trailing_comment).unwrap_err();
+        assert_eq!(e.code, "manifest.syntax.toml", "行尾真注释应拒");
+        assert_eq!(e.line, Some(9), "行号应透传");
+
+        let whole_line = m(BASE, &[("console = false\n", "console = false\n\n[ui]\n# label = \"x\"\n")]);
+        let e = check_manifest_text(&whole_line).unwrap_err();
+        assert_eq!(e.code, "manifest.syntax.toml", "整行注释应拒");
     }
 
     #[test]
