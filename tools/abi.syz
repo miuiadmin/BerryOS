@@ -246,7 +246,7 @@ namespace_mount(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # **策略注入 / 遥测**（AI 调度，见 `AI调度设计-v1.0.md`）
 # 0x83 policy_bind（v3·已实现）——注册 AI 策略注入通道（共享环，SET_POLICY）
 policy_bind(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
-# 0x84 telemetry_open（v3·已实现）——打开遥测环（只读）。翻真首域（阶段五第 16 步）：op=0 klog 快照——telemetry_open(op, buf, len) 读内核日志字节环（per-CPU 双环 CPU 序拼接、环内旧→新、每环贡献最新 min(环内有效字节扣除 128B 热尾容错窗, 余量) 字节），返回实写字节数（0 = 两环皆空/读窗不稳的诚实空，常态 >0）；三拒面：op 域外 -ENOTSUP（SwitchRec/WakeRec 环读口随后续波次）、len=0 或超 16KiB 单读帽 -EINVAL、copy_out 失败 -EFAULT（已写段诚实保留）。零 handle 零权利位（系统级遥测读面——sched_util_snapshot 同族口径）
+# 0x84 telemetry_open（v3·已实现）——打开遥测环（只读）。翻真首域（阶段五第 16 步）：op=0 klog 快照——telemetry_open(op, buf, len) 读内核日志字节环（per-CPU 双环 CPU 序拼接、环内旧→新、每环贡献最新 min(环内有效字节扣除 128B 热尾容错窗, 余量) 字节），返回实写字节数（0 = 两环皆空/读窗不稳的诚实空，常态 >0）；三拒面：op 域外 -ENOTSUP（op 域 add-only 三档在册：op=1 memstat 定长 40B 五域〔2026-11-19 遥测刀、bsh free 消费〕；op=2 双族环快照〔2026-11-19 环读口刀——32B 轻头+每环 24B 段描述符+变长载荷，SwitchRec/WakeRec CPU 序段序旧→新整条截尾、逐环一致跨环尽力一致、降级段 count=0 total 照出，berryctl trace 消费〕）、len=0 或超 16KiB 单读帽 -EINVAL、copy_out 失败 -EFAULT（已写段诚实保留）。零 handle 零权利位（系统级遥测读面——sched_util_snapshot 同族口径）
 telemetry_open(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **安全 / 远程证明**（预留）
