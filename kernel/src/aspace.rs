@@ -40,58 +40,37 @@ fn asid_lock() {
     }
 }
 
-/// 尝试分配一个空闲且未在任一核 `TTBR0_EL1` 钉死的 ASID（F0-2：满载返 `None` 供
-/// `sys_process_create` 折 `-ENOMEM`，绝不重复发放活跃号）。
-pub fn try_alloc_asid() -> Option<u16> {
-    let pinned = berry_hal_aarch64::active_cpu_asids();
+/// 取一个新 ASID（首调用惰性初始化；`just` 关卡输出里打印过实测宽度）。
+/// S-4 4-3：计数器推进由 [`ASID_LOCK`] 互斥（原「单核顺序访问」假设随
+/// `sys_process_create` 双核化失效）；回卷 quiesce 恒在**锁外**——锁内
+/// 取号 + 回卷代数 bump（代数序 = 取号序），rolled 即放锁，锁外
+/// [`roll_quiesce_arm`]（本核全量失效 + 广播置闩，**不等待**——SVC 路等待
+/// 归 dispatch 尾，内核任务路显式驱动）。单核（boot 前期 / ktest）零争用
+/// 直过，arm 短路为仅本地失效（与 4-3 前行为零漂移）。
+pub fn alloc_asid() -> u16 {
     asid_lock();
-    // SAFETY: ASID_LOCK 临界区（互斥）；惰性初始化同临界区内完成。
-    let picked = unsafe {
+    // SAFETY: ASID_LOCK 临界区（互斥）；惰性初始化同临界区内完成。boot
+    // DAIF 窗 / SVC 屏蔽窗 / 测试任务窗均可达，持锁窗有界（纯计数器操作）。
+    let (asid, rolled) = unsafe {
         let slot = &raw mut ASIDS;
         if (*slot).is_none() {
             *slot = Some(AsidAllocator::new(berry_hal_aarch64::asid_bits()));
         }
-        let res = (*slot).as_mut().unwrap().try_alloc(&pinned);
-        if let Some((_, true)) = res {
+        let (asid, rolled) = (*slot).as_mut().unwrap().alloc();
+        if rolled {
             berry_hal_aarch64::tlbshoot::roll_gen_bump();
         }
-        res
+        (asid, rolled)
     };
+    // G3-3 lockdep（g3-3c）：物理放点（一）；同款见 asid_force_near_roll。
     #[cfg(feature = "lockdep")]
     berry_hal_aarch64::lockdep::release(berry_hal_aarch64::lockdep::CLASS_ASID);
     ASID_LOCK.store(false, Ordering::Release);
-    if let Some((asid, rolled)) = picked {
-        if rolled {
-            // 锁外武装：本核全量失效 + 广播置闩（本函数绝不等待）。
-            berry_hal_aarch64::tlbshoot::roll_quiesce_arm();
-        }
-        Some(asid)
-    } else {
-        None
+    if rolled {
+        // 锁外武装：本核全量失效 + 广播置闩（本函数绝不等待）。
+        berry_hal_aarch64::tlbshoot::roll_quiesce_arm();
     }
-}
-
-/// 取一个新 ASID（boot / ktest 可信语境便捷入口；耗尽即 panic，EL0 路径走 [`try_alloc_asid`]）。
-pub fn alloc_asid() -> u16 {
-    try_alloc_asid().expect("alloc_asid: 硬件可用 ASID 全部耗尽")
-}
-
-/// 归还已销毁根地址空间的 ASID（F0-2：清零活跃位图，游标不回退，推迟复用至下次全量失效）。
-pub fn free_asid(asid: u16) {
-    if asid == 0 {
-        return;
-    }
-    asid_lock();
-    // SAFETY: ASID_LOCK 临界区互斥。
-    unsafe {
-        let slot = &raw mut ASIDS;
-        if let Some(alloc) = (*slot).as_mut() {
-            alloc.free(asid);
-        }
-    }
-    #[cfg(feature = "lockdep")]
-    berry_hal_aarch64::lockdep::release(berry_hal_aarch64::lockdep::CLASS_ASID);
-    ASID_LOCK.store(false, Ordering::Release);
+    asid
 }
 
 /// 测试注入（fw_cfg `opt/berry/asidroll` 门内专用——smoke-smp 相 4）：

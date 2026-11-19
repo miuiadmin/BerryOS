@@ -24,8 +24,13 @@
 //!   （acct/T/U/R/L/I/K/P/X 九段 + U/P 三段形 `w/i/nw`、其余 `w/i` 两段
 //!   形——行格式的字段序与段形是 smoke 收割正则的契约面，散拼一处错序
 //!   即红一整轮 CI）。
+//! - [`MemstatRec`] / [`TELEMETRY_OP_KLOG`] / [`TELEMETRY_OP_MEMSTAT`]：
+//!   0x84 telemetry_open op 域的出参形状与 op 常量单源（遥测 v3 首件
+//!   memstat 定长快照 40B——内核派发与 berry-sys 包装同引此，消内核/
+//!   用户双写；add-only 扩路见 [`MemstatRec`] 注）。
 //!
-//! 与冻结面的关系：syscall ABI 零触碰；环/槽表的原子机械（seqlock 写方
+//! 与冻结面的关系：NR 表/派发面零触碰（0x84 op 域常量与出参形状是唯一
+//! ABI 面，即上条单源项）；环/槽表的原子机械（seqlock 写方
 //! 协议、fetch_min/max 序）不在此 crate（有状态并发面留 kernel——本面只
 //! 钉「值怎么编码」的判定律，不钉「环怎么写」的机械）。
 //!
@@ -160,6 +165,46 @@ pub fn wakesrc_row_shape_ok() -> bool {
         && WAKESRC_FIELD_ORDER[7] == "P"
         && WAKESRC_FIELD_ORDER[8] == "X"
 }
+
+// ---- 0x84 op 域单源（遥测 v3 首件 memstat：形状与 op 常量——内核派发
+// （syscall.rs）与 berry-sys 包装同引此，消内核/用户双写）----
+
+/// 0x84 telemetry_open 的 op 域常量（单源）。0 = klog 快照（内核日志
+/// 字节环——bsh dmesg 消费面）。
+pub const TELEMETRY_OP_KLOG: u64 = 0;
+
+/// 1 = memstat 定长快照（[`MemstatRec`] 40B——遥测 v3 首件）。演进注：
+/// SwitchRec/WakeRec 环读口自 op=2 起按落地序取号，不预留（add-only
+/// 纪律下预留号无执法值——域外恒 -ENOTSUP 与未定义同形）。
+pub const TELEMETRY_OP_MEMSTAT: u64 = 1;
+
+/// memstat 定长快照（0x84 op=1 出参——`#[repr(C)]` ABI 形状 day-one 定
+/// 型；字段全定宽 u64 对齐 8、LE 直拷，无 usize/bool——40B 整）。
+///
+/// 字段序 = 阅读序（总量 → 不可动 → 已用 → 可用 → VMO 账）：`free_pages`
+/// 是读点派生域（装配方在单一致窗三元组上按 total − reserved − alloc
+/// 派生——恒等式按构造闭合，消费方可自验）；`committed_pages` 与
+/// `alloc_pages` 分窗读，运行窗两者无恒等式（静止窗恒 committed ≤
+/// alloc）。
+///
+/// add-only 扩路（对外层四十年合同的 op 域版）：加字段 = 尾追新版本域
+/// 或取新 op 值，禁改旧结构——旧调用方 len=40 恒收 40B v1 前缀，返回
+/// 值自证所得。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct MemstatRec {
+    /// 物理页总量（boot 构造窗定容常量，不随负载漂）。
+    pub total_pages: u64,
+    /// 保留页数（buddy RESERVED 对称水位——内核镜像/dtb 等，永不可分配）。
+    pub reserved_pages: u64,
+    /// 已分配页数（buddy allocated 水位——RESERVED 恒不计入）。
+    pub alloc_pages: u64,
+    /// 空闲页数（派生域：total − reserved − alloc）。
+    pub free_pages: u64,
+    /// VMO 已提交页数（per-page ledger 项数的全局聚合投影）。
+    pub committed_pages: u64,
+}
+const _: () = assert!(core::mem::size_of::<MemstatRec>() == 40);
 
 // ---- W3-Q81：环读面（双流 vct 归并/帽律）分模块——见 ringmerge.rs ----
 pub mod ringmerge;
@@ -413,5 +458,35 @@ mod tests {
         // 守恒律（G1.5 ① 的行内自洽）：acct == Σ wakes。
         let sum = row.t.0 + row.u.0 + row.r.0 + row.l.0 + row.i.0 + row.k.0 + row.p.0 + row.x.0;
         assert_eq!(row.acct, sum, "WAKESRC 行内 acct ≠ Σ 槽 wakes（两路失联）");
+    }
+
+    // ---- 0x84 op 域：MemstatRec 形状与 op 常量钉板 ----
+
+    /// 形状钉板：size == 40（5×u64）、align == 8——改字段数/改宽即红
+    /// （定义处 const 断言钉编译期，此处 host 面再钉一层执法）。
+    #[test]
+    fn memstat_rec_shape_pinned() {
+        assert_eq!(core::mem::size_of::<MemstatRec>(), 40, "五域 5×u64 = 40B 冻结面");
+        assert_eq!(core::mem::align_of::<MemstatRec>(), 8, "字段全定宽对齐 8");
+    }
+
+    /// 字段偏移字面钉板（0/8/16/24/32——阅读序 total→reserved→alloc→free→
+    /// committed；插字段/错序即红）。
+    #[test]
+    fn memstat_rec_field_offsets_pinned() {
+        assert_eq!(core::mem::offset_of!(MemstatRec, total_pages), 0);
+        assert_eq!(core::mem::offset_of!(MemstatRec, reserved_pages), 8);
+        assert_eq!(core::mem::offset_of!(MemstatRec, alloc_pages), 16);
+        assert_eq!(core::mem::offset_of!(MemstatRec, free_pages), 24);
+        assert_eq!(core::mem::offset_of!(MemstatRec, committed_pages), 32);
+    }
+
+    /// op 常量值钉板（0/1——add-only 纪律下已发布值永不重排；改值 = 撕
+    /// 既有调用方）。
+    #[test]
+    fn telemetry_op_values_pinned() {
+        assert_eq!(TELEMETRY_OP_KLOG, 0);
+        assert_eq!(TELEMETRY_OP_MEMSTAT, 1);
+        assert_ne!(TELEMETRY_OP_KLOG, TELEMETRY_OP_MEMSTAT);
     }
 }
