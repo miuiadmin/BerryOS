@@ -74,6 +74,20 @@ build-user:
         cargo build --release --manifest-path tools/elf2flat/Cargo.toml \
         --target "$HOST_TRIPLE"
     ELF2FLAT="$ROOT_ABS/tools/elf2flat/cargo-target/$HOST_TRIPLE/release/elf2flat"
+    # mkapp 换轨五刀（彻底 Rust 化轨道 b 层 #4 刀序第四位，§5 钉板五步第
+    # 5 步）：产链现役件 = tools/mkapp（Rust 独立小工作区，#522-#534 四刀
+    # 件）——先编后用，下方四处 .bap 打包位全走本 bin。Python 版
+    # mkapp.py 不退役（p3sim/gensourceindex/berry_assemble import 图根 +
+    # CLI 对拍 oracle + selftest 语义钉板——selftest_guard 零豁免契约不
+    # 动）。对拍背书：三组真实 staging（无 UI/全 UI/能力面）Rust↔Python
+    # 产物 sha256 恒等 + 摘要行全等 + Python --check 交叉复验（tests/
+    # build_parity.rs，cargo test test-host 前置跑）。mkcpio path 依赖 =
+    # 单编码器纪律（mkimage→mkfat 同款先例）。cd user 后相对路径失效——
+    # 一律走 $ROOT_ABS 绝对路径（mkcpio 块同坑纪律）。
+    CARGO_TARGET_DIR="$ROOT_ABS/tools/mkapp/cargo-target" \
+        cargo build --release --manifest-path "$ROOT_ABS/tools/mkapp/Cargo.toml" \
+        --target "$HOST_TRIPLE"
+    MKAPP="$ROOT_ABS/tools/mkapp/cargo-target/$HOST_TRIPLE/release/mkapp"
     # GUI-0（2026-10-29）：user 侧 none-target 家族（echo/talker/thrchild/svcmgr/
     # abuser/hello）**保留 NEON codegen**——EL0 任务 FP 态已由 TaskContext 全量保存
     # 兜底、GUI 光栅后续正要用 SIMD；根 .cargo/config.toml 的 -neon 旗只属内核
@@ -329,8 +343,8 @@ build-user:
     cp -R bins/appdemo/views userbins/app-stage/APPDEMO/
     cp bins/appquiet/manifest.toml userbins/app-stage/APPQUIET/
     cp cargo-target/aarch64-unknown-linux-musl/release/appquiet userbins/app-stage/APPQUIET/bin/
-    python3 ../tools/mkapp.py userbins/app/APPDEMO.bap userbins/app-stage/APPDEMO
-    python3 ../tools/mkapp.py userbins/app/APPQUIET.bap userbins/app-stage/APPQUIET
+    "$MKAPP" userbins/app/APPDEMO.bap userbins/app-stage/APPDEMO
+    "$MKAPP" userbins/app/APPQUIET.bap userbins/app-stage/APPQUIET
     # app-2 刀2：APPTOMB 迁 libc 路（docs/app-2实施设计草案-v1.0.md §4
     # 换链——musl target + berry-libc shim + berry-ld 剥 musl crt 同
     # stdhello 链；none target 全量 build 行不再产出〔user/ members 已摘
@@ -345,7 +359,7 @@ build-user:
     mkdir -p userbins/app-stage/APPTOMB/bin
     cp bins/apptomb/manifest.toml userbins/app-stage/APPTOMB/
     cp cargo-target/aarch64-unknown-linux-musl/release/apptomb userbins/app-stage/APPTOMB/bin/
-    python3 ../tools/mkapp.py userbins/app/APPTOMB.bap userbins/app-stage/APPTOMB
+    "$MKAPP" userbins/app/APPTOMB.bap userbins/app-stage/APPTOMB
     # 波 4 先行批（W4-RECON §5.4 改动点 1）+ 刀 A SETTINGS 接线：七应用
     # crate 接线——appstub 秒退壳退役，APPTOMB :315-327 食谱（musl +
     # berry-ld 绝对路径 RUSTFLAGS → staging → mkapp 五道门禁）。资产单源
@@ -382,7 +396,7 @@ build-user:
         else
             cp -R "bins/appstub/apps/$id/views" "userbins/app-stage/$id/"
         fi
-        python3 ../tools/mkapp.py "userbins/app/$id.bap" "userbins/app-stage/$id"
+        "$MKAPP" "userbins/app/$id.bap" "userbins/app-stage/$id"
     done
     # G-eco-c/d + app-0：rootfs.cpio（hello + stdhello + hexyl + bsh + fail + bench1 + fsmgr + vprobe + vblk + vnet ELF 本体——装载走
     # svcmgr 流式 cpio/ELF 链，非 include_bytes 内嵌；产物在仓库根 =
@@ -1085,6 +1099,11 @@ test-host:
     # --selftest 行同挂），后续刀（check_manifest_text 门禁/BYI1/信封/
     # 签名）依彻底Rust化计划 §4 刀序推进后再换轨。
     cargo test --manifest-path tools/mkapp/Cargo.toml --target {{host}}
+    # W1（同上五刀·产链换轨后置注）：mkapp cargo test 现含 build 编排面
+    # 镜像测试 + tests/build_parity.rs oracle 对拍（三组真实 staging
+    # Rust↔Python 产物 sha256 恒等 + 摘要行全等 + --check 交叉复验 +
+    # 拒面同文案）——产链现役件已切本 bin（build-user 四处打包位），
+    # Python mkapp.py = 模块面 + oracle（--selftest 行同挂，语义钉板）。
     # W1 接线（SEC-02 A2 同款纪律）：berry_assemble 门禁自检——V13 组装器
     # （ADR #82「组装不 fork」product.toml 校验/dry-run 计划/装配反回滚门）
     # 落地时自称 51 腿绿但从未接线 test-host：有 selftest 零自动执法 =
