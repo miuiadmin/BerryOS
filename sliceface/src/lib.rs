@@ -28,6 +28,10 @@
 //!   不被 0 预算踩死）。
 //! - [`throttle_admissible`]:S5-c 预算执法准入——deadline + 预算已设
 //!   （preempt_threshold>0）+ 未在限流（HELD_THROTTLE 位清）三与门。
+//! - [`dl_grant`]:预算授片分派律（预算授片分派刀 2026-11-19）——带预算
+//!   deadline 任务授 budget 尺寸片；budget<=0 / 非 deadline 回 `None`
+//!   （消费侧回落 class 面——前置与 [`throttle_admissible`] 前两合取
+//!   一致：受预算执法任务集 == 受预算授片任务集）。
 //!
 //! 与冻结面的关系：`SchedClass` trait 冻结签名零触碰；SLEEPQ/RQ 物理
 //! 结构不在此 crate（裸指针机械留 sched——本面只钉「预算怎么算」的
@@ -161,6 +165,20 @@ pub fn throttle_admissible(
         && preempt_threshold > 0
         && slice_exhausted(slice_left)
         && !throttled
+}
+
+/// 预算授片分派律（预算授片分派刀 2026-11-19）：带预算 deadline 任务
+/// （`prio_effective >= PRIO_DEADLINE` 且 preempt_threshold>0）的授片
+/// 尺寸 = budget（`Some`），其余 `None`——消费侧回落 class 面。前置两
+/// 合取与 [`throttle_admissible`] 的前两门一致（协调律）：受预算执法的
+/// 任务集恰是拿预算尺寸授片的任务集，免执法者免预算片。budget<=0 回
+/// `None` 而非授 0——ktest 手造与生产 budget_ns=0（sched_setattr 合法
+/// 回退态）的无预算 deadline 任务不被踩死（[`replenish`] 的「budget<=0
+/// 保持现值」回落律同款）；授 0 会造 slice_left 恒 0 的语义僵尸
+/// （eligibility 不看 slice，永不出限流面）。
+#[inline]
+pub fn dl_grant(prio_effective: i32, preempt_threshold: i32) -> Option<u64> {
+    (prio_effective >= PRIO_DEADLINE && preempt_threshold > 0).then_some(preempt_threshold as u64)
 }
 
 #[cfg(test)]
@@ -310,5 +328,23 @@ mod tests {
         assert!(!throttle_admissible(1000, 100, 1, false));
         // 已限流 → 拒（幂等防重复置位）。
         assert!(!throttle_admissible(1000, 100, 0, true));
+    }
+
+    /// 预算授片分派律：三态 + 边界。
+    #[test]
+    fn dl_grant_law() {
+        // deadline + budget>0 → Some(budget)。
+        assert_eq!(dl_grant(PRIO_DEADLINE, 100), Some(100));
+        assert_eq!(dl_grant(i32::MAX, 1), Some(1));
+        // budget=0 / 负 → None（无预算面回落 class 面，不被踩死）。
+        assert_eq!(dl_grant(PRIO_DEADLINE, 0), None);
+        assert_eq!(dl_grant(PRIO_DEADLINE, -1), None);
+        // 非 deadline → None（threshold>0 也拒——两门独立合取）。
+        assert_eq!(dl_grant(PRIO_DEADLINE - 1, 100), None);
+        assert_eq!(dl_grant(0, 100), None);
+        assert_eq!(dl_grant(i32::MIN, 100), None);
+        // i32::MAX 不溢出：as u64 零符号扩展（spawn 面 min i32::MAX 截断
+        // 语义既存，非本律引入）。
+        assert_eq!(dl_grant(PRIO_DEADLINE, i32::MAX), Some(i32::MAX as u64));
     }
 }

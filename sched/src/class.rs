@@ -82,6 +82,10 @@ use berry_sliceface::{
 // W3-Q11：deadline 带优先级常量单源 berry-sliceface——本模块 re-export
 // （lib.rs `pub use class::PRIO_DEADLINE` 消费链不变，band.rs 同）。
 pub use berry_sliceface::PRIO_DEADLINE;
+// 预算授片分派刀（2026-11-19）：授片尺寸律单源 berry-sliceface——本模块
+// re-export（lib.rs `pub use class::dl_grant`——ktest 消费走
+// berry_sched::dl_grant 形，PRIO_DEADLINE 同款链）。
+pub use berry_sliceface::dl_grant;
 
 /// 判定：是否 deadline 任务（带序 ≥ PRIO_DEADLINE）。S5-c 计数门起
 /// `runqueue` 原语层（`DL_ON_RING` 账点）同判据消费——单一事实源。
@@ -977,14 +981,37 @@ impl TaskClass {
     /// `slice_cycles`（**零漂移**——现役所有非 band 任务不受影响）；
     /// `Band` = 武装槽 quota 镜像优先（04 号审计机会四①（2026-11-17）——
     /// [`FairBand::quantum_cached`]），未武装回落现算——懒武装路径两值恒等；显式 configure 下授片跟随槽 quota（语义变化明示见 quota_cycles_of doc）（band
-    /// 特有配额替代全局片）。消费面 = `sched.rs` 八 Band 可达授片点 +
-    /// idle 授片（Unit——`sched.rs::on_irq_tick` idle 臂 intent 0 不出带
-    /// ），interactive 短片/ utility 长片的差异化源头。
+    /// 特有配额替代全局片）。deadline 例外（预算授片分派刀 2026-11-19）：
+    /// 带预算 deadline 任务的授片不取本面值——dl_grant 双门先行授 budget
+    /// （[`TaskClass::grant_cycles_of`] per-task 面，本面成为其回落臂），
+    /// 故「Unit=零漂移」对带预算 deadline 任务不成立；本面原样保留 = class
+    /// 面事实源（ktest class 面断言零动）。原直接消费面 = `sched.rs` 八
+    /// Band 可达授片点 + idle 授片（Unit——`sched.rs::on_irq_tick` idle 臂
+    /// intent 0 不出带），interactive 短片/ utility 长片的差异化源头。
     pub fn grant_cycles(&self) -> u64 {
         match self {
             TaskClass::Unit => hal::timer::slice_cycles(),
             TaskClass::Band(b) => b.quantum_cached(),
         }
+    }
+
+    /// per-task 授片面（预算授片分派刀 2026-11-19）：deadline 正交轴前置
+    /// 于 class 分派——[`dl_grant`] 双门（deadline + preempt_threshold>0）
+    /// 命中授 budget 尺寸片，否则回落 class 面 [`TaskClass::grant_cycles`]。
+    /// 三点口径：① class 面 `grant_cycles` 原样（ktest class 面断言零动）；
+    /// ② deadline 轴正交于 intent 带轴——Band+deadline 组合实存（ktest
+    /// SMPLZ sldl 形；生产 `apply_sched_attr_to_task` 的 INTENT 块与
+    /// policy=3 块独立 if 可并置），命中时预算压过本带 quantum；③ 回落 =
+    /// class 面（budget=0 是 ktest 手造与生产 sched_setattr 的合法态——
+    /// 无预算 deadline 任务不被 0 预算踩死，replenish 回落律同款；Band
+    /// 无预算 deadline 保带 quantum 逐位零漂移）。消费面 = `sched.rs`
+    /// 授片习语单形（八授片点 + idle 点——idle 免疫由双门结构性保证：
+    /// IDLE_TASK prio/threshold 双零，两合取各自独立不满足）。
+    pub fn grant_cycles_of(&self, t: &Task) -> u64 {
+        if let Some(b) = dl_grant(t.prio_effective, t.preempt_threshold) {
+            return b;
+        }
+        self.grant_cycles()
     }
 
     /// 带参数投影（`Unit` = None）——ktest spawn 面断言与诊断面消费。
