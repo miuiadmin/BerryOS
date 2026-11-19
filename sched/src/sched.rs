@@ -1079,8 +1079,9 @@ pub fn spawn_user_env(entry_va: usize, arg: usize, env: usize, sp0_va: usize,
 /// [`spawn`]（IRQ 屏蔽态）。
 ///
 /// Plan B v0.5：返回新任务的裸指针（usize 不透明值——语义层写入 `pinned`
-/// 钉住字段；crate 边界纪律同 `proc_tag`）。任务已入 runqueue，指针即
-/// `&'static mut Task` 的地址（Box::leak）。
+/// 钉住字段；crate 边界纪律同 `proc_tag`）。返回时**尚未入环**——入环
+/// 拆至 [`enqueue_prepared_user`]（F-E1/S-6：SMP 下入环后即可被对核偷取，
+/// 调用侧簿记须先完成）；指针即 `&'static mut Task` 的地址（Box::leak）。
 pub fn try_prepare_user(entry_va: usize, arg: usize, arg1: usize, sp0_va: usize,
                          name: &'static [u8], ttbr0: usize, asid: u16, proc_tag: usize,
                          pinned: usize, thread_key: usize, spread: bool) -> Option<usize> {
@@ -1365,19 +1366,42 @@ pub fn intent_snapshot_current(now_ns: u64) -> Option<(crate::intent::MsgIntent,
 /// 无效 → `None`（消息照常投递，不结算不记遥测）。IRQ 屏蔽窗内单核访问。
 /// W3-Q6：结算后附 `(declared, effective)` 双档读出（`intent_settle_note`
 /// 的档位直方/通胀计数源——`Task` 字段在锁窗内单核读安全）。
+/// 机会五③密度账本化（2026-11-19）契约扩张——**新增本核 RQ 锁触达**：
+/// settle 的 `write_back` 是生产唯一在环 `intent_effective` 写点
+/// （cur-in-ring 不变量——Running 常驻环），锁包后按带变重登 per-RQ 密度
+/// 账本（`Runqueue::density_reclass`）。调用方须 IRQ 屏蔽（`rq_lock` 取放
+/// 契约）：现役唯一调用者 syscall.rs recv slowpath 已满足（PreemptSpan
+/// 禁切 + syscall 全屏蔽窗）；裸调风险 = 未屏蔽窗内阻塞取锁+本核 tick
+/// 自等。锁窗内纯算术无切换；**write_back 与计数修正必须同窗**（
+/// write_back 留窗外 = integrity 同窗双读见「新带账旧值」假火）。
 pub fn intent_settle_current_ext(
     m: crate::intent::MsgIntent,
     opt_out: bool,
     now_ns: u64,
 ) -> Option<(crate::intent::SettleOut, u8, u8)> {
-    // SAFETY: CURRENT 可写；syscall 主体 IRQ 屏蔽（免锁根基），单核顺序。
+    // SAFETY: CURRENT 可写；syscall 主体 IRQ 屏蔽（免锁根基 + 本刀起 RQ
+    // 锁取放契约——doc 契约扩张注）。
     let cur = unsafe { current_task() };
     if cur.is_null() {
         None
     } else {
         // SAFETY: 同上。
         let t = unsafe { &mut *cur };
+        // 机会五③锁包重登：before/after 两读带档（`band_of_task` 单源
+        // 派生），带变则重登——本核 RQ（cur-in-ring ⇒ CURRENT 恒在本核
+        // 环）；band 不变（仅 hop/since/acc 变）时 reclass 短路但仍取放
+        // 锁（窗内纯算术，µs 级——recv slowpath 可付）。
+        let before = band_of_task(&*t);
+        // SAFETY: 调用方 IRQ 屏蔽（doc 契约）；窗内禁切换（纯算术）。
+        let phys = unsafe { rq_lock() };
         let out = crate::intent::settle(t, m, opt_out, now_ns);
+        let after = band_of_task(&*t);
+        if before != after {
+            // SAFETY: 本核分诊；重登在本核 RQ 锁窗内（单写者纪律）。
+            unsafe { rq() }.density_reclass(before, after);
+        }
+        // SAFETY: 配对上行 rq_lock（phys 退化形同款直通）。
+        unsafe { rq_unlock(phys) };
         Some((out, t.intent_declared, t.intent_effective))
     }
 }
@@ -3336,8 +3360,9 @@ pub fn for_each_runnable(mut f: impl FnMut(&mut Task)) {
 /// 把 `t` 链到本核 runqueue 环尾。**ktest 手搭 runnable 者专用**（生产路径
 /// 一律走 class enqueue/`enqueue_with_kick`——本函数不置 Ready、不路由）。
 /// 契约同 `Runqueue::link_back`：IRQ 屏蔽窗内、`t` 不在任何环上（链接字段
-/// 均 `None`）且地址稳定（ktest `Box::leak`）；len/Σvruntime/DL_ON_RING
-/// 三账本经结构原语层入账——ring_check 金丝雀对账不漂移。
+/// 均 `None`）且地址稳定（ktest `Box::leak`）；各账本（len/Σvruntime/
+/// DL_ON_RING/机会五③密度两槽）经结构原语层入账——ring_check/integrity
+/// 金丝雀对账不漂移。
 pub fn rq_insert_kt(t: &mut Task) {
     // SAFETY: 契约如上；ktest 单核屏蔽窗（sched::init 前，环空零争用）。
     unsafe { rq().link_back(core::ptr::NonNull::from(t)) };
@@ -3348,6 +3373,23 @@ pub fn rq_insert_kt(t: &mut Task) {
 pub fn rq_unlink_kt(t: &mut Task) {
     // SAFETY: 同上。
     unsafe { rq().unlink(core::ptr::NonNull::from(t)) };
+}
+
+/// 机会五③密度账本化（2026-11-19）ktest 面：对给定（本地）Runqueue 做带档
+/// 重登——[`Runqueue::density_reclass`] 的跨 crate 出口（pub(crate) 面
+/// kernel/ktest 不可达；生产唯一调用者 = [`intent_settle_current_ext`]
+/// 锁包臂）。ktest 本地环单线程窗（timer/IRQ 未启）——RQ 锁契约的串行
+/// 等价。与 TCB 档位写**成对**使用（settle 锁包的本地环镜像：只调其一
+/// 即账本与走查漂移——DENS 族 D-3 钉的病理面）。
+pub fn density_reclass_kt(rq: &Runqueue, from: u8, to: u8) {
+    rq.density_reclass(from, to);
+}
+
+/// 机会五③密度账本化（2026-11-19）ktest 面：对给定（本地）Runqueue 走查
+/// 密度真值——[`Runqueue::dens_on_ring_walk`] 的跨 crate 出口（生产消费
+/// 面 = `integrity_check` 金丝雀与 `Runqueue::resync_density` 重数）。
+pub fn dens_on_ring_walk_kt(rq: &Runqueue) -> (usize, usize) {
+    rq.dens_on_ring_walk()
 }
 
 /// 重算 `t` 的有效优先级（4-3b 统一合成公式）：
@@ -3407,8 +3449,10 @@ pub fn last_killed() -> &'static [u8] {
 
 /// 环/SLEEPQ 完整性周期走查（复盘雷 2 残留诊断）：环分裂成「头可达活圈 +
 /// 孤儿段」对 pick 完全不可见——smoke 标记全部分裂前打完，30s 长跑五任务
-/// 静默失联由此漏网。本检查对账两笔：①runqueue 走查步数 == len 记账
-///（步数 < len = 孤儿段；到帽 = 断链）；②SLEEPQ 链走计数 == len 记账。
+/// 静默失联由此漏网。本检查对账：①runqueue 走查步数 == len 记账
+///（步数 < len = 孤儿段；到帽 = 断链）；②SLEEPQ 链走计数 == len 记账；
+/// ③（机会五③密度账本化，2026-11-19）per-RQ 密度两计数 == 本环走查真值
+/// （双边等式——见循环内注）。
 /// 消费点 = `on_irq_tick` 金丝雀分支（随 [`bump_switches`] 时间节流到期——
 /// 金丝雀时间节流刀（2026-11-19）起全局 ≤1 次/周期；O(n) 极小）与 ktest。
 /// **零分配、成功路径零输出**；违约即 panic 带时刻响亮失败（失败路径才
@@ -3443,6 +3487,16 @@ fn integrity_check() {
             // 单边断言对在途态免疫。
             let dl_walk = rq_of(cpu).dl_on_ring_walk();
             let dl_ledger = crate::runqueue::dl_on_ring();
+            // 机会五③密度账本对账（2026-11-19）：本环走查真值 vs per-RQ
+            // 两计数 load——**双边等式**（与上 DL 单边不同：per-RQ 账本环
+            // 私有，无 ktest 本地环污染源——DL 单边理由不适用；settle 锁包
+            // 后一切 intent 写点在本队列 RQ 锁窗内 ⇒ 同窗双读必恰等；跨核
+            // 在途偷取〔对核已 unlink、本核未 link〕两环两账同缺席——
+            // per-ring 断言免疫；两向响亮 = 漏登/漂移即捕获，含下溢回绕
+            // 巨值形——等式比较对回绕值恒假）。读须**同锁窗**（同上 DL
+            // 论证：窗外读会被随后的入/出账打穿 = 假火）。
+            let (dens_walk_i, dens_walk_u) = rq_of(cpu).dens_on_ring_walk();
+            let dens_ledger = (rq_of(cpu).int_count(), rq_of(cpu).util_count());
             rq_release(cpu);
             assert!(
                 steps == want,
@@ -3458,6 +3512,15 @@ fn integrity_check() {
                 cpu,
                 dl_walk,
                 dl_ledger
+            );
+            assert!(
+                dens_ledger == (dens_walk_i, dens_walk_u),
+                "integrity: cpu{} density ledger {:?} != walk ({}, {}) \
+                 (missed density_reclass? resync_density after direct intent writes)",
+                cpu,
+                dens_ledger,
+                dens_walk_i,
+                dens_walk_u
             );
         }
         sq_acquire();
@@ -4248,6 +4311,10 @@ pub unsafe fn park_recheck() {
 // 在环数比较（`int > util`——cur-in-ring 不变量使当前任务在计，
 // throttled/frozen 在环保留也在计 = 潜在 interactive 负载；空环〔idle
 // 偷取常态〕= 0>0 假 = 不密集——空闲核无响应供给之争，utility 入住无害）。
+// 两数自机会五③密度账本化（2026-11-19）起读 per-RQ 密度账本（runqueue.rs
+// `int_count`/`util_count`——link_back/unlink 结构原语层入出账 + settle
+// 带变 `density_reclass` 重登，integrity 金丝雀双边等式执法），不再
+// 锁窗整圈走查。
 
 /// 偷取候选的带兼容档（[`steal_band_rank`] 返回值——越小越优）。
 pub const STEAL_RANK_COMPAT: u8 = 0;
@@ -4298,7 +4365,8 @@ fn band_of_task(t: &Task) -> u8 {
 /// IRQ 屏蔽 + 独立远端 RQ 真锁窗（3-1b 起无 KL 包络——窗口正确性自足）；
 /// 本核出选已 None 且**本核 RQ 窗已闭**（调用契约：先 pick 放锁后
 /// 偷——两调用面 idle_loop/park_recheck 均在 rq_unlock 之后；带分布快照
-/// 的本核短锁窗在远端窗**之前**开闭——仍绝不双持）。
+/// 自机会五③〔2026-11-19〕起为免锁账本读——全程无本核锁触达，更绝不
+/// 双持）。
 /// 环手术锁形 = §3 特则「**只持远端**」（c-2b slice 5 真锁包络）：远端
 /// 扫描+摘环一窗 → 放远端 → 无归属窗 → 回插本核再取本地——**绝不双持**
 /// （F-L1「双持一律核号升序」特则本路径构造性不触发——无归属窗单点入队
@@ -4311,44 +4379,26 @@ unsafe fn try_steal_one() -> Option<*mut Task> {
     let other = 1 - me;
     let src = rq_of(other);
     // —— band 感知前置：目标核（本核 = 偷取目的地）带分布快照 ——
-    // 本核 RQ 短锁窗内数环上两现役带在环数（判据与容忍度见节注）。
-    // 快照后放锁再开远端窗——绝不双持；密集是软偏好输入，快照-扫描
-    // 间隙对核唤醒入环的竞态最多翻转边界档（int==util）一档，容忍。
-    // 空环早退（04 号审计机会五①，2026-11-17）：len()==0 空判-only 免锁
-    // 门——空形白付的是锁对而非走查（head None 走查本就零迭代），门砍的
-    // 正是取放锁。门读 = rq.len()（AtomicUsize Relaxed 免锁读——runqueue
-    // Q3 跨核读者先例，place()/tick 拉取门同款在职形；head Cell 裸读是
-    // 跨核无锁窗形式数据竞争，不用）。判据钉死空判-only：tick 拉取门
-    // 独占者形 mine==1 的密度仍承重——扩成「恒跳快照」即破带偏好语义。
-    // 两向无害：读旧非零 → 门不开，锁窗照旧逐位同形；读旧零 → (0,0)
-    // 定义值，仅差 utility 候选一档软偏好——与既有快照-扫描间隙容忍
-    // 同族。全冻结环 len>0 门不开，冻结计数语义保留。
-    let (tgt_int, tgt_util) = if rq_of(me).len() == 0 {
-        (0, 0)
-    } else {
-        let phys = rq_lock_of(me);
-        let mut ni = 0usize;
-        let mut nu = 0usize;
-        if let Some(h) = rq_of(me).head() {
-            let mut cur = h;
-            loop {
-                let p = cur.as_ptr();
-                match band_of_task(&*p) {
-                    crate::intent::INTENT_INTERACTIVE => ni += 1,
-                    crate::intent::INTENT_UTILITY => nu += 1,
-                    _ => {}
-                }
-                // SAFETY: 环上节点必有 next（锁窗内无并发出/入环）。
-                let next =
-                    (*p).rq_next.get().expect("steal dens: on-ring node must have next");
-                if next == h {
-                    break; // 整圈数完
-                }
-                cur = next;
-            }
-        }
-        rq_unlock_of(me, phys);
-        (ni, nu)
+    // 机会五③密度账本化（2026-11-19）：本核 RQ per-queue int/util 两在环
+    // 计数（runqueue.rs——link_back/unlink 结构原语层 + settle 带变
+    // density_reclass 维护，integrity 金丝雀双边等式执法）两次 Relaxed
+    // 免锁读，整体取代旧形「机会五① len 空判门 + 门开时锁窗整圈走查」。
+    // ①空判门就此吞没（超集定谳）：读旧零 → (0,0) 定义值，仅差 utility
+    // 候选一档软偏好（与旧门短路值同形）；读旧非零 → 恒得近真密度 ≡ 旧
+    // 形门不开时的锁窗走查——两向均不劣于旧形，①的「扩成恒跳快照即破
+    // 带偏好语义」禁令随账本精确化消解（门的存在理由是走查成本，非语义
+    // ——账本形走查已零）。账本漂移（漏登）态下空环可能读陈非零（①的
+    // 「空环恒 (0,0)」保证让位——已裁可接受买办：漂移的响亮执法在
+    // integrity 双边等式，快照面只软消费）。
+    // 两次 load 非原子对（int 读于 util 前，间隙对核可入/出环一档）：
+    // 偏差 ≤ 在途一档，与既有「快照-扫描间隙容忍」同族——密集是软偏好
+    // 输入，无正确性面。全冻结环两计数照计（对应旧形 len>0 门不开），冻结
+    // 计数语义保留。
+    // SAFETY: 只取本核引用分诊（me ∈ {0,1}）；两计数读为安全方法
+    //（Relaxed——跨核读者防撕裂，len 先例）。
+    let (tgt_int, tgt_util) = {
+        let r = unsafe { rq_of(me) };
+        (r.int_count(), r.util_count())
     };
     // —— 远端窗（只持远端）：对核环扫描（has_eff_above_filtered 同款走查
     // 形）：band 感知三档选优——兼容档见首即定（早退），否则整圈取最小档。

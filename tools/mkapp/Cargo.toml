@@ -15,6 +15,10 @@ path = "src/lib.rs"
 # .cargo/config.toml 锁 build.target=aarch64-unknown-none，宿主件靠
 # --manifest-path + 显式 --target 走 host 面）。
 [dependencies]
+# mkcpio 单编码器纪律（app-0 §4）：cpio(newc) 归档 = path 依赖复用
+# tools/mkcpio（mkimage→mkfat 同款先例——根 workspace 截断 + 纯 std，
+# 零外部依赖纪律不破；mkcpio 自身零依赖）。
+mkcpio = { path = "../mkcpio" }
 
 # 独立小工作区标记（tools/mkfat 同款形态——根 workspace 自动上溯在此截断）
 [workspace]

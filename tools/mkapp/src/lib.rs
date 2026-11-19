@@ -19,6 +19,8 @@ pub const ENTRY_MAX: usize = 32;
 pub const STACK_PAGES_MIN: u32 = 1;
 pub const STACK_PAGES_MAX: u32 = 64;
 pub const UI_PATH_MAX: usize = 32;
+pub const ICON_FILES_MAX: usize = 4;
+pub const VIEWS_FILES_MAX: usize = 4;
 pub const LABEL_MAX: usize = 32;
 pub const ACTION_NAME_MAX: usize = 24;
 pub const AGENT_ACTIONS_MAX: usize = 16;
@@ -68,6 +70,25 @@ pub mod byi;
 /// W1-Q27 四刀：cpio(newc) 走查器 + SHA256SUMS 复验（`_cpio_entries`/
 /// `_verify_sums` 镜像 + 自持 SHA-256）。
 pub mod cpio;
+
+/// W1-Q27 六刀：`--check` 五步复验面（`check_bap` 镜像）。
+pub mod check;
+
+/// W1-Q27 五刀：build 编排面（Python `build()` 镜像——staging 走查 →
+/// 门禁 → abi 打戳 → SHA256SUMS → cpio 落盘 + 摘要行）+ 产链换轨件。
+pub mod build;
+
+/// W1-Q27 七刀：`--json` 机读单行信封面（Python `_json_envelope`/
+/// `_json_main` 镜像——build/check/new 三 op）。
+pub mod json;
+
+/// W1-Q27 八刀：`--new` 应用脚手架四件（Python `do_new` 镜像——SDK-1a
+/// §4.5；模板 = include_str! 资产与 Python `SCAFFOLD_*` 同字节源）。
+pub mod new;
+
+/// W1-Q27 九刀：P1 签名面（`_find_berry_sign`/`_run_berry_sign`/
+/// `_sign_bap`/`_verify_bap_sig` 镜像——berry-sign 子进程封装 + 发现序）。
+pub mod sign;
 
 /// [security] 三键视图（profile/key_lineage/integrator——齐备或齐缺）。
 #[derive(Debug, Clone, PartialEq, Eq)]

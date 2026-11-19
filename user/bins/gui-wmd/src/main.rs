@@ -23,11 +23,12 @@
 //! ——本行永不进 MARKERS）转 serve。
 //!
 //! **serve poll-first（波3 事件通道 + K1 I1 per-app apps 面）**：每轮顶依次
-//! ①返回兜底软定时到点检查（500ms 单槽——无在途帽不动作）→ ②事件通道
-//! 非阻塞收割（BACK_ACK/订阅端忽略帧）→ ③wm_srv→push_srv→apps 通道段
-//! 确定性轮询（各路至多一条：请求面严格串行 RPC；apps 段 recv 错码 =
-//! close+摘表——坏 app 客户端不杀服务）→ 全 EAGAIN 才
-//! `berry_object_wait_many` 并等；wait 集 = wm_srv + push_srv + 事件通道
+//! ⓪poisoned 中继通道非阻塞清淤（停摆根治刀 §1.2——清到即丢+解污染，
+//! 健康期 Clean fast path 零 I/O）→ ①返回兜底软定时到点检查（500ms 单槽
+//! ——无在途帽不动作）→ ②事件通道非阻塞收割（BACK_ACK/订阅端忽略帧）
+//! → ③wm_srv→push_srv→apps 通道段确定性轮询（各路至多一条：请求面严格
+//! 串行 RPC；apps 段 recv 错码 = close+摘表——坏 app 客户端不杀服务）→
+//! 全 EAGAIN 才 `berry_object_wait_many` 并等；wait 集 = wm_srv + push_srv + 事件通道
 //! （属主+订阅者）+ apps（表序稳定）截 [`WAIT_SET_MAX`]=16（kernel
 //! `WAIT_MANY_MAX` 单源镜像）——**越窗判定走需求总数**
 //! `2 + wait_set_needed()`（不截断值——K1 I1 重造：旧 evt_handles 式拼装
@@ -46,8 +47,10 @@
 //! **K1 I1 起 per-app 多客户端成为常态**（launcher + 各 [ui] app 独占
 //! 通道）：中继阻塞期间对端可变更表 → TABLE_GET 应答快照与「请求到达
 //! 时」表态可能有出入（新鲜度窗口 = 一次中继时长）；某 app 的长 park
-//! 中继（RELEASE_WAIT 等）会顺延他人一帧处理时长——**接受为 v1 语义**
-//! （各客户端 RPC 帽 300s 同值不先炸；中继帽收紧/快照戳挂账后刀）。
+//! 中继（RELEASE_WAIT 等）会顺延他人——**停摆根治刀（§1）起顺延上界
+//! = 分相帽**（send 10s / recv 2s，帽到点快答 ST_BUSY 返回 serve 不自
+//! 杀；毒化通道清淤恢复——见 `relay` 模块注），新鲜度窗口同此上界；
+//! 快照戳挂账后刀。
 //! **波3 裁决（波3设计 §9）**：多客户端跟随面不走 TABLE_WAIT（冻结、
 //! 零新增驻留者——parked 单车位仍只归 inputd push 面），表跟随一律走
 //! 属主/订阅者事件通道 WM_EVENT_TABLE 通知 + TABLE_GET 快照（通知尽力
@@ -70,10 +73,9 @@ use berry_sys::{
 #[cfg(target_os = "linux")]
 use gui_wmd::{AppRecv, Port, SendEvtStatus};
 #[cfg(target_os = "linux")]
-use gui_wmd::table::WmTable;
-
+use gui_wmd::relay::{self, Domain, RelayIo, RelayState};
 #[cfg(target_os = "linux")]
-mod relay;
+use gui_wmd::table::WmTable;
 
 // 链接种子（guifbd 同款）：rlib/LTO 按需保留——无引用则 berry-libc 的 crt0
 // （含 `_start`）不进链接；`#[used]` 防死码消除。
@@ -111,48 +113,26 @@ pub(crate) fn now_ns() -> u64 {
 }
 
 /// 应答 send（无随行 handle 面；EBUSY → wait WRITABLE 重臂重验）。与
-/// guifbd 无限重臂不同：**总帽 10s 到点 trap**（§3 #6 失败面——「持续
-/// EBUSY = trap」，对端不排空 10s = 链病态，不留无限空转面）。
+/// guifbd 无限重臂不同：**总帽 10s 到点丢帧 + 诊断行 + 继续**（停摆根
+/// 治刀 §1.6——旧 trap 面 = 「单个慢客户端不排空拖死全服务」的第二自
+/// 杀面；快照真值恒经 TABLE_GET 可迟一拍重取，客户端自有 RPC 帽兜底）。
+/// 芯在 [`relay::send_capped`]（host 单测 §4 d 直盖）。
 #[cfg(target_os = "linux")]
 pub(crate) fn send_rep(h: Handle, rep: &[u8]) {
-    let deadline = now_ns() + WMD_IDLE_CAP_NS;
-    loop {
-        let s = berry_channel_send(h, rep.as_ptr(), rep.len(), core::ptr::null(), 0);
-        if s == 0 {
-            return;
-        }
-        if s != BERRY_ERR_BUSY {
-            println!("gui-wmd: send 失败 {}", s);
-            trap();
-        }
-        let mut obs = 0u64;
-        if berry_object_wait_one(h, SIGNAL_WRITABLE, deadline, &mut obs) != 0 {
-            println!("gui-wmd: send busy 帽到点");
-            trap(); // 持续 EBUSY（10s 未排空）= fail loud
-        }
-        // 命中 WRITABLE → 下一轮 send 重验（obs 不作判据——重验循环兜底）
+    let mut p = ChanPort;
+    if let relay::SendCap::Dropped = relay::send_capped(&mut p, h, rep, &[], relay::REPLY_SEND_CAP_NS) {
+        println!("gui-wmd: send busy 帽到点（丢帧继续）");
     }
 }
 
 /// 应答 send（随行 handle 面——快照/present 域中继应答/gift ack：handle
-/// 随应答迁回客户端表）；busy 帽语义同 [`send_rep`]。
+/// 随应答迁回客户端表；帽语义同 [`send_rep`]——到点丢帧 + **随行关收**
+/// + 继续）。
 #[cfg(target_os = "linux")]
 pub(crate) fn send_rep_handles(h: Handle, rep: &[u8], hs: &[Handle]) {
-    let deadline = now_ns() + WMD_IDLE_CAP_NS;
-    loop {
-        let s = berry_channel_send(h, rep.as_ptr(), rep.len(), hs.as_ptr(), hs.len());
-        if s == 0 {
-            return;
-        }
-        if s != BERRY_ERR_BUSY {
-            println!("gui-wmd: send 失败 {}", s);
-            trap();
-        }
-        let mut obs = 0u64;
-        if berry_object_wait_one(h, SIGNAL_WRITABLE, deadline, &mut obs) != 0 {
-            println!("gui-wmd: send busy 帽到点");
-            trap();
-        }
+    let mut p = ChanPort;
+    if let relay::SendCap::Dropped = relay::send_capped(&mut p, h, rep, hs, relay::REPLY_SEND_CAP_NS) {
+        println!("gui-wmd: send busy 帽到点（丢帧关随行继续）");
     }
 }
 
@@ -186,11 +166,61 @@ pub(crate) fn trap() -> ! {
     }
 }
 
-/// Port 真实现（guest I/O 壳）：阻塞应答 = 现有 send 族（busy 帽 trap）；
-/// 事件面 = 恒非阻塞（满即丢/病态关闭归策略核裁量）；建联 = channel_create
-/// options=0（intent 结算默认开——GUI 服务不 opt-out）。
+/// Port 真实现（guest I/O 壳）：阻塞应答 = send 族（帽到点丢帧继续
+/// ——§1.6）；事件面 = 恒非阻塞（满即丢/病态关闭归策略核裁量）；建联 =
+/// channel_create options=0（intent 结算默认开——GUI 服务不 opt-out）。
 #[cfg(target_os = "linux")]
 struct ChanPort;
+
+/// RelayIo 真实现（present/hdi 通道面——relay 芯的 guest 缝：非阻塞
+/// 单发/收帧 + 分相等待 + 诊断行直打串口）。
+#[cfg(target_os = "linux")]
+impl RelayIo for ChanPort {
+    fn now_ns(&mut self) -> u64 {
+        now_ns()
+    }
+    fn send_try(&mut self, ch: Handle, rep: &[u8], hs: &[Handle]) -> relay::ChSend {
+        let s = if hs.is_empty() {
+            berry_channel_send(ch, rep.as_ptr(), rep.len(), core::ptr::null(), 0)
+        } else {
+            berry_channel_send(ch, rep.as_ptr(), rep.len(), hs.as_ptr(), hs.len())
+        };
+        match s {
+            0 => relay::ChSend::Sent,
+            BERRY_ERR_BUSY => relay::ChSend::Busy,
+            s => relay::ChSend::Err(s),
+        }
+    }
+    fn wait_writable(&mut self, ch: Handle, deadline: u64) -> bool {
+        let mut obs = 0u64;
+        berry_object_wait_one(ch, SIGNAL_WRITABLE, deadline, &mut obs) == 0
+    }
+    fn recv_try(&mut self, cli: Handle, buf: &mut [u8], hout: &mut [Handle]) -> relay::ChRecv {
+        let mut nb = buf.len();
+        let mut nh = hout.len();
+        let s = berry_channel_recv(cli, buf.as_mut_ptr(), &mut nb, hout.as_mut_ptr(), &mut nh);
+        match s {
+            0 => relay::ChRecv::Frame(nb, nh),
+            BERRY_ERR_AGAIN => relay::ChRecv::Empty,
+            s => relay::ChRecv::Err(s),
+        }
+    }
+    fn wait_readable(&mut self, cli: Handle, deadline: u64) -> bool {
+        let mut obs = 0u64;
+        berry_object_wait_one(cli, SIGNAL_READABLE, deadline, &mut obs) == 0
+    }
+    fn close_all(&mut self, hs: &[Handle]) {
+        for &h in hs {
+            let _ = berry_handle_close(h);
+        }
+    }
+    fn diag(&mut self, msg: &str, code: i32) {
+        println!("{} {}", msg, code);
+    }
+    fn fail(&mut self) -> ! {
+        trap()
+    }
+}
 
 #[cfg(target_os = "linux")]
 impl Port for ChanPort {
@@ -282,16 +312,17 @@ impl Port for ChanPort {
 /// SUBSCRIBE 0x68 + K1 DETACH 0x6A；0x6B..=0x7F 未定形 → 1B ST_BAD）；
 /// **其余一切 op（含 0x20..=0x22 input 域错投、0x90..=0x9F 事件帧型
 /// 错投）→ 1B ST_BAD + close 随行**。`ch` = 帧来源通道（wm_srv 或 app
-/// 通道——应答参数化回它，多客户端隔离的结构基础）。
+/// 通道——应答参数化回它，多客户端隔离的结构基础）。中继臂过
+/// [`RelayState`]（毒化账跨轮驻留——serve 循环持单例）。
 #[cfg(target_os = "linux")]
-fn on_wm(table: &mut WmTable, present_cli: Handle, hdi_cli: Handle, ch: Handle,
-         msg: &[u8], hs: &[Handle]) {
+fn on_wm(table: &mut WmTable, rstate: &mut RelayState, present_cli: Handle, hdi_cli: Handle,
+         ch: Handle, msg: &[u8], hs: &[Handle]) {
     match msg.first() {
         Some(&op) if (gp::OP_GETINFO..=gp::OP_FRAME_TIMING).contains(&op) => {
-            relay::relay(ch, present_cli, msg, hs);
+            relay_dispatch(rstate, Domain::Present, ch, present_cli, msg, hs);
         }
         Some(&op) if (gp::OP_REG_VBLANK..=gp::OP_VBLANK_TIMING).contains(&op) => {
-            relay::relay(ch, hdi_cli, msg, hs);
+            relay_dispatch(rstate, Domain::Hdi, ch, hdi_cli, msg, hs);
         }
         // 0x69 开口：恰 1B + 随行恰 1（畸形/随行数失配 = ST_BAD + close
         // 随行——坏客户端不杀服务）。ack 走新通道（table::app_attach）。
@@ -312,6 +343,31 @@ fn on_wm(table: &mut WmTable, present_cli: Handle, hdi_cli: Handle, ch: Handle,
             close_all(hs);
             st_rep(ch, gp::ST_BAD);
         }
+    }
+}
+
+/// 中继单趟 + 返回契约消费（§1 诊断行映射——帽到点/毒化行保留旧字符串
+/// 前缀「gui-wmd: relay send/recv …帽到点」供串口验尸预言与长稳探针对
+/// 拍：修后这些行可现，但**不再**伴随 G1.5 kill 行）。
+#[cfg(target_os = "linux")]
+fn relay_dispatch(rstate: &mut RelayState, dom: Domain, ch: Handle, cli: Handle,
+                  msg: &[u8], hs: &[Handle]) {
+    use gui_wmd::relay::RelayOutcome::*;
+    let mut port = ChanPort;
+    let name = match dom {
+        Domain::Present => "present",
+        Domain::Hdi => "hdi",
+    };
+    match rstate.relay(&mut port, dom, ch, cli, msg, hs) {
+        Relayed => {}
+        BadAttach => {} // 既有执法面（ST_BAD 应答已自答）
+        SendBusy => println!("gui-wmd: relay send busy 帽到点（快答 ST_BUSY {}）", name),
+        RecvCapPoisoned => {
+            println!("gui-wmd: relay recv 帽到点（快答 ST_BUSY+毒化 {}）", name)
+        }
+        PoisonedBusy => println!("gui-wmd: relay 毒化期快答 ST_BUSY（{}）", name),
+        StaleDropped => println!("gui-wmd: relay 陈旧应答丢弃（{}）", name),
+        ReplyDropped => println!("gui-wmd: send busy 帽到点（中继应答丢弃 {}）", name),
     }
 }
 
@@ -380,11 +436,12 @@ fn main() {
 
     // —— 启动序②：present 首发 RELEASE_WAIT 清前世孤儿别名（guifbd
     // boot 期空转即答——无长 park 边界问题；应答随行归还别名全量即关）。
-    relay::boot_release_all(present_cli);
+    let mut port = ChanPort;
+    relay::boot_release_all(&mut port, present_cli);
 
     // —— 启动序③：present GETINFO 缓存几何（快照头/wm GETINFO 的
     // disp_w/disp_h 域同源取值）。
-    let info = relay::boot_getinfo(present_cli);
+    let info = relay::boot_getinfo(&mut port, present_cli);
     // wm wire 几何域 = u16——表示不了的屏 = 协议破缺面（宁可不起）。
     if info.display_w > u16::MAX as u32 || info.display_h > u16::MAX as u32 {
         eprintln!("gui-wmd: display {}x{} over u16", info.display_w, info.display_h);
@@ -395,20 +452,33 @@ fn main() {
     // WAIT(0) 恒立即答；epoch = 启动单调钟派生 u8——无持久化下唯一跨
     // 启动区分源）。
     let mut table = WmTable::new(info.display_w as u16, info.display_h as u16, now_ns());
-    let mut port = ChanPort;
+    // 中继毒化账（停摆根治刀 §1.2——present/hdi 独立标记，跨轮驻留）。
+    let mut rstate = RelayState::new();
 
     // —— 启动序⑤：诊断行转 serve（小写 wmd 前缀——永不进 MARKERS）。
     println!("gui-wmd: up");
 
-    // —— serve poll-first：每轮顶 = 返回兜底软定时检查 + 事件通道收割
+    // —— serve poll-first：每轮顶 = ⓪poisoned 通道非阻塞清淤（§1.2——
+    // 清到即丢+诊断行+解污染）+ 返回兜底软定时检查 + 事件通道收割
     // （BACK_ACK 至多迟一轮——请求面处理不饿死收割）；wm_srv→push_srv→
     // apps 通道段确定性轮询（各路至多一条）；全 EAGAIN 才 wait_many 并等
     // （deadline 进调用本身）。命中/到点皆回环顶重询（poll-first 无丢唤醒）。
     loop {
+        // ⓪ poisoned 清淤（健康期 Clean fast path 零 I/O）。
+        match rstate.drain(&mut port, Domain::Present, present_cli) {
+            relay::DrainStale::Cleared => {
+                println!("gui-wmd: relay 陈旧应答清淤解污染（present）")
+            }
+            _ => {}
+        }
+        match rstate.drain(&mut port, Domain::Hdi, hdi_cli) {
+            relay::DrainStale::Cleared => println!("gui-wmd: relay 陈旧应答清淤解污染（hdi）"),
+            _ => {}
+        }
         table.on_back_tick(&mut port, now_ns());
         table.sweep_evt(&mut port);
         if let Some((msg, hs)) = poll(wm_srv) {
-            on_wm(&mut table, present_cli, hdi_cli, wm_srv, &msg.0[..msg.1], &hs.0[..hs.1]);
+            on_wm(&mut table, &mut rstate, present_cli, hdi_cli, wm_srv, &msg.0[..msg.1], &hs.0[..hs.1]);
             continue;
         }
         if let Some((msg, hs)) = poll(push_srv) {
@@ -418,7 +488,7 @@ fn main() {
         // apps 轮询段（K1 I1）：一路至多一帧（串行 RPC 纪律同上；命中帧
         // 同走 on_wm——应答参数化回该通道；病态通道在段内 close+摘表）。
         if let Some(f) = table.poll_apps(&mut port) {
-            on_wm(&mut table, present_cli, hdi_cli, f.ch, &f.msg[..f.n], &f.hs[..f.nh]);
+            on_wm(&mut table, &mut rstate, present_cli, hdi_cli, f.ch, &f.msg[..f.n], &f.hs[..f.nh]);
             continue;
         }
         // wait 集 = [wm_srv, push_srv] + 事件通道（属主+订阅者）+ apps，

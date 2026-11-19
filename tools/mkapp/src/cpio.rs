@@ -32,7 +32,7 @@ fn rej(msg: String, code: &'static str, where_: &str) -> Reject {
         message: msg,
         code,
         where_: Box::leak(where_.to_string().into_boxed_str()),
-        line: None,
+        line: None, jx_where: None, jx_expected: None, jx_got: None, jx_fix: None,
     }
 }
 

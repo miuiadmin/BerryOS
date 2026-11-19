@@ -5,3 +5,10 @@ version = 4
 [[package]]
 name = "mkapp"
 version = "0.1.0"
+dependencies = [
+ "mkcpio",
+]
+
+[[package]]
+name = "mkcpio"
+version = "0.1.0"

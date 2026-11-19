@@ -174,6 +174,11 @@ pub fn run() {
     // cbox 刀1（黑匣子崩溃记录表）排液窗数学钉板——main 线增量（末位新号
     // 纪律——ktest done 前；定义在文件尾）。
     test_cbox();
+    // 机会五③密度账本化（2026-11-19）：per-RQ int/util 两在环计数器挂
+    // link_back/unlink 结构原语层 + settle 在环改档 density_reclass 重登
+    // + integrity 双边等式执法的配套钉板（本地 Runqueue；末位新号纪律
+    // ——ktest done 前；sched::init 前跑，par 门恒关不涉偷取触发面）。
+    test_density_ledger();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     crate::splash::step(8, b"ktest done");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
@@ -3508,32 +3513,93 @@ fn test_vmo() {
     let v = unsafe { core::ptr::read_volatile(0x20_0000 as *const u64) };
     assert_eq!(v, MAGIC, "VMO：子映射经共享表根可读（同 PA 双 VA 别名）");
 
+    // E2. 跨 2MiB 段边界映射（W3-Q110 L3 游标钉板）：三页区间
+    // [0x3F_F000, 0x40_2000) 骑跨 0x40_0000 边界——页 0 落段 1 尾槽 511、
+    // 页 1/2 落段 2 首槽 0/1。游标化 map/clear_leaves/protect 的段界推进
+    // （seg_pages 以段尾为界 + 跨段重走查）由本例钉死；读写/protect/unmap
+    // 三面均验。
+    // 主线解堵刀（2026-11-19）+根因：本例原把第三页 VA 写成 0x41_0000——
+    // 十六进制数位进位错（0x40_0000+0x1000=0x40_1000，非 0x41_0000——后者
+    // 在段 2 槽 16，区间外 15 页），裸 read 无期望故障包裹 → L3 平移故障
+    // （ISS=0x7）硬崩。表实测（走查 dump）：map 已正确填段 1 槽 511 + 段 2
+    // 槽 0/1，槽 16 恒 0——vmar 游标无辜，纯测试 VA 算错。
+    let mut vmo3 = Vmo::create(PAGE_SIZE * 3).expect("VMO：跨段 VMO create");
+    vmo3.commit(fa, 0, PAGE_SIZE * 3).expect("VMO：跨段 commit");
+    const M2_0: u64 = 0x0BAD_0000_C0DE_0001;
+    const M2_1: u64 = 0x0BAD_0000_C0DE_0002;
+    const M2_2: u64 = 0x0BAD_0000_C0DE_0003;
+    vmo3.write(0, &M2_0.to_le_bytes()).expect("VMO：跨段写页 0");
+    vmo3.write(PAGE_SIZE, &M2_1.to_le_bytes()).expect("VMO：跨段写页 1");
+    vmo3.write(2 * PAGE_SIZE, &M2_2.to_le_bytes()).expect("VMO：跨段写页 2");
+    root.map(fa, &mut vmo3, 0x3F_F000, 0, PAGE_SIZE * 3, Perm::Rw)
+        .expect("VMO：跨段 map（两段各一走查）");
+    // SAFETY: 读已映射页（root 激活态）。
+    assert_eq!(
+        unsafe { core::ptr::read_volatile(0x3F_F000 as *const u64) },
+        M2_0,
+        "VMO：跨段读段 1 尾槽 511"
+    );
+    assert_eq!(
+        unsafe { core::ptr::read_volatile(0x40_0000 as *const u64) },
+        M2_1,
+        "VMO：跨段读段 2 首槽 0"
+    );
+    assert_eq!(
+        unsafe { core::ptr::read_volatile(0x40_1000 as *const u64) },
+        M2_2,
+        "VMO：跨段读段 2 槽 1"
+    );
+    // protect 跨段降权（Ro）→ 写必 fault；提回 Rw → 写通。
+    root.protect(0x3F_F000, PAGE_SIZE * 3, Perm::Ro)
+        .expect("VMO：跨段 protect→RO");
+    for va in [0x3F_F000usize, 0x40_0000, 0x40_1000] {
+        hal::trap::arm_expected_fault(va);
+        // SAFETY: 预期 Permission fault（期望故障槽已 arm）。
+        unsafe { core::ptr::write_volatile(va as *mut u64, 0) };
+        assert!(!hal::trap::fault_armed(), "VMO：跨段 RO 页写居然没 fault");
+    }
+    root.protect(0x3F_F000, PAGE_SIZE * 3, Perm::Rw)
+        .expect("VMO：跨段 protect→RW");
+    // SAFETY: 写已提权页。
+    unsafe { core::ptr::write_volatile(0x40_0000 as *mut u64, MAGIC2) };
+    vmo3.read(PAGE_SIZE, &mut buf).expect("VMO：跨段 read back");
+    assert_eq!(u64::from_le_bytes(buf), MAGIC2, "VMO：跨段 VA 写→VMO 读一致");
+    // unmap 跨段清叶 → 读必 fault（三页跨两段全清）。
+    root.unmap(0x3F_F000, PAGE_SIZE * 3).expect("VMO：跨段 unmap");
+    for va in [0x3F_F000usize, 0x40_0000, 0x40_1000] {
+        hal::trap::arm_expected_fault(va);
+        // SAFETY: 预期同步异常（期望故障槽已 arm）。
+        let _ = unsafe { core::ptr::read_volatile(va as *const u64) };
+        assert!(!hal::trap::fault_armed(), "VMO：跨段 unmap 后读居然没 fault");
+    }
+    drop(vmo3);
+
     // F. A1-2 容量冒烟：40MiB VMO 全量 commit/decommit——`vmo.rs` commit 逐页
     // order-0 出帧，不受 MAX_ORDER 堆单块地形约束；帧账本对账（B-0
     // `allocated_pages` 口径）钉「10240 页全出全还、零泄漏」。40MB+ blob
     // 装载面的前置证据（`docs/容量工程前置-A1设计草案-v1.0.md` §2 关键洞察 / §4 A1-2）。
     //
-    // 对账须计**页记帐双 Vec**（`Vmo::create` 经堆整页路径入账——heap.rs
-    // >2048B → `order_for` 取 `2^order >= npages` 最小阶）：`pages:
-    // Vec<Option<usize>>` 16B/页 → 160KiB → order 6 = 64 页；`mapcnt:
-    // Vec<u16>` 2B/页 → 20KiB → order 3 = 8 页——合计 72 页伴随 VMO 存活，
-    // drop 才归还（首跑实测 +72 实抓，与逐项算术逐页吻合）。
+    // 对账须计**页记帐单 Vec**（`Vmo::create` 经堆整页路径入账——heap.rs
+    // >2048B → `order_for` 取 `2^order >= npages` 最小阶）：W3-Q109 打包
+    // （52a4ba156）后 `PageLedger` 只剩 `slots: Vec<u64>` 8B/页——旧双
+    // Vec（16B+2B）已并一，8B×10240 = 80KiB → 20 页 → order 5 = 32 页
+    // 伴随 VMO 存活，drop 才归还。旧公式按双 Vec 算 72 页，打包刀漏改本
+    // 期望 → 期望过时非回归——主线解堵刀（2026-11-19）随打包面翻新。
     const CAP40: usize = 40 * 1024 * 1024;
     let np40 = CAP40 / PAGE_SIZE;
-    let ledger = (16 * np40).div_ceil(PAGE_SIZE).next_power_of_two()
-        + (2 * np40).div_ceil(PAGE_SIZE).next_power_of_two();
+    let ledger = (8 * np40).div_ceil(PAGE_SIZE).next_power_of_two();
     let a0 = fa.allocated_pages();
     let mut big = Vmo::create(CAP40).expect("VMO：40MiB create（128MiB 帽内）");
     assert_eq!(
         fa.allocated_pages(),
         a0 + ledger,
-        "VMO：create 记帐双 Vec 入账（order 取整 72 页）"
+        "VMO：create 记帐单 Vec 入账（order 取整 32 页）"
     );
     big.commit(fa, 0, CAP40).expect("VMO：40MiB 全量 commit（10240 页逐页）");
     assert_eq!(
         fa.allocated_pages(),
         a0 + ledger + np40,
-        "VMO：commit 帧账本精确 +10240（另记帐 72 伴随存活）"
+        "VMO：commit 帧账本精确 +10240（另记帐 32 伴随存活）"
     );
     big.write(0, &MAGIC.to_le_bytes()).expect("VMO：首页 write");
     let off_last = CAP40 - 8;
@@ -3547,13 +3613,13 @@ fn test_vmo() {
     assert_eq!(
         fa.allocated_pages(),
         a0 + ledger,
-        "VMO：decommit 后 10240 帧全还（记帐双 Vec 随 VMO 存活）"
+        "VMO：decommit 后 10240 帧全还（记帐单 Vec 随 VMO 存活）"
     );
     drop(big);
     assert_eq!(
         fa.allocated_pages(),
         a0,
-        "VMO：drop 后帧账本精确归位（零泄漏——记帐双 Vec 一并归还）"
+        "VMO：drop 后帧账本精确归位（零泄漏——记帐单 Vec 一并归还）"
     );
 
     // 收尾：回内核空表（与 idle/无 AS 任务的 ttbr0=0 状态对齐）。
@@ -6276,7 +6342,8 @@ fn test_telemetry_open() {
     // 现建现验不留柄先例）——建+commit → decommit → drop，每相后 svc4 快照
     // 对拍，末态==初态五域全等（写点净零检测，不依赖 eager/demand 语义
     // 假定）。±1 恰形依据（本路径实测语义）：1 页 VMO 生命周期的堆面 =
-    // 记账双 Vec（16B/8B slab 槽）＋ decommit 瞬态 Vec，slab 页不还 buddy
+    // 记账单 Vec（8B slab 槽；W3-Q109 打包 52a4ba156 后旧双 Vec 16B/8B 槽
+    // 已并一——预热臂同形跑法不变）＋ decommit 瞬态 Vec，slab 页不还 buddy
     //（G0）——先走一遍同形预热臂把所用槽坐进 freelist，此后三相堆分配全
     // freelist 命中、零 buddy 取帧副作用（IRQ 热路径零分配＋单核静止窗），
     // alloc/committed 差分恰 ±1。
@@ -6316,6 +6383,545 @@ fn test_telemetry_open() {
     // len 族负例零改零漂移）。
     assert_eq!(svc4(0x84, 1, &raw mut REC as u64, 0), -22, "TELEMETRY：op=1 len=0 须 -EINVAL");
     assert_eq!(svc4(0x84, 1, &raw mut REC as u64, 8), -22, "TELEMETRY：op=1 len=8（<40）须 -EINVAL");
+
+    // ---- op=2 双族环快照（环读口刀）臂：K1 静止窗种子正例＋K2 截尾/追加/
+    // wrap 因果差分＋K3 负例＋K4 用毕即清（同函数静默盖延续——零输出行，
+    // fail = panic 停机冒烟自然红）----
+    //
+    // 静止窗依据：ktest::run 先于 telemetry::init（main.rs :1007 < :1140）
+    // ——切换/唤醒钩子未注册、四环零写者零并发，telemetry 种子口
+    // pub(crate) 直写合法（test_loadgen「sched::init 前手驱」先例族）。
+    // 种子用毕即清（ktest_reset_rings，K4）封堵种子对 G1.5 双形态断言
+    //（off 臂 total()==0 真空执法 / on 臂分母基线）的污染——清零后 boot
+    // 真数据从初值累计，语义零漂移。
+
+    // 快照缓冲（EL1 内核地址——copy_out 走高半直映分支；满载 7296B 走
+    // static 免栈帽，SNAP 同款本函数族私有静态）。
+    static mut RSNAP: [u8; 7296] = [0; 7296];
+
+    // svc4 全链取一帧环快照（len 门由内核执法——负例直接透传 errno）。
+    fn snap_rings(len: u64) -> i64 {
+        // RSNAP 为本函数族私有静态（ktest 单核窗）；len 走调用点字面
+        //（static mut 字段读不进安全面）——SNAP 正例同形零 unsafe 块。
+        svc4(0x84, 2, &raw mut RSNAP as u64, len)
+    }
+
+    // 快照字节共享读（调用点先以断言钉 n 界）。
+    fn rbuf(n: usize) -> &'static [u8] {
+        // SAFETY: n 由调用点断言钉 ≤ 7296 实写界；仅共享读（svc 同步返回后
+        // 无并发写者——静止窗）。
+        unsafe {
+            &*core::ptr::slice_from_raw_parts(
+                core::ptr::addr_of!(RSNAP) as *const u8,
+                n,
+            )
+        }
+    }
+
+    fn u32le(b: &[u8], o: usize) -> u32 {
+        u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
+    }
+    fn u64le(b: &[u8], o: usize) -> u64 {
+        u64::from_le_bytes([
+            b[o], b[o + 1], b[o + 2], b[o + 3], b[o + 4], b[o + 5], b[o + 6], b[o + 7],
+        ])
+    }
+    // 段描述符解码（telface 编解码纯函数单源——svc 出参按字节流解，不对
+    // 静态缓冲 reinterpret 对齐面）。
+    fn seg_at(b: &[u8], o: usize) -> berry_telface::RingSegV1 {
+        let mut d = [0u8; 24];
+        d.copy_from_slice(&b[o..o + 24]);
+        berry_telface::ring_seg_read(&d)
+    }
+
+    {
+        use berry_hal_aarch64::wake_gen::{WAKE_SRC_SGI_RESCHED, WAKE_SRC_TIMER};
+        use berry_telface::{RingSegV1, SwitchRec, WakeRec};
+
+        // 种子：cpu0 切换三条（vct 递增、kind 覆盖 0/1/3、idle_next 混合）
+        // ＋唤醒两条（reason 1/2 双覆盖、source 真源常量、since_vct < vct）
+        //；cpu1 两环留空对照（空段描述符形态）。
+        let s_seed = [
+            SwitchRec {
+                vct: 1_000, prev: 0x1111_1111, next: 0x2222_2222, kind: 0,
+                idle_next: false, _pad: [0; 6],
+            },
+            SwitchRec {
+                vct: 2_000, prev: 0x2222_2222, next: 0x3333_3333, kind: 1,
+                idle_next: true, _pad: [0; 6],
+            },
+            SwitchRec {
+                vct: 3_000, prev: 0x3333_3333, next: 0x1111_1111, kind: 3,
+                idle_next: false, _pad: [0; 6],
+            },
+        ];
+        let w_seed = [
+            WakeRec {
+                vct: 1_500, since_vct: 1_200, wait_obj: 0, task_id: 0x4444_4444,
+                reason: 1, source: WAKE_SRC_SGI_RESCHED, _pad: [0; 2],
+            },
+            WakeRec {
+                vct: 2_600, since_vct: 2_100, wait_obj: 0xdead_beef, task_id: 0x5555_5555,
+                reason: 2, source: WAKE_SRC_TIMER, _pad: [0; 2],
+            },
+        ];
+        crate::telemetry::ktest_seed_switch(0, &s_seed);
+        crate::telemetry::ktest_seed_wake(0, &w_seed);
+
+        // 段游标自描述走读（canon 序＋各段载荷位——消费方视角的解包律；
+        // 走完游标 == 返回值即「变长填充返回值自证」的钉板形）。
+        fn walk(b: &[u8]) -> ([RingSegV1; 4], [usize; 4]) {
+            let mut segs = [berry_telface::ring_seg_read(&[0u8; 24]); 4];
+            let mut offs = [0usize; 4];
+            let mut cur = 32usize;
+            for i in 0..4 {
+                segs[i] = seg_at(b, cur);
+                offs[i] = cur + 24;
+                cur = offs[i] + segs[i].count as usize * segs[i].rec_size as usize;
+            }
+            (segs, offs)
+        }
+
+        // K1 正例：满载快照恰 264（32 头 + 4×24 段 + 3×24 切换 + 2×32 唤醒）。
+        let n = snap_rings(7296);
+        assert_eq!(n, 264, "TELEMETRY：op=2 快照须恰 264（n={}）", n);
+        let b = rbuf(n as usize);
+        // 头钉板（version/hdr_bytes/几何字面；cntfrq>0 且 == EL1 直调双源）。
+        let mut hb = [0u8; 32];
+        hb.copy_from_slice(&b[..32]);
+        let h = berry_telface::rings_hdr_read(&hb);
+        assert_eq!(h.version, 1, "TELEMETRY：头 version==1");
+        assert_eq!(h.hdr_bytes, 32, "TELEMETRY：头 hdr_bytes==32（头尾追扩形锚）");
+        assert!(h.cntfrq > 0, "TELEMETRY：头 cntfrq 须 >0");
+        assert_eq!(
+            h.cntfrq, berry_hal_aarch64::timer::cntfrq(),
+            "TELEMETRY：cntfrq 双源对拍（svc 出参 == EL1 直调）"
+        );
+        assert_eq!(h.ring_len, 64, "TELEMETRY：ring_len==64");
+        assert_eq!(h.ring_cpus, 2, "TELEMETRY：ring_cpus==2");
+
+        let (segs, offs) = walk(b);
+        assert_eq!(
+            32 + segs.iter().fold(0usize, |a, s| a + 24 + s.count as usize * s.rec_size as usize),
+            n as usize,
+            "TELEMETRY：段游标自描述走完须恰 n"
+        );
+        // 四段描述符钉板：canon 序 family{0,0,1,1}×cpu{0,1,0,1}、count
+        // {3,0,2,0}、total 同种子、rec_size{24,24,32,32}。
+        assert_eq!(segs.map(|s| s.family), [0, 0, 1, 1], "TELEMETRY：段序 family 0,0,1,1");
+        assert_eq!(segs.map(|s| s.cpu), [0, 1, 0, 1], "TELEMETRY：段序 cpu 0,1,0,1");
+        assert_eq!(segs.map(|s| s.count), [3, 0, 2, 0], "TELEMETRY：count 3,0,2,0");
+        assert_eq!(segs.map(|s| s.total), [3, 0, 2, 0], "TELEMETRY：total==种子数");
+        assert_eq!(segs.map(|s| s.rec_size), [24, 24, 32, 32], "TELEMETRY：rec_size 自述");
+
+        // 逐条 LE 解码对拍种子恒等（switch c0：段内旧→新）。
+        for (i, want) in s_seed.iter().enumerate() {
+            let o = offs[0] + i * 24;
+            assert_eq!(u64le(b, o), want.vct, "TELEMETRY：switch[{i}].vct 对拍");
+            assert_eq!(u32le(b, o + 8), want.prev, "TELEMETRY：switch[{i}].prev 对拍");
+            assert_eq!(u32le(b, o + 12), want.next, "TELEMETRY：switch[{i}].next 对拍");
+            assert_eq!(b[o + 16], want.kind, "TELEMETRY：switch[{i}].kind 对拍");
+            assert_eq!(b[o + 17], want.idle_next as u8, "TELEMETRY：switch[{i}].idle_next 对拍");
+            assert_eq!(&b[o + 18..o + 24], &[0u8; 6], "TELEMETRY：switch[{i}]._pad 恒 0");
+        }
+        // 段内 vct 旧→新（单调不减——环写入序钉板）。
+        assert!(
+            u64le(b, offs[0]) <= u64le(b, offs[0] + 24)
+                && u64le(b, offs[0] + 24) <= u64le(b, offs[0] + 48),
+            "TELEMETRY：switch 段内 vct 须旧→新"
+        );
+        // wake c0：逐条对拍＋source 域合法（wake_src_valid 事后审计面）。
+        for (i, want) in w_seed.iter().enumerate() {
+            let o = offs[2] + i * 32;
+            assert_eq!(u64le(b, o), want.vct, "TELEMETRY：wake[{i}].vct 对拍");
+            assert_eq!(u64le(b, o + 8), want.since_vct, "TELEMETRY：wake[{i}].since_vct 对拍");
+            assert!(u64le(b, o + 8) < u64le(b, o), "TELEMETRY：wake[{i}] since_vct < vct");
+            assert_eq!(u64le(b, o + 16), want.wait_obj, "TELEMETRY：wake[{i}].wait_obj 对拍");
+            assert_eq!(u32le(b, o + 24), want.task_id, "TELEMETRY：wake[{i}].task_id 对拍");
+            assert_eq!(b[o + 28], want.reason, "TELEMETRY：wake[{i}].reason 对拍");
+            assert!(crate::telemetry::wake_src_valid(b[o + 29]), "TELEMETRY：wake[{i}].source 须真源");
+            assert_eq!(b[o + 29], want.source, "TELEMETRY：wake[{i}].source 对拍");
+        }
+        assert!(u64le(b, offs[2]) <= u64le(b, offs[2] + 32), "TELEMETRY：wake 段内 vct 须旧→新");
+        // 双源对拍：段 total 之和 == EL1 直调（跨段守恒——装配路径错位即红）。
+        assert_eq!(
+            segs[0].total + segs[1].total,
+            crate::telemetry::total(),
+            "TELEMETRY：switch totals 双源对拍"
+        );
+        assert_eq!(
+            segs[2].total + segs[3].total,
+            crate::telemetry::wake_total(),
+            "TELEMETRY：wake totals 双源对拍"
+        );
+
+        // K2 截尾：len=104 → 返回 104 且 switch c0 count==2（整条粒度拷旧
+        // 端）、其后段整段缺席（余量<24 即止语义钉板——头仍在）。
+        let n = snap_rings(104);
+        assert_eq!(n, 104, "TELEMETRY：len=104 须返回 104（头+单段 2 条）");
+        let b = rbuf(104);
+        // 首段后余量 0 < 24——其后段整段缺席（缺席由 104 == 32+24+2×24
+        // 自证），只解首段与头（walk 四段循环在缺席面会越界，不用）。
+        let s0 = seg_at(b, 32);
+        assert_eq!(s0.count, 2, "TELEMETRY：截尾段 count==2（3 条窗拷 2）");
+        assert_eq!(s0.total, 3, "TELEMETRY：截尾不改 total 照出");
+        assert_eq!(u64le(b, 56), 1_000, "TELEMETRY：截尾保旧端（条 0）");
+        assert_eq!(u64le(b, 56 + 24), 2_000, "TELEMETRY：截尾保旧端（条 1）");
+
+        // K2 追加因果：续种 2 条 → count 5 且旧三条条目级恒等＋新两条在尾
+        //（段描述符含 count/total 使字节前缀恒等不成立——条目级执法修正）。
+        let s_seed5 = [
+            s_seed[0], s_seed[1], s_seed[2],
+            SwitchRec {
+                vct: 4_000, prev: 0x1111_1111, next: 0x4444_4444, kind: 2,
+                idle_next: true, _pad: [0; 6],
+            },
+            SwitchRec {
+                vct: 5_000, prev: 0x4444_4444, next: 0x2222_2222, kind: 0,
+                idle_next: false, _pad: [0; 6],
+            },
+        ];
+        crate::telemetry::ktest_seed_switch(0, &s_seed5);
+        let n = snap_rings(7296);
+        assert_eq!(n, 312, "TELEMETRY：5 条须恰 312（32+4×24+5×24+2×32；n={}）", n);
+        let b = rbuf(n as usize);
+        let (segs, offs) = walk(b);
+        assert_eq!(segs[0].count, 5, "TELEMETRY：追加后 count==5");
+        assert_eq!(segs[0].total, 5, "TELEMETRY：追加后 total==5");
+        for (i, want) in s_seed5.iter().enumerate() {
+            let o = offs[0] + i * 24;
+            assert_eq!(u64le(b, o), want.vct, "TELEMETRY：追加臂 switch[{i}] vct（旧三条恒等＋新两条在尾）");
+            assert_eq!(u32le(b, o + 8), want.prev);
+            assert_eq!(u32le(b, o + 12), want.next);
+            assert_eq!(b[o + 16], want.kind);
+            assert_eq!(b[o + 17], want.idle_next as u8);
+        }
+
+        // K2 wrap：续种至 65 条 → count==64 且最旧条被淘汰（fill_span wrap
+        // 旋转钉板）＋total==65＋丢包派生 total−min(total,ring_len)==1。
+        let mut s65 = [s_seed[0]; 65];
+        for (i, r) in s65.iter_mut().enumerate() {
+            *r = SwitchRec {
+                vct: 1_000 + i as u64 * 1_000,
+                prev: 0x1000_0000 + i as u32,
+                next: 0x2000_0000 + i as u32,
+                kind: (i % 4) as u8,
+                idle_next: i % 2 == 0,
+                _pad: [0; 6],
+            };
+        }
+        crate::telemetry::ktest_seed_switch(0, &s65);
+        let n = snap_rings(7296);
+        assert_eq!(n, 1728, "TELEMETRY：65 条须恰 1728（32+4×24+64×24+2×32；n={}）", n);
+        let b = rbuf(n as usize);
+        let (segs, offs) = walk(b);
+        assert_eq!(segs[0].count, 64, "TELEMETRY：wrap 后 count==64（环容）");
+        assert_eq!(segs[0].total, 65, "TELEMETRY：wrap 后 total==65 照出");
+        assert_eq!(
+            segs[0].total - segs[0].total.min(h.ring_len),
+            1,
+            "TELEMETRY：丢包派生 total−min(total,ring_len)==1（最旧淘汰）"
+        );
+        for i in 0..64 {
+            let o = offs[0] + i * 24;
+            let want = &s65[i + 1]; // 写 #0 被淘汰——段内首条 = 写 #1
+            assert_eq!(u64le(b, o), want.vct, "TELEMETRY：wrap 旋转第 {i} 条须 = 写 #{}（旧→新）", i + 1);
+            assert_eq!(u32le(b, o + 8), want.prev);
+            assert_eq!(b[o + 16], want.kind);
+        }
+
+        // K3 负例：op=2 len 冻结下限门（len<32 → -EINVAL）＋op=4 域外恒
+        // -ENOTSUP（add-only 自执法——op=3 已翻真返数据，域外负例迁下一值；
+        // 既有 op=99 与 op=0/1 族负例零改零漂移）。
+        assert_eq!(snap_rings(0), -22, "TELEMETRY：op=2 len=0 须 -EINVAL");
+        assert_eq!(snap_rings(8), -22, "TELEMETRY：op=2 len=8（<32）须 -EINVAL");
+        assert_eq!(snap_rings(31), -22, "TELEMETRY：op=2 len=31（头下限−1）须 -EINVAL");
+        assert_eq!(
+            // RSNAP 私有静态（ktest 单核窗）——SNAP 负例同形零 unsafe 块。
+            svc4(0x84, 4, &raw mut RSNAP as u64, 7296),
+            -95,
+            "TELEMETRY：op=4 域外须 -ENOTSUP"
+        );
+
+        // K4 用毕即清：四环归零 → 快照恰 128（头＋四空段描述符）且段
+        // count/total 全零——封堵种子对 G1.5 断言面的污染（清零后 boot 真
+        // 数据从初值累计，语义零漂移）；rec_size/family/cpu 仍自述。
+        crate::telemetry::ktest_reset_rings();
+        let n = snap_rings(7296);
+        assert_eq!(n, 128, "TELEMETRY：清零后快照须恰 128（头+四空段；n={}）", n);
+        let b = rbuf(128);
+        let (segs, _) = walk(b);
+        assert_eq!(segs.map(|s| s.count), [0, 0, 0, 0], "TELEMETRY：清零后段 count 全零");
+        assert_eq!(segs.map(|s| s.total), [0, 0, 0, 0], "TELEMETRY：清零后段 total 全零");
+        assert_eq!(segs.map(|s| s.rec_size), [24, 24, 32, 32], "TELEMETRY：清零后 rec_size 仍自述");
+        assert_eq!(crate::telemetry::total(), 0, "TELEMETRY：清零后 total()==0（G1.5 off 臂真空基线恢复）");
+        assert_eq!(crate::telemetry::wake_total(), 0, "TELEMETRY：清零后 wake_total()==0");
+    }
+
+    // ---- op=3 WakeSrc 槽表纯镜像（槽表读口刀）臂：K1 满表 pristine 钉板＋
+    // K2 保留段播种字节级对拍＋len 因果阶梯＋K4 用毕即清（K3 域外负例已随
+    // add-only 滚 op=4——见上；同函数静默盖延续——零输出行，fail = panic
+    // 停机冒烟自然红）----
+    //
+    // 静止窗双证（树实证 main.rs）：ktest::run（:1007）先于
+    // berry_sched::init（:1128）与 telemetry::init（:1140）——on_wake 钩子
+    // 未注册（wakes 族全槽恒 0）＋:1127「IRQ 此刻仍屏蔽（boot DAIF）」到达
+    // 族写点结构性不可达；merge_hal 在 G1.5 尾（后于 ktest）⇒ 窗内表结构
+    // 性近 pristine。断言面不押纯度前提（防御纵深）：120 结构性不可达槽全
+    // 字段 pristine 钉板（写点全枚举执法的运行期版——对任何前提鲁棒）＋
+    // 全 128 槽 wakes==0 结构断言；TIMER/UART/PWRKEY 三可达槽 irq_count 不
+    // 断言绝对值（噪声免疫层）。播种槽取保留段 0x40/0x41（任何运行期路径
+    // 结构性不可达——对静止窗纯度与 IRQ 噪声双免疫；种子不触 8 可达槽）。
+    {
+        use core::sync::atomic::Ordering;
+
+        // 快照缓冲（EL1 内核地址——copy_out 走高半直映分支；满载 8232B 走
+        // static 免栈帽，RSNAP 同款块私有静态）。
+        static mut WSNAP: [u8; 8232] = [0; 8232];
+
+        // svc4 全链取一帧槽表快照（len 门由内核执法——负例直接透传 errno）。
+        fn snap_wsrc(len: u64) -> i64 {
+            // WSNAP 为本块私有静态（ktest 单核窗）；len 走调用点字面
+            //（static mut 字段读不进安全面）——snap_rings 同形零 unsafe 块。
+            svc4(0x84, 3, &raw mut WSNAP as u64, len)
+        }
+
+        // 快照字节共享读（调用点先以断言钉 n 界——rbuf 同形）。
+        fn wbuf(n: usize) -> &'static [u8] {
+            // SAFETY: n 由调用点断言钉 ≤ 8232 实写界；仅共享读（svc 同步
+            // 返回后无并发写者——静止窗）。
+            unsafe {
+                &*core::ptr::slice_from_raw_parts(
+                    core::ptr::addr_of!(WSNAP) as *const u8,
+                    n,
+                )
+            }
+        }
+
+        // 头/行解码（telface 编解码纯函数单源——svc 出参按字节流解，不对
+        // 静态缓冲 reinterpret 对齐面；seg_at 同款）。
+        fn whdr(b: &[u8]) -> berry_telface::WsrcHdrV1 {
+            let mut d = [0u8; 40];
+            d.copy_from_slice(&b[..40]);
+            berry_telface::wsrc_hdr_read(&d)
+        }
+        fn wrow(b: &[u8], i: usize) -> berry_telface::WakeSrcRecV1 {
+            let mut d = [0u8; 64];
+            d.copy_from_slice(&b[40 + i * 64..40 + (i + 1) * 64]);
+            berry_telface::wsrc_row_read(&d)
+        }
+
+        // pristine 谱（WakeSrcRec::new() 初值的平镜像——十字段全含，行级
+        // 相等即全字段全字节钉板）。
+        const PRISTINE: berry_telface::WakeSrcRecV1 = berry_telface::WakeSrcRecV1 {
+            wakes: 0,
+            irq_count: 0,
+            no_waiter: 0,
+            first_ts: u64::MAX,
+            last_ts: 0,
+            last_ack_ts: 0,
+            last_woken_id: 0,
+            flags: 0,
+            ts_domain: 0,
+            _pad: [0; 5],
+        };
+
+        // K1 满表 pristine 钉板：满取恰 8232；头七域钉板（cntfrq/acct_n
+        // 双源对拍 EL1 直调、acct_n==0、now_vct 单调 sane）；120 不可达槽
+        //（0x00 哨兵＋0x08-0x7E 预留段）全字段 pristine 谱＋全 128 槽
+        // wakes==0＋Σ==acct_n==0（守恒镜像）。
+        let n = snap_wsrc(8232);
+        assert_eq!(n, 8232, "TELEMETRY：op=3 满取须恰 8232（n={}）", n);
+        let b = wbuf(8232);
+        let h = whdr(b);
+        assert_eq!(h.version, 1, "TELEMETRY：wsrc 头 version==1");
+        assert_eq!(h.hdr_bytes, 40, "TELEMETRY：wsrc 头 hdr_bytes==40（头尾追扩形锚）");
+        assert_eq!(h.slots, 128, "TELEMETRY：wsrc 头 slots==128");
+        assert_eq!(h.rec_size, 64, "TELEMETRY：wsrc 头 rec_size==64（条目步进自述）");
+        assert!(h.cntfrq > 0, "TELEMETRY：wsrc 头 cntfrq 须 >0");
+        assert_eq!(
+            h.cntfrq, berry_hal_aarch64::timer::cntfrq(),
+            "TELEMETRY：wsrc cntfrq 双源对拍（svc 出参 == EL1 直调）"
+        );
+        assert_eq!(
+            h.wake_acct_n, crate::telemetry::wake_acct_n(),
+            "TELEMETRY：wsrc acct_n 双源对拍（svc 出参 == EL1 直调）"
+        );
+        assert_eq!(h.wake_acct_n, 0, "TELEMETRY：wsrc acct_n==0（on_wake 钩子未注册窗）");
+        assert!(
+            h.now_vct > 0 && h.now_vct <= berry_hal_aarch64::timer::cntvct(),
+            "TELEMETRY：wsrc now_vct 单调 sane（快照时刻 ≤ 断言时刻——CNTVCT 单调律）"
+        );
+        let mut sum = 0u64;
+        for i in 0..128usize {
+            let r = wrow(b, i);
+            assert_eq!(r.wakes, 0, "TELEMETRY：全 128 槽 wakes==0（钩子未注册——i={i}）");
+            if i == 0x00 || (0x08..=0x7E).contains(&i) {
+                assert_eq!(r, PRISTINE, "TELEMETRY：不可达槽 {i:#04x} 须全字段 pristine 谱");
+            }
+            sum += r.wakes;
+        }
+        assert_eq!(sum, h.wake_acct_n, "TELEMETRY：Σ行wakes==acct_n==0（守恒镜像）");
+
+        // K2 播种对拍：保留段不可达槽 0x40/0x41 直原子 store 播种
+        //（WAKE_SRC_TABLE pub static 字段全 pub——零新口）＋
+        // ktest_wake_acct_set(5) 使 Σ==N 守恒镜像可断言（WAKE_ACCT_N 私有
+        // 故立助手口）。
+        {
+            let t = &crate::telemetry::WAKE_SRC_TABLE[0x40];
+            t.wakes.store(5, Ordering::Relaxed);
+            t.irq_count.store(9, Ordering::Relaxed);
+            t.no_waiter.store(3, Ordering::Relaxed);
+            t.first_ts.store(1_000, Ordering::Relaxed);
+            t.last_ts.store(2_000, Ordering::Relaxed);
+            t.last_ack_ts.store(1_900, Ordering::Relaxed);
+            t.last_woken_id.store(0xDEAD_BEEF, Ordering::Relaxed);
+            t.flags.store(crate::telemetry::WSRC_F_IRQ_LINE, Ordering::Relaxed);
+        }
+        // 0x41 irq-only 形：仅到达计数（irq-only 哨兵语义钉板——first_ts
+        // 不动==u64::MAX，merge_hal 三槽/POWER_KEY 到达面同形）。
+        crate::telemetry::WAKE_SRC_TABLE[0x41]
+            .irq_count
+            .store(4, Ordering::Relaxed);
+        crate::telemetry::ktest_wake_acct_set(5);
+
+        let n = snap_wsrc(8232);
+        assert_eq!(n, 8232, "TELEMETRY：播种后满取须仍恰 8232（n={}）", n);
+        let b = wbuf(8232);
+        let h = whdr(b);
+        assert_eq!(h.wake_acct_n, 5, "TELEMETRY：播种后头 acct_n==5");
+        // 真 CNTVCT 对种子值结构性优势（now_vct 行读毕后取 ⇒ ≥ 任一行内
+        // 时戳——种子 last_ts=2000 的装配序钉板）。
+        assert!(h.now_vct > 2_000, "TELEMETRY：now_vct 须 > 种子 last_ts 2000（头锚≥行时戳）");
+        // 0x40 全谱 LE 解码逐字段恒等（种子→镜像零转换损失）。
+        let r = wrow(b, 0x40);
+        assert_eq!(r.wakes, 5, "TELEMETRY：0x40 wakes 对拍");
+        assert_eq!(r.irq_count, 9, "TELEMETRY：0x40 irq_count 对拍");
+        assert_eq!(r.no_waiter, 3, "TELEMETRY：0x40 no_waiter 对拍");
+        assert_eq!(r.first_ts, 1_000, "TELEMETRY：0x40 first_ts 对拍");
+        assert_eq!(r.last_ts, 2_000, "TELEMETRY：0x40 last_ts 对拍");
+        assert_eq!(r.last_ack_ts, 1_900, "TELEMETRY：0x40 last_ack_ts 对拍");
+        assert_eq!(r.last_woken_id, 0xDEAD_BEEF, "TELEMETRY：0x40 last_woken_id 对拍");
+        assert_eq!(
+            r.flags, crate::telemetry::WSRC_F_IRQ_LINE,
+            "TELEMETRY：0x40 flags 对拍（分类位）"
+        );
+        assert_eq!(r.ts_domain, 0, "TELEMETRY：0x40 ts_domain 冻结 0 镜像");
+        assert_eq!(r._pad, [0u8; 5], "TELEMETRY：0x40 垫区写零");
+        // 0x41 irq-only 逐字段。
+        let r = wrow(b, 0x41);
+        assert_eq!(r.irq_count, 4, "TELEMETRY：0x41 irq_count 对拍（irq-only）");
+        assert_eq!(
+            r.first_ts, u64::MAX,
+            "TELEMETRY：0x41 first_ts 哨兵不动（irq-only 语义钉板）"
+        );
+        assert_eq!(
+            (r.wakes, r.no_waiter, r.last_ts, r.last_ack_ts, r.last_woken_id, r.flags, r.ts_domain, r._pad),
+            (0, 0, 0, 0, 0, 0, 0, [0u8; 5]),
+            "TELEMETRY：0x41 余字段须 pristine（irq-only 最小形）"
+        );
+        // 126 行仍 pristine＋Σ==5（守恒镜像）。
+        let mut sum = 0u64;
+        for i in 0..128usize {
+            let r = wrow(b, i);
+            if i != 0x40 && i != 0x41 {
+                assert_eq!(r, PRISTINE, "TELEMETRY：播种后非种子槽 {i:#04x} 仍 pristine");
+            }
+            sum += r.wakes;
+        }
+        assert_eq!(sum, 5, "TELEMETRY：Σ行wakes==5==acct_n（守恒镜像）");
+
+        // K2 重播（单调差分面钉板）：0x40 wakes fetch_add(5)＋N set(10) →
+        // 再满取 row wakes==10、其余行与上帧同谱（两帧全字段全字节各自钉板
+        // ⇒ 逐字节恒等——行区唯一写者是种子本身，帧间零漂；头 now_vct 是
+        // 逐次快照时钟锚〔G6〕天然前进，不进帧间恒等面）。
+        crate::telemetry::WAKE_SRC_TABLE[0x40]
+            .wakes
+            .fetch_add(5, Ordering::Relaxed);
+        crate::telemetry::ktest_wake_acct_set(10);
+        let n = snap_wsrc(8232);
+        assert_eq!(n, 8232, "TELEMETRY：重播后满取须仍恰 8232（n={}）", n);
+        let b = wbuf(8232);
+        let h = whdr(b);
+        assert_eq!(h.wake_acct_n, 10, "TELEMETRY：重播后头 acct_n==10");
+        let r = wrow(b, 0x40);
+        assert_eq!(r.wakes, 10, "TELEMETRY：重播后 0x40 wakes==10（单调族差分）");
+        assert_eq!(
+            (r.irq_count, r.no_waiter, r.first_ts, r.last_ts, r.last_ack_ts, r.last_woken_id, r.flags, r.ts_domain, r._pad),
+            (9, 3, 1_000, 2_000, 1_900, 0xDEAD_BEEF, crate::telemetry::WSRC_F_IRQ_LINE, 0, [0u8; 5]),
+            "TELEMETRY：重播后 0x40 余字段逐字节恒等"
+        );
+        for i in 0..128usize {
+            if i == 0x40 {
+                continue;
+            }
+            if i == 0x41 {
+                let r41 = wrow(b, i);
+                assert_eq!(r41.irq_count, 4, "TELEMETRY：重播后 0x41 irq-only 形恒等");
+                assert_eq!(r41.first_ts, u64::MAX, "TELEMETRY：重播后 0x41 哨兵恒等");
+            } else {
+                assert_eq!(wrow(b, i), PRISTINE, "TELEMETRY：重播后非种子槽 {i:#04x} 恒等");
+            }
+        }
+
+        // K2 len 因果阶梯（N=10 态）：len<40 → -22；len=40 → 恰头单读探
+        // 几何；len=104 → 恰 row[0] 全字段落位；len=360 → 返 360 且为满载
+        // 结果前缀逐字节恒等（唯一例外：头 now_vct@24..32 是逐次快照时钟
+        // 锚〔G6——行读毕后取〕跨调用恒前进，排除该 8 字节、其余全段逐
+        // 字节恒等——前缀律的确定性面）；len=8231 → 返 8168
+        //（(8231−40)/64=127 整行截尾钉板——返回值自证）。
+        assert_eq!(snap_wsrc(0), -22, "TELEMETRY：op=3 len=0 须 -EINVAL");
+        assert_eq!(snap_wsrc(8), -22, "TELEMETRY：op=3 len=8（<40）须 -EINVAL");
+        assert_eq!(snap_wsrc(39), -22, "TELEMETRY：op=3 len=39（头下限−1）须 -EINVAL");
+        // 满载帧前缀样本（360B 栈拷——上帧 b 的前 360B）。
+        let mut pref = [0u8; 360];
+        pref.copy_from_slice(&b[..360]);
+        let n = snap_wsrc(40);
+        assert_eq!(n, 40, "TELEMETRY：len=40 单读头探几何（恰头零行）");
+        let h = whdr(wbuf(40));
+        assert_eq!(h.version, 1, "TELEMETRY：len=40 头 version==1 照出");
+        assert_eq!(h.slots, 128, "TELEMETRY：len=40 头 slots==128 照出");
+        assert_eq!(h.rec_size, 64, "TELEMETRY：len=40 头 rec_size==64 照出");
+        assert_eq!(h.wake_acct_n, 10, "TELEMETRY：len=40 头 acct_n==10 照出");
+        let n = snap_wsrc(104);
+        assert_eq!(n, 104, "TELEMETRY：len=104 须返 104（头+单行）");
+        assert_eq!(
+            wrow(wbuf(104), 0),
+            PRISTINE,
+            "TELEMETRY：len=104 恰 row[0] 全字段落位（0x00 哨兵槽 pristine）"
+        );
+        let n = snap_wsrc(360);
+        assert_eq!(n, 360, "TELEMETRY：len=360 须返 360（头+5 整行）");
+        let b360 = wbuf(360);
+        assert_eq!(
+            &b360[..24], &pref[..24],
+            "TELEMETRY：len=360 前缀恒等（version..rec_size 域）"
+        );
+        assert_eq!(
+            &b360[32..360], &pref[32..360],
+            "TELEMETRY：len=360 前缀恒等（acct_n 域＋五整行——now_vct@24..32 逐次时钟锚除外）"
+        );
+        let n = snap_wsrc(8231);
+        assert_eq!(n, 8168, "TELEMETRY：len=8231 须返 8168（(8231−40)/64=127 整行截尾）");
+
+        // K4 用毕即清：ktest_reset_wsrc → 再满取 128 行全 pristine 谱＋头
+        // acct_n==0＋wake_acct_conserved 真（Σ==N==0 复原）——封堵种子对
+        // G1.5 双形态断言面（user.rs WAKESRC）与 WSRC-K（下文）的污染；
+        // 清零后 boot 真数据从初值累计，语义零漂移。
+        crate::telemetry::ktest_reset_wsrc();
+        let n = snap_wsrc(8232);
+        assert_eq!(n, 8232, "TELEMETRY：清零后满取须仍恰 8232（n={}）", n);
+        let b = wbuf(8232);
+        let h = whdr(b);
+        assert_eq!(h.wake_acct_n, 0, "TELEMETRY：清零后头 acct_n==0");
+        for i in 0..128usize {
+            assert_eq!(wrow(b, i), PRISTINE, "TELEMETRY：清零后槽 {i:#04x} 全字段 pristine 谱");
+        }
+        assert!(
+            crate::telemetry::wake_acct_conserved(),
+            "TELEMETRY：清零后守恒检查真（Σ==N==0 复原——G1.5 断言面零污染）"
+        );
+    }
 }
 
 /// G5（§1.6-补）：boot-params 消费端纯函数面——newc 定址查找 / TOML 子集
@@ -12681,4 +13287,197 @@ fn test_cbox() {
 
     cbox::ktest_restore(saved.0, saved.1);
     berry_hal_aarch64::uart_puts(b"CBOXK ok\n");
+}
+
+/// 机会五③密度账本化（2026-11-19）钉板：per-RQ int/util 两在环计数器
+///（runqueue.rs——消费面 try_steal_one 带感知偷取快照）的账点四面：
+/// - D-1 混合入环计账：ia/util/other 三向入环断言两计数 + 出环镜像减
+///   （Fair enqueue/dequeue 走 link_back/unlink 原语层——账点面同生产；
+///   bg(0x04) 现役带但无密度槽、unspec 非带——两形皆不计数）；
+/// - D-2 density_reclass 四向转移：ia↔util 换槽、ia↔unit 净额（仅
+///   0x02/0x03 有槽，其余档对 no-op——settle 借入/回落的生产翻转形）；
+/// - D-3 resync_density 修复面：直改在环 intent → 账本漂移（走查见真、
+///   账本见旧）→ resync 归零差（resync_vruntime_sum 同款洗账纪律）；
+/// - D-4 走查 vs 账本等价钉板：混合环上「TCB 改档+reclass 成对」正形 +
+///   无槽任务出环后 dens_on_ring_walk == 两计数 load（integrity 双边
+///   等式的本地环钉板），并手数钉死真值（防两侧同漂的假等式）。
+/// 本地 Runqueue（per-RQ 账本环私有——与 PER_CPU_RQ/全局 DL_ON_RING 零
+/// 触碰；ktest 在 sched::init 前单线程窗，RQ 锁契约串行等价）。非 smoke
+/// 标记（断言炸 = panic = 后续标记缺失兜底）。DENS ok n=4。
+fn test_density_ledger() {
+    use berry_sched::{
+        dens_on_ring_walk_kt, density_reclass_kt, Fair, Runqueue, SchedClass, Task,
+        INTENT_BACKGROUND, INTENT_INTERACTIVE, INTENT_UNSPECIFIED, INTENT_UTILITY,
+    };
+
+    /// 占位入口（enqueue 只接线不执行；halt 兜底——BANDM4 同款）。
+    extern "C" fn dn_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    /// 手搭带档任务（环前写 intent_effective——生产 apply_sched_attr_to_task
+    /// 同序：属性写在 enqueue 前，link 时计数自然正确）。
+    fn mk(name: &'static [u8], intent: u8) -> &'static mut Task {
+        let mut t = Task::new_kernel_with_as(dn_dummy, 0, name, 0, 0);
+        t.intent_effective = intent;
+        alloc::boxed::Box::leak(t)
+    }
+
+    let rr = Fair;
+
+    // —— D-1. 混合入环计账（ia/util/other 三向 + 出环镜像减）。
+    let mut rq = Runqueue::new();
+    assert_eq!(
+        (rq.int_count(), rq.util_count()),
+        (0, 0),
+        "DENS：D-1 新环两计数须零"
+    );
+    let da = mk(b"dIA".as_slice(), INTENT_INTERACTIVE);
+    let du = mk(b"dUT".as_slice(), INTENT_UTILITY);
+    let dc = mk(b"dBG".as_slice(), INTENT_BACKGROUND); // 现役带但无密度槽（0x04）
+    let dz = mk(b"dUN".as_slice(), INTENT_UNSPECIFIED); // 非带
+    rr.enqueue(&mut *da, &mut rq);
+    assert_eq!(
+        (rq.int_count(), rq.util_count()),
+        (1, 0),
+        "DENS：D-1 ia 入环须 int+1"
+    );
+    rr.enqueue(&mut *du, &mut rq);
+    assert_eq!(
+        (rq.int_count(), rq.util_count()),
+        (1, 1),
+        "DENS：D-1 util 入环须 util+1"
+    );
+    rr.enqueue(&mut *dc, &mut rq);
+    rr.enqueue(&mut *dz, &mut rq);
+    assert_eq!(rq.len(), 4, "DENS：D-1 四任务须全入环");
+    assert_eq!(
+        (rq.int_count(), rq.util_count()),
+        (1, 1),
+        "DENS：D-1 bg/unspec 无密度槽不计数"
+    );
+    // 出环镜像减（Fair::dequeue → unlink 原语层出账——block/steal 同层）。
+    rr.dequeue(&mut *da, &mut rq);
+    assert_eq!(
+        (rq.int_count(), rq.util_count()),
+        (0, 1),
+        "DENS：D-1 ia 出环须 int-1"
+    );
+    rr.dequeue(&mut *du, &mut rq);
+    assert_eq!(
+        (rq.int_count(), rq.util_count()),
+        (0, 0),
+        "DENS：D-1 util 出环须 util-1"
+    );
+    rr.dequeue(&mut *dc, &mut rq);
+    rr.dequeue(&mut *dz, &mut rq);
+    assert_eq!(
+        (rq.int_count(), rq.util_count()),
+        (0, 0),
+        "DENS：D-1 收尾空环两计数须零"
+    );
+
+    // —— D-2. density_reclass 四向转移（纯计数算术面；TCB 档位写归 settle
+    // ——D-4 钉成对正形）。环 = {ta(ia)}，账本 (1,0)。
+    let mut rq2 = Runqueue::new();
+    let ta = mk(b"eIA".as_slice(), INTENT_INTERACTIVE);
+    rr.enqueue(&mut *ta, &mut rq2);
+    assert_eq!(
+        (rq2.int_count(), rq2.util_count()),
+        (1, 0),
+        "DENS：D-2 起点须 (1,0)"
+    );
+    // ia→util：换槽 int-1 util+1（utility 任务借入 interactive 到期回落形）。
+    density_reclass_kt(&rq2, INTENT_INTERACTIVE, INTENT_UTILITY);
+    assert_eq!(
+        (rq2.int_count(), rq2.util_count()),
+        (0, 1),
+        "DENS：D-2 ia→util 须换槽"
+    );
+    // util→ia：镜像换回（utility 借入 interactive 形）。
+    density_reclass_kt(&rq2, INTENT_UTILITY, INTENT_INTERACTIVE);
+    assert_eq!(
+        (rq2.int_count(), rq2.util_count()),
+        (1, 0),
+        "DENS：D-2 util→ia 须换回"
+    );
+    // ia→unit（非带档）：只减 int（ia 回落 declared 0x00 形——净额面）。
+    density_reclass_kt(&rq2, INTENT_INTERACTIVE, INTENT_UNSPECIFIED);
+    assert_eq!(
+        (rq2.int_count(), rq2.util_count()),
+        (0, 0),
+        "DENS：D-2 ia→unit 须只减 int"
+    );
+    // unit→ia：只增 int（bg/无档借入 0x02 形——it_mid 每 boot 真跑翻转）。
+    density_reclass_kt(&rq2, INTENT_UNSPECIFIED, INTENT_INTERACTIVE);
+    assert_eq!(
+        (rq2.int_count(), rq2.util_count()),
+        (1, 0),
+        "DENS：D-2 unit→ia 须只增 int"
+    );
+    // 非槽档对（bg→unspec）：双 no-op（无密度槽的转移零账动）。
+    density_reclass_kt(&rq2, INTENT_BACKGROUND, INTENT_UNSPECIFIED);
+    assert_eq!(
+        (rq2.int_count(), rq2.util_count()),
+        (1, 0),
+        "DENS：D-2 非槽档对须 no-op"
+    );
+
+    // —— D-3. resync_density 修复面（直改在环 intent → 漂移 → 归零差）。
+    // 直改 = ktest 手搓面（生产 intent 写点全经 settle 锁包或环前写——
+    // 改后不 resync 即账本漂移，integrity 双边等式将 panic 的本地环演示）。
+    ta.intent_effective = INTENT_UTILITY;
+    assert_eq!(
+        (rq2.int_count(), rq2.util_count()),
+        (1, 0),
+        "DENS：D-3 直改在环 intent 后账本须漂移（改档不重登的病理面）"
+    );
+    assert_eq!(
+        dens_on_ring_walk_kt(&rq2),
+        (0, 1),
+        "DENS：D-3 走查须见真值（判据读当下 intent_effective）"
+    );
+    assert_eq!(
+        rq2.resync_density(),
+        (0, 1),
+        "DENS：D-3 resync 须返回重数真值"
+    );
+    assert_eq!(
+        (rq2.int_count(), rq2.util_count()),
+        (0, 1),
+        "DENS：D-3 resync 后账本须归真（漂移差清零）"
+    );
+
+    // —— D-4. 走查 vs 账本等价（迁移正形）。环起 = {ta(ut)}，账本 (0,1)。
+    let tb = mk(b"eUT".as_slice(), INTENT_UTILITY);
+    let tc = mk(b"eBG".as_slice(), INTENT_BACKGROUND);
+    let td = mk(b"eUN".as_slice(), INTENT_UNSPECIFIED);
+    rr.enqueue(&mut *tb, &mut rq2);
+    rr.enqueue(&mut *tc, &mut rq2);
+    rr.enqueue(&mut *td, &mut rq2);
+    assert_eq!(
+        (rq2.int_count(), rq2.util_count()),
+        (0, 2),
+        "DENS：D-4 三入环后须 (0,2)（bg/unspec 无槽）"
+    );
+    // 在环改档正形（settle 锁包的本地环镜像）：TCB 档位写与 reclass
+    // **成对**落（只做其一即 D-3 已钉的漂移面）。
+    tb.intent_effective = INTENT_UNSPECIFIED;
+    density_reclass_kt(&rq2, INTENT_UTILITY, INTENT_UNSPECIFIED);
+    // 无槽任务出环（unlink 面——账本零动）。
+    rr.dequeue(&mut *tc, &mut rq2);
+    // 环 = {ta(ut), tb(un), td(un)}：手数钉死真值（防两侧同漂的假等式）。
+    assert_eq!(
+        dens_on_ring_walk_kt(&rq2),
+        (0, 1),
+        "DENS：D-4 走查真值须手数钉死（ia×0、util×1）"
+    );
+    assert_eq!(
+        dens_on_ring_walk_kt(&rq2),
+        (rq2.int_count(), rq2.util_count()),
+        "DENS：D-4 走查真值须==账本（integrity 双边等式钉板）"
+    );
+
+    // 任务体泄漏不回收（同 test_policy 政策——v1 无 reap）。
+    berry_hal_aarch64::uart_puts(b"DENS ok n=4\n");
 }

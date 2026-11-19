@@ -464,3 +464,21 @@ fn sha256_standard_vectors() {
         "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
     );
 }
+
+#[test]
+fn g0_bootctl_factory_layout_and_crc() {
+    let b = mkimage::bootctl_factory();
+    assert_eq!(b.len(), 52);
+    assert_eq!(&b[0..4], &0x42525943u32.to_le_bytes()); // BRYC
+    assert_eq!(&b[4..8], &3u32.to_le_bytes());           // v3
+    assert_eq!(b[9], 15, "A pri=15");                    // 出厂 A 最高
+    assert_eq!(b[10], 3, "A tries=3");
+    assert_eq!(b[11], 1, "A successful=1");
+    assert_eq!(b[25], 14, "B pri=14");
+    assert_eq!(b[26], 3, "B tries=3");
+    assert_eq!(b[27], 0, "B successful=0 试用期");
+    assert_eq!(b[44..48], [0; 4], "boot_count=0");
+    let crc = u32::from_le_bytes([b[48], b[49], b[50], b[51]]);
+    assert_eq!(crc, mkimage::crc32_ieee(&b[..48]), "CRC 自洽");
+    assert_eq!(mkimage::crc32_ieee(b"123456789"), 0xCBF43926, "IEEE 向量");
+}

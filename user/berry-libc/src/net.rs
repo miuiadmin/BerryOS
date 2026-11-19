@@ -30,9 +30,21 @@
 //!   空时恒 EAGAIN（独立阻塞收留 v2 协议）；「每写必回等长应答」对端
 //!   （echo/回显族）上 POSIX 写读流同构可用。
 //! - **服务端会话（listen/accept 产出的 dsid）**：send = 命名 RT 纯发送
-//!   臂（A3-1 案②裁定）、recv = POLL 节拍 + DRAIN 收割（bsh evs 同款
-//!   1s 节拍）；CLOSED 旗 = 可读余量 + EOF 收口、NOSESSION = 会话已收
-//!   口（recv 返 0 = POSIX EOF）。
+//!   臂（A3-1 案②裁定）、recv = DRAIN-first 收割 + POLL 冷节拍/EOF 面
+//!   （A' 案，e 门解锁——RPC 热路径去 POLL：数据在途时单 recv 纯 DRAIN
+//!   循环「填满用户缓冲或抽干会话缓冲」，零收成才发一次 POLL 查旗，
+//!   阻塞冷节拍 1s（bsh evs 同款））；CLOSED 旗 = 可读余量 + EOF 收口、
+//!   NOSESSION = 会话已收口（recv 返 0 = POSIX EOF）。
+//! - **VMO 大块通道形**（NET 大块刀·三轨统一契约，2026-11-19）：进程级
+//!   单例收割 VMO（2048B，create 即 commit）+ 每进程一次全局探针（探针 =
+//!   首个 VMO 形 op 的应答形本身：3B/4B 新形 ↔ 旧 netd 拒形（DNS 形 5B/
+//!   nodev 1B ST_BAD）→ 永久回退 legacy inline）。Server 臂 send 大块
+//!   （>250）走 `OP_TCP_RT_VMO`（op10：本体预填 + duplicate 别名随行，
+//!   应答 4B `[st][dlen][seq]` dlen/seq 回显配对——单片 2048 = 8×legacy）；
+//!   大缓冲 recv（余量+槽 ≥2048 的「无弃字节」容量门）走
+//!   `OP_TCP_DRAIN_VMO`（op9：别名随行，应答 3B `[st][dlen]`，数据经
+//!   本体回搬——单割幅 250→2048）；≤250 小载荷/小缓冲/旧 netd 恒 legacy
+//!   inline 旧形（小载荷不付 VMO 税）。
 //! - send 恒 RPC 至应答（v1 无「仅入队」语义——O_NONBLOCK 对 send 不
 //!   分岔，A3-1 残留条目同源文档化）；四刀起 Client 臂升级 **K 窗流水线**
 //!   （`TCP_PIPE_K`=3：K 个 RT op 在途、应答按尾随 seq 配对收割、陈值
@@ -55,8 +67,10 @@ use berry_fsclient::{
 };
 use berry_netdproto as ndp;
 use berry_sys::{
-    berry_channel_recv, berry_channel_send, berry_clock_read, berry_object_wait_one,
-    berry_thread_sleep, BERRY_ERR_AGAIN, BERRY_ERR_BUSY, CLOCK_MONOTONIC, SIGNAL_READABLE,
+    berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
+    berry_handle_duplicate, berry_object_wait_one, berry_thread_sleep, berry_vmo_commit,
+    berry_vmo_create, berry_vmo_read, berry_vmo_write, BERRY_ERR_AGAIN, BERRY_ERR_BUSY,
+    CLOCK_MONOTONIC, Handle, RIGHT_READ, RIGHT_TRANSFER, RIGHT_WRITE, SIGNAL_READABLE,
     SIGNAL_WRITABLE,
 };
 
@@ -475,6 +489,148 @@ fn rpc_poll(session: u32) -> Result<PollState, c_int> {
     }
 }
 
+// —— VMO 大块通道形（NET 大块刀·三轨统一契约 2026-11-19）：进程级单例
+//    VMO + 随行别名 RPC——drain 单割幅 250→2048、Server 臂大块回发单片
+//    2048 = 8×legacy inline 幅。wire 名义家 = netdproto（op9/op10 + 定长
+//    帧编解码/解析器）；blkproto 先例锚：svcmgr blk_rpc（客户端
+//    duplicate(READ|WRITE|TRANSFER)→send 随行→recv 无 handle）+ vblk 臂
+//    （服务侧 nh==1→vmo_read/write 别名→close）。——
+
+/// VMO 通道幅：收割/回发共用 2048B（e 臂 16K 突发下单 RPC 搬 8×legacy
+/// inline 幅）。客户端收面几何定值——与服务侧 VMO_CHUNK=2048 同值对齐
+///（drivers/bins/vnet/src/tcp.rs VMO 契约块；协议层 dlen u16 全域合法，
+/// 两侧各自按面几何收口）。
+const VMO_CAP: usize = 2048;
+
+/// 进程级单例收割 VMO（0 = 未建）。create 即 commit——**commit-before-
+/// write 坑**：新 VMO 无已提交页，先 vmo_write/vmo_read = -EFAULT；blk/
+/// vblk 先例同款 create→commit→用三连。
+static mut VMO_D: Handle = 0;
+
+/// VMO 通道可用性（每进程一次全局记忆）：0 = 未探，1 = 可用（netd 识
+/// op9/op10——应答 3B/4B 新形），2 = 旧 netd 永久回退。首用探针 = 首个
+/// VMO 形 op 的应答形本身（新形 ↔ 旧 netd 拒形），drain/send 两臂共享。
+static mut VMO_PROBE: u8 = 0;
+
+/// 单例 VMO 建制（false = 本地失败，瞬态不记忆——本趟 legacy 下趟再试）。
+fn vmo_ensure() -> bool {
+    // SAFETY: 单线程 static mut 直写（本模块 ABI 口径，SOCKETS 同款）。
+    unsafe {
+        if VMO_D != 0 {
+            return true;
+        }
+        let mut h: Handle = 0;
+        if berry_vmo_create(VMO_CAP as u64, 0, &mut h) != 0 || h == 0 {
+            return false;
+        }
+        if berry_vmo_commit(h, 0, VMO_CAP as u64) != 0 {
+            let _ = berry_handle_close(h);
+            return false;
+        }
+        VMO_D = h;
+        true
+    }
+}
+
+/// 单例句柄（vmo_ensure 后调用）。
+fn vmo_h() -> Handle {
+    // SAFETY: 只读。
+    unsafe { VMO_D }
+}
+
+/// 旧 netd 拒形判别：serve() 未知 op / 带随行 = DNS 形 5B `[ST_BAD][0×4]`
+/// （addr 五清零，随行别名由服务侧收口环回收）；serve_nodev() 无 NIC
+/// 拓扑 = 1B `[ST_BAD]`。与既有 st 应答同幅不可辨（1B v1 tcp 形 / 5B
+/// sid 形的陈 ST_BAD 应答）——**仅 VMO_PROBE==0（首探窗）作权威信号**（审查
+/// 修）：probe==1 后 1B/5B 拒形按构造必为外来弃置（计 FOREIGN_DROP 续
+/// 收）。首探窗误读面 = 永久回退 + op9 侧该批收割字节滞 VMO 丢一次 /
+/// op10 侧新 netd 可能已执行而 legacy 重发同片 = 线上静默重复（旧注释
+/// 「零重复」仅对真旧 netd 成立，误读场景不成立——wave10/14 陈应答债
+/// 同族，文档化残余）。
+fn vmo_old_netd_reject(b: &[u8]) -> bool {
+    (b.len() == 1 && b[0] == ndp::ST_BAD)
+        || (b.len() == ndp::REPLY_LEN && b[0] == ndp::ST_BAD && b[1..5] == [0u8; 4])
+}
+
+/// VMO 形应答收割三态。
+enum VmoHarvest {
+    /// judge 过检帧已拷入 rep（语义解归调用方）。
+    Frame,
+    /// 旧 netd 拒形（别名已被服务侧收口）——调用方永久回退 legacy。
+    OldNetd,
+}
+
+/// RPC 发出相的随行形（blk_rpc 先例）：满队 -EBUSY 阻塞等 WRITABLE 重试
+/// （[`netd_rpc_issue`] 同口径 CAP_FAST 总帽）；成功 = 别名已随行**迁出
+/// 调用者表**（channel_send 迁移语义）——此后禁 close（归服务侧收口）；
+/// 失败 = 别名未被 take 未迁出，本函数收口关闭。false = 请求未达（op
+/// 未被执行，调用方走 legacy 重发安全）。
+fn netd_rpc_issue_h(req: &[u8], dup: Handle) -> bool {
+    let netd = crate::io::netd_h();
+    if netd == 0 {
+        let _ = berry_handle_close(dup);
+        return false;
+    }
+    let send_dl = now() + CAP_FAST_NS;
+    loop {
+        let hs = [dup];
+        let s = berry_channel_send(netd, req.as_ptr(), req.len(), hs.as_ptr(), 1);
+        if s == 0 {
+            return true;
+        }
+        if s != BERRY_ERR_BUSY {
+            break; // 链断面——别名未被 take，收口
+        }
+        let mut obs = 0u64;
+        if berry_object_wait_one(netd, SIGNAL_WRITABLE, send_dl, &mut obs) != 0 {
+            break; // 满队帽到——别名未被 take，收口
+        }
+    }
+    let _ = berry_handle_close(dup);
+    false
+}
+
+/// VMO 形 RPC 线上层（[`netd_rpc_raw_valid`] 的随行版）：issue（别名
+/// 随行）→ 帽内收割判形——judge 过检帧入 rep；旧 netd 拒形返
+/// [`VmoHarvest::OldNetd`]；其余 = 外来弃置续收（帽 [`FOREIGN_DROP_MAX`]
+/// ——共享通道 wave10/14 活性面，单发壳同纪律）。Err = 链断/帽到/弃置
+/// 越界（**不重发**——请求可能仍在途，blk_rpc 应答帽纪律）。收割入
+/// 满幅 scratch 再判形（超幅外来消息 EINVAL 误判链断——raw_valid 同坑）。
+fn netd_vmo_rpc(
+    req: &[u8],
+    dup: Handle,
+    cap_ns: u64,
+    judge: impl Fn(&[u8]) -> bool,
+    rep: &mut [u8],
+) -> Result<VmoHarvest, ()> {
+    if !netd_rpc_issue_h(req, dup) {
+        return Err(());
+    }
+    let dl = now() + cap_ns;
+    let mut scratch = [0u8; ndp::RT_SEQ_REP_MAX];
+    let mut dropped = 0usize;
+    loop {
+        let n = netd_rpc_harvest_dl(dl, &mut scratch).ok_or(())?;
+        if judge(&scratch[..n]) && n <= rep.len() {
+            rep[..n].copy_from_slice(&scratch[..n]);
+            return Ok(VmoHarvest::Frame);
+        }
+        // 旧 netd 拒形仅在探针未明（VMO_PROBE==0）时作权威信号（审查修：
+        // probe==1 后新 netd 对 op9/op10 恒答 3B/4B 形，任何 1B/5B 拒形帧
+        // 按构造必为外来弃置——计 FOREIGN_DROP 续收，不翻永久回退，防
+        // 陈 ST_BAD 帧致 op9 割量滞丢/op10 线上静默重复）。单线程 ABI
+        // 口径（本模块 :1131 同款）——static mut 直读。
+        let probe = unsafe { core::ptr::read_volatile(&raw const VMO_PROBE) };
+        if probe == 0 && vmo_old_netd_reject(&scratch[..n]) {
+            return Ok(VmoHarvest::OldNetd);
+        }
+        dropped += 1;
+        if dropped > FOREIGN_DROP_MAX {
+            return Err(());
+        }
+    }
+}
+
 // —— socket fd 表（宿主；单线程 static mut 直写——fs.rs FDT/io.rs
 //    ALIASES 同口径）——
 
@@ -858,7 +1014,7 @@ pub unsafe extern "C" fn getsockopt(
 }
 
 // —— send/recv（分形：Client = legacy RT 回显缓冲；Server = 命名 RT /
-//    POLL+DRAIN——v1 语义裁定见模块头注）——
+//    DRAIN-first + POLL 冷节拍——v1 语义裁定见模块头注）——
 
 /// errno 置位 + -1 收口（pub 面小助手）。
 fn err_ret(e: c_int) -> c_int {
@@ -920,7 +1076,9 @@ struct PipeOp {
 ///   陈值弃、BUSY 同 seq 退避重发＋持续背压 60s 全局帽到 EIO（F87）；回显按 op 序入槽缓冲——每 op 应答
 ///   仍严格等长携本 op 回显，ROUNDTRIP 对外语义零漂移）；缓冲余量不足
 ///   → 部分写返回（首片即不足 = EAGAIN——读写节奏面，容量 = K×250）；
-/// - Server：命名 RT 纯发送臂（应答不携数据，A3-1 案②）；
+/// - Server：命名 RT 纯发送臂（应答不携数据，A3-1 案②）；大块（>250）
+///   走 op10 VMO 形单片（[`rt_vmo_chunk`]——单片 2048 = 8×legacy；≤250
+///   尾片/通道不可用 = legacy inline 分片续传，小载荷不付 VMO 税）；
 /// - Unconnected/Listen → EPIPE（Linux 口径：非连接套接字 send）。
 pub(crate) fn sock_send(fd: c_int, buf: *const u8, n: usize) -> ssize_t {
     let e = match sock_entry(fd) {
@@ -933,7 +1091,34 @@ pub(crate) fn sock_send(fd: c_int, buf: *const u8, n: usize) -> ssize_t {
         SockKind::Server => {
             let mut sent = 0usize;
             while sent < n {
-                let chunk = (n - sent).min(ndp::TCP_DATA_MAX);
+                let rem = n - sent;
+                // 大块回发（>250）：op10 VMO 形单片帽 min(rem, VMO_CAP)——
+                // 单 RPC 搬 8×legacy 幅；探针态非「永久回退」才入（2 =
+                // 旧 netd 直 legacy）。通道不可用（旧 netd 拒形已记忆回
+                // 退/本地建制瞬态——首探窗误读形下 op10 可能已被新 netd
+                // 执行,legacy 重发=线上重复(窄面:probe==0 恰逢陈拒形帧)）落 legacy 重发本片(
+                // 重复；真错 = 部分写/errno（同 legacy 臂纪律）。
+                // SAFETY: 只读探针态（单线程）。
+                if rem > ndp::TCP_DATA_MAX && unsafe { VMO_PROBE } != 2 {
+                    let chunk = rem.min(VMO_CAP);
+                    // SAFETY: 调用方缓冲前 n 字节有效（libc 契约）。
+                    let data = unsafe { core::slice::from_raw_parts(buf.add(sent), chunk) };
+                    match rt_vmo_chunk(e.sid, data) {
+                        Ok(Some(k)) => {
+                            sent += k;
+                            continue;
+                        }
+                        Ok(None) => {}
+                        Err(errno) => {
+                            return if sent > 0 {
+                                sent as ssize_t
+                            } else {
+                                err_ret(errno) as ssize_t
+                            };
+                        }
+                    }
+                }
+                let chunk = rem.min(ndp::TCP_DATA_MAX);
                 // SAFETY: 同上。
                 let data = unsafe { core::slice::from_raw_parts(buf.add(sent), chunk) };
                 match rpc_st(SockOp::Send, ndp::TcpSReq::Roundtrip { data }, e.sid, CAP_SLOW_NS) {
@@ -1126,6 +1311,80 @@ fn sock_send_pipe(fd: c_int, buf: *const u8, n: usize) -> ssize_t {
     sent as ssize_t
 }
 
+/// Server 臂大块 RT 的 VMO 形（op10）单片：本体 vmo_write 预填 →
+/// duplicate(READ|WRITE|TRANSFER) 别名随行（netdproto 定长帧）→ 4B
+/// `[st][dlen][seq]`——seq 恒回携（Server 臂填 0），OK dlen = 受纳载荷
+/// 全等回显（判形配对——4B 外来 POLL 应答同幅不可辨的收窄面：需 dlen
+/// 全等才过检，误伤残机率再降一档；非 OK 恒零 dlen = 解析器烘焙线）。
+/// Ok(Some(k)) = k 字节已发；Ok(None) = 通道不可用（旧 netd 拒形已记忆
+/// 永久回退 / 本地建制失败瞬态——真旧 netd 下 op10 未被执行，legacy
+/// 重发零重复；首探窗误读形下 op10 可能已执行=线上重复（窄面，审查记档）；
+/// Err = RPC 链断帽到（EIO，**不重发**——请求可能仍在途；且 Err 后单例
+/// VMO 视为仍被在途请求借用——下一次 VMO 形 op 覆写偏 0 会使迟出队的旧
+/// 请求读到新载荷（静默流损坏窄面，TCG 帽到形触发——文档化残余，加固
+/// 归后续：Err 后一次成功 RPC 完成收割才复用 VMO 形））/
+/// op 级错码。
+fn rt_vmo_chunk(sid: u32, data: &[u8]) -> Result<Option<usize>, c_int> {
+    if data.is_empty() || data.len() > VMO_CAP {
+        return Err(crate::EIO); // 防御（调用方几何保证不达）
+    }
+    if !vmo_ensure() {
+        return Ok(None);
+    }
+    let vmo = vmo_h();
+    if berry_vmo_write(vmo, data.as_ptr(), 0, data.len()) != 0 {
+        return Ok(None); // 内核面瞬态——不记忆，legacy 本趟
+    }
+    let mut dup: Handle = 0;
+    if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER, &mut dup) != 0 {
+        return Ok(None); // 表满/瞬态——不记忆，legacy 本趟
+    }
+    let mut req = [0u8; ndp::RT_VMO_REQ_LEN];
+    // Server 臂命名 RT 无 seq——恒填 0（应答 seq 回显配对面）。
+    let rn = match ndp::encode_rt_vmo_request(&mut req, data.len() as u16, 0, sid) {
+        Some(n) => n,
+        None => {
+            let _ = berry_handle_close(dup);
+            return Err(crate::EIO); // sid/dlen 域外——防御（dsid ∈ 1..=8 恒过）
+        }
+    };
+    let echo = data.len() as u16;
+    let mut rep = [0u8; ndp::RT_VMO_REP_LEN];
+    let v = netd_vmo_rpc(
+        &req[..rn],
+        dup,
+        CAP_SLOW_NS, // RT 形慢 op 帽（legacy Roundtrip 同值）
+        |b| {
+            match ndp::parse_rt_vmo_reply(b) {
+                // seq 回显 = 配对令牌（Server 臂恒 0）；OK 需 dlen 全等
+                // 回显，非 OK 恒零 dlen（解析器烘焙线）。
+                Some((st, dlen, seq)) if seq == 0 => st != ndp::ST_OK || dlen == echo,
+                _ => false,
+            }
+        },
+        &mut rep,
+    )
+    .map_err(|_| crate::EIO)?;
+    match v {
+        VmoHarvest::OldNetd => {
+            // SAFETY: 单线程 static mut 直写。
+            unsafe { VMO_PROBE = 2; }
+            return Ok(None);
+        }
+        VmoHarvest::Frame => {
+            // SAFETY: 同上。4B 形已证 netd 识 op10。
+            unsafe { VMO_PROBE = 1; }
+        }
+    }
+    // judge 已过烘焙线（恰长/st 域/零值律/seq 配对）——解包必 Some。
+    let (st, _, _) = ndp::parse_rt_vmo_reply(&rep).ok_or(crate::EIO)?;
+    if st == ndp::ST_OK {
+        Ok(Some(data.len()))
+    } else {
+        Err(sock_rpc_errno(SockOp::Send, st))
+    }
+}
+
 /// Client 臂 K 窗 seq 发号器（滚动 u8；单线程 static mut 直写——本模块
 /// 单线程 ABI 口径）。回绕距 256 ≫ K=3：同 seq 复用需 256 op 间隔，迟到
 /// 应答窗口（vnet 内帽 60s）内结构性无碰撞。
@@ -1141,8 +1400,11 @@ fn seq_next() -> u8 {
 /// `recv(2)` / read 链尾（sock_recv）：按 kind 分形——
 /// - Client：槽缓冲（send 的回显随行）优先；空 → EAGAIN（v1 客户端无
 ///   独立收面——session-0 无 POLL/DRAIN，阻塞档同返：文档化取舍）；
-/// - Server：POLL 节拍 + DRAIN 收割——CLOSED 旗 = 余量终 drain 后 EOF
-///   （0）；NOSESSION（会话已收口）= EOF（0）；非阻塞空队 → EAGAIN；
+/// - Server：DRAIN-first 收割 + POLL 冷节拍/EOF 面（A' 案，e 门解锁——
+///   RPC 热路径去 POLL）——槽缓冲排空后 DRAIN 循环（填满用户缓冲或抽干
+///   会话缓冲，任一轮得手即部分返），零收成才一次 POLL 查旗：CLOSED 旗
+///   = 余量续 drain 收尾后 EOF（0）；NOSESSION（会话已收口）= EOF（0）；
+///   非阻塞零收 → EAGAIN；
 /// - Unconnected/Listen → EPIPE。
 pub(crate) fn sock_recv(fd: c_int, buf: *mut u8, n: usize) -> ssize_t {
     let e = match sock_entry(fd) {
@@ -1172,45 +1434,124 @@ pub(crate) fn sock_recv(fd: c_int, buf: *mut u8, n: usize) -> ssize_t {
             if c > 0 {
                 return c as ssize_t;
             }
+            // A' 案 DRAIN-first（e 门解锁——热路径去 POLL）：先 DRAIN 循环
+            // 填满用户缓冲或抽干会话缓冲（任一轮 k>0 落袋 = POSIX 部分
+            // 返），零收成才发一次 POLL 查旗（冷节拍/EOF 面）——数据在途
+            // 的单次 recv 零 POLL（旧形每 op POLL+DRAIN 双 RPC 量子）。
+            let mut got = 0usize;
+            // 防御帽（审查 P3）：continue 支（CLOSED 带余量 / Live 泵窗入数）
+            // 的连续零收计数——「串行 DRAIN 必非零」约定是文档面保证（单
+            // 消费者+Closed 后无补给三重论证），若未来 dup/fork 共享 sid 破
+            // 约定，帽 3 连零收按现刻态出（EOF/部分返），防不饱和小自旋。
+            let mut zero_streak = 0u8;
             loop {
-                match rpc_poll(e.sid) {
-                    Ok(PollState::Gone) => return 0, // 会话已收口 = EOF
-                    Ok(PollState::Live { flags, rbytes }) => {
-                        if flags & ndp::POLL_FLAG_CLOSED != 0 {
-                            if rbytes > 0 {
-                                match drain_once(e.sid, slot, out) {
-                                    Ok(k) => return k as ssize_t,
-                                    Err(errno) => return err_ret(errno) as ssize_t,
-                                }
-                            }
-                            return 0; // 对端收口无余量 = EOF
+                match drain_once(e.sid, slot, &mut out[got..]) {
+                    Ok(k) if k > 0 => {
+                        got += k;
+                        zero_streak = 0;
+                        if got == out.len() {
+                            // 用户缓冲满 = 部分返（会话余量下轮收）。
+                            return got as ssize_t;
                         }
-                        if rbytes > 0 {
-                            match drain_once(e.sid, slot, out) {
-                                Ok(k) => return k as ssize_t,
-                                Err(errno) => return err_ret(errno) as ssize_t,
-                            }
-                        }
-                        if e.nonblock {
-                            return err_ret(crate::EAGAIN) as ssize_t;
-                        }
-                        sleep_tick();
+                        // 用户缓冲有余：续 DRAIN（余量入槽只发生在缓冲恰
+                        // 满形——此支槽恒空，drain_once 前置不变量保持）。
                     }
-                    Err(errno) => return err_ret(errno) as ssize_t,
+                    Ok(_) => match rpc_poll(e.sid) {
+                        // k==0 冷节拍：一次 POLL 查旗定 EOF / 续候。
+                        Ok(PollState::Gone) => {
+                            // 会话已收口 = EOF（已收量先行部分返）。
+                            return got as ssize_t;
+                        }
+                        Ok(PollState::Live { flags, rbytes }) => {
+                            if flags & ndp::POLL_FLAG_CLOSED != 0 {
+                                if rbytes > 0 && zero_streak < 3 {
+                                    zero_streak += 1;
+                                    // 对端收口带余量：槽仍 Data，续 DRAIN
+                                    // 收尾量（余量尽后下轮冷节拍收 EOF）。
+                                    continue;
+                                }
+                                // 对端收口余量尽（或帽到）= EOF（got>0
+                                // 部分返先行）。
+                                return got as ssize_t;
+                            }
+                            if rbytes > 0 && zero_streak < 3 {
+                                // 泵窗入数（drain-0 后应答窗间数据到）：
+                                // POLL 已见可读即回 DRAIN——旧形同款立即
+                                // 返数据，不浪费一拍（审查 F1 修）。
+                                zero_streak += 1;
+                                continue;
+                            }
+                            if got > 0 {
+                                // 已收量在手 = 部分返（EAGAIN/阻塞只属零收）。
+                                return got as ssize_t;
+                            }
+                            if e.nonblock {
+                                return err_ret(crate::EAGAIN) as ssize_t;
+                            }
+                            sleep_tick();
+                        }
+                        Err(errno) => {
+                            // 已收量先行（审查 P2 修：禁把已抽走的字节随
+                            // -1 蒸发——vnet 侧 rx_drain 已消费,丢 got=
+                            // 静默流空洞;同 send 侧「已发部分→部分返」纪律）。
+                            if got > 0 {
+                                return got as ssize_t;
+                            }
+                            return err_ret(errno) as ssize_t;
+                        }
+                    },
+                    Err(errno) => {
+                        // DRAIN 错误面（审查 P2 修×2）：got>0 部分返先行；
+                        // 零收的 ST_BAD（EIO 映射）面——Free 槽 drain 报
+                        // BAD 而旧形 poll 首步报 Gone(EOF)，语义漂移以
+                        // POLL 复核闭合：Gone=EOF 零返,余者原错误 loud。
+                        if got > 0 {
+                            return got as ssize_t;
+                        }
+                        if errno == crate::EIO {
+                            if let Ok(PollState::Gone) = rpc_poll(e.sid) {
+                                return 0;
+                            }
+                        }
+                        return err_ret(errno) as ssize_t;
+                    }
                 }
             }
         }
     }
 }
 
-/// 单次 DRAIN 收割：应答数据直拷用户缓冲（截 min），余量入槽缓冲
-/// （此时槽缓冲恒空——recv 首步已排空，k ≤ RES_MAX 必容）。
+/// 单次 DRAIN 收割（VMO 形优先的分派器）。VMO 形准入两门：①全局探针
+/// 非「永久回退」；②收割容量几何门 `out.len() + RES_MAX ≥ VMO_CAP`——
+/// 2048 单割幅的「无弃字节」契约：溢出槽余量 = take − out 幅 ≤ RES_MAX
+/// 且槽恒空必容（legacy 形 250 幅恒容的 VMO 版不变量；服务端单割幅无
+/// 请求侧帽域，割多少只能收多少——小缓冲落 legacy 零风险，e 臂 16384
+/// 缓冲常态过门）。旧 netd 拒形 → 永久回退（每进程一次）；本地建制
+/// 失败（瞬态）本趟 legacy。k == 0 = 会话缓冲现刻空的诚实零收（两形
+/// 同义——冷节拍信号，vnet 侧 DRAIN 臂口径明文「0 是调用方节奏面诚实
+/// 值非协议错」（drivers/bins/vnet/src/main.rs:1131-1139）；旧不变量
+/// 「POLL 报 rbytes>0 后 DRAIN 零收 = 协议破缺」随 recv 热路径去 POLL
+/// 溶解）。死 sid 不入零收支：ST_BAD 经错误面 loud。
 fn drain_once(sid: u32, slot: usize, out: &mut [u8]) -> Result<usize, c_int> {
+    // SAFETY: 只读探针态（单线程）。
+    if unsafe { VMO_PROBE } != 2 && out.len() + RES_MAX >= VMO_CAP {
+        match drain_vmo(sid, slot, out) {
+            Ok(Some(k)) => return Ok(k),
+            Ok(None) => {} // 旧 netd（已记忆永久回退）/本地瞬态——落 legacy
+            Err(errno) => return Err(errno),
+        }
+    }
+    drain_inline(sid, slot, out)
+}
+
+/// legacy inline DRAIN 旧形（A' 案原身）：应答数据直拷用户缓冲（截
+/// min），余量入槽缓冲（此时槽缓冲恒空——recv 首步已排空，k ≤ 250 恒
+/// 被 out+槽容纳）。死 sid 不入零收支：ST_BAD 经 rpc_data 错误面 loud。
+fn drain_inline(sid: u32, slot: usize, out: &mut [u8]) -> Result<usize, c_int> {
     let mut tmp = [0u8; RES_MAX];
     let k = rpc_data(SockOp::Recv, ndp::TcpSReq::Drain, sid, CAP_FAST_NS, &mut tmp)?;
     if k == 0 {
-        // 串行 RPC 下 POLL 报 rbytes>0 后 DRAIN 零收成 = 协议破缺（loud）。
-        return Err(crate::EIO);
+        return Ok(0);
     }
     let c = k.min(out.len());
     out[..c].copy_from_slice(&tmp[..c]);
@@ -1218,6 +1559,85 @@ fn drain_once(sid: u32, slot: usize, out: &mut [u8]) -> Result<usize, c_int> {
         res_append(slot, &tmp[c..k]);
     }
     Ok(c)
+}
+
+/// VMO 形 DRAIN（op9）单片：duplicate(READ|WRITE|TRANSFER) 别名随行
+/// （netdproto 定长帧）→ 3B `[st][dlen]` → 本体 vmo_read(take) → 入用户
+/// 缓冲、余量入槽（容量门几何保证余量 ≤ RES_MAX 且槽恒空）。Ok(Some(k))
+/// = 直入用户缓冲 k 字节；Ok(None) = 通道不可用（旧 netd 拒形已记忆
+/// 永久回退 / 本地建制失败瞬态——op9 未被执行或被域外拒，legacy 重割
+/// 安全）；Err = RPC 链断帽到（EIO）/ op 级错码（sock_rpc_errno）。
+/// vmo_read 失败面 EIO loud 不可回退——数据已被服务侧从会话收割进
+/// VMO，legacy 重割 = 流空洞。
+fn drain_vmo(sid: u32, slot: usize, out: &mut [u8]) -> Result<Option<usize>, c_int> {
+    if !vmo_ensure() {
+        return Ok(None);
+    }
+    let mut dup: Handle = 0;
+    if berry_handle_duplicate(vmo_h(), RIGHT_READ | RIGHT_WRITE | RIGHT_TRANSFER, &mut dup) != 0 {
+        return Ok(None); // 表满/瞬态——不记忆，legacy 本趟
+    }
+    let mut req = [0u8; ndp::DRAIN_VMO_REQ_LEN];
+    let rn = match ndp::encode_drain_vmo_request(&mut req, sid) {
+        Some(n) => n,
+        None => {
+            let _ = berry_handle_close(dup);
+            return Err(crate::EIO); // sid 域外——防御（dsid ∈ 1..=8 恒过）
+        }
+    };
+    let mut rep = [0u8; ndp::VMO_REP_LEN];
+    let v = netd_vmo_rpc(
+        &req[..rn],
+        dup,
+        CAP_FAST_NS, // DRAIN 快 op 帽（legacy drain 同值）
+        // 3B 形判形 = netdproto 解析器烘焙线（恰长/st 域/非 OK 零 dlen）。
+        // 3B 外来与 v1 tcp 形 1 数据字节 `[st][1][x]` 结构巧合（netdproto
+        // 契约块注记的跨面歧义）——严格串行下不跨面解析即无歧义；弃置
+        // 陈应答撞形 = 误伤一次面（文档化残余）。
+        |b| ndp::parse_tcp_reply_vmo(b).is_some(),
+        &mut rep,
+    )
+    .map_err(|_| crate::EIO)?;
+    match v {
+        VmoHarvest::OldNetd => {
+            // SAFETY: 单线程 static mut 直写。
+            unsafe { VMO_PROBE = 2; }
+            return Ok(None);
+        }
+        VmoHarvest::Frame => {
+            // SAFETY: 同上。3B 形已证 netd 识 op9。
+            unsafe { VMO_PROBE = 1; }
+        }
+    }
+    // judge 已过烘焙线——解包必 Some。
+    let (st, dlen) = ndp::parse_tcp_reply_vmo(&rep).ok_or(crate::EIO)?;
+    if st == ndp::ST_NOSESSION {
+        // 会话已收口 = EOF 语义位（Poll 族同码）：零收落冷节拍——sock_recv
+        // 的 POLL 复核收口 Gone→EOF，legacy ST_BAD→EIO→复核 Gone 同归。
+        return Ok(Some(0));
+    }
+    if st != ndp::ST_OK {
+        return Err(sock_rpc_errno(SockOp::Recv, st));
+    }
+    let take = dlen as usize;
+    if take == 0 {
+        return Ok(Some(0)); // 冷节拍诚实零收（legacy k==0 同义；服务侧零收不触 VMO）
+    }
+    if take > VMO_CAP {
+        return Err(crate::EIO); // 幅超 VMO——协议破缺 loud（vmo_read 越界前拦）
+    }
+    let mut tmp = [0u8; VMO_CAP];
+    if berry_vmo_read(vmo_h(), tmp.as_mut_ptr(), 0, take) != 0 {
+        return Err(crate::EIO); // 收割已消费——loud，禁 legacy 重割
+    }
+    let c = take.min(out.len());
+    out[..c].copy_from_slice(&tmp[..c]);
+    if take > c {
+        // 容量门几何：take − out 幅 ≤ RES_MAX，槽恒空（drain_once 前置
+        // 不变量）必容。
+        res_append(slot, &tmp[c..take]);
+    }
+    Ok(Some(c))
 }
 
 /// `send(2)`：flags 只收 MSG_NOSIGNAL（v1 无信号面 = 语义恒真）；其余

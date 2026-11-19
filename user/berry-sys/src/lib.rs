@@ -524,8 +524,8 @@ pub extern "C" fn berry_sched_util_snapshot(util: *mut u32, count: usize) -> Sta
 }
 
 // —— 遥测（0x84 telemetry_open op 域：klog 快照首域 + memstat 定长快照
-// 第二档在役——遥测 v3 首件；SwitchRec/WakeRec 环读口随后续波次自 op=2
-// 起，不预留）——
+// 第二档 + 双族环快照第三档〔环读口刀〕+ WakeSrc 槽表纯镜像第四档〔槽表
+// 读口刀〕在役；后续波次自 op=4 起按落地序取号，不预留）——
 
 /// 0x84：v3 号提前实现（klog 快照首域翻真）。abi.toml 在册但 stage=v3——
 /// 常量层只产 v1/1.1 行（gen_abi.py defined 集），`nr::TELEMETRY_OPEN` 不
@@ -533,10 +533,17 @@ pub extern "C" fn berry_sched_util_snapshot(util: *mut u32, count: usize) -> Sta
 /// 落地后换 `nr::` 常量名——同内核派发注）。
 const TELEMETRY_OPEN_NR: usize = 0x84;
 
-/// 0x84 op 域常量（klog=0 / memstat=1）与 memstat 出参形状
-/// [`MemstatRec`]——单源 [`berry_telface`] 转发，内核派发同引（消内核/
-/// 用户双写；值与形状钉板在 telface host 测试）。
-pub use berry_telface::{MemstatRec, TELEMETRY_OP_KLOG, TELEMETRY_OP_MEMSTAT};
+/// 0x84 op 域常量（klog=0 / memstat=1 / rings=2 / wsrc=3）与四档出参形状
+/// ——单源 [`berry_telface`] 转发，内核派发同引（消内核/用户双写；值与
+/// 形状钉板在 telface host 测试）；头/段/行编解码纯函数（rings_hdr_read/
+/// ring_seg_read/wsrc_hdr_read/wsrc_row_read）随同转发——消费方解析走
+/// 同一具（U1 解析契约）。
+pub use berry_telface::{
+    MemstatRec, RingSegV1, RingsHdrV1, RING_FAMILY_SWITCH, RING_FAMILY_WAKE, REASON_SIGNALED,
+    REASON_TIMEOUT, SwitchRec, TELEMETRY_OP_KLOG, TELEMETRY_OP_MEMSTAT, TELEMETRY_OP_RINGS,
+    TELEMETRY_OP_WSRC, TELEMETRY_WSRC_MAX, WakeRec, WakeSrcRecV1, WsrcHdrV1, ring_seg_read,
+    rings_hdr_read, wsrc_hdr_read, wsrc_row_read,
+};
 
 /// `berry_telemetry_klog_snapshot(buf, len)`（0x84 op=0，阶段五第 17 步
 /// bsh dmesg 消费面）：读内核日志字节环到 `buf`，**返回 >0 = 实写字节数**
@@ -560,6 +567,62 @@ pub extern "C" fn berry_telemetry_klog_snapshot(buf: *mut u8, len: usize) -> Sta
 #[no_mangle]
 pub extern "C" fn berry_telemetry_memstat_snapshot(out: *mut MemstatRec) -> Status {
     unsafe { sys(TELEMETRY_OPEN_NR, TELEMETRY_OP_MEMSTAT as usize, out as usize, core::mem::size_of::<MemstatRec>(), 0, 0, 0) }
+}
+
+/// `berry_telemetry_rings_snapshot(buf, len)`（0x84 op=2，环读口刀——
+/// berryctl trace 消费面）：per-CPU 切换环＋唤醒环四段一体快照写入
+/// `buf`，**返回实写字节数（≥ 32 头自证）**或负 errno 透传；len < 32 →
+/// -EINVAL（内核执法），无上帽（变长填充返回值自证——klog 裸缓冲透传
+/// 同形第三件，buf/len 字节直传）。
+///
+/// 布局 = 32B 头 [`RingsHdrV1`]＋每环 24B 段描述符 [`RingSegV1`]＋变长
+/// 载荷（CPU 序段序 switch c0→c1→wake c0→c1、段内旧→新、整条粒度截
+/// 尾）。**尽力一致契约**：逐环一致（每环单 seqlock 版本窗整块拷）或整
+/// 环诚实弃（count=0 而 total 照出——降级可判 total>0 ∧ count==0，空可
+/// 判 total==0），四环间无一致保证（各环独立快照时刻——跨段非时序归并
+/// 读方自知）；丢包可派生每环 total − min(total, ring_len)。
+///
+/// 头/段解析契约 = [`berry_telface`] 编解码纯函数（[`rings_hdr_read`]/
+/// [`ring_seg_read`]——host 钉板即单源）；条目（[`SwitchRec`] 24B/
+/// [`WakeRec`] 32B）按 telface 钉板偏移 LE 手解。尾追追加律：未来扩形
+/// 走头尾追或新 op 值，旧调用方恒收 v1 前缀。零 handle 零权利位（系统级
+/// 遥测读面——klog/memstat 同族口径）。
+#[no_mangle]
+pub extern "C" fn berry_telemetry_rings_snapshot(buf: *mut u8, len: usize) -> Status {
+    unsafe { sys(TELEMETRY_OPEN_NR, TELEMETRY_OP_RINGS as usize, buf as usize, len, 0, 0, 0) }
+}
+
+/// `berry_telemetry_wsrc_snapshot(buf, len)`（0x84 op=3，槽表读口刀——
+/// berryctl powertop 消费面）：WakeSrc 源槽表全表纯镜像快照写入 `buf`，
+/// **返回实写字节数（≥ 40 头自证）**或负 errno 透传；len < 40 → -EINVAL
+/// （内核执法），无上帽（整行粒度截尾＋返回值自证——klog 裸缓冲透传同形
+/// 第四件，buf/len 字节直传）。
+///
+/// 布局 = 40B 头 [`WsrcHdrV1`]＋128×64B 定长平数据镜像行 [`WakeSrcRecV1`]
+///（满载 [`TELEMETRY_WSRC_MAX`]；行号即源值——值直索引 0..=0x7F 零 src
+/// 域，头 `slots`/`rec_size` 自述几何，**条目步进按头 rec_size 自述走读**
+/// ＝消费方跨版本走读锚）。尾追追加律：未来扩形走头尾追或新 op 值，旧
+/// 调用方恒收 v1 前缀。零 handle 零权利位（系统级遥测读面——klog/rings
+/// 同族口径）。
+///
+/// **一致性契约（G6——逐槽逐字段独立原子读、非一致快照，如实文档化）**：
+/// 单调族（wakes/irq_count/no_waiter fetch_add、first_ts fetch_min、
+/// last_ts fetch_max、flags fetch_or、merge_hal 单调 store）中途读恒得
+/// 某个真实持过的值，无回退无撕裂；非单调族（last_woken_id/last_ack_ts
+/// 定宽 store）可旧可新不撕；跨字段错位可能（wakes 新于 last_ts 等）。
+/// 装配序双不变式：头 `wake_acct_n` 先读（Acquire）后扫槽 ⇒ 瞬态恒
+/// Σ行wakes ≥ 头 wake_acct_n（一次广播可醒任意多任务，差值非固定帽——
+/// `wake_acct_conserved` 读序的读者侧对偶）；头 `now_vct` 行读毕后取 ⇒
+/// ≥ 任一行内时戳（CNTVCT 单调律——差分区间分母可安全夹上界）。
+/// `first_ts == u64::MAX` 哨兵＝未触；**差分只许用单调族**（区间差精确
+/// 自愈、不丢不双计）；戳字段单点语义（跨字段戳差是可旧可新单点代理非
+/// 分布）；全记录一致窗不承诺（挂账维持）。trace_off 表照出（计数器族
+/// 不随关——观测计数≠环记录面）；SGI×2/UNKNOWN 的 irq_count＝G1.5 boot
+/// 尾单点并账快照非连续并账——差分对该三槽恒 0 是 v1 已知边界（连续并账
+/// 挂 v2）。禁默示「全表烘焙一致像」。
+#[no_mangle]
+pub extern "C" fn berry_telemetry_wsrc_snapshot(buf: *mut u8, len: usize) -> Status {
+    unsafe { sys(TELEMETRY_OPEN_NR, TELEMETRY_OP_WSRC as usize, buf as usize, len, 0, 0, 0) }
 }
 
 // —— 策略注入（0x83：机制在内核、策略可插拔的带内接口——表形面（COMMIT/

@@ -3,7 +3,7 @@
 Type: standard
 Status: current
 Updated: 2026-11-18
-Version: 1.1.0
+Version: 1.2.0
 
 > 回答三件事：**用什么 shell、配哪些命令、管道怎么实现**。
 > 本标准规定现行生效的 `bsh` v1/v2 命令行、内建命令与管道契约；终端优先（CLI-First）全栈闭环演进目标（用户态伪终端 `ptyd / consoled / berry-vt / bmux`、`ProcessArgs v2` 全双工流式继承与 `/svc` 服务发现、`bsh` 3.0 词法/AST 脚本与 `Job + SuspendToken` 作业控制、`sandbox` 能力裁剪及 `bed / less / btop / lscap / btrace / bdbg` 完整工具链）分别见 [pty 总体设计](../.agents/plans/pty/design.md)、[bsh 总体设计](../.agents/plans/bsh/design.md) 与 [cli-suite 总体设计](../.agents/plans/cli-suite/design.md)。
