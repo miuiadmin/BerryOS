@@ -354,12 +354,9 @@ pub fn sec_park_ctx() -> *mut crate::task::TaskContext {
 /// 低半栈 → 读 IRQ 栈帧 fault → 向量风暴死循环（SP 每轮 `-0x120` 下坠，
 /// tick 永不进——`pre1==t1` 同冻即此死状指纹）。16KiB 同早期栈量级；换栈
 /// 点在 `-> !` 入口（永不 ret），旧低半帧弃置无害。
-#[repr(C, align(4096))]
-pub struct SecStackBuf([u8; 16384]);
-/// F0-2 修：必须声明为 `static mut` 以落入可写 `.bss (NOLOAD)`；此前误写为不可变 `static`
-/// 导致副核 16KiB 栈被编译器放入 `.rodata`，开启 `TTBR1` `.rodata` 硬件只读后当场捕获。
-#[no_mangle]
-pub static mut SMP_SEC_STACK: SecStackBuf = SecStackBuf([0; 16384]);
+#[repr(C, align(16))]
+struct SecStackBuf([u8; 16384]);
+static SMP_SEC_STACK: SecStackBuf = SecStackBuf([0; 16384]);
 
 /// 副核高半栈顶（满减栈 = 数组尾）。
 pub fn sec_stack_top() -> usize {
@@ -722,8 +719,6 @@ global_asm!(
     //      字面量可读。gate 检查在 on_irq_tick 早退（统一探测/参与环合一，
     //      secondary_main 自身无 gate 分支）——不归（-> !）。
     ".Lsmp_final:",
-    "    ldr x2, =SMP_SEC_STACK",
-    "    add sp, x2, #16384",
     "    ldr x0, =__secondary_main_ptr",
     "    ldr x1, [x0]",
     "    blr x1",

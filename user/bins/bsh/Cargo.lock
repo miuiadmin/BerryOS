@@ -42,10 +42,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "berry-jobs"
-version = "0.2.0"
-
-[[package]]
 name = "berry-libc"
 version = "0.2.0"
 dependencies = [
@@ -101,9 +97,16 @@ version = "0.2.0"
 [[package]]
 name = "berry-sys"
 version = "0.2.0"
+dependencies = [
+ "berry-vdsoface",
+]
 
 [[package]]
 name = "berry-tls"
+version = "0.2.0"
+
+[[package]]
+name = "berry-vdsoface"
 version = "0.2.0"
 
 [[package]]
@@ -121,7 +124,6 @@ dependencies = [
  "berry-exec",
  "berry-fsproto",
  "berry-guiproto",
- "berry-jobs",
  "berry-libc",
  "berry-netdproto",
  "berry-poll",

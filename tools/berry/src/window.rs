@@ -194,49 +194,6 @@ fn draw_tooltip(buf: &mut [u32], width: u32, height: u32, hover: usize) {
     draw_text(buf, width, height, x + 5, y + 3, text);
 }
 
-/// UI u32 面 → RGBA 字节面（overlay 纹理载荷）。UI 面写 0x00RRGGBB
-/// （softbuffer 语义，R 在高 16 位）；alpha 统一按覆盖写——ui 面零值 =
-/// 未覆盖（透客帧/底色），非零 = 覆盖 255（UI 写色当前无纯零色）。
-fn ui_to_rgba(ui: &[u32], rgba: &mut [u8]) {
-    for (i, &px) in ui.iter().enumerate() {
-        let o = i * 4;
-        rgba[o] = ((px >> 16) & 0xFF) as u8;
-        rgba[o + 1] = ((px >> 8) & 0xFF) as u8;
-        rgba[o + 2] = (px & 0xFF) as u8;
-        rgba[o + 3] = if px != 0 { 0xFF } else { 0x00 };
-    }
-}
-
-/// 交互层重绘（wgpu overlay 路）：持久缓冲复用，仅尺寸变化重分配；层序
-/// 与 softbuffer 段一致（工具栏恒绘 + 非 menu 态 tooltip + menu 态菜单）。
-/// 调用方按 overlay 状态签名 gating——签名不变即整层零重绘零上传。
-fn redraw_overlay(
-    ui: &mut Vec<u32>,
-    rgba: &mut Vec<u8>,
-    sw: u32,
-    sh: u32,
-    armed: bool,
-    hover: Option<usize>,
-    menu_open: bool,
-    profile_id: &str,
-) {
-    let n = sw as usize * sh as usize;
-    ui.clear();
-    ui.resize(n, 0);
-    rgba.clear();
-    rgba.resize(n * 4, 0);
-    draw_toolbar(ui, sw, sh, armed, hover);
-    if !menu_open {
-        if let Some(h) = hover {
-            draw_tooltip(ui, sw, sh, h);
-        }
-    }
-    if menu_open {
-        draw_menu(ui, sw, sh, profile_id);
-    }
-    ui_to_rgba(ui, rgba);
-}
-
 /// Base window-open factor per panel class, in logical-point terms.
 ///
 /// Tall panels (>1200) open smaller because they are clamped by screen height
@@ -478,15 +435,6 @@ struct App {
     surface: Option<Surface<Arc<Window>, Arc<Window>>>,
     last_frame: Option<Frame>,
     last_fit: Option<Fit>,
-    /// 客帧序号（poll_frame 收帧递增）与已上传序号——客帧不变跳 upload_full。
-    frame_seq: u64,
-    uploaded_seq: u64,
-    /// overlay/UI 持久面（I1 止血：稳态零分配，仅尺寸变化重分配）。
-    ui_buf: Vec<u32>,
-    rgba_buf: Vec<u8>,
-    /// overlay 状态签名（尺寸/hover/menu/power_armed/profile）——变化才
-    /// 重绘交互层并重传 overlay 纹理。
-    overlay_sig: Option<(u32, u32, Option<usize>, bool, bool, &'static str)>,
     cursor: Option<(f64, f64)>,
     mouse_down: bool,
     mods: ModifiersState,
@@ -537,11 +485,6 @@ impl App {
             surface: None,
             last_frame: None,
             last_fit: None,
-            frame_seq: 0,
-            uploaded_seq: 0,
-            ui_buf: Vec::new(),
-            rgba_buf: Vec::new(),
-            overlay_sig: None,
             cursor: None,
             mouse_down: false,
             mods: ModifiersState::empty(),
@@ -567,7 +510,6 @@ impl App {
         match self.session.source_mut().try_next_frame() {
             Some(frame) => {
                 self.last_frame = Some(frame);
-                self.frame_seq += 1;
                 true
             }
             None => false,
@@ -576,45 +518,44 @@ impl App {
 
     fn draw(&mut self) {
         // B1-b 壳半：wgpu 主路——客帧 + 交互层（overlay alpha 合成）GPU 呈现。
-        // I1 止血：fit 走 scale::fit 单源（与 softbuffer 段同公式同参数），
-        // letterbox 几何经 uniform 下发 shader，pointer 映射与渲染几何同源；
-        // 客帧不变跳 upload_full，overlay 签名不变跳重绘重传（稳态零分配）。
+        // 交互层绘制函数（draw_toolbar/menu/tooltip）沿用 CPU 实现，产物转
+        // RGBA 写 overlay 纹理（alpha 0=透客帧/255=覆盖），shader 内合成。
         if let (Some(p), Some(w)) = (self.wgpu.as_mut(), self.window.as_ref()) {
             if let Some(frame) = self.last_frame.as_ref() {
                 let size = w.inner_size();
                 if size.width > 0 && size.height > 0 {
                     let (sw, sh) = (size.width, size.height);
-                    let integer = matches!(self.scale, ScaleMode::Integer(_));
-                    let guest_h = sh.saturating_sub(TOOLBAR_H).max(1);
-                    let fit = scale::fit(frame.width, frame.height, sw, guest_h, integer);
-                    let sig = (
-                        sw,
-                        sh,
-                        self.hover,
-                        self.menu_open,
-                        self.power_armed.is_some(),
-                        self.profile.id,
-                    );
-                    if self.overlay_sig.as_ref() != Some(&sig) {
-                        redraw_overlay(
-                            &mut self.ui_buf,
-                            &mut self.rgba_buf,
-                            sw,
-                            sh,
-                            self.power_armed.is_some(),
-                            self.hover,
-                            self.menu_open,
-                            self.profile.id,
-                        );
-                        p.upload_overlay(&self.rgba_buf, sw, sh);
-                        self.overlay_sig = Some(sig);
+                    // 交互层 CPU 面复用：先绘 softbuffer 形态的 u32 面，再转
+                    // RGBA（alpha：交互层覆盖区 255——工具栏底/按钮/菜单面，
+                    // 其余 0 透客帧）。
+                    let mut ui = vec![0u32; (sw * sh) as usize];
+                    let bar_top = sh.saturating_sub(TOOLBAR_H);
+                    if self.menu_open {
+                        draw_menu(&mut ui, sw, sh, self.profile.id);
+                    } else {
+                        // 工具栏底条（覆盖区 alpha 255）。
+                        for y in bar_top..sh {
+                            let s = (y * sw) as usize;
+                            ui[s..s + sw as usize].fill(0xFF00_0000 | 0x181C20);
+                        }
+                        draw_toolbar(&mut ui, sw, sh, self.power_armed.is_some(), self.hover);
+                        if let Some(h) = self.hover {
+                            draw_tooltip(&mut ui, sw, sh, h);
+                        }
                     }
-                    if self.uploaded_seq != self.frame_seq {
-                        p.upload_full(frame);
-                        self.uploaded_seq = self.frame_seq;
+                    // u32 面 → RGBA 字节面（alpha 位在 u32 高 8 位——UI 面
+                    // 绘制函数只写 0x00RRGGBB，故 alpha 统一在此按覆盖区写）。
+                    let mut rgba = Vec::with_capacity(ui.len() * 4);
+                    for px in ui {
+                        let a = (px >> 24) & 0xFF;
+                        let r = px & 0xFF;
+                        let g = (px >> 8) & 0xFF;
+                        let b = (px >> 16) & 0xFF;
+                        rgba.extend_from_slice(&[r as u8, g as u8, b as u8, a as u8]);
                     }
-                    if p.present(w, (fit.x, fit.y, fit.w, fit.h)) {
-                        self.last_fit = Some(fit);
+                    p.upload_full(frame);
+                    p.upload_overlay(&rgba, sw, sh);
+                    if p.present(w) {
                         return;
                     }
                 }
@@ -1038,9 +979,6 @@ impl App {
                             self.serial = None; // 新 run 从零 tail
                             self.rotating = false;
                             self.last_frame = None;
-                            // 旋转翻转几何：旧 fit 坐标系随之失效，与新帧
-                            // 同批清（不清 = 新帧首绘前 pointer 拿错位映射）。
-                            self.last_fit = None;
                             if let Some(w) = &self.window {
                                 w.request_redraw();
                             }
@@ -1384,44 +1322,603 @@ mod default_size_tests {
 }
 
 #[cfg(test)]
-mod overlay_tests {
+mod window_pure_tests {
     use super::*;
 
-    /// I1 ③：UI 面 0x00RRGGBB（R 高 16 位）→ RGBA 字节序正确——旧实现
-    /// r/b 互换（纯红渲染成蓝）；alpha 按覆盖写（非零=255，零=透）。
+    /// 字母表契约（glyph 15 字母 = SHOTBFULRECINPW 的并集）：凡出现在
+    /// 工具栏 label/tip 与 profile id 大写面里的字母，字形必须非全零；
+    /// 表外字符（含数字与 A/D/K 等）字形恒全零 = 静默空白。新增按钮或
+    /// profile 时若拼词用到表外字母，画面会静默缺字——本测就是这个
+    /// 契约的防回归钉板（表外空白集显式列出，防止误当缺陷）。
     #[test]
-    fn ui_to_rgba_channel_order_and_alpha_coverage() {
-        let ui = [0x00FF_0000, 0x00E8_ECF0, 0x0000_0000];
-        let mut rgba = [0u8; 12];
-        ui_to_rgba(&ui, &mut rgba);
-        assert_eq!(&rgba[0..4], &[0xFF, 0x00, 0x00, 0xFF], "纯红保持红且覆盖");
-        assert_eq!(&rgba[4..8], &[0xE8, 0xEC, 0xF0, 0xFF], "文字前景色字节序");
-        assert_eq!(&rgba[8..12], &[0x00, 0x00, 0x00, 0x00], "零值=透客帧");
+    fn glyph_alphabet_contract() {
+        let alphabet = "SHOTBFULRECINPW";
+        for ch in alphabet.chars() {
+            let any_set = (0..7).any(|r| glyph(ch, r) != 0);
+            assert!(any_set, "alphabet letter {ch} renders blank");
+        }
+        // 已知空白集：数字与未收录字母——结构上就是空白（非缺陷，
+        // 钉板防「数字怎么不显示」式回归误判）。
+        for ch in "0123456789ADGJKMQVXYZ".chars() {
+            for r in 0..7 {
+                assert_eq!(glyph(ch, r), 0, "blank set {ch} row {r}");
+            }
+        }
     }
 
-    /// I1 ④：持久缓冲复用——首绘定容、同签名重绘幂等（无残留）、缩窗
-    /// 后长度跟随；工具栏底条为覆盖区（alpha 255）而客帧区透（alpha 0）。
+    /// 每行 5 bit（高 3 位恒零）——5 列字形网格的结构不变量。
     #[test]
-    fn redraw_overlay_persistent_buffer_and_coverage() {
-        let (mut ui, mut rgba) = (Vec::new(), Vec::new());
-        redraw_overlay(&mut ui, &mut rgba, 480, 1000, false, None, false, "phone");
-        let n = 480usize * 1000;
-        assert_eq!(ui.len(), n);
-        assert_eq!(rgba.len(), n * 4);
-        // 工具栏底条首行左端：底条色 0x0018_1C20 → RGBA [18,1C,20,FF]。
-        let bar = (1000 - TOOLBAR_H) as usize * 480 * 4;
-        assert_eq!(&rgba[bar..bar + 4], &[0x18, 0x1C, 0x20, 0xFF]);
-        // 客帧区左上角未覆盖 = 透。
-        assert_eq!(&rgba[0..4], &[0, 0, 0, 0]);
-        // 同签名重绘：中段取样与首绘一致（clear+resize 不残留旧帧内容）。
-        let mid = 500 * 480 * 4;
-        let before = rgba[mid..mid + 8].to_vec();
-        redraw_overlay(&mut ui, &mut rgba, 480, 1000, false, None, false, "phone");
-        assert_eq!(&rgba[mid..mid + 8], &before[..]);
-        // 缩窗（320x240，armed+hover+menu 全态）：长度跟随新尺寸。
-        redraw_overlay(&mut ui, &mut rgba, 320, 240, true, Some(3), true, "phone");
-        assert_eq!(ui.len(), 320 * 240);
-        assert_eq!(rgba.len(), 320 * 240 * 4);
-        assert_eq!(ui[0], 0, "menu 浮于工具栏上方，左上角仍在透区");
+    fn glyph_rows_are_5bit() {
+        for ch in "SHOTBFULRECINPW".chars() {
+            for r in 0..7 {
+                assert_eq!(glyph(ch, r) >> 5, 0, "{ch} row {r} exceeds 5 bits");
+            }
+        }
+    }
+
+    /// draw_text 2x 像素放大落点：'S' 首行位图 0b01111 → col1..4 置色
+    /// （每列横跨 2px），col0 不置；纵向同理 2px。手算锚点。
+    #[test]
+    fn draw_text_pixel_placements() {
+        let (w, h) = (64u32, 32u32);
+        let mut buf = vec![0u32; (w * h) as usize];
+        draw_text(&mut buf, w, h, 10, 20, "S");
+        let fg = 0x00E8_ECF0;
+        // row0 = 0b01111: col 1..4 → px 12..=19, py 20..=21.
+        for py in [20usize, 21] {
+            for px in 12..20usize {
+                assert_eq!(buf[py * w as usize + px], fg, "set px {px},{py}");
+            }
+            // col0 (px 10,11) stays blank.
+            for px in [10usize, 11] {
+                assert_eq!(buf[py * w as usize + px], 0, "blank px {px},{py}");
+            }
+        }
+        // row1 = 0b10000: only col0 → px 10..11, py 22..23.
+        for py in [22usize, 23] {
+            for px in [10usize, 11] {
+                assert_eq!(buf[py * w as usize + px], fg, "row1 col0");
+            }
+        }
+        // char cell advance = 12px: second char 'H' starts at px 22.
+        let mut buf2 = vec![0u32; (w * h) as usize];
+        draw_text(&mut buf2, w, h, 10, 20, "SH");
+        for py in [20usize, 21] {
+            // 'H' row0 = 0b10001 → col0 (px 22,23) and col4 (px 30,31).
+            assert_eq!(buf2[py * w as usize + 22], fg);
+            assert_eq!(buf2[py * w as usize + 23], fg);
+            assert_eq!(buf2[py * w as usize + 30], fg);
+            assert_eq!(buf2[py * w as usize + 31], fg);
+            // px 24..30 (cols 1..3 of 'H') blank in row0.
+            for px in 24..30usize {
+                assert_eq!(buf2[py * w as usize + px], 0);
+            }
+        }
+    }
+
+    /// 越界裁剪：右/下边缘处 draw_text 不 panic、越界像素零写入、
+    /// 界内像素照常写入（buf 长度不受污染）。
+    #[test]
+    fn draw_text_clips_at_edges() {
+        let (w, h) = (33u32, 31u32);
+        let mut buf = vec![0u32; (w * h) as usize];
+        // 'S' at x=26: cols reach px 26+8=34 (clip) and 26..33 (in-bounds
+        // part of col1..2). Must not panic.
+        draw_text(&mut buf, w, h, 26, 20, "S");
+        assert_eq!(buf.len(), (w * h) as usize);
+        let fg = 0x00E8_ECF0;
+        // px 28..32 within row0 band (col1 spans px 28,29; col2 spans
+        // 30,31; px 32 is col3's first half — 33 wide so still inside).
+        assert_eq!(buf[20 * w as usize + 28], fg);
+        assert_eq!(buf[20 * w as usize + 31], fg);
+        assert_eq!(buf[20 * w as usize + 32], fg);
+        // Bottom edge: y=30 → rows 0-2 (py 30..35) partial; py 30 in.
+        let mut buf2 = vec![0u32; (w * h) as usize];
+        draw_text(&mut buf2, w, h, 4, 30, "S");
+        assert_eq!(buf2[30 * w as usize + 6], fg, "py=30 row0 visible");
+    }
+
+    /// 表外字符静默空白不 panic（字形 fallback = [0;7]）。
+    #[test]
+    fn draw_text_unknown_char_blank() {
+        let (w, h) = (64u32, 32u32);
+        let mut buf = vec![1u32; (w * h) as usize];
+        draw_text(&mut buf, w, h, 0, 0, "AZ9");
+        assert!(buf.iter().all(|p| *p == 1), "no pixel touched");
+    }
+
+    /// menu 几何：h = count*24+8（6 profiles → 152），右锚 8px 边距；
+    /// 小窗 saturating 贴边（width < 228 → x 饱和到 0，不回绕）。
+    #[test]
+    fn menu_rect_geometry_and_saturation() {
+        let count = crate::profile::PROFILES.len() as u32;
+        let (mx, my, mw, mh) = menu_rect(480, 1000);
+        assert_eq!(mw, 220);
+        assert_eq!(mh, count * 24 + 8);
+        assert_eq!(mx, 480 - 220 - 8);
+        assert_eq!(my, 1000 - TOOLBAR_H - (count * 24 + 8) - 8);
+        // Tall-window degenerate: menu top saturates at 0.
+        let (sx, sy, _, sh_) = menu_rect(480, 100);
+        assert_eq!((sx, sy, sh_), (252, 0, count * 24 + 8));
+        // Narrow window: x saturates at 0 (no wraparound).
+        let (nx, _, _, _) = menu_rect(100, 1000);
+        assert_eq!(nx, 0);
+    }
+
+    /// menu_hit 行边界：每 24px 一行自菜单顶起算（顶部 4px padding 归
+    /// row0）；底部 8px padding 带 None；越过行区 None。
+    #[test]
+    fn menu_hit_row_boundaries() {
+        let (w, h) = (480u32, 1000u32);
+        let count = crate::profile::PROFILES.len();
+        let (_, my, _, _) = menu_rect(w, h);
+        // Row i occupies [my+24i, my+24(i+1)); top padding folds into row0.
+        for i in 0..count {
+            let top = my + i as u32 * 24;
+            assert_eq!(menu_hit(w, h, 300.0, (top + 1) as f64), Some(i));
+        }
+        // Bottom 8px padding band: row index would be count → None.
+        let band_y = (my + (count as u32) * 24 + 4) as f64;
+        assert_eq!(menu_hit(w, h, 300.0, band_y), None);
+        // Above the menu and to the left: None.
+        assert_eq!(menu_hit(w, h, 5.0, (my - 1) as f64), None);
+    }
+
+    /// 工具栏纵向带：按钮带 [by, by+32) 命中，其下到 bar 底的 8px 间隙
+    /// 带 None；bar 顶边界线上方 None。
+    #[test]
+    fn toolbar_hit_vertical_band() {
+        let (w, h) = (480u32, 200u32);
+        let (bx, _) = toolbar_buttons(w)[0];
+        let bar_top = h - TOOLBAR_H;
+        let by = bar_top + 8;
+        // Inside button vertical band.
+        assert_eq!(toolbar_hit(w, h, (bx + 30) as f64, (by + 16) as f64), Some(0));
+        // 8px gap below buttons (by+32 .. bar bottom).
+        assert_eq!(
+            toolbar_hit(w, h, (bx + 30) as f64, (by + 32) as f64),
+            None,
+            "gap below buttons"
+        );
+        // Just above the bar: guest area.
+        assert_eq!(
+            toolbar_hit(w, h, (bx + 30) as f64, (bar_top - 1) as f64),
+            None
+        );
+        // Exactly at bar_top: still None — the 8px band above the buttons
+        // (bar_top..by) is dead space inside the bar.
+        assert_eq!(toolbar_hit(w, h, (bx + 30) as f64, bar_top as f64), None);
+    }
+
+    /// armed 态按钮 3 用确认红（现测只钉 hover 色，armed 色无钉板）；
+    /// armed 优先级高于 hover。
+    #[test]
+    fn draw_toolbar_armed_color_priority() {
+        let (w, h) = (480usize, 1000usize);
+        let mut buf = vec![0u32; w * h];
+        draw_toolbar(&mut buf, w as u32, h as u32, true, Some(3));
+        let (bx, _) = toolbar_buttons(w as u32)[3];
+        let by = h - TOOLBAR_H as usize + 8;
+        // Armed red beats hover gray on button 3.
+        assert_eq!(buf[by * w + (bx + 10) as usize], 0x008B_2E2E);
+        // Hover targets button 3 only; button 0 keeps its default fill.
+        assert_eq!(buf[by * w + (toolbar_buttons(w as u32)[0].0 + 10) as usize], 0x002C_3238);
+    }
+
+    /// tooltip 右缘钳位：WEB（最右按钮）BROWSER 泡在窄窗被
+    /// min(width - bw_tip) 拉回界内，不越界不 panic。
+    #[test]
+    fn draw_tooltip_edge_clamp() {
+        let (w, h) = (480u32, 200u32);
+        let mut buf = vec![0u32; (w * h) as usize];
+        draw_tooltip(&mut buf, w, h, 5);
+        let tip = 0x002A_3036;
+        let ty = h - TOOLBAR_H - 26;
+        // Tip band fully within bounds and actually drawn.
+        let row_hits = (ty..ty + 20)
+            .filter(|y| (0..w).any(|x| buf[(*y * w + x) as usize] == tip))
+            .count();
+        assert!(row_hits >= 19, "tooltip drawn in {row_hits}/20 rows");
+        // Out-of-range hover index: silent no-op.
+        let mut buf2 = vec![0u32; (w * h) as usize];
+        draw_tooltip(&mut buf2, w, h, 6);
+        assert!(buf2.iter().all(|p| *p == 0));
+    }
+}
+
+#[cfg(test)]
+mod menu_draw_tests {
+    use super::*;
+
+    const BG: u32 = 0x0022_282E;
+    const HILITE: u32 = 0x0034_4A3A;
+    const FG: u32 = 0x00E8_ECF0;
+
+    fn row_band(i: usize) -> std::ops::Range<u32> {
+        let (_, my, _, _) = menu_rect(480, 1000);
+        let y = my + 4 + i as u32 * 24;
+        y..y + 22
+    }
+
+    /// 当前 profile 高亮带：命中行纵向 22px 全带高亮（取远离文本的右列
+    /// 佐证纯填充），非当前行同列为菜单底色——高亮只落在命中行。
+    #[test]
+    fn draw_menu_current_highlight_band_geometry() {
+        let (w, h) = (480u32, 1000u32);
+        let (mx, my, mw, _) = menu_rect(w, h);
+        let mut buf = vec![0u32; (w * h) as usize];
+        draw_menu(&mut buf, w, h, "phone");
+        let col = (mx + mw - 10) as usize; // beyond text extent, pure fill
+        let idx = crate::profile::PROFILES.iter().position(|p| p.id == "phone").unwrap();
+        for y in row_band(idx) {
+            assert_eq!(buf[y as usize * w as usize + col], HILITE, "row {y}");
+        }
+        for (i, _) in crate::profile::PROFILES.iter().enumerate() {
+            if i == idx {
+                continue;
+            }
+            let mid = row_band(i).start + 11;
+            assert_eq!(
+                buf[mid as usize * w as usize + col],
+                BG,
+                "non-current row {i} must stay background"
+            );
+        }
+        // Highlight band starts at my+4 (below the menu's top padding).
+        assert_eq!(buf[(row_band(idx).start - 1) as usize * w as usize + col], BG);
+        let _ = my;
+    }
+
+    /// 高亮带横向内缩 2px：[mx+2, mx+mw-2) 着色，mx+1 与 mx+mw-2 保持
+    /// 底色；行间 2px 间隙带保持底色（高亮不外溢不连行）。
+    #[test]
+    fn draw_menu_highlight_inset_and_gap_rows() {
+        let (w, h) = (480u32, 1000u32);
+        let (mx, _, mw, _) = menu_rect(w, h);
+        let mut buf = vec![0u32; (w * h) as usize];
+        draw_menu(&mut buf, w, h, "tablet");
+        let idx = crate::profile::PROFILES.iter().position(|p| p.id == "tablet").unwrap();
+        let mid = row_band(idx).start + 11;
+        let row = mid as usize * w as usize;
+        //远离文本列与近缘列都在带内（TABLET 文本宽 6*12=72 < mw-4-10）。
+        for x in [mx + 2, mx + 80, mx + mw - 3] {
+            assert_eq!(buf[row + x as usize], HILITE, "inside band at {x}");
+        }
+        assert_eq!(buf[row + (mx + 1) as usize], BG, "left inset");
+        assert_eq!(buf[row + (mx + mw - 2) as usize], BG, "right inset");
+        // 行间 2px 间隙（band end .. next band start）保持底色。
+        let gap_y = row_band(idx).end;
+        assert_eq!(buf[gap_y as usize * w as usize + (mx + 10) as usize], BG);
+    }
+
+    /// 每个 profile 行的 id 大写文本至少落一个前景像素（PHONE 全字母
+    /// 在字形表内；含表外字母的 id 如 DESKTOP 的 D/K 为空白但 E/S/T/O/P
+    /// 仍渲染——每行可见性逐一钉板）。
+    #[test]
+    fn draw_menu_text_pixels_per_profile_row() {
+        let (w, h) = (480u32, 1000u32);
+        let (mx, _, _, _) = menu_rect(w, h);
+        let mut buf = vec![0u32; (w * h) as usize];
+        draw_menu(&mut buf, w, h, "none-of-them");
+        for (i, p) in crate::profile::PROFILES.iter().enumerate() {
+            let band = row_band(i);
+            let has_fg = (band.start..band.end).any(|y| {
+                (mx + 10..mx + 150).any(|x| buf[y as usize * w as usize + x as usize] == FG)
+            });
+            assert!(has_fg, "profile {} renders no text pixels", p.id);
+        }
+    }
+
+    /// 退化几何裁剪：菜单矩形超出缓冲（宽 < 228、高 < 菜单高）时
+    /// saturating 贴 0 后逐像素钳界——不 panic、缓冲长度不变、可见区
+    /// 内照常填充（窄窗整行可见段全底色）。
+    #[test]
+    fn draw_menu_clips_when_menu_exceeds_buffer() {
+        let (w, h) = (100u32, 60u32);
+        assert_eq!(menu_rect(w, h).0, 0, "narrow saturates x to 0");
+        let mut buf = vec![0u32; (w * h) as usize];
+        draw_menu(&mut buf, w, h, "phone");
+        assert_eq!(buf.len(), (w * h) as usize);
+        for x in 0..w {
+            assert_eq!(buf[x as usize], BG, "row 0 fully covered at {x}");
+        }
+        // 底行 y=59：menu 高 152 钳到 60 后全高都在菜单内；phone
+        // （idx 2）高亮带 52..74 被钳到 60——底行落在带内应为高亮，
+        // 远离文本的右列佐证（菜单内缩 2px：col < mx+mw-2=98）。
+        let idx = crate::profile::PROFILES.iter().position(|p| p.id == "phone").unwrap();
+        let band_top = 4 + idx as u32 * 24;
+        assert!(h - 1 >= band_top && h - 1 < band_top + 22, "bottom row inside band");
+        assert_eq!(buf[((h - 1) * w + w - 2) as usize], HILITE, "clipped band tail visible");
+        // 带外行（y=3 顶部 padding）保持底色。
+        assert_eq!(buf[3 * w as usize + 50], BG);
+    }
+
+    /// menu_hit 边界包容性：x=mx 含、x=mx+mw 排、y=my 归 row0（顶部
+    /// padding 折入）、行界小数截断（23.99 → row0，24.0 → row1）、
+    /// y=my-1 排除。
+    #[test]
+    fn menu_hit_edge_inclusivity_and_fractional_rows() {
+        let (w, h) = (480u32, 1000u32);
+        let (mx, my, mw, _) = menu_rect(w, h);
+        assert_eq!(menu_hit(w, h, mx as f64, (my + 10) as f64), Some(0));
+        assert_eq!(
+            menu_hit(w, h, (mx + mw) as f64 - 0.01, (my + 10) as f64),
+            Some(0),
+            "just inside right edge"
+        );
+        assert_eq!(menu_hit(w, h, (mx + mw) as f64, (my + 10) as f64), None);
+        assert_eq!(menu_hit(w, h, (mx + 5) as f64, my as f64), Some(0));
+        assert_eq!(
+            menu_hit(w, h, (mx + 5) as f64, my as f64 + 23.99),
+            Some(0),
+            "fractional stays row0"
+        );
+        assert_eq!(
+            menu_hit(w, h, (mx + 5) as f64, (my + 24) as f64),
+            Some(1),
+            "exact boundary lands row1"
+        );
+        assert_eq!(menu_hit(w, h, (mx + 5) as f64, (my - 1) as f64), None);
+    }
+
+    /// current 无匹配 id：全菜单零高亮像素（HILITE 计数 = 0），底色与
+    /// 文本照常——菜单对未知 id 静默降级不点亮任何行。
+    #[test]
+    fn draw_menu_without_match_no_highlight() {
+        let (w, h) = (480u32, 1000u32);
+        let mut buf = vec![0u32; (w * h) as usize];
+        draw_menu(&mut buf, w, h, "no-such-profile");
+        assert!(
+            !buf.iter().any(|p| *p == HILITE),
+            "unmatched current must not highlight"
+        );
+        assert!(buf.iter().any(|p| *p == BG));
+    }
+
+    /// base_window_factor 1200 阈值边界：panel_h=1200 不触发 0.55 档
+    /// （严格大于才触发），1201 触发；Integer 模式不受 panel_h 影响。
+    #[test]
+    fn base_window_factor_threshold_boundary() {
+        assert_eq!(base_window_factor(ScaleMode::Fit, 1200), 0.9);
+        assert_eq!(base_window_factor(ScaleMode::Fit, 1201), 0.55);
+        assert_eq!(base_window_factor(ScaleMode::Integer(1), 2250), 1.0);
+        assert_eq!(base_window_factor(ScaleMode::Integer(3), 100), 3.0);
+    }
+
+    /// monitor scale_factor 退化守卫：0 与负值按 1.0 处理（物理像素即
+    /// 逻辑点），与显式 1.0 结果逐字相同——除零面被守卫拦死。
+    #[test]
+    fn default_window_size_degenerate_scale_factor() {
+        let expect = default_window_size(540, 960, 0.9, Some((1728, 1117, 1.0)));
+        assert_eq!(expect, (486, 864));
+        assert_eq!(
+            default_window_size(540, 960, 0.9, Some((1728, 1117, 0.0))),
+            expect,
+            "zero scale factor falls back to 1.0"
+        );
+        assert_eq!(
+            default_window_size(540, 960, 0.9, Some((1728, 1117, -2.0))),
+            expect,
+            "negative scale factor falls back to 1.0"
+        );
+    }
+}
+
+#[cfg(test)]
+mod toolbar_clip_tests {
+    use super::*;
+
+    /// 窄窗按钮越界裁剪：width=300 时按钮列锚点饱和到 0，第 5/6 枚按钮
+    /// 起点越过右缘 → 循环空区间零写入不 panic；部分可见按钮（第 4 枚
+    /// 264..300 段）照常填充；越界右缘列保持 bar 底色。
+    #[test]
+    fn draw_toolbar_clips_offscreen_buttons() {
+        let (w, h) = (300u32, 200u32);
+        let btns = toolbar_buttons(w);
+        assert_eq!(btns[0].0, 0, "saturating anchor");
+        assert!(btns[5].0 >= w, "last button starts off right edge");
+        let mut buf = vec![0u32; (w * h) as usize];
+        draw_toolbar(&mut buf, w, h, false, None);
+        assert_eq!(buf.len(), (w * h) as usize);
+        let by = (h - TOOLBAR_H + 8) as usize;
+        // Button 4 spans 264..324 — visible part 264..300 filled up to
+        // the last column (no off-screen write, no gap).
+        assert_eq!(buf[by * w as usize + 264], 0x002C_3238);
+        assert_eq!(buf[by * w as usize + 299], 0x002C_3238, "partial button filled to edge");
+        // Button 5 spans 330..390 — entirely off-screen; the button band
+        // above (bar_top..by) keeps the bar fill where buttons exist.
+        assert_eq!(buf[(by - 1) * w as usize + 290], 0x0018_1C20, "above band stays bar");
+    }
+}
+
+#[cfg(test)]
+mod window_deep_tests {
+    use super::*;
+
+    // —— 工具栏命中水平几何边界族 ——
+
+    /// 按钮左右缘精确包容：x=bx 含、x=bx+bw 排（开区间右缘归下一
+    /// 间隙/按钮）；相邻按钮间隙中点 None（间隙 6px 无死区误吞）。
+    #[test]
+    fn toolbar_hit_horizontal_edges_and_gaps() {
+        let (w, h) = (480u32, 200u32);
+        let btns = toolbar_buttons(w);
+        let by = (h - TOOLBAR_H + 8) as f64;
+        for (i, (bx, bw)) in btns.iter().enumerate() {
+            assert_eq!(toolbar_hit(w, h, *bx as f64, by + 16.0), Some(i), "left edge btn {i}");
+            assert_eq!(
+                toolbar_hit(w, h, (*bx + *bw - 1) as f64, by + 16.0),
+                Some(i),
+                "last inside col btn {i}"
+            );
+            assert_eq!(
+                toolbar_hit(w, h, (*bx + *bw) as f64, by + 16.0),
+                None,
+                "right edge exclusive btn {i}"
+            );
+        }
+        // Gap midpoint between button 0 and 1 (6px gap): dead.
+        let (b0, bw) = btns[0];
+        let gap_mid = (b0 + bw + 3) as f64;
+        assert_eq!(toolbar_hit(w, h, gap_mid, by + 16.0), None, "gap midpoint");
+    }
+
+    /// 纵向带精确边界：y=by 含（按钮顶含）、y=by+32 排（按钮底开）；
+    /// y=by-0.01 仍按钮带（浮点锚在带内）。
+    #[test]
+    fn toolbar_hit_vertical_edges() {
+        let (w, h) = (480u32, 200u32);
+        let (bx, bw) = toolbar_buttons(w)[0];
+        let bar_top = h - TOOLBAR_H;
+        let by = bar_top + 8;
+        assert_eq!(toolbar_hit(w, h, (bx + 1) as f64, by as f64), Some(0), "top edge in");
+        assert_eq!(
+            toolbar_hit(w, h, (bx + 1) as f64, (by + 31) as f64),
+            Some(0),
+            "bottom-1 in"
+        );
+        assert_eq!(toolbar_hit(w, h, (bx + 1) as f64, (by + 32) as f64), None, "bottom edge out");
+        assert_eq!(
+            toolbar_hit(w, h, (bx + bw / 2) as f64, (by - 1) as f64),
+            None,
+            "one above button band"
+        );
+    }
+
+    /// 窄窗锚点饱和下的命中语义：width=300 时 6 槽仍生成，右缘越界
+    /// 按钮起点 x 落在界内前缀段（左锚 0）照常命中——退化几何不误吞。
+    #[test]
+    fn toolbar_hit_narrow_window_partial_buttons() {
+        let (w, h) = (300u32, 200u32);
+        let btns = toolbar_buttons(w);
+        assert_eq!(btns[0].0, 0, "saturated anchor at 0");
+        // Buttons 0..=3 start in-bounds; each center still hit-testable.
+        for i in 0..4usize {
+            let (bx, bw) = btns[i];
+            assert!(bx < w, "btn {i} in-bounds prefix");
+            let by = (h - TOOLBAR_H + 8) as f64;
+            let x = (bx + bw / 2) as f64;
+            let hit = toolbar_hit(w, h, x, by + 16.0);
+            if x < w as f64 {
+                assert_eq!(hit, Some(i), "visible center btn {i}");
+            }
+        }
+        // Off-screen button rect is still hit-testable in coordinate space:
+        // toolbar_hit does NOT screen-clip button rects (the window simply
+        // never delivers clicks past its edge). Pin the real contract —
+        // button 5 starts at 330 on a 300-wide window, its center 360 hits.
+        let (b5, bw5) = btns[5];
+        assert!(b5 >= w, "btn 5 rect starts off right edge");
+        let x5 = (b5 + bw5 / 2) as f64;
+        assert_eq!(
+            toolbar_hit(w, h, x5, (h - TOOLBAR_H + 24) as f64),
+            Some(5),
+            "off-screen rect stays hit-testable (no screen clip)"
+        );
+    }
+
+    // —— tooltip 深面 ——
+
+    /// tooltip 左钳位：SH0T 按钮（最左，bx=0 饱和锚时）泡宽 tw+10 恒
+    /// <= 半宽锚，x 不下溢不 panic；右缘同理被 min 拉回——左右双缘全
+    /// 界内（泡行不越界）。
+    #[test]
+    fn draw_tooltip_left_clamp_and_bounds() {
+        // Narrow window forces anchor 0 for button 0; SCREENSHOT tip is the
+        // widest (10 chars → tw=120, bw_tip=130).
+        let (w, h) = (300u32, 200u32);
+        let mut buf = vec![0u32; (w * h) as usize];
+        draw_tooltip(&mut buf, w, h, 0);
+        let tip = 0x002A_3036;
+        let ty = (h - TOOLBAR_H - 26) as usize;
+        // Full 20-row band must be drawn and every painted pixel in-bounds
+        // by construction (no panic). Count per-row painted columns.
+        let mut rows_painted = 0;
+        for y in ty..(ty + 20).min(h as usize) {
+            if (0..w as usize).any(|x| buf[y * w as usize + x] == tip) {
+                rows_painted += 1;
+            }
+        }
+        assert!(rows_painted >= 19, "left-clamped tip paints {rows_painted}/20 rows");
+        // Right side: WEB/BROWSER on a window narrower than the anchor
+        // push → clamp keeps x + bw_tip <= width.
+        let (w2, h2) = (360u32, 200u32);
+        let mut buf2 = vec![0u32; (w2 * h2) as usize];
+        draw_tooltip(&mut buf2, w2, h2, 5);
+        let mut painted2 = 0;
+        let ty2 = (h2 - TOOLBAR_H - 26) as usize;
+        for y in ty2..(ty2 + 20).min(h2 as usize) {
+            if (0..w2 as usize).any(|x| buf2[y * w2 as usize + x] == tip) {
+                painted2 += 1;
+            }
+        }
+        assert!(painted2 >= 19, "right-clamped tip paints {painted2}/20 rows");
+    }
+
+    /// 泡内文本可见：hover 0（SCREENSHOT）泡带内至少一个前景像素
+    /// （泡不只画底不画字）。
+    #[test]
+    fn draw_tooltip_renders_text_inside() {
+        let (w, h) = (480u32, 200u32);
+        let mut buf = vec![0u32; (w * h) as usize];
+        draw_tooltip(&mut buf, w, h, 0);
+        let fg = 0x00E8_ECF0;
+        let ty = (h - TOOLBAR_H - 26) as usize;
+        let has_text = (ty..(ty + 20).min(h as usize)).any(|y| {
+            (0..w as usize).any(|x| buf[y * w as usize + x] == fg)
+        });
+        assert!(has_text, "tooltip band contains text pixels");
+    }
+
+    // —— 字形位图逐字母钉板 ——
+
+    /// 字形表内容钉板：每字母全 7 行位图逐字节锁死（15 字母 × 7 行）。
+    /// 表值漂移即红——比「非全零」更强的防回归：字形是视觉契约。
+    #[test]
+    fn glyph_bitmaps_exact() {
+        let expect: &[(char, [u8; 7])] = &[
+            ('S', [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110]),
+            ('H', [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001]),
+            ('O', [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110]),
+            ('T', [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100]),
+            ('B', [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110]),
+            ('F', [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000]),
+            ('U', [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110]),
+            ('L', [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111]),
+            ('R', [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001]),
+            ('E', [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111]),
+            ('C', [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110]),
+            ('I', [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111]),
+            ('N', [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001]),
+            ('P', [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000]),
+            ('W', [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001]),
+        ];
+        for (ch, rows) in expect {
+            for r in 0..7 {
+                assert_eq!(glyph(*ch, r), rows[r], "glyph {ch} row {r}");
+            }
+        }
+    }
+
+    // —— default_window_size 饱和/退化面 ——
+
+    /// panel 维度 0：max(1) 守卫防除零，factor 钳 0.2 后 0*w 仍落
+    /// 320x240 地板；不 panic。
+    #[test]
+    fn default_window_size_zero_panel() {
+        let (w, h) = default_window_size(0, 0, 0.9, Some((800, 600, 1.0)));
+        assert_eq!((w, h), (320, 240), "zero panel floors");
+        // None-monitor path: raw factor on zero panel → floors too.
+        assert_eq!(default_window_size(0, 960, 0.9, None), (320, 864));
+    }
+
+    /// monitor 物理面退化（0x0）：除后 clamp 极小 → factor 地板 0.2，
+    /// 尺寸地板兜底；不除零不 panic。
+    #[test]
+    fn default_window_size_degenerate_monitor() {
+        let (w, h) = default_window_size(540, 960, 0.9, Some((0, 0, 1.0)));
+        assert_eq!((w, h), (320, 240));
+        // Huge integer factor without monitor: no clamp, direct scale.
+        assert_eq!(default_window_size(300, 200, 8.0, None), (2400, 1600));
     }
 }

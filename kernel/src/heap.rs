@@ -51,21 +51,21 @@ impl SlabHeap {
     }
 }
 
-// SAFETY: F0-3 起 `freelists` 与底层 `FrameAllocator` 统一受第 5 层 `mm::ALLOC_LOCK`（irqsave）互斥保护。
+// SAFETY: G0 单核、无抢占、无并发访问。SMP(G2) 后重构（加锁 / 每核 slab）。
 unsafe impl Sync for SlabHeap {}
 
 unsafe impl GlobalAlloc for SlabHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         match route(layout.size(), layout.align()) {
-            // slab 路径：持 ALLOC_LOCK 弹空槽；若空则同窗向 frames_locked 批取 1 页切槽（零重入）。
+            // slab 路径
             Some(Route::Slab { class, slots }) => {
                 let ci = class_index(class).expect("Slab 路由 class 必在表内");
-                let mut g = crate::mm::alloc_lock();
                 let fl = &mut *self.freelists.get();
                 if let Some(slot) = pop(fl, ci) {
                     return slot;
                 }
-                let frame = match crate::mm::frames_locked(&mut g).alloc() {
+                // freelist 空：取一页，切成 class 槽，槽 1.. 推入 freelist，返回槽 0。
+                let frame = match crate::mm::frames().alloc() {
                     Ok(pfn) => pfn,
                     Err(_) => return ptr::null_mut(),
                 };
@@ -76,12 +76,10 @@ unsafe impl GlobalAlloc for SlabHeap {
                 base
             }
             // 整页路径
-            Some(Route::Pages { order, .. }) => {
-                match crate::mm::with_frames(|fa| fa.alloc_order(order)) {
-                    Ok(pfn) => phys_to_virt(pfn << PAGE_SHIFT) as *mut u8,
-                    Err(_) => ptr::null_mut(),
-                }
-            }
+            Some(Route::Pages { order, .. }) => match crate::mm::frames().alloc_order(order) {
+                Ok(pfn) => phys_to_virt(pfn << PAGE_SHIFT) as *mut u8,
+                Err(_) => ptr::null_mut(),
+            },
             // 零大小（Layout 非零不变量外的防御面）：拒分配，不 panic。
             None => ptr::null_mut(),
         }
@@ -91,14 +89,15 @@ unsafe impl GlobalAlloc for SlabHeap {
         match dealloc_route(layout.size(), layout.align()) {
             Some(Route::Slab { class, .. }) => {
                 let ci = class_index(class).expect("Slab 路由 class 必在表内");
-                let _g = crate::mm::alloc_lock();
                 push(&mut *self.freelists.get(), ci, ptr)
             }
             Some(Route::Pages { order, .. }) => {
+                // 2b-1 起高半 direct map：alloc 侧返回的是 phys_to_virt(pfn<<SHIFT)，
+                // 还帧前必须折回 PA——旧「VA==PA」是 2b-1 之前的过时前提，照抄会把
+                // 高半 VA 当 PFN 还帧必 Err，被吞错后每块静默漏帧（S-2 vmo_cap 踩亮）。
                 let pfn = virt_to_phys(ptr as usize) >> PAGE_SHIFT;
-                let free_res = crate::mm::with_frames(|fa| fa.free(pfn, order));
-                if free_res.is_err() {
-                    // 锁外告警打印（严守 ALLOC -> PRINT 正序）。
+                if let Err(_) = crate::mm::frames().free(pfn, order) {
+                    // loud-not-silent：坏块不静默吞（吞错正是上雷存活至今的原因）。
                     uart_puts(b"heap: large dealloc free failed pfn=0x");
                     uart_put_hex64(pfn as u64);
                     uart_puts(b" order=");
@@ -106,6 +105,7 @@ unsafe impl GlobalAlloc for SlabHeap {
                     uart_puts(b"\n");
                 }
             }
+            // 零大小 dealloc：无账可还（Layout 非零不变量下不到达；loud 不吞）。
             None => uart_puts(b"heap: dealloc zero-size layout\n"),
         }
     }
