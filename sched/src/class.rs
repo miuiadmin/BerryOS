@@ -433,8 +433,10 @@ impl Fair {
         my_cur: *mut Task,
     ) -> Option<&mut Task> {
         // S5-c lazy unthrottle（04 号审计附记一收口——2026-11-17）：与
-        // trait `pick_next` 同头调用——生产八个出选点全走本函数（pick_next
-        // 仅 ktest 直调），此前 deadline 任务预算限流后生产无解冻路径。
+        // trait `pick_next` 同头调用——生产出选两口（本函数七点 +
+        // `pick_next_if_above` try_preempt 一点，W3-Q93 现形；pick_next
+        // 仅 ktest 直调）头部同源解冻，此前 deadline 任务预算限流后生产
+        // 无解冻路径。
         // dl_on_ring 门 0 时零成本（一次 Relaxed 读 + 早退），v1 常态全员
         // fair 门常闭；语义与 pick_next 侧逐位一致（同函数单源）。
         unsafe { lazy_unthrottle_deadlines(rq) };
@@ -444,8 +446,9 @@ impl Fair {
         let t = unsafe { &mut *chosen.as_ptr() };
         crate::policy::apply(t);
         // OBS-01（06 号 §5 观测维补面）：出选记账——intent 全档 + 带任务
-        // per-band（生产出选唯一路径 = 本函数；`SchedClass::pick_next`
-        // 是 ktest 直调面不经此）。Relaxed 纯计数（stats.rs 纪律）。
+        // per-band（生产出选两口 = 本函数 + `pick_next_if_above`，两口均
+        // note_pick；`SchedClass::pick_next` 是 ktest 直调面不经此）。
+        // Relaxed 纯计数（stats.rs 纪律）。
         crate::stats::note_pick(t);
         Some(t)
     }

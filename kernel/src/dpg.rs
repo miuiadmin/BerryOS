@@ -627,8 +627,8 @@ extern "C" fn dpg_pager(_arg: usize) -> ! {
         // 同层 FIFO 不插队（严格更高才切，§A43）；sched::init 前 CURRENT
         // null 早退（ktest 护栏内置）。W3-Q59：直切判序三门（null 护栏/
         // 出选门控〔幻影出选防线——无严格更高不 pick；机会一②
-        // （2026-11-17）起 sched 物理面 = Fair::pick_next_preempt 扫尾门控，
-        // 旧 has_eff_above 探峰已退役〕/严格更高才切）+ 本供给链收口序（SupplyPage→MagicWrite→Wake→
+        // （2026-11-17）起 sched 物理面 = Fair::pick_next_if_above（W3-Q93
+        // 终形）单圈带门出选，旧 has_eff_above 探峰已退役〕/严格更高才切）+ 本供给链收口序（SupplyPage→MagicWrite→Wake→
         // TryPreempt→KlockExit）host 钉板 berry_dpgface::fastpath——
         // 判序律单源可测；sched 物理臂零改动（消费点锚）。
         berry_sched::try_preempt();
