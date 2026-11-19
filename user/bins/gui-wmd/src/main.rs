@@ -2,8 +2,11 @@
 //! 呈现（guifbd）/窗口策略（本服务）分离。guifbd 零改动；gfxdemo 改连
 //! wm 域（同 op 换端——present/hdi 八+六 op 经本服务透传中继（refresh 刀
 //! 1-6：0x07 INPUT_PULSE / 0x08 FRAME_TIMING / 0x44 PANEL_CAPS / 0x45
-//! VBLANK_TIMING 入域），wm 九 op 本地权威处理）；inputd 追加推送端收
-//! 窗口表快照（WM_TABLE_WAIT 阻塞应答形——波3 冻结面，零新增驻留者）。
+//! VBLANK_TIMING 入域），wm op 本地权威处理（0x60..=0x6A——K1 I1 增
+//! 0x69 attach（on_wm 分发层随行开口）/0x6A detach + per-app apps 通道
+//! 表：launcher/各 [ui] app 各独占一通道，应答参数化回来源通道——共享
+//! dup(WMD_CLI_DUP) 单 FIFO 应答互截缺陷的结构性解））；inputd 追加推送
+//! 端收窗口表快照（WM_TABLE_WAIT 阻塞应答形——波3 冻结面，零新增驻留者）。
 //!
 //! **boot 授能链**：EFI 相 svcmgr guifbd arm Ok 后 wmd arm 预拉本服务
 //! （门 = present_cli≠0 ∧ cpio 命中），extras 4 枚 = [wm_srv（wm 客户端
@@ -19,29 +22,36 @@
 //! version≥1 → ⑤`gui-wmd: up` 诊断行（小写 wmd 前缀防误配 `WM ok` 标记
 //! ——本行永不进 MARKERS）转 serve。
 //!
-//! **serve poll-first（波3 扩事件通道面）**：每轮顶依次 ①返回兜底软定时
-//! 到点检查（500ms 单槽——无在途帽不动作）→ ②事件通道非阻塞收割
-//! （BACK_ACK/订阅端忽略帧）→ ③wm_srv→push_srv 确定性轮询（一路至多
-//! 一条：请求面严格串行 RPC）→ 全 EAGAIN 才 `berry_object_wait_many`
-//! 并等；wait 集 = wm_srv + push_srv + 事件通道（属主+订阅者，表序稳定）
-//! 截 [`WAIT_SET_MAX`]=16（kernel `WAIT_MANY_MAX` 单源镜像）——越窗截断
-//! + 100ms 短帽重询兜底（事件通道上界 15+4 > 14 槽，截断面靠短帽回环
-//! 无丢唤醒）；deadline = min(空闲帽 10s, 返回兜底截止, 越窗短帽)——
-//! **进调用本身**（醒来后补查不够）；到点 = 合法空闲重臂续等（真断链面
-//! = recv 非 -EAGAIN 错码照 trap）。每轮 poll 前重置 nb/nh 容量（recv
-//! 出参 in-out，漏重置 = 恒 -EINVAL 死循环）。
+//! **serve poll-first（波3 事件通道 + K1 I1 per-app apps 面）**：每轮顶依次
+//! ①返回兜底软定时到点检查（500ms 单槽——无在途帽不动作）→ ②事件通道
+//! 非阻塞收割（BACK_ACK/订阅端忽略帧）→ ③wm_srv→push_srv→apps 通道段
+//! 确定性轮询（各路至多一条：请求面严格串行 RPC；apps 段 recv 错码 =
+//! close+摘表——坏 app 客户端不杀服务）→ 全 EAGAIN 才
+//! `berry_object_wait_many` 并等；wait 集 = wm_srv + push_srv + 事件通道
+//! （属主+订阅者）+ apps（表序稳定）截 [`WAIT_SET_MAX`]=16（kernel
+//! `WAIT_MANY_MAX` 单源镜像）——**越窗判定走需求总数**
+//! `2 + wait_set_needed()`（不截断值——K1 I1 重造：旧 evt_handles 式拼装
+//! 被出参物理截断恒 ≤16，越窗不可感 = 短帽死码坑）；越窗时截断优先级 =
+//! wm_srv/push_srv/属主 evt 恒进，subs/apps 按序进到满，截断面靠 100ms
+//! 短帽回环兜底无丢唤醒；deadline = min(空闲帽 10s, 返回兜底截止, 越窗
+//! 短帽)——**进调用本身**（醒来后补查不够）；到点 = 合法空闲重臂续等
+//! （真断链面 = recv 非 -EAGAIN 错码——wm_srv/push_srv/事件通道 trap，
+//! apps 通道摘表）。每轮 poll 前重置 nb/nh 容量（recv 出参 in-out，漏
+//! 重置 = 恒 -EINVAL 死循环）。
 //!
 //! **新鲜度结构注记（§7 Q10）**：单 wm 客户端串行下中继期间表不可能变 =
 //! 零新鲜度损失——serve 单线程，中继透传（present/hdi RPC）阻塞期间不可
 //! 能处理另一 CREATE/SET，TABLE_GET/TABLE_WAIT 应答携带的快照与请求到达
-//! 时表态一致；v1 wm 客户端恰一个（gfxdemo，严格串行 RPC 更无并发两请求）。
-//! **后刀第二 wm 客户端注意**：中继阻塞期间对端可变更表 → TABLE_GET
-//! 应答快照与「请求到达时」表态可能有出入（新鲜度窗口 = 一次中继时长），
-//! 届时须评估 per-request 快照戳或拆线程，勿直接加客户端。**波3 裁决
-//! （波3设计 §9）**：多客户端跟随面不走 TABLE_WAIT（冻结、零新增驻留者
-//! ——parked 单车位仍只归 inputd push 面），表跟随一律走属主/订阅者事件
-//! 通道 WM_EVENT_TABLE 通知 + TABLE_GET 快照（通知尽力而为，丢弃至多
-//! 迟一拍）。
+//! 时表态一致；gfxdemo 期 wm 客户端恰一个（严格串行 RPC 更无并发两请求）。
+//! **K1 I1 起 per-app 多客户端成为常态**（launcher + 各 [ui] app 独占
+//! 通道）：中继阻塞期间对端可变更表 → TABLE_GET 应答快照与「请求到达
+//! 时」表态可能有出入（新鲜度窗口 = 一次中继时长）；某 app 的长 park
+//! 中继（RELEASE_WAIT 等）会顺延他人一帧处理时长——**接受为 v1 语义**
+//! （各客户端 RPC 帽 300s 同值不先炸；中继帽收紧/快照戳挂账后刀）。
+//! **波3 裁决（波3设计 §9）**：多客户端跟随面不走 TABLE_WAIT（冻结、
+//! 零新增驻留者——parked 单车位仍只归 inputd push 面），表跟随一律走
+//! 属主/订阅者事件通道 WM_EVENT_TABLE 通知 + TABLE_GET 快照（通知尽力
+//! 而为，丢弃至多迟一拍）。
 //!
 //! **双面 crate（gui-inputd 先例）**：策略核在 lib（`gui_wmd::table`——
 //! host 单测 mock 客户端全盖）；本文件 = guest 入口 I/O 壳（ChanPort 接
@@ -52,12 +62,13 @@ use berry_guiproto as gp;
 #[cfg(target_os = "linux")]
 use berry_sys::{
     berry_channel_create, berry_channel_recv, berry_channel_send, berry_clock_read,
-    berry_handle_close, berry_object_wait_many, berry_object_wait_one, Handle, BERRY_ERR_AGAIN,
-    BERRY_ERR_BUSY, BERRY_ERR_TIMEDOUT, CLOCK_MONOTONIC, SIGNAL_READABLE, SIGNAL_WRITABLE,
+    berry_handle_close, berry_handle_duplicate, berry_object_wait_many,
+    berry_object_wait_one, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BUSY, BERRY_ERR_TIMEDOUT,
+    CLOCK_MONOTONIC, RIGHT_TRANSFER, SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
 
 #[cfg(target_os = "linux")]
-use gui_wmd::{Port, SendEvtStatus};
+use gui_wmd::{AppRecv, Port, SendEvtStatus};
 #[cfg(target_os = "linux")]
 use gui_wmd::table::WmTable;
 
@@ -75,9 +86,12 @@ static CRT0_SEED: unsafe extern "C" fn() = berry_libc::berry_crt0_anchor;
 #[cfg(target_os = "linux")]
 const WMD_IDLE_CAP_NS: u64 = 10 * 1_000_000_000;
 
-/// 事件通道越窗短帽：wait 集超 [`WAIT_SET_MAX`] 截断时的重询周期（事件
-/// 通道上界 = 15 属主 + 4 订阅者 + 2 请求面 = 21 > 16；截断面靠本帽回环
-/// 兜底，无丢唤醒——BACK_ACK 至多迟一帽）。
+/// wait 集越窗短帽：**需求总数**（2 底 + 属主 evt + subs + apps）越
+/// [`WAIT_SET_MAX`] 截断时的重询周期——被截通道靠本帽回环兜底无丢唤醒
+/// （BACK_ACK/请求至多迟一帽）。K1 I1 重造：旧拼装面被出参物理截断
+/// 恒 ≤16，`n > WAIT_SET_MAX` 分支不可达 = 本帽死码（S1 实抓）；
+/// `wait_set_needed` 需求总数外溢判定落成后本帽**首次真实武装**（apps
+/// 8 路入集后越窗从边缘态变常态——2+15+4+8=29 > 16）。
 #[cfg(target_os = "linux")]
 const WMD_EVT_OVERFLOW_POLL_NS: u64 = 100 * 1_000_000;
 
@@ -197,6 +211,11 @@ impl Port for ChanPort {
             _ => SendEvtStatus::Dead,
         }
     }
+    fn send_rep_try(&mut self, ch: Handle, rep: &[u8]) -> bool {
+        // 内核 channel send 本就非阻塞（满即 -EBUSY）——单发即「试发不
+        // 等待」；满/死 false 由调用方自决（app 通道拆除面跳过 ack）。
+        berry_channel_send(ch, rep.as_ptr(), rep.len(), core::ptr::null(), 0) == 0
+    }
     fn recv_nowait(&mut self, ch: Handle, buf: &mut [u8]) -> Option<usize> {
         let mut hout = [0 as Handle; 8];
         let mut nb = buf.len();
@@ -209,6 +228,29 @@ impl Port for ChanPort {
                 println!("gui-wmd: evt recv 失败 {}", s);
                 trap(); // 非 -EAGAIN 错码 = 通道链断（boot 定值/建联面，真死亡面）
             }
+        }
+    }
+    fn recv_app(&mut self, ch: Handle, buf: &mut [u8], hout: &mut [Handle]) -> AppRecv {
+        let mut nb = buf.len();
+        let mut nh = hout.len();
+        let s = berry_channel_recv(ch, buf.as_mut_ptr(), &mut nb, hout.as_mut_ptr(), &mut nh);
+        match s {
+            0 => AppRecv::Frame(nb, nh),
+            BERRY_ERR_AGAIN => AppRecv::Empty,
+            s => {
+                // app 通道是动态建联面——病态 = 摘表不杀服务（对照上面的
+                // trap 面：那只适用 boot 定值柄 wm_srv/push_srv/事件通道）。
+                println!("gui-wmd: app recv 失败 {} 摘除 {}", s, ch);
+                AppRecv::Dead
+            }
+        }
+    }
+    fn dup_transfer(&mut self, h: Handle) -> Option<Handle> {
+        let mut alias = 0 as Handle;
+        if berry_handle_duplicate(h, RIGHT_TRANSFER, &mut alias) == 0 && alias != 0 {
+            Some(alias)
+        } else {
+            None
         }
     }
     fn close(&mut self, h: Handle) {
@@ -228,14 +270,19 @@ impl Port for ChanPort {
     }
 }
 
-/// wm_srv 帧分发（§3 #6 分发表执法 + 波3 新 op）：present 1..=8 →
-/// present_cli 透传（refresh 刀3 A6：0x07 INPUT_PULSE 入域；刀4 P3：
-/// 0x08 FRAME_TIMING 入域——呈现回执查询面）；hdi 0x40..=0x45 →
+/// wm_srv/apps 通道帧分发（§3 #6 分发表执法 + 波3 新 op + K1 I1 0x69）：
+/// present 1..=8 → present_cli 透传（refresh 刀3 A6：0x07 INPUT_PULSE 入域；
+/// 刀4 P3：0x08 FRAME_TIMING 入域——呈现回执查询面）；hdi 0x40..=0x45 →
 /// hdi_cli 透传（refresh 刀1-6：0x44 PANEL_CAPS / 0x45 VBLANK_TIMING
-/// 入域）；wm 0x60..=0x7F → 本地表处理（九 op：GETINFO/CREATE/DESTROY/
-/// SET/TABLE_GET/TABLE_WAIT + 波3 FOCUS 0x66/BACK 0x67/SUBSCRIBE 0x68；
-/// 0x69..=0x7F 未定形 → 1B ST_BAD）；**其余一切 op（含 0x20..=0x22
-/// input 域错投、0x90..=0x9F 事件帧型错投）→ 1B ST_BAD + close 随行**。
+/// 入域）；**0x69 ATTACH 在 wm 域分发之前开口**（恰 1B + 随行恰 1 执法
+/// 在本层——table::handle_wm 的零随行一刀切门之前，wm 域唯一合法随行
+/// op：随行 = 对端 srv 端，迁入 apps 表，ack/ST_FULL 经新通道回）；
+/// wm 0x60..=0x7F → 本地表处理（0x60..=0x6A 十一枚中十枚：GETINFO/
+/// CREATE/DESTROY/SET/TABLE_GET/TABLE_WAIT + 波3 FOCUS 0x66/BACK 0x67/
+/// SUBSCRIBE 0x68 + K1 DETACH 0x6A；0x6B..=0x7F 未定形 → 1B ST_BAD）；
+/// **其余一切 op（含 0x20..=0x22 input 域错投、0x90..=0x9F 事件帧型
+/// 错投）→ 1B ST_BAD + close 随行**。`ch` = 帧来源通道（wm_srv 或 app
+/// 通道——应答参数化回它，多客户端隔离的结构基础）。
 #[cfg(target_os = "linux")]
 fn on_wm(table: &mut WmTable, present_cli: Handle, hdi_cli: Handle, ch: Handle,
          msg: &[u8], hs: &[Handle]) {
@@ -245,6 +292,17 @@ fn on_wm(table: &mut WmTable, present_cli: Handle, hdi_cli: Handle, ch: Handle,
         }
         Some(&op) if (gp::OP_REG_VBLANK..=gp::OP_VBLANK_TIMING).contains(&op) => {
             relay::relay(ch, hdi_cli, msg, hs);
+        }
+        // 0x69 开口：恰 1B + 随行恰 1（畸形/随行数失配 = ST_BAD + close
+        // 随行——坏客户端不杀服务）。ack 走新通道（table::app_attach）。
+        Some(&op) if op == gp::OP_WM_ATTACH => {
+            if gp::parse_wm_attach_req(msg).is_some() && hs.len() == 1 {
+                let mut port = ChanPort;
+                table.app_attach(&mut port, hs[0]);
+            } else {
+                close_all(hs);
+                st_rep(ch, gp::ST_BAD);
+            }
         }
         Some(&op) if (gp::OP_WM_GETINFO..=0x7F).contains(&op) => {
             let mut port = ChanPort;
@@ -343,9 +401,9 @@ fn main() {
     println!("gui-wmd: up");
 
     // —— serve poll-first：每轮顶 = 返回兜底软定时检查 + 事件通道收割
-    // （BACK_ACK 至多迟一轮——请求面处理不饿死收割）；wm_srv→push_srv
-    // 确定性轮询；全 EAGAIN 才 wait_many 并等（deadline 进调用本身）。
-    // 命中/到点皆回环顶重询（poll-first 无丢唤醒）。
+    // （BACK_ACK 至多迟一轮——请求面处理不饿死收割）；wm_srv→push_srv→
+    // apps 通道段确定性轮询（各路至多一条）；全 EAGAIN 才 wait_many 并等
+    // （deadline 进调用本身）。命中/到点皆回环顶重询（poll-first 无丢唤醒）。
     loop {
         table.on_back_tick(&mut port, now_ns());
         table.sweep_evt(&mut port);
@@ -357,20 +415,31 @@ fn main() {
             on_push(&mut table, push_srv, &msg.0[..msg.1], &hs.0[..hs.1]);
             continue;
         }
-        // wait 集 = [wm_srv, push_srv] + 事件通道（属主+订阅者，表序稳定）
-        // 截 WAIT_SET_MAX=16；越窗截断 + 100ms 短帽回环兜底。deadline =
-        // min(空闲帽 10s, 返回兜底截止, 越窗短帽)——到点皆合法重臂。
+        // apps 轮询段（K1 I1）：一路至多一帧（串行 RPC 纪律同上；命中帧
+        // 同走 on_wm——应答参数化回该通道；病态通道在段内 close+摘表）。
+        if let Some(f) = table.poll_apps(&mut port) {
+            on_wm(&mut table, present_cli, hdi_cli, f.ch, &f.msg[..f.n], &f.hs[..f.nh]);
+            continue;
+        }
+        // wait 集 = [wm_srv, push_srv] + 事件通道（属主+订阅者）+ apps，
+        // 截 WAIT_SET_MAX=16（截断优先级：wm_srv/push_srv/属主 evt 恒进，
+        // subs/apps 按序到满）；**越窗判定走需求总数**（wait_set_needed
+        // 不截断——旧 evt_handles 式拼装恒 ≤16 = 判定死码，K1 I1 重造）
+        // + 100ms 短帽回环兜底。deadline = min(空闲帽 10s, 返回兜底截止,
+        // 越窗短帽)——到点皆合法重臂。
         let mut hs = [0 as Handle; WAIT_SET_MAX];
         let sigs = [SIGNAL_READABLE; WAIT_SET_MAX];
         hs[0] = wm_srv;
         hs[1] = push_srv;
         let mut n = 2 + table.evt_handles(&mut hs[2..]);
+        n += table.apps_handles(&mut hs[n..]);
+        let need = 2 + table.wait_set_needed();
         let now = now_ns();
         let mut deadline = now + WMD_IDLE_CAP_NS;
         if let Some(dl) = table.back_deadline() {
             deadline = deadline.min(dl.max(now));
         }
-        if n > WAIT_SET_MAX {
+        if need > WAIT_SET_MAX {
             n = WAIT_SET_MAX;
             deadline = deadline.min(now + WMD_EVT_OVERFLOW_POLL_NS);
         }
