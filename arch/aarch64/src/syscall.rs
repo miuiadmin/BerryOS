@@ -89,10 +89,13 @@ pub fn dispatch(tf: &mut TrapFrame) -> i64 {
     // 放（`svc_exit_class` 毕）= 零锁持有；自旋读对核回执计数（他核 IRQ
     // handler 置位，不依赖本核 IRQ 开）。NONE 类号多付一次 Acquire 原子读
     //（单核闩恒 0 直返）。
-    crate::tlbshoot::sched_exit_check();
     // S-4 4-3：ASID 回卷 quiesce 驱动（闩驱动——闩恒 false 时一次 Acquire
     // 读直返，单核闩恒不置）。零锁纪律同上（§3.2）。
-    crate::tlbshoot::roll_quiesce_check();
+    // W3-Q108（03 号机会一 1b/5a）：两查合并为 [`tlbshoot::exit_checks`]
+    // 单调——一次 TPIDR 单读 per-CPU 合并闩（`SmpCpu.exit_latch`）全零直返，
+    // 置位才展开对应旧查（先 TLB 等待后回卷驱动，与旧两连调同序）。每号省
+    // 1 次 MRS tpidr 追链 + 1 次闩数组读。
+    crate::tlbshoot::exit_checks();
     // G3-1b 落点①：syscall 返回边界检查点（草案 §8.C——svc_exit_class 毕 =
     // KL+结构锁全放；x0 写回是 TrapFrame 栈写不触共享结构，检查点在其前不
     // 违约）。`-> !` handler（0x33/0x36）不归，本尾对其不可达——不设检查点。
