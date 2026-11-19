@@ -170,17 +170,17 @@ fn route_end_to_end_and_symmetry() {
             order: 0
         })
     );
-    // ktest A1-2 账面锚点复现：16B/页 × 10240 页 = 160KiB → order 6（64 页）；
-    // 2B/页 × 10240 = 20KiB → order 3（8 页）。
+    // ktest A1-2 账面锚点复现（W3-Q109 打包后单 Vec 面，主线解堵刀
+    // 2026-11-19 随之翻新）：8B/页 × 10240 页 = 80KiB → 20 页 → order 5
+    // （32 页）——旧双 Vec（16B+2B）72 页锚点随打包瘦身作废。
     let np40 = 40 * 1024 * 1024 / PAGE_SIZE;
-    let ledger = (16 * np40).div_ceil(PAGE_SIZE).next_power_of_two()
-        + (2 * np40).div_ceil(PAGE_SIZE).next_power_of_two();
-    assert_eq!(ledger, 72, "A1-2 记账双 Vec 72 页锚点");
+    let ledger = (8 * np40).div_ceil(PAGE_SIZE).next_power_of_two();
+    assert_eq!(ledger, 32, "A1-2 记账单 Vec 32 页锚点（W3-Q109 打包后）");
     assert_eq!(
-        route(16 * np40, 8),
+        route(8 * np40, 8),
         Some(Route::Pages {
-            npages: 40,
-            order: 6
+            npages: 20,
+            order: 5
         })
     );
     // 对称律：dealloc 与 alloc 同 (size,align) 必同路——全域抽样。
