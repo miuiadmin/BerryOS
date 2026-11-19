@@ -167,3 +167,11 @@ smoke-wt-*/
 # mkimage 宿主工具独立 target（彻底 Rust 化轨道 b 层 #8 刀序第三位首刀，
 # tools/mkfat 同款纪律）
 /tools/mkimage/cargo-target/
+
+# 终验观察件（2026-11-19）：TCP 族 crate 裸 target（F103 target-* 族漏网面）。
+/user/berry-tcp/target/
+/user/berry-netdproto/target/
+
+# W3 隔离构建面（五百八十八判例）：隔离 HOME 与 target 目录不进库
+.home-q110/
+.target-host-*/
