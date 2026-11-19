@@ -74,6 +74,20 @@ use crate::syspages;
 /// 整帧清屏底色（gfxdemo 同值——FULL 帧先铺底再回放 DisplayList）。
 const CLEAR_BG: (u8, u8, u8) = (0x10, 0x18, 0x28);
 
+/// spawn 窗守卫时长（2026-11-20 应用内全冻 + 导航三键零反应事故刀）：
+/// 成功 APP_SPAWN 后本窗内（a）槽位/列表/多任务键的**新 spawn 让位**
+///（消费不落 spawn 面）∧（b）launcher 渲染让位（[`LoopHost`]
+/// `render_hold`——present 域单飞避让）。护的是 guifbd present 域的
+/// 单客户端几何：pending/cb_park/rel_park 单槽 + held 全局单表——两
+/// 客户端并发呈现（连环 tap 两 app 先后 boot / launcher 分钟摆字帧撞
+/// app 首帧窗）会互踩：boot 跨代清账 RELEASE 全量排空他人在途别名 →
+/// 对方 `release count=0` 断言 fail→park（app 冻结 / 桌面全灭实抓形
+/// 态）。时长 = app boot 链（GETINFO→CREATE→清账→VMO→首帧 SUBMIT→
+/// latch→RELEASE）在 TCG 重载下的上界（实测每帧 render+blit+3 RPC
+/// 100-400ms，全链 1-2s）+ 裕量；超窗 = 回落基线竞速面（概率极低，
+/// 且 pump 侧宽容收口已兜不致死）。
+const SPAWN_GUARD_NS: u64 = 3 * 1_000_000_000;
+
 /// 自测 swipe 收敛帽（超时 = eprintln 诊断 + 放弃——PAGE 缺失由 smoke
 /// 兜底 loud；不 fail 挂死：桌面常驻义务优先于自测件）。
 const SETTLE_CAP_NS: u64 = 5 * 1_000_000_000;
@@ -169,6 +183,10 @@ struct LoopHost {
     /// 关机二击确认窗（Some(deadline) = armed 态——3s 内再击 = 真关机；
     /// 过期回常态，deadline 纳入稳态等待帽保证准时醒复位）。
     power_armed: Option<u64>,
+    /// spawn 窗守卫（Some(deadline) = 最近一次成功 APP_SPAWN 的呈现
+    /// 避让窗未过——新 spawn 让位 + 渲染让位，见 [`SPAWN_GUARD_NS`]；
+    /// deadline 入 extra_deadline 保证到点醒解除）。
+    spawn_guard: Option<u64>,
     /// 状态栏时钟续摆：上帧摆字（None = 尚未/永不摆：注入缺席时
     /// REALTIME 恒 -ENOTSUP，本面静默，桌面保持建树时的 12:00 占位）。
     last_clock: Option<[u8; 5]>,
@@ -213,6 +231,7 @@ pub fn run(
         snap_frame: None,
         click_ready: false,
         power_armed: None,
+        spawn_guard: None,
         last_clock: None,
     };
     let cfg = appshell::pump::PumpCfg {
@@ -274,6 +293,7 @@ impl appshell::pump::HostHooks for LoopHost {
                         &mut self.power_armed,
                         t_now,
                         &mut self.recents_app,
+                        &mut self.spawn_guard,
                         self.hw,
                         self.self_wins,
                     ) {
@@ -286,13 +306,22 @@ impl appshell::pump::HostHooks for LoopHost {
                         if self.spawn_ok == 0
                             || !on_covered_tap(ui, self.hw, &self.self_wins, t_now)
                         {
-                            if !on_sys_click(
+                            // spawn 窗守卫（2026-11-20 应用内全冻事故刀）：
+                            // 上一成功 spawn 的 boot/首帧呈现窗内——新 spawn
+                            // 让位（消费本击）。连环 tap 两 app 并发 boot 会
+                            // 互踩 guifbd present 单飞槽位（见 SPAWN_GUARD_NS
+                            // 注）；覆盖收盖面在守卫之**前**不受影响（退出
+                            // 路恒活）。
+                            if self.spawn_guard.map_or(false, |dl| t_now < dl) {
+                                eprintln!("launcher: spawn guard skip");
+                            } else if !on_sys_click(
                                 *node,
                                 ui,
                                 &mut self.desktop,
                                 &mut self.spawn_ok,
                                 self.smoke,
                                 &mut self.recents_app,
+                                &mut self.spawn_guard,
                             ) {
                                 on_click(
                                     *node,
@@ -300,6 +329,7 @@ impl appshell::pump::HostHooks for LoopHost {
                                     &mut self.spawn_ok,
                                     self.smoke,
                                     &mut self.recents_app,
+                                    &mut self.spawn_guard,
                                 );
                             }
                         }
@@ -445,7 +475,22 @@ impl appshell::pump::HostHooks for LoopHost {
     fn extra_deadline(&mut self) -> Option<u64> {
         // 刀 D：armed 窗纳入等待帽——3s 准时醒做过期复位（不醒 = 红键
         // 滞留至 IDLE 帽 10s，确认语义受损）。
-        self.power_armed
+        // spawn 守卫截止同律纳入——到点醒解除渲染让位（damage 在守卫窗
+        // 内留脏，醒后首拍重渲）。
+        match (self.power_armed, self.spawn_guard) {
+            (None, None) => None,
+            (Some(a), None) => Some(a),
+            (None, Some(g)) => Some(g),
+            (Some(a), Some(g)) => Some(a.min(g)),
+        }
+    }
+
+    /// 渲染让位（appshell::pump 单飞避让面）：spawn 守卫窗内 = true——
+    /// 刚拉起 app 的 boot/首帧呈现链独占 guifbd present 域（单 pending/
+    /// cb_park/rel_park 槽 + 全局 held 表），launcher 本窗不出帧（分钟
+    /// 摆字至多迟本窗时长——视觉面可忽略）。
+    fn render_hold(&mut self) -> bool {
+        self.spawn_guard.map_or(false, |dl| appshell::rpc::now() < dl)
     }
 }
 
@@ -623,6 +668,7 @@ fn on_nav_click(
     power_armed: &mut Option<u64>,
     t_now: u64,
     recents: &mut Option<RecentsApp>,
+    guard: &mut Option<u64>,
     wm_h: Handle,
     self_wins: [u16; 2],
 ) -> bool {
@@ -683,9 +729,15 @@ fn on_nav_click(
     } else if node == nav.recents {
         // 多任务 v1：重新拉起最近 spawn 的应用（真重拉非死键）；无历史
         // = 静默无操作（桌面常驻义务）。整体取出再 spawn——避免 spawn
-        // RPC 窗内再借用 desktop。
+        // RPC 窗内再借用 desktop。spawn 窗守卫内让位（连环重拉与连环
+        // spawn 同形——present 单飞避让，见 SPAWN_GUARD_NS 注）。
         if let Some(app) = recents.take() {
-            spawn_by_id(&app);
+            if guard.map_or(false, |dl| t_now < dl) {
+                eprintln!("launcher: recents skip (spawn guard)");
+                *recents = Some(app); // 守卫窗内不重拉——记忆保留
+            } else {
+                spawn_by_id(&app, guard);
+            }
         }
         true
     } else if node == nav.home {
@@ -769,8 +821,9 @@ pub struct RecentsApp {
     pub id_len: u8,
 }
 
-/// 按 id spawn（on_click 与多任务键重拉共用）。回执记账返回 ok 与否。
-fn spawn_by_id_inner(id: &[u8], smoke: bool, spawn_ok: &mut u32) -> bool {
+/// 按 id spawn（on_click 与多任务键重拉共用）。回执记账返回 ok 与否；
+/// ok 时落 spawn 窗守卫（[`SPAWN_GUARD_NS`]——新 spawn/渲染让位窗起算）。
+fn spawn_by_id_inner(id: &[u8], smoke: bool, spawn_ok: &mut u32, guard: &mut Option<u64>) -> bool {
     let h = app_cli_h();
     if h == 0 {
         return false; // 冻结相：app 通道结构性缺席
@@ -809,7 +862,13 @@ fn spawn_by_id_inner(id: &[u8], smoke: bool, spawn_ok: &mut u32) -> bool {
                 // 冒烟模式（正常 boot 零 CLICK）。
                 println!("CLICK ok n=1");
             }
-            matches!(ack, Some((true, _)))
+            if matches!(ack, Some((true, _))) {
+                // spawn 窗守卫起算（成功拉起才有呈现窗——失败面不占）。
+                *guard = Some(appshell::rpc::now() + SPAWN_GUARD_NS);
+                true
+            } else {
+                false
+            }
         }
         None => {
             eprintln!("launcher: spawn id bad");
@@ -819,9 +878,9 @@ fn spawn_by_id_inner(id: &[u8], smoke: bool, spawn_ok: &mut u32) -> bool {
 }
 
 /// 多任务键重拉入口（无 smoke 标记面——正常交互路径）。
-fn spawn_by_id(id: &RecentsApp) {
+fn spawn_by_id(id: &RecentsApp, guard: &mut Option<u64>) {
     let mut n = 0u32;
-    if !spawn_by_id_inner(&id.id[..id.id_len as usize], false, &mut n) {
+    if !spawn_by_id_inner(&id.id[..id.id_len as usize], false, &mut n, guard) {
         eprintln!("launcher: recents respawn failed");
     }
 }
@@ -842,6 +901,7 @@ fn on_sys_click(
     spawn_ok: &mut u32,
     smoke: bool,
     recents: &mut Option<RecentsApp>,
+    guard: &mut Option<u64>,
 ) -> bool {
     match desktop.tabs.cur {
         1 => {
@@ -879,7 +939,7 @@ fn on_sys_click(
             }
             match hit_app.and_then(|idx| icons::registry().get(idx)) {
                 Some(entry) => {
-                    if spawn_by_id_inner(entry.id_bytes(), smoke, spawn_ok) {
+                    if spawn_by_id_inner(entry.id_bytes(), smoke, spawn_ok, guard) {
                         let mut id = [0u8; 24];
                         let src = entry.id_bytes();
                         let n = src.len().min(24);
@@ -954,6 +1014,7 @@ fn on_click(
     spawn_ok: &mut u32,
     smoke: bool,
     recents: &mut Option<RecentsApp>,
+    guard: &mut Option<u64>,
 ) {
     let slot = desktop
         .slots
@@ -964,7 +1025,7 @@ fn on_click(
     let Some(slot) = slot else { return }; // 壁纸/状态栏/圆点/容器白区 = 无格
     let Some(idx) = slot.app else { return }; // 占位/幽灵格不可 spawn
     let Some(entry) = icons::registry().get(idx) else { return };
-    if spawn_by_id_inner(entry.id_bytes(), smoke, spawn_ok) {
+    if spawn_by_id_inner(entry.id_bytes(), smoke, spawn_ok, guard) {
         // 多任务键记忆：spawn 成功才记账（失败不占 recents 槽）。
         let mut id = [0u8; 24];
         let src = entry.id_bytes();
