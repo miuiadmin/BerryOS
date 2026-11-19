@@ -49,123 +49,37 @@ static KL_CONTENDED_CAS: AtomicU64 = AtomicU64::new(0);
 /// 「holder=0 而 LOCK=true」只对本核可见，本核此刻不会再读）。kl_held
 /// 读点恒在 IRQ 屏蔽窗（recompute 发射点全在锁窗/屏蔽窗）⇒ 无撕裂窗口。
 static KL_HELD: AtomicUsize = AtomicUsize::new(0);
-/// S-6 ③b：KERN_LOCK 持有起算 cntvct（看门狗年龄算子；诊断面，定谳后
-/// 随探针退役）。维护序同 KL_HELD——acquire 成功即写。
-static KL_HELD_SINCE: AtomicU64 = AtomicU64::new(0);
-/// S-6 ③b 持者点名（run11 定谳：held_by=CPU0 + age=0s 连刷 = 快速循环
-/// 取放活锁——差最后一环「CPU0 上是谁在刷」）：本核当前任务名钩子，sched
-/// init 反向注入（arch 不依赖 sched，KlockOps 同款反转先例）。返回
-/// (名指针, 名长)；(0,0) = park 态/防御窗无当前任务。名 = 任务字面量
-/// &'static [u8]，跨核读不悬垂。
-static mut NAME_HOOK: Option<fn() -> (usize, usize)> = None;
-/// 持者名镜像（acquire 成功即写，与 KL_HELD 同窗）。
-static KL_HELD_TAG_PTR: AtomicUsize = AtomicUsize::new(0);
-static KL_HELD_TAG_LEN: AtomicUsize = AtomicUsize::new(0);
+// 探针族退役刀（2026-11-19）：S-6 ③b 诊断账面随 spin_bark 全族退役——
+// KL_HELD_SINCE（持锁起算 cntvct）/ NAME_HOOK + KL_HELD_TAG_PTR/LEN（持者
+// 点名镜像）/ set_kl_name_hook 安装面 / lock_bark + BARK_LAST/BARK_CNT
+// （自旋看门狗）及 kern_acquire/print_lock 两处 bark 环全撤（「spin!」行
+// 宿主零消费者）；kl_diag_gate 门控维护块同撤。**必保面**：KL_HELD
+// （kl_held 退化判据依赖）+ KL_CONTENDED_CAS→kl_contention（switches= 行
+// 尾 kl= 字段的活消费者——bcts-parkprobe 正则词法依赖）。TTAS 语义零变。
 
-/// 安装本核任务名钩子（sched::init，boot 单线程恰一次，此后只读）。
-pub fn set_kl_name_hook(f: fn() -> (usize, usize)) {
-    // SAFETY: boot 单线程安装（第二核上线前）。
-    unsafe { NAME_HOOK = Some(f) };
-}
 /// 打印互斥锁（整条消息粒度）。
 static PRINT_LOCK: AtomicBool = AtomicBool::new(false);
 
-// ---- S-6 ③b 自旋看门狗（arch 双锁自报；诊断面，定谳后随探针退役）----
-
-/// bark 节流锚（上次 bark 的 cntvct）。
-static BARK_LAST: AtomicU64 = AtomicU64::new(0);
-/// bark 总量帽记账。
-static BARK_CNT: AtomicU64 = AtomicU64::new(0);
-
-/// 自旋看门狗 bark（与 sched 侧 spin.rs 槽同款纪律）：par 门（单核零
-/// 漂移）+ 1s 全局节流 + 32 行总量帽，**原始 UART 直写不吃 PRINT_LOCK**
-/// （泄漏锁可能就是它）。`held_by`：KERN_LOCK 面 = KL_HELD 持者核号
-/// （0 = 无人持/已清）；PRINT_LOCK 面传 0。
-fn lock_bark(what: &[u8], held_by: usize, since: u64) {
-    if !crate::smp::par_enabled() {
-        return;
-    }
-    let now = crate::timer::cntvct();
-    if now.saturating_sub(BARK_LAST.load(Ordering::Relaxed)) < crate::timer::cntfrq() {
-        return;
-    }
-    if BARK_CNT.fetch_add(1, Ordering::Relaxed) >= 32 {
-        return;
-    }
-    BARK_LAST.store(now, Ordering::Relaxed);
-    crate::uart::uart_puts(b"spin! ");
-    crate::uart::uart_puts(what);
-    crate::uart::uart_puts(b" cpu=");
-    crate::uart::uart_put_dec(crate::smp::cpu_id() as u64);
-    crate::uart::uart_puts(b" held_by=");
-    crate::uart::uart_put_dec(held_by as u64);
-    if held_by != 0 {
-        crate::uart::uart_puts(b" task='");
-        let (p, l) = (
-            KL_HELD_TAG_PTR.load(Ordering::Relaxed),
-            KL_HELD_TAG_LEN.load(Ordering::Relaxed),
-        );
-        if p != 0 && l != 0 && l <= 32 {
-            // SAFETY: sched 侧钩子契约——任务名 &'static 字面量，不悬垂。
-            let name: &[u8] = unsafe { core::slice::from_raw_parts(p as *const u8, l) };
-            crate::uart::uart_puts(name);
-        }
-        crate::uart::uart_puts(b"' age=");
-        // ms 分辨率（run11 的 s 级显示全落 0s——快速取放必须看亚秒）。
-        crate::uart::uart_put_dec(now.saturating_sub(since) * 1000 / crate::timer::cntfrq());
-        crate::uart::uart_puts(b"ms");
-    }
-    crate::uart::uart_puts(b"\n");
-}
-
-/// KERN_LOCK 取锁（TTAS）。03 号分派审计机会一 1a：诊断账面（KL_HELD_SINCE
-/// CNTVCT 读 + NAME_HOOK 持者点名间接调 + 三写）自无条件付移
-/// `争用臂 ∨ SMP 态` 门后（判律单源 `berry_lkface::kl_diag_gate`——单核
-/// 无争用时消费面唯一 `lock_bark` 首 par 门恒返，零消费零维护；SMP 态
-/// 恒维护保 bark 数据源新鲜；KL_HELD 镜像不动——`kl_held` 退化判据依赖）。
+/// KERN_LOCK 取锁（TTAS）。争用臂记账 KL_CONTENDED_CAS（kl= 字段活消费
+/// 者）；KL_HELD 持有者镜像维护（kl_held 退化判据依赖）。探针族退役刀
+/// （2026-11-19）：S-6 ③b 诊断账面（KL_HELD_SINCE 时间戳/持者点名镜像）
+/// 与自旋看门狗 bark 环随 spin_bark 全族退役——TTAS CAS 序零变。
 #[inline]
 pub fn kern_acquire() {
     // G3-3 lockdep：物理取点记账（feature 关 = 编译消除；类 = TABLE——七类
     // 全序位 4，KL 类内末取立法）。
     #[cfg(feature = "lockdep")]
     crate::lockdep::acquire(crate::lockdep::CLASS_TABLE);
-    // S-6 ③b：内层自旋超限（2^23 次）看门狗自报（非 wedge 态计数远够不到
-    // ——争用突发 µs 量级；零漂移）。
-    let mut bark_n = 0u32;
-    // 争用臂记账（本核本次取锁是否经 CAS 失败臂——诊断账面门输入）。
-    let mut contended = false;
     while KERN_LOCK
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
-        contended = true;
         KL_CONTENDED_CAS.fetch_add(1, Ordering::Relaxed);
         while KERN_LOCK.load(Ordering::Relaxed) {
             core::hint::spin_loop();
-            bark_n = bark_n.wrapping_add(1);
-            if bark_n >= berry_lkface::KL_SPIN_BARK_MASK {
-                bark_n = 0;
-                lock_bark(
-                    b"kern",
-                    KL_HELD.load(Ordering::Relaxed),
-                    KL_HELD_SINCE.load(Ordering::Relaxed),
-                );
-            }
         }
     }
     KL_HELD.store(crate::smp::cpu_id() + 1, Ordering::Relaxed);
-    // S-6 ③b：持锁诊断账面（SINCE 时间戳/持者点名镜像）门控维护——门律
-    // 单源 lkface（W3-Q101）；门关 = 单核无争用（bark 零消费），账面零写。
-    if berry_lkface::kl_diag_gate(contended, crate::smp::par_enabled()) {
-        KL_HELD_SINCE.store(crate::timer::cntvct(), Ordering::Relaxed);
-        // S-6 ③b：持者点名镜像（钩子未装窗 = boot 最早路径，(0,0) 空过）。
-        // SAFETY: boot 安装后只读。
-        if let Some(h) = unsafe { NAME_HOOK } {
-            let (p, l) = h();
-            KL_HELD_TAG_PTR.store(p, Ordering::Relaxed);
-            KL_HELD_TAG_LEN.store(l, Ordering::Relaxed);
-        }
-    }
 }
 
 /// 读 KERN_LOCK 争用计数（S-3c c-2c 观测面；非门禁——§4 :101 同款裁决）。
@@ -313,19 +227,12 @@ pub fn print_lock() {
     // 锁」由此自动执法（其后任何取锁 = rank 降 = violation）。
     #[cfg(feature = "lockdep")]
     crate::lockdep::acquire(crate::lockdep::CLASS_PRINT);
-    // S-6 ③b：看门狗自报（同 kern_acquire；PRINT 面无持者镜像——自报即定位）。
-    let mut bark_n = 0u32;
     while PRINT_LOCK
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
         while PRINT_LOCK.load(Ordering::Relaxed) {
             core::hint::spin_loop();
-            bark_n = bark_n.wrapping_add(1);
-            if bark_n >= (1 << 23) {
-                bark_n = 0;
-                lock_bark(b"print", 0, 0);
-            }
         }
     }
 }

@@ -138,6 +138,6 @@ trace-dual + lat + reject-trio + testhost（同目录 20261105-0930~0931 批）�
 
 - origin/wip/sched-1.1@1008dcdc7 × icount-baseline 合并树终档：我方八项逐位保持（pick_scan 131/switch_pair 306——合并指令流对测径零污染的实证）；origin 侧 W3-Q98/Q102 两新项入册（send_recv_pair 1168/svc_roundtrip 50）；alloc64k 37→127（布局骰第五掷，孤项）。五跑 prove verdict=exact（回执 icount-prove-20261119-070911）。
 
-## [2026-11-19 W3-Q108 dispatch 尾合并闩] svc_roundtrip/send_recv_pair 双降——双闩单读的真实指令削减
+## [2026-11-19 探针族退役刀] 三项真指令减量
 
-- Q108（SmpCpu 尾插 exit_latch AtomicU8 + exit_checks() 单点分诊）替换 dispatch 尾两连调（sched_exit_check/roll_quiesce_check 各自 cpu_id() MRS tpidr 追链 + 各读一格全局闩数组）：**svc_roundtrip 50→46（-8）= 每号 syscall 省 1 次 MRS tpidr + 1 次闩数组 Acquire 读**（单核常态分诊读全零直返——置位展开零发生）；send_recv_pair 1168→1160（-8）= 往返内多号 svc 同因累积（send+recv 各省同量）。其余八项逐位不动（pick_scan/switch_pair 佐证调度器面零外溢）。五跑 prove verdict=exact max_dev=0.000%（回执 icount-prove-20261119-115305）→ ICOUNT_TOL=0.0 维持；`--icount --update` 两行立法。
+- 探针族退役+金丝雀时间节流：**switch_pair 306→300（−6）=退役的真实指令节省**（bump_switches 计数分支面缩+KL 诊断账面出锁路径——确定性通道第二批单刀量化收益）；send_recv_pair 1168→1159（−9）/svc_roundtrip 50→47（−3）同族热路径减量；其余七项逐位稳。五跑 prove verdict=exact（回执 icount-prove-20261119-151447）。
