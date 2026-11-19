@@ -24,11 +24,33 @@ pub struct Reject {
     pub where_: &'static str,
     /// 仅语法层：TOML 解析位点（1 起行号）。
     pub line: Option<u32>,
+    /// --json 拒因舱扩展（W1-Q27 七刀，Python `Reject` kwargs 镜像）：
+    /// 三舱恒 `Option<String>`——`Some(原始 JSON 片段)`（串 = 含引号转义
+    /// 形、int = 裸数字、list = JSON 数组），`None` = 字段缺席。仅钉板
+    /// 类站点（Python selftest 八类对拍的拒因）填充；其余站点 None =
+    /// Python 缺省 kwargs 同形。
+    pub jx_where: Option<String>,
+    pub jx_expected: Option<String>,
+    pub jx_got: Option<String>,
+    pub jx_fix: Option<String>,
 }
 
 impl Reject {
     fn new(message: impl Into<String>, code: &'static str, where_: &'static str) -> Self {
-        Self { message: message.into(), code, where_, line: None }
+        Self { message: message.into(), code, where_, line: None, jx_where: None, jx_expected: None, jx_got: None, jx_fix: None }
+    }
+
+    /// --json 拒因舱三键装载（七刀：钉板类站点专用——Python kwargs 值的
+    /// 原始 JSON 片段形）。
+    pub fn jx(
+        message: impl Into<String>,
+        code: &'static str,
+        where_: &'static str,
+        jx_expected: Option<String>,
+        jx_got: Option<String>,
+        jx_fix: Option<String>,
+    ) -> Self {
+        Self { message: message.into(), code, where_, line: None, jx_where: None, jx_expected, jx_got, jx_fix }
     }
 }
 
@@ -95,6 +117,7 @@ fn parse_toml_subset(text: &str) -> Result<Parsed, Reject> {
             return Err(Reject {
                 message: format!("manifest: TOML 解析失败： 行 {lineno} 注释非规范形（canonical 不发射注释）"),
                 code: "manifest.syntax.toml", where_: "manifest.toml", line: Some(lineno),
+                jx_where: None, jx_expected: None, jx_got: None, jx_fix: None,
             });
         }
         if t.starts_with('[') {
@@ -102,6 +125,7 @@ fn parse_toml_subset(text: &str) -> Result<Parsed, Reject> {
                 return Err(Reject {
                     message: format!("manifest: TOML 解析失败： 行 {lineno} 节头非 [name] 形"),
                     code: "manifest.syntax.toml", where_: "manifest.toml", line: Some(lineno),
+                jx_where: None, jx_expected: None, jx_got: None, jx_fix: None,
                 });
             }
             let name = t[1..t.len() - 1].to_string();
@@ -116,6 +140,7 @@ fn parse_toml_subset(text: &str) -> Result<Parsed, Reject> {
             None => return Err(Reject {
                 message: format!("manifest: TOML 解析失败： 行 {lineno} 无「=」"),
                 code: "manifest.syntax.toml", where_: "manifest.toml", line: Some(lineno),
+                jx_where: None, jx_expected: None, jx_got: None, jx_fix: None,
             }),
         };
         let key = t[..eq].trim().to_string();
@@ -134,6 +159,7 @@ fn parse_value(s: &str, lineno: u32) -> Result<Val, Reject> {
     let syntax = |msg: String| Reject {
         message: format!("manifest: TOML 解析失败： {msg}"),
         code: "manifest.syntax.toml", where_: "manifest.toml", line: Some(lineno),
+                jx_where: None, jx_expected: None, jx_got: None, jx_fix: None,
     };
     if s == "true" { return Ok(Val::Bool(true)); }
     if s == "false" { return Ok(Val::Bool(false)); }
@@ -209,7 +235,12 @@ fn check_str<'a>(v: &'a Val, what: &str, maxlen: usize, key: &'static str) -> Re
         _ => return Err(Reject::new(format!("manifest: {what} 应为字符串"), code_ty, key)),
     };
     if s.is_empty() || s.len() > maxlen {
-        return Err(Reject::new(format!("manifest: {what} 空/超长（1..={maxlen}）"), code_len, key));
+        // Python `_check_str` length 臂 kwargs 镜像（--json 钉板类②）：
+        // expected="1..={maxlen}" 区间串 / got=len(v) int。
+        return Err(Reject::jx(
+            format!("manifest: {what} 空/超长（1..={maxlen}）"), code_len, key,
+            Some(format!("\"1..={maxlen}\"")), Some(format!("{}", s.len())), None,
+        ));
     }
     for ch in s.chars() {
         if !('\x20'..='\x7E').contains(&ch) || ch == '\\' || ch == '"' {
@@ -307,7 +338,30 @@ pub fn check_manifest_text(text: &str) -> Result<ManifestView<'static>, Reject> 
     }
     let intent: &'static str = match as_str(get(&doc, "app.intent").unwrap()) {
         Some(s) if INTENTS.contains(&s) => Box::leak(s.to_string().into_boxed_str()),
-        _ => return Err(Reject::new("manifest: intent 应为六词之一", "manifest.intent.vocab", "app.intent")),
+        // Python kwargs 镜像（--json 钉板类③）：expected=六词表 list / got=原值串。
+        _ => {
+            let raw = get(&doc, "app.intent").unwrap();
+            let got = match raw {
+                Val::Str(s) => format!("\"{s}\""),
+                Val::Bool(b) => format!("{b}"),
+                Val::Int(i) => format!("{i}"),
+                Val::Arr(a) => format!(
+                    "[{}]",
+                    a.iter().map(|v| match v {
+                        Val::Str(s) => format!("\"{s}\""),
+                        Val::Bool(b) => format!("{b}"),
+                        Val::Int(i) => format!("{i}"),
+                        Val::Arr(_) => "\"…\"".to_string(),
+                    }).collect::<Vec<_>>().join(",")
+                ),
+            };
+            return Err(Reject::jx(
+                format!("manifest: intent 应为六词之一 ({})", INTENTS.iter().map(|s| format!("'{s}'")).collect::<Vec<_>>().join(", ")),
+                "manifest.intent.vocab", "app.intent",
+                Some(format!("[{}]", INTENTS.iter().map(|s| format!("\"{s}\"")).collect::<Vec<_>>().join(","))),
+                Some(got), None,
+            ));
+        }
     };
 
     // [compat] 三值链 + min_level + abi_revision。
@@ -347,9 +401,13 @@ pub fn check_manifest_text(text: &str) -> Result<ManifestView<'static>, Reject> 
                     "manifest.compat.order", "compat"));
             }
             if cp > SDK_CURRENT {
-                return Err(Reject::new(
+                // Python kwargs 镜像（--json 钉板类④）：expected="≤{SDK}" / got=compile 串。
+                return Err(Reject::jx(
                     format!("manifest: compile {} 超工具链当前级 {}", ver_str(cp), ver_str(SDK_CURRENT)),
-                    "manifest.compat.ceiling", "compat.compile"));
+                    "manifest.compat.ceiling", "compat.compile",
+                    Some(format!("\"≤{}\"", ver_str(SDK_CURRENT))),
+                    Some(format!("\"{}\"", ver_str(cp))), None,
+                ));
             }
             compat = Some((mn, tg, cp));
             if let Some(v) = get(&doc, "compat.min_level") {
@@ -527,9 +585,13 @@ pub fn check_manifest_text(text: &str) -> Result<ManifestView<'static>, Reject> 
         sec, ui, agent_actions, blob,
     };
     if text != view.canonical() {
-        return Err(Reject::new(
-            "manifest: 非规范形（hex/下划线整数、单引号、内联表、多行串、注释、多余空白等 tomllib 收而门禁不收）",
-            "manifest.canonical", "manifest.toml"));
+        // Python kwargs 镜像（--json 钉板类⑤）：fix 修法舱在场。
+        return Err(Reject::jx(
+            "manifest: 非规范形（hex/下划线整数、单引号、内联表、多行串、注释、多余空白等 tomllib 收而门禁不收）".to_string(),
+            "manifest.canonical", "manifest.toml",
+            None, None,
+            Some("\"以门禁规范形重发射（canonical 键序/定序/双引号基础串/LF/无注释）\"".to_string()),
+        ));
     }
     Ok(view)
 }

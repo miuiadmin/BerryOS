@@ -77,7 +77,7 @@ impl BuildSummary {
 }
 
 fn rej(msg: String, code: &'static str, where_: &str) -> Reject {
-    Reject { message: msg, code, where_: Box::leak(where_.to_string().into_boxed_str()), line: None }
+    Reject { message: msg, code, where_: Box::leak(where_.to_string().into_boxed_str()), line: None, jx_where: None, jx_expected: None, jx_got: None, jx_fix: None }
 }
 
 /// staging 目录条目（名， 数据）——排序前收集形。
@@ -259,10 +259,13 @@ fn stage_walk(app_dir: &Path) -> Result<(String, Vec<u8>, Vec<Item>, Vec<Item>),
         .collect();
     bins.sort();
     if bins.len() != 1 {
-        return Err(rej(
-            format!("{}: 应恰一个文件，得 {}", bin_dir.display(), bins.len()),
-            "stage.bin.count",
-            "bin/",
+        // Python kwargs 镜像（--json 钉板类⑥）：where="bin/" / expected=1 /
+        // got=len int。
+        let n = bins.len();
+        return Err(Reject::jx(
+            format!("{}: 应恰一个文件， 得 {n}", bin_dir.display()),
+            "stage.bin.count", "bin/",
+            Some("1".to_string()), Some(format!("{n}")), None,
         ));
     }
     let bin_name = bins.remove(0);
@@ -415,10 +418,12 @@ pub fn build(out_path: &str, app_dir: &str) -> Result<BuildSummary, Reject> {
 
     // 门禁 3：entry == bin/ 唯一文件
     if m.entry != format!("bin/{bin_name}") {
-        return Err(rej(
-            format!("manifest entry {:?} != bin/{bin_name:?}", m.entry),
-            "entry.mismatch",
-            "app.entry",
+        // Python kwargs 镜像（--json 钉板类⑦）：expected="bin/<名>" / got=entry。
+        let got = m.entry.to_string();
+        return Err(Reject::jx(
+            format!("manifest entry '{got}' != bin/'{bin_name}'"),
+            "entry.mismatch", "app.entry",
+            Some(format!("\"bin/{bin_name}\"")), Some(format!("\"{got}\"")), None,
         ));
     }
     // GUI-7 交叉门
@@ -439,10 +444,12 @@ pub fn build(out_path: &str, app_dir: &str) -> Result<BuildSummary, Reject> {
     let elf = read_to_vec(&app.join("bin").join(&bin_name))?;
     if elf.len() < 4 || &elf[..4] != b"\x7fELF" {
         let got = if elf.len() >= 4 { hex(&elf[..4]) } else { hex(&elf) };
-        return Err(rej(
+        // Python kwargs 镜像（--json 钉板类⑧）：expected="7f454c46" / got=hex 串。
+        let where_static: &'static str = Box::leak(format!("bin/{bin_name}").into_boxed_str());
+        return Err(Reject::jx(
             format!("bin/{bin_name}: 非 ELF（头 4 字节 {got}）"),
-            "bin.elf",
-            &format!("bin/{bin_name}"),
+            "bin.elf", where_static,
+            Some("\"7f454c46\"".to_string()), Some(format!("\"{got}\"")), None,
         ));
     }
 

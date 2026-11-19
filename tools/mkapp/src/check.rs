@@ -21,7 +21,7 @@ use crate::gate::Reject;
 use crate::{ICON_FILES_MAX, UI_PATH_MAX, VIEWS_FILES_MAX};
 
 fn rej(msg: String, code: &'static str, where_: &str) -> Reject {
-    Reject { message: msg, code, where_: Box::leak(where_.to_string().into_boxed_str()), line: None }
+    Reject { message: msg, code, where_: Box::leak(where_.to_string().into_boxed_str()), line: None, jx_where: None, jx_expected: None, jx_got: None, jx_fix: None }
 }
 
 /// `--check` 结果摘要（Python `check_bap` 返回 dict 镜像：path/bytes/

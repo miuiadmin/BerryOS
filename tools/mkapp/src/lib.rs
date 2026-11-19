@@ -78,6 +78,10 @@ pub mod check;
 /// 门禁 → abi 打戳 → SHA256SUMS → cpio 落盘 + 摘要行）+ 产链换轨件。
 pub mod build;
 
+/// W1-Q27 七刀：`--json` 机读单行信封面（Python `_json_envelope`/
+/// `_json_main` 镜像——build/check 两 op）。
+pub mod json;
+
 /// [security] 三键视图（profile/key_lineage/integrator——齐备或齐缺）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sec<'a> {
