@@ -1107,6 +1107,10 @@ test-host:
     # W1（同上六刀·--check）：tests/check_parity.rs——check_bap 五步
     # Rust↔Python oracle 对拍（OK 行全等 + 拒面十族同 code）；CLI --check
     # 臂实装（出口码同 Python），Python --check 仍为 CLI oracle 面。
+    # W1（同上七刀·--json）：src/json.rs 信封面 + tests/json_parity.rs
+    # oracle 对拍（正例双 op result 舱逐键全等 + 负例六类钉板族七舱全等
+    # + io 兜底 + 单行纪律 + 双读一致）；CLI --json 臂实装（build/check
+    # 两 op，拒因 exit 1/用法错 2 同 Python），其余形态仍走 Python 面。
     # W1 接线（SEC-02 A2 同款纪律）：berry_assemble 门禁自检——V13 组装器
     # （ADR #82「组装不 fork」product.toml 校验/dry-run 计划/装配反回滚门）
     # 落地时自称 51 腿绿但从未接线 test-host：有 selftest 零自动执法 =
