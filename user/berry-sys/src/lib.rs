@@ -524,8 +524,8 @@ pub extern "C" fn berry_sched_util_snapshot(util: *mut u32, count: usize) -> Sta
 }
 
 // —— 遥测（0x84 telemetry_open op 域：klog 快照首域 + memstat 定长快照
-// 第二档在役——遥测 v3 首件；SwitchRec/WakeRec 环读口随后续波次自 op=2
-// 起，不预留）——
+// 第二档 + 双族环快照第三档〔环读口刀〕在役；后续波次自 op=3 起按落地
+// 序取号，不预留）——
 
 /// 0x84：v3 号提前实现（klog 快照首域翻真）。abi.toml 在册但 stage=v3——
 /// 常量层只产 v1/1.1 行（gen_abi.py defined 集），`nr::TELEMETRY_OPEN` 不
@@ -533,10 +533,15 @@ pub extern "C" fn berry_sched_util_snapshot(util: *mut u32, count: usize) -> Sta
 /// 落地后换 `nr::` 常量名——同内核派发注）。
 const TELEMETRY_OPEN_NR: usize = 0x84;
 
-/// 0x84 op 域常量（klog=0 / memstat=1）与 memstat 出参形状
-/// [`MemstatRec`]——单源 [`berry_telface`] 转发，内核派发同引（消内核/
-/// 用户双写；值与形状钉板在 telface host 测试）。
-pub use berry_telface::{MemstatRec, TELEMETRY_OP_KLOG, TELEMETRY_OP_MEMSTAT};
+/// 0x84 op 域常量（klog=0 / memstat=1 / rings=2）与三档出参形状——单源
+/// [`berry_telface`] 转发，内核派发同引（消内核/用户双写；值与形状钉板
+/// 在 telface host 测试）；头/段编解码纯函数（rings_hdr_read/ring_seg_read）
+/// 随同转发——消费方解析走同一具（U1 解析契约）。
+pub use berry_telface::{
+    MemstatRec, RingSegV1, RingsHdrV1, RING_FAMILY_SWITCH, RING_FAMILY_WAKE, REASON_SIGNALED,
+    REASON_TIMEOUT, SwitchRec, TELEMETRY_OP_KLOG, TELEMETRY_OP_MEMSTAT, TELEMETRY_OP_RINGS,
+    WakeRec, ring_seg_read, rings_hdr_read,
+};
 
 /// `berry_telemetry_klog_snapshot(buf, len)`（0x84 op=0，阶段五第 17 步
 /// bsh dmesg 消费面）：读内核日志字节环到 `buf`，**返回 >0 = 实写字节数**
@@ -560,6 +565,29 @@ pub extern "C" fn berry_telemetry_klog_snapshot(buf: *mut u8, len: usize) -> Sta
 #[no_mangle]
 pub extern "C" fn berry_telemetry_memstat_snapshot(out: *mut MemstatRec) -> Status {
     unsafe { sys(TELEMETRY_OPEN_NR, TELEMETRY_OP_MEMSTAT as usize, out as usize, core::mem::size_of::<MemstatRec>(), 0, 0, 0) }
+}
+
+/// `berry_telemetry_rings_snapshot(buf, len)`（0x84 op=2，环读口刀——
+/// berryctl trace 消费面）：per-CPU 切换环＋唤醒环四段一体快照写入
+/// `buf`，**返回实写字节数（≥ 32 头自证）**或负 errno 透传；len < 32 →
+/// -EINVAL（内核执法），无上帽（变长填充返回值自证——klog 裸缓冲透传
+/// 同形第三件，buf/len 字节直传）。
+///
+/// 布局 = 32B 头 [`RingsHdrV1`]＋每环 24B 段描述符 [`RingSegV1`]＋变长
+/// 载荷（CPU 序段序 switch c0→c1→wake c0→c1、段内旧→新、整条粒度截
+/// 尾）。**尽力一致契约**：逐环一致（每环单 seqlock 版本窗整块拷）或整
+/// 环诚实弃（count=0 而 total 照出——降级可判 total>0 ∧ count==0，空可
+/// 判 total==0），四环间无一致保证（各环独立快照时刻——跨段非时序归并
+/// 读方自知）；丢包可派生每环 total − min(total, ring_len)。
+///
+/// 头/段解析契约 = [`berry_telface`] 编解码纯函数（[`rings_hdr_read`]/
+/// [`ring_seg_read`]——host 钉板即单源）；条目（[`SwitchRec`] 24B/
+/// [`WakeRec`] 32B）按 telface 钉板偏移 LE 手解。尾追追加律：未来扩形
+/// 走头尾追或新 op 值，旧调用方恒收 v1 前缀。零 handle 零权利位（系统级
+/// 遥测读面——klog/memstat 同族口径）。
+#[no_mangle]
+pub extern "C" fn berry_telemetry_rings_snapshot(buf: *mut u8, len: usize) -> Status {
+    unsafe { sys(TELEMETRY_OPEN_NR, TELEMETRY_OP_RINGS as usize, buf as usize, len, 0, 0, 0) }
 }
 
 // —— 策略注入（0x83：机制在内核、策略可插拔的带内接口——表形面（COMMIT/

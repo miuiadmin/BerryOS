@@ -28,6 +28,10 @@
 //!   0x84 telemetry_open op 域的出参形状与 op 常量单源（遥测 v3 首件
 //!   memstat 定长快照 40B——内核派发与 berry-sys 包装同引此，消内核/
 //!   用户双写；add-only 扩路见 [`MemstatRec`] 注）。
+//! - [`SwitchRec`]/[`WakeRec`]/[`RingsHdrV1`]/[`RingSegV1`] 与
+//!   [`TELEMETRY_OP_RINGS`]：op=2 双族环快照的形状与常量单源（环读口刀
+//!   ——自 kernel/src/telemetry.rs 迁此；头/段 LE 编解码纯函数与
+//!   `ringmerge::fill_span` 旋转律同批，host 钉板）。
 //!
 //! 与冻结面的关系：NR 表/派发面零触碰（0x84 op 域常量与出参形状是唯一
 //! ABI 面，即上条单源项）；环/槽表的原子机械（seqlock 写方
@@ -174,8 +178,9 @@ pub fn wakesrc_row_shape_ok() -> bool {
 pub const TELEMETRY_OP_KLOG: u64 = 0;
 
 /// 1 = memstat 定长快照（[`MemstatRec`] 40B——遥测 v3 首件）。演进注：
-/// SwitchRec/WakeRec 环读口自 op=2 起按落地序取号，不预留（add-only
-/// 纪律下预留号无执法值——域外恒 -ENOTSUP 与未定义同形）。
+/// SwitchRec/WakeRec 环读口已落地 op=2（[`TELEMETRY_OP_RINGS`]）；后续
+/// 波次自 op=3 起按落地序取号，不预留（add-only 纪律下预留号无执法值
+/// ——域外恒 -ENOTSUP 与未定义同形）。
 pub const TELEMETRY_OP_MEMSTAT: u64 = 1;
 
 /// memstat 定长快照（0x84 op=1 出参——`#[repr(C)]` ABI 形状 day-one 定
@@ -205,6 +210,195 @@ pub struct MemstatRec {
     pub committed_pages: u64,
 }
 const _: () = assert!(core::mem::size_of::<MemstatRec>() == 40);
+
+// ---- 0x84 op 域第三件：双族环快照形状与常量（环读口刀——SwitchRec/
+// WakeRec 形状自 kernel/src/telemetry.rs 迁此单源〔挂账 1 断言补齐落点〕；
+// 头/段定形＋LE 编解码纯函数。内核装配（telemetry.rs/syscall.rs）与
+// berry-sys/berryctl 消费同引此，消内核/用户双写）----
+
+/// 2 = 双族环快照（[`SwitchRec`] 切换环 + [`WakeRec`] 唤醒环——per-CPU
+/// 四环一体导出，32B 轻头＋每环 24B 段描述符＋变长载荷）。演进注：后续
+/// 波次自 op=3 起按落地序取号，不预留（add-only 纪律下预留号无执法值
+/// ——域外恒 -ENOTSUP 与未定义同形）。
+pub const TELEMETRY_OP_RINGS: u64 = 2;
+
+/// 段族常量：切换环（`RingSegV1.family` 取值）。
+pub const RING_FAMILY_SWITCH: u32 = 0;
+/// 段族常量：唤醒环。
+pub const RING_FAMILY_WAKE: u32 = 1;
+
+/// 单条切换记录（自 kernel/src/telemetry.rs 迁此单源——数据域偏移零漂
+/// vct@0/prev@8/next@12/kind@16/idle_next@17；补显式 `_pad` 尾垫
+/// （WakeRec 惯例——防未来加字段撞匿名垫无声漂移），24B 整）。
+///
+/// add-only 扩路（同 [`MemstatRec`] 注）：加字段 = 尾追新版本域或取新
+/// op 值，禁改旧结构——`_pad` 恒 0，旧调用方恒收 v1 前缀，返回值自证
+/// 所得。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct SwitchRec {
+    /// 切换时刻 CNTVCT（原始周期数——换算 ns 需快照头 cntfrq，归消费方）。
+    pub vct: u64,
+    /// 切出任务 id（名字 FNV-1a-32；0 = idle/boot 前）。
+    pub prev: u32,
+    /// 切入任务 id。
+    pub next: u32,
+    /// 切换原因（SwitchKind 的 u8 编码全域 **0..=3**：0=Yield 1=Preempt
+    /// 2=Exit 3=Block——四值齐；解码归消费方）。
+    pub kind: u8,
+    /// 切入是否为 idle 任务（repr(C) bool 1B 0/1 稳定——布局零漂移与
+    /// 构造点语义零触优先）。
+    pub idle_next: bool,
+    /// 定宽对齐垫（ABI 演进保留，恒 0）。
+    pub _pad: [u8; 6],
+}
+const _: () = assert!(core::mem::size_of::<SwitchRec>() == 24);
+
+/// 唤醒原因 u8 编码（`WakeReason` 消费面子集——`Pending` 是入队初值，
+/// 永不进环；出现即写路径 bug，读侧拒）。自 kernel/src/telemetry.rs 迁此
+/// （telemetry.rs re-export 保 crate 内路径稳定——ktest/user.rs 消费点
+/// 零改）。
+pub const REASON_SIGNALED: u8 = 1;
+/// Timeout 编码（见 [`REASON_SIGNALED`]）。
+pub const REASON_TIMEOUT: u8 = 2;
+
+/// 单条唤醒记录（自 kernel/src/telemetry.rs 迁此单源——字面零改：
+/// vct@0/since_vct@8/wait_obj@16/task_id@24/reason@28/source@29/_pad@30，
+/// 32B 整）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct WakeRec {
+    /// 唤醒时刻 CNTVCT（减 `since_vct` = block→wake 延迟，原始周期数——
+    /// 换算 ns 需快照头 cntfrq，归消费方）。
+    pub vct: u64,
+    /// 入睡时刻 CNTVCT（`block_current` 戳，与 deadline 同屏蔽窗填）。
+    pub since_vct: u64,
+    /// 等待对象标识（0 = 纯 sleep；非 0 = 对象地址——展示端反查归消费方）。
+    pub wait_obj: u64,
+    /// 被唤醒任务 id（名字 FNV-1a-32）。
+    pub task_id: u32,
+    /// 唤醒原因（[`REASON_SIGNALED`]/[`REASON_TIMEOUT`]）。
+    pub reason: u8,
+    /// 唤醒归因源（`WAKE_SRC_*`——环内恒 ∈ 6 真源，wake_check ⑤ 执法）。
+    pub source: u8,
+    /// 定宽对齐垫（ABI 演进保留，恒 0）。
+    pub _pad: [u8; 2],
+}
+const _: () = assert!(core::mem::size_of::<WakeRec>() == 32);
+
+/// 双族环快照头版本（v1 轻头——[`RingsHdrV1`]）。
+pub const RINGS_SNAP_VER: u32 = 1;
+
+/// 双族环快照头（0x84 op=2 出参前 32B——v1 轻头：砍 magic〔op 派发＋
+/// 单源形状已定身份〕、砍 slept_ns/suspend_count〔电源域字段挂起刀再立
+/// ——冻结恒 0 = 伪 ABI 教训〕、砍 generation〔其语义挂烘焙一致像，逐环
+/// 窗语义无执法值——随挂账 8 统一裁决另立〕）。
+///
+/// `hdr_bytes` 是头尾追扩形锚：未来加字段走头尾追，旧消费方按自述跳到
+/// 段区；`cntfrq` 是消费方 vct→ns 换算唯一源（公约 5 归消费方但因子
+/// 内核给，防硬编码伪 ABI）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct RingsHdrV1 {
+    /// 版本（= [`RINGS_SNAP_VER`]）。
+    pub version: u32,
+    /// 头字节数（= 32——头尾追扩形锚，消费方按此跳到段区）。
+    pub hdr_bytes: u32,
+    /// CNTFRQ（vct→ns 换算因子——vct 域换算的唯一真源）。
+    pub cntfrq: u64,
+    /// 环容量（每环槽数——V1 几何 64）。
+    pub ring_len: u64,
+    /// CPU 数（V1 几何 2；消费方按此自适应段数 = 2×族数）。
+    pub ring_cpus: u64,
+}
+const _: () = assert!(core::mem::size_of::<RingsHdrV1>() == 32);
+
+/// 每环段描述符（24B——**紧随其窗口读落笔** ⇒ counts 恒真：count 是实拷
+/// 条数非预探测值，两遍探测法的「头 counts 可撒谎」面结构性不存在）。
+///
+/// `count` 三态算术可区分：空（`total==0`）／降级（`total>0 ∧ count==0`
+/// ∧ 余量足——64 次重试上界后读窗不稳的诚实弃段）／截尾（余量尽，返回
+/// 值自证）。丢包可派生 `total − min(total, ring_len)`（轮转淘汰数）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct RingSegV1 {
+    /// 段族（[`RING_FAMILY_SWITCH`]/[`RING_FAMILY_WAKE`]）。
+    pub family: u32,
+    /// CPU 序号（0..ring_cpus）。
+    pub cpu: u32,
+    /// 该环累计写入数（单调不减——写方限本核）。
+    pub total: u64,
+    /// 段内实含条数（三态见类型注）。
+    pub count: u32,
+    /// 条目字节宽自述（24/32——消费方按此步进条目区）。
+    pub rec_size: u32,
+}
+const _: () = assert!(core::mem::size_of::<RingSegV1>() == 24);
+
+/// V1 几何：每环槽数（kernel `RING_LEN`/`WAKE_RING_LEN` cross-const
+/// assert 同值钉死——拓扑真化/扩容 = 几何 MAJOR 走新 op 值纪律，双改由
+/// 断言强制同批）。
+pub const TELEMETRY_RINGS_V1_RING_LEN: usize = 64;
+
+/// V1 几何：CPU 数（kernel `NCPUS` cross-const assert 同值钉死）。
+pub const TELEMETRY_RINGS_V1_CPUS: usize = 2;
+
+/// op=2 快照满载上界（**字面冻结**：32 头 + 4×24 段 + 2×64×24 切换 +
+/// 2×64×32 唤醒——不随 size_of 动；变长填充下实写由返回值自证，本值是
+/// 内核 stage 与调用方缓冲的容量下界参考）。
+pub const TELEMETRY_RINGS_MAX: usize = 7296;
+
+// ---- 头/段 LE 编解码纯函数（host 钉板 round-trip；kernel 装配与
+// berryctl 解析同引此单源。条目（SwitchRec/WakeRec）按域偏移 LE 手解/
+// 手装——memstat 臂同款，不在本面）----
+
+/// 头 32B LE 编码（[`RingsHdrV1`] → 字节流）。
+pub fn rings_hdr_write(h: &RingsHdrV1, out: &mut [u8; 32]) {
+    out[0..4].copy_from_slice(&h.version.to_le_bytes());
+    out[4..8].copy_from_slice(&h.hdr_bytes.to_le_bytes());
+    out[8..16].copy_from_slice(&h.cntfrq.to_le_bytes());
+    out[16..24].copy_from_slice(&h.ring_len.to_le_bytes());
+    out[24..32].copy_from_slice(&h.ring_cpus.to_le_bytes());
+}
+
+/// 头 32B LE 解码（字节流 → [`RingsHdrV1`]；字段合法性归调用方）。
+pub fn rings_hdr_read(buf: &[u8; 32]) -> RingsHdrV1 {
+    RingsHdrV1 {
+        version: u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]),
+        hdr_bytes: u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]),
+        cntfrq: u64::from_le_bytes([
+            buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15],
+        ]),
+        ring_len: u64::from_le_bytes([
+            buf[16], buf[17], buf[18], buf[19], buf[20], buf[21], buf[22], buf[23],
+        ]),
+        ring_cpus: u64::from_le_bytes([
+            buf[24], buf[25], buf[26], buf[27], buf[28], buf[29], buf[30], buf[31],
+        ]),
+    }
+}
+
+/// 段描述符 24B LE 编码（[`RingSegV1`] → 字节流）。
+pub fn ring_seg_write(s: &RingSegV1, out: &mut [u8; 24]) {
+    out[0..4].copy_from_slice(&s.family.to_le_bytes());
+    out[4..8].copy_from_slice(&s.cpu.to_le_bytes());
+    out[8..16].copy_from_slice(&s.total.to_le_bytes());
+    out[16..20].copy_from_slice(&s.count.to_le_bytes());
+    out[20..24].copy_from_slice(&s.rec_size.to_le_bytes());
+}
+
+/// 段描述符 24B LE 解码（字节流 → [`RingSegV1`]；字段合法性归调用方）。
+pub fn ring_seg_read(buf: &[u8; 24]) -> RingSegV1 {
+    RingSegV1 {
+        family: u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]),
+        cpu: u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]),
+        total: u64::from_le_bytes([
+            buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15],
+        ]),
+        count: u32::from_le_bytes([buf[16], buf[17], buf[18], buf[19]]),
+        rec_size: u32::from_le_bytes([buf[20], buf[21], buf[22], buf[23]]),
+    }
+}
 
 // ---- W3-Q81：环读面（双流 vct 归并/帽律）分模块——见 ringmerge.rs ----
 pub mod ringmerge;
@@ -488,5 +682,139 @@ mod tests {
         assert_eq!(TELEMETRY_OP_KLOG, 0);
         assert_eq!(TELEMETRY_OP_MEMSTAT, 1);
         assert_ne!(TELEMETRY_OP_KLOG, TELEMETRY_OP_MEMSTAT);
+    }
+
+    // ---- op=2 双族环快照：形状/常量/编解码钉板（环读口刀 F4）----
+
+    /// op 常量三值互异（{0,1,2}——add-only 下三档在役值钉死）。
+    #[test]
+    fn telemetry_op_trio_distinct() {
+        assert_eq!(TELEMETRY_OP_RINGS, 2);
+        let trio = [TELEMETRY_OP_KLOG, TELEMETRY_OP_MEMSTAT, TELEMETRY_OP_RINGS];
+        for i in 0..trio.len() {
+            for j in i + 1..trio.len() {
+                assert_ne!(trio[i], trio[j], "op 值撞号（{i} vs {j}）");
+            }
+        }
+    }
+
+    /// SwitchRec 形状钉板：size == 24、字段偏移字面 vct@0/prev@8/next@12/
+    /// kind@16/idle_next@17/_pad@18（自 kernel 迁移零漂——数据域偏移与
+    /// 迁移前隐式尾垫形态逐字节同位）。
+    #[test]
+    fn switch_rec_shape_pinned() {
+        assert_eq!(core::mem::size_of::<SwitchRec>(), 24, "24B 冻结面（挂账 1 断言）");
+        assert_eq!(core::mem::align_of::<SwitchRec>(), 8);
+        assert_eq!(core::mem::offset_of!(SwitchRec, vct), 0);
+        assert_eq!(core::mem::offset_of!(SwitchRec, prev), 8);
+        assert_eq!(core::mem::offset_of!(SwitchRec, next), 12);
+        assert_eq!(core::mem::offset_of!(SwitchRec, kind), 16);
+        assert_eq!(core::mem::offset_of!(SwitchRec, idle_next), 17);
+        assert_eq!(core::mem::offset_of!(SwitchRec, _pad), 18);
+    }
+
+    /// WakeRec 形状钉板：size == 32、七字段偏移字面（迁移字面零改）。
+    #[test]
+    fn wake_rec_shape_pinned() {
+        assert_eq!(core::mem::size_of::<WakeRec>(), 32);
+        assert_eq!(core::mem::align_of::<WakeRec>(), 8);
+        assert_eq!(core::mem::offset_of!(WakeRec, vct), 0);
+        assert_eq!(core::mem::offset_of!(WakeRec, since_vct), 8);
+        assert_eq!(core::mem::offset_of!(WakeRec, wait_obj), 16);
+        assert_eq!(core::mem::offset_of!(WakeRec, task_id), 24);
+        assert_eq!(core::mem::offset_of!(WakeRec, reason), 28);
+        assert_eq!(core::mem::offset_of!(WakeRec, source), 29);
+        assert_eq!(core::mem::offset_of!(WakeRec, _pad), 30);
+    }
+
+    /// 头/段形状钉板：32B/24B、字段偏移字面（version@0/hdr_bytes@4/
+    /// cntfrq@8/ring_len@16/ring_cpus@24；family@0/cpu@4/total@8/count@16/
+    /// rec_size@20——插字段/错序即红）。
+    #[test]
+    fn rings_hdr_seg_shape_pinned() {
+        assert_eq!(core::mem::size_of::<RingsHdrV1>(), 32);
+        assert_eq!(core::mem::align_of::<RingsHdrV1>(), 8);
+        assert_eq!(core::mem::offset_of!(RingsHdrV1, version), 0);
+        assert_eq!(core::mem::offset_of!(RingsHdrV1, hdr_bytes), 4);
+        assert_eq!(core::mem::offset_of!(RingsHdrV1, cntfrq), 8);
+        assert_eq!(core::mem::offset_of!(RingsHdrV1, ring_len), 16);
+        assert_eq!(core::mem::offset_of!(RingsHdrV1, ring_cpus), 24);
+
+        assert_eq!(core::mem::size_of::<RingSegV1>(), 24);
+        assert_eq!(core::mem::align_of::<RingSegV1>(), 8);
+        assert_eq!(core::mem::offset_of!(RingSegV1, family), 0);
+        assert_eq!(core::mem::offset_of!(RingSegV1, cpu), 4);
+        assert_eq!(core::mem::offset_of!(RingSegV1, total), 8);
+        assert_eq!(core::mem::offset_of!(RingSegV1, count), 16);
+        assert_eq!(core::mem::offset_of!(RingSegV1, rec_size), 20);
+    }
+
+    /// family 常量互异（段序判族依据——撞号即族归属撕裂）。
+    #[test]
+    fn ring_family_constants_distinct() {
+        assert_eq!(RING_FAMILY_SWITCH, 0);
+        assert_eq!(RING_FAMILY_WAKE, 1);
+        assert_ne!(RING_FAMILY_SWITCH, RING_FAMILY_WAKE);
+    }
+
+    /// rec_size 域恒等：24/32 == size_of::<SwitchRec>/::<WakeRec>（内核
+    /// 装配写进段描述符的 rec_size 与条目形状恒等——漂移即消费方步进错
+    /// 位）。
+    #[test]
+    fn ring_seg_rec_size_identity() {
+        assert_eq!(core::mem::size_of::<SwitchRec>(), 24);
+        assert_eq!(core::mem::size_of::<WakeRec>(), 32);
+        // V1 几何常量钉板（kernel cross-const assert 同值）。
+        assert_eq!(TELEMETRY_RINGS_V1_RING_LEN, 64);
+        assert_eq!(TELEMETRY_RINGS_V1_CPUS, 2);
+        // 满载上界字面：32 + 4×24 + 2×64×24 + 2×64×32。
+        assert_eq!(
+            TELEMETRY_RINGS_MAX,
+            32 + 4 * 24 + 2 * 64 * core::mem::size_of::<SwitchRec>()
+                + 2 * 64 * core::mem::size_of::<WakeRec>()
+        );
+        assert_eq!(TELEMETRY_RINGS_MAX, 7296);
+    }
+
+    /// 头/段 LE 编解码 round-trip（kernel 装配 ↔ berryctl 解析同一具
+    /// ——中间字节流的字段序/字节序即 ABI 面）。
+    #[test]
+    fn rings_hdr_seg_codec_roundtrip() {
+        let h = RingsHdrV1 {
+            version: RINGS_SNAP_VER,
+            hdr_bytes: 32,
+            cntfrq: 0x0123_4567_89ab_cdef,
+            ring_len: 64,
+            ring_cpus: 2,
+        };
+        let mut buf = [0u8; 32];
+        rings_hdr_write(&h, &mut buf);
+        // 字节序抽查（LE：低字节在前）。
+        assert_eq!(buf[0], 1, "version=1 的 LE 首字节");
+        assert_eq!(buf[4], 32, "hdr_bytes=32 的 LE 首字节");
+        assert_eq!(buf[8], 0xef, "cntfrq 低字节在前（LE）");
+        assert_eq!(rings_hdr_read(&buf), h, "头 round-trip 恒等");
+
+        let s = RingSegV1 {
+            family: RING_FAMILY_WAKE,
+            cpu: 1,
+            total: 0xfeed_face_dead_beef,
+            count: 64,
+            rec_size: 32,
+        };
+        let mut b2 = [0u8; 24];
+        ring_seg_write(&s, &mut b2);
+        assert_eq!(b2[0], RING_FAMILY_WAKE as u8);
+        assert_eq!(b2[8], 0xef, "total 低字节在前（LE）");
+        assert_eq!(ring_seg_read(&b2), s, "段 round-trip 恒等");
+
+        // 空段 round-trip（total=0/count=0 形态——trace_off 空段/降级段的
+        // 编码面：rec_size 自述恒在场）。
+        let z = RingSegV1 { family: 0, cpu: 0, total: 0, count: 0, rec_size: 24 };
+        let mut b3 = [0u8; 24];
+        ring_seg_write(&z, &mut b3);
+        assert_eq!(b3[0..20], [0u8; 20], "空段的 family/cpu/total/count 全零");
+        assert_eq!(&b3[20..24], &24u32.to_le_bytes(), "rec_size 自述恒在场");
+        assert_eq!(ring_seg_read(&b3), z);
     }
 }

@@ -6377,6 +6377,279 @@ fn test_telemetry_open() {
     // len 族负例零改零漂移）。
     assert_eq!(svc4(0x84, 1, &raw mut REC as u64, 0), -22, "TELEMETRY：op=1 len=0 须 -EINVAL");
     assert_eq!(svc4(0x84, 1, &raw mut REC as u64, 8), -22, "TELEMETRY：op=1 len=8（<40）须 -EINVAL");
+
+    // ---- op=2 双族环快照（环读口刀）臂：K1 静止窗种子正例＋K2 截尾/追加/
+    // wrap 因果差分＋K3 负例＋K4 用毕即清（同函数静默盖延续——零输出行，
+    // fail = panic 停机冒烟自然红）----
+    //
+    // 静止窗依据：ktest::run 先于 telemetry::init（main.rs :1007 < :1140）
+    // ——切换/唤醒钩子未注册、四环零写者零并发，telemetry 种子口
+    // pub(crate) 直写合法（test_loadgen「sched::init 前手驱」先例族）。
+    // 种子用毕即清（ktest_reset_rings，K4）封堵种子对 G1.5 双形态断言
+    //（off 臂 total()==0 真空执法 / on 臂分母基线）的污染——清零后 boot
+    // 真数据从初值累计，语义零漂移。
+
+    // 快照缓冲（EL1 内核地址——copy_out 走高半直映分支；满载 7296B 走
+    // static 免栈帽，SNAP 同款本函数族私有静态）。
+    static mut RSNAP: [u8; 7296] = [0; 7296];
+
+    // svc4 全链取一帧环快照（len 门由内核执法——负例直接透传 errno）。
+    fn snap_rings(len: u64) -> i64 {
+        // RSNAP 为本函数族私有静态（ktest 单核窗）；len 走调用点字面
+        //（static mut 字段读不进安全面）——SNAP 正例同形零 unsafe 块。
+        svc4(0x84, 2, &raw mut RSNAP as u64, len)
+    }
+
+    // 快照字节共享读（调用点先以断言钉 n 界）。
+    fn rbuf(n: usize) -> &'static [u8] {
+        // SAFETY: n 由调用点断言钉 ≤ 7296 实写界；仅共享读（svc 同步返回后
+        // 无并发写者——静止窗）。
+        unsafe {
+            &*core::ptr::slice_from_raw_parts(
+                core::ptr::addr_of!(RSNAP) as *const u8,
+                n,
+            )
+        }
+    }
+
+    fn u32le(b: &[u8], o: usize) -> u32 {
+        u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
+    }
+    fn u64le(b: &[u8], o: usize) -> u64 {
+        u64::from_le_bytes([
+            b[o], b[o + 1], b[o + 2], b[o + 3], b[o + 4], b[o + 5], b[o + 6], b[o + 7],
+        ])
+    }
+    // 段描述符解码（telface 编解码纯函数单源——svc 出参按字节流解，不对
+    // 静态缓冲 reinterpret 对齐面）。
+    fn seg_at(b: &[u8], o: usize) -> berry_telface::RingSegV1 {
+        let mut d = [0u8; 24];
+        d.copy_from_slice(&b[o..o + 24]);
+        berry_telface::ring_seg_read(&d)
+    }
+
+    {
+        use berry_hal_aarch64::wake_gen::{WAKE_SRC_SGI_RESCHED, WAKE_SRC_TIMER};
+        use berry_telface::{RingSegV1, SwitchRec, WakeRec};
+
+        // 种子：cpu0 切换三条（vct 递增、kind 覆盖 0/1/3、idle_next 混合）
+        // ＋唤醒两条（reason 1/2 双覆盖、source 真源常量、since_vct < vct）
+        //；cpu1 两环留空对照（空段描述符形态）。
+        let s_seed = [
+            SwitchRec {
+                vct: 1_000, prev: 0x1111_1111, next: 0x2222_2222, kind: 0,
+                idle_next: false, _pad: [0; 6],
+            },
+            SwitchRec {
+                vct: 2_000, prev: 0x2222_2222, next: 0x3333_3333, kind: 1,
+                idle_next: true, _pad: [0; 6],
+            },
+            SwitchRec {
+                vct: 3_000, prev: 0x3333_3333, next: 0x1111_1111, kind: 3,
+                idle_next: false, _pad: [0; 6],
+            },
+        ];
+        let w_seed = [
+            WakeRec {
+                vct: 1_500, since_vct: 1_200, wait_obj: 0, task_id: 0x4444_4444,
+                reason: 1, source: WAKE_SRC_SGI_RESCHED, _pad: [0; 2],
+            },
+            WakeRec {
+                vct: 2_600, since_vct: 2_100, wait_obj: 0xdead_beef, task_id: 0x5555_5555,
+                reason: 2, source: WAKE_SRC_TIMER, _pad: [0; 2],
+            },
+        ];
+        crate::telemetry::ktest_seed_switch(0, &s_seed);
+        crate::telemetry::ktest_seed_wake(0, &w_seed);
+
+        // 段游标自描述走读（canon 序＋各段载荷位——消费方视角的解包律；
+        // 走完游标 == 返回值即「变长填充返回值自证」的钉板形）。
+        fn walk(b: &[u8]) -> ([RingSegV1; 4], [usize; 4]) {
+            let mut segs = [berry_telface::ring_seg_read(&[0u8; 24]); 4];
+            let mut offs = [0usize; 4];
+            let mut cur = 32usize;
+            for i in 0..4 {
+                segs[i] = seg_at(b, cur);
+                offs[i] = cur + 24;
+                cur = offs[i] + segs[i].count as usize * segs[i].rec_size as usize;
+            }
+            (segs, offs)
+        }
+
+        // K1 正例：满载快照恰 264（32 头 + 4×24 段 + 3×24 切换 + 2×32 唤醒）。
+        let n = snap_rings(7296);
+        assert_eq!(n, 264, "TELEMETRY：op=2 快照须恰 264（n={}）", n);
+        let b = rbuf(n as usize);
+        // 头钉板（version/hdr_bytes/几何字面；cntfrq>0 且 == EL1 直调双源）。
+        let mut hb = [0u8; 32];
+        hb.copy_from_slice(&b[..32]);
+        let h = berry_telface::rings_hdr_read(&hb);
+        assert_eq!(h.version, 1, "TELEMETRY：头 version==1");
+        assert_eq!(h.hdr_bytes, 32, "TELEMETRY：头 hdr_bytes==32（头尾追扩形锚）");
+        assert!(h.cntfrq > 0, "TELEMETRY：头 cntfrq 须 >0");
+        assert_eq!(
+            h.cntfrq, berry_hal_aarch64::timer::cntfrq(),
+            "TELEMETRY：cntfrq 双源对拍（svc 出参 == EL1 直调）"
+        );
+        assert_eq!(h.ring_len, 64, "TELEMETRY：ring_len==64");
+        assert_eq!(h.ring_cpus, 2, "TELEMETRY：ring_cpus==2");
+
+        let (segs, offs) = walk(b);
+        assert_eq!(
+            32 + segs.iter().fold(0usize, |a, s| a + 24 + s.count as usize * s.rec_size as usize),
+            n as usize,
+            "TELEMETRY：段游标自描述走完须恰 n"
+        );
+        // 四段描述符钉板：canon 序 family{0,0,1,1}×cpu{0,1,0,1}、count
+        // {3,0,2,0}、total 同种子、rec_size{24,24,32,32}。
+        assert_eq!(segs.map(|s| s.family), [0, 0, 1, 1], "TELEMETRY：段序 family 0,0,1,1");
+        assert_eq!(segs.map(|s| s.cpu), [0, 1, 0, 1], "TELEMETRY：段序 cpu 0,1,0,1");
+        assert_eq!(segs.map(|s| s.count), [3, 0, 2, 0], "TELEMETRY：count 3,0,2,0");
+        assert_eq!(segs.map(|s| s.total), [3, 0, 2, 0], "TELEMETRY：total==种子数");
+        assert_eq!(segs.map(|s| s.rec_size), [24, 24, 32, 32], "TELEMETRY：rec_size 自述");
+
+        // 逐条 LE 解码对拍种子恒等（switch c0：段内旧→新）。
+        for (i, want) in s_seed.iter().enumerate() {
+            let o = offs[0] + i * 24;
+            assert_eq!(u64le(b, o), want.vct, "TELEMETRY：switch[{i}].vct 对拍");
+            assert_eq!(u32le(b, o + 8), want.prev, "TELEMETRY：switch[{i}].prev 对拍");
+            assert_eq!(u32le(b, o + 12), want.next, "TELEMETRY：switch[{i}].next 对拍");
+            assert_eq!(b[o + 16], want.kind, "TELEMETRY：switch[{i}].kind 对拍");
+            assert_eq!(b[o + 17], want.idle_next as u8, "TELEMETRY：switch[{i}].idle_next 对拍");
+            assert_eq!(&b[o + 18..o + 24], &[0u8; 6], "TELEMETRY：switch[{i}]._pad 恒 0");
+        }
+        // 段内 vct 旧→新（单调不减——环写入序钉板）。
+        assert!(
+            u64le(b, offs[0]) <= u64le(b, offs[0] + 24)
+                && u64le(b, offs[0] + 24) <= u64le(b, offs[0] + 48),
+            "TELEMETRY：switch 段内 vct 须旧→新"
+        );
+        // wake c0：逐条对拍＋source 域合法（wake_src_valid 事后审计面）。
+        for (i, want) in w_seed.iter().enumerate() {
+            let o = offs[2] + i * 32;
+            assert_eq!(u64le(b, o), want.vct, "TELEMETRY：wake[{i}].vct 对拍");
+            assert_eq!(u64le(b, o + 8), want.since_vct, "TELEMETRY：wake[{i}].since_vct 对拍");
+            assert!(u64le(b, o + 8) < u64le(b, o), "TELEMETRY：wake[{i}] since_vct < vct");
+            assert_eq!(u64le(b, o + 16), want.wait_obj, "TELEMETRY：wake[{i}].wait_obj 对拍");
+            assert_eq!(u32le(b, o + 24), want.task_id, "TELEMETRY：wake[{i}].task_id 对拍");
+            assert_eq!(b[o + 28], want.reason, "TELEMETRY：wake[{i}].reason 对拍");
+            assert!(crate::telemetry::wake_src_valid(b[o + 29]), "TELEMETRY：wake[{i}].source 须真源");
+            assert_eq!(b[o + 29], want.source, "TELEMETRY：wake[{i}].source 对拍");
+        }
+        assert!(u64le(b, offs[2]) <= u64le(b, offs[2] + 32), "TELEMETRY：wake 段内 vct 须旧→新");
+        // 双源对拍：段 total 之和 == EL1 直调（跨段守恒——装配路径错位即红）。
+        assert_eq!(
+            segs[0].total + segs[1].total,
+            crate::telemetry::total(),
+            "TELEMETRY：switch totals 双源对拍"
+        );
+        assert_eq!(
+            segs[2].total + segs[3].total,
+            crate::telemetry::wake_total(),
+            "TELEMETRY：wake totals 双源对拍"
+        );
+
+        // K2 截尾：len=104 → 返回 104 且 switch c0 count==2（整条粒度拷旧
+        // 端）、其后段整段缺席（余量<24 即止语义钉板——头仍在）。
+        let n = snap_rings(104);
+        assert_eq!(n, 104, "TELEMETRY：len=104 须返回 104（头+单段 2 条）");
+        let b = rbuf(104);
+        // 首段后余量 0 < 24——其后段整段缺席（缺席由 104 == 32+24+2×24
+        // 自证），只解首段与头（walk 四段循环在缺席面会越界，不用）。
+        let s0 = seg_at(b, 32);
+        assert_eq!(s0.count, 2, "TELEMETRY：截尾段 count==2（3 条窗拷 2）");
+        assert_eq!(s0.total, 3, "TELEMETRY：截尾不改 total 照出");
+        assert_eq!(u64le(b, 56), 1_000, "TELEMETRY：截尾保旧端（条 0）");
+        assert_eq!(u64le(b, 56 + 24), 2_000, "TELEMETRY：截尾保旧端（条 1）");
+
+        // K2 追加因果：续种 2 条 → count 5 且旧三条条目级恒等＋新两条在尾
+        //（段描述符含 count/total 使字节前缀恒等不成立——条目级执法修正）。
+        let s_seed5 = [
+            s_seed[0], s_seed[1], s_seed[2],
+            SwitchRec {
+                vct: 4_000, prev: 0x1111_1111, next: 0x4444_4444, kind: 2,
+                idle_next: true, _pad: [0; 6],
+            },
+            SwitchRec {
+                vct: 5_000, prev: 0x4444_4444, next: 0x2222_2222, kind: 0,
+                idle_next: false, _pad: [0; 6],
+            },
+        ];
+        crate::telemetry::ktest_seed_switch(0, &s_seed5);
+        let n = snap_rings(7296);
+        assert_eq!(n, 312, "TELEMETRY：5 条须恰 312（32+4×24+5×24+2×32；n={}）", n);
+        let b = rbuf(n as usize);
+        let (segs, offs) = walk(b);
+        assert_eq!(segs[0].count, 5, "TELEMETRY：追加后 count==5");
+        assert_eq!(segs[0].total, 5, "TELEMETRY：追加后 total==5");
+        for (i, want) in s_seed5.iter().enumerate() {
+            let o = offs[0] + i * 24;
+            assert_eq!(u64le(b, o), want.vct, "TELEMETRY：追加臂 switch[{i}] vct（旧三条恒等＋新两条在尾）");
+            assert_eq!(u32le(b, o + 8), want.prev);
+            assert_eq!(u32le(b, o + 12), want.next);
+            assert_eq!(b[o + 16], want.kind);
+            assert_eq!(b[o + 17], want.idle_next as u8);
+        }
+
+        // K2 wrap：续种至 65 条 → count==64 且最旧条被淘汰（fill_span wrap
+        // 旋转钉板）＋total==65＋丢包派生 total−min(total,ring_len)==1。
+        let mut s65 = [s_seed[0]; 65];
+        for (i, r) in s65.iter_mut().enumerate() {
+            *r = SwitchRec {
+                vct: 1_000 + i as u64 * 1_000,
+                prev: 0x1000_0000 + i as u32,
+                next: 0x2000_0000 + i as u32,
+                kind: (i % 4) as u8,
+                idle_next: i % 2 == 0,
+                _pad: [0; 6],
+            };
+        }
+        crate::telemetry::ktest_seed_switch(0, &s65);
+        let n = snap_rings(7296);
+        assert_eq!(n, 1728, "TELEMETRY：65 条须恰 1728（32+4×24+64×24+2×32；n={}）", n);
+        let b = rbuf(n as usize);
+        let (segs, offs) = walk(b);
+        assert_eq!(segs[0].count, 64, "TELEMETRY：wrap 后 count==64（环容）");
+        assert_eq!(segs[0].total, 65, "TELEMETRY：wrap 后 total==65 照出");
+        assert_eq!(
+            segs[0].total - segs[0].total.min(h.ring_len),
+            1,
+            "TELEMETRY：丢包派生 total−min(total,ring_len)==1（最旧淘汰）"
+        );
+        for i in 0..64 {
+            let o = offs[0] + i * 24;
+            let want = &s65[i + 1]; // 写 #0 被淘汰——段内首条 = 写 #1
+            assert_eq!(u64le(b, o), want.vct, "TELEMETRY：wrap 旋转第 {i} 条须 = 写 #{}（旧→新）", i + 1);
+            assert_eq!(u32le(b, o + 8), want.prev);
+            assert_eq!(b[o + 16], want.kind);
+        }
+
+        // K3 负例：op=2 len 冻结下限门（len<32 → -EINVAL）＋op=3 域外恒
+        // -ENOTSUP（add-only 自执法；既有 op=99 与 op=0/1 族负例零改）。
+        assert_eq!(snap_rings(0), -22, "TELEMETRY：op=2 len=0 须 -EINVAL");
+        assert_eq!(snap_rings(8), -22, "TELEMETRY：op=2 len=8（<32）须 -EINVAL");
+        assert_eq!(snap_rings(31), -22, "TELEMETRY：op=2 len=31（头下限−1）须 -EINVAL");
+        assert_eq!(
+            // RSNAP 私有静态（ktest 单核窗）——SNAP 负例同形零 unsafe 块。
+            svc4(0x84, 3, &raw mut RSNAP as u64, 7296),
+            -95,
+            "TELEMETRY：op=3 域外须 -ENOTSUP"
+        );
+
+        // K4 用毕即清：四环归零 → 快照恰 128（头＋四空段描述符）且段
+        // count/total 全零——封堵种子对 G1.5 断言面的污染（清零后 boot 真
+        // 数据从初值累计，语义零漂移）；rec_size/family/cpu 仍自述。
+        crate::telemetry::ktest_reset_rings();
+        let n = snap_rings(7296);
+        assert_eq!(n, 128, "TELEMETRY：清零后快照须恰 128（头+四空段；n={}）", n);
+        let b = rbuf(128);
+        let (segs, _) = walk(b);
+        assert_eq!(segs.map(|s| s.count), [0, 0, 0, 0], "TELEMETRY：清零后段 count 全零");
+        assert_eq!(segs.map(|s| s.total), [0, 0, 0, 0], "TELEMETRY：清零后段 total 全零");
+        assert_eq!(segs.map(|s| s.rec_size), [24, 24, 32, 32], "TELEMETRY：清零后 rec_size 仍自述");
+        assert_eq!(crate::telemetry::total(), 0, "TELEMETRY：清零后 total()==0（G1.5 off 臂真空基线恢复）");
+        assert_eq!(crate::telemetry::wake_total(), 0, "TELEMETRY：清零后 wake_total()==0");
+    }
 }
 
 /// G5（§1.6-补）：boot-params 消费端纯函数面——newc 定址查找 / TOML 子集
