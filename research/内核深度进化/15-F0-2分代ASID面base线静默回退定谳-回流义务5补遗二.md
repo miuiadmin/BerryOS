@@ -58,4 +58,4 @@ Updated: 2026-11-20
 - 修正对象：[11-vmarface入册清单预备-回流义务6深化-171判例族全量对账.md](11-vmarface入册清单预备-回流义务6深化-171判例族全量对账.md)（触点 4「不复活 asidface 死行」前提错误，修正方向见本件）。
 - 义务来源：[05-base-overhaul回流接缝预研-W3面资产对撞审计.md](05-base-overhaul回流接缝预研-W3面资产对撞审计.md)（回流义务清单单源；本件 = 义务 5 补遗二，F0-2 复活随刀列入回流义务增补项）。
 - 证据单源：合并树 `acbcc8d20280efabf2cd12929d4bb8e8fd7c8dc5`（merge-tree 实跑可复现）；谱系切换点 `7f05be12e`/`3ed0a1d11`/`e022cf3c8`/`1008dcdc7`（`git log --full-history -S` + 第一父链逐树扫描可复现）；overhaul 未触 mm/asid.rs 实证 = `git log fceb03ff3..origin/wip/base-overhaul -- mm/src/asid.rs` 零命中。
-- 沿革：`docs/阶段沿革.md` 六百一十六节（随本批）。
+- 沿革：`docs/阶段沿革.md` 六百一十七节（随本批）。
