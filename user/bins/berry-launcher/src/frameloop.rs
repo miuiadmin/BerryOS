@@ -59,7 +59,7 @@ use berry_appshell as appshell;
 use berry_appproto as ap;
 use berry_guiproto as gp;
 use berry_libc::io::{app_cli_h, self_vmar_h};
-use berry_sys::{berry_channel_recv, berry_channel_send, berry_clock_read, berry_power_off, Handle, BERRY_ERR_AGAIN, CLOCK_REALTIME};
+use berry_sys::{berry_clock_read, berry_power_off, Handle, CLOCK_REALTIME};
 use berry_ui::desc::{IconProps, MsgBuf, Props};
 use berry_ui::hit::PtrEvent;
 use berry_ui::{Msg, NodeId, UiMain};
@@ -68,7 +68,6 @@ use appshell::rpc::{fail, rpc};
 
 use crate::desktop::{self, Desktop, NavNodes, POWER_ARM_WINDOW_NS};
 use crate::icons;
-use crate::inputfeed::{self, Router};
 use crate::settings_io;
 use crate::syspages;
 
@@ -154,6 +153,8 @@ fn note_spawn_ack(smoke: bool, spawn_ok: &mut u32, ack: Option<(bool, u32)>) -> 
 struct LoopHost {
     /// wm/present 客户端端柄（back 键查表/收窗 RPC 面）。
     hw: Handle,
+    /// 键盘导航序列重组器（on_key 键盘刀）。
+    kseq: u8,
     /// 桌面静态面句柄。
     desktop: Desktop,
     /// 冒烟模式（段④ 两标记的唯一门）。
@@ -188,16 +189,9 @@ struct LoopHost {
     /// 避让窗未过——新 spawn 让位 + 渲染让位，见 [`SPAWN_GUARD_NS`]；
     /// deadline 入 extra_deadline 保证到点醒解除）。
     spawn_guard: Option<u64>,
-    /// 输入焦点路由（架构面 B：app 输入 Feeder 注册表 + 手势粘滞 +
-    /// 「回桌面」开关——见 [`inputfeed`] 模块注）。
-    router: Router,
     /// 状态栏时钟续摆：上帧摆字（None = 尚未/永不摆：注入缺席时
     /// REALTIME 恒 -ENOTSUP，本面静默，桌面保持建树时的 12:00 占位）。
     last_clock: Option<[u8; 5]>,
-    /// 键盘序列重组态（[`LoopHost::on_key`](LoopHost#method.on_key)——
-    /// 0 基态 / 1 已收 ESC / 2 已收 ESC `[`；inputd KeyPump 箭头出向 =
-    /// ESC 序列三帧单字节连发，消费侧按帧重组）。
-    kseq: u8,
 }
 
 /// 帧循环入口（W2 面 + K2 自窗账——`hw` = wm 客户端端柄（wm/present 同
@@ -227,6 +221,7 @@ pub fn run(
     let selftest = smoke || berry_clock_read(CLOCK_REALTIME, &mut rt0) != 0;
     let mut host = LoopHost {
         hw,
+        kseq: 0,
         desktop,
         smoke,
         selftest,
@@ -240,9 +235,7 @@ pub fn run(
         click_ready: false,
         power_armed: None,
         spawn_guard: None,
-        router: Router::new(),
         last_clock: None,
-        kseq: 0,
     };
     let cfg = appshell::pump::PumpCfg {
         hw,
@@ -306,7 +299,6 @@ impl appshell::pump::HostHooks for LoopHost {
                         &mut self.spawn_guard,
                         self.hw,
                         self.self_wins,
-                        &mut self.router,
                     ) {
                         // 覆盖态点击门（2026-11-20 桌面点击无反应事故刀）：
                         // v1 无合成器 + 输入单订阅者（事件恒全投 launcher），
@@ -315,7 +307,7 @@ impl appshell::pump::HostHooks for LoopHost {
                         // 后一切 spawn 静默拒「app slots」=「点击无反应」。
                         // 覆盖态点击改收盖（back 键同款 DESTROY + wake 重画）。
                         if self.spawn_ok == 0
-                            || !on_covered_tap(ui, self.hw, &self.self_wins, t_now, &mut self.router)
+                            || !on_covered_tap(ui, self.hw, &self.self_wins, t_now)
                         {
                             // spawn 窗守卫（2026-11-20 应用内全冻事故刀）：
                             // 上一成功 spawn 的 boot/首帧呈现窗内——新 spawn
@@ -333,7 +325,6 @@ impl appshell::pump::HostHooks for LoopHost {
                                 self.smoke,
                                 &mut self.recents_app,
                                 &mut self.spawn_guard,
-                                &mut self.router,
                             ) {
                                 on_click(
                                     *node,
@@ -342,7 +333,6 @@ impl appshell::pump::HostHooks for LoopHost {
                                     self.smoke,
                                     &mut self.recents_app,
                                     &mut self.spawn_guard,
-                                    &mut self.router,
                                 );
                             }
                         }
@@ -506,30 +496,11 @@ impl appshell::pump::HostHooks for LoopHost {
         self.spawn_guard.map_or(false, |dl| appshell::rpc::now() < dl)
     }
 
-    /// 键盘消费面（键盘消费刀 2026-11-20——pump `DEV_KEYBOARD` 分流点
-    /// 直投，`code` = inputd KeyPump 翻译后出向字节，逐帧无按住态）。
-    /// v1 词汇 = 箭头 UP/DOWN 的 ESC 序列（`0x1b '[' 'A'/'B'` 三帧——
-    /// inputd `translate_seq` 出向形态）经 [`crate::keynav`] 重组后翻桌面
-    /// pager：UP=上一页、DOWN=下一页。垂直箭头控水平 pager = inputd
-    /// 出向词汇约束下的映射（LEFT/RIGHT 表外不出向——gui-inputd 负测
-    /// 钉板），v2 扩词汇后可换 C/D finals。
-    ///
-    /// 门与吞面：系统页在树（`tabs.cur != 0`——桌面被 sys 页不透明底
-    /// 盖住，翻页不可见）吞；覆盖态（wmd 表可见非自 APP 窗在场——
-    /// [`Self::covered_by_app`](LoopHost::covered_by_app)）吞：v1 无合
-    /// 成器，翻页重画会把桌面画到 app 像素上面；边界页（page 0 按 UP /
-    /// 末页按 DOWN）无操作。序列失序/表外 final/基态非 ESC 字节吞
-    /// ——[`crate::keynav`] 单源（bsh editor「非 A/B finals 一律吞」同
-    /// 纪律；v1 桌面无文本输入面——syspages Apps Search Input 件的键
-    /// 盘喂入是 v2 面）。翻页收尾 = snap_to + rehang_view（on_msg 翻页/
-    /// nav home 键同款）；wake 归 pump 键帧既有语义（engine_fed 保旧）。
+    /// 键盘导航（on_key 键盘刀——ESC 序列重组后箭头 UP/DOWN 翻桌面页）。
     fn on_key(&mut self, ui: &mut UiMain, code: u8, _ts_ns: u64) {
         let Some(nav) = crate::keynav::seq_step(&mut self.kseq, code) else { return };
         if self.desktop.tabs.cur != 0 {
-            return; // sys 页盖桌面——pager 不可见不翻
-        }
-        if self.covered_by_app() {
-            return; // 覆盖态：桌面重画会盖 app 像素（无合成器）
+            return;
         }
         let delta: i32 = match nav {
             crate::keynav::KeyNav::PagePrev => -1,
@@ -537,117 +508,11 @@ impl appshell::pump::HostHooks for LoopHost {
         };
         let target = self.desktop.pager.page() as i32 + delta;
         if target < 0 || target >= desktop::PAGES as i32 {
-            return; // 边界页无操作
+            return;
         }
         self.desktop.pager.snap_to(ui, target as u8);
         if let Err(e) = desktop::rehang_view(ui, &mut self.desktop) {
             fail(&format!("keynav rehang view err={e:?}"));
-        }
-    }
-
-    /// 指针事件焦点路由门（架构面 B——pump 输入泵前的归属判定）：
-    /// 覆盖态（开关开 ∧ feeder 在席）手势落在应用带 → 投喂对应 app 的
-    /// Feeder（即答/缓冲）并消费；false = 引擎正统路径零扰动。导航带
-    /// （顶/底）恒本地——覆盖态三键逃生门。
-    fn on_input(&mut self, ui: &mut UiMain, ev: &PtrEvent, t_now: u64) -> bool {
-        let _ = t_now;
-        let (vp_w, vp_h) = ui.viewport();
-        let Some(i) = inputfeed::route(&self.router, ev, vp_w, vp_h) else {
-            return false;
-        };
-        let done = ev.phase == gp::PHASE_UP || ev.phase == gp::PHASE_CANCEL;
-        deliver_feeder(&mut self.router, i, *ev);
-        if done {
-            self.router.gesture = None;
-        }
-        true
-    }
-
-    /// 附加等待通道 = 活 feeder 表（app INPUT_POLL 到达即醒——首拍必答
-    /// 面，无 10s IDLE 帽迟滞）。
-    fn aux_handles(&mut self, out: &mut [Handle]) -> usize {
-        let mut n = 0;
-        for f in self.router.feeders.iter().flatten() {
-            if n < out.len() {
-                out[n] = f.h;
-                n += 1;
-            }
-        }
-        n
-    }
-
-    /// feeder 服务拍（每轮回环顶）：drain 新到 INPUT_POLL（arm 位）→
-    /// flush 缓冲（≤3 事件/答）→ 死通道摘除。全非阻塞（EBUSY = 事件丢
-    /// 失容忍——app 侧一问一答时序下罕见防御面）。
-    fn on_aux(&mut self, _ui: &mut UiMain) {
-        let mut dead = [false; inputfeed::FEEDERS_MAX];
-        let mut out = [inputfeed::zero_event(); gp::INPUT_EVENTS_MAX];
-        for i in 0..inputfeed::FEEDERS_MAX {
-            let Some(f) = self.router.feeders[i].as_mut() else { continue };
-            if !f.poll {
-                // 非阻塞收一轮 INPUT_POLL（app 侧 input_arm 同帧形）。
-                let mut buf = [0u8; 8];
-                let mut hout = [0 as Handle; 2];
-                let mut nb = buf.len();
-                let mut nh = hout.len();
-                let s = berry_channel_recv(
-                    f.h,
-                    buf.as_mut_ptr(),
-                    &mut nb,
-                    hout.as_mut_ptr(),
-                    &mut nh,
-                );
-                if s == 0 {
-                    if gp::parse_input_poll_req(&buf[..nb]).is_some() {
-                        f.poll = true;
-                    }
-                    // 非 POLL 帧（协议外）静默丢弃——防御不炸路由。
-                } else if s != BERRY_ERR_AGAIN {
-                    dead[i] = true; // app 退出/通道病态
-                    continue;
-                }
-            }
-            // poll 在席且有缓冲 → 即答一批（≤INPUT_EVENTS_MAX）。
-            if f.poll {
-                let k = f.pop_into(&mut out);
-                if k > 0 {
-                    let mut wes = [inputfeed::to_wire(&out[0]); gp::INPUT_EVENTS_MAX];
-                    for j in 0..k {
-                        wes[j] = inputfeed::to_wire(&out[j]);
-                    }
-                    let mut rep = [0u8; gp::INPUT_REP_MAX];
-                    if let Some(n) = gp::encode_input_events_rep(&mut rep, &wes[..k]) {
-                        let s = berry_channel_send(f.h, rep.as_ptr(), n, core::ptr::null(), 0);
-                        if s != 0 && s != berry_sys::BERRY_ERR_BUSY {
-                            dead[i] = true; // 通道病态（BUSY = 满队容忍丢帧）
-                        }
-                    }
-                    f.poll = false; // 本 poll 已消费（丢帧面事件失联容忍）
-                }
-            }
-        }
-        for (i, d) in dead.iter().enumerate() {
-            if *d {
-                self.router.remove(i);
-            }
-        }
-    }
-}
-
-impl LoopHost {
-    /// 覆盖态判据（键盘翻页门用——`on_covered_tap` 表查询面同款裁剪，
-    /// 不收盖只判在场）：wmd 表可见非自 APP 窗在场 = true；查表失败 =
-    /// false（fail-open 同 `on_covered_tap`——判据病态不连坐桌面常
-    /// 行为）。
-    fn covered_by_app(&mut self) -> bool {
-        let mut req = [0u8; 256];
-        let mut rep = [0u8; 256];
-        let mut rhs = [0 as Handle; 8];
-        let m = gp::encode_wm_table_get_req(&mut req);
-        let (n, _) = rpc(self.hw, &req[..m], &[], &mut rep, &mut rhs);
-        match gp::parse_wm_snapshot_rep(&rep[..n]) {
-            Some(Ok(snap)) => covering_app_win(&snap, &self.self_wins).is_some(),
-            _ => false,
         }
     }
 }
@@ -775,15 +640,8 @@ fn covering_app_win(snap: &gp::WmSnapshot, self_wins: &[u16; 2]) -> Option<u16> 
 /// 覆盖残留像素）后消费本次点击；无覆盖/查表失败 = false（回落原点击
 /// 面——fail-open，覆盖判据病态不连坐桌面常行为）。DESTROY 失败
 /// eprintln 诊断（窗口表与像素面失联的异常面），仍 wake 仍消费（防同拍
-/// 连击再落 spawn 面把失败面放大）。收盖拍同步「回桌面」复位（焦点
-/// 路由停喂——桌面回前台）。
-fn on_covered_tap(
-    ui: &mut UiMain,
-    wm_h: Handle,
-    self_wins: &[u16; 2],
-    t_now: u64,
-    router: &mut Router,
-) -> bool {
+/// 连击再落 spawn 面把失败面放大）。
+fn on_covered_tap(ui: &mut UiMain, wm_h: Handle, self_wins: &[u16; 2], t_now: u64) -> bool {
     let mut req = [0u8; 256];
     let mut rep = [0u8; 256];
     let mut rhs = [0 as Handle; 8];
@@ -800,7 +658,6 @@ fn on_covered_tap(
         eprintln!("launcher: covered destroy id={} st={}", wid, rep[0]);
     }
     let _ = n;
-    router.retire();
     ui.wake(t_now);
     true
 }
@@ -837,7 +694,6 @@ fn on_nav_click(
     guard: &mut Option<u64>,
     wm_h: Handle,
     self_wins: [u16; 2],
-    router: &mut Router,
 ) -> bool {
     let nav = desktop.nav;
     let snap_page = |ui: &mut UiMain, desktop: &mut Desktop, target: u8| {
@@ -880,9 +736,6 @@ fn on_nav_click(
                 eprintln!("launcher: back destroy st={}", rep[0]);
             }
             let _ = n;
-            // 「回桌面」复位（焦点路由刀）：back 收应用 = 桌面回前台——
-            // 输入路由停喂（不可见 app 不再吃应用带点击）。
-            router.retire();
         } else if desktop.tabs.cur != 0 {
             // R1：非桌面 tab = 回桌面 tab（sys 页在树先摘——桌面整面回显
             //）；同拍不做页翻（一 back 一义）。
@@ -906,7 +759,7 @@ fn on_nav_click(
                 eprintln!("launcher: recents skip (spawn guard)");
                 *recents = Some(app); // 守卫窗内不重拉——记忆保留
             } else {
-                spawn_by_id(&app, guard, router);
+                spawn_by_id(&app, guard);
             }
         }
         true
@@ -936,9 +789,6 @@ fn on_nav_click(
         }
         if destroyed {
             ui.wake(t_now);
-            // 「回桌面」复位（焦点路由刀——back 同款）：home 收批 = 桌面
-            // 回前台，输入路由停喂。
-            router.retire();
         }
         // 原回桌面语义：sys 页在树先回桌面 tab（R1 同律）；再落翻页回
         // page 0。
@@ -994,33 +844,9 @@ pub struct RecentsApp {
     pub id_len: u8,
 }
 
-/// 投喂一事件到 feeder（on_input 路由拍）：poll 在席 = 即答单事件帧
-/// （inputd 应答同帧形）；未在席 = 缓冲（满丢最旧）。BUSY/错码 = 事件
-/// 丢失容忍（一问一答时序下罕见防御面——不杀 launcher）。
-fn deliver_feeder(router: &mut Router, i: usize, ev: PtrEvent) {
-    let Some(f) = router.feeders[i].as_mut() else { return };
-    if f.poll {
-        let w = inputfeed::to_wire(&ev);
-        let mut rep = [0u8; gp::INPUT_REP_MAX];
-        if let Some(n) = gp::encode_input_events_rep(&mut rep, &[w]) {
-            let _ = berry_channel_send(f.h, rep.as_ptr(), n, core::ptr::null(), 0);
-        }
-        f.poll = false;
-    } else {
-        f.push(ev);
-    }
-}
-
 /// 按 id spawn（on_click 与多任务键重拉共用）。回执记账返回 ok 与否；
-/// ok 时落 spawn 窗守卫（[`SPAWN_GUARD_NS`]——新 spawn/渲染让位窗起算）
-/// + 输入 Feeder 注册（ack 随行柄——焦点路由开关随注册置位）。
-fn spawn_by_id_inner(
-    id: &[u8],
-    smoke: bool,
-    spawn_ok: &mut u32,
-    guard: &mut Option<u64>,
-    router: &mut Router,
-) -> bool {
+/// ok 时落 spawn 窗守卫（[`SPAWN_GUARD_NS`]——新 spawn/渲染让位窗起算）。
+fn spawn_by_id_inner(id: &[u8], smoke: bool, spawn_ok: &mut u32, guard: &mut Option<u64>) -> bool {
     let h = app_cli_h();
     if h == 0 {
         return false; // 冻结相：app 通道结构性缺席
@@ -1030,18 +856,8 @@ fn spawn_by_id_inner(
     let mut rhs = [0 as Handle; 8];
     match ap::encode_spawn_request(&mut req, id) {
         Some(m) => {
-            let (n, nh) = rpc(h, &req[..m], &[], &mut rep, &mut rhs);
+            let (n, _) = rpc(h, &req[..m], &[], &mut rep, &mut rhs);
             let ack = ap::parse_spawn_ack(&rep, n);
-            // 输入 Feeder 注册（ack 随行首柄——ok 形才有；满表 loud 关收
-            // 该 app 静态页续活）。注册即焦点开关置位（v1 单可见 app）。
-            if let Some((true, _)) = ack {
-                if nh >= 1 && rhs[0] != 0 {
-                    if !router.register(rhs[0]) {
-                        eprintln!("launcher: feeder 表满——app {} 输入降级静态页", core::str::from_utf8(id).unwrap_or("?"));
-                        appshell::rpc::close_h(rhs[0]);
-                    }
-                }
-            }
             // 失败回执 loud 诊断（2026-11-20 事故刀：正常 boot 的失败 ack
             // 原被静默吞——svcmgr 槽满（APP_SPAWN_LIVE_MAX=4）连环拒「app
             // slots」时用户零反馈 =「点击无反应」。err 值域 = svcmgr
@@ -1085,9 +901,9 @@ fn spawn_by_id_inner(
 }
 
 /// 多任务键重拉入口（无 smoke 标记面——正常交互路径）。
-fn spawn_by_id(id: &RecentsApp, guard: &mut Option<u64>, router: &mut Router) {
+fn spawn_by_id(id: &RecentsApp, guard: &mut Option<u64>) {
     let mut n = 0u32;
-    if !spawn_by_id_inner(&id.id[..id.id_len as usize], false, &mut n, guard, router) {
+    if !spawn_by_id_inner(&id.id[..id.id_len as usize], false, &mut n, guard) {
         eprintln!("launcher: recents respawn failed");
     }
 }
@@ -1109,7 +925,6 @@ fn on_sys_click(
     smoke: bool,
     recents: &mut Option<RecentsApp>,
     guard: &mut Option<u64>,
-    router: &mut Router,
 ) -> bool {
     match desktop.tabs.cur {
         1 => {
@@ -1147,7 +962,7 @@ fn on_sys_click(
             }
             match hit_app.and_then(|idx| icons::registry().get(idx)) {
                 Some(entry) => {
-                    if spawn_by_id_inner(entry.id_bytes(), smoke, spawn_ok, guard, router) {
+                    if spawn_by_id_inner(entry.id_bytes(), smoke, spawn_ok, guard) {
                         let mut id = [0u8; 24];
                         let src = entry.id_bytes();
                         let n = src.len().min(24);
@@ -1223,7 +1038,6 @@ fn on_click(
     smoke: bool,
     recents: &mut Option<RecentsApp>,
     guard: &mut Option<u64>,
-    router: &mut Router,
 ) {
     let slot = desktop
         .slots
@@ -1234,7 +1048,7 @@ fn on_click(
     let Some(slot) = slot else { return }; // 壁纸/状态栏/圆点/容器白区 = 无格
     let Some(idx) = slot.app else { return }; // 占位/幽灵格不可 spawn
     let Some(entry) = icons::registry().get(idx) else { return };
-    if spawn_by_id_inner(entry.id_bytes(), smoke, spawn_ok, guard, router) {
+    if spawn_by_id_inner(entry.id_bytes(), smoke, spawn_ok, guard) {
         // 多任务键记忆：spawn 成功才记账（失败不占 recents 槽）。
         let mut id = [0u8; 24];
         let src = entry.id_bytes();
