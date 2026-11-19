@@ -586,6 +586,9 @@ pub fn parse_keys_listing(data: &[u8]) -> R<(String, [u8; PK_LEN], bool)> {
 
 mod sha512;
 
+/// 二刀（berry-sign 面）：发现序 + 子进程封装 + 索引签名/验签单点缝。
+pub mod sign;
+
 /// SHA-512/256 摘要（= BSIG 链 bap_digest 同算法——envelope.rs :68/
 /// sha512::digest256）。自持实现零依赖（mkapp SHA-256 同款纪律）；NIST
 /// 向量钉板见 tests。

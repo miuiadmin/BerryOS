@@ -1130,10 +1130,14 @@ test-host:
     # Rust 件 lib 纯面测试（TLV 索引编码/解析 canonical 单形 + 源钥清单
     # 冻结行格式 + 自持 SHA-512/256——Python 现役件 build_index/
     # parse_index/build_keys_listing 五组黄金形字节恒等对拍 + 拒面文案
-    # 全等 + NIST 向量钉板）。独立小工作区，须显式 --target {{host}}。
+    # 全等 + NIST 向量钉板）。二刀（berry-sign 面）：src/sign.rs 发现序/
+    # 子进程封装/sign_index 单点缝/verify_index_signature 三态 +
+    # tests/sign_parity.rs oracle 真流对拍（签名字节恒等 + 验签三态
+    # 双侧同构 + unsigned 降级注全等；berry-sign 缺席 skip 纯面兜底）。
+    # 独立小工作区，须显式 --target {{host}}。
     # 产线现役件仍 python3 tools/gensourceindex.py（上方 --selftest 行
-    # 同挂），后续刀（berry-sign 面/product 派生/CLI）依彻底Rust化计划
-    # §4 刀序推进后再换轨。
+    # 同挂），后续刀（CLI/product 派生）依彻底Rust化计划 §4 刀序推进
+    # 后再换轨。
     cargo test --manifest-path tools/gensourceindex/Cargo.toml --target {{host}}
     # W1 接线（SEC-02 A2 同款纪律）：berry_assemble 门禁自检——V13 组装器
     # （ADR #82「组装不 fork」product.toml 校验/dry-run 计划/装配反回滚门）

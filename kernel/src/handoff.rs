@@ -215,9 +215,15 @@ pub fn init_segs<'a>(h: &'a BerryHandoff, hpa: usize) -> Option<&'a [InitSeg]> {
     if n > INIT_SEGS_MAX {
         return None;
     }
-    // 同页自相对基址（gate 内 expect 比对）：按 version 分派 v2 @176/v1
-    // @128——描述符数组随 handoff 同页（单页自含），基址即头后。
-    let base_off: u64 = if h.version >= 2 { 176 } else { 128 };
+    // 同页自相对基址（gate 内 expect 比对）：按 version 分派 v3 @232/v2
+    // @176/v1 @128——描述符数组随 handoff 同页（单页自含），基址即头后。
+    let base_off: u64 = if h.version >= 3 {
+        berry_hofface::SEGS_BASE_OFF_V3
+    } else if h.version == 2 {
+        berry_hofface::SEGS_BASE_OFF_V2
+    } else {
+        berry_hofface::SEGS_BASE_OFF_V1
+    };
     let base_pa = (hpa as u64).checked_add(base_off)?;
     if h.init_segs_pa != base_pa {
         return None;
