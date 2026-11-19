@@ -235,8 +235,10 @@ fn main() -> ExitCode {
     for (local, fat_path) in [
         (efi, b"/EFI/BOOT/BOOTAA64.EFI".as_slice()),
         (hello, b"/HELLO.TXT".as_slice()),
-        (kernel, b"/KERNEL.ELF".as_slice()),
-        (initrd, b"/INITRD.BIN".as_slice()),
+        // G0 刀 1 双槽模式：A 槽也走槽名（KERNELA.ELF）——slot crate
+        // arbitrate 槽 0 返此名；旧单槽盘（无 --kernel-b）仍写 KERNEL.ELF。
+        (kernel, if kernel_b.is_some() { b"/KERNELA.ELF".as_slice() } else { b"/KERNEL.ELF".as_slice() }),
+        (initrd, if kernel_b.is_some() { b"/INITRDA.BIN".as_slice() } else { b"/INITRD.BIN".as_slice() }),
     ] {
         match std::fs::read(local) {
             Ok(data) => {

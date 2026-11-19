@@ -52,12 +52,12 @@ def _find_kernel(root: Path) -> Path:
         return root / "target-local/aarch64-unknown-none/debug/berry-kernel"  # 缺件路径供报错
     return candidates[0]
 
-def check_artifacts(root: Path) -> dict[str, Path]:
+def check_artifacts(root: Path, explicit_kernel=None) -> dict[str, Path]:
     """产物就位检查——缺件即 loud 退场。"""
     artifacts = {}
     checks = {
         "berryboot_efi": root / "bootloader/berryboot/out/BERRYBOOT.EFI",
-        "kernel_elf": _find_kernel(root),
+        "kernel_elf": Path(explicit_kernel) if explicit_kernel else _find_kernel(root),
         "rootfs_cpio": root / "rootfs.cpio",
     }
     for name, path in checks.items():
@@ -108,6 +108,7 @@ def main():
     parser.add_argument("--sign-key", help="签名私钥路径（HSM 代理或本地 dev 键）")
     parser.add_argument("--trust-pk", help="信任公钥路径")
     parser.add_argument("--skip-sign", action="store_true", help="跳过签名（dev 模式）")
+    parser.add_argument("--kernel", help="内核 ELF 显式路径（推荐——发现序有跨 lane 污染风险）")
     parser.add_argument("--size-mib", type=int, default=192,
                        help="盘容量 MiB（默认 192——双槽+双 rootfs）")
     args = parser.parse_args()
@@ -116,7 +117,7 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print("=== releng_pack: 产物就位检查 ===")
-    arts = check_artifacts(root)
+    arts = check_artifacts(root, getattr(args, "kernel", None))
 
     print("=== 尺寸门 ===")
     gates_pass = True
