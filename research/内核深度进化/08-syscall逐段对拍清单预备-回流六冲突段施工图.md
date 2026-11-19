@@ -57,4 +57,4 @@ base `vmar.map(crate::mm::frames(), vmo, ..., Perm::UserRw)`（v1 恒 RW 映射�
 - 义务来源（回流总图）：[05-base-overhaul回流接缝预研-W3面资产对撞审计.md](05-base-overhaul回流接缝预研-W3面资产对撞审计.md)——本件把其义务 5「逐段 Q 号锚点对拍」落为六段施工图。
 - 姊妹件：[06-recv_n重放形态预研-ChannelShared接缝审计.md](06-recv_n重放形态预研-ChannelShared接缝审计.md)（recv 侧重放六接缝，与段 5/6 同批施工）；[07-vslotface归并裁定预备-三查判序两形恒等性对拍审计.md](07-vslotface归并裁定预备-三查判序两形恒等性对拍审计.md)（义务 2 裁定）。
 - 证据单源：合并树 `d3f2ae24257da5a612c798fbcd8d61dfb3ac07a4`（merge-tree 实跑可复现：`git merge-tree --write-tree --merge-base=fceb03ff3 origin/wip/base-overhaul origin/wip/sched-1.1`）；六段提取与两侧形状对照全文存 W3 工作区 scratch（q115/）。
-- 沿革：`docs/阶段沿革.md` 六百零七节（随本批）。
+- 沿革：`docs/阶段沿革.md` 六百零八节（随本批；原拟六百零七，随 base W2-Q203 合入让号）。
