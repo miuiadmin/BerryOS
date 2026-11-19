@@ -41,8 +41,6 @@ pub const NR_VMAR_ALLOCATE: usize = 0x19;
 pub const NR_VMO_GET_SIZE: usize = 0x1A;
 /// P6 A-3（用户态 DMA 面：virtqueue 描述符地址是 guest PA，驱动须能查自己 VMO 页的后备；无 IOMMU 板上 PA 披露面 = 已授 MMIO 窗口的设备本可 DMA 全内存，v1 接受并文档化——IOMMU/SMMU 随 `安全与硬件隔离设计-v1.0.md`）。
 pub const NR_VMO_GET_PHYS: usize = 0x1B;
-/// F0-4（DMA 缓存同步：按 CTR_EL0.DminLine 对已提交物理页直映地址执行 `dc cvac` / `dc civac` + `dsb sy`）。
-pub const NR_VMO_CACHE_OP: usize = 0x1C;
 /// G4-2 首形（§5-③ 裁决）＝阻塞收货：无武装缺页请求时 poll-first 后睡 pager
 /// 裸键，fault 探针武装 EL0 请求槽 + 唤醒即递送——ADR #9 缺页路径零分配。供给 =
 /// pt_lock 窗 commit + 填叶 + tlbi/broadcast（vmar_map 同款）+ 唤 faulter。
@@ -104,6 +102,8 @@ pub const NR_CHANNEL_SEND: usize = 0x52;
 pub const NR_CHANNEL_RECV: usize = 0x53;
 /// 3-4c 落地：`options` 恒 0（非 0 → -EINVAL），授 SIGNAL|DUPLICATE。
 pub const NR_EVENT_CREATE: usize = 0x54;
+/// W3-Q97 add-only 加号（先例 0x21/0x23/0x24/0x83/0x84/0x88）：排空式批量 recv。槽距常量 `RECV_N_SLOT_STRIDE` = 304B（berry-chanface recvn 模块单源，kernel/user 两端消费——头 16B〔nbytes/nhandles 出参〕+ 载荷 256B〔CHAN_MSG_MAX〕+ handle 值 32B〔CHAN_HND_MAX×4〕）；批量帽 RECV_N_MAX = 16（2×CHAN_DEPTH——队列深两倍，一次批量窗必能排空任意满队）。判据面 = chanface recvn host 钉板（k 域/槽地址/唤醒判）。
+pub const NR_CHANNEL_RECV_N: usize = 0x57;
 pub const NR_CLOCK_READ: usize = 0x61;
 /// SEC-01 §4.5 件 11（2026-10）：号位按在册模式冻结预留（度量链零实现——底料 SEC-3；防 ABI 冻结后再挤号）；ktest B 段「在册未实现真号」-ENOTSUP 样本挂 kernel 解冻（ktest.rs 兄弟 WIP 冻结中；沿用既有纪律勿拿未知号 0x99 冒充——二者 -ENOTSUP 成因不同）。
 pub const NR_BERRY_ATTEST: usize = 0x85;
@@ -130,18 +130,6 @@ pub const CHAN_OPT_NO_INTENT: u64 = 1 << 0;
 /// 门权）。映射走 vmar_map 对象级分流 map_demand（首触缺页由 EL0 pager 供给）。
 /// 其余位保留（非 0 尾 → -EINVAL，options 纪律）。
 pub const VMO_OPT_DEMAND: u64 = 1 << 0;
-/// `vmo_create` options bit1（F0-4）：物理连续 DMA 后备 VMO——创建时按 2 的幂阶
-/// 立即分配物理连续页块并清零钉死（禁止与 `VMO_OPT_DEMAND` 混用，禁止 `decommit`）。
-pub const VMO_OPT_CONTIGUOUS: u64 = 1 << 1;
-/// `vmo_create` options bit2（F0-4）：DMA 物理页钉死标志——置位对象禁止
-/// `vmo_decommit`（返 `-ENOTSUP`），直至句柄全关无映射销毁。
-pub const VMO_OPT_PINNED: u64 = 1 << 2;
-/// `vmo_cache_op` op bit0（F0-4）：DMA 发送前将数据缓存脏行刷至一致性点 PoC（`dc cvac` + `dsb sy`，需 `RIGHT_READ`）。
-pub const VMO_CACHE_OP_CLEAN: u64 = 1 << 0;
-/// `vmo_cache_op` op bit1（F0-4）：DMA 接收前失效数据缓存至 PoC（内核以 `dc civac` + `dsb sy` 保非对齐行安全，需 `RIGHT_WRITE`）。
-pub const VMO_CACHE_OP_INVALIDATE: u64 = 1 << 1;
-/// `vmo_cache_op` op bit2（F0-4）：DMA 双向缓冲刷脏并失效至 PoC（`dc civac` + `dsb sy`，需 `RIGHT_WRITE`）。
-pub const VMO_CACHE_OP_CLEAN_INVALIDATE: u64 = 1 << 2;
 
 // ---- rights 位（`能力模型设计.md` §2；位表冻结，未消费位全量在册）----
 pub const RIGHT_READ: Rights = 1 << 0;
