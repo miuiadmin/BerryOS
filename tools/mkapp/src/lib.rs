@@ -71,6 +71,9 @@ pub mod byi;
 /// `_verify_sums` 镜像 + 自持 SHA-256）。
 pub mod cpio;
 
+/// W1-Q27 六刀：`--check` 五步复验面（`check_bap` 镜像）。
+pub mod check;
+
 /// W1-Q27 五刀：build 编排面（Python `build()` 镜像——staging 走查 →
 /// 门禁 → abi 打戳 → SHA256SUMS → cpio 落盘 + 摘要行）+ 产链换轨件。
 pub mod build;
