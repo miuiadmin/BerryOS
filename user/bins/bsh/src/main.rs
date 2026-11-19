@@ -1,4 +1,4 @@
-//! bsh —— P5 A-2 交互 shell（`docs/shell设计-v1.0.md` v0 最小面 + v0.5 管道，
+//! bsh —— P5 A-2 交互 shell（`docs/shell设计-v1.1.md` v0 最小面 + v0.5 管道，
 //! stdhello 同链：musl target + berry-libc shim + berry-exec 流式拉起）。
 //!
 //! 通道拓扑（boot 手搭，见 main.rs A-2 段）：fd0 = endB2（console 转发键盘
@@ -13,7 +13,7 @@
 //! 空读（libc 10s 帽超时 EOF 化）= 噪声，静默续读不重刷 prompt。
 //!
 //! P5 v0.5 管道（`PIPE ok` = rootfs 相第 10 标记）：`A | B` 相邻段间 channel
-//! 对当 pipe（前段 stdout = 写端 / 后段 stdin = 读端，`docs/shell设计-v1.0.md` §2.2
+//! 对当 pipe（前段 stdout = 写端 / 后段 stdin = 读端，`docs/shell设计-v1.1.md` §2.2
 //! 「channel 即 pipe」）——自验三跑对拍：`hexyl | hexyl` 管道输出 == 同字节
 //! 直喂 `hexyl` 参照**逐字节全等**（证明管道把 A 的 stdout 原样递到 B 的
 //! stdin）+ 全链 EOF 到齐才打标。
@@ -63,17 +63,36 @@
 //! 帽），详见 [`collect_fg`] 头注。打字-ahead（等待期收走的非 0x03 字节）
 //! 进 [`TYPEAHEAD`] 缓存，交互循环先于 stdin 消化——不丢键。
 //!
+//! 作业控制 v2 刀（2026-11-19，`&` 后台作业 + jobs/kill + `$!`）：run_line
+//! 入口整行尾缀 `&` 剥离（berry-jobs `strip_bg`——展开前原始文本操作符识别
+//! 纪律同 `&&`/`|`/`>`；false 路径逐字节恒等），bg 整行进 [`exec_bg`]——
+//! v2 安全子集＝**单段外部命令异步**（赋值/链/管道/重定向/内建五类拒形，
+//! POSIX list 语义偏差记面；一棵 Job＝一条管道的整树机制归 3.0）。后台
+//! stdout＝`console_h()` 直打（无采集面；承载前提＝berry-exec gift[0] 授位
+//! 掩码 +RIGHT_DUPLICATE——内核双门「源柄 DUP 门 × 永不增权」下沿 spawn
+//! 链自举）。pid→handle 解析面＝bsh 自持 job 表（[`JOBS`]，JOBS_MAX=8：
+//! 内核 ABI 全表无 pid 号位、ps 账本只登 svcmgr/boot 产进程——三选一唯此
+//! 路通且零内核零 ABI）。`jobs` 先扫荡后列示 / `kill %n` terminate(143)
+//! inline 收割（128+15 惯例码，与 Ctrl-C 130 同构异值）；`$!` 载作业号
+//! （未设展开空串）；exit 收杀 terminate(129)+1s 短帽（本系统孤儿不可寻
+//! 不可杀，放任＝berry-term respawn 循环下 wedged 孤儿占 PROCESS_MAX=64
+//! 永久累积）；Ctrl-C 维持只杀前台（collect_fg 冻结面零触碰——后台作业
+//! 不进前台 kill 集）；通报时机＝下条命令前（Line 臂 [`job_sweep`]——
+//! bash 哑终端本真行为）。
+//!
 //! v1 内建：help / echo / env / run / exit / cat / ls / mkdir / rm / cd / pwd / inputpoll（GUI-4 段② input 域 POLL 消费端）
 //! + 命令行体验刀六件：clear / uname / uptime / sleep / type / history
 //!（单源 [`BUILTINS`]；`--no-selftest` argv 旗 = 子 bsh 跳链直进交互循环
 //!——term_selftest 哑终端驱动面）+ v2 B3 第 20 件 unset（变量生命周期
 //!闭环——赋值/覆盖/撤销）+ export 面刀第 21 件 export（全导出语义——
-//! vars 单表即导出集，赋值/覆盖/撤销/传递子进程四环闭合）。（Plan B
+//! vars 单表即导出集，赋值/覆盖/撤销/传递子进程四环闭合）+ 作业控制 v2
+//! 刀第 22/23 件 jobs/kill（`&` 后台/jobs 列示/kill %n/`$!`/退出收杀
+//! 五联动）。（Plan B
 //! v0.5：`exit` 经 std::process::exit
 //! → libc `exit` → 0x33 真退出）。`run` 后 `reap()` 完整回收子进程（Plan B
 //! 前「每次 run 泄漏一个 park 中的子进程」的旧常态退役）。
 //!
-//! P5 v0 收官（`docs/shell设计-v1.0.md` §2.3/§2.5）：**环境变量**（shell 局部变量表 +
+//! P5 v0 收官（`docs/shell设计-v1.1.md` §2.3/§2.5）：**环境变量**（shell 局部变量表 +
 //! `$NAME`/`$?` 展开 + `env` 内建；子进程 env 传递已落——processargs v1.1
 //! bootstrap 通道第二消息（spawn 产点组 [`build_export_set`] 全导出集喂
 //! spec.env）+ `export` 第 21 内建（裸形/`-p` 与 env 同渲染、`K=V` 赋值
@@ -91,7 +110,7 @@
 
 use std::io::{Read, Write};
 
-use berry_libc::io::{close, fs_h, input_h, netd_h, read, rootfs_h, stdin_h, write};
+use berry_libc::io::{close, console_h, fs_h, input_h, netd_h, read, rootfs_h, stdin_h, write};
 use berry_libc::{
     EACCES, EEXIST, EIO, EISDIR, EINVAL, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY, EPERM,
 };
@@ -103,7 +122,8 @@ use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_event_create,
     berry_handle_close, berry_handle_duplicate, berry_object_signal, berry_object_wait_many,
     berry_object_wait_one, berry_process_terminate, berry_signal_send,
-    berry_telemetry_klog_snapshot, Handle, BERRY_ERR_AGAIN,
+    berry_telemetry_klog_snapshot, berry_telemetry_memstat_snapshot, Handle, MemstatRec,
+    BERRY_ERR_AGAIN,
     BERRY_ERR_BAD_STATE, BERRY_ERR_BUSY, CLOCK_MONOTONIC, RIGHT_READ, RIGHT_RECV, RIGHT_SEND,
     RIGHT_TRANSFER, SIGNAL_READABLE, SIGNAL_TERMINATED, SIGNAL_WRITABLE,
 };
@@ -200,6 +220,46 @@ fn typeahead_pop() -> Option<u8> {
             Some(v.remove(0))
         }
     }
+}
+
+/// B6 `$!` 载体：最后一次后台作业号（-1＝未设——展开空串，POSIX 未设
+/// 语义）。载值＝作业号非真 pid（系统无 pid 面、libc kill 非 self 恒
+/// ESRCH 零消费者——POSIX 偏差影响面约 0 记面）；恒粘不随表回收改写
+/// （表号可复用、$! 记最后一次值，裁决 9）。`int_armed` 访问器先例同款。
+static mut BG_LAST: i32 = -1;
+
+fn bg_last() -> i32 {
+    // SAFETY: bsh 单线程（main 独占）；无并发写者。
+    unsafe { core::ptr::addr_of_mut!(BG_LAST).read() }
+}
+
+fn bg_last_set(n: i32) {
+    // SAFETY: 同上。
+    unsafe {
+        *core::ptr::addr_of_mut!(BG_LAST) = n;
+    }
+}
+
+/// B3 job 表条目：剥离后 trimmed 文本（登记/列示/通报渲染单源）＋子句柄。
+/// [`ChildHandles`] 无 Drop——一切出表路径必须 reap（kill/通报扫荡/exit
+/// 三点全覆盖，漏收即有界泄漏警告面）。
+struct JobEntry {
+    n: u32,
+    cmd: String,
+    child: ChildHandles,
+}
+
+/// B3 job 表：bsh 自持 pid→handle 解析面（裁决 7）。`static mut` + 访问器
+/// （[`TYPEAHEAD`] 单线程纪律同款——std 单线程，v1 无 pthread 面）；容量
+/// ＝berry-jobs `JOBS_MAX`（8 job hp + 1 前台 hp 远低 per-parent 24 柄，
+/// G5 资源账）。编号＝`alloc_id` 最低空位（1 起，出表让位回收复用）。
+static mut JOBS: Vec<JobEntry> = Vec::new();
+
+/// job 表访问器（B3；返回 `&'static mut`——单线程无重入调用点，逐语句
+/// 取用不跨调用持有）。
+fn jobs() -> &'static mut Vec<JobEntry> {
+    // SAFETY: bsh 单线程（main 独占）；无并发写者。
+    unsafe { &mut *core::ptr::addr_of_mut!(JOBS) }
 }
 
 fn main() {
@@ -334,13 +394,15 @@ fn main() {
     //    gift spawn），排 fat 族前（EFI 路无盘亦打 SIG）；无拓扑降级门
     //    （失败即 park loud）。
     sig_selftest();
-    // —— 命令行体验刀 + v2 B 域 + export 面刀：内建与语义步自验（`CLI ok
-    //    n=11` = rootfs 相第 55 标记；B 域起 6→10——⑥ `>>`/⑦ `||`/⑧
-    //    unset/⑨ 管道参数四族步；export 面刀 ⑩ 第 21 内建步 10→11）。
-    //    链序契约同 U2/MMP/CLK/SIG——⑥ 走 RAM 树 fs
-    //    面（u4 先例同款，非盘面）、⑨⑩ 走 spawn（bin/fail/true/echo/grep
-    //    /env 现档），排 fat 族之前（EFI 路无盘亦打 CLI——smoke-image ECO
-    //    canon 同面）；无拓扑降级门（失败即 park loud）。
+    // —— 命令行体验刀 + v2 B 域 + export 面刀 + 作业控制 v2 刀：内建与语义
+    //    步自验（`CLI ok n=13` = rootfs 相第 55 标记；B 域起 6→10——⑥ `>>`
+    //    /⑦ `||`/⑧ unset/⑨ 管道参数四族步；export 面刀 ⑩ 第 21 内建步
+    //    10→11；作业控制 v2 刀 ⑪ 第 22/23 内建步 11→12——strip_bg 绑定/
+    //    `&`-jobs-kill-$! 端到端/负形三件）。链序契约同 U2/MMP/CLK/SIG
+    //    ——⑥ 走 RAM 树 fs 面（u4 先例同款，非盘面）、⑨⑩⑪ 走 spawn
+    //    （bin/fail/true/echo/grep/env/hello 现档），排 fat 族之前（EFI 路
+    //    无盘亦打 CLI——smoke-image ECO canon 同面）；无拓扑降级门（失败
+    //    即 park loud）。
     cli_selftest();
     // —— 命令行体验刀 + v2 B6：哑终端管道契约钉板（`TERM ok n=3` = rootfs
     //    相第 56 标记；B6 起 2→3——② `^C` 回显步）——spawn 子 bsh
@@ -490,6 +552,10 @@ fn interactive(vars: &mut Vec<(String, String)>, status: &mut i32) -> ! {
             editor::Flow::Line(line) => {
                 out.write_all(b"\n").unwrap(); // Enter 回显（归调用方契约）
                 let s = String::from_utf8_lossy(&line).into_owned();
+                // B5（作业控制 v2）：下条命令前通报（job_sweep 同 B4 扫荡
+                // ——bash 哑终端本真行为；空行 Enter 亦触发 Line 事件＝轻敲
+                // 即刷 Done；空表零输出零字节）。
+                job_sweep(&mut out);
                 run_line(s.trim_end_matches(['\n', '\r']), vars, status, &mut out, ed.history());
                 prompt_pending = true;
             }
@@ -3439,6 +3505,16 @@ fn expand(s: &str, vars: &[(String, String)], status: i32) -> String {
                 i += 2;
                 continue;
             }
+            // B6（作业控制 v2）`$!`：最后一次后台作业号（未设＝-1 展开空串
+            // ——POSIX 未设语义；载 jid 非 pid 偏差记面——影响面约 0）。
+            if c == b'!' {
+                let last = bg_last();
+                if last >= 0 {
+                    out.extend_from_slice(last.to_string().as_bytes());
+                }
+                i += 2;
+                continue;
+            }
             if c.is_ascii_alphabetic() || c == b'_' {
                 let (st, mut j) = (i + 1, i + 2);
                 while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_') {
@@ -3510,6 +3586,13 @@ fn split_chains(line: &str) -> Vec<(&str, Option<ChainOp>)> {
 /// 首段空、次段闸参考**承袭 status**——非零 status 进场则整行跳过（v1 的
 /// split 无条件序贯会执行；POSIX 本形是语法错，两形都非错——现行=左起
 /// 闸的自然延伸）。
+///
+/// B1（作业控制 v2）：入口整行尾缀 `&` 剥离（berry-jobs `strip_bg`——
+/// 展开前原始文本纪律同 `&&`/`|`/`>`，裁决 1）：bg=true 整行进 [`exec_bg`]
+/// （v2 安全子集＝单段外部命令异步，链形在那拒）；false 走现行路径**逐
+/// 字节恒等**（无 `&` 行纯 no-op，G1 恒等契约四边缘 ⑪a 钉板）；剥后空
+/// 文本＝no-op 不碰 status（防御面——strip_bg true 路径结构性恒非空）。
+/// 全部调用点（interactive Line 臂/自验/term 驱动面）零改自动获得语义。
 fn run_line(
     line: &str,
     vars: &mut Vec<(String, String)>,
@@ -3517,6 +3600,13 @@ fn run_line(
     out: &mut std::io::Stdout,
     hist: &[Vec<u8>],
 ) {
+    let (rest, bg) = berry_jobs::strip_bg(line);
+    if bg {
+        if !rest.is_empty() {
+            *status = exec_bg(rest, vars, *status, out);
+        }
+        return;
+    }
     for (part, op) in split_chains(line) {
         if let Some(op) = op {
             let go = match op {
@@ -3623,24 +3713,171 @@ fn exec_one(
     code
 }
 
+/// B2 `&` 后台执行面（作业控制 v2）：strip_bg 剥离后的整行进此——检测序
+/// 镜像 [`exec_one`] 先例，**全部在原始文本上**（操作符识别纪律）。拒形
+/// 五类各一行诊断码 1：赋值（进程内落表无 spawn 面）、`&&`/`||` 链
+/// （split_chains 多段形——整链异步需子壳面，POSIX list 语义偏差记面挂
+/// 3.0）、`|` 管道与 `>` 重定向（一棵 Job＝一条完整管道的机制归 3.0 刀
+/// 12）、首词内建（`run` 除外——内建在 bsh 进程内执行无 spawn 面，v1 无
+/// fork/线程，sleep 进程内自睡造线程即脚枪）；console 缺席（后台 stdout
+/// ＝console 直打，无输出端拒）与表满（JOBS_MAX——spawn 前拒不死 shell）
+/// 同拒码 1。通过面展开（进入时 `$?`）后两分类：`run <name> [args]` →
+/// target＝run 后首词、裸名 → bin/<word0> 派发形；target 白名单与
+/// cpio_find 的 127/not found、spawn Err 的 126 文案单源复用 run 面。
+/// spawn Ok＝登记＋spawn_line 回显打 out（stderr 语义）＋`$!`＝jid＋返 0
+/// （POSIX 异步列表自身返 0）；Err（含 -ENOMEM 出帽降级）＝补关未 take
+/// 的 gifts＋spawn failed 126（run_output 同形）。
+fn exec_bg(
+    rest: &str,
+    vars: &[(String, String)],
+    status: i32,
+    out: &mut std::io::Stdout,
+) -> i32 {
+    let raw = rest.trim();
+    if raw.is_empty() {
+        return 0; // 防御面（strip_bg true 路径结构性恒非空）
+    }
+    // 赋值（原始文本，优先序同 exec_one——值域保持，拒绝在语法层之后）。
+    if assignment_of(raw).is_some() {
+        writeln!(out, "bsh: &: 赋值不可后台").unwrap();
+        return 1;
+    }
+    // 链形：`&&`/`||`（split_chains 多段——`a && b &` 只异步末段的半阻塞
+    // 语义拒绝整链，裁决 1）。
+    if raw.contains("&&") || raw.contains("||") {
+        writeln!(out, "bsh: &: 链形不可后台（仅单段外部命令）").unwrap();
+        return 1;
+    }
+    if raw.contains('|') {
+        writeln!(out, "bsh: &: 管道不可后台（仅单段外部命令）").unwrap();
+        return 1;
+    }
+    if raw.contains('>') {
+        writeln!(out, "bsh: &: 重定向不可后台（仅单段外部命令）").unwrap();
+        return 1;
+    }
+    // 内建（run 除外——run 走通过面 run 形分类）。
+    let first = raw.split_whitespace().next().unwrap_or("");
+    if first != "run" && BUILTINS.contains(&first) {
+        writeln!(out, "bsh: {}: 内建不可后台", first).unwrap();
+        return 1;
+    }
+    // console 缺席＝无输出端（记面——boot 链恒在位，⑪b 活证）。
+    if console_h() == 0 {
+        writeln!(out, "bsh: &: 无控制台输出端").unwrap();
+        return 1;
+    }
+    // 表满（alloc_id None 在 spawn 前拒——不死 shell）。
+    let ids: Vec<u32> = jobs().iter().map(|j| j.n).collect();
+    let Some(n) = berry_jobs::alloc_id(&ids) else {
+        writeln!(out, "bsh: &: too many jobs").unwrap();
+        return 1;
+    };
+    // 通过面：展开（进入时 $?）后两分类（镜像 render_cmd run 臂/裸名臂形态
+    // ——展开结果只是数据不当语法重解析，纪律同 exec_one）。
+    let expanded = expand(raw, vars, status);
+    let words: Vec<&str> = expanded.split_whitespace().collect();
+    if words.is_empty() {
+        return 0; // 展开后空（如 `$空变量 &`）——POSIX 异步空列表自身状态 0（与
+        // run_line 空段跳过不碰 status 的语义不同——bg 段已定形，如实记面）
+    }
+    let (target, args): (&str, &[&str]) = if words[0] == "run" {
+        if words.len() < 2 {
+            writeln!(out, "usage: run <name>").unwrap();
+            return 2;
+        }
+        (&words[1], &words[2..])
+    } else {
+        (&words[0], &words[1..])
+    };
+    // target 白名单（run 面单源：split_whitespace 产物恒无空白，'/' 检查
+    // 仍有效——裸名派发形同法）。
+    if target.is_empty() || target.contains([' ', '/']) {
+        writeln!(out, "usage: run <name>").unwrap();
+        return 2;
+    }
+    let full = format!("bin/{}", target);
+    let Some((data_off, data_len)) = cpio_find(rootfs_h(), full.as_bytes()) else {
+        writeln!(out, "bsh: run: {}: not found", target).unwrap();
+        return 127;
+    };
+    // fs gifts 装配（run_output 同款：缺席＝裸形态降级零漂移）。
+    let mut gift_buf = [0 as Handle; 2];
+    let gifts: Option<&[Handle]> = match fs_gifts() {
+        Some((r, f)) => {
+            gift_buf = [r, f];
+            Some(&gift_buf[..])
+        }
+        None => None,
+    };
+    let argv: Vec<&[u8]> = args.iter().map(|a| a.as_bytes()).collect();
+    let env_kv = build_export_set(vars);
+    let env_set: Vec<&[u8]> = env_kv.iter().map(|e| e.as_slice()).collect();
+    let spec = SpawnSpec {
+        name: full.as_bytes(),
+        data_off,
+        data_len,
+        stdout: console_h(),
+        stack_pages: 32,
+        // gift 在位时按 berry-exec 断言补空 feeder 占位（EOF 即达——子读
+        // stdin 恒返 0，/dev/null 语义，run_output 同律）。
+        stdin_feed: if gifts.is_some() { Some(&[]) } else { None },
+        stdin_handle: None,
+        args: &argv,
+        extra_gifts: gifts.unwrap_or(&[]),
+        mmio_vmo: None,
+        mmio_va: 0,
+        intent: 0,
+        force_eager: false,
+        env: &env_set,
+    };
+    match spawn_rootfs_elf(rootfs_h(), &spec) {
+        Ok(child) => {
+            // 登记面 cmd＝剥离后 trimmed 文本（含 `run` 词——列示/通报渲染
+            // 单源）；回显 spawn_line 打 out；$!＝jid；返 0。
+            let cmd = raw.to_string();
+            let mut echo = Vec::new();
+            berry_jobs::spawn_line(&mut echo, n, &cmd);
+            out.write_all(&echo).unwrap();
+            out.flush().unwrap();
+            jobs().push(JobEntry { n, cmd, child });
+            bg_last_set(n as i32);
+            0
+        }
+        Err(_) => {
+            // gifts 未被 take（早退点全在 env send 前）——显式补关防泄漏
+            //（未装配的 0 值关返 -EBADF 无害，run_output 同形）。
+            if gifts.is_some() {
+                let _ = berry_handle_close(gift_buf[0]);
+                let _ = berry_handle_close(gift_buf[1]);
+            }
+            writeln!(out, "bsh: run: {}: spawn failed", target).unwrap();
+            126
+        }
+    }
+}
+
 /// 内建名单单源（命令行体验刀：render_cmd if-else 链的隐式知识升 const）
 /// ——两消费同表：`type` 内建身份查询 / RealSrc Tab 命令位候选。help 文案
 /// 由 [`HELP_LINES`] 承载，cli_selftest ④ 断言「BUILTINS 每名 ∈ HELP_LINES」
 /// 执法（名单或文案单边漂移即红）。分发序本身仍是 render_cmd 的 if-else
-/// （行为面独立——名单只答「是不是内建」）。
+/// （行为面独立——名单只答「是不是内建」）。作业控制 v2 刀 21→23
+/// （jobs/kill）。
 const BUILTINS: &[&str] = &[
     "help", "exit", "env", "export", "echo", "run", "cat", "ls", "mkdir", "rm", "cd", "pwd",
-    "inputpoll", "clear", "uname", "uptime", "sleep", "type", "history", "dmesg", "unset",
+    "inputpoll", "clear", "uname", "uptime", "sleep", "type", "history", "dmesg", "unset", "jobs",
+    "kill", "free",
 ];
 
 /// help 文案三行（A60：192B 控制台原子消息帽——单行装不下全清单，逐条
 /// 拆行各 ≤192B；命令行体验刀 12→19 内建（dmesg 追补第 19 件）后再拆第三行，同帽纪律；
-/// v2 B 域起补 `||`/`>>`/unset 语法面；export 面刀第 21 件 export K=V）。与
+/// v2 B 域起补 `||`/`>>`/unset 语法面；export 面刀第 21 件 export K=V；
+/// 作业控制 v2 刀补 jobs/kill %n 与 `cmd &` 语法面）。与
 /// [`BUILTINS`] 的名单一致性由 cli_selftest ④ 执法（每名必须出现）。
 const HELP_LINES: [&str; 3] = [
     "bsh 内建：help | echo <text> | env | export K=V | run <name> | cat <file> | ls | ls <dir> | mkdir <dir> | rm <path> | cd <dir> | pwd | inputpoll",
     "…续：| clear | uname | uptime | sleep <s> | type <name> | history | dmesg | unset <name> | A | B（rootfs 管道，段可带参）| A && B | A || B | A > file | A >> file | exit",
-    "……续：| 裸名 = bin/<name> 派发（C-2a uu 家族）",
+    "……续：| 裸名 = bin/<name> 派发（C-2a uu 家族）| jobs | kill %n | cmd &（后台）| free（RAM 面板）",
 ];
 
 /// 内建/外部命令统一渲染（P6 A-1 起 `>` 重定向与直出共道）：返回
@@ -3668,6 +3905,9 @@ fn render_cmd(
         (Vec::new(), 0)
     } else if cmd == "exit" {
         out.flush().unwrap();
+        // B5（作业控制 v2）：退出收杀（空表零改路径——今日 exit 字节恒等，
+        // boot 链 term_selftest 零作业路径零漂）。
+        job_exit_sweep(out);
         // → libc exit → EOF + berry_process_exit(0x33)
         std::process::exit(0)
     } else if cmd == "env" || cmd == "export" || cmd == "export -p" {
@@ -3793,6 +4033,11 @@ fn render_cmd(
         // 阶段五第 17 步：内核日志尾部（0x84 telemetry_open op=0 klog 快照
         // ——berry_sys 薄包装；数据面字节走返回值，`dmesg > file` 天然可重定向）。
         dmesg_output(out)
+    } else if cmd == "free" {
+        free_output(out)
+    } else if let Some(_rest) = cmd.strip_prefix("free ") {
+        writeln!(out, "usage: free").unwrap();
+        (Vec::new(), 2)
     } else if let Some(_rest) = cmd.strip_prefix("dmesg ") {
         // 无参命令带参照打（clear 同款幂等面，不拒）——参数忽略。
         dmesg_output(out)
@@ -3811,6 +4056,28 @@ fn render_cmd(
     } else if let Some(_rest) = cmd.strip_prefix("history ") {
         writeln!(out, "usage: history").unwrap();
         (Vec::new(), 2)
+    } else if cmd == "jobs" {
+        // B4（作业控制 v2）：先扫荡（已退者 Done 通报打 out——stderr 语义）
+        // 后列示（返数据＝running_line 逐行——`jobs > f` 重定向自动成立）；
+        // 空表空数据 0。参数形（-l/-p）挂账。
+        job_sweep(out);
+        let mut d = Vec::new();
+        // 审查 note 修复：列示按作业号升序（Vec push 序在 kill 后低号复用
+        // 时乱序）。
+        let mut js: Vec<(u32, String)> = jobs().iter().map(|j| (j.n, j.cmd.clone())).collect();
+        js.sort_by_key(|(n, _)| *n);
+        for (n, cmd) in &js {
+            berry_jobs::running_line(&mut d, *n, cmd);
+        }
+        (d, 0)
+    } else if let Some(_rest) = cmd.strip_prefix("jobs ") {
+        writeln!(out, "usage: jobs").unwrap();
+        (Vec::new(), 2)
+    } else if cmd == "kill" {
+        writeln!(out, "usage: kill %n（默认 143 = 128+15）").unwrap();
+        (Vec::new(), 2)
+    } else if let Some(rest) = cmd.strip_prefix("kill ") {
+        kill_output(rest.trim(), out)
     } else {
         // C-2a：裸名 PATH 派发（内建优先零漂移——到这 = 非内建）：首词查
         // bin/<name>，命中即拉起、余词作 argv[1..]（uu 家族非内建成员
@@ -3938,6 +4205,99 @@ fn run_output(
         berry_libc::park(); // 关不掉 = 泄漏面，loud 死（不 trap：交互面不死 shell）
     }
     (data, code)
+}
+
+/// B4/B5 扫荡（作业控制 v2；jobs 内建「先扫荡后列示」的前半 + interactive
+/// Line 臂「下条命令前通报」——bash 哑终端本真行为，裁决 6）：逐 job
+/// `wait_one(hp, TERMINATED, 0)` 纯 poll（deadline=0 免费——berry-poll 头注
+/// 立法先例）命中→出表＋`reap_with_timeout(1s)`（poll 已命中，帽是防御面）
+/// →done_line `[n]+ Done(码)` 打 out（stderr 语义——退出码真值保真）；
+/// reap Err＝警告行＋出表（ChildHandles 无 Drop——有界泄漏记面，JOBS_MAX
+/// 定上界）。未退者原位跳过（列示面＝还活着的）。
+fn job_sweep(out: &mut std::io::Stdout) {
+    let table = jobs();
+    let mut i = 0;
+    while i < table.len() {
+        let mut obs = 0u64;
+        let alive = berry_object_wait_one(table[i].child.hp, SIGNAL_TERMINATED, 0, &mut obs) != 0;
+        if alive {
+            i += 1;
+            continue;
+        }
+        let job = table.remove(i); // 出表在先——reap 后无论成败不回表
+        match job.child.reap_with_timeout(1_000_000_000) {
+            Ok(code) => {
+                let mut d = Vec::new();
+                berry_jobs::done_line(&mut d, job.n, code, &job.cmd);
+                out.write_all(&d).unwrap();
+            }
+            Err(()) => {
+                writeln!(out, "[bsh: job {}: reap failed（有界泄漏）]", job.n).unwrap();
+            }
+        }
+        // remove 已前移后继——i 不进。
+    }
+    out.flush().unwrap();
+}
+
+/// `kill %n`（B4 单形——`-N` 旗标族/多目标/裸 pid/名形全拒，挂账 3；kill
+/// 直杀无协同投递窗——signal_send 只达 berry-libc 链子，裁决 4）：terminate
+/// (hp, 143)（POSIX kill 默认 TERM→128+15 惯例码；Ctrl-C 的 130 先例同构
+/// 异值）→inline 有界收割 `reap_with_timeout(1s)`（其内 wait TERMINATED
+/// ——表即时清、用户即时反馈，上界 1s）。通报行走**返回数据**（exec_one
+/// 直出＝控制台；`kill %n > f` 随重定向入文件——POSIX 通知归 tty 的偏差
+/// 记面，换取自验 ⑪b 通报字节逐字节可断言）；terminate 返 0＝terminated_
+/// line、返 -EBADSTATE＝已退未收走同链收割 done_line（真码保真——退出码
+/// 首因不覆写）。`%n` 不在表码 1；杂形 usage 2。`kill %$!` 消费闭环
+/// （展开先于内建派发）。
+fn kill_output(ref_s: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
+    let Some(n) = berry_jobs::parse_job_ref(ref_s) else {
+        writeln!(out, "usage: kill %n（默认 143 = 128+15）").unwrap();
+        return (Vec::new(), 2);
+    };
+    let Some(i) = jobs().iter().position(|j| j.n == n) else {
+        writeln!(out, "bsh: kill: {}: no such job", ref_s).unwrap();
+        return (Vec::new(), 1);
+    };
+    let term = berry_process_terminate(jobs()[i].child.hp, 143);
+    if term != 0 && term != BERRY_ERR_BAD_STATE {
+        // 防御面（process_create 入表即授 MANAGE——常态不可达）；作业留表。
+        writeln!(out, "bsh: kill: {}: terminate failed ({})", ref_s, term).unwrap();
+        return (Vec::new(), 1);
+    }
+    let job = jobs().remove(i); // 出表在先——reap 后无论成败不回表
+    match job.child.reap_with_timeout(1_000_000_000) {
+        Ok(code) => {
+            let mut d = Vec::new();
+            if term == 0 {
+                berry_jobs::terminated_line(&mut d, job.n, code, &job.cmd);
+            } else {
+                // -EBADSTATE＝已退未收：同链收割走 done_line（真码保真）。
+                berry_jobs::done_line(&mut d, job.n, code, &job.cmd);
+            }
+            (d, 0)
+        }
+        Err(()) => {
+            writeln!(out, "[bsh: job {}: reap failed（有界泄漏）]", job.n).unwrap();
+            (Vec::new(), 0)
+        }
+    }
+}
+
+/// B5 退出收杀（exit 臂 exit(0) 前）：逐活作业 terminate(hp, 129)
+/// （128+SIGHUP 惯例，zsh HUP 同向——裁决 5：本系统孤儿不可寻不可杀，
+/// 放任＝berry-term respawn 循环下 wedged 孤儿占 PROCESS_MAX=64 永久累积）
+/// ——已退者 -EBADSTATE 忽略（退出码首因不覆写）；逐个
+/// `reap_with_timeout(1s)`（失败＝有界泄漏警告不阻退——上界 8×1s）；空表
+/// 零改路径；bsh 退出码仍 0。
+fn job_exit_sweep(out: &mut std::io::Stdout) {
+    for job in jobs().drain(..) {
+        let _ = berry_process_terminate(job.child.hp, 129);
+        if job.child.reap_with_timeout(1_000_000_000).is_err() {
+            writeln!(out, "[bsh: job {}: reap failed（有界泄漏）]", job.n).unwrap();
+        }
+    }
+    out.flush().unwrap();
 }
 
 // —— fs 面（P6 A-1）：`>` 重定向 + cat/ls 内建。C-1 刀 4 起全量走
@@ -4311,6 +4671,38 @@ fn dmesg_output(out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
         (buf[..r as usize].to_vec(), 0)
     }
 }
+/// free（遥测 memstat 刀）：RAM 五域单行快照——数据源 `telemetry_open`
+/// op=1 memstat（berry-sys 结构体出参包装）；失败诊断行码 1（stderr 语义）。
+/// 输出形 `mem: total=<n>K reserved=<n>K alloc=<n>K free=<n>K committed=<n>K`
+/// （pages×4 = KiB；带参拒 usage 2）。
+fn free_output(out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
+    let mut rec = MemstatRec {
+        total_pages: 0,
+        reserved_pages: 0,
+        alloc_pages: 0,
+        free_pages: 0,
+        committed_pages: 0,
+    };
+    let r = berry_telemetry_memstat_snapshot(&mut rec);
+    if r < 0 {
+        writeln!(out, "bsh: free: telemetry memstat snapshot failed ({})", r).unwrap();
+        (Vec::new(), 1)
+    } else {
+        (
+            format!(
+                "mem: total={}K reserved={}K alloc={}K free={}K committed={}K\n",
+                rec.total_pages * 4,
+                rec.reserved_pages * 4,
+                rec.alloc_pages * 4,
+                rec.free_pages * 4,
+                rec.committed_pages * 4
+            )
+            .into_bytes(),
+            0,
+        )
+    }
+}
+
 
 /// `type <name>`（命令行体验刀，契约 1）：身份三档——BUILTINS 表命中
 /// → `is a shell builtin`；rootfs `bin/<name>` 命中（cpio 查档）→
@@ -5068,10 +5460,10 @@ fn prompt_after_ctrl_c(d: &[u8]) -> bool {
     }
 }
 
-/// 命令行体验刀（`CLI ok n=11` = rootfs 相第 55 标记；v2 B 域起 6→10、
-/// export 面刀 10→11）：
+/// 命令行体验刀（`CLI ok n=13` = rootfs 相第 55 标记；v2 B 域起 6→10、
+/// export 面刀 10→11、作业控制 v2 刀 11→12）：
 /// 六内建行为面 + v2 四族步 + export 步自验——render_cmd 直调（与交互/重定向同一渲染
-/// 面；诊断/usage 打真 stdout = stderr 语义）。十一步全过才打；败 eprintln
+/// 面；诊断/usage 打真 stdout = stderr 语义）。十三步全过才打；败 eprintln
 /// + park（标记缺失 → smoke FAIL 兜底）：
 /// ⓪ clear——`\x1b[2J\x1b[H` 7B 逐字节精确对拍 + 带参照打幂等面；
 /// ① uname——`BerryOS aarch64 ` 前缀 + 非空版本单行（libc `.berryver` 单源）+ 带参拒；
@@ -5100,7 +5492,11 @@ fn prompt_after_ctrl_c(d: &[u8]) -> bool {
 ///    等价 + 裸列显与 env 渲染逐字节同（裁决 6 执法）+ 非法名拒 2）+
 ///    run_capture_env 显式端到端（env={"__E=1"} 恰一行精确等值——传递链
 ///    全通证）+ do_pipe 真实路径端到端（`env | grep -q __E` 码 0 /
-///    `__NOPE` 码 1——run/管道产点接线活证，⑨ 先例零新机器）。
+///    `__NOPE` 码 1——run/管道产点接线活证，⑨ 先例零新机器）；
+/// ⑪ 作业控制 v2（B7）——三面：⑪a strip_bg 边缘 guest 绑定钉板；⑪b
+///    `run hello &` 端到端真码链（表空预扫/$!＝1/jobs 列示逐字节/kill %1
+///    Terminated(143) 逐字节（reap 真码内嵌断言）/表清/kill %2 缺席 1）
+///    ；⑪c 负形三件（管道/内建/赋值后台形拒码 1＋表空）。
 fn cli_selftest() {
     fn render(cmd: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
         render_cmd(cmd, &[], 0, out, &[])
@@ -5179,7 +5575,9 @@ fn cli_selftest() {
     if render("type", &mut out).1 != 2 {
         fails.push("④ type 缺参未拒");
     }
-    for b in ["clear", "uname", "uptime", "sleep", "type", "history", "unset", "export"] {
+    for b in [
+        "clear", "uname", "uptime", "sleep", "type", "history", "unset", "export", "jobs", "kill", "free",
+    ] {
         if !BUILTINS.contains(&b) {
             fails.push("④ BUILTINS 单源缺新内建");
         }
@@ -5402,11 +5800,136 @@ fn cli_selftest() {
         }
     }
 
+    // ⑪ 作业控制 v2（B7；berry-jobs host 14 测盖算法面，此处 guest 绑定 +
+    //    端到端）。断言只建内部状态与渲染字节（render 辅助先例——不依赖
+    //    串口时序）；boot console 新增行＝spawn 回显/Terminated 通报/负形
+    //    诊断/hello 自身 13B（bg stdout＝console 直打）。
+    // ⑪a strip_bg 边缘 guest 绑定钉板（G1 恒等契约四边缘代表形——host
+    //    14 测之上钉「bsh 链接的是这份 berry-jobs」）。
+    {
+        let ok = berry_jobs::strip_bg("run hello &") == ("run hello", true)
+            && berry_jobs::strip_bg("a &&") == ("a &&", false)
+            && berry_jobs::strip_bg("a&&&b") == ("a&&&b", false)
+            && berry_jobs::strip_bg("P=a&b") == ("P=a&b", false);
+        if !ok {
+            fails.push("⑪a strip_bg guest 绑定破缺（正形/&& 尾/尾非 &/值域）");
+        }
+    }
+    // ⑪b 端到端真码链（int ③ 模板直改——hello 发 13B 后 10s 滚动长睡结构性
+    //    不自退：Running 态与 kill 收割均非竞速，裁决 15；首个 `&` 即 E1
+    //    授位扩面活证——链断则 spawn failed 当场红 loud）。
+    {
+        let mut vv: Vec<(String, String)> = Vec::new();
+        let mut st = 0i32;
+        if !jobs().is_empty() {
+            fails.push("⑪b 表空预扫破缺");
+        }
+        run_line("run hello &", &mut vv, &mut st, &mut out, &[]);
+        if st != 0 || expand("$!", &vv, 0) != "1" {
+            fails.push("⑪b 登记链破缺（st != 0 或 $! != 1）");
+        }
+        let (d, c) = render("jobs", &mut out);
+        if c != 0 || d.as_slice() != b"[1] Running run hello\n".as_slice() {
+            fails.push("⑪b jobs 列示 != [1] Running run hello（逐字节）");
+        }
+        // kill 经 render 直调 render_cmd（副作用与 run_line 路径同链——
+        // strip_bg/split_chains 对无 `&` 行恒等 no-op）：通报字节逐字节断言
+        // 内含 reap 真码 143。
+        let (d, c) = render("kill %1", &mut out);
+        if c != 0 || d.as_slice() != b"[1]+ Terminated(143) run hello\n".as_slice() {
+            fails.push("⑪b kill %1 通报 != [1]+ Terminated(143)（reap 码破缺）");
+        }
+        if !jobs().is_empty() {
+            fails.push("⑪b kill 后表未清");
+        }
+        if render("kill %2", &mut out).1 != 1 {
+            fails.push("⑪b 缺席形码 != 1");
+        }
+        // 审查 minor 修复：⑪b 污染 BG_LAST 会使交互会话开场 $!="1"——
+        // 自验毕复位 POSIX 初态（未设 = 展开空串）。
+        bg_last_set(-1);
+    }
+    // ⑪c 负形三件：管道/内建/赋值后台形全拒（码 1，零 spawn）＋表空断言。
+    {
+        let mut vv: Vec<(String, String)> = Vec::new();
+        let mut st = 0i32;
+        run_line("run hello | cat &", &mut vv, &mut st, &mut out, &[]);
+        if st != 1 {
+            fails.push("⑪c 管道后台形未拒（码 != 1）");
+        }
+        run_line("sleep 1 &", &mut vv, &mut st, &mut out, &[]);
+        if st != 1 {
+            fails.push("⑪c 内建后台形未拒（码 != 1）");
+        }
+        run_line("P=a&", &mut vv, &mut st, &mut out, &[]);
+        if st != 1 {
+            fails.push("⑪c 赋值后台形未拒（码 != 1）");
+        }
+        if !jobs().is_empty() {
+            fails.push("⑪c 负形后表非空");
+        }
+    }
+
     if !fails.is_empty() {
         eprintln!("bsh: cli selftest bad: {:?}", fails);
         berry_libc::park();
     }
-    println!("CLI ok n=11");
+    // ⑫ free（遥测 memstat 刀）：RAM 五域单行快照——⑫a 纯面（`mem: total=`
+    //    前缀逐字节 + 换行尾 + 五 token 键序齐 + 值域 ASCII 数字非空）+
+    //    ⑫b 数据面恒等式域（弱式运行窗：total>0、alloc/reserved/committed
+    //    各自 ≤total、free==total−reserved−alloc KiB 域整数重演算——内核
+    //    派生式契约钉板；committed≤alloc 禁断言〔分窗读可造假态〕）+
+    //    「free x」带参拒 2；纯 render 直调零外部 bin、静默不打印数据面。
+    {
+        let (d, c) = render("free", &mut out);
+        let s = String::from_utf8_lossy(&d);
+        let keys = ["total=", "reserved=", "alloc=", "free=", "committed="];
+        let mut vals = [0u64; 5];
+        let mut ok = c == 0 && s.starts_with("mem: total=") && s.ends_with("\n");
+        if ok {
+            let body = &s["mem: ".len()..s.len() - 1];
+            let toks: Vec<&str> = body.split(' ').collect();
+            if toks.len() != 5 {
+                ok = false;
+            }
+            for (i, tok) in toks.iter().enumerate().take(5) {
+                match tok
+                    .strip_prefix(keys[i])
+                    .and_then(|t| t.strip_suffix('K'))
+                    .filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+                    .and_then(|v| v.parse::<u64>().ok())
+                {
+                    Some(n) => vals[i] = n,
+                    None => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+        }
+        if !ok {
+            fails.push("⑫a free 行形/键序/数值域破缺（mem: 单行五 token）");
+        } else {
+            let (total, reserved, alloc, mem_free, committed) =
+                (vals[0], vals[1], vals[2], vals[3], vals[4]);
+            let ident = total > 0
+                && alloc <= total
+                && reserved <= total
+                && committed <= total
+                && total
+                    .checked_sub(reserved)
+                    .and_then(|t| t.checked_sub(alloc))
+                    .is_some_and(|f| f == mem_free);
+            if !ident {
+                fails.push("⑫b free 恒等式域破缺（free != total−reserved−alloc 等）");
+            }
+        }
+        if render("free x", &mut out).1 != 2 {
+            fails.push("⑫ free 带参未拒");
+        }
+    }
+
+    println!("CLI ok n=13");
 }
 
 /// 命令行体验刀（`TERM ok n=3` = rootfs 相第 56 标记；v2 B 域起 2→3）——哑
@@ -5659,7 +6182,7 @@ enum PipeFail {
     SpawnFail(String),
 }
 
-/// `A | B | …` 拉起 + 末段 stdout 收集（`docs/shell设计-v1.0.md` §2.2 channel 即 pipe）：
+/// `A | B | …` 拉起 + 末段 stdout 收集（`docs/shell设计-v1.1.md` §2.2 channel 即 pipe）：
 /// 相邻段间 [`channel_pair`]——前段 stdout = 写端（spawn 内 dup SEND 别名作
 /// gift[0]）、后段 stdin = 读端（`stdin_handle`，被 env send take 迁进子表）；
 /// 末段 stdout = 采集对。EOF 链 = 消息层约定（d-3b）：前段 exit → libc

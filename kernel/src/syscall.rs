@@ -485,14 +485,23 @@ extern "C" fn sys_power_off(_tf: &mut TrapFrame) -> i64 {
     ERR_NOT_SUPPORTED as i64
 }
 
-// ---- 遥测环读口（阶段五第 16 步：0x84 telemetry_open 翻真——klog 快照首域）----
+// ---- 遥测环读口（0x84 telemetry_open——klog 快照首域〔阶段五第 16 步〕＋
+// memstat 定长快照〔遥测 v3 首件〕；op 域 add-only）----
 
-/// 0x84 op 域：0 = klog 快照（内核日志字节环——`arch .../klog_ring.rs`，串口
-/// 镜像）。后续波次补 SwitchRec / WakeRec 环读口（各自新 op 值，add-only）。
-const TELEMETRY_OP_KLOG: u64 = 0;
+/// 0x84 op 域常量**单源 = berry-telface**（klog=0 / memstat=1——内核派发与
+/// berry-sys 包装同引此，消内核/用户双写）；SwitchRec/WakeRec 环读口自
+/// op=2 起按落地序取号（add-only 纪律下预留号无执法值）。
+use berry_telface::{TELEMETRY_OP_KLOG, TELEMETRY_OP_MEMSTAT};
 
-/// 单次快照读帽（= 单环容量 16KiB——再大也只装得下单环最新段；bsh dmesg
-/// 消费面 4KiB 尾帽远在其下）。
+/// op=1 memstat 定长快照**冻结下限**（v1 形 40B = `MemstatRec` 5×u64）。
+/// len ≥ 此值即服务：实写 40B 返 40——尾追追加律（未来扩形旧调用方收
+/// 40B v1 前缀、返回值自证所得；跨大改走新 op 值）。字面冻结不随 size_of
+/// 动：本臂恒写 v1 前缀。
+const MEMSTAT_REC_V1: usize = 40;
+
+/// klog 快照读帽（op=0 臂专属——= 单环容量 16KiB，再大也只装得下单环最新
+/// 段；bsh dmesg 消费面 4KiB 尾帽远在其下。op=1 memstat 定长 40B，len 门
+/// 是 [`MEMSTAT_REC_V1`] 冻结下限——len 帽语义 op 专属，各在臂内）。
 const TELEMETRY_SNAPSHOT_MAX: usize = berry_hal_aarch64::klog_ring::KLOG_RING_SIZE;
 
 /// klog 快照暂存（ring 快照 → copy_out 之间的稳定缓冲）。**单写者 = KL**：
@@ -500,46 +509,83 @@ const TELEMETRY_SNAPSHOT_MAX: usize = berry_hal_aarch64::klog_ring::KLOG_RING_SI
 /// 取锁——无第二并发写者，免独立锁。
 static mut KLOG_SNAP_STAGE: [u8; TELEMETRY_SNAPSHOT_MAX] = [0; TELEMETRY_SNAPSHOT_MAX];
 
-/// `berry_telemetry_open(op, buf, len)`（0x84，阶段五第 16 步翻真首域）：
-/// op=0 klog 快照——读两核 klog 字节环拼接 copy_out 到 `buf`，返回实写字节
-/// 数（>0）。拼接契约：CPU 序（环 0 → 环 1）、环内旧→新、每环贡献其**最新**
-/// `min(环内有效字节, 余量)` 字节（先到环优先占满——裸相串口主力在 CPU0，
-/// dmesg 尾部语义天然成立；两环拼接非时序归并，读方自知）。
+/// `berry_telemetry_open(op, buf, len)`（0x84）：op 域 add-only 分发——
+/// match 首键 op、len 门各自在臂内（拒序 op 先行——klog 翻真时判序保形）。
 ///
-/// 拒面：op 域外 → -ENOTSUP（后续 SwitchRec/WakeRec op 语义位）；`len` 为 0
-/// 或 > [`TELEMETRY_SNAPSHOT_MAX`] → -EINVAL；copy_out 失败 → -EFAULT（逐环
-/// 分段拷贝，失败前的段已写——诚实部分读，调用方重试）。零 handle 零权利位
-/// （系统级遥测读面——统计信号非对象内容，`sched_util_snapshot` 同族口径）。
+/// op=0 klog 快照（阶段五第 16 步首域）——读两核 klog 字节环拼接 copy_out 到
+/// `buf`，返回实写字节数（>0）。拼接契约：CPU 序（环 0 → 环 1）、环内旧→新、
+/// 每环贡献其**最新** `min(环内有效字节, 余量)` 字节（先到环优先占满——裸相
+/// 串口主力在 CPU0，dmesg 尾部语义天然成立；两环拼接非时序归并，读方自知）。
+/// len 门：`len` 为 0 或 > [`TELEMETRY_SNAPSHOT_MAX`] → -EINVAL。
 ///
-/// 锁类 TABLE：klog 环热尾容错读无锁无共享串行面；copy_out 链走查调用方页表
-/// = §A113 读者面（同 0x61 clock_read）。
+/// op=1 memstat 定长快照（遥测 v3 首件）——`MemstatRec` 40B 五域 RAM 面经
+/// [`crate::telemetry::memstat_snapshot`] 装配（free 读点派生使
+/// total==alloc+free+reserved 按构造闭合）。len 门：`len` <
+/// [`MEMSTAT_REC_V1`] → -EINVAL；≥ 则实写 40B 返 40（尾追追加律见彼注）。
+///
+/// 拒面：op 域外 → -ENOTSUP；copy_out 失败 → -EFAULT（klog 臂逐环分段拷贝，
+/// 失败前的段已写——诚实部分读，调用方重试；memstat 臂单发整段无半写面）。
+/// 零 handle 零权利位（系统级遥测读面——统计信号非对象内容，
+/// `sched_util_snapshot` 同族口径）。
+///
+/// 锁类 TABLE：klog 环热尾容错读无锁无共享串行面；memstat 三元组单闭包
+/// 一致窗、水位皆 Relaxed 原子读（统计信号无序角色）；copy_out 链走查调用
+/// 方页表 = §A113 读者面（同 0x61 clock_read）。
 extern "C" fn sys_telemetry_open(tf: &mut TrapFrame) -> i64 {
     let (op, ptr, len) = (tf.regs[1], tf.regs[2], tf.regs[3]);
-    if op != TELEMETRY_OP_KLOG {
-        return ERR_NOT_SUPPORTED as i64; // op 域外（后续环读口预留）
-    }
-    if len == 0 || len as usize > TELEMETRY_SNAPSHOT_MAX {
-        return ERR_INVALID_ARG as i64;
-    }
-    let el1 = caller_is_el1(tf);
-    // SAFETY: 单写者 = KL（见 KLOG_SNAP_STAGE 注）；本 handler 全程 KL 窗。
-    let stage = unsafe { &mut *core::ptr::addr_of_mut!(KLOG_SNAP_STAGE) };
-    let mut total: usize = 0;
-    for cpu in 0..berry_hal_aarch64::klog_ring::KLOG_NCPUS {
-        let rem = len as usize - total;
-        if rem == 0 {
-            break;
+    match op {
+        // op=0 klog（G1 逐字节保形：原单臂 if 体原序原码随臂下放）。
+        TELEMETRY_OP_KLOG => {
+            if len == 0 || len as usize > TELEMETRY_SNAPSHOT_MAX {
+                return ERR_INVALID_ARG as i64;
+            }
+            let el1 = caller_is_el1(tf);
+            // SAFETY: 单写者 = KL（见 KLOG_SNAP_STAGE 注）；本 handler 全程 KL 窗。
+            let stage = unsafe { &mut *core::ptr::addr_of_mut!(KLOG_SNAP_STAGE) };
+            let mut total: usize = 0;
+            for cpu in 0..berry_hal_aarch64::klog_ring::KLOG_NCPUS {
+                let rem = len as usize - total;
+                if rem == 0 {
+                    break;
+                }
+                let n = berry_hal_aarch64::klog_ring::snapshot_into(cpu, &mut stage[..rem]);
+                if n == 0 {
+                    continue; // 空环/读窗不稳——跳过该环（诚实空，不重试占锁）
+                }
+                match copy_to_user(el1, ptr + total as u64, &stage[..n]) {
+                    Ok(()) => total += n,
+                    Err(e) => return e as i64, // -EFAULT 透传（此前段已写=诚实部分读）
+                }
+            }
+            total as i64
         }
-        let n = berry_hal_aarch64::klog_ring::snapshot_into(cpu, &mut stage[..rem]);
-        if n == 0 {
-            continue; // 空环/读窗不稳——跳过该环（诚实空，不重试占锁）
+        // op=1 memstat（v3 首件）：len 冻结下限门 → 栈上装配 → 单发整段拷出。
+        TELEMETRY_OP_MEMSTAT => {
+            if (len as usize) < MEMSTAT_REC_V1 {
+                return ERR_INVALID_ARG as i64;
+            }
+            let el1 = caller_is_el1(tf);
+            let rec = crate::telemetry::memstat_snapshot();
+            // 栈上 40B raw 组装（sched_util_snapshot 同款；定长小件零 static
+            // stage——免暂存免锁）。
+            let words = [
+                rec.total_pages,
+                rec.reserved_pages,
+                rec.alloc_pages,
+                rec.free_pages,
+                rec.committed_pages,
+            ];
+            let mut raw = [0u8; MEMSTAT_REC_V1];
+            for (slot, w) in raw.chunks_exact_mut(8).zip(words) {
+                slot.copy_from_slice(&w.to_le_bytes());
+            }
+            match copy_to_user(el1, ptr, &raw) {
+                Ok(()) => MEMSTAT_REC_V1 as i64,
+                Err(e) => e as i64,
+            }
         }
-        match copy_to_user(el1, ptr + total as u64, &stage[..n]) {
-            Ok(()) => total += n,
-            Err(e) => return e as i64, // -EFAULT 透传（此前段已写=诚实部分读）
-        }
+        _ => ERR_NOT_SUPPORTED as i64, // op 域外（环读口自 op=2 起随后续波次取号）
     }
-    total as i64
 }
 
 /// MONOTONIC 纳秒 → CNTVCT 周期（先商后余防中间溢出，与 [`sys_clock_read`]

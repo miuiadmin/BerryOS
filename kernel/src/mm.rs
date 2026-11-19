@@ -206,3 +206,13 @@ pub fn frames() -> &'static mut FrameAllocator<'static> {
             .expect("mm::init() 未调用就访问 frames()")
     }
 }
+
+/// 遥测 memstat 三元组单口（0x84 op=1 消费面）：单次 [`frames`] 借用窗内
+/// 背靠背一致读 `(total, reserved, allocated)`——三值取自同一分配器实例的
+/// 同一借用窗（SMP 下帧分配器由 SVC TABLE 类 KL 窗串行保护，同 [`frames`]
+/// 契约）。`free` 由消费方按 `total − reserved − allocated` 读点派生
+///（零第二记账源——free 无独立计数器，恒等式按构造闭合）。
+pub(crate) fn memstat_frame_counts() -> (usize, usize, usize) {
+    let fa = frames();
+    (fa.npages(), fa.reserved_pages(), fa.allocated_pages())
+}

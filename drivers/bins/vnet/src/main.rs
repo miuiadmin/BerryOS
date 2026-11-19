@@ -1095,7 +1095,7 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
                             // 收割 rx：应答复用 v1 两形（OK 携收割字节；零收成
                             // = 1B OK 形——POLL 报过 rbytes 后串行收割必非零，
                             // 0 是调用方节奏面诚实值非协议错）。verify 波实抓:
-                            // 割幅必须帽 TCP_DATA_MAX——rt 缓冲幅 RT_ECHO_MAX=500
+                            // 割幅必须帽 TCP_DATA_MAX——rt 缓冲幅 RT_ECHO_MAX=K×TCP_DATA_MAX（五刀③=750）
                             // 是 session-0 K 窗回显收流面,表会话 DRAIN 若割 >250B
                             // 入应答,encode_tcp_reply 越帽返 None → serve 防御
                             // trap 即崩(echo 相 16KB 突发攒 >250B 后首割即中,4/4

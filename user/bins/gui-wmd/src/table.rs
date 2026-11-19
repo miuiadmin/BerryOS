@@ -26,6 +26,15 @@
 //!   「通知驱动 + 异步拉取」面，波3设计 §4）；与属主通道同收表变更
 //!   广播。静态定容帽 [`WM_EVT_SUBS_MAX`]。订阅者通道 = 表跟随 RPC
 //!   面（TABLE_GET 即答；TABLE_WAIT 冻结律不动——即答非驻留）。
+//! - **apps**：per-app wm 通道表（K1 I1——0x69 attach 随行迁入的对端
+//!   srv 端，`[Handle; WM_APPS_MAX]` + `apps_n`，subs 同形定容）。每 app
+//!   独占一条通道 = 共享 dup 单 FIFO 应答互截缺陷的结构性解（应答参数化
+//!   回来源通道——on_wm 的 ch 本就是逐请求绑定）。恰 1 随行的执法在
+//!   on_wm 分发层（零随行门之前——0x69 是 wm 域唯一合法随行 op）；ack
+//!   （1B ST_OK + 随行自持柄 TRANSFER 别名）/ 帽满 ST_FULL 皆经新通道回。
+//!   轮询段 recv 错码 ≠ EAGAIN = close+保序摘表（坏客户端不杀服务——
+//!   subs Dead 摘除同律）；DETACH 0x6A 表内寻位 close+摘除（u32 失配时
+//!   到达通道命中兜底——I2 消费面的「注销帧走 app 通道自身」形态）。
 //! - **有效几何不变量式避让**：任何 CREATE/DESTROY/SET（含系统层窗
 //!   变更）触发受影响表项重算 O(N)（N≤15 零成本）——AVOID_SYS 旗标窗
 //!   对 layer=SYSTEM **可见**窗求差集写有效几何（**SERVICE 不挖坑**——
@@ -38,13 +47,18 @@
 //! 无效 ST_NOENT、表满 ST_FULL、野值已在 wire 层拒（guiproto parse 域
 //! 执法——本表不做第二解析器）。
 
-use crate::{Port, SendEvtStatus};
+use crate::{AppRecv, Port, SendEvtStatus};
 use berry_guiproto as gp;
 use berry_sys::Handle;
 
 /// 无窗订阅者事件通道帽（静态定容纪律——guifbd 面实测 1 路，4 路 = 测试
 /// 与防御余量；满即 ST_FULL）。
 pub const WM_EVT_SUBS_MAX: usize = 4;
+
+/// per-app wm 通道帽（K1 I1——静态定容纪律同 subs；桌面场实测 launcher
+/// 常驻 1 + 并发 [ui] app ≤ APP_SPAWN_LIVE_MAX=4，8 = 余量帽；满即
+/// ST_FULL 经新通道回 + 随行柄关收）。
+pub const WM_APPS_MAX: usize = 8;
 
 /// 返回键兜底帽：WM_EVT_BACK 投递后无 BACK_ACK 且无表变更的容忍窗
 /// （波3设计 §3 R2——500ms 单槽软定时，进 serve 循环零新增线程）。
@@ -102,6 +116,22 @@ fn clip_rect(c: (u32, u32, u32, u32), s: (u32, u32, u32, u32)) -> (u32, u32, u32
     best
 }
 
+/// apps 轮询段命中帧（K1 I1）：`ch` = 来源 app 通道（应答参数化回它——
+/// on_wm 同分派）；`msg[..n]` = 帧字节、`hs[..nh]` = 随行 handle（中继域
+/// 帧可随行 VMO——wm 域帧恒 0）。
+pub struct AppFrame {
+    /// 来源 app 通道（wmd 自持端）。
+    pub ch: Handle,
+    /// 帧字节（CHAN_MSG_MAX=256 单帧窗）。
+    pub msg: [u8; 256],
+    /// 帧长。
+    pub n: usize,
+    /// 随行 handle（CHAN_HND_MAX=8 窗）。
+    pub hs: [Handle; 8],
+    /// 随行数。
+    pub nh: usize,
+}
+
 pub struct WmTable {
     wins: [Win; gp::WM_WINDOWS_MAX],
     count: usize,
@@ -115,6 +145,10 @@ pub struct WmTable {
     /// 无窗订阅者事件通道（定容数组，表序稳定）。
     subs: [Handle; WM_EVT_SUBS_MAX],
     subs_n: usize,
+    /// per-app wm 通道（K1 I1——attach 随行迁入的对端 srv 端；定容数组，
+    /// 表序稳定 = 建联序，wait 集拼装/轮询段确定性面）。
+    apps: [Handle; WM_APPS_MAX],
+    apps_n: usize,
     disp_w: u16,
     disp_h: u16,
 }
@@ -147,6 +181,8 @@ impl WmTable {
             pending_back: None,
             subs: [0; WM_EVT_SUBS_MAX],
             subs_n: 0,
+            apps: [0; WM_APPS_MAX],
+            apps_n: 0,
             disp_w,
             disp_h,
         }
@@ -547,6 +583,129 @@ impl WmTable {
         p.send_handles(ch, &out[..n], &[cli]);
     }
 
+    /// OP_WM_ATTACH 策略核（K1 I1——on_wm 分发层已执法恰 1B + 随行恰 1）：
+    /// `srv` = 随行迁入的对端 srv 端（本表自持的该 app 通道 wmd 侧端）。
+    /// 帽满 → ST_FULL **经新通道回** + 随行柄关收（不入表——send 即 take，
+    /// 不 close 即泄漏）；成功 → 入表 + ack 走新通道（1B ST_OK + 随行自持
+    /// 柄的 TRANSFER 别名——send 后原柄仍持，别名供 DETACH 寻址；subscribe
+    /// 的 ack+&[cli] 先例是 wmd 自建对，此处反向：随行的是自持端别名）。
+    /// dup 资源拒绝同 ST_FULL 面（subscribe 内核资源拒绝同形）。
+    pub fn app_attach<P: Port>(&mut self, p: &mut P, srv: Handle) {
+        if self.apps_n >= WM_APPS_MAX {
+            Self::st_rep(p, srv, gp::ST_FULL);
+            p.close(srv);
+            return;
+        }
+        let Some(alias) = p.dup_transfer(srv) else {
+            Self::st_rep(p, srv, gp::ST_FULL);
+            p.close(srv);
+            return;
+        };
+        self.apps[self.apps_n] = srv;
+        self.apps_n += 1;
+        let mut out = [0u8; 1];
+        let n = gp::encode_status_rep(&mut out, gp::ST_OK);
+        p.send_handles(srv, &out[..n], &[alias]);
+    }
+
+    /// OP_WM_DETACH 策略核（K1 I1——零随行门后 handle_wm 新臂）：5B 的
+    /// `srv_handle` 先按 **wmd 命名空间表项值** 寻位（内核 handle 表按
+    /// 进程私有、随行迁移必重编号——控制端 echo 其本地 id 时此路不中，
+    /// 由到达通道 `ch` 命中兜底：注销帧从 app 通道自身进入的 I2 消费面
+    /// 形态，寻址零 id 算术）；命中 → ST_OK 回 `ch` → close + 保序摘除
+    /// （先应答后关：ch == 表项 handle 形态下先关即向已关柄 send）；
+    /// 双失配 ST_BAD（坏寻址不炸服务）。
+    pub fn app_detach<P: Port>(&mut self, p: &mut P, ch: Handle, srv_handle: u32) {
+        let pos = (0..self.apps_n).find(|&i| self.apps[i] == srv_handle)
+            .or_else(|| (0..self.apps_n).find(|&i| self.apps[i] == ch));
+        let Some(i) = pos else {
+            Self::st_rep(p, ch, gp::ST_BAD);
+            return;
+        };
+        let h = self.apps[i];
+        // 非阻塞试发 ack（对抗审查 CONFIRMED 细化）：死者通道可满队
+        //（≤8 未应答请求）——trap 帽 send 会向满队拖死 serve；满/死即
+        // 跳过（对端已死，ack 无读者；调用方 wm_detach_rpc 本就 fail-
+        // soft）。成功记录面与 send 同（replies）——send_rep_try 单发
+        // 非阻塞、零等待零重试。
+        p.send_rep_try(ch, &[gp::ST_OK]);
+        p.close(h);
+        // parked 守卫（对抗审查 CONFIRMED）：app 通道可合法驻留 TABLE_WAIT
+        // 单车位（wire 层零来源门）——通道拆除后 parked 悬垂，下一次表变
+        // 更 bump 向已关柄发快照 = EBADF trap 杀全服务。驻留者随通道拆除
+        // 静默清槽（对端正拆除，无人消费位移应答）。
+        if let Some((pch, _)) = self.parked {
+            if pch == h {
+                self.parked = None;
+            }
+        }
+        for j in i..self.apps_n - 1 {
+            self.apps[j] = self.apps[j + 1];
+        }
+        self.apps_n -= 1;
+    }
+
+    /// apps 轮询段（K1 I1——serve 每轮 push_srv poll 之后）：`apps[..apps_n]`
+    /// 逐个非阻塞收，**一路至多一帧**（串行 RPC 纪律同 wm_srv/push_srv
+    /// poll——命中即返，主循环 dispatch 后 continue 回环重扫；本帧处理可
+    /// 变表（detach 自摘/建窗广播关通道），重扫天然免疫索引失效）。recv
+    /// 错码 ≠ EAGAIN = close + 保序摘表（坏客户端不杀服务——subs Dead
+    /// 摘除同律；ChanPort::recv_nowait 的 trap 面只适用 boot 定值柄，本路
+    /// 不走它）。
+    pub fn poll_apps<P: Port>(&mut self, p: &mut P) -> Option<AppFrame> {
+        let mut buf = [0u8; 256];
+        let mut i = 0;
+        while i < self.apps_n {
+            let h = self.apps[i];
+            let mut hs = [0 as Handle; 8];
+            match p.recv_app(h, &mut buf, &mut hs) {
+                AppRecv::Frame(n, nh) => {
+                    return Some(AppFrame { ch: h, msg: buf, n, hs, nh });
+                }
+                AppRecv::Empty => i += 1,
+                AppRecv::Dead => {
+                    p.close(h);
+                    // parked 守卫（同 app_detach——悬垂驻留清槽防 EBADF 自陷）。
+                    if let Some((pch, _)) = self.parked {
+                        if pch == h {
+                            self.parked = None;
+                        }
+                    }
+                    // 保序摘除（表序稳定——wait 集构造确定性）；摘除后
+                    // 原 i+1 项落位 i，不进 i 即下轮扫到它。
+                    for j in i..self.apps_n - 1 {
+                        self.apps[j] = self.apps[j + 1];
+                    }
+                    self.apps_n -= 1;
+                }
+            }
+        }
+        None
+    }
+
+    /// 表侧 wait 集需求总数（**不截断**——K1 I1 重造：evt_handles 式拼装
+    /// 被出参物理截断恒 ≤ 帽，越窗不可感 = 100ms 短帽死码坑的根因；主
+    /// 循环以 2 底 + 本值判断越窗，main.rs 侧
+    /// `WMD_EVT_OVERFLOW_POLL_NS` 首次真实武装）。
+    pub fn wait_set_needed(&self) -> usize {
+        let owners = (0..self.count).filter(|&i| self.wins[i].evt.is_some()).count();
+        owners + self.subs_n + self.apps_n
+    }
+
+    /// apps 通道入 wait 集（属主 evt/subs 之后按序进——截断优先级：
+    /// wm_srv/push_srv/属主 evt 恒进，subs/apps 按序到满；槽满截断由
+    /// 出参长度保证）。
+    pub fn apps_handles(&self, out: &mut [Handle]) -> usize {
+        let mut n = 0;
+        for i in 0..self.apps_n {
+            if n < out.len() {
+                out[n] = self.apps[i];
+                n += 1;
+            }
+        }
+        n
+    }
+
     /// 事件通道非阻塞收割（serve 循环每轮顶调用）：属主通道收 BACK_ACK
     /// （余帧型一律忽略——TABLE_GET 也不答：事件通道无请求相关性，乱答
     /// 毒化对端；坏客户端不得杀服务）；订阅者通道 = 表跟随 RPC 面——
@@ -602,8 +761,11 @@ impl WmTable {
         n
     }
 
-    /// wm 域分发（wm_srv 面）：九 op 之外（0x69..=0x7F 未定形）1B
-    /// ST_BAD；wm 域 op **零随行 handle**——非空即拒面 close。
+    /// wm 域分发（wm_srv 面 + K1 I1 起 apps 通道同分派——应答参数化回
+    /// `ch`）：0x60..=0x6A 十一枚中十枚入本表（原九 op + DETACH 0x6A；
+    /// ATTACH 0x69 不入——on_wm 分发层随行恰 1 执法开口在零随行门之前）；
+    /// 0x6B..=0x7F 未定形 1B ST_BAD；wm 域 op **零随行 handle**——非空
+    /// 即拒面 close（0x69 的恰 1 随行是唯一豁免，且豁免在 on_wm 层）。
     pub fn handle_wm<P: Port>(&mut self, p: &mut P, ch: Handle, msg: &[u8], hs: &[Handle]) {
         if !hs.is_empty() {
             p.close_all(hs);
@@ -644,6 +806,10 @@ impl WmTable {
             Some(&gp::OP_WM_SUBSCRIBE) if gp::parse_wm_subscribe_req(msg).is_some() => {
                 self.subscribe(p, ch)
             }
+            Some(&gp::OP_WM_DETACH) => match gp::parse_wm_detach_req(msg) {
+                Some(srv_handle) => self.app_detach(p, ch, srv_handle),
+                None => Self::st_rep(p, ch, gp::ST_BAD),
+            },
             _ => Self::st_rep(p, ch, gp::ST_BAD),
         }
     }

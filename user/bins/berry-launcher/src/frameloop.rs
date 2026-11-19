@@ -28,6 +28,12 @@
 //! 恒 None 直通——原始坐标保真；位移 0.41·vp_w > 0.4·vp_w 翻页阈 +
 //! 速度环远超 500px/s fling 阈，双判据同向）各落定 → `PAGE ok n=2`。
 //!
+//! **自测门**（I3 性能止血）：`smoke ∨ 壁钟注入缺席` 才跑——gui8 三靴
+//!（A 双靴/B 常态对照/--normal-boot 常态隔离）与 smoke-image EFI 靴全在
+//! 断言面且全无 `opt/berry/rtc` 注入（PAGE ok 照打）；宿主 berry 真实
+//! 交互路恒注 rtc → WaitFirst 短路 Done，开机零 swipe——两轮 swipe 与
+//! 真实输入同队列相撞的开机「点不动」窗消失（判据全账见 [`run`] 头注）。
+//!
 //! **段④ 点击面（真实输入 → APP_SPAWN）**：`Msg::Click` 槽命中 →
 //! `app_cli_h()!=0` 时真发 APP_SPAWN；**首例 ok 回执恰一次**打 `CLICK
 //! ok n=1`——**仅当 `smoke` 为真**（main 经 GUI8.SMK 精确载荷判定）。
@@ -65,11 +71,13 @@ const CLEAR_BG: (u8, u8, u8) = (0x10, 0x18, 0x28);
 /// 兜底 loud；不 fail 挂死：桌面常驻义务优先于自测件）。
 const SETTLE_CAP_NS: u64 = 5 * 1_000_000_000;
 
-/// 自测状态机（boot 一次性走完 → Done 常驻）。
+/// 自测状态机（boot 一次性走完 → Done 常驻；门控见 [`run`] 头注——
+/// 真实交互 boot 在 WaitFirst 即短路 Done，状态机不推进）。
 #[derive(Clone, Copy)]
 enum Selftest {
     /// 首帧在途——presented>0 时注入第一轮 swipe（LAUNCH ok 已由
-    /// on_presented 打出——首帧 FRAME_CALLBACK 过链即打）。
+    /// on_presented 打出——首帧 FRAME_CALLBACK 过链即打）；自测门
+    /// 关（真实交互 boot）即短路 Done。
     WaitFirst,
     /// 第一轮 swipe 收敛中（pc = 注入时已呈现数基线；page()==1 且 snap
     /// 停（tick false）且再有一帧呈现 = 落定）。
@@ -128,6 +136,10 @@ struct LoopHost {
     desktop: Desktop,
     /// 冒烟模式（段④ 两标记的唯一门）。
     smoke: bool,
+    /// 自测门（I3）：`smoke ∨ 壁钟注入缺席`——run 构造期一次定格
+    ///（判据全账见 [`run`] 头注；真实交互 boot = false → WaitFirst
+    /// 短路 Done）。
+    selftest: bool,
     /// input gift 在场（run 参数定格——hi 后续在 pump 内可因输入面失效
     /// 置 0，门仍真）。
     has_input: bool,
@@ -137,6 +149,10 @@ struct LoopHost {
     launched: bool,
     /// 多任务键记忆（最近 spawn 成功的 app）。
     recents_app: Option<RecentsApp>,
+    /// 自窗记账（K2）：双 CREATE ack 窗 id——[0]=SYSTEM 状态栏窗、[1]=APP
+    /// 桌面窗。back 键焦点命中自窗视同无应用（wmd refocus 回落桌面窗后
+    /// 按 back = 自毁雷）；home 键 DESTROY 批只收非自窗。
+    self_wins: [u16; 2],
     /// 自测状态机。
     st: Selftest,
     /// PAGE ok 后 snap_to(0) 的呈现基线。
@@ -151,25 +167,41 @@ struct LoopHost {
     last_clock: Option<[u8; 5]>,
 }
 
-/// 帧循环入口（签名 = W2 冻结面——`hw` = wm 客户端端柄（wm/present 同
+/// 帧循环入口（W2 面 + K2 自窗账——`hw` = wm 客户端端柄（wm/present 同
 /// 端混流，ADR #61 中继），`ui` = 泄堆 arena，`desktop` = 静态面句柄，
-/// `smoke` = main 单次读取的 GUI8.SMK 精确载荷判定——只门控段④两标记，
-/// 不改点击/帧链行为）。
+/// `smoke` = main 单次读取的 GUI8.SMK 精确载荷判定——门控段④两标记 +
+/// 自测门两臂之一，不改点击/帧链行为；`self_wins` = main 双 CREATE ack
+/// 窗 id 存档（[0]=SYSTEM 状态栏窗、[1]=APP 桌面窗）——back/home 键
+/// 自窗排除面（桌面窗永不被导航键 DESTROY））。
+///
+/// **自测门判据（I3 前置核实定谳，2026-11-18 现场核树）**：`PAGE ok
+/// n=2` 的全部断言面 = gui8 靴 A（SMK 在）+ 靴 B 与 `--normal-boot`
+/// 常态隔离靴（无 SMK）+ smoke-image EFI 靴（零 fw_cfg 无数据盘）——
+/// GUI8.SMK 旗**不覆盖**后三形态，`!smoke → Done` 一刀会炸两门。四形态
+/// 拓扑结构性无壁钟注入（gui8 仅注 `opt/berry/display`；EFI 路零
+/// fw_cfg → `CLOCK_REALTIME` 恒 -ENOTSUP），宿主 berry 真实交互路恒注
+/// `opt/berry/rtc`（qemu.rs fwcfg 表，SystemTime 可读即有值）——门取
+/// 两臂之或 `smoke ∨ 壁钟不可读`：冒烟形态照打，真实桌面短路。
 pub fn run(
     hw: Handle,
     hi: Handle,
     ui: &'static mut UiMain,
     desktop: Desktop,
     smoke: bool,
+    self_wins: [u16; 2],
 ) -> ! {
+    let mut rt0 = 0u64;
+    let selftest = smoke || berry_clock_read(CLOCK_REALTIME, &mut rt0) != 0;
     let mut host = LoopHost {
         hw,
         desktop,
         smoke,
+        selftest,
         has_input: hi != 0,
         spawn_ok: 0,
         launched: false,
         recents_app: None,
+        self_wins,
         st: Selftest::WaitFirst,
         snap_frame: None,
         click_ready: false,
@@ -236,6 +268,7 @@ impl appshell::pump::HostHooks for LoopHost {
                         t_now,
                         &mut self.recents_app,
                         self.hw,
+                        self.self_wins,
                     ) {
                         if !on_sys_click(
                             *node,
@@ -319,7 +352,13 @@ impl appshell::pump::HostHooks for LoopHost {
         // —— 自测状态机（boot 一次性；标记字节精确）——
         match self.st {
             Selftest::WaitFirst => {
-                if presented > 0 {
+                if !self.selftest {
+                    // 门控短路（I3）：真实交互 boot（非冒烟 ∧ 壁钟在场）
+                    // 不自测——两轮 swipe 与真实输入同队列相撞的开机
+                    // 「点不动」窗整体消失。LAUNCH ok/telem 不受影响
+                    //（on_presented 面）；PAGE ok 在此形态无断言面。
+                    self.st = Selftest::Done;
+                } else if presented > 0 {
                     inject_swipe(ui, t_now);
                     self.st = Selftest::Settle1 { pc: presented, deadline: t_now + SETTLE_CAP_NS };
                 }
@@ -459,17 +498,55 @@ fn set_power_face(ui: &mut UiMain, nav: &NavNodes, armed: bool) {
     }
 }
 
+/// back 键焦点应用窗判据（纯谓词，测试面）：FOCUSED ∧ LAYER_APP ∧ 非自
+/// 窗——自窗（APP 层桌面窗）在焦视同无应用（降次级语义，桌面窗永不被
+/// back DESTROY）。wmd 单焦点槽下 FOCUSED 恒至多一枚，find 即取焦点。
+fn focused_app_win(snap: &gp::WmSnapshot, self_wins: &[u16; 2]) -> Option<u16> {
+    snap.entries
+        .iter()
+        .take(snap.count)
+        .find(|e| {
+            e.flags & gp::WM_WIN_F_FOCUSED != 0
+                && e.layer == gp::WM_LAYER_APP
+                && !self_wins.contains(&e.id)
+        })
+        .map(|e| e.id)
+}
+
+/// home 键 DESTROY 批目标筛（纯谓词，测试面）：LAYER_APP ∧ 可见 ∧ 非自
+/// 窗——状态栏 SYSTEM 窗与桌面自窗永不在批内；隐藏应用窗不收（v1 语义
+/// 只收可见窗）。快照表序出批（逐发逐收）。
+fn home_destroy_ids<'a>(
+    snap: &'a gp::WmSnapshot,
+    self_wins: &'a [u16; 2],
+) -> impl Iterator<Item = u16> + 'a {
+    snap.entries
+        .iter()
+        .take(snap.count)
+        .filter(|e| {
+            e.layer == gp::WM_LAYER_APP
+                && e.flags & gp::WM_WIN_F_VISIBLE != 0
+                && !self_wins.contains(&e.id)
+        })
+        .map(|e| e.id)
+}
+
 /// 导航五键命中 + 动作（刀 D，审计 02 号 §6.1 M2——走现役 `Msg::Click`
 /// 通道零新输入面）。返回 true = 已消费（不落槽 spawn）；false = 非导航
 /// 键（调用方续走 app 槽命中）。
 ///
 /// - **返回**：波3-件④——应用在焦先收应用（查表→焦点窗 DESTROY→
-///   wmd 表序回焦桌面）；无应用在焦 = 桌面翻页语义（v1 原路）。
+///   wmd 表序回焦桌面）；焦点命中自窗（K2 排雷：wmd refocus 回落后
+///   焦点常驻桌面窗自身）视同无应用在焦，走次级语义——桌面窗永不被
+///   back 自毁；无应用在焦 = 桌面翻页语义（v1 原路）。
 ///   launcher/wmd 同步 RPC 无死锁对（guifbd 的 SUBMIT 内禁同步 RPC
 ///   wmd 才是死锁对——launcher 非 blit 路径）。
 /// - **多任务**：重新拉起最近 spawn 的应用（真重拉非死键）；无历史 =
 ///   静默无操作。
-/// - **桌面**：`page!=0` 吸附 page 0；已在 = 无操作。
+/// - **桌面**：K2 补 DESTROY 批——回 tab+page0 之前先收快照内全部非自
+///   窗 ∧ LAYER_APP 可见窗（逐发逐收），批中有成收即 wake 触发 FULL
+///   重画（v1 无合成器、像素共享 fb，app 残留像素靠本帧覆盖）；再回
+///   tab+page0（`page!=0` 吸附 page 0；已在 = 无操作）。
 /// - **旋转**：打 `ROTATE` 串口标记——宿主 berry 窗口监听并换几何
 ///   重启（guest 无法自转 ramfb 几何——fw_cfg 是宿主注入面）。
 /// - **关机**：二击 3s 窗确认——首击 armed（换警示面 + 窗起算）；窗内
@@ -484,6 +561,7 @@ fn on_nav_click(
     t_now: u64,
     recents: &mut Option<RecentsApp>,
     wm_h: Handle,
+    self_wins: [u16; 2],
 ) -> bool {
     let nav = desktop.nav;
     let snap_page = |ui: &mut UiMain, desktop: &mut Desktop, target: u8| {
@@ -504,20 +582,17 @@ fn on_nav_click(
         }
     }
     if node == nav.back {
-        // 波3-件④ 最小刀：应用在焦先收应用（查表→焦点窗 DESTROY→
-        // wmd 表序回焦桌面窗）；无应用在焦 = 桌面翻页语义（v1 原路）。
+        // 波3-件④ + K2 排雷：应用在焦先收应用（查表→焦点窗 DESTROY→
+        // wmd 表序回焦桌面）；焦点命中自窗（wmd refocus 回落后即桌面窗
+        // 自身）视同无应用在焦走次级语义——桌面窗永不被 back 自毁；
+        // 无应用在焦 = 桌面翻页语义（v1 原路）。
         let mut req = [0u8; 256];
         let mut rep = [0u8; 256];
         let mut rhs = [0 as Handle; 8];
         let m = gp::encode_wm_table_get_req(&mut req);
         let (n, _) = rpc(wm_h, &req[..m], &[], &mut rep, &mut rhs);
         let focused_app = match gp::parse_wm_snapshot_rep(&rep[..n]) {
-            Some(Ok(snap)) => snap
-                .entries
-                .iter()
-                .take(snap.count)
-                .find(|e| e.flags & gp::WM_WIN_F_FOCUSED != 0 && e.layer == gp::WM_LAYER_APP)
-                .map(|e| e.id),
+            Some(Ok(snap)) => focused_app_win(&snap, &self_wins),
             _ => None,
         };
         if let Some(wid) = focused_app {
@@ -551,7 +626,34 @@ fn on_nav_click(
         }
         true
     } else if node == nav.home {
-        // 桌面键：sys 页在树先回桌面 tab（R1 同律）；再落翻页回 page 0。
+        // 桌面键（K2 补 DESTROY 批）：回 tab+page0 之前，先收快照内全部
+        // 非自窗 ∧ LAYER_APP 可见窗——逐发逐收（rpc 单飞天然串行；失败
+        // eprintln 不阻批——批面按快照逐项独立）；wmd 摘表+回焦桌面为
+        // 内建。批中有成收即 wake：v1 无合成器、像素共享 fb，app 残留
+        // 像素靠本帧 FULL 重画覆盖（wake 空脏集置 FULL；订阅面 v1 不
+        // 建；零成收不 wake——表未变不重画，免覆盖仍存活窗）。
+        let mut req = [0u8; 256];
+        let mut rep = [0u8; 256];
+        let mut rhs = [0 as Handle; 8];
+        let m = gp::encode_wm_table_get_req(&mut req);
+        let (n, _) = rpc(wm_h, &req[..m], &[], &mut rep, &mut rhs);
+        let mut destroyed = false;
+        if let Some(Ok(snap)) = gp::parse_wm_snapshot_rep(&rep[..n]) {
+            for wid in home_destroy_ids(&snap, &self_wins) {
+                let m = gp::encode_wm_destroy_req(&mut req, wid);
+                rpc(wm_h, &req[..m], &[], &mut rep, &mut rhs);
+                if rep[0] != 0 {
+                    eprintln!("launcher: home destroy id={} st={}", wid, rep[0]);
+                } else {
+                    destroyed = true;
+                }
+            }
+        }
+        if destroyed {
+            ui.wake(t_now);
+        }
+        // 原回桌面语义：sys 页在树先回桌面 tab（R1 同律）；再落翻页回
+        // page 0。
         if desktop.tabs.cur != 0 {
             if let Err(e) = desktop::switch_sys_page(ui, desktop, 0) {
                 eprintln!("launcher: home tab err={e:?}");
@@ -843,5 +945,106 @@ mod tests {
         assert_eq!(quiet, 1);
         assert!(!note_spawn_ack(false, &mut quiet, Some((true, 0))));
         assert_eq!(quiet, 2);
+    }
+
+    /// K2 测试夹具：APP 层窗项（flags 可见/焦点自选）。
+    fn app_entry(id: u16, flags: u8) -> gp::WmEntry {
+        gp::WmEntry {
+            id,
+            parent: 0,
+            group: 0,
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 10,
+            layer: gp::WM_LAYER_APP,
+            z: 0,
+            flags,
+        }
+    }
+
+    /// K2 测试夹具：自窗账 [状态栏 SYSTEM=1, 桌面 APP=2]（main 双 CREATE
+    /// 存档序）。
+    const SELF_WINS: [u16; 2] = [1, 2];
+
+    /// back 焦点判据真值表：FOCUSED∧LAYER_APP∧非自窗三条件缺一不可——
+    /// 桌面自窗在焦 = None（自毁雷排除，降次级语义）；SYSTEM 层窗与
+    /// count 截断外的窗永不入选。
+    #[test]
+    fn back_focus_excludes_self_windows() {
+        // app 窗在焦 = 收它。
+        let mut e = [app_entry(0, 0); gp::WM_WINDOWS_MAX];
+        e[0] = app_entry(3, gp::WM_WIN_F_VISIBLE | gp::WM_WIN_F_FOCUSED);
+        e[1] = app_entry(SELF_WINS[1], gp::WM_WIN_F_VISIBLE);
+        e[2] = app_entry(SELF_WINS[0], gp::WM_WIN_F_VISIBLE);
+        let snap =
+            gp::WmSnapshot { version: 1, disp_w: 800, disp_h: 1280, entries: e, count: 3 };
+        assert_eq!(focused_app_win(&snap, &SELF_WINS), Some(3));
+
+        // 桌面自窗（APP 层）在焦 = 视同无应用（wmd refocus 回落常态）。
+        let mut e = [app_entry(0, 0); gp::WM_WINDOWS_MAX];
+        e[0] = app_entry(SELF_WINS[1], gp::WM_WIN_F_VISIBLE | gp::WM_WIN_F_FOCUSED);
+        e[1] = app_entry(3, gp::WM_WIN_F_VISIBLE);
+        let snap =
+            gp::WmSnapshot { version: 1, disp_w: 800, disp_h: 1280, entries: e, count: 2 };
+        assert_eq!(focused_app_win(&snap, &SELF_WINS), None);
+
+        // 状态栏自窗在焦但层不符（SYSTEM 层门拒——理论形钉板）。
+        let mut e = [app_entry(0, 0); gp::WM_WINDOWS_MAX];
+        e[0] = gp::WmEntry {
+            layer: gp::WM_LAYER_SYSTEM,
+            flags: gp::WM_WIN_F_VISIBLE | gp::WM_WIN_F_FOCUSED,
+            ..app_entry(SELF_WINS[0], 0)
+        };
+        e[1] = app_entry(3, gp::WM_WIN_F_VISIBLE);
+        let snap =
+            gp::WmSnapshot { version: 1, disp_w: 800, disp_h: 1280, entries: e, count: 2 };
+        assert_eq!(focused_app_win(&snap, &SELF_WINS), None);
+
+        // app 窗只可见不焦点 = 不收（FOCUSED 门）。
+        let mut e = [app_entry(0, 0); gp::WM_WINDOWS_MAX];
+        e[0] = app_entry(3, gp::WM_WIN_F_VISIBLE);
+        let snap =
+            gp::WmSnapshot { version: 1, disp_w: 800, disp_h: 1280, entries: e, count: 1 };
+        assert_eq!(focused_app_win(&snap, &SELF_WINS), None);
+
+        // 焦点窗在 count 截断外 = 不参选（表序前 count 项才有效）。
+        let mut e = [app_entry(0, 0); gp::WM_WINDOWS_MAX];
+        e[0] = app_entry(3, gp::WM_WIN_F_VISIBLE);
+        e[1] = app_entry(4, gp::WM_WIN_F_VISIBLE | gp::WM_WIN_F_FOCUSED);
+        let snap =
+            gp::WmSnapshot { version: 1, disp_w: 800, disp_h: 1280, entries: e, count: 1 };
+        assert_eq!(focused_app_win(&snap, &SELF_WINS), None);
+    }
+
+    /// home 批目标筛真值表：只收可见 ∧ 非自窗 ∧ LAYER_APP——桌面/状态
+    /// 栏自窗、隐藏应用窗、SYSTEM 层窗皆不在批内；快照表序保序出批；
+    /// 空表批空。
+    #[test]
+    fn home_batch_targets_visible_foreign_apps_only() {
+        let mut e = [app_entry(0, 0); gp::WM_WINDOWS_MAX];
+        e[0] = app_entry(SELF_WINS[1], gp::WM_WIN_F_VISIBLE); // 桌面自窗——排除
+        e[1] = app_entry(3, gp::WM_WIN_F_VISIBLE); // 可见应用窗——收
+        e[2] = app_entry(4, 0); // 隐藏应用窗——不收
+        e[3] = gp::WmEntry {
+            layer: gp::WM_LAYER_SYSTEM,
+            flags: gp::WM_WIN_F_VISIBLE,
+            ..app_entry(SELF_WINS[0], 0)
+        }; // 状态栏窗（SYSTEM 层）——排除
+        e[4] = app_entry(5, gp::WM_WIN_F_VISIBLE | gp::WM_WIN_F_FOCUSED); // 焦点应用窗——收
+        let snap =
+            gp::WmSnapshot { version: 1, disp_w: 800, disp_h: 1280, entries: e, count: 5 };
+        let got = home_destroy_ids(&snap, &SELF_WINS).collect::<Vec<u16>>();
+        assert_eq!(got, vec![3, 5]);
+
+        // 空表（count=0 = 合法空表）——批空（零成收零 wake 面）。
+        let snap = gp::WmSnapshot {
+            version: 1,
+            disp_w: 800,
+            disp_h: 1280,
+            entries: [app_entry(0, 0); gp::WM_WINDOWS_MAX],
+            count: 0,
+        };
+        assert_eq!(home_destroy_ids(&snap, &SELF_WINS).count(), 0);
     }
 }

@@ -1171,3 +1171,17 @@ mod spawn_image_argv_tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }
+
+/// 注入专用 QMP socket 路径：qmp 端点同目录的兄弟文件 qmp-inject.sock
+/// （仅 unix 端点形态存在）。spawn 建端（spawn_image 内）与 berry 侧
+/// 连接方（device.rs 原生指针注入）共用此单源推导。
+pub(crate) fn inject_sock_path(qmp: &Endpoint) -> Option<std::path::PathBuf> {
+    #[cfg(unix)]
+    if let Endpoint::Unix(p) = qmp {
+        return Some(p.with_file_name("qmp-inject.sock"));
+    }
+    #[cfg(not(unix))]
+    let _ = qmp;
+    None
+}
+

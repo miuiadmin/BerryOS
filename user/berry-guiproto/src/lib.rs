@@ -165,6 +165,27 @@ pub const DEV_TEXT: u8 = 2;
 /// 事件通道客户端端）。表跟随纪律（波3设计 §9）：TABLE_WAIT 冻结零新增
 /// 驻留者，跟随一律走本通道通知 + TABLE_GET 快照。
 pub const OP_WM_SUBSCRIBE: u8 = 0x68;
+
+// ---------- per-app wm 通道（K1——launcher/各 [ui] app 独占通道面） ----------
+//
+// add-only 纪律同波2/波3：只增常量与新编解码函数，不动任何既有 op 的
+// 字节面。0x69/0x6A 落 wm 域 0x60..=0x7F 带内（0x68 之后顺位），与
+// 0x90..=0x9F 事件帧带外互不认领（帧型带隔离——新 codec 与 parse_wm_evt
+// 双向钉板）。
+
+/// wm 域：per-app 通道挂接（K1：客户端 → wmd 控制通道发）。请求恰 1B
+/// `[op]` + 随行恰 1 handle（对端 srv 端——能力随消息迁入 wmd apps 表，
+/// 应答面自此走该新通道——共享 dup 单 FIFO 应答互截缺陷的结构性解）；
+/// 应答 = wmd 在**新通道**上回 1B ST_OK + 随行恰 1 handle（wmd 自持
+/// srv 端的 TRANSFER 别名——DETACH 寻址面）。恰 1 随行的执法在 wmd
+/// on_wm 分发层（wm 域零随行门之前——0x69 是 wm 域唯一合法随行 op）。
+pub const OP_WM_ATTACH: u8 = 0x69;
+/// wm 域：per-app 通道摘除（K1：app 退出的 wmd 侧槽回收面——app_reap_tail
+/// 经控制通道发）。请求 5B `[op][srv_handle u32 LE]` 零随行；应答 1B
+/// ST_OK/ST_BAD（wm_srv 控制通道回）。`srv_handle` 语义 = wmd apps 表项
+/// handle 值（wmd 命名空间——内核 handle 表按进程私有、随行迁移必重编号，
+/// 跨进程 id 不互通；寻址合同细面见 wmd 侧实现注）。
+pub const OP_WM_DETACH: u8 = 0x6A;
 /// 事件帧型：返回键投递（wmd → 焦点窗属主；`[kind][wid u16][r]`——500ms
 /// 无 BACK_ACK 且无表变更则 wmd 兜底 DESTROY，wire 只管投递不管兜底）。
 pub const WM_EVT_BACK: u8 = 0x90;
@@ -3394,6 +3415,46 @@ pub fn parse_wm_evt(buf: &[u8]) -> Option<WmEvt> {
     }
 }
 
+// ---------- per-app wm 通道编解码（K1——add-only，见 OP_WM_ATTACH 块注） ----------
+
+/// WM_ATTACH 请求帧长（恰 `[op]` 1B——随行恰 1 handle 的执法在 wmd
+/// on_wm 分发层，不在本 codec）。
+pub const WM_ATTACH_REQ_LEN: usize = 1;
+/// WM_DETACH 请求帧长（`[op][srv_handle u32 LE]`）。
+pub const WM_DETACH_REQ_LEN: usize = 5;
+
+/// 编码 WM_ATTACH 请求（无域）。buf 不足 = 调用方错 assert。
+pub fn encode_wm_attach_req(out: &mut [u8]) -> usize {
+    assert!(out.len() >= WM_ATTACH_REQ_LEN, "guiproto: wm attach buf 不足");
+    out[0] = OP_WM_ATTACH;
+    WM_ATTACH_REQ_LEN
+}
+
+/// 解析 WM_ATTACH 请求：恰 1B + op（随行面归分发层执法）。
+pub fn parse_wm_attach_req(buf: &[u8]) -> Option<()> {
+    if buf.len() != WM_ATTACH_REQ_LEN || buf[0] != OP_WM_ATTACH {
+        return None;
+    }
+    Some(())
+}
+
+/// 编码 WM_DETACH 请求：`srv_handle` = 寻址值（任意 u32——存在性归 wmd
+/// 策略面）。
+pub fn encode_wm_detach_req(out: &mut [u8], srv_handle: u32) -> usize {
+    assert!(out.len() >= WM_DETACH_REQ_LEN, "guiproto: wm detach buf 不足");
+    out[0] = OP_WM_DETACH;
+    out[1..5].copy_from_slice(&srv_handle.to_le_bytes());
+    WM_DETACH_REQ_LEN
+}
+
+/// 解析 WM_DETACH 请求：恰 5B + op → srv_handle。
+pub fn parse_wm_detach_req(buf: &[u8]) -> Option<u32> {
+    if buf.len() != WM_DETACH_REQ_LEN || buf[0] != OP_WM_DETACH {
+        return None;
+    }
+    Some(u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]))
+}
+
 /// 编码 INPUT_INJECT 请求：`dev_kind` ∈ {DEV_POINTER, DEV_KEYBOARD,
 /// DEV_TEXT}；`payload` ≤ 24B（键盘 = 1B key code；文本 = ASCII 串）。
 /// 野 dev_kind / 载荷越帽 / buf 不足 → None（调用方可构造面——assert
@@ -5069,6 +5130,20 @@ mod tests {
         // LE 钉板：version 首字节 = 最低位字节（counter 段）。
         assert_eq!(buf[4], 0x01);
         assert_eq!(buf[7], 0x0A);
+        // ATTACH req 1B（K1 per-app 通道——随行恰 1 面在 wmd 分发层执法）。
+        let n = encode_wm_attach_req(&mut buf);
+        assert_eq!(&buf[..n], &[0x69][..]);
+        // DETACH req 5B（srv_handle u32 LE）。
+        let n = encode_wm_detach_req(&mut buf, 0x0102_0304);
+        assert_eq!(&buf[..n], &[0x6A, 0x04, 0x03, 0x02, 0x01][..]);
+        // LE 钉板：srv_handle 首字节 = 最低位字节。
+        assert_eq!(buf[1], 0x04);
+        // 帧型带隔离核证（K1 §1.1）：0x69/0x6A 与 0x90 族事件帧带外双向
+        // 互不认领（新 codec 拒事件帧首字节；parse_wm_evt 拒两新 op）。
+        assert_eq!(parse_wm_attach_req(&[WM_EVT_TABLE, 0, 0, 0, 0]), None);
+        assert_eq!(parse_wm_detach_req(&[WM_EVT_BACK, 0, 0, 0]), None);
+        assert_eq!(parse_wm_evt(&[OP_WM_ATTACH]), None);
+        assert_eq!(parse_wm_evt(&[OP_WM_DETACH, 0, 0, 0, 0]), None);
     }
 
     #[test]
@@ -5124,8 +5199,12 @@ mod tests {
         frames.push(buf[..n].to_vec());
         let n = encode_wm_snapshot_rep(&mut buf, &wm_snap_sample(1)).unwrap();
         frames.push(buf[..n].to_vec());
+        let n = encode_wm_attach_req(&mut buf);
+        frames.push(buf[..n].to_vec());
+        let n = encode_wm_detach_req(&mut buf, 0x1234_5678);
+        frames.push(buf[..n].to_vec());
 
-        // 帧序号分派解析器（九帧型 → 统一 Option<()> 拒面）。
+        // 帧序号分派解析器（十一帧型 → 统一 Option<()> 拒面）。
         fn dispatch(fi: usize, b: &[u8]) -> Option<()> {
             match fi {
                 0 => parse_wm_getinfo_req(b).map(|_| ()),
@@ -5136,6 +5215,8 @@ mod tests {
                 5 => parse_wm_set_req(b).map(|_| ()),
                 6 => parse_wm_table_get_req(b).map(|_| ()),
                 7 => parse_wm_table_wait_req(b).map(|_| ()),
+                9 => parse_wm_attach_req(b).map(|_| ()),
+                10 => parse_wm_detach_req(b).map(|_| ()),
                 _ => match parse_wm_snapshot_rep(b) {
                     Some(Ok(_)) | Some(Err(_)) => Some(()),
                     None => None,
