@@ -1,4 +1,4 @@
-//! bsh —— P5 A-2 交互 shell（`docs/shell设计-v1.1.md` v0 最小面 + v0.5 管道，
+//! bsh —— P5 A-2 交互 shell（`docs/shell设计-v1.2.md` v0 最小面 + v0.5 管道，
 //! stdhello 同链：musl target + berry-libc shim + berry-exec 流式拉起）。
 //!
 //! 通道拓扑（boot 手搭，见 main.rs A-2 段）：fd0 = endB2（console 转发键盘
@@ -13,7 +13,7 @@
 //! 空读（libc 10s 帽超时 EOF 化）= 噪声，静默续读不重刷 prompt。
 //!
 //! P5 v0.5 管道（`PIPE ok` = rootfs 相第 10 标记）：`A | B` 相邻段间 channel
-//! 对当 pipe（前段 stdout = 写端 / 后段 stdin = 读端，`docs/shell设计-v1.1.md` §2.2
+//! 对当 pipe（前段 stdout = 写端 / 后段 stdin = 读端，`docs/shell设计-v1.2.md` §2.2
 //! 「channel 即 pipe」）——自验三跑对拍：`hexyl | hexyl` 管道输出 == 同字节
 //! 直喂 `hexyl` 参照**逐字节全等**（证明管道把 A 的 stdout 原样递到 B 的
 //! stdin）+ 全链 EOF 到齐才打标。
@@ -92,7 +92,7 @@
 //! → libc `exit` → 0x33 真退出）。`run` 后 `reap()` 完整回收子进程（Plan B
 //! 前「每次 run 泄漏一个 park 中的子进程」的旧常态退役）。
 //!
-//! P5 v0 收官（`docs/shell设计-v1.1.md` §2.3/§2.5）：**环境变量**（shell 局部变量表 +
+//! P5 v0 收官（`docs/shell设计-v1.2.md` §2.3/§2.5）：**环境变量**（shell 局部变量表 +
 //! `$NAME`/`$?` 展开 + `env` 内建；子进程 env 传递已落——processargs v1.1
 //! bootstrap 通道第二消息（spawn 产点组 [`build_export_set`] 全导出集喂
 //! spec.env）+ `export` 第 21 内建（裸形/`-p` 与 env 同渲染、`K=V` 赋值
@@ -6182,7 +6182,7 @@ enum PipeFail {
     SpawnFail(String),
 }
 
-/// `A | B | …` 拉起 + 末段 stdout 收集（`docs/shell设计-v1.1.md` §2.2 channel 即 pipe）：
+/// `A | B | …` 拉起 + 末段 stdout 收集（`docs/shell设计-v1.2.md` §2.2 channel 即 pipe）：
 /// 相邻段间 [`channel_pair`]——前段 stdout = 写端（spawn 内 dup SEND 别名作
 /// gift[0]）、后段 stdin = 读端（`stdin_handle`，被 env send take 迁进子表）；
 /// 末段 stdout = 采集对。EOF 链 = 消息层约定（d-3b）：前段 exit → libc

@@ -19,4 +19,4 @@ Status: implemented
 
 - [遥测 memstat 与 free 内建刀实施设计](../../plans/2026-11-19-遥测memstat与free内建刀实施设计.md)
 - [2026-11-19-bsh作业控制v2刀](2026-11-19-bsh作业控制v2刀.md)（愈合源刀）
-- [可观测性设计-v1.0](../../../docs/可观测性设计-v1.0.md) §3/§5（禁重复记账源律与 op 域 MINOR 版本律——本刀 op=1 即 MINOR 滚版点，abi.toml desc 与 ABI 文档行随 D8 滚）
+- [可观测性设计-v1.0](../../../docs/可观测性设计-v1.2.md) §3/§5（禁重复记账源律与 op 域 MINOR 版本律——本刀 op=1 即 MINOR 滚版点，abi.toml desc 与 ABI 文档行随 D8 滚）

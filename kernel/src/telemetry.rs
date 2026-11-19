@@ -10,13 +10,15 @@
 //! prev 运行时长 → 运行时长分布）、任务 id（名字 FNV-1a 稳定哈希）、切换
 //! 原因分型、是否切入 idle（→ util）。**唤醒事件已随 4-0 落地**（唤醒环：
 //! block→wake 延迟即「唤醒模式」分布数据，经 [`set_wake_hook`] 注册的
-//! [`on_wake`]）。**消费路径**：`telemetry_open`(0x84) op 域在役三档——klog
-//! 快照首域（berry_telemetry_klog_snapshot——bsh dmesg 消费）＋ memstat 定长
-//! 快照第二档（遥测 v3 首件——[`memstat_snapshot`]，bsh free 消费）＋环
-//! 历史快照第三档（op=2 双族一体——per-CPU 切换环＋唤醒环四段导出，本
-//! 文件 [`ring_snap_into`]/[`wake_ring_snap_into`]，berryctl trace 消费）；
-//! 后续波次自 op=3 起按落地序取号（trace 服务/AI 策略服务）；v1 读点 =
-//! watchdog 存活性断言（环在涨、vct 单调、延迟非负）。
+//! [`on_wake`]）。**消费路径**：`telemetry_open`(0x84) op 域在役四档——
+//! klog 快照首域（berry_telemetry_klog_snapshot——bsh dmesg 消费）＋
+//! memstat 定长快照第二档（遥测 v3 首件——[`memstat_snapshot`]，bsh free
+//! 消费）＋环历史快照第三档（op=2 双族一体——per-CPU 切换环＋唤醒环四段
+//! 导出，本文件 [`ring_snap_into`]/[`wake_ring_snap_into`]，berryctl trace
+//! 消费）＋WakeSrc 槽表纯镜像第四档（op=3 槽表读口刀——40B 轻头＋
+//! 128×64B 平数据全表，本文件 [`wsrc_table_snap_into`]，berryctl powertop
+//! 消费）；后续波次自 op=4 起按落地序取号（trace 服务/AI 策略服务）；
+//! v1 读点 = watchdog 存活性断言（环在涨、vct 单调、延迟非负）。
 //!
 //! **S-3c B12/B13：per-CPU 双环 + seqlock（拆 KERN_LOCK 前置件）**。写方限
 //! 本核（设计原案「per-CPU 环 + 写方限本核」兑现）：切换/唤醒钩子跑在发生
@@ -469,6 +471,57 @@ pub struct WakeSrcRec {
     pub _pad: [u8; 5],
 }
 const _: () = assert!(core::mem::size_of::<WakeSrcRec>() == 64);
+
+// M1 cross-const assert（槽表读口刀）：本文件原子壳 `WakeSrcRec` 与
+// berry-telface op=3 平数据镜像 `WakeSrcRecV1` 十字段逐偏移同位钉死＋
+// size 同值＋槽域 WAKE_SRC_SLOTS == WSRC_TABLE_V1_SLOTS（op=2 环几何
+// cross-const 判例同构——插字段/错序/槽域单改即编译红）。壳不可替换为
+// 平数据（原子面留 kernel——wsrcface「布局留 kernel 壳」纪律）；镜像由
+// 本断言锁步。
+const _: () = assert!(
+    core::mem::size_of::<WakeSrcRec>() == core::mem::size_of::<berry_telface::WakeSrcRecV1>()
+);
+const _: () = assert!(
+    core::mem::offset_of!(WakeSrcRec, wakes)
+        == core::mem::offset_of!(berry_telface::WakeSrcRecV1, wakes)
+);
+const _: () = assert!(
+    core::mem::offset_of!(WakeSrcRec, irq_count)
+        == core::mem::offset_of!(berry_telface::WakeSrcRecV1, irq_count)
+);
+const _: () = assert!(
+    core::mem::offset_of!(WakeSrcRec, no_waiter)
+        == core::mem::offset_of!(berry_telface::WakeSrcRecV1, no_waiter)
+);
+const _: () = assert!(
+    core::mem::offset_of!(WakeSrcRec, first_ts)
+        == core::mem::offset_of!(berry_telface::WakeSrcRecV1, first_ts)
+);
+const _: () = assert!(
+    core::mem::offset_of!(WakeSrcRec, last_ts)
+        == core::mem::offset_of!(berry_telface::WakeSrcRecV1, last_ts)
+);
+const _: () = assert!(
+    core::mem::offset_of!(WakeSrcRec, last_ack_ts)
+        == core::mem::offset_of!(berry_telface::WakeSrcRecV1, last_ack_ts)
+);
+const _: () = assert!(
+    core::mem::offset_of!(WakeSrcRec, last_woken_id)
+        == core::mem::offset_of!(berry_telface::WakeSrcRecV1, last_woken_id)
+);
+const _: () = assert!(
+    core::mem::offset_of!(WakeSrcRec, flags)
+        == core::mem::offset_of!(berry_telface::WakeSrcRecV1, flags)
+);
+const _: () = assert!(
+    core::mem::offset_of!(WakeSrcRec, ts_domain)
+        == core::mem::offset_of!(berry_telface::WakeSrcRecV1, ts_domain)
+);
+const _: () = assert!(
+    core::mem::offset_of!(WakeSrcRec, _pad)
+        == core::mem::offset_of!(berry_telface::WakeSrcRecV1, _pad)
+);
+const _: () = assert!(WAKE_SRC_SLOTS == berry_telface::WSRC_TABLE_V1_SLOTS);
 
 impl WakeSrcRec {
     const fn new() -> Self {
@@ -1206,7 +1259,7 @@ pub const CONSENT_EV_EXPIRE: u8 = 4;
 #[allow(dead_code)] // 同上——v1 词汇预留无消费者
 pub const CONSENT_EV_RAN_ANYWAY: u8 = 5;
 
-// ---- 0x84 op=1：memstat 定长快照装配（遥测 v3 首件——`docs/可观测性设计-v1.0.md`
+// ---- 0x84 op=1：memstat 定长快照装配（遥测 v3 首件——`docs/可观测性设计-v1.2.md`
 // §3；RAM 五域读点，bsh free 消费。形状与 op 常量单源 = berry-telface
 // [`MemstatRec`]/`TELEMETRY_OP_MEMSTAT`；双族环快照 op=2 已落地——见文件尾
 // 环快照装配段）----
@@ -1383,4 +1436,112 @@ pub(crate) fn ktest_reset_rings() {
     for r in rings.iter_mut() {
         *r = WakeRing::new();
     }
+}
+
+// ---- 0x84 op=3：WakeSrc 槽表纯镜像快照装配（槽表读口刀——`syscall.rs`
+// 派发臂唯一消费方；形状/常量单源 berry-telface `WsrcHdrV1`/`WakeSrcRecV1`
+//（M1 cross-const assert 与本文件原子壳锁步）；一致性语义 = 逐槽逐字段
+// 独立原子读、非一致快照〔G6——wake_src_snapshot 先例扩全表〕）----
+
+/// WakeSrc 槽表全表纯镜像快照装配（0x84 op=3）。`stage` 装配缓冲、
+/// `limit` = 用户 len 与满载容量的 min（syscall 侧传入）；返回实写字节
+/// 数 = 40 头 ＋ 行数×64（≥40 头自证）。
+///
+/// **装配序双不变式**（裁决 4——序漂移即破，注释执法）：
+/// ① N 先读（`WAKE_ACCT_N` Acquire——`wake_acct_conserved` 读序同款）：
+///    写序「槽先、N 末位 Release」的读者侧对偶 ⇒ 瞬态恒 **Σ行wakes ≥
+///    acct_n**（一次广播可醒任意多任务，不做固定差值帽）。
+/// ② 逐槽 0..行数 字段独立 Relaxed 读（`wake_src_snapshot` 逐槽先例扩
+///    全表）→ 平数据镜像行 LE 落 stage 行区。行数 = min(128,
+///    (limit−40)/64)——**整行粒度截尾**（半行结构性写不出，返回值自证）。
+/// ③ `now_vct` 行读毕后取（CNTVCT 单调律 ⇒ 头锚 **≥ 任一行内时戳**——
+///    消费方区间分母可安全夹上界）。
+/// ④ 头最后装配落笔 offset 0（op=2 头最后落笔判例）。
+///
+/// **一致性契约（G6——诚实非一致快照）**：单调族（wakes/irq_count/
+/// no_waiter fetch_add、first_ts fetch_min、last_ts fetch_max、flags
+/// fetch_or、merge_hal 单调 store）中途读恒得某个真实持过的值，无回退
+/// 无撕裂；非单调族（last_woken_id/last_ack_ts 定宽 store）可旧可新不
+/// 撕；**跨字段错位可能**（wakes 新于 last_ts 等）——差分只许用单调族。
+/// 全记录一致窗不承诺（挂账维持）。读口零写：不并账不重试不设窗
+///（`wake_src_merge_hal` 不进装配——G1.5 语义零漂移）。trace_off 无
+/// 特判表照出：on_wake 槽写与 N 递增都在 trace_off 早退之前（计数器族
+/// 不随关），双 trace 态皆真数据无空头形。
+pub(crate) fn wsrc_table_snap_into(stage: &mut [u8], limit: usize) -> usize {
+    let hdr_len = core::mem::size_of::<berry_telface::WsrcHdrV1>();
+    let rec_len = core::mem::size_of::<berry_telface::WakeSrcRecV1>();
+    // ① 独立总账 N 先读（Acquire——写序槽先、N 末位 Release 的读者侧
+    //    对偶：瞬态恒 Σ行wakes ≥ N）。
+    let acct_n = WAKE_ACCT_N.load(Ordering::Acquire);
+    // ② 逐槽逐字段独立 Relaxed 读 → 平数据镜像行；行数整行粒度截尾。
+    let rows = WAKE_SRC_SLOTS.min(limit.saturating_sub(hdr_len) / rec_len);
+    for src in 0..rows {
+        let s = &WAKE_SRC_TABLE[src];
+        let row = berry_telface::WakeSrcRecV1 {
+            wakes: s.wakes.load(Ordering::Relaxed),
+            irq_count: s.irq_count.load(Ordering::Relaxed),
+            no_waiter: s.no_waiter.load(Ordering::Relaxed),
+            first_ts: s.first_ts.load(Ordering::Relaxed),
+            last_ts: s.last_ts.load(Ordering::Relaxed),
+            last_ack_ts: s.last_ack_ts.load(Ordering::Relaxed),
+            last_woken_id: s.last_woken_id.load(Ordering::Relaxed),
+            flags: s.flags.load(Ordering::Relaxed),
+            // 冻结保留域恒 0（普通字节非原子、无写点——编解码垫区写零）。
+            ts_domain: s.ts_domain,
+            _pad: [0; 5],
+        };
+        let mut rbuf = [0u8; core::mem::size_of::<berry_telface::WakeSrcRecV1>()];
+        berry_telface::wsrc_row_write(&row, &mut rbuf);
+        let off = hdr_len + src * rec_len;
+        stage[off..off + rec_len].copy_from_slice(&rbuf);
+    }
+    // ③ now_vct 行读毕后取（CNTVCT 单调律 ⇒ 头锚 ≥ 任一行内时戳）。
+    let now_vct = berry_hal_aarch64::timer::cntvct();
+    // ④ 头最后装配落笔 offset 0。
+    let h = berry_telface::WsrcHdrV1 {
+        version: berry_telface::WSRC_SNAP_VER,
+        hdr_bytes: hdr_len as u32,
+        slots: WAKE_SRC_SLOTS as u32,
+        rec_size: rec_len as u32,
+        // cntfrq 同刻读：vct→ns 换算唯一源（rings 头同款）。
+        cntfrq: berry_hal_aarch64::timer::cntfrq(),
+        now_vct,
+        wake_acct_n: acct_n,
+    };
+    let mut hbuf = [0u8; core::mem::size_of::<berry_telface::WsrcHdrV1>()];
+    berry_telface::wsrc_hdr_write(&h, &mut hbuf);
+    stage[..hdr_len].copy_from_slice(&hbuf);
+    hdr_len + rows * rec_len
+}
+
+// ---- ktest 助手（op=3 槽表对拍专用——**仅 ktest 静止窗合法**（`ktest::run`
+// 先于 `berry_sched::init`/`telemetry::init`：on_wake 钩子未注册＋boot
+// DAIF 屏蔽到达点结构性不可达——main.rs 时序 :1007 < :1128 < :1140）；
+// 生产路径禁调。槽播种零新口：`WAKE_SRC_TABLE` pub static 字段全 pub 直
+// 原子 store 即可达——与 op=2 环种子口的差异：表已 pub、唯 N 私有，故
+// 助手只有 N 播种与全表清零两件）----
+
+/// 独立总账播种（ktest 自算 Σ 播种对拍——`WAKE_ACCT_N` 私有故立此口）。
+/// Release 与生产写序同纪律（N 末位 Release）。
+pub(crate) fn ktest_wake_acct_set(n: u64) {
+    WAKE_ACCT_N.store(n, Ordering::Release);
+}
+
+/// 全表清零：128 槽逐原子字段恢复 `WakeSrcRec::new()` 初值＋N 归 0（种子
+/// 用毕即清——K4；封堵种子对 G1.5 双形态断言面与 WSRC-K 的污染，清零后
+/// boot 真数据从初值累计，语义零漂移）。ts_domain/`_pad` 是 v1 冻结恒 0
+/// 普通字节（无写点、经非 mut static 无合法写路径）——结构性恒初值，清零
+/// 面如实不含。
+pub(crate) fn ktest_reset_wsrc() {
+    for slot in WAKE_SRC_TABLE.iter() {
+        slot.wakes.store(0, Ordering::Relaxed);
+        slot.irq_count.store(0, Ordering::Relaxed);
+        slot.no_waiter.store(0, Ordering::Relaxed);
+        slot.first_ts.store(u64::MAX, Ordering::Relaxed);
+        slot.last_ts.store(0, Ordering::Relaxed);
+        slot.last_ack_ts.store(0, Ordering::Relaxed);
+        slot.last_woken_id.store(0, Ordering::Relaxed);
+        slot.flags.store(0, Ordering::Relaxed);
+    }
+    WAKE_ACCT_N.store(0, Ordering::Release);
 }

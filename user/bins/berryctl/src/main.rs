@@ -18,6 +18,15 @@
 //!   ＋`--json`（纯净 stdout 单对象、诊断 stderr——shell设计 §3 铁律
 //!   首件）；降级段行内 degraded 标记（TCG 降级频度观测仪器——
 //!   powertop/trace 梯队首块）。不进 smoke boot 序列（零标记面）。
+//! - `powertop`（槽表读口刀）：**非 RPC 面**早分支（trace 先例位）——内核
+//!   0x84 op=3 WakeSrc 槽表纯镜像直调（berry_sys 薄包装第四件）。「谁在
+//!   挡住深睡」v1 判据＝频度×浪费率×源排行：默认单快照累计形（wakes
+//!   降序源排行＋no_waiter/irq_count 浪费率锚＋安静时长＋ack 延迟单点
+//!   代理诚实降档）；`-d <ms>` 差分形（`berry_thread_sleep` 真睡两帧逐
+//!   槽饱和差分——区间 Δwakes/Δt 频度，头 now_vct 差自证区间锚；测量
+//!   自身 sleep 超时醒＝TIMER +1 如实注记）；`--json`（day-one 第二件：
+//!   mode 条件域两层、raw 单调计数＋因子出口、率/排名/合成指数归人读
+//!   形——shell设计 §3 铁律）。不进 smoke boot 序列（零标记面）。
 //!
 //! 失败面（无 gift / RPC 帽尽 / 畸形应答 / 未知子命令）stderr 一行诊断
 //! + exit 1——标记缺失 = smoke FAIL 兜底（链断 loud）。v0 边界：bsh
@@ -314,6 +323,399 @@ fn trace_cmd(json: bool) {
     }
 }
 
+// ---- `powertop` 子命令（槽表读口刀雏形——「谁在挡住深睡」观测面）----
+//
+// 取数 = 内核 0x84 op=3 WakeSrc 槽表全表纯镜像（40B 头 WsrcHdrV1＋
+// 128×64B 行 WakeSrcRecV1，行号即源值；头/行解码经 berry-sys re-export
+// 的 telface 纯函数单源，条目步进按头 rec_size 自述走读——条目偏移手解
+// 不在本面）。活动槽谓词 = wakes>0||irq>0||no_waiter>0（user.rs 计数族
+// 判例；first_ts≠MAX 禁用——漏 merge_hal 三槽与 PWRKEY 恰是要观测的无主
+// 到达面）。
+//
+// v1 判据（谱裁决 9——频度×浪费率×源排行）：「深睡」v1 语义 = idle 深
+// park 长驻留的打断（TCG 无 PSCI suspend/无 C-state/无 PMU——非 Linux
+// 同名面）；频度主判据 = 区间 Δwakes/Δt（差分形；单快照形出 raw 累计
+// 与源排行）；浪费率 = no_waiter/irq_count 到达锚 [0,1]（分母裁 irq_count
+// 非 wakes——wakes 是广播乘数〔一次广播可醒任意多任务〕nw/wakes 无界
+// 不可比；v1 真数面仅 UART_RX 良性竞态＋POWER_KEY 结构性无主两槽，TIMER
+// 类浪费走环侧 WakeRec.reason==TIMEOUT 占比代理归 trace 面不复制）；排
+// 行 = Δwakes 降序（单快照 wakes 降序）并列 irq 降序再并列 src 升序。
+// 安静时长（now_vct−last_ts）与 ack 延迟（last_ts−last_ack_ts）= 展示
+// 辅助单点代理（跨字段错位诚实降档「-」）。
+//
+// 差分 = berry_thread_sleep 真睡两帧（测量任务真睡让核 park、窗内醒源
+// 直接归因＝powertop 本义；禁 clock 忙等——自抬 TIMER 到达计数污染被测
+// 面）；区间分母 = 两帧头 now_vct 差自证（命令行标称值仅作睡眠 pacing
+// 不作分母）；差分行集 = 两帧活动槽并集；测量自身贡献如实注记（本命令
+// sleep 超时醒＝TIMER dw 含 +1 诚实可解释）。
+
+/// `-d <ms>` 上帽（30s——RPC_CAP_NS 30s 判例；宿主等不起更长的诊断窗）。
+const POWERTOP_D_CAP_MS: u64 = 30_000;
+
+/// 源值→短名（本文件本地 8 槽表：0x01-0x06 on_wake 真源＋0x07 PWRKEY
+/// 到达源＋0x7F UNKNOWN——名字映射归消费方公约，内核只出值；表外源
+/// hex 兜底）。KBOOT=KERNEL_BOOT/UART=UART_RX/RESCHED·TLB=SGI×2。
+fn wsrc_short_name(src: u8) -> Option<&'static str> {
+    match src {
+        0x01 => Some("KBOOT"),
+        0x02 => Some("TIMER"),
+        0x03 => Some("UART"),
+        0x04 => Some("RESCHED"),
+        0x05 => Some("TLB"),
+        0x06 => Some("IPC"),
+        0x07 => Some("PWRKEY"),
+        0x7F => Some("UNK"),
+        _ => None,
+    }
+}
+
+/// vct→ms 换算（消费方派生；cntfrq==0 防御归 0——内核契约恒 >0）。
+fn vct_ms(v: u64, cntfrq: u64) -> u64 {
+    if cntfrq == 0 {
+        return 0;
+    }
+    ((v as u128) * 1000 / cntfrq as u128).min(u64::MAX as u128) as u64
+}
+
+/// 一帧快照：头＋行区（下标即源值；行数 = min(头 slots, 实写余量整行数)）。
+struct WsrcSnap {
+    hdr: berry_sys::WsrcHdrV1,
+    rows: Vec<berry_sys::WakeSrcRecV1>,
+}
+
+/// 单帧取数（trace 先例同形：st<0 / n<40 → stderr 一行 + exit 1）。行区
+/// 自描述走读：起点 = 头 hdr_bytes、步进 = 头 rec_size（跨版本走读锚；v1
+/// 不足 64B/几何越界 = 诚实拒——v1 行解码器只认 64B 镜像）。
+fn wsrc_fetch() -> WsrcSnap {
+    use berry_sys::{wsrc_hdr_read, wsrc_row_read};
+
+    let mut buf = vec![0u8; berry_sys::TELEMETRY_WSRC_MAX];
+    let st = berry_sys::berry_telemetry_wsrc_snapshot(buf.as_mut_ptr(), buf.len());
+    if st < 0 {
+        eprintln!("berryctl: powertop err {}", st);
+        exit(1);
+    }
+    let n = st as usize;
+    if n < 40 {
+        eprintln!("berryctl: powertop short snap n={n}");
+        exit(1);
+    }
+    let mut hb = [0u8; 40];
+    hb.copy_from_slice(&buf[..40]);
+    let hdr = wsrc_hdr_read(&hb);
+    let start = hdr.hdr_bytes as usize;
+    let stride = hdr.rec_size as usize;
+    if start < 40 || stride < 64 || start > n {
+        eprintln!("berryctl: powertop bad geom hb={} rs={}", hdr.hdr_bytes, hdr.rec_size);
+        exit(1);
+    }
+    // v1 槽域 = 值域上界 0x7F+1 = 128（单源 wsrcface SLOTS 的 v1 钉值）。
+    let rows_n = (hdr.slots as usize).min(128).min((n - start) / stride);
+    let mut rows = Vec::with_capacity(rows_n);
+    for i in 0..rows_n {
+        let off = start + i * stride;
+        let mut rb = [0u8; 64];
+        rb.copy_from_slice(&buf[off..off + 64]);
+        rows.push(wsrc_row_read(&rb));
+    }
+    WsrcSnap { hdr, rows }
+}
+
+/// 活动槽谓词（user.rs:2030 计数族判例——单调计数三元 OR）。
+fn wsrc_active(r: &berry_sys::WakeSrcRecV1) -> bool {
+    r.wakes > 0 || r.irq_count > 0 || r.no_waiter > 0
+}
+
+/// 行首「wsrc=0xXX(NAME)」/表外源「wsrc=0xXX」（wsrc= token 族——canon
+/// 已过前缀；非「src=」——与标记「ROOTFS ok src=」互非子串纪律）。
+fn wsrc_row_prefix(src: usize) -> String {
+    let b = src as u8;
+    match wsrc_short_name(b) {
+        Some(name) => format!("wsrc=0x{:02X}({})", b, name),
+        None => format!("wsrc=0x{:02X}", b),
+    }
+}
+
+/// 人读单快照形：首行总账＋活动槽行（wakes 降序、并列 irq 降序、再并列
+/// src 升序——确定性）。首行不出现「src=」「ok 」子串面（canon 机查门）。
+fn powertop_human_cum(s: &WsrcSnap) {
+    let cntfrq = s.hdr.cntfrq;
+    let mut idx: Vec<usize> = (0..s.rows.len()).filter(|&i| wsrc_active(&s.rows[i])).collect();
+    println!(
+        "powertop acct={} cntfrq={} active={}/{} now={}ms",
+        s.hdr.wake_acct_n,
+        cntfrq,
+        idx.len(),
+        s.hdr.slots,
+        vct_ms(s.hdr.now_vct, cntfrq)
+    );
+    idx.sort_by(|&a, &b| {
+        let (ra, rb) = (&s.rows[a], &s.rows[b]);
+        rb.wakes
+            .cmp(&ra.wakes)
+            .then(rb.irq_count.cmp(&ra.irq_count))
+            .then(a.cmp(&b))
+    });
+    for i in idx {
+        let r = &s.rows[i];
+        let mut line = wsrc_row_prefix(i);
+        line.push_str(&format!(" w={} i={} nw={}", r.wakes, r.irq_count, r.no_waiter));
+        if r.irq_count > 0 {
+            // 浪费率 = nw/irq 到达锚 [0,1]（跨字段错位瞬态可 >100%，夹 100
+            // 诚实上限——结构上 nw≤irq，读窗错位除外）。
+            let pct = ((r.no_waiter as u128) * 100 / r.irq_count as u128).min(100) as u64;
+            line.push_str(&format!(" waste={pct}%"));
+        }
+        if r.first_ts == u64::MAX {
+            line.push_str(" first=-"); // 哨兵＝未触（irq-only 槽常态）
+        } else {
+            line.push_str(&format!(" first={}ms", vct_ms(r.first_ts, cntfrq)));
+        }
+        if r.last_ts > 0 {
+            line.push_str(&format!(" last={}ms", vct_ms(r.last_ts, cntfrq)));
+        } else {
+            line.push_str(" last=-");
+        }
+        // ack 延迟单点代理：仅 last_ack_ts>0 ∧ last_ts≥last_ack_ts 出
+        //（跨字段错位诚实降档「-」）。
+        if r.last_ack_ts > 0 && r.last_ts >= r.last_ack_ts {
+            line.push_str(&format!(" ack={}ms", vct_ms(r.last_ts - r.last_ack_ts, cntfrq)));
+        } else {
+            line.push_str(" ack=-");
+        }
+        // 安静时长 = now_vct−last_ts（装配序保证 ≥0；错位防御饱和减）。
+        if r.last_ts > 0 {
+            line.push_str(&format!(" idle={}ms", vct_ms(s.hdr.now_vct.saturating_sub(r.last_ts), cntfrq)));
+        } else {
+            line.push_str(" idle=-");
+        }
+        println!("{}", line);
+    }
+    // TIMER 类浪费 v1 无槽级面——环侧 TIMEOUT 占比代理归 trace 面注记。
+    println!("# waste=nw/irq 到达锚：v1 真数面仅 UART/PWRKEY；TIMER 类走 trace 环侧 TIMEOUT 代理");
+}
+
+/// 人读差分形：首行区间锚＋两帧活动槽并集行（Δwakes 降序、并列 Δirq
+/// 降序、再并列 src 升序）；列同形换 dw=/dirq=/dnw=＋区间率 wake/s；帧 2
+/// last_ts 单点随行。测量自身贡献如实注记一行。
+fn powertop_human_diff(s1: &WsrcSnap, s2: &WsrcSnap, interval_vct: u64) {
+    let cntfrq = s2.hdr.cntfrq;
+    let n = s1.rows.len().min(s2.rows.len());
+    let mut idx: Vec<usize> = (0..n)
+        .filter(|&i| wsrc_active(&s1.rows[i]) || wsrc_active(&s2.rows[i]))
+        .collect();
+    let dacct = s2.hdr.wake_acct_n.saturating_sub(s1.hdr.wake_acct_n);
+    println!(
+        "powertop diff dacct={} cntfrq={} active={}/{} interval={}ms",
+        dacct,
+        cntfrq,
+        idx.len(),
+        s2.hdr.slots,
+        vct_ms(interval_vct, cntfrq)
+    );
+    let dw = |i: usize| s2.rows[i].wakes.saturating_sub(s1.rows[i].wakes);
+    let dirq = |i: usize| s2.rows[i].irq_count.saturating_sub(s1.rows[i].irq_count);
+    idx.sort_by(|&a, &b| {
+        dw(b).cmp(&dw(a)).then(dirq(b).cmp(&dirq(a))).then(a.cmp(&b))
+    });
+    for i in idx {
+        let r2 = &s2.rows[i];
+        let mut line = wsrc_row_prefix(i);
+        line.push_str(&format!(" dw={} dirq={} dnw={}", dw(i), dirq(i), r2.no_waiter.saturating_sub(s1.rows[i].no_waiter)));
+        if r2.last_ts > 0 {
+            line.push_str(&format!(" last={}ms", vct_ms(r2.last_ts, cntfrq)));
+        } else {
+            line.push_str(" last=-");
+        }
+        // 区间率 = Δwakes/Δt（cntfrq 换算，消费方派生；整数百分率两位——
+        // 分母 0 防御降档「-」）。
+        if interval_vct > 0 {
+            let centi = ((dw(i) as u128) * 100 * cntfrq as u128 / interval_vct as u128).min(u64::MAX as u128) as u64;
+            line.push_str(&format!(" wake/s={}.{:02}", centi / 100, centi % 100));
+        } else {
+            line.push_str(" wake/s=-");
+        }
+        println!("{}", line);
+    }
+    println!("# 差分窗测量自身贡献：本命令 sleep 超时醒＝TIMER dw 含 +1（如实注记）");
+}
+
+/// --json：纯净 stdout 单对象（诊断 stderr——shell设计 §3 铁律）。
+/// schema add-only（day-one 第二件）：顶层公共因子平铺（version/cntfrq/
+/// slots/rec_size）＋mode 条件域两层——cum 形 {now_vct,wake_acct_n,
+/// sources:[…raw 九域]}、diff 形 {t0:{now_vct,wake_acct_n},t1:{同},
+/// interval_vct,sources:[…Δ 四域]}。字段单义：cum 行恒 raw 累计、diff
+/// 行恒 Δ；raw 单调计数＋cntfrq＋now_vct 锚出口，率/比/排行/合成指数不
+/// 进 JSON（公约 5——防测量窗口语义双义进 ABI）；first_ts 哨兵
+/// u64::MAX 原样导出（＝未触）；ts_domain 不进（v1 冻结 0——add-only 后
+/// 补通道在）；活动槽 src 升序、src 出数值不出名。
+fn powertop_json_cum(s: &WsrcSnap) {
+    let mut out = String::with_capacity(1024);
+    out.push_str("{\"version\":");
+    out.push_str(&s.hdr.version.to_string());
+    out.push_str(",\"mode\":\"cum\",\"cntfrq\":");
+    out.push_str(&s.hdr.cntfrq.to_string());
+    out.push_str(",\"slots\":");
+    out.push_str(&s.hdr.slots.to_string());
+    out.push_str(",\"rec_size\":");
+    out.push_str(&s.hdr.rec_size.to_string());
+    out.push_str(",\"now_vct\":");
+    out.push_str(&s.hdr.now_vct.to_string());
+    out.push_str(",\"wake_acct_n\":");
+    out.push_str(&s.hdr.wake_acct_n.to_string());
+    out.push_str(",\"sources\":[");
+    let mut first = true;
+    for (src, r) in s.rows.iter().enumerate() {
+        if !wsrc_active(r) {
+            continue;
+        }
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        out.push_str("{\"src\":");
+        out.push_str(&src.to_string());
+        out.push_str(",\"wakes\":");
+        out.push_str(&r.wakes.to_string());
+        out.push_str(",\"irq_count\":");
+        out.push_str(&r.irq_count.to_string());
+        out.push_str(",\"no_waiter\":");
+        out.push_str(&r.no_waiter.to_string());
+        out.push_str(",\"first_ts\":");
+        out.push_str(&r.first_ts.to_string());
+        out.push_str(",\"last_ts\":");
+        out.push_str(&r.last_ts.to_string());
+        out.push_str(",\"last_ack_ts\":");
+        out.push_str(&r.last_ack_ts.to_string());
+        out.push_str(",\"last_woken_id\":");
+        out.push_str(&r.last_woken_id.to_string());
+        out.push_str(",\"flags\":");
+        out.push_str(&r.flags.to_string());
+        out.push('}');
+    }
+    out.push_str("]}");
+    println!("{}", out);
+}
+
+fn powertop_json_diff(s1: &WsrcSnap, s2: &WsrcSnap, interval_vct: u64) {
+    let mut out = String::with_capacity(1024);
+    out.push_str("{\"version\":");
+    out.push_str(&s2.hdr.version.to_string());
+    out.push_str(",\"mode\":\"diff\",\"cntfrq\":");
+    out.push_str(&s2.hdr.cntfrq.to_string());
+    out.push_str(",\"slots\":");
+    out.push_str(&s2.hdr.slots.to_string());
+    out.push_str(",\"rec_size\":");
+    out.push_str(&s2.hdr.rec_size.to_string());
+    out.push_str(",\"t0\":{\"now_vct\":");
+    out.push_str(&s1.hdr.now_vct.to_string());
+    out.push_str(",\"wake_acct_n\":");
+    out.push_str(&s1.hdr.wake_acct_n.to_string());
+    out.push_str("},\"t1\":{\"now_vct\":");
+    out.push_str(&s2.hdr.now_vct.to_string());
+    out.push_str(",\"wake_acct_n\":");
+    out.push_str(&s2.hdr.wake_acct_n.to_string());
+    out.push_str("},\"interval_vct\":");
+    out.push_str(&interval_vct.to_string());
+    out.push_str(",\"sources\":[");
+    let n = s1.rows.len().min(s2.rows.len());
+    let mut first = true;
+    for src in 0..n {
+        let (r1, r2) = (&s1.rows[src], &s2.rows[src]);
+        if !wsrc_active(r1) && !wsrc_active(r2) {
+            continue;
+        }
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        out.push_str("{\"src\":");
+        out.push_str(&src.to_string());
+        out.push_str(",\"dwakes\":");
+        out.push_str(&r2.wakes.saturating_sub(r1.wakes).to_string());
+        out.push_str(",\"dirq_count\":");
+        out.push_str(&r2.irq_count.saturating_sub(r1.irq_count).to_string());
+        out.push_str(",\"dno_waiter\":");
+        out.push_str(&r2.no_waiter.saturating_sub(r1.no_waiter).to_string());
+        out.push_str(",\"last_ts\":");
+        out.push_str(&r2.last_ts.to_string());
+        out.push('}');
+    }
+    out.push_str("]}");
+    println!("{}", out);
+}
+
+/// `powertop` 入口：args[2..] 扫描 `--json` 与 `-d <ms>`（u64 毫秒、帽
+/// [`POWERTOP_D_CAP_MS`]；缺值/非数/越帽 stderr + exit 1）；无 `-d` ＝
+/// 单快照累计形。差分 = snap1 → `berry_thread_sleep` 真睡（deadline 绝对
+/// MONOTONIC ns；测量任务真睡让核 park——禁 clock 忙等，自抬 TIMER 到达
+/// 计数污染被测面）→ snap2 → 逐槽饱和差分（单调族 Δ 恒非负）；区间 =
+/// h2.now_vct−h1.now_vct（头时钟锚自证——命令行标称值仅作睡眠 pacing
+/// 不作分母）。
+fn powertop_cmd(args: &[String]) {
+    let mut json = false;
+    let mut dur_ms: Option<u64> = None;
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--json" {
+            json = true;
+        } else if a == "-d" {
+            i += 1;
+            let raw = match args.get(i) {
+                Some(s) => s.as_str(),
+                None => {
+                    eprintln!("berryctl: powertop -d needs <ms>");
+                    exit(1);
+                }
+            };
+            let v = match raw.parse::<u64>() {
+                Ok(v) => v,
+                Err(_) => {
+                    eprintln!("berryctl: powertop bad -d {}", raw);
+                    exit(1);
+                }
+            };
+            if v > POWERTOP_D_CAP_MS {
+                eprintln!("berryctl: powertop -d cap {}ms", POWERTOP_D_CAP_MS);
+                exit(1);
+            }
+            dur_ms = Some(v);
+        } else {
+            eprintln!("berryctl: powertop unknown arg {}", a);
+            exit(1);
+        }
+        i += 1;
+    }
+    match dur_ms {
+        None => {
+            let s = wsrc_fetch();
+            if json {
+                powertop_json_cum(&s);
+            } else {
+                powertop_human_cum(&s);
+            }
+        }
+        Some(ms) => {
+            let s1 = wsrc_fetch();
+            // 真睡：deadline = now + ms×1e6（绝对 ns；已过点立即返 0——
+            // 幂等安全）。
+            let st = berry_sys::berry_thread_sleep(now() + ms * 1_000_000);
+            if st != 0 {
+                eprintln!("berryctl: powertop sleep err {}", st);
+                exit(1);
+            }
+            let s2 = wsrc_fetch();
+            let interval_vct = s2.hdr.now_vct.saturating_sub(s1.hdr.now_vct);
+            if json {
+                powertop_json_diff(&s1, &s2, interval_vct);
+            } else {
+                powertop_human_diff(&s1, &s2, interval_vct);
+            }
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let sub = args.get(1).map(String::as_str).unwrap_or("");
@@ -335,12 +737,20 @@ fn main() {
         trace_cmd(args.get(2).map(String::as_str) == Some("--json"));
         exit(0);
     }
+    // `powertop` 早分支（槽表读口刀雏形——「谁在挡住深睡」观测面）：直调
+    // 内核 0x84 op=3（trace 先例位——非 psproto RPC、无 gift 依赖，bsh 手
+    // 跑档亦可调）。默认单快照累计形；`-d <ms>` 差分形；`--json` day-one
+    // 第二件（schema add-only）。不进 smoke boot 序列（零标记面）。
+    if sub == "powertop" {
+        powertop_cmd(&args[2..]);
+        exit(0);
+    }
     let op: u8 = match sub {
         "ver" => OP_VER,
         "ps" => OP_PS_LIST,
         "mem" => OP_MEM,
         _ => {
-            eprintln!("usage: berryctl ver|ps|mem|power|trace");
+            eprintln!("usage: berryctl ver|ps|mem|power|trace|powertop");
             exit(1);
         }
     };
