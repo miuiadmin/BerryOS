@@ -23,3 +23,7 @@ targets = ["aarch64-unknown-none", "aarch64-unknown-linux-musl"]
 # W3-Q106：vDSO 页布局/换算单源（berry_clock_read MONOTONIC fast path
 # 消费；内核侧 kernel/src/vdso.rs 同源建页——「不长第二套」）。
 berry-vdsoface = { path = "../berry-vdsoface", version = "0.2.0" }
+# 0x84 telemetry_open op 域单源（遥测 v3 首件 memstat）：MemstatRec 形状
+# 与 op 常量——内核派发（syscall.rs）同引此 crate，消内核/用户双写；
+# 跨 workspace path 依赖先例 = berry-power→emface。
+berry-telface = { path = "../../telface" }

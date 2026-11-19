@@ -106,6 +106,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "berry-jobs"
+version = "0.2.0"
+
+[[package]]
 name = "berry-layout"
 version = "0.2.0"
 
@@ -185,11 +189,16 @@ version = "0.2.0"
 name = "berry-sys"
 version = "0.2.0"
 dependencies = [
+ "berry-telface",
  "berry-vdsoface",
 ]
 
 [[package]]
 name = "berry-tcp"
+version = "0.2.0"
+
+[[package]]
+name = "berry-telface"
 version = "0.2.0"
 
 [[package]]

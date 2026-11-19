@@ -126,11 +126,13 @@ pub const RT_SEQ_REQ_MAX: usize = 3 + TCP_DATA_MAX;
 /// 2B `[st][seq]` 形结构性更短——vnet serve 应答缓冲取本值）。
 pub const RT_SEQ_REP_MAX: usize = 3 + TCP_DATA_MAX;
 
-/// RT 流水线窗深（四刀）：libc Client 臂 K 窗与 vnet session-0 挂起 op 队列
-/// 的共源几何定值——K=2 恰满 berry-tcp 在途环（2×TCP_DATA_MAX=500 ≤
-/// TX_SLOTS×MSS=512，vnet tcp.rs 消费侧 const assert 机器钉）；回绕距
-/// u8 全域 256 ≫ K 无歧义。双侧（libc TCP_PIPE_K / vnet RT_K）必同值。
-pub const RT_PIPE_K: usize = 2;
+/// RT 流水线窗深（四刀 2、五刀③ 2→3）：libc Client 臂 K 窗与 vnet
+/// session-0 挂起 op 队列的共源几何定值——K=3 保守案：K×250=750 ≤
+/// min(TX_CAP, WINDOW)=1024 双界（五刀③环扩 TX_SLOTS 4→8 + 通告窗
+/// 512→1024 联动，余 274B+2 槽；K=4 恰满零余量拒；vnet tcp.rs 消费侧
+/// const assert 机器钉）；回绕距 u8 全域 256 ≫ K 无歧义。双侧（libc
+/// TCP_PIPE_K / vnet RT_K）必同值。
+pub const RT_PIPE_K: usize = 3;
 
 /// 应答线上长度。
 pub const REPLY_LEN: usize = 5;
@@ -1717,12 +1719,14 @@ mod tests {
         assert!(TCP_REP_MAX + 1 + 4 > CHAN_MSG_MAX);
     }
 
-    /// RT_PIPE_K 几何钉：K=2 恰满 berry-tcp 环（2×250=500 ≤ 4×128=512，
-    /// vnet tcp.rs 消费侧 const assert 同值单源）；回绕距 256 ≫ K。
+    /// RT_PIPE_K 几何钉（五刀③ 2→3）：K=3 保守案 750 ≤ min(TX_CAP,
+    /// WINDOW)=1024 双界（环扩 8×128 与通告窗同值对齐，余 274B+2 槽；
+    /// K=4 恰满零余量拒；vnet tcp.rs 消费侧 const assert 同值单源）；
+    /// 回绕距 256 ≫ K。
     #[test]
     fn rt_pipe_k_geometry_pinned() {
-        assert_eq!(RT_PIPE_K, 2);
-        assert!(RT_PIPE_K * TCP_DATA_MAX <= 4 * 128);
+        assert_eq!(RT_PIPE_K, 3);
+        assert!(RT_PIPE_K * TCP_DATA_MAX <= 8 * 128);
         assert!(RT_PIPE_K < 256);
     }
 }

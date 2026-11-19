@@ -523,7 +523,9 @@ pub extern "C" fn berry_sched_util_snapshot(util: *mut u32, count: usize) -> Sta
     unsafe { sys(nr::SCHED_UTIL_SNAPSHOT, util as usize, count, 0, 0, 0, 0) }
 }
 
-// —— 遥测环读口（阶段五第 16/17 步：0x84 telemetry_open——klog 快照首域）——
+// —— 遥测（0x84 telemetry_open op 域：klog 快照首域 + memstat 定长快照
+// 第二档在役——遥测 v3 首件；SwitchRec/WakeRec 环读口随后续波次自 op=2
+// 起，不预留）——
 
 /// 0x84：v3 号提前实现（klog 快照首域翻真）。abi.toml 在册但 stage=v3——
 /// 常量层只产 v1/1.1 行（gen_abi.py defined 集），`nr::TELEMETRY_OPEN` 不
@@ -531,10 +533,10 @@ pub extern "C" fn berry_sched_util_snapshot(util: *mut u32, count: usize) -> Sta
 /// 落地后换 `nr::` 常量名——同内核派发注）。
 const TELEMETRY_OPEN_NR: usize = 0x84;
 
-/// `berry_telemetry_open` op 域：0 = klog 快照（内核日志字节环——串口
-/// 镜像；bsh `dmesg` 的数据源）。后续波次补 SwitchRec / WakeRec 环读口
-/// （各自新 op 值，add-only）。
-pub const TELEMETRY_OP_KLOG: u64 = 0;
+/// 0x84 op 域常量（klog=0 / memstat=1）与 memstat 出参形状
+/// [`MemstatRec`]——单源 [`berry_telface`] 转发，内核派发同引（消内核/
+/// 用户双写；值与形状钉板在 telface host 测试）。
+pub use berry_telface::{MemstatRec, TELEMETRY_OP_KLOG, TELEMETRY_OP_MEMSTAT};
 
 /// `berry_telemetry_klog_snapshot(buf, len)`（0x84 op=0，阶段五第 17 步
 /// bsh dmesg 消费面）：读内核日志字节环到 `buf`，**返回 >0 = 实写字节数**
@@ -545,6 +547,19 @@ pub const TELEMETRY_OP_KLOG: u64 = 0;
 #[no_mangle]
 pub extern "C" fn berry_telemetry_klog_snapshot(buf: *mut u8, len: usize) -> Status {
     unsafe { sys(TELEMETRY_OPEN_NR, TELEMETRY_OP_KLOG as usize, buf as usize, len, 0, 0, 0) }
+}
+
+/// `berry_telemetry_memstat_snapshot(out)`（0x84 op=1，遥测 v3 首件——
+/// bsh `free` 消费面）：RAM 五域定长快照写入 `*out`（[`MemstatRec`] 40B
+/// ——total/reserved/alloc/free/committed 页数；`free_pages` 是内核读点
+/// 派生域，消费方可以 total − reserved − alloc 自验）。**返回 40 = 实写
+/// 字节数**（尾追追加律：未来扩形旧调用方恒收 40B v1 前缀，返回值自证
+/// 所得）；len 由包装内部钉 `size_of::<MemstatRec>()`，调用方只供出参槽
+/// （`berry_clock_read` 结构体出参同层先例）；坏指针 → -EFAULT，负
+/// errno 透传。零 handle 零权利位（系统级遥测读面——klog 同族口径）。
+#[no_mangle]
+pub extern "C" fn berry_telemetry_memstat_snapshot(out: *mut MemstatRec) -> Status {
+    unsafe { sys(TELEMETRY_OPEN_NR, TELEMETRY_OP_MEMSTAT as usize, out as usize, core::mem::size_of::<MemstatRec>(), 0, 0, 0) }
 }
 
 // —— 策略注入（0x83：机制在内核、策略可插拔的带内接口——表形面（COMMIT/

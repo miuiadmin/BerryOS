@@ -1010,6 +1010,8 @@ test-host:
     # 批切分 + poll-first 收割到干 + 分段阻塞轮转 + LT/非阻塞/唤醒三免费
     # 语义，host 13 测）。
     cargo test --manifest-path user/Cargo.toml -p berry-poll --target {{host}}
+    # 作业控制 v2 刀：berry-jobs 纯面（strip_bg/alloc_id/渲染行——host 14 测；2026-11-19 愈合复通——活线合并曾丢此线，随 free 刀同批复接）。
+    cargo test --manifest-path user/Cargo.toml -p berry-jobs --target {{host}}
     # GUI-1：berry-fbcon（自绘 8×16 字形 + 蜂格渲染核纯函数面——V-6 刀 2
     # 前置段产物，GUI-1 迁正 user/ members 随挂 host 测试：字形锚点/蜂格
     # 渲染/滚动/格式打包，host 28 测）。
