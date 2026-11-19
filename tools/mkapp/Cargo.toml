@@ -1,0 +1,20 @@
+[package]
+name = "mkapp"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+description = "BerryOS app 打包门禁（mkapp.py Rust 首刀，彻底 Rust 化轨道 b 层 #4 刀序第四位——canonical 规范形重发射面）"
+
+[lib]
+name = "mkapp"
+path = "src/lib.rs"
+
+# 零外部依赖纪律（W1 lane：禁新外部依赖）——纯 std。与 tools/elf2flat、
+# tools/mkcpio、tools/mkfat、tools/mkimage 同款独立小工作区形态（根
+# .cargo/config.toml 锁 build.target=aarch64-unknown-none，宿主件靠
+# --manifest-path + 显式 --target 走 host 面）。
+[dependencies]
+
+# 独立小工作区标记（tools/mkfat 同款形态——根 workspace 自动上溯在此截断）
+[workspace]

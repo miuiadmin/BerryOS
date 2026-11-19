@@ -79,6 +79,7 @@
 /reference/zcore/
 /reference/loopx-2.1.0/
 /reference/ginux/
+/reference/sdk-ui/cache/
 
 # python 脚本字节码缓存（size.py 被工具链调用时产生）
 __pycache__/
@@ -107,6 +108,8 @@ __pycache__/
 # mkfat 宿主工具独立 target（彻底 Rust 化轨道 b 层 #8 刀序第二位首刀，
 # test-host 接线与 CLI 对拍构建共用，防产物入库）
 /tools/mkfat/cargo-target/
+# mkapp 宿主工具独立 target（b 层 #4 刀序第四位首刀，mkfat 同款纪律）
+/tools/mkapp/cargo-target/
 
 # berry 宿主工具截图产物（berry shot 默认输出 / 窗口 Cmd-S）
 /shot.png

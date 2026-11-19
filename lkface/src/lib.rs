@@ -90,6 +90,34 @@ pub enum Violation {
     IrqUnbalanced,
 }
 
+/// KERN_LOCK 取锁自旋看门狗的自旋帽（2^23 次——非 wedge 态计数远够不到；
+/// 争用突发 µs 量级；零漂移）。
+pub const KL_SPIN_BARK_MASK: u32 = 1 << 23;
+
+/// KERN_LOCK 诊断账面维护门律（03 号分派审计机会一 1a——`kern_acquire` 的
+/// CNTVCT 读 + 持者点名钩子间接调 + 三写账面自无条件付移门控付）。
+///
+/// 门 = `争用出现过 ∨ SMP 并行态`：
+/// - `par == true`（SMP 参与态）：账面**恒维护**——跨核持锁年龄/持者是
+///   看门狗 bark 的实数据源（`lock_bark` 无条件进——其 par 门在函数首行，
+///   维护门与消费门同步开 = 数据永远新鲜，bark 的 age/task 名永远有效）；
+/// - `par == false`（单核生产态）：消费面唯一（`lock_bark` 首行 par 门恒
+///   返）零消费 ⇒ 零维护——账面写全跳过，取锁快路径只付 CAS + KL_HELD
+///   一写（kl_held 退化判据依赖，kern_lock.rs :165-171 注）；
+/// - `contended == true`（本核曾进 CAS 失败臂——即便单核）：KL_CONTENDED_CAS
+///   已记账争用事实，账面随争用事实补维护——防「单核态突发争用 → 看门狗
+///   数据源陈旧」的观测盲区（ktest lockdep 系直接改写 KERN_LOCK 的合法面）。
+///
+/// 合同（与 HAL `kern_acquire` 逐字等价）：
+///
+/// ```text
+/// kl_diag_gate(contended, par) = contended || par
+/// ```
+#[inline]
+pub const fn kl_diag_gate(contended: bool, par: bool) -> bool {
+    contended || par
+}
+
 impl Violation {
     /// HAL violation 报告的 kind 字节串（定名单源——报告面与检查面同词）。
     #[inline]

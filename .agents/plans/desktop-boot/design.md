@@ -3,13 +3,13 @@
 Type: spec
 Status: active
 Updated: 2026-11-18
-Version: 2.1.0
+Version: 2.2.0
 
-一句话说明：`desktop-boot` 定义 BerryOS 从电源上电（UEFI `berryboot`）、Apple 风格无闪烁胶囊开机画面（`bootsplashd`）、声明式服务并行编排（`rootmgr`）到一比一复刻 iOS 18 / iPadOS 18 的流体桌面壳层（`berry-shell`）的终态架构契约。
+一句话说明：`desktop-boot` 定义 BerryOS 从电源上电（UEFI `berryboot`）、Apple 风格无闪烁胶囊开机画面（`bootsplashd`）、声明式服务并行编排（`rootmgr`）到融合 iOS 18/26/27 液态玻璃与 OpenHarmony 6.0 智慧光场的流体桌面壳层（`berry-shell`）的终态架构契约。
 
 ## 背景
 
-如 [GUI 与 SDK 及启动模拟器全栈深研](../../research/2026-11-18-GUI与SDK及启动模拟器全栈深研.md) 第四节所示，现行开机与桌面链路存在多处断裂：`berryboot` 硬编码 128MB 内存窗且首屏不设原生高分 GOP 模式；内核 `splash.rs` 在无延迟紧循环内空转 8 次且每次 `redraw` 先全屏涂黑造成严重闪烁，多任务开启后立即 `detach` 致服务拉起阶段进度冻结；单体 `svcmgr` 混装数十项自检阻塞启动且无会话级重连自愈；`berry-launcher` 每次正常开机强制自动翻两页跑 `PAGE ok` 自测，将状态栏、桌面网格与重复的设置页硬塞进单棵 512 节点树，并以 `OP_WM_DESTROY` 强拆窗口代替返回导航、以单槽重拉代替多任务视图。依据 [图形合成与 SDK 及模拟器终态架构裁决](../../notes/proposed/2026-11-18-图形合成与SDK及模拟器终态架构裁决.md) 与 [全面复刻 iOS 18 视觉与流体交互范式裁决](../../notes/proposed/2026-11-18-全面复刻iOS18视觉与流体交互范式裁决.md)，本规格定义开机引导与桌面壳层的终态契约；视觉、材质、几何与物理公共规范严格遵循 [GUI 合成与 SDK 终态标准](../../../docs/GUI合成与SDK终态标准-v2.0.md) 与 [iOS 视觉与流体交互复刻标准](../../../docs/iOS视觉与流体交互复刻标准-v1.0.md)。
+如 [GUI 与 SDK 及启动模拟器全栈深研](../../research/2026-11-18-GUI与SDK及启动模拟器全栈深研.md) 第四节所示，现行开机与桌面链路存在多处断裂：`berryboot` 硬编码 128MB 内存窗且首屏不设原生高分 GOP 模式；内核 `splash.rs` 在无延迟紧循环内空转 8 次且每次 `redraw` 先全屏涂黑造成严重闪烁，多任务开启后立即 `detach` 致服务拉起阶段进度冻结；单体 `svcmgr` 混装数十项自检阻塞启动且无会话级重连自愈；`berry-launcher` 每次正常开机强制自动翻两页跑 `PAGE ok` 自测，将状态栏、桌面网格与重复的设置页硬塞进单棵 512 节点树，并以 `OP_WM_DESTROY` 强拆窗口代替返回导航、以单槽重拉代替多任务视图。依据 [图形合成与 SDK 及模拟器终态架构裁决](../../notes/proposed/2026-11-18-图形合成与SDK及模拟器终态架构裁决.md)、[全面复刻 iOS 18 视觉与流体交互范式裁决](../../notes/proposed/2026-11-18-全面复刻iOS18视觉与流体交互范式裁决.md) 与 [融合 iOS 26 至 27 液态玻璃与 OpenHarmony 6 光场一镜到底架构裁决](../../notes/proposed/2026-11-18-融合iOS26至27液态玻璃与OpenHarmony6光场一镜到底架构裁决.md)，本规格定义开机引导与桌面壳层的终态契约；视觉、材质、几何与物理公共规范严格遵循 [GUI 合成与 SDK 终态标准](../../../docs/GUI合成与SDK终态标准-v2.0.md) 与 [iOS 与鸿蒙融合液态玻璃及光场交互标准](../../../docs/iOS与鸿蒙融合液态玻璃及光场交互标准-v2.0.md)。
 
 ## 范围
 
@@ -58,25 +58,25 @@ sequenceDiagram
    - `rootmgr` 读取静态编译校验的服务拓扑表，将无依赖关系的组件并行拉起（如 `devmgr` 枚举期与 `compositor` 内存池初始化并行；`fsmgr`/`vblk` 挂载与首帧静态桌面壁纸解码并行；`vnet` 网络协商完全异步后置，绝不阻塞桌面首帧亮屏）。
    - **会话重连不变量**：废除遇错 `park()` 假活挂起反模式；任何服务异常一律以非零码退出触发 `SIGNAL_PEER_CLOSED`，由 `rootmgr` 按指数退避策略重启服务实例并通过 `/svc` 服务目录透明重连下游客户端。
 
-### 三、一比一复刻 iOS 18 / iPadOS 18 的流体桌面壳层（`berry-shell`）
+### 三、融合 iOS 26/27 与 OpenHarmony 6.0 的流体桌面壳层（`berry-shell`）
 
 将原单体 `berry-launcher` 重构为职责正交的壳层模块族，彻底清除内置重复设置页与无后端空壳应用图标：
 
-1. **状态栏、灵动岛与模块化控制中心（`SystemChrome`）**：
-   - **顶部状态栏与灵动岛实时胶囊（`Layer::SystemBar` / `Layer::Overlay`）**：安全区高 `54pt`，左侧显示等宽数字粗体时钟（如 `9:41`），右侧显示圆角四格信号、Wi-Fi 与电池图标，前景随底层窗口亮度 `200ms` 自动切换纯白/纯黑；正中常驻 **灵动岛（Dynamic Island，`126×37pt` 超椭圆胶囊）**，在后台存在倒计时、媒体播放、录屏、文件传输或 AI 语义代操作时以微弹性弹簧实时向两侧生长显示动态摘要，单击展开为 `R = 42pt` 控制卡片。
-   - **锁屏同源通知中心与 iOS 18 圆角模块化控制中心（`Layer::Overlay`）**：左/中下拉展开底部叠卡式通知中心（`Notification Stack`）；右上下拉在 `RegularMaterial`（`1.9x` 增艳模糊）背景上展开 iOS 18 模块化控制中心（圆形无线磁贴组、媒体方卡、支持越界橡皮筋弹性拉长的竖向全圆角亮度柱与音量柱，支持右侧多页分组滑切），状态与 `SETTINGS.bap` 实时双向同步。
+1. **状态栏、实况胶囊与模块化控制中心（`SystemChrome`）**：
+   - **顶部状态栏与实况胶囊（`Layer::SystemBar` / `Layer::Overlay`）**：安全区高 `54pt`，背景默认全屏延伸（Safe-Area Auto-Bleed，内容区域避让）；左侧显示等宽数字粗体时钟（如 `9:41`），右侧显示圆角四格信号、Wi-Fi 与电池图标，前景随底层窗口亮度 `200ms` 自动切换纯白/纯黑；正中常驻 **实况胶囊（Live Capsule，融合 iOS 27 微发光轮廓与 OpenHarmony 6.0 非侵入式实况窗，`126×37pt` 超椭圆）**，后台存在倒计时、媒体播放、录屏、文件传输或 AI 意图代操作时以微弹性弹簧平滑生长显示胶囊摘要，单击展开为 `R = 42pt` 液态玻璃控制卡片。
+   - **锁屏同源通知中心与模块化控制中心（`Layer::Overlay`）**：左/中下拉展开底部叠卡式通知中心（`Notification Stack`）；右上下拉在 `LiquidGlass`（凸透镜边缘折射 + 动态高光 + `1.9x` 增艳）背景上展开模块化控制中心（圆形无线磁贴组、媒体方卡、支持越界橡皮筋弹性拉长的竖向全圆角亮度柱与音量柱，支持右侧多页分组滑切），状态与 `SETTINGS.bap` 实时双向同步。
    - **底部导航：默认 iOS Home 横条 + 可选经典三键兼容开关（`Layer::SystemBar`）**：默认启用 `134×5pt` 圆角悬浮 **Home Indicator 横条**（安全区 `34pt`，支持上滑飞回图标槽、上滑悬停进叠卡多任务、左右横滑快切应用）；同时在「设置 → 显示与导航」保留「经典三键导航」热切换开关（开启后在 `44pt` 全透明底栏以抗锯齿 SF 细线条矢量绘制返回、主页、多任务符号，彻底淘汰旧 AOSP 位图）。
-2. **iPhone 主屏、Spotlight 与 iPadOS 宽屏连续体（`HomeStage`）**：
-   - **竖屏 iPhone 态（`< 600pt`）**：承载景深缩放壁纸（打开应用或呼出浮层时自动 `0.93x` 微缩）、`4×6` 连续超椭圆（`22.37%`）图标与交互小组件混排网格、长按错相摆动拖拽重排（`Jiggle Mode`）、主屏任意处下滑唤出 **Spotlight 毛玻璃全局搜索**，以及底部 `34pt` 超椭圆无文字标签 `RegularMaterial` 悬浮四槽 Dock。
-   - **宽屏 iPadOS 态（`>= 600pt`）**：窗口横屏或平板档自动切换为 iPadOS 18 浮动扩充 Dock（常驻应用 + 分割线 + 最近 3 应用）、应用顶部三点多窗菜单（`•••` 支持 `Split View` 左右分屏与 `Slide Over` 侧拉小窗）以及 `>= 960pt` 下的 **台前调度（Stage Manager）**（左侧立体工作区缩略簇 + 中央最多 4 个超椭圆自由缩放重叠窗口）。
+2. **iPhone 主屏、底部可达意图条与 iPadOS 宽屏连续体（`HomeStage`）**：
+   - **竖屏 iPhone 态（`< 600pt`）**：承载景深缩放壁纸（打开应用或呼出浮层时自动 `0.93x` 微缩）、`4×6` 连续超椭圆（`22.37%`）图标与交互小组件混排网格、长按错相摆动拖拽重排（`Jiggle Mode`）；底部提供单手可达 **"Search or Ask" 意图条**（下滑或点击展开 Spotlight 与 AI 语义意图）；底部为 iOS 26 液态玻璃（Liquid Glass）收缩 **Dock**（滚动页面时自适应收缩为精简药丸，静止时舒展为四槽浮岛，叠加触控水面光斑波纹）。
+   - **宽屏 iPadOS 态（`>= 600pt`）**：窗口横屏或平板档自动切换为浮动扩充 Dock（常驻应用 + 分割线 + 最近 3 应用）、应用顶部三点多窗菜单（`•••` 支持 `Split View` 左右分屏与 `Slide Over` 侧拉小窗）以及 `>= 960pt` 下的 **台前调度（Stage Manager）**（左侧立体工作区缩略簇 + 中央最多 4 个超椭圆自由缩放重叠窗口，支持 OpenHarmony 6.0 窗口级精准拖拽吸附）。
 3. **iOS 弧形叠卡多任务切换器（`AppSwitcher`）**：
    - 彻底取代原 `Option<RecentsApp>` 单槽重拉桩；对接 `appd` LRU 任务栈与 `compositor` 表面纹理（活跃/冻结应用零拷贝引用实时表面，墓碑应用无缝加载压缩快照），左侧弧形层叠排列 `38pt` 超椭圆圆角实时卡片（卡片上方悬浮应用图标与名称），支持松手投射惯性翻阅、点击弹簧放大回前台以及上滑甩出卡片关闭任务。
 
-### 四、丝滑应用启动握手与全栈预测性返回契约
+### 四、一镜到底共享元素（geometryTransition）与全栈预测性返回契约
 
-1. **零卡顿应用启动（Hero Morph + Starting Window）**：
-   - 用户点击桌面图标同帧（`≤ 16.7ms`），`berry-shell` 立即调用 `appd::launch_async(app_id)`（非阻塞异步发车），同时在 `compositor` 创建一枚与该应用主题底色和图标一致的轻量 `StartingSurface`，驱动**从桌面图标精确坐标与圆角向全屏窗口连续展开的欠阻尼/临界阻尼弹簧动画（Icon-to-Window Hero Morph，可随时被反向手势中断抓回）**；
-   - 后台 `appd` 完成 PIE ELF 装载与子进程初始化后，应用提交真实首帧 `Swapchain` 槽，`compositor` 在单拍内将 `StartingSurface` 原子替换为真实应用表面——即便冷启动耗时 150ms，用户体感也是点击瞬间 0ms 立即跟手展开。
+1. **零卡顿一镜到底启动（Hero Morph + geometryTransition + Starting Window）**：
+   - 用户点击桌面图标同帧（`≤ 16.7ms`），`berry-shell` 立即调用 `appd::launch_async(app_id)`（非阻塞异步发车），同时在 `compositor` 注册共享元素 ID（`geometryTransition("app_hero")`）并创建与该图标一致的轻量 `StartingSurface`，驱动**从桌面图标精确坐标与圆角向全屏窗口连续展开的欠阻尼/临界阻尼弹簧动画（Icon-to-Window Hero Morph，可随时被反向手势中断抓回）**；
+   - 后台 `appd` 完成 PIE ELF 装载与子进程初始化后，应用提交真实首帧 `Swapchain` 槽，`compositor` 在单拍内将 `StartingSurface` 一镜到底原子替换为真实应用表面——即便冷启动耗时 150ms，用户体感也是点击瞬间 0ms 立即跟手展开。
 2. **全栈分级预测性返回（Predictive Back）**：
    - 废除导航栏直接发 `OP_WM_DESTROY` 强拆应用窗口的粗暴做法；无论是点击返回键还是从屏幕左右侧边缘向内滑动，统一走四级有序责任链：
      1. 若 `imed` 软键盘处于升起态 → 优先平滑收起软键盘；

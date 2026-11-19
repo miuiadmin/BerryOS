@@ -19,16 +19,13 @@ arch/aarch64/src/mmu.rs::BOOT_L1	page-table
 arch/aarch64/src/mmu.rs::BOOT_L2_LOW	page-table
 arch/aarch64/src/mmu.rs::BOOT_L2_RAM	page-table
 arch/aarch64/src/mmu.rs::KERNEL_L1	page-table
-arch/aarch64/src/mmu.rs::KERNEL_L2_LOW	page-table
-arch/aarch64/src/mmu.rs::KERNEL_L2_RAM	page-table
-arch/aarch64/src/mmu.rs::KERNEL_L3_IMG	page-table
+arch/aarch64/src/mmu.rs::SPLIT_L3_SYSCALLS	page-table
 arch/aarch64/src/pl061.rs::PL061_NOTIFY	arch
 arch/aarch64/src/smp.rs::BOOT_EL	scheduler
 arch/aarch64/src/smp.rs::SMP_CPU0	scheduler
 arch/aarch64/src/smp.rs::SMP_CPU1	scheduler
 arch/aarch64/src/smp.rs::SMP_SEC_PARK_CTX	scheduler
 arch/aarch64/src/smp.rs::SMP_SEC_REPORT	scheduler
-arch/aarch64/src/smp.rs::SMP_SEC_STACK	scheduler
 arch/aarch64/src/syscall.rs::SYSCALLS	boot
 arch/aarch64/src/timer.rs::FREQ	scheduler
 arch/aarch64/src/timer.rs::SLICE	scheduler
@@ -64,6 +61,8 @@ kernel/src/mm.rs::FRAME_BMAPS	page-table
 kernel/src/mm.rs::FRAME_FREE	page-table
 kernel/src/mm.rs::FRAME_ORDER	page-table
 kernel/src/mm.rs::FRAME_SUMS	page-table
+kernel/src/pi.rs::PI_EDGE_CACHE	other
+kernel/src/pi.rs::PI_EDGE_LEN	other
 kernel/src/process.rs::HT_DRAINQ	other
 kernel/src/process.rs::HT_DRAINQ_LEN	other
 kernel/src/process.rs::HT_DRAINQ_WARNED	other
@@ -73,6 +72,7 @@ kernel/src/syscall.rs::KLOG_SNAP_STAGE	boot
 kernel/src/telemetry.rs::PRESSURE_OUTLET	telemetry
 kernel/src/telemetry.rs::SWITCH_RINGS	telemetry
 kernel/src/telemetry.rs::WAKE_RINGS	telemetry
+kernel/src/vdso.rs::VDSO_VMO	other
 sched/src/band.rs::BANDS	scheduler
 sched/src/class.rs::LAST_VCT	scheduler
 sched/src/em.rs::EM_TABLE	scheduler
@@ -86,7 +86,6 @@ sched/src/sched.rs::KLOCK_OPS	scheduler
 sched/src/sched.rs::LB_MATCH	scheduler
 sched/src/sched.rs::PER_CPU_RQ	scheduler
 sched/src/sched.rs::REAPQ	scheduler
-sched/src/sched.rs::REAPQ_LEN	scheduler
 sched/src/sched.rs::REAPQ_WARNED	scheduler
 sched/src/sched.rs::REAP_POST_HOOK	scheduler
 sched/src/sched.rs::SLEEPQ	scheduler
