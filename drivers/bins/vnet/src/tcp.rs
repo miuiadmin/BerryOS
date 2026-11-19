@@ -43,6 +43,7 @@
 use crate::{now, recv_frame, trap, Dma, TxBatch, GW_IP, IOB, OUR_IP, POLL_STEP_NS};
 use berry_netdproto as ndp;
 use berry_netproto as np;
+use berry_sys::{berry_vmo_read, berry_vmo_write, Handle};
 use berry_tcp as bt;
 
 /// echod 端口（宿主 127.0.0.1:18080，`tools/echod.py` 定值）——自验目标。
@@ -91,6 +92,23 @@ const RX_SEG_MAX: usize = 1460;
 /// netdproto DRAIN 128B 拉模型天然多次拉取。表
 /// 8 槽静态段随之 +约 11KB（boot 冒烟面，见 TCPTABLE 注）。
 const RX_SESS_BUF: usize = 2048;
+
+// ==================== VMO 数据面（三轨统一契约，e 门续刀）====================
+//
+// 随行 VMO 数据面两 op（先例锚：svcmgr blk_rpc 客户端 duplicate
+// (READ|WRITE|TRANSFER) → send 随行 → 服务侧 recv 收 handle（vblk 臂
+// nh==1 → vmo_read/write 别名 → close））。op 号/wire 形/请求应答编解码
+// 的名义家 = netdproto（`OP_TCP_DRAIN_VMO=9`/`OP_TCP_RT_VMO=10` + 定长帧
+// 编解码器 + sid 域执法——本 crate 不镜像协议值，分派门与应答编码全引
+// ndp）。两 op 随行恰 1 handle（`CHAN_HND_MAX=8` 域内恒法——服务侧收窗
+// 已按 8 满额，多带面走 nh>1 → ST_BAD 应答不死）。
+
+/// 单次 VMO 面幅帽（服务侧几何定值 2048）：drain 侧 = take 上限（一次收割
+/// 清空整槽——恰与会话收缓冲 [`RX_SESS_BUF`] 同值）；rt 侧 = 单次 vmo_read
+/// 抽载上界（[`VMO_STAGE`] 同幅）。协议层 dlen 抬 u16 破 250B inline 帽
+/// 全域合法，本服务面按客户端 VMO 收面几何 2048 收口——越幅 ST_BAD 协议
+/// 面拒。
+const VMO_CHUNK: usize = 2048;
 
 // T-c 对抗审查 ③（首刀换锚）：旧钉「对端按我方通告（MSS=128）回的最大
 // 段」假设已被 NET-01 实证证伪——SLIRP 不读通告按 MTU 拼段，1460B 段是
@@ -780,6 +798,10 @@ static mut TCPTABLE: TcpMux = TcpMux { slots: [Slot::Free; SLOTS] };
 pub(crate) fn mux() -> &'static mut TcpMux {
     unsafe { &mut *core::ptr::addr_of_mut!(TCPTABLE) }
 }
+
+/// rt_vmo 载荷抽取暂存（static 免大栈帧——main.rs IOB 家法；单线程独占窗：
+/// serve 串行分派，用毕即弃，send_data 泵不经本缓冲）。
+static mut VMO_STAGE: [u8; VMO_CHUNK] = [0; VMO_CHUNK];
 
 /// LISTEN 失败形（serve() 翻译：Dup→ST_BAD / Full→ST_FULL）。
 #[derive(Debug)]
@@ -1555,6 +1577,34 @@ impl TcpMux {
         Some(take)
     }
 
+    /// DRAIN 的 VMO 形（三轨统一契约 drain_vmo）：收割字节直写随行客户端
+    /// VMO——take = min(rx_len, [`VMO_CHUNK`]) 经 berry_vmo_write 后
+    /// copy_within 压实消费（与 [`TcpMux::rx_drain`] 同构，免应答 inline
+    /// 中转）。死 sid（Free/Listen/越界）None；**客户端供给 handle 的
+    /// vmo_write 失败同样 None**——两路都 ST_BAD，服务不死。
+    ///
+    /// 错误面纪律（与 DMA 面有意分道，**防后人统一**）：本函数操作的是
+    /// **客户端随行 handle**（客户端资产）——坏 VMO/未 commit/尺寸不足是
+    /// 客户端错误，答 ST_BAD + serve 尾部 close 环收别名即止（vblk blk
+    /// READ 臂同款）；DMA 面（main.rs 自有 d.vmo 上的 vmo_write/read）失败
+    /// = 传输层断链 trap 是**另一族**——那边是自建常驻资产，断链即真死。
+    /// 勿把两族错误面并轨。
+    pub(crate) fn rx_drain_vmo(&mut self, sid: u32, vmo: Handle) -> Option<usize> {
+        let s = match self.slots.get_mut(Self::idx_of(sid)?)? {
+            Slot::Pending(s) | Slot::Ready(s) | Slot::Data(s) => s,
+            _ => return None,
+        };
+        let take = s.rx_len.min(VMO_CHUNK);
+        // take=0（零收成）不触 VMO——诚实 0 值（「POLL 后串行收割必非零」的
+        // 节奏面语义与 rx_drain 同注）。
+        if take > 0 && berry_vmo_write(vmo, s.rx.as_ptr(), 0, take) != 0 {
+            return None; // 客户端 VMO 访问失败——ST_BAD 面（纪律见上注）
+        }
+        s.rx.copy_within(take..s.rx_len, 0);
+        s.rx_len -= take;
+        Some(take)
+    }
+
     /// 会话槽无挂臂谓词（send 的 ACK 已到——自验同步点；A2-3 起 serve
     /// 命名 RT 臂的收口谓词：Closed 态 arm 亦空 = RST-in-wait 可接受裁定）。
     pub(crate) fn arm_idle(&self, sid: u32) -> Option<bool> {
@@ -1658,6 +1708,38 @@ impl TcpMux {
             pump_once(d, regs, mac, gw_mac, self, POLL_STEP_NS);
         }
         true
+    }
+
+    /// RT 的 VMO 形服务臂（三轨统一契约 rt_vmo）：随行客户端 VMO 抽 dlen
+    /// 字节进 [`VMO_STAGE`] 暂存 → 既有 [`TcpMux::send_data`] 面（暂存闸/
+    /// 环准入/泵等位**零改**——2048 大载荷靠既有逐段闸 + 五刀②紧缩泵收
+    /// 口）。dlen 域 1..=[`VMO_CHUNK`]（0 = inline RT 的空载拒同语义；越幅
+    /// = 抽载几何拒）；返回受纳与否（serve 臂编码 ST_OK/ST_BAD）。
+    ///
+    /// 错误面纪律（与 DMA 面有意分道，**防后人统一**）：客户端供给 handle
+    /// 的 vmo_read 失败 = 客户端错误（false → ST_BAD + serve 尾部 close 环
+    /// 收别名，服务不死——vblk blk WRITE 臂同款）；DMA 面（自有 d.vmo）
+    /// 失败 trap 是另一族（自建资产断链即真死）。勿把两族错误面并轨。
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn rt_vmo_send(
+        &mut self,
+        d: &mut Dma,
+        regs: *mut u32,
+        mac: &[u8; 6],
+        gw_mac: &[u8; 6],
+        sid: u32,
+        vmo: Handle,
+        dlen: usize,
+    ) -> bool {
+        if dlen == 0 || dlen > VMO_CHUNK {
+            return false;
+        }
+        // SAFETY: 单线程独占窗（serve 串行分派；send_data 泵不触 VMO_STAGE）。
+        let stage: &mut [u8; VMO_CHUNK] = unsafe { &mut *core::ptr::addr_of_mut!(VMO_STAGE) };
+        if berry_vmo_read(vmo, stage.as_mut_ptr(), 0, dlen) != 0 {
+            return false; // 客户端 VMO 访问失败——ST_BAD 面（纪律见上注）
+        }
+        self.send_data(d, regs, mac, gw_mac, sid, &stage[..dlen])
     }
 
     /// 表会话主动关闭第一段：close() → act（FIN 段；Established→FinWait1 /

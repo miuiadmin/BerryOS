@@ -50,6 +50,12 @@
 //!   迟到/错配应答配对面；载荷域纯净（seq 字节不进回显流）。窗深
 //!   [`RT_PIPE_K`] 双侧共源；无 seq 请求恒无 seq 应答（旧消费者零漂移）。
 //!
+//! - TCP VMO 面（e 门续刀）：DRAIN_VMO/RT_VMO 二 op 载荷/收割字节走随行
+//!   handle（客户端 VMO——blkproto 超帽走 VMO 先例的 TCP 数据面移植），
+//!   请求只携元数据定长帧（5B/8B）、dlen 抬 u16 破 250B inline 帽；应答
+//!   3B/4B 定长无 inline（非 OK 恒零 dlen）；显式 sid 字段 = 命名会话专属
+//!   （0 拒）。
+//!
 //! **应答烘焙线不变量**：未知 st 拒；DNS 面**非 OK 状态必须携带全零 addr**、
 //! TCP 面**非 OK 状态必须不携 data**（编码/解析两侧对称执法——线上不存在
 //! 「超时了但带数据」的歧义形态，消费方无需防御性判断）。
@@ -110,6 +116,12 @@ const _: () = assert!(TCP_REP_MAX <= CHAN_MSG_MAX);
 const _: () = assert!(REQ_S_LEN_MAX <= CHAN_MSG_MAX);
 const _: () = assert!(RT_SEQ_REQ_MAX <= CHAN_MSG_MAX);
 const _: () = assert!(TCP_REP_MAX + 1 <= CHAN_MSG_MAX);
+// e 门续刀扩族：VMO 形四帧皆定长小帧（5/8/3/4B ≤ 帽——载荷走随行 handle
+// 不占 inline；机器钉防后续扩字段破帽）。
+const _: () = assert!(DRAIN_VMO_REQ_LEN <= CHAN_MSG_MAX);
+const _: () = assert!(RT_VMO_REQ_LEN <= CHAN_MSG_MAX);
+const _: () = assert!(VMO_REP_LEN <= CHAN_MSG_MAX);
+const _: () = assert!(RT_VMO_REP_LEN <= CHAN_MSG_MAX);
 
 /// 请求线上长度上界（DNS 2+NAME_MAX 与 TCP ROUNDTRIP 2+TCP_DATA_MAX 取大）。
 pub const REQ_LEN_MAX: usize = 2 + TCP_DATA_MAX;
@@ -828,6 +840,204 @@ pub fn parse_poll_reply(buf: &[u8]) -> Option<PollRep> {
     }
     let rbytes = u16::from_le_bytes([buf[2], buf[3]]);
     Some(PollRep { st, flags, rbytes })
+}
+
+// ---------- TCP VMO 面（e 门续刀：DRAIN_VMO/RT_VMO）----------
+//
+// 载荷/收割字节走随行 handle（客户端 VMO），请求帧只携元数据——dlen 抬
+// u16 破 v1 inline 帽 250B（A2-3 实抓坑：表会话 DRAIN 割幅 >250B 入 v1
+// 应答即 encode 越帽，只能循环 250B 割；RT 大段发送同受 250B 拆段）。
+// blkproto 先例（512B 扇区超 inline 帽走 VMO）的 TCP 数据面移植。随行
+// 1 handle ≤ CHAN_HND_MAX=8 恒法（通道几何面；协议层只定字节面不验
+// handle——svcmgr blk_rpc duplicate→send 随行 / vblk 臂 nh==1→vmo_read/
+// write 的通道层职辖）。
+//
+// 两 op 无 v1 形各自恰长定形（LISTEN/POLL 先例；op 首字节 9/10 与 v1 八
+// op 天然可分——v1/会话化解析器按未知 op 拒，旧 op 零漂移按构造）：
+// - DRAIN_VMO 请求 `[op][sid u32 LE]` = [`DRAIN_VMO_REQ_LEN`] 5B 随行
+//   1 handle（收割目标 VMO）；应答恰 [`VMO_REP_LEN`] 3B 定长 `[st][dlen
+//   u16 LE]` 无 inline（收割字节已直写 VMO），非 OK 恒零 dlen；OK dlen=0
+//   合法（零收成诚实值——v1 DRAIN 1B OK 形同族）。
+// - RT_VMO 请求 `[op][dlen u16 LE][seq u8][sid u32 LE]` = [`RT_VMO_REQ_LEN`]
+//   8B 随行 1 handle（预填载荷的客户端 VMO）；应答恰 [`RT_VMO_REP_LEN`]
+//   4B `[st][dlen u16 LE][seq u8]`——seq 形 RT 配对（v1 无 seq 形不涉；
+//   BUSY 背压必携原 seq——客户端同 seq 退避重发）；OK dlen=0 拒（RT
+//   载荷非空族法的应答侧对称）。
+//
+// sid 域：显式 sid 字段 = 命名会话专属（∈ 1..=[`TCP_SESSIONS_MAX`]，0 拒
+// ——DRAIN/ACCEPT 同法：默认会话的收割/往返走 legacy ROUNDTRIP 面）。
+// 应答 st 域 = v1 TCP 域 + [`ST_NOSESSION`]（专用形解锁 v1 两形字节面
+// 锁死的死 sid 诊断位——Sid/Poll 会话族先例）；EAGAIN/FULL 不入（零收成
+// 是 OK dlen=0 的合法内容；表满归 LISTEN/ACCEPT 造会话面）。应答两形与
+// v1 两形无消解关系：严格串行 RPC 下调用方按所发 op 选解析器（Sid/Poll
+// 专用形同款），且 3B 形可能与 v1 `[st][dlen][data]` 形结构巧合（如
+// `[ST_OK,1,0]` 两读皆合法）——不跨面解析即无歧义。；4B rt_vmo 形同类巧合：`[ST_OK,1,0,5]` 同为合法 v1 seq 形（dlen=1 前缀+尾 seq）与合法 rt_vmo 形（dlen=1,seq=5）——POLL OK 形 `[st][flags][rbytes LE]` 亦同幅。应答面跨面禁令是串行 RPC 约定（按所发 op 选解析器）非机制——双读钉板见 vmo_cross_face_coincidence_pinned。
+
+/// TCP 收割接收缓冲 VMO 形（e 门续刀）：数据会话 → 收割字节直写随行
+/// 客户端 VMO（>250B 大割幅一次成），应答 3B 定长无 inline。
+pub const OP_TCP_DRAIN_VMO: u8 = 9;
+/// TCP 会话往返 VMO 形（e 门续刀）：预填载荷的客户端 VMO 随行发送，应答
+/// 4B 定长携 seq（K 窗流水线配对面——v1 无 seq 形不涉）。
+pub const OP_TCP_RT_VMO: u8 = 10;
+
+/// DRAIN_VMO 请求线上长度（`[op][sid u32 LE]`）。
+pub const DRAIN_VMO_REQ_LEN: usize = 5;
+/// RT_VMO 请求线上长度（`[op][dlen u16 LE][seq u8][sid u32 LE]`）。
+pub const RT_VMO_REQ_LEN: usize = 8;
+/// DRAIN_VMO 应答线上长度（`[st][dlen u16 LE]` 定长——非 OK 也 3B 恒零
+/// 值，非 v1 的 1B 缩形）。
+pub const VMO_REP_LEN: usize = 3;
+/// RT_VMO 应答线上长度（`[st][dlen u16 LE][seq u8]`）。
+pub const RT_VMO_REP_LEN: usize = 4;
+
+/// vmo 应答形 st 域：v1 TCP 域（[`tcp_st_known`]）+ [`ST_NOSESSION`]——
+/// 专用形不复用 v1 两形，死 sid 诊断位入域（Sid/Poll 会话族先例）。
+const fn vmo_st_known(st: u8) -> bool {
+    tcp_st_known(st) || st == ST_NOSESSION
+}
+
+/// 编码 DRAIN_VMO 请求（恰 [`DRAIN_VMO_REQ_LEN`] 5B；随行 1 handle 由通道
+/// 层携带，协议层只定字节面）。None 契约：sid 0 / 越帽 / out 太短，不截断。
+pub fn encode_drain_vmo_request(out: &mut [u8], sid: u32) -> Option<usize> {
+    if sid == 0 || sid > TCP_SESSIONS_MAX {
+        return None;
+    }
+    let m = out.get_mut(..DRAIN_VMO_REQ_LEN)?;
+    m[0] = OP_TCP_DRAIN_VMO;
+    m[1..5].copy_from_slice(&sid.to_le_bytes());
+    Some(DRAIN_VMO_REQ_LEN)
+}
+
+/// 解析 DRAIN_VMO 请求：恰长执法（尾随/截断一并拒）；坏 op 首字节 /
+/// sid 0 / 越帽 → None（与编码侧对称）。
+pub fn parse_drain_vmo_request(buf: &[u8]) -> Option<u32> {
+    if buf.len() != DRAIN_VMO_REQ_LEN {
+        return None;
+    }
+    if buf[0] != OP_TCP_DRAIN_VMO {
+        return None;
+    }
+    let sid = u32::from_le_bytes(buf[1..5].try_into().ok()?);
+    if sid == 0 || sid > TCP_SESSIONS_MAX {
+        return None;
+    }
+    Some(sid)
+}
+
+/// 编码 RT_VMO 请求（恰 [`RT_VMO_REQ_LEN`] 8B；随行 1 handle = 预填载荷
+/// 的客户端 VMO，dlen 是 VMO 内载荷长度——VMO 面无 250B inline 帽，u16
+/// 全域合法）。None 契约：dlen 0（RT 载荷非空族法）/ sid 0 / 越帽 /
+/// out 太短。
+pub fn encode_rt_vmo_request(out: &mut [u8], dlen: u16, seq: u8, sid: u32) -> Option<usize> {
+    if dlen == 0 {
+        return None;
+    }
+    if sid == 0 || sid > TCP_SESSIONS_MAX {
+        return None;
+    }
+    let m = out.get_mut(..RT_VMO_REQ_LEN)?;
+    m[0] = OP_TCP_RT_VMO;
+    m[1..3].copy_from_slice(&dlen.to_le_bytes());
+    m[3] = seq;
+    m[4..8].copy_from_slice(&sid.to_le_bytes());
+    Some(RT_VMO_REQ_LEN)
+}
+
+/// 解析 RT_VMO 请求：恰长 8B 执法（尾随/截断一并拒）；坏 op 首字节 /
+/// dlen 0 / sid 0 / 越帽 → None（与编码侧对称）。
+pub fn parse_rt_vmo_request(buf: &[u8]) -> Option<(u16, u8, u32)> {
+    if buf.len() != RT_VMO_REQ_LEN {
+        return None;
+    }
+    if buf[0] != OP_TCP_RT_VMO {
+        return None;
+    }
+    let dlen = u16::from_le_bytes([buf[1], buf[2]]);
+    let seq = buf[3];
+    let sid = u32::from_le_bytes(buf[4..8].try_into().ok()?);
+    if dlen == 0 {
+        return None;
+    }
+    if sid == 0 || sid > TCP_SESSIONS_MAX {
+        return None;
+    }
+    Some((dlen, seq, sid))
+}
+
+/// 编码 DRAIN_VMO 应答（恰 [`VMO_REP_LEN`] 3B 定长——非 OK 也 3B 恒零值；
+/// 收割字节已在随行 VMO 内，无 inline）。烘焙线：域外 st → None；**非 OK
+/// 携非零 dlen → None**（「超时了但带收割量」歧义形态不线上存在——DNS
+/// addr 烘焙线同族）；OK dlen=0 合法（零收成诚实值）。out 太短 → None。
+pub fn encode_tcp_reply_vmo(out: &mut [u8], st: u8, dlen: u16) -> Option<usize> {
+    if !vmo_st_known(st) {
+        return None;
+    }
+    if st != ST_OK && dlen != 0 {
+        return None;
+    }
+    let m = out.get_mut(..VMO_REP_LEN)?;
+    m[0] = st;
+    m[1..3].copy_from_slice(&dlen.to_le_bytes());
+    Some(VMO_REP_LEN)
+}
+
+/// 解析 DRAIN_VMO 应答：恰 3B 定长执法（尾随/截断/v1 1B 缩形一并拒）；
+/// 域外 st / 非 OK 携非零 dlen → None（与编码侧对称）。
+pub fn parse_tcp_reply_vmo(buf: &[u8]) -> Option<(u8, u16)> {
+    if buf.len() != VMO_REP_LEN {
+        return None;
+    }
+    let st = buf[0];
+    if !vmo_st_known(st) {
+        return None;
+    }
+    let dlen = u16::from_le_bytes([buf[1], buf[2]]);
+    if st != ST_OK && dlen != 0 {
+        return None;
+    }
+    Some((st, dlen))
+}
+
+/// 编码 RT_VMO 应答（恰 [`RT_VMO_REP_LEN`] 4B——seq 形 RT 配对；回显字节
+/// 已写回随行 VMO，dlen = 回显长度）。烘焙线：域外 st → None；非 OK 携
+/// 非零 dlen → None；**OK 携 dlen=0 → None**（RT 载荷非空族法的应答侧
+/// 对称——v1 seq 形 2B 域外同族）；BUSY 背压携原 seq 合法（客户端同 seq
+/// 退避重发）。out 太短 → None。
+pub fn encode_rt_vmo_reply(out: &mut [u8], st: u8, dlen: u16, seq: u8) -> Option<usize> {
+    if !vmo_st_known(st) {
+        return None;
+    }
+    if st != ST_OK && dlen != 0 {
+        return None;
+    }
+    if st == ST_OK && dlen == 0 {
+        return None;
+    }
+    let m = out.get_mut(..RT_VMO_REP_LEN)?;
+    m[0] = st;
+    m[1..3].copy_from_slice(&dlen.to_le_bytes());
+    m[3] = seq;
+    Some(RT_VMO_REP_LEN)
+}
+
+/// 解析 RT_VMO 应答：恰 4B 定长执法；域外 st / 非 OK 携非零 dlen / OK 携
+/// dlen=0 → None（与编码侧对称）。
+pub fn parse_rt_vmo_reply(buf: &[u8]) -> Option<(u8, u16, u8)> {
+    if buf.len() != RT_VMO_REP_LEN {
+        return None;
+    }
+    let st = buf[0];
+    if !vmo_st_known(st) {
+        return None;
+    }
+    let dlen = u16::from_le_bytes([buf[1], buf[2]]);
+    if st != ST_OK && dlen != 0 {
+        return None;
+    }
+    if st == ST_OK && dlen == 0 {
+        return None;
+    }
+    Some((st, dlen, buf[3]))
 }
 
 #[cfg(test)]
@@ -1729,4 +1939,207 @@ mod tests {
         assert!(RT_PIPE_K * TCP_DATA_MAX <= 8 * 128);
         assert!(RT_PIPE_K < 256);
     }
+
+    // ---------- TCP VMO 面（e 门续刀）----------
+
+    /// 双 op 请求往返 + wire 钉板：drain_vmo `[op][sid LE]` 5B 与 rt_vmo
+    /// `[op][dlen u16 LE][seq][sid LE]` 8B——端序/字段序漂移在此炸响；
+    /// dlen/seq 全域边界与 sid 帽两端往返。
+    #[test]
+    fn vmo_request_roundtrip_and_wire_pinned() {
+        let mut out = [0u8; RT_VMO_REQ_LEN];
+        let n = encode_drain_vmo_request(&mut out, 5).unwrap();
+        assert_eq!(n, DRAIN_VMO_REQ_LEN);
+        assert_eq!(&out[..n], &[OP_TCP_DRAIN_VMO, 5, 0, 0, 0]);
+        assert_eq!(parse_drain_vmo_request(&out[..n]), Some(5));
+
+        // sid 帽两端（1 与 TCP_SESSIONS_MAX）往返。
+        assert_eq!(encode_drain_vmo_request(&mut out, 1).unwrap(), DRAIN_VMO_REQ_LEN);
+        assert_eq!(parse_drain_vmo_request(&out[..DRAIN_VMO_REQ_LEN]), Some(1));
+        let n = encode_drain_vmo_request(&mut out, TCP_SESSIONS_MAX).unwrap();
+        assert_eq!(parse_drain_vmo_request(&out[..n]), Some(TCP_SESSIONS_MAX));
+
+        let n = encode_rt_vmo_request(&mut out, 0x1234, 7, 2).unwrap();
+        assert_eq!(n, RT_VMO_REQ_LEN);
+        assert_eq!(&out[..n], &[OP_TCP_RT_VMO, 0x34, 0x12, 7, 2, 0, 0, 0]);
+        assert_eq!(parse_rt_vmo_request(&out[..n]), Some((0x1234, 7, 2)));
+
+        // dlen u16 全域边界（1 与 MAX——VMO 面无 250 inline 帽）；seq 回绕
+        // 全域（0 与 255 皆合法——v1 seq 形同法）。
+        assert_eq!(encode_rt_vmo_request(&mut out, 1, 0, 1).unwrap(), RT_VMO_REQ_LEN);
+        assert_eq!(parse_rt_vmo_request(&out), Some((1, 0, 1)));
+        let n = encode_rt_vmo_request(&mut out, u16::MAX, 255, TCP_SESSIONS_MAX).unwrap();
+        assert_eq!(
+            &out[..n],
+            &[OP_TCP_RT_VMO, 0xFF, 0xFF, 0xFF, TCP_SESSIONS_MAX as u8, 0, 0, 0]
+        );
+        assert_eq!(
+            parse_rt_vmo_request(&out[..n]),
+            Some((u16::MAX, 255, TCP_SESSIONS_MAX))
+        );
+
+        // out 不足/空 out：None 不截断。
+        let mut small = [0u8; 4];
+        assert_eq!(encode_drain_vmo_request(&mut small, 1), None);
+        let mut small = [0u8; 7];
+        assert_eq!(encode_rt_vmo_request(&mut small, 1, 1, 1), None);
+        let mut empty: [u8; 0] = [];
+        assert_eq!(encode_drain_vmo_request(&mut empty, 1), None);
+        assert_eq!(encode_rt_vmo_request(&mut empty, 1, 1, 1), None);
+    }
+
+    /// 双 op 请求野值/恰长执法：sid 0 与越帽双侧拒、rt dlen 0 拒（RT 载荷
+    /// 非空族法）、坏 op 首字节拒、截断/尾随一并拒。
+    #[test]
+    fn vmo_request_wild_values_and_length_rejected() {
+        let mut out = [0u8; RT_VMO_REQ_LEN];
+        // sid 0：显式 sid 字段 = 命名会话专属（DRAIN 同法），编码产不出、
+        // 解析双侧拒。
+        assert_eq!(encode_drain_vmo_request(&mut out, 0), None);
+        assert_eq!(parse_drain_vmo_request(&[OP_TCP_DRAIN_VMO, 0, 0, 0, 0]), None);
+        assert_eq!(encode_rt_vmo_request(&mut out, 4, 1, 0), None);
+        assert_eq!(parse_rt_vmo_request(&[OP_TCP_RT_VMO, 4, 0, 1, 0, 0, 0, 0]), None);
+        // 越帽（编码 u32::MAX / 解析帽+1）
+        assert_eq!(encode_drain_vmo_request(&mut out, u32::MAX), None);
+        assert_eq!(
+            parse_drain_vmo_request(&[OP_TCP_DRAIN_VMO, 0, 0, 0, TCP_SESSIONS_MAX as u8 + 1]),
+            None
+        );
+        assert_eq!(encode_rt_vmo_request(&mut out, 4, 1, u32::MAX), None);
+        assert_eq!(
+            parse_rt_vmo_request(&[OP_TCP_RT_VMO, 4, 0, 1, 0, 0, 0, TCP_SESSIONS_MAX as u8 + 1]),
+            None
+        );
+        // rt dlen 0 双侧拒。
+        assert_eq!(encode_rt_vmo_request(&mut out, 0, 1, 1), None);
+        assert_eq!(parse_rt_vmo_request(&[OP_TCP_RT_VMO, 0, 0, 1, 1, 0, 0, 0]), None);
+        // 坏 op 首字节：对面 op 的合法帧互拒。
+        assert_eq!(parse_drain_vmo_request(&[OP_TCP_RT_VMO, 1, 0, 0, 0]), None);
+        assert_eq!(parse_rt_vmo_request(&[OP_TCP_DRAIN_VMO, 1, 0, 0, 0, 0, 0, 0]), None);
+        // 恰长执法：截断/尾随一并拒（drain 5B / rt 8B 定长单形）。
+        assert_eq!(parse_drain_vmo_request(&[]), None);
+        assert_eq!(parse_drain_vmo_request(&[OP_TCP_DRAIN_VMO]), None);
+        assert_eq!(parse_drain_vmo_request(&[OP_TCP_DRAIN_VMO, 2, 0, 0]), None);
+        assert_eq!(parse_drain_vmo_request(&[OP_TCP_DRAIN_VMO, 2, 0, 0, 0, 0]), None); // 尾随 6B
+        assert_eq!(parse_rt_vmo_request(&[OP_TCP_RT_VMO, 1, 0, 1, 1, 0, 0]), None); // 截断 7B
+        assert_eq!(parse_rt_vmo_request(&[OP_TCP_RT_VMO, 1, 0, 1, 1, 0, 0, 0, 0]), None); // 尾随 9B
+    }
+
+    /// vmo 应答两形往返 + wire 钉板：3B `[st][dlen u16 LE]`（定长——非 OK
+    /// 也 3B 恒零值，非 v1 的 1B 缩形）与 4B `[st][dlen LE][seq]`；OK
+    /// dlen=0 域分：drain 合法（零收成）/ rt 拒（载荷非空族法）。
+    #[test]
+    fn vmo_reply_roundtrip_and_wire_pinned() {
+        let mut out = [0u8; RT_VMO_REP_LEN];
+        let n = encode_tcp_reply_vmo(&mut out, ST_OK, 1000).unwrap();
+        assert_eq!(n, VMO_REP_LEN);
+        assert_eq!(&out[..n], &[ST_OK, 0xE8, 0x03]); // 1000 = 0x03E8 LE
+        assert_eq!(parse_tcp_reply_vmo(&out[..n]), Some((ST_OK, 1000)));
+
+        // OK dlen=0 = 零收成诚实值（v1 DRAIN 1B OK 形同族——此形定长无缩形）。
+        let n = encode_tcp_reply_vmo(&mut out, ST_OK, 0).unwrap();
+        assert_eq!(&out[..n], &[ST_OK, 0, 0]);
+        assert_eq!(parse_tcp_reply_vmo(&out[..n]), Some((ST_OK, 0)));
+
+        // 非 OK 定长 3B 恒零值 + NOSESSION 入域（专用形解锁 v1 形锁死的
+        // 死 sid 诊断位）。
+        let n = encode_tcp_reply_vmo(&mut out, ST_NOSESSION, 0).unwrap();
+        assert_eq!(&out[..n], &[ST_NOSESSION, 0, 0]);
+        assert_eq!(parse_tcp_reply_vmo(&out[..n]), Some((ST_NOSESSION, 0)));
+        let n = encode_tcp_reply_vmo(&mut out, ST_TIMEOUT, 0).unwrap();
+        assert_eq!(parse_tcp_reply_vmo(&out[..n]), Some((ST_TIMEOUT, 0)));
+
+        // dlen u16 上界往返。
+        let n = encode_tcp_reply_vmo(&mut out, ST_OK, u16::MAX).unwrap();
+        assert_eq!(&out[..n], &[ST_OK, 0xFF, 0xFF]);
+        assert_eq!(parse_tcp_reply_vmo(&out[..n]), Some((ST_OK, u16::MAX)));
+
+        // rt_vmo 形：OK 携 dlen LE + seq；非 OK 携原 seq（BUSY 背压配对
+        // 面——v1 seq 形同法）。
+        let n = encode_rt_vmo_reply(&mut out, ST_OK, 0x0100, 0x5A).unwrap();
+        assert_eq!(n, RT_VMO_REP_LEN);
+        assert_eq!(&out[..n], &[ST_OK, 0x00, 0x01, 0x5A]);
+        assert_eq!(parse_rt_vmo_reply(&out[..n]), Some((ST_OK, 0x0100, 0x5A)));
+
+        let n = encode_rt_vmo_reply(&mut out, ST_BUSY, 0, 0x42).unwrap();
+        assert_eq!(&out[..n], &[ST_BUSY, 0, 0, 0x42]);
+        assert_eq!(parse_rt_vmo_reply(&out[..n]), Some((ST_BUSY, 0, 0x42)));
+        let n = encode_rt_vmo_reply(&mut out, ST_TIMEOUT, 0, 255).unwrap();
+        assert_eq!(parse_rt_vmo_reply(&out[..n]), Some((ST_TIMEOUT, 0, 255)));
+
+        // out 不足/空 out：None 不截断。
+        let mut small = [0u8; 2];
+        assert_eq!(encode_tcp_reply_vmo(&mut small, ST_OK, 1), None);
+        let mut small = [0u8; 3];
+        assert_eq!(encode_rt_vmo_reply(&mut small, ST_OK, 1, 1), None);
+        let mut empty: [u8; 0] = [];
+        assert_eq!(encode_tcp_reply_vmo(&mut empty, ST_OK, 0), None);
+        assert_eq!(encode_rt_vmo_reply(&mut empty, ST_BAD, 0, 1), None);
+    }
+
+    /// vmo 应答烘焙线与形状执法：域外 st（未知值/EAGAIN/FULL）双侧拒；非
+    /// OK 携非零 dlen 双侧拒；rt OK dlen=0 双侧拒；恰长（截断/尾随/1B 缩
+    /// 形）拒。
+    #[test]
+    fn vmo_reply_baking_line_and_shapes() {
+        let mut out = [0u8; RT_VMO_REP_LEN];
+        // 未知 st / 域外 st（EAGAIN=非阻塞语义归 ACCEPT、FULL=造会话面）。
+        assert_eq!(encode_tcp_reply_vmo(&mut out, 0xFF, 0), None);
+        assert_eq!(parse_tcp_reply_vmo(&[0xFF, 0, 0]), None);
+        assert_eq!(encode_tcp_reply_vmo(&mut out, ST_EAGAIN, 0), None);
+        assert_eq!(encode_tcp_reply_vmo(&mut out, ST_FULL, 0), None);
+        assert_eq!(parse_tcp_reply_vmo(&[ST_EAGAIN, 0, 0]), None);
+        assert_eq!(encode_rt_vmo_reply(&mut out, ST_FULL, 0, 1), None);
+        assert_eq!(parse_rt_vmo_reply(&[ST_EAGAIN, 0, 0, 1]), None);
+        // 非 OK 携非零 dlen（「超时了但带收割量」歧义形态不线上存在）。
+        assert_eq!(encode_tcp_reply_vmo(&mut out, ST_TIMEOUT, 1), None);
+        assert_eq!(parse_tcp_reply_vmo(&[ST_TIMEOUT, 1, 0]), None);
+        assert_eq!(encode_rt_vmo_reply(&mut out, ST_TIMEOUT, 1, 1), None);
+        assert_eq!(parse_rt_vmo_reply(&[ST_TIMEOUT, 1, 0, 1]), None);
+        // rt OK dlen=0（载荷非空族法的应答侧对称——v1 seq 形 2B 域外同族）。
+        assert_eq!(encode_rt_vmo_reply(&mut out, ST_OK, 0, 1), None);
+        assert_eq!(parse_rt_vmo_reply(&[ST_OK, 0, 0, 1]), None);
+        // 恰长：drain 3B / rt 4B 定长单形，截断与尾随一并拒（非 OK 1B 缩
+        // 形域外——v1 形不同款）。
+        assert_eq!(parse_tcp_reply_vmo(&[]), None);
+        assert_eq!(parse_tcp_reply_vmo(&[ST_BAD]), None); // v1 1B 非 OK 形非此面
+        assert_eq!(parse_tcp_reply_vmo(&[ST_OK, 0xE8]), None);
+        assert_eq!(parse_tcp_reply_vmo(&[ST_OK, 0xE8, 0x03, 0]), None); // 尾随
+        assert_eq!(parse_rt_vmo_reply(&[]), None);
+        assert_eq!(parse_rt_vmo_reply(&[ST_BUSY, 0, 0]), None); // 截断 3B
+        assert_eq!(parse_rt_vmo_reply(&[ST_OK, 1, 0, 1, 0]), None); // 尾随 5B
+    }
+
+    /// 零漂移反向钉板：新二 op 请求在 v1/会话化解析器全拒（op 首字节 9/10
+    /// 天然可分——旧消费者零接触）；op 取值钉板防意外重编号。应答两形不
+    /// 经 v1 应答面消费（串行 RPC 按所发 op 选形——Sid/Poll 专用形同款，
+    /// 此处只钉请求面）。
+    #[test]
+    fn vmo_new_ops_rejected_by_legacy_parsers() {
+        let mut out = [0u8; RT_VMO_REQ_LEN];
+        let n = encode_drain_vmo_request(&mut out, 3).unwrap();
+        assert_eq!(parse_tcp_request(&out[..n]), None);
+        assert_eq!(parse_tcp_s_request(&out[..n]), None);
+        let n = encode_rt_vmo_request(&mut out, 16, 1, 3).unwrap();
+        assert_eq!(parse_tcp_request(&out[..n]), None);
+        assert_eq!(parse_tcp_s_request(&out[..n]), None);
+        // op 域邻界钉板：8=DRAIN 旧面 / 9、10 新面。
+        assert_eq!(OP_TCP_DRAIN, 8);
+        assert_eq!(OP_TCP_DRAIN_VMO, 9);
+        assert_eq!(OP_TCP_RT_VMO, 10);
+    }
 }
+#[test]
+    fn vmo_cross_face_coincidence_pinned() {
+        // 双读巧合钉板（审查补）：3B/4B VMO 应答形与 v1 形的有意巧合冻成
+        // 机器事实——防后人误当 bug 修掉或误加防御（跨面解析禁令靠串行
+        // RPC 约定，巧合帧两读皆 Some 是设计现状）。
+        let f3 = [ST_OK, 1, 0u8];
+        assert!(parse_tcp_reply(&f3).is_some(), "3B 巧合:v1 读合法");
+        assert!(parse_tcp_reply_vmo(&f3).is_some(), "3B 巧合:vmo 读合法");
+        let f4 = [ST_OK, 1, 0u8, 5];
+        assert!(parse_tcp_reply(&f4).is_some(), "4B 巧合:v1 seq 形读合法");
+        assert!(parse_rt_vmo_reply(&f4).is_some(), "4B 巧合:rt_vmo 读合法");
+    }
+
+    

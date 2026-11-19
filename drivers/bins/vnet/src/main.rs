@@ -897,27 +897,34 @@ fn dns_roundtrip(
 
 /// serve() 应答形（A2-2 段③）：Dns / Tcp（legacy 三 op + tcp 形域内拒）/
 /// Sid（LISTEN·ACCEPT 共用 `[st][sid u32]` 5B——accept_form 分域编码器）/
-/// Poll（`[st][flags][rbytes u16]` 4B）。
+/// Poll（`[st][flags][rbytes u16]` 4B）/ DrainVmo·RtVmo（VMO 数据面两臂
+/// ——ndp 定长契约编码器 3B/4B，服务面几何见 tcp.rs VMO 块）。
 #[derive(Clone, Copy, PartialEq)]
 enum Form {
     Dns,
     Tcp,
     Sid,
     Poll,
+    DrainVmo,
+    RtVmo,
 }
 
 /// 常驻服务循环（A-8b DNS + T-d TCP 三 op + A2-2 段③ LISTEN/ACCEPT/POLL +
-/// A2-3 DRAIN/命名 RT·CLOSE，vblk A-4 同款纪律）：env 块 gift[2] 端点收
+/// A2-3 DRAIN/命名 RT·CLOSE + VMO 数据面 drain_vmo/rt_vmo，vblk A-4 同款
+/// 纪律）：env 块 gift[2] 端点收
 /// berry-netdproto 请求——按首字节 op 分派：DNS_QUERY 查询 / TCP 七 op
 ///（OPEN·ROUNDTRIP·CLOSE legacy 单会话（在席再 OPEN → ST_BUSY）+
 /// LISTEN·ACCEPT·POLL 会话表 + A2-3 命名数据面 DRAIN·RT·CLOSE——echo
-/// server 整链）→ 真网卡往返 → 应答。空队 = 合法空闲（非阻塞
+/// server 整链）+ VMO 两 op（drain_vmo/rt_vmo 随行 1 handle——DRAIN 收面
+/// 直写客户端 VMO、RT 载荷从 VMO 抽，大载荷过 inline 250 帽；blkproto 随行
+/// VMO 先例）→ 真网卡往返 → 应答。空队 = 合法空闲（非阻塞
 /// 泵一步 + wait READABLE 10s 帽**超时重臂**——链断判定交发问方 roundtrip
 /// 超时，「常驻服务 wait 超时是心跳不是死线」；hostfwd 入站不等 client
 /// RPC——POLL 拉模型的服务端活性面）；client 错误一律 ST_* 应答**服务不死**；
-/// 多带 handle 逐个 close（EBUSY → ST 降级五清不死、其余非 0 → trap）；协
-/// 议无随行面（nh != 0 / nb == 0 / 未知 op = 坏请求，DNS 形 1B ST_BAD——旧
-/// 垃圾消息行为零改动）。
+/// 多带 handle 逐个 close（EBUSY → ST 降级五清不死、其余非 0 → trap）；随
+/// 行面仅 VMO 两臂（nh==1 + 恰形恒法——blk_rpc/vblk 随行 VMO 先例，别名一
+/// 律经 close 环回收）；nh>1 / nb == 0 / 长度不符 / 未知 op = 坏请求，DNS
+/// 形 1B ST_BAD——旧垃圾消息行为零改动。
 fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
     let h = gift2_h();
     if h == 0 {
@@ -930,7 +937,12 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
     // [st][dlen][data≤TCP_DATA_MAX][seq] = RT_SEQ_REP_MAX 253B（四刀 seq 形
     // 抬升；msg 256 = CHAN_MSG_MAX 通道帽恰容会话形 256）。
     let mut rep = [0u8; ndp::RT_SEQ_REP_MAX];
-    let mut hs = [0 as Handle; 6]; // 随行收口容量 = CHAN_HND_MAX（T-1 4→6；协议 0/富余丢弃）
+    // 随行收口容量 = CHAN_HND_MAX = 8（kernel A2-3 6→8 同步——wm 订阅 recv
+    // 窗满额纪律同源）：窗按 ABI 满额，任何帧形态必被整体消费。窗小（6）则
+    // 7/8-handle 垃圾消息 recv -EINVAL 进「链断」trap 面——「多带面 ST_BAD
+    // 应答不死」与「窗小回滚滞队毒化后续读者」两害一起封。VMO 两臂恰 1 随行
+    // 恒法，多带面走 nh>1 → 1B BAD。
+    let mut hs = [0 as Handle; 8];
     // TCP 单会话独占（草案 §8）：None = 无会话；OPEN 建 / CLOSE 弃——
     // selftest 与本服务同一 Sess 驱动（「不长第二套」）。
     let mut sess: Option<tcp::Sess> = None;
@@ -976,7 +988,49 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
         // seq 退避重发的配对面）。
         let mut defer = false;
         let mut rep_seq: Option<u8> = None;
-        if nh == 0 && nb >= 1 {
+        // VMO 数据面两臂（三轨统一契约——wire 面/编解码名义家 = netdproto，
+        // 几何帽见 tcp.rs VMO 块；blk_rpc/vblk 随行 VMO 先例）：恰形匹配才
+        // 入臂（nh==1 + 恰长 + op 对号——sid 域/dlen 域执法归 ndp 解析器）；
+        // nh>1 / 长度不符 / 未知 op 落既有垃圾面（三分支皆不中 → Form::Dns
+        // 1B ST_BAD，旧消息行为零改动）；随行 handle 恒由尾部 close 环回收
+        // （EBUSY 五清不死）。
+        if nh == 1 && nb == ndp::DRAIN_VMO_REQ_LEN && msg[0] == ndp::OP_TCP_DRAIN_VMO {
+            // drain_vmo：收割字节直写客户端 VMO（免 inline 应答载荷中转）；
+            // 应答 [st][dlen u16 LE] 3B 定长——OK 携收割字节（可为 0 = 诚实
+            // 零收成），死 sid / VMO 访问失败 → BAD（非 OK 恒零值 = dl 初值
+            // 0 即面，五清同保）。
+            form = Form::DrainVmo;
+            match ndp::parse_drain_vmo_request(&msg[..nb]) {
+                Some(sid) => match table.rx_drain_vmo(sid, hs[0]) {
+                    Some(n) => {
+                        st = ndp::ST_OK;
+                        dl = n;
+                    }
+                    None => st = ndp::ST_BAD,
+                },
+                None => st = ndp::ST_BAD, // sid 域外（臂门已钉 op/恰长——防御面）
+            }
+        } else if nh == 1 && nb == ndp::RT_VMO_REQ_LEN && msg[0] == ndp::OP_TCP_RT_VMO {
+            // rt_vmo：载荷从客户端 VMO 抽取（服务面几何 1..=2048，0/越幅 =
+            // 协议面拒）→ 既有 send_data 面（暂存闸/环准入零改）；应答 4B
+            // [st][dlen u16 LE][seq]——dlen = 受纳载荷长（非 OK 恒零），seq
+            // 恒回携（客户端同 seq 退避重发的配对令牌——rep_seq 纪律同源，
+            // BAD 亦携）。
+            form = Form::RtVmo;
+            rep_seq = Some(msg[3]); // 原始字节先携——解析拒（dlen 0/sid 域外）时 BAD 也配对
+            match ndp::parse_rt_vmo_request(&msg[..nb]) {
+                Some((dlen, seq, sid)) => {
+                    rep_seq = Some(seq);
+                    if table.rt_vmo_send(d, regs, mac, gw_mac, sid, hs[0], dlen as usize) {
+                        st = ndp::ST_OK;
+                        dl = dlen as usize;
+                    } else {
+                        st = ndp::ST_BAD;
+                    }
+                }
+                None => st = ndp::ST_BAD, // dlen 0 / sid 域外（ndp 域执法）
+            }
+        } else if nh == 0 && nb >= 1 {
             match msg[0] {
                 ndp::OP_DNS_QUERY => match ndp::parse_request(&msg[..nb]) {
                     Some(ndp::Req::DnsQuery { name }) => match core::str::from_utf8(name) {
@@ -1126,8 +1180,10 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
                 }
             }
         }
-        // 协议无随行面：多带 handle 全部回收（EBUSY = client 送了映射中
-        // 唯一 handle——降级 ST_BAD 服务不死；其余错 = 链断 trap）。降级
+        // 随行 handle 一律回收（VMO 两臂用毕的别名 + 多带垃圾面——请求随
+        // 行 handle 经 recv 迁入本表，close 环即别名回收点；EBUSY = client
+        // 送了映射中唯一 handle——降级 ST_BAD 服务不死；其余错 = 链断
+        // trap）。降级
         // **五清** st/addr/dl/sid_rep/poll 面：编码器烘焙线「非 OK 恒全零
         // addr / 非 OK 恒不携 data / 非 OK 恒 sid=0」三侧都不许残留成功值
         // （DNS 成功后撞 EBUSY 时 addr 不清 → encode_reply None → trap 服务
@@ -1174,6 +1230,22 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
             Form::Poll => match ndp::encode_poll_reply(&mut rep, st, poll_flags, poll_rbytes) {
                 Some(n) => n,
                 None => trap(), // 非 OK 恒 flags/rbytes=0（五清）恒过；防御面
+            },
+            // VMO 两臂应答 = ndp 定长契约编码器（非 OK 恒零 dlen 烘焙线在
+            // 编码器内执法——None = 编码面违约 trap（防御）；dl ≤ VMO_CHUNK
+            // 2048 恒入 u16）。
+            Form::DrainVmo => match ndp::encode_tcp_reply_vmo(&mut rep, st, dl as u16) {
+                Some(n) => n,
+                None => trap(), // st ∈ {OK,BAD} + 非 OK 恒零 dl（五清）恒过；防御面
+            },
+            Form::RtVmo => match ndp::encode_rt_vmo_reply(
+                &mut rep,
+                st,
+                dl as u16,
+                rep_seq.unwrap_or(0),
+            ) {
+                Some(n) => n,
+                None => trap(), // OK 恒 dl=dlen≥1 / 非 OK 恒零 dl（五清）恒过；防御面
             },
             Form::Dns => match ndp::encode_reply(&mut rep, st, addr) {
                 Some(n) => n,
@@ -1229,7 +1301,9 @@ fn serve_nodev() -> ! {
         berry_libc::park();
     }
     let mut msg = [0u8; 256];
-    let mut hs = [0 as Handle; 6]; // 随行收口容量 = CHAN_HND_MAX（serve() 同款）
+    // 随行收口容量 = CHAN_HND_MAX = 8（serve() 同款满额窗——deviceless 面
+    // 同拒多带 trap 面）。
+    let mut hs = [0 as Handle; 8];
     loop {
         let mut nb = msg.len();
         let mut nh = hs.len();
