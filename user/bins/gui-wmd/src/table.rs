@@ -645,6 +645,12 @@ impl WmTable {
         self.apps_n -= 1;
     }
 
+    /// apps 通道在册查询（presarb 死亡对账面：owner 属主通道被摘表/
+    /// DETACH 后 false → wmd 代发 drain_orphans 清场）。
+    pub fn app_alive(&self, h: Handle) -> bool {
+        self.apps[..self.apps_n].contains(&h)
+    }
+
     /// apps 轮询段（K1 I1——serve 每轮 push_srv poll 之后）：`apps[..apps_n]`
     /// 逐个非阻塞收，**一路至多一帧**（串行 RPC 纪律同 wm_srv/push_srv
     /// poll——命中即返，主循环 dispatch 后 continue 回环重扫；本帧处理可

@@ -73,6 +73,8 @@ use berry_sys::{
 #[cfg(target_os = "linux")]
 use gui_wmd::{AppRecv, Port, SendEvtStatus};
 #[cfg(target_os = "linux")]
+use gui_wmd::presarb::{ArbGate, PresentArb, PresentOp};
+#[cfg(target_os = "linux")]
 use gui_wmd::relay::{self, Domain, RelayIo, RelayState};
 #[cfg(target_os = "linux")]
 use gui_wmd::table::WmTable;
@@ -301,28 +303,65 @@ impl Port for ChanPort {
 }
 
 /// wm_srv/apps 通道帧分发（§3 #6 分发表执法 + 波3 新 op + K1 I1 0x69）：
-/// present 1..=8 → present_cli 透传（refresh 刀3 A6：0x07 INPUT_PULSE 入域；
-/// 刀4 P3：0x08 FRAME_TIMING 入域——呈现回执查询面）；hdi 0x40..=0x45 →
+/// present 1..=8 → **presarb 单飞闸门后** present_cli 透传（refresh 刀3
+/// A6：0x07 INPUT_PULSE 入域；刀4 P3：0x08 FRAME_TIMING 入域——呈现回执
+/// 查询面；云桌面根治刀：SUBMIT/RELEASE 事务边界 op 受属主闸门——他客户
+/// 端事务在途 ST_BUSY 快答不转发〔随行关收，alias 未达 guifbd 零孤儿〕，
+/// 属主挂死租约帽外先 drain_orphans 清场再放行）；hdi 0x40..=0x45 →
 /// hdi_cli 透传（refresh 刀1-6：0x44 PANEL_CAPS / 0x45 VBLANK_TIMING
-/// 入域）；**0x69 ATTACH 在 wm 域分发之前开口**（恰 1B + 随行恰 1 执法
-/// 在本层——table::handle_wm 的零随行一刀切门之前，wm 域唯一合法随行
-/// op：随行 = 对端 srv 端，迁入 apps 表，ack/ST_FULL 经新通道回）；
-/// wm 0x60..=0x7F → 本地表处理（0x60..=0x6A 十一枚中十枚：GETINFO/
-/// CREATE/DESTROY/SET/TABLE_GET/TABLE_WAIT + 波3 FOCUS 0x66/BACK 0x67/
-/// SUBSCRIBE 0x68 + K1 DETACH 0x6A；0x6B..=0x7F 未定形 → 1B ST_BAD）；
-/// **其余一切 op（含 0x20..=0x22 input 域错投、0x90..=0x9F 事件帧型
-/// 错投）→ 1B ST_BAD + close 随行**。`ch` = 帧来源通道（wm_srv 或 app
-/// 通道——应答参数化回它，多客户端隔离的结构基础）。中继臂过
-/// [`RelayState`]（毒化账跨轮驻留——serve 循环持单例）。
+/// 入域；桌面客户端只用 PANEL_CAPS 即答面——v1 不入闸门）；**0x69 ATTACH
+/// 在 wm 域分发之前开口**（恰 1B + 随行恰 1 执法在本层——table::
+/// handle_wm 的零随行一刀切门之前，wm 域唯一合法随行 op：随行 = 对端
+/// srv 端，迁入 apps 表，ack/ST_FULL 经新通道回）；wm 0x60..=0x7F →
+/// 本地表处理（0x60..=0x6A 十一枚中十枚：GETINFO/CREATE/DESTROY/SET/
+/// TABLE_GET/TABLE_WAIT + 波3 FOCUS 0x66/BACK 0x67/SUBSCRIBE 0x68 + K1
+/// DETACH 0x6A；0x6B..=0x7F 未定形 → 1B ST_BAD）；**其余一切 op（含
+/// 0x20..=0x22 input 域错投、0x90..=0x9F 事件帧型错投）→ 1B ST_BAD +
+/// close 随行**。`ch` = 帧来源通道（wm_srv 或 app 通道——应答参数化回
+/// 它，多客户端隔离的结构基础；present 属主身份也以此为本）。中继臂过
+/// [`RelayState`]（毒化账跨轮驻留——serve 循环持单例）+ [`PresentArb`]
+/// （单飞属主账）。
 #[cfg(target_os = "linux")]
-fn on_wm(table: &mut WmTable, rstate: &mut RelayState, present_cli: Handle, hdi_cli: Handle,
-         ch: Handle, msg: &[u8], hs: &[Handle]) {
+fn on_wm(table: &mut WmTable, rstate: &mut RelayState, arb: &mut PresentArb,
+         present_cli: Handle, hdi_cli: Handle, ch: Handle, msg: &[u8], hs: &[Handle]) {
     match msg.first() {
         Some(&op) if (gp::OP_GETINFO..=gp::OP_FRAME_TIMING).contains(&op) => {
-            relay_dispatch(rstate, Domain::Present, ch, present_cli, msg, hs);
+            let pop = if op == gp::OP_SUBMIT {
+                PresentOp::Submit
+            } else if op == gp::OP_RELEASE {
+                PresentOp::Release
+            } else {
+                PresentOp::Other
+            };
+            match arb.gate(now_ns(), ch, pop) {
+                ArbGate::Busy => {
+                    // 他客户端事务在途（租约窗内）——快答不转发（alias
+                    // 零孤儿面；客户端 pump 侧步进重试）。
+                    close_all(hs);
+                    st_rep(ch, gp::ST_BUSY);
+                }
+                ArbGate::DrainForward => {
+                    // 属主挂死/空闲帽外——先代发 RELEASE_WAIT 清场（held/
+                    // parked 残留全量回收 + owner=None），成则放行本请求。
+                    // 毒化在席 = 清场禁发（协议配对红线）——ST_BUSY 降级，
+                    // serve 顶既有清淤路自愈后再试。
+                    let mut port = ChanPort;
+                    if relay::drain_orphans(rstate, &mut port, Domain::Present, present_cli) {
+                        arb.on_sent(now_ns(), ch, PresentOp::Release);
+                        relay_dispatch(rstate, arb, ch, pop, present_cli, msg, hs);
+                    } else {
+                        println!("gui-wmd: presarb drain 未成（毒化/帽到点——快答 ST_BUSY present）");
+                        close_all(hs);
+                        st_rep(ch, gp::ST_BUSY);
+                    }
+                }
+                ArbGate::Forward => {
+                    relay_dispatch(rstate, arb, ch, pop, present_cli, msg, hs);
+                }
+            }
         }
         Some(&op) if (gp::OP_REG_VBLANK..=gp::OP_VBLANK_TIMING).contains(&op) => {
-            relay_dispatch(rstate, Domain::Hdi, ch, hdi_cli, msg, hs);
+            relay_dispatch(rstate, arb, ch, PresentOp::Other, hdi_cli, msg, hs);
         }
         // 0x69 开口：恰 1B + 随行恰 1（畸形/随行数失配 = ST_BAD + close
         // 随行——坏客户端不杀服务）。ack 走新通道（table::app_attach）。
@@ -348,26 +387,44 @@ fn on_wm(table: &mut WmTable, rstate: &mut RelayState, present_cli: Handle, hdi_
 
 /// 中继单趟 + 返回契约消费（§1 诊断行映射——帽到点/毒化行保留旧字符串
 /// 前缀「gui-wmd: relay send/recv …帽到点」供串口验尸预言与长稳探针对
-/// 拍：修后这些行可现，但**不再**伴随 G1.5 kill 行）。
+/// 拍：修后这些行可现，但**不再**伴随 G1.5 kill 行）+ presarb 记账：请求
+/// **已到达 guifbd** 的四态（Relayed/RecvCapPoisoned/StaleDropped/
+/// ReplyDropped）on_sent（Submit 占主 / Release 清主 / Other 刷活跃）；
+/// 未到达三态（BadAttach/SendBusy/PoisonedBusy）不动 owner——guifbd 侧
+/// 事务状态与请求同步为零迁移。
 #[cfg(target_os = "linux")]
-fn relay_dispatch(rstate: &mut RelayState, dom: Domain, ch: Handle, cli: Handle,
-                  msg: &[u8], hs: &[Handle]) {
+fn relay_dispatch(rstate: &mut RelayState, arb: &mut PresentArb, ch: Handle, pop: PresentOp,
+                  cli: Handle, msg: &[u8], hs: &[Handle]) {
     use gui_wmd::relay::RelayOutcome::*;
     let mut port = ChanPort;
+    let dom = if matches!(msg.first(), Some(&op) if (gp::OP_REG_VBLANK..=gp::OP_VBLANK_TIMING).contains(&op)) {
+        Domain::Hdi
+    } else {
+        Domain::Present
+    };
     let name = match dom {
         Domain::Present => "present",
         Domain::Hdi => "hdi",
     };
-    match rstate.relay(&mut port, dom, ch, cli, msg, hs) {
-        Relayed => {}
-        BadAttach => {} // 既有执法面（ST_BAD 应答已自答）
-        SendBusy => println!("gui-wmd: relay send busy 帽到点（快答 ST_BUSY {}）", name),
+    let out = rstate.relay(&mut port, dom, ch, cli, msg, hs);
+    match out {
+        Relayed => arb.on_sent(now_ns(), ch, pop),
         RecvCapPoisoned => {
-            println!("gui-wmd: relay recv 帽到点（快答 ST_BUSY+毒化 {}）", name)
+            // 请求已被 guifbd 消费（应答未归毒化）——事务状态照记。
+            arb.on_sent(now_ns(), ch, pop);
+            println!("gui-wmd: relay recv 帽到点（快答 ST_BUSY+毒化 {}）", name);
         }
+        StaleDropped => {
+            arb.on_sent(now_ns(), ch, pop);
+            println!("gui-wmd: relay 陈旧应答丢弃（{}）", name);
+        }
+        ReplyDropped => {
+            arb.on_sent(now_ns(), ch, pop);
+            println!("gui-wmd: send busy 帽到点（中继应答丢弃 {}）", name);
+        }
+        BadAttach => {} // 既有执法面（ST_BAD 应答已自答）——未到达
+        SendBusy => println!("gui-wmd: relay send busy 帽到点（快答 ST_BUSY {}）", name),
         PoisonedBusy => println!("gui-wmd: relay 毒化期快答 ST_BUSY（{}）", name),
-        StaleDropped => println!("gui-wmd: relay 陈旧应答丢弃（{}）", name),
-        ReplyDropped => println!("gui-wmd: send busy 帽到点（中继应答丢弃 {}）", name),
     }
 }
 
@@ -454,6 +511,8 @@ fn main() {
     let mut table = WmTable::new(info.display_w as u16, info.display_h as u16, now_ns());
     // 中继毒化账（停摆根治刀 §1.2——present/hdi 独立标记，跨轮驻留）。
     let mut rstate = RelayState::new();
+    // present 单飞仲裁账（云桌面根治刀——单事务属主 + 租约 + 死亡对账）。
+    let mut arb = PresentArb::new();
 
     // —— 启动序⑤：诊断行转 serve（小写 wmd 前缀——永不进 MARKERS）。
     println!("gui-wmd: up");
@@ -477,8 +536,25 @@ fn main() {
         }
         table.on_back_tick(&mut port, now_ns());
         table.sweep_evt(&mut port);
+        // presarb 死亡对账：owner 属主通道已被摘表/DETACH（poll_apps Dead
+        // 面 / app_detach 自摘面）→ 清主 + 代发 drain 清场（孤儿别名/parked
+        // 残留回收——「死 app 永占 credits」面结构性消失）。wm_srv（launcher
+        // 端）除外——boot 定值柄不在 apps 表，其死亡面 = poll(wm_srv) 的
+        // trap→监督重启既有链，不归本对账。app_alive 是 O(N) 定容扫描
+        //（N≤8，每轮顶零成本）；drain 只在属主失踪的真死亡拍发生（阻塞 ≤
+        // 一帧 park 上界）。
+        if let Some(o) = arb.owner() {
+            if o != wm_srv && !table.app_alive(o) {
+                arb.forget(o);
+                if !relay::drain_orphans(&mut rstate, &mut port, Domain::Present, present_cli) {
+                    // 毒化在席/帽到点：孤儿面留待下一事务的租约抢占或
+                    // serve 顶清淤路——不为死通道炸服务。
+                    println!("gui-wmd: presarb 死亡 drain 未成（孤儿面待下次事务抢占）");
+                }
+            }
+        }
         if let Some((msg, hs)) = poll(wm_srv) {
-            on_wm(&mut table, &mut rstate, present_cli, hdi_cli, wm_srv, &msg.0[..msg.1], &hs.0[..hs.1]);
+            on_wm(&mut table, &mut rstate, &mut arb, present_cli, hdi_cli, wm_srv, &msg.0[..msg.1], &hs.0[..hs.1]);
             continue;
         }
         if let Some((msg, hs)) = poll(push_srv) {
@@ -488,7 +564,7 @@ fn main() {
         // apps 轮询段（K1 I1）：一路至多一帧（串行 RPC 纪律同上；命中帧
         // 同走 on_wm——应答参数化回该通道；病态通道在段内 close+摘表）。
         if let Some(f) = table.poll_apps(&mut port) {
-            on_wm(&mut table, &mut rstate, present_cli, hdi_cli, f.ch, &f.msg[..f.n], &f.hs[..f.nh]);
+            on_wm(&mut table, &mut rstate, &mut arb, present_cli, hdi_cli, f.ch, &f.msg[..f.n], &f.hs[..f.nh]);
             continue;
         }
         // wait 集 = [wm_srv, push_srv] + 事件通道（属主+订阅者）+ apps，

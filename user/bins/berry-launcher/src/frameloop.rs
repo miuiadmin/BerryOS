@@ -294,6 +294,7 @@ impl appshell::pump::HostHooks for LoopHost {
         for m in msgs.iter() {
             match m {
                 Msg::Click { node } => {
+                    eprintln!("launcher: CLICK node={:?} spawn_ok={} guard={:?}", node, self.spawn_ok, self.spawn_guard.is_some());
                     // 五键导航先判（含 BottomTabs 三页位——命中 = 消费，
                     // 不落槽 spawn 面）。导航键是覆盖态的逃生面，恒最先。
                     if !on_nav_click(
@@ -335,6 +336,7 @@ impl appshell::pump::HostHooks for LoopHost {
                                 &mut self.spawn_guard,
                                 &mut self.router,
                             ) {
+                                eprintln!("launcher: on_click node={:?} tabs_cur={} pager_page={}", node, self.desktop.tabs.cur, self.desktop.pager.page());
                                 on_click(
                                     *node,
                                     &self.desktop,
@@ -1231,9 +1233,20 @@ fn on_click(
         .flatten()
         .chain(desktop.dock.iter())
         .find(|s| s.cell == node || s.label_node == node || s.icon == Some(node));
-    let Some(slot) = slot else { return }; // 壁纸/状态栏/圆点/容器白区 = 无格
-    let Some(idx) = slot.app else { return }; // 占位/幽灵格不可 spawn
-    let Some(entry) = icons::registry().get(idx) else { return };
+    let Some(slot) = slot else {
+        eprintln!("launcher: on_click NO SLOT for node={:?} (slots count={})", node,
+            desktop.slots.iter().flatten().count());
+        return; // 壁纸/状态栏/圆点/容器白区 = 无格
+    };
+    let Some(idx) = slot.app else {
+        eprintln!("launcher: on_click SLOT HIT but no app node={:?}", node);
+        return; // 占位/幽灵格不可 spawn
+    };
+    let Some(entry) = icons::registry().get(idx) else {
+        eprintln!("launcher: on_click REGISTRY MISS idx={}", idx);
+        return;
+    };
+    eprintln!("launcher: on_click SPAWNING id={:?}", entry.id_bytes());
     if spawn_by_id_inner(entry.id_bytes(), smoke, spawn_ok, guard, router) {
         // 多任务键记忆：spawn 成功才记账（失败不占 recents 槽）。
         let mut id = [0u8; 24];

@@ -68,7 +68,6 @@ use berry_ui::damage::DamageSet;
 use berry_ui::desc::MsgBuf;
 #[cfg(not(test))]
 use berry_ui::frame::VoteBallot;
-#[cfg(not(test))]
 use berry_ui::hit::PtrEvent;
 use berry_ui::UiMain;
 
@@ -89,6 +88,13 @@ pub const IDLE_CAP_NS: u64 = 10 * 1_000_000_000;
 /// 占用 guifbd `rel_park` 单槽时本端请求被拒——对方帧 latch 即让槽
 ///（vgpu reap 帽 10s 同值对齐）；到帽才 fail（真死链面）。
 pub const RELEASE_RETRY_CAP_NS: u64 = 10 * 1_000_000_000;
+
+/// SUBMIT/FRAME_CALLBACK 1B ST_BUSY 拒答重试总帽（present 单飞仲裁面）：
+/// wmd presarb（gui-wmd 侧）对他客户端事务在途的 SUBMIT 快答 ST_BUSY
+///（属主租约 5s 内让位）；帽取 8s > 租约——到帽前属主事务必已收口或被
+/// 租约抢占，本端重试必过。到帽才 fail（真死链面——guifbd/wmd 双停摆
+/// 形态）。
+pub const PRESENT_BUSY_RETRY_CAP_NS: u64 = 8 * 1_000_000_000;
 
 /// RELEASE_WAIT 重试步进（100ms——步进睡让出 CPU，醒即重验）。
 pub const RELEASE_RETRY_STEP_NS: u64 = 100 * 1_000_000;
@@ -191,6 +197,30 @@ pub trait HostHooks {
     /// 保证到点醒（pump 等待面不感知 hold 本身）。
     fn render_hold(&mut self) -> bool {
         false
+    }
+
+    /// 指针事件路由门（输入焦点分发面——默认 false = 引擎自消费）：
+    /// pump 收到每个真实指针事件（inputd INPUT_POLL 批内非键盘帧）先过
+    /// 本门；true = 事件已被宿主路由走（如转发给覆盖态应用），pump 不再
+    /// push 进引擎。手势粘滞（DOWN 锁定 → UP/CANCEL 解锁）归宿主自管。
+    fn on_input(&mut self, ui: &mut UiMain, ev: &PtrEvent, t_now: u64) -> bool {
+        let _ = (ui, ev, t_now);
+        false
+    }
+
+    /// 附加等待通道（宿主私有多路消费面——默认零路）：pump 的稳态
+    /// wait_many 在 [wm, input] 之外追加这些句柄（READABLE 并等——app
+    /// 输入 feeder 类「宿主代答」通道的及时醒面；总数（含基础两路）≤ 内核
+    /// WAIT_MANY_MAX=16 由宿主自律）。
+    fn aux_handles(&mut self, out: &mut [Handle]) -> usize {
+        let _ = out;
+        0
+    }
+
+    /// 附加通道服务拍（pump 每轮回环顶调用——非阻塞 drain/代答面；与
+    /// wait 唤醒无关地幂等调用，宿主自守零阻塞）。
+    fn on_aux(&mut self, ui: &mut UiMain) {
+        let _ = ui;
     }
 }
 
@@ -355,6 +385,9 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
                             diag(&format!("input events n={}", view.count()));
                             input_logged = true;
                         }
+                        // 本批是否有事件落引擎（全批被路由走 = 不 wake——
+                        // 引擎零工作，覆盖态应用的呈现归其自身帧循环）。
+                        let mut engine_fed = false;
                         for i in 0..view.count() {
                             if let Some(ev) = view.event(i) {
                                 // —— 键盘帧覆载分流（guiproto DEV_KEYBOARD
@@ -364,6 +397,7 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
                                 //    幻影按下）。
                                 if ev.device_id == gp::DEV_KEYBOARD {
                                     hooks.on_key(ui, ev.x as u8, ev.timestamp_ns);
+                                    engine_fed = true; // 键面保旧 wake 语义（on_key 消费归引擎侧）
                                     continue;
                                 }
                                 let pe = PtrEvent::from_wire(
@@ -375,12 +409,20 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
                                     ev.buttons,
                                     ev.pressure,
                                 );
-                                if let Err(e) = ui.push_pointer(pe) {
-                                    diag(&format!("input push err={e:?}"));
+                                // —— 焦点路由门（输入分发面）：宿主（launcher
+                                //    形态）判定事件归属覆盖态应用时消费不走
+                                //    引擎；false = 引擎正统路径零扰动。
+                                if !hooks.on_input(ui, &pe, t_now) {
+                                    if let Err(e) = ui.push_pointer(pe) {
+                                        diag(&format!("input push err={e:?}"));
+                                    }
+                                    engine_fed = true;
                                 }
                             }
                         }
-                        ui.wake(now());
+                        if engine_fed {
+                            ui.wake(now());
+                        }
                     }
                     Some(Err(gp::ST_EAGAIN)) => {
                         if !input_logged {
@@ -441,12 +483,9 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
 
             // SUBMIT：fresh READ dup 别名随行（send 即 take——原 vmo 留表；
             // TRANSFER 保位——随行预检执法，dup 只紧不松须显式保位）。
-            let mut alias: Handle = 0;
-            if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias) != 0
-                || alias == 0
-            {
-                fail("dup alias");
-            }
+            // **ST_BUSY 步进重试**（present 单飞仲裁面）：wmd 对他客户端
+            // 事务在途的 SUBMIT 快答 ST_BUSY（随行别名已被关收）——fresh
+            // dup 重试至帽（8s > 属主租约 5s，到帽前必过）。
             let (flags, rects, k) = if full {
                 (
                     gp::SUBMIT_F_DAMAGE_FULL,
@@ -466,24 +505,45 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
                 rect_count: k,
             };
             let m = enc_req(gp::encode_present_req(&mut req, &sreq));
-            let (n, _) = rpc(cfg.hw, &req[..m], &[alias], &mut rep, &mut rhs);
-            let token = match gp::parse_submit_ack(&rep[..n]) {
-                Some(t) => t,
-                None => fail(&format!("submit ack bad st={}", rep[0])),
+            let mut busy_dl = 0u64;
+            let token = loop {
+                let mut alias: Handle = 0;
+                if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias) != 0
+                    || alias == 0
+                {
+                    fail("dup alias");
+                }
+                let (n, _) = rpc(cfg.hw, &req[..m], &[alias], &mut rep, &mut rhs);
+                if let Some(t) = gp::parse_submit_ack(&rep[..n]) {
+                    break t;
+                }
+                if n == 1 && rep[0] == gp::ST_BUSY {
+                    busy_step("submit busy（present 单飞让位重试）", &mut busy_dl);
+                    continue;
+                }
+                fail(&format!("submit ack bad st={}", rep[0]));
             };
             ui.note_submitted();
 
             // FRAME_CALLBACK：blit-at-SUBMIT 形下帧已呈现（token 校验即
             // 答）——断 PRESENTED（DISCARDED = 呈现链破相 fail loud）。
-            // status/credits 单源仍在本应答（P3 回执无 credits 域）。
+            // status/credits 单源仍在本应答（P3 回执无 credits 域）。ST_BUSY
+            // 步进重试同 SUBMIT（仲裁瞬态——本端帧已在途，重试无副作用）。
             let m = enc_req(gp::encode_present_req(
                 &mut req,
                 &gp::PresentReq::FrameCallback { frame_token: token },
             ));
-            let (n, _) = rpc(cfg.hw, &req[..m], &[], &mut rep, &mut rhs);
-            let done = match gp::parse_frame_done_rep(&rep[..n]) {
-                Some(d) => d,
-                None => fail(&format!("frame done bad st={}", rep[0])),
+            let mut cb_dl = 0u64;
+            let done = loop {
+                let (n, _) = rpc(cfg.hw, &req[..m], &[], &mut rep, &mut rhs);
+                if let Some(d) = gp::parse_frame_done_rep(&rep[..n]) {
+                    break d;
+                }
+                if n == 1 && rep[0] == gp::ST_BUSY {
+                    busy_step("frame callback busy（present 单飞让位重试）", &mut cb_dl);
+                    continue;
+                }
+                fail(&format!("frame done bad st={}", rep[0]));
             };
             if done.status != gp::FRAME_PRESENTED {
                 fail(&format!("frame status={}", done.status));
@@ -548,23 +608,49 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
 
         hooks.on_frame(ui, presented, t_now);
 
-        // —— 稳态等待：wait_many [wm READABLE (+input READABLE)] +
+        // —— 附加通道服务拍（宿主多路消费面——feeder 类；与 wait 唤醒无关
+        //    幂等调用，非阻塞 drain/代答归宿主自守）。
+        hooks.on_aux(ui);
+
+        // —— 稳态等待：wait_many [wm READABLE (+input READABLE) (+aux)] +
         //    deadline = min(next_wakeup, now+IDLE 帽, extra)；TIMEDOUT =
-        //    期限到正常醒——渲染下一拍 / Idle 空转睡回。
+        //    期限到正常醒——渲染下一拍 / Idle 空转睡回。aux 段 = 宿主附加
+        //    通道（app 输入 feeder 等——READABLE 及时醒；总数 ≤16 内核帽
+        //    由宿主自律，越窗 = wait err fail loud 既有面）。
         let deadline = wait_deadline(ui.next_wakeup(), now(), hooks.extra_deadline());
-        let mut hs = [cfg.hw, 0 as Handle];
-        let ss = [SIGNAL_READABLE, SIGNAL_READABLE];
+        let mut hs = [0 as Handle; 8];
+        let ss = [SIGNAL_READABLE; 8];
+        hs[0] = cfg.hw;
         let mut n = 1usize;
         if hi != 0 && input_pending {
             hs[1] = hi;
             n = 2;
         }
+        n += hooks.aux_handles(&mut hs[n..]);
         let mut idx = 0usize;
         let mut obs = 0u64;
         let wst = berry_object_wait_many(hs.as_ptr(), ss.as_ptr(), n, deadline, &mut idx, &mut obs);
         if wst != 0 && wst != BERRY_ERR_TIMEDOUT {
             fail(&format!("wait err={wst}"));
         }
+    }
+}
+
+/// present 域 1B ST_BUSY 拒答的步进重试共尾（SUBMIT/FRAME_CALLBACK 面）：
+/// 100ms 步进让出 CPU（RELEASE_RETRY_STEP_NS 同值），总帽
+/// [`PRESENT_BUSY_RETRY_CAP_NS`]（`cap_dl` = 各调用点局部帽位，0 = 首次
+/// 起算）；到帽 fail（真死链面）。
+#[cfg(not(test))]
+fn busy_step(what: &str, cap_dl: &mut u64) {
+    if *cap_dl == 0 {
+        *cap_dl = now() + PRESENT_BUSY_RETRY_CAP_NS;
+        diag(what);
+    }
+    if now() >= *cap_dl {
+        fail(&format!("{}: 帽到点", what));
+    }
+    if berry_thread_sleep(now() + RELEASE_RETRY_STEP_NS) != 0 {
+        fail("busy retry sleep");
     }
 }
 
