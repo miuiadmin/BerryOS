@@ -12,3 +12,4 @@
 | 05 | `05-base-overhaul回流接缝预研-W3面资产对撞审计.md` | base-overhaul 回流时 W3 face crate 群对撞四态定级＋回流义务清单 |
 | 06 | `06-recv_n重放形态预研-ChannelShared接缝审计.md` | 回流义务 3 深化：消费点六接缝施工图 + disarm 双重释放风险钉板 |
 | 07 | `07-vslotface归并裁定预备-三查判序两形恒等性对拍审计.md` | 回流义务 2 深化：三查判序两形 200k 样本恒等对拍＋退役/保留/迁移裁定 |
+| 08 | `08-syscall逐段对拍清单预备-回流六冲突段施工图.md` | 回流义务 5 深化：syscall.rs 回流六冲突段施工图（3 overhaul 权威 + 2 base 权威 + 1 组合重放）＋KLOG 窗缘/权利域两域裁定 |
