@@ -140,9 +140,20 @@
 # berry-complete/berry-poll 镜像形态。单消费 = bsh（独立小工作区 path
 # 依赖，musl target，同 stdhello 不入 members——本 crate 零 syscall 面故
 # 入 members 挂 host 测试无碍）；job 表与 terminate/wait/reap 面 留 bsh）。
-members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-winplan", "berry-argv", "berry-strmem", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto", "berry-gpuproto",
+# 驱动子系统研究报告 P1 框架件 + 波 2.2 先行刀：berry-driver（统一
+# Driver trait 生命周期框架——probe/start/stop 三口 + registry 全槽探测，
+# 借 Linux probe 生命周期形状；no_std + alloc，host 测试经 justfile
+# test-host 显式行跑。依赖 berry-virtio 跨工作区 path（user→drivers 反向
+# 先例，drivers→user = vnet 消费 berry-netproto）——virtio_example 展示
+# 框架库包装法；真消费面 vblk/vnet 接线是后续刀）。
+# 存储栈 P0-2 刀 1：berry-partition（GPT/MBR 分区表解析纯函数 crate——
+# MBR 4 槽/0xEE 保护条转 GPT/GPT 头与条目区解码/坏签名与病态域 loud 拒，
+# research/2026-11-18-驱动子系统综合研究报告.md P0-2；读盘经注入闭包，
+# 库零 IO。单消费 = vblk 多分区暴露（下一刀接线）——host 测试经 justfile
+# test-host 显式行跑）。
+members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-winplan", "berry-argv", "berry-strmem", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto", "berry-gpuproto", "berry-partition",
     "berry-termio",
-    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-layout", "berry-psproto", "berry-complete", "berry-tls", "berry-mmap", "berry-signal", "berry-fbcon", "berry-gfx", "berry-poll", "berry-jobs", "berry-guiproto", "berry-ui", "berry-appshell", "berry-softime", "berry-appproto", "berry-cbox", "berry-pwproto", "berry-lifecycle", "berry-crypto", "berry-spawngeo", "bins/abuser", "bins/berry-verify", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild", "bins/dpgp", "bins/policydemo"]
+    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-layout", "berry-psproto", "berry-complete", "berry-tls", "berry-mmap", "berry-signal", "berry-fbcon", "berry-gfx", "berry-poll", "berry-jobs", "berry-guiproto", "berry-ui", "berry-appshell", "berry-softime", "berry-appproto", "berry-cbox", "berry-pwproto", "berry-lifecycle", "berry-crypto", "berry-spawngeo", "berry-driver", "bins/abuser", "bins/berry-verify", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild", "bins/dpgp", "bins/policydemo"]
 exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet", "bins/apptomb"]
 
 # cbox 刀 2：berry-cbox（黑匣子账本纯函数 crate，「解析器即产品」——排液
