@@ -487,13 +487,15 @@ extern "C" fn sys_power_off(_tf: &mut TrapFrame) -> i64 {
 
 // ---- 遥测环读口（0x84 telemetry_open——klog 快照首域〔阶段五第 16 步〕＋
 // memstat 定长快照〔遥测 v3 首件〕＋双族环历史快照〔op=2 环读口刀——
-// per-CPU 切换环＋唤醒环四段一体导出〕；op 域 add-only，后续波次自 op=3
-// 起按落地序取号）----
+// per-CPU 切换环＋唤醒环四段一体导出〕＋WakeSrc 槽表纯镜像〔op=3 槽表
+// 读口刀——40B 轻头＋128×64B 平数据全表导出，本文件 wsrc 臂＋
+// telemetry::wsrc_table_snap_into，berryctl powertop 消费〕；op 域
+// add-only，后续波次自 op=4 起按落地序取号）----
 
-/// 0x84 op 域常量**单源 = berry-telface**（klog=0 / memstat=1 / rings=2
-/// ——内核派发与 berry-sys 包装同引此，消内核/用户双写）；后续波次自
-/// op=3 起按落地序取号（add-only 纪律下预留号无执法值）。
-use berry_telface::{TELEMETRY_OP_KLOG, TELEMETRY_OP_MEMSTAT, TELEMETRY_OP_RINGS};
+/// 0x84 op 域常量**单源 = berry-telface**（klog=0 / memstat=1 / rings=2 /
+/// wsrc=3——内核派发与 berry-sys 包装同引此，消内核/用户双写）；后续波次
+/// 自 op=4 起按落地序取号（add-only 纪律下预留号无执法值）。
+use berry_telface::{TELEMETRY_OP_KLOG, TELEMETRY_OP_MEMSTAT, TELEMETRY_OP_RINGS, TELEMETRY_OP_WSRC};
 
 /// op=1 memstat 定长快照**冻结下限**（v1 形 40B = `MemstatRec` 5×u64）。
 /// len ≥ 此值即服务：实写 40B 返 40——尾追追加律（未来扩形旧调用方收
@@ -517,6 +519,13 @@ static mut KLOG_SNAP_STAGE: [u8; TELEMETRY_SNAPSHOT_MAX] = [0; TELEMETRY_SNAPSHO
 /// memstat 尾追追加律同族）。字面冻结不随 size_of 动：本臂恒写 v1 前缀。
 const RINGS_SNAP_HDR_V1: usize = 32;
 
+/// op=3 WakeSrc 槽表快照**冻结下限**（v1 轻头 40B = `WsrcHdrV1`）。len ≥
+/// 此值即服务（len=40 可单读头探几何——op=2 探针先例同精神）；**无上帽**
+///（全表定长 8232B 上界天然，变长仅整行截尾、返回值自证——16KiB 帽是
+/// op=0 臂专属语义不移植，`RINGS_SNAP_HDR_V1` 注族）。字面冻结不随
+/// size_of 动：本臂恒写 v1 前缀。
+const WSRC_SNAP_HDR_V1: usize = 40;
+
 /// 环快照暂存（窗口读 → copy_out 之间的稳定缓冲；容量 = telface
 /// `TELEMETRY_RINGS_MAX` 满载上界 7296B：32 头＋4×24 段＋2×64×24 切换＋
 /// 2×64×32 唤醒）。**单写者 = KL**：本 handler 恒 TABLE 类（KL 全局互斥
@@ -524,6 +533,16 @@ const RINGS_SNAP_HDR_V1: usize = 32;
 /// **新立不共用**（命名与注释语义绑 klog——stage 命名诚实，裁决 6）。
 static mut RING_SNAP_STAGE: [u8; berry_telface::TELEMETRY_RINGS_MAX] =
     [0; berry_telface::TELEMETRY_RINGS_MAX];
+
+/// WakeSrc 槽表快照暂存（全表纯镜像装配 → copy_out 之间的稳定缓冲；容量
+/// = telface `TELEMETRY_WSRC_MAX` 满载 8232B：40 头＋128×64 行——与
+/// `WAKE_SRC_TABLE` 本身 8KB 同量级）。**单写者 = KL**：本 handler 恒
+/// TABLE 类（KL 全局互斥跨核串行）+ ktest EL1 面同经 dispatch 取锁——
+/// `KLOG_SNAP_STAGE`/`RING_SNAP_STAGE` 同纪律**新立不共用**（RING_SNAP_STAGE
+/// 裁决 6 判例直移：单发整段无半写面——半写面即用户缓冲出现不完整行＋
+/// 无头的中间态）。
+static mut WSRC_SNAP_STAGE: [u8; berry_telface::TELEMETRY_WSRC_MAX] =
+    [0; berry_telface::TELEMETRY_WSRC_MAX];
 
 /// op=2 单段装配步：`read` 窗口读进 stage 段位（整条粒度 cap 截尾）→
 /// 段描述符**紧随其窗口读落笔**（count = 实拷数——段描述符形下 counts
@@ -590,16 +609,29 @@ fn rings_seg_put(
 /// [`RINGS_SNAP_HDR_V1`] → -EINVAL；无上帽（变长填充返回值自证，≥32 恒
 /// 返 ≥32）。
 ///
+/// op=3 WakeSrc 槽表纯镜像（槽表读口刀）——40B 头（`WsrcHdrV1`：
+/// version/hdr_bytes/slots/rec_size/cntfrq/now_vct/wake_acct_n）＋128×64B
+/// 定长平数据行（`WakeSrcRecV1`——**行号即源值**，值直索引零 src 域）。
+/// 全表镜像导出、变长仅整行截尾（len=40 单读头探几何；无上帽——全表定长
+/// 8232B 上界天然，返回值 40+行数×64 自证）。一致性语义＝逐槽逐字段独立
+/// 原子读**非一致快照**与装配序双不变式（Σ行wakes ≥ wake_acct_n＋
+/// now_vct ≥ 任一行时戳）见臂内注（G6 全文）＋
+/// [`crate::telemetry::wsrc_table_snap_into`] doc。trace_off 表照出（槽写
+/// 与 N 递增在 trace_off 早退前——计数器族不随关，双 trace 态皆真数据无
+/// 空头形）。len 门：`len` < [`WSRC_SNAP_HDR_V1`] → -EINVAL。
+///
 /// 拒面：op 域外 → -ENOTSUP；copy_out 失败 → -EFAULT（klog 臂逐环分段拷贝，
-/// 失败前的段已写——诚实部分读，调用方重试；memstat/rings 臂单发整段无
-/// 半写面）。零 handle 零权利位（系统级遥测读面——统计信号非对象内容，
-/// `sched_util_snapshot` 同族口径）。
+/// 失败前的段已写——诚实部分读，调用方重试；memstat/rings/wsrc 臂单发
+/// 整段无半写面）。零 handle 零权利位（系统级遥测读面——统计信号非对象
+/// 内容，`sched_util_snapshot` 同族口径）。
 ///
 /// 锁类 TABLE：klog 环热尾容错读无锁无共享串行面；memstat 三元组单闭包
 /// 一致窗、水位皆 Relaxed 原子读（统计信号无序角色）；rings 臂 seqlock
 /// 单版本窗整块拷（重试持 KL 有界：64 次 × ~2KB 拷贝，写方永不取 KL 无
-/// 死锁面）+ 7296B static stage 单写者；copy_out 链走查调用
-/// 方页表 = §A113 读者面（同 0x61 clock_read）。
+/// 死锁面）+ 7296B static stage 单写者；wsrc 臂纯原子读零重试面（表无
+/// seqlock——op=2 最大风险〔TCG 降级〕在本刀结构性不存在）+ 8232B
+/// static stage 单写者；copy_out 链走查调用方页表 = §A113 读者面（同
+/// 0x61 clock_read）。
 extern "C" fn sys_telemetry_open(tf: &mut TrapFrame) -> i64 {
     let (op, ptr, len) = (tf.regs[1], tf.regs[2], tf.regs[3]);
     match op {
@@ -683,7 +715,43 @@ extern "C" fn sys_telemetry_open(tf: &mut TrapFrame) -> i64 {
                 Err(e) => e as i64,      // -EFAULT 透传（单发整段无半写面）
             }
         }
-        _ => ERR_NOT_SUPPORTED as i64, // op 域外（后续波次自 op=3 起按落地序取号）
+        // op=3 WakeSrc 槽表纯镜像（槽表读口刀）：len 冻结下限门 → 全表装配
+        //（telemetry::wsrc_table_snap_into——装配序双不变式：N 先读 Acquire
+        // →逐槽逐字段 Relaxed 读→now_vct 行读毕后取→头最后落笔）→ 单发
+        // 整段拷出。**一致性契约（G6 全文）**：逐槽逐字段独立原子读、非一
+        // 致快照（wake_src_snapshot 单槽先例扩全表）——单调族（wakes/
+        // irq_count/no_waiter fetch_add、first_ts fetch_min、last_ts
+        // fetch_max、flags fetch_or、merge_hal 单调 store）中途读恒得某个
+        // 真实持过的值无回退无撕裂；非单调族（last_woken_id/last_ack_ts
+        // 定宽 store）可旧可新不撕；跨字段错位可能（wakes 新于 last_ts 等）
+        // ——差分只许用单调族（区间差精确自愈、不丢不双计）；全记录一致窗
+        // 不承诺（挂账维持）。Σ行wakes ≥ wake_acct_n 恒立（N 先读——写序
+        // 「槽先 N 末位 Release」的读者侧对偶；一次广播可醒任意多任务，
+        // 不做固定差值帽）；now_vct ≥ 任一行内时戳（行读毕后取，CNTVCT
+        // 单调律——消费方区间分母可安全夹上界）。first_ts==u64::MAX 哨兵＝
+        // 未触。整行粒度截尾：余量按 64B 整行分、不足一行即止，返回值
+        // 40+行数×64 自证（len=40 可单读头探几何）。trace_off 表照出零特判
+        //（on_wake 槽写与 N 递增都在 trace_off 早退之前——计数器族不随关；
+        // 表导出双 trace 态皆真数据、无空头形）。并账点边界：SGI×2/UNKNOWN
+        // 的 irq_count 是 G1.5 boot 尾单点并账快照非连续并账——差分对该
+        // 三槽恒 0 是 v1 已知边界（连续并账挂 v2）。
+        TELEMETRY_OP_WSRC => {
+            if (len as usize) < WSRC_SNAP_HDR_V1 {
+                return ERR_INVALID_ARG as i64;
+            }
+            let el1 = caller_is_el1(tf);
+            // 输出总界 = 用户 len 与满载容量的 min（全表定长——len>8232
+            // 恒满载）；stage 只用到满载容量。
+            let limit = (len as usize).min(berry_telface::TELEMETRY_WSRC_MAX);
+            // SAFETY: 单写者 = KL（见 WSRC_SNAP_STAGE 注）；本 handler 全程 KL 窗。
+            let stage = unsafe { &mut *core::ptr::addr_of_mut!(WSRC_SNAP_STAGE) };
+            let n = crate::telemetry::wsrc_table_snap_into(stage, limit);
+            match copy_to_user(el1, ptr, &stage[..n]) {
+                Ok(()) => n as i64,  // ≥40 头自证
+                Err(e) => e as i64,  // -EFAULT 透传（单发整段无半写面）
+            }
+        }
+        _ => ERR_NOT_SUPPORTED as i64, // op 域外（后续波次自 op=4 起按落地序取号）
     }
 }
 

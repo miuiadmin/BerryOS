@@ -32,6 +32,11 @@
 //!   [`TELEMETRY_OP_RINGS`]：op=2 双族环快照的形状与常量单源（环读口刀
 //!   ——自 kernel/src/telemetry.rs 迁此；头/段 LE 编解码纯函数与
 //!   `ringmerge::fill_span` 旋转律同批，host 钉板）。
+//! - [`WakeSrcRecV1`]/[`WsrcHdrV1`] 与 [`TELEMETRY_OP_WSRC`]：op=3
+//!   WakeSrc 槽表纯镜像的形状与常量单源（槽表读口刀——40B 轻头＋
+//!   128×64B 定长行，行号即源值零 src 域；kernel 原子壳同偏移镜像由
+//!   cross-const assert 锁步；头/行 LE 编解码纯函数，host 钉板；
+//!   berryctl powertop 消费）。
 //!
 //! 与冻结面的关系：NR 表/派发面零触碰（0x84 op 域常量与出参形状是唯一
 //! ABI 面，即上条单源项）；环/槽表的原子机械（seqlock 写方
@@ -400,6 +405,185 @@ pub fn ring_seg_read(buf: &[u8; 24]) -> RingSegV1 {
     }
 }
 
+// ---- 0x84 op 域第四件：WakeSrc 槽表纯镜像形状与常量（槽表读口刀——
+// 40B 轻头 WsrcHdrV1＋128×64B 定长平数据镜像 WakeSrcRecV1；行号即源值
+// 零 src 域〔值直索引 0..=0x7F 槽域单源 berry-wsrcface〕。内核装配
+//（telemetry.rs/syscall.rs）与 berry-sys/berryctl powertop 消费同引此，
+// 消内核/用户双写）----
+
+/// 3 = WakeSrc 槽表全表纯镜像（[`WsrcHdrV1`] 40B 轻头＋[`WakeSrcRecV1`]
+/// 128 行——行号即源值）。演进注：后续波次自 op=4 起按落地序取号，不预留
+///（add-only 纪律下预留号无执法值——域外恒 -ENOTSUP 与未定义同形）。
+pub const TELEMETRY_OP_WSRC: u64 = 3;
+
+/// 槽表快照头版本（v1 轻头——[`WsrcHdrV1`]）。
+pub const WSRC_SNAP_VER: u32 = 1;
+
+/// 单槽平数据镜像行（0x84 op=3 出参条目——`#[repr(C)]` 64B 定宽；与内核
+/// 原子壳 `WakeSrcRec`〔kernel/src/telemetry.rs〕**同偏移镜像**：十字段
+/// 逐偏移由 kernel 侧 cross-const assert 钉死（插字段/错序即编译红），
+/// 本面 size/align const 断言＋host shape_pinned 再钉一层）。
+///
+/// 不含 `src` 域：**行号即源值**（值直索引 0..=0x7F——槽数与钳位单源
+/// berry-wsrcface，头 slots/rec_size 自述几何）。`first_ts` 哨兵语义随形
+///（`u64::MAX` = 未触——内核 fetch_min 写序的镜像）；`ts_domain`/`_pad`
+/// 是 v1 冻结保留域（内核侧恒 0 **普通字节非原子**——如实标注：无写点、
+/// 镜像照拷即尽，v2 SLEPT 双钟域挂账）。数据域 60B＋repr(C) 对齐垫＝64B
+/// 整（显式 `_pad`@55..60＋隐式尾垫 60..64——编解码垫区写零）。
+///
+/// add-only 扩路（同 [`MemstatRec`] 注）：加字段 = 尾追新版本域或取新
+/// op 值，禁改旧结构——旧调用方按头 `hdr_bytes`/`rec_size` 自述走读，
+/// 返回值自证所得；**条目形变跨大改走新 op 值纪律**。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct WakeSrcRecV1 {
+    /// 本源唤醒事件数（单调族——on_wake fetch_add）。
+    pub wakes: u64,
+    /// 本源 IRQ 到达数（单调族——TIMER/UART 到达点 fetch_add；SGI×2/
+    /// UNKNOWN = G1.5 boot 尾单点并账 store）。
+    pub irq_count: u64,
+    /// 到达而无等待者（单调族——UART 良性竞态 / POWER_KEY 结构性无主）。
+    pub no_waiter: u64,
+    /// 首次唤醒时刻 CNTVCT（哨兵 `u64::MAX` = 未触——单调族 fetch_min）。
+    pub first_ts: u64,
+    /// 最近唤醒时刻（单调族 fetch_max）。
+    pub last_ts: u64,
+    /// 最近 IRQ 到达/ack 戳（非单调族——定宽 store，可旧可新不撕）。
+    pub last_ack_ts: u64,
+    /// 最近被唤醒任务 id（非单调族——名字 FNV-1a-32）。
+    pub last_woken_id: u32,
+    /// 分类/sticky 位（单调族 fetch_or——`WSRC_F_*` 位面单源 wsrcface）。
+    pub flags: u16,
+    /// 时戳域（v1 恒 0 = CNTVCT 单域；冻结保留）。
+    pub ts_domain: u8,
+    /// 定宽垫（ABI 演进保留，恒 0——编码垫区写零）。
+    pub _pad: [u8; 5],
+}
+const _: () = assert!(core::mem::size_of::<WakeSrcRecV1>() == 64);
+const _: () = assert!(core::mem::align_of::<WakeSrcRecV1>() == 8);
+
+/// 槽表快照头（0x84 op=3 出参前 40B——v1 轻头；砍 magic〔memstat/rings
+/// 双判例：op 派发＋单源形状已定身份〕）。
+///
+/// `hdr_bytes` 是头尾追扩形锚（同 [`RingsHdrV1`]）；`slots`/`rec_size`
+/// 自述几何（消费方自适应行数与条目步进——跨版本走读锚，op=2 `RingSegV1`
+/// rec_size 判例）；`cntfrq` 是 vct→ns 换算唯一源（rings 头同款）；
+/// `now_vct` 是快照时刻 CNTVCT（差分区间时钟锚＋安静时长分母——装配序
+/// 保证 ≥ 任一行内时戳：行读毕后取，CNTVCT 单调律）；`wake_acct_n` 是
+/// 独立总账（守恒自验右侧——装配序保证瞬态 Σ行wakes ≥ 本值：N 先读
+/// Acquire，写序「槽先 N 末位 Release」的读者侧对偶）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct WsrcHdrV1 {
+    /// 版本（= [`WSRC_SNAP_VER`]）。
+    pub version: u32,
+    /// 头字节数（= 40——头尾追扩形锚，消费方按此跳到行区）。
+    pub hdr_bytes: u32,
+    /// 槽数（= 128——行号即源值，消费方自适应行数）。
+    pub slots: u32,
+    /// 条目字节宽自述（= 64——消费方按此步进行区）。
+    pub rec_size: u32,
+    /// CNTFRQ（vct→ns 换算因子——vct 域换算的唯一真源）。
+    pub cntfrq: u64,
+    /// 快照时刻 CNTVCT（行读毕后取 ⇒ ≥ 任一行内**真实**时戳——未触槽 first_ts 的 u64::MAX 哨兵域排除，审查 note 修）。
+    pub now_vct: u64,
+    /// 唤醒记账独立总账（N 先读 ⇒ 瞬态 Σ行wakes ≥ 本值）。
+    pub wake_acct_n: u64,
+}
+const _: () = assert!(core::mem::size_of::<WsrcHdrV1>() == 40);
+
+/// V1 几何：槽表槽数（kernel `WAKE_SRC_SLOTS` cross-const assert 同值钉死
+///——槽域双改由断言强制同批；值域单源 berry-wsrcface `SLOTS`，本常量钉
+/// 快照几何面）。
+pub const WSRC_TABLE_V1_SLOTS: usize = 128;
+
+/// V1 几何：单槽行宽（kernel `WakeSrcRec` size cross-const assert 同值
+/// 钉死——条目形变跨大改走新 op 值纪律）。
+pub const WSRC_TABLE_V1_REC: usize = 64;
+
+/// op=3 快照满载上界（**字面冻结**：40 头 + 128×64 行——不随 size_of 动，
+/// [`TELEMETRY_RINGS_MAX`] 判例；全表定长镜像恒整表导出，变长仅整行
+/// 截尾、返回值 40+行数×64 自证）。
+pub const TELEMETRY_WSRC_MAX: usize = 8232;
+
+// ---- 头/行 LE 编解码纯函数（host 钉板 round-trip；kernel 装配与
+// berryctl powertop 解析同引此单源。垫区写零〔规范化编码〕、读方垫区
+// 不验——rings_hdr_write/read 判例）----
+
+/// 行 64B LE 编码（[`WakeSrcRecV1`] → 字节流；垫区写零——显式 `_pad`
+/// @55..60 与 repr(C) 隐式尾垫 @60..64 恒落零字节，字段域照值）。
+pub fn wsrc_row_write(r: &WakeSrcRecV1, out: &mut [u8; 64]) {
+    out[0..8].copy_from_slice(&r.wakes.to_le_bytes());
+    out[8..16].copy_from_slice(&r.irq_count.to_le_bytes());
+    out[16..24].copy_from_slice(&r.no_waiter.to_le_bytes());
+    out[24..32].copy_from_slice(&r.first_ts.to_le_bytes());
+    out[32..40].copy_from_slice(&r.last_ts.to_le_bytes());
+    out[40..48].copy_from_slice(&r.last_ack_ts.to_le_bytes());
+    out[48..52].copy_from_slice(&r.last_woken_id.to_le_bytes());
+    out[52..54].copy_from_slice(&r.flags.to_le_bytes());
+    out[54] = r.ts_domain;
+    out[55..64].fill(0);
+}
+
+/// 行 64B LE 解码（字节流 → [`WakeSrcRecV1`]；垫区不验——照拷字段域，
+/// 字段合法性归调用方）。
+pub fn wsrc_row_read(buf: &[u8; 64]) -> WakeSrcRecV1 {
+    WakeSrcRecV1 {
+        wakes: u64::from_le_bytes([
+            buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
+        ]),
+        irq_count: u64::from_le_bytes([
+            buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15],
+        ]),
+        no_waiter: u64::from_le_bytes([
+            buf[16], buf[17], buf[18], buf[19], buf[20], buf[21], buf[22], buf[23],
+        ]),
+        first_ts: u64::from_le_bytes([
+            buf[24], buf[25], buf[26], buf[27], buf[28], buf[29], buf[30], buf[31],
+        ]),
+        last_ts: u64::from_le_bytes([
+            buf[32], buf[33], buf[34], buf[35], buf[36], buf[37], buf[38], buf[39],
+        ]),
+        last_ack_ts: u64::from_le_bytes([
+            buf[40], buf[41], buf[42], buf[43], buf[44], buf[45], buf[46], buf[47],
+        ]),
+        last_woken_id: u32::from_le_bytes([buf[48], buf[49], buf[50], buf[51]]),
+        flags: u16::from_le_bytes([buf[52], buf[53]]),
+        ts_domain: buf[54],
+        _pad: [buf[55], buf[56], buf[57], buf[58], buf[59]],
+    }
+}
+
+/// 头 40B LE 编码（[`WsrcHdrV1`] → 字节流；无垫区——数据域恰 40B 整）。
+pub fn wsrc_hdr_write(h: &WsrcHdrV1, out: &mut [u8; 40]) {
+    out[0..4].copy_from_slice(&h.version.to_le_bytes());
+    out[4..8].copy_from_slice(&h.hdr_bytes.to_le_bytes());
+    out[8..12].copy_from_slice(&h.slots.to_le_bytes());
+    out[12..16].copy_from_slice(&h.rec_size.to_le_bytes());
+    out[16..24].copy_from_slice(&h.cntfrq.to_le_bytes());
+    out[24..32].copy_from_slice(&h.now_vct.to_le_bytes());
+    out[32..40].copy_from_slice(&h.wake_acct_n.to_le_bytes());
+}
+
+/// 头 40B LE 解码（字节流 → [`WsrcHdrV1`]；字段合法性归调用方）。
+pub fn wsrc_hdr_read(buf: &[u8; 40]) -> WsrcHdrV1 {
+    WsrcHdrV1 {
+        version: u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]),
+        hdr_bytes: u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]),
+        slots: u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]),
+        rec_size: u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]),
+        cntfrq: u64::from_le_bytes([
+            buf[16], buf[17], buf[18], buf[19], buf[20], buf[21], buf[22], buf[23],
+        ]),
+        now_vct: u64::from_le_bytes([
+            buf[24], buf[25], buf[26], buf[27], buf[28], buf[29], buf[30], buf[31],
+        ]),
+        wake_acct_n: u64::from_le_bytes([
+            buf[32], buf[33], buf[34], buf[35], buf[36], buf[37], buf[38], buf[39],
+        ]),
+    }
+}
+
 // ---- W3-Q81：环读面（双流 vct 归并/帽律）分模块——见 ringmerge.rs ----
 pub mod ringmerge;
 
@@ -686,14 +870,20 @@ mod tests {
 
     // ---- op=2 双族环快照：形状/常量/编解码钉板（环读口刀 F4）----
 
-    /// op 常量三值互异（{0,1,2}——add-only 下三档在役值钉死）。
+    /// op 常量四值互异（{0,1,2,3}——add-only 下四档在役值钉死；op=3 槽表
+    /// 纯镜像档〔槽表读口刀〕随本刀入役，trio 扩 quad）。
     #[test]
-    fn telemetry_op_trio_distinct() {
-        assert_eq!(TELEMETRY_OP_RINGS, 2);
-        let trio = [TELEMETRY_OP_KLOG, TELEMETRY_OP_MEMSTAT, TELEMETRY_OP_RINGS];
-        for i in 0..trio.len() {
-            for j in i + 1..trio.len() {
-                assert_ne!(trio[i], trio[j], "op 值撞号（{i} vs {j}）");
+    fn telemetry_op_quad_distinct() {
+        assert_eq!(TELEMETRY_OP_WSRC, 3);
+        let quad = [
+            TELEMETRY_OP_KLOG,
+            TELEMETRY_OP_MEMSTAT,
+            TELEMETRY_OP_RINGS,
+            TELEMETRY_OP_WSRC,
+        ];
+        for i in 0..quad.len() {
+            for j in i + 1..quad.len() {
+                assert_ne!(quad[i], quad[j], "op 值撞号（{i} vs {j}）");
             }
         }
     }
@@ -816,5 +1006,144 @@ mod tests {
         assert_eq!(b3[0..20], [0u8; 20], "空段的 family/cpu/total/count 全零");
         assert_eq!(&b3[20..24], &24u32.to_le_bytes(), "rec_size 自述恒在场");
         assert_eq!(ring_seg_read(&b3), z);
+    }
+
+    // ---- op=3 WakeSrc 槽表纯镜像：形状/常量/编解码钉板（槽表读口刀 F6）----
+
+    /// 行形状钉板：size == 64、align == 8、十字段偏移字面（wakes@0/irq@8/
+    /// nw@16/first@24/last@32/ack@40/id@48/flags@52/ts_domain@54/_pad@55——
+    /// kernel 原子壳 cross-const assert 同位锁步；插字段/错序即红）。
+    #[test]
+    fn wsrc_row_shape_pinned() {
+        assert_eq!(core::mem::size_of::<WakeSrcRecV1>(), 64, "64B 冻结面");
+        assert_eq!(core::mem::align_of::<WakeSrcRecV1>(), 8);
+        assert_eq!(core::mem::offset_of!(WakeSrcRecV1, wakes), 0);
+        assert_eq!(core::mem::offset_of!(WakeSrcRecV1, irq_count), 8);
+        assert_eq!(core::mem::offset_of!(WakeSrcRecV1, no_waiter), 16);
+        assert_eq!(core::mem::offset_of!(WakeSrcRecV1, first_ts), 24);
+        assert_eq!(core::mem::offset_of!(WakeSrcRecV1, last_ts), 32);
+        assert_eq!(core::mem::offset_of!(WakeSrcRecV1, last_ack_ts), 40);
+        assert_eq!(core::mem::offset_of!(WakeSrcRecV1, last_woken_id), 48);
+        assert_eq!(core::mem::offset_of!(WakeSrcRecV1, flags), 52);
+        assert_eq!(core::mem::offset_of!(WakeSrcRecV1, ts_domain), 54);
+        assert_eq!(core::mem::offset_of!(WakeSrcRecV1, _pad), 55);
+    }
+
+    /// 头形状钉板：size == 40、七域偏移字面（version@0/hdr_bytes@4/slots@8/
+    /// rec_size@12/cntfrq@16/now_vct@24/wake_acct_n@32——插字段/错序即红）。
+    #[test]
+    fn wsrc_hdr_shape_pinned() {
+        assert_eq!(core::mem::size_of::<WsrcHdrV1>(), 40, "40B 冻结面");
+        assert_eq!(core::mem::align_of::<WsrcHdrV1>(), 8);
+        assert_eq!(core::mem::offset_of!(WsrcHdrV1, version), 0);
+        assert_eq!(core::mem::offset_of!(WsrcHdrV1, hdr_bytes), 4);
+        assert_eq!(core::mem::offset_of!(WsrcHdrV1, slots), 8);
+        assert_eq!(core::mem::offset_of!(WsrcHdrV1, rec_size), 12);
+        assert_eq!(core::mem::offset_of!(WsrcHdrV1, cntfrq), 16);
+        assert_eq!(core::mem::offset_of!(WsrcHdrV1, now_vct), 24);
+        assert_eq!(core::mem::offset_of!(WsrcHdrV1, wake_acct_n), 32);
+    }
+
+    /// 头/行 LE 编解码 round-trip（kernel 装配 ↔ berryctl powertop 解析
+    /// 同一具——中间字节流的字段序/字节序即 ABI 面）＋垫区写零规范化面。
+    #[test]
+    fn wsrc_hdr_row_codec_roundtrip() {
+        let h = WsrcHdrV1 {
+            version: WSRC_SNAP_VER,
+            hdr_bytes: 40,
+            slots: 128,
+            rec_size: 64,
+            cntfrq: 0x0123_4567_89ab_cdef,
+            now_vct: 0xdead_beef_cafe_1234,
+            wake_acct_n: 7,
+        };
+        let mut buf = [0u8; 40];
+        wsrc_hdr_write(&h, &mut buf);
+        // 字节序抽查（LE：低字节在前）。
+        assert_eq!(buf[0], 1, "version=1 的 LE 首字节");
+        assert_eq!(buf[4], 40, "hdr_bytes=40 的 LE 首字节");
+        assert_eq!(buf[16], 0xef, "cntfrq 低字节在前（LE）");
+        assert_eq!(buf[24], 0x34, "now_vct 低字节在前（LE）");
+        assert_eq!(wsrc_hdr_read(&buf), h, "头 round-trip 恒等");
+
+        let r = WakeSrcRecV1 {
+            wakes: 0xfeed_face_dead_f00d,
+            irq_count: 9,
+            no_waiter: 3,
+            first_ts: 1_000,
+            last_ts: 2_000,
+            last_ack_ts: 1_900,
+            last_woken_id: 0xDEAD_BEEF,
+            flags: 0xBEEF,
+            ts_domain: 0,
+            _pad: [0; 5],
+        };
+        let mut rbuf = [0u8; 64];
+        wsrc_row_write(&r, &mut rbuf);
+        assert_eq!(rbuf[0], 0x0d, "wakes 低字节在前（LE）");
+        assert_eq!(&rbuf[55..64], &[0u8; 9], "垫区写零（_pad＋repr(C) 尾垫）");
+        assert_eq!(wsrc_row_read(&rbuf), r, "行 round-trip 恒等（垫零保真）");
+
+        // 垫区写零是编码侧规范化（非仅入参纪律）：非零垫入参也落全零垫，
+        // 读方不验照拷——写方恒零、读方不警察的对称契约。
+        let mut dirty = r;
+        dirty._pad = [1, 2, 3, 4, 5];
+        let mut dbuf = [0u8; 64];
+        wsrc_row_write(&dirty, &mut dbuf);
+        assert_eq!(&dbuf[55..64], &[0u8; 9], "编码规范化：垫区恒落零");
+    }
+
+    /// 哨兵保真：未触行（first_ts = u64::MAX）round-trip 后哨兵原样——
+    /// 消费方「未触槽可判」判据与 irq-only 槽形（merge_hal 三槽语义钉板）
+    /// 的编码面。
+    #[test]
+    fn wsrc_row_sentinel_fidelity() {
+        let r = WakeSrcRecV1 {
+            wakes: 0,
+            irq_count: 4,
+            no_waiter: 0,
+            first_ts: u64::MAX,
+            last_ts: 0,
+            last_ack_ts: 0,
+            last_woken_id: 0,
+            flags: 0,
+            ts_domain: 0,
+            _pad: [0; 5],
+        };
+        let mut buf = [0u8; 64];
+        wsrc_row_write(&r, &mut buf);
+        // 哨兵字节面抽查（FF ×8 @24..32）＋ round-trip 保真。
+        assert_eq!(&buf[24..32], &[0xffu8; 8], "哨兵 u64::MAX 的字节面");
+        let back = wsrc_row_read(&buf);
+        assert_eq!(back.first_ts, u64::MAX, "未触行 round-trip 后哨兵原样");
+        assert_eq!(back, r);
+    }
+
+    /// 满载上界算术恒等＋几何常量钉板：40 头 + slots×rec == 8232 字面冻结
+    ///（kernel cross-const assert 同值）；rec_size 域 == size_of::<行> 恒等
+    ///（漂移即消费方步进错位）。
+    #[test]
+    fn wsrc_max_and_geometry_identities() {
+        assert_eq!(WSRC_TABLE_V1_SLOTS, 128);
+        assert_eq!(WSRC_TABLE_V1_REC, 64);
+        assert_eq!(core::mem::size_of::<WakeSrcRecV1>(), WSRC_TABLE_V1_REC);
+        assert_eq!(core::mem::size_of::<WsrcHdrV1>(), 40);
+        assert_eq!(
+            TELEMETRY_WSRC_MAX,
+            core::mem::size_of::<WsrcHdrV1>() + WSRC_TABLE_V1_SLOTS * WSRC_TABLE_V1_REC
+        );
+        assert_eq!(TELEMETRY_WSRC_MAX, 8232);
+        // 头 slots/rec_size 自述域与几何常量恒等（内核装配写进头的两域）。
+        let h = WsrcHdrV1 {
+            version: WSRC_SNAP_VER,
+            hdr_bytes: 40,
+            slots: WSRC_TABLE_V1_SLOTS as u32,
+            rec_size: WSRC_TABLE_V1_REC as u32,
+            cntfrq: 0,
+            now_vct: 0,
+            wake_acct_n: 0,
+        };
+        assert_eq!(h.slots as usize, WSRC_TABLE_V1_SLOTS);
+        assert_eq!(h.rec_size as usize, WSRC_TABLE_V1_REC);
     }
 }
