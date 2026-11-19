@@ -1076,6 +1076,14 @@ test-host:
     # mkapp 门禁自检（a-3 U4：mkfat --check-fixture 同位前置——打包器门禁
     # 面此前只在 build-user 产物链上被动覆盖，门禁自身坏 = 产物链静默劣化）。
     python3 tools/mkapp.py --selftest
+    # W1（彻底 Rust 化轨道 b 层 #4 刀序第四位首刀）：mkapp Rust 件 lib 纯面
+    # 测试（canonical 规范形重发射——Python 现役件 M.canonical() 13 形黄金
+    # 向量字节级对拍：v0 旧形/词表/可选节组合/尾增节全谱/kitchen sink +
+    # 幂等律 + min_level 孤立不发射钉板 + 常量镜像对账）。独立小工作区，
+    # 须显式 --target {{host}}。产链现役件仍 Python mkapp.py（下方
+    # --selftest 行同挂），后续刀（check_manifest_text 门禁/BYI1/信封/
+    # 签名）依彻底Rust化计划 §4 刀序推进后再换轨。
+    cargo test --manifest-path tools/mkapp/Cargo.toml --target {{host}}
     # W1 接线（SEC-02 A2 同款纪律）：berry_assemble 门禁自检——V13 组装器
     # （ADR #82「组装不 fork」product.toml 校验/dry-run 计划/装配反回滚门）
     # 落地时自称 51 腿绿但从未接线 test-host：有 selftest 零自动执法 =
@@ -1383,6 +1391,17 @@ test-host:
     # （A/NXDOMAIN/压缩指针/畸形包）+ live UDP 闭环 13 腿；改 dns-stub.py
     # 或 bcts wrap 必跑。
     python3 tools/dns-stub.py --selftest
+    # W1 接线（2026-11-19；base fc99d2b79 GUI 合并批带入两件零接线实捕）：
+    # cpio_filter 门禁自检——mkcpio newc 归档确定性 marker 移除/追加（产品
+    # 桌面镜像与 GUI8 验证镜像共享 rootfs 条目的 probe.on/gpuhdi.on 分叉
+    # 面）；垫料解析/重复 remove/追加冲突 loud 拒面。改 cpio_filter.py 或
+    # 镜像 marker 分叉面必跑。
+    python3 tools/cpio_filter.py --selftest
+    # W1 接线（同批实捕）：gui_guard 门禁自检——F9 普通 app 边界静态守卫
+    # （wm=true 必依赖 berry-room/berry-ui、fs RPC 走 fsclient、源码禁
+    # syscall 面/WM RPC 解码/像素基元、nshfont 不得在场）；正样本 + 22 类
+    # 负样本 fail closed。改 gui_guard.py 或普通 app 授权面必跑。
+    python3 tools/gui_guard.py --self-test
     # W1 接线（#257 后继件；base 重写剥落重放）：bcts-parkprobe 门禁自检
     # ——berryos-smoke.* 串口日志 park 签名分类器（dns_park/churn_starve/
     # net_live/clean_boot 四分支钉板 + unreadable 负样本）；bcts 失败路径
