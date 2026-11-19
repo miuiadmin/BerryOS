@@ -373,3 +373,22 @@ mod tests {
         assert_eq!(arb.chosen, 0, "撕裂后仍引导 A");
     }
 }
+
+#[cfg(test)]
+mod mkimage_parity {
+    use super::*;
+    #[test]
+    fn factory_bytes_match_mkimage_embedded() {
+        // G0 刀 1：BootControl::factory().to_bytes() 的布局快照——与
+        // tools/mkimage bootctl_factory() 逐字节一致（跨工作区单源钉板）。
+        let b = BootControl::factory().to_bytes();
+        let mut expect = [0u8; 52];
+        expect[0..4].copy_from_slice(&0x4252_5943u32.to_le_bytes()); // BRYC
+        expect[4..8].copy_from_slice(&3u32.to_le_bytes());           // v3
+        expect[8] = 0; expect[9] = 15; expect[10] = 3; expect[11] = 1; // A
+        expect[24] = 1; expect[25] = 14; expect[26] = 3; expect[27] = 0; // B
+        assert_eq!(&b[..48], &expect[..48]);
+        let crc = crc32(&b[..48]);
+        assert_eq!(&b[48..52], &crc.to_le_bytes());
+    }
+}

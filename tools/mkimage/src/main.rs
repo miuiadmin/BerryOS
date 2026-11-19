@@ -83,6 +83,11 @@ fn sign_kernel_raw(root: &std::path::Path, sk: &str, kernel: &str) -> Result<Vec
         .map_err(|e| e.to_string())
 }
 
+/// G0 刀 1：BOOTCTL 工厂默认件 52B（与 berry-slot BootControl::factory()
+/// .to_bytes() 逐字节一致——slot crate 测试钉板对拍面）。
+
+/// IEEE CRC32（与 berry-slot::crc32 同算法——工厂件一致性钉板依赖）。
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--selftest") {
@@ -103,6 +108,8 @@ fn main() -> ExitCode {
     let mut sign_key: Option<&str> = None;
     let mut trust_pk: Option<&str> = None;
     let mut manifest_name: Option<&str> = None;
+    let mut kernel_b: Option<&str> = None;
+    let mut initrd_b: Option<&str> = None;
     let mut i = 0;
     fn need<'a>(flag: &str, args: &'a [String], i: &mut usize) -> Result<&'a str, String> {
         *i += 1;
@@ -161,6 +168,14 @@ fn main() -> ExitCode {
             },
             "--trust-pk" => match need("--trust-pk", &args, &mut i) {
                 Ok(v) => trust_pk = Some(v),
+                Err(e) => return usage_fail(&e),
+            },
+            "--kernel-b" => match need("--kernel-b", &args, &mut i) {
+                Ok(v) => kernel_b = Some(v),
+                Err(e) => return usage_fail(&e),
+            },
+            "--initrd-b" => match need("--initrd-b", &args, &mut i) {
+                Ok(v) => initrd_b = Some(v),
                 Err(e) => return usage_fail(&e),
             },
             "--manifest-name" => match need("--manifest-name", &args, &mut i) {
@@ -234,6 +249,33 @@ fn main() -> ExitCode {
             }
         }
     }
+    // G0 刀 1：B 槽+控制块双副本工厂件（--kernel-b 缺席=旧单槽盘零漂移；
+    // 在席时 --initrd-b 亦须在席——半装 B 槽拒产）。
+    if let Some(kb) = kernel_b {
+        let ib = match initrd_b {
+            Some(v) => v,
+            None => return usage_fail("--kernel-b 在席须 --initrd-b（半装 B 槽拒产）"),
+        };
+        for (local, fat_path) in [(kb, b"/KERNELB.ELF".as_slice()), (ib, b"/INITRDB.BIN".as_slice())] {
+            match std::fs::read(local) {
+                Ok(data) => {
+                    nbytes += data.len();
+                    puts.push((fat_path.to_vec(), data));
+                }
+                Err(e) => {
+                    eprintln!("mkimage: FAIL: 读 {local}：{e}");
+                    return ExitCode::from(1);
+                }
+            }
+        }
+        // 工厂默认：A pri=15 tries=3 successful=1；B pri=14 tries=3 successful=0
+        // （试用期）；boot_count=0 双副本同值——读侧确定性取副本 1。
+        let ctl = mkimage::bootctl_factory();
+        puts.push((b"/BOOTCTL1.DAT".to_vec(), ctl.to_vec()));
+        puts.push((b"/BOOTCTL2.DAT".to_vec(), ctl.to_vec()));
+        nbytes += ctl.len() * 2;
+    }
+
     // P2 挂接：源实例两件（缺省缺席——四件套字节零漂移）。
     if let Some(si) = source_instance {
         match mkimage::load_source_instance(si) {
