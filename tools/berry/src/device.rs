@@ -214,10 +214,13 @@ impl Device {
         if let Endpoint::Unix(p) = &self.qmp_ep {
             let _ = std::fs::remove_file(p);
         }
-        // 注入专用 qmp-inject.sock 同清（路径推导单源 qemu::inject_sock_path）：
+        // 注入专用 socket 同清×2（原生 + web——单客户端拆分后两枚）：
         // 残留 socket 文件让重生的 QEMU 第二 QMP 服务端 bind 失败——原位
         // 重生死链（S4 缺口定谳）。
         if let Some(p) = qemu::inject_sock_path(&self.qmp_ep) {
+            let _ = std::fs::remove_file(p);
+        }
+        if let Some(p) = qemu::inject_native_sock_path(&self.qmp_ep) {
             let _ = std::fs::remove_file(p);
         }
         // 串口 chardev socket 同清（console 刀件1）：残留 socket 文件会让
@@ -444,9 +447,10 @@ fn boot_runtime(
         let qmp = Arc::new(Mutex::new(qmp));
         let source: Box<dyn ScreenSource> = if let Some(info) = fb {
             let input = VncInput::connect(vnc)?;
-            // 原生指针 QMP 注入面（I2）：qmp 端点同目录 qmp-inject.sock
-            // （spawn 建端；路径推导单源在 qemu::inject_sock_path）。
-            let inject = qemu::inject_sock_path(qmp_ep);
+            // 原生指针 QMP 注入面（I2）：qmp-inject-native.sock（与 web
+            // 拦截器的 qmp-inject.sock 分离——单客户端设计定谳后拆分，
+            // 路径推导单源在 qemu::inject_native_sock_path）。
+            let inject = qemu::inject_native_sock_path(qmp_ep);
             Box::new(RamSource::open(
                 ram_path.unwrap_or(std::path::Path::new("")),
                 info,

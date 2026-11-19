@@ -7073,13 +7073,17 @@ fn app_launch(
         //    自有别名**占 [1]/[2]（主会话裁决修复 I2 风险项：旧占位是
         //    WMD_CLI_DUP 共享端点别名〔互截面〕，自有通道别名永不消费
         //    零共享面——槽位语义与 libc GIFT_H 按位落种对偶全保，app
-        //    内 input_h() 复活）。
+        //    内 input_h() 复活）。**占位 dup 掩码必须保 RIGHT_TRANSFER**
+        //    （berry-exec env 块 send 预检律）：占位柄随 gifts[1]/[2]
+        //    进 channel_send 随行迁移，内核逐柄验 TRANSFER——去位即
+        //    -EACCES(-13) 反杀本进程（G1.5 全服务连灭，2026-11-19 云桌面
+        //    CONTACTS 点击实抓：x0=-13/nhandles=8/plen=13）。
         if !bad && inp_src != 0 {
             let pref_ok = if wants_fs {
                 true
             } else {
-                berry_handle_duplicate(cli, RIGHT_SEND, &mut gui_ph0) == 0
-                    && berry_handle_duplicate(cli, RIGHT_SEND, &mut gui_ph1) == 0
+                berry_handle_duplicate(cli, RIGHT_SEND | RIGHT_TRANSFER, &mut gui_ph0) == 0
+                    && berry_handle_duplicate(cli, RIGHT_SEND | RIGHT_TRANSFER, &mut gui_ph1) == 0
             };
             if pref_ok {
                 if berry_handle_duplicate(inp_src, RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER, &mut in_dup) != 0 {
