@@ -19,6 +19,8 @@ pub const ENTRY_MAX: usize = 32;
 pub const STACK_PAGES_MIN: u32 = 1;
 pub const STACK_PAGES_MAX: u32 = 64;
 pub const UI_PATH_MAX: usize = 32;
+pub const ICON_FILES_MAX: usize = 4;
+pub const VIEWS_FILES_MAX: usize = 4;
 pub const LABEL_MAX: usize = 32;
 pub const ACTION_NAME_MAX: usize = 24;
 pub const AGENT_ACTIONS_MAX: usize = 16;
@@ -68,6 +70,10 @@ pub mod byi;
 /// W1-Q27 四刀：cpio(newc) 走查器 + SHA256SUMS 复验（`_cpio_entries`/
 /// `_verify_sums` 镜像 + 自持 SHA-256）。
 pub mod cpio;
+
+/// W1-Q27 五刀：build 编排面（Python `build()` 镜像——staging 走查 →
+/// 门禁 → abi 打戳 → SHA256SUMS → cpio 落盘 + 摘要行）+ 产链换轨件。
+pub mod build;
 
 /// [security] 三键视图（profile/key_lineage/integrator——齐备或齐缺）。
 #[derive(Debug, Clone, PartialEq, Eq)]
