@@ -174,6 +174,11 @@ pub fn run() {
     // cbox 刀1（黑匣子崩溃记录表）排液窗数学钉板——main 线增量（末位新号
     // 纪律——ktest done 前；定义在文件尾）。
     test_cbox();
+    // 机会五③密度账本化（2026-11-19）：per-RQ int/util 两在环计数器挂
+    // link_back/unlink 结构原语层 + settle 在环改档 density_reclass 重登
+    // + integrity 双边等式执法的配套钉板（本地 Runqueue；末位新号纪律
+    // ——ktest done 前；sched::init 前跑，par 门恒关不涉偷取触发面）。
+    test_density_ledger();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     crate::splash::step(8, b"ktest done");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
@@ -3507,6 +3512,62 @@ fn test_vmo() {
     // SAFETY: 读子 Vmar 映射页（同一 L1 表根，root 仍激活）。
     let v = unsafe { core::ptr::read_volatile(0x20_0000 as *const u64) };
     assert_eq!(v, MAGIC, "VMO：子映射经共享表根可读（同 PA 双 VA 别名）");
+
+    // E2. 跨 2MiB 段边界映射（W3-Q110 L3 游标钉板）：三页区间
+    // [0x3F_F000, 0x42_F000) 骑跨 0x40_0000 边界——页 0 落段 1 尾槽 511、
+    // 页 1/2 落段 2 首槽 0/1。游标化 map/clear_leaves/protect 的段界推进
+    // （seg_pages 以段尾为界 + 跨段重走查）由本例钉死；读写/protect/unmap
+    // 三面均验。
+    let mut vmo3 = Vmo::create(PAGE_SIZE * 3).expect("VMO：跨段 VMO create");
+    vmo3.commit(fa, 0, PAGE_SIZE * 3).expect("VMO：跨段 commit");
+    const M2_0: u64 = 0x0BAD_0000_C0DE_0001;
+    const M2_1: u64 = 0x0BAD_0000_C0DE_0002;
+    const M2_2: u64 = 0x0BAD_0000_C0DE_0003;
+    vmo3.write(0, &M2_0.to_le_bytes()).expect("VMO：跨段写页 0");
+    vmo3.write(PAGE_SIZE, &M2_1.to_le_bytes()).expect("VMO：跨段写页 1");
+    vmo3.write(2 * PAGE_SIZE, &M2_2.to_le_bytes()).expect("VMO：跨段写页 2");
+    root.map(fa, &mut vmo3, 0x3F_F000, 0, PAGE_SIZE * 3, Perm::Rw)
+        .expect("VMO：跨段 map（两段各一走查）");
+    // SAFETY: 读已映射页（root 激活态）。
+    assert_eq!(
+        unsafe { core::ptr::read_volatile(0x3F_F000 as *const u64) },
+        M2_0,
+        "VMO：跨段读段 1 尾槽 511"
+    );
+    assert_eq!(
+        unsafe { core::ptr::read_volatile(0x40_0000 as *const u64) },
+        M2_1,
+        "VMO：跨段读段 2 首槽 0"
+    );
+    assert_eq!(
+        unsafe { core::ptr::read_volatile(0x41_0000 as *const u64) },
+        M2_2,
+        "VMO：跨段读段 2 槽 1"
+    );
+    // protect 跨段降权（Ro）→ 写必 fault；提回 Rw → 写通。
+    root.protect(0x3F_F000, PAGE_SIZE * 3, Perm::Ro)
+        .expect("VMO：跨段 protect→RO");
+    for va in [0x3F_F000usize, 0x40_0000, 0x41_0000] {
+        hal::trap::arm_expected_fault(va);
+        // SAFETY: 预期 Permission fault（期望故障槽已 arm）。
+        unsafe { core::ptr::write_volatile(va as *mut u64, 0) };
+        assert!(!hal::trap::fault_armed(), "VMO：跨段 RO 页写居然没 fault");
+    }
+    root.protect(0x3F_F000, PAGE_SIZE * 3, Perm::Rw)
+        .expect("VMO：跨段 protect→RW");
+    // SAFETY: 写已提权页。
+    unsafe { core::ptr::write_volatile(0x40_0000 as *mut u64, MAGIC2) };
+    vmo3.read(PAGE_SIZE, &mut buf).expect("VMO：跨段 read back");
+    assert_eq!(u64::from_le_bytes(buf), MAGIC2, "VMO：跨段 VA 写→VMO 读一致");
+    // unmap 跨段清叶 → 读必 fault（三页跨两段全清）。
+    root.unmap(0x3F_F000, PAGE_SIZE * 3).expect("VMO：跨段 unmap");
+    for va in [0x3F_F000usize, 0x40_0000, 0x41_0000] {
+        hal::trap::arm_expected_fault(va);
+        // SAFETY: 预期同步异常（期望故障槽已 arm）。
+        let _ = unsafe { core::ptr::read_volatile(va as *const u64) };
+        assert!(!hal::trap::fault_armed(), "VMO：跨段 unmap 后读居然没 fault");
+    }
+    drop(vmo3);
 
     // F. A1-2 容量冒烟：40MiB VMO 全量 commit/decommit——`vmo.rs` commit 逐页
     // order-0 出帧，不受 MAX_ORDER 堆单块地形约束；帧账本对账（B-0
@@ -12954,4 +13015,197 @@ fn test_cbox() {
 
     cbox::ktest_restore(saved.0, saved.1);
     berry_hal_aarch64::uart_puts(b"CBOXK ok\n");
+}
+
+/// 机会五③密度账本化（2026-11-19）钉板：per-RQ int/util 两在环计数器
+///（runqueue.rs——消费面 try_steal_one 带感知偷取快照）的账点四面：
+/// - D-1 混合入环计账：ia/util/other 三向入环断言两计数 + 出环镜像减
+///   （Fair enqueue/dequeue 走 link_back/unlink 原语层——账点面同生产；
+///   bg(0x04) 现役带但无密度槽、unspec 非带——两形皆不计数）；
+/// - D-2 density_reclass 四向转移：ia↔util 换槽、ia↔unit 净额（仅
+///   0x02/0x03 有槽，其余档对 no-op——settle 借入/回落的生产翻转形）；
+/// - D-3 resync_density 修复面：直改在环 intent → 账本漂移（走查见真、
+///   账本见旧）→ resync 归零差（resync_vruntime_sum 同款洗账纪律）；
+/// - D-4 走查 vs 账本等价钉板：混合环上「TCB 改档+reclass 成对」正形 +
+///   无槽任务出环后 dens_on_ring_walk == 两计数 load（integrity 双边
+///   等式的本地环钉板），并手数钉死真值（防两侧同漂的假等式）。
+/// 本地 Runqueue（per-RQ 账本环私有——与 PER_CPU_RQ/全局 DL_ON_RING 零
+/// 触碰；ktest 在 sched::init 前单线程窗，RQ 锁契约串行等价）。非 smoke
+/// 标记（断言炸 = panic = 后续标记缺失兜底）。DENS ok n=4。
+fn test_density_ledger() {
+    use berry_sched::{
+        dens_on_ring_walk_kt, density_reclass_kt, Fair, Runqueue, SchedClass, Task,
+        INTENT_BACKGROUND, INTENT_INTERACTIVE, INTENT_UNSPECIFIED, INTENT_UTILITY,
+    };
+
+    /// 占位入口（enqueue 只接线不执行；halt 兜底——BANDM4 同款）。
+    extern "C" fn dn_dummy(_arg: usize) -> ! {
+        berry_hal_aarch64::halt()
+    }
+
+    /// 手搭带档任务（环前写 intent_effective——生产 apply_sched_attr_to_task
+    /// 同序：属性写在 enqueue 前，link 时计数自然正确）。
+    fn mk(name: &'static [u8], intent: u8) -> &'static mut Task {
+        let mut t = Task::new_kernel_with_as(dn_dummy, 0, name, 0, 0);
+        t.intent_effective = intent;
+        alloc::boxed::Box::leak(t)
+    }
+
+    let rr = Fair;
+
+    // —— D-1. 混合入环计账（ia/util/other 三向 + 出环镜像减）。
+    let mut rq = Runqueue::new();
+    assert_eq!(
+        (rq.int_count(), rq.util_count()),
+        (0, 0),
+        "DENS：D-1 新环两计数须零"
+    );
+    let da = mk(b"dIA".as_slice(), INTENT_INTERACTIVE);
+    let du = mk(b"dUT".as_slice(), INTENT_UTILITY);
+    let dc = mk(b"dBG".as_slice(), INTENT_BACKGROUND); // 现役带但无密度槽（0x04）
+    let dz = mk(b"dUN".as_slice(), INTENT_UNSPECIFIED); // 非带
+    rr.enqueue(&mut *da, &mut rq);
+    assert_eq!(
+        (rq.int_count(), rq.util_count()),
+        (1, 0),
+        "DENS：D-1 ia 入环须 int+1"
+    );
+    rr.enqueue(&mut *du, &mut rq);
+    assert_eq!(
+        (rq.int_count(), rq.util_count()),
+        (1, 1),
+        "DENS：D-1 util 入环须 util+1"
+    );
+    rr.enqueue(&mut *dc, &mut rq);
+    rr.enqueue(&mut *dz, &mut rq);
+    assert_eq!(rq.len(), 4, "DENS：D-1 四任务须全入环");
+    assert_eq!(
+        (rq.int_count(), rq.util_count()),
+        (1, 1),
+        "DENS：D-1 bg/unspec 无密度槽不计数"
+    );
+    // 出环镜像减（Fair::dequeue → unlink 原语层出账——block/steal 同层）。
+    rr.dequeue(&mut *da, &mut rq);
+    assert_eq!(
+        (rq.int_count(), rq.util_count()),
+        (0, 1),
+        "DENS：D-1 ia 出环须 int-1"
+    );
+    rr.dequeue(&mut *du, &mut rq);
+    assert_eq!(
+        (rq.int_count(), rq.util_count()),
+        (0, 0),
+        "DENS：D-1 util 出环须 util-1"
+    );
+    rr.dequeue(&mut *dc, &mut rq);
+    rr.dequeue(&mut *dz, &mut rq);
+    assert_eq!(
+        (rq.int_count(), rq.util_count()),
+        (0, 0),
+        "DENS：D-1 收尾空环两计数须零"
+    );
+
+    // —— D-2. density_reclass 四向转移（纯计数算术面；TCB 档位写归 settle
+    // ——D-4 钉成对正形）。环 = {ta(ia)}，账本 (1,0)。
+    let mut rq2 = Runqueue::new();
+    let ta = mk(b"eIA".as_slice(), INTENT_INTERACTIVE);
+    rr.enqueue(&mut *ta, &mut rq2);
+    assert_eq!(
+        (rq2.int_count(), rq2.util_count()),
+        (1, 0),
+        "DENS：D-2 起点须 (1,0)"
+    );
+    // ia→util：换槽 int-1 util+1（utility 任务借入 interactive 到期回落形）。
+    density_reclass_kt(&rq2, INTENT_INTERACTIVE, INTENT_UTILITY);
+    assert_eq!(
+        (rq2.int_count(), rq2.util_count()),
+        (0, 1),
+        "DENS：D-2 ia→util 须换槽"
+    );
+    // util→ia：镜像换回（utility 借入 interactive 形）。
+    density_reclass_kt(&rq2, INTENT_UTILITY, INTENT_INTERACTIVE);
+    assert_eq!(
+        (rq2.int_count(), rq2.util_count()),
+        (1, 0),
+        "DENS：D-2 util→ia 须换回"
+    );
+    // ia→unit（非带档）：只减 int（ia 回落 declared 0x00 形——净额面）。
+    density_reclass_kt(&rq2, INTENT_INTERACTIVE, INTENT_UNSPECIFIED);
+    assert_eq!(
+        (rq2.int_count(), rq2.util_count()),
+        (0, 0),
+        "DENS：D-2 ia→unit 须只减 int"
+    );
+    // unit→ia：只增 int（bg/无档借入 0x02 形——it_mid 每 boot 真跑翻转）。
+    density_reclass_kt(&rq2, INTENT_UNSPECIFIED, INTENT_INTERACTIVE);
+    assert_eq!(
+        (rq2.int_count(), rq2.util_count()),
+        (1, 0),
+        "DENS：D-2 unit→ia 须只增 int"
+    );
+    // 非槽档对（bg→unspec）：双 no-op（无密度槽的转移零账动）。
+    density_reclass_kt(&rq2, INTENT_BACKGROUND, INTENT_UNSPECIFIED);
+    assert_eq!(
+        (rq2.int_count(), rq2.util_count()),
+        (1, 0),
+        "DENS：D-2 非槽档对须 no-op"
+    );
+
+    // —— D-3. resync_density 修复面（直改在环 intent → 漂移 → 归零差）。
+    // 直改 = ktest 手搓面（生产 intent 写点全经 settle 锁包或环前写——
+    // 改后不 resync 即账本漂移，integrity 双边等式将 panic 的本地环演示）。
+    ta.intent_effective = INTENT_UTILITY;
+    assert_eq!(
+        (rq2.int_count(), rq2.util_count()),
+        (1, 0),
+        "DENS：D-3 直改在环 intent 后账本须漂移（改档不重登的病理面）"
+    );
+    assert_eq!(
+        dens_on_ring_walk_kt(&rq2),
+        (0, 1),
+        "DENS：D-3 走查须见真值（判据读当下 intent_effective）"
+    );
+    assert_eq!(
+        rq2.resync_density(),
+        (0, 1),
+        "DENS：D-3 resync 须返回重数真值"
+    );
+    assert_eq!(
+        (rq2.int_count(), rq2.util_count()),
+        (0, 1),
+        "DENS：D-3 resync 后账本须归真（漂移差清零）"
+    );
+
+    // —— D-4. 走查 vs 账本等价（迁移正形）。环起 = {ta(ut)}，账本 (0,1)。
+    let tb = mk(b"eUT".as_slice(), INTENT_UTILITY);
+    let tc = mk(b"eBG".as_slice(), INTENT_BACKGROUND);
+    let td = mk(b"eUN".as_slice(), INTENT_UNSPECIFIED);
+    rr.enqueue(&mut *tb, &mut rq2);
+    rr.enqueue(&mut *tc, &mut rq2);
+    rr.enqueue(&mut *td, &mut rq2);
+    assert_eq!(
+        (rq2.int_count(), rq2.util_count()),
+        (0, 2),
+        "DENS：D-4 三入环后须 (0,2)（bg/unspec 无槽）"
+    );
+    // 在环改档正形（settle 锁包的本地环镜像）：TCB 档位写与 reclass
+    // **成对**落（只做其一即 D-3 已钉的漂移面）。
+    tb.intent_effective = INTENT_UNSPECIFIED;
+    density_reclass_kt(&rq2, INTENT_UTILITY, INTENT_UNSPECIFIED);
+    // 无槽任务出环（unlink 面——账本零动）。
+    rr.dequeue(&mut *tc, &mut rq2);
+    // 环 = {ta(ut), tb(un), td(un)}：手数钉死真值（防两侧同漂的假等式）。
+    assert_eq!(
+        dens_on_ring_walk_kt(&rq2),
+        (0, 1),
+        "DENS：D-4 走查真值须手数钉死（ia×0、util×1）"
+    );
+    assert_eq!(
+        dens_on_ring_walk_kt(&rq2),
+        (rq2.int_count(), rq2.util_count()),
+        "DENS：D-4 走查真值须==账本（integrity 双边等式钉板）"
+    );
+
+    // 任务体泄漏不回收（同 test_policy 政策——v1 无 reap）。
+    berry_hal_aarch64::uart_puts(b"DENS ok n=4\n");
 }

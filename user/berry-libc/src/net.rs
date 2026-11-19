@@ -30,9 +30,11 @@
 //!   空时恒 EAGAIN（独立阻塞收留 v2 协议）；「每写必回等长应答」对端
 //!   （echo/回显族）上 POSIX 写读流同构可用。
 //! - **服务端会话（listen/accept 产出的 dsid）**：send = 命名 RT 纯发送
-//!   臂（A3-1 案②裁定）、recv = POLL 节拍 + DRAIN 收割（bsh evs 同款
-//!   1s 节拍）；CLOSED 旗 = 可读余量 + EOF 收口、NOSESSION = 会话已收
-//!   口（recv 返 0 = POSIX EOF）。
+//!   臂（A3-1 案②裁定）、recv = DRAIN-first 收割 + POLL 冷节拍/EOF 面
+//!   （A' 案，e 门解锁——RPC 热路径去 POLL：数据在途时单 recv 纯 DRAIN
+//!   循环「填满用户缓冲或抽干会话缓冲」，零收成才发一次 POLL 查旗，
+//!   阻塞冷节拍 1s（bsh evs 同款））；CLOSED 旗 = 可读余量 + EOF 收口、
+//!   NOSESSION = 会话已收口（recv 返 0 = POSIX EOF）。
 //! - send 恒 RPC 至应答（v1 无「仅入队」语义——O_NONBLOCK 对 send 不
 //!   分岔，A3-1 残留条目同源文档化）；四刀起 Client 臂升级 **K 窗流水线**
 //!   （`TCP_PIPE_K`=3：K 个 RT op 在途、应答按尾随 seq 配对收割、陈值
@@ -858,7 +860,7 @@ pub unsafe extern "C" fn getsockopt(
 }
 
 // —— send/recv（分形：Client = legacy RT 回显缓冲；Server = 命名 RT /
-//    POLL+DRAIN——v1 语义裁定见模块头注）——
+//    DRAIN-first + POLL 冷节拍——v1 语义裁定见模块头注）——
 
 /// errno 置位 + -1 收口（pub 面小助手）。
 fn err_ret(e: c_int) -> c_int {
@@ -1141,8 +1143,11 @@ fn seq_next() -> u8 {
 /// `recv(2)` / read 链尾（sock_recv）：按 kind 分形——
 /// - Client：槽缓冲（send 的回显随行）优先；空 → EAGAIN（v1 客户端无
 ///   独立收面——session-0 无 POLL/DRAIN，阻塞档同返：文档化取舍）；
-/// - Server：POLL 节拍 + DRAIN 收割——CLOSED 旗 = 余量终 drain 后 EOF
-///   （0）；NOSESSION（会话已收口）= EOF（0）；非阻塞空队 → EAGAIN；
+/// - Server：DRAIN-first 收割 + POLL 冷节拍/EOF 面（A' 案，e 门解锁——
+///   RPC 热路径去 POLL）——槽缓冲排空后 DRAIN 循环（填满用户缓冲或抽干
+///   会话缓冲，任一轮得手即部分返），零收成才一次 POLL 查旗：CLOSED 旗
+///   = 余量续 drain 收尾后 EOF（0）；NOSESSION（会话已收口）= EOF（0）；
+///   非阻塞零收 → EAGAIN；
 /// - Unconnected/Listen → EPIPE。
 pub(crate) fn sock_recv(fd: c_int, buf: *mut u8, n: usize) -> ssize_t {
     let e = match sock_entry(fd) {
@@ -1172,31 +1177,87 @@ pub(crate) fn sock_recv(fd: c_int, buf: *mut u8, n: usize) -> ssize_t {
             if c > 0 {
                 return c as ssize_t;
             }
+            // A' 案 DRAIN-first（e 门解锁——热路径去 POLL）：先 DRAIN 循环
+            // 填满用户缓冲或抽干会话缓冲（任一轮 k>0 落袋 = POSIX 部分
+            // 返），零收成才发一次 POLL 查旗（冷节拍/EOF 面）——数据在途
+            // 的单次 recv 零 POLL（旧形每 op POLL+DRAIN 双 RPC 量子）。
+            let mut got = 0usize;
+            // 防御帽（审查 P3）：continue 支（CLOSED 带余量 / Live 泵窗入数）
+            // 的连续零收计数——「串行 DRAIN 必非零」约定是文档面保证（单
+            // 消费者+Closed 后无补给三重论证），若未来 dup/fork 共享 sid 破
+            // 约定，帽 3 连零收按现刻态出（EOF/部分返），防不饱和小自旋。
+            let mut zero_streak = 0u8;
             loop {
-                match rpc_poll(e.sid) {
-                    Ok(PollState::Gone) => return 0, // 会话已收口 = EOF
-                    Ok(PollState::Live { flags, rbytes }) => {
-                        if flags & ndp::POLL_FLAG_CLOSED != 0 {
-                            if rbytes > 0 {
-                                match drain_once(e.sid, slot, out) {
-                                    Ok(k) => return k as ssize_t,
-                                    Err(errno) => return err_ret(errno) as ssize_t,
-                                }
-                            }
-                            return 0; // 对端收口无余量 = EOF
+                match drain_once(e.sid, slot, &mut out[got..]) {
+                    Ok(k) if k > 0 => {
+                        got += k;
+                        zero_streak = 0;
+                        if got == out.len() {
+                            // 用户缓冲满 = 部分返（会话余量下轮收）。
+                            return got as ssize_t;
                         }
-                        if rbytes > 0 {
-                            match drain_once(e.sid, slot, out) {
-                                Ok(k) => return k as ssize_t,
-                                Err(errno) => return err_ret(errno) as ssize_t,
-                            }
-                        }
-                        if e.nonblock {
-                            return err_ret(crate::EAGAIN) as ssize_t;
-                        }
-                        sleep_tick();
+                        // 用户缓冲有余：续 DRAIN（余量入槽只发生在缓冲恰
+                        // 满形——此支槽恒空，drain_once 前置不变量保持）。
                     }
-                    Err(errno) => return err_ret(errno) as ssize_t,
+                    Ok(_) => match rpc_poll(e.sid) {
+                        // k==0 冷节拍：一次 POLL 查旗定 EOF / 续候。
+                        Ok(PollState::Gone) => {
+                            // 会话已收口 = EOF（已收量先行部分返）。
+                            return got as ssize_t;
+                        }
+                        Ok(PollState::Live { flags, rbytes }) => {
+                            if flags & ndp::POLL_FLAG_CLOSED != 0 {
+                                if rbytes > 0 && zero_streak < 3 {
+                                    zero_streak += 1;
+                                    // 对端收口带余量：槽仍 Data，续 DRAIN
+                                    // 收尾量（余量尽后下轮冷节拍收 EOF）。
+                                    continue;
+                                }
+                                // 对端收口余量尽（或帽到）= EOF（got>0
+                                // 部分返先行）。
+                                return got as ssize_t;
+                            }
+                            if rbytes > 0 && zero_streak < 3 {
+                                // 泵窗入数（drain-0 后应答窗间数据到）：
+                                // POLL 已见可读即回 DRAIN——旧形同款立即
+                                // 返数据，不浪费一拍（审查 F1 修）。
+                                zero_streak += 1;
+                                continue;
+                            }
+                            if got > 0 {
+                                // 已收量在手 = 部分返（EAGAIN/阻塞只属零收）。
+                                return got as ssize_t;
+                            }
+                            if e.nonblock {
+                                return err_ret(crate::EAGAIN) as ssize_t;
+                            }
+                            sleep_tick();
+                        }
+                        Err(errno) => {
+                            // 已收量先行（审查 P2 修：禁把已抽走的字节随
+                            // -1 蒸发——vnet 侧 rx_drain 已消费,丢 got=
+                            // 静默流空洞;同 send 侧「已发部分→部分返」纪律）。
+                            if got > 0 {
+                                return got as ssize_t;
+                            }
+                            return err_ret(errno) as ssize_t;
+                        }
+                    },
+                    Err(errno) => {
+                        // DRAIN 错误面（审查 P2 修×2）：got>0 部分返先行；
+                        // 零收的 ST_BAD（EIO 映射）面——Free 槽 drain 报
+                        // BAD 而旧形 poll 首步报 Gone(EOF)，语义漂移以
+                        // POLL 复核闭合：Gone=EOF 零返,余者原错误 loud。
+                        if got > 0 {
+                            return got as ssize_t;
+                        }
+                        if errno == crate::EIO {
+                            if let Ok(PollState::Gone) = rpc_poll(e.sid) {
+                                return 0;
+                            }
+                        }
+                        return err_ret(errno) as ssize_t;
+                    }
                 }
             }
         }
@@ -1204,13 +1265,17 @@ pub(crate) fn sock_recv(fd: c_int, buf: *mut u8, n: usize) -> ssize_t {
 }
 
 /// 单次 DRAIN 收割：应答数据直拷用户缓冲（截 min），余量入槽缓冲
-/// （此时槽缓冲恒空——recv 首步已排空，k ≤ RES_MAX 必容）。
+/// （此时槽缓冲恒空——recv 首步已排空，k ≤ RES_MAX 必容）。k == 0 =
+/// 会话缓冲现刻空的诚实零收，非协议错（A' 案：DRAIN-first 下零收是
+/// 冷节拍信号——vnet 侧 DRAIN 臂同口径明文「0 是调用方节奏面诚实值
+/// 非协议错」（drivers/bins/vnet/src/main.rs:1131-1139）；旧不变量
+/// 「POLL 报 rbytes>0 后 DRAIN 零收 = 协议破缺」随 recv 热路径去 POLL
+/// 溶解）。死 sid 不入零收支：ST_BAD 经 rpc_data 错误面 loud。
 fn drain_once(sid: u32, slot: usize, out: &mut [u8]) -> Result<usize, c_int> {
     let mut tmp = [0u8; RES_MAX];
     let k = rpc_data(SockOp::Recv, ndp::TcpSReq::Drain, sid, CAP_FAST_NS, &mut tmp)?;
     if k == 0 {
-        // 串行 RPC 下 POLL 报 rbytes>0 后 DRAIN 零收成 = 协议破缺（loud）。
-        return Err(crate::EIO);
+        return Ok(0);
     }
     let c = k.min(out.len());
     out[..c].copy_from_slice(&tmp[..c]);
