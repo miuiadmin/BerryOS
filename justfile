@@ -970,6 +970,16 @@ test-host:
     cargo test --manifest-path user/Cargo.toml -p berry-lifecycle --target {{host}}
     cargo test --manifest-path drivers/Cargo.toml -p berry-virtio --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-blkproto --target {{host}}
+    # 存储栈 P0-2 刀 1：berry-partition（GPT/MBR 分区表解析纯函数面——
+    # MBR 4 槽/0xEE 保护条转 GPT/GPT 头与条目区解码/坏签名与病态域 loud
+    # 拒，host 16 测；消费 = vblk 多分区暴露（下一刀接线））。
+    cargo test --manifest-path user/Cargo.toml -p berry-partition --target {{host}}
+    # 驱动子系统研究报告 P1 框架件 + 波 2.2 先行刀：berry-driver（统一
+    # Driver trait 生命周期框架——probe/start/stop 三口可循环 + registry
+    # 全槽探测失败不炸，借 Linux probe 生命周期形状；virtio_example 钉
+    # berry-virtio 包装法（mmio 偏移/鉴定值单源引常量），消费面 vblk/vnet
+    # 接线后续刀，host 7 测）。
+    cargo test --manifest-path user/Cargo.toml -p berry-driver --target {{host}}
     # 刀 3 B1-a：berry-gpuproto（virtio-gpu 2D 协议纯函数面——九命令/头/
     # 响应/event/config 编解码 + uapi 常量两源钉板，02 号 §3.1/§3.2；
     # 传输接线归 B1-c）。

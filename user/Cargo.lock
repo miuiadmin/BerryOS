@@ -49,6 +49,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "berry-driver"
+version = "0.2.0"
+dependencies = [
+ "berry-virtio",
+]
+
+[[package]]
 name = "berry-exec"
 version = "0.2.0"
 dependencies = [
@@ -152,6 +159,10 @@ name = "berry-netproto"
 version = "0.2.0"
 
 [[package]]
+name = "berry-partition"
+version = "0.2.0"
+
+[[package]]
 name = "berry-poll"
 version = "0.2.0"
 
@@ -229,6 +240,13 @@ dependencies = [
  "berry-loader",
  "berry-manifest",
  "berry-sys",
+]
+
+[[package]]
+name = "berry-virtio"
+version = "0.2.0"
+dependencies = [
+ "berry-gpuproto",
 ]
 
 [[package]]
