@@ -276,84 +276,11 @@ global_asm!(
     ".endm",
 
     // ---- current-EL SPx 同步异常：存帧 → 调 Rust → 取帧 → eret ----
-    //
-    // W3-Q107 SVC 快帧（03 号审计机会四）：同步异常两阶段保存——EC 先判后保。
-    // 第一段无条件存 x0-x8（esr 判定需草稿寄存器，x0 原值先落栈即安全）；
-    // EC=0x15（SVC，berry_trapface::EC_SVC 单源值，host 钉板）走快径：只存
-    // x9-x18 + x30——SVC 语义只消费 x0-x6、只回写 x0（dispatch 契约），x19-x29
-    // 由内核 Rust 代码全程 AAPCS64 callee-saved 纪律保持（Linux/seL4 syscall
-    // 快入口同构论证，见 03 号审计机会四正确性论证）；FAR 免存（EC=0x15 不写
-    // FAR_EL1，SVC 面无人读）。其余 EC（BRK/D-abort/未知）补齐全量帧——
-    // dump/cbox/demand 探针/canary 面所见帧与旧全量形逐字节同构。帧物理布局
-    // 仍 288B TrapFrame（x19-x29/far 槽不初始化），handler 签名/切换舞蹈零改。
     "exc_sync_spx:",
-    "    sub sp, sp, #288",
-    "    stp x0, x1, [sp, #0]",
-    "    stp x2, x3, [sp, #16]",
-    "    stp x4, x5, [sp, #32]",
-    "    stp x6, x7, [sp, #48]",
-    "    str x8,      [sp, #64]",
-    "    mrs x0, esr_el1",
-    "    str x0,      [sp, #248]",
-    "    lsr x0, x0, #26",
-    "    cmp x0, #0x15",
-    "    b.eq 79f",
-    "    stp x9, x10, [sp, #72]",
-    "    stp x11, x12, [sp, #88]",
-    "    stp x13, x14, [sp, #104]",
-    "    stp x15, x16, [sp, #120]",
-    "    stp x17, x18, [sp, #136]",
-    "    stp x19, x20, [sp, #152]",
-    "    stp x21, x22, [sp, #168]",
-    "    stp x23, x24, [sp, #184]",
-    "    stp x25, x26, [sp, #200]",
-    "    stp x27, x28, [sp, #216]",
-    "    str x29,      [sp, #232]",
-    "    str x30,      [sp, #240]",
-    "    mrs x0, far_el1",
-    "    str x0,      [sp, #256]",
-    "    b 80f",
-    "79:",
-    "    stp x9, x10, [sp, #72]",
-    "    stp x11, x12, [sp, #88]",
-    "    stp x13, x14, [sp, #104]",
-    "    stp x15, x16, [sp, #120]",
-    "    stp x17, x18, [sp, #136]",
-    "    str x30,      [sp, #240]",
-    "80:",
-    "    mrs x0, elr_el1",
-    "    mrs x1, spsr_el1",
-    "    stp x0, x1, [sp, #264]",
-    "    add x2, sp, #288",
-    "    str x2,      [sp, #280]",
+    "    save_frame",
     "    mov x0, sp",
     "    bl exception_sync",
-    // 恢复同分流（帧内 esr 再判）：SVC 快径只取 x0-x18 + x30——x19-x29
-    // 此刻仍在寄存器里（内核 AAPCS64 保持的原值），加载栈上未初始化槽
-    // 反而破坏之；非 SVC 走原全量宏。
-    "    ldr x0, [sp, #248]",
-    "    lsr x0, x0, #26",
-    "    cmp x0, #0x15",
-    "    b.eq 89f",
     "    load_frame",
-    "    eret",
-    "89:",
-    "    ldr x0, [sp, #264]",
-    "    msr elr_el1, x0",
-    "    ldr x0, [sp, #272]",
-    "    msr spsr_el1, x0",
-    "    ldp x0, x1, [sp, #0]",
-    "    ldp x2, x3, [sp, #16]",
-    "    ldp x4, x5, [sp, #32]",
-    "    ldp x6, x7, [sp, #48]",
-    "    ldp x8, x9, [sp, #64]",
-    "    ldp x10, x11, [sp, #80]",
-    "    ldp x12, x13, [sp, #96]",
-    "    ldp x14, x15, [sp, #112]",
-    "    ldp x16, x17, [sp, #128]",
-    "    ldr x18,      [sp, #144]",
-    "    ldr x30,      [sp, #240]",
-    "    add sp, sp, #288",
     "    eret",
 
     // ---- current-EL SPx IRQ：同 save/restore；调 exception_irq（ack/EOIR）----
@@ -367,83 +294,11 @@ global_asm!(
     // ---- lower-EL（EL0）同步异常：SVC 派发 / 故障 → 杀当前任务（G1.5）----
     // handler 可能经 kill 槽 switch 走不归（帧所在栈被弃）——与 IRQ 路径 switch
     // 同一复合规则：switch 是纯叶子 asm。
-    // W3-Q107 SVC 快帧（03 号审计机会四）：同 SPx 臂两阶段形——EC 先判后保，
-    // SVC（0x15）快径只存 x0-x18+x30+esr/elr/spsr/sp_el0（FAR 免存）；fault
-    // EC 补齐全量帧后走 canary/demand 探针/杀链（dump/cbox 面所见帧逐字节
-    // 同构旧形）。x19-x29 不存不取——EL1/EL0 同一论证：内核 Rust 全程
-    // AAPCS64 callee-saved 纪律 + 切换舞蹈 TaskContext 兜底（block/被抢占
-    // 切走再归，寄存器仍用户原值）。数值标号用 78/76/88（与 SPx 臂 79/80/89
-    // 分立——gas 数值标号可重定义，分立纯为可读）。sp 槽 = SP_EL0（用户 SP，
-    // 本宏族唯一记录处）。
     "exc_sync_el0:",
-    "    sub sp, sp, #288",
-    "    stp x0, x1, [sp, #0]",
-    "    stp x2, x3, [sp, #16]",
-    "    stp x4, x5, [sp, #32]",
-    "    stp x6, x7, [sp, #48]",
-    "    str x8,      [sp, #64]",
-    "    mrs x0, esr_el1",
-    "    str x0,      [sp, #248]",
-    "    lsr x0, x0, #26",
-    "    cmp x0, #0x15",
-    "    b.eq 78f",
-    "    stp x9, x10, [sp, #72]",
-    "    stp x11, x12, [sp, #88]",
-    "    stp x13, x14, [sp, #104]",
-    "    stp x15, x16, [sp, #120]",
-    "    stp x17, x18, [sp, #136]",
-    "    stp x19, x20, [sp, #152]",
-    "    stp x21, x22, [sp, #168]",
-    "    stp x23, x24, [sp, #184]",
-    "    stp x25, x26, [sp, #200]",
-    "    stp x27, x28, [sp, #216]",
-    "    str x29,      [sp, #232]",
-    "    str x30,      [sp, #240]",
-    "    mrs x0, far_el1",
-    "    str x0,      [sp, #256]",
-    "    b 76f",
-    "78:",
-    "    stp x9, x10, [sp, #72]",
-    "    stp x11, x12, [sp, #88]",
-    "    stp x13, x14, [sp, #104]",
-    "    stp x15, x16, [sp, #120]",
-    "    stp x17, x18, [sp, #136]",
-    "    str x30,      [sp, #240]",
-    "76:",
-    "    mrs x0, elr_el1",
-    "    mrs x1, spsr_el1",
-    "    mrs x2, sp_el0",
-    "    stp x0, x1, [sp, #264]",
-    "    str x2,      [sp, #280]",
+    "    save_frame_el0",
     "    mov x0, sp",
     "    bl exception_sync_el0",
-    // 恢复同分流（帧内 esr 再判）：SVC 快径只取 x0-x18+x30 + sp_el0；
-    // 非 SVC（杀链不归/probe 恢复/canary 恢复路径）走原全量宏。
-    "    ldr x0, [sp, #248]",
-    "    lsr x0, x0, #26",
-    "    cmp x0, #0x15",
-    "    b.eq 88f",
     "    load_frame_el0",
-    "    eret",
-    "88:",
-    "    ldr x0, [sp, #264]",
-    "    msr elr_el1, x0",
-    "    ldr x0, [sp, #272]",
-    "    msr spsr_el1, x0",
-    "    ldr x0, [sp, #280]",
-    "    msr sp_el0, x0",
-    "    ldp x0, x1, [sp, #0]",
-    "    ldp x2, x3, [sp, #16]",
-    "    ldp x4, x5, [sp, #32]",
-    "    ldp x6, x7, [sp, #48]",
-    "    ldp x8, x9, [sp, #64]",
-    "    ldp x10, x11, [sp, #80]",
-    "    ldp x12, x13, [sp, #96]",
-    "    ldp x14, x15, [sp, #112]",
-    "    ldp x16, x17, [sp, #128]",
-    "    ldr x18,      [sp, #144]",
-    "    ldr x30,      [sp, #240]",
-    "    add sp, sp, #288",
     "    eret",
 
     // ---- lower-EL（EL0）IRQ：GIC 协议复用 exception_irq（含抢占 switch）----
