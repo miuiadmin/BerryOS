@@ -147,7 +147,7 @@ const _: () = {
     assert!(offset_of!(BerryHandoff, sig_slot_off) == 160);
     assert!(offset_of!(BerryHandoff, sig_slot_len) == 168);
     // W3-Q15：布局与 hofface 协议常量互检（尺寸单源不漂移）。
-    assert!(HANDOFF_SIZE == 176);
+    assert!(HANDOFF_SIZE == 232);
     assert!(INIT_SEGS_MAX == 32);
 };
 

@@ -1079,8 +1079,9 @@ pub fn spawn_user_env(entry_va: usize, arg: usize, env: usize, sp0_va: usize,
 /// [`spawn`]（IRQ 屏蔽态）。
 ///
 /// Plan B v0.5：返回新任务的裸指针（usize 不透明值——语义层写入 `pinned`
-/// 钉住字段；crate 边界纪律同 `proc_tag`）。任务已入 runqueue，指针即
-/// `&'static mut Task` 的地址（Box::leak）。
+/// 钉住字段；crate 边界纪律同 `proc_tag`）。返回时**尚未入环**——入环
+/// 拆至 [`enqueue_prepared_user`]（F-E1/S-6：SMP 下入环后即可被对核偷取，
+/// 调用侧簿记须先完成）；指针即 `&'static mut Task` 的地址（Box::leak）。
 pub fn try_prepare_user(entry_va: usize, arg: usize, arg1: usize, sp0_va: usize,
                          name: &'static [u8], ttbr0: usize, asid: u16, proc_tag: usize,
                          pinned: usize, thread_key: usize, spread: bool) -> Option<usize> {
