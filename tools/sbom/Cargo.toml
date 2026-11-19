@@ -1,0 +1,10 @@
+[package]
+name = "berry-sbom"
+# G1 刀 5：CycloneDX 1.5 SBOM 生成 + 开源协议阻断扫描。
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]

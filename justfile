@@ -970,6 +970,16 @@ test-host:
     cargo test --manifest-path user/Cargo.toml -p berry-lifecycle --target {{host}}
     cargo test --manifest-path drivers/Cargo.toml -p berry-virtio --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-blkproto --target {{host}}
+    # 存储栈 P0-2 刀 1：berry-partition（GPT/MBR 分区表解析纯函数面——
+    # MBR 4 槽/0xEE 保护条转 GPT/GPT 头与条目区解码/坏签名与病态域 loud
+    # 拒，host 16 测；消费 = vblk 多分区暴露（下一刀接线））。
+    cargo test --manifest-path user/Cargo.toml -p berry-partition --target {{host}}
+    # 驱动子系统研究报告 P1 框架件 + 波 2.2 先行刀：berry-driver（统一
+    # Driver trait 生命周期框架——probe/start/stop 三口可循环 + registry
+    # 全槽探测失败不炸，借 Linux probe 生命周期形状；virtio_example 钉
+    # berry-virtio 包装法（mmio 偏移/鉴定值单源引常量），消费面 vblk/vnet
+    # 接线后续刀，host 7 测）。
+    cargo test --manifest-path user/Cargo.toml -p berry-driver --target {{host}}
     # 刀 3 B1-a：berry-gpuproto（virtio-gpu 2D 协议纯函数面——九命令/头/
     # 响应/event/config 编解码 + uapi 常量两源钉板，02 号 §3.1/§3.2；
     # 传输接线归 B1-c）。
@@ -1120,10 +1130,14 @@ test-host:
     # Rust 件 lib 纯面测试（TLV 索引编码/解析 canonical 单形 + 源钥清单
     # 冻结行格式 + 自持 SHA-512/256——Python 现役件 build_index/
     # parse_index/build_keys_listing 五组黄金形字节恒等对拍 + 拒面文案
-    # 全等 + NIST 向量钉板）。独立小工作区，须显式 --target {{host}}。
+    # 全等 + NIST 向量钉板）。二刀（berry-sign 面）：src/sign.rs 发现序/
+    # 子进程封装/sign_index 单点缝/verify_index_signature 三态 +
+    # tests/sign_parity.rs oracle 真流对拍（签名字节恒等 + 验签三态
+    # 双侧同构 + unsigned 降级注全等；berry-sign 缺席 skip 纯面兜底）。
+    # 独立小工作区，须显式 --target {{host}}。
     # 产线现役件仍 python3 tools/gensourceindex.py（上方 --selftest 行
-    # 同挂），后续刀（berry-sign 面/product 派生/CLI）依彻底Rust化计划
-    # §4 刀序推进后再换轨。
+    # 同挂），后续刀（CLI/product 派生）依彻底Rust化计划 §4 刀序推进
+    # 后再换轨。
     cargo test --manifest-path tools/gensourceindex/Cargo.toml --target {{host}}
     # W1 接线（SEC-02 A2 同款纪律）：berry_assemble 门禁自检——V13 组装器
     # （ADR #82「组装不 fork」product.toml 校验/dry-run 计划/装配反回滚门）

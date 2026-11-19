@@ -1,0 +1,15 @@
+[package]
+name = "berry-partition"
+version.workspace = true
+edition = "2021"
+# 存储栈 P0 缺口第二项第一刀（.agents/research/2026-11-18-驱动子系统综合
+# 研究报告.md P0-2「无分区表解析」）：GPT/MBR 分区表解析纯函数 crate，
+# berry-fatfs/berry-blkproto「解析器即产品」同款形态——`cfg_attr(not(test),
+# no_std)` + `extern crate alloc`：库本体 no_std（workspace none-target
+# 全量构建可编），test 构建放开 std 仅为测试挂具。读盘经注入闭包（库零
+# IO 零 syscall 面），host 测试镜像构造全验。单消费 = vblk（drivers/bins/
+# vblk 多分区暴露——下一刀接线，本刀纯新增不动消费面）。
+description = "BerryOS GPT/MBR partition table parser: pure no_std disk-layout decode with injected block reader (storage P0-2)"
+license = "Apache-2.0"
+
+[dependencies]
