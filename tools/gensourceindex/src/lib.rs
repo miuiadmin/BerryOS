@@ -620,3 +620,38 @@ pub fn gen_keys_lines(bs_stdout: Option<&str>) -> R<Vec<String>> {
     );
     Ok(lines)
 }
+
+#[cfg(test)]
+mod cli_face_tests {
+    use super::*;
+
+    /// gen_keys_lines：透传行 trim 契约 + 注行逐字钉板（cmd_gen_keys
+    /// 唯一打印源——Python do_gen_keys :876-878 文案镜像，双源漂移守卫）。
+    #[test]
+    fn gen_keys_lines_passthrough_and_note() {
+        let ls = gen_keys_lines(Some("sk 写入 /tmp/a\npk 写入 /tmp/b\n\n")).unwrap();
+        assert_eq!(
+            ls,
+            vec![
+                "sk 写入 /tmp/a\npk 写入 /tmp/b".to_string(),
+                "gensourceindex: 注: dev 密钥对（berry-sign 头注「dev/test 面纪律」——永不用于真签，真签面随 #77/P3）".to_string(),
+            ]
+        );
+        // None = 空透传（防御形——子进程 stdout 缺席不 panic）
+        let ls0 = gen_keys_lines(None).unwrap();
+        assert_eq!(ls0.len(), 2);
+        assert_eq!(ls0[0], "");
+    }
+
+    /// check_index_version：降拒/等值过/升过三态（Python check_index_version
+    /// 镜像——check_gen 单调口径；拒文案回显双值）。
+    #[test]
+    fn check_index_version_monotone() {
+        assert!(check_index_version(3, 2).is_ok()); // 升过
+        assert!(check_index_version(2, 2).is_ok()); // 等值幂等过
+        let e = check_index_version(1, 2).unwrap_err();
+        let msg = format!("{e}");
+        assert!(msg.contains("索引版本回降拒"), "{msg}");
+        assert!(msg.contains('1') && msg.contains('2'), "{msg}");
+    }
+}

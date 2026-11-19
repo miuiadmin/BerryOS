@@ -189,11 +189,18 @@ fn cmd_gen_keys(rest: &[String]) -> ExitCode {
                 eprintln!("gensourceindex: FAIL: berry-sign keygen 拒：{}", t.trim());
                 return ExitCode::from(1);
             }
-            println!("{}", String::from_utf8_lossy(&o.stdout).trim());
-            println!(
-                "gensourceindex: 注: dev 密钥对（berry-sign 头注「dev/test 面纪律」——永不用于真签，真签面随 #77/P3）"
-            );
-            ExitCode::SUCCESS
+            match gensourceindex::gen_keys_lines(Some(&String::from_utf8_lossy(&o.stdout))) {
+                Ok(ls) => {
+                    for l in ls {
+                        println!("{l}");
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(r) => {
+                    eprintln!("{r}");
+                    ExitCode::from(1)
+                }
+            }
         }
     }
 }
