@@ -7744,8 +7744,9 @@ fn test_deadline() {
     assert!(picked.slice_left == 100,
             "DL：B2 解冻后须授新预算 slice（期望 100，实际 {}）", picked.slice_left);
 
-    // DL-B3（04 号审计附记一钉板）：生产路径解冻——`pick_next_filtered`
-    // 是生产八个出选点的唯一扫描面（trait `pick_next` 仅 ktest 直调）；
+    // DL-B3（04 号审计附记一钉板）：生产路径解冻——生产出选两口 =
+    // `pick_next_filtered` 七点 + `pick_next_if_above` try_preempt 一点
+    // （W3-Q93 现形，头部同源解冻；trait `pick_next` 仅 ktest 直调）；
     // 修复前本面无 lazy_unthrottle 调用，deadline 任务预算限流后生产
     // 无解冻路径（DL_ON_RING 账本死账）。B1 同款置位 → 走 filtered 面
     // → 周期到须解冻 + 授新预算——与 B2（trait 面）逐位对拍。

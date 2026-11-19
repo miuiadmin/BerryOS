@@ -5,11 +5,12 @@
 //! 运行：单线程、IRQ 屏蔽、分配器已活——零调度噪声，纯子系统成本。
 //!
 //! 三条产出线：
-//! 1. **微基准**（`BENCH,<name>,<iters>,<cyc_per_op>` 机器可读行 × 8）——
+//! 1. **微基准**（`BENCH,<name>,<iters>,<cyc_per_op>` 机器可读行 × 10）——
 //!    计时 = CNTVCT **原始周期数**。口径纪律（测试策略 §7）：TCG 下 CNTV
 //!    推进 ≈ CNTFRQ/2，绝对值只做**同机同 QEMU 的相对比较**（基线对拍在
 //!    宿主侧 `tools/bench.py`，宽松因子门禁）；内核只出数不做门禁。
-//!    七项在 `run()` 的 boot 干净窗（ktest 后、timer/sched init 前）；
+//!    九项在 `run()` 的 boot 干净窗（ktest 后、timer/sched init 前——
+//!    send_recv_pair/svc_roundtrip 两项 W3-Q98/Q102 增）；
 //!    switch_pair 在 `run_sched_epoch()` 的调度器纪元窗（sched init 后、
 //!    telemetry::init 前——04 号审计基线缺口两项，2026-11-17）。
 //! 2. **churn 泄漏金丝雀**（`BENCHCHURN ok frame=0 vmo=0 handle=0`）——
@@ -365,7 +366,7 @@ fn bench_pick_scan() {
     rq.resync_vruntime_sum(); // 直改 vruntime 后洗账
     let mut acc: usize = 0;
     bench(b"pick_scan", 1024, || {
-        // SAFETY: boot 窗单线程 + IRQ 屏蔽 = pick_inner 调用契约（KERN_LOCK 窗
+        // SAFETY: boot 窗单线程 + IRQ 屏蔽 = pick_next_filtered 调用契约（KERN_LOCK 窗
         // 的串行等价）——ktest 直调面同判据；my_cur 在环（Running 参选形）。
         // 每迭代 = 一次真实出选（advance_past 游标推进 + policy 空表零写 +
         // stats 记账——与生产面同路径）。
