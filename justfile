@@ -1080,6 +1080,9 @@ test-host:
     # V-0a 刀 3：berryboot app 单源共识——内嵌 HELLO.TXT 基准 ↔ 仓库 fixture
     # hello.txt 逐字节对拍（mkfat fixture 共识基准同族，改一侧忘同步即炸）。
     cargo test --manifest-path bootloader/berryboot/Cargo.toml -p berryboot --target {{host}}
+    # G0 刀 1：berry-slot（A/B 槽位仲裁纯面——CRC 向量/双副本/仲裁三律/
+    # 三靴崩溃走查 host 钉板）。
+    cargo test --manifest-path bootloader/berryboot/Cargo.toml -p berry-slot --target {{host}}
     # V-5a-0：berrydump（Fusion/AAVMF 设备面事实 dump 纯取证工具——解析
     # 纯函数面 host 钉板：RSDP/XSDT/MADT/SPCR/DBG2/FDT 六表面合成向量 +
     # 表名注册，host 8 测；独立 workspace 与 berryboot 主引导链解耦，
