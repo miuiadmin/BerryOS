@@ -61,12 +61,12 @@ jobs:
       # 发布序 = 依赖序（叶子在前）。dry-run：六叶子严格（真守卫）；两依赖件
       # 上册前降级 warning（结构性不可验，真发布序内自验）。部分成功重跑语义
       # （already exists 跳过 / index 传播等 30–60s 重试）见指南 §9.1。
-      - name: 发布链（依赖序八连）
+      - name: 发布链（依赖序九连）
         run: |
           set -e
           cd user
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
-            for c in berry-sys berry-tls berry-netdproto berry-fsproto berry-mmap berry-signal; do
+            for c in berry-vdsoface berry-sys berry-tls berry-netdproto berry-fsproto berry-mmap berry-signal; do
               echo "::group::cargo publish --dry-run -p $c"
               cargo publish --dry-run -p "$c"
               echo "::endgroup::"
@@ -79,7 +79,7 @@ jobs:
               echo "::endgroup::"
             done
           else
-            for c in berry-sys berry-tls berry-netdproto berry-fsproto berry-mmap berry-signal berry-fsclient berry-libc; do
+            for c in berry-vdsoface berry-sys berry-tls berry-netdproto berry-fsproto berry-mmap berry-signal berry-fsclient berry-libc; do
               echo "::group::cargo publish -p $c"
               cargo publish -p "$c"
               echo "::endgroup::"

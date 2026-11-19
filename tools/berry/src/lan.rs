@@ -349,3 +349,29 @@ mod tests {
         );
     }
 }
+
+/// 十三刀补：resolve_lan_host 无显式 host 走平台链（直测、零 mock）——
+/// macOS 上即 ipconfig/en0 真探针；无网/CI 容器态总探针失败 =
+/// FallbackLoopback（回退契约真值钉板，非伪造返回）。
+#[cfg(test)]
+mod resolve_tests {
+    use super::*;
+
+    #[test]
+    fn resolve_without_explicit_runs_platform_chain() {
+        match resolve_lan_host(None) {
+            LanHost::Addr(a) => {
+                // 真探针产出的必须是合法非环回非链路本地 IPv4
+                // （probe_macos_iface 的过滤面）。
+                let ip: std::net::Ipv4Addr = a.parse().expect("probe must yield IPv4");
+                assert!(!ip.is_loopback(), "got {a}");
+                assert!(!ip.is_link_local(), "got {a}");
+            }
+            LanHost::FallbackLoopback => {
+                // 无网/全探针失败态：契约即回退（调用方 127.0.0.1 + 警告）。
+            }
+        }
+        // 确定性：同进程两次解析同一形态。
+        assert_eq!(resolve_lan_host(None), resolve_lan_host(None));
+    }
+}

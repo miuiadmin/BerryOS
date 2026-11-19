@@ -20,7 +20,7 @@
 //!    设计 §12）——资源到顶时**错误码回、不 panic、可恢复**的确定性边界
 //!    断言：ABI §8.0「永不 panic」承诺的耗尽版执法（全过才打，L0）。
 //!
-//! 收尾行 `BENCH ok n=8` 自 `run()` 尾迁至 `run_sched_epoch()` 纪元尾恒发
+//! 收尾行 `BENCH ok n=10` 自 `run()` 尾迁至 `run_sched_epoch()` 纪元尾恒发
 //!（04 号审计基线缺口刀，2026-11-17——须在最后一行 BENCH 之后：bench.py
 //! 的 len==done_n 收割契约按本行截尾；门缺席 = 仅缺 switch_pair 行、
 //! trailer 照发），是 smoke 裸相关卡标记（标记清单单一事实源 =
@@ -39,8 +39,8 @@ use crate::handle::{
 use crate::ktest::{svc4, svc6};
 use crate::mm;
 use crate::syscall::{
-    NR_CHANNEL_CREATE, NR_CHANNEL_RECV, NR_CHANNEL_SEND, NR_HANDLE_CLOSE, NR_VMO_CREATE,
-    VMO_MAX_SIZE,
+    NR_CHANNEL_CREATE, NR_CHANNEL_RECV, NR_CHANNEL_SEND, NR_CLOCK_READ, NR_HANDLE_CLOSE,
+    NR_VMO_CREATE, VMO_MAX_SIZE,
 };
 use crate::vmo::Vmo;
 use berry_hal_aarch64::timer::cntvct;
@@ -51,9 +51,14 @@ use core::sync::atomic::{AtomicU64, Ordering};
 const PAGE: usize = 1 << 12;
 
 /// 基准项计数（`BENCH ok n=` 的定值——增删基准项时同步改这里、smoke 两处
-/// 标记表（markers.sh/smoke-image.sh）、bench.py 的 _iter_table 与表头注释、
-/// bcts 冻结件滚新（计数面零增减的 bcts@N 滚新——主线收））。
-const N_METRICS: usize = 8;
+/// 标记表（markers.sh/smoke-image.sh）、smoke.sh 头注计数、bench.py 的
+/// _iter_table 与表头注释、bcts 冻结件滚新（计数面零增减的 bcts@N 滚新
+/// ——主线收）。
+/// W3-Q98（2026-11-18）：8→9——send_recv_pair 入（02 号 IPC 审计落选三）。
+/// W3-Q102（2026-11-18）：9→10——svc_roundtrip 入（03 号 syscall 分派审计
+/// 测量面建议——分派包络〔帧存取+锁类+尾检查〕的确定性对拍面，此前该
+/// 包络只有 B-1 墙钟通道的间接影子）。
+const N_METRICS: usize = 10;
 
 // ---- S-2（设计 §12）常量 ----
 
@@ -98,7 +103,18 @@ pub fn run() {
     // pick_scan（04 号审计基线缺口，2026-11-17）：Fair 出选面纯函数成本——
     // 与上六项同窗（ktest 后、timer/sched init 前干净窗）。
     bench_pick_scan();
-    // AM 原子观测对（非标记行）：紧随七项官方基准后、churn 前——七行
+    // send_recv_pair（02 号 IPC 审计落选三随 W3-Q98 刀 b 收口，2026-11-18）：
+    // IPC 主路径 icount 首项——svc 直调 send+recv 往返（无随行 handle、8B
+    // 载荷最小形），与上七项同窗。
+    bench_send_recv_pair();
+    // svc_roundtrip（03 号 syscall 分派审计测量面建议，W3-Q102，2026-11-18）：
+    // 分派包络 icount 首项——svc 直调 0x61 clock_read 最小平凡号往返
+    // （TABLE 类全锁面 + PT 锁 copy_out 窗 + 尾三查全走），与上八项同窗。
+    // 该包络此前零 deterministic 覆盖（审计 §「测量缺口」：唯 B-1 墙钟
+    // sys_vmo_rw4k 间接受其影响）——本行入册后任何包络刀（03 号机会一/二/
+    // 四/五族）的指令流变化都有 L2 对拍锚。
+    bench_svc_roundtrip();
+    // AM 原子观测对（非标记行）：紧随十项官方基准后、churn 前——十行
     // `BENCH,` + BENCHCHURN/BENCHXH 的既有 boot 形状零扰动（`BENCH ok`
     // 收尾行已迁 run_sched_epoch 纪元尾恒发——本窗不再打）。
     bench_am_pair();
@@ -213,6 +229,44 @@ fn bench_handle_evt() {
 /// （原始差值累计后一次整除——CNTVCT 粒度噪声在 8192 样本上摊薄）。
 /// `fetch_add` 行 − `cntvct_only` 行 = 计时对自身成本之外的 RMW 净开销；
 /// frozen_owner 判空 = 单条本位分支（亚周期级），以差值地板覆盖不另设行。
+/// svc_roundtrip（W3-Q102；03 号分派审计 §测量面建议）：分派包络基准——
+/// EL1 `svc #0` 打 **0x61 clock_read**（TABLE 类最小平凡号）一次完整往返：
+/// 帧保存/恢复 + 派发表查 + kern_acquire/release 全对 + PT 锁 copy_out 窗
+/// + dispatch 尾三查（sched_exit_check/roll_quiesce_check/exit checkpoint）。
+/// 这是包络面的 **deterministic 对拍锚**（icount 通道逐指令计数——与
+/// send_recv_pair 同族：任何包络刀改动必显形为基线漂移，L2 门禁对拍）。
+/// 迭代 512：clock_read 每次 2 次 MRS + 除法，TCG 下单次往返数十周期级，
+/// 与 handle_evt/pick_scan 同量级档（基线可读性，对拍按名不按量）。
+fn bench_svc_roundtrip() {
+    // 静态出参槽（S-2 同款纪律：boot 窗单线程 IRQ 屏蔽，raw 指针传参——
+    // EL1 直映分支 copy_out 写回即落本槽）。
+    static mut OUT: u64 = 0;
+    // SAFETY: 窗内单线程独占（bench 全族同款前置）。
+    unsafe { OUT = 0 }
+    // 前置正确性钉板（一次真往返：状态 0 + 出参单调正——ktest SYSCALL C 段
+    // 同款断言的 bench 侧最小形；坏 = 后续测量数字全部无意义，fail loud）。
+    assert_eq!(
+        svc4(NR_CLOCK_READ as u64, 0, &raw mut OUT as u64, 0),
+        0,
+        "bench: svc_roundtrip clock_read 前置状态"
+    );
+    assert!(unsafe { OUT } > 0, "bench: svc_roundtrip clock_read 出参须正");
+    bench(b"svc_roundtrip", 512, || {
+        // SAFETY: svc 同步异常；dispatch 只回写 x0（svc4 契约）；出参槽
+        // 窗内独占。错误码断言在环外钉（环内零分支最小形——包络本体的
+        // 测量不掺比较指令）。
+        unsafe { core::ptr::write_volatile(&raw mut OUT, 0) };
+        assert_eq!(
+            svc4(NR_CLOCK_READ as u64, 0, &raw mut OUT as u64, 0),
+            0,
+            "bench: svc_roundtrip clock_read 状态"
+        );
+    });
+    // 读回断言（防死存储消除 + handler 真执行钉板——send_recv_pair 同款）。
+    // SAFETY: 只读比对。
+    assert!(unsafe { *(&raw const OUT) } > 0, "bench: svc_roundtrip 出参终值须正");
+}
+
 fn bench_am_pair() {
     // 局部安全原子（非 static mut——零 unsafe 台账面；独占缓存行无从谈起
     // 独占，但本窗口无第二写者 = 无假共享）。
@@ -278,7 +332,7 @@ fn bench_fa<F: FnMut()>(name: &[u8], iters: u32, mut f: F) {
 /// 出选（不真切上下文、不真跑任务体、不占生产环）。环长 20 = 审计附记二
 /// 常态值（128 是 `RING_WALK_CAP` 断言帽非生产形；混合带〔FairBand 分派〕
 /// 变体挂账另刀）。setup 同 ktest POLICY 族先例：`Box::leak` + `Fair::
-/// enqueue` 正路入环 + vr=i/vd=i+1000 定值铺展 + `resync_vruntime_sum`
+/// enqueue` 正路入环 + vr=i 铺展（vd 由 enqueue 授）+ `resync_vruntime_sum`
 /// 直改后洗账（S2b+ 账本调和纪律）；一枚置 Running 作 `my_cur`（is_cur
 /// 参选分支——生产 pick 调用形，ktest Y1 同款）。泄漏面：20×(TCB+16KiB
 /// 栈) 有界不还（ktest POLICY 同款先例——bench 窗无回收点；churn 金丝雀
@@ -299,8 +353,8 @@ fn bench_pick_scan() {
     let mut my_cur: *mut Task = core::ptr::null_mut();
     for i in 0..RING_N as u64 {
         let mut t = Task::new_kernel_with_as(ps_dummy, i as usize, b"ps".as_slice(), 0, 0);
-        t.vruntime = i; // vr=i / vd=i+1000 定值铺展（eligible 与 ineligible 两态全覆盖）
-        t.vdeadline = i + 1000;
+        // vr=i 铺展（enqueue 会把落后 avg 者钳到 avg——首段 ineligible 尾段 eligible 两态覆盖）；
+        t.vdeadline = i + 1000; // 注：fair 任务 enqueue 授自身 vd（此值被覆写——审查轮勘正注，探针确定性不受影响）
         let t: &'static mut Task = alloc::boxed::Box::leak(t);
         rr.enqueue(t, &mut rq);
         if i == 0 {
@@ -323,12 +377,92 @@ fn bench_pick_scan() {
     assert_ne!(acc, 0, "bench: pick_scan 出选指针累计（防死存储消除）");
 }
 
+/// send_recv_pair（02 号 IPC 审计落选三，随 W3-Q98 刀 b 收口）：IPC 主路径
+/// icount 首项——一对 channel 端点上 1024 轮 send+recv 往返（svc 直调面，
+/// 与 ktest H2 同形：无随行 handle、8B 载荷最小形——载荷 nbytes 恒 8，队列
+/// 每轮净空 = send 恒快路满检过 + recv 恒真弹）。对象经 `channel_create`
+/// 建对（bootstrap 表），测毕两端 close 清场。**口径注**：EL1 svc 直调 =
+/// SVC 入口 + 门控 + 拷贝链全链（无 EL0 页表走查——icount 通道值面是
+/// 指令数代理，EL1 高半直映免走查是既有形态，与 handle_evt 同窗同判）；
+/// WRITABLE/READABLE 唤醒链稳态零等待者 = wake_matching 空桶 O(1) 早退
+/// 在数内（recv 后对端恒空——4-4 检查链 fastpath 判定每轮进 miss 支但
+/// 空桶近零开销）。**迭代数 1024**：与 handle_evt 同档（send/recv 往返
+/// 单轮成本 ~数百指令，总量在 boot 帽内）。
+fn bench_send_recv_pair() {
+    // 静态缓冲（S-2 同款纪律：boot 窗单线程 IRQ 屏蔽，raw 指针触碰）。
+    static mut C0: u64 = 0;
+    static mut C1: u64 = 0;
+    static mut SBUF: [u8; 8] = [0x58; 8];
+    static mut RBUF: [u8; 8] = [0; 8];
+    static mut NB: u64 = 8;
+    static mut NH: u64 = 0;
+    static mut HND: [u32; 4] = [0; 4];
+    // SAFETY: 出参槽写 u64 槽低半（bench 窗单线程）。
+    unsafe { C0 = 0; C1 = 0; }
+    assert_eq!(
+        svc4(
+            NR_CHANNEL_CREATE as u64,
+            0,
+            &raw mut C0 as u64,
+            &raw mut C1 as u64,
+        ),
+        0,
+        "bench: send_recv_pair channel_create"
+    );
+    let (hc0, hc1) = (unsafe { C0 } as u32, unsafe { C1 } as u32);
+    assert_ne!(hc0, 0, "bench: send_recv_pair end0");
+    assert_ne!(hc1, 0, "bench: send_recv_pair end1");
+    bench(b"send_recv_pair", 1024, || {
+        // 静态缓冲 raw 指针地址取值（safe：无解引用，仅取址转 u64 传参；
+        // svc6/svc4 为安全直调面——ktest H2 同款）。boot 窗单线程 IRQ 屏蔽
+        // （S-2 纪律）保证静态缓冲读写无竞争。
+        assert_eq!(
+            svc6(
+                NR_CHANNEL_SEND as u64,
+                hc0 as u64,
+                &raw const SBUF as u64,
+                8,
+                0,
+                0,
+                0,
+            ),
+            0,
+            "bench: send_recv_pair send"
+        );
+        assert_eq!(
+            svc6(
+                NR_CHANNEL_RECV as u64,
+                hc1 as u64,
+                &raw mut RBUF as u64,
+                &raw mut NB as u64,
+                &raw mut HND as u64,
+                &raw mut NH as u64,
+                0,
+            ),
+            0,
+            "bench: send_recv_pair recv"
+        );
+    });
+    // 读回形状断言（防死存储消除 + recv 语义钉板）：8B 载荷逐字节同源。
+    // SAFETY: 只读比对。
+    assert_eq!(
+        unsafe { *(&raw const RBUF) },
+        unsafe { *(&raw const SBUF) },
+        "bench: send_recv_pair 读回载荷须逐字节同源"
+    );
+    // SAFETY: 同上。
+    unsafe { NB = 8; NH = 0; }
+    // 清场：两端 close（互钉环泄漏——channel.rs 安全向政策，xh 面同款）。
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hc0 as u64, 0, 0), 0, "bench: send_recv_pair close end0");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hc1 as u64, 0, 0), 0, "bench: send_recv_pair close end1");
+}
+
 // ---- switch_pair：调度器纪元基准窗（run_sched_epoch）----
 
 /// sbench 门控键（fw_cfg 具名项——pilat 同款「值面不解析：键在即全配置」；
-/// bench.py 的 icount 族 qemu_cmd 恒递此键 = 基线面恒全八行；trace-dual
+/// bench.py 的 icount 族 qemu_cmd 恒递此键 = 基线面恒全十行；trace-dual
 /// 两臂红线禁递〔TRACE_CAP 证书面 = 前调度器纪元项——见 bench.py 常量注〕；
-/// smoke/生产 boot 缺席 = 门缺席仅缺 switch_pair 行，trailer 恒 n=8）。
+/// smoke/生产 boot 缺席 = 门缺席仅缺 switch_pair 行，trailer 恒 n=10）。
 const SBENCH_PROBE_NAME: &str = "opt/berry/sbench";
 
 /// switch_pair 唤醒位（USER_SIGNAL_BITS 登记位 1<<53——裸键族共用一位先例
@@ -370,7 +504,7 @@ extern "C" fn sb_task_b(_arg: usize) -> ! {
 /// **调度器纪元基准窗**（04 号审计基线缺口，2026-11-17）：switch_pair——
 /// berry_sched::init 与 telemetry::init 之间的唯一槽位（调度器已在 + 遥测
 /// 钩子未注册 = TRACE_CAP 0.0 结构性零面 + boot DAIF 屏蔽窗）。收尾行
-/// `BENCH ok n=8` 自 `run()` 尾迁此恒发（须在最后一行 BENCH 之后——
+/// `BENCH ok n=10` 自 `run()` 尾迁此恒发（须在最后一行 BENCH 之后——
 /// bench.py 的 len==done_n 收割契约按本行截尾）。
 ///
 /// **boot 手递首切**：spawn A/B 后 `yield_now_keep_irq` 让出一次（idle_loop
@@ -380,9 +514,11 @@ extern "C" fn sb_task_b(_arg: usize) -> ! {
 /// pick-None 臂切回 IDLE_TASK.ctx = boot 在 yield 行下续行（顺带 reap_drain
 /// 回收 A/B 的 Task Box 与 16KiB 栈——零泄漏面）。
 ///
-/// **迭代数 128**：避开 100 倍数（bump_switches 金丝雀打印不落窗——现行
-/// SOAK_PRINT_EVERY=10000，纪元总切换 ≈ 2N+O(1) ≈ 259 ≪ 10000，结构性
-/// 无行；非 100 倍数为旧 100 档时代的保守带）。
+/// **迭代数 128**：bump_switches 金丝雀打印不落窗——现行金丝雀时间节流
+/// CANARY_PERIOD=15s vct〔探针族退役刀 2026-11-19 换计数节流〕下为**近结构性**
+/// 无行（审查轮勘正措辞）：-icount 虚拟时钟域里纪元 ≪ 15s 周期故除边界带外无行；
+/// 首行锚在纪元前的手递首切或更早（vct 边界与纪元中段相撞的亚毫秒带是唯一破窗
+/// ——拉长纪元前须重估本保证）；「非 100 倍数」为旧计数节流档时代的保守带。
 ///
 /// **口径陷阱记名**：内核任务对是切换热路径的**下界形**——无 SVC 往返
 /// 〔归 B-1〕、无 TTBR0/ASID churn〔A/B 均无地址空间，activate_if_changed
@@ -394,10 +530,11 @@ extern "C" fn sb_task_b(_arg: usize) -> ! {
 /// 任务体不带 klock 包络（lat 先例的 klock_exit 会解蔽 = 破窗）；block/
 /// wake 的 KERN_LOCK 位=0 直调面（幂等跳过——exit_current 直调同款）。
 ///
-/// **配对悬账（主线收）**：sched `note_switch` 的 SWITCHES_TT 在钩子缺席
-/// 期也计（「实际不可达」防御支——本纪元使其可达），G1.5 的
-/// `tel >= switches_tt` 断言将差本纪元切换数（≈259）；须随本刀在 sched
-/// 侧配对修复（tt 计数移入钩子在位分支，或 telemetry::init 注册时重基）。
+/// **配对悬账已收（2026-11-18）**：sched `note_switch` 的 SWITCHES_TT
+/// 原在钩子缺席期也计（「实际不可达」防御支——本纪元使其可达），
+/// icount 通道（恒递 sbench 键）boot 尾 G1.5 必炸（total=990 <
+/// switches_tt=1249，差恰本纪元 ≈259 切换）。修复 = tt 计数移入
+/// `SWITCH_HOOK` 在位分支（分母与环写同生同灭）——本头注留档。
 pub fn run_sched_epoch() {
     // noktest 生产形态整窗跳（P0-4 合并一门同款：ktest/bench 相互独立但
     // 生产 boot 同跳——零 BENCH 行零 trailer，与旧 noktest 形状逐位一致）。

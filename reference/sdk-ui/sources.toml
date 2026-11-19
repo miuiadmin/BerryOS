@@ -1,0 +1,831 @@
+# BerryOS SDK/UI official-reference source manifest.
+# Private-repo only. `cache/` is ignored; this file records how to reproduce it.
+# Schema:
+#   id          stable directory/id
+#   official    authoritative human-readable entry
+#   source      clone/archive source when one exists
+#   license     short license verdict; always verify the in-tree file before vendoring
+#   cache       link | git | sparse-git | gitiles-archive
+#   enabled     true for the curated local cache; false means inventory-only for now
+#   ref         branch/tag used by tools/fetch.py
+#   commit      pin captured on 2026-11-11
+#   paths       sparse checkout patterns (gitignore-style include patterns)
+
+version = 1
+
+# ---------- OpenHarmony / HarmonyOS ----------
+
+[[source]]
+id = "openharmony-docs"
+vendor = "OpenHarmony"
+category = "harmony"
+title = "OpenHarmony ArkUI/application-development docs"
+official = "https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V5/development-guideline-V5"
+source = "https://gitee.com/openharmony/docs.git"
+license = "CC-BY-4.0 (docs repository LICENSE)"
+cache = "sparse-git"
+enabled = true
+ref = "master"
+commit = "b84779874332bd7c2afee0ca3875494fa4793f1f"
+paths = [
+  "/LICENSE",
+  "/README.md",
+  "/README_zh.md",
+  "en/application-dev/ui/**/*.md",
+  "en/application-dev/reference/apis-arkui/**/*.md",
+  "en/application-dev/quick-start/**/*.md",
+  "zh-cn/application-dev/ui/**/*.md",
+  "zh-cn/application-dev/reference/apis-arkui/**/*.md",
+  "zh-cn/application-dev/quick-start/**/*.md",
+]
+note = "Text-only sparse cache. Figures stay online to keep the cache small."
+
+[[source]]
+id = "openharmony-interface-sdk-js"
+vendor = "OpenHarmony"
+category = "harmony"
+title = "OpenHarmony TypeScript/API definition surface"
+official = "https://developer.huawei.com/consumer/cn/doc/harmonyos-references-V5/development-intro-V5"
+source = "https://gitee.com/openharmony/interface_sdk-js"
+license = "Apache-2.0"
+cache = "sparse-git"
+enabled = true
+ref = "master"
+commit = "c349adc73e2ec1f61f6fca489b5af059e3ed6999"
+paths = [
+  "/LICENSE",
+  "/LICENCE.md",
+  "/README.md",
+  "/README_zh.md",
+  "api/**/*.d.ts",
+  "api/**/*.d.ets",
+  "api/**/*.json",
+  "arkts/**/*.d.ts",
+  "arkts/**/*.md",
+]
+note = "Primary @since/API-surface and permission-annotation model."
+
+[[source]]
+id = "harmonyos-developer"
+vendor = "Huawei"
+category = "harmony"
+title = "HarmonyOS NEXT developer center"
+official = "https://developer.huawei.com/consumer/cn/"
+source = ""
+license = "Proprietary; link-only"
+cache = "link"
+enabled = false
+note = "SPA/login-gated commercial docs. Do not mirror. Use OpenHarmony source repositories as the reproducible baseline."
+
+[[source]]
+id = "openharmony-arkui-ace-engine"
+vendor = "OpenHarmony"
+category = "harmony"
+title = "ArkUI declarative framework engine"
+official = "https://gitee.com/openharmony/arkui_ace_engine"
+source = "https://gitee.com/openharmony/arkui_ace_engine.git"
+license = "Apache-2.0"
+cache = "sparse-git"
+enabled = false
+ref = "master"
+paths = [
+  "frameworks/core/components_ng/**",
+  "frameworks/bridge/declarative_frontend/state_mgmt/**",
+  "interfaces/**",
+]
+note = "Large but the strongest OpenHarmony retained/diff-update engine reference."
+
+[[source]]
+id = "openharmony-ui-lite"
+vendor = "OpenHarmony"
+category = "harmony"
+title = "ArkUI lite retained tree"
+official = "https://gitee.com/openharmony/arkui_ui_lite"
+source = "https://gitee.com/openharmony/arkui_ui_lite.git"
+license = "Apache-2.0"
+cache = "sparse-git"
+enabled = false
+ref = "master"
+paths = ["frameworks/components/**", "common/**", "targets/**"]
+note = "Useful constrained-memory retained-tree counterpart."
+
+# ---------- Android / Google ----------
+
+[[source]]
+id = "android-developer-docs"
+vendor = "Google"
+category = "android"
+title = "Android developer API-guidelines source"
+official = "https://developer.android.com"
+source = "https://android.googlesource.com/platform/developers/docs"
+license = "Apache-2.0 (source repository)"
+cache = "sparse-git"
+enabled = true
+ref = "main"
+commit = "16f4057bbc0f3e541a5be8c71eb011559e78b6bd"
+paths = ["api-guidelines/**"]
+note = "Only the public API-guidelines source is available here; the rendered developer site is link-only."
+
+[[source]]
+id = "android-developer-design"
+vendor = "Google"
+category = "android"
+title = "Android design guidelines"
+official = "https://developer.android.com/design"
+source = ""
+license = "CC-BY-4.0; verify page footer before caching text"
+cache = "link"
+enabled = false
+note = "No stable public source repository found."
+
+[[source]]
+id = "source-android"
+vendor = "Google"
+category = "android"
+title = "AOSP documentation"
+official = "https://source.android.com/docs"
+source = ""
+license = "CC-BY-4.0; verify page footer"
+cache = "link"
+enabled = false
+note = "The old source.android.com Gitiles repository is now only a migration pointer."
+
+[[source]]
+id = "android-source-docs"
+vendor = "Google"
+category = "android"
+title = "source.android.com migration pointer"
+official = "https://source.android.com/docs"
+source = "https://android.googlesource.com/platform/docs/source.android.com"
+license = "Unknown/pointer-only"
+cache = "git"
+enabled = true
+ref = "main"
+commit = "72e0ae8d8207042452f75874221103f4f6b3014a"
+note = "Kept as evidence that the former docs repository no longer carries the site source."
+
+[[source]]
+id = "android-frameworks-base"
+vendor = "Google"
+category = "android"
+title = "Android framework view/widget/input APIs"
+official = "https://source.android.com"
+source = "https://android.googlesource.com/platform/frameworks/base"
+license = "Apache-2.0 (NOTICE in tree)"
+cache = "sparse-git"
+enabled = true
+ref = "main"
+commit = "1cdfff555f4a21f71ccc978290e2e212e2f8b168"
+paths = [
+  "/NOTICE",
+  "/MODULE_LICENSE_APACHE2",
+  "api/*.txt",
+  "core/java/android/view/**/*.java",
+  "core/java/android/view/**/*.aidl",
+  "core/java/android/view/**/*.aconfig",
+  "core/java/android/widget/**/*.java",
+  "core/java/android/widget/**/*.aidl",
+  "core/java/android/widget/**/*.aconfig",
+  "libs/input/**/*.java",
+  "libs/input/**/*.aidl",
+  "libs/input/**/*.kt",
+]
+note = "Canonical googlesource directly; GitHub aosp-mirror is stale/archived."
+
+[[source]]
+id = "android-frameworks-native"
+vendor = "Google"
+category = "android"
+title = "Android native graphics/binder/input stack"
+official = "https://source.android.com"
+source = "https://android.googlesource.com/platform/frameworks/native/+archive/refs/heads/main.tar.gz"
+license = "Apache-2.0/BSD mixed; verify per file"
+cache = "gitiles-archive"
+enabled = true
+ref = "main"
+commit = "4f463a6b1de9198963dc6aff74154a504ba3f8f6"
+note = "Full Gitiles subtree archive; includes BufferQueue, SurfaceFlinger, binder and input native sources."
+
+[[source]]
+id = "androidx"
+vendor = "Google"
+category = "android"
+title = "Jetpack Compose runtime/UI/foundation"
+official = "https://developer.android.com/jetpack/compose"
+source = "https://android.googlesource.com/platform/frameworks/support"
+license = "Apache-2.0"
+cache = "sparse-git"
+enabled = true
+ref = "androidx-main"
+commit = "51f21287209090df3c125ea368dc58004bef37ae"
+paths = [
+  "/LICENSE.txt",
+  "/license-baseline.txt",
+  "/README.md",
+  "compose/runtime/**/*.kt",
+  "compose/runtime/**/*.java",
+  "compose/runtime/**/*.md",
+  "compose/ui/**/*.kt",
+  "compose/ui/**/*.java",
+  "compose/ui/**/*.md",
+  "compose/foundation/**/*.kt",
+  "compose/foundation/**/*.java",
+  "compose/foundation/**/*.md",
+  "!compose/**/androidTest/**",
+  "!compose/**/test/**",
+  "!compose/**/tests/**",
+]
+note = "Declarative recomposition, slot table, composition local and layout reference."
+
+[[source]]
+id = "material-components-android"
+vendor = "Google"
+category = "material"
+title = "Material Components Android"
+official = "https://m3.material.io/develop/android"
+source = "https://github.com/material-components/material-components-android.git"
+license = "Apache-2.0"
+cache = "sparse-git"
+enabled = true
+ref = "master"
+commit = "66b0eeb53afeb6025ffbbd37734b08e5bce197ed"
+paths = [
+  "/LICENSE",
+  "/README.md",
+  "docs/**",
+  "lib/**/*.java",
+  "lib/**/*.kt",
+  "lib/**/*.xml",
+  "lib/**/*.md",
+]
+
+[[source]]
+id = "material-color-utilities"
+vendor = "Google"
+category = "material"
+title = "Material color/HCT utilities"
+official = "https://m3.material.io/styles/color/system"
+source = "https://github.com/material-foundation/material-color-utilities.git"
+license = "Apache-2.0"
+cache = "git"
+enabled = true
+ref = "main"
+commit = "194144d75ed7d34f06264a625e086db81a7ab9aa"
+
+[[source]]
+id = "material-3"
+vendor = "Google"
+category = "material"
+title = "Material 3 design guidelines"
+official = "https://m3.material.io"
+source = ""
+license = "Site is JS-rendered; verify footer manually before any snapshot"
+cache = "link"
+enabled = false
+
+# ---------- Chromium / ChromeOS / Fuchsia ----------
+
+[[source]]
+id = "chromiumos-docs"
+vendor = "ChromiumOS"
+category = "chromeos"
+title = "ChromiumOS historical docs repository"
+official = "https://chromium.org/chromium-os/developer-library/"
+source = "https://chromium.googlesource.com/chromiumos/docs"
+license = "No root license file; Chromium/ChromiumOS project terms apply"
+cache = "git"
+enabled = true
+ref = "main"
+commit = "9ebb25c9313489d97036d5fe7271ebb681246558"
+note = "Deprecated since Q1 2024; retained as a historical archive."
+
+[[source]]
+id = "chromiumos-developer-library"
+vendor = "ChromiumOS"
+category = "chromeos"
+title = "ChromiumOS Developer Library"
+official = "https://chromium.org/chromium-os/developer-library/"
+source = ""
+license = "Link-only unless a page grants reuse"
+cache = "link"
+enabled = false
+
+[[source]]
+id = "chromeos-dev"
+vendor = "Google"
+category = "chromeos"
+title = "ChromeOS developer portal"
+official = "https://chromeos.dev/"
+source = ""
+license = "Link-only"
+cache = "link"
+enabled = false
+
+[[source]]
+id = "chromium-src-docs"
+vendor = "Chromium"
+category = "chromeos"
+title = "Chromium compositor/viz/mojo/a11y docs"
+official = "https://chromium.googlesource.com/chromium/src/+/main/docs/"
+source = "https://chromium.googlesource.com/chromium/src/+archive/refs/heads/main/docs.tar.gz"
+license = "Chromium project docs; verify per file"
+cache = "gitiles-archive"
+enabled = false
+ref = "main"
+note = "About 32 MB compressed; fetch on demand when studying compositor/GPU internals."
+
+[[source]]
+id = "fuchsia"
+vendor = "Google"
+category = "fuchsia"
+title = "Fuchsia docs and UI/compositor core"
+official = "https://fuchsia.dev/fuchsia-src/"
+source = "https://fuchsia.googlesource.com/fuchsia"
+license = "BSD-3-Clause (root LICENSE)"
+cache = "sparse-git"
+enabled = true
+ref = "main"
+commit = "2958ce1c659a9b9a6512180f5507932fbf342382"
+paths = [
+  "/LICENSE",
+  "/PATENTS",
+  "/README.md",
+  "docs/**/*.md",
+  "docs/**/*.yaml",
+  "src/ui/README.md",
+  "src/ui/scenic/lib/**/*.cc",
+  "src/ui/scenic/lib/**/*.h",
+  "src/ui/scenic/lib/**/*.rs",
+  "src/ui/scenic/lib/**/*.fidl",
+  "src/ui/scenic/lib/**/*.md",
+  "src/ui/scenic/bin/**/*.cc",
+  "src/ui/scenic/bin/**/*.h",
+  "src/ui/scenic/bin/**/*.rs",
+  "src/ui/scenic/bin/**/*.md",
+  "src/ui/lib/input_pipeline/**/*.cc",
+  "src/ui/lib/input_pipeline/**/*.h",
+  "src/ui/lib/input_pipeline/**/*.rs",
+  "src/ui/lib/input_pipeline/**/*.fidl",
+  "src/ui/lib/input_pipeline/**/*.md",
+  "src/ui/input/**/*.cc",
+  "src/ui/input/**/*.h",
+  "src/ui/input/**/*.rs",
+  "src/ui/input/**/*.fidl",
+  "src/ui/input/**/*.md",
+  "src/lib/ui/carnelian/**/*.rs",
+  "src/lib/ui/carnelian/**/*.md",
+  "src/lib/ui/carnelian/**/*.toml",
+  "src/lib/ui/keymaps/**/*.rs",
+  "src/lib/ui/keymaps/**/*.md",
+  "sdk/lib/ui/scenic/**/*.h",
+  "sdk/lib/ui/scenic/**/*.cc",
+  "sdk/lib/ui/scenic/**/*.fidl",
+  "sdk/lib/ui/scenic/**/*.md",
+]
+
+[[source]]
+id = "fuchsia-dev"
+vendor = "Google"
+category = "fuchsia"
+title = "Rendered Fuchsia documentation"
+official = "https://fuchsia.dev/fuchsia-src/"
+source = ""
+license = "Link-only rendered docs"
+cache = "link"
+enabled = false
+
+# ---------- Flutter / Dart ----------
+
+[[source]]
+id = "flutter-website"
+vendor = "Google"
+category = "flutter"
+title = "Flutter UI/layout/focus/adaptive docs source"
+official = "https://docs.flutter.dev/"
+source = "https://github.com/flutter/website.git"
+license = "CC-BY-3.0 docs; BSD-3 code samples"
+cache = "sparse-git"
+enabled = true
+ref = "main"
+commit = "35ed8c8d5caf1ff8b63a80bfe0f5b1b85e6e8e68"
+paths = [
+  "/LICENSE",
+  "/README.md",
+  "sites/docs/src/content/ui/**/*.md",
+  "sites/docs/src/content/ui/**/*.yaml",
+  "sites/docs/src/content/cookbook/design/**/*.md",
+  "sites/docs/src/content/cookbook/forms/**/*.md",
+  "sites/docs/src/content/cookbook/effects/**/*.md",
+  "sites/docs/src/content/learn/pathway/tutorial/*.md",
+  "sites/docs/src/content/perf/ui-performance.md",
+  "sites/docs/src/content/reference/widgets.md",
+  "sites/docs/src/data/catalog/widgets.yml",
+]
+
+[[source]]
+id = "flutter"
+vendor = "Google"
+category = "flutter"
+title = "Flutter widgets/rendering/embedder source"
+official = "https://docs.flutter.dev/"
+source = "https://github.com/flutter/flutter.git"
+license = "BSD-3-Clause"
+cache = "sparse-git"
+enabled = true
+ref = "master"
+commit = "b98afb52407777ee1b2544b93b064335ed56e340"
+paths = [
+  "/LICENSE",
+  "/README.md",
+  "packages/flutter/lib/src/widgets/**/*.dart",
+  "packages/flutter/lib/src/rendering/**/*.dart",
+  "packages/flutter/lib/src/services/**/*.dart",
+  "engine/src/flutter/shell/platform/embedder/**/*.h",
+  "engine/src/flutter/shell/platform/embedder/**/*.cc",
+  "engine/src/flutter/shell/platform/embedder/**/*.md",
+]
+note = "Engine moved into this monorepo; the old flutter/engine repository is archived."
+
+[[source]]
+id = "flutter-packages"
+vendor = "Google"
+category = "flutter"
+title = "Flutter platform packages/plugins"
+official = "https://pub.dev/flutter/packages"
+source = "https://github.com/flutter/packages.git"
+license = "BSD-3-Clause"
+cache = "sparse-git"
+enabled = false
+ref = "main"
+
+[[source]]
+id = "dart-site"
+vendor = "Google"
+category = "flutter"
+title = "Dart language/runtime docs"
+official = "https://dart.dev/"
+source = "https://github.com/dart-lang/site-www.git"
+license = "CC-BY-4.0 docs; BSD-3 code"
+cache = "sparse-git"
+enabled = false
+ref = "main"
+
+# ---------- Apple ----------
+
+[[source]]
+id = "apple-developer-docs"
+vendor = "Apple"
+category = "apple"
+title = "Apple Developer Documentation"
+official = "https://developer.apple.com/documentation/"
+source = ""
+license = "© Apple Inc.; no reuse license"
+cache = "link"
+enabled = false
+note = "Never mirror pages, assets or sample-code archives."
+
+[[source]]
+id = "apple-hig"
+vendor = "Apple"
+category = "apple"
+title = "Apple Human Interface Guidelines"
+official = "https://developer.apple.com/design/human-interface-guidelines/"
+source = ""
+license = "© Apple Inc.; link-only"
+cache = "link"
+enabled = false
+
+[[source]]
+id = "swiftui-docs"
+vendor = "Apple"
+category = "apple"
+title = "SwiftUI documentation"
+official = "https://developer.apple.com/documentation/swiftui/"
+source = ""
+license = "© Apple Inc.; link-only"
+cache = "link"
+enabled = false
+
+[[source]]
+id = "uikit-docs"
+vendor = "Apple"
+category = "apple"
+title = "UIKit documentation"
+official = "https://developer.apple.com/documentation/uikit/"
+source = ""
+license = "© Apple Inc.; link-only"
+cache = "link"
+enabled = false
+
+[[source]]
+id = "appkit-docs"
+vendor = "Apple"
+category = "apple"
+title = "AppKit documentation"
+official = "https://developer.apple.com/documentation/appkit/"
+source = ""
+license = "© Apple Inc.; link-only"
+cache = "link"
+enabled = false
+
+[[source]]
+id = "swift-book"
+vendor = "Swiftlang/Apple"
+category = "apple"
+title = "The Swift Programming Language book source"
+official = "https://docs.swift.org/swift-book/"
+source = "https://github.com/swiftlang/swift-book.git"
+license = "Apache-2.0"
+cache = "sparse-git"
+enabled = true
+ref = "main"
+commit = "16a2a4caa408c86fc85bde1e1dfff4745b6e454c"
+paths = ["/LICENSE.txt", "/README.md", "/Style.md", "TSPL.docc/**"]
+
+[[source]]
+id = "swift-docc"
+vendor = "Swiftlang/Apple"
+category = "apple"
+title = "DocC documentation compiler"
+official = "https://www.swift.org/documentation/docc/"
+source = "https://github.com/swiftlang/swift-docc.git"
+license = "Apache-2.0"
+cache = "sparse-git"
+enabled = true
+ref = "main"
+commit = "c0ac171ed0027f2b09b067f6fdf4369f54b48fa0"
+paths = [
+  "/LICENSE.txt",
+  "/NOTICE.txt",
+  "/README.md",
+  "/CONTRIBUTING.md",
+  "Sources/**/*.swift",
+  "Sources/**/*.md",
+  "docs/**",
+]
+
+# ---------- Microsoft / Windows ----------
+
+[[source]]
+id = "microsoft-ui-xaml-specs"
+vendor = "Microsoft"
+category = "windows"
+title = "WinUI/XAML control specifications"
+official = "https://learn.microsoft.com/en-us/windows/apps/winui/winui3/"
+source = "https://github.com/microsoft/microsoft-ui-xaml-specs.git"
+license = "CC-BY-4.0 (LICENSE-CODE for samples)"
+cache = "sparse-git"
+enabled = true
+ref = "master"
+commit = "34b14114af141ceb843413bedb85705c9a2e9204"
+paths = [
+  "/LICENSE",
+  "/LICENSE-CODE",
+  "/README.md",
+  "/spec_template.md",
+  "active/**/*.md",
+  "winui3/**/*.md",
+  "archive/**/*.md",
+]
+
+[[source]]
+id = "windows-dev-docs"
+vendor = "Microsoft"
+category = "windows"
+title = "Windows developer documentation source"
+official = "https://learn.microsoft.com/windows/"
+source = "https://github.com/MicrosoftDocs/windows-dev-docs.git"
+license = "CC-BY-4.0 (LICENSE); code samples per LICENSE-CODE"
+cache = "sparse-git"
+enabled = true
+ref = "docs"
+commit = "a3812316d9d6678be4e526ffb4b1c4f3958d956d"
+paths = [
+  "/LICENSE",
+  "/LICENSE-CODE",
+  "/README.md",
+  "/CONTRIBUTING.md",
+  "ThirdPartyNotices/**",
+  "**/*.md",
+  "**/*.yaml",
+]
+
+[[source]]
+id = "fluent-2"
+vendor = "Microsoft"
+category = "windows"
+title = "Fluent 2 design guidelines"
+official = "https://fluent2.microsoft.design/"
+source = ""
+license = "© Microsoft; link-only"
+cache = "link"
+enabled = false
+
+[[source]]
+id = "microsoft-ui-xaml"
+vendor = "Microsoft"
+category = "windows"
+title = "WinUI 3 XAML controls source"
+official = "https://github.com/microsoft/microsoft-ui-xaml"
+source = "https://github.com/microsoft/microsoft-ui-xaml.git"
+license = "MIT"
+cache = "sparse-git"
+enabled = false
+ref = "main"
+
+[[source]]
+id = "winui-gallery"
+vendor = "Microsoft"
+category = "windows"
+title = "WinUI Gallery sample"
+official = "https://github.com/microsoft/WinUI-Gallery"
+source = "https://github.com/microsoft/WinUI-Gallery.git"
+license = "MIT"
+cache = "sparse-git"
+enabled = false
+ref = "main"
+
+# ---------- Desktop / convergent ecosystems ----------
+
+[[source]]
+id = "gnome-hig"
+vendor = "GNOME"
+category = "desktop"
+title = "GNOME Human Interface Guidelines source"
+official = "https://developer.gnome.org/hig/"
+source = "https://gitlab.gnome.org/Teams/Websites/developer.gnome.org-hig.git"
+license = "CC-BY-SA-4.0 (COPYING.md attribution)"
+cache = "sparse-git"
+enabled = true
+ref = "main"
+commit = "97028eac37922e787cad5796215f7e986451883a"
+paths = [
+  "/COPYING.md",
+  "/README.md",
+  "source/**/*.rst",
+  "source/**/*.md",
+  "source/**/*.py",
+  "source/**/*.yaml",
+]
+
+[[source]]
+id = "libadwaita"
+vendor = "GNOME"
+category = "desktop"
+title = "GNOME adaptive widget/design-system library"
+official = "https://gnome.pages.gitlab.gnome.org/libadwaita/"
+source = "https://gitlab.gnome.org/GNOME/libadwaita.git"
+license = "LGPL-2.1-or-later"
+cache = "git"
+enabled = true
+ref = "main"
+commit = "39fff6661b28cce7b332ad5692b4efb21967d50d"
+
+[[source]]
+id = "gtk"
+vendor = "GTK"
+category = "desktop"
+title = "GTK widget toolkit"
+official = "https://docs.gtk.org/gtk4/"
+source = "https://gitlab.gnome.org/GNOME/gtk.git"
+license = "LGPL-2.1-or-later"
+cache = "sparse-git"
+enabled = false
+ref = "main"
+
+[[source]]
+id = "kde-hig"
+vendor = "KDE"
+category = "desktop"
+title = "KDE Human Interface Guidelines"
+official = "https://develop.kde.org/hig/"
+source = "https://invent.kde.org/documentation/develop-kde-org.git"
+license = "CC-BY-SA-4.0"
+cache = "sparse-git"
+enabled = false
+ref = "master"
+paths = ["content/hig/**"]
+
+[[source]]
+id = "kirigami"
+vendor = "KDE"
+category = "desktop"
+title = "KDE convergent QML components"
+official = "https://develop.kde.org/docs/getting-started/kirigami/"
+source = "https://invent.kde.org/frameworks/kirigami.git"
+license = "LGPL-2.0-or-later / LGPL-2.1-or-later mixed"
+cache = "sparse-git"
+enabled = false
+ref = "master"
+
+[[source]]
+id = "qt-qml"
+vendor = "Qt"
+category = "desktop"
+title = "Qt QML/Quick documentation and source"
+official = "https://doc.qt.io/qt-6/"
+source = "https://code.qt.io/qt/qtdeclarative.git"
+license = "LGPL-3.0-only / GPL-3.0-only / commercial; docs GFDL-1.3"
+cache = "sparse-git"
+enabled = false
+ref = "dev"
+note = "GPL/LGPL/commercial tri-license: architecture reference only unless a license is acquired."
+
+[[source]]
+id = "cosmic-libcosmic"
+vendor = "System76"
+category = "desktop"
+title = "COSMIC Rust desktop toolkit"
+official = "https://github.com/pop-os/libcosmic"
+source = "https://github.com/pop-os/libcosmic.git"
+license = "MPL-2.0"
+cache = "sparse-git"
+enabled = false
+ref = "master"
+
+# ---------- Other mobile/open OS references ----------
+
+[[source]]
+id = "webos-ose"
+vendor = "LG"
+category = "other-os"
+title = "webOS OSE documentation"
+official = "https://www.webosose.org/"
+source = "https://github.com/webosose"
+license = "Apache-2.0 unless a repository states otherwise"
+cache = "link"
+enabled = false
+
+[[source]]
+id = "webos-enact"
+vendor = "LG/Enact"
+category = "other-os"
+title = "Enact declarative web UI framework"
+official = "https://enactjs.com/"
+source = "https://github.com/enactjs/enact.git"
+license = "Apache-2.0"
+cache = "sparse-git"
+enabled = false
+ref = "main"
+
+[[source]]
+id = "tizen-docs"
+vendor = "Samsung"
+category = "other-os"
+title = "Tizen documentation"
+official = "https://samsungtizenos.com/docs/"
+source = ""
+license = "Link-only; Tizen infrastructure is migrating"
+cache = "link"
+enabled = false
+
+[[source]]
+id = "efl"
+vendor = "Enlightenment/Tizen"
+category = "other-os"
+title = "EFL/Elementary retained C toolkit"
+official = "https://www.enlightenment.org/"
+source = "https://git.enlightenment.org/enlightenment/efl.git"
+license = "Multi-license; inspect licenses/ per file"
+cache = "sparse-git"
+enabled = false
+ref = "master"
+paths = ["src/lib/elementary/**", "src/lib/ecore/**", "src/lib/evas/**", "src/lib/eo/**"]
+
+[[source]]
+id = "plasma-mobile"
+vendor = "KDE"
+category = "other-os"
+title = "Plasma Mobile shell"
+official = "https://plasma-mobile.org/"
+source = "https://invent.kde.org/plasma/plasma-mobile.git"
+license = "GPL-2.0-or-later"
+cache = "sparse-git"
+enabled = false
+ref = "master"
+paths = ["shell/**", "lookandfeel/**", "applets/**"]
+
+[[source]]
+id = "lomiri"
+vendor = "UBports"
+category = "other-os"
+title = "Lomiri mobile shell"
+official = "https://gitlab.com/ubports/development/core/lomiri"
+source = "https://gitlab.com/ubports/development/core/lomiri.git"
+license = "GPL-3.0"
+cache = "sparse-git"
+enabled = false
+ref = "main"
+note = "GPL: architecture/idea reference only."
+
+[[source]]
+id = "phosh"
+vendor = "Phosh"
+category = "other-os"
+title = "Phosh mobile shell"
+official = "https://gitlab.gnome.org/World/Phosh/phosh"
+source = "https://gitlab.gnome.org/World/Phosh/phosh.git"
+license = "GPL-3.0"
+cache = "sparse-git"
+enabled = false
+ref = "main"

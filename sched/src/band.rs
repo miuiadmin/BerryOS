@@ -293,7 +293,7 @@ pub fn period_check(band: u8, now: u64) -> bool {
 /// `throttled` 镜像真的槽中 [`DEADLINES`] 最小值——即最早「翻期解限」时刻。
 /// 无（未武装 / 无一在限流）→ None。
 ///
-/// 消费点 = `sched.rs::nearest_deadline`（与 SLEEPQ 队头 min 合并）：idle/park
+/// 消费点 = `sched.rs::nearest_deadline`/`nearest_deadline_park`（与 SLEEPQ 队头 min 合并；醒源刀 2026-11-18 起 park 形另并逐任务第三源）：idle/park
 /// 停泊武装与 tick 入口收紧据此定时——F5 强制让点（限流 cur 不再续跑、核回
 /// idle/park）之后，停泊核在带翻期时刻自醒（tick → `band_period_sweep`
 /// 翻期解限 → pick 回场）。缺此面则深 park（mask CNTV 无 tick）把「让点」
