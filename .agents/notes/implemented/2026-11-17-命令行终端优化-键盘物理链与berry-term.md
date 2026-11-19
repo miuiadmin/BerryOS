@@ -41,7 +41,7 @@ Status: implemented
 ## Related
 
 - [命令行体验刀实施设计](../../plans/2026-11-15-命令行体验刀实施设计.md)（契约 4 挂账源，本刀兑现其件 1/5/6）
-- [shell设计-v1.0](../../../docs/shell设计-v1.0.md) §2.5 进展注（挂账台账面）
+- [shell设计-v1.1](../../../docs/shell设计-v1.1.md) §2.5 进展注（挂账台账面）
 - [2026-11-15-命令行体验刀](2026-11-15-命令行体验刀.md)（管道契约钉板——berry-term 管道引擎的地基）
 - [2026-11-15-波4-settings真应用首件](2026-11-15-波4-settings真应用首件.md)（settings crate 范式——berry-term 骨架母版）
 - [2026-11-15-波3TabBar三页装配面](2026-11-15-波3TabBar三页装配面.md)（[ui] 门授能与 deferred 记账——TERMINAL 上桌前提）

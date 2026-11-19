@@ -74,6 +74,9 @@ version = "0.2.0"
 [[package]]
 name = "berry-sys"
 version = "0.2.0"
+dependencies = [
+ "berry-vdsoface",
+]
 
 [[package]]
 name = "berry-tls"
@@ -86,6 +89,10 @@ dependencies = [
  "berry-gfx",
  "berry-guiproto",
 ]
+
+[[package]]
+name = "berry-vdsoface"
+version = "0.2.0"
 
 [[package]]
 name = "settings"

@@ -1,8 +1,12 @@
-# IPC 设计
+# IPC 设计（v1.0）
 
-> 版本：**1.0**（v1.0）｜2026-11-06
+Type: standard
+Status: current
+Updated: 2026-11-18
+Version: 1.0.1
 
-> 决策依据见 `架构决策.md` #5、#6、#28。本文件展开"全支持 IPC（同步 channel + 异步通知 + 共享内存）+ 路径式命名空间"。
+> 决策依据见 [架构决策](架构决策.md) #5、#6、#28。本标准规定现行生效的 Channel、Event 与共享内存通信契约；莓核 2.0 演进目标（`ChannelShared` 无环双端与 `PEER_CLOSED`/`DEAD`、`ObjType::Port` 侵入式观察者链废除 `WAIT_ANY`、`channel_call` 同带定向让片、TCB 级精确受益者计费及真共享 VMO 环）见 [ipc 总体设计](../.agents/plans/ipc/design.md)。
+> **v1.0.1 修订（2026-11-18）**：升格 Curia `Type: standard`；统一非阻塞 `send/recv` + `object_wait` 组合口径，同步随行句柄上限 `CHAN_HND_MAX = 8`，并明示 v1 `WAIT_ANY` 哨兵与 `MsgBilling` 的适用边界。
 
 ## 1. 三条路径，按场景选
 
@@ -14,10 +18,10 @@
 
 ## 2. Channel（同步端点）
 
-- **双端**：一对端点，一端 send 一端 recv，FIFO，有界队列。
-- **消息** = `inline 字节（≤ 256B）` + `handle 列表`。超长数据走共享 VMO，inline 只传小信封/控制信息。
-- **阻塞语义**：满则阻塞、空则阻塞；可设超时/非阻塞标志。
-- **badge**：server 端连接带 badge，server 据此区分 client（不为每个 client 建独立 channel）。
+- **双端**：一对端点，一端 send 一端 recv，FIFO，有界队列（深度 `CHAN_DEPTH = 8`）。
+- **消息** = `inline 字节（≤ 256B）` + `handle 列表（≤ 8 枚，CHAN_HND_MAX = 8）`。超长数据走共享 VMO，inline 只传小信封/控制信息。
+- **非阻塞原语 + 信号等待组合语义**：`channel_send`/`channel_recv` 原语本身恒非阻塞（满返 `-EBUSY`、空返 `-EAGAIN`）；阻塞语义统一由调用方配合 `object_wait_one` / `object_wait_many`（等待 `SIGNAL_WRITABLE` / `SIGNAL_READABLE`）构成。
+- **badge（2.0 演进）**：句柄槽内联不可伪造 `badge` 供单通道鉴别多客户端，规格见 [ipc 总体设计](../.agents/plans/ipc/design.md)。
 - **msg_intent: u8（内核可见元数据槽，ADR #42，4-3c 已落）**：消息头 `MsgIntent{intent, hop, acc_ns}`（内核可见、用户不传参不回写）携带发送者 `intent_effective` 快照；server recv 结算 `intent_effective = min(declared, msg_intent)`（数值越小档越高——语义 max）、**每消息重导**（弱消息自然回落 = reply 即回退的无 reply 等价物）；channel 级 opt-out = `channel_create` options bit0。三道帽：跳数 ≤8 / 每跳预算 50ms / 链累计 400ms，超顶降级为不传播。
 - **msg_billing（内核可见，S4/1.1 契约）**：消息头追加 `{domain_id, charged_ns}`
   16B；send 快照发送者域，recv 后 server 运行记 client；reply/abort 回退。
@@ -90,7 +94,7 @@
 
 ## 阶段化目标（v1 基线，对照 `架构决策.md` #20）
 
-- **v1**：同步 Channel（`send/recv` + handle 迁移）+ Event 异步通知；**先用纯能力传递**做服务互联（不经 namespace）；TCB 双优先级字段随 Phase 2b 预留（§2.1 PI 前置）。（G0–G2）——**非阻塞有界队列已落地**（3-4b：空 recv -EAGAIN / 满 send -EBUSY，深度 8 / inline ≤256B / 随行 handle ≤4）；阻塞等待（4-0/4-1/4-2）+ PI（4-3b）+ intent 传播（4-3c）+ fastpath/slowpath 分层（4-4）**均已随 P4 落地**。
+- **v1**：同步 Channel（`send/recv` + handle 迁移）+ Event 异步通知；**先用纯能力传递**做服务互联（不经 namespace）；TCB 双优先级字段随 Phase 2b 预留（§2.1 PI 前置）。（G0–G2）——**非阻塞有界队列已落地**（3-4b：空 recv -EAGAIN / 满 send -EBUSY，深度 8 / inline ≤256B / 随行 handle ≤8〔T-1 扩 6、A2-3 扩 8〕）；阻塞等待（4-0/4-1/4-2）+ PI（4-3b）+ intent 传播（4-3c）+ fastpath/slowpath 分层（4-4）**均已随 P4 落地**（注：v1 常驻服务使用 `wait_many` 挂 `WAIT_ANY` 哨兵期间全局快路径退回慢路径，莓核 2.0 通过 `Port` 观察者链彻底移除该限制，见 [ipc 总体设计](../.agents/plans/ipc/design.md)）。
 - **v2**：共享 VMO 零拷贝；futex 用户态同步。（G2–G3）
 - **v3**：路径式命名空间（namespace 服务 + mount）——作为可用性层后加；badge。（优先级继承 §2.1 与 fastpath/slowpath §7 已随 P4 完成，不占 v3。）（G3+）
 

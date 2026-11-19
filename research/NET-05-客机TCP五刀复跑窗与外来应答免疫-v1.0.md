@@ -1,0 +1,48 @@
+# NET-05:客机 TCP 五刀复跑窗——外来应答免疫实施与验收现势（v1.0）
+
+> 版本：**1.0**（v1.0）｜2026-11-19｜文件名 `NET-05-客机TCP五刀复跑窗与外来应答免疫-v1.0.md`
+> **定位**：[五刀 plan](../.agents/plans/2026-11-17-客机tcp五刀burst收割饥饿.md)（承 NET-01/02/03/04 + 2026-11-17/18 scout+实施+审查波）的证据链——五刀三件谱系（①外来应答免疫+P3 retx_floor+P4 post_account 紧缩）、burst 记差清偿的根因定谳与免疫终验（run13 双毒注活体全绿）、复跑窗（同窗 2.0×/echo 16KB/五标记链）现势与受阻面如实记档。
+> **证据分级**：沿用 NET-01 口径——【证】= 本波实跑输出/一手行号；【走】= 走查；【界】= 工具边界。
+
+---
+
+## 0. 总判断
+
+五刀①（burst 收割饥饿清偿）按 plan 落地并已入库：根因形状经 scout workflow（6 agent 对抗核验）+ 十三轮复现靴定谳——`sock_send_pipe` 收割相弹出 `parse_tcp_reply` 拒收的外来消息即 bail(500,EIO) 部分写快返、兄弟 op 成孤儿、其 TIMEOUT 应答滞留共享 netd 通道毒化后续消费者（F147 跨套接字面）；修法=收割免疫（`FOREIGN_DROP_MAX=16` 弃置界+五单发面判形收割+K 窗计数弃置续收+审查两收紧+rpc_poll 补面）。终验 run13【证】：确定性注入（stray DNS）+ 同轮活体 `parF`（真 parse 拒收形，genesis 形状）双毒注皆弃置续收，burst 2000/2000 全量绿、valDrop 零误拒——修前同形态（scout VP-1 CONFIRMED）为 bail(500) 快返+孤儿 op。复跑窗【证】：A 链（origin 尖全件）净窗 sock4k=1035 B/s、sock16k=1306 B/s——**绝对门 ≥1000 B/s 单窗过**；同窗 2.0× 比值与 echo 16KB 1.5× 两门受阻（§2），移交 owner 稳定窗。
+
+## 1. 五刀三件谱系（均已入库 origin）
+
+- **①外来应答免疫**（本波，libc net.rs +108/-9）：弃置界+`netd_rpc_raw_valid`/`netd_rpc_valid`（253B 满幅 scratch 判形、弃置即消费、越界 None）+`rpc_st`/`rpc_data`/`rpc_sid`/`dns_query`/`rpc_poll` 五面换用+K 窗 foreign 计数+头注 F147 口径并档。三镜对抗审查（9 agent）实抓自引入角落回归（seq 形 253B 帧经 min(253,252) 截断伪装合法 v1 形落成功路——drain 交付陈回显）当批闭合（判形收紧 seq 必 None+超幅过检帧弃置不截断）；rpc_poll 补面（Server 臂最热 4B 收割面原是超幅外来帧 EINVAL 钉死队首永久毒化点）。实施笔记[2026-11-18-客机tcp五刀burst外来应答免疫](../.agents/notes/implemented/2026-11-18-客机tcp五刀burst外来应答免疫.md)。
+- **P3 retx_floor**（并行巷 1a9abec9c）：环头 Data 槽取段首 seq 只读观测面——P4 弃置水印锚，straddling 臂钉死「绝不取 snd_una」。
+- **P4 post_account 紧缩**（并行巷 de8c375b4）：ACK 前缀弃置重基点——echo 16KB 1.5× 门结构解锁件；F121 两闸随基点收缩部分解闸；随批滚 F149-F151。
+
+## 2. 复跑窗现势（2026-11-19 波，私有 fixture=/private/tmp/berryos-ab5{a,b}）
+
+- **A 链净窗（A1）**【证】：origin 尖（6a3cc445c）全件+私有钉（LSN 19181 重映射/poll 帽 120s/吞吐臂零探针）——boot 66s 五标记面绿（BSH/LSN/TCPS），`TP5 sock4k sent=4096 got=4096 @3957ms =1035B/s`、`TP5 sock16k sent=16384 got=16384 @12537ms =1306B/s`——绝对门 ≥1000 B/s 过（单窗）。
+- **A2 与 B 窗受阻**【证】：A2（同镜像同载荷）与 B1×2（四刀尖 bcef7985d 整树净 checkout）均 vnet 靴期早死（tcp 面诊断后连接全 EIO，仅 BSH ok）——低载窗（load 2.2-4.0）亦复现，判定为 vnet 启动面 F122 族概率性 flaky【界】（A1 同像同环境全绿）；非链间差异（A/B 同死同活）。四刀尖基线整树另暴露被取代树健壮性断层（fceb03ff3 VirtIO 自动复位/vnet 安全几何在基线之后）。
+- **echo 16KB 服务端臂受阻**【证】：guest 回显恰 12×250=3000B 后 `send errno=5`（EIO）断流——serve 面流式回显（250 chunk 串 × Server RT 域）需专项调试（257 几何/F121 闸/DRAIN 缓冲交互待查），1.5× 门（P4 解锁后应可达）测量未获。
+- **环境口径**：宿主多 QEMU+并行巷常驻，TCG 靴 66s-226s 漂移；数值按「同窗交错」纪律仅 A1 单窗有效，无跨窗比值。
+
+## 3. 判据对照（plan 验收线）
+
+| 门 | 判据 | 现势 |
+|---|---|---|
+| burst 全量对拍 | 2000B 带注入全绿 | **过**（run13：stale+parF 双弃置续收，2000/2000，逐字节） |
+| 绝对吞吐 | ≥1000 B/s | **过**（A1 单窗：1035/1306 B/s） |
+| 同窗 2.0× | 4KB/16KB A/B 交错 | **受阻**——基线整树靴翻车（§2），原始 2.0× 证据以 NET-04 §2（四刀 verify 4/4）为准未失效；复跑待稳定窗 |
+| echo 16KB 1.5× | 服务端同窗 | **受阻**——臂 3000B 断流待专项（§2）；P4 结构解锁件在库 |
+| 语义门 | 单测+五标记链 | 单测面按 F80 边界以 e2e 注入臂承载（run13）；五标记链 A1 面绿（BSH/LSN/TCPS；EVS/SKT 未驱动宿主 client，完整链待正牌窗） |
+
+## 4. 彻底复跑四窗（2026-11-19 补，workflow 靴跑员 A1→B1→A2→B2 串行）
+
+修臂（背压重试）后四窗：【证】**B 链首获健康窗**（B1 全标记绿）——sock16k 双链平价：A 链 1281-1338 B/s、B 链 1298-1338 B/s（同窗相邻比值 0.99-1.03×）= **五刀增量吞吐中性**（符合设计：①免疫仅加弃置路径、P3/P4 为服务面暂存——K 窗增益本属四刀已验域）；sock4k 短窗噪声带 668-1321 B/s（3-6s 相位对宿主瞬时载敏感，跨窗不可比口径沿用）；A1 全标记面绿（BSH/EVS/LSN/NET/PIPE/ROOTFS/TCPS）；B2 撞 F122 族 vnet 靴死（3/4 窗活）。**echo 臂确定性断流定谳**：三活窗同形——echoed 378/378/500B 后 `send errno=32`（EPIPE=vnet 侧会话死亡，非背压非 F121）——**B 链（P4 前基线）同形=四刀尖既有 serve 面限制、非 P4 回归**；根修需 vnet 会话面取证（RST/超时/收口三嫌疑），1.5× 门维持受阻记档。
+
+## 5. 移交（owner 稳定窗复跑配方）
+
+fixture 就位：`/private/tmp/berryos-ab5a`（A 链=origin 尖+臂+钉）、`/private/tmp/berryos-ab5b`（B 链=四刀尖整树+臂+钉，净 checkout）、`bootdrv-ab5.sh`（交错靴驱动+echo 宿主驱动内嵌）——/tmp 周期清洗后按 NET-05 §2 配方重建（臂函数/钉/驱动全文在本波会话档）。复跑序：低载稳定窗 A1→B1→A2→B2 紧邻交错（每窗判据=TP5 双臂行+五标记面）；echo 臂先修 3000B 断流再入窗。F122 族 vnet 启动 flaky 建议随下一轮 sweep 复核（本波低载复现实证加强其立案面）。
+
+## 适用边界
+
+- 时点快照：A 链锚 6a3cc445c、B 链锚 bcef7985d（2026-11-19）；origin 持续前进，复跑时以当刻尖重锚。
+- 数值口径：TCG 同宿主窗内相对比较有效；绝对 B/s 跨窗不可比（NET-03 方法论沿用）。
+- 本篇只记现势与证据；五刀②（暂存紧缩后续）与 dup 通道债（wave10/14）归属不变。
