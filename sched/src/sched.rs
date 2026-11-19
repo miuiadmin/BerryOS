@@ -37,26 +37,33 @@ impl Counter {
 /// 上下文切换计数（切换原语位共享递增——[`bump_switches`]，位谱勘正见彼注）。里程碑金丝雀：两任务在 timer slice 下分时 → 计数持续涨（≥数千 = G1 过关）；冻结在某值 = switch 坏（卡死/饿死）。
 /// 04 号审计机会三（2026-11-17）起 per-CPU 分槽：写侧本核槽 fetch_add（LB_TICKS 同款路由）、读侧两槽求和快照（[`switches`]）——拆掉同点跨核 RMW 的缓存行争用。
 static SWITCHES: [Counter; 2] = [Counter::new(), Counter::new()];
-/// S-6 ③ 心跳诊断：上一行打点时的双核 ticks_pre 总数（跨 500 节流——
-/// [`on_irq_tick`] 心跳行用）。诊断面，定谳后随探针一并退役。
-static HB_LAST: AtomicU64 = AtomicU64::new(0);
-/// S-6 ③ 卡死等待者扫描：上一轮扫描时的双核 ticks_pre 总数（跨 5000
-/// 节流——[`on_irq_tick`] stuck 行用）。诊断面，定谳后随探针一并退役。
-static STUCK_LAST: AtomicU64 = AtomicU64::new(0);
-/// S-6 ② 拉取金丝雀行真序号（run5 曾误用 diag_readout().2——那是 CPU1
-/// 派发计数非拉取数，行号全标 #1）。仅诊断打印用。
-static PULL_CNT: AtomicU64 = AtomicU64::new(0);
+/// 金丝雀时间节流锚（金丝雀时间节流刀（2026-11-19））：上次 switches= 行
+/// 打点时的 CNTVCT。全局单锚**非 per-CPU**——打印节律按墙钟定，与切换率/
+/// 核数双解耦；双核同窗双过点由取档 CAS 单赢家裁决（见 [`bump_switches`]）。
+/// 0 初值无哨兵特例（canary_due 纯函数形定谳）——首行落在计数原点起满一
+/// 周期时（QEMU 复位起 ~15s），smoke 120-400s 窗内裕量足。
+static CANARY_LAST: AtomicU64 = AtomicU64::new(0);
 
 /// SWITCHES 递增 + 金丝雀打印（S-6 ①：全域唯一递增/打印口径）。
 /// 全部十三个切换原语位共享本 helper（04 号审计机会三（2026-11-17）勘察勘正：实数 13 位/8 函数——旧注「十一位」漏了 on_irq_tick F5 限流让点的副核 park/idle 两臂）。
 /// 位谱：yield/exit/block 三函数各直切+park 双臂（6 位）+ tick 抢占 go 臂 + F5 让点副核 park/idle 两臂 + SGI resched 直切 + try_preempt 直切 + park/idle 两派发位。
-/// %SOAK_PRINT_EVERY 判定走**本核槽**计数（04 号审计机会三分槽起，旧「全局计数」口径退役）——本核槽跨点的位即打印位。
 /// 沿革九十四发现①收口（两层）：打印若只挂 tick 抢占支（旧单点）SMP 稳态
 /// 忙对各占核时结构性冷；更深的洞 = **直切臂（出选有货即切）旧完全不计数**
 /// ——park 臂冷、直切臂热，漏计 = 金丝雀对 SMP 稳态主干结构性失明（S-6
 /// 复跑 0/53K 切换字符实证）。A12「SWITCHES 计入金丝雀」至此全量兑现。
-/// 返回 true = 本次跨过打印点（调用方可据此做**锁窗已证面**的附带走查）。
-/// 分槽起返回语义 = 「本核槽跨界」布尔——integrity_check 两消费点频率微变（各核独立跨界，总量级不变）。
+/// 金丝雀时间节流刀（2026-11-19）：打印判定自事件数取模（旧本核槽
+/// %SOAK_PRINT_EVERY，常量已随 balface 退役）改 CNTVCT 时间节流
+///（`berry_balface::canary_due`，周期常量单源 berry_balface::CANARY_PERIOD
+/// ——15s vct 起步待实跑定标）。定案论据 = **活性证据与切换率解耦**：按
+/// 事件数定节奏自拆台——被测对象越慢（最需要活性证据时）行越少，TCG 相窗
+/// 双核各 ~500 切换永不跨 10000 档 = 零行结构性必红（0ea3d11ad 既账至此
+/// 闭合）；按墙钟定节奏则快机更稀（降频收益保持且改善）、慢机必在。宿主
+/// 三件（smoke-smp canary_check / smoke-image 阶段 4/6 / bcts-parkprobe
+/// churn 尾判）零改动自动复活。计数面（SWITCHES 每 switch 递增）零变化；
+/// watchdog/soakmon 走 [`switches`] 计数器直读，与本打印频率解耦。
+/// 返回 true = 本次到期取档（调用方可据此做**锁窗已证面**的附带走查）。
+/// 时间节流起返回语义 = 「全局到期」布尔——integrity_check 两消费点频率
+/// ≤1 次/周期全局。
 ///
 /// SAFETY 契约（print_lock_raw 要求）：调用点 IRQ 屏蔽窗内——十三位皆然
 /// （切换原语锁窗/屏蔽窗，见各位注）。只取 PRINT_LOCK（与任务态
@@ -65,23 +72,25 @@ static PULL_CNT: AtomicU64 = AtomicU64::new(0);
 /// 窗内禁切）⇒ 无自死锁面。
 fn bump_switches() -> bool {
     // 写侧 = 本核槽（LB_TICKS 同款路由；cpu_id() TPIDR==0 防御窗回落 0 槽 = 单核正确）。
-    // 判定走本核槽取模——禁每 switch 求两槽全局和（重新引入跨核 load 自 defeats 分核本意）。
-    let sw = SWITCHES[hal::smp::cpu_id() as usize].v.fetch_add(1, Ordering::Relaxed) + 1;
-    // bring-up 诊断（G1）：每 N 次切换打一行计数，证分时持续、计数不冻。
-    // 2026-11-17 降频定谳（04 号调度审计机会二，G1/S-6 里程碑已过）：
-    // 100→10000——每 100 切换的 PRINT_LOCK+UART 行是 IRQ 窗内周期性 µs 级
-    // 尖峰（切换点可能在 IRQ 上下文），金丝雀语义（计数持续涨）在 10000
-    // 档完整保留。计数面（SWITCHES 每 switch 递增）零变化；watchdog/
-    // soakmon 走 `switches()` 计数器直读，与本打印频率解耦。
-    // W3-Q96：sw 为双槽全局和快照——跨点判定语义与旧全局计数器逐位一致
-    //（balface::soak_crossed 钉板：分槽只改写路径不改跨点序）。周期常量
-    // 单源在 berry_balface::SOAK_PRINT_EVERY（本函数旧本地常量退役）。
-    if berry_balface::soak_crossed(sw) {
+    SWITCHES[hal::smp::cpu_id() as usize].v.fetch_add(1, Ordering::Relaxed);
+    // 金丝雀时间节流刀（2026-11-19）：读-判-写三步——先 load 锚、due 判定
+    //（门律单源 balface）、判过后 CAS 取档（CANARY_LAST: last→now）。CAS
+    // 输者 = 对核同窗先取档，跳过打印（计数照记）——单窗 ≤1 打印者，行
+    // 周期观测保语义。
+    let now = hal::timer::cntvct();
+    let last = CANARY_LAST.load(Ordering::Relaxed);
+    if berry_balface::canary_due(now, last)
+        && CANARY_LAST
+            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    {
         // S-2 E0 打印面（草案 3.1-3）：金丝雀三段在 PRINT_LOCK 内拼行原子
         //（IRQ 屏蔽窗内调用——print 对不带 irqsave，纪律见 kern_lock 模块头）。
-        // 04 号审计机会三分槽起判定/打印两值分离：整除判定 = 本核槽值（上方 sw），打印值 = 两槽求和快照（下方 sw_sum）。
-        // 宿主 smoke-smp awk 对 switches= 序列断言严格递增——打印面 = 全局和（逐槽单调 ⇒ 跨 PRINT_LOCK 序化读下和**非降**；严格递增为主态，等值残边在对核同窗跨点+锁争用下可达——下行注记，smoke-smp awk 严格门的理论红面）。
-        // 旧「整除判定与打印同值」性质显式放弃；等值残边：两核同窗各自跨点 + PRINT_LOCK 争用下相邻两行可逐位相等（审查轮勘正：非纯理论——对核持锁读和时本核跨界已落地、获锁后重读可同和，二核系统无第三递增者；实践量级远小于 TCG 抖动面且门控相 canary 常缺〔已录债〕，仅 -smp 量产窗暴露）。
+        // 打印值 = 两槽求和快照（下方 sw_sum，锁内读）：**打印者自身的本次
+        // 增量必含于其锁内和读 ⇒ 相邻两行结构性严格递增**——旧取模形态的
+        // 等值残边（对核同窗跨点+锁争用下相邻行可逐位相等的理论红面）随
+        // 时间节流消灭（单窗 ≤1 打印者）。读序必须保持在 print_lock_raw
+        // 之后（锁外预读会复活等值残边）。
         print_lock_raw();
         let sw_sum = SWITCHES[0].v.load(Ordering::Relaxed)
             + SWITCHES[1].v.load(Ordering::Relaxed);
@@ -222,7 +231,7 @@ pub fn preempt_checkpoint() {
 }
 
 /// g3-1d：检查点真探形命中数（boot 起累计；fa ktest 尾 `ckpt=` 字段打印）。
-/// 04 号审计机会三（2026-11-17）分槽起 = 两槽 Relaxed load 求和快照（hb 行 tot=hb0+hb1 读时求和先例）。
+/// 04 号审计机会三（2026-11-17）分槽起 = 两槽 Relaxed load 求和快照。
 /// 快照语义：两槽和非原子 ns 窗（读 slot0 与 slot1 之间对核可再 bump）——读者全 ≥/增长型（fa ckpt>=1）安全，禁新增等值比较。
 pub fn preempt_checkpoint_hits() -> u64 {
     PREEMPT_CKPT_HITS[0].v.load(Ordering::Relaxed)
@@ -791,56 +800,10 @@ pub fn init() {
             t.capacity[c] = hal::smp::cpu_capacity(c as u32);
         }
     }
-    // S-6 ③b：自旋看门狗 bark 自装（spin.rs 零依赖槽的 hal 面）。
-    crate::spin::set_spin_bark(spin_bark_hal);
-    // S-6 ③b：KERN_LOCK 持者点名钩子自装（arch 反向注入槽）。
-    hal::kern_lock::set_kl_name_hook(current_name_ptrs);
-}
-
-/// S-6 ③b：本核当前任务名指针（arch KERN_LOCK 看门狗持者点名；诊断面，
-/// 定谳后随探针一并退役）。返回 (名指针, 名长)；(0, 0) = park 态/防御窗。
-/// 名 = 任务字面量 &'static [u8]——跨核读不悬垂。
-fn current_name_ptrs() -> (usize, usize) {
-    // SAFETY: current_task 本核槽读契约（锁窗/屏蔽窗内由持锁调用点满足）；
-    // 名切片 'static 字面量。
-    unsafe {
-        let t = current_task();
-        if t.is_null() {
-            return (0, 0);
-        }
-        let task: &Task = &*t;
-        (task.name.as_ptr() as usize, task.name.len())
-    }
-}
-
-// ---- S-6 ③b 自旋看门狗 bark（hal 面；诊断面，定谳后随探针一并退役）----
-
-/// bark 节流锚（上次 bark 的 cntvct；0 起点 = 首报即过门）。
-static SPIN_BARK_LAST: AtomicU64 = AtomicU64::new(0);
-/// bark 总量帽记账（超 32 行静默——wedge 尸检足够，串口不再刷屏）。
-static SPIN_BARK_CNT: AtomicU64 = AtomicU64::new(0);
-
-/// 自旋看门狗 bark：par 门（单核零漂移）+ 1s 全局节流 + 32 行总量帽，
-/// **原始 UART 直写不吃 PRINT_LOCK**（泄漏锁可能就是它——arch 侧
-/// PRINT_LOCK 自旋同款自报）。lock 地址供尸检 `nm` 反查（REAPQ/SLEEPQ
-/// 静态有名；Runqueue.lock 动态地址按区段归属）。
-fn spin_bark_hal(addr: usize) {
-    if !hal::smp::par_enabled() {
-        return;
-    }
-    let now = hal::timer::cntvct();
-    if now.saturating_sub(SPIN_BARK_LAST.load(Ordering::Relaxed)) < hal::timer::cntfrq() {
-        return; // 1s 节流（全局；多锁并发 wedge 轮流报，总量帽兜底）
-    }
-    if SPIN_BARK_CNT.fetch_add(1, Ordering::Relaxed) >= 32 {
-        return;
-    }
-    SPIN_BARK_LAST.store(now, Ordering::Relaxed);
-    hal::uart_puts(b"spin! cpu=");
-    hal::uart_put_dec(hal::smp::cpu_id() as u64);
-    hal::uart_puts(b" lock=0x");
-    hal::uart_put_hex64(addr as u64);
-    hal::uart_puts(b"\n");
+    // 探针族退役刀（2026-11-19）：S-6 ③b 自旋看门狗自装对撤除——spin bark
+    // 槽安装（spin::set_spin_bark(spin_bark_hal)）与 KL 持者点名钩子安装
+    //（kern_lock::set_kl_name_hook(current_name_ptrs)）随 spin_bark 全族
+    // 退役（'spin!' 行宿主零消费者）。
 }
 
 /// S-3b（子案 §9.6 填充点）bring-up 成功后真化拓扑：`nr_cpus=2` +
@@ -920,19 +883,6 @@ fn place(task: &Task) -> usize {
 /// 记账落地替换（调点调度 v1.3 §6 后续件）。
 const SPAWN_UTIL_EST: u32 = 128;
 
-/// EAS 选核决策日志门（OBS-01——06 号 §5 观测维「EAS 决策日志」最小面）：
-/// par 门内**首调即打 + 每 [`EAS_LOG_EVERY`] 次一行**（含 None 回退行——
-/// 默认 boot 无 policy hint（ai_demo 表 placement=0），只记 Some 决策的话
-/// 该面结构性冷：spawn 全走 hint=0 短路，run-smp 实测零行）。快照 =
-/// 决策结果 + hint + 双核 util/spare。raw UART 直写不吃 PRINT_LOCK
-/// （`spin_bark` 先例：调用点在 spawn 屏蔽窗内或持 KL，PRINT_LOCK 与 KL
-/// 不新增序边；跨核并写最坏形 = 字节交错，观测面容忍）。Relaxed 纯统计
-/// 门，无同步角色；par 门外（ktest 直调/单核）零输出漂移。
-static EAS_LOG_CNT: AtomicU64 = AtomicU64::new(0);
-/// 决策行频率：首行后每 N 次选核一行（LB/soakload fleet 的 spawn 突发
-/// 每轮 4-8 次，256 ≈ 数十轮一行——boot/smoke 全程个位数行不刷屏）。
-const EAS_LOG_EVERY: u64 = 256;
-
 /// EAS 放置决策（**纯决策面**——输入全注入，ktest 钉板对象）：
 /// placement hint → berry-em `eas_pick_cpu` 的组合律。判序：
 /// ①hint 词汇执法：0（无意见）/越域值 → None 不进 EAS 面（词汇
@@ -989,32 +939,11 @@ pub fn eas_place(task_key: u64) -> Option<usize> {
     }
     let utils = [crate::util::cpu_util(0), crate::util::cpu_util(1)];
     let picked = eas_pick_place(&domains[..n], &utils, hint, SPAWN_UTIL_EST);
-    // OBS-01 决策日志（首调 + 每 N 次；门与形态见 EAS_LOG_CNT 注）：
-    // cpu=- 即 None（place() 回退现役 K=2 启发式）；spare = capacity −
-    // util（饱和减——与选核能量判据同源同尺度的余量读数）。
-    if hal::smp::par_enabled() {
-        let c = EAS_LOG_CNT.fetch_add(1, Ordering::Relaxed);
-        if c == 0 || c % EAS_LOG_EVERY == 0 {
-            // SAFETY: topo 只读访问器（init 一次性写、此后只读契约）。
-            let cap = unsafe { topo() }.capacity;
-            hal::uart_puts(b"EAS place cpu=");
-            match picked {
-                Some(cpu) => hal::uart_put_dec(cpu as u64),
-                None => hal::uart_puts(b"-(K=2)"),
-            }
-            hal::uart_puts(b" hint=");
-            hal::uart_put_dec(hint as u64);
-            hal::uart_puts(b" u=");
-            hal::uart_put_dec(utils[0] as u64);
-            hal::uart_puts(b"/");
-            hal::uart_put_dec(utils[1] as u64);
-            hal::uart_puts(b" spare=");
-            hal::uart_put_dec(cap[0].saturating_sub(utils[0]) as u64);
-            hal::uart_puts(b"/");
-            hal::uart_put_dec(cap[1].saturating_sub(utils[1]) as u64);
-            hal::uart_puts(b"\n");
-        }
-    }
+    // 探针族退役刀（2026-11-19）：EAS 决策日志面退役（EAS_LOG_CNT/
+    // EAS_LOG_EVERY + 首调/每 256 次的「EAS place」打印块——宿主零消费者，
+    // run-smp 实测零 Some 行在案）；决策管道（eas_place/eas_pick_place/
+    // placement hint 消费）保留——生产放置路由 + ktest test_eas_place
+    // 直调钉板。
     picked
 }
 
@@ -2068,7 +1997,7 @@ pub unsafe fn kill_all_tasks_by_pinned(
 }
 
 /// switches 金丝雀只读访问（watchdog / 遥测读；A12 原子化后锁外读合法）。
-/// 04 号审计机会三（2026-11-17）分槽起 = 两槽 Relaxed load 求和快照（hb 行 tot=hb0+hb1 / telemetry::total 两环求和先例）。
+/// 04 号审计机会三（2026-11-17）分槽起 = 两槽 Relaxed load 求和快照（telemetry::total 两环求和先例）。
 /// 快照语义：两槽和非原子 ns 窗（读 slot0 与 slot1 之间对核可再 bump）——读者全 ≥/增长型（watchdog 严格增长 / SOAK sw 打印）安全，禁新增等值比较。
 pub fn switches() -> u64 {
     SWITCHES[0].v.load(Ordering::Relaxed) + SWITCHES[1].v.load(Ordering::Relaxed)
@@ -3480,9 +3409,8 @@ pub fn last_killed() -> &'static [u8] {
 /// 孤儿段」对 pick 完全不可见——smoke 标记全部分裂前打完，30s 长跑五任务
 /// 静默失联由此漏网。本检查对账两笔：①runqueue 走查步数 == len 记账
 ///（步数 < len = 孤儿段；到帽 = 断链）；②SLEEPQ 链走计数 == len 记账。
-/// 消费点 = `on_irq_tick` 金丝雀分支（随 `bump_switches` 本核槽跨点——
-/// 2026-11-17 起每 10000 切换一次，04 号审计机会二降频；04 号审计机会三
-/// 分槽后 = 各核独立跨界，频率微变量级不变；O(n) 极小）与 ktest。
+/// 消费点 = `on_irq_tick` 金丝雀分支（随 [`bump_switches`] 时间节流到期——
+/// 金丝雀时间节流刀（2026-11-19）起全局 ≤1 次/周期；O(n) 极小）与 ktest。
 /// **零分配、成功路径零输出**；违约即 panic 带时刻响亮失败（失败路径才
 /// 格式化）。调用契约：IRQ 上下文（环/队变更屏蔽窗的串行等价）。
 fn integrity_check() {
@@ -3865,7 +3793,7 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
     }
     // 04 号审计机会三（2026-11-17）：全局 IRQ_TICKS 退役（write-only 零读者——每 tick 一发跨核共享 RMW 白付）。
     // tick 诊断面已由分核影子承担：SmpCpu.ticks_pre（note_tick_entry，入口计数、含上方 gate 早退轮）+ SmpCpu.ticks（note_tick，下方）。
-    // 「pre 涨/ticks 冻 = 卡锁、同冻 = CNTV/IRQ 链死」金丝雀语义在分核面原样存活（hb 行走 ticks_pre 求和）。
+    // 「pre 涨/ticks 冻 = 卡锁、同冻 = CNTV/IRQ 链死」金丝雀语义在分核面原样存活（hb 行退役后 ticks_pre 读者 = PAR absent 尾注）。
     // S-2b 诊断面：per-CPU tick 计数（两核都计——PAR absent 时区分「副核
     // tick 死」vs「tick 活但派发不出」）。
     hal::smp::note_tick();
@@ -3972,76 +3900,18 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
         if preempt_count() > 0 {
             return;
         }
-        // S-6 ③ per-CPU 心跳（诊断面，定谳后退役）：双核 ticks_pre 快照对照
-        // 行——挂死尸检一跑定谳「单侧冻结 = 核 wedge（tick/抢占链死）」vs
-        // 「双爬 = 内核活、服务协议死锁」。安全位 = preempt_count 门后
-        // （PRINT_LOCK 持窗任务被 tick 打断不进本区，G43 同防线）；par 门
-        // 内 = 单核零漂移；tot 每 500 跳一行（phase2 ~840s 量级 ≈ 数十行）。
-        if hal::smp::par_enabled() {
-            let (hb0, hb1, _) = hal::smp::diag_readout();
-            let tot = hb0 + hb1;
-            // W3-Q82：折叠门单源 berry_balface::heartbeat_due（swap 换出值投影）。
-            let hb_prev = HB_LAST.swap(tot, Ordering::Relaxed);
-            if berry_balface::heartbeat_due(tot, hb_prev) {
-                hal::kern_lock::with_print_lock(|| {
-                    hal::uart_puts(b"hb c0=");
-                    hal::uart_put_dec(hb0);
-                    hal::uart_puts(b" c1=");
-                    hal::uart_put_dec(hb1);
-                    hal::uart_puts(b"\n");
-                });
-            }
-            // S-6 ③ 卡死等待者扫描（诊断面，与心跳同退役）：每 2500 tot-tick
-            //（run10 定谳：wedge 后全靠对核独爬，5000 门槛只扫到一轮即被
-            // smoke 超时杀——降到 2500 换死前两轮）持 SQ 窗走 SLEEPQ，>10s
-            // 高龄等待者点名（名/obj/年龄）。与心跳行配对一跑定谳「谁在对谁
-            // 断供」：尸末年龄持续爬升的 stuck 行 = 永久丢醒（跨核唤醒丢失）
-            // 候选；出现一两次即消失 = 慢链路非死锁。窗纪律同 expire_timeouts
-            // （SQ 自旋锁跨核互斥）；采集在窗内、打印在窗外——不新增锁序边。
-            // W3-Q82：折叠门单源 berry_balface::stuck_scan_due；点名帽单源
-            // STUCK_MAX（本地 const 摘除——同值迁移非新语义）。
-            let st_prev = STUCK_LAST.swap(tot, Ordering::Relaxed);
-            if berry_balface::stuck_scan_due(tot, st_prev) {
-                let freq = hal::timer::cntfrq();
-                let now = hal::timer::cntvct();
-                use berry_balface::STUCK_MAX;
-                let mut hits = [(0usize, 0usize, 0usize, 0u64); STUCK_MAX];
-                let mut n_hits = 0usize;
-                let phys = sq_lock();
-                for_each_sleeper(|t| {
-                    let age = now.saturating_sub(t.wait_since);
-                    // W3-Q82：高龄判单源 berry_balface::stuck_aged（乘域同形）。
-                    if berry_balface::stuck_aged(age, freq) && n_hits < STUCK_MAX {
-                        hits[n_hits] =
-                            (t.name.as_ptr() as usize, t.name.len(), t.wait_obj, age / freq);
-                        n_hits += 1;
-                    }
-                });
-                sq_unlock(phys);
-                for i in 0..n_hits {
-                    // SAFETY: 指针取自 Task.name（&'static [u8] 字面量——
-                    // 'static 生命周期，任务离队/退出均不悬垂）。
-                    let name: &[u8] = unsafe {
-                        core::slice::from_raw_parts(hits[i].0 as *const u8, hits[i].1)
-                    };
-                    hal::kern_lock::with_print_lock(|| {
-                        hal::uart_puts(b"stuck '");
-                        hal::uart_puts(name);
-                        hal::uart_puts(b"' obj=0x");
-                        hal::uart_put_hex64(hits[i].2 as u64);
-                        hal::uart_puts(b" age=");
-                        hal::uart_put_dec(hits[i].3);
-                        hal::uart_puts(b"s\n");
-                    });
-                }
-            }
-        }
+        // 探针族退役刀（2026-11-19）：S-6 ③ 心跳/stuck 扫描段（hb c0= 行 +
+        // stuck 点名 + HB_LAST/STUCK_LAST 双 static）随定谳退役——S-6/E 臂
+        // 两定谳已落（2026-11-07/11-08），触发器已 fired；tick 路上最后一对
+        // 无条件跨核 RMW（每 slice 燃尽 tick 双核同线乒乓的 HB/STUCK_LAST
+        // swap）随之全清。同段 preempt_count==0 门 + par 门骨架原样留给下方
+        // 保留代码（stats_line_poll/定时拉取——G43 防死锁论证不动）。
         // OBS-01（06 号 §5 观测维补面）：SCHED 周期行轮询——per-intent
         // picks + per-band picks/runtime 的节流快照（5s 窗 CAS 单赢家，
-        // stats.rs）。挂点位 = hb/stuck 同语境（slice 燃尽支 + preempt_
-        // count==0 门内——G43：被 PRINT_LOCK 持窗任务打断的 tick 不进本
-        // 区，with_print_lock 无自死锁面）。观测面非门禁：ktest 零断言、
-        // 单核照打（par 门外——intent/band 账面单核同样成立）。
+        // stats.rs）。挂点位 = slice 燃尽支 + preempt_count==0 门内——
+        // G43：被 PRINT_LOCK 持窗任务打断的 tick 不进本区，with_print_lock
+        // 无自死锁面。观测面非门禁：ktest 零断言、单核照打（par 门外
+        //——intent/band 账面单核同样成立）。
         crate::stats::sched_line_poll();
         // S-6 ②（沿革九十四发现②收口）：定时拉取——设计 §3.4「空闲核
         // **定时**或被唤醒时从忙核拉任务」的定时半句最小兑现。旧触发面仅
@@ -4069,18 +3939,10 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
                 // RQ 窗未开（rq_lock 在后）✓、preempt_count==0（PRINT_LOCK
                 // 持窗已让）✓——与 idle/park 两点的差异仅「本核出选非
                 // None」：失衡判据已保证只在对核显著更重时拉。
-                if let Some(p) = unsafe { try_steal_one() } {
-                    let st = PULL_CNT.fetch_add(1, Ordering::Relaxed) + 1;
-                    if st <= 8 {
-                        hal::kern_lock::with_print_lock(|| {
-                            hal::uart_puts(b"sS6: pull #");
-                            hal::uart_put_dec(st);
-                            hal::uart_puts(b" '");
-                            hal::uart_puts((*p).name);
-                            hal::uart_puts(b"'\n");
-                        });
-                    }
-                }
+                // 探针族退役刀（2026-11-19）：PULL_CNT 序号 + 前 8 行
+                // sS6: pull 打印退役（宿主零消费者）；偷取全套副作用在函数
+                // 体内（摘环/随迁 home/回插本环），返回指针不再消费。
+                unsafe { try_steal_one() };
             }
         }
         // S-3a 义务⑥：mod4 切回 park 门退役——副核 slice 尽与 CPU0 同径出选；
@@ -4330,7 +4192,7 @@ pub unsafe fn park_recheck() {
     // 出选即消费版（advance_past 推进本核 FIFO）。my_cur=null：park 态
     // 环上无 Running 残留（任务离环只在 block/exit，切回 park 前已离）。
     // RQ 窗（c-2b）：出选 + 置 Running 同窗（防偷屏障——派发 helper 首行
-    // 同值重写幂等，为偷取臂保留）；打名诊断/切换在窗外。
+    // 同值重写幂等，为偷取臂保留）；切换在窗外。
     let phys = rq_lock();
     let picked: Option<*mut Task> = RR
         .pick_next_filtered(rq(), topo(), core::ptr::null_mut())
@@ -4341,21 +4203,10 @@ pub unsafe fn park_recheck() {
     rq_unlock(phys);
     if let Some(next) = picked {
         let next_ptr: *mut Task = next;
-        // S-2b 排障期诊断面（随段迁入）：派发计数 + 前 8 次打名（c1 恒 0 时
-        // 证派发发生过、派发了谁——任务没活到下个 tick 的归因起点）。
+        // S-2b 派发计数（排障期诊断面随段迁入）：note_dispatch/disp_cnt 本体
+        // 必保——PAR absent 尾注 d1= 的数据源（smoke-smp 硬断言 d1>0）；
+        // 探针族退役刀（2026-11-19）撤前 8 次 sS2b: disp 打名（宿主零消费者）。
         hal::smp::note_dispatch();
-        {
-            let d1 = hal::smp::diag_readout().2;
-            if d1 <= 8 {
-                hal::kern_lock::with_print_lock(|| {
-                    hal::uart_puts(b"sS2b: disp #");
-                    hal::uart_put_dec(d1);
-                    hal::uart_puts(b" '");
-                    hal::uart_puts((*next_ptr).name);
-                    hal::uart_puts(b"'\n");
-                });
-            }
-        }
         // S-3b b-2：派发尾提取 [`dispatch_from_park_ctx`]（本核出选与偷取
         // 同径；置 Running/授片/显式 arm/set_current/SWITCHES/激活/切入
         // 全在 helper——S-3a ⑤二分的授片侧语义不变）。
@@ -4368,22 +4219,9 @@ pub unsafe fn park_recheck() {
     // 后与本核出选**同径派发**（LB 记账面同格——件④ per-child 归因的机制
     // 前提）。
     if let Some(next_ptr) = try_steal_one() {
+        // 同上：note_dispatch 必保（d1 数据源）；前 8 次 sS2b: steal 打名随
+        // 探针族退役刀（2026-11-19）撤（宿主零消费者）。
         hal::smp::note_dispatch();
-        // 偷取臂同款前 8 次打名（run7/8 c1=0 归因缺口：出选臂打印、偷取臂
-        // 哑——st1 计数之外零可见性，偷了谁不可考；「副核只偷了一只常驻者
-        // 后粘性占用、探测停摆」的定谳就缺这行字）。
-        {
-            let d1 = hal::smp::diag_readout().2;
-            if d1 <= 8 {
-                hal::kern_lock::with_print_lock(|| {
-                    hal::uart_puts(b"sS2b: steal #");
-                    hal::uart_put_dec(d1);
-                    hal::uart_puts(b" '");
-                    hal::uart_puts((*next_ptr).name);
-                    hal::uart_puts(b"'\n");
-                });
-            }
-        }
         // SAFETY: PSTATE.I=1（park 环屏蔽窗）；结构锁窗在 helper 体内已闭。
         dispatch_from_park_ctx(next_ptr);
         return;
@@ -4587,7 +4425,8 @@ unsafe fn try_steal_one() -> Option<*mut Task> {
 /// 挂表内核任务（task_a/task_b 隔离金丝雀类，EL1 跑）皆可偷，b-2a 实测
 /// 后者跨核迁移随环轮转健康）+ 切入。本核出选与偷取同径（LB 同格
 /// 合格）。note_switch prev=null 跳过发射（park 非调度语义上下文）；sS2b
-/// 派发诊断（note_dispatch/打名）留调用侧（出选/偷取两臂各记）。
+/// 派发计数（note_dispatch）留调用侧（出选/偷取两臂各记——PAR absent
+/// d1= 数据源；打名随探针族退役刀（2026-11-19）撤）。
 ///
 /// # Safety
 /// PSTATE.I=1（park 环屏蔽窗）；结构锁窗已闭（RQ 窗/偷取窗在调用侧）；

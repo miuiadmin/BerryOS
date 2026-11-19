@@ -137,3 +137,7 @@ trace-dual + lat + reject-trio + testhost（同目录 20261105-0930~0931 批）�
 ## [2026-11-19 merge-icount 合并树] 十项终档
 
 - origin/wip/sched-1.1@1008dcdc7 × icount-baseline 合并树终档：我方八项逐位保持（pick_scan 131/switch_pair 306——合并指令流对测径零污染的实证）；origin 侧 W3-Q98/Q102 两新项入册（send_recv_pair 1168/svc_roundtrip 50）；alloc64k 37→127（布局骰第五掷，孤项）。五跑 prove verdict=exact（回执 icount-prove-20261119-070911）。
+
+## [2026-11-19 探针族退役刀] 三项真指令减量
+
+- 探针族退役+金丝雀时间节流：**switch_pair 306→300（−6）=退役的真实指令节省**（bump_switches 计数分支面缩+KL 诊断账面出锁路径——确定性通道第二批单刀量化收益）；send_recv_pair 1168→1159（−9）/svc_roundtrip 50→47（−3）同族热路径减量；其余七项逐位稳。五跑 prove verdict=exact（回执 icount-prove-20261119-151447）。
