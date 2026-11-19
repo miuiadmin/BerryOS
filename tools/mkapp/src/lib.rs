@@ -65,6 +65,10 @@ pub mod gate;
 /// `_byi_validate` 镜像 + 自持 inflate）。
 pub mod byi;
 
+/// W1-Q27 四刀：cpio(newc) 走查器 + SHA256SUMS 复验（`_cpio_entries`/
+/// `_verify_sums` 镜像 + 自持 SHA-256）。
+pub mod cpio;
+
 /// [security] 三键视图（profile/key_lineage/integrator——齐备或齐缺）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sec<'a> {
