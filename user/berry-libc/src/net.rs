@@ -35,7 +35,7 @@
 //!   口（recv 返 0 = POSIX EOF）。
 //! - send 恒 RPC 至应答（v1 无「仅入队」语义——O_NONBLOCK 对 send 不
 //!   分岔，A3-1 残留条目同源文档化）；四刀起 Client 臂升级 **K 窗流水线**
-//!   （`TCP_PIPE_K`=2：K 个 RT op 在途、应答按尾随 seq 配对收割、陈值
+//!   （`TCP_PIPE_K`=3：K 个 RT op 在途、应答按尾随 seq 配对收割、陈值
 //!   弃、BUSY 同 seq 退避重发——八 op 对外语义零漂移，纯实现面；DNS/
 //!   慢 op/Server 臂保持严格串行 v1 形）；connect 恒阻塞至握手帽（无
 //!   EINPROGRESS 谎报面）。
@@ -521,8 +521,8 @@ fn slot_of(fd: c_int) -> usize {
 //    （io.rs PEND 同款偏移口径；单槽容量四刀 P3 = K×TCP_DATA_MAX——
 //    「恰一应答」收发粒度帽随 K 窗同步放宽，准入式见 sock_send）——
 
-/// 槽缓冲容量（四刀 P3）：250 → K×TCP_DATA_MAX=500——K 窗在途 op 的
-/// 回显暂存上限（SOCK_FD_MAX=8，静态 +2KB）。
+/// 槽缓冲容量（四刀 P3 250 起步，五刀③随 K=3）：K×TCP_DATA_MAX=750——
+/// K 窗在途 op 的回显暂存上限（SOCK_FD_MAX=8，静态 +4KB）。
 const RES_MAX: usize = ndp::RT_PIPE_K * ndp::TCP_DATA_MAX;
 static mut RESIDUE: [[u8; RES_MAX]; SOCK_FD_MAX] = [[0; RES_MAX]; SOCK_FD_MAX];
 static mut RES_LEN: [usize; SOCK_FD_MAX] = [0; SOCK_FD_MAX];
@@ -894,8 +894,9 @@ unsafe fn sockaddr_in_view(addr: *const SockAddr, len: u32) -> Option<AddrView> 
     })
 }
 
-/// Client 臂 K 窗流水线深度（四刀 P2）：与 vnet session-0 挂起 op 队列
-/// 共源（netdproto [`ndp::RT_PIPE_K`] 单源——恰满 berry-tcp 环 500 ≤ 512）。
+/// Client 臂 K 窗流水线深度（四刀 P2、五刀③ 2→3）：与 vnet session-0
+/// 挂起 op 队列共源（netdproto [`ndp::RT_PIPE_K`] 单源——750 ≤
+/// min(环容 8×128, 通告窗)=1024 双界）。
 const TCP_PIPE_K: usize = ndp::RT_PIPE_K;
 
 /// K 窗在途 op 槽（issue/harvest 两相的暂存：请求序号 + 回显缓冲——
@@ -1126,7 +1127,7 @@ fn sock_send_pipe(fd: c_int, buf: *const u8, n: usize) -> ssize_t {
 }
 
 /// Client 臂 K 窗 seq 发号器（滚动 u8；单线程 static mut 直写——本模块
-/// 单线程 ABI 口径）。回绕距 256 ≫ K=2：同 seq 复用需 256 op 间隔，迟到
+/// 单线程 ABI 口径）。回绕距 256 ≫ K=3：同 seq 复用需 256 op 间隔，迟到
 /// 应答窗口（vnet 内帽 60s）内结构性无碰撞。
 fn seq_next() -> u8 {
     // SAFETY: 单线程读写。
