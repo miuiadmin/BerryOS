@@ -69,6 +69,7 @@ kernel/src/splash.rs::STATE	other
 kernel/src/syscall.rs::BOOTSTRAP_HT	boot
 kernel/src/syscall.rs::KLOG_SNAP_STAGE	boot
 kernel/src/syscall.rs::RING_SNAP_STAGE	boot
+kernel/src/syscall.rs::WSRC_SNAP_STAGE	boot
 kernel/src/telemetry.rs::PRESSURE_OUTLET	telemetry
 kernel/src/telemetry.rs::SWITCH_RINGS	telemetry
 kernel/src/telemetry.rs::WAKE_RINGS	telemetry
