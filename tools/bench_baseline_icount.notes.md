@@ -141,3 +141,7 @@ trace-dual + lat + reject-trio + testhost（同目录 20261105-0930~0931 批）�
 ## [2026-11-19 探针族退役刀] 三项真指令减量
 
 - 探针族退役+金丝雀时间节流：**switch_pair 306→300（−6）=退役的真实指令节省**（bump_switches 计数分支面缩+KL 诊断账面出锁路径——确定性通道第二批单刀量化收益）；send_recv_pair 1168→1159（−9）/svc_roundtrip 50→47（−3）同族热路径减量；其余七项逐位稳。五跑 prove verdict=exact（回执 icount-prove-20261119-151447）。
+
+## [2026-11-19 主线解堵后正式定档] 绿线十二项终档
+
+- a161d6de4（双红解堵：E2 VA 笔误+记账锚 72→32 均测试侧）绿线 prove exact 定档；悬账终偿。回执 icount-prove-20261119-194629。

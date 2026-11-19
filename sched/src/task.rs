@@ -223,7 +223,11 @@ pub struct Task {
     /// 声明入口落地）。**u8 越小档越高**。
     pub intent_declared: u8,
     /// 有效档 = min(declared, 消息借来的)（**每消息重导**，`intent.rs::settle`
-    /// ——非单调累积，弱消息自然回落）。
+    /// ——非单调累积，弱消息自然回落）。在环直改本字段须配
+    /// [`crate::runqueue::Runqueue::density_reclass`] 重登（生产唯一在环
+    /// 写点 = settle 锁包臂）或 [`crate::runqueue::Runqueue::resync_density`]
+    /// 洗账（ktest 手搓面）——机会五③密度账本化 2026-11-19，漏登 =
+    /// `integrity_check` 双边等式响亮。
     pub intent_effective: u8,
     /// 当前借入 intent 的消息链跳数（借入时随消息头记录；转发快照 +1）。
     pub intent_hop: u8,
