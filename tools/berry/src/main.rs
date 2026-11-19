@@ -87,6 +87,8 @@ enum Cmd {
     Symbolize(SymbolizeCmd),
     /// Aggregate the on-disk CBOX.LOG crash ledger (cbox knife 3).
     CrashLog(CrashLogCmd),
+    /// BSHRC.CFG host writer family: set/get/list/rm (export knife #3).
+    Bshrc(BshrcCmd),
     /// Print version.
     Version,
     /// 打印 home() 根路径（recipe/脚本消费——justfile 侧消除 home() 逻辑复制）。
@@ -111,6 +113,43 @@ struct CrashLogCmd {
     /// Repo root for ELF resolution (userbins → kernel fallback).
     #[arg(long)]
     elf_dir: Option<PathBuf>,
+}
+
+/// `berry bshrc`——BSHRC.CFG 宿主写者族（export 刀挂账 #3）。--disk 与
+/// --profile 互斥（clap usage rc 2）；缺省盘三级解析见 bshrc::resolve_disk。
+#[derive(Parser, Debug)]
+struct BshrcCmd {
+    #[command(subcommand)]
+    action: BshrcAction,
+    /// 显式数据盘路径（缺省三级解析：--disk > BERRY_DATA_DISK > home()/data/<profile>.img）。
+    #[arg(long)]
+    disk: Option<PathBuf>,
+    /// 缺省解析用的 profile 名（与 --disk 互斥；取值校验沿 profile 单源）。
+    #[arg(long, default_value = "desktop", conflicts_with = "disk")]
+    profile: String,
+}
+
+#[derive(Subcommand, Debug)]
+enum BshrcAction {
+    /// 写 KEY=VALUE（一或多对同批，模型改毕一次落盘）。
+    Set(BshrcSetCmd),
+    /// 读单键（last-wins 末值；缺席 rc≠0＋诊断）。
+    Get(BshrcKeyCmd),
+    /// 列全部键值（last-wins 投影；缺席空输出 rc 0）。
+    List,
+    /// 删键（该键全部行；缺席 rc≠0）。
+    Rm(BshrcKeyCmd),
+}
+
+#[derive(Parser, Debug)]
+struct BshrcSetCmd {
+    /// KEY=VALUE 对（可多对；键 1..=32B、键值禁 CR·LF·NUL、总量 ≤2048B 单簇）。
+    pairs: Vec<String>,
+}
+
+#[derive(Parser, Debug)]
+struct BshrcKeyCmd {
+    key: String,
 }
 
 #[derive(Parser, Debug)]
@@ -986,6 +1025,116 @@ fn dispatch(cli: Cli) -> Result<()> {
                 );
             }
             Ok(())
+        }
+        Some(Cmd::Bshrc(c)) => {
+            // 盘解析（C2 写语境三级薄函数）先行——错误面已带指路。
+            let disk = berry::bshrc::resolve_disk(c.disk.as_deref(), &c.profile)?;
+            let disk_arg = disk.display().to_string();
+            match c.action {
+                BshrcAction::Set(s) => {
+                    if s.pairs.is_empty() {
+                        return Err(BerryError::new(
+                            2,
+                            "bshrc set 须至少一对 KEY=VALUE".to_string(),
+                        ));
+                    }
+                    let mut pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(s.pairs.len());
+                    for p in &s.pairs {
+                        let (k, v) = match p.split_once('=') {
+                            Some((k, v)) => (k.as_bytes().to_vec(), v.as_bytes().to_vec()),
+                            None => {
+                                return Err(BerryError::new(
+                                    2,
+                                    format!("bshrc set 参数须 KEY=VALUE 形：{p:?}"),
+                                ));
+                            }
+                        };
+                        pairs.push((k, v));
+                    }
+                    let keys: Vec<String> = pairs
+                        .iter()
+                        .map(|(k, _)| String::from_utf8_lossy(k).into_owned())
+                        .collect();
+                    let out = berry::bshrc::set(&disk, &pairs)?;
+                    // human 形成功零 stdout（脚本面以 rc 判）；软警已在
+                    // 库内走 stderr。
+                    if cli.json {
+                        println!(
+                            "{}",
+                            serde_json::json!({"v": 1, "t": "bshrc.set", "path": disk_arg,
+                                "keys": keys, "bytes": out.bytes, "clusters": out.clusters})
+                        );
+                    }
+                    Ok(())
+                }
+                BshrcAction::Get(g) => {
+                    let key = g.key.as_bytes().to_vec();
+                    match berry::bshrc::get(&disk, &key)? {
+                        Some(v) => {
+                            let value = String::from_utf8_lossy(&v).into_owned();
+                            if cli.json {
+                                println!(
+                                    "{}",
+                                    serde_json::json!({"v": 1, "t": "bshrc.get",
+                                        "key": g.key, "value": value})
+                                );
+                            } else {
+                                println!("{value}"); // 裸值（脚本友好）
+                            }
+                            Ok(())
+                        }
+                        None => Err(BerryError::env(format!(
+                            "bshrc: 键 {} 缺席（BSHRC.CFG 无此键）",
+                            g.key
+                        ))
+                        .with_hint("berry bshrc list 查看在库键")),
+                    }
+                }
+                BshrcAction::List => {
+                    let entries = berry::bshrc::list(&disk)?;
+                    if cli.json {
+                        println!(
+                            "{}",
+                            serde_json::json!({"v": 1, "t": "bshrc.list", "path": disk_arg,
+                                "entries": entries.iter().map(|(k, v)| serde_json::json!({
+                                    "key": String::from_utf8_lossy(k),
+                                    "value": String::from_utf8_lossy(v),
+                                })).collect::<Vec<_>>()})
+                        );
+                    } else {
+                        // KEY=VALUE 行——与文件形一致（脚本友好）。
+                        for (k, v) in &entries {
+                            println!(
+                                "{}={}",
+                                String::from_utf8_lossy(k),
+                                String::from_utf8_lossy(v)
+                            );
+                        }
+                    }
+                    Ok(())
+                }
+                BshrcAction::Rm(r) => {
+                    let key = r.key.as_bytes().to_vec();
+                    match berry::bshrc::rm(&disk, &key)? {
+                        Some(out) => {
+                            if cli.json {
+                                println!(
+                                    "{}",
+                                    serde_json::json!({"v": 1, "t": "bshrc.rm",
+                                        "path": disk_arg, "key": r.key,
+                                        "bytes": out.bytes, "clusters": out.clusters})
+                                );
+                            }
+                            Ok(())
+                        }
+                        None => Err(BerryError::env(format!(
+                            "bshrc: 键 {} 缺席（BSHRC.CFG 无此键）",
+                            r.key
+                        ))
+                        .with_hint("berry bshrc list 查看在库键")),
+                    }
+                }
+            }
         }
         Some(Cmd::Version) => {
             commands::version(cli.json);
