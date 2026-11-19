@@ -35,4 +35,4 @@ Updated: 2026-11-20
 - 第 0 步单源：[17-回流第0步实施化-F0-1与F0-2复活随刀diff草案-事故族第三面F0-1arch同点回退.md](17-回流第0步实施化-F0-1与F0-2复活随刀diff草案-事故族第三面F0-1arch同点回退.md)——七点草案不扩点；本面复活义务挂在六步总序各整取步的随刀面（第 1 步 vmar.rs/aspace/dpg 随刀、第 4 步 ktest 随刀、vmo.rs F0-3 面随刀）。
 - 恒等区旁证：[16-try_alloc_asid两形语义对拍-ASID恒等区与destroy路径语义差定谳-Q110游标面消亡清单件.md](16-try_alloc_asid两形语义对拍-ASID恒等区与destroy路径语义差定谳-Q110游标面消亡清单件.md)（aspace 两形恒等）与本件六供体文件零 diff 同法——回流取形无三方分歧时操作等价。
 - 证据可复现：回退笔判据 = `git show 7f05be12e~1:kernel/src/mm.rs | grep -c with_frames` = 3 vs `git show 7f05be12e:kernel/src/mm.rs` 同口径 = 0；vmoledger new_contiguous 同笔 4→0；`-S` 全区间零命中；owner 蔓延笔 = d25c75876 两亲 b3a200533（活）×27b35c111（死）取死。
-- 沿革：`docs/阶段沿革.md` 六百二十一节（随本批）。
+- 沿革：`docs/阶段沿革.md` 六百二十二节（随本批）。
