@@ -3514,10 +3514,15 @@ fn test_vmo() {
     assert_eq!(v, MAGIC, "VMO：子映射经共享表根可读（同 PA 双 VA 别名）");
 
     // E2. 跨 2MiB 段边界映射（W3-Q110 L3 游标钉板）：三页区间
-    // [0x3F_F000, 0x42_F000) 骑跨 0x40_0000 边界——页 0 落段 1 尾槽 511、
+    // [0x3F_F000, 0x40_2000) 骑跨 0x40_0000 边界——页 0 落段 1 尾槽 511、
     // 页 1/2 落段 2 首槽 0/1。游标化 map/clear_leaves/protect 的段界推进
     // （seg_pages 以段尾为界 + 跨段重走查）由本例钉死；读写/protect/unmap
     // 三面均验。
+    // 主线解堵刀（2026-11-19）+根因：本例原把第三页 VA 写成 0x41_0000——
+    // 十六进制数位进位错（0x40_0000+0x1000=0x40_1000，非 0x41_0000——后者
+    // 在段 2 槽 16，区间外 15 页），裸 read 无期望故障包裹 → L3 平移故障
+    // （ISS=0x7）硬崩。表实测（走查 dump）：map 已正确填段 1 槽 511 + 段 2
+    // 槽 0/1，槽 16 恒 0——vmar 游标无辜，纯测试 VA 算错。
     let mut vmo3 = Vmo::create(PAGE_SIZE * 3).expect("VMO：跨段 VMO create");
     vmo3.commit(fa, 0, PAGE_SIZE * 3).expect("VMO：跨段 commit");
     const M2_0: u64 = 0x0BAD_0000_C0DE_0001;
@@ -3540,14 +3545,14 @@ fn test_vmo() {
         "VMO：跨段读段 2 首槽 0"
     );
     assert_eq!(
-        unsafe { core::ptr::read_volatile(0x41_0000 as *const u64) },
+        unsafe { core::ptr::read_volatile(0x40_1000 as *const u64) },
         M2_2,
         "VMO：跨段读段 2 槽 1"
     );
     // protect 跨段降权（Ro）→ 写必 fault；提回 Rw → 写通。
     root.protect(0x3F_F000, PAGE_SIZE * 3, Perm::Ro)
         .expect("VMO：跨段 protect→RO");
-    for va in [0x3F_F000usize, 0x40_0000, 0x41_0000] {
+    for va in [0x3F_F000usize, 0x40_0000, 0x40_1000] {
         hal::trap::arm_expected_fault(va);
         // SAFETY: 预期 Permission fault（期望故障槽已 arm）。
         unsafe { core::ptr::write_volatile(va as *mut u64, 0) };
@@ -3561,7 +3566,7 @@ fn test_vmo() {
     assert_eq!(u64::from_le_bytes(buf), MAGIC2, "VMO：跨段 VA 写→VMO 读一致");
     // unmap 跨段清叶 → 读必 fault（三页跨两段全清）。
     root.unmap(0x3F_F000, PAGE_SIZE * 3).expect("VMO：跨段 unmap");
-    for va in [0x3F_F000usize, 0x40_0000, 0x41_0000] {
+    for va in [0x3F_F000usize, 0x40_0000, 0x40_1000] {
         hal::trap::arm_expected_fault(va);
         // SAFETY: 预期同步异常（期望故障槽已 arm）。
         let _ = unsafe { core::ptr::read_volatile(va as *const u64) };
@@ -3574,27 +3579,27 @@ fn test_vmo() {
     // `allocated_pages` 口径）钉「10240 页全出全还、零泄漏」。40MB+ blob
     // 装载面的前置证据（`docs/容量工程前置-A1设计草案-v1.0.md` §2 关键洞察 / §4 A1-2）。
     //
-    // 对账须计**页记帐双 Vec**（`Vmo::create` 经堆整页路径入账——heap.rs
-    // >2048B → `order_for` 取 `2^order >= npages` 最小阶）：`pages:
-    // Vec<Option<usize>>` 16B/页 → 160KiB → order 6 = 64 页；`mapcnt:
-    // Vec<u16>` 2B/页 → 20KiB → order 3 = 8 页——合计 72 页伴随 VMO 存活，
-    // drop 才归还（首跑实测 +72 实抓，与逐项算术逐页吻合）。
+    // 对账须计**页记帐单 Vec**（`Vmo::create` 经堆整页路径入账——heap.rs
+    // >2048B → `order_for` 取 `2^order >= npages` 最小阶）：W3-Q109 打包
+    // （52a4ba156）后 `PageLedger` 只剩 `slots: Vec<u64>` 8B/页——旧双
+    // Vec（16B+2B）已并一，8B×10240 = 80KiB → 20 页 → order 5 = 32 页
+    // 伴随 VMO 存活，drop 才归还。旧公式按双 Vec 算 72 页，打包刀漏改本
+    // 期望 → 期望过时非回归——主线解堵刀（2026-11-19）随打包面翻新。
     const CAP40: usize = 40 * 1024 * 1024;
     let np40 = CAP40 / PAGE_SIZE;
-    let ledger = (16 * np40).div_ceil(PAGE_SIZE).next_power_of_two()
-        + (2 * np40).div_ceil(PAGE_SIZE).next_power_of_two();
+    let ledger = (8 * np40).div_ceil(PAGE_SIZE).next_power_of_two();
     let a0 = fa.allocated_pages();
     let mut big = Vmo::create(CAP40).expect("VMO：40MiB create（128MiB 帽内）");
     assert_eq!(
         fa.allocated_pages(),
         a0 + ledger,
-        "VMO：create 记帐双 Vec 入账（order 取整 72 页）"
+        "VMO：create 记帐单 Vec 入账（order 取整 32 页）"
     );
     big.commit(fa, 0, CAP40).expect("VMO：40MiB 全量 commit（10240 页逐页）");
     assert_eq!(
         fa.allocated_pages(),
         a0 + ledger + np40,
-        "VMO：commit 帧账本精确 +10240（另记帐 72 伴随存活）"
+        "VMO：commit 帧账本精确 +10240（另记帐 32 伴随存活）"
     );
     big.write(0, &MAGIC.to_le_bytes()).expect("VMO：首页 write");
     let off_last = CAP40 - 8;
@@ -3608,13 +3613,13 @@ fn test_vmo() {
     assert_eq!(
         fa.allocated_pages(),
         a0 + ledger,
-        "VMO：decommit 后 10240 帧全还（记帐双 Vec 随 VMO 存活）"
+        "VMO：decommit 后 10240 帧全还（记帐单 Vec 随 VMO 存活）"
     );
     drop(big);
     assert_eq!(
         fa.allocated_pages(),
         a0,
-        "VMO：drop 后帧账本精确归位（零泄漏——记帐双 Vec 一并归还）"
+        "VMO：drop 后帧账本精确归位（零泄漏——记帐单 Vec 一并归还）"
     );
 
     // 收尾：回内核空表（与 idle/无 AS 任务的 ttbr0=0 状态对齐）。
@@ -6337,7 +6342,8 @@ fn test_telemetry_open() {
     // 现建现验不留柄先例）——建+commit → decommit → drop，每相后 svc4 快照
     // 对拍，末态==初态五域全等（写点净零检测，不依赖 eager/demand 语义
     // 假定）。±1 恰形依据（本路径实测语义）：1 页 VMO 生命周期的堆面 =
-    // 记账双 Vec（16B/8B slab 槽）＋ decommit 瞬态 Vec，slab 页不还 buddy
+    // 记账单 Vec（8B slab 槽；W3-Q109 打包 52a4ba156 后旧双 Vec 16B/8B 槽
+    // 已并一——预热臂同形跑法不变）＋ decommit 瞬态 Vec，slab 页不还 buddy
     //（G0）——先走一遍同形预热臂把所用槽坐进 freelist，此后三相堆分配全
     // freelist 命中、零 buddy 取帧副作用（IRQ 热路径零分配＋单核静止窗），
     // alloc/committed 差分恰 ±1。
