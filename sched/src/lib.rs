@@ -36,7 +36,7 @@ pub use band::{
     state, throttle_all, unthrottle_all, BandBudget, BAND_SLOTS,
 };
 pub use class::{
-    class_fair_intent, class_of_task, Fair, FairBand, RoundRobin, SchedClass, TaskClass,
+    class_fair_intent, class_of_task, dl_grant, Fair, FairBand, RoundRobin, SchedClass, TaskClass,
     PRIO_DEADLINE,
 };
 pub use em::{
