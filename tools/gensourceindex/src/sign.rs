@@ -182,8 +182,13 @@ pub fn verify_index_signature(raw: &[u8], source_pk: &[u8], src_sig: &[u8]) -> O
     }
 }
 
-/// 测试/签名面共用临时目录（Python `tempfile.TemporaryDirectory(prefix=)`
-/// 同形；调用方负责 remove_dir_all）。
+
+/// 临时目录（gen.rs harden 面复用——Python tempfile 同位纪律；调用方
+/// 负责 remove_dir_all）。
+pub fn tempdir_pub(prefix: &str) -> PathBuf {
+    tempdir_create(prefix)
+}
+
 fn tempdir_create(prefix: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "{prefix}-{}-{}",
