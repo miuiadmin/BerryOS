@@ -6630,16 +6630,17 @@ fn test_telemetry_open() {
             assert_eq!(b[o + 16], want.kind);
         }
 
-        // K3 负例：op=2 len 冻结下限门（len<32 → -EINVAL）＋op=3 域外恒
-        // -ENOTSUP（add-only 自执法；既有 op=99 与 op=0/1 族负例零改）。
+        // K3 负例：op=2 len 冻结下限门（len<32 → -EINVAL）＋op=4 域外恒
+        // -ENOTSUP（add-only 自执法——op=3 已翻真返数据，域外负例迁下一值；
+        // 既有 op=99 与 op=0/1 族负例零改零漂移）。
         assert_eq!(snap_rings(0), -22, "TELEMETRY：op=2 len=0 须 -EINVAL");
         assert_eq!(snap_rings(8), -22, "TELEMETRY：op=2 len=8（<32）须 -EINVAL");
         assert_eq!(snap_rings(31), -22, "TELEMETRY：op=2 len=31（头下限−1）须 -EINVAL");
         assert_eq!(
             // RSNAP 私有静态（ktest 单核窗）——SNAP 负例同形零 unsafe 块。
-            svc4(0x84, 3, &raw mut RSNAP as u64, 7296),
+            svc4(0x84, 4, &raw mut RSNAP as u64, 7296),
             -95,
-            "TELEMETRY：op=3 域外须 -ENOTSUP"
+            "TELEMETRY：op=4 域外须 -ENOTSUP"
         );
 
         // K4 用毕即清：四环归零 → 快照恰 128（头＋四空段描述符）且段
@@ -6655,6 +6656,271 @@ fn test_telemetry_open() {
         assert_eq!(segs.map(|s| s.rec_size), [24, 24, 32, 32], "TELEMETRY：清零后 rec_size 仍自述");
         assert_eq!(crate::telemetry::total(), 0, "TELEMETRY：清零后 total()==0（G1.5 off 臂真空基线恢复）");
         assert_eq!(crate::telemetry::wake_total(), 0, "TELEMETRY：清零后 wake_total()==0");
+    }
+
+    // ---- op=3 WakeSrc 槽表纯镜像（槽表读口刀）臂：K1 满表 pristine 钉板＋
+    // K2 保留段播种字节级对拍＋len 因果阶梯＋K4 用毕即清（K3 域外负例已随
+    // add-only 滚 op=4——见上；同函数静默盖延续——零输出行，fail = panic
+    // 停机冒烟自然红）----
+    //
+    // 静止窗双证（树实证 main.rs）：ktest::run（:1007）先于
+    // berry_sched::init（:1128）与 telemetry::init（:1140）——on_wake 钩子
+    // 未注册（wakes 族全槽恒 0）＋:1127「IRQ 此刻仍屏蔽（boot DAIF）」到达
+    // 族写点结构性不可达；merge_hal 在 G1.5 尾（后于 ktest）⇒ 窗内表结构
+    // 性近 pristine。断言面不押纯度前提（防御纵深）：120 结构性不可达槽全
+    // 字段 pristine 钉板（写点全枚举执法的运行期版——对任何前提鲁棒）＋
+    // 全 128 槽 wakes==0 结构断言；TIMER/UART/PWRKEY 三可达槽 irq_count 不
+    // 断言绝对值（噪声免疫层）。播种槽取保留段 0x40/0x41（任何运行期路径
+    // 结构性不可达——对静止窗纯度与 IRQ 噪声双免疫；种子不触 8 可达槽）。
+    {
+        use core::sync::atomic::Ordering;
+
+        // 快照缓冲（EL1 内核地址——copy_out 走高半直映分支；满载 8232B 走
+        // static 免栈帽，RSNAP 同款块私有静态）。
+        static mut WSNAP: [u8; 8232] = [0; 8232];
+
+        // svc4 全链取一帧槽表快照（len 门由内核执法——负例直接透传 errno）。
+        fn snap_wsrc(len: u64) -> i64 {
+            // WSNAP 为本块私有静态（ktest 单核窗）；len 走调用点字面
+            //（static mut 字段读不进安全面）——snap_rings 同形零 unsafe 块。
+            svc4(0x84, 3, &raw mut WSNAP as u64, len)
+        }
+
+        // 快照字节共享读（调用点先以断言钉 n 界——rbuf 同形）。
+        fn wbuf(n: usize) -> &'static [u8] {
+            // SAFETY: n 由调用点断言钉 ≤ 8232 实写界；仅共享读（svc 同步
+            // 返回后无并发写者——静止窗）。
+            unsafe {
+                &*core::ptr::slice_from_raw_parts(
+                    core::ptr::addr_of!(WSNAP) as *const u8,
+                    n,
+                )
+            }
+        }
+
+        // 头/行解码（telface 编解码纯函数单源——svc 出参按字节流解，不对
+        // 静态缓冲 reinterpret 对齐面；seg_at 同款）。
+        fn whdr(b: &[u8]) -> berry_telface::WsrcHdrV1 {
+            let mut d = [0u8; 40];
+            d.copy_from_slice(&b[..40]);
+            berry_telface::wsrc_hdr_read(&d)
+        }
+        fn wrow(b: &[u8], i: usize) -> berry_telface::WakeSrcRecV1 {
+            let mut d = [0u8; 64];
+            d.copy_from_slice(&b[40 + i * 64..40 + (i + 1) * 64]);
+            berry_telface::wsrc_row_read(&d)
+        }
+
+        // pristine 谱（WakeSrcRec::new() 初值的平镜像——十字段全含，行级
+        // 相等即全字段全字节钉板）。
+        const PRISTINE: berry_telface::WakeSrcRecV1 = berry_telface::WakeSrcRecV1 {
+            wakes: 0,
+            irq_count: 0,
+            no_waiter: 0,
+            first_ts: u64::MAX,
+            last_ts: 0,
+            last_ack_ts: 0,
+            last_woken_id: 0,
+            flags: 0,
+            ts_domain: 0,
+            _pad: [0; 5],
+        };
+
+        // K1 满表 pristine 钉板：满取恰 8232；头七域钉板（cntfrq/acct_n
+        // 双源对拍 EL1 直调、acct_n==0、now_vct 单调 sane）；120 不可达槽
+        //（0x00 哨兵＋0x08-0x7E 预留段）全字段 pristine 谱＋全 128 槽
+        // wakes==0＋Σ==acct_n==0（守恒镜像）。
+        let n = snap_wsrc(8232);
+        assert_eq!(n, 8232, "TELEMETRY：op=3 满取须恰 8232（n={}）", n);
+        let b = wbuf(8232);
+        let h = whdr(b);
+        assert_eq!(h.version, 1, "TELEMETRY：wsrc 头 version==1");
+        assert_eq!(h.hdr_bytes, 40, "TELEMETRY：wsrc 头 hdr_bytes==40（头尾追扩形锚）");
+        assert_eq!(h.slots, 128, "TELEMETRY：wsrc 头 slots==128");
+        assert_eq!(h.rec_size, 64, "TELEMETRY：wsrc 头 rec_size==64（条目步进自述）");
+        assert!(h.cntfrq > 0, "TELEMETRY：wsrc 头 cntfrq 须 >0");
+        assert_eq!(
+            h.cntfrq, berry_hal_aarch64::timer::cntfrq(),
+            "TELEMETRY：wsrc cntfrq 双源对拍（svc 出参 == EL1 直调）"
+        );
+        assert_eq!(
+            h.wake_acct_n, crate::telemetry::wake_acct_n(),
+            "TELEMETRY：wsrc acct_n 双源对拍（svc 出参 == EL1 直调）"
+        );
+        assert_eq!(h.wake_acct_n, 0, "TELEMETRY：wsrc acct_n==0（on_wake 钩子未注册窗）");
+        assert!(
+            h.now_vct > 0 && h.now_vct <= berry_hal_aarch64::timer::cntvct(),
+            "TELEMETRY：wsrc now_vct 单调 sane（快照时刻 ≤ 断言时刻——CNTVCT 单调律）"
+        );
+        let mut sum = 0u64;
+        for i in 0..128usize {
+            let r = wrow(b, i);
+            assert_eq!(r.wakes, 0, "TELEMETRY：全 128 槽 wakes==0（钩子未注册——i={i}）");
+            if i == 0x00 || (0x08..=0x7E).contains(&i) {
+                assert_eq!(r, PRISTINE, "TELEMETRY：不可达槽 {i:#04x} 须全字段 pristine 谱");
+            }
+            sum += r.wakes;
+        }
+        assert_eq!(sum, h.wake_acct_n, "TELEMETRY：Σ行wakes==acct_n==0（守恒镜像）");
+
+        // K2 播种对拍：保留段不可达槽 0x40/0x41 直原子 store 播种
+        //（WAKE_SRC_TABLE pub static 字段全 pub——零新口）＋
+        // ktest_wake_acct_set(5) 使 Σ==N 守恒镜像可断言（WAKE_ACCT_N 私有
+        // 故立助手口）。
+        {
+            let t = &crate::telemetry::WAKE_SRC_TABLE[0x40];
+            t.wakes.store(5, Ordering::Relaxed);
+            t.irq_count.store(9, Ordering::Relaxed);
+            t.no_waiter.store(3, Ordering::Relaxed);
+            t.first_ts.store(1_000, Ordering::Relaxed);
+            t.last_ts.store(2_000, Ordering::Relaxed);
+            t.last_ack_ts.store(1_900, Ordering::Relaxed);
+            t.last_woken_id.store(0xDEAD_BEEF, Ordering::Relaxed);
+            t.flags.store(crate::telemetry::WSRC_F_IRQ_LINE, Ordering::Relaxed);
+        }
+        // 0x41 irq-only 形：仅到达计数（irq-only 哨兵语义钉板——first_ts
+        // 不动==u64::MAX，merge_hal 三槽/POWER_KEY 到达面同形）。
+        crate::telemetry::WAKE_SRC_TABLE[0x41]
+            .irq_count
+            .store(4, Ordering::Relaxed);
+        crate::telemetry::ktest_wake_acct_set(5);
+
+        let n = snap_wsrc(8232);
+        assert_eq!(n, 8232, "TELEMETRY：播种后满取须仍恰 8232（n={}）", n);
+        let b = wbuf(8232);
+        let h = whdr(b);
+        assert_eq!(h.wake_acct_n, 5, "TELEMETRY：播种后头 acct_n==5");
+        // 真 CNTVCT 对种子值结构性优势（now_vct 行读毕后取 ⇒ ≥ 任一行内
+        // 时戳——种子 last_ts=2000 的装配序钉板）。
+        assert!(h.now_vct > 2_000, "TELEMETRY：now_vct 须 > 种子 last_ts 2000（头锚≥行时戳）");
+        // 0x40 全谱 LE 解码逐字段恒等（种子→镜像零转换损失）。
+        let r = wrow(b, 0x40);
+        assert_eq!(r.wakes, 5, "TELEMETRY：0x40 wakes 对拍");
+        assert_eq!(r.irq_count, 9, "TELEMETRY：0x40 irq_count 对拍");
+        assert_eq!(r.no_waiter, 3, "TELEMETRY：0x40 no_waiter 对拍");
+        assert_eq!(r.first_ts, 1_000, "TELEMETRY：0x40 first_ts 对拍");
+        assert_eq!(r.last_ts, 2_000, "TELEMETRY：0x40 last_ts 对拍");
+        assert_eq!(r.last_ack_ts, 1_900, "TELEMETRY：0x40 last_ack_ts 对拍");
+        assert_eq!(r.last_woken_id, 0xDEAD_BEEF, "TELEMETRY：0x40 last_woken_id 对拍");
+        assert_eq!(
+            r.flags, crate::telemetry::WSRC_F_IRQ_LINE,
+            "TELEMETRY：0x40 flags 对拍（分类位）"
+        );
+        assert_eq!(r.ts_domain, 0, "TELEMETRY：0x40 ts_domain 冻结 0 镜像");
+        assert_eq!(r._pad, [0u8; 5], "TELEMETRY：0x40 垫区写零");
+        // 0x41 irq-only 逐字段。
+        let r = wrow(b, 0x41);
+        assert_eq!(r.irq_count, 4, "TELEMETRY：0x41 irq_count 对拍（irq-only）");
+        assert_eq!(
+            r.first_ts, u64::MAX,
+            "TELEMETRY：0x41 first_ts 哨兵不动（irq-only 语义钉板）"
+        );
+        assert_eq!(
+            (r.wakes, r.no_waiter, r.last_ts, r.last_ack_ts, r.last_woken_id, r.flags, r.ts_domain, r._pad),
+            (0, 0, 0, 0, 0, 0, 0, [0u8; 5]),
+            "TELEMETRY：0x41 余字段须 pristine（irq-only 最小形）"
+        );
+        // 126 行仍 pristine＋Σ==5（守恒镜像）。
+        let mut sum = 0u64;
+        for i in 0..128usize {
+            let r = wrow(b, i);
+            if i != 0x40 && i != 0x41 {
+                assert_eq!(r, PRISTINE, "TELEMETRY：播种后非种子槽 {i:#04x} 仍 pristine");
+            }
+            sum += r.wakes;
+        }
+        assert_eq!(sum, 5, "TELEMETRY：Σ行wakes==5==acct_n（守恒镜像）");
+
+        // K2 重播（单调差分面钉板）：0x40 wakes fetch_add(5)＋N set(10) →
+        // 再满取 row wakes==10、其余行与上帧同谱（两帧全字段全字节各自钉板
+        // ⇒ 逐字节恒等——行区唯一写者是种子本身，帧间零漂；头 now_vct 是
+        // 逐次快照时钟锚〔G6〕天然前进，不进帧间恒等面）。
+        crate::telemetry::WAKE_SRC_TABLE[0x40]
+            .wakes
+            .fetch_add(5, Ordering::Relaxed);
+        crate::telemetry::ktest_wake_acct_set(10);
+        let n = snap_wsrc(8232);
+        assert_eq!(n, 8232, "TELEMETRY：重播后满取须仍恰 8232（n={}）", n);
+        let b = wbuf(8232);
+        let h = whdr(b);
+        assert_eq!(h.wake_acct_n, 10, "TELEMETRY：重播后头 acct_n==10");
+        let r = wrow(b, 0x40);
+        assert_eq!(r.wakes, 10, "TELEMETRY：重播后 0x40 wakes==10（单调族差分）");
+        assert_eq!(
+            (r.irq_count, r.no_waiter, r.first_ts, r.last_ts, r.last_ack_ts, r.last_woken_id, r.flags, r.ts_domain, r._pad),
+            (9, 3, 1_000, 2_000, 1_900, 0xDEAD_BEEF, crate::telemetry::WSRC_F_IRQ_LINE, 0, [0u8; 5]),
+            "TELEMETRY：重播后 0x40 余字段逐字节恒等"
+        );
+        for i in 0..128usize {
+            if i == 0x40 {
+                continue;
+            }
+            if i == 0x41 {
+                let r41 = wrow(b, i);
+                assert_eq!(r41.irq_count, 4, "TELEMETRY：重播后 0x41 irq-only 形恒等");
+                assert_eq!(r41.first_ts, u64::MAX, "TELEMETRY：重播后 0x41 哨兵恒等");
+            } else {
+                assert_eq!(wrow(b, i), PRISTINE, "TELEMETRY：重播后非种子槽 {i:#04x} 恒等");
+            }
+        }
+
+        // K2 len 因果阶梯（N=10 态）：len<40 → -22；len=40 → 恰头单读探
+        // 几何；len=104 → 恰 row[0] 全字段落位；len=360 → 返 360 且为满载
+        // 结果前缀逐字节恒等（唯一例外：头 now_vct@24..32 是逐次快照时钟
+        // 锚〔G6——行读毕后取〕跨调用恒前进，排除该 8 字节、其余全段逐
+        // 字节恒等——前缀律的确定性面）；len=8231 → 返 8168
+        //（(8231−40)/64=127 整行截尾钉板——返回值自证）。
+        assert_eq!(snap_wsrc(0), -22, "TELEMETRY：op=3 len=0 须 -EINVAL");
+        assert_eq!(snap_wsrc(8), -22, "TELEMETRY：op=3 len=8（<40）须 -EINVAL");
+        assert_eq!(snap_wsrc(39), -22, "TELEMETRY：op=3 len=39（头下限−1）须 -EINVAL");
+        // 满载帧前缀样本（360B 栈拷——上帧 b 的前 360B）。
+        let mut pref = [0u8; 360];
+        pref.copy_from_slice(&b[..360]);
+        let n = snap_wsrc(40);
+        assert_eq!(n, 40, "TELEMETRY：len=40 单读头探几何（恰头零行）");
+        let h = whdr(wbuf(40));
+        assert_eq!(h.version, 1, "TELEMETRY：len=40 头 version==1 照出");
+        assert_eq!(h.slots, 128, "TELEMETRY：len=40 头 slots==128 照出");
+        assert_eq!(h.rec_size, 64, "TELEMETRY：len=40 头 rec_size==64 照出");
+        assert_eq!(h.wake_acct_n, 10, "TELEMETRY：len=40 头 acct_n==10 照出");
+        let n = snap_wsrc(104);
+        assert_eq!(n, 104, "TELEMETRY：len=104 须返 104（头+单行）");
+        assert_eq!(
+            wrow(wbuf(104), 0),
+            PRISTINE,
+            "TELEMETRY：len=104 恰 row[0] 全字段落位（0x00 哨兵槽 pristine）"
+        );
+        let n = snap_wsrc(360);
+        assert_eq!(n, 360, "TELEMETRY：len=360 须返 360（头+5 整行）");
+        let b360 = wbuf(360);
+        assert_eq!(
+            &b360[..24], &pref[..24],
+            "TELEMETRY：len=360 前缀恒等（version..rec_size 域）"
+        );
+        assert_eq!(
+            &b360[32..360], &pref[32..360],
+            "TELEMETRY：len=360 前缀恒等（acct_n 域＋五整行——now_vct@24..32 逐次时钟锚除外）"
+        );
+        let n = snap_wsrc(8231);
+        assert_eq!(n, 8168, "TELEMETRY：len=8231 须返 8168（(8231−40)/64=127 整行截尾）");
+
+        // K4 用毕即清：ktest_reset_wsrc → 再满取 128 行全 pristine 谱＋头
+        // acct_n==0＋wake_acct_conserved 真（Σ==N==0 复原）——封堵种子对
+        // G1.5 双形态断言面（user.rs WAKESRC）与 WSRC-K（下文）的污染；
+        // 清零后 boot 真数据从初值累计，语义零漂移。
+        crate::telemetry::ktest_reset_wsrc();
+        let n = snap_wsrc(8232);
+        assert_eq!(n, 8232, "TELEMETRY：清零后满取须仍恰 8232（n={}）", n);
+        let b = wbuf(8232);
+        let h = whdr(b);
+        assert_eq!(h.wake_acct_n, 0, "TELEMETRY：清零后头 acct_n==0");
+        for i in 0..128usize {
+            assert_eq!(wrow(b, i), PRISTINE, "TELEMETRY：清零后槽 {i:#04x} 全字段 pristine 谱");
+        }
+        assert!(
+            crate::telemetry::wake_acct_conserved(),
+            "TELEMETRY：清零后守恒检查真（Σ==N==0 复原——G1.5 断言面零污染）"
+        );
     }
 }
 

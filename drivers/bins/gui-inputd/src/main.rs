@@ -34,6 +34,12 @@
 //! drain 者，旁注非第二消费、不进 wire）。==0（rootfs 相 wmd 未起）时
 //! 两路面/旁注/步进睡改形全门控——单通道现行为逐字节保留（46 标记面
 //! 零漂移的构造保证）。
+//!
+//! **wmd 停摆刀 I3（联动小修）**：在途 WAIT 悬挂（>15s 无应答）强制清
+//! 位重发一次 WAIT(0)（每悬挂段单发帽）——修「wmd 死于 WAIT 在途 ⇒ 探
+//! 测门永闭 ⇒ 重探测零发」实锤弱点；重臂侧同版本不重臂 = 自持回声环
+//! 截断（wmd 侧位移应答链点燃防御）。详注 `wm_probe_if_degraded` /
+//! `wm_on_reply`。
 
 // host 兜底 main：host `cargo test` 连带构建 bin target 时 guest 面整体
 // 缺席（berry-libc 按目标门控——见 Cargo.toml 注），空壳防符号插入劫
@@ -96,6 +102,12 @@ mod guest {
     /// GUI-5：wmd 推送快照超龄帽（Q11-②——age 超此值视同缺席，旁注降级
     /// 记账不命中；③降级态每帽值一跳重发 WAIT(0) 重探测）。
     const SNAPSHOT_STALE_CAP_NS: u64 = 10_000_000_000;
+    /// 在途 WAIT 悬挂判据（wmd 停摆刀 I3）：发送起超此龄仍无应答 = 疑似
+    /// 悬挂（wmd 死于 WAIT 在途 / 应答被丢）——强制清 outstanding 重发
+    /// 一次 WAIT(0)，修「门永闭 ⇒ 重探测零发」。取 15s = 超龄帽 10s +
+    /// 裕量：健康稳态（表安静、唯一 WAIT park 在 wmd 席上）在途超 10s
+    /// 属正常，裕量把强制重发压到「快照已判降级之后」才可能触发。
+    const WAIT_HUNG_CAP_NS: u64 = 15_000_000_000;
     /// 屏幕几何兜底：泵构造先于首张 wmd 快照时的 800×600 初值；快照
     /// 到达即经 `PointerPump::set_geom` 换真显示域（Q15）。快照缺席/畸形
     /// 的降级态保留初值，事件坐标按兜底域归一。
@@ -727,8 +739,17 @@ mod guest {
         /// WAIT 在途位（guiproto 头注「每域严格串行 RPC、队列深 1」的
         /// 发送侧执法）：send 置位、应答到达清位；探测重发（Q11-③）在位
         /// 期间禁发——防「park 中 WAIT + 探测 WAIT(0)」双在途触发 wmd
-        /// parked 单车位位移应答（R2 备注⑦ 现答现快照）联锁的自持回声环。
+        /// parked 单车位位移应答（R2 备注⑦ 现答现快照）联锁的自持回声
+        /// 环（在途悬挂超 [`WAIT_HUNG_CAP_NS`] 的强制重发例外见
+        /// `wm_probe_if_degraded`；重臂侧配对截断见 `wm_on_reply`）。
         outstanding: bool,
+        /// 当前在途 WAIT 的发送时刻（I3 悬挂判据——`outstanding` 的龄；
+        /// `wm_send_wait` 打点）。
+        wait_ns: u64,
+        /// 悬挂强制重发单发帽（I3）：本悬挂段（上次应答以来）已强制过 =
+        /// true；任一应答到达（悬挂段终）回充 false——在途悬挂期间至多
+        /// 强发一次，不对死通道连发。
+        forced_sent: bool,
         /// 首快照诊断行已打（防逐快照刷屏——推送相 smoke 覆盖 = 零，行只
         /// 在手跑/联调面可见）。
         logged: bool,
@@ -751,6 +772,8 @@ mod guest {
         born_ns: 0,
         probe_ns: 0,
         outstanding: false,
+        wait_ns: 0,
+        forced_sent: false,
         logged: false,
         degraded: false,
         lock: None,
@@ -832,26 +855,41 @@ mod guest {
 
     /// WAIT 重臂发送（EBUSY → WRITABLE 10s 重臂重验——`send_rep` 同形；
     /// 其余错 = push 链 syscall 面断 loud）。发送即记在途位——应答到达前
-    /// 本端禁再发（深 1 的发送侧执法，见 `WmCache::outstanding`）。
+    /// 本端禁再发（深 1 的发送侧执法，见 `WmCache::outstanding`）；并打
+    /// 点在途龄（I3 悬挂判据，见 `WmCache::wait_ns`）。
     fn wm_send_wait(push: Handle, last_seen: u32) {
         // SAFETY: 单线程进程（serve/serve_poll 调用链内独占）。
         let c = unsafe { &mut *core::ptr::addr_of_mut!(WM_CACHE) };
         c.outstanding = true;
+        c.wait_ns = now();
         let mut req = [0u8; 8];
         let n = gp::encode_wm_table_wait_req(&mut req, last_seen);
         send_rep(push, &req[..n]);
     }
 
-    /// push 路应答消费：快照三态解析——`Some(Ok)` 存储 + age 打点 + 立刻
-    /// 重臂 WAIT(new_version)（表变更恰醒一次收一张，Q17）；`Some(Err)` /
-    /// `None`（1B 拒 / 畸形）= wmd 侧病——**降级记账不 trap**（失败隔离：
-    /// wmd 病不连坐输入服务；Q11-③ 每 10s WAIT(0) 重探测兜底闭环）。
+    /// push 路应答消费：快照三态解析——`Some(Ok)` 存储 + age 打点 + **版本
+    /// 推进才**立刻重臂 WAIT(new_version)（表变更恰醒一次收一张，Q17）；
+    /// `Some(Err)` / `None`（1B 拒 / 畸形）= wmd 侧病——**降级记账不
+    /// trap**（失败隔离：wmd 病不连坐输入服务；Q11-③ 每 10s WAIT(0)
+    /// 重探测兜底闭环）。
+    ///
+    /// I3 配对面（自持回声环截断）：**同版本应答不重臂**——探测/强制
+    /// WAIT(0) 在表安静时得到的现值应答（version == 本端已持）若照常
+    /// 重臂 WAIT(现版本)，会在 wmd 侧位移仍 park 在席的旧 WAIT（后到
+    /// 同版本 → 位移者现答现快照）→ 应答 → 再重臂 → 再位移……RTT 频
+    /// 自持回声环（静止桌面被点燃成常转 ping-pong）。版本不变 = 表安
+    /// 静，旧 parked 仍在 wmd 席上、表一变即由 bump 应答归位；本端转
+    /// 入 10s 探测保活（快照每拍刷新，旁注/粘滞锁保持可用）。同版本
+    /// 应答亦不清 `degraded`（防保活期超龄振荡逐拍重打 tally 行——
+    /// tally 迁沿记账单源收口在本函数：版本推进 = 推送链真恢复，清位）。
     fn wm_on_reply(push: Handle, buf: &[u8], pump: &mut PointerPump) {
         // SAFETY: 单线程进程（serve 调用链内独占）。
         let c = unsafe { &mut *core::ptr::addr_of_mut!(WM_CACHE) };
         // 应答到达 = 在途 WAIT 已消费（一请求一应答——1B 拒/畸形同面，
-        // 三态解析前先清位；Ok 路随重臂再置位）。
+        // 三态解析前先清位；Ok 路随重臂再置位）。任一应答同时回充悬挂
+        // 单发帽（I3——强制重发按悬挂段计，见 `WmCache::forced_sent`）。
         c.outstanding = false;
+        c.forced_sent = false;
         match gp::parse_wm_snapshot_rep(buf) {
             Some(Ok(snap)) if snap.disp_w == 0 || snap.disp_h == 0 => {
                 println!("gui-inputd: wm 快照显示域退化（{}x{}）", snap.disp_w, snap.disp_h);
@@ -870,11 +908,19 @@ mod guest {
                     w: u32::from(snap.disp_w),
                     h: u32::from(snap.disp_h),
                 });
+                // 版本推进才重臂/清降级（I3 回声环截断——见函数注）；
+                // 首快照（本端无持有）视同推进。
+                let advanced = match &c.snap {
+                    Some(old) => old.version != snap.version,
+                    None => true,
+                };
                 let v = snap.version;
                 c.snap = Some(snap);
                 c.born_ns = now();
-                c.degraded = false;
-                wm_send_wait(push, v);
+                if advanced {
+                    c.degraded = false;
+                    wm_send_wait(push, v);
+                }
             }
             Some(Err(st)) => {
                 println!("gui-inputd: wm wait rep st={}", st);
@@ -895,6 +941,16 @@ mod guest {
     /// 再位移」自持回声环；「send 入死通道无应答 = 惰性无害」面（Q11-③
     /// 括注）因无在途不受门控。fresh→degraded 迁沿打一行旁注 tally（有
     /// 旁注才打——wmd 崩溃/推送停滞的诊断面；冷启动缺席静默）。
+    ///
+    /// I3 悬挂强制重发（wmd 停摆刀）：在途超 [`WAIT_HUNG_CAP_NS`]（15s
+    /// = 超龄帽 + 裕量）视为悬挂（wmd 死于 WAIT 在途 / 应答被丢 ⇒ 门永
+    /// 闭 ⇒ 重探测零发）——强制清 outstanding 重发一次 WAIT(0)：wmd
+    /// 活则立即答现快照（版本推进即重归 park，安静表转 10s 探测保活），
+    /// 死则入死通道惰性无害 + 悬挂诊断行。回声环防线双保留：短龄在途
+    /// 照旧让位（上段门控）；强制重发带单发帽（`forced_sent`——本悬
+    /// 挂段至多 1 次，任一应答回充），且重臂侧同版本不重臂截断
+    /// （`wm_on_reply`）——强制 WAIT(0) 的现值应答若照常重臂，会在
+    /// wmd 侧位移仍在席的旧 WAIT 点燃回声环。
     fn wm_probe_if_degraded(push: Handle) {
         // SAFETY: 单线程进程（serve 调用链内独占）。
         let c = unsafe { &mut *core::ptr::addr_of_mut!(WM_CACHE) };
@@ -904,7 +960,9 @@ mod guest {
             None => true,
         };
         if !degraded {
-            c.degraded = false;
+            // tally 迁沿记账的清位单源在 `wm_on_reply`（版本推进才清
+            // ——I3：保活期同版本应答不清，防逐拍振荡刷 tally 行；本处
+            // 只按龄早退，不动记账）。
             return;
         }
         if !c.degraded && c.n_hit + c.n_stale + c.n_gone + c.n_miss > 0 {
@@ -915,7 +973,25 @@ mod guest {
         }
         c.degraded = true;
         if c.outstanding {
-            return; // 深 1 已被在途 WAIT 占用——探测让位（见函数注）
+            // 短龄在途让位（自持回声环防线——见函数注）。
+            if t.saturating_sub(c.wait_ns) <= WAIT_HUNG_CAP_NS {
+                return; // 深 1 已被在途 WAIT 占用——探测让位（见函数注）
+            }
+            if c.forced_sent {
+                return; // 本悬挂段已强制过——单发帽，不对死通道连发
+            }
+            // 在途悬挂（>15s 无应答）：强制清位重发一次 WAIT(0)——修
+            // 「wmd 死于 WAIT 在途 ⇒ 门永闭 ⇒ 重探测零发」。重臂侧配
+            // 对截断见 `wm_on_reply`（同版本不重臂——回声环防线）。
+            c.forced_sent = true;
+            c.outstanding = false;
+            println!(
+                "gui-inputd: wm WAIT 在途悬挂（{}s）——强制清位重发探测",
+                t.saturating_sub(c.wait_ns) / 1_000_000_000
+            );
+            c.probe_ns = t;
+            wm_send_wait(push, 0); // 置位 outstanding + 在途龄重起
+            return;
         }
         if t.saturating_sub(c.probe_ns) >= SNAPSHOT_STALE_CAP_NS {
             c.probe_ns = t;

@@ -1104,6 +1104,9 @@ test-host:
     # Rust↔Python 产物 sha256 恒等 + 摘要行全等 + --check 交叉复验 +
     # 拒面同文案）——产链现役件已切本 bin（build-user 四处打包位），
     # Python mkapp.py = 模块面 + oracle（--selftest 行同挂，语义钉板）。
+    # W1（同上六刀·--check）：tests/check_parity.rs——check_bap 五步
+    # Rust↔Python oracle 对拍（OK 行全等 + 拒面十族同 code）；CLI --check
+    # 臂实装（出口码同 Python），Python --check 仍为 CLI oracle 面。
     # W1 接线（SEC-02 A2 同款纪律）：berry_assemble 门禁自检——V13 组装器
     # （ADR #82「组装不 fork」product.toml 校验/dry-run 计划/装配反回滚门）
     # 落地时自称 51 腿绿但从未接线 test-host：有 selftest 零自动执法 =
