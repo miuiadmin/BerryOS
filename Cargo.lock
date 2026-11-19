@@ -7,10 +7,6 @@ name = "berry-aokface"
 version = "0.2.0"
 
 [[package]]
-name = "berry-asidface"
-version = "0.2.0"
-
-[[package]]
 name = "berry-balface"
 version = "0.2.0"
 
@@ -75,10 +71,8 @@ version = "0.2.0"
 name = "berry-hal-aarch64"
 version = "0.2.0"
 dependencies = [
- "berry-asidface",
  "berry-fwcfgface",
  "berry-lkface",
- "berry-memface",
  "berry-numface",
  "berry-psface",
  "berry-svcface",
@@ -145,6 +139,7 @@ dependencies = [
  "berry-sched",
  "berry-susface",
  "berry-telface",
+ "berry-vdsoface",
  "berry-vmoledger",
  "berry-vslotface",
  "berry-wqmatch",
@@ -162,9 +157,6 @@ version = "0.2.0"
 [[package]]
 name = "berry-mm"
 version = "0.2.0"
-dependencies = [
- "berry-asidface",
-]
 
 [[package]]
 name = "berry-numface"
@@ -256,6 +248,10 @@ version = "0.2.0"
 dependencies = [
  "berry-emface",
 ]
+
+[[package]]
+name = "berry-vdsoface"
+version = "0.2.0"
 
 [[package]]
 name = "berry-vmoledger"

@@ -1,0 +1,2251 @@
+# BerryUI SDK API ledger (SDK-S0). Single source; see tools/sdk_ledger.py.
+[meta]
+format = 1
+channel_vocab = ["in-tree"]
+stability_vocab = ["experimental", "stable", "frozen", "deprecated"]
+capability_vocab = ["none"]
+owner = "berry-ui"
+
+[[item]]
+id = "berry_ui::sdk::RectI"
+kind = "type"
+module = "diagnostic"
+since = "F2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Axis"
+kind = "type"
+module = "desc"
+since = "F2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::CircleProps"
+kind = "type"
+module = "desc"
+since = "GUI-6"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ClipProps"
+kind = "type"
+module = "desc"
+since = "C1-clipping"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ColProps"
+kind = "type"
+module = "desc"
+since = "F2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::FocusDir"
+kind = "type"
+module = "desc"
+since = "C1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-C1ComponentFocusNavigation-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::GridProps"
+kind = "type"
+module = "desc"
+since = "F2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::IconProps"
+kind = "type"
+module = "desc"
+since = "F2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ImageProps"
+kind = "type"
+module = "desc"
+since = "F2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Msg"
+kind = "type"
+module = "desc"
+since = "F2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::MsgBuf"
+kind = "type"
+module = "desc"
+since = "F2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::NodeId"
+kind = "type"
+module = "desc"
+since = "F2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::PadProps"
+kind = "type"
+module = "desc"
+since = "F2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::PanelProps"
+kind = "type"
+module = "desc"
+since = "F4"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Props"
+kind = "type"
+module = "desc"
+since = "F2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::RectProps"
+kind = "type"
+module = "desc"
+since = "F2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::RowProps"
+kind = "type"
+module = "desc"
+since = "F2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TextBuf"
+kind = "type"
+module = "desc"
+since = "F2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TextProps"
+kind = "type"
+module = "desc"
+since = "F2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TextStyle"
+kind = "type"
+module = "desc"
+since = "F2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ViewKind"
+kind = "type"
+module = "desc"
+since = "F2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ViewSpec"
+kind = "type"
+module = "desc"
+since = "F2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::HitDumpEntry"
+kind = "type"
+module = "diagnostic"
+since = "F2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::LayoutDumpEntry"
+kind = "type"
+module = "diagnostic"
+since = "F2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Constraints"
+kind = "type"
+module = "layout"
+since = "L1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-L1LocalConstraintsAdaptiveSlot-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::CrossAlign"
+kind = "type"
+module = "layout"
+since = "L1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-L1LocalConstraintsAdaptiveSlot-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::LayoutStat"
+kind = "type"
+module = "layout"
+since = "L1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-L1LocalConstraintsAdaptiveSlot-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::EmptyIconSource"
+kind = "type"
+module = "metrics"
+since = "F2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::FontSource"
+kind = "type"
+module = "metrics"
+since = "F2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::IconSource"
+kind = "type"
+module = "metrics"
+since = "F2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::NavigationIconSource"
+kind = "type"
+module = "navigation"
+since = "OH-SHELL"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/Berry设备平台-OpenHarmonyShell-v1.1.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::NAV_ICON_BACK"
+kind = "const"
+module = "navigation"
+since = "OH-SHELL"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/Berry设备平台-OpenHarmonyShell-v1.1.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::NAV_ICON_BACK_ACTIVE"
+kind = "const"
+module = "navigation"
+since = "OH-SHELL"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/Berry设备平台-OpenHarmonyShell-v1.1.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::NAV_ICON_HOME"
+kind = "const"
+module = "navigation"
+since = "OH-SHELL"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/Berry设备平台-OpenHarmonyShell-v1.1.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::NAV_ICON_HOME_ACTIVE"
+kind = "const"
+module = "navigation"
+since = "OH-SHELL"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/Berry设备平台-OpenHarmonyShell-v1.1.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::NAV_ICON_TASK"
+kind = "const"
+module = "navigation"
+since = "OH-SHELL"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/Berry设备平台-OpenHarmonyShell-v1.1.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::NAV_ICON_TASK_ACTIVE"
+kind = "const"
+module = "navigation"
+since = "OH-SHELL"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/Berry设备平台-OpenHarmonyShell-v1.1.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::AlertDialog"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::DialogAction"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::OverlaySurface"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Toast"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Menu"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::MenuItemSpec"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Sheet"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TextArea"
+kind = "type"
+module = "text_area"
+since = "TRI-CONTROLS-10"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-TriPlatformControls-v1.10.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TextAreaSpec"
+kind = "type"
+module = "text_area"
+since = "TRI-CONTROLS-10"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-TriPlatformControls-v1.10.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TEXT_AREA_LINES_MAX"
+kind = "const"
+module = "text_area"
+since = "TRI-CONTROLS-10"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-TriPlatformControls-v1.10.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::PullRefresh"
+kind = "type"
+module = "pull_refresh"
+since = "TRI-CONTROLS-9"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.10.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::PullRefreshSpec"
+kind = "type"
+module = "pull_refresh"
+since = "TRI-CONTROLS-9"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.10.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::PullRefreshPhase"
+kind = "type"
+module = "pull_refresh"
+since = "TRI-CONTROLS-9"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.10.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::PullRefreshEvent"
+kind = "type"
+module = "pull_refresh"
+since = "TRI-CONTROLS-9"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.10.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::PULL_REFRESH_SETTLE_NS"
+kind = "const"
+module = "pull_refresh"
+since = "TRI-CONTROLS-9"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.10.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::PULL_REFRESH_PHASE_NS"
+kind = "const"
+module = "pull_refresh"
+since = "TRI-CONTROLS-9"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.10.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::PULL_REFRESH_DRAG_DIV"
+kind = "const"
+module = "pull_refresh"
+since = "TRI-CONTROLS-9"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.10.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TextFieldSlots"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-8"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TextFieldSlotsSpec"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-8"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::FieldMessage"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-8"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::FieldMessageKind"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-8"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ContextMenu"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-7"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ContextMenuOutcome"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-7"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::NavStack"
+kind = "type"
+module = "nav_stack"
+since = "TRI-CONTROLS-7"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::NavEvent"
+kind = "type"
+module = "nav_stack"
+since = "TRI-CONTROLS-7"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::NAV_STACK_MAX"
+kind = "const"
+module = "nav_stack"
+since = "TRI-CONTROLS-7"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::LongPressGesture"
+kind = "type"
+module = "gesture"
+since = "TRI-CONTROLS-7"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::LongPressOutcome"
+kind = "type"
+module = "gesture"
+since = "TRI-CONTROLS-7"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::LONG_PRESS_NS"
+kind = "const"
+module = "gesture"
+since = "TRI-CONTROLS-7"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::DatePicker"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-6"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::DatePickerValue"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-6"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TimePicker"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-6"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TimePickerValue"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-6"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::days_in_month"
+kind = "fn"
+module = "widgets"
+since = "TRI-CONTROLS-6"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::DATE_PICKER_YEAR_MIN"
+kind = "const"
+module = "widgets"
+since = "TRI-CONTROLS-6"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::DATE_PICKER_YEAR_MAX"
+kind = "const"
+module = "widgets"
+since = "TRI-CONTROLS-6"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ButtonEmphasis"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-5"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::image"
+kind = "fn"
+module = "widgets"
+since = "TRI-CONTROLS-5"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SwipePager"
+kind = "type"
+module = "swipe"
+since = "TRI-CONTROLS-5"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SWIPE_PAGES_MAX"
+kind = "const"
+module = "swipe"
+since = "TRI-CONTROLS-5"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SNAP_DUR_NS"
+kind = "const"
+module = "swipe"
+since = "TRI-CONTROLS-5"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::FLIP_VEL_PX_S"
+kind = "const"
+module = "swipe"
+since = "TRI-CONTROLS-5"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::DOT_ON"
+kind = "const"
+module = "swipe"
+since = "TRI-CONTROLS-5"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::DOT_OFF"
+kind = "const"
+module = "swipe"
+since = "TRI-CONTROLS-5"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ScrollViewAxis"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-4"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Badge"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Chip"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ChipKind"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SearchField"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SegmentedControl"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SegmentedItemSpec"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Stepper"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TextPicker"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SEGMENTED_MAX"
+kind = "const"
+module = "widgets"
+since = "TRI-CONTROLS-3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TEXT_PICKER_MAX"
+kind = "const"
+module = "widgets"
+since = "TRI-CONTROLS-3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SEM_STATE_SELECTED"
+kind = "const"
+module = "sem"
+since = "TRI-CONTROLS-3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Checkbox"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Radio"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Slider"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ProgressIndicator"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::LoadingIndicator"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Tabs"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TabItemSpec"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TabBarStyle"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TABS_MAX"
+kind = "const"
+module = "widgets"
+since = "TRI-CONTROLS-1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Section"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Grid"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SafeInsets"
+kind = "type"
+module = "widgets"
+since = "TRI-CONTROLS-1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.7.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::MonospaceTextMetrics"
+kind = "type"
+module = "metrics"
+since = "F2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TextMetrics"
+kind = "type"
+module = "metrics"
+since = "F2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Density"
+kind = "type"
+module = "theme"
+since = "F3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryDesign-F3主题与基元-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::InteractionState"
+kind = "type"
+module = "theme"
+since = "F3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryDesign-F3主题与基元-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::RadiusToken"
+kind = "type"
+module = "theme"
+since = "F3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryDesign-F3主题与基元-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SpacingToken"
+kind = "type"
+module = "theme"
+since = "F3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryDesign-F3主题与基元-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::StateColors"
+kind = "type"
+module = "theme"
+since = "F3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryDesign-F3主题与基元-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::StrokeToken"
+kind = "type"
+module = "theme"
+since = "F3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryDesign-F3主题与基元-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Theme"
+kind = "type"
+module = "theme"
+since = "F3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryDesign-D2TokenPairContract-v1.0.md"
+breaking = [{ since = "DESIGN-D2", change = "Added scheme field for additive ColorScheme dispatch; light values are frozen.", successor = "Theme::light" }]
+
+[[item]]
+id = "berry_ui::sdk::ThemeColors"
+kind = "type"
+module = "theme"
+since = "F3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryDesign-F3主题与基元-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ThemeMetrics"
+kind = "type"
+module = "theme"
+since = "F3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryDesign-F3主题与基元-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TypographyToken"
+kind = "type"
+module = "theme"
+since = "F3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryDesign-F3主题与基元-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ime_overlap_px"
+kind = "fn"
+module = "text_input"
+since = "GUI-T1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-GUIT1TextFieldFoundationBeforeIME-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::text_key_intent"
+kind = "fn"
+module = "text_input"
+since = "GUI-T1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-GUIT1TextFieldFoundationBeforeIME-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TextInputEdit"
+kind = "type"
+module = "text_input"
+since = "GUI-T1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-GUIT1TextFieldFoundationBeforeIME-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TextInputKeyOp"
+kind = "type"
+module = "text_input"
+since = "GUI-T1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-GUIT1TextFieldFoundationBeforeIME-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TextInputKind"
+kind = "type"
+module = "text_input"
+since = "GUI-T1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-GUIT1TextFieldFoundationBeforeIME-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TextInputOutcome"
+kind = "type"
+module = "text_input"
+since = "GUI-T1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-GUIT1TextFieldFoundationBeforeIME-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TextInputState"
+kind = "type"
+module = "text_input"
+since = "GUI-T1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-GUIT1TextFieldFoundationBeforeIME-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TextSelection"
+kind = "type"
+module = "text_input"
+since = "GUI-T1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-GUIT1TextFieldFoundationBeforeIME-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TEXT_INPUT_MAX"
+kind = "const"
+module = "text_input"
+since = "GUI-T1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-GUIT1TextFieldFoundationBeforeIME-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::AppBar"
+kind = "type"
+module = "widgets"
+since = "F4"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F4组件第一版-v1.1.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::IconButton"
+kind = "type"
+module = "widgets"
+since = "D3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-AppBarD3-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Button"
+kind = "type"
+module = "widgets"
+since = "F4"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F4组件第一版-v1.1.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Card"
+kind = "type"
+module = "widgets"
+since = "F4"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F4组件第一版-v1.1.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::EmptyState"
+kind = "type"
+module = "widgets"
+since = "F4"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F4组件第一版-v1.1.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ListDetail"
+kind = "type"
+module = "widgets"
+since = "L3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-L3TransposedContainerFlexListDetail-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ListDetailSpec"
+kind = "type"
+module = "widgets"
+since = "L3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-L3TransposedContainerFlexListDetail-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ListTile"
+kind = "type"
+module = "widgets"
+since = "D3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-AppBarD3-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ListTileSpec"
+kind = "type"
+module = "widgets"
+since = "D3"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-AppBarD3-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ListItem"
+kind = "type"
+module = "widgets"
+since = "F4"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F4组件第一版-v1.1.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Scaffold"
+kind = "type"
+module = "widgets"
+since = "F4"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-TriPlatformControls-v1.12.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ScrollView"
+kind = "type"
+module = "widgets"
+since = "F4"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F4组件第一版-v1.1.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Switch"
+kind = "type"
+module = "widgets"
+since = "F4"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F4组件第一版-v1.1.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TextVariant"
+kind = "type"
+module = "widgets"
+since = "F4"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F4组件第一版-v1.1.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TextField"
+kind = "type"
+module = "widgets"
+since = "GUI-T1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-GUIT1TextFieldFoundationBeforeIME-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TextFieldSpec"
+kind = "type"
+module = "widgets"
+since = "GUI-T1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-GUIT1TextFieldFoundationBeforeIME-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::WidgetContext"
+kind = "type"
+module = "widgets"
+since = "F4"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F4组件第一版-v1.1.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::column"
+kind = "fn"
+module = "widgets"
+since = "F4"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F4组件第一版-v1.1.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::divider"
+kind = "fn"
+module = "widgets"
+since = "F4"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F4组件第一版-v1.1.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::icon"
+kind = "fn"
+module = "widgets"
+since = "F4"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F4组件第一版-v1.1.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::row"
+kind = "fn"
+module = "widgets"
+since = "F4"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F4组件第一版-v1.1.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::text"
+kind = "fn"
+module = "widgets"
+since = "F4"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F4组件第一版-v1.1.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::FlexEntry"
+kind = "type"
+module = "crate"
+since = "L2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-LAYOUTL6aFlexSpecAlgebra-v1.0.md"
+breaking = [{ since = "LAYOUT-L6a", change = "Added shrink and basis fields; weight remains the L2-compatible grow field.", successor = "FlexSpec" }]
+
+[[item]]
+id = "berry_ui::sdk::FocusEntry"
+kind = "type"
+module = "crate"
+since = "C1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::Ui"
+kind = "type"
+module = "crate"
+since = "F2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::UiError"
+kind = "type"
+module = "crate"
+since = "F2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::UiMain"
+kind = "type"
+module = "crate"
+since = "F2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SlotVariant"
+kind = "type"
+module = "sdk"
+since = "L1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::slot_variant"
+kind = "fn"
+module = "sdk"
+since = "L1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-F2核心盘点-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::FocusOp"
+kind = "type"
+module = "sdk"
+since = "C1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-C1ComponentFocusNavigation-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::focus_key_intent"
+kind = "fn"
+module = "sdk"
+since = "C1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "stable"
+spec = "docs/BerryUI-C1ComponentFocusNavigation-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::KeyRoute"
+kind = "type"
+module = "sdk"
+since = "GUI-T1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-GUIT1TextFieldFoundationBeforeIME-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::key_route"
+kind = "fn"
+module = "sdk"
+since = "GUI-T1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-GUIT1TextFieldFoundationBeforeIME-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::A11yRegion"
+kind = "type"
+module = "sem"
+since = "SEM-A1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SemEntry"
+kind = "type"
+module = "sem"
+since = "SEM-A1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SEM_ACTION_ACTIVATE"
+kind = "const"
+module = "sem"
+since = "SEM-A1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SEM_ACTION_ADJUST"
+kind = "const"
+module = "sem"
+since = "SEM-A1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SEM_ACTION_FOCUS"
+kind = "const"
+module = "sem"
+since = "SEM-A1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SEM_ACTION_TEXT_EDIT"
+kind = "const"
+module = "sem"
+since = "SEM-A1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SEM_LABEL_MAX"
+kind = "const"
+module = "sem"
+since = "SEM-A1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SEM_MAX"
+kind = "const"
+module = "sem"
+since = "SEM-A1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SEM_STATE_CHECKED"
+kind = "const"
+module = "sem"
+since = "SEM-A1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SEM_STATE_DISABLED"
+kind = "const"
+module = "sem"
+since = "SEM-A1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::a11y_region_roundtrip"
+kind = "fn"
+module = "sem"
+since = "SEM-A1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-SEMA1SemanticTreeSidecar-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ColorPair"
+kind = "type"
+module = "theme"
+since = "DESIGN-D2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryDesign-D2TokenPairContract-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ColorPairToken"
+kind = "type"
+module = "theme"
+since = "DESIGN-D2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryDesign-D2TokenPairContract-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ColorScheme"
+kind = "type"
+module = "theme"
+since = "DESIGN-D2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryDesign-D2TokenPairContract-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ColorSchemePreference"
+kind = "type"
+module = "theme"
+since = "DESIGN-D2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryDesign-D2TokenPairContract-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ContrastLevel"
+kind = "type"
+module = "theme"
+since = "DESIGN-D2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryDesign-D2TokenPairContract-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TextScale"
+kind = "type"
+module = "theme"
+since = "DESIGN-D2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryDesign-D2TokenPairContract-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::contrast_meets"
+kind = "fn"
+module = "theme"
+since = "DESIGN-D2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryDesign-D2TokenPairContract-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::contrast_ratio_centi"
+kind = "fn"
+module = "theme"
+since = "DESIGN-D2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryDesign-D2TokenPairContract-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::resolve_color_scheme"
+kind = "fn"
+module = "theme"
+since = "DESIGN-D2"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryDesign-D2TokenPairContract-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::BoxConstraints"
+kind = "type"
+module = "layout"
+since = "LAYOUT-L4"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-LAYOUTL4BoxConstraintsIntrinsicBoundary-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::ReapplyStat"
+kind = "type"
+module = "crate"
+since = "RUN-K1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-RUNK1KeyedReApplyLifecycle-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::SETTLE_DERIVE_MAX"
+kind = "const"
+module = "crate"
+since = "RUN-K1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-RUNK1KeyedReApplyLifecycle-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::KEYED_DEPTH_MAX"
+kind = "const"
+module = "crate"
+since = "RUN-K1"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-RUNK1KeyedReApplyLifecycle-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TextWrapEntry"
+kind = "type"
+module = "crate"
+since = "LAYOUT-L5"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-LAYOUTL5PerNodeBoxTextWrap-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::TEXT_WRAP_MAX"
+kind = "const"
+module = "crate"
+since = "LAYOUT-L5"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-LAYOUTL5PerNodeBoxTextWrap-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::FlexBasis"
+kind = "type"
+module = "crate"
+since = "LAYOUT-L6a"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-LAYOUTL6aFlexSpecAlgebra-v1.0.md"
+breaking = []
+
+[[item]]
+id = "berry_ui::sdk::FlexSpec"
+kind = "type"
+module = "crate"
+since = "LAYOUT-L6a"
+channel = "in-tree"
+capability = "none"
+owner = "berry-ui"
+stability = "experimental"
+spec = "docs/BerryUI-LAYOUTL6aFlexSpecAlgebra-v1.0.md"
+breaking = []

@@ -10,7 +10,7 @@
 
 **三层可用地已经能写出并跑通真实应用**（hexyl 0.17.0 未经修改 + appdemo/launcher 全链在役）；**管控面/后台面/GUI 高层 API 大多「立法在册、落地在途」**——这正是规范存在的意义：方案全套有、按刀序落、每个缺口有对标依据。下面逐层盘点，四态标注：【真】现役可用 ｜【法】立法在册未落（给挂靠刀） ｜【雏】雏形已入库待长全 ｜【空】空白本文立方案。
 
-## §1 L0 内核层：44 在册（v1 40 + 1.1 四号）/ 45 已挂派发（含 0x83/0x84 v3 提前实现；单源 = tools/abi.toml 四元组，2026-11-17 系统审计随迁） / 帽 45
+## §1 L0 内核层：45 在册（v1 41 + 1.1 四号）/ 46 已挂派发（含 0x83/0x84 v3 提前实现；单源 = tools/abi.toml 四元组，2026-11-18 W3-Q97 0x57 add-only 随迁） / 帽 45
 
 - 单一事实源 = `tools/abi.toml`（gen_abi 五产物同源，`just abi-check` 逐字节执法）——编号全表见 ABI 文档 §4，本文只列族组：handle 三（close/duplicate/replace）· object wait 三 + get_info · VMO/Vmar 九 · pager 三（demand paging G4）· process 四（create/start/exit_code/suspend）· thread 五（create/exit/set_priority/exception_channel/…）· sched_setattr（intent 注入面）· channel 三 · event 三 · clock · signal 两（send/take）· futex 两 · timer · mmap · telemetry/attest 预留。【真】
 - berry-sys = raw 绑定 crate（abi_gen 镜像 + 封装），crates.io 发布序在册（SDK-1b）。【真】

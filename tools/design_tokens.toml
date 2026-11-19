@@ -1,0 +1,256 @@
+format = 1
+owner = "berry-ui"
+text_contrast_x100 = 450
+inactive_exemption = "WCAG inactive component"
+
+[[pair]]
+scheme = "light"
+token = "background"
+background = "#f5f7fa"
+foreground = "#1b2540"
+level = "text"
+
+[[pair]]
+scheme = "light"
+token = "surface"
+background = "#ffffff"
+foreground = "#1b2540"
+level = "text"
+
+[[pair]]
+scheme = "light"
+token = "surface_variant"
+background = "#e9edf3"
+foreground = "#1b2540"
+level = "text"
+
+[[pair]]
+scheme = "light"
+token = "primary"
+background = "#0074e0"
+foreground = "#ffffff"
+level = "text"
+
+[[pair]]
+scheme = "light"
+token = "success"
+background = "#008b6f"
+foreground = "#000000"
+level = "text"
+
+[[pair]]
+scheme = "light"
+token = "warning"
+background = "#fb8c00"
+foreground = "#1b2540"
+level = "text"
+
+[[pair]]
+scheme = "light"
+token = "danger"
+background = "#d02f3d"
+foreground = "#ffffff"
+level = "text"
+
+[[pair]]
+scheme = "light"
+token = "normal"
+background = "#ffffff"
+foreground = "#1b2540"
+level = "text"
+
+[[pair]]
+scheme = "light"
+token = "pressed"
+background = "#e1eaf8"
+foreground = "#172b49"
+level = "text"
+
+[[pair]]
+scheme = "light"
+token = "disabled"
+background = "#f0f2f5"
+foreground = "#a6adba"
+level = "inactive"
+
+[[pair]]
+scheme = "light"
+token = "selected"
+background = "#d6e4ff"
+foreground = "#102a66"
+level = "text"
+
+[[pair]]
+scheme = "light"
+token = "focused"
+background = "#e9f2ff"
+foreground = "#0b2554"
+level = "text"
+
+[[pair]]
+scheme = "dark"
+token = "background"
+background = "#0f141a"
+foreground = "#edf2fa"
+level = "text"
+
+[[pair]]
+scheme = "dark"
+token = "surface"
+background = "#1a212b"
+foreground = "#edf2fa"
+level = "text"
+
+[[pair]]
+scheme = "dark"
+token = "surface_variant"
+background = "#242d3a"
+foreground = "#edf2fa"
+level = "text"
+
+[[pair]]
+scheme = "dark"
+token = "primary"
+background = "#8abeff"
+foreground = "#0f1724"
+level = "text"
+
+[[pair]]
+scheme = "dark"
+token = "success"
+background = "#62d8b5"
+foreground = "#071b16"
+level = "text"
+
+[[pair]]
+scheme = "dark"
+token = "warning"
+background = "#ffc66d"
+foreground = "#221200"
+level = "text"
+
+[[pair]]
+scheme = "dark"
+token = "danger"
+background = "#ff8a95"
+foreground = "#2a0608"
+level = "text"
+
+[[pair]]
+scheme = "dark"
+token = "normal"
+background = "#222b38"
+foreground = "#e7eef9"
+level = "text"
+
+[[pair]]
+scheme = "dark"
+token = "pressed"
+background = "#2d3a4c"
+foreground = "#dce8fa"
+level = "text"
+
+[[pair]]
+scheme = "dark"
+token = "disabled"
+background = "#1e252f"
+foreground = "#8e9aab"
+level = "inactive"
+
+[[pair]]
+scheme = "dark"
+token = "selected"
+background = "#31415c"
+foreground = "#dceafb"
+level = "text"
+
+[[pair]]
+scheme = "dark"
+token = "focused"
+background = "#263447"
+foreground = "#e5f0ff"
+level = "text"
+
+[[pair]]
+scheme = "high_contrast_light"
+token = "background"
+background = "#ffffff"
+foreground = "#000000"
+level = "text"
+
+[[pair]]
+scheme = "high_contrast_light"
+token = "surface"
+background = "#ffffff"
+foreground = "#000000"
+level = "text"
+
+[[pair]]
+scheme = "high_contrast_light"
+token = "surface_variant"
+background = "#f2f5fa"
+foreground = "#000000"
+level = "text"
+
+[[pair]]
+scheme = "high_contrast_light"
+token = "primary"
+background = "#003e9c"
+foreground = "#ffffff"
+level = "text"
+
+[[pair]]
+scheme = "high_contrast_light"
+token = "success"
+background = "#00694f"
+foreground = "#ffffff"
+level = "text"
+
+[[pair]]
+scheme = "high_contrast_light"
+token = "warning"
+background = "#8a4b00"
+foreground = "#ffffff"
+level = "text"
+
+[[pair]]
+scheme = "high_contrast_light"
+token = "danger"
+background = "#9e1b27"
+foreground = "#ffffff"
+level = "text"
+
+[[pair]]
+scheme = "high_contrast_light"
+token = "normal"
+background = "#ffffff"
+foreground = "#000000"
+level = "text"
+
+[[pair]]
+scheme = "high_contrast_light"
+token = "pressed"
+background = "#e7eefa"
+foreground = "#001a4d"
+level = "text"
+
+[[pair]]
+scheme = "high_contrast_light"
+token = "disabled"
+background = "#f3f4f7"
+foreground = "#5a626e"
+level = "inactive"
+
+[[pair]]
+scheme = "high_contrast_light"
+token = "selected"
+background = "#dce6ff"
+foreground = "#001444"
+level = "text"
+
+[[pair]]
+scheme = "high_contrast_light"
+token = "focused"
+background = "#e1ebff"
+foreground = "#001040"
+level = "text"

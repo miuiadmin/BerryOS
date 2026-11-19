@@ -19,7 +19,6 @@
 
 use berry_mm::frame::FrameAllocator;
 use berry_mm::va::{phys_to_virt, PAGE_SHIFT, PAGE_SIZE};
-use berry_mm::MAX_ORDER;
 use berry_vmoledger::{DemandLedger, PageLedger};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -93,65 +92,6 @@ impl Vmo {
         Ok(v)
     }
 
-    /// 建钉死匿名 VMO（F0-4 `VMO_OPT_PINNED`：禁止中途 `decommit`）。
-    pub fn create_pinned(size: usize) -> Result<Self, VmoError> {
-        let mut v = Self::create(size)?;
-        v.ledger.set_pinned();
-        Ok(v)
-    }
-
-    /// 建物理连续且钉死的 DMA VMO（F0-4 `VMO_OPT_CONTIGUOUS`）：
-    /// 按 `npages.next_power_of_two()` 计算伙伴阶 `order`，经 `ALLOC_LOCK` 一次弹出物理连续块，
-    /// 在锁外用 `DC ZVA` 清零整块后完成全页预提交记账；`Vec` 预留失败时自动将整阶块退回伙伴分配器。
-    pub fn create_contiguous_global(size: usize) -> Result<Self, VmoError> {
-        if size == 0 {
-            return Err(VmoError::OutOfRange);
-        }
-        let npages = size.div_ceil(PAGE_SIZE);
-        let Some(block_pages) = npages.checked_next_power_of_two() else {
-            return Err(VmoError::OutOfRange);
-        };
-        let order = block_pages.trailing_zeros() as usize;
-        if order > MAX_ORDER {
-            return Err(VmoError::NoFrames);
-        }
-        let pfn = crate::mm::with_frames(|fa| fa.alloc_order(order))
-            .map_err(|_| VmoError::NoFrames)?;
-        let pa_base = pfn << PAGE_SHIFT;
-        for i in 0..block_pages {
-            // SAFETY: 刚弹出的独占连续物理页块尚无任何外部别名，锁外逐页清零安全。
-            unsafe { zero_page_4k(phys_to_virt(pa_base + i * PAGE_SIZE) as *mut u8) };
-        }
-        match PageLedger::new_contiguous(size, pa_base, order as u8) {
-            Ok(ledger) => Ok(Self {
-                ledger,
-                demand_pins: DemandLedger::default(),
-                demand: false,
-                zfod: false,
-            }),
-            Err(e) => {
-                crate::mm::with_frames(|fa| {
-                    let _ = fa.free(pfn, order);
-                });
-                Err(e)
-            }
-        }
-    }
-
-    /// 对已提交匿名页区间执行 PoC 数据缓存维护（F0-4 `0x1C vmo_cache_op`）。
-    pub fn cache_op(&self, clean_only: bool, offset: usize, len: usize) -> Result<(), VmoError> {
-        berry_vmoledger::copy_gate(&self.ledger, offset, len)?;
-        berry_vmoledger::walk_copy(&self.ledger, offset, len, |pa, off, n| {
-            let kva = phys_to_virt(pa + off);
-            if clean_only {
-                berry_hal_aarch64::cache_poc_clean(kva, n);
-            } else {
-                berry_hal_aarch64::cache_poc_clean_invalidate(kva, n);
-            }
-        });
-        Ok(())
-    }
-
     /// 按需后备？（fault 探针分派用：demand 区间的缺页走 pager 协议。）
     pub fn is_demand(&self) -> bool {
         self.demand
@@ -200,18 +140,8 @@ impl Vmo {
             if self.ledger.page_pa(page).is_none() {
                 let pa = zero_frame(fa)?;
                 self.ledger.mark_committed(page, Some(pa));
-            }
-        }
-        Ok(())
-    }
-
-    /// 运行时安全提交（F0-3）：逐页经 `ALLOC_LOCK` 分配新物理帧并在锁外完成 `DC ZVA` 清零。
-    pub fn commit_global(&mut self, offset: usize, len: usize) -> Result<(), VmoError> {
-        let range = self.ledger.commit_pages(offset, len)?;
-        for page in range.iter() {
-            if self.ledger.page_pa(page).is_none() {
-                let pa = zero_frame_global()?;
-                self.ledger.mark_committed(page, Some(pa));
+                // committed 聚合水位：新提交页 +1（见 VMO_COMMITTED_PAGES 注）。
+                VMO_COMMITTED_PAGES.fetch_add(1, Ordering::Relaxed);
             }
         }
         Ok(())
@@ -234,24 +164,10 @@ impl Vmo {
             debug_assert_eq!(Some(pa), Some(_registered));
             // SAFETY: 该页独占（mapcnt==0 → 无映射别名）且 PA 来自 alloc。
             let _ = fa.free(pa >> PAGE_SHIFT, 0); // 元数据异常只泄漏不 panic
+            // committed 聚合水位：出账页 −1（随 mark_decommitted 记账，与
+            // 还帧成败无关——口径 = ledger `Some(pa)` 项数）。
+            VMO_COMMITTED_PAGES.fetch_sub(1, Ordering::Relaxed);
         }
-        Ok(())
-    }
-
-    /// 运行时安全归还（F0-3）：先在锁外收集待退页表（含 `Vec` 堆分配），再持 `ALLOC_LOCK` 借用遍历批量退还，
-    /// 锁释放后再在锁外析构临时 `Vec`（严禁在 `ALLOC_LOCK` 窗内触发 `SlabHeap::dealloc` 自重入）。
-    pub fn decommit_global(&mut self, offset: usize, len: usize) -> Result<(), VmoError> {
-        let (_, pas) = self.ledger.decommit_pages(offset, len)?;
-        crate::mm::with_frames(|fa| {
-            for &(page, _registered) in pas.iter() {
-                let pa = self
-                    .ledger
-                    .mark_decommitted(page)
-                    .expect("上已校验全提交");
-                debug_assert_eq!(Some(pa), Some(_registered));
-                let _ = fa.free(pa >> PAGE_SHIFT, 0);
-            }
-        });
         Ok(())
     }
 
@@ -354,29 +270,41 @@ impl Drop for Vmo {
     /// Drop 只兜 boot/ktest 直构对象——其映射常驻不解除（如用户进程
     /// code/data/stack 页），泄漏即 v1 政策。
     /// MMIO 窗口后备（P6 A-2）：`pages` 恒空 → 还帧面天然零动作——设备 PA 从
-    /// 不进帧记账，无「还设备页进 buddy」面。
+    /// 不进帧记账，无「还设备页进 buddy」面。committed 聚合水位
+    /// （[`VMO_COMMITTED_PAGES`]）随 drain 实还页逐页递减；泄漏页（仍被
+    /// 映射）不减——页仍被 VMO 持有，水位如实。
     fn drop(&mut self) {
-        // F0-4：未残留映射的 MMIO 窗口销毁时，自动将交集内活跃 VirtIO 槽写 STATUS=0 复位，阻断遗留异步 DMA。
-        if let Some((pa_base, size)) = self.ledger.mmio_pa_range() {
-            if !self.ledger.any_mapped() {
-                berry_hal_aarch64::reset_virtio_mmio_window(pa_base, size);
-            }
-            return;
+        for (_page, pa) in self.ledger.droppable_pages() {
+            // SAFETY: 独占页（无映射别名）；PA 来自 FrameAllocator::alloc。
+            let _ = crate::mm::frames().free(pa >> PAGE_SHIFT, 0);
+            // committed 聚合水位：实还页 −1（泄漏页不进本迭代面）。
+            VMO_COMMITTED_PAGES.fetch_sub(1, Ordering::Relaxed);
         }
-        // F0-4：物理连续阶块 VMO 在全无映射时整阶归还伙伴分配器（严禁拆成 order-0 双还）。
-        if let Some((pa_base, order)) = self.ledger.contig_drop_block() {
-            crate::mm::with_frames(|fa| {
-                let _ = fa.free(pa_base >> PAGE_SHIFT, order);
-            });
-            return;
-        }
-        // F0-3：经第 5 层 ALLOC_LOCK 归还无映射页，消除 HT_DRAINQ 异步析构与并发分配的数据竞争。
-        crate::mm::with_frames(|fa| {
-            for (_page, pa) in self.ledger.droppable_pages() {
-                let _ = fa.free(pa >> PAGE_SHIFT, 0);
-            }
-        });
     }
+}
+
+// ---- committed 全局聚合水位（遥测 memstat 刀：0x84 op=1 消费）----
+//
+// 口径 = 全体在册 [`PageLedger`] `pages` 中 `Some(pa)` 项数：MMIO 记账
+// `pages` 恒空（[`PageLedger::new_mmio`]）天然零计数；demand 供给页走
+// `Vmo::commit` 同一写点。「禁重复记账源」不破：PageLedger 仍是逐页
+// 唯一事实源（资格判定与簿记），本原子只是其物理执行臂的全局水位投影
+// ——与 buddy `allocated` 对位图的关系同构（聚合账 vs 明细账，论证全文
+// 随实施笔记记档）。drift 护栏 = ktest 因果差分臂（末态==初态）+
+// committed≤alloc 静止窗恒等式双钉。
+
+/// VMO committed 页数水位（Relaxed——纯计数无跨序依赖面，buddy
+/// `allocated` 同款形态）。写点与本文件物理执行臂逐对：`Vmo::commit`
+/// 逐页 +1、`Vmo::decommit` 逐页 −1、`Drop` drain 逐页 −1；泄漏页
+/// （仍被映射，v1 政策）不还不减——水位如实反映「VMO 持有中」。
+static VMO_COMMITTED_PAGES: AtomicUsize = AtomicUsize::new(0);
+
+/// committed 水位 O(1) 读口：遥测 memstat 快照 `committed_pages` 域装配
+/// 消费（telemetry.rs，0x84 op=1）。
+// 消费随遥测 memstat 刀后续域接线（telemetry memstat_snapshot）；handoff
+// 模块「消费随刀」先例同款过渡豁免，接线后撤。
+pub(crate) fn committed_pages() -> usize {
+    VMO_COMMITTED_PAGES.load(Ordering::Relaxed)
 }
 
 /// 从帧分配器取一页并清零，返回 **PA**（`alloc` 给 PFN 须左移；buddy 只管元数据，
@@ -386,15 +314,6 @@ pub(crate) fn zero_frame(fa: &mut FrameAllocator) -> Result<usize, VmoError> {
     let pa = pfn << PAGE_SHIFT;
     // SAFETY: 独占新分配帧（尚无别名引用）；Normal WB 直映（清零臂前提，
     // 见 `zero_page_4k` 合同注）。
-    unsafe { zero_page_4k(phys_to_virt(pa) as *mut u8) };
-    Ok(pa)
-}
-
-/// 运行时安全取零帧（F0-3）：仅在 `fa.alloc()` 瞬间持 `ALLOC_LOCK`，随后在锁外完成 `DC ZVA` 4KiB 清零。
-pub(crate) fn zero_frame_global() -> Result<usize, VmoError> {
-    let pfn = crate::mm::with_frames(|fa| fa.alloc()).map_err(|_| VmoError::NoFrames)?;
-    let pa = pfn << PAGE_SHIFT;
-    // SAFETY: 刚弹出的独占物理帧尚无任何外部可见别名，锁外直映清零安全无争用。
     unsafe { zero_page_4k(phys_to_virt(pa) as *mut u8) };
     Ok(pa)
 }
@@ -416,52 +335,36 @@ pub(crate) fn zero_frame_global() -> Result<usize, VmoError> {
 // 零化至一致性点（PoC），shareable 域内对全体核可见，与 memset 版读写
 // 语义逐字节等价。
 //
-// 探测（F0-1 修）：读 `DCZID_EL0`（ARM DDI 0487 D24.2.42）而非 `CTR_EL0`——
-// `DCZID_EL0.DZP`（bit 4）＝0 才许执行 `DC ZVA`（置 1 时执行即 UNDEFINED），
-// 零化块大小 = `4 << DCZID_EL0.BS`（bits[3:0]），解码律单源在 `berry_memface`。
-// 禁止或块大小不整除 4096 → GPR 回退（`write_bytes` → 本仓整数 `memset`）。
+// 探测：CTR_EL0.DZ（bit 26）＝1 才启用（0 时 DC ZVA 是 UNDEFINED）；行
+// 大小 = 4 << CTR_EL0.DminLine（bits[19:16]，Linux `dminline` 同式）。DZ=0
+// 或行不整除 4096 → GPR 回退（`write_bytes` → 本仓 memset，旧路径原样）。
+// 本内核 QEMU virt/cortex-a72 形态恒 DZ=1、行 64B；陷出面（HCR_EL2.TID5
+// 域拦 CTR_EL0 读）需在席 hypervisor——裸金属形态不在场。
 
-/// DC ZVA 探测缓存：0 = 未探测；`NO_ZVA` = 已探测不可用；其他 = 零化块字节数。
+/// DC ZVA 探测缓存：0 = 未探测；`NO_ZVA` = 已探测不可用；其他 = 行字节数。
 /// 惰性首探落在 boot 单线程窗（首个 `zero_frame` = 建表/建 VMO 期）；SMP
 /// 起核后并发首探是良性竞态——同型 CPU 写同值（Relaxed 足够：值只依赖
-/// 只读 `DCZID_EL0`，无跨序依赖面）。
+/// 只读 CTR_EL0，无跨序依赖面）。
 static ZVA_PROBE: AtomicUsize = AtomicUsize::new(0);
 /// 「已探测、不可用」哨兵（防不可用形态每调重探 mrs）。
 const NO_ZVA: usize = usize::MAX;
 
-/// 探测并缓存 `DC ZVA` 零化块字节数（不可用 = `NO_ZVA`）。
+/// 探测并缓存 DC ZVA 行字节数（不可用 = `NO_ZVA`）。
 fn zva_probe_cached() -> usize {
     let cached = ZVA_PROBE.load(Ordering::Relaxed);
     if cached != 0 {
         return cached;
     }
-    // SAFETY: dczid_el0 为架构定义的块零化 ID 只读寄存器，EL1 直读无副作用。
-    let dczid: u64;
+    // SAFETY: ctr_el0 只读系统寄存器，EL1 直读无副作用（陷出面注见上）。
+    let ctr: u64;
     unsafe {
-        core::arch::asm!(
-            "mrs {}, dczid_el0",
-            out(reg) dczid,
-            options(nostack, preserves_flags)
-        );
+        core::arch::asm!("mrs {}, ctr_el0", out(reg) ctr, options(nostack, preserves_flags));
     }
-    let v = berry_memface::dczid_block_size(dczid, PAGE_SIZE).unwrap_or(NO_ZVA);
+    let dz = ctr >> 26 & 1;
+    let line = 4usize << ((ctr >> 16) & 0xF);
+    let v = if dz == 1 && PAGE_SIZE % line == 0 { line } else { NO_ZVA };
     ZVA_PROBE.store(v, Ordering::Relaxed);
     v
-}
-
-/// 返回实测 `DC ZVA` 块大小（供 ktest 核验硬件探测结果；禁用态返 `None`）。
-#[cfg(test)]
-#[allow(dead_code)]
-pub(crate) fn zva_block_size_probed() -> Option<usize> {
-    let v = zva_probe_cached();
-    (v != NO_ZVA).then_some(v)
-}
-
-/// 返回实测 `DC ZVA` 块大小（裸机 boot ktest 探针）。
-#[cfg(not(test))]
-pub(crate) fn zva_block_size_probed() -> Option<usize> {
-    let v = zva_probe_cached();
-    (v != NO_ZVA).then_some(v)
 }
 
 /// 4KiB 页专用清零：DC ZVA 主档（行步进环）+ GPR 回退档（旧 `write_bytes`

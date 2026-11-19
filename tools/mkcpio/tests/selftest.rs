@@ -201,6 +201,47 @@ fn run_cmd(cmd: &[&str], cwd: &std::path::Path) -> (bool, String, String) {
     }
 }
 
+/// 先编后用 + 产物轮询（build-then-poll，共享工作树竞态加固——mkfat 同款
+/// 2026-11-18 实抓根因）：test-host 与并行 bot 流水线同用本 cargo-target
+/// 时，另一 cargo 的 unlink→hardlink 窗口可令 exists() 瞬时假阴性。修 =
+/// 缺席不即红——短轮询等对方落链，仍缺席再重建兜底，三轮穷尽才红；真
+/// build 失败仍即红（不吞真错）。
+fn build_then_poll(repo: &std::path::Path, cargo_target: &std::path::Path, host: &str) -> std::path::PathBuf {
+    let bin = cargo_target.join(host).join("release").join("mkcpio");
+    for attempt in 0..3 {
+        if attempt > 0 {
+            eprintln!("mkcpio: 产物缺席第 {attempt} 轮——重建（共享工作树竞态兜底）");
+        }
+        let (ok, _, err) = run_cmd(
+            &[
+                "cargo",
+                "build",
+                "--release",
+                "--manifest-path",
+                "tools/mkcpio/Cargo.toml",
+                "--target",
+                host,
+                "--target-dir",
+                cargo_target.to_str().unwrap(),
+            ],
+            repo,
+        );
+        if !ok {
+            panic!("Rust mkcpio build 失败：{err}");
+        }
+        for _ in 0..20 {
+            if bin.exists() {
+                return bin;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+    panic!(
+        "Rust mkcpio 产物在 build 成功 + 3×1s 轮询重建后仍缺席：{}（并行流水线持续占用 cargo-target，或产物路径漂移）",
+        bin.display()
+    );
+}
+
 #[test]
 fn oracle_byte_parity() {
     let _ = run_oracle_byte_parity();
@@ -233,25 +274,7 @@ fn run_oracle_byte_parity() -> Option<()> {
         o.lines().find_map(|l| l.strip_prefix("host: ").map(str::to_string)).unwrap_or_default()
     };
     let cargo_target = repo.join("tools/mkcpio/cargo-target");
-    let (ok, _, err) = run_cmd(
-        &[
-            "cargo",
-            "build",
-            "--release",
-            "--manifest-path",
-            "tools/mkcpio/Cargo.toml",
-            "--target",
-            &host,
-            "--target-dir",
-            cargo_target.to_str().unwrap(),
-        ],
-        &repo,
-    );
-    if !ok {
-        panic!("Rust mkcpio build 失败：{err}");
-    }
-    let rust_bin = cargo_target.join(&host).join("release").join("mkcpio");
-    assert!(rust_bin.exists(), "Rust mkcpio 产物缺席：{}", rust_bin.display());
+    let rust_bin = build_then_poll(&repo, &cargo_target, &host);
     let args_spec = |out: &str| vec![
         out.to_string(),
         format!("bin/aa={}", f1.display()),

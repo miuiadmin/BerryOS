@@ -1,0 +1,18 @@
+[app]
+id = "BERRYDEMO"
+version = "0.1.0"
+entry = "bin/berrydemo"
+type = "app"
+intent = "utility"
+
+[capabilities]
+console = true
+wm = true
+
+[runtime]
+stack_pages = 48
+
+[ui]
+icon = "icons/icon.byi"
+label = "Berry Demo"
+views = "views/main.bui"
