@@ -1,3 +1,4 @@
+pub mod bshrc;
 pub mod commands;
 pub mod control;
 pub mod crashlog;

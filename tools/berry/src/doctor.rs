@@ -38,6 +38,9 @@ pub struct DataDiskReport {
     pub disks: Vec<String>,
     /// 逐 profile 将用的盘（data_disk_plan 同源推演）。
     pub profiles: Vec<(&'static str, Option<PathBuf>)>,
+    /// 逐 profile 的 BSHRC.CFG 在席布尔（C5 薄面：crashlog 读面缺席探测
+    /// ——静态只读零副作用，fwcfg/data_disk 推演先例延伸）。
+    pub bshrc_present: Vec<(&'static str, bool)>,
 }
 
 pub fn collect() -> Report {
@@ -72,14 +75,25 @@ pub fn collect() -> Report {
             })
             .unwrap_or_default();
         disks.sort();
+        let profiles: Vec<(&'static str, Option<PathBuf>)> = PROFILES
+            .iter()
+            .map(|p| (p.id, qemu::data_disk_plan(p.id)))
+            .collect();
         DataDiskReport {
             env: std::env::var("BERRY_DATA_DISK").ok(),
             dir,
             disks,
-            profiles: PROFILES
+            // BSHRC 在席推演与盘推演同序（Some 盘探测/None 无盘恒 false）。
+            bshrc_present: profiles
                 .iter()
-                .map(|p| (p.id, qemu::data_disk_plan(p.id)))
+                .map(|(id, disk)| {
+                    (
+                        *id,
+                        disk.as_deref().is_some_and(crate::bshrc::bshrc_present),
+                    )
+                })
                 .collect(),
+            profiles,
         }
     };
     Report {
@@ -108,9 +122,13 @@ impl Report {
             "env": dd.env,
             "dir": dd.dir,
             "disks": dd.disks,
-            "profiles": dd.profiles
+            "profiles": dd
+                .profiles
                 .iter()
-                .map(|(id, disk)| json!({"id": id, "disk": disk}))
+                .zip(dd.bshrc_present.iter())
+                .map(|((id, disk), (_, bshrc))| {
+                    json!({"id": id, "disk": disk, "bshrc_present": bshrc})
+                })
                 .collect::<Vec<_>>(),
         })
     }
@@ -176,7 +194,19 @@ impl Report {
             );
             for (id, disk) in &dd.profiles {
                 match disk {
-                    Some(p) => println!("  {id:<8} -> {}", p.display()),
+                    Some(p) => {
+                        let bshrc = dd
+                            .bshrc_present
+                            .iter()
+                            .find(|(pid, _)| pid == id)
+                            .map(|(_, b)| *b)
+                            .unwrap_or(false);
+                        println!(
+                            "  {id:<8} -> {}{}",
+                            p.display(),
+                            if bshrc { "  [bshrc]" } else { "" }
+                        );
+                    }
                     None => println!("  {id:<8} -> (none)"),
                 }
             }
@@ -234,6 +264,7 @@ mod tests {
                 dir: PathBuf::from("/tmp/berry-home/data"),
                 disks: vec![],
                 profiles: vec![],
+                bshrc_present: vec![],
             },
         };
         assert!(!mk(false, false).ok(), "全缺 -> not ok");
@@ -267,6 +298,7 @@ mod tests {
                     ("default", None),
                     ("desktop", Some(PathBuf::from("/h/data/desktop.img"))),
                 ],
+                bshrc_present: vec![("default", false), ("desktop", true)],
             },
         };
         let v = r.data_disk_json();
@@ -276,8 +308,10 @@ mod tests {
         assert_eq!(v["disks"][1], "phone.img");
         assert_eq!(v["profiles"][0]["id"], "default");
         assert!(v["profiles"][0]["disk"].is_null(), "无盘 -> null");
+        assert!(!v["profiles"][0]["bshrc_present"].as_bool().unwrap(), "无盘 -> 无 BSHRC");
         assert_eq!(v["profiles"][1]["id"], "desktop");
         assert_eq!(v["profiles"][1]["disk"], "/h/data/desktop.img");
+        assert!(v["profiles"][1]["bshrc_present"].as_bool().unwrap(), "在席布尔透传");
         // env 未设时是 null 不是空串（JSON 形状钉板）。
         let mut r2 = r;
         r2.data_disk.env = None;
@@ -324,6 +358,8 @@ mod tests {
         let r2 = collect();
         assert_eq!(r2.data_disk.env.as_deref(), Some("off"));
         assert!(r2.data_disk.profiles.iter().all(|(_, d)| d.is_none()));
+        // C5 薄面：非卷盘件（b"x"）在席也不算 BSHRC 在——crashlog 读面探测。
+        assert!(r2.data_disk.bshrc_present.iter().all(|(_, b)| !b));
         std::env::remove_var("BERRY_DATA_DISK");
         std::env::remove_var("BERRY_HOME");
         std::fs::remove_dir_all(&tmp).ok();
