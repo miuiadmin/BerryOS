@@ -25,7 +25,7 @@ Status: implemented
 ## Consequences
 
 - 生产复活链实证：探针两跑 `S5C-DLP ok stalls=2 iters=1228314`（首修树）/ `ok stalls=2 iters=647634`（终树）——每次确认 stall 的检测都发生在复活后（冻死任务读不了钟），stalls=2 即两轮「燃尽→限流→周期到→filtered 面解冻→复活」端到端实证。
-- **预算/授片交互挂账**（审查 NOTE 定谳，非本刀引入）：`dl_refill` 置 slice_left=budget 后，八个生产授片点派发尾 `slice_left = grant_cycles()` 整片覆盖——生产每期实跑 ≈ 一授片（10Hz 下 100ms）而非 budget，B3(iii) 钉的预算语义仅 ktest 直调面可观察（探针 S5C_BUDGET_MS 注同款事实已在案）。真预算帽待「grant 面按 class 分派」预算刀（`is_deadline(next)` 授 preempt_threshold，经 class_of_task 分派面勿散写）。
+- **预算/授片交互挂账**（审查 NOTE 定谳，非本刀引入）〔2026-11-19 已修：预算授片分派刀落地 dl_grant/grant_cycles_of 八点换臂——见 2026-11-19 笔记；残留=tick 采样粒度与抢占窗宽恕两条后续刀候选在彼档。〕：`dl_refill` 置 slice_left=budget 后，八个生产授片点派发尾 `slice_left = grant_cycles()` 整片覆盖——生产每期实跑 ≈ 一授片（10Hz 下 100ms）而非 budget，B3(iii) 钉的预算语义仅 ktest 直调面可观察（探针 S5C_BUDGET_MS 注同款事实已在案）。真预算帽待「grant 面按 class 分派」预算刀（`is_deadline(next)` 授 preempt_threshold，经 class_of_task 分派面勿散写）。
 - **停泊核醒源残留窗挂账（遗漏检查轮勘正升级）**：深 park 形实为无界迟延（非「迟至一片」——原论证无代码依据，勘正见 Alternatives 第三条）——后续刀照 THRYLD T3 手法把逐任务 vdeadline 并入 nearest_deadline，优先级上调。
   - 〔2026-11-18 已修：同上，`nearest_dl_throttle_wake` 环走查案落地（THRYLD T5 钉板）。〕
 - try_preempt 探序（has_eff_above_filtered 先于 filtered 调用）：刚到期解冻任务对探峰不可见 ≤1 片——接受有界延迟，避免 SVC 尾热路径重加扫描（违 0ea3d11ad len 门快赢）。

@@ -5373,13 +5373,18 @@ const S5C_PROBE_NAME: &str = "opt/berry/s5cprobe";
 /// deadline 周期（≥ 4 tick @ 缺省 10Hz——period ≥ 4 tick 量化可容，故本
 /// 探针不动 set_slice_hz）。
 const S5C_PERIOD_MS: u64 = 400;
-/// 每期预算（CBS 形：budget ≪ period）。口径注记：解冻后的再分派走
-/// sched.rs 八授片点（Band 可达——另 idle 臂 Unit 授片不出带）
-/// （`slice_left = grant_cycles()`）整片覆盖——dl 预算面
-/// 真生效域只有改档后首片（首 tick 即燃尽入限流），此后每期实跑 ≈ 一个
-/// tick 片（100ms @ 10Hz），占空比 ≈ slice/period ≈ 25% 而非本值的 0.5%；
-/// stall 判读（隙 > period/2）不受影响。这是现状调度器的授片/预算交互
-/// 事实，非本探针引入。
+/// 每期预算（CBS 形：budget ≪ period）。口径注记（预算授片分派刀
+/// 2026-11-19 后）：解冻后的再分派走 sched.rs 授片习语
+/// （`slice_left = grant_cycles_of()`）——带预算 deadline 的每次重授帽已
+/// 从全局 slice（100ms @ 10Hz）缩到本值（2ms），占空比相位均值
+/// ≈25%→≈12.5%。诚实限定两条（账面真、物理仍 tick 量化——完全闭合归
+/// 后续刀）：① 执法检测延迟仍=到下 tick 边界——arm_slice 臂全局片不读
+/// slice_left，budget 在派发后首个 tick 被 delta 一次烧穿，每期实跑=
+/// 派发点至下 tick 的间隙（相位依赖 0..100ms）；后续刀候选 = arm_slice
+/// 收紧 min(slice_left, SLICE)（小预算执法延迟 100ms→budget）；② 抢占窗
+/// 再授片宽恕仍在——期内被抢占后再派发获整额 budget 重授、被抢前已耗
+/// 部分无人记账（帽已缩，闭合需 switch-out 记账）。stall 判读
+/// （隙 > period/2）不受影响。
 const S5C_BUDGET_MS: u64 = 2;
 /// 开跑宽限（PILAT_GRACE_MS 同因：boot 验收对收尾——dl 改档与看门狗
 /// 起检都在宽限后）。
