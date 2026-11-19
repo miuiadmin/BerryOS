@@ -258,29 +258,3 @@ fn hostile_snapshots_never_panic() {
         let _ = check_irq_exit(depth, floor);
     }
 }
-
-// ---- W3-Q101：KL 诊断账面门律（03 号分派审计机会一 1a）----
-
-/// 门律全表四象限：`contended || par` 恰等——单核无争用（false,false）为
-/// 唯一关门态（零消费 ⇒ 零维护），其余三态全开门。
-#[test]
-fn kl_diag_gate_truth_table() {
-    assert!(!kl_diag_gate(false, false), "单核无争用 = 唯一关门态");
-    assert!(kl_diag_gate(true, false), "单核争用 = 开（随争用事实补维护）");
-    assert!(kl_diag_gate(false, true), "SMP 态无争用 = 开（bark 数据源恒新鲜）");
-    assert!(kl_diag_gate(true, true), "SMP 态争用 = 开");
-    // 与字面 || 恰等对拍（防未来演化为非单调门的漂移）。
-    for c in [false, true] {
-        for p in [false, true] {
-            assert_eq!(kl_diag_gate(c, p), c || p);
-        }
-    }
-}
-
-/// 自旋帽常量钉板：2^23 = 8388608（HAL kern_acquire 自旋超限看门狗阈值
-/// 单源——W3-Q101 自 kern_lock.rs 字面 `(1 << 23)` 迁册）。
-#[test]
-fn kl_spin_bark_mask_frozen() {
-    assert_eq!(KL_SPIN_BARK_MASK, 1 << 23);
-    assert_eq!(KL_SPIN_BARK_MASK, 8_388_608);
-}

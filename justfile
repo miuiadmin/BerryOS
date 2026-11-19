@@ -831,20 +831,19 @@ test-host:
     # 含尾 + 防呆帽〕+ 区序两族〔pinned 族 SLEEPQ 先/thread 族 RQ 先〕+
     # 幂等置位/清位律，host 12 测；判定律单源，sched.rs 六函数消费）。
     cargo test -p berry-frzface --target {{host}}
-    # W3-Q82：berry-balface（on_irq_tick 内嵌 SMP 门纯函数钉板——心跳/
-    # 卡扫折叠除法变档律〔500/2500 两周期独立折叠〕+ 高龄乘域判〔严格
-    # 大于 10s，与报告字段 div 形两数学独立〕+ 定时拉取近空闲联合门
-    # 〔mine<=1 ∧ theirs>=mine+2，反复迁移防线〕+ 偷取 victim 三值合取
-    # 〔spread ∧ ttbr0!=0 ∧ eligible〕，host 13 测；判定律单源，sched.rs
-    # 五点消费）。
+    # W3-Q82：berry-balface（on_irq_tick 内嵌 SMP 门纯函数钉板——定时
+    # 拉取近空闲联合门〔mine<=1 ∧ theirs>=mine+2，反复迁移防线〕+ 偷取
+    # victim 三值合取〔spread ∧ ttbr0!=0 ∧ eligible〕+ 金丝雀时间节流门
+    # 〔canary_due——探针族退役刀 2026-11-19 起，心跳/卡扫族随探针退役、
+    # soak_crossed 由 canary_due 继任〕，host 15 测；判定律单源，sched.rs
+    # 消费）。
     cargo test -p berry-balface --target {{host}}
     # W3-Q36：berry-lkface（lockdep 检查面纯函数——rank 七类全序表/
-    # check_acquire 三检判序/check_release 两臂/check_irq_exit 配平判
-    # + W3-Q101 kl_diag_gate 门律四象限真值表〔与字面 || 恰等对拍〕+
-    # KL_SPIN_BARK_MASK 2^23 迁册冻结，host 15 测；判定律单源，HAL
-    # kern_lock.rs lockdep 面 + kern_acquire 诊断门消费。#305 入库起
-    # 未接线 test-host（base 预存缺口），W3-Q103 随刀补线——「有 host
-    # 测零自动执法 = 静默腐烂」判例族（Q89 heapface 同款先例）。
+    # check_acquire 三检判序/check_release 两臂/check_irq_exit 配平判，
+    # host 13 测；判定律单源，HAL kern_lock.rs lockdep 面消费。
+    # 〔探针族退役刀 2026-11-19：kl_diag_gate/KL_SPIN_BARK_MASK 随
+    # spin_bark 族退役除册。#305 入库起未接线 test-host（base 预存缺
+    # 口），W3-Q103 随刀补线——「有 host 测零自动执法 = 静默腐烂」判例族。〕
     cargo test -p berry-lkface --target {{host}}
 
     # W3-Q83：berry-numface（UART 整数格式化族纯面钉板——u64 十进制〔无前

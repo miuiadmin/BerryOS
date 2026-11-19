@@ -66,6 +66,11 @@ static ACKS: [AtomicU32; MAX_CORES] = [AtomicU32::new(0), AtomicU32::new(0)];
 static TX: AtomicU32 = AtomicU32::new(0);
 
 /// per-CPU 待等闩（broadcast 置位；dispatch 尾等待毕清零）。
+/// W3-Q108 迁移注：置位/消费正字 = `SmpCpu.exit_latch` bit0（单字合并闩，
+/// 03 号机会一 1b——dispatch 尾一次 TPIDR 单读分诊双闩）；本数组**保留**
+/// 作迁移期镜像 + panic 诊断面（wait_pending 楔死自报名跨核读双闩态——
+/// 单字合并闩只有本核半边，对核闩态诊断走本镜像）。双写期：置位/清位点
+/// 与镜像同步（Release 同序）；消费分诊只读合并闩。
 static PENDING: [AtomicBool; MAX_CORES] = [AtomicBool::new(false), AtomicBool::new(false)];
 
 /// per-CPU 快照（broadcast 时点对核 ACKS 值）。
@@ -78,7 +83,34 @@ static ROLL_GEN: AtomicU32 = AtomicU32::new(0);
 static QUIESCED_GEN: AtomicU32 = AtomicU32::new(0);
 
 /// per-CPU 回卷待驱动闩（arm 置位；quiesce_check 等毕清零——单核恒不置）。
+/// W3-Q108 迁移注：正字 = `SmpCpu.exit_latch` bit1（双闩合并面同 PENDING 注）；
+/// 本数组保留同款（panic 诊断镜像）。
 static ROLL_PENDING: [AtomicBool; MAX_CORES] = [AtomicBool::new(false), AtomicBool::new(false)];
+
+/// W3-Q108（03 号机会一 1b/5a）：dispatch 尾合并闩位常量与分诊读——
+/// bit0 = TLB shootdown 待等闩、bit1 = ASID 回卷 quiesce 待驱动闩。
+pub(crate) const LATCH_TLB: u8 = 1 << 0;
+pub(crate) const LATCH_ROLL: u8 = 1 << 1;
+
+/// 合并闩置位（本核；Release——与镜像 PENDING/ROLL_PENDING 同序双写）。
+fn latch_set(bits: u8) {
+    if let Some(latch) = crate::smp::exit_latch_slot() {
+        latch.fetch_or(bits, Ordering::Release);
+    }
+}
+
+/// 合并闩清位（本核；Release——等待/驱动毕与镜像同步清）。
+fn latch_clear(bits: u8) {
+    if let Some(latch) = crate::smp::exit_latch_slot() {
+        latch.fetch_and(!bits, Ordering::Release);
+    }
+}
+
+/// dispatch 尾分诊读（一次 TPIDR → 单 load 全零直返；任一位置位走对应慢
+/// 查）。None（TPIDR 未装防御窗）= 无闩可等，返回 0。
+pub(crate) fn exit_latch_read() -> u8 {
+    crate::smp::exit_latch_slot().map_or(0, |l| l.load(Ordering::Acquire))
+}
 
 /// 收端半边（trap.rs SGI #2 臂调）：本地全量失效 + `dsb ish`（失效完成
 /// 先于回执可观的排序边）+ 回执计数自增。**取锁面恒零、零打印零分配**
@@ -115,6 +147,7 @@ pub fn broadcast() {
     let snap = ACKS[t].load(Ordering::Acquire);
     PEND_SNAP[me].store(snap, Ordering::Relaxed);
     PENDING[me].store(true, Ordering::Release);
+    latch_set(LATCH_TLB);
     // 快照→发送不可重排（SeqCst 栅）：若发送先于快照可观，快照可能已含
     // 本轮回执 → 等待谓词（> 快照）永不满足 = 悬死。
     core::sync::atomic::fence(Ordering::SeqCst);
@@ -149,13 +182,17 @@ fn wait_pending(me: usize) {
         core::hint::spin_loop();
     }
     PENDING[me].store(false, Ordering::Release);
+    latch_clear(LATCH_TLB);
 }
 
 /// dispatch 尾等待点（arch syscall.rs `dispatch` 在 `svc_exit_class` 后调）：
 /// 本核有待等闩才自旋（NONE 类号多付一次 Acquire 原子读；单核闩恒 0）。
+/// W3-Q108（03 号机会一 1b）：SVC 热路径经 [`exit_checks`] 单读分诊后进入，
+/// 此处保留直调自适应面（roll 驱动环内复调 / ktest·probe 直调）——镜像与
+/// 合并闩任一置位即等待（双写期两正字恒同步， belt-and-suspenders）。
 pub(crate) fn sched_exit_check() {
     let me = crate::smp::cpu_id();
-    if PENDING[me].load(Ordering::Acquire) {
+    if PENDING[me].load(Ordering::Acquire) || exit_latch_read() & LATCH_TLB != 0 {
         wait_pending(me);
     }
 }
@@ -183,6 +220,7 @@ pub fn roll_quiesce_arm() {
         return;
     }
     ROLL_PENDING[crate::smp::cpu_id()].store(true, Ordering::Release);
+    latch_set(LATCH_ROLL);
     broadcast();
 }
 
@@ -194,7 +232,10 @@ pub fn roll_quiesce_arm() {
 /// `ROLL` 再进，循环条件重检再驱动一轮（有界：回卷间隔 ≫ 回执往返）。
 pub fn roll_quiesce_check() {
     let me = crate::smp::cpu_id();
-    if !ROLL_PENDING[me].load(Ordering::Acquire) {
+    // W3-Q108：闩判先走合并闩 bit1（一次 TPIDR 单读）；置位期镜像恒同步
+    //（置位点同序双写），未置直返与旧 ROLL_PENDING 读语义等价。显式调用点
+    //（内核任务路 main.rs）不经 dispatch 尾分诊，此处保守回读镜像正字。
+    if exit_latch_read() & LATCH_ROLL == 0 && !ROLL_PENDING[me].load(Ordering::Acquire) {
         return;
     }
     while QUIESCED_GEN.load(Ordering::Acquire) < ROLL_GEN.load(Ordering::Acquire) {
@@ -204,9 +245,29 @@ pub fn roll_quiesce_check() {
         QUIESCED_GEN.fetch_max(g, Ordering::Release);
     }
     ROLL_PENDING[me].store(false, Ordering::Release);
+    latch_clear(LATCH_ROLL);
 }
 
 // ---- 观测面（probe ④ / ktest / 等价镜）----
+
+/// W3-Q108（03 号机会一 1b/5a）：dispatch 尾三查合一分诊——一次 TPIDR
+/// 追链读 `SmpCpu.exit_latch`（bit0=TLB shootdown 待等闩、bit1=ASID 回卷
+/// quiesce 待驱动闩），全零直返（单核生产面常态——两闩恒 0 不置）；任一
+/// 位置位才展开对应旧查（两查可同置：先等回执再驱动回卷，与旧两连调同
+/// 序）。替代旧形态「每号 syscall 各自 cpu_id() 追链 + 各读一格闩数组」——
+/// 每号省 1 次 MRS tpidr + 1 次闩数组 Acquire 读。防御窗（TPIDR 未装）=
+/// 分诊读 0 → 直返（无闩可等，与单核语义一致）；直调/ktest 面走
+/// [`sched_exit_check`]/[`roll_quiesce_check`] 自适应兜底不受影响。
+pub(crate) fn exit_checks() {
+    let l = exit_latch_read();
+    if l & LATCH_TLB != 0 {
+        let me = crate::smp::cpu_id();
+        wait_pending(me);
+    }
+    if l & LATCH_ROLL != 0 {
+        roll_quiesce_check();
+    }
+}
 
 /// 指定核回执计数（probe ④ 的 wait_secs 轮询谓词源）。
 pub fn ack_count(core: usize) -> u32 {

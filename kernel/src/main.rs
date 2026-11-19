@@ -3,7 +3,7 @@
 //! Phase 2a Step 6（里程碑）：两内核任务在 CNTV 定时器上**抢占式分时**。`on_irq_tick`
 //! 经 IRQ 派发槽被调，做真 `tick`（减 slice_left）+ 归 0 则 `pick_next` + `switch`。
 //! task_a/task_b 是**忙循环**（不 yield）——A/B 交替**纯由 timer slice 驱动**，即里程碑
-//! 原文「两个内核任务在定时器上分时」。每 50 次切换打一行 `switches=N` 金丝雀（liveness）。
+//! 原文「两个内核任务在定时器上分时」。按时间节流（现行 CANARY_PERIOD=15s，探针族退役刀 2026-11-19；历史值 100/10000——每 50 次打一行 `switches=N` 金丝雀（liveness）。
 //! 异常向量已装（HAL `trap`）；panic handler 输出消息 + 位置（file:line:col）（G0 判据），
 //! CPU 异常寄存器/ESR/FAR dump 在 HAL `trap::exception_sync`。
 #![no_std]
@@ -6193,7 +6193,7 @@ const LATSGI_POLL_MAX: usize = 4096;
 
 // ---- S-1：soakmon（soak 长跑心跳，boot 门控 spawn 块见 main 尾段；
 // 设计 = docs/基准与压力测试设计-v1.0.md §11 + 落地实录。命名注记：sched.rs 的
-// SOAK_PRINT_EVERY（金丝雀节流常量）与 task_a 注释「SOAK=1 低噪 soak」是
+// SOAK_PRINT_EVERY（金丝雀节流常量——探针族退役刀 2026-11-19 起由 balface::CANARY_PERIOD 继任）与 task_a 注释「SOAK=1 低噪 soak」是
 // 历史名，与本文 soakmon 无关，勿混读）----
 
 /// soakmon 的 fw_cfg 具名项名（门控键——soak.sh 专递

@@ -53,6 +53,9 @@ const TCP_SPORT: u16 = 48080;
 /// 自验各相位帽（ns）：握手/往返/挥手单相位预算（§6 RPC 成本模型：单帧
 /// poll ~1s 级 TCG；成功路径三相位合计 ≈10 帧往返）。
 const SELFTEST_CAP_NS: u64 = 60_000_000_000;
+
+/// 自验整生命周期重试数（F122 族修：瞬态饥饿帽到先重试再 trap）。
+const SELFTEST_RETRIES: u32 = 3;
 /// send_data 分批入环的阻塞泵帽（ns，二刀）：环满/零窗等位 ACK 的相位预算
 ///（serve RT 臂另持 TCPS_RT_CAP_NS 60s 收全 ACK——本帽只管入环相）。
 const SEND_CAP_NS: u64 = 30_000_000_000;
@@ -1951,14 +1954,54 @@ pub(crate) fn listen_selftest(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac
 /// 插在 `NET ok` 自验之后、serve() 之前（A-8b 同款：自验毕转常驻、DNS/TCP
 /// 服务面零回归）。失败各相位 println 诊断 + trap loud（标记缺失 = smoke
 /// FAIL 兜底）。
+///
+/// F122 族修（2026-11-19 根因定谳）：TCG/宿主饥饿窗可烧穿自验绝对帽
+/// （guest 单调钟下 60s 帽在宿主调度伸缩下工作量不可达——B2p 死窗实证：
+/// 握手成、64B 回环 60s 帽穿 → trap → TCP 面全 EIO 的「网面死窗」，内核
+/// 与其余套件照常）。修=整生命周期（connect+roundtrip+shutdown）瞬态类
+/// 超时先重试 [`SELFTEST_RETRIES`] 次再 trap——瞬态饥饿再给机会，协议
+/// 破缺（对拍失败/会话异常）仍首犯即 hard trap；attempt 间 table.reset()
+/// 清 mux 残留。
 pub fn selftest(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) {
+    for attempt in 1..=SELFTEST_RETRIES {
+        let table = mux();
+        table.reset();
+        match selftest_once(d, regs, mac, gw_mac, attempt) {
+            Ok(()) => {
+                println!("TCP ok echo=64");
+                return;
+            }
+            // 瞬态类（各相位帽到）：attempt 间已 println 诊断——重试。
+            Err(Transient) => continue,
+            // 协议破缺类：首犯即 loud（重试也治不了对拍/异常）。
+            Err(Hard) => trap(),
+        }
+    }
+    println!("vnet: tcp 自验重试耗尽（{} 次瞬态帽到）", SELFTEST_RETRIES);
+    trap();
+}
+
+/// 自验单次生命周期。Err(Transient)=某相位绝对帽到（饥饿面，可重试）；
+/// Err(Hard)=协议破缺（对拍失败/会话异常终止，重试无义）。
+enum SelftestFail {
+    Transient,
+    Hard,
+}
+use SelftestFail::{Transient, Hard};
+
+fn selftest_once(
+    d: &mut Dma,
+    regs: *mut u32,
+    mac: &[u8; 6],
+    gw_mac: &[u8; 6],
+    attempt: u32,
+) -> Result<(), SelftestFail> {
     let table = mux();
-    table.reset();
     let mut sess = match Sess::connect(d, regs, mac, gw_mac, table, TCP_SPORT, ECHO_PORT, now() + SELFTEST_CAP_NS) {
         Some(s) => s,
         None => {
-            println!("vnet: tcp 自验握手失败");
-            trap();
+            println!("vnet: tcp 自验握手失败（第 {} 次）", attempt);
+            return Err(Transient);
         }
     };
     let mut out = [0u8; bt::MSS as usize];
@@ -1966,20 +2009,23 @@ pub fn selftest(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) {
         RtRes::Ok(n) if n == PATTERN.len() && out[..n] == PATTERN[..] => {}
         RtRes::Ok(n) => {
             println!("vnet: tcp 回显对拍失败 got={}", n);
-            trap();
+            return Err(Hard);
         }
         RtRes::Timeout => {
-            println!("vnet: tcp 自验超时（roundtrip）state={:?}", sess.conn.state);
-            trap();
+            println!(
+                "vnet: tcp 自验超时（roundtrip）state={:?}（第 {} 次）",
+                sess.conn.state, attempt
+            );
+            return Err(Transient);
         }
         RtRes::Bad => {
             println!("vnet: tcp 会话异常终止（roundtrip）");
-            trap();
+            return Err(Hard);
         }
     }
     if !sess.shutdown(d, regs, mac, gw_mac, table, now() + SELFTEST_CAP_NS) {
-        println!("vnet: tcp 挥手超时 state={:?}", sess.conn.state);
-        trap();
+        println!("vnet: tcp 挥手超时 state={:?}（第 {} 次）", sess.conn.state, attempt);
+        return Err(Transient);
     }
-    println!("TCP ok echo=64");
+    Ok(())
 }
