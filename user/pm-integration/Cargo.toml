@@ -1,0 +1,43 @@
+[package]
+name = "pm-integration"
+# L-SYS 0.2.0：字面版本不走 workspace 继承（独立小工作区，版本治理
+# 规则/14；user 族同批同值——berry-power/berry-thermal/berry-em/
+# berry-slackface 同款）。升版 = 逐 crate 手同步。
+version = "0.2.0"
+edition = "2021"
+
+# PM 四 crate 联合场景（全链纯面验证，CP-08 接线前）——berry-power（频率
+# 帽聚合/充电限流票 mA 域）+ berry-thermal（step_wise+迟滞+JEITA）+
+# berry-em（EM 表/EAS 选核能量律）+ berry-slackface（timer slack 聚合）四件
+# 各自独立测试全绿（31+13+8+12）但从未联合；本件以只读 path 依赖把四件按
+# ADR #66/#68（docs/架构决策.md:74/:76）与调度彻底计划 CP-08 段
+# （docs/调度彻底计划-v1.2.md:99）的数据流接成三个端到端场景（热降频全链/
+# slack+EM 联合/充电票+关机边界），验证「上游出→下游收」跨 crate 正确性。
+#
+# 形态：四 crate 同族独立小工作区（空 [workspace] escape 根/父 workspace，
+# 不入 user/Cargo.toml members——berry-em/berry-slackface 同例）。差异如实
+# 记：本件是 host 验证面 harness 非产线服务——无 bin 壳、无 musl 产线 profile
+# （[profile.release] 省略），lib 桥面 no_std 兼容、场景全在 cfg(test)。
+# CP-08 接线刀已挂 justfile test-host（04 号复核 F3 收口）；不进 rootfs/产线。
+#
+# host 测试（仓根 .cargo/config.toml 锁 build.target = aarch64-unknown-none，
+# 须显式 --target 覆盖——四 crate 同款纪律）：
+#   CARGO_TARGET_DIR=target-cargo cargo test --manifest-path \
+#     user/pm-integration/Cargo.toml --target aarch64-apple-darwin
+license = "Apache-2.0"
+
+[workspace]
+
+[lib]
+name = "pm_integration"
+path = "src/lib.rs"
+
+[dependencies]
+# 四被测件（只读 path 依赖，零改其源）。
+berry-power = { path = "../bins/berry-power" }
+berry-thermal = { path = "../bins/berry-thermal" }
+berry-em = { path = "../berry-em" }
+berry-slackface = { path = "../berry-slackface" }
+# 协议单源：battery 帧编码（场景 A/C 低电票走 PowerCore 会话面真帧路径；
+# ADR #68 ③ 零新 syscall 载体，berry-power 同源消费）。
+berry-pwproto = { path = "../berry-pwproto" }

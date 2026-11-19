@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["berry-efi", "app"]
+
+# EFI 应用面：panic=abort（无 unwind——.eh_frame 在链接脚本 DISCARD，PE 侧
+# 亦无 pdata）；体积优先。
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = true
+codegen-units = 1

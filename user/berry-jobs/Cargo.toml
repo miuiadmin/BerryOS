@@ -1,0 +1,15 @@
+[package]
+name = "berry-jobs"
+version.workspace = true
+edition = "2021"
+# 作业控制 v2 刀（.agents/plans/2026-11-19-bsh作业控制v2刀实施设计.md 契约 J）：
+# bsh 后台作业纯函数 crate，`berry-complete`/`berry-poll` 同款形态——
+# `cfg_attr(not(test), no_std)` + `extern crate alloc`：库本体 no_std
+# （workspace none-target 全量构建可编），test 构建放开 std 仅为测试挂具。
+# 单消费 = bsh（user/bins/bsh 独立小工作区 path 依赖，musl target，同
+# stdhello 不入 members——本 crate 零 syscall 面故入 members 挂 host 测试
+# 无碍）；job 表与 terminate/wait/reap syscall 面全留 bsh。
+description = "BerryOS bsh job control: bg-suffix stripping / job-id allocation / %n parsing / report lines"
+license = "Apache-2.0"
+
+[dependencies]

@@ -1,0 +1,14 @@
+[package]
+name = "echo"
+version = "0.1.0"
+edition = "2021"
+
+# 注：rootfs 的 bin/echo 条目自 C-2a 起由本 crate 提供（自研 echo 是
+# svcmgr include_bytes 内嵌演示件、不占 cpio 条目——无命名冲突）；
+# bsh 的 echo 内建优先（裸名不派发到 PATH），GNU 语义面经 `run echo` 取。
+license = "Apache-2.0"
+
+[dependencies]
+rustix.workspace = true
+uu_echo = "=0.12.0"
+berry-libc = { path = "../../../berry-libc" }

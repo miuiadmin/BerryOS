@@ -1,0 +1,172 @@
+/target
+
+# kernel/ 仓内默认 target（取证时代仓内直跑残留，正式构建走共享 ~/.cargo-target）
+/kernel/target/
+
+# 刀 A 隔离 target（任务指定 CARGO_TARGET_DIR=.target-a——直跑 cargo 面
+# check/test 隔离，不与 justfile 各工作区 target 互染）
+/.target-a/
+**/*.rs.bk
+
+# G-eco initrd 镜像（编译侧产物，不入库）——A1-3b 起含 --split 编号卷
+# （rootfs0.cpio/…：单卷 ≤32MiB 形态下 28MiB 归档 = 1 卷 rootfs0.cpio）
+/rootfs.cpio
+/rootfs*.cpio
+
+# P6 A-2 virtio-blk 探测盘（run-rootfs/smoke 现场造的 1MiB 空盘，不入库）
+/disk.img
+
+# S-1 soak 专属盘（soak.sh 现场造；专属名与 smoke 的 disk.img 零交集——
+# 并行窗口同名盘互毁面归零）
+/disk.soak.img
+
+# V-3 just image 整盘镜像产物（mkimage.py 现场造，不入库）
+/out/
+
+# C-0 刀 4 FAT 子目录相盘（mkfat --fixture 模式现场造，不入库；默认盘
+# 字节零漂移硬线不破——子目录只在 fixture 模式）
+/disk_dirs.img
+
+# B4 掉电相专属盘（smoke 阶段 7 现场造 + pwrcls 注入；专属名与主盘零交集
+# ——毒环态不污染他相复用盘）
+/disk.pwr.img
+
+# S-0 smoke-smp 专属盘（smoke.sh smp 相现场造；专属名与主 smoke 盘零交集
+# ——smoke/smoke-smp 并行窗互毁面归零）
+/disk.smp.img
+
+# S-5d soak-smp 专属盘（soak-smp.sh 现场造；三方零交集纪律同上——
+# soak/smoke/soak-smp 并行窗互毁面归零）
+/disk.soaksmp.img
+
+# G3-5 soak-g3 专属盘（soak-g3.sh 现场造；四方零交集纪律同上）
+/disk.soakg3.img
+
+# G4-3 dpg 家族专属盘（bench.py --dpg 现场造 disk.dpg.img；dpgsoak
+# disk.dpgf.img / smoke-lockdep disk.lockdep.img——专属名与他线活盘零
+# 交集纪律同上）
+/disk.dpg.img
+/disk.dpgf.img
+/disk.lockdep.img
+
+# G-eco 用户程序编译产物（just build-user 产出；缺产物 = 内核 include_bytes
+# 编译期炸响——D6 的 loud-not-silent 设计，build 链已依赖 build-user）
+/kernel/src/userbins/
+
+# G-eco-b 子程序平像中转区（svcmgr include_bytes! 的输入；两遍构建 pass 1 产物）
+/user/userbins/
+
+# 用户态独立工作区 target（build-user 显式 CARGO_TARGET_DIR）
+/user/cargo-target/
+
+# P7 x86_64 独立工作区 target（build-x86 显式 CARGO_TARGET_DIR）
+/arch/x86_64/cargo-target/
+
+# drivers/ 驱动工作区 target（build-user 驱动面显式 CARGO_TARGET_DIR）
+/drivers/cargo-target/
+
+# C-2a uutils coreutils 家族工作区 target（build-user uu 面显式 CARGO_TARGET_DIR）
+/user/bins/uu/cargo-target/
+
+# C-3 ps/berryctl 独立小工作区 target（build-user 注册段显式 CARGO_TARGET_DIR，仓库根）
+/cargo-target/
+
+# Claude Code 本地/会话态（不提交；共享的 agents/settings.json 若需入库再单独 force-add）
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+
+# 第三方参考实现仅本地保留：克隆树不入库（出处/协议见 reference/README.md）
+/reference/zcore/
+/reference/loopx-2.1.0/
+/reference/ginux/
+/reference/sdk-ui/cache/
+
+# python 脚本字节码缓存（size.py 被工具链调用时产生）
+__pycache__/
+
+# Claude Code 会话/工作树目录（本地工具产物，不入库）；
+# .claude/skills 符号链接入库（.codex/skills 与 CLAUDE.md 两桥已在库）——
+# 父目录被排除时 git 不下钻，须用 .claude/* + ! 取反惯用法，单写 !.claude/skills 无效
+.claude/*
+!.claude/skills
+
+# loopx MCP 注册（含本机绝对路径，机器绑定）
+/.mcp.json
+
+# loopx 项目内控制面状态（goal/todo/证据账本，本地态）
+/.loopx/
+
+# berry 宿主工具独立 target（just berry-build 显式 CARGO_TARGET_DIR）
+/tools/berry/cargo-target/
+
+# elf2flat 宿主工具独立 target（just build-user 换轨二刀起产链内构建，
+# CARGO_TARGET_DIR 显式钉此——防全局 target-dir 覆盖漂移）
+/tools/elf2flat/cargo-target/
+# elf2pe 宿主工具独立 target（test-host 接线 cargo test 默认落此处，
+# 同款防全局 target-dir 覆盖漂移口径）
+/tools/elf2pe/cargo-target/
+# mkfat 宿主工具独立 target（彻底 Rust 化轨道 b 层 #8 刀序第二位首刀，
+# test-host 接线与 CLI 对拍构建共用，防产物入库）
+/tools/mkfat/cargo-target/
+# mkapp 宿主工具独立 target（b 层 #4 刀序第四位首刀，mkfat 同款纪律）
+/tools/mkapp/cargo-target/
+
+# berry 宿主工具截图产物（berry shot 默认输出 / 窗口 Cmd-S）
+/shot.png
+/berry-shot-*.png
+.cargo-target-local/
+.tmp_report.md
+
+# 合并 worktree 残骸与本地构建缓存（审计 2026-11-08）
+smoke-wt-*/
+# W3 lane 隔离验证 target（#208/#216 判例——/.target-*/ 构建产物防误入 git）
+/.target-*/
+
+# W3 lane 隔离构建 target（unsafe 台账重产/QA 独立复现——防误入库，#208/#216 判例）
+/.target-*/
+
+# W3 lane 本地独立构建缓存（干净复现纪律——不与共享 ~/.cargo-target 互染）
+/.cargo-w3/
+/.target-*/
+
+# W3 lane 独立 no_std target 目录（CARGO_TARGET_DIR 隔离构建——#216 判例
+# 「构建产物不入库」防再犯；base 剥落后随刀补回）
+/.target-*/
+
+# SDK-2 dev 签发密钥对（just sign-user → berry-sign keygen 产物；纪律 =
+# tools/testkeys/README.md——钥本体永不入仓，README 入仓）
+/tools/testkeys/dev/
+
+# 并行会话构建缓存与本地面包容器（VNC wave5 条件项，probe 2026-11-13 裁决：
+# 六路径全 NOT IGNORED 且无竞争性 ACTIVE 声索——第四波 survey F23 明言
+# 「与并行线协调后一并于后续刀补」；均纯未跟踪，忽略不影响已入库文件）
+/target-cargo/
+/.dsh-target/
+/.dsh-worktrees/
+/kernel/kernel/
+/.berry-review/
+# launcher 独立小工作区本机构建缓存（波0 基线收口补）
+/user/bins/berry-launcher/cargo-target/
+
+# 波 2 画廊 PPM 中间产物（gallery2 测试再生——PNG/cells.tsv 入仓，ppm/ 不进提交）
+/WAVE2-GALLERY/ppm/
+# W3 lane 隔离构建缓存目录（#208/#216 判例：.target-* 构建产物不入库；
+# base 重写反复剥落本规则，随刀补回）
+/.target-*/
+.plugins/
+
+# 并行会话隔离 target 族与验证残渣(2026-11-17 四刀 survey F103 收口:
+# 仓库根 target-<tag> 形态构建缓存/user 工作区默认 target/根 userbins
+# 产物/toxproxy 会话日志——均不入库;此前逐目录堆积 27+ 目录污染 status)
+/target-*/
+/user/target/
+/userbins/
+/user/cargo-target-*/
+/px-*.log
+/user/target-*/
+# mkimage 宿主工具独立 target（彻底 Rust 化轨道 b 层 #8 刀序第三位首刀，
+# tools/mkfat 同款纪律）
+/tools/mkimage/cargo-target/
+# 终验观察件（2026-11-19）：TCP 族 crate 裸 target（F103 target-* 族漏网面）。
+/user/berry-tcp/target/
+/user/berry-netdproto/target/

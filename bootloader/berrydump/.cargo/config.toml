@@ -1,0 +1,5 @@
+# berryboot 同款（P7-x0 纪律：自证不靠 inheritance——根 config 锁
+# build.target=aarch64-unknown-none 且发现跨 workspace 边界仍命中，
+# 独立工作区必须自带钉版）。
+[build]
+target = "aarch64-unknown-none"

@@ -1,0 +1,14 @@
+[package]
+name = "berry-svcface"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+
+[lib]
+name = "berry_svcface"
+path = "src/lib.rs"
+
+# 无外部依赖：SVC 入口锁类位集与号→锁类注册表纯函数面（host 单测走
+# `cfg(test)` 链 std，形态抄 berry-sliceface / berry-chanface）。HAL crate
+# 消费（SVC_CLASS_* 常量单源迁此，kern_lock.rs re-export——W3-Q67；
+# wqmatch/chanface/sliceface 同款纪律）。

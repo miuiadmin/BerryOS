@@ -1,0 +1,47 @@
+[package]
+name = "files"
+# L-SYS 0.2.0：字面版本不走 workspace 继承（musl 链独立小工作区，版本治理
+# 规则/14；user/bins 同批同值——settings/appstub/berry-launcher 同款）。
+# 升版 = 逐 crate 手同步。
+version = "0.2.0"
+edition = "2021"
+
+# 波 4 第二件（.agents/plans/2026-11-15-波4预制应用翻新实施设计.md §2.2；
+# 先例 = settings 垂直切片 9035af061）：FILES 真 GUI 应用——appstub 秒退壳
+# 的替换。目标 = 双根浏览页（apps / data）+ 面包屑 chip 逐级跳层 + 固定
+# 过滤词表 chip（softimed 缺席的 v1 降解）+ Scroll[List] 目录条目
+# （pattern::list_item 名 + 类型角标、目录在前）+ 文件条目只读详情
+# （Dialog 降解为应用内瞬态行）。data 根经 berry-fsclient（fs_h 礼物）
+# 真往返 FAT12 数据盘：READDIR 列名 + STAT 定型（fsclient 严格串行单
+# RPC 会话纪律，launcher layout_io 同源）。
+#
+# 链与形态 = settings crate 镜像（berry-launcher 二级镜像）：独立小工作区
+# （空 [workspace] escape user 根，不入 members；musl target + berry-libc
+# shim + berry-ld 链，构建行见 justfile build-user RUSTFLAGS 形）。与
+# settings 的 dep 差 = + berry-fsclient（READDIR/STAT/STATFS 直面——
+# libc opendir 的 C ABI 面不如同名 Rust 面可直用；帽常量/TYPE_DIR 单源
+# 再出口同享）。
+#
+# GUI 通道形态注（svcmgr app_launch GUI 授权链 5452649af）：本 app 声明
+# fs 词 + [ui] 节 → gift 槽位 [rootfs, fs, wm, input]——wm 落 extras[2]
+#（berry-libc io.rs GIFT_H[4]，wm_cli_h() 的 [0] 位被 rootfs 占位）。
+# 取用经同槽访问器 wm_present_h()（「同一 gift 位对不同程序承载不同
+# 对象」的多产面惯例）；专用访问器挂 appshell 裁决 A（3b）落地换轨。
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+berry-sys = { path = "../../berry-sys" }
+berry-guiproto = { path = "../../berry-guiproto" }
+berry-ui = { path = "../../berry-ui" }
+berry-gfx = { path = "../../berry-gfx" }
+berry-fsclient = { path = "../../berry-fsclient" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

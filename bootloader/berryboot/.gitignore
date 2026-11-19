@@ -1,0 +1,3 @@
+# berryboot 工作区本地产物（build-boot 现场造、确定性可再生）
+/cargo-target/
+/out/

@@ -1,0 +1,17 @@
+[package]
+name = "berry-utrace"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+
+[lib]
+name = "berry_utrace"
+path = "src/lib.rs"
+
+[dependencies]
+# W3-Q23：util 窗口机盒纯面（per-CPU 槽机械的纯结构投影）。判序与折叠
+# 数学单源 berry-emface（window_state 三态 + ewma_fold）——本 crate 只
+# 模型「槽状态怎么推进」，不重写任何数学（零第二实现）。host 表驱动
+# 钉板 + sched/src/util.rs 真账流文档化基准（原子壳保持现状，接线取舍
+# 见 PR body）。
+berry-emface = { path = "../emface" }

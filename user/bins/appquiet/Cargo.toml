@@ -1,0 +1,25 @@
+[package]
+name = "appquiet"
+# L-SYS 0.2.0：字面版本不走 workspace 继承（musl 链独立小工作区，版本治理
+# 规则/14；user/bins 22 件同批同值）。升版 = 逐 crate 手同步。
+version = "0.2.0"
+edition = "2021"
+
+# app-0 demo 双 app 之二（`docs/app-0实施设计草案-v1.0.md` §4）：manifest
+# `console = false` + 显式 [runtime] stack_pages = 8（显式路径）——能力
+# 缺席可运行的活证：stdout = appd 私有采集对端（输出不进串口），main
+# 静默真退出，appd collect 面只收 libc exit 先行的零长 EOF（fail 同款
+# 快路径）。stdhello 同链独立小工作区。
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+berry-libc = { path = "../../berry-libc" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

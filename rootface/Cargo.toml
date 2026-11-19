@@ -1,0 +1,9 @@
+[package]
+name = "berry-rootface"
+version.workspace = true
+edition.workspace = true
+license = "Apache-2.0"
+publish = false
+description = "rootfs 装载门纯面（W3-Q85）：fwcfg 多卷发现/v0 init_blob 域门/isegs Σ 帽/拼装对账 host 钉板"
+
+[dependencies]

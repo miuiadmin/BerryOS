@@ -1,0 +1,8 @@
+[package]
+name = "berry-susface"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "BerryOS process/thread suspend 冻结深度判序纯函数面（W3-Q38）"
+
+[dependencies]

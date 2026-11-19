@@ -1,0 +1,46 @@
+[package]
+name = "gui-wmd"
+# L-SYS 0.2.0：字面版本不走 workspace 继承（musl 链独立小工作区，版本治理
+# 规则/14；user/bins 22 件同批同值）。升版 = 逐 crate 手同步。
+version = "0.2.0"
+edition = "2021"
+
+# GUI-5（ADR #61）+ 波3（六波方案步骤 4）：gui-wmd 独立窗口管理守护——
+# 呈现/窗口策略分离 + 焦点/返回路由/事件通道。
+# **双面 crate**（gui-inputd 先例）：lib = 纯策略核（权威窗口表两层窗 +
+# Z 序 + AVOID_SYS 避让有效几何 + parent/group 缝 + 单焦点 + version 纪元
+# 计数 + 波3 焦点维护/OP_WM_BACK 路由 500ms 单槽兜底/属主事件通道/表变更
+# 广播——I/O 全走 Port 缝，host 单测 mock 客户端全盖）；bin = guest 入口
+# （present/hdi 双域透传中继 + 两路 poll-first serve + 事件通道并监 +
+# 返回兜底软定时，ChanPort 接 berry_sys）。
+# 拓扑：guifbd 不动；gfxdemo 改连 wm 域（同 op 换端）；inputd 追加推送端；
+# 波3 起属主窗（CREATE 随行 gift 事件通道端）与无窗订阅者
+# （OP_WM_SUBSCRIBE——guifbd 表快照通知驱动面）收 WM_EVENT_TABLE 广播。
+# **零 fs 端**（Q-义务②）：fsproto 严格串行无请求号——常驻双读者 =
+# 应答跨客户错配；持久化形态前置三件见设计稿 §7（位序留 GUI-8）。
+# **env 冻结注记（§7 Q12）**：extras 4 枚 = [wm_srv, push_srv,
+# present_cli, hdi_cli]，加 base 4 恰 8/8 零余量（CHAN_HND_MAX 硬帽）；
+# 第 5 插 = kernel/channel + berry-exec + berry-libc 四处抬帽另刀，本刀
+# 不预抬不预留。guifbd/gfxdemo 同型独立小工作区（musl target +
+# berry-libc shim + CRT0_SEED 锚）。
+# **berry-libc 按目标门控**（gui-inputd 同因）：berry-libc 的 crt0/inline
+# asm 在 host 测试构建不编译（T-1 家族）；host bin 为空壳 main，guest 面
+# 整体缺席——lib 单测得以 host `cargo test` 直跑。
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+berry-sys = { path = "../../berry-sys" }
+berry-guiproto = { path = "../../berry-guiproto" }
+
+# guest 面依赖（musl/linux 侧）：gift 收割/park/crt0 锚（gfxdemo 同款）。
+[target.'cfg(target_os = "linux")'.dependencies]
+berry-libc = { path = "../../berry-libc" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

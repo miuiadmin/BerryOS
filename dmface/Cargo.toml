@@ -1,0 +1,8 @@
+[package]
+name = "berry-dmface"
+version.workspace = true
+edition = "2021"
+license = "Apache-2.0"
+description = "fw_cfg display mode request parsing pure face (W3-Q84)"
+
+[dependencies]

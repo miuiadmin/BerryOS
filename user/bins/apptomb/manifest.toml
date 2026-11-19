@@ -1,0 +1,12 @@
+[app]
+id = "APPTOMB"
+version = "0.1.0"
+entry = "bin/apptomb"
+type = "app"
+intent = "background"
+
+[capabilities]
+console = true
+
+[runtime]
+stack_pages = 4

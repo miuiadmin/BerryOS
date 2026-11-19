@@ -1,0 +1,40 @@
+#!/bin/sh
+# berry-ld —— G-eco-d 链接器包装（macOS 交叉 musl 的关键一环，附录 A「链接咒语」）
+#
+# rustc 经 `-C linker=<本脚本> -C linker-flavor=ld.lld` 调入：
+#   1. 剥 musl crt（crt1/crti/crtbegin/crtend/crtn.o——crt1.o 的 _start 与
+#      berry-libc crt0 冲突；__libc_start_main 面全免）；
+#   2. 剥 `-lc`（**零 musl 字节**执法点，C-2a 由「惰性保险网」转正）：
+#      图里缺的符号一律 berry-libc 补桩（loud 拒链 → 补到绿），不让 musl
+#      libc.a 顶包——顶包的正确性危害是真 musl 代码带 raw Linux svc 混进
+#      镜像（rustix linux_raw 号对撞的同族灾难），且 lto=fat 把 berry-libc
+#      折进 bin 自身 rcgu.o 后，musl 成员被拉的传递闭包（strerror_r.lo →
+#      __errno_location）会以 duplicate symbol 拒链——错误形态与缺口
+#      本体完全脱钩，C-2a 实踩两轮。
+#   3. 转交 rustup 内置 rust-lld 直驱（多调用 binary：argv[1] 的
+#      `-flavor gnu` 由 rustc 已带，保持参数原序勿动）。
+#
+# 诊断辅助：BERRY_LD_DUMP=<路径> 时把过滤前的原始 argv 落盘（排障用，
+# 常态零开销；C-2a cp 链接排障引入）。
+[ -n "$BERRY_LD_DUMP" ] && printf '%s\n' "$@" > "$BERRY_LD_DUMP"
+
+# 过滤用 shift-回队惯用形：不能「先 `set --` 清空再循环」——那会把循环
+# 列表一并清掉（实踩：rust-lld 零参被调，报 generic driver 提示）。
+n=$#
+while [ "$n" -gt 0 ]; do
+  a=$1
+  shift
+  n=$((n - 1))
+  case "$a" in
+    */crt1.o | */crti.o | */crtbegin.o | */crtend.o | */crtn.o) continue ;;
+    # rustc 对 musl target 展开为单 token `-lc`（实测 argv 形态）。
+    -lc) continue ;;
+  esac
+  set -- "$@" "$a"
+done
+RUSTC=$(command -v rustc || echo "$HOME/.cargo/bin/rustc")
+SYSROOT=$("$RUSTC" --print sysroot)
+# 宿主三元组动态取（勿硬编码 aarch64-apple-darwin——CI 是 linux 宿主；rust-lld
+# 由 rustup 随宿主工具链分发，路径只差三元组一段）。
+HOST=$("$RUSTC" -vV | sed -n 's/^host: //p')
+exec "$SYSROOT/lib/rustlib/$HOST/bin/rust-lld" "$@"

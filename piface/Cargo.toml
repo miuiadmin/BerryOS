@@ -1,0 +1,18 @@
+[package]
+name = "berry-piface"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+
+[lib]
+name = "berry_piface"
+path = "src/lib.rs"
+
+# 无外部依赖：PI 捐赠图纯函数面（host 单测走 `cfg(test)` 链 std，形态抄
+# berry-wqmatch / berry-iprofile）。kernel crate 消费（donor_edge/传播核心
+# 外迁单源，kernel/src/pi.rs 保留锁窗机械）。
+
+[dependencies]
+# 值域三形（WaitKey/WAIT_ANY）复用 W3-Q2 单源——donor 资格判的等待键
+# 域与 wake 匹配同源，防两 crate 值域漂移。
+berry-wqmatch = { path = "../wqmatch" }

@@ -1,0 +1,9 @@
+[package]
+name = "berry-bootprogress"
+version = "0.1.0"
+edition = "2021"
+description = "BerryOS boot progress truth model and native framebuffer renderer"
+license = "Apache-2.0"
+
+[dependencies]
+berry-fbcon = { path = "../../../user/berry-fbcon" }

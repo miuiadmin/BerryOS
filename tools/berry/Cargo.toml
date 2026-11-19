@@ -1,0 +1,64 @@
+[package]
+name = "berry"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "BerryOS developer device shell (host tool)"
+publish = false
+
+[lib]
+name = "berry"
+path = "src/lib.rs"
+
+[[bin]]
+name = "berry"
+path = "src/main.rs"
+
+[features]
+gui = []
+
+[dependencies]
+berry-cbox = { path = "../../user/berry-cbox" }
+# BSHRC 宿主写者（export 刀挂账 #3）：FAT12 就地写面走 berry-fatfs 纯编
+# 解码写基元（fat12_set/find_free_cluster/encode_file_entry 等）——客机
+# fsmgr 消费同 crate，「写读两端 FAT 实现对拍」按构造成立；跨 workspace
+# path 依赖先例 = berry-cbox。host 工具面，不进客机/ABI。
+berry-fatfs = { path = "../../user/berry-fatfs" }
+clap = { version = "4.5", features = ["derive"] }
+serde_json = "1.0"
+winit = "0.30"
+softbuffer = "0.4"
+miniz_oxide = "0.8"
+# VNC wave 5 TLS plane (VeNCrypt client / https page / wss termination).
+# Host tool only (this workspace never enters the guest image). Minimal
+# feature set per plan: ring backend, std, tls12; no aws-lc-rs, no logging.
+# rustls-pki-types is a direct dep because PEM loading + ServerName types
+# sit on the public path of this knife, not just transitively.
+# Licenses: rustls Apache-2.0 OR ISC OR MIT; ring Apache-2.0 AND ISC;
+# pki-types/webpki/once_cell/zeroize/cfg-if/getrandom/libc ISC or MIT or
+# Apache-2.0; sole exception subtle 2.6.1 = BSD-3-Clause (three-clause,
+# accepted by the wave-5 plan; no removal path from rustls 0.23).
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+rustls-pki-types = { version = "1", features = ["std"] }
+# VNC wave 10 terminal QR (Nayuki qrcodegen): single-file pure-Rust MIT
+# crate, zero transitive dependencies (Cargo.lock gains exactly one line),
+# no rust-version/edition declaration so MSRV risk is nil. Used only by
+# `berry vnc web --lan` pairing (host tool, never enters the guest).
+qrcodegen = "1.8"
+# 显示加速 B1-b 壳半（#286）：wgpu Metal 呈现骨架 + overlay alpha 合成。
+# Host 工具面（不进客机镜像）。wgpu 30 系依赖树经 lock 收敛（见 Cargo.lock）。
+wgpu = "30.0"
+pollster = "1.0.1"
+bytemuck = "1.25.2"
+
+[dev-dependencies]
+# 仅测试字节恒等对拍消费（BSHRC 刀 T1：berry 写者产物 vs mkfat build_volume
+# 造盘产物整盘逐字节等值＝写方言≡造盘方言同源证）；零外部 crate。
+mkfat = { path = "../../tools/mkfat" }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+[workspace]
