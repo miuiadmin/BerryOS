@@ -1129,10 +1129,11 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // 04 号审计基线缺口（2026-11-17）：switch_pair 调度器纪元基准窗——
     // berry_sched::init 与 telemetry::init 之间的唯一槽位（调度器已在 +
     // 遥测钩子未注册 = TRACE_CAP 0.0 结构性零面 + boot DAIF 屏蔽窗）。
-    // `BENCH ok` 收尾行自 bench::run() 尾迁至本纪元尾恒发（n=8；trailer 须
-    // 在最后一行 BENCH 之后——bench.py 的 len==done_n 收割契约）。纪元内
-    // 切换先于遥测注册 = G1.5 的 tel>=switches_tt 配平悬账（见 bench.rs
-    // run_sched_epoch 注）——配对修复主线收。
+    // `BENCH ok` 收尾行自 bench::run() 尾迁至本纪元尾恒发（n=10——随
+    // W3-Q98/Q102 两基准项入册滚动；trailer 须在最后一行 BENCH 之后——
+    // bench.py 的 len==done_n 收割契约）。纪元内切换先于遥测注册曾是
+    // G1.5 的 tel>=switches_tt 配平悬账——2026-11-18 已收（tt 计数移入
+    // 钩子在位分支，见 bench.rs run_sched_epoch 头注）。
     bench::run_sched_epoch();
     // 3-4c 遥测环：注册切换钩子（init 后、首个**被记录**切换前——bench
     // 纪元窗的切换在钩子注册前结构性零记录；rust_main 尾部的 yield_now

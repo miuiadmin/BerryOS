@@ -78,6 +78,18 @@ pub mod check;
 /// 门禁 → abi 打戳 → SHA256SUMS → cpio 落盘 + 摘要行）+ 产链换轨件。
 pub mod build;
 
+/// W1-Q27 七刀：`--json` 机读单行信封面（Python `_json_envelope`/
+/// `_json_main` 镜像——build/check/new 三 op）。
+pub mod json;
+
+/// W1-Q27 八刀：`--new` 应用脚手架四件（Python `do_new` 镜像——SDK-1a
+/// §4.5；模板 = include_str! 资产与 Python `SCAFFOLD_*` 同字节源）。
+pub mod new;
+
+/// W1-Q27 九刀：P1 签名面（`_find_berry_sign`/`_run_berry_sign`/
+/// `_sign_bap`/`_verify_bap_sig` 镜像——berry-sign 子进程封装 + 发现序）。
+pub mod sign;
+
 /// [security] 三键视图（profile/key_lineage/integrator——齐备或齐缺）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sec<'a> {
