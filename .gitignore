@@ -167,3 +167,4 @@ smoke-wt-*/
 # 终验观察件（2026-11-19）：TCP 族 crate 裸 target（F103 target-* 族漏网面）。
 /user/berry-tcp/target/
 /user/berry-netdproto/target/
+/bootloader/berryboot/slot/cargo-target/

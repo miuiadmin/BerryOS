@@ -1,0 +1,10 @@
+[package]
+name = "berry-slot"
+# G0 刀 1（A/B 槽位仲裁纯面）——跨界共享 bootloader/用户态。
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
