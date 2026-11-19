@@ -78,6 +78,33 @@ jobs:
       - name: writable-globals（可写全局清单门禁）
         run: python3 tools/writable_globals.py --check
 
+      # GUI F9：普通 BerryUI app 边界静态守卫（零依赖、先于工具链安装）。
+      # 六个 wm=true app 不得直接回到 syscall/WM RPC/VMO/stride/像素路径，
+      # berry-nshfont 迁移期临时件不得回潮。
+      - name: gui-boundary-guard（GUI F9 普通 app 禁令）
+        run: |
+          python3 tools/gui_guard.py --self-test
+          python3 tools/gui_guard.py
+
+      # SDK-S0 / DESIGN-D2：公开 API 与视觉 token 两本账本必须与源码/生成
+      # 矩阵双向 100% 对拍；GUI8 零 QEMU 自检同步防 marker 断言腐烂。
+      - name: sdk/design ledger + GUI8 self-test
+        run: |
+          python3 tools/sdk_ledger.py --check
+          python3 tools/design_ledger.py --check
+          python3 tools/gui8-smoke.py --self-test
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # 与仓根 rust-toolchain.toml 钉版同值（SDK-02 拍板①）：显式安装防
+          # rustup 1.28+ 默认不自动装（action 装 stable、cargo 按钉版文件找
+          # 1.97.0 缺席 = 结构性红灯）。抬级 = 钉版文件 + 本行两同步。
+          toolchain: 1.97.0
+          # aarch64-unknown-none：内核 + no_std 用户程序；aarch64-unknown-linux-musl：
+          # G-eco-d std 面（stdhello/hexyl/bsh/fail/fsmgr/vprobe/vblk/vnet——berry-libc
+          # shim + berry-ld 链）；x86_64-unknown-none：P7 x86_64 最小集（ADR #41）。
+          targets: aarch64-unknown-none, aarch64-unknown-linux-musl, x86_64-unknown-none
+
       # 应用规范 §15.2/SDK-2-资源 §一.2「禁全类别原语」grep 守卫：公开
       # Rust 面（*.rs）出现 all-files/all-media/all-devices 式聚合入口即
       # FAIL——词表闭集外新词必须过评审，防 scoped-storage 十年返工课重演。

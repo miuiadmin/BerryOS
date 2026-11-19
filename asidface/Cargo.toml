@@ -1,0 +1,8 @@
+[package]
+name = "berry-asidface"
+version.workspace = true
+edition.workspace = true
+license = "Apache-2.0"
+description = "分代位图与在跑核活跃号钉死 ASID 分配器纯函数面（F0-2）"
+
+[dependencies]

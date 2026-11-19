@@ -79,6 +79,7 @@
 /reference/zcore/
 /reference/loopx-2.1.0/
 /reference/ginux/
+/reference/sdk-ui/cache/
 
 # python 脚本字节码缓存（size.py 被工具链调用时产生）
 __pycache__/
