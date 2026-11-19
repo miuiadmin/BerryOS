@@ -1104,4 +1104,260 @@ mod tests {
         assert_eq!(ws.read(&mut sink).unwrap(), 0);
         assert_eq!(ws.read(&mut sink).unwrap(), 0);
     }
+
+    // ------------------------------------------------------------------
+    // W1-Q26 二十二刀：ws.rs 拒面与底座增量（既有 14 测未覆盖面）。
+    // ------------------------------------------------------------------
+
+    /// read_server_frame 拒面增量：保留位（RSV1..3）非零必拒；长度域
+    /// 超 MAX_SERVER_FRAME（16MiB）必拒且消息带实际长度；截断头/截断
+    /// 扩展长度/截断载荷 = UnexpectedEof（区分于协议拒的 InvalidData）。
+    #[test]
+    fn server_frame_rejects_reserved_bits_oversize_and_truncation() {
+        // RSV1 set (0x40) on a binary frame.
+        let bytes = [0xC2, 1, 0];
+        let e = read_server_frame(&mut std::io::Cursor::new(&bytes)).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+        assert!(e.to_string().contains("reserved bits"), "{e}");
+        // Oversize: 64-bit length 17MiB (> 16MiB cap), payload absent —
+        // the length check fires before any allocation/read.
+        let mut bytes = vec![0x82, 127];
+        bytes.extend_from_slice(&(((16u64 << 20) + 1).to_be_bytes()));
+        let e = read_server_frame(&mut std::io::Cursor::new(&bytes)).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+        assert!(e.to_string().contains("too large"), "{e}");
+        assert!(
+            e.to_string().contains(&format!("{}", (16 << 20) + 1)),
+            "实际长度入文案: {e}"
+        );
+        // 恰 16MiB 不拒长度门（载荷截断在读时咬——EOF 面）。
+        let mut bytes = vec![0x82, 127];
+        bytes.extend_from_slice(&(16u64 << 20).to_be_bytes());
+        let e = read_server_frame(&mut std::io::Cursor::new(&bytes)).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof, "{e}");
+        // Truncated mid-frame: header only, then EOF.
+        let e = read_server_frame(&mut std::io::Cursor::new(&[0x82])).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof, "{e}");
+        // Truncated 16-bit extended length.
+        let e = read_server_frame(&mut std::io::Cursor::new(&[0x82, 126, 0x01]))
+            .unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof, "{e}");
+        // Truncated 64-bit extended length.
+        let e =
+            read_server_frame(&mut std::io::Cursor::new(&[0x82, 127, 0, 0, 0])).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof, "{e}");
+    }
+
+    /// MAX_SERVER_FRAME 常量契约：16MiB——RFB 矩形载荷的绝对上限，
+    /// 超界即协议拒（不先吃内存）。数值漂移（手滑改 8/32MiB）即红。
+    #[test]
+    fn max_server_frame_is_16mib() {
+        assert_eq!(MAX_SERVER_FRAME, 16 << 20);
+        assert_eq!(MAX_UPGRADE_HEAD, 8192);
+    }
+
+    /// 流层拒面：未知服务端 opcode（3 = 保留）在 WsStream 读路径上报
+    /// InvalidData 带 opcode 编号；空二元帧被跳过（零长载荷不产出
+    /// 0 字节 read——循环续读下一帧）。
+    #[test]
+    fn stream_rejects_unknown_opcode_and_skips_empty_frames() {
+        let port = spawn_peer(|mut s| {
+            accept_101(&mut s, &[]);
+            // Empty binary frame (0 bytes): skipped by the read loop.
+            s.write_all(&[0x82, 0]).unwrap();
+            // Unknown opcode 3 with a small payload: protocol error.
+            s.write_all(&[0x83, 2, 0x11, 0x22]).unwrap();
+            s.flush().unwrap();
+        });
+        let mut ws = WsStream::handshake(dial(port), "127.0.0.1", port).unwrap();
+        let mut buf = [0u8; 4];
+        let e = ws.read(&mut buf).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+        assert!(e.to_string().contains("unknown server opcode 3"), "{e}");
+    }
+
+    /// 流层空帧跳过的对面证：空帧后跟数据帧，数据照常读出（跳过不
+    /// 吞后续帧）。
+    #[test]
+    fn empty_frame_skip_still_yields_later_data() {
+        let port = spawn_peer(|mut s| {
+            accept_101(&mut s, &[]);
+            s.write_all(&[0x82, 0]).unwrap(); // empty binary
+            s.write_all(&server_frame(b"ok")).unwrap();
+            s.flush().unwrap();
+        });
+        let mut ws = WsStream::handshake(dial(port), "127.0.0.1", port).unwrap();
+        let mut buf = [0u8; 2];
+        ws.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"ok");
+    }
+
+    /// quasi_random 底座：n 字节输出、连续两次调用不同（nanos+counter
+    /// 混合源）、n 可到 20（SHA-1 摘要 20 字节内任取）。ws_key() 是
+    /// 它的 base64 面：恒 24 字符（16 字节 → ceil(16/3)*4 = 24，含 '='）。
+    #[test]
+    fn quasi_random_shape_and_uniqueness() {
+        let a = quasi_random(16);
+        let b = quasi_random(16);
+        assert_eq!(a.len(), 16);
+        assert_eq!(b.len(), 16);
+        assert_ne!(a, b, "计数器至少保证连续调用不同");
+        let big = quasi_random(20);
+        assert_eq!(big.len(), 20, "摘要全量 20 字节内可取");
+        let key = ws_key();
+        assert_eq!(key.len(), 24, "16 字节 base64 恒 24 字符（RFC 6455 §4.1）");
+        assert!(key.ends_with('='), "16 字节非 3 的倍数——尾 padding 恒在");
+        assert!(key
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'+' || c == b'/' || c == b'='));
+    }
+
+    /// upgrade_request 逐字节钉板：行序、CRLF 形、尾空行、Host 拼接、
+    /// Version 13——QEMU ws 端点解析面的出向契约（无 Sec-WebSocket-
+    /// Protocol，probe f1）。
+    #[test]
+    fn upgrade_request_exact_bytes() {
+        let req = upgrade_request("127.0.0.1", 6001, "AKEY==");
+        let want = "GET / HTTP/1.1\r\n\
+                    Host: 127.0.0.1:6001\r\n\
+                    Upgrade: websocket\r\n\
+                    Connection: Upgrade\r\n\
+                    Sec-WebSocket-Key: AKEY==\r\n\
+                    Sec-WebSocket-Version: 13\r\n\
+                    \r\n";
+        assert_eq!(req, want);
+    }
+
+    /// 握手拒面增量：升级头中途 EOF（对端 101 前关连接）与超长头
+    /// （>8192 无终止符）。两者都是 protocol 码 7。
+    #[test]
+    fn handshake_rejects_eof_and_oversize_head() {
+        // EOF mid-head: peer half-closes after a partial status line
+        // (shutdown(Write) = clean FIN; a raw drop-close on macOS can
+        // surface as ECONNRESET instead of EOF — both are read-path
+        // failures, but FIN pins the deterministic EOF face).
+        let port = spawn_peer(|mut s| {
+            let _ = s.write_all(b"HTTP/1.1 101 Switching Proto");
+            let _ = s.flush();
+            let _ = s.shutdown(std::net::Shutdown::Write);
+            std::thread::sleep(Duration::from_secs(3));
+        });
+        let e = WsStream::handshake(dial(port), "127.0.0.1", port).unwrap_err();
+        assert_eq!(e.code, 7);
+        assert!(e.message.contains("EOF during"), "{e}");
+        // Oversize head: >8192 bytes of header lines, no terminator.
+        let port = spawn_peer(|mut s| {
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                s.read_exact(&mut byte).unwrap();
+                head.push(byte[0]);
+            }
+            let filler = "X-Fill: 0123456789abcdef\r\n".repeat(512);
+            s.write_all(filler.as_bytes()).unwrap();
+            s.flush().unwrap();
+            // Hold the connection open: the client must trip the size
+            // limit on its own (no EOF shortcut).
+            std::thread::sleep(Duration::from_secs(3));
+        });
+        let e = WsStream::handshake(dial(port), "127.0.0.1", port).unwrap_err();
+        assert_eq!(e.code, 7);
+        assert!(e.message.contains("exceeds 8192"), "{e}");
+    }
+
+    /// 头解析底座（UpgradeHead::parse 经 validate_upgrade 间接）：
+    /// 头名大小写不敏感（SEC-WEBSOCKET-ACCEPT 大写形照过）、值前导
+    /// 空白剥、Upgrade: WebSocket 值大小写不敏感、缺 Connection 头拒。
+    #[test]
+    fn head_parsing_case_insensitive_names_and_value_trim() {
+        // All-caps header names + padded values must still validate.
+        let port = spawn_peer(|mut s| {
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                s.read_exact(&mut byte).unwrap();
+                head.push(byte[0]);
+            }
+            let req = String::from_utf8(head).unwrap();
+            let key = req
+                .lines()
+                .find_map(|l| l.strip_prefix("Sec-WebSocket-Key: "))
+                .unwrap()
+                .to_string();
+            let resp = format!(
+                "HTTP/1.1 101 Switching Protocols\r\n\
+                 UPGRADE: WebSocket\r\n\
+                 CONNECTION:   Upgrade\r\n\
+                 SEC-WEBSOCKET-ACCEPT:  {}\r\n\r\n",
+                expected_accept(&key)
+            );
+            s.write_all(resp.as_bytes()).unwrap();
+            s.flush().unwrap();
+        });
+        let ws = WsStream::handshake(dial(port), "127.0.0.1", port).unwrap();
+        drop(ws); // validated: parsed and admitted
+        // Missing Connection header entirely -> protocol error naming it.
+        let port = spawn_peer(|mut s| {
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                s.read_exact(&mut byte).unwrap();
+                head.push(byte[0]);
+            }
+            let req = String::from_utf8(head).unwrap();
+            let key = req
+                .lines()
+                .find_map(|l| l.strip_prefix("Sec-WebSocket-Key: "))
+                .unwrap()
+                .to_string();
+            let resp = format!(
+                "HTTP/1.1 101 Switching Protocols\r\n\
+                 Upgrade: websocket\r\n\
+                 Sec-WebSocket-Accept: {}\r\n\r\n",
+                expected_accept(&key)
+            );
+            s.write_all(resp.as_bytes()).unwrap();
+            s.flush().unwrap();
+        });
+        let e = WsStream::handshake(dial(port), "127.0.0.1", port).unwrap_err();
+        assert_eq!(e.code, 7);
+        assert!(e.message.contains("Connection"), "{e}");
+    }
+
+    /// 握手后首帧同段捎带（Prefixed 面）：101 头与首帧载荷同一次
+    /// write 到达——Prefixed 必须把头后字节喂给帧解码器，不丢不重。
+    /// 既有 handshake_accepts_101_with_locale_date_bytes 分两次写；本
+    /// 测钉同段捎带形态（TCP 不保消息边界，QEMU 单 flush 常态）。
+    #[test]
+    fn first_frame_piggybacked_on_head_segment() {
+        let port = spawn_peer(|mut s| {
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                s.read_exact(&mut byte).unwrap();
+                head.push(byte[0]);
+            }
+            let req = String::from_utf8(head).unwrap();
+            let key = req
+                .lines()
+                .find_map(|l| l.strip_prefix("Sec-WebSocket-Key: "))
+                .unwrap()
+                .to_string();
+            let mut resp = format!(
+                "HTTP/1.1 101 Switching Protocols\r\n\
+                 Upgrade: websocket\r\n\
+                 Connection: Upgrade\r\n\
+                 Sec-WebSocket-Accept: {}\r\n\r\n",
+                expected_accept(&key)
+            )
+            .into_bytes();
+            resp.extend_from_slice(&server_frame(b"RFB 003.008\n"));
+            s.write_all(&resp).unwrap();
+            s.flush().unwrap();
+        });
+        let mut ws = WsStream::handshake(dial(port), "127.0.0.1", port).unwrap();
+        let mut banner = [0u8; 12];
+        ws.read_exact(&mut banner).unwrap();
+        assert_eq!(&banner, b"RFB 003.008\n");
+    }
 }

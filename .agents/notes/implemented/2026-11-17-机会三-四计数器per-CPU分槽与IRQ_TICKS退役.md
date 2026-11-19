@@ -32,3 +32,7 @@ Status: implemented
 - 验证实跑（隔离 target-s5c）：cargo build 绿×2；boot 相 smoke 32/32 ×2（单核零漂移）；手动 `-smp 2` 双核 boot：SMP 握手标记齐+ktest done（watchdog 增长断言+G1.5 配平随套过）+零 panic；switches 行 0=符合 canary 债预期形态。smoke-smp 全量验证 deferred 至消费面解耦刀（今日必红在既有债，非本刀罪）。
 - 对抗审查（wf_e1f8dfa5-fa8，21 agent 四维+逐 finding）：17 发现（16 CONFIRMED/1 PLAUSIBLE/0 rejected）全处置——两处跨件悬垂先例引用（util.rs:22/syscall.rs:2689 改指 LB_TICKS+退役注）+telemetry.rs「11 位」+smoke-smp 同块 17 处残文（8 续行+8 echo+头部条目 3——值与口径双过时）+OBS-01 调研文档旧口径+API 参考三访问器行补求和快照行为注+main.rs soakmon 措辞；PLAUSIBLE 一条（严格递增降格非降）采纳改注；「总量级不变」注释经计数论证核证正确零改动。
 - 沿革五百五十；API 参考 v1.13 三行行为注（计数 182 不变——签名未变零计数面）。
+
+## 重落地附记（2026-11-19）
+
+本刀提交（本笔记「验证」节所指）在合并 1e7872196 中被裁为僵尸态（代码面缺席、无冲突文件存活）。机会三 已按勘察落性表在 icount-baseline 分支重落地（见 2026-11-19 重落地刀笔记）——本笔记现状陈述自重落地起重新为真；旧提交号指向被裁形。

@@ -1,0 +1,1 @@
+/tmp/berry-merge/ktgt/aarch64-unknown-none/debug/libberry_fbcon.rlib: /private/tmp/berry-merge/user/berry-fbcon/src/font.rs /private/tmp/berry-merge/user/berry-fbcon/src/font_data.rs /private/tmp/berry-merge/user/berry-fbcon/src/lib.rs /private/tmp/berry-merge/user/berry-fbcon/src/render.rs

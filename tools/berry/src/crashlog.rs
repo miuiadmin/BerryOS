@@ -822,4 +822,156 @@ mod tests {
         fat_set(&mut d, fat_off, cap + 1, 2);
         assert!(matches!(read_root_file(&d, "CBOX.LOG"), Err(FatErr::Loop)));
     }
+
+    /// BPB 拒面族（几何域逐项破坏 → NoVolume 非 panic——`bpb_ok` 私有，
+    /// 经 `read_root_file` 立态；spc=0 已有测，此处补齐其余域全表）。
+    #[test]
+    fn bpb_negative_family() {
+        let base = mkfat_disk(&two_line_ledger());
+        let vol = 16 * 512;
+        // (why, 相对 vol 偏移, 补丁字节)：bps 非法值 / spc 非 2 的幂 /
+        // nfats=3 / rents=0 / spf=0 / 510 引导签名抹除。
+        let cases: &[(&str, usize, &[u8])] = &[
+            ("bps=8192 非法", 11, &8192u16.to_le_bytes()),
+            ("spc=3 非 2 的幂", 13, &[3]),
+            ("nfats=3", 16, &[3]),
+            ("rents=0", 17, &0u16.to_le_bytes()),
+            ("spf=0", 22, &0u16.to_le_bytes()),
+            ("签名抹除", 510, &[0, 0]),
+        ];
+        for &(why, off, patch) in cases {
+            let mut d = base.clone();
+            d[vol + off..vol + off + patch.len()].copy_from_slice(patch);
+            assert!(
+                matches!(read_root_file(&d, "CBOX.LOG"), Err(FatErr::NoVolume)),
+                "{why} 应 NoVolume"
+            );
+        }
+    }
+
+    /// 目录项边界：size=0 空件直通（truncate(0) 收口空 vec）；首簇=0
+    /// （FREE）→ Torn{have:0}——目录项在而链未起的另一形态。
+    #[test]
+    fn zero_size_entry_and_free_first_cluster() {
+        let mut d = mkfat_disk(&two_line_ledger());
+        let (_, root_off, _) = geom(&d);
+        let ent = root_off + 32; // [0]=卷标
+        // size=0：首簇照读一簇后 `out.len() >= size` 收口，truncate(0)。
+        d[ent + 28..ent + 32].copy_from_slice(&0u32.to_le_bytes());
+        assert_eq!(read_root_file(&d, "CBOX.LOG").unwrap(), Vec::<u8>::new());
+
+        let mut d2 = mkfat_disk(&two_line_ledger());
+        let (_, root_off2, _) = geom(&d2);
+        let ent2 = root_off2 + 32;
+        d2[ent2 + 26..ent2 + 28].copy_from_slice(&0u16.to_le_bytes());
+        match read_root_file(&d2, "CBOX.LOG") {
+            Err(FatErr::Torn { have, want }) => {
+                assert_eq!((have, want), (0, two_line_ledger().len()));
+            }
+            other => panic!("期望 Torn{{have:0}}，得 {other:?}"),
+        }
+    }
+
+    /// `FatErr::message` 全四态（CLI 非零退出面的用户文案——形状钉板防漂）。
+    #[test]
+    fn fat_err_messages() {
+        assert!(FatErr::NoVolume.message().contains("FAT 卷"));
+        assert_eq!(FatErr::NoEnt("X.LOG".into()).message(), "根目录无 X.LOG");
+        let torn = FatErr::Torn { have: 2048, want: 4096 }.message();
+        assert!(torn.contains("2048B") && torn.contains("4096B"), "{torn}");
+        assert!(FatErr::Loop.message().contains("环"));
+    }
+
+    /// `task_name` NUL 填充三态 + `kind_str` 渲染 + `aggregate` 乱序 boot
+    /// min/max（与到达序无关）。
+    #[test]
+    fn task_name_kind_and_boot_minmax() {
+        let mut r = rec(1, KIND_EL0, "ab", 1, 1);
+        assert_eq!(task_name(&r), "ab");
+        r.name = [b'a'; 16]; // 满 16 无 NUL → 全长
+        assert_eq!(task_name(&r).len(), 16);
+        r.name = [0xff; 16]; // 非 UTF-8 → lossy 保长度
+        r.name[8..].fill(0);
+        assert_eq!(task_name(&r), "\u{fffd}".repeat(8));
+
+        assert_eq!(kind_str(KIND_EL0), "el0");
+        assert_eq!(kind_str(KIND_EL1), "el1");
+        assert_eq!(kind_str(9), "k9");
+
+        let recs = vec![
+            (5u32, rec(1, KIND_EL1, "k", 1, 1)),
+            (1u32, rec(2, KIND_EL1, "k", 1, 1)),
+            (9u32, rec(3, KIND_EL1, "k", 1, 1)),
+        ];
+        let fps = aggregate(&recs);
+        let st = fps.values().next().unwrap();
+        assert_eq!((st.count, st.boot_first, st.boot_last), (3, 1, 9));
+    }
+
+    /// 报告面 × 真符号源：Hit 行渲染经 `report_human` 全链（此前仅
+    /// None 态直测）——blob 重定基与内核名直查两条腿 + rejected=0 无头注。
+    #[test]
+    fn report_human_symbolized_hit_lines() {
+        use crate::symbolize::testutil::build_elf;
+        let dir = std::env::temp_dir().join(format!(
+            "berry-cbox-test-report-{}",
+            std::process::id()
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+        let kdir = dir.join("cargo-target/aarch64-unknown-none/debug");
+        std::fs::create_dir_all(&kdir).unwrap();
+        std::fs::write(
+            kdir.join("berry-kernel"),
+            build_elf(&[
+                ("__user_rogue_ptr", 0x4000_0000),
+                ("sched_main", 0x4000_8000),
+            ]),
+        )
+        .unwrap();
+        let recs = vec![
+            (1u32, rec(1, KIND_EL0, "user_rogue_ptr", 0x1004, 0x10)),
+            (2u32, rec(2, KIND_EL1, "sched", 0x4000_8010, 0x20)),
+        ];
+        let s = report_human(&recs, 0, Path::new("/disk.img"), Some(&dir));
+        let lines: Vec<&str> = s.split('\n').collect();
+        assert_eq!(lines.len(), 3, "{s}");
+        // 并列 ×1 按 kind 序：el0(1) < el1(2)。
+        assert!(
+            lines[1].contains("el0 user_rogue_ptr")
+                && lines[1].contains("→ __user_rogue_ptr+0x4（内核 blob 重定基）"),
+            "{}",
+            lines[1]
+        );
+        assert!(
+            lines[2].contains("el1 sched")
+                && lines[2].contains("→ sched_main+0x10（内核 ELF）"),
+            "{}",
+            lines[2]
+        );
+        assert!(!lines[0].contains("拒"), "{}", lines[0]); // rejected=0
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `parse_ledger` 尾向边界：无换行尾行照解析（split 末段）/ CRLF 全拒
+    /// （`\r` 入词域必拒——Windows 形账本不误读）/ 纯换行零记录零拒。
+    #[test]
+    fn parse_ledger_tail_edges() {
+        let good = two_line_ledger();
+        let (recs, rj) = parse_ledger(&good[..good.len() - 1]);
+        assert_eq!((recs.len(), rj), (2, 0));
+
+        let mut crlf = Vec::with_capacity(good.len() + 2);
+        for &b in &good {
+            if b == b'\n' {
+                crlf.push(b'\r');
+            }
+            crlf.push(b);
+        }
+        let (rs, rj) = parse_ledger(&crlf);
+        assert!(rs.is_empty(), "CRLF 行不应被误读");
+        assert_eq!(rj, crlf.split(|&b| b == b'\n').filter(|l| !l.is_empty()).count(), "拒行数 = CRLF 行数");
+
+        let (rs, rj) = parse_ledger(b"\n\n");
+        assert_eq!((rs.len(), rj), (0, 0));
+    }
 }
