@@ -9,3 +9,4 @@
 | 02 | `02-IPC快路径审计.md` | recv 10x walk/PI 重推门/消息环形化——Top-5 |
 | 03 | `03-syscall分派审计.md` | 诊断残留退役/KERN_LOCK 归零/SVC 包络测量——Top-5 |
 | 04 | `04-调度热路径审计.md` | preempt 门控/诊断退役/per-CPU 原子——Top-5 |
+| 05 | `05-base-overhaul回流接缝预研-W3面资产对撞审计.md` | base-overhaul 回流时 W3 face crate 群对撞四态定级＋回流义务清单 |
