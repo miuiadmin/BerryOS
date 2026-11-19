@@ -365,3 +365,31 @@ pub fn load_source_instance(si_dir: &str) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Mki
     }
     Ok(puts)
 }
+
+/// G0 刀 1：BOOTCTL 工厂默认件 52B（与 berry-slot BootControl::factory()
+/// .to_bytes() 逐字节一致——slot crate 测试钉板对拍面）。布局：
+/// magic BRYC @0 / version 3 @4 / slot A @8 / slot B @24 /
+/// recovery_trigger @40 / boot_count @44 / crc32 @48。
+pub fn bootctl_factory() -> [u8; 52] {
+    let mut b = [0u8; 52];
+    b[0..4].copy_from_slice(&0x4252_5943u32.to_le_bytes());
+    b[4..8].copy_from_slice(&3u32.to_le_bytes());
+    b[8] = 0; b[9] = 15; b[10] = 3; b[11] = 1; // A pri=15 tries=3 ok=1
+    b[24] = 1; b[25] = 14; b[26] = 3; b[27] = 0; // B pri=14 tries=3 ok=0
+    let crc = crc32_ieee(&b[..48]);
+    b[48..52].copy_from_slice(&crc.to_le_bytes());
+    b
+}
+
+/// IEEE CRC32（与 berry-slot::crc32 同算法——工厂件一致性钉板依赖）。
+pub fn crc32_ieee(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for &byte in data {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+        }
+    }
+    !crc
+}
