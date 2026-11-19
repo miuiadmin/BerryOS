@@ -6165,6 +6165,9 @@ fn test_sysver() {
 /// 逐行零漂移——smoke 契约面零新行）。EL1 svc4 全链：快照非空 + boot 横幅
 /// 在环（ktest 点累计串流 ≈1KB ≪ 16KiB 环，无追尾淘汰）+ 行结构（含换行、
 /// 全 ASCII 可印域）+ op 域外 / len 边界负例。
+/// op=1 memstat 臂（遥测 v3 首件，K1-K3）：五域恒等式强式（静止窗）+
+/// 双源对拍（svc 读回 vs EL1 直调分配器单口）+ 瞬态 VMO 三相反因果差分
+/// （末态==初态五域全等）+ len 冻结下限负例（<40 → -EINVAL）。
 fn test_telemetry_open() {
     // 快照缓冲（EL1 内核地址——copy_out 走高半直映分支；test_syscall OUT 同款）。
     static mut SNAP: [u8; 4096] = [0; 4096];
@@ -6199,6 +6202,120 @@ fn test_telemetry_open() {
         -22,
         "TELEMETRY：len 超单读帽须 -EINVAL"
     );
+
+    // ---- op=1 memstat（遥测 v3 首件）臂：K1 正例恒等式强式＋双源对拍、
+    // K2 瞬态 VMO 三相反因果差分、K3 len 冻结下限负例（同函数静默盖延续
+    // ——零输出行，fail = panic 停机冒烟自然红）----
+
+    // 布局钉（WSRC-K D 同款）：形状单源 berry-telface `MemstatRec`——定义
+    // 处 const 断言与 host 钉板之外，内核面再钉一层（svc 出参 40B 冻结面）。
+    use berry_telface::MemstatRec;
+    assert_eq!(
+        core::mem::size_of::<MemstatRec>(),
+        40,
+        "TELEMETRY：MemstatRec 布局漂移（40B 五域冻结面）"
+    );
+
+    // memstat 快照缓冲（EL1 内核地址——copy_out 走高半直映分支；SNAP 同款）。
+    static mut REC: [u8; 40] = [0; 40];
+
+    // svc4 全链取一帧 memstat 快照：返值钉 40 ＋ LE 解码五域（字段序
+    // total→reserved→alloc→free→committed，与 MemstatRec 同序——出参按
+    // 字节直拷解码，不对静态缓冲 reinterpret 对齐面）。
+    fn snap_memstat() -> (u64, u64, u64, u64, u64) {
+        // SAFETY: svc 同步异常；REC 为本函数族私有静态（ktest 单核窗），
+        // len 走字面 40。
+        let n = svc4(0x84, 1, &raw mut REC as u64, 40);
+        assert_eq!(n, 40, "TELEMETRY：memstat 快照须实写 40B 返 40（n={}）", n);
+        // SAFETY: 上断言钉 40B 全量实写（单发整段拷出无半写面）；仅共享读。
+        let buf: &[u8; 40] = unsafe { &*core::ptr::addr_of!(REC) };
+        let w = |i: usize| {
+            u64::from_le_bytes([
+                buf[i * 8],
+                buf[i * 8 + 1],
+                buf[i * 8 + 2],
+                buf[i * 8 + 3],
+                buf[i * 8 + 4],
+                buf[i * 8 + 5],
+                buf[i * 8 + 6],
+                buf[i * 8 + 7],
+            ])
+        };
+        (w(0), w(1), w(2), w(3), w(4))
+    }
+
+    // K1 正例：五域恒等式强式（静止窗——sched::init 前单核、写点全静止；
+    // G4 精确值断言禁域——断的全是域与恒等式，零 RAM 精确值）。
+    let (total, reserved, alloc, free, committed) = snap_memstat();
+    assert!(total > 0, "TELEMETRY：total 须 >0（boot 构造窗定容非空）");
+    assert!(
+        reserved > 0,
+        "TELEMETRY：reserved 须 >0（内核镜像必占保留页——防水位忘接/恒零）"
+    );
+    assert!(reserved <= total, "TELEMETRY：reserved 须 ≤ total");
+    assert!(alloc <= total, "TELEMETRY：alloc 须 ≤ total");
+    assert_eq!(
+        total,
+        alloc + free + reserved,
+        "TELEMETRY：恒等式 total==alloc+free+reserved（free 读点派生构造闭合）"
+    );
+    assert!(committed <= alloc, "TELEMETRY：静止窗恒 committed ≤ alloc");
+    // 双源对拍：svc 读回 vs EL1 直调分配器单口（两条独立路径同源——装配
+    // 路径错位即红）。
+    {
+        let fa = crate::mm::frames();
+        assert_eq!(total, fa.npages() as u64, "TELEMETRY：total 须 == EL1 直调 npages()");
+        assert_eq!(
+            alloc,
+            fa.allocated_pages() as u64,
+            "TELEMETRY：alloc 须 == EL1 直调 allocated_pages()"
+        );
+    }
+
+    // K2 因果差分臂（committed 写点主钉板）：瞬态 VMO 三相（test_sysver
+    // 现建现验不留柄先例）——建+commit → decommit → drop，每相后 svc4 快照
+    // 对拍，末态==初态五域全等（写点净零检测，不依赖 eager/demand 语义
+    // 假定）。±1 恰形依据（本路径实测语义）：1 页 VMO 生命周期的堆面 =
+    // 记账双 Vec（16B/8B slab 槽）＋ decommit 瞬态 Vec，slab 页不还 buddy
+    //（G0）——先走一遍同形预热臂把所用槽坐进 freelist，此后三相堆分配全
+    // freelist 命中、零 buddy 取帧副作用（IRQ 热路径零分配＋单核静止窗），
+    // alloc/committed 差分恰 ±1。
+    {
+        use crate::vmo::Vmo;
+        use berry_mm::va::PAGE_SIZE;
+        let mut warm = Vmo::create(PAGE_SIZE).expect("TELEMETRY：装配预热 VMO（可信语境）");
+        warm.commit(crate::mm::frames(), 0, PAGE_SIZE).expect("TELEMETRY：预热 commit");
+        warm.decommit(crate::mm::frames(), 0, PAGE_SIZE).expect("TELEMETRY：预热 decommit");
+        drop(warm);
+
+        // 初态（三相全等基准）。
+        let s0 = snap_memstat();
+        // 相一：建 ＋ commit 1 页——alloc/committed 恰 +1、free 恰 −1（派生
+        // 面）、total 不动；reserved 全程不动（VMO 不碰保留面）。
+        let mut vmo = Vmo::create(PAGE_SIZE).expect("TELEMETRY：装配瞬态 VMO（可信语境）");
+        vmo.commit(crate::mm::frames(), 0, PAGE_SIZE).expect("TELEMETRY：瞬态 commit");
+        let s1 = snap_memstat();
+        assert_eq!(
+            s1,
+            (s0.0, s0.1, s0.2 + 1, s0.3 - 1, s0.4 + 1),
+            "TELEMETRY：commit 相差分须恰 total/reserved 不动、alloc/committed +1、free −1"
+        );
+        // 相二：decommit 还 1 页——committed 单调回落（与 commit 对称），
+        // 五域全归初值。
+        vmo.decommit(crate::mm::frames(), 0, PAGE_SIZE).expect("TELEMETRY：瞬态 decommit");
+        let s2 = snap_memstat();
+        assert_eq!(s2, s0, "TELEMETRY：decommit 相五域须全归初值");
+        // 相三：drop（记账 Vec 归还 slab 不触 buddy；账面空、还帧面零动作）
+        // ——末态与初态五域全等。
+        drop(vmo);
+        let s3 = snap_memstat();
+        assert_eq!(s3, s0, "TELEMETRY：末态须与初态五域全等（写点净零检测）");
+    }
+
+    // K3 负例：op=1 len 冻结下限门（len<40 → -EINVAL；上文 op=99 与 op=0
+    // len 族负例零改零漂移）。
+    assert_eq!(svc4(0x84, 1, &raw mut REC as u64, 0), -22, "TELEMETRY：op=1 len=0 须 -EINVAL");
+    assert_eq!(svc4(0x84, 1, &raw mut REC as u64, 8), -22, "TELEMETRY：op=1 len=8（<40）须 -EINVAL");
 }
 
 /// G5（§1.6-补）：boot-params 消费端纯函数面——newc 定址查找 / TOML 子集

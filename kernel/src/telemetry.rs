@@ -10,9 +10,11 @@
 //! prev 运行时长 → 运行时长分布）、任务 id（名字 FNV-1a 稳定哈希）、切换
 //! 原因分型、是否切入 idle（→ util）。**唤醒事件已随 4-0 落地**（唤醒环：
 //! block→wake 延迟即「唤醒模式」分布数据，经 [`set_wake_hook`] 注册的
-//! [`on_wake`]）。**消费路径分两步**：`telemetry_open`(0x84) 已翻真 klog 快照首域（berry_telemetry_klog_snapshot——bsh dmesg 消费）；SwitchRec/WakeRec 映射环读口留 v3（trace 服务/
-//! AI 策略服务）；v1 读点 = watchdog 存活性断言（环在涨、vct 单调、延迟
-//! 非负）。
+//! [`on_wake`]）。**消费路径**：`telemetry_open`(0x84) op 域在役两档——klog
+//! 快照首域（berry_telemetry_klog_snapshot——bsh dmesg 消费）＋ memstat 定长
+//! 快照第二档（遥测 v3 首件——[`memstat_snapshot`]，bsh free 消费）；
+//! SwitchRec/WakeRec 映射环读口自 op=2 起随后续波次（trace 服务/AI 策略
+//! 服务）；v1 读点 = watchdog 存活性断言（环在涨、vct 单调、延迟非负）。
 //!
 //! **S-3c B12/B13：per-CPU 双环 + seqlock（拆 KERN_LOCK 前置件）**。写方限
 //! 本核（设计原案「per-CPU 环 + 写方限本核」兑现）：切换/唤醒钩子跑在发生
@@ -35,7 +37,7 @@ use berry_hal_aarch64::wake_gen::{
     WAKE_SRC_NONE, WAKE_SRC_POWER_KEY, WAKE_SRC_SGI_RESCHED, WAKE_SRC_SGI_TLB, WAKE_SRC_UNKNOWN,
 };
 use berry_sched::{SwitchKind, Task, WakeReason};
-use berry_telface::HIST_BUCKETS;
+use berry_telface::{HIST_BUCKETS, MemstatRec};
 use core::sync::atomic::{fence, AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 
 /// 环容量（静态预储——2KB 级常驻 .bss，boot 后永不增长；per-CPU 后总量
@@ -1223,3 +1225,28 @@ pub const CONSENT_EV_EXPIRE: u8 = 4;
 /// 不假装没发生（RanAnyway 语义）。
 #[allow(dead_code)] // 同上——v1 词汇预留无消费者
 pub const CONSENT_EV_RAN_ANYWAY: u8 = 5;
+
+// ---- 0x84 op=1：memstat 定长快照装配（遥测 v3 首件——`docs/可观测性设计-v1.0.md`
+// §3；RAM 五域读点，bsh free 消费。形状与 op 常量单源 = berry-telface
+// [`MemstatRec`]/`TELEMETRY_OP_MEMSTAT`；SwitchRec/WakeRec 环读口自 op=2 起
+// 随后续波次）----
+
+/// memstat 快照装配（0x84 op=1——`syscall.rs` 派发臂唯一消费方）：mm 三元组
+/// 经 [`crate::mm::memstat_frame_counts`] 单闭包一致窗背靠背取（total/
+/// reserved/alloc 同一分配器借用窗），`free` 读点派生 total − reserved −
+/// alloc——恒等式按构造闭合（零第二记账源）；`committed` 独立窗取
+/// [`crate::vmo::committed_pages`] 聚合原子（与 alloc 分窗读，运行窗两者
+/// 无恒等式——静止窗恒 committed ≤ alloc）。
+pub(crate) fn memstat_snapshot() -> MemstatRec {
+    let (total, reserved, alloc) = crate::mm::memstat_frame_counts();
+    MemstatRec {
+        total_pages: total as u64,
+        reserved_pages: reserved as u64,
+        alloc_pages: alloc as u64,
+        // saturating 纯防御：结构不变量（total ≥ reserved+alloc）下不触发。
+        free_pages: (total as u64)
+            .saturating_sub(reserved as u64)
+            .saturating_sub(alloc as u64),
+        committed_pages: crate::vmo::committed_pages() as u64,
+    }
+}
