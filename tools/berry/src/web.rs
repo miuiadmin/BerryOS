@@ -1282,7 +1282,7 @@ fn proxy_ws_plain(
             // 后注入器自 ≥5s 节流重连——QMP 恢复后拦截输入自动复活。
             let inj = QmpInjector::connect_guarded(p, Duration::from_secs(2));
             if inj.is_some() {
-                eprintln!("berry: vnc web: lan /ws input interceptor on (qmp)");
+                eprintln!("berry: vnc web: lan /ws input interceptor on (qmp) gw={gw} gh={gh}");
             }
             inj
         });
@@ -1321,6 +1321,7 @@ fn proxy_ws_plain(
                         ];
                         let x = u16::from_be_bytes([b[1], b[2]]);
                         let y = u16::from_be_bytes([b[3], b[4]]);
+                        eprintln!("berry: ptr-evt x={x} y={y} btn={:02x} →qmp", b[0]);
                         injector.as_mut().unwrap().pointer(x, y, b[0], gw, gh);
                     } else {
                         if u_wr.write_all(&pend[..total]).is_err() || u_wr.flush().is_err() {

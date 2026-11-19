@@ -423,7 +423,7 @@ impl QmpInjector {
     /// 底）；写失败即置 sock=None 哑化并挂 ≥5s 重连窗，逾窗后下一次事
     /// 件试连一次——成功复活、失败续窗等下窗。
     pub fn pointer(&mut self, x: u16, y: u16, buttons: u8, gw: u32, gh: u32) -> bool {
-        use std::io::Write;
+        use std::io::{Read, Write};
         if self.sock.is_none() {
             if let Some(t) = self.retry_at {
                 if Instant::now() < t {
@@ -439,6 +439,23 @@ impl QmpInjector {
             }
         }
         let Some(s) = self.sock.as_mut() else { return false };
+        // 应答排水（根因修复 2026-11-19：QMP 每命令回一条 ~30B {"return":{}},
+        // 不读则 macOS 内核发送缓冲 ~8KB 在 ~35 条后满 → write EAGAIN → 哑化
+        // → 全部后续点击静默丢弃。用**超时读**清缓冲（try_clone 会共享 OFD
+        // 把非阻塞泄漏到写路径——K3 撤排水的根因；本形直接在主柄上短超时
+        // 读，读后恢复原超时，零 OFD 污染）。
+        let orig_timeout = s.read_timeout().ok().flatten();
+        s.set_read_timeout(Some(Duration::from_millis(1))).ok();
+        let mut drain_buf = [0u8; 4096];
+        loop {
+            match s.read(&mut drain_buf) {
+                Ok(0) | Err(_) => break, // EOF/超时/错码——排空或无数据
+                Ok(_) => continue,       // 继续排
+            }
+        }
+        if let Some(t) = orig_timeout {
+            s.set_read_timeout(Some(t)).ok();
+        }
         let msg = pointer_msg(x, y, buttons, gw, gh);
         if writeln!(s, "{msg}").is_err() || s.flush().is_err() {
             self.sock = None;

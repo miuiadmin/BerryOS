@@ -21,3 +21,4 @@
 | 14 | `14-Q95环形队列与F1-3Vec存储对拍裁定件-owner裁定数据补强.md` | channel.rs 段 2 裁定项数据补强：Q95 环形 vs F1-3 Vec 存储 host 微基线（满队 2.34x/回滚 7.6x/k=1 持平）＋六消费点改接清单＋三路裁定选项（推荐路 C：骨架优先、环形资产保留、收益决策推迟到真机 profile） |
 | 15 | `15-F0-2分代ASID面base线静默回退定谳-回流义务5补遗二.md` | F0-2 全家面 base 线静默回退定谳：谱系实锤（切换点 7f05be12e，w1 侧枝三跳接力回灌）＋合并树隐藏编译红四连（try_alloc/free_asid/active_cpu_asids/挂测行孤儿）＋11 号件「不复活死行」裁定修正＋13 号件施工序插第 0 步（F0-2 复活随刀） |
 | 16 | `16-try_alloc_asid两形语义对拍-ASID恒等区与destroy路径语义差定谳-Q110游标面消亡清单件.md` | try_alloc_asid 两形语义对拍（Q110 游标面消亡清单件）：ASID 分配面四函数 token 级恒等（零手术恒等区）＋destroy 路径语义差随第 1 步整取自动承接＋asidface 双代数并存澄清＋Q110 游标面消亡清单闭合 |
+| 17 | `17-回流第0步实施化-F0-1与F0-2复活随刀diff草案-事故族第三面F0-1arch同点回退.md` | 13 号施工序第 0 步实施化：F0-1/F0-2 复活随刀逐步 diff 草案（七触点逐 hunk 可施工，15 号六点扩为七点）＋主发现事故族第三面——F0-1 arch 面（CTR_EL0 PoU 缓存一致性）同点 7f05be12e 静默回退（mmu.rs 5→0/arch dep 1→0/lib.rs re-export 摘）＋第五连编译红预警（vmar.rs 整取后 hal::sync_icache_pou E0425）＋ktest G/H 验收面静默丢失登记＋R490 五笔重放义务 |
