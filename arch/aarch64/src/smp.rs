@@ -37,7 +37,7 @@
 //! console/RX 钉 CPU0（SPI_ROUTES target=0x01）、副核稳态零 UART 写。
 
 use core::arch::{asm, global_asm};
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 
 use crate::{uart_put_dec, uart_put_hex64, uart_puts};
 
@@ -159,6 +159,16 @@ pub struct SmpCpu {
     pub lockdep_depth: u8,
     /// IRQ 地板（`exception_irq` 入口深度快照——跨流分层，lockdep 模块头）。
     pub lockdep_floor: u8,
+    /// dispatch 尾合并闩（W3-Q108；03 号分派审计机会一 1b + 机会五 5a 同刀）：
+    /// TLB shootdown 等待闩与 ASID 回卷 quiesce 闩的 per-CPU 单字合并面——
+    /// 两闩旧形态各为全局数组一格（`tlbshoot::PENDING`/`ROLL_PENDING`），
+    /// dispatch 尾每号各付一次 MRS tpidr 追链 + 一次闩数组 Acquire 读；合并
+    /// 后尾查一次 TPIDR → 单 load 本字全零直返。bit0 = TLB shootdown 闩、
+    /// bit1 = ASID 回卷 quiesce 闩。本核独占写（置位点 broadcast/
+    /// roll_quiesce_arm 与消费点 sched_exit_check/roll_quiesce_check 恒同核
+    /// ——跨核 SGI 只走 ACKS 回执计数，不触本字）；原子口径 = 与旧闩一致
+    /// （Release 置 / Acquire 读，见 tlbshoot.rs 迁移注）。
+    pub exit_latch: AtomicU8,
 }
 
 const fn zero_cpu() -> SmpCpu {
@@ -180,6 +190,7 @@ const fn zero_cpu() -> SmpCpu {
         lockdep_chain: [0; crate::lockdep::DEPTH_MAX],
         lockdep_depth: 0,
         lockdep_floor: 0,
+        exit_latch: AtomicU8::new(0),
     }
 }
 
@@ -212,6 +223,9 @@ const _: () = assert!(core::mem::offset_of!(SmpCpu, preempt_count) == 104);
 const _: () = assert!(core::mem::offset_of!(SmpCpu, lockdep_chain) == 112);
 const _: () = assert!(core::mem::offset_of!(SmpCpu, lockdep_depth) == 124);
 const _: () = assert!(core::mem::offset_of!(SmpCpu, lockdep_floor) == 125);
+// W3-Q108 尾插第五字段（exit_latch@126）：同尾插纪律——逻辑尺寸 127 仍
+// ≤ 128 帽（align 64），size 断言不变、asm 只钉 0/8/16 不受影响。
+const _: () = assert!(core::mem::offset_of!(SmpCpu, exit_latch) == 126);
 
 /// 副核 per-CPU 块（TPIDR_EL1 由 secondary_entry asm ⑩ 自钉）。
 #[no_mangle]
@@ -285,6 +299,24 @@ pub fn preempt_count_slot() -> Option<&'static AtomicU64> {
     // SAFETY: 非零即本核钉入的 SmpCpu 地址（boot 期钉、此后不变）；
     // preempt_count 字段本核独占写（禁切窗只在本核开合——跨核不触达）。
     Some(unsafe { &*(core::ptr::addr_of_mut!((*(base as *mut SmpCpu)).preempt_count)) })
+}
+
+/// 本核 dispatch 尾合并闩槽（W3-Q108；03 号机会一 1b/机会五 5a）：TPIDR_EL1
+/// 一次追链 → `SmpCpu.exit_latch` 单字——TLB shootdown 闩（bit0）与 ASID
+/// 回卷 quiesce 闩（bit1）合并读面。置位点（broadcast/roll_quiesce_arm）与
+/// 消费点（sched_exit_check/roll_quiesce_check）恒同核 = 本核独占写；跨核
+/// SGI 走 ACKS 回执计数不触本字。None = TPIDR_EL1 未装（cpu0_init/ktest 前
+/// 防御窗）——调用方回落 false（无闩可等，与单核闩恒 0 语义一致）。
+pub fn exit_latch_slot() -> Option<&'static AtomicU8> {
+    let base: u64;
+    // SAFETY: 只读系统寄存器。
+    unsafe { asm!("mrs {}, tpidr_el1", out(reg) base) };
+    if base == 0 {
+        return None;
+    }
+    // SAFETY: 非零即本核钉入的 SmpCpu 地址（boot 期钉、此后不变）；
+    // exit_latch 字段本核独占写（闩置位点与消费点恒同核）。
+    Some(unsafe { &*(core::ptr::addr_of_mut!((*(base as *mut SmpCpu)).exit_latch)) })
 }
 
 /// 本核 LOCKDEP 槽（G3-3）：TPIDR_EL1 → `SmpCpu` 尾插链三元组（类栈首址 /
