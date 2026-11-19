@@ -231,6 +231,15 @@ pub fn crc32(data: &[u8]) -> u32 {
     !crc
 }
 
+
+/// G0 刀 2 防回滚接口（纯面）：候选 rollback_version 低于在册值 → 拒
+/// （false）。在册值取两槽 max——跨槽全局反降级（design §2.1 Anti-
+/// rollback Index 语义）。v1 调用方：验签面比对 manifest 侧版本位。
+pub fn rollback_ok(ctl: &BootControl, candidate: u32) -> bool {
+    let floor = ctl.slots[0].rollback_version.max(ctl.slots[1].rollback_version);
+    candidate >= floor
+}
+
 const _: () = assert!(size_of::<[u8; CONTROL_LEN]>() == 52);
 
 #[cfg(test)]
@@ -371,5 +380,33 @@ mod tests {
         assert_eq!(picked.boot_count, 10);
         let arb = picked.arbitrate().unwrap();
         assert_eq!(arb.chosen, 0, "撕裂后仍引导 A");
+    }
+}
+
+#[cfg(test)]
+mod mkimage_parity {
+    use super::*;
+    #[test]
+    fn factory_bytes_match_mkimage_embedded() {
+        // G0 刀 1：BootControl::factory().to_bytes() 的布局快照——与
+        // tools/mkimage bootctl_factory() 逐字节一致（跨工作区单源钉板）。
+        let b = BootControl::factory().to_bytes();
+        let mut expect = [0u8; 52];
+        expect[0..4].copy_from_slice(&0x4252_5943u32.to_le_bytes()); // BRYC
+        expect[4..8].copy_from_slice(&3u32.to_le_bytes());           // v3
+        expect[8] = 0; expect[9] = 15; expect[10] = 3; expect[11] = 1; // A
+        expect[24] = 1; expect[25] = 14; expect[26] = 3; expect[27] = 0; // B
+        assert_eq!(&b[..48], &expect[..48]);
+        let crc = crc32(&b[..48]);
+        assert_eq!(&b[48..52], &crc.to_le_bytes());
+    }
+    #[test]
+    fn rollback_gate() {
+        let mut c = BootControl::factory();
+        c.slots[0].rollback_version = 7;
+        c.slots[1].rollback_version = 3;
+        assert!(rollback_ok(&c, 7), "等于在册最高 → 过");
+        assert!(rollback_ok(&c, 9), "高于 → 过");
+        assert!(!rollback_ok(&c, 6), "低于在册最高 → 拒（防降级）");
     }
 }

@@ -1242,14 +1242,37 @@ pub extern "C" fn efi_main(
                                             b"TRUSTPK",
                                             32,
                                         );
-                                        let sig_p = read_exact_fat_file(
+                                        // G0 刀 2：签名锚按选中槽命名——
+                                        // KERNELA.SIG / KERNELB.SIG；旧单槽
+                                        // 盘（kernel_name=KERNEL.ELF 兼容名）
+                                        // 回退 KERNEL.SIG 零漂移。
+                                        let sig_name: &[u8] = if slot_active == 0 {
+                                            b"KERNELA.SIG"
+                                        } else if slot_active == 1 {
+                                            b"KERNELB.SIG"
+                                        } else {
+                                            b"KERNEL.SIG"
+                                        };
+                                        let mut sig_p = read_exact_fat_file(
                                             bs_ref,
                                             con_out,
                                             root,
                                             root_ref,
-                                            b"KERNEL.SIG",
+                                            sig_name,
                                             64,
                                         );
+                                        // 槽签名缺席且非旧盘 → 回退旧名（
+                                        // 半装签名面兼容）。
+                                        if sig_p.is_none() && slot_active != 0xFFFF_FFFF {
+                                            sig_p = read_exact_fat_file(
+                                                bs_ref,
+                                                con_out,
+                                                root,
+                                                root_ref,
+                                                b"KERNEL.SIG",
+                                                64,
+                                            );
+                                        }
                                         match (pk_p, sig_p) {
                                             (Some(pk), Some(sp)) => {
                                                 // SAFETY: read_exact_fat_file
