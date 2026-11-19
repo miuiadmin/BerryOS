@@ -623,12 +623,13 @@ fn window_shrink_limits_inflight() {
 
 #[test]
 fn send_ring_full_rejects() {
-    // 环满拒：宽窗（8192）下 4×128 恰满 TX_SLOTS，第 5 段拒；弹槽腾位后续发。
+    // 环满拒：宽窗（8192）下 TX_SLOTS×128（五刀③环扩 =8×128）恰满环，
+    // 第 9 段拒；弹槽腾位后续发。
     let (mut c, _) = Conn::open(1000);
     let mut sa = syn_ack(5000, 1001, None);
     sa.window = 8192;
     c.on_seg(&sa);
-    for i in 0..4 {
+    for i in 0..TX_SLOTS as u32 {
         let seq = 1001 + 128 * i;
         assert_eq!(c.send(128).action, Action::Data { seq, len: 128 });
     }
@@ -636,7 +637,7 @@ fn send_ring_full_rejects() {
     assert_eq!(c.send(1).action, Action::None, "环满拒");
     c.on_seg(&ack_seg_w(1129, 8192)); // 弹第一段
     assert_eq!(c.tx_inflight(), TX_SLOTS - 1);
-    assert_eq!(c.send(1).action, Action::Data { seq: 1513, len: 1 });
+    assert_eq!(c.send(1).action, Action::Data { seq: 1001 + 128 * TX_SLOTS as u32, len: 1 });
 }
 
 #[test]
@@ -668,9 +669,9 @@ fn rst_clears_tx_ring() {
 
 #[test]
 fn consts_pinned() {
-    // §4 定值表钉板：MSS=128 / 窗口 512 / TIME_WAIT 2s。
+    // §4 定值表钉板：MSS=128 / 窗口 1024（五刀③环扩联动）/ TIME_WAIT 2s。
     assert_eq!(MSS, 128);
-    assert_eq!(WINDOW, 512);
+    assert_eq!(WINDOW, 1024);
     assert_eq!(TIME_WAIT_MS, 2_000);
     assert_eq!(RTO_START_MS, 3_000);
     // 窗口恒通告：任意操作序列后不变（滑窗 v2 的扩展点护栏）。

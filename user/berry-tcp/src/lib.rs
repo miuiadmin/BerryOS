@@ -8,8 +8,8 @@
 //! - **`TcpSeg` 是自定义输入视图**（seq/ack/flags/window/mss/payload 借用）——与
 //!   berry-netproto 的 parse_tcp（T-a）互不依赖（T-a ∥ T-b 并行的解耦点）；T-c 时
 //!   vnet 把 parse_tcp 输出翻译成 TcpSeg 喂进来。
-//! - 定值表（草案 §4 对账）：MSS=128（通告+收帽）/ 窗口恒 512 / RTO 3s 起 ×2 退避
-//!   3 次帽 / TIME_WAIT 2s / 在途窗 [`TX_SLOTS`]=4 定槽环（多段在途 +
+//! - 定值表（草案 §4 对账）：MSS=128（通告+收帽）/ 窗口恒 1024 / RTO 3s 起 ×2 退避
+//!   3 次帽 / TIME_WAIT 2s / 在途窗 [`TX_SLOTS`]=8 定槽环（多段在途 +
 //!   Go-Back-N 队头重发，二刀）/ 发送窗消费（`snd_wnd` 记账 + 零窗停发，二刀）/
 //!   乱序段丢弃回当前 ACK（靠对端重传）/ 收 RST 任意状态直转 Closed
 //!   （对陌生四元组回 RST = v2）。
@@ -33,12 +33,16 @@
 /// 最大段长（通告 + 收取帽）：RX_BUF_SZ 256 − 帧开销 66 = 190 上限内留余量（草案 §5；
 /// 该定值安全由 vnet tcp.rs 消费侧 const assert 机器钉住——T-c 对抗审查 ③）。
 pub const MSS: u16 = 128;
-/// 在途环容量（槽，二刀）：一段 250B RPC 载荷拆 ceil(250/128)=2 槽 + close 排队
-/// FIN 1 槽 + 余量 1 ⇒ 4。环容量 4×128 ≥ TCP_DATA_MAX 由 vnet tcp.rs 消费侧
-/// const assert 机器钉住（单侧缩环/抬帽即编译期炸响，与 MSS 钉同族）。
-pub const TX_SLOTS: usize = 4;
-/// 固定通告窗口（非目标滑窗；本 crate 是**收侧**通告——发送窗消费见 `snd_wnd`）。
-pub const WINDOW: u16 = 512;
+/// 在途环容量（槽，二刀 4、五刀③环扩 4→8）：K 窗多 op 在途 = K×2 段
+/// （250B op 拆 ceil(250/128)=2 段）+ close 排队 FIN 1 槽 + 余量 1 ⇒
+/// K=3 恰容 8；K=2 时半环（数据面 4 槽）。环容量 8×128 ≥ K×TCP_DATA_MAX
+/// 由 vnet tcp.rs 消费侧 const assert 机器钉住（单侧缩环/抬帽即编译期
+/// 炸响，与 MSS 钉同族）。
+pub const TX_SLOTS: usize = 8;
+/// 固定通告窗口（五刀③ 512→1024，与环容 TX_SLOTS×MSS=1024 同值对齐——
+/// K 窗在途 K×250=750 的双界之一，vnet tcp.rs const assert 机器钉；非目标
+/// 滑窗；本 crate 是**收侧**通告——发送窗消费见 `snd_wnd`）。
+pub const WINDOW: u16 = 1024;
 /// RTO 起始值（毫秒）：TCG 友好；SLIRP 本地几乎不丢——重传是防御面非主路径。
 pub const RTO_START_MS: u64 = 3_000;
 /// RTO 退避帽（重传次数上限）：`on_rto` 在 backoff 到帽时放弃会话。
@@ -149,7 +153,7 @@ pub struct Conn {
     pub snd_una: u32,
     /// 期望收到的下一个字节序号（对端 SYN/数据/FIN 推进）。
     pub rcv_nxt: u32,
-    /// 通告窗口（恒 WINDOW=512；滑窗 v2 的扩展点）。
+    /// 通告窗口（恒 WINDOW=1024；滑窗 v2 的扩展点）。
     pub window: u16,
     /// 对端 SYN 携带的 MSS 通告（无选项 = None）。
     pub peer_mss: Option<u16>,

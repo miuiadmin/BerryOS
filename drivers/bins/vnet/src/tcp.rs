@@ -58,9 +58,9 @@ const SELFTEST_CAP_NS: u64 = 60_000_000_000;
 const SEND_CAP_NS: u64 = 30_000_000_000;
 /// 单帧组帧缓冲：TCP 头 20 + MSS 选项 4 + 段体 MSS=128 = 152B。
 const SEG_BUF_SZ: usize = np::TCP_HDR_SZ + np::TCP_OPT_MSS_SZ + bt::MSS as usize;
-/// 发送暂存跨 op 容量（四刀 P5）= berry-tcp 在途环容量 TX_SLOTS×MSS=512
-/// ——K 窗多 op 并发在途时 tx 暂存跨 op 连续（tx_seq0 基点不因单 op 完成
-/// 重立，环空才失效——post_account 语义不变）。
+/// 发送暂存跨 op 容量（四刀 P5，五刀③随环扩）= berry-tcp 在途环容量
+/// TX_SLOTS×MSS=1024——K 窗多 op 并发在途时 tx 暂存跨 op 连续（tx_seq0
+/// 基点不因单 op 完成重立，环空才失效——post_account 语义不变）。
 pub(crate) const TX_CAP: usize = bt::TX_SLOTS * bt::MSS as usize;
 /// tx 批量单帧槽步长（四刀 P10，含 12B virtio-net 头）：TCP 段最大帧
 /// 12+14+20+152 = 198B——desc 各指 TX_BUF_PAGE 内偏移，整批一次页写/
@@ -83,8 +83,9 @@ pub(crate) const RT_ECHO_MAX: usize = ndp::RT_PIPE_K * ndp::TCP_DATA_MAX;
 /// 发送面几何不动（停等 128B，吞吐抬升属二刀）。
 const RX_SEG_MAX: usize = 1460;
 /// 会话入站收缓冲幅（首刀 512→2048）：容纳 1×1460 大段 + 常规段余量。
-/// 与 bt::WINDOW（通告 512）解耦——通告几何不动（窗口执法/滑窗属二刀），
-/// 本值只钉「实际能收」；netdproto DRAIN 128B 拉模型天然多次拉取。表
+/// 与 bt::WINDOW（五刀③通告 512→1024）解耦——本值只钉「实际能收」，
+/// WINDOW ≤ 本值由五刀③ const assert 机器钉（对端守约发满窗也容得下）；
+/// netdproto DRAIN 128B 拉模型天然多次拉取。表
 /// 8 槽静态段随之 +约 11KB（boot 冒烟面，见 TCPTABLE 注）。
 const RX_SESS_BUF: usize = 2048;
 
@@ -114,13 +115,22 @@ const _: () = assert!(crate::RX_BUF_SZ <= crate::IOB_SZ);
 // 128 钉板把守。
 const _: () = assert!(berry_netdproto::TCP_DATA_MAX > bt::MSS as usize);
 const _: () = assert!(bt::TX_SLOTS * bt::MSS as usize >= berry_netdproto::TCP_DATA_MAX);
-// 四刀几何钉：① K 窗恰满环（K×TCP_DATA_MAX ≤ TX_CAP=TX_SLOTS×MSS——K=2
-// 恰在环容与 guest 自通告收窗 512 双界内；K≥3 需环扩+通告窗联动双前置）；
-// ② tx 批布局装进 IOB（批帧数 × 步长 ≤ IOB_SZ）；③ session-0 回显收流幅
-// = K×TCP_DATA_MAX 单源（拼段准入几何）。
+// 几何钉（四刀立、五刀③环扩换锚）：① K 窗在途 K×TCP_DATA_MAX ≤
+// TX_CAP=TX_SLOTS×MSS——四刀 K=2 恰满双界（500 ≤ 环容 512=通告窗 512），
+// 五刀③ K=2→3：环扩 4→8 + 通告窗 512→1024 联动，750 ≤ min(TX_CAP,
+// WINDOW)=1024 余 274B+2 槽（K=4 恰满零余量拒）；② tx 批布局装进 IOB
+//（批帧数 × 步长 ≤ IOB_SZ——TX_SLOTS=8 下 8×198=1584 ≤ 1600 余 16B）；
+// ③ session-0 回显收流幅 = K×TCP_DATA_MAX 单源（拼段准入几何）。
 const _: () = assert!(ndp::RT_PIPE_K * ndp::TCP_DATA_MAX <= TX_CAP);
 const _: () = assert!(TX_BATCH_MAX * TX_FRAME_STEP <= crate::IOB_SZ);
 const _: () = assert!(RT_ECHO_MAX == ndp::RT_PIPE_K * ndp::TCP_DATA_MAX);
+// 五刀③环扩双钉（与上钉同族）：① K 窗未收回显 ≤ 通告窗（K×TCP_DATA_MAX
+// ≤ bt::WINDOW——收侧半边：通告窗与 TX_CAP 同值 1024,缩窗（<750）或抬 K≥5 即编译期炸响;K=4 为字节钉盲区（1000≤1024 过——槽几何恰满零 FIN 余量,由槽级钉把守）,
+// 编译期炸响）；② 通告窗 ≤ 会话收缓冲（WINDOW ≤ RX_SESS_BUF——对端守约
+// 发满窗也装得下，rx 准入预检不越界）。
+const _: () = assert!(ndp::RT_PIPE_K * ndp::TCP_DATA_MAX <= bt::WINDOW as usize);
+const _: () = assert!(bt::WINDOW as usize <= RX_SESS_BUF);
+const _: () = assert!(ndp::RT_PIPE_K * 2 + 2 <= bt::TX_SLOTS); // 槽级钉:K op 各 ceil(250/128)=2 段+FIN 1+余量 1（K=3 恰容;K=4 结构性拒）
 
 /// 回显载荷 64B（ICMP 32B probe 同族确定性 pattern）。
 static PATTERN: &[u8; 64] = b"berryos-tcp-probe-0123456789012345678901234567890123456789abcdef";
@@ -161,8 +171,9 @@ pub(crate) struct Sess {
     /// 见常量注；准入预检见 route_seg）。
     rx: [u8; RX_SESS_BUF],
     rx_len: usize,
-    /// 发送暂存（二刀重传载荷源，四刀 P5 跨 op 扩容 TX_CAP=512）：op 首段
-    /// 发送时整批拷入（≤K×TCP_DATA_MAX，基点 tx_seq0），重发按 (seq−tx_seq0,
+    /// 发送暂存（二刀重传载荷源，四刀 P5 跨 op 扩容、五刀③随环扩
+    /// TX_CAP=1024）：op 首段发送时整批拷入（≤K×TCP_DATA_MAX，基点
+    /// tx_seq0），重发按 (seq−tx_seq0,
     /// len) 切片组帧——berry-tcp 维持零拷贝纯状态机，载荷归属 IO 层。环空
     /// 即失效（post_account 收账——K 窗下 = 全部挂起 op 收口；下一 op 重立
     /// 基）；净生成面 = step/pump_timers 两处 RTO 路径 act(&[])。
@@ -290,7 +301,7 @@ impl Sess {
     /// 旧臂保守残留、新臂顺带清数据尾——Fin 无载荷重发不读暂存，安全）；
     /// FIN 占序号的 +1 面以 N≥tx_len 分支整体失效处理（非 assert）。两处
     /// F121 闸的 staged=snd_nxt−tx_seq0 随基点自动受益（前移即准入重开）。
-    /// memmove ≤ TX_CAP=512B，post_account 每收 ACK 步一次，单线程可忽略。
+    /// memmove ≤ TX_CAP=1024B，post_account 每收 ACK 步一次，单线程可忽略。
     fn post_account(&mut self) {
         let floor = self.conn.tx_retx_floor();
         let d = floor.wrapping_sub(self.tx_seq0);
@@ -756,7 +767,8 @@ pub(crate) struct TcpMux {
 
 /// 表单例（首刀几何注：Sess rx 512→2048 后 8 槽表 ≈ 17KB；连带 IOB 扩容，
 /// .bss 实测增量 +9.5KB——boot 冒烟面，128M 帧边敏感见 NET-01 环境战记。
-/// 二刀追加 Sess.tx 发送暂存 250B/槽 ≈ +2KB）。
+/// Sess.tx 发送暂存二刀 250B/槽起，四刀 P5 跨 op 扩 TX_CAP=512、五刀③
+/// 环扩至 1024B/槽（8 槽累计 ≈8KB,五刀③自身增量 +4KB）。
 static mut TCPTABLE: TcpMux = TcpMux { slots: [Slot::Free; SLOTS] };
 
 /// 全局表单例（vnet 单线程：自验与 serve() 串行，无并发面——SAFETY：无
@@ -1198,10 +1210,11 @@ impl RtPipe {
         // 暂存容量闸（F121，非阻塞形——与环容量 BUSY 同轨）：F105 构造
         // （紧缩前形态）——客户端 read 清 res_pending 后新 op 准入重开，
         // 而旧纪元尾段未全 ACK 时基点不前移，新 op 落旧基点连暂存可越
-        // TX_CAP 击 act_q Data 臂防御 trap（构造：A/B 双 op 满环 500B → A
-        // 完成+回显被应用
-        // read 收走 → C 准入重开落 off=500 暂存至 628>512——紧缩前形态；
-        // 紧缩后 ACK 推进即部分解闸，此构造的暂存量已被在途字节界住）。
+        // TX_CAP 击 act_q Data 臂防御 trap（五刀③新几何构造：K=3 纪元
+        // A/B/C 三 op 750 在途 → 完成+回显被应用 read 收走 → D 准入
+        // 重开落 off=750 暂存至 1000（余 24B 不足下一 op）→ E 再入
+        // 1250>1024 拒——紧缩前形态；紧缩后 ACK 推进即部分解闸，此构造
+        // 的暂存量已被在途字节界住）。
         // 环/op 有空槽 ≠ 暂存有余位：不足即 BUSY——同 seq 退避重发（客户端
         // 60s 全局帽 F87 兜底，二者组成完整背压环）；ACK 推进使部分紧缩
         // 腾位、环空为全解特例，重发即过。
