@@ -1138,8 +1138,13 @@ test-host:
     # 三刀（CLI 消费半边）：src/main.rs --verify/--gen-keys 臂实装
     # （Python do_verify/do_gen_keys 镜像）+ tests/cli_parity.rs oracle
     # 真流对拍（--verify stdout 逐行全等/单调门/两件套对拍拒/gen-keys
-    # 真流/用法错族）。生成面产链位仍 python3 现役（上方 --selftest 行
-    # 同挂），产链换轨归后续刀。
+    # 真流/用法错族）。四刀（生成面库刀）：src/gen.rs rootfs-manifest 路
+    # （load_app_entries/build_entry/do_generate——依赖全走已 Rust 化件：
+    # mkcpio load_manifest 表加载 + mkapp gate/cpio manifest 语义与走查
+    # 单源复用）+ tests/gen_parity.rs oracle 真流对拍（两件套字节恒等 +
+    # stdout 逐行全等 + 单调门/[security]/pk 长度拒面同构；--preset 面
+    # berry_assemble Python 现役不镜像）。生成面产链位仍 python3 现役
+    # （上方 --selftest 行同挂），产链换轨归后续刀。
     cargo test --manifest-path tools/gensourceindex/Cargo.toml --target {{host}}
     # W1 接线（SEC-02 A2 同款纪律）：berry_assemble 门禁自检——V13 组装器
     # （ADR #82「组装不 fork」product.toml 校验/dry-run 计划/装配反回滚门）
