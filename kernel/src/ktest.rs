@@ -3513,6 +3513,62 @@ fn test_vmo() {
     let v = unsafe { core::ptr::read_volatile(0x20_0000 as *const u64) };
     assert_eq!(v, MAGIC, "VMO：子映射经共享表根可读（同 PA 双 VA 别名）");
 
+    // E2. 跨 2MiB 段边界映射（W3-Q110 L3 游标钉板）：三页区间
+    // [0x3F_F000, 0x42_F000) 骑跨 0x40_0000 边界——页 0 落段 1 尾槽 511、
+    // 页 1/2 落段 2 首槽 0/1。游标化 map/clear_leaves/protect 的段界推进
+    // （seg_pages 以段尾为界 + 跨段重走查）由本例钉死；读写/protect/unmap
+    // 三面均验。
+    let mut vmo3 = Vmo::create(PAGE_SIZE * 3).expect("VMO：跨段 VMO create");
+    vmo3.commit(fa, 0, PAGE_SIZE * 3).expect("VMO：跨段 commit");
+    const M2_0: u64 = 0x0BAD_0000_C0DE_0001;
+    const M2_1: u64 = 0x0BAD_0000_C0DE_0002;
+    const M2_2: u64 = 0x0BAD_0000_C0DE_0003;
+    vmo3.write(0, &M2_0.to_le_bytes()).expect("VMO：跨段写页 0");
+    vmo3.write(PAGE_SIZE, &M2_1.to_le_bytes()).expect("VMO：跨段写页 1");
+    vmo3.write(2 * PAGE_SIZE, &M2_2.to_le_bytes()).expect("VMO：跨段写页 2");
+    root.map(fa, &mut vmo3, 0x3F_F000, 0, PAGE_SIZE * 3, Perm::Rw)
+        .expect("VMO：跨段 map（两段各一走查）");
+    // SAFETY: 读已映射页（root 激活态）。
+    assert_eq!(
+        unsafe { core::ptr::read_volatile(0x3F_F000 as *const u64) },
+        M2_0,
+        "VMO：跨段读段 1 尾槽 511"
+    );
+    assert_eq!(
+        unsafe { core::ptr::read_volatile(0x40_0000 as *const u64) },
+        M2_1,
+        "VMO：跨段读段 2 首槽 0"
+    );
+    assert_eq!(
+        unsafe { core::ptr::read_volatile(0x41_0000 as *const u64) },
+        M2_2,
+        "VMO：跨段读段 2 槽 1"
+    );
+    // protect 跨段降权（Ro）→ 写必 fault；提回 Rw → 写通。
+    root.protect(0x3F_F000, PAGE_SIZE * 3, Perm::Ro)
+        .expect("VMO：跨段 protect→RO");
+    for va in [0x3F_F000usize, 0x40_0000, 0x41_0000] {
+        hal::trap::arm_expected_fault(va);
+        // SAFETY: 预期 Permission fault（期望故障槽已 arm）。
+        unsafe { core::ptr::write_volatile(va as *mut u64, 0) };
+        assert!(!hal::trap::fault_armed(), "VMO：跨段 RO 页写居然没 fault");
+    }
+    root.protect(0x3F_F000, PAGE_SIZE * 3, Perm::Rw)
+        .expect("VMO：跨段 protect→RW");
+    // SAFETY: 写已提权页。
+    unsafe { core::ptr::write_volatile(0x40_0000 as *mut u64, MAGIC2) };
+    vmo3.read(PAGE_SIZE, &mut buf).expect("VMO：跨段 read back");
+    assert_eq!(u64::from_le_bytes(buf), MAGIC2, "VMO：跨段 VA 写→VMO 读一致");
+    // unmap 跨段清叶 → 读必 fault（三页跨两段全清）。
+    root.unmap(0x3F_F000, PAGE_SIZE * 3).expect("VMO：跨段 unmap");
+    for va in [0x3F_F000usize, 0x40_0000, 0x41_0000] {
+        hal::trap::arm_expected_fault(va);
+        // SAFETY: 预期同步异常（期望故障槽已 arm）。
+        let _ = unsafe { core::ptr::read_volatile(va as *const u64) };
+        assert!(!hal::trap::fault_armed(), "VMO：跨段 unmap 后读居然没 fault");
+    }
+    drop(vmo3);
+
     // F. A1-2 容量冒烟：40MiB VMO 全量 commit/decommit——`vmo.rs` commit 逐页
     // order-0 出帧，不受 MAX_ORDER 堆单块地形约束；帧账本对账（B-0
     // `allocated_pages` 口径）钉「10240 页全出全还、零泄漏」。40MB+ blob
