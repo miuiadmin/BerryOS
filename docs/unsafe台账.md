@@ -42,25 +42,16 @@
 <!-- UNSAFE-AUDIT:SUMMARY:BEGIN -->
 | 目录 | .rs 文件数 | 总行数 | unsafe 非空行 | 密度 |
 |------|-----------|--------|--------------|------|
-| kernel/ | 32 | 37249 | 2359 | 6.33% |
-| mm/ | 7 | 2368 | 4 | 0.17% |
+| kernel/ | 32 | 37484 | 2360 | 6.30% |
+| mm/ | 7 | 2544 | 4 | 0.16% |
 | sched/ | 15 | 8894 | 1743 | 19.60% |
 | ipc/ | 0 | 0 | 0 | — |
-| arch/ | 23 | 7395 | 1084 | 14.66% |
-| **合计** | 77 | 55906 | 5190 | **9.28%** |
+| arch/ | 23 | 7491 | 1086 | 14.50% |
+| **合计** | 77 | 56413 | 5193 | **9.21%** |
 
-- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 42393，unsafe 非空行 4390，密度 10.36%（生产面口径）
-- 分类计数：页表 74 | 上下文切换 35 | MMIO 162 | 分配器 16 | 硬件原子 0 | 其它 899
-- 类型计数：block 1033 | fn 149 | impl 2 | extern 2（另有类型签名位提及 15 处——只计不登记，防双计）
-
-| kernel/ | 32 | 37482 | 2360 | 6.30% |
-| mm/ | 7 | 2544 | 4 | 0.16% |
-| sched/ | 15 | 9073 | 1835 | 20.22% |
-| arch/ | 23 | 7584 | 1089 | 14.36% |
-| **合计** | 77 | 56683 | 5288 | **9.33%** |
-- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 43053，unsafe 非空行 4487，密度 10.42%（生产面口径）
-- 分类计数：页表 74 | 上下文切换 35 | MMIO 165 | 分配器 16 | 硬件原子 0 | 其它 907
-- 类型计数：block 1044 | fn 149 | impl 2 | extern 2（另有类型签名位提及 15 处——只计不登记，防双计）
+- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 42781，unsafe 非空行 4392，密度 10.27%（生产面口径）
+- 分类计数：页表 74 | 上下文切换 35 | MMIO 164 | 分配器 16 | 硬件原子 0 | 其它 900
+- 类型计数：block 1036 | fn 149 | impl 2 | extern 2（另有类型签名位提及 15 处——只计不登记，防双计）
 - 对标：Android ~4%（unsafe 行占 Rust 总行比，Google 2025-11）；本表为跨度非空行口径（偏高估），见 §一
 <!-- UNSAFE-AUDIT:SUMMARY:END -->
 
@@ -336,19 +327,19 @@
 | kernel/src/bench.rs | 449 | block | 其它 | unsafe { *(&raw const RBUF) }, unsafe { *(&raw const SBUF) }, "b |
 | kernel/src/bench.rs | 450 | block | 其它 | unsafe { *(&raw const SBUF) }, "bench: send_recv_pair 读回载荷须逐字节同源 |
 | kernel/src/bench.rs | 454 | block | 其它 | unsafe { NB = 8; NH = 0; } // 清场：两端 close（互钉环泄漏——channel.rs 安全向政 |
-| kernel/src/bench.rs | 592 | block | 其它 | unsafe { &*core::ptr::addr_of!(BUF) }; let base = mm::frames().a |
-| kernel/src/bench.rs | 665 | block | 其它 | unsafe { XH_C0 = 0; XH_C1 = 0; } assert_eq!( svc4( NR_CHANNEL_CR |
-| kernel/src/bench.rs | 676 | block | 其它 | unsafe { XH_C0 } as u32, unsafe { XH_C1 } as u32); assert_ne!(hc |
-| kernel/src/bench.rs | 676 | block | 其它 | unsafe { XH_C1 } as u32); assert_ne!(hc0, 0, "bench: xh 预热端点 0 须 |
-| kernel/src/bench.rs | 687 | block | 其它 | unsafe { &mut *core::ptr::addr_of_mut!(XH_HS) }; for h in hs.ite |
-| kernel/src/bench.rs | 811 | block | 其它 | unsafe { XH_VOUT = 0; } assert_eq!( svc6( NR_VMO_CREATE as u64, |
-| kernel/src/bench.rs | 825 | block | 其它 | unsafe { XH_VOUT } as u32; assert_ne!(hv, 0, "bench: xh vmo 帽边界 |
-| kernel/src/bench.rs | 909 | block | 其它 | unsafe { XH_NB = XH_MSG; XH_NH = 4; } assert_eq!( svc6( NR_CHANN |
-| kernel/src/bench.rs | 926 | block | 其它 | unsafe { XH_NB }, XH_MSG, "bench: xh recv 字节数回写"); assert_eq!(un |
-| kernel/src/bench.rs | 927 | block | 其它 | unsafe { XH_RBUF[0] }, 0x58, "bench: xh recv 载荷首字节"); assert_eq! |
-| kernel/src/bench.rs | 928 | block | 其它 | unsafe { XH_NH }, 0, "bench: xh recv handle 数回写"); } // 恢复面：排空后再 |
-| kernel/src/bench.rs | 946 | block | 其它 | unsafe { XH_NB = XH_MSG; XH_NH = 4; } assert_eq!( svc6( NR_CHANN |
-| kernel/src/bench.rs | 976 | block | 其它 | unsafe { XH_NB = XH_MSG; XH_NH = 4; } assert_eq!( svc6( NR_CHANN |
+| kernel/src/bench.rs | 594 | block | 其它 | unsafe { &*core::ptr::addr_of!(BUF) }; let base = mm::frames().a |
+| kernel/src/bench.rs | 667 | block | 其它 | unsafe { XH_C0 = 0; XH_C1 = 0; } assert_eq!( svc4( NR_CHANNEL_CR |
+| kernel/src/bench.rs | 678 | block | 其它 | unsafe { XH_C0 } as u32, unsafe { XH_C1 } as u32); assert_ne!(hc |
+| kernel/src/bench.rs | 678 | block | 其它 | unsafe { XH_C1 } as u32); assert_ne!(hc0, 0, "bench: xh 预热端点 0 须 |
+| kernel/src/bench.rs | 689 | block | 其它 | unsafe { &mut *core::ptr::addr_of_mut!(XH_HS) }; for h in hs.ite |
+| kernel/src/bench.rs | 813 | block | 其它 | unsafe { XH_VOUT = 0; } assert_eq!( svc6( NR_VMO_CREATE as u64, |
+| kernel/src/bench.rs | 827 | block | 其它 | unsafe { XH_VOUT } as u32; assert_ne!(hv, 0, "bench: xh vmo 帽边界 |
+| kernel/src/bench.rs | 911 | block | 其它 | unsafe { XH_NB = XH_MSG; XH_NH = 4; } assert_eq!( svc6( NR_CHANN |
+| kernel/src/bench.rs | 928 | block | 其它 | unsafe { XH_NB }, XH_MSG, "bench: xh recv 字节数回写"); assert_eq!(un |
+| kernel/src/bench.rs | 929 | block | 其它 | unsafe { XH_RBUF[0] }, 0x58, "bench: xh recv 载荷首字节"); assert_eq! |
+| kernel/src/bench.rs | 930 | block | 其它 | unsafe { XH_NH }, 0, "bench: xh recv handle 数回写"); } // 恢复面：排空后再 |
+| kernel/src/bench.rs | 948 | block | 其它 | unsafe { XH_NB = XH_MSG; XH_NH = 4; } assert_eq!( svc6( NR_CHANN |
+| kernel/src/bench.rs | 978 | block | 其它 | unsafe { XH_NB = XH_MSG; XH_NH = 4; } assert_eq!( svc6( NR_CHANN |
 | kernel/src/bootparams.rs | 331 | block | MMIO | unsafe { hal::timer::set_slice_hz(hz as u64) }; } if let Some(co |
 | kernel/src/cbox.rs | 118 | fn | 其它 | unsafe extern "C" fn on_fault(kind: u8, tf: *const TrapFrame) { |
 | kernel/src/cbox.rs | 140 | block | 其它 | unsafe { &mut (*tbl)[slot] }; // seqlock 开写：先抬奇（排液方见奇即跳）；fence 防 |
