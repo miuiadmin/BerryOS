@@ -79,8 +79,12 @@ pub mod check;
 pub mod build;
 
 /// W1-Q27 七刀：`--json` 机读单行信封面（Python `_json_envelope`/
-/// `_json_main` 镜像——build/check 两 op）。
+/// `_json_main` 镜像——build/check/new 三 op）。
 pub mod json;
+
+/// W1-Q27 八刀：`--new` 应用脚手架四件（Python `do_new` 镜像——SDK-1a
+/// §4.5；模板 = include_str! 资产与 Python `SCAFFOLD_*` 同字节源）。
+pub mod new;
 
 /// [security] 三键视图（profile/key_lineage/integrator——齐备或齐缺）。
 #[derive(Debug, Clone, PartialEq, Eq)]

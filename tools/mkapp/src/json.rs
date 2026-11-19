@@ -18,7 +18,7 @@ use crate::gate::Reject;
 
 /// JSON 字符串字面量转义（RFC 8259 双引号串子集——值域已过门禁可打印
 /// ASCII，转义面只剩 `"` 与 `\`；控制字符走 `\u00XX` 防御面）。
-fn esc(s: &str) -> String {
+pub(crate) fn esc(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for ch in s.chars() {
@@ -140,15 +140,22 @@ pub fn envelope(op: &str, run: impl FnOnce() -> Result<String, Reject>) -> (Stri
     }
 }
 
-/// CLI `--json` 分派（Python `_json_main` 镜像，build/check 两 op）：
-/// `--json <out.bap> <app-dir>` | `--json --check <path.bap>`。其余形态
-/// （含 `--selftest`/`--new`/签名面旗标混排）= 用法错 → `None`（caller
-/// 打 stderr 用法 + exit 2——双模式同形）。
+/// CLI `--json` 分派（Python `_json_main` 镜像，build/check/new 三 op）：
+/// `--json <out.bap> <app-dir>` | `--json --check <path.bap>` |
+/// `--json --new <dir> --id <ID>`。其余形态（含 `--selftest`/签名面旗标
+/// 混排）= 用法错 → `None`（caller 打 stderr 用法 + exit 2——双模式同形）。
 pub fn json_main_dispatch(args: &[String]) -> Option<(String, i32)> {
     if args.len() == 2 && args[0] == "--check" {
         let path = args[1].clone();
         return Some(envelope("check", || {
             crate::check::check_bap(&path).map(|s| check_result_json(&s, &path))
+        }));
+    }
+    if args.len() == 4 && args[0] == "--new" && args[2] == "--id" {
+        let dir = args[1].clone();
+        let id = args[3].clone();
+        return Some(envelope("new", || {
+            crate::new::do_new(&dir, &id).map(|s| s.result_json())
         }));
     }
     if args.len() == 2 && !args[0].starts_with('-') {
@@ -302,7 +309,10 @@ mod json_tests {
         assert!(json_main_dispatch(&a(&["--check", "x.bap"])).is_some());
         assert!(json_main_dispatch(&a(&["out.bap", "dir"])).is_some());
         assert!(json_main_dispatch(&a(&["--selftest"])).is_none());
-        assert!(json_main_dispatch(&a(&["--new", "d", "--id", "X"])).is_none());
+        assert!(json_main_dispatch(&a(&["--new", "d", "--id", "X"])).is_some());
+        // 变形：缺 --id / --id 不在位 = 用法错
+        assert!(json_main_dispatch(&a(&["--new", "d"])).is_none());
+        assert!(json_main_dispatch(&a(&["--new", "d", "X", "--id"])).is_none());
         assert!(json_main_dispatch(&a(&["--sign-key", "k", "o.bap", "d"])).is_none());
         assert!(json_main_dispatch(&[]).is_none());
     }

@@ -51,6 +51,21 @@ fn main() -> ExitCode {
             }
         };
     }
-    eprintln!("mkapp: 用法：mkapp <out.bap> <app-dir> | mkapp --check <bap>（其余形态走 python3 tools/mkapp.py——CLI oracle 面保留）");
+    // --new 恰四参形（Python main() `len(args)==4 and args[0]=="--new"
+    // and args[2]=="--id"` 同判；签名面旗标混排 = 用法错走兜底——Rust 件
+    // 无签名面，混排天然落此处拒）。
+    if args.len() == 4 && args[0] == "--new" && args[2] == "--id" {
+        return match mkapp::new::do_new(&args[1], &args[3]) {
+            Ok(sum) => {
+                println!("{}", sum.line());
+                ExitCode::from(0)
+            }
+            Err(e) => {
+                eprintln!("mkapp: {}", e.message);
+                ExitCode::from(1)
+            }
+        };
+    }
+    eprintln!("mkapp: 用法：mkapp <out.bap> <app-dir> | mkapp --check <bap> | mkapp --new <dir> --id <ID>（其余形态走 python3 tools/mkapp.py——CLI oracle 面保留）");
     ExitCode::from(2)
 }
