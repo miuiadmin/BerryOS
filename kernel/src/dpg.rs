@@ -146,12 +146,14 @@ unsafe extern "C" fn probe(esr: usize, far: usize) -> bool {
     // 注销与对象释放都在 KL 窗内发生，他核注销须先取同把 KL）+ regions
     // 权威重验（变更方经 PT 锁嵌 KL 同序，锁外快查与入锁间的变更由本窗
     // 收口）。
-    let _kl = hal::kern_lock::klock_enter_irqsave();
+    hal::kern_lock::klock_enter();
     let Some(root) = vmar::demand_root(asid) else {
+        hal::kern_lock::klock_exit();
         return false; // stage-1 stale 命中折 None——原杀链
     };
     // SAFETY: root = 本 KL 窗内 fresh 查得（窗内活，见上）；region 查只读。
     if unsafe { (*root).demand_region_at(far).is_none() } {
+        hal::kern_lock::klock_exit();
         return false;
     }
     // 命中 = 提交路径：入深（G4-3 深度帽——此后至 block 前的活跃窗计深度）。
@@ -193,7 +195,7 @@ unsafe extern "C" fn probe(esr: usize, far: usize) -> bool {
     crate::telemetry::dpg_stall_fold(stall_now);
     // 醒 = 活跃窗重开（收尾段计深度——此窗内嵌套异常同样响雷）。
     depth_enter();
-    drop(_kl);
+    hal::kern_lock::klock_exit();
     assert!(
         matches!(r, berry_sched::WakeReason::Signaled),
         "dpg probe: 醒因非 Signaled（fault 键无超时/无他者——唤醒面破损）"
@@ -274,14 +276,16 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
     if vmar::demand_root(asid).is_none() {
         return false; // KL 外零锁快拒（rogue fault 不付全谱窗）
     }
-    let kl = hal::kern_lock::klock_enter_irqsave();
+    hal::kern_lock::klock_enter();
     // stage-2 根槽 fresh 重查（同 [`probe`]——窗内查得即窗内活；stale
     // 命中折 None → 原杀链）。
     let Some(root) = vmar::demand_root(asid) else {
+        hal::kern_lock::klock_exit();
         return false;
     };
     // SAFETY: root = 本 KL 窗内 fresh 查得（窗内活）；regions 权威重验在本窗。
     let Some((rvmo, _, _)) = (unsafe { (*root).demand_region_at(far) }) else {
+        hal::kern_lock::klock_exit();
         return false;
     };
     // P1-3 ZFOD 快路径：命中区间属**匿名零页** demand VMO（零臂供给学习
@@ -306,14 +310,12 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
         let va = far & !(PAGE_SIZE - 1);
         // SAFETY: root 窗内活；supply_page = pt_lock 嵌 KL 正序（pager
         // 供给窗同链），幂等（叶已在 → Ok 零动作）。
-        let r = unsafe { (*root).supply_page_global(va) };
+        let r = unsafe { (*root).supply_page(mm::frames(), va) };
         match r {
             Ok(()) => {
-                drop(kl);
-                // F0-3：ZFOD 直供在 PT 锁窗内广播了 TLB shootdown，放锁后在零锁窗口排干本核 PENDING 闩。
-                hal::tlbshoot::sched_exit_check();
+                hal::kern_lock::klock_exit();
                 depth_exit();
-                return true; // eret 重试命中新零叶（ELR 不动——同醒后重试形，全程维持 PSTATE.I=1）
+                return true; // eret 重试命中新零叶（ELR 不动——同醒后重试形）
             }
             // 直供失败（帧耗尽/建表失败）：KL 仍持，降级续走下方 pager
             // 武装链（= 快路径从未发生的原语义；pager 侧供给失败 fail
@@ -436,7 +438,7 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
         // 醒因门已滤——不可达（matches! 全集穷尽外的防御臂）。
         berry_sched::WakeReason::Pending => true,
     };
-    drop(kl);
+    hal::kern_lock::klock_exit();
     depth_exit();
     ok
 }
@@ -600,17 +602,19 @@ extern "C" fn dpg_pager(_arg: usize) -> ! {
         // 在 KL 窗内 fresh 查——窗内查得即窗内活（注销/释放同窗互斥）。
         let root = vmar::demand_root(asid)
             .expect("dpg_pager: asid 反查失败（boot 装配 AS 恒登记——Box::leak 永不 Drop）");
-        let (_vmo, _vmo_off, _base) = unsafe { (*root).demand_region_at(far) }
+        let (vmo, vmo_off, base) = unsafe { (*root).demand_region_at(far) }
             .expect("dpg_pager: 请求 VA 已不在 demand 区间（unmap 竞窗）");
         let va = far & !(PAGE_SIZE - 1);
-        // F0-1 + F0-3：在叶 PTE 置有效之前写入 magic 并完成 PoU 缓存同步，且经 ALLOC_LOCK 安全提交建表。
-        unsafe {
-            (*root).supply_page_init_global(va, |vmo, page_off| {
-                vmo.write(page_off, &DPG_MAGIC.to_le_bytes())
-                    .expect("dpg_pager: 写 magic 失败（供给页未提交？）");
-            })
-        }
-        .expect("dpg_pager: supply_page_init_global 失败（帧耗尽/建表失败——fail loud）");
+        unsafe { (*root).supply_page(mm::frames(), va) }
+            .expect("dpg_pager: supply_page 失败（帧耗尽/建表失败——fail loud）");
+        // 数据面：供给页是清零页——写 magic（经 VMO direct map 写路径；
+        // faulter 经其 VA 读同 PA——跨核可见性 = 供给窗 dsb ish + tlbi/
+        // broadcast 在场〔supply_page 链〕，KL 全谱串行同 C3 口径）。
+        let off = vmo_off + (va - base);
+        // SAFETY: Region 的 vmo 指针有效性 = init 泄漏持有（boot 装配恒活）
+        // × demand 钉防线（G4-2 修批——handle 层销毁拒面第二分量）双保险。
+        unsafe { (*vmo).write(off, &DPG_MAGIC.to_le_bytes()) }
+            .expect("dpg_pager: 写 magic 失败（供给页未提交？）");
         // 供给毕唤 faulter（KL 窗内 SQ 嵌套 = SVC 同构）。
         berry_sched::wake_matching(&FAULT_KEY as *const u8 as usize, DPG_WAKE_BIT);
         // P0-1 线1d fastpath 直切：唤醒只入环不抢占——被唤 faulter eff
@@ -629,7 +633,6 @@ extern "C" fn dpg_pager(_arg: usize) -> ! {
         // 判序律单源可测；sched 物理臂零改动（消费点锚）。
         berry_sched::try_preempt();
         hal::kern_lock::klock_exit();
-        hal::tlbshoot::sched_exit_check();
     }
 }
 
@@ -1014,13 +1017,18 @@ extern "C" fn dpg_press(arg: usize) -> ! {
         // F6（2026-11-17）第四形态降软：**慢速宿主**——QEMU TCG/HVF 形
         // 下宿主执行速度远慢于标定环境，单页 pager 供给往返墙钟被环境性
         // 放大（实测 Σ=12.9-33M cyc vs 阈 437500 = 30-75×，bcts 两 run +
-        // 本地 HVF 多跑同签名 panic；CI smoke job 快速窗内 wall < 1× 阈
+        // 本地 HVF 多跑同签名 panic；CI smoke 快速窗内 wall < 1× 阈
         // 不触发）。环境性放大与真标定漂移的区分 = 量级断层：供给链代码
         // 回归的漂移是常数级（2-10×），宿主慢速是整体执行速度级（30×+
         //，实证域 30-75× 与快速域 <1× 之间无重叠）——断层线取 10× 留
         // 三倍余量，其上视为环境性前提破走软路径（清位重冲 + x 记账
         //），其下保留单核静默形标定漂移检测，θ_p 语义与标定面零改动。
-        let slow_host = wall >= theta_w.saturating_mul(10);
+        // F6b（2026-11-17 晚修，BANDM4 判例连带）：断层线判据变量从 wall
+        // 改 rev_cyc（Σ 口径）——wall 是自证页墙钟和，rev_cyc 是折卷窗内
+        // 停顿累计（打印口径/环境放大语义面）；两变量在带执法在飞时解耦
+        //（回场 Burst 把停顿塞进折卷窗但自证页本身跑得快——实测 wall 3×
+        // / rev_cyc 12× 同时发生）。判据跟打印同变量，环境性放大按 Σ 判。
+        let slow_host = rev_cyc >= theta_w.saturating_mul(10);
         assert!(
             wall < theta_w || hal::smp::par_enabled() || berry_sched::any_armed() || slow_host,
             "dpg_press: 反向臂自证缺页墙钟 Σ={} ≥ θ_p·W={}（单核独占形：少量缺页即达压——单页供给停顿标定漂移，θ_p 误报判据前提破）",

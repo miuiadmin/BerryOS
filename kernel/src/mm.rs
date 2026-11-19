@@ -31,44 +31,6 @@ use berry_hal_aarch64::{RAM_BASE, RAM_TOP, RAM_TOP_DEFAULT};
 use berry_mm::frame::FrameAllocator;
 use berry_mm::va::PAGE_SIZE;
 use berry_mm::MAX_ORDER;
-use core::sync::atomic::{AtomicBool, Ordering};
-
-/// F0-3：第 5 层（`CLASS_ALLOC`，rank 5：位于 `TABLE`/`PT` 之内、`ASID`/`PRINT` 之外）
-/// 物理帧与 Slab 小对象统一分配器自旋锁，彻底消除 `HT_DRAINQ` 异步回收与并发系统调用对
-/// `FRAMES` / `SlabHeap` 的跨核数据竞争及 `&'static mut` 别名 UB。
-static ALLOC_LOCK: AtomicBool = AtomicBool::new(false);
-
-/// `ALLOC_LOCK` RAII 守卫（自带 `DAIF` 保存/恢复与 `lockdep` `CLASS_ALLOC` 记账）。
-pub struct AllocGuard {
-    saved_daif: u64,
-}
-
-#[inline]
-pub fn alloc_lock() -> AllocGuard {
-    let saved_daif = berry_hal_aarch64::irq_save();
-    berry_hal_aarch64::disable_irq();
-    #[cfg(feature = "lockdep")]
-    berry_hal_aarch64::lockdep::acquire(berry_hal_aarch64::lockdep::CLASS_ALLOC);
-    while ALLOC_LOCK
-        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-        .is_err()
-    {
-        while ALLOC_LOCK.load(Ordering::Relaxed) {
-            core::hint::spin_loop();
-        }
-    }
-    AllocGuard { saved_daif }
-}
-
-impl Drop for AllocGuard {
-    #[inline]
-    fn drop(&mut self) {
-        #[cfg(feature = "lockdep")]
-        berry_hal_aarch64::lockdep::release(berry_hal_aarch64::lockdep::CLASS_ALLOC);
-        ALLOC_LOCK.store(false, Ordering::Release);
-        berry_hal_aarch64::irq_restore(self.saved_daif);
-    }
-}
 
 /// buddy 后备定容：按整段 RAM 计（RAM 几何来自 HAL 平台常量）。
 const MAX_PAGES: usize = (RAM_TOP - RAM_BASE) / PAGE_SIZE; // 65536（256MiB 上限）
@@ -232,36 +194,25 @@ pub unsafe fn init(handoff: Option<&'static crate::handoff::BerryHandoff>) {
     core::ptr::addr_of_mut!(FRAMES).write(Some(fa));
 }
 
-/// 在第 5 层 [`ALLOC_LOCK`] 保护下访问全局帧分配器（推荐全运行时路径使用；闭包内严禁触发堆分配或取更外层锁）。
-#[inline]
-pub fn with_frames<R>(f: impl FnOnce(&mut FrameAllocator<'static>) -> R) -> R {
-    let mut guard = alloc_lock();
-    f(frames_locked(&mut guard))
-}
-
-/// 凭已持有的 [`AllocGuard`] 零重入借用全局帧分配器（供 `SlabHeap` 缺页补仓/大页直退同窗复用）。
-#[inline]
-pub fn frames_locked<'a>(_guard: &'a mut AllocGuard) -> &'a mut FrameAllocator<'static> {
-    // SAFETY: 调用方以 `&mut AllocGuard` 静态证明本核独占持有 ALLOC_LOCK 且已屏蔽 IRQ。
-    unsafe {
-        (*(&raw mut FRAMES))
-            .as_mut()
-            .expect("mm::init() 未调用就访问 frames_locked()")
-    }
-}
-
-/// 线程安全读取当前已分配物理页总数（SMP 遥测与压测对账单口）。
-#[inline]
-pub fn allocated_pages() -> usize {
-    with_frames(|fa| fa.allocated_pages())
-}
-
-/// 取全局帧分配器的可变引用（仅供启动单线程期、`ktest` 与 `bench` 直测窗口使用；SMP 运行时一律走 [`with_frames`]）。
+/// 取全局帧分配器的可变引用。
+///
+/// # Safety（调用方视角）
+/// G0 单核无抢占下安全。SMP 现役（双核在役）：帧分配器实际由 SVC TABLE 类 KL 窗串行保护（见 syscall.rs install() vmo/vmar 段注）——本文件无需自持锁。
 pub fn frames() -> &'static mut FrameAllocator<'static> {
-    // SAFETY: 启动单线程 / ktest / bench 受控窗口使用。
+    // SAFETY: G0 下唯一可变访问点。
     unsafe {
         FRAMES
             .as_mut()
             .expect("mm::init() 未调用就访问 frames()")
     }
+}
+
+/// 遥测 memstat 三元组单口（0x84 op=1 消费面）：单次 [`frames`] 借用窗内
+/// 背靠背一致读 `(total, reserved, allocated)`——三值取自同一分配器实例的
+/// 同一借用窗（SMP 下帧分配器由 SVC TABLE 类 KL 窗串行保护，同 [`frames`]
+/// 契约）。`free` 由消费方按 `total − reserved − allocated` 读点派生
+///（零第二记账源——free 无独立计数器，恒等式按构造闭合）。
+pub(crate) fn memstat_frame_counts() -> (usize, usize, usize) {
+    let fa = frames();
+    (fa.npages(), fa.reserved_pages(), fa.allocated_pages())
 }
