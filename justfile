@@ -1135,9 +1135,11 @@ test-host:
     # tests/sign_parity.rs oracle 真流对拍（签名字节恒等 + 验签三态
     # 双侧同构 + unsigned 降级注全等；berry-sign 缺席 skip 纯面兜底）。
     # 独立小工作区，须显式 --target {{host}}。
-    # 产线现役件仍 python3 tools/gensourceindex.py（上方 --selftest 行
-    # 同挂），后续刀（CLI/product 派生）依彻底Rust化计划 §4 刀序推进
-    # 后再换轨。
+    # 三刀（CLI 消费半边）：src/main.rs --verify/--gen-keys 臂实装
+    # （Python do_verify/do_gen_keys 镜像）+ tests/cli_parity.rs oracle
+    # 真流对拍（--verify stdout 逐行全等/单调门/两件套对拍拒/gen-keys
+    # 真流/用法错族）。生成面产链位仍 python3 现役（上方 --selftest 行
+    # 同挂），产链换轨归后续刀。
     cargo test --manifest-path tools/gensourceindex/Cargo.toml --target {{host}}
     # W1 接线（SEC-02 A2 同款纪律）：berry_assemble 门禁自检——V13 组装器
     # （ADR #82「组装不 fork」product.toml 校验/dry-run 计划/装配反回滚门）

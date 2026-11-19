@@ -595,3 +595,28 @@ pub mod sign;
 pub fn sha512_256(data: &[u8]) -> [u8; 32] {
     sha512::digest512_256(data)
 }
+
+// ---- 三刀·CLI 纯函数面（--verify/--gen-keys 消费半边）----
+
+/// 索引版本单调门（Python `check_index_version` 镜像——berry-crypto
+/// ledger.rs `check_gen` 口径：new < seen = 拒（回滚/回放）；等值过
+/// （同代幂等面）；升过。口径同步义务：Rust 侧改义随笔）。
+pub fn check_index_version(new: u32, seen: u32) -> R<()> {
+    if new < seen {
+        return Err(die(format!(
+            "索引版本回降拒：index_version {new} < 已见水位 {seen}（v1.2 §五 :91 索引级单调版本号防回滚——check_gen 同口径）"
+        )));
+    }
+    Ok(())
+}
+
+/// --gen-keys 透传出口（Python `do_gen_keys` 镜像——berry-sign keygen
+/// 子进程；不可得 loud 拒同文案）。返回打印行集（调用方负责 println）。
+pub fn gen_keys_lines(bs_stdout: Option<&str>) -> R<Vec<String>> {
+    let mut lines = vec![format!("{}", bs_stdout.unwrap_or("").trim())];
+    lines.push(
+        "gensourceindex: 注: dev 密钥对（berry-sign 头注「dev/test 面纪律」——永不用于真签，真签面随 #77/P3）"
+            .to_string(),
+    );
+    Ok(lines)
+}
