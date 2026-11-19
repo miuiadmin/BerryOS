@@ -1328,7 +1328,9 @@ fn proxy_ws_plain(
     let pump_in = std::thread::spawn(move || {
         // 拦截器未启用（qmp_sock 不在场）→ 纯字节管道（零开销路径）。
         let mut injector = qmp_path.as_deref().and_then(|p| {
-            let inj = QmpInjector::connect(p);
+            // 建连全程 2s 守护（QMP 楔死不得卡死代理泵线程）；失联哑化
+            // 后注入器自 ≥5s 节流重连——QMP 恢复后拦截输入自动复活。
+            let inj = QmpInjector::connect_guarded(p, Duration::from_secs(2));
             if inj.is_some() {
                 eprintln!("berry: vnc web: lan /ws input interceptor on (qmp)");
             }
