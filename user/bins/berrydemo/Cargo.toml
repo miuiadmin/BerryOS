@@ -1,0 +1,21 @@
+[package]
+name = "berrydemo"
+version = "0.1.0"
+edition = "2021"
+# BERRYDEMO：Berry Demo 系统与应用开发标准展示。Berry Room 负责
+# WM/窗口/frame/输入/销毁；BerryUI/Berry Design 负责控件、主题与状态。
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+berry-gfx = { path = "../../berry-gfx" }
+berry-room = { path = "../../berry-room" }
+berry-ui = { path = "../../berry-ui", features = ["guest-font-vmo"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

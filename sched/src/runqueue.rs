@@ -30,6 +30,35 @@ pub struct Runqueue {
     /// 撕裂），两端 Relaxed；K=2 放置启发式与金丝雀对账容忍近似值。
     /// codegen 与 Cell 等形（ldr/str）——icount 零漂。
     len: AtomicUsize,
+    /// 机会五③密度账本化（2026-11-19）：per-queue「在环两现役带计数」——
+    /// interactive(0x02)/utility(0x03) 各一槽。消费面 = `sched::try_steal_one`
+    /// 带感知偷取快照（旧形 = len 空判门+本队列 RQ 锁+整圈走查，账本化后
+    /// 降两次 Relaxed 免锁读——快照恒得近真密度，不再只覆盖非空环）。
+    ///
+    /// **账点挂 `link_back`/`unlink` 结构原语层**（同 `len`/`sum_vruntime`/
+    /// `DL_ON_RING` 三先例）：出环生产路径不止 `Fair::dequeue` 一条——block
+    /// 直调 `unlink`、steal 摘对核环也直调——挂类层必漏账。
+    ///
+    /// **纪律同 [`Self::len`]**：一切写点（link/unlink/`density_reclass`）
+    /// 在本队列 RQ 锁窗内单写者，load+store 免 RMW、两端 Relaxed；原子性
+    /// 只为跨核读者（偷取快照）防撕裂（`place()` 的 len 免锁读先例）。
+    ///
+    /// **在环改档须重登**（settle 带变）：与 `DL_ON_RING` 的「带位在环上
+    /// 不变」假设不同——密度轴有生产在环 `intent_effective` 写点（intent
+    /// 结算借入/回落，`sched::intent_settle_current_ext` 锁包调
+    /// [`Self::density_reclass`]）；漏登 = 账本无界漂移（usize 下溢回绕
+    /// 巨值），后果有界于偷取偏好序次优，执法 = `integrity_check` 双边
+    /// 等式（每 100 切换金丝雀内必捕获）。ktest 直改在环 intent 后须调
+    /// [`Self::resync_density`] 洗账（现存零回填点，义务纯前瞻）。
+    ///
+    /// **单源等价律**：`band_of_task(t)==INTENT_x ⟺ intent_effective==INTENT_x`
+    /// （`FairBand::new(intent,·)` 使 band_id==intent 恒成立）——link/unlink
+    /// 的常量比较与偷取旧走查的 `band_of_task` match 逐位等价。
+    ///
+    /// 命名消歧：与 `util.rs` 的 utilization EWMA 族（`UTIL_*`——PM 频率
+    /// 信号）无涉；`util_count` 是 utility **意图带**在环计数。
+    int_count: AtomicUsize,
+    util_count: AtomicUsize,
     /// Σvruntime 增量账本（1.1/S2b+：EEVDF `avg_vruntime` 的 O(1) 化——
     /// 消费面 = `crate::class::avg_vruntime`，pick_next 热路径少一圈 O(n)
     /// 全环扫描）。账点三处闭环：`link_back` 加 / `unlink` 减（**结构原语
@@ -119,6 +148,8 @@ impl Runqueue {
         Runqueue {
             head: Cell::new(None),
             len: AtomicUsize::new(0),
+            int_count: AtomicUsize::new(0),
+            util_count: AtomicUsize::new(0),
             sum_vruntime: AtomicU64::new(0),
             lock: SpinLock::new(),
         }
@@ -159,6 +190,19 @@ impl Runqueue {
     /// （`place`/integrity）无撕裂，本核锁窗内读者值稳定）。
     pub fn len(&self) -> usize {
         self.len.load(Ordering::Relaxed)
+    }
+
+    /// 机会五③密度账本读：interactive(0x02) 在环数（消费面 = 偷取快照两
+    /// load 之一）。Relaxed 免锁读同 [`Self::len`] 口径：跨核读者不撕裂，
+    /// 本核锁窗内读者值稳定。
+    pub fn int_count(&self) -> usize {
+        self.int_count.load(Ordering::Relaxed)
+    }
+
+    /// 机会五③密度账本读：utility(0x03) 在环数。口径同 [`Self::int_count`]
+    /// （命名消歧见字段注——与 utilization EWMA 族无涉）。
+    pub fn util_count(&self) -> usize {
+        self.util_count.load(Ordering::Relaxed)
     }
 
     /// Σvruntime 账本读（S2b+；消费面 = `crate::class::avg_vruntime`——
@@ -305,8 +349,8 @@ impl Runqueue {
     /// 把 `task` 插到环尾（head 的前驱）——新任务排到最后被 pick。
     ///
     /// W3-Q53：接线律单源 `berry_ringface::ilist`（形状分流 + 写回集）；
-    /// 本体只剩物理臂——`Cell` 链接字读写适配 + 账本三件（len/
-    /// sum_vruntime/DL_ON_RING）随线增减。
+    /// 本体只剩物理臂——`Cell` 链接字读写适配 + 账本五件（len/
+    /// sum_vruntime/DL_ON_RING/机会五③密度两槽）随线增减。
     ///
     /// # Safety
     /// `task` 须当前不在任何 runqueue 上（`rq_prev`/`rq_next` 均为
@@ -355,13 +399,31 @@ impl Runqueue {
         if crate::class::is_deadline(&*t) {
             DL_ON_RING.fetch_add(1, Ordering::Relaxed);
         }
+        // 机会五③密度账本入账：link 时刻 `intent_effective` 落两现役带槽
+        // 即计（单源等价律见字段注——与偷取旧走查的 `band_of_task` match
+        // 逐位等价）。单写者 load+store（本队列 RQ 锁窗内——同 len 纪律，
+        // 非带任务两比较分支零访存）。在环改档（settle 借入/回落）经
+        // `density_reclass` 重登——入/出账消歧由此保证：改档者的出账读
+        // 摘线时刻档位，与期间 reclass 的减增恰配平。
+        match (*t).intent_effective {
+            crate::intent::INTENT_INTERACTIVE => {
+                self.int_count
+                    .store(self.int_count.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
+            }
+            crate::intent::INTENT_UTILITY => {
+                self.util_count
+                    .store(self.util_count.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
+            }
+            _ => {}
+        }
     }
 
     /// 把 `task` 从环上摘下（任意位置）。若 `task == head`，游标前移到 `next`。
     /// 不在环上（`rq_prev==None`）则幂等返回。
     ///
     /// W3-Q53：摘链律单源 `berry_ringface::ilist::run_unlink`（形状分流
-    /// 含两元环陷阱判据 + 写回集）；本体只剩物理臂 + 账本三件。
+    /// 含两元环陷阱判据 + 写回集）；本体只剩物理臂 + 账本五件（同
+    /// [`link_back`] 头注）。
     ///
     /// # Safety
     /// 同 [`link_back`]。
@@ -402,6 +464,112 @@ impl Runqueue {
         if crate::class::is_deadline(&*t) {
             DL_ON_RING.fetch_sub(1, Ordering::Relaxed);
         }
+        // 机会五③密度账本出账：判据读**摘线时刻** `intent_effective`（当下
+        // 判据——与 DL 的「link 时刻带位==摘线时刻带位」假设不同：密度轴
+        // 在环改档存在，入/出账消歧由 `density_reclass` 重登保证——改档者
+        // 出账读改后档位，与 reclass 的减增恰配平）。单写者 load+store
+        //（本队列 RQ 锁窗内——同 len 纪律）；幂等早退分支（不在环——函数
+        // 头）不触此处，无重复出账；steal 的「对核 unlink+本核 link_back」
+        // 两腿各按档位在两队列账本内同额转移。漂移域下溢回绕仍被
+        // integrity 双边等式响亮捕获（等式比较对回绕值恒假）。
+        match (*t).intent_effective {
+            crate::intent::INTENT_INTERACTIVE => {
+                self.int_count
+                    .store(self.int_count.load(Ordering::Relaxed) - 1, Ordering::Relaxed);
+            }
+            crate::intent::INTENT_UTILITY => {
+                self.util_count
+                    .store(self.util_count.load(Ordering::Relaxed) - 1, Ordering::Relaxed);
+            }
+            _ => {}
+        }
+    }
+
+    /// 机会五③（2026-11-19）带档重登：在环任务 intent 结算改档时两计数槽
+    /// 转移——`from` 槽减、`to` 槽增（仅 0x02/0x03 有槽，其余档位 no-op，
+    /// 槽选择常量与 link/unlink 同源）。**调用方须持本队列 RQ 锁**（单写者
+    /// 纪律——同 `len` 写点面）；前置 = `from`/`to` 为同一任务改档前后带档
+    /// 且 TCB 档位写（settle 的 `write_back`）与本调用**同锁窗**——窗外
+    /// write_back 则 integrity 同窗双读见「新带任务旧账」假火。生产唯一
+    /// 调用者 = `sched::intent_settle_current_ext` 锁包臂（带变才调）。
+    pub(crate) fn density_reclass(&self, from: u8, to: u8) {
+        match from {
+            crate::intent::INTENT_INTERACTIVE => {
+                self.int_count
+                    .store(self.int_count.load(Ordering::Relaxed) - 1, Ordering::Relaxed);
+            }
+            crate::intent::INTENT_UTILITY => {
+                self.util_count
+                    .store(self.util_count.load(Ordering::Relaxed) - 1, Ordering::Relaxed);
+            }
+            _ => {}
+        }
+        match to {
+            crate::intent::INTENT_INTERACTIVE => {
+                self.int_count
+                    .store(self.int_count.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
+            }
+            crate::intent::INTENT_UTILITY => {
+                self.util_count
+                    .store(self.util_count.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
+            }
+            _ => {}
+        }
+    }
+
+    /// 机会五③（2026-11-19）密度走查真值：真扫本环数两现役带在环数（判据
+    /// 读**当下** `intent_effective`——对账的正是「账本入账口径」vs「扫描
+    /// 看到的真」，同 `dl_on_ring_walk` 口径）。消费面 =
+    /// `sched::integrity_check` 金丝雀双边等式对账 + [`Self::resync_density`]
+    /// 重数。走查判据与账本入账判据同源（单源等价律见字段注）。
+    ///
+    /// 调用契约同 [`Self::dl_on_ring_walk`]（本环 RQ 锁窗内或其串行等价——
+    /// 走查期间无并发出/入环）。
+    pub(crate) fn dens_on_ring_walk(&self) -> (usize, usize) {
+        let Some(h) = self.head.get() else {
+            return (0, 0);
+        };
+        // SAFETY: 环走查同款不变式（§A136：先访当前节点、后判回 head）；
+        // 环上任务均调度器拥有（ring_check 扫描同款）。
+        unsafe {
+            let mut cur = h;
+            let mut steps = 0;
+            let (mut ni, mut nu) = (0usize, 0usize);
+            loop {
+                steps += 1;
+                // W3-Q12：同上单源（walk_step_cap）。
+                assert!(
+                    berry_ringface::walk_step_cap(steps, RING_WALK_CAP),
+                    "dens_on_ring_walk: ring walk exceeds cap (broken links?)"
+                );
+                match (*cur.as_ptr()).intent_effective {
+                    crate::intent::INTENT_INTERACTIVE => ni += 1,
+                    crate::intent::INTENT_UTILITY => nu += 1,
+                    _ => {}
+                }
+                cur = (*cur.as_ptr())
+                    .rq_next
+                    .get()
+                    .expect("dens_on_ring_walk: on-ring node must have next");
+                if cur == h {
+                    return (ni, nu);
+                }
+            }
+        }
+    }
+
+    /// 机会五③（2026-11-19）全环重数两带在环数并回写账本（洗账面——
+    /// **仅测试/诊断用**，照 [`Self::resync_vruntime_sum`] 纪律）：在环上
+    /// 直改 `Task::intent_effective` 的手搓场景（ktest）改后调用，否则账本
+    /// 与走查真值漂移（`integrity_check` 双边等式对账将 panic）。生产路径
+    /// 的 intent 变更全经 link/unlink/`density_reclass` 入账，无需 resync
+    /// （现存零回填点，义务纯前瞻）。返回重数值；空环清零两账本。调用
+    /// 契约同 [`Self::ring_check`]（环变更屏蔽窗内或其串行等价）。
+    pub fn resync_density(&self) -> (usize, usize) {
+        let (ni, nu) = self.dens_on_ring_walk();
+        self.int_count.store(ni, Ordering::Relaxed);
+        self.util_count.store(nu, Ordering::Relaxed);
+        (ni, nu)
     }
 
     /// 环游标（4-3a：`RoundRobin::pick_next` 环形扫描的起点）。crate 内策略

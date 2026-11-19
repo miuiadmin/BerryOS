@@ -1,4 +1,4 @@
-//! bsh —— P5 A-2 交互 shell（`docs/shell设计-v1.1.md` v0 最小面 + v0.5 管道，
+//! bsh —— P5 A-2 交互 shell（`docs/shell设计-v1.2.md` v0 最小面 + v0.5 管道，
 //! stdhello 同链：musl target + berry-libc shim + berry-exec 流式拉起）。
 //!
 //! 通道拓扑（boot 手搭，见 main.rs A-2 段）：fd0 = endB2（console 转发键盘
@@ -13,7 +13,7 @@
 //! 空读（libc 10s 帽超时 EOF 化）= 噪声，静默续读不重刷 prompt。
 //!
 //! P5 v0.5 管道（`PIPE ok` = rootfs 相第 10 标记）：`A | B` 相邻段间 channel
-//! 对当 pipe（前段 stdout = 写端 / 后段 stdin = 读端，`docs/shell设计-v1.1.md` §2.2
+//! 对当 pipe（前段 stdout = 写端 / 后段 stdin = 读端，`docs/shell设计-v1.2.md` §2.2
 //! 「channel 即 pipe」）——自验三跑对拍：`hexyl | hexyl` 管道输出 == 同字节
 //! 直喂 `hexyl` 参照**逐字节全等**（证明管道把 A 的 stdout 原样递到 B 的
 //! stdin）+ 全链 EOF 到齐才打标。
@@ -92,7 +92,7 @@
 //! → libc `exit` → 0x33 真退出）。`run` 后 `reap()` 完整回收子进程（Plan B
 //! 前「每次 run 泄漏一个 park 中的子进程」的旧常态退役）。
 //!
-//! P5 v0 收官（`docs/shell设计-v1.1.md` §2.3/§2.5）：**环境变量**（shell 局部变量表 +
+//! P5 v0 收官（`docs/shell设计-v1.2.md` §2.3/§2.5）：**环境变量**（shell 局部变量表 +
 //! `$NAME`/`$?` 展开 + `env` 内建；子进程 env 传递已落——processargs v1.1
 //! bootstrap 通道第二消息（spawn 产点组 [`build_export_set`] 全导出集喂
 //! spec.env）+ `export` 第 21 内建（裸形/`-p` 与 env 同渲染、`K=V` 赋值
@@ -122,7 +122,8 @@ use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_event_create,
     berry_handle_close, berry_handle_duplicate, berry_object_signal, berry_object_wait_many,
     berry_object_wait_one, berry_process_terminate, berry_signal_send,
-    berry_telemetry_klog_snapshot, Handle, BERRY_ERR_AGAIN,
+    berry_telemetry_klog_snapshot, berry_telemetry_memstat_snapshot, Handle, MemstatRec,
+    BERRY_ERR_AGAIN,
     BERRY_ERR_BAD_STATE, BERRY_ERR_BUSY, CLOCK_MONOTONIC, RIGHT_READ, RIGHT_RECV, RIGHT_SEND,
     RIGHT_TRANSFER, SIGNAL_READABLE, SIGNAL_TERMINATED, SIGNAL_WRITABLE,
 };
@@ -394,7 +395,7 @@ fn main() {
     //    （失败即 park loud）。
     sig_selftest();
     // —— 命令行体验刀 + v2 B 域 + export 面刀 + 作业控制 v2 刀：内建与语义
-    //    步自验（`CLI ok n=12` = rootfs 相第 55 标记；B 域起 6→10——⑥ `>>`
+    //    步自验（`CLI ok n=13` = rootfs 相第 55 标记；B 域起 6→10——⑥ `>>`
     //    /⑦ `||`/⑧ unset/⑨ 管道参数四族步；export 面刀 ⑩ 第 21 内建步
     //    10→11；作业控制 v2 刀 ⑪ 第 22/23 内建步 11→12——strip_bg 绑定/
     //    `&`-jobs-kill-$! 端到端/负形三件）。链序契约同 U2/MMP/CLK/SIG
@@ -3865,7 +3866,7 @@ fn exec_bg(
 const BUILTINS: &[&str] = &[
     "help", "exit", "env", "export", "echo", "run", "cat", "ls", "mkdir", "rm", "cd", "pwd",
     "inputpoll", "clear", "uname", "uptime", "sleep", "type", "history", "dmesg", "unset", "jobs",
-    "kill",
+    "kill", "free",
 ];
 
 /// help 文案三行（A60：192B 控制台原子消息帽——单行装不下全清单，逐条
@@ -3876,7 +3877,7 @@ const BUILTINS: &[&str] = &[
 const HELP_LINES: [&str; 3] = [
     "bsh 内建：help | echo <text> | env | export K=V | run <name> | cat <file> | ls | ls <dir> | mkdir <dir> | rm <path> | cd <dir> | pwd | inputpoll",
     "…续：| clear | uname | uptime | sleep <s> | type <name> | history | dmesg | unset <name> | A | B（rootfs 管道，段可带参）| A && B | A || B | A > file | A >> file | exit",
-    "……续：| 裸名 = bin/<name> 派发（C-2a uu 家族）| jobs | kill %n | cmd &（后台）",
+    "……续：| 裸名 = bin/<name> 派发（C-2a uu 家族）| jobs | kill %n | cmd &（后台）| free（RAM 面板）",
 ];
 
 /// 内建/外部命令统一渲染（P6 A-1 起 `>` 重定向与直出共道）：返回
@@ -4032,6 +4033,11 @@ fn render_cmd(
         // 阶段五第 17 步：内核日志尾部（0x84 telemetry_open op=0 klog 快照
         // ——berry_sys 薄包装；数据面字节走返回值，`dmesg > file` 天然可重定向）。
         dmesg_output(out)
+    } else if cmd == "free" {
+        free_output(out)
+    } else if let Some(_rest) = cmd.strip_prefix("free ") {
+        writeln!(out, "usage: free").unwrap();
+        (Vec::new(), 2)
     } else if let Some(_rest) = cmd.strip_prefix("dmesg ") {
         // 无参命令带参照打（clear 同款幂等面，不拒）——参数忽略。
         dmesg_output(out)
@@ -4665,6 +4671,38 @@ fn dmesg_output(out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
         (buf[..r as usize].to_vec(), 0)
     }
 }
+/// free（遥测 memstat 刀）：RAM 五域单行快照——数据源 `telemetry_open`
+/// op=1 memstat（berry-sys 结构体出参包装）；失败诊断行码 1（stderr 语义）。
+/// 输出形 `mem: total=<n>K reserved=<n>K alloc=<n>K free=<n>K committed=<n>K`
+/// （pages×4 = KiB；带参拒 usage 2）。
+fn free_output(out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
+    let mut rec = MemstatRec {
+        total_pages: 0,
+        reserved_pages: 0,
+        alloc_pages: 0,
+        free_pages: 0,
+        committed_pages: 0,
+    };
+    let r = berry_telemetry_memstat_snapshot(&mut rec);
+    if r < 0 {
+        writeln!(out, "bsh: free: telemetry memstat snapshot failed ({})", r).unwrap();
+        (Vec::new(), 1)
+    } else {
+        (
+            format!(
+                "mem: total={}K reserved={}K alloc={}K free={}K committed={}K\n",
+                rec.total_pages * 4,
+                rec.reserved_pages * 4,
+                rec.alloc_pages * 4,
+                rec.free_pages * 4,
+                rec.committed_pages * 4
+            )
+            .into_bytes(),
+            0,
+        )
+    }
+}
+
 
 /// `type <name>`（命令行体验刀，契约 1）：身份三档——BUILTINS 表命中
 /// → `is a shell builtin`；rootfs `bin/<name>` 命中（cpio 查档）→
@@ -5422,10 +5460,10 @@ fn prompt_after_ctrl_c(d: &[u8]) -> bool {
     }
 }
 
-/// 命令行体验刀（`CLI ok n=12` = rootfs 相第 55 标记；v2 B 域起 6→10、
+/// 命令行体验刀（`CLI ok n=13` = rootfs 相第 55 标记；v2 B 域起 6→10、
 /// export 面刀 10→11、作业控制 v2 刀 11→12）：
 /// 六内建行为面 + v2 四族步 + export 步自验——render_cmd 直调（与交互/重定向同一渲染
-/// 面；诊断/usage 打真 stdout = stderr 语义）。十二步全过才打；败 eprintln
+/// 面；诊断/usage 打真 stdout = stderr 语义）。十三步全过才打；败 eprintln
 /// + park（标记缺失 → smoke FAIL 兜底）：
 /// ⓪ clear——`\x1b[2J\x1b[H` 7B 逐字节精确对拍 + 带参照打幂等面；
 /// ① uname——`BerryOS aarch64 ` 前缀 + 非空版本单行（libc `.berryver` 单源）+ 带参拒；
@@ -5538,7 +5576,7 @@ fn cli_selftest() {
         fails.push("④ type 缺参未拒");
     }
     for b in [
-        "clear", "uname", "uptime", "sleep", "type", "history", "unset", "export", "jobs", "kill",
+        "clear", "uname", "uptime", "sleep", "type", "history", "unset", "export", "jobs", "kill", "free",
     ] {
         if !BUILTINS.contains(&b) {
             fails.push("④ BUILTINS 单源缺新内建");
@@ -5836,7 +5874,62 @@ fn cli_selftest() {
         eprintln!("bsh: cli selftest bad: {:?}", fails);
         berry_libc::park();
     }
-    println!("CLI ok n=12");
+    // ⑫ free（遥测 memstat 刀）：RAM 五域单行快照——⑫a 纯面（`mem: total=`
+    //    前缀逐字节 + 换行尾 + 五 token 键序齐 + 值域 ASCII 数字非空）+
+    //    ⑫b 数据面恒等式域（弱式运行窗：total>0、alloc/reserved/committed
+    //    各自 ≤total、free==total−reserved−alloc KiB 域整数重演算——内核
+    //    派生式契约钉板；committed≤alloc 禁断言〔分窗读可造假态〕）+
+    //    「free x」带参拒 2；纯 render 直调零外部 bin、静默不打印数据面。
+    {
+        let (d, c) = render("free", &mut out);
+        let s = String::from_utf8_lossy(&d);
+        let keys = ["total=", "reserved=", "alloc=", "free=", "committed="];
+        let mut vals = [0u64; 5];
+        let mut ok = c == 0 && s.starts_with("mem: total=") && s.ends_with("\n");
+        if ok {
+            let body = &s["mem: ".len()..s.len() - 1];
+            let toks: Vec<&str> = body.split(' ').collect();
+            if toks.len() != 5 {
+                ok = false;
+            }
+            for (i, tok) in toks.iter().enumerate().take(5) {
+                match tok
+                    .strip_prefix(keys[i])
+                    .and_then(|t| t.strip_suffix('K'))
+                    .filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+                    .and_then(|v| v.parse::<u64>().ok())
+                {
+                    Some(n) => vals[i] = n,
+                    None => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+        }
+        if !ok {
+            fails.push("⑫a free 行形/键序/数值域破缺（mem: 单行五 token）");
+        } else {
+            let (total, reserved, alloc, mem_free, committed) =
+                (vals[0], vals[1], vals[2], vals[3], vals[4]);
+            let ident = total > 0
+                && alloc <= total
+                && reserved <= total
+                && committed <= total
+                && total
+                    .checked_sub(reserved)
+                    .and_then(|t| t.checked_sub(alloc))
+                    .is_some_and(|f| f == mem_free);
+            if !ident {
+                fails.push("⑫b free 恒等式域破缺（free != total−reserved−alloc 等）");
+            }
+        }
+        if render("free x", &mut out).1 != 2 {
+            fails.push("⑫ free 带参未拒");
+        }
+    }
+
+    println!("CLI ok n=13");
 }
 
 /// 命令行体验刀（`TERM ok n=3` = rootfs 相第 56 标记；v2 B 域起 2→3）——哑
@@ -6089,7 +6182,7 @@ enum PipeFail {
     SpawnFail(String),
 }
 
-/// `A | B | …` 拉起 + 末段 stdout 收集（`docs/shell设计-v1.1.md` §2.2 channel 即 pipe）：
+/// `A | B | …` 拉起 + 末段 stdout 收集（`docs/shell设计-v1.2.md` §2.2 channel 即 pipe）：
 /// 相邻段间 [`channel_pair`]——前段 stdout = 写端（spawn 内 dup SEND 别名作
 /// gift[0]）、后段 stdin = 读端（`stdin_handle`，被 env send take 迁进子表）；
 /// 末段 stdout = 采集对。EOF 链 = 消息层约定（d-3b）：前段 exit → libc

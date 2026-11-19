@@ -99,7 +99,11 @@ mod tests {
 
     fn capture_diag(s: &str) {
         DIAG_N.fetch_add(1, Ordering::Relaxed);
-        DIAG_BUF.lock().unwrap().push(s.to_string());
+        // 抗毒化锁：持锁断言 panic 不级联炸死后续并行测试（flaky 级联根因）。
+        DIAG_BUF
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(s.to_string());
     }
 
     fn never_park() -> ! {
@@ -126,10 +130,19 @@ mod tests {
             fs: None,
         };
         bind(&H);
+        // 锚定自身行而非 buf.last()：测试并行下其它模块的诊断行可经全局
+        // 绑定表插队（icons/pump 等经 host() 推行），last 会误锚别人行——
+        // 偶发 flake 根因。记调用前水位，断言只盯自己水位之后的行。
+        let before = DIAG_N.load(Ordering::Relaxed);
         diag("rpc send err=-5");
-        let buf = DIAG_BUF.lock().unwrap();
-        let last = buf.last().unwrap();
-        assert_eq!(last, "probe: rpc send err=-5");
+        let buf = DIAG_BUF
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mine: Vec<&String> = buf.iter().skip(before).collect();
+        assert!(
+            mine.contains(&&"probe: rpc send err=-5".to_string()),
+            "own diag line not captured after slot {before}: {mine:?}"
+        );
         // 绑定后 tag/park/fs 三面就是绑定表本尊。
         assert_eq!(host().tag, "probe");
     }

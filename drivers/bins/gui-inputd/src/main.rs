@@ -59,10 +59,9 @@ mod guest {
     use berry_libc::io::{gift2_h, wm_push_h};
     use berry_sys::{
         berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
-        berry_object_wait_many, berry_object_wait_one, berry_thread_sleep, berry_vmo_create,
-        berry_vmo_get_phys, berry_vmo_read, berry_vmo_write, Handle, BERRY_ERR_AGAIN,
-        BERRY_ERR_BUSY, CLOCK_MONOTONIC, SIGNAL_READABLE, SIGNAL_WRITABLE, VMO_OPT_CONTIGUOUS,
-        VMO_OPT_PINNED,
+        berry_object_wait_many, berry_object_wait_one, berry_thread_sleep, berry_vmo_commit,
+        berry_vmo_create, berry_vmo_get_phys, berry_vmo_read, berry_vmo_write, Handle,
+        BERRY_ERR_AGAIN, BERRY_ERR_BUSY, CLOCK_MONOTONIC, SIGNAL_READABLE, SIGNAL_WRITABLE,
     };
     use berry_virtio as vio;
     use gui_inputd::{
@@ -518,14 +517,12 @@ mod guest {
             None => trap(), // qsize=16 恒成立；防御面
         };
         let mut vmo = 0 as Handle;
-        if berry_vmo_create(
-            DMA_LEN,
-            (VMO_OPT_CONTIGUOUS | VMO_OPT_PINNED) as u32,
-            &mut vmo,
-        ) != 0
-            || vmo == 0
-        {
-            println!("gui-inputd: vmo_create(CONTIGUOUS|PINNED) 失败");
+        if berry_vmo_create(DMA_LEN, 0, &mut vmo) != 0 || vmo == 0 {
+            println!("gui-inputd: vmo_create 失败");
+            trap();
+        }
+        if berry_vmo_commit(vmo, 0, DMA_LEN) != 0 {
+            println!("gui-inputd: commit 失败");
             trap();
         }
         let mut ring_pa = 0u64;

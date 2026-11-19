@@ -28,3 +28,7 @@ Status: implemented
 - 对抗审查（wf_2cf96b04-c13，10 agent 四维）：6 发现（5 CONFIRMED/1 PLAUSIBLE/0 rejected）全处置——grant_cycles doc「两值恒等」加限定（显式 configure 场景不成立）；tick 注补懒武装首臂锚点反向微差；API 参考合计行粗体 181→183（v1.13 遗传两版落后，本版正身）；class.rs:169 与 main.rs:5352「八授片点」随正典加 Band 可达限定；PLAUSIBLE 单趟读定门收口；笔记/沿革本笔。
 - API 参考 v1.13→v1.14 升版随迁（git mv 保史）：`quota_cycles_of` 新行（band.rs 10→11、合计 **183** 粗体正身）、`FairBand::consume` 行签名+now 参与语义差注、八处入链滚新（含沿革被并行 lane 覆写后重打一次）。
 - 沿革五百五十三（551/552 被并行 lane 同窗占用，落笔前重 census 取 553）。
+
+## 重落地附记（2026-11-19）
+
+本刀提交（本笔记「验证」节所指）在合并 1e7872196 中被裁为僵尸态（代码面缺席、无冲突文件存活）。机会四 已按勘察落性表在 icount-baseline 分支重落地（见 2026-11-19 重落地刀笔记）——本笔记现状陈述自重落地起重新为真；旧提交号指向被裁形。
