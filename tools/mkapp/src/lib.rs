@@ -58,6 +58,9 @@ pub fn ver_str(v: (u32, u32, u32)) -> String {
     format!("{}.{}.{}", v.0, v.1, v.2)
 }
 
+/// W1-Q27 二刀：`check_manifest_text` 门禁面（Python mkapp.py :375 镜像）。
+pub mod gate;
+
 /// [security] 三键视图（profile/key_lineage/integrator——齐备或齐缺）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sec<'a> {
