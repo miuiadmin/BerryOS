@@ -129,7 +129,24 @@ fn vnc_web_host_value_validation() {
             "拒形 stderr 须含 invalid --host value：{err}"
         );
     }
-    // 合法裸地址：值校验放行 → 进入 run 定位（rc≠2）。
-    let ok = berry(&["vnc", "web", "--lan", "--host", "192.168.1.105"]);
-    assert_ne!(ok.status.code(), Some(2), "合法 host 不得在 usage 层拒");
+    // 合法裸地址：值校验放行 → 进入 run 定位层（rc≠2）。传不存在的
+    // run id 把失败点钉在 find_run（确定性 env 错 rc=3）：无参 find_run
+    // 会回落本机最新 run 目录——共享工作树上并行流水线的活 run 会把
+    // 进程一路带到 serve accept 循环，子进程永不退出（挂死测试宿主）。
+    let ok = berry(&[
+        "vnc",
+        "web",
+        "--lan",
+        "--host",
+        "192.168.1.105",
+        "--run",
+        "w1-cli-flags-nonexistent-run",
+    ]);
+    let code = ok.status.code();
+    assert_ne!(code, Some(2), "合法 host 不得在 usage 层拒");
+    assert!(
+        code.is_some(),
+        "run 定位层应给出确定性退出码而非信号：{}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
 }
