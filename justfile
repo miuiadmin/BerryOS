@@ -1076,6 +1076,14 @@ test-host:
     # mkapp 门禁自检（a-3 U4：mkfat --check-fixture 同位前置——打包器门禁
     # 面此前只在 build-user 产物链上被动覆盖，门禁自身坏 = 产物链静默劣化）。
     python3 tools/mkapp.py --selftest
+    # W1（彻底 Rust 化轨道 b 层 #4 刀序第四位首刀）：mkapp Rust 件 lib 纯面
+    # 测试（canonical 规范形重发射——Python 现役件 M.canonical() 13 形黄金
+    # 向量字节级对拍：v0 旧形/词表/可选节组合/尾增节全谱/kitchen sink +
+    # 幂等律 + min_level 孤立不发射钉板 + 常量镜像对账）。独立小工作区，
+    # 须显式 --target {{host}}。产链现役件仍 Python mkapp.py（下方
+    # --selftest 行同挂），后续刀（check_manifest_text 门禁/BYI1/信封/
+    # 签名）依彻底Rust化计划 §4 刀序推进后再换轨。
+    cargo test --manifest-path tools/mkapp/Cargo.toml --target {{host}}
     # W1 接线（SEC-02 A2 同款纪律）：berry_assemble 门禁自检——V13 组装器
     # （ADR #82「组装不 fork」product.toml 校验/dry-run 计划/装配反回滚门）
     # 落地时自称 51 腿绿但从未接线 test-host：有 selftest 零自动执法 =
