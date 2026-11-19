@@ -12,8 +12,8 @@
   本工具只管数值对拍——「严格」与「宽松」各守各的确定性边界。
 
 四通道（BENCH_RE/BENCH1_RE 逗号锚定互不误配；基线文件按通道分离）：
-- 默认（B-0）：QEMU 裸跑收割内核 BENCH 行（boot 窗口七项——switch_pair
-  由 fw_cfg `opt/berry/sbench` 门控缺席；trailer 恒 n=8，行数对账走交集
+- 默认（B-0）：QEMU 裸跑收割内核 BENCH 行（boot 窗口九项——switch_pair
+  由 fw_cfg `opt/berry/sbench` 门控缺席；trailer 恒 n=10，行数对账走交集
   语义——缺席项恰为门控集才放行，见 run_once）。
 - --el0（B-1）：run-rootfs 形态 QEMU（-fw_cfg rootfs，无盘无网无 echod），
   等 bsh 链打到 `B1 ok n=4` 后收割 bsh relay 的 BENCH1 四行。裸相的内核
@@ -32,8 +32,9 @@
   在内核侧 L0；跨机绝对值不可比承 B-2 纪律）。行嵌矩阵流中段（prio 8 抢
   占打印）——BENCHRT 同款非锚定收割。
 - --icount（B-2）：裸跑 QEMU 追加定值 `-icount shift=1,sleep=off` 与
-  `opt/berry/sbench` 门键（基线面恒全八行——04 号审计基线缺口两项收口，
-  2026-11-17），等 boot 尾 `BENCHWAKE n=`（非锚定），双面收割——八行
+  `opt/berry/sbench` 门键（基线面恒全十行——04 号两项 + W3-Q98
+  send_recv_pair + W3-Q102 svc_roundtrip，2026-11-18），等 boot 尾
+  `BENCHWAKE n=`（非锚定），双面收割——十行
   BENCH（行锚定）= L2 门禁面 + BENCHWAKE 整行 = R-0 观测面（§13「依赖」
   段，观测不动门禁）。三条语义
   （设计 §13，防误用）：①CNTV 推进绑指令数（shift=1 虚拟时钟 = 每指令 2ns，
@@ -191,12 +192,12 @@ ICOUNT_ARGS = ["-icount", "shift=1,sleep=off"]
 # 04 号审计基线缺口两项（2026-11-17）：pick_scan 进 boot 干净窗（恒发）+
 # switch_pair 进调度器纪元（fw_cfg `opt/berry/sbench` 门控——键在才 spawn
 # 测量对）。**icount 族 qemu_cmd 恒递此键**（run_icount 默认 sbench=True
-# = --icount/--prove 通道基线面恒全八行）；**trace-dual 两臂红线禁递**
+# = --icount/--prove 通道基线面恒全十行）；**trace-dual 两臂红线禁递**
 # （sbench=False 显式关——TRACE_CAP 证书面 = 前调度器纪元项，switch_pair
 # 属调度器纪元，入面即触发「迁纪元须重标定」义务，见 TRACE_CAP 注）；
-# smoke/生产 boot 缺席 = 门缺席仅缺 switch_pair 行，trailer 恒 n=8。
+# smoke/生产 boot 缺席 = 门缺席仅缺 switch_pair 行，trailer 恒 n=10。
 SBENCH_ARGS = ["-fw_cfg", "name=opt/berry/sbench,string=1"]
-# 门控缺席容差集（DONE 对账交集语义）：trailer 恒 n=8 而行数可少门控项——
+# 门控缺席容差集（DONE 对账交集语义）：trailer 恒 n=10 而行数可少门控项——
 # 容差恰 {switch_pair} 一项（余名缺席照旧红；run_once 恒用、run_icount 仅
 # sbench=False 的调用面用）。
 SBENCH_GATED = frozenset({"switch_pair"})
@@ -238,7 +239,7 @@ TRACE_CAP = 0.0
 
 # L2 紧门禁形态（**单一事实源**——基线文件头注释与设计文档 §13 只做镜像
 # 引用，执法点唯一在此常量；防双源漂移 = P6 A-5 基准漂移雷教训）：
-#   0.0  = 各项逐值精确相等（八项；五跑证明 verdict=exact 时合法）
+#   0.0  = 各项逐值精确相等（十项；五跑证明 verdict=exact 时合法）
 #   0.05 = ±5% **双侧带** [base×0.95, base×1.05]（证明得 drift 时的降级档
 #          ——确定性通道里向「好」漂移同样 = 指令流变了 = 异常，与 L1 单侧
 #          只拦劣化（下方 cyc > old * factor）刻意不同）
@@ -451,8 +452,8 @@ def qemu_preflight(wait_s: float | None = None) -> None:
 def run_once(kernel: str, el0: bool = False) -> dict[str, int]:
     """QEMU 跑到收尾标记，收割 {name: cyc_per_op}。
 
-    el0=False：裸跑到 BENCH ok（B-0 内核七项——switch_pair 由 sbench 门控
-    结构性缺席，trailer 恒 n=8 走交集对账）。
+    el0=False：裸跑到 BENCH ok（B-0 内核九项——switch_pair 由 sbench 门控
+    结构性缺席，trailer 恒 n=10 走交集对账）。
     el0=True：run-rootfs 形态（-fw_cfg rootfs 递送；无盘无网——B-1 无网络
     面，echod 免挂）跑到 `B1 ok n=4`（bsh selftest 链尾），收割 bsh relay
     的 BENCH1 行。
@@ -543,7 +544,7 @@ def run_once(kernel: str, el0: bool = False) -> dict[str, int]:
                              "（bsh relay 面与内核/程序出表不一致——改 bench1 后同步）")
     elif len(metrics) != done_n:
         # 04 号审计基线缺口刀起（2026-11-17）的交集语义：B-0 通道不递
-        # sbench 键（switch_pair 行结构性缺席）而 trailer 恒 n=8——行数
+        # sbench 键（switch_pair 行结构性缺席）而 trailer 恒 n=10——行数
         # 对账放宽为「缺席项恰为门控集」；余名缺席/计数漂移照旧红。
         missing = set(_iter_table()) - set(metrics)
         if not (missing <= SBENCH_GATED
@@ -1159,7 +1160,7 @@ def run_icount(kernel: str, trace_off: bool = False,
     等它 = 必超帽假红）。
 
     sbench（04 号审计基线缺口刀起，2026-11-17）：True（默认）= qemu_cmd
-    恒递 `opt/berry/sbench` 门键 → switch_pair 行必在 → 基线面恒全八行
+    恒递 `opt/berry/sbench` 门键 → switch_pair 行必在 → 基线面恒全十行
     （行数对账维持恰等）。False = trace-dual 两臂专用（**红线：该键禁进
     trace-dual**，证书面见 TRACE_CAP 注）→ 该行结构性缺席 → 行数对账走
     交集语义（缺席项恰为门控集才放行）。
@@ -1169,9 +1170,9 @@ def run_icount(kernel: str, trace_off: bool = False,
     ICOUNT_ARGS（boot 时序虚拟时间化，与实时通道不同形态）；②done 标记 =
     BENCHWAKE_RE **全形状**非锚定 search（轮询/缺席诊断/整行收割三处共用
     同一形状——撕裂半行结构性不可能早退，见 BENCHWAKE_RE 注；BENCHWAKE
-    严格后于 `BENCH ok n=8`（watchdog 在稳态矩阵样本积累后才打，user.rs
-    打印序）——等到 BENCHWAKE 八行 BENCH 必已齐，一次收割双面齐）；③双面
-    收割 = 八行 BENCH **行锚定**（门禁面——bench 窗口先于矩阵起跑，行位
+    严格后于 `BENCH ok n=10`（watchdog 在稳态矩阵样本积累后才打，user.rs
+    打印序）——等到 BENCHWAKE 十行 BENCH 必已齐，一次收割双面齐）；③双面
+    收割 = 十行 BENCH **行锚定**（门禁面——bench 窗口先于矩阵起跑，行位
     干净，run_once B-0 同款）+ BENCHWAKE 整行**非锚定**（R-0 观测面）；
     ④返回三元组——iters 面（2026-10-27 三镜审查补修）：prove 的比对面
     从逐名 cyc 升 (iters,cyc) 元组（iters = 内核 ELF 冻结常量，同一会话
@@ -1179,7 +1180,7 @@ def run_icount(kernel: str, trace_off: bool = False,
     cyc 掩盖收割回退」）——门禁/立基线侧仍只用 cyc（iters 列由
     _iter_table 静态镜像写盘，两源一致性由 prove 元组比对背书）；
     ⑤qemu_preflight 跨进程串行守卫；⑥trace_off 参数（off 臂 fw_cfg +
-    done/观测行换面——收割协议与八行 BENCH 面两臂全同）。
+    done/观测行换面——收割协议与十行 BENCH 面两臂全同）。
 
     -icount 下 boot 不达 done 标记 = 合法发现（§13 语义② boot 时序全变）
     ——本函数只 loud 上报（SystemExit 带串口尾），绝不放宽帽硬凑绿。
@@ -1245,7 +1246,7 @@ def run_icount(kernel: str, trace_off: bool = False,
     # 观测面：done 标记整行（on 臂 = BENCHWAKE〔R-0 依赖注记——wake 延迟确定性
     # 观测，不动门禁〕；off 臂 = TRACE off ok 替代标记行）。
     wake_line = done_re.search(text).group(0)
-    # 门禁面：八行 BENCH 行锚定收割 + BENCH ok n= 一致性校验（镜像 run_once
+    # 门禁面：十行 BENCH 行锚定收割 + BENCH ok n= 一致性校验（镜像 run_once
     # 的 B-0 分支）。BENCHWAKE 已在而 BENCH ok 缺席 = 「严格后于」时序假设
     # 被打破（user.rs 打印序变化？）——loud 不容静默降级。
     metrics: dict[str, int] = {}
@@ -1263,7 +1264,8 @@ def run_icount(kernel: str, trace_off: bool = False,
         raise SystemExit("bench.py: done 标记已在而 BENCH ok 行缺席——时序假设"
                          "「done 标记严格后于 BENCH ok」被打破，门禁面不可收割")
     if len(metrics) != done_n:
-        # 交集语义（SBENCH_GATED 注）：sbench=False 调用面（trace-dual 两臂）
+        # 交集语义（SBENCH_GATED 注；审查轮角落注：陌生名行恰顶替门控缺席且计数相等
+        # 时静默绿——已知角落，门控集单元素+行名审计可查，不为它加行名白名单）：sbench=False 调用面（trace-dual 两臂）
         # 的 switch_pair 行结构性缺席——缺席项恰为门控集才放行；sbench=True
         # 而缺行 = 真破面，照旧红。
         missing = set(_iter_table()) - set(metrics)
@@ -1290,21 +1292,21 @@ def prove_icount(kernel: str) -> None:
     """B-2 五跑证明（§13 L2 开门前置，义务在提案方）：单进程串行五次
     run_icount（每跑内建 SIGTERM+wait 纪律 + qemu_preflight 跨进程串行
     守卫——进程内五跑天然串行，进程间由 pgrep 执法，2026-10-27 审查补修），
-    八项 **(iters,cyc) 元组逐值比对**出漂移谱（机器可读 CSV，公约 4）。
+    十项 **(iters,cyc) 元组逐值比对**出漂移谱（机器可读 CSV，公约 4）。
 
     比对面注记（2026-10-27 审查补修）：iters = 内核 ELF 冻结常量，同一
     证明会话内结构性不变——元组比对的价值不在多抓数值漂移，而在把**收割
     面**（正则分组/行解析）一并钉进证明，防「只比 cyc 掩盖收割回退」；
     iters 在会话内漂移 = 收割面/ELF 变化，SystemExit loud 而非记入漂移谱
     （非合法数值漂移结局）。「逐字节相同」的表述只属于 BENCHWAKE 整行
-    字符串比对——八项 BENCH 是逐值（元组）比对。
+    字符串比对——十项 BENCH 是逐值（元组）比对。
 
     **观测 only**：不写基线、不进门禁（--prove --update 拒绝）。漂移是
     合法结局——五跑 boot 都达标记即 exit 0（run_icount 达标记失败自会
     SystemExit）；verdict 只陈述事实，门禁形态由人按 verdict 烘焙进
     ICOUNT_TOL（常量注释即证明台账，可重验）。BENCHWAKE 五跑行顺带比对
     = R-0 依赖注记的观测面（§13「依赖」段：-icount 下 wake 延迟确定性
-    顺带验证）——**不动 verdict**，门禁面恒 = 八行 BENCH。
+    顺带验证）——**不动 verdict**，门禁面恒 = 十行 BENCH。
     """
     all_runs: list[dict[str, tuple[int, int]]] = []
     wakes: list[str] = []
@@ -1440,7 +1442,7 @@ def save_baseline_icount(metrics: dict[str, int]) -> None:
     严格同形——P6 A-5 基准漂移雷：读写两侧不同形则「双绿」退化成对陈旧
     基准自证）/史档指针（史档与勘误记事迁 notes.md 不随 --update 重写——
     2026-11-04 m1 迁移前整文件模板重写曾实证抹史一次，沿革五十四续）。"""
-    iters = _iter_table()  # 与 B-0 同八项（bench.rs 定值镜像——分文件不分项）
+    iters = _iter_table()  # 与 B-0 同十项（bench.rs 定值镜像——分文件不分项）
     lines = [
         "# BerryOS -icount 确定性通道基线（B-2，`python3 tools/bench.py --icount`）。",
         "# 口径 = CNTVCT 周期数在 -icount shift=1 虚拟时钟下的**指令数代理**",
@@ -1483,7 +1485,7 @@ def save_baseline_icount_off(metrics: dict[str, int]) -> None:
     ——那是 on 家族文件，两文件数据源不同臂不能互写）。头注释镜像 on 家族
     六件 + 关臂语义/结构性零足迹定谳（TRACE_CAP 注释为单一事实源，此处只
     镜像）。"""
-    iters = _iter_table()  # 与 on 家族同八项（同一 bench 面，分文件不分项）
+    iters = _iter_table()  # 与 on 家族同十项（同一 bench 面，分文件不分项）
     lines = [
         "# BerryOS -icount 确定性通道 **trace 记录面关** 臂基线（G3-4b 双跑，",
         "# `python3 tools/bench.py --trace-dual`；fw_cfg opt/berry/trace=0）。",
@@ -1507,9 +1509,12 @@ def save_baseline_icount_off(metrics: dict[str, int]) -> None:
 
 def _iter_table() -> dict[str, int]:
     """B-0 基准项 → 迭代数（与 bench.rs 定值镜像——漂移只影响基线可读性，对拍按名）。
-    八项（04 号审计基线缺口刀起，2026-11-17）：pick_scan = boot 干净窗直调
-    出选面；switch_pair = 调度器纪元门控行（sbench 键缺席的通道结构性缺席
-    ——交集对账容差集 SBENCH_GATED 恰含此名）。"""
+    十项（W3-Q102 起含 svc_roundtrip，2026-11-18）：pick_scan = boot 干净窗
+    直调出选面；switch_pair = 调度器纪元门控行（sbench 键缺席的通道结构性
+    缺席——交集对账容差集 SBENCH_GATED 恰含此名）；send_recv_pair = svc
+    直调 IPC 主路径往返（02 号 IPC 审计落选三）；svc_roundtrip = svc 直调
+    0x61 clock_read 分派包络往返（03 号分派审计测量面建议——新增项基线
+    缺席时门禁只提示不红，`--icount --update` 自立，两项同律）。"""
     return {
         "cntvct_pair": 4096,
         "frame_alloc4k": 1024,
@@ -1519,6 +1524,8 @@ def _iter_table() -> dict[str, int]:
         "handle_evt": 1024,
         "pick_scan": 1024,
         "switch_pair": 128,
+        "send_recv_pair": 1024,
+        "svc_roundtrip": 512,
     }
 
 
@@ -1576,7 +1583,7 @@ def selftest() -> int:
       回读等 + off 写不触 on（两文件数据源不同臂不能互写）
     - _l2_bad L2 带：等值过 / 0→0 恰等过 / 0→非零无界红 / 双侧漂移红 /
       项消失红 / 新项跳过 / tol 参数化双侧带语义
-    - 三镜迭代定值 live 对读：bench.rs 八项字面 ↔ _iter_table；bench1
+    - 三镜迭代定值 live 对读：bench.rs 十项字面 ↔ _iter_table；bench1
       四 const ↔ _iter_table_el0；bsh bench1_selftest WANT ↔ 同表
       （「改值三处同步」纪律的宿主执法面）
     - RT/LAT wire 镜像：RT_SAMPLES/LAT_SAMPLES ↔ RT_N/LAT_N、deltas
@@ -1755,8 +1762,8 @@ def selftest() -> int:
         for nm, it in re.findall(r'bench\(b"([a-z0-9_]+)", (\d+),',
                                  bench_rs.read_text(encoding="utf-8")):
             got[nm] = int(it)
-        check("mirror: bench.rs 八项字面 ↔ _iter_table（B-0 镜；switch_pair "
-              "行由 sbench 门控缺席于部分通道——镜像面按字面全八项）",
+        check("mirror: bench.rs 十项字面 ↔ _iter_table（B-0 镜；switch_pair "
+              "行由 sbench 门控缺席于部分通道——镜像面按字面全十项）",
               got == _iter_table(),
               f"rs={sorted(got.items())} py={sorted(_iter_table().items())}")
         got1: dict[str, int] = {}
@@ -1936,7 +1943,7 @@ def main() -> None:
                          " BENCHLAT lane 行（只出表无基线——R-1 同族独立通道）")
     ap.add_argument("--icount", action="store_true",
                     help="B-2 通道：-icount shift=1,sleep=off 确定性裸跑（恒递"
-                         " opt/berry/sbench 门键 = 基线面恒全行），收割八行"
+                         " opt/berry/sbench 门键 = 基线面恒全行），收割十行"
                          " BENCH 做 L2 紧门禁对拍（基线 bench_baseline_icount.txt"
                          " 独立文件）+ BENCHWAKE 观测行")
     ap.add_argument("--trace-dual", action="store_true",
@@ -2176,7 +2183,18 @@ def main() -> None:
                 for b in bad:
                     print(f"bench.py: FAIL {b}", file=sys.stderr)
                 raise SystemExit(1)
-            save_baseline_icount(metrics_on)
+            # 门控行保全（icount 基线刀审查轮修）：trace-dual 双臂 sbench=False
+            # （switch_pair 恒缺席），若直写 on 家族基线会把 --icount --update 落入的
+            # 门控行剥掉（实抓：switch_pair 行被抹=L2 永不设防）。保已入册门控行：
+            # on 家族落盘 = 双臂实测 ∪ 现册中属门控集（SBENCH_GATED）的行。
+            merged_on = dict(metrics_on)
+            try:
+                for k, v in load_baseline_icount().items():
+                    if k in SBENCH_GATED and k not in merged_on:
+                        merged_on[k] = v
+            except FileNotFoundError:
+                pass
+            save_baseline_icount(merged_on)
             save_baseline_icount_off(metrics_off)
             print(f"bench.py: 双份基线已刷新 → "
                   f"{BASELINE_ICOUNT.relative_to(REPO)} + "

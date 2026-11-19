@@ -116,11 +116,11 @@ pub fn intent_picks(intent: u8) -> u64 {
 
 /// 节流锚（上次 SCHED 行的 cntvct；0 起点 = boot 后首窗即过门——首行
 /// 约 5s 虚拟时打出，boot 期 fleet 已跑、账面非全零）。CAS 单赢家：
-/// 双核同窗竞争只有 CAS 成功者打行（`HB_LAST` swap 单赢家同义，但 delta
+/// 双核同窗竞争只有 CAS 成功者打行（`HB_LAST` swap 单赢家同义，但 delta〔HB_LAST 已随探针族退役 2026-11-19——史料引用〕
 /// 节流不能用 swap——锚被窗内调用持续前推 = 滑窗永不到期，故 CAS 形）。
 static SCHED_LINE_LAST: AtomicU64 = AtomicU64::new(0);
 
-/// 行间隔（虚拟秒；cntvct/cntfrq 换算——`spin_bark` 1s 节流同源数学，
+/// 行间隔（虚拟秒；cntvct/cntfrq 换算——`spin_bark` 1s 节流同源数学，〔注：spin_bark 族已随探针族退役（2026-11-19）——本注保留其数学先例引用的史料价值〕
 /// 取 5s：smoke 数分钟窗 ≈ 数十行内、boot 期必见 ≥1 行）。
 const SCHED_LINE_SECS: u64 = 5;
 
