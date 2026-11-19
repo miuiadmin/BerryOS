@@ -20,3 +20,5 @@ berry-loader = { path = "../../../user/berry-loader" }
 # 跨界先例同款）。消费面 = 本 crate 验签块（KERNEL.ELF 全字节 verify +
 # digest256 填 V10 meas_root 槽）。
 berry-crypto = { path = "../../../user/berry-crypto" }
+# G0 刀 1：A/B 槽位仲裁纯面（跨界共享）。
+berry-slot = { path = "../slot" }

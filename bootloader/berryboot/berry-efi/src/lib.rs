@@ -189,6 +189,11 @@ pub const EFI_LOADED_IMAGE_PROTOCOL_GUID: EfiGuid = EfiGuid {
 
 /// EFI_FILE_PROTOCOL 的 open_mode 位（只收用到的）。
 pub const EFI_FILE_MODE_READ: u64 = 0x0000_0000_0000_0001;
+/// G0 刀 1：写面 open_mode（EDK2 SimpleFileSystem.h 逐字）。
+pub const EFI_FILE_MODE_WRITE: u64 = 0x0000_0000_0000_0002;
+pub const EFI_FILE_MODE_CREATE: u64 = 0x8000_0000_0000_0000;
+/// G0 刀 1：新建文件属性（READ_ONLY 位不置——控制块须可改写）。
+pub const EFI_FILE_ATTR_NONE: u64 = 0x0000_0000_0000_0000;
 
 /// AllocatePool 内存类型（EfiLoaderData = 引导应用数据——EBS 后仍有效；
 /// V-0b 刀 1 KERNEL.ELF 整档缓冲用）。
@@ -371,9 +376,16 @@ pub struct EfiFileProtocol {
         buffer_size: *mut usize,
         buffer: *mut c_void,
     ) -> EfiStatus, // @32
-    pub write: *mut c_void,        // @40
+    pub write: unsafe extern "C" fn(
+        this: *mut EfiFileProtocol,
+        buffer_size: *mut usize,
+        buffer: *mut c_void,
+    ) -> EfiStatus, // @40（G0 刀 1：控制块写回）
     pub get_position: *mut c_void, // @48
-    pub set_position: *mut c_void, // @56
+    pub set_position: unsafe extern "C" fn(
+        this: *mut EfiFileProtocol,
+        position: u64,
+    ) -> EfiStatus, // @56（G0 刀 1：整档覆写前回零）
     pub get_info: unsafe extern "C" fn(
         this: *mut EfiFileProtocol,
         information_type: *const EfiGuid,
@@ -381,7 +393,7 @@ pub struct EfiFileProtocol {
         buffer: *mut c_void,
     ) -> EfiStatus, // @64（V-0b 刀 1）
     pub set_info: *mut c_void,     // @72
-    pub flush: *mut c_void,        // @80
+    pub flush: unsafe extern "C" fn(this: *mut EfiFileProtocol) -> EfiStatus, // @80（G0 刀 1）
 }
 
 /// LOADED_IMAGE_PROTOCOL——v0 只描到 device_handle @24（32B 截断，后续
@@ -565,6 +577,7 @@ mod tests {
 
     #[test]
     fn table_sizes() {
+        assert_eq!(size_of::<EfiFileProtocol>(), 88);
         assert_eq!(size_of::<EfiTableHeader>(), 24);
         assert_eq!(size_of::<EfiSimpleTextOutputProtocol>(), 80);
         assert_eq!(size_of::<EfiSystemTable>(), 120);

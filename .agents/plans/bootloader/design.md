@@ -3,7 +3,7 @@
 Type: spec
 Status: active
 Updated: 2026-11-18
-Version: 1.0.0
+Version: 1.0.1
 
 ## 1. 模块定位与职责边界
 
@@ -74,9 +74,10 @@ struct BerrySlotInfo {
 
 struct BerryBootControl {
     uint32_t magic;            // 'BRYC' (0x42525943)
-    uint32_t version;          // 2
+    uint32_t version;          // 3（v2→v3：增 boot_count——双副本撕裂排序序号，G0 刀 1 实施补）
     struct BerrySlotInfo slots[2];
     uint32_t recovery_trigger; // 非零表示强制进 Recovery
+    uint32_t boot_count;       // 单调递增（每次控制块写入 +1）——双副本两份皆 CRC 有效但内容不同时取 boot_count 高者为权威（交替写协议的跨写序依据；v2 无此字段则该形态无解）
     uint32_t crc32;
 };
 ```
