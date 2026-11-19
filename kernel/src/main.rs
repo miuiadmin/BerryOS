@@ -3,7 +3,7 @@
 //! Phase 2a Step 6（里程碑）：两内核任务在 CNTV 定时器上**抢占式分时**。`on_irq_tick`
 //! 经 IRQ 派发槽被调，做真 `tick`（减 slice_left）+ 归 0 则 `pick_next` + `switch`。
 //! task_a/task_b 是**忙循环**（不 yield）——A/B 交替**纯由 timer slice 驱动**，即里程碑
-//! 原文「两个内核任务在定时器上分时」。每 50 次切换打一行 `switches=N` 金丝雀（liveness）。
+//! 原文「两个内核任务在定时器上分时」。按时间节流（现行 CANARY_PERIOD=15s，探针族退役刀 2026-11-19；历史值 100/10000——每 50 次打一行 `switches=N` 金丝雀（liveness）。
 //! 异常向量已装（HAL `trap`）；panic handler 输出消息 + 位置（file:line:col）（G0 判据），
 //! CPU 异常寄存器/ESR/FAR dump 在 HAL `trap::exception_sync`。
 #![no_std]
@@ -41,6 +41,7 @@ mod syscall;
 mod sysver; // VER：版本身份 VMO（运行时查询面——boot 编译期成像 + 第 9 插只读交付）
 mod telemetry;
 mod user;
+mod vdso; // W3-Q106：vDSO 数据页（clock_read MONOTONIC 零 syscall 化内核半）
 mod vmar;
 mod vmo;
 
@@ -893,6 +894,20 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     // 3-1：注册真 syscall 语义 handler（handle 三操作 + clock_read）进 HAL 表。
     // 必须先于 ktest::run（SYSCALL 用例）与一切用户进程。
     syscall::install();
+    // W3-Q104（03 号分派审计机会五 5b）：SYSCALLS 派发表固化只读——install
+    // 填毕（本行之上 = 全系统唯一写点）即冻结，此后写表 = D-abort 权限错
+    // fatal。窗位硬约束：ktest 之前（探针在 test_syscall 内正向断言）+
+    // smp_bringup/arm_slice/enable_irq 之前（boot 单线程 DAIF 屏蔽窗——
+    // freeze_syscalls_table 的 # Safety 合同）。
+    // SAFETY: boot 单线程 DAIF 屏蔽窗；只动 boot 页表项与完成标记。
+    unsafe { berry_hal_aarch64::freeze_syscalls_table() };
+
+    // W3-Q106：vDSO 数据页成像——必须先于 ktest::run（SYSCALL 用例直调
+    // NR_PROCESS_CREATE → sys_process_create 装配 AS）与一切用户 AS 装配；
+    // CNTFRQ 快照是纯 MRS 读（timer.rs cntfrq），无 timer::init 依赖，故
+    // 可与 syscall::install 同窗（原置 timer::init 后 = boot 序破约，
+    // smoke 实跑 PANIC 定谳）。
+    vdso::init(mm::frames());
 
     //（S-2a E0 历史注：sched 舞蹈锁原语槽 set_klock_ops 在下方 park 块前
     // 安装；同批的「①位 置/清器 KLOCK_FLAG 槽」已随 S-4 判例 klock_enter
@@ -5358,13 +5373,18 @@ const S5C_PROBE_NAME: &str = "opt/berry/s5cprobe";
 /// deadline 周期（≥ 4 tick @ 缺省 10Hz——period ≥ 4 tick 量化可容，故本
 /// 探针不动 set_slice_hz）。
 const S5C_PERIOD_MS: u64 = 400;
-/// 每期预算（CBS 形：budget ≪ period）。口径注记：解冻后的再分派走
-/// sched.rs 八授片点（Band 可达——另 idle 臂 Unit 授片不出带）
-/// （`slice_left = grant_cycles()`）整片覆盖——dl 预算面
-/// 真生效域只有改档后首片（首 tick 即燃尽入限流），此后每期实跑 ≈ 一个
-/// tick 片（100ms @ 10Hz），占空比 ≈ slice/period ≈ 25% 而非本值的 0.5%；
-/// stall 判读（隙 > period/2）不受影响。这是现状调度器的授片/预算交互
-/// 事实，非本探针引入。
+/// 每期预算（CBS 形：budget ≪ period）。口径注记（预算授片分派刀
+/// 2026-11-19 后）：解冻后的再分派走 sched.rs 授片习语
+/// （`slice_left = grant_cycles_of()`）——带预算 deadline 的每次重授帽已
+/// 从全局 slice（100ms @ 10Hz）缩到本值（2ms），占空比相位均值
+/// ≈25%→≈12.5%。诚实限定两条（账面真、物理仍 tick 量化——完全闭合归
+/// 后续刀）：① 执法检测延迟仍=到下 tick 边界——arm_slice 臂全局片不读
+/// slice_left，budget 在派发后首个 tick 被 delta 一次烧穿，每期实跑=
+/// 派发点至下 tick 的间隙（相位依赖 0..100ms）；后续刀候选 = arm_slice
+/// 收紧 min(slice_left, SLICE)（小预算执法延迟 100ms→budget）；② 抢占窗
+/// 再授片宽恕仍在——期内被抢占后再派发获整额 budget 重授、被抢前已耗
+/// 部分无人记账（帽已缩，闭合需 switch-out 记账）。stall 判读
+/// （隙 > period/2）不受影响。
 const S5C_BUDGET_MS: u64 = 2;
 /// 开跑宽限（PILAT_GRACE_MS 同因：boot 验收对收尾——dl 改档与看门狗
 /// 起检都在宽限后）。
@@ -6178,7 +6198,7 @@ const LATSGI_POLL_MAX: usize = 4096;
 
 // ---- S-1：soakmon（soak 长跑心跳，boot 门控 spawn 块见 main 尾段；
 // 设计 = docs/基准与压力测试设计-v1.0.md §11 + 落地实录。命名注记：sched.rs 的
-// SOAK_PRINT_EVERY（金丝雀节流常量）与 task_a 注释「SOAK=1 低噪 soak」是
+// SOAK_PRINT_EVERY（金丝雀节流常量——探针族退役刀 2026-11-19 起由 balface::CANARY_PERIOD 继任）与 task_a 注释「SOAK=1 低噪 soak」是
 // 历史名，与本文 soakmon 无关，勿混读）----
 
 /// soakmon 的 fw_cfg 具名项名（门控键——soak.sh 专递
@@ -6253,7 +6273,7 @@ extern "C" fn task_soakmon(arg: usize) -> ! {
         let sw = berry_sched::switches();
         // S-5d 心跳 v2（D4）：per-CPU sw/park 四数入行；S-5e M1 v2.1 追加 churn。
         let (sw0, sw1, park0, park1) = berry_hal_aarch64::smp::sw_park_readout();
-        let pages = mm::allocated_pages() as u64;
+        let pages = mm::frames().allocated_pages() as u64;
         let lost = berry_hal_aarch64::uart::rx_lost() as u64;
         // S-5e M1（心跳 v2.1）：载荷业务进度第 9 字段——调度/内存面照绿而
         // churn 冻结 = svc 恒败/gen 顶格/写者被杀，端到端假绿在此开口。
@@ -6335,8 +6355,17 @@ extern "C" fn task_soakmon(arg: usize) -> ! {
 /// cpu_do_idle 同款；TCG 实测 wfe 立返拖垮主核吞吐——S-1 铁律）。
 #[no_mangle]
 pub unsafe extern "C" fn secondary_main() -> ! {
-    // S-2b + F0-2：高半 `.bss` 副核栈已在 `.Lsmp_final` `blr` 进入本函数前切妥（消除
-    // Rust 函数序言在换栈前压旧栈/只读段的 UB 窗口）。
+    // S-2b 修复：换离低半早期栈（__boot_stack_top）到高半静态栈——必须在
+    // 任何调用/IRQ 之前（本函数 `-> !`，旧帧弃置无害）。此后本核全部栈
+    // 访问（探测环帧/tick IRQ 帧/park 存档帧）都在高半：主表与用户表均映，
+    // park 帧恢复后读栈不再依赖低半映射（2b-2 退役；风暴雷详注见 smp.rs
+    // `SMP_SEC_STACK`）。
+    {
+        let top = berry_hal_aarch64::smp::sec_stack_top();
+        // SAFETY: 特权寄存器写；副核 DAIF 屏蔽窗内单线程；nostack——只改
+        // 寄存器不访问内存（此刻旧栈仍在低半可用，但本指令不触栈）。
+        unsafe { core::arch::asm!("mov sp, {0}", in(reg) top, options(nostack)) };
+    }
     // SAFETY: 特权寄存器写；副核 DAIF 窗内单线程。
     // （排障期哨兵 enter/init ok 已随 C1 复活验证回收——bring-up 窗口 =
     // UART 单写者纪律窗，副核静默是 SMP ok 完整落行的前提，勿在此窗加打印。）
@@ -6367,7 +6396,7 @@ pub unsafe extern "C" fn secondary_main() -> ! {
         // 对岸，免锁）。
         berry_hal_aarch64::smp::par_sample(0, false);
         if berry_hal_aarch64::smp::par_enabled() {
-            match berry_sched::nearest_deadline() {
+            match berry_sched::nearest_deadline_park() {
                 // SAFETY: 本核 CVAL 编程到 SLEEPQ 最近 deadline（绝对截止，
                 // 过期即醒由回环 expire 承接）；屏蔽窗内。
                 Some(d) => unsafe { berry_hal_aarch64::timer::arm_at(d) },
@@ -7499,7 +7528,7 @@ extern "C" fn task_alloc(arg: usize) -> ! {
             let r = berry_sched::block_current(arg, ALLOC_EV_BIT, deadline);
             berry_hal_aarch64::kern_lock::klock_exit();
             assert!(r == WakeReason::Timeout, "alloc: 沉降等待醒因非 Timeout");
-            let p = mm::allocated_pages();
+            let p = mm::frames().allocated_pages();
             if p == last {
                 stable += 1;
             } else {
@@ -7515,7 +7544,7 @@ extern "C" fn task_alloc(arg: usize) -> ! {
     let (_hp, _hv, hd) = storm_spawn_fleet("A", user_allocst_code(), STORM_WRITER_N, 0);
     // ② 基线：水位（fleet 帧已在——flag 门保证）+ per-CPU sw（写者已
     // thread_start，park 自旋不占内核态面）。
-    let pages_base = mm::allocated_pages();
+    let pages_base = mm::frames().allocated_pages();
     let (sw0_b, sw1_b, _, _) = berry_hal_aarch64::smp::sw_park_readout();
     // ③ 放行。
     let one: u8 = 1;
@@ -7540,7 +7569,7 @@ extern "C" fn task_alloc(arg: usize) -> ! {
     // 水位断言 = **带宽口径**：SMP EL0 形态全局水位无干净窗（常驻面 ±几帧
     // 波动 = 噪声底；S-5b 三跑实证），对账主信号 = churn 帧全泄（320 轮
     // × 1 帧 = ±320 量级）——带宽 64 = 常驻波动余量，主信号裕度 5×。
-    let pages_end = mm::allocated_pages() as i64;
+    let pages_end = mm::frames().allocated_pages() as i64;
     let delta = pages_end - pages_base as i64;
     assert!(
         delta.abs() <= 64,

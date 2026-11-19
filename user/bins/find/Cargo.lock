@@ -52,9 +52,21 @@ version = "0.2.0"
 [[package]]
 name = "berry-sys"
 version = "0.2.0"
+dependencies = [
+ "berry-telface",
+ "berry-vdsoface",
+]
+
+[[package]]
+name = "berry-telface"
+version = "0.2.0"
 
 [[package]]
 name = "berry-tls"
+version = "0.2.0"
+
+[[package]]
+name = "berry-vdsoface"
 version = "0.2.0"
 
 [[package]]

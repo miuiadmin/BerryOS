@@ -87,6 +87,13 @@ pub struct BuddyAllocator<'a> {
     /// `allocated_pages()` 从 O(num_pages) 扫落为 O(1) load（B-0 泄漏金丝雀
     /// 每次 boot 执法 + F37 watchdog 锁窗读 + S-3 拆锁后跨核读的撕裂面）。
     allocated: AtomicUsize,
+    /// 保留页数水位（遥测 memstat 刀 D1，`allocated` 邻位同款 Relaxed 形态）：
+    /// `reserve_range` 每实标一 RESERVED 单元 +1、`release_range` 每实还页
+    /// −1（对称水位——交叠保留跳过已占用块零动）。与 `allocated` 正交：
+    /// alloc/free 不动本水位、reserve/release 不动 `allocated`。口径由
+    /// [`reserved_pages_scan`] 对拍测试钉板；`reserved_pages()` O(1) load
+    /// 供遥测 memstat 三元组单口消费。
+    reserved: AtomicUsize,
 }
 
 impl<'a> BuddyAllocator<'a> {
@@ -141,6 +148,7 @@ impl<'a> BuddyAllocator<'a> {
             bmap_words,
             sum_words,
             allocated: AtomicUsize::new(0),
+            reserved: AtomicUsize::new(0),
         };
         me.reset_free();
         me
@@ -310,6 +318,8 @@ impl<'a> BuddyAllocator<'a> {
             self.bm_clear(0, p);
             self.free[p] = false;
             self.order[p] = RESERVED;
+            // 遥测 reserved 水位：每实标一单元 +1（上方已占用块跳过路径零动）。
+            self.reserved.fetch_add(1, Ordering::Relaxed);
             p += 1;
         }
     }
@@ -342,6 +352,8 @@ impl<'a> BuddyAllocator<'a> {
             self.bm_set(0, p);
             self.merge_up(p, 0);
             released += 1;
+            // 遥测 reserved 水位：实还页同步递减（与 released 同点累计）。
+            self.reserved.fetch_sub(1, Ordering::Relaxed);
             // p 若在合并中退为尾页（p != 合并头），后续步进照走（TAIL ≠
             // RESERVED → 跳过），区间内下一 RESERVED 页继续回收。
             p += 1;
@@ -439,6 +451,17 @@ impl<'a> BuddyAllocator<'a> {
         self.allocated.load(Ordering::Relaxed)
     }
 
+    /// **保留页总数**（遥测 memstat 的 reserved 真源水位：free 读点派生式
+    /// `total − reserved − allocated` 的补账字段——保留页恒不计
+    /// `allocated`，缺本水位则内核镜像/dtb 等保留面被误计空闲）。
+    ///
+    /// [`reserve_range`] 每实标一 RESERVED 单元 +1、[`release_range`] 每实还
+    /// 页 −1 的对称水位（交叠幂等跳过零动），O(1) Relaxed load；口径由
+    /// [`reserved_pages_scan`] 对拍测试钉板（allocated 同款纪律）。
+    pub fn reserved_pages(&self) -> usize {
+        self.reserved.load(Ordering::Relaxed)
+    }
+
     /// 旧全窗扫口径（D24 独立实现——对拍基准，非运行期 API）：扫已分配块头
     ///（`free=false` 且非 TAIL/RESERVED）按 `2^order` 累计。水位与之失同步
     /// = alloc/free 挂点漏改——对拍测试 loud。
@@ -451,6 +474,20 @@ impl<'a> BuddyAllocator<'a> {
                 if o != TAIL && o != RESERVED {
                     n += 1usize << o;
                 }
+            }
+        }
+        n
+    }
+
+    /// reserved 水位的全窗扫对拍基准（`#[cfg(test)]`，非运行期 API）：扫
+    /// RESERVED 哨兵页逐页累计（RESERVED 恒为单页占用单元）。水位与之
+    /// 失同步 = reserve/release 挂点漏改——对拍测试 loud。
+    #[cfg(test)]
+    fn reserved_pages_scan(&self) -> usize {
+        let mut n = 0usize;
+        for p in 0..self.num_pages {
+            if !self.free[p] && self.order[p] == RESERVED {
+                n += 1;
             }
         }
         n
@@ -1075,6 +1112,102 @@ mod tests {
         }
         assert_eq!(ba.allocated_pages(), 0, "全释放后水位非零 = 泄漏口径破");
         assert_eq!(ba.allocated_pages(), ba.allocated_pages_scan());
+    }
+
+    /// 遥测 reserved 水位对拍（allocated 水位对拍的对称臂——memstat 刀 D1）：
+    /// 混序 alloc/free 生命期每步断言 `reserved_pages()`（O(1) 水位）==
+    /// `reserved_pages_scan()`（全窗扫口径）且**对称律**——alloc/free 恒不动
+    /// reserved、reserve/release 恒不动 allocated（两水位口径正交）。内嵌四钉：
+    /// 交叠幂等不重计、越界腿截断、release 归零、reserve/release 往返守恒。
+    /// 确定性 LCG（K-1 对拍同款，勿换随机源——同输入同输出纪律）。
+    #[test]
+    fn reserved_watermark_matches_scan() {
+        let n = 1024usize;
+        let mut ba = make(n);
+        assert_eq!(ba.reserved_pages(), 0);
+        assert_eq!(ba.reserved_pages_scan(), 0);
+        // 对称律一侧：reserve 只动 reserved、不动 allocated。
+        ba.reserve_range(100, 180);
+        assert_eq!(ba.reserved_pages(), 80);
+        assert_eq!(ba.reserved_pages_scan(), 80);
+        assert_eq!(ba.allocated_pages(), 0, "reserve 动 allocated = 口径破");
+        // 交叠幂等不重计：[150, 220) 与 [100, 180) 交叠 30 页 → 净增恰 40。
+        ba.reserve_range(150, 220);
+        assert_eq!(ba.reserved_pages(), 120, "交叠保留重计 = 幂等面破");
+        assert_eq!(ba.reserved_pages_scan(), 120);
+        // 越界腿截断：b 截到窗顶 [1000, 1024) → 净增恰 24。
+        ba.reserve_range(1000, 9999);
+        assert_eq!(ba.reserved_pages(), 144);
+        assert_eq!(ba.reserved_pages_scan(), 144);
+        // 混序生命期（alloc/free 臂）：reserved 全程冻结 + 两水位逐步对拍。
+        let mut held: Vec<(usize, usize)> = Vec::new();
+        let mut rng: u64 = 0x5E2_D31;
+        for step in 0..500 {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let pick = (rng >> 33) % 4;
+            match pick {
+                0 | 1 => {
+                    if let Ok(p) = ba.alloc() {
+                        held.push((p, 0));
+                    }
+                }
+                2 => {
+                    let o = ((rng >> 40) % 5) as usize;
+                    if let Ok(p) = ba.alloc_order(o) {
+                        held.push((p, o));
+                    }
+                }
+                _ => {
+                    if let Some((p, o)) = held.pop() {
+                        ba.free(p, o).unwrap();
+                    }
+                }
+            }
+            assert_eq!(
+                ba.reserved_pages(),
+                144,
+                "step={} alloc/free 动 reserved = 口径破",
+                step
+            );
+            assert_eq!(
+                ba.reserved_pages(),
+                ba.reserved_pages_scan(),
+                "step={} reserved 水位/全窗扫分歧（挂点漏改）",
+                step
+            );
+            assert_eq!(
+                ba.allocated_pages(),
+                ba.allocated_pages_scan(),
+                "step={} allocated 水位/全窗扫分歧",
+                step
+            );
+        }
+        // churn 全释放后再进 release 相（此后非 RESERVED 页全空闲——
+        // release 断言值与 churn 序列解耦、逐值确定）。
+        for &(p, o) in held.iter() {
+            ba.free(p, o).unwrap();
+        }
+        assert_eq!(ba.allocated_pages(), 0);
+        assert_eq!(ba.allocated_pages_scan(), 0);
+        // 对称律另侧：release 只还区间内 RESERVED 页（[120, 260) ∩ 保留集
+        // [100, 220) = 100 页）、allocated 零扰；水位同步递减；幂等二连 0。
+        assert_eq!(ba.release_range(120, 260), 100);
+        assert_eq!(ba.reserved_pages(), 44);
+        assert_eq!(ba.reserved_pages_scan(), 44);
+        assert_eq!(ba.allocated_pages(), 0, "release 动 allocated = 口径破");
+        assert_eq!(ba.release_range(120, 260), 0, "幂等");
+        assert_eq!(ba.reserved_pages(), 44);
+        // 往返守恒：全空闲区 reserve→release 归还恰 = 首保数，水位回滚。
+        ba.reserve_range(300, 340);
+        assert_eq!(ba.reserved_pages(), 84);
+        assert_eq!(ba.release_range(300, 340), 40);
+        assert_eq!(ba.reserved_pages(), 44, "往返守恒破");
+        assert_eq!(ba.reserved_pages_scan(), 44);
+        // release 归零：残量（[100, 120) 20 页 + [1000, 1024) 24 页）全还。
+        assert_eq!(ba.release_range(0, n), 44);
+        assert_eq!(ba.reserved_pages(), 0, "全回收后水位非零");
+        assert_eq!(ba.reserved_pages_scan(), 0);
+        assert_eq!(ba.allocated_pages(), 0);
     }
 
     /// §A21 判例的机器复现（吸收调研 13/15 号，swift-os 坑一精神的本仓翻译）：
