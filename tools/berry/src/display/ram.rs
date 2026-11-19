@@ -7,14 +7,21 @@
 //! Geometry/PA come from the kernel's boot line:
 //!   `FB ok 480x1000 fmt=1 stride=1920 fb=0000000043d00000`
 //! The line is printed once at boot; `berry shell` waits for it.
+//!
+//! I2 止血两件：读面两段式（先只散读 512 采样点各 4B 算签名，变化才
+//! 全帧读——静态屏免 60Hz 全帧 pread 底噪）；原生指针主路走 QMP
+//! input-send-event（QEMU 11 的 VNC 路对裸 RFB msg5 丢绝对坐标），
+//! 失联才退 RFB msg5 保底。
 
 use std::fs::File;
 use std::io;
 use std::path::Path;
+use std::time::Duration;
 
 use crate::display::frame::{Caps, Frame, InputEvent, ScreenSource, TransportKind};
 use crate::display::vnc::VncInput;
 use crate::error::{BerryError, Result};
+use crate::qmp::QmpInjector;
 
 const RAM_BASE: u64 = 0x4000_0000;
 
@@ -60,82 +67,197 @@ impl FbInfo {
     }
 }
 
-/// Pure geometry half of the `open` ladder (no filesystem): zero
-/// extents, stride < width*4 (u64 math — the old `width*4` u32 multiply
-/// overflowed, panicking in debug on a corrupt boot line), PA below the
-/// RAM base. Returns `(offset_into_file, bytes_needed)`.
-pub(crate) fn fb_geometry(info: &FbInfo) -> Result<(u64, u64)> {
-    if info.width == 0 || info.height == 0 {
-        return Err(BerryError::protocol("RAM: bad fb geometry"));
-    }
-    if (info.stride as u64) < info.width as u64 * 4 {
-        return Err(BerryError::protocol("RAM: bad fb geometry"));
-    }
-    if info.fb_pa < RAM_BASE {
-        return Err(BerryError::protocol("RAM: fb PA below RAM base"));
-    }
-    Ok((info.fb_pa - RAM_BASE, info.stride as u64 * info.height as u64))
+/// 可定位精确读面（pread 语义）：真源 = `File`；测试源 = 内存面 + 读
+/// 分类计数（两段式行为的自证锚）。trait 私有，经 `Box<dyn ReadAt>` 装进
+/// `RamScan`——不扩公共 API 面。
+trait ReadAt {
+    fn read_exact_at(&self, buf: &mut [u8], off: u64) -> io::Result<()>;
 }
 
-/// The full window bound: geometry plus the EOF check. `checked_add`: a
-/// corrupt boot line can carry fb_pa near u64::MAX where offset+need
-/// wraps and would sneak past the EOF gate.
-pub(crate) fn fb_window(offset: u64, need: u64, file_len: u64) -> Result<()> {
-    if offset.checked_add(need).is_none_or(|end| end > file_len) {
-        return Err(BerryError::protocol(format!(
-            "RAM: fb window {offset}+{need} outside {file_len}"
-        )));
-    }
-    Ok(())
-}
-
-pub struct RamSource {
-    file: File,
-    offset: u64,
-    info: FbInfo,
-    vnc: VncInput,
-    raw: Vec<u8>,
-    seq: u64,
-    last_sig: u64,
-}
-
-impl RamSource {
-    pub fn open(path: &Path, info: FbInfo, vnc: VncInput) -> Result<Self> {
-        // Geometry ladder first (pure, no filesystem), so a corrupt boot
-        // line never produces an io error or an arithmetic panic.
-        let (offset, need) = fb_geometry(&info)?;
-        let file = File::open(path)?;
-        let len = file.metadata()?.len();
-        fb_window(offset, need, len)?;
-        Ok(Self {
-            file,
-            offset,
-            info,
-            vnc,
-            raw: vec![0; need as usize],
-            seq: 0,
-            last_sig: 0,
-        })
-    }
-
-    fn read_at(file: &File, buf: &mut [u8], off: u64) -> io::Result<()> {
+impl ReadAt for File {
+    fn read_exact_at(&self, buf: &mut [u8], off: u64) -> io::Result<()> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::FileExt;
-            file.read_exact_at(buf, off)
+            FileExt::read_exact_at(self, buf, off)
         }
         #[cfg(windows)]
         {
             use std::os::windows::fs::FileExt;
             let mut done = 0;
             while done < buf.len() {
-                let n = file.seek_read(&mut buf[done..], off + done as u64)?;
+                let n = self.seek_read(&mut buf[done..], off + done as u64)?;
                 if n == 0 {
                     return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "ram eof"));
                 }
                 done += n;
             }
             Ok(())
+        }
+    }
+}
+
+/// 签名种子与折叠素数（与旧单段式逐位一致——签名语义零漂移）。
+const SIG_SEED: u64 = 0xcbf2_9ce4_8422_2325;
+/// 采样点数（旧单段式同参数：512 点等步长）。
+const SIG_POINTS: usize = 512;
+
+/// FNV 折叠单步。
+fn sig_fold(sig: &mut u64, v: u32) {
+    *sig ^= u64::from(v);
+    *sig = sig.wrapping_mul(0x100_0000_01b3);
+}
+
+/// fb 窗口两段式扫描器：stage-1 只散读采样点各 4B 算签名（静态屏每轮
+/// ~2KB 读量），签名变才 stage-2 全帧读 + BGRA→RGBA 重排。采样点集与旧
+/// 单段式（全帧读后同式采样）同源——检测语义逐点零漂移。与 RamSource
+/// 分离以可单测（无需活 VNC 连接）。
+struct RamScan {
+    reader: Box<dyn ReadAt>,
+    offset: u64,
+    raw: Vec<u8>,
+    /// 采样点字节偏移（构造时按窗口长度一次定死：0 起等步长、窗口尾不足
+    /// 4B 处停——与旧签名循环同界；几何不变，无每轮分配）。
+    sample_offs: Vec<usize>,
+    last_sig: u64,
+    seq: u64,
+}
+
+impl RamScan {
+    fn new(reader: Box<dyn ReadAt>, offset: u64, need: usize) -> Self {
+        let step = (need / 4 / SIG_POINTS).max(1);
+        let mut sample_offs = Vec::new();
+        let mut i = 0usize;
+        while i + 3 < need {
+            sample_offs.push(i);
+            i += step * 4;
+        }
+        Self {
+            reader,
+            offset,
+            raw: vec![0; need],
+            sample_offs,
+            last_sig: 0,
+            seq: 0,
+        }
+    }
+
+    /// stage-1：散读采样点各 4B 算签名（每点一次小 pread——1080p 级窗口
+    /// 步长 ~16KB，聚合成跨点大段只会把读量放大回全帧；实测 512 次小读
+    /// 本身已快于一次全帧读，字节量砍 ~99%）。
+    fn probe_sig(&self) -> io::Result<u64> {
+        let mut sig = SIG_SEED;
+        let mut word = [0u8; 4];
+        for &off in &self.sample_offs {
+            self.reader.read_exact_at(&mut word, self.offset + off as u64)?;
+            sig_fold(&mut sig, u32::from_le_bytes(word));
+        }
+        Ok(sig)
+    }
+
+    /// 全帧缓冲上的同点集签名（stage-2 后重算——last_sig 恒描述所发帧的
+    /// 实读字节，不受 stage-1 与全帧读之间的客机写入影响）。
+    fn buf_sig(&self) -> u64 {
+        let mut sig = SIG_SEED;
+        for &off in &self.sample_offs {
+            let b: [u8; 4] = self.raw[off..off + 4].try_into().unwrap();
+            sig_fold(&mut sig, u32::from_le_bytes(b));
+        }
+        sig
+    }
+
+    fn try_next_frame(&mut self, info: &FbInfo) -> Option<Frame> {
+        // 两段式：先采样签名，未变即 None（零全帧读）。
+        let probe = self.probe_sig().ok()?;
+        if probe == self.last_sig {
+            return None;
+        }
+        self.reader.read_exact_at(&mut self.raw, self.offset).ok()?;
+        self.last_sig = self.buf_sig();
+        self.seq += 1;
+        let mut frame = Frame::new(info.width, info.height);
+        frame.seq = self.seq;
+        let w = info.width as usize;
+        let h = info.height as usize;
+        let stride = info.stride as usize;
+        for y in 0..h {
+            let row = y * stride;
+            for x in 0..w {
+                let o = row + x * 4;
+                let b0 = self.raw[o] as u32;
+                let b1 = self.raw[o + 1] as u32;
+                let b2 = self.raw[o + 2] as u32;
+                frame.pixels[y * w + x] = match info.format {
+                    0 => (b0 << 16) | (b1 << 8) | b2,       // RGBX
+                    1 => (b2 << 16) | (b1 << 8) | b0,       // BGRX
+                    _ => 0,
+                };
+            }
+        }
+        Some(frame)
+    }
+}
+
+/// 原生指针注入通道状态（QMP 主路，惰性）。
+enum Inject {
+    /// 无注入面（非 unix 端点形态）。
+    Off,
+    /// QMP 注入器自管生命周期：首个指针事件才建连（2s 守护），失联哑
+    /// 化后 ≥5s 节流重连自愈——QMP 恢复后 QMP 主路自动复活；节流窗内
+    /// pointer=false，调用方走 RFB msg5 保底。
+    Qmp(QmpInjector),
+}
+
+pub struct RamSource {
+    scan: RamScan,
+    info: FbInfo,
+    vnc: VncInput,
+    inject: Inject,
+}
+
+impl RamSource {
+    pub fn open(
+        path: &Path,
+        info: FbInfo,
+        vnc: VncInput,
+        inject_sock: Option<&Path>,
+    ) -> Result<Self> {
+        if info.width == 0 || info.height == 0 || info.stride < info.width * 4 {
+            return Err(BerryError::protocol("RAM: bad fb geometry"));
+        }
+        let file = File::open(path)?;
+        let len = file.metadata()?.len();
+        if info.fb_pa < RAM_BASE {
+            return Err(BerryError::protocol("RAM: fb PA below RAM base"));
+        }
+        let offset = info.fb_pa - RAM_BASE;
+        let need = info.stride as u64 * info.height as u64;
+        if offset + need > len {
+            return Err(BerryError::protocol(format!(
+                "RAM: fb window {offset}+{need} outside {len}"
+            )));
+        }
+        Ok(Self {
+            scan: RamScan::new(Box::new(file), offset, need as usize),
+            info,
+            vnc,
+            inject: match inject_sock {
+                Some(p) => Inject::Qmp(QmpInjector::lazy(p, Duration::from_secs(2))),
+                None => Inject::Off,
+            },
+        })
+    }
+
+    /// QMP 注入一步（注入器自管建连/哑化/节流重连，见 Inject）：true =
+    /// 已走 QMP；false = 调用方走 RFB msg5 保底。缩放分母用 fb 实几何
+    /// （InputEvent 指针坐标即该域）。连接与写带 2s 守护超时——本调用
+    /// 在 UI 线程，QEMU 卡死不得冻结窗口。
+    fn qmp_pointer(&mut self, x: u16, y: u16, buttons: u8) -> bool {
+        match &mut self.inject {
+            Inject::Qmp(inj) => {
+                inj.pointer(x, y, buttons, self.info.width, self.info.height)
+            }
+            Inject::Off => false,
         }
     }
 }
@@ -154,53 +276,21 @@ impl ScreenSource for RamSource {
     }
 
     fn try_next_frame(&mut self) -> Option<Frame> {
-        Self::read_at(&self.file, &mut self.raw, self.offset).ok()?;
-        // Skip static frames with a cheap sampled signature; the console/frame
-        // is otherwise re-rendered 60x/s for no reason.
-        let mut sig = 0xcbf2_9ce4_8422_2325u64;
-        let step = (self.raw.len() / 4 / 512).max(1);
-        let mut i = 0;
-        while i + 3 < self.raw.len() {
-            let v = u32::from_le_bytes([
-                self.raw[i],
-                self.raw[i + 1],
-                self.raw[i + 2],
-                self.raw[i + 3],
-            ]);
-            sig ^= v as u64;
-            sig = sig.wrapping_mul(0x100_0000_01b3);
-            i += step * 4;
-        }
-        if sig == self.last_sig {
-            return None;
-        }
-        self.last_sig = sig;
-        self.seq += 1;
-        let mut frame = Frame::new(self.info.width, self.info.height);
-        frame.seq = self.seq;
-        let w = self.info.width as usize;
-        let h = self.info.height as usize;
-        let stride = self.info.stride as usize;
-        for y in 0..h {
-            let row = y * stride;
-            for x in 0..w {
-                let o = row + x * 4;
-                let b0 = self.raw[o] as u32;
-                let b1 = self.raw[o + 1] as u32;
-                let b2 = self.raw[o + 2] as u32;
-                frame.pixels[y * w + x] = match self.info.format {
-                    0 => (b0 << 16) | (b1 << 8) | b2,       // RGBX
-                    1 => (b2 << 16) | (b1 << 8) | b0,       // BGRX
-                    _ => 0,
-                };
-            }
-        }
-        Some(frame)
+        self.scan.try_next_frame(&self.info)
     }
 
     fn send_input(&mut self, event: InputEvent) -> Result<()> {
         match event {
-            InputEvent::Pointer { x, y, buttons } => self.vnc.pointer(x, y, buttons),
+            // 指针主路 QMP input-send-event（S1 层二判例：QEMU 11 的 VNC
+            // pointer 路丢绝对坐标——vs->absolute 为假、queue_abs 不入队；
+            // input-send-event 实测可达 virtio-tablet），失联才退 RFB
+            // msg5。键路维持 RFB。
+            InputEvent::Pointer { x, y, buttons } => {
+                if self.qmp_pointer(x, y, buttons) {
+                    return Ok(());
+                }
+                self.vnc.pointer(x, y, buttons)
+            }
             InputEvent::Key { keysym, down } => self.vnc.key(keysym, down),
         }
     }
@@ -222,259 +312,108 @@ mod tests {
         assert_eq!(i.fb_pa, 0x43d0_0000);
     }
 
-    #[test]
-    fn parse_fb_line_rejections_and_fragments() {
-        // Missing any required token -> None (the `?` on each Option).
-        for bad in [
-            "FB ok fmt=1 stride=1920 fb=0x43d00000",              // no WxH
-            "FB ok 480x1000 stride=1920 fb=0x43d00000",           // no fmt
-            "FB ok 480x1000 fmt=1 fb=0x43d00000",                 // no stride
-            "FB ok 480x1000 fmt=1 stride=1920",                   // no fb
-            "FB ok axb fmt=1 stride=1920 fb=0x43d00000",          // bad WxH
-            "FB ok 480x1000 fmt=x stride=1920 fb=0x43d00000",     // bad fmt
-            "FB ok 480x1000 fmt=1 stride=x fb=0x43d00000",        // bad stride
-            "FB ok 480x1000 fmt=1 stride=1920 fb=zz",             // bad fb hex
-            "",
-        ] {
-            assert!(FbInfo::parse(bad).is_none(), "must reject: {bad:?}");
-        }
-        // Tokens survive arbitrary order and surrounding junk (the loop is
-        // token-oriented, not position-oriented).
-        let i = FbInfo::parse(
-            "junk fb=0000000043d00000 fmt=1 noise 480x1000 stride=1920 tail",
-        )
-        .unwrap();
-        assert_eq!((i.width, i.height, i.stride, i.format), (480, 1000, 1920, 1));
-        assert_eq!(i.fb_pa, 0x43d0_0000);
-        // fb= without the 0x prefix still parses as hex; leading zeros ok.
-        let i = FbInfo::parse("FB ok 2x2 fmt=1 stride=8 fb=43d00000").unwrap();
-        assert_eq!(i.fb_pa, 0x43d0_0000);
-        // A second WxH-looking token does not clobber: first wins? No — the
-        // loop overwrites, so LAST wins; pin that either way is stable under
-        // the real kernel line (single WxH token). Here: pin current
-        // behavior (last wins) so a future refactor is a conscious change.
-        let i = FbInfo::parse("FB ok 480x1000 800x600 fmt=1 stride=1920 fb=0x1").unwrap();
-        assert_eq!((i.width, i.height), (800, 600));
-        // u32::MAX geometry tokens parse (rejection happens later, in
-        // fb_window) — parse itself must not panic on extremes.
-        let i = FbInfo::parse("FB ok 4294967295x4294967295 fmt=1 stride=4294967295 fb=0xffffffffffffffff").unwrap();
-        assert_eq!(i.width, u32::MAX);
-        assert_eq!(i.fb_pa, u64::MAX);
+    /// 读分类计数（Rc 共享给测试柄）：fb 窗口全长读 = stage-2 全帧读，
+    /// 其余 = stage-1 散读。
+    #[derive(Default)]
+    struct ReadLog {
+        full: std::cell::Cell<usize>,
+        small: std::cell::Cell<usize>,
     }
 
-    /// Minimal scripted RFB peer backing a live VncInput (handshake only;
-    /// further client messages relayed to the channel so send_input's
-    /// wire bytes are assertable). Reuses vnc.rs's fake-RFB helpers —
-    /// single source for the scripting discipline.
-    fn vnc_input_stub() -> (VncInput, std::sync::mpsc::Receiver<Vec<u8>>) {
-        use std::io::Read;
-        use crate::net::Endpoint;
-        let (tx, rx) = std::sync::mpsc::channel();
-        let port = crate::display::vnc::tests::spawn_rfb(move |mut s| {
-            let sw = crate::display::vnc::tests::server_write;
-            sw(&mut s, b"RFB 003.008\n");
-            let mut b = [0u8; 12];
-            s.read_exact(&mut b).unwrap();
-            sw(&mut s, &[1, 1]); // one security type: none
-            let mut c = [0u8; 1];
-            s.read_exact(&mut c).unwrap();
-            sw(&mut s, &[0, 0, 0, 0]); // SecurityResult ok
-            let mut ci = [0u8; 1]; // ClientInit
-            s.read_exact(&mut ci).unwrap();
-            // ServerInit: 4x2, 32bpp BGRX, name "t"
-            let mut init = Vec::new();
-            init.extend_from_slice(&4u16.to_be_bytes());
-            init.extend_from_slice(&2u16.to_be_bytes());
-            init.extend_from_slice(&[
-                32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0,
-            ]);
-            init.extend_from_slice(&1u32.to_be_bytes());
-            init.push(b't');
-            sw(&mut s, &init);
-            // Relay pointer/key messages from the client.
-            let mut buf = [0u8; 64];
-            loop {
-                match s.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        if tx.send(buf[..n].to_vec()).is_err() {
-                            break;
-                        }
-                    }
-                }
+    /// 内存面 Mock（Rc<RefCell> 数据允许建扫描器后再改帧内容）。
+    struct MockRam {
+        data: std::rc::Rc<std::cell::RefCell<Vec<u8>>>,
+        fb_off: usize,
+        fb_len: usize,
+        log: std::rc::Rc<ReadLog>,
+    }
+
+    impl ReadAt for MockRam {
+        fn read_exact_at(&self, buf: &mut [u8], off: u64) -> io::Result<()> {
+            let o = off as usize;
+            let end = o.checked_add(buf.len()).unwrap_or(usize::MAX);
+            let data = self.data.borrow();
+            if end > data.len() {
+                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "mock eof"));
             }
-        });
-        let vnc = VncInput::connect_auth(
-            &Endpoint::Tcp(format!("127.0.0.1:{port}")),
-            None,
-        )
-        .unwrap();
-        (vnc, rx)
-    }
-
-    fn geo(w: u32, h: u32, stride: u32, fb_pa: u64) -> FbInfo {
-        FbInfo { fb_pa, width: w, height: h, stride, format: 1 }
-    }
-
-    #[test]
-    fn fb_geometry_ladder() {
-        // Happy path: offset = fb_pa - 0x4000_0000, need = stride*height.
-        let (off, need) = fb_geometry(&geo(480, 1000, 1920, 0x43d0_0000)).unwrap();
-        assert_eq!(off, 0x3d0_0000);
-        assert_eq!(need, 1_920_000);
-        // Stride may exceed width*4 (row padding is legal).
-        let (off, need) = fb_geometry(&geo(4, 2, 32, 0x4000_0000)).unwrap();
-        assert_eq!((off, need), (0, 64));
-        // Rejections, in ladder order.
-        for (bad, why) in [
-            (geo(0, 100, 400, 0x4000_0000), "zero width"),
-            (geo(480, 0, 1920, 0x4000_0000), "zero height"),
-            (geo(4, 2, 15, 0x4000_0000), "stride < width*4"),
-            // width*4 = 2^32 overflows the OLD u32 multiply — debug panic
-            // before this fix; u64 math here must cleanly reject.
-            (geo(0xFFFF_FFFF, 1, 8, 0x4000_0000), "width*4 u32 overflow"),
-            (geo(4, 2, 16, 0x3FFF_FFFF), "PA below RAM base"),
-            (geo(4, 2, 16, 0), "PA zero"),
-        ] {
-            let e = fb_geometry(&bad).unwrap_err();
-            assert_eq!(e.code, 7, "{why}: {bad:?}");
+            buf.copy_from_slice(&data[o..end]);
+            drop(data);
+            let is_full = o == self.fb_off && buf.len() == self.fb_len;
+            let c = if is_full { &self.log.full } else { &self.log.small };
+            c.set(c.get() + 1);
+            Ok(())
         }
-        // Exact boundary: stride == width*4 is legal; PA == RAM_BASE ok.
-        let (off, _) = fb_geometry(&geo(4, 2, 16, 0x4000_0000)).unwrap();
-        assert_eq!(off, 0);
     }
 
-    #[test]
-    fn fb_window_eof_and_overflow() {
-        // Exact fit.
-        fb_window(0, 32, 32).unwrap();
-        // One byte short -> rc=7 with both numbers in the message.
-        let e = fb_window(0, 32, 31).unwrap_err();
-        assert_eq!(e.code, 7);
-        assert!(e.message.contains("outside"), "msg: {}", e.message);
-        // Offset pushed to the middle: 32+32 == 64 fits, len 63 does not.
-        fb_window(32, 32, 64).unwrap();
-        assert!(fb_window(32, 32, 63).is_err());
-        // u64 add overflow: offset near u64::MAX plus a huge need must be
-        // rejected (the old unchecked `offset + need` wrapped and sneaked
-        // past the gate). offset = u64::MAX - 2^30, need = (2^32-1)^2.
-        let offset = 0xFFFF_FFFF_FFFF_FFFFu64 - 0x4000_0000;
-        let need = 0xFFFF_FFFFu64 * 0xFFFF_FFFFu64;
-        let e = fb_window(offset, need, u64::MAX).unwrap_err();
-        assert_eq!(e.code, 7);
-        assert!(e.message.contains("outside"), "msg: {}", e.message);
-    }
-
-    #[test]
-    fn ram_source_open_ladder_and_io() {
-        // unwrap_err needs T: Debug and RamSource is not Debug; extract
-        // the error side with expect_err_msg instead.
-        let (vnc, _rx) = vnc_input_stub();
-        fn open_err(
-            path: &std::path::Path,
-            info: FbInfo,
-            vnc: VncInput,
-        ) -> BerryError {
-            match RamSource::open(path, info, vnc) {
-                Err(e) => e,
-                Ok(_) => panic!("open must fail: {info:?} {path:?}"),
-            }
-        }
-        let missing = std::path::Path::new("/nonexistent/berry-ram-test/guest.ram");
-        // Bad geometry is rejected BEFORE the file is touched: with a
-        // nonexistent path the error must be the geometry one, not io.
-        let e = open_err(missing, geo(0, 2, 8, 0x4000_0000), vnc_input_stub().0);
-        assert!(e.message.contains("bad fb geometry"), "got: {}", e.message);
-        let e = open_err(missing, geo(4, 2, 16, 0x3FFF_FFFF), vnc_input_stub().0);
-        assert!(e.message.contains("below RAM base"), "got: {}", e.message);
-        let _ = vnc;
-        // Good geometry + missing file -> io error (code 6, device class).
-        let e = open_err(missing, geo(4, 2, 16, 0x4000_0000), vnc_input_stub().0);
-        assert_eq!(e.code, 6, "got: {} ({})", e.message, e.code);
-        // Real file, window past EOF -> the "outside" rejection.
-        let tmp = std::env::temp_dir().join(format!("berry-ram-open-{}", std::process::id()));
-        std::fs::create_dir_all(&tmp).unwrap();
-        let small = tmp.join("small.ram");
-        std::fs::write(&small, vec![0u8; 8]).unwrap();
-        let e = open_err(&small, geo(4, 2, 16, 0x4000_0000), vnc_input_stub().0);
-        assert!(e.message.contains("outside"), "got: {}", e.message);
-        std::fs::remove_file(&small).unwrap();
-        std::fs::remove_dir(&tmp).unwrap();
-    }
-
-    #[test]
-    fn ram_source_scanout_data_plane() {
-        // 4x2 BGRX framebuffer inside a fake guest-RAM file: window read,
-        // sampled-signature change detection, per-format channel packing,
-        // and the send_input routing — all without QEMU.
-        let (vnc, rx) = vnc_input_stub();
-        let tmp = std::env::temp_dir().join(format!("berry-ram-scanout-{}", std::process::id()));
-        std::fs::create_dir_all(&tmp).unwrap();
-        let ram_path = tmp.join("guest.ram");
-        let w = 4u32;
-        let h = 2u32;
-        let stride = 16u32;
-        let mut ram = vec![0u8; 1024];
-        let base = 64usize; // fb window offset inside the file
-        let px = |ram: &mut Vec<u8>, o: usize, b: u8, g: u8, r: u8| {
-            ram[base + o] = b;
-            ram[base + o + 1] = g;
-            ram[base + o + 2] = r;
-            ram[base + o + 3] = 0;
+    /// 64x16 BGRX、stride 256（窗口 4096B、fb 起偏 0x10）：采样步长 2px
+    /// → 8B，恰 512 点（0、8 … 4088）——on/off 采样点都充足。
+    fn setup() -> (
+        RamScan,
+        std::rc::Rc<std::cell::RefCell<Vec<u8>>>,
+        std::rc::Rc<ReadLog>,
+        FbInfo,
+    ) {
+        let info = FbInfo {
+            fb_pa: RAM_BASE + 0x10,
+            width: 64,
+            height: 16,
+            stride: 256,
+            format: 1,
         };
-        // Row 0: red, green; row 1: blue, white (BGRX byte order).
-        px(&mut ram, 0, 0x00, 0x00, 0xff);
-        px(&mut ram, 4, 0x00, 0xff, 0x00);
-        px(&mut ram, stride as usize, 0xff, 0x00, 0x00);
-        px(&mut ram, stride as usize + 4, 0xff, 0xff, 0xff);
-        std::fs::write(&ram_path, &ram).unwrap();
-        let info = FbInfo { fb_pa: 0x4000_0000 + 64, width: w, height: h, stride, format: 1 };
+        let (fb_off, fb_len) = (0x10usize, 4096usize);
+        let data = std::rc::Rc::new(std::cell::RefCell::new(vec![0u8; fb_off + fb_len]));
+        let log = std::rc::Rc::new(ReadLog::default());
+        let mock = MockRam {
+            data: data.clone(),
+            fb_off,
+            fb_len,
+            log: log.clone(),
+        };
+        let scan = RamScan::new(Box::new(mock), fb_off as u64, fb_len);
+        (scan, data, log, info)
+    }
 
-        let mut src = RamSource::open(&ram_path, info, vnc).unwrap();
-        assert_eq!(src.caps().kind, TransportKind::Shm);
-        assert_eq!(src.caps().max_w, 4096);
-        let f = src.try_next_frame().unwrap();
-        assert_eq!((f.width, f.height), (4, 2));
-        assert_eq!(f.seq, 1);
-        assert_eq!(f.pixels[0], 0xff_0000); // red
-        assert_eq!(f.pixels[1], 0x00_ff00); // green
-        assert_eq!(f.pixels[4], 0x00_00ff); // blue (row 1, x=0)
-        assert_eq!(f.pixels[5], 0xff_ffff); // white
-        // Stride padding bytes (x=2..4 both rows) are skipped, not read.
-        // Static frame: sampled signature unchanged -> None, seq frozen.
-        assert!(src.try_next_frame().is_none());
+    /// 静态帧零全帧读：首帧一次全帧读 + 发帧；此后每轮只散读采样点、
+    /// 不发帧也不全帧读。第二轮散读数恰为采样点数——隐含钉死 stage-1
+    /// 与全帧签名（last_sig）同点集（错位即假阳性全帧读，本测必红）。
+    #[test]
+    fn two_stage_static_frame_skips_full_read() {
+        let (mut scan, _data, log, info) = setup();
+        assert!(scan.try_next_frame(&info).is_some(), "首帧必发");
+        assert_eq!(log.full.get(), 1, "首帧恰一次全帧读");
+        let probe_reads = scan.sample_offs.len();
+        assert!(probe_reads > 0);
+        assert!(scan.try_next_frame(&info).is_none(), "静态帧不发帧");
+        assert_eq!(log.full.get(), 1, "静态帧零全帧读");
+        assert_eq!(
+            log.small.get(),
+            probe_reads * 2,
+            "两轮各恰一轮采样散读"
+        );
+    }
 
-        // Change one byte of pixel (0,0): blue channel 0x00 -> 0x11.
-        ram[base + 0] = 0x11;
-        std::fs::write(&ram_path, &ram).unwrap();
-        let f = src.try_next_frame().unwrap();
+    /// 采样点变化 → 全帧读 + 发帧；顺带钉 BGRX 重排（b2<<16|b1<<8|b0）。
+    #[test]
+    fn two_stage_changed_sample_point_full_read() {
+        let (mut scan, data, log, info) = setup();
+        assert!(scan.try_next_frame(&info).is_some());
+        // 采样点 8（像素 2 首字节）翻转。
+        data.borrow_mut()[0x10 + 8] = 0xB0;
+        let f = scan.try_next_frame(&info).expect("采样点变化必发帧");
+        assert_eq!(log.full.get(), 2, "变化帧恰再来一次全帧读");
+        assert_eq!(f.pixels[2], 0x0000_00B0, "BGRX 首字节落蓝通道");
         assert_eq!(f.seq, 2);
-        assert_eq!(f.pixels[0], 0xff_0011); // R intact, B changed
+    }
 
-        // Input routing: Pointer -> RFB message 5, Key -> message 4. TCP
-        // may coalesce both into one relay read; split by message type.
-        src.send_input(InputEvent::Pointer { x: 1, y: 2, buttons: 3 }).unwrap();
-        src.send_input(InputEvent::Key { keysym: 0x61, down: true }).unwrap();
-        let mut wire = Vec::new();
-        while wire.len() < 14 {
-            wire.extend(rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap());
-        }
-        assert_eq!(&wire[..6], &[5, 3, 0, 1, 0, 2]);
-        assert_eq!(&wire[6..], &[4, 1, 0, 0, 0, 0, 0, 0x61]);
-
-        // RGBX (format 0): R = byte0. Same file, fresh source.
-        let info0 = FbInfo { format: 0, ..info };
-        let mut src0 = RamSource::open(&ram_path, info0, vnc_input_stub().0).unwrap();
-        let f0 = src0.try_next_frame().unwrap();
-        // pixel(0,0) bytes are now b0=0x11,b1=0,b2=0xff -> (0x11<<16)|0xff.
-        assert_eq!(f0.pixels[0], 0x11_00ff);
-        // Unknown format code -> all-black pixels (pinned).
-        let info7 = FbInfo { format: 7, ..info };
-        let mut src7 = RamSource::open(&ram_path, info7, vnc_input_stub().0).unwrap();
-        let f7 = src7.try_next_frame().unwrap();
-        assert!(f7.pixels.iter().all(|&p| p == 0));
-
-        std::fs::remove_file(&ram_path).unwrap();
-        std::fs::remove_dir(&tmp).unwrap();
+    /// 非采样点变化不检出：512 点采样对零星小改动的盲区是既有取舍
+    /// （检出率 ~2KB/窗口），两段式与旧单段式同盲区——语义零漂移钉板。
+    #[test]
+    fn two_stage_off_sample_change_still_missed() {
+        let (mut scan, data, log, info) = setup();
+        assert!(scan.try_next_frame(&info).is_some());
+        // 偏移 4 不在采样集（步长 8B：0、8、16 …）。
+        data.borrow_mut()[0x10 + 4] = 0xFF;
+        assert!(scan.try_next_frame(&info).is_none(), "盲区改动不发帧");
+        assert_eq!(log.full.get(), 1, "盲区改动零全帧读");
     }
 }
