@@ -558,6 +558,8 @@ pub extern "C" fn _start(console: Handle, env: usize) -> ! {
         // 活兑现，echo/监督零长停。
         while app_serve_one(console) {}
         launcher_supervise(console);
+        // I2：wmd 监督探活（poll 形同上——死亡面一次重启帽内重拉）。
+        wmd_supervise(console);
         app_supervise(console);
         // AM-2e：压力沿观测桥（机制→消费第一段真线；真梯度策略挂 v2 am，
         // 本刀只落消费沿观测，恢复沿不做）。载形 = 周期自检点 deadline=0
@@ -593,6 +595,14 @@ pub extern "C" fn _start(console: Handle, env: usize) -> ! {
             Some(c) => c.hp,
             None => 0,
         };
+        // SAFETY: WMD_CHILD 单线程独占（boot arm / wmd_supervise / 本 loop
+        // 不交叠——LAUNCHER_CHILD 同纪律）。I2：wmd hp 入并等集 = 死亡沿
+        // 即刻唤醒（lhp 同形；不入则圈速兜底 APP_IDLE_CAP_NS 10s 内——
+        // 并等面仍零结构性新增：poll 探活本就每圈先行）。
+        let whp = match unsafe { &*core::ptr::addr_of!(WMD_CHILD) } {
+            Some(c) => c.hp,
+            None => 0,
+        };
         // SAFETY: APP_CHILDREN 只读共享面（app_supervise 独占借用已释）。
         let children: &[Option<AppSpawnTail>] = unsafe {
             core::slice::from_raw_parts(
@@ -600,8 +610,8 @@ pub extern "C" fn _start(console: Handle, env: usize) -> ! {
                 APP_SPAWN_LIVE_MAX,
             )
         };
-        let mut hs = [0 as Handle; 2 + 2 * APP_SPAWN_LIVE_MAX];
-        let mut sigs = [0u64; 2 + 2 * APP_SPAWN_LIVE_MAX];
+        let mut hs = [0 as Handle; 3 + 2 * APP_SPAWN_LIVE_MAX];
+        let mut sigs = [0u64; 3 + 2 * APP_SPAWN_LIVE_MAX];
         let mut n = 0usize;
         if svc != 0 {
             hs[n] = svc;
@@ -610,6 +620,11 @@ pub extern "C" fn _start(console: Handle, env: usize) -> ! {
         }
         if lhp != 0 {
             hs[n] = lhp;
+            sigs[n] = SIGNAL_TERMINATED;
+            n += 1;
+        }
+        if whp != 0 {
+            hs[n] = whp;
             sigs[n] = SIGNAL_TERMINATED;
             n += 1;
         }
@@ -860,6 +875,35 @@ static LAUNCHER_RESTARTED: AtomicU32 = AtomicU32::new(0);
 /// 装配 Ok 落值；launcher_supervise 死亡面消费后双清零。
 static LAUNCHER_WMCLI: AtomicU32 = AtomicU32::new(0);
 static LAUNCHER_WMSRV: AtomicU32 = AtomicU32::new(0);
+
+// ---- I2：wmd 监督一次重启（wmd 停摆根治刀 · SPEC §2）----
+
+/// wmd 监督子柄（I2）：wmd spawn Ok 留存（boot arm / 监督重启共用装配路
+/// `wmd_spawn` 落值），稳态 loop `wmd_supervise` 非阻塞探活用；None = 无
+/// wmd（rootfs 形/死亡收口后重启未成/帽尽）。旧形「常驻不 reap 句柄长存」
+/// 的孤儿 drop 改为显式留存——探活 + 死亡面 reap 收口的前提。
+/// SAFETY: svcmgr 单线程独占（LAUNCHER_CHILD 同纪律）。
+static mut WMD_CHILD: Option<ChildHandles> = None;
+
+/// wmd 一次重启帽（I2——launcher_supervise 先例「一次重启」语义复用：
+/// 循环重启风暴比不重启更伤稳态）：swap 惯取 1 = 帽已用；帽后再死 = eco
+/// 终报行不再试。
+static WMD_RESTARTED: AtomicU32 = AtomicU32::new(0);
+
+/// wmd 四常驻源（I2 重启装配面）：wm 服务端端 / push 服务端端 / present
+/// 客户端端 / hdi 客户端端各 dup 一枚留表——boot arm Ok 路一次性落值
+/// （dup 先于 extras take，原件随 spawn 迁入后本表唯一同端点句柄即此四
+/// 源）。监督重启 = 四源**现 dup** 重组 env 冻结 8/8 同形 extras（`wmd_
+/// spawn` 共用芯）——同通道对象续命（内核 v1 无对端关闭检测、两端互钉环
+/// 上端点恒活）⇒ 新 wmd 承接 WMD_CLI_DUP 控制面（新 spawn 的 [ui] app
+/// attach 续通）与 inputd/WMD_PUSH_B 推送面。掩码四权 = 常驻 dup 源惯用
+/// 形（WMD_CLI_DUP 同款：使命就是再 dup + 随行迁移，位须显式保位）。
+/// **留表即留命**（NET_A/WMD_CLI_DUP 同形）；0 = boot 未走过 wmd Ok 路
+/// （rootfs 形恒 0——重启路判零防御直退）。
+static WMD_WM_SRV_SRC: AtomicU32 = AtomicU32::new(0);
+static WMD_PUSH_SRV_SRC: AtomicU32 = AtomicU32::new(0);
+static WMD_PRESENT_SRC: AtomicU32 = AtomicU32::new(0);
+static WMD_HDI_SRC: AtomicU32 = AtomicU32::new(0);
 
 /// SPAWN RPC 活子表帽（M-C）：GUI app 分钟级活期 × 4 槽 = 同时活 app 上
 /// 限；满表拒新不拒旧（洪泛面：launcher 端重复点击防抖归 launcher，本帽
@@ -1439,27 +1483,35 @@ fn run_rootfs_child(console: Handle) {
             // 服务端端 + 交接件 present/hdi 客户端端随 env 块 take 迁入。
             let (w_cli, wm_srv) = channel_pair();
             let (push_cli, push_srv) = channel_pair();
-            match spawn_rootfs_elf(
-                H_ROOTFS,
-                &SpawnSpec {
-                    name: b"bin/gui-wmd",
-                    data_off,
-                    data_len,
-                    stdout: console,
-                    stack_pages: 8,
-                    stdin_feed: Some(&[]),
-                    stdin_handle: None,
-                    args: &[],
-                    extra_gifts: &[wm_srv, push_srv, present_cli, hdi_cli],
-                    mmio_vmo: None,
-                    mmio_va: 0,
-                    intent: 0,
-                    force_eager: true,
-                    env: &[],
-                },
-            ) {
-                Ok(child) => {
-                    ps_reg(b"gui-wmd", psp::STATE_ALIVE, 0); // 常驻（不 reap——vblk 同款）
+            // I2 四常驻源 dup（先于 extras take——原件随 spawn 迁入后本表
+            // 唯一同端点句柄即此四源；监督重启 = 四源现 dup 重组同形
+            // extras，见 statics 头注）。四权掩码 = 常驻 dup 源惯用形
+            // （WMD_CLI_DUP 同款）；dup 败 trap = 其 dup 先例同形。
+            let mut wm_srv_src: Handle = 0;
+            let mut push_srv_src: Handle = 0;
+            let mut present_src: Handle = 0;
+            let mut hdi_src: Handle = 0;
+            let dm = RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER | RIGHT_DUPLICATE;
+            if berry_handle_duplicate(wm_srv, dm, &mut wm_srv_src) != 0
+                || berry_handle_duplicate(push_srv, dm, &mut push_srv_src) != 0
+                || berry_handle_duplicate(present_cli, dm, &mut present_src) != 0
+                || berry_handle_duplicate(hdi_cli, dm, &mut hdi_src) != 0
+            {
+                trap();
+            }
+            match wmd_spawn(console, data_off, data_len, &[wm_srv, push_srv, present_cli, hdi_cli]) {
+                Some(child) => {
+                    ps_reg(b"gui-wmd", psp::STATE_ALIVE, 0); // 常驻（I2 起死亡面随监督 reap 收口——孤儿 drop 形退役）
+                    // I2：监督子柄 + 四常驻源落值（wmd_supervise 消费——
+                    // ps 谎账修与一次重启的前提面）。hp 先捕——下方订阅
+                    // 迟到 ack 收割的并等源用（WMD_CHILD move 后不可借）。
+                    let wmd_hp = child.hp;
+                    // SAFETY: WMD_CHILD 单线程独占（boot arm/稳态 loop 不交叠）。
+                    unsafe { WMD_CHILD = Some(child); }
+                    WMD_WM_SRV_SRC.store(wm_srv_src, Ordering::Relaxed);
+                    WMD_PUSH_SRV_SRC.store(push_srv_src, Ordering::Relaxed);
+                    WMD_PRESENT_SRC.store(present_src, Ordering::Relaxed);
+                    WMD_HDI_SRC.store(hdi_src, Ordering::Relaxed);
                     // wmd 客户端端仅此落值（兼作下方 gfxdemo arm 的 spawn Ok
                     // 标志——present_cli 0 值跳过同款）；push_cli 交 inputd
                     // arm（WMD_PUSH_B 留表即留命——EFI 相 inputd 未拉起则
@@ -1555,7 +1607,7 @@ fn run_rootfs_child(console: Handle) {
                             // READABLE 即全窗收丢弃（随行 handle 全 close 收
                             // 口）；有界二帽 60s——收割窗后残余面收窄至
                             // 120s 连续停顿角（TCG 极端形态，挂账即档）。
-                            let hs = [sub_dup, child.hp];
+                            let hs = [sub_dup, wmd_hp];
                             let sigs = [SIGNAL_READABLE, SIGNAL_TERMINATED];
                             let reap_by = now() + BLKD_REPLY_CAP;
                             loop {
@@ -1599,30 +1651,29 @@ fn run_rootfs_child(console: Handle) {
                     // boot 一次性泄漏 1 槽可忍，失败路零 trap 纪律优先）。
                     let _ = berry_handle_close(sub_dup);
                 }
-                Err(()) => {
+                None => {
                     ps_reg(b"gui-wmd", psp::STATE_SPAWNFAIL, 0);
                     // Err 全在 env send 前——六 fresh/交接端无一被 take：
                     // wm 对 ×2 + push 对 ×2 本段新建须回收；present/hdi 客户
                     // 端端虽 guifbd arm 所建，换手失败已无人交付（guifbd 侧
                     // 服务端端互钉常活），一并回收 + 置 0（防下方 arm 误
                     // 用）——显式回收防表槽泄漏（vnet Err 路先例形态）。
-                    if berry_handle_close(wm_srv) != 0 {
-                        trap();
-                    }
-                    if berry_handle_close(w_cli) != 0 {
-                        trap();
-                    }
-                    if berry_handle_close(push_srv) != 0 {
-                        trap();
-                    }
-                    if berry_handle_close(push_cli) != 0 {
-                        trap();
-                    }
-                    if berry_handle_close(present_cli) != 0 {
-                        trap();
-                    }
-                    if berry_handle_close(hdi_cli) != 0 {
-                        trap();
+                    // I2：四常驻源 dup 同批回收（spawn 未成即无重启面）。
+                    for h in [
+                        wm_srv,
+                        w_cli,
+                        push_srv,
+                        push_cli,
+                        present_cli,
+                        hdi_cli,
+                        wm_srv_src,
+                        push_srv_src,
+                        present_src,
+                        hdi_src,
+                    ] {
+                        if berry_handle_close(h) != 0 {
+                            trap();
+                        }
                     }
                     eco_skip(b"gui-wmd spawn");
                 }
@@ -8576,6 +8627,149 @@ fn launcher_supervise(console: Handle) {
                 now() + LAUNCHER_INIT_CAP_NS,
                 Ordering::Relaxed,
             );
+        }
+    }
+}
+
+/// wmd spawn 装配芯（I2——boot arm 与监督一次重启共用形，launcher_
+/// assemble 同款提取）。契约：`gifts` 四枚 = env 冻结 8/8 的 extras
+/// （wm_srv/push_srv/present_cli/hdi_cli——boot 路四原件、重启路四源现
+/// dup）由调用方持有；Some = spawn Ok（四枚随 extras **take 迁入**，子柄
+/// 归调用方落 `WMD_CHILD` + ps_reg）；None = Err 全在 env send 前（四枚
+/// 原样在本表，收口义务在调用方）。boot-only 面（gfxdemo 交接 w_cli /
+/// WMD_PUSH_B / WMD_CLI_DUP / 订阅代发）不属本芯——留在 boot arm。
+fn wmd_spawn(
+    console: Handle,
+    data_off: u64,
+    data_len: u64,
+    gifts: &[Handle; 4],
+) -> Option<ChildHandles> {
+    match spawn_rootfs_elf(
+        H_ROOTFS,
+        &SpawnSpec {
+            name: b"bin/gui-wmd",
+            data_off,
+            data_len,
+            stdout: console,
+            stack_pages: 8,
+            stdin_feed: Some(&[]),
+            stdin_handle: None,
+            args: &[],
+            extra_gifts: gifts,
+            mmio_vmo: None,
+            mmio_va: 0,
+            intent: 0,
+            force_eager: true,
+            env: &[],
+        },
+    ) {
+        Ok(child) => Some(child),
+        Err(()) => None,
+    }
+}
+
+/// wmd 监督探活（I2 wmd 停摆根治刀 · SPEC §2——`launcher_supervise` 先例
+/// 「一次重启」语义复用）：poll `wait_one(hp, TERMINATED, 0)` 命中 = 死亡
+/// 面 → reap 全链收口 → **ps 谎账修**（旧「常驻不 reap」形死后表恒 ALIVE
+/// ——停摆整场无人察觉的谎面；EXITED 即 psproto 的死态 wire 真值——库无
+/// STATE_DEAD 常量）→ eco 行 loud → 一次重启帽（WMD_RESTARTED swap 惯取
+/// ——帽后再死 = 终报不再试）内四常驻源现 dup 重组同形 extras 重拉
+/// （`wmd_spawn` 共用芯）→ 重启成 ps_reg ALIVE 真值覆盖。
+/// **重启承接面**（同通道对象续命——内核 v1 无对端关闭检测、互钉环上端点
+/// 恒活）：新 wmd 承接 WMD_CLI_DUP 控制面（重启后新 spawn 的 [ui] app 走
+/// 新 attach 续通）与 inputd/WMD_PUSH_B 推送面（I3 inputd 门控修的前提）。
+/// **v1 接受注记（SPEC §2 K1）**：旧 per-app apps 表随 wmd 死清零——活着
+/// 的 app/launcher 旧通道端互钉死端（陈 send 进无人读队列、对端 recv 恒
+/// EAGAIN 不报错——内核 v1 诚实缺口），自愈归客户端自身监督面（launcher
+/// 300s 帽 park/重拉挂账，超范围）；guifbd wm 表跟随面同滞旧订阅通道静默
+/// 降级（guifbd 首收 'm' 后已 close stdin 端——二次投递无读者结构性不可
+/// 达，故不重订阅：新 wmd 零订阅者照常服务，wm 域真值以新 RPC 面为准）。
+/// 重启路败面（cpio 缺/dup/spawn）= loud 不 trap（launcher fs dup 先例
+/// ——监督面自身永不自杀）。
+fn wmd_supervise(console: Handle) {
+    let hp = match unsafe { &*core::ptr::addr_of!(WMD_CHILD) } {
+        Some(c) => c.hp,
+        None => return, // 无 wmd（rootfs 形/已收口/重启未成）——no-op 零开销
+    };
+    let mut obs = 0u64;
+    let s = berry_object_wait_one(hp, SIGNAL_TERMINATED, 0, &mut obs);
+    if s == BERRY_ERR_AGAIN {
+        return; // 存活常态（poll 未命中）
+    }
+    if s != 0 {
+        trap(); // poll 野柄 = 表异常（launcher_supervise 同口径）
+    }
+    // 死亡面：reap 全链收口（wait 已命中 → 内部 wait 瞬回；Err = 句柄留存
+    // 有界泄漏的既定政策，账本仍收口——launcher 同形）。
+    let code = match unsafe { (&*core::ptr::addr_of!(WMD_CHILD)).as_ref() } {
+        Some(c) => match c.reap() {
+            Ok(c) => c,
+            Err(()) => 1, // 读码失败防御面——非零标记（eco 行已响）
+        },
+        None => return, // 理论不可达（hp 借用自 Some 支）——防御直退
+    };
+    // SAFETY: WMD_CHILD 单线程独占（稳态 loop 内，装配/serve 不交叠）。
+    unsafe { WMD_CHILD = None; }
+    ps_exit(b"gui-wmd", code);
+    eco_line(console, b"wmd died");
+    if WMD_RESTARTED.swap(1, Ordering::Relaxed) != 0 {
+        return; // 一次重启帽已用——终报不再试（循环重启风暴比不重启更伤稳态）
+    }
+    // 门 = cpio gui-wmd 在席（镜像被裁剪角：loud 即止，零 dup 零 spawn）。
+    let (data_off, data_len) = match cpio_find(H_ROOTFS, b"bin/gui-wmd") {
+        Some(g) => g,
+        None => {
+            // 验尸面区分：本行 = 重启**未试**（镜像无件）；成功路才打
+            // "wmd restart"——两态同串会让串口对拍把「没重启」读成「重启
+            // 过」（I4 复核当场修）。
+            eco_line(console, b"wmd noimg");
+            return;
+        }
+    };
+    // 四常驻源齐判（唯一 store 点 = boot Ok 路，先于稳态 loop 可达——本判
+    // 结构性恒过；判零直退 = 防御带）。
+    let wm_srv_src = WMD_WM_SRV_SRC.load(Ordering::Relaxed);
+    let push_srv_src = WMD_PUSH_SRV_SRC.load(Ordering::Relaxed);
+    let present_src = WMD_PRESENT_SRC.load(Ordering::Relaxed);
+    let hdi_src = WMD_HDI_SRC.load(Ordering::Relaxed);
+    if wm_srv_src == 0 || push_srv_src == 0 || present_src == 0 || hdi_src == 0 {
+        return;
+    }
+    // 四源现 dup（boot arm 同掩码）——败/半途败 = 已成份回收 + loud 放弃
+    // 重启（监督面零 trap——launcher fs dup 先例）。
+    let mut gifts = [0 as Handle; 4];
+    let dm = RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER | RIGHT_DUPLICATE;
+    for (src, g) in [wm_srv_src, push_srv_src, present_src, hdi_src]
+        .iter()
+        .zip(gifts.iter_mut())
+    {
+        if berry_handle_duplicate(*src, dm, g) != 0 {
+            for h in gifts {
+                if h != 0 && berry_handle_close(h) != 0 {
+                    trap();
+                }
+            }
+            eco_line(console, b"wmd dup");
+            return;
+        }
+    }
+    match wmd_spawn(console, data_off, data_len, &gifts) {
+        Some(child) => {
+            ps_reg(b"gui-wmd", psp::STATE_ALIVE, 0); // 重启真值覆盖（ps 谎账修复续面）
+            // SAFETY: 同上单线程独占。
+            unsafe { WMD_CHILD = Some(child); }
+            eco_line(console, b"wmd respawn");
+        }
+        None => {
+            // Err 全在 env send 前——四 dup 原样在本表，显式回收防表槽泄
+            // 漏（boot Err 路同款枚举）。账本保持上方 EXITED 真值（死 = 终
+            // 态事实；重启失败只 loud 不改写——SPAWNFAIL 属 boot 拉起面）。
+            for h in gifts {
+                if h != 0 && berry_handle_close(h) != 0 {
+                    trap();
+                }
+            }
+            eco_line(console, b"wmd respawn fail");
         }
     }
 }

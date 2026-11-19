@@ -3,18 +3,22 @@
 //! 双面 crate（gui-inputd 先例）：本 lib = 权威窗口表状态机（两层窗 +
 //! Z 序 + AVOID_SYS 避让 + 单焦点 + version 纪元计数 + 波3 新面：焦点
 //! 维护 / OP_WM_BACK 路由 + 500ms 单槽兜底 / 属主事件通道 / 表变更广播
-//! / 无窗订阅者）——**全部 I/O 走 [`Port`] 缝**（时间/收发/建联/关闭），
+//! / 无窗订阅者）+ 停摆根治刀起的 present/hdi 透传中继芯（[`relay`]——
+//! 分相帽/毒化清淤/应答帽丢帧的去自杀化状态机，main.rs 壳消费）——
+//! **全部 I/O 走 [`Port`]/[`relay::RelayIo`] 缝**（时间/收发/建联/关闭），
 //! 零 berry-libc/berry-sys 调用点（仅 `Handle = u32` 类型引用），host
 //! `cargo test` 直跑；bin（main.rs）= guest 入口（ChanPort 接
 //! berry_sys + 两路 poll-first serve + 事件通道并监 + 兜底软定时）。
 //!
 //! 纯函数纪律（berry-guiproto/gui-inputd 同款）：零分配、零 unsafe、
-//! 零 panic 数据面（`Port::fail` 是防御面出口——表项值域由构造保证，
-//! 不可达分支 loud 不静默）。host 单测全盖（inline `tests`——MockPort
-//! 喂真 wire 帧（mock 客户端）+ 应答/事件/关闭三记录面断言）。
+//! 零 panic 数据面（`Port::fail`/`RelayIo::fail` 是防御面出口——表项
+//! 值域由构造保证，不可达分支 loud 不静默）。host 单测全盖（inline
+//! `tests`——MockPort 喂真 wire 帧（mock 客户端）+ 应答/事件/关闭三
+//! 记录面断言）。
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod relay;
 pub mod table;
 
 use berry_sys::Handle;
@@ -96,6 +100,7 @@ mod tests {
     //! wire 面共识一体钉板（C-4 FakeSrc 同法：确定性序列 + 状态谓词）。
 
     use crate::{AppRecv, Port, SendEvtStatus};
+    use crate::relay::{self, Domain, RelayOutcome};
     use crate::table::{WmTable, WMD_BACK_FALLBACK_NS, WM_APPS_MAX, WM_EVT_SUBS_MAX};
     use berry_guiproto as gp;
     use std::vec::Vec;
@@ -1039,5 +1044,42 @@ mod tests {
         assert!(p.closed.contains(&77), "随行 close");
         assert_eq!(t.wait_set_needed(), 0, "未入表");
         assert_eq!(re_st(&wm(&mut t, &mut p, CH_WM, &[gp::OP_WM_ATTACH])), gp::ST_BAD);
+    }
+
+    // —— 停摆根治刀 §4 (e)：全域停摆隔离（relay 芯 + 本表同刻对拍） ——
+
+    /// (e) present 域毒化不扰 wm 域本地面：中继 recv 帽到点毒化后，wm 域
+    /// CREATE/TABLE_GET 照常应答——「relay 长 park = 全服务停摆」降为
+    /// 「呈现面降级快失败，wm 域/推送/输入零影响」的钉板（两状态机同刻
+    /// 驱动：RelayIoMock 注入应答不归，MockPort 验本地面健康）。
+    #[test]
+    fn relay_poisoned_present_domain_isolated_from_wm_local() {
+        let (mut t, mut p) = mk_table();
+        let mut rs = relay::RelayState::new();
+        let mut rio = relay::mock::RelayIoMock::new(relay::mock::CLI);
+        // present 域 GETINFO 中继：应答不归 → 帽到点毒化 + ST_BUSY 快答。
+        let out = rs.relay(
+            &mut rio,
+            Domain::Present,
+            relay::mock::CH_WM,
+            relay::mock::CLI,
+            &[gp::OP_GETINFO],
+            &[],
+        );
+        assert_eq!(out, RelayOutcome::RecvCapPoisoned);
+        assert!(rs.poisoned(Domain::Present));
+        assert_eq!(
+            rio.replies,
+            vec![(relay::mock::CH_WM, vec![gp::ST_BUSY], vec![])]
+        );
+        // wm 域本地面照常：CREATE 应答 + TABLE_GET 快照不受呈现面停摆影响。
+        let (w1, _, _) = create_win(&mut t, &mut p, gp::WM_LAYER_APP, 0, 600, false);
+        let s = table_get(&mut t, &mut p);
+        assert_eq!(s.count, 1, "wm 域 CREATE 照常");
+        assert_eq!(entry(&s, w1).id, w1);
+        // 毒化持续（drain FIFO 空）期间本地面再动表仍正常。
+        assert_eq!(rs.drain(&mut rio, Domain::Present, relay::mock::CLI), relay::DrainStale::Still);
+        assert_eq!(destroy_req(&mut t, &mut p, w1), gp::ST_OK);
+        assert_eq!(table_get(&mut t, &mut p).count, 0);
     }
 }
