@@ -7309,6 +7309,48 @@ fn test_deadline() {
                 "DL：B4-4 解冻须授新预算 slice（期望 100，实际 {}）", tb5.slice_left);
     }
 
+    // B5（预算授片分派刀 2026-11-19）——`TaskClass::grant_cycles_of`
+    // per-task 面三态钉板：带预算 deadline → budget 尺寸授片；budget=0
+    // deadline → class 面回落（ktest 手造与生产 sched_setattr budget_ns=0
+    // 皆合法态——replenish「不被 0 预算踩死」回落律同款）；fair → class
+    // 面原值。另钉 Band+deadline 复合臂（intent 带轴与 deadline 轴正交
+    // ——预算压过本带 quantum）与 berry_sched::dl_grant 再导出面（dl_grant
+    // 数学律本体 host 钉板在 berry-sliceface 的 dl_grant_law）。
+    {
+        use berry_sched::{class_of_task, dl_grant, INTENT_INTERACTIVE};
+        let tg = mk(b"dlG".as_slice());
+        // 三态一：deadline + budget>0 → budget 值（预算压过 class 面）。
+        tg.prio_effective = PRIO_DEADLINE;
+        tg.preempt_threshold = 77;
+        assert_eq!(dl_grant(tg.prio_effective, tg.preempt_threshold), Some(77),
+                   "DL：B5 dl_grant 带预算 deadline 须 Some(budget)");
+        assert_eq!(class_of_task(&*tg).grant_cycles_of(&*tg), 77,
+                   "DL：B5 带预算 deadline 授片须=preempt_threshold");
+        // 复合臂：Band+deadline 同形取 budget（dl_grant 前置于 class 分派）
+        // ——前提守卫：本带 quantum 授片 ≠ 77（防巧合同值假绿）。
+        tg.intent_effective = INTENT_INTERACTIVE;
+        assert_ne!(class_of_task(&*tg).grant_cycles(), 77,
+                   "DL：B5 复合臂前提守卫（band quantum 须 ≠ budget）");
+        assert_eq!(class_of_task(&*tg).grant_cycles_of(&*tg), 77,
+                   "DL：B5 Band+deadline 复合臂授片须=预算（压过本带 quantum）");
+        tg.intent_effective = 0;
+        // 三态二：deadline + budget=0 → class 面回落（Unit 臂=全局 slice）。
+        tg.preempt_threshold = 0;
+        assert_eq!(dl_grant(tg.prio_effective, tg.preempt_threshold), None,
+                   "DL：B5 dl_grant 零预算 deadline 须 None（不踩死）");
+        assert_eq!(class_of_task(&*tg).grant_cycles_of(&*tg),
+                   class_of_task(&*tg).grant_cycles(),
+                   "DL：B5 零预算 deadline 须回落 class 面");
+        // 三态三：fair → class 面原值（threshold>0 也拒——双门独立）。
+        tg.prio_effective = 0;
+        tg.preempt_threshold = 77;
+        assert_eq!(dl_grant(tg.prio_effective, tg.preempt_threshold), None,
+                   "DL：B5 dl_grant fair 须 None（双门独立拒绝）");
+        assert_eq!(class_of_task(&*tg).grant_cycles_of(&*tg),
+                   class_of_task(&*tg).grant_cycles(),
+                   "DL：B5 fair 授片须=class 面原值（零漂移）");
+    }
+
     berry_hal_aarch64::uart_puts(b"DL-K ok\n");
 }
 
@@ -8652,10 +8694,14 @@ fn test_band_m4() {
 
         let gia = mk(b"m4gIA".as_slice(), INTENT_INTERACTIVE);
         let gut = mk(b"m4gUT".as_slice(), INTENT_UTILITY);
-        // 授片差异化（TaskClass::grant_cycles——本刀新面）：Band = 本带
-        // quantum 周期数（表行源）、Unit = 全局 slice。
-        let (g_ia, g_ut) =
-            (class_of_task(&*gia).grant_cycles(), class_of_task(&*gut).grant_cycles());
+        // 授片差异化（TaskClass::grant_cycles_of per-task 面——预算授片
+        // 分派刀 2026-11-19）起的生产授片习语；公平带任务 dl_grant 双门
+        // 不中回落 class 面：Band = 本带 quantum 周期数（表行源）、
+        // Unit = 全局 slice。
+        let (g_ia, g_ut) = (
+            class_of_task(&*gia).grant_cycles_of(&*gia),
+            class_of_task(&*gut).grant_cycles_of(&*gut),
+        );
         assert_eq!(g_ia, ns2cyc(ib.band.quantum_ns), "BANDM4：G interactive 授片须=quantum_ns 周期数");
         assert_eq!(g_ut, ns2cyc(ub.band.quantum_ns), "BANDM4：G utility 授片须=quantum_ns 周期数");
         assert!(g_ia < g_ut, "BANDM4：G interactive 短片须<utility 长片");
@@ -8697,8 +8743,9 @@ fn test_band_m4() {
             };
             // SAFETY: pick 产物（在环、调度器拥有）——LOADGEN 同款指针面。
             let next = unsafe { &mut *next_ptr };
-            // (3) 真授片（per-task 分派——本刀 grant_cycles）。
-            next.slice_left = class_of_task(&*next).grant_cycles();
+            // (3) 真授片（per-task 分派——grant_cycles_of 生产习语，
+            //     预算授片分派刀 2026-11-19）。
+            next.slice_left = class_of_task(&*next).grant_cycles_of(&*next);
             // (4) 真跑一个跑段。
             let run_start = cntvct();
             spin_until(run_start + ns2cyc(G1_SPIN_NS));
@@ -8799,7 +8846,7 @@ fn test_band_m4() {
             };
             // SAFETY: 同上。
             let next = unsafe { &mut *next_ptr };
-            next.slice_left = class_of_task(&*next).grant_cycles();
+            next.slice_left = class_of_task(&*next).grant_cycles_of(&*next);
             let run_start = cntvct();
             spin_until(run_start + ns2cyc(15_000_000));
             class_of_task(&*next).tick(&mut *next, &mut rq);
@@ -8846,9 +8893,9 @@ fn test_band_m4() {
         let gu = mk(b"m4gUN".as_slice(), INTENT_UNSPECIFIED);
         assert_eq!(class_of_task(&*gu), TaskClass::Unit, "BANDM4：G3 未声明 intent 须回落 unit");
         assert_eq!(
-            class_of_task(&*gu).grant_cycles(),
+            class_of_task(&*gu).grant_cycles_of(&*gu),
             slice_cycles(),
-            "BANDM4：G3 unit 授片须=全局 slice（零漂移）"
+            "BANDM4：G3 unit 授片须=全局 slice（fair 双门不中——class 面回落零漂移）"
         );
 
         // 收口（test_band 纪律：先 unthrottle 清环上位再 configure(0)——
@@ -11425,9 +11472,12 @@ fn test_band_smp() {
         "BAND-SMP：BS-2 首两带槽须默认关（前序收口）"
     );
     // 跨核授片差异：interactive 短片 < utility 长片，各=本带 quantum_ns 周期数
-    // （TaskClass::grant_cycles 的 per-task 分派——跨环同律）。
-    let (g_ia, g_ut) =
-        (class_of_task(&*gia).grant_cycles(), class_of_task(&*gut).grant_cycles());
+    // （TaskClass::grant_cycles_of 的 per-task 分派——跨环同律；公平带任务
+    // dl_grant 双门不中回落 class 面）。
+    let (g_ia, g_ut) = (
+        class_of_task(&*gia).grant_cycles_of(&*gia),
+        class_of_task(&*gut).grant_cycles_of(&*gut),
+    );
     assert_eq!(
         g_ia,
         ns2cyc(ib.band.quantum_ns),
@@ -11507,7 +11557,7 @@ fn test_band_smp() {
             .map(|n| n as *mut Task);
         if let Some(next_ptr) = picked0 {
             let next = unsafe { &mut *next_ptr };
-            next.slice_left = class_of_task(&*next).grant_cycles();
+            next.slice_left = class_of_task(&*next).grant_cycles_of(&*next);
             picks_ia += 1;
             let run_start = cntvct();
             spin_until(run_start + run_cyc);
@@ -11542,7 +11592,7 @@ fn test_band_smp() {
             .map(|n| n as *mut Task);
         if let Some(next_ptr) = picked1 {
             let next = unsafe { &mut *next_ptr };
-            next.slice_left = class_of_task(&*next).grant_cycles();
+            next.slice_left = class_of_task(&*next).grant_cycles_of(&*next);
             picks_ut += 1;
             let run_start = cntvct();
             spin_until(run_start + run_cyc);
