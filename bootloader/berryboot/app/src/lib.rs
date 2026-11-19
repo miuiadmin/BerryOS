@@ -65,7 +65,8 @@ use berry_efi::{
     EfiLoadedImageProtocol, EfiMemoryDescriptor, EfiSimpleFileSystemProtocol,
     EfiStatus, EfiSystemTable, EFI_ALLOCATE_ADDRESS, EFI_ALLOCATE_ANY_PAGES,
     EFI_BOOT_SERVICES_SIGNATURE, EFI_BUFFER_TOO_SMALL, EFI_FILE_INFO_GUID,
-    EFI_FILE_MODE_READ, EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID,
+    EFI_FILE_MODE_CREATE, EFI_FILE_MODE_READ, EFI_FILE_MODE_WRITE,
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID,
     EFI_LOADED_IMAGE_PROTOCOL_GUID, EFI_LOADER_DATA, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID,
     EFI_SUCCESS, EFI_SYSTEM_TABLE_SIGNATURE,
 };
@@ -283,6 +284,61 @@ impl SigFacts {
 /// 纳管——memmap 缓冲/init 段页同纪律）；未用缓冲（验败/半装/尺寸不
 /// 符）一页量级泄露无害。任一步失败/尺寸不符 = 诊断行 + None（引导链
 /// 零 panic——调用方按缺席/半装/降级处置）。
+/// G0 刀 1：控制块读（52B 定长；缺席返 false——旧盘常态）。
+fn read_ctl_file(
+    root: *mut EfiFileProtocol,
+    root_ref: &EfiFileProtocol,
+    name: &[u8],
+    out: &mut [u8; berry_slot::CONTROL_LEN],
+) -> bool {
+    let mut name16 = [0u16; 13];
+    let n16 = utf16_encode_bytes(name, &mut name16);
+    let mut file: *mut EfiFileProtocol = core::ptr::null_mut();
+    let r_open =
+        unsafe { (root_ref.open)(root, &mut file, n16.as_ptr(), EFI_FILE_MODE_READ, 0) };
+    if r_open != EFI_SUCCESS || file.is_null() {
+        return false;
+    }
+    let file_ref = unsafe { &*file };
+    let mut n = out.len();
+    let r = unsafe { (file_ref.read)(file, &mut n, out.as_mut_ptr() as *mut c_void) };
+    unsafe { (file_ref.close)(file) };
+    r == EFI_SUCCESS && n == out.len()
+}
+
+/// G0 刀 1：控制块写（WRITE|CREATE 开 → set_position(0) → Write 52B →
+/// Flush → Close；任一步失败返 false——写败由对侧副本兜底，不打断引导）。
+fn write_ctl_file(
+    root: *mut EfiFileProtocol,
+    root_ref: &EfiFileProtocol,
+    name: &[u8],
+    data: &[u8; berry_slot::CONTROL_LEN],
+) -> bool {
+    let mut name16 = [0u16; 13];
+    let n16 = utf16_encode_bytes(name, &mut name16);
+    let mut file: *mut EfiFileProtocol = core::ptr::null_mut();
+    let r_open = unsafe {
+        (root_ref.open)(
+            root,
+            &mut file,
+            n16.as_ptr(),
+            EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_CREATE,
+            0,
+        )
+    };
+    if r_open != EFI_SUCCESS || file.is_null() {
+        return false;
+    }
+    let file_ref = unsafe { &*file };
+    let mut n = data.len();
+    let r_w = unsafe {
+        (file_ref.write)(file, &mut n, data.as_ptr() as *const u8 as *mut c_void)
+    };
+    let r_f = unsafe { (file_ref.flush)(file) };
+    unsafe { (file_ref.close)(file) };
+    r_w == EFI_SUCCESS && r_f == EFI_SUCCESS && n == data.len()
+}
+
 fn read_exact_fat_file(
     bs: &berry_efi::EfiBootServices,
     con_out: &berry_efi::EfiSimpleTextOutputProtocol,
@@ -1044,6 +1100,67 @@ pub extern "C" fn efi_main(
                         });
                     }
 
+                    // —— G0 刀 1：A/B 槽位仲裁（HELLO.TXT 后、装载前——
+                    //    写回须在 GetMemoryMap 前完成，map key 有效期纪律）。
+                    //    双副本读 → 择权威 → arbitrate → slot: 横幅 → 交替写
+                    //    回 tries 减一态。无控制件（旧单槽盘）→ KERNEL.ELF
+                    //    兼容直读零记账；仲裁 None（recovery/双空）→ 亦走
+                    //    兼容名（G0 刀 2/3 再收 recovery 面）。
+                    let mut ctl1 = [0u8; berry_slot::CONTROL_LEN];
+                    let mut ctl2 = [0u8; berry_slot::CONTROL_LEN];
+                    let got1 = read_ctl_file(root, root_ref, b"BOOTCTL1.DAT", &mut ctl1);
+                    let got2 = read_ctl_file(root, root_ref, b"BOOTCTL2.DAT", &mut ctl2);
+                    let mut kernel_name: &[u8] = b"KERNEL.ELF";
+                    let mut initrd_name: &[u8] = b"INITRD.BIN";
+                    let mut slot_active: u32 = 0xFFFF_FFFF;
+                    match berry_slot::BootControl::pick_copy(
+                        if got1 { &ctl1 } else { &[0u8; berry_slot::CONTROL_LEN] },
+                        if got2 { &ctl2 } else { &[0u8; berry_slot::CONTROL_LEN] },
+                    ) {
+                        Some(ctl) => match ctl.arbitrate() {
+                            Some(arb) => {
+                                kernel_name = arb.kernel_name.as_bytes();
+                                initrd_name = arb.initrd_name.as_bytes();
+                                slot_active = arb.chosen as u32;
+                                print_line(con_out, |l| {
+                                    l.push_str("slot: ");
+                                    l.push(if arb.chosen == 0 { b"A" } else { b"B" });
+                                    l.push_str(" pri=");
+                                    l.push_u32_dec(arb.writeback.slots[arb.chosen].priority as u32);
+                                    l.push_str(" tries=");
+                                    l.push_u32_dec(arb.writeback.slots[arb.chosen].tries_remaining as u32);
+                                    l.push_str(" cnt=");
+                                    l.push_u32_dec(arb.writeback.boot_count);
+                                });
+                                // 交替写回：权威副本为高 boot_count 侧，写
+                                // 对侧（写新态 → Flush → 对侧成下一权威）。
+                                let wb = arb.writeback.to_bytes();
+                                let authoritative_is_1 = got1
+                                    && berry_slot::BootControl::from_bytes(&ctl1)
+                                        .map(|c| c.boot_count)
+                                        .unwrap_or(0)
+                                        >= berry_slot::BootControl::from_bytes(&ctl2)
+                                            .map(|c| c.boot_count)
+                                            .unwrap_or(0);
+                                let target = if authoritative_is_1 { b"BOOTCTL2.DAT" } else { b"BOOTCTL1.DAT" };
+                                let _ = write_ctl_file(root, root_ref, target, &wb);
+                            }
+                            None => {
+                                print_line(con_out, |l| {
+                                    l.push_str("slot: recovery-trigger");
+                                });
+                            }
+                        },
+                        None => {
+                            if got1 || got2 {
+                                print_line(con_out, |l| {
+                                    l.push_str("slot: ctl-corrupt fallback");
+                                });
+                            }
+                            // 双缺席（got1&&got2 皆 false）= 旧单槽盘——零记账静默。
+                        }
+                    }
+
                     // 行 5（V-0b 刀 1）：KERNEL.ELF 整档读入——GetInfo 探
                     // file_size → AllocatePool(EfiLoaderData) 按长整档缓冲 →
                     // 循环 Read 收齐（got == file_size 才算过）。缓冲**不
@@ -1051,7 +1168,7 @@ pub extern "C" fn efi_main(
                     // 返回后由固件回收。帽 64MiB：荒谬长先拒（VMO_MAX_SIZE
                     // 同精神——防无界分配把引导面炸成 panic）。
                     let mut name16k = [0u16; 16];
-                    let kname = utf16_encode_bytes(b"KERNEL.ELF", &mut name16k);
+                    let kname = utf16_encode_bytes(kernel_name, &mut name16k);
                     let mut kfile = core::ptr::null_mut();
                     let r_kopen = unsafe {
                         (root_ref.open)(root, &mut kfile, kname.as_ptr(), EFI_FILE_MODE_READ, 0)
@@ -1197,7 +1314,7 @@ pub extern "C" fn efi_main(
                                         }
                                         let mut name16i = [0u16; 16];
                                         let iname =
-                                            utf16_encode_bytes(b"INITRD.BIN", &mut name16i);
+                                            utf16_encode_bytes(initrd_name, &mut name16i);
                                         let mut ifile = core::ptr::null_mut();
                                         let r_iopen = unsafe {
                                             (root_ref.open)(root, &mut ifile, iname.as_ptr(), EFI_FILE_MODE_READ, 0)
