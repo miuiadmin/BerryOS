@@ -86,6 +86,10 @@ pub mod json;
 /// §4.5；模板 = include_str! 资产与 Python `SCAFFOLD_*` 同字节源）。
 pub mod new;
 
+/// W1-Q27 九刀：P1 签名面（`_find_berry_sign`/`_run_berry_sign`/
+/// `_sign_bap`/`_verify_bap_sig` 镜像——berry-sign 子进程封装 + 发现序）。
+pub mod sign;
+
 /// [security] 三键视图（profile/key_lineage/integrator——齐备或齐缺）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sec<'a> {
