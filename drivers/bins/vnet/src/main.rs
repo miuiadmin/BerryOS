@@ -1005,8 +1005,14 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
                 tcp::pump_serve(d, regs, mac, gw_mac, table, &mut sess, &mut rt);
                 drain_done(h, &mut rep);
                 // 等待窗节拍（四刀 P9）：挂起 op / 完成 / RTO-TW 臂在席 →
-                // 短 tick；全闲 → 10s 心跳零漂移。
-                let tick_ns = if tcp::RtPipe::busy(&sess) { SVC_TICK_NS } else { SVC_IDLE_NS };
+                // 短 tick；全闲 → 10s 心跳零漂移。量子刀 P1：表会话活跃
+                // （earliest_timer 在席=RTO 挂臂/TIME_WAIT 收口期）同样短
+                // tick——阻塞 recv 消费者免 1-10s 收割量化,liveness 闸。
+                let tick_ns = if tcp::RtPipe::busy(&sess) || table.earliest_timer().is_some() {
+                    SVC_TICK_NS
+                } else {
+                    SVC_IDLE_NS
+                };
                 let mut obs = 0u64;
                 let _ = berry_object_wait_one(h, SIGNAL_READABLE, now() + tick_ns, &mut obs);
                 continue;
