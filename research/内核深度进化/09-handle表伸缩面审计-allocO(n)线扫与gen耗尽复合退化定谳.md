@@ -4,7 +4,7 @@ Type: research
 Status: done
 Updated: 2026-11-19
 
-一句话说明：补货梯度「新审计面扫描」（boot/时基·handle 表伸缩·SMP 三候选）查实定谳——SMP 面 owner 文档群已占（母案 [SMP设计草案-v1.0.md](../../docs/SMP设计草案-v1.0.md) + S2-S5 实施草案 + [调度器SMP部署设计-v1.0.md](../../docs/调度器SMP部署设计-v1.0.md)，W3 不立项；boot/时基面 rtc.rs 84 行 + vdso.rs 62 行且 bootparams 已 bootpface 单源（W3-Q85），肉不足立项；**handle 表伸缩面立项**——本件实测三退化轴：①`alloc_slot` O(n) 前向线扫 × 14 个 syscall 插入点 × boot 插表 12+ 点（表龄越长扫越长）；②gen 14 位 ≈ 1.6 万次重用即耗尽，耗尽槽永久废弃且**不在 free list**（`Free { next_gen }` 只记代号不挂链）——复合恶化：线扫要跳过耗尽槽、耗尽槽永远占着 vec 实位；③64K 帽 = `slot_index_valid(65536)` 硬顶。ktest 双钉（:3707「最低空槽应被复用」+ :844「满装首收须最低位槽」）冻结分配序不变量——任何伸缩改造必须保最低空槽语义。三轴定级：不换数据结构（Vec 平铺 + 最低空槽序是 v1 唯一已被 ktest 钉板且 boot 插表可证的形态）；候选刀 = ①最低空槽游标 hint 单调化（amortized O(1)，reset 于 close/drain——语义等价最小刀）；②gen 域 14→29 位扩容（SLOT_BITS 不动，ABI §8.1 位域不动，改 `gen_in_issue_domain` 发行域单源即可）——两刀均列候选不实施，留 owner 裁定。
+一句话说明：补货梯度「新审计面扫描」（boot/时基·handle 表伸缩·SMP 三候选）查实定谳——SMP 面 owner 文档群已占（母案 [SMP设计草案-v1.0.md](../../docs/SMP设计草案-v1.0.md) + S2-S5 实施草案 + [调度器SMP部署设计-v1.0.md](../../docs/调度器SMP部署设计-v1.0.md)，W3 不立项；boot/时基面 rtc.rs 84 行 + vdso.rs 62 行且 bootparams 已 bootpface 单源（W3-Q85），肉不足立项；**handle 表伸缩面立项**——本件实测三退化轴：①`alloc_slot` O(n) 前向线扫 × 14 个 syscall 插入点 × boot 插表 12+ 点（表龄越长扫越长）；②gen 14 位 ≈ 1.6 万次重用即耗尽，耗尽槽永久废弃且**不在 free list**（`Free { next_gen }` 只记代号不挂链）——复合恶化：线扫要跳过耗尽槽、耗尽槽永远占着 vec 实位；③64K 帽 = `slot_index_valid(65536)` 硬顶。ktest 双钉（:3707「最低空槽应被复用」+ :844「满装首收须最低位槽」）冻结分配序不变量——任何伸缩改造必须保最低空槽语义。三轴定级：不换数据结构（Vec 平铺 + 最低空槽序是 v1 唯一已被 ktest 钉板且 boot 插表可证的形态）；候选刀 = ①最低空槽游标 hint 单调化（amortized O(1)，reset 于 close/drain——语义等价最小刀）；②gen 域扩容**查实不可行**（gen 可用窗 = 32 − SLOT_BITS 16 − 预留位 2 恰 14 位已顶满，扩容必吞 §8.1 预留位或 u64 化破坏决策 #28——列 owner ABI 裁定件不入候选）——刀 A 列候选不实施，留 owner 裁定。
 
 ## 审计基线（2026-11-19 21:3x 直核）
 
@@ -31,13 +31,13 @@ gen 域 = 14 位（`GEN_MASK = 0x3FFF`），单槽 close/take/drain 各 +1，**�
 
 1. **不换数据结构**：Vec 平铺 + 最低空槽分配序被 ktest 双钉（:3707/:844）+ boot 插表顺序可证——换 free-list/游标树/哈希都破坏「最低空槽」冻结语义，v1 收益不抵 ABI/测试面风险。overhaul 线同形（无分叉），回流不撞。
 2. **候选刀 A（最低空槽游标 hint）**：`HandleTable` 加 `lowest_free_hint: usize`——insert 尾插时置新槽号（单调），close 置 `min(hint, slot)`，drain 归零；`alloc_slot` 从 hint 起扫。**语义等价**（仍最低空槽，只是起点前移）、amortized O(1)、零 ABI 面。风险点：close/drain/replace 路径的 hint 维护遗漏面（ktest 已有双钉可回归）。
-3. **候选刀 B（gen 域 14→29 位扩容）**：SLOT_BITS 16 不动、bit30/31 预留不动，仅 `GEN_BITS 14→29`（`gen_in_issue_domain` 发行域单源改）——耗尽周期 1.6 万 → 5.4 亿，轴 ② 实质清零。**ABI 面注意**：handle 值域 = 槽位|代号，gen 变宽 = 已发行 handle 数值域变宽，但 v1 从不发行预留位非零值（`has_reserved_bits` 拒面已在册），扩容后 bit30 仍预留——`decode_gen` 掩码单源改即可，冻结面零触碰。风险点：hdlface 表驱动测试的 GEN 域边界用例需同步扩。
-4. **实施时点建议**：两刀均小（各 ≤ 50 行 kernel + hdlface 测试面），但当前 lane 无性能实证需求（无实测回归数据指认 alloc_slot 为瓶颈——02 号 IPC 审计「每 RPC 等待量子」瓶颈定谳在前），**列候选留 owner 裁定**，不抢回流窗口（overhaul 回流在即，syscall.rs 六段手术优先）。
+3. **候选刀 B（gen 域扩容——查实不可行，改列 owner ABI 裁定件）**：gen 可用窗 = 32 − SLOT_BITS 16 − RESERVED_MASK 预留位 2 = **恰 14 位，已顶满**（hdlface/src/lib.rs 位域常量单源实况：`Handle = u32`、SLOT_BITS 16 占 [0,16)、RESERVED_MASK 0xC000_0000 钉死 bit30/31）。任何扩容只有两条路且都非「发行域单源改」：其一，吞 bit30/31 预留位——即便吞尽也只到 16 位 gen = 65536 周期（4 倍改善，非量级差），且触碰 ABI §8.1 预留面；其二，`Handle` 换 u64——推翻决策 #28「handle 表示 uint32_t」四十年外部合同（2026-10 已触发）。改 `GEN_BITS` 即改 handle 值域，非 `decode_gen` 掩码局部改。**定谳：v1 唯一零 ABI 伸缩路径 = 刀 A**；预留位启用/位域重构若要做，是 owner ABI 裁定件，代价即上述两条路。
+4. **实施时点建议**：刀 A 小（≤ 50 行 kernel + hdlface 测试面），但当前 lane 无性能实证需求（无实测回归数据指认 alloc_slot 为瓶颈——02 号 IPC 审计「每 RPC 等待量子」瓶颈定谳在前），**列候选留 owner 裁定**，不抢回流窗口（overhaul 回流在即，syscall.rs 六段手术优先）；刀 B 已定谳不可行，无实施面。
 
 ## 与其他文档的关系
 
 - 三候选查实定谳来源：上轮补货梯度（QUEUE 21:1x 轮「boot/时基·handle 表伸缩·SMP 预研新审计面扫描」）。
-- handle 位域单源：[../../hdlface/src/lib.rs](../../hdlface/src/lib.rs)（W3-Q8 钉板——候选刀 B 的发行域改动单源在此）。
+- handle 位域单源：[../../hdlface/src/lib.rs](../../hdlface/src/lib.rs)（W3-Q8 钉板——gen 窗 14 位顶满的常量实况在此，刀 B 不可行定性依据）。
 - ktest 不变量钉板：kernel/src/ktest.rs :3707（最低空槽复用）/:844（E3f 满装最低位槽）——候选刀 A 的回归面。
 - gen 耗尽安全设计（防回卷复活）：kernel/src/handle.rs `take_gen` 注释（3b3 审查 H3）——本件轴 ② 的「非债」定性依据。
 - 沿革：`docs/阶段沿革.md` 六百零九节（随本批）。
