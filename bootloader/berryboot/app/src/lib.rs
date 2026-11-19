@@ -113,7 +113,7 @@ pub const HANDOFF_MAGIC: u32 = 0x4252_5948;
 /// 协议版本：v2 = 2（V10 尾追加度量/签名槽留位——ADR #82 附录一，全零 =
 /// 未度量/未占用，v1 行为零变）；v1 = 1（A1-3b init 分段递送）；v0 = 0
 /// 冻结于 V-0b 刀 3（扩字段 = bump version，内核认 ≤ 当前版）。
-pub const HANDOFF_VERSION: u32 = 2;
+pub const HANDOFF_VERSION: u32 = 3;
 
 /// 分段描述符数上限（与内核侧同值——handoff 单页自含的执法点）。
 pub const INIT_SEGS_MAX: usize = 32;
@@ -161,11 +161,16 @@ pub struct BerryHandoff {
     pub meas_root: [u8; 32],      // @128 度量根留位（V10 预埋，ADR #82 附录一；全零 = 未度量）
     pub sig_slot_off: u64,        // @160 签名槽偏移留位（V10 预埋，同上；零 = 未占用，off/len 同判）
     pub sig_slot_len: u64,        // @168 签名槽长度留位（V10 预埋，同上；零 = 未占用）
+    pub slot_active: u32,         // @176 G0 刀 3：选中槽（0=A/1=B；0xFFFFFFFF=旧单槽无仲裁）
+    pub _r2: u32,                 // @180 保留零
+    pub ramoops_pa: u64,          // @184 G0 刀 3：16KiB Ramoops 持久区 PA（0=未保留——v1 域面 EFI 域无控制器标记面）
+    pub ramoops_len: u64,         // @192 Ramoops 区长（16384=16KiB 标准；0=未保留）
+    pub rng_seed: [u8; 32],       // @200 硬件真随机数种子（刀 3 规格；全零=未采集——EFI RNG Protocol 未绑 v1 域面）
 }
 
 /// 布局执法表（与 kernel/src/handoff.rs 逐行相同——两侧同表执法）。
 const _: () = {
-    assert!(size_of::<BerryHandoff>() == 176);
+    assert!(size_of::<BerryHandoff>() == 232);
     assert!(size_of::<InitSeg>() == 16);
     assert!(offset_of!(InitSeg, pa) == 0);
     assert!(offset_of!(InitSeg, len) == 8);
@@ -456,6 +461,7 @@ fn load_kernel(
     gop: &GopFacts,
     isegs: &[InitSeg],
     sig: &SigFacts,
+    slot_active: u32,
 ) -> Option<u64> {
     let segs = bo.segments();
     // 整窗认领（AllocateAddress 对已占用页返错不覆盖——kbuf/固件数据若
@@ -541,7 +547,7 @@ fn load_kernel(
             init_blob_len: 0,
             cmdline_pa: 0,
             cmdline_len: 0,
-            init_segs_pa: if isegs.is_empty() { 0 } else { hpa + 176 },
+            init_segs_pa: if isegs.is_empty() { 0 } else { hpa + 232 },
             init_segs_count: isegs.len() as u32,
             _r1: 0,
             // V10 验签槽（P3 启用，ADR #82 附录一预埋位的消费面）：
@@ -551,6 +557,13 @@ fn load_kernel(
             meas_root: sig.meas_root,
             sig_slot_off: sig.slot_pa,
             sig_slot_len: sig.slot_len,
+            // G0 刀 3：v3 尾追加三面（旧值语义：旧单槽=0xFFFFFFFF、
+            // Ramoops EFI 域未保留=0、RNG 未采集=全零——v1 域面）。
+            slot_active,
+            _r2: 0,
+            ramoops_pa: 0,
+            ramoops_len: 0,
+            rng_seed: [0; 32],
         });
         // 描述符数组随 handoff 同页 @176（V10 头 128B→176B；§3.2.1 单页
         // 自含：32×16B+176B = 688B < 4KiB——内核 init_segs 按「恰为
@@ -639,6 +652,7 @@ fn final_boot(
     hpa: u64,
     bo: &berry_loader::BootElf,
     isegs: &[InitSeg],
+    slot_active: u32,
 ) {
     // CurrentEL 预检（EL 编码在位 [3:2]：EL1 → 0x4）。
     let el: u64;
@@ -1538,6 +1552,7 @@ pub extern "C" fn efi_main(
                                                     &gop_facts,
                                                     &isegs[..iseg_n],
                                                     &sig_facts,
+                                                    slot_active,
                                                 ) {
                                                     final_boot(
                                                         unsafe { &*bs },
@@ -1546,6 +1561,7 @@ pub extern "C" fn efi_main(
                                                         hpa,
                                                         &bo,
                                                         &isegs[..iseg_n],
+                                                        slot_active,
                                                     );
                                                 }
                                             }
