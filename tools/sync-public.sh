@@ -352,8 +352,12 @@ rm -rf "$DEST/docs/规则"
 # 预装 fail-fast、QEMU/just 全家无安装步）——换 ubuntu-latest 必红，门面仓挂
 # 永久红 CI 不如不挂。公开面保留 sdk-publish.yml（crates.io 发布链，本就
 # ubuntu-latest + workflow_dispatch 休眠态）。CI 住在开发主仓。
+# unsafe-ledger-autofix.yml 同律不入（2026-11-20 镜像同步出口安检实捕：
+# 内部 autofix 流水线——push 触发 wip/sched-1.1 + hermes-auto label +
+# 内部 runner PATH，随 .github 白名单 rsync 带入后安检 LEAK 拦截于提交前；
+# 形态剥除律：内部流水线 workflow 一律剥除，非形态适配——与 ci 双道同律）。
 WF_DIR="$DEST/.github/workflows"
-rm -f "$WF_DIR/ci.yml" "$WF_DIR/ci-light.yml"
+rm -f "$WF_DIR/ci.yml" "$WF_DIR/ci-light.yml" "$WF_DIR/unsafe-ledger-autofix.yml"
 for wf in "$WF_DIR"/*.yml; do
   [ -e "$wf" ] || continue
   # runner 面换公开形态（余量防御：任何残留 self-hosted 标签）
