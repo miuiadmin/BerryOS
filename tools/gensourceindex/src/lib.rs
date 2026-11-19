@@ -584,10 +584,14 @@ pub fn parse_keys_listing(data: &[u8]) -> R<(String, [u8; PK_LEN], bool)> {
 
 // ---- 自持 SHA-512/256（FIPS 180-4——berry-crypto sha512::digest256 同源面）----
 
-mod sha512;
+pub mod sha512;
 
 /// 二刀（berry-sign 面）：发现序 + 子进程封装 + 索引签名/验签单点缝。
 pub mod sign;
+
+/// W1 三刀第二片：生成面库刀（rootfs-manifest 路——load_app_entries/
+/// build_entry/do_generate；--preset 面 berry_assemble Python 现役）。
+pub mod gen;
 
 /// SHA-512/256 摘要（= BSIG 链 bap_digest 同算法——envelope.rs :68/
 /// sha512::digest256）。自持实现零依赖（mkapp SHA-256 同款纪律）；NIST
