@@ -44,14 +44,15 @@ pub const HANDOFF_MAGIC: u32 = 0x4252_5948;
 
 /// 协议版本：v2 = 2（V10 度量/签名槽留位）；v1 = 1（A1-3b init 分段）；
 /// v0 = 0（V-0b 刀 3 冻结）。probe 认 ≤ 当前版（双向兼容）。
-pub const HANDOFF_VERSION: u32 = 2;
+/// v3 = 3（G0 刀 3：slot_active/ramoops_pa/len/rng_seed 尾追加 56B→232B）。
+pub const HANDOFF_VERSION: u32 = 3;
 
 /// 分段描述符数上限（A1-3b §3.2.1）：32×16B + 176B 头 = 688B < 4KiB——
 /// handoff 单页自含的执法点；越顶 = 递送面违约。
 pub const INIT_SEGS_MAX: usize = 32;
 
 /// 交接结构尺寸（v2 = 176B 头；kernel 侧 const assert 同值）。
-pub const HANDOFF_SIZE: u64 = 176;
+pub const HANDOFF_SIZE: u64 = 232;
 
 /// 分段描述符尺寸（16B：pa + len 双 u64）。
 pub const INIT_SEG_SIZE: u64 = 16;
@@ -59,6 +60,7 @@ pub const INIT_SEG_SIZE: u64 = 16;
 // ---- 布局常量（自相对契约按 version 分派用）----
 
 /// v2 头长：描述符数组基址偏移（meas_root/sig_slot 尾追加后）。
+pub const SEGS_BASE_OFF_V3: u64 = 232;
 pub const SEGS_BASE_OFF_V2: u64 = 176;
 /// v1 头长：描述符数组基址偏移（旧装载器照跑——双向兼容的版本门控）。
 pub const SEGS_BASE_OFF_V1: u64 = 128;
@@ -143,7 +145,9 @@ pub fn init_segs_gate<S: SegRaw>(
         return if init_segs_pa == 0 { Some(()) } else { None };
     }
     // 同页自相对契约：数组基址随头按 version 分派。
-    let base_off: u64 = if version >= 2 {
+    let base_off: u64 = if version >= 3 {
+        SEGS_BASE_OFF_V3
+    } else if version == 2 {
         SEGS_BASE_OFF_V2
     } else {
         SEGS_BASE_OFF_V1
@@ -221,14 +225,14 @@ mod tests {
     #[test]
     fn test_protocol_constants_frozen() {
         assert_eq!(HANDOFF_MAGIC, 0x4252_5948); // LE 读出 ASCII "BRYH"
-        assert_eq!(HANDOFF_VERSION, 2);
+        assert_eq!(HANDOFF_VERSION, 3);
         assert_eq!(INIT_SEGS_MAX, 32);
-        assert_eq!(HANDOFF_SIZE, 176);
+        assert_eq!(HANDOFF_SIZE, 232);
         assert_eq!(INIT_SEG_SIZE, 16);
-        // 单页自含执法点：32×16 + 176 = 688 < 4096。
+        // 单页自含执法点：32×16 + 232 = 744 < 4096。
         assert_eq!(
             INIT_SEGS_MAX as u64 * INIT_SEG_SIZE + HANDOFF_SIZE,
-            688
+            744
         );
         assert!(INIT_SEGS_MAX as u64 * INIT_SEG_SIZE + HANDOFF_SIZE < 4096);
         // v1 布局同自含（128B 头 + 512 = 640 < 4KiB）。
@@ -257,7 +261,7 @@ mod tests {
             (ok_pa, 0xFEED_D00D, 1, false),
             (ok_pa, 0, 0, false),
             // 版本不识别（>v2）→ None：fail-safe 降级既有路。
-            (ok_pa, HANDOFF_MAGIC, 3, false),
+            (ok_pa, HANDOFF_MAGIC, 4, false),
             (ok_pa, HANDOFF_MAGIC, u32::MAX, false),
             // 对齐拒：x0 非 8 对齐（页对齐但差 4——最易混形）。
             (ok_pa + 4, HANDOFF_MAGIC, 2, false),
@@ -269,7 +273,7 @@ mod tests {
             (RB - 8, HANDOFF_MAGIC, 2, false),
             // 顶界：end = x0+176 恰 ≤ RT 过；end > RT 拒（半开窗）。
             (RT - HANDOFF_SIZE, HANDOFF_MAGIC, 2, true),
-            (RT - HANDOFF_SIZE + 8, HANDOFF_MAGIC, 2, false),
+            (RT - HANDOFF_SIZE + 8, HANDOFF_MAGIC, 4, false),
         ];
         for &(x0, m, v, want) in cases {
             assert_eq!(probe_gate(x0, m, v, RB, RT), want, "x0={:#x}", x0);
