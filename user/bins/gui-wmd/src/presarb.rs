@@ -1,3 +1,8 @@
+// 孤儿文件（不参与编译）——保留供历史参考，待归档
+// 云桌面多客户端架构刀（A 面 present 域单飞仲裁）终局否决、全量回退后
+// 留在树中的死文件：gui-wmd lib.rs 已无 mod presarb。完整实现存
+// git 8a0065f10 可取回；定谳见
+// .agents/notes/rejected/2026-11-20-云桌面多客户端架构根治.md。
 //! presarb —— present 域单飞仲裁（云桌面反复卡死根治刀 · 架构面 A）。
 //!
 //! **缺陷本体**：guifbd 的 present 域是单客户端时代几何——`held` 别名表
