@@ -1200,6 +1200,10 @@ test-host:
     # 单源复用/storage 三键域界+atomicity 收窄；params/storage 域界执法
     # 经 to_lib_val 转换桥复用 lib check_boot_params/need_u32 单源——零
     # 第二套词表/域界文案；parity 21 拒面语料单点变异对拍逐字全等）。
+    # 二刀第三段：[product.defaults.locale] i18n 八键执法（languages
+    # BCP 47 手写段匹配器+1..=8 帽+大小写不敏感查重/timezone IANA 段形/
+    # region·regulatory_domain ISO 3166-1 alpha-2/calendar 等四枚举词表；
+    # parity 20 拒面语料 + BCP47 accept/拒梯分支对齐 + 八键全席正面）。
     # 独立小工作区，须显式 --target {{host}}。Python 件不退役——CLI 对拍
     # oracle + gensourceindex --preset import 面单源。
     cargo test --manifest-path tools/berryassemble/Cargo.toml --target {{host}}
