@@ -16,7 +16,7 @@
 # bash tools/fwcfg-check.sh）。
 
 version = 1
-updated = "2026-11-17"
+updated = "2026-11-20"
 namespace = "opt/berry/"
 
 # —— rootfs 递送族（file / cpio 字节流；两键并在 rootfs0 优先）——
@@ -154,6 +154,13 @@ kind = "string"
 injectors = ["tools/bench.py（--trace-dual off 臂，string=0）"]
 consumer = "kernel/src/telemetry.rs（记录面开关）"
 polarity = "恰 1 字节 '0'=关；缺席/他值=开（默认面零漂移；计数器族不随关）"
+
+[[keys]]
+name = "sbench"
+kind = "string"
+injectors = ["tools/bench.py（run_icount icount 族 qemu_cmd 恒注 string=1，默认 sbench=True；trace-dual 两臂 sbench=False 红线禁递——TRACE_CAP 证书面 = 前调度器纪元项）"]
+consumer = "kernel/src/bench.rs 调度器纪元基准门 SBENCH_PROBE_NAME（在位才 spawn switch_pair 测量对；值面不解析——键在即全配置，pilat 同款）"
+polarity = "在位 = switch_pair 行必出（基线面恒全八行）；缺席 = 仅缺 switch_pair 行，BENCH ok n=8 trailer 恒发"
 
 [[keys]]
 name = "rwake"
