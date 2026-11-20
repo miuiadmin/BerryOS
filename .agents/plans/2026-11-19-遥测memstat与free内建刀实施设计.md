@@ -96,7 +96,7 @@ D5 .agents 批：挂账 #3 兑现注记（plans/2026-11-17-命令行终端与she
 
 ## 挂账移交（本刀显式不做）
 
-1. SwitchRec/WakeRec 环读口（op=2 起按落地序取号）；内核唤醒记账 §9 kind/options→Handle 形与现行 (op,buf,len) 形的收口裁决随其刀（本刀不动 §9 不引入 handle 语义——裁决 13）；SwitchRec 24B size 断言补齐随其刀。
+1. SwitchRec/WakeRec 环读口（op=2 起按落地序取号）；内核唤醒记账 §9 kind/options→Handle 形与现行 (op,buf,len) 形的收口裁决随其刀（本刀不动 §9 不引入 handle 语义——裁决 13）；SwitchRec 24B size 断言补齐随其刀。（兑现注记：op=2 已落——[环读口刀谱](2026-11-19-遥测环读口op2刀实施设计.md)。）
 2. MemstatRec 细域扩展（slab_pages/pcp_pages/discardable_pages/wired_pages——现内核零实现源；补真源后走新 op 值或尾追域）。
 3. 0x07 INFO_KMEM_STATS(6) 投影导出（ipc 刀——届时引用本案 MemstatRec 单源形状）。
 4. free 旗标族（-b/-k/-m/-g/-h）与 --json（cli-suite 外部 free [-h|--json] 面——shell设计 §3 梯队二）；vmstat/btop。

@@ -1162,6 +1162,16 @@ test-host:
     # bin（先编后用 + cargo-target 钉位）；Python 件不退役——CLI 对拍
     # oracle + berry_assemble import 面单源（--preset 让位）。
     cargo test --manifest-path tools/gensourceindex/Cargo.toml --target {{host}}
+    # W1（彻底 Rust 化轨道 b 层 #6 刀序第六位首刀）：berryassemble Rust 件
+    # lib 纯面测试——boot-params 词表执法+序列化（三键 v1/u32 恰界/intent
+    # 六档/越帽 32/schema=1 头+字典序键值行黄金形）/ kernel 锚形（name@
+    # sha256:<64hex> + 大写归一 + 拒梯）/ 装配反回滚门（u32 域界+PR≤level
+    # 两臂）/ platform level 单源读器。tests/parity.rs Python 现役件真跑
+    # oracle 对拍（serialize 字节恒等 + validate_platform_revision 拒面
+    # 文案全等 + ANCHOR_RE accept/拒梯 + abi.toml 真源同读 + 坏源分支）。
+    # 独立小工作区，须显式 --target {{host}}。Python 件不退役——CLI 对拍
+    # oracle + gensourceindex --preset import 面单源。
+    cargo test --manifest-path tools/berryassemble/Cargo.toml --target {{host}}
     # W1 接线（SEC-02 A2 同款纪律）：berry_assemble 门禁自检——V13 组装器
     # （ADR #82「组装不 fork」product.toml 校验/dry-run 计划/装配反回滚门）
     # 落地时自称 51 腿绿但从未接线 test-host：有 selftest 零自动执法 =
