@@ -2387,6 +2387,115 @@ fn run_rootfs_child(console: Handle) {
                             Err(()) => eco_skip(b"vprobe spawn"),
                         }
                     }
+                } else if name == "bin/devmgr" {
+                    // 驱动子系统收口刀（devmgr v1 接线——devmgr v1 笔记契约
+                    // 「授窗 + gift」兑现；smoke 标记面按接线约束不加，现役
+                    // 断言链零漂移）：MMIO 槽枚举 + 驱动匹配 + 服务状态报告的
+                    // 观察件，跑完即退自检件——vprobe 同款 spawn + 阻塞 reap。
+                    // 窗 = H_MMIO 经 SpawnSpec::mmio_vmo 授能（vprobe 同款，
+                    // EL0 永不自造物理窗）；通道 = gift[2] 递 ps 查询端（libc
+                    // gift2_h——账本行名 × ALIVE 是 v1 无 /svc 命名空间的现役
+                    // 等价物），本侧服务一笔 PS_LIST（bc_run_sub 同款收发）。
+                    // 账本不入册（hexyl/vprobe 同例——18 行恰满 256B 帧帽，
+                    // 零漂移）；退出码不判（vprobe 同口径——窗几何错 devmgr
+                    // 自打诊断行后 exit 1，报告面自足）。mkcpio 名序本条目在
+                    // bsh 与 hexyl 之间到访：预拉族（vblk/vnet/PM 双服务/
+                    // guifbd/inputd/fsmgr）此刻皆已入账，报告 ✓/✗ 有真值；
+                    // vprobe/hello 尚未起且不在驱动表内，无告警面。窗口缺席
+                    // = 可见降级不 spawn（vprobe 同款防御）。
+                    let mut msz = 0u64;
+                    if berry_vmo_get_size(H_MMIO, &mut msz) != 0 {
+                        eco_skip(b"mmio absent");
+                    } else {
+                        let (q_a, q_b) = channel_pair();
+                        match spawn_rootfs_elf(
+                            H_ROOTFS,
+                            &SpawnSpec {
+                                name: name.as_bytes(),
+                                data_off,
+                                data_len,
+                                stdout: console,
+                                stack_pages: 16, // musl std 小程序（ps/berryctl 同档）
+                                stdin_feed: Some(&[]), // gift[1] 占位（gift[2] 前置断言——vblk 同款）
+                                stdin_handle: None,
+                                args: &[],
+                                extra_gifts: &[q_b], // → env 块 gift[2]（devmgr 查询端）
+                                mmio_vmo: Some(H_MMIO),
+                                mmio_va: VIRTIO_MMIO_VA,
+                                intent: 0,
+                                force_eager: false,
+                                env: &[],
+                            },
+                        ) {
+                            Ok(child) => {
+                                // ① 收请求（严格串行单请求；富余 handle 收口
+                                // 丢弃——bc_run_sub 同款。帽 60s：svcmgr 顺序
+                                // 走到此处即服务，慢而活着不误杀；devmgr 侧
+                                // 自有 30s RPC 帽，先到先收无竞速面）。
+                                const DM_CAP_NS: u64 = 60 * 1_000_000_000;
+                                let mut msg = [0u8; 256];
+                                let mut hh = [0 as Handle; 6];
+                                let mut nb = msg.len();
+                                let mut nh = hh.len();
+                                let ok = loop {
+                                    let s = berry_channel_recv(
+                                        q_a,
+                                        msg.as_mut_ptr(),
+                                        &mut nb,
+                                        hh.as_mut_ptr(),
+                                        &mut nh,
+                                    );
+                                    if s == 0 {
+                                        for i in 0..nh {
+                                            let _ = berry_handle_close(hh[i]);
+                                        }
+                                        break nh == 0
+                                            && psp::parse_request(&msg, nb) == Some(psp::OP_PS_LIST);
+                                    }
+                                    if s != BERRY_ERR_AGAIN {
+                                        trap();
+                                    }
+                                    let mut obs = 0u64;
+                                    if berry_object_wait_one(
+                                        q_a,
+                                        SIGNAL_READABLE,
+                                        now() + DM_CAP_NS,
+                                        &mut obs,
+                                    ) != 0
+                                    {
+                                        eco_note(console, b"devmgr req");
+                                        break false;
+                                    }
+                                };
+                                // ② 表应答（encode_table_reply 单源——bc 面
+                                // 共用；畸形/超帽 → ST_BAD，devmgr 侧降级
+                                // unknown 不死）。
+                                let mut rep = [0u8; 256];
+                                let rl = match if ok { encode_table_reply(&mut rep) } else { None } {
+                                    Some(l) => l,
+                                    None => bad_reply(&mut rep),
+                                };
+                                send_retry(q_a, rep.as_ptr(), rl);
+                                // ③ 阻塞 reap（vprobe 同款——枚举报告已由
+                                // devmgr 自打到 console，reap 只收尸；Err →
+                                // 降级行不阻 walk）。
+                                if child.reap().is_err() {
+                                    eco_skip(b"devmgr reap");
+                                }
+                                if berry_handle_close(q_a) != 0 {
+                                    trap();
+                                }
+                            }
+                            Err(()) => {
+                                // Err 全在 env send 前——q_b 未被 take，两新鲜
+                                // 端显式回收防表槽泄漏（vblk 同款）。
+                                if berry_handle_close(q_b) != 0 || berry_handle_close(q_a) != 0 {
+                                    trap();
+                                }
+                                eco_skip(b"devmgr spawn");
+                            }
+                        }
+                    }
                 } else if name.starts_with("app/") && name.ends_with(".bap") {
                     // app-0 a-2：app 包整条目收集（'a'<'b' 排序在一切 bin/
                     // 前——收集完 bin/ arms 才轮到，启动批在主走查毕统一走）。
