@@ -64,6 +64,8 @@ use berry_virtio as vio;
 // A-4：服务协议 + env 块 gift[2] 服务端端（fsmgr 同槽惯例）。
 use berry_blkproto::{encode_reply, parse_request, Req, SECTOR_SZ, ST_BAD, ST_OK, ST_RANGE};
 use berry_libc::io::gift2_h;
+// P0-2 刀 2：分区表探测（GPT/MBR 解析纯函数——读盘经闭包注入 blk_op）。
+use berry_partition::PartitionKind;
 
 // 弹道不变量：协议扇区长度 == DMA 描述符长度（serve() 读向切片取 proto 侧
 // `SECTOR_SZ`、blk_op 的 desc 长度取 virtio 侧 `BLK_SECTOR_SZ`——两 crate 零
@@ -414,6 +416,53 @@ fn main() {
     if got != &LBA1_PATTERN[..] {
         println!("vblk: LBA1 读回不符");
         trap();
+    }
+    // 存储栈 P0-2 刀 2：分区表探测（berry-partition::parse——读盘经闭包
+    // 注入：blk_op 单扇区 IN + IOB bounce 拷出；LBA↔盘容对账归消费侧，
+    // 表声称越盘容即 Reader 拒）。结果只打日志（教学可见性：vblk 从此
+    // 看得见盘上的分区布局）；解析失败/空表**不杀服务**（印章盘 =
+    // superfloppy 形合法面，按整盘服务继续；多分区按 RPC 暴露归 v2）。
+    let parts = berry_partition::parse(
+        |lba, buf| -> berry_partition::Result<()> {
+            if lba >= cap {
+                return Err(berry_partition::Error::Reader);
+            }
+            blk_op(&d, regs, vio::BLK_T_IN, lba, None);
+            // SAFETY: 单线程独占窗；blk_op 已把数据读回 IOB[16..528]。
+            let iob: &[u8; 544] = unsafe { &*core::ptr::addr_of!(IOB) };
+            buf.copy_from_slice(&iob[vio::BLK_HDR_SZ..vio::BLK_HDR_SZ + buf.len()]);
+            Ok(())
+        },
+        SECTOR_SZ as u64,
+    );
+    match parts {
+        Ok(ps) if !ps.is_empty() => {
+            // 同表恒同面（0xEE 即整面转 GPT）——首条判 scheme 即可。
+            let scheme = if matches!(ps[0].kind, PartitionKind::Gpt(_)) {
+                "GPT"
+            } else {
+                "MBR"
+            };
+            // index = 表内槽位号（GPT 条目号与 UEFI 工具显示对齐、MBR
+            // 1..=4）；LBA 域闭区间含端（库语义原样转述）。
+            print!("vblk: {} {} partitions:", scheme, ps.len());
+            for p in &ps {
+                match (&p.kind, p.name.as_deref()) {
+                    (PartitionKind::Gpt(_), Some(n)) => {
+                        print!(" [{}] {} {}-{}", p.index, n, p.first_lba, p.last_lba)
+                    }
+                    (PartitionKind::Gpt(_), None) => {
+                        print!(" [{}] {}-{}", p.index, p.first_lba, p.last_lba)
+                    }
+                    (PartitionKind::Mbr(t), _) => {
+                        print!(" [{}] type={:#04x} {}-{}", p.index, t, p.first_lba, p.last_lba)
+                    }
+                }
+            }
+            println!();
+        }
+        Ok(_) => println!("vblk: no partitions（空表，按整盘服务）"),
+        Err(e) => println!("vblk: 分区表解析 {}（按整盘服务）", e),
     }
     println!("VBLK ok cap={} slot={}", cap, slot);
     // A-4：自验毕即转常驻服务（A-3 的 main 返回 = exit(0) + svcmgr reap

@@ -113,6 +113,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "berry-hal"
+version = "0.2.0"
+dependencies = [
+ "berry-virtio",
+]
+
+[[package]]
 name = "berry-jobs"
 version = "0.2.0"
 
@@ -173,6 +180,13 @@ version = "0.2.0"
 [[package]]
 name = "berry-pwproto"
 version = "0.2.0"
+
+[[package]]
+name = "berry-rtc"
+version = "0.2.0"
+dependencies = [
+ "berry-sys",
+]
 
 [[package]]
 name = "berry-signal"
@@ -247,6 +261,13 @@ name = "berry-virtio"
 version = "0.2.0"
 dependencies = [
  "berry-gpuproto",
+]
+
+[[package]]
+name = "berry-watchdog"
+version = "0.2.0"
+dependencies = [
+ "berry-sys",
 ]
 
 [[package]]

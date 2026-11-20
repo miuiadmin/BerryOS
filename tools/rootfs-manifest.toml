@@ -64,6 +64,11 @@ version = 1
 "bin/cp" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/cp"
 "bin/cut" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/cut"
 "bin/date" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/date"
+# devmgr v1（驱动子系统研究报告 §4.2 交付 1.1 最小先行版）：MMIO 槽枚举
+# + 驱动匹配 + 服务状态报告。svcmgr 拉起链零触碰（cpio_find 点名制不识
+# 即零扰动——v1 由授窗拉起者/后续接线刀消费）；bsh 手跑无 MMIO 窗不适用
+# （窗契约 = vprobe 同款 SpawnSpec::mmio_vmo 授能）。
+"bin/devmgr" = "cargo-target/aarch64-unknown-linux-musl/release/devmgr"
 "bin/df" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/df"
 "bin/du" = "bins/uu/cargo-target/aarch64-unknown-linux-musl/release/du"
 "bin/dpgx" = "cargo-target/aarch64-unknown-linux-musl/release/dpgx"

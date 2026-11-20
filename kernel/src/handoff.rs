@@ -113,11 +113,16 @@ pub struct BerryHandoff {
     pub meas_root: [u8; 32],      // @128 度量根留位（V10 预埋，ADR #82 附录一；全零 = 未度量）
     pub sig_slot_off: u64,        // @160 签名槽偏移留位（V10 预埋，同上；零 = 未占用，off/len 同判）
     pub sig_slot_len: u64,        // @168 签名槽长度留位（V10 预埋，同上；零 = 未占用）
+    pub slot_active: u32,         // @176 G0 刀 3：选中槽（0=A/1=B；0xFFFFFFFF=旧单槽）
+    pub _r2: u32,                 // @180 保留零
+    pub ramoops_pa: u64,          // @184 Ramoops 持久区 PA（0=未保留）
+    pub ramoops_len: u64,         // @192 Ramoops 区长（0=未保留）
+    pub rng_seed: [u8; 32],       // @200 硬件随机种子（全零=未采集）
 }
 
 /// 布局执法表（与 berryboot 侧逐行相同——两侧同表，任一侧漂移编译期炸响）。
 const _: () = {
-    assert!(size_of::<BerryHandoff>() == 176);
+    assert!(size_of::<BerryHandoff>() == 232);
     assert!(size_of::<InitSeg>() == 16);
     assert!(offset_of!(InitSeg, pa) == 0);
     assert!(offset_of!(InitSeg, len) == 8);
@@ -146,6 +151,10 @@ const _: () = {
     assert!(offset_of!(BerryHandoff, meas_root) == 128);
     assert!(offset_of!(BerryHandoff, sig_slot_off) == 160);
     assert!(offset_of!(BerryHandoff, sig_slot_len) == 168);
+    assert!(offset_of!(BerryHandoff, slot_active) == 176);
+    assert!(offset_of!(BerryHandoff, ramoops_pa) == 184);
+    assert!(offset_of!(BerryHandoff, ramoops_len) == 192);
+    assert!(offset_of!(BerryHandoff, rng_seed) == 200);
     // W3-Q15：布局与 hofface 协议常量互检（尺寸单源不漂移）。
     assert!(HANDOFF_SIZE == 232);
     assert!(INIT_SEGS_MAX == 32);

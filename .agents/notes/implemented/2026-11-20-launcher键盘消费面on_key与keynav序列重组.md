@@ -16,7 +16,7 @@ Status: implemented
 
 最小面三件，全部落在 berry-launcher：
 
-- **keynav.rs 新模块**（纯逻辑）：ESC 序列重组单步状态机 `seq_step(&mut kseq, code) -> Option<KeyNav>`——三态（基态/已收 ESC/已收 ESC `[`），final `A`/`B` 产 `PagePrev`/`PageNext`；失序、表外 final、基态非 ESC 字节一律吞（bsh editor「非 A/B finals 一律吞」同纪律）；连发 ESC 折算为「前帧裸吞 + 本帧新序列头」。host 单测 6 例（完整序列/连按/基态吞/裸 ESC 复原/双 ESC/表外 final）。
+- **keynav.rs 新模块**（纯逻辑）：ESC 序列重组单步状态机 `seq_step(&mut kseq, code) -> Option<KeyNav>`——三态（基态/已收 ESC/已收 ESC `[`），final `A`/`B` 产 `PagePrev`/`PageNext`；失序、表外 final、基态非 ESC 字节一律吞（bsh editor「非 A/B finals 一律吞」同纪律）；连发 ESC 折算为「前帧裸吞 + 本帧新序列头」。host 单测 12 例 = 本刀 6 例（完整序列/连按/基态吞/裸 ESC 复原/双 ESC/表外 final）+ 同日测试补强对拍六景（UP/DOWN 完整序列逐帧态/DOWN×2/失序 ESC→X→A/基态 A/ESC 随机字节后 `[`→A）。
 - **frameloop `on_key` 覆写**：调 `keynav::seq_step` 重组，动作 = 桌面 pager 翻页（`snap_to` + `rehang_view`，on_msg 翻页/nav home 键同款收尾；wake 归 pump 键帧既有语义）。三重门：系统页在树（`tabs.cur != 0`——桌面被 sys 页不透明底盖住）吞；覆盖态（wmd 表可见非自 APP 窗在场）吞——v1 无合成器，翻页重画会把桌面画到 app 像素上面；边界页（page 0 按 UP/末页按 DOWN）无操作。
 - **`covered_by_app` 判据**（LoopHost 固有方法）：`on_covered_tap` 的表查询面同款裁剪（TABLE_GET + `covering_app_win`），只判在场不收盖；查表失败 fail-open 同款。
 

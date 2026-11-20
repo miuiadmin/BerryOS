@@ -140,4 +140,77 @@ mod tests {
         // 复位后新序列不受污染。
         assert_eq!(run(&mut k, b"\x1b[A"), vec![KeyNav::PagePrev]);
     }
+
+    // —— 对拍六景（输入测试补强：一景一测，逐帧态钉板，与上方六测
+    // 互补——上方盖双 ESC/表外 final 族，本段盖指定序列逐字形态）——
+
+    /// 景 1：ESC → `[` → A（UP）完整序列——三帧逐帧态推进，终帧恰出
+    /// PagePrev 并复位基态。
+    #[test]
+    fn scene_up_complete_sequence() {
+        let mut k = KSEQ_BASE;
+        assert_eq!(seq_step(&mut k, 0x1b), None);
+        assert_eq!(k, KSEQ_ESC);
+        assert_eq!(seq_step(&mut k, b'['), None);
+        assert_eq!(k, KSEQ_ESC_BRACKET);
+        assert_eq!(seq_step(&mut k, b'A'), Some(KeyNav::PagePrev));
+        assert_eq!(k, KSEQ_BASE);
+    }
+
+    /// 景 2：ESC → `[` → B（DOWN）完整序列——终帧恰出 PageNext 并复位。
+    #[test]
+    fn scene_down_complete_sequence() {
+        let mut k = KSEQ_BASE;
+        assert_eq!(seq_step(&mut k, 0x1b), None);
+        assert_eq!(k, KSEQ_ESC);
+        assert_eq!(seq_step(&mut k, b'['), None);
+        assert_eq!(k, KSEQ_ESC_BRACKET);
+        assert_eq!(seq_step(&mut k, b'B'), Some(KeyNav::PageNext));
+        assert_eq!(k, KSEQ_BASE);
+    }
+
+    /// 景 3：连续两次 ESC → `[` → B（DOWN×2）恰出两个 PageNext——第一
+    /// 序列终帧复位正确性（第二序列不被残态污染）。
+    #[test]
+    fn scene_down_twice_two_actions() {
+        let mut k = KSEQ_BASE;
+        assert_eq!(run(&mut k, b"\x1b[B\x1b[B"), vec![
+            KeyNav::PageNext,
+            KeyNav::PageNext,
+        ]);
+        assert_eq!(k, KSEQ_BASE);
+    }
+
+    /// 景 4：失序 ESC → X → A——X 表外字节吞掉并复位，随后 A 落基态
+    /// 重组失败（非 ESC 开头一律吞），全程零动作。
+    #[test]
+    fn scene_misordered_esc_x_then_a() {
+        let mut k = KSEQ_BASE;
+        assert_eq!(seq_step(&mut k, 0x1b), None);
+        assert_eq!(k, KSEQ_ESC);
+        assert_eq!(seq_step(&mut k, b'X'), None); // 表外字节：吞 + 复位
+        assert_eq!(k, KSEQ_BASE);
+        assert_eq!(seq_step(&mut k, b'A'), None); // 基态 A：重组失败吞
+        assert_eq!(k, KSEQ_BASE);
+    }
+
+    /// 景 5：基态直接收 A（非 ESC 开头）——吞，态不动。
+    #[test]
+    fn scene_base_a_swallowed() {
+        let mut k = KSEQ_BASE;
+        assert_eq!(seq_step(&mut k, b'A'), None);
+        assert_eq!(k, KSEQ_BASE);
+    }
+
+    /// 景 6：基态收 ESC 后跟随机字节再收 `[` → A——随机字节吞复位后，
+    /// `[` 与 A 均落基态吞，整流零动作（字节取样含字母/数字/零字节/
+    /// 高位字节，均非 `[` 非 ESC）。
+    #[test]
+    fn scene_esc_random_then_bracket_a() {
+        for &rnd in b"Qz7A\x00\xff\x7f" {
+            let mut k = KSEQ_BASE;
+            assert_eq!(run(&mut k, &[0x1b, rnd, b'[', b'A']), vec![]);
+            assert_eq!(k, KSEQ_BASE, "rnd byte {rnd:#04x} 须吞后复位");
+        }
+    }
 }

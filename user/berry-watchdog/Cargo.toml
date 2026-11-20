@@ -1,0 +1,20 @@
+[package]
+name = "berry-watchdog"
+version.workspace = true
+edition = "2021"
+# 驱动波 2 清偿刀（.agents/research/2026-11-18-驱动子系统综合研究报告.md
+# P1-10「硬件看门狗完全缺失」的 v1 骨架件）：QEMU virt 机无 WDT 设备
+# （goldfish/PL031 系均未挂），真硬件 WDT 驱动是后续刀——本刀先落纯软件
+# 超时窗：new(timeout_ms) 装表 + kick() 喂狗（内部取单调钟锚定）+
+# is_expired(now_us) 查询（注入时刻——库零 IO 纪律同 berry-partition 读盘
+# 闭包）。喂狗取时经 berry-sys CLOCK_MONOTONIC 单源 syscall（REALTIME 绝
+# 不作看门狗时基——壁钟可跳）。形态 = berry-softime 家族 cfg_attr
+# (not(test), no_std) + host 测试；syscall 面 cfg(not(test))（berry-fsclient
+# 纪律），host 测试注入 thread-local 假钟（每测试线程独立，并行零竞争）。
+# 真消费接线（监督进程主循环喂狗）挂账后续刀，本刀纯新增零行为变化。
+description = "BerryOS software watchdog skeleton: pure timeout-window model (kick/is_expired) on monotonic-clock microseconds"
+license = "Apache-2.0"
+
+[dependencies]
+# syscall 单源（CLOCK_MONOTONIC + berry_clock_read 镜像）——禁第二套 ABI 镜像。
+berry-sys = { path = "../berry-sys" }

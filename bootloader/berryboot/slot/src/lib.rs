@@ -234,7 +234,10 @@ pub fn crc32(data: &[u8]) -> u32 {
 
 /// G0 刀 2 防回滚接口（纯面）：候选 rollback_version 低于在册值 → 拒
 /// （false）。在册值取两槽 max——跨槽全局反降级（design §2.1 Anti-
-/// rollback Index 语义）。v1 调用方：验签面比对 manifest 侧版本位。
+/// rollback Index 语义）。
+/// G0G1 review P3 清偿注（2026-11-20）：v1 无 OTA/manifest 侧版本位可比——
+/// 调用面留 G2 OTA 刀接线（pkgmgr 递 bundle rollback_version 为候选）。
+/// berryboot 验签面消费时点=sig verify 后 handoff 填槽前（结构预埋）。
 pub fn rollback_ok(ctl: &BootControl, candidate: u32) -> bool {
     let floor = ctl.slots[0].rollback_version.max(ctl.slots[1].rollback_version);
     candidate >= floor

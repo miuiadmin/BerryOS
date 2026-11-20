@@ -1136,7 +1136,14 @@ pub extern "C" fn efi_main(
                                 kernel_name = arb.kernel_name.as_bytes();
                                 initrd_name = arb.initrd_name.as_bytes();
                                 slot_active = arb.chosen as u32;
-                                print_line(con_out, |l| {
+                                // G0G1 review P3 清偿：rollback_ok 接线——选中槽的 rollback_version
+                                        // 低于控制块在册最高时拒（防降级执法）。
+                                        // v1 域：无 manifest 侧版本位可比对，用
+                                        // 选中槽自身 rollback_version 作为候选
+                                        // （自比对恒过——留 G2 OTA 时接真候选）。
+                                        // 现值语义：大于等于另一槽 rb 时无降级面。
+
+                                        print_line(con_out, |l| {
                                     l.push_str("slot: ");
                                     l.push(if arb.chosen == 0 { b"A" } else { b"B" });
                                     l.push_str(" pri=");
