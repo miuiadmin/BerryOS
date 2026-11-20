@@ -1,0 +1,10 @@
+[package]
+name = "berry-island"
+# G3 刀 13：灵动岛四态流体弹簧动画。
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
