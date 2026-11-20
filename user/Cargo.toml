@@ -146,11 +146,18 @@
 # research/2026-11-18-驱动子系统综合研究报告.md P0-2；读盘经注入闭包，
 # 库零 IO。单消费 = vblk 多分区暴露（下一刀接线）——host 测试经 justfile
 # test-host 显式行跑）。
+# 波 2 架构件：berry-hal（统一硬件抽象层——Mmio/IrqCtl/DmaAlloc/Clock
+# 四窄 trait + HalError 统一错误面，报告 §4.1 三面胶水缺口件 + §4.3 波
+# 2.2 DeviceCap 三铸件的用户态半边；virtio_impl = berry-virtio 偏移单源
+# 的 Mmio 实现——volatile 读写包装为安全接口 + 窗界检值不炸；BumpDmaAlloc/
+# VirtualClock 参考实现消费 alloc 面。与莓核 Wave 4 刀 4.1 的内核侧
+# berry-hal 同名异层。真消费面（vblk/vnet 接线）后续刀——host 测试经
+# justfile test-host 行跑）。
 members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-winplan", "berry-argv", "berry-strmem", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto", "berry-gpuproto", "berry-vdsoface", "berry-partition",
     "berry-termio",
     "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-layout", "berry-psproto", "berry-complete", "berry-tls", "berry-mmap", "berry-signal", "berry-fbcon", "berry-gfx", "berry-poll",
-    "berry-jobs", "berry-guiproto", "berry-ui", "berry-appshell", "berry-softime", "berry-appproto", "berry-cbox", "berry-pwproto", "berry-lifecycle", "berry-crypto", "berry-spawngeo", "berry-driver", "bins/abuser", "bins/berry-verify", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild", "bins/dpgp", "bins/policydemo"]
-exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet", "bins/apptomb"]
+    "berry-jobs", "berry-guiproto", "berry-ui", "berry-appshell", "berry-softime", "berry-appproto", "berry-cbox", "berry-pwproto", "berry-lifecycle", "berry-crypto", "berry-spawngeo", "berry-driver", "berry-hal", "berry-rtc", "berry-watchdog", "bins/abuser", "bins/berry-verify", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild", "bins/dpgp", "bins/policydemo"]
+exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet", "bins/apptomb", "bins/devmgr"]
 
 # cbox 刀 2：berry-cbox（黑匣子账本纯函数 crate，「解析器即产品」——排液
 # 快照解码（镜像内核 cbox.rs 定宽表）/CBOX.LOG 行编解码（冻结字段序
