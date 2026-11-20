@@ -21,7 +21,7 @@ just berry-build          # host 独立 workspace，显式 --target <host>
 # target-dir 指 ~/.cargo-target 时，cargo/rustc 子进程对该目录 .d 写会
 # EPERM（shell 可写 rustc 被拒——四轮审计实抓）——跑测试换
 # CARGO_TARGET_DIR=/tmp/berry-test cargo test --release --target <host>。
-just berry doctor         # QEMU / 固件 / 镜像 / accel / fw_cfg 键注入报告 / 缺省数据盘推演（--json 含 fwcfg 数组与 data_disk 块）
+just berry doctor         # QEMU / 固件 / 镜像 / accel / fw_cfg 键注入报告 / 缺省数据盘推演含逐 profile BSHRC.CFG 在席（--json 含 fwcfg 数组与 data_disk 块）
 just berry home           # 打印 run 目录/数据盘/vars 持久位根（BERRY_HOME 覆写与 Windows 分支单源在此，justfile 消费）
 ```
 
@@ -49,6 +49,7 @@ Linux/Windows 分发链（wave5 实机化，产物落 `out/`）：Linux 侧 `too
 
 - `berry symbolize <elf>`——ELF64 零依赖符号化（cbox 刀 3）
 - `berry crash-log <fat 镜像>`——CBOX.LOG 黑匣子账本直读/指纹聚合（cbox 刀 3；fatcat.py 继任）
+- `berry bshrc --disk <盘> set|get|list|rm ...`——BSHRC.CFG 宿主写者族（export 刀挂账 #3；`--disk` 与 `--profile <id>`〔缺省 desktop〕互斥，旗标须在子动作前；缺省盘三级解析同 `BERRY_DATA_DISK`）。`set KEY=VALUE ...` 多对同批一次落盘；`get KEY` 打裸值（缺席 rc≠0）；`list` 打 KEY=VALUE 行（缺席空输出 rc 0）；`rm KEY` 删该键全部行。写端帽 fail-closed：键 1..=32B、单行 ≤126B、Entry ≤63 行、总量 ≤2048B 单簇、键值禁 CR·LF·NUL；env 通道帽（16 项/256B）投影软警走 stderr 不拒写。停机写纪律：活 berry 会话正用该盘时拒写（fsmgr 整读 FAT0 进 RAM，宿主写会被客机下次 commit 覆写——先 `device stop`；体系外手起 QEMU 无 meta 是残余风险；**会话以 BERRY_DATA_DISK 显式挂数的盘同样不可检**（meta 不记 env）——此形态请先自行停会话。）；berry 只复用不造盘（缺盘先 `just desktop`）。PATH/which 端到端例：`berry bshrc set PATH=/etc` → 客机 boot 后 `echo $PATH` 印 `/etc`、`run which mtab` 印 `/etc/mtab`（fsmgr 每 boot 预建件）。
 - `berry version`——版本面
 - `berry stats` / `berry record` / `berry play`——会话统计/录制/回放（速览 70-73 行详载）
 - `berry swipe ...`——swipe 别名（tap/key/text 同族，见 main.rs:81）

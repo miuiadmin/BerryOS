@@ -3,13 +3,13 @@
 Type: spec
 Status: active
 Updated: 2026-11-18
-Version: 2.1.0
+Version: 2.2.0
 
-一句话说明：`ui-sdk` 定义 BerryOS 面向系统与第三方开发者的完整客户端技术栈（`berry-gfx` v2、`berry-text`、`berry-ui` v2、`imed`、动态 `Vmar` 页堆与 `berry-sdk`）——以 $G^2$ 超椭圆抗锯齿与四阶 Vibrancy 光栅、SF 等价 UTF-8/CJK 矢量排印、一比一复刻 iOS 18 / iPadOS 18 的响应式组件树与零样板异步框架，彻底终结双轨控件分裂、廉价拼凑感与底层样板负担。
+一句话说明：`ui-sdk` 定义 BerryOS 面向系统与第三方开发者的完整客户端技术栈（`berry-gfx` v2、`berry-text`、`berry-ui` v2、`imed`、动态 `Vmar` 页堆与 `berry-sdk`）——深度融合 iOS 26/27 液态玻璃流体控件与 OpenHarmony 6.0 单节点双脏更新、安全区背景默认延伸、`LayoutPolicy`、`geometryTransition` 一镜到底及一多双栏架构，彻底终结样板负担与审美割裂。
 
 ## 背景
 
-如 [GUI 与 SDK 及启动模拟器全栈深研](../../research/2026-11-18-GUI与SDK及启动模拟器全栈深研.md) 第三节所揭示，现役客户端栈存在五大瓶颈：`berry-gfx` 仅支持 1-bit 透明键与逐像素标量 `put_px`；文字仅限 95 个 ASCII 1-bit 点阵字模且无输入法守护进程；`berry-ui` 原生 41 `ViewKind` 写死 1x 物理像素迫使业务转向 3,114 行 `pattern.rs` 双轨拼装，且受困于 `512` 节点、`64B` 文本、`8` 输入框与 `256KiB` 静态 BSS 堆硬帽；`berry-appshell` 事件循环锁死 2 枚句柄迫使终端等应用重写全套帧循环。依据 [图形合成与 SDK 及模拟器终态架构裁决](../../notes/proposed/2026-11-18-图形合成与SDK及模拟器终态架构裁决.md) 与 [全面复刻 iOS 18 视觉与流体交互范式裁决](../../notes/proposed/2026-11-18-全面复刻iOS18视觉与流体交互范式裁决.md)，本规格定义客户端五层 crate 族的内部总体契约；跨模块公共标准与像素级视觉参数见 [GUI 合成与 SDK 终态标准](../../../docs/GUI合成与SDK终态标准-v2.0.md) 及 [iOS 视觉与流体交互复刻标准](../../../docs/iOS视觉与流体交互复刻标准-v1.0.md)。
+如 [GUI 与 SDK 及启动模拟器全栈深研](../../research/2026-11-18-GUI与SDK及启动模拟器全栈深研.md) 第三节所揭示，现役客户端栈存在五大瓶颈：`berry-gfx` 仅支持 1-bit 透明键与逐像素标量 `put_px`；文字仅限 95 个 ASCII 1-bit 点阵字模且无输入法守护进程；`berry-ui` 原生 41 `ViewKind` 写死 1x 物理像素迫使业务转向 3,114 行 `pattern.rs` 双轨拼装，且受困于 `512` 节点、`64B` 文本、`8` 输入框与 `256KiB` 静态 BSS 堆硬帽；`berry-appshell` 事件循环锁死 2 枚句柄迫使终端等应用重写全套帧循环。依据 [图形合成与 SDK 及模拟器终态架构裁决](../../notes/proposed/2026-11-18-图形合成与SDK及模拟器终态架构裁决.md) 与 [融合 iOS 26/27 液态玻璃与 OpenHarmony 6 光场一镜到底架构裁决](../../notes/proposed/2026-11-18-融合iOS26至27液态玻璃与OpenHarmony6光场一镜到底架构裁决.md)，本规格定义客户端五层 crate 族的内部总体契约；跨模块公共标准与视觉光学参数见 [GUI 合成与 SDK 终态标准](../../../docs/GUI合成与SDK终态标准-v2.0.md) 及 [iOS 与鸿蒙融合液态玻璃及光场交互标准](../../../docs/iOS与鸿蒙融合液态玻璃及光场交互标准-v2.0.md)。
 
 ## 范围
 
@@ -59,12 +59,13 @@ L1–L3 全部保持 `#![no_std]` + `alloc` 纯内存计算与 100% 宿主机 `c
 2. **动态可扩展 Arena 与细粒度零虚拟 DOM 信号核（`Signal<T>` / `Computed<T>`）**：
    - 节点槽表与文本存储改由受控页块池承载（单 `Ui` 默认软预算 `4,096` 节点，按需平滑扩容；短文本 `≤ 48B` 内联 SSO，长文本走引用计数共享块池 `SharedStr`），彻底解除 `512` 节点、`64B` 文本、`8` 输入框与 `1024` 字形截断硬帽。
    - 提供轻量 `Copy` 代数句柄 `Signal<T>` 与按拓扑高度求值防毛刺的 `Computed<T>`（`Memo<T>`）：控件属性绑定信号后，修改 `sig.set(val)` 仅通过精确属性掩码（`PAINT_ONLY` vs `LAYOUT`）标脏订阅该信号的叶子节点及其脏区矩形（同帧多次修改自动批处理合并），无需手写命令式 `ui.set_text(id, ...)` 与外部镜像状态同步；同时保留 `.bui` 二进制 TLV 视图资产具名槽挂载能力以支撑毫秒级 UI 热重载。
-3. **完整约束布局与响应式断点**：
-   - `Flex`（`Row`/`Col`）完整实现 `flex_grow`、`flex_shrink`、`flex_basis`、`justify_content`（含 `SpaceBetween`/`SpaceAround`）、`align_items`、`gap` 与多行 `flex_wrap`；`Spacer` 即 `flex_grow: 1.0` 的标准弹性节点；
-   - `SafeArea` 容器自动消费合成器下发的四边 `Insets { status_top, nav_bottom, cutout_left, cutout_right, ime_bottom }`，支持背景色/列表内容贯通至屏幕物理边缘（Edge-to-Edge）而交互控件自动内缩避让；
-   - 内置标准窗口宽度断点 `WindowSizeClass`：`Compact (< 600vp)`、`Medium (600..840vp)`、`Expanded (>= 840vp)`，令同一份应用代码自适应手机竖屏（底部 `NavigationBar`）与平板/横屏桌面（侧边 `NavigationRail` + 双栏主从视图 `NavigationSplitView`）。
-4. **开放 `Widget` Trait、纯正 iOS 18 标准控件库与流体物理滚动**：
-   - 开放 `pub trait Widget { fn measure(&mut self, ...); fn layout(&mut self, ...); fn paint(&self, ...); fn on_event(&mut self, ...); fn semantics(&self, ...); }`，严格依据 [iOS 视觉与流体交互复刻标准](../../../docs/iOS视觉与流体交互复刻标准-v1.0.md) 打造纯正 UIKit/SwiftUI 等价控件库：支持随滚动折叠入 `ChromeMaterial` 毛玻璃的 `34pt` 大标题 `UINavigationBar`、`InsetGroupedList`（`10pt` 超椭圆分组卡 + 对齐正文起点的 `0.33pt` 极细分割线 + `29×29pt` 彩色圆角行首标）、按住圆球弹性拉伸的 `51×31pt` `UISwitch`、`UISegmentedControl`、底部 `ChromeMaterial` `UITabBar`、驱动父窗 `0.92x` 纵深微缩的 `UISheet`、背景全屏模糊浮出的 `UIContextMenu` 以及宽屏（`>= 600pt`）自动展开的 `UISplitView`。
+3. **OpenHarmony 6.0 沉浸式安全区默认延伸、三态 `LayoutPolicy` 与一多响应式断点**：
+   - `Flex`（`Row`/`Col`）与 `LazyVGrid` 完整实现弹性伸缩与懒加载网格；原生支持 OpenHarmony 6.0 三态尺寸策略 `LayoutPolicy::{MatchParent, WrapContent, FitAtIdealSize}`；
+   - **组件背景安全区默认延伸（Safe-Area Auto-Bleed）**：邻接状态栏或底部 Home 横条的根容器与导航层背景材质默认自动向外延伸铺满物理屏幕四边，而内部交互内容自动按合成器 `Insets` 内缩（支持 `ignore_safe_area(Edges)` 按边豁免），彻底消灭手工安全区垫块；
+   - 内置横向栅格断点（`xs < 320pt`、`sm 320..600pt`、`md 600..840pt`、`lg >= 840pt`）与七大自适应布局原语（拉伸、均分、占比、缩放、延伸、隐藏、折行）；`Navigation` 容器在 `xs/sm` 自动呈单栈推页，在 `md/lg` 自动裂变为左侧液态玻璃边栏加右侧内容双栏（支持配置未选中态默认占位页 `Placeholder`）。
+4. **开放 `Widget` Trait、iOS 26/27 液态玻璃控件库、`geometryTransition` 一镜到底与 `XComponent` 直通**：
+   - 开放 `pub trait Widget` 与高性能自绘直通节点 `XComponent`（等价于 OpenHarmony 6.0 `lockCanvas` 交换链槽，供终端字符格、3D 与媒体视图零缝嵌入组件树）；
+   - 严格依据 [iOS 与鸿蒙融合液态玻璃及光场交互标准](../../../docs/iOS与鸿蒙融合液态玻璃及光场交互标准-v2.0.md) 打造新一代标准控件库：随滚动折叠的 `34pt` 大标题导航栏、**随向下滚动自动流态收缩的悬浮液态玻璃胶囊 `TabBar` 与工具栏**、**底部拇指热区下沉搜索栏（Bottom-Reach Search）**、**从触发按钮轮廓原位液态生长的 `Alert` / `ContextMenu`**、**带边缘折射放大的文本选区放大镜 `Loupe`**、`0.33pt` 缩进细线 `InsetGroupedList`、按压液态拉伸 `51×31pt` `UISwitch` 以及一行声明 `.geometry_transition("id")` 即可跨页面连续形变的**一镜到底转场原语**。
    - **`VirtualList` 与 UIKit 原装物理滚动**：滚动容器严格实装 `UIScrollView` 对数橡皮筋越界公式 $d' = (1 - \frac{1}{0.55 d / D + 1}) D$、每毫秒 `0.998` 指数衰减惯性（Fling）与松手投射终点判定；`VirtualList` 仅实例化当前视口可见区加前后 1 屏缓冲区的行节点并循环复用槽位，支持 100,000 行数据在 `< 64` 活跃节点与 120fps 下丝滑滚动。
    - **完整手势竞技场**：原生支持 `Tap`、`DoubleTap`、`LongPress`（默认 500ms 触发 `ContextMenu` 预览）、全屏左边缘交互式侧滑返回（`InteractivePop`）、方向锁定 `Pan/Drag`、`Swipe` 与双指 `Pinch/Scale`。
 

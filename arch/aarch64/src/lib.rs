@@ -109,6 +109,12 @@ pub fn asid_bits() -> u32 {
     mmu::asid_bits()
 }
 
+/// F0-2：返回双核当前在硬件 `TTBR0_EL1` 上激活的 ASID 快照（供 ASID
+/// 分配器钉死防撞）。
+pub fn active_cpu_asids() -> [u16; 2] {
+    mmu::active_cpu_asids()
+}
+
 /// 北极星审计修（2026-11-15）：TTBR0 ASID 位域环回探针——boot 单线程窗调
 /// 一次（`rust_main` 早期、任何任务地址空间激活之前）。位域不环回（QEMU
 /// HVF 形虚拟化）⇒ 按号 TLB 语义不可依托，P0-3 免失效激活档整档退化全量
@@ -121,9 +127,29 @@ pub unsafe fn probe_asid_field_roundtrip() {
     unsafe { mmu::probe_asid_field_roundtrip() };
 }
 
-/// 北极星审计修：探针结果只读透传（关卡行/诊断面）。
+/// 北极星审计修：探针结果只读透传（关卡行/诊断面用）。
 pub fn asid_tlb_untrusted() -> bool {
     mmu::asid_tlb_untrusted()
+}
+
+// ---- W3-Q104（03 号分派审计机会五 5b）：SYSCALLS 派发表固化 ----
+
+/// W3-Q104：把 SYSCALLS 派发表所在 2MiB 块拆 4KiB 叶、**仅表页本体**置
+/// EL1 只读（W^X 分派面固化；表整页独占，不冻邻页——布局漂移教训见
+/// `mmu::freeze_syscalls_table` 头注）。窗位合同：`syscall::install` 毕、
+/// smp_bringup/arm_slice/enable_irq 前的 boot 单线程 DAIF 屏蔽窗调用一次
+///（详见 `mmu::freeze_syscalls_table`）。
+///
+/// # Safety
+/// 见 `mmu::freeze_syscalls_table`（boot 单线程窗；只动 boot 页表项）。
+pub unsafe fn freeze_syscalls_table() {
+    // SAFETY: 调用点合同见上（rust_main 单线程窗）。
+    unsafe { mmu::freeze_syscalls_table() };
+}
+
+/// W3-Q104：固化完成标记只读透传（ktest 自证用）。
+pub fn syscalls_table_ro() -> bool {
+    mmu::syscalls_table_ro()
 }
 
 /// 2b-2：激活任务地址空间——TTBR0 ← 表+ASID、CONTEXTIDR、`tlbi aside1is`
@@ -194,22 +220,17 @@ pub fn cache_poc_clean_invalidate(kva: usize, len: usize) {
     mmu::cache_poc_clean_invalidate(kva, len);
 }
 
-/// F0-4：MMIO 窗口销毁时自动将交集内活跃 VirtIO 槽复位（`STATUS = 0`）。
+/// F0-4：MMIO 窗口销毁时的内核级 VirtIO `STATUS = 0` 自动复位防线。
 pub fn reset_virtio_mmio_window(pa_base: usize, size: usize) {
     mmu::reset_virtio_mmio_window(pa_base, size);
 }
 
-/// F0-2：返回各核当前在 `TTBR0_EL1` 激活的 ASID 快照（供 ASID 分配器钉死防撞）。
-pub fn active_cpu_asids() -> [u16; 2] {
-    mmu::active_cpu_asids()
-}
-
 // 描述符构造导出（2b-2 起内核侧填用户页表用；boot 建表在 crate 内部直接用）。
 // P6 A-2 起加 ATTR_DEVICE/SH_NONE：用户侧 MMIO 窗口叶（Device-nGnRnE + 不
-// 共享——内核直映 MMIO 同款，见 mmu.rs）。F0-2 起加 AP_USER_RO/PXN/UXN。
+// 共享——内核直映 MMIO 同款，见 mmu.rs）。
 pub use paging::{
     page_descriptor, table_descriptor, AP_RO, AP_USER_RO, AP_USER_RW, ATTR_DEVICE, ATTR_NORMAL,
-    PXN, SH_INNER, SH_NONE, UXN,
+    SH_INNER, SH_NONE,
 };
 
 // ---- IRQ 派发回调（HAL→上层，函数指针槽反转）----
@@ -434,3 +455,4 @@ pub fn halt() -> ! {
         unsafe { core::arch::asm!("wfi") };
     }
 }
+

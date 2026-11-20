@@ -45,6 +45,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 磁盘预清（2026-11-17 run 44156980378 判例）：30G 盘被 _diag 日志 +
+      # _temp + /tmp 临时 rootfs 累积撑爆（No space left on device 炸 smoke
+      # 四跑）。run 前清三日龄诊断日志与过期临时件，保 run 期间瞬时空量。
+      - name: 磁盘预清（_diag/_temp//tmp 过期件）
+        run: |
+          set -x
+          find /home/runner/actions-runner/_diag -name '*.log' -mtime +2 -delete || true
+          rm -rf /home/runner/actions-runner/_work/_temp/* 2>/dev/null || true
+          find /tmp -maxdepth 1 \( -name 'berryos-*' -o -name 'qemu-*' \) -mtime +1 -delete 2>/dev/null || true
+          df -h / | tail -1
+
       # 规则与桥契约门禁（fail-fast）：AGENTS 行/字符帽 + 探针 + 锚点 + 上游三桥
       # 串 + 雷册锚点。纯 Python，无依赖，先于工具链安装跑——防入口文件
       # 膨胀悄悄吃掉每轮上下文。
@@ -66,6 +77,33 @@ jobs:
 
       - name: writable-globals（可写全局清单门禁）
         run: python3 tools/writable_globals.py --check
+
+      # GUI F9：普通 BerryUI app 边界静态守卫（零依赖、先于工具链安装）。
+      # 六个 wm=true app 不得直接回到 syscall/WM RPC/VMO/stride/像素路径，
+      # berry-nshfont 迁移期临时件不得回潮。
+      - name: gui-boundary-guard（GUI F9 普通 app 禁令）
+        run: |
+          python3 tools/gui_guard.py --self-test
+          python3 tools/gui_guard.py
+
+      # SDK-S0 / DESIGN-D2：公开 API 与视觉 token 两本账本必须与源码/生成
+      # 矩阵双向 100% 对拍；GUI8 零 QEMU 自检同步防 marker 断言腐烂。
+      - name: sdk/design ledger + GUI8 self-test
+        run: |
+          python3 tools/sdk_ledger.py --check
+          python3 tools/design_ledger.py --check
+          python3 tools/gui8-smoke.py --self-test
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # 与仓根 rust-toolchain.toml 钉版同值（SDK-02 拍板①）：显式安装防
+          # rustup 1.28+ 默认不自动装（action 装 stable、cargo 按钉版文件找
+          # 1.97.0 缺席 = 结构性红灯）。抬级 = 钉版文件 + 本行两同步。
+          toolchain: 1.97.0
+          # aarch64-unknown-none：内核 + no_std 用户程序；aarch64-unknown-linux-musl：
+          # G-eco-d std 面（stdhello/hexyl/bsh/fail/fsmgr/vprobe/vblk/vnet——berry-libc
+          # shim + berry-ld 链）；x86_64-unknown-none：P7 x86_64 最小集（ADR #41）。
+          targets: aarch64-unknown-none, aarch64-unknown-linux-musl, x86_64-unknown-none
 
       # 应用规范 §15.2/SDK-2-资源 §一.2「禁全类别原语」grep 守卫：公开
       # Rust 面（*.rs）出现 all-files/all-media/all-devices 式聚合入口即
@@ -181,13 +219,13 @@ jobs:
       #    不可本地全链（tarball 生成即剥 path → registry 解析前置，--no-verify
       #    也不绕，B6 实证）——只跑 --list（registry-free，E1 实证）保文件清单
       #    干净面。叶子发布后本档升级为完整 package（另刀回填，勿现在改）。
-      - name: sdk-publish-guard（SDK-1b 十 crate 发布面守卫）
+      - name: sdk-publish-guard（SDK-1b 十一 crate 发布面守卫）
         working-directory: user
         run: |
           set -eu
           # —— 硬门 1：十 crate 元数据齐备（version/description/license/
           #    repository/readme 字段 + README 本体在位）。
-          for c in berry-sys berry-tls berry-netdproto berry-fsproto berry-mmap berry-signal berry-lifecycle berry-strmem berry-fsclient berry-libc; do
+          for c in berry-sys berry-tls berry-netdproto berry-fsproto berry-mmap berry-signal berry-lifecycle berry-strmem berry-vdsoface berry-fsclient berry-libc; do
             m="$c/Cargo.toml"
             grep -q '^version.workspace = true$' "$m" || { echo "::error file=$m::version 应为 version.workspace = true（迁移步骤 1 继承形）"; exit 1; }
             grep -q '^description = ' "$m"         || { echo "::error file=$m::缺 description"; exit 1; }
@@ -209,6 +247,9 @@ jobs:
           }
           dw berry-fsclient/Cargo.toml berry-sys
           dw berry-fsclient/Cargo.toml berry-fsproto
+          # W3-Q106：sys 第 1 条内部依赖（vDSO 页布局/换算单源——magic/freq/
+          # seq 冻结 ABI + ticks→ns；libc clock fast path 消费）。
+          dw berry-sys/Cargo.toml berry-vdsoface
           dw berry-fsclient/Cargo.toml berry-netdproto
           dw berry-libc/Cargo.toml berry-sys
           dw berry-libc/Cargo.toml berry-fsclient
@@ -227,7 +268,7 @@ jobs:
           # libc strmem.rs 薄 #[no_mangle] 壳消费）。
           dw berry-libc/Cargo.toml berry-strmem
           # —— 硬门 2b：path 依赖反向执法（双镜头审查 F1，2026-10-30）。
-          #    dw() 只正向钉十一条已知线在位；此处反向兜两条：
+          #    dw() 只正向钉十二条已知线在位；此处反向兜两条：
           #    ① path-only 形零容忍——任何「有 path 无 version」依赖线当场红
           #       （防未来加线/改形去 version 静默过 CI、爆在 publish
           #       当天「path dependency without a version」）；
@@ -238,16 +279,17 @@ jobs:
               berry-sys/Cargo.toml berry-tls/Cargo.toml berry-netdproto/Cargo.toml \
               berry-fsproto/Cargo.toml berry-mmap/Cargo.toml berry-signal/Cargo.toml \
               berry-lifecycle/Cargo.toml berry-strmem/Cargo.toml \
+              berry-vdsoface/Cargo.toml \
               berry-fsclient/Cargo.toml berry-libc/Cargo.toml
           then
-            echo "::error::发布族十 manifest 存在 path-only 依赖线（= { path = … } 无 version）"
+            echo "::error::发布族十一 manifest 存在 path-only 依赖线（= { path = … } 无 version）"
             exit 1
           fi
           pc() {  # pc <manifest> <期望 path 行数>（grep -c 零命中退出码 1，|| true 吞）
             n=$(grep -cE '= \{ path = ' "$1" || true)
             [ "$n" = "$2" ] || { echo "::error file=$1::path 依赖线计数 $n ≠ 期望 $2（加线/改形须同步 dw/pc 定值）"; exit 1; }
           }
-          pc berry-sys/Cargo.toml 0
+          pc berry-sys/Cargo.toml 1
           pc berry-tls/Cargo.toml 0
           pc berry-netdproto/Cargo.toml 0
           pc berry-fsproto/Cargo.toml 0
@@ -255,16 +297,18 @@ jobs:
           pc berry-signal/Cargo.toml 0
           pc berry-lifecycle/Cargo.toml 0
           pc berry-strmem/Cargo.toml 0
+          pc berry-vdsoface/Cargo.toml 0
           pc berry-fsclient/Cargo.toml 3
           pc berry-libc/Cargo.toml 8
-          # —— 档 ②：八叶子完整 package（含 verification build；rustflags
+          # —— 档 ②：九叶子完整 package（含 verification build；rustflags
           #    -fp-armv8/-neon 弃用告警为已知噪声（基线 B2），非失败）。
-          for c in berry-sys berry-tls berry-netdproto berry-fsproto berry-mmap berry-signal berry-lifecycle berry-strmem; do
+          for c in berry-tls berry-netdproto berry-fsproto berry-mmap berry-signal berry-lifecycle berry-strmem berry-vdsoface; do
             echo "::group::cargo package -p $c"
             cargo package -p "$c"
             echo "::endgroup::"
           done
-          # —— 档 ③：中/顶层 --list（registry-free 文件清单干净面）。
+          # —— 档 ③：中/顶层（sys/fsclient/libc）--list（registry-free 文件清单干净面）。
+          cargo package --list -p berry-sys
           cargo package --list -p berry-fsclient
           cargo package --list -p berry-libc
 
@@ -435,6 +479,14 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+
+      # 磁盘预清（同 smoke job 步注）：bcts 八跑全相 rootfs 复跑瞬时吃盘更凶。
+      - name: 磁盘预清（_diag/_temp//tmp 过期件）
+        run: |
+          find /home/runner/actions-runner/_diag -name '*.log' -mtime +2 -delete || true
+          rm -rf /home/runner/actions-runner/_work/_temp/* 2>/dev/null || true
+          find /tmp -maxdepth 1 \( -name 'berryos-*' -o -name 'qemu-*' \) -mtime +1 -delete 2>/dev/null || true
+          df -h / | tail -1
 
       # 共享 target 缓存挂载（smoke job 同款，ci 上方同名步）：增量构建复用
       # 跨 run 编译产物。needs: smoke 序行 → 与 smoke job 无共享位并发写。

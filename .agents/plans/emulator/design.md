@@ -3,9 +3,9 @@
 Type: spec
 Status: active
 Updated: 2026-11-18
-Version: 2.1.0
+Version: 2.3.0
 
-一句话说明：`emulator`（`tools/berry` 设备平台）定义 BerryOS 在 macOS、Linux 与 Windows 宿主机上的虚拟化启动、Xcode iOS Simulator 同款超椭圆钛金属外框窗口、120fps 零拷贝 GPU 呈现、双架构同构硬件加速、亚秒级快照速启与全栈开发调试桥接的终态架构。
+一句话说明：`emulator`（`tools/berry` 设备平台）定义 BerryOS 在 macOS、Linux 与 Windows 宿主机上的虚拟化启动、Xcode iOS Simulator 同款超椭圆钛金属外框窗口、120fps 零拷贝 GPU 呈现、液态玻璃倾角光场与触控波纹仿真、双架构同构硬件加速、亚秒级快照速启与全栈开发调试桥接的终态架构。
 
 ## 背景
 
@@ -37,15 +37,15 @@ flowchart LR
 2. **高帧率 Web 远程桌面升级**：
    - `berry web` / `--lan` 不再串接锁死 33fps 的 QEMU VNC 轮询口，而是直接订阅宿主进程内的同一套 `ScanoutMap + UpdateMap` 脏区源，按浏览器端 `requestAnimationFrame` 回执节拍推送脏块（小块走紧凑 QOI/WebP/LZ4 无损帧，全屏动效走自适应帧率控制），使局域网平板/浏览器调试突破 33fps 瓶颈直达 60fps。
 
-### 二、Xcode iOS Simulator 同款超椭圆外框、Retina 1:1 窗口与开发者 HUD
+### 二、Xcode iOS Simulator 同款超椭圆外框、光场仿真与开发者 HUD
 
 1. **无边框超椭圆钛金属设备外框（Device Bezel）与缩放铁律**：
-   - 彻底移除 `window.rs` 中 `0.55` 与 `0.9` 历史缩放乘数，遵循 [iOS 视觉与流体交互复刻标准](../../../docs/iOS视觉与流体交互复刻标准-v1.0.md) 第六节：默认开启无系统标题栏透明合成画布，以 `wgpu` 抗锯齿渲染等宽微高光钛金属超椭圆设备外框（Bezel），客机屏幕四角严格按同心 `55pt`（iPhone 态）/ `18pt`（iPad 态）连续超椭圆遮罩硬件裁切（传入 `--frameless-raw` 可切纯画面无壳模式）；
-   - 默认按客机逻辑点 `pt`（`vp`）1:1 映射宿主逻辑点并自动钳制在当前显示器可用工作区高度 `92%` 以内保持严格宽高比；拖拽宿主窗口边缘执行 GPU Lanczos 锐利等比缩放，点击“旋转 / 切换 iPad 形态”则通过 `virtio-gpu` EDID 热更新触发客机免重启切入 iPadOS 横屏模式。
-2. **极简悬浮毛玻璃控制胶囊与调试 HUD（退役帧内点阵灰条）**：
+   - 彻底移除 `window.rs` 中 `0.55` 与 `0.9` 历史缩放乘数，遵循 [iOS 与鸿蒙融合液态玻璃及光场交互标准](../../../docs/iOS与鸿蒙融合液态玻璃及光场交互标准-v2.0.md) 第六节：默认开启无系统标题栏透明合成画布，以 `wgpu` 抗锯齿渲染等宽微高光钛金属超椭圆设备外框（Bezel），客机屏幕四角严格按同心 `55pt`（iPhone 态）/ `18pt`（iPad 态）连续超椭圆遮罩硬件裁切（传入 `--frameless-raw` 可切纯画面无壳模式）；
+   - 默认按客机逻辑点 `pt`（`vp`）1:1 映射宿主逻辑点并自动钳制在当前显示器可用工作区高度 `92%` 以内保持严格宽高比；拖拽宿主窗口边缘执行 GPU Lanczos 锐利等比缩放，点击「旋转 / 切换形态」则通过 `virtio-gpu` EDID 热更新触发客机免重启切入双栏或台前调度横屏模式。
+2. **极简悬浮液态玻璃控制胶囊、虚拟倾角光场与调试 HUD（退役帧内点阵灰条）**：
    - 废除在客机画面底部硬塞 48px 灰条与 15 字母残缺 5×7 点阵 `glyph()` 的旧实现；
-   - 控制栏收敛为设备外框右上侧极简悬浮胶囊按钮组，提供：**电源/锁屏、音量加减、iPhone/iPad 横竖屏旋转、Home/多任务手势触发、带壳/纯屏 1:1 无损截屏与录屏、一键保存/回滚快照、Web 共享二维码及开发者 HUD 开关**。
-   - 开启开发者 HUD 时，在宿主 GPU 合成层零侵入叠加实时帧率曲线、客机本拍 `UpdateMap` 脏矩形红框高亮、输入到上屏端到端延迟读数及 CPU/内存水位。
+   - 控制栏收敛为设备外框右上侧极简悬浮胶囊按钮组，提供：**电源/锁屏、音量加减、iPhone/iPad/折叠屏形态旋转、Home/多任务手势触发、虚拟设备倾角光场滑杆（驱动客机 `LiquidGlass` 动态镜面高光与折射测试）、带壳/纯屏 1:1 无损截屏与录屏、一键保存/回滚快照、Web 共享二维码及开发者 HUD 开关**。
+   - 开启开发者 HUD 或演示录屏模式时，在宿主 GPU 合成层零侵入叠加实时帧率曲线、客机本拍 `UpdateMap` 脏矩形红框、`geometryTransition` 共享节点包围盒高亮、触控点击光斑波纹指示器、输入到上屏端到端延迟读数及 CPU/内存水位。
 
 ### 三、双架构同构硬件加速与自包含拓扑引擎
 
@@ -58,7 +58,10 @@ flowchart LR
    - 收敛 `spawn_kernel` 与 `spawn_image` 为统一的 `VmSpec` 构建器：`spawn_kernel` 同样经过 `fwcfg_plan` 单源注入 `opt/berry/accel`、`rtc` 与显示参数（根除 HVF 直启漏键崩溃）；
    - 启动前执行静态拓扑自检（`TopologyValidator`）：自动保证 `virtio-mmio.force-legacy=false`、`virtio-gpu-device` 严格先于 `ramfb` 声明、GUI 模式必配 `virtio-tablet-device` + `virtio-keyboard-device`、`simdev=1` 必配第二路字符通道——任何不满足拓扑不变量的组合在宿主进程创建前立即给出精确人类可读与 `--json` 错误提示，绝不放任客机进入静默黑屏或内核 D-abort。
    - **单二进制自包含资产初始化**：在 `berry` 二进制内直接链接纯 Rust `berry-fatfs` / `mkfat` 格式化核；首次运行 `berry shell` 发现 `~/.berry/data/<profile>.img` 缺席时，毫秒级自动在本地创建并盖章合规 FAT 数据盘，彻底消除对外部 Python 脚本与 `just desktop` 预热步骤的隐性依赖。
-   - **全平台双向控制台**：Windows 平台串口控制通道采用本地回环命名管道或 `127.0.0.1:0` 随机高端口带令牌鉴权套接字，使 `berry console`、`berry logs -f` 在 macOS/Linux/Windows 三端行为 100% 一致。
+   - **全平台双向控制台与无头纯终端模式（`--boot-mode headless`）**：
+     - 统一复用既有 `fw_cfg` 键 `opt/berry/bootmode`（[fwcfg-keys.toml](../../../tools/fwcfg-keys.toml) 单源扩充 `string=headless`，与既有 `verbose` 同键正交）；当传入 `berry run/console --boot-mode headless` 时，`TopologyValidator` 自动豁免显示设备与 `virtio-tablet` 强制门，QEMU 以纯无头 `-display none` 在 `< 150ms` 内直达客机 `consoled + ptyd + bsh`（见 [pty 总体设计](../pty/design.md)）；
+     - `berry console` 默认自动挂载第二路 `virtio-console` 控制端口 `berry-ctlport`：宿主终端触发 `SIGWINCH` 时实时向客机推送最新 `Winsize { cols, rows }`，拦截客机 `bmux/bed` 发出的 OSC 52 剪贴板序列同步至宿主系统剪贴板，并在 Windows/macOS/Linux 三端保持 100% 一致体验；
+     - 配套终端协作子命令：`berry push <host_path> <guest_path>` 与 `berry pull <guest_path> <host_path>` 经 `berry-ctlport` 对接客机 `bscp` 实现 0.2 秒免重打镜像文件互传；`berry ssh [cmd]` 自动桥接/转发至客机 `bsshd` 加密远程多路终端会话（见 [cli-suite 总体设计](../cli-suite/design.md)）。
 
 ### 四、亚秒级 QuickBoot 快照速启与生产力桥接
 
