@@ -811,6 +811,20 @@ stage = "v1"
 implemented = true
 note = 'A7-4 段② 翻真（2026-10-31，与 0x86 同刀）：swap(0) 语义取走当前进程 pending 集；出参写失败不消费（先写后清）。投递中新到位置回内核 pending（下轮 take）——竞态免设计。'
 
+title = "**生态兼容（受限态原语）**"
+[[group.syscall]]
+num = 0x4A
+name = "restricted_enter"
+desc = '进入受限态（EL0 SAN 域——AArch64 PSTATE.PAN/x86-64 SMAP 硬件栅栏）；flags=0 预留'
+stage = "v2"
+note = 'G2 刀 7：linux_runner 守护进程用——受限态下 guest 进程不可直接访问宿主 EL1 映射'
+[[group.syscall]]
+num = 0x4B
+name = "restricted_kick"
+desc = '将目标任务踢出受限态（紧急逃生/调试面）——target Handle + reason u32'
+stage = "v2"
+note = 'G2 刀 7：与 0x4A 成对——kick 后任务回普通 EL0 域'
+
 [[group]]
 title = "**电源**（guest 内关机最小闭环——桌面UX审计 02 号 M3）"
 [[group.syscall]]

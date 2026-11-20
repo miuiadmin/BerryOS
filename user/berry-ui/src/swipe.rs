@@ -20,6 +20,10 @@
 //!   持初值起拍）。
 //! - **圆点指示器**：自管节点组；页裁定（含吸附途中）即直摆高亮
 //!   （`on_msg` 返 true 语义）——paint-only props，measured==0 面。
+//! - **B2 30Hz 落画节流门**（[`SNAP_PAINT_MIN_NS`]）：高像素软渲染域
+//!   （[`crate::frame::SOFT_RENDER_HEAVY_PX`] 之上）snap 步进的落画钳
+//!   30Hz——节流窗内的拍只推进动画态不落画（不发 set_offset = 零
+//!   damage），预算账见常量注；低像素域零扰动。
 //! - 零 panic / 零分配 / 无浮点：offset 全 i32、判据阈值 i32 整数算术。
 
 use crate::anim::{self, AnimProp, Easing, SpringPreset, SpringProp};
@@ -33,6 +37,28 @@ pub const SWIPE_PAGES_MAX: u8 = 8;
 /// 吸附动画时长（§7.4：QuadOut 240ms——QuadOut 档时长，Spring 档无
 /// 定长、双阈值收敛自决）。
 pub const SNAP_DUR_NS: u64 = 240_000_000;
+
+/// 吸附落画节流窗（B2 动画节流帽：30Hz = 33.3ms）——高像素软渲染域
+/// （渲染域 w*h 超 [`crate::frame::SOFT_RENDER_HEAVY_PX`]，与 ballot_for
+/// 像素封顶 B2b 同源同阈）内，snap 两次整帧落画的最小间隔。预算账：
+/// 1080P（1088×1920 = 2.09M px）软渲染下 snap 单帧实需 15-18ms——每拍
+/// set_offset 的 damage 是新旧子树包络 ≈ 整条页带（1.74M px，壁纸
+/// SmoothArgb 全幅重双线性 ≈11.5ms + 图标/标签 + guifbd 逐行读拷贝
+/// 2-4ms），60Hz 预算 16.7ms 贴线、120Hz 预算 8.3ms 恒被击穿 2×；
+/// 240ms 吸附动画在 120Hz 档要 29 帧全量重画（AP3 整帧量化），把单
+/// vCPU 客机钉死在渲染满载（PANELARB sw hz=120 src=vote/boost 实锤）。
+/// 本窗把落画钳到 30Hz：240ms 动画 29 帧（120Hz 档）/ 15 帧（60Hz 档）
+/// 降到 8-15 帧，动画期渲染 CPU 与每帧 4 连环 present 中继占空比同步
+/// 减半以上。时间线不受影响：QuadOut 是纯时间函数（开窗拍按当时刻现
+/// 算）、Spring 积分按 remain 全量追积——只是推迟 set_offset 落画拍。
+/// 低像素域不节流（480×1000 = 0.48M px 60Hz 预算内付得起，观感不
+/// 降档；亦保 host 单测小视口行为零扰动）。与 berry-appshell pump 的
+/// 落画节流拍（B2 宿主侧背撑）常量同源——pump 直接导入本常量；但锚
+/// 各异（swipe 锚 snap_paint_ns、pump 锚 last_draw_ns），两窗开沿可差
+/// ≤一窗（非 snap 落画插入时），表现为单帧 ≤33ms 附加迟滞、自重
+/// 对齐、无冻结（对抗审查 P3 勘正——原「同窗同源」表述不准）：
+/// 漂移 = 动画冻结或空转，禁各自为政。
+pub const SNAP_PAINT_MIN_NS: u64 = 33_300_000;
 
 /// 翻页速度阈（§7.4：|v| ≥ 500px/s 按速度向翻页）。
 pub const FLIP_VEL_PX_S: i32 = 500;
@@ -97,6 +123,12 @@ pub struct SwipePager {
     drag_last_x: i32,
     /// 吸附态（一次至多一条）。
     snap: Option<Snap>,
+    /// 上次 snap 步进落画时刻（[`SNAP_PAINT_MIN_NS`] 节流窗锚——B2；
+    /// None = 窗外（吸附起拍帧立即落画）。仅 tick 的落画拍更新；
+    /// begin_snap/snap_to 复位——松手/直落位后的首拍不迟滞（跟手末帧
+    /// 与吸附首帧无缝衔接）。跟手 DragMove 的 apply_ox 不更新本锚——
+    /// 跟手是输入驱动域（响应优先），不入动画节流账。
+    snap_paint_ns: Option<u64>,
     /// 松手吸附档（默认 [`SnapMode::QuadOut`]——行为零变化）。
     snap_mode: SnapMode,
 }
@@ -123,6 +155,7 @@ impl SwipePager {
             drag_x0: 0,
             drag_last_x: 0,
             snap: None,
+            snap_paint_ns: None,
             snap_mode: SnapMode::QuadOut,
         }
     }
@@ -231,6 +264,8 @@ impl SwipePager {
         }
         self.dragging = false;
         self.snap = None;
+        // 节流窗锚复位（直落位 = 新视觉基准——后续吸附首拍不迟滞）。
+        self.snap_paint_ns = None;
         self.page = page;
         self.update_dots(ui);
         self.apply_ox(ui, self.page_ofs(page));
@@ -317,7 +352,22 @@ impl SwipePager {
     /// 语义同式）。QuadOut 时长 = AP3（§9 刀6）整帧量化：起拍按当前档
     /// 周期定格（240ms → 60Hz 档 15 帧 / 120Hz 档 29 帧），尾拍无小数
     /// 帧抖动；档未协商（period 0）退化直通 240ms。
+    ///
+    /// **B2 30Hz 落画节流门**：高像素软渲染域内，now 距上次落画 <
+    /// [`SNAP_PAINT_MIN_NS`] 的拍**只推进动画态不落画**——不发
+    /// set_offset（零 damage → embedder 跳过帧零光栅零 RPC），开窗拍
+    /// 按当时刻取值一次落画；完成拍豁免（终点精确落位不迟滞）。节流
+    /// 拍仍返 true——tick 契约「无吸附 → false」下吸附在飞即 true：
+    /// wake-on-true 形消费者（photos）靠它每拍唤醒全帧兜底不冻；落画
+    /// 节流背撑形消费者（berry-appshell pump，常量同源锚各异）按开窗
+    /// 拍收画。
     pub fn tick<const N: usize>(&mut self, ui: &mut Ui<N>, now_ns: u64) -> bool {
+        // 节流窗预判（snap 活着才有意义——无吸附的 None 早退在下方
+        // match；像素域判定放窗内才做——低像素域/窗外零额外开销）。
+        let throttled = match self.snap_paint_ns {
+            Some(t) => now_ns.saturating_sub(t) < SNAP_PAINT_MIN_NS && heavy_viewport(ui),
+            None => false,
+        };
         let (v, done) = match &mut self.snap {
             None => return false,
             Some(Snap::QuadOut { from, to, start_ns, dur_ns }) => {
@@ -345,7 +395,15 @@ impl SwipePager {
         if done {
             self.snap = None;
         }
+        if throttled && !done {
+            // 节流拍到此为止：动画态已推进（Spring 积分已步；QuadOut 纯
+            // 时间函数无态可推），本拍不落画——ox 镜像与引擎同留在上次
+            // 落画位（镜像 = 屏上真相——吸附途中抓回的跟手基准不漂），
+            // 落画推迟到下一个开窗拍，轨迹零丢失。
+            return true;
+        }
         self.apply_ox(ui, v);
+        self.snap_paint_ns = Some(now_ns);
         true
     }
 
@@ -375,6 +433,9 @@ impl SwipePager {
     /// 且松手速度非零 → SpringProp 以松手速度入参（重定目标/抓回中断
     /// 由位置-速度续接天然承接）。
     fn begin_snap<const N: usize>(&mut self, ui: &mut Ui<N>, target_page: u8, vx: i32) {
+        // 节流窗锚复位（新吸附起拍帧立即落画——松手瞬间跟手末帧到吸附
+        // 首帧的无缝衔接优先于节流；此后才进 30Hz 窗节奏）。
+        self.snap_paint_ns = None;
         self.page = target_page;
         self.update_dots(ui);
         let to = self.page_ofs(target_page);
@@ -428,6 +489,16 @@ impl SwipePager {
 /// 翻页位移阈：40% 页宽（i32 整数——`w*2/5`，严格 > 判定在上文）。
 fn flip_threshold(vp_w: u32) -> i32 {
     (vp_w as i32 * 2) / 5
+}
+
+/// 高像素软渲染域判定（B2/B2b 域门）：渲染域 w*h 超
+/// [`crate::frame::SOFT_RENDER_HEAVY_PX`]（阈值单源在 frame.rs，票面
+/// 封顶与落画节流两帽共司）。1088×1920 = 2.09M px 在域；
+/// 480×1000 = 0.48M px、host 单测小视口（100×100 等）不在——行为
+/// 零扰动。
+fn heavy_viewport<const N: usize>(ui: &Ui<N>) -> bool {
+    let (w, h) = ui.viewport();
+    (w as u64) * (h as u64) > crate::frame::SOFT_RENDER_HEAVY_PX
 }
 
 /// wire u32 → i32 饱和（§0 坐标铁律——同 `hit::u32_to_i32_sat` 口径，

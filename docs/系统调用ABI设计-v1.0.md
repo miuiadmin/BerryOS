@@ -107,6 +107,8 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | **信号**（POSIX 兼容——libc 协同式投递，A7-4） |||||
 | 0x86 | `signal_send` | 向进程投信号：`h=0` → 当前进程（raise 面，零 handle 需求）；`h≠0` 门控 Process **MANAGE**。sig ∈ 1..=64 位置位 pending（幂等 = POSIX 标准信号合并语义）；目标非 Alive → -EBADSTATE。**不唤醒目标**——投递点在用户态（延迟档），内核零阻塞零解蔽零分配 | v1 | 2026-10-31 |
 | 0x87 | `signal_take` | 原子取走当前进程 pending 集（swap(0) 语义——取后内核位清零）：`*pending` = u64 出参 8 字节（信号 n = 位 n-1）。libc 协同式投递的取货口；零 handle 面零权利位（「对象几何非内容」惯例） | v1 | — |
+| 0x4A | `restricted_enter` | 进入受限态（EL0 SAN 域——AArch64 PSTATE.PAN/x86-64 SMAP 硬件栅栏）；flags=0 预留 | v2 | — |
+| 0x4B | `restricted_kick` | 将目标任务踢出受限态（紧急逃生/调试面）——target Handle + reason u32 | v2 | — |
 | **电源**（guest 内关机最小闭环——桌面UX审计 02 号 M3） |||||
 | 0x88 | `power_off` | 整机下电（PSCI SYSTEM_OFF 0x84000008 经 HVC conduit——QEMU TCG/KVM 均受理 `qemu_system_shutdown_request`，PM-10 §1.6 实读）。成功 = 不归（整机退出）；返回 -ENOTSUP = conduit 死（EFI handoff / 非 EL1 入口 / 无 PSCI——`off_supported` probe 缓存门）或固件拒收。零参数零出参。 | v1 | — |
 <!-- @gen:syscalls end -->

@@ -1321,8 +1321,19 @@ fn proxy_ws_plain(
                         ];
                         let x = u16::from_be_bytes([b[1], b[2]]);
                         let y = u16::from_be_bytes([b[3], b[4]]);
-                        eprintln!("berry: ptr-evt x={x} y={y} btn={:02x} →qmp", b[0]);
-                        injector.as_mut().unwrap().pointer(x, y, b[0], gw, gh);
+                        let via_qmp = injector.as_mut().unwrap().pointer(x, y, b[0], gw, gh);
+                        if via_qmp {
+                            eprintln!("berry: ptr-evt x={x} y={y} btn={:02x} →qmp", b[0]);
+                        } else {
+                            // 哑化回退保底（2026-11-20）：QMP 注入失败时把原始
+                            // RFB PointerEvent 原样转发 VNC（判例 9c77f180b：直通
+                            // 路 btn/sync 达客机、绝对坐标丢——至少保留按键反馈
+                            // 不静默吞；成功路径绝不转发防双投递）。
+                            eprintln!("berry: ptr-evt x={x} y={y} btn={:02x} →vfb(哑化回退)", b[0]);
+                            if u_wr.write_all(&pend[..total]).is_err() || u_wr.flush().is_err() {
+                                break 'outer;
+                            }
+                        }
                     } else {
                         if u_wr.write_all(&pend[..total]).is_err() || u_wr.flush().is_err() {
                             break 'outer;

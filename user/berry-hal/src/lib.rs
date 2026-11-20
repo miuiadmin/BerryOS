@@ -12,6 +12,15 @@
 //! 同名异层：那颗服务内核 arch 抽象，本颗服务用户态驱动进程，契约面互不
 //! 相交（报告 §6 节奏耦合段两半边分说）。
 //!
+//! 与 berry-driver 的关系（2026-11-20 债务清理刀定谳：**契约面正交组合**）：
+//! 那颗钉**生命周期**契约（probe 认领 → start 服役 → stop 退役），本颗
+//! 钉**硬件访问**契约——组合发生在消费侧：驱动实现方同时实现 Driver
+//! trait 并持有本 crate 的 trait 对象（vprobe 接线形态；driver 的示例
+//! 模块亦同款，故 driver→hal 的 crate 依赖是可选的单向箭头，本 crate
+//! 永不反向依赖 driver）。生命周期契约不被硬件访问契约绑架（反之
+//! 亦然——两契约可各自独立测试）。缝合成铸件（DeviceCap：MMIO 窗
+//! VMO + Interrupt + Bti）归波 2.2 后续刀。
+//!
 //! 形态 = berry-driver 族例：`cfg_attr(not(test), no_std)` 库本体 + alloc
 //! （[`BumpDmaAlloc`] 蓄水池的 Vec 面）；test 构建放开 std 仅为默认测试
 //! 挂具。库本体零 `unsafe` 面（volatile 的 unsafe 收敛在 virtio_impl 实现

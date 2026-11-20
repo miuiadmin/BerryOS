@@ -14,7 +14,8 @@
 //! - **credits 背压簿记**（[`Credits`]）：≤ `CREDITS_MAX`（guiproto 单
 //!   源）——帽满不提交不轰炸（对齐条 8）。
 //! - **vote 产票不仲裁**（[`ballot_for`]）：仲裁在显示服务（对齐条 12）；
-//!   v1 票值定值表（scene 取 guiproto 单源）。
+//!   v1 票值定值表（scene 取 guiproto 单源）+ B2b 像素预算感知封顶
+//!   （高像素域 preferred/max 钳 60——[`SOFT_RENDER_HEAVY_PX`]）。
 //! - 零 panic / 零分配：period 0（vsync 未协商）退化即时，不除零。
 //!
 //! - **集成接缝（已收敛）**：next_vsync_tick / next_wakeup / Credits /
@@ -157,6 +158,19 @@ impl Credits {
     }
 }
 
+/// 软渲染高像素阈（渲染域像素数 w*h，B2/B2b 两帽共用单源）：超此值的
+/// 域里 120Hz 档对单 vCPU 软光栅 + CPU blit 管线结构性不可达——1080P
+/// 实测 snap 帧实需 15-18ms（壁纸 SmoothArgb 全幅重双线性 ≈11.5ms 主导
+/// + 图标/标签 + guifbd 逐行读拷贝 2-4ms），120Hz 预算 8.3ms 恒被击穿
+/// 2×、60Hz 预算 16.7ms 贴线（PANELARB sw hz=120 src=vote 实锤即此链）。
+/// 两处立法引本阈：① [`ballot_for`] 像素预算感知封顶（preferred/max 钳
+/// 60——防「票投 120 又喂不动 120」的自我饱和）；② swipe snap 的 30Hz
+/// 落画节流门（`swipe::SNAP_PAINT_MIN_NS` 窗的域判定）。在域示例：
+/// 1088×1920 = 2.09M px、1080×1920 = 2.07M px；不在域：480×1000 =
+/// 0.48M px、720×1280 = 0.92M px——低像素域 60Hz 预算内付得起，观感
+/// 不降档、行为零变化。
+pub const SOFT_RENDER_HEAVY_PX: u64 = 1_500_000;
+
 /// 单帧产物（§6 冻结字段；render_frame 返回值）。`drew=false`（damage
 /// 空）= **不提交**（「无 damage 不提交」+ IDLE 零 SUBMIT 零
 /// FRAME_CALLBACK，对齐条 6）。
@@ -177,8 +191,10 @@ pub struct FrameOutcome {
 impl FrameOutcome {
     /// 跳过帧（damage 空——无提交）：damage 空集、rate_hint 0（不提交
     /// 的帧无帧率话语权）。lib.rs `render_frame` 的 `drew=false` 出口走
-    /// 此构造器——跳过帧语义单源（字段注「诚实填 0」的执法点）。
-    pub(crate) fn skipped(expected_present_ns: u64) -> Self {
+    /// 此构造器——跳过帧语义单源（字段注「诚实填 0」的执法点）；embedder
+    /// 侧落画节流拍（B2——整拍不进 render_frame，见 berry-appshell pump）
+    /// 亦经此构造零提交产物。pub：跨 crate 消费面（pump 形 embedder）。
+    pub fn skipped(expected_present_ns: u64) -> Self {
         Self {
             drew: false,
             damage: crate::damage::DamageSet::new(),
@@ -209,39 +225,57 @@ pub struct VoteBallot {
 /// 相位分档，档位字节折进六档语义域：交互谱系三相位 → INTERACTIVE、
 /// idle → BACKGROUND）。sticky 唯置位点 = idle（停帧粘滞——显示服务
 /// 收到 sticky 票后不再唤醒引擎，§3.8）。
-pub(crate) fn ballot_for(anim_active: bool, interacting: bool, idle: bool) -> VoteBallot {
-    if idle {
-        return VoteBallot {
+///
+/// `render_px` = 渲染域像素数（w*h）：超 [`SOFT_RENDER_HEAVY_PX`] 时
+/// B2b 像素预算感知封顶——preferred/max 钳 60（120 档在高像素软渲染下
+/// 结构性不可达，立法防自我饱和；max 钳后仲裁器 g_range 的 G_max 同步
+/// 收口，A6 boost 的 min(BOOST_HZ, G_max) 一并被压——票面是唯一钳点）。
+pub(crate) fn ballot_for(
+    anim_active: bool,
+    interacting: bool,
+    idle: bool,
+    render_px: u64,
+) -> VoteBallot {
+    let mut ballot = if idle {
+        VoteBallot {
             min_hz: 0,
             max_hz: 0,
             preferred_hz: 0,
             scene: berry_guiproto::Intent::Background as u8,
             sticky: 1,
-        };
-    }
-    if interacting {
-        return VoteBallot {
+        }
+    } else if interacting {
+        VoteBallot {
             min_hz: 60,
             max_hz: 120,
             preferred_hz: 120,
             scene: berry_guiproto::Intent::Interactive as u8,
             sticky: 0,
-        };
-    }
-    if anim_active {
-        return VoteBallot {
+        }
+    } else if anim_active {
+        VoteBallot {
             min_hz: 30,
             max_hz: 120,
             preferred_hz: 60,
             scene: berry_guiproto::Intent::Interactive as u8,
             sticky: 0,
-        };
+        }
+    } else {
+        VoteBallot {
+            min_hz: 0,
+            max_hz: 60,
+            preferred_hz: 60,
+            scene: berry_guiproto::Intent::Interactive as u8,
+            sticky: 0,
+        }
+    };
+    // B2b 封顶执法：纯下钳（min()）零上抬——interacting 档 {60,120,120} →
+    // {60,60,60}、anim 档 {30,120,60} → {30,60,60}；常态 {0,60,60} 与
+    // idle 全 0 不受影响（min_hz 不动：interacting 的 60 保底原样——
+    // 拖拽跟手下限不因高像素降档）。
+    if render_px > SOFT_RENDER_HEAVY_PX {
+        ballot.max_hz = ballot.max_hz.min(60);
+        ballot.preferred_hz = ballot.preferred_hz.min(60);
     }
-    VoteBallot {
-        min_hz: 0,
-        max_hz: 60,
-        preferred_hz: 60,
-        scene: berry_guiproto::Intent::Interactive as u8,
-        sticky: 0,
-    }
+    ballot
 }
