@@ -44,6 +44,46 @@ pub const PAGE_SIZE: usize = 4096;
 /// log2(PAGE_SIZE)。
 pub const PAGE_SHIFT: usize = 12;
 
+/// PA 域宽（物理位，W3-Q109 打包立法）：打包槽 PFN 域的上限依据。
+/// 本机 PA 窗 `[0x4000_0000, 0x5000_0000)`（256MiB，RAM_BASE 单源在
+/// `arch/aarch64/src/lib.rs`）远在内；钉 34 位（16GiB）为 RAM 扩展留量。
+/// 哨兵安全性不依赖本常量：未提交判定 = PFN 域零，与 PA 0 页号 0 同值
+/// 而 PA 0 低于 RAM_BASE 且首页恒被无条件保留——结构性不可达。
+pub const PA_BITS: u32 = 34;
+
+/// 打包槽 mapcnt 域宽（u16 饱和计数语义原样——防线不变量不动）。
+const MAPCNT_BITS: u32 = 16;
+/// 打包槽 PFN 域位移（mapcnt 域 [0,16) 之上）。
+const PFN_SHIFT: u32 = MAPCNT_BITS;
+/// 打包槽 PFN 域宽 = PA_BITS − PAGE_SHIFT（34−12 = 22 位，16GiB 页号域）。
+const PFN_BITS: u32 = PA_BITS - PAGE_SHIFT as u32;
+/// PFN 域提取/清位掩码。
+const PFN_MASK: u64 = ((1u64 << PFN_BITS) - 1) << PFN_SHIFT;
+/// mapcnt 域提取/清位掩码。
+const MAPCNT_MASK: u64 = (1u64 << MAPCNT_BITS) - 1;
+
+// 打包布局编译期立法（01 号审计机会 5「位宽用 const assert 钉死，溢出
+// 编译期拦截」）：域不越 u64、两域零交叠、PFN 域帽住 34 物理位。
+const _: () = assert!(MAPCNT_BITS + PFN_BITS <= 64);
+const _: () = assert!(PFN_SHIFT == MAPCNT_BITS && PFN_MASK & MAPCNT_MASK == 0);
+const _: () = assert!(PA_BITS <= 48 && PA_BITS > PAGE_SHIFT as u32);
+
+#[inline]
+fn slot_pfn(slot: u64) -> u64 {
+    (slot & PFN_MASK) >> PFN_SHIFT
+}
+
+#[inline]
+fn slot_mapcnt(slot: u64) -> u16 {
+    (slot & MAPCNT_MASK) as u16
+}
+
+#[inline]
+fn slot_pack(pfn: u64, mapcnt: u16) -> u64 {
+    debug_assert!(pfn < (1u64 << PFN_BITS), "PA 超打包域（>{:?}", 1u64 << PA_BITS);
+    (pfn << PFN_SHIFT) | mapcnt as u64
+}
+
 /// VMO 错误（自 kernel/src/vmo.rs 单源迁此；kernel re-export 维持
 /// `crate::vmo::VmoError` 引用路径零改动）。
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -118,60 +158,108 @@ impl PageRange {
     }
 }
 
-/// 纯页记账：每页后备 PA + 每页映射计数 + MMIO 窗口基址（值域钉板）。
+/// 纯页记账：每页单 u64 打包槽（PA｜mapcnt｜状态位）+ MMIO 窗口基址
+/// （值域钉板）。
 ///
 /// 与 kernel 侧 `Vmo` 的分工：`Vmo` 持本结构 + 物理执行臂（FrameAllocator
 /// 分配/清零/归还、direct map 拷贝），本结构只持状态与判定律。
 /// **零物理副作用**——所有 `Result` 都是纯校验。
+///
+/// **打包布局（W3-Q109，01 号内存管理审计机会 5）**：此前每页
+/// `pages: Vec<Option<usize>>`（16B，Option 无 niche）+ `mapcnt: Vec<u16>`
+/// 共 24B/页；现合并单 `slots: Vec<u64>` = 8B/页，元数据内存 −66%
+/// （128MiB VMO ≈576KiB→256KiB）。位布局（低位→高位）：
+///
+/// ```text
+/// ┌─────────────────────────────────────────────┬───────────────────┐
+/// │ 63                  38  37            16  15      0            │
+/// │      未用（0）          │ PFN（页号，22 位）│ mapcnt（u16）      │
+/// └─────────────────────────────────────────────┴───────────────────┘
+/// ```
+///
+/// - 槽值 `0` = 未提交（PFN 域零；PA 0 低于 RAM_BASE 且首页恒被无条件
+///   保留——结构性不可达，哨兵安全，见 [`PA_BITS`] 注）。
+/// - PFN 存页号（`pa / PAGE_SIZE`）非字节地址：PA 域按 34 物理位
+///   （16GiB）钉 [`PA_BITS`]，页号域 = 34−12 = 22 位；本机 PA 窗
+///   `[0x4000_0000, 0x5000_0000)` 256MiB（65536 页）远在内。
+/// - mapcnt 16 位不变（u16 饱和语义原样）。
+/// - 位窗用 const assert 编译期钉死（见 [`slot_pfn`] 前三断言）。
+///
+/// MMIO 窗口后备下 `slots` 恒空（设备 PA 绝不进帧记账——`Drop` 的还帧
+/// 循环天然零动作，误填会把设备地址 free 进 buddy = 灾难），映射计数
+/// 走 `mmio_mapcnt` 独立 Vec<u16>（设备窗口无页 PA 但照建计数——track/
+/// untrack/any_mapped 悬空 PTE 防线对设备窗口同样成立）。
 pub struct PageLedger {
     /// 容量（字节，已页对齐）。
     size: usize,
     /// MMIO 窗口基 PA（`Some` = 设备物理窗口后备；`None` = 匿名页后备）。
-    /// 窗口后备下 `pages` **恒空**：设备 PA 绝不进帧记账——`Drop` 的还帧
-    /// 循环天然零动作（误填会把设备地址 free 进 buddy = 灾难），
-    /// `mapcnt` 照建（track/untrack/any_mapped 悬空 PTE 防线对设备窗口
-    /// 同样成立）。
     mmio_pa: Option<usize>,
-    /// F0-4：物理连续阶块记账 `Some((pa_base, order))`（`VMO_OPT_CONTIGUOUS` 由 `alloc_order`
-    /// 一次弹出 `1 << order` 页并钉死直至对象销毁，禁止中途逐页 `decommit` 撕裂阶块）。
+    /// 每页打包槽：位 12..34 = PA 页号（0 = 未提交）、位 4..20 = mapcnt。
+    slots: Vec<u64>,
+    /// MMIO 后备专用映射计数（匿名后备空 Vec；npages() 以此为源）。
+    mmio_mapcnt: Vec<u16>,
+    /// 物理连续阶块（F0-4）：`Some((pa_base, order))` = 创建期整阶分配的
+    /// 连续 DMA 后备（Drop 整阶归还，严禁拆页双还）；`None` = 普通匿名。
     contig_block: Option<(usize, u8)>,
-    /// F0-4：DMA 钉死位（`VMO_OPT_PINNED` 或 `VMO_OPT_CONTIGUOUS` 置真时拒绝 `decommit`）。
+    /// DMA 钉死标志（F0-4 `VMO_OPT_PINNED`/`VMO_OPT_CONTIGUOUS`）：
+    /// 置位对象禁止 `decommit`（-ENOTSUP）。
     pinned: bool,
-    /// 每页后备 PA；`None` = 未提交。索引 = offset / PAGE_SIZE。
-    pages: Vec<Option<usize>>,
-    /// 每页映射计数（vmar `map` +1 / `unmap` -1，3-2）。**悬空 PTE 防线**：
-    /// 归还仍被映射的物理页 → PA 被 buddy 复用 → 残留 PTE 经旧 VA 静默
-    /// 写坏新主人。本计数让 `decommit`/对象销毁拒绝（或泄漏）此类页。
-    mapcnt: Vec<u16>,
 }
 
 impl PageLedger {
     /// 建匿名记账（不占物理页）。`size` 向上取整到页；size==0 →
-    /// [`VmoError::OutOfRange`]；记账双 Vec **try 化**（3b3 审查 H2）：
-    /// 预留失败返 [`VmoError::NoMem`] 而非 abort。
+    /// [`VmoError::OutOfRange`]；记账单 Vec **try 化**（3b3 审查 H2，
+    /// W3-Q109 打包后单 Vec）：预留失败返 [`VmoError::NoMem`] 而非 abort。
     pub fn new_anon(size: usize) -> Result<Self, VmoError> {
         if size == 0 {
             return Err(VmoError::OutOfRange); // syscall 面已前置 -EINVAL，此处兜底
         }
         let npages = size.div_ceil(PAGE_SIZE);
-        let mut pages = Vec::new();
-        pages.try_reserve_exact(npages).map_err(|_| VmoError::NoMem)?;
-        pages.resize(npages, None);
+        let mut slots = Vec::new();
+        slots.try_reserve_exact(npages).map_err(|_| VmoError::NoMem)?;
+        slots.resize(npages, 0u64);
+        Ok(Self {
+            size: npages * PAGE_SIZE,
+            mmio_pa: None,
+            slots,
+            mmio_mapcnt: Vec::new(),
+            contig_block: None,
+            pinned: false,
+        })
+    }
+
+    /// 建 MMIO 窗口记账（P6 A-2，boot-only）：`slots` 恒空、映射计数照建。
+    /// `[pa_base, +size)` 双侧页对齐执法（匿名 create 的取整是成文设计
+    /// （多授零页无害），MMIO 相反——静默取整会把请求范围外的相邻设备
+    /// PA 经 Device 映射漏给 EL0，能力过授不告警（比 Zircon 更严是
+    /// 有意的收紧版）。
+    pub fn new_mmio(pa_base: usize, size: usize) -> Result<Self, VmoError> {
+        if size == 0 {
+            return Err(VmoError::OutOfRange);
+        }
+        if pa_base % PAGE_SIZE != 0 {
+            return Err(VmoError::Unaligned);
+        }
+        if size % PAGE_SIZE != 0 {
+            return Err(VmoError::Unaligned);
+        }
+        let npages = size / PAGE_SIZE;
         let mut mapcnt = Vec::new();
         mapcnt.try_reserve_exact(npages).map_err(|_| VmoError::NoMem)?;
         mapcnt.resize(npages, 0);
         Ok(Self {
             size: npages * PAGE_SIZE,
-            mmio_pa: None,
+            mmio_pa: Some(pa_base),
+            slots: Vec::new(),
+            mmio_mapcnt: mapcnt,
             contig_block: None,
             pinned: false,
-            pages,
-            mapcnt,
         })
     }
 
     /// 建物理连续且钉死的匿名 DMA 记账（F0-4：`pa_base` 为 `alloc_order(order)` 头页物理地址，
-    /// `[0..npages)` 创建即全量登记 `Some(pa_base + i * PAGE_SIZE)`，`commit` 幂等空过、`decommit` 拒 `NotSupported`）。
+    /// `[0..npages)` 创建即全量登记已提交，`commit` 幂等空过、`decommit` 拒 `NotSupported`）。
+    /// W3-Q109 打包槽适配：登记走 `slot_pack(pfn, 0)`（mapcnt 域零起）。
     pub fn new_contiguous(size: usize, pa_base: usize, order: u8) -> Result<Self, VmoError> {
         if size == 0 {
             return Err(VmoError::OutOfRange);
@@ -186,10 +274,11 @@ impl PageLedger {
         if npages > block_pages {
             return Err(VmoError::OutOfRange);
         }
-        let mut pages = Vec::new();
-        pages.try_reserve_exact(npages).map_err(|_| VmoError::NoMem)?;
+        let mut slots = Vec::new();
+        slots.try_reserve_exact(npages).map_err(|_| VmoError::NoMem)?;
         for i in 0..npages {
-            pages.push(Some(pa_base + i * PAGE_SIZE));
+            let pfn = (pa_base as u64 + i as u64 * PAGE_SIZE as u64) / PAGE_SIZE as u64;
+            slots.push(slot_pack(pfn, 0));
         }
         let mut mapcnt = Vec::new();
         mapcnt.try_reserve_exact(npages).map_err(|_| VmoError::NoMem)?;
@@ -197,10 +286,10 @@ impl PageLedger {
         Ok(Self {
             size: npages * PAGE_SIZE,
             mmio_pa: None,
+            slots,
+            mmio_mapcnt: Vec::new(),
             contig_block: Some((pa_base, order)),
             pinned: true,
-            pages,
-            mapcnt,
         })
     }
 
@@ -224,33 +313,14 @@ impl PageLedger {
         self.mmio_pa.map(|pa| (pa, self.size))
     }
 
-    /// 建 MMIO 窗口记账（P6 A-2，boot-only）：`pages` 恒空、`mapcnt` 照建。
-    /// `[pa_base, +size)` 双侧页对齐执法（匿名 create 的取整是成文设计
-    /// （多授零页无害），MMIO 相反——静默取整会把请求范围外的相邻设备
-    /// PA 经 Device 映射漏给 EL0，能力过授不告警（比 Zircon 更严是
-    /// 有意的收紧版）。
-    pub fn new_mmio(pa_base: usize, size: usize) -> Result<Self, VmoError> {
-        if size == 0 {
-            return Err(VmoError::OutOfRange);
+    /// 物理连续阶块 VMO 的整阶归还参数（`Vmo::Drop` 消费；非连续后备 `None`）。
+    /// 映射计数非零时拒还（悬空 PTE 防线同匿名页）。
+    pub fn contig_drop_block(&self) -> Option<(usize, usize)> {
+        let (pa_base, order) = self.contig_block?;
+        if self.any_mapped() {
+            return None;
         }
-        if pa_base % PAGE_SIZE != 0 {
-            return Err(VmoError::Unaligned);
-        }
-        if size % PAGE_SIZE != 0 {
-            return Err(VmoError::Unaligned);
-        }
-        let npages = size / PAGE_SIZE;
-        let mut mapcnt = Vec::new();
-        mapcnt.try_reserve_exact(npages).map_err(|_| VmoError::NoMem)?;
-        mapcnt.resize(npages, 0);
-        Ok(Self {
-            size: npages * PAGE_SIZE,
-            mmio_pa: Some(pa_base),
-            contig_block: None,
-            pinned: true,
-            pages: Vec::new(),
-            mapcnt,
-        })
+        Some((pa_base, order as usize))
     }
 
     /// MMIO 物理窗口后备？
@@ -265,21 +335,30 @@ impl PageLedger {
 
     /// 页数。
     pub fn npages(&self) -> usize {
-        self.mapcnt.len()
+        if self.mmio_pa.is_some() {
+            self.mmio_mapcnt.len()
+        } else {
+            self.slots.len()
+        }
     }
 
-    /// 第 `page_idx` 页的后备 PA（未提交 → `None`）。MMIO 窗口后备：
-    /// 页 PA = `pa_base + idx*PAGE_SIZE`（连续设备物理区间，恒「已提交」
+    /// 第 `page_idx` 页的后备 PA（未提交 → `None`）。MMIO 窗口后备：页
+    /// PA = `pa_base + idx*PAGE_SIZE`（连续设备物理区间，恒「已提交」
     /// ——无 commit 语义）。
     pub fn page_pa(&self, page_idx: usize) -> Option<usize> {
         if let Some(pa) = self.mmio_pa {
-            return if page_idx < self.mapcnt.len() {
+            return if page_idx < self.mmio_mapcnt.len() {
                 Some(pa + page_idx * PAGE_SIZE)
             } else {
                 None
             };
         }
-        self.pages.get(page_idx).copied().flatten()
+        let slot = *self.slots.get(page_idx)?;
+        let pfn = slot_pfn(slot);
+        if pfn == 0 {
+            return None;
+        }
+        Some(pfn as usize * PAGE_SIZE)
     }
 
     /// `pos` 所在页的 `(PA, 页内偏移, 本步最多拷贝字节)`（read/write 步进；
@@ -320,13 +399,18 @@ impl PageLedger {
     /// 落账一页提交（kernel 臂出页成功后回调；`Some(pa)`）或预登记
     /// （`None`——预留位语义，测试面用）。**幂等覆写防线**：已提交页
     /// 覆写 = 丢帧泄漏——debug_assert 拦（生产由 commit_pages 资格判
-    /// 保证不触）。
+    /// 保证不触）。W3-Q109：`None` 落账 = 槽清零（PFN 域归零即未提交）。
     pub fn mark_committed(&mut self, page_idx: usize, pa: Option<usize>) {
         debug_assert!(
-            self.pages[page_idx].is_none(),
+            self.page_pa(page_idx).is_none(),
             "mark_committed 覆写已提交页 = 丢帧泄漏"
         );
-        self.pages[page_idx] = pa;
+        let slot = &mut self.slots[page_idx];
+        let pfn = match pa {
+            Some(pa) => pa as u64 / PAGE_SIZE as u64,
+            None => 0,
+        };
+        *slot = slot_pack(pfn, slot_mapcnt(*slot));
     }
 
     /// decommit 区间资格判（3-2）：MMIO 拒；对齐/界内校验；**先整段验**
@@ -337,7 +421,12 @@ impl PageLedger {
         offset: usize,
         len: usize,
     ) -> Result<(PageRange, Vec<(usize, usize)>), VmoError> {
-        if self.mmio_pa.is_some() || self.pinned {
+        if self.mmio_pa.is_some() {
+            return Err(VmoError::NotSupported);
+        }
+        // F0-4：钉死对象（CONTIGUOUS/PINNED）禁止拆块/拆页归还——整阶块
+        // 的生命周期 = 句柄全关无映射销毁（Drop 整阶归还）。
+        if self.pinned {
             return Err(VmoError::NotSupported);
         }
         if offset % PAGE_SIZE != 0 || len % PAGE_SIZE != 0 {
@@ -346,70 +435,85 @@ impl PageLedger {
         check_bounds(self.size, offset, len)?;
         let range = PageRange::new(offset, len);
         for page in range.iter() {
-            if self.pages[page].is_none() {
+            if slot_pfn(self.slots[page]) == 0 {
                 return Err(VmoError::NotCommitted);
             }
-            if self.mapcnt[page] > 0 {
+            if slot_mapcnt(self.slots[page]) > 0 {
                 return Err(VmoError::Mapped);
             }
         }
         let pas = range
             .iter()
-            .map(|p| (p, self.pages[p].expect("上已校验全提交")))
+            .map(|p| (p, self.page_pa(p).expect("上已校验全提交")))
             .collect();
         Ok((range, pas))
     }
 
     /// decommit 落账（kernel 臂还帧后逐页回调；**只清账不还帧**）。
+    /// W3-Q109：清 PFN 域、保 mapcnt 域（原 `.take()` 语义：None 归还，
+    /// 计数照留）。
     pub fn mark_decommitted(&mut self, page_idx: usize) -> Option<usize> {
-        self.pages[page_idx].take()
+        let slot = &mut self.slots[page_idx];
+        let pfn = slot_pfn(*slot);
+        *slot &= !PFN_MASK; // PFN 域清零，mapcnt 保留
+        if pfn == 0 {
+            None
+        } else {
+            Some(pfn as usize * PAGE_SIZE)
+        }
     }
 
     // ---- 映射计数（vmar map/unmap 回调；悬空 PTE 防线，见结构体注释）----
 
     /// 区间映射计数 +1（vmar `map` 成功后回调）。饱和加：计数是防线不是
-    /// 账本，溢出方向的保守错误（多泄漏一页）可接受。
+    /// 账本，溢出方向的保守错误（多泄漏一页）可接受。W3-Q109：匿名走
+    /// 打包槽 mapcnt 域，MMIO 走独立 `mmio_mapcnt`。
     pub fn track_map(&mut self, offset: usize, len: usize) {
-        for c in self.mapcnt[offset / PAGE_SIZE..(offset + len) / PAGE_SIZE].iter_mut() {
-            *c = c.saturating_add(1);
+        if self.mmio_pa.is_some() {
+            for c in self.mmio_mapcnt[offset / PAGE_SIZE..(offset + len) / PAGE_SIZE]
+                .iter_mut()
+            {
+                *c = c.saturating_add(1);
+            }
+            return;
+        }
+        for slot in self.slots[offset / PAGE_SIZE..(offset + len) / PAGE_SIZE].iter_mut() {
+            *slot = slot_pack(slot_pfn(*slot), slot_mapcnt(*slot).saturating_add(1));
         }
     }
 
     /// 区间映射计数 -1（vmar `unmap` 成功后回调，经 Region 存的对象指针）。
     pub fn untrack_map(&mut self, offset: usize, len: usize) {
-        for c in self.mapcnt[offset / PAGE_SIZE..(offset + len) / PAGE_SIZE].iter_mut() {
-            *c = c.saturating_sub(1);
+        if self.mmio_pa.is_some() {
+            for c in self.mmio_mapcnt[offset / PAGE_SIZE..(offset + len) / PAGE_SIZE]
+                .iter_mut()
+            {
+                *c = c.saturating_sub(1);
+            }
+            return;
+        }
+        for slot in self.slots[offset / PAGE_SIZE..(offset + len) / PAGE_SIZE].iter_mut() {
+            *slot = slot_pack(slot_pfn(*slot), slot_mapcnt(*slot).saturating_sub(1));
         }
     }
 
     /// 任一页仍被映射？（handle close 拒绝面：映射未解除的 VMO 不许销毁。）
     pub fn any_mapped(&self) -> bool {
-        self.mapcnt.iter().any(|&c| c > 0)
-    }
-
-    /// F0-4 连续阶块销毁回收判：仅在全块零残留映射（`!any_mapped()`）时返回 `Some((pa_base, order))`
-    /// 供内核以整阶 `fa.free(pa_base >> PAGE_SHIFT, order)` 一次归还；若仍有残留映射则安全泄漏不拆块。
-    pub fn contig_drop_block(&self) -> Option<(usize, usize)> {
-        let (pa_base, order) = self.contig_block?;
-        if self.any_mapped() {
-            None
-        } else {
-            Some((pa_base, order as usize))
+        if self.mmio_pa.is_some() {
+            return self.mmio_mapcnt.iter().any(|&c| c > 0);
         }
+        self.slots.iter().any(|&s| slot_mapcnt(s) > 0)
     }
 
     /// 对象销毁回收判（Drop 面）：归还 mapcnt==0 的已提交页、**仍被映射的
     /// 页泄漏不还**（悬空 PTE 防线的最后一环）。返回 (页号, PA) 迭代面
-    /// ——kernel 臂执行还帧。连续阶块 VMO 走 [`contig_drop_block`] 整阶归还，此处恒空防 order-0 双还。
+    /// ——kernel 臂执行还帧。
     pub fn droppable_pages(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
-        let is_contig = self.contig_block.is_some();
-        self.pages
+        self.slots
             .iter()
             .enumerate()
-            .filter(move |&(page, backing)| {
-                !is_contig && backing.is_some() && self.mapcnt[page] == 0
-            })
-            .map(|(page, backing)| (page, backing.expect("filter 已筛 Some")))
+            .filter(|&(_page, &slot)| slot_pfn(slot) != 0 && slot_mapcnt(slot) == 0)
+            .map(|(page, &slot)| (page, slot_pfn(slot) as usize * PAGE_SIZE))
     }
 
     // ---- 测试面（host 单测）----
@@ -418,22 +522,25 @@ impl PageLedger {
     /// any_mapped 布尔面）。
     #[cfg(test)]
     pub(crate) fn mapcnt_of(&self, page_idx: usize) -> u16 {
-        self.mapcnt[page_idx]
+        if self.mmio_pa.is_some() {
+            return self.mmio_mapcnt[page_idx];
+        }
+        slot_mapcnt(self.slots[page_idx])
     }
 
     /// 测试/观测面：已提交页数。
     #[cfg(test)]
     pub(crate) fn committed_count(&self) -> usize {
-        self.pages.iter().filter(|p| p.is_some()).count()
+        self.slots.iter().filter(|&&s| slot_pfn(s) != 0).count()
     }
 
     /// 测试/观测面：已提交页号集合。
     #[cfg(test)]
     pub(crate) fn committed_pages(&self) -> Vec<usize> {
-        self.pages
+        self.slots
             .iter()
             .enumerate()
-            .filter(|(_, p)| p.is_some())
+            .filter(|(_, &s)| slot_pfn(s) != 0)
             .map(|(i, _)| i)
             .collect()
     }
@@ -540,7 +647,7 @@ mod rw_tests {
 
     #[test]
     fn gate_pass_through_each_law() {
-        let mut led = ledger3();
+        let led = ledger3();
         // 零长窗在尾界外一点 → OutOfRange（零长不豁免界检）。
         assert_eq!(copy_gate(&led, 3 * PAGE_SIZE + 1, 0), Err(VmoError::OutOfRange));
         // 溢出卷回拒。
@@ -954,44 +1061,158 @@ mod tests {
         assert_eq!(r.count(), 3);
         assert_eq!(r.iter().collect::<Vec<_>>(), vec![2, 3, 4]);
     }
+}
+#[cfg(test)]
+mod pack_tests {
+    use super::*;
+
+
+    /// 模拟 kernel 臂的 commit（tests 模块同款镜像）：资格判 + 未提交页落账。
+    fn commit(led: &mut PageLedger, offset: usize, len: usize, pa_base: usize) {
+        let range = led.commit_pages(offset, len).expect("资格判应过");
+        for p in range.iter() {
+            if led.page_pa(p).is_none() {
+                led.mark_committed(p, Some(pa_base + p * PAGE_SIZE));
+            }
+        }
+    }
+
+    /// W3-Q109 打包布局立法钉板：位窗/往返/域界/哨兵/两后备案分流。
+    /// 01 号内存管理审计机会 5 的回归面——打包语义 = 旧双 Vec 语义
+    /// 逐位等价（凡本测红 = 打包回归）。
 
     #[test]
-    fn contiguous_and_pinned_ledger_laws() {
-        // 5 页（20KiB = vnet DMA 几何）配 order=3（8 页阶块）：创建即全提交且物理连续，
-        // commit 幂等放行，decommit 拒 NotSupported，droppable_pages 为空防 order-0 误还，
-        // 未映射时 contig_drop_block 返回整块 (pa_base, 3)，映射中返回 None 守悬空 PTE 防线。
-        let base_pa = 0x4200_0000;
-        let mut c = PageLedger::new_contiguous(5 * KIB4, base_pa, 3).unwrap();
-        assert!(c.is_contiguous() && c.is_pinned());
-        assert_eq!(c.size(), 5 * KIB4);
-        for i in 0..5 {
-            assert_eq!(c.page_pa(i), Some(base_pa + i * KIB4));
+    fn layout_windows_are_pinned() {
+        // 位窗立法：mapcnt 占 [0,16)、PFN 占 [16,38)、高位 [38,64) 恒零。
+        assert_eq!(MAPCNT_BITS, 16);
+        assert_eq!(PFN_SHIFT, 16);
+        assert_eq!(PFN_BITS, PA_BITS - PAGE_SHIFT as u32);
+        assert_eq!(PA_BITS, 34);
+        // 域不交叠：两掩码相与必零。
+        assert_eq!(PFN_MASK & MAPCNT_MASK, 0);
+        // 满域打包不越界：PFN 最大页号 + mapcnt 满值。
+        let max_pfn = (1u64 << PFN_BITS) - 1;
+        let slot = slot_pack(max_pfn, u16::MAX);
+        assert_eq!(slot_pfn(slot), max_pfn);
+        assert_eq!(slot_mapcnt(slot), u16::MAX);
+        // 高位域恒零（未用域不藏污）。
+        assert_eq!(slot >> (PFN_SHIFT + PFN_BITS), 0);
+        // slot=0 双读零：未提交 + 计数零。
+        assert_eq!(slot_pfn(0), 0);
+        assert_eq!(slot_mapcnt(0), 0);
+    }
+
+    #[test]
+    fn pfn_roundtrip_page_aligned_pas() {
+        // 往返律：mark_committed(pa) → page_pa(pa) 逐位还原（全域代表点）。
+        // PA 域内代表点：RAM_BASE 之上合法窗（0x4000_0000 起）+ 高位角。
+        let mut led = PageLedger::new_anon(8 * PAGE_SIZE).unwrap();
+        let pas = [
+            0x4000_0000,                     // RAM_BASE 首页
+            0x4000_0000 + 5 * PAGE_SIZE,     // 窗内点
+            0x4FFF_F000,                     // RAM_TOP 前一页
+            (1u64 << PA_BITS) as usize - PAGE_SIZE, // PA 域顶页（16GiB-4KiB）
+        ];
+        for (i, &pa) in pas.iter().enumerate() {
+            led.mark_committed(i, Some(pa));
+            assert_eq!(led.page_pa(i), Some(pa), "往返失败 @{:#x}", pa);
         }
-        assert_eq!(c.page_pa(5), None);
-        // 幂等 commit 资格过（全页均已 Some，调用方零新分配）。
-        assert_eq!(c.commit_pages(0, 5 * KIB4).unwrap().count(), 5);
-        // decommit 一律拒 NotSupported。
-        assert_eq!(c.decommit_pages(0, KIB4), Err(VmoError::NotSupported));
-        assert_eq!(c.droppable_pages().count(), 0);
-        assert_eq!(c.contig_drop_block(), Some((base_pa, 3)));
-        // 映射一页后 contig_drop_block 拒绝拆块。
-        c.track_map(KIB4, KIB4);
-        assert_eq!(c.contig_drop_block(), None);
-        c.untrack_map(KIB4, KIB4);
-        assert_eq!(c.contig_drop_block(), Some((base_pa, 3)));
+        // 未对齐 PA 静默截断为页号（kernel 臂只出页对齐帧——host 面钉
+        // 「入参页对齐」的既有前置，非新语义）。
+        led.mark_committed(4, Some(0x4001_2345));
+        assert_eq!(led.page_pa(4), Some(0x4001_2000));
+    }
 
-        // 非对齐基或阶块容量不足显式拒。
-        assert_eq!(
-            PageLedger::new_contiguous(5 * KIB4, base_pa + 0x100, 3).err(),
-            Some(VmoError::Unaligned)
-        );
-        assert_eq!(
-            PageLedger::new_contiguous(5 * KIB4, base_pa, 2).err(),
-            Some(VmoError::OutOfRange)
-        );
+    #[test]
+    fn mark_decommitted_keeps_mapcnt_clears_pfn() {
+        // mark_decommitted 语义钉板：清 PFN 域、保 mapcnt 域（原 `.take()`
+        // 语义镜像——计数不随归还归零）。
+        let mut led = PageLedger::new_anon(2 * PAGE_SIZE).unwrap();
+        led.mark_committed(0, Some(0x4000_1000));
+        led.track_map(0, PAGE_SIZE); // mapcnt=1
+        assert_eq!(led.mapcnt_of(0), 1);
+        assert_eq!(led.page_pa(0), Some(0x4000_1000));
+        let ret = led.mark_decommitted(0);
+        assert_eq!(ret, Some(0x4000_1000), "归还 PA 返回");
+        assert_eq!(led.page_pa(0), None, "PFN 域已清");
+        assert_eq!(led.mapcnt_of(0), 1, "mapcnt 保留");
+        // 已清页再清：None 且不炸。
+        assert_eq!(led.mark_decommitted(0), None);
+    }
 
-        // MMIO 区间查询供内核 VirtIO 自动复位使用。
-        let m = PageLedger::new_mmio(0x0A00_0000, 4 * KIB4).unwrap();
-        assert_eq!(m.mmio_pa_range(), Some((0x0A00_0000, 4 * KIB4)));
+    #[test]
+    fn mmio_routed_to_independent_counter() {
+        // MMIO 后备案分流：slots 恒空、mmio_mapcnt 独立计数、any_mapped
+        // /droppable 不读 slots。
+        let mut led = PageLedger::new_mmio(0x0900_0000, 2 * PAGE_SIZE).unwrap();
+        assert!(led.is_mmio());
+        assert_eq!(led.npages(), 2);
+        led.track_map(0, PAGE_SIZE);
+        assert!(led.any_mapped());
+        assert_eq!(led.mapcnt_of(0), 1);
+        assert_eq!(led.mapcnt_of(1), 0);
+        led.untrack_map(0, PAGE_SIZE);
+        assert!(!led.any_mapped());
+        // droppable 恒空（设备 PA 不进帧账）。
+        assert_eq!(led.droppable_pages().count(), 0);
+        // page_pa 恒「已提交」形。
+        assert_eq!(led.page_pa(1), Some(0x0900_0000 + PAGE_SIZE));
+    }
+
+    #[test]
+    fn packed_size_is_8b_per_page() {
+        // 打包收益钉板（host 观测面）：slots 单 Vec u64 = 8B/页——
+        // 旧双 Vec 24B/页（Option<usize> 16B + u16 2B 经 Vec 步进 24B）。
+        // 类型面钉板：slots = 单 Vec<u64>（Vec 三字等宽族）——旧
+        // pages: Vec<Option<usize>> + mapcnt: Vec<u16> 双 Vec 已并一。
+        // （结构大小非验收面，位窗与语义面才是；本断言防字段回摆。）
+        let led = PageLedger::new_anon(4 * PAGE_SIZE).unwrap();
+        assert_eq!(led.npages(), 4);
+        assert_eq!(core::mem::size_of::<Vec<u64>>(), core::mem::size_of::<Vec<u8>>());
+        assert_eq!(core::mem::size_of::<u64>(), 8, "打包槽 8B/页立法");
+    }
+
+    #[test]
+    fn mapcnt_saturates_in_packed_domain() {
+        // 打包槽内 mapcnt 饱和律：u16::MAX+1 不回卷、不渗 PFN 域。
+        let mut led = PageLedger::new_anon(PAGE_SIZE).unwrap();
+        led.mark_committed(0, Some(0x4000_0000));
+        for _ in 0..(u16::MAX as usize + 1) {
+            led.track_map(0, PAGE_SIZE);
+        }
+        assert_eq!(led.mapcnt_of(0), u16::MAX, "饱和加");
+        assert_eq!(led.page_pa(0), Some(0x4000_0000), "饱和不渗 PFN");
+        led.untrack_map(0, PAGE_SIZE);
+        assert_eq!(led.mapcnt_of(0), u16::MAX - 1, "饱和减不塌 0");
+        assert_eq!(led.page_pa(0), Some(0x4000_0000));
+    }
+
+    #[test]
+    fn full_lifecycle_under_packing() {
+        // 全生命周期对拍：建→提交→映射→解映射→归还→重提交（打包面下
+        // 与旧双 Vec 语义逐位等价的端到端守卫）。
+        let mut led = PageLedger::new_anon(4 * PAGE_SIZE).unwrap();
+        assert_eq!(led.committed_count(), 0);
+        commit(&mut led, 0, 2 * PAGE_SIZE, 0x4000_0000);
+        assert_eq!(led.committed_pages(), vec![0, 1]);
+        assert_eq!(led.page_pa(1), Some(0x4000_0000 + PAGE_SIZE));
+        led.track_map(0, 2 * PAGE_SIZE);
+        led.track_map(0, 2 * PAGE_SIZE);
+        assert!(led.any_mapped());
+        assert!(matches!(led.decommit_pages(0, 2 * PAGE_SIZE), Err(VmoError::Mapped)));
+        led.untrack_map(0, 2 * PAGE_SIZE);
+        led.untrack_map(0, 2 * PAGE_SIZE);
+        assert!(!led.any_mapped());
+        let (_, pas) = led.decommit_pages(0, 2 * PAGE_SIZE).unwrap();
+        assert_eq!(pas, vec![(0, 0x4000_0000), (1, 0x4000_0000 + PAGE_SIZE)]);
+        for (p, _) in pas {
+            led.mark_decommitted(p);
+        }
+        assert_eq!(led.committed_count(), 0);
+        // churn 重提交：同一槽 PFN 重写不残留旧 mapcnt（helper 落账
+        // pa_base + p*PAGE——p=1 期望 0x4800_1000）。
+        commit(&mut led, PAGE_SIZE, PAGE_SIZE, 0x4800_0000);
+        assert_eq!(led.page_pa(1), Some(0x4800_0000 + PAGE_SIZE));
+        assert_eq!(led.mapcnt_of(1), 0, "重提交不带旧计数");
     }
 }

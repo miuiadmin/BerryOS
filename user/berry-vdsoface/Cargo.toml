@@ -1,0 +1,20 @@
+[package]
+name = "berry-vdsoface"
+version.workspace = true
+edition = "2021"
+# W3-Q106（03 号审计机会三）：vDSO 数据页布局与换算纯函数 crate——
+# clock_read MONOTONIC vDSO 化的单源面。页布局常量 + magic/version 域 +
+# ticks→ns 换算（与内核 sys_clock_read 同式：先商后余防中间溢出）；
+# host 测试先行（berry-fbcon「纯函数 crate 化先 host 测」纪律同款）。
+# 双消费：kernel/arch 侧建页填页（path 依赖跨工作区引本 crate，先例 =
+# berry-fbcon）+ user/berry-sys fast path 读页换算（同 user workspace
+# path 依赖）。库本体 no_std（两侧消费面），test 构建放开 std；
+# `cfg_attr(not(test), no_std)` + 显式 `--target <host>` 测试（根 config
+# 锁 aarch64-unknown-none 跨 workspace 边界命中——berryboot/fbcon 同款
+# gotcha）。
+license = "Apache-2.0"
+description = "BerryOS vDSO data-page layout and ticks-to-ns conversion as pure functions (frozen-ABI magic/freq/seq fields, seqlock-ready predicate), host-testable single source"
+repository = "https://github.com/miuiadmin/BerryOS"
+readme = "README.md"
+
+[dependencies]

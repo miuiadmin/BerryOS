@@ -3,7 +3,7 @@
 Type: spec
 Status: active
 Updated: 2026-11-18
-Version: 1.0.0
+Version: 1.0.1
 
 ## 1. 模块定位与职责边界
 
@@ -38,7 +38,7 @@ BerryOS Compat 是 BerryOS 连接已有开源生态（Linux / POSIX / Android）
 
 ### 职责边界划分
 - **归属 Compat 的职责**：
-  1. **Tier 1 (源码级 POSIX)**：向开发者提供标准 C 运行时（`berry-musl`），将 `open/read/write/poll` 转译为 BerryOS [cbox](../cbox/design.md) 通道与文件对象调用。
+  1. **Tier 1 (源码级 POSIX)**：向开发者提供标准 C 运行时（`berry-musl` / `berry-libc`），将 `open/read/write/poll/posix_spawn` 转译为 BerryOS [storage-image](../storage-image/design.md) 文件系统会话与 [ipc](../ipc/design.md) `Channel / Port` 对象调用。
   2. **Tier 2 (二进制级用户态仿真)**：基于内核 `Restricted Mode` 原语，运行原生未经修改的 aarch64/x86-64 Linux ELF 二进制文件，由 `linux_runner` 捕获其 Linux Syscall 并仿真为 BerryOS 服务 IPC。
   3. **Tier 3 (硬件级极速 MicroVM)**：针对内核级驱动或复杂容器，基于 Hypervisor 原语启动轻量 Linux 客机（<15ms 冷启），通过 VirtIO 桥接显示、音频与网络。
   4. **窗口与桌面缝合**：将 Linux X11/Wayland 窗口无缝注入 BerryOS [compositor](../compositor/design.md)，享受原生圆角裁剪、阴影及手势交互，用户无感知系统差异。
@@ -57,7 +57,7 @@ sequenceDiagram
     participant LR as linux_runner (Normal Mode)
     participant K as meihe 微内核
     participant LP as Linux 二进制 (Restricted Mode)
-    participant FS as VFS / cbox
+    participant FS as VFS / fsmgr
 
     LR->>K: 0x4A berry_restricted_enter(flags, state_vmo)
     Note over K,LP: 内核切换上下文到受限态寄存器
@@ -68,7 +68,7 @@ sequenceDiagram
     K->>K: 保存 Linux 寄存器到 state_vmo
     K-->>LR: 退出 restricted_enter，返回原因: SYSCALL_TRAP
     LR->>LR: 解析系统调用号 (如 sys_openat)
-    LR->>FS: 转换为 BerryOS cbox IPC
+    LR->>FS: 转换为 BerryOS VFS / Channel IPC
     FS-->>LR: 返回结果 fd / handle
     LR->>LR: 填写 state_vmo 的 return_code (x0/rax)
     LR->>K: 再次 0x4A berry_restricted_enter

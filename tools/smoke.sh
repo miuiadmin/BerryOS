@@ -11,8 +11,9 @@
 #      stdhello 经 musl target + berry-libc shim + 流式装载全链自打——
 #      G-eco-d d-1c）标记到齐——「rootfs 程序经全链跑通出字」的关卡化
 #      （裸跑相 rootfs 缺席 = svcmgr 静默降级，26 标记零扰动，两相互证；
-#      B-0 起裸相含 BENCH ok n=8（04 号审计基线缺口刀起 n=6→n=8——
-#      pick_scan/switch_pair 两项收口，trailer 迁调度器纪元尾恒发）——
+#      B-0 起裸相含 BENCH ok n=10（04 号 n=6→n=8 pick_scan/switch_pair；
+#      W3-Q98 n=8→n=9 send_recv_pair + W3-Q102 n=9→n=10 svc_roundtrip
+#      ——02/03 号审计测量面收口，trailer 形态不变）——
 #      内核微基准 + churn 泄漏金丝雀关卡化；
 #      R-0 起含 BENCHWAKE n=——唤醒延迟直方图 boot 尾形状行；
 #      S-2 起含 BENCHXH ok——资源耗尽/恢复六面确定性关卡化；
@@ -1672,8 +1673,10 @@ echo "smoke: FAT 持久化到齐（跨 boot 读回 f42t + M3DEMO T3.TXT 交互 c
 # 采样撞窗是概率事件，注入 = 每轮必达）+ 注入后分类必须 poison。
 # 已知缺口（如实入册，评估 §6）：Boot A/B 的 kill 前无活性复验——无输出
 # 挂死与合法采样不可区分（kernel panic 有 loud 串口、由标记帽兜）；
-# switches= 金丝雀每 50 切一行（1x ≈10s），18s/15s 窗内零增长断言在慢机
-# 上是假红，故不做。
+# switches= 金丝雀现为时间节流（探针族退役刀 2026-11-19 起：balface::
+# CANARY_PERIOD=15s vct、行频与切换率解耦——SOAK_PRINT_EVERY 事件计数
+# 节流已随该刀退役，旧「每 50 切一行、慢机窗内零增长假红」系该节律时代
+# 所记）；18s/15s 窗内零增长断言仍不做（kill 前活性复验缺口如实在册）。
 # Boot C（恢复终验）：毒环盘上全链重跑——fatw 覆写走恢复 commit（①collect
 # 走旧首簇即撞 Free 止步 → ②升序分配把旧首簇复用进新链头（smoke 单文
 # 件覆写负载下它是最低 Free；一般负载可中段复用/不复用——守卫按成员制

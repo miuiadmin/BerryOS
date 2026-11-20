@@ -32,3 +32,7 @@ Status: implemented
 - `just build` 的 docs-guard 在工作树被并行 lane 对其自己已提交内容的陈旧缓冲覆写挡红（索引 :33/:134+沿革 547 节自抹+沉浸头块回退）——主线改 cargo 直构+smoke.sh 直跑完成验证；该红非本刀债（AGENTS 规则 8）。
 - 对抗审查（wf_5d4ccbe5-ad2，25 agent 四维 finder+逐 finding 对抗核实）：21 发现（19 CONFIRMED/1 PLAUSIBLE/1 REJECTED）全数处置——①**v1.13 计数勘正 181→182**（最硬一条，四维度重复命中：退役项 `has_eff_above_filtered` 系 `pub(crate)` 从不在机提口径，runqueue 仍 7、class 16→17、合计 182——版本头/分文件表/合计行/索引行四处同步+「事实源对拍时点」行补 v1.13 注）；②规则 README 入链漏一（反引号路径提及，check-docs 不报警的盲区）；③API 参考 pick_next_filtered 行「生产出选唯一路径」陈账；④雷册/规则 §A43 两处符号名漏 `_filtered` 勘正（dpgface 纯函数 `has_eff_above` 独立存续，勿误伤）；⑤class.rs trait 面头注「八个出选点」清创（七 filtered+一 preempt）+性能主张「miss 路同为一圈」补 DL_ON_RING>0 反例限定（该形态 miss=解冻+扫描两圈，但命中路旧形三圈收敛两圈——净口径按形态记）；⑥dpgface 两处孪生注+dpg.rs W3-Q59 消费锚注滚新；⑦ktest (c) 注勘正（>= 误用形返回 cur 自身——等键 head 侧首见）+miss 路 note_pick 零计补钉（intent_picks 快照对拍）+(b) 等键前提自钉（键漂移两方向显形——PLAUSIBLE 补强）；⑧MAJOR「提交闸风险」（工作树兄弟陈旧覆写与本刀必交文件相交）=外科提交处置；⑨笔记/沿革缺口=本笔收口。修后复跑：cargo build 绿+boot smoke 32/32+berry-dpgface/berry-ringface host 全绿。
 - 沿革五百四十九；API 参考 v1.13（**182** pub fn——审查勘正后口径）。
+
+## 形替换附记（2026-11-18 合并 1e7872196）
+
+本刀落地面在合并 1e7872196（2026-11-18 02:29）中被 origin 侧同题刀形胜替换——终形 = `Fair::pick_next_if_above`（W3-Q93，见[探峰出选双圈合一笔记](2026-11-17-探峰出选双圈合一.md)）：class.rs 解到 origin 侧 `scan_with_eff` 单圈累加器带门形，本刀 `pick_next_preempt`/`pick_inner` 载体与 ktest `test_pick_preempt`（PNPK）已随合并裁退（全树零定义）。语义等价（解冻→扫描→带门→出选，miss 零副作用）经 DL-B4 四态 + ringface host 3000 例对拍钉板。按规则 9 读本笔记：Problem/Decision/Consequences 各段的载体与机制名均系本刀落笔时形，现行代码以 W3-Q93 形为准（API 参考 v1.18 条目已改登终形）。
