@@ -31,3 +31,8 @@ berry-exec = { path = "../../../user/berry-exec" }
 berry-virtio = { path = "../../berry-virtio" }
 # A-4：服务协议（请求/应答编解码，纯函数 host 测试盖）。
 berry-blkproto = { path = "../../../user/berry-blkproto" }
+# 存储栈 P0-2 刀 2（消费面兑现）：启动时分区表探测——GPT/MBR 解析纯
+# 函数 crate，读盘经闭包注入（blk_op 单扇区 IN + IOB bounce 拷出），
+# 解析结果打日志（教学可见性）；alloc 面走 berry-libc 静态堆（bsh 同链
+# 先例）。多分区按 RPC 暴露归 v2（协议 crate 冻结面不动）。
+berry-partition = { path = "../../../user/berry-partition" }
