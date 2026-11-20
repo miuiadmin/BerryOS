@@ -2035,6 +2035,21 @@ def parse_args(argv=None):
 
 def main(argv=None) -> int:
     args = parse_args(argv)
+    # aged 旗域校验（对抗审查 P2/P3）：非有限值（NaN 参与 >= 比较为
+    # False 可穿过 _aged_wait 的 <=0 守卫、sleep(NaN) 直接 traceback）
+    # 与负值一并显式拒绝；--normal-boot 腿不读 aged_minutes——组合
+    # 显式拒绝防「静默忽略被误读为已 aged」。
+    if not (args.aged_minutes >= 0) or args.aged_minutes == float("inf"):
+        print(
+            "gui8-smoke: FAIL: --aged-minutes 须为非负有限分钟数",
+            file=sys.stderr, flush=True)
+        return 2
+    if args.aged_minutes > 0 and args.normal_boot:
+        print(
+            "gui8-smoke: FAIL: --aged-minutes 暂不支持 --normal-boot 组合"
+            "（该腿无 click ready 门锚点，不加 aged 面）",
+            file=sys.stderr, flush=True)
+        return 2
     try:
         if args.self_test:
             return self_test(args)

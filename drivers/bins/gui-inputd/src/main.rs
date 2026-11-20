@@ -103,7 +103,10 @@ mod guest {
     /// 观测面 tally 周期：60s（真机场放久后服务环疑似停转——收割停/转发
     /// 停，零日志零痕迹；每拍一行固定前缀「gui-inputd: tally 」的旁路心跳：
     /// 行缺席 = 环停转（卡在 wait/send/park 面），行在场而计数冻结 = 环转
-    /// 但收割/应答停——两级定位面。第 10 拍附 wm 面一行）。
+    /// 但收割/应答停——两级定位面。第 10 拍附 wm 面一行。行可迟到：纯
+    /// poll 帽路径最坏 60+30+0.1 ≈ 90s；send_rep EBUSY 重臂每轮再 +10s
+    /// （迟到上界 90+10k s，「send EBUSY 计」行在卷即自愈形）——巡检
+    /// 哨按缺席 ≥2× 周期（≥120s）立案，勿以 ~90s 假阳性。
     const TALLY_PERIOD_NS: u64 = 60_000_000_000;
     /// GUI-5：wmd 推送快照超龄帽（Q11-②——age 超此值视同缺席，旁注降级
     /// 记账不命中；③降级态每帽值一跳重发 WAIT(0) 重探测）。
@@ -1156,7 +1159,10 @@ mod guest {
         // 观测面 tally 计数（纯旁路零控制流改动）：harvest_total = 收割喂
         // 泵累计——两台泵各自的自由运行 u16 `harvested` 游标按回环顶快照
         // wrapping 对账推进量（serve 回环顶与 serve_poll 两处收割在回环顶
-        // 统一收口；回环一拍内推进 < 65536 结构性成立，u16 回绕无损）；
+        // 统一收口；回环一拍内推进 < 65536 是速率假设非结构保证——环深
+        // 16 不封顶（收割即回挂、设备可边产边收），设备产率 × 30s 帽
+        // ≪ 65536 时 u16 回绕无损；宿主持续洪灌（≥ ~2185 事件/s × 30s）
+        // 才会失真少计，纯观测面无控制流影响）；
         // polls_served = serve_poll 完成累计；e 字段读 [`SEND_EBUSY`]；q
         // 字段 = 两泵待取深（pub `pending()`——lib 只读不改）。行缺席 =
         // 环停转，行在场而计数冻结 = 收割/应答停（见 [`TALLY_PERIOD_NS`]）。
@@ -1187,7 +1193,9 @@ mod guest {
                 tally_n += 1;
                 // SAFETY: 单线程进程独占（send_rep 写面同进程串行——
                 // WM_CACHE 同款面）。
-                let ebusy = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(SEND_EBUSY)) };
+                // SAFETY: 单线程串行读（写点 :707 同为非 volatile——两侧
+                // 对称；单侧 volatile 无意义，对抗审查 P3 裁定）。
+                let ebusy = unsafe { *core::ptr::addr_of!(SEND_EBUSY) };
                 println!(
                     "gui-inputd: tally h={} p={} e={} q={}/{}",
                     harvest_total, polls_served, ebusy, pump.pending(), kpump.pending()

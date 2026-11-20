@@ -7146,7 +7146,10 @@ fn app_launch(
         if gui_ph0 != 0 {
             // 满前缀形占位（[1]/[2] = cli 自有别名，服务于满前缀语义
             // ——见 ④ 注；input 位 [3] 撤。gui_ph0≠0 ⟹ gui_ph1≠0
-            // 同批成对，零 0 洞保形）。
+            // 同批成对，零 0 洞保形）。占位别名落 env 位 [5]/[6] →
+            // libc GIFT_H[1]/[4]（fs_h/wm_present_h 同槽族）——
+            // !wants_fs app 禁读这两槽：读到的是 wm cli 别名非 0 假
+            // 在场，非 fs/present 端点（对抗审查 P3 钉板）。
             gifts[1] = gui_ph0;
             gifts[2] = gui_ph1;
             &gifts[..3]
@@ -7205,6 +7208,8 @@ fn app_launch(
             if wm_cli != 0 && berry_handle_close(wm_cli) != 0 {
                 trap();
             }
+            // in_dup 恒 0（④ 撤 dup 后）——此分支不可达但保留清理面
+            // 结构：重做刀回装 input dup 时此收口即复活，勿删。
             if in_dup != 0 && berry_handle_close(in_dup) != 0 {
                 trap();
             }

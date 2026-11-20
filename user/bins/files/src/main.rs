@@ -26,7 +26,8 @@
 //! 承载不同对象」的多产面惯例——extras[2] 对 gui-wmd 承载 present
 //! 客户端端、对本 app 承载 wm 客户端端，同为 wmd 通道客户端端）；
 //! 专用访问器挂 appshell 裁决 A（波 3 §6）落地换轨。input 固定位
-//! [3] = `input_h()` 不受影响。
+//! [3] = `input_h()` 自 2026-11-20 输入楔死刀撤共享 dup 后结构性恒 0
+//! （app 静态页降级，输入交互归 inputfeed 重做刀私有通道面）。
 //!
 //! **帧循环/退出形态照 settings 先例**：wm 门控（0 = 一行诊断 + park
 //! 常驻不秒退）→ WM_GETINFO 几何 → present GETINFO 轻断言 → 帧 VMO

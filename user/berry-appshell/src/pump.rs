@@ -334,10 +334,14 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
         //    INPUT_STALE_CAP_NS 即判死：非阻塞排空 hi 通道吞掉一切滞留
         //    应答（不解析不注入，随行 handle 照关），复位后照常走下方
         //    既有 input_arm 重挂；复位只翻 input_pending，不清其他输入
-        //    状态。残余竞态：排空与重挂之间服务端仍可能投下一条迟到的
-        //    旧应答——下一轮 recv 按新 poll 应答照常消费（至多一条，自纠
-        //    不楔死），属预期。age 取 wrapping 减：时钟回拨折大值 →
-        //    复位一次重挂自愈，不 panic。
+        //    状态。残余竞态两向：①排空与重挂之间服务端仍可能投下一条
+        //    迟到的旧应答——下一轮 recv 按新 poll 应答照常消费（至多
+        //    一条，自纠不楔死），属预期；②若 60s 静默的真因是服务端
+        //    被饿而非应答丢，恰越阈落地的那条应答内是收割即新鲜的
+        //    事件，同被排空无差别丢弃（一批 ≤INPUT_EVENTS_MAX，一次性，
+        //    下一轮重挂自愈；手势 down/up 跨批分裂会留孤立 up）——归因
+        //    以 inputd tally 行佐证。age 取 wrapping 减：时钟回拨折大值
+        //    → 复位一次重挂自愈，不 panic。
         let input_age_ns = t_now.wrapping_sub(input_arm_ns);
         if hi != 0 && input_pending && input_age_ns > INPUT_STALE_CAP_NS {
             let mut drained = 0usize;
@@ -352,8 +356,11 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
                     &mut nh,
                 );
                 if s != 0 {
-                    // AGAIN = 已排空即止；其他错 = 通道已死——交下方重挂
-                    // 路的 arm 失败处置（disable 面）。
+                    // AGAIN = 已排空即止；其他错 = 队首滞留或通道死——
+                    // recv 向与 send 向是同一通道的两条独立 FIFO：滞留
+                    // 消息由下一轮主收路径的 recv err 分支 disable，通道
+                    // 死由 arm send 失败 disable（可能多挂一条必死 poll
+                    // 进服务端队列，一轮内收口）。
                     break;
                 }
                 for h in &input_hs[..nh] {
