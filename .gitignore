@@ -112,6 +112,8 @@ __pycache__/
 /tools/mkapp/cargo-target/
 # gensourceindex 宿主工具独立 target（b 层 #5 刀序第五位首刀，mkapp 同款纪律）
 /tools/gensourceindex/cargo-target/
+# berryassemble 宿主工具独立 target（b 层 #6 刀序第六位首刀，mkapp 同款纪律）
+/tools/berryassemble/cargo-target/
 
 # berry 宿主工具截图产物（berry shot 默认输出 / 窗口 Cmd-S）
 /shot.png
