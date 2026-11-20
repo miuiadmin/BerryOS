@@ -8,8 +8,11 @@
 //! 本片后 lite 面与 Python `load_product(lite=True)` 全分支同构。
 //! 词表/域界单源复用 lib（`boot_params_spec`/`INTENTS`/`parse_kernel_anchor`）。
 //!
-//! 未收录面（后续片）：`[product.defaults.locale]` 八键（BCP 47/tz/枚举）
-//! ——locale 节出现即 loud 拒（未收录面不静默放行）。本片未接 CLI
+//! 第三片：`[product.defaults.locale]` i18n 八键执法（languages BCP 47 形/
+//! 1..=8 帽/大小写不敏感查重、timezone Area[/Sub]/Location 段形、region/
+//! regulatory_domain ISO 3166-1 alpha-2、calendar 等四枚举词表）——Python
+//! `_check_locale_section` 逐枝镜像；BCP 47 简化 ABNF 手写段匹配器（零
+//! regex 依赖——段界即 token 界，贪婪+回退同构）。本件未接 CLI
 //! （产线零触碰——首刀「只挂测试」先例）。
 //!
 //! 已知边界（钉界）：①toml_doc 空节不产出——`[product.trust]` 空节 Python
@@ -61,6 +64,24 @@ const DEFAULTS_KEYS: [&str; 2] = ["launcher", "locale"];
 const DEFAULTS_DEFERRED: [&str; 1] = ["scheduler"];
 const SOURCE_KEYS: [&str; 1] = ["instance"];
 const TRUST_KEYS: [&str; 1] = ["pk_anchor"];
+
+// locale 八键（Python LOCALE_KEYS 镜像——§1.5 定形组）
+const LOCALE_KEYS: [&str; 8] = [
+    "calendar",
+    "first_day_of_week",
+    "hour_cycle",
+    "languages",
+    "region",
+    "regulatory_domain",
+    "temperature_unit",
+    "timezone",
+];
+const LANGUAGES_MAX: usize = 8;
+const BCP47_LEN_MAX: usize = 35;
+const CALENDARS: [&str; 1] = ["gregory"];
+const WEEKDAYS: [&str; 7] = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+const HOUR_CYCLES: [&str; 4] = ["h11", "h12", "h23", "h24"];
+const TEMP_UNITS: [&str; 2] = ["celsius", "fahrenheit"];
 
 // ---- 展平表 → 树视图（段切分；引号键内 '.' 差一档——toml_doc 头注钉界）----
 
@@ -266,7 +287,253 @@ fn sorted_dups(items: &[String]) -> Vec<String> {
     dups.into_iter().collect()
 }
 
-// ---- [platform] 全节执法（二刀第二片——Python `_check_platform_section` 镜像）----
+// ---- locale 形校验（Python BCP47_RE / TZ_RE / REGION_RE 手写镜像——零 regex）----
+
+/// RFC 5646 简化 ABNF 手写段匹配器（Python BCP47_RE IGNORECASE fullmatch
+/// 镜像）。策略 = 按 '-' 切段后逐段归亚型（language/extlang/script/region/
+/// variant/extension/privateuse），贪婪分配 + 定长回退——子段串唯一分解同
+/// Python 正则回溯语义（歧义形现役语面无同席；parity 梯语料钉板）。
+fn bcp47_ok(tag: &str) -> bool {
+    if tag.is_empty() || tag.chars().count() > BCP47_LEN_MAX {
+        return false;
+    }
+    let segs: Vec<&str> = tag.split('-').collect();
+    // privateuse 单独形：x-…
+    if segs[0].eq_ignore_ascii_case("x") {
+        return segs.len() >= 2
+            && segs[1..].iter().all(|s| (1..=8).contains(&s.len()) && s.chars().all(|c| c.is_ascii_alphanumeric()));
+    }
+    // language：{2,3} (+0..3 extlang 各 3) | 4 | {5,8}
+    let prim = segs[0];
+    let pl = prim.chars().count();
+    let alpha = |s: &str| s.chars().all(|c| c.is_ascii_alphabetic());
+    if !(2..=8).contains(&pl) || !alpha(prim) {
+        return false;
+    }
+    let mut i = 1;
+    if (2..=3).contains(&pl) {
+        while i < segs.len() && i <= 3 {
+            let s = segs[i];
+            if s.len() == 3 && alpha(s) {
+                i += 1;
+            } else {
+                break;
+            }
+        }
+    }
+    // script：4 alpha（恰 4——5 alpha 语言已耗，无歧义）
+    if i < segs.len() && segs[i].chars().count() == 4 && alpha(segs[i]) {
+        i += 1;
+    }
+    // region：2 alpha | 3 digit
+    if i < segs.len() {
+        let s = segs[i];
+        let cl = s.chars().count();
+        if (cl == 2 && alpha(s)) || (cl == 3 && s.chars().all(|c| c.is_ascii_digit())) {
+            i += 1;
+        }
+    }
+    // variant*：{5,8} alnum | 4 = digit+3 alnum
+    while i < segs.len() {
+        let s = segs[i];
+        let cl = s.chars().count();
+        let is_variant = (5..=8).contains(&cl) && s.chars().all(|c| c.is_ascii_alphanumeric())
+            || cl == 4 && s.chars().next().map_or(false, |c| c.is_ascii_digit())
+                && s.chars().skip(1).all(|c| c.is_ascii_alphanumeric());
+        if !is_variant {
+            break;
+        }
+        i += 1;
+    }
+    // extension*：singleton（alnum ≠ x/X）+ {2,8} alnum 子段 1..=n
+    while i < segs.len() {
+        let s = segs[i];
+        if s.chars().count() != 1 || !s.chars().next().map_or(false, |c| c.is_ascii_alphanumeric() && c != 'x' && c != 'X') {
+            break;
+        }
+        i += 1;
+        let mut sub = 0;
+        while i < segs.len() {
+            let t = segs[i];
+            if (2..=8).contains(&t.chars().count()) && t.chars().all(|c| c.is_ascii_alphanumeric()) {
+                i += 1;
+                sub += 1;
+            } else {
+                break;
+            }
+        }
+        if sub == 0 {
+            return false;
+        }
+    }
+    // 私有段后缀：x + {1,8} alnum 子段 1..=n
+    if i < segs.len() && segs[i].eq_ignore_ascii_case("x") {
+        i += 1;
+        let mut sub = 0;
+        while i < segs.len() {
+            let t = segs[i];
+            if (1..=8).contains(&t.chars().count()) && t.chars().all(|c| c.is_ascii_alphanumeric()) {
+                i += 1;
+                sub += 1;
+            } else {
+                break;
+            }
+        }
+        if sub == 0 {
+            return false;
+        }
+    }
+    i == segs.len()
+}
+
+/// IANA tz ID 形（Area[/Sub]/Location：段 = [A-Za-z0-9_+-]{1,30}、1..=3 段）。
+fn tz_ok(v: &str) -> bool {
+    let segs: Vec<&str> = v.split('/').collect();
+    (1..=3).contains(&segs.len())
+        && segs.iter().all(|s| {
+            (1..=30).contains(&s.chars().count())
+                && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '+' | '-'))
+        })
+}
+
+/// ISO 3166-1 alpha-2（两枚大写字母）。
+fn region_ok(v: &str) -> bool {
+    v.chars().count() == 2 && v.chars().all(|c| c.is_ascii_uppercase())
+}
+
+/// `[product.defaults.locale]` i18n 八键执法（Python `_check_locale_section`
+/// 逐枝镜像——文案即契约，parity 真跑钉板）。
+fn check_locale_section(p: &mut LiteProduct, sect: &View) -> Result<(), Reject> {
+    let node = match sect.get("locale") {
+        Some(n) => n,
+        None => return Ok(()),
+    };
+    let lv = match node {
+        Node::Table(v) => v,
+        _ => {
+            return Err(Reject(
+                "product.defaults.locale: 应为节（键值表——i18n 八键，§1.5：languages/timezone/region/regulatory_domain/calendar/first_day_of_week/hour_cycle/temperature_unit）"
+                    .to_string(),
+            ))
+        }
+    };
+    reject_unknown("product.defaults.locale", lv, &LOCALE_KEYS, &[])?;
+    // languages：BCP 47 数组 1..=8 + 大小写不敏感查重
+    if let Some(node) = lv.get("languages") {
+        let langs = match node {
+            Node::Leaf(Val::Arr(a)) => a.clone(),
+            _ => {
+                return Err(Reject(
+                    "product.defaults.locale.languages: 应为字符串数组（BCP 47 well-formed 列表，1..=8 项——§1.5）"
+                        .to_string(),
+                ))
+            }
+        };
+        if !(1..=LANGUAGES_MAX).contains(&langs.len()) {
+            return Err(Reject(format!(
+                "product.defaults.locale.languages: {} 项越 [1,{}] 帽（帽=推断：语言列表场景足够，防清单膨胀——§1.5）",
+                langs.len(), LANGUAGES_MAX
+            )));
+        }
+        let mut items: Vec<String> = Vec::new();
+        for (i, tag) in langs.iter().enumerate() {
+            let t = match tag {
+                Val::Str(s) => s.clone(),
+                other => {
+                    return Err(Reject(format!(
+                        "product.defaults.locale.languages[{i}]: 应为字符串（got {}）",
+                        val_type_name(other)
+                    )))
+                }
+            };
+            if t.chars().count() > BCP47_LEN_MAX || !bcp47_ok(&t) {
+                return Err(Reject(format!(
+                    "product.defaults.locale.languages[{i}]: BCP 47 well-formed 不符 '{t}'（RFC 5646 langtag/privateuse 形——语言[-文字][-地区][-变体…]；grandfathered 弃用族不收——§1.5）"
+                )));
+            }
+            items.push(t);
+        }
+        let lowered: Vec<String> = items.iter().map(|t| t.to_lowercase()).collect();
+        let dups = sorted_dups(&lowered);
+        if !dups.is_empty() {
+            return Err(Reject(format!(
+                "product.defaults.locale.languages: 条目重复 {}（BCP 47 大小写不敏感查重——§1.5）",
+                py_list(&dups)
+            )));
+        }
+        p.locale_languages = items;
+    }
+    // timezone / region / regulatory_domain：非空串 + 各自形
+    for key in ["timezone", "region", "regulatory_domain"] {
+        let v = match lv.get(key) {
+            Some(Node::Leaf(Val::Str(s))) => s.clone(),
+            Some(other) => {
+                return Err(Reject(format!(
+                    "product.defaults.locale.{key}: 应为非空字符串（got {}）",
+                    type_name(other)
+                )))
+            }
+            None => continue,
+        };
+        if v.is_empty() {
+            return Err(Reject(format!(
+                "product.defaults.locale.{key}: 应为非空字符串（got str）"
+            )));
+        }
+        if key == "timezone" {
+            if !tz_ok(&v) {
+                return Err(Reject(format!(
+                    "product.defaults.locale.timezone: IANA tz ID 形不符 '{}'（Area[/Sub]/Location 段形〔段内 [A-Za-z0-9_+-]、1..=3 段〕——词表 = iana.org 时区集，不做仓内枚举；§1.5）",
+                    v
+                )));
+            }
+            p.locale_timezone = v;
+        } else {
+            if !region_ok(&v) {
+                return Err(Reject(format!(
+                    "product.defaults.locale.{key}: 应为 ISO 3166-1 alpha-2（两枚大写字母；got '{}'——§1.5）",
+                    v
+                )));
+            }
+            if key == "region" {
+                p.locale_region = v;
+            } else {
+                p.locale_regulatory_domain = v;
+            }
+        }
+    }
+    // 四枚举：calendar / first_day_of_week / hour_cycle / temperature_unit
+    for (key, vocab) in [
+        ("calendar", &CALENDARS[..]),
+        ("first_day_of_week", &WEEKDAYS[..]),
+        ("hour_cycle", &HOUR_CYCLES[..]),
+        ("temperature_unit", &TEMP_UNITS[..]),
+    ] {
+        let node = match lv.get(key) {
+            Some(n) => n,
+            None => continue,
+        };
+        let ok = matches!(node, Node::Leaf(Val::Str(s)) if vocab.contains(&s.as_str()));
+        if !ok {
+            let vocab_list: Vec<String> = vocab.iter().map(|s| s.to_string()).collect();
+            return Err(Reject(format!(
+                "product.defaults.locale.{key}: 枚举外值 {}（词表 {}——add-only，§1.5）",
+                py_node_repr(node),
+                py_list(&vocab_list)
+            )));
+        }
+        if let Node::Leaf(Val::Str(s)) = node {
+            let sv = s.clone();
+            match key {
+                "calendar" => p.locale_calendar = sv,
+                "first_day_of_week" => p.locale_first_day_of_week = sv,
+                "hour_cycle" => p.locale_hour_cycle = sv,
+                _ => p.locale_temperature_unit = sv,
+            }
+        }
+    }
+    Ok(())
+}
 
 /// lite `Val` → lib `toml_val::Val` 转换桥（params 词表执法单源复用——
 /// 二刀第二片：`[platform.boot.params]` 不再长第二套词表/域界实现）。
@@ -508,6 +775,14 @@ pub struct LiteProduct {
     pub image_size_mib: u32,
     pub rootfs_split_mib: u32,
     pub min_power_atomicity: String,
+    pub locale_languages: Vec<String>,
+    pub locale_timezone: String,
+    pub locale_region: String,
+    pub locale_regulatory_domain: String,
+    pub locale_calendar: String,
+    pub locale_first_day_of_week: String,
+    pub locale_hour_cycle: String,
+    pub locale_temperature_unit: String,
 }
 
 /// 结构面执法主入口（Python `load_product(path, lite=True)` 镜像——文本入，
@@ -908,12 +1183,8 @@ fn check_product_section(p: &mut LiteProduct, sect: &View) -> Result<(), Reject>
         )));
     }
     p.launcher = launcher;
-    if dv.contains_key("locale") {
-        return Err(Reject(
-            "product.defaults.locale: 未收录面（Rust lite 二刀第三段——locale 八键执法归后续片；本片 loud 拒，不静默放行）"
-                .to_string(),
-        ));
-    }
+    // [product.defaults.locale]——i18n 八键（第三片——Python 逐枝镜像）
+    check_locale_section(p, dv)?;
     Ok(())
 }
 
@@ -960,5 +1231,30 @@ mod tests {
         assert!(load_lite_product(&good_min().replacen("board = \"qemu-virt\"", "board = \"rpi4\"", 1)).is_err());
         assert!(load_lite_product("schema = 2\n").is_err()); // 须 = 1 先于缺节
         assert!(load_lite_product("schema = 1\n[platform]\narch = \"x86_64\"\n").is_err()); // 缺 [product]
+        // 第三片 locale：八键全席过检 + 过检视图字段
+        let full = good_min().replacen(
+            "[platform]\n",
+            "[product.defaults.locale]\nlanguages = [\"zh-Hans-CN\", \"en-US\"]\ntimezone = \"Asia/Shanghai\"\nregion = \"CN\"\nregulatory_domain = \"CN\"\ncalendar = \"gregory\"\nfirst_day_of_week = \"mon\"\nhour_cycle = \"h23\"\ntemperature_unit = \"celsius\"\n[platform]\n",
+            1,
+        );
+        let lp = load_lite_product(&full).unwrap();
+        assert_eq!(lp.locale_languages.len(), 2);
+        assert_eq!(lp.locale_timezone, "Asia/Shanghai");
+        assert_eq!(lp.locale_region, "CN");
+        assert_eq!(lp.locale_hour_cycle, "h23");
+        // bcp47_ok 手写 matcher 单源钉板（Python BCP47_RE 梯形——parity 面
+        // 全谱对拍，此处钉结构性关键形）
+        for good in ["zh", "zh-Hans", "zh-Hans-CN", "zh-cmn-Hans-CN", "en-419",
+                     "de-CH-1901", "sl-rozaj-biske", "hy-Latn-IT-arevela",
+                     "en-a-bbb-x-a-ccc", "x-pig-latin", "ZH-HANS", "abcdefgh"] {
+            assert!(bcp47_ok(good), "rust 拒了 accept 形 {good}");
+        }
+        for bad in ["z", "7z", "zh-", "-zh", "zh--cn", "x-", "i-klingon",
+                    &"a".repeat(36), "zh-x-9toolongsegment"] {
+            assert!(!bcp47_ok(bad), "rust 过了 reject 形 {bad}");
+        }
+        assert!(tz_ok("UTC") && tz_ok("Asia/Shanghai") && tz_ok("America/Argentina/Buenos_Aires"));
+        assert!(!tz_ok("") && !tz_ok("a/b/c/d") && !tz_ok("Asia/") && tz_ok(&format!("a/{}", "b".repeat(30))) && !tz_ok(&format!("a/{}", "b".repeat(31))));
+        assert!(region_ok("CN") && !region_ok("cn") && !region_ok("CHN") && !region_ok("C1"));
     }
 }

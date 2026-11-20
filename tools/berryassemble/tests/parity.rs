@@ -435,6 +435,86 @@ fn parity_load_lite_product() {
     for (name, text) in cases {
         assert_reject_both(name, &text);
     }
+
+    // ---- 第三片 [product.defaults.locale] 八键拒面语料（good_platform_min
+    // 单点变异/追加——每条 Rust 拒 ⇔ Python 拒且文案逐字全等）----
+    let locale = |body: &str| -> String {
+        good_platform_min().replacen(
+            "[platform]\n",
+            &format!("[product.defaults.locale]\n{body}[platform]\n"),
+            1,
+        )
+    };
+    let cases3: Vec<(&str, String)> = vec![
+        ("locale 非表", locale("locale = 1\n")),
+        ("locale 未知键", locale("extra = 1\n")),
+        ("languages 非数组", locale("languages = \"zh\"\n")),
+        ("languages 空数组", locale("languages = []\n")),
+        ("languages 越帽 9 项", locale(&format!("languages = [{}]\n", (0..9).map(|i| format!("\"l{i}\"")).collect::<Vec<_>>().join(", ")))),
+        ("languages 元素非串", locale("languages = [7]\n")),
+        ("languages BCP47 短", locale("languages = [\"z\"]\n")),
+        ("languages BCP47 超 35", locale(&format!("languages = [\"{}\"]\n", "a".repeat(36)))),
+        ("languages BCP47 grandfathered", locale("languages = [\"i-klingon\"]\n")),
+        ("languages 大小写不敏感查重", locale("languages = [\"zh-Hans\", \"zh-hans\"]\n")),
+        ("languages 私有段后缀缺子段", locale("languages = [\"zh-x\"]\n")),
+        ("timezone 非 IANA 段形", locale("timezone = \"a/b/c/d\"\n")),
+        ("region 非大写双字母", locale("region = \"cn\"\n")),
+        ("regulatory_domain 三字母", locale("regulatory_domain = \"CHN\"\n")),
+        ("timezone 非串", locale("timezone = 8\n")),
+        ("region 空串", locale("region = \"\"\n")),
+        ("calendar 枚举外", locale("calendar = \"islamic\"\n")),
+        ("first_day_of_week 枚举外", locale("first_day_of_week = \"friday\"\n")),
+        ("hour_cycle 枚举外", locale("hour_cycle = \"h25\"\n")),
+        ("temperature_unit 非串", locale("temperature_unit = 1\n")),
+    ];
+    for (name, text) in cases3 {
+        assert_reject_both(name, &text);
+    }
+
+    // 第三片正面：locale 八键全席过检（Python OK 面对账 + 过检视图对齐）
+    let full = locale("languages = [\"zh-Hans-CN\", \"en-US\"]\ntimezone = \"Asia/Shanghai\"\nregion = \"CN\"\nregulatory_domain = \"CN\"\ncalendar = \"gregory\"\nfirst_day_of_week = \"mon\"\nhour_cycle = \"h23\"\ntemperature_unit = \"celsius\"\n");
+    let p = lite::load_lite_product(&full).unwrap();
+    assert_eq!(p.locale_languages, vec!["zh-Hans-CN".to_string(), "en-US".to_string()]);
+    assert_eq!(p.locale_timezone, "Asia/Shanghai");
+    assert_eq!(p.locale_region, "CN");
+    assert_eq!(p.locale_regulatory_domain, "CN");
+    assert_eq!(p.locale_calendar, "gregory");
+    assert_eq!(p.locale_first_day_of_week, "mon");
+    assert_eq!(p.locale_hour_cycle, "h23");
+    assert_eq!(p.locale_temperature_unit, "celsius");
+    let (py_out, ok) = py_load_lite(&full);
+    assert!(ok, "locale 全席: python 未过：{py_out}");
+
+    // BCP47 accept 梯（分支对齐钉板——手写镜像正则回溯语义的关键语形）：
+    // 私有段单独形 / extlang / 数字 region / 4-数字头变体 / 变体链 / 扩展+私有
+    // 后缀 / 大小写不敏感。双过/双拒皆同构；文案面由上方拒面语料担。
+    for good in [
+        "x-pig-latin",
+        "zh-Hant",
+        "zh-Hans-CN",
+        "en-419",
+        "de-CH-1901",
+        "sl-rozaj-biske",
+        "hy-Latn-IT-arevela",
+        "en-a-bbb-x-a-ccc",
+        "zh-cmn-Hans-CN",
+        "ZH-HANS",
+    ] {
+        let text = locale(&format!("languages = [\"{good}\"]\n"));
+        let r = lite::load_lite_product(&text);
+        let (py_out, _) = py_load_lite(&text);
+        match (r.is_ok(), py_out.starts_with("OK")) {
+            (true, true) | (false, false) => {}
+            (a, b) => panic!("BCP47 accept 梯分支漂移 {good}: rust_ok={a} py_ok={b} ({py_out})"),
+        }
+    }
+    // 拒梯（结构性坏形——双侧必拒）
+    for bad in ["zh-", "-zh", "zh--cn", "x-", "7z", "zh-x-9toolongsegment"] {
+        let text = locale(&format!("languages = [\"{bad}\"]\n"));
+        assert!(lite::load_lite_product(&text).is_err(), "rust 过了拒形 {bad}");
+        let (py_out, _) = py_load_lite(&text);
+        assert!(py_out.starts_with("REJ:"), "python 过了拒形 {bad}");
+    }
 }
 
 /// 第二片起的最小过面 platform 节（六键齐备 + 最小 boot/storage）。
