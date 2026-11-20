@@ -10,7 +10,7 @@
 //! → loop {
 //!   hooks.on_head（时钟续摆/armed 复位等应用特化）
 //!   → input 泵（上轮 INPUT_POLL 应答收 + push_pointer/键盘帧 on_key
-//!     分流；再挂下一轮）
+//!     分流；再挂下一轮；在途超 60s stale-reset 自愈）
 //!   → ui.pump_input → hooks.on_msgs（Click/翻页分发）
 //!   → hooks.on_tick（snap 动画步进）
 //!   → render_frame（跳过帧不提交——damage 空集零 SUBMIT 零 RPC）
@@ -84,6 +84,17 @@ pub const FRAME_VA: usize = 0x5100_0000;
 /// IDLE 稳态等待帽（Idle 相撤定时器 → 10s 周期兜底醒，醒后跳过帧零提交
 /// 再睡——非燃 CPU 阻塞形的定长节拍）。
 pub const IDLE_CAP_NS: u64 = 10 * 1_000_000_000;
+
+/// 输入 poll 在途超时帽：60s = 两个服务端 30s 帽周期（inputd
+/// POLL_BLOCK_CAP_NS = 30s——活着的服务端最迟一个帽周期必应答；取两个
+/// 周期 = 留整整一个周期的到货余量，逾此仍无应答即判应答被互截/丢失，
+/// 回环顶 stale-reset 复位重挂——单在途模型「无超时无自愈」死相的
+/// 终结面）。
+pub const INPUT_STALE_CAP_NS: u64 = 60 * 1_000_000_000;
+
+/// 输入 poll 应答采样打印周期：每第 100 个应答打一行 events/EAGAIN
+/// 诊断（一次性 input_logged 旗退役后的节拍；错误路径不受此门恒必打）。
+pub const INPUT_LOG_EVERY: u64 = 100;
 
 /// glyph scratch 容量（堆置；~30 短 label 富余——paint 对超容 run 截断
 /// 尾字形，视觉面非正确性面）。
@@ -308,12 +319,55 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
     // 段④形态：真实输入（inputd INPUT_POLL 阻塞批拉；hi==0 = 静默）。
     let mut hi = cfg.hi;
     let mut input_pending = false;
-    let mut input_logged = false;
+    let mut input_arm_ns: u64 = 0; // 最近一次 input_arm 成功时刻（在途超时基准）
+    let mut input_polls: u64 = 0; // INPUT_POLL 应答计数（采样打印节拍）
+    let mut input_stale_resets: u64 = 0; // stale-reset 复位计数（diag n= 面）
     let mut input_buf = [0u8; gp::INPUT_REP_MAX];
     let mut input_hs = [0 as Handle; 8];
 
     loop {
         let t_now = now();
+
+        // —— 输入 poll 在途超时自愈（stale-reset）：单在途 INPUT_POLL 的
+        //    死相 = 应答被互截/丢失 → input_pending 永真、永不再挂、无
+        //    超时无自愈——输入静默永死而循环其余面全活。在途逾
+        //    INPUT_STALE_CAP_NS 即判死：非阻塞排空 hi 通道吞掉一切滞留
+        //    应答（不解析不注入，随行 handle 照关），复位后照常走下方
+        //    既有 input_arm 重挂；复位只翻 input_pending，不清其他输入
+        //    状态。残余竞态：排空与重挂之间服务端仍可能投下一条迟到的
+        //    旧应答——下一轮 recv 按新 poll 应答照常消费（至多一条，自纠
+        //    不楔死），属预期。age 取 wrapping 减：时钟回拨折大值 →
+        //    复位一次重挂自愈，不 panic。
+        let input_age_ns = t_now.wrapping_sub(input_arm_ns);
+        if hi != 0 && input_pending && input_age_ns > INPUT_STALE_CAP_NS {
+            let mut drained = 0usize;
+            loop {
+                let mut nb = input_buf.len();
+                let mut nh = input_hs.len();
+                let s = berry_channel_recv(
+                    hi,
+                    input_buf.as_mut_ptr(),
+                    &mut nb,
+                    input_hs.as_mut_ptr(),
+                    &mut nh,
+                );
+                if s != 0 {
+                    // AGAIN = 已排空即止；其他错 = 通道已死——交下方重挂
+                    // 路的 arm 失败处置（disable 面）。
+                    break;
+                }
+                for h in &input_hs[..nh] {
+                    close_h(*h);
+                }
+                drained += 1;
+            }
+            input_pending = false;
+            input_stale_resets += 1;
+            diag(&format!(
+                "input poll stale-reset n={} drained={} age_ns={}",
+                input_stale_resets, drained, input_age_ns
+            ));
+        }
 
         hooks.on_head(ui, t_now);
 
@@ -335,11 +389,16 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
                 for h in &input_hs[..nh] {
                     close_h(*h);
                 }
+                // 采样打印：一次性 input_logged 旗已退役——旗先被 armed/
+                //    EAGAIN 行消费后 events 行结构性假阴性（events 行缺席
+                //    不可为证），改为每第 INPUT_LOG_EVERY 个应答打一行；
+                //    错误路径（st=/rep bad/recv err）不受采样门恒必打。
+                input_polls += 1;
+                let sampled = input_polls % INPUT_LOG_EVERY == 0;
                 match gp::parse_input_events_rep(&input_buf[..nb]) {
                     Some(Ok(view)) => {
-                        if !input_logged {
+                        if sampled {
                             diag(&format!("input events n={}", view.count()));
-                            input_logged = true;
                         }
                         for i in 0..view.count() {
                             if let Some(ev) = view.event(i) {
@@ -369,9 +428,8 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
                         ui.wake(now());
                     }
                     Some(Err(gp::ST_EAGAIN)) => {
-                        if !input_logged {
+                        if sampled {
                             diag("input poll EAGAIN");
-                            input_logged = true;
                         }
                     }
                     Some(Err(st)) => diag(&format!("input poll st={st}")),
@@ -386,9 +444,12 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
         if hi != 0 && !input_pending {
             if input_arm(hi) {
                 input_pending = true;
-                if !input_logged {
+                input_arm_ns = now();
+                // armed 行同走采样门（旗退役后无独立一次性节拍——与应答
+                //    行共用 input_polls 计数；input_polls==0 的首挂恒打
+                //    一行 = 启动活性证据）。
+                if input_polls % INPUT_LOG_EVERY == 0 {
                     diag(&format!("input poll armed h={hi}"));
-                    input_logged = true;
                 }
             } else {
                 diag("input poll arm failed -- disable");
@@ -645,5 +706,13 @@ mod tests {
             wait_deadline(Some(now + 1_000), now, Some(now + 500)),
             now + 500
         );
+    }
+
+    /// 在途帽契约：恰等于两个服务端 30s 帽周期（inputd
+    /// POLL_BLOCK_CAP_NS——一个周期必应答 + 一个周期到货余量）；改此值
+    /// 须有意识地重估「客户端复位不误杀慢而活的服务端」契约。
+    #[test]
+    fn input_stale_cap_is_two_server_caps() {
+        assert_eq!(INPUT_STALE_CAP_NS, 2 * 30_000_000_000);
     }
 }
