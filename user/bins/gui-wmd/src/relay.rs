@@ -69,11 +69,6 @@ pub const RELAY_RECV_CAP_NS: u64 = 30 * 1_000_000_000;
 /// 拖死全服务。
 pub const REPLY_SEND_CAP_NS: u64 = 10 * 1_000_000_000;
 
-/// 运行期孤儿清场帽（[`drain_orphans`]）：send/recv 两相各 35s——recv 相
-/// 容忍 pending 在途 park 至 latch（合法上界一个帧周期）+ TCG/vgpu 余量
-/// （RELAY_RECV_CAP_NS 30s 同源再放宽）；帽到点 = false 降级不 fail。
-pub const RELAY_DRAIN_CAP_NS: u64 = 35 * 1_000_000_000;
-
 /// boot 期 rpc0 帽（启动序②③专用：guifbd 空转即答无长 park；保持旧
 /// 300s 宽帽防 TCG 竞速（宿主争用下 guest 帽翻车先例）误杀 boot 面——
 /// boot 失败面仍 trap，监督重启归 svcmgr 刀）。
@@ -416,69 +411,6 @@ fn rpc0<R: RelayIo>(io: &mut R, cli: Handle, req: &[u8]) -> ([u8; 256], usize, [
     }
 }
 
-/// 运行期孤儿清场（presarb 配对面——DrainForward 抢占与属主通道死亡对账
-/// 共用）：代发一趟 RELEASE_WAIT，guifbd 应答 = held 全量 + parked 槽清空
-/// （pending 在途时 park 至 latch——合法上界一个帧周期；帽值
-/// [`RELAY_DRAIN_CAP_NS`]）。应答随行全量关收（孤儿别名/属主残留别名都
-/// 只是各客户端帧 VMO 的 dup——关 = 引用计数下降，原柄恒在各客户端）。
-///
-/// **毒化门（协议配对红线）**：`rstate` 该域 poisoned（上一趟中继应答
-/// 未归、≤1 条陈旧帧在途）时**禁发**——本趟应答会与陈旧帧错配（reply
-/// mismatch = 协议腐化）；返回 false 由 serve 顶既有 [`RelayState::drain`]
-/// 清淤路自愈（guifbd 对 parked op 恒最终应答）。返回 false = 毒化在席/
-/// 帽到点（标记毒化防后续错配）/发送失败——**不 fail 服务**，调用方
-/// loud 一行 + ST_BUSY 快答降级。
-pub fn drain_orphans<R: RelayIo>(
-    rstate: &mut RelayState,
-    io: &mut R,
-    dom: Domain,
-    cli: Handle,
-) -> bool {
-    if rstate.poisoned(dom) {
-        return false;
-    }
-    let mut req = [0u8; 256];
-    let n = match gp::encode_present_req(&mut req, &gp::PresentReq::ReleaseWait) {
-        Some(n) => n,
-        None => return false, // 256B 窗恒容 4B 帧——防御面
-    };
-    let deadline = io.now_ns() + RELAY_DRAIN_CAP_NS;
-    loop {
-        match io.send_try(cli, &req[..n], &[]) {
-            ChSend::Sent => break,
-            ChSend::Busy => {
-                if !io.wait_writable(cli, deadline) {
-                    return false;
-                }
-            }
-            ChSend::Err(_) => return false, // 链断面归毒化/relay 既有防线
-        }
-    }
-    let mut rep = [0u8; 256];
-    let mut rhs = [0 as Handle; 8];
-    let deadline = io.now_ns() + RELAY_DRAIN_CAP_NS;
-    loop {
-        match io.recv_try(cli, &mut rep, &mut rhs) {
-            ChRecv::Frame(nb, nh) => {
-                // 毒化门已排除陈旧在途——本帧即本趟应答（帧形不细究：
-                // drain 语义 = 「排空到空」，随行关收即返）。
-                let _ = nb;
-                io.close_all(&rhs[..nh.min(rhs.len())]);
-                return true;
-            }
-            ChRecv::Empty => {
-                if !io.wait_readable(cli, deadline) {
-                    // 帽到点：本趟请求已交付 guifbd、应答未归——与中继
-                    // RecvCapPoisoned 同形，毒化标记防后续错配。
-                    *rstate.slot(dom) = true;
-                    return false;
-                }
-            }
-            ChRecv::Err(_) => return false,
-        }
-    }
-}
-
 /// 启动序②：present 首发 RELEASE_WAIT 清前世孤儿别名（wmd 崩溃重启
 /// 残留——guifbd held 表持前世在途别名 credits 永占；guifbd :474-496
 /// 语义零改动）。应答随行归还别名全量即关（本 wmd 不持 present credits
@@ -771,36 +703,5 @@ mod tests {
             st.relay(&mut io, Domain::Hdi, CH_WM, CLI, &[gp::OP_REG_VBLANK, 0, 0], &[3]);
         assert_eq!(out2, RelayOutcome::Relayed);
         assert_eq!(io.sent.len(), 1);
-    }
-
-    /// 孤儿清场（presarb 配对）：健康态清场 = 代发 RELEASE_WAIT + 应答
-    /// 随行关收 + 成功；毒化在席 = 禁发（零 send——协议配对红线）；清场
-    /// 帽到点 = 毒化标记（后续中继快答防线）。
-    #[test]
-    fn drain_orphans_poison_gate_and_cap() {
-        // 健康态：应答（随行 2 别名）5ms 后到达 → 关收 + true
-        //（`inflight_at` 首参 = 毫秒——mock 契约）。
-        let mut st = RelayState::new();
-        let mut io = RelayIoMock::new(CLI);
-        io.inflight_at(5, &[gp::ST_OK, 0, 0], &[7, 8]);
-        assert!(drain_orphans(&mut st, &mut io, Domain::Present, CLI));
-        assert_eq!(io.sent.len(), 1, "代发恰一趟 RELEASE_WAIT");
-        assert!(io.closed.contains(&7) && io.closed.contains(&8), "应答随行关收");
-
-        // 毒化在席：禁发（零 send）+ false。
-        let mut st2 = RelayState::new();
-        let mut io2 = RelayIoMock::new(CLI);
-        let _ = st2.relay(&mut io2, Domain::Present, CH_WM, CLI, &[gp::OP_GETINFO], &[]);
-        assert!(st2.poisoned(Domain::Present));
-        let mut io3 = RelayIoMock::new(CLI);
-        assert!(!drain_orphans(&mut st2, &mut io3, Domain::Present, CLI));
-        assert!(io3.sent.is_empty(), "毒化禁发");
-
-        // 清场帽到点：本趟请求已交付、应答未归 → 毒化标记 + false。
-        let mut st3 = RelayState::new();
-        let mut io4 = RelayIoMock::new(CLI);
-        assert!(!drain_orphans(&mut st3, &mut io4, Domain::Present, CLI));
-        assert_eq!(io4.sent.len(), 1, "请求已交付");
-        assert!(st3.poisoned(Domain::Present), "帽到点毒化标记");
     }
 }

@@ -169,3 +169,4 @@ smoke-wt-*/
 /user/berry-netdproto/target/
 /bootloader/berryboot/slot/cargo-target/
 /sbom.json
+/tools/sbom/cargo-target/
