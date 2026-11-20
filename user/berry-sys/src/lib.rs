@@ -241,22 +241,6 @@ pub extern "C" fn berry_vmo_get_phys(vmo: Handle, offset: u64, out: *mut u64) ->
     unsafe { sys(nr::VMO_GET_PHYS, vmo as usize, offset as usize, out as usize, 0, 0, 0) }
 }
 
-/// F0-4 DMA PoC 数据缓存维护（`VMO_CACHE_OP_CLEAN` / `INVALIDATE` / `CLEAN_INVALIDATE`）。
-#[no_mangle]
-pub extern "C" fn berry_vmo_cache_op(vmo: Handle, op: u32, offset: u64, len: u64) -> Status {
-    unsafe {
-        sys(
-            nr::VMO_CACHE_OP,
-            vmo as usize,
-            op as usize,
-            offset as usize,
-            len as usize,
-            0,
-            0,
-        )
-    }
-}
-
 /// v1 rights 须恰 READ|WRITE（UserRo 留 v2）；options 折叠（见段首注）。
 #[no_mangle]
 pub extern "C" fn berry_vmar_map(
@@ -539,7 +523,9 @@ pub extern "C" fn berry_sched_util_snapshot(util: *mut u32, count: usize) -> Sta
     unsafe { sys(nr::SCHED_UTIL_SNAPSHOT, util as usize, count, 0, 0, 0, 0) }
 }
 
-// —— 遥测环读口（阶段五第 16/17 步：0x84 telemetry_open——klog 快照首域）——
+// —— 遥测（0x84 telemetry_open op 域：klog 快照首域 + memstat 定长快照
+// 第二档 + 双族环快照第三档〔环读口刀〕+ WakeSrc 槽表纯镜像第四档〔槽表
+// 读口刀〕在役；后续波次自 op=4 起按落地序取号，不预留）——
 
 /// 0x84：v3 号提前实现（klog 快照首域翻真）。abi.toml 在册但 stage=v3——
 /// 常量层只产 v1/1.1 行（gen_abi.py defined 集），`nr::TELEMETRY_OPEN` 不
@@ -547,10 +533,17 @@ pub extern "C" fn berry_sched_util_snapshot(util: *mut u32, count: usize) -> Sta
 /// 落地后换 `nr::` 常量名——同内核派发注）。
 const TELEMETRY_OPEN_NR: usize = 0x84;
 
-/// `berry_telemetry_open` op 域：0 = klog 快照（内核日志字节环——串口
-/// 镜像；bsh `dmesg` 的数据源）。后续波次补 SwitchRec / WakeRec 环读口
-/// （各自新 op 值，add-only）。
-pub const TELEMETRY_OP_KLOG: u64 = 0;
+/// 0x84 op 域常量（klog=0 / memstat=1 / rings=2 / wsrc=3）与四档出参形状
+/// ——单源 [`berry_telface`] 转发，内核派发同引（消内核/用户双写；值与
+/// 形状钉板在 telface host 测试）；头/段/行编解码纯函数（rings_hdr_read/
+/// ring_seg_read/wsrc_hdr_read/wsrc_row_read）随同转发——消费方解析走
+/// 同一具（U1 解析契约）。
+pub use berry_telface::{
+    MemstatRec, RingSegV1, RingsHdrV1, RING_FAMILY_SWITCH, RING_FAMILY_WAKE, REASON_SIGNALED,
+    REASON_TIMEOUT, SwitchRec, TELEMETRY_OP_KLOG, TELEMETRY_OP_MEMSTAT, TELEMETRY_OP_RINGS,
+    TELEMETRY_OP_WSRC, TELEMETRY_RINGS_MAX, TELEMETRY_WSRC_MAX, WakeRec, WakeSrcRecV1, WsrcHdrV1, ring_seg_read,
+    rings_hdr_read, wsrc_hdr_read, wsrc_row_read,
+};
 
 /// `berry_telemetry_klog_snapshot(buf, len)`（0x84 op=0，阶段五第 17 步
 /// bsh dmesg 消费面）：读内核日志字节环到 `buf`，**返回 >0 = 实写字节数**
@@ -561,6 +554,75 @@ pub const TELEMETRY_OP_KLOG: u64 = 0;
 #[no_mangle]
 pub extern "C" fn berry_telemetry_klog_snapshot(buf: *mut u8, len: usize) -> Status {
     unsafe { sys(TELEMETRY_OPEN_NR, TELEMETRY_OP_KLOG as usize, buf as usize, len, 0, 0, 0) }
+}
+
+/// `berry_telemetry_memstat_snapshot(out)`（0x84 op=1，遥测 v3 首件——
+/// bsh `free` 消费面）：RAM 五域定长快照写入 `*out`（[`MemstatRec`] 40B
+/// ——total/reserved/alloc/free/committed 页数；`free_pages` 是内核读点
+/// 派生域，消费方可以 total − reserved − alloc 自验）。**返回 40 = 实写
+/// 字节数**（尾追追加律：未来扩形旧调用方恒收 40B v1 前缀，返回值自证
+/// 所得）；len 由包装内部钉 `size_of::<MemstatRec>()`，调用方只供出参槽
+/// （`berry_clock_read` 结构体出参同层先例）；坏指针 → -EFAULT，负
+/// errno 透传。零 handle 零权利位（系统级遥测读面——klog 同族口径）。
+#[no_mangle]
+pub extern "C" fn berry_telemetry_memstat_snapshot(out: *mut MemstatRec) -> Status {
+    unsafe { sys(TELEMETRY_OPEN_NR, TELEMETRY_OP_MEMSTAT as usize, out as usize, core::mem::size_of::<MemstatRec>(), 0, 0, 0) }
+}
+
+/// `berry_telemetry_rings_snapshot(buf, len)`（0x84 op=2，环读口刀——
+/// berryctl trace 消费面）：per-CPU 切换环＋唤醒环四段一体快照写入
+/// `buf`，**返回实写字节数（≥ 32 头自证）**或负 errno 透传；len < 32 →
+/// -EINVAL（内核执法），无上帽（变长填充返回值自证——klog 裸缓冲透传
+/// 同形第三件，buf/len 字节直传）。
+///
+/// 布局 = 32B 头 [`RingsHdrV1`]＋每环 24B 段描述符 [`RingSegV1`]＋变长
+/// 载荷（CPU 序段序 switch c0→c1→wake c0→c1、段内旧→新、整条粒度截
+/// 尾）。**尽力一致契约**：逐环一致（每环单 seqlock 版本窗整块拷）或整
+/// 环诚实弃（count=0 而 total 照出——降级可判 total>0 ∧ count==0，空可
+/// 判 total==0），四环间无一致保证（各环独立快照时刻——跨段非时序归并
+/// 读方自知）；丢包可派生每环 total − min(total, ring_len)。
+///
+/// 头/段解析契约 = [`berry_telface`] 编解码纯函数（[`rings_hdr_read`]/
+/// [`ring_seg_read`]——host 钉板即单源）；条目（[`SwitchRec`] 24B/
+/// [`WakeRec`] 32B）按 telface 钉板偏移 LE 手解。尾追追加律：未来扩形
+/// 走头尾追或新 op 值，旧调用方恒收 v1 前缀。零 handle 零权利位（系统级
+/// 遥测读面——klog/memstat 同族口径）。
+#[no_mangle]
+pub extern "C" fn berry_telemetry_rings_snapshot(buf: *mut u8, len: usize) -> Status {
+    unsafe { sys(TELEMETRY_OPEN_NR, TELEMETRY_OP_RINGS as usize, buf as usize, len, 0, 0, 0) }
+}
+
+/// `berry_telemetry_wsrc_snapshot(buf, len)`（0x84 op=3，槽表读口刀——
+/// berryctl powertop 消费面）：WakeSrc 源槽表全表纯镜像快照写入 `buf`，
+/// **返回实写字节数（≥ 40 头自证）**或负 errno 透传；len < 40 → -EINVAL
+/// （内核执法），无上帽（整行粒度截尾＋返回值自证——klog 裸缓冲透传同形
+/// 第四件，buf/len 字节直传）。
+///
+/// 布局 = 40B 头 [`WsrcHdrV1`]＋128×64B 定长平数据镜像行 [`WakeSrcRecV1`]
+///（满载 [`TELEMETRY_WSRC_MAX`]；行号即源值——值直索引 0..=0x7F 零 src
+/// 域，头 `slots`/`rec_size` 自述几何，**条目步进按头 rec_size 自述走读**
+/// ＝消费方跨版本走读锚）。尾追追加律：未来扩形走头尾追或新 op 值，旧
+/// 调用方恒收 v1 前缀。零 handle 零权利位（系统级遥测读面——klog/rings
+/// 同族口径）。
+///
+/// **一致性契约（G6——逐槽逐字段独立原子读、非一致快照，如实文档化）**：
+/// 单调族（wakes/irq_count/no_waiter fetch_add、first_ts fetch_min、
+/// last_ts fetch_max、flags fetch_or、merge_hal 单调 store）中途读恒得
+/// 某个真实持过的值，无回退无撕裂；非单调族（last_woken_id/last_ack_ts
+/// 定宽 store）可旧可新不撕；跨字段错位可能（wakes 新于 last_ts 等）。
+/// 装配序双不变式：头 `wake_acct_n` 先读（Acquire）后扫槽 ⇒ 瞬态恒
+/// Σ行wakes ≥ 头 wake_acct_n（一次广播可醒任意多任务，差值非固定帽——
+/// `wake_acct_conserved` 读序的读者侧对偶）；头 `now_vct` 行读毕后取 ⇒
+/// ≥ 任一行内时戳（CNTVCT 单调律——差分区间分母可安全夹上界）。
+/// `first_ts == u64::MAX` 哨兵＝未触；**差分只许用单调族**（区间差精确
+/// 自愈、不丢不双计）；戳字段单点语义（跨字段戳差是可旧可新单点代理非
+/// 分布）；全记录一致窗不承诺（挂账维持）。trace_off 表照出（计数器族
+/// 不随关——观测计数≠环记录面）；SGI×2/UNKNOWN 的 irq_count＝G1.5 boot
+/// 尾单点并账快照非连续并账——差分对该三槽恒 0 是 v1 已知边界（连续并账
+/// 挂 v2）。禁默示「全表烘焙一致像」。
+#[no_mangle]
+pub extern "C" fn berry_telemetry_wsrc_snapshot(buf: *mut u8, len: usize) -> Status {
+    unsafe { sys(TELEMETRY_OPEN_NR, TELEMETRY_OP_WSRC as usize, buf as usize, len, 0, 0, 0) }
 }
 
 // —— 策略注入（0x83：机制在内核、策略可插拔的带内接口——表形面（COMMIT/
@@ -755,9 +817,45 @@ pub extern "C" fn berry_event_create(options: u32, out: *mut Handle) -> Status {
 // —— 时间 ——
 
 /// 单调钟纳秒（`clock_id` 须 `CLOCK_MONOTONIC`）。
+///
+/// **W3-Q106 vDSO fast path**：MONOTONIC 读内核映射的只读 vDSO 数据页
+/// （固定 [`berry_vdsoface::VDSO_VA`]）+ EL0 直读 `cntvct_el0`
+/// （`CNTKCTL_EL1.EL0VCTEN` 自 B-1 已开）+ 页内 freq 换算（与内核
+/// `sys_clock_read` 逐位同式，单源 `berry-vdsoface`），**整号不陷 SVC**。
+/// 页未就绪（magic/freq 域异常——结构性不可达，防御面）或 `clock_id`
+/// 非 MONOTONIC（REALTIME 走 rtc 注入语义）→ 回落原 syscall 路径。
+/// 一体构建契约：本 crate 与内核同 image 组装（vDSO 页由同仓内核 boot 期
+/// 映入每个 AS）——「新用户态跑旧内核」不在支持面（crate 状态即
+/// "the API moves with the kernel ABI"）。
 #[no_mangle]
 pub extern "C" fn berry_clock_read(clock_id: u32, out: *mut Time) -> Status {
+    if clock_id == CLOCK_MONOTONIC {
+        if let Some(ns) = vdso_monotonic_ns() {
+            // SAFETY: out 契约同 syscall 路径（调用方供可写 Time 槽）。
+            unsafe { *out = ns };
+            return 0;
+        }
+    }
     unsafe { sys(nr::CLOCK_READ, clock_id as usize, out as usize, 0, 0, 0, 0) }
+}
+
+/// vDSO fast path 本体：读页头（magic+freq）→ `mrs cntvct_el0` → 同式换算。
+/// 页无效（旧页/未就绪）→ `None`（调用方回落 syscall）。
+#[inline]
+fn vdso_monotonic_ns() -> Option<Time> {
+    // SAFETY: 页由内核 boot 期映射（一体构建契约，见 berry_clock_read 注），
+    // 只读 16B 头 + 非对齐宽容（volatile 防 LLVM 假定重读合并）。
+    let head: [u8; 16] = unsafe { core::ptr::read_volatile(berry_vdsoface::VDSO_VA as *const [u8; 16]) };
+    if !berry_vdsoface::page_ready(head) {
+        return None;
+    }
+    let freq = u64::from_le_bytes([
+        head[8], head[9], head[10], head[11], head[12], head[13], head[14], head[15],
+    ]);
+    let ticks: u64;
+    // SAFETY: 只读计数器（EL0VCTEN 门自 kernel timer::init 已开）。
+    unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) ticks, options(nostack, preserves_flags)) };
+    berry_vdsoface::ticks_to_ns(ticks, freq)
 }
 
 // —— 信号（A7-4 段②，协同式用户态投递——libc `signal.rs` 消费）——

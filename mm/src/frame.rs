@@ -156,6 +156,15 @@ impl<'a> FrameAllocator<'a> {
     pub fn allocated_pages(&self) -> usize {
         self.buddy.allocated_pages()
     }
+
+    /// 保留页总数（透传 [`BuddyAllocator::reserved_pages`]——遥测 memstat 的
+    /// reserved 真源水位：reserve 实标页 +1 / release 实还页 −1 的对称账，
+    /// 与 [`FrameAllocator::allocated_pages`] 两口径正交，buddy 对拍测试钉板）。
+    /// 注意 [`FrameAllocator::reserve`] 返回值口径不变（窗口裁剪页数——MMAP
+    /// 记账面零改）；水位只认实标单元，交叠腿上两者可差。
+    pub fn reserved_pages(&self) -> usize {
+        self.buddy.reserved_pages()
+    }
 }
 
 /// 页大小掩码（`PAGE_SIZE - 1`）——ceil 除法用。
@@ -251,6 +260,40 @@ mod tests {
         fa.free(b, 2).unwrap();
         fa.free(c, 0).unwrap();
         assert_eq!(fa.allocated_pages(), 0, "全释放归零（泄漏金丝雀判据）");
+    }
+
+    #[test]
+    fn reserved_pages_symmetric_with_allocated() {
+        // allocated 金丝雀测试的对称臂（遥测 reserved 口径）：reserve 实标页
+        // 计入、交叠幂等不重计、release 实还页同步递减、allocated 全程零扰
+        //（两水位正交）；全回收归零 + 回收后整窗复可分配。
+        let base = 0x8000_0000;
+        let (f, o, bm, sm) = backing(64);
+        let mut fa = FrameAllocator::new(base, base + 64 * KIB4, f, o, bm, sm);
+        assert_eq!(fa.reserved_pages(), 0, "空窗应为 0");
+        assert_eq!(fa.reserve(base + 4 * KIB4, 2 * KIB4), 2);
+        assert_eq!(fa.reserved_pages(), 2);
+        // 交叠腿：裁剪窗 2 页但页 5 已 RESERVED → 水位净增恰 1（reserve
+        // 返回值仍是裁剪页数——MMAP 记账面，水位只认实标单元）。
+        assert_eq!(fa.reserve(base + 5 * KIB4, 2 * KIB4), 2);
+        assert_eq!(fa.reserved_pages(), 3, "交叠保留重计 = 幂等面破");
+        // 正交律双侧：alloc 动 allocated 不动 reserved。
+        assert_eq!(fa.allocated_pages(), 0, "reserve 动 allocated = 口径破");
+        let a = fa.alloc().unwrap();
+        assert_eq!(fa.allocated_pages(), 1);
+        assert_eq!(fa.reserved_pages(), 3, "alloc 动 reserved = 口径破");
+        fa.free(a, 0).unwrap();
+        // release 只还 RESERVED 单元（{4,5,6} 全还 = 3 页）、水位同步归零、
+        // 幂等二连 0。
+        assert_eq!(fa.release(base + 4 * KIB4, 3 * KIB4), 3);
+        assert_eq!(fa.reserved_pages(), 0, "全回收归零");
+        assert_eq!(fa.release(base + 4 * KIB4, 3 * KIB4), 0, "幂等");
+        // 回收后整窗复可分配（含曾保留页）。
+        let mut got = Vec::new();
+        while let Ok(p) = fa.alloc() {
+            got.push(p);
+        }
+        assert_eq!(got.len(), 64);
     }
 
     // ---- W3-Q42：clip_to_window 三律钉板（reserve/release 区间算术单源）----
