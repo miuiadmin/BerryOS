@@ -175,9 +175,17 @@ fn path_conflicts(seen: &std::collections::HashSet<String>, path: &str) -> bool 
 }
 
 pub fn parse(text: &str) -> Result<Table, TomlError> {
+    parse_with_sections(text).map(|(t, _)| t)
+}
+
+/// `parse` + 节头路径清单（文件序）。空节（无任何键）在 Table 中零条目
+/// ——节在场性消费面（lite 结构执法）经此清单区分「节缺席」vs「节在场
+/// 但空」（tomllib dict 语义：空节 = 空 table，在场）。
+pub fn parse_with_sections(text: &str) -> Result<(Table, Vec<String>), TomlError> {
     let mut table: Table = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut section = String::new();
+    let mut sections: Vec<String> = Vec::new();
     let mut acc: Option<(String, String)> = None; // (key, 累积数组体)
     for (idx, raw) in text.split('\n').enumerate() {
         let lineno = (idx + 1) as u32;
@@ -216,6 +224,7 @@ pub fn parse(text: &str) -> Result<Table, TomlError> {
             if !seen.insert(format!("[{section}]")) {
                 return Err(err(lineno, &format!("节头 [{section}] 重复定义")));
             }
+            sections.push(section.clone());
             continue;
         }
         let eq = t
@@ -268,7 +277,7 @@ pub fn parse(text: &str) -> Result<Table, TomlError> {
     if acc.is_some() {
         return Err(err(text.split('\n').count() as u32, "多行数组未闭合"));
     }
-    Ok(table)
+    Ok((table, sections))
 }
 
 /// 展平对拍形：`k = repr`（Python repr 镜像——串单引号、bool 大写
