@@ -1,12 +1,9 @@
 //! soft 光栅执行器（**私有模块**——只经 `queue::Queue::submit` 驱动，
 //! 无独立公开面）。像素语义与 berry-fbcon render.rs 共识契约逐位同：
 //!
-//! - 落盘：u32 小端（单像素 `to_le_bytes` 字节拷贝；fill 族整行铺写
-//!   [`fill_row`] 运行时验 4 对齐走 u32 直铺、未对齐退字节路——两侧
-//!   逐位同，不赌目标缓冲对齐）；
+//! - 落盘：u32 小端 `to_le_bytes` 字节拷贝（不赌目标缓冲 4 字节对齐）；
 //! - 寻址：`off = y*stride + x*4`（stride = 行字节数，**行尾 padding
-//!   结构性不可达**——单像素写经 [`put_px`] 单口执法，fill 族整行
-//!   铺写经 [`fill_row`]（界检语义与 put_px 同集的行级收敛））；
+//!   结构性不可达**——所有写经 [`put_px`] 单口执法）；
 //! - glyph 位序：MSB = 最左列（`bits & (0x80 >> gx)`，fbcon 对偶）——
 //!   段② 起经 `GlyphBits::bit` 推广到任意几何（字形蜂格与图像/
 //!   图标位图同一 [`mono_blit`] 共核，一条位法两处消费）；ARGB 面
@@ -107,55 +104,17 @@ fn put_px(target: &mut [u8], desc: &TextureDesc, clip: &Rect, x: i32, y: i32, px
     target[off..off + 4].copy_from_slice(&px.to_le_bytes());
 }
 
-/// 行铺写（fill 族共核）：行 `y` 上 `[x0, x1)` 整段一次界检后整行落盘
-///（调用方已把区间裁进 clip；本口只做纹理界夹取——与逐 px [`put_px`]
-/// 的 usize 域转换 + 纹理界直检**同集**，负坐标/出纹理两侧同裁空，
-/// 像素结果逐位同）。空区间/行出界 = no-op。
-///
-/// 落盘两路：行偏移与基址均 4 对齐时 u32 直铺（`to_le` 后原位 u32 存储
-/// 与 `to_le_bytes` 字节拷贝逐位同——任意端序目标均成立）；未对齐
-///（Vec<u8> 类型对齐仅 1，分配器实践恒 ≥4——防御面不赌）退 4B 字节段
-/// 铺写，语义不变。u32 路 unsafe 论证：`off+len ≤ (h-1)*stride + w*4
-/// = need ≤ target.len()`（desc 构造期 + submit `check_buf` 双执法——
-/// 与 put_px 直索引同一先验）；对齐已检、len 为 4 的倍数。
-fn fill_row(target: &mut [u8], desc: &TextureDesc, y: i32, x0: i32, x1: i32, px: u32) {
-    // 纹理界夹取（每行一次——put_px 逐 px 防御面的行级同义收敛）。
-    if y < 0 || y as usize >= desc.h() {
-        return;
-    }
-    let w_i = desc.w() as i32; // 构造期已钉 w ≤ i32::MAX
-    let x0 = x0.max(0);
-    let x1 = x1.min(w_i);
-    if x0 >= x1 {
-        return;
-    }
-    let off = y as usize * desc.stride() + x0 as usize * 4;
-    let len = (x1 - x0) as usize * 4;
-    if off % 4 == 0 && target.as_ptr() as usize % 4 == 0 {
-        let px_le = px.to_le();
-        // SAFETY: 见头注——off/len 界内由 need ≤ target.len() 先验钉死；
-        // 基址与 off 均 4 对齐已检（u32 读写合法）；len 为 4 的倍数。
-        let words = unsafe {
-            core::slice::from_raw_parts_mut(target.as_mut_ptr().add(off) as *mut u32, len / 4)
-        };
-        words.fill(px_le);
-    } else {
-        let b = px.to_le_bytes();
-        for c in target[off..off + len].chunks_exact_mut(4) {
-            c.copy_from_slice(&b);
-        }
-    }
-}
-
 /// 矩形填充：rect ∩ clip 后整铺（空交叠 = no-op；零宽/高在此自然短路）。
-/// 行切片写：每行一次界检（[`fill_row`]——区间恒为 `[r.x, r.x+r.w)`，
-/// 与逐 px [`put_px`] 像素集逐位同）。
 pub(crate) fn fill_rect(target: &mut [u8], desc: &TextureDesc, rect: &Rect, px: u32, clip: &Rect) {
     let Some(r) = rect.intersect(clip) else { return };
     let (y_end, x_end) = (r.y.saturating_add(r.h), r.x.saturating_add(r.w));
     let mut y = r.y;
     while y < y_end {
-        fill_row(target, desc, y, r.x, x_end, px);
+        let mut x = r.x;
+        while x < x_end {
+            put_px(target, desc, clip, x, y, px);
+            x += 1;
+        }
         y += 1;
     }
 }
@@ -164,7 +123,7 @@ pub(crate) fn fill_rect(target: &mut [u8], desc: &TextureDesc, rect: &Rect, px: 
 /// `radius` 钳 `min(rect.w, rect.h)/2` 与 [`RADIUS_LUT_MAX`] 后取行
 /// 内缩 LUT（`radius_row_inset` 单源，一次预计算两角复用）；逐可见行
 /// 内缩量 = `max(上角内缩, 下角内缩)`，行内区间 `[x0+inset, x1-inset)`
-/// 再 ∩ clip 后经 [`fill_row`] 行铺写落盘。中段（两角均 0 内缩）与
+/// 再 ∩ clip 后经 [`put_px`] 单口落盘。中段（两角均 0 内缩）与
 /// [`fill_rect`] 逐像素等价；圆区外像素结构性不写（无 AA——整数内缩）。
 pub(crate) fn fill_rect_rounded(
     target: &mut [u8],
@@ -180,8 +139,17 @@ pub(crate) fn fill_rect_rounded(
     let r = radius.min(half).min(RADIUS_LUT_MAX);
     let Some(vis) = rect.intersect(clip) else { return };
     if r == 0 {
-        // 直角快速路：半径钳 0 = 整矩形，与 fill_rect 同集（不另起 LUT）。
-        fill_rect(target, desc, rect, px, clip);
+        // 直角快速路：与 fill_rect 同循环（不另起 LUT）。
+        let (y_end, x_end) = (vis.y.saturating_add(vis.h), vis.x.saturating_add(vis.w));
+        let mut y = vis.y;
+        while y < y_end {
+            let mut x = vis.x;
+            while x < x_end {
+                put_px(target, desc, clip, x, y, px);
+                x += 1;
+            }
+            y += 1;
+        }
         return;
     }
     // 行 LUT：inset[row] = radius_row_inset(r, row)，row ∈ [0, r)。
@@ -205,10 +173,14 @@ pub(crate) fn fill_rect_rounded(
         let inset_bot = if d_bot < r { lut[d_bot as usize] as i32 } else { 0 };
         let inset = inset_top.max(inset_bot);
         // 行内区间 = [rect.x+inset, rect.x+rect.w−inset) ∩ vis 行界 ∩ clip
-        //（敌意巨坐标 saturating——fill_row 纹理界夹取兜底）。
+        //（敌意巨坐标 saturating——put_px 纹理界直检兜底）。
         let x0 = rect.x.saturating_add(inset).max(x_lo_bound).max(clip.x);
         let x1 = rect_x_end.saturating_sub(inset).min(x_hi_bound).min(clip_x1);
-        fill_row(target, desc, y, x0, x1, px);
+        let mut x = x0;
+        while x < x1 {
+            put_px(target, desc, clip, x, y, px);
+            x += 1;
+        }
         y += 1;
     }
 }
@@ -543,16 +515,6 @@ fn scaled_argb_blit(
 /// 映射回源中心，Q16 求floor/Q8 权重。
 /// 透明键仍二值：四个采样 alpha 加权 ≥128 视为不透明；RGB 只按不透明
 /// 采样归一，避免透明底 (0,0,0) 在边缘渗黑。壁纸源全不透明，主路径无分支。
-///
-/// 坐标生成（I4 验证面按实测码形定稿）：`cy` 链（直除 + `y0/y1/fy` +
-/// 源行基址）行级一次外提——px 值逐位同；`cx` 保持逐 px 直除。曾试
-/// 手写定点递推（qx/rem 步进），三上下文实测码形反劣：客机
-/// aarch64-unknown-none（opt z+LTO）px 循环 3 条 sdiv/px 与直除持平、
-/// host opt3 由 0（编译器自做外提+强度削减）升 1——递推与优化器相搏，
-/// 已弃（递推另携带行间状态漏重置的语义破，A/B 载具实抓）。实测留账：
-/// 客机码形 3→2 sdiv/px（`cx` 分子除 + `/65536`——z 档不做 2 幂强度
-/// 削减），host 0 持平；端到端增益以 telem 实测为准，不作 insn 级倍数
-/// 主张。
 fn smooth_argb_blit(
     target: &mut [u8],
     desc: &TextureDesc,
@@ -571,29 +533,27 @@ fn smooth_argb_blit(
         return;
     };
     let (x_end, y_end) = (vis.x.saturating_add(vis.w), vis.y.saturating_add(vis.h));
-    let sw_last = sw.saturating_sub(1) as usize;
     let mut y = vis.y;
     while y < y_end {
-        // 行级一次：cy 直除 + 源行基址（同式提出，px 值逐位同）。
-        let cy = ((2 * (y - dy) as i64 + 1) * sh as i64 * 65536 / (2 * dh as i64)) - 32768;
-        let y0 = (cy / 65536).clamp(0, sh.saturating_sub(1) as i64) as usize;
-        let y1 = (y0 + 1).min(sh.saturating_sub(1) as usize);
-        let fy = ((cy - (y0 as i64) * 65536).max(0) / 256) as u32;
-        let row0 = y0 * sw as usize;
-        let row1 = y1 * sw as usize;
         let mut x = vis.x;
         while x < x_end {
             // 目标像素中心 → 源坐标（Q16；-0.5 边界由 clamp 退化为边缘色）。
             let cx = ((2 * (x - dx) as i64 + 1) * sw as i64 * 65536
                 / (2 * dw as i64))
                 - 32768;
-            let x0 = (cx / 65536).clamp(0, sw_last as i64) as usize;
-            let x1 = (x0 + 1).min(sw_last);
+            let cy = ((2 * (y - dy) as i64 + 1) * sh as i64 * 65536
+                / (2 * dh as i64))
+                - 32768;
+            let x0 = (cx / 65536).clamp(0, sw.saturating_sub(1) as i64) as usize;
+            let y0 = (cy / 65536).clamp(0, sh.saturating_sub(1) as i64) as usize;
+            let x1 = (x0 + 1).min(sw.saturating_sub(1) as usize);
+            let y1 = (y0 + 1).min(sh.saturating_sub(1) as usize);
             let fx = ((cx - (x0 as i64) * 65536).max(0) / 256) as u32; // 0..=255
-            let p00 = px.get(row0 + x0).copied().unwrap_or(0);
-            let p01 = px.get(row0 + x1).copied().unwrap_or(0);
-            let p10 = px.get(row1 + x0).copied().unwrap_or(0);
-            let p11 = px.get(row1 + x1).copied().unwrap_or(0);
+            let fy = ((cy - (y0 as i64) * 65536).max(0) / 256) as u32;
+            let p00 = px.get(y0 * sw as usize + x0).copied().unwrap_or(0);
+            let p01 = px.get(y0 * sw as usize + x1).copied().unwrap_or(0);
+            let p10 = px.get(y1 * sw as usize + x0).copied().unwrap_or(0);
+            let p11 = px.get(y1 * sw as usize + x1).copied().unwrap_or(0);
             let samples = [(p00, (256 - fx) * (256 - fy)), (p01, fx * (256 - fy)), (p10, (256 - fx) * fy), (p11, fx * fy)];
             let mut aw = 0u32;
             for (p, w) in samples {

@@ -3,13 +3,13 @@
 Type: spec
 Status: active
 Updated: 2026-11-18
-Version: 2.1.0
+Version: 2.2.0
 
-一句话说明：`compositor`（`berry-compositor`）是 BerryOS 的统一显示呈现、离屏表面合成与输入焦点路由服务——合流并取代过渡期分离的 `guifbd` 与 `gui-wmd`，通过每客户端独立能力会话、双/三缓冲零拷贝交换链、8-bit 预乘 Alpha 与 `1.8x` 增艳四阶 Vibrancy 毛玻璃场景图合成器以及内建手势/焦点路由器，兑现 60–480Hz 锁拍零撕裂 iOS 18 / iPadOS 18 多窗体验。
+一句话说明：`compositor`（`berry-compositor`）是 BerryOS 的统一显示呈现、Rosen 同构保留式 `SceneNode` 合成与焦点路由服务——合流并取代过渡期分离的 `guifbd` 与 `gui-wmd`，通过每客户端独立能力会话、`SceneStream + XComponent Swapchain` 双模表面、六阶液态玻璃与光场合成器以及跨页 `geometryTransition` 一镜到底插值，兑现 60–480Hz 锁拍零撕裂体验。
 
 ## 背景
 
-如 [GUI 与 SDK 及启动模拟器全栈深研](../../research/2026-11-18-GUI与SDK及启动模拟器全栈深研.md) 所示，现役分离架构（`gui-wmd` 管几何表并单线程阻塞中继、`guifbd` 单帧缓冲直写加顶底带缓存重放）存在共享通道互截、每窗强制全屏 8.29MB 内存膨胀、无法支持浮窗移动与遮挡恢复、无窗口级转场动画、以及输入命中仅记账不路由等根本缺陷。依据 [图形合成与 SDK 及模拟器终态架构裁决](../../notes/proposed/2026-11-18-图形合成与SDK及模拟器终态架构裁决.md)、[全面复刻 iOS 18 视觉与流体交互范式裁决](../../notes/proposed/2026-11-18-全面复刻iOS18视觉与流体交互范式裁决.md) 与底座 [meihe 总体设计](../meihe/design.md) 及 [ipc 总体设计](../ipc/design.md) 的 `Port` / `channel_call` / `Interrupt` 原语，本规格定义 `compositor` 的内部总体契约；跨模块公共标准见 [GUI 合成与 SDK 终态标准](../../../docs/GUI合成与SDK终态标准-v2.0.md) 与 [iOS 视觉与流体交互复刻标准](../../../docs/iOS视觉与流体交互复刻标准-v1.0.md)，刷新率仲裁与面板时序细则见 [刷新率体系规范](../../../docs/刷新率体系规范-v1.0.md)。
+如 [GUI 与 SDK 及启动模拟器全栈深研](../../research/2026-11-18-GUI与SDK及启动模拟器全栈深研.md) 所示，现役分离架构（`gui-wmd` 管几何表并单线程阻塞中继、`guifbd` 单帧缓冲直写加顶底带缓存重放）存在共享通道互截、每窗强制全屏 8.29MB 内存膨胀、无法支持浮窗移动与遮挡恢复、无窗口级转场动画、以及输入命中仅记账不路由等根本缺陷。依据 [图形合成与 SDK 及模拟器终态架构裁决](../../notes/proposed/2026-11-18-图形合成与SDK及模拟器终态架构裁决.md)、[融合 iOS 26/27 液态玻璃与 OpenHarmony 6 光场一镜到底架构裁决](../../notes/proposed/2026-11-18-融合iOS26至27液态玻璃与OpenHarmony6光场一镜到底架构裁决.md) 与底座 [meihe 总体设计](../meihe/design.md) 及 [ipc 总体设计](../ipc/design.md) 的 `Port` / `channel_call` / `Interrupt` 原语，本规格定义 `compositor` 的内部总体契约；跨模块公共标准见 [GUI 合成与 SDK 终态标准](../../../docs/GUI合成与SDK终态标准-v2.0.md) 与 [iOS 与鸿蒙融合液态玻璃及光场交互标准](../../../docs/iOS与鸿蒙融合液态玻璃及光场交互标准-v2.0.md)，刷新率仲裁与面板时序细则见 [刷新率体系规范](../../../docs/刷新率体系规范-v1.0.md)。
 
 ## 范围
 
@@ -59,7 +59,7 @@ flowchart LR
 2. **合成器侧零重绘几何变换**：每个 `SurfaceNode` 持有合成属性 `{ dst_rect, clip_rect, corner_radius_px, opacity: u8, scale_q16: (u32, u32), translate: (i32, i32), backdrop_blur_radius: u8, shadow_elevation: u8 }`。窗口打开图标展开、返回手势跟手缩小、多任务卡片排列与旋转切屏均只修改 `SurfaceNode` 合成属性，客户端无需重新光栅化内容。
 3. **两遍无冗余合成算法（在每个 VSync `latch` 拍点执行）**：
    - **第一遍（自顶向下遮挡剔除与脏区求交）**：汇总本拍所有变更表面的新旧屏幕包围盒为全局 `ScreenDamage`（上限 16 矩形，超帽按最小面积增量合并）；按 Z 序从顶层向底层扫描节点，对 `opacity == 255 && scale == 1.0 && corner_radius == 0` 的窗口累加其 `opaque_region` 进入 `CoveredSet`；任何底层节点（含桌面壁纸）的可见重绘域 `vis = node_bounds ∩ ScreenDamage - CoveredSet` 若为空集则 **100% 跳过采样**（全屏不透明应用在前台时，底层桌面与壁纸合成开销恒为 `0`）。
-   - **第二遍（自底向上 Span/SIMD 混合与 iOS 18 四阶 Vibrancy 合成入后备扫描缓冲）**：维护双后备扫描缓冲（`ScanoutBuf[0..2]`），仅对 `ScreenDamage` 矩形集合按 Z 序自底向上执行：背景材质节点严格执行「1/4 降采样 Dual-Kawase 模糊 + `1.8x` 饱和度矩阵增益 + Light/Dark 语义纱幕 + `0.5pt` 超椭圆微晶内描边」四阶管线；随后按模式（Light 双层柔和阴影 / Dark 零外阴影纯灰度抬升）处理投影，最后按行 Span 执行不透明 `memcpy` 或 AArch64 NEON 四像素并行预乘 `SrcOver` Alpha 混合及 $G^2$ 连续曲率超椭圆（Squircle）边缘 8-bit 覆盖率遮罩（含 `large` Sheet 模态升起时的父窗口 `0.92x` 纵深微缩与 `10pt` 顶圆角裁剪）。
+   - **第二遍（自底向上 Span/SIMD 混合、六阶液态玻璃与 `geometryTransition` 一镜到底合成）**：维护双后备扫描缓冲（`ScanoutBuf[0..2]`），吸收 OpenHarmony Rosen `RSRenderNode` 机制在服务端配对绑定同一 `transition_id` 的源/目标节点实时插值几何与超椭圆曲率；背景材质节点严格执行「1/4 降采样 Dual-Kawase 模糊 + 超椭圆边缘凸透镜折射偏移 + `1.8x` 饱和度与环境色吸收 + 五档语义纱幕 + 随触点游走镜面高光与光场涟漪 + iOS 27 意图流光边框（及 `Reduce Transparency` 实心回退）」六阶管线；随后按模式处理投影，执行 NEON 预乘 `SrcOver` 混合与 $G^2$ 连续超椭圆遮罩。
 4. **原子扫描提交与动态显示热切换**：
    - `virtio-gpu` 2D 后端：将已合成的 `ScreenDamage` 矩形批编码为异步 `TRANSFER_TO_HOST_2D` + `RESOURCE_FLUSH` 门铃提交（双缓冲交替 `SET_SCANOUT` 或单主扫描面锁拍更新），启用 `cursorq (q1)` 硬件光标平面使鼠标移动零主表面合成开销；
    - 动态模式切换：监听 `virtio-gpu` 配置变更中断或宿主控制令，读取新 `pmodes`/`EDID` 重建后备扫描缓冲，向全体活跃会话广播 `Evt::DisplayMetricsChanged { disp_w, disp_h, density_q8, refresh_hz, safe_insets }`，等待顶层可见会话提交新尺寸首帧（帽 100ms 超时以等比缩放旧帧平滑过渡）后原子切换 `SET_SCANOUT`，全程**免重启**。

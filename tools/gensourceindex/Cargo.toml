@@ -1,0 +1,31 @@
+[package]
+name = "gensourceindex"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+description = "BerryOS 官方源静态实例生成器（gensourceindex.py Rust 首刀，彻底 Rust 化轨道 b 层 #5 刀序第五位——TLV 索引编码/解析 + 源钥清单 + 自持 SHA-512/256）"
+
+[lib]
+name = "gensourceindex"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gensourceindex"
+path = "src/main.rs"
+
+# 零外部依赖纪律（W1 lane：禁新外部依赖）——纯 std。与 tools/elf2flat、
+# tools/mkcpio、tools/mkfat、tools/mkimage、tools/mkapp 同款独立小工作区
+# 形态（根 .cargo/config.toml 锁 build.target=aarch64-unknown-none，宿主
+# 件靠 --manifest-path + 显式 --target 走 host 面）。
+[dependencies]
+# 单编码器/单语义纪律（三刀第二片生成面）：条目表 = mkcpio load_manifest
+#（rootfs-manifest 唯一加载器）；manifest 语义 + cpio(newc) 走查 = mkapp
+# gate/cpio（check_manifest_text/_cpio_entries——gsi Python 件同款 import
+# 复用面）。mkcpio/mkapp 均纯 std path 依赖，零外部依赖纪律不破
+#（mkapp→mkcpio 同款先例）。
+mkcpio = { path = "../mkcpio" }
+mkapp = { path = "../mkapp" }
+
+# 独立小工作区标记（tools/mkfat 同款形态——根 workspace 自动上溯在此截断）
+[workspace]
