@@ -93,7 +93,7 @@ D3 主线统一验证与提交：分层验证链（见步骤 5／verification）
 
 1. bootstrap 端句柄卫生（boot 后 env 通道端子侧悬挂未关——现况同形；随句柄泄漏卫生刀）。
 2. env 链路贯穿 svcmgr/launcher/berry-term（ECO 链/app_launch/持久 bsh 转发 env——本刀只接 bsh 产侧三点，其余 27 点恒 &[]；待 BSHRC/PATH 消费面实跑定收益后另刀）。
-3. BSHRC.CFG 写者与宿主生成面（树内无写者，PATH 变量唯一来源悬空——which 真值端到端待此）。
+3. BSHRC.CFG 写者与宿主生成面（树内无写者，PATH 变量唯一来源悬空——which 真值端到端待此）。（兑现注记 2026-11-19：宿主写者已落——[BSHRC 刀谱](2026-11-19-BSHRC宿主写者与PATH端到端刀实施设计.md)。）
 4. ENV 容量帽 256B/16 项扩容路（BSHRC 64 行帽 vs 传递 16 项帽的截断已文档化，无现实压力；>256B 走 VMO 路挂 v3）。
 5. docs/事件循环A5设计草案-v1.0.md §1.1 锚点陈旧翻新（lib.rs:240 已漂、gift ≤3→≤4——草案整体翻新另刀）。
 6. tools 七面注释陈旧（smoke.sh:949 起「六内建/CLI 十步」枚举注释块、markers.sh:47-48、smoke-image.sh:314——G3 七面零 diff 硬约束下不触，搭下次合法触面刀捎带）。
