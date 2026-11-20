@@ -47,18 +47,36 @@
 //!    ROLE_TEXT 登记位在输入行节点）。
 //! 2. 尾段字节解释器（T2/T3 纯面 = berry-termio `TermCore`，T7）：行环/
 //!    尾段/feed 解释器/软换行/视图计算全在纯 crate（host 单测护栏）；
-//!    本文件只持 drawn 渲染副本与 UI 胶水（wake/child_send/wait_many
-//!    不进纯 crate）。TEXT_INLINE/MAX_NODES 零触碰。
+//!    本文件只持 drawn 渲染副本与通道/进程 IO 胶水（ui.wake /
+//!    child_probe / wait_many / terminate / reap 调用留本文件——分诊
+//!    决策与键路背压状态机在 berry-termio `triage` 纯面，只产决策不触
+//!    IO，两 crate 头注互指）。TEXT_INLINE/MAX_NODES 零触碰。
 //! 3. 持久子 bsh + 自动 respawn：启动 spawn 一次（`--no-selftest` 跳自验
 //!    链直进交互循环——term_selftest 铁律：不带旗 = TCG 分钟级自验 +
 //!    term 链无界递归）；stdin = `stdin_handle` 通道端直传（feeder 模型
 //!    反面——本 app 长命持续发键，非一次性泵尽；端被 env send take，
 //!    本表留对端 in_s 发送）；stdout = 私有对端；stack_pages=16（svcmgr
 //!    拉起 bsh 现值先例）；extra_gifts = rootfs/fs 双 dup（fs_gifts——
-//!    term_selftest 同参）。子退出（EOF 零长消息/对端异常）→ 行环加一行
-//!    `berry-term: bsh exited` + 记死亡时点；**Dead 态 2s 冷却后自动
+//!    term_selftest 同参）。**键路满队非死信号**（2026-11-20 分诊刀——
+//!    EBUSY 从死判面除名）：child_probe 单发非阻塞三态（Sent/Full/
+//!    LinkErr），满队转本地保序 FIFO（triage `Backlog`——KEYPEND_CAP=
+//!    256B，溢出丢新键计数；pending 非空时新键不探测直接入缓冲，键字节
+//!    通道＋本地缓冲跨段全程 FIFO），帧循环顶排空步＋稳态 in_s WRITABLE
+//!    背压臂（子腾位即醒续发——键路/排空路零同步阻塞零带帽等待）。子
+//!    退出四入口（L1 stdout 零长 EOF〔配合性真死权威〕＞L2 hp
+//!    TERMINATED 死讯臂〔非配合死唯一权威窗——稳态第 5 臂子活期恒挂，
+//!    terminate 杀/G1.5 击杀的 EOF 缺口面全时覆盖〕＞L3 stdout 非
+//!    EAGAIN 错与键路非 BUSY 错〔通道坏近不可达——死询打标后收口〕）全
+//!    收敛收口漏斗单路（triage 收敛表）：排空 out_s 残留 → 行环加一行
+//!    `berry-term: bsh exited` + pending 键陪葬计数行（`dropped N keys`）
+//!    → 记死亡时点；**Dead 态 2s 冷却后自动
 //!    respawn**（成功打 `berry-term: respawn`；失败打诊断行续 2s 退避
-//!    不杀页面；respawn 到期点并入稳态 deadline）；子存活 <2s 即死记一
+//!    不杀页面；respawn 到期点并入稳态 deadline）；**respawn 收口门**——
+//!    自动路与熔断 Enter 手动路前置 `child.proc.is_none()`（同步漏斗下
+//!    恒真的结构断言——双活 bsh 共享 fs 通道禁例结构性不可达）；漏斗
+//!    **无条件 terminate(130) 先行**（pipe_selftest 先例——0 已杀/-37
+//!    已退皆死证幂等）→ reap 瞬回（Err = 有界泄漏＋熔断停自动 respawn，
+//!    Enter 手动路保留）；子存活 <2s 即死记一
 //!    击（自然寿命死亡清零陈账），**三击熔断**——停自动重启、打
 //!    `berry-term: respawn circuit broken (enter to restart)` 常驻行，
 //!    Enter 手动重启并清零计数（熔断恢复路径）。归属：bsh 是 berry-term
@@ -74,17 +92,25 @@
 //!    （诊断行写明缺哪个断言）。自检子 terminate(130)+reap 收口
 //!    （term_selftest 先例形）。
 //!
-//! **稳态 wait_many 至多 3 路**：帧回调 hw + 输入 hi（条件）+ 子 stdout
-//! out_s（条件）——settings n≤2 面的第三路扩展（子输出即醒即收，不赌
-//! IDLE 帽）；deadline = min(next_wakeup, IDLE 帽, respawn 到期点〔待
-//! 重启死亡在席时〕）。
+//! **稳态 wait_many 至多 5 路**（2026-11-20 分诊刀 3→5 扩展）：帧回调
+//! hw + 输入 hi（条件）+ 子 stdout out_s（条件）+ in_s WRITABLE（条件
+//! 背压臂——pending 非空时子腾位即醒续发）+ hp TERMINATED（条件死讯臂
+//! ——子活期恒挂，非配合死即醒即收；bsh collect_fg 三臂先例同构）；
+//! deadline = min(next_wakeup, IDLE 帽, respawn 到期点〔待重启死亡在席
+//! 时〕, 忙段提示点〔hint 未出行时〕）。
 //!
 //! **输出面**：manifest console=false → stdout 走 svcmgr 私有对（drain 归
 //! app_supervise）；全部 println/eprintln 为诊断面，不构成串口标记。
 //! 首帧呈现回执打一行 `berry-term: first frame`。
 //!
 //! **v1 降解面**：每键一通道往返（哑终端固有——子回显即醒即收，无本地
-//! 即时反馈）；prompt 接续自然成立（子 prompt 与回显输入同驻尾段，输入
+//! 即时反馈）；**满队溢出丢新键**（本地 FIFO 帽 256B——丢新不丢旧保
+//! FIFO 序，`dropped N keys` 行计数可见）与**子死弃 pending 键**（半行
+//! 命令不重投新子——误执行面；同 dropped 行计数可见；已进通道 ≤8 键
+//! berry-term 侧不可数——诚实边界）；忙段提示一次性（子忙不读持续 5s
+//! 打 `child busy, N keys buffered`——哑终端无本地回显，忙期屏静默需
+//! 解释；排空毕复位，再忙段再提示）；prompt 接续自然成立（子 prompt
+//! 与回显输入同驻尾段，输入
 //! 行 = 尾段末块 + 光标——「输入行独立成行＋Enter 回流自证」旧观感已随
 //! 哑终端化退役）；`\r`/UTF-8 多字节序列不 special-case（域外字节渲染
 //! 等宽缺省空格面）；ESC 序列词汇表外一律吞（通用 ANSI 屏模型已砍单）；
@@ -104,8 +130,10 @@ use berry_sys::{
     berry_handle_duplicate, berry_object_wait_many, berry_object_wait_one,
     berry_process_terminate, berry_vmar_map, berry_vmo_commit, berry_vmo_create, Handle,
     BERRY_ERR_AGAIN, BERRY_ERR_BUSY, BERRY_ERR_TIMEDOUT, CLOCK_MONOTONIC, RIGHT_READ,
-    RIGHT_RECV, RIGHT_SEND, RIGHT_TRANSFER, RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_WRITABLE,
+    RIGHT_RECV, RIGHT_SEND, RIGHT_TRANSFER, RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_TERMINATED,
+    SIGNAL_WRITABLE,
 };
+use berry_termio::triage::{Backlog, DeathEntry, DeathVerdict, Liveness, SendFeed};
 use berry_termio::{TermCore, LINE_MAX, TERM_ROWS};
 use berry_ui::desc::{ColProps, TextProps, TextStyle};
 use berry_ui::hit::PtrEvent;
@@ -148,8 +176,18 @@ const CLEAR_BG: (u8, u8, u8) = (0x00, 0x00, 0x00);
 /// 行环总收容帽（自检收集环同值——子输出整场字节上界，防无界 Vec）。
 const COLLECT_MAX: usize = 32 * 1024;
 
-/// 收集环活动帽（term_collect 同值：收包刷新、帽尽即收场）。
+/// 自检收集环活动帽（term_collect 专属：收包刷新、帽尽即收场）。键路
+/// 死判用途已随 2026-11-20 超时会流分诊刀整体退役（EBUSY 非死信号——
+/// 满队转本地 FIFO 背压，见 child_probe/Backlog；「帽尽即杀」任何保留
+/// 形入砍单）——常量名义收窄回本面，全文件唯一消费点 term_collect。
 const COLLECT_TIMEOUT_NS: u64 = 10 * 1_000_000_000;
+
+/// input_arm 的 EBUSY 等待帽（输入面装配等待——2026-11-20 分诊刀常量化
+/// 收编原 :1252 硬编码字面量，值同零行为漂）。与 COLLECT_TIMEOUT_NS
+///（自检收集环活动帽）语义互不相干——数值相同纯属历史同源，是后者三处
+/// 复用漂移故事的收口半边；本帽属输入面既有豁免等待（G5 豁免清单），如
+/// 再现冻结归输入面刀。
+const INPUT_ARM_CAP_NS: u64 = 10 * 1_000_000_000;
 
 /// 子 bsh 栈页数（term_selftest 先例值：svcmgr 拉起 bsh 现值 16 页——
 /// musl std 大程序口径）。
@@ -588,14 +626,20 @@ fn pipe_selftest() {
 
 /// 持久子 bsh 句柄（帧循环的通道面）。
 struct Child {
-    /// 子 stdin 通道本端（发送面：行 + `\n`；Enter 键路消费）。
+    /// 子 stdin 通道本端（发送面：键字节透传；0 = 子死收口后——键走
+    /// dead 分支静默丢弃/熔断 Enter 面）。
     in_s: Handle,
-    /// 子 stdout 私有收端（帧循环第三等待路；0 = 子已退/面失效）。
+    /// 子 stdout 私有收端（帧循环第三等待路；0 = 子已死/面失效）。
     out_s: Handle,
-    /// spawn 产物（子退出时 best-effort reap——不回收 = 有界泄漏）。
+    /// spawn 产物（子死收口漏斗 terminate 先行 → reap——Err = 有界泄漏
+    /// ＋熔断；respawn 收口门 is_none() 结构断言的对面）。
     proc: Option<ChildHandles>,
-    /// 子死标记（EOF/挂断后置位——发送路静默丢弃）。
+    /// 子死标记（EOF/stdout 错/键路 LinkErr/死讯臂四入口收口漏斗置位
+    /// ——幂等门面；置位即发送路静默丢弃）。
     dead: bool,
+    /// 键路背压状态机（M2——本地保序 FIFO＋溢出丢新计数＋忙段追踪；
+    /// respawn 整体替换自动清零——新会话不继承旧键，滞留键随旧子陪葬）。
+    backlog: Backlog,
 }
 
 /// 持久子 bsh spawn（模块头注件 3；T5 抽 Result 变体——boot 首次 Err 仍
@@ -647,9 +691,10 @@ fn try_spawn_child() -> Result<Child, &'static str> {
         }
     };
     // out_c 原值留本表（stdout 内部 dup 交付子表）——spawn 后即关；in_c
-    // 已迁移（子表 STDIN_H），本表零副本。
+    // 已迁移（子表 STDIN_H），本表零副本。backlog 全零构造（const fn——
+    // respawn 整体替换自动清零语义）。
     let _ = berry_handle_close(out_c);
-    Ok(Child { in_s, out_s, proc: Some(child), dead: false })
+    Ok(Child { in_s, out_s, proc: Some(child), dead: false, backlog: Backlog::new() })
 }
 
 /// 子监督态（T5：自动 respawn + 三击熔断——bsh 是 berry-term 的内部实现
@@ -691,26 +736,53 @@ fn try_respawn(term: &mut Term, sup: &mut Super) -> Option<Child> {
     }
 }
 
-/// 通道发送（子 stdin 写点——rpc_send 的通道形：-EBUSY 阻塞等 WRITABLE
-/// 帽重臂；其余错 = 链断返 false 调用方标记子死）。
-fn child_send(h: Handle, bytes: &[u8]) -> bool {
-    let mut deadline = 0u64;
-    loop {
-        let s = berry_channel_send(h, bytes.as_ptr(), bytes.len(), core::ptr::null(), 0);
-        if s == 0 {
-            return true;
+/// 子 stdin 单发非阻塞探测（M1——原 child_send 的非阻塞三态化，满队
+/// 10s 帽死判环整体退役：单次 berry_channel_send，0 → [`SendFeed::Sent`]；
+/// -EBUSY → [`SendFeed::Full`]（满队＝子忙不读的正常背压形态——转本地
+/// FIFO，**非死信号**，EBUSY 从死判面彻底除名 G5）；其余非零 →
+/// [`SendFeed::LinkErr`]（通道坏——L3 死分诊入口）。零等待零重臂——
+/// 键路/排空路零带帽等待（帧循环零同步阻塞）；满队与链断分立成两变体
+/// ＝编译期除掉「队列满视同链断」合流（病灶一的形态学除名）。
+///
+/// G5 自查豁免清单（本文件现存带帽 wait_one 全录——键路/排空路零带帽
+/// 等待）：rpc_send / rpc_recv（RPC 面，帽重臂雷 2 纪律）、term_collect
+///（自检收集环活动帽 COLLECT_TIMEOUT_NS——名义收窄回本面）、input_arm
+///（输入面装配等待 INPUT_ARM_CAP_NS——既有面零行为改，如再现冻结归输
+/// 入面刀）；child_link_dead 的 deadline=0 poll 非阻塞死询（打标面）。
+fn child_probe(h: Handle, bytes: &[u8]) -> SendFeed {
+    let s = berry_channel_send(h, bytes.as_ptr(), bytes.len(), core::ptr::null(), 0);
+    if s == 0 {
+        SendFeed::Sent
+    } else if s == BERRY_ERR_BUSY {
+        SendFeed::Full
+    } else {
+        SendFeed::LinkErr
+    }
+}
+
+/// L3 键路死分诊（LinkErr——通道坏近不可达面，一旦出现＝监督契约破产
+/// 且无恢复路）：deadline=0 poll hp TERMINATED 死询打标（非阻塞——仅
+/// 诊断文本，Liveness 标不改变收敛）→ triage 纯面收敛表裁决 → 收口
+/// 漏斗。终止重启是唯一有界恢复（裁决 5——四入口全 TerminateThenReap
+/// 单路；「不杀健康子」令的边界是「不因满队/超时杀」，链破产面不在此
+/// 列）。
+fn child_link_dead(term: &mut Term, child: &mut Child, sup: &mut Super) {
+    let mut obs = 0u64;
+    let live = match child.proc.as_ref() {
+        Some(proc) => {
+            if berry_object_wait_one(proc.hp, SIGNAL_TERMINATED, 0, &mut obs) == 0 {
+                Liveness::Terminated
+            } else {
+                Liveness::Alive
+            }
         }
-        if s != BERRY_ERR_BUSY {
-            return false;
-        }
-        if deadline == 0 {
-            deadline = now() + COLLECT_TIMEOUT_NS;
-        }
-        let mut obs = 0u64;
-        if berry_object_wait_one(h, SIGNAL_WRITABLE, deadline, &mut obs) != 0 {
-            return false; // 满队超时（子不读——视同链断）
-        }
-        deadline = 0;
+        // proc 不在席＝已收口（防御面——死证在先）。
+        None => Liveness::Terminated,
+    };
+    let entry = DeathEntry::SendLinkErr(live);
+    eprintln!("berry-term: child stdin link err {entry:?}");
+    match entry.converge() {
+        DeathVerdict::TerminateThenReap => mark_child_dead(term, child, sup),
     }
 }
 
@@ -771,11 +843,12 @@ fn main() {
     run(hw, input_h(), ui, page, child);
 }
 
-/// 帧循环 + 输入 + 子 stdout 收割（settings `run` 的第三路扩展形：wait
-/// many 至多 3 路 [hw, hi, out_s]；渲染/SUBMIT/回调/RELEASE/vote 全照
-/// settings 食谱）。键帧（DEV_KEYBOARD）整帧字节透传子 bsh stdin（哑终
-/// 端化 T1——本地编辑器已退役，pump.rs 分流点同形）；指针帧照 push
-/// （无命中目标，零效果——预留面）。
+/// 帧循环 + 输入 + 子 stdout 收割（settings `run` 的五路扩展形：wait
+/// many 至多 5 路 [hw, hi, (out_s), (in_s 背压臂), (hp 死讯臂)]；渲染/
+/// SUBMIT/回调/RELEASE/vote 全照 settings 食谱）。键帧（DEV_KEYBOARD）
+/// 整帧字节经 child_probe/Backlog 异步背压透传子 bsh stdin（哑终端化
+/// T1——本地编辑器已退役，pump.rs 分流点同形；满队转本地 FIFO 不判
+/// 死）；指针帧照 push（无命中目标，零效果——预留面）。
 fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, page: Page, child_in: Child) -> ! {
     // —— present GETINFO 轻断言（settings 同形）。
     let mut req = [0u8; 256];
@@ -879,14 +952,49 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, page: Page, child_in:
         let t_now = now();
 
         // —— T5 自动 respawn：Dead 态 2s 冷却到（熔断态除外——Enter 手动
-        //    恢复）；失败续退避（try_respawn 内 pending 重臂）。
-        if child.dead && !sup.broken {
+        //    恢复）；失败续退避（try_respawn 内 pending 重臂）。respawn
+        //    收口门（M5）：前置 child.proc.is_none() 条件——同步收口漏斗
+        //    （mark_child_dead 内 take）下恒真的结构断言；真不满足则拒绝
+        //    重生，双活 bsh 共享 fs 通道禁例结构性不可达（立法点）。
+        if child.dead && !sup.broken && child.proc.is_none() {
             if let Some(died_at) = sup.pending {
                 if t_now >= died_at.saturating_add(RESPAWN_COOLDOWN_NS) {
                     if let Some(c) = try_respawn(&mut term, &mut sup) {
                         child = c;
                     }
                 }
+            }
+        }
+
+        // —— 键 FIFO 排空步（M2——满队期唯一发送者）：pending 非空时连发
+        //    队头至 Full（子未腾位——留队头待下轮，稳态 WRITABLE 背压臂
+        //    优化唤醒延迟）/空/LinkErr（L3 死分诊后 break）。排空正确性
+        //    不依赖唤醒粒度——本步每轮无条件试（裁决 13）。排空毕的忙段
+        //    溢出丢新总数经 on_sent 回报（N>0 才打行——损失面计数可见）。
+        if !child.dead && child.in_s != 0 {
+            while let Some(b) = child.backlog.next_pending() {
+                match child_probe(child.in_s, &[b]) {
+                    SendFeed::Sent => {
+                        if let Some(dropped) = child.backlog.on_sent() {
+                            if dropped > 0 {
+                                let msg = format!("berry-term: dropped {dropped} keys");
+                                term.push_line(msg.as_bytes());
+                            }
+                        }
+                    }
+                    SendFeed::Full => break, // 子忙未腾位——队头留待（下轮/背压臂醒）
+                    SendFeed::LinkErr => {
+                        child_link_dead(&mut term, &mut child, &mut sup);
+                        break;
+                    }
+                }
+            }
+            // 忙段提示（M6——每忙段恰一次）：子忙不读持续 5s 后提示一次
+            //（哑终端无本地回显，忙期屏静默需解释；排空毕复位，再忙段
+            // 再提示；格式化走本文件——纯 crate 不触 fmt 依赖面）。
+            if let Some(n) = child.backlog.hint_due(t_now) {
+                let msg = format!("berry-term: child busy, {n} keys buffered");
+                term.push_line(msg.as_bytes());
             }
         }
 
@@ -916,10 +1024,11 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, page: Page, child_in:
                                     // 键帧：哑终端透传（T1）——任意字节一
                                     // 视同仁发子 stdin（0x03/0x08/0x0A/0x09/
                                     // 0x1B/可打印零本地语义；空行 Enter 照发
-                                    // `\n`——子 bsh 空行仅重显 prompt；遇
-                                    // EBUSY 等可写再发——child_send 契约）。
-                                    // 显示变更的醒源全在子回显（out_s 即醒
-                                    // 即收）——键自身不 wake。
+                                    // `\n`——子 bsh 空行仅重显 prompt；满队
+                                    // 转本地 FIFO 异步背压——child_probe/
+                                    // Backlog 契约，零同步等待）。显示变更
+                                    // 的醒源全在子回显（out_s 即醒即收）——
+                                    // 键自身不 wake。
                                     let b = ev.x as u8;
                                     if child.dead {
                                         // 熔断态 Enter = 手动重启（T5 恢复
@@ -928,14 +1037,48 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, page: Page, child_in:
                                         if sup.broken && b == b'\n' {
                                             sup.strikes = 0;
                                             sup.broken = false;
-                                            if let Some(c) =
-                                                try_respawn(&mut term, &mut sup)
-                                            {
-                                                child = c;
+                                            // respawn 收口门（M5）：proc 在席
+                                            // ＝收口漏斗未走完（同步漏斗下
+                                            // 恒不可达防御面）——拒绝重生，
+                                            // 双活 bsh 共享 fs 通道禁例结构
+                                            // 性不可达。
+                                            if child.proc.is_none() {
+                                                if let Some(c) =
+                                                    try_respawn(&mut term, &mut sup)
+                                                {
+                                                    child = c;
+                                                }
+                                            } else {
+                                                eprintln!(
+                                                    "berry-term: respawn gate: proc present"
+                                                );
                                             }
                                         }
-                                    } else if !child_send(child.in_s, &[b]) {
-                                        mark_child_dead(&mut term, &mut child, &mut sup);
+                                    } else if child.backlog.pending_len() > 0 {
+                                        // 保序不变式（G6）：pending 非空时新
+                                        // 键不探测直接入缓冲——排空步为满队
+                                        // 期唯一发送者，结构性无竞窗（on_key
+                                        // 对非空 pending 忽略 feed 值不旁路）
+                                        //；溢出丢新在此计数（dropped 行于
+                                        // 忙段毕/子死时报账）。
+                                        child.backlog.on_key(SendFeed::Full, b, t_now);
+                                    } else {
+                                        // 键路异步背压（M2）：Sent/Full 交
+                                        // backlog.on_key 仲裁（首键入缓开忙
+                                        // 段）；LinkErr 走 L3 死分诊（死询
+                                        // 打标→收敛表→收口漏斗）。
+                                        match child_probe(child.in_s, &[b]) {
+                                            SendFeed::LinkErr => {
+                                                child_link_dead(
+                                                    &mut term,
+                                                    &mut child,
+                                                    &mut sup,
+                                                );
+                                            }
+                                            feed => {
+                                                child.backlog.on_key(feed, b, t_now);
+                                            }
+                                        }
                                     }
                                     continue;
                                 }
@@ -1137,10 +1280,12 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, page: Page, child_in:
             }
         }
 
-        // —— 稳态等待（settings n≤2 面的第三路扩展）：wait_many 至多 3
-        //    路 [hw READABLE, (hi READABLE), (out_s READABLE)] + deadline =
-        //    min(next_wakeup, now+IDLE 帽)；子输出即醒即收不赌 IDLE 帽。
-        //    条件路紧凑装填（n = 有效前缀——0 句柄禁入等待集）。
+        // —— 稳态等待（settings n≤2 面的五路扩展——2026-11-20 分诊刀
+        //    M3）：wait_many 至多 5 路 [hw READABLE, (hi READABLE), (out_s
+        //    READABLE), (in_s WRITABLE 背压臂), (hp TERMINATED 死讯臂)] +
+        //    deadline = min(next_wakeup, now+IDLE 帽, respawn 到期点, 忙段
+        //    提示点)；子输出即醒即收不赌 IDLE 帽。条件路紧凑装填（n =
+        //    有效前缀——0 句柄禁入等待集；WAIT_MANY_MAX=16 容量内）。
         let cap = now() + IDLE_CAP_NS;
         let mut deadline = ui.next_wakeup().map_or(cap, |t| t.min(cap));
         // respawn 到期点并入（T5）：待重启死亡在席时 min 加冷却到期点
@@ -1150,8 +1295,13 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, page: Page, child_in:
                 deadline = deadline.min(died_at.saturating_add(RESPAWN_COOLDOWN_NS));
             }
         }
-        let mut hs = [0 as Handle; 3];
-        let ss = [SIGNAL_READABLE, SIGNAL_READABLE, SIGNAL_READABLE];
+        // 忙段提示点并入（M6）：hint 未出行时 min 加提示到期点（不赌
+        // IDLE 帽——到点即醒打提示行）。
+        if let Some(hint_at) = child.backlog.hint_at() {
+            deadline = deadline.min(hint_at);
+        }
+        let mut hs = [0 as Handle; 5];
+        let mut ss = [SIGNAL_READABLE; 5];
         hs[0] = hw;
         let mut n = 1usize;
         if hi != 0 && input_pending {
@@ -1162,53 +1312,132 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, page: Page, child_in:
             hs[n] = child.out_s;
             n += 1;
         }
+        // 条件背压臂（M2/M3）：pending 非空且 in_s 在席——子 recv 腾位经
+        // wake_matching(对端, WRITABLE) 即醒续发（匹配键 = ObjRef 地址跨
+        // handle 别名互通）；排空步每轮无条件试，本臂仅优化唤醒延迟。
+        if !child.dead && child.in_s != 0 && child.backlog.pending_len() > 0 {
+            hs[n] = child.in_s;
+            ss[n] = SIGNAL_WRITABLE;
+            n += 1;
+        }
+        // 条件死讯臂（M3——L2 非配合死唯一权威窗）：子活期恒挂（bsh
+        //    collect_fg 三臂先例同构；EOF 缺口面全时覆盖，零每帧常询
+        //    ——裁决 14）；臂安装前 TERMINATED 已置的竞窗由 wait_many
+        //    立即返回覆盖。命中 → 收口漏斗（L1 EOF 优先由臂序保证——
+        //    out_s 在前）。
+        let mut death_arm: Option<usize> = None;
+        if !child.dead {
+            if let Some(proc) = child.proc.as_ref() {
+                death_arm = Some(n);
+                hs[n] = proc.hp;
+                ss[n] = SIGNAL_TERMINATED;
+                n += 1;
+            }
+        }
         let mut idx = 0usize;
         let mut obs = 0u64;
         let wst = berry_object_wait_many(hs.as_ptr(), ss.as_ptr(), n, deadline, &mut idx, &mut obs);
         if wst != 0 && wst != BERRY_ERR_TIMEDOUT {
             fail(&format!("wait err={wst}"));
         }
+        if wst == 0 && Some(idx) == death_arm {
+            // L2 死讯臂命中：非配合死亡（内核 terminate 杀/G1.5 击杀——
+            // 无 EOF 面）即醒即收；漏斗 ① 会先排空 out_s 残留保末段输出。
+            eprintln!("berry-term: child terminated (death arm)");
+            mark_child_dead(&mut term, &mut child, &mut sup);
+        }
     }
 }
 
-/// 子死收口（EOF/挂断/发送链断共用）：行环加退出行 + best-effort reap +
-/// 通道面收口（out_s 置 0 出等待集；in_s 关——后续键静默丢弃）+ T5 监督
-/// 记账：存活 <2s 的快速死亡记一击（自然寿命死亡清零陈账——长命证明
-/// 电路健康，防跨小时陈账误熔断）；三击熔断——停自动重启、打常驻诊断行
-/// （Enter 手动恢复）；否则记 pending 死亡时点（2s 冷却后自动 respawn）。
+/// 子死收口漏斗（EOF／stdout 错／键路 LinkErr／死讯臂四入口共用——
+/// 2026-11-20 分诊刀 terminate 先行重构）：幂等门后序＝①排空 out_s
+/// 残留（保退出末段输出——EOF 消息自然抵达；有界＝队列深 8）→ ②dead
+/// 置位＋退出行（文案零滚）→ ③pending 键陪葬计数行 → ④关双端 →
+/// ⑤无条件 terminate(130) 先行（pipe_selftest 先例——0 已杀/-37 已退
+/// 皆死证幂等；EOF 路子配合退出中 terminate 亦安全，mid-exit 两返码均
+/// 死证）→ ⑥reap（TERMINATED 前置保证下瞬回，30s 帽降为防御兜底；Err
+/// ＝有界泄漏＋熔断停自动 respawn——Enter 手动路保留，不冒第二消费
+/// 者险）→ ⑦T5 记账（strikes/pending 逻辑零改）。死判收敛在 triage
+/// 纯面（DeathEntry 四入口全 TerminateThenReap 单路）——本函数是 IO 序
+/// 薄壳。
 fn mark_child_dead(term: &mut Term, child: &mut Child, sup: &mut Super) {
     if child.dead {
-        return; // 幂等（收割/发送两路可能先后触发）
+        return; // 幂等（收割/键路/排空/死讯臂多路可能先后触发）
     }
+    // ① 排空 out_s 残留队列：退出末段字节喂行环后才打退出行（EOF 消息
+    //    在此自然抵达/消费——收割路重入时队列已空即 EAGAIN）。
+    if child.out_s != 0 {
+        let mut msg = [0u8; 256];
+        loop {
+            let mut nb = msg.len();
+            let mut nh = 0usize;
+            let s = berry_channel_recv(
+                child.out_s,
+                msg.as_mut_ptr(),
+                &mut nb,
+                core::ptr::null_mut(),
+                &mut nh,
+            );
+            if s == 0 && nb > 0 {
+                term.feed(&msg[..nb]);
+                continue;
+            }
+            break; // EOF（零长）/EAGAIN/对端异常——排空毕
+        }
+    }
+    // ② dead 置位＋退出行（文案零滚）。
     child.dead = true;
     let t = now();
     term.push_line(b"berry-term: bsh exited");
-    // 通道收口：out_s 即关（EOF 后队列空——关不丢数据）；in_s 即关（子
-    // 已死，后续透传字节静默丢弃）。
+    // ③ pending 键陪葬：半行命令重投新子＝误执行面（裁决 11）——本地
+    //    在缓键计数可见（dropped 行；已进通道 ≤8 键本侧不可数——诚实
+    //    边界，挂账 4）；Backlog 全态清零＝respawn 整体替换自动清零的
+    //    显式面（新会话不继承旧键）。
+    let (pending, dropped) = child.backlog.on_child_dead();
+    let total = pending + dropped;
+    if total > 0 {
+        let msg = format!("berry-term: dropped {total} keys");
+        term.push_line(msg.as_bytes());
+    }
+    // ④ 通道收口：out_s 即关置 0（出等待集）；in_s 即关（后续透传字节
+    //    走 dead 分支静默丢弃）。
     let _ = berry_handle_close(child.out_s);
     child.out_s = 0;
     let _ = berry_handle_close(child.in_s);
     child.in_s = 0;
-    // best-effort reap（EOF 先行于 TERMINATED 落账——wait 瞬回；Err = 有界
-    // 泄漏，诊断不杀页面）。
+    // ⑤⑥ terminate 先行收口 → reap（terminate 返码仅 eprintln 诊断——
+    //    0 已杀/-37 已退皆死证；非 0 非 -37 理论不可达面 reap 仍走 30s
+    //    帽防御兜底）。reap Err＝有界泄漏＋熔断（child reap failed 行
+    //    保留＋broken 置位停自动 respawn）。
     if let Some(proc) = child.proc.take() {
+        let ts = berry_process_terminate(proc.hp, 130);
+        eprintln!("berry-term: child terminate rc={ts}");
         match proc.reap() {
             Ok(_) => {}
-            Err(()) => eprintln!("berry-term: child reap failed (bounded leak)"),
+            Err(()) => {
+                eprintln!("berry-term: child reap failed (bounded leak)");
+                sup.broken = true;
+                sup.pending = None;
+                term.push_line(b"berry-term: respawn circuit broken (enter to restart)");
+            }
         }
     }
-    // T5 监督记账。
-    if t.saturating_sub(sup.spawned_at) < CHILD_MIN_LIFE_NS {
-        sup.strikes += 1;
-    } else {
-        sup.strikes = 0;
-    }
-    if sup.strikes >= RESPAWN_BREAK_STRIKES {
-        sup.broken = true;
-        sup.pending = None;
-        term.push_line(b"berry-term: respawn circuit broken (enter to restart)");
-    } else {
-        sup.pending = Some(t);
+    // ⑦ T5 监督记账（reap Err 路已熔断——pending 重臂面跳过；击数口径
+    //    零改：<2s 记击/≥2s 清零/三击熔断——自然寿命死亡清零陈账，长命
+    //    证明电路健康，防跨小时陈账误熔断）。
+    if !sup.broken {
+        if t.saturating_sub(sup.spawned_at) < CHILD_MIN_LIFE_NS {
+            sup.strikes += 1;
+        } else {
+            sup.strikes = 0;
+        }
+        if sup.strikes >= RESPAWN_BREAK_STRIKES {
+            sup.broken = true;
+            sup.pending = None;
+            term.push_line(b"berry-term: respawn circuit broken (enter to restart)");
+        } else {
+            sup.pending = Some(t);
+        }
     }
 }
 
@@ -1249,7 +1478,7 @@ fn input_arm(h: Handle) -> bool {
             return false;
         }
         if deadline == 0 {
-            deadline = now() + 10_000_000_000;
+            deadline = now() + INPUT_ARM_CAP_NS;
         }
         let mut obs = 0u64;
         if berry_object_wait_one(h, SIGNAL_WRITABLE, deadline, &mut obs) != 0 {

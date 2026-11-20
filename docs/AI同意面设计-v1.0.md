@@ -5,7 +5,7 @@
 > 同意面 = AI 权限的「用户可见审批层」：内核 SET_POLICY 能力管「能不能」，本设计管「用户知不知道、批没批」。
 > 语义底稿 = `research/21-Veda-consent机制深读.md`（Veda 为 GPL-3.0-only：**语义可借、代码一字不进**，规则 13 同口径）。
 > 挂钩：`能力模型设计-v1.0.md` §8（唯一机制纪律）、`AI调度设计-v1.0.md` §3/§4 末条（SET_POLICY 委托）、
-> `应用模型设计-v1.0.md` §3/§8（manifest 落点与 Agent 面）、`可观测性设计-v1.0.md`（trace 基座）。
+> `应用模型设计-v1.0.md` §3/§8（manifest 落点与 Agent 面）、`可观测性设计-v1.2.md`（trace 基座）。
 
 ## 0. 定位：用户可见的审批层，不是第二套权限
 
@@ -77,7 +77,7 @@
   动了要紧之物的**事后告知**（RanAnyway 语义，21 号 §2/§5.2 第 4 条）。
 - **审计 = trace 环事件 + 计数面 + 并账**，三层：
   1. 事件词汇：trace 新增 `consent` 类别五事件（request/approve/decline/expire/ran_anyway）——挂
-     可观测性 trace 通道（`可观测性设计-v1.0.md` §2 类别表 add-only 扩一，现有七类不动）。
+     可观测性 trace 通道（`可观测性设计-v1.2.md` §2 类别表 add-only 扩一，现有七类不动）。
   2. 计数面：复用 P1-a 拒收入账四计数模式（`sched/src/policy.rs:670-701`：静态 `AtomicU64` +
      Relaxed 纯统计 + 快照读出口 + 决策路径零新增写面）扩出同意面计数组——五事件各一计（与事件
      词汇同名），审批与护栏生效频率可量化。
@@ -163,7 +163,7 @@ empty-trash = "destructive"
 - `docs/能力模型设计-v1.0.md`：§1/§2/§4/§8（纯能力、dup 收紧、Job revoke、唯一机制纪律）。
 - `docs/AI调度设计-v1.0.md`：§3 权限节 / §4 末条（注入权也是能力）/ §5 护栏。
 - `docs/应用模型设计-v1.0.md`：§3 manifest / §8 Agent 面（Agent = 普通应用、不设特权 API）。
-- `docs/可观测性设计-v1.0.md`：§2 tracepoint 类别 / §3 环基座 / §7 阶段。
+- `docs/可观测性设计-v1.2.md`：§2 tracepoint 类别 / §3 环基座 / §7 阶段。
 - `sched/src/policy.rs`（670–701 行）：P1-a 拒收入账四计数——同意面计数组的模式来源。
 - `research/24-2026新OS全景与四家深读.md` §2.2、`research/17-sansIO协议核与openfang内核形态.md`：
   consent by identity / 锁屏抑制 / presence 三条与 P1-c 定位来源。

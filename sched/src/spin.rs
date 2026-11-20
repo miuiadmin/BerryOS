@@ -12,17 +12,10 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-// S-6 ③b 自旋看门狗（诊断面，定谳后随探针一并退役）：持锁者被杀/泄漏 →
-// 取锁者 IRQ 关死自旋（run10 c0 tick 冻结实录）。内层自旋计数超限经函数
-// 指针槽自报 lock 地址——本文件零依赖纪律（义务⑦）不破：槽本体纯 core，
-// hal 面 bark 由 sched.rs 提供并在 init 自装。None = 零开销直通。
-static mut SPIN_BARK: Option<fn(usize)> = None;
-
-/// 安装自旋看门狗 bark（sched::init 自装；boot 单线程恰一次，此后只读）。
-pub fn set_spin_bark(f: fn(usize)) {
-    // SAFETY: boot 单线程安装（第二核上线前），此后只读。
-    unsafe { SPIN_BARK = Some(f) };
-}
+// 探针族退役刀（2026-11-19）：S-6 ③b 自旋看门狗（SPIN_BARK 函数指针槽 +
+// set_spin_bark 安装 + acquire 内层 2^23 计数 bark 分支）随 spin_bark 全族
+// 退役——「spin!」行宿主零消费者；TTAS 语义零变（外层 CAS 环原样），最热
+// 自旋环少一条本地递增。
 
 /// TTAS 自旋锁。`locked == false` = 空闲。
 pub struct SpinLock {
@@ -39,7 +32,6 @@ impl SpinLock {
 
     /// 取锁（TTAS：CAS 入主，失败转廉读自旋让出总线——同 `kern_acquire` 形）。
     pub fn acquire(&self) {
-        let mut n = 0u32;
         while self
             .locked
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -47,16 +39,6 @@ impl SpinLock {
         {
             while self.locked.load(Ordering::Relaxed) {
                 core::hint::spin_loop();
-                // S-6 ③b：内层自旋超限（2^23 次 ≈ 亚秒量级）bark 一次。
-                // bark 自带 par 门/节流/总量帽——非 wedge 态零输出零漂移。
-                n = n.wrapping_add(1);
-                if n >= (1 << 23) {
-                    n = 0;
-                    // SAFETY: boot 单线程安装后只读。
-                    if let Some(bark) = unsafe { SPIN_BARK } {
-                        bark(self as *const SpinLock as usize);
-                    }
-                }
             }
         }
     }

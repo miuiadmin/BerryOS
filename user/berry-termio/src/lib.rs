@@ -3,10 +3,12 @@
 //! 最大回归面，本 crate 以脱离 QEMU 的 host 回归网对冲，berry-complete
 //! 「纯面外迁」先例同款纪律）。
 //!
-//! **职责边界**：行环 / 尾段 / 回显字节解释器 / 软换行 / 视图计算——全部
-//! 纯面（定长数组零 alloc，无 syscall 依赖）；ui.wake / child_send /
-//! wait_many 胶水留在 berry-term main.rs 不进本 crate。显示单源 = 子 bsh
-//! 回显字节——本模块只解释不生成。
+//! **职责边界**：行环 / 尾段 / 回显字节解释器 / 软换行 / 视图计算 / 子
+//! 监督分诊决策面（triage——只产决策不触 IO）——全部纯面（定长数组零
+//! alloc，无 syscall 依赖）；ui.wake / child_send / wait_many 等通道与
+//! 进程 IO 胶水（send/recv/wait/terminate/reap 调用）留在 berry-term
+//! main.rs 不进本 crate。显示单源 = 子 bsh 回显字节——本模块只解释不
+//! 生成。
 //!
 //! **字节解释器（feed）覆盖集 = bsh 回显词汇表**（bsh editor.rs 逐臂核实
 //! 封闭）：纯文本＋`\n`（行定稿）＋BS-空格-BS 三连（退格/Ctrl-U/历史召回
@@ -42,6 +44,10 @@
 //! 保尾段可见——prompt 恒在屏）。
 
 #![cfg_attr(not(test), no_std)]
+
+/// 子监督分诊决策与键路仲裁纯面（2026-11-20 超时会流分诊刀 P1——死
+/// 信号层级表／SendFeed 三态镜像／Backlog 键路背压状态机）。
+pub mod triage;
 
 /// 行环可见行数（berry-term 行环节点数单源）。
 pub const TERM_ROWS: usize = 24;
@@ -480,5 +486,181 @@ mod tests {
         assert_eq!(t.view_row(0), b"bsh> draft^C"); // ^C 收尾的中断行
         assert_eq!(t.view_row(1), b"");
         assert_eq!(t.tail(), b"bsh> ");
+    }
+
+    // —— triage 纯面（2026-11-20 超时会流分诊刀 P4 测试族：九键回归/
+    // 溢出丢新/保序负证/忙段提示/排空全链/子死清零/死判收敛表）——
+
+    use crate::triage::{
+        Backlog, DeathEntry, DeathVerdict, KeyAct, Liveness, SendFeed, CHILD_BUSY_HINT_NS,
+        KEYPEND_CAP,
+    };
+
+    /// ① 九键回归（病灶一钉板）：通道深 8——8 键 Sent 直达、第 9 键
+    /// Full 转缓**不判死**；零 Dropped；busy_since 置位（hint_at 在席）；
+    /// 排空毕 episode 回报零丢键、忙段复位。
+    #[test]
+    fn backlog_nine_keys_full_turns_to_buffer() {
+        let mut bl = Backlog::new();
+        let t = 1_000u64;
+        for i in 0..8u8 {
+            assert_eq!(bl.on_key(SendFeed::Sent, b'a' + i, t), KeyAct::Delivered);
+        }
+        assert_eq!(bl.pending_len(), 0);
+        assert_eq!(bl.hint_at(), None); // 未开忙段
+        // 第 9 键：满队（CHAN_DEPTH=8 已积压）→ 入缓开忙段——EBUSY 非
+        // 死信号（G5），本状态机无任何死判出口。
+        assert_eq!(bl.on_key(SendFeed::Full, b'z', t), KeyAct::Buffered);
+        assert_eq!(bl.pending_len(), 1);
+        assert_eq!(bl.hint_at(), Some(t + CHILD_BUSY_HINT_NS)); // busy_since 置位
+        // 排空：单键送达、episode 回报零丢键、忙段复位。
+        assert_eq!(bl.next_pending(), Some(b'z'));
+        assert_eq!(bl.on_sent(), Some(0));
+        assert_eq!(bl.next_pending(), None);
+        assert_eq!(bl.hint_at(), None);
+    }
+
+    /// ② 溢出丢新不丢旧：CAP+5 键全 Full → 前 CAP 入缓、后 5
+    /// DroppedNew；排空 FIFO 序断言（0..=255 逐字节＝入缓序）＋排空毕
+    /// episode 回报 dropped=5（④ 的丢键>0 面）。
+    #[test]
+    fn backlog_overflow_drops_new_keeps_fifo() {
+        let mut bl = Backlog::new();
+        for i in 0..KEYPEND_CAP {
+            assert_eq!(bl.on_key(SendFeed::Full, i as u8, 0), KeyAct::Buffered);
+        }
+        for k in 0..5u8 {
+            assert_eq!(bl.on_key(SendFeed::Full, 0xF0 | k, 0), KeyAct::DroppedNew);
+        }
+        assert_eq!(bl.pending_len(), KEYPEND_CAP);
+        // 排空全链：FIFO 序＝入缓序（丢新不丢旧——旧键 0..=255 全在）；
+        // 末键送达后回报本忙段丢新总数 5。
+        for i in 0..KEYPEND_CAP {
+            assert_eq!(bl.next_pending(), Some(i as u8));
+            let last = i + 1 == KEYPEND_CAP;
+            assert_eq!(bl.on_sent(), if last { Some(5) } else { None });
+        }
+        assert_eq!(bl.next_pending(), None);
+        assert_eq!(bl.hint_at(), None); // 忙段复位
+    }
+
+    /// ②′ 保序不变量负证：pending 非空时 Sent 不旁路（误喂 Sent 也入缓
+    /// ——模型无旁路口）；LinkErr 不进 Backlog（防御＝丢新键、零状态
+    /// 污染——不开忙段不动计数）。
+    #[test]
+    fn backlog_no_bypass_when_pending_and_linkerr_rejected() {
+        let mut bl = Backlog::new();
+        assert_eq!(bl.on_key(SendFeed::Full, b'x', 7), KeyAct::Buffered);
+        // pending 非空时误喂 Sent（调用方违约形态）：不 Delivered、入缓
+        // ——排空序 x 先 y 后（不靠时序假设的结构性保序）。
+        assert_eq!(bl.on_key(SendFeed::Sent, b'y', 7), KeyAct::Buffered);
+        assert_eq!(bl.pending_len(), 2);
+        assert_eq!(bl.next_pending(), Some(b'x'));
+        assert_eq!(bl.on_sent(), None);
+        assert_eq!(bl.next_pending(), Some(b'y'));
+        assert_eq!(bl.on_sent(), Some(0));
+        // LinkErr 防御：丢新键、零状态污染（随后键流全新态起算）。
+        let mut bl2 = Backlog::new();
+        assert_eq!(bl2.on_key(SendFeed::LinkErr, b'e', 7), KeyAct::DroppedNew);
+        assert_eq!(bl2.pending_len(), 0);
+        assert_eq!(bl2.hint_at(), None);
+        assert_eq!(bl2.on_key(SendFeed::Sent, b'k', 7), KeyAct::Delivered);
+    }
+
+    /// ③ 忙段提示恰一次：阈值前不出、到点出行附在缓键数、出行后不再出
+    ///（hint_at 同步熄灭）；排空复位后再忙段再提示（新忙段新起点）。
+    #[test]
+    fn backlog_hint_once_per_episode_rearms_after_drain() {
+        let mut bl = Backlog::new();
+        let t0 = 100u64;
+        assert_eq!(bl.on_key(SendFeed::Full, b'1', t0), KeyAct::Buffered);
+        assert_eq!(bl.on_key(SendFeed::Full, b'2', t0), KeyAct::Buffered);
+        assert_eq!(bl.hint_due(t0 + CHILD_BUSY_HINT_NS - 1), None);
+        assert_eq!(bl.hint_due(t0 + CHILD_BUSY_HINT_NS), Some(2)); // 附 pending 数
+        assert_eq!(bl.hint_due(t0 + CHILD_BUSY_HINT_NS + 1), None); // 恰一次
+        assert_eq!(bl.hint_at(), None); // 已出行不再给 deadline
+        // 排空复位（末键送达＝忙段毕）。
+        assert_eq!(bl.next_pending(), Some(b'1'));
+        assert_eq!(bl.on_sent(), None);
+        assert_eq!(bl.next_pending(), Some(b'2'));
+        assert_eq!(bl.on_sent(), Some(0));
+        // 再忙段（新起点 t1）：再提示。
+        let t1 = t0 + 60 * 1_000_000_000;
+        assert_eq!(bl.on_key(SendFeed::Full, b'3', t1), KeyAct::Buffered);
+        assert_eq!(bl.hint_due(t1 + CHILD_BUSY_HINT_NS - 1), None);
+        assert_eq!(bl.hint_due(t1 + CHILD_BUSY_HINT_NS), Some(1));
+    }
+
+    /// ④ 排空全链（中段续键对账）：300 键溢出 44 后排空半程、中途续入
+    /// 10 键（pending 非空一律入缓 FIFO 尾接——Sent 亦不旁路）、续排空
+    /// ——episode 回报＝本忙段丢新总数 44，到达序＝入缓序全链一致。
+    #[test]
+    fn backlog_drain_chain_reports_episode_drops_with_mid_arrivals() {
+        let mut bl = Backlog::new();
+        for i in 0..300usize {
+            let act = bl.on_key(SendFeed::Full, (i % 256) as u8, 0);
+            if i < KEYPEND_CAP {
+                assert_eq!(act, KeyAct::Buffered);
+            } else {
+                assert_eq!(act, KeyAct::DroppedNew);
+            }
+        }
+        let mut received = Vec::new();
+        for _ in 0..128 {
+            received.push(bl.next_pending().unwrap());
+            assert_eq!(bl.on_sent(), None); // 半程无 episode 回报
+        }
+        // 中途续键 10 枚：pending 非空——Sent 亦入缓（尾接不插队）。
+        for k in 0..10u8 {
+            assert_eq!(bl.on_key(SendFeed::Sent, b'0' + k, 0), KeyAct::Buffered);
+        }
+        while let Some(b) = bl.next_pending() {
+            received.push(b);
+            let report = bl.on_sent();
+            if bl.pending_len() == 0 {
+                assert_eq!(report, Some(44)); // 排空毕＝本忙段丢新总数
+            } else {
+                assert_eq!(report, None);
+            }
+        }
+        let mut expect: Vec<u8> = (0..KEYPEND_CAP).map(|i| i as u8).collect();
+        expect.extend((0..10u8).map(|k| b'0' + k));
+        assert_eq!(received, expect); // 到达序＝入缓序（续键尾接）
+        assert_eq!(bl.on_sent(), None); // 空缓无操作
+    }
+
+    /// ⑤ 子死清零：on_child_dead 回报在缓键数并全态复位（respawn 整体
+    /// 替换的显式面——新会话不继承旧键）；清零后新键从零态起。
+    #[test]
+    fn backlog_child_dead_reports_pending_and_wipes() {
+        let mut bl = Backlog::new();
+        for k in 0..5u8 {
+            assert_eq!(bl.on_key(SendFeed::Full, b'a' + k, 0), KeyAct::Buffered);
+        }
+        assert_eq!(bl.on_child_dead().0, 5);
+        assert_eq!(bl.pending_len(), 0);
+        assert_eq!(bl.next_pending(), None);
+        assert_eq!(bl.hint_at(), None);
+        assert_eq!(bl.hint_due(u64::MAX), None);
+        // 清零后：Sent 直达（零残留）、新忙段全新起算。
+        assert_eq!(bl.on_key(SendFeed::Sent, b'z', 0), KeyAct::Delivered);
+        assert_eq!(bl.on_key(SendFeed::Full, b'w', 9), KeyAct::Buffered);
+        assert_eq!(bl.hint_at(), Some(9 + CHILD_BUSY_HINT_NS));
+    }
+
+    /// ⑥ 死判收敛表（四入口全 TerminateThenReap 单路）：L1 EOF／L3
+    /// stdout 臂／L3 键路臂×死询两标——Liveness 仅诊断不改变收敛
+    ///（G5／裁决 5 表测执法）。
+    #[test]
+    fn death_entry_table_all_converge_terminate_then_reap() {
+        let table = [
+            DeathEntry::StdoutEof,
+            DeathEntry::StdoutErr,
+            DeathEntry::SendLinkErr(Liveness::Terminated),
+            DeathEntry::SendLinkErr(Liveness::Alive),
+        ];
+        for e in &table {
+            assert_eq!(e.converge(), DeathVerdict::TerminateThenReap);
+        }
     }
 }

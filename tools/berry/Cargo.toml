@@ -19,7 +19,11 @@ gui = []
 
 [dependencies]
 berry-cbox = { path = "../../user/berry-cbox" }
-berry-dmface = { path = "../../dmface" }
+# BSHRC 宿主写者（export 刀挂账 #3）：FAT12 就地写面走 berry-fatfs 纯编
+# 解码写基元（fat12_set/find_free_cluster/encode_file_entry 等）——客机
+# fsmgr 消费同 crate，「写读两端 FAT 实现对拍」按构造成立；跨 workspace
+# path 依赖先例 = berry-cbox。host 工具面，不进客机/ABI。
+berry-fatfs = { path = "../../user/berry-fatfs" }
 clap = { version = "4.5", features = ["derive"] }
 serde_json = "1.0"
 winit = "0.30"
@@ -46,6 +50,11 @@ qrcodegen = "1.8"
 wgpu = "30.0"
 pollster = "1.0.1"
 bytemuck = "1.25.2"
+
+[dev-dependencies]
+# 仅测试字节恒等对拍消费（BSHRC 刀 T1：berry 写者产物 vs mkfat build_volume
+# 造盘产物整盘逐字节等值＝写方言≡造盘方言同源证）；零外部 crate。
+mkfat = { path = "../../tools/mkfat" }
 
 [profile.release]
 lto = true

@@ -34,4 +34,4 @@ Status: implemented
 
 - [export 内建与 spawn env 面刀实施设计](../../plans/2026-11-17-export内建与spawn-env面刀实施设计.md)（本刀刀谱——契约 P/A/L/B、裁决 15 条、砍单汇总）
 - [2026-11-17-命令行终端与shell完善刀](2026-11-17-命令行终端与shell完善刀.md)（挂账 #2 兑现源）
-- [shell设计-v1.1](../../../docs/shell设计-v1.1.md) P5 行后记（export 兑现注）
+- [shell设计-v1.2](../../../docs/shell设计-v1.2.md) P5 行后记（export 兑现注）
