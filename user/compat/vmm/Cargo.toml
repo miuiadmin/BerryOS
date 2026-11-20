@@ -1,0 +1,10 @@
+[package]
+name = "berry-vmm"
+# G2 刀 10：MicroVM 虚拟机管理器。
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]

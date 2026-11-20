@@ -825,6 +825,27 @@ desc = '将目标任务踢出受限态（紧急逃生/调试面）——target H
 stage = "v2"
 note = 'G2 刀 7：与 0x4A 成对——kick 后任务回普通 EL0 域'
 
+
+title = "**Hypervisor（MicroVM 基础设施）**"
+[[group.syscall]]
+num = 0x77
+name = "guest_create"
+desc = '创建 guest 物理地址空间（PAS）——入口=IPA 基址+大小；返回 guest Handle'
+stage = "v2"
+note = 'G2 刀 10：EL2 Stage-2 页表域（AArch64 VTTBR_EL0）；QEMU TCG 无 EL2 时 -ENOSYS'
+[[group.syscall]]
+num = 0x78
+name = "vcpu_create"
+desc = '创建 vCPU——绑定 guest Handle；返回 vcpu Handle（含 EL2 上下文槽）'
+stage = "v2"
+note = 'G2 刀 10：vCPU=物理 CPU 线程的虚拟化实例（VTTBR/VCPU regs/SCTRL）'
+[[group.syscall]]
+num = 0x79
+name = "vcpu_run"
+desc = '运行 vCPU 直到事件（HLT/异常/IO）——返回 exit_reason；非阻塞式'
+stage = "v2"
+note = 'G2 刀 10：主循环=ERET 到 guest→trap 回 EL2→读 ESR_EL2 分派'
+
 [[group]]
 title = "**电源**（guest 内关机最小闭环——桌面UX审计 02 号 M3）"
 [[group.syscall]]

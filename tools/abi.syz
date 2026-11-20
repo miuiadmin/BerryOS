@@ -274,6 +274,15 @@ restricted_enter(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x4B restricted_kick（v2·已实现）——将目标任务踢出受限态（紧急逃生/调试面）——target Handle + reason u32
 #   note: G2 刀 7：与 0x4A 成对——kick 后任务回普通 EL0 域
 restricted_kick(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x77 guest_create（v2·已实现）——创建 guest 物理地址空间（PAS）——入口=IPA 基址+大小；返回 guest Handle
+#   note: G2 刀 10：EL2 Stage-2 页表域（AArch64 VTTBR_EL0）；QEMU TCG 无 EL2 时 -ENOSYS
+guest_create(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x78 vcpu_create（v2·已实现）——创建 vCPU——绑定 guest Handle；返回 vcpu Handle（含 EL2 上下文槽）
+#   note: G2 刀 10：vCPU=物理 CPU 线程的虚拟化实例（VTTBR/VCPU regs/SCTRL）
+vcpu_create(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x79 vcpu_run（v2·已实现）——运行 vCPU 直到事件（HLT/异常/IO）——返回 exit_reason；非阻塞式
+#   note: G2 刀 10：主循环=ERET 到 guest→trap 回 EL2→读 ESR_EL2 分派
+vcpu_run(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **电源**（guest 内关机最小闭环——桌面UX审计 02 号 M3）
 # 0x88 power_off（v1）——整机下电（PSCI SYSTEM_OFF 0x84000008 经 HVC conduit——QEMU TCG/KVM 均受理 `qemu_system_shutdown_request`，PM-10 §1.6 实读）。成功 = 不归（整机退出）；返回 -ENOTSUP = conduit 死（EFI handoff / 非 EL1 入口 / 无 PSCI——`off_supported` probe 缓存门）或固件拒收。零参数零出参。
