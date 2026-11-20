@@ -1,0 +1,10 @@
+[package]
+name = "berry-widgetd"
+# G3 刀 12：小组件生命周期与 Timeline Provider。
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
