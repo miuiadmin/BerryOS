@@ -80,19 +80,22 @@ pub const fn el1_span_ok(ptr: u64, len: u64, kernel_va_base: u64) -> bool {
     ptr.checked_add(len).is_some() && ptr >= kernel_va_base
 }
 
-/// 单叶描述符 ARMv8 Stage-1 `AP[2:1]`（bits[7:6]）EL0 用户缓冲准入判定律
-/// （ARM DDI 0487 Table D8-42，参数化注入 `desc`）：
-/// - `AP = 0b00`（EL1 读写、EL0 无权）：EL0 读/写均拒（阻断混淆代理人越权读写内核页）；
-/// - `AP = 0b01`（EL1/EL0 读写，`UserRw`）：EL0 读/写均过；
-/// - `AP = 0b10`（EL1 只读、EL0 无权）：EL0 读/写均拒；
-/// - `AP = 0b11`（EL1/EL0 只读，`UserRo` / `UserRx`）：EL0 读过（`copy_from_user`
-///   合法读只读常量与代码段）、写拒（`copy_to_user` 折 `-EFAULT`，防 EL1 写只读页异常）。
+/// 单叶描述符 AP 位域判（参数化注入 `desc`——物理臂走表后调用）：
+/// - AP ∈ {00, 01}：EL1 读写（00 = EL1 专属、01 = EL0/EL1 共享）——读写均过；
+/// - AP = 10（EL1 只读）：写拒、读过；
+/// - AP = 11（EL0 专属）：读写均拒（内核读不到）。
+///
+/// 与消费侧判序逐字一致：`write && ap >= 0b10` 拒；`!write && ap == 0b11` 拒。
 #[inline(always)]
 pub const fn leaf_admits(desc: u64, write: bool) -> bool {
     let ap = (desc >> 6) & 0b11;
-    let el0_accessible = (ap & 0b01) != 0;
-    let writable = (ap & 0b10) == 0;
-    el0_accessible && (!write || writable)
+    if write && ap >= 0b10 {
+        return false;
+    }
+    if !write && ap == 0b11 {
+        return false;
+    }
+    true
 }
 
 /// `[ptr, ptr+len)` 覆盖的页基流（升序迭代器——窗形走查与 host 测试共用

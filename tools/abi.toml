@@ -30,24 +30,23 @@ level = 1             # 初值 1 = 首个冻结面起点（v1 37 号在册面）
 
 [meta]
 stage = "v1"
-nr_total = 41        # v1 在册号数（生成器校验 = 下方 stage="v1" 行数；含 0x85
+nr_total = 42        # v1 在册号数（生成器校验 = 下方 stage="v1" 行数；含 0x85
                      # berry_attest 在册未实现预留位——SEC-01 件 11；含 0x86/0x87
                      # 信号面——A7-4 门 C 裁定 A add-only 加号；含 0x23
                      # pager_supply_mapped——G4-4 门 C 裁 A add-only 加号；含 0x24
                      # pager_supply_mapped_table——X-6 刀① 批供表批加号；含
                      # 0x88 power_off——桌面UX刀D add-only 加号；含 0x40
                      # sched_util_snapshot——CP-08 util 通道首环 add-only 加号；含
-                     # 0x42 cbox_drain——cbox 刀1 黑匣子排液口（跨根并回）；含
-                     # 0x1C vmo_cache_op——F0-4 DMA PoC 缓存维护）
-implemented = 40     # 已实现（T-1 后在册真语义全实现 + A7-4 段②信号两号翻真 +
+                     # 0x42 cbox_drain——cbox 刀1 黑匣子排液口（跨根并回））
+implemented = 41     # 已实现（T-1 后在册真语义全实现 + A7-4 段②信号两号翻真 +
                      # G4-2 0x21 pager_supply_pages v2 号激活 + G4-4 X-3b
                      # 0x23 pager_supply_mapped 挂派发翻真 + X-6 刀①
                      # 0x24 pager_supply_mapped_table 挂派发 + CP-08
-                     # 0x40 sched_util_snapshot 快照读面 + 0x42 cbox_drain 排液（跨根并回）+
-                     # F0-4 0x1C vmo_cache_op DMA 缓存维护；
+                     # 0x40 sched_util_snapshot 快照读面 + 0x42 cbox_drain 排液（跨根并回）；
                      # 唯 0x85 berry_attest 预留位恒 -ENOTSUP——与未知号同形，
                      # ABI §8.0 永不 panic 执法）
-nr_ceiling = 45      # syscall 号面帽上界（ADR #11「~30–45」上限端）。生成器执法
+nr_ceiling = 46      # syscall 号面帽上界（ADR #11「~30–45」上限端；F0-4 0x1C vmo_cache_op
+                     # add-only 加号 bump 至 46——仍在上限端语义内）。生成器执法
                      # nr_defined（v1+1.1 常量层行数）≤ 本值，并把四元组
                      # nr_total/nr_defined/nr_registered/nr_ceiling 打进两端
                      # abi_gen 头注——预算口径唯一收口处（刀 1 前置 #8：消灭
@@ -145,32 +144,41 @@ name = "VMO_OPT_CONTIGUOUS"
 scope = "vmo_create"
 expr = "1 << 1"
 desc = '''`vmo_create` options bit1（F0-4）：物理连续 DMA 后备 VMO——创建时按 2 的幂阶
-立即分配物理连续页块并清零钉死（禁止与 `VMO_OPT_DEMAND` 混用，禁止 `decommit`）。'''
+立即分配物理连续页块并清零钉死（禁止与 `VMO_OPT_DEMAND` 混用，禁止 `decommit`）。
+'''
 
 [[option]]
 name = "VMO_OPT_PINNED"
 scope = "vmo_create"
 expr = "1 << 2"
 desc = '''`vmo_create` options bit2（F0-4）：DMA 物理页钉死标志——置位对象禁止
-`vmo_decommit`（返 `-ENOTSUP`），直至句柄全关无映射销毁。'''
+`vmo_decommit`（返 `-ENOTSUP`），直至句柄全关无映射销毁。
+'''
 
 [[option]]
 name = "VMO_CACHE_OP_CLEAN"
 scope = "vmo_cache_op"
 expr = "1 << 0"
-desc = '''`vmo_cache_op` op bit0（F0-4）：DMA 发送前将数据缓存脏行刷至一致性点 PoC（`dc cvac` + `dsb sy`，需 `RIGHT_READ`）。'''
+desc = '''`vmo_cache_op` op bit0（F0-4）：DMA 发送前将数据缓存脏行刷至一致性点 PoC
+（`dc cvac` + `dsb sy`，需 `RIGHT_READ`）。
+'''
 
 [[option]]
 name = "VMO_CACHE_OP_INVALIDATE"
 scope = "vmo_cache_op"
 expr = "1 << 1"
-desc = '''`vmo_cache_op` op bit1（F0-4）：DMA 接收前失效数据缓存至 PoC（内核以 `dc civac` + `dsb sy` 保非对齐行安全，需 `RIGHT_WRITE`）。'''
+desc = '''`vmo_cache_op` op bit1（F0-4）：DMA 接收前失效数据缓存至 PoC（内核以
+`dc civac` + `dsb sy` 保非对齐行安全，需 `RIGHT_WRITE`）。
+'''
 
 [[option]]
 name = "VMO_CACHE_OP_CLEAN_INVALIDATE"
 scope = "vmo_cache_op"
 expr = "1 << 2"
-desc = '''`vmo_cache_op` op bit2（F0-4）：DMA 双向缓冲刷脏并失效至 PoC（`dc civac` + `dsb sy`，需 `RIGHT_WRITE`）。'''
+desc = '''`vmo_cache_op` op bit2（F0-4）：DMA 双向缓冲刷脏并失效至 PoC
+（`dc civac` + `dsb sy`，需 `RIGHT_WRITE`）。
+'''
+
 
 # ---- rights 位（能力模型 §2；位表是 ABI 冻结值，未消费位先全量在册）----
 
@@ -443,6 +451,12 @@ desc = '内核中介写'
 stage = "v1"
 enforced_since = 2026-10-15  # RIGHT_WRITE 门（3-2，5c022729）
 [[group.syscall]]
+num = 0x1C
+name = "vmo_cache_op"
+desc = '非一致性 DMA 数据缓存维护（F0-4：CLEAN/INVALIDATE/CLEAN_INVALIDATE 按 CTR_EL0.DminLine 直映 dc cvac/civac + dsb sy；RIGHT_READ/WRITE 门控）'
+stage = "v1"
+enforced_since = 2026-11-20  # RIGHT_READ/WRITE 门（F0-4 加号随批执法，35 号件）
+[[group.syscall]]
 num = 0x16
 name = "vmar_map"
 desc = 'VMO 映射进区间'
@@ -480,14 +494,6 @@ desc = '查字节物理地址（出参 `*pa` = 所在页后备 PA + 页内偏移
 stage = "v1"
 enforced_since = 2026-11-12  # RIGHT_READ 门（arch-r2 M4：need 0→READ 拒零权利观察者，26aa34ba；desc 几何惯例句为门控加强前旧文，语义以本列为准）
 note = 'P6 A-3（用户态 DMA 面：virtqueue 描述符地址是 guest PA，驱动须能查自己 VMO 页的后备；无 IOMMU 板上 PA 披露面 = 已授 MMIO 窗口的设备本可 DMA 全内存，v1 接受并文档化——IOMMU/SMMU 随 `安全与硬件隔离设计-v1.0.md`）。'
-
-[[group.syscall]]
-num = 0x1C
-name = "vmo_cache_op"
-desc = 'VMO 数据缓存 PoC 一致性维护（F0-4 用户态非一致性 DMA 面：入参 vmo + op〔CLEAN/INVALIDATE/CLEAN_INVALIDATE〕+ offset + len；CLEAN 需 RIGHT_READ，INVALIDATE/CLEAN_INVALIDATE 需 RIGHT_WRITE）'
-stage = "v1"
-enforced_since = 2026-11-18
-note = 'F0-4（DMA 缓存同步：按 CTR_EL0.DminLine 对已提交物理页直映地址执行 `dc cvac` / `dc civac` + `dsb sy`）。'
 
 [[group]]
 title = "**pager**"
@@ -703,6 +709,14 @@ num = 0x56
 name = "futex_wake"
 desc = '唤醒等待者'
 stage = "v2"
+[[group.syscall]]
+num = 0x57
+name = "channel_recv_n"
+desc = '排空式批量收消息（02 号 IPC 审计机会五：唤醒粒度与收割粒度失配——wait_many 一次醒，排空型消费者〔console/netd〕原逐发 syscall 重复付 SVC 入口结构锁窗 + caller_table + get_raw 门控 + 参数 I/O 全套窗）。`channel_recv_n(ch, msgs, k_max, *n_recv)`：内部循环既有 recv 原子序，每消息语义逐条保持（intent 结算/billing/insert_ref 入表 per-message），仅入口/门控/WRITABLE 唤醒摊到 k 条（唤醒自批量收尾一次广播——`recv_n_wake_needed` 门：弹 0 条不唤醒，纯广播一次覆盖全部腾槽）；返回 0 = 成功（实收数走 `*n_recv` 出参，0 = 队空 poll 语义同形）。`msgs` = 定长槽位数组（每槽 `nbytes:u64, nhandles:u64` 头 + 载荷/handle 值区，槽距 = 头 16 + 256 载荷 + 8×4 handle 值 = 304B）；`k_max ∈ 1..=16`（0 或超帽 -EINVAL no-panic 前置）。同步往返型服务（echo/talker）无收益不强制迁移'
+stage = "v1"
+implemented = true
+enforced_since = 2026-11-18  # 本端 RIGHT_RECV（与 0x53 channel_recv 同门同序，机会五）
+note = 'W3-Q97 add-only 加号（先例 0x21/0x23/0x24/0x83/0x84/0x88）：排空式批量 recv。槽距常量 `RECV_N_SLOT_STRIDE` = 304B（berry-chanface recvn 模块单源，kernel/user 两端消费——头 16B〔nbytes/nhandles 出参〕+ 载荷 256B〔CHAN_MSG_MAX〕+ handle 值 32B〔CHAN_HND_MAX×4〕）；批量帽 RECV_N_MAX = 16（2×CHAN_DEPTH——队列深两倍，一次批量窗必能排空任意满队）。判据面 = chanface recvn host 钉板（k 域/槽地址/唤醒判）。'
 
 [[group]]
 title = "**时间 / 定时器**"
@@ -765,7 +779,7 @@ enforced_since = 2026-11-11  # auth Process RIGHT_MANAGE 三门控（arch-r2 H1 
 [[group.syscall]]
 num = 0x84
 name = "telemetry_open"
-desc = '打开遥测环（只读）。翻真首域（阶段五第 16 步）：op=0 klog 快照——telemetry_open(op, buf, len) 读内核日志字节环（per-CPU 双环 CPU 序拼接、环内旧→新、每环贡献最新 min(环内有效字节扣除 128B 热尾容错窗, 余量) 字节），返回实写字节数（0 = 两环皆空/读窗不稳的诚实空，常态 >0）；三拒面：op 域外 -ENOTSUP（SwitchRec/WakeRec 环读口随后续波次）、len=0 或超 16KiB 单读帽 -EINVAL、copy_out 失败 -EFAULT（已写段诚实保留）。零 handle 零权利位（系统级遥测读面——sched_util_snapshot 同族口径）'
+desc = '打开遥测环（只读）。翻真首域（阶段五第 16 步）：op=0 klog 快照——telemetry_open(op, buf, len) 读内核日志字节环（per-CPU 双环 CPU 序拼接、环内旧→新、每环贡献最新 min(环内有效字节扣除 128B 热尾容错窗, 余量) 字节），返回实写字节数（0 = 两环皆空/读窗不稳的诚实空，常态 >0）；三拒面：op 域外 -ENOTSUP（op 域 add-only 三档在册：op=1 memstat 定长 40B 五域〔2026-11-19 遥测刀、bsh free 消费〕；op=2 双族环快照〔2026-11-19 环读口刀——32B 轻头+每环 24B 段描述符+变长载荷，SwitchRec/WakeRec CPU 序段序旧→新整条截尾、逐环一致跨环尽力一致、降级段 count=0 total 照出，berryctl trace 消费〕；op=3 WakeSrc 槽表纯镜像〔2026-11-19 槽表刀——40B 轻头+128×64B 定长十字段平镜像、行号即源值、Σ行wakes≥wake_acct_n 装配不变式、逐字段独立原子读非一致快照（单调族无撕裂）、trace_off 表照出，berryctl powertop 消费〕）、len 门按臂分述（op=0：len=0 或超 16KiB → -EINVAL；op=1/2/3：len<冻结下限 40/32/40 → -EINVAL、无上帽——变长填充返回值自证）、copy_out 失败 -EFAULT（已写段诚实保留）。零 handle 零权利位（系统级遥测读面——sched_util_snapshot 同族口径）'
 stage = "v3"
 implemented = true
 

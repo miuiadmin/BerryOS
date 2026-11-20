@@ -8,7 +8,7 @@ Status: implemented
 
 ## Decision
 
-- **定谳（任务②）：damage 语义在 SUBMIT 侧（声明），不在绘制侧**。guifbd `rects_clip_into`/`frame_flush_batch`（[guifbd lib.rs](../../../user/bins/guifbd/src/lib.rs) :206/:247）只消费 SUBMIT wire 上的 rect 集；绘制侧 berry-gfx pass 本就有 dirty 面（[pass.rs](../../../user/berry-gfx/src/pass.rs) :34-41，queue 屏障裁剪执法）而 gfxdemo 此前未用——「双整帧」是消费者用法非协议限制，最小改 = 消费者侧一处，协议/服务端零触碰。
+- **定谳（任务②）：damage 语义在 SUBMIT 侧（声明），不在绘制侧**。guifbd `rects_clip_into`/`frame_flush_batch`（[guifbd lib.rs](../../../user/bins/guifbd/src/main.rs) :206/:247）只消费 SUBMIT wire 上的 rect 集；绘制侧 berry-gfx pass 本就有 dirty 面（[pass.rs](../../../user/berry-gfx/src/pass.rs) :34-41，queue 屏障裁剪执法）而 gfxdemo 此前未用——「双整帧」是消费者用法非协议限制，最小改 = 消费者侧一处，协议/服务端零触碰。
 - **实施（任务①）：编译分支 `PARTIAL_ENVELOPE: bool = true`**（[gfxdemo main.rs](../../../user/bins/gfxdemo/src/main.rs) :87）。为什么是编译分支而非 env/argv：berry-libc environ 是空表桩（getenv 恒空）、boot 链 svcmgr spawn `args: &[]` 恒空参——运行期参数面在本程序结构性不可达（改 spawn 面出本轮范围）。
 - **绘制域 == 声明域**：pass dirty = 下半屏 `Rect::new(0, h/2, w, h-h/2)`（Clear 与全部命令裁剪到区内——顶部红带/顶部字形整条裁空、底部绿条落区内）；SUBMIT K=2 下半屏二分（`{0,960,1080,480}`+`{0,1440,1080,480}`），并集 = dirty 区 = 包络 r≈500‰——不产声明外笔迹（真 damage）。K 面与 16 号基线同形（批形状/reap 可比）。false = 基线形态（上下半帧分区 r=1000‰），A/B 回放翻此重建。
 - 波一刀 B（残帧清屏）不受扰：清屏帧恒 FULL 形（K=0 + `SUBMIT_F_DAMAGE_FULL`），不触一次性 `log_rects` 观测位。

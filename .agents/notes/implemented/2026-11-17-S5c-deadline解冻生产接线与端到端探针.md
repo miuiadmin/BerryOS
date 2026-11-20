@@ -20,12 +20,14 @@ Status: implemented
 - **搬而非双写**（trait 面 :251 删调用、仅 filtered 保留）：生产等价，但 DL-B2（trait 面钉板）须同批改写、trait 面成死码——双写零 ktest 改写量、两面各自被钉板执法，取双写。
 - **静态论证收口（不出 boot 探针）**：ktest 在 sched::init 前跑、无真调度循环，ktest 直调只证函数体；现行生产零 deadline 任务，端到端复活链（真 spawn→真 tick 限流→真出选解冻→复活）无探针则无证据——pilat fw_cfg 门控判例在席，出探针。探针首版即抓出账本不变量问题，证明这个决定正确。
 - **nearest_deadline 醒源扩展随刀**（停泊核残留窗：throttled DL 任务停在深 park 副核环上，`nearest_deadline` 不含逐任务 vdeadline，复活迟至该核任意醒）：~~周期 tick 再臂下迟至一片、有界非饿死~~（遗漏检查轮 wf_5a6238b8-a36 勘正：该论证无代码依据——深 park 形 wake 源依赖 nearest_deadline/arm_slice 周期再臂的假设在深 park 路径不成立，停泊核上被冻 DL 任务的复活实为**无界迟延**（同 F5 修前饿死形态）；今日根本无解冻故非恶化，但债的严重度按无界记——THRYLD T3 给 band 限流解了同题，S5-c 逐任务位可同法扩〔把逐任务 vdeadline 并入 nearest_deadline〕，优先级应上调），不扩本刀审查面，挂账（见 Consequences）。
+  - 〔2026-11-18 已修：深 park 醒源刀落地 `nearest_dl_throttle_wake` 三源并入（THRYLD T5 钉板）——见 2026-11-18 笔记。〕
 
 ## Consequences
 
 - 生产复活链实证：探针两跑 `S5C-DLP ok stalls=2 iters=1228314`（首修树）/ `ok stalls=2 iters=647634`（终树）——每次确认 stall 的检测都发生在复活后（冻死任务读不了钟），stalls=2 即两轮「燃尽→限流→周期到→filtered 面解冻→复活」端到端实证。
-- **预算/授片交互挂账**（审查 NOTE 定谳，非本刀引入）：`dl_refill` 置 slice_left=budget 后，八个生产授片点派发尾 `slice_left = grant_cycles()` 整片覆盖——生产每期实跑 ≈ 一授片（10Hz 下 100ms）而非 budget，B3(iii) 钉的预算语义仅 ktest 直调面可观察（探针 S5C_BUDGET_MS 注同款事实已在案）。真预算帽待「grant 面按 class 分派」预算刀（`is_deadline(next)` 授 preempt_threshold，经 class_of_task 分派面勿散写）。
+- **预算/授片交互挂账**（审查 NOTE 定谳，非本刀引入）〔2026-11-19 已修：预算授片分派刀落地 dl_grant/grant_cycles_of 八点换臂——见 2026-11-19 笔记；残留=tick 采样粒度与抢占窗宽恕两条后续刀候选在彼档。〕：`dl_refill` 置 slice_left=budget 后，八个生产授片点派发尾 `slice_left = grant_cycles()` 整片覆盖——生产每期实跑 ≈ 一授片（10Hz 下 100ms）而非 budget，B3(iii) 钉的预算语义仅 ktest 直调面可观察（探针 S5C_BUDGET_MS 注同款事实已在案）。真预算帽待「grant 面按 class 分派」预算刀（`is_deadline(next)` 授 preempt_threshold，经 class_of_task 分派面勿散写）。
 - **停泊核醒源残留窗挂账（遗漏检查轮勘正升级）**：深 park 形实为无界迟延（非「迟至一片」——原论证无代码依据，勘正见 Alternatives 第三条）——后续刀照 THRYLD T3 手法把逐任务 vdeadline 并入 nearest_deadline，优先级上调。
+  - 〔2026-11-18 已修：同上，`nearest_dl_throttle_wake` 环走查案落地（THRYLD T5 钉板）。〕
 - try_preempt 探序（has_eff_above_filtered 先于 filtered 调用）：刚到期解冻任务对探峰不可见 ≤1 片——接受有界延迟，避免 SVC 尾热路径重加扫描（违 0ea3d11ad len 门快赢）。
 - 默认 boot ktest 后 DL_ON_RING 回零：解冻快门恢复常闭、v1 零成本主张在默认 boot 形态成立（审查 MINOR 处置后）。
 - 验证实跑（全部隔离 CARGO_TARGET_DIR=$PWD/target-s5c）：`just build` 全链绿 ×3（docs-guard/abi-check/build-user/mkapp 随链）；`bash tools/fwcfg-check.sh` 27 键两侧一致；`SMOKE_PHASES=boot just smoke` boot 相 32/32 标记 ×3（impl 后/探针修正后/终树——ktest done 在列 = DL 族含 B3 与段尾出账全套绿）；探针如上两跑 ok。
