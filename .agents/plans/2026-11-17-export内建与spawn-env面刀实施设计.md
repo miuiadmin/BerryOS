@@ -1,8 +1,8 @@
 # export 内建与 spawn env 面刀实施设计（processargs v1.1）
 
 Type: plan
-Status: draft
-Updated: 2026-11-17
+Status: done
+Updated: 2026-11-20
 
 ## 一句话说明
 
@@ -143,3 +143,7 @@ RX 断言撞面：__E/__X/__NOPE 形与现役标记/RX 断言族两两互非子�
 5. BSHRC.CFG 写者/宿主生成面排期（树内零写者，PATH 唯一来源悬空——which 真值端到端待此）。
 6. processargs 登记形态（本稿裁治理章程薄指针节）——若 owner 要独立标准文档（docs/进程参数块协议-v1.1.md）翻裁决 12。
 7. musl std environ/__environ 别名形态——实施轮客机实测定谳（技术残验非裁决，U4 ② 端到端兜底＋双静态预案在册）。
+
+## 落地注记
+
+- 2026-11-17 三段式收官（规格轮＋实施轮＋主线修复集成，HEAD ff7feb381）：S1 berry-argv env blob 组装律、S3 berry-libc environ/getenv/setenv/unsetenv 真身、S2 berry-exec `SpawnSpec` env 字段与条件发送、S4 bsh export 第 21 内建与三产点接线全量落地；内核零改、七面零滚新（CLI ok n=10→11 前缀式）。事实与因果见[实施笔记](../notes/implemented/2026-11-17-export内建与spawn-env面刀.md)；本刀显式不做的移交挂账与待裁项以本稿两节为准，2026-11-20 文档状态审计翻 done。

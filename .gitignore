@@ -170,3 +170,17 @@ smoke-wt-*/
 /bootloader/berryboot/slot/cargo-target/
 /sbom.json
 /tools/sbom/cargo-target/
+
+# 工程卫生四模式（2026-11-20 防再犯收口）：隔离构建与临时产物从逐目录
+# 枚举升为任意深度通配。cargo-target/——compat 三 crate 产物 69 文件曾
+# 误入库（当刀已 rm --cached 清偿），widgets 四 crate 同族残部的清理建议
+# 见当日工程卫生笔记；target-*/——隔离 target 已下沉子目录（drivers/、
+# tools/berry/、user/berry-*/ 等漏网实抓，根锚定 /target-*/ 盖不到）；
+# *.img——临时盘镜像任意名（disk-qw1.img 判例：逐盘名枚举漏网）；
+# screenshot.png——临时截图，任意深度。零误伤验证：git ls-files 无
+# tracked 的 .img/screenshot.png/target-*；cargo-target/ 命中的 tracked
+# 仅历史误入库构建产物，不伤任何源文件。
+cargo-target/
+target-*/
+*.img
+screenshot.png
