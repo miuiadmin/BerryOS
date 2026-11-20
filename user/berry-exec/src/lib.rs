@@ -755,7 +755,10 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
     let mut gift = [0 as Handle; 8];
     // 三 dup 掩码均保 TRANSFER 位——gift 数组整体随 env 块 channel_send 迁
     // 交子表（send 随行预检：去位即 -EACCES 自陷；dup 只紧不松须显式保位）。
-    if berry_handle_duplicate(stdout, RIGHT_SEND | RIGHT_TRANSFER, &mut gift[0]) != 0 {
+    // 作业控制 v2 刀授位（第三次丢失病愈合 2026-11-20：跨刀 review 实抓该行
+    // 被 merge 单边取材回退——cmd & 族整条链依赖此 DUP 位，缺位即 exec_bg
+    // 首 spawn dup -EACCES → trap 杀 bsh。内核双门论证见 op2 刀谱裁决 2。）
+    if berry_handle_duplicate(stdout, RIGHT_SEND | RIGHT_TRANSFER | RIGHT_DUPLICATE, &mut gift[0]) != 0 {
         trap();
     }
     let stdin_pair = stdin_feed.map(|_| channel_pair());

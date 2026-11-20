@@ -190,6 +190,23 @@ fn model_rm(lines: &mut Vec<Line>, key: &[u8]) -> bool {
 fn check_caps(pairs: &[(Vec<u8>, Vec<u8>)], lines: &[Line], clus_bytes: usize) -> Result<Vec<u8>> {
     let bad_byte = |b: &u8| matches!(b, b'\r' | b'\n' | 0);
     for (k, v) in pairs {
+        // 跨刀 review 修（2026-11-20）：键字符集白名单——镜像 bsh is_var_name
+        //（[A-Za-z_][A-Za-z0-9_]*）——否则 '9X=1' 落盘可装载可导出但展开语法
+        // 不可寻址（幽灵变量），违背「写得出读端必可见」fail-closed 宣称。
+        let name_ok = |k: &[u8]| {
+            !k.is_empty()
+                && (k[0].is_ascii_alphabetic() || k[0] == b'_')
+                && k.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'_')
+        };
+        if !name_ok(k) {
+            return Err(BerryError::new(
+                2,
+                format!(
+                    "bshrc: 键字符集违例（须 [A-Za-z_][A-Za-z0-9_]*——bsh 展开语法可寻址）：{}",
+                    String::from_utf8_lossy(k)
+                ),
+            ));
+        }
         if k.is_empty() || k.len() > KEY_MAX {
             return Err(BerryError::new(
                 2,
@@ -1000,11 +1017,24 @@ mod tests {
         for bad in [
             (b"K".to_vec(), b"a\rb".to_vec()),
             (b"K".to_vec(), b"a\nb".to_vec()),
-            (b"K\r".to_vec(), b"v".to_vec()),
         ] {
             let e = set(&p, &[bad]).unwrap_err();
             assert_eq!(e.code, 2, "{}", e.message);
             assert!(e.message.contains("CR·LF·NUL"), "{}", e.message);
+        }
+        // 键内 CR：字符集白名单先拒（语义同族——写端 fail-closed，2026-11-20
+        // 跨刀 review 后 charset 检查先于值字面检查，如实滚期望）。
+        {
+            let e = set(&p, &[(b"K\r".to_vec(), b"v".to_vec())]).unwrap_err();
+            assert_eq!(e.code, 2, "{}", e.message);
+            assert!(e.message.contains("字符集"), "{}", e.message);
+        }
+        // 键字符集白名单（跨刀 review）：非 [A-Za-z_][A-Za-z0-9_]* 拒。
+        for bad_key in [b"9X".to_vec(), b"A B".to_vec(), b"_OK9".to_vec().iter().take(0).cloned().collect::<Vec<u8>>()] {
+            if bad_key.is_empty() { continue; }
+            let e = set(&p, &[(bad_key, b"v".to_vec())]).unwrap_err();
+            assert_eq!(e.code, 2);
+            assert!(e.message.contains("字符集"), "{}", e.message);
         }
         // 单行内容帽：126B 过、127B 拒（读端 128B 行帽剥 CR 余量）。
         let val = vec![b'x'; 126 - 2]; // K= + 124x = 126B 恰帽
