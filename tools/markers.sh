@@ -15,9 +15,11 @@
 # +FRZCYC——ktest freeze/thaw 两轮循环（SUS-NEG 之后、BL-OVF 之前）；
 # sim-S3 起 +PSCI susp=0——boot 期 PSCI 深睡探测（EFI/EL2 门与 TCG
 # FEATURES 拒三路同打）+PWRDEG——ktest 深睡降级证据链（ktest done 前）。
-# 04 号审计基线缺口刀起 BENCH ok n=6→n=8（pick_scan/switch_pair 两项
-# 收口；trailer 迁调度器纪元尾恒发——字面变动，计数面零增减）。
-MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "FP ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=8" "BENCHWAKE n=" "G1.5 ok" "WAKESRC acct=" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok" "DPG ok" "FRZCYC ok r=2" "PSCI susp=0" "PWRDEG ok d=1")
+# 04 号审计基线缺口刀起 n=6→n=8（pick_scan/switch_pair 两项收口）；
+# W3-Q98（02 号 IPC 审计落选三）n=8→n=9——send_recv_pair 入；W3-Q102
+# （03 号分派审计测量面建议）n=9→n=10——svc_roundtrip 入（trailer 恒发
+# 形态不变，计数面 9→10）。
+MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "FP ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=10" "BENCHWAKE n=" "G1.5 ok" "WAKESRC acct=" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok" "DPG ok" "FRZCYC ok r=2" "PSCI susp=0" "PWRDEG ok d=1")
 
 # rootfs 相 56 标记（G4-3 B 刀 +DPGN ok n=4——0x21 四早退负序（门/对齐/
 # commit/身份验各断精确 errno）；C-lite +DPGS ok n=4——缺页风暴 N=4；G4-2
@@ -47,8 +49,8 @@ ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" 
 # grep -F 互查过（WAKESRC acct=/BENCHWAKE n= 均不含本串——'WAKE ok'
 # 词中空格独有；本串亦非任何现役标记子串）。
 # 命令行体验刀 +CLI ok n=/+TERM ok n=（54→56，均前缀式——步数单源在 bsh）：CLI = bsh cli_selftest
-# 十步（体验刀六步：clear 7B 对拍/uname 前缀/uptime 数值域/sleep 1s 时钟差分/type
-# 三分支/history 环回读；完善刀四步：>> 三态/|| 链/unset/管道切词带参）；TERM = bsh term_selftest
+# 十三步（体验刀六步：clear 7B 对拍/uname 前缀/uptime 数值域/sleep 1s 时钟差分/type
+# 三分支/history 环回读；完善刀四步：>> 三态/|| 链/unset/管道切词带参；export 面刀 ⑩ 第 21 内建；作业控制 ⑪；遥测 free ⑫——十至十三步）；TERM = bsh term_selftest
 # 三步（spawn 子 bsh stdin_feed 喂两命令+尾字节 \x03 驱动私有 stdout 收齐
 # 提示符/回显/两结果行/^C 回显与 prompt 重显 → terminate 130 收口）。CLI 前缀式（n= 单源在 bsh——步数变动免改本表，FS ok n= 同款）。
 # canon：对全表 grep -F 互查过——"CLI ok"与"CLK ok"位 3 I≠K 互非子串

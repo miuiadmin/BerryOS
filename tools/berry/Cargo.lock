@@ -171,9 +171,11 @@ name = "berry"
 version = "0.1.0"
 dependencies = [
  "berry-cbox",
+ "berry-fatfs",
  "bytemuck",
  "clap",
  "miniz_oxide",
+ "mkfat",
  "pollster",
  "qrcodegen",
  "rustls",
@@ -187,6 +189,10 @@ dependencies = [
 [[package]]
 name = "berry-cbox"
 version = "0.1.0"
+
+[[package]]
+name = "berry-fatfs"
+version = "0.2.0"
 
 [[package]]
 name = "bit-set"
@@ -983,6 +989,10 @@ checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
 dependencies = [
  "adler2",
 ]
+
+[[package]]
+name = "mkfat"
+version = "0.1.0"
 
 [[package]]
 name = "naga"

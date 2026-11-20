@@ -551,9 +551,10 @@ fn expect_step(run: &Path, args: &serde_json::Value, step: usize) -> Result<()> 
             }
         }
         if let Some(want) = args.get("fnv1a64").and_then(|v| v.as_str()) {
-            let want = want
-                .trim_start_matches("0x")
-                .parse::<u64>()
+            // 锚值口径 = 十六进制（错误面与脚本样例一律 {:016x} 形态；
+            // 旧 .parse::<u64>() 十进制口径把 hex 锚值整族拒成
+            // "bad fnv1a64"——测试首跑实咬，随刀对齐显示面契约）。
+            let want = u64::from_str_radix(want.trim_start_matches("0x"), 16)
                 .map_err(|_| BerryError::new(2, format!("expect step {step}: bad fnv1a64")))?;
             let got = fnv1a64(&data);
             if got != want {
@@ -3115,6 +3116,381 @@ mod console_tests {
         let _l = UnixListener::bind(tmp.join("serial.sock")).unwrap();
         // 活 listener：0 次重试参数下首连即成（不 sleep）。
         connect_with_retry(&tmp.join("serial.sock"), 0, Duration::from_millis(0)).unwrap();
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
+
+// ---- W1-Q25 八刀：commands.rs 纯函数面钉板（fnv1a64 / qcode 表 /
+// parse_mode / read_end_kept / expect_step 文件面）。----
+#[cfg(test)]
+mod fnv1a64_tests {
+    use super::fnv1a64;
+
+    /// FNV-1a 64 官方向量（空串 = offset basis 常数自证——脚本侧 expect
+    /// 步的 fnv1a64 锚值全部由本函数产出，表错即静默错判）。
+    #[test]
+    fn official_vectors() {
+        assert_eq!(fnv1a64(b""), 0xcbf2_9ce4_8422_2325, "空串 = 位移基");
+        assert_eq!(fnv1a64(b"a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(fnv1a64(b"foobar"), 0x8594_4171_f739_67e8);
+        assert_eq!(fnv1a64(b"hello world"), 0x779a_65e7_023c_d2e7);
+    }
+
+    /// 字节敏感性与顺序律：单字节差必改哈希；同字节集不同序必不同；
+    /// 末字节翻转必改（expect 锚值防碰撞最小面）。
+    #[test]
+    fn byte_sensitivity_and_order() {
+        assert_ne!(fnv1a64(b"a"), fnv1a64(b"b"));
+        assert_ne!(fnv1a64(b"ab"), fnv1a64(b"ba"));
+        assert_ne!(fnv1a64(b"\x00\x01\x02"), fnv1a64(b"\x00\x01\x03"));
+        assert_ne!(fnv1a64(&[0xfe, 0xff]), fnv1a64(&[0xff, 0xfe]));
+    }
+}
+
+#[cfg(test)]
+mod qcode_table_tests {
+    use super::qcode_to_keysym;
+
+    /// 全表钉板（含别名对 ret=enter、spc=space）——错值/漏键在运行期
+    /// 表现为 VNC 侧按键错乱，无编译期信号。
+    #[test]
+    fn full_named_table() {
+        let cases: &[(&str, u32)] = &[
+            ("ret", 0xff0d),
+            ("enter", 0xff0d),
+            ("esc", 0xff1b),
+            ("backspace", 0xff08),
+            ("tab", 0xff09),
+            ("spc", 0x20),
+            ("space", 0x20),
+            ("left", 0xff51),
+            ("up", 0xff52),
+            ("right", 0xff53),
+            ("down", 0xff54),
+            ("delete", 0xffff),
+            ("home", 0xff50),
+            ("end", 0xff57),
+            ("minus", 0x2d),
+            ("equal", 0x3d),
+            ("comma", 0x2c),
+            ("dot", 0x2e),
+            ("slash", 0x2f),
+            ("semicolon", 0x3b),
+            ("apostrophe", 0x27),
+            ("bracket_left", 0x5b),
+            ("bracket_right", 0x5d),
+            ("backslash", 0x5c),
+            ("grave_accent", 0x60),
+        ];
+        for (q, want) in cases {
+            assert_eq!(qcode_to_keysym(q), Some(*want), "qcode {q}");
+        }
+    }
+
+    /// 单字符面：可打印 ASCII 恒等；多字符未知词 / 空串拒绝。
+    #[test]
+    fn char_face_and_rejects() {
+        assert_eq!(qcode_to_keysym("a"), Some(0x61));
+        assert_eq!(qcode_to_keysym("Q"), Some(0x51));
+        assert_eq!(qcode_to_keysym("5"), Some(0x35));
+        assert_eq!(qcode_to_keysym("é"), Some(0xe9));
+        assert_eq!(qcode_to_keysym(""), None);
+        assert_eq!(qcode_to_keysym("ab"), None);
+        assert_eq!(qcode_to_keysym("notakey"), None);
+        assert_eq!(qcode_to_keysym("Return"), None, "大小写敏感");
+    }
+}
+
+#[cfg(test)]
+mod parse_mode_tests {
+    use super::parse_mode;
+
+    /// 接受梯：常规 / 最小 1x1 / 上界恰 8192。
+    #[test]
+    fn accept_ladder() {
+        assert_eq!(parse_mode("800x600"), Some((800, 600)));
+        assert_eq!(parse_mode("1x1"), Some((1, 1)));
+        assert_eq!(parse_mode("8192x8192"), Some((8192, 8192)));
+    }
+
+    /// 拒面全家桶：零维 / 越上界 / 非数字 / 缺分隔 / 多余段 / 大写 X /
+    /// 负数 / 空白混入。
+    #[test]
+    fn reject_family() {
+        assert_eq!(parse_mode("0x600"), None, "零宽");
+        assert_eq!(parse_mode("800x0"), None, "零高");
+        assert_eq!(parse_mode("8193x600"), None, "越上界");
+        assert_eq!(parse_mode("800x8193"), None);
+        assert_eq!(parse_mode("800.5x600"), None, "非整数");
+        assert_eq!(parse_mode("800"), None, "缺分隔");
+        assert_eq!(parse_mode("x600"), None);
+        assert_eq!(parse_mode("800x"), None);
+        assert_eq!(parse_mode("800x600x24"), None, "多余段");
+        assert_eq!(parse_mode("800X600"), None, "大写 X 不认");
+        assert_eq!(parse_mode("-1x600"), None, "负数");
+        assert_eq!(parse_mode("800 x600"), None, "空白混入");
+        assert_eq!(parse_mode(""), None);
+    }
+}
+
+#[cfg(test)]
+mod read_end_kept_tests {
+    use super::read_end_kept;
+    use crate::run_dir::ENV_LOCK;
+    use std::io::Write as _;
+
+    fn sandbox(tag: &str) -> std::path::PathBuf {
+        let tmp = std::env::temp_dir().join(format!("berry-endkept-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("run")).unwrap();
+        std::env::set_var("BERRY_HOME", &tmp);
+        tmp
+    }
+
+    /// 尾向扫描契约：同 id 多条 run.end 取最后一条；他 id 行跳过；
+    /// 坏 JSON 行容错不炸。
+    #[test]
+    fn latest_end_line_wins_and_tolerates_corrupt() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let tmp = sandbox("latest");
+        let idx = tmp.join("run").join("index.jsonl");
+        let mut f = std::fs::File::create(&idx).unwrap();
+        writeln!(
+            f,
+            r#"{{"v":1,"t":"run.start","run":"r1","label":"t"}}"#
+        )
+        .unwrap();
+        writeln!(f, r#"{{"v":1,"t":"run.end","run":"r0","kept":false}}"#).unwrap();
+        writeln!(f, "{{oops").unwrap();
+        writeln!(f, r#"{{"v":1,"t":"run.end","run":"r1","kept":false}}"#).unwrap();
+        writeln!(f, r#"{{"v":1,"t":"run.start","run":"r2"}}"#).unwrap();
+        writeln!(f, r#"{{"v":1,"t":"run.end","run":"r1","kept":true}}"#).unwrap();
+        drop(f);
+        assert_eq!(read_end_kept("r1"), Some(true), "同 id 取最后一条");
+        assert_eq!(read_end_kept("r0"), Some(false), "他 id 正常取值");
+        assert_eq!(read_end_kept("r2"), None, "只有 start 无 end");
+        assert_eq!(read_end_kept("rX"), None, "无匹配 id");
+        std::env::remove_var("BERRY_HOME");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 缺席面：kept 字段缺 → None；index 文件整缺 → None（宿主崩溃漏
+    /// 写形态，枚举以扫目录兜底——本函数只管证词缺席）。
+    #[test]
+    fn kept_field_or_index_absent_is_none() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let tmp = sandbox("absent");
+        let idx = tmp.join("run").join("index.jsonl");
+        std::fs::write(&idx, r#"{"v":1,"t":"run.end","run":"r9"}"#).unwrap();
+        assert_eq!(read_end_kept("r9"), None, "kept 字段缺");
+        std::env::remove_var("BERRY_HOME");
+        // index 缺席：换一个空 home 再探。
+        let tmp2 = sandbox("absent2");
+        std::fs::remove_file(tmp2.join("run").join("index.jsonl")).ok();
+        assert_eq!(read_end_kept("r9"), None, "index 文件缺");
+        std::env::remove_var("BERRY_HOME");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&tmp2);
+    }
+}
+
+#[cfg(test)]
+mod expect_step_file_tests {
+    use super::expect_step;
+    use serde_json::json;
+    use std::io::Write as _;
+
+    /// 文件面绿路：file + min_bytes + fnv1a64（0x 前缀与裸十六进制双形
+    /// 态）全过。run 路径在纯 file 步不触（state 才走 control）。
+    #[test]
+    fn file_face_green_both_hex_forms() {
+        let tmp = std::env::temp_dir().join(format!("berry-expect-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let f = tmp.join("shot.ppm");
+        let mut fh = std::fs::File::create(&f).unwrap();
+        fh.write_all(b"foobar").unwrap();
+        drop(fh);
+        let run = tmp.join("no-such-run");
+        let args = json!({"file": f.to_str().unwrap(), "min_bytes": 3,
+                          "fnv1a64": "0x85944171f73967e8"});
+        expect_step(&run, &args, 1).unwrap();
+        let args = json!({"file": f.to_str().unwrap(),
+                          "fnv1a64": "85944171f73967e8"});
+        expect_step(&run, &args, 2).unwrap();
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 拒面：min_bytes 不足与 fnv 不匹配均 device 码 6 且消息带回显；
+    /// 坏 fnv 字面量与空 args 均 usage 码 2。
+    #[test]
+    fn reject_faces_and_codes() {
+        let tmp = std::env::temp_dir().join(format!("berry-expect2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let f = tmp.join("data.bin");
+        std::fs::write(&f, b"foobar").unwrap();
+        let run = tmp.join("no-such-run");
+        // min_bytes 不足：device 码，消息含实际字节数与门槛。
+        let args = json!({"file": f.to_str().unwrap(), "min_bytes": 100});
+        let e = expect_step(&run, &args, 3).unwrap_err();
+        assert_eq!(e.code, 6, "{}", e.message);
+        assert!(e.message.contains("bytes < 100"), "{}", e.message);
+        // fnv 不匹配：device 码，消息两侧十六进制都在（定位用）。
+        let args = json!({"file": f.to_str().unwrap(),
+                          "fnv1a64": "0x0000000000000001"});
+        let e = expect_step(&run, &args, 4).unwrap_err();
+        assert_eq!(e.code, 6, "{}", e.message);
+        assert!(e.message.contains("85944171f73967e8"), "{}", e.message);
+        // 坏 fnv 字面量：usage 码 2。
+        let args = json!({"file": f.to_str().unwrap(), "fnv1a64": "zz"});
+        let e = expect_step(&run, &args, 5).unwrap_err();
+        assert_eq!(e.code, 2, "{}", e.message);
+        assert!(e.message.contains("bad fnv1a64"), "{}", e.message);
+        // 既无 state 又无 file：usage 码 2。
+        let e = expect_step(&run, &json!({}), 6).unwrap_err();
+        assert_eq!(e.code, 2, "{}", e.message);
+        assert!(e.message.contains("needs state or file"), "{}", e.message);
+        // 文件缺席（state 未给、file 给但读不到）：device 码。
+        let args = json!({"file": tmp.join("missing.bin").to_str().unwrap()});
+        let e = expect_step(&run, &args, 7).unwrap_err();
+        assert_eq!(e.code, 6, "{}", e.message);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
+
+// ---- W1-Q26 十八刀（run 定位决策面增量）：显式 id 三态（目录 id 命中/
+// ---- 绝对路径直用/缺席 env 码 + 拼路径文案）+ 死 sock 集成面（占位普通
+// ---- 文件 vnc.sock 探活拒——不进 best_vnc、回落最新死 run）+
+// ---- vnc_endpoint 三态（sock 优先/port 次之/双缺 env 码带路径）+
+// ---- vnc_reachable 三态（listen 真/占位文件假/无 sock 恒真）。
+// ---- 既有 find_run_tests 已覆盖枚举回落四面（vnc 优先/回落最新/
+// ---- no-meta 滤/空 root 拒），本模块只补零测增量面。
+#[cfg(test)]
+mod run_locate_tests {
+    use super::{find_run, vnc_endpoint, vnc_reachable};
+    use crate::run_dir::ENV_LOCK;
+    use std::io::Write as _;
+    use std::os::unix::net::UnixListener;
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, SystemTime};
+
+    fn tmp_home(tag: &str) -> PathBuf {
+        let tmp = std::env::temp_dir().join(format!(
+            "berry-runloc-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(tmp.join("run")).unwrap();
+        std::env::set_var("BERRY_HOME", &tmp);
+        tmp
+    }
+
+    fn cleanup(tmp: &Path) {
+        std::env::remove_var("BERRY_HOME");
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    /// run 目录（meta.json 在）+ mtime 钉 base+off 秒（set_modified 免
+    /// 真实时间流逝偶发——find_run_tests 同款纪律）。
+    fn mk_run(root: &Path, name: &str, off: u64) -> PathBuf {
+        let d = root.join(name);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("meta.json"), b"{}").unwrap();
+        let t = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000 + off);
+        std::fs::File::open(&d).unwrap().set_modified(t).unwrap();
+        d
+    }
+
+    /// 显式 id 三态：run 根下 id 直命中；绝对路径形态直用（is_dir 门）；
+    /// 缺席 env 码 3 且消息带拼出的完整路径。
+    #[test]
+    fn explicit_id_dir_path_and_missing() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let tmp = tmp_home("explicit");
+        let r1 = mk_run(&tmp.join("run"), "r1", 100);
+        assert_eq!(find_run(Some("r1")).unwrap(), r1, "id 形态拼 run 根");
+        assert_eq!(
+            find_run(Some(r1.to_str().unwrap())).unwrap(),
+            r1,
+            "目录路径直用"
+        );
+        let e = find_run(Some("nope")).unwrap_err();
+        assert_eq!(e.code, 3, "{}", e.message);
+        assert!(e.message.contains("run not found"), "{}", e.message);
+        assert!(
+            e.message.contains(tmp.join("run").join("nope").to_str().unwrap()),
+            "拼路径入文案: {}",
+            e.message
+        );
+        cleanup(&tmp);
+    }
+
+    /// 死 sock 集成面：QEMU 崩溃现场形态——vnc.sock 残留为普通文件，
+    /// 探活 connect 拒 → 不进 best_vnc 候选，回落最新死 run。
+    #[test]
+    #[cfg(unix)]
+    fn stale_socket_file_falls_back_to_newest() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let tmp = tmp_home("stale");
+        let root = tmp.join("run");
+        let r1 = mk_run(&root, "100-a", 100);
+        let r2 = mk_run(&root, "200-b", 200);
+        // r1 造残留死 sock（占位普通文件——connect ENOTSOCK/ECONNREFUSED）。
+        // 写 sock 后 r1 目录 mtime 滚到当下（最新）——探活拒后它仍该走
+        // best_any 回落路径胜出，正钉「死 sock 不夺回落位」的字面行为。
+        std::fs::write(r1.join("vnc.sock"), b"stale").unwrap();
+        assert!(!vnc_reachable(&r1), "占位文件 sock 探活必拒");
+        assert_eq!(find_run(None).unwrap(), r1, "死 sock 回落最新死 run（写后最新）");
+        cleanup(&tmp);
+    }
+
+    /// vnc_endpoint 三态：unix sock 文件优先；vnc.port 次之（trim 生效）；
+    /// 双缺 env 码且消息带 run 路径。
+    #[test]
+    #[cfg(unix)]
+    fn vnc_endpoint_sock_port_absent() {
+        let tmp = std::env::temp_dir().join(format!("berry-vncep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let e = vnc_endpoint(&tmp).unwrap_err();
+        assert_eq!(e.code, 3, "{}", e.message);
+        assert!(e.message.contains("no VNC endpoint"), "{}", e.message);
+        assert!(e.message.contains(tmp.to_str().unwrap()), "{}", e.message);
+        // vnc.port 形态：TCP 端点（尾换行 trim 后拼 127.0.0.1:5944）。
+        let mut f = std::fs::File::create(tmp.join("vnc.port")).unwrap();
+        writeln!(f, "5944").unwrap();
+        drop(f);
+        match vnc_endpoint(&tmp) {
+            Ok(crate::net::Endpoint::Tcp(a)) => assert_eq!(a, "127.0.0.1:5944"),
+            other => panic!("port 形态应产 TCP 端点: {other:?}"),
+        }
+        // vnc.sock 在席优先于 port（判序 sock → port）。
+        std::fs::write(tmp.join("vnc.sock"), b"").unwrap();
+        match vnc_endpoint(&tmp) {
+            Ok(crate::net::Endpoint::Unix(p)) => assert_eq!(p, tmp.join("vnc.sock")),
+            other => panic!("sock 形态应产 Unix 端点: {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// vnc_reachable 三态：listen 中的 sock 探活命中真；占位普通文件假；
+    /// 无 sock 文件恒真（TCP/无端点形态不预探）。
+    #[test]
+    #[cfg(unix)]
+    fn vnc_reachable_listen_placeholder_absent() {
+        let tmp = std::env::temp_dir().join(format!("berry-vncre-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(vnc_reachable(&tmp), "无 sock 文件不预探恒真");
+        std::fs::write(tmp.join("vnc.sock"), b"stale").unwrap();
+        assert!(!vnc_reachable(&tmp), "普通文件 sock 必拒");
+        std::fs::remove_file(tmp.join("vnc.sock")).unwrap();
+        let _l = UnixListener::bind(tmp.join("vnc.sock")).unwrap();
+        assert!(vnc_reachable(&tmp), "listen 中的 sock 探活命中");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

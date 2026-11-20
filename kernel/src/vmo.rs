@@ -93,6 +93,38 @@ impl Vmo {
         Ok(v)
     }
 
+    /// 按需后备？（fault 探针分派用：demand 区间的缺页走 pager 协议。）
+    pub fn is_demand(&self) -> bool {
+        self.demand
+    }
+
+    /// ZFOD 匿名零页 VMO？（P1-3——`probe_el0` 快路径判定：真 = 缺页
+    /// 内核直供新零页，零 pager 往返。）置位语义见结构体 `zfod` 字段注。
+    pub fn is_zfod(&self) -> bool {
+        self.zfod
+    }
+
+    /// 置 ZFOD 标志（P1-3——供给面学习点：0x21/0x23/0x24 **零臂**
+    /// （`src=0`）供给成功时由 `pager_supply_one` 调用；KL 窗内串行，
+    /// 与探针读点同锁域互斥）。幂等（重复置位无操作）。
+    pub(crate) fn mark_zfod(&mut self) {
+        self.zfod = true;
+    }
+
+    /// 建 MMIO 物理窗口 VMO（P6 A-2，**boot-only**——无 syscall 面：物理窗口
+    /// 是 boot 授的能力，EL0 不可自造；Zircon `zx_vmo_create_physical` 收紧
+    /// 版）。语义面（窗口恒空记账/内容四拒/双侧对齐执法）见
+    /// [`PageLedger::new_mmio`]。
+    pub fn create_mmio(pa_base: usize, size: usize) -> Result<Self, VmoError> {
+        Ok(Self {
+            ledger: PageLedger::new_mmio(pa_base, size)?,
+            demand_pins: DemandLedger::default(),
+            demand: false,
+            zfod: false,
+        })
+    }
+
+
     /// 建钉死匿名 VMO（F0-4 `VMO_OPT_PINNED`：禁止中途 `decommit`）。
     pub fn create_pinned(size: usize) -> Result<Self, VmoError> {
         let mut v = Self::create(size)?;
@@ -152,37 +184,6 @@ impl Vmo {
         Ok(())
     }
 
-    /// 按需后备？（fault 探针分派用：demand 区间的缺页走 pager 协议。）
-    pub fn is_demand(&self) -> bool {
-        self.demand
-    }
-
-    /// ZFOD 匿名零页 VMO？（P1-3——`probe_el0` 快路径判定：真 = 缺页
-    /// 内核直供新零页，零 pager 往返。）置位语义见结构体 `zfod` 字段注。
-    pub fn is_zfod(&self) -> bool {
-        self.zfod
-    }
-
-    /// 置 ZFOD 标志（P1-3——供给面学习点：0x21/0x23/0x24 **零臂**
-    /// （`src=0`）供给成功时由 `pager_supply_one` 调用；KL 窗内串行，
-    /// 与探针读点同锁域互斥）。幂等（重复置位无操作）。
-    pub(crate) fn mark_zfod(&mut self) {
-        self.zfod = true;
-    }
-
-    /// 建 MMIO 物理窗口 VMO（P6 A-2，**boot-only**——无 syscall 面：物理窗口
-    /// 是 boot 授的能力，EL0 不可自造；Zircon `zx_vmo_create_physical` 收紧
-    /// 版）。语义面（窗口恒空记账/内容四拒/双侧对齐执法）见
-    /// [`PageLedger::new_mmio`]。
-    pub fn create_mmio(pa_base: usize, size: usize) -> Result<Self, VmoError> {
-        Ok(Self {
-            ledger: PageLedger::new_mmio(pa_base, size)?,
-            demand_pins: DemandLedger::default(),
-            demand: false,
-            zfod: false,
-        })
-    }
-
     /// MMIO 物理窗口后备？（vmar map 的 attr 分派用：Device-nGnRnE + SH_NONE）。
     pub fn is_mmio(&self) -> bool {
         self.ledger.is_mmio()
@@ -200,12 +201,13 @@ impl Vmo {
             if self.ledger.page_pa(page).is_none() {
                 let pa = zero_frame(fa)?;
                 self.ledger.mark_committed(page, Some(pa));
+                // committed 聚合水位：新提交页 +1（见 VMO_COMMITTED_PAGES 注）。
+                VMO_COMMITTED_PAGES.fetch_add(1, Ordering::Relaxed);
             }
         }
         Ok(())
     }
 
-    /// 运行时安全提交（F0-3）：逐页经 `ALLOC_LOCK` 分配新物理帧并在锁外完成 `DC ZVA` 清零。
     pub fn commit_global(&mut self, offset: usize, len: usize) -> Result<(), VmoError> {
         let range = self.ledger.commit_pages(offset, len)?;
         for page in range.iter() {
@@ -234,11 +236,13 @@ impl Vmo {
             debug_assert_eq!(Some(pa), Some(_registered));
             // SAFETY: 该页独占（mapcnt==0 → 无映射别名）且 PA 来自 alloc。
             let _ = fa.free(pa >> PAGE_SHIFT, 0); // 元数据异常只泄漏不 panic
+            // committed 聚合水位：出账页 −1（随 mark_decommitted 记账，与
+            // 还帧成败无关——口径 = ledger `Some(pa)` 项数）。
+            VMO_COMMITTED_PAGES.fetch_sub(1, Ordering::Relaxed);
         }
         Ok(())
     }
 
-    /// 运行时安全归还（F0-3）：先在锁外收集待退页表（含 `Vec` 堆分配），再持 `ALLOC_LOCK` 借用遍历批量退还，
     /// 锁释放后再在锁外析构临时 `Vec`（严禁在 `ALLOC_LOCK` 窗内触发 `SlabHeap::dealloc` 自重入）。
     pub fn decommit_global(&mut self, offset: usize, len: usize) -> Result<(), VmoError> {
         let (_, pas) = self.ledger.decommit_pages(offset, len)?;
@@ -354,7 +358,9 @@ impl Drop for Vmo {
     /// Drop 只兜 boot/ktest 直构对象——其映射常驻不解除（如用户进程
     /// code/data/stack 页），泄漏即 v1 政策。
     /// MMIO 窗口后备（P6 A-2）：`pages` 恒空 → 还帧面天然零动作——设备 PA 从
-    /// 不进帧记账，无「还设备页进 buddy」面。
+    /// 不进帧记账，无「还设备页进 buddy」面。committed 聚合水位
+    /// （[`VMO_COMMITTED_PAGES`]）随 drain 实还页逐页递减；泄漏页（仍被
+    /// 映射）不减——页仍被 VMO 持有，水位如实。
     fn drop(&mut self) {
         // F0-4：未残留映射的 MMIO 窗口销毁时，自动将交集内活跃 VirtIO 槽写 STATUS=0 复位，阻断遗留异步 DMA。
         if let Some((pa_base, size)) = self.ledger.mmio_pa_range() {
@@ -377,6 +383,30 @@ impl Drop for Vmo {
             }
         });
     }
+}
+
+// ---- committed 全局聚合水位（遥测 memstat 刀：0x84 op=1 消费）----
+//
+// 口径 = 全体在册 [`PageLedger`] `pages` 中 `Some(pa)` 项数：MMIO 记账
+// `pages` 恒空（[`PageLedger::new_mmio`]）天然零计数；demand 供给页走
+// `Vmo::commit` 同一写点。「禁重复记账源」不破：PageLedger 仍是逐页
+// 唯一事实源（资格判定与簿记），本原子只是其物理执行臂的全局水位投影
+// ——与 buddy `allocated` 对位图的关系同构（聚合账 vs 明细账，论证全文
+// 随实施笔记记档）。drift 护栏 = ktest 因果差分臂（末态==初态）+
+// committed≤alloc 静止窗恒等式双钉。
+
+/// VMO committed 页数水位（Relaxed——纯计数无跨序依赖面，buddy
+/// `allocated` 同款形态）。写点与本文件物理执行臂逐对：`Vmo::commit`
+/// 逐页 +1、`Vmo::decommit` 逐页 −1、`Drop` drain 逐页 −1；泄漏页
+/// （仍被映射，v1 政策）不还不减——水位如实反映「VMO 持有中」。
+static VMO_COMMITTED_PAGES: AtomicUsize = AtomicUsize::new(0);
+
+/// committed 水位 O(1) 读口：遥测 memstat 快照 `committed_pages` 域装配
+/// 消费（telemetry.rs，0x84 op=1）。
+// 消费随遥测 memstat 刀后续域接线（telemetry memstat_snapshot）；handoff
+// 模块「消费随刀」先例同款过渡豁免，接线后撤。
+pub(crate) fn committed_pages() -> usize {
+    VMO_COMMITTED_PAGES.load(Ordering::Relaxed)
 }
 
 /// 从帧分配器取一页并清零，返回 **PA**（`alloc` 给 PFN 须左移；buddy 只管元数据，

@@ -25,9 +25,6 @@ use berry_memface::{cache_line_span, ctr_dmin_line, ctr_pou_plan, IcachePolicy};
 use core::arch::asm;
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 
-/// `CTR_EL0` 惰性缓存（`u64::MAX` = 未探测；同型核只读系统寄存器幂等写）。
-static CTR_CACHE: AtomicU64 = AtomicU64::new(u64::MAX);
-
 /// 每核当前硬件 `TTBR0_EL1` 激活的 ASID 快照（供 `AsidAllocator` 钉死防撞）。
 static ACTIVE_CPU_ASID: [AtomicU16; 2] = [AtomicU16::new(0), AtomicU16::new(0)];
 
@@ -38,11 +35,11 @@ static ACTIVE_CPU_ASID: [AtomicU16; 2] = [AtomicU16::new(0), AtomicU16::new(0)];
 /// 足够——程序序即真实序，A12 同款纪律）。
 static ASID_TLB_UNTRUSTED: AtomicBool = AtomicBool::new(false);
 
+/// `CTR_EL0` 惰性缓存（`u64::MAX` = 未探测；同型核只读系统寄存器幂等写）。
+static CTR_CACHE: AtomicU64 = AtomicU64::new(u64::MAX);
+
 const TWO_MB: usize = 1 << 21;
-const PAGE_4K: usize = 1 << 12;
 const L2_INDEX_MASK: usize = PTES_PER_TABLE - 1; // 9 位
-/// `KERNEL_L3_IMG` 覆盖的内核前段 2MiB 块数（`4 * 2MiB = 8MiB`，远超 `.text+.rodata`）。
-const KERNEL_IMG_L2_BLOCKS: usize = 4;
 
 /// L1 表（512 项，4KiB）。
 #[repr(C, align(4096))]
@@ -50,7 +47,7 @@ struct L1Table([u64; PTES_PER_TABLE]);
 /// L2 表（512 项，4KiB）。
 #[repr(C, align(4096))]
 struct L2Table([u64; PTES_PER_TABLE]);
-/// L3 表（512 项，4KiB）。
+/// L3 表（512 项，4KiB；W3-Q104 块拆分用——叶描述符表与 L2 同构）。
 #[repr(C, align(4096))]
 struct L3Table([u64; PTES_PER_TABLE]);
 
@@ -58,26 +55,19 @@ struct L3Table([u64; PTES_PER_TABLE]);
 // 2b-2 低半退役后，这些表经 phys_to_virt(pa==va) 访问，规则不变。
 #[link_section = ".bss.boot"]
 static mut BOOT_L1: L1Table = L1Table([0; PTES_PER_TABLE]);
-/// L1[0]：低区（设备 MMIO，`[0, 1GiB)`，仅供低半临时身份表使用）。
+/// L1[0]：低区（设备 MMIO，`[0, 1GiB)`）。
 #[link_section = ".bss.boot"]
 static mut BOOT_L2_LOW: L2Table = L2Table([0; PTES_PER_TABLE]);
-/// L1[1]：RAM 区（低半临时身份表使用，供 `.text.boot` 开 MMU 跳高半过渡）。
+/// L1[1]：RAM 区（`[0x4000_0000, 0x8000_0000)`，实际映 `[RAM_BASE, RAM_TOP)`）。
 #[link_section = ".bss.boot"]
 static mut BOOT_L2_RAM: L2Table = L2Table([0; PTES_PER_TABLE]);
 
-/// TTBR1 内核专属根表（F0-2 起与 `BOOT_L1` 物理分离，全量实施分段 W^X 与直映 `PXN`）。
+/// TTBR1 内核表（2b-0 引入）。条目与 BOOT_L1 同构——指向**同一对 L2 表**：
+/// 描述符输出的是 PA，与从哪张 L1 走查无关；`KERNEL_VA_BASE` bits[38:0]=0，
+/// 故 KVA[38:30] == PA[38:30]，高半 L1 索引镜像身份 L1 索引。2b-2 低半退役后
+/// 这张表成为内核唯一页表根。
 #[link_section = ".bss.boot"]
 static mut KERNEL_L1: L1Table = L1Table([0; PTES_PER_TABLE]);
-/// TTBR1 低区设备 MMIO L2 表（全置 `PXN | UXN`）。
-#[link_section = ".bss.boot"]
-static mut KERNEL_L2_LOW: L2Table = L2Table([0; PTES_PER_TABLE]);
-/// TTBR1 RAM 直映 L2 表（前 8MiB 下挂 `KERNEL_L3_IMG` 细分 `.text`/`.rodata`，余块全置 `PXN | UXN`）。
-#[link_section = ".bss.boot"]
-static mut KERNEL_L2_RAM: L2Table = L2Table([0; PTES_PER_TABLE]);
-/// TTBR1 内核镜像前 8MiB 4KiB 细粒度页表池。
-#[link_section = ".bss.boot"]
-static mut KERNEL_L3_IMG: [L3Table; KERNEL_IMG_L2_BLOCKS] =
-    [const { L3Table([0; PTES_PER_TABLE]) }; KERNEL_IMG_L2_BLOCKS];
 
 /// 内核空表（2b-2 低半退役）：TTBR0 的「无 AS」落点——全零 → 任何低半访问必然
 /// fault（身份表退役的正向断言即由此而来）。放普通 `.bss`（高半 VMA，boot 期已清零；
@@ -142,9 +132,13 @@ pub unsafe extern "C" fn build_boot_pt() {
     (&raw mut (*l1).0[1]).write_volatile(table_descriptor(l2_ram as usize));
 
     // 低区 L2：映 UART、GIC 所在的 2MiB 块为 Device（identity）。
+    // F0-4 调和刀：VirtIO-MMIO 窗块（0x0A00_0000）同入 Device 直映——
+    // `reset_virtio_mmio_window` 经高半 KERNEL_VA_BASE+pa 直访槽寄存器，
+    // 无此块则 MMIO VMO Drop 即 fatal D-abort（overhaul KERNEL_L2_LOW 同款）。
     let dev_blocks = [
         UART0_BASE & !(TWO_MB - 1),
         GICD_BASE & !(TWO_MB - 1),
+        VIRTIO_MMIO0_PA & !(TWO_MB - 1),
     ];
     for pa in dev_blocks {
         let idx = (pa >> 21) & L2_INDEX_MASK;
@@ -174,78 +168,10 @@ pub unsafe extern "C" fn build_boot_pt() {
         pa += TWO_MB;
     }
 
-    // F0-2：TTBR1 专属内核页表——全量实施硬件 W^X 与直映区 PXN|UXN（MMU 开启前就地构建，零 BBM 风险）。
+    // 2b-0：TTBR1 内核表——高半 KVA 与低半 PA 走同一对 L2（见 KERNEL_L1 文档）。
     let k_l1 = &raw mut KERNEL_L1;
-    let k_l2_low = &raw mut KERNEL_L2_LOW;
-    let k_l2_ram = &raw mut KERNEL_L2_RAM;
-    let k_l3_img = &raw mut KERNEL_L3_IMG;
-    (&raw mut (*k_l1).0[0]).write_volatile(table_descriptor(k_l2_low as usize));
-    (&raw mut (*k_l1).0[1]).write_volatile(table_descriptor(k_l2_ram as usize));
-
-    // TTBR1 设备 MMIO 块（UART/PL061、GIC、VirtIO-MMIO 窗）：全置 PXN | UXN。
-    let k_dev_blocks = [
-        UART0_BASE & !(TWO_MB - 1),
-        GICD_BASE & !(TWO_MB - 1),
-        VIRTIO_MMIO0_PA & !(TWO_MB - 1),
-    ];
-    let mut di = 0;
-    while di < k_dev_blocks.len() {
-        let dpa = k_dev_blocks[di];
-        let idx = (dpa >> 21) & L2_INDEX_MASK;
-        (&raw mut (*k_l2_low).0[idx])
-            .write_volatile(block_descriptor_nx(dpa, ATTR_DEVICE, SH_NONE));
-        di += 1;
-    }
-
-    // 读取低半 PA 段界（ldr 伪指令落 .text.boot 局部文字池，零高半 ADRP）。
-    let text_s: usize;
-    let text_e: usize;
-    let ro_s: usize;
-    let ro_e: usize;
-    asm!(
-        "ldr {0}, =__text_start_pa",
-        "ldr {1}, =__text_end_pa",
-        "ldr {2}, =__rodata_start_pa",
-        "ldr {3}, =__rodata_end_pa",
-        out(reg) text_s,
-        out(reg) text_e,
-        out(reg) ro_s,
-        out(reg) ro_e,
-        options(nomem, nostack, preserves_flags),
-    );
-
-    // 前 8MiB 按 4KiB 页细分：.text → RO+EL1X(UXN)；.rodata → RO+PXN+UXN；其余 → RW+PXN+UXN。
-    let mut blk = 0;
-    while blk < KERNEL_IMG_L2_BLOCKS {
-        let blk_pa = RAM_BASE + blk * TWO_MB;
-        let l2_idx = (blk_pa >> 21) & L2_INDEX_MASK;
-        let l3_ptr = &raw mut (*k_l3_img)[blk];
-        (&raw mut (*k_l2_ram).0[l2_idx]).write_volatile(table_descriptor(l3_ptr as usize));
-        let mut p = 0;
-        while p < PTES_PER_TABLE {
-            let page_pa = blk_pa + p * PAGE_4K;
-            let perm = if page_pa >= text_s && page_pa < text_e {
-                AP_RO | UXN
-            } else if page_pa >= ro_s && page_pa < ro_e {
-                AP_RO | PXN | UXN
-            } else {
-                AP_EL1_RW | PXN | UXN
-            };
-            (&raw mut (*l3_ptr).0[p])
-                .write_volatile(kernel_page_descriptor(page_pa, ATTR_NORMAL, SH_INNER, perm));
-            p += 1;
-        }
-        blk += 1;
-    }
-
-    // [RAM_BASE + 8MiB, RAM_TOP) 全部直映块强制置 PXN | UXN（严禁 EL1 执行堆/栈/用户物理帧）。
-    let mut kpa = RAM_BASE + KERNEL_IMG_L2_BLOCKS * TWO_MB;
-    while kpa < RAM_TOP {
-        let idx = (kpa >> 21) & L2_INDEX_MASK;
-        (&raw mut (*k_l2_ram).0[idx])
-            .write_volatile(block_descriptor_nx(kpa, ATTR_NORMAL, SH_INNER));
-        kpa += TWO_MB;
-    }
+    (&raw mut (*k_l1).0[0]).write_volatile(table_descriptor(l2_low as usize));
+    (&raw mut (*k_l1).0[1]).write_volatile(table_descriptor(l2_ram as usize));
 
     // 表写入对页表遍历可见。
     dsb_ish();
@@ -255,12 +181,9 @@ pub unsafe extern "C" fn build_boot_pt() {
 #[link_section = ".text.boot"]
 unsafe extern "C" fn enable_mmu() {
     write_mair_el1(MAIR_EL1);
-    // F0-2：按硬件 ID_AA64MMFR0_EL1.ASIDBits 动态置 TCR_EL1.AS（bit 36），激活真 16 位 ASID。
-    let mmfr0: u64;
-    asm!("mrs {0}, id_aa64mmfr0_el1", out(reg) mmfr0, options(nostack, preserves_flags));
-    let (_, tcr_as) = tcr_as_config(mmfr0);
-    write_tcr_el1(TCR_EL1 | tcr_as);
-    // TTBR0 = 身份表（临时，2b-2 退役）；TTBR1 = 高半内核表（分段 W^X + PXN）。
+    write_tcr_el1(TCR_EL1);
+    // TTBR0 = 身份表（临时，2b-2 退役）；TTBR1 = 高半内核表（2b-0 起）。
+    // 表在 .bss.boot 低半（VMA==PA），地址即 PA——2b-2 后新增表才需 virt_to_phys。
     write_ttbr0_el1((&raw const BOOT_L1) as u64);
     write_ttbr1_el1((&raw const KERNEL_L1) as u64);
     isb();
@@ -303,6 +226,8 @@ pub(crate) fn asid_bits() -> u32 {
     tcr_as_config(v).0
 }
 
+/// ASID 在 TTBR0 / `tlbi aside1` 操作数里的移位量：16 位 → [63:48]、8 位 → [63:56]
+/// （TCR.A1=0：硬件 ASID 取自 TTBR0，与 TCR.AS=0 的 8 位取位一致）。
 /// F0-2：ARMv8-A `TTBR0_EL1` 与 `TLBI ASIDE1*` 的 ASID 起始位恒为 bit 48
 /// （8 位模式用 `[55:48]`，16 位模式 `TCR_EL1.AS=1` 用 `[63:48]`；修复此前 8 位错移 56 缺陷）。
 #[inline(always)]
@@ -442,6 +367,15 @@ pub(crate) fn current_ttbr0_pa() -> usize {
     ttbr as usize & 0x0000_FFFF_FFFF_F000
 }
 
+/// 读当前 TTBR1_EL1 内核表基 PA（bits[47:12]；W3-Q104 freeze_syscalls_table
+/// walk 用——高半 .text 不得静态引用 `.bss.boot` 低半表符号，见该函数内注释）。
+pub(crate) fn current_ttbr1_pa() -> usize {
+    let ttbr: u64;
+    // SAFETY: 特权读；EL1，无副作用。
+    unsafe { asm!("mrs {0}, ttbr1_el1", out(reg) ttbr, options(nostack, preserves_flags)) };
+    ttbr as usize & 0x0000_FFFF_FFFF_F000
+}
+
 /// S-4 4-2：当前 ASID——syscall copy 链读者解析 per-AS PT 锁的键；demand
 /// 探针（`dpg::probe`）asid 反查同源。与 [`current_ttbr0_pa`] 同一激活窗
 /// （EL0 syscall 不切 AS，天然 = 调用者 ASID，同窗一致键）。
@@ -494,6 +428,99 @@ pub(crate) unsafe fn flush_all_asid() {
 pub(crate) unsafe fn flush_local_all() {
     asm!("tlbi vmalle1", options(nostack, preserves_flags));
     dsb_ish();
+}
+
+// ---- W3-Q104（03 号分派审计机会五 5b）：SYSCALLS 派发表固化 RO ----
+
+/// 固化完成标记（ktest 自证用；boot 窗内置位后恒 `true`）。
+static SYSCALLS_RO: AtomicBool = AtomicBool::new(false);
+
+/// SYSCALLS 表是否已固化只读（ktest 断言门自证用）。
+pub fn syscalls_table_ro() -> bool {
+    SYSCALLS_RO.load(Ordering::Relaxed)
+}
+
+/// 把 `SYSCALLS` 派发表所在 2MiB 块拆成 4KiB 叶、**仅表页本体**置
+/// **EL1 只读**（表 = 256 槽 × 16B 恰一整页，#[repr(C, align(4096))]
+/// wrapper 保证页对齐 + 整页独占），其余 511 页逐位保真原块 RW——函数
+/// 指针表 W^X 固化（`research/内核深度进化/03-syscall分派审计.md`
+/// 机会五 5b：boot 期 [`crate::syscall::install`] 填毕、终生只读却留
+/// 可写页的分派面关死；此后任何写 = D-abort(current-EL) 权限错
+/// fatal——ktest 期望故障探针正向断言之）。
+/// R490 三轮：**不冻邻页**——邻页静态量随链接布局漂移换人（两轮 smoke
+/// 红：debug 布局冻住 ktest EBUF、CI 布局冻住 KLOG_SNAP_STAGE 区带写
+/// 者），「邻页无运行期写者」论断不可靠；表整页独占后冻本页即完备。
+///
+/// 为什么必须拆块：高半内核映射是 L2 2MiB **块描述符**（`build_boot_pt`），
+/// AP 位长在块上——直接改块权限 = 整个 2MiB（`.data`/`.bss` 同块全体静态
+/// 量）一起失写，boot 必死。故插一张 L3 把该块劈成 512 张 4KiB 叶。
+///
+/// 时序合同：**只能在高半经 TTBR1 活跃时调**（`rust_main` 单线程 DAIF 屏
+/// 蔽尾窗、smp_bringup 前）——本函数对该块内代码/数据的取指与数据访问
+/// 走高半映射；低半身份已在 2b-2 退役（`retire_low_half` 在 boot 早期），
+/// 不存在低半走查面。副核 `bl enable_mmu` 消费表基只读，walk 到的即新
+/// 拓扑（表项写毕经 `dsb ish` 才切 L2 项），无共享窗。
+///
+/// # Safety
+/// boot 单线程调用一次；只写页表项（RAM L2 目标槽 + `SPLIT_L3_SYSCALLS`
+/// 专表，高半 .bss）与 `SYSCALLS_RO` 标记，不触碰任何运行期数据。
+pub unsafe fn freeze_syscalls_table() {
+    // 镜像布局：VMA - KERNEL_VA_BASE == LMA（linker 脚本）。
+    let sva = crate::syscall::table_addr();
+    debug_assert_eq!(sva & 0xFFF, 0, "SYSCALLS 须 4KiB 对齐");
+    let spa = sva - KERNEL_VA_BASE;
+    let l2_idx = (spa >> 21) & L2_INDEX_MASK;
+
+    // RAM L2 表基：**运行期从 TTBR1_EL1 walk**（L1[1] → 下级表基 PA），不从
+    // `BOOT_L2_RAM` 符号直取——该表落 `.bss.boot` 低半（VMA==PA），高半
+    // .text 的静态引用必发 ADRP±4GiB 断链（R490 判例：rust-lld
+    // `R_AARCH64_ADR_PREL_PG_HI21 out of range`，CI-light 不编目标机的双盲
+    // 面）。KERNEL_L1[1] 与 BOOT_L1[1] 同指该表（build_boot_pt），TTBR1 写入
+    // 值即其 PA——walk 零静态引用、零额外真值源。walk 读经高半直映别名。
+    let l1_pa = current_ttbr1_pa();
+    let l1 = (l1_pa + KERNEL_VA_BASE) as *const u64;
+    let l2_desc = unsafe { (&raw const *l1.add(1)).read_volatile() };
+    debug_assert_eq!(l2_desc & 0x3, 0b11, "L1[1] 须是有效表描述符");
+    let l2 = (((l2_desc & 0x0000_FFFF_FFFF_F000) as usize) + KERNEL_VA_BASE) as *mut L2Table;
+
+    // 分裂专表（高半普通 .bss——boot asm 开 MMU 前按 PA 清零主体 .bss，
+    // 调用时已零；挂表时 VMA−KERNEL_VA_BASE 折算 PA。**不得**学四张 boot
+    // 表落 .bss.boot 低半：高半 .text 的 ADRP 引用断链〔R490 链接红根因〕）。
+    static mut SPLIT_L3_SYSCALLS: L3Table = L3Table([0; PTES_PER_TABLE]);
+    let l3 = &raw mut SPLIT_L3_SYSCALLS;
+
+    // 旧块 PA（清 bits[20:0] 属性位；MMU 开前建表后表项稳定，volatile 防折叠）。
+    let old_block = unsafe { (&raw const (*l2).0[l2_idx]).read_volatile() };
+    debug_assert_eq!(old_block & 0x3, 0b01, "拆分目标须是有效块描述符");
+    let block_pa = (old_block & !0x1F_FFFF) as usize;
+
+    // 512 叶：**只冻表页本体**（表 = 256 槽 × 16B = 4096B，#[repr(C,
+    // align(4096))] wrapper 保证页对齐 + 整页独占——R490 二轮前置），其余
+    // 511 页逐位保真原块 RW。**禁邻页盲冻**（R490 三轮教训）：邻页静态量
+    // 随链接布局漂移换人（debug 布局 = ktest EBUF/HBUF/RNBUF，CI 布局 =
+    // syscall::KLOG_SNAP_STAGE 区带），「邻页无运行期写者」论断不可靠——
+    // 盲冻邻页 = 随机杀 boot（两轮 smoke 红 + reviewer 本地 QEMU 实证）。
+    // 表本页整页独占后写者唯一 = install（boot 单线程窗，freeze 之前），
+    // 冻本页即安全闭环。
+    let tgt_pf = spa >> 12;
+    for i in 0..PTES_PER_TABLE {
+        let pf = (block_pa >> 12) + i;
+        let ap = if pf == tgt_pf { AP_RO } else { AP_EL1_RW };
+        unsafe {
+            (&raw mut (*l3).0[i]).write_volatile(page_descriptor_kernel(pf << 12, ap));
+        }
+    }
+
+    // 标记先置后翻（翻转前单线程窗零观察者）：若 SYSCALLS_RO 恰链进 RO
+    // 三页窗，翻转后自写必 D-abort fatal——置位必须在权限翻转**前**完成。
+    SYSCALLS_RO.store(true, Ordering::Release);
+
+    // 先 L3 后 L2（walk 见表项时叶已就绪——无窗口），再屏障 + 全量 TLB
+    // 失效（旧块项是 global，须 vmalle1is 家族）。
+    unsafe { dsb_ish() };
+    unsafe { (&raw mut (*l2).0[l2_idx]).write_volatile(table_descriptor(l3 as usize - KERNEL_VA_BASE)) };
+    unsafe { dsb_ish() };
+    unsafe { flush_all_asid() };
 }
 
 /// F0-1：PoU 指令/数据缓存一致性同步（ARM DDI 0487 B2.4.4）。
@@ -646,8 +673,6 @@ pub(crate) fn reset_virtio_mmio_window(pa_base: usize, size: usize) {
         unsafe { asm!("dsb sy", options(nostack, preserves_flags)) };
     }
 }
-
-// ---- 系统寄存器读写（unsafe 收敛地，裸 asm）----
 
 #[inline(always)]
 unsafe fn write_mair_el1(v: u64) {

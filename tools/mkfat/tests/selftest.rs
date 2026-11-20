@@ -335,6 +335,48 @@ fn run_cmd(cmd: &[&str], cwd: &std::path::Path) -> (bool, String, String) {
     }
 }
 
+/// 先编后用 + 产物轮询（build-then-poll，共享工作树竞态加固）：test-host
+/// 与并行 bot 流水线同用本 cargo-target 时，另一 cargo 的 unlink→hardlink
+/// 窗口可令 exists() 瞬时假阴性（2026-11-18 02:4x 轮实抓：build ok 而
+/// 「产物缺席」假红，隔离三连绿定谳瞬态）。修 = 缺席不即红——先短轮询等
+/// 对方 finalization 落链（毫秒级补齐），仍缺席再重建（对方撤链兜底），
+/// 三轮穷尽才红；真 build 失败仍即红（不吞真错）。
+fn build_then_poll(repo: &std::path::Path, cargo_target: &std::path::Path, host: &str) -> std::path::PathBuf {
+    let bin = cargo_target.join(host).join("release").join("mkfat");
+    for attempt in 0..3 {
+        if attempt > 0 {
+            eprintln!("mkfat: 产物缺席第 {attempt} 轮——重建（共享工作树竞态兜底）");
+        }
+        let (ok, _, err) = run_cmd(
+            &[
+                "cargo",
+                "build",
+                "--release",
+                "--manifest-path",
+                "tools/mkfat/Cargo.toml",
+                "--target",
+                host,
+                "--target-dir",
+                cargo_target.to_str().unwrap(),
+            ],
+            repo,
+        );
+        if !ok {
+            panic!("Rust mkfat build 失败：{err}");
+        }
+        for _ in 0..20 {
+            if bin.exists() {
+                return bin;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+    panic!(
+        "Rust mkfat 产物在 build 成功 + 3×1s 轮询重建后仍缺席：{}（并行流水线持续占用 cargo-target，或产物路径漂移）",
+        bin.display()
+    );
+}
+
 #[test]
 fn oracle_byte_parity() {
     let _ = run_oracle_byte_parity();
@@ -353,32 +395,15 @@ fn run_oracle_byte_parity() -> Option<()> {
     std::fs::write(&efi, (0..3000).map(|i| ((i * 7 + 3) % 256) as u8).collect::<Vec<_>>()).unwrap();
     let hello = td.join("HELLO.TXT");
     std::fs::write(&hello, b"berryboot efi hello\n").unwrap();
-    // Rust CLI：先 build 再跑（--target-dir 钉位纪律同 mkcpio）。
+    // Rust CLI：先 build 再跑（--target-dir 钉位纪律同 mkcpio；build 收口
+    // 走 build_then_poll——共享 cargo-target 并行流水线竞态自愈）。
     let repo = repo_root();
     let host = {
         let (_, o, _) = run_cmd(&["rustc", "-vV"], &repo);
         o.lines().find_map(|l| l.strip_prefix("host: ").map(str::to_string)).unwrap_or_default()
     };
     let cargo_target = repo.join("tools/mkfat/cargo-target");
-    let (ok, _, err) = run_cmd(
-        &[
-            "cargo",
-            "build",
-            "--release",
-            "--manifest-path",
-            "tools/mkfat/Cargo.toml",
-            "--target",
-            &host,
-            "--target-dir",
-            cargo_target.to_str().unwrap(),
-        ],
-        &repo,
-    );
-    if !ok {
-        panic!("Rust mkfat build 失败：{err}");
-    }
-    let rust_bin = cargo_target.join(&host).join("release").join("mkfat");
-    assert!(rust_bin.exists(), "Rust mkfat 产物缺席：{}", rust_bin.display());
+    let rust_bin = build_then_poll(&repo, &cargo_target, &host);
     // 面 1：--put 整盘对拍。
     let py_put = td.join("py.img");
     let (ok, _, err) = run_cmd(
@@ -486,26 +511,10 @@ fn run_oracle_guard_regen_parity() -> Option<()> {
         let (_, o, _) = run_cmd(&["rustc", "-vV"], &repo);
         o.lines().find_map(|l| l.strip_prefix("host: ").map(str::to_string)).unwrap_or_default()
     };
-    // 先编后用（与 oracle_byte_parity 同款）：测试并行跑时本测可能先于另一测
-    // 的 build 步起跑——自带 build 步消竞态（增量编译，第二次近零耗时）。
+    // 先编后用（build-then-poll 竞态加固——helper 内嵌 build + 轮询重试，
+    // 测试并行与共享工作树并行流水线两窗口皆自愈）。
     let cargo_target = repo.join("tools/mkfat/cargo-target");
-    let (ok, _, err) = run_cmd(
-        &[
-            "cargo",
-            "build",
-            "--release",
-            "--manifest-path",
-            "tools/mkfat/Cargo.toml",
-            "--target",
-            &host,
-            "--target-dir",
-            cargo_target.to_str().unwrap(),
-        ],
-        &repo,
-    );
-    assert!(ok, "Rust mkfat build 失败：{err}");
-    let rust_bin = cargo_target.join(&host).join("release").join("mkfat");
-    assert!(rust_bin.exists(), "Rust mkfat 产物缺席：{}", rust_bin.display());
+    let rust_bin = build_then_poll(&repo, &cargo_target, &host);
     let rb = rust_bin.to_str().unwrap();
     // 面 1/2：守卫四面（双基准 + 双漂移红面）输出行与 rc 全等。
     let fx12 = "user/berry-fatfs/tests/volume_fixture.bin";
