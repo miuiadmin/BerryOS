@@ -4400,8 +4400,7 @@ unsafe fn try_steal_one() -> Option<*mut Task> {
         let r = unsafe { rq_of(me) };
         (r.int_count(), r.util_count())
     };
-    // —— 远端窗（只持远端）：对核环扫描（has_eff_above_filtered 同款走查
-    // 形）：band 感知三档选优——兼容档见首即定（早退），否则整圈取最小档。
+    // —— 远端窗（只持远端）：对核环扫描（旧形 has_eff_above_filtered 同款走查形——符号已退役，现行单源 ringface::eligible）：band 感知三档选优——兼容档见首即定（早退），否则整圈取最小档。
     // 扫描与摘环同窗——victim 定型到 unlink 原子，防扫描后摘环前被对核
     // pick/出队抢走。断链形态由 link/unlink 入口断言执法（环不变式），
     // 走查「环上必有 next」与 ring_check 同口径。
