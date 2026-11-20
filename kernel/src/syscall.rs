@@ -2132,6 +2132,27 @@ extern "C" fn sys_restricted_kick(tf: &mut TrapFrame) -> i64 {
     0
 }
 
+
+/// `guest_create(ipa_base, ipa_size)`（0x77，G2 刀 10）：创建 guest PAS。
+/// v1 桩：AArch64 QEMU TCG 无 EL2 → -ENOSYS（真机 EL2 面归后续刀）。
+extern "C" fn sys_guest_create(tf: &mut TrapFrame) -> i64 {
+    let _ipa_base = tf.regs[0];
+    let _ipa_size = tf.regs[1];
+    -38 // -ENOSYS
+}
+
+/// `vcpu_create(guest_handle)`（0x78，G2 刀 10）：创建 vCPU。
+extern "C" fn sys_vcpu_create(tf: &mut TrapFrame) -> i64 {
+    let _guest = tf.regs[0];
+    -38
+}
+
+/// `vcpu_run(vcpu_handle)`（0x79，G2 刀 10）：运行 vCPU。
+extern "C" fn sys_vcpu_run(tf: &mut TrapFrame) -> i64 {
+    let _vcpu = tf.regs[0];
+    -38
+}
+
 extern "C" fn sys_cbox_drain(tf: &mut TrapFrame) -> i64 {
     let (buf, cap_raw, out) = (tf.regs[1], tf.regs[2], tf.regs[3]);
     let Ok(cap) = u32::try_from(cap_raw) else {
@@ -4195,6 +4216,11 @@ pub fn install() {
     // 同 0x83 先例），字面量挂。
     reg(0x4A, sys_restricted_enter, SVC_CLASS_TABLE);
     reg(0x4B, sys_restricted_kick, SVC_CLASS_TABLE);
+    // —— G2 刀 10：Hypervisor MicroVM（0x77/0x78/0x79）——v1 桩 -ENOSYS
+    // （QEMU TCG 无 EL2；真机 EL2 面归后续刀）。
+    reg(0x77, sys_guest_create, SVC_CLASS_TABLE);
+    reg(0x78, sys_vcpu_create, SVC_CLASS_TABLE);
+    reg(0x79, sys_vcpu_run, SVC_CLASS_TABLE);
     // —— SQ+RQ+TABLE（0x2E）：wait/send 族（wake→enqueue 双结构窗 + 表）——
     reg(NR_HANDLE_CLOSE, sys_handle_close, SVC_CLASS_SQ_RQ_TABLE);
     reg(NR_HANDLE_DUPLICATE, sys_handle_duplicate, SVC_CLASS_TABLE);
