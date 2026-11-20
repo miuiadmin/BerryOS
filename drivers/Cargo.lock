@@ -46,6 +46,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "berry-hal"
+version = "0.2.0"
+dependencies = [
+ "berry-virtio",
+]
+
+[[package]]
 name = "berry-libc"
 version = "0.2.0"
 dependencies = [
@@ -169,6 +176,8 @@ name = "vprobe"
 version = "0.2.0"
 dependencies = [
  "berry-exec",
+ "berry-hal",
  "berry-libc",
  "berry-sys",
+ "berry-virtio",
 ]

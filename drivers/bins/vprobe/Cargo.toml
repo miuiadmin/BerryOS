@@ -19,3 +19,13 @@ license = "Apache-2.0"
 berry-libc = { path = "../../../user/berry-libc" }
 berry-sys = { path = "../../../user/berry-sys" }
 berry-exec = { path = "../../../user/berry-exec" }
+# HAL 接线（2026-11-18）：MMIO 读写经 berry-hal 的 Mmio trait + VirtioMmio
+# 实现——volatile/窗界检收敛在 HAL 实现内部，本 bin 零 MMIO unsafe（HAL
+# crate 的首个真消费者，消「HAL 落地零驱动使用」空转）。跨工作区 path
+# （drivers→user）先例 = 上三行 user 侧 crate 同款，锁独立互不污染。
+berry-hal = { path = "../../../user/berry-hal" }
+# 探测判据的偏移/鉴定值单源（MAGIC/VERSION/DEVICE_ID/VENDOR_ID 偏移 +
+# MAGIC_VAL/VERSION_MODERN/DEVICE_ID_* 鉴定值）——vblk 同款「引常量不
+# 复制」；本地六常量镜像（VIRTIO_MAGIC/VERSION/DEV_BLOCK/NET/INPUT/GPU）
+# 随 HAL 接线退役。
+berry-virtio = { path = "../../berry-virtio" }

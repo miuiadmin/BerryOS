@@ -969,6 +969,8 @@ test-host:
     # VirtualClock 参考实现消费 alloc 面，真消费面 vblk/vnet 接线后续刀，
     # host 8 测）。
     cargo test --manifest-path user/Cargo.toml -p berry-hal --target {{host}}
+    cargo test --manifest-path user/Cargo.toml -p berry-rtc --target {{host}}
+    cargo test --manifest-path user/Cargo.toml -p berry-watchdog --target {{host}}
     # 刀 3 B1-a：berry-gpuproto（virtio-gpu 2D 协议纯函数面——九命令/头/
     # 响应/event/config 编解码 + uapi 常量两源钉板，02 号 §3.1/§3.2；
     # 传输接线归 B1-c）。
