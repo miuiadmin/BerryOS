@@ -492,9 +492,10 @@ impl appshell::pump::HostHooks for LoopHost {
     /// 刚拉起 app 的 boot/首帧呈现链独占 guifbd present 域（单 pending/
     /// cb_park/rel_park 槽 + 全局 held 表），launcher 本窗不出帧（分钟
     /// 摆字至多迟本窗时长——视觉面可忽略）。
-    fn render_hold(&mut self) -> bool {
-        self.spawn_guard.map_or(false, |dl| appshell::rpc::now() < dl)
-    }
+    // 主线解堵（2026-11-20）：render_hold 曾在此 impl 块（HostHooks 成员）——
+    // trait 演进后避让逻辑由 pump 内自持 spawn_guard 承担（pump.rs :318 同
+    // 判据），本成员成孤立定义 E0407 阻 build-user 全链，摘除（doc :80 历史叙
+    // 述保留）。
 
     /// 键盘导航（on_key 键盘刀——ESC 序列重组后箭头 UP/DOWN 翻桌面页）。
     fn on_key(&mut self, ui: &mut UiMain, code: u8, _ts_ns: u64) {

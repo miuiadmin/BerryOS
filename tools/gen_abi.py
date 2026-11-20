@@ -1011,7 +1011,10 @@ stage = "v1"
     # （nr_total/defined/registered 各 +1，帽 45 不动）。
     # W3-Q97 0x57 channel_recv_n 加号（1b9d7359c）随刀滚新：40/44/43→41/45/44
     # （nr_total/defined/registered 各 +1，帽 45 不动——abi_gen 头注同值单源）。
-    check("在册四元组口径", (nt, nd, nr, nc) == (41, 45, 44, 45),
+    # 35 号件 0x1C vmo_cache_op 加号（F0-4）随刀滚新：41/45/44/45→42/46/45/46
+    # （nr_total/defined/registered/帽 各 +1——abi_gen 头注与 abi.toml nr_ceiling
+    # 已同批滚至 46，本钉彼批漏更，CI-light selftest 红回补）。
+    check("在册四元组口径", (nt, nd, nr, nc) == (42, 46, 45, 46),
           f"got {(nt, nd, nr, nc)}")
     check("在册 wakesrc 空闲段活算", next_free_wakesrc(
         {w["name"]: eval_expr(w["expr"]) for w in real["wakesrc"]}) == 0x08)

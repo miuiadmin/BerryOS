@@ -380,9 +380,162 @@ fn parity_load_lite_product() {
     // 边界对齐钉板（双侧分支形对账，非文案面）
     // app_id 盲剥律：Python e[4:-4] 字符索引——非 ASCII 不 panic、恰 9 字符得空
     // app_id 盲剥律经 lib 内单测钉板（lite_product_law——parity 面走 load 主面）
-    // preset 空 + override 全空 = 过面（v0 空 preset 合法）
-    let empty_preset = "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = []\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n";
-    let (py_out, ok) = py_load_lite(empty_preset);
+    // preset 空 + override 全空 + platform 最小面 = 过面（v0 空 preset 合法；
+    // 第二片起 platform 六键齐备才过——词表/域界执法已挂）
+    let empty_preset = good_platform_min();
+    let (py_out, ok) = py_load_lite(&empty_preset);
     assert!(ok, "空 preset: python 未过：{py_out}");
-    assert!(lite::load_lite_product(empty_preset).is_ok());
+    assert!(lite::load_lite_product(&empty_preset).is_ok());
+
+    // ---- 第二片 [platform] 全节拒面语料（good_platform_min 单点变异）----
+    // 每条 = Rust 拒 ⇔ Python 拒且文案逐字全等（首片 42 条同纪律）。
+    let cases: Vec<(&str, String)> = vec![
+        ("platform 未知键", good_platform_min().replacen("[platform]\n", "[platform]\nextra = 1\n", 1)),
+        ("缺 feature_level", good_platform_min().replacen("feature_level = \"rich\"\n", "", 1)),
+        ("arch 枚举外", good_platform_min().replacen("arch = \"x86_64\"", "arch = \"arm64\"", 1)),
+        ("feature_level 枚举外", good_platform_min().replacen("feature_level = \"rich\"", "feature_level = \"lite\"", 1)),
+        ("build_type 枚举外", good_platform_min().replacen("build_type = \"eng\"", "build_type = \"prod\"", 1)),
+        ("sideload 非 bool", good_platform_min().replacen("sideload = false", "sideload = 1", 1)),
+        ("user 型 sideload 收窄", good_platform_min()
+            .replacen("build_type = \"eng\"", "build_type = \"user\"", 1)
+            .replacen("sideload = false", "sideload = true", 1)),
+        ("boot 未知键", good_platform_min().replacen("[platform.boot]\n", "[platform.boot]\nextra = 1\n", 1)),
+        ("kernel 锚 sha 短一位", good_platform_min().replacen(
+            &format!("\"krnl@sha256:{}\"", "a".repeat(64)),
+            &format!("\"krnl@sha256:{}\"", "a".repeat(63)),
+            1)),
+        ("kernel 非 str", good_platform_min().replacen("kernel = \"krnl", "kernel = 7\n# krnl", 1)),
+        ("params 未知键", good_platform_min().replacen(
+            &format!("\"krnl@sha256:{}\"\n", "a".repeat(64)),
+            &format!("\"krnl@sha256:{}\"\n[platform.boot.params]\nunknown = 1\n", "a".repeat(64)),
+            1)),
+        ("params intent 枚举外", good_platform_min().replacen(
+            &format!("\"krnl@sha256:{}\"\n", "a".repeat(64)),
+            &format!("\"krnl@sha256:{}\"\n[platform.boot.params]\nintent_default = \"fast\"\n", "a".repeat(64)),
+            1)),
+        ("params u32 域界外", good_platform_min().replacen(
+            &format!("\"krnl@sha256:{}\"\n", "a".repeat(64)),
+            &format!("\"krnl@sha256:{}\"\n[platform.boot.params]\nsched_slice_hz = 99999999\n", "a".repeat(64)),
+            1)),
+        ("params 非表", good_platform_min().replacen(
+            &format!("\"krnl@sha256:{}\"\n", "a".repeat(64)),
+            &format!("\"krnl@sha256:{}\"\nparams = 1\n", "a".repeat(64)),
+            1)),
+        ("缺 storage 节", good_platform_min().replacen(
+            &format!("\"krnl@sha256:{}\"\n[platform.storage]\nimage_size_mib = 96\nrootfs_split_mib = 32\nmin_power_atomicity = \"p0\"\n", "a".repeat(64)),
+            &format!("\"krnl@sha256:{}\"\n", "a".repeat(64)),
+            1)),
+        ("image_size_mib 域界外", good_platform_min().replacen("image_size_mib = 96", "image_size_mib = 47", 1)),
+        ("image_size_mib 非 int", good_platform_min().replacen("image_size_mib = 96", "image_size_mib = \"96\"", 1)),
+        ("rootfs_split_mib 域界外", good_platform_min().replacen("rootfs_split_mib = 32", "rootfs_split_mib = 65", 1)),
+        ("atomicity 词表内非 p0", good_platform_min().replacen("min_power_atomicity = \"p0\"", "min_power_atomicity = \"p1\"", 1)),
+        ("atomicity 枚举外", good_platform_min().replacen("min_power_atomicity = \"p0\"", "min_power_atomicity = \"p9\"", 1)),
+        ("storage 未知键", good_platform_min().replacen("min_power_atomicity = \"p0\"\n", "min_power_atomicity = \"p0\"\nextra = 1\n", 1)),
+    ];
+    for (name, text) in cases {
+        assert_reject_both(name, &text);
+    }
+
+    // ---- 第三片 [product.defaults.locale] 八键拒面语料（good_platform_min
+    // 单点变异/追加——每条 Rust 拒 ⇔ Python 拒且文案逐字全等）----
+    let locale = |body: &str| -> String {
+        good_platform_min().replacen(
+            "[platform]\n",
+            &format!("[product.defaults.locale]\n{body}[platform]\n"),
+            1,
+        )
+    };
+    let cases3: Vec<(&str, String)> = vec![
+        ("locale 非表", locale("locale = 1\n")),
+        ("locale 未知键", locale("extra = 1\n")),
+        ("languages 非数组", locale("languages = \"zh\"\n")),
+        ("languages 空数组", locale("languages = []\n")),
+        ("languages 越帽 9 项", locale(&format!("languages = [{}]\n", (0..9).map(|i| format!("\"l{i}\"")).collect::<Vec<_>>().join(", ")))),
+        ("languages 元素非串", locale("languages = [7]\n")),
+        ("languages BCP47 短", locale("languages = [\"z\"]\n")),
+        ("languages BCP47 超 35", locale(&format!("languages = [\"{}\"]\n", "a".repeat(36)))),
+        ("languages BCP47 grandfathered", locale("languages = [\"i-klingon\"]\n")),
+        ("languages 大小写不敏感查重", locale("languages = [\"zh-Hans\", \"zh-hans\"]\n")),
+        ("languages 私有段后缀缺子段", locale("languages = [\"zh-x\"]\n")),
+        ("timezone 非 IANA 段形", locale("timezone = \"a/b/c/d\"\n")),
+        ("region 非大写双字母", locale("region = \"cn\"\n")),
+        ("regulatory_domain 三字母", locale("regulatory_domain = \"CHN\"\n")),
+        ("timezone 非串", locale("timezone = 8\n")),
+        ("region 空串", locale("region = \"\"\n")),
+        ("calendar 枚举外", locale("calendar = \"islamic\"\n")),
+        ("first_day_of_week 枚举外", locale("first_day_of_week = \"friday\"\n")),
+        ("hour_cycle 枚举外", locale("hour_cycle = \"h25\"\n")),
+        ("temperature_unit 非串", locale("temperature_unit = 1\n")),
+    ];
+    for (name, text) in cases3 {
+        assert_reject_both(name, &text);
+    }
+
+    // 第三片正面：locale 八键全席过检（Python OK 面对账 + 过检视图对齐）
+    let full = locale("languages = [\"zh-Hans-CN\", \"en-US\"]\ntimezone = \"Asia/Shanghai\"\nregion = \"CN\"\nregulatory_domain = \"CN\"\ncalendar = \"gregory\"\nfirst_day_of_week = \"mon\"\nhour_cycle = \"h23\"\ntemperature_unit = \"celsius\"\n");
+    let p = lite::load_lite_product(&full).unwrap();
+    assert_eq!(p.locale_languages, vec!["zh-Hans-CN".to_string(), "en-US".to_string()]);
+    assert_eq!(p.locale_timezone, "Asia/Shanghai");
+    assert_eq!(p.locale_region, "CN");
+    assert_eq!(p.locale_regulatory_domain, "CN");
+    assert_eq!(p.locale_calendar, "gregory");
+    assert_eq!(p.locale_first_day_of_week, "mon");
+    assert_eq!(p.locale_hour_cycle, "h23");
+    assert_eq!(p.locale_temperature_unit, "celsius");
+    let (py_out, ok) = py_load_lite(&full);
+    assert!(ok, "locale 全席: python 未过：{py_out}");
+
+    // BCP47 accept 梯（分支对齐钉板——手写镜像正则回溯语义的关键语形）：
+    // 私有段单独形 / extlang / 数字 region / 4-数字头变体 / 变体链 / 扩展+私有
+    // 后缀 / 大小写不敏感。双过/双拒皆同构；文案面由上方拒面语料担。
+    for good in [
+        "x-pig-latin",
+        "zh-Hant",
+        "zh-Hans-CN",
+        "en-419",
+        "de-CH-1901",
+        "sl-rozaj-biske",
+        "hy-Latn-IT-arevela",
+        "en-a-bbb-x-a-ccc",
+        "zh-cmn-Hans-CN",
+        "ZH-HANS",
+    ] {
+        let text = locale(&format!("languages = [\"{good}\"]\n"));
+        let r = lite::load_lite_product(&text);
+        let (py_out, _) = py_load_lite(&text);
+        match (r.is_ok(), py_out.starts_with("OK")) {
+            (true, true) | (false, false) => {}
+            (a, b) => panic!("BCP47 accept 梯分支漂移 {good}: rust_ok={a} py_ok={b} ({py_out})"),
+        }
+    }
+    // 拒梯（结构性坏形——双侧必拒）
+    for bad in ["zh-", "-zh", "zh--cn", "x-", "7z", "zh-x-9toolongsegment"] {
+        let text = locale(&format!("languages = [\"{bad}\"]\n"));
+        assert!(lite::load_lite_product(&text).is_err(), "rust 过了拒形 {bad}");
+        let (py_out, _) = py_load_lite(&text);
+        assert!(py_out.starts_with("REJ:"), "python 过了拒形 {bad}");
+    }
+}
+
+/// 第二片起的最小过面 platform 节（六键齐备 + 最小 boot/storage）。
+fn good_platform_min() -> String {
+    [
+        "schema = 1\n",
+        "[product]\n",
+        "name = \"p\"\n",
+        "vendor = \"o\"\n",
+        "board = \"qemu-virt\"\n",
+        "[product.apps]\npreset = []\n",
+        "[product.defaults]\nlauncher = \"bin/sh\"\n",
+        "[platform]\n",
+        "arch = \"x86_64\"\n",
+        "feature_level = \"rich\"\n",
+        "build_type = \"eng\"\n",
+        "sideload = false\n",
+        "[platform.boot]\n",
+        "kernel = \"krnl@sha256:",
+    ]
+    .concat()
+        + &"a".repeat(64)
+        + "\"\n[platform.storage]\nimage_size_mib = 96\nrootfs_split_mib = 32\nmin_power_atomicity = \"p0\"\n"
 }

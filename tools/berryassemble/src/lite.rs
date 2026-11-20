@@ -3,9 +3,17 @@
 //! apps.{preset,override,priv_grants}/branding/source/trust/defaults.launcher）
 //! 键集/类型/值域执法（G4 两段式第一段——零文件对账，lite 语义）。
 //!
-//! 未收录面（后续片）：`[product.defaults.locale]` 八键（BCP 47/tz/枚举）与
-//! `[platform]` 全节执法——locale 节出现即 loud 拒（未收录面不静默放行）；
-//! platform 只查在场性。本片未接 CLI（产线零触碰——首刀「只挂测试」先例）。
+//! 第二片：`[platform]` 全节执法（六键在场性 + 三枚举 + sideload bool +
+//! user 收窄 + boot 锚形/params 词表 + storage 值域/atomicity 档）——
+//! 本片后 lite 面与 Python `load_product(lite=True)` 全分支同构。
+//! 词表/域界单源复用 lib（`boot_params_spec`/`INTENTS`/`parse_kernel_anchor`）。
+//!
+//! 第三片：`[product.defaults.locale]` i18n 八键执法（languages BCP 47 形/
+//! 1..=8 帽/大小写不敏感查重、timezone Area[/Sub]/Location 段形、region/
+//! regulatory_domain ISO 3166-1 alpha-2、calendar 等四枚举词表）——Python
+//! `_check_locale_section` 逐枝镜像；BCP 47 简化 ABNF 手写段匹配器（零
+//! regex 依赖——段界即 token 界，贪婪+回退同构）。本件未接 CLI
+//! （产线零触碰——首刀「只挂测试」先例）。
 //!
 //! 已知边界（钉界）：①toml_doc 空节不产出——`[product.trust]` 空节 Python
 //! 侧「在场 → pk_anchor 必填缺失」vs 本片「缺席跳过」，语面外（第三片随
@@ -27,6 +35,24 @@ pub const VENDOR_MAX: usize = 16;
 const BOARDS: [&str; 1] = ["qemu-virt"];
 const CAPS_KEYS: [&str; 3] = ["console", "fs", "net"];
 const TOP_KEYS: [&str; 3] = ["platform", "product", "schema"];
+/// Python `PLATFORM_KEYS` 镜像（必填六键——`_check_platform_section` 在场
+/// 性巡检序：arch/feature_level/build_type/sideload/boot/storage）。
+const PLATFORM_KEYS: [&str; 6] = [
+    "arch",
+    "boot",
+    "build_type",
+    "feature_level",
+    "sideload",
+    "storage",
+];
+const ARCHES: [&str; 2] = ["aarch64", "x86_64"];
+const FEATURE_LEVELS: [&str; 1] = ["rich"];
+const BUILD_TYPES: [&str; 3] = ["eng", "userdebug", "user"];
+const ATOMICITY_LEVELS: [&str; 3] = ["p0", "p1", "p2"];
+const SIZE_MIB_RANGE: (u32, u32) = (48, 1024);
+const SPLIT_MIB_RANGE: (u32, u32) = (8, 64);
+const BOOT_KEYS: [&str; 2] = ["kernel", "params"];
+const STORAGE_KEYS: [&str; 3] = ["image_size_mib", "min_power_atomicity", "rootfs_split_mib"];
 const PRODUCT_KEYS: [&str; 8] = [
     "apps", "board", "branding", "defaults", "name", "source", "trust", "vendor",
 ];
@@ -38,6 +64,24 @@ const DEFAULTS_KEYS: [&str; 2] = ["launcher", "locale"];
 const DEFAULTS_DEFERRED: [&str; 1] = ["scheduler"];
 const SOURCE_KEYS: [&str; 1] = ["instance"];
 const TRUST_KEYS: [&str; 1] = ["pk_anchor"];
+
+// locale 八键（Python LOCALE_KEYS 镜像——§1.5 定形组）
+const LOCALE_KEYS: [&str; 8] = [
+    "calendar",
+    "first_day_of_week",
+    "hour_cycle",
+    "languages",
+    "region",
+    "regulatory_domain",
+    "temperature_unit",
+    "timezone",
+];
+const LANGUAGES_MAX: usize = 8;
+const BCP47_LEN_MAX: usize = 35;
+const CALENDARS: [&str; 1] = ["gregory"];
+const WEEKDAYS: [&str; 7] = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+const HOUR_CYCLES: [&str; 4] = ["h11", "h12", "h23", "h24"];
+const TEMP_UNITS: [&str; 2] = ["celsius", "fahrenheit"];
 
 // ---- 展平表 → 树视图（段切分；引号键内 '.' 差一档——toml_doc 头注钉界）----
 
@@ -243,9 +287,471 @@ fn sorted_dups(items: &[String]) -> Vec<String> {
     dups.into_iter().collect()
 }
 
-// ---- load_lite 主面 ----
+// ---- locale 形校验（Python BCP47_RE / TZ_RE / REGION_RE 手写镜像——零 regex）----
 
-/// `load_product(lite=True)` 的过检视图（结构面——本片收录 [product] 全节）。
+/// RFC 5646 简化 ABNF 手写段匹配器（Python BCP47_RE IGNORECASE fullmatch
+/// 镜像）。策略 = 按 '-' 切段后逐段归亚型（language/extlang/script/region/
+/// variant/extension/privateuse），贪婪分配 + 定长回退——子段串唯一分解同
+/// Python 正则回溯语义（歧义形现役语面无同席；parity 梯语料钉板）。
+fn bcp47_ok(tag: &str) -> bool {
+    if tag.is_empty() || tag.chars().count() > BCP47_LEN_MAX {
+        return false;
+    }
+    let segs: Vec<&str> = tag.split('-').collect();
+    // privateuse 单独形：x-…
+    if segs[0].eq_ignore_ascii_case("x") {
+        return segs.len() >= 2
+            && segs[1..].iter().all(|s| (1..=8).contains(&s.len()) && s.chars().all(|c| c.is_ascii_alphanumeric()));
+    }
+    // language：{2,3} (+0..3 extlang 各 3) | 4 | {5,8}
+    let prim = segs[0];
+    let pl = prim.chars().count();
+    let alpha = |s: &str| s.chars().all(|c| c.is_ascii_alphabetic());
+    if !(2..=8).contains(&pl) || !alpha(prim) {
+        return false;
+    }
+    let mut i = 1;
+    if (2..=3).contains(&pl) {
+        while i < segs.len() && i <= 3 {
+            let s = segs[i];
+            if s.len() == 3 && alpha(s) {
+                i += 1;
+            } else {
+                break;
+            }
+        }
+    }
+    // script：4 alpha（恰 4——5 alpha 语言已耗，无歧义）
+    if i < segs.len() && segs[i].chars().count() == 4 && alpha(segs[i]) {
+        i += 1;
+    }
+    // region：2 alpha | 3 digit
+    if i < segs.len() {
+        let s = segs[i];
+        let cl = s.chars().count();
+        if (cl == 2 && alpha(s)) || (cl == 3 && s.chars().all(|c| c.is_ascii_digit())) {
+            i += 1;
+        }
+    }
+    // variant*：{5,8} alnum | 4 = digit+3 alnum
+    while i < segs.len() {
+        let s = segs[i];
+        let cl = s.chars().count();
+        let is_variant = (5..=8).contains(&cl) && s.chars().all(|c| c.is_ascii_alphanumeric())
+            || cl == 4 && s.chars().next().map_or(false, |c| c.is_ascii_digit())
+                && s.chars().skip(1).all(|c| c.is_ascii_alphanumeric());
+        if !is_variant {
+            break;
+        }
+        i += 1;
+    }
+    // extension*：singleton（alnum ≠ x/X）+ {2,8} alnum 子段 1..=n
+    while i < segs.len() {
+        let s = segs[i];
+        if s.chars().count() != 1 || !s.chars().next().map_or(false, |c| c.is_ascii_alphanumeric() && c != 'x' && c != 'X') {
+            break;
+        }
+        i += 1;
+        let mut sub = 0;
+        while i < segs.len() {
+            let t = segs[i];
+            if (2..=8).contains(&t.chars().count()) && t.chars().all(|c| c.is_ascii_alphanumeric()) {
+                i += 1;
+                sub += 1;
+            } else {
+                break;
+            }
+        }
+        if sub == 0 {
+            return false;
+        }
+    }
+    // 私有段后缀：x + {1,8} alnum 子段 1..=n
+    if i < segs.len() && segs[i].eq_ignore_ascii_case("x") {
+        i += 1;
+        let mut sub = 0;
+        while i < segs.len() {
+            let t = segs[i];
+            if (1..=8).contains(&t.chars().count()) && t.chars().all(|c| c.is_ascii_alphanumeric()) {
+                i += 1;
+                sub += 1;
+            } else {
+                break;
+            }
+        }
+        if sub == 0 {
+            return false;
+        }
+    }
+    i == segs.len()
+}
+
+/// IANA tz ID 形（Area[/Sub]/Location：段 = [A-Za-z0-9_+-]{1,30}、1..=3 段）。
+fn tz_ok(v: &str) -> bool {
+    let segs: Vec<&str> = v.split('/').collect();
+    (1..=3).contains(&segs.len())
+        && segs.iter().all(|s| {
+            (1..=30).contains(&s.chars().count())
+                && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '+' | '-'))
+        })
+}
+
+/// ISO 3166-1 alpha-2（两枚大写字母）。
+fn region_ok(v: &str) -> bool {
+    v.chars().count() == 2 && v.chars().all(|c| c.is_ascii_uppercase())
+}
+
+/// `[product.defaults.locale]` i18n 八键执法（Python `_check_locale_section`
+/// 逐枝镜像——文案即契约，parity 真跑钉板）。
+fn check_locale_section(p: &mut LiteProduct, sect: &View) -> Result<(), Reject> {
+    let node = match sect.get("locale") {
+        Some(n) => n,
+        None => return Ok(()),
+    };
+    let lv = match node {
+        Node::Table(v) => v,
+        _ => {
+            return Err(Reject(
+                "product.defaults.locale: 应为节（键值表——i18n 八键，§1.5：languages/timezone/region/regulatory_domain/calendar/first_day_of_week/hour_cycle/temperature_unit）"
+                    .to_string(),
+            ))
+        }
+    };
+    reject_unknown("product.defaults.locale", lv, &LOCALE_KEYS, &[])?;
+    // languages：BCP 47 数组 1..=8 + 大小写不敏感查重
+    if let Some(node) = lv.get("languages") {
+        let langs = match node {
+            Node::Leaf(Val::Arr(a)) => a.clone(),
+            _ => {
+                return Err(Reject(
+                    "product.defaults.locale.languages: 应为字符串数组（BCP 47 well-formed 列表，1..=8 项——§1.5）"
+                        .to_string(),
+                ))
+            }
+        };
+        if !(1..=LANGUAGES_MAX).contains(&langs.len()) {
+            return Err(Reject(format!(
+                "product.defaults.locale.languages: {} 项越 [1,{}] 帽（帽=推断：语言列表场景足够，防清单膨胀——§1.5）",
+                langs.len(), LANGUAGES_MAX
+            )));
+        }
+        let mut items: Vec<String> = Vec::new();
+        for (i, tag) in langs.iter().enumerate() {
+            let t = match tag {
+                Val::Str(s) => s.clone(),
+                other => {
+                    return Err(Reject(format!(
+                        "product.defaults.locale.languages[{i}]: 应为字符串（got {}）",
+                        val_type_name(other)
+                    )))
+                }
+            };
+            if t.chars().count() > BCP47_LEN_MAX || !bcp47_ok(&t) {
+                return Err(Reject(format!(
+                    "product.defaults.locale.languages[{i}]: BCP 47 well-formed 不符 '{t}'（RFC 5646 langtag/privateuse 形——语言[-文字][-地区][-变体…]；grandfathered 弃用族不收——§1.5）"
+                )));
+            }
+            items.push(t);
+        }
+        let lowered: Vec<String> = items.iter().map(|t| t.to_lowercase()).collect();
+        let dups = sorted_dups(&lowered);
+        if !dups.is_empty() {
+            return Err(Reject(format!(
+                "product.defaults.locale.languages: 条目重复 {}（BCP 47 大小写不敏感查重——§1.5）",
+                py_list(&dups)
+            )));
+        }
+        p.locale_languages = items;
+    }
+    // timezone / region / regulatory_domain：非空串 + 各自形
+    for key in ["timezone", "region", "regulatory_domain"] {
+        let v = match lv.get(key) {
+            Some(Node::Leaf(Val::Str(s))) => s.clone(),
+            Some(other) => {
+                return Err(Reject(format!(
+                    "product.defaults.locale.{key}: 应为非空字符串（got {}）",
+                    type_name(other)
+                )))
+            }
+            None => continue,
+        };
+        if v.is_empty() {
+            return Err(Reject(format!(
+                "product.defaults.locale.{key}: 应为非空字符串（got str）"
+            )));
+        }
+        if key == "timezone" {
+            if !tz_ok(&v) {
+                return Err(Reject(format!(
+                    "product.defaults.locale.timezone: IANA tz ID 形不符 '{}'（Area[/Sub]/Location 段形〔段内 [A-Za-z0-9_+-]、1..=3 段〕——词表 = iana.org 时区集，不做仓内枚举；§1.5）",
+                    v
+                )));
+            }
+            p.locale_timezone = v;
+        } else {
+            if !region_ok(&v) {
+                return Err(Reject(format!(
+                    "product.defaults.locale.{key}: 应为 ISO 3166-1 alpha-2（两枚大写字母；got '{}'——§1.5）",
+                    v
+                )));
+            }
+            if key == "region" {
+                p.locale_region = v;
+            } else {
+                p.locale_regulatory_domain = v;
+            }
+        }
+    }
+    // 四枚举：calendar / first_day_of_week / hour_cycle / temperature_unit
+    for (key, vocab) in [
+        ("calendar", &CALENDARS[..]),
+        ("first_day_of_week", &WEEKDAYS[..]),
+        ("hour_cycle", &HOUR_CYCLES[..]),
+        ("temperature_unit", &TEMP_UNITS[..]),
+    ] {
+        let node = match lv.get(key) {
+            Some(n) => n,
+            None => continue,
+        };
+        let ok = matches!(node, Node::Leaf(Val::Str(s)) if vocab.contains(&s.as_str()));
+        if !ok {
+            let vocab_list: Vec<String> = vocab.iter().map(|s| s.to_string()).collect();
+            return Err(Reject(format!(
+                "product.defaults.locale.{key}: 枚举外值 {}（词表 {}——add-only，§1.5）",
+                py_node_repr(node),
+                py_list(&vocab_list)
+            )));
+        }
+        if let Node::Leaf(Val::Str(s)) = node {
+            let sv = s.clone();
+            match key {
+                "calendar" => p.locale_calendar = sv,
+                "first_day_of_week" => p.locale_first_day_of_week = sv,
+                "hour_cycle" => p.locale_hour_cycle = sv,
+                _ => p.locale_temperature_unit = sv,
+            }
+        }
+    }
+    Ok(())
+}
+
+/// lite `Val` → lib `toml_val::Val` 转换桥（params 词表执法单源复用——
+/// 二刀第二片：`[platform.boot.params]` 不再长第二套词表/域界实现）。
+fn to_lib_val(v: &Val) -> crate::toml_val::Val {
+    match v {
+        Val::Int(n) => crate::toml_val::Val::Int(*n),
+        Val::Str(s) => crate::toml_val::Val::Str(s.clone()),
+        Val::Bool(b) => crate::toml_val::Val::Bool(*b),
+        Val::Arr(a) => crate::toml_val::Val::List(a.iter().map(to_lib_val).collect()),
+    }
+}
+
+/// View params 节 → 有序键值对（键序 = 首现序——`check_boot_params` 的
+/// BTreeMap 只用于确定性序列化面，拒面先检不受键序影响）。
+fn view_pairs(v: &View) -> Vec<(String, Val)> {
+    v.order
+        .iter()
+        .filter_map(|k| match v.get(k) {
+            Some(Node::Leaf(val)) => Some((k.clone(), val.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Python `枚举外值 {v!r}` 拒面（`isinstance(v, str) and v in vocab` 单
+/// 分支——非串与枚举外同文案，got 段 = repr；表形走 dict repr 面）。
+fn vocab_check(sect_key: &str, node: &Node, vocab: &[&str], why: &str) -> Result<(), Reject> {
+    let ok = matches!(node, Node::Leaf(Val::Str(s)) if vocab.contains(&s.as_str()));
+    if !ok {
+        let vocab_list: Vec<String> = vocab.iter().map(|s| s.to_string()).collect();
+        return Err(Reject(format!(
+            "{sect_key}: 枚举外值 {}（词表 {}——{why}）",
+            py_node_repr(node),
+            py_list(&vocab_list)
+        )));
+    }
+    Ok(())
+}
+
+/// `[platform]` 全节执法（Python `_check_platform_section` 逐枝镜像）。
+fn check_platform_section(p: &mut LiteProduct, sect: &View) -> Result<(), Reject> {
+    reject_unknown("platform", sect, &PLATFORM_KEYS, &[])?;
+    // 必填六键巡检（Python for key in (…) 序）
+    for key in ["arch", "feature_level", "build_type", "sideload", "boot", "storage"] {
+        if !sect.contains_key(key) {
+            return Err(Reject(format!(
+                "platform.{key}: 必填缺失（v0 存在性校验——schema §1.3）"
+            )));
+        }
+    }
+    vocab_check(
+        "platform.arch",
+        sect.get("arch").unwrap(),
+        &ARCHES,
+        "x86_64=最小集",
+    )?;
+    vocab_check(
+        "platform.feature_level",
+        sect.get("feature_level").unwrap(),
+        &FEATURE_LEVELS,
+        "Q7：v0 只 rich 在册（骨架 add-only）",
+    )?;
+    vocab_check(
+        "platform.build_type",
+        sect.get("build_type").unwrap(),
+        &BUILD_TYPES,
+        "user 型收窄见 §1.7",
+    )?;
+    let sideload = match sect.get("sideload") {
+        Some(Node::Leaf(Val::Bool(b))) => *b,
+        Some(other) => {
+            return Err(Reject(format!(
+                "platform.sideload: 应为 bool（got {}）",
+                type_name(other)
+            )))
+        }
+        None => {
+            return Err(Reject(
+                "platform.sideload: 应为 bool（got NoneType）".to_string(),
+            ))
+        }
+    };
+    if matches!(sect.get("build_type"), Some(Node::Leaf(Val::Str(s))) if s == "user")
+        && sideload
+    {
+        return Err(Reject(
+            "platform.sideload: user 型下必须缺省或 false（§1.3 收窄清单——v1 立法面）"
+                .to_string(),
+        ));
+    }
+    if let Some(Node::Leaf(Val::Str(s))) = sect.get("arch") {
+        p.arch = s.clone();
+    }
+    if let Some(Node::Leaf(Val::Str(s))) = sect.get("feature_level") {
+        p.feature_level = s.clone();
+    }
+    p.build_type = match sect.get("build_type") {
+        Some(Node::Leaf(Val::Str(s))) => s.clone(),
+        _ => String::new(),
+    };
+    p.sideload = sideload;
+
+    // [platform.boot]——kernel 工件锚 + params 词表子表
+    let boot = need_table(sect, "boot")?;
+    reject_unknown("platform.boot", boot, &BOOT_KEYS, &[])?;
+    let kernel = match boot.get("kernel") {
+        Some(Node::Leaf(Val::Str(s))) if !s.is_empty() => s.clone(),
+        _ => {
+            return Err(Reject(
+                "platform.boot.kernel: 应为非空字符串（必填——工件锚）".to_string(),
+            ))
+        }
+    };
+    let (kname, ksha) = crate::parse_kernel_anchor(&kernel)?;
+    p.kernel_name = kname;
+    p.kernel_sha = ksha;
+    let params = match boot.get("params") {
+        Some(Node::Table(v)) => v,
+        Some(_) => {
+            return Err(Reject(
+                "platform.boot.params: 应为节（键值表）".to_string(),
+            ))
+        }
+        None => {
+            // Python `boot.get("params", {})` 缺席 = 空表（零拒面路径）
+            return check_platform_storage(p, sect);
+        }
+    };
+    let pairs = view_pairs(params);
+    if pairs.len() > crate::PARAMS_MAX {
+        return Err(Reject(format!(
+            "platform.boot.params: {} 键越帽 {}（§1.6-4 解析面定界——INITRD 段 count 帽 32）",
+            pairs.len(),
+            crate::PARAMS_MAX
+        )));
+    }
+    let lib_pairs: std::collections::BTreeMap<String, crate::toml_val::Val> =
+        pairs
+            .iter()
+            .map(|(k, v)| (k.clone(), to_lib_val(v)))
+            .collect();
+    crate::check_boot_params(&lib_pairs)?;
+    for (k, v) in pairs {
+        if let Val::Str(s) = v {
+            p.params.insert(k, s);
+        } else if let Val::Int(n) = v {
+            p.params.insert(k, n.to_string());
+        }
+    }
+    check_platform_storage(p, sect)
+}
+
+/// `[platform.storage]` 产物几何 + atomicity 档执法。
+fn check_platform_storage(p: &mut LiteProduct, sect: &View) -> Result<(), Reject> {
+    let storage = need_table(sect, "storage")?;
+    reject_unknown("platform.storage", storage, &STORAGE_KEYS, &[])?;
+    for key in STORAGE_KEYS {
+        if !storage.contains_key(key) {
+            return Err(Reject(format!(
+                "platform.storage.{key}: 必填缺失（schema §1.3）"
+            )));
+        }
+    }
+    let img = match storage.get("image_size_mib") {
+        Some(Node::Leaf(v)) => to_lib_val(v),
+        _ => crate::toml_val::Val::Other,
+    };
+    let img = crate_need_u32("platform.storage", "image_size_mib", &img, SIZE_MIB_RANGE.0, SIZE_MIB_RANGE.1)?;
+    p.image_size_mib = img;
+    let split = match storage.get("rootfs_split_mib") {
+        Some(Node::Leaf(v)) => to_lib_val(v),
+        _ => crate::toml_val::Val::Other,
+    };
+    let split = crate_need_u32("platform.storage", "rootfs_split_mib", &split, SPLIT_MIB_RANGE.0, SPLIT_MIB_RANGE.1)?;
+    p.rootfs_split_mib = split;
+    let pa = match storage.get("min_power_atomicity") {
+        Some(Node::Leaf(v)) => v.clone(),
+        _ => Val::Arr(vec![]),
+    };
+    if !matches!(&pa, Val::Str(s) if ATOMICITY_LEVELS.contains(&s.as_str())) {
+        let vocab: Vec<String> = ATOMICITY_LEVELS.iter().map(|s| s.to_string()).collect();
+        return Err(Reject(format!(
+            "platform.storage.min_power_atomicity: 枚举外值 {}（词表 {}——§2.4）",
+            py_repr(&pa),
+            py_list(&vocab)
+        )));
+    }
+    let pa_str = match &pa {
+        Val::Str(s) => s.clone(),
+        _ => String::new(),
+    };
+    if pa_str != "p0" {
+        return Err(Reject(format!(
+            "platform.storage.min_power_atomicity: 词表内但 v1 只 p0 可组（{pa_str} 无在册实现可满足——§1.3/§2.4 词表先立值域收窄，08 号 §6-Q11 采纳形）"
+        )));
+    }
+    p.min_power_atomicity = pa_str;
+    Ok(())
+}
+
+/// lib 面 `need_u32` 复用桥（lite Val → lib Val 后调 lib 私有实现的公开
+/// 包装——零第二套域界文案）。
+fn crate_need_u32(
+    sect: &str,
+    key: &str,
+    v: &crate::toml_val::Val,
+    lo: u32,
+    hi: u32,
+) -> Result<u32, Reject> {
+    // 直接走 lib 的 check_boot_params 通道外露的单值域界执法——
+    // 与 Python `_need_u32` 文案逐字对齐（got 段 = type name）。
+    crate::check_single_u32(sect, key, v, lo, hi)
+}
+
+
+
+/// `load_product(lite=True)` 的过检视图（结构面——第一片 [product] 全节 +
+/// 第二片 [platform] 全节）。
 #[derive(Debug, Default, PartialEq)]
 pub struct LiteProduct {
     pub name: String,
@@ -259,6 +765,24 @@ pub struct LiteProduct {
     pub launcher: String,
     pub trust_pk_anchor: String,
     pub source_instance: String,
+    pub arch: String,
+    pub feature_level: String,
+    pub build_type: String,
+    pub sideload: bool,
+    pub params: BTreeMap<String, String>,
+    pub kernel_name: String,
+    pub kernel_sha: String,
+    pub image_size_mib: u32,
+    pub rootfs_split_mib: u32,
+    pub min_power_atomicity: String,
+    pub locale_languages: Vec<String>,
+    pub locale_timezone: String,
+    pub locale_region: String,
+    pub locale_regulatory_domain: String,
+    pub locale_calendar: String,
+    pub locale_first_day_of_week: String,
+    pub locale_hour_cycle: String,
+    pub locale_temperature_unit: String,
 }
 
 /// 结构面执法主入口（Python `load_product(path, lite=True)` 镜像——文本入，
@@ -292,8 +816,7 @@ pub fn load_lite_product(text: &str) -> Result<LiteProduct, Reject> {
     }
     let mut p = LiteProduct::default();
     check_product_section(&mut p, need_table(&root, "product")?)?;
-    // platform 在场性（Python _need_table 位）；全节执法归后续片
-    need_table(&root, "platform")?;
+    check_platform_section(&mut p, need_table(&root, "platform")?)?;
     Ok(p)
 }
 
@@ -660,12 +1183,8 @@ fn check_product_section(p: &mut LiteProduct, sect: &View) -> Result<(), Reject>
         )));
     }
     p.launcher = launcher;
-    if dv.contains_key("locale") {
-        return Err(Reject(
-            "product.defaults.locale: 未收录面（Rust lite 二刀第三段——locale 八键执法归后续片；本片 loud 拒，不静默放行）"
-                .to_string(),
-        ));
-    }
+    // [product.defaults.locale]——i18n 八键（第三片——Python 逐枝镜像）
+    check_locale_section(p, dv)?;
     Ok(())
 }
 
@@ -673,23 +1192,33 @@ fn check_product_section(p: &mut LiteProduct, sect: &View) -> Result<(), Reject>
 mod tests {
     use super::*;
 
-    const GOOD_MIN: &str = concat!(
-        "schema = 1\n",
-        "[product]\n",
-        "name = \"p\"\n",
-        "vendor = \"o\"\n",
-        "board = \"qemu-virt\"\n",
-        "[product.apps]\n",
-        "preset = [\"app/A.bap\"]\n",
-        "[product.defaults]\n",
-        "launcher = \"bin/sh\"\n",
-        "[platform]\n",
-        "arch = \"x86_64\"\n",
-    );
+    fn good_min() -> String {
+        [
+            "schema = 1\n",
+            "[product]\n",
+            "name = \"p\"\n",
+            "vendor = \"o\"\n",
+            "board = \"qemu-virt\"\n",
+            "[product.apps]\n",
+            "preset = [\"app/A.bap\"]\n",
+            "[product.defaults]\n",
+            "launcher = \"bin/sh\"\n",
+            "[platform]\n",
+            "arch = \"x86_64\"\n",
+            "feature_level = \"rich\"\n",
+            "build_type = \"eng\"\n",
+            "sideload = false\n",
+            "[platform.boot]\n",
+            "kernel = \"krnl@sha256:",
+        ]
+        .concat()
+            + &"a".repeat(64)
+            + "\"\n[platform.storage]\nimage_size_mib = 96\nrootfs_split_mib = 32\nmin_power_atomicity = \"p0\"\n"
+    }
 
     #[test]
     fn lite_product_law() {
-        let p = load_lite_product(GOOD_MIN).unwrap();
+        let p = load_lite_product(&good_min()).unwrap();
         assert_eq!(p.name, "p");
         assert_eq!(p.vendor, "o");
         assert_eq!(p.board, "qemu-virt");
@@ -699,8 +1228,33 @@ mod tests {
         assert_eq!(app_id_of("app/SETTINGS.bap"), "SETTINGS");
         assert_eq!(app_id_of("app/X"), "");
         // 拒面抽查（全谱归 parity oracle 对拍）
-        assert!(load_lite_product(&GOOD_MIN.replacen("board = \"qemu-virt\"", "board = \"rpi4\"", 1)).is_err());
+        assert!(load_lite_product(&good_min().replacen("board = \"qemu-virt\"", "board = \"rpi4\"", 1)).is_err());
         assert!(load_lite_product("schema = 2\n").is_err()); // 须 = 1 先于缺节
         assert!(load_lite_product("schema = 1\n[platform]\narch = \"x86_64\"\n").is_err()); // 缺 [product]
+        // 第三片 locale：八键全席过检 + 过检视图字段
+        let full = good_min().replacen(
+            "[platform]\n",
+            "[product.defaults.locale]\nlanguages = [\"zh-Hans-CN\", \"en-US\"]\ntimezone = \"Asia/Shanghai\"\nregion = \"CN\"\nregulatory_domain = \"CN\"\ncalendar = \"gregory\"\nfirst_day_of_week = \"mon\"\nhour_cycle = \"h23\"\ntemperature_unit = \"celsius\"\n[platform]\n",
+            1,
+        );
+        let lp = load_lite_product(&full).unwrap();
+        assert_eq!(lp.locale_languages.len(), 2);
+        assert_eq!(lp.locale_timezone, "Asia/Shanghai");
+        assert_eq!(lp.locale_region, "CN");
+        assert_eq!(lp.locale_hour_cycle, "h23");
+        // bcp47_ok 手写 matcher 单源钉板（Python BCP47_RE 梯形——parity 面
+        // 全谱对拍，此处钉结构性关键形）
+        for good in ["zh", "zh-Hans", "zh-Hans-CN", "zh-cmn-Hans-CN", "en-419",
+                     "de-CH-1901", "sl-rozaj-biske", "hy-Latn-IT-arevela",
+                     "en-a-bbb-x-a-ccc", "x-pig-latin", "ZH-HANS", "abcdefgh"] {
+            assert!(bcp47_ok(good), "rust 拒了 accept 形 {good}");
+        }
+        for bad in ["z", "7z", "zh-", "-zh", "zh--cn", "x-", "i-klingon",
+                    &"a".repeat(36), "zh-x-9toolongsegment"] {
+            assert!(!bcp47_ok(bad), "rust 过了 reject 形 {bad}");
+        }
+        assert!(tz_ok("UTC") && tz_ok("Asia/Shanghai") && tz_ok("America/Argentina/Buenos_Aires"));
+        assert!(!tz_ok("") && !tz_ok("a/b/c/d") && !tz_ok("Asia/") && tz_ok(&format!("a/{}", "b".repeat(30))) && !tz_ok(&format!("a/{}", "b".repeat(31))));
+        assert!(region_ok("CN") && !region_ok("cn") && !region_ok("CHN") && !region_ok("C1"));
     }
 }

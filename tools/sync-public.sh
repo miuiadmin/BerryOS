@@ -265,6 +265,10 @@ WHITELIST=(
   # 为 base 债清偿——base 848a0fb35 树内 aokface/ 在、justfile 已消费而
   # members/白名单双漏登，base tip test-host 必红，随刀一并清偿）
   dmface aokface
+  # asidface 补账（2026-11-20 本刀实捕：34 号件 F0-2 加 crate 时白名单笔
+  # 未随刀、35 号件平移带刀——CI-light sync-public --check-members 腿红
+  # 实锤，fwcfgface/balface/psface 判例同款纪律）
+  asidface
   # wsrcface 补账（2026-11-16 净增量重放随刀：W3-Q28 首开件白名单笔
   # 随刀补登——fwcfgface/dmface 同判例，先登防 check-members 红）
   wsrcface
