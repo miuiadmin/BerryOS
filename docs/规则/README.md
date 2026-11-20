@@ -86,7 +86,7 @@ berryos/
 ├── drivers/            Rust：用户态驱动独立工作区（berry-virtio 框架；真机驱动批次直接进 bins/<名>/）
 ├── fs/                 Rust：VFS / 具体 FS（用户态服务，占位）
 ├── net/                Rust：协议栈（用户态服务，占位）
-├── user/               Rust：berry-sys/libc/shell/系统服务/协议 crate
+├── user/               Rust：berry-sys/libc/shell/系统服务/协议 crate；user/widgets/ 下两独立小工作区〔自带 [workspace] 空 section，sysnr 先例形〕——berry-scene-ir（G3 刀 11，224eeee0d 2026-11-20：声明式小组件二进制序列化 16B header+24B 定长节点四型+1024B payload 区+40 节点帽+全验证反序列化，6 host 测）、berry-widgetd（G3 刀 12，76dc1c8f4 2026-11-20：WidgetGrid 4×4 网格排布/TimelineScheduler 数据过期时间线/SmartStack 同格叠放轮换，7 host 测）——非 user workspace members、justfile 零接线（13 host 测自持未挂 test-host，R136 lkface「有 host 测零自动执法 = 静默腐烂」判例族——接线归 owner/G3 线，W2 只登记）
 ├── tools/              构建脚本（cargo + just）/ smoke / 确定性打包 / ABI 生成
 ├── docs/               设计文档 / 笔记（文件名中文）
 ├── research/           调研报告（仅私密仓——公开镜像不带）
