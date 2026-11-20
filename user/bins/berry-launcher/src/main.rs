@@ -15,6 +15,8 @@
 //! - [`frameloop`]：launcher 帧循环特化（自测状态机/点击 spawn/五键
 //!   导航/时钟续摆/关机 armed）——帧循环骨架（present 会话/帧 VMO/
 //!   SUBMIT 链/输入泵/稳态等待）走 appshell::pump 的 HostHooks 回调。
+//! - [`wallcache`]：B1 壁纸预缩放缓存（boot 一次性双线性烘进 VMO 全尺
+//!   寸面，此后壁纸 Argb 平拷贝代逐帧 SmoothArgb 重算——失败自动降级）。
 //!
 //! 本文件保留面：wm 门控 + appshell Host 绑定（诊断前缀 "launcher"——
 //! 与抽取前字节一致）+ 严格串行 RPC 消费（appshell::rpc）+ `LAUNCH v=`
@@ -61,6 +63,7 @@ mod keynav;
 mod layout_io;
 mod settings_io;
 mod syspages;
+mod wallcache;
 
 use berry_appshell as appshell;
 
@@ -243,7 +246,11 @@ fn main() {
     // 堆置（桌面进程终身持有——常驻面无回收语义，leak 即分配）。
     let ui: &'static mut UiMain =
         Box::leak(Box::new(UiMain::new(info.disp_w as u32, info.disp_h as u32)));
-    ui.set_icon_source(icons::icon_source());
+    ui.set_icon_source(wallcache::wrap(
+        icons::icon_source(),
+        info.disp_w as u32,
+        info.disp_h as u32,
+    ));
     // 比例文本供件（痛点⑥根修·消费点切换，03 号 §1.3-3）：HD 档
     //（big 模式状态栏/格 label S32x48）内在测量与渲染同走真实 advance
     //（「12:00」等串宽从 len×32 等宽值 → Σadvance 比例值）；三档点阵

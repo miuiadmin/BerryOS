@@ -11,9 +11,11 @@
 //!   hooks.on_head（时钟续摆/armed 复位等应用特化）
 //!   → input 泵（上轮 INPUT_POLL 应答收 + push_pointer/键盘帧 on_key
 //!     分流；再挂下一轮；在途超 60s stale-reset 自愈）
-//!   → ui.pump_input → hooks.on_msgs（Click/翻页分发）
+//!   → ui.pump_input_at（C′/A′ 合规：当前时钟自算重采样目标 + 内建
+//!     wake 时序）→ hooks.on_msgs（Click/翻页分发）
 //!   → hooks.on_tick（snap 动画步进）
-//!   → render_frame（跳过帧不提交——damage 空集零 SUBMIT 零 RPC）
+//!   → render_frame（跳过帧不提交——damage 空集零 SUBMIT 零 RPC；B2
+//!     高像素域 30Hz 落画节流拍整拍不进 render_frame，见渲染段注）
 //!   → [drew] 光栅进帧 VMO → SUBMIT（FULL xor K；fresh READ dup 别名
 //!     ——send 即 take）→ FRAME_CALLBACK（断 PRESENTED）→
 //!     note_presented（credits 真值重同步）→ RELEASE（归还别名即关）
@@ -21,7 +23,8 @@
 //!   → vote（票面变化才发）
 //!   → hooks.on_frame（自测状态机/click-ready 谓词等）
 //!   → wait_many [wm READABLE (+input READABLE)] + deadline =
-//!     min(next_wakeup, now+IDLE 帽, hooks.extra_deadline)
+//!     min(next_wakeup, now+IDLE 帽, hooks.extra_deadline；B2 节流拍
+//!     直接钉开窗沿——见等待段注）
 //! }
 //! ```
 //!
@@ -68,6 +71,10 @@ use berry_ui::damage::DamageSet;
 use berry_ui::desc::MsgBuf;
 #[cfg(not(test))]
 use berry_ui::frame::VoteBallot;
+#[cfg(not(test))]
+use berry_ui::frame::SOFT_RENDER_HEAVY_PX;
+#[cfg(not(test))]
+use berry_ui::swipe::SNAP_PAINT_MIN_NS;
 #[cfg(not(test))]
 use berry_ui::hit::PtrEvent;
 use berry_ui::UiMain;
@@ -312,7 +319,7 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
     //    单源在 guifbd 档位表，规范 §3.4）。
     ui.wake(now());
 
-    let mut last_expected: u64 = 0; // pump 重采样 target（上帧 expected 轨）
+    let mut last_draw_ns: u64 = 0; // B2 落画节流窗锚（最近一次 drew 帧时刻；0 = 未画过）
     let mut last_vote: Option<VoteBallot> = None; // 票面变化才发
     let mut presented: u64 = 0; // FRAME_CALLBACK 过链计数（应用基线）
     let mut buf_id: u32 = 1; // SUBMIT buffer 代际（RELEASE echo 非断言面）
@@ -327,6 +334,10 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
 
     loop {
         let t_now = now();
+        // 本迭代收到真实输入应答（B2 落画节流让位旗——输入响应优先，
+        // 有新输入的拍不节流；键盘帧同计——on_key 消费面的树变更同样
+        // 需要即刻落画）。
+        let mut input_beat = false;
 
         // —— 输入 poll 在途超时自愈（stale-reset）：单在途 INPUT_POLL 的
         //    死相 = 应答被互截/丢失 → input_pending 永真、永不再挂、无
@@ -432,7 +443,13 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
                                 }
                             }
                         }
+                        // 显式 wake 保留：键盘帧分流（on_key continue 不
+                        // push）下 pump_input_at 的 A′ 内建 wake（仅指针
+                        // 输入）不覆盖——本 wake 是键盘路径唯一的起振面；
+                        // 指针路径与 A′ wake 同拍双调，wake 对已 Run 相位
+                        // 幂等且保留精确 damage，仅 wakes 遥测计数 +1。
                         ui.wake(now());
+                        input_beat = true;
                     }
                     Some(Err(gp::ST_EAGAIN)) => {
                         if sampled {
@@ -465,15 +482,45 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
         }
 
         // —— 输入泵 + Msg 分发（合成注入与真实输入同口）——
-        let msgs = ui.pump_input(last_expected);
+        // C′/A′ 合规（案卷 F5）：生产消费面唯一入口 pump_input_at——以
+        // 本拍 t_now 自算重采样目标（与 render_frame 内部自算 expected
+        // 同式同拍，µs 级相邻），禁传上一帧 expected（稳态陈旧一个
+        // period、idle 长睡后是远古值——拖跟预测整体静默失效；旧裸面
+        // pump_input 仅供 host 测试确定性缝）。
+        let msgs = ui.pump_input_at(t_now);
         hooks.on_msgs(ui, &msgs, t_now);
         hooks.on_tick(ui, t_now);
 
         // —— 渲染（跳过帧不提交——damage 空集零 SUBMIT 零 RPC）——
         let mut enc = CommandEncoder::new();
-        let out = ui.render_frame(t_now, scratch, &mut enc);
-        last_expected = out.expected_present_ns;
+        // —— B2 落画节流拍（30Hz 帽，高像素软渲染域专用）：距上次 drew
+        //    帧 <SNAP_PAINT_MIN_NS 且本拍无新输入、引擎动画表空时，整拍
+        //    不进 render_frame（不是进了不画——相位/票面/last_now 时戳
+        //    全保持：防 Idle 翻转引发 sticky 票 churn 与停帧震荡、防
+        //    next_wakeup 按陈旧 last_now 算出过点 vsync 拍照取即自旋）。
+        //    pager snap 的 set_offset（swipe 侧同窗节流——高像素域内节流
+        //    拍根本不发）damage 留待开窗拍一并消费，新旧包络并集自吸收
+        //    中间态。预算账：1080P（w*h ≥ SOFT_RENDER_HEAVY_PX）软渲染
+        //    帧实需 15-18ms，30Hz 窗 33.3ms 给足 2× 余量——240ms 吸附
+        //    动画从 29 帧（120Hz 档）降到 8-15 帧，动画期渲染 CPU 与每帧
+        //    present 中继占空比同步减半以上。低像素域恒 false——行为
+        //    逐字节现状。skipped(0)：节流拍零提交零 target 消费，expected
+        //    域无读者（构造器单源语义见 frame.rs）。
+        let pace_beat = !input_beat
+            && !ui.anim_active()
+            && last_draw_ns != 0
+            && t_now.saturating_sub(last_draw_ns) < SNAP_PAINT_MIN_NS
+            && {
+                let (vw, vh) = ui.viewport();
+                vw as u64 * vh as u64 > SOFT_RENDER_HEAVY_PX
+            };
+        let out = if pace_beat {
+            berry_ui::frame::FrameOutcome::skipped(0)
+        } else {
+            ui.render_frame(t_now, scratch, &mut enc)
+        };
         if out.drew {
+            last_draw_ns = t_now;
             let dmg = out.damage;
             // K>0 xor FULL 立法兜底：count==0 非空集视同整帧。
             let full = damage_is_full(&dmg);
@@ -615,7 +662,18 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
         // —— 稳态等待：wait_many [wm READABLE (+input READABLE)] +
         //    deadline = min(next_wakeup, now+IDLE 帽, extra)；TIMEDOUT =
         //    期限到正常醒——渲染下一拍 / Idle 空转睡回。
-        let deadline = wait_deadline(ui.next_wakeup(), now(), hooks.extra_deadline());
+        // B2 节流拍：render 未跑 → 引擎 last_now 未推进 → next_wakeup 的
+        // vsync 拍对真实 now 可能已过点（照取即 deadline 在过去 = wait
+        // 立即醒自旋），本拍等待直接钉开窗沿（最近 drew + 节流窗——与
+        // swipe tick 同窗同源，开窗拍 tick 落画 + render 收画同拍收口）；
+        // 应用额外帽（armed 窗类）仍取更早者；事件（wm/input READABLE）
+        // 照常即醒不受帽。
+        let deadline = if pace_beat {
+            let win = last_draw_ns.saturating_add(SNAP_PAINT_MIN_NS);
+            hooks.extra_deadline().map_or(win, |e| win.min(e))
+        } else {
+            wait_deadline(ui.next_wakeup(), now(), hooks.extra_deadline())
+        };
         let mut hs = [cfg.hw, 0 as Handle];
         let ss = [SIGNAL_READABLE, SIGNAL_READABLE];
         let mut n = 1usize;
