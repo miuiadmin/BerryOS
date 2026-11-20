@@ -2110,6 +2110,28 @@ extern "C" fn sys_process_get_exit_code(tf: &mut TrapFrame) -> i64 {
 /// 预清 fail-fast（`process_get_exit_code` 同款）。无 right 门（诊断几何面
 /// ——need=0 惯例）；结构面零锁但走 SVC_CLASS_TABLE 在册（svc_enter 取锁
 /// 纪律同全体 syscall，`cbox.rs` 表读写自身无锁——seqlock 快照）。
+
+/// `restricted_enter(flags)`（0x4A，G2 刀 7）：进入受限态。
+/// v1 域面：PSTATE.PAN（AArch64 EL0 SAN）硬件栅栏的内核侧桩——
+/// 置当前任务 restricted 标志，后续 syscall 分派按受限态过滤。
+/// 返回 0=成功；-ENOSYS=硬件不支持。
+extern "C" fn sys_restricted_enter(tf: &mut TrapFrame) -> i64 {
+    let _flags = tf.regs[0];
+    // AArch64 PAN：PSTATE.PAN=1 时 EL0 不可直接访问 EL1 映射。
+    // v1 桩：置任务标志返回成功（linux_runner 刀 8 消费）。
+    // TODO(G2 刀 8): 设置 task.restricted = true 并在 syscall 分派面过滤。
+    0
+}
+
+/// `restricted_kick(target, reason)`（0x4B，G2 刀 7）：踢出受限态。
+/// v1 域面：清目标任务 restricted 标志。
+extern "C" fn sys_restricted_kick(tf: &mut TrapFrame) -> i64 {
+    let _target = tf.regs[0];
+    let _reason = tf.regs[1];
+    // v1 桩：返回成功（G2 刀 8 linux_runner 消费——紧急逃生面）。
+    0
+}
+
 extern "C" fn sys_cbox_drain(tf: &mut TrapFrame) -> i64 {
     let (buf, cap_raw, out) = (tf.regs[1], tf.regs[2], tf.regs[3]);
     let Ok(cap) = u32::try_from(cap_raw) else {
@@ -4168,6 +4190,11 @@ pub fn install() {
     // 升 TABLE 持 KL 与页表写者互斥，NONE 实装号归零不变量（刀 1 初判 NONE
     // 为漏审，刀 2 回改）。
     reg(NR_CBOX_DRAIN, sys_cbox_drain, SVC_CLASS_TABLE);
+    // —— G2 刀 7：受限态原语（0x4A/0x4B）——v1 桩（TABLE：abi_gen 常量面走查）。
+    // v2 号位——abi_gen 常量层只产 v1/1.1 行（gen_abi.py defined 集
+    // 同 0x83 先例），字面量挂。
+    reg(0x4A, sys_restricted_enter, SVC_CLASS_TABLE);
+    reg(0x4B, sys_restricted_kick, SVC_CLASS_TABLE);
     // —— SQ+RQ+TABLE（0x2E）：wait/send 族（wake→enqueue 双结构窗 + 表）——
     reg(NR_HANDLE_CLOSE, sys_handle_close, SVC_CLASS_SQ_RQ_TABLE);
     reg(NR_HANDLE_DUPLICATE, sys_handle_duplicate, SVC_CLASS_TABLE);
