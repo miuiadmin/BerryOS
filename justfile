@@ -1169,6 +1169,9 @@ test-host:
     # 两臂）/ platform level 单源读器。tests/parity.rs Python 现役件真跑
     # oracle 对拍（serialize 字节恒等 + validate_platform_revision 拒面
     # 文案全等 + ANCHOR_RE accept/拒梯 + abi.toml 真源同读 + 坏源分支）。
+    # 二刀第一段：toml_doc 解析器（product.toml 语面——嵌套节/多行数组/
+    # 行尾注释/引号键/重复键与表互覆拒）+ tomllib flatten oracle 对拍
+    # （acme 参照物 + SELFTEST 模板 + 合成语料逐行全等）。
     # 独立小工作区，须显式 --target {{host}}。Python 件不退役——CLI 对拍
     # oracle + gensourceindex --preset import 面单源。
     cargo test --manifest-path tools/berryassemble/Cargo.toml --target {{host}}

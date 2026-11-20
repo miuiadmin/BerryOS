@@ -23,6 +23,10 @@
 
 use std::collections::BTreeMap;
 
+/// product.toml 面 TOML 子集解析器（二刀第一段——语面 = acme 参照物 +
+/// SELFTEST_PRODUCT 模板全集；tomllib 对拍钉板）。
+pub mod toml_doc;
+
 /// 门禁拒绝（一行理由——mkapp Reject 先例；文案即契约，Python `Reject`
 /// 双侧全等由 parity 对拍钉板）。
 #[derive(Debug)]
@@ -373,5 +377,105 @@ mod tests {
         assert!(platform_level_of("").is_err());
         // bool 形（Python type() 拦）——本读器 parse::<u64> 天然拒 "true"
         assert!(platform_level_of("[platform]\nlevel = true\n").is_err());
+    }
+
+    #[test]
+    fn toml_doc_parses_acme_reference() {
+        // 仓内参照物真源：acme product.toml（含多行 preset 数组 + 全席注释 +
+        // 引号键面注释化保留 + 注释化节头不产出）
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../drill/acme/product.toml"
+        ))
+        .unwrap();
+        let t = toml_doc::parse(&text).unwrap();
+        let m: std::collections::BTreeMap<&str, &toml_doc::Val> =
+            t.iter().map(|(k, v)| (k.as_str(), v)).collect();
+        assert_eq!(m["schema"], &toml_doc::Val::Int(1));
+        assert_eq!(m["product.name"], &toml_doc::Val::Str("acme-rich".into()));
+        assert_eq!(m["product.vendor"], &toml_doc::Val::Str("acme".into()));
+        assert_eq!(m["product.board"], &toml_doc::Val::Str("qemu-virt".into()));
+        assert_eq!(m["platform.sideload"], &toml_doc::Val::Bool(false));
+        assert_eq!(
+            m["platform.boot.kernel"],
+            &toml_doc::Val::Str("KERNEL.ELF@sha256:a19b039187b5964d791b13a065a2b4b3eff00d3d1b4f9140dbf8da8756e35d0d".into())
+        );
+        // 多行 preset 数组（5 元素 + 尾逗号）——flatten repr 形
+        assert_eq!(
+            m["product.apps.preset"],
+            &toml_doc::Val::Arr(vec![
+                "app/SETTINGS.bap".into(),
+                "app/FILES.bap".into(),
+                "app/PHOTOS.bap".into(),
+                "app/CAMERA.bap".into(),
+                "app/BROWSER.bap".into(),
+            ].into_iter().map(toml_doc::Val::Str).collect())
+        );
+        assert_eq!(
+            m["product.apps.priv_grants.SETTINGS"],
+            &toml_doc::Val::Arr(vec![toml_doc::Val::Str("console".into()), toml_doc::Val::Str("fs".into())])
+        );
+        assert!(m.contains_key("product.defaults.launcher"));
+        // 注释化节不产出（override/branding/source/trust 全注释）
+        assert!(!m.contains_key("product.apps.override.SETTINGS"));
+        assert!(!m.contains_key("product.branding.wallpaper"));
+        assert!(!m.contains_key("product.source.instance"));
+    }
+
+    #[test]
+    fn toml_doc_law() {
+        use toml_doc::{flatten, parse, Val};
+        // 最小面：节序 + 键序保序 + repr 形
+        let t = parse("schema = 1\n[a.b]\nk = \"v\"\nn = -7\nb = true\n").unwrap();
+        assert_eq!(
+            t,
+            vec![
+                ("schema".to_string(), Val::Int(1)),
+                ("a.b.k".to_string(), Val::Str("v".into())),
+                ("a.b.n".to_string(), Val::Int(-7)),
+                ("a.b.b".to_string(), Val::Bool(true)),
+            ]
+        );
+        // 引号键（base.toml "app/A.bap" 形）
+        let t2 = parse("[entries]\n\"app/A.bap\" = \"userbins/app/A.bap\"\n").unwrap();
+        assert_eq!(
+            t2,
+            vec![(
+                "entries.app/A.bap".to_string(),
+                Val::Str("userbins/app/A.bap".into())
+            )]
+        );
+        // flatten repr：串单引号、数组逗号后空格
+        let t3 = parse("[x]\ns = [\"a\", \"b\"]\n").unwrap();
+        assert_eq!(flatten(&t3), vec!["x.s = ['a', 'b']".to_string()]);
+        // 串内 # 与 , 免疫（串外定位）
+        let t4 = parse("[x]\ns = \"a#b,c]d\"\n").unwrap();
+        assert_eq!(t4[0].1, Val::Str("a#b,c]d".into()));
+        // 空行/整行注释/行尾注释剥除
+        let t5 = parse("# 头\n[a] # 尾\n\nk = 1 # v\n").unwrap();
+        assert_eq!(t5, vec![("a.k".to_string(), Val::Int(1))]);
+        // 多行数组跨行累积（元素带注释行）
+        let t6 = parse("[a]\np = [\n  \"x\", # 一\n  \"y\",\n]\n").unwrap();
+        assert_eq!(
+            t6,
+            vec![(
+                "a.p".to_string(),
+                Val::Arr(vec![Val::Str("x".into()), Val::Str("y".into())])
+            )]
+        );
+        // 拒梯：无 = / 未闭合串 / 闭合后残留 / 多行数组未闭合 / 内联表 /
+        // 非法值 / 转义串
+        assert!(parse("[a]\nk\n").is_err());
+        assert!(parse("[a]\nk = \"x\n").is_err());
+        assert!(parse("[a]\nk = \"x\" y\n").is_err());
+        assert!(parse("[a]\nk = 1\np = [\"x\",\n").is_err());
+        assert!(parse("[a]\nk = { x = 1 }\n").is_err());
+        assert!(parse("[a]\nk = abc\n").is_err());
+        assert!(parse("[a]\nk = \"a\\\\b\"\n").is_err());
+        // 重复键/重复节头拒（tomllib 同咬——键唯一性执法）
+        assert!(parse("[a]\nk = 1\nk = 2\n").is_err());
+        assert!(parse("[a]\nk = 1\n[b]\nj = 2\n[a]\nm = 3\n").is_err());
+        // 空节不产出（对拍文本避让面在此钉界）
+        assert!(parse("[empty]\n").unwrap().is_empty());
     }
 }

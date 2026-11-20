@@ -184,3 +184,72 @@ fn parity_platform_level_true_source() {
     let py_bad = out.strip_prefix("REJ: ").unwrap().to_string();
     assert!(py_bad.contains("非整数"), "python 分支漂移：{py_bad}");
 }
+
+/// toml_doc 解析 ↔ tomllib 展平对拍：`k = repr` 逐行全等（Python repr
+/// 形镜像——串单引号、bool 大写、数组逗号后空格）。语料经 hex 传载防
+/// 引号面互扰（python bytes.fromhex 解回）。tomllib 拒 → Ok(None)
+/// （分支面：tomllib 拒的形本子集必拒）。
+fn py_tomllib_flatten(text: &str) -> Option<Vec<String>> {
+    let hex = text.bytes().map(|b| format!("{b:02x}")).collect::<String>();
+    let py = format!(
+        "import tomllib\n\
+         raw = bytes.fromhex('{hex}').decode()\n\
+         try:\n\
+         \x20   doc = tomllib.loads(raw)\n\
+         except Exception:\n\
+         \x20   print('PYREJ')\n\
+         \x20   raise SystemExit(0)\n\
+         def _flat(d, prefix, out):\n\
+         \x20   for k, v in d.items():\n\
+         \x20       key = f'{{prefix}}.{{k}}' if prefix else k\n\
+         \x20       if isinstance(v, dict):\n\
+         \x20           _flat(v, key, out)\n\
+         \x20       else:\n\
+         \x20           out.append(f'{{key}} = {{v!r}}')\n\
+         out = []\n\
+         _flat(doc, '', out)\n\
+         print('\\n'.join(out))"
+    );
+    let (out, err, _) = py_run(&py);
+    if !err.is_empty() {
+        panic!("python oracle 崩（非拒面）：{err}");
+    }
+    if out == "PYREJ" {
+        return None;
+    }
+    Some(out.split('\n').map(|s| s.to_string()).collect())
+}
+
+#[test]
+fn parity_toml_doc_flatten() {
+    // 语料 1：acme 参照物真源（现役语面全集）
+    let acme = std::fs::read_to_string(repo_root().join("tools/drill/acme/product.toml")).unwrap();
+    // 语料 2：SELFTEST_PRODUCT 模板（berry_assemble.py 内嵌真源）
+    let (tpl, tpl_err, _) = py_run(
+        "import sys; sys.path.insert(0, 'tools')\nimport berry_assemble as b\nprint(b.SELFTEST_PRODUCT, end='')",
+    );
+    assert!(tpl_err.is_empty(), "SELFTEST_PRODUCT 提取失败：{tpl_err}");
+    // 语料 3：合成面（引号键/负 int/串内 # 与 ,/bool 两态/空行注释）
+    let synth = "[t]\n\"app/A.bap\" = \"userbins/app/A.bap\"\nneg = -7\ns = \"a#b,c]d\"\nb1 = true\nb2 = false\nai = [1, -2]\n\n# 注\nc = 2 # 尾\n";
+    for (name, text) in [("acme", acme), ("selftest-tpl", tpl), ("synth", synth.to_string())] {
+        let rust = toml_doc::flatten(&toml_doc::parse(&text).unwrap());
+        let py = py_tomllib_flatten(&text)
+            .unwrap_or_else(|| panic!("{name}: python tomllib 拒了语料（分支面漂移）"));
+        assert_eq!(
+            rust, py,
+            "{name}: flatten 对拍漂移\nrust: {rust:#?}\npy:   {py:#?}"
+        );
+    }
+    // 拒面分支：tomllib 拒的形本子集必拒（重复键/未闭合/重复节头）
+    for bad in [
+        "[a]\nk = 1\nk = 2\n",
+        "[a]\nk = \"x\n",
+        "[a]\nk = 1\n[a]\nj = 2\n",
+    ] {
+        assert!(toml_doc::parse(bad).is_err(), "rust 未拒：{bad}");
+        assert!(
+            py_tomllib_flatten(bad).is_none(),
+            "python tomllib 未拒（分支面漂移）：{bad}"
+        );
+    }
+}
