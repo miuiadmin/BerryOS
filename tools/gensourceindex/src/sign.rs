@@ -140,10 +140,12 @@ pub fn sign_index(index_form: Option<&[u8]>, sk_path: Option<&str>) -> Result<([
     }
     let mut s = [0u8; SIG_LEN];
     s.copy_from_slice(&sig);
+    // 覆盖域标签 repr 形 = Python `SRC_LABEL!r`（b'BSRC-TOP'）逐字对齐
+    // ——CLI 生成面 stdout 对拍合同（gen_cli_parity 逐行全等钉板）。
     Ok((
         s,
         format!(
-            "berry-sign sign-raw 64B ed25519 裸签名（覆盖域 {:?} ‖ 槽前 {}B；独立于 .bap 信封合同）",
+            "berry-sign sign-raw 64B ed25519 裸签名（覆盖域 b'{}' ‖ 槽前 {}B；独立于 .bap 信封合同）",
             String::from_utf8_lossy(SRC_LABEL),
             cover.len() - SRC_LABEL.len()
         ),
@@ -182,8 +184,13 @@ pub fn verify_index_signature(raw: &[u8], source_pk: &[u8], src_sig: &[u8]) -> O
     }
 }
 
-/// 测试/签名面共用临时目录（Python `tempfile.TemporaryDirectory(prefix=)`
-/// 同形；调用方负责 remove_dir_all）。
+
+/// 临时目录（gen.rs harden 面复用——Python tempfile 同位纪律；调用方
+/// 负责 remove_dir_all）。
+pub fn tempdir_pub(prefix: &str) -> PathBuf {
+    tempdir_create(prefix)
+}
+
 fn tempdir_create(prefix: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "{prefix}-{}-{}",

@@ -488,7 +488,17 @@ sign-user: build-user
         n=$((n + 1))
     done
     # 官方源静态实例两件套 → user/userbins/source/（gitignored 产物）。
-    python3 tools/gensourceindex.py --sign-key tools/testkeys/dev/dev.sk
+    # 五刀产链换轨（b 层 #5）：先编后用 + CARGO_TARGET_DIR 钉
+    # tools/gensourceindex/cargo-target（elf2flat/mkcpio/mkfat/mkimage/
+    # mkapp 同款纪律）；Python gensourceindex.py 不退役——CLI 对拍
+    # oracle（test-host 挂双侧，tools/gensourceindex cargo test 行）+
+    # berry_assemble import 面单源。
+    HOSTG=$(rustc -vV | sed -n 's/^host: //p')
+    CARGO_TARGET_DIR="$PWD/tools/gensourceindex/cargo-target" \
+        cargo build --release --manifest-path tools/gensourceindex/Cargo.toml \
+        --target "$HOSTG"
+    "$PWD/tools/gensourceindex/cargo-target/$HOSTG/release/gensourceindex" \
+        --sign-key tools/testkeys/dev/dev.sk \
         --rootfs-manifest tools/rootfs-manifest.toml \
         --user-dir user \
         --out-dir user/userbins/source \
@@ -1138,8 +1148,19 @@ test-host:
     # 三刀（CLI 消费半边）：src/main.rs --verify/--gen-keys 臂实装
     # （Python do_verify/do_gen_keys 镜像）+ tests/cli_parity.rs oracle
     # 真流对拍（--verify stdout 逐行全等/单调门/两件套对拍拒/gen-keys
-    # 真流/用法错族）。生成面产链位仍 python3 现役（上方 --selftest 行
-    # 同挂），产链换轨归后续刀。
+    # 真流/用法错族）。四刀（生成面库刀）：src/gen.rs rootfs-manifest 路
+    # （load_app_entries/build_entry/do_generate——依赖全走已 Rust 化件：
+    # mkcpio load_manifest 表加载 + mkapp gate/cpio manifest 语义与走查
+    # 单源复用）+ tests/gen_parity.rs oracle 真流对拍（两件套字节恒等 +
+    # stdout 逐行全等 + 单调门/[security]/pk 长度拒面同构；--preset 面
+    # berry_assemble Python 现役不镜像）。五刀（生成面 CLI 换轨）：
+    # src/main.rs 生成臂全旗标集（argparse 判序镜像：--verify 独占/
+    # --sign-key 同席门/生成双必选 + 让位面 --preset/--selftest 指回
+    # python3）+ tests/gen_cli_parity.rs CLI 级对拍（两件套字节恒等含
+    # --sign-key 真签腿〔BERRY_SIGN env 合同位注入〕+ stdout 逐行全等 +
+    # 拒面/用法错族 exit 码与 stderr 全等）。sign-user 产链位已切本
+    # bin（先编后用 + cargo-target 钉位）；Python 件不退役——CLI 对拍
+    # oracle + berry_assemble import 面单源（--preset 让位）。
     cargo test --manifest-path tools/gensourceindex/Cargo.toml --target {{host}}
     # W1 接线（SEC-02 A2 同款纪律）：berry_assemble 门禁自检——V13 组装器
     # （ADR #82「组装不 fork」product.toml 校验/dry-run 计划/装配反回滚门）

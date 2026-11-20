@@ -1,13 +1,15 @@
-//! gensourceindex Rust CLI（三刀·CLI 面：--verify / --gen-keys 两消费
-//! 半边；生成面与 --preset/--sign-key 产链位仍 python3 现役——依彻底
-//! Rust 化计划 §4 刀序推进后再换轨）。出口码同 Python：拒因 1、用法
-//! 错 2、成功 0。`--selftest` 走 python3（selftest_guard 零豁免契约）。
+//! gensourceindex Rust CLI（三刀·CLI 面：--verify / --gen-keys 消费
+//! 半边；五刀·生成面臂：rootfs-manifest 路换轨 Rust——`--out-dir` +
+//! `--source-pk` 全旗标集实装，sign-user 产链位走本 bin）。出口码同
+//! Python：拒因 1、用法错 2、成功 0。`--selftest` 走 python3
+//! （selftest_guard 零豁免契约）；`--preset` 面不镜像（berry_assemble
+//! Python 现役单源——遇即让位指引 python3，拒因文案注明）。
 
 use std::process::ExitCode;
 
 use gensourceindex::{parse_index, parse_keys_listing, KEYS_NAME};
 
-const USAGE: &str = "用法：gensourceindex --verify <source-index.tlv> [--prev <tlv>] | gensourceindex --gen-keys <sk-out> <pk-out>（生成面走 python3 tools/gensourceindex.py）";
+const USAGE: &str = "用法：gensourceindex [--rootfs-manifest <toml>] [--user-dir <dir>] --out-dir <dir> --source-pk <pk> [--sign-key <sk>] [--source-id <id>] [--index-version N] [--prev <tlv>] | gensourceindex --verify <source-index.tlv> [--prev <tlv>] | gensourceindex --gen-keys <sk-out> <pk-out>（--preset/--selftest 走 python3 tools/gensourceindex.py）";
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -17,8 +19,7 @@ fn main() -> ExitCode {
     if argv.first().map(|s| s.as_str()) == Some("--gen-keys") {
         return cmd_gen_keys(&argv[1..]);
     }
-    eprintln!("gensourceindex: {USAGE}");
-    ExitCode::from(2)
+    cmd_generate_or_usage(&argv)
 }
 
 /// --verify：结构/单调/两件套对拍（Python `do_verify` 镜像——签名
@@ -26,13 +27,19 @@ fn main() -> ExitCode {
 fn cmd_verify(rest: &[String]) -> ExitCode {
     // 恰 1 或 3 参（<tlv> / <tlv> --prev <tlv>——Python argparse 同域）。
     let (path, prev) = match rest {
-        [p] => (p, None),
-        [p, f, v] if f == "--prev" => (p, Some(v)),
+        [p] => (p.as_str(), None),
+        [p, f, v] if f == "--prev" => (p.as_str(), Some(v.as_str())),
         _ => {
             eprintln!("gensourceindex: {USAGE}");
             return ExitCode::from(2);
         }
     };
+    cmd_verify_parsed(path, prev)
+}
+
+/// --verify 已解析形（五刀通用旗标解析器共入口——`--verify` 非首参
+/// 形经 `cmd_generate_or_usage` 解析后落此）。
+fn cmd_verify_parsed(path: &str, prev: Option<&str>) -> ExitCode {
     let raw = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) => {
@@ -156,6 +163,169 @@ fn cmd_verify(rest: &[String]) -> ExitCode {
         );
     }
     ExitCode::SUCCESS
+}
+
+/// 生成面旗标集（Python main() argparse 面 :1298-1352 镜像——五刀换轨
+/// 臂）。默认值：`--rootfs-manifest` = <repo>/tools/rootfs-manifest.toml
+/// （表头注契约——发现序 = bin 所在 tools/ 目录）、`--user-dir` =
+/// <repo>/user、`--source-id` = berryos、`--index-version` = 1。
+struct GenArgs {
+    rootfs_manifest: Option<String>,
+    user_dir: Option<String>,
+    out_dir: Option<String>,
+    source_pk: Option<String>,
+    sign_key: Option<String>,
+    source_id: String,
+    index_version: u32,
+    prev: Option<String>,
+    /// `--verify` 值（旗标可非首参——Python argparse 混排域）。
+    verify: Option<String>,
+}
+
+/// 生成面 / --verify 通用旗标解析（Python argparse 同域：值旗标
+/// `--flag v` 与 `--flag=v` 双形、`--selftest`/`--preset` 即时让位）。
+/// 未知旗标 / 缺值 = 用法错 2（argparse error 出口同构）。
+fn parse_gen_flags(argv: &[String]) -> Result<GenArgs, ExitCode> {
+    let mut a = GenArgs {
+        rootfs_manifest: None,
+        user_dir: None,
+        out_dir: None,
+        source_pk: None,
+        sign_key: None,
+        source_id: "berryos".to_string(),
+        index_version: 1,
+        prev: None,
+        verify: None,
+    };
+    let val = |name: &str, inline: Option<&str>, i: &mut usize, argv: &[String]|
+        -> Result<String, ExitCode> {
+        if let Some(v) = inline {
+            return Ok(v.to_string());
+        }
+        *i += 1;
+        let Some(v) = argv.get(*i) else {
+            eprintln!("gensourceindex: {name} 缺值（expected one argument）");
+            return Err(ExitCode::from(2));
+        };
+        Ok(v.clone())
+    };
+    let mut i = 0usize;
+    while i < argv.len() {
+        let (flag, inline): (&str, Option<&str>) = match argv[i].split_once('=') {
+            Some((f, v)) if f.starts_with("--") => (f, Some(v)),
+            _ => (argv[i].as_str(), None),
+        };
+        match flag {
+            "--selftest" | "--preset" => {
+                // Python 现役面即时让位（单源纪律——berry_assemble 模块
+                // 图根 + selftest_guard 零豁免契约）。
+                let face = if flag == "--preset" {
+                    "G16 产品派生面 berry_assemble Python 单源"
+                } else {
+                    "门禁自检 oracle 面"
+                };
+                eprintln!("gensourceindex: {flag} 走 python3 tools/gensourceindex.py（{face}——Rust 件不镜像，让位指引）");
+                return Err(ExitCode::from(2));
+            }
+            "--rootfs-manifest" => a.rootfs_manifest = Some(val(flag, inline, &mut i, argv)?),
+            "--user-dir" => a.user_dir = Some(val(flag, inline, &mut i, argv)?),
+            "--out-dir" => a.out_dir = Some(val(flag, inline, &mut i, argv)?),
+            "--source-pk" => a.source_pk = Some(val(flag, inline, &mut i, argv)?),
+            "--sign-key" => a.sign_key = Some(val(flag, inline, &mut i, argv)?),
+            "--source-id" => a.source_id = val(flag, inline, &mut i, argv)?,
+            "--prev" => a.prev = Some(val(flag, inline, &mut i, argv)?),
+            "--verify" => a.verify = Some(val(flag, inline, &mut i, argv)?),
+            "--index-version" => {
+                let v = val(flag, inline, &mut i, argv)?;
+                match v.parse::<u32>() {
+                    Ok(n) => a.index_version = n,
+                    Err(_) => {
+                        eprintln!("gensourceindex: invalid int value '{v}'（--index-version）");
+                        return Err(ExitCode::from(2));
+                    }
+                }
+            }
+            other => {
+                eprintln!("gensourceindex: 未知旗标 {other:?}（unrecognized arguments: {other}）");
+                return Err(ExitCode::from(2));
+            }
+        }
+        i += 1;
+    }
+    Ok(a)
+}
+
+/// 生成面主臂（Python main() 末段 :1336-1352 判序镜像：--verify 独占
+/// （不与生成面混用）→ --sign-key 需 --source-pk 同席 → 生成需
+/// --out-dir + --source-pk）。
+fn cmd_generate_or_usage(argv: &[String]) -> ExitCode {
+    let a = match parse_gen_flags(argv) {
+        Ok(a) => a,
+        Err(code) => return code,
+    };
+    if let Some(vpath) = a.verify {
+        if a.out_dir.is_some() || a.source_pk.is_some() || a.sign_key.is_some() {
+            eprintln!("gensourceindex: --verify 独占（不与生成面混用）");
+            return ExitCode::from(2);
+        }
+        return cmd_verify_parsed(&vpath, a.prev.as_deref());
+    }
+    if a.sign_key.is_some() && a.source_pk.is_none() {
+        eprintln!(
+            "gensourceindex: --sign-key 需与 --source-pk 同席（pk 进索引自述 + sk 签名——钥对同源）"
+        );
+        return ExitCode::from(2);
+    }
+    let (Some(out_dir), Some(source_pk)) = (a.out_dir.as_deref(), a.source_pk.as_deref()) else {
+        eprintln!("gensourceindex: 生成需 --out-dir + --source-pk（或用 --verify/--gen-keys/--selftest）");
+        return ExitCode::from(2);
+    };
+    // 默认值：tools/ 目录发现（gen.rs repo_tools_dir——CWD/exe 双上溯）。
+    let tools = gensourceindex::gen::repo_tools_dir();
+    let manifest_path = a
+        .rootfs_manifest
+        .clone()
+        .unwrap_or_else(|| tools.join("rootfs-manifest.toml").display().to_string());
+    let user_dir = a
+        .user_dir
+        .clone()
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| tools.parent().unwrap_or(std::path::Path::new(".")).join("user"));
+    let mtext = match std::fs::read_to_string(&manifest_path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("gensourceindex: FAIL: 读 {manifest_path}：{e}");
+            return ExitCode::from(1);
+        }
+    };
+    let entries = match gensourceindex::gen::load_app_entries(&mtext, &manifest_path, &user_dir) {
+        Ok(es) => es,
+        Err(r) => {
+            eprintln!("{r}");
+            return ExitCode::from(1);
+        }
+    };
+    let p = gensourceindex::gen::GenParams {
+        entries,
+        source_pk: std::path::Path::new(source_pk),
+        sign_key: a.sign_key.as_deref().map(std::path::Path::new),
+        source_id: &a.source_id,
+        index_version: a.index_version,
+        prev: a.prev.as_deref().map(std::path::Path::new),
+        out_dir: std::path::Path::new(out_dir),
+    };
+    match gensourceindex::gen::do_generate(&p) {
+        Ok(lines) => {
+            for l in lines {
+                println!("{l}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(r) => {
+            eprintln!("{r}");
+            ExitCode::from(1)
+        }
+    }
 }
 
 /// --gen-keys：berry-sign keygen 透传（Python `do_gen_keys` 镜像）。

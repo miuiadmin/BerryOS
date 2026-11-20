@@ -5,3 +5,18 @@ version = 4
 [[package]]
 name = "gensourceindex"
 version = "0.1.0"
+dependencies = [
+ "mkapp",
+ "mkcpio",
+]
+
+[[package]]
+name = "mkapp"
+version = "0.1.0"
+dependencies = [
+ "mkcpio",
+]
+
+[[package]]
+name = "mkcpio"
+version = "0.1.0"
