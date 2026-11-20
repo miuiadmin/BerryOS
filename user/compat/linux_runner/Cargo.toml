@@ -1,0 +1,10 @@
+[package]
+name = "linux-runner"
+# G2 刀 8：Linux ELF 兼容层——syscall 翻译守护进程。
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
