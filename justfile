@@ -173,6 +173,17 @@ build-user:
     CARGO_TARGET_DIR=../drivers/cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
         cargo build --release --manifest-path ../drivers/bins/gui-inputd/Cargo.toml \
         --target aarch64-unknown-linux-musl
+    # devmgr v1（驱动子系统研究报告 §4.2 交付 1.1 最小先行版：MMIO 槽
+    # 枚举 + 驱动匹配 + 服务状态报告）：扫 32 槽 virtio-mmio 窗建设备
+    # 清单，did→驱动匹配表（blk=2→vblk/net=1→vnet/input=18→gui-inputd/
+    # gpu=16→guifbd），查 svcmgr ps 账本（psproto PS_LIST，ps 同拓扑）
+    # 打每设备服务在席状态，缺席 WARN。**不拉起服务**（svcmgr 点名链不
+    # 动，v2 自动拉起）；逻辑核在 lib（host `cargo test --lib` 10 测）。
+    # 独立小工作区 musl 链（ps/guifbd 同链）；rootfs 条目走
+    # tools/rootfs-manifest.toml（svcmgr cpio_find 点名制不识即零扰动）。
+    CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
+        cargo build --release --manifest-path bins/devmgr/Cargo.toml \
+        --target aarch64-unknown-linux-musl
     # app-0（ADR #43/#44）：demo 双 app（appdemo console=true / appquiet
     # console=false——能力授予/缺席两半活证）musl 同链 → staging 组装
     # {manifest.toml, bin/<名>} → mkapp 门禁五道产 .bap（cpio(newc) 包 =
@@ -952,6 +963,12 @@ test-host:
     # berry-virtio 包装法（mmio 偏移/鉴定值单源引常量），消费面 vblk/vnet
     # 接线后续刀，host 7 测）。
     cargo test --manifest-path user/Cargo.toml -p berry-driver --target {{host}}
+    # 波 2 架构件：berry-hal（统一硬件抽象层——Mmio/IrqCtl/DmaAlloc/Clock
+    # 四窄 trait + HalError 统一错误面；virtio_impl = berry-virtio 偏移单源
+    # 的 Mmio 实现（volatile 包装为安全接口 + 窗界检值不炸）；BumpDmaAlloc/
+    # VirtualClock 参考实现消费 alloc 面，真消费面 vblk/vnet 接线后续刀，
+    # host 8 测）。
+    cargo test --manifest-path user/Cargo.toml -p berry-hal --target {{host}}
     # 刀 3 B1-a：berry-gpuproto（virtio-gpu 2D 协议纯函数面——九命令/头/
     # 响应/event/config 编解码 + uapi 常量两源钉板，02 号 §3.1/§3.2；
     # 传输接线归 B1-c）。

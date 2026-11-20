@@ -151,10 +151,28 @@
 # research/2026-11-18-驱动子系统综合研究报告.md P0-2；读盘经注入闭包，
 # 库零 IO。单消费 = vblk 多分区暴露（下一刀接线）——host 测试经 justfile
 # test-host 显式行跑）。
+# 波 2 架构件：berry-hal（统一硬件抽象层——Mmio/IrqCtl/DmaAlloc/Clock
+# 四窄 trait + HalError 统一错误面，报告 §4.1 三面胶水缺口件 + §4.3 波
+# 2.2 DeviceCap 三铸件的用户态半边；virtio_impl = berry-virtio 偏移单源
+# 的 Mmio 实现——volatile 读写包装为安全接口 + 窗界检值不炸；BumpDmaAlloc/
+# VirtualClock 参考实现消费 alloc 面。与莓核 Wave 4 刀 4.1 的内核侧
+# berry-hal 同名异层。真消费面（vblk/vnet 接线）后续刀——host 测试经
+# justfile test-host 行跑）。
+# 驱动波 2 清偿双刀：berry-rtc（用户态 RTC 消费面——研究报告 P1-7：
+# 内核 rtc.rs 壁钟在席而用户态零公共消费库，launcher/appshell 各自单点
+# 自持、日期级换算全仓无处拿）——
+# read_epoch 经 berry-sys CLOCK_REALTIME 单源 syscall（ns→s，ABI 镜像
+# 禁第二套）+ 历法换算纯函数（"HH:MM:SS" UTC / 年-月-日简化儒略日算法
+# ——向量 Python 独立对拍钉板）；berry-watchdog（软件看门狗骨架——
+# P1-10：QEMU virt 无 WDT 设备 → v1 纯软件超时窗 new/kick/is_expired，
+# 时基单调钟 µs 单源经 berry-sys，host 测试注入 thread-local 假钟）。
+# 双 crate 均 berry-softime 家族形态（cfg_attr(not(test), no_std) +
+# host 测试，syscall 面 cfg(not(test))）；真消费接线（launcher 时钟
+# 续摆/监督进程喂狗）挂账后续刀——本刀零行为变化。
 members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-winplan", "berry-argv", "berry-strmem", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto", "berry-gpuproto", "berry-partition",
     "berry-termio",
-    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-layout", "berry-psproto", "berry-complete", "berry-tls", "berry-mmap", "berry-signal", "berry-fbcon", "berry-gfx", "berry-poll", "berry-jobs", "berry-guiproto", "berry-ui", "berry-appshell", "berry-softime", "berry-appproto", "berry-cbox", "berry-pwproto", "berry-lifecycle", "berry-crypto", "berry-spawngeo", "berry-driver", "bins/abuser", "bins/berry-verify", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild", "bins/dpgp", "bins/policydemo"]
-exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet", "bins/apptomb"]
+    "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-layout", "berry-psproto", "berry-complete", "berry-tls", "berry-mmap", "berry-signal", "berry-fbcon", "berry-gfx", "berry-poll", "berry-jobs", "berry-guiproto", "berry-ui", "berry-appshell", "berry-softime", "berry-appproto", "berry-cbox", "berry-pwproto", "berry-lifecycle", "berry-crypto", "berry-spawngeo", "berry-driver", "berry-hal", "berry-rtc", "berry-watchdog", "bins/abuser", "bins/berry-verify", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild", "bins/dpgp", "bins/policydemo"]
+exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet", "bins/apptomb", "bins/devmgr"]
 
 # cbox 刀 2：berry-cbox（黑匣子账本纯函数 crate，「解析器即产品」——排液
 # 快照解码（镜像内核 cbox.rs 定宽表）/CBOX.LOG 行编解码（冻结字段序

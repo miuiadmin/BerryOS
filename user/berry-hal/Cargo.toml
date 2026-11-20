@@ -1,0 +1,22 @@
+[package]
+name = "berry-hal"
+version.workspace = true
+edition = "2021"
+# 驱动子系统研究报告（.agents/research/2026-11-18-驱动子系统综合研究报告.md）
+# P1 结构性缺口件 + 波 2 架构件：统一硬件抽象层——MMIO 读写/IRQ 注册/DMA
+# 分配/时钟四条窄 trait（报告 §4.1 诊断三面胶水各自为政；§4.3 波 2.2
+# DeviceCap 三铸件的用户态半边）。驱动只写业务逻辑，平台差异沉到 trait
+# 实现侧；与莓核 Wave 4 刀 4.1 的内核侧 berry-hal 同名异层（那颗管内核
+# arch 抽象，本颗管用户态驱动进程——契约面互不相交）。形态 = berry-driver
+# 族例 `cfg_attr(not(test), no_std)` + alloc（BumpDmaAlloc 蓄水池 Vec 面）；
+# 库本体零 unsafe（volatile 收敛在 virtio_impl 实现内部）。依赖 berry-virtio
+# 跨工作区 path（user→drivers 反向，berry-driver 同款先例）——virtio_impl
+# 消费其 mmio 偏移表/鉴定值单源（magic/version/device_id），不复制常量。
+description = "BerryOS unified HAL traits (Mmio/IrqCtl/DmaAlloc/Clock) for userland drivers, host-testable"
+license = "Apache-2.0"
+
+[dependencies]
+# virtio_impl 的寄存器偏移/鉴定值单源（mmio::MAGIC/VERSION/DEVICE_ID 与
+# MAGIC_VAL/VERSION_MODERN）——跨工作区 path 依赖，berry-driver 同款
+# 「引常量不复制」纪律。
+berry-virtio = { path = "../../drivers/berry-virtio" }

@@ -1,0 +1,24 @@
+[package]
+name = "berry-rtc"
+version.workspace = true
+edition = "2021"
+# 驱动波 2 清偿刀（.agents/research/2026-11-18-驱动子系统综合研究报告.md
+# P1-7「RTC 无设备驱动、用户态零消费面」的用户侧半件）：内核壁钟已在席
+# （fw_cfg `opt/berry/rtc` 宿主注入 epoch + MONOTONIC 锚），但用户态零
+# 公共消费库——launcher/appshell 各自单点自持（直取 syscall + hhmm_utc
+# 的 ns 口径 5B 面），日期级换算全仓无处可拿——本 crate 补用户态消费面：
+# read_epoch 经 berry-sys
+# `CLOCK_REALTIME` 单源 syscall（ABI 镜像禁第二套），历法换算纯函数
+# （epoch 秒 → "HH:MM:SS" UTC / 年-月-日简化儒略日算法）host 测试钉
+# Python datetime 独立对拍的已知向量。形态 = berry-softime 家族
+# `cfg_attr(not(test), no_std)` + host 测试；syscall 面 cfg(not(test))
+# （berry-fsclient 纪律——host 测试二进制零 svc 面）。消费接线（launcher
+# 时钟改经本 crate、appshell::scene::hhmm_utc 的 ns 口径归一）挂账后续刀，
+# 本刀纯新增零行为变化。
+description = "BerryOS userland RTC face: epoch seconds via CLOCK_REALTIME syscall + pure UTC civil-calendar formatting"
+license = "Apache-2.0"
+
+[dependencies]
+# syscall 单源（CLOCK_REALTIME/MONOTONIC 常量 + berry_clock_read 镜像）——
+# 禁第二套 ABI 镜像（ berry-sys 头注纪律）。
+berry-sys = { path = "../berry-sys" }
