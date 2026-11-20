@@ -2032,18 +2032,49 @@ pub fn vnc_web(
                 open_hint(open_browser(&url));
             }
             std::io::stdout().flush().ok();
-            // 输入拦截器装配（2026-11-16）：run 有 qmp.sock 即启用；客机几何按
-            // meta 的 profile 取渲染尺寸（QMP abs 值域 0..32767 需要缩放分母）。
+            // 输入拦截器装配（2026-11-16）：run 有 qmp.sock 即启用；QMP abs
+            // 值域 0..32767 需要缩放分母——**display_mode 实几何优先**
+            // （--display-mode 覆盖档位下 profile 的渲染尺寸已失真：
+            // 2026-11-20 1080x1920 场实锤——按 480x1000 缩放把中/下半屏
+            // 点击全钳到右/底边缘，「点了很多没反应」主凶；ram.rs 原生路
+            // 「缩放分母用 fb 实几何」同款单源律），'WxH@hz' 形取 @ 前
+            // WxH；缺场才回退 profile 渲染尺寸。
             let qmp_inject = run.join("qmp-inject.sock");
             let qmp_sock = if qmp_inject.exists() { qmp_inject } else { run.join("qmp.sock") };
             let (gw, gh) = std::fs::read(run.join("meta.json"))
                 .ok()
                 .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
                 .and_then(|m| {
-                    m.get("profile")
-                        .and_then(|p| p.as_str())
-                        .and_then(|id| crate::profile::get(id).ok())
-                        .map(|pr| (pr.render_w, pr.render_h))
+                    // display_mode 实几何优先——解析复用 berry-dmface 单源
+                    // （对抗审查 P1：宿主手写解串缺 trim+32B 门，与客机判定链
+                    // 分叉可致同串两侧判定相反、静默回退错分母）；宽度同款
+                    // 32 对齐（P2：客机 scanout 宽 (w0+31)&!31——1080→1088，
+                    // 分母用请求宽则 web 路系统性右偏且与原生路 fbinfo 不一致）。
+                    // 解析失败回退 profile 是有意降级链（回退打一行可见）。
+                    m.get("display_mode")
+                        .and_then(|s| s.as_str())
+                        .and_then(|s| {
+                            berry_dmface::parse_display_mode(s.as_bytes())
+                                .filter(|(w, h)| *w > 0 && *h > 0)
+                                .map(|(w, h)| ((w + 31) & !31, h))
+                        })
+                        .or_else(|| {
+                            let fallback = m
+                                .get("profile")
+                                .and_then(|p| p.as_str())
+                                .and_then(|id| crate::profile::get(id).ok())
+                                .map(|pr| (pr.render_w, pr.render_h));
+                            let raw = m
+                                .get("display_mode")
+                                .and_then(|s| s.as_str())
+                                .unwrap_or("(缺席)");
+                            if let Some((fw, fh)) = fallback {
+                                eprintln!(
+                                    "berry: 拦截器几何回退 profile {fw}x{fh}（display_mode={raw} 解析失败）"
+                                );
+                            }
+                            fallback
+                        })
                 })
                 .unwrap_or((1, 1));
             let upstream = crate::web::LanUpstream {

@@ -65,9 +65,12 @@ use crate::host::diag;
 #[cfg(not(test))]
 use crate::rpc::{close_h, rpc_recv, rpc_send};
 
-/// 壁纸源顶区像素采样（状态栏 scrim 动态预混）：返回顶 `rows` 行
-/// 的 ARGB 像素切片与源宽——scene::status_scrim 消费（icons 私有
-/// 模块的最小重导出面）。
+/// 壁纸源顶区像素采样（原状态栏 scrim 动态预混供件）：返回顶 `rows`
+/// 行的 ARGB 像素切片与源宽。唯一生产消费者 scene::status_scrim 已
+/// 退役（2026-11-16 桌面沉浸化撤衬底——status_scrim 现仅测试保活，
+/// 2026-11-20 债务清理刀定谳），本函数随之降为测试保活面；保留为
+/// 壁纸顶区采样的公共访问口（波 4 状态栏重做/「图标明暗随内容」刀
+/// 的既定候选供件——Android12 调研 P2 项）。
 pub fn wallpaper_top_rows(rows: u32) -> (&'static [u32], u32) {
     let h = wallpaper::WALLPAPER_H.min(rows);
     let n = (wallpaper::WALLPAPER_W as usize) * (h as usize);
@@ -148,7 +151,9 @@ pub const NAV_BACK: u16 = 7;
 pub const NAV_HOME: u16 = 8;
 pub const NAV_POWER: u16 = 9;
 /// 关机确认态面（二击 3s 窗 armed：同形换暗红警示底——帧循环
-/// set_props 换 id，运行期零重建）。
+/// set_props 换 id，运行期零重建）。唯一消费者 = launcher frameloop
+/// `set_power_face`（指针路径恒活；键盘路径不可达——2026-11-20
+/// keynav 裁决：键盘词汇仅翻页，见 [`NAV_ARMED_BG`] 注）。
 pub const NAV_POWER_ARMED: u16 = 10;
 /// 多任务键面（v1 语义 = 重新拉起最近应用）。
 pub const NAV_RECENTS: u16 = 11;
@@ -342,7 +347,14 @@ pub(crate) fn status_faces() -> Vec<IconFace> {
 /// 壁纸、无任何底色块；argb_blit 1-bit 透明键 A==0 跳过即得穿透。
 /// 裁决出处：.agents/plans/2026-11-17-图标透明与系统栏跟随综合裁决.md）。
 const NAV_BASE_BG: u32 = 0x0000_0000;
-/// 导航键底块色（关机确认态：暗红警示）。
+/// 导航键底块色（关机确认态：暗红警示——不透明是刻意立法，2026-11-17
+/// P0-① 透明化裁决明文保留）。**活代码，勿当死代码清（2026-11-20 债务
+/// 核查定谳）**：消费链 = [`status_faces`] 表项 → 面 id
+/// [`NAV_POWER_ARMED`] → launcher frameloop `set_power_face` 二击关机
+/// 窗换面——指针路径恒活（导航键是覆盖态逃生面，消息分流「恒最先」）。
+/// 不可达的只有**键盘**路径：2026-11-20 keynav 裁决定键盘词汇 = 箭头
+/// 翻页（裸 Esc 需超时裁决而 on_key 无 timer 钩子，弃）——armed 仅
+/// 指针点击可触发，「键盘不可达」不构成整体死代码判据。
 const NAV_ARMED_BG: u32 = 0xFF7A_1F1F;
 /// 符号白（TEXT_FG 同值系）。
 const NAV_GLYPH_FG: u32 = 0xFFF0_F0F4;

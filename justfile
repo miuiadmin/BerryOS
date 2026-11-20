@@ -190,9 +190,11 @@ build-user:
     # devmgr v1（驱动子系统研究报告 §4.2 交付 1.1 最小先行版：MMIO 槽
     # 枚举 + 驱动匹配 + 服务状态报告）：扫 32 槽 virtio-mmio 窗建设备
     # 清单，did→驱动匹配表（blk=2→vblk/net=1→vnet/input=18→gui-inputd/
-    # gpu=16→guifbd），查 svcmgr ps 账本（psproto PS_LIST，ps 同拓扑）
-    # 打每设备服务在席状态，缺席 WARN。**不拉起服务**（svcmgr 点名链不
-    # 动，v2 自动拉起）；逻辑核在 lib（host `cargo test --lib` 10 测）。
+    # gpu=16→guifbd + 表补全刀先行绑定 console=3/rng=4→berry-rng〔账本
+    # 行名 rngd，psproto NAME_MAX=8 帽〕），查 svcmgr ps 账本（psproto
+    # PS_LIST，ps 同拓扑）打每设备服务在席状态，缺席 WARN。**不拉起
+    # 服务**（svcmgr 点名链不动，v2 自动拉起）；逻辑核在 lib（host
+    # `cargo test --lib` 11 测）。
     # 独立小工作区 musl 链（ps/guifbd 同链）；rootfs 条目走
     # tools/rootfs-manifest.toml（svcmgr cpio_find 点名制不识即零扰动）。
     CARGO_TARGET_DIR=cargo-target RUSTFLAGS="-C linker=$ROOT/tools/berry-ld -C linker-flavor=ld.lld -C link-arg=-zmax-page-size=4096" \
@@ -993,13 +995,15 @@ test-host:
     cargo test --manifest-path user/Cargo.toml -p berry-blkproto --target {{host}}
     # 存储栈 P0-2 刀 1：berry-partition（GPT/MBR 分区表解析纯函数面——
     # MBR 4 槽/0xEE 保护条转 GPT/GPT 头与条目区解码/坏签名与病态域 loud
-    # 拒，host 16 测；消费 = vblk 多分区暴露（下一刀接线））。
+    # 拒 + display() 分区列表单行格式化〔教学可见性，vblk 手拼形状收口〕，
+    # host 18 测；消费 = vblk 多分区暴露（下一刀接线））。
     cargo test --manifest-path user/Cargo.toml -p berry-partition --target {{host}}
     # 驱动子系统研究报告 P1 框架件 + 波 2.2 先行刀：berry-driver（统一
     # Driver trait 生命周期框架——probe/start/stop 三口可循环 + registry
     # 全槽探测失败不炸，借 Linux probe 生命周期形状；virtio_example 钉
-    # berry-virtio 包装法（mmio 偏移/鉴定值单源引常量），消费面 vblk/vnet
-    # 接线后续刀，host 7 测）。
+    # berry-virtio 包装法〔鉴定值单源引常量 + MMIO 读写经 berry-hal
+    # VirtioMmio，vprobe 同款接线〕，消费面 vblk/vnet 接线后续刀，
+    # host 7 测）。
     cargo test --manifest-path user/Cargo.toml -p berry-driver --target {{host}}
     # 波 2 架构件：berry-hal（统一硬件抽象层——Mmio/IrqCtl/DmaAlloc/Clock
     # 四窄 trait + HalError 统一错误面；virtio_impl = berry-virtio 偏移单源

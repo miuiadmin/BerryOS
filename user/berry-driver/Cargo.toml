@@ -20,3 +20,6 @@ license = "Apache-2.0"
 # DEVICE_ID_* 与状态位 ST_*）——跨工作区 path 依赖，berry-gpuproto 同款
 # 「引常量不复制」纪律。
 berry-virtio = { path = "../../drivers/berry-virtio" }
+# virtio_example 的 MMIO 读写面（VirtioMmio——volatile 与窗界检收敛在 HAL
+# 实现内部，vprobe 同款接线；同 workspace path，2026-11-20 消费面扩展）。
+berry-hal = { path = "../berry-hal" }

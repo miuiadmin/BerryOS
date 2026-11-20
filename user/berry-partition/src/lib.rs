@@ -47,6 +47,7 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
+use core::fmt::Write as _;
 
 /// MBR 分区表在 LBA0 内的偏移（4×16B 槽位自此起，尾随 0x55AA 签名）。
 pub const MBR_TABLE_OFF: usize = 446;
@@ -205,6 +206,42 @@ where
         });
     }
     Ok(parts)
+}
+
+/// 把分区列表格式化为可打印单行字符串（教学可见性——消费侧一行日志即得
+/// 盘上全景；形状 = vblk 现行分区日志的手拼循环收口，vblk 换用归后续刀）。
+///
+/// 形态：头段 `{scheme} {n} partition[s]:`（scheme 按首条 kind 判——同表
+/// 恒同面，[`parse`] 的 0xEE 整面转 GPT 语义保证）+ 逐条 ` [{index}] …`：
+/// GPT 条带名（空名省略）、MBR 条带 `type={:#04x}`，LBA 域闭区间原样
+/// 转述。空表无 scheme 可判，头段退 `0 partitions`；尾不带换行（行终止
+/// 归消费侧 print/println 面）。
+pub fn display(parts: &[Partition]) -> String {
+    let mut s = String::new();
+    if parts.is_empty() {
+        let _ = write!(s, "0 partitions");
+        return s;
+    }
+    let scheme = match parts[0].kind {
+        PartitionKind::Gpt(_) => "GPT",
+        PartitionKind::Mbr(_) => "MBR",
+    };
+    let n = parts.len();
+    let _ = write!(s, "{scheme} {n} partition{}:", if n == 1 { "" } else { "s" });
+    for p in parts {
+        match (&p.kind, p.name.as_deref()) {
+            (PartitionKind::Gpt(_), Some(name)) => {
+                let _ = write!(s, " [{}] {} {}-{}", p.index, name, p.first_lba, p.last_lba);
+            }
+            (PartitionKind::Gpt(_), None) => {
+                let _ = write!(s, " [{}] {}-{}", p.index, p.first_lba, p.last_lba);
+            }
+            (PartitionKind::Mbr(t), _) => {
+                let _ = write!(s, " [{}] type={t:#04x} {}-{}", p.index, p.first_lba, p.last_lba);
+            }
+        }
+    }
+    s
 }
 
 /// GPT 面：LBA1 头校验 + 条目区逐条切窗（`parse` 内部，0xEE 已见）。
@@ -425,6 +462,53 @@ mod tests {
         assert_eq!(parts[0].index, 4); // GPT 条目号（槽位 3 零基 +1）。
         assert_eq!(parts[0].kind, PartitionKind::Gpt([1u8; 16]));
         assert_eq!(parts[0].name.as_deref(), Some("only"));
+    }
+
+    #[test]
+    fn display_mbr_list_matches_vblk_log_shape() {
+        // 头段 scheme + 条数（复数 s）、逐条 index/type/LBA 闭区间；空槽
+        // （槽 2）不入列，槽位号原样转述。
+        let mut img = blank_image(4);
+        stamp_mbr(&mut img);
+        put_mbr_entry(&mut img, 0, 0x83, 2048, 4096);
+        put_mbr_entry(&mut img, 2, 0x0B, 6144, 8192);
+        let parts = parse(reader(&img), BS).unwrap();
+        assert_eq!(
+            display(&parts),
+            "MBR 2 partitions: [1] type=0x83 2048-6143 [3] type=0x0b 6144-14335"
+        );
+
+        // 单条数语法（partition 不带 s——devmgr 报告同款单复数面）。
+        let mut img = blank_image(2);
+        stamp_mbr(&mut img);
+        put_mbr_entry(&mut img, 0, 0x83, 2048, 4096);
+        let parts = parse(reader(&img), BS).unwrap();
+        assert_eq!(display(&parts), "MBR 1 partition: [1] type=0x83 2048-6143");
+    }
+
+    #[test]
+    fn display_gpt_names_and_empty_list() {
+        // GPT 面：条目名随行（空名省略成纯 LBA 域）、utf16 名全量往返。
+        let mut img = blank_image(34);
+        put_gpt_header(&mut img, 128, GPT_ENTRY_SIZE as u32);
+        let guid_root: [u8; 16] = [0x48, 0xF3, 0x33, 0x7C, 0x10, 0x4B, 0x4D, 0x2B,
+            0xB1, 0xC6, 0x2A, 0x9D, 0xF8, 0x30, 0xB5, 0xC2];
+        let guid_data: [u8; 16] = [0xA2, 0xA0, 0xD0, 0xEB, 0xE5, 0xB9, 0x33, 0x44,
+            0x87, 0xC0, 0x68, 0xB6, 0xD7, 0x26, 0x41, 0xFC];
+        put_gpt_entry(&mut img, 0, guid_root, 2048, 10239, "root");
+        put_gpt_entry(&mut img, 1, guid_data, 10240, 20479, "数据盘");
+        put_gpt_entry(&mut img, 2, [1u8; 16], 20480, 22527, ""); // 空名条。
+        let parts = parse(reader(&img), BS).unwrap();
+        assert_eq!(
+            display(&parts),
+            "GPT 3 partitions: [1] root 2048-10239 [2] 数据盘 10240-20479 [3] 20480-22527"
+        );
+
+        // 空表：无 scheme 可判，退纯条数（消费侧接「按整盘服务」语态）。
+        let mut img = blank_image(1);
+        stamp_mbr(&mut img);
+        let parts = parse(reader(&img), BS).unwrap();
+        assert_eq!(display(&parts), "0 partitions");
     }
 
     #[test]
