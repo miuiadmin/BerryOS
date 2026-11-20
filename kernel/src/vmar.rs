@@ -881,6 +881,14 @@ impl Drop for Vmar {
         if !held {
             hal::kern_lock::kern_release();
         }
+        // F0-2：分代位图归还——根空间销毁即还号（位图精确跟踪，回卷轮次
+        // 只复用已释放号；0 = 非根/已归还，空操作）。v1 不回收表树帧的
+        // 政策不变（模块头），ASID 是唯一随 Drop 归还的硬件资源。
+        let asid = self.asid;
+        if asid != 0 {
+            crate::aspace::free_asid(asid);
+            self.asid = 0;
+        }
     }
 }
 

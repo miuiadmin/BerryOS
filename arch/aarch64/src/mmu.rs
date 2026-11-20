@@ -17,9 +17,16 @@
 //! 只需 `dsb ish` 保证表写入对页表遍历可见，再置 `sctlr_el1 = M|C|I`、`isb`。
 
 use crate::paging::*;
-use crate::{GICD_BASE, KERNEL_VA_BASE, RAM_BASE, RAM_TOP, UART0_BASE};
+use crate::{
+    GICD_BASE, KERNEL_VA_BASE, RAM_BASE, RAM_TOP, UART0_BASE, VIRTIO_MMIO0_PA, VIRTIO_MMIO_LEN,
+};
+use berry_asidface::{tcr_as_config, ASID_SHIFT};
+use berry_memface::{cache_line_span, ctr_dmin_line, ctr_pou_plan, IcachePolicy};
 use core::arch::asm;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
+
+/// 每核当前硬件 `TTBR0_EL1` 激活的 ASID 快照（供 `AsidAllocator` 钉死防撞）。
+static ACTIVE_CPU_ASID: [AtomicU16; 2] = [AtomicU16::new(0), AtomicU16::new(0)];
 
 /// 免失效激活档（P0-3 `activate_ttbr0_keep_tlb`）可信度：`true` = 虚拟化层
 /// 不环回 TTBR0 的 ASID 位域（QEMU HVF 实测形态——Hypervisor 自管 guest
@@ -27,6 +34,9 @@ use core::sync::atomic::{AtomicBool, Ordering};
 /// [`probe_asid_field_roundtrip`] 探测写入；调度切换临界区只读（Relaxed
 /// 足够——程序序即真实序，A12 同款纪律）。
 static ASID_TLB_UNTRUSTED: AtomicBool = AtomicBool::new(false);
+
+/// `CTR_EL0` 惰性缓存（`u64::MAX` = 未探测；同型核只读系统寄存器幂等写）。
+static CTR_CACHE: AtomicU64 = AtomicU64::new(u64::MAX);
 
 const TWO_MB: usize = 1 << 21;
 const L2_INDEX_MASK: usize = PTES_PER_TABLE - 1; // 9 位
@@ -122,9 +132,13 @@ pub unsafe extern "C" fn build_boot_pt() {
     (&raw mut (*l1).0[1]).write_volatile(table_descriptor(l2_ram as usize));
 
     // 低区 L2：映 UART、GIC 所在的 2MiB 块为 Device（identity）。
+    // F0-4 调和刀：VirtIO-MMIO 窗块（0x0A00_0000）同入 Device 直映——
+    // `reset_virtio_mmio_window` 经高半 KERNEL_VA_BASE+pa 直访槽寄存器，
+    // 无此块则 MMIO VMO Drop 即 fatal D-abort（overhaul KERNEL_L2_LOW 同款）。
     let dev_blocks = [
         UART0_BASE & !(TWO_MB - 1),
         GICD_BASE & !(TWO_MB - 1),
+        VIRTIO_MMIO0_PA & !(TWO_MB - 1),
     ];
     for pa in dev_blocks {
         let idx = (pa >> 21) & L2_INDEX_MASK;
@@ -209,17 +223,24 @@ pub(crate) fn asid_bits() -> u32 {
     let v: u64;
     // SAFETY: 只读系统寄存器。
     unsafe { asm!("mrs {0}, id_aa64mmfr0_el1", out(reg) v, options(nostack, preserves_flags)) };
-    match (v >> 4) & 0xf {
-        2 => 16,
-        _ => 8, // 0 → 8 位；保留值保守取 8
-    }
+    tcr_as_config(v).0
 }
 
 /// ASID 在 TTBR0 / `tlbi aside1` 操作数里的移位量：16 位 → [63:48]、8 位 → [63:56]
 /// （TCR.A1=0：硬件 ASID 取自 TTBR0，与 TCR.AS=0 的 8 位取位一致）。
+/// F0-2：ARMv8-A `TTBR0_EL1` 与 `TLBI ASIDE1*` 的 ASID 起始位恒为 bit 48
+/// （8 位模式用 `[55:48]`，16 位模式 `TCR_EL1.AS=1` 用 `[63:48]`；修复此前 8 位错移 56 缺陷）。
 #[inline(always)]
-fn asid_shift() -> u32 {
-    if asid_bits() == 16 { 48 } else { 56 }
+const fn asid_shift() -> u32 {
+    ASID_SHIFT
+}
+
+/// 返回双核当前在硬件 `TTBR0_EL1` 上激活的 ASID 快照（供分配器钉死防撞）。
+pub fn active_cpu_asids() -> [u16; 2] {
+    [
+        ACTIVE_CPU_ASID[0].load(Ordering::Acquire),
+        ACTIVE_CPU_ASID[1].load(Ordering::Acquire),
+    ]
 }
 
 /// 按 ASID 失效（`tlbi aside1is`；IS 口径——单核下与非 IS 等价，多核语义先立对）。
@@ -297,16 +318,20 @@ unsafe fn activate_ttbr0_regs(ttbr0_pa: usize, asid: u16) {
     } else {
         ttbr0_pa
     };
+    let cpu = crate::smp::cpu_id();
+    if cpu < ACTIVE_CPU_ASID.len() {
+        ACTIVE_CPU_ASID[cpu].store(asid, Ordering::Release);
+    }
     let shift = asid_shift();
     let ttbr = (asid as u64) << shift | table as u64;
     write_ttbr0_el1(ttbr);
-    isb();
-    // CONTEXTIDR_EL1：PROCID = asid（调试/trace 关联用；A1=0 下非功能位）。
+    // CONTEXTIDR_EL1：PROCID = asid（软件镜像 + trace 关联；写后必跟 isb 保证同核后继 mrs 立即可见）。
     asm!(
         "msr contextidr_el1, {0}",
         in(reg) (asid as u64) << 13,
         options(nostack, preserves_flags)
     );
+    isb();
 }
 
 /// 激活任务地址空间（**免失效档**）：寄存器面同 [`activate_ttbr0`]，但跳过
@@ -496,6 +521,157 @@ pub unsafe fn freeze_syscalls_table() {
     unsafe { (&raw mut (*l2).0[l2_idx]).write_volatile(table_descriptor(l3 as usize - KERNEL_VA_BASE)) };
     unsafe { dsb_ish() };
     unsafe { flush_all_asid() };
+}
+
+/// F0-1：PoU 指令/数据缓存一致性同步（ARM DDI 0487 B2.4.4）。
+///
+/// 内核经高半直映 `kva`（`KERNEL_VA_BASE + pa`）写代码页或填零页后、向页表装入
+/// 可执行有效叶 PTE 之前调用：
+/// 1. `CTR_EL0.IDC == 0` 时按 `DminLine` 执行 `dc cvau` 将脏数据推至 PoU；
+/// 2. `dsb ish` 保数据写及 D-cache 清理对 Inner Shareable 域取指面可见；
+/// 3. `CTR_EL0.DIC == 0` 时失效 I-cache：`L1Ip == PIPT` 用 `ic ivau`（Inner
+///    Shareable 硬件广播），VIPT/别名形态用 `ic ialluis` 全集失效防跨 VA 色彩残留；
+/// 4. `dsb ish` + `isb` 收口。
+pub(crate) fn sync_icache_pou(kva: usize, len: usize) {
+    if len == 0 {
+        return;
+    }
+    let mut ctr = CTR_CACHE.load(Ordering::Relaxed);
+    if ctr == u64::MAX {
+        // SAFETY: ctr_el0 为只读缓存类型寄存器，EL1 直读无副作用。
+        unsafe { asm!("mrs {0}, ctr_el0", out(reg) ctr, options(nostack, preserves_flags)) };
+        CTR_CACHE.store(ctr, Ordering::Relaxed);
+    }
+    let plan = ctr_pou_plan(ctr);
+    if let Some(dline) = plan.d_clean_step {
+        if let Some((mut p, end)) = cache_line_span(kva, len, dline) {
+            while p < end {
+                // SAFETY: kva 属内核有效 Normal WB 直映窗口，dc cvau 仅刷缓存行到 PoU。
+                unsafe { asm!("dc cvau, {0}", in(reg) p, options(nostack, preserves_flags)) };
+                p += dline;
+            }
+        }
+    }
+    // SAFETY: 屏障指令，保证前序数据写与 dc cvau 在 Inner Shareable 域完结。
+    unsafe { dsb_ish() };
+    if let Some(iline) = plan.i_inval_step {
+        match plan.icache_policy {
+            IcachePolicy::Pipt => {
+                if let Some((mut p, end)) = cache_line_span(kva, len, iline) {
+                    while p < end {
+                        // SAFETY: PIPT 下按物理标记匹配，kva 与用户 VA 共享同一物理行且 IS 广播。
+                        unsafe {
+                            asm!("ic ivau, {0}", in(reg) p, options(nostack, preserves_flags))
+                        };
+                        p += iline;
+                    }
+                }
+            }
+            IcachePolicy::ViptOrAliasing => {
+                // SAFETY: EL1 特权全集指令缓存失效（Inner Shareable），消除高半 KVA 与低半 EL0 VA 异色别名。
+                unsafe { asm!("ic ialluis", options(nostack, preserves_flags)) };
+            }
+        }
+        // SAFETY: 屏障指令，等待 I-cache 失效广播完成并刷新本核取指流水线。
+        unsafe {
+            dsb_ish();
+            isb();
+        }
+    } else {
+        // SAFETY: DIC=1 免显式失效 I-cache，但本核后续取指仍须上下文同步。
+        unsafe { isb() };
+    }
+}
+
+#[inline]
+fn read_ctr_cached() -> u64 {
+    let mut ctr = CTR_CACHE.load(Ordering::Relaxed);
+    if ctr == u64::MAX {
+        // SAFETY: ctr_el0 为只读缓存类型寄存器，EL1 直读无副作用。
+        unsafe { asm!("mrs {0}, ctr_el0", out(reg) ctr, options(nostack, preserves_flags)) };
+        CTR_CACHE.store(ctr, Ordering::Relaxed);
+    }
+    ctr
+}
+
+/// F0-4：DMA 发送前将数据缓存脏行推至一致性点 PoC（`dc cvac` + `dsb sy`）。
+pub(crate) fn cache_poc_clean(kva: usize, len: usize) {
+    if len == 0 {
+        return;
+    }
+    let dline = ctr_dmin_line(read_ctr_cached());
+    if let Some((mut p, end)) = cache_line_span(kva, len, dline) {
+        while p < end {
+            // SAFETY: kva 属内核有效 Normal WB 直映窗口，dc cvac 将脏缓存行刷至 PoC。
+            unsafe { asm!("dc cvac, {0}", in(reg) p, options(nostack, preserves_flags)) };
+            p += dline;
+        }
+    }
+    // SAFETY: 全系统屏障，确保缓存行写回在后续设备门铃 MMIO 写之前对外部总线可见。
+    unsafe { asm!("dsb sy", options(nostack, preserves_flags)) };
+}
+
+/// F0-4：DMA 接收/双向缓冲清理并失效至一致性点 PoC（`dc civac` + `dsb sy`；用 `civac` 而非裸 `ivac`
+/// 防止非缓存行对齐边界丢弃相邻 CPU 脏字节）。
+pub(crate) fn cache_poc_clean_invalidate(kva: usize, len: usize) {
+    if len == 0 {
+        return;
+    }
+    let dline = ctr_dmin_line(read_ctr_cached());
+    if let Some((mut p, end)) = cache_line_span(kva, len, dline) {
+        while p < end {
+            // SAFETY: kva 属内核有效 Normal WB 直映窗口，dc civac 先刷脏再失效该行。
+            unsafe { asm!("dc civac, {0}", in(reg) p, options(nostack, preserves_flags)) };
+            p += dline;
+        }
+    }
+    // SAFETY: 全系统屏障，确保缓存失效先于后续 CPU 读完成。
+    unsafe { asm!("dsb sy", options(nostack, preserves_flags)) };
+}
+
+/// F0-4：MMIO 窗口销毁时的内核级 VirtIO `STATUS = 0` 自动复位防线。
+///
+/// 扫描 `[pa_base, pa_base + size)` 与板级 `[VIRTIO_MMIO0_PA, +VIRTIO_MMIO_LEN)` 的交集内所有
+/// `0x200` 对齐传输槽：若 `MagicValue == 0x74726976`（`"virt"`）、`DeviceID != 0` 且当前 `Status != 0`，
+/// 立即经 `KERNEL_VA_BASE` Device-nGnRnE 高半直映写 `Status = 0` 并 `dsb sy`，切断崩溃驱动遗留的异步 DMA。
+pub(crate) fn reset_virtio_mmio_window(pa_base: usize, size: usize) {
+    const SLOT_STRIDE: usize = 0x200;
+    const VIRTIO_MAGIC: u32 = 0x7472_6976;
+    const OFF_DEVICE_ID: usize = 0x008;
+    const OFF_STATUS: usize = 0x070;
+
+    let Some(pa_end) = pa_base.checked_add(size) else {
+        return;
+    };
+    let win_start = pa_base.max(VIRTIO_MMIO0_PA);
+    let win_end = pa_end.min(VIRTIO_MMIO0_PA + VIRTIO_MMIO_LEN);
+    if win_start >= win_end {
+        return;
+    }
+    let mut slot_pa = (win_start + SLOT_STRIDE - 1) & !(SLOT_STRIDE - 1);
+    let mut did_reset = false;
+    while slot_pa + SLOT_STRIDE <= win_end {
+        let base_kva = KERNEL_VA_BASE + slot_pa;
+        // SAFETY: KERNEL_L2_LOW 已将 [0, 0x4000_0000) 映射为 EL1 Device-nGnRnE；32 位对齐寄存器访问。
+        unsafe {
+            let magic = (base_kva as *const u32).read_volatile();
+            if magic == VIRTIO_MAGIC {
+                let dev_id = ((base_kva + OFF_DEVICE_ID) as *const u32).read_volatile();
+                if dev_id != 0 {
+                    let status_ptr = (base_kva + OFF_STATUS) as *mut u32;
+                    if status_ptr.read_volatile() != 0 {
+                        status_ptr.write_volatile(0);
+                        did_reset = true;
+                    }
+                }
+            }
+        }
+        slot_pa += SLOT_STRIDE;
+    }
+    if did_reset {
+        // SAFETY: 全系统屏障，确保 VirtIO 复位写立即送达设备总线。
+        unsafe { asm!("dsb sy", options(nostack, preserves_flags)) };
+    }
 }
 
 #[inline(always)]

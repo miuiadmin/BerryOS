@@ -51,7 +51,7 @@ Q4 裁定原文：「BCTS 立为独立于 G0–G5 的认证套件」（12 号 §
 
 | 级 | 面 | 承诺 | 进 BCTS |
 |---|---|---|---|
-| L0 | syscall C-ABI（abi.toml 单源，v1 41 号在册、nr_ceiling=45） | 永久冻结、只加号不回收（ADR #55） | ✅ Tier 1 |
+| L0 | syscall C-ABI（abi.toml 单源，v1 42 号在册、nr_ceiling=46） | 永久冻结、只加号不回收（ADR #55） | ✅ Tier 1 |
 | L1 | 服务 wire 协议 | add-only + per-interface version（ADR #54/#59） | ✅ Tier 2 |
 | L2 | 公开库 API（berry-sys/libc/gfx/ui 及协议 crate 族） | semver + N=3 废弃窗口 | ✅ Tier 3 |
 | L3/L4 | 系统内部 API / 工具输出 | 零承诺 | **不进**（测零承诺面 = 制造伪契约；Hyrum 纪律同构，04 号 §4.1-1，:194） |
@@ -274,7 +274,7 @@ bcts: build
   回放时（清单条目数 < 下限 = 拒跑）。
 - **覆盖率报表**：冻结件按 L0/L1/L2 机器可读清单算「已测/未测」并给测试作者指路
   （PlaSA dashboard 同构，07 号 §1.5，:115）；v0 只出 L0 面（41 号逐号对账表，
-  以 `tools/abi.toml` 单源为准——随 nr_total 滚新，采集时点 implemented=40）；L1/L2 面报表随 V14。
+  以 `tools/abi.toml` 单源为准——随 nr_total 滚新，采集时点 implemented=40，现值注 41〔#610 0x1C 随迁〕）；L1/L2 面报表随 V14。
 
 ### 4.5 迁移路径与闸位
 
@@ -362,7 +362,7 @@ Q4 补裁原文（12 号:74）：谁跑 = OEM 自测 ＋ 平台裁决；第三�
 
 | # | 基线（不得砍/不得改） | 核验位 |
 |---|---|---|
-| 1 | L0 syscall 全集实现（在册 41 号、nr_ceiling=45 只加不删；禁「支持 30 个号」子集设备） | Tier 1 ＋ abi-check |
+| 1 | L0 syscall 全集实现（在册 42 号、nr_ceiling=46 只加不删；禁「支持 30 个号」子集设备） | Tier 1 ＋ abi-check |
 | 2 | L1 已发布接口全集（替换实现须说全量契约，禁「实现 fsproto 的一半」） | Tier 2 conformance |
 | 3 | 最小系统应用集与卸载语义（SETTINGS/FILES/CAMERA 不可卸载、分发渠道不可卸载） | Tier 1 装载谓词族 |
 | 4 | 能力词表不裁剪不私扩（G0 词表全网一致；特权只走系统签名＋白名单一条路） | 基线核（认证元数据） |
