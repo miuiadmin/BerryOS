@@ -953,7 +953,7 @@ QEMU_PID=$!
 # SIG）；无拓扑降级门，失败即 park loud。"SIG ok" 与现役标记两两互非子串
 # （现役无 `XSIG ok` 形态在册——前邻特例不需要）。
 # 命令行体验刀：+ CLI ok n= / + TERM ok n=——bsh 六内建（clear/uname/
-# uptime/sleep/type/history）行为面 + 哑终端管道契约钉板（CLI 十步：
+# uptime/sleep/type/history）行为面 + 哑终端管道契约钉板（CLI 十三步：
 # ⓪clear `\x1b[2J\x1b[H` 7B 逐字节对拍+带参照打幂等 ①uname 前缀+
 # 带参拒 ②uptime `up <N>s` 数值域+带参拒 ③sleep 1s 时钟差分 [1s,30s]
 # TCG 宽带+拒面四连（缺失/非数字/负数/超 60s 帽）+sleep 0 域内放行
