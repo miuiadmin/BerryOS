@@ -1162,6 +1162,20 @@ def _warn_input_armed(boot: Boot) -> None:
         )
 
 
+def _aged_wait(label: str, minutes: float) -> None:
+    # aged 注入用例（rejected 判例盲区补口）：armed 即测即退永远测不到
+    # 「放久楔死」（输入链新靴活/放久死的时变面）——click ready 门通过
+    # 后、注入前静置 N 分钟再点。默认 0 = 关闭，行为与现状等价（CI 零
+    # 扰动）。只给注入腿用；纯隔离验证腿（boot B）不加。
+    if minutes <= 0:
+        return
+    start = time.strftime("%H:%M:%S")
+    log(f"{label}: aged 等待起——静置 {minutes:g} 分钟（{start}）")
+    time.sleep(minutes * 60.0)
+    end = time.strftime("%H:%M:%S")
+    log(f"{label}: aged 等待止（{start} → {end}），续注入")
+
+
 def run_dual_boot(args) -> int:
     preflight(args)
     print_marker_status()
@@ -1228,6 +1242,10 @@ def run_dual_boot(args) -> int:
         log(f"boot A: display {w}x{h}（{src}）→ cell(0,0) 中心 ({cx},{cy})")
 
         boot_a.qmp_connect()
+        # aged 用例锚点：click ready 门已过、demo_before/quiet_before 快照
+        # 已取——静置窗后原快照续用（aged 期冒出的 up 行会被精确计数
+        # 验证面 FAIL 兜住，不静默吞）。
+        _aged_wait("boot A", args.aged_minutes)
         log("boot A: QMP 注入单击（abs → btn down → btn up）")
         boot_a.qmp.click(cx, cy, w, h)
 
@@ -1995,6 +2013,14 @@ def parse_args(argv=None):
         help="dual Boot A 等 click ready 的秒数（缺席即 FAIL，无 sleep 回退）",
     )
     ap.add_argument(
+        "--aged-minutes",
+        type=float,
+        default=0.0,
+        metavar="N",
+        help="aged 注入用例：boot A click ready 门通过后、注入单击前静置 "
+        "N 分钟再点（默认 0 关闭——CI 零扰动；boot B 只验隔离态不加）",
+    )
+    ap.add_argument(
         "--normal-boot",
         action="store_true",
         help="常态隔离：不造 GUI8.SMK，点击后断言 spawn 仍发生且零标记",
@@ -2009,6 +2035,21 @@ def parse_args(argv=None):
 
 def main(argv=None) -> int:
     args = parse_args(argv)
+    # aged 旗域校验（对抗审查 P2/P3）：非有限值（NaN 参与 >= 比较为
+    # False 可穿过 _aged_wait 的 <=0 守卫、sleep(NaN) 直接 traceback）
+    # 与负值一并显式拒绝；--normal-boot 腿不读 aged_minutes——组合
+    # 显式拒绝防「静默忽略被误读为已 aged」。
+    if not (args.aged_minutes >= 0) or args.aged_minutes == float("inf"):
+        print(
+            "gui8-smoke: FAIL: --aged-minutes 须为非负有限分钟数",
+            file=sys.stderr, flush=True)
+        return 2
+    if args.aged_minutes > 0 and args.normal_boot:
+        print(
+            "gui8-smoke: FAIL: --aged-minutes 暂不支持 --normal-boot 组合"
+            "（该腿无 click ready 门锚点，不加 aged 面）",
+            file=sys.stderr, flush=True)
+        return 2
     try:
         if args.self_test:
             return self_test(args)
