@@ -16,7 +16,7 @@
 # bash tools/fwcfg-check.sh）。
 
 version = 1
-updated = "2026-11-20"
+updated = "2026-11-18"
 namespace = "opt/berry/"
 
 # —— rootfs 递送族（file / cpio 字节流；两键并在 rootfs0 优先）——
@@ -156,13 +156,6 @@ consumer = "kernel/src/telemetry.rs（记录面开关）"
 polarity = "恰 1 字节 '0'=关；缺席/他值=开（默认面零漂移；计数器族不随关）"
 
 [[keys]]
-name = "sbench"
-kind = "string"
-injectors = ["tools/bench.py（run_icount icount 族 qemu_cmd 恒注 string=1，默认 sbench=True；trace-dual 两臂 sbench=False 红线禁递——TRACE_CAP 证书面 = 前调度器纪元项）"]
-consumer = "kernel/src/bench.rs 调度器纪元基准门 SBENCH_PROBE_NAME（在位才 spawn switch_pair 测量对；值面不解析——键在即全配置，pilat 同款）"
-polarity = "在位 = switch_pair 行必出（基线面恒全八行）；缺席 = 仅缺 switch_pair 行，BENCH ok n=8 trailer 恒发"
-
-[[keys]]
 name = "rwake"
 kind = "string"
 injectors = ["（无仓内注入方——手拼 -fw_cfg 专递，调度审计 08 号实录）"]
@@ -181,6 +174,13 @@ name = "pilat"
 kind = "string"
 injectors = ["（无仓内注入方——G 卡收割手拼 -fw_cfg 专递，rwake 同款；复现配方单源 = research/调度彻底计划/17-PI三任务链延迟.md）"]
 consumer = "kernel/src/main.rs PI 三任务链延迟探针门 PILAT_PROBE_NAME（在位才 spawn 四任务组 + set_slice_hz(100) 测量档早读；值面不解析——键在即全配置）"
+polarity = "在位才 spawn；缺席 = run/smoke 零扰动（EFI 路天然缺席）"
+
+[[keys]]
+name = "sbench"
+kind = "string"
+injectors = ["（无仓内注入方——bench.py icount 族 qemu_cmd 恒递此键 = 基线面恒全八行；trace-dual 两臂红线禁递〔TRACE_CAP 证书面 = 前调度器纪元项〕；判读法单源 = kernel/src/bench.rs sbench 门控键段头注）"]
+consumer = "kernel/src/bench.rs SBENCH_PROBE_NAME（在位才 spawn sb_task_a/sb_task_b switch_pair 测量任务对——04 号审计基线缺口刀起 BENCH 通道 n=6→n=8；值面不解析：键在即全配置；smoke/生产 boot 缺席 = 仅缺 switch_pair 行，trailer 恒 n=8）"
 polarity = "在位才 spawn；缺席 = run/smoke 零扰动（EFI 路天然缺席）"
 
 [[keys]]

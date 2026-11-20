@@ -1,7 +1,8 @@
 # iOS 视觉与流体交互复刻标准（v1.0）
 
 Type: standard
-Status: current
+Status: superseded
+Superseded-by: [iOS与鸿蒙融合液态玻璃及光场交互标准-v2.0.md](iOS与鸿蒙融合液态玻璃及光场交互标准-v2.0.md)
 Updated: 2026-11-18
 Version: 1.0.0
 

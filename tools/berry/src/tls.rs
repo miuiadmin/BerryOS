@@ -315,3 +315,28 @@ mod tests {
         assert!(e.hint.is_some());
     }
 }
+
+/// 十三刀补：server_name 括号剥离深面（中缀/前缀括号不动——trim 边
+/// 契约与 is_loopback 同式；bare IPv6 直入 IpAddress 档）。
+#[cfg(test)]
+mod server_name_tests {
+    use super::*;
+
+    #[test]
+    fn server_name_bracket_edge_forms() {
+        // 前后缀括号成对剥（dial_host 输出形）。
+        assert!(matches!(server_name("[fe80::1]").unwrap(), ServerName::IpAddress(_)));
+        // 中缀括号不是剥离目标：整体当 DNS 名解析（非法名拒，code 7）。
+        let e = server_name("host[name").unwrap_err();
+        assert_eq!(e.code, 7);
+        // bare IPv6 不带括号直接可解析（split 前的原始 host 形）。
+        assert!(matches!(server_name("::1").unwrap(), ServerName::IpAddress(_)));
+        // 尾缀孤立括号被宽松 trim 剥掉（is_loopback 同款 trim 边契约）：
+        // "name]" → "name" 落 DnsName 档——钉实际行为防重构漂移。
+        assert!(matches!(server_name("name]").unwrap(), ServerName::DnsName(_)));
+        // 空串拒形。
+        assert!(server_name("").is_err());
+        // DNS 名保持 DnsName 档（IP 优先、非 IP 落 DNS 的分档律）。
+        assert!(matches!(server_name("berry.local").unwrap(), ServerName::DnsName(_)));
+    }
+}

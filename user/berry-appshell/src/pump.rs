@@ -191,6 +191,13 @@ pub trait HostHooks {
     /// 非本批面。默认空实现：launcher 形态不收键零改零警；GUI 终端类应用
     /// 覆写收键。
     fn on_key(&mut self, _ui: &mut UiMain, _code: u8, _ts_ns: u64) {}
+
+    /// 渲染让位（GUI lane 债修 2026-11-20：launcher 侧 render_hold 实现的
+    /// trait 声明——默认 false（非 launcher 实现者零改），launcher spawn
+    /// 守卫窗内 true 避让 guifbd present 域单飞窗）。
+    fn render_hold(&mut self) -> bool {
+        false
+    }
 }
 
 /// pump 装配参数。

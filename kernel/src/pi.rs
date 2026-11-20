@@ -128,50 +128,34 @@ fn recompute_locked() {
     if kl_phys {
         berry_hal_aarch64::kern_lock::kern_acquire();
     }
-    for _ in 0..PI_MAX_HOPS {
-        let changed = Cell::new(false);
-        berry_sched::for_each_sleeper(|donor| {
-            let Some((peer, need)) = donor_edge(donor) else { return };
-            // donor 的有效优先级 = max(尾趟才刷的 prio_effective, 本轮**实时**的
-            // pi_inherited)——后者是链式传播的命门：pi 在轮内被上游更新后，同轮/
-            // 下轮的下游捐赠立刻可见（只读 prio_effective 会把传播截死在一跳，
-            // 轮帽「每轮一跳」的语义也随之落空）。也避免嵌套闭包再借 donor。
-            let d_eff = donor.prio_effective.max(donor.pi_inherited);
-            berry_sched::for_each_sleeper(|cand| {
-                let Some(ht) = holder_table(cand) else { return };
-                if ht.holder_has(peer, need) && d_eff > cand.pi_inherited {
-                    cand.pi_inherited = d_eff;
-                    changed.set(true);
-                }
-            });
-            // 形 B：本核 RQ 受捐扫描（与 SLEEPQ 受捐同形——判定同一
-            // `holder_has`）。donor 所等资源的 peer 端点持有者可能正
-            // runnable（高优 client 阻塞、低优 server 在环等 CPU——
-            // Mars Pathfinder 形态）：boost 只有写进环上持有者的
-            // pi_inherited 并经尾趟刷进 prio_effective，pick 才看得见。
-            // 钩子发射点与入睡摘环序保证 SLEEPQ/RQ 任务集此刻不相交
-            //（block 先摘环后发钩 / wake 先入环后发钩）——无双访。
-            // **共享表护栏（形 B 边界）**：`proc_tag==0`（内核侧共享表——
-            // 「视作持有表内一切」的 v1 粗粒度）的 runnable 者不作受捐方
-            // ——粗粒度对睡眠者无害（J7 面，4-3b 起语义不变），对环上是
-            // 4-5a 式 boost 喷洒：任一 donor 入睡即全环抬升（fa 对实证
-            // ——pong(32) 一睡、共享表全环任务喷到 32：矩阵优先级塌平
-            // G1.5 超时 + ping 升 32 塌掉 32>16 直切契约）。受捐方须
-            // 真实可识别（proc_tag≠0 = EL0 进程表/spawn_with_tag 私有表
-            // ——生产 client/server 拓扑即此形）。
-            berry_sched::for_each_runnable(|cand| {
-                if cand.proc_tag == 0 {
-                    return; // 共享表 runnable：不可识别持有面——不捐（喷洒护栏）
-                }
-                let Some(ht) = holder_table(cand) else { return };
-                if ht.holder_has(peer, need) && d_eff > cand.pi_inherited {
-                    cand.pi_inherited = d_eff;
-                    changed.set(true);
-                }
-            });
-        });
-        if !changed.get() {
-            break; // 不动点：再无传播
+    // W3-Q99（02 号机会二刀 b）：传播相静态边缓存。三窗（SQ 已持 → RQ →
+    // KL 子窗）冻结下，边资格的判据面——donor 的 wait_obj/wait_signals/
+    // peer 指针、cand 的 proc_tag 与表内容——跨全部 8 跳静态（传播只写
+    // pi_inherited 与 changed 标志，不触任何边资格字段）。故首跳建相时把
+    // 命中的 (donor → cand) 真边收入 [`PI_EDGE_CACHE`] 有界数组，余跳只
+    // 迭代边对（免每跳每 donor 的 donor_edge 解引用 + 每 cand 的
+    // holder_table 反查与 holder_has 全槽扫——原最贵项 O(donor×候选×槽)
+    // 降为 O(真边)）。**溢出全回退**：真边数超 [`PI_EDGE_CAP`] 时本趟
+    // 置 `cached = false`，8 跳全走下方原路径（语义兜底，v1 睡眠者
+    // 个位数下不可达；host 钉板 piface::propagate_cached 对拍两形终态
+    // 逐位一致）。边的应用序 = 建相发现序 = 原「外 donor 链序、内 cand
+    // SLEEPQ→RQ 序」的同序展开——同轮实时可见律的中间态亦逐位保持。
+    let cached = Cell::new(true);
+    build_edge_cache(&cached);
+    if cached.get() {
+        // 缓存形：每跳只迭代真边对。建相趟纯收集零应用——溢出回退侧由此
+        // 保持「从同一初始态起跳」的逐位等价（host 钉板
+        // `piface::propagate_cached` 对拍两形终态）。
+        for _ in 0..PI_MAX_HOPS {
+            if !propagate_edges_cached() {
+                break; // 不动点：再无传播
+            }
+        }
+    } else {
+        for _ in 0..PI_MAX_HOPS {
+            if !propagate_full() {
+                break; // 不动点：再无传播
+            }
         }
     }
     if kl_phys {
@@ -210,6 +194,161 @@ fn recompute_locked() {
     berry_sched::pi_derived_recount(donors.get());
     // RQ 窗闭（后于 KL 子窗——开窗序的严格逆）。
     berry_sched::pi_rq_unlock(rq_phys);
+}
+
+// ---- W3-Q99（02 号机会二刀 b）：传播相静态边缓存 ----
+//
+// 结构与容量：真边 (donor, cand) 对的收入数组。`NonNull<Task>` 指针在
+// 三窗冻结下跨全 8 跳有效（retain 钉住纪律 + 钩子发射点任务集不变），
+// 故边只存指针对——零分配纪律不破（const 数组，无运行期分配）。容量
+// 64 = 真边子上界估算（v1 睡眠者个位数、每 donor 真受捐者个位数——64
+// 已是宽松帽；超过即整体回退原路径，语义零损失）。static mut 形态与
+// SLEEPQ/KEY_HEADS 同款（单核 IRQ 屏蔽窗内访问；writable_globals
+// 在册登记——auto_group 判 kernel/src/pi.rs 归 other）。
+const PI_EDGE_CAP: usize = 64;
+
+/// 单条真边：donor → cand 指针对（身份键，跨 8 跳不解引用语义）。
+#[derive(Clone, Copy)]
+struct EdgeSlot {
+    donor: NonNull<Task>,
+    cand: NonNull<Task>,
+}
+
+static mut PI_EDGE_CACHE: [EdgeSlot; PI_EDGE_CAP] =
+    [EdgeSlot { donor: NonNull::dangling(), cand: NonNull::dangling() }; PI_EDGE_CAP];
+/// 缓存内有效边数（0 = 空；建相趟入口重置——每趟重建无陈旧边）。
+static mut PI_EDGE_LEN: usize = 0;
+
+/// 建相趟：单遍全扫收集真边（donor_edge 判过 + 两域受捐判定 holder_has
+/// 命中），**纯收集零应用**——pi_inherited 清零后起跑的传播语义与原路径
+/// 逐位一致（建相不改任何 pi 字段，两形同初始态）。溢出（真边 > 帽）置
+/// `cached = false`，调用方整趟回退原路径。
+fn build_edge_cache(cached: &Cell<bool>) {
+    // SAFETY: SLEEPQ 同款单核顺序访问契约（recompute_locked 的 SQ 窗内
+    // 调用；IRQ 屏蔽窗内无并发写者）。
+    unsafe {
+        PI_EDGE_LEN = 0;
+    }
+    let overflow = Cell::new(false);
+    berry_sched::for_each_sleeper(|donor| {
+        if overflow.get() {
+            return;
+        }
+        let Some((peer, need)) = donor_edge(donor) else { return };
+        // 受捐两域内域序 = 原路径内层序（SLEEPQ 先、RQ 后）——边应用序与
+        // 原路径逐位同序，同轮实时可见律的中间态亦保持。
+        berry_sched::for_each_sleeper(|cand| {
+            let Some(ht) = holder_table(cand) else { return };
+            if ht.holder_has(peer, need) {
+                push_edge(donor, cand, &overflow);
+            }
+        });
+        // 形 B：RQ 域受捐（共享表护栏 proc_tag==0 拒——原路径同款）。
+        berry_sched::for_each_runnable(|cand| {
+            if cand.proc_tag == 0 {
+                return; // 共享表 runnable：不可识别持有面——不捐（喷洒护栏）
+            }
+            let Some(ht) = holder_table(cand) else { return };
+            if ht.holder_has(peer, need) {
+                push_edge(donor, cand, &overflow);
+            }
+        });
+    });
+    if overflow.get() {
+        cached.set(false);
+    }
+}
+
+/// 单边入缓存；满即置溢出（调用方回退原路径）。
+fn push_edge(donor: &Task, cand: &Task, overflow: &Cell<bool>) {
+    // SAFETY: 同 build_edge_cache（SQ/RQ 窗内串行）。
+    let n = unsafe { PI_EDGE_LEN };
+    if n >= PI_EDGE_CAP {
+        overflow.set(true);
+        return;
+    }
+    // SAFETY: donor/cand 来自 for_each_* 迭代器的 &mut Task 投影，指针
+    // 有效且三窗冻结下跨全 8 跳钉住（retain 纪律）；存裸指针对仅作边
+    // 身份，使用点才解引用。PI_EDGE_CACHE 写窗 = recompute_locked 的
+    // 三窗内，与 SLEEPQ 访问同契约。
+    unsafe {
+        PI_EDGE_CACHE[n] = EdgeSlot {
+            donor: NonNull::from(donor),
+            cand: NonNull::from(cand),
+        };
+        PI_EDGE_LEN = n + 1;
+    }
+}
+
+/// 缓存形传播一跳：只迭代真边对（免 donor_edge 解引用 + holder_table
+/// 反查 + holder_has 全槽扫——原每跳最贵项 O(donor×候选×槽) 降为
+/// O(真边)）。返回本轮是否有变化。
+fn propagate_edges_cached() -> bool {
+    let changed = Cell::new(false);
+    // SAFETY: 读 len 与边数组同窗（recompute_locked 三窗内调用）。
+    let n = unsafe { PI_EDGE_LEN };
+    for i in 0..n {
+        // SAFETY: 建相趟存入的指针在三窗冻结 + retain 钉住下有效；本函数
+        // 只在 recompute_locked 的 KL 子窗内调用（与建相同窗）。
+        let mut slot = unsafe { PI_EDGE_CACHE[i] };
+        // SAFETY: 同上——donor 只读。
+        let donor = unsafe { slot.donor.as_ref() };
+        let d_eff = donor.prio_effective.max(donor.pi_inherited);
+        // SAFETY: 同上——cand 需写 pi_inherited（本传播唯一写点，与原路径
+        // 同一 Task 字段，KL 窗内合法）。
+        let cand = unsafe { slot.cand.as_mut() };
+        if d_eff > cand.pi_inherited {
+            cand.pi_inherited = d_eff;
+            changed.set(true);
+        }
+    }
+    changed.get()
+}
+
+/// 原路径传播一跳（溢出回退面）：与缓存形前版本逐字等价的原始扫描。
+fn propagate_full() -> bool {
+    let changed = Cell::new(false);
+    berry_sched::for_each_sleeper(|donor| {
+        let Some((peer, need)) = donor_edge(donor) else { return };
+        // donor 的有效优先级 = max(尾趟才刷的 prio_effective, 本轮**实时**的
+        // pi_inherited)——后者是链式传播的命门：pi 在轮内被上游更新后，同轮/
+        // 下轮的下游捐赠立刻可见（只读 prio_effective 会把传播截死在一跳，
+        // 轮帽「每轮一跳」的语义也随之落空）。也避免嵌套闭包再借 donor。
+        let d_eff = donor.prio_effective.max(donor.pi_inherited);
+        berry_sched::for_each_sleeper(|cand| {
+            let Some(ht) = holder_table(cand) else { return };
+            if ht.holder_has(peer, need) && d_eff > cand.pi_inherited {
+                cand.pi_inherited = d_eff;
+                changed.set(true);
+            }
+        });
+        // 形 B：本核 RQ 受捐扫描（与 SLEEPQ 受捐同形——判定同一
+        // `holder_has`）。donor 所等资源的 peer 端点持有者可能正
+        // runnable（高优 client 阻塞、低优 server 在环等 CPU——
+        // Mars Pathfinder 形态）：boost 只有写进环上持有者的
+        // pi_inherited 并经尾趟刷进 prio_effective，pick 才看得见。
+        // 钩子发射点与入睡摘环序保证 SLEEPQ/RQ 任务集此刻不相交
+        //（block 先摘环后发钩 / wake 先入环后发钩）——无双访。
+        // **共享表护栏（形 B 边界）**：`proc_tag==0`（内核侧共享表——
+        // 「视作持有表内一切」的 v1 粗粒度）的 runnable 者不作受捐方
+        // ——粗粒度对睡眠者无害（J7 面，4-3b 起语义不变），对环上是
+        // 4-5a 式 boost 喷洒：任一 donor 入睡即全环抬升（fa 对实证
+        // ——pong(32) 一睡、共享表全环任务喷到 32：矩阵优先级塌平
+        // G1.5 超时 + ping 升 32 塌掉 32>16 直切契约）。受捐方须
+        // 真实可识别（proc_tag≠0 = EL0 进程表/spawn_with_tag 私有表
+        // ——生产 client/server 拓扑即此形）。
+        berry_sched::for_each_runnable(|cand| {
+            if cand.proc_tag == 0 {
+                return; // 共享表 runnable：不可识别持有面——不捐（喷洒护栏）
+            }
+            let Some(ht) = holder_table(cand) else { return };
+            if ht.holder_has(peer, need) && d_eff > cand.pi_inherited {
+                cand.pi_inherited = d_eff;
+                changed.set(true);
+            }
+        });
+    });
+    changed.get()
 }
 
 /// donor 的捐赠边（机械壳——资格判定单源 `berry_piface::donor_edge`）：
