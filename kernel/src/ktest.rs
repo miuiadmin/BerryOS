@@ -179,6 +179,11 @@ pub fn run() {
     // + integrity 双边等式执法的配套钉板（本地 Runqueue；末位新号纪律
     // ——ktest done 前；sched::init 前跑，par 门恒关不涉偷取触发面）。
     test_density_ledger();
+    // F0-3/F0-4（回流第 1 步复活批——26 号/27 号件）：锁守卫 RAII 化配套
+    // 钉板 + DMA 连续块/缓存同步/MMIO 复位自检（定义体随五文件贴回链
+    // 复活，27 号刀②）。末位新号纪律——ktest done 前。
+    test_f0_3();
+    test_f0_4();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     crate::splash::step(8, b"ktest done");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
@@ -355,8 +360,8 @@ fn test_syscall() {
     //     「options≠0 须拒」升「未知位须拒」+ bit0 受纳正测（建毕即 close）。
     assert_eq!(svc6(NR_VMO_CREATE as u64, 0, 0, &raw mut OUT as u64, 0, 0, 0), -22,
         "SYSCALL：vmo_create size=0 须 -EINVAL");
-    assert_eq!(svc6(NR_VMO_CREATE as u64, PAGE_SIZE as u64, 2, &raw mut OUT as u64, 0, 0, 0), -22,
-        "SYSCALL：vmo_create options 未知位须 -EINVAL（bit0=DEMAND 已激活）");
+    assert_eq!(svc6(NR_VMO_CREATE as u64, PAGE_SIZE as u64, 8, &raw mut OUT as u64, 0, 0, 0), -22,
+        "SYSCALL：vmo_create options 未知位须 -EINVAL（bit0=DEMAND / bit1=CONTIGUOUS / bit2=PINNED 已激活）");
     assert_eq!(
         svc6(NR_VMO_CREATE as u64, PAGE_SIZE as u64, 0x1_0000_0001,
              &raw mut OUT as u64, 0, 0, 0),
@@ -13482,3 +13487,248 @@ fn test_density_ledger() {
     // 任务体泄漏不回收（同 test_policy 政策——v1 无 reap）。
     berry_hal_aarch64::uart_puts(b"DENS ok n=4\n");
 }
+/// F0-3：验证 `KlockIrqSaveGuard` / `TableIrqSaveGuard` 在关中断上下文不提前开中断、
+/// `tlbshoot::test_inline_consume_once()` 对飞内联消费自解、以及 `ALLOC_LOCK` 零泄漏往返。
+fn test_f0_3() {
+    use berry_mm::va::PAGE_SIZE;
+    let daif_before = berry_hal_aarch64::irq_save();
+    assert_ne!(
+        daif_before & 0x80,
+        0,
+        "F0-3: ktest 入口 DAIF.I 应处于屏蔽态"
+    );
+    {
+        let _kl = berry_hal_aarch64::kern_lock::klock_enter_irqsave();
+        assert!(
+            berry_hal_aarch64::kern_lock::kl_held(),
+            "F0-3: KlockIrqSaveGuard 窗内应持有 KL"
+        );
+        // 重入层：TableIrqSaveGuard 在 kl_held() 下零死锁退化。
+        let _tbl = berry_hal_aarch64::kern_lock::kern_acquire_irqsave_reentrant();
+    }
+    let daif_after_kl = berry_hal_aarch64::irq_save();
+    assert_eq!(
+        daif_after_kl & 0x80,
+        daif_before & 0x80,
+        "F0-3: KlockIrqSaveGuard 退出绝不可误清 DAIF.I（防止异常出口 ELR/SPSR 踩踏）"
+    );
+    {
+        let _tbl = berry_hal_aarch64::kern_lock::kern_acquire_irqsave_reentrant();
+    }
+    assert_eq!(
+        berry_hal_aarch64::irq_save() & 0x80,
+        daif_before & 0x80,
+        "F0-3: TableIrqSaveGuard 退出绝不可误清 DAIF.I"
+    );
+
+    assert!(
+        berry_hal_aarch64::tlbshoot::test_inline_consume_once(),
+        "F0-3: tlbshoot 对飞内联代消费推进 ACKS 失败"
+    );
+
+    let base_pages = crate::mm::allocated_pages();
+    {
+        let mut vmo = crate::vmo::Vmo::create(PAGE_SIZE * 2).expect("F0-3: Vmo::create");
+        vmo.commit_global(0, PAGE_SIZE * 2)
+            .expect("F0-3: commit_global");
+        assert_eq!(
+            crate::mm::allocated_pages(),
+            base_pages + 2,
+            "F0-3: commit_global 分配页数不符"
+        );
+        vmo.decommit_global(0, PAGE_SIZE)
+            .expect("F0-3: decommit_global");
+        assert_eq!(
+            crate::mm::allocated_pages(),
+            base_pages + 1,
+            "F0-3: decommit_global 退还页数不符"
+        );
+    }
+    assert_eq!(
+        crate::mm::allocated_pages(),
+        base_pages,
+        "F0-3: Vmo::Drop 经 ALLOC_LOCK 回收后页数未归位"
+    );
+}
+
+
+/// F0-4：验证 `VMO_OPT_CONTIGUOUS | VMO_OPT_PINNED` 5 页物理连续阶块分配/整阶零泄漏归还、
+/// `decommit` `-ENOTSUP` 防拆块、`0x1C vmo_cache_op` 读写权限门控及 MMIO `Drop` VirtIO 自动复位。
+fn test_f0_4() {
+    use crate::abi_gen::{
+        ERR_ACCESS_DENIED, ERR_INVALID_ARG, ERR_NOT_SUPPORTED, NR_HANDLE_CLOSE,
+        NR_HANDLE_DUPLICATE, NR_VMO_CACHE_OP, NR_VMO_COMMIT, NR_VMO_CREATE, NR_VMO_DECOMMIT,
+        NR_VMO_GET_PHYS, VMO_CACHE_OP_CLEAN, VMO_CACHE_OP_CLEAN_INVALIDATE,
+        VMO_CACHE_OP_INVALIDATE, VMO_OPT_CONTIGUOUS, VMO_OPT_DEMAND, VMO_OPT_PINNED,
+    };
+    use crate::handle::RIGHT_READ;
+    use berry_mm::va::PAGE_SIZE;
+
+    // 1. DEMAND 与 CONTIGUOUS 互斥须拒 -EINVAL。
+    let mut bad_h: u32 = 0;
+    assert_eq!(
+        svc4(
+            NR_VMO_CREATE as u64,
+            PAGE_SIZE as u64,
+            VMO_OPT_DEMAND | VMO_OPT_CONTIGUOUS,
+            &raw mut bad_h as u64,
+        ),
+        ERR_INVALID_ARG as i64,
+        "F0-4: DEMAND|CONTIGUOUS 须拒 -EINVAL"
+    );
+
+    // 2. 5 页（20KiB = vnet DMA 几何）CONTIGUOUS|PINNED：占 order=3（8 页），5 页 PA 严格差 4096B。
+    let base_pages = crate::mm::allocated_pages();
+    let mut hv: u32 = 0;
+    assert_eq!(
+        svc4(
+            NR_VMO_CREATE as u64,
+            (5 * PAGE_SIZE) as u64,
+            VMO_OPT_CONTIGUOUS | VMO_OPT_PINNED,
+            &raw mut hv as u64,
+        ),
+        0,
+        "F0-4: vmo_create(5p, CONTIGUOUS|PINNED)"
+    );
+    assert_eq!(
+        crate::mm::allocated_pages(),
+        base_pages + 8,
+        "F0-4: 5 页连续块应占 order=3（8 页）"
+    );
+    let mut pa0: u64 = 0;
+    assert_eq!(
+        svc4(NR_VMO_GET_PHYS as u64, hv as u64, 0, &raw mut pa0 as u64),
+        0,
+        "F0-4: get_phys(0)"
+    );
+    for i in 1..5u64 {
+        let mut pai: u64 = 0;
+        assert_eq!(
+            svc4(
+                NR_VMO_GET_PHYS as u64,
+                hv as u64,
+                i * PAGE_SIZE as u64,
+                &raw mut pai as u64,
+            ),
+            0,
+            "F0-4: get_phys({i})"
+        );
+        assert_eq!(
+            pai,
+            pa0 + i * PAGE_SIZE as u64,
+            "F0-4: 第 {i} 页物理地址必须与首页严格连续"
+        );
+    }
+
+    // 3. commit 幂等 0（不额外吃页），decommit 拒 -ENOTSUP。
+    assert_eq!(
+        svc4(NR_VMO_COMMIT as u64, hv as u64, 0, (5 * PAGE_SIZE) as u64),
+        0,
+        "F0-4: 连续 VMO 幂等 commit 须成功"
+    );
+    assert_eq!(
+        crate::mm::allocated_pages(),
+        base_pages + 8,
+        "F0-4: 幂等 commit 不得额外分配物理页"
+    );
+    assert_eq!(
+        svc4(NR_VMO_DECOMMIT as u64, hv as u64, 0, PAGE_SIZE as u64),
+        ERR_NOT_SUPPORTED as i64,
+        "F0-4: 连续/钉死 VMO 禁止 decommit"
+    );
+
+    // 4. 0x1C vmo_cache_op：跨页 CLEAN / INVALIDATE / CLEAN_INVALIDATE 全通；只读句柄拒 INVALIDATE。
+    assert_eq!(
+        svc6(
+            NR_VMO_CACHE_OP as u64,
+            hv as u64,
+            VMO_CACHE_OP_CLEAN,
+            8192,
+            8000,
+            0,
+            0,
+        ),
+        0,
+        "F0-4: vmo_cache_op(CLEAN, 跨页 8000B)"
+    );
+    assert_eq!(
+        svc6(
+            NR_VMO_CACHE_OP as u64,
+            hv as u64,
+            VMO_CACHE_OP_INVALIDATE,
+            8192,
+            8000,
+            0,
+            0,
+        ),
+        0,
+        "F0-4: vmo_cache_op(INVALIDATE, 跨页 8000B)"
+    );
+    assert_eq!(
+        svc6(
+            NR_VMO_CACHE_OP as u64,
+            hv as u64,
+            VMO_CACHE_OP_CLEAN_INVALIDATE,
+            0,
+            4096,
+            0,
+            0,
+        ),
+        0,
+        "F0-4: vmo_cache_op(CLEAN_INVALIDATE)"
+    );
+    let mut h_ro: u32 = 0;
+    assert_eq!(
+        svc4(
+            NR_HANDLE_DUPLICATE as u64,
+            hv as u64,
+            RIGHT_READ,
+            &raw mut h_ro as u64,
+        ),
+        0,
+        "F0-4: dup READ-only"
+    );
+    assert_eq!(
+        svc6(
+            NR_VMO_CACHE_OP as u64,
+            h_ro as u64,
+            VMO_CACHE_OP_CLEAN,
+            0,
+            64,
+            0,
+            0,
+        ),
+        0,
+        "F0-4: READ-only 句柄允许 CLEAN"
+    );
+    assert_eq!(
+        svc6(
+            NR_VMO_CACHE_OP as u64,
+            h_ro as u64,
+            VMO_CACHE_OP_INVALIDATE,
+            0,
+            64,
+            0,
+            0,
+        ),
+        ERR_ACCESS_DENIED as i64,
+        "F0-4: READ-only 句柄必须拒绝 INVALIDATE（-EACCES）"
+    );
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, h_ro as u64, 0, 0), 0);
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hv as u64, 0, 0), 0);
+    assert_eq!(
+        crate::mm::allocated_pages(),
+        base_pages,
+        "F0-4: 关闭连续 VMO 后 8 页阶块须完整归还伙伴分配器（0 页泄漏）"
+    );
+
+    // 5. MMIO 窗口 Drop 自动复位路径（有在席设备时把非零 STATUS 清回 0；空槽安全无操作）。
+    {
+        let _mmio = crate::vmo::Vmo::create_mmio(
+            berry_hal_aarch64::VIRTIO_MMIO0_PA,
+            berry_hal_aarch64::VIRTIO_MMIO_LEN,
+        )
+        .expect("F0-4: create_mmio");
+    }
+}
+

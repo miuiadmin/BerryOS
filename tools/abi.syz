@@ -26,6 +26,11 @@ type berry_time uint64
 # options 位（未知位一律 -EINVAL；scope = 归属 syscall——同值异 scope 不冲突，DOC-6 修：旧裸值两条 1 << 0 无注记）:
 #   CHAN_OPT_NO_INTENT = 1 << 0  (0x1)（scope: channel_create）
 #   VMO_OPT_DEMAND = 1 << 0  (0x1)（scope: vmo_create）
+#   VMO_OPT_CONTIGUOUS = 1 << 1  (0x2)（scope: vmo_create）
+#   VMO_OPT_PINNED = 1 << 2  (0x4)（scope: vmo_create）
+#   VMO_CACHE_OP_CLEAN = 1 << 0  (0x1)（scope: vmo_cache_op）
+#   VMO_CACHE_OP_INVALIDATE = 1 << 1  (0x2)（scope: vmo_cache_op）
+#   VMO_CACHE_OP_CLEAN_INVALIDATE = 1 << 2  (0x4)（scope: vmo_cache_op）
 # rights 位（berry_rights；权限在 handle 不在对象）:
 #   BERRY_RIGHT_READ = 1 << 0  (0x1)
 #   BERRY_RIGHT_WRITE = 1 << 1  (0x2)
@@ -63,7 +68,7 @@ type berry_time uint64
 #   BERRY_ERR_OUT_OF_RANGE = -34
 #   BERRY_ERR_FAULT = -14
 
-# ---- syscall 入口（§4 编号表全量在册；v1 41 号、已实现 40；
+# ---- syscall 入口（§4 编号表全量在册；v1 42 号、已实现 41；
 #      a1..a6 ↔ ARM64 SVC x1..x6 全宽占位参——参数面待 §8.3 原型层（v2 挂账）补）----
 
 # **handle / 通用对象**
@@ -96,6 +101,8 @@ vmo_decommit(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 vmo_read(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x15 vmo_write（v1）——内核中介写
 vmo_write(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x1C vmo_cache_op（v1）——非一致性 DMA 数据缓存维护（F0-4：CLEAN/INVALIDATE/CLEAN_INVALIDATE 按 CTR_EL0.DminLine 直映 dc cvac/civac + dsb sy；RIGHT_READ/WRITE 门控）
+vmo_cache_op(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x16 vmar_map（v1）——VMO 映射进区间
 vmar_map(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x17 vmar_unmap（v1）——解除映射
