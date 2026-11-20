@@ -99,7 +99,7 @@ place() 只在 spawn 调用(sched.rs:755 注:「wake/expire 再入队回 home �
 
 THROTTLE 位使任务不可再出选,但单任务独占核时 pick None ⇒ on_irq_tick 不切换(sched.rs:3806-3830 的 go=None 路)⇒ cur 继续跑到 block/yield/exit。单核同形(非 SMP 退化)。
 
-**修复(2026-11-16 F5 刀,判据/切换舞/醒源三件,sched/ 内)**:① 判据单源 `sched::throttle_yield_due(cur)`(HELD_THROTTLE 位——band 越线与 S5-c 逐任务预算两位写者的统一面);② on_irq_tick 片燃尽支出选 None 臂强制让点(RQ 窗内 cur Ready 化——在环保留不摘环;CPU0 切 IDLE_TASK/idle 环热旋支承接翻期,副核 set_current(null) 切 sec_park_ctx 由 park_recheck 承接,均 block/exit pick-None 臂同形);③ 醒源护栏 `band::nearest_throttle_wake`(armed+throttled 槽的 DEADLINES 最小值)并入 `nearest_deadline`——缺此面深 park mask CNTV 无 tick,让点变永久饿死(sweep 永不再跑)。ktest `THRYLD ok n=4` 钉决策面四面;连带 dpg_press 硬 panic 门扩「带执法在飞降软」(any_armed——F5 使 utility 带进入真实配额占空比,翻期整批回场 Burst 合法推高缺页供给墙钟,单核静默场前提与 SMP 形同构性破,详 note)。
+**修复(2026-11-16 F5 刀,判据/切换舞/醒源三件,sched/ 内)**:① 判据单源 `sched::throttle_yield_due(cur)`(HELD_THROTTLE 位——band 越线与 S5-c 逐任务预算两位写者的统一面);② on_irq_tick 片燃尽支出选 None 臂强制让点(RQ 窗内 cur Ready 化——在环保留不摘环;CPU0 切 IDLE_TASK/idle 环热旋支承接翻期,副核 set_current(null) 切 sec_park_ctx 由 park_recheck 承接,均 block/exit pick-None 臂同形);③ 醒源护栏 `band::nearest_throttle_wake`(armed+throttled 槽的 DEADLINES 最小值)并入 `nearest_deadline`——缺此面深 park mask CNTV 无 tick,让点变永久饿死(sweep 永不再跑)。ktest `THRYLD ok n=4` 钉决策面四面〔2026-11-18 醒源刀后 n=5——T5 增逐任务面〕;连带 dpg_press 硬 panic 门扩「带执法在飞降软」(any_armed——F5 使 utility 带进入真实配额占空比,翻期整批回场 Burst 合法推高缺页供给墙钟,单核静默场前提与 SMP 形同构性破,详 note)。
 
 ### 3.6 F6:验收面缺口复核
 

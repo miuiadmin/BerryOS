@@ -355,7 +355,7 @@ AAB 的本质是“把最终安装物的组装权从开发者手里移到商店�
 5. .bap 签名 day-one 用全文件方案(v2 形态：对整包字节签名)，manifest 预留 key lineage 字段(add-only);安装物=构建产物(mkapp 确定性)，拒绝“商店侧重组”式分发——保住同输入同字节与可复现安装。挂点：tools/mkapp.py、docs/应用模型设计-v1.0.md、与 just image 确定性同口径。
 6. 构建面：坚持 just+cargo 串联，不引入插件式构建 DSL;把构建耗时纳入机器可读遥测(AI 测试友好化第三原则的构建版)，防 Gradle 式复杂度温水。挂点：justfile、tools/smoke.sh、docs/测试策略-v1.0.md。
 7. profile 思想迁移：ART 的“真实使用画像驱动预编译”对应 BerryOS 的 IntentProfile 查表+遥测入场券(ADR #42)——应用行为画像(启动窗口/交互节奏)应设计为 SDK 可见资产而非运行时内部，供 AI 调度消费。挂点：docs/AI调度设计-v1.0.md、内核遥测环。
-8. 生态数据保持公开机器可读(Android dashboard 撤退的反例)：遥测/兼容性数据出口格式化、可导出。挂点：docs/可观测性设计-v1.0.md。
+8. 生态数据保持公开机器可读(Android dashboard 撤退的反例)：遥测/兼容性数据出口格式化、可导出。挂点：docs/可观测性设计-v1.2.md。
 9. QEMU-first+确定性 smoke 是模拟器税的正解，维持裸相零漂移与 smoke 时限纪律；GUI 线扩面时截图/golden 对拍沿用此基建(SDK-1 已有此方向)。挂点：tools/smoke.sh、GUI里程碑规划 SDK-1。
 
 ### 四、主要来源
@@ -495,7 +495,7 @@ eTS 时代是「JS 超集 + 声明式范式」并存过渡；ArkTS 反向操作�
 1. **ABI 单源+「单行道」自觉**（挂点 `tools/gen_abi.py`/abi.toml）：Swift 教训是冻结前把不确定面挡在冻结面外。建议 abi.toml 显式加 `experimental` 标记通道，v2 字段生成期即拒入冻结产物——比事后拆 ABI 便宜百倍。
 2. **稳定性执法工具化**（挂点 `docs/系统调用ABI设计-v1.0.md` + berry-libc 测试）：BerryOS 的「31 号全实现+永不 panic」承诺已由 ktest/smoke 执法，同构于 Apple「静态分析拒私有 API」——保持「每个承诺配一个自动执法点」的清单化（可观测性文档补一节「承诺-执法对照表」）。
 3. **os_signpost 同构件**（挂点 SDK-3：`docs/GUI里程碑规划-2026-10-v1.0.md` ADR #54 + berry-gfx 帧循环）：帧时间线 p50/p90 应定义统一事件 schema（begin/end 事件+稳定字段名），让 berryui 解释器、gfx pass、内核遥测环三方打点同轨可对齐——这正是 Instruments 的核心设计。
-4. **MetricKit 形态借给 smoke 遥测**（挂点 `docs/可观测性设计-v1.0.md` + tools/smoke.sh）：boot 期遥测环+泄漏金丝雀已是雏形；补「聚合回传、机器可读 JSON、批量不实时」的输出形态，AI 测试友好化原则的直接兑现。
+4. **MetricKit 形态借给 smoke 遥测**（挂点 `docs/可观测性设计-v1.2.md` + tools/smoke.sh）：boot 期遥测环+泄漏金丝雀已是雏形；补「聚合回传、机器可读 JSON、批量不实时」的输出形态，AI 测试友好化原则的直接兑现。
 5. **弱链接思想的 v1 替身**（挂点 berry-manifest views/ 字段）：v1 无动态链接，dyld 题不存在；但 .bap manifest 的 add-only 纪律 + appd 对未知字段的容忍策略就是「deployment target 宽容带」的镜像，建议 manifest 文档明示「读者忽略未知字段」为协议承诺。
 6. **反向教训——不做双轨**（挂点 berryui 拍板）：SwiftUI 双轨 6 年是资源性特权；BerryOS 应坚持「单一声明式 UI 框架+内核 console 退化透传」（C-4 已定形态），永不为过渡期维护第二套 UI 栈。
 
