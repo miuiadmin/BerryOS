@@ -11945,8 +11945,8 @@ fn test_smp_lazy() {
 ///   ≥4 且 ≥3×utility）；interactive 配额（10ms/8ms 期 >100%）CBS 期内律
 ///   不可越线（BANDM4-G1 同律在双环形状下复证）。
 /// - **BS-3 per-band stats 双环聚合**（stats.rs——「跨核一份全局账」的
-///   ktest 可达形态）：`Fair::pick_next_filtered`（生产出选唯一路径——
-///   note_pick 记账点）与 `FairBand::tick`（note_runtime 记账点）在两环
+///   ktest 可达形态）：`Fair::pick_next_filtered`（生产出选两口之一——
+///   pick_next_filtered+pick_next_if_above 两口均 note_pick 记账点）与 `FairBand::tick`（note_runtime 记账点）在两环
 ///   上各自触发，全局原子计数从**两环同时**累积：Δband_picks 与本地出选
 ///   计数逐一对账（rq0 出选 ↔ interactive 账、rq1 出选 ↔ utility 账——
 ///   零串账）、Δintent_picks 同源、Δband_runtime ≥ 各环实跑周期。
