@@ -2,7 +2,7 @@
 
 > 调研位：M-GUI 专题第八篇。聚焦两个用户裁决面：③「吸取安卓渲染响应慢的教训」→ 输入响应管线延迟分解与输入优先调度；⑥「开发套件要最先进的 GUI 开发方式」→ 热重载/可视化/性能工具/AI 生成 UI 的形态盘点与 BerryOS 演进序。
 > 方法：联网调研（WebSearch/WebFetch，证据逐条带 URL）+ 本地文档/源码（路径标注）。确定度分 高（一手源码/官方文档）/ 中（可信二手/推算）/ 低（估计）。
-> 基线：本地参照 = `docs/GUI里程碑规划-2026-10-v1.0.md`（三薄服务 + 单 GUI 进程、GUI-1..9 刀序）、`docs/AI调度设计-v1.0.md`（intent 机制）、`docs/可观测性设计-v1.0.md`（双环遥测）、`docs/开发体验.md`（宿主交叉编译循环）、CLAUDE.md（设计总原则三条 / Gotchas 雷册）。
+> 基线：本地参照 = `docs/GUI里程碑规划-2026-10-v1.0.md`（三薄服务 + 单 GUI 进程、GUI-1..9 刀序）、`docs/AI调度设计-v1.0.md`（intent 机制）、`docs/可观测性设计-v1.2.md`（双环遥测）、`docs/开发体验.md`（宿主交叉编译循环）、CLAUDE.md（设计总原则三条 / Gotchas 雷册）。
 
 ---
 
@@ -111,7 +111,7 @@ Android 三层手段正好一一对应这三成因；BerryOS 应显式拥有全�
 
 ### 3.3 BerryOS 映射：GUI 事件流成为 AI 调度的一等输入
 
-现有地基（本地证据）：intent = 第一类调度输入（u8 两段式查表，ADR #42，CLAUDE.md 调度表）；AI 调度动作空间四类封顶（①放置 ②频率/热 hint ③包络内权重微调 ④EPP），遥测环双环在位（`docs/AI调度设计-v1.0.md`、`docs/可观测性设计-v1.0.md`）。映射建议：
+现有地基（本地证据）：intent = 第一类调度输入（u8 两段式查表，ADR #42，CLAUDE.md 调度表）；AI 调度动作空间四类封顶（①放置 ②频率/热 hint ③包络内权重微调 ④EPP），遥测环双环在位（`docs/AI调度设计-v1.0.md`、`docs/可观测性设计-v1.2.md`）。映射建议：
 
 1. **「interaction 脉冲」= 一个用户态 PM 服务的频率 hint（动作空间②）**：gui-inputd 在 touch down/scroll 期向 PM/AI 策略服务发「交互中」事件 → PM 抬频一个短窗（touch up 后 ~200–500ms 衰减），等价 `POWER_HINT_INTERACTION`。**功耗/响应交换显式化**——正是「又要低功耗又要优秀」的机制位：无输入时照常 tickless 深睡，脉冲只在交互窗。
 2. **焦点进程 intent 提升（非 AI 路径的机制默认）**：前台 GUI 进程 spawn/获得焦点时 `intent_declared` 定 INTERACTIVE 档（ berry_intent 编码冻结在册，ADR #42）——公平仍是机制默认，intent 只是叠加；**短窗 touch boost**（事件到达 → effective 提升数百 ms）用内核已有的防饥饿 boost 形态（「紧急晋升只走内核防饥饿 boost」的既有语义，`docs/AI调度设计-v1.0.md` §词汇表）。
@@ -243,4 +243,4 @@ Android 三层手段正好一一对应这三成因；BerryOS 应显式拥有全�
 
 **联网（16）**：Perfetto FrameTimeline 文档；web.dev INP；AOSP InputTransport.cpp（android-10.0.0_r36）；WWDC 2015 Session 233 索引（nonstrict.eu）；W3C Pointer Events / MDN pointerrawupdate；One Euro Filter（lifl.fr/~casiez/Ng 论文页 + one-euro-rs + HN）；android.os.Process 文档（THREAD_PRIORITY_URGENT_DISPLAY）；AOSP device/google/coral powerhint.json + CarbonROM cpu_input_boost 补丁 + XDA mpdiscussion；developer.android.com ADPF/Game Mode interventions/GameState（XDA）；flutter#110431 + flutter#73286；docs.flutter.dev hot reload；fatbobman/NSHipster/Guardsquare（SwiftUI Preview）；Android 官方 Live Edit deep dive + iterative-development 文档；JetBrains compose-hot-reload GH discussions；Vite HMR 文档 + bjornlu 原理文；Slint VS Code 文档/Marketplace/issue；v0.app + Medium 机制文 + Builder.io AI + gendesigns 对比；uiautomator dump（SO/testRigor/issuetracker/developer.android.com agents-skills）；Ars Technica 输入延迟讨论；Ng et al. CHI 2012（Semantic Scholar）。
 
-**本地（6）**：`docs/GUI里程碑规划-2026-10-v1.0.md`（附录 B 全景 + 裁决 A–F + GUI-1..9 刀序）；`docs/AI调度设计-v1.0.md`（动作空间四类/intent 词表/遥测）；`docs/可观测性设计-v1.0.md`（双环遥测/通道分离）；`docs/开发体验.md`（L0–L3 阶梯/fat:rw/hvf-TCG 双模）；CLAUDE.md（设计总原则三条/调度 intent 表/Gotchas 雷册）；`user/berry-fbcon`（host 像素断言先例）。
+**本地（6）**：`docs/GUI里程碑规划-2026-10-v1.0.md`（附录 B 全景 + 裁决 A–F + GUI-1..9 刀序）；`docs/AI调度设计-v1.0.md`（动作空间四类/intent 词表/遥测）；`docs/可观测性设计-v1.2.md`（双环遥测/通道分离）；`docs/开发体验.md`（L0–L3 阶梯/fat:rw/hvf-TCG 双模）；CLAUDE.md（设计总原则三条/调度 intent 表/Gotchas 雷册）；`user/berry-fbcon`（host 像素断言先例）。

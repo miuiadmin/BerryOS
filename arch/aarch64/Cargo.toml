@@ -50,7 +50,3 @@ berry-tickface = { path = "../../tickface" }
 berry-numface = { path = "../../numface" }
 # W3-Q67：SVC 判定面纯函数单源（kern_lock.rs 消费 re-export；host 钉板在 svcface）。
 berry-svcface = { path = "../../svcface" }
-# F0-1：ARMv8 CTR_EL0 PoU 指令/数据一致性解码与缓存行跨度计算纯面单源。
-berry-memface = { path = "../../memface" }
-# F0-2：TCR_EL1.AS 动态位宽与 ASID_SHIFT=48 架构常量纯面单源。
-berry-asidface = { path = "../../asidface" }
