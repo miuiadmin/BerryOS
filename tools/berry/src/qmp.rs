@@ -381,20 +381,29 @@ const RETRY_AFTER: Duration = Duration::from_secs(5);
 /// 连接生命周期取证（全局节流 5s 一行）：connect_guarded 各失败阶段与
 /// 哑化/重连成败各打一行——楔死从静默变可见（2026-11-20 双形态实锤：
 /// 起点握手失败整会话哑管道 + 会话中哑化仅事件驱动重连，此前全静默）。
-fn life_note(stage: &str) {
+fn life_note(path: &Path, stage: &str) {
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::Instant;
     static LAST_MS: AtomicU64 = AtomicU64::new(0);
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+    static BOOT: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    // 单调钟判窗（对抗审查 P2：墙钟 duration_since 失败折 0 会恒早退
+    // 静默死）；compare_exchange 收紧同窗竞争（P3 良性竞态改单行保证）。
+    let boot = BOOT.get_or_init(Instant::now);
+    let now_ms = boot.elapsed().as_millis() as u64;
     let last = LAST_MS.load(Ordering::Relaxed);
     if now_ms.saturating_sub(last) < 5_000 {
         return;
     }
-    LAST_MS.store(now_ms, Ordering::Relaxed);
-    eprintln!("berry: qmp-inject {stage}");
+    if LAST_MS
+        .compare_exchange(last, now_ms, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    eprintln!(
+        "berry: qmp-inject {stage} [{}]",
+        path.file_name().and_then(|s| s.to_str()).unwrap_or("?")
+    );
 }
 
 impl QmpInjector {
@@ -407,7 +416,7 @@ impl QmpInjector {
         let mut s = match std::os::unix::net::UnixStream::connect(path) {
             Ok(s) => s,
             Err(_) => {
-                life_note("connect 拒绝（监听窗竞速/路径缺席）");
+                life_note(path, "connect 拒绝（监听窗竞速/路径缺席）");
                 return None;
             }
         };
@@ -416,7 +425,7 @@ impl QmpInjector {
         let mut r = BufReader::new(s.try_clone().ok()?);
         let mut line = String::new();
         if r.read_line(&mut line).is_err() {
-            life_note("greeting 超时（QEMU 主循环饱和?）");
+            life_note(path, "greeting 超时（QEMU 主循环饱和?）");
             return None;
         }
         writeln!(s, "{{\"execute\":\"qmp_capabilities\"}}").ok()?;
@@ -424,7 +433,7 @@ impl QmpInjector {
         line.clear();
         r.read_line(&mut line).ok()?;
         if !line.contains("return") {
-            life_note("caps 回读异常");
+            life_note(path, "caps 回读异常");
             return None;
         }
         Some(QmpInjector {
@@ -461,11 +470,11 @@ impl QmpInjector {
             }
             match Self::connect_guarded(&self.path, self.guard) {
                 Some(fresh) => {
-                    life_note("重连成功复活");
+                    life_note(&self.path, "重连成功复活");
                     *self = fresh
                 }
                 None => {
-                    life_note("重连失败（续 5s 窗）");
+                    life_note(&self.path, "重连失败（续 5s 窗）");
                     self.retry_at = Some(Instant::now() + RETRY_AFTER);
                     return false;
                 }
@@ -490,8 +499,10 @@ impl QmpInjector {
             s.set_read_timeout(Some(t)).ok();
         }
         let msg = pointer_msg(x, y, buttons, gw, gh);
-        if writeln!(s, "{msg}").is_err() || s.flush().is_err() {
-            life_note("写失败哑化（挂 5s 重连窗）");
+        // 单次 write（对抗审查 P3：msg 自带换行，writeln 会拆两次 write_all
+        // ——首写已投递而次写失败仍报 false 触发回退转发=双投递发丝窗）。
+        if s.write_all(msg.as_bytes()).is_err() {
+            life_note(&self.path, "写失败哑化（挂 5s 重连窗）");
             self.sock = None;
             self.retry_at = Some(Instant::now() + RETRY_AFTER);
             return false;

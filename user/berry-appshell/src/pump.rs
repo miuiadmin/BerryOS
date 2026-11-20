@@ -665,7 +665,9 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
         // B2 节流拍：render 未跑 → 引擎 last_now 未推进 → next_wakeup 的
         // vsync 拍对真实 now 可能已过点（照取即 deadline 在过去 = wait
         // 立即醒自旋），本拍等待直接钉开窗沿（最近 drew + 节流窗——与
-        // swipe tick 同窗同源，开窗拍 tick 落画 + render 收画同拍收口）；
+        // swipe tick 常量同源锚各异（snap_paint_ns vs last_draw_ns），
+        // 开窗拍可差 ≤一窗——单帧 ≤33ms 附加迟滞、自重对齐无冻结
+        // （对抗审查 P3 勘正））；
         // 应用额外帽（armed 窗类）仍取更早者；事件（wm/input READABLE）
         // 照常即醒不受帽。
         let deadline = if pace_beat {

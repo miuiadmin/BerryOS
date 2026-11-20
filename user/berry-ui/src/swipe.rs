@@ -53,7 +53,10 @@ pub const SNAP_DUR_NS: u64 = 240_000_000;
 /// 算）、Spring 积分按 remain 全量追积——只是推迟 set_offset 落画拍。
 /// 低像素域不节流（480×1000 = 0.48M px 60Hz 预算内付得起，观感不
 /// 降档；亦保 host 单测小视口行为零扰动）。与 berry-appshell pump 的
-/// 落画节流拍（B2 宿主侧背撑）同窗同源——pump 直接导入本常量，两窗
+/// 落画节流拍（B2 宿主侧背撑）常量同源——pump 直接导入本常量；但锚
+/// 各异（swipe 锚 snap_paint_ns、pump 锚 last_draw_ns），两窗开沿可差
+/// ≤一窗（非 snap 落画插入时），表现为单帧 ≤33ms 附加迟滞、自重
+/// 对齐、无冻结（对抗审查 P3 勘正——原「同窗同源」表述不准）：
 /// 漂移 = 动画冻结或空转，禁各自为政。
 pub const SNAP_PAINT_MIN_NS: u64 = 33_300_000;
 
@@ -356,7 +359,8 @@ impl SwipePager {
     /// 按当时刻取值一次落画；完成拍豁免（终点精确落位不迟滞）。节流
     /// 拍仍返 true——tick 契约「无吸附 → false」下吸附在飞即 true：
     /// wake-on-true 形消费者（photos）靠它每拍唤醒全帧兜底不冻；落画
-    /// 节流背撑形消费者（berry-appshell pump，同窗同源）按开窗拍收画。
+    /// 节流背撑形消费者（berry-appshell pump，常量同源锚各异）按开窗
+    /// 拍收画。
     pub fn tick<const N: usize>(&mut self, ui: &mut Ui<N>, now_ns: u64) -> bool {
         // 节流窗预判（snap 活着才有意义——无吸附的 None 早退在下方
         // match；像素域判定放窗内才做——低像素域/窗外零额外开销）。

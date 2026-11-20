@@ -48,8 +48,11 @@ use berry_ui::IconSource;
 
 /// 缓存映射 VA（mmap VA 窗 [0x5000_0000,0x6000_0000) 内固定 +32MiB
 /// ——pump.rs FRAME_VA=0x5100_0000（+16MiB）同款「与假想 first-fit
-/// 分配零交叠」防御位；帧 VMO 区自 +16MiB 起 ≤+24MiB，本位与其及
-/// 底段 [0x5000_0000,0x5100_0000) 均不相交；页对齐）。
+/// 分配零交叠」防御位；帧 VMO 区自 +16MiB 起 ≤+24MiB 的前提 = 页取整
+/// 显示字节 ≤16MiB（w·h ≤ 4,194,304 px——对抗审查 P3 钉板：1088×1920
+/// =2.09M 在域，未来大屏超此域时帧区可漫过 +32MiB 撞本位，bake 以
+/// 16MiB 卫返 None 降级挡之）；底段 [0x5000_0000,0x5100_0000) 不相交；
+/// 页对齐）。
 const WALLCACHE_VA: usize = 0x5200_0000;
 
 /// 烘好的全尺寸壁纸面（boot 单线程写毕后进程终身只读——经
@@ -111,7 +114,8 @@ pub fn wrap(inner: &'static dyn IconSource, vp_w: u32, vp_h: u32) -> &'static dy
 /// 视口几何的 VMO 映射面。任何一步失败 → None（调用方降级）。
 fn bake(inner: &dyn IconSource, vp_w: u32, vp_h: u32) -> Option<WallCache> {
     // 几何先验：TextureDesc 拒面下界（w≥8/h≥16）+ 单 VMO 帽镜像
-    //（berry-mmap VMO_MAX=32MiB，与内核 VMO_MAX_SIZE 同值）。
+    //（berry-mmap VMO_MAX=32MiB——libc 侧保守镜像；内核 VMO_MAX_SIZE
+    // 自 A1-2 起为 128MiB，镜像漂移本体另开小刀统一）。
     if vp_w < 8 || vp_h < 16 {
         return None;
     }
@@ -130,6 +134,26 @@ fn bake(inner: &dyn IconSource, vp_w: u32, vp_h: u32) -> Option<WallCache> {
     if src.iter().any(|p| p >> 24 == 0) {
         return None;
     }
+    // 帧区让位卫（VA 注的像素域前提执法——超域即降级，防未来大屏帧
+    // VMO 漫过 +32MiB 撞本位）。
+    if page_len > 16 * 1024 * 1024 {
+        return None;
+    }
+    // 光栅件先构（纯构造零副作用——对抗审查 P2：desc/dl/pass 的 .ok()?
+    // 失败口必须位于任何内核对象创建之前，使映射窗内唯一失败口=submit，
+    // 该口已有 unmap+close 回滚）。fg/bg 对 ARGB 面不适用（cmd.rs 变体注）。
+    let desc = TextureDesc::new(vp_w as usize, vp_h as usize, vp_w as usize * 4, TextureFormat::Rgbx)
+        .ok()?;
+    let mut dl = DisplayList::new();
+    dl.push(Cmd::DrawImage {
+        src: ImageSrc::SmoothArgb { sw, sh, dw: vp_w, dh: vp_h, px: src },
+        x: 0,
+        y: 0,
+        fg: Color { r: 0, g: 0, b: 0 },
+        bg: None,
+    })
+    .ok()?;
+    let pass = PassDescriptor::new(LoadOp::Load, StoreOp::Store, None); // 无 dirty = 全幅 clip：整格必写
     // VMO 三连（pump 帧 VMO 同形）：create→commit→map @固定防御位。
     let hv = self_vmar_h();
     if hv == 0 {
@@ -147,24 +171,15 @@ fn bake(inner: &dyn IconSource, vp_w: u32, vp_h: u32) -> Option<WallCache> {
     if berry_vmar_map(hv, 0, vmo, 0, &mut va, page_len, RIGHT_READ | RIGHT_WRITE) != 0
         || va != WALLCACHE_VA
     {
-        // commit 后未映射（或位未按请求落）——直接 close 零内核残留。
+        // 失败形 A（map 拒）= 零映射直接 close；形 B（成功但落位 ≠ 请求
+        // 位）= 按已映口径回滚（对抗审查 P3：映射中 VMO 直接 close 撞
+        // -EBUSY 拒面——mmap.rs:190 同款先 unmap 后 close）。
+        if va != WALLCACHE_VA && va != 0 {
+            let _ = berry_vmar_unmap(hv, va, page_len);
+        }
         let _ = berry_handle_close(vmo);
         return None;
     }
-    // 光栅：生产 smooth 臂直烘——同一段 smooth_argb_blit（零漂移的
-    // 结构保证，见模块头论证）。fg/bg 对 ARGB 面不适用（cmd.rs 变体注）。
-    let desc = TextureDesc::new(vp_w as usize, vp_h as usize, vp_w as usize * 4, TextureFormat::Rgbx)
-        .ok()?;
-    let mut dl = DisplayList::new();
-    dl.push(Cmd::DrawImage {
-        src: ImageSrc::SmoothArgb { sw, sh, dw: vp_w, dh: vp_h, px: src },
-        x: 0,
-        y: 0,
-        fg: Color { r: 0, g: 0, b: 0 },
-        bg: None,
-    })
-    .ok()?;
-    let pass = PassDescriptor::new(LoadOp::Load, StoreOp::Store, None); // 无 dirty = 全幅 clip：整格必写
     // SAFETY: [WALLCACHE_VA, +page_len) 刚由 vmar_map 落位且整段已
     // commit（内核逐页出页清零——mmap.rs 匿名档同语义）；boot 单线程
     // 独占写窗。submit 失败 = 先验后写零笔迹，回滚映射即可。

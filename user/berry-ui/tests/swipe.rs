@@ -405,3 +405,61 @@ fn snap_duration_quantized_to_frames() {
     assert!(pager.tick(&mut ui, t0 + q), "整帧长完成（精确 to）");
     assert!(!pager.tick(&mut ui, t0 + q + 1), "吸附毕再 tick 零开销");
 }
+
+/// B2 落画节流门（重域 1080P 形；审查修复批补测——当日实现零直接
+/// 覆盖）：重域判定由 viewport 面积驱动（1088×1920≈2.09M > 1.5M 阈），
+/// 节流只发生在重域 + 窗内拍 + 吸附未毕三条件合取时。
+#[test]
+fn snap_paint_throttle_heavy_viewport() {
+    // 重域 pager（页宽=viewport 宽 1088——终态页 1 的 page0_x = -1088）。
+    let mut ui = Ui::<64>::new(1088, 1920);
+    let root = ui.root();
+    let mut pager = SwipePager::new(3);
+    let track = pager.attach(&mut ui, root).unwrap();
+    ui.layout();
+    ui.drain_damage();
+    assert!(drag_start(&mut pager, &mut ui, track, 50));
+    assert!(drag_move(&mut pager, &mut ui, track, 20)); // dx=-30 域内跟手（< 位移阈）
+    assert!(drag_end(&mut pager, &mut ui, track, -600), "速度向（≥500px/s）翻页");
+
+    // (a) 起拍帧即画（锚复位语义——吸附起拍不迟滞）。
+    let t0 = 1_000u64;
+    assert!(pager.tick(&mut ui, t0), "起拍帧");
+    let x0 = page0_x(&ui, &pager);
+
+    // (b) 窗内拍（+16ms < 33.3ms）：返 true（吸附在飞）但 ox 纹丝不动。
+    assert!(pager.tick(&mut ui, t0 + 16_000_000), "节流拍仍 true（吸附在飞）");
+    assert_eq!(page0_x(&ui, &pager), x0, "窗内拍零落画（不发 set_offset）");
+
+    // (c) 开窗拍（+33.4ms 越窗）：落画，ox 向页 1 前进。
+    assert!(pager.tick(&mut ui, t0 + 33_400_000), "开窗拍");
+    assert!(page0_x(&ui, &pager) < x0, "开窗拍落画（向 -1088 前进）");
+
+    // (d) 完成拍豁免：滚到吸附完毕，终态精确落位（豁免保证终点零迟滞
+    // ——即使完成时刻落在节流窗内）。40×16ms=640ms ≫ 240ms 吸附期。
+    let mut t = t0 + 33_400_000;
+    for _ in 0..40 {
+        t += 16_000_000;
+        pager.tick(&mut ui, t);
+        if page0_x(&ui, &pager) == -1088 {
+            break;
+        }
+    }
+    assert_eq!(page0_x(&ui, &pager), -1088, "完成拍精确落位页 1（零迟滞）");
+    assert!(!pager.tick(&mut ui, t + 1), "吸附毕再 tick 零开销");
+}
+
+/// 对照面：轻域（100×100=0.01M < 阈）节流门整体不生效——窗内拍照常
+/// 落画（低分辨率档逐字节现状，B2 像素域门的另一半）。
+#[test]
+fn snap_paint_no_throttle_light_viewport() {
+    let (mut ui, mut pager, track) = pager3();
+    assert!(drag_start(&mut pager, &mut ui, track, 50));
+    assert!(drag_move(&mut pager, &mut ui, track, 20));
+    assert!(drag_end(&mut pager, &mut ui, track, -600));
+    let t0 = 1_000u64;
+    assert!(pager.tick(&mut ui, t0), "起拍帧");
+    let x0 = page0_x(&ui, &pager);
+    assert!(pager.tick(&mut ui, t0 + 16_000_000), "窗内拍（轻域不节流）");
+    assert!(page0_x(&ui, &pager) < x0, "轻域窗内拍照常落画");
+}
