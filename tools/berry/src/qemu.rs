@@ -198,36 +198,6 @@ fn log_stdio(cmd: &mut Command, log: &Path) -> Result<()> {
     Ok(())
 }
 
-/// 注入专用 QMP socket 路径（仅 unix 端点形态存在）。
-/// QEMU socket chardev 是**单客户端设计**（char-socket.c:917 tcp_chr_new_client
-/// 客户端连入即摘除监听 GSource; backlog=1 :1229）——「多客户端 unix 服务端」
-/// 是本仓的历史误设（2026-11-19 六路根因调查定谳，实证：楔死时刻监视线程
-/// 栈采样完全健康、既有连接 330s 零故障、持有者断开 0.1s 自愈、200 轮
-/// connect/greet/close 零失败——不是 QEMU bug）。因此 **web 拦截器与原生
-/// 指针路各用独立 socket**（避免单客户端争抢先到垄断后到哑化）。
-/// - `qmp-inject.sock`：LAN /ws 拦截器专用（web.rs 唯一持有者）
-/// - `qmp-inject-native.sock`：原生窗口指针主路专用（ram.rs 唯一持有者）
-pub(crate) fn inject_sock_path(qmp: &Endpoint) -> Option<std::path::PathBuf> {
-    #[cfg(unix)]
-    if let Endpoint::Unix(p) = qmp {
-        return Some(p.with_file_name("qmp-inject.sock"));
-    }
-    #[cfg(not(unix))]
-    let _ = qmp;
-    None
-}
-
-/// 原生指针路注入 socket（ram.rs 专用——见 `inject_sock_path` 注）。
-pub(crate) fn inject_native_sock_path(qmp: &Endpoint) -> Option<std::path::PathBuf> {
-    #[cfg(unix)]
-    if let Endpoint::Unix(p) = qmp {
-        return Some(p.with_file_name("qmp-inject-native.sock"));
-    }
-    #[cfg(not(unix))]
-    let _ = qmp;
-    None
-}
-
 pub fn spawn_kernel(
     qemu: &Qemu,
     kernel: &Path,
@@ -293,17 +263,7 @@ pub fn spawn_image(
     }
     cmd.arg("-vnc").arg(vnc.qemu_vnc()?);
     cmd.arg("-qmp").arg(qmp.qemu_qmp());
-    // 注入专用 QMP×2（**单客户端设计**——每个消费者独占一个 socket，
-    // 根因调查定谳后拆分）：qmp-inject.sock 归 LAN /ws 拦截器；
-    // qmp-inject-native.sock 归原生窗口指针主路。本机 0600 run 目录边界内。
-    if let Some(inj) = inject_sock_path(qmp) {
-        cmd.arg("-qmp")
-            .arg(format!("unix:{},server=on,wait=off", inj.display()));
-    }
-    if let Some(inj) = inject_native_sock_path(qmp) {
-        cmd.arg("-qmp")
-            .arg(format!("unix:{},server=on,wait=off", inj.display()));
-    }
+    // 注入专用 QMP×2（qmp-inject.sock/qmp-inject-native.sock）已随 QMP 注入链退役删除，只留主 qmp socket；归档锚=.agents/research/证据快照/2026-11-20-VNC直通绝对坐标判例驳斥.md
     cmd.arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,readonly=on,file={}",

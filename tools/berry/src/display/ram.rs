@@ -8,20 +8,18 @@
 //!   `FB ok 480x1000 fmt=1 stride=1920 fb=0000000043d00000`
 //! The line is printed once at boot; `berry shell` waits for it.
 //!
-//! I2 止血两件：读面两段式（先只散读 512 采样点各 4B 算签名，变化才
-//! 全帧读——静态屏免 60Hz 全帧 pread 底噪）；原生指针主路走 QMP
-//! input-send-event（QEMU 11 的 VNC 路对裸 RFB msg5 丢绝对坐标），
-//! 失联才退 RFB msg5 保底。
+//! 读面两段式（I2 止血遗产）：先只散读 512 采样点各 4B 算签名，变化才
+//! 全帧读——静态屏免 60Hz 全帧 pread 底噪。
+//!
+//! 指针注入链退役（归档锚：.agents/research/证据快照/2026-11-20-VNC直通绝对坐标判例驳斥.md）：原生指针直走 RFB PointerEvent——VncInput 握手已补发 SetEncodings 置位 vs->absolute，绝对坐标直达 virtio-tablet；QMP input-send-event 注入面（含 0..32767 缩放与 fb 几何分母）整体退役，宿主侧不再做几何缩放。
 
 use std::fs::File;
 use std::io;
 use std::path::Path;
-use std::time::Duration;
 
 use crate::display::frame::{Caps, Frame, InputEvent, ScreenSource, TransportKind};
 use crate::display::vnc::VncInput;
 use crate::error::{BerryError, Result};
-use crate::qmp::QmpInjector;
 
 const RAM_BASE: u64 = 0x4000_0000;
 
@@ -198,30 +196,14 @@ impl RamScan {
     }
 }
 
-/// 原生指针注入通道状态（QMP 主路，惰性）。
-enum Inject {
-    /// 无注入面（非 unix 端点形态）。
-    Off,
-    /// QMP 注入器自管生命周期：首个指针事件才建连（2s 守护），失联哑
-    /// 化后 ≥5s 节流重连自愈——QMP 恢复后 QMP 主路自动复活；节流窗内
-    /// pointer=false，调用方走 RFB msg5 保底。
-    Qmp(QmpInjector),
-}
-
 pub struct RamSource {
     scan: RamScan,
     info: FbInfo,
     vnc: VncInput,
-    inject: Inject,
 }
 
 impl RamSource {
-    pub fn open(
-        path: &Path,
-        info: FbInfo,
-        vnc: VncInput,
-        inject_sock: Option<&Path>,
-    ) -> Result<Self> {
+    pub fn open(path: &Path, info: FbInfo, vnc: VncInput) -> Result<Self> {
         if info.width == 0 || info.height == 0 || info.stride < info.width * 4 {
             return Err(BerryError::protocol("RAM: bad fb geometry"));
         }
@@ -241,24 +223,7 @@ impl RamSource {
             scan: RamScan::new(Box::new(file), offset, need as usize),
             info,
             vnc,
-            inject: match inject_sock {
-                Some(p) => Inject::Qmp(QmpInjector::lazy(p, Duration::from_secs(2))),
-                None => Inject::Off,
-            },
         })
-    }
-
-    /// QMP 注入一步（注入器自管建连/哑化/节流重连，见 Inject）：true =
-    /// 已走 QMP；false = 调用方走 RFB msg5 保底。缩放分母用 fb 实几何
-    /// （InputEvent 指针坐标即该域）。连接与写带 2s 守护超时——本调用
-    /// 在 UI 线程，QEMU 卡死不得冻结窗口。
-    fn qmp_pointer(&mut self, x: u16, y: u16, buttons: u8) -> bool {
-        match &mut self.inject {
-            Inject::Qmp(inj) => {
-                inj.pointer(x, y, buttons, self.info.width, self.info.height)
-            }
-            Inject::Off => false,
-        }
     }
 }
 
@@ -281,16 +246,9 @@ impl ScreenSource for RamSource {
 
     fn send_input(&mut self, event: InputEvent) -> Result<()> {
         match event {
-            // 指针主路 QMP input-send-event（S1 层二判例：QEMU 11 的 VNC
-            // pointer 路丢绝对坐标——vs->absolute 为假、queue_abs 不入队；
-            // input-send-event 实测可达 virtio-tablet），失联才退 RFB
-            // msg5。键路维持 RFB。
-            InputEvent::Pointer { x, y, buttons } => {
-                if self.qmp_pointer(x, y, buttons) {
-                    return Ok(());
-                }
-                self.vnc.pointer(x, y, buttons)
-            }
+            // 指针直走 RFB PointerEvent（6B：type+mask+x+y，坐标即 VNC 表面域原值直传，宿主侧不再缩放）；QMP 注入链退役（归档锚：.agents/research/证据快照/2026-11-20-VNC直通绝对坐标判例驳斥.md）。
+            // 键路维持 RFB KeyEvent 不变。
+            InputEvent::Pointer { x, y, buttons } => self.vnc.pointer(x, y, buttons),
             InputEvent::Key { keysym, down } => self.vnc.key(keysym, down),
         }
     }

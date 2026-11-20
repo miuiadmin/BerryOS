@@ -214,15 +214,6 @@ impl Device {
         if let Endpoint::Unix(p) = &self.qmp_ep {
             let _ = std::fs::remove_file(p);
         }
-        // 注入专用 socket 同清×2（原生 + web——单客户端拆分后两枚）：
-        // 残留 socket 文件让重生的 QEMU 第二 QMP 服务端 bind 失败——原位
-        // 重生死链（S4 缺口定谳）。
-        if let Some(p) = qemu::inject_sock_path(&self.qmp_ep) {
-            let _ = std::fs::remove_file(p);
-        }
-        if let Some(p) = qemu::inject_native_sock_path(&self.qmp_ep) {
-            let _ = std::fs::remove_file(p);
-        }
         // 串口 chardev socket 同清（console 刀件1）：残留 socket 文件会让
         // 重生的 QEMU bind 失败。serial.log 不用手截——logfile 缺省
         // logappend=off，QEMU 自己截断（qemu.rs machine_args 注记）。
@@ -447,15 +438,11 @@ fn boot_runtime(
         let qmp = Arc::new(Mutex::new(qmp));
         let source: Box<dyn ScreenSource> = if let Some(info) = fb {
             let input = VncInput::connect(vnc)?;
-            // 原生指针 QMP 注入面（I2）：qmp-inject-native.sock（与 web
-            // 拦截器的 qmp-inject.sock 分离——单客户端设计定谳后拆分，
-            // 路径推导单源在 qemu::inject_native_sock_path）。
-            let inject = qemu::inject_native_sock_path(qmp_ep);
+            // 指针注入面退役（归档锚：.agents/research/证据快照/2026-11-20-VNC直通绝对坐标判例驳斥.md）：原生路改走 VncInput 的 RFB PointerEvent 直通——握手已补发 SetEncodings 置位 vs->absolute，宿主零几何知识。
             Box::new(RamSource::open(
                 ram_path.unwrap_or(std::path::Path::new("")),
                 info,
                 input,
-                inject.as_deref(),
             )?)
         } else {
             wait_endpoint(vnc, Duration::from_secs(5))?;

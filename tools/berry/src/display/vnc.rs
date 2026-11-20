@@ -625,9 +625,19 @@ impl Drop for VncSource {
     }
 }
 
-/// Input-only RFB client: performs the handshake but never requests a frame
-/// and never advertises encodings. QEMU supports multiple VNC clients, so the
-/// shell and `berry input` can coexist while frames come from shared RAM.
+/// 输入正名补发（归档锚：.agents/research/证据快照/2026-11-20-VNC直通绝对坐标判例驳斥.md）：SetEncodings（count=1，RAW）触发 QEMU check_pointer_type_change 依设备 handler 图置位 vs->absolute——此前本客户端从不发 SetEncodings，绝对坐标 PointerEvent 走 REL 分支被 virtio-tablet 静默丢弃，「QEMU VNC 丢绝对坐标」旧判例即此形态的误外推。
+/// 本客户端 input-only：从不发 FramebufferUpdateRequest，QEMU 零帧推送，无排水需求（帧更新排水仅帧消费者需要，见快照实验三陷阱）。
+fn send_input_set_encodings<S: Read + Write>(stream: &mut S) -> Result<()> {
+    let mut m = vec![2u8, 0];
+    m.extend_from_slice(&1u16.to_be_bytes());
+    m.extend_from_slice(&0i32.to_be_bytes());
+    stream.write_all(&m)?;
+    stream.flush()?;
+    Ok(())
+}
+
+/// 输入专用 RFB 客户端：完成握手后补发一发 SetEncodings（仅 RAW，见 `send_input_set_encodings`）置位 QEMU 侧 vs->absolute，但从不发 FramebufferUpdateRequest——零帧请求、零帧推送。
+/// QEMU 支持多 VNC 客户端，shell 与 `berry input` 可与共享 RAM 帧源（ram.rs）并存。
 pub struct VncInput {
     stream: Stream,
     width: u32,
@@ -644,6 +654,7 @@ impl VncInput {
         let mut stream = connect_retry(endpoint, Duration::from_secs(5))?;
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
         let (w, h, _, _) = handshake_auth(&mut stream, password)?;
+        send_input_set_encodings(&mut stream)?;
         stream.set_read_timeout(None)?;
         Ok(Self { stream, width: w, height: h })
     }
@@ -1092,6 +1103,26 @@ mod tests {
             e.message
         );
         assert!(e.hint.unwrap().contains("berry vnc passwd"));
+    }
+
+    /// 输入正名钉板（归档锚：.agents/research/证据快照/2026-11-20-VNC直通绝对坐标判例驳斥.md）：握手后的补发恰 8B——type=2+pad+count=1+encoding RAW(0)，置位 vs->absolute；且无 FramebufferUpdateRequest 跟随（input-only 零帧请求零排水）。
+    #[test]
+    fn input_set_encodings_raw_only_no_frame_request() {
+        let port = spawn_rfb(|mut s| {
+            let m = read_n(&mut s, 8);
+            assert_eq!(m, vec![2, 0, 0, 1, 0, 0, 0, 0], "恰 SetEncodings(count=1, RAW)");
+            // 短窗内不得再有任何字节：帧请求缺席（对端关断则 EOF，同判）。
+            use std::io::Read;
+            s.set_read_timeout(Some(Duration::from_millis(80))).unwrap();
+            let mut sink = [0u8; 1];
+            let got = s.read(&mut sink);
+            assert!(
+                !matches!(got, Ok(n) if n > 0),
+                "input-only 客户端不得跟随 FramebufferUpdateRequest（超时 Err 与 EOF Ok(0) 均合法）"
+            );
+        });
+        let mut c = connect_to(port);
+        send_input_set_encodings(&mut c).unwrap();
     }
 
     // ------------------------------------------------------------------
