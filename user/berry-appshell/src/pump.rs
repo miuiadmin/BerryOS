@@ -572,7 +572,15 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
                 Some(r) => r,
                 None => fail(&format!("release rep bad st={}", rep[0])),
             };
-            if rel.count < 1 || nh != rel.count {
+            // 宽容 RELEASE（全冻刀 fix 复原——随架构刀全量回退复活的
+            // count<1→fail 断言，2026-11-20 真机场「进应用即 launcher
+            // park 永死」二次实抓：serial 实拍 release count=0 nh=0 +
+            // inputd tally 计数冻结 + 泵队列 32 满 + stale-reset 零）：
+            // count==0 = 他客户端跨代清账已排空本端在途别名（别名=本端
+            // VMO 的 READ|TRANSFER dup，原柄在本表，对方 close=纯引用
+            // 计数下降）；本帧 PRESENTED 已先断言——早归还良性。随行
+            // handle 不论归属全量 close；count≥1 时保持 nh==count 契约。
+            if rel.count != 0 && nh != rel.count {
                 fail(&format!("release count={} nh={}", rel.count, nh));
             }
             for h in &rhs[..nh] {
