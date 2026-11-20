@@ -42,14 +42,14 @@
 <!-- UNSAFE-AUDIT:SUMMARY:BEGIN -->
 | 目录 | .rs 文件数 | 总行数 | unsafe 非空行 | 密度 |
 |------|-----------|--------|--------------|------|
-| kernel/ | 32 | 38890 | 2392 | 6.15% |
+| kernel/ | 32 | 38899 | 2392 | 6.15% |
 | mm/ | 7 | 2544 | 4 | 0.16% |
 | sched/ | 15 | 9148 | 1779 | 19.45% |
 | ipc/ | 0 | 0 | 0 | — |
 | arch/ | 23 | 7491 | 1086 | 14.50% |
-| **合计** | 77 | 58073 | 5261 | **9.06%** |
+| **合计** | 77 | 58082 | 5261 | **9.06%** |
 
-- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 43590，unsafe 非空行 4442，密度 10.19%（生产面口径）
+- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 43599，unsafe 非空行 4442，密度 10.19%（生产面口径）
 - 分类计数：页表 78 | 上下文切换 35 | MMIO 164 | 分配器 16 | 硬件原子 0 | 其它 921
 - 类型计数：block 1061 | fn 149 | impl 2 | extern 2（另有类型签名位提及 15 处——只计不登记，防双计）
 - 对标：Android ~4%（unsafe 行占 Rust 总行比，Google 2025-11）；本表为跨度非空行口径（偏高估），见 §一
@@ -396,8 +396,8 @@
 | kernel/src/handle.rs | 569 | block | 其它 | unsafe { &*obj.as_ptr() }; if r.obj.obj_type() != ty { return Er |
 | kernel/src/handle.rs | 600 | block | 其它 | unsafe { &*obj.as_ptr() }; if !berry_hdlface::probe::waitable(r. |
 | kernel/src/handle.rs | 636 | block | 其它 | unsafe { (*obj.as_ptr()).obj.obj_type() == ty } { n += 1; } } } |
-| kernel/src/handoff.rs | 175 | block | 其它 | unsafe { &*(phys_to_virt(x0) as *const BerryHandoff) }; if berry |
-| kernel/src/handoff.rs | 236 | block | 其它 | unsafe { core::slice::from_raw_parts(base, n) }; // 段几何门（含切片长度一致 |
+| kernel/src/handoff.rs | 184 | block | 其它 | unsafe { &*(phys_to_virt(x0) as *const BerryHandoff) }; if berry |
+| kernel/src/handoff.rs | 245 | block | 其它 | unsafe { core::slice::from_raw_parts(base, n) }; // 段几何门（含切片长度一致 |
 | kernel/src/heap.rs | 55 | impl | 分配器 | unsafe impl Sync for SlabHeap {} unsafe impl GlobalAlloc for Sla |
 | kernel/src/heap.rs | 57 | impl | 分配器 | unsafe impl GlobalAlloc for SlabHeap { unsafe fn alloc(&self, la |
 | kernel/src/heap.rs | 58 | fn | 分配器 | unsafe fn alloc(&self, layout: Layout) -> *mut u8 { match route( |
