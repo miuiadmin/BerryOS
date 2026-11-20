@@ -26,6 +26,7 @@ use std::collections::BTreeMap;
 /// product.toml 面 TOML 子集解析器（二刀第一段——语面 = acme 参照物 +
 /// SELFTEST_PRODUCT 模板全集；tomllib 对拍钉板）。
 pub mod toml_doc;
+pub mod lite;
 
 /// 门禁拒绝（一行理由——mkapp Reject 先例；文案即契约，Python `Reject`
 /// 双侧全等由 parity 对拍钉板）。

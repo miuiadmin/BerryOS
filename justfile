@@ -1189,8 +1189,12 @@ test-host:
     # oracle 对拍（serialize 字节恒等 + validate_platform_revision 拒面
     # 文案全等 + ANCHOR_RE accept/拒梯 + abi.toml 真源同读 + 坏源分支）。
     # 二刀第一段：toml_doc 解析器（product.toml 语面——嵌套节/多行数组/
-    # 行尾注释/引号键/重复键与表互覆拒）+ tomllib flatten oracle 对拍
-    # （acme 参照物 + SELFTEST 模板 + 合成语料逐行全等）。
+    # 行尾注释/引号键/重复键与表互覆拒；空节在场性经 parse_with_sections
+    # 清单保留——tomllib「节头出现 = table 在场」语义钉平）+ tomllib
+    # flatten oracle 对拍（acme 参照物 + SELFTEST 模板 + 合成语料逐行全等）。
+    # 二刀第二段第一片：lite.rs load_product(lite=True) 结构面镜像——
+    # 顶层键/schema=1/[product] 全节键集类型值域执法；parity oracle 真跑
+    # 文件面（42 拒面文案逐字对拍 + acme/SELFTEST 双正面过检视图对账）。
     # 独立小工作区，须显式 --target {{host}}。Python 件不退役——CLI 对拍
     # oracle + gensourceindex --preset import 面单源。
     cargo test --manifest-path tools/berryassemble/Cargo.toml --target {{host}}

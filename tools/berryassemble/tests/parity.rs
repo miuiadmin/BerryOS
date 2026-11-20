@@ -253,3 +253,136 @@ fn parity_toml_doc_flatten() {
         );
     }
 }
+
+/// Python `load_product(lite=True)` 直驱（语料 hex 传载防引号互扰）：
+/// 返回 (拒面文案 or OK, exit)。写临时文件真跑文件面入口。
+fn py_load_lite(text: &str) -> (String, bool) {
+    #[allow(unused_variables)]
+    let h = text.bytes().map(|b| format!("{b:02x}")).collect::<String>();
+    let code = format!(
+        "import sys, tempfile, os\n\
+         sys.path.insert(0, 'tools')\n\
+         import berry_assemble as b\n\
+         raw = bytes.fromhex('{h}').decode()\n\
+         d = tempfile.mkdtemp()\n\
+         p = os.path.join(d, 'product.toml')\n\
+         open(p, 'w').write(raw)\n\
+         try:\n\
+         \x20   prod = b.load_product(p, lite=True)\n\
+         \x20   print('OK', prod.name, prod.vendor, prod.board, ','.join(prod.preset), prod.launcher)\n\
+         except b.Reject as e:\n\
+         \x20   print('REJ:', e)"
+    );
+    let (out, err, code) = py_run(&code);
+    assert!(err.is_empty(), "python oracle 崩（非拒面）：{err}");
+    (out, code == Some(0))
+}
+
+/// 拒面文案全等对拍（rust 拒 ⇔ python 拒且逐字同文案）。
+fn assert_reject_both(name: &str, text: &str) {
+    let rust = lite::load_lite_product(text).err().map(|r| r.0);
+    let (py_out, _) = py_load_lite(text);
+    let py_rej = py_out.strip_prefix("REJ: ").map(|s| s.to_string());
+    match (rust, py_rej) {
+        (Some(r), Some(p)) => assert_eq!(r, p, "{name}: 拒面文案漂移"),
+        (None, None) => panic!("{name}: 双侧都过了（语料应拒）"),
+        (r, p) => panic!("{name}: 分支面漂移 rust={r:?} py={p:?}"),
+    }
+}
+
+#[test]
+fn parity_load_lite_product() {
+    // 语料 1：acme 参照物（现役语面——branding 注释化位不在场）
+    let acme = std::fs::read_to_string(repo_root().join("tools/drill/acme/product.toml")).unwrap();
+    let p = lite::load_lite_product(&acme).unwrap();
+    assert_eq!(p.name, "acme-rich");
+    assert_eq!(p.vendor, "acme");
+    assert_eq!(p.priv_grants.get("SETTINGS").unwrap(), &vec!["console".to_string(), "fs".to_string()]);
+    let (py_out, ok) = py_load_lite(&acme);
+    assert!(ok, "acme: python 未过：{py_out}");
+    assert_eq!(py_out, "OK acme-rich acme qemu-virt app/SETTINGS.bap,app/FILES.bap,app/PHOTOS.bap,app/CAMERA.bap,app/BROWSER.bap bin/berry-launcher");
+
+    // 语料 2：SELFTEST_PRODUCT 模板（branding 在场 + priv_grants 双 app 面）
+    let (tpl, err, _) = py_run(
+        "import sys; sys.path.insert(0, 'tools')\nimport berry_assemble as b\nprint(b.SELFTEST_PRODUCT, end='')",
+    );
+    assert!(err.is_empty());
+    let p = lite::load_lite_product(&tpl).unwrap();
+    assert_eq!(p.branding.get("wallpaper").unwrap(), "assets/wallpaper.byi");
+    assert_eq!(p.grants_issued_by, "oem-main");
+    let (py_out, ok) = py_load_lite(&tpl);
+    assert!(ok, "tpl: python 未过：{py_out}");
+    assert_eq!(py_out, "OK sample-rich berryos qemu-virt app/A.bap bin/berry-launcher");
+
+    // 语料 3：全拒面谱（文案即契约——双侧逐字对拍）
+    for (name, text) in [
+        ("未知顶层键", "schema = 1\nextra = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = []\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("schema 缺", "[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = []\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("schema 非 1", "schema = 2\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = []\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("schema 串型", "schema = \"1\"\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = []\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("缺 product 节", "schema = 1\n[platform]\narch = \"x86_64\"\n"),
+        ("product 非表", "schema = 1\nproduct = 1\n[platform]\narch = \"x86_64\"\n"),
+        ("name 缺", "schema = 1\n[product]\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = []\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("name 非 str", "schema = 1\n[product]\nname = 7\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = []\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("name 超长", &format!("schema = 1\n[product]\nname = \"{}\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = []\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n", "a".repeat(25))),
+        ("name 字符集", "schema = 1\n[product]\nname = \"_bad\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = []\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("vendor 超长", &format!("schema = 1\n[product]\nname = \"p\"\nvendor = \"{}\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = []\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n", "v".repeat(17))),
+        ("vendor 大写", "schema = 1\n[product]\nname = \"p\"\nvendor = \"Oem\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = []\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("board 词表外", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"rpi4\"\n[product.apps]\npreset = []\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("board 空串", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"\"\n[product.apps]\npreset = []\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("缺 apps 节", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("apps 未知键", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = []\nextra = 1\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("preset 非 arr", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = \"app/A.bap\"\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("preset 元素非 str", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = [7]\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("preset 非 app/ 前缀", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = [\"bin/sh\"]\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("preset 重复", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = [\"app/A.bap\", \"app/A.bap\"]\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("preset 越 APP_SLOTS 帽", &format!("schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = [{}]\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n", (0..11).map(|i| format!("\"app/I{i}.bap\"")).collect::<Vec<_>>().join(", "))),
+        ("override 非 preset id", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = [\"app/A.bap\"]\n[product.apps.override]\nB = \"baps/B.bap\"\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("override 值非 str", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = [\"app/A.bap\"]\n[product.apps.override]\nA = 7\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("priv_grants 非 table", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = [\"app/A.bap\"]\npriv_grants = 1\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("issued_by 撞保留名", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = [\"app/A.bap\"]\n[product.apps.priv_grants]\nissued_by = [\"x\"]\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("issued_by 缺", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = [\"app/A.bap\"]\n[product.apps.priv_grants]\nA = [\"console\"]\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("issued_by 值域外", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = [\"app/A.bap\"]\n[product.apps.priv_grants]\nissued_by = \"OEM_X\"\nA = [\"console\"]\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("issued_by 超长", &format!("schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = [\"app/A.bap\"]\n[product.apps.priv_grants]\nissued_by = \"{}\"\nA = [\"console\"]\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n", "i".repeat(17))),
+        ("grants 非 preset id", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = [\"app/A.bap\"]\n[product.apps.priv_grants]\nissued_by = \"o\"\nB = [\"console\"]\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("grants 值非 arr", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = [\"app/A.bap\"]\n[product.apps.priv_grants]\nissued_by = \"o\"\nA = \"console\"\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("能力键非 str", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = [\"app/A.bap\"]\n[product.apps.priv_grants]\nissued_by = \"o\"\nA = [7]\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("未知能力键", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = [\"app/A.bap\"]\n[product.apps.priv_grants]\nissued_by = \"o\"\nA = [\"gpu\"]\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("能力键重复", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = [\"app/A.bap\"]\n[product.apps.priv_grants]\nissued_by = \"o\"\nA = [\"console\", \"console\"]\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("branding 非 table", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\nbranding = 1\n[product.apps]\npreset = []\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("branding 未知键", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = []\n[product.branding]\ntheme = \"dark\"\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("branding 值空", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = []\n[product.branding]\nwallpaper = \"\"\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("source 非 table", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\nsource = 1\n[product.apps]\npreset = []\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("source.instance 空", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = []\n[product.source]\ninstance = \"\"\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("trust 缺 pk_anchor", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = []\n[product.trust]\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("trust pk_anchor 空", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = []\n[product.trust]\npk_anchor = \"\"\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("缺 defaults 节", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = []\n[platform]\narch = \"x86_64\"\n"),
+        ("launcher 缺", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = []\n[product.defaults]\n[platform]\narch = \"x86_64\"\n"),
+        ("launcher 前缀", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = []\n[product.defaults]\nlauncher = \"usr/bin/sh\"\n[platform]\narch = \"x86_64\"\n"),
+        ("缺 platform 节", "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = []\n[product.defaults]\nlauncher = \"bin/sh\"\n"),
+    ] {
+        assert_reject_both(name, text);
+    }
+
+    // 坏 TOML：双侧 loud 拒 + 分支标识对齐（解析器文案不同源——首刀坏源
+    // 先例：tomllib 自带文案 vs 本子集解析器文案，逐字统一归 CLI 刀）。
+    {
+        let text = "[product\nname = \"p\"\n";
+        assert!(lite::load_lite_product(text).is_err(), "rust 未拒坏 TOML");
+        // Python 拒面文案 = 文件路径前缀 + tomllib 自带英文细节（不同源——
+        // 首刀先例：分支标识「TOML 解析失败」对齐即钉板）。oracle 捕
+        // Reject 后打印再退 0——拒态以 REJ: 前缀判，非退出码。
+        let (py_out, _) = py_load_lite(text);
+        assert!(py_out.starts_with("REJ: ") && py_out.contains("TOML 解析失败"),
+            "python 分支漂移：{py_out}");
+    }
+
+    // 边界对齐钉板（双侧分支形对账，非文案面）
+    // app_id 盲剥律：Python e[4:-4] 字符索引——非 ASCII 不 panic、恰 9 字符得空
+    // app_id 盲剥律经 lib 内单测钉板（lite_product_law——parity 面走 load 主面）
+    // preset 空 + override 全空 = 过面（v0 空 preset 合法）
+    let empty_preset = "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = []\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n";
+    let (py_out, ok) = py_load_lite(empty_preset);
+    assert!(ok, "空 preset: python 未过：{py_out}");
+    assert!(lite::load_lite_product(empty_preset).is_ok());
+}
