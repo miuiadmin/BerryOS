@@ -2031,18 +2031,33 @@ pub fn vnc_web(
                 open_hint(open_browser(&url));
             }
             std::io::stdout().flush().ok();
-            // 输入拦截器装配（2026-11-16）：run 有 qmp.sock 即启用；客机几何按
-            // meta 的 profile 取渲染尺寸（QMP abs 值域 0..32767 需要缩放分母）。
+            // 输入拦截器装配（2026-11-16）：run 有 qmp.sock 即启用；QMP abs
+            // 值域 0..32767 需要缩放分母——**display_mode 实几何优先**
+            // （--display-mode 覆盖档位下 profile 的渲染尺寸已失真：
+            // 2026-11-20 1080x1920 场实锤——按 480x1000 缩放把中/下半屏
+            // 点击全钳到右/底边缘，「点了很多没反应」主凶；ram.rs 原生路
+            // 「缩放分母用 fb 实几何」同款单源律），'WxH@hz' 形取 @ 前
+            // WxH；缺场才回退 profile 渲染尺寸。
             let qmp_inject = run.join("qmp-inject.sock");
             let qmp_sock = if qmp_inject.exists() { qmp_inject } else { run.join("qmp.sock") };
             let (gw, gh) = std::fs::read(run.join("meta.json"))
                 .ok()
                 .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
                 .and_then(|m| {
-                    m.get("profile")
-                        .and_then(|p| p.as_str())
-                        .and_then(|id| crate::profile::get(id).ok())
-                        .map(|pr| (pr.render_w, pr.render_h))
+                    m.get("display_mode")
+                        .and_then(|s| s.as_str())
+                        .and_then(|s| {
+                            let base = s.split('@').next()?;
+                            let (w, h) = base.split_once('x')?;
+                            let (w, h) = (w.parse::<u32>().ok()?, h.parse::<u32>().ok()?);
+                            if w > 0 && h > 0 { Some((w, h)) } else { None }
+                        })
+                        .or_else(|| {
+                            m.get("profile")
+                                .and_then(|p| p.as_str())
+                                .and_then(|id| crate::profile::get(id).ok())
+                                .map(|pr| (pr.render_w, pr.render_h))
+                        })
                 })
                 .unwrap_or((1, 1));
             let upstream = crate::web::LanUpstream {

@@ -378,6 +378,25 @@ pub struct QmpInjector {
 /// 探测级——QMP 恢复后至多 5s 输入复活。
 const RETRY_AFTER: Duration = Duration::from_secs(5);
 
+/// 连接生命周期取证（全局节流 5s 一行）：connect_guarded 各失败阶段与
+/// 哑化/重连成败各打一行——楔死从静默变可见（2026-11-20 双形态实锤：
+/// 起点握手失败整会话哑管道 + 会话中哑化仅事件驱动重连，此前全静默）。
+fn life_note(stage: &str) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    static LAST_MS: AtomicU64 = AtomicU64::new(0);
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let last = LAST_MS.load(Ordering::Relaxed);
+    if now_ms.saturating_sub(last) < 5_000 {
+        return;
+    }
+    LAST_MS.store(now_ms, Ordering::Relaxed);
+    eprintln!("berry: qmp-inject {stage}");
+}
+
 impl QmpInjector {
     /// 连接并协商 capabilities；对 greeting/回读与后续写全程设 `guard`
     /// 超时（持有方在 UI/代理线程连写——QEMU 卡死守护：超时即 None/
@@ -385,17 +404,27 @@ impl QmpInjector {
     /// 方自选降级面）。成功者自带哑化后节流重连自愈（见结构体注）。
     pub fn connect_guarded(path: &Path, guard: Duration) -> Option<Self> {
         use std::io::{BufRead, BufReader, Write};
-        let mut s = std::os::unix::net::UnixStream::connect(path).ok()?;
+        let mut s = match std::os::unix::net::UnixStream::connect(path) {
+            Ok(s) => s,
+            Err(_) => {
+                life_note("connect 拒绝（监听窗竞速/路径缺席）");
+                return None;
+            }
+        };
         s.set_read_timeout(Some(guard)).ok()?;
         s.set_write_timeout(Some(guard)).ok()?;
         let mut r = BufReader::new(s.try_clone().ok()?);
         let mut line = String::new();
-        r.read_line(&mut line).ok()?; // greeting
+        if r.read_line(&mut line).is_err() {
+            life_note("greeting 超时（QEMU 主循环饱和?）");
+            return None;
+        }
         writeln!(s, "{{\"execute\":\"qmp_capabilities\"}}").ok()?;
         s.flush().ok()?;
         line.clear();
         r.read_line(&mut line).ok()?;
         if !line.contains("return") {
+            life_note("caps 回读异常");
             return None;
         }
         Some(QmpInjector {
@@ -431,8 +460,12 @@ impl QmpInjector {
                 }
             }
             match Self::connect_guarded(&self.path, self.guard) {
-                Some(fresh) => *self = fresh,
+                Some(fresh) => {
+                    life_note("重连成功复活");
+                    *self = fresh
+                }
                 None => {
+                    life_note("重连失败（续 5s 窗）");
                     self.retry_at = Some(Instant::now() + RETRY_AFTER);
                     return false;
                 }
@@ -458,6 +491,7 @@ impl QmpInjector {
         }
         let msg = pointer_msg(x, y, buttons, gw, gh);
         if writeln!(s, "{msg}").is_err() || s.flush().is_err() {
+            life_note("写失败哑化（挂 5s 重连窗）");
             self.sock = None;
             self.retry_at = Some(Instant::now() + RETRY_AFTER);
             return false;
