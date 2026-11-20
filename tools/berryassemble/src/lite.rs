@@ -3,9 +3,14 @@
 //! apps.{preset,override,priv_grants}/branding/source/trust/defaults.launcher）
 //! 键集/类型/值域执法（G4 两段式第一段——零文件对账，lite 语义）。
 //!
-//! 未收录面（后续片）：`[product.defaults.locale]` 八键（BCP 47/tz/枚举）与
-//! `[platform]` 全节执法——locale 节出现即 loud 拒（未收录面不静默放行）；
-//! platform 只查在场性。本片未接 CLI（产线零触碰——首刀「只挂测试」先例）。
+//! 第二片：`[platform]` 全节执法（六键在场性 + 三枚举 + sideload bool +
+//! user 收窄 + boot 锚形/params 词表 + storage 值域/atomicity 档）——
+//! 本片后 lite 面与 Python `load_product(lite=True)` 全分支同构。
+//! 词表/域界单源复用 lib（`boot_params_spec`/`INTENTS`/`parse_kernel_anchor`）。
+//!
+//! 未收录面（后续片）：`[product.defaults.locale]` 八键（BCP 47/tz/枚举）
+//! ——locale 节出现即 loud 拒（未收录面不静默放行）。本片未接 CLI
+//! （产线零触碰——首刀「只挂测试」先例）。
 //!
 //! 已知边界（钉界）：①toml_doc 空节不产出——`[product.trust]` 空节 Python
 //! 侧「在场 → pk_anchor 必填缺失」vs 本片「缺席跳过」，语面外（第三片随
@@ -27,6 +32,24 @@ pub const VENDOR_MAX: usize = 16;
 const BOARDS: [&str; 1] = ["qemu-virt"];
 const CAPS_KEYS: [&str; 3] = ["console", "fs", "net"];
 const TOP_KEYS: [&str; 3] = ["platform", "product", "schema"];
+/// Python `PLATFORM_KEYS` 镜像（必填六键——`_check_platform_section` 在场
+/// 性巡检序：arch/feature_level/build_type/sideload/boot/storage）。
+const PLATFORM_KEYS: [&str; 6] = [
+    "arch",
+    "boot",
+    "build_type",
+    "feature_level",
+    "sideload",
+    "storage",
+];
+const ARCHES: [&str; 2] = ["aarch64", "x86_64"];
+const FEATURE_LEVELS: [&str; 1] = ["rich"];
+const BUILD_TYPES: [&str; 3] = ["eng", "userdebug", "user"];
+const ATOMICITY_LEVELS: [&str; 3] = ["p0", "p1", "p2"];
+const SIZE_MIB_RANGE: (u32, u32) = (48, 1024);
+const SPLIT_MIB_RANGE: (u32, u32) = (8, 64);
+const BOOT_KEYS: [&str; 2] = ["kernel", "params"];
+const STORAGE_KEYS: [&str; 3] = ["image_size_mib", "min_power_atomicity", "rootfs_split_mib"];
 const PRODUCT_KEYS: [&str; 8] = [
     "apps", "board", "branding", "defaults", "name", "source", "trust", "vendor",
 ];
@@ -243,9 +266,225 @@ fn sorted_dups(items: &[String]) -> Vec<String> {
     dups.into_iter().collect()
 }
 
-// ---- load_lite 主面 ----
+// ---- [platform] 全节执法（二刀第二片——Python `_check_platform_section` 镜像）----
 
-/// `load_product(lite=True)` 的过检视图（结构面——本片收录 [product] 全节）。
+/// lite `Val` → lib `toml_val::Val` 转换桥（params 词表执法单源复用——
+/// 二刀第二片：`[platform.boot.params]` 不再长第二套词表/域界实现）。
+fn to_lib_val(v: &Val) -> crate::toml_val::Val {
+    match v {
+        Val::Int(n) => crate::toml_val::Val::Int(*n),
+        Val::Str(s) => crate::toml_val::Val::Str(s.clone()),
+        Val::Bool(b) => crate::toml_val::Val::Bool(*b),
+        Val::Arr(a) => crate::toml_val::Val::List(a.iter().map(to_lib_val).collect()),
+    }
+}
+
+/// View params 节 → 有序键值对（键序 = 首现序——`check_boot_params` 的
+/// BTreeMap 只用于确定性序列化面，拒面先检不受键序影响）。
+fn view_pairs(v: &View) -> Vec<(String, Val)> {
+    v.order
+        .iter()
+        .filter_map(|k| match v.get(k) {
+            Some(Node::Leaf(val)) => Some((k.clone(), val.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Python `枚举外值 {v!r}` 拒面（`isinstance(v, str) and v in vocab` 单
+/// 分支——非串与枚举外同文案，got 段 = repr；表形走 dict repr 面）。
+fn vocab_check(sect_key: &str, node: &Node, vocab: &[&str], why: &str) -> Result<(), Reject> {
+    let ok = matches!(node, Node::Leaf(Val::Str(s)) if vocab.contains(&s.as_str()));
+    if !ok {
+        let vocab_list: Vec<String> = vocab.iter().map(|s| s.to_string()).collect();
+        return Err(Reject(format!(
+            "{sect_key}: 枚举外值 {}（词表 {}——{why}）",
+            py_node_repr(node),
+            py_list(&vocab_list)
+        )));
+    }
+    Ok(())
+}
+
+/// `[platform]` 全节执法（Python `_check_platform_section` 逐枝镜像）。
+fn check_platform_section(p: &mut LiteProduct, sect: &View) -> Result<(), Reject> {
+    reject_unknown("platform", sect, &PLATFORM_KEYS, &[])?;
+    // 必填六键巡检（Python for key in (…) 序）
+    for key in ["arch", "feature_level", "build_type", "sideload", "boot", "storage"] {
+        if !sect.contains_key(key) {
+            return Err(Reject(format!(
+                "platform.{key}: 必填缺失（v0 存在性校验——schema §1.3）"
+            )));
+        }
+    }
+    vocab_check(
+        "platform.arch",
+        sect.get("arch").unwrap(),
+        &ARCHES,
+        "x86_64=最小集",
+    )?;
+    vocab_check(
+        "platform.feature_level",
+        sect.get("feature_level").unwrap(),
+        &FEATURE_LEVELS,
+        "Q7：v0 只 rich 在册（骨架 add-only）",
+    )?;
+    vocab_check(
+        "platform.build_type",
+        sect.get("build_type").unwrap(),
+        &BUILD_TYPES,
+        "user 型收窄见 §1.7",
+    )?;
+    let sideload = match sect.get("sideload") {
+        Some(Node::Leaf(Val::Bool(b))) => *b,
+        Some(other) => {
+            return Err(Reject(format!(
+                "platform.sideload: 应为 bool（got {}）",
+                type_name(other)
+            )))
+        }
+        None => {
+            return Err(Reject(
+                "platform.sideload: 应为 bool（got NoneType）".to_string(),
+            ))
+        }
+    };
+    if matches!(sect.get("build_type"), Some(Node::Leaf(Val::Str(s))) if s == "user")
+        && sideload
+    {
+        return Err(Reject(
+            "platform.sideload: user 型下必须缺省或 false（§1.3 收窄清单——v1 立法面）"
+                .to_string(),
+        ));
+    }
+    if let Some(Node::Leaf(Val::Str(s))) = sect.get("arch") {
+        p.arch = s.clone();
+    }
+    if let Some(Node::Leaf(Val::Str(s))) = sect.get("feature_level") {
+        p.feature_level = s.clone();
+    }
+    p.build_type = match sect.get("build_type") {
+        Some(Node::Leaf(Val::Str(s))) => s.clone(),
+        _ => String::new(),
+    };
+    p.sideload = sideload;
+
+    // [platform.boot]——kernel 工件锚 + params 词表子表
+    let boot = need_table(sect, "boot")?;
+    reject_unknown("platform.boot", boot, &BOOT_KEYS, &[])?;
+    let kernel = match boot.get("kernel") {
+        Some(Node::Leaf(Val::Str(s))) if !s.is_empty() => s.clone(),
+        _ => {
+            return Err(Reject(
+                "platform.boot.kernel: 应为非空字符串（必填——工件锚）".to_string(),
+            ))
+        }
+    };
+    let (kname, ksha) = crate::parse_kernel_anchor(&kernel)?;
+    p.kernel_name = kname;
+    p.kernel_sha = ksha;
+    let params = match boot.get("params") {
+        Some(Node::Table(v)) => v,
+        Some(_) => {
+            return Err(Reject(
+                "platform.boot.params: 应为节（键值表）".to_string(),
+            ))
+        }
+        None => {
+            // Python `boot.get("params", {})` 缺席 = 空表（零拒面路径）
+            return check_platform_storage(p, sect);
+        }
+    };
+    let pairs = view_pairs(params);
+    if pairs.len() > crate::PARAMS_MAX {
+        return Err(Reject(format!(
+            "platform.boot.params: {} 键越帽 {}（§1.6-4 解析面定界——INITRD 段 count 帽 32）",
+            pairs.len(),
+            crate::PARAMS_MAX
+        )));
+    }
+    let lib_pairs: std::collections::BTreeMap<String, crate::toml_val::Val> =
+        pairs
+            .iter()
+            .map(|(k, v)| (k.clone(), to_lib_val(v)))
+            .collect();
+    crate::check_boot_params(&lib_pairs)?;
+    for (k, v) in pairs {
+        if let Val::Str(s) = v {
+            p.params.insert(k, s);
+        } else if let Val::Int(n) = v {
+            p.params.insert(k, n.to_string());
+        }
+    }
+    check_platform_storage(p, sect)
+}
+
+/// `[platform.storage]` 产物几何 + atomicity 档执法。
+fn check_platform_storage(p: &mut LiteProduct, sect: &View) -> Result<(), Reject> {
+    let storage = need_table(sect, "storage")?;
+    reject_unknown("platform.storage", storage, &STORAGE_KEYS, &[])?;
+    for key in STORAGE_KEYS {
+        if !storage.contains_key(key) {
+            return Err(Reject(format!(
+                "platform.storage.{key}: 必填缺失（schema §1.3）"
+            )));
+        }
+    }
+    let img = match storage.get("image_size_mib") {
+        Some(Node::Leaf(v)) => to_lib_val(v),
+        _ => crate::toml_val::Val::Other,
+    };
+    let img = crate_need_u32("platform.storage", "image_size_mib", &img, SIZE_MIB_RANGE.0, SIZE_MIB_RANGE.1)?;
+    p.image_size_mib = img;
+    let split = match storage.get("rootfs_split_mib") {
+        Some(Node::Leaf(v)) => to_lib_val(v),
+        _ => crate::toml_val::Val::Other,
+    };
+    let split = crate_need_u32("platform.storage", "rootfs_split_mib", &split, SPLIT_MIB_RANGE.0, SPLIT_MIB_RANGE.1)?;
+    p.rootfs_split_mib = split;
+    let pa = match storage.get("min_power_atomicity") {
+        Some(Node::Leaf(v)) => v.clone(),
+        _ => Val::Arr(vec![]),
+    };
+    if !matches!(&pa, Val::Str(s) if ATOMICITY_LEVELS.contains(&s.as_str())) {
+        let vocab: Vec<String> = ATOMICITY_LEVELS.iter().map(|s| s.to_string()).collect();
+        return Err(Reject(format!(
+            "platform.storage.min_power_atomicity: 枚举外值 {}（词表 {}——§2.4）",
+            py_repr(&pa),
+            py_list(&vocab)
+        )));
+    }
+    let pa_str = match &pa {
+        Val::Str(s) => s.clone(),
+        _ => String::new(),
+    };
+    if pa_str != "p0" {
+        return Err(Reject(format!(
+            "platform.storage.min_power_atomicity: 词表内但 v1 只 p0 可组（{pa_str} 无在册实现可满足——§1.3/§2.4 词表先立值域收窄，08 号 §6-Q11 采纳形）"
+        )));
+    }
+    p.min_power_atomicity = pa_str;
+    Ok(())
+}
+
+/// lib 面 `need_u32` 复用桥（lite Val → lib Val 后调 lib 私有实现的公开
+/// 包装——零第二套域界文案）。
+fn crate_need_u32(
+    sect: &str,
+    key: &str,
+    v: &crate::toml_val::Val,
+    lo: u32,
+    hi: u32,
+) -> Result<u32, Reject> {
+    // 直接走 lib 的 check_boot_params 通道外露的单值域界执法——
+    // 与 Python `_need_u32` 文案逐字对齐（got 段 = type name）。
+    crate::check_single_u32(sect, key, v, lo, hi)
+}
+
+
+
+/// `load_product(lite=True)` 的过检视图（结构面——第一片 [product] 全节 +
+/// 第二片 [platform] 全节）。
 #[derive(Debug, Default, PartialEq)]
 pub struct LiteProduct {
     pub name: String,
@@ -259,6 +498,16 @@ pub struct LiteProduct {
     pub launcher: String,
     pub trust_pk_anchor: String,
     pub source_instance: String,
+    pub arch: String,
+    pub feature_level: String,
+    pub build_type: String,
+    pub sideload: bool,
+    pub params: BTreeMap<String, String>,
+    pub kernel_name: String,
+    pub kernel_sha: String,
+    pub image_size_mib: u32,
+    pub rootfs_split_mib: u32,
+    pub min_power_atomicity: String,
 }
 
 /// 结构面执法主入口（Python `load_product(path, lite=True)` 镜像——文本入，
@@ -292,8 +541,7 @@ pub fn load_lite_product(text: &str) -> Result<LiteProduct, Reject> {
     }
     let mut p = LiteProduct::default();
     check_product_section(&mut p, need_table(&root, "product")?)?;
-    // platform 在场性（Python _need_table 位）；全节执法归后续片
-    need_table(&root, "platform")?;
+    check_platform_section(&mut p, need_table(&root, "platform")?)?;
     Ok(p)
 }
 
@@ -673,23 +921,33 @@ fn check_product_section(p: &mut LiteProduct, sect: &View) -> Result<(), Reject>
 mod tests {
     use super::*;
 
-    const GOOD_MIN: &str = concat!(
-        "schema = 1\n",
-        "[product]\n",
-        "name = \"p\"\n",
-        "vendor = \"o\"\n",
-        "board = \"qemu-virt\"\n",
-        "[product.apps]\n",
-        "preset = [\"app/A.bap\"]\n",
-        "[product.defaults]\n",
-        "launcher = \"bin/sh\"\n",
-        "[platform]\n",
-        "arch = \"x86_64\"\n",
-    );
+    fn good_min() -> String {
+        [
+            "schema = 1\n",
+            "[product]\n",
+            "name = \"p\"\n",
+            "vendor = \"o\"\n",
+            "board = \"qemu-virt\"\n",
+            "[product.apps]\n",
+            "preset = [\"app/A.bap\"]\n",
+            "[product.defaults]\n",
+            "launcher = \"bin/sh\"\n",
+            "[platform]\n",
+            "arch = \"x86_64\"\n",
+            "feature_level = \"rich\"\n",
+            "build_type = \"eng\"\n",
+            "sideload = false\n",
+            "[platform.boot]\n",
+            "kernel = \"krnl@sha256:",
+        ]
+        .concat()
+            + &"a".repeat(64)
+            + "\"\n[platform.storage]\nimage_size_mib = 96\nrootfs_split_mib = 32\nmin_power_atomicity = \"p0\"\n"
+    }
 
     #[test]
     fn lite_product_law() {
-        let p = load_lite_product(GOOD_MIN).unwrap();
+        let p = load_lite_product(&good_min()).unwrap();
         assert_eq!(p.name, "p");
         assert_eq!(p.vendor, "o");
         assert_eq!(p.board, "qemu-virt");
@@ -699,7 +957,7 @@ mod tests {
         assert_eq!(app_id_of("app/SETTINGS.bap"), "SETTINGS");
         assert_eq!(app_id_of("app/X"), "");
         // 拒面抽查（全谱归 parity oracle 对拍）
-        assert!(load_lite_product(&GOOD_MIN.replacen("board = \"qemu-virt\"", "board = \"rpi4\"", 1)).is_err());
+        assert!(load_lite_product(&good_min().replacen("board = \"qemu-virt\"", "board = \"rpi4\"", 1)).is_err());
         assert!(load_lite_product("schema = 2\n").is_err()); // 须 = 1 先于缺节
         assert!(load_lite_product("schema = 1\n[platform]\narch = \"x86_64\"\n").is_err()); // 缺 [product]
     }

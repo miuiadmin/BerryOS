@@ -380,9 +380,82 @@ fn parity_load_lite_product() {
     // 边界对齐钉板（双侧分支形对账，非文案面）
     // app_id 盲剥律：Python e[4:-4] 字符索引——非 ASCII 不 panic、恰 9 字符得空
     // app_id 盲剥律经 lib 内单测钉板（lite_product_law——parity 面走 load 主面）
-    // preset 空 + override 全空 = 过面（v0 空 preset 合法）
-    let empty_preset = "schema = 1\n[product]\nname = \"p\"\nvendor = \"o\"\nboard = \"qemu-virt\"\n[product.apps]\npreset = []\n[product.defaults]\nlauncher = \"bin/sh\"\n[platform]\narch = \"x86_64\"\n";
-    let (py_out, ok) = py_load_lite(empty_preset);
+    // preset 空 + override 全空 + platform 最小面 = 过面（v0 空 preset 合法；
+    // 第二片起 platform 六键齐备才过——词表/域界执法已挂）
+    let empty_preset = good_platform_min();
+    let (py_out, ok) = py_load_lite(&empty_preset);
     assert!(ok, "空 preset: python 未过：{py_out}");
-    assert!(lite::load_lite_product(empty_preset).is_ok());
+    assert!(lite::load_lite_product(&empty_preset).is_ok());
+
+    // ---- 第二片 [platform] 全节拒面语料（good_platform_min 单点变异）----
+    // 每条 = Rust 拒 ⇔ Python 拒且文案逐字全等（首片 42 条同纪律）。
+    let cases: Vec<(&str, String)> = vec![
+        ("platform 未知键", good_platform_min().replacen("[platform]\n", "[platform]\nextra = 1\n", 1)),
+        ("缺 feature_level", good_platform_min().replacen("feature_level = \"rich\"\n", "", 1)),
+        ("arch 枚举外", good_platform_min().replacen("arch = \"x86_64\"", "arch = \"arm64\"", 1)),
+        ("feature_level 枚举外", good_platform_min().replacen("feature_level = \"rich\"", "feature_level = \"lite\"", 1)),
+        ("build_type 枚举外", good_platform_min().replacen("build_type = \"eng\"", "build_type = \"prod\"", 1)),
+        ("sideload 非 bool", good_platform_min().replacen("sideload = false", "sideload = 1", 1)),
+        ("user 型 sideload 收窄", good_platform_min()
+            .replacen("build_type = \"eng\"", "build_type = \"user\"", 1)
+            .replacen("sideload = false", "sideload = true", 1)),
+        ("boot 未知键", good_platform_min().replacen("[platform.boot]\n", "[platform.boot]\nextra = 1\n", 1)),
+        ("kernel 锚 sha 短一位", good_platform_min().replacen(
+            &format!("\"krnl@sha256:{}\"", "a".repeat(64)),
+            &format!("\"krnl@sha256:{}\"", "a".repeat(63)),
+            1)),
+        ("kernel 非 str", good_platform_min().replacen("kernel = \"krnl", "kernel = 7\n# krnl", 1)),
+        ("params 未知键", good_platform_min().replacen(
+            &format!("\"krnl@sha256:{}\"\n", "a".repeat(64)),
+            &format!("\"krnl@sha256:{}\"\n[platform.boot.params]\nunknown = 1\n", "a".repeat(64)),
+            1)),
+        ("params intent 枚举外", good_platform_min().replacen(
+            &format!("\"krnl@sha256:{}\"\n", "a".repeat(64)),
+            &format!("\"krnl@sha256:{}\"\n[platform.boot.params]\nintent_default = \"fast\"\n", "a".repeat(64)),
+            1)),
+        ("params u32 域界外", good_platform_min().replacen(
+            &format!("\"krnl@sha256:{}\"\n", "a".repeat(64)),
+            &format!("\"krnl@sha256:{}\"\n[platform.boot.params]\nsched_slice_hz = 99999999\n", "a".repeat(64)),
+            1)),
+        ("params 非表", good_platform_min().replacen(
+            &format!("\"krnl@sha256:{}\"\n", "a".repeat(64)),
+            &format!("\"krnl@sha256:{}\"\nparams = 1\n", "a".repeat(64)),
+            1)),
+        ("缺 storage 节", good_platform_min().replacen(
+            &format!("\"krnl@sha256:{}\"\n[platform.storage]\nimage_size_mib = 96\nrootfs_split_mib = 32\nmin_power_atomicity = \"p0\"\n", "a".repeat(64)),
+            &format!("\"krnl@sha256:{}\"\n", "a".repeat(64)),
+            1)),
+        ("image_size_mib 域界外", good_platform_min().replacen("image_size_mib = 96", "image_size_mib = 47", 1)),
+        ("image_size_mib 非 int", good_platform_min().replacen("image_size_mib = 96", "image_size_mib = \"96\"", 1)),
+        ("rootfs_split_mib 域界外", good_platform_min().replacen("rootfs_split_mib = 32", "rootfs_split_mib = 65", 1)),
+        ("atomicity 词表内非 p0", good_platform_min().replacen("min_power_atomicity = \"p0\"", "min_power_atomicity = \"p1\"", 1)),
+        ("atomicity 枚举外", good_platform_min().replacen("min_power_atomicity = \"p0\"", "min_power_atomicity = \"p9\"", 1)),
+        ("storage 未知键", good_platform_min().replacen("min_power_atomicity = \"p0\"\n", "min_power_atomicity = \"p0\"\nextra = 1\n", 1)),
+    ];
+    for (name, text) in cases {
+        assert_reject_both(name, &text);
+    }
+}
+
+/// 第二片起的最小过面 platform 节（六键齐备 + 最小 boot/storage）。
+fn good_platform_min() -> String {
+    [
+        "schema = 1\n",
+        "[product]\n",
+        "name = \"p\"\n",
+        "vendor = \"o\"\n",
+        "board = \"qemu-virt\"\n",
+        "[product.apps]\npreset = []\n",
+        "[product.defaults]\nlauncher = \"bin/sh\"\n",
+        "[platform]\n",
+        "arch = \"x86_64\"\n",
+        "feature_level = \"rich\"\n",
+        "build_type = \"eng\"\n",
+        "sideload = false\n",
+        "[platform.boot]\n",
+        "kernel = \"krnl@sha256:",
+    ]
+    .concat()
+        + &"a".repeat(64)
+        + "\"\n[platform.storage]\nimage_size_mib = 96\nrootfs_split_mib = 32\nmin_power_atomicity = \"p0\"\n"
 }

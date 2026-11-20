@@ -106,17 +106,17 @@ pub fn check_boot_params(
             )?;
             out.insert(key.clone(), ParamVal::U32(v));
         } else {
-            // intent 六档
+            // intent 六档——Python `not isinstance(val, str) or val not in INTENTS`
+            // 单分支：非串与枚举外同文案，got 段 = repr（非串形如实打值）。
             let Some(s) = val.as_str() else {
                 return Err(die(format!(
-                    "platform.boot.params.{key}: 不在六档词表 {intents:?}（ADR #58——got None）",
-                    intents = INTENTS
+                    "platform.boot.params.{key}: 不在六档词表 ('unspecified', 'latency_critical', 'interactive', 'utility', 'background', 'maintenance')（ADR #58——got {}）",
+                    val.py_repr()
                 )));
             };
             if !INTENTS.contains(&s) {
                 return Err(die(format!(
-                    "platform.boot.params.{key}: 不在六档词表 {intents:?}（ADR #58——got '{s}'）",
-                    intents = INTENTS
+                    "platform.boot.params.{key}: 不在六档词表 ('unspecified', 'latency_critical', 'interactive', 'utility', 'background', 'maintenance')（ADR #58——got '{s}'）"
                 )));
             }
             // 'static 断言：词表本身是 'static 数组，找不到时上面已拒
@@ -137,7 +137,8 @@ fn need_u32(
     // bool 是 int 子类（Python 面），type() 才拦得住——Rust 面枚举分型天然拦。
     let Some(n) = v.as_int() else {
         return Err(die(format!(
-            "{sect}.{key}: 应为整数（got int）"
+            "{sect}.{key}: 应为整数（got {}）",
+            v.type_name()
         )));
     };
     if !(lo as i64..=hi as i64).contains(&n) {
@@ -146,6 +147,18 @@ fn need_u32(
         )));
     }
     Ok(n as u32)
+}
+
+/// `need_u32` 的公开包装（`[platform.storage]` 域界执法单源复用——lite
+/// 第二片转换桥调用；与 Python `_need_u32` 文案逐字对齐）。
+pub fn check_single_u32(
+    sect: &str,
+    key: &str,
+    v: &toml_val::Val,
+    lo: u32,
+    hi: u32,
+) -> Result<u32, Reject> {
+    need_u32(sect, key, v, lo, hi)
 }
 
 /// boot-params 过检视图 → `etc/boot-params.toml` 字节（G5 产件面的单一
@@ -256,14 +269,16 @@ pub fn platform_level_of(text: &str) -> Result<u64, Reject> {
     Err(die("abi.toml [platform].level: 缺席（装配反回滚门比对基准单源）".to_string()))
 }
 
-/// 极简 TOML 值（本刀只吃 params 面的 int/str 两型——`[platform]` 全节
-/// 结构执法归后续刀；`as_int` 排除 bool，Python `type(v) is not int` 同拦）。
+/// 极简 TOML 值（params 面的 int/str/bool/list 四型——`[platform]` 全节
+/// 结构执法（二刀第二片）经 lite 转换复用；`as_int` 排除 bool，Python
+/// `type(v) is not int` 同拦）。
 pub mod toml_val {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum Val {
         Int(i64),
         Str(String),
         Bool(bool),
+        List(Vec<Val>),
         Other,
     }
 
@@ -277,8 +292,34 @@ pub mod toml_val {
 
         pub fn as_str(&self) -> Option<&str> {
             match self {
-                Val::Str(s) => Some(s),
+                Val::Str(s) => Some(s.as_str()),
                 _ => None,
+            }
+        }
+
+        /// Python `type(v).__name__` 镜像（拒面文案 `got {…}` 段单源）。
+        pub fn type_name(&self) -> &'static str {
+            match self {
+                Val::Int(_) => "int",
+                Val::Str(_) => "str",
+                Val::Bool(_) => "bool",
+                Val::List(_) => "list",
+                Val::Other => "NoneType",
+            }
+        }
+
+        /// Python `repr` 镜像（拒面 `got {v!r}` 段——int 裸形/str 单引号/
+        /// bool 首帽/list 方括号递归）。
+        pub fn py_repr(&self) -> String {
+            match self {
+                Val::Int(n) => n.to_string(),
+                Val::Str(s) => format!("'{s}'"),
+                Val::Bool(b) => if *b { "True" } else { "False" }.to_string(),
+                Val::List(a) => {
+                    let inner: Vec<String> = a.iter().map(|v| v.py_repr()).collect();
+                    format!("[{}]", inner.join(", "))
+                }
+                Val::Other => "None".to_string(),
             }
         }
     }
