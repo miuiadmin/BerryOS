@@ -56,7 +56,7 @@ Updated: 2026-11-20
 ## 与其他文档的关系
 
 - 施工单源：[13-ktest调用序列与九文件回流对拍总账-回流义务5补遗.md](13-ktest调用序列与九文件回流对拍总账-回流义务5补遗.md)——「dpg.rs 2 段取 overhaul」裁定的实施化；本件补中段调和刀与供体核活清单，裁定本体不动。
-- 判据链：[18-事故族第四面排查定谳-7f05be12e全symbol扫描收口-6文件18symbol配套静默回退与消费链连带丢失.md](18-事故族第四面排查定谳-7f05be12e全symbol扫描收口-6文件18symbol配套静默回退与消费链连带丢失.md)（供体先行）→ [22-vmar.rs十段整取第1步实施化diff草案-事故族第五面PXNUXN同点回退定谳.md](22-vmar.rs十段整取第1步实施化diff草案-事故族第五面PXNUXN同点回退定谳.md)（第八连：跨文件消费面）→ 本件（调和面 F：同文件锁纪律撕裂——静默错族）。24 号件（aspace.rs 两段，`24-aspace.rs两段冲突处置与消费改接面diff草案-第九连供体链生死分叉定谳.md`，PR #588 在途）的第九连与本件调和面 F 正交互补——其管跨文件供体链生死，本件管同文件段区/并区一致性。
+- 判据链：[18-事故族第四面排查定谳-7f05be12e全symbol扫描收口-6文件18symbol配套静默回退与消费链连带丢失.md](18-事故族第四面排查定谳-7f05be12e全symbol扫描收口-6文件18symbol配套静默回退与消费链连带丢失.md)（供体先行）→ [22-vmar.rs十段整取第1步实施化diff草案-事故族第五面PXNUXN同点回退定谳.md](22-vmar.rs十段整取第1步实施化diff草案-事故族第五面PXNUXN同点回退定谳.md)（第八连：跨文件消费面）→ 本件（调和面 F：同文件锁纪律撕裂——静默错族）。[24-aspace.rs两段冲突处置与消费改接面diff草案-第九连供体链生死分叉定谳.md](24-aspace.rs两段冲突处置与消费改接面diff草案-第九连供体链生死分叉定谳.md)的第九连与本件调和面 F 正交互补——其管跨文件供体链生死，本件管同文件段区/并区一致性。
 - 供体验证单源：[20-kernLock双guard与mm三锁助手复活实装验证-第1步随刀序12实跑定谳.md](20-kernLock双guard与mm三锁助手复活实装验证-第1步随刀序12实跑定谳.md)——刀③ kern_lock 双 guard 的 fceb 形贴回实施验证。
 - 证据可复现：merge-tree = `git merge-tree --write-tree --merge-base=fceb03ff3 origin/wip/sched-1.1 origin/wip/base-overhaul`（树 `827fef355`）；两段段位 = `git show {origin/wip/sched-1.1,fceb03ff3,origin/wip/base-overhaul}:kernel/src/dpg.rs` 三方 `git merge-file -p`（`<<<<<<<` ×2 @:149/:287）；残留位 = merged 文件 `grep -n "kern_lock::klock_exit"`（×5 + 段区 2 处 ours 臂）；fceb RAII 基线 = `git show fceb03ff3:kernel/src/dpg.rs | grep -n "klock_enter_irqsave\|drop(_kl)\|drop(kl)"`。
-- 沿革：[docs/阶段沿革.md](../../docs/阶段沿革.md) 六百三十三节（随本批；六百三十二为 #588 在途占用，让号序承 Q122 判例）。
+- 沿革：[docs/阶段沿革.md](../../docs/阶段沿革.md) 六百三十四节（随本批；初编六百三十三与 W2-Q244 撞号让号，承 Q7 契约让号律）。
