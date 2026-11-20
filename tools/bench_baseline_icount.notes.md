@@ -146,3 +146,7 @@ trace-dual + lat + reject-trio + testhost（同目录 20261105-0930~0931 批）�
 
 - a161d6de4（双红解堵：E2 VA 笔误+记账锚 72→32 均测试侧）绿线 prove exact 定档；悬账终偿。回执 icount-prove-20261119-194629。
 - 勘误（2026-11-20）：[终档]节『十二项』系笔误，实钉十项——回执与重烘实质不变（N_METRICS=10、基线在册恰 10 行；G3-4a 先例=不回写原句，提交题历史不更动）。
+
+## [2026-11-20 合流后重烘] 六项漂移归因
+
+- e7ac476b1（launcher E0407 解堵+origin 21 笔合流窗：mkapp 五刀/gensourceindex/launcher GUI/ABI 42 号等）改指令流：buddy 族两项换轨（alloc4k 82→37 / alloc64k 37→180）+send_recv/svc/switch/vmo_commit 小真增量（GUI/工具链码变化）——确定性通道如实记变。--update 重烘（--qemu-wait 0 争用降级，icount 值免疫）。
