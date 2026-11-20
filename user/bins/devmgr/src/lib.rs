@@ -132,24 +132,33 @@ pub fn enumerate(reader: &mut dyn SlotReader) -> Result<DeviceInventory, BadMagi
 /// （8B 帽内短名——gui-inputd 注册名是 `inputd`，svcmgr `ps_reg(b"inputd")`
 /// 实录）。两名字段分立：v2 `/svc` 注册面落成后 `driver` 升命名空间路径。
 pub struct DriverBinding {
-    /// virtio DeviceID（2=block / 1=net / 18=input / 16=gpu）。
+    /// virtio DeviceID（2=block / 1=net / 18=input / 16=gpu / 3=console /
+    /// 4=rng）。
     pub device_id: u32,
-    /// 设备类短名（报告用："blk"/"net"/"input"/"gpu"）。
+    /// 设备类短名（报告用："blk"/"net"/"input"/"gpu"/"console"/"rng"）。
     pub kind: &'static str,
     /// 驱动服务名（报告与缺失告警用）。
     pub driver: &'static str,
-    /// svcmgr ps 账本行名（服务在席性判定的查表键）。
+    /// svcmgr ps 账本行名（服务在席性判定的查表键；psproto NAME_MAX=8
+    /// 帽内短名——超帽驱动名取缩写：gui-inputd→`inputd` 实录、
+    /// berry-rng→`rngd` 同款）。
     pub ledger_name: &'static str,
 }
 
-/// v1 匹配表（研究报告 §4.2：blk=2→vblk、net=1→vnet、input=18→
-/// gui-inputd、gpu=16→guifbd）。did 数值与 vprobe 四常量 /
-/// berry-virtio `mmio::DEVICE_ID_GPU` 等值钉板互证。
-pub const DRIVER_TABLE: [DriverBinding; 4] = [
+/// v1 匹配表（研究报告 §4.2 四类：blk=2→vblk、net=1→vnet、input=18→
+/// gui-inputd、gpu=16→guifbd）+ 驱动表补全刀两行（console=3、rng=4——
+/// 先行绑定：服务本体未落（rng = 报告交付 1.5 未动面），设备在而账本
+/// 无行时 devmgr 报 absent WARN，正是「缺谁」的正确观察面）。did 数值
+/// 与 vprobe 白名单 / berry-virtio `mmio::DEVICE_ID_GPU` 等值钉板互证
+/// （console/rng 暂无 vprobe 白名——挂即 vprobe trap，smoke 拓扑面归
+/// 各自服务落地刀）。
+pub const DRIVER_TABLE: [DriverBinding; 6] = [
     DriverBinding { device_id: 2, kind: "blk", driver: "vblk", ledger_name: "vblk" },
     DriverBinding { device_id: 1, kind: "net", driver: "vnet", ledger_name: "vnet" },
     DriverBinding { device_id: 18, kind: "input", driver: "gui-inputd", ledger_name: "inputd" },
     DriverBinding { device_id: 16, kind: "gpu", driver: "guifbd", ledger_name: "guifbd" },
+    DriverBinding { device_id: 3, kind: "console", driver: "console", ledger_name: "console" },
+    DriverBinding { device_id: 4, kind: "rng", driver: "berry-rng", ledger_name: "rngd" },
 ];
 
 /// 按设备 ID 查绑定（未知 did = None → 报告 WARN，管理器不死）。
@@ -368,8 +377,9 @@ mod tests {
         );
     }
 
-    // 3. 驱动匹配表：四设备类全命中，名字域（driver 与 ledger_name）钉板；
-    //    gui-inputd 的账本行名是 inputd（svcmgr ps_reg 实录）。
+    // 3. 驱动匹配表：六设备类全命中，名字域（driver 与 ledger_name）钉板；
+    //    gui-inputd 的账本行名是 inputd（svcmgr ps_reg 实录）；console/rng
+    //    是先行绑定（服务未落——rngd 行名按 gui-inputd→inputd 同款缩）。
     #[test]
     fn driver_table_bindings() {
         let blk = driver_for(2).unwrap();
@@ -380,6 +390,11 @@ mod tests {
         assert_eq!((input.kind, input.driver, input.ledger_name), ("input", "gui-inputd", "inputd"));
         let gpu = driver_for(16).unwrap();
         assert_eq!((gpu.kind, gpu.driver, gpu.ledger_name), ("gpu", "guifbd", "guifbd"));
+        let console = driver_for(3).unwrap();
+        assert_eq!((console.kind, console.driver, console.ledger_name), ("console", "console", "console"));
+        let rng = driver_for(4).unwrap();
+        assert_eq!((rng.kind, rng.driver, rng.ledger_name), ("rng", "berry-rng", "rngd"));
+        assert_eq!(DRIVER_TABLE.len(), 6);
         assert!(driver_for(9).is_none());
         assert!(driver_for(0).is_none());
     }
@@ -450,16 +465,32 @@ mod tests {
         assert!(!s.contains("WARN"));
     }
 
-    // 8. 未知 did：did=4（virtio-rng——研究报告波 1 交付 1.5 的未来面）→
-    //    清单 did=? + WARN 无绑定（管理器全景不死）。
+    // 8. 未知 did：did=9（virtio-9p——本仓无消费者的真未知类；4=rng 已入
+    //    驱动表补全刀先行绑定，不再当未知样例）→ 清单 did=? + WARN 无绑定
+    //    （管理器全景不死）。
     #[test]
     fn unknown_device_id_warns_without_binding() {
         let mut bus = MockBus::new();
-        bus.plug(12, 4);
+        bus.plug(12, 9);
         let inv = enumerate(&mut bus).unwrap();
         let s = report(&inv, Some(&SvcLedger::default()));
-        assert!(s.contains("[slot 12] did=4 → ?"));
-        assert!(s.contains("devmgr: WARN: [slot 12] device id 4 has no driver binding"));
+        assert!(s.contains("[slot 12] did=9 → ?"));
+        assert!(s.contains("devmgr: WARN: [slot 12] device id 9 has no driver binding"));
+    }
+
+    // 8b. 先行绑定渲染：rng 设备在而服务未落（交付 1.5 未动面）→ ✗ +
+    //     WARN absent——「设备在而服务缺」的 loud 观察面（表补全的意义：
+    //     did 有主，缺的是服务本体）。
+    #[test]
+    fn rng_forward_binding_renders_absent_warn() {
+        let mut bus = MockBus::new();
+        bus.plug(9, 4);
+        let inv = enumerate(&mut bus).unwrap();
+        let s = report(&inv, Some(&SvcLedger::default()));
+        assert!(s.contains("[slot 9] rng → berry-rng ✗"));
+        assert!(s.contains(
+            "devmgr: WARN: [slot 9] rng driver berry-rng not registered (state: absent)"
+        ));
     }
 
     // 9. 单设备语法（device 不带复数 s——烟测对拍面友好）。

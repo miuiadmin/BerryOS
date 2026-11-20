@@ -9,7 +9,8 @@
 //! 「引常量不复制」纪律）。
 //!
 //! LE 域说明：virtio-mmio 全域 LE（规范 §4.2.2），host 与目标 aarch64
-//! 均 LE，`read_volatile` 直读即 LE 序（berry-driver rd32 同形态）。
+//! 均 LE，`read_volatile` 直读即 LE 序（消费面 vprobe 与 berry-driver
+//! virtio_example 全经本实现走读写，不再各持 volatile 面）。
 //!
 //! [`magic`]: VirtioMmio::magic
 //! [`device_id`]: VirtioMmio::device_id

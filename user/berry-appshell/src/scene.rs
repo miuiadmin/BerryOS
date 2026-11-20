@@ -1,17 +1,17 @@
 //! scene —— 窗树装配底座（波3-件⑦ 抽取自 berry-launcher desktop.rs 的
 //! 通用建树面——scrim/组对齐/图标桥；行为零变化）。
 //!
-//! 职责：状态栏整条装配（scrim 衬底色动态预混 + OH StatusbarConfig
+//! 职责：状态栏整条装配（scrim 衬底色动态预混——**已退役**：2026-11-16
+//! 桌面沉浸化撤衬底，[`status_scrim`] 留档仅测试保活 + OH StatusbarConfig
 //! LayoutGroups 1/3 三组对齐 + 内建图标桥 + 时钟/角标文本面）+ 文本叶
 //! spec 单源 + "HH:MM" 时钟格式化。**桌面特化（网格/壁纸/dock/TabBar
 //! 三页/五键导航条）留 launcher**——本模块只收与具体应用无关的壳面
 //!（波 4 消费：任何 appshell 应用都能拼同款状态栏/文本叶）。
 //!
 //! 建树序纪律（launcher desktop.rs 裁决六承袭）：Root 直接子插入序 =
-//! 自底向上 z 序（paint 前序头先发 = 先插者在底）——scrim 必须在内容
-//! 列之前插入（后插者盖上：尾插会把状态内容整条压在 scrim 之下，boot
-//! 实证 2026-11-13）。本模块不拥有 root 装配序——scrim 色值由消费侧
-//! 取 [`status_scrim`] 后自行按序插入。
+//! 自底向上 z 序（paint 前序头先发 = 先插者在底）——底衬类节点（scrim
+//! 时代实证 2026-11-13：尾插会把状态内容整条压在衬底之下）必须在内容
+//! 列之前插入。本模块不拥有 root 装配序——衬底色与插入序归消费侧。
 //!
 //! host 测试面：全模块纯函数（scrim 均值预混/组宽推算/档位表/时钟换算/
 //! 文本 spec 域执法）——零 syscall 零 RPC。
@@ -41,10 +41,12 @@ pub const OH_STATUS_PAD: u32 = 24;
 pub const STATUS_CLOCK: &[u8] = b"12:00";
 /// 状态栏 scrim 衬底静态回退色（Rect 无 alpha 通道——预混 = 50% 黑混
 /// 壁纸顶色；动态面 = [`status_scrim`] 壁纸顶区采样，壁纸缺席时回退
-/// 本值（防御面：非 phone 几何））。
+/// 本值（防御面：非 phone 几何））。**已随 [`status_scrim`] 退役**
+/// （2026-11-16 撤衬底后仅测试面引用）。
 pub const STATUS_SCRIM: Color = Color { r: 0x03, g: 0x5E, b: 0x63 };
 /// 壁纸顶区采样行数（135×240 源图顶 15 行 ≈ 屏顶 6%——OH scrim 语义的
-///「背景就是壁纸暗化」近似）。
+///「背景就是壁纸暗化」近似）。**已随 [`status_scrim`] 退役**（同上，
+/// 仅测试面引用）。
 pub const SCRIM_SAMPLE_ROWS: u32 = 15;
 /// 模拟态角标字（无信号/电池真值源——恒满格为模拟值，如实注；模拟器
 /// 静态满格+标注是两大生态通行做法）。
@@ -58,6 +60,17 @@ pub const TEXT_FG: Color = Color { r: 240, g: 240, b: 244 };
 /// 状态栏 scrim 动态预混：壁纸源顶 15 行 RGB 均值 × 0.5（等价 50% 黑
 /// 遮罩，随壁纸跟随——换壁纸自动换 scrim，不再出现「暗带与壁纸无关」
 /// 的实色条）。壁纸数据缺席时回退 [`STATUS_SCRIM`] 静态值。
+///
+/// **已退役（2026-11-20 架构债清理刀）**：唯一生产消费者是 launcher
+/// desktop 状态栏的深色衬底 Rect——2026-11-16 桌面沉浸化刀撤衬底后
+/// 全仓零生产调用，本函数自此仅被下方 host 测试保活。同批随退伴件：
+/// [`STATUS_SCRIM`]/[`SCRIM_SAMPLE_ROWS`] 两常量与 icons::
+/// `wallpaper_top_rows` 的生产链（同样只剩测试面）。保留函数体不删
+/// （波 4 状态栏重做若恢复动态衬底可复活）；新代码勿再调用。
+#[deprecated(
+    since = "2026-11-20",
+    note = "状态栏深色衬底已随 2026-11-16 桌面沉浸化刀撤除，零生产消费者；复活前先读 .agents/notes/implemented/2026-11-20-驱动两波架构债清理.md"
+)]
 pub fn status_scrim() -> Color {
     let (px, w) = icons::wallpaper_top_rows(SCRIM_SAMPLE_ROWS);
     if w == 0 || px.is_empty() {
@@ -396,8 +409,10 @@ mod tests {
     }
 
     /// scrim 动态预混 = 壁纸顶 15 行均值 × 0.5（独立复算对拍）；非空
-    /// 域恒可算。
+    /// 域恒可算。（被测函数已退役——测试保活钉板：退役面留函数体，
+    /// 像素数学仍被独立对拍执法，复活即有真值护栏。）
     #[test]
+    #[allow(deprecated)]
     fn scrim_is_half_of_wallpaper_top_mean() {
         let expect = {
             let (px, w) = icons::wallpaper_top_rows(SCRIM_SAMPLE_ROWS);

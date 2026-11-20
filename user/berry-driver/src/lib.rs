@@ -12,6 +12,18 @@
 //! （registry 的 Vec 面）；test 构建放开 std 仅为默认测试挂具。接线示例见
 //! [`virtio_example`]（berry-virtio 框架库怎么被新 trait 包装——真消费面
 //! vblk/vnet 接线是后续刀）。
+//!
+//! 与 berry-hal 的关系（2026-11-20 债务清理刀定谳：**契约面正交组合**）：
+//! 本 crate 钉**生命周期**契约（probe 认领 → start 服役 → stop 退役），
+//! berry-hal 钉**硬件访问**契约（Mmio/IrqCtl/DmaAlloc/Clock 四窄
+//! trait）——一枚完整驱动 = 两者的正交组合：Driver 实现侧在 probe/
+//! start 里经 hal 的 trait 对象读写窗、注册中断。依赖方向单向可选：
+//! 本 crate 的示例/实现侧可引 berry-hal 兑现 volatile 读写（vprobe
+//! 同款接线形态），hal 永不反向依赖本 crate；trait 面不硬编 HAL
+//! （probe 的 `mmio_base` 裸指针是总线中立最小面，volatile 读写方式
+//! 归实现侧自选——mock 可零 HAL 独立测试）。缝合点（DeviceCap 三铸
+//! 件：MMIO 窗 VMO + Interrupt + Bti）归波 2.2 后续刀，届时组合面
+//! 升格为 bus 层铸件，本 crate 生命周期契约保持不被 HAL 契约绑架。
 
 #![cfg_attr(not(test), no_std)]
 
