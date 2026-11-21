@@ -889,6 +889,12 @@ test-host:
     # 序 + 敌意短缓冲安全律 + 数字表冻结锚，host 10 测；装配律单源，HAL
     # uart.rs·trap.rs·psci.rs 四消费点壳化）。
     cargo test -p berry-numface --target {{host}}
+    # W3-Q140：berry-bpface（boot-params 纯函数面——cpio newc 定址查找
+    # 状态机〔魔数双形/页垫 4096 契约/TRAILER 自终止/checked 防回卷〕+
+    # TOML 子集解析〔schema 门/三键值域/未知键宽严分工/行数帽〕host 钉
+    # 板 20 测；判定律单源外迁 kernel bootparams.rs，Vmo 物理臂与 eco 注
+    # 入留壳）。
+    cargo test -p berry-bpface --target {{host}}
     # W3-Q20：berry-polface（policy O(1) 快照查表数学 + SchedAttr 位选律
     # 纯函数面——散列锚点指纹/256 键桶覆盖摊平律/饱和窗全占+窗尽缺席/
     # 空槽早退缺席/桶 255 回绕落位/first-wins 不覆写/窗满拒收不入表/

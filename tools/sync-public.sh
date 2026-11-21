@@ -225,7 +225,7 @@ WHITELIST=(
   # w3 产线外迁 crate（2026-11-11 补账对齐 workspace members；本轮回放对齐
   # +lkface/trapface 两件（#292/#296 重放合入）——白名单漂移由 --check-members
   # 机器门执法（漏补 = 红且列差集），不再靠人工对账）
-  bandface chanface dtbface dpgface emface evface frzface hdlface
+  bandface bpface chanface dtbface dpgface emface evface frzface hdlface
   hdrface hofface intface iprofile itally piface polface ringface
   safeck schedface sliceface sysvface telface utrace
   vmoledger vslotface wqmatch wsrcface lkface trapface heapface

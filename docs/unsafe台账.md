@@ -42,14 +42,14 @@
 <!-- UNSAFE-AUDIT:SUMMARY:BEGIN -->
 | 目录 | .rs 文件数 | 总行数 | unsafe 非空行 | 密度 |
 |------|-----------|--------|--------------|------|
-| kernel/ | 32 | 39853 | 2417 | 6.06% |
+| kernel/ | 32 | 39635 | 2417 | 6.10% |
 | mm/ | 7 | 2544 | 4 | 0.16% |
 | sched/ | 15 | 9251 | 1818 | 19.65% |
 | ipc/ | 0 | 0 | 0 | — |
 | arch/ | 23 | 7772 | 1123 | 14.45% |
-| **合计** | 77 | 59420 | 5362 | **9.02%** |
+| **合计** | 77 | 59202 | 5362 | **9.06%** |
 
-- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 44509，unsafe 非空行 4536，密度 10.19%（生产面口径）
+- 剔除 ktest.rs/bench.rs（测试/基准面）：总行 44291，unsafe 非空行 4536，密度 10.24%（生产面口径）
 - 分类计数：页表 94 | 上下文切换 35 | MMIO 164 | 分配器 17 | 硬件原子 0 | 其它 929
 - 类型计数：block 1086 | fn 149 | impl 2 | extern 2（另有类型签名位提及 15 处——只计不登记，防双计）
 - 对标：Android ~4%（unsafe 行占 Rust 总行比，Google 2025-11）；本表为跨度非空行口径（偏高估），见 §一
@@ -356,7 +356,7 @@
 | kernel/src/bench.rs | 931 | block | 其它 | unsafe { XH_NH }, 0, "bench: xh recv handle 数回写"); } // 恢复面：排空后再 |
 | kernel/src/bench.rs | 949 | block | 其它 | unsafe { XH_NB = XH_MSG; XH_NH = 4; } assert_eq!( svc6( NR_CHANN |
 | kernel/src/bench.rs | 979 | block | 其它 | unsafe { XH_NB = XH_MSG; XH_NH = 4; } assert_eq!( svc6( NR_CHANN |
-| kernel/src/bootparams.rs | 331 | block | MMIO | unsafe { hal::timer::set_slice_hz(hz as u64) }; } if let Some(co |
+| kernel/src/bootparams.rs | 113 | block | MMIO | unsafe { hal::timer::set_slice_hz(hz as u64) }; } if let Some(co |
 | kernel/src/cbox.rs | 118 | fn | 其它 | unsafe extern "C" fn on_fault(kind: u8, tf: *const TrapFrame) { |
 | kernel/src/cbox.rs | 140 | block | 其它 | unsafe { &mut (*tbl)[slot] }; // seqlock 开写：先抬奇（排液方见奇即跳）；fence 防 |
 | kernel/src/cbox.rs | 144 | block | 其它 | unsafe { core::ptr::write_volatile(&mut r.stamp, odd) }; core::s |
