@@ -7114,7 +7114,7 @@ fn test_telemetry_open() {
 /// eco 行（验证记录见 notes 沿革）。不触 timer/sched 静态注入面——真镜像
 /// 的注入已在 ktest 前的 rootfs 装载段完成，此处 save/restore 不扰动。
 fn test_bootparams() {
-    use crate::bootparams::{self, Src};
+    use crate::bootparams::{self, ByteSource, Src};
 
     /// 占位入口（纯函数面 Task 永不执行；halt 兜底——it_dummy 同款）。
     extern "C" fn bp_dummy(_arg: usize) -> ! {

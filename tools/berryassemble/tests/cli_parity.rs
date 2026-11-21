@@ -202,10 +202,11 @@ fn cli_parity_check_lite() {
         }
     }
 
-    // 面 6：让位臂（--check/--dry-run/--emit+out-dir/--selftest/--sample
-    // = Rust exit 2 让位指引；Python 正常执行——单源不镜像只拍码面）
+    // 面 6：让位臂（--dry-run/--emit+out-dir/--selftest/--sample = Rust
+    // exit 2 让位指引；Python 正常执行——单源不镜像只拍码面）。五刀后
+    // --check 已镜像（validate_all 组合面）——移出让位族，归面 7 全量
+    // 对拍（validate_parity.rs）。
     for args in [
-        vec!["--check", "x.toml"],
         vec!["--dry-run", "x.toml"],
         vec!["--emit", "x.toml", "--out-dir", "o"],
         vec!["--selftest"],
