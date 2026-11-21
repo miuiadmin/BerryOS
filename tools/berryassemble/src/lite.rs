@@ -151,8 +151,9 @@ fn seed_empty_table(view: &mut View, segs: &[&str]) {
 
 // ---- Python repr / type-name 镜像（文案即契约——parity 钉板）----
 
-/// Python list repr：`['a', 'b']`。
-fn py_list(items: &[String]) -> String {
+/// Python list repr（`{v!r}` 镜像——f"[{', '.join(map(repr, …))}]"；
+/// pub(crate)：resolve.rs 基座对账面复用——单源不复制。）
+pub(crate) fn py_list(items: &[String]) -> String {
     let inner: Vec<String> = items.iter().map(|s| format!("'{s}'")).collect();
     format!("[{}]", inner.join(", "))
 }
@@ -265,7 +266,8 @@ fn vendor_charset_ok(s: &str) -> bool {
 
 /// Python `e[4:-4]` 切片语义（app/ 前缀 + .bap 后缀盲剥——字符索引非字节
 /// 索引，非 ASCII 键不 panic；长度 ≤ 8 时 start≥end 得空串，同 Python 钳位）。
-fn app_id_of(entry: &str) -> &str {
+/// （pub(crate)：resolve.rs 基座对账面复用——单源不复制。）
+pub(crate) fn app_id_of(entry: &str) -> &str {
     let n = entry.chars().count();
     if n > 8 {
         let start = entry.char_indices().nth(4).unwrap().0;
@@ -772,6 +774,10 @@ pub struct LiteProduct {
     pub params: BTreeMap<String, String>,
     pub kernel_name: String,
     pub kernel_sha: String,
+    /// G7：锚是否已对包内件现算对账（件缺 = false——四刀第三片
+    /// `measure_kernel_anchor` 消费面；Python `Product.kernel_measured`
+    /// 镜像）。
+    pub kernel_measured: bool,
     pub image_size_mib: u32,
     pub rootfs_split_mib: u32,
     pub min_power_atomicity: String,

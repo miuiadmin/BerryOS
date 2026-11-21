@@ -1229,6 +1229,12 @@ test-host:
     # 32B 恰长 + gensourceindex parse_index path 依赖单解释器复用）；
     # tests/full_parity.rs oracle 真跑文件面对拍（gsi 两件套真产 + 7 拒腿
     # 变异文案逐字全等 + 结构拒面前置）。
+    # 四刀第三片：anchor.rs kernel 锚现算对账（measure_kernel_anchor 三态
+    # 镜像——件缺=Ok(false) 只形校验过 / 件在且等=true 现算对账过 / 件在
+    # 不等=loud 拒「锚对账不等」；SHA-256 = mkapp cpio::sha256_hex 单解释
+    # 器 path 依赖）；tests/anchor_parity.rs oracle 真跑对拍（三态双侧
+    # 同构 + 拒面文案逐字全等 + 5MiB 大件分块读腿——摘要经独立 hashlib
+    # 管道自算防同错对拍）。
     # 独立小工作区，须显式 --target {{host}}。Python 件不退役——CLI 对拍
     # oracle + gensourceindex --preset import 面单源。
     cargo test --manifest-path tools/berryassemble/Cargo.toml --target {{host}}
