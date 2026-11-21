@@ -20,6 +20,10 @@ path = "src/main.rs"
 # 同款独立小工作区形态（根 .cargo/config.toml 锁 build.target=
 # aarch64-unknown-none，宿主件靠 --manifest-path + 显式 --target 走 host 面）。
 [dependencies]
+# 四刀第一片（--check 产物面）：source 两件套 TLV 深校验 = gensourceindex
+# parse_index 单解释器 path 依赖（Python 侧惰性 import 同款复用；gsi 依赖
+# mkcpio/mkapp 均纯 std，零外部依赖纪律不破）。
+gensourceindex = { path = "../gensourceindex" }
 
 # 独立小工作区标记（tools/mkfat 同款形态——根 workspace 自动上溯在此截断）
 [workspace]

@@ -1215,6 +1215,11 @@ test-host:
     # 对拍（stdout 逐行全等剥路径段 + exit 码/stderr 全等 + 用法错族 +
     # 让位臂五旗标指回 python3——--check/--dry-run/--emit/--selftest/
     # --sample 现役单源不镜像）。
+    # 四刀第一片：full.rs 产物面对账（load_product(lite=False) 文件面四臂
+    # 镜像——override OEM 件/branding 资产在席 + source 两件套 + trust 锚
+    # 32B 恰长 + gensourceindex parse_index path 依赖单解释器复用）；
+    # tests/full_parity.rs oracle 真跑文件面对拍（gsi 两件套真产 + 7 拒腿
+    # 变异文案逐字全等 + 结构拒面前置）。
     # 独立小工作区，须显式 --target {{host}}。Python 件不退役——CLI 对拍
     # oracle + gensourceindex --preset import 面单源。
     cargo test --manifest-path tools/berryassemble/Cargo.toml --target {{host}}
