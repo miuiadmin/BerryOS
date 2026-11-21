@@ -785,6 +785,21 @@ pub struct LiteProduct {
     pub locale_temperature_unit: String,
 }
 
+/// locale 节开关位（Python `if prod.locale` 镜像——空 dict falsy）。
+/// 三刀 CLI 消费面（--check-lite OK 行 locale=on/off）。
+impl LiteProduct {
+    pub fn locale_on(&self) -> bool {
+        !(self.locale_languages.is_empty()
+            && self.locale_timezone.is_empty()
+            && self.locale_region.is_empty()
+            && self.locale_regulatory_domain.is_empty()
+            && self.locale_calendar.is_empty()
+            && self.locale_first_day_of_week.is_empty()
+            && self.locale_hour_cycle.is_empty()
+            && self.locale_temperature_unit.is_empty())
+    }
+}
+
 /// 结构面执法主入口（Python `load_product(path, lite=True)` 镜像——文本入，
 /// 零文件对账）。检查序与 Python 逐枝对齐（首拒分支双侧同构）。
 pub fn load_lite_product(text: &str) -> Result<LiteProduct, Reject> {

@@ -1208,6 +1208,13 @@ test-host:
     # BCP 47 手写段匹配器+1..=8 帽+大小写不敏感查重/timezone IANA 段形/
     # region·regulatory_domain ISO 3166-1 alpha-2/calendar 等四枚举词表；
     # parity 20 拒面语料 + BCP47 accept/拒梯分支对齐 + 八键全席正面）。
+    # 三刀·CLI 消费半边：src/main.rs --check-lite 臂换轨（Python main()
+    # 判序逐行镜像：旗标循环/互斥单模式/out-dir 值对/用法错 2/拒因 1；
+    # do_check(lite=True) OK 行逐字同构含 preset 计数与 locale·trust
+    # 开关位 + OSError 读失败文案镜像）+ tests/cli_parity.rs oracle 真跑
+    # 对拍（stdout 逐行全等剥路径段 + exit 码/stderr 全等 + 用法错族 +
+    # 让位臂五旗标指回 python3——--check/--dry-run/--emit/--selftest/
+    # --sample 现役单源不镜像）。
     # 独立小工作区，须显式 --target {{host}}。Python 件不退役——CLI 对拍
     # oracle + gensourceindex --preset import 面单源。
     cargo test --manifest-path tools/berryassemble/Cargo.toml --target {{host}}

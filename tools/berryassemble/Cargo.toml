@@ -10,6 +10,11 @@ description = "BerryOS 产品配置层组装器（berry_assemble.py Rust 首刀�
 name = "berryassemble"
 path = "src/lib.rs"
 
+# 三刀·CLI 消费半边（--check-lite 臂——gensourceindex main.rs 同款形态）。
+[[bin]]
+name = "berryassemble"
+path = "src/main.rs"
+
 # 零外部依赖纪律（W1 lane：禁新外部依赖）——纯 std。与 tools/elf2flat、
 # tools/mkcpio、tools/mkfat、tools/mkimage、tools/mkapp、tools/gensourceindex
 # 同款独立小工作区形态（根 .cargo/config.toml 锁 build.target=
