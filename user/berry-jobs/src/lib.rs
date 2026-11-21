@@ -10,8 +10,9 @@
 //! justfile test-host 显式行跑。
 //!
 //! 四件原语（API 瘦身——裁决 2 砍泵缓冲账后的最小面）：
-//! - [`strip_bg`]：run_line 入口整行尾缀 `&` 剥离（G1 恒等契约四边缘的
-//!   单源钉板——false 路径返回原文切片零漂）；
+//! - [`strip_bg`]：run_line 入口整行尾缀 `&` 剥离——**Superseded**（bsh
+//!   v2.5 引号刀裁决 6：词法单源纪律，消费面已整迁 berry-lex 引号感知
+//!   版；导出与既有 host 边缘测保留不破 14 测面，详见 fn 级标注）；
 //! - [`alloc_id`]：job 表最低空位编号（1 起，满帽 None）；
 //! - [`parse_job_ref`]：`kill %n` 单形引用解析（杂形全拒——形解析归此、
 //!   在册与否归调用方表查）；
@@ -28,6 +29,15 @@ use alloc::vec::Vec;
 /// wait_many（8+stdin+out ≤ 16）前瞻对齐）。表满拒在 spawn 前——不死 shell。
 pub const JOBS_MAX: u32 = 8;
 
+/// **Superseded**（bsh v2.5 引号与统一分词器刀——刀谱 .agents/plans/
+/// 2026-11-21-bsh引号与统一分词器v2.5刀实施设计.md 裁决 6）：词法单源
+/// 纪律（G6）下本盲版退役，唯一消费者 bsh run_line（＋自验 ⑪a 绑定）已
+/// 整迁 berry-lex 引号感知版 `berry_lex::strip_bg`（返回契约逐字节同——
+/// 良构输入盲/感知等价，引号三形唯感知版不剥；八边缘语料已整迁其 host
+/// 测）。导出与既有 host 边缘测按刀谱 D3 收窄形保留（不破 berry-jobs
+/// 14 测面）；本 crate 活跃面收窄为纯作业数据面（alloc_id/parse_job_ref/
+/// 四渲染行）。新消费者一律用 berry-lex 版，勿再引用本函数。
+///
 /// 行尾独立单 `&` 剥离（run_line 入口整行尾缀——操作符识别纪律：展开前
 /// 原始文本）。返回 (剥离后文本, 是否后台)。
 ///

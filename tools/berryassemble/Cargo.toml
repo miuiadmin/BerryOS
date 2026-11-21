@@ -20,6 +20,18 @@ path = "src/main.rs"
 # 同款独立小工作区形态（根 .cargo/config.toml 锁 build.target=
 # aarch64-unknown-none，宿主件靠 --manifest-path + 显式 --target 走 host 面）。
 [dependencies]
+# 四刀第一片（--check 产物面）：source 两件套 TLV 深校验 = gensourceindex
+# parse_index 单解释器 path 依赖（Python 侧惰性 import 同款复用；gsi 依赖
+# mkcpio/mkapp 均纯 std，零外部依赖纪律不破）。
+# 四刀第二片（基座表对账）：resolve_entries 基座加载 = mkcpio load_manifest
+# 单解释器 path 依赖（Python 侧 from mkcpio import load_manifest 同款
+# 单加载器纪律；gsi→mkcpio 先例同链，纯 std）。
+gensourceindex = { path = "../gensourceindex" }
+mkcpio = { path = "../mkcpio" }
+# 四刀第三片（kernel 锚现算）：SHA-256 = mkapp cpio::sha256_hex 单解释器
+# path 依赖（自持 FIPS 180-4——Python hashlib.sha256 的 Rust 对偶；经
+# gensourceindex 传递面已在依赖图上，此处显式声明的直接消费面）。
+mkapp = { path = "../mkapp" }
 
 # 独立小工作区标记（tools/mkfat 同款形态——根 workspace 自动上溯在此截断）
 [workspace]

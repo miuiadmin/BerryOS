@@ -332,6 +332,12 @@ static mut IDLE_TASK: Task = Task {
     wake_vct: core::cell::Cell::new(0),
     key_prev: core::cell::Cell::new(None),
     key_next: core::cell::Cell::new(None),
+    // 运行账第一真源四字段（op4 刀 R1）：idle 恒不在三并集面（导出结构
+    // 性缺席），字段零起步保形完整。
+    cpu_ticks: AtomicU64::new(0),
+    switches: AtomicU64::new(0),
+    wakes: AtomicU64::new(0),
+    run_since: AtomicU64::new(0),
 };
 
 /// IDLE 判定（v1.3 §7 util 记账门）：`t` 是否 CPU0 idle 上下文
@@ -2082,6 +2088,36 @@ unsafe fn note_switch(prev: *mut Task, next: *mut Task, kind: SwitchKind) {
     // wake_matching 同归任务侧基线；NONE 只属于副核首任务切入前的未接线窗，
     // 到达记账即绊网）。首个切换后 KERNEL_BOOT 归因冻结（G1.5 断言）。
     hal::wake::wake_src_task_ctx();
+    // 运行账第一真源充账（进程账读口 op4 刀 R2）：**前移到 null 早退之前**
+    // 自处理三对形——park 对（任一侧 null）必须覆盖（wake_src_task_ctx 同
+    // 位无条件先例）：prev 非空结算（run_since≠0 门下 cpu_ticks +=
+    // now−run_since 饱和减、结算毕清 0；switches+1——park 切出同计）、
+    // next 非空盖戳（run_since=now）、双空零动作走既有早退。结算清 0 的
+    // 理由：park 派发路径（dispatch_from_park_ctx）无 note_switch 不盖戳，
+    // 残留旧戳会把 park+就绪时长记入 cpu_ticks（歪账）——清 0 使未盖戳段
+    // 零结算（诚实少计）。写者唯一 = IRQ 屏蔽窗 + prev 此刻已切出定型
+    //（无核在跑）+ next 未起跑；now 单读共用；零分配零锁零切换（SwitchHook
+    // 契约同款铁则）。计数器族常开不随 trace_off（op3 判例）。
+    if !prev.is_null() || !next.is_null() {
+        let now = hal::timer::cntvct();
+        if !prev.is_null() {
+            // SAFETY: 指针由调用点保证有效（刚做过状态写入）；IRQ 屏蔽路径。
+            unsafe {
+                let p = &*prev;
+                let since = p.run_since.load(Ordering::Relaxed);
+                if since != 0 {
+                    p.cpu_ticks
+                        .fetch_add(now.saturating_sub(since), Ordering::Relaxed);
+                    p.run_since.store(0, Ordering::Relaxed); // 段闭口
+                }
+                p.switches.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        if !next.is_null() {
+            // SAFETY: 同上（next 此刻未起跑——单写者）。
+            unsafe { (*next).run_since.store(now, Ordering::Relaxed) };
+        }
+    }
     if prev.is_null() || next.is_null() {
         return;
     }
@@ -2133,6 +2169,10 @@ unsafe fn note_wake(t: *mut Task, reason: WakeReason) {
     // 同窗纪律）。
     unsafe {
         (*t).wake_vct.set(hal::timer::cntvct());
+        // 运行账第一真源充账（进程账读口 op4 刀 R3）：wakes 无条件计数
+        //（与 wake_vct 同位——钩子在否无关；Signaled+Timeout 双因合计；
+        // 计数器族常开不随 trace_off——op3 判例直移）。
+        (*t).wakes.fetch_add(1, Ordering::Relaxed);
     }
     let hook = unsafe { WAKE_HOOK };
     if let Some(h) = hook {
@@ -3352,6 +3392,43 @@ pub fn for_each_runnable(mut f: impl FnMut(&mut Task)) {
             f(t);
             if cur == head {
                 break; // 环回起点 → 一圈完成
+            }
+        }
+    }
+}
+
+/// 遍历**全体在役任务**（进程账读口 op4 刀）：SLEEPQ 头→尾 ＋ for cpu
+/// in 0..2 双 RQ 环走查（freeze_by_pinned 三段同款形；遍历序确定性
+/// SLEEPQ→RQ0→RQ1——截尾前缀语义的自述基础）。面 = Blocked+Ready+
+/// Running 全体在役（cur-in-ring 不变式：Running 常驻环、IDLE 恒不在
+/// 环）；Exited（REAPQ 瞬态）与 idle/park 语境（无 TCB）结构性不在面。
+///
+/// **调用契约**：SQ+RQ0+RQ1 持锁窗内（0x84 op=4 SVC 入口 SQ_RQ_TABLE
+/// 预取形或等价）＋ IRQ 屏蔽；回调只读（禁改链接字段 `sleep_prev`/
+/// `sleep_next`/`rq_prev`/`rq_next`、禁出/入队/入环、禁 block/wake——
+/// [`for_each_sleeper`] 契约面）。
+pub fn for_each_inflight_task(mut f: impl FnMut(&Task)) {
+    // SAFETY: 契约如上——三并集锁窗内走查期间无并发出/入队；先存 next
+    // 再交回调（§A136 环终止先存 next；回调只读不改链接）。
+    unsafe {
+        // SLEEPQ 头→尾。
+        let mut cur = sleepq().head.get();
+        while let Some(c) = cur {
+            let t = c.as_ptr();
+            cur = (*t).sleep_next.get();
+            f(&*t);
+        }
+        // 双 RQ 环走查（先访当前节点，再推进并判回 head）。
+        for cpu in 0..2 {
+            let head = rq_of(cpu).head();
+            let mut cur = head;
+            while let Some(c) = cur {
+                let t = c.as_ptr();
+                cur = (*t).rq_next.get();
+                f(&*t);
+                if cur == head {
+                    break; // 环终止
+                }
             }
         }
     }

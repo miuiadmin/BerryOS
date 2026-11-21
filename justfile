@@ -891,6 +891,12 @@ test-host:
     # 序 + 敌意短缓冲安全律 + 数字表冻结锚，host 10 测；装配律单源，HAL
     # uart.rs·trap.rs·psci.rs 四消费点壳化）。
     cargo test -p berry-numface --target {{host}}
+    # W3-Q140：berry-bpface（boot-params 纯函数面——cpio newc 定址查找
+    # 状态机〔魔数双形/页垫 4096 契约/TRAILER 自终止/checked 防回卷〕+
+    # TOML 子集解析〔schema 门/三键值域/未知键宽严分工/行数帽〕host 钉
+    # 板 20 测；判定律单源外迁 kernel bootparams.rs，Vmo 物理臂与 eco 注
+    # 入留壳）。
+    cargo test -p berry-bpface --target {{host}}
     # W3-Q20：berry-polface（policy O(1) 快照查表数学 + SchedAttr 位选律
     # 纯函数面——散列锚点指纹/256 键桶覆盖摊平律/饱和窗全占+窗尽缺席/
     # 空槽早退缺席/桶 255 回绕落位/first-wins 不覆写/窗满拒收不入表/
@@ -1069,8 +1075,17 @@ test-host:
     # 批切分 + poll-first 收割到干 + 分段阻塞轮转 + LT/非阻塞/唤醒三免费
     # 语义，host 13 测）。
     cargo test --manifest-path user/Cargo.toml -p berry-poll --target {{host}}
-    # 作业控制 v2 刀：berry-jobs 纯面（strip_bg/alloc_id/渲染行——host 14 测；2026-11-19 愈合复通——活线合并曾丢此线，随 free 刀同批复接）。
+    # 作业控制 v2 刀：berry-jobs 纯面（alloc_id/parse_job_ref/渲染行——
+    # host 14 测；strip_bg 自 v2.5 引号刀起 Superseded 保留导出——消费面
+    # 已整迁 berry-lex、边缘测随面同留；2026-11-19 愈合复通——活线合并曾
+    # 丢此线，随 free 刀同批复接）。
     cargo test --manifest-path user/Cargo.toml -p berry-jobs --target {{host}}
+    # bsh v2.5 引号与统一分词器刀：berry-lex 词法单源（单遍 Item 流/三视图
+    # render·fields·word_texts/strip_bg 引号感知版——host 72 测：引号三件
+    # 全分支＋render 对拍 expand 恒等律＋恒等金样族；bsh 解析层词边界/操作符
+    # 识别全经此单源，berry-jobs strip_bg 语料整迁退役——Superseded 保留
+    # 导出，berry-jobs 活跃面归纯作业数据面）。
+    cargo test --manifest-path user/Cargo.toml -p berry-lex --target {{host}}
     # GUI-1：berry-fbcon（自绘 8×16 字形 + 蜂格渲染核纯函数面——V-6 刀 2
     # 前置段产物，GUI-1 迁正 user/ members 随挂 host 测试：字形锚点/蜂格
     # 渲染/滚动/格式打包，host 28 测）。
@@ -1217,8 +1232,30 @@ test-host:
     # 对拍（stdout 逐行全等剥路径段 + exit 码/stderr 全等 + 用法错族 +
     # 让位臂五旗标指回 python3——--check/--dry-run/--emit/--selftest/
     # --sample 现役单源不镜像）。
+    # 四刀第一片：full.rs 产物面对账（load_product(lite=False) 文件面四臂
+    # 镜像——override OEM 件/branding 资产在席 + source 两件套 + trust 锚
+    # 32B 恰长 + gensourceindex parse_index path 依赖单解释器复用）；
+    # tests/full_parity.rs oracle 真跑文件面对拍（gsi 两件套真产 + 7 拒腿
+    # 变异文案逐字全等 + 结构拒面前置）。
+    # 四刀第三片：anchor.rs kernel 锚现算对账（measure_kernel_anchor 三态
+    # 镜像——件缺=Ok(false) 只形校验过 / 件在且等=true 现算对账过 / 件在
+    # 不等=loud 拒「锚对账不等」；SHA-256 = mkapp cpio::sha256_hex 单解释
+    # 器 path 依赖）；tests/anchor_parity.rs oracle 真跑对拍（三态双侧
+    # 同构 + 拒面文案逐字全等 + 5MiB 大件分块读腿——摘要经独立 hashlib
+    # 管道自算防同错对拍）。
+    # 五刀收口：validate.rs --check 全量臂组合面（_validate_all :985 镜像
+    # ——check_full → resolve_entries → measure_kernel_anchor 聚合 + OK
+    # 行六段 format_check_ok :1012 逐字镜像）+ main.rs --check 臂换轨
+    # （读面 read_product_text 抽单源 + tools/ 目录发现 repo_tools_dir
+    # 〔gsi 同款 CWD/exe 双上溯——DEFAULT_BASE/DEFAULT_USER_DIR 等价物〕）
+    # + tests/validate_parity.rs CLI oracle 对拍（读失败/schema=0 结构拒/
+    # override 文件面拒/真源基座拒〔双侧同咬仓内 rootfs-manifest 构建树
+    # 缺席〕/坏 TOML 分支标识/用法错 2 六腿；OK 行正面 = lib 黄金形 +
+    # Python do_check 同现场模块级逐字对拍钉板）；cli_parity 让位臂族
+    # 滚新（--check 移出让位族）。
     # 独立小工作区，须显式 --target {{host}}。Python 件不退役——CLI 对拍
-    # oracle + gensourceindex --preset import 面单源。
+    # oracle + gensourceindex --preset import 面单源（--dry-run/--emit
+    # 计划/产件面仍 Python 单源）。
     cargo test --manifest-path tools/berryassemble/Cargo.toml --target {{host}}
     # W1 接线（SEC-02 A2 同款纪律）：berry_assemble 门禁自检——V13 组装器
     # （ADR #82「组装不 fork」product.toml 校验/dry-run 计划/装配反回滚门）

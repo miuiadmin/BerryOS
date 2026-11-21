@@ -1,0 +1,19 @@
+[package]
+name = "berry-bpface"
+edition.workspace = true
+version.workspace = true
+license = "Apache-2.0"
+description = "boot-params 纯函数面：newc 定址查找状态机 + TOML 子集解析（W3-Q140）"
+
+[lib]
+name = "berry_bpface"
+path = "src/lib.rs"
+
+[dependencies]
+# intent 六档词表码值单源（INTENT_* 常量真源 = berry-intface；经 sched
+# re-export 的 transitive 面不可 use，Cargo 直依赖惯例同 wqmatch/piface）。
+berry-intface = { path = "../intface" }
+
+# 无其他依赖：纯函数面（host 单测走 cfg(test) 链 std，形态抄
+# berry-wsrcface / berry-dtbface）。kernel bootparams.rs 消费（薄壳
+# re-export + Src 的 ByteSource impl——Vmo 物理臂留 kernel）。

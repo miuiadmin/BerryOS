@@ -64,8 +64,9 @@
 //! 进 [`TYPEAHEAD`] 缓存，交互循环先于 stdin 消化——不丢键。
 //!
 //! 作业控制 v2 刀（2026-11-19，`&` 后台作业 + jobs/kill + `$!`）：run_line
-//! 入口整行尾缀 `&` 剥离（berry-jobs `strip_bg`——展开前原始文本操作符识别
-//! 纪律同 `&&`/`|`/`>`；false 路径逐字节恒等），bg 整行进 [`exec_bg`]——
+//! 入口整行尾缀 `&` 剥离（v2.5 起迁 berry-lex `strip_bg` 引号感知版——
+//! 展开前原始文本操作符识别纪律同 `&&`/`|`/`>`；零引号输入逐字节恒等），
+//! bg 整行进 [`exec_bg`]——
 //! v2 安全子集＝**单段外部命令异步**（赋值/链/管道/重定向/内建五类拒形，
 //! POSIX list 语义偏差记面；一棵 Job＝一条管道的整树机制归 3.0）。后台
 //! stdout＝`console_h()` 直打（无采集面；承载前提＝berry-exec gift[0] 授位
@@ -122,7 +123,9 @@ use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_event_create,
     berry_handle_close, berry_handle_duplicate, berry_object_signal, berry_object_wait_many,
     berry_object_wait_one, berry_process_terminate, berry_signal_send,
-    berry_telemetry_klog_snapshot, berry_telemetry_memstat_snapshot, Handle, MemstatRec,
+    berry_telemetry_klog_snapshot, berry_telemetry_memstat_snapshot,
+    berry_telemetry_procstat_snapshot, procstat_hdr_read, procstat_row_read, Handle, MemstatRec,
+    TELEMETRY_PROCSTAT_MAX,
     BERRY_ERR_AGAIN,
     BERRY_ERR_BAD_STATE, BERRY_ERR_BUSY, CLOCK_MONOTONIC, RIGHT_READ, RIGHT_RECV, RIGHT_SEND,
     RIGHT_TRANSFER, SIGNAL_READABLE, SIGNAL_TERMINATED, SIGNAL_WRITABLE,
@@ -133,6 +136,11 @@ use berry_netdproto as ndp;
 // inputpoll 消费端的真值断言用 crate 单源 decode，不自造第二套解析。
 use berry_guiproto as gp;
 use berry_exec::{channel_pair, cpio_find, cpio_names, spawn_rootfs_elf, ChildHandles, SpawnSpec};
+// bsh v2.5 引号与统一分词器刀：词法单源 berry-lex（lex 扁平 Item 流＋
+// render/fields/word_texts 三视图＋strip_bg 引号感知版）——本文件解析层
+// 全部词边界/操作符识别经此单源（G6 纪律：main.rs 禁新增裸 contains/
+// strip_prefix 词法扫描；既有内建 arity 匹配消费 render/fields 产物不算）。
+use berry_lex::{Item, Op, Piece, Quote, Word};
 // C-1 刀 4：fsproto 只余帽常量（usage 预检 + 读面失控兜底）——协议面
 // （encode/parse/ST_*）随自有 RPC 退役，全部走 berry-libc。
 use berry_fsproto::{FILE_SIZE_MAX, NAME_MAX, PATH_DEPTH_MAX, PATH_MAX};
@@ -394,12 +402,16 @@ fn main() {
     //    gift spawn），排 fat 族前（EFI 路无盘亦打 SIG）；无拓扑降级门
     //    （失败即 park loud）。
     sig_selftest();
-    // —— 命令行体验刀 + v2 B 域 + export 面刀 + 作业控制 v2 刀：内建与语义
-    //    步自验（`CLI ok n=13` = rootfs 相第 55 标记；B 域起 6→10——⑥ `>>`
-    //    /⑦ `||`/⑧ unset/⑨ 管道参数四族步；export 面刀 ⑩ 第 21 内建步
-    //    10→11；作业控制 v2 刀 ⑪ 第 22/23 内建步 11→12——strip_bg 绑定/
-    //    `&`-jobs-kill-$! 端到端/负形三件）。链序契约同 U2/MMP/CLK/SIG
-    //    ——⑥ 走 RAM 树 fs 面（u4 先例同款，非盘面）、⑨⑩⑪ 走 spawn
+    // —— 命令行体验刀 + v2 B 域 + export 面刀 + 作业控制 v2 刀 + v2.5 引号
+    //    刀：内建与语义步自验（`CLI ok n=15` = rootfs 相第 55 标记；B 域起
+    //    6→10——⑥ `>>`/⑦ `||`/⑧ unset/⑨ 管道参数四族步；export 面刀 ⑩
+    //    第 21 内建步 10→11；作业控制 v2 刀 ⑪ 第 22/23 内建步 11→12
+    //    ——strip_bg 绑定/`&`-jobs-kill-$! 端到端/负形三件；v2.5 引号刀
+    //    ⑬ 引号面步 13→14——纯面对拍/端到端引号三件/负形，⑫ 惰性 fails
+    //    门同批愈合移全部步后；进程账读口 op4 刀 ⑮ 第 25 内建步 14→15
+    //    ——裸 ps 从外部 bin/ps 转内核真源内建〔行形/键序/Running 因果
+    //    弱式＋带参拒〕）。链序契约同 U2/MMP/CLK/SIG
+    //    ——⑥⑬ 走 RAM 树 fs 面（u4 先例同款，非盘面）、⑨⑩⑪ 走 spawn
     //    （bin/fail/true/echo/grep/env/hello 现档），排 fat 族之前（EFI 路
     //    无盘亦打 CLI——smoke-image ECO canon 同面）；无拓扑降级门（失败
     //    即 park loud）。
@@ -3495,46 +3507,44 @@ fn build_export_set(vars: &[(String, String)]) -> Vec<Vec<u8>> {
     out
 }
 
-/// `$NAME` / `$?` 展开（未定义变量 → 空串，sh 惯例；无 `${}`/引号/转义面
-/// ——v1）。按字节扫描：多字节 UTF-8 连续字节 ≥0x80 不撞 ASCII 语法位。
+/// `$NAME` / `$?` / `$!` 展开（未定义变量 → 空串，sh 惯例）。v2.5 引号刀起
+/// 扫描本体退役——词法单源 berry-lex [`berry_lex::render`] 承载（扫描律字节
+/// 级移植），本函数收敛为 lex＋render 复合便捷面：自验断言与个别文本面消费
+/// 者继续用「整串进、整串出」旧形态（无引号输入下与旧扫描逐字节恒等——恒等
+/// 契约；引号输入经 lex 剥引号/转义还原，是 v2.5 新语义面）。管线六产点
+/// （赋值/export/exec_bg/render_cmd/do_redirect 探针/do_pipe）已全换
+/// Item 视图族直调，不再过本函数。
 fn expand(s: &str, vars: &[(String, String)], status: i32) -> String {
-    let b = s.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'$' && i + 1 < b.len() {
-            let c = b[i + 1];
-            if c == b'?' {
-                out.extend_from_slice(status.to_string().as_bytes());
-                i += 2;
-                continue;
-            }
-            // B6（作业控制 v2）`$!`：最后一次后台作业号（未设＝-1 展开空串
-            // ——POSIX 未设语义；载 jid 非 pid 偏差记面——影响面约 0）。
-            if c == b'!' {
-                let last = bg_last();
-                if last >= 0 {
-                    out.extend_from_slice(last.to_string().as_bytes());
-                }
-                i += 2;
-                continue;
-            }
-            if c.is_ascii_alphabetic() || c == b'_' {
-                let (st, mut j) = (i + 1, i + 2);
-                while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_') {
-                    j += 1;
-                }
-                if let Some(v) = get_var(vars, &s[st..j]) {
-                    out.extend_from_slice(v.as_bytes());
-                }
-                i = j;
-                continue;
-            }
-        }
-        out.push(b[i]);
-        i += 1;
+    match berry_lex::lex(s) {
+        Ok(l) => berry_lex::render(&l.items, &lex_vars(vars, status)),
+        // 未闭合引号：run_line 首道 lex 已拦（status 2 不执行），此处不可达
+        // 防御面——空串（今日调用面均为自验无引号串）。
+        Err(_) => String::new(),
     }
-    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// berry-lex 三视图渲染注入组装（vars 表＋`$?`＋`$!` 载 [`bg_last`]——
+/// 旧 expand 的 bg_last() 调用点语义镜像：未设 <0 展开空串）。
+fn lex_vars<'a>(vars: &'a [(String, String)], status: i32) -> berry_lex::Vars<'a> {
+    berry_lex::Vars {
+        table: vars,
+        status,
+        bang: bg_last(),
+    }
+}
+
+/// Item 组两端空白段剥离（`part.trim()` 的 Item 等价——Sep 集同冻结
+/// `char::is_whitespace`，零漂；引号内空白是 Word 字面非 Sep 不受动）。
+fn trim_sep(items: &[Item]) -> &[Item] {
+    let mut a = 0usize;
+    let mut b = items.len();
+    while a < b && matches!(items[a], Item::Sep(_)) {
+        a += 1;
+    }
+    while b > a && matches!(items[b - 1], Item::Sep(_)) {
+        b -= 1;
+    }
+    &items[a..b]
 }
 
 /// 链操作符（v2 B2：`&&`/`||` 边界扫描产物）。
@@ -3545,35 +3555,66 @@ enum ChainOp {
     Or,
 }
 
-/// `&&`/`||` 链切分（v2 B2，纯函数——自验直调）：原始文本左起**不重叠**
-/// 边界扫描，产 (段, 引导操作符) 序列——首段操作符 None（无条件执行）、
-/// 后续段携带引导它的操作符。单字符 `&`/`|` 不构成边界：`a|b` 不切（段内
-/// 管道归 exec_one）；`a&&&b` 余段 `&b`、`a|||b` 余段 `|b`（落管道臂段空
-/// 校验 usage 2——POSIX 亦语法错，记面）。**恒等契约**：无 `||` 输入下与
-/// 旧 `split("&&")` 逐字节同果（含 `a&&&b` 边缘）。
-fn split_chains(line: &str) -> Vec<(&str, Option<ChainOp>)> {
-    let b = line.as_bytes();
-    // 边界表：(位置, op)——遇成对 `&&`/`||` 记一条并跳两字节（不重叠）。
-    let mut cuts: Vec<(usize, ChainOp)> = Vec::new();
-    let mut i = 0usize;
-    while i + 1 < b.len() {
-        if (b[i] == b'&' || b[i] == b'|') && b[i] == b[i + 1] {
-            cuts.push((i, if b[i] == b'&' { ChainOp::And } else { ChainOp::Or }));
-            i += 2;
-        } else {
-            i += 1;
-        }
-    }
-    let mut out: Vec<(&str, Option<ChainOp>)> = Vec::new();
+/// 链切分（v2.5 引号刀起裸 `&&`/`||` 文本扫描退役——berry-lex Op(And)/
+/// Op(Or) Item 分组接替；操作符只在未引号区成 token，引号内 `&&` 是数据）。
+/// 产出 (组, 引导操作符) 序列——首组 None（无条件执行）、后续组携带引导它
+/// 的操作符，与旧 split_chains 文本切片同构（`a&&&b` 余组 `&b`、`a|||b`
+/// 余组 `|b`——单 `&`/`|` 词内字面不构成边界；纯函数——⑦ 对拍臂消费）。
+fn chain_groups(items: &[Item]) -> Vec<(&[Item], Option<ChainOp>)> {
+    let mut out: Vec<(&[Item], Option<ChainOp>)> = Vec::new();
     let mut start = 0usize;
     let mut pending: Option<ChainOp> = None;
-    for (pos, op) in cuts {
-        out.push((&line[start..pos], pending.take()));
-        pending = Some(op);
-        start = pos + 2;
+    for (i, it) in items.iter().enumerate() {
+        let cop = match it {
+            Item::Op(Op::And) => Some(ChainOp::And),
+            Item::Op(Op::Or) => Some(ChainOp::Or),
+            _ => None,
+        };
+        if let Some(op) = cop {
+            out.push((&items[start..i], pending.take()));
+            pending = Some(op);
+            start = i + 1;
+        }
     }
-    out.push((&line[start..], pending));
+    out.push((&items[start..], pending));
     out
+}
+
+/// 赋值形检测（P3——首 Word 首 Piece 为 unquoted Lit 且词源文本起
+/// `^[A-Za-z_][A-Za-z0-9_]*=`；名扫描段沿用 [`assignment_of`] 单源）。
+/// 值域＝名后全部 Item（首词余段＋词后整段含 Sep——`A=1 > f` 值
+/// `"1 > f"` 保形）经 [`berry_lex::render`] **单次展开**（`RC=$?` 进时
+/// status 保形、`A="a b"` 值 a b 新增、`"A"=x` 首段 quoted 非赋值 → 落
+/// 裸名 not found POSIX 形）。返回 (名, 渲染值)；exec_bg 拒形仅消费
+/// Some/None。
+fn assignment_of_items(items: &[Item], v: &berry_lex::Vars) -> Option<(String, String)> {
+    // 首 Item 须 Word（Op/Sep 开头不是赋值形——旧文本扫描首字符非名字
+    // 字符即 None 的 Item 等价：`|B=1`/`>x=1` 不匹配、不跳 Op 找词）。
+    let first = match items.first()? {
+        Item::Word(w) => w,
+        _ => return None,
+    };
+    // 首段须 unquoted Lit（Var/引号段开头都不是赋值形）。
+    let Piece::Lit { text, quote } = first.pieces.first()? else {
+        return None;
+    };
+    if *quote != Quote::None {
+        return None;
+    }
+    let (name, lit_rest) = assignment_of(text)?;
+    // 值组：首 Lit 剩余段＋首词余 Piece 合成一词，再接词后全部 Item——
+    // render 串接即值（Sep 原字节保距）。
+    let mut pieces: Vec<Piece> = Vec::with_capacity(first.pieces.len());
+    if !lit_rest.is_empty() {
+        pieces.push(Piece::Lit {
+            text: lit_rest.to_string(),
+            quote: Quote::None,
+        });
+    }
+    pieces.extend(first.pieces[1..].iter().cloned());
+    let mut value = berry_lex::render(&[Item::Word(Word { pieces })], v);
+    value.push_str(&berry_lex::render(&items[1..], v));
+    Some((name.to_string(), value))
 }
 
 /// 一行命令：按 `&&`/`||` 边界切段顺序执行（v2 B2 起 `||` 入链——首段
@@ -3590,13 +3631,11 @@ fn split_chains(line: &str) -> Vec<(&str, Option<ChainOp>)> {
 /// 首段空、次段闸参考**承袭 status**——非零 status 进场则整行跳过（v1 的
 /// split 无条件序贯会执行；POSIX 本形是语法错，两形都非错——现行=左起
 /// 闸的自然延伸）。
-///
-/// B1（作业控制 v2）：入口整行尾缀 `&` 剥离（berry-jobs `strip_bg`——
-/// 展开前原始文本纪律同 `&&`/`|`/`>`，裁决 1）：bg=true 整行进 [`exec_bg`]
-/// （v2 安全子集＝单段外部命令异步，链形在那拒）；false 走现行路径**逐
-/// 字节恒等**（无 `&` 行纯 no-op，G1 恒等契约四边缘 ⑪a 钉板）；剥后空
-/// 文本＝no-op 不碰 status（防御面——strip_bg true 路径结构性恒非空）。
-/// 全部调用点（interactive Line 臂/自验/term 驱动面）零改自动获得语义。
+/// v2.5 引号刀：strip_bg 迁 berry-lex 引号感知版（零引号输入逐字节恒等）；
+/// bg=false 后整行首道 [`berry_lex::lex`]——未闭合引号打 `bsh: unclosed
+/// quote`＋status 2 不执行（单行拒；今日该输入类引号零语义零契约，续行
+/// 3.0 berry-line）；链切分换 [`chain_groups`]（Op(And/Or) 分组——引号内
+/// `&&`/`||` 是数据不切链）。
 fn run_line(
     line: &str,
     vars: &mut Vec<(String, String)>,
@@ -3604,14 +3643,19 @@ fn run_line(
     out: &mut std::io::Stdout,
     hist: &[Vec<u8>],
 ) {
-    let (rest, bg) = berry_jobs::strip_bg(line);
+    let (rest, bg) = berry_lex::strip_bg(line);
     if bg {
         if !rest.is_empty() {
             *status = exec_bg(rest, vars, *status, out);
         }
         return;
     }
-    for (part, op) in split_chains(line) {
+    let Ok(lexed) = berry_lex::lex(line) else {
+        writeln!(out, "bsh: unclosed quote").unwrap();
+        *status = 2;
+        return;
+    };
+    for (group, op) in chain_groups(&lexed.items) {
         if let Some(op) = op {
             let go = match op {
                 ChainOp::And => *status == 0,
@@ -3621,21 +3665,15 @@ fn run_line(
                 continue; // 跳过：不求值、不碰 status（`||` 后续段仍可执行）
             }
         }
-        if part.trim().is_empty() {
+        if trim_sep(group).is_empty() {
             continue;
         }
-        *status = exec_one(part, vars, status, out, hist);
+        *status = exec_one_items(group, vars, status, out, hist);
     }
 }
 
-/// 单段命令：trim → 赋值形检测（**原始文本**；值展开后落表——`RC=$?`）→
-/// unset 检测（v2 B3，同层——变量删减需 &mut vars）→ export 前缀检测
-/// （export 面刀 B1，同层——赋值/确认两形需 &mut vars，裸形落 render_cmd）
-/// → `|` 管道检测
-/// （**原始文本**——展开结果只是数据、永不产操作符）→ `>`/`>>` 重定向
-/// 检测（原始文本，P6 A-1/B1）→ 展开（用**进入时**的 `$?`）→ 分派
-/// （render_cmd）。返回段状态码：0 成功 / 2 usage / 126 spawn failed /
-/// 127 not found / run|pipe = 子进程真码（reap Err → 1）。
+/// 单段命令（v2.5 引号刀起 &str 入口为冻结签名兼容面——内部 re-lex 后进
+/// [`exec_one_items`]；既有自验直调零编译涟漪）。
 fn exec_one(
     part: &str,
     vars: &mut Vec<(String, String)>,
@@ -3643,75 +3681,106 @@ fn exec_one(
     out: &mut std::io::Stdout,
     hist: &[Vec<u8>],
 ) -> i32 {
-    let raw = part.trim();
-    if raw.is_empty() {
+    // 直调文本可含未闭合引号（管线面不可达——run_line 首道 lex 已拦）；
+    // 防御按空段处理（今日引号零语义输入恒 Ok，无行为面）。
+    let items = match berry_lex::lex(part) {
+        Ok(l) => l.items,
+        Err(_) => Vec::new(),
+    };
+    exec_one_items(&items, vars, status, out, hist)
+}
+
+/// 单段命令（Item 形态——run_line 链分组直调面）：两端 Sep 剥离 → 赋值形
+/// 检测（首 Word 首 Piece unquoted Lit 起 `name=`；值＝余部 render **单次
+/// 展开**）→ unset（首词 word_texts——字面名不展开）→ export（首词
+/// word_texts＋Op 放行守卫）→ Op(Pipe) 管道 → Op(Redirect/Append) 重定向
+/// → render_cmd。检测序与谓词观测逐层保形（v2.5 起谓词从裸 contains 换
+/// Op 谓词——引号内操作符字节是数据）。返回段状态码：0 成功 / 2 usage /
+/// 126 spawn failed / 127 not found / run|pipe = 子进程真码（reap Err → 1）。
+fn exec_one_items(
+    part: &[Item],
+    vars: &mut Vec<(String, String)>,
+    status: &mut i32,
+    out: &mut std::io::Stdout,
+    hist: &[Vec<u8>],
+) -> i32 {
+    let it = trim_sep(part);
+    if it.is_empty() {
         return 0;
     }
-    // 赋值（原始文本上检测，优先于管道——`P=a|b` 的 | 进值域；值在落表时
-    // 才展开——`RC=$?`）。覆盖写 = 同名尾置（get_var rev 找最新）。
-    if let Some((name, value)) = assignment_of(raw) {
-        let value = expand(value, vars, *status);
-        vars.push((name.to_string(), value));
+    let v = lex_vars(vars, *status);
+    // 赋值（优先于管道——`P=a|b` 的 | 进值域；值 render 单次展开——
+    // `RC=$?` 进时 status 保形）。覆盖写 = 同名尾置（get_var rev 找最新）。
+    if let Some((name, value)) = assignment_of_items(it, &v) {
+        vars.push((name, value));
         return 0;
     }
-    // unset（v2 B3；原始文本上检测，与赋值同优先层——render_cmd 签名持
-    // &vars 不可变，变量删减落 exec_one；故 `unset A > f` 不落重定向，
-    // 记面）。裸 `unset` = 无操作 0；余词空白分词逐名 `retain` 全删同名项
-    // （get_var rev 找最新语义下，全删与墓碑终态等价——实现取全删）；
-    // 名字面不展开（`unset $A` 按字面名——v1 记面）；未定义名静默 0
-    // （POSIX 形）。env 显示面零改动（vars 表即源）。
-    if raw == "unset" {
-        return 0;
-    }
-    if let Some(rest) = raw.strip_prefix("unset ") {
-        for name in rest.split_whitespace() {
+    // unset（v2 B3；与赋值同优先层——render_cmd 签名持 &vars 不可变，变量
+    // 删减落 exec_one）。首词 word_texts 匹配（剥引号不展开——`unset $A`
+    // 按字面名零漂、`unset 'A'` 新增可用）；裸 `unset` = 无操作 0；余词
+    // 逐名字面 `retain` 全删（Op 融合字面并入——`unset A|B` 一名保距）；
+    // 未定义名静默 0（POSIX 形）。env 显示面零改动（vars 表即源）。
+    let wt = berry_lex::word_texts(it);
+    if wt.first().map(String::as_str) == Some("unset") {
+        for name in &wt[1..] {
             vars.retain(|(k, _)| k != name);
         }
         return 0;
     }
-    // export 前缀臂（export 面刀 B1 第 21 内建；原始 trimmed 段上检测，与
-    // 赋值/unset 同层）。三形：`export K=V` = 赋值（assignment_of 同法切
-    // 名值——名字段经其白名单、值 expand 后尾置覆盖，**值域可含 `|`/`>`**
-    // ——`export K=V > f` 与 `A=1 > f` 同形记面：不落管道/重定向）；
-    // `export K`（合法名，is_var_name 白名单）= 幂等确认 0（未赋值保持
-    // 未赋值——POSIX「标记导出」在全导出语义下坍缩，偏差记面）；杂形
-    // usage 2。**列显形与重定向/管道形不入本臂**：裸 `export`/`export -p`
-    // 与含 `>`/`|` 的形（`export > f`、`export -p > f`——B1 承诺与
-    // `env > f` 同走 do_redirect）直落后续检测，由 render_cmd 的
-    // export/export -p 精确匹配产列显数据字节（审查轮 critical 修复：
-    // 初版把这些形当杂形拒 usage 2 违诺）。`export K > f` 落重定向臂后
-    // render_cmd 无 `export K` 匹配 → 裸名派发 127（记面——杂形如实）。
-    if let Some(rest) = raw.strip_prefix("export ") {
-        let rest = rest.trim();
-        if let Some((name, value)) = assignment_of(rest) {
-            let value = expand(value, vars, *status);
-            vars.push((name.to_string(), value));
+    // export 前缀臂（export 面刀 B1 第 21 内建；首词 word_texts 匹配）。
+    // 三形：`export K=V` = 赋值（assignment_of_items 同法——**值域可含
+    // 引号内 `|`/`>`**——`export K="a>b"` 不再放行重定向、落赋值新增正确
+    // 形；未引号 `export K=V > f` 与 `A=1 > f` 同形记面：不落管道/重定向）；
+    // `export K`（合法名）= 幂等确认 0；杂形 usage 2。**列显形与重定向/
+    // 管道形不入本臂**：裸 `export`/`export -p` 与含 Op(Pipe/Redirect/
+    // Append) 的形直落后续检测（B1 承诺——`env > f` 同走 do_redirect；
+    // `export K > f` 落重定向臂后 render_cmd 无 `export K` 匹配 → 裸名
+    // 派发 127（记面——杂形如实））。
+    if wt.first().map(String::as_str) == Some("export") {
+        let first_idx = it
+            .iter()
+            .position(|x| matches!(x, Item::Word(_)))
+            .expect("首词在位（trim_sep 非空组首必 Word）");
+        let rest = trim_sep(&it[first_idx + 1..]);
+        if let Some((name, value)) = assignment_of_items(rest, &v) {
+            vars.push((name, value));
             return 0;
         }
-        if !rest.is_empty() && rest != "-p" && !rest.contains('>') && !rest.contains('|') {
-            if is_var_name(rest) {
-                return 0;
+        let has_op = rest.iter().any(|x| {
+            matches!(
+                x,
+                Item::Op(Op::Pipe) | Item::Op(Op::Redirect) | Item::Op(Op::Append)
+            )
+        });
+        if !has_op {
+            let rwt = berry_lex::word_texts(rest);
+            if rwt.is_empty() || (rwt.len() == 1 && rwt[0] == "-p") {
+                // 裸形/`-p` 列显形 → 放行落 render_cmd 精确匹配。
+            } else if rwt.len() == 1 && is_var_name(&rwt[0]) {
+                return 0; // 幂等确认（未赋值保持未赋值——全导出语义坍缩记面）
+            } else {
+                writeln!(out, "usage: export K=V | export K | export（列显）").unwrap();
+                return 2;
             }
-            writeln!(out, "usage: export K=V | export K | export（列显）").unwrap();
-            return 2;
         }
     }
-    // 管道（原始文本上检测，优先于内建名匹配——`a | b` 整体不是内建名）。
-    // 若在展开后文本上重解析：`P=a|b` 后 `echo $P` 被值里的 | 切成管道误报
-    // usage、`P=hexyl|hexyl` 后裸 `$P` 会把变量值当语法执行（对抗审查实抓）。
-    // `&&` 切行同在 run_line 的展开前做。
-    if raw.contains('|') {
-        return do_pipe(raw, vars, *status, out);
+    // 管道（Op 谓词——仅未引号区成 token；展开产物永为数据：`P=a|b` 后
+    // `echo $P` 的 items 零 Op，`grep "a|b"` 引号内 | 不切管道）。
+    if it.iter().any(|x| matches!(x, Item::Op(Op::Pipe))) {
+        return do_pipe_items(it, vars, *status, out);
     }
-    // 重定向（原始文本上检测，同纪律；`|`+`>` 组合先撞管道分支——B4 起
-    // 段切词含 args：`a | b > c` 的 `>` `c` 成段 b 的参数而非重定向
-    // （不 usage、不重定向，记面——统一分词器/管道内重定向随 v3 收口）。
-    // v2 B1 起 `>>` 追加与 `>` 覆写在 do_redirect 内分流；≥3 个 `>` /
-    // 混现为 usage。
-    if raw.contains('>') {
-        return do_redirect(raw, vars, *status, out, hist);
+    // 重定向（Op(Redirect/Append) 谓词，同纪律；`|`+`>` 组合先撞管道分支
+    // ——B4 起段切词含 args：`a | b > c` 的 `>` `c` 成段 b 的参数而非
+    // 重定向（不 usage、不重定向，记面——统一分词器/管道内重定向随 v3
+    // 收口）；`>>` 追加与 `>` 覆写在 do_redirect 内分流；重定向族 Op ≥2
+    // usage）。
+    if it
+        .iter()
+        .any(|x| matches!(x, Item::Op(Op::Redirect) | Item::Op(Op::Append)))
+    {
+        return do_redirect_items(it, vars, *status, out, hist);
     }
-    let (data, code) = render_cmd(raw, vars, *status, out, hist);
+    let (data, code) = render_cmd_items(it, vars, *status, out, hist);
     out.write_all(&data).unwrap();
     out.flush().unwrap();
     code
@@ -3731,38 +3800,72 @@ fn exec_one(
 /// spawn Ok＝登记＋spawn_line 回显打 out（stderr 语义）＋`$!`＝jid＋返 0
 /// （POSIX 异步列表自身返 0）；Err（含 -ENOMEM 出帽降级）＝补关未 take
 /// 的 gifts＋spawn failed 126（run_output 同形）。
+/// B2 `&` 后台执行面（v2.5 引号刀起 &str 入口为冻结签名兼容面——内部
+/// re-lex 后进 [`exec_bg_items`]；`raw` 原文随行——登记面 cmd 文本单源）。
 fn exec_bg(
     rest: &str,
     vars: &[(String, String)],
     status: i32,
     out: &mut std::io::Stdout,
 ) -> i32 {
-    let raw = rest.trim();
-    if raw.is_empty() {
+    // strip_bg true 路径引号恒闭合（berry-lex 感知版），Err 防御不可达。
+    let items = match berry_lex::lex(rest) {
+        Ok(l) => l.items,
+        Err(_) => {
+            writeln!(out, "bsh: unclosed quote").unwrap();
+            return 2;
+        }
+    };
+    exec_bg_items(&items, rest.trim(), vars, status, out)
+}
+
+/// B2 `&` 后台执行面（Item 形态）：拒形五类谓词 token 化（赋值形/含链
+/// Op(And|Or)/含 Op(Pipe)/含重定向族 Op/首词 word_texts 内建非 run——五条
+/// 诊断文案与码逐字节保形；引号内操作符字节是数据不触发拒形）；通过面
+/// [`berry_lex::fields`] 两分类（run 形 target=fields[1]、裸名 fields[0]＋
+/// args——`hexyl "a b" &` 新增可用；展开空吞词返 0 保形）；console/表满
+/// 拒不动；spawn/登记/回显/$! 面零改。
+fn exec_bg_items(
+    items: &[Item],
+    raw: &str,
+    vars: &[(String, String)],
+    status: i32,
+    out: &mut std::io::Stdout,
+) -> i32 {
+    let it = trim_sep(items);
+    if it.is_empty() {
         return 0; // 防御面（strip_bg true 路径结构性恒非空）
     }
-    // 赋值（原始文本，优先序同 exec_one——值域保持，拒绝在语法层之后）。
-    if assignment_of(raw).is_some() {
+    let v = lex_vars(vars, status);
+    // 赋值（首词 NAME= 形，优先序同 exec_one——值域保持，拒绝在语法层之后）。
+    if assignment_of_items(it, &v).is_some() {
         writeln!(out, "bsh: &: 赋值不可后台").unwrap();
         return 1;
     }
-    // 链形：`&&`/`||`（split_chains 多段——`a && b &` 只异步末段的半阻塞
-    // 语义拒绝整链，裁决 1）。
-    if raw.contains("&&") || raw.contains("||") {
+    // 链形：Op(And)/Op(Or)（`a && b &` 只异步末段的半阻塞语义拒绝整链，
+    // 裁决 1——引号内 `&&` 是数据不触发）。
+    if it
+        .iter()
+        .any(|x| matches!(x, Item::Op(Op::And) | Item::Op(Op::Or)))
+    {
         writeln!(out, "bsh: &: 链形不可后台（仅单段外部命令）").unwrap();
         return 1;
     }
-    if raw.contains('|') {
+    if it.iter().any(|x| matches!(x, Item::Op(Op::Pipe))) {
         writeln!(out, "bsh: &: 管道不可后台（仅单段外部命令）").unwrap();
         return 1;
     }
-    if raw.contains('>') {
+    if it
+        .iter()
+        .any(|x| matches!(x, Item::Op(Op::Redirect) | Item::Op(Op::Append)))
+    {
         writeln!(out, "bsh: &: 重定向不可后台（仅单段外部命令）").unwrap();
         return 1;
     }
-    // 内建（run 除外——run 走通过面 run 形分类）。
-    let first = raw.split_whitespace().next().unwrap_or("");
-    if first != "run" && BUILTINS.contains(&first) {
+    // 内建（run 除外——run 走通过面 run 形分类）；首词 word_texts（剥引号
+    // 不展开——`"sleep" 1 &` 引号面照拒）。
+    let first = berry_lex::word_texts(it).first().cloned().unwrap_or_default();
+    if first != "run" && BUILTINS.contains(&first.as_str()) {
         writeln!(out, "bsh: {}: 内建不可后台", first).unwrap();
         return 1;
     }
@@ -3777,15 +3880,14 @@ fn exec_bg(
         writeln!(out, "bsh: &: too many jobs").unwrap();
         return 1;
     };
-    // 通过面：展开（进入时 $?）后两分类（镜像 render_cmd run 臂/裸名臂形态
-    // ——展开结果只是数据不当语法重解析，纪律同 exec_one）。
-    let expanded = expand(raw, vars, status);
-    let words: Vec<&str> = expanded.split_whitespace().collect();
+    // 通过面：fields 两分类（镜像 render_cmd run 臂/裸名臂形态——展开产物
+    // 只是数据不当语法重解析，纪律同 exec_one）。
+    let words = berry_lex::fields(it, &v);
     if words.is_empty() {
         return 0; // 展开后空（如 `$空变量 &`）——POSIX 异步空列表自身状态 0（与
         // run_line 空段跳过不碰 status 的语义不同——bg 段已定形，如实记面）
     }
-    let (target, args): (&str, &[&str]) = if words[0] == "run" {
+    let (target, args): (&str, &[String]) = if words[0] == "run" {
         if words.len() < 2 {
             writeln!(out, "usage: run <name>").unwrap();
             return 2;
@@ -3794,8 +3896,8 @@ fn exec_bg(
     } else {
         (&words[0], &words[1..])
     };
-    // target 白名单（run 面单源：split_whitespace 产物恒无空白，'/' 检查
-    // 仍有效——裸名派发形同法）。
+    // target 白名单（run 面单源：fields 产物 quoted 词可含空格——拒面照旧，
+    // `run "a b" &` 落 usage 2 如实）。
     if target.is_empty() || target.contains([' ', '/']) {
         writeln!(out, "usage: run <name>").unwrap();
         return 2;
@@ -3854,31 +3956,29 @@ fn exec_bg(
 /// 由 [`HELP_LINES`] 承载，cli_selftest ④ 断言「BUILTINS 每名 ∈ HELP_LINES」
 /// 执法（名单或文案单边漂移即红）。分发序本身仍是 render_cmd 的 if-else
 /// （行为面独立——名单只答「是不是内建」）。作业控制 v2 刀 21→23
-/// （jobs/kill）。
+/// （jobs/kill）；进程账读口 op4 刀 24→25（ps——裸 ps 从外部 bin/ps〔RPC
+/// 账本〕转内核真源内建；bin/ps 留 rootfs 供显式路径/run 档，两账本互补
+/// 非竞合）。
 const BUILTINS: &[&str] = &[
     "help", "exit", "env", "export", "echo", "run", "cat", "ls", "mkdir", "rm", "cd", "pwd",
     "inputpoll", "clear", "uname", "uptime", "sleep", "type", "history", "dmesg", "unset", "jobs",
-    "kill", "free",
+    "kill", "free", "ps",
 ];
 
 /// help 文案三行（A60：192B 控制台原子消息帽——单行装不下全清单，逐条
 /// 拆行各 ≤192B；命令行体验刀 12→19 内建（dmesg 追补第 19 件）后再拆第三行，同帽纪律；
 /// v2 B 域起补 `||`/`>>`/unset 语法面；export 面刀第 21 件 export K=V；
-/// 作业控制 v2 刀补 jobs/kill %n 与 `cmd &` 语法面）。与
+/// 作业控制 v2 刀补 jobs/kill %n 与 `cmd &` 语法面；v2.5 引号刀补引号
+/// 短句；进程账读口 op4 刀补第 25 件 ps〔进程账〕）。与
 /// [`BUILTINS`] 的名单一致性由 cli_selftest ④ 执法（每名必须出现）。
 const HELP_LINES: [&str; 3] = [
     "bsh 内建：help | echo <text> | env | export K=V | run <name> | cat <file> | ls | ls <dir> | mkdir <dir> | rm <path> | cd <dir> | pwd | inputpoll",
     "…续：| clear | uname | uptime | sleep <s> | type <name> | history | dmesg | unset <name> | A | B（rootfs 管道，段可带参）| A && B | A || B | A > file | A >> file | exit",
-    "……续：| 裸名 = bin/<name> 派发（C-2a uu 家族）| jobs | kill %n | cmd &（后台）| free（RAM 面板）",
+    "……续：| 裸名 = bin/<name> 派发（C-2a uu 家族）| jobs | kill %n | cmd &（后台）| free（RAM 面板）| ps（进程账）| 'x' 全字面 | \"x\" 保空格",
 ];
 
-/// 内建/外部命令统一渲染（P6 A-1 起 `>` 重定向与直出共道）：返回
-/// (数据字节, 状态码)。**诊断/usage/not-found/警告打 `out`**（stderr 语义
-/// ——不随 `>` 进文件），数据面字节交调用方定向（直出 = 打 stdout；
-/// 重定向 = put_file 入文件）。`exit` 不重定向照常执行（v1：先于写文件——
-/// POSIX 的 open-before-exec 面随 v2）。词边界纪律：`run `/`echo `/`cat `
-/// （`runfoo` = 未知命令 127）。`hist` = editor 历史环只读透传（`history`
-/// 内建——命令行体验刀）。
+/// 内建/外部命令统一渲染（v2.5 引号刀起 &str 入口为冻结签名兼容面——内部
+/// re-lex 后进 [`render_cmd_items`]；既有自验直调零编译涟漪）。
 fn render_cmd(
     cmd_s: &str,
     vars: &[(String, String)],
@@ -3886,8 +3986,43 @@ fn render_cmd(
     out: &mut std::io::Stdout,
     hist: &[Vec<u8>],
 ) -> (Vec<u8>, i32) {
-    let cmd = expand(cmd_s, vars, status);
-    if cmd.is_empty() {
+    // 直调文本可含未闭合引号（管线面不可达——run_line 首道 lex 已拦）；
+    // 防御按空命令处理（今日自验调用面恒无引号，无行为面）。
+    let items = match berry_lex::lex(cmd_s) {
+        Ok(l) => l.items,
+        Err(_) => Vec::new(),
+    };
+    render_cmd_items(&items, vars, status, out, hist)
+}
+
+/// 内建/外部命令统一渲染（Item 形态；P6 A-1 起 `>` 重定向与直出共道）：
+/// 返回 (数据字节, 状态码)。**诊断/usage/not-found/警告打 `out`**（stderr 语义
+/// ——不随 `>` 进文件），数据面字节交调用方定向（直出 = 打 stdout；
+/// 重定向 = put_file 入文件）。`exit` 不重定向照常执行（v1：先于写文件——
+/// POSIX 的 open-before-exec 面随 v2）。词边界纪律：`run `/`echo `/`cat `
+/// （`runfoo` = 未知命令 127）。`hist` = editor 历史环只读透传（`history`
+/// 内建——命令行体验刀）。
+/// v2.5 引号刀：全链匹配面从 expand 文本换 [`berry_lex::render`]（剥引号
+/// ＋`$NAME`/`$?`/`$!` 展开不分词保距——无引号输入下与旧 expand 逐字节
+/// 恒等，恒等契约执法点；`"echo" hi` 今日 not-found 翻案为执行——仅引号
+/// 输入面 POSIX 形）；裸名派发臂 argv 从 [`berry_lex::fields`]（无引号
+/// 展开分裂＋邻接粘连＋空引号空字段——`hexyl "a b"` 单参新增可用；无引号
+/// 输入下与 split_whitespace(expand) 逐字段恒等）；not-found 消息用 render
+/// 全组文本（`foo   bar` 内距保距零漂）。空命令判从 fields 空判（`$空`
+/// 消词返 0——无引号恒等；`""` 空字段保——落裸名派发 usage 2，裁决 12）。
+fn render_cmd_items(
+    items: &[Item],
+    vars: &[(String, String)],
+    status: i32,
+    out: &mut std::io::Stdout,
+    hist: &[Vec<u8>],
+) -> (Vec<u8>, i32) {
+    let v = lex_vars(vars, status);
+    let f = berry_lex::fields(items, &v);
+    let cmd = berry_lex::render(items, &v);
+    // 空命令门：render 空（旧 expand 空判——`$空` 消词返 0，无引号恒等）
+    // **且** fields 空（`""` 空字段保——落派发臂 usage 2，裁决 12）。
+    if cmd.is_empty() && f.is_empty() {
         return (Vec::new(), 0);
     }
     if cmd == "help" {
@@ -4030,6 +4165,14 @@ fn render_cmd(
     } else if let Some(_rest) = cmd.strip_prefix("free ") {
         writeln!(out, "usage: free").unwrap();
         (Vec::new(), 2)
+    } else if cmd == "ps" {
+        // 进程账读口 op4 刀：裸 ps 内建化（内核 0x84 op=4 单源人读面——
+        // 外部 bin/ps 的 RPC 拉起账本由 berryctl ps 承接，两账本互补非竞合）。
+        ps_output(out)
+    } else if let Some(_rest) = cmd.strip_prefix("ps ") {
+        // 纯查询无参语义（free/uptime 判例）。
+        writeln!(out, "usage: ps").unwrap();
+        (Vec::new(), 2)
     } else if let Some(_rest) = cmd.strip_prefix("dmesg ") {
         // 无参命令带参照打（clear 同款幂等面，不拒）——参数忽略。
         dmesg_output(out)
@@ -4071,26 +4214,40 @@ fn render_cmd(
     } else if let Some(rest) = cmd.strip_prefix("kill ") {
         kill_output(rest.trim(), out)
     } else {
-        // C-2a：裸名 PATH 派发（内建优先零漂移——到这 = 非内建）：首词查
-        // bin/<name>，命中即拉起、余词作 argv[1..]（uu 家族非内建成员
-        // cp/mv/touch/rmdir 等经这条进 shell；裸名 ls/rm/mkdir/cd/pwd/cat
-        // 被内建分支先吃，GNU 全量面经 `run ls` 取）；未命中保持 not found
-        // 127（文案/码不变——RX 相 b/c 断言面）。含 `/` 的词不走派发
-        // （v1 PATH 唯一 = bin/，路径形仍 not found）。
-        let mut words = cmd.split_whitespace();
-        let (name, rest): (&str, Vec<&str>) = match words.next() {
-            Some(w) if !w.contains('/') => (w, words.collect()),
-            _ => {
-                writeln!(out, "bsh: {}: not found", cmd).unwrap();
-                return (Vec::new(), 127);
-            }
+        // C-2a：裸名 PATH 派发（内建优先零漂移——到这 = 非内建）：首字段查
+        // bin/<name>，命中即拉起、余字段作 argv[1..]（fields 视图——引号词
+        // 保单参〔`hexyl "a b"`/`cp "x y" z` 新增可用〕、无引号展开分裂与
+        // split_whitespace(expand) 逐字段恒等；uu 家族非内建成员 cp/mv/
+        // touch/rmdir 等经这条进 shell；裸名 ls/rm/mkdir/cd/pwd/cat 被内建
+        // 分支先吃，GNU 全量面经 `run ls` 取）；未命中保持 not found 127
+        // （文案/码不变——RX 相 b/c 断言面；消息用 render 全组文本保内距
+        // 空格零漂）。含 `/` 的词不走派发（v1 PATH 唯一 = bin/，路径形仍
+        // not found）。fields 空（render 非空的纯空白展开——`$W` W="  "）
+        // 落 not found 面＝旧 split_whitespace 零词臂逐字节同；空名
+        // （`""` 独立词——引号空字段）直送 run_output 落 usage 2（裁决 12）。
+        let Some(first) = f.first() else {
+            writeln!(out, "bsh: {}: not found", cmd).unwrap();
+            return (Vec::new(), 127);
         };
-        if cpio_find(rootfs_h(), format!("bin/{}", name).as_bytes()).is_some() {
-            // export 面刀 B3：派发臂同接真值（与 `run ` 臂同集——裸名子件
-            // 与 run 子件环境面同形）。
+        let name = first.as_str();
+        if name.is_empty() {
+            let rest: Vec<&str> = f[1..].iter().map(String::as_str).collect();
             let env_kv = build_export_set(vars);
             let env_set: Vec<&[u8]> = env_kv.iter().map(|e| e.as_slice()).collect();
-            run_output(name, &rest, &env_set, out)
+            return run_output(name, &rest, &env_set, out);
+        }
+        if !name.contains('/') {
+            let rest: Vec<&str> = f[1..].iter().map(String::as_str).collect();
+            if cpio_find(rootfs_h(), format!("bin/{}", name).as_bytes()).is_some() {
+                // export 面刀 B3：派发臂同接真值（与 `run ` 臂同集——裸名子件
+                // 与 run 子件环境面同形）。
+                let env_kv = build_export_set(vars);
+                let env_set: Vec<&[u8]> = env_kv.iter().map(|e| e.as_slice()).collect();
+                run_output(name, &rest, &env_set, out)
+            } else {
+                writeln!(out, "bsh: {}: not found", cmd).unwrap();
+                (Vec::new(), 127)
+            }
         } else {
             writeln!(out, "bsh: {}: not found", cmd).unwrap();
             (Vec::new(), 127)
@@ -4531,54 +4688,90 @@ fn unlink_of(path: &str) -> Result<(), i32> {
     }
 }
 
-/// `A > f` / `A >> f` 切分（v2 B1 升三态）：原始文本 `>` 计数——恰 1 =
-/// 覆写形（v1 路径零漂移）；恰 2 且相邻成 `>>` = 追加形（切**首处** `>>`
-/// ——count==2 且含 `>>` 子串 ⟺ 两 `>` 恰相邻）；其余（≥3 如 `>>>`、
-/// `>`/`>>` 混现、两 `>` 不相邻如 `a > b > c`）None = usage 面。两侧
-/// trim、目标过 [`valid_path`]（刀 4 起多段）照旧。返回 (cmd, file,
-/// append)。
-fn split_redirect(raw: &str) -> Option<(&str, &str, bool)> {
-    match raw.matches('>').count() {
-        1 => {
-            let (a, b) = raw.split_once('>')?;
-            let (cmd, file) = (a.trim(), b.trim());
-            valid_path(file).then_some((cmd, file, false))
+/// `A > f` / `A >> f` 切分（v2.5 引号刀起裸 `>` 文本计数三态退役——重定向
+/// 族 Op 恰一＋目标恰一词规则接替，三态/混现/不相邻同观测）：组内
+/// Op(Redirect)/Op(Append) **恰一个**（≥2 如 `>>>`、`>`/`>>` 混现、
+/// `a > b > c` 不相邻 → None = usage 面——引号内 `>` 是数据不计数）；
+/// op 后 [`berry_lex::fields`] **恰一词**为目标（零词/多词 → None——旧
+/// `a > b c` valid_path 拒同观测；`> "a b.txt"` 引号保单词后过
+/// [`valid_path`] 照拒 = 三镜墙如实）。返回 (cmd 侧 Item 组, 目标, append)。
+fn redirect_of<'a>(
+    items: &'a [Item],
+    v: &berry_lex::Vars,
+) -> Option<(&'a [Item], String, bool)> {
+    let mut hit: Option<(usize, bool)> = None; // (idx, append)
+    for (i, it) in items.iter().enumerate() {
+        match it {
+            Item::Op(Op::Redirect) => {
+                if hit.is_some() {
+                    return None;
+                }
+                hit = Some((i, false));
+            }
+            Item::Op(Op::Append) => {
+                if hit.is_some() {
+                    return None;
+                }
+                hit = Some((i, true));
+            }
+            _ => {}
         }
-        2 => {
-            let (a, b) = raw.split_once(">>")?;
-            let (cmd, file) = (a.trim(), b.trim());
-            valid_path(file).then_some((cmd, file, true))
-        }
-        _ => None,
     }
+    let (idx, append) = hit?;
+    let target_fields = berry_lex::fields(&items[idx + 1..], v);
+    if target_fields.len() != 1 {
+        return None;
+    }
+    let file = target_fields.into_iter().next().unwrap();
+    if !valid_path(&file) {
+        return None;
+    }
+    Some((&items[..idx], file, append))
 }
 
+/// `A > f` / `A >> f`（Item 形态——exec_one 重定向臂直调面）。v2.5 引号刀：
+/// 旧 &str 入口 [`split_redirect`] 三态与「expand(cmd_s) 双调用判空」探针
+/// 退役——重定向族 Op 恰一＋目标恰一词规则与 fields 空判接替（观测等价
+/// 顺手收敛，背景 9 勘误：旧探针弃用结果仅判空、无叠加语义，非行为修）；
 /// `A > f` 覆写 / `A >> f` 追加重定向（P6 A-1 起；v2 B1 增 append 臂）：
 /// 渲染命令（数据字节**不进 out**）→ put_file 全量入文件（libc open/
 /// write/close——close 即 commit）。诊断/警告照打 out（stderr 语义）；
-/// fs 错误 → 警告 + errno 码。空命令（展开后空）不建/不碰目标（POSIX
-/// `> f` 建空文件——v2 再议）；命令失败仍落已产出的部分数据（先渲染后
-/// 写，非 open-before-exec）。**append 落法 = 读旧 + 拼接 + 整写回**
-/// （不走 libc O_APPEND/SEEK_END——berry-libc 写打开一律截断、可写 fd
-/// SEEK_END 用自身游标均 v1 文档化缺口，fs.rs 头注；get_file/put_file
-/// 件已在零新协议面；FAT 大目标读改写翻倍成本——重定向量级 KB 级可受，
-/// 诚实记面）；目标缺席（Err(ENOENT)）= 空起步（`>>` 新名建新面）。
-/// 刀 4：目标可多段（RAM 树写；FAT 名仍只落根——fsmgr 分层路由）。
-fn do_redirect(
-    raw: &str,
+/// fs 错误 → 警告 + errno 码。空命令（fields 空——展开空吞词同观测，`> f`
+/// 裸重定向）不建/不碰目标（POSIX `> f` 建空文件——v2 再议）；命令失败
+/// 仍落已产出的部分数据（先渲染后写，非 open-before-exec）。**append 落法
+/// = 读旧 + 拼接 + 整写回**（不走 libc O_APPEND/SEEK_END——berry-libc 写
+/// 打开一律截断、可写 fd SEEK_END 用自身游标均 v1 文档化缺口，fs.rs 头注；
+/// get_file/put_file 件已在零新协议面；FAT 大目标读改写翻倍成本——重定向
+/// 量级 KB 级可受，诚实记面）；目标缺席（Err(ENOENT)）= 空起步（`>>` 新名
+/// 建新面）。刀 4：目标可多段（RAM 树写；FAT 名仍只落根——fsmgr 分层路由）。
+/// v2.5 引号刀：旧 &str 入口 [`split_redirect`] 三态与「expand(cmd_s) 双
+/// 调用判空」探针退役——重定向族 Op 恰一＋目标恰一词规则与 render 空判
+/// 接替（观测等价顺手收敛，背景 9 勘误：旧探针弃用结果仅判空、无叠加
+/// 语义，非行为修；探针取 render 空判非 fields 空判——纯空白展开形两判
+/// 分歧，G1 恒等契约优先）；旧 &str 包装无第二调用方（唯一调用方
+/// exec_one 重定向臂随接骨迁 items 直调），按零 dead_code 退役不保空壳。
+fn do_redirect_items(
+    items: &[Item],
     vars: &[(String, String)],
     status: i32,
     out: &mut std::io::Stdout,
     hist: &[Vec<u8>],
 ) -> i32 {
-    let Some((cmd_s, file_s, append)) = split_redirect(raw) else {
+    let v = lex_vars(vars, status);
+    let Some((cmd_items, file_s, append)) = redirect_of(items, &v) else {
         writeln!(out, "usage: <command> > <file>（>> 追加）").unwrap();
         return 2;
     };
-    if expand(cmd_s, vars, status).is_empty() {
-        return 0; // v1：空命令不建/不碰目标（`> f`/`>> f` 裸重定向——文档化面）
+    let cmd_items = trim_sep(cmd_items);
+    // 空命令探针：render 空判（旧 expand(cmd_s).is_empty() 的逐字节等价——
+    // P6 拟 fields 空判，但纯空白展开〔`$SP` SP="   "〕下 fields 空而 render
+    // 非空，两判分歧即观测漂〔旧：落 not found 127＋建空目标；fields 判：
+    // 返 0 不建〕——G1 恒等契约优先，取 render 空判；`> f`/`$空 > f` 返 0
+    // 不建不碰两判同观测）。
+    if berry_lex::render(cmd_items, &v).is_empty() {
+        return 0; // v1：空命令不建/不碰目标（`> f`/`>> f`/`$空 > f`——文档化面）
     }
-    let (data, code) = render_cmd(cmd_s, vars, status, out, hist);
+    let (data, code) = render_cmd_items(cmd_items, vars, status, out, hist);
     out.flush().unwrap(); // 诊断先落（stderr 语义——数据进文件）
     if fs_h() == 0 {
         // NoFs 预检（libc 无 gift 面会把 open 降级 ENOENT——文本漂移，故
@@ -4591,7 +4784,7 @@ fn do_redirect(
     let data = if append {
         // 记面：目标在席但超 FILE_SIZE_MAX 时 get_file 防御帽 Err loud 拒
         //（同目标的 `>` 覆写不受影响——读改写面的固有边界）。
-        match get_file(file_s) {
+        match get_file(&file_s) {
             Ok(mut old) => {
                 old.extend_from_slice(&data);
                 old
@@ -4606,7 +4799,7 @@ fn do_redirect(
     } else {
         data
     };
-    match put_file(file_s, &data) {
+    match put_file(&file_s, &data) {
         Ok(()) => code,
         Err(e) => {
             writeln!(out, "bsh: {}: {}", file_s, errno_text(e)).unwrap();
@@ -4693,6 +4886,71 @@ fn free_output(out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
             0,
         )
     }
+}
+
+/// ps（进程账读口 op4 刀）：全体在役任务单源人读面——数据源 `telemetry_
+/// open` op=4（`berry_telemetry_procstat_snapshot` 薄包装，内核真源；外部
+/// bin/ps 的 RPC 拉起账本由 berryctl ps 承接，两账本互补非竞合——内核面
+/// 无 exited/spawnfail 行是口径差非缺陷）。栈 5160B 快照缓冲（dmesg 4KiB
+/// 先例同量级）；失败/短帧打诊断行码 1（stderr 语义）。
+///
+/// 输出形 `{comm} {State} cpu={ms}ms sw={n} wk={n} hcpu={n}` 逐行＋换行尾
+///（comm 零垫裁尾；State 三词 Ready/Running/Blocked；`ms=cpu_ticks×1000/
+/// cntfrq` u128 整除〔换算单义——K 后缀 free 判例精神，周期→ms 只此一处〕
+/// ；sw=switches/wk=wakes/hcpu=home_cpu）。数据面走 render_cmd 返回值
+/// ——`ps > f` 天然重定向；行序 = 快照序（SLEEPQ→RQ0→RQ1 头自述确定性）。
+fn ps_output(out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
+    let mut buf = [0u8; TELEMETRY_PROCSTAT_MAX];
+    let r = berry_telemetry_procstat_snapshot(buf.as_mut_ptr(), buf.len());
+    if r < 0 {
+        writeln!(out, "bsh: ps: telemetry procstat snapshot failed ({})", r).unwrap();
+        return (Vec::new(), 1);
+    }
+    let n = r as usize;
+    if n < 40 {
+        writeln!(out, "bsh: ps: telemetry procstat snapshot failed ({})", r).unwrap();
+        return (Vec::new(), 1);
+    }
+    let mut hb = [0u8; 40];
+    hb.copy_from_slice(&buf[..40]);
+    let hdr = procstat_hdr_read(&hb);
+    let start = hdr.hdr_bytes as usize;
+    let stride = hdr.rec_size as usize;
+    if start < 40 || stride < 40 || start > n || stride != 40 {
+        writeln!(out, "bsh: ps: bad geom hb={} rs={}", hdr.hdr_bytes, hdr.rec_size).unwrap();
+        return (Vec::new(), 1);
+    }
+    // 行数 = 头 rows 与实写余量整行的 min（返回值/头双自证）。
+    let rows_n = (hdr.rows as usize).min((n - start) / stride);
+    let mut d = Vec::new();
+    for i in 0..rows_n {
+        let off = start + i * stride;
+        let mut rb = [0u8; 40];
+        rb.copy_from_slice(&buf[off..off + 40]);
+        let row = procstat_row_read(&rb);
+        let end = row.comm.iter().rposition(|&b| b != 0).map_or(0, |p| p + 1);
+        let comm = core::str::from_utf8(&row.comm[..end]).unwrap_or("?");
+        let state = match row.state {
+            0 => "Ready",
+            1 => "Running",
+            2 => "Blocked",
+            3 => "Exited",
+            _ => "Unknown",
+        };
+        // ms 换算单义：cpu_ticks×1000/cntfrq u128 整除（cntfrq==0 防御归
+        // 0——内核契约恒 >0）。
+        let ms = if hdr.cntfrq == 0 {
+            0
+        } else {
+            ((row.cpu_ticks as u128) * 1000 / hdr.cntfrq as u128).min(u64::MAX as u128) as u64
+        };
+        d.extend_from_slice(format!(
+            "{} {} cpu={}ms sw={} wk={} hcpu={}\n",
+            comm, state, ms, row.switches, row.wakes, row.home_cpu
+        )
+        .as_bytes());
+    }
+    (d, 0)
 }
 
 
@@ -5452,10 +5710,11 @@ fn prompt_after_ctrl_c(d: &[u8]) -> bool {
     }
 }
 
-/// 命令行体验刀（`CLI ok n=13` = rootfs 相第 55 标记；v2 B 域起 6→10、
-/// export 面刀 10→11、作业控制 v2 刀 11→12）：
+/// 命令行体验刀（`CLI ok n=15` = rootfs 相第 55 标记；v2 B 域起 6→10、
+/// export 面刀 10→11、作业控制 v2 刀 11→12、v2.5 引号刀 13→14、进程账
+/// 读口 op4 刀 14→15）：
 /// 六内建行为面 + v2 四族步 + export 步自验——render_cmd 直调（与交互/重定向同一渲染
-/// 面；诊断/usage 打真 stdout = stderr 语义）。十三步全过才打；败 eprintln
+/// 面；诊断/usage 打真 stdout = stderr 语义）。十五步全过才打；败 eprintln
 /// + park（标记缺失 → smoke FAIL 兜底）：
 /// ⓪ clear——`\x1b[2J\x1b[H` 7B 逐字节精确对拍 + 带参照打幂等面；
 /// ① uname——`BerryOS aarch64 ` 前缀 + 非空版本单行（libc `.berryver` 单源）+ 带参拒；
@@ -5489,6 +5748,19 @@ fn prompt_after_ctrl_c(d: &[u8]) -> bool {
 ///    `run hello &` 端到端真码链（表空预扫/$!＝1/jobs 列示逐字节/kill %1
 ///    Terminated(143) 逐字节（reap 真码内嵌断言）/表清/kill %2 缺席 1）
 ///    ；⑪c 负形三件（管道/内建/赋值后台形拒码 1＋表空）。
+/// ⑫ free（⑫a 纯面＋⑫b 恒等式域＋带参拒）。
+/// ⑬ 引号面（v2.5 引号与统一分词器刀）——三面：⑬a 纯面对拍（lex/render/
+///    fields 钉板三代表形——`echo "a b"` 词列/`A='x|y'` 值无管道 Op/
+///    `"$V"` 禁分词/`echo $A` 双词展开）；⑬b run_line 端到端真码链
+///    （`echo "hello world"` 内距空格逐字节＋`A="a b"` 后 `echo $A` 双词
+///    ＋`P=a|b` 后 `echo "$P"` 单参数字面〔G2 执法〕＋`echo 'a && b'`
+///    无链切）；⑬c 负形（未闭合引号拒码 2 不执行＋`> f` 空命令返 0 不建
+///    目标）。fails/park 门移全部步后（V2 愈合——原位 ⑫ 前为惰性门）。
+/// ⑮ ps（进程账读口 op4 刀·第 25 内建）——行数 ≥1＋至少一行 Running
+///    （调用者自身在跑——因果弱式）＋每行 cpu=/sw=/wk=/hcpu= 键序齐＋
+///    值域 ASCII 数字＋「ps x」带参拒 2；纯 render 直调静默不打印数据面
+///    （⑫ 模板直移；裸 ps 从外部 bin/ps 转内建——bin/ps 留 rootfs，
+///    RPC 账本面 berryctl ps 承接）。
 fn cli_selftest() {
     fn render(cmd: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
         render_cmd(cmd, &[], 0, out, &[])
@@ -5568,7 +5840,7 @@ fn cli_selftest() {
         fails.push("④ type 缺参未拒");
     }
     for b in [
-        "clear", "uname", "uptime", "sleep", "type", "history", "unset", "export", "jobs", "kill", "free",
+        "clear", "uname", "uptime", "sleep", "type", "history", "unset", "export", "jobs", "kill", "free", "ps",
     ] {
         if !BUILTINS.contains(&b) {
             fails.push("④ BUILTINS 单源缺新内建");
@@ -5597,16 +5869,24 @@ fn cli_selftest() {
         fails.push("⑤ history 带参未拒");
     }
 
-    // ⑥ `>>` 追加（B1）：split_redirect 三态纯函数对拍（零串口噪声——
-    //    usage 走纯函数 None 判定，不打诊断行）+ RAM 树三跑。小写下划线
-    //    名走 RAM 表（fsmgr 名字空间按构造隔离——零盘面，链序契约保持）。
-    let ok = matches!(split_redirect("a > f"), Some(("a", "f", false)))
-        && matches!(split_redirect("a >> f"), Some(("a", "f", true)))
-        && matches!(split_redirect("echo x > d1/Z.TXT"), Some(("echo x", "d1/Z.TXT", false)))
-        && split_redirect("a > b > c").is_none()
-        && split_redirect("a > b >> c").is_none()
-        && split_redirect("a >>> b").is_none()
-        && split_redirect("a >> b >> c").is_none();
+    // ⑥ `>>` 追加（B1）：重定向切分纯面对拍（v2.5 机械滚动——split_redirect
+    //    退役，redirect_of〔重定向族 Op 恰一＋目标恰一词〕同七形期望接替；
+    //    零串口噪声——usage 走纯函数 None 判定，不打诊断行）+ RAM 树三跑。
+    //    小写下划线名走 RAM 表（fsmgr 名字空间按构造隔离——零盘面，链序
+    //    契约保持）。
+    let rv6 = berry_lex::Vars { table: &[], status: 0, bang: -1 };
+    let redir = |s: &str| -> Option<(String, String, bool)> {
+        let l = berry_lex::lex(s).ok()?;
+        let (c, f, a) = redirect_of(&l.items, &rv6)?;
+        Some((berry_lex::render(c, &rv6), f, a))
+    };
+    let ok = matches!(&redir("a > f"), Some((c, f, false)) if c == "a" && f == "f")
+        && matches!(&redir("a >> f"), Some((c, f, true)) if c == "a" && f == "f")
+        && matches!(&redir("echo x > d1/Z.TXT"), Some((c, f, false)) if c == "echo x" && f == "d1/Z.TXT")
+        && redir("a > b > c").is_none()
+        && redir("a > b >> c").is_none()
+        && redir("a >>> b").is_none()
+        && redir("a >> b >> c").is_none();
     if !ok {
         fails.push("⑥ split_redirect 三态破缺（覆写/追加/混现与不相邻拒）");
     }
@@ -5643,17 +5923,35 @@ fn cli_selftest() {
         }
     }
 
-    // ⑦ `||` 链（B2）：split_chains 纯函数对拍四形 + run_line 直调。失败段
-    //    用 `run fail`（bin/fail 在档，exit 42 零输出——and_selftest 同款
-    //    零串口噪声）；成功段用赋值形——全步零诊断行。
-    let ok = matches!(split_chains("a||b").as_slice(), [("a", None), ("b", Some(ChainOp::Or))])
+    // ⑦ `||` 链（B2）：链切分纯面对拍四形（v2.5 机械滚动——split_chains
+    //    退役，chain_groups〔Op(And/Or) 分组〕＋render 同期望接替，含
+    //    `a&&&b` 恒等边缘）+ run_line 直调。失败段用 `run fail`（bin/fail
+    //    在档，exit 42 零输出——and_selftest 同款零串口噪声）；成功段用
+    //    赋值形——全步零诊断行。
+    let rv7 = berry_lex::Vars { table: &[], status: 0, bang: -1 };
+    let chains = |s: &str| -> Vec<(String, Option<ChainOp>)> {
+        match berry_lex::lex(s) {
+            Ok(l) => chain_groups(&l.items)
+                .into_iter()
+                .map(|(g, op)| (berry_lex::render(g, &rv7), op))
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    };
+    let ok = matches!(
+        chains("a||b").as_slice(),
+        [(a, None), (b, Some(ChainOp::Or))] if a == "a" && b == "b"
+    ) && matches!(
+        chains("a&&b||c").as_slice(),
+        [(a, None), (b, Some(ChainOp::And)), (c, Some(ChainOp::Or))] if a == "a" && b == "b" && c == "c"
+    ) && matches!(chains("a|b").as_slice(), [(a, None)] if a == "a|b")
         && matches!(
-            split_chains("a&&b||c").as_slice(),
-            [("a", None), ("b", Some(ChainOp::And)), ("c", Some(ChainOp::Or))]
-        )
-        && matches!(split_chains("a|b").as_slice(), [("a|b", None)])
-        && matches!(split_chains("a&&&b").as_slice(), [("a", None), ("&b", Some(ChainOp::And))])
-        && matches!(split_chains("a|||b").as_slice(), [("a", None), ("|b", Some(ChainOp::Or))]);
+            chains("a&&&b").as_slice(),
+            [(a, None), (b, Some(ChainOp::And))] if a == "a" && b == "&b"
+        ) && matches!(
+            chains("a|||b").as_slice(),
+            [(a, None), (b, Some(ChainOp::Or))] if a == "a" && b == "|b"
+        );
     if !ok {
         fails.push("⑦ split_chains 对拍破缺（|| 切/混排三段/| 不切/恒等与余段边缘）");
     }
@@ -5707,13 +6005,27 @@ fn cli_selftest() {
         }
     }
 
-    // ⑨ 管道参数面（B4）：切词纯函数对拍 + do_pipe 直调（`$P | cat` 拒面
-    //    打一行滚新 usage 文案——零 smoke 消费，rg 实证；grep -q 双段
-    //    零输出真码链——u2 ③④ 同族手法，段名从 rootfs 现档择定）。
-    let ok = matches!(split_pipe_seg("echo berry p4"), Some(("echo", ref a)) if a.as_slice() == ["berry", "p4"])
-        && split_pipe_seg("   ").is_none()
-        && split_pipe_seg("bin/ls x").is_none()
-        && split_pipe_seg("a|b c").is_none();
+    // ⑨ 管道参数面（B4）：切词纯面对拍（v2.5 机械滚动——split_pipe_seg
+    //    退役，fields 视图＋名终值校验（空/含 `/`/含 `|` 拒）同期望接替）
+    //    + do_pipe 直调（`$P | cat` 拒面打一行滚新 usage 文案——零 smoke
+    //    消费，rg 实证；grep -q 双段零输出真码链——u2 ③④ 同族手法，段名
+    //    从 rootfs 现档择定）。
+    let rv9 = berry_lex::Vars { table: &[], status: 0, bang: -1 };
+    let seg_fields = |s: &str| -> Vec<String> {
+        berry_lex::lex(s).map(|l| berry_lex::fields(&l.items, &rv9)).unwrap_or_default()
+    };
+    let seg_ok = |s: &str| -> bool {
+        match seg_fields(s).first() {
+            Some(n) => !n.is_empty() && !n.contains('/') && !n.contains('|'),
+            None => false,
+        }
+    };
+    let ok = matches!(
+        seg_fields("echo berry p4").as_slice(),
+        [a, b, c] if a == "echo" && b == "berry" && c == "p4"
+    ) && !seg_ok("   ")
+        && !seg_ok("bin/ls x")
+        && !seg_ok("a|b c");
     if !ok {
         fails.push("⑨ split_pipe_seg 对拍破缺（多词/空段// 与 | 拒）");
     }
@@ -5797,12 +6109,14 @@ fn cli_selftest() {
     //    串口时序）；boot console 新增行＝spawn 回显/Terminated 通报/负形
     //    诊断/hello 自身 13B（bg stdout＝console 直打）。
     // ⑪a strip_bg 边缘 guest 绑定钉板（G1 恒等契约四边缘代表形——host
-    //    14 测之上钉「bsh 链接的是这份 berry-jobs」）。
+    //    72 测之上钉「bsh 链接的是这份 berry-lex」；v2.5 机械滚动：调用
+    //    目标从 berry_jobs 改绑 berry_lex 同四边缘同期望——盲版语料整迁，
+    //    berry_jobs::strip_bg 已退役）。
     {
-        let ok = berry_jobs::strip_bg("run hello &") == ("run hello", true)
-            && berry_jobs::strip_bg("a &&") == ("a &&", false)
-            && berry_jobs::strip_bg("a&&&b") == ("a&&&b", false)
-            && berry_jobs::strip_bg("P=a&b") == ("P=a&b", false);
+        let ok = berry_lex::strip_bg("run hello &") == ("run hello", true)
+            && berry_lex::strip_bg("a &&") == ("a &&", false)
+            && berry_lex::strip_bg("a&&&b") == ("a&&&b", false)
+            && berry_lex::strip_bg("P=a&b") == ("P=a&b", false);
         if !ok {
             fails.push("⑪a strip_bg guest 绑定破缺（正形/&& 尾/尾非 &/值域）");
         }
@@ -5825,7 +6139,7 @@ fn cli_selftest() {
             fails.push("⑪b jobs 列示 != [1] Running run hello（逐字节）");
         }
         // kill 经 render 直调 render_cmd（副作用与 run_line 路径同链——
-        // strip_bg/split_chains 对无 `&` 行恒等 no-op）：通报字节逐字节断言
+        // berry_lex strip_bg/chain_groups 对无 `&` 行恒等 no-op）：通报字节逐字节断言
         // 内含 reap 真码 143。
         let (d, c) = render("kill %1", &mut out);
         if c != 0 || d.as_slice() != b"[1]+ Terminated(143) run hello\n".as_slice() {
@@ -5862,10 +6176,9 @@ fn cli_selftest() {
         }
     }
 
-    if !fails.is_empty() {
-        eprintln!("bsh: cli selftest bad: {:?}", fails);
-        berry_libc::park();
-    }
+    // fails/park 门（V2 愈合：原位 ⑫ free 块之前——⑫/⑬ 三断言永不生效的
+    // 惰性门〔free 刀落位遗留〕；移至全部步后真执法，前置绿验基线 2026-11-20
+    // 最终验证轮笔记 CLI ok n=13 全过）。
     // ⑫ free（遥测 memstat 刀）：RAM 五域单行快照——⑫a 纯面（`mem: total=`
     //    前缀逐字节 + 换行尾 + 五 token 键序齐 + 值域 ASCII 数字非空）+
     //    ⑫b 数据面恒等式域（弱式运行窗：total>0、alloc/reserved/committed
@@ -5921,7 +6234,151 @@ fn cli_selftest() {
         }
     }
 
-    println!("CLI ok n=13");
+    // ⑬ 引号面（v2.5 引号与统一分词器刀）：三面——⑬a 纯面对拍（lex/render/
+    //    fields guest 绑定钉板三代表形）＋⑬b run_line 端到端真码链（RAM 树
+    //    落文件逐字节对拍——⑥ 同款零盘面）＋⑬c 负形（未闭合拒码 2 不执行＋
+    //    `> f` 空命令返 0 不建目标探针钉板）。字面量避开 RX 断言族与现役
+    //    标记（canon 机查）。
+    {
+        // ⑬a 纯面：`echo "a b"` 词列 / `A='x|y'` 值无管道 Op / `"$V"` 禁分词
+        //    / `echo $A` 无引号展开分裂（A="a b"）。
+        let tv: Vec<(String, String)> = vec![("V".to_string(), "a b".to_string())];
+        let tvv = berry_lex::Vars { table: &tv, status: 0, bang: -1 };
+        let ok = matches!(
+            berry_lex::fields(&berry_lex::lex("echo \"a b\"").unwrap().items, &tvv).as_slice(),
+            [a, b] if a == "echo" && b == "a b"
+        );
+        if !ok {
+            fails.push("⑬a fields 引号词列破缺（echo \"a b\" != [echo, a b]）");
+        }
+        let l = berry_lex::lex("A='x|y'").unwrap();
+        let ok = l.items.iter().all(|i| !matches!(i, Item::Op(_)))
+            && berry_lex::render(&l.items, &tvv) == "A=x|y";
+        if !ok {
+            fails.push("⑬a 单引号字面面破缺（A='x|y' 值域生 Op 或 render 漂）");
+        }
+        let ok = matches!(
+            berry_lex::fields(&berry_lex::lex("\"$V\"").unwrap().items, &tvv).as_slice(),
+            [a] if a == "a b"
+        );
+        if !ok {
+            fails.push("⑬a 双引号禁分词破缺（\"$V\" 非单词 a b）");
+        }
+        let ta: Vec<(String, String)> = vec![("A".to_string(), "a b".to_string())];
+        let tav = berry_lex::Vars { table: &ta, status: 0, bang: -1 };
+        let ok = matches!(
+            berry_lex::fields(&berry_lex::lex("echo $A").unwrap().items, &tav).as_slice(),
+            [a, b, c] if a == "echo" && b == "a" && c == "b"
+        );
+        if !ok {
+            fails.push("⑬a 无引号展开分裂破缺（echo $A != [echo, a, b]）");
+        }
+    }
+    {
+        // ⑬b 端到端：owner 例 1 兑现＋G2 执法两形＋链数据形；数据面经 `>`
+        //    落 RAM 树 get_file 逐字节对拍（零串口噪声）。
+        let mut vv: Vec<(String, String)> = Vec::new();
+        let mut st = 0i32;
+        run_line("echo \"hello world\" > __qt1", &mut vv, &mut st, &mut out, &[]);
+        let good = matches!(get_file("__qt1"), Ok(d) if d == b"hello world\n");
+        if !good {
+            fails.push("⑬b echo \"hello world\" 内距空格破缺（owner 例 1）");
+        }
+        run_line("A=\"a b\"", &mut vv, &mut st, &mut out, &[]);
+        run_line("echo $A > __qt2", &mut vv, &mut st, &mut out, &[]);
+        let good = matches!(get_file("__qt2"), Ok(d) if d == b"a b\n");
+        if !good {
+            fails.push("⑬b A=\"a b\" 后 echo $A 双词展开破缺");
+        }
+        run_line("P=a|b", &mut vv, &mut st, &mut out, &[]);
+        run_line("echo \"$P\" > __qt3", &mut vv, &mut st, &mut out, &[]);
+        let good = matches!(get_file("__qt3"), Ok(d) if d == b"a|b\n");
+        if !good {
+            fails.push("⑬b echo \"$P\" 单参数字面破缺（G2 展开产物不当语法）");
+        }
+        run_line("echo 'a && b' > __qt4", &mut vv, &mut st, &mut out, &[]);
+        let good = matches!(get_file("__qt4"), Ok(d) if d == b"a && b\n");
+        if !good {
+            fails.push("⑬b echo 'a && b' 无链切破缺（引号内 && 是数据）");
+        }
+        for f in ["__qt1", "__qt2", "__qt3", "__qt4"] {
+            if unlink_of(f).is_err() {
+                fails.push("⑬b RAM 树清场失败（残留引号自验文件）");
+            }
+        }
+    }
+    {
+        // ⑬c 负形：未闭合引号拒码 2 不执行（表空/状态面断言）＋`> f` 空命令
+        //    返 0 不建目标（do_redirect 探针语义钉板——背景 9 勘误观测等价）。
+        let mut vv: Vec<(String, String)> = Vec::new();
+        let mut st = 0i32;
+        run_line("X=1 \"y", &mut vv, &mut st, &mut out, &[]);
+        if st != 2 || get_var(&vv, "X").is_some() {
+            fails.push("⑬c 未闭合引号未拒（码 != 2 或段已执行落表）");
+        }
+        run_line("> __qt5", &mut vv, &mut st, &mut out, &[]);
+        if st != 0 || get_file("__qt5").is_ok() {
+            fails.push("⑬c > f 空命令语义破缺（返 0 不建目标）");
+        }
+    }
+
+    // ⑮ ps（进程账读口 op4 刀·第 25 内建）：render 直调弱式（G4 禁精确
+    //    活值——行数 ≥1、至少一行含 Running〔调用者自身在跑——因果弱式〕、
+    //    每行五 token 键序齐 cpu=/sw=/wk=/hcpu=＋首 token comm、值域 ASCII
+    //    数字非空）＋「ps x」带参拒 2；纯 render 直调静默不打印数据面
+    //    （⑫ 模板直移）。「裸 ps 从外部 bin/ps 转内建」语义注记：bin/ps
+    //    留 rootfs 供显式路径/run 档（RPC 拉起账本面 berryctl ps 承接
+    //    ——两账本互补非竞合）。
+    {
+        let (d, c) = render("ps", &mut out);
+        let s = String::from_utf8_lossy(&d);
+        let lines: Vec<&str> = s.strip_suffix('\n').unwrap_or(&s).split('\n').collect();
+        let mut ok = c == 0 && !lines.is_empty() && s.ends_with('\n');
+        if ok {
+            ok = lines.iter().any(|l| l.contains("Running"));
+        }
+        if ok {
+            for l in &lines {
+                let toks: Vec<&str> = l.split(' ').collect();
+                if toks.len() != 6 || toks[0].is_empty() {
+                    ok = false;
+                    break;
+                }
+                // state 词校验（三词＋防御两词——行形键序钉板）。
+                if !matches!(toks[1], "Ready" | "Running" | "Blocked" | "Exited" | "Unknown") {
+                    ok = false;
+                    break;
+                }
+                // 四 token 键序＋值域：cpu={ms}ms（尾随 ms 单位先剥）、
+                // sw=/wk=/hcpu= 纯 ASCII 数字非空。
+                let digits = |v: &str| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit());
+                let cpu_ok = toks[2]
+                    .strip_prefix("cpu=")
+                    .and_then(|v| v.strip_suffix("ms"))
+                    .is_some_and(digits);
+                let sw_ok = toks[3].strip_prefix("sw=").is_some_and(digits);
+                let wk_ok = toks[4].strip_prefix("wk=").is_some_and(digits);
+                let hcpu_ok = toks[5].strip_prefix("hcpu=").is_some_and(digits);
+                if !(cpu_ok && sw_ok && wk_ok && hcpu_ok) {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if !ok {
+            fails.push("⑮ ps 行形/键序/数值域破缺（cpu=/sw=/wk=/hcpu= 五 token）");
+        }
+        if render("ps x", &mut out).1 != 2 {
+            fails.push("⑮ ps 带参未拒");
+        }
+    }
+
+    if !fails.is_empty() {
+        eprintln!("bsh: cli selftest bad: {:?}", fails);
+        berry_libc::park();
+    }
+
+    println!("CLI ok n=15");
 }
 
 /// 命令行体验刀（`TERM ok n=3` = rootfs 相第 56 标记；v2 B 域起 2→3）——哑
@@ -6081,21 +6538,12 @@ fn term_ready(d: &[u8]) -> bool {
         && prompt_after_ctrl_c(d)
 }
 
-/// 管道段切词（v2 B4，纯函数——自验直调）：段文本（已展开）`split_
-/// whitespace` 分词——首词为名（仍禁 `/` 与 `|`：`|` 防御性保留——展开
-/// 注入的 `|` 不当语法，`P=a|b` 后 `echo $P | cat` 的首段切词即撞此拒）、
-/// 余词为 args（PipeSeg.args 字段首次由交互路径装配）。None = usage 面：
-/// 零词空段 / 名含 `/` 或 `|`。变量值含空白拆多参 = POSIX 同形分词（无
-/// 引号面下无保留空格手段——记面，统一分词器专刀收口）。
-fn split_pipe_seg(seg: &str) -> Option<(&str, Vec<&str>)> {
-    let mut words = seg.split_whitespace();
-    let name = words.next()?;
-    if name.contains(['/', '|']) {
-        return None;
-    }
-    Some((name, words.collect()))
-}
-
+/// 管道段切词（v2 B4 纯函数——v2.5 引号刀起退役：`split_whitespace` 分词
+/// 由 [`berry_lex::fields`] 视图接替〔无引号展开分裂＋Op 融合字面并入——
+/// `a>|b` 段名 `a>`、`a | b > c` 段参 `>,c` 保距〕；名终值校验（空/含
+/// `/` 或 `|`——`P=a|b` 后 `$P | cat` 首段切词撞此拒＝⑨ 钉板）保留迁
+/// [`push_seg`] 段装配处；⑨ 对拍臂机械滚 fields 直调——行为断言全保）。
+///
 /// `A | B | …` 交互面（v2 B4：各段首词名 + 余词 args——参数面放开）。
 /// 拉起/收集/回收全在 [`pipe_capture`]，此处只切词 + 回放 + 警告。段仍只
 /// 走 bin/ spawn（内建不进管道，政策不变）。
@@ -6104,26 +6552,47 @@ fn split_pipe_seg(seg: &str) -> Option<(&str, Vec<&str>)> {
 /// `hello | …`，hello 10s 周期睡眠永循环）= 10s collect 帽 + 30s reap 帽/段
 /// 的可见冻结 + 僵尸留存（v1 无 kill syscall，PROCESS_MAX=64 出帽时新管
 /// spawn failed 拒绝但 shell 活）——kill/监督随 v2。
+/// v2.5 引号刀：&str 入口为冻结签名兼容面（内部 re-lex 进
+/// [`do_pipe_items`]）；Op(Pipe) 分组替 `split('|')`——引号内 `|` 是数据
+/// 不切段（`grep "a|b"` 单参新增可用）。
 fn do_pipe(cmd: &str, vars: &[(String, String)], status: i32, out: &mut std::io::Stdout) -> i32 {
-    // 段名执行时展开（`$X | hexyl` 的 X 也是数据面）；展开注入的 `|`/空格
-    // 只会撞下方切词校验或 not found——不当语法（切段已在 exec_one 的原始
-    // 文本上完成）。两段式 owned 装配：先收各段 (名, args)，再组装 PipeSeg
-    // 引用（name/args 借自 owned，函数尾前恒活）。
-    let owned: Vec<String> = cmd.split('|').map(|p| expand(p.trim(), vars, status)).collect();
-    let mut names: Vec<&str> = Vec::with_capacity(owned.len());
-    let mut args_all: Vec<Vec<&str>> = Vec::with_capacity(owned.len());
-    for seg in owned.iter() {
-        match split_pipe_seg(seg) {
-            Some((name, args)) => {
-                names.push(name);
-                args_all.push(args);
-            }
-            None => {
-                writeln!(out, "usage: <name> [args] | <name> [args]（rootfs bin/ 裸名）").unwrap();
+    let items = match berry_lex::lex(cmd) {
+        Ok(l) => l.items,
+        Err(_) => Vec::new(), // 管线面不可达（run_line 首道 lex 已拦）
+    };
+    do_pipe_items(&items, vars, status, out)
+}
+
+/// `A | B | …`（Item 形态——exec_one 管道臂直调面）。
+fn do_pipe_items(
+    items: &[Item],
+    vars: &[(String, String)],
+    status: i32,
+    out: &mut std::io::Stdout,
+) -> i32 {
+    let v = lex_vars(vars, status);
+    // 段切分：Op(Pipe) 分组（引号内 | 不切）；段名执行时展开（`$X | hexyl`
+    // 的 X 也是数据面）；展开注入的 `|`/空格只会撞下方名终值校验或
+    // not found——不当语法。两段式 owned 装配：先收各段 (名, args)，再组
+    // 装 PipeSeg 引用（name/args 借自 owned，函数尾前恒活）。
+    let mut segs_owned: Vec<(String, Vec<String>)> = Vec::new();
+    let mut start = 0usize;
+    for (i, it) in items.iter().enumerate() {
+        if matches!(it, Item::Op(Op::Pipe)) {
+            if !push_seg(&items[start..i], &v, out, &mut segs_owned) {
                 return 2;
             }
+            start = i + 1;
         }
     }
+    if !push_seg(&items[start..], &v, out, &mut segs_owned) {
+        return 2;
+    }
+    let names: Vec<&str> = segs_owned.iter().map(|(n, _)| n.as_str()).collect();
+    let args_all: Vec<Vec<&str>> = segs_owned
+        .iter()
+        .map(|(_, a)| a.iter().map(String::as_str).collect())
+        .collect();
     let segs: Vec<PipeSeg> = names
         .iter()
         .zip(args_all.iter())
@@ -6157,8 +6626,32 @@ fn do_pipe(cmd: &str, vars: &[(String, String)], status: i32, out: &mut std::io:
     code
 }
 
+/// 管道段装配一步（fields 切词＋名终值校验——旧 split_pipe_seg 契约迁移
+/// 面）：空段（fields 空——`a|`/`|b` 边缘与 `$空` 吞词同观测）或名空/含
+/// `/`/含 `|`（展开注入防御——⑨ 钉板）打 usage 拒 false；过则 push
+/// (名, args) 返 true。usage 文案与旧 None 面逐字节同。
+fn push_seg(
+    seg: &[Item],
+    v: &berry_lex::Vars,
+    out: &mut std::io::Stdout,
+    segs: &mut Vec<(String, Vec<String>)>,
+) -> bool {
+    let usage = "usage: <name> [args] | <name> [args]（rootfs bin/ 裸名）";
+    let f = berry_lex::fields(seg, v);
+    let Some(name) = f.first() else {
+        writeln!(out, "{usage}").unwrap();
+        return false;
+    };
+    if name.is_empty() || name.contains('/') || name.contains('|') {
+        writeln!(out, "{usage}").unwrap();
+        return false;
+    }
+    segs.push((name.clone(), f[1..].to_vec()));
+    true
+}
+
 /// 管道段：程序名 + argv[1..]（自验传 `--color=never` 先例；v2 B4 起交互
-/// 路径经 [`split_pipe_seg`] 切词装配——参数面放开）。
+/// 路径经 [`push_seg`] 切词装配——参数面放开）。
 struct PipeSeg<'a> {
     name: &'a str,
     args: &'a [&'a str],

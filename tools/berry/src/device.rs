@@ -444,14 +444,13 @@ fn boot_runtime(
         let qmp = Arc::new(Mutex::new(qmp));
         let source: Box<dyn ScreenSource> = if let Some(info) = fb {
             let input = VncInput::connect(vnc)?;
-            // 原生指针 QMP 注入面（I2）：qmp 端点同目录 qmp-inject.sock
-            //（spawn 建端；路径推导单源在 qemu::inject_sock_path）。
-            let inject = qemu::inject_sock_path(qmp_ep);
+            // 指针注入面退役（归档锚：.agents/research/证据快照/2026-11-20-VNC直通绝对坐标判例驳斥.md）：
+            // 原生路改走 VncInput 的 RFB PointerEvent 直通——握手已补发 SetEncodings
+            // 置位 vs->absolute，宿主零几何知识。
             Box::new(RamSource::open(
                 ram_path.unwrap_or(std::path::Path::new("")),
                 info,
                 input,
-                inject.as_deref(),
             )?)
         } else {
             wait_endpoint(vnc, Duration::from_secs(5))?;

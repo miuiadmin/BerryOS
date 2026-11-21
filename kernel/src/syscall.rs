@@ -488,13 +488,19 @@ extern "C" fn sys_power_off(_tf: &mut TrapFrame) -> i64 {
 // memstat 定长快照〔遥测 v3 首件〕＋双族环历史快照〔op=2 环读口刀——
 // per-CPU 切换环＋唤醒环四段一体导出〕＋WakeSrc 槽表纯镜像〔op=3 槽表
 // 读口刀——40B 轻头＋128×64B 平数据全表导出，本文件 wsrc 臂＋
-// telemetry::wsrc_table_snap_into，berryctl powertop 消费〕；op 域
-// add-only，后续波次自 op=4 起按落地序取号）----
+// telemetry::wsrc_table_snap_into，berryctl powertop 消费〕＋全体在役
+// 任务快照〔op=4 进程账读口刀——ProcStatHdrV1 40B 轻头＋40B
+// ProcStatRecV1×行数动态，本文件 procstat 臂＋
+// telemetry::procstat_snap_into，berryctl ps --json 与 bsh ps 消费〕；op 域
+// add-only，后续波次自 op=5 起按落地序取号）----
 
 /// 0x84 op 域常量**单源 = berry-telface**（klog=0 / memstat=1 / rings=2 /
-/// wsrc=3——内核派发与 berry-sys 包装同引此，消内核/用户双写）；后续波次
-/// 自 op=4 起按落地序取号（add-only 纪律下预留号无执法值）。
-use berry_telface::{TELEMETRY_OP_KLOG, TELEMETRY_OP_MEMSTAT, TELEMETRY_OP_RINGS, TELEMETRY_OP_WSRC};
+/// wsrc=3 / procstat=4——内核派发与 berry-sys 包装同引此，消内核/用户
+/// 双写）；后续波次自 op=5 起按落地序取号（add-only 纪律下预留号无执法值）。
+use berry_telface::{
+    TELEMETRY_OP_KLOG, TELEMETRY_OP_MEMSTAT, TELEMETRY_OP_PROCSTAT, TELEMETRY_OP_RINGS,
+    TELEMETRY_OP_WSRC,
+};
 
 /// op=1 memstat 定长快照**冻结下限**（v1 形 40B = `MemstatRec` 5×u64）。
 /// len ≥ 此值即服务：实写 40B 返 40——尾追追加律（未来扩形旧调用方收
@@ -542,6 +548,23 @@ static mut RING_SNAP_STAGE: [u8; berry_telface::TELEMETRY_RINGS_MAX] =
 /// 无头的中间态）。
 static mut WSRC_SNAP_STAGE: [u8; berry_telface::TELEMETRY_WSRC_MAX] =
     [0; berry_telface::TELEMETRY_WSRC_MAX];
+
+/// op=4 全体在役任务快照**冻结下限**（v1 轻头 40B = `ProcStatHdrV1`）。len ≥
+/// 此值即服务（len=40 可单读头探几何——op=2/3 探针先例同精神）；**无上帽**
+///（变长填充返回值自证——整行截尾、返回值 40+rows×40 自证，16KiB 帽是
+/// op=0 臂专属语义不移植，`WSRC_SNAP_HDR_V1` 注族）。字面冻结不随 size_of
+/// 动：本臂恒写 v1 前缀。
+const PROCSTAT_SNAP_HDR_V1: usize = 40;
+
+/// 任务快照暂存（三并集遍历装配 → copy_out 之间的稳定缓冲；容量 = telface
+/// `TELEMETRY_PROCSTAT_MAX` 满载上界 5160B：40 头＋128×40 行——与
+/// `RING_SNAP_STAGE` 7296B/`WSRC_SNAP_STAGE` 8232B 同域同量级）。**单写者
+/// = 四锁窗**：本 handler 恒 SQ_RQ_TABLE 类（SQ+RQ0+RQ1 结构锁 + KL 全局
+/// 互斥跨核串行——较前三 stage 的「KL 恒持」更强一层）+ ktest EL1 面同经
+/// dispatch 取锁——`KLOG_SNAP_STAGE` 同纪律**新立不共用**（裁决 6 判例
+/// 直移：单发整段无半写面）。
+static mut PROCSTAT_SNAP_STAGE: [u8; berry_telface::TELEMETRY_PROCSTAT_MAX] =
+    [0; berry_telface::TELEMETRY_PROCSTAT_MAX];
 
 /// op=2 单段装配步：`read` 窗口读进 stage 段位（整条粒度 cap 截尾）→
 /// 段描述符**紧随其窗口读落笔**（count = 实拷数——段描述符形下 counts
@@ -619,18 +642,39 @@ fn rings_seg_put(
 /// 与 N 递增在 trace_off 早退前——计数器族不随关，双 trace 态皆真数据无
 /// 空头形）。len 门：`len` < [`WSRC_SNAP_HDR_V1`] → -EINVAL。
 ///
+/// op=4 全体在役任务快照（进程账读口刀）——40B 头（`ProcStatHdrV1`：
+/// version/hdr_bytes/rec_size/rows/seen/cntfrq/now_vct）＋定宽 40B 行
+///（`ProcStatRecV1`：comm[8]/name_id/state/kern/home_cpu/intent/
+/// cpu_ticks/switches/wakes）×行数动态（行粒度 = per-TASK——任务集三并集
+/// SLEEPQ+RQ0+RQ1 是 freeze/kill 在册枚举面；帽 128 行满载 5160B，**seen>
+/// rows 即截断**〔seen 恒真〕）。**同窗一致快照 = 0x84 族首例**：SQ+RQ0+
+/// RQ1+KL 四锁窗（SVC 入口 SQ_RQ_TABLE 类终态正序预取）内行集与行内字段
+/// 同窗定型；在跑段未结算 = cpu_ticks 诚实上界（差分只许用单调族）；计数
+/// 器族常开 trace_off 双态同值；行键 comm+name_id 撞名不可区分（内核零
+/// 任务号真源——禁默示跨快照一致）。装配序与一致性全文（G6）见
+/// [`crate::telemetry::procstat_snap_into`] doc。len 门：`len` <
+/// [`PROCSTAT_SNAP_HDR_V1`] → -EINVAL；无上帽（变长填充返回值自证，
+/// len=40 单读头探几何〔探针先例〕）。
+///
 /// 拒面：op 域外 → -ENOTSUP；copy_out 失败 → -EFAULT（klog 臂逐环分段拷贝，
-/// 失败前的段已写——诚实部分读，调用方重试；memstat/rings/wsrc 臂单发
-/// 整段无半写面）。零 handle 零权利位（系统级遥测读面——统计信号非对象
+/// 失败前的段已写——诚实部分读，调用方重试；memstat/rings/wsrc/procstat
+/// 臂单发整段无半写面）。零 handle 零权利位（系统级遥测读面——统计信号非对象
 /// 内容，`sched_util_snapshot` 同族口径）。
 ///
-/// 锁类 TABLE：klog 环热尾容错读无锁无共享串行面；memstat 三元组单闭包
-/// 一致窗、水位皆 Relaxed 原子读（统计信号无序角色）；rings 臂 seqlock
-/// 单版本窗整块拷（重试持 KL 有界：64 次 × ~2KB 拷贝，写方永不取 KL 无
-/// 死锁面）+ 7296B static stage 单写者；wsrc 臂纯原子读零重试面（表无
-/// seqlock——op=2 最大风险〔TCG 降级〕在本刀结构性不存在）+ 8232B
-/// static stage 单写者；copy_out 链走查调用方页表 = §A113 读者面（同
-/// 0x61 clock_read）。
+/// 锁类 SQ_RQ_TABLE（进程账读口刀整号滚类，原 TABLE）：klog 环热尾容错读
+/// 无锁无共享串行面；memstat 三元组单闭包一致窗、水位皆 Relaxed 原子读
+///（统计信号无序角色）；rings 臂 seqlock 单版本窗整块拷（重试持 KL 有界：
+/// 64 次 × ~2KB 拷贝，写方永不取 KL 无死锁面）+ 7296B static stage 单写者；
+/// wsrc 臂纯原子读零重试面（表无 seqlock——op=2 最大风险〔TCG 降级〕在
+/// 该刀结构性不存在）+ 8232B static stage 单写者；op=4 臂任务集三并集遍历
+/// 需 SQ+RQ0+RQ1 与四锁窗一致快照（thread_sleep 0x37 无 KL 改 SQ 在案
+/// ——KL 窗裸走 SLEEPQ 有撕链面、handler 内持 KL 取结构锁违七层冻结序，
+/// 入口终态正序预取 = 唯一合法构式；环写方〔note_switch/note_wake 钩子
+/// 体〕在 IRQ 语境零结构锁——改类无新死锁面，fault 链 ALL 类同取全集
+/// 先例）+ 5160B static stage 单写者；op=0..3 连坐 = 入口多三对无争用
+/// TTAS（诊断频度 syscall 非成本——四臂行为面零漂移，只改入口锁足迹）；
+/// copy_out 链走查调用方页表 = §A113 读者面（同 0x61 clock_read——PT 锁
+/// 在 SQ/RQ/KL 内层取，wait/send 族 0x2E 同序在册）。
 extern "C" fn sys_telemetry_open(tf: &mut TrapFrame) -> i64 {
     let (op, ptr, len) = (tf.regs[1], tf.regs[2], tf.regs[3]);
     match op {
@@ -750,7 +794,29 @@ extern "C" fn sys_telemetry_open(tf: &mut TrapFrame) -> i64 {
                 Err(e) => e as i64,  // -EFAULT 透传（单发整段无半写面）
             }
         }
-        _ => ERR_NOT_SUPPORTED as i64, // op 域外（后续波次自 op=4 起按落地序取号）
+        // op=4 全体在役任务快照（进程账读口刀）：len 冻结下限门 → 三并集
+        // 遍历装配（telemetry::procstat_snap_into——四锁窗同窗一致快照
+        //〔G6 全文见装配函数 doc〕；遍历序 SLEEPQ→RQ0→RQ1 确定性）→ 单发
+        // 整段拷出。整行粒度截尾：余量按 40B 整行分、不足一行即止，返回值
+        // 40+rows×40 自证（len=40 单读头探几何——行零而 seen 恒真）。
+        TELEMETRY_OP_PROCSTAT => {
+            if (len as usize) < PROCSTAT_SNAP_HDR_V1 {
+                return ERR_INVALID_ARG as i64;
+            }
+            let el1 = caller_is_el1(tf);
+            // 输出总界 = 用户 len 与满载容量的 min（行帽 128——len>5160
+            // 恒满载）；stage 只用到满载容量。
+            let limit = (len as usize).min(berry_telface::TELEMETRY_PROCSTAT_MAX);
+            // SAFETY: 单写者 = KL（见 PROCSTAT_SNAP_STAGE 注）；本 handler
+            // 全程 SQ_RQ_TABLE 四锁窗。
+            let stage = unsafe { &mut *core::ptr::addr_of_mut!(PROCSTAT_SNAP_STAGE) };
+            let n = crate::telemetry::procstat_snap_into(stage, limit);
+            match copy_to_user(el1, ptr, &stage[..n]) {
+                Ok(()) => n as i64,  // ≥40 头自证
+                Err(e) => e as i64,  // -EFAULT 透传（单发整段无半写面）
+            }
+        }
+        _ => ERR_NOT_SUPPORTED as i64, // op 域外（后续波次自 op=5 起按落地序取号）
     }
 }
 
@@ -4719,10 +4785,18 @@ pub fn install() {
     // 0x87 signal_take）+ policy SNAPS 三槽轮转区是全局单写者共享面（KL 串
     // 行跨核 SVC 写者；读者 apply/weight_of 在 RQ 屏蔽决策窗，无共同写窗）。
     reg(0x83, sys_policy_bind, SVC_CLASS_TABLE);
-    // —— TABLE：阶段五第 16 步 0x84 telemetry_open 翻真（klog 快照首域）。
+    // —— SQ+RQ+TABLE（0x2E）：阶段五第 16 步 0x84 telemetry_open 翻真
+    //（klog 快照首域；进程账读口 op4 刀整号滚类 TABLE→SQ_RQ_TABLE）。
     // 同 0x83：v3 在册号、abi_gen 常量层不产 NR_TELEMETRY_OPEN，字面量挂
-    // 派发（v3 常量层落地后换常量名）。TABLE 理由：copy_out 链走查调用方
-    // 页表（§A113 读者面，同 0x61/0x87）+ 快照暂存 stage 是 KL 串行共享面
-    //（见 sys_telemetry_open 注）。
-    reg(0x84, sys_telemetry_open, SVC_CLASS_TABLE);
+    // 派发（v3 常量层落地后换常量名）。类理由（原 TABLE 面保留叠加 + op=4
+    // 滚类新面）：copy_out 链走查调用方页表（§A113 读者面，同 0x61/0x87）
+    // + 四 stage 是 KL 串行共享面（单写者论证）；op=4 任务集三并集遍历
+    //（SLEEPQ+RQ0+RQ1）需 SQ+RQ0+RQ1 持锁窗——thread_sleep 0x37 无 KL
+    // 改 SQ 在案（KL 窗裸走 SLEEPQ 有撕链/游标失稳面）、handler 内持 KL
+    // 取结构锁违七层冻结序（跨核 ABBA 面），入口终态正序预取
+    //（svc_enter_class 结构先行 KL 最内）= 唯一合法构式；op=0..3 连坐 =
+    // 入口多三对无争用 TTAS（诊断频度 syscall 非成本）；环写方
+    //（note_switch/note_wake 计账，IRQ 语境）零结构锁——改类无新死锁面
+    //（fault 链 ALL 类同取全集先例）；四臂行为面零漂移（只改入口锁足迹）。
+    reg(0x84, sys_telemetry_open, SVC_CLASS_SQ_RQ_TABLE);
 }

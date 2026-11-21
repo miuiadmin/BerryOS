@@ -13,9 +13,38 @@
 
 use std::process::ExitCode;
 
-use berryassemble::lite::{load_lite_product, LiteProduct, APP_SLOTS};
+use berryassemble::lite::{load_lite_product, APP_SLOTS};
+use berryassemble::validate::{format_check_ok, validate_all};
 
-const USAGE: &str = "用法：berryassemble --check-lite <product.toml>（--check/--dry-run/--emit/--selftest/--sample 走 python3 tools/berry_assemble.py——CLI oracle 面保留）";
+const USAGE: &str = "用法：berryassemble --check | --check-lite <product.toml>（--dry-run/--emit/--selftest/--sample 走 python3 tools/berry_assemble.py——CLI oracle 面保留）";
+
+/// 五刀·tools/ 目录发现（gensourceindex `repo_tools_dir` 同款先例——
+/// CWD/exe 双上溯）。`--check` 默认基座表/user 基准 = Python `ROOT`/
+/// `REPO`（__file__ 相对）的 Rust 等价物：exe 在
+/// tools/berryassemble/cargo-target/<host>/debug 内，上溯三级即 tools/。
+fn repo_tools_dir() -> std::path::PathBuf {
+    for base in [
+        std::env::current_dir().ok(),
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf())),
+    ] {
+        let Some(mut dir) = base else { continue };
+        loop {
+            if dir.file_name().map(|f| f == "tools").unwrap_or(false) {
+                return dir.to_path_buf();
+            }
+            if dir.join("abi.toml").is_file() && dir.join("berry_assemble.py").is_file() {
+                return dir.to_path_buf();
+            }
+            match dir.parent() {
+                Some(p) => dir = p.to_path_buf(),
+                None => break,
+            }
+        }
+    }
+    std::env::current_dir().unwrap_or_default().join("tools")
+}
 
 /// Python repr 串面（单引号 + 反斜杠/引号转义——f"{v!r}" 镜像）。
 fn py_repr(s: &str) -> String {
@@ -35,24 +64,11 @@ fn py_oserror_str(e: &std::io::Error, path: &str) -> String {
     }
 }
 
-/// `do_check(path, lite=True)` 镜像：OK 行逐字同构（计数/开关位全对齐）。
+/// `do_check(lite=True)` 镜像：OK 行逐字同构（计数/开关位全对齐）。
 fn cmd_check_lite(path: &str) -> ExitCode {
-    let text = match std::fs::read(path) {
-        Ok(b) => match String::from_utf8(b) {
-            Ok(t) => t,
-            // tomllib 侧坏 UTF-8 同落 TOML 解析面（分支标识对齐——
-            // 首刀先例：解析器文案不同源，逐字统一归后续刀）。
-            Err(_) => {
-                eprintln!(
-                    "berry-assemble: {path}: TOML 解析失败： 行 1 无效 UTF-8 字节"
-                );
-                return ExitCode::from(1);
-            }
-        },
-        Err(e) => {
-            eprintln!("berry-assemble: 读 {path} 失败：{}", py_oserror_str(&e, path));
-            return ExitCode::from(1);
-        }
+    let text = match read_product_text(path) {
+        Ok(t) => t,
+        Err(()) => return ExitCode::from(1),
     };
     match load_lite_product(&text) {
         Ok(p) => {
@@ -70,6 +86,64 @@ fn cmd_check_lite(path: &str) -> ExitCode {
         }
         // 解析拒面不带 {path}: 前缀（Python load_product 文件面入口带、
         // 结构面文案本体不带——首刀 parity 先例：分支标识对齐）。
+        Err(e) => {
+            eprintln!("berry-assemble: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// product.toml 读面（--check/--check-lite 共用——Python `load_product`
+/// 文件入口 :751-760 镜像：读失败 `读 {path} 失败：{OSError}`、坏 UTF-8
+/// 落 TOML 解析面分支标识）。Err = 已印拒行（调用方直接返回 exit 1）。
+fn read_product_text(path: &str) -> Result<String, ()> {
+    match std::fs::read(path) {
+        Ok(b) => match String::from_utf8(b) {
+            Ok(t) => Ok(t),
+            // tomllib 侧坏 UTF-8 同落 TOML 解析面（分支标识对齐——
+            // 首刀先例：解析器文案不同源，逐字统一归后续刀）。
+            Err(_) => {
+                eprintln!(
+                    "berry-assemble: {path}: TOML 解析失败： 行 1 无效 UTF-8 字节"
+                );
+                Err(())
+            }
+        },
+        Err(e) => {
+            eprintln!("berry-assemble: 读 {path} 失败：{}", py_oserror_str(&e, path));
+            Err(())
+        }
+    }
+}
+
+/// `do_check` 全量臂（Python :1009-1019 镜像——五刀收口）。默认基座表/
+/// user 基准 = tools/ 发现（`DEFAULT_BASE`/`DEFAULT_USER_DIR` 等价物）。
+fn cmd_check(path: &str) -> ExitCode {
+    let text = match read_product_text(path) {
+        Ok(t) => t,
+        Err(()) => return ExitCode::from(1),
+    };
+    // Python src_dir = dirname(abspath(path))；基座表 path 相对 user/。
+    let tools = repo_tools_dir();
+    let base = tools.join("rootfs-manifest.toml").display().to_string();
+    let user_dir = tools
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join("user")
+        .display()
+        .to_string();
+    let src_dir = std::path::Path::new(path)
+        .parent()
+        .map(|p| {
+            let s = p.display().to_string();
+            if s.is_empty() { ".".to_string() } else { s }
+        })
+        .unwrap_or_else(|| ".".to_string());
+    match validate_all(&text, &src_dir, &base, &user_dir) {
+        Ok((p, _, _)) => {
+            println!("{}", format_check_ok(path, &p));
+            ExitCode::SUCCESS
+        }
         Err(e) => {
             eprintln!("berry-assemble: {e}");
             ExitCode::from(1)
@@ -140,10 +214,8 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
         Some("--check") => {
-            eprintln!(
-                "berry-assemble: --check 走 python3 tools/berry_assemble.py（全量面对账〔基座表/kernel 锚度量〕现役单源——让位指引）"
-            );
-            ExitCode::from(2)
+            // out_dir 静默忽略（Python :1887 判序同构——模式分派先于执行）。
+            cmd_check(path.expect("mode 带值"))
         }
         Some("--dry-run") => {
             eprintln!(
@@ -165,6 +237,7 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use berryassemble::lite::LiteProduct;
 
     #[test]
     fn py_repr_law() {

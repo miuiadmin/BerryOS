@@ -173,8 +173,12 @@ pub const REGISTRY: &[(u8, u8)] = &[
     (0x77, SVC_CLASS_TABLE), // guest_create（G2 刀 10 桩）
     (0x78, SVC_CLASS_TABLE), // vcpu_create（G2 刀 10 桩）
     (0x79, SVC_CLASS_TABLE), // vcpu_run（G2 刀 10 桩）
-    // —— TABLE：阶段五遥测环读（0x84——klog 快照首域 copy_out 读者面 §A113）——
-    (0x84, SVC_CLASS_TABLE),      // telemetry_open
+    // —— SQ+RQ+TABLE（0x2E）：阶段五遥测环读（0x84——copy_out 读者面
+    // §A113 保留叠加；进程账读口 op4 刀整号滚类 TABLE→SQ_RQ_TABLE：op=4
+    // 任务集三并集遍历需 SQ+RQ0+RQ1 终态正序预取，thread_sleep 0x37 无 KL
+    // 改 SQ 在案 KL 窗裸走有撕链面、持 KL 取结构锁违七层冻结序——入口
+    // 整号改类 = 唯一合法构式，op=0..3 连坐 = 入口多三对无争用 TTAS）——
+    (0x84, SVC_CLASS_SQ_RQ_TABLE), // telemetry_open
 ];
 
 /// 号→入口锁类：注册表线性扫（52 项·boot 期注册语义纯投影）。**未注册号

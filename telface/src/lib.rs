@@ -37,6 +37,11 @@
 //!   128×64B 定长行，行号即源值零 src 域；kernel 原子壳同偏移镜像由
 //!   cross-const assert 锁步；头/行 LE 编解码纯函数，host 钉板；
 //!   berryctl powertop 消费）。
+//! - [`ProcStatRecV1`]/[`ProcStatHdrV1`] 与 [`TELEMETRY_OP_PROCSTAT`]：
+//!   op=4 全体在役任务快照的形状与常量单源（进程账读口 op4 刀——40B
+//!   轻头＋40B 定宽行×行数动态、帽 128 满载 5160B 字面冻结；行粒度
+//!   per-TASK；运行账三核心量真源 = TCB 四原子字段；头/行 LE 编解码
+//!   纯函数，host 钉板；berryctl ps --json 与 bsh ps 消费）。
 //!
 //! 与冻结面的关系：NR 表/派发面零触碰（0x84 op 域常量与出参形状是唯一
 //! ABI 面，即上条单源项）；环/槽表的原子机械（seqlock 写方
@@ -183,9 +188,10 @@ pub fn wakesrc_row_shape_ok() -> bool {
 pub const TELEMETRY_OP_KLOG: u64 = 0;
 
 /// 1 = memstat 定长快照（[`MemstatRec`] 40B——遥测 v3 首件）。演进注：
-/// SwitchRec/WakeRec 环读口已落地 op=2（[`TELEMETRY_OP_RINGS`]）；后续
-/// 波次自 op=3 起按落地序取号，不预留（add-only 纪律下预留号无执法值
-/// ——域外恒 -ENOTSUP 与未定义同形）。
+/// SwitchRec/WakeRec 环读口已落地 op=2（[`TELEMETRY_OP_RINGS`]）、槽表
+/// 纯镜像 op=3（[`TELEMETRY_OP_WSRC`]）、全体在役任务快照 op=4
+///（[`TELEMETRY_OP_PROCSTAT`]）；后续波次自 op=5 起按落地序取号，不预留
+///（add-only 纪律下预留号无执法值——域外恒 -ENOTSUP 与未定义同形）。
 pub const TELEMETRY_OP_MEMSTAT: u64 = 1;
 
 /// memstat 定长快照（0x84 op=1 出参——`#[repr(C)]` ABI 形状 day-one 定
@@ -223,7 +229,7 @@ const _: () = assert!(core::mem::size_of::<MemstatRec>() == 40);
 
 /// 2 = 双族环快照（[`SwitchRec`] 切换环 + [`WakeRec`] 唤醒环——per-CPU
 /// 四环一体导出，32B 轻头＋每环 24B 段描述符＋变长载荷）。演进注：后续
-/// 波次自 op=3 起按落地序取号，不预留（add-only 纪律下预留号无执法值
+/// 波次自 op=5 起按落地序取号，不预留（add-only 纪律下预留号无执法值
 /// ——域外恒 -ENOTSUP 与未定义同形）。
 pub const TELEMETRY_OP_RINGS: u64 = 2;
 
@@ -412,7 +418,7 @@ pub fn ring_seg_read(buf: &[u8; 24]) -> RingSegV1 {
 // 消内核/用户双写）----
 
 /// 3 = WakeSrc 槽表全表纯镜像（[`WsrcHdrV1`] 40B 轻头＋[`WakeSrcRecV1`]
-/// 128 行——行号即源值）。演进注：后续波次自 op=4 起按落地序取号，不预留
+/// 128 行——行号即源值）。演进注：后续波次自 op=5 起按落地序取号，不预留
 ///（add-only 纪律下预留号无执法值——域外恒 -ENOTSUP 与未定义同形）。
 pub const TELEMETRY_OP_WSRC: u64 = 3;
 
@@ -579,6 +585,181 @@ pub fn wsrc_hdr_read(buf: &[u8; 40]) -> WsrcHdrV1 {
             buf[24], buf[25], buf[26], buf[27], buf[28], buf[29], buf[30], buf[31],
         ]),
         wake_acct_n: u64::from_le_bytes([
+            buf[32], buf[33], buf[34], buf[35], buf[36], buf[37], buf[38], buf[39],
+        ]),
+    }
+}
+
+// ---- 0x84 op 域第五件：全体在役任务快照形状与常量（进程账读口 op4 刀
+// ——40B 轻头 ProcStatHdrV1＋定宽 40B 行 ProcStatRecV1×行数动态、帽 128
+// 行满载 5160B 字面冻结。行粒度 = per-TASK（任务集三并集 SLEEPQ+RQ0+RQ1
+// 是 freeze/kill 在册枚举面；Process 无全局表可枚举）。运行账三核心量
+//（cpu_ticks/switches/wakes）真源 = TCB 四原子字段（sched 侧切点/醒点
+// 充账——「既有账本聚合」在零真源域=立第一源）。内核装配
+//（telemetry.rs/syscall.rs）与 berry-sys/berryctl/bsh 消费同引此，消
+// 内核/用户双写）----
+
+/// 4 = 全体在役任务快照（[`ProcStatHdrV1`] 40B 轻头＋[`ProcStatRecV1`]
+/// 40B 定宽行×行数动态——Blocked+Ready+Running 全体在役任务）。
+/// 演进注：后续波次自 op=5 起按落地序取号，不预留（add-only 纪律下
+/// 预留号无执法值——域外恒 -ENOTSUP 与未定义同形）。
+pub const TELEMETRY_OP_PROCSTAT: u64 = 4;
+
+/// 任务快照头版本（v1 轻头——[`ProcStatHdrV1`]）。
+pub const PROCSTAT_SNAP_VER: u32 = 1;
+
+/// 行帽（**字面冻结**：现实负载 ~20-40 任务的 3-6 倍余量；超帽 = seen>
+/// rows 诚实截断〔「截断的表是谎言表」对冲——seen 恒真〕，升档走 PATCH
+/// 级字面滚＋算术恒等测同批）。
+pub const PROCSTAT_ROWS_CAP: usize = 128;
+
+/// 单任务运行账行（0x84 op=4 出参条目——`#[repr(C)]` 40B 定宽，数据域
+/// 恰 40B 整无垫）。
+///
+/// 字段面：`comm` 任务名零垫截 8（psproto NAME_MAX=8 同帽——**同名撞
+/// 不可区分**：EL0 造进程任务名恒 user_child、行键只许 comm+name_id
+/// 〔内核零任务号真源，拍脑袋发明 pid 进 ABI = 冻结假域——真 pid 面留
+/// cli-suite/procfs 刀〕）；`name_id` 环对照契约常量（[`name_id`] 同源
+/// ——同名录可撞）；`state` 序数 0=Ready/1=Running/2=Blocked/3=Exited
+///（3 结构性不出现——Exited 瞬态在 REAPQ 不在三并集面，保留枚举完备）；
+/// `kern` 1=内核任务（proc_tag==0 ∧ pinned==0）；`cpu_ticks` 累计在核
+/// CNTVCT 周期（v1 诚实口径 = 墙钟在核时长含 IRQ 屏蔽窗；**在跑段未
+/// 结算 = 落后至最近切点的诚实上界**——对核 EL0 在跑任务的本段时长未
+/// 入账，差分消费单调自愈；ns 换算归消费方〔头 cntfrq 唯一源〕）；
+/// `switches` 累计让出 CPU 次数（yield/抢占/睡眠/退出/park 五形——与
+/// 全局 SWITCHES 13 位口径对齐非 SWITCHES_TT 窄口径）；`wakes` 累计
+/// 唤醒次数（Signaled+Timeout 双因合计）。
+///
+/// add-only 扩路（同 [`MemstatRec`] 注）：加字段 = 尾追新版本域或取新
+/// op 值，禁改旧结构——旧调用方按头 `hdr_bytes`/`rec_size` 自述走读，
+/// 返回值自证所得。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct ProcStatRecV1 {
+    /// 任务名（零垫截 8——`Task.name` 前 8 字节）。
+    pub comm: [u8; 8],
+    /// 名字 FNV-1a-32（环对照契约常量——同 [`name_id`]）。
+    pub name_id: u32,
+    /// 状态序数（0=Ready/1=Running/2=Blocked/3=Exited——3 不在面）。
+    pub state: u8,
+    /// 1 = 内核任务（proc_tag==0 ∧ pinned==0）。
+    pub kern: u8,
+    /// 归属核（home CPU）。
+    pub home_cpu: u8,
+    /// intent 有效档（intent_effective——u8 越小档越高，编码单源
+    /// berry-intface）。
+    pub intent: u8,
+    /// 累计在核 CNTVCT 周期（在跑段未结算 = 诚实上界；ns 换算归消费方）。
+    pub cpu_ticks: u64,
+    /// 累计让出 CPU 次数（五形全计）。
+    pub switches: u64,
+    /// 累计唤醒次数（双因合计）。
+    pub wakes: u64,
+}
+const _: () = assert!(core::mem::size_of::<ProcStatRecV1>() == 40);
+const _: () = assert!(core::mem::align_of::<ProcStatRecV1>() == 8);
+
+/// 任务快照头（0x84 op=4 出参前 40B——v1 轻头；砍 magic〔memstat/rings/
+/// wsrc 三判例〕、砍 generation〔RingsHdrV1 判例直移——同窗一致快照下
+/// 无执法值〕）。
+///
+/// `hdr_bytes` 是头尾追扩形锚（同 [`RingsHdrV1`]/[`WsrcHdrV1`]）；
+/// `rec_size` 行步进自述（跨版本走读锚，[`RingSegV1`] 判例）；`rows`/
+/// `seen` 双自证——seen=遍历命中数恒真，**seen>rows = 帽截断诚实对冲**
+///（截尾契约 = 余量整 40B 行分、不足一行即止）；`cntfrq` 是 vct→ns 换算
+/// 唯一源（rings/wsrc 头同款）；`now_vct` 是快照时刻 CNTVCT（差分区间
+/// 时钟锚——行读毕后取 ⇒ 头锚时序）。@20..24 对齐垫编码写零。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct ProcStatHdrV1 {
+    /// 版本（= [`PROCSTAT_SNAP_VER`]）。
+    pub version: u32,
+    /// 头字节数（= 40——头尾追扩形锚，消费方按此跳到行区）。
+    pub hdr_bytes: u32,
+    /// 行步进自述（= 40——消费方按此步行区）。
+    pub rec_size: u32,
+    /// 实发行数（≤ seen——截断时 < seen）。
+    pub rows: u32,
+    /// 遍历命中数（恒真——seen>rows 即截断自证）。
+    pub seen: u32,
+    /// CNTFRQ（vct→ns 换算因子——cpu_ticks 周期原值换算的唯一真源）。
+    pub cntfrq: u64,
+    /// 快照时刻 CNTVCT（行读毕后取——差分区间时钟锚）。
+    pub now_vct: u64,
+}
+const _: () = assert!(core::mem::size_of::<ProcStatHdrV1>() == 40);
+
+/// op=4 快照满载上界（**字面冻结**：40 头 + 128×40 行——不随 size_of 动，
+/// [`TELEMETRY_RINGS_MAX`]/[`TELEMETRY_WSRC_MAX`] 判例；变长填充下实写
+/// 由返回值自证，本值是内核 stage 与调用方缓冲的容量下界参考）。
+pub const TELEMETRY_PROCSTAT_MAX: usize = 5160;
+
+// ---- 头/行 LE 编解码纯函数（host 钉板 round-trip；kernel 装配与
+// berryctl/bsh 解析同引此单源。垫区写零〔规范化编码〕、读方垫区不验
+//——wsrc_hdr/wsrc_row 判例）----
+
+/// 行 40B LE 编码（[`ProcStatRecV1`] → 字节流；数据域恰 40B 整无垫）。
+pub fn procstat_row_write(r: &ProcStatRecV1, out: &mut [u8; 40]) {
+    out[0..8].copy_from_slice(&r.comm);
+    out[8..12].copy_from_slice(&r.name_id.to_le_bytes());
+    out[12] = r.state;
+    out[13] = r.kern;
+    out[14] = r.home_cpu;
+    out[15] = r.intent;
+    out[16..24].copy_from_slice(&r.cpu_ticks.to_le_bytes());
+    out[24..32].copy_from_slice(&r.switches.to_le_bytes());
+    out[32..40].copy_from_slice(&r.wakes.to_le_bytes());
+}
+
+/// 行 40B LE 解码（字节流 → [`ProcStatRecV1`]；字段合法性归调用方）。
+pub fn procstat_row_read(buf: &[u8; 40]) -> ProcStatRecV1 {
+    ProcStatRecV1 {
+        comm: [
+            buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
+        ],
+        name_id: u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]),
+        state: buf[12],
+        kern: buf[13],
+        home_cpu: buf[14],
+        intent: buf[15],
+        cpu_ticks: u64::from_le_bytes([
+            buf[16], buf[17], buf[18], buf[19], buf[20], buf[21], buf[22], buf[23],
+        ]),
+        switches: u64::from_le_bytes([
+            buf[24], buf[25], buf[26], buf[27], buf[28], buf[29], buf[30], buf[31],
+        ]),
+        wakes: u64::from_le_bytes([
+            buf[32], buf[33], buf[34], buf[35], buf[36], buf[37], buf[38], buf[39],
+        ]),
+    }
+}
+
+/// 头 40B LE 编码（[`ProcStatHdrV1`] → 字节流；@20..24 对齐垫写零——
+/// repr(C) u32×5 后 u64 对齐垫，编码侧规范化）。
+pub fn procstat_hdr_write(h: &ProcStatHdrV1, out: &mut [u8; 40]) {
+    out[0..4].copy_from_slice(&h.version.to_le_bytes());
+    out[4..8].copy_from_slice(&h.hdr_bytes.to_le_bytes());
+    out[8..12].copy_from_slice(&h.rec_size.to_le_bytes());
+    out[12..16].copy_from_slice(&h.rows.to_le_bytes());
+    out[16..20].copy_from_slice(&h.seen.to_le_bytes());
+    out[20..24].fill(0);
+    out[24..32].copy_from_slice(&h.cntfrq.to_le_bytes());
+    out[32..40].copy_from_slice(&h.now_vct.to_le_bytes());
+}
+
+/// 头 40B LE 解码（字节流 → [`ProcStatHdrV1`]；垫区不验——字段合法性归
+/// 调用方）。
+pub fn procstat_hdr_read(buf: &[u8; 40]) -> ProcStatHdrV1 {
+    ProcStatHdrV1 {
+        version: u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]),
+        hdr_bytes: u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]),
+        rec_size: u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]),
+        rows: u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]),
+        seen: u32::from_le_bytes([buf[16], buf[17], buf[18], buf[19]]),
+        cntfrq: u64::from_le_bytes([
+            buf[24], buf[25], buf[26], buf[27], buf[28], buf[29], buf[30], buf[31],
+        ]),
+        now_vct: u64::from_le_bytes([
             buf[32], buf[33], buf[34], buf[35], buf[36], buf[37], buf[38], buf[39],
         ]),
     }
@@ -870,20 +1051,21 @@ mod tests {
 
     // ---- op=2 双族环快照：形状/常量/编解码钉板（环读口刀 F4）----
 
-    /// op 常量四值互异（{0,1,2,3}——add-only 下四档在役值钉死；op=3 槽表
-    /// 纯镜像档〔槽表读口刀〕随本刀入役，trio 扩 quad）。
+    /// op 常量五值互异（{0,1,2,3,4}——add-only 下五档在役值钉死；op=4
+    /// 全体在役任务快照档〔进程账读口 op4 刀〕随本刀入役，quad 扩 quint）。
     #[test]
-    fn telemetry_op_quad_distinct() {
-        assert_eq!(TELEMETRY_OP_WSRC, 3);
-        let quad = [
+    fn telemetry_op_quint_distinct() {
+        assert_eq!(TELEMETRY_OP_PROCSTAT, 4);
+        let quint = [
             TELEMETRY_OP_KLOG,
             TELEMETRY_OP_MEMSTAT,
             TELEMETRY_OP_RINGS,
             TELEMETRY_OP_WSRC,
+            TELEMETRY_OP_PROCSTAT,
         ];
-        for i in 0..quad.len() {
-            for j in i + 1..quad.len() {
-                assert_ne!(quad[i], quad[j], "op 值撞号（{i} vs {j}）");
+        for i in 0..quint.len() {
+            for j in i + 1..quint.len() {
+                assert_ne!(quint[i], quint[j], "op 值撞号（{i} vs {j}）");
             }
         }
     }
@@ -1145,5 +1327,126 @@ mod tests {
         };
         assert_eq!(h.slots as usize, WSRC_TABLE_V1_SLOTS);
         assert_eq!(h.rec_size as usize, WSRC_TABLE_V1_REC);
+    }
+
+    // ---- op=4 全体在役任务快照：形状/常量/编解码钉板（进程账读口 op4 刀
+    // F6——wsrc 族同形第五件）----
+
+    /// 行形状钉板：size == 40、align == 8、九字段偏移字面（comm@0/
+    /// name_id@8/state@12/kern@13/home_cpu@14/intent@15/cpu_ticks@16/
+    /// switches@24/wakes@32——数据域恰 40B 整无垫；插字段/错序即红）。
+    #[test]
+    fn procstat_row_shape_pinned() {
+        assert_eq!(core::mem::size_of::<ProcStatRecV1>(), 40, "40B 冻结面");
+        assert_eq!(core::mem::align_of::<ProcStatRecV1>(), 8);
+        assert_eq!(core::mem::offset_of!(ProcStatRecV1, comm), 0);
+        assert_eq!(core::mem::offset_of!(ProcStatRecV1, name_id), 8);
+        assert_eq!(core::mem::offset_of!(ProcStatRecV1, state), 12);
+        assert_eq!(core::mem::offset_of!(ProcStatRecV1, kern), 13);
+        assert_eq!(core::mem::offset_of!(ProcStatRecV1, home_cpu), 14);
+        assert_eq!(core::mem::offset_of!(ProcStatRecV1, intent), 15);
+        assert_eq!(core::mem::offset_of!(ProcStatRecV1, cpu_ticks), 16);
+        assert_eq!(core::mem::offset_of!(ProcStatRecV1, switches), 24);
+        assert_eq!(core::mem::offset_of!(ProcStatRecV1, wakes), 32);
+    }
+
+    /// 头形状钉板：size == 40、七域偏移字面（version@0/hdr_bytes@4/
+    /// rec_size@8/rows@12/seen@16/cntfrq@24/now_vct@32——@20..24 唯一
+    /// 间隙即对齐垫，编码写零；插字段/错序即红）。
+    #[test]
+    fn procstat_hdr_shape_pinned() {
+        assert_eq!(core::mem::size_of::<ProcStatHdrV1>(), 40, "40B 冻结面");
+        assert_eq!(core::mem::align_of::<ProcStatHdrV1>(), 8);
+        assert_eq!(core::mem::offset_of!(ProcStatHdrV1, version), 0);
+        assert_eq!(core::mem::offset_of!(ProcStatHdrV1, hdr_bytes), 4);
+        assert_eq!(core::mem::offset_of!(ProcStatHdrV1, rec_size), 8);
+        assert_eq!(core::mem::offset_of!(ProcStatHdrV1, rows), 12);
+        assert_eq!(core::mem::offset_of!(ProcStatHdrV1, seen), 16);
+        assert_eq!(core::mem::offset_of!(ProcStatHdrV1, cntfrq), 24);
+        assert_eq!(core::mem::offset_of!(ProcStatHdrV1, now_vct), 32);
+        // @20..24 是七域间唯一字节间隙（u32×5 后 u64 对齐垫）。
+        let ends = [
+            core::mem::offset_of!(ProcStatHdrV1, seen) + 4,
+            core::mem::offset_of!(ProcStatHdrV1, cntfrq),
+        ];
+        assert_eq!(ends[1] - ends[0], 4, "seen 尾到 cntfrq 头恰 4B 垫");
+    }
+
+    /// 头/行 LE 编解码 round-trip（kernel 装配 ↔ berryctl/bsh 解析同一具
+    ///——中间字节流的字段序/字节序即 ABI 面）＋头垫区写零规范化面。
+    #[test]
+    fn procstat_hdr_row_codec_roundtrip() {
+        let h = ProcStatHdrV1 {
+            version: PROCSTAT_SNAP_VER,
+            hdr_bytes: 40,
+            rec_size: 40,
+            rows: 3,
+            seen: 5,
+            cntfrq: 0x0123_4567_89ab_cdef,
+            now_vct: 0xdead_beef_cafe_1234,
+        };
+        let mut buf = [0xffu8; 40];
+        procstat_hdr_write(&h, &mut buf);
+        // 字节序抽查（LE：低字节在前）＋垫区写零规范化（入参污垫也落零）。
+        assert_eq!(buf[0], 1, "version=1 的 LE 首字节");
+        assert_eq!(buf[4], 40, "hdr_bytes=40 的 LE 首字节");
+        assert_eq!(buf[12], 3, "rows=3 的 LE 首字节");
+        assert_eq!(buf[24], 0xef, "cntfrq 低字节在前（LE）");
+        assert_eq!(buf[32], 0x34, "now_vct 低字节在前（LE）");
+        assert_eq!(&buf[20..24], &[0u8; 4], "头 @20..24 对齐垫写零");
+        assert_eq!(procstat_hdr_read(&buf), h, "头 round-trip 恒等");
+
+        let r = ProcStatRecV1 {
+            comm: *b"kt_ps_ab",
+            name_id: 0xDEAD_BEEF,
+            state: 2,
+            kern: 1,
+            home_cpu: 1,
+            intent: 3,
+            cpu_ticks: 0xfeed_face_dead_f00d,
+            switches: 7,
+            wakes: 9,
+        };
+        let mut rbuf = [0u8; 40];
+        procstat_row_write(&r, &mut rbuf);
+        assert_eq!(&rbuf[0..8], b"kt_ps_ab", "comm 零垫 8B 直拷");
+        assert_eq!(rbuf[8], 0xef, "name_id 低字节在前（LE）");
+        assert_eq!(rbuf[12], 2, "state 序数直拷");
+        assert_eq!(rbuf[16], 0x0d, "cpu_ticks 低字节在前（LE）");
+        assert_eq!(procstat_row_read(&rbuf), r, "行 round-trip 恒等");
+
+        // 零垫截 8 的编码面：短名 comm 尾零（装配侧零初始化数组直拷——
+        // 读方零垫裁尾归消费方）。
+        let short = ProcStatRecV1 { comm: *b"ps\0\0\0\0\0\0", ..r };
+        let mut sbuf = [0u8; 40];
+        procstat_row_write(&short, &mut sbuf);
+        assert_eq!(&sbuf[0..8], b"ps\0\0\0\0\0\0", "短名尾零保真");
+        assert_eq!(procstat_row_read(&sbuf), short);
+    }
+
+    /// 满载上界算术恒等＋几何常量钉板：40 头 + ROWS_CAP×40 == 5160 字面
+    /// 冻结；rec_size 域 == size_of::<行> 恒等（漂移即消费方步进错位）。
+    #[test]
+    fn procstat_max_and_geometry_identities() {
+        assert_eq!(PROCSTAT_ROWS_CAP, 128);
+        assert_eq!(PROCSTAT_SNAP_VER, 1);
+        assert_eq!(core::mem::size_of::<ProcStatRecV1>(), 40);
+        assert_eq!(
+            TELEMETRY_PROCSTAT_MAX,
+            core::mem::size_of::<ProcStatHdrV1>() + PROCSTAT_ROWS_CAP * core::mem::size_of::<ProcStatRecV1>()
+        );
+        assert_eq!(TELEMETRY_PROCSTAT_MAX, 5160);
+        // 头 rec_size 自述域与行几何恒等（内核装配写进头的域）。
+        let h = ProcStatHdrV1 {
+            version: PROCSTAT_SNAP_VER,
+            hdr_bytes: 40,
+            rec_size: core::mem::size_of::<ProcStatRecV1>() as u32,
+            rows: 0,
+            seen: 0,
+            cntfrq: 0,
+            now_vct: 0,
+        };
+        assert_eq!(h.rec_size as usize, core::mem::size_of::<ProcStatRecV1>());
+        assert_eq!(h.hdr_bytes as usize, core::mem::size_of::<ProcStatHdrV1>());
     }
 }

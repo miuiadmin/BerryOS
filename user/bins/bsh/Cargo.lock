@@ -46,6 +46,10 @@ name = "berry-jobs"
 version = "0.2.0"
 
 [[package]]
+name = "berry-lex"
+version = "0.2.0"
+
+[[package]]
 name = "berry-libc"
 version = "0.2.0"
 dependencies = [
@@ -134,6 +138,7 @@ dependencies = [
  "berry-fsproto",
  "berry-guiproto",
  "berry-jobs",
+ "berry-lex",
  "berry-libc",
  "berry-netdproto",
  "berry-poll",

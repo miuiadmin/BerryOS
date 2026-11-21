@@ -10,14 +10,16 @@
 //! prev 运行时长 → 运行时长分布）、任务 id（名字 FNV-1a 稳定哈希）、切换
 //! 原因分型、是否切入 idle（→ util）。**唤醒事件已随 4-0 落地**（唤醒环：
 //! block→wake 延迟即「唤醒模式」分布数据，经 [`set_wake_hook`] 注册的
-//! [`on_wake`]）。**消费路径**：`telemetry_open`(0x84) op 域在役四档——
+//! [`on_wake`]）。**消费路径**：`telemetry_open`(0x84) op 域在役五档——
 //! klog 快照首域（berry_telemetry_klog_snapshot——bsh dmesg 消费）＋
 //! memstat 定长快照第二档（遥测 v3 首件——[`memstat_snapshot`]，bsh free
 //! 消费）＋环历史快照第三档（op=2 双族一体——per-CPU 切换环＋唤醒环四段
 //! 导出，本文件 [`ring_snap_into`]/[`wake_ring_snap_into`]，berryctl trace
 //! 消费）＋WakeSrc 槽表纯镜像第四档（op=3 槽表读口刀——40B 轻头＋
 //! 128×64B 平数据全表，本文件 [`wsrc_table_snap_into`]，berryctl powertop
-//! 消费）；后续波次自 op=4 起按落地序取号（trace 服务/AI 策略服务）；
+//! 消费）＋全体在役任务快照第五档（op=4 ProcStat——本文件
+//! [`procstat_snap_into`]，berryctl ps --json 与 bsh ps 消费）；后续波次
+//! 自 op=5 起按落地序取号（trace 服务/AI 策略服务）；
 //! v1 读点 = watchdog 存活性断言（环在涨、vct 单调、延迟非负）。
 //!
 //! **S-3c B12/B13：per-CPU 双环 + seqlock（拆 KERN_LOCK 前置件）**。写方限
@@ -40,7 +42,7 @@ use berry_hal_aarch64::smp::cpu_id;
 use berry_hal_aarch64::wake_gen::{
     WAKE_SRC_NONE, WAKE_SRC_POWER_KEY, WAKE_SRC_SGI_RESCHED, WAKE_SRC_SGI_TLB, WAKE_SRC_UNKNOWN,
 };
-use berry_sched::{SwitchKind, Task, WakeReason};
+use berry_sched::{SwitchKind, Task, TaskState, WakeReason};
 use berry_telface::{HIST_BUCKETS, MemstatRec};
 use core::sync::atomic::{fence, AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 
@@ -1544,4 +1546,95 @@ pub(crate) fn ktest_reset_wsrc() {
         slot.flags.store(0, Ordering::Relaxed);
     }
     WAKE_ACCT_N.store(0, Ordering::Release);
+}
+
+// ---- op=4 全体在役任务快照装配（进程账读口 op4 刀）----
+
+/// [`ProcStatRecV1`] 的 `state` 序数（0=Ready/1=Running/2=Blocked/3=Exited
+/// ——Exited 瞬态在 REAPQ 不在三并集面，保留枚举完备）。
+fn procstat_state_code(s: TaskState) -> u8 {
+    match s {
+        TaskState::Ready => 0,
+        TaskState::Running => 1,
+        TaskState::Blocked => 2,
+        TaskState::Exited => 3,
+    }
+}
+
+/// op=4 快照装配（[`berry_telface::ProcStatHdrV1`] 40B 头＋定宽 40B
+/// [`berry_telface::ProcStatRecV1`] 行×行数动态）：[`berry_sched::
+/// for_each_inflight_task`] 任务集三并集遍历（SLEEPQ→RQ0→RQ1 确定性序）
+/// →行落 stage → `now_vct` 行读毕后取 → 头最后装配落笔 offset 0 → 返回
+/// 40+rows×40（≥40 头自证）。
+///
+/// **装配序**（M1）：① 逐任务 seen 全计；行落条件 = 已落行数 <
+/// [`berry_telface::PROCSTAT_ROWS_CAP`] ∧ limit 余量整行（整行粒度截尾
+/// ——半行结构性写不出）；rows=min(seen, (limit−40)/40, 128)。②
+/// `now_vct` 行读毕后取（头锚时序——wsrc 判例）。③ 头最后落笔（op=2 头
+/// 最后落笔判例）。④ 返回 40+rows×40。不重试不设窗（读口零写、四锁窗
+/// 内全冻结）。
+///
+/// **一致性契约（G6——同窗一致快照，0x84 族首例）**：调用契约 = SQ+
+/// RQ0+RQ1+KL 四锁窗（0x84 SVC 入口 SQ_RQ_TABLE 类终态正序预取）内行集
+/// 与行内字段同窗定型——强于 op=2 逐环一致/op=3 逐字段非一致。计数器族
+/// Relaxed 读（统计信号无序角色——四锁窗内无并发写者，值即冻结真值）。
+/// **在跑段未结算 = cpu_ticks 诚实上界**：对核 EL0 在跑任务的本段时长
+/// 未入账（切出侧才结算——差分消费单调自愈，同 op=3 now_vct≥行时戳
+/// 家族的诚实语义）。trace_off 双态同值（计数器族常开——无空头形无数
+/// 值差）。Exited（REAPQ 瞬态）与 idle/park 语境（无 TCB）不在面。
+/// 截尾契约 = 余量整 40B 行分、不足一行即止，头 rows=实发行数、
+/// seen=遍历命中数——**seen>rows 即截断**（帽 128 满载 5160B；「截断的
+/// 表是谎言表」对冲 = seen 恒真）。
+pub(crate) fn procstat_snap_into(stage: &mut [u8], limit: usize) -> usize {
+    let hdr_len = core::mem::size_of::<berry_telface::ProcStatHdrV1>();
+    let rec_len = core::mem::size_of::<berry_telface::ProcStatRecV1>();
+    // 行帽 = 常量帽 ∧ limit 余量整行（stage 容量 = TELEMETRY_PROCSTAT_MAX
+    // 恰容满载——调用方 limit 已夹）。
+    let row_cap =
+        berry_telface::PROCSTAT_ROWS_CAP.min(limit.saturating_sub(hdr_len) / rec_len);
+    let mut seen: usize = 0;
+    let mut rows: usize = 0;
+    // ① 三并集遍历装配（回调只读——for_each_inflight_task 契约面）。
+    berry_sched::for_each_inflight_task(|t| {
+        seen += 1;
+        if rows < row_cap {
+            let mut comm = [0u8; 8]; // 零垫截 8（psproto NAME_MAX=8 同帽）
+            let n = t.name.len().min(8);
+            comm[..n].copy_from_slice(&t.name[..n]);
+            let row = berry_telface::ProcStatRecV1 {
+                comm,
+                name_id: name_id(t.name),
+                state: procstat_state_code(t.state),
+                // kern = 内核任务判定（proc_tag==0 ∧ pinned==0——语义归
+                // 内核 crate，此处只按可观测设计 §3 的既定判据镜像）。
+                kern: (t.proc_tag == 0 && t.pinned == 0) as u8,
+                home_cpu: t.home_cpu,
+                intent: t.intent_effective,
+                cpu_ticks: t.cpu_ticks.load(Ordering::Relaxed),
+                switches: t.switches.load(Ordering::Relaxed),
+                wakes: t.wakes.load(Ordering::Relaxed),
+            };
+            let mut rbuf = [0u8; core::mem::size_of::<berry_telface::ProcStatRecV1>()];
+            berry_telface::procstat_row_write(&row, &mut rbuf);
+            let off = hdr_len + rows * rec_len;
+            stage[off..off + rec_len].copy_from_slice(&rbuf);
+            rows += 1;
+        }
+    });
+    // ②③ 头最后装配落笔 offset 0（now_vct 行读毕后取；cntfrq 同刻读——
+    // vct→ns 换算唯一源）。
+    let h = berry_telface::ProcStatHdrV1 {
+        version: berry_telface::PROCSTAT_SNAP_VER,
+        hdr_bytes: hdr_len as u32,
+        rec_size: rec_len as u32,
+        rows: rows as u32,
+        seen: seen as u32,
+        cntfrq: berry_hal_aarch64::timer::cntfrq(),
+        now_vct: berry_hal_aarch64::timer::cntvct(),
+    };
+    let mut hbuf = [0u8; core::mem::size_of::<berry_telface::ProcStatHdrV1>()];
+    berry_telface::procstat_hdr_write(&h, &mut hbuf);
+    stage[..hdr_len].copy_from_slice(&hbuf);
+    // ④ 40+rows×40。
+    hdr_len + rows * rec_len
 }
