@@ -1235,8 +1235,19 @@ test-host:
     # 器 path 依赖）；tests/anchor_parity.rs oracle 真跑对拍（三态双侧
     # 同构 + 拒面文案逐字全等 + 5MiB 大件分块读腿——摘要经独立 hashlib
     # 管道自算防同错对拍）。
+    # 五刀收口：validate.rs --check 全量臂组合面（_validate_all :985 镜像
+    # ——check_full → resolve_entries → measure_kernel_anchor 聚合 + OK
+    # 行六段 format_check_ok :1012 逐字镜像）+ main.rs --check 臂换轨
+    # （读面 read_product_text 抽单源 + tools/ 目录发现 repo_tools_dir
+    # 〔gsi 同款 CWD/exe 双上溯——DEFAULT_BASE/DEFAULT_USER_DIR 等价物〕）
+    # + tests/validate_parity.rs CLI oracle 对拍（读失败/schema=0 结构拒/
+    # override 文件面拒/真源基座拒〔双侧同咬仓内 rootfs-manifest 构建树
+    # 缺席〕/坏 TOML 分支标识/用法错 2 六腿；OK 行正面 = lib 黄金形 +
+    # Python do_check 同现场模块级逐字对拍钉板）；cli_parity 让位臂族
+    # 滚新（--check 移出让位族）。
     # 独立小工作区，须显式 --target {{host}}。Python 件不退役——CLI 对拍
-    # oracle + gensourceindex --preset import 面单源。
+    # oracle + gensourceindex --preset import 面单源（--dry-run/--emit
+    # 计划/产件面仍 Python 单源）。
     cargo test --manifest-path tools/berryassemble/Cargo.toml --target {{host}}
     # W1 接线（SEC-02 A2 同款纪律）：berry_assemble 门禁自检——V13 组装器
     # （ADR #82「组装不 fork」product.toml 校验/dry-run 计划/装配反回滚门）
