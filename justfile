@@ -1414,6 +1414,16 @@ test-host:
     # 件 None 容忍与重复 add_file 拒形 + cwd 无关确定性（子进程 cwd=ROOT
     # 钉位）。三突变红分支实证（常量漂移/印章换字/注入内容截尾均咬）。
     python3 tools/make_desktop_disk.py --selftest
+    # W1 接线（tools 弱面清偿·PIL 渲染生成器族首件）：gen_splash_logo /
+    # gen_splash_pct 门禁自检——splash HD 字模两生成器（kernel 消费面
+    # splash.rs）此前零守卫：结构律（常量↔行几何互锁/字形序恰 11 形/
+    # 类型行钉板）+ 位域律（尾包无效位区全零/值域 v<2^w/72 行恰容/
+    # 零填充段）+ 紧致 bbox 律（四缘有墨——getbbox 语义机器镜像）+
+    # 黄金哈希 ×2（字源/字号/阈值变更必漂移）+ 突变红 ×6 + PIL 重产
+    # 逐字节对拍（缺席 skip——CI Linux 面黄金哈希兜底）；--check 漂移
+    # 守卫同位（genfbfont --check 同族）。
+    python3 tools/gen_splash_logo.py --selftest
+    python3 tools/gen_splash_pct.py --selftest
     # K-3：size.py ADRP 解码器向量自检（--assert-flip 扩面的门禁自身坏 =
     # smoke/build-release 断言静默劣化，同 a-3 U4 纪律门禁化）。
     python3 tools/size.py --selftest
