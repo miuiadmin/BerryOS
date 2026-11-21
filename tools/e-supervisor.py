@@ -30,6 +30,10 @@ MACHINERY_PREFIXES = (
     "tools/e-guard.py", "tools/e-doctor.py", "tools/e-heartbeat.sh",
     "tools/e-supervisor.py", "tools/run-e.sh", "tools/pack-work.py",
     "tools/push-green.py", "tools/e-receipts.py",
+    "tools/review-pin-check.py", "tools/review-recv.py", "tools/review-debt.py",
+    "tools/control-plane-gate.sh", "tools/control-plane.txt",
+    "tools/run-artifact.sh", "tools/gate-wrap.sh", "tools/claude-audit.py",
+    "tools/stale-parks.py", "tools/stranded-deferrals.py", "tools/answers-readback.py",
 )
 UNDO_AFTER_SECS = 3 * 3600
 REPAIR_AFTER_SECS = 6 * 3600

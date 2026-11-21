@@ -33,6 +33,9 @@ cp "$REPO/.githooks/pre-commit" "$REPO/.githooks/prepare-commit-msg" .githooks/
 chmod +x .githooks/pre-commit .githooks/prepare-commit-msg
 git config core.hooksPath .githooks
 cp "$REPO/.agents/tools/check-docs.mjs" .agents/tools/
+# 控制面条件测试门依赖件（pre-commit 尾段调用；清单+门本体随沙箱走）
+mkdir -p tools
+cp "$REPO/tools/control-plane-gate.sh" "$REPO/tools/control-plane.txt" tools/
 # docs/ 必须有被跟踪文件（空目录不进 git——checkout-index 不导出，显式面
 # 报「路径不存在」）：自由知识无头块形态合法。
 printf '# 沙箱自由知识\n\n一句话说明：gate-selftest 夹具。\n' > docs/free.md
@@ -53,7 +56,7 @@ set_facts() {
   git add tools/facts.txt
 }
 set_facts 2 1
-git add .agents .githooks docs
+git add .agents .githooks docs tools/control-plane-gate.sh tools/control-plane.txt
 git commit -qm init || die "沙箱 init 提交未过门（最小合法面应过）"
 
 bad_doc() { mkdir -p .agents/plans/mod2; printf '# 断头\n\nType: spec\nStatus: active\n' > .agents/plans/mod2/design.md; }

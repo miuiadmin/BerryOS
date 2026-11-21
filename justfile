@@ -1516,6 +1516,19 @@ test-host:
     python3 tools/pack-work.py --selftest
     python3 tools/push-green.py --selftest
     python3 tools/e-receipts.py --selftest
+    # 自动化开发二期 P1/P2 接线：评审凭据三件（pin 校验/协议行回执验收/
+    # 欠账记账）+ 证物链两件（信封/包裹器）+ 治理四件（控制面门/两张债网/
+    # 决策读回/配置面审计）。改对应工具必跑。
+    python3 tools/review-pin-check.py --selftest
+    python3 tools/review-recv.py --selftest
+    python3 tools/review-debt.py --selftest
+    bash tools/run-artifact.sh --selftest
+    bash tools/gate-wrap.sh --selftest
+    bash tools/control-plane-gate.sh --selftest
+    python3 -I tools/stale-parks.py --selftest
+    python3 -I tools/stranded-deferrals.py --selftest
+    python3 -I tools/answers-readback.py --selftest
+    python3 -I tools/claude-audit.py --selftest
     # 工程纪律刀阶段 4 接线：数字自证面——facts 对拍自检（合成仓 11 键/
     # 篡改红/幂等）+ check-docs 检测器自检（四组坏样例必触发——「a detector
     # that goes quiet is an ERROR」）。改 facts.py、check-docs 检查面必跑。

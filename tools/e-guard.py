@@ -39,10 +39,14 @@ PUNCH_PLAN = ROOT / ".agents" / "plans" / "2026-11-22-e面运营.md"
 
 # FROZEN 集（规则/16 §5：无人会话不可写；改它们 = attended 会话的活）
 FROZEN_PREFIXES = (
-    ".claude/settings.json", ".claude/hooks/", ".githooks/",
-    ".agents/skills/berryos-runner/", "tools/e-guard.py", "tools/e-doctor.py",
-    "tools/e-heartbeat.sh", "tools/e-supervisor.py", "tools/run-e.sh",
-    "tools/pack-work.py", "tools/push-green.py", "tools/e-receipts.py",
+    ".claude/settings.json", ".claude/hooks/", ".githooks/", ".claude/MANIFEST.md",
+    ".agents/skills/berryos-runner/",
+    "tools/e-guard.py", "tools/e-doctor.py", "tools/e-heartbeat.sh",
+    "tools/e-supervisor.py", "tools/run-e.sh", "tools/pack-work.py",
+    "tools/push-green.py", "tools/e-receipts.py",
+    "tools/review-pin-check.py", "tools/review-recv.py", "tools/review-debt.py",
+    "tools/control-plane-gate.sh", "tools/control-plane.txt",
+    "tools/run-artifact.sh", "tools/gate-wrap.sh",
 )
 
 PARKED_RE = re.compile(r"^- \[ \]\s*\[PARKED")

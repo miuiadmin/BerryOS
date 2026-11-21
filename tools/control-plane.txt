@@ -1,0 +1,33 @@
+# 控制面清单（自动化开发二期 P2 治理四件；规则/16 §5）——tools/control-plane-gate.sh
+# 的唯一输入。立法两条：
+#   1) staged（git diff --cached --name-only）命中任一前缀 = 动了控制面 = 同批必须
+#      过对应自检：tools/*.py 逐件跑 --selftest；.sh 内容带 --selftest 的同跑；
+#      前缀行带「=> 命令」的跑该命令（目录/配置前缀的对应门）；.sh 无 --selftest
+#      的跳过并列名（提示补齐，不红——存量补齐是活不是事故）。
+#   2) default-conservative：未列名的新治理件默认按控制面处理——新建治理工具的
+#      同一提交必须把路径前缀补进本清单；漏登靠评审拦，门不替你想。
+# 为什么清单自己也列名：改清单能躲门是经典自拆面板（改宪法绕过宪法）——门读的
+# 就是这份文件，动它至少要被列名看见。
+# 行格式：前缀（第一列）+「#」注释（给人读）+ 可选「=> 命令」（前缀级测试，给门读）。
+.githooks/                                  # 提交/推送机器闸（快照门/印记闸所在） => bash tools/gate-selftest.sh
+.claude/settings.json                       # E lane hooks 接线（Stop 守卫 + FROZEN 封条） => python3 tools/claude-audit.py
+.agents/skills/berryos-runner/              # 无人会话宪法单源（SKILL/RUNBOOK；散文面无逐件自检，列名受审）
+tools/e-guard.py                            # Stop 守卫与 fixpoint 哨兵（哨兵全仓唯一写点）
+tools/e-heartbeat.sh                        # E lane 心跳（transcript mtime 判活 + 退避 resume）
+tools/e-supervisor.py                       # E lane 监督（machinery revert / repair-needed）
+tools/run-e.sh                              # E lane 拉起器（marker + tmux；stop 对无人环境拒执）
+tools/pack-work.py                          # 开工包拼装器（punch-list/facts/git 状态 → JSON）
+tools/push-green.py                         # 一节一推链（落地判据 + CI 三态判决）
+tools/e-receipts.py                         # 内容寻址回执（树不变恒有效，无 TTL）
+tools/e-doctor.py                           # E lane 起飞前体检
+tools/review-pin-check.py                   # 评审 pin 唯一事实源校验（P1 件，落地后生效）
+tools/review-recv.py                        # 评审回执协议行验收（LENS/HIGHEST，缺行 rc=3）
+tools/review-debt.py                        # 评审宕机欠账五件套（记账→禁推→最旧优先补审）
+tools/run-artifact.sh                       # run-artifact 信封（smoke 判决文件化 + running 标记 + 轮换）
+tools/gate-wrap.sh                          # 门禁包装（超时/环境面归一）
+tools/control-plane-gate.sh                 # 控制面条件测试门（本刀自指：改门必过门）
+tools/control-plane.txt                     # 本清单自身（改清单 = 改门输入，列名受审）
+tools/stale-parks.py                        # 债网一：punch-list 停车理由失效检测（advisory）
+tools/stranded-deferrals.py                 # 债网二：搁浅引用检测（等的东西已到；advisory）
+tools/answers-readback.py                   # 决策账本机器读回（A: 行对照 punch，advisory）
+tools/claude-audit.py                       # .claude 配置面登记审计（五向对拍）

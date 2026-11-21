@@ -89,4 +89,9 @@ if [ "$rc" -ne 0 ]; then
 EOF
   exit 1
 fi
+
+# —— 控制面条件测试门（自动化开发二期 P2；规则/16 §5）——staged 命中
+# tools/control-plane.txt 前缀（治理工具本身）即逐件跑其 --selftest；
+# 无命中零成本直通。清单自指：改本钩子也在清单里。
+bash "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/tools/control-plane-gate.sh" || exit 1
 exit 0

@@ -89,6 +89,7 @@ __pycache__/
 .claude/*
 !.claude/skills
 !.claude/settings.json
+!.claude/MANIFEST.md
 
 # loopx MCP 注册（含本机绝对路径，机器绑定）
 /.mcp.json

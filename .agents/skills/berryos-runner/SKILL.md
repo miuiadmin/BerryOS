@@ -43,6 +43,16 @@ description: BerryOS 无人值守 runner 宪法（E 面）——每轮循环、d
 
 单项 park 不 park 全链：某个子任务被硬停/被阻，其余任务继续。park 必须落两处——punch-list 加 `- [ ] [PARKED→人审: <一句理由>]` 条目 + PR 评论（若有在途 PR）；禁 silently defer-and-forget。park 解除：owner 在 punch-list 把条目改回普通 `[ ]` 即被下轮捡起。
 
+## 评审协议行契约（review lane 与任何评审会话）
+
+评审结论必须机器可判——报告 = 正文 + 协议尾：
+
+- 每上场镜头一行 `LENS <镜头名> <pass|L1|L2|L3>`，末行 `HIGHEST <最高级>`（等于各镜头最高级，全 pass 则 `pass`）；协议行必须连续收尾，散落正文即拒收（rc=3 不完整，须重出报告）。
+- 镜头集合与顺序的唯一源 = `review-pin.toml`（本目录；条件镜按改动路径前缀加载），禁在别处复制口径。改 pin = 改评审策略 = 显式可审提交（单独 commit 写明改哪条为什么；改前跑 `review-pin-check.py --selftest`，日常 `--live` 对账——模型漂移红、环境缺席只警告）。
+- 验收：`python3 tools/review-recv.py envelope <报告文件> --pin .agents/skills/berryos-runner/review-pin.toml --paths <本节改动路径逗号列表>`——回执按报告+pin+路径三重指纹落 `.claude/state/review-recv/`，不完整不落（fail closed）。
+- 欠账（评审方宕机/跳过节）：`python3 tools/review-debt.py record <节标识>` 记账；恢复后 `list` 最旧优先补审，`clear <id>` 清账；**push-green 推送前查账，有欠账禁推**（rc=1）——宕机是 delay 不是 approval。
+- pass_cap=33 触帽拒开新 pass、记档升级 owner（消费面执行器后续刀）。
+
 ## git 纪律
 
 - 身份：`git config user.name berryos-hermes-bot` + 独立邮箱，且本克隆 `git config berryos.bot-email <该邮箱>`（pre-push 身份闸消费——bot 推非 `wip/auto-*`/`hermes/*` 分支直接拒）。

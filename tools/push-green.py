@@ -87,6 +87,10 @@ def main(argv: list[str]) -> int:
         branch = argv[argv.index("--branch") + 1]
     if not branch:
         branch = sh(["git", "rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
+    debt = sh(["python3", "tools/review-debt.py", "check"])
+    if debt.returncode != 0:
+        print(json.dumps({"verdict": "review-debt", "why": "评审欠账在册——恢复后最旧优先补审再推（规则/16 §5）", "detail": debt.stdout.strip()[-200:]}, ensure_ascii=False))
+        return 1
     push = subprocess.run(["git", "push", "origin", branch], cwd=str(ROOT),
                           capture_output=True, text=True, timeout=300)
     if push.returncode != 0:
