@@ -123,7 +123,9 @@ use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_event_create,
     berry_handle_close, berry_handle_duplicate, berry_object_signal, berry_object_wait_many,
     berry_object_wait_one, berry_process_terminate, berry_signal_send,
-    berry_telemetry_klog_snapshot, berry_telemetry_memstat_snapshot, Handle, MemstatRec,
+    berry_telemetry_klog_snapshot, berry_telemetry_memstat_snapshot,
+    berry_telemetry_procstat_snapshot, procstat_hdr_read, procstat_row_read, Handle, MemstatRec,
+    TELEMETRY_PROCSTAT_MAX,
     BERRY_ERR_AGAIN,
     BERRY_ERR_BAD_STATE, BERRY_ERR_BUSY, CLOCK_MONOTONIC, RIGHT_READ, RIGHT_RECV, RIGHT_SEND,
     RIGHT_TRANSFER, SIGNAL_READABLE, SIGNAL_TERMINATED, SIGNAL_WRITABLE,
@@ -401,12 +403,14 @@ fn main() {
     //    （失败即 park loud）。
     sig_selftest();
     // —— 命令行体验刀 + v2 B 域 + export 面刀 + 作业控制 v2 刀 + v2.5 引号
-    //    刀：内建与语义步自验（`CLI ok n=14` = rootfs 相第 55 标记；B 域起
+    //    刀：内建与语义步自验（`CLI ok n=15` = rootfs 相第 55 标记；B 域起
     //    6→10——⑥ `>>`/⑦ `||`/⑧ unset/⑨ 管道参数四族步；export 面刀 ⑩
     //    第 21 内建步 10→11；作业控制 v2 刀 ⑪ 第 22/23 内建步 11→12
     //    ——strip_bg 绑定/`&`-jobs-kill-$! 端到端/负形三件；v2.5 引号刀
     //    ⑬ 引号面步 13→14——纯面对拍/端到端引号三件/负形，⑫ 惰性 fails
-    //    门同批愈合移全部步后）。链序契约同 U2/MMP/CLK/SIG
+    //    门同批愈合移全部步后；进程账读口 op4 刀 ⑮ 第 25 内建步 14→15
+    //    ——裸 ps 从外部 bin/ps 转内核真源内建〔行形/键序/Running 因果
+    //    弱式＋带参拒〕）。链序契约同 U2/MMP/CLK/SIG
     //    ——⑥⑬ 走 RAM 树 fs 面（u4 先例同款，非盘面）、⑨⑩⑪ 走 spawn
     //    （bin/fail/true/echo/grep/env/hello 现档），排 fat 族之前（EFI 路
     //    无盘亦打 CLI——smoke-image ECO canon 同面）；无拓扑降级门（失败
@@ -3952,23 +3956,25 @@ fn exec_bg_items(
 /// 由 [`HELP_LINES`] 承载，cli_selftest ④ 断言「BUILTINS 每名 ∈ HELP_LINES」
 /// 执法（名单或文案单边漂移即红）。分发序本身仍是 render_cmd 的 if-else
 /// （行为面独立——名单只答「是不是内建」）。作业控制 v2 刀 21→23
-/// （jobs/kill）。
+/// （jobs/kill）；进程账读口 op4 刀 24→25（ps——裸 ps 从外部 bin/ps〔RPC
+/// 账本〕转内核真源内建；bin/ps 留 rootfs 供显式路径/run 档，两账本互补
+/// 非竞合）。
 const BUILTINS: &[&str] = &[
     "help", "exit", "env", "export", "echo", "run", "cat", "ls", "mkdir", "rm", "cd", "pwd",
     "inputpoll", "clear", "uname", "uptime", "sleep", "type", "history", "dmesg", "unset", "jobs",
-    "kill", "free",
+    "kill", "free", "ps",
 ];
 
 /// help 文案三行（A60：192B 控制台原子消息帽——单行装不下全清单，逐条
 /// 拆行各 ≤192B；命令行体验刀 12→19 内建（dmesg 追补第 19 件）后再拆第三行，同帽纪律；
 /// v2 B 域起补 `||`/`>>`/unset 语法面；export 面刀第 21 件 export K=V；
 /// 作业控制 v2 刀补 jobs/kill %n 与 `cmd &` 语法面；v2.5 引号刀补引号
-/// 短句）。与
+/// 短句；进程账读口 op4 刀补第 25 件 ps〔进程账〕）。与
 /// [`BUILTINS`] 的名单一致性由 cli_selftest ④ 执法（每名必须出现）。
 const HELP_LINES: [&str; 3] = [
     "bsh 内建：help | echo <text> | env | export K=V | run <name> | cat <file> | ls | ls <dir> | mkdir <dir> | rm <path> | cd <dir> | pwd | inputpoll",
     "…续：| clear | uname | uptime | sleep <s> | type <name> | history | dmesg | unset <name> | A | B（rootfs 管道，段可带参）| A && B | A || B | A > file | A >> file | exit",
-    "……续：| 裸名 = bin/<name> 派发（C-2a uu 家族）| jobs | kill %n | cmd &（后台）| free（RAM 面板）| 'x' 全字面 | \"x\" 保空格",
+    "……续：| 裸名 = bin/<name> 派发（C-2a uu 家族）| jobs | kill %n | cmd &（后台）| free（RAM 面板）| ps（进程账）| 'x' 全字面 | \"x\" 保空格",
 ];
 
 /// 内建/外部命令统一渲染（v2.5 引号刀起 &str 入口为冻结签名兼容面——内部
@@ -4158,6 +4164,14 @@ fn render_cmd_items(
         free_output(out)
     } else if let Some(_rest) = cmd.strip_prefix("free ") {
         writeln!(out, "usage: free").unwrap();
+        (Vec::new(), 2)
+    } else if cmd == "ps" {
+        // 进程账读口 op4 刀：裸 ps 内建化（内核 0x84 op=4 单源人读面——
+        // 外部 bin/ps 的 RPC 拉起账本由 berryctl ps 承接，两账本互补非竞合）。
+        ps_output(out)
+    } else if let Some(_rest) = cmd.strip_prefix("ps ") {
+        // 纯查询无参语义（free/uptime 判例）。
+        writeln!(out, "usage: ps").unwrap();
         (Vec::new(), 2)
     } else if let Some(_rest) = cmd.strip_prefix("dmesg ") {
         // 无参命令带参照打（clear 同款幂等面，不拒）——参数忽略。
@@ -4872,6 +4886,71 @@ fn free_output(out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
             0,
         )
     }
+}
+
+/// ps（进程账读口 op4 刀）：全体在役任务单源人读面——数据源 `telemetry_
+/// open` op=4（`berry_telemetry_procstat_snapshot` 薄包装，内核真源；外部
+/// bin/ps 的 RPC 拉起账本由 berryctl ps 承接，两账本互补非竞合——内核面
+/// 无 exited/spawnfail 行是口径差非缺陷）。栈 5160B 快照缓冲（dmesg 4KiB
+/// 先例同量级）；失败/短帧打诊断行码 1（stderr 语义）。
+///
+/// 输出形 `{comm} {State} cpu={ms}ms sw={n} wk={n} hcpu={n}` 逐行＋换行尾
+///（comm 零垫裁尾；State 三词 Ready/Running/Blocked；`ms=cpu_ticks×1000/
+/// cntfrq` u128 整除〔换算单义——K 后缀 free 判例精神，周期→ms 只此一处〕
+/// ；sw=switches/wk=wakes/hcpu=home_cpu）。数据面走 render_cmd 返回值
+/// ——`ps > f` 天然重定向；行序 = 快照序（SLEEPQ→RQ0→RQ1 头自述确定性）。
+fn ps_output(out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
+    let mut buf = [0u8; TELEMETRY_PROCSTAT_MAX];
+    let r = berry_telemetry_procstat_snapshot(buf.as_mut_ptr(), buf.len());
+    if r < 0 {
+        writeln!(out, "bsh: ps: telemetry procstat snapshot failed ({})", r).unwrap();
+        return (Vec::new(), 1);
+    }
+    let n = r as usize;
+    if n < 40 {
+        writeln!(out, "bsh: ps: telemetry procstat snapshot failed ({})", r).unwrap();
+        return (Vec::new(), 1);
+    }
+    let mut hb = [0u8; 40];
+    hb.copy_from_slice(&buf[..40]);
+    let hdr = procstat_hdr_read(&hb);
+    let start = hdr.hdr_bytes as usize;
+    let stride = hdr.rec_size as usize;
+    if start < 40 || stride < 40 || start > n || stride != 40 {
+        writeln!(out, "bsh: ps: bad geom hb={} rs={}", hdr.hdr_bytes, hdr.rec_size).unwrap();
+        return (Vec::new(), 1);
+    }
+    // 行数 = 头 rows 与实写余量整行的 min（返回值/头双自证）。
+    let rows_n = (hdr.rows as usize).min((n - start) / stride);
+    let mut d = Vec::new();
+    for i in 0..rows_n {
+        let off = start + i * stride;
+        let mut rb = [0u8; 40];
+        rb.copy_from_slice(&buf[off..off + 40]);
+        let row = procstat_row_read(&rb);
+        let end = row.comm.iter().rposition(|&b| b != 0).map_or(0, |p| p + 1);
+        let comm = core::str::from_utf8(&row.comm[..end]).unwrap_or("?");
+        let state = match row.state {
+            0 => "Ready",
+            1 => "Running",
+            2 => "Blocked",
+            3 => "Exited",
+            _ => "Unknown",
+        };
+        // ms 换算单义：cpu_ticks×1000/cntfrq u128 整除（cntfrq==0 防御归
+        // 0——内核契约恒 >0）。
+        let ms = if hdr.cntfrq == 0 {
+            0
+        } else {
+            ((row.cpu_ticks as u128) * 1000 / hdr.cntfrq as u128).min(u64::MAX as u128) as u64
+        };
+        d.extend_from_slice(format!(
+            "{} {} cpu={}ms sw={} wk={} hcpu={}\n",
+            comm, state, ms, row.switches, row.wakes, row.home_cpu
+        )
+        .as_bytes());
+    }
+    (d, 0)
 }
 
 
@@ -5631,10 +5710,11 @@ fn prompt_after_ctrl_c(d: &[u8]) -> bool {
     }
 }
 
-/// 命令行体验刀（`CLI ok n=14` = rootfs 相第 55 标记；v2 B 域起 6→10、
-/// export 面刀 10→11、作业控制 v2 刀 11→12、v2.5 引号刀 13→14）：
+/// 命令行体验刀（`CLI ok n=15` = rootfs 相第 55 标记；v2 B 域起 6→10、
+/// export 面刀 10→11、作业控制 v2 刀 11→12、v2.5 引号刀 13→14、进程账
+/// 读口 op4 刀 14→15）：
 /// 六内建行为面 + v2 四族步 + export 步自验——render_cmd 直调（与交互/重定向同一渲染
-/// 面；诊断/usage 打真 stdout = stderr 语义）。十四步全过才打；败 eprintln
+/// 面；诊断/usage 打真 stdout = stderr 语义）。十五步全过才打；败 eprintln
 /// + park（标记缺失 → smoke FAIL 兜底）：
 /// ⓪ clear——`\x1b[2J\x1b[H` 7B 逐字节精确对拍 + 带参照打幂等面；
 /// ① uname——`BerryOS aarch64 ` 前缀 + 非空版本单行（libc `.berryver` 单源）+ 带参拒；
@@ -5676,6 +5756,11 @@ fn prompt_after_ctrl_c(d: &[u8]) -> bool {
 ///    ＋`P=a|b` 后 `echo "$P"` 单参数字面〔G2 执法〕＋`echo 'a && b'`
 ///    无链切）；⑬c 负形（未闭合引号拒码 2 不执行＋`> f` 空命令返 0 不建
 ///    目标）。fails/park 门移全部步后（V2 愈合——原位 ⑫ 前为惰性门）。
+/// ⑮ ps（进程账读口 op4 刀·第 25 内建）——行数 ≥1＋至少一行 Running
+///    （调用者自身在跑——因果弱式）＋每行 cpu=/sw=/wk=/hcpu= 键序齐＋
+///    值域 ASCII 数字＋「ps x」带参拒 2；纯 render 直调静默不打印数据面
+///    （⑫ 模板直移；裸 ps 从外部 bin/ps 转内建——bin/ps 留 rootfs，
+///    RPC 账本面 berryctl ps 承接）。
 fn cli_selftest() {
     fn render(cmd: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
         render_cmd(cmd, &[], 0, out, &[])
@@ -5755,7 +5840,7 @@ fn cli_selftest() {
         fails.push("④ type 缺参未拒");
     }
     for b in [
-        "clear", "uname", "uptime", "sleep", "type", "history", "unset", "export", "jobs", "kill", "free",
+        "clear", "uname", "uptime", "sleep", "type", "history", "unset", "export", "jobs", "kill", "free", "ps",
     ] {
         if !BUILTINS.contains(&b) {
             fails.push("④ BUILTINS 单源缺新内建");
@@ -6237,12 +6322,63 @@ fn cli_selftest() {
         }
     }
 
+    // ⑮ ps（进程账读口 op4 刀·第 25 内建）：render 直调弱式（G4 禁精确
+    //    活值——行数 ≥1、至少一行含 Running〔调用者自身在跑——因果弱式〕、
+    //    每行五 token 键序齐 cpu=/sw=/wk=/hcpu=＋首 token comm、值域 ASCII
+    //    数字非空）＋「ps x」带参拒 2；纯 render 直调静默不打印数据面
+    //    （⑫ 模板直移）。「裸 ps 从外部 bin/ps 转内建」语义注记：bin/ps
+    //    留 rootfs 供显式路径/run 档（RPC 拉起账本面 berryctl ps 承接
+    //    ——两账本互补非竞合）。
+    {
+        let (d, c) = render("ps", &mut out);
+        let s = String::from_utf8_lossy(&d);
+        let lines: Vec<&str> = s.strip_suffix('\n').unwrap_or(&s).split('\n').collect();
+        let mut ok = c == 0 && !lines.is_empty() && s.ends_with('\n');
+        if ok {
+            ok = lines.iter().any(|l| l.contains("Running"));
+        }
+        if ok {
+            for l in &lines {
+                let toks: Vec<&str> = l.split(' ').collect();
+                if toks.len() != 6 || toks[0].is_empty() {
+                    ok = false;
+                    break;
+                }
+                // state 词校验（三词＋防御两词——行形键序钉板）。
+                if !matches!(toks[1], "Ready" | "Running" | "Blocked" | "Exited" | "Unknown") {
+                    ok = false;
+                    break;
+                }
+                // 四 token 键序＋值域：cpu={ms}ms（尾随 ms 单位先剥）、
+                // sw=/wk=/hcpu= 纯 ASCII 数字非空。
+                let digits = |v: &str| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit());
+                let cpu_ok = toks[2]
+                    .strip_prefix("cpu=")
+                    .and_then(|v| v.strip_suffix("ms"))
+                    .is_some_and(digits);
+                let sw_ok = toks[3].strip_prefix("sw=").is_some_and(digits);
+                let wk_ok = toks[4].strip_prefix("wk=").is_some_and(digits);
+                let hcpu_ok = toks[5].strip_prefix("hcpu=").is_some_and(digits);
+                if !(cpu_ok && sw_ok && wk_ok && hcpu_ok) {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if !ok {
+            fails.push("⑮ ps 行形/键序/数值域破缺（cpu=/sw=/wk=/hcpu= 五 token）");
+        }
+        if render("ps x", &mut out).1 != 2 {
+            fails.push("⑮ ps 带参未拒");
+        }
+    }
+
     if !fails.is_empty() {
         eprintln!("bsh: cli selftest bad: {:?}", fails);
         berry_libc::park();
     }
 
-    println!("CLI ok n=14");
+    println!("CLI ok n=15");
 }
 
 /// 命令行体验刀（`TERM ok n=3` = rootfs 相第 56 标记；v2 B 域起 2→3）——哑

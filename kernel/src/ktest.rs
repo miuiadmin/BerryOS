@@ -6635,17 +6635,17 @@ fn test_telemetry_open() {
             assert_eq!(b[o + 16], want.kind);
         }
 
-        // K3 负例：op=2 len 冻结下限门（len<32 → -EINVAL）＋op=4 域外恒
-        // -ENOTSUP（add-only 自执法——op=3 已翻真返数据，域外负例迁下一值；
+        // K3 负例：op=2 len 冻结下限门（len<32 → -EINVAL）＋op=5 域外恒
+        // -ENOTSUP（add-only 自执法——op=4 已翻真返数据，域外负例迁下一值；
         // 既有 op=99 与 op=0/1 族负例零改零漂移）。
         assert_eq!(snap_rings(0), -22, "TELEMETRY：op=2 len=0 须 -EINVAL");
         assert_eq!(snap_rings(8), -22, "TELEMETRY：op=2 len=8（<32）须 -EINVAL");
         assert_eq!(snap_rings(31), -22, "TELEMETRY：op=2 len=31（头下限−1）须 -EINVAL");
         assert_eq!(
             // RSNAP 私有静态（ktest 单核窗）——SNAP 负例同形零 unsafe 块。
-            svc4(0x84, 4, &raw mut RSNAP as u64, 7296),
+            svc4(0x84, 5, &raw mut RSNAP as u64, 7296),
             -95,
-            "TELEMETRY：op=4 域外须 -ENOTSUP"
+            "TELEMETRY：op=5 域外须 -ENOTSUP"
         );
 
         // K4 用毕即清：四环归零 → 快照恰 128（头＋四空段描述符）且段
@@ -6665,7 +6665,7 @@ fn test_telemetry_open() {
 
     // ---- op=3 WakeSrc 槽表纯镜像（槽表读口刀）臂：K1 满表 pristine 钉板＋
     // K2 保留段播种字节级对拍＋len 因果阶梯＋K4 用毕即清（K3 域外负例已随
-    // add-only 滚 op=4——见上；同函数静默盖延续——零输出行，fail = panic
+    // add-only 滚 op=5——见上；同函数静默盖延续——零输出行，fail = panic
     // 停机冒烟自然红）----
     //
     // 静止窗双证（树实证 main.rs）：ktest::run（:1007）先于
@@ -6926,6 +6926,184 @@ fn test_telemetry_open() {
             crate::telemetry::wake_acct_conserved(),
             "TELEMETRY：清零后守恒检查真（Σ==N==0 复原——G1.5 断言面零污染）"
         );
+    }
+
+    // ---- op=4 全体在役任务快照（进程账读口刀）臂：K1 静止窗播种对拍钉板＋
+    // K2 len 因果阶梯与整行截尾＋K4 用毕即清（K3 域外负例已随 add-only 滚
+    // op=5——见上；同函数静默盖延续——零输出行，fail = panic 停机自然红）----
+    //
+    // 静止窗依据（op3 全零谱同构更干净）：ktest::run 先于
+    // berry_sched::init（main.rs :1007 < :1128）——三并集结构性空、无切换
+    // 无唤醒 ⇒ 播种行三计数全零净零谱合法且确定。播种走 rq_insert_kt/
+    // sleepq_insert 既有 pub 面（Box::leak 手法同款——零新 ktest 助手）；
+    // rq_kt 对经结构原语入账（link_back/unlink 账本面），字段先置后入环
+    //（intent 密度两槽随 link_back 入账），ring_check/integrity 不漂。
+    {
+        use alloc::boxed::Box;
+        use berry_sched::{
+            rq_insert_kt, rq_unlink_kt, sleepq_insert, sleepq_unlink, Task, TaskState,
+            INTENT_INTERACTIVE,
+        };
+
+        /// 占位入口（手搭任务永不执行；halt 兜底——pi_dummy 同款）。
+        extern "C" fn ps_dummy(_arg: usize) -> ! {
+            berry_hal_aarch64::halt()
+        }
+
+        // 快照缓冲（EL1 内核地址——copy_out 走高半直映分支；满载 5160B
+        // 走 static 免栈帽，RSNAP/WSNAP 同款块私有静态）。
+        static mut PSNAP: [u8; 5160] = [0; 5160];
+
+        // svc4 全链取一帧任务快照（len 门由内核执法——负例直接透传 errno）。
+        fn snap_ps(len: u64) -> i64 {
+            // PSNAP 为本块私有静态（ktest 单核窗）；len 走调用点字面
+            //（static mut 字段读不进安全面）——snap_wsrc 同形零 unsafe 块。
+            svc4(0x84, 4, &raw mut PSNAP as u64, len)
+        }
+
+        // 快照字节共享读（调用点先以断言钉 n 界——wbuf 同形）。
+        fn pbuf(n: usize) -> &'static [u8] {
+            // SAFETY: n 由调用点断言钉 ≤ 5160 实写界；仅共享读（svc 同步
+            // 返回后无并发写者——静止窗）。
+            unsafe {
+                &*core::ptr::slice_from_raw_parts(
+                    core::ptr::addr_of!(PSNAP) as *const u8,
+                    n,
+                )
+            }
+        }
+
+        // 头/行解码（telface 编解码纯函数单源——svc 出参按字节流解，不对
+        // 静态缓冲 reinterpret 对齐面；whdr/wrow 同形）。
+        fn phdr(b: &[u8]) -> berry_telface::ProcStatHdrV1 {
+            let mut d = [0u8; 40];
+            d.copy_from_slice(&b[..40]);
+            berry_telface::procstat_hdr_read(&d)
+        }
+        fn prow(b: &[u8], i: usize) -> berry_telface::ProcStatRecV1 {
+            let mut d = [0u8; 40];
+            d.copy_from_slice(&b[40 + i * 40..40 + (i + 1) * 40]);
+            berry_telface::procstat_row_read(&d)
+        }
+
+        // 播种三行：2×Ready 经 rq_insert_kt 入本核环（proc_tag 0 与
+        // 0x1234 各一〔kern 两形〕、home_cpu/intent 异值种子）＋1×Blocked
+        // 经 sleepq_insert 入队（state 手置 Blocked——ktest 手搭不置，生产
+        // 走 block_current）。
+        let mut psa = Task::new_kernel(ps_dummy, 0, b"kt_ps_a");
+        psa.proc_tag = 0; // kern=1 形（proc_tag==0 ∧ pinned==0）
+        psa.home_cpu = 0;
+        psa.intent_effective = INTENT_INTERACTIVE; // 异值种子甲
+        let psa: &'static mut Task = Box::leak(psa);
+        rq_insert_kt(psa);
+        let mut psb = Task::new_kernel(ps_dummy, 0, b"kt_ps_b");
+        psb.proc_tag = 0x1234; // kern=0 形（EL0 进程任务判据镜像）
+        psb.home_cpu = 1;
+        psb.intent_effective = 0; // UNSPECIFIED——异值种子乙
+        let psb: &'static mut Task = Box::leak(psb);
+        rq_insert_kt(psb);
+        let mut psc = Task::new_kernel(ps_dummy, 0, b"kt_ps_c");
+        psc.state = TaskState::Blocked;
+        psc.wait_deadline = u64::MAX;
+        let psc: &'static mut Task = Box::leak(psc);
+        sleepq_insert(psc);
+
+        // K1 正例：满取恰 160（40+3×40）＋头钉板＋行逐字段镜像＋净零谱。
+        let n = snap_ps(5160);
+        assert_eq!(n, 160, "TELEMETRY：op=4 满取须恰 160（n={}）", n);
+        let b = pbuf(160);
+        let h = phdr(b);
+        assert_eq!(h.version, 1, "TELEMETRY：ps 头 version==1");
+        assert_eq!(h.hdr_bytes, 40, "TELEMETRY：ps 头 hdr_bytes==40（头尾追扩形锚）");
+        assert_eq!(h.rec_size, 40, "TELEMETRY：ps 头 rec_size==40（条目步进自述）");
+        assert_eq!(h.rows, 3, "TELEMETRY：ps 头 rows==3（三行全落）");
+        assert_eq!(h.seen, 3, "TELEMETRY：ps 头 seen==3（无截断）");
+        assert!(h.cntfrq > 0, "TELEMETRY：ps 头 cntfrq 须 >0");
+        assert_eq!(
+            h.cntfrq, berry_hal_aarch64::timer::cntfrq(),
+            "TELEMETRY：ps cntfrq 双源对拍（svc 出参 == EL1 直调）"
+        );
+        assert!(
+            h.now_vct > 0 && h.now_vct <= berry_hal_aarch64::timer::cntvct(),
+            "TELEMETRY：ps now_vct 单调 sane（快照时刻 ≤ 断言时刻——CNTVCT 单调律）"
+        );
+        // 行钉板：遍历序 SLEEPQ→RQ0（link_back 头保序——插入序）——
+        // row0=Blocked 播种、row1/2=Ready 播种；逐字段镜像种子（comm 含零
+        // 垫/name_id EL1 直调双源/state 序数/kern 两形/home_cpu+intent 种子
+        // 值）＋三计数净零谱（静止窗 sched::init 前无切换无唤醒，结构性零）。
+        let r0 = prow(b, 0);
+        assert_eq!(&r0.comm, b"kt_ps_c\0", "TELEMETRY：row0 comm 逐字节（含零垫）");
+        assert_eq!(r0.name_id, berry_telface::name_id(b"kt_ps_c"), "TELEMETRY：row0 name_id 双源对拍");
+        assert_eq!(r0.state, 2, "TELEMETRY：row0 state 序数镜像（Blocked）");
+        assert_eq!(r0.kern, 1, "TELEMETRY：row0 kern 镜像（内核任务形）");
+        assert_eq!(r0.home_cpu, psc.home_cpu, "TELEMETRY：row0 home_cpu 镜像");
+        assert_eq!(r0.intent, psc.intent_effective, "TELEMETRY：row0 intent 镜像");
+        let r1 = prow(b, 1);
+        assert_eq!(&r1.comm, b"kt_ps_a\0", "TELEMETRY：row1 comm 逐字节（含零垫）");
+        assert_eq!(r1.name_id, berry_telface::name_id(b"kt_ps_a"), "TELEMETRY：row1 name_id 双源对拍");
+        assert_eq!(r1.state, 0, "TELEMETRY：row1 state 序数镜像（Ready）");
+        assert_eq!(r1.kern, 1, "TELEMETRY：row1 kern 镜像（proc_tag==0 形）");
+        assert_eq!(r1.home_cpu, psa.home_cpu, "TELEMETRY：row1 home_cpu 镜像种子");
+        assert_eq!(r1.intent, psa.intent_effective, "TELEMETRY：row1 intent 镜像种子");
+        let r2 = prow(b, 2);
+        assert_eq!(&r2.comm, b"kt_ps_b\0", "TELEMETRY：row2 comm 逐字节（含零垫）");
+        assert_eq!(r2.name_id, berry_telface::name_id(b"kt_ps_b"), "TELEMETRY：row2 name_id 双源对拍");
+        assert_eq!(r2.state, 0, "TELEMETRY：row2 state 序数镜像（Ready）");
+        assert_eq!(r2.kern, 0, "TELEMETRY：row2 kern 镜像（proc_tag!=0 形）");
+        assert_eq!(r2.home_cpu, psb.home_cpu, "TELEMETRY：row2 home_cpu 镜像种子");
+        assert_eq!(r2.intent, psb.intent_effective, "TELEMETRY：row2 intent 镜像种子");
+        for (i, r) in [r0, r1, r2].iter().enumerate() {
+            assert_eq!((r.cpu_ticks, r.switches, r.wakes), (0, 0, 0),
+                "TELEMETRY：row{i} 三计数净零谱（静止窗无切换无唤醒）");
+        }
+
+        // K2 len 因果阶梯（三行在队态）：len<40 → -22；len=40 单读头探几何
+        //（行零而 seen 恒真）；len=79 整行截尾首行放不下即止；len=120 恰
+        // 头+两行且为满载结果前缀逐字节恒等（唯一例外 now_vct@24..32 逐次
+        // 快照时钟锚〔G6——行读毕后取〕跨调用恒前进，排除该 8 字节——
+        // wsrc 阶梯同形；前两行=SLEEPQ 行＋RQ 首行——遍历序自证）。
+        assert_eq!(snap_ps(0), -22, "TELEMETRY：op=4 len=0 须 -EINVAL");
+        assert_eq!(snap_ps(8), -22, "TELEMETRY：op=4 len=8（<40）须 -EINVAL");
+        assert_eq!(snap_ps(39), -22, "TELEMETRY：op=4 len=39（头下限−1）须 -EINVAL");
+        // 满载帧样本（160B 栈拷——上帧 b 的全量）。
+        let mut full = [0u8; 160];
+        full.copy_from_slice(&b[..160]);
+        let n = snap_ps(40);
+        assert_eq!(n, 40, "TELEMETRY：len=40 单读头探几何（恰头零行）");
+        let h40 = phdr(pbuf(40));
+        assert_eq!(h40.version, 1, "TELEMETRY：len=40 头 version==1 照出");
+        assert_eq!(h40.rows, 0, "TELEMETRY：len=40 rows==0（余量不足一行）");
+        assert_eq!(h40.seen, 3, "TELEMETRY：len=40 seen==3 恒真（行零而遍历真）");
+        let n = snap_ps(79);
+        assert_eq!(n, 40, "TELEMETRY：len=79 须返 40（40+40−1 整行截尾首行放不下即止）");
+        assert_eq!(phdr(pbuf(40)).rows, 0, "TELEMETRY：len=79 rows==0");
+        let n = snap_ps(120);
+        assert_eq!(n, 120, "TELEMETRY：len=120 须返 120（头+两整行）");
+        let b120 = pbuf(120);
+        assert_eq!(&b120[..24], &full[..24],
+            "TELEMETRY：len=120 前缀恒等（version..seen 域）");
+        assert_eq!(&b120[24..32], &full[24..32],
+            "TELEMETRY：len=120 cntfrq 恒等（常量域）");
+        assert_eq!(&b120[40..120], &full[40..120],
+            "TELEMETRY：len=120 前缀恒等（两整行——now_vct@32..40 逐次时钟锚除外（审查 critical 修：ProcStatHdrV1 多一 u32 使 now_vct 在 @32 非 @24））");
+        let p1 = prow(b120, 0);
+        let p2 = prow(b120, 1);
+        assert_eq!(&p1.comm, b"kt_ps_c\0", "TELEMETRY：len=120 首行=SLEEPQ 行（遍历序自证）");
+        assert_eq!(&p2.comm, b"kt_ps_a\0", "TELEMETRY：len=120 次行=RQ 首行（遍历序自证）");
+
+        // K4 用毕即清：rq_unlink_kt×2＋sleepq_unlink×1（SLEEPQ 清理纪律
+        //判例）→再满取恰 40 且 rows==0/seen==0（队列复原——封堵种子对后续
+        //臂与金丝雀对账的污染）；PSNAP 清零防跨臂串读。
+        rq_unlink_kt(psa);
+        rq_unlink_kt(psb);
+        sleepq_unlink(psc);
+        let n = snap_ps(5160);
+        assert_eq!(n, 40, "TELEMETRY：清队后满取须恰 40（n={}）", n);
+        let h = phdr(pbuf(40));
+        assert_eq!(h.rows, 0, "TELEMETRY：清队后 rows==0");
+        assert_eq!(h.seen, 0, "TELEMETRY：清队后 seen==0（三并集复原）");
+        // SAFETY: PSNAP 本块私有静态（ktest 单核窗）——整块清零（跨臂串读防）。
+        unsafe { core::ptr::addr_of_mut!(PSNAP).write_bytes(0, 1) };
     }
 }
 

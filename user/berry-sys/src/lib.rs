@@ -525,7 +525,8 @@ pub extern "C" fn berry_sched_util_snapshot(util: *mut u32, count: usize) -> Sta
 
 // —— 遥测（0x84 telemetry_open op 域：klog 快照首域 + memstat 定长快照
 // 第二档 + 双族环快照第三档〔环读口刀〕+ WakeSrc 槽表纯镜像第四档〔槽表
-// 读口刀〕在役；后续波次自 op=4 起按落地序取号，不预留）——
+// 读口刀〕+ 全体在役任务快照第五档〔进程账读口刀〕在役；后续波次自 op=5
+// 起按落地序取号，不预留）——
 
 /// 0x84：v3 号提前实现（klog 快照首域翻真）。abi.toml 在册但 stage=v3——
 /// 常量层只产 v1/1.1 行（gen_abi.py defined 集），`nr::TELEMETRY_OPEN` 不
@@ -533,16 +534,19 @@ pub extern "C" fn berry_sched_util_snapshot(util: *mut u32, count: usize) -> Sta
 /// 落地后换 `nr::` 常量名——同内核派发注）。
 const TELEMETRY_OPEN_NR: usize = 0x84;
 
-/// 0x84 op 域常量（klog=0 / memstat=1 / rings=2 / wsrc=3）与四档出参形状
-/// ——单源 [`berry_telface`] 转发，内核派发同引（消内核/用户双写；值与
-/// 形状钉板在 telface host 测试）；头/段/行编解码纯函数（rings_hdr_read/
-/// ring_seg_read/wsrc_hdr_read/wsrc_row_read）随同转发——消费方解析走
-/// 同一具（U1 解析契约）。
+/// 0x84 op 域常量（klog=0 / memstat=1 / rings=2 / wsrc=3 / procstat=4）
+/// 与五档出参形状——单源 [`berry_telface`] 转发，内核派发同引（消内核/
+/// 用户双写；值与形状钉板在 telface host 测试）；头/段/行编解码纯函数
+///（rings_hdr_read/ring_seg_read/wsrc_hdr_read/wsrc_row_read/
+/// procstat_hdr_read/procstat_row_read）随同转发——消费方解析走同一具
+///（U1 解析契约）。
 pub use berry_telface::{
-    MemstatRec, RingSegV1, RingsHdrV1, RING_FAMILY_SWITCH, RING_FAMILY_WAKE, REASON_SIGNALED,
-    REASON_TIMEOUT, SwitchRec, TELEMETRY_OP_KLOG, TELEMETRY_OP_MEMSTAT, TELEMETRY_OP_RINGS,
-    TELEMETRY_OP_WSRC, TELEMETRY_RINGS_MAX, TELEMETRY_WSRC_MAX, WakeRec, WakeSrcRecV1, WsrcHdrV1, ring_seg_read,
-    rings_hdr_read, wsrc_hdr_read, wsrc_row_read,
+    MemstatRec, ProcStatHdrV1, ProcStatRecV1, RingSegV1, RingsHdrV1, RING_FAMILY_SWITCH,
+    RING_FAMILY_WAKE, REASON_SIGNALED, REASON_TIMEOUT, SwitchRec, TELEMETRY_OP_KLOG,
+    TELEMETRY_OP_MEMSTAT, TELEMETRY_OP_PROCSTAT, TELEMETRY_OP_RINGS, TELEMETRY_OP_WSRC,
+    TELEMETRY_RINGS_MAX, TELEMETRY_WSRC_MAX, TELEMETRY_PROCSTAT_MAX, WakeRec, WakeSrcRecV1,
+    WsrcHdrV1, procstat_hdr_read, procstat_row_read, ring_seg_read, rings_hdr_read,
+    wsrc_hdr_read, wsrc_row_read,
 };
 
 /// `berry_telemetry_klog_snapshot(buf, len)`（0x84 op=0，阶段五第 17 步
@@ -623,6 +627,33 @@ pub extern "C" fn berry_telemetry_rings_snapshot(buf: *mut u8, len: usize) -> St
 #[no_mangle]
 pub extern "C" fn berry_telemetry_wsrc_snapshot(buf: *mut u8, len: usize) -> Status {
     unsafe { sys(TELEMETRY_OPEN_NR, TELEMETRY_OP_WSRC as usize, buf as usize, len, 0, 0, 0) }
+}
+
+/// `berry_telemetry_procstat_snapshot(buf, len)`（0x84 op=4，进程账读口刀
+/// ——berryctl ps --json 与 bsh ps 消费面）：全体在役任务快照写入 `buf`，
+/// **返回实写字节数（≥ 40 头自证）**或负 errno 透传；len < 40 → -EINVAL
+///（内核执法），无上帽（整行粒度截尾＋返回值自证——klog 裸缓冲透传同形
+/// 第五件，buf/len 字节直传）。
+///
+/// 布局 = 40B 头 [`ProcStatHdrV1`]＋定宽 40B 行 [`ProcStatRecV1`]×行数
+/// 动态（满载 [`TELEMETRY_PROCSTAT_MAX`] 5160B = 40+128×40；行粒度 =
+/// per-TASK——任务集三并集 SLEEPQ+RQ0+RQ1；头 `rows`/`seen` 自述实发与
+/// 遍历命中，**条目步进按头 rec_size 自述走读**＝消费方跨版本走读锚）。
+/// 尾追追加律：未来扩形走头尾追或新 op 值，旧调用方恒收 v1 前缀。零
+/// handle 零权利位（系统级遥测读面——klog/wsrc 同族口径）。
+///
+/// **一致性契约（G6——同窗一致快照，0x84 族首例，如实文档化）**：内核
+/// SQ+RQ0+RQ1+KL 四锁窗（SVC 入口 SQ_RQ_TABLE 类终态正序预取）内行集与
+/// 行内字段同窗定型——强于 op=2 逐环一致/op=3 逐字段非一致；**在跑段未
+/// 结算 = cpu_ticks 诚实上界**（对核 EL0 在跑任务的本段时长未入账——
+/// 差分消费单调自愈）；计数器族常开 trace_off 双态同值（无空头形无数值
+/// 差）；Exited（REAPQ 瞬态）与 idle/park 语境（无 TCB）不在面；行键
+/// comm+name_id 撞名不可区分（内核零任务号真源）——**差分只许用单调族**
+///（cpu_ticks/switches/wakes 单调非减），禁默示「跨快照一致」；截尾契约
+/// = 余量整 40B 行分、不足一行即止，seen>rows 即截断（seen 恒真）。
+#[no_mangle]
+pub extern "C" fn berry_telemetry_procstat_snapshot(buf: *mut u8, len: usize) -> Status {
+    unsafe { sys(TELEMETRY_OPEN_NR, TELEMETRY_OP_PROCSTAT as usize, buf as usize, len, 0, 0, 0) }
 }
 
 // —— 策略注入（0x83：机制在内核、策略可插拔的带内接口——表形面（COMMIT/

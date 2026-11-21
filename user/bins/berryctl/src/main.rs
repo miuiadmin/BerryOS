@@ -717,6 +717,115 @@ fn powertop_cmd(args: &[String]) {
     }
 }
 
+// ---- `ps --json` 子命令（进程账读口 op4 刀雏形——内核 0x84 op=4 全体
+// 在役任务快照的 JSON 出口，--json day-one 第三件）----
+//
+// 取数 = 内核 0x84 op=4（40B 头 ProcStatHdrV1＋定宽 40B 行 ProcStatRecV1
+// ×行数动态；头/行解码经 berry-sys re-export 的 telface 纯函数单源，条目
+// 步进按头 rec_size 自述走读——条目偏移手解不在本面，wsrc_fetch 同形）。
+// 两账本互补注记：本面=内核在役任务瞬时+运行账；psproto OP_PS_LIST 拉起
+// 账本（bare `berryctl ps`，零改承接）=生命周期含 exited/spawnfail——行
+// 集口径差是设计态（挂账 cli-suite 统一定消费面）。
+//
+// schema add-only（U3）：顶层 {version, cntfrq, now_vct, rows, seen,
+// tasks:[…]}；行 {comm, name_id, state, kern, home_cpu, intent, cpu_ticks,
+// switches, wakes}——state 字符串形、kern 布尔形、comm 零垫裁尾；raw 单调
+// 计数出口（cpu_ticks 周期原值——ns/CPU% 换算归消费方〔公约 5；cntfrq
+// 因子已带头〕）；不排序不聚合（快照序=SLEEPQ→RQ0→RQ1 头自述确定性）。
+
+/// state 序数 → 字符串（0=Ready/1=Running/2=Blocked/3=Exited〔结构性
+/// 不出现〕——域外诚实标 Unknown 不 panic）。
+fn procstat_state_name(s: u8) -> &'static str {
+    match s {
+        0 => "Ready",
+        1 => "Running",
+        2 => "Blocked",
+        3 => "Exited",
+        _ => "Unknown",
+    }
+}
+
+/// comm 零垫裁尾（[u8;8] → 尾零剥除的字符串；非 UTF-8 字节 lossy——任务
+/// 名是 ASCII，防御面）。
+fn procstat_comm_str(comm: &[u8; 8]) -> std::borrow::Cow<'_, str> {
+    let end = comm.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1);
+    String::from_utf8_lossy(&comm[..end])
+}
+
+/// `ps --json` 取数与渲染（trace 先例同形：st<0〔含旧内核 -ENOSYS 诚实
+/// 降级〕/n<40 → stderr 一行 + exit 1；纯净 stdout 单对象——shell设计
+/// §3 铁律）。
+fn procstat_json_cmd() {
+    use berry_sys::{procstat_hdr_read, procstat_row_read};
+
+    let mut buf = vec![0u8; berry_sys::TELEMETRY_PROCSTAT_MAX];
+    let st = berry_sys::berry_telemetry_procstat_snapshot(buf.as_mut_ptr(), buf.len());
+    if st < 0 {
+        eprintln!("berryctl: ps err {}", st);
+        exit(1);
+    }
+    let n = st as usize;
+    if n < 40 {
+        eprintln!("berryctl: ps short snap n={n}");
+        exit(1);
+    }
+    let mut hb = [0u8; 40];
+    hb.copy_from_slice(&buf[..40]);
+    let hdr = procstat_hdr_read(&hb);
+    let start = hdr.hdr_bytes as usize;
+    let stride = hdr.rec_size as usize;
+    if start < 40 || stride < 40 || start > n {
+        eprintln!("berryctl: ps bad geom hb={} rs={}", hdr.hdr_bytes, hdr.rec_size);
+        exit(1);
+    }
+    // 行数 = 头 rows 与实写余量整行的 min（返回值/头双自证）。
+    let rows_n = (hdr.rows as usize).min((n - start) / stride);
+    let mut out = String::with_capacity(1024);
+    out.push_str("{\"version\":");
+    out.push_str(&hdr.version.to_string());
+    out.push_str(",\"cntfrq\":");
+    out.push_str(&hdr.cntfrq.to_string());
+    out.push_str(",\"now_vct\":");
+    out.push_str(&hdr.now_vct.to_string());
+    out.push_str(",\"rows\":");
+    out.push_str(&hdr.rows.to_string());
+    out.push_str(",\"seen\":");
+    out.push_str(&hdr.seen.to_string());
+    out.push_str(",\"tasks\":[");
+    let mut first = true;
+    for i in 0..rows_n {
+        let off = start + i * stride;
+        let mut rb = [0u8; 40];
+        rb.copy_from_slice(&buf[off..off + 40]);
+        let r = procstat_row_read(&rb);
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        out.push_str("{\"comm\":\"");
+        out.push_str(&procstat_comm_str(&r.comm));
+        out.push_str("\",\"name_id\":");
+        out.push_str(&r.name_id.to_string());
+        out.push_str(",\"state\":\"");
+        out.push_str(procstat_state_name(r.state));
+        out.push_str("\",\"kern\":");
+        out.push_str(if r.kern != 0 { "true" } else { "false" });
+        out.push_str(",\"home_cpu\":");
+        out.push_str(&r.home_cpu.to_string());
+        out.push_str(",\"intent\":");
+        out.push_str(&r.intent.to_string());
+        out.push_str(",\"cpu_ticks\":");
+        out.push_str(&r.cpu_ticks.to_string());
+        out.push_str(",\"switches\":");
+        out.push_str(&r.switches.to_string());
+        out.push_str(",\"wakes\":");
+        out.push_str(&r.wakes.to_string());
+        out.push('}');
+    }
+    out.push_str("]}");
+    println!("{}", out);
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let sub = args.get(1).map(String::as_str).unwrap_or("");
@@ -744,6 +853,15 @@ fn main() {
     // 第二件（schema add-only）。不进 smoke boot 序列（零标记面）。
     if sub == "powertop" {
         powertop_cmd(&args[2..]);
+        exit(0);
+    }
+    // `ps --json` 早分支（进程账读口刀雏形）：直调内核 0x84 op=4（trace/
+    // powertop 先例位——非 psproto RPC、无 gift 依赖，bsh 手跑档亦可调）。
+    // **仅 --json 截住**——bare `ps` 落回下方 RPC 族零改（BC ok/PS ok
+    // 零滚结构性成立；svcmgr 面零碰）；--json day-one 第三件（schema
+    // add-only）。不进 smoke boot 序列（零标记面）。
+    if sub == "ps" && args[2..].iter().any(|a| a == "--json") {
+        procstat_json_cmd();
         exit(0);
     }
     let op: u8 = match sub {
