@@ -35,7 +35,7 @@ Version: 1.0.0
 ### 三、数字自证契约
 
 1. `tools/facts.txt` git 跟踪、`key=value` 排序行、零日期；键面：tests_rust、smoke_bare/rootfs/eco/rx、smoke_gui8、bcts_floor_live、docs_md、design_md、stamped_designs、banner_consumers。`python3 tools/facts.py` 对拍、`--update` 刷新、`--selftest` 合成树夹具。
-2. check-docs 加 `--verify-facts`（对拍文档面两键，文档计数权威身份不变）与 `--selftest`（每检查器一组必触发坏样例）。
+2. check-docs 加 `--verify-facts`（对拍 facts.txt 文档面三键——docs_md/design_md/stamped_designs，文档计数权威身份不变）与 `--selftest`（每检查器一组必触发坏样例）。后续演进（2026-11-22）：两刀连同双戳机检已上游化为 Curia 2.6.0（miuiadmin/curia-md），本仓 check-docs 追上游收口，`--verify-facts` 降为唯一显式登记的本地扩展。
 3. `tools/selftest_guard.py` 扫描面扩到 `.agents/tools/*.mjs`；刷新义务：动计数输入面的同一提交带 `--update`。
 
 ### 四、规划双戳契约
