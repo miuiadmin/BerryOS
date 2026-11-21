@@ -9,7 +9,8 @@
 //! pump::run(起振) → loop {
 //!   on_head：armed 过期复位 → 状态栏时钟续摆（分钟字变才动笔）
 //!   [pump] input 收/挂 → pump_input → on_msgs（五键导航/tab 命中优先，
-//!     槽命中 → APP_SPAWN；pager.on_msg → 翻页 rehang）
+//!     槽命中 → APP_SPAWN；pager.on_msg → 翻页 rehang）；键盘帧 →
+//!     on_key（keynav 重组 ESC 序列——桌面态上/下键落 pager 相邻页）
 //!   on_tick：pager.tick（snap 动画步进）
 //!   [pump] render → SUBMIT（surface_id=0xFFFF 系统面豁免——guifbd
 //!     波3-件② 带裁剪）→ FRAME_CALLBACK → RELEASE → on_presented
@@ -68,6 +69,7 @@ use appshell::rpc::{fail, rpc};
 
 use crate::desktop::{self, Desktop, NavNodes, POWER_ARM_WINDOW_NS};
 use crate::icons;
+use crate::keynav;
 use crate::settings_io;
 use crate::syspages;
 
@@ -172,6 +174,10 @@ struct LoopHost {
     /// 状态栏时钟续摆：上帧摆字（None = 尚未/永不摆：注入缺席时
     /// REALTIME 恒 -ENOTSUP，本面静默，桌面保持建树时的 12:00 占位）。
     last_clock: Option<[u8; 5]>,
+    /// 键盘序列重组态（on_key 覆写面——keynav 三态：0 基态 / 1 已收
+    /// ESC / 2 已收 ESC `[`；inputd KeyPump 箭头出向 = ESC 序列三帧
+    /// 单字节连发，消费侧按帧重组才恢复「一次箭头 = 一个动作」）。
+    kseq: u8,
 }
 
 /// 帧循环入口（W2 面 + K2 自窗账——`hw` = wm 客户端端柄（wm/present 同
@@ -214,6 +220,7 @@ pub fn run(
         click_ready: false,
         power_armed: None,
         last_clock: None,
+        kseq: keynav::KSEQ_BASE,
     };
     let cfg = appshell::pump::PumpCfg {
         hw,
@@ -446,6 +453,62 @@ impl appshell::pump::HostHooks for LoopHost {
         // 刀 D：armed 窗纳入等待帽——3s 准时醒做过期复位（不醒 = 红键
         // 滞留至 IDLE 帽 10s，确认语义受损）。
         self.power_armed
+    }
+
+    /// 键盘消费面（输入链族批 2026-11-21，总审计 input-chain P1「键盘
+    /// 全链死三连」第三连——635dc0e62 曾落、14a9b16fa G0G1 sweep 连坐
+    /// 回退后本批重建；Router/焦点路由面不含——归 B-infra 刀自理）：
+    /// 覆写 on_key 接 [`keynav::seq_step`] 重组 ESC[A/B 序列，上/下键
+    /// 落 pager 相邻页。三重门（2026-11-20 键盘消费刀原设计）：
+    /// ① 重组先行——序列态恒推进（门在动作后判：tab/覆盖起落不冻结
+    /// 序列，跨界残帧不悬置成跨态死结）；
+    /// ② 非桌面态吞——sys 页在树（`tabs.cur != 0`，on_msgs 喂 pager
+    /// 同律：桌面被 sys 页不透明底整面盖住）或应用窗覆盖（翻页重画
+    /// 会把桌面画到 app 像素上面——v1 无合成器共享 fb；查表
+    /// fail-open）；
+    /// ③ 边界页无操作——page 0 上键饱和停驻、末页下键越界拒（统一
+    /// page_node 存在性预判，免空 rehang 空重画）。
+    /// 翻页收尾 = snap_to + rehang_view（on_nav_click snap_page 同款）；
+    /// wake 归 pump 键帧批后统一 wake（on_key continue 不 push_pointer，
+    /// 该 wake 是键盘路径唯一起振面）——本覆写零 wake 笔零打印（翻页
+    /// 非冒烟断言件，PAGE ok 是 swipe 自测标记）。
+    fn on_key(&mut self, ui: &mut UiMain, code: u8, _ts_ns: u64) {
+        let Some(nav) = keynav::seq_step(&mut self.kseq, code) else {
+            return; // 吞/续态（keynav 吞面纪律——表外/失序/基态字节全静默）
+        };
+        if self.desktop.tabs.cur != 0 || self.covered_by_app() {
+            return; // 非桌面态：sys 页整面盖桌面 / app 窗覆盖——键不达 pager
+        }
+        let p = self.desktop.pager.page();
+        let target = match nav {
+            keynav::KeyNav::PagePrev => p.saturating_sub(1),
+            keynav::KeyNav::PageNext => p.saturating_add(1),
+        };
+        if target == p || self.desktop.pager.page_node(target).is_none() {
+            return; // 边界页：饱和停驻/越界拒——无操作
+        }
+        self.desktop.pager.snap_to(ui, target);
+        if let Err(e) = desktop::rehang_view(ui, &mut self.desktop) {
+            fail(&format!("key rehang view err={e:?}"));
+        }
+    }
+}
+
+impl LoopHost {
+    /// 覆盖态判据（on_key 门查询面——on_covered_tap 表查询的同款裁剪，
+    /// 只判在场不收盖）：TABLE_GET 快照内可见非自 APP 窗在场 = 桌面被
+    /// 应用画面覆盖。查表失败 fail-open（false——on_covered_tap 同律：
+    /// 判据病态不连坐桌面常行为）。
+    fn covered_by_app(&self) -> bool {
+        let mut req = [0u8; 256];
+        let mut rep = [0u8; 256];
+        let mut rhs = [0 as Handle; 8];
+        let m = gp::encode_wm_table_get_req(&mut req);
+        let (n, _) = rpc(self.hw, &req[..m], &[], &mut rep, &mut rhs);
+        match gp::parse_wm_snapshot_rep(&rep[..n]) {
+            Some(Ok(snap)) => covering_app_win(&snap, &self.self_wins).is_some(),
+            _ => false,
+        }
     }
 }
 

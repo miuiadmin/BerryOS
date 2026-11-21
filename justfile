@@ -1757,6 +1757,25 @@ gui8-smoke-normal:
     fi
     exec python3 tools/gui8-smoke.py "$@"
 
+# GUI-8 活体 app 回收时延回归门（2026-11-21 冻结案测试面补缺）：gui8
+# 全臂 APPDEMO 载荷 console=true（out_s==0 结构性跳过 collect_eof）=
+# 回收烧帽类缺陷 CI 恒盲。本门单 boot（无 GUI8.SMK）：BROWSER（活体
+# console=false 泵 app）图标首击 spawn → 多任务键二击同 id 回收；断言
+# eco 行序 it → recycle → killed → it、零 no EOF/exit code、二击时延 ≤
+# 首击 + 40s（EOF 烧帽回归 +60s 必爆帽；主修回退 = killed 行缺席 FAIL）。
+# gui8-recycle-gate：活体 console=false app 同 id 回收时延门。
+gui8-recycle-gate:
+    #!/bin/sh
+    set -eu
+    if [ ! -f "{{IMAGE}}" ] || [ "${GUI8_REBUILD:-0}" = 1 ]; then
+        just image
+    fi
+    set -- --image "{{IMAGE}}" --code "{{AAVMF_CODE}}" --vars "{{AAVMF_VARS}}" --recycle-gate
+    if [ "${GUI8_KEEP:-0}" = 1 ]; then
+        set -- "$@" --keep
+    fi
+    exec python3 tools/gui8-smoke.py "$@"
+
 # ---------- V-0a BerryBoot（EFI 骨架；VM 草案 §V-0，AAVMF 引导链）----------
 # 独立小工作区（同 x86_64 模式——根 workspace 不含本目录；构建必须显式
 # --target，根 .cargo/config.toml 锁的 build.target 跨 workspace 边界仍命中）。

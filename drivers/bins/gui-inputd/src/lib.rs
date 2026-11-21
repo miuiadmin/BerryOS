@@ -52,7 +52,11 @@ use berry_virtio::input::{
 const BATCH_CAP: usize = 32;
 /// 完整事件队列帽：drain 消费节奏下的弹性容量；满则丢新 + 计数
 /// （常驻输入源恒有消费方——POLL 阻塞语义兜底，帽只是防御面）。
-const QUEUE_CAP: usize = 32;
+/// 总攻批 32→128 扩容（input 路 P1 三重帽之一）：设备层收割面
+/// （QSIZE=64×20ms tick）扩后，客户端应答-重挂间隙（1080P 软渲染帧窗/
+/// 点击引发的同步 RPC 链停顿）的泵内积压深度须同档跟上——60Hz 指针流
+/// 约 1 事件/报 ≈ 50 事件/s，128 槽 ≈ 2.5s 停顿容忍（原 32 槽 ≈ 0.6s）。
+const QUEUE_CAP: usize = 128;
 
 /// 驱动侧原始事件（wire 解码后、归一化前）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -662,10 +666,35 @@ impl PointerPump {
 const KEY_QUEUE_CAP: usize = 32;
 
 /// 修正键位拼装：bit0=shift、bit1=ctrl、bit2=alt（字段整体读写；alt 位
-/// v1 维护不消费——为 Alt 组合词汇预留）。
+/// v1 维护不消费——为 Alt 组合词汇预留）；bit3=CapsLock **锁存档位**（与
+/// bit0-2 即时修饰不同——press 翻转、release 不清，泵内锁存的档位状态，
+/// Linux 键盘 caps 语义）。
 const MOD_SHIFT: u8 = 1 << 0;
 const MOD_CTRL: u8 = 1 << 1;
 const MOD_ALT: u8 = 1 << 2;
+const MOD_CAPS: u8 = 1 << 3;
+
+// ---- 键词汇扩展常量（总攻批 input 路 P2：导航七键 + CapsLock）----
+// berry-virtio 常量面按「按需再冻」纪律未收这批（input.rs 自注
+// 「KEY_CAPSLOCK=58 等不在表——按需再冻」）——该文件是本刀域外文件，
+// 不越域补冻，消费侧私有镜像钉板（值域 = linux/input-event-codes.h
+// 冻结值，host 测试对拍钉死；berry-virtio 后续收编时以此为准）。
+/// CapsLock（泵内锁存档位——见 [`MOD_CAPS`]）。
+const KEY_CAPSLOCK: u16 = 58;
+/// 上翻页（出向 ESC 序列 `5~`）。
+const KEY_PAGEUP: u16 = 75;
+/// Home（出向 ESC 序列 `H`）。
+const KEY_HOME: u16 = 102;
+/// 左箭头（出向 ESC 序列 `D`）。
+const KEY_LEFT: u16 = 105;
+/// 右箭头（出向 ESC 序列 `C`）。
+const KEY_RIGHT: u16 = 106;
+/// End（出向 ESC 序列 `F`）。
+const KEY_END: u16 = 107;
+/// 下翻页（出向 ESC 序列 `6~`）。
+const KEY_PAGEDOWN: u16 = 78;
+/// Delete（出向 ESC 序列 `3~`）。
+const KEY_DELETE: u16 = 111;
 
 /// 键盘泵：RawInputEvent 流（Linux EV_KEY 码）→ 出向字节流（US 布局
 /// 翻译、修正键感知）。与 [`PointerPump`] 平行不混道——键盘事件不进
@@ -675,13 +704,18 @@ const MOD_ALT: u8 = 1 << 2;
 /// 词汇与语义：
 /// - 修正键（SHIFT×2 / CTRL×2 / ALT）：value 1/0 置/清位不出向（两枚
 ///   物理 Shift 共享一个修正位、Ctrl 同理——不按键计数，双按住松一即清
-///   ，v1 已知简化）；
-/// - EV_KEY 主键 value=1：按表产 1..=3 个出向字节（普通键恰一个——
-///   Ctrl+字母 → `c & 0x1F`、Shift 选双档上档字符；箭头 UP/DOWN 产
-///   ESC 序列三帧单字节连发——出向帧形态不变，见 [`translate_seq`]，
-///   修正键不作用、Shift+箭头仍裸序列）；value=0 吞掉（无按住态追踪
-///   ——重复字节靠设备重发不靠泵）；表外码 ignored 计数、value 非 0/1
-///   同 ignored（PointerPump §5.1 忽略计数同纪律）；
+///   ，v1 已知简化）；**CapsLock 是锁存档位非即时修饰**——press 翻转
+///   `MOD_CAPS`、release 不清（泵内锁存；只作用于字母档——caps 在席时
+///   字母选大写、caps+Shift 双在席回小写，US 布局档位反转语义；数字/
+///   符号/控制码不受）；
+/// - EV_KEY 主键 value=1：按表产 1..=4 个出向字节（普通键恰一个——
+///   Ctrl+字母 → `c & 0x1F`、Shift 选双档上档字符、caps 见上；导航键
+///   产 ESC 序列连发——UP/DOWN `A`/`B` + 本批扩七键 RIGHT/LEFT `C`/`D`、
+///   HOME/END `H`/`F`、DELETE/PGUP/PGDN `3~`/`5~`/`6~`，出向帧形态不变
+///   见 [`translate_seq`]，修正键不作用、Shift+导航键仍裸序列）；value=0
+///   吞掉（无按住态追踪——重复字节靠设备重发不靠泵，CapsLock 的档位
+///   翻转不受影响）；表外码 ignored 计数、value 非 0/1 同 ignored
+///   （PointerPump §5.1 忽略计数同纪律）；
 /// - EV_SYN(SYN_REPORT)：**消费不聚合**——键字节在按压时刻已入队，批界
 ///   对键无语义（与 PointerPump 的关批聚合相对）；其余 SYN code 落
 ///   ignored；
@@ -719,9 +753,17 @@ impl KeyPump {
             (EV_KEY, KEY_LEFTSHIFT | KEY_RIGHTSHIFT) => self.set_mod(MOD_SHIFT, ev.value),
             (EV_KEY, KEY_LEFTCTRL | KEY_RIGHTCTRL) => self.set_mod(MOD_CTRL, ev.value),
             (EV_KEY, KEY_LEFTALT) => self.set_mod(MOD_ALT, ev.value),
+            (EV_KEY, KEY_CAPSLOCK) => match ev.value {
+                // 锁存档位：press 翻转、release 不清（Linux caps 语义——
+                // 与即时修正键的置/清位不同面）；野值 ignored 同纪律。
+                1 => self.mods ^= MOD_CAPS,
+                0 => {}
+                _ => self.ignored += 1,
+            },
             (EV_KEY, code) => match ev.value {
                 1 => {
-                    // 先查箭头序列表（UP/DOWN 三字节逐帧入队），miss 回落
+                    // 先查导航序列表（UP/DOWN/RIGHT/LEFT/HOME/END/
+                    // DELETE/PGUP/PGDN 产 3-4 字节逐帧入队），miss 回落
                     // 单字节翻译路径（普通键零漂移）。
                     if let Some(seq) = translate_seq(code) {
                         for &b in seq {
@@ -801,10 +843,13 @@ const SHIFT_DIGITS: [u8; 10] = [b'!', b'@', b'#', b'$', b'%', b'^', b'&', b'*', 
 
 /// US 布局键翻译（修正键应用后；表外码 None——ignored 计数归调用面）。
 /// Ctrl 只作用于字母（`c & 0x1F`，小写基、Shift 不改果）；Shift 选主键区
-/// 双档上档；Alt 不参与（v1 无 Alt 组合词汇）。
+/// 双档上档；**CapsLock 只作用于字母档**——caps ^ shift 恰一在席选大写
+/// （双在席回小写 = Shift 反转档位的 US 语义），数字/符号/控制码不受；
+/// Alt 不参与（v1 无 Alt 组合词汇）。
 fn translate_key(code: u16, mods: u8) -> Option<u8> {
     let shift = mods & MOD_SHIFT != 0;
     let ctrl = mods & MOD_CTRL != 0;
+    let caps = mods & MOD_CAPS != 0;
     let letter = if (KEY_Q..=KEY_P).contains(&code) {
         Some(ROW_QWERTY[(code - KEY_Q) as usize])
     } else if (KEY_A..=KEY_L).contains(&code) {
@@ -815,7 +860,8 @@ fn translate_key(code: u16, mods: u8) -> Option<u8> {
         None
     };
     if let Some(c) = letter {
-        return Some(if ctrl { c & 0x1f } else if shift { c - 32 } else { c });
+        // 恰一在席（caps 或 shift）选大写；ctrl 控制码小写基不受 caps。
+        return Some(if ctrl { c & 0x1f } else if shift != caps { c - 32 } else { c });
     }
     match code {
         KEY_1..=KEY_9 => Some(if shift {
@@ -846,19 +892,32 @@ fn translate_key(code: u16, mods: u8) -> Option<u8> {
     }
 }
 
-/// 箭头键出向序列表（UP/DOWN 两枚——xterm 同形 ESC 序列；LEFT/RIGHT/
-/// HOME/END 不在表——bsh editor 非 A/B finals 一律吞，出向无消费语义，
-/// 「表外 None 不出向」哲学同 [`translate_key`]）。修正键不作用：箭头
-/// 无修饰形，Shift+UP 仍裸序列（记面）。
+/// 导航键出向序列表（xterm 同形 ESC 序列）：UP `A` / DOWN `B` / RIGHT
+/// `C` / LEFT `D` / HOME `H` / END `F` / DELETE `3~` / PGUP `5~` /
+/// PGDN `6~`。总攻批扩七键（原 UP/DOWN 两枚——彼时「bsh editor 非 A/B
+/// finals 一律吞，出向无消费语义」的裁决反转：词汇先通、消费端 bsh
+/// editor finals 集与 berry-term 扩集是兄弟路挂账，域外不动；当前键盘
+/// 消费端整体未接线——总攻 input 路 P1 键盘死三连——无即时回归面）。
+/// F1-F12 维持不冻——无消费面再冻（总攻同裁决）。「表外 None 不出向」
+/// 哲学同 [`translate_key`]。修正键不作用：导航键无修饰形，Shift+UP
+/// 仍裸序列（记面）。
 ///
-/// 产 3 字节按序入队 = 三帧单字节连发：drain/key_frame/serve_poll 零改动
-/// ——字节队列 seam 既有「一帧一字节」形态直接承载（KEY_QUEUE_CAP=32 容
-/// 3B/键无压力）。serve 面批帽共享（max_events ≤ INPUT_EVENTS_MAX=3）恰
-/// 容一箭头一批；与指针帧混批时溢出字节留队下轮——延迟一拍不丢失。
+/// 产 3-4 字节按序入队 = 逐帧单字节连发：drain/key_frame/serve_poll 零
+/// 改动——字节队列 seam 既有「一帧一字节」形态直接承载（KEY_QUEUE_CAP=32
+/// 容 4B/键 8 键无压力）。serve 面批帽共享（max_events ≤
+/// INPUT_EVENTS_MAX=3）恰容一枚 3B 序列；4B 序列（DELETE/翻页）与指针
+/// 帧混批时溢出字节留队下轮——延迟一拍不丢失。
 fn translate_seq(code: u16) -> Option<&'static [u8]> {
     match code {
         KEY_UP => Some(&[0x1b, b'[', b'A']),
         KEY_DOWN => Some(&[0x1b, b'[', b'B']),
+        KEY_RIGHT => Some(&[0x1b, b'[', b'C']),
+        KEY_LEFT => Some(&[0x1b, b'[', b'D']),
+        KEY_HOME => Some(&[0x1b, b'[', b'H']),
+        KEY_END => Some(&[0x1b, b'[', b'F']),
+        KEY_DELETE => Some(&[0x1b, b'[', b'3', b'~']),
+        KEY_PAGEUP => Some(&[0x1b, b'[', b'5', b'~']),
+        KEY_PAGEDOWN => Some(&[0x1b, b'[', b'6', b'~']),
         _ => None,
     }
 }
@@ -1537,6 +1596,30 @@ mod tests {
     }
 
     #[test]
+    fn pump_queue_cap_drop_new() {
+        // 事件队帽 128（总攻批 32→128 扩容钉板——input 路 P1 三重帽之一）：
+        // 满则丢新 + 计数（消费方缺席的防御面——应答-重挂间隙的泵内积压
+        // 深度）；FIFO 保前 128。65 个 tap 批（press+release 同批 = DOWN+UP
+        // 两事件）= 130 事件 → 持前 128、丢尾 2。
+        assert_eq!(QUEUE_CAP, 128);
+        let mut p = pump();
+        for i in 0..65u64 {
+            p.feed(ev(i * 3 + 1, EV_KEY, BTN_TOUCH, 1));
+            p.feed(ev(i * 3 + 2, EV_KEY, BTN_TOUCH, 0));
+            p.feed(syn(i * 3 + 3));
+        }
+        assert_eq!(p.pending(), QUEUE_CAP);
+        assert_eq!(p.dropped_events, 2);
+        let mut out = [ZERO_EVENT; QUEUE_CAP];
+        assert_eq!(p.drain(&mut out), QUEUE_CAP);
+        // FIFO + 丢新：队首 = 首批 DOWN，队尾 = 第 64 批 UP（id 自 0 起）。
+        assert_eq!(out[0].phase, PHASE_DOWN);
+        assert_eq!(out[QUEUE_CAP - 1].phase, PHASE_UP);
+        assert_eq!(out[QUEUE_CAP - 1].pointer_id, 63);
+        assert_eq!(p.pending(), 0);
+    }
+
+    #[test]
     fn encode_pump_event_roundtrip() {
         // 泵事件 → wire → parse_pointer_event 对拍闭环（§8.3）：
         // 含 history（3 采样事件）与各域值。
@@ -1714,6 +1797,42 @@ mod tests {
     }
 
     #[test]
+    fn keypump_capslock_latch() {
+        // CapsLock 泵内锁存档位（总攻批 P2——死键修面）：press 翻转、
+        // release 不清（Linux caps 档位语义，非即时修饰）；只作用字母档
+        // ——caps ^ shift 恰一在席选大写、双在席回小写（Shift 反转档位的
+        // US 语义）；数字/符号/控制码不受；再 press 翻回。冻结值对拍
+        // linux/input-event-codes.h（常量镜像钉板在 lib 本侧）。
+        assert_eq!(KEY_CAPSLOCK, 58);
+        let mut p = KeyPump::new();
+        p.feed(kev(KEY_CAPSLOCK, 1));
+        p.feed(kev(KEY_CAPSLOCK, 0)); // release 不清档位
+        p.feed(kev(KEY_A, 1));
+        take_k(&mut p, b"A");
+        // caps+Shift 双在席 → 小写（反转）
+        p.feed(kev(KEY_LEFTSHIFT, 1));
+        p.feed(kev(KEY_A, 1));
+        take_k(&mut p, b"a");
+        p.feed(kev(KEY_LEFTSHIFT, 0));
+        // 数字/符号/控制码不吃 caps
+        p.feed(kev(KEY_1, 1));
+        p.feed(kev(KEY_MINUS, 1));
+        p.feed(kev(KEY_ENTER, 1));
+        take_k(&mut p, &[b'1', b'-', 0x0a]);
+        // 再 press 翻回小写档
+        p.feed(kev(KEY_CAPSLOCK, 1));
+        p.feed(kev(KEY_A, 1));
+        take_k(&mut p, b"a");
+        assert_eq!(p.ignored, 0);
+        // 野 value 不动档位、进 ignored（修正键同纪律）
+        let mut p2 = KeyPump::new();
+        p2.feed(kev(KEY_CAPSLOCK, 2));
+        p2.feed(kev(KEY_A, 1));
+        take_k(&mut p2, b"a");
+        assert_eq!(p2.ignored, 1);
+    }
+
+    #[test]
     fn keypump_unknown_and_wild_values_ignored() {
         // 表外码按压 ignored；表外码释放吞掉；野 value（2=autorepeat）
         // ignored——修正键野 value 不动位；非键盘事件面全 ignored。
@@ -1808,8 +1927,8 @@ mod tests {
         assert_eq!(p.ignored, 0);
     }
 
-    // ---- 箭头键出向（UP/DOWN 两枚——ESC 序列三帧单字节连发；混批时
-    // serve 面溢出留队下轮的批帽交互见 translate_seq 注）----
+    // ---- 导航键出向（UP/DOWN 两枚 + 总攻批七键——ESC 序列 3-4 字节逐帧
+    // 连发；混批时 serve 面溢出留队下轮的批帽交互见 translate_seq 注）----
 
     #[test]
     fn keypump_arrow_up_esc_seq_fifo() {
@@ -1879,15 +1998,72 @@ mod tests {
     }
 
     #[test]
-    fn keypump_key_left_ignored() {
-        // KEY_LEFT=105 表外负测保持：不出向、不冻常量（bsh editor 非 A/B
-        // finals 一律吞——LEFT/RIGHT/HOME/END 无出向消费语义，字面码钉板）。
+    fn keypump_nav_seven_keys_esc_seq() {
+        // 导航七键扩表（总攻批 P2——xterm ESC 序列，UP/DOWN 既有两枚之外
+        // 新增）：RIGHT `C` / LEFT `D` / HOME `H` / END `F` / DELETE `3~` /
+        // PGUP `5~` / PGDN `6~`；4B 序列（DELETE/翻页）逐帧连发。冻结值
+        // 对拍 linux/input-event-codes.h（常量镜像钉板在 lib 本侧——
+        // berry-virtio 按需再冻未收，见 KEY_HOME 注）。
+        assert_eq!(
+            (KEY_HOME, KEY_PAGEUP, KEY_PAGEDOWN, KEY_CAPSLOCK),
+            (102, 75, 78, 58)
+        );
+        assert_eq!((KEY_LEFT, KEY_RIGHT, KEY_END, KEY_DELETE), (105, 106, 107, 111));
         let mut p = KeyPump::new();
-        p.feed(kev(105, 1));
+        p.feed(kev(KEY_RIGHT, 1));
+        p.feed(syn(2));
+        take_k(&mut p, &[0x1b, b'[', b'C']);
+        p.feed(kev(KEY_LEFT, 1));
+        p.feed(syn(3));
+        take_k(&mut p, &[0x1b, b'[', b'D']);
+        p.feed(kev(KEY_HOME, 1));
+        p.feed(syn(4));
+        take_k(&mut p, &[0x1b, b'[', b'H']);
+        p.feed(kev(KEY_END, 1));
+        p.feed(syn(5));
+        take_k(&mut p, &[0x1b, b'[', b'F']);
+        p.feed(kev(KEY_DELETE, 1));
+        p.feed(syn(6));
+        assert_eq!(p.pending(), 4); // 4B 序列
+        take_k(&mut p, &[0x1b, b'[', b'3', b'~']);
+        p.feed(kev(KEY_PAGEUP, 1));
+        p.feed(kev(KEY_PAGEDOWN, 1));
+        p.feed(syn(7));
+        take_k(&mut p, &[0x1b, b'[', b'5', b'~', 0x1b, b'[', b'6', b'~']);
+        // 释放零帧 + 表外负测（F1）同口径见下测。
+        assert_eq!(p.ignored, 0);
+    }
+
+    #[test]
+    fn keypump_nav_release_and_shift_bare() {
+        // 释放零帧：未 press 的 release 吞掉；4B 序列键（PGUP）同款。
+        // Shift 在席仍裸序列（导航键无修饰形）。
+        let mut p = KeyPump::new();
+        p.feed(kev(KEY_LEFT, 0));
+        p.feed(kev(KEY_DELETE, 0));
+        p.feed(syn(2));
+        assert_eq!(p.pending(), 0);
+        p.feed(kev(KEY_LEFTSHIFT, 1));
+        p.feed(kev(KEY_HOME, 1));
+        p.feed(kev(KEY_PAGEUP, 1));
+        p.feed(syn(3));
+        take_k(&mut p, &[0x1b, 0x5b, b'H', 0x1b, 0x5b, b'5', b'~']);
+        p.feed(kev(KEY_PAGEUP, 0));
+        assert_eq!(p.pending(), 0);
+        assert_eq!(p.ignored, 0);
+    }
+
+    #[test]
+    fn keypump_f1_still_ignored() {
+        // F1=59 表外负测保持：不出向（F1-F12 维持不冻——无消费面再冻，
+        // 总攻同裁决）。旧负测 KEY_LEFT=105 已随七键扩表反转（见
+        // `keypump_nav_seven_keys_esc_seq`），负测位换 F1 字面码钉板。
+        let mut p = KeyPump::new();
+        p.feed(kev(59, 1));
         p.feed(syn(2));
         assert_eq!(p.pending(), 0);
         assert_eq!(p.ignored, 1);
-        p.feed(kev(105, 0));
+        p.feed(kev(59, 0));
         assert_eq!(p.ignored, 1); // 释放吞掉不进计数
     }
 

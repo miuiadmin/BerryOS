@@ -850,15 +850,26 @@ pub enum Axis {
     Y,
 }
 
-/// 输入消息七变体（§3.6 手势 referee 产物；引擎内零闭包零回调副作用）。
+/// 输入消息九变体（§3.6 手势 referee 产物；引擎内零闭包零回调副作用）。
 /// GUI-6 D25 扩域（趁 gfxdemo/launcher 零消费者窗口）：DragStart 携
 /// `axis`（锁轴）、DragEnd 携 `vx`/`vy`（速度环差分产物，px/s，i32 钳
-/// ±32768）——ADR #52 形态不动（引擎产/app 消费）。
+/// ±32768）——ADR #52 形态不动（引擎产/app 消费）。总攻批 2 扩域
+/// （add-only）：DoubleClick/LongPress 双击与长按语义（P2 输入链缺陷
+/// 4/5——语义附加不劫持既有 Click 面）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Msg {
     Press { node: NodeId, x: u32, y: u32 },
     Release { node: NodeId, x: u32, y: u32 },
     Click { node: NodeId },
+    /// 双击（总攻批 2）：双击窗（300ms）内**同节点**二次 Click 时在该次
+    /// UP 追加——Click 首击二击照产（add-only 附加语义，快速连点零损
+    /// 失；消费端自行选择处理 Click 或 DoubleClick）；成对后清锚，三连
+    /// 击 = 新窗首击。
+    DoubleClick { node: NodeId },
+    /// 长按（总攻批 2）：DOWN 后 slop 内静止（未出手势）超 450ms 产——
+    /// 静止期有事件流时随流早发、零流场景 UP 收尾兜底；长按已消费后的
+    /// UP 只产 Release 不再产 Click。
+    LongPress { node: NodeId },
     DragStart { node: NodeId, axis: Axis, x: u32, y: u32 },
     DragMove { node: NodeId, x: u32, y: u32, resampled: bool },
     /// `vx`/`vy` = 释放时速度环 96ms 窗差分（px/s；样本 <2 / Δt==0 /
