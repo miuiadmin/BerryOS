@@ -1,0 +1,131 @@
+diff --git a/kernel/src/bench.rs b/kernel/src/bench.rs
+index 4970bcfc2..55982a97b 100644
+--- a/kernel/src/bench.rs
++++ b/kernel/src/bench.rs
+@@ -115,6 +115,15 @@ pub fn run() {
+     // sys_vmo_rw4k 间接受其影响）——本行入册后任何包络刀（03 号机会一/二/
+     // 四/五族）的指令流变化都有 L2 对拍锚。
+     bench_svc_roundtrip();
++    // 32 号件（Q95 路C 决策数据）：队列深度 k 阶梯稳态项——BENCHKB 观测行
++    // （BENCHFA 观测先例：不进 N_METRICS/smoke 收割契约，boot 形状零扰动）。
++    // 语义：建对后先连发 k 条灌队至稳态深度，再 1024 轮「recv 一条 + send
++    // 一条」（队列滞留恒 k）；对 k in {2,4,8} 各测一行，行名 send_recv_k<k>。
++    // 收益论据 = 14 号件 host 微基线（Vec remove(0) 满队 2.34x/回滚 7.6x）
++    // 的真机对拍面：k 越大 Vec/Ring 比值应同步放大（memmove (k-1)*440B）。
++    // 灌队/清场成本在计时窗外（bench 骨架只计轮回）。
++    bench_send_recv_k();
++
+     // AM 原子观测对（非标记行）：紧随十项官方基准后、churn 前——十行
+     // `BENCH,` + BENCHCHURN/BENCHXH 的既有 boot 形状零扰动（`BENCH ok`
+     // 收尾行已迁 run_sched_epoch 纪元尾恒发——本窗不再打）。
+@@ -995,3 +1004,110 @@ fn xh_chan_drain(hc1: u32) -> bool {
+     );
+     true
+ }
++
++/// 32 号件：队列深度 k 阶梯稳态基准（观测行 BENCHKB 前缀）。建对后连发 k
++/// 条灌队，1024 轮 recv+send 恒持深度 k——k=2/4/8 三行 + k=1 对照（净空
++/// 往返，与 send_recv_pair 同语义不同行名，跨线对拍锚）。载荷 8B 最小形
++/// （send_recv_pair 同款）。svc 直调面 = SVC 入口+门控+拷贝链全链（无 EL0
++/// 页表走查，icount 通道值面同判）。清场：两端 close。
++fn bench_send_recv_k() {
++    // 静态缓冲（S-2 同款纪律：boot 窗单线程 IRQ 屏蔽，raw 指针触碰）。
++    static mut C0: u64 = 0;
++    static mut C1: u64 = 0;
++    static mut SBUF: [u8; 8] = [0x58; 8];
++    static mut RBUF: [u8; 8] = [0; 8];
++    static mut NB: u64 = 8;
++    static mut NH: u64 = 0;
++    static mut HND: [u32; 4] = [0; 4];
++    // SAFETY: 出参槽写 u64 槽低半（bench 窗单线程）。
++    unsafe { C0 = 0; C1 = 0; }
++    assert_eq!(
++        svc4(
++            NR_CHANNEL_CREATE as u64,
++            0,
++            &raw mut C0 as u64,
++            &raw mut C1 as u64,
++        ),
++        0,
++        "bench: send_recv_k channel_create"
++    );
++    let (hc0, hc1) = (unsafe { C0 } as u32, unsafe { C1 } as u32);
++    assert_ne!(hc0, 0, "bench: send_recv_k end0");
++    assert_ne!(hc1, 0, "bench: send_recv_k end1");
++    for k in [2usize, 4, 8, 1] {
++        // 灌队至深度 k（计时窗外）。k=1 对照行在尾（净空往返语义自证）。
++        for _ in 0..k {
++            assert_eq!(
++                svc6(NR_CHANNEL_SEND as u64, hc0 as u64, &raw const SBUF as u64, 8, 0, 0, 0),
++                0,
++                "bench: send_recv_k 灌队 send"
++            );
++        }
++        bench_k_row(b"send_recv_k", k as u64, 1024, hc0, hc1);
++        // 排水至净空（计时窗外；下一 k 档从净空重新灌队）。
++        for _ in 0..k {
++            assert_eq!(
++                svc6(
++                    NR_CHANNEL_RECV as u64,
++                    hc1 as u64,
++                    &raw mut RBUF as u64,
++                    &raw mut NB as u64,
++                    &raw mut HND as u64,
++                    &raw mut NH as u64,
++                    0,
++                ),
++                0,
++                "bench: send_recv_k 排水 recv"
++            );
++        }
++    }
++    // 读回形状断言（防死存储消除 + recv 语义钉板——send_recv_pair 同款）。
++    // SAFETY: 只读比对。
++    assert_eq!(
++        unsafe { *(&raw const RBUF) },
++        unsafe { *(&raw const SBUF) },
++        "bench: send_recv_k 读回载荷须逐字节同源"
++    );
++    // SAFETY: 同上。
++    unsafe { NB = 8; NH = 0; }
++    // 清场：两端 close（channel.rs 安全向政策，xh 面同款）。
++    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hc0 as u64, 0, 0), 0, "bench: send_recv_k close end0");
++    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hc1 as u64, 0, 0), 0, "bench: send_recv_k close end1");
++}
++
++/// 32 号件：k 阶梯单行计时体（BENCHKB 前缀观测行——不进 BENCH, 官方十行）。
++/// 行名 = <base>,k<k>,<iters>,<cyc_per_op>——宿主收割 grep '^BENCHKB'。
++fn bench_k_row(base: &[u8], k: u64, iters: u32, hc0: u32, hc1: u32) {
++    static mut RBUF: [u8; 8] = [0; 8];
++    static mut NB: u64 = 8;
++    static mut NH: u64 = 0;
++    static mut HND: [u32; 4] = [0; 4];
++    static mut SBUF: [u8; 8] = [0x58; 8];
++    let t0 = cntvct();
++    for _ in 0..iters {
++        // SAFETY: 静态缓冲 raw 地址传参（boot 窗单线程独占——S-2 纪律）。
++        unsafe {
++            assert_eq!(
++                svc6(NR_CHANNEL_RECV as u64, hc1 as u64, &raw mut RBUF as u64, &raw mut NB as u64, &raw mut HND as u64, &raw mut NH as u64, 0),
++                0,
++                "bench: send_recv_k recv"
++            );
++            assert_eq!(
++                svc6(NR_CHANNEL_SEND as u64, hc0 as u64, &raw const SBUF as u64, 8, 0, 0, 0),
++                0,
++                "bench: send_recv_k send"
++            );
++        }
++    }
++    let t1 = cntvct();
++    let per = (t1 - t0) / iters as u64;
++    uart_puts(b"BENCHKB,");
++    uart_puts(base);
++    uart_puts(b",k");
++    uart_put_dec(k);
++    uart_puts(b",");
++    uart_put_dec(iters as u64);
++    uart_puts(b",");
++    uart_put_dec(per);
++    uart_puts(b"\n");
++}

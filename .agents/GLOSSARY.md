@@ -92,6 +92,14 @@
 
 **灵动岛实时胶囊（Dynamic Island）**：位于状态栏正中的自适应超椭圆交互胶囊——静默态为紧凑纯黑胶囊，后台存在计时、媒体播放、录屏、传输或 AI 语义代操作时以临界阻尼弹簧实时生长为双槽摘要或展开控制卡片。_Avoid_: 静态刘海块、常驻横幅条
 
+**液态玻璃材质（Liquid Glass）**：融合 iOS 26/27 `Liquid Glass` 与 HarmonyOS 6「智慧光感」的六阶光学表面管线——在 Dual-Kawase 模糊与 `1.8x` 饱和度提拉之上，叠加超椭圆边缘凸透镜折射位移、环境色漫溢吸收、随触点/指针实时游走的镜面高光与触控光场涟漪，并具备无障碍不透明降级能力。_Avoid_: 平面死灰毛玻璃、静态白框描边
+
+**一镜到底共享转场（geometryTransition）**：吸收自 OpenHarmony ArkUI 的声明式共享元素几何过渡原语——源视图与目标视图绑定同一 `transition_id` 时，合成器自动在 `SceneNode` 树上连续插值跨层级/跨页面的屏幕包围盒、超椭圆曲率与不透明度，消除页面硬切。_Avoid_: 手工计算起止像素动画、白屏硬切跳转
+
+**实况胶囊（Live Capsule）**：融合 iOS 26/27 流光灵动岛与 OpenHarmony/HarmonyOS 6 实况窗（Live Window）的全场景实时任务载体——支持顶部紧凑胶囊、沉浸态免打扰轻弹幕、多级下拉交互实况卡、锁屏叠卡及流光边框 `"Search or Ask"` 智能体意图入口的同源流转。_Avoid_: 全屏打断弹窗、静态通知横幅
+
+**安全区背景默认延伸（Safe-Area Auto-Bleed）**：吸收自 OpenHarmony 6.0（API 20+）的沉浸式布局机制——邻接状态栏或底部导航区的容器背景色与液态玻璃材质默认自动向外铺满物理屏幕边缘，而内部交互内容自动按权威 `Insets` 内缩避让。_Avoid_: 手工拼接顶底安全区垫块
+
 ## 存储、安全、发布与救援
 
 **按需只读根卷（BerryROFS）**：4KiB 页对齐压缩并内嵌块级 SHA-256 Merkle 校验树的只读系统根文件系统，取代全量吃内存的 `rootfs.cpio`。_Avoid_: 内存盘 cpio、未验签裸 squashfs
@@ -126,6 +134,20 @@
 
 **企业双域隔离（Work Profile）**：在同一物理设备上基于独立 CE 加密密钥与 UID 隔离划分出的企业办公沙箱，强制执行防复制外泄（DLP）与远程擦除。_Avoid_: 简单应用双开
 
-**伪终端守护（ptyd）**：提供符合 POSIX 语义的虚拟主从伪终端（Master/Slave PTY），支持 ANSI/VT100 终端序列与窗口尺寸变更事件广播。_Avoid_: 裸串口直接桥接
+**伪终端守护（ptyd）**：以一对能力句柄 `(PtyMasterCap, PtySlaveCap)` 加双 `64KiB` 共享 `IoRing VMO` 提供全双工流、行规（Raw/Cooked/Echo/ISIG）与窗口缩放（`WINCH`）通知的纯用户态终端服务。_Avoid_: 内核态 TTY、裸串口直接桥接
 
-**终端多路复用器（bmux）**：BerryOS 原生终端多窗多面板分屏会话复用器，支持会话持久分离与挂载。_Avoid_: 必须依赖外部 tmux 移植
+**控制台守护（consoled）**：持内核 `Interrupt` 对象在用户态驱动物理 PL011 / `virtio-console`、承载带外控制口 `berry-ctlport` 并将后台守护进程日志隔离于活跃终端之外的系统服务。_Avoid_: 内核 `task_console` 线程、全局混流串口
+
+**终端协议纯核（berry-vt）**：零依赖 `no_std` 表驱动 VT100/xterm-256color/TrueColor 转义解析、备用屏幕缓冲（`?1049h`）、括号粘贴（`?2004h`）与脏格差分发射引擎。_Avoid_: 各工具私写转义正则解析
+
+**终端多路复用器（bmux）**：BerryOS 原生终端多窗多面板分屏会话复用器，支持单串口多任务并发及断线后台保活重连（`detach / attach`）。_Avoid_: 必须依赖外部 tmux 移植
+
+**服务能力目录（ServiceDir）**：挂载于 `/svc`、由 `rootmgr` 向受控会话签发并支持按需建立每客户端独占会话通道或由 `bsh sandbox` 细粒度裁剪的能力寻址目录。_Avoid_: 位置写死的 `GIFT_H` 静态槽、全局无鉴权命名表
+
+**全屏终端编辑器（bed）**：基于 `berry-vt` 与 Rope 缓冲、支持无模式与 `--vi` 双键位、语法着色及 `.swp` 掉电零丢稿恢复的轻量机内代码文本编辑器。_Avoid_: 搬运重型 C 编辑器
+
+**能力句柄透视器（lscap）**：实时导出目标进程句柄槽位、对象类型（`1..=19`）、64 位 Rights、内联 Badge 及 Channel 对端连接拓扑的微内核独有诊断命令。_Avoid_: 仅能看普通文件的传统 `lsof`
+
+**系统调用与 IPC 追踪器（btrace）**：基于调试异常通道与无锁追踪环，在终端内实时解码打印目标进程 `berry_*` 系统调用、Channel RPC 协议帧及尾延迟直方图的在机诊断工具。_Avoid_: 依赖 `ptrace` 的传统 `strace`
+
+**在机命令行调试器（bdbg）**：凭 `ProcessDebugCap` 与 `berry-unwind` 在纯串口或远程终端内直接执行软件断点、硬件数据观察点与符号化栈回溯的交互式调试器。_Avoid_: 只能依赖宿主机外部 IDE 联调
