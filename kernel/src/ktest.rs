@@ -7080,8 +7080,12 @@ fn test_telemetry_open() {
         let n = snap_ps(120);
         assert_eq!(n, 120, "TELEMETRY：len=120 须返 120（头+两整行）");
         let b120 = pbuf(120);
-        assert_eq!(&b120[..24], &full[..24],
-            "TELEMETRY：len=120 前缀恒等（version..seen 域）");
+        assert_eq!(&b120[..12], &full[..12],
+            "TELEMETRY：len=120 前缀恒等（version..rec_size 域）");
+        assert_eq!(phdr(b120).rows, 2,
+            "TELEMETRY：len=120 rows==2（本帧行数自述——phdr 单源读）");
+        assert_eq!(&b120[16..24], &full[16..24],
+            "TELEMETRY：len=120 前缀恒等（seen 域——满载帧 seen 同值）");
         assert_eq!(&b120[24..32], &full[24..32],
             "TELEMETRY：len=120 cntfrq 恒等（常量域）");
         assert_eq!(&b120[40..120], &full[40..120],
