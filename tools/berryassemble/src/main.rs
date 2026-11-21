@@ -13,7 +13,7 @@
 
 use std::process::ExitCode;
 
-use berryassemble::lite::{load_lite_product, LiteProduct, APP_SLOTS};
+use berryassemble::lite::{load_lite_product, APP_SLOTS};
 
 const USAGE: &str = "用法：berryassemble --check-lite <product.toml>（--check/--dry-run/--emit/--selftest/--sample 走 python3 tools/berry_assemble.py——CLI oracle 面保留）";
 
@@ -165,6 +165,7 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use berryassemble::lite::LiteProduct;
 
     #[test]
     fn py_repr_law() {

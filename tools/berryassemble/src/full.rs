@@ -106,7 +106,8 @@ pub fn check_full_files(p: &LiteProduct, src_dir: &str) -> Result<(), Reject> {
 }
 
 /// Python repr 串形（f"{v!r}" 镜像——单引号；三刀 main.rs py_repr 同源律）。
-fn py_repr(s: &str) -> String {
+/// （pub(crate)：resolve.rs 基座对账面复用——单源不复制。）
+pub(crate) fn py_repr(s: &str) -> String {
     // Python repr 单引号形：内嵌单引号时转义，反斜杠转义（str 面
     // simple-path 足够——路径语料不含引号/反斜杠边界，双侧对拍钉板）。
     let inner = s.replace('\\', "\\\\").replace('\'', "\\'");
@@ -114,7 +115,8 @@ fn py_repr(s: &str) -> String {
 }
 
 /// `os.path.join` 形目录拼接（rel 含前导 / 时 Python 归绝对——镜像）。
-fn join_path(dir: &str, rel: &str) -> String {
+/// （pub(crate)：resolve.rs 基座对账面复用——单源不复制。）
+pub(crate) fn join_path(dir: &str, rel: &str) -> String {
     if rel.starts_with('/') {
         rel.to_string()
     } else if dir.is_empty() {
