@@ -51,6 +51,272 @@ def exported_name(part: str) -> str | None:
     return name if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) else None
 
 
+def selftest() -> int:
+    """自检合成腿（design_ledger --selftest 同款风格；零真仓依赖——合成
+    sdk.rs+TOML+doc tmp 树直调 validate/compare_facade/check_doc 全链）。
+
+    覆盖面：
+      1. exported_name 三形（裸路径/别名/非法名与注释跳过）；
+      2. public_facade_names 提取（crate:: 路径/花括号组/非 crate re-export/
+         fn/struct/enum/type/const/trait 声明面 + 去重保序）；
+      3. validate 全链：合成最小合规 TOML 过检，单点变异（meta.format/
+         owner/id 前缀/重复 id/kind/module/channel/capability/stability/
+         spec 缺件/breaking 空/deprecated 无后继）逐项拒面文案钉板；
+      4. compare_facade 双向对账（sdk.rs 多出 = missing、ledger 多出 =
+         stale、恰等过）；
+      5. matrix 黄金行形（id 定序 + 表头）；
+      6. write_doc→check_doc 往返（fresh 过、漂移红、markers 缺失拒）。
+    """
+    import tempfile
+
+    # ① exported_name 三形。
+    assert exported_name("layout::Rect") == "Rect"
+    assert exported_name("layout::Rect as UiRect") == "UiRect"
+    assert exported_name("  Rect ") == "Rect"
+    assert exported_name("// comment") is None
+    assert exported_name("") is None
+    assert exported_name("bad-name") is None
+    assert exported_name("9start") is None
+    assert exported_name("theme::Color as 9bad") is None
+
+    # ② public_facade_names 提取（合成 sdk.rs 全形态）。
+    sdk_src = (
+        "pub use crate::layout::{Rect, Edge as UiEdge};\n"
+        "pub use crate::theme::Palette;\n"
+        "pub use external_crate::Ext;\n"
+        "pub fn make_rect() -> Rect { Rect }\n"
+        "pub const MAX: u32 = 4;\n"
+        "pub struct Marker;\n"
+        "pub enum Kind { A }\n"
+        "pub type Alias = u8;\n"
+        "pub trait Draw {}\n"
+        "pub const fn helper() {}\n"
+        "fn private_thing() {}\n"
+        "pub use crate::layout::Rect;\n"  # 重复——去重保序
+    )
+    real_sdk = globals()["SDK"]
+    globals()["SDK"] = _SyntheticSdk(sdk_src)
+    try:
+        names = public_facade_names()
+    finally:
+        globals()["SDK"] = real_sdk
+    assert names == [
+        "Rect", "UiEdge", "Palette", "Ext",
+        "make_rect", "MAX", "Marker", "Kind", "Alias", "Draw", "helper",
+    ], f"提取面漂移: {names}"
+
+    # ③④ validate + compare_facade 全链（合成 tmp 树真跑）。
+    spec_rel = "docs/spec.md"
+    items = [
+        {"id": "berry_ui::sdk::Draw", "kind": "fn", "module": "theme",
+         "since": "F2", "channel": "in-tree", "capability": "none",
+         "owner": "berry-ui", "stability": "stable", "spec": spec_rel,
+         "breaking": []},
+        {"id": "berry_ui::sdk::Rect", "kind": "type", "module": "layout",
+         "since": "F2", "channel": "in-tree", "capability": "none",
+         "owner": "berry-ui", "stability": "stable", "spec": spec_rel,
+         "breaking": []},
+    ]
+
+    def item_toml(entries) -> str:
+        lines = [
+            "[meta]",
+            "format = 1",
+            'owner = "berry-ui"',
+            'channel_vocab = ["in-tree", "sdk"]',
+            'stability_vocab = ["stable", "deprecated"]',
+            'capability_vocab = ["none", "gpu"]',
+            "",
+        ]
+        for entry in entries:
+            lines.append("[[item]]")
+            lines.append(f'id = "{entry["id"]}"')
+            lines.append(f'kind = "{entry["kind"]}"')
+            lines.append(f'module = "{entry["module"]}"')
+            lines.append(f'since = "{entry["since"]}"')
+            lines.append(f'channel = "{entry["channel"]}"')
+            lines.append(f'capability = "{entry["capability"]}"')
+            lines.append('owner = "berry-ui"')
+            lines.append(f'stability = "{entry["stability"]}"')
+            lines.append(f'spec = "{entry["spec"]}"')
+            lines.append("breaking = []")
+        return "\n".join(lines) + "\n"
+
+    import sdk_ledger as mod
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        # spec 文件须在 ROOT 下真实存在（validate 查 is_file）。
+        (tmp_path / spec_rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / spec_rel).write_text("spec\n", encoding="utf-8")
+        ledger = tmp_path / "sdk_api.toml"
+        ledger.write_text(item_toml(items), encoding="utf-8")
+        sdk_file = tmp_path / "sdk.rs"
+        sdk_file.write_text(
+            "pub use crate::layout::Rect;\n"
+            "pub use crate::theme::Draw;\n",
+            encoding="utf-8",
+        )
+        doc = tmp_path / "doc.md"
+        doc.write_text(
+            "head\n" + BEGIN + "\nold\n" + END + "\ntail\n", encoding="utf-8",
+        )
+        real = {
+            "LEDGER": mod.LEDGER, "SDK": mod.SDK, "DOC": mod.DOC,
+            "ROOT": mod.ROOT,
+        }
+        mod.LEDGER = ledger
+        mod.SDK = sdk_file
+        mod.DOC = doc
+        mod.ROOT = tmp_path
+        try:
+            # 正面：合成最小合规 2 条过检 + 双向对账恰等 + doc 往返。
+            loaded = mod.validate(mod.load())
+            assert len(loaded) == 2
+            mod.compare_facade(loaded)
+            mod.write_doc(loaded)
+            mod.check_doc(loaded)
+            text = doc.read_text(encoding="utf-8")
+            assert text.startswith("head\n") and text.endswith("tail\n")
+
+            # ⑤ matrix 黄金行形（id 定序 Draw < Rect 字典序）。
+            matrix_text = mod.matrix(loaded)
+            lines_out = matrix_text.splitlines()
+            assert lines_out[0] == "| API | kind | since | channel | stability | spec |"
+            assert lines_out[1] == "|---|---|---|---|---|---|"
+            assert lines_out[2].startswith("| `berry_ui::sdk::Draw` | fn | F2 |")
+            assert lines_out[3].startswith("| `berry_ui::sdk::Rect` | type | F2 |")
+
+            # ④ compare_facade 双向：sdk.rs 多出 = missing。
+            sdk_file.write_text(
+                "pub use crate::layout::Rect;\n"
+                "pub use crate::theme::Draw;\n"
+                "pub use crate::extra::Ghost;\n",
+                encoding="utf-8",
+            )
+            try:
+                mod.compare_facade(loaded)
+            except mod.LedgerError as error:
+                assert "missing from ledger: Ghost" in str(error)
+            else:
+                raise AssertionError("facade 多出须 missing 拒")
+            # ledger 多出 = stale。
+            sdk_file.write_text(
+                "pub use crate::layout::Rect;\n", encoding="utf-8",
+            )
+            try:
+                mod.compare_facade(loaded)
+            except mod.LedgerError as error:
+                assert "absent from sdk.rs facade: Draw" in str(error)
+            else:
+                raise AssertionError("ledger 多出须 stale 拒")
+            # 恢复恰等 + doc 漂移腿。
+            sdk_file.write_text(
+                "pub use crate::layout::Rect;\n"
+                "pub use crate::theme::Draw;\n",
+                encoding="utf-8",
+            )
+            mod.compare_facade(loaded)
+            drifted = [dict(entry) for entry in items]
+            drifted[0]["stability"] = "deprecated"
+            try:
+                mod.check_doc(drifted)
+            except mod.LedgerError as error:
+                assert "stale" in str(error)
+            else:
+                raise AssertionError("check_doc 漂移必须红")
+            # markers 缺失拒。
+            doc.write_text("no markers here\n", encoding="utf-8")
+            try:
+                mod.check_doc(loaded)
+            except mod.LedgerError as error:
+                assert "markers" in str(error)
+            else:
+                raise AssertionError("markers 缺失必须拒")
+
+            # ③ validate 拒面族（单点变异逐项钉文案）。
+            def expect_reject(toml_text: str, needle: str):
+                ledger.write_text(toml_text, encoding="utf-8")
+                try:
+                    mod.validate(mod.load())
+                except (mod.LedgerError, tomllib.TOMLDecodeError) as error:
+                    assert needle in str(error), (
+                        f"变异 {needle!r} 未咬: {error}"
+                    )
+                else:
+                    raise AssertionError(f"变异 {needle!r} 未拒")
+
+            good = item_toml(items)
+            expect_reject(good.replace("format = 1", "format = 2", 1),
+                          "meta.format must be 1")
+            expect_reject(good.replace('owner = "berry-ui"', 'owner = "x"', 1),
+                          "meta.owner must be berry-ui")
+            expect_reject(
+                good.replace('id = "berry_ui::sdk::Rect"',
+                             'id = "core::Rect"', 1),
+                "id invalid",
+            )
+            expect_reject(
+                good.replace('kind = "type"', 'kind = "macro"', 1),
+                "kind must be fn/type/const",
+            )
+            expect_reject(
+                good.replace('module = "layout"', 'module = "ghost"', 1),
+                "unknown module",
+            )
+            expect_reject(
+                good.replace('channel = "in-tree"', 'channel = "udp"', 1),
+                "unknown channel",
+            )
+            expect_reject(
+                good.replace('capability = "none"', 'capability = "tpu"', 1),
+                "unknown capability",
+            )
+            expect_reject(
+                good.replace('stability = "stable"', 'stability = "beta"', 1),
+                "unknown stability",
+            )
+            expect_reject(
+                good.replace('spec = "docs/spec.md"', 'spec = "docs/none.md"', 1),
+                "spec missing",
+            )
+            expect_reject(good.replace("breaking = []", "", 1),
+                          "missing: breaking")
+            # 重复 id。
+            dup = good.replace(
+                'id = "berry_ui::sdk::Rect"',
+                'id = "berry_ui::sdk::Draw"', 1)
+            expect_reject(dup, "duplicate id")
+            # deprecated 无后继。
+            dep = good.replace(
+                'stability = "stable"', 'stability = "deprecated"', 1)
+            expect_reject(dep, "deprecated item lacks successor")
+            # 空 since。
+            expect_reject(good.replace('since = "F2"', 'since = ""', 1),
+                          "since empty")
+        finally:
+            mod.LEDGER = real["LEDGER"]
+            mod.SDK = real["SDK"]
+            mod.DOC = real["DOC"]
+            mod.ROOT = real["ROOT"]
+
+    print(
+        "sdk_ledger selftest: 6 腿全绿"
+        "（exported_name 三形/facade 提取/validate 拒面族/双向对账/matrix 黄金形/doc 往返）"
+    )
+    return 0
+
+
+class _SyntheticSdk:
+    """public_facade_names 的合成 SDK 文件替身（read_text 协议面）。"""
+
+    def __init__(self, text: str):
+        self._text = text
+
+    def read_text(self, encoding: str = "utf-8") -> str:
+        return self._text
+
+
 def public_facade_names() -> list[str]:
     text = SDK.read_text(encoding="utf-8")
     names: list[str] = []
@@ -200,7 +466,11 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--write", action="store_true")
+    parser.add_argument("--selftest", action="store_true",
+                        help="合成自检腿（零真仓依赖）")
     args = parser.parse_args()
+    if args.selftest:
+        return selftest()
     if args.check == args.write:
         parser.error("choose exactly one of --check/--write")
     data = load()
