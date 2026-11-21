@@ -49,8 +49,8 @@ ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" 
 # grep -F 互查过（WAKESRC acct=/BENCHWAKE n= 均不含本串——'WAKE ok'
 # 词中空格独有；本串亦非任何现役标记子串）。
 # 命令行体验刀 +CLI ok n=/+TERM ok n=（54→56，均前缀式——步数单源在 bsh）：CLI = bsh cli_selftest
-# 十五步（体验刀六步：clear 7B 对拍/uname 前缀/uptime 数值域/sleep 1s 时钟差分/type
-# 三分支/history 环回读；完善刀四步：>> 三态/|| 链/unset/管道切词带参；export 面刀 ⑩ 第 21 内建；作业控制 ⑪；遥测 free ⑫——十至十五步）；TERM = bsh term_selftest
+# 十六步（体验刀六步：clear 7B 对拍/uname 前缀/uptime 数值域/sleep 1s 时钟差分/type
+# 三分支/history 环回读；完善刀四步：>> 三态/|| 链/unset/管道切词带参；export 面刀 ⑩ 第 21 内建；作业控制 ⑪；遥测 free ⑫——十至十六步）；TERM = bsh term_selftest
 # 三步（spawn 子 bsh stdin_feed 喂两命令+尾字节 \x03 驱动私有 stdout 收齐
 # 提示符/回显/两结果行/^C 回显与 prompt 重显 → terminate 130 收口）。CLI 前缀式（n= 单源在 bsh——步数变动免改本表，FS ok n= 同款）。
 # canon：对全表 grep -F 互查过——"CLI ok"与"CLK ok"位 3 I≠K 互非子串

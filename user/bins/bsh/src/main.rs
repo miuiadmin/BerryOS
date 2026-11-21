@@ -88,7 +88,12 @@
 //!闭环——赋值/覆盖/撤销）+ export 面刀第 21 件 export（全导出语义——
 //! vars 单表即导出集，赋值/覆盖/撤销/传递子进程四环闭合）+ 作业控制 v2
 //! 刀第 22/23 件 jobs/kill（`&` 后台/jobs 列示/kill %n/`$!`/退出收杀
-//! 五联动）。（Plan B
+//! 五联动）+ 脚本执行与分号注释刀第 26/27 件 source/.（POSIX dot 双名
+//!——当前上下文逐行装载：门序镜像 cat 三段门＋深度帽 8 防递归；同刀
+//! `;` 顺序链入 [`ChainOp::Seq`]、词首 `#` 注释与 `$0` 面在 berry-lex；
+//! argv 第三路 `bsh <file>` 脚本执行在 [`run_script`]——跳自验链＋
+//! environ 播种＋逐行 run_line＋job_exit_sweep 后按末行 status 退）。
+//!（Plan B
 //! v0.5：`exit` 经 std::process::exit
 //! → libc `exit` → 0x33 真退出）。`run` 后 `reap()` 完整回收子进程（Plan B
 //! 前「每次 run 泄漏一个 park 中的子进程」的旧常态退役）。
@@ -248,6 +253,29 @@ fn bg_last_set(n: i32) {
     }
 }
 
+/// `$0` 载体（脚本执行与分号注释刀）：shell 名——交互/自验路恒 "bsh"、
+/// 脚本路＝脚本名（main 起点单次置位）。vars 表不注入 "0" 名（防 env/
+/// export 面污染）。bg_last 先例同款：static mut＋只读访问器（单线程
+/// SAFETY 面）。
+static mut ARG0: &str = "bsh";
+
+/// `$0` 渲染源（lex_vars 装配；source 装载面零动——source 不改 $0）。
+fn shell_arg0() -> &'static str {
+    // SAFETY: bsh 单线程（main 独占）；无并发写者。
+    unsafe { core::ptr::addr_of_mut!(ARG0).read() }
+}
+
+/// `$0` 装配写者（脚本执行与分号注释刀·D9）：main 起点单次置位——脚本路
+/// 传脚本名（调用方 `Box::leak` 进程定驻——bsh 经 [`std::process::exit`]
+/// 收口，无复用/归还面）、交互/自验路不调（保持默认 "bsh"）。此后全程
+/// 零写者（bg_last_set 单写者同款纪律）。
+fn arg0_set(s: &'static str) {
+    // SAFETY: bsh 单线程（main 独占）；main 起点单次写、此后零写者。
+    unsafe {
+        *core::ptr::addr_of_mut!(ARG0) = s;
+    }
+}
+
 /// B3 job 表条目：剥离后 trimmed 文本（登记/列示/通报渲染单源）＋子句柄。
 /// [`ChildHandles`] 无 Drop——一切出表路径必须 reap（kill/通报扫荡/exit
 /// 三点全覆盖，漏收即有界泄漏警告面）。
@@ -274,11 +302,24 @@ fn main() {
     // —— P5 v0：变量/状态壳（`&&` 自验与交互循环共享——`$?` 跨行语义）。
     let mut vars: Vec<(String, String)> = Vec::new();
     let mut status: i32 = 0;
+    // —— 脚本执行与分号注释刀·argv 第三路（裁决 D1）：skip(1) 解析——首个
+    //    非旗参＝脚本路径（余参静默忽略，$1..$n 位置参数挂 3.0 记面）→ 跳
+    //    boot 自验链直进脚本路（同 --no-selftest 机理——TCG 分钟级阻塞＋
+    //    smoke 契约保护；脚本检测先于旗检测：`bsh --no-selftest T.SH` 双参
+    //    形亦走脚本路——旗的跳链语义对脚本路天然蕴含；svcmgr 零参与
+    //    term_selftest 子 bsh 单旗形零漂移）。$0 装配（裁决 D9）：main 起点
+    //    单次置位——脚本路=脚本名（argv String 经 Box::leak 进程定驻）、
+    //    交互/自验路保持默认 "bsh"（ARG0 初值）。
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(script) = args.iter().find(|a| a.as_str() != "--no-selftest") {
+        arg0_set(Box::leak(script.clone().into_boxed_str()));
+        run_script(script, &mut vars, &mut status);
+    }
     // —— 命令行体验刀：`--no-selftest` = 跳过 boot 自验链直进交互循环——
     //    term_selftest 子 bsh 的哑终端驱动面（子 bsh 重跑全链 = 分钟级阻塞
     //    + term 链无界递归，见 term_selftest 头注；管道契约只验交互面）。
     //    svcmgr 常规拉起零参零漂移；args 经 spawn argv 面（uu clap 同链）。
-    if std::env::args().skip(1).any(|a| a == "--no-selftest") {
+    if args.iter().any(|a| a.as_str() == "--no-selftest") {
         interactive(&mut vars, &mut status);
     }
     // —— 自驱自验：内部 `run hexyl`，全链（cpio 查询 → 流式拉起 → feeder →
@@ -403,15 +444,17 @@ fn main() {
     //    （失败即 park loud）。
     sig_selftest();
     // —— 命令行体验刀 + v2 B 域 + export 面刀 + 作业控制 v2 刀 + v2.5 引号
-    //    刀：内建与语义步自验（`CLI ok n=15` = rootfs 相第 55 标记；B 域起
+    //    刀：内建与语义步自验（`CLI ok n=16` = rootfs 相第 55 标记；B 域起
     //    6→10——⑥ `>>`/⑦ `||`/⑧ unset/⑨ 管道参数四族步；export 面刀 ⑩
     //    第 21 内建步 10→11；作业控制 v2 刀 ⑪ 第 22/23 内建步 11→12
     //    ——strip_bg 绑定/`&`-jobs-kill-$! 端到端/负形三件；v2.5 引号刀
     //    ⑬ 引号面步 13→14——纯面对拍/端到端引号三件/负形，⑫ 惰性 fails
     //    门同批愈合移全部步后；进程账读口 op4 刀 ⑮ 第 25 内建步 14→15
     //    ——裸 ps 从外部 bin/ps 转内核真源内建〔行形/键序/Running 因果
-    //    弱式＋带参拒〕）。链序契约同 U2/MMP/CLK/SIG
-    //    ——⑥⑬ 走 RAM 树 fs 面（u4 先例同款，非盘面）、⑨⑩⑪ 走 spawn
+    //    弱式＋带参拒〕；脚本执行与分号注释刀 ⑯ 第 26/27 内建与新语法步
+    //    15→16——source/. 端到端 RAM 树＋`;` 顺序链＋词首 `#` 注释＋
+    //    $0）。链序契约同 U2/MMP/CLK/SIG
+    //    ——⑥⑯ 走 RAM 树 fs 面（u4 先例同款，非盘面）、⑨⑩⑪ 走 spawn
     //    （bin/fail/true/echo/grep/env/hello 现档），排 fat 族之前（EFI 路
     //    无盘亦打 CLI——smoke-image ECO canon 同面）；无拓扑降级门（失败
     //    即 park loud）。
@@ -502,6 +545,71 @@ fn rc_load(vars: &mut Vec<(String, String)>) {
     }
 }
 
+/// environ → vars 播种（export 面刀 B4 起；脚本执行与分号注释刀抽共享
+/// fn——[interactive]/[run_script] 同调，不播种则脚本路 `run` 子进程 env
+/// 恒空）。vars_os 按首个 `=` 切键值、无 `=` 项其内跳过、插入序保持；
+/// interactive 调用点先于 rc_load——rc 后载同名尾置覆盖胜出（get_var rev
+/// 语义自然成立）。boot 自验链零播种副作用（不进两函数；svcmgr 恒空
+/// env → environ 空 → 零行）。
+fn env_seed(vars: &mut Vec<(String, String)>) {
+    for (k, v) in std::env::vars_os() {
+        vars.push((
+            k.to_string_lossy().into_owned(),
+            v.to_string_lossy().into_owned(),
+        ));
+    }
+}
+
+/// argv 第三路：`bsh <file>` 脚本执行（脚本执行与分号注释刀·裁决 D1-D4；
+/// main 检出脚本参即直入——boot 自验链整段跳过，同 `--no-selftest` 机理）。
+/// 门序镜像 [`cat_output`] 三段门（裁决 D2）：valid_path 拒 → eprintln
+/// usage＋exit 2；fs_h()==0 →「fs not available」＋exit 1；get_file Err →
+/// errno_text＋exit errno_code（ENOENT=127 余 1）。读面复用 get_file
+/// （FILE_SIZE_MAX 帽即脚本帽，不另立 8KiB/64 行——那是 BSHRC 专用）。
+/// 裁决 D3：environ 播种（[env_seed]——interactive 同调）；**不装载
+/// BSHRC.CFG**（POSIX 非交互不读 rc；rc_load 装载点零动，守「写端适配
+/// 读端」铁律——交互/脚本起点差异记面）。裁决 D4 逐行循环：split
+/// b'\n'＋trim 兼剥 CRLF `\r`＋空行跳过＋run_line(…,&[])（hist 空——
+/// 历史属交互循环 editor 状态）；注释行零特判（词首 `#` 词法层统一吞
+/// ——run_line no-op 不碰 status）；未闭合引号行 run_line 打诊断＋
+/// status 2 续跑（POSIX 中止语义偏差记面）；status 起点 0（main 局部壳
+/// ）——空脚本/纯注释脚本＝0 自然成立（[source_output] 的显式归零在彼
+/// 侧——进场 status 可非零，两形同果）。收口：job_exit_sweep（exit 内建
+/// 先例——脚本遗留后台作业 terminate＋reap）＋std::process::exit(末行
+/// status)。脚本内 `exit` 内建＝恒码 0 现行为保持记面（exit n 带码挂
+/// 3.0——killList）；脚本路不武装 Ctrl-C（int_arm 仅 interactive——与
+/// 自验链同形记面）。恒不返回。
+fn run_script(path: &str, vars: &mut Vec<(String, String)>, status: &mut i32) -> ! {
+    if !valid_path(path) {
+        eprintln!("usage: bsh <file>");
+        std::process::exit(2);
+    }
+    if fs_h() == 0 {
+        eprintln!("bsh: {}: fs not available", path);
+        std::process::exit(1);
+    }
+    let data = match get_file(path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("bsh: {}: {}", path, errno_text(e));
+            std::process::exit(errno_code(e));
+        }
+    };
+    env_seed(vars);
+    let mut out = std::io::stdout();
+    for line in String::from_utf8_lossy(&data).split('\n') {
+        // trim 兼剥 CRLF 尾 \r（\r 属空白——宿主生成工具 CRLF 形态；
+        // source_output 逐行同款）。
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        run_line(line, vars, status, &mut out, &[]);
+    }
+    job_exit_sweep(&mut out);
+    std::process::exit(*status);
+}
+
 /// 交互循环（化妆面）：**C-4 起行编辑归 bsh**（console 逐字节透传，
 /// echo/退格/历史召回/Tab 补全全在本端——editor.rs）。逐字节 read +
 /// Editor::feed；行定稿走 run_line。空读（fd0 的 10s 帽超时 EOF 化）
@@ -512,16 +620,11 @@ fn rc_load(vars: &mut Vec<(String, String)>) {
 /// 由调用方持有（`$?` 跨链尾→交互语义零漂移）。恒不返回（无限循环）。
 fn interactive(vars: &mut Vec<(String, String)>, status: &mut i32) -> ! {
     // export 面刀 B4：environ → vars 播种（继承链闭环——子 bsh `echo $K`/
-    // `env` 可见、which 的 PATH 来源链通）。vars_os 按首个 '=' 切键值、无
-    // '=' 项其内跳过、插入序保持；先于 rc_load——rc 后载同名尾置覆盖胜出
-    // （get_var rev 语义自然成立）。boot 自验链零播种副作用（不进
-    // interactive；svcmgr 恒空 env → environ 空 → 零行）。
-    for (k, v) in std::env::vars_os() {
-        vars.push((
-            k.to_string_lossy().into_owned(),
-            v.to_string_lossy().into_owned(),
-        ));
-    }
+    // `env` 可见、which 的 PATH 来源链通）。脚本执行与分号注释刀起抽
+    // [env_seed] 共享 fn（run_script 同调）；先于 rc_load——rc 后载同名
+    // 尾置覆盖胜出（get_var rev 语义自然成立）。boot 自验链零播种副作用
+    // （不进 interactive；svcmgr 恒空 env → environ 空 → 零行）。
+    env_seed(vars);
     // M2 第 9 步：BSHRC.CFG 装载（静默——见 rc_load 头注；常规链尾与
     // --no-selftest 两路径同机生效）。
     rc_load(vars);
@@ -3524,12 +3627,15 @@ fn expand(s: &str, vars: &[(String, String)], status: i32) -> String {
 }
 
 /// berry-lex 三视图渲染注入组装（vars 表＋`$?`＋`$!` 载 [`bg_last`]——
-/// 旧 expand 的 bg_last() 调用点语义镜像：未设 <0 展开空串）。
+/// 旧 expand 的 bg_last() 调用点语义镜像：未设 <0 展开空串；`$0` 载
+/// [`ARG0`]/[`shell_arg0`]——交互="bsh"/脚本=脚本名，vars 表不注入
+/// "0" 名）。
 fn lex_vars<'a>(vars: &'a [(String, String)], status: i32) -> berry_lex::Vars<'a> {
     berry_lex::Vars {
         table: vars,
         status,
         bang: bg_last(),
+        arg0: shell_arg0(),
     }
 }
 
@@ -3547,19 +3653,27 @@ fn trim_sep(items: &[Item]) -> &[Item] {
     &items[a..b]
 }
 
-/// 链操作符（v2 B2：`&&`/`||` 边界扫描产物）。
+/// 链操作符（v2 B2：`&&`/`||` 边界扫描产物；脚本执行与分号注释刀起 `;`
+/// 入第三变体）。
 enum ChainOp {
     /// `&&`：前段成功（status==0）才执行。
     And,
     /// `||`：前段失败（status!=0）才执行。
     Or,
+    /// `;`：顺序执行（无条件闸——POSIX 2.9.3 顺序表：无条件顺序执行、
+    /// 终态取最后一条命令；闸只读 $? 不改）。
+    Seq,
 }
 
 /// 链切分（v2.5 引号刀起裸 `&&`/`||` 文本扫描退役——berry-lex Op(And)/
 /// Op(Or) Item 分组接替；操作符只在未引号区成 token，引号内 `&&` 是数据）。
-/// 产出 (组, 引导操作符) 序列——首组 None（无条件执行）、后续组携带引导它
-/// 的操作符，与旧 split_chains 文本切片同构（`a&&&b` 余组 `&b`、`a|||b`
-/// 余组 `|b`——单 `&`/`|` 词内字面不构成边界；纯函数——⑦ 对拍臂消费）。
+/// 脚本执行与分号注释刀起 Op(Semicolon) 入第三边界——产出 (组, 引导
+/// 操作符) 三元序列：首组 None（无条件执行）、后续组携带引导它的操作符，
+/// 与旧 split_chains 文本切片同构（`a&&&b` 余组 `&b`、`a|||b` 余组 `|b`
+/// ——单 `&`/`|` 词内字面不构成边界；纯函数——⑦ 对拍臂消费）。扁平单趟
+/// 与 POSIX 层级 list 顺序/短路等价（`;` 闸恒真只读 $?）；`;;`＝两枚、
+/// 前导/尾随 `;` 产空组——run_line 空组静默跳过（宽容偏差家族记面，
+/// case 语法挂 3.0）。
 fn chain_groups(items: &[Item]) -> Vec<(&[Item], Option<ChainOp>)> {
     let mut out: Vec<(&[Item], Option<ChainOp>)> = Vec::new();
     let mut start = 0usize;
@@ -3568,6 +3682,7 @@ fn chain_groups(items: &[Item]) -> Vec<(&[Item], Option<ChainOp>)> {
         let cop = match it {
             Item::Op(Op::And) => Some(ChainOp::And),
             Item::Op(Op::Or) => Some(ChainOp::Or),
+            Item::Op(Op::Semicolon) => Some(ChainOp::Seq),
             _ => None,
         };
         if let Some(op) = cop {
@@ -3617,9 +3732,11 @@ fn assignment_of_items(items: &[Item], v: &berry_lex::Vars) -> Option<(String, S
     Some((name.to_string(), value))
 }
 
-/// 一行命令：按 `&&`/`||` 边界切段顺序执行（v2 B2 起 `||` 入链——首段
+/// 一行命令：按 `&&`/`||`/`;` 边界切段顺序执行（v2 B2 起 `||` 入链——首段
 /// 无条件执行，后续段条件 = `&&` 需 status==0 / `||` 需 status!=0，左结合
-/// 跳过不终止：`a && b || c` 的 a 败后 b 跳过、c 照执行）。**跳过段不求值
+/// 跳过不终止：`a && b || c` 的 a 败后 b 跳过、c 照执行；脚本执行与分号
+/// 注释刀起 `;` 无条件闸入链——POSIX 2.9.3 顺序表：每段恒执行、终态取
+/// 最后一条命令，扁平单趟与层级 list 等价）。**跳过段不求值
 /// 不碰 status**（赋值/展开均不发生——and_selftest ② 短路钉板同义）；
 /// **每 part 执行时才展开变量**（`A=1 && echo $A` 的求值序）；空 part =
 /// 无操作 status 不变（v1 语义保持）；链结果 = 最后**已执行**段状态。
@@ -3660,6 +3777,8 @@ fn run_line(
             let go = match op {
                 ChainOp::And => *status == 0,
                 ChainOp::Or => *status != 0,
+                // 无条件闸（POSIX 2.9.3 顺序表——`;` 段恒执行）。
+                ChainOp::Seq => true,
             };
             if !go {
                 continue; // 跳过：不求值、不碰 status（`||` 后续段仍可执行）
@@ -3764,6 +3883,26 @@ fn exec_one_items(
             }
         }
     }
+    // source/.（脚本执行与分号注释刀·第 26/27 内建；首词 word_texts 匹配
+    // ——POSIX dot 正名 `.`＋bash 别名 source 双名同臂）。POSIX dot 语义：
+    // bsh 无子 shell，当前上下文逐行 run_line（vars/status 直接共享调用方
+    // 壳——赋值/展开/`$?` 全落本壳，零机制新增）；单参形门序镜像 cat 三段
+    // 门（多参/含 Op 融合字面形如 `source f | x`/`source f > g` 的 rest
+    // 渲染多词 → valid_path 拒 usage 2——unset/export 拦截臂家族同形
+    // 记面）；参数经 render 单次展开（`source $F` 同 cat 面）。分发在此
+    // 非 render_cmd（需 &mut vars/&mut status——render_cmd 签名持只读
+    // 借用）。
+    if wt.first().map(String::as_str) == Some("source")
+        || wt.first().map(String::as_str) == Some(".")
+    {
+        let first_idx = it
+            .iter()
+            .position(|x| matches!(x, Item::Word(_)))
+            .expect("首词在位（trim_sep 非空组首必 Word）");
+        let rest = trim_sep(&it[first_idx + 1..]);
+        let arg = berry_lex::render(rest, &v);
+        return source_output(arg.trim(), vars, status, out, hist);
+    }
     // 管道（Op 谓词——仅未引号区成 token；展开产物永为数据：`P=a|b` 后
     // `echo $P` 的 items 零 Op，`grep "a|b"` 引号内 | 不切管道）。
     if it.iter().any(|x| matches!(x, Item::Op(Op::Pipe))) {
@@ -3842,12 +3981,15 @@ fn exec_bg_items(
         writeln!(out, "bsh: &: 赋值不可后台").unwrap();
         return 1;
     }
-    // 链形：Op(And)/Op(Or)（`a && b &` 只异步末段的半阻塞语义拒绝整链，
-    // 裁决 1——引号内 `&&` 是数据不触发）。
-    if it
-        .iter()
-        .any(|x| matches!(x, Item::Op(Op::And) | Item::Op(Op::Or)))
-    {
+    // 链形：Op(And)/Op(Or)/Op(Semicolon)（`a && b &` 只异步末段的半阻塞语义
+    // 拒绝整链，裁决 1——引号内 `&&` 是数据不触发；脚本执行与分号注释刀起
+    // `a ; b &` 同族拒整链后台——POSIX 仅后台末段的偏差记面挂 3.0）。
+    if it.iter().any(|x| {
+        matches!(
+            x,
+            Item::Op(Op::And) | Item::Op(Op::Or) | Item::Op(Op::Semicolon)
+        )
+    }) {
         writeln!(out, "bsh: &: 链形不可后台（仅单段外部命令）").unwrap();
         return 1;
     }
@@ -3958,23 +4100,28 @@ fn exec_bg_items(
 /// （行为面独立——名单只答「是不是内建」）。作业控制 v2 刀 21→23
 /// （jobs/kill）；进程账读口 op4 刀 24→25（ps——裸 ps 从外部 bin/ps〔RPC
 /// 账本〕转内核真源内建；bin/ps 留 rootfs 供显式路径/run 档，两账本互补
-/// 非竞合）。
+/// 非竞合）；脚本执行与分号注释刀 25→27（source/.——POSIX dot 正名 `.`
+/// ＋bash 别名 source 双名同臂；Tab/type/exec_bg 内建拒经 contains 自动
+/// 收编；分发点在 exec_one_items 拦截臂〔需 &mut vars/status〕非
+/// render_cmd if-else）。
 const BUILTINS: &[&str] = &[
     "help", "exit", "env", "export", "echo", "run", "cat", "ls", "mkdir", "rm", "cd", "pwd",
     "inputpoll", "clear", "uname", "uptime", "sleep", "type", "history", "dmesg", "unset", "jobs",
-    "kill", "free", "ps",
+    "kill", "free", "ps", "source", ".",
 ];
 
-/// help 文案三行（A60：192B 控制台原子消息帽——单行装不下全清单，逐条
+/// help 文案四行（A60：192B 控制台原子消息帽——单行装不下全清单，逐条
 /// 拆行各 ≤192B；命令行体验刀 12→19 内建（dmesg 追补第 19 件）后再拆第三行，同帽纪律；
 /// v2 B 域起补 `||`/`>>`/unset 语法面；export 面刀第 21 件 export K=V；
 /// 作业控制 v2 刀补 jobs/kill %n 与 `cmd &` 语法面；v2.5 引号刀补引号
-/// 短句；进程账读口 op4 刀补第 25 件 ps〔进程账〕）。与
-/// [`BUILTINS`] 的名单一致性由 cli_selftest ④ 执法（每名必须出现）。
-const HELP_LINES: [&str; 3] = [
+/// 短句；进程账读口 op4 刀补第 25 件 ps〔进程账〕；脚本执行与分号注释刀
+/// 拆第四行——source/.、`A ; B`、词首 `#` 注释、`$0`、`bsh <file>`）。
+/// 与 [`BUILTINS`] 的名单一致性由 cli_selftest ④ 执法（每名必须出现）。
+const HELP_LINES: [&str; 4] = [
     "bsh 内建：help | echo <text> | env | export K=V | run <name> | cat <file> | ls | ls <dir> | mkdir <dir> | rm <path> | cd <dir> | pwd | inputpoll",
     "…续：| clear | uname | uptime | sleep <s> | type <name> | history | dmesg | unset <name> | A | B（rootfs 管道，段可带参）| A && B | A || B | A > file | A >> file | exit",
     "……续：| 裸名 = bin/<name> 派发（C-2a uu 家族）| jobs | kill %n | cmd &（后台）| free（RAM 面板）| ps（进程账）| 'x' 全字面 | \"x\" 保空格",
+    "……续：| source <file> = . <file>（当前上下文装载）| A ; B（顺序执行）| # 词首注释至行尾 | $0（shell 名）| bsh <file>（脚本执行）",
 ];
 
 /// 内建/外部命令统一渲染（v2.5 引号刀起 &str 入口为冻结签名兼容面——内部
@@ -5008,6 +5155,79 @@ fn cat_output(name: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
     }
 }
 
+/// source 深度（脚本执行与分号注释刀）：static mut＋访问器——JOBS/jobs()
+/// SAFETY 形镜像（单线程逐语句取用，不跨调用持有）。嵌套计数：sourced
+/// 行再 source 即 +1，return 路径成对 -1；**sourced 内 exit 不减**——
+/// run_line → exit 内建 process::exit 杀整 shell，深度随进程消亡。
+static mut SOURCE_DEPTH: u32 = 0;
+
+/// source 深度帽（8）：self-source 直接递归（当前上下文无子 shell 面）
+/// 到帽即拒——防栈/内存自噬。
+const SOURCE_DEPTH_MAX: u32 = 8;
+
+/// source 深度访问器（jobs() 先例同款）。
+fn source_depth() -> &'static mut u32 {
+    // SAFETY: bsh 单线程（main 独占）；无并发写者。
+    unsafe { &mut *core::ptr::addr_of_mut!(SOURCE_DEPTH) }
+}
+
+/// `source <file>` / `. <file>`（脚本执行与分号注释刀·第 26/27 内建——
+/// POSIX dot 正名 `.`＋bash 别名 source 双名同臂，分发在 exec_one_items
+/// 拦截臂）：读文件后**当前上下文**逐行 [`run_line`]——bsh 无子 shell，
+/// vars/status 共享调用方壳（赋值/展开/`$?`/后台作业全落本壳，POSIX dot
+/// 语义零机制新增）。门序镜像 [`cat_output`] 三段门：valid_path 拒 →
+/// usage 2；fs_h()==0 → 码 1；get_file Err → errno 码（ENOENT=127 余 1）。
+/// 读面复用 get_file（FILE_SIZE_MAX 帽即装载帽，不另立 8KiB/64 行——
+/// 那是 BSHRC 专用）。深度帽 [`SOURCE_DEPTH_MAX`]：超帽诊断＋返 1。
+/// **注释/空行零特判**（词法层统一吞——词首 `#` 即注释，交互/脚本同一
+/// run_line 零分叉）；**sourced 内 `exit`＝杀整 shell**（run_line → exit
+/// 内建 process::exit 整进程——POSIX 本真行为记面）；source 不改 `$0`
+/// （ARG0 装配在 main 起点，装载面零动）。返末行 status；零命令执行
+/// （空/纯注释文件）＝ 0（POSIX dot 边缘面——先归零再逐行，真命令行
+/// 覆写）。未闭合引号行打诊断 status 2 续跑（POSIX 中止语义偏差——脚本
+/// 路同族记面）。
+fn source_output(
+    name: &str,
+    vars: &mut Vec<(String, String)>,
+    status: &mut i32,
+    out: &mut std::io::Stdout,
+    hist: &[Vec<u8>],
+) -> i32 {
+    if !valid_path(name) {
+        writeln!(out, "usage: source <file>").unwrap();
+        return 2;
+    }
+    if fs_h() == 0 {
+        writeln!(out, "bsh: source: {}: fs not available", name).unwrap();
+        return 1;
+    }
+    let data = match get_file(name) {
+        Ok(d) => d,
+        Err(e) => {
+            writeln!(out, "bsh: source: {}: {}", name, errno_text(e)).unwrap();
+            return errno_code(e);
+        }
+    };
+    if *source_depth() >= SOURCE_DEPTH_MAX {
+        writeln!(out, "bsh: source: too deep (max {})", SOURCE_DEPTH_MAX).unwrap();
+        return 1;
+    }
+    *source_depth() += 1;
+    // 零命令执行返 0（POSIX dot 边缘面）：先归零再逐行——任何真命令行
+    // 覆写，注释/空行 run_line 不碰 status。
+    *status = 0;
+    for line in String::from_utf8_lossy(&data).split('\n') {
+        // trim 兼剥 CRLF 尾 \r（\r 属空白——宿主生成工具 CRLF 形态）。
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        run_line(line, vars, status, out, hist);
+    }
+    *source_depth() -= 1;
+    *status
+}
+
 /// `ls`：dir_lines("/") → 每名一行（空表 = 空输出 0）。裸 `ls` 的根列名
 /// = opendir("/") → fsmgr READDIR 根并合（RAM 根 + FAT 未影子名——与
 /// v1 LIST 同源同序，C-1 刀 4 服务侧对齐）。
@@ -5710,11 +5930,11 @@ fn prompt_after_ctrl_c(d: &[u8]) -> bool {
     }
 }
 
-/// 命令行体验刀（`CLI ok n=15` = rootfs 相第 55 标记；v2 B 域起 6→10、
+/// 命令行体验刀（`CLI ok n=16` = rootfs 相第 55 标记；v2 B 域起 6→10、
 /// export 面刀 10→11、作业控制 v2 刀 11→12、v2.5 引号刀 13→14、进程账
-/// 读口 op4 刀 14→15）：
+/// 读口 op4 刀 14→15、脚本执行与分号注释刀 15→16）：
 /// 六内建行为面 + v2 四族步 + export 步自验——render_cmd 直调（与交互/重定向同一渲染
-/// 面；诊断/usage 打真 stdout = stderr 语义）。十五步全过才打；败 eprintln
+/// 面；诊断/usage 打真 stdout = stderr 语义）。十六步全过才打；败 eprintln
 /// + park（标记缺失 → smoke FAIL 兜底）：
 /// ⓪ clear——`\x1b[2J\x1b[H` 7B 逐字节精确对拍 + 带参照打幂等面；
 /// ① uname——`BerryOS aarch64 ` 前缀 + 非空版本单行（libc `.berryver` 单源）+ 带参拒；
@@ -5761,6 +5981,17 @@ fn prompt_after_ctrl_c(d: &[u8]) -> bool {
 ///    值域 ASCII 数字＋「ps x」带参拒 2；纯 render 直调静默不打印数据面
 ///    （⑫ 模板直移；裸 ps 从外部 bin/ps 转内建——bin/ps 留 rootfs，
 ///    RPC 账本面 berryctl ps 承接）。
+/// ⑯ source/.＋`;`＋词首 `#`＋$0（脚本执行与分号注释刀·第 26/27 内建
+///    与新语法面端到端）——⑯a 纯面（零 fsmgr 服务面）：`;` 无条件闸
+///    run_line 直调（败段后续照执行＋终态=末已执行段）＋注释行/尾注释
+///    no-op（status 不碰）＋$0 展开面（ARG0 默认 "bsh"——boot 链非脚
+///    本路；render_cmd 端到端经 lex_vars/shell_arg0 接线）；⑯b source/.
+///    端到端（fs 面——RAM 树小写下划线名，⑥ 同款）：put_file 建脚本 →
+///    source/`.` 逐行执行（vars 落本壳＋末行 42 终态）→ 纯注释文件归零
+///    （dot 零命令=0 边缘面）→ unlink 清场。**fs 面断言在 fs_h()==0
+///    拓扑降级**（镜像 cat 三段门先例——纯面半恒测；链序契约：cli 在
+///    U2 家族后 fat 族前，EFI 路无盘亦打 ⑯a、⑯b 静默降级，smoke-image
+///    ECO canon 同面）。
 fn cli_selftest() {
     fn render(cmd: &str, out: &mut std::io::Stdout) -> (Vec<u8>, i32) {
         render_cmd(cmd, &[], 0, out, &[])
@@ -5841,6 +6072,7 @@ fn cli_selftest() {
     }
     for b in [
         "clear", "uname", "uptime", "sleep", "type", "history", "unset", "export", "jobs", "kill", "free", "ps",
+        "source", ".",
     ] {
         if !BUILTINS.contains(&b) {
             fails.push("④ BUILTINS 单源缺新内建");
@@ -5874,7 +6106,7 @@ fn cli_selftest() {
     //    零串口噪声——usage 走纯函数 None 判定，不打诊断行）+ RAM 树三跑。
     //    小写下划线名走 RAM 表（fsmgr 名字空间按构造隔离——零盘面，链序
     //    契约保持）。
-    let rv6 = berry_lex::Vars { table: &[], status: 0, bang: -1 };
+    let rv6 = berry_lex::Vars { table: &[], status: 0, bang: -1, arg0: "bsh" };
     let redir = |s: &str| -> Option<(String, String, bool)> {
         let l = berry_lex::lex(s).ok()?;
         let (c, f, a) = redirect_of(&l.items, &rv6)?;
@@ -5928,7 +6160,7 @@ fn cli_selftest() {
     //    `a&&&b` 恒等边缘）+ run_line 直调。失败段用 `run fail`（bin/fail
     //    在档，exit 42 零输出——and_selftest 同款零串口噪声）；成功段用
     //    赋值形——全步零诊断行。
-    let rv7 = berry_lex::Vars { table: &[], status: 0, bang: -1 };
+    let rv7 = berry_lex::Vars { table: &[], status: 0, bang: -1, arg0: "bsh" };
     let chains = |s: &str| -> Vec<(String, Option<ChainOp>)> {
         match berry_lex::lex(s) {
             Ok(l) => chain_groups(&l.items)
@@ -6010,7 +6242,7 @@ fn cli_selftest() {
     //    + do_pipe 直调（`$P | cat` 拒面打一行滚新 usage 文案——零 smoke
     //    消费，rg 实证；grep -q 双段零输出真码链——u2 ③④ 同族手法，段名
     //    从 rootfs 现档择定）。
-    let rv9 = berry_lex::Vars { table: &[], status: 0, bang: -1 };
+    let rv9 = berry_lex::Vars { table: &[], status: 0, bang: -1, arg0: "bsh" };
     let seg_fields = |s: &str| -> Vec<String> {
         berry_lex::lex(s).map(|l| berry_lex::fields(&l.items, &rv9)).unwrap_or_default()
     };
@@ -6243,7 +6475,7 @@ fn cli_selftest() {
         // ⑬a 纯面：`echo "a b"` 词列 / `A='x|y'` 值无管道 Op / `"$V"` 禁分词
         //    / `echo $A` 无引号展开分裂（A="a b"）。
         let tv: Vec<(String, String)> = vec![("V".to_string(), "a b".to_string())];
-        let tvv = berry_lex::Vars { table: &tv, status: 0, bang: -1 };
+        let tvv = berry_lex::Vars { table: &tv, status: 0, bang: -1, arg0: "bsh" };
         let ok = matches!(
             berry_lex::fields(&berry_lex::lex("echo \"a b\"").unwrap().items, &tvv).as_slice(),
             [a, b] if a == "echo" && b == "a b"
@@ -6265,7 +6497,7 @@ fn cli_selftest() {
             fails.push("⑬a 双引号禁分词破缺（\"$V\" 非单词 a b）");
         }
         let ta: Vec<(String, String)> = vec![("A".to_string(), "a b".to_string())];
-        let tav = berry_lex::Vars { table: &ta, status: 0, bang: -1 };
+        let tav = berry_lex::Vars { table: &ta, status: 0, bang: -1, arg0: "bsh" };
         let ok = matches!(
             berry_lex::fields(&berry_lex::lex("echo $A").unwrap().items, &tav).as_slice(),
             [a, b, c] if a == "echo" && b == "a" && c == "b"
@@ -6373,12 +6605,97 @@ fn cli_selftest() {
         }
     }
 
+    // ⑯ source/.＋`;`＋词首 `#`＋$0（脚本执行与分号注释刀·第 26/27 内建
+    //    与新语法面端到端）：⑯a 纯面（零 fsmgr 服务面——run_line/
+    //    render_cmd 直调，⑦ 同款 `run fail` 零串口噪声）；⑯b source/.
+    //    端到端走 RAM 树 fs 面（⑥ 同款小写下划线名——fsmgr 名字空间按
+    //    构造隔离，零盘面；链序契约保持）。fs_h()==0 拓扑降级：⑯b 静默
+    //    跳过（镜像 cat 三段门先例——无 fs 礼物装配的裸相不设门）。
+    {
+        // ⑯a 纯面：`;` 无条件闸（败段后续照执行、终态=末已执行段）＋注释
+        //    行/尾注释 no-op（status 不碰、段不落表）＋$0 展开面（ARG0
+        //    默认 "bsh"——boot 链非脚本路；`echo $0` 端到端经
+        //    lex_vars→shell_arg0 接线）；零 fsmgr 服务面——run fail 走
+        //    rootfs VMO gift 非 fs RPC（⑦ 同款零串口噪声）。
+        let mut vv: Vec<(String, String)> = Vec::new();
+        let mut st = 0i32;
+        // 无条件闸：首段败（run fail=42）后续段照执行（`&&` 短路对照形）。
+        run_line("run fail ; __SA=1", &mut vv, &mut st, &mut out, &[]);
+        if st != 0 || get_var(&vv, "__SA").is_none() {
+            fails.push("⑯a `;` 无条件闸破缺（败段后续未执行）");
+        }
+        // 终态=末已执行段：赋值段（0）覆写 42。
+        run_line("__SB=1 ; __SC=2", &mut vv, &mut st, &mut out, &[]);
+        if st != 0 || get_var(&vv, "__SB").is_none() || get_var(&vv, "__SC").is_none() {
+            fails.push("⑯a `;` 双赋值段破缺（终态非末段 0）");
+        }
+        run_line("__SD=1 ; run fail", &mut vv, &mut st, &mut out, &[]);
+        if st != 42 || get_var(&vv, "__SD").is_none() {
+            fails.push("⑯a `;` 终态非末段（42）");
+        }
+        // 注释行 no-op：整行词首 `#`——status 不碰（st 保持 42）、段不执行。
+        run_line("# __SE=1", &mut vv, &mut st, &mut out, &[]);
+        if st != 42 || get_var(&vv, "__SE").is_some() {
+            fails.push("⑯a 词首 # 注释行非 no-op（status 被碰或段已执行）");
+        }
+        // 尾注释形：`A ; # c` 操作符后注释——`;` 后空组静默跳过（`;;`
+        // 前导/尾随同族），注释段不执行、st 保持 42（末已执行段终态——
+        // 赋值形会覆写 0，故对照段用 run fail）。
+        run_line("run fail ; # __SG=2", &mut vv, &mut st, &mut out, &[]);
+        if st != 42 || get_var(&vv, "__SG").is_some() {
+            fails.push("⑯a 尾注释吞尾破缺（__SG 落表或终态被碰）");
+        }
+        // $0：ARG0 默认值端到端（render_cmd→lex_vars→shell_arg0）。
+        let (d, c) = render_cmd("echo $0", &vv, st, &mut out, &[]);
+        if c != 0 || d.as_slice() != b"bsh\n".as_slice() {
+            fails.push("⑯a $0 展开面破缺（非默认 bsh）");
+        }
+        // 词中 `#` 字面对照（非注释——XCU 2.3 规则 8 边界）。
+        run_line("__SH=a#b", &mut vv, &mut st, &mut out, &[]);
+        if get_var(&vv, "__SH") != Some("a#b") {
+            fails.push("⑯a 词中 # 字面破缺（值非 a#b）");
+        }
+
+        // ⑯b source/. 端到端（fs 面——RAM 树）：建面 → source 逐行执行
+        //    （vars 落本壳＋注释行 no-op＋`;` 段＋末行 42 终态）→ `.` 正名
+        //    同臂 → 纯注释文件归零（dot 零命令=0——进场 42 被覆写）→
+        //    清场。
+        if fs_h() != 0 {
+            let body = b"# head comment\n__SV=7 ; __SV2=8\nrun fail\n";
+            let cmt = b"# only comments\n";
+            if put_file("__srcs.sh", body).is_err() || put_file("__srcc.sh", cmt).is_err() {
+                fails.push("⑯b source 建面失败（RAM 树写）");
+            } else {
+                run_line("source __srcs.sh", &mut vv, &mut st, &mut out, &[]);
+                if st != 42
+                    || get_var(&vv, "__SV") != Some("7")
+                    || get_var(&vv, "__SV2") != Some("8")
+                {
+                    fails.push("⑯b source 端到端破缺（vars 未落本壳或末行 42 终态）");
+                }
+                // `.` 正名同臂（source_output 同一拦截臂）。
+                run_line(". __srcs.sh", &mut vv, &mut st, &mut out, &[]);
+                if st != 42 || get_var(&vv, "__SV") != Some("7") {
+                    fails.push("⑯b `.` 正名同臂破缺");
+                }
+                // 零命令执行=0（进场 42 → 纯注释文件归零——POSIX dot 边缘面）。
+                run_line("source __srcc.sh", &mut vv, &mut st, &mut out, &[]);
+                if st != 0 {
+                    fails.push("⑯b 纯注释文件未归零（dot 零命令=0）");
+                }
+                if unlink_of("__srcs.sh").is_err() || unlink_of("__srcc.sh").is_err() {
+                    fails.push("⑯b RAM 树清场失败（残留自验文件）");
+                }
+            }
+        }
+    }
+
     if !fails.is_empty() {
         eprintln!("bsh: cli selftest bad: {:?}", fails);
         berry_libc::park();
     }
 
-    println!("CLI ok n=15");
+    println!("CLI ok n=16");
 }
 
 /// 命令行体验刀（`TERM ok n=3` = rootfs 相第 56 标记；v2 B 域起 2→3）——哑

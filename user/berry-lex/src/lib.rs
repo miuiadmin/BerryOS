@@ -1,12 +1,15 @@
 //! berry-lex —— bsh 词法单源纯函数面（bsh v2.5 引号与统一分词器刀，刀谱
-//! .agents/plans/2026-11-21-bsh引号与统一分词器v2.5刀实施设计.md 契约 L）。
+//! .agents/plans/2026-11-21-bsh引号与统一分词器v2.5刀实施设计.md 契约 L；
+//! `;`/词首 `#`/`$0` 三面承
+//! .agents/plans/2026-11-22-bsh脚本执行与分号注释刀实施设计.md 域1）。
 //! 单遍零回溯扫描产扁平 Item 流：Word〔Piece 段列——字面/引号/变量
 //! provenance 逐段携带，混合词 `"$V"x`/`a"b c"d 的 POSIX 逐段语义免二次
-//! 改造〕＋Op〔`&&`/`||`/`|`/`>`/`>>`，**仅未引号区识别**〕＋Sep〔未引号
-//! 空白原字节保留——render 保距的载体〕；配三视图纯函数与 strip_bg 引号
-//! 感知版。bsh（musl 独立小工作区 path 依赖）与 3.0 bsh-syntax 共用的词法
-//! 层单源——本扫描核即 3.0 Lexer 词法层子集（同核两层消费，禁平行第二套
-//! 扫描器）。
+//! 改造〕＋Op〔`&&`/`||`/`|`/`>`/`>>`/`;`，**仅未引号区识别**〕＋Sep〔未
+//! 引号空白原字节保留——render 保距的载体〕＋词首 `#` 注释至行尾（XCU
+//! 2.3 规则 8——仅词首起注释，词中/闭引号续词 `#` 是字面）；配三视图纯
+//! 函数与 strip_bg 引号/注释感知版。bsh（musl 独立小工作区 path 依赖）
+//! 与 3.0 bsh-syntax 共用的词法层单源——本扫描核即 3.0 Lexer 词法层子集
+//! （同核两层消费，禁平行第二套扫描器）。
 //!
 //! `cfg_attr(not(test), no_std)` + `extern crate alloc`（berry-jobs/
 //! berry-complete/berry-poll 镜像形态）：库本体 no_std（workspace
@@ -14,20 +17,22 @@
 //! （bsh，musl target）alloc 由 std 提供。零 syscall/零 IO/零 unsafe。
 //! host 测试经 justfile test-host 显式行跑。
 //!
-//! 反注入纪律（脊，docs/shell设计 操作符识别纪律的引号外化保持法）：五族
+//! 反注入纪律（脊，docs/shell设计 操作符识别纪律的引号外化保持法）：六族
 //! 操作符只在未引号区成 token；展开产物永为数据——fields 的无引号展开只
 //! 分裂字段、永不产 Op（`P=a|b` 后 `echo $P` 的 items 零 Op）。
 //!
 //! 五件原语：
-//! - [`lex`]：单遍扫描 → Item 流（未闭合引号 `Err(UnclosedQuote)`）；
-//! - [`strip_bg`]：行尾独立 `&` 剥离（引号感知——引号区内尾 `&` 不剥；
-//!   返回契约与 berry-jobs 盲版逐字节同，良构输入盲/感知等价）；
-//! - [`render`]：剥引号＋`$NAME`/`$?`/`$!` 展开**不分词**保距（bsh expand
-//!   扫描律字节级移植——无引号输入下逐字节恒等，恒等契约执法点）；
+//! - [`lex`]：单遍扫描 → Item 流（词首 `#` 注释丢弃至行尾；未闭合引号
+//!   `Err(UnclosedQuote)`）；
+//! - [`strip_bg`]：行尾独立 `&` 剥离（引号/注释感知——引号区内与词首
+//!   `#` 注释内尾 `&` 不剥；零引号且零词首 `#` 输入与 berry-jobs 盲版
+//!   逐字节同）；
+//! - [`render`]：剥引号＋`$NAME`/`$?`/`$!`/`$0` 展开**不分词**保距（bsh
+//!   expand 扫描律字节级移植——无引号输入下逐字节恒等，恒等契约执法点）；
 //! - [`fields`]：argv 视图（无引号展开按空白分裂＋邻接粘连＋Op 融合字面
 //!   并入——`a>|b` 段名 `a>`、`a | b > c` 段参 `>,c` 保距）；
-//! - [`word_texts`]：剥引号不展开（Var/Status/Bang 还源文本 `$NAME`/`$?`/
-//!   `$!` 字面——unset 名域/赋值名检测消费）。
+//! - [`word_texts`]：剥引号不展开（Var/Status/Bang/Arg0 还源文本
+//!   `$NAME`/`$?`/`$!`/`$0` 字面——unset 名域/赋值名检测消费）。
 
 #![cfg_attr(not(test), no_std)]
 extern crate alloc;
@@ -36,7 +41,7 @@ use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
-/// 链/管道/重定向操作符（仅未引号区识别——引号内字节全是数据）。
+/// 链（含顺序 `;`）/管道/重定向操作符（仅未引号区识别——引号内字节全是数据）。
 /// 字面文本由 [`Op::text`] 派生（render/fields 融合的单源）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
@@ -50,6 +55,9 @@ pub enum Op {
     Redirect,
     /// `>>`：重定向（追加写）。
     Append,
+    /// `;`：顺序执行（无条件闸——POSIX 2.9.3 顺序表；`;;`＝两枚，case
+    /// 语法挂 3.0）。
+    Semicolon,
 }
 
 impl Op {
@@ -61,6 +69,7 @@ impl Op {
             Op::Pipe => "|",
             Op::Redirect => ">",
             Op::Append => ">>",
+            Op::Semicolon => ";",
         }
     }
 }
@@ -101,6 +110,12 @@ pub enum Piece {
     },
     /// `$!`（最后一次后台作业号；未设＝<0 → 展开空串，镜像 bg_last 语义）。
     Bang {
+        /// 段的引号 provenance。
+        quote: Quote,
+    },
+    /// `$0`（shell 名——交互="bsh"、脚本=脚本名；$1..$n 位置参数挂
+    /// 3.0，余数字维持 `$` 字面。Single 区不产此形——那里 `$` 是字面）。
+    Arg0 {
         /// 段的引号 provenance。
         quote: Quote,
     },
@@ -228,6 +243,14 @@ impl Out {
         self.sep_flush();
         self.items.push(Item::Op(op));
     }
+    /// 词首谓词（Normal 态 `#` 注释判）：无开字面游程且无已积词段——
+    /// `#` 仅词首起注释（XCU 2.3 规则 8）。ws()/op() 断词清段（`a ;
+    /// # c` 操作符后注释、`a # c` 空白后注释）；词中字面（`a#b`）/闭
+    /// 引号续词（`"x"#y`）/展开段后（`$A#b`）游程或段在——`#` 落词中
+    /// 为字面。
+    fn at_word_start(&self) -> bool {
+        self.lit_q.is_none() && self.pieces.is_empty()
+    }
     /// 展开段（Var/Status/Bang）：断 Sep 断字面游程，Piece 入当前词；区内
     /// 产段计为引号区内容（`"$V"` 不补空段）。
     fn piece(&mut self, p: Piece) {
@@ -250,9 +273,9 @@ fn is_ascii_ws(c: u8) -> bool {
     matches!(c, b' ' | b'\t' | 0x0B | 0x0C | b'\r' | b'\n')
 }
 
-/// `$` 三形扫描（Normal/Double 共用——bsh expand 扫描律同形：`$NAME` 贪名、
-/// `$?`/`$!` 单点、`$` 后非上述字符（或行尾）字面一字节）。返回消费后的
-/// 下标。
+/// `$` 四形扫描（Normal/Double 共用——bsh expand 扫描律同形：`$NAME` 贪名、
+/// `$?`/`$!`/`$0` 单点、`$` 后非上述字符（或行尾）字面一字节）。返回消费
+/// 后的下标。
 fn scan_dollar(line: &str, b: &[u8], i: usize, quote: Quote, out: &mut Out) -> usize {
     if i + 1 < b.len() {
         let c = b[i + 1];
@@ -262,6 +285,11 @@ fn scan_dollar(line: &str, b: &[u8], i: usize, quote: Quote, out: &mut Out) -> u
         }
         if c == b'!' {
             out.piece(Piece::Bang { quote });
+            return i + 2;
+        }
+        if c == b'0' {
+            // 数字零臂（$0 shell 名）；$1..$n 挂 3.0——余数字落 `$` 字面臂。
+            out.piece(Piece::Arg0 { quote });
             return i + 2;
         }
         if c.is_ascii_alphabetic() || c == b'_' {
@@ -285,14 +313,18 @@ fn scan_dollar(line: &str, b: &[u8], i: usize, quote: Quote, out: &mut Out) -> u
 /// 单遍零回溯词法扫描：`line` → 扁平 Item 流。三态状态机：
 /// - 单引号区内一切字节字面（含 `"`、`\`、`$` 与操作符字节——Op 永不在
 ///   区内产出）；
-/// - 双引号区内 `$NAME`/`$?`/`$!` 三形产 Piece 携 Double（展开禁分词——
+/// - 双引号区内 `$NAME`/`$?`/`$!` 四形产 Piece（含 $0） 携 Double（展开禁分词——
 ///   fields 视图执法）、仅 `\$` `\"` `\\` 三转义（其余 `\x` 双字节字面）、
 ///   `'` 与空白字面（引号内空白不是 Sep——`"a b"` 单词）；
 /// - 未引号 `\` ＝字面字节（v2.5 裁决 4——恒等契约优先，今日 `echo a\b`
 ///   输出 `a\b` 零漂；行尾孤立 `\` 亦字面；POSIX 转义挂 3.0）；
 /// - 空白积累 Sep；maximal munch 算符：`&&`→And、`||`→Or、`>>`→Append、
-///   单 `>`→Redirect、单 `|`→Pipe；单 `&` 非尾缀＝词内字面字节（尾缀剥离
-///   归 strip_bg 上游）；
+///   单 `>`→Redirect、单 `|`→Pipe、单 `;`→Semicolon（`;;`＝两枚——case
+///   挂 3.0）；单 `&` 非尾缀＝词内字面字节（尾缀剥离归 strip_bg 上游）；
+/// - 词首 `#`（[`Out`] 词首谓词——行首/未引号空白/操作符后）起注释丢弃
+///   至行尾（XCU 2.3 规则 8 先于规则 9）；词中 `a#b`/闭引号续词 `"x"#y`/
+///   展开段后 `$A#b` 的 `#` 是字面；单行输入与 3.0 State::Comment 第四态
+///   零差（多行注释挂 3.0）；
 /// - 多字节 UTF-8 解 char 归类（连续字节 ≥0x80 不撞 ASCII 语法位；Normal
 ///   态 Unicode 空白如 U+3000 同入 Sep）；
 /// - 相邻无 Sep 的 Piece 并入同 Word（POSIX 相邻拼接）。
@@ -388,6 +420,14 @@ pub fn lex(line: &str) -> Result<Lexed, LexError> {
                         out.op(Op::Redirect);
                         i += 1;
                     }
+                } else if c == b';' {
+                    // 顺序执行算符（无条件闸——与 &&/|| 短路族相对）。
+                    out.op(Op::Semicolon);
+                    i += 1;
+                } else if c == b'#' && out.at_word_start() {
+                    // 词首注释至行尾：丢弃余字节（break 只出 Normal 态
+                    // ——EOL 未闭错检零改；单行输入与 3.0 第四态零差）。
+                    break;
                 } else {
                     out.lit_push(&line[i..i + 1], Quote::None);
                     i += 1;
@@ -411,15 +451,18 @@ fn quote_of(state: State) -> Quote {
     }
 }
 
-/// 行尾独立单 `&` 剥离（引号感知版——berry-jobs 盲版语料整迁）。返回契约
-/// 与 berry-jobs 现版逐字节同：false 返**原文切片**（零漂）、true 返剥后
-/// trim 口径、循环剥、len 1 裸 `&` 停、前字符 `&` 停。差别仅在引号区——
-/// 尾 `&` 在引号区内不剥。良构输入下盲/感知版等价（良构引号区尾恒是闭引号
-/// 字节非 `&`；唯未闭合引号行尾 `&` 落区内——该行随后 lex 亦 `UnclosedQuote`
-/// 拒，错误面零契约）。
+/// 行尾独立单 `&` 剥离（引号/注释感知版——berry-jobs 盲版语料整迁）。返回
+/// 契约与 berry-jobs 现版逐字节同：false 返**原文切片**（零漂）、true 返
+/// 剥后 trim 口径、循环剥、len 1 裸 `&` 停、前字符 `&` 停。差别仅在引号
+/// 区与词首注释区——尾 `&` 在引号区内/注释内不剥。零引号且零词首 `#` 输入
+/// 下盲/感知版等价（良构引号区尾恒是闭引号字节非 `&`；唯未闭合引号行尾
+/// `&` 落区内——该行随后 lex 亦 `UnclosedQuote` 拒，错误面零契约）。
 ///
 /// 引号三形：`echo "a" &`→(`echo "a"`, true)、`echo "&"`→原文 false、
 /// `echo "a&`→原文 false（未闭合区内尾 `&` 不剥）。
+/// 注释形（2026-11-22 刀）：`# … &`→原文 false（整行注释＝前台无操作
+/// POSIX 形——注释内尾 `&` 不剥）；`a#b &`/`"x"#y &` 照剥（词中/闭引号
+/// 续词 `#` 非注释）。
 pub fn strip_bg(line: &str) -> (&str, bool) {
     let mut rest = line.trim();
     let mut bg = false;
@@ -448,21 +491,38 @@ pub fn strip_bg(line: &str) -> (&str, bool) {
 }
 
 /// 行末字节是否在引号区外（三态扫描；双引号内 `\` 跳下一字节；未闭合
-/// 引号 → 末字节视为区内 → false）。
+/// 引号 → 末字节视为区内 → false；词首 `#` 后余文视同区内 → false——
+/// 注释截停，注释内尾 `&` 不剥）。词首旗是 strip_bg 侧近似判：行首/未
+/// 引号空白/`&|>;` 字节后为词首，引号开闭与其余词内容字节续词——单 `&`
+/// 在 lex 律是词内字面，此处并入算符字节集（保守偏差：`a&#b &` 判注释
+/// 不剥——少剥不误剥，注释误启只余前台无操作面）。
 fn ends_outside_quotes(s: &str) -> bool {
     let b = s.as_bytes();
     let mut state = State::Normal;
+    let mut word_start = true;
     let mut i = 0usize;
     while i < b.len() {
         match state {
             State::Normal => match b[i] {
-                b'\'' => state = State::Single,
-                b'"' => state = State::Double,
-                _ => {}
+                b'\'' => {
+                    state = State::Single;
+                    word_start = false;
+                }
+                b'"' => {
+                    state = State::Double;
+                    word_start = false;
+                }
+                // 词首 # 截停——余文（含尾 &）视同区内。
+                b'#' if word_start => return false,
+                c if is_ascii_ws(c) => word_start = true,
+                b'&' | b'|' | b'>' | b';' => word_start = true,
+                _ => word_start = false,
             },
             State::Single => {
                 if b[i] == b'\'' {
                     state = State::Normal;
+                    // 闭引号续词——# 落词中为字面。
+                    word_start = false;
                 }
             }
             State::Double => {
@@ -470,6 +530,7 @@ fn ends_outside_quotes(s: &str) -> bool {
                     i += 1; // 转义吃下一字节
                 } else if b[i] == b'"' {
                     state = State::Normal;
+                    word_start = false; // 闭引号续词
                 }
             }
         }
@@ -479,7 +540,7 @@ fn ends_outside_quotes(s: &str) -> bool {
 }
 
 /// 三视图渲染注入：变量表（**后见者胜**——镜像 bsh get_var rev-find）、
-/// `$?` 值、`$!` 值（<0＝未设 → 展开空串，镜像 bg_last 语义）。
+/// `$?` 值、`$!` 值（<0＝未设 → 展开空串，镜像 bg_last 语义）、`$0` shell 名（交互="bsh"/脚本=脚本名——ARG0 装配）。
 pub struct Vars<'a> {
     /// 变量表（同名取最后一次出现）。
     pub table: &'a [(String, String)],
@@ -487,13 +548,16 @@ pub struct Vars<'a> {
     pub status: i32,
     /// `$!` 后台作业号（未设传负值）。
     pub bang: i32,
+    /// `$0` shell 名（交互="bsh"、脚本=脚本名——bsh ARG0 static 装配；
+    /// vars 表不注入 "0" 名——防 env/export 面污染，2026-11-22 刀 D9）。
+    pub arg0: &'a str,
 }
 
 fn lookup<'a>(table: &'a [(String, String)], name: &str) -> Option<&'a str> {
     table.iter().rev().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
 }
 
-/// 视图一 render：剥引号＋`$NAME`/`$?`/`$!` 按 Piece 展开且**不分词**
+/// 视图一 render：剥引号＋`$NAME`/`$?`/`$!`/`$0` 按 Piece 展开且**不分词**
 /// 保距——Sep 原字节、Op 字面文本、引号剥除、双引号转义已还原。bsh
 /// expand 扫描律字节级移植（未定义空串、贪名扫描、`$` 后非上述字符字面、
 /// UTF-8 透传、替换产物不重扫）。**无引号输入下与 bsh expand 逐字节恒等**
@@ -521,6 +585,9 @@ pub fn render(items: &[Item], vars: &Vars) -> String {
                             if vars.bang >= 0 {
                                 out.push_str(&vars.bang.to_string());
                             }
+                        }
+                        Piece::Arg0 { .. } => {
+                            out.push_str(vars.arg0);
                         }
                     }
                 }
@@ -596,7 +663,7 @@ impl Fields {
 }
 
 /// 视图二 fields：argv 产位——Sep 断字段；字段内 Piece 串接（Lit 逐字、
-/// Var/Status/Bang 展开值），仅 quote==None 的展开值按空白分裂；Op 融合
+/// Var/Status/Bang/Arg0 展开值），仅 quote==None 的展开值按空白分裂；Op 融合
 /// 为字面文本并入无 Sep 邻接字段（无开字段则起字段——`a>|b` 管道组一段名
 /// `a>`、`a | b > c` 二段参 `[>,c]` 保距）。纯无引号展开致空的字段丢弃、
 /// 含 quoted Piece 的空字段保留（空引号——argv 收空串）。
@@ -631,6 +698,9 @@ pub fn fields(items: &[Item], vars: &Vars) -> Vec<String> {
                             };
                             fb.push_expansion(&v, *quote);
                         }
+                        Piece::Arg0 { quote } => {
+                            fb.push_expansion(vars.arg0, *quote);
+                        }
                     }
                 }
             }
@@ -639,8 +709,8 @@ pub fn fields(items: &[Item], vars: &Vars) -> Vec<String> {
     fb.finish()
 }
 
-/// 视图三 word_texts：剥引号、Var/Status/Bang **还原源文本**（`$NAME`/
-/// `$?`/`$!` 字面）不展开。字段切分/Op 融合/空字段保留三律与 fields 同
+/// 视图三 word_texts：剥引号、Var/Status/Bang/Arg0 **还原源文本**（`$NAME`/
+/// `$?`/`$!`/`$0` 字面）不展开。字段切分/Op 融合/空字段保留三律与 fields 同
 /// 源（unset 名列/export 分类/赋值名检测消费——`unset $A` 字面名 `$A`
 /// 零漂、`unset 'A'` 剥引号新增可用）。
 pub fn word_texts(items: &[Item]) -> Vec<String> {
@@ -668,6 +738,9 @@ pub fn word_texts(items: &[Item]) -> Vec<String> {
                         }
                         Piece::Bang { quote } => {
                             fb.seg("$!", *quote != Quote::None);
+                        }
+                        Piece::Arg0 { quote } => {
+                            fb.seg("$0", *quote != Quote::None);
                         }
                     }
                 }
@@ -714,6 +787,9 @@ mod tests {
     fn bg(q: Quote) -> Piece {
         Piece::Bang { quote: q }
     }
+    fn a0(q: Quote) -> Piece {
+        Piece::Arg0 { quote: q }
+    }
     fn lx(s: &str) -> Vec<Item> {
         lex(s).expect("lex 不应报错").items
     }
@@ -754,6 +830,7 @@ mod tests {
             table: t,
             status: 7,
             bang: 3,
+            arg0: "bsh",
         }
     }
 
@@ -844,6 +921,48 @@ mod tests {
     }
 
     #[test]
+    fn lex_semicolon_forms() {
+        // D5：单 `;`→Op(Semicolon)（`>` 臂后无 maximal munch 冲突）；`;;`＝
+        // 两枚（case 语法挂 3.0——空组静默跳过族）；前导/尾随分号同产 Op。
+        assert_eq!(lx("a;b"), vec![lw("a"), op(Op::Semicolon), lw("b")]);
+        assert_eq!(
+            lx("a ; b"),
+            vec![lw("a"), sep(" "), op(Op::Semicolon), sep(" "), lw("b")]
+        );
+        assert_eq!(
+            lx("a; b"),
+            vec![lw("a"), op(Op::Semicolon), sep(" "), lw("b")]
+        );
+        assert_eq!(
+            lx("a ;b"),
+            vec![lw("a"), sep(" "), op(Op::Semicolon), lw("b")]
+        );
+        assert_eq!(lx(";a"), vec![op(Op::Semicolon), lw("a")]);
+        assert_eq!(lx("a;"), vec![lw("a"), op(Op::Semicolon)]);
+        assert_eq!(lx(";;"), vec![op(Op::Semicolon), op(Op::Semicolon)]);
+        assert_eq!(
+            lx("a;;b"),
+            vec![lw("a"), op(Op::Semicolon), op(Op::Semicolon), lw("b")]
+        );
+    }
+
+    #[test]
+    fn lex_semicolon_quoted_data() {
+        // 引号内 `;` 是数据——永不产 Op（反注入纪律）。
+        assert_eq!(lx("';'"), vec![word(vec![lit(";", Quote::Single)])]);
+        assert_eq!(lx("\";\""), vec![word(vec![lit(";", Quote::Double)])]);
+        assert_eq!(
+            lx("a';'b"),
+            vec![word(vec![
+                lit("a", Quote::None),
+                lit(";", Quote::Single),
+                lit("b", Quote::None)
+            ])]
+        );
+    }
+
+
+    #[test]
     fn lex_maximal_munch_triples() {
         // `>>>`＝Append+Redirect（消费层重定向族 ≥2 → usage 2 同观测）；
         // `a|||b` 余段 `|b`（今日 split_chains/split 同形）；`a&&&b` 余段 `&b`。
@@ -885,6 +1004,74 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn lex_comment_word_initial() {
+        // D6：词首 `#` 注释至行尾（XCU 2.3 规则 8）——行首/未引号空白后
+        // （空白含 Unicode 空白——Sep 集冻结 char::is_whitespace）。
+        assert_eq!(lx("# c"), Vec::<Item>::new());
+        assert_eq!(lx("#"), Vec::<Item>::new());
+        assert_eq!(lx("  # c"), vec![sep("  ")]);
+        assert_eq!(lx("a # c"), vec![lw("a"), sep(" ")]);
+        assert_eq!(lx("a\u{3000}# c"), vec![lw("a"), sep("\u{3000}")]);
+        // 注释内引号字节惰性——不开区；EOL 错检零改的注释侧。
+        assert_eq!(lex("# 'unclosed"), Ok(Lexed { items: Vec::new() }));
+        assert_eq!(
+            lex("a # '\""),
+            Ok(Lexed {
+                items: vec![lw("a"), sep(" ")]
+            })
+        );
+    }
+
+    #[test]
+    fn lex_comment_after_operator() {
+        // 操作符后即词首（op() 断词清段）：`;`/`&&`/`|`/`>` 后注释四形。
+        assert_eq!(
+            lx("a ; # c"),
+            vec![lw("a"), sep(" "), op(Op::Semicolon), sep(" ")]
+        );
+        assert_eq!(
+            lx("a && # c"),
+            vec![lw("a"), sep(" "), op(Op::And), sep(" ")]
+        );
+        assert_eq!(lx("a| #c"), vec![lw("a"), op(Op::Pipe), sep(" ")]);
+        assert_eq!(lx("a> #f"), vec![lw("a"), op(Op::Redirect), sep(" ")]);
+        assert_eq!(lx("a;#b"), vec![lw("a"), op(Op::Semicolon)]);
+    }
+
+    #[test]
+    fn lex_comment_word_middle_and_quote_continue() {
+        // 非词首 `#` 一律字面：词中 `a#b`、闭引号续词 `"x"#y`/`'x'#y`、
+        // 空引号续段 `""#y`、展开段后 `$A#b`、`$` 字面臂 `$#`、单 `&` 词内
+        // `a&#b`（单 & 非 Op 不清段——与 `&&` 后注释形对照）。
+        assert_eq!(lx("a#b"), vec![word(vec![lit("a#b", Quote::None)])]);
+        assert_eq!(
+            lx("echo a#b"),
+            vec![lw("echo"), sep(" "), word(vec![lit("a#b", Quote::None)])]
+        );
+        assert_eq!(
+            lx("\"x\"#y"),
+            vec![word(vec![lit("x", Quote::Double), lit("#y", Quote::None)])]
+        );
+        assert_eq!(
+            lx("'x'#y"),
+            vec![word(vec![lit("x", Quote::Single), lit("#y", Quote::None)])]
+        );
+        assert_eq!(
+            lx("\"\"#y"),
+            vec![word(vec![lit("", Quote::Double), lit("#y", Quote::None)])]
+        );
+        assert_eq!(
+            lx("$A#b"),
+            vec![word(vec![var("A", Quote::None), lit("#b", Quote::None)])]
+        );
+        assert_eq!(lx("$#"), vec![word(vec![lit("$#", Quote::None)])]);
+        assert_eq!(lx("a&#b"), vec![word(vec![lit("a&#b", Quote::None)])]);
+        // `&&` 是 Op——其后 `#` 起注释（对照形）。
+        assert_eq!(lx("a&&#b"), vec![lw("a"), op(Op::And)]);
+    }
+
 
     #[test]
     fn lex_single_quote_literal_all() {
@@ -1059,6 +1246,45 @@ mod tests {
     }
 
     #[test]
+    fn lex_dollar_zero_piece() {
+        // D9：`$0` 数字零臂 → Piece::Arg0（携 provenance）；单引号内 `$`
+        // 是字面不产段；邻接字节续词；`$00`＝Arg0＋字面 0。
+        assert_eq!(lx("$0"), vec![word(vec![a0(Quote::None)])]);
+        assert_eq!(
+            lx("x$0y"),
+            vec![word(vec![
+                lit("x", Quote::None),
+                a0(Quote::None),
+                lit("y", Quote::None)
+            ])]
+        );
+        assert_eq!(lx("\"$0\""), vec![word(vec![a0(Quote::Double)])]);
+        assert_eq!(lx("'$0'"), vec![word(vec![lit("$0", Quote::Single)])]);
+        assert_eq!(
+            lx("$0x"),
+            vec![word(vec![a0(Quote::None), lit("x", Quote::None)])]
+        );
+        assert_eq!(
+            lx("$00"),
+            vec![word(vec![a0(Quote::None), lit("0", Quote::None)])]
+        );
+        assert_eq!(
+            lx("A=$0"),
+            vec![word(vec![lit("A=", Quote::None), a0(Quote::None)])]
+        );
+    }
+
+    #[test]
+    fn lex_dollar_other_digits_literal() {
+        // 余数字维持 `$` 字面（$1..$n/$#/shift/set -- 挂 3.0）。
+        assert_eq!(lx("$1"), vec![word(vec![lit("$1", Quote::None)])]);
+        assert_eq!(lx("$10"), vec![word(vec![lit("$10", Quote::None)])]);
+        assert_eq!(lx("\"$1\""), vec![word(vec![lit("$1", Quote::Double)])]);
+        assert_eq!(lx("a$2b"), vec![word(vec![lit("a$2b", Quote::None)])]);
+    }
+
+
+    #[test]
     fn lex_utf8_words() {
         assert_eq!(
             lx("echo 中文 测试"),
@@ -1140,6 +1366,7 @@ mod tests {
                     table: &t,
                     status: 7,
                     bang,
+                    arg0: "bsh",
                 };
                 assert_eq!(
                     render(&lx(l), &v),
@@ -1158,6 +1385,7 @@ mod tests {
                 table: &t,
                 status,
                 bang: -1,
+                arg0: "bsh",
             };
             assert_eq!(render(&lx("$?"), &v), expand_ref("$?", &t, status, -1));
             assert_eq!(render(&lx("a$?b"), &v), expand_ref("a$?b", &t, status, -1));
@@ -1173,6 +1401,69 @@ mod tests {
             assert_eq!(render(&lx(l), &v), l, "回环破:{l:?}");
         }
     }
+
+    #[test]
+    fn render_identity_rescope_three_free() {
+        // 恒等契约重划界（2026-11-22 刀 D10）：无 `;`/无词首 `#`/无 `$0`
+        // 输入零漂移。三零语料抽样对拍（含 `#` 非词首不渗漏探针——`a#b`/
+        // `$A#b` 词中字面恒等；`;` render 面亦保距——见分号回环测）。
+        let t = table();
+        let v = vs(&t);
+        for l in [
+            "echo hi", "a && b || c", "a | b > c", "P=a&b", "run a&b", "x=$?",
+            "echo $V", "a & b", "a#b", "$A#b",
+        ] {
+            assert_eq!(render(&lx(l), &v), expand_ref(l, &t, 7, 3), "恒等破:{l:?}");
+        }
+    }
+
+    #[test]
+    fn render_semicolon_roundtrip() {
+        // `;` Op 字面还原——render 全类回环逐字节（恒等新增量：分号输入
+        // render 面仍保距；执行面切多命令属 bsh 消费——恒等契约界外）。
+        let t = table();
+        let v = vs(&t);
+        for l in [
+            "a;b", "a ; b", "a; b", "a ;b", ";a", "a;", ";;", "a;;b", "a && b ; c",
+        ] {
+            assert_eq!(render(&lx(l), &v), l, "回环破:{l:?}");
+            assert_eq!(render(&lx(l), &v), expand_ref(l, &t, 7, 3), "镜像破:{l:?}");
+        }
+    }
+
+    #[test]
+    fn render_comment_drop_forms() {
+        // 词首注释丢弃至行尾——render 面注释文消失（注释输入在恒等契约
+        // 界外——钉板新观测）；词中 `#` 字面不丢。
+        let t = table();
+        let v = vs(&t);
+        assert_eq!(render(&lx("# c"), &v), "");
+        assert_eq!(render(&lx("a # c"), &v), "a ");
+        assert_eq!(render(&lx("a ; # c"), &v), "a ; ");
+        assert_eq!(render(&lx("echo hi # tail"), &v), "echo hi ");
+        assert_eq!(render(&lx("a#b"), &v), "a#b");
+    }
+
+    #[test]
+    fn render_arg0_expansion() {
+        // $0 展开：交互默认 "bsh"／脚本名（bsh ARG0 装配——域 3 消费）。
+        let t = table();
+        let vi = vs(&t);
+        assert_eq!(render(&lx("$0"), &vi), "bsh");
+        assert_eq!(render(&lx("echo $0"), &vi), "echo bsh");
+        let v_script = Vars {
+            table: &t,
+            status: 7,
+            bang: 3,
+            arg0: "/RAM/T.SH",
+        };
+        assert_eq!(render(&lx("$0"), &v_script), "/RAM/T.SH");
+        assert_eq!(render(&lx("\"$0\""), &v_script), "/RAM/T.SH");
+        assert_eq!(render(&lx("x$0y"), &v_script), "x/RAM/T.SHy");
+        // 单引号内 $0 字面。
+        assert_eq!(render(&lx("'$0'"), &vi), "$0");
+    }
+
 
     #[test]
     fn render_strips_quotes() {
@@ -1193,6 +1484,69 @@ mod tests {
         assert_eq!(render(&lx(r#""a\\b""#), &v), "a\\b");
         assert_eq!(render(&lx(r#""a\nb""#), &v), "a\\nb"); // \n 双字节字面
     }
+
+    #[test]
+    fn fields_semicolon_groups() {
+        // 消费面形状：Semicolon 切组（chain_groups 三元扩展的 berry-lex 侧
+        // 锚）；整流无 Sep 全融合（`a;b`→"a;b"——分组前置条件钉板）；空组
+        // 族（前导/尾随/`;;` 中空——宽容偏差家族）。
+        let t = table();
+        let v = vs(&t);
+        let items = lx("a ; b");
+        let gs = groups_at(&items, Op::Semicolon);
+        assert_eq!(gs.len(), 2);
+        assert_eq!(fields(gs[0], &v), vec!["a"]);
+        assert_eq!(fields(gs[1], &v), vec!["b"]);
+        assert_eq!(fields(&items, &v), vec!["a", ";", "b"]);
+        assert_eq!(fields(&lx("a;b"), &v), vec!["a;b"]);
+        let items = lx("a;");
+        let gs = groups_at(&items, Op::Semicolon);
+        assert_eq!(gs.len(), 2);
+        assert!(gs[1].is_empty());
+        let items = lx(";a");
+        let gs = groups_at(&items, Op::Semicolon);
+        assert_eq!(gs.len(), 2);
+        assert!(gs[0].is_empty());
+        let items = lx("a;;b");
+        let gs = groups_at(&items, Op::Semicolon);
+        assert_eq!(gs.len(), 3);
+        assert!(gs[1].is_empty());
+    }
+
+    #[test]
+    fn fields_comment_noop_shape() {
+        // 注释行 argv 空——消费层 no-op（bsh 空命令跳过同观测）。
+        let t = table();
+        let v = vs(&t);
+        assert_eq!(fields(&lx("# c"), &v), Vec::<String>::new());
+        assert_eq!(fields(&lx("  # c"), &v), Vec::<String>::new());
+        assert_eq!(fields(&lx("echo a # c"), &v), vec!["echo", "a"]);
+    }
+
+    #[test]
+    fn fields_arg0_split_and_quoted() {
+        // provenance 律：无引号 $0 展开按空白分裂、双引号禁分词；空 arg0
+        // 无引号消词、quoted 保空字段。
+        let t = table();
+        let v = Vars {
+            table: &t,
+            status: 7,
+            bang: 3,
+            arg0: "my script",
+        };
+        assert_eq!(fields(&lx("echo $0"), &v), vec!["echo", "my", "script"]);
+        assert_eq!(fields(&lx("echo \"$0\""), &v), vec!["echo", "my script"]);
+        let ve = Vars {
+            table: &t,
+            status: 7,
+            bang: 3,
+            arg0: "",
+        };
+        assert_eq!(fields(&lx("$0"), &ve), Vec::<String>::new());
+        assert_eq!(fields(&lx("\"$0\""), &ve), vec![""]);
+        assert_eq!(fields(&lx("$0"), &vs(&t)), vec!["bsh"]);
+    }
+
 
     // ======================== fields：argv 视图三律 ========================
 
@@ -1286,6 +1640,7 @@ mod tests {
         let v = Vars {
             table: &t,
             status: 7,
+            arg0: "bsh",
             bang: 3,
         };
         assert_eq!(fields(&lx("$?"), &v), vec!["7"]);
@@ -1295,6 +1650,7 @@ mod tests {
             table: &t,
             status: 0,
             bang: -1,
+            arg0: "bsh",
         };
         assert_eq!(fields(&lx("$!"), &vn), Vec::<String>::new()); // 未设消词
         assert_eq!(fields(&lx("\"$!\""), &vn), vec![""]); // quoted 保空
@@ -1338,6 +1694,18 @@ mod tests {
         assert_eq!(fields(cg[0], &v), vec!["a"]);
         assert_eq!(fields(cg[1], &v), vec!["|b"]);
     }
+
+    #[test]
+    fn word_texts_semicolon_and_arg0_restore() {
+        // `;` 融合与 fields 同律；Arg0 还源 `$0` 字面（unset 名域零渗漏）。
+        assert_eq!(word_texts(&lx("a ; b")), vec!["a", ";", "b"]);
+        assert_eq!(word_texts(&lx("a;b")), vec!["a;b"]);
+        assert_eq!(word_texts(&lx("$0")), vec!["$0"]);
+        assert_eq!(word_texts(&lx("x$0y")), vec!["x$0y"]);
+        assert_eq!(word_texts(&lx("\"$0\"")), vec!["$0"]);
+        assert_eq!(word_texts(&lx("'$0'")), vec!["$0"]);
+    }
+
 
     // ======================== word_texts：剥引号不展开 ========================
 
@@ -1468,6 +1836,60 @@ mod tests {
         assert!(bg);
         assert_eq!(r, r#"echo "a\\""#);
     }
+
+    #[test]
+    fn strip_comment_tail_amp_not_stripped() {
+        // D7：注释内尾 `&` 不剥（`# … &`＝前台＋整行注释 POSIX 形）——
+        // 词首 `#` 截停使 ends_outside_quotes 视同区内。
+        for line in [
+            "# c &",
+            "# &",
+            "run x # y &",
+            "a ; # b &",
+            "a #b &",
+            "  # z &  ",
+        ] {
+            let (r, bg) = strip_bg(line);
+            assert!(!bg, "误剥:{line:?}");
+            assert_eq!(r, line);
+        }
+    }
+
+    #[test]
+    fn strip_comment_word_start_edges() {
+        // 非词首 `#` 不截停——照常剥：词中 `a#b`、闭引号续词 `"x"#y`、
+        // 引号区内 `#`（数据）；词首判含空白后与引号闭区后续词两向钉板。
+        let (r, bg) = strip_bg("a#b &");
+        assert!(bg);
+        assert_eq!(r, "a#b");
+        let (r, bg) = strip_bg("\"x\"#y &");
+        assert!(bg);
+        assert_eq!(r, "\"x\"#y");
+        let (r, bg) = strip_bg("echo \"#x\" &");
+        assert!(bg);
+        assert_eq!(r, "echo \"#x\"");
+        let (r, bg) = strip_bg("run \"a\" # b &");
+        assert!(!bg);
+        assert_eq!(r, "run \"a\" # b &");
+        let (r, bg) = strip_bg("'a' # b &");
+        assert!(!bg);
+        assert_eq!(r, "'a' # b &");
+    }
+
+    #[test]
+    fn strip_comment_after_amp_conservative() {
+        // 词首判把单 `&` 并入算符字节集（保守近似）：`a&#b &` 的 `&` 后
+        // `#` 判词首 → 不剥（lex 律此处 `#` 是词中字面——两函数分歧记面；
+        // 少剥不误剥：整行前台跑 `a&#b`＋字面 `&` 参，同 `a & b` 形）。
+        let (r, bg) = strip_bg("a&#b &");
+        assert!(!bg);
+        assert_eq!(r, "a&#b &");
+        // `&&` 是算符——其后 `#` 词首注释，lex/strip_bg 同判。
+        let (r, bg) = strip_bg("a&&#b &");
+        assert!(!bg);
+        assert_eq!(r, "a&&#b &");
+    }
+
 
     /// berry-jobs 盲版镜像（L4 等价证明的对拍基线——零引号字节语料逐条同果）。
     fn strip_bg_blind(line: &str) -> (&str, bool) {
