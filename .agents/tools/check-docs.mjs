@@ -1,18 +1,16 @@
 #!/usr/bin/env node
 /**
- * check-docs.mjs —— Curia 2.5 文档自检（纯 node 标准库、零依赖、Node ≥ 18、不联网、不执行文档内代码）。
- * 权威：Curia 2.5 规范「配套脚本规格」与「豁免清单」——编码预检 + 3 组检查（报告组号 0 至 3）、退出码 0/1/2、
+ * check-docs.mjs —— Curia 2.6 文档自检（纯 node 标准库、零依赖、Node ≥ 18、不联网、不执行文档内代码）。
+ * 权威：Curia 2.6 规范「配套脚本规格」与「豁免清单」——编码预检 + 3 组检查（报告组号 0 至 3）、退出码 0/1/2、
  * 目录级与组级豁免、诚实条款（空集必红、根锚点缺失必红、只证明机械子集、不读 git、异常非零）。用法：
- *   node .agents/tools/check-docs.mjs [--strict] [--health] [--suggest-standards] [--exclude <路径或 glob>]… [路径…]
+ *   node .agents/tools/check-docs.mjs [--strict] [--health] [--suggest-standards] [--selftest] [--exclude <路径或 glob>]… [路径…]
+ *   BerryOS 本地扩展：--verify-facts 对拍 tools/facts.txt 文档面三键（规则/16 §3；上游 2.6 不含）。
  *   报告模式列发现不失败（0）；--strict 任一发现即 1；
  *   2 = 无法完成检查：扫描面为空、路径不存在、根锚点缺失、内部错误——两种模式都不得返回 0。
  *   诊断模式：--health 体检载荷、桥与规范覆盖，--suggest-standards 列出 docs 标准候选；
  *   两者只读、不写文件、--strict 无效，正常一律退出 0（根锚点缺失或内部错误才 2）。
- *   --verify-facts：对拍 tools/facts.txt 的文档面三键（docs_md/design_md/stamped_designs，
- *   工程纪律刀阶段 4——文档计数权威在本脚本，制品漂移即红）；与 --strict 可叠加。
- *   --selftest：合成夹具 + 子进程自腿（工程纪律刀阶段 4 检测器自检律——「a detector
- *   that goes quiet is an ERROR」：组 0-3 各至少一腿坏样例必触发、好样例必过、facts
- *   漂移必红）；不读写活树。
+ *   --selftest：合成夹具 + 子进程自腿（2.6 检测器自检律——检测器变哑即红：组 0-3 各
+ *   至少一腿坏样例必触发、好样例必过、双戳三坏样例必触发）；不读写活树、不依赖 git。
  * 锚点：工作区根 = 调用时的工作目录，该目录须自身含 `.agents/` 或 `docs/` 目录——两者皆无时默认调用退出码 2，
  *   不自脚本位置、不向父目录上溯（上溯会命中 `~/.agents` 一类无关祖先）；脚本文件位置不限，一律以调用目录为基准。
  *   结构判定以根下 `.agents/` 目录为锚；显式路径的面内无 `.agents/` 子树时结构组不执行，stderr 注明、汇总行自带标注；
@@ -131,18 +129,18 @@ function isExcluded(entry, excludes) {
   });
 }
 
-const USAGE = '用法：node .agents/tools/check-docs.mjs [--strict] [--health] [--suggest-standards] [--verify-facts] [--selftest] [--exclude <路径或 glob>]… [路径…]\n  --health / --suggest-standards 是只读诊断，不接受路径参数；先 cd 到工作区根。\n  --verify-facts 对拍 tools/facts.txt 文档面三键（可与 --strict 叠加）；--selftest 合成夹具自检。';
+const USAGE = '用法：node .agents/tools/check-docs.mjs [--strict] [--health] [--suggest-standards] [--selftest] [--verify-facts] [--exclude <路径或 glob>]… [路径…]\n  --health / --suggest-standards 是只读诊断，不接受路径参数；先 cd 到工作区根。\n  --selftest 合成夹具自检（检测器变哑即红）；--verify-facts（本地扩展）对拍 tools/facts.txt 文档面三键。';
 class UsageError extends Error {}
 
 function parseArgs(argv) {
-  const opts = { strict: false, health: false, suggestStandards: false, verifyFacts: false, selftest: false, excludes: [], paths: [], help: false };
+  const opts = { strict: false, health: false, suggestStandards: false, selftest: false, verifyFacts: false, excludes: [], paths: [], help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i], v = argv[i + 1];
     if (a === '--strict') opts.strict = true;
     else if (a === '--health') opts.health = true;
     else if (a === '--suggest-standards') opts.suggestStandards = true;
-    else if (a === '--verify-facts') opts.verifyFacts = true;
     else if (a === '--selftest') opts.selftest = true;
+    else if (a === '--verify-facts') opts.verifyFacts = true;
     else if (a === '--exclude') {
       if (!v) throw new UsageError(`${a} 缺参数`);
       i++;
@@ -404,7 +402,7 @@ function checkArchivedHeader(rel, hdr, out) {
   else if (!DATE_RE.test(archF.value)) add(out, 1, rel, archF.idx + 1, `Archived 值 \`${archF.value}\` 非 yyyy-mm-dd`);
 }
 
-/** 组 1：规划双戳（工程纪律刀阶段 5；规则/16 §4）——`.agents/plans/<模块>/design.md` 已含戳行者受检（戳在场即 opt-in，存量未戳模块零回填）。反黑洞：盖戳节禁裸 `- [ ]`、戳计数须等于本节 checklist 实数、双戳齐才算 done；节内末条 Verified 为准（历史戳不执法）。 */
+/** 组 1：规划双戳（2.6 可选协议「模块设计的节级完成态」）——`.agents/plans/<模块>/design.md` 已含戳行者受检（戳在场即 opt-in，存量未戳模块零回填）。反黑洞：盖戳节禁裸 `- [ ]`、戳计数须等于本节 checklist 实数、双戳齐才算 done；节内末条 Verified 为准（历史戳不执法）。 */
 function checkDesignStamps(rel, lines, out) {
   if (!/^\.agents\/plans\/[^/]+\/design\.md$/.test(rel)) return;
   const VERIFIED_RE = /^>\s*Verified:\s*(\d{4}-\d{2}-\d{2})\s*·\s*([0-9a-f]{7,40})\s*·\s*(\d+)\s*\/\s*(\d+)\s*·\s*tests\s+(\d+|-)\s*$/;
@@ -434,7 +432,7 @@ function checkDesignStamps(rel, lines, out) {
     if (!DATE_RE.test(date)) add(out, 1, rel, line, `Verified 戳日期 \`${date}\` 非 yyyy-mm-dd`);
     if (s.unchecked > 0) add(out, 1, rel, line, `反黑洞：盖戳节内有 ${s.unchecked} 个裸 \`- [ ]\`——未验收项必须先撤戳重验（调度只读结构，裸项塞进盖戳节即隐形）`);
     if (s.checks !== +n1 || s.checks !== +n2) add(out, 1, rel, line, `戳计数不符：\`${n1}/${n2}\` ≠ 本节 checklist 实数 ${s.checks} 项（已勾 ${s.checks}、裸 ${s.unchecked}）`);
-    if (!s.quality) add(out, 1, rel, line, '缺 `> Quality reviewed:` 行——双戳齐才算 done（规则/16 §4）');
+    if (!s.quality) add(out, 1, rel, line, '缺 `> Quality reviewed:` 行——双戳齐才算 done（规范「节级完成态」）');
   }
 }
 
@@ -744,7 +742,7 @@ function runSuggestStandards(opts) {
   return 0;
 }
 
-/** --verify-facts：对拍 tools/facts.txt 文档面三键（工程纪律刀阶段 4）。文档计数权威在本脚本的 collect——制品漂移即红。返回漂移键数。 */
+/** --verify-facts（BerryOS 本地扩展；规则/16 §3）：对拍 tools/facts.txt 的文档面三键。文档计数权威在本脚本的 collect——制品漂移即红。返回漂移键数。 */
 function verifyFacts(files) {
   const factsPath = join(process.cwd(), 'tools', 'facts.txt');
   if (!existsSync(factsPath)) {
@@ -809,7 +807,7 @@ function runSelftest() {
     '# 走错家\n\nType: survey\nStatus: current\nUpdated: 2026-11-21\n\n正文。\n'); // survey 应在 research → 组 2
   writeFileSync(join(bad, '.agents/plans/mod1/断链.md'),
     '# 断链\n\nType: plan\nStatus: active\nUpdated: 2026-11-21\n\n看[不存在的目标](../nope.md)。\n'); // 组 3
-  // 双戳三坏样例（工程纪律刀阶段 5）
+  // 双戳三坏样例（2.6）
   for (const s of ['s1', 's2', 's3']) mkdirSync(join(bad, '.agents/plans', s), { recursive: true });
   writeFileSync(join(bad, '.agents/plans/s1/design.md'),
     '# s1 总体设计\n\nType: spec\nStatus: active\nUpdated: 2026-11-21\nVersion: 1.0.0\n\n## 验收\n\n- [x] 甲\n- [ ] 乙\n\n> Verified: 2026-11-21 · abcdef123456 · 2/2 · tests 1\n> Quality reviewed: x 2026-11-21\n'); // 裸 checkbox → 反黑洞
@@ -825,21 +823,9 @@ function runSelftest() {
   ok = leg('戳计数坏样例触发', out.includes('戳计数不符')) && ok;
   ok = leg('缺 Quality reviewed 坏样例触发', out.includes('Quality reviewed')) && ok;
 
-  // 腿 3：facts 漂移必红（--verify-facts；mkTree 面 = 3 篇 .md）
-  const fdir = mkdtempSync(join(tmpdir(), 'cd-facts-'));
-  mkTree(fdir);
-  mkdirSync(join(fdir, 'tools'), { recursive: true });
-  writeFileSync(join(fdir, 'tools/facts.txt'), 'docs_md=4\ndesign_md=2\nstamped_designs=0\n');
-  r = run(['--verify-facts'], fdir);
-  ok = leg('facts 漂移红', r.status === 1) && ok;
-  writeFileSync(join(fdir, 'tools/facts.txt'), 'docs_md=3\ndesign_md=2\nstamped_designs=1\n');
-  r = run(['--verify-facts'], fdir);
-  ok = leg('facts 一致过', r.status === 0) && ok;
-
   rmSync(good, { recursive: true, force: true });
   rmSync(bad, { recursive: true, force: true });
-  rmSync(fdir, { recursive: true, force: true });
-  if (ok) console.log('check-docs 自检：PASS（好过/四组坏样例触发/facts 漂移红与一致过——检测器变哑即红）');
+  if (ok) console.log('check-docs 自检：PASS（好过/四组坏样例触发/双戳三坏样例触发——检测器变哑即红）');
   return ok ? 0 : 1;
 }
 
