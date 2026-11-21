@@ -182,6 +182,54 @@ fn validate_parity_check() {
         assert_eq!(r.rc, 2);
         assert_eq!(p.rc, 2);
     }
+    // 腿 ⑦（六刀）：--dry-run 真源基座拒腿（行面前置的基座面对拍——
+    // 双侧同咬仓内真基座表构建树缺席，拒面剥仓根段逐字全等；行面全
+    // 分支对拍归 plan_parity.rs 模块级）
+    {
+        let pkg = tmp.join("pkg7");
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(pkg.join("product.toml"), good_product()).unwrap();
+        let path = pkg.join("product.toml").display().to_string();
+        let r = run(&rust_bin(), &["--dry-run", &path, "--platform-revision", "1"]);
+        let p = run(&py, &["--dry-run", &path, "--platform-revision", "1"]);
+        assert_eq!(r.rc, 1, "rust dry-run 基座拒：{}", r.err);
+        assert_eq!(p.rc, 1, "py dry-run 基座拒：{}", p.err);
+        let root = repo_root().display().to_string();
+        let re = r.err.replace(&root, "<REPO>");
+        let pe = p.err.replace(&root, "<REPO>");
+        assert!(!re.is_empty() && re == pe, "dry-run 基座拒面漂移\nrust: {re}\npy:   {pe}");
+    }
+    // 腿 ⑧（六刀）：--dry-run 装配门两臂（pr 越域拒前置——不落读面；
+    // 域内但超前 level 拒——文案逐字全等）
+    {
+        let r = run(&rust_bin(), &["--dry-run", "nope.toml", "--platform-revision", "4294967296"]);
+        let p = run(&py, &["--dry-run", "nope.toml", "--platform-revision", "4294967296"]);
+        assert_eq!(r.rc, 1);
+        assert_eq!(p.rc, 1);
+        assert_eq!(r.err, p.err, "域界拒面漂移");
+        assert!(r.err.contains("u32 域"), "域界族拒面：{}", r.err);
+
+        let r = run(&rust_bin(), &["--dry-run", "nope.toml", "--platform-revision", "2"]);
+        let p = run(&py, &["--dry-run", "nope.toml", "--platform-revision", "2"]);
+        assert_eq!(r.rc, 1);
+        assert_eq!(p.rc, 1);
+        assert_eq!(r.err, p.err, "反回滚拒面漂移");
+        assert!(r.err.contains("超前平台"), "反回滚族拒面：{}", r.err);
+    }
+    // 腿 ⑨（六刀）：--dry-run 用法错（缺值尾 exit 2）+ 坏 pr 值（int()
+    // 拒形——exit 2 文案全等）
+    {
+        let r = run(&rust_bin(), &["--dry-run"]);
+        let p = run(&py, &["--dry-run"]);
+        assert_eq!(r.rc, 2);
+        assert_eq!(p.rc, 2);
+
+        let r = run(&rust_bin(), &["--dry-run", "x.toml", "--platform-revision", "abc"]);
+        let p = run(&py, &["--dry-run", "x.toml", "--platform-revision", "abc"]);
+        assert_eq!(r.rc, 2);
+        assert_eq!(p.rc, 2);
+        assert_eq!(r.err, p.err, "坏 pr 值拒面漂移");
+    }
 
     fs::remove_dir_all(&tmp).ok();
 }

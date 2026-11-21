@@ -1251,9 +1251,17 @@ test-host:
     # 缺席〕/坏 TOML 分支标识/用法错 2 六腿；OK 行正面 = lib 黄金形 +
     # Python do_check 同现场模块级逐字对拍钉板）；cli_parity 让位臂族
     # 滚新（--check 移出让位族）。
+    # 六刀：plan.rs --dry-run 计划面（Python build_plan :890 + do_dry_run
+    # :1020 逐字镜像——行面全分支 + 装配门两臂前置 + relpath user_disp）；
+    # main.rs --dry-run 臂换轨（pr 旗标解析收值 + abi.toml 单源读 + 组合
+    # 面聚合 + 逐行打印）+ tests/plan_parity.rs oracle 模块级对拍（合成
+    # 现场 7 腿行面逐行全等：全席基线/sideload 形/最小面/user_disp 变/
+    # params 双形/source 透传〔gsi 两件套真产〕/kernel_measured 真件态）
+    # + validate_parity CLI 腿补（真源基座拒/装配门域界与反回滚两臂/
+    # 用法错与坏 pr 值）；cli_parity 让位臂族滚新（--dry-run 移出让位族）。
     # 独立小工作区，须显式 --target {{host}}。Python 件不退役——CLI 对拍
-    # oracle + gensourceindex --preset import 面单源（--dry-run/--emit
-    # 计划/产件面仍 Python 单源）。
+    # oracle + gensourceindex --preset import 面单源（--emit 产件面仍
+    # Python 单源）。
     cargo test --manifest-path tools/berryassemble/Cargo.toml --target {{host}}
     # W1 接线（SEC-02 A2 同款纪律）：berry_assemble 门禁自检——V13 组装器
     # （ADR #82「组装不 fork」product.toml 校验/dry-run 计划/装配反回滚门）
