@@ -1271,7 +1271,8 @@ impl SwipeItem {
                 self.begin_snap(ui, self.open);
                 true
             }
-            Msg::Press { .. } | Msg::Release { .. } | Msg::Click { .. } => false,
+            Msg::Press { .. } | Msg::Release { .. } | Msg::Click { .. }
+            | Msg::DoubleClick { .. } | Msg::LongPress { .. } => false,
         }
     }
 
@@ -1482,7 +1483,8 @@ impl DragReorder {
                 }
                 true
             }
-            Msg::Press { .. } | Msg::Release { .. } | Msg::Click { .. } => false,
+            Msg::Press { .. } | Msg::Release { .. } | Msg::Click { .. }
+            | Msg::DoubleClick { .. } | Msg::LongPress { .. } => false,
         }
     }
 
@@ -1780,7 +1782,8 @@ impl Sheet {
                 self.begin_slide(self.open);
                 true
             }
-            Msg::Press { .. } | Msg::Release { .. } | Msg::Click { .. } => false,
+            Msg::Press { .. } | Msg::Release { .. } | Msg::Click { .. }
+            | Msg::DoubleClick { .. } | Msg::LongPress { .. } => false,
         }
     }
 
@@ -1947,7 +1950,8 @@ impl Drawer {
                 self.begin_slide(self.open);
                 true
             }
-            Msg::Press { .. } | Msg::Release { .. } | Msg::Click { .. } => false,
+            Msg::Press { .. } | Msg::Release { .. } | Msg::Click { .. }
+            | Msg::DoubleClick { .. } | Msg::LongPress { .. } => false,
         }
     }
 
@@ -2097,7 +2101,8 @@ impl Refresh {
                 let _ = ui.set_offset(self.indicator, 0, -(REFRESH_IND as i32));
                 true
             }
-            Msg::Press { .. } | Msg::Release { .. } | Msg::Click { .. } => false,
+            Msg::Press { .. } | Msg::Release { .. } | Msg::Click { .. }
+            | Msg::DoubleClick { .. } | Msg::LongPress { .. } => false,
         }
     }
 

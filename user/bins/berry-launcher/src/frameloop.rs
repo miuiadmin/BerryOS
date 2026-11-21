@@ -59,7 +59,7 @@
 use berry_appshell as appshell;
 use berry_appproto as ap;
 use berry_guiproto as gp;
-use berry_libc::io::{app_cli_h, self_vmar_h};
+use berry_libc::io::{app_cli_h, self_vmar_h, wm_cli_h};
 use berry_sys::{berry_clock_read, berry_power_off, Handle, CLOCK_REALTIME};
 use berry_ui::desc::{IconProps, MsgBuf, Props};
 use berry_ui::hit::PtrEvent;
@@ -79,6 +79,13 @@ const CLEAR_BG: (u8, u8, u8) = (0x10, 0x18, 0x28);
 /// 自测 swipe 收敛帽（超时 = eprintln 诊断 + 放弃——PAGE 缺失由 smoke
 /// 兜底 loud；不 fail 挂死：桌面常驻义务优先于自测件）。
 const SETTLE_CAP_NS: u64 = 5 * 1_000_000_000;
+
+/// 双击幂等窗帽（`LoopHost::spawn_dedup` 兜底面，总审计 input-chain P2
+/// 「双击闪现」2026-11-22）：覆盖 referee 250ms 双击窗之外的人手慢二击
+/// + 应用冷启动建窗竞速（第二击先到、应用窗未上 wm 表——此形二次
+/// APP_SPAWN 撞 svcmgr 同 id 回收 = 开→关→重开闪现）。窗内同格第二击
+/// 视为重复吞掉；窗外视为蓄意重开。
+const SPAWN_DEDUP_WINDOW_NS: u64 = 2 * 1_000_000_000;
 
 /// 自测状态机（boot 一次性走完 → Done 常驻；门控见 [`run`] 头注——
 /// 真实交互 boot 在 WaitFirst 即短路 Done，状态机不推进）。
@@ -136,6 +143,37 @@ fn note_spawn_ack(smoke: bool, spawn_ok: &mut u32, ack: Option<(bool, u32)>) -> 
     }
 }
 
+/// 双击幂等窗纯谓词（测试面——`LoopHost::spawn_dedup` 消费面）：窗内
+/// （t_now 距 ok 回执 < [`SPAWN_DEDUP_WINDOW_NS`]）且命中格 id 与记账
+/// id 同一 → true（吞第二击）；无记账/窗外/异格/命中非格面 = false
+/// （点击落原面——非格命中不受窗影响）。
+fn spawn_dedup_hit(dedup: Option<(&RecentsApp, u64)>, hit: Option<&[u8]>, t_now: u64) -> bool {
+    let Some((app, ack_ns)) = dedup else {
+        return false;
+    };
+    if t_now >= ack_ns.saturating_add(SPAWN_DEDUP_WINDOW_NS) {
+        return false; // 窗外：第二击视为蓄意重开
+    }
+    match hit {
+        Some(id) => id == &app.id[..app.id_len as usize],
+        None => false, // 命中非格面（壁纸/容器白区/导航余白）
+    }
+}
+
+/// 点击命中格 → 注册表 id（on_click 同映射：cell/label/icon 三节点皆归
+/// 本格——最深叶命中面；桌面网格 + dock 同表）。幂等窗查询面：未命中
+/// 格/占位格/注册表外 = None（该击不受窗影响，落原面）。
+fn click_cell_app_id(node: NodeId, desktop: &Desktop) -> Option<&'static [u8]> {
+    let slot = desktop
+        .slots
+        .iter()
+        .flatten()
+        .chain(desktop.dock.iter())
+        .find(|s| s.cell == node || s.label_node == node || s.icon == Some(node))?;
+    let idx = slot.app?;
+    icons::registry().get(idx).map(|e| e.id_bytes())
+}
+
 /// launcher 帧循环特化状态（appshell::pump::HostHooks 实现——全部字段
 /// 即抽取前 frameloop::run 的局部态）。
 struct LoopHost {
@@ -178,6 +216,16 @@ struct LoopHost {
     /// ESC / 2 已收 ESC `[`；inputd KeyPump 箭头出向 = ESC 序列三帧
     /// 单字节连发，消费侧按帧重组才恢复「一次箭头 = 一个动作」）。
     kseq: u8,
+    /// 双击幂等窗（总审计 input-chain P2「双击闪现」2026-11-22 兜底面）：
+    /// 最近一次点击路 spawn 成功的 app + 其 ok 回执时刻（on_click/
+    /// on_sys_click 成功支路落账；多任务键重拉不入账）。同格 Click 在
+    /// [`SPAWN_DEDUP_WINDOW_NS`] 窗内 → 吞第二击（不落 covered_tap 收
+    /// 盖〔开→关闪现〕、不二次 APP_SPAWN 撞 svcmgr 同 id 回收〔开→关→
+    /// 重开闪现〕）。back/home 一击即撤窗（退回手势 = 蓄意离场声明，其
+    /// 后点图标 = 蓄意重开）。正解 = already-alive 路承接活实例第二击
+    /// （svcmgr 重开=聚焦刀），本窗只兜其未接住的残余竞速（回执仍为
+    /// ok 形时）。
+    spawn_dedup: Option<(RecentsApp, u64)>,
 }
 
 /// 帧循环入口（W2 面 + K2 自窗账——`hw` = wm 客户端端柄（wm/present 同
@@ -221,6 +269,7 @@ pub fn run(
         power_armed: None,
         last_clock: None,
         kseq: keynav::KSEQ_BASE,
+        spawn_dedup: None,
     };
     let cfg = appshell::pump::PumpCfg {
         hw,
@@ -272,6 +321,12 @@ impl appshell::pump::HostHooks for LoopHost {
         for m in msgs.iter() {
             match m {
                 Msg::Click { node } => {
+                    // 双击幂等窗撤销（退回手势）：back/home 命中一击即撤
+                    // ——其后再点图标 = 蓄意重开，窗不得吞（撤窗与 DESTROY
+                    // 成败无关：导航键命中本身即离场意图声明）。
+                    if *node == self.desktop.nav.back || *node == self.desktop.nav.home {
+                        self.spawn_dedup = None;
+                    }
                     // 五键导航先判（含 BottomTabs 三页位——命中 = 消费，
                     // 不落槽 spawn 面）。导航键是覆盖态的逃生面，恒最先。
                     if !on_nav_click(
@@ -284,14 +339,25 @@ impl appshell::pump::HostHooks for LoopHost {
                         self.hw,
                         self.self_wins,
                     ) {
+                        // 双击幂等窗兜底（吞第二击，见 LoopHost::spawn_dedup
+                        // 字段注）：同格命中且在上次 spawn ok 回执窗内 →
+                        // 整击吞掉（先于 covered_tap——收盖恰是开→关闪现
+                        // 的第一路）。正解 = already-alive 路，本窗只兜其
+                        // 未接住的残余竞速。
+                        let dedup_hit = spawn_dedup_hit(
+                            self.spawn_dedup.as_ref().map(|(a, t)| (a, *t)),
+                            click_cell_app_id(*node, &self.desktop),
+                            t_now,
+                        );
                         // 覆盖态点击门（2026-11-20 桌面点击无反应事故刀）：
                         // v1 无合成器 + 输入单订阅者（事件恒全投 launcher），
                         // 应用窗开盖后桌面命中面仍活着——连点被误读成连环
                         // spawn，svcmgr APP_SPAWN_LIVE_MAX=4 槽被同 app 烧尽
                         // 后一切 spawn 静默拒「app slots」=「点击无反应」。
                         // 覆盖态点击改收盖（back 键同款 DESTROY + wake 重画）。
-                        if self.spawn_ok == 0
-                            || !on_covered_tap(ui, self.hw, &self.self_wins, t_now)
+                        if !dedup_hit
+                            && (self.spawn_ok == 0
+                                || !on_covered_tap(ui, self.hw, &self.self_wins, t_now))
                         {
                             if !on_sys_click(
                                 *node,
@@ -300,6 +366,8 @@ impl appshell::pump::HostHooks for LoopHost {
                                 &mut self.spawn_ok,
                                 self.smoke,
                                 &mut self.recents_app,
+                                &mut self.spawn_dedup,
+                                self.self_wins,
                             ) {
                                 on_click(
                                     *node,
@@ -307,6 +375,8 @@ impl appshell::pump::HostHooks for LoopHost {
                                     &mut self.spawn_ok,
                                     self.smoke,
                                     &mut self.recents_app,
+                                    &mut self.spawn_dedup,
+                                    self.self_wins,
                                 );
                             }
                         }
@@ -754,9 +824,11 @@ fn on_nav_click(
     } else if node == nav.recents {
         // 多任务 v1：重新拉起最近 spawn 的应用（真重拉非死键）；无历史
         // = 静默无操作（桌面常驻义务）。整体取出再 spawn——避免 spawn
-        // RPC 窗内再借用 desktop。
+        // RPC 窗内再借用 desktop。实例仍活 ∧ 窗在场时 svcmgr 回 err=3
+        // 已活形——本路经 spawn_by_id_inner 走 wmd 焦点面真切换（内容
+        // 不丢，重开=聚焦刀）；实例亡/窗不在场才真重拉。
         if let Some(app) = recents.take() {
-            spawn_by_id(&app);
+            spawn_by_id(&app, self_wins);
         }
         true
     } else if node == nav.home {
@@ -835,13 +907,19 @@ fn on_nav_click(
 /// 断帧循环、不 fail、**不产标记**）。
 /// 多任务键记忆体：最近一次 spawn 成功的应用 id（二进制拷贝——注册表
 /// 条目生命周期不随帧循环，spawn 窗外安全）。
+#[derive(Clone, Copy)]
 pub struct RecentsApp {
     pub id: [u8; 24],
     pub id_len: u8,
 }
 
-/// 按 id spawn（on_click 与多任务键重拉共用）。回执记账返回 ok 与否。
-fn spawn_by_id_inner(id: &[u8], smoke: bool, spawn_ok: &mut u32) -> bool {
+/// 按 id spawn（on_click 与多任务键重拉共用）。回执记账返回 true 与否；
+/// **err=3 已活形**（重开=聚焦刀②）：svcmgr 同 id 活 ∧ 窗在场时不回收
+/// 不重拉——本侧改走 wmd 焦点面（`focus_alive_app`）后仍返回 true
+/// （「目标 app 已活且已切回」——on_click/recents 记账语义成立）；
+/// `note_spawn_ack(ack)` 对 (false,3) 不递增 spawn_ok：已活非拉起，
+/// CLICK 标记面与覆盖态门零漂。
+fn spawn_by_id_inner(id: &[u8], smoke: bool, spawn_ok: &mut u32, self_wins: [u16; 2]) -> bool {
     let h = app_cli_h();
     if h == 0 {
         return false; // 冻结相：app 通道结构性缺席
@@ -857,9 +935,18 @@ fn spawn_by_id_inner(id: &[u8], smoke: bool, spawn_ok: &mut u32) -> bool {
             // 原被静默吞——svcmgr 槽满（APP_SPAWN_LIVE_MAX=4）连环拒「app
             // slots」时用户零反馈 =「点击无反应」。err 值域 = svcmgr
             // app_serve_spawn 冻结款：1 = 守卫/拉起败/槽满（细节归 svcmgr
-            // eco: app 行）、2 = id 不在册。失败面永不产标记（eprintln 非
+            // eco: app 行）、2 = id 不在册、3 = 同 id 已活 ∧ 窗在场（重开
+            // =聚焦形——本侧特判走焦点面，不打拒绝诊断；svcmgr 侧另有
+            // eco `alive` 行）。失败面永不产标记（eprintln 非
             // canon 前缀，与 CLICK ok / click ready 互非子串）。
             match ack {
+                Some((false, 3)) => {
+                    // 已活回执（重开=聚焦刀① 的消费端）：不重 spawn——
+                    // 查表定位应用窗发 OP_WM_FOCUS 切回（成功路径零打印；
+                    // 查无窗/聚焦败 eprintln 诊断——TOCTOU 形窗已亡，下
+                    // 一击走 svcmgr 回收再开路自愈）。
+                    focus_alive_app(self_wins);
+                }
                 Some((false, st)) => eprintln!(
                     "launcher: spawn {} 拒 st={} ({})",
                     core::str::from_utf8(id).unwrap_or("?"),
@@ -880,7 +967,7 @@ fn spawn_by_id_inner(id: &[u8], smoke: bool, spawn_ok: &mut u32) -> bool {
                 // 冒烟模式（正常 boot 零 CLICK）。
                 println!("CLICK ok n=1");
             }
-            matches!(ack, Some((true, _)))
+            matches!(ack, Some((true, _))) || ack == Some((false, 3))
         }
         None => {
             eprintln!("launcher: spawn id bad");
@@ -889,10 +976,44 @@ fn spawn_by_id_inner(id: &[u8], smoke: bool, spawn_ok: &mut u32) -> bool {
     }
 }
 
-/// 多任务键重拉入口（无 smoke 标记面——正常交互路径）。
-fn spawn_by_id(id: &RecentsApp) {
+/// 已活聚焦（重开=聚焦刀②的 wmd 面）：TABLE_GET 查表定位应用窗
+/// （`covering_app_win`——可见 ∧ 非自 ∧ APP 层，焦点窗优先表序兜底；
+/// 已活形态下应用窗即覆盖窗）→ OP_WM_FOCUS 聚焦该窗。像素面零动作：
+/// v1 无合成器、共享 fb——已活窗的像素本就在屏，FOCUS 只授焦点态
+/// （back 键路由面/输入路由面）；wm 通道缺席（冻结相）= 静默跳过
+/// （app 通道在而 wm 通道缺的结构形不可达，防御面）。wm 通道取
+/// `wm_cli_h()`（gifts [0] 槽——与本文件 on_covered_tap 的 wm_h 同源）。
+fn focus_alive_app(self_wins: [u16; 2]) {
+    let wm_h = wm_cli_h();
+    if wm_h == 0 {
+        return; // 冻结相：wm 通道结构性缺席——聚焦面静默跳过
+    }
+    let mut req = [0u8; 256];
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let m = gp::encode_wm_table_get_req(&mut req);
+    let (n, _) = rpc(wm_h, &req[..m], &[], &mut rep, &mut rhs);
+    let target = match gp::parse_wm_snapshot_rep(&rep[..n]) {
+        Some(Ok(snap)) => covering_app_win(&snap, &self_wins),
+        _ => None,
+    };
+    let Some(wid) = target else {
+        eprintln!("launcher: alive focus no win");
+        return;
+    };
+    let m = gp::encode_wm_focus_req(&mut req, wid);
+    let (n, _) = rpc(wm_h, &req[..m], &[], &mut rep, &mut rhs);
+    if rep[0] != 0 {
+        eprintln!("launcher: alive focus id={} st={}", wid, rep[0]);
+    }
+    let _ = n;
+}
+
+/// 多任务键重拉入口（无 smoke 标记面——正常交互路径；err=3 已活形经
+/// `spawn_by_id_inner` 内走焦点面——重开=聚焦刀的真切换主场景）。
+fn spawn_by_id(id: &RecentsApp, self_wins: [u16; 2]) {
     let mut n = 0u32;
-    if !spawn_by_id_inner(&id.id[..id.id_len as usize], false, &mut n) {
+    if !spawn_by_id_inner(&id.id[..id.id_len as usize], false, &mut n, self_wins) {
         eprintln!("launcher: recents respawn failed");
     }
 }
@@ -902,7 +1023,7 @@ fn spawn_by_id(id: &RecentsApp) {
 ///
 /// - 应用列表页：固定过滤词命中 → 换选（换底 + 重装行 + rehang）；
 ///   行命中（Card/Row/Pad/Text 四面）→ 与桌面格同一 spawn 路（注册表
-///   真流——成功记账 recents；空行/标题 = 不消费）。
+///   真流——成功记账 recents + 双击幂等窗；空行/标题 = 不消费）。
 /// - 设置页：Slider 纯点击步进（+100 permille wrap——Drag 路引擎已接
 ///   ；步进值落 SETTINGS.JSN）。其余控件 = 引擎组件反应面（事件经
 ///   [`on_widget_event`] 回写），此处零动作。
@@ -913,6 +1034,8 @@ fn on_sys_click(
     spawn_ok: &mut u32,
     smoke: bool,
     recents: &mut Option<RecentsApp>,
+    dedup: &mut Option<(RecentsApp, u64)>,
+    self_wins: [u16; 2],
 ) -> bool {
     match desktop.tabs.cur {
         1 => {
@@ -950,12 +1073,17 @@ fn on_sys_click(
             }
             match hit_app.and_then(|idx| icons::registry().get(idx)) {
                 Some(entry) => {
-                    if spawn_by_id_inner(entry.id_bytes(), smoke, spawn_ok) {
+                    if spawn_by_id_inner(entry.id_bytes(), smoke, spawn_ok, self_wins) {
                         let mut id = [0u8; 24];
                         let src = entry.id_bytes();
                         let n = src.len().min(24);
                         id[..n].copy_from_slice(&src[..n]);
-                        *recents = Some(RecentsApp { id, id_len: n as u8 });
+                        let app = RecentsApp { id, id_len: n as u8 };
+                        *recents = Some(app);
+                        // 双击幂等窗起算：rpc 阻塞同步归——now() 即 ok 回执
+                        // 时刻（窗帽见 SPAWN_DEDUP_WINDOW_NS；err=3 已活形
+                        // 同经本窗兜底残余竞速——已活即前台，窗内二击无害）。
+                        *dedup = Some((app, appshell::rpc::now()));
                     }
                     true
                 }
@@ -1025,6 +1153,8 @@ fn on_click(
     spawn_ok: &mut u32,
     smoke: bool,
     recents: &mut Option<RecentsApp>,
+    dedup: &mut Option<(RecentsApp, u64)>,
+    self_wins: [u16; 2],
 ) {
     let slot = desktop
         .slots
@@ -1035,13 +1165,18 @@ fn on_click(
     let Some(slot) = slot else { return }; // 壁纸/状态栏/圆点/容器白区 = 无格
     let Some(idx) = slot.app else { return }; // 占位/幽灵格不可 spawn
     let Some(entry) = icons::registry().get(idx) else { return };
-    if spawn_by_id_inner(entry.id_bytes(), smoke, spawn_ok) {
-        // 多任务键记忆：spawn 成功才记账（失败不占 recents 槽）。
+    if spawn_by_id_inner(entry.id_bytes(), smoke, spawn_ok, self_wins) {
+        // 多任务键记忆：spawn 成功（含 err=3 已活聚焦形——目标 app 已在
+        // 前台，仍是最近使用）才记账（失败不占 recents 槽）。
         let mut id = [0u8; 24];
         let src = entry.id_bytes();
         let n = src.len().min(24);
         id[..n].copy_from_slice(&src[..n]);
-        *recents = Some(RecentsApp { id, id_len: n as u8 });
+        let app = RecentsApp { id, id_len: n as u8 };
+        *recents = Some(app);
+        // 双击幂等窗起算：rpc 阻塞同步归——now() 即 ok 回执时刻（窗帽见
+        // SPAWN_DEDUP_WINDOW_NS；吞面 = spawn_dedup_hit/on_msgs Click 门）。
+        *dedup = Some((app, appshell::rpc::now()));
     }
 }
 
@@ -1101,6 +1236,40 @@ mod tests {
         assert_eq!(quiet, 1);
         assert!(!note_spawn_ack(false, &mut quiet, Some((true, 0))));
         assert_eq!(quiet, 2);
+    }
+
+    /// 双击幂等窗真值表（总审计 input-chain P2 兜底面）：窗内同 id 吞
+    /// 第二击；无记账/窗外（帽边界即过期）/异 id/命中非格面 = 不吞
+    /// （点击落原面）。
+    #[test]
+    fn spawn_dedup_hit_truth_table() {
+        let app = |id: &[u8]| {
+            let mut a = [0u8; 24];
+            a[..id.len()].copy_from_slice(id);
+            RecentsApp { id: a, id_len: id.len() as u8 }
+        };
+        let a = app(b"APPDEMO");
+        let ack = 1_000_000_000u64;
+        // 窗内同 id（referee 250ms 窗外的慢二击形）：吞。
+        assert!(spawn_dedup_hit(Some((&a, ack)), Some(b"APPDEMO"), ack + 500_000_000));
+        // 帽边界即过期（t_now >= ack + 帽 → 不吞——窗外蓄意重开）。
+        assert!(!spawn_dedup_hit(
+            Some((&a, ack)),
+            Some(b"APPDEMO"),
+            ack + SPAWN_DEDUP_WINDOW_NS
+        ));
+        // 窗外更远：不吞。
+        assert!(!spawn_dedup_hit(
+            Some((&a, ack)),
+            Some(b"APPDEMO"),
+            ack + SPAWN_DEDUP_WINDOW_NS + 1
+        ));
+        // 异 id（另一应用格）：不吞——正常 spawn 面。
+        assert!(!spawn_dedup_hit(Some((&a, ack)), Some(b"FILES"), ack + 1));
+        // 命中非格面（壁纸/容器白区）：不吞，落原面。
+        assert!(!spawn_dedup_hit(Some((&a, ack)), None, ack + 1));
+        // 无记账（首击 spawn 失败/boot 未点击）：不吞。
+        assert!(!spawn_dedup_hit(None, Some(b"APPDEMO"), ack));
     }
 
     /// K2 测试夹具：APP 层窗项（flags 可见/焦点自选）。

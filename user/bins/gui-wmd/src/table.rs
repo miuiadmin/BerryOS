@@ -35,6 +35,10 @@
 //!   轮询段 recv 错码 ≠ EAGAIN = close+保序摘表（坏客户端不杀服务——
 //!   subs Dead 摘除同律）；DETACH 0x6A 表内寻位 close+摘除（u32 失配时
 //!   到达通道命中兜底——I2 消费面的「注销帧走 app 通道自身」形态）。
+//!   两条死亡对账路（DETACH 摘表 / 轮询段 Dead）随行**僵尸窗销毁**：表项
+//!   记属主来源通道（[`Win::owner`] = CREATE 到达通道），属主通道拆除时
+//!   名下全部窗口直接销毁（[`WmTable::destroy_owned`]——强杀/崩溃 app
+//!   的窗不滞留占 WM_WINDOWS_MAX 槽、不滞焦；refocus+bump 广播现成面）。
 //! - **有效几何不变量式避让**：任何 CREATE/DESTROY/SET（含系统层窗
 //!   变更）触发受影响表项重算 O(N)（N≤15 零成本）——AVOID_SYS 旗标窗
 //!   对 layer=SYSTEM **可见**窗求差集写有效几何（**SERVICE 不挖坑**——
@@ -82,6 +86,11 @@ struct Win {
     avoid_sys: bool,
     /// 属主事件通道（wmd 侧端）——CREATE 建联、DESTROY 关联关闭（波3 §3）。
     evt: Option<Handle>,
+    /// 属主来源通道（僵尸窗刀）：CREATE 到达通道（wm_srv 或 apps 表内
+    /// app 通道）——app 通道死亡对账（DETACH 摘表 / 轮询段 Dead）时按此
+    /// 销毁该属主名下全部窗口；wm_srv 窗恒不触发（boot 定值柄不在
+    /// apps 表，其死亡面 = wmd 整体重启链，不归本对账）。
+    owner: Handle,
 }
 
 /// 单矩形裁剪：C 减 S（半开矩形），保形取四条剩余带面积最大者（并列取
@@ -170,6 +179,7 @@ impl WmTable {
             vis: false,
             avoid_sys: false,
             evt: None,
+            owner: 0,
         };
         WmTable {
             wins: [blank; gp::WM_WINDOWS_MAX],
@@ -366,7 +376,8 @@ impl WmTable {
     /// 驱动有效几何避让。应答 8B ack(window_id) + 随行属主事件通道端
     /// （波3 §3：CREATE 建联——gift 面随 ack 迁入客户端表）；内核通道
     /// 资源拒绝时降级无通道窗（ack 零随行——BACK 兜底直接 DESTROY，
-    /// 返回语义仍正确）。
+    /// 返回语义仍正确）。表项记属主来源通道 = 到达 `ch`（僵尸窗刀——
+    /// app 通道死亡对账按此销窗）。
     fn create<P: Port>(&mut self, p: &mut P, ch: Handle, req: gp::WmCreateReq) {
         if req.parent != 0 && self.find(req.parent).is_none() {
             Self::st_rep(p, ch, gp::ST_NOENT);
@@ -390,6 +401,7 @@ impl WmTable {
             vis: true,
             avoid_sys: req.flags & gp::WM_CREATE_F_AVOID_SYS != 0,
             evt: gift.map(|(srv, _)| srv),
+            owner: ch,
         };
         self.count += 1;
         self.focus = Some(id);
@@ -433,6 +445,27 @@ impl WmTable {
         } else {
             Self::st_rep(p, ch, gp::ST_NOENT);
         }
+    }
+
+    /// 僵尸窗销毁（死亡对账——P1 supervision）：销毁属主通道 `owner`
+    /// 名下全部窗口，逐窗 [`destroy_internal`] 同款清理（evt 通道关联
+    /// 关闭 + refocus + recompute + bump 广播——launcher/订阅者表跟随
+    /// 自动收新表重画）。摘窗后继前移补位——命中位不进即续扫同位；
+    /// 返回销毁数（0 = 该属主名下无窗）。N≤WM_WINDOWS_MAX 定容，O(N²)
+    /// 零成本。
+    fn destroy_owned<P: Port>(&mut self, p: &mut P, owner: Handle) -> usize {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.count {
+            if self.wins[i].owner == owner {
+                let id = self.wins[i].id;
+                self.destroy_internal(p, id);
+                n += 1;
+            } else {
+                i += 1;
+            }
+        }
+        n
     }
 
     /// WM_SET：masked-out 槽位不动（「编什么收什么」——wire 层不清零，
@@ -643,15 +676,20 @@ impl WmTable {
             self.apps[j] = self.apps[j + 1];
         }
         self.apps_n -= 1;
+        // 僵尸窗刀（死亡对账升级）：强杀/崩溃 app 由 svcmgr 收口发 DETACH
+        //（本路 = 死亡面主形态）——通道拆除时名下全部窗口直接销毁而非
+        // 滞留僵尸窗（占 WM_WINDOWS_MAX 槽 + 滞焦带分类）；重启/新 app
+        // 重建窗自然从新表起（launcher 死亡面同款：重启装配重建双窗）。
+        self.destroy_owned(p, h);
     }
 
     /// apps 轮询段（K1 I1——serve 每轮 push_srv poll 之后）：`apps[..apps_n]`
     /// 逐个非阻塞收，**一路至多一帧**（串行 RPC 纪律同 wm_srv/push_srv
     /// poll——命中即返，主循环 dispatch 后 continue 回环重扫；本帧处理可
     /// 变表（detach 自摘/建窗广播关通道），重扫天然免疫索引失效）。recv
-    /// 错码 ≠ EAGAIN = close + 保序摘表（坏客户端不杀服务——subs Dead
-    /// 摘除同律；ChanPort::recv_nowait 的 trap 面只适用 boot 定值柄，本路
-    /// 不走它）。
+    /// 错码 ≠ EAGAIN = close + 保序摘表 + **僵尸窗销毁**（坏客户端不杀
+    /// 服务——subs Dead 摘除同律；ChanPort::recv_nowait 的 trap 面只适用
+    /// boot 定值柄，本路不走它）。
     pub fn poll_apps<P: Port>(&mut self, p: &mut P) -> Option<AppFrame> {
         let mut buf = [0u8; 256];
         let mut i = 0;
@@ -677,6 +715,10 @@ impl WmTable {
                         self.apps[j] = self.apps[j + 1];
                     }
                     self.apps_n -= 1;
+                    // 僵尸窗刀同 app_detach：通道病态死亡对账销窗（DETACH
+                    // 失联兜底路——强杀恰留满队未读应答时 wm_detach_rpc
+                    // 放弃即靠本面收口）。
+                    self.destroy_owned(p, h);
                 }
             }
         }
@@ -812,5 +854,283 @@ impl WmTable {
             },
             _ => Self::st_rep(p, ch, gp::ST_BAD),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! 僵尸窗销毁（死亡对账——P1 supervision）单测：mini Port mock 驱动
+    //! attach→CREATE→DETACH / 轮询段 Dead 全链，断言窗口表清空面/refocus/
+    //! 广播 bump 三面（lib.rs 全量 mock 为其私域测试模块——本模块自持
+    //! 精简 mock，relay/presarb 每文件自持 mock 同款先例）。
+
+    use super::WmTable;
+    use crate::{AppRecv, Port, SendEvtStatus};
+    use berry_guiproto as gp;
+    use berry_sys::Handle;
+    use std::vec::Vec;
+
+    /// mock wm_srv 控制端通道（u32 寻址臂 DETACH / TABLE_GET 的到达面）。
+    const CH_WM: Handle = 1;
+
+    struct MiniPort {
+        now: u64,
+        replies: Vec<(Handle, Vec<u8>)>,
+        gifts: Vec<(Handle, Vec<u8>, Vec<Handle>)>,
+        events: Vec<(Handle, Vec<u8>)>,
+        closed: Vec<Handle>,
+        created: Vec<(Handle, Handle)>,
+        inbox: Vec<(Handle, Vec<u8>)>,
+        dead: Vec<Handle>,
+        next_dup: Handle,
+    }
+
+    impl MiniPort {
+        fn new() -> Self {
+            MiniPort {
+                now: 1_000_000,
+                replies: Vec::new(),
+                gifts: Vec::new(),
+                events: Vec::new(),
+                closed: Vec::new(),
+                created: Vec::new(),
+                inbox: Vec::new(),
+                dead: Vec::new(),
+                next_dup: 300,
+            }
+        }
+
+        /// app 通道注入来帧（poll_apps 收件箱——弹出序 = 注入序）。
+        fn inject(&mut self, ch: Handle, frame: &[u8]) {
+            self.inbox.push((ch, frame.to_vec()));
+        }
+
+        /// 事件帧记录面查询（ch 上全部帧）。
+        fn events_on(&self, ch: Handle) -> Vec<&[u8]> {
+            self.events.iter().filter(|(h, _)| *h == ch).map(|(_, b)| b.as_slice()).collect()
+        }
+    }
+
+    impl Port for MiniPort {
+        fn now_ns(&mut self) -> u64 {
+            self.now
+        }
+        fn send(&mut self, ch: Handle, rep: &[u8]) {
+            self.replies.push((ch, rep.to_vec()));
+        }
+        fn send_handles(&mut self, ch: Handle, rep: &[u8], hs: &[Handle]) {
+            self.gifts.push((ch, rep.to_vec(), hs.to_vec()));
+        }
+        fn send_nowait(&mut self, ch: Handle, frame: &[u8]) -> SendEvtStatus {
+            self.events.push((ch, frame.to_vec()));
+            SendEvtStatus::Queued
+        }
+        fn send_rep_try(&mut self, ch: Handle, rep: &[u8]) -> bool {
+            self.replies.push((ch, rep.to_vec()));
+            true
+        }
+        fn recv_nowait(&mut self, _ch: Handle, _buf: &mut [u8]) -> Option<usize> {
+            None // 本模块零 sweep 面——恒空
+        }
+        fn recv_app(&mut self, ch: Handle, buf: &mut [u8], _hout: &mut [Handle]) -> AppRecv {
+            // dead 面双 duty 同 lib.rs mock：recv 错码注入位（轮询段 Dead 路）。
+            if self.dead.contains(&ch) {
+                return AppRecv::Dead;
+            }
+            match self.inbox.iter().position(|(h, _)| *h == ch) {
+                Some(pos) => {
+                    let (_, f) = self.inbox.remove(pos);
+                    buf[..f.len()].copy_from_slice(&f);
+                    // mock 注入恒零随行（wm 域帧零随行）。
+                    AppRecv::Frame(f.len(), 0)
+                }
+                None => AppRecv::Empty,
+            }
+        }
+        fn dup_transfer(&mut self, _h: Handle) -> Option<Handle> {
+            let alias = self.next_dup;
+            self.next_dup += 1;
+            Some(alias)
+        }
+        fn close(&mut self, h: Handle) {
+            self.closed.push(h);
+        }
+        fn channel_create(&mut self) -> Option<(Handle, Handle)> {
+            let n = self.created.len() as Handle;
+            let pair = (100 + n, 200 + n);
+            self.created.push(pair);
+            Some(pair)
+        }
+        fn fail(&mut self) -> ! {
+            panic!("mini mock: 防御面 fail 触达")
+        }
+    }
+
+    // —— 驱动助手 ——
+
+    fn mk() -> (WmTable, MiniPort) {
+        (WmTable::new(800, 600, 1_000_000), MiniPort::new())
+    }
+
+    fn attach(t: &mut WmTable, p: &mut MiniPort, srv: Handle) {
+        let g0 = p.gifts.len();
+        t.app_attach(p, srv);
+        assert!(p.gifts.len() > g0, "attach 应 ack 经新通道");
+    }
+
+    fn mk_create_frame(layer: u8) -> ([u8; 16], usize) {
+        let req = gp::WmCreateReq {
+            layer,
+            flags: 0,
+            parent: 0,
+            group: 0,
+            x: 0,
+            y: 0,
+            w: 800,
+            h: 600,
+        };
+        let mut f = [0u8; 16];
+        let n = gp::encode_wm_create_req(&mut f, &req).unwrap();
+        (f, n)
+    }
+
+    /// CREATE 帧分发公共段：gift ack 解 wid + 回读建联 evt 端。
+    fn dispatch_create(
+        t: &mut WmTable,
+        p: &mut MiniPort,
+        ch: Handle,
+        msg: &[u8],
+        hs: &[Handle],
+    ) -> (u16, Handle) {
+        let g0 = p.gifts.len();
+        t.handle_wm(p, ch, msg, hs);
+        let (_, ack, _) = &p.gifts[g0];
+        let wid = gp::parse_wm_create_ack(ack).expect("CREATE ack 应 OK 形");
+        let (srv, _) = p.created[p.created.len() - 1];
+        (wid, srv)
+    }
+
+    /// 经 app 通道建窗（注入→poll_apps→handle_wm 真分派路——owner 记账
+    /// = 到达通道的钉板路），返回 (wid, wmd 侧事件通道端)。
+    fn create_via_app(
+        t: &mut WmTable,
+        p: &mut MiniPort,
+        ch: Handle,
+        layer: u8,
+    ) -> (u16, Handle) {
+        let (f, n) = mk_create_frame(layer);
+        p.inject(ch, &f[..n]);
+        let fr = t.poll_apps(p).expect("CREATE 帧应命中");
+        assert_eq!(fr.ch, ch, "帧来源 = app 通道");
+        dispatch_create(t, p, fr.ch, &fr.msg[..fr.n], &fr.hs[..fr.nh])
+    }
+
+    /// wm_srv 直建窗（gfxdemo/desktop 控制面形——不经 apps 轮询段）。
+    fn create_via_wm_srv(t: &mut WmTable, p: &mut MiniPort, layer: u8) -> (u16, Handle) {
+        let (f, n) = mk_create_frame(layer);
+        dispatch_create(t, p, CH_WM, &f[..n], &[])
+    }
+
+    fn table_get(t: &mut WmTable, p: &mut MiniPort) -> gp::WmSnapshot {
+        let mut f = [0u8; 8];
+        let n = gp::encode_wm_table_get_req(&mut f);
+        let r0 = p.replies.len();
+        t.handle_wm(p, CH_WM, &f[..n], &[]);
+        let rep = p.replies[r0].1.clone();
+        match gp::parse_wm_snapshot_rep(&rep) {
+            Some(Ok(s)) => s,
+            other => panic!("快照解析失败: {:?}", other.map(|r| r.err())),
+        }
+    }
+
+    fn focused_id(s: &gp::WmSnapshot) -> Option<u16> {
+        (0..s.count as usize)
+            .find(|&i| s.entries[i].flags & gp::WM_WIN_F_FOCUSED != 0)
+            .map(|i| s.entries[i].id)
+    }
+
+    // —— 僵尸窗销毁（死亡对账）——
+
+    /// 正例一（DETACH 路——强杀/崩溃 app 的 svcmgr 收口主形态）：u32
+    /// 寻址臂摘表时该属主名下全部窗口销毁（evt 关联关闭 + refocus 回幸
+    /// 存窗 + bump 广播达幸存窗事件端），他人窗口（他 app 通道 / wm_srv
+    /// 直建）零误伤；apps 槽照常回收。
+    #[test]
+    fn zombie_windows_destroyed_on_detach() {
+        let (mut t, mut p) = mk();
+        attach(&mut t, &mut p, 55);
+        attach(&mut t, &mut p, 77);
+        // 建序：wm_srv 窗 → 77 窗 → 55 双窗（末建持焦 = 55 的 wb）。
+        let (w_sys, _) = create_via_wm_srv(&mut t, &mut p, gp::WM_LAYER_SYSTEM);
+        let (w_77, s_77) = create_via_app(&mut t, &mut p, 77, gp::WM_LAYER_APP);
+        let (_wa, s_a) = create_via_app(&mut t, &mut p, 55, gp::WM_LAYER_APP);
+        let (wb, s_b) = create_via_app(&mut t, &mut p, 55, gp::WM_LAYER_APP);
+        let s = table_get(&mut t, &mut p);
+        assert_eq!(s.count, 4);
+        assert_eq!(focused_id(&s), Some(wb), "末建 55 窗持焦");
+        let ver0 = s.version;
+        // svcmgr 收口形：DETACH(u32=表项值) 经控制面到达。
+        let mut df = [0u8; 5];
+        let dn = gp::encode_wm_detach_req(&mut df, 55);
+        let r0 = p.replies.len();
+        t.handle_wm(&mut p, CH_WM, &df[..dn], &[]);
+        assert_eq!(p.replies[r0].1, vec![gp::ST_OK], "DETACH ack ST_OK");
+        // 僵尸窗销毁：55 名下 wa/wb 全销、wm_srv/77 窗零误伤、refocus 回
+        // 表序最末可见幸存窗（w_77）。
+        let s = table_get(&mut t, &mut p);
+        assert_eq!(s.count, 2, "55 双窗销毁");
+        let ids: Vec<u16> = (0..s.count as usize).map(|i| s.entries[i].id).collect();
+        assert_eq!(ids, vec![w_sys, w_77], "幸存 = wm_srv 窗 + 77 窗");
+        assert_eq!(focused_id(&s), Some(w_77), "refocus 回幸存窗");
+        assert!(s.version > ver0, "bump 广播面抬版本");
+        // 通道/资源收口：app 通道 55 close + 亡窗 evt 端关联关闭；77 evt
+        // 端存活且收到销毁广播（launcher 表跟随自动重画面）。
+        assert!(p.closed.contains(&55), "app 通道关闭");
+        assert!(p.closed.contains(&s_a) && p.closed.contains(&s_b), "亡窗 evt 关联关闭");
+        assert!(!p.closed.contains(&s_77), "幸存窗 evt 不误伤");
+        let last = *p.events_on(s_77).last().expect("幸存窗应收广播");
+        assert_eq!(gp::parse_wm_evt_table(last), Some(s.version), "末拍广播携新版本");
+        // apps 槽回收：wait 集需求 = 幸存双窗 evt + 余 77 通道。
+        let mut hs = [0 as Handle; 8];
+        assert_eq!(t.apps_handles(&mut hs), 1);
+        assert_eq!(hs[0], 77);
+        assert_eq!(t.wait_set_needed(), 3);
+    }
+
+    /// 正例二（轮询段 Dead 路——通道病态 recv 错码形态，DETACH 失联的
+    /// 兜底面）：Dead 摘表同刻该属主窗口销毁；他 app 通道/窗口照常存活
+    /// 可续用（同趟轮询后仍可收帧应答）。
+    #[test]
+    fn zombie_windows_destroyed_on_poll_dead() {
+        let (mut t, mut p) = mk();
+        attach(&mut t, &mut p, 55);
+        attach(&mut t, &mut p, 66);
+        let (_wa, s_a) = create_via_app(&mut t, &mut p, 55, gp::WM_LAYER_APP);
+        let (_wb, s_b) = create_via_app(&mut t, &mut p, 55, gp::WM_LAYER_APP);
+        let (w_66, s_66) = create_via_app(&mut t, &mut p, 66, gp::WM_LAYER_APP);
+        assert_eq!(table_get(&mut t, &mut p).count, 3);
+        p.dead.push(55); // 55 通道 recv 错码注入
+        // 同趟轮询：55 Dead → close+摘表+销窗 → 66 空转 → None。
+        assert!(t.poll_apps(&mut p).is_none(), "55 Dead 摘除后无帧可收");
+        let s = table_get(&mut t, &mut p);
+        assert_eq!(s.count, 1, "55 名下双窗全销毁");
+        assert_eq!(s.entries[0].id, w_66);
+        assert_eq!(focused_id(&s), Some(w_66), "refocus 回幸存窗");
+        assert!(p.closed.contains(&55), "病态通道关闭");
+        assert!(p.closed.contains(&s_a) && p.closed.contains(&s_b), "亡窗 evt 关联关闭");
+        assert!(!p.closed.contains(&s_66), "幸存窗 evt 不误伤");
+        let last = *p.events_on(s_66).last().expect("幸存窗应收广播");
+        assert_eq!(gp::parse_wm_evt_table(last), Some(s.version), "末拍广播携新版本");
+        // 66 通道照常可续用：GETINFO 帧命中且应答回该通道。
+        let mut g = [0u8; 8];
+        let gn = gp::encode_wm_getinfo_req(&mut g);
+        p.inject(66, &g[..gn]);
+        let fr = t.poll_apps(&mut p).expect("66 仍可收帧");
+        assert_eq!(fr.ch, 66);
+        let r0 = p.replies.len();
+        t.handle_wm(&mut p, fr.ch, &fr.msg[..fr.n], &fr.hs[..fr.nh]);
+        assert_eq!(p.replies[r0].0, 66, "应答回来源通道");
+        assert_eq!(p.replies[r0].1.len(), 12, "12B GETINFO rep");
+        assert_eq!(t.wait_set_needed(), 2, "幸存窗 evt + 66 通道");
     }
 }

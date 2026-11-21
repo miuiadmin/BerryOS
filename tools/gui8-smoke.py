@@ -171,6 +171,7 @@ LAYOUT_GATE_CELLS = (
 if len(LAYOUT_GATE) != 65:
     raise RuntimeError("LAYOUT_GATE 字节数漂移（期望 65）")
 MARK_GATE_DEFERRED = "app BROWSER gui deferred"
+ECO_GATE_ALIVE = "eco: app BROWSER alive"
 ECO_GATE_RECYCLE = "eco: app BROWSER recycle"
 ECO_GATE_KILLED = "eco: app BROWSER killed"
 ECO_GATE_NO_EOF = "eco: app BROWSER no EOF"
@@ -958,9 +959,15 @@ NAV_BAR_W = NAV_KEY_PX * 3 + NAV_GAP * 2
 
 
 def recents_center(w: int, h: int) -> tuple[int, int]:
-    """多任务键（nav.recents）中心——回收门二击注入点（紧凑档）。"""
+    """多任务键（nav.recents）中心——回收门注入点之一（紧凑档）。"""
     x0 = (w - NAV_BAR_W) // 2
     return x0 + 2 * (NAV_KEY_PX + NAV_GAP) + NAV_KEY_PX // 2, h - 8 - NAV_KEY_PX // 2
+
+
+def back_center(w: int, h: int) -> tuple[int, int]:
+    """back 键（nav.back）中心——销窗不杀进程（真泄漏形载具）。"""
+    x0 = (w - NAV_BAR_W) // 2
+    return x0 + NAV_KEY_PX // 2, h - 8 - NAV_KEY_PX // 2
 
 
 RE_LAUNCH_GEOM = re.compile(r"LAUNCH v=\d+ wmax=\d+ (\d+)x(\d+)")
@@ -1148,19 +1155,21 @@ def verify_recycle_gate(text: str, log_path: Path | None = None) -> None:
     )
     for bad in GATE_LAUNCHER_FAILS:
         _require_exact_count(text, bad, 0, "recycle gate", log_path)
+    _require_exact_count(text, ECO_GATE_ALIVE, 1, "recycle gate", log_path)
     its = list(RE_GATE_IT.finditer(text))
     if len(its) != 2:
         raise SmokeError(
             f"recycle gate: BROWSER it 行 {len(its)} != 2"
-            f"（首击+二击恰两 spawn；多于 2 = 误多点/连环 spawn）",
+            f"（首击+回收再拉恰两 spawn；alive 路零新 it；多于 2 = 误多点/连环 spawn）",
             log_path,
         )
+    p_alive = text.rfind(ECO_GATE_ALIVE)
     p_rec = text.rfind(ECO_GATE_RECYCLE)
     p_kill = text.rfind(ECO_GATE_KILLED)
-    if not (its[0].end() <= p_rec < p_kill < its[1].start()):
+    if not (its[0].end() <= p_alive < p_rec < p_kill < its[1].start()):
         raise SmokeError(
-            "recycle gate: 行序破缺（期望 it → recycle → killed → it；"
-            f"got it@{its[0].end()} rec@{p_rec} kill@{p_kill} it@{its[1].start()}）",
+            "recycle gate: 行序破缺（期望 it → alive → recycle → killed → it；"
+            f"got it@{its[0].end()} alive@{p_alive} rec@{p_rec} kill@{p_kill} it@{its[1].start()}）",
             log_path,
         )
 
@@ -1847,25 +1856,42 @@ def run_recycle_gate(args) -> int:
         )
         first_latency = time.monotonic() - t0
 
-        # 二击：多任务键重拉 = svcmgr 同 id 回收（外部击杀形）。时延帽 =
-        # max(floor, 首击 + headroom)：烧帽回归（+60s）必爆帽；headroom
-        # 默认 40s < 60s 且 >> 正常回收（毫秒级）与 TCG 抖动。
+        # 二击（批3 后换载具）：同位重击 = already-alive 聚焦路（窗在场
+        # → err=3 → launcher 焦点 RPC，零 recycle 零新 it）。断言 alive 行。
+        t1 = time.monotonic()
+        log("recycle-gate: QMP 注入二击（同图标；already-alive 聚焦路）")
+        boot.qmp.click(cx, cy, w, h)
+        boot.log.wait_until(
+            boot.proc,
+            lambda t: ECO_GATE_ALIVE in t,
+            "二击后 eco: app BROWSER alive 行（聚焦不回收活证）",
+            args.click_timeout,
+            "recycle gate",
+        )
+        alive_latency = time.monotonic() - t1
+
+        # 三击前置：back 键销窗不杀进程（真泄漏形）——此后同 id 窗不在场，
+        # 三击才走回收（外部击杀形）。时延帽 = max(floor, 首击 + headroom)：
+        # 烧帽回归（+60s）必爆帽；headroom 默认 40s < 60s 且 >> 正常回收。
+        bx, by = back_center(w, h)
+        boot.qmp.click(bx, by, w, h)
+        time.sleep(2.0)  # 销窗 RPC 往返 + 表广播沉淀
         boot.log.poll()
         it1 = len(RE_GATE_IT.findall(boot.log.text))
         budget = max(
             args.recycle_budget_floor, first_latency + args.recycle_headroom
         )
-        t1 = time.monotonic()
-        log(f"recycle-gate: QMP 注入二击（recents 键；帽 {budget:.0f}s）")
-        boot.qmp.click(rx, ry, w, h)
+        t2 = time.monotonic()
+        log(f"recycle-gate: QMP 注入三击（同图标；recycle 路；帽 {budget:.0f}s）")
+        boot.qmp.click(cx, cy, w, h)
         boot.log.wait_until(
             boot.proc,
             lambda t: len(RE_GATE_IT.findall(t)) > it1,
-            f"二击后新 eco: app BROWSER it 行（回收→再拉起活证；帽 {budget:.0f}s）",
+            f"三击后新 eco: app BROWSER it 行（回收→再拉起活证；帽 {budget:.0f}s）",
             budget,
             "recycle gate",
         )
-        second_latency = time.monotonic() - t1
+        second_latency = time.monotonic() - t2
 
         boot.log.poll()
         verify_recycle_gate(boot.log.text, boot.log_path)
@@ -2449,6 +2475,7 @@ def self_test(args) -> int:
         fake_g = (
             f"{MARK_GATE_DEFERRED}\n"
             "eco: app BROWSER it 03\n"
+            f"{ECO_GATE_ALIVE}\n"
             f"{ECO_GATE_RECYCLE}\n"
             f"{ECO_GATE_KILLED}\n"
             "eco: app BROWSER it 03\n"

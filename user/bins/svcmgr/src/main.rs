@@ -973,7 +973,8 @@ static INPUTD_RESTARTED: AtomicU32 = AtomicU32::new(0);
 /// SPAWN RPC 活子表帽（M-C）：GUI app 分钟级活期 × 4 槽 = 同时活 app 上
 /// 限；满表驱逐最老让新（2026-11-21 真机场 4 槽满案：UI 泵循环永不自退的
 /// 结构性槽泄漏下「拒新」= 用户体感死锁——同 id 先回收再开、无同 id 驱逐
-/// spawn_ns 最老，洪泛点击自驱逐收敛不撑爆监督面）。帽值 = 桌面 4 页
+/// last_touch 最老〔LRU 选老序——见 AppSpawnTail.last_touch_ns 字段注〕，
+/// 洪泛点击自驱逐收敛不撑爆监督面）。帽值 = 桌面 4 页
 /// × 每页 1 点击并发面的宽余量（v1 demo 拓扑实活 ≤2）。
 const APP_SPAWN_LIVE_MAX: usize = 4;
 
@@ -5951,6 +5952,96 @@ fn wm_detach_rpc(h: Handle) -> bool {
     nb == 1 && rep[0] == gp::ST_OK
 }
 
+/// 同 id 已活判据的 wmd 表查（重开=聚焦刀——`app_serve_spawn` 同 id 命中
+/// 分支的预检件）：控制端临时 dup（WMD_CLI_DUP 现源——wm_subscribe /
+/// wm_attach 同面；svcmgr 单线程独占，控制通道 cli 侧 FIFO 无第二读者，
+/// 应答互截禁例结构性不达）发 OP_WM_TABLE_GET → 短帽收全表快照 →
+/// **可见 ∧ APP 层表项 ≥ 2** = 有应用窗在场。≥2 判据的基准：launcher 恒
+/// 恰一枚 APP 层窗（桌面自窗——状态栏是 SYSTEM 层，SELF_WINS 账
+/// [状态栏 SYSTEM, 桌面 APP]），每 [ui] app 恰补一枚全屏 APP 层窗
+/// （mms-app 形）——APP 层可见窗数 1 = 仅桌面（无应用窗）、≥2 = 至少一
+/// 枚应用窗在场。任何失败面（wmd 未起/dup 败/发送败/帽到/畸形）= false
+/// ——保守归窗不在场走现状回收路（查询失败零新行为面）。
+fn app_alive_win_present() -> bool {
+    let src = WMD_CLI_DUP.load(Ordering::Relaxed);
+    if src == 0 {
+        return false; // wmd 未起（rootfs 相）——窗面恒缺席
+    }
+    let mut ctl: Handle = 0;
+    if berry_handle_duplicate(src, RIGHT_SEND | RIGHT_RECV, &mut ctl) != 0 || ctl == 0 {
+        return false;
+    }
+    let ok = app_alive_win_probe(ctl);
+    // 用毕即关（sub_dup 先例；关失败 = 一次性 1 槽泄漏可忍，零 trap 纪律）。
+    let _ = berry_handle_close(ctl);
+    ok
+}
+
+/// `app_alive_win_present` 的 RPC 半程（临时 dup 已就位）：预排液 → 带帽
+/// 发送 → 带帽等应答 → 满额窗收 → 快照解析 + 判据。帽复用
+/// `WM_DETACH_CAP_NS`（10s——同值同理由：伙伴服务 RPC 不用 60s 族长帽，
+/// 失败一次不阻回收决策；wmd 健康 = serve 轮询 ms 级回）。预排液先行 =
+/// 应答判读即本函数全部语义（无 DETACH 的「摘除由 wmd 帧序保证」兜底），
+/// 上一轮帽到滞留控制通道 cli 侧的陈旧快照帧必须先清（wm_detach_rpc 同
+/// 款；随行 handle 全量收口丢弃）。
+fn app_alive_win_probe(h: Handle) -> bool {
+    let mut msg = [0u8; 256];
+    let mut hh = [0 as Handle; 8];
+    loop {
+        let mut nb = msg.len();
+        let mut nh = hh.len();
+        let s = berry_channel_recv(h, msg.as_mut_ptr(), &mut nb, hh.as_mut_ptr(), &mut nh);
+        if s == BERRY_ERR_AGAIN {
+            break;
+        }
+        if s != 0 {
+            return false;
+        }
+        for k in 0..nh {
+            let _ = berry_handle_close(hh[k]);
+        }
+    }
+    let mut req = [0u8; 4];
+    let n = gp::encode_wm_table_get_req(&mut req);
+    loop {
+        let s = berry_channel_send(h, req.as_ptr(), n, core::ptr::null(), 0);
+        if s == 0 {
+            break;
+        }
+        if s != BERRY_ERR_BUSY {
+            return false;
+        }
+        let mut obs = 0u64;
+        if berry_object_wait_one(h, SIGNAL_WRITABLE, now() + WM_DETACH_CAP_NS, &mut obs) != 0 {
+            return false;
+        }
+    }
+    let mut obs = 0u64;
+    if berry_object_wait_one(h, SIGNAL_READABLE, now() + WM_DETACH_CAP_NS, &mut obs) != 0 {
+        return false; // 帽到（wmd 楔死形）——本帧成陈旧帧，归下轮预排液清
+    }
+    let mut rep = [0u8; 256];
+    let mut rh = [0 as Handle; 8];
+    let mut nb = rep.len();
+    let mut nh = rh.len();
+    if berry_channel_recv(h, rep.as_mut_ptr(), &mut nb, rh.as_mut_ptr(), &mut nh) != 0 {
+        return false;
+    }
+    for i in 0..nh {
+        let _ = berry_handle_close(rh[i]);
+    }
+    match gp::parse_wm_snapshot_rep(&rep[..nb]) {
+        Some(Ok(snap)) => snap
+            .entries
+            .iter()
+            .take(snap.count)
+            .filter(|e| e.layer == gp::WM_LAYER_APP && e.flags & gp::WM_WIN_F_VISIBLE != 0)
+            .count()
+            >= 2,
+        _ => false,
+    }
+}
+
 /// eco 降级行（run_rootfs_child 内 `eco_skip` 闭包的独立 fn 版——A-8c 的
 /// DNS 自验在 `_start` 语境（闭包作用域外）消费，形态逐字同源）。
 fn eco_line(console: Handle, why: &[u8]) {
@@ -7509,6 +7600,10 @@ fn app_launch(
             // 定宽）。
             let mut tid = [0u8; ID_MAX];
             tid[..id.len()].copy_from_slice(id);
+            // 拉起时刻单点取样：入表序（spawn_ns）与首触时刻（last_touch_ns）
+            // 同值起算（LRU 驱逐选老序——使用信号刷新归 already-alive 路，
+            // 见 AppSpawnTail 字段注）。
+            let spawn_at = now();
             return (
                 true,
                 uface,
@@ -7525,8 +7620,11 @@ fn app_launch(
                     // per-app wm 通道自留面（K1）：reap 死亡面 DETACH 用。
                     wm_det,
                     wm_srv_id,
-                    // 槽满驱逐最老的选老序源（入表时刻——见字段注）。
-                    spawn_ns: now(),
+                    // 入表时刻（记账面——见字段注）。
+                    spawn_ns: spawn_at,
+                    // 首触时刻 = 拉起时刻（LRU 驱逐选老序源——使用信号
+                    // 刷新归 already-alive 路，见字段注）。
+                    last_touch_ns: spawn_at,
                 }),
             );
         }
@@ -8240,11 +8338,18 @@ struct AppSpawnTail {
     /// 已失活——u32=0 裁定见 wm_detach_rpc 头注，真机寻址真值在到达
     /// 通道。保留 = 记账 + 同命名空间 harness 的完备性面）。
     wm_srv_id: u32,
-    /// 拉起时刻（`now()` 同源 CLOCK_MONOTONIC ns）：槽满驱逐最老的选老
-    /// 序（2026-11-21 真机场 4 槽满案立法——槽序只反映首空槽扫描序，
-    /// 不可作入表序用；boot 批同步形同赋值，语义无害——boot 尾不入
-    /// APP_CHILDREN）。
+    /// 拉起时刻（`now()` 同源 CLOCK_MONOTONIC ns）：入表序记账（2026-11-21
+    /// 真机场 4 槽满案立法面——槽序只反映首空槽扫描序，不可作入表序用；
+    /// boot 批同步形同赋值，语义无害——boot 尾不入 APP_CHILDREN）。驱逐
+    /// 选老序源已让位 last_touch_ns（本字段降为入表序审计面）。
     spawn_ns: u64,
+    /// 最近使用时刻（`now()` 同源 CLOCK_MONOTONIC ns）：槽满驱逐选老序源
+    /// ——LRU 升级（总审计 app-lifecycle P3「驱逐序 FIFO 非使用序」，
+    /// 2026-11-22 收口）：拉起时与 spawn_ns 同值；活实例收到使用信号即
+    /// 刷新。v1 使用信号 = 同 id SPAWN 命中活实例且决定保留的 already-
+    /// alive 路（该路在本字段落线时刷新——字段与驱逐比较器先行就位）；
+    /// 无刷新源时恒等 spawn_ns，驱逐序退化回入表序 FIFO，行为零漂。
+    last_touch_ns: u64,
 }
 
 /// `AppSpawnTail` 兑现面（M-C γ-分下半）：collect_eof → 关对 → reap →
@@ -8261,7 +8366,7 @@ struct AppSpawnTail {
 /// 自退不同形，串口排障不再被设计路径噪音稀释）。ps 账本仍记真码
 /// （kernel 落的退出码即事实；独立状态位需 psp 协议面扩容，挂账）。
 fn app_reap_tail(console: Handle, t: AppSpawnTail, killed: bool) -> bool {
-    let AppSpawnTail { child, out_s, stdout_c, id, id_len, ledger, eof_seen, wm_det, wm_srv_id: _wm_srv_id, spawn_ns: _spawn_ns } = t;
+    let AppSpawnTail { child, out_s, stdout_c, id, id_len, ledger, eof_seen, wm_det, wm_srv_id: _wm_srv_id, spawn_ns: _spawn_ns, last_touch_ns: _last_touch_ns } = t;
     let id = &id[..id_len];
     if out_s != 0 {
         // console=false：子表持的是 stdout 的 dup 别名（spawn 内 dup
@@ -8744,7 +8849,9 @@ fn app_spawn_recycle(console: Handle, children: &mut [Option<AppSpawnTail>], slo
 /// 账本异步可见（预期态击杀打 `killed` 短行与真异常退场分诊）。err 值域：
 /// 1 = 守卫/拉起败（细节归 eco: app 行；满表不再拒新——同 id 回收再开、
 /// 无同 id 驱逐最老〔2026-11-21 真机场 4 槽满案〕，"app slots" 拒新行
-/// 退役为不可达防御兜底）、2 = id 不在册。console 参数 = svcmgr
+/// 退役为不可达防御兜底）、2 = id 不在册、3 = 同 id 已活 ∧ 窗在场（重开
+/// =聚焦形——不回收不重拉，eco `alive` 行可见化；launcher 特判走 wmd
+/// 焦点面）。console 参数 = svcmgr
 /// console（manifest console=true 的 app 诊断直打串口；false 走私有对收集
 /// ——boot 批同语义，零新面）。
 fn app_serve_spawn(console: Handle, svc: Handle, id: &[u8]) {
@@ -8823,31 +8930,55 @@ fn app_serve_spawn(console: Handle, svc: Handle, id: &[u8]) {
                         APP_SPAWN_LIVE_MAX,
                     )
                 };
-                // ① 同 id 回收再开：表内同 id 活实例 = 销窗未退的泄漏形，
-                // 回收旧实例原槽让新（点同一图标 = 回收旧的开新的，永不
-                // 重复占槽）。复数同 id 在本刀下**结构性不可达**：本表唯
+                // ① 同 id 命中两形（重开=聚焦刀起分野）：**窗在场 = 用户切
+                // 回**（覆盖态下点回图标/多任务键重开——旧序一律回收重杀
+                // = 内容全丢，总审计 P2「重开=杀重启」）→ 不回收不重拉：
+                // eco `alive` 行 + 已活形回执 err=3（值域扩展——appproto
+                // 耦合律零改：ok=0 携非零理由码即合法帧，库头「err 值域
+                // v1 无分类面」明文留位；launcher 消费端特判 3 走 wmd 焦
+                // 点面不重 spawn），活实例 last_touch_ns 就地刷新（LRU 驱
+                // 逐选老序的使用信号——见字段注）；**窗不在场（back/home
+                // 销窗未退的真泄漏形——窗亡进程在，聚焦无目标）与表查失
+                // 败面（`app_alive_win_present` 头注）= 维持回收再开**（现
+                // 状路零新面）。复数同 id 在本刀下**结构性不可达**：本表唯
                 // 一新尾插入点（本函数）恒先过 ①，`app_supervise` 只回插
                 // 原槽、boot 批不入表——异 id 僵尸的收敛路径 = 表满时点
                 // 新 id 触发 ② 驱逐最老，非同 id 点击逐拍收敛。
                 let same = (0..APP_SPAWN_LIVE_MAX).find(|&i| {
                     children[i].as_ref().map_or(false, |t| &t.id[..t.id_len] == id)
                 });
-                let (slot, killed) = if let Some(i) = same {
+                let already = app_spawn_alive_gate(same.is_some());
+                let (slot, killed) = if already {
+                    if let Some(i) = same {
+                        eco_app(console, id, b"alive");
+                        // 使用信号刷新（LRU 选老序源）：保留 = 正在使用，
+                        // 驱逐比较器不按入表序误踢活跃实例。
+                        if let Some(t) = children[i].as_mut() {
+                            t.last_touch_ns = now();
+                        }
+                    }
+                    // 已活短路哨兵——slot/killed 无消费面（下方拉起段被
+                    // already 门整体拦截，原槽活实例原样保留）。
+                    (usize::MAX, false)
+                } else if let Some(i) = same {
                     app_spawn_recycle(console, children, i, b"recycle");
                     (i, true)
                 } else {
                     match (0..APP_SPAWN_LIVE_MAX).find(|&i| children[i].is_none()) {
                         Some(i) => (i, false),
-                        // ② 槽满驱逐最老：无同 id 且四槽全活，spawn_ns 最小
-                        // 者让路（选老序源 = 入表时刻 FIFO 非使用序——设计
-                        // 取舍立法于 AppSpawnTail.spawn_ns 字段注；FILES ×3
-                        // 占槽形；None 形以 u64::MAX 退让——全满前提下不可
-                        // 达防御面）。
+                        // ② 槽满驱逐最老：无同 id 且四槽全活，last_touch_ns
+                        // 最小者让路（选老序源 = 最近使用时刻 LRU，非入表
+                        // 序 FIFO——总审计 P3「驱逐选老」2026-11-22 收口：
+                        // 正在使用的应用不再被静默踢掉；使用信号刷新面立法
+                        // 于 AppSpawnTail.last_touch_ns 字段注，无刷新源时
+                        // 恒等 spawn_ns = 入表序，行为零漂；FILES ×3 占槽
+                        // 形；None 形以 u64::MAX 退让——全满前提下不可达
+                        // 防御面）。
                         None => {
                             let mut old = 0usize;
                             for i in 1..APP_SPAWN_LIVE_MAX {
-                                if children[i].as_ref().map_or(u64::MAX, |t| t.spawn_ns)
-                                    < children[old].as_ref().map_or(u64::MAX, |t| t.spawn_ns)
+                                if children[i].as_ref().map_or(u64::MAX, |t| t.last_touch_ns)
+                                    < children[old].as_ref().map_or(u64::MAX, |t| t.last_touch_ns)
                                 {
                                     old = i;
                                 }
@@ -8857,47 +8988,54 @@ fn app_serve_spawn(console: Handle, svc: Handle, id: &[u8]) {
                         }
                     }
                 };
-                // P3 案 c：装载期验签守卫（调用侧插入——boot 批同源单点，头注/
-                // app_launch 注记；先于 app_launch = 验签子独立解析面零漂）。
-                p3_sig_guard(console, id, off, len, step);
-                let (_, _, tail) = app_launch(
-                    console,
-                    FS_A.load(Ordering::Relaxed),
-                    false, // SPAWN RPC 形：launcher 点击拉起，裁决 B deferral 不适用
-                    id,
-                    off,
-                    len,
-                    step,
-                    mf,
-                    icons,
-                    views,
-                );
-                match tail {
-                    Some(t) => {
-                        // 拉起成立：尾入子表（slot 由预检锁定），ACK 即刻——
-                        // 收口归稳态 app_supervise（M-C 异步形）。
-                        // SAFETY: 单线程独占写面（slot 此刻必空——预检后无
-                        // 第二插入点）；tuple 首值谓词与 tail 同源（Ok 臂
-                        // 恒 (true, _, Some)，Err 臂恒 (false, _, None)）。
-                        let children: &mut [Option<AppSpawnTail>] = unsafe {
-                            core::slice::from_raw_parts_mut(
-                                core::ptr::addr_of!(APP_CHILDREN)
-                                    as *mut Option<AppSpawnTail>,
-                                APP_SPAWN_LIVE_MAX,
-                            )
-                        };
-                        children[slot] = Some(t);
-                        (true, 0)
-                    }
-                    // 拉起败（守卫已过关 = 剩余失败面：fs dup/wm attach/
-                    // spawn）：预检槽位自然空置，无需归还动作。本路先杀过
-                    // 旧实例（killed）时净损失可见化——判读不与正常回收混
-                    // 同。18B ≤ 24B eco 帽。
-                    None => {
-                        if killed {
-                            eco_app(console, id, b"killed for nothing");
+                if already {
+                    // 已活形回执：拉起面整段跳过（sig_guard/app_launch/
+                    // 槽位写入全零动作——活实例已在目标态，回执 err=3 由
+                    // launcher 特判走焦点面）。
+                    (false, 3)
+                } else {
+                    // P3 案 c：装载期验签守卫（调用侧插入——boot 批同源单点，头注/
+                    // app_launch 注记；先于 app_launch = 验签子独立解析面零漂）。
+                    p3_sig_guard(console, id, off, len, step);
+                    let (_, _, tail) = app_launch(
+                        console,
+                        FS_A.load(Ordering::Relaxed),
+                        false, // SPAWN RPC 形：launcher 点击拉起，裁决 B deferral 不适用
+                        id,
+                        off,
+                        len,
+                        step,
+                        mf,
+                        icons,
+                        views,
+                    );
+                    match tail {
+                        Some(t) => {
+                            // 拉起成立：尾入子表（slot 由预检锁定），ACK 即刻——
+                            // 收口归稳态 app_supervise（M-C 异步形）。
+                            // SAFETY: 单线程独占写面（slot 此刻必空——预检后无
+                            // 第二插入点）；tuple 首值谓词与 tail 同源（Ok 臂
+                            // 恒 (true, _, Some)，Err 臂恒 (false, _, None)）。
+                            let children: &mut [Option<AppSpawnTail>] = unsafe {
+                                core::slice::from_raw_parts_mut(
+                                    core::ptr::addr_of!(APP_CHILDREN)
+                                        as *mut Option<AppSpawnTail>,
+                                    APP_SPAWN_LIVE_MAX,
+                                )
+                            };
+                            children[slot] = Some(t);
+                            (true, 0)
                         }
-                        (false, 1)
+                        // 拉起败（守卫已过关 = 剩余失败面：fs dup/wm attach/
+                        // spawn）：预检槽位自然空置，无需归还动作。本路先杀过
+                        // 旧实例（killed）时净损失可见化——判读不与正常回收混
+                        // 同。18B ≤ 24B eco 帽。
+                        None => {
+                            if killed {
+                                eco_app(console, id, b"killed for nothing");
+                            }
+                            (false, 1)
+                        }
                     }
                 }
             }
@@ -9748,4 +9886,14 @@ fn trap() -> ! {
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     trap()
+}
+
+
+/// 批3 二分工程解：already 判定抽离点——app_serve_spawn 体内直放
+/// app_alive_win_present() 调用会因函数增长触发确定性 dpg 子崩
+/// （位置敏感非语义；机制疑 ELF 装载边界，深查立内核刀）。经此
+/// 单点转发后 spawn 主体体积回基线，probe 逻辑体落在文件尾安全区。
+#[inline(never)]
+fn app_spawn_alive_gate(same_hit: bool) -> bool {
+    same_hit && app_alive_win_present()
 }
