@@ -1224,6 +1224,11 @@ test-host:
     # 对拍（stdout 逐行全等剥路径段 + exit 码/stderr 全等 + 用法错族 +
     # 让位臂五旗标指回 python3——--check/--dry-run/--emit/--selftest/
     # --sample 现役单源不镜像）。
+    # 四刀第一片：full.rs 产物面对账（load_product(lite=False) 文件面四臂
+    # 镜像——override OEM 件/branding 资产在席 + source 两件套 + trust 锚
+    # 32B 恰长 + gensourceindex parse_index path 依赖单解释器复用）；
+    # tests/full_parity.rs oracle 真跑文件面对拍（gsi 两件套真产 + 7 拒腿
+    # 变异文案逐字全等 + 结构拒面前置）。
     # 独立小工作区，须显式 --target {{host}}。Python 件不退役——CLI 对拍
     # oracle + gensourceindex --preset import 面单源。
     cargo test --manifest-path tools/berryassemble/Cargo.toml --target {{host}}
@@ -1371,6 +1376,12 @@ test-host:
     # tools/mkimage）；Python 版不降格改名——模块面现役（gensourceindex
     # import）+ CLI 对拍 oracle，selftest 照跑守 Python 侧语义钉板。
     python3 tools/mkimage.py --selftest
+    # W1-Q4 续（a-3 U4 纪律同款）：releng_pack 门禁自检——G1 刀 6 发布
+    # 打包流水线（产物检查→尺寸门→mkimage 造盘→manifest）此前零守卫，
+    # 只在真发布链上被动覆盖：帽值不变量（G0 刀 1 双槽 256MiB——随刀
+    # 单源化 docstring/文案 128 残留同步清偿）/ sha256 分段读对拍 / 尺寸
+    # 门恰界两侧 / 缺件 loud 退场 / berry-sign 发现序缺席分支 / run 双路。
+    python3 tools/releng_pack.py --selftest
     # K-3：size.py ADRP 解码器向量自检（--assert-flip 扩面的门禁自身坏 =
     # smoke/build-release 断言静默劣化，同 a-3 U4 纪律门禁化）。
     python3 tools/size.py --selftest

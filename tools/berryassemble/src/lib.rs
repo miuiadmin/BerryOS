@@ -27,6 +27,7 @@ use std::collections::BTreeMap;
 /// SELFTEST_PRODUCT 模板全集；tomllib 对拍钉板）。
 pub mod toml_doc;
 pub mod lite;
+pub mod full;
 
 /// 门禁拒绝（一行理由——mkapp Reject 先例；文案即契约，Python `Reject`
 /// 双侧全等由 parity 对拍钉板）。
