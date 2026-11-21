@@ -19,10 +19,16 @@
 //! **链形态** = berry-launcher 镜像（musl std + berry-libc shim + CRT0
 //! 链接种子；gfxdemo/berry-launcher 先例）：
 //!
-//! - 服务连接：`wm_cli_h()` 门控（0 = GUI 通道未授权 → 单行诊断 + park
-//!   常驻，**不秒退**——launcher「wm absent」降级同形）→ WM_GETINFO
+//! - 服务连接：**wm 门控走 [`wm_present_h`]**（2026-11-21 换轨修正：本
+//!   app 声明 fs 词 + [ui] 节 → gift 槽位 `[rootfs, fs, wm]`——wm 落
+//!   extras[2]（berry-libc io.rs GIFT_H[4]）；旧 `wm_cli_h()` 的 [0] 位
+//!   对 wants_fs 程序承载 rootfs VMO，取到的是 VMO 非通道端——spawn
+//!   即「wm absent」park 假降级，真机从未真正开窗〔files/berry-term
+//!   同款先例〕；0 = GUI 通道未授权 → 单行诊断 + park 常驻，**不秒退**
+//!   ——launcher「wm absent」降级同形）→ WM_GETINFO
 //!   几何 → present GETINFO 轻断言 → 帧缓冲 VMO 三连（create/commit/
-//!   map @ FRAME_VA）。
+//!   map @ FRAME_VA）。settings_io 走 `fs_h()`=GIFT_H[1]=fs 客户端
+//!   不受换轨影响。
 //! - 渲染循环：三态停帧（RUN/SETTLE/IDLE——引擎 `render_frame`/
 //!   `next_wakeup` 驱动；damage 空集零 SUBMIT 零 RPC）+ SUBMIT →
 //!   FRAME_CALLBACK → RELEASE 严格内联串行（在途 ≤1 结构性背压，
@@ -50,7 +56,7 @@ use berry_gfx::font::FontSize;
 use berry_gfx::pass::{LoadOp, PassDescriptor, StoreOp};
 use berry_gfx::queue::Queue;
 use berry_guiproto as gp;
-use berry_libc::io::{input_h, self_vmar_h, wm_cli_h};
+use berry_libc::io::{input_h, self_vmar_h, wm_present_h};
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
     berry_handle_duplicate, berry_object_wait_many, berry_object_wait_one, berry_vmar_map,
@@ -591,11 +597,13 @@ fn pct_len(v: u32) -> usize {
 }
 
 fn main() {
-    // —— 降级门：wm 客户端端未交付（波 4 缺口——app_launch extra_gifts
-    //    现▮fs 两枚，GUI 通道授权路径未落）→ 一行诊断 + park 常驻
-    //    （launcher「wm absent」同形；appstub 的 exit(0) 秒退就此退役；
-    //    wiring 落地后本门自然放行）。
-    let hw = wm_cli_h();
+    // —— 降级门（2026-11-21 换轨修正：wm 礼物取用改 `wm_present_h()`=
+    //    GIFT_H[4]=wants_fs 族 extras[2] 位真通道——本 app 带 fs 词，
+    //    旧 `wm_cli_h()` 取 [0] 位 = rootfs VMO 假在场，spawn 即 park
+    //    假降级）：未交付 → 一行诊断 + park 常驻（files/berry-term 同形
+    //    ——wants_fs GUI app 的 wm 礼物落 extras[2]，同槽访问器；窗口
+    //    义务语义不折衷成 exit(0) 秒退）。
+    let hw = wm_present_h();
     if hw == 0 {
         eprintln!("settings: wm absent (no gui gift)");
         berry_libc::park();

@@ -63,7 +63,7 @@ use berry_sys::Handle;
 #[cfg(not(test))]
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_handle_duplicate, berry_object_wait_many,
-    berry_object_wait_one, berry_vmar_map, berry_vmo_commit, berry_vmo_create,
+    berry_object_wait_one, berry_thread_sleep, berry_vmar_map, berry_vmo_commit, berry_vmo_create,
     BERRY_ERR_AGAIN, BERRY_ERR_BUSY, BERRY_ERR_TIMEDOUT, RIGHT_READ, RIGHT_TRANSFER, RIGHT_WRITE,
     SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
@@ -102,6 +102,17 @@ pub const INPUT_STALE_CAP_NS: u64 = 60 * 1_000_000_000;
 /// 输入 poll 应答采样打印周期：每第 100 个应答打一行 events/EAGAIN
 /// 诊断（一次性 input_logged 旗退役后的节拍；错误路径不受此门恒必打）。
 pub const INPUT_LOG_EVERY: u64 = 100;
+
+/// SUBMIT/FRAME_CALLBACK 1B ST_BUSY 拒答重试总帽（present 单飞仲裁面）：
+/// wmd presarb（gui-wmd 侧 ArbGate::Busy 分支——注释宣称「客户端 pump 侧
+/// 步进重试」即本面）对他客户端事务在途的 SUBMIT/RELEASE 快答 ST_BUSY
+///（属主租约 PRESENT_LEASE_NS=5s 内让位）；帽取 8s > 租约——到帽前属主
+/// 事务必已收口或被租约抢占，本端重试必过。到帽才 fail（真死链面——
+/// guifbd/wmd 双停摆形态）。
+pub const PRESENT_BUSY_RETRY_CAP_NS: u64 = 8 * 1_000_000_000;
+
+/// ST_BUSY 步进重试步进（100ms——步进睡让出 CPU，醒即重验）。
+pub const PRESENT_BUSY_RETRY_STEP_NS: u64 = 100 * 1_000_000;
 
 /// glyph scratch 容量（堆置；~30 短 label 富余——paint 对超容 run 截断
 /// 尾字形，视觉面非正确性面）。
@@ -538,12 +549,10 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
 
             // SUBMIT：fresh READ dup 别名随行（send 即 take——原 vmo 留表；
             // TRANSFER 保位——随行预检执法，dup 只紧不松须显式保位）。
-            let mut alias: Handle = 0;
-            if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias) != 0
-                || alias == 0
-            {
-                fail("dup alias");
-            }
+            // **ST_BUSY 步进重试**（present 单飞仲裁面）：wmd 对他客户端
+            // 事务在途的 SUBMIT 快答 ST_BUSY（随行别名已被关收——快答未
+            // 转发零孤儿）——每轮 fresh dup 重试至帽（8s > 属主租约 5s，
+            // 到帽前必过）。
             let (flags, rects, k) = if full {
                 (
                     gp::SUBMIT_F_DAMAGE_FULL,
@@ -563,24 +572,46 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
                 rect_count: k,
             };
             let m = enc_req(gp::encode_present_req(&mut req, &sreq));
-            let (n, _) = rpc(cfg.hw, &req[..m], &[alias], &mut rep, &mut rhs);
-            let token = match gp::parse_submit_ack(&rep[..n]) {
-                Some(t) => t,
-                None => fail(&format!("submit ack bad st={}", rep[0])),
+            let mut busy_dl = 0u64;
+            let token = loop {
+                let mut alias: Handle = 0;
+                if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias) != 0
+                    || alias == 0
+                {
+                    fail("dup alias");
+                }
+                let (n, _) = rpc(cfg.hw, &req[..m], &[alias], &mut rep, &mut rhs);
+                if let Some(t) = gp::parse_submit_ack(&rep[..n]) {
+                    break t;
+                }
+                if n == 1 && rep[0] == gp::ST_BUSY {
+                    busy_step("submit busy（present 单飞让位重试）", &mut busy_dl);
+                    continue;
+                }
+                fail(&format!("submit ack bad st={}", rep[0]));
             };
             ui.note_submitted();
 
             // FRAME_CALLBACK：blit-at-SUBMIT 形下帧已呈现（token 校验即
             // 答）——断 PRESENTED（DISCARDED = 呈现链破相 fail loud）。
-            // status/credits 单源仍在本应答（P3 回执无 credits 域）。
+            // status/credits 单源仍在本应答（P3 回执无 credits 域）。ST_BUSY
+            // 步进重试同 SUBMIT（wmd stale 清场封锁/中继毒化瞬态的快答
+            // ——本端帧已在途，重试无副作用）。
             let m = enc_req(gp::encode_present_req(
                 &mut req,
                 &gp::PresentReq::FrameCallback { frame_token: token },
             ));
-            let (n, _) = rpc(cfg.hw, &req[..m], &[], &mut rep, &mut rhs);
-            let done = match gp::parse_frame_done_rep(&rep[..n]) {
-                Some(d) => d,
-                None => fail(&format!("frame done bad st={}", rep[0])),
+            let mut cb_dl = 0u64;
+            let done = loop {
+                let (n, _) = rpc(cfg.hw, &req[..m], &[], &mut rep, &mut rhs);
+                if let Some(d) = gp::parse_frame_done_rep(&rep[..n]) {
+                    break d;
+                }
+                if n == 1 && rep[0] == gp::ST_BUSY {
+                    busy_step("frame callback busy（present 单飞让位重试）", &mut cb_dl);
+                    continue;
+                }
+                fail(&format!("frame done bad st={}", rep[0]));
             };
             if done.status != gp::FRAME_PRESENTED {
                 fail(&format!("frame status={}", done.status));
@@ -692,6 +723,25 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
     }
 }
 
+/// present 域 1B ST_BUSY 拒答的步进重试共尾（SUBMIT/FRAME_CALLBACK 面）：
+/// 100ms 步进让出 CPU，总帽 [`PRESENT_BUSY_RETRY_CAP_NS`]（`cap_dl` = 各
+/// 调用点局部帽位，0 = 首次起算）；到帽 fail（真死链面）。兑现 gui-wmd
+/// 侧 ArbGate::Busy 分支「客户端 pump 侧步进重试」的宣称——快答未转发 +
+/// 随行已关收，重发即安全（SUBMIT 面重发前须 fresh dup 别名）。
+#[cfg(not(test))]
+fn busy_step(what: &str, cap_dl: &mut u64) {
+    if *cap_dl == 0 {
+        *cap_dl = now() + PRESENT_BUSY_RETRY_CAP_NS;
+        diag(what);
+    }
+    if now() >= *cap_dl {
+        fail(&format!("{}: 帽到点", what));
+    }
+    if berry_thread_sleep(now() + PRESENT_BUSY_RETRY_STEP_NS) != 0 {
+        fail("busy retry sleep");
+    }
+}
+
 /// 挂一轮 INPUT_POLL：inputd 阻塞批拉 ≤3 事件；-EBUSY = 通道满（前一轮
 /// 未收），等 WRITABLE 后重试；其余错 = 输入面失效，返回 false。
 #[cfg(not(test))]
@@ -789,5 +839,16 @@ mod tests {
     #[test]
     fn input_stale_cap_is_two_server_caps() {
         assert_eq!(INPUT_STALE_CAP_NS, 2 * 30_000_000_000);
+    }
+
+    /// ST_BUSY 重试帽契约：8s > presarb 属主租约 5s（gui-wmd 侧
+    /// PRESENT_LEASE_NS——到帽前属主事务必已收口或被租约抢占，本端重试
+    /// 必过）；步进 100ms。改值须有意识地重估「帽盖住租约窗」契约。
+    #[test]
+    fn present_busy_retry_cap_covers_presarb_lease() {
+        const PRESENT_LEASE_NS: u64 = 5 * 1_000_000_000;
+        assert_eq!(PRESENT_BUSY_RETRY_CAP_NS, 8 * 1_000_000_000);
+        assert!(PRESENT_BUSY_RETRY_CAP_NS > PRESENT_LEASE_NS);
+        assert_eq!(PRESENT_BUSY_RETRY_STEP_NS, 100 * 1_000_000);
     }
 }

@@ -599,9 +599,9 @@ fn on_covered_tap(ui: &mut UiMain, wm_h: Handle, self_wins: &[u16; 2], t_now: u6
 /// 键（调用方续走 app 槽命中）。
 ///
 /// - **返回**：波3-件④——应用在焦先收应用（查表→焦点窗 DESTROY→
-///   wmd 表序回焦桌面）；焦点命中自窗（K2 排雷：wmd refocus 回落后
-///   焦点常驻桌面窗自身）视同无应用在焦，走次级语义——桌面窗永不被
-///   back 自毁；无应用在焦 = 桌面翻页语义（v1 原路）。
+///   成收 wake 重画→wmd 表序回焦桌面）；焦点命中自窗（K2 排雷：wmd
+///   refocus 回落后焦点常驻桌面窗自身）视同无应用在焦，走次级语义
+///   ——桌面窗永不被 back 自毁；无应用在焦 = 桌面翻页语义（v1 原路）。
 ///   launcher/wmd 同步 RPC 无死锁对（guifbd 的 SUBMIT 内禁同步 RPC
 ///   wmd 才是死锁对——launcher 非 blit 路径）。
 /// - **多任务**：重新拉起最近 spawn 的应用（真重拉非死键）；无历史 =
@@ -646,9 +646,9 @@ fn on_nav_click(
     }
     if node == nav.back {
         // 波3-件④ + K2 排雷：应用在焦先收应用（查表→焦点窗 DESTROY→
-        // wmd 表序回焦桌面）；焦点命中自窗（wmd refocus 回落后即桌面窗
-        // 自身）视同无应用在焦走次级语义——桌面窗永不被 back 自毁；
-        // 无应用在焦 = 桌面翻页语义（v1 原路）。
+        // 成收 wake 重画→wmd 表序回焦桌面）；焦点命中自窗（wmd
+        // refocus 回落后即桌面窗自身）视同无应用在焦走次级语义——
+        // 桌面窗永不被 back 自毁；无应用在焦 = 桌面翻页语义（v1 原路）。
         let mut req = [0u8; 256];
         let mut rep = [0u8; 256];
         let mut rhs = [0 as Handle; 8];
@@ -665,6 +665,14 @@ fn on_nav_click(
             let (n, _) = rpc(wm_h, &req[..m], &[], &mut rep, &mut rhs);
             if rep[0] != 0 {
                 eprintln!("launcher: back destroy st={}", rep[0]);
+            } else {
+                // 成收即 wake（home 批/on_covered_tap 同款）：v1 无合成
+                // 器、像素共享 fb，app 残留像素靠本帧 FULL 重画覆盖
+                // （wake 空脏集置 FULL——refocus 只是表态变更非重画，
+                // 不 wake 则 damage 空集零 SUBMIT，桌面残影不可见却
+                // 可交互）；零成收不 wake——表未变不重画，免覆盖仍
+                // 存活窗。
+                ui.wake(t_now);
             }
             let _ = n;
         } else if desktop.tabs.cur != 0 {
