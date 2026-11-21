@@ -352,7 +352,7 @@ find "$DEST/tools" -maxdepth 1 -name '*.notes.md' -delete 2>/dev/null || true
 # ---------- docs/ 出口脱敏（镜像复发面根治） ----------
 # 提案档头块引用内部流水线档案名（.hermes-loop/QUEUE.md 等）——同步重拷会
 # 覆盖镜像侧手改脱敏（2026-11-19 两轮实捕复发）。根治：同步时统一脱敏。
-find "$DEST/docs" -name '*.md' -exec sed -i '' -e 's@`\.hermes-loop/QUEUE\.md`@内部任务队列档案@g' -e 's@\.hermes-loop/QUEUE\.md@内部任务队列档案@g' -e 's@`\.hermes-loop/`@内部流水线目录@g' {} +
+find "$DEST/docs" -name '*.md' -exec perl -pi -e 's{`?\.hermes-loop/QUEUE\.md`?}{内部任务队列档案}g; s{`\.hermes-loop/`}{内部流水线目录}g' {} +
 # docs/规则/ 整目录剔（域铁律——设计思路本体，内部档）
 rm -rf "$DEST/docs/规则"
 
