@@ -3,7 +3,9 @@
 
 流水线：
   1. 产物就位检查（berryboot.efi / kernel ELF / rootfs.cpio）
-  2. 尺寸门（boot.efi ≤ 2MiB、boot.img ≤ 16MiB、system.img ≤ 128MiB）
+  2. 尺寸门（boot.efi ≤ 2MiB、boot.img ≤ 16MiB、berryos.img ≤ 256MiB——
+     G0 刀 1 双槽+双 rootfs 后 128 已不敷，帽值单源 SYSTEM/BERRYBOOT/BOOT
+     三常量）
   3. mkimage 造盘（A/B 双槽+BOOTCTL 工厂件）
   4. berry-sign 签发 KERNELA.SIG / KERNELB.SIG（ed25519）
   5. 签名注入（mkfat --put 二次卷写或重跑 mkimage 带签名件）
@@ -23,12 +25,13 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
-# 尺寸门（MiB）
-BERRYBOOT_EFI_CAP = 2 * 1024 * 1024   # 2 MiB
-BOOT_IMG_CAP = 16 * 1024 * 1024       # 16 MiB
-SYSTEM_IMG_CAP = 256 * 1024 * 1024    # 256 MiB（G0 刀 1 后双槽+双 rootfs——128 已不敷）
+# 尺寸门（MiB）——帽值单源：报错文案/manifest 注记一律引常量，禁字面量
+BERRYBOOT_EFI_CAP = 2 * 1024 * 1024    # 2 MiB
+BOOT_IMG_CAP = 16 * 1024 * 1024        # 16 MiB
+SYSTEM_IMG_CAP = 256 * 1024 * 1024     # 256 MiB（G0 刀 1 后双槽+双 rootfs——128 已不敷）
 
 
 def sha256_file(path: Path) -> str:
@@ -100,9 +103,58 @@ def run(cmd: list[str], desc: str) -> bool:
     return True
 
 
+def selftest() -> int:
+    """自检合成腿（berry_assemble --selftest 同款风格；零真产物零 cargo）。
+
+    覆盖面：
+      1. 帽值不变量（G0 刀 1 双槽后 256MiB——docstring/文案已单源化，漂移即红）；
+      2. sha256_file 与 hashlib 逐字节对拍（分段读路径真跑）；
+      3. size_gate 恰界两侧（==过 / +1 过 / 超 1B 拒）；
+      4. check_artifacts 缺件 loud 退场（SystemExit(1) + FAIL 行）；
+      5. run() 双路（真跑 python3 -c ok / exit 3 假件拒）；
+      6. find_sign_tool 空目录 None（发现序缺席分支）。
+    """
+    # ① 帽值不变量。
+    assert BERRYBOOT_EFI_CAP == 2 * 1024 * 1024
+    assert BOOT_IMG_CAP == 16 * 1024 * 1024
+    assert SYSTEM_IMG_CAP == 256 * 1024 * 1024, "G0 刀 1 双槽+双 rootfs 帽 = 256MiB"
+    # ② sha256 分段读对拍（3MiB 跨 64KiB 分段边界）。
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        blob = bytes(range(256)) * 12 * 1024  # 3MiB
+        f = tmp_path / "blob.bin"
+        f.write_bytes(blob)
+        assert sha256_file(f) == hashlib.sha256(blob).hexdigest()
+        # ③ size_gate 恰界。
+        gate_ok = tmp_path / "gate_ok.bin"
+        gate_ok.write_bytes(b"x" * BOOT_IMG_CAP)
+        assert size_gate("恰界", gate_ok, BOOT_IMG_CAP) is True
+        gate_over = tmp_path / "gate_over.bin"
+        gate_over.write_bytes(b"x" * (BOOT_IMG_CAP + 1))
+        assert size_gate("超界", gate_over, BOOT_IMG_CAP) is False
+        # ④ 缺件 loud 退场（合成 root——三检查位全空）。
+        empty_root = tmp_path / "empty_root"
+        empty_root.mkdir()
+        try:
+            check_artifacts(empty_root)
+        except SystemExit as e:
+            assert e.code == 1
+        else:
+            raise AssertionError("check_artifacts 缺件必须 SystemExit(1)")
+        # ⑥ 发现序缺席分支。
+        assert find_sign_tool(empty_root) is None
+    # ⑤ run() 双路（真子进程）。
+    assert run([sys.executable, "-c", "print('ok')"], "真跑") is True
+    assert run([sys.executable, "-c", "raise SystemExit(3)"], "假件") is False
+    print("releng_pack selftest: 6 腿全绿（帽值/sha256/尺寸门恰界/缺件/发现序/run 双路）")
+    return 0
+
+
 def main():
     root = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser(description="G1 刀 6 镜像打包+HSM 签名流水线")
+    parser.add_argument("--selftest", action="store_true",
+                       help="自检（合成腿，零真产物零 cargo——门禁形态 a-3 U4 纪律）")
     parser.add_argument("--out-dir", default=str(root / "out/release"),
                        help="产物输出目录（默认 out/release）")
     parser.add_argument("--sign-key", help="签名私钥路径（HSM 代理或本地 dev 键）")
@@ -112,6 +164,9 @@ def main():
     parser.add_argument("--size-mib", type=int, default=192,
                        help="盘容量 MiB（默认 192——双槽+双 rootfs）")
     args = parser.parse_args()
+
+    if args.selftest:
+        return selftest()
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -162,7 +217,7 @@ def main():
 
     print("=== 复检 boot.img 尺寸 ===")
     if not size_gate("berryos.img", img_out, SYSTEM_IMG_CAP):
-        print("releng_pack: FAIL: 镜像超 128MiB 帽")
+        print(f"releng_pack: FAIL: 镜像超 {SYSTEM_IMG_CAP // 1024 // 1024}MiB 帽")
         sys.exit(1)
 
     print("=== manifest 产出 ===")

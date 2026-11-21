@@ -1362,6 +1362,12 @@ test-host:
     # tools/mkimage）；Python 版不降格改名——模块面现役（gensourceindex
     # import）+ CLI 对拍 oracle，selftest 照跑守 Python 侧语义钉板。
     python3 tools/mkimage.py --selftest
+    # W1-Q4 续（a-3 U4 纪律同款）：releng_pack 门禁自检——G1 刀 6 发布
+    # 打包流水线（产物检查→尺寸门→mkimage 造盘→manifest）此前零守卫，
+    # 只在真发布链上被动覆盖：帽值不变量（G0 刀 1 双槽 256MiB——随刀
+    # 单源化 docstring/文案 128 残留同步清偿）/ sha256 分段读对拍 / 尺寸
+    # 门恰界两侧 / 缺件 loud 退场 / berry-sign 发现序缺席分支 / run 双路。
+    python3 tools/releng_pack.py --selftest
     # K-3：size.py ADRP 解码器向量自检（--assert-flip 扩面的门禁自身坏 =
     # smoke/build-release 断言静默劣化，同 a-3 U4 纪律门禁化）。
     python3 tools/size.py --selftest
