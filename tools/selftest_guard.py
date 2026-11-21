@@ -41,6 +41,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 TOOLS = ROOT / "tools"
+# 工程纪律刀阶段 4：扫描面扩 .agents/tools（修「check-docs.mjs 带自检但不在
+# 扫描面」双洞——检测器自身也受「有 selftest 必有接线」执法）。
+TOOLS_DIRS = (TOOLS, ROOT / ".agents" / "tools")
 JUSTFILE = ROOT / "justfile"
 
 # 字面量口径：argv 实装面（'#' 截行防 justfile 注释行误配）。
@@ -73,21 +76,23 @@ def scan(
     just_lines = [ln.split("#", 1)[0] for ln in just_text.splitlines()]
     unwired: list[str] = []
     exempt_hits: list[tuple[str, str]] = []
-    for p in sorted(tools_dir.iterdir()):
-        if p.is_symlink() or not p.is_file() or p.suffix not in (".py", ".sh"):
-            continue
-        try:
-            text = p.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            continue  # 非文本件防御面
-        if not declares_selftest(text):
-            continue
-        name = p.name
-        if name in exempt:
-            exempt_hits.append((name, exempt[name]))
-            continue
-        if not any(wire_re(name).search(ln) for ln in just_lines):
-            unwired.append(name)
+    dirs = tools_dir if isinstance(tools_dir, (list, tuple)) else [tools_dir]
+    for d in dirs:
+        for p in sorted(d.iterdir()):
+            if p.is_symlink() or not p.is_file() or p.suffix not in (".py", ".sh", ".mjs"):
+                continue
+            try:
+                text = p.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue  # 非文本件防御面
+            if not declares_selftest(text):
+                continue
+            name = p.name
+            if name in exempt:
+                exempt_hits.append((name, exempt[name]))
+                continue
+            if not any(wire_re(name).search(ln) for ln in just_lines):
+                unwired.append(name)
     return unwired, exempt_hits
 
 
@@ -171,7 +176,7 @@ def main(argv: list[str]) -> int:
             )
         return 1
     print(
-        f"selftest_guard: PASS（{sum(1 for p in TOOLS.iterdir() if p.suffix in ('.py', '.sh') and p.is_file() and not p.is_symlink())} 件扫描，"
+        f"selftest_guard: PASS（{sum(1 for d in TOOLS_DIRS for p in d.iterdir() if p.suffix in ('.py', '.sh', '.mjs') and p.is_file() and not p.is_symlink())} 件扫描（tools + .agents/tools），"
         f"{len(exempt)} 豁免，0 漏接线）"
     )
     return 0

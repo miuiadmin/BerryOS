@@ -1,0 +1,16 @@
+# 计数事实制品（工程纪律刀阶段 4；规则/16 §3）——tools/facts.py 重算，
+# 零日期：数字变才有 diff。刷新：python3 tools/facts.py --update（动计数
+# 输入面的同一提交带刷）；文档面三键另有 check-docs --verify-facts 提交级
+# 执法（快照门内联）。口径声明见 facts.py 头注——静态口径，勿与运行期
+# 结果口径（cargo result / smoke verdict）混引。
+banner_consumers=4
+bcts_floor_live=91
+design_md=41
+docs_md=545
+smoke_bare=32
+smoke_eco=52
+smoke_gui8=39
+smoke_rootfs=56
+smoke_rx=3
+stamped_designs=0
+tests_rust=2784

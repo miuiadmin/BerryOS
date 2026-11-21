@@ -509,6 +509,14 @@ build-release: docs-guard abi-check build-user
 docs-guard:
     python3 tools/docs_guard.py
 
+# 计数事实制品对拍（工程纪律刀阶段 4；规则/16 §3）——数字自证面；
+# 刷新 = facts --update（动计数输入面的同一提交带刷）
+facts:
+    python3 tools/facts.py
+
+facts-update:
+    python3 tools/facts.py --update
+
 # 可写全局清单门禁（Ginux writable-globals 借法）：新增 static mut 必须入册
 writable-globals:
     python3 tools/writable_globals.py --check
@@ -1497,6 +1505,11 @@ test-host:
     # 好过+印记耗/no-verify 拦/merge 免检/索引留毒拒/未跟踪不误伤）。
     # 改 .githooks/* 或 check-docs 检查面必跑。
     {{BASH}} tools/gate-selftest.sh
+    # 工程纪律刀阶段 4 接线：数字自证面——facts 对拍自检（合成仓 11 键/
+    # 篡改红/幂等）+ check-docs 检测器自检（四组坏样例必触发——「a detector
+    # that goes quiet is an ERROR」）。改 facts.py、check-docs 检查面必跑。
+    python3 tools/facts.py --selftest
+    node .agents/tools/check-docs.mjs --selftest
 
 # 忙核 arm-to-nearest-deadline（oneshot 收紧律）host 钉板：律单源
 # sched/src/oneshot.rs（sched crate 本体 no_std + HAL 依赖不编 host），

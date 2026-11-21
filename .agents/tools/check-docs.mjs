@@ -8,6 +8,11 @@
  *   2 = 无法完成检查：扫描面为空、路径不存在、根锚点缺失、内部错误——两种模式都不得返回 0。
  *   诊断模式：--health 体检载荷、桥与规范覆盖，--suggest-standards 列出 docs 标准候选；
  *   两者只读、不写文件、--strict 无效，正常一律退出 0（根锚点缺失或内部错误才 2）。
+ *   --verify-facts：对拍 tools/facts.txt 的文档面三键（docs_md/design_md/stamped_designs，
+ *   工程纪律刀阶段 4——文档计数权威在本脚本，制品漂移即红）；与 --strict 可叠加。
+ *   --selftest：合成夹具 + 子进程自腿（工程纪律刀阶段 4 检测器自检律——「a detector
+ *   that goes quiet is an ERROR」：组 0-3 各至少一腿坏样例必触发、好样例必过、facts
+ *   漂移必红）；不读写活树。
  * 锚点：工作区根 = 调用时的工作目录，该目录须自身含 `.agents/` 或 `docs/` 目录——两者皆无时默认调用退出码 2，
  *   不自脚本位置、不向父目录上溯（上溯会命中 `~/.agents` 一类无关祖先）；脚本文件位置不限，一律以调用目录为基准。
  *   结构判定以根下 `.agents/` 目录为锚；显式路径的面内无 `.agents/` 子树时结构组不执行，stderr 注明、汇总行自带标注；
@@ -22,7 +27,9 @@
  */
 
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -124,16 +131,18 @@ function isExcluded(entry, excludes) {
   });
 }
 
-const USAGE = '用法：node .agents/tools/check-docs.mjs [--strict] [--health] [--suggest-standards] [--exclude <路径或 glob>]… [路径…]\n  --health / --suggest-standards 是只读诊断，不接受路径参数；先 cd 到工作区根。';
+const USAGE = '用法：node .agents/tools/check-docs.mjs [--strict] [--health] [--suggest-standards] [--verify-facts] [--selftest] [--exclude <路径或 glob>]… [路径…]\n  --health / --suggest-standards 是只读诊断，不接受路径参数；先 cd 到工作区根。\n  --verify-facts 对拍 tools/facts.txt 文档面三键（可与 --strict 叠加）；--selftest 合成夹具自检。';
 class UsageError extends Error {}
 
 function parseArgs(argv) {
-  const opts = { strict: false, health: false, suggestStandards: false, excludes: [], paths: [], help: false };
+  const opts = { strict: false, health: false, suggestStandards: false, verifyFacts: false, selftest: false, excludes: [], paths: [], help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i], v = argv[i + 1];
     if (a === '--strict') opts.strict = true;
     else if (a === '--health') opts.health = true;
     else if (a === '--suggest-standards') opts.suggestStandards = true;
+    else if (a === '--verify-facts') opts.verifyFacts = true;
+    else if (a === '--selftest') opts.selftest = true;
     else if (a === '--exclude') {
       if (!v) throw new UsageError(`${a} 缺参数`);
       i++;
@@ -700,6 +709,90 @@ function runSuggestStandards(opts) {
   return 0;
 }
 
+/** --verify-facts：对拍 tools/facts.txt 文档面三键（工程纪律刀阶段 4）。文档计数权威在本脚本的 collect——制品漂移即红。返回漂移键数。 */
+function verifyFacts(files) {
+  const factsPath = join(process.cwd(), 'tools', 'facts.txt');
+  if (!existsSync(factsPath)) {
+    console.error(`[facts] 制品缺席：${factsPath}（--verify-facts 需制品在场——非 docs/.agents 提交面不会走到本模式）`);
+    return 1;
+  }
+  const expected = {};
+  for (const line of readFileSync(factsPath, 'utf8').split('\n')) {
+    const m = /^([a-z0-9_]+)=(.+)$/.exec(line);
+    if (m) expected[m[1]] = m[2];
+  }
+  const designs = files.filter((f) => /(^|\/)\.agents\/plans\/[^/]+\/design\.md$/.test(f.rel));
+  const stampRe = /^>\s*Verified:/m;
+  const stamped = designs.filter((f) => {
+    try { return stampRe.test(readFileSync(f.abs, 'utf8')); } catch { return false; }
+  });
+  const actual = { docs_md: String(files.length), design_md: String(designs.length), stamped_designs: String(stamped.length) };
+  let bad = 0;
+  for (const k of Object.keys(actual)) {
+    if (expected[k] === undefined) { console.error(`[facts] 制品缺键 ${k}`); bad++; }
+    else if (expected[k] !== actual[k]) { console.error(`[facts] ${k} 漂移：制品 ${expected[k]} ≠ 实况 ${actual[k]}`); bad++; }
+  }
+  return bad;
+}
+
+/** --selftest：合成夹具 + 子进程自腿（检测器自检律——检测器变哑即红）。 */
+function runSelftest() {
+  const self = fileURLToPath(import.meta.url);
+  const leg = (name, cond) => {
+    if (!cond) { console.error(`check-docs 自检 FAIL: ${name}`); process.exitCode = 1; return false; }
+    console.log(`check-docs 自检: 腿绿 ${name}`);
+    return true;
+  };
+  const mkTree = (root) => {
+    mkdirSync(join(root, '.agents/plans/mod1'), { recursive: true });
+    mkdirSync(join(root, '.agents/plans/mod2'), { recursive: true });
+    mkdirSync(join(root, 'docs'), { recursive: true });
+    writeFileSync(join(root, '.agents/plans/mod1/design.md'),
+      '# mod1 总体设计\n\nType: spec\nStatus: active\nUpdated: 2026-11-21\nVersion: 1.0.0\n\n一句话说明：好样例。\n');
+    writeFileSync(join(root, 'docs/free.md'), '# 自由\n\n一句话说明：自由知识无头块合法。\n');
+  };
+  const run = (args, cwd) => spawnSync(process.execPath, [self, ...args], { cwd, encoding: 'utf8' });
+
+  let ok = true;
+  // 腿 1：好样例必过（--strict 全绿）
+  const good = mkdtempSync(join(tmpdir(), 'cd-good-'));
+  mkTree(good);
+  let r = run(['--strict'], good);
+  ok = leg('好样例 --strict 过', r.status === 0) && ok;
+
+  // 腿 2：坏样例各组必触发（组 0 编码 / 组 1 头块 / 组 2 家 / 组 3 链接）
+  const bad = mkdtempSync(join(tmpdir(), 'cd-bad-'));
+  mkTree(bad);
+  writeFileSync(join(bad, '.agents/plans/bin-bad.md'), '# 坏编码\n\n�\n'); // 组 0：内容含替换符
+  writeFileSync(join(bad, '.agents/plans/mod2/design.md'),
+    '# mod2 总体设计\n\nType: spec\nStatus: active\nUpdated: 2026-11-21\n'); // 缺 Version → 组 1
+  writeFileSync(join(bad, '.agents/plans/leak.md'),
+    '# 走错家\n\nType: survey\nStatus: current\nUpdated: 2026-11-21\n\n正文。\n'); // survey 应在 research → 组 2
+  writeFileSync(join(bad, '.agents/plans/mod1/断链.md'),
+    '# 断链\n\nType: plan\nStatus: active\nUpdated: 2026-11-21\n\n看[不存在的目标](../nope.md)。\n'); // 组 3
+  r = run(['--strict'], bad);
+  const out = r.stdout || '';
+  ok = leg('坏样例退出 1', r.status === 1) && ok;
+  for (const g of [0, 1, 2, 3]) ok = leg(`组 ${g} 坏样例触发`, out.includes(`组 ${g} ·`)) && ok;
+
+  // 腿 3：facts 漂移必红（--verify-facts；mkTree 面 = 2 篇 .md）
+  const fdir = mkdtempSync(join(tmpdir(), 'cd-facts-'));
+  mkTree(fdir);
+  mkdirSync(join(fdir, 'tools'), { recursive: true });
+  writeFileSync(join(fdir, 'tools/facts.txt'), 'docs_md=3\ndesign_md=1\nstamped_designs=0\n');
+  r = run(['--verify-facts'], fdir);
+  ok = leg('facts 漂移红', r.status === 1) && ok;
+  writeFileSync(join(fdir, 'tools/facts.txt'), 'docs_md=2\ndesign_md=1\nstamped_designs=0\n');
+  r = run(['--verify-facts'], fdir);
+  ok = leg('facts 一致过', r.status === 0) && ok;
+
+  rmSync(good, { recursive: true, force: true });
+  rmSync(bad, { recursive: true, force: true });
+  rmSync(fdir, { recursive: true, force: true });
+  if (ok) console.log('check-docs 自检：PASS（好过/四组坏样例触发/facts 漂移红与一致过——检测器变哑即红）');
+  return ok ? 0 : 1;
+}
+
 function main(argv) {
   let opts;
   try { opts = parseArgs(argv); } catch (e) {
@@ -707,6 +800,10 @@ function main(argv) {
     throw e;
   }
   if (opts.help) { console.log(USAGE); return 0; }
+  if (opts.selftest) {
+    if (opts.paths.length || opts.health || opts.suggestStandards) { console.error(`用法错误：--selftest 不与其他模式/路径混用\n${USAGE}`); return 2; }
+    return runSelftest();
+  }
   if (opts.health || opts.suggestStandards) {
     if (opts.paths.length) {
       console.error(`用法错误：--health / --suggest-standards 不接受路径参数；先 cd 到工作区根\n${USAGE}`);
@@ -763,6 +860,11 @@ function main(argv) {
     : `检查 ${files.length} 篇 / 告警 0 条`;
   console.log(`${summary}${structNote ? `（${structNote}）` : ''}`);
   if (out.length && opts.strict) { console.error(`✗ --strict：${out.length} 条告警`); return 1; }
+  if (opts.verifyFacts) {
+    const factsBad = verifyFacts(files);
+    if (factsBad) { console.error(`✗ --verify-facts：${factsBad} 键漂移（刷新：python3 tools/facts.py --update 同批提交）`); return 1; }
+    console.log('[facts] PASS（docs_md / design_md / stamped_designs 三键一致）');
+  }
   return 0;
 }
 
