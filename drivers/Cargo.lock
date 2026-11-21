@@ -46,6 +46,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "berry-hal"
+version = "0.2.0"
+dependencies = [
+ "berry-virtio",
+]
+
+[[package]]
 name = "berry-libc"
 version = "0.2.0"
 dependencies = [
@@ -81,6 +88,10 @@ version = "0.2.0"
 
 [[package]]
 name = "berry-netproto"
+version = "0.2.0"
+
+[[package]]
+name = "berry-partition"
 version = "0.2.0"
 
 [[package]]
@@ -154,6 +165,7 @@ dependencies = [
  "berry-blkproto",
  "berry-exec",
  "berry-libc",
+ "berry-partition",
  "berry-sys",
  "berry-virtio",
 ]
@@ -176,6 +188,8 @@ name = "vprobe"
 version = "0.2.0"
 dependencies = [
  "berry-exec",
+ "berry-hal",
  "berry-libc",
  "berry-sys",
+ "berry-virtio",
 ]

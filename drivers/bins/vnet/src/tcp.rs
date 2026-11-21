@@ -1851,7 +1851,7 @@ impl TcpMux {
 
     /// 表最早定时（RTO 挂臂 / TIME_WAIT）——step() dl min 与 serve() 空闲
     /// 步进共用；空表 None（dl 不受影响——legacy 零漂移按构造）。
-    fn earliest_timer(&self) -> Option<u64> {
+    pub(crate) fn earliest_timer(&self) -> Option<u64> {
         self.slots
             .iter()
             .filter_map(|s| match s {

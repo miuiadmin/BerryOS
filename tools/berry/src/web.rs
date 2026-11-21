@@ -57,7 +57,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::error::{BerryError, Result};
-use crate::qmp::QmpInjector;
 
 /// Header budget per request (request line + headers); anything bigger is a
 /// bad request. noVNC loads assets with plain browser requests, well below.
@@ -700,62 +699,7 @@ impl Drop for ConnSlot {
 pub struct LanUpstream {
     pub dial: String,
     pub tls: Option<LanTlsUpstream>,
-    /// 在场即启用输入拦截器：QEMU 11 的 VNC pointer 路径丢弃绝对坐标
-    /// （实测 trace：btn/sync 在、input_event_abs 恒缺席——vs->absolute
-    /// 为假，queue_abs 从不入队），而 QMP input-send-event 广播未绑定
-    /// handler 链实测可达 virtio-tablet。代理拦截浏览器 RFB PointerEvent
-    /// （6B 客户端消息）转 QMP，其余字节原样转发。
-    pub qmp_sock: Option<PathBuf>,
-    pub guest_w: u32,
-    pub guest_h: u32,
-}
-
-/// 解析浏览器→上游字节流开头的 ws 客户端帧（恒 mask）。返回
-/// (整帧长, opcode, 载荷区间)；字节不足返回 None。
-fn parse_client_frame(buf: &[u8]) -> Option<(usize, u8, std::ops::Range<usize>)> {
-    if buf.len() < 2 {
-        return None;
-    }
-    let opcode = buf[0] & 0x0F;
-    let masked = buf[1] & 0x80 != 0;
-    let mut len = (buf[1] & 0x7F) as usize;
-    let mut off = 2usize;
-    if len == 126 {
-        if buf.len() < off + 2 {
-            return None;
-        }
-        len = u16::from_be_bytes([buf[off], buf[off + 1]]) as usize;
-        off += 2;
-    } else if len == 127 {
-        if buf.len() < off + 8 {
-            return None;
-        }
-        len = usize::try_from(u64::from_be_bytes(buf[off..off + 8].try_into().ok()?)).ok()?;
-        off += 8;
-    }
-    let mask_len = if masked { 4 } else { 0 };
-    let total = off + mask_len + len;
-    if buf.len() < total {
-        return None;
-    }
-    Some((total, opcode, off + mask_len..total))
-}
-
-/// 载荷按帧 mask 位异或取一字节。
-fn unmask_byte(frame: &[u8], payload: &std::ops::Range<usize>, idx: usize) -> u8 {
-    let masked = frame[1] & 0x80 != 0;
-    if !masked {
-        return frame[payload.start + idx];
-    }
-    let mask = &frame[payload.start - 4..payload.start];
-    frame[payload.start + idx] ^ mask[idx % 4]
-}
-
-impl LanUpstream {
-    /// 兼容旧调用形态（无拦截器）。
-    pub fn dial_only(dial: String) -> Self {
-        LanUpstream { dial, tls: None, qmp_sock: None, guest_w: 1, guest_h: 1 }
-    }
+    // 拦截器三字段（qmp_sock/guest_w/guest_h，含帧解析助手 parse_client_frame/unmask_byte 与 dial_only 兼容构造）已随 QMP 注入链退役删除；归档锚=.agents/research/证据快照/2026-11-20-VNC直通绝对坐标判例驳斥.md
 }
 
 /// The TLS upstream leg of `--lan` on a TLS run (wave 11): the rustls
@@ -1269,69 +1213,17 @@ fn proxy_ws_plain(
     let mut b_rd = browser.try_clone()?;
     let mut u_wr = up.try_clone()?;
     let pump_shutdown = Arc::clone(&shutdown);
-    // 输入拦截器（在场时）：浏览器方向的 RFB PointerEvent（ws 帧载 6B、
-    // 首字节 0x05）不上传 QEMU 的 VNC pointer 路径（该路径丢绝对坐标），
-    // 改走 QMP input-send-event；其余帧逐字节原样转发。
-    let qmp_path = upstream.qmp_sock.clone();
-    let gw = upstream.guest_w;
-    let gh = upstream.guest_h;
+    // 浏览器→上游方向=纯字节管道：RFB PointerEvent 随其余 ws 帧原样直通 QEMU VNC（well-formed 客户端发 SetEncodings 后绝对坐标直达客机）。
+    // 输入拦截器（帧感知 is_ptr 分支+QMP 注入+哑化回退）与 ptr-evt 取证行已随判例驳斥退役——直通后点击路径无宿主日志面，属接受的观测损失；归档锚=.agents/research/证据快照/2026-11-20-VNC直通绝对坐标判例驳斥.md
     let pump_in = std::thread::spawn(move || {
-        // 拦截器未启用（qmp_sock 不在场）→ 纯字节管道（零开销路径）。
-        let mut injector = qmp_path.as_deref().and_then(|p| {
-            // 建连全程 2s 守护（QMP 楔死不得卡死代理泵线程）；失联哑化
-            // 后注入器自 ≥5s 节流重连——QMP 恢复后拦截输入自动复活。
-            let inj = QmpInjector::connect_guarded(p, Duration::from_secs(2));
-            if inj.is_some() {
-                eprintln!("berry: vnc web: lan /ws input interceptor on (qmp)");
-            }
-            inj
-        });
-        if injector.is_none() {
-            // 哑管道：与旧实现完全一致（直通、无帧解析、无缓冲）。
-            let mut buf = [0u8; 8192];
-            loop {
-                match b_rd.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        if u_wr.write_all(&buf[..n]).is_err() || u_wr.flush().is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-        } else {
-            // 帧感知拦截：RFB PointerEvent（6B/首字节 0x05）→ QMP，
-            // 其余帧原样转发。
-            let mut chunk = [0u8; 8192];
-            let mut pend: Vec<u8> = Vec::new();
-            'outer: loop {
-                loop {
-                    let Some((total, opcode, payload)) = parse_client_frame(&pend) else {
+        let mut buf = [0u8; 8192];
+        loop {
+            match b_rd.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if u_wr.write_all(&buf[..n]).is_err() || u_wr.flush().is_err() {
                         break;
-                    };
-                    let is_ptr = opcode == 2 && payload.len() == 6
-                        && unmask_byte(&pend[..total], &payload, 0) == 0x05;
-                    if is_ptr {
-                        let b = [
-                            unmask_byte(&pend[..total], &payload, 1),
-                            unmask_byte(&pend[..total], &payload, 2),
-                            unmask_byte(&pend[..total], &payload, 3),
-                            unmask_byte(&pend[..total], &payload, 4),
-                            unmask_byte(&pend[..total], &payload, 5),
-                        ];
-                        let x = u16::from_be_bytes([b[1], b[2]]);
-                        let y = u16::from_be_bytes([b[3], b[4]]);
-                        injector.as_mut().unwrap().pointer(x, y, b[0], gw, gh);
-                    } else {
-                        if u_wr.write_all(&pend[..total]).is_err() || u_wr.flush().is_err() {
-                            break 'outer;
-                        }
                     }
-                    pend.drain(..total);
-                }
-                match b_rd.read(&mut chunk) {
-                    Ok(0) | Err(_) => break 'outer,
-                    Ok(n) => pend.extend_from_slice(&chunk[..n]),
                 }
             }
         }
@@ -2052,7 +1944,7 @@ mod tests {
         std::fs::write(tmp.join("novnc").join("vnc.html"), b"<html>noVNC</html>").unwrap();
         let ctx = Arc::new(ServeCtx {
             root: tmp.clone(),
-            lan: Some(LanUpstream { dial: format!("127.0.0.1:{up_port}"), tls: None, qmp_sock: None, guest_w: 1, guest_h: 1 }),
+            lan: Some(LanUpstream { dial: format!("127.0.0.1:{up_port}"), tls: None }),
             ctl: None,
         });
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2147,7 +2039,7 @@ mod tests {
         std::fs::write(tmp.join("novnc").join("vnc.html"), b"<html>noVNC</html>").unwrap();
         let ctx = Arc::new(ServeCtx {
             root: tmp.clone(),
-            lan: Some(LanUpstream { dial: format!("127.0.0.1:{dead_port}"), tls: None, qmp_sock: None, guest_w: 1, guest_h: 1 }),
+            lan: Some(LanUpstream { dial: format!("127.0.0.1:{dead_port}"), tls: None }),
             ctl: None,
         });
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2728,9 +2620,6 @@ mod tests {
         let lan_up = LanUpstream {
             dial: format!("127.0.0.1:{up_port}"),
             tls: Some(LanTlsUpstream { cfg: client_cfg, name, dir: dir.clone() }),
-            qmp_sock: None,
-            guest_w: 1,
-            guest_h: 1,
         };
         let tmp = std::env::temp_dir().join(format!("berry-lan-tls-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
@@ -2834,9 +2723,6 @@ mod tests {
         let lan_up = LanUpstream {
             dial: format!("127.0.0.1:{up_port}"),
             tls: Some(LanTlsUpstream { cfg: client_cfg, name, dir: other }),
-            qmp_sock: None,
-            guest_w: 1,
-            guest_h: 1,
         };
         let tmp = std::env::temp_dir().join(format!("berry-lan-tls-neg-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);

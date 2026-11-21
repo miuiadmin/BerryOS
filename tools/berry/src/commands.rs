@@ -2032,26 +2032,10 @@ pub fn vnc_web(
                 open_hint(open_browser(&url));
             }
             std::io::stdout().flush().ok();
-            // 输入拦截器装配（2026-11-16）：run 有 qmp.sock 即启用；客机几何按
-            // meta 的 profile 取渲染尺寸（QMP abs 值域 0..32767 需要缩放分母）。
-            let qmp_inject = run.join("qmp-inject.sock");
-            let qmp_sock = if qmp_inject.exists() { qmp_inject } else { run.join("qmp.sock") };
-            let (gw, gh) = std::fs::read(run.join("meta.json"))
-                .ok()
-                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-                .and_then(|m| {
-                    m.get("profile")
-                        .and_then(|p| p.as_str())
-                        .and_then(|id| crate::profile::get(id).ok())
-                        .map(|pr| (pr.render_w, pr.render_h))
-                })
-                .unwrap_or((1, 1));
+            // 输入拦截器装配（qmp-inject.sock 探测+meta.json display_mode 几何解析（berry-dmface 单源，宽 32 对齐）+QmpInjector 组装）已随 QMP 注入链退役删除——宿主零客机几何知识，坐标归一全归客机 inputd；归档锚=.agents/research/证据快照/2026-11-20-VNC直通绝对坐标判例驳斥.md
             let upstream = crate::web::LanUpstream {
                 dial: vnc_cfg::addr_host(dial, ws_port),
                 tls: upstream_tls,
-                qmp_sock: qmp_sock.exists().then_some(qmp_sock),
-                guest_w: gw,
-                guest_h: gh,
             };
             return crate::web::serve(
                 &root,

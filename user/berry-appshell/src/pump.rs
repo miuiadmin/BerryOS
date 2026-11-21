@@ -10,10 +10,12 @@
 //! → loop {
 //!   hooks.on_head（时钟续摆/armed 复位等应用特化）
 //!   → input 泵（上轮 INPUT_POLL 应答收 + push_pointer/键盘帧 on_key
-//!     分流；再挂下一轮）
-//!   → ui.pump_input → hooks.on_msgs（Click/翻页分发）
+//!     分流；再挂下一轮；在途超 60s stale-reset 自愈）
+//!   → ui.pump_input_at（C′/A′ 合规：当前时钟自算重采样目标 + 内建
+//!     wake 时序）→ hooks.on_msgs（Click/翻页分发）
 //!   → hooks.on_tick（snap 动画步进）
-//!   → render_frame（跳过帧不提交——damage 空集零 SUBMIT 零 RPC）
+//!   → render_frame（跳过帧不提交——damage 空集零 SUBMIT 零 RPC；B2
+//!     高像素域 30Hz 落画节流拍整拍不进 render_frame，见渲染段注）
 //!   → [drew] 光栅进帧 VMO → SUBMIT（FULL xor K；fresh READ dup 别名
 //!     ——send 即 take）→ FRAME_CALLBACK（断 PRESENTED）→
 //!     note_presented（credits 真值重同步）→ RELEASE（归还别名即关）
@@ -21,7 +23,8 @@
 //!   → vote（票面变化才发）
 //!   → hooks.on_frame（自测状态机/click-ready 谓词等）
 //!   → wait_many [wm READABLE (+input READABLE)] + deadline =
-//!     min(next_wakeup, now+IDLE 帽, hooks.extra_deadline)
+//!     min(next_wakeup, now+IDLE 帽, hooks.extra_deadline；B2 节流拍
+//!     直接钉开窗沿——见等待段注）
 //! }
 //! ```
 //!
@@ -69,6 +72,10 @@ use berry_ui::desc::MsgBuf;
 #[cfg(not(test))]
 use berry_ui::frame::VoteBallot;
 #[cfg(not(test))]
+use berry_ui::frame::SOFT_RENDER_HEAVY_PX;
+#[cfg(not(test))]
+use berry_ui::swipe::SNAP_PAINT_MIN_NS;
+#[cfg(not(test))]
 use berry_ui::hit::PtrEvent;
 use berry_ui::UiMain;
 
@@ -84,6 +91,17 @@ pub const FRAME_VA: usize = 0x5100_0000;
 /// IDLE 稳态等待帽（Idle 相撤定时器 → 10s 周期兜底醒，醒后跳过帧零提交
 /// 再睡——非燃 CPU 阻塞形的定长节拍）。
 pub const IDLE_CAP_NS: u64 = 10 * 1_000_000_000;
+
+/// 输入 poll 在途超时帽：60s = 两个服务端 30s 帽周期（inputd
+/// POLL_BLOCK_CAP_NS = 30s——活着的服务端最迟一个帽周期必应答；取两个
+/// 周期 = 留整整一个周期的到货余量，逾此仍无应答即判应答被互截/丢失，
+/// 回环顶 stale-reset 复位重挂——单在途模型「无超时无自愈」死相的
+/// 终结面）。
+pub const INPUT_STALE_CAP_NS: u64 = 60 * 1_000_000_000;
+
+/// 输入 poll 应答采样打印周期：每第 100 个应答打一行 events/EAGAIN
+/// 诊断（一次性 input_logged 旗退役后的节拍；错误路径不受此门恒必打）。
+pub const INPUT_LOG_EVERY: u64 = 100;
 
 /// glyph scratch 容量（堆置；~30 短 label 富余——paint 对超容 run 截断
 /// 尾字形，视觉面非正确性面）。
@@ -173,6 +191,13 @@ pub trait HostHooks {
     /// 非本批面。默认空实现：launcher 形态不收键零改零警；GUI 终端类应用
     /// 覆写收键。
     fn on_key(&mut self, _ui: &mut UiMain, _code: u8, _ts_ns: u64) {}
+
+    /// 渲染让位（GUI lane 债修 2026-11-20：launcher 侧 render_hold 实现的
+    /// trait 声明——默认 false（非 launcher 实现者零改），launcher spawn
+    /// 守卫窗内 true 避让 guifbd present 域单飞窗）。
+    fn render_hold(&mut self) -> bool {
+        false
+    }
 }
 
 /// pump 装配参数。
@@ -301,19 +326,73 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
     //    单源在 guifbd 档位表，规范 §3.4）。
     ui.wake(now());
 
-    let mut last_expected: u64 = 0; // pump 重采样 target（上帧 expected 轨）
+    let mut last_draw_ns: u64 = 0; // B2 落画节流窗锚（最近一次 drew 帧时刻；0 = 未画过）
     let mut last_vote: Option<VoteBallot> = None; // 票面变化才发
     let mut presented: u64 = 0; // FRAME_CALLBACK 过链计数（应用基线）
     let mut buf_id: u32 = 1; // SUBMIT buffer 代际（RELEASE echo 非断言面）
     // 段④形态：真实输入（inputd INPUT_POLL 阻塞批拉；hi==0 = 静默）。
     let mut hi = cfg.hi;
     let mut input_pending = false;
-    let mut input_logged = false;
+    let mut input_arm_ns: u64 = 0; // 最近一次 input_arm 成功时刻（在途超时基准）
+    let mut input_polls: u64 = 0; // INPUT_POLL 应答计数（采样打印节拍）
+    let mut input_stale_resets: u64 = 0; // stale-reset 复位计数（diag n= 面）
     let mut input_buf = [0u8; gp::INPUT_REP_MAX];
     let mut input_hs = [0 as Handle; 8];
 
     loop {
         let t_now = now();
+        // 本迭代收到真实输入应答（B2 落画节流让位旗——输入响应优先，
+        // 有新输入的拍不节流；键盘帧同计——on_key 消费面的树变更同样
+        // 需要即刻落画）。
+        let mut input_beat = false;
+
+        // —— 输入 poll 在途超时自愈（stale-reset）：单在途 INPUT_POLL 的
+        //    死相 = 应答被互截/丢失 → input_pending 永真、永不再挂、无
+        //    超时无自愈——输入静默永死而循环其余面全活。在途逾
+        //    INPUT_STALE_CAP_NS 即判死：非阻塞排空 hi 通道吞掉一切滞留
+        //    应答（不解析不注入，随行 handle 照关），复位后照常走下方
+        //    既有 input_arm 重挂；复位只翻 input_pending，不清其他输入
+        //    状态。残余竞态两向：①排空与重挂之间服务端仍可能投下一条
+        //    迟到的旧应答——下一轮 recv 按新 poll 应答照常消费（至多
+        //    一条，自纠不楔死），属预期；②若 60s 静默的真因是服务端
+        //    被饿而非应答丢，恰越阈落地的那条应答内是收割即新鲜的
+        //    事件，同被排空无差别丢弃（一批 ≤INPUT_EVENTS_MAX，一次性，
+        //    下一轮重挂自愈；手势 down/up 跨批分裂会留孤立 up）——归因
+        //    以 inputd tally 行佐证。age 取 wrapping 减：时钟回拨折大值
+        //    → 复位一次重挂自愈，不 panic。
+        let input_age_ns = t_now.wrapping_sub(input_arm_ns);
+        if hi != 0 && input_pending && input_age_ns > INPUT_STALE_CAP_NS {
+            let mut drained = 0usize;
+            loop {
+                let mut nb = input_buf.len();
+                let mut nh = input_hs.len();
+                let s = berry_channel_recv(
+                    hi,
+                    input_buf.as_mut_ptr(),
+                    &mut nb,
+                    input_hs.as_mut_ptr(),
+                    &mut nh,
+                );
+                if s != 0 {
+                    // AGAIN = 已排空即止；其他错 = 队首滞留或通道死——
+                    // recv 向与 send 向是同一通道的两条独立 FIFO：滞留
+                    // 消息由下一轮主收路径的 recv err 分支 disable，通道
+                    // 死由 arm send 失败 disable（可能多挂一条必死 poll
+                    // 进服务端队列，一轮内收口）。
+                    break;
+                }
+                for h in &input_hs[..nh] {
+                    close_h(*h);
+                }
+                drained += 1;
+            }
+            input_pending = false;
+            input_stale_resets += 1;
+            diag(&format!(
+                "input poll stale-reset n={} drained={} age_ns={}",
+                input_stale_resets, drained, input_age_ns
+            ));
+        }
 
         hooks.on_head(ui, t_now);
 
@@ -335,11 +414,16 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
                 for h in &input_hs[..nh] {
                     close_h(*h);
                 }
+                // 采样打印：一次性 input_logged 旗已退役——旗先被 armed/
+                //    EAGAIN 行消费后 events 行结构性假阴性（events 行缺席
+                //    不可为证），改为每第 INPUT_LOG_EVERY 个应答打一行；
+                //    错误路径（st=/rep bad/recv err）不受采样门恒必打。
+                input_polls += 1;
+                let sampled = input_polls % INPUT_LOG_EVERY == 0;
                 match gp::parse_input_events_rep(&input_buf[..nb]) {
                     Some(Ok(view)) => {
-                        if !input_logged {
+                        if sampled {
                             diag(&format!("input events n={}", view.count()));
-                            input_logged = true;
                         }
                         for i in 0..view.count() {
                             if let Some(ev) = view.event(i) {
@@ -366,12 +450,17 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
                                 }
                             }
                         }
+                        // 显式 wake 保留：键盘帧分流（on_key continue 不
+                        // push）下 pump_input_at 的 A′ 内建 wake（仅指针
+                        // 输入）不覆盖——本 wake 是键盘路径唯一的起振面；
+                        // 指针路径与 A′ wake 同拍双调，wake 对已 Run 相位
+                        // 幂等且保留精确 damage，仅 wakes 遥测计数 +1。
                         ui.wake(now());
+                        input_beat = true;
                     }
                     Some(Err(gp::ST_EAGAIN)) => {
-                        if !input_logged {
+                        if sampled {
                             diag("input poll EAGAIN");
-                            input_logged = true;
                         }
                     }
                     Some(Err(st)) => diag(&format!("input poll st={st}")),
@@ -386,9 +475,12 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
         if hi != 0 && !input_pending {
             if input_arm(hi) {
                 input_pending = true;
-                if !input_logged {
+                input_arm_ns = now();
+                // armed 行同走采样门（旗退役后无独立一次性节拍——与应答
+                //    行共用 input_polls 计数；input_polls==0 的首挂恒打
+                //    一行 = 启动活性证据）。
+                if input_polls % INPUT_LOG_EVERY == 0 {
                     diag(&format!("input poll armed h={hi}"));
-                    input_logged = true;
                 }
             } else {
                 diag("input poll arm failed -- disable");
@@ -397,15 +489,45 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
         }
 
         // —— 输入泵 + Msg 分发（合成注入与真实输入同口）——
-        let msgs = ui.pump_input(last_expected);
+        // C′/A′ 合规（案卷 F5）：生产消费面唯一入口 pump_input_at——以
+        // 本拍 t_now 自算重采样目标（与 render_frame 内部自算 expected
+        // 同式同拍，µs 级相邻），禁传上一帧 expected（稳态陈旧一个
+        // period、idle 长睡后是远古值——拖跟预测整体静默失效；旧裸面
+        // pump_input 仅供 host 测试确定性缝）。
+        let msgs = ui.pump_input_at(t_now);
         hooks.on_msgs(ui, &msgs, t_now);
         hooks.on_tick(ui, t_now);
 
         // —— 渲染（跳过帧不提交——damage 空集零 SUBMIT 零 RPC）——
         let mut enc = CommandEncoder::new();
-        let out = ui.render_frame(t_now, scratch, &mut enc);
-        last_expected = out.expected_present_ns;
+        // —— B2 落画节流拍（30Hz 帽，高像素软渲染域专用）：距上次 drew
+        //    帧 <SNAP_PAINT_MIN_NS 且本拍无新输入、引擎动画表空时，整拍
+        //    不进 render_frame（不是进了不画——相位/票面/last_now 时戳
+        //    全保持：防 Idle 翻转引发 sticky 票 churn 与停帧震荡、防
+        //    next_wakeup 按陈旧 last_now 算出过点 vsync 拍照取即自旋）。
+        //    pager snap 的 set_offset（swipe 侧同窗节流——高像素域内节流
+        //    拍根本不发）damage 留待开窗拍一并消费，新旧包络并集自吸收
+        //    中间态。预算账：1080P（w*h ≥ SOFT_RENDER_HEAVY_PX）软渲染
+        //    帧实需 15-18ms，30Hz 窗 33.3ms 给足 2× 余量——240ms 吸附
+        //    动画从 29 帧（120Hz 档）降到 8-15 帧，动画期渲染 CPU 与每帧
+        //    present 中继占空比同步减半以上。低像素域恒 false——行为
+        //    逐字节现状。skipped(0)：节流拍零提交零 target 消费，expected
+        //    域无读者（构造器单源语义见 frame.rs）。
+        let pace_beat = !input_beat
+            && !ui.anim_active()
+            && last_draw_ns != 0
+            && t_now.saturating_sub(last_draw_ns) < SNAP_PAINT_MIN_NS
+            && {
+                let (vw, vh) = ui.viewport();
+                vw as u64 * vh as u64 > SOFT_RENDER_HEAVY_PX
+            };
+        let out = if pace_beat {
+            berry_ui::frame::FrameOutcome::skipped(0)
+        } else {
+            ui.render_frame(t_now, scratch, &mut enc)
+        };
         if out.drew {
+            last_draw_ns = t_now;
             let dmg = out.damage;
             // K>0 xor FULL 立法兜底：count==0 非空集视同整帧。
             let full = damage_is_full(&dmg);
@@ -504,7 +626,15 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
                 Some(r) => r,
                 None => fail(&format!("release rep bad st={}", rep[0])),
             };
-            if rel.count < 1 || nh != rel.count {
+            // 宽容 RELEASE（全冻刀 fix 复原——随架构刀全量回退复活的
+            // count<1→fail 断言，2026-11-20 真机场「进应用即 launcher
+            // park 永死」二次实抓：serial 实拍 release count=0 nh=0 +
+            // inputd tally 计数冻结 + 泵队列 32 满 + stale-reset 零）：
+            // count==0 = 他客户端跨代清账已排空本端在途别名（别名=本端
+            // VMO 的 READ|TRANSFER dup，原柄在本表，对方 close=纯引用
+            // 计数下降）；本帧 PRESENTED 已先断言——早归还良性。随行
+            // handle 不论归属全量 close；count≥1 时保持 nh==count 契约。
+            if rel.count != 0 && nh != rel.count {
                 fail(&format!("release count={} nh={}", rel.count, nh));
             }
             for h in &rhs[..nh] {
@@ -539,7 +669,20 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
         // —— 稳态等待：wait_many [wm READABLE (+input READABLE)] +
         //    deadline = min(next_wakeup, now+IDLE 帽, extra)；TIMEDOUT =
         //    期限到正常醒——渲染下一拍 / Idle 空转睡回。
-        let deadline = wait_deadline(ui.next_wakeup(), now(), hooks.extra_deadline());
+        // B2 节流拍：render 未跑 → 引擎 last_now 未推进 → next_wakeup 的
+        // vsync 拍对真实 now 可能已过点（照取即 deadline 在过去 = wait
+        // 立即醒自旋），本拍等待直接钉开窗沿（最近 drew + 节流窗——与
+        // swipe tick 常量同源锚各异（snap_paint_ns vs last_draw_ns），
+        // 开窗拍可差 ≤一窗——单帧 ≤33ms 附加迟滞、自重对齐无冻结
+        // （对抗审查 P3 勘正））；
+        // 应用额外帽（armed 窗类）仍取更早者；事件（wm/input READABLE）
+        // 照常即醒不受帽。
+        let deadline = if pace_beat {
+            let win = last_draw_ns.saturating_add(SNAP_PAINT_MIN_NS);
+            hooks.extra_deadline().map_or(win, |e| win.min(e))
+        } else {
+            wait_deadline(ui.next_wakeup(), now(), hooks.extra_deadline())
+        };
         let mut hs = [cfg.hw, 0 as Handle];
         let ss = [SIGNAL_READABLE, SIGNAL_READABLE];
         let mut n = 1usize;
@@ -645,5 +788,13 @@ mod tests {
             wait_deadline(Some(now + 1_000), now, Some(now + 500)),
             now + 500
         );
+    }
+
+    /// 在途帽契约：恰等于两个服务端 30s 帽周期（inputd
+    /// POLL_BLOCK_CAP_NS——一个周期必应答 + 一个周期到货余量）；改此值
+    /// 须有意识地重估「客户端复位不误杀慢而活的服务端」契约。
+    #[test]
+    fn input_stale_cap_is_two_server_caps() {
+        assert_eq!(INPUT_STALE_CAP_NS, 2 * 30_000_000_000);
     }
 }

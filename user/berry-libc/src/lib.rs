@@ -217,13 +217,17 @@ pub fn park() -> ! {
 // host libSystem 符号插入（见 Cargo.toml 头注「纯面外迁」idiom 起因）。
 // 本模块经 `cargo check --tests` 做编译验证；可跑执法锚在 berry-fsclient
 // errno 立值镜像（与本单源经 net.rs「errno 单源对拍」const assert 钉死）。
+// 2026-11-20 工程卫生：#[test] 属性全摘——本 crate 结构性不可 host 测试
+// （上述两条），挂着属性 = cargo test 永不执行的死属性；函数体保留作
+// cargo check --tests 编译验证与立值档案，摘属性后无调用点故配
+// allow(dead_code)。
 #[cfg(test)]
+#[allow(dead_code)]
 mod errno_probe {
     use super::*;
 
     /// 基础段 1..34（asm-generic errno-base；musl aarch64 同）——立值面
     /// 全量钉板，23 项。
-    #[test]
     fn errno_base_1_34_matches_linux_generic() {
         assert_eq!(EPERM, 1);
         assert_eq!(ENOENT, 2);
@@ -252,7 +256,6 @@ mod errno_probe {
 
     /// 扩展段 35..133（asm-generic errno；musl aarch64 同）——立值面
     /// 全量钉板，9 项（EADDRINUSE 已裁翻案对齐（见决策链注））。
-    #[test]
     fn errno_extended_35_133_matches_linux_generic() {
         assert_eq!(ENAMETOOLONG, 36);
         assert_eq!(ENOSYS, 38);
@@ -273,14 +276,12 @@ mod errno_probe {
     /// 相悖——x86 与 asm-generic 在 98 同值；112 实为 **newlib** 值域
     /// （swift-os 坑二里 newlib 头的 112——坑二被反向吸收）。裁定后：
     /// 改立值或改本断言二择一，berry-fsclient 镜像侧同步。
-    #[test]
     fn eaddrinuse_matches_linux_generic() {
         assert_eq!(EADDRINUSE, 98);
     }
 
     /// EAI_*（getaddrinfo 直接返回码，非 errno；musl include/netdb.h
     /// 同值）——立值面钉板 4 项（EAI_FAMILY 已裁翻案对齐（见决策链注））。
-    #[test]
     fn eai_values_match_musl() {
         assert_eq!(EAI_NONAME, -2);
         assert_eq!(EAI_AGAIN, -3);
@@ -293,7 +294,6 @@ mod errno_probe {
     /// -6 EAI_FAMILY / -7 EAI_SOCKTYPE）；-5 是 **glibc** 编号（glibc
     /// EAI_FAMILY=-5、EAI_SOCKTYPE=-6）。A3-1 注「musl 同值」实为 glibc
     /// 值。裁定后：改立值或改本断言二择一。
-    #[test]
     fn eai_family_matches_musl() {
         assert_eq!(EAI_FAMILY, -6);
     }

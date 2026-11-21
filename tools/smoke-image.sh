@@ -315,7 +315,7 @@ KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL o
 # 无 \n 可与上帧 art 行尾残字拼成 `veco: …`——grep 用无前缀子串）不进
 # canon。裸 grep -qF 足够——"LAUNCH ok"/"PAGE ok n="
 # 与现役 34 枚互非子串（LAUNCH/PAGE 词头独有）。
-# 命令行体验刀 起 +CLI ok n= / +TERM ok n=（bsh cli_selftest 十步——
+# 命令行体验刀 起 +CLI ok n= / +TERM ok n=（bsh cli_selftest 十三步——
 # 体验刀六步：clear 7B 对拍/uname 前缀/uptime 数值域/sleep 1s 时钟差分/type 三分支
 # /history 环回读；完善刀四步：>> 三态/|| 链/unset/管道切词带参；term_selftest 三步——
 # spawn 子 bsh（--no-selftest 跳链直进交互循环 + stdin_feed 喂两命令+尾字节 \x03

@@ -26,6 +26,11 @@ type berry_time uint64
 # options 位（未知位一律 -EINVAL；scope = 归属 syscall——同值异 scope 不冲突，DOC-6 修：旧裸值两条 1 << 0 无注记）:
 #   CHAN_OPT_NO_INTENT = 1 << 0  (0x1)（scope: channel_create）
 #   VMO_OPT_DEMAND = 1 << 0  (0x1)（scope: vmo_create）
+#   VMO_OPT_CONTIGUOUS = 1 << 1  (0x2)（scope: vmo_create）
+#   VMO_OPT_PINNED = 1 << 2  (0x4)（scope: vmo_create）
+#   VMO_CACHE_OP_CLEAN = 1 << 0  (0x1)（scope: vmo_cache_op）
+#   VMO_CACHE_OP_INVALIDATE = 1 << 1  (0x2)（scope: vmo_cache_op）
+#   VMO_CACHE_OP_CLEAN_INVALIDATE = 1 << 2  (0x4)（scope: vmo_cache_op）
 # rights 位（berry_rights；权限在 handle 不在对象）:
 #   BERRY_RIGHT_READ = 1 << 0  (0x1)
 #   BERRY_RIGHT_WRITE = 1 << 1  (0x2)
@@ -63,7 +68,7 @@ type berry_time uint64
 #   BERRY_ERR_OUT_OF_RANGE = -34
 #   BERRY_ERR_FAULT = -14
 
-# ---- syscall 入口（§4 编号表全量在册；v1 41 号、已实现 40；
+# ---- syscall 入口（§4 编号表全量在册；v1 42 号、已实现 41；
 #      a1..a6 ↔ ARM64 SVC x1..x6 全宽占位参——参数面待 §8.3 原型层（v2 挂账）补）----
 
 # **handle / 通用对象**
@@ -96,6 +101,8 @@ vmo_decommit(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 vmo_read(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x15 vmo_write（v1）——内核中介写
 vmo_write(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x1C vmo_cache_op（v1）——非一致性 DMA 数据缓存维护（F0-4：CLEAN/INVALIDATE/CLEAN_INVALIDATE 按 CTR_EL0.DminLine 直映 dc cvac/civac + dsb sy；RIGHT_READ/WRITE 门控）
+vmo_cache_op(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x16 vmar_map（v1）——VMO 映射进区间
 vmar_map(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x17 vmar_unmap（v1）——解除映射
@@ -246,7 +253,7 @@ namespace_mount(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # **策略注入 / 遥测**（AI 调度，见 `AI调度设计-v1.0.md`）
 # 0x83 policy_bind（v3·已实现）——注册 AI 策略注入通道（共享环，SET_POLICY）
 policy_bind(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
-# 0x84 telemetry_open（v3·已实现）——打开遥测环（只读）。翻真首域（阶段五第 16 步）：op=0 klog 快照——telemetry_open(op, buf, len) 读内核日志字节环（per-CPU 双环 CPU 序拼接、环内旧→新、每环贡献最新 min(环内有效字节扣除 128B 热尾容错窗, 余量) 字节），返回实写字节数（0 = 两环皆空/读窗不稳的诚实空，常态 >0）；三拒面：op 域外 -ENOTSUP（op 域 add-only 三档在册：op=1 memstat 定长 40B 五域〔2026-11-19 遥测刀、bsh free 消费〕；op=2 双族环快照〔2026-11-19 环读口刀——32B 轻头+每环 24B 段描述符+变长载荷，SwitchRec/WakeRec CPU 序段序旧→新整条截尾、逐环一致跨环尽力一致、降级段 count=0 total 照出，berryctl trace 消费〕；op=3 WakeSrc 槽表纯镜像〔2026-11-19 槽表刀——40B 轻头+128×64B 定长十字段平镜像、行号即源值、Σ行wakes≥wake_acct_n 装配不变式、逐字段独立原子读非一致快照（单调族无撕裂）、trace_off 表照出，berryctl powertop 消费〕）、len=0 或超 16KiB 单读帽 -EINVAL、copy_out 失败 -EFAULT（已写段诚实保留）。零 handle 零权利位（系统级遥测读面——sched_util_snapshot 同族口径）
+# 0x84 telemetry_open（v3·已实现）——打开遥测环（只读）。翻真首域（阶段五第 16 步）：op=0 klog 快照——telemetry_open(op, buf, len) 读内核日志字节环（per-CPU 双环 CPU 序拼接、环内旧→新、每环贡献最新 min(环内有效字节扣除 128B 热尾容错窗, 余量) 字节），返回实写字节数（0 = 两环皆空/读窗不稳的诚实空，常态 >0）；三拒面：op 域外 -ENOTSUP（op 域 add-only 三档在册：op=1 memstat 定长 40B 五域〔2026-11-19 遥测刀、bsh free 消费〕；op=2 双族环快照〔2026-11-19 环读口刀——32B 轻头+每环 24B 段描述符+变长载荷，SwitchRec/WakeRec CPU 序段序旧→新整条截尾、逐环一致跨环尽力一致、降级段 count=0 total 照出，berryctl trace 消费〕；op=3 WakeSrc 槽表纯镜像〔2026-11-19 槽表刀——40B 轻头+128×64B 定长十字段平镜像、行号即源值、Σ行wakes≥wake_acct_n 装配不变式、逐字段独立原子读非一致快照（单调族无撕裂）、trace_off 表照出，berryctl powertop 消费〕）、len 门按臂分述（op=0：len=0 或超 16KiB → -EINVAL；op=1/2/3：len<冻结下限 40/32/40 → -EINVAL、无上帽——变长填充返回值自证）、copy_out 失败 -EFAULT（已写段诚实保留）。零 handle 零权利位（系统级遥测读面——sched_util_snapshot 同族口径）
 telemetry_open(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **安全 / 远程证明**（预留）
@@ -261,6 +268,21 @@ signal_send(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x87 signal_take（v1）——原子取走当前进程 pending 集（swap(0) 语义——取后内核位清零）：`*pending` = u64 出参 8 字节（信号 n = 位 n-1）。libc 协同式投递的取货口；零 handle 面零权利位（「对象几何非内容」惯例）
 #   note: A7-4 段② 翻真（2026-10-31，与 0x86 同刀）：swap(0) 语义取走当前进程 pending 集；出参写失败不消费（先写后清）。投递中新到位置回内核 pending（下轮 take）——竞态免设计。
 signal_take(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x4A restricted_enter（v2·已实现）——进入受限态（EL0 SAN 域——AArch64 PSTATE.PAN/x86-64 SMAP 硬件栅栏）；flags=0 预留
+#   note: G2 刀 7：linux_runner 守护进程用——受限态下 guest 进程不可直接访问宿主 EL1 映射
+restricted_enter(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x4B restricted_kick（v2·已实现）——将目标任务踢出受限态（紧急逃生/调试面）——target Handle + reason u32
+#   note: G2 刀 7：与 0x4A 成对——kick 后任务回普通 EL0 域
+restricted_kick(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x77 guest_create（v2·已实现）——创建 guest 物理地址空间（PAS）——入口=IPA 基址+大小；返回 guest Handle
+#   note: G2 刀 10：EL2 Stage-2 页表域（AArch64 VTTBR_EL0）；QEMU TCG 无 EL2 时 -ENOSYS
+guest_create(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x78 vcpu_create（v2·已实现）——创建 vCPU——绑定 guest Handle；返回 vcpu Handle（含 EL2 上下文槽）
+#   note: G2 刀 10：vCPU=物理 CPU 线程的虚拟化实例（VTTBR/VCPU regs/SCTRL）
+vcpu_create(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
+# 0x79 vcpu_run（v2·已实现）——运行 vCPU 直到事件（HLT/异常/IO）——返回 exit_reason；非阻塞式
+#   note: G2 刀 10：主循环=ERET 到 guest→trap 回 EL2→读 ESR_EL2 分派
+vcpu_run(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 
 # **电源**（guest 内关机最小闭环——桌面UX审计 02 号 M3）
 # 0x88 power_off（v1）——整机下电（PSCI SYSTEM_OFF 0x84000008 经 HVC conduit——QEMU TCG/KVM 均受理 `qemu_system_shutdown_request`，PM-10 §1.6 实读）。成功 = 不归（整机退出）；返回 -ENOTSUP = conduit 死（EFI handoff / 非 EL1 入口 / 无 PSCI——`off_supported` probe 缓存门）或固件拒收。零参数零出参。

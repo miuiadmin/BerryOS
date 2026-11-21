@@ -1,0 +1,10 @@
+[package]
+name = "berry-scene-ir"
+# G3 刀 11：声明式 SceneIR 小组件二进制序列化。
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]

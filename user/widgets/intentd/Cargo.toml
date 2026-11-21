@@ -1,0 +1,10 @@
+[package]
+name = "berry-intentd"
+# G3 刀 14：意图路由与快捷指令自动化执行器。
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]

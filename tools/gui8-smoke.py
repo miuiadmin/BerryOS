@@ -28,8 +28,15 @@ FS/U1/U2/U3/B1/U4/TAB/INT/POLL/MMP/CLK/SIG/PS/BC/THR/EXIT 均结构性缺席）�
     快照真值接入 one-shot latch）；门在停机后全量日志上计数，非 boot
     期等待，均零序锚（WMSUB 跨通道无协议序，纯恰一计数）；
   - `launcher: click ready` **强制在席恰一次**（缺席即 FAIL，不 sleep
-    回退——这是 QMP 注入前的状态谓词门）；
-  - QMP 三批注入（abs → btn down → btn up）单击 APPDEMO 格中心；
+    回退——这是注入前的状态谓词门）；
+  - 单击注入通路 --input-path：qmp（默认——QMP 三批 abs → btn down →
+    btn up）或 vnc（RFB PointerEvent 直通——QEMU 另挂 -vnc 127.0.0.1:0
+    自动分配口，内建最小 RFB 客户端带 SetEncodings；gui8 点击历来走
+    QMP、用户手走的 VNC 人面路从未被测，正是「QEMU 11 VNC 丢绝对坐标」
+    旧判例能长期立足的制度性原因，本臂给人面路立法测试面）；vnc 形
+    断言面不变——点击同一格中心、VNC 表面域坐标直给勿缩放（ServerInit
+    实拍表面几何必须与串口几何全等，不等即 fail closed）；
+    `--aged-minutes` 与两通路正交组合可用；
   - 精确计数：`CLICK ok n=1` == 1、`LAYOUTW ok` == 1、`LAYOUT ok n=`
     == 0（重复/顺序假绿一律 FAIL，不 warn）；
   - 点击后 `app APPDEMO up` 恰 1 行（boot 批 0 行 = 裁决 B 面，
@@ -60,8 +67,10 @@ plumbing 自检（零 QEMU；含错 payload / 无哨兵 / 错 canonical / 重复
 只认 click ready 状态谓词，不用固定 sleep 兜底。
 
 macOS 纪律：serial 落文件（不依赖 terminal）、QMP 只用 unix socket
-（零 ambient TCP 端口）、每 boot fresh blank vars.fd、SIGTERM/QMP quit
-双路收尾、无 Docker/UTM 依赖。
+（默认零 ambient TCP 端口；--input-path vnc 例外——QEMU 另开 127.0.0.1
+VNC 口自动避让分配，走 TCP 形态是判例驳斥快照实验陷阱段结论：unix
+vnc.sock 异常关闭而 TCP 口正常）、每 boot fresh blank vars.fd、
+SIGTERM/QMP quit 双路收尾、无 Docker/UTM 依赖。
 """
 from __future__ import annotations
 
@@ -449,6 +458,144 @@ class QmpClient:
             pass
         self.f = None
         self.sock = None
+
+
+# =====================================================================
+# 最小 RFB 客户端（--input-path vnc：VNC 直通注入臂）
+# =====================================================================
+# 判例驳斥锚（归档考古入口）：
+# .agents/research/证据快照/2026-11-20-VNC直通绝对坐标判例驳斥.md
+# （提交 9be8d6158）。定谳：well-formed RFB 客户端（发 SetEncodings——
+# 浏览器 noVNC 恒发）经 QEMU VNC 直通的 PointerEvent 绝对坐标直达客机；
+# QEMU vs->absolute 由 set_encodings 触发 check_pointer_type_change 依
+# 设备侧 handler 图置位（virtio-tablet 在席即真）——不发 SetEncodings 的
+# 裸客户端走 REL 分支被静默丢弃，正是旧判例观测形态的根源。
+
+
+class RfbError(SmokeError):
+    pass
+
+
+class RfbClient:
+    """input-only 最小 RFB 3.8 客户端——只服务单击注入，不收帧。
+
+    三铁律照抄判例驳斥快照实验陷阱段：①PointerEvent 恰 6B（type+mask+
+    u16 x+u16 y）无 pad，多写一字节推歪协议流即被踢；②读侧 leftover 粘包
+    缓冲（TCP 合流与分段都不许读歪）；③input-only 不发
+    FramebufferUpdateRequest——零推送零排水（快照实验里帧更新不排水即
+    输出缓冲超帽被踢；不发请求即结构性免排水）。
+    """
+
+    def __init__(self, host: str, port: int, timeout: float = 15.0):
+        self.host = host
+        self.port = int(port)
+        self.sock = socket.create_connection((host, self.port), timeout=timeout)
+        self.sock.settimeout(timeout)
+        # leftover 粘包缓冲（铁律二）：_read_exact 只从这里割字节。
+        self.buf = b""
+        self.fb_w = 0
+        self.fb_h = 0
+        self._handshake()
+
+    def _read_exact(self, n: int) -> bytes:
+        while len(self.buf) < n:
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                raise RfbError(
+                    f"RFB EOF（还差 {n - len(self.buf)}B——QEMU 已退出或被踢）"
+                )
+            self.buf += chunk
+        out, self.buf = self.buf[:n], self.buf[n:]
+        return out
+
+    def _send(self, data: bytes) -> None:
+        self.sock.sendall(data)
+
+    def _handshake(self) -> None:
+        ver = self._read_exact(12)
+        if not ver.startswith(b"RFB 003."):
+            raise RfbError(f"RFB 版本行异常：{ver!r}")
+        # 客户端回 3.8（QEMU 恒发 003.008；3.3 服务器不在本 rig 面内）。
+        self._send(b"RFB 003.008\n")
+        n_types = self._read_exact(1)[0]
+        if n_types == 0:
+            rlen = struct.unpack(">I", self._read_exact(4))[0]
+            reason = self._read_exact(min(rlen, 512))
+            raise RfbError(f"RFB 服务器拒绝（无安全类型）：{reason!r}")
+        types = self._read_exact(n_types)
+        if 1 not in types:
+            raise RfbError(
+                f"RFB 安全类型不含 None(1)（得 {list(types)}）——"
+                "只支持无鉴权 VNC（-vnc 勿带 password）"
+            )
+        self._send(b"\x01")
+        result = struct.unpack(">I", self._read_exact(4))[0]
+        if result != 0:
+            # 3.8 失败面还带 u32 长度 + reason——尽力读出再抛。
+            try:
+                rlen = struct.unpack(">I", self._read_exact(4))[0]
+                reason = self._read_exact(min(rlen, 512))
+            except RfbError:
+                reason = b""
+            raise RfbError(f"RFB 安全握手失败 result={result}：{reason!r}")
+        # ClientInit shared=1（不独占——与生产 berry 客户端同形）。
+        self._send(b"\x01")
+        # ServerInit：u16 宽高 + 16B 像素格式（input-only 不消费）+ 名字。
+        self.fb_w, self.fb_h = struct.unpack(">HH", self._read_exact(4))
+        self._read_exact(16)
+        name_len = struct.unpack(">I", self._read_exact(4))[0]
+        if name_len > 4096:
+            raise RfbError(f"RFB ServerInit 名字超长 {name_len}")
+        self._read_exact(name_len)
+        # SetEncodings ×1（RAW）——判例驳斥的实验本体：这一发触发 QEMU
+        # check_pointer_type_change 把 vs->absolute 置真，后续 PointerEvent
+        # 才走绝对坐标直通 virtio-tablet。注意本消息头自带 1B pad（type+
+        # pad+u16 数量+i32 编码），与 PointerEvent 的「恰 6B 无 pad」恰成
+        # 对照——两处头格式别写串。
+        self._send(b"\x02\x00" + struct.pack(">Hi", 1, 0))
+
+    def pointer(self, mask: int, x: int, y: int) -> None:
+        # 铁律一：PointerEvent 恰 6B（type=5+mask+u16 x+u16 y 大端）无 pad
+        # ；坐标 = VNC 表面域 u16 直给勿缩放（宿主不做任何客机几何换算）。
+        if not (0 <= x <= 65535 and 0 <= y <= 65535):
+            raise RfbError(f"RFB PointerEvent 坐标越界：({x},{y})")
+        self._send(struct.pack("!BBHH", 5, mask & 0xFF, x, y))
+
+    def click(self, x: int, y: int) -> None:
+        # 三发单击：①move 定位 ②左键 down ③up——与 QMP 三批单击同拍
+        # （0.25s 间隔让 guest 输入泵逐发消费，非时序断言）。QEMU 对每个
+        # PointerEvent 发绝对 move + 按键差分 + sync，与 QMP 三批等效。
+        self.pointer(0, x, y)
+        time.sleep(0.25)
+        self.pointer(1, x, y)
+        time.sleep(0.25)
+        self.pointer(0, x, y)
+
+    def close(self) -> None:
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+
+def vnc_port_from_qmp(qmp: QmpClient) -> int:
+    """query-vnc 探 -vnc 127.0.0.1:N 自动避让后的实口（端口发现不走猜）。"""
+    info = qmp.execute("query-vnc") or {}
+    if not info.get("enabled"):
+        raise RfbError(
+            f"query-vnc：VNC 未启用（{info!r}）——vnc 注入路需要 QEMU 挂 -vnc"
+        )
+    # QEMU 11 端口在 service 键（str 形）；老树 port int 键一并兼容。
+    raw = info.get("service") or info.get("port")
+    if raw is None:
+        raise RfbError(f"query-vnc：缺 service/port 键（{info!r}）")
+    try:
+        port = int(raw)
+    except (TypeError, ValueError) as e:
+        raise RfbError(f"query-vnc 端口非法：{raw!r}（{info!r}）") from e
+    if not (1 <= port <= 65535):
+        raise RfbError(f"query-vnc 端口越界：{port}")
+    return port
 
 
 # =====================================================================
@@ -960,6 +1107,13 @@ def qemu_command(
         "-qmp",
         f"unix:{sock_path},server=on,wait=off",
     ]
+    # VNC 直通注入臂（--input-path vnc）：QEMU 另挂 -vnc 127.0.0.1:0——
+    # 从 5900 起自动避让在用口，实口经 QMP query-vnc 探明（不猜）。TCP
+    # 形态是判例驳斥快照实验陷阱段结论（unix vnc.sock 异常关闭，TCP 口
+    # 正常）。默认 qmp 路不加此旗（CI 零扰动）。判例锚：
+    # .agents/research/证据快照/2026-11-20-VNC直通绝对坐标判例驳斥.md
+    if getattr(args, "input_path", "qmp") == "vnc":
+        cmd += ["-vnc", "127.0.0.1:0"]
     # 调试开关（GUI8_QEMU_TRACE=1）：QEMU 输入子系统 trace 落 run 目录。
     if os.environ.get("GUI8_QEMU_TRACE"):
         cmd += [
@@ -1009,9 +1163,12 @@ class Boot:
         # 串口走 -serial file；QEMU 自身诊断另落 .qemu.log（不污染 guest 流）。
         self.qemu_log_path = self.run_dir / f"boot-{self.suffix}.qemu.log"
         self.fh = self.qemu_log_path.open("wb")
+        vnc_note = (
+            "，VNC 127.0.0.1 自动口" if self.args.input_path == "vnc" else ""
+        )
         log(
             f"boot {self.phase}: QEMU 启动（serial→{self.log_path.name}，"
-            f"QMP→{self.sock_path.name}，m=256M，display none）"
+            f"QMP→{self.sock_path.name}，m=256M，display none{vnc_note}）"
         )
         self.proc = subprocess.Popen(
             cmd,
@@ -1162,6 +1319,50 @@ def _warn_input_armed(boot: Boot) -> None:
         )
 
 
+def _aged_wait(label: str, minutes: float) -> None:
+    # aged 注入用例（rejected 判例盲区补口）：armed 即测即退永远测不到
+    # 「放久楔死」（输入链新靴活/放久死的时变面）——click ready 门通过
+    # 后、注入前静置 N 分钟再点。默认 0 = 关闭，行为与现状等价（CI 零
+    # 扰动）。只给注入腿用；纯隔离验证腿（boot B）不加。
+    if minutes <= 0:
+        return
+    start = time.strftime("%H:%M:%S")
+    log(f"{label}: aged 等待起——静置 {minutes:g} 分钟（{start}）")
+    time.sleep(minutes * 60.0)
+    end = time.strftime("%H:%M:%S")
+    log(f"{label}: aged 等待止（{start} → {end}），续注入")
+
+
+def _inject_click(boot: "Boot", cx: int, cy: int, w: int, h: int) -> None:
+    """boot A 单击注入分派：--input-path qmp=QMP 三批；vnc=RFB PointerEvent 直通。"""
+    if boot.args.input_path == "vnc":
+        assert boot.qmp is not None
+        port = vnc_port_from_qmp(boot.qmp)
+        rfb = RfbClient("127.0.0.1", port)
+        try:
+            # 坐标域门：VNC 表面几何（ServerInit 实拍）必须与串口解析几何
+            # 全等——本 rig fw_cfg 800x600 宽度已 32 对齐，两域 1:1；不等
+            # 即几何单源链（QEMU 表面几何→设备 ABS_INFO→inputd 归一）漂移
+            # ，fail closed 勿缩放硬点（宿主做缩放=私藏客机几何，正是判例
+            # 驳斥后要退役的形态）。
+            if (rfb.fb_w, rfb.fb_h) != (w, h):
+                raise SmokeError(
+                    f"boot {boot.phase}: VNC 表面 {rfb.fb_w}x{rfb.fb_h} != "
+                    f"串口几何 {w}x{h}——两域不一致，fail closed（勿缩放）",
+                    boot.log_path,
+                )
+            log(
+                f"boot {boot.phase}: VNC 直通注入单击（127.0.0.1:{port}，"
+                "RFB PointerEvent move → left down → up，带 SetEncodings）"
+            )
+            rfb.click(cx, cy)
+        finally:
+            rfb.close()
+    else:
+        log(f"boot {boot.phase}: QMP 注入单击（abs → btn down → btn up）")
+        boot.qmp.click(cx, cy, w, h)
+
+
 def run_dual_boot(args) -> int:
     preflight(args)
     print_marker_status()
@@ -1228,8 +1429,12 @@ def run_dual_boot(args) -> int:
         log(f"boot A: display {w}x{h}（{src}）→ cell(0,0) 中心 ({cx},{cy})")
 
         boot_a.qmp_connect()
-        log("boot A: QMP 注入单击（abs → btn down → btn up）")
-        boot_a.qmp.click(cx, cy, w, h)
+        # aged 用例锚点：click ready 门已过、demo_before/quiet_before 快照
+        # 已取——静置窗后原快照续用（aged 期冒出的 up 行会被精确计数
+        # 验证面 FAIL 兜住，不静默吞）。qmp 连接在 vnc 形下同样在席
+        # （quit 收尾 + query-vnc 端口发现都走它）。
+        _aged_wait("boot A", args.aged_minutes)
+        _inject_click(boot_a, cx, cy, w, h)
 
         # 点击后等待三项同时成立：CLICK 恰一、LAYOUTW、新增 APPDEMO up。
         # （批B BANDR 不入等待集——首触发 = guifbd seed 自验证拍，boot 期
@@ -1471,6 +1676,7 @@ def dry_run(args) -> int:
         else:
             create_data_disk(disk, with_smoke=not normal)
         log(f"dry-run: mode  = {'normal-boot（无 GUI8.SMK）' if normal else 'dual-boot（精确 GUI8.SMK）'}")
+        log(f"dry-run: input-path = {args.input_path}（boot A 单击注入通路）")
         log(f"dry-run: image = {args.image}")
         log(f"dry-run: code  = {args.code}")
         log(f"dry-run: vars  = {args.vars or '(未给；每 boot 仍产 fresh blank)'}")
@@ -1613,6 +1819,74 @@ class MockQmp:
                     break
                 else:
                     self._send(conn, {"return": {}})
+            conn.close()
+        except Exception as e:  # noqa: BLE001 —— 自检要把异常带回主线程
+            self.error = e
+        finally:
+            try:
+                self.srv.close()
+            except OSError:
+                pass
+
+    def join(self):
+        self.thread.join(timeout=10)
+        if self.error:
+            raise self.error
+
+
+class MockRfb:
+    """最小 RFB server（自检）：无鉴权 3.8 握手 + 分段发送夹逼读侧
+    leftover 缓冲 + 全量记录客户端字节流（三铁律字节级对拍）。"""
+
+    # ServerInit 像素格式 16B（bpp32/depth24/LE/truecolor + rgb max +
+    # shift + pad）——input-only 客户端不消费，只占位。
+    PIXFMT = bytes(
+        [32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 0, 16, 8, 0, 0, 0]
+    )
+
+    def __init__(self):
+        self.srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.srv.bind(("127.0.0.1", 0))
+        self.srv.listen(1)
+        self.srv.settimeout(10.0)
+        self.port = self.srv.getsockname()[1]
+        self.client_stream = b""
+        self.error: Exception | None = None
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+
+    def start(self):
+        self.thread.start()
+        return self
+
+    def _serve(self):
+        name = b"QEMU (gui8-mock)"
+        try:
+            conn, _ = self.srv.accept()
+            conn.settimeout(10.0)
+            # 分段计划：version 与安全类型清单挤一坨（12B 版本读须留 2B
+            # leftover）；安全 result 拆 1B+3B（后半与 ServerInit 宽高同
+            # 坨）；像素格式拆 7B+9B（后半与名长同坨）——粘包/半包双向
+            # 夹逼 _read_exact 的 leftover 路径（铁律二）。
+            conn.sendall(b"RFB 003.008\n" + b"\x01\x01")
+            time.sleep(0.05)
+            conn.sendall(b"\x00")
+            time.sleep(0.05)
+            conn.sendall(b"\x00\x00\x00" + struct.pack(">HH", 800, 600))
+            time.sleep(0.05)
+            conn.sendall(self.PIXFMT[:7])
+            time.sleep(0.05)
+            conn.sendall(
+                self.PIXFMT[7:] + struct.pack(">I", len(name)) + name
+            )
+            # 客户端应发恰 40B：版本 12 + 安全选择 1 + ClientInit 1 +
+            # SetEncodings 8 + PointerEvent×3 各 6（多一字节即 pad 违律）。
+            buf = bytearray()
+            while len(buf) < 40:
+                chunk = conn.recv(40 - len(buf))
+                if not chunk:
+                    break
+                buf += chunk
+            self.client_stream = bytes(buf)
             conn.close()
         except Exception as e:  # noqa: BLE001 —— 自检要把异常带回主线程
             self.error = e
@@ -1928,9 +2202,42 @@ def self_test(args) -> int:
             raise SmokeError("QMP 第三批非 btn up")
         log("self-test: QMP ok（no-device 广播 3 批，坐标 3891/7100）")
 
+        # 4b) VNC 直通注入臂：RFB 握手 + 字节级三铁律对拍（判例驳斥快照
+        #     实验陷阱段：PointerEvent 恰 6B 无 pad / leftover 粘包读 /
+        #     SetEncodings 在席 + 零 FramebufferUpdateRequest）。
+        mock_rfb = MockRfb().start()
+        rfb = RfbClient("127.0.0.1", mock_rfb.port, timeout=5.0)
+        if (rfb.fb_w, rfb.fb_h) != (800, 600):
+            raise SmokeError(
+                f"RFB ServerInit 几何异常：{rfb.fb_w}x{rfb.fb_h} != 800x600"
+            )
+        rfb.click(95, 95)
+        expect_error("RFB 坐标越界", lambda: rfb.pointer(0, 70000, 0))
+        rfb.close()
+        mock_rfb.join()
+        stream = mock_rfb.client_stream
+        expect_stream = (
+            b"RFB 003.008\n"
+            + b"\x01"
+            + b"\x01"
+            + b"\x02\x00\x00\x01\x00\x00\x00\x00"
+            + b"\x05\x00\x00\x5f\x00\x5f"
+            + b"\x05\x01\x00\x5f\x00\x5f"
+            + b"\x05\x00\x00\x5f\x00\x5f"
+        )
+        if stream != expect_stream:
+            raise SmokeError(
+                f"RFB 客户端字节流漂移（{len(stream)}B != "
+                f"{len(expect_stream)}B）：{stream!r} != {expect_stream!r}"
+            )
+        log(
+            "self-test: RFB ok（分段粘包握手 800x600；SetEncodings RAW "
+            "在席；PointerEvent 恰 6B×3 无 pad；零 FramebufferUpdateRequest）"
+        )
+
         log(
             "SELFTEST PASS（精确哨兵/canonical 109B/精确计数与顺序/"
-            "常态隔离/geometry/log/QMP；零 QEMU）"
+            "常态隔离/geometry/log/QMP/RFB 直通臂；零 QEMU）"
         )
         return 0
     finally:
@@ -1956,7 +2263,9 @@ def parse_args(argv=None):
             "  python3 tools/gui8-smoke.py --self-test\n"
             "  python3 tools/gui8-smoke.py --dry-run\n"
             "  python3 tools/gui8-smoke.py --dry-run --normal-boot\n"
+            "  python3 tools/gui8-smoke.py --dry-run --input-path vnc\n"
             "  python3 tools/gui8-smoke.py --image out/berryos.img\n"
+            "  python3 tools/gui8-smoke.py --image out/berryos.img --input-path vnc\n"
             "  python3 tools/gui8-smoke.py --normal-boot\n"
             "  GUI8_KEEP=1 just gui8-smoke\n"
         ),
@@ -1995,6 +2304,23 @@ def parse_args(argv=None):
         help="dual Boot A 等 click ready 的秒数（缺席即 FAIL，无 sleep 回退）",
     )
     ap.add_argument(
+        "--input-path",
+        choices=("qmp", "vnc"),
+        default="qmp",
+        help="boot A 单击注入通路：qmp=QMP input-send-event 三批（默认，"
+        "CI 零扰动）；vnc=RFB PointerEvent 直通（QEMU 加 -vnc 127.0.0.1:0，"
+        "内建最小 RFB 客户端带 SetEncodings——给用户手走的 VNC 人面路立法"
+        "测试面，断言面不变；--aged-minutes 与通路正交）",
+    )
+    ap.add_argument(
+        "--aged-minutes",
+        type=float,
+        default=0.0,
+        metavar="N",
+        help="aged 注入用例：boot A click ready 门通过后、注入单击前静置 "
+        "N 分钟再点（默认 0 关闭——CI 零扰动；boot B 只验隔离态不加）",
+    )
+    ap.add_argument(
         "--normal-boot",
         action="store_true",
         help="常态隔离：不造 GUI8.SMK，点击后断言 spawn 仍发生且零标记",
@@ -2009,6 +2335,29 @@ def parse_args(argv=None):
 
 def main(argv=None) -> int:
     args = parse_args(argv)
+    # aged 旗域校验（对抗审查 P2/P3）：非有限值（NaN 参与 >= 比较为
+    # False 可穿过 _aged_wait 的 <=0 守卫、sleep(NaN) 直接 traceback）
+    # 与负值一并显式拒绝；--normal-boot 腿不读 aged_minutes——组合
+    # 显式拒绝防「静默忽略被误读为已 aged」。
+    if not (args.aged_minutes >= 0) or args.aged_minutes == float("inf"):
+        print(
+            "gui8-smoke: FAIL: --aged-minutes 须为非负有限分钟数",
+            file=sys.stderr, flush=True)
+        return 2
+    if args.aged_minutes > 0 and args.normal_boot:
+        print(
+            "gui8-smoke: FAIL: --aged-minutes 暂不支持 --normal-boot 组合"
+            "（该腿无 click ready 门锚点，不加 aged 面）",
+            file=sys.stderr, flush=True)
+        return 2
+    # vnc 直通臂本刀只立 dual boot A 面（任务域）；normal-boot 腿注入保
+    # 持 QMP——显式拒绝防「静默忽略被误读为已走 VNC 直通」。
+    if args.input_path == "vnc" and args.normal_boot:
+        print(
+            "gui8-smoke: FAIL: --input-path vnc 暂不支持 --normal-boot 组合"
+            "（vnc 臂只立 dual boot A 注入面，该腿注入保持 QMP）",
+            file=sys.stderr, flush=True)
+        return 2
     try:
         if args.self_test:
             return self_test(args)

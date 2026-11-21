@@ -541,7 +541,7 @@ const TELEMETRY_OPEN_NR: usize = 0x84;
 pub use berry_telface::{
     MemstatRec, RingSegV1, RingsHdrV1, RING_FAMILY_SWITCH, RING_FAMILY_WAKE, REASON_SIGNALED,
     REASON_TIMEOUT, SwitchRec, TELEMETRY_OP_KLOG, TELEMETRY_OP_MEMSTAT, TELEMETRY_OP_RINGS,
-    TELEMETRY_OP_WSRC, TELEMETRY_WSRC_MAX, WakeRec, WakeSrcRecV1, WsrcHdrV1, ring_seg_read,
+    TELEMETRY_OP_WSRC, TELEMETRY_RINGS_MAX, TELEMETRY_WSRC_MAX, WakeRec, WakeSrcRecV1, WsrcHdrV1, ring_seg_read,
     rings_hdr_read, wsrc_hdr_read, wsrc_row_read,
 };
 

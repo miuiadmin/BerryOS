@@ -3410,12 +3410,16 @@ fn sig_selftest() {
 /// status=42（`fail` = exit 42 的 rootfs 程序，0x3A 真码链）**且 Z 未置**
 /// ——若短路失效：Z 被置 99 且 status 被尾段赋值改写为 0，双证同时崩；
 /// ③ `RC=$?` → RC=="42"（`$?` 展开 = 上一步真码）。
-fn and_selftest(vars: &mut Vec<(String, String)>, status: &mut i32) {
+fn and_selftest(_vars: &mut Vec<(String, String)>, status: &mut i32) {
+    // 跨刀 review 修（2026-11-20）：局部表断言——原写主表使 X/Y/RC 残留进
+    // 交互会话，经 export 全导出面泄入每个子进程环境（幽灵变量+占用 env
+    // 通道帽 3 项）。断言只看局部值，主表零污染。
+    let mut vars: Vec<(String, String)> = Vec::new();
     let mut out = std::io::stdout();
-    run_line("X=1 && Y=2", vars, status, &mut out, &[]);
-    run_line("run fail && Z=99", vars, status, &mut out, &[]);
-    run_line("RC=$?", vars, status, &mut out, &[]);
-    let get = |n: &str| get_var(vars, n).map(|s| s.to_string());
+    run_line("X=1 && Y=2", &mut vars, status, &mut out, &[]);
+    run_line("run fail && Z=99", &mut vars, status, &mut out, &[]);
+    run_line("RC=$?", &mut vars, status, &mut out, &[]);
+    let get = |n: &str| get_var(&vars, n).map(|s| s.to_string());
     if *status != 0
         || get("X").as_deref() != Some("1")
         || get("Y").as_deref() != Some("2")
@@ -3801,15 +3805,11 @@ fn exec_bg(
         writeln!(out, "bsh: run: {}: not found", target).unwrap();
         return 127;
     };
-    // fs gifts 装配（run_output 同款：缺席＝裸形态降级零漂移）。
-    let mut gift_buf = [0 as Handle; 2];
-    let gifts: Option<&[Handle]> = match fs_gifts() {
-        Some((r, f)) => {
-            gift_buf = [r, f];
-            Some(&gift_buf[..])
-        }
-        None => None,
-    };
+    // 跨刀 review 修（2026-11-20 Major-2 保守收口）：后台作业不带 fs 通道
+    // 礼物——fs 客户端端是单会话串行面（fsmgr 服务侧单 FIFO 应答），后台
+    // 作业持第二客户端端与前台 shell fs 面并发即应答互偷（会话永久毒化）。
+    // v2 限制记面：后台作业无 fs 访问（需 fs 的作业走前台；bg fs 面随
+    // fsmgr 多会话化另刀）。stdin 恒 EOF（/dev/null 语义）。
     let argv: Vec<&[u8]> = args.iter().map(|a| a.as_bytes()).collect();
     let env_kv = build_export_set(vars);
     let env_set: Vec<&[u8]> = env_kv.iter().map(|e| e.as_slice()).collect();
@@ -3819,12 +3819,10 @@ fn exec_bg(
         data_len,
         stdout: console_h(),
         stack_pages: 32,
-        // gift 在位时按 berry-exec 断言补空 feeder 占位（EOF 即达——子读
-        // stdin 恒返 0，/dev/null 语义，run_output 同律）。
-        stdin_feed: if gifts.is_some() { Some(&[]) } else { None },
+        stdin_feed: None,
         stdin_handle: None,
         args: &argv,
-        extra_gifts: gifts.unwrap_or(&[]),
+        extra_gifts: &[],
         mmio_vmo: None,
         mmio_va: 0,
         intent: 0,
@@ -3845,12 +3843,6 @@ fn exec_bg(
             0
         }
         Err(_) => {
-            // gifts 未被 take（早退点全在 env send 前）——显式补关防泄漏
-            //（未装配的 0 值关返 -EBADF 无害，run_output 同形）。
-            if gifts.is_some() {
-                let _ = berry_handle_close(gift_buf[0]);
-                let _ = berry_handle_close(gift_buf[1]);
-            }
             writeln!(out, "bsh: run: {}: spawn failed", target).unwrap();
             126
         }
@@ -6491,7 +6483,7 @@ fn u2_selftest(vars: &mut Vec<(String, String)>, status: &mut i32) {
     let mut out = std::io::stdout();
     run_line("run true && A=1", vars, status, &mut out, &[]);
     run_line("run false && B=1", vars, status, &mut out, &[]);
-    let get = |n: &str| get_var(vars, n).map(|s| s.to_string());
+    let get = |n: &str| get_var(&vars, n).map(|s| s.to_string());
     if *status != 1 || get("A").as_deref() != Some("1") || get("B").is_some() {
         eprintln!(
             "bsh: u2 selftest bad: step=5 status={} A={:?} B={:?}",

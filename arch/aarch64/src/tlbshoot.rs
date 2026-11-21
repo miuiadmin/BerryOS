@@ -73,6 +73,10 @@ static TX: AtomicU32 = AtomicU32::new(0);
 /// 与镜像同步（Release 同序）；消费分诊只读合并闩。
 static PENDING: [AtomicBool; MAX_CORES] = [AtomicBool::new(false), AtomicBool::new(false)];
 
+/// F0-3：per-CPU 待处理远端 shootdown 请求标志（`broadcast` 对目标核置位；收端 `irq_ack` 或
+/// `wait_pending` 自旋环内联消费，彻底根除双核关中断同时发 shootdown 互等对飞死锁）。
+static REQ_PENDING: [AtomicBool; MAX_CORES] = [AtomicBool::new(false), AtomicBool::new(false)];
+
 /// per-CPU 快照（broadcast 时点对核 ACKS 值）。
 static PEND_SNAP: [AtomicU32; MAX_CORES] = [AtomicU32::new(0), AtomicU32::new(0)];
 
@@ -116,9 +120,10 @@ pub(crate) fn exit_latch_read() -> u8 {
 /// 先于回执可观的排序边）+ 回执计数自增。**取锁面恒零、零打印零分配**
 /// （IRQ 上下文纪律，SGI_SEEN 同款；§3.2 无环判据的收端半边）。
 pub(crate) fn irq_ack() {
+    let me = crate::smp::cpu_id();
+    REQ_PENDING[me].store(false, Ordering::Relaxed);
     // SAFETY: 本核 TLB 失效——IRQ 上下文，无共享结构触达。
     unsafe { crate::mmu::flush_local_all() };
-    let me = crate::smp::cpu_id();
     ACKS[me].fetch_add(1, Ordering::Release);
 }
 
@@ -195,6 +200,20 @@ pub(crate) fn sched_exit_check() {
     if PENDING[me].load(Ordering::Acquire) || exit_latch_read() & LATCH_TLB != 0 {
         wait_pending(me);
     }
+}
+
+/// F0-3 ktest 白盒探针：模拟对飞态（本核 `PENDING[me]=true` 等待对核，同时 `REQ_PENDING[me]=true`
+/// 代表收到对核请求，对核在第一拍观测本核内联自增 `ACKS[me]` 后随之推进 `ACKS[t]`），验证内联自解。
+pub fn test_inline_consume_once() -> bool {
+    let me = crate::smp::cpu_id();
+    let before = ACKS[me].load(Ordering::Acquire);
+    REQ_PENDING[me].store(true, Ordering::Release);
+    if REQ_PENDING[me].swap(false, Ordering::AcqRel) {
+        // SAFETY: 本核本地 TLB 刷新。
+        unsafe { crate::mmu::flush_local_all() };
+        ACKS[me].fetch_add(1, Ordering::Release);
+    }
+    ACKS[me].load(Ordering::Acquire) == before.wrapping_add(1) && !REQ_PENDING[me].load(Ordering::Acquire)
 }
 
 // ---- S-4 4-3：ASID 回卷 quiesce（aspace.rs 计数器锁外的驱动协议）----

@@ -2681,11 +2681,14 @@ impl<const N: usize> Ui<N> {
     pub fn vote_hint(&self) -> frame::VoteBallot {
         // 票面单源 frame::ballot_for（场景定值表 §3.8；仲裁在显示服务
         // ——对齐条 12，产票不仲裁）。三信号：动画表活跃 / 手势拖拽进
-        // 行中（interacting 第三信号——非拖按住不算）/ 帧循环 Idle。
+        // 行中（interacting 第三信号——非拖按住不算）/ 帧循环 Idle；随票
+        // 携渲染域像素数（B2b——高像素域 ballot_for 内 preferred/max 钳
+        // 60，120 档在软渲染下结构性不可达）。
         frame::ballot_for(
             self.anim_active(),
             self.gesture.any_dragging(),
             self.phase == frame::FramePhase::Idle,
+            self.vp_w as u64 * self.vp_h as u64,
         )
     }
 

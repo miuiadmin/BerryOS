@@ -1,3 +1,8 @@
+// 孤儿文件（不参与编译）——保留供历史参考，待归档
+// 波 3（2026-11-20）抽取 berry-appshell 时未删的原件：main.rs mod 表无
+// icons（crate::icons 经 `pub use appshell::icons` 解析），且本文件
+// `use crate::{rpc_recv, rpc_send}` 在 crate 根无此符号——挂回编译必红。
+// 现役版本：user/berry-appshell/src/icons.rs。
 //! icons —— app 注册表 + 图标供给桥（GUI-8 段③ W2，docs/
 //! docs/GUI-8实施设计草案-v1.0.md §4 段③「IconSource 供件桥接」）。
 //!

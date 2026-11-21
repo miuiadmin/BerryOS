@@ -1,3 +1,7 @@
+// 孤儿文件（不参与编译）——保留供历史参考，待归档
+// 唯一引用主是同为孤儿的 icons.rs（#[path] mod status_icons）；与现役
+// 副本逐字节相同。生成器 tools/genohstatus.py 波 3 起产物已改指
+// user/berry-appshell/src/status_icons.rs，本文件不再被生成链触达。
 //! 由 tools/genohstatus.py 生成——勿手改。
 //! signal/wifi = OpenHarmony 官方资产；battery/dock = OH 官方几何复刻。
 

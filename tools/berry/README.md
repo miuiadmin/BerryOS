@@ -25,7 +25,7 @@ just berry doctor         # QEMU / 固件 / 镜像 / accel / fw_cfg 键注入报
 just berry home           # 打印 run 目录/数据盘/vars 持久位根（BERRY_HOME 覆写与 Windows 分支单源在此，justfile 消费）
 ```
 
-fw_cfg 具名键（`opt/berry/*`）的单源键表在 `tools/fwcfg-keys.toml`（27 键：形态/注入方/消费方/极性），改键先改表再动代码，`bash tools/fwcfg-check.sh` 对拍两侧零漂移。`berry run/shot/device start --json` 的输出含 `data_disk` 字段（null=无盘，与 doctor 的 data_disk 块同源 `qemu.rs data_disk_plan`）。
+fw_cfg 具名键（`opt/berry/*`）的单源键表在 `tools/fwcfg-keys.toml`（28 键：形态/注入方/消费方/极性），改键先改表再动代码，`bash tools/fwcfg-check.sh` 对拍两侧零漂移。`berry run/shot/device start --json` 的输出含 `data_disk` 字段（null=无盘，与 doctor 的 data_disk 块同源 `qemu.rs data_disk_plan`）。
 
 `tools/berry` 是独立 workspace；根 `.cargo/config.toml` 把 `build.target` 锁成
 `aarch64-unknown-none`，所以必须走 `just berry-build`（或显式 `--target`）。宿主依赖

@@ -1,0 +1,25 @@
+[package]
+name = "berry-driver"
+version.workspace = true
+edition = "2021"
+# 驱动子系统研究报告（.agents/research/2026-11-18-驱动子系统综合研究报告.md）
+# P1 结构性缺口框架件 + 波 2.2「总线抽象泛化」先行刀：统一 Driver trait
+# 生命周期框架——借 Linux probe 生命周期形状不借住址（报告 §2.4：probe
+# 认领 → start 服役 → stop 退役三口可循环，对照 Linux probe/remove +
+# module_init/exit）。形态 = berry-virtio 族例 `cfg_attr(not(test), no_std)`
+# + alloc（registry 的 Vec 面）；真消费面（vblk/vnet 接线）是后续刀，本刀
+# 只落 trait + registry + virtio_example 包装示例。依赖 berry-virtio 跨
+# 工作区 path（先例 = drivers→user 方向的 vnet 消费 berry-netproto；本处
+# 反向 user→drivers，锁各自独立互不污染同理）——示例消费其 mmio 偏移表/
+# 鉴定值单源（magic/version/device_id），不复制常量。
+description = "BerryOS unified driver lifecycle trait (probe/start/stop) + registry, Linux-probe-shaped, host-testable"
+license = "Apache-2.0"
+
+[dependencies]
+# virtio_example 的寄存器偏移/鉴定值单源（MAGIC_VAL/VERSION_MODERN/
+# DEVICE_ID_* 与状态位 ST_*）——跨工作区 path 依赖，berry-gpuproto 同款
+# 「引常量不复制」纪律。
+berry-virtio = { path = "../../drivers/berry-virtio" }
+# virtio_example 的 MMIO 读写面（VirtioMmio——volatile 与窗界检收敛在 HAL
+# 实现内部，vprobe 同款接线；同 workspace path，2026-11-20 消费面扩展）。
+berry-hal = { path = "../berry-hal" }

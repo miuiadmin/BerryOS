@@ -5783,6 +5783,8 @@ mod tests {
         assert_ne!(WM_EVT_BACK, WM_EVT_TABLE);
         assert_ne!(WM_EVT_TABLE, WM_EVT_BACK_ACK);
         assert_ne!(WM_EVT_BACK, WM_EVT_BACK_ACK);
+    }
+
     // ---------- 刀3 仲裁器决策表（规范 §6.3 A1-A11——每条一正一负 + 组合钉板）----------
     use super::arbiter::*;
 
@@ -6510,5 +6512,4 @@ mod tests {
         assert_eq!(g.on_content_cadence(0), Decision::Stay, "内容 0 复位不迁移");
         assert_eq!(g.lfc_k(), 0);
     }
-}
 }

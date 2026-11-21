@@ -2,7 +2,7 @@
 //!
 //! **动机**：SVC 入口锁类分档（S-3c c-2c slice 2b 起）的六类位集常量与
 //! 45 号注册表此前只活在两处——`kern_lock.rs` 常量 + `kernel/src/syscall.rs`
-//! `install()` 的 45 行 `reg()` 字面量表。HAL/内核 crate 只 aarch64-unknown-none
+//! `install()` 的 52 行 `reg()` 字面量表。HAL/内核 crate 只 aarch64-unknown-none
 //! 可编，host 测不可达：类位集与 sched `HELD_*` 的**位镜像一致性**（bit1=SQ
 //! 0x02 / bit2=RQ0 0x04 / bit3=RQ1 0x08 / bit4=REAPQ 0x10 / bit5=TABLE 0x20）
 //! 此前只有 kernel main 编译期断言执法（aarch64-only），「实装号 NONE 归零
@@ -19,9 +19,9 @@
 //!   [`HELD_TABLE_BIT`]：sched `task.rs` HELD_* 位值的**判据面镜像**（非
 //!   第二实现——host 侧拿不到 berry-sched，此处钉「类位集对 sched 位值的
 //!   组装律」，与 kernel main.rs 编译期断言同一语义的 host 可测形）。
-//! - [`REGISTRY`]：46 号注册表（`(nr, class)` 对——与 kernel `install()`
+//! - [`REGISTRY`]：52 号注册表（`(nr, class)` 对——与 kernel `install()`
 //!   逐行对应；`0x83 policy_bind` 字面量号同款入册）。
-//! - [`class_of`]：号→类查询——注册表线性扫（45 项，boot 期注册语义的
+//! - [`class_of`]：号→类查询——注册表线性扫（52 项，boot 期注册语义的
 //!   纯投影；**未注册号 → [`SVC_CLASS_NONE`]**，与 HAL 派发表默认槽
 //!   `(sys_unimplemented, NONE)` 全表初始化同一律）。
 //! - [`NONE 号后继审计律`]由 [`none_class_audited`] 执法：在册 NONE 实装
@@ -91,7 +91,7 @@ pub const fn assembled_class(sq: bool, rq0: bool, rq1: bool, reapq: bool, table:
     v
 }
 
-/// 号→锁类注册表：与 kernel `syscall.rs install()` 的 45 行 `reg()` 逐行
+/// 号→锁类注册表：与 kernel `syscall.rs install()` 的 52 行 `reg()` 逐行
 /// 对应（改 kernel 落类 = 同步改此表——host 钉板即执法面）。号值 = ABI
 /// v1/v3 真号（abi_gen NR_* / 0x83 字面量）。
 pub const REGISTRY: &[(u8, u8)] = &[
@@ -116,6 +116,7 @@ pub const REGISTRY: &[(u8, u8)] = &[
     (0x15, SVC_CLASS_TABLE), // vmo_write
     (0x1A, SVC_CLASS_TABLE), // vmo_get_size
     (0x1B, SVC_CLASS_TABLE), // vmo_get_phys
+    (0x1C, SVC_CLASS_TABLE), // vmo_cache_op（35 号件 F0-4 非一致 DMA 缓存维护）
     (0x16, SVC_CLASS_TABLE), // vmar_map
     (0x17, SVC_CLASS_TABLE), // vmar_unmap
     (0x18, SVC_CLASS_TABLE), // vmar_protect
@@ -162,11 +163,21 @@ pub const REGISTRY: &[(u8, u8)] = &[
     //    swap(0) Relaxed 原子零锁需求；出参 copy_out_u64 链 = §A113 读者面，
     //    S-4 4-2 起 per-AS PT 锁同窗——§A115 四问复审落 NONE（同 0x61）。
     (0x87, SVC_CLASS_NONE), // signal_take（W3-Q100 降档）
+    // —— TABLE：G2 刀 7 受限态原语双号（0x4A/0x4B）——v1 桩（TABLE：
+    //    abi_gen 常量面走查；v2 号位——abi_gen 常量层只产 v1/1.1 行，
+    //    字面量挂同 0x83 先例）。
+    (0x4A, SVC_CLASS_TABLE), // restricted_enter（G2 刀 7 桩）
+    (0x4B, SVC_CLASS_TABLE), // restricted_kick（G2 刀 7 桩）
+    // —— TABLE：G2 刀 10 Hypervisor MicroVM 三号（0x77/0x78/0x79）——
+    //    v1 桩 -ENOSYS（QEMU TCG 无 EL2；真机 EL2 面归后续刀）。
+    (0x77, SVC_CLASS_TABLE), // guest_create（G2 刀 10 桩）
+    (0x78, SVC_CLASS_TABLE), // vcpu_create（G2 刀 10 桩）
+    (0x79, SVC_CLASS_TABLE), // vcpu_run（G2 刀 10 桩）
     // —— TABLE：阶段五遥测环读（0x84——klog 快照首域 copy_out 读者面 §A113）——
     (0x84, SVC_CLASS_TABLE),      // telemetry_open
 ];
 
-/// 号→入口锁类：注册表线性扫（45 项·boot 期注册语义纯投影）。**未注册号
+/// 号→入口锁类：注册表线性扫（52 项·boot 期注册语义纯投影）。**未注册号
 /// → [`SVC_CLASS_NONE`]**——与 HAL `SYSCALLS` 默认槽全表 NONE 初始化同一
 /// 律（未知/未实现/越界号零锁直达 `-ENOTSUP`，绝不 panic 绝不杀调用者）。
 pub const fn class_of(nr: u8) -> u8 {
@@ -292,10 +303,10 @@ mod tests {
         }
     }
 
-    /// 表规模与形状：46 号在册、无重复号（W3-Q97 批量 recv 0x57 入册）。
+    /// 表规模与形状：52 号在册、无重复号（W3-Q97 0x57／35 号件 0x1C／G2 刀 7+10 五号入册）。
     #[test]
     fn registry_shape() {
-        assert_eq!(REGISTRY.len(), 46);
+        assert_eq!(REGISTRY.len(), 52);
         assert!(nrs_unique());
     }
 
@@ -356,8 +367,8 @@ mod tests {
                 hit_cnt += 1;
             }
         }
-        // 恰 43 号非 NONE 命中、213 号 NONE（256-46+3 白名单降档——W3-Q100
-        // 后 NONE 面 = 未注册 210 号 + 白名单实装 3 号）。
+        // 恰 49 号非 NONE 命中、207 号 NONE（256-52+3 白名单降档——W3-Q100
+        // 后 NONE 面 = 未注册 204 号 + 白名单实装 3 号）。
         let none_installed = (REGISTRY.len() - NONE_DOWNGRADED_NRS.len()) as u16;
         assert_eq!(hit_cnt, none_installed);
         assert_eq!(none_cnt, 256 - none_installed);
@@ -375,7 +386,7 @@ mod tests {
         assert_eq!(class_of(0x88), SVC_CLASS_TABLE); // power_off
         assert_eq!(class_of(0x83), SVC_CLASS_TABLE); // policy_bind
         assert_eq!(class_of(0x37), SVC_CLASS_SQ_RQ); // thread_sleep
-        for nr in [0x11u8, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B] {
+        for nr in [0x11u8, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C] {
             assert_eq!(class_of(nr), SVC_CLASS_TABLE, "vmo/vmar {nr:#04x}");
         }
         for nr in [0x31u8, 0x33, 0x34, 0x36, 0x3B, 0x51, 0x54] {

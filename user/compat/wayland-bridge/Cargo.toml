@@ -1,0 +1,10 @@
+[package]
+name = "compat-wayland-bridge"
+# G2 刀 9：Linux GUI wl_surface/wl_shm → BerryOS SurfaceId/VMO 桥接。
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]

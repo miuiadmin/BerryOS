@@ -116,7 +116,7 @@ fn trace_cmd(json: bool) {
 
     // 满载 7296B（内核 RING_SNAP_STAGE 同容量；变长填充下实写由返回值
     // 自证——truncate 到 n 后按段自描述走读）。
-    let mut buf = vec![0u8; 7296];
+    let mut buf = vec![0u8; berry_sys::TELEMETRY_RINGS_MAX]; // 跨刀 review：字面 7296 改单源（消双写链断节）
     let st = berry_sys::berry_telemetry_rings_snapshot(buf.as_mut_ptr(), buf.len());
     if st < 0 {
         eprintln!("berryctl: trace err {}", st);
@@ -134,7 +134,8 @@ fn trace_cmd(json: bool) {
 
     // 段自描述走读（消费方视角解包律——与内核 ktest 对拍臂同一序）。
     let mut aggs: Vec<SegAgg> = Vec::new();
-    let mut cur = 32usize;
+    let mut cur = hdr.hdr_bytes as usize; // 跨刀 review：按头自述锚走读（powertop 同形）
+        if cur < 32 { eprintln!("berryctl: trace hdr_bytes {} < 32", cur); std::process::exit(1); }
     while cur + 24 <= n {
         let mut d = [0u8; 24];
         d.copy_from_slice(&buf[cur..cur + 24]);

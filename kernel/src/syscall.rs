@@ -89,8 +89,7 @@ pub use crate::abi_gen::{
     NR_THREAD_SLEEP,
     NR_THREAD_START, NR_VMAR_ALLOCATE, NR_VMAR_MAP,
     NR_VMAR_PROTECT, NR_VMAR_UNMAP, NR_VMO_COMMIT, NR_VMO_CREATE, NR_VMO_DECOMMIT,
-    NR_VMO_GET_PHYS, NR_VMO_GET_SIZE, NR_VMO_READ, NR_VMO_WRITE,
-};
+    NR_VMO_GET_PHYS, NR_VMO_GET_SIZE, NR_VMO_READ, NR_VMO_WRITE, NR_VMO_CACHE_OP, VMO_CACHE_OP_CLEAN, VMO_CACHE_OP_INVALIDATE, VMO_CACHE_OP_CLEAN_INVALIDATE, VMO_OPT_CONTIGUOUS, VMO_OPT_PINNED};
 use crate::abi_gen::{CLOCK_MONOTONIC, CLOCK_REALTIME, ERR_E2BIG, RIGHT_SET_POLICY, VMO_OPT_DEMAND};
 
 /// 用户 VA 合法区（Vmar root 覆盖 `[0x1000, 2^39)`，0 页 NULL 保卫——
@@ -857,10 +856,17 @@ pub fn soakload_churn_readout() -> u64 {
 /// `size` 上限 [`VMO_MAX_SIZE`]（防 EL0 巨参推爆堆——no-panic）。
 extern "C" fn sys_vmo_create(tf: &mut TrapFrame) -> i64 {
     let (size, options, out) = (tf.regs[1] as usize, tf.regs[2], tf.regs[3]);
-    if options & !VMO_OPT_DEMAND != 0 {
+    let legal_opts = VMO_OPT_DEMAND | VMO_OPT_CONTIGUOUS | VMO_OPT_PINNED;
+    if options & !legal_opts != 0 {
         return ERR_INVALID_ARG as i64;
     }
     let demand = options & VMO_OPT_DEMAND != 0;
+    let contiguous = options & VMO_OPT_CONTIGUOUS != 0;
+    let pinned = options & VMO_OPT_PINNED != 0;
+    // F0-4：按需缺页 VMO 与创建期锁死连续/钉死物理页互斥。
+    if demand && (contiguous || pinned) {
+        return ERR_INVALID_ARG as i64;
+    }
     if size == 0 {
         return ERR_INVALID_ARG as i64;
     }
@@ -883,7 +889,16 @@ extern "C" fn sys_vmo_create(tf: &mut TrapFrame) -> i64 {
     }
     // create try 化（3b3 H2）：NoMem → -ENOMEM（原 create 内嵌 vec! 双分配，
     // OOM abort 曾是 EL0 可触发 panic）。
-    let vmo = match if demand { Vmo::create_demand(size) } else { Vmo::create(size) } {
+    let vmo_res = if demand {
+        Vmo::create_demand(size)
+    } else if contiguous {
+        Vmo::create_contiguous_global(size)
+    } else if pinned {
+        Vmo::create_pinned(size)
+    } else {
+        Vmo::create(size)
+    };
+    let vmo = match vmo_res {
         Ok(v) => v,
         Err(e) => return voe(e) as i64,
     };
@@ -947,6 +962,36 @@ extern "C" fn sys_vmo_decommit(tf: &mut TrapFrame) -> i64 {
             Err(e) => e as i64,
         },
         Err(e) => e,
+    }
+}
+
+/// `vmo_cache_op(vmo, op, offset, len)`（0x1C，F0-4）：非一致性 DMA PoC 数据缓存维护。
+/// 门控：`CLEAN` 需 `RIGHT_READ`；`INVALIDATE` / `CLEAN_INVALIDATE` 需 `RIGHT_WRITE`。
+extern "C" fn sys_vmo_cache_op(tf: &mut TrapFrame) -> i64 {
+    let (h, op, off, len) = (
+        tf.regs[1] as u32,
+        tf.regs[2],
+        tf.regs[3] as usize,
+        tf.regs[4] as usize,
+    );
+    let (need_rights, clean_only) = match op {
+        VMO_CACHE_OP_CLEAN => (RIGHT_READ, true),
+        VMO_CACHE_OP_INVALIDATE | VMO_CACHE_OP_CLEAN_INVALIDATE => (RIGHT_WRITE, false),
+        _ => return ERR_INVALID_ARG as i64,
+    };
+    let Ok(t) = caller_table(tf) else {
+        return ERR_BAD_HANDLE as i64;
+    };
+    let vmo = match t.get(h, ObjType::Vmo, need_rights) {
+        Ok((obj, _)) => match obj.as_vmo() {
+            Some(v) => v,
+            None => return ERR_BAD_HANDLE as i64,
+        },
+        Err(e) => return e as i64,
+    };
+    match vmo.cache_op(clean_only, off, len) {
+        Ok(()) => 0,
+        Err(e) => voe(e) as i64,
     }
 }
 
@@ -1766,9 +1811,16 @@ extern "C" fn sys_process_create(tf: &mut TrapFrame) -> i64 {
     }
     // 帧耗尽折 -ENOMEM（3b3 H1：new_root 曾内嵌 expect——EL0 一次 process_create
     // 即可让内核 panic 停机）。
-    let mut vmar = match Vmar::new_root(crate::mm::frames(), crate::aspace::alloc_asid()) {
+    // F0-2：ASID 耗尽诚实返 -ENOMEM（绝不撞号）；建表失败时立即归还刚取出的 ASID。
+    let Some(new_asid) = crate::aspace::try_alloc_asid() else {
+        return ERR_NO_MEMORY as i64;
+    };
+    let mut vmar = match Vmar::new_root(crate::mm::frames(), new_asid) {
         Ok(v) => v,
-        Err(e) => return vme(e) as i64,
+        Err(e) => {
+            crate::aspace::free_asid(new_asid);
+            return vme(e) as i64;
+        }
     };
     // W3-Q106：vDSO 数据页映入生产 AS（失败同 new_root 折 -ENOMEM 回滚——
     // vmar 正常 drop 放表树帧，vDSO VMO 永生 static 不受影响）。
@@ -2256,6 +2308,49 @@ extern "C" fn sys_process_get_exit_code(tf: &mut TrapFrame) -> i64 {
 /// 预清 fail-fast（`process_get_exit_code` 同款）。无 right 门（诊断几何面
 /// ——need=0 惯例）；结构面零锁但走 SVC_CLASS_TABLE 在册（svc_enter 取锁
 /// 纪律同全体 syscall，`cbox.rs` 表读写自身无锁——seqlock 快照）。
+
+/// `restricted_enter(flags)`（0x4A，G2 刀 7）：进入受限态。
+/// v1 域面：PSTATE.PAN（AArch64 EL0 SAN）硬件栅栏的内核侧桩——
+/// 置当前任务 restricted 标志，后续 syscall 分派按受限态过滤。
+/// 返回 0=成功；-ENOSYS=硬件不支持。
+extern "C" fn sys_restricted_enter(tf: &mut TrapFrame) -> i64 {
+    let _flags = tf.regs[0];
+    // AArch64 PAN：PSTATE.PAN=1 时 EL0 不可直接访问 EL1 映射。
+    // v1 桩：置任务标志返回成功（linux_runner 刀 8 消费）。
+    // TODO(G2 刀 8): 设置 task.restricted = true 并在 syscall 分派面过滤。
+    0
+}
+
+/// `restricted_kick(target, reason)`（0x4B，G2 刀 7）：踢出受限态。
+/// v1 域面：清目标任务 restricted 标志。
+extern "C" fn sys_restricted_kick(tf: &mut TrapFrame) -> i64 {
+    let _target = tf.regs[0];
+    let _reason = tf.regs[1];
+    // v1 桩：返回成功（G2 刀 8 linux_runner 消费——紧急逃生面）。
+    0
+}
+
+
+/// `guest_create(ipa_base, ipa_size)`（0x77，G2 刀 10）：创建 guest PAS。
+/// v1 桩：AArch64 QEMU TCG 无 EL2 → -ENOSYS（真机 EL2 面归后续刀）。
+extern "C" fn sys_guest_create(tf: &mut TrapFrame) -> i64 {
+    let _ipa_base = tf.regs[0];
+    let _ipa_size = tf.regs[1];
+    -38 // -ENOSYS
+}
+
+/// `vcpu_create(guest_handle)`（0x78，G2 刀 10）：创建 vCPU。
+extern "C" fn sys_vcpu_create(tf: &mut TrapFrame) -> i64 {
+    let _guest = tf.regs[0];
+    -38
+}
+
+/// `vcpu_run(vcpu_handle)`（0x79，G2 刀 10）：运行 vCPU。
+extern "C" fn sys_vcpu_run(tf: &mut TrapFrame) -> i64 {
+    let _vcpu = tf.regs[0];
+    -38
+}
+
 extern "C" fn sys_cbox_drain(tf: &mut TrapFrame) -> i64 {
     let (buf, cap_raw, out) = (tf.regs[1], tf.regs[2], tf.regs[3]);
     let Ok(cap) = u32::try_from(cap_raw) else {
@@ -4514,6 +4609,16 @@ pub fn install() {
     // 升 TABLE 持 KL 与页表写者互斥，NONE 实装号归零不变量（刀 1 初判 NONE
     // 为漏审，刀 2 回改）。
     reg(NR_CBOX_DRAIN, sys_cbox_drain, SVC_CLASS_TABLE);
+    // —— G2 刀 7：受限态原语（0x4A/0x4B）——v1 桩（TABLE：abi_gen 常量面走查）。
+    // v2 号位——abi_gen 常量层只产 v1/1.1 行（gen_abi.py defined 集
+    // 同 0x83 先例），字面量挂。
+    reg(0x4A, sys_restricted_enter, SVC_CLASS_TABLE);
+    reg(0x4B, sys_restricted_kick, SVC_CLASS_TABLE);
+    // —— G2 刀 10：Hypervisor MicroVM（0x77/0x78/0x79）——v1 桩 -ENOSYS
+    // （QEMU TCG 无 EL2；真机 EL2 面归后续刀）。
+    reg(0x77, sys_guest_create, SVC_CLASS_TABLE);
+    reg(0x78, sys_vcpu_create, SVC_CLASS_TABLE);
+    reg(0x79, sys_vcpu_run, SVC_CLASS_TABLE);
     // —— SQ+RQ+TABLE（0x2E）：wait/send 族（wake→enqueue 双结构窗 + 表）——
     reg(NR_HANDLE_CLOSE, sys_handle_close, SVC_CLASS_SQ_RQ_TABLE);
     reg(NR_HANDLE_DUPLICATE, sys_handle_duplicate, SVC_CLASS_TABLE);
@@ -4540,6 +4645,7 @@ pub fn install() {
     reg(NR_VMO_CREATE, sys_vmo_create, SVC_CLASS_TABLE);
     reg(NR_VMO_COMMIT, sys_vmo_commit, SVC_CLASS_TABLE);
     reg(NR_VMO_DECOMMIT, sys_vmo_decommit, SVC_CLASS_TABLE);
+    reg(NR_VMO_CACHE_OP, sys_vmo_cache_op, SVC_CLASS_TABLE);
     reg(NR_VMO_READ, sys_vmo_read, SVC_CLASS_TABLE);
     reg(NR_VMO_WRITE, sys_vmo_write, SVC_CLASS_TABLE);
     reg(NR_VMO_GET_SIZE, sys_vmo_get_size, SVC_CLASS_TABLE);

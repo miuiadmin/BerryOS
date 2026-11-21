@@ -198,6 +198,12 @@ pub struct PageLedger {
     slots: Vec<u64>,
     /// MMIO 后备专用映射计数（匿名后备空 Vec；npages() 以此为源）。
     mmio_mapcnt: Vec<u16>,
+    /// 物理连续阶块（F0-4）：`Some((pa_base, order))` = 创建期整阶分配的
+    /// 连续 DMA 后备（Drop 整阶归还，严禁拆页双还）；`None` = 普通匿名。
+    contig_block: Option<(usize, u8)>,
+    /// DMA 钉死标志（F0-4 `VMO_OPT_PINNED`/`VMO_OPT_CONTIGUOUS`）：
+    /// 置位对象禁止 `decommit`（-ENOTSUP）。
+    pinned: bool,
 }
 
 impl PageLedger {
@@ -217,6 +223,8 @@ impl PageLedger {
             mmio_pa: None,
             slots,
             mmio_mapcnt: Vec::new(),
+            contig_block: None,
+            pinned: false,
         })
     }
 
@@ -244,7 +252,75 @@ impl PageLedger {
             mmio_pa: Some(pa_base),
             slots: Vec::new(),
             mmio_mapcnt: mapcnt,
+            contig_block: None,
+            pinned: false,
         })
+    }
+
+    /// 建物理连续且钉死的匿名 DMA 记账（F0-4：`pa_base` 为 `alloc_order(order)` 头页物理地址，
+    /// `[0..npages)` 创建即全量登记已提交，`commit` 幂等空过、`decommit` 拒 `NotSupported`）。
+    /// W3-Q109 打包槽适配：登记走 `slot_pack(pfn, 0)`（mapcnt 域零起）。
+    pub fn new_contiguous(size: usize, pa_base: usize, order: u8) -> Result<Self, VmoError> {
+        if size == 0 {
+            return Err(VmoError::OutOfRange);
+        }
+        if pa_base % PAGE_SIZE != 0 {
+            return Err(VmoError::Unaligned);
+        }
+        let npages = size.div_ceil(PAGE_SIZE);
+        let Some(block_pages) = 1usize.checked_shl(order as u32) else {
+            return Err(VmoError::OutOfRange);
+        };
+        if npages > block_pages {
+            return Err(VmoError::OutOfRange);
+        }
+        let mut slots = Vec::new();
+        slots.try_reserve_exact(npages).map_err(|_| VmoError::NoMem)?;
+        for i in 0..npages {
+            let pfn = (pa_base as u64 + i as u64 * PAGE_SIZE as u64) / PAGE_SIZE as u64;
+            slots.push(slot_pack(pfn, 0));
+        }
+        let mut mapcnt = Vec::new();
+        mapcnt.try_reserve_exact(npages).map_err(|_| VmoError::NoMem)?;
+        mapcnt.resize(npages, 0);
+        Ok(Self {
+            size: npages * PAGE_SIZE,
+            mmio_pa: None,
+            slots,
+            mmio_mapcnt: Vec::new(),
+            contig_block: Some((pa_base, order)),
+            pinned: true,
+        })
+    }
+
+    /// 置 DMA 钉死标志（`VMO_OPT_PINNED`）。
+    pub fn set_pinned(&mut self) {
+        self.pinned = true;
+    }
+
+    /// 是否钉死（`VMO_OPT_PINNED` / `VMO_OPT_CONTIGUOUS`）。
+    pub fn is_pinned(&self) -> bool {
+        self.pinned
+    }
+
+    /// 是否物理连续阶块后备。
+    pub fn is_contiguous(&self) -> bool {
+        self.contig_block.is_some()
+    }
+
+    /// MMIO 物理窗口区间 `(pa_base, size)`（供 `Vmo::Drop` 执行 VirtIO 自动复位防线）。
+    pub fn mmio_pa_range(&self) -> Option<(usize, usize)> {
+        self.mmio_pa.map(|pa| (pa, self.size))
+    }
+
+    /// 物理连续阶块 VMO 的整阶归还参数（`Vmo::Drop` 消费；非连续后备 `None`）。
+    /// 映射计数非零时拒还（悬空 PTE 防线同匿名页）。
+    pub fn contig_drop_block(&self) -> Option<(usize, usize)> {
+        let (pa_base, order) = self.contig_block?;
+        if self.any_mapped() {
+            return None;
+        }
+        Some((pa_base, order as usize))
     }
 
     /// MMIO 物理窗口后备？
@@ -346,6 +422,11 @@ impl PageLedger {
         len: usize,
     ) -> Result<(PageRange, Vec<(usize, usize)>), VmoError> {
         if self.mmio_pa.is_some() {
+            return Err(VmoError::NotSupported);
+        }
+        // F0-4：钉死对象（CONTIGUOUS/PINNED）禁止拆块/拆页归还——整阶块
+        // 的生命周期 = 句柄全关无映射销毁（Drop 整阶归还）。
+        if self.pinned {
             return Err(VmoError::NotSupported);
         }
         if offset % PAGE_SIZE != 0 || len % PAGE_SIZE != 0 {

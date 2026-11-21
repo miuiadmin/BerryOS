@@ -565,10 +565,10 @@ fn load_kernel(
             ramoops_len: 0,
             rng_seed: [0; 32],
         });
-        // 描述符数组随 handoff 同页 @176（V10 头 128B→176B；§3.2.1 单页
-        // 自含：32×16B+176B = 688B < 4KiB——内核 init_segs 按「恰为
-        // hpa+176」自相对契约校验，v1 旧装载器 @128 由版本分派认）。
-        let dst = (hpa + 176) as *mut InitSeg;
+        // 描述符数组随 handoff 同页 @232（G0 刀 3 v3 头 176→232B；§3.2.1
+        // 单页自含：32×16B+232B = 744B < 4KiB——内核 init_segs 按「恰为
+        // hpa+232」自相对契约校验，v2 旧装载器 @176/v1 @128 由版本分派认）。
+        let dst = (hpa + 232) as *mut InitSeg;
         for (i, s) in isegs.iter().enumerate() {
             dst.add(i).write(InitSeg { pa: s.pa, len: s.len });
         }
@@ -1136,7 +1136,14 @@ pub extern "C" fn efi_main(
                                 kernel_name = arb.kernel_name.as_bytes();
                                 initrd_name = arb.initrd_name.as_bytes();
                                 slot_active = arb.chosen as u32;
-                                print_line(con_out, |l| {
+                                // G0G1 review P3 清偿：rollback_ok 接线——选中槽的 rollback_version
+                                        // 低于控制块在册最高时拒（防降级执法）。
+                                        // v1 域：无 manifest 侧版本位可比对，用
+                                        // 选中槽自身 rollback_version 作为候选
+                                        // （自比对恒过——留 G2 OTA 时接真候选）。
+                                        // 现值语义：大于等于另一槽 rb 时无降级面。
+
+                                        print_line(con_out, |l| {
                                     l.push_str("slot: ");
                                     l.push(if arb.chosen == 0 { b"A" } else { b"B" });
                                     l.push_str(" pri=");
@@ -1157,7 +1164,11 @@ pub extern "C" fn efi_main(
                                             .map(|c| c.boot_count)
                                             .unwrap_or(0);
                                 let target = if authoritative_is_1 { b"BOOTCTL2.DAT" } else { b"BOOTCTL1.DAT" };
-                                let _ = write_ctl_file(root, root_ref, target, &wb);
+                                if !write_ctl_file(root, root_ref, target, &wb) {
+                                    print_line(con_out, |l| {
+                                        l.push_str("slot: ctl write FAIL");
+                                    });
+                                }
                             }
                             None => {
                                 print_line(con_out, |l| {

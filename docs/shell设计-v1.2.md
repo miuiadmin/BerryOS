@@ -2,7 +2,7 @@
 
 Type: standard
 Status: current
-Updated: 2026-11-18
+Updated: 2026-11-20
 Version: 1.2.0
 
 > 回答三件事：**用什么 shell、配哪些命令、管道怎么实现**。
@@ -58,9 +58,9 @@ bsh> cat a.txt | grep boot
 - **`&` 后台作业（v2 过渡实现，2026-11-19）**：`run_line` 入口整行尾缀 `&` 剥离（原始文本纪律）后走 `exec_bg`——单段外部命令形异步拉起（`stdout` 直打 console、`stdin` 恒 EOF 即 `/dev/null` 语义），登记自持 job 表（`JOBS_MAX=8` 最低空位编号）并回显 `[n] cmd`、置 `$!`＝作业号；`jobs` 列示（下条命令前自动通报 `[n]+ Done(码)`）、`kill %n`＝`process_terminate(143)`＋1s 有界收割、`exit` 时活作业收杀 `terminate(129)`（本系统孤儿不可寻不可杀，放任＝永生占进程帽）。拒形：链/管道/重定向/内建（`run` 除外）/赋值——整链异步与 `fg`/`bg`/`wait`/`Ctrl-Z` 挂起随 [bsh 总体设计](../.agents/plans/bsh/design.md) 的 `Job` 树（届时本表 Superseded）。
 - **Ctrl-C 杀链**：前台等待期（`collect_fg` `wait_many` 挂 `stdin` 项）收到 `0x03` → 回显 `^C` + 对持有的子进程句柄直调 `process_terminate(130)`（`128 + SIGINT` 惯例码，受 `RIGHT_MANAGE` 门控）→ 等待 `SIGNAL_TERMINATED` 收口；前台期其余按键进入 `TYPEAHEAD` 缓冲不丢键；后台作业不进前台 kill 集（v2 过渡语义——`Job` 树整树清剿见总体设计）。整棵 `Job` 树原子清剿与 `Ctrl-Z` `SuspendToken` 作业控制见 [bsh 总体设计](../.agents/plans/bsh/design.md)。
 
-### 2.3 内建命令（23 件现役单源）
+### 2.3 内建命令（24 件现役单源）
 
-改 shell 自身进程状态的命令必须是内建；名单由 `const BUILTINS` 单源维护（`type` 身份查询、`HELP_LINES` 互钉自检与 `Tab` 补全候选同表消费），现役共 23 件（2026-11-19 作业控制刀补 `jobs`/`kill` 第 22/23 件）：`help`、`exit`、`env`、`export`、`echo`、`run`、`cat`、`ls`、`mkdir`、`rm`、`cd`、`pwd`、`inputpoll`、`clear`、`uname`、`uptime`、`sleep`、`type`、`history`、`dmesg`、`unset`、`jobs`、`kill`。非内建裸命令名自动按 `bin/<name>` 查 `rootfs` 派发并透传参数与导出环境变量集。
+改 shell 自身进程状态的命令必须是内建；名单由 `const BUILTINS` 单源维护（`type` 身份查询、`HELP_LINES` 互钉自检与 `Tab` 补全候选同表消费），现役共 24 件（2026-11-19 作业控制刀补 `jobs`/`kill` 第 22/23 件、遥测刀补 `free` 第 24 件）：`help`、`exit`、`env`、`export`、`echo`、`run`、`cat`、`ls`、`mkdir`、`rm`、`cd`、`pwd`、`inputpoll`、`clear`、`uname`、`uptime`、`sleep`、`type`、`history`、`dmesg`、`unset`、`jobs`、`kill`、`free`。非内建裸命令名自动按 `bin/<name>` 查 `rootfs` 派发并透传参数与导出环境变量集。
 
 ### 2.4 行编辑与哑终端管道契约
 
@@ -72,7 +72,7 @@ bsh> cat a.txt | grep boot
 | 梯队 | 命令 | 来源与状态 | 说明 |
 |------|------|------------|------|
 | **基础文件与文本** | `cd/ls/cat/echo/pwd/env/mkdir/rm/cp/mv/rmdir/touch/head/tail/cut/tr/sort/uniq/wc/date/df/du/true/false` + `grep/find/which/hexyl` | `bsh` 内建 + `uutils` 裁剪集 + 自研（已在册 [rootfs-manifest.toml](../tools/rootfs-manifest.toml)） | 满足日常文件管理与流过滤；全屏编辑器 `bed` 与分页器 `less` 见 [cli-suite 总体设计](../.agents/plans/cli-suite/design.md) |
-| **系统与网络** | `ps / run / berryctl / dmesg`（现役）；`btop / free / vmstat / ip / ping / dig / nc / curl / bscp / bsshd`（演进） | 自研 | 现役 `ps/berryctl` 依赖启动期 `gift`；迁入 `/svc` 服务发现与网络套件规格见 [cli-suite 总体设计](../.agents/plans/cli-suite/design.md) |
+| **系统与网络** | `ps / run / berryctl / dmesg`（现役）；`free`（bsh 内建先行 2026-11-19——0x84 op=1 单源；外部 `free [-h|--json]` 仍演进同源）；`btop / vmstat / ip / ping / dig / nc / curl / bscp / bsshd`（演进） | 自研 | 现役 `ps/berryctl` 依赖启动期 `gift`；迁入 `/svc` 服务发现与网络套件规格见 [cli-suite 总体设计](../.agents/plans/cli-suite/design.md) |
 | **微内核独有诊断** | `sandbox / lscap / btrace / bdbg / cboxctl` | 自研（架构差异化核心） | 能力沙箱裁剪、句柄与 Channel 拓扑透视、实时 syscall/IPC 追踪与在机交互断点调试，规格见 [bsh 总体设计](../.agents/plans/bsh/design.md) 与 [cli-suite 总体设计](../.agents/plans/cli-suite/design.md) |
 
 **AI 与自动化友好铁律**：系统查询与诊断类 CLI（`berryctl / ps / free / lscap / btrace / cboxctl / ip`）面向演进统一提供 `--json` 纯净标准输出（诊断告警走 `stderr`），Schema 遵守 add-only 兼容策略。

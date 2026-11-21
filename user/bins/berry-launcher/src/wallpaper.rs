@@ -1,3 +1,7 @@
+// 孤儿文件（不参与编译）——保留供历史参考，待归档
+// 唯一引用主是同为孤儿的 icons.rs（#[path] mod wallpaper）；与现役副本
+// 逐字节相同。生成器 tools/genohwallpaper.py 波 3 起产物已改指
+// user/berry-appshell/src/wallpaper.rs，本文件不再被生成链触达。
 //! 由 tools/genohwallpaper.py 生成——勿手改。
 //! OpenHarmony phone 默认壁纸中央 cover 裁切，135×240 静态源图。
 //! 源：applications_launcher @ f75dfb6bf727...，SHA-256 20c7fa0a817edb0d630bf356714ee2cb22dcec0f57cb4a6879e2bc2c40b164b5。

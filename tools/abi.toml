@@ -30,7 +30,7 @@ level = 1             # 初值 1 = 首个冻结面起点（v1 37 号在册面）
 
 [meta]
 stage = "v1"
-nr_total = 41        # v1 在册号数（生成器校验 = 下方 stage="v1" 行数；含 0x85
+nr_total = 42        # v1 在册号数（生成器校验 = 下方 stage="v1" 行数；含 0x85
                      # berry_attest 在册未实现预留位——SEC-01 件 11；含 0x86/0x87
                      # 信号面——A7-4 门 C 裁定 A add-only 加号；含 0x23
                      # pager_supply_mapped——G4-4 门 C 裁 A add-only 加号；含 0x24
@@ -38,14 +38,15 @@ nr_total = 41        # v1 在册号数（生成器校验 = 下方 stage="v1" 行
                      # 0x88 power_off——桌面UX刀D add-only 加号；含 0x40
                      # sched_util_snapshot——CP-08 util 通道首环 add-only 加号；含
                      # 0x42 cbox_drain——cbox 刀1 黑匣子排液口（跨根并回））
-implemented = 40     # 已实现（T-1 后在册真语义全实现 + A7-4 段②信号两号翻真 +
+implemented = 41     # 已实现（T-1 后在册真语义全实现 + A7-4 段②信号两号翻真 +
                      # G4-2 0x21 pager_supply_pages v2 号激活 + G4-4 X-3b
                      # 0x23 pager_supply_mapped 挂派发翻真 + X-6 刀①
                      # 0x24 pager_supply_mapped_table 挂派发 + CP-08
                      # 0x40 sched_util_snapshot 快照读面 + 0x42 cbox_drain 排液（跨根并回）；
                      # 唯 0x85 berry_attest 预留位恒 -ENOTSUP——与未知号同形，
                      # ABI §8.0 永不 panic 执法）
-nr_ceiling = 45      # syscall 号面帽上界（ADR #11「~30–45」上限端）。生成器执法
+nr_ceiling = 46      # syscall 号面帽上界（ADR #11「~30–45」上限端；F0-4 0x1C vmo_cache_op
+                     # add-only 加号 bump 至 46——仍在上限端语义内）。生成器执法
                      # nr_defined（v1+1.1 常量层行数）≤ 本值，并把四元组
                      # nr_total/nr_defined/nr_registered/nr_ceiling 打进两端
                      # abi_gen 头注——预算口径唯一收口处（刀 1 前置 #8：消灭
@@ -137,6 +138,47 @@ desc = '''`vmo_create` options bit0（G4-2，§5-① 裁决）：按需后备 VM
 demand 对象属性 + 额外授 RIGHT_SET_POLICY（在册未消费位首消费；0x21 pager 面
 门权）。映射走 vmar_map 对象级分流 map_demand（首触缺页由 EL0 pager 供给）。
 其余位保留（非 0 尾 → -EINVAL，options 纪律）。'''
+
+[[option]]
+name = "VMO_OPT_CONTIGUOUS"
+scope = "vmo_create"
+expr = "1 << 1"
+desc = '''`vmo_create` options bit1（F0-4）：物理连续 DMA 后备 VMO——创建时按 2 的幂阶
+立即分配物理连续页块并清零钉死（禁止与 `VMO_OPT_DEMAND` 混用，禁止 `decommit`）。
+'''
+
+[[option]]
+name = "VMO_OPT_PINNED"
+scope = "vmo_create"
+expr = "1 << 2"
+desc = '''`vmo_create` options bit2（F0-4）：DMA 物理页钉死标志——置位对象禁止
+`vmo_decommit`（返 `-ENOTSUP`），直至句柄全关无映射销毁。
+'''
+
+[[option]]
+name = "VMO_CACHE_OP_CLEAN"
+scope = "vmo_cache_op"
+expr = "1 << 0"
+desc = '''`vmo_cache_op` op bit0（F0-4）：DMA 发送前将数据缓存脏行刷至一致性点 PoC
+（`dc cvac` + `dsb sy`，需 `RIGHT_READ`）。
+'''
+
+[[option]]
+name = "VMO_CACHE_OP_INVALIDATE"
+scope = "vmo_cache_op"
+expr = "1 << 1"
+desc = '''`vmo_cache_op` op bit1（F0-4）：DMA 接收前失效数据缓存至 PoC（内核以
+`dc civac` + `dsb sy` 保非对齐行安全，需 `RIGHT_WRITE`）。
+'''
+
+[[option]]
+name = "VMO_CACHE_OP_CLEAN_INVALIDATE"
+scope = "vmo_cache_op"
+expr = "1 << 2"
+desc = '''`vmo_cache_op` op bit2（F0-4）：DMA 双向缓冲刷脏并失效至 PoC
+（`dc civac` + `dsb sy`，需 `RIGHT_WRITE`）。
+'''
+
 
 # ---- rights 位（能力模型 §2；位表是 ABI 冻结值，未消费位先全量在册）----
 
@@ -408,6 +450,12 @@ name = "vmo_write"
 desc = '内核中介写'
 stage = "v1"
 enforced_since = 2026-10-15  # RIGHT_WRITE 门（3-2，5c022729）
+[[group.syscall]]
+num = 0x1C
+name = "vmo_cache_op"
+desc = '非一致性 DMA 数据缓存维护（F0-4：CLEAN/INVALIDATE/CLEAN_INVALIDATE 按 CTR_EL0.DminLine 直映 dc cvac/civac + dsb sy；RIGHT_READ/WRITE 门控）'
+stage = "v1"
+enforced_since = 2026-11-20  # RIGHT_READ/WRITE 门（F0-4 加号随批执法，35 号件）
 [[group.syscall]]
 num = 0x16
 name = "vmar_map"
@@ -731,7 +779,7 @@ enforced_since = 2026-11-11  # auth Process RIGHT_MANAGE 三门控（arch-r2 H1 
 [[group.syscall]]
 num = 0x84
 name = "telemetry_open"
-desc = '打开遥测环（只读）。翻真首域（阶段五第 16 步）：op=0 klog 快照——telemetry_open(op, buf, len) 读内核日志字节环（per-CPU 双环 CPU 序拼接、环内旧→新、每环贡献最新 min(环内有效字节扣除 128B 热尾容错窗, 余量) 字节），返回实写字节数（0 = 两环皆空/读窗不稳的诚实空，常态 >0）；三拒面：op 域外 -ENOTSUP（op 域 add-only 三档在册：op=1 memstat 定长 40B 五域〔2026-11-19 遥测刀、bsh free 消费〕；op=2 双族环快照〔2026-11-19 环读口刀——32B 轻头+每环 24B 段描述符+变长载荷，SwitchRec/WakeRec CPU 序段序旧→新整条截尾、逐环一致跨环尽力一致、降级段 count=0 total 照出，berryctl trace 消费〕；op=3 WakeSrc 槽表纯镜像〔2026-11-19 槽表刀——40B 轻头+128×64B 定长十字段平镜像、行号即源值、Σ行wakes≥wake_acct_n 装配不变式、逐字段独立原子读非一致快照（单调族无撕裂）、trace_off 表照出，berryctl powertop 消费〕）、len=0 或超 16KiB 单读帽 -EINVAL、copy_out 失败 -EFAULT（已写段诚实保留）。零 handle 零权利位（系统级遥测读面——sched_util_snapshot 同族口径）'
+desc = '打开遥测环（只读）。翻真首域（阶段五第 16 步）：op=0 klog 快照——telemetry_open(op, buf, len) 读内核日志字节环（per-CPU 双环 CPU 序拼接、环内旧→新、每环贡献最新 min(环内有效字节扣除 128B 热尾容错窗, 余量) 字节），返回实写字节数（0 = 两环皆空/读窗不稳的诚实空，常态 >0）；三拒面：op 域外 -ENOTSUP（op 域 add-only 三档在册：op=1 memstat 定长 40B 五域〔2026-11-19 遥测刀、bsh free 消费〕；op=2 双族环快照〔2026-11-19 环读口刀——32B 轻头+每环 24B 段描述符+变长载荷，SwitchRec/WakeRec CPU 序段序旧→新整条截尾、逐环一致跨环尽力一致、降级段 count=0 total 照出，berryctl trace 消费〕；op=3 WakeSrc 槽表纯镜像〔2026-11-19 槽表刀——40B 轻头+128×64B 定长十字段平镜像、行号即源值、Σ行wakes≥wake_acct_n 装配不变式、逐字段独立原子读非一致快照（单调族无撕裂）、trace_off 表照出，berryctl powertop 消费〕）、len 门按臂分述（op=0：len=0 或超 16KiB → -EINVAL；op=1/2/3：len<冻结下限 40/32/40 → -EINVAL、无上帽——变长填充返回值自证）、copy_out 失败 -EFAULT（已写段诚实保留）。零 handle 零权利位（系统级遥测读面——sched_util_snapshot 同族口径）'
 stage = "v3"
 implemented = true
 
@@ -762,6 +810,41 @@ desc = '原子取走当前进程 pending 集（swap(0) 语义——取后内核�
 stage = "v1"
 implemented = true
 note = 'A7-4 段② 翻真（2026-10-31，与 0x86 同刀）：swap(0) 语义取走当前进程 pending 集；出参写失败不消费（先写后清）。投递中新到位置回内核 pending（下轮 take）——竞态免设计。'
+
+title = "**生态兼容（受限态原语）**"
+[[group.syscall]]
+num = 0x4A
+name = "restricted_enter"
+desc = '进入受限态（EL0 SAN 域——AArch64 PSTATE.PAN/x86-64 SMAP 硬件栅栏）；flags=0 预留'
+stage = "v2"
+note = 'G2 刀 7：linux_runner 守护进程用——受限态下 guest 进程不可直接访问宿主 EL1 映射'
+[[group.syscall]]
+num = 0x4B
+name = "restricted_kick"
+desc = '将目标任务踢出受限态（紧急逃生/调试面）——target Handle + reason u32'
+stage = "v2"
+note = 'G2 刀 7：与 0x4A 成对——kick 后任务回普通 EL0 域'
+
+
+title = "**Hypervisor（MicroVM 基础设施）**"
+[[group.syscall]]
+num = 0x77
+name = "guest_create"
+desc = '创建 guest 物理地址空间（PAS）——入口=IPA 基址+大小；返回 guest Handle'
+stage = "v2"
+note = 'G2 刀 10：EL2 Stage-2 页表域（AArch64 VTTBR_EL0）；QEMU TCG 无 EL2 时 -ENOSYS'
+[[group.syscall]]
+num = 0x78
+name = "vcpu_create"
+desc = '创建 vCPU——绑定 guest Handle；返回 vcpu Handle（含 EL2 上下文槽）'
+stage = "v2"
+note = 'G2 刀 10：vCPU=物理 CPU 线程的虚拟化实例（VTTBR/VCPU regs/SCTRL）'
+[[group.syscall]]
+num = 0x79
+name = "vcpu_run"
+desc = '运行 vCPU 直到事件（HLT/异常/IO）——返回 exit_reason；非阻塞式'
+stage = "v2"
+note = 'G2 刀 10：主循环=ERET 到 guest→trap 回 EL2→读 ESR_EL2 分派'
 
 [[group]]
 title = "**电源**（guest 内关机最小闭环——桌面UX审计 02 号 M3）"

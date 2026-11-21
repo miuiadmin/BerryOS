@@ -99,6 +99,14 @@ mod guest {
     const SVC_TICK_NS: u64 = 100_000_000;
     /// 应答 send EBUSY 重臂帽：10s（vnet 同档）。
     const SEND_REARM_NS: u64 = 10_000_000_000;
+    /// 观测面 tally 周期：60s（真机场放久后服务环疑似停转——收割停/转发
+    /// 停，零日志零痕迹；每拍一行固定前缀「gui-inputd: tally 」的旁路心跳：
+    /// 行缺席 = 环停转（卡在 wait/send/park 面），行在场而计数冻结 = 环转
+    /// 但收割/应答停——两级定位面。第 10 拍附 wm 面一行。行可迟到：纯
+    /// poll 帽路径最坏 60+30+0.1 ≈ 90s；send_rep EBUSY 重臂每轮再 +10s
+    /// （迟到上界 90+10k s，「send EBUSY 计」行在卷即自愈形）——巡检
+    /// 哨按缺席 ≥2× 周期（≥120s）立案，勿以 ~90s 假阳性。
+    const TALLY_PERIOD_NS: u64 = 60_000_000_000;
     /// GUI-5：wmd 推送快照超龄帽（Q11-②——age 超此值视同缺席，旁注降级
     /// 记账不命中；③降级态每帽值一跳重发 WAIT(0) 重探测）。
     const SNAPSHOT_STALE_CAP_NS: u64 = 10_000_000_000;
@@ -671,10 +679,19 @@ mod guest {
         }
     }
 
+    /// 观测面：send_rep EBUSY 重试累计（serve 60s tally 的 e 字段读点）。
+    /// 静态从众 WM_CACHE 先例（单线程进程独占）——累计点在 send_rep 叶子，
+    /// 调用链穿过 serve/serve_poll/wm_send_wait 多址，计数沿调用链逐层传
+    /// 递需改四张函数签名，面过宽不值当。
+    static mut SEND_EBUSY: u64 = 0;
+
     /// 应答发送（受激面——服务端永不主动 send）：EBUSY → wait WRITABLE
     /// 10s 重臂重发（阻塞形态，自旋形态的公平分槽面——G-eco-b 铁律）；
-    /// 其它错 = 链断 loud。
+    /// 其它错 = 链断 loud。观测面：EBUSY 重试计数——首轮与每次翻倍各打
+    /// 一行（c=1/2/4/8…幂次节流防刷屏），累计入 [`SEND_EBUSY`]（控制流
+    /// 零改动——纯旁路）。
     fn send_rep(h: Handle, rep: &[u8]) {
+        let mut c = 0u64; // 本轮 EBUSY 计（幂次节流打印的判据）
         loop {
             let s = berry_channel_send(h, rep.as_ptr(), rep.len(), core::ptr::null(), 0);
             if s == 0 {
@@ -683,6 +700,13 @@ mod guest {
             if s != BERRY_ERR_BUSY {
                 println!("gui-inputd: send 失败 {}", s);
                 trap();
+            }
+            c += 1;
+            // SAFETY: 单线程进程独占（WM_CACHE 同款面；serve tally 读点同
+            // 进程串行）。
+            unsafe { *core::ptr::addr_of_mut!(SEND_EBUSY) += 1 };
+            if c.is_power_of_two() {
+                println!("gui-inputd: send EBUSY 计 c={}", c);
             }
             let mut obs = 0u64;
             let _ = berry_object_wait_one(h, SIGNAL_WRITABLE, now() + SEND_REARM_NS, &mut obs);
@@ -1129,11 +1153,59 @@ mod guest {
         // serve 内 kb 以 `&mut Option<&mut KbDev>` 持有（serve_poll 每次取
         // 重借用，回环顶的收割面共用同一门控）。
         let mut kb = kb;
+        // 观测面 tally 计数（纯旁路零控制流改动）：harvest_total = 收割喂
+        // 泵累计——两台泵各自的自由运行 u16 `harvested` 游标按回环顶快照
+        // wrapping 对账推进量（serve 回环顶与 serve_poll 两处收割在回环顶
+        // 统一收口；回环一拍内推进 < 65536 是速率假设非结构保证——环深
+        // 16 不封顶（收割即回挂、设备可边产边收），设备产率 × 30s 帽
+        // ≪ 65536 时 u16 回绕无损；宿主持续洪灌（≥ ~2185 事件/s × 30s）
+        // 才会失真少计，纯观测面无控制流影响）；
+        // polls_served = serve_poll 完成累计；e 字段读 [`SEND_EBUSY`]；q
+        // 字段 = 两泵待取深（pub `pending()`——lib 只读不改）。行缺席 =
+        // 环停转，行在场而计数冻结 = 收割/应答停（见 [`TALLY_PERIOD_NS`]）。
+        let mut harvest_total: u64 = 0;
+        let mut polls_served: u64 = 0;
+        let mut tally_n: u64 = 0;
+        let mut last_tally_ns = now();
+        let mut h_pt_prev = d.harvested;
+        let mut h_kb_prev = kb.as_ref().map_or(0, |k| k.d.harvested);
         loop {
             harvest(d, regs, pump); // 空闲期收割（tick 心跳的消费点）
             if let Some(k) = kb.as_deref_mut() {
                 // 第二台收割喂 KeyPump（键盘 eventq——同 tick 心跳消费点）
                 harvest(&mut k.d, k.regs, kpump);
+            }
+            // 观测面对账（上一拍以来两泵游标推进——含 serve_poll 内收割）。
+            harvest_total =
+                harvest_total.wrapping_add(d.harvested.wrapping_sub(h_pt_prev) as u64);
+            h_pt_prev = d.harvested;
+            if let Some(k) = kb.as_ref() {
+                harvest_total =
+                    harvest_total.wrapping_add(k.d.harvested.wrapping_sub(h_kb_prev) as u64);
+                h_kb_prev = k.d.harvested;
+            }
+            let t_now = now();
+            if t_now.saturating_sub(last_tally_ns) >= TALLY_PERIOD_NS {
+                last_tally_ns = t_now;
+                tally_n += 1;
+                // SAFETY: 单线程进程独占（send_rep 写面同进程串行——
+                // WM_CACHE 同款面）。
+                // SAFETY: 单线程串行读（写点 :707 同为非 volatile——两侧
+                // 对称；单侧 volatile 无意义，对抗审查 P3 裁定）。
+                let ebusy = unsafe { *core::ptr::addr_of!(SEND_EBUSY) };
+                println!(
+                    "gui-inputd: tally h={} p={} e={} q={}/{}",
+                    harvest_total, polls_served, ebusy, pump.pending(), kpump.pending()
+                );
+                if tally_n % 10 == 0 {
+                    // 每 10 拍附 wm 面一行（降级/在途/强发三布尔的 0/1 串）。
+                    // SAFETY: 单线程进程（serve 独占——WM_CACHE 同款面）。
+                    let c = unsafe { &*core::ptr::addr_of!(WM_CACHE) };
+                    println!(
+                        "gui-inputd: tally wm=d{}o{}f{}",
+                        c.degraded as u8, c.outstanding as u8, c.forced_sent as u8
+                    );
+                }
             }
             // —— 路①：input 域（既有分派零扰动）
             let mut nb = msg.len();
@@ -1173,7 +1245,12 @@ mod guest {
                         }
                     },
                     gp::OP_INPUT_POLL => match gp::parse_input_poll_req(&msg[..nb]) {
-                        Some(max) => serve_poll(d, regs, &mut kb, pump, kpump, h, push, max, &mut rep),
+                        Some(max) => {
+                            serve_poll(d, regs, &mut kb, pump, kpump, h, push, max, &mut rep);
+                            // 观测面：serve_poll 完成计数（含 ST_EAGAIN 帽
+                            // 到点形——完成即计，与应答内容无关）。
+                            polls_served += 1;
+                        }
                         None => {
                             let n = gp::encode_status_rep(&mut rep, gp::ST_BAD);
                             send_rep(h, &rep[..n]);

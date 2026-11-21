@@ -109,6 +109,12 @@ pub fn asid_bits() -> u32 {
     mmu::asid_bits()
 }
 
+/// F0-2：返回双核当前在硬件 `TTBR0_EL1` 上激活的 ASID 快照（供 ASID
+/// 分配器钉死防撞）。
+pub fn active_cpu_asids() -> [u16; 2] {
+    mmu::active_cpu_asids()
+}
+
 /// 北极星审计修（2026-11-15）：TTBR0 ASID 位域环回探针——boot 单线程窗调
 /// 一次（`rust_main` 早期、任何任务地址空间激活之前）。位域不环回（QEMU
 /// HVF 形虚拟化）⇒ 按号 TLB 语义不可依托，P0-3 免失效激活档整档退化全量
@@ -196,6 +202,27 @@ pub fn current_ttbr0_pa() -> usize {
 /// 读者键（与 [`current_ttbr0_pa`] 同一读点，同窗一致）。
 pub fn current_asid() -> u16 {
     mmu::current_asid()
+}
+
+/// F0-1：PoU 指令/数据缓存一致性同步——内核经高半直映 `kva` 写代码页后、装入
+/// 有效可执行 PTE 前调用（`dc cvau` + `dsb ish` + `ic ivau`/`ic ialluis` + `dsb ish` + `isb`）。
+pub fn sync_icache_pou(kva: usize, len: usize) {
+    mmu::sync_icache_pou(kva, len);
+}
+
+/// F0-4：DMA 发送前将数据缓存脏行推至 PoC（`dc cvac` + `dsb sy`）。
+pub fn cache_poc_clean(kva: usize, len: usize) {
+    mmu::cache_poc_clean(kva, len);
+}
+
+/// F0-4：DMA 接收/双向缓冲清理并失效至 PoC（`dc civac` + `dsb sy`）。
+pub fn cache_poc_clean_invalidate(kva: usize, len: usize) {
+    mmu::cache_poc_clean_invalidate(kva, len);
+}
+
+/// F0-4：MMIO 窗口销毁时的内核级 VirtIO `STATUS = 0` 自动复位防线。
+pub fn reset_virtio_mmio_window(pa_base: usize, size: usize) {
+    mmu::reset_virtio_mmio_window(pa_base, size);
 }
 
 // 描述符构造导出（2b-2 起内核侧填用户页表用；boot 建表在 crate 内部直接用）。
@@ -428,3 +455,4 @@ pub fn halt() -> ! {
         unsafe { core::arch::asm!("wfi") };
     }
 }
+

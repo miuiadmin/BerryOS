@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """svc_registry_check —— SVC 落类注册表三方对拍（W3-Q67 执法件）。
 
-单源纪律：号→锁类的唯一事实源是 `berry-svcface` 的 `REGISTRY`（43 项
+单源纪律：号→锁类的唯一事实源是 `berry-svcface` 的 `REGISTRY`（52 项
 `(nr, class)` 对）。`kernel/src/syscall.rs install()` 的 43 行 `reg()`
 字面量与 `arch/aarch64/src/kern_lock.rs` 的六类常量 re-export 都是消费面
 ——漂移（改一处忘另一处）在编译期无咬合：reg() 吃的是 NR_* 常量与
@@ -10,11 +10,11 @@ SVC_CLASS_* 常量，值相同名字对不上也照编。本脚本按文本解�
   1. `kernel/src/abi_gen.rs` 的 `pub const NR_*: usize = <val>`（含
      syscall.rs 内联 `const NR_*`）——号值域；
   2. `kernel/src/syscall.rs install()` 的 `reg(NR_X | 0xNN, fn, SVC_CLASS_Y)`
-     ——46 行期望表；
+     ——52 行期望表；
   3. `svcface/src/lib.rs` 的 `REGISTRY: &[(u8, u8)]`——实存表。
 
 判据（任一失配退出 1）：
-  - install() 行数 == REGISTRY 项数 == 46；
+  - install() 行数 == REGISTRY 项数 == 52；
   - 逐号 (nr 值, 类常量名) 全等（序不敏感；install 侧 NR_* 先经 1 解析成值）；
   - REGISTRY 无重复号；
   - install()/REGISTRY 引用的 SVC_CLASS_* 常量名都在 svcface lib.rs 定义。
@@ -27,7 +27,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-EXPECT_ENTRIES = 46
+EXPECT_ENTRIES = 52
 
 
 def parse_nr_consts() -> dict:
