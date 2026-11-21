@@ -25,7 +25,11 @@ from pathlib import Path
 import hashlib
 import sys
 import zlib
-from PIL import Image, ImageDraw, ImageFont
+
+try:
+    from PIL import Image, ImageDraw, ImageFont  # type: ignore
+except ImportError:  # selftest/--check 降级面；产线生成路径硬依赖 PIL
+    Image = ImageDraw = ImageFont = None
 
 CELL_W = 32
 CELL_H = 48
@@ -48,7 +52,7 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def render_a2(font: ImageFont.FreeTypeFont, ch: str) -> tuple[bytes, tuple[int, int, int, int], int, int]:
+def render_a2(font, ch: str) -> tuple[bytes, tuple[int, int, int, int], int, int]:
     """渲染一个字并返回 (A2 packed bytes, bbox, 着墨像素数, 首个非零像素 index)。"""
     big_w, big_h = CELL_W * 4, CELL_H * 4
     img = Image.new("L", (big_w, big_h), 0)
