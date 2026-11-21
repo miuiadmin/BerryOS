@@ -31,6 +31,12 @@ berry-poll = { path = "../../berry-poll" }
 # 面留 bsh）。no_std + extern crate alloc 形态在 std 消费侧照常链接
 # （alloc 由 std 提供，berry-poll 同款）。
 berry-jobs = { path = "../../berry-jobs" }
+# bsh v2.5 引号与统一分词器刀：词法单源（单遍零回溯 Item 流＋render/
+# fields/word_texts 三视图＋strip_bg 引号感知版——host 72 测全盖引号三件
+# 与恒等金样族；bsh 解析层词边界/操作符识别全经此单源）。no_std +
+# extern crate alloc 形态在 std 消费侧照常链接（alloc 由 std 提供，
+# berry-jobs 同款）。
+berry-lex = { path = "../../berry-lex" }
 # A2-3：netd 会话化协议（LISTEN/ACCEPT/POLL/DRAIN/RT/CLOSE 编解码）——
 # EVS echo server 自验（`EVS ok n=2`）的 RPC 面。仅协议层纯函数，
 # 零 syscall/IO 依赖（berry-fsproto 同形态）。

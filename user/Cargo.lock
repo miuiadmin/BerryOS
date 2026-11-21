@@ -129,6 +129,10 @@ name = "berry-layout"
 version = "0.2.0"
 
 [[package]]
+name = "berry-lex"
+version = "0.2.0"
+
+[[package]]
 name = "berry-libc"
 version = "0.2.0"
 dependencies = [

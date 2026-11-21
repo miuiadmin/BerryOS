@@ -1,0 +1,17 @@
+[package]
+name = "berry-lex"
+version.workspace = true
+edition = "2021"
+# bsh v2.5 引号与统一分词器刀（.agents/plans/2026-11-21-bsh引号与统一分词器
+# v2.5刀实施设计.md 契约 L）：bsh 词法单源纯函数 crate，`berry-jobs`/
+# `berry-complete` 同款形态——`cfg_attr(not(test), no_std)` +
+# `extern crate alloc`：库本体 no_std（workspace none-target 全量构建可编），
+# test 构建放开 std 仅为测试挂具。单遍零回溯扫描产扁平 Item 流＋三视图
+# 纯函数（render/fields/word_texts）＋strip_bg 引号感知版；bsh（musl 独立
+# 小工作区 path 依赖，同 stdhello 不入 members——本 crate 零 syscall 面故
+# 入 members 挂 host 测试）与 3.0 bsh-syntax 共用的词法层单源——扫描核即
+# 3.0 Lexer 词法层，禁平行第二套扫描器。
+description = "BerryOS bsh lexer: single-pass Item stream + quote-aware views (render/fields/word_texts) + strip_bg"
+license = "Apache-2.0"
+
+[dependencies]

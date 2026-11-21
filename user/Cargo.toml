@@ -146,6 +146,11 @@
 # research/2026-11-18-驱动子系统综合研究报告.md P0-2；读盘经注入闭包，
 # 库零 IO。单消费 = vblk 多分区暴露（下一刀接线）——host 测试经 justfile
 # test-host 显式行跑）。
+# bsh v2.5 引号与统一分词器刀：berry-lex（bsh 词法单源纯函数 crate——单遍
+# 零回溯 Item 流＋render/fields/word_texts 三视图＋strip_bg 引号感知版，
+# 引号三件/未闭合拒/操作符引号外化全律；单消费 = bsh（独立小工作区 path
+# 依赖，musl target，同 berry-jobs——本 crate 零 syscall 面故入 members 挂
+# host 测试无碍；3.0 bsh-syntax 同核两代消费禁第二套扫描器））。
 # 波 2 架构件：berry-hal（统一硬件抽象层——Mmio/IrqCtl/DmaAlloc/Clock
 # 四窄 trait + HalError 统一错误面，报告 §4.1 三面胶水缺口件 + §4.3 波
 # 2.2 DeviceCap 三铸件的用户态半边；virtio_impl = berry-virtio 偏移单源
@@ -156,7 +161,7 @@
 members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-winplan", "berry-argv", "berry-strmem", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto", "berry-gpuproto", "berry-vdsoface", "berry-partition",
     "berry-termio",
     "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-layout", "berry-psproto", "berry-complete", "berry-tls", "berry-mmap", "berry-signal", "berry-fbcon", "berry-gfx", "berry-poll",
-    "berry-jobs", "berry-guiproto", "berry-ui", "berry-appshell", "berry-softime", "berry-appproto", "berry-cbox", "berry-pwproto", "berry-lifecycle", "berry-crypto", "berry-spawngeo", "berry-driver", "berry-hal", "berry-rtc", "berry-watchdog", "bins/abuser", "bins/berry-verify", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild", "bins/dpgp", "bins/policydemo"]
+    "berry-jobs", "berry-lex", "berry-guiproto", "berry-ui", "berry-appshell", "berry-softime", "berry-appproto", "berry-cbox", "berry-pwproto", "berry-lifecycle", "berry-crypto", "berry-spawngeo", "berry-driver", "berry-hal", "berry-rtc", "berry-watchdog", "bins/abuser", "bins/berry-verify", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild", "bins/dpgp", "bins/policydemo"]
 exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet", "bins/apptomb", "bins/devmgr"]
 
 # cbox 刀 2：berry-cbox（黑匣子账本纯函数 crate，「解析器即产品」——排液

@@ -1067,8 +1067,17 @@ test-host:
     # 批切分 + poll-first 收割到干 + 分段阻塞轮转 + LT/非阻塞/唤醒三免费
     # 语义，host 13 测）。
     cargo test --manifest-path user/Cargo.toml -p berry-poll --target {{host}}
-    # 作业控制 v2 刀：berry-jobs 纯面（strip_bg/alloc_id/渲染行——host 14 测；2026-11-19 愈合复通——活线合并曾丢此线，随 free 刀同批复接）。
+    # 作业控制 v2 刀：berry-jobs 纯面（alloc_id/parse_job_ref/渲染行——
+    # host 14 测；strip_bg 自 v2.5 引号刀起 Superseded 保留导出——消费面
+    # 已整迁 berry-lex、边缘测随面同留；2026-11-19 愈合复通——活线合并曾
+    # 丢此线，随 free 刀同批复接）。
     cargo test --manifest-path user/Cargo.toml -p berry-jobs --target {{host}}
+    # bsh v2.5 引号与统一分词器刀：berry-lex 词法单源（单遍 Item 流/三视图
+    # render·fields·word_texts/strip_bg 引号感知版——host 72 测：引号三件
+    # 全分支＋render 对拍 expand 恒等律＋恒等金样族；bsh 解析层词边界/操作符
+    # 识别全经此单源，berry-jobs strip_bg 语料整迁退役——Superseded 保留
+    # 导出，berry-jobs 活跃面归纯作业数据面）。
+    cargo test --manifest-path user/Cargo.toml -p berry-lex --target {{host}}
     # GUI-1：berry-fbcon（自绘 8×16 字形 + 蜂格渲染核纯函数面——V-6 刀 2
     # 前置段产物，GUI-1 迁正 user/ members 随挂 host 测试：字形锚点/蜂格
     # 渲染/滚动/格式打包，host 28 测）。
