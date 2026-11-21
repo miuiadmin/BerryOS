@@ -5,10 +5,14 @@
 # 元素约束沿袭：元素 = 引号串，**元素内不得含 `)`/引号**（历史 awk 计数
 # 器的解析约束；今虽无计数器，加标记仍守此约束防回归）。
 # 消费方：smoke.sh 裸相 32 + rootfs 相 56；smoke-smp.sh 各相同双数组；
-# smoke-image.sh KERNEL_MARKERS 硬拷贝（G4-1 三镜 P2-3 补列——改 MARKERS
-# 须连 smoke-image.sh 同步，第三消费方漏同步即静默失覆盖）；bcts-run.sh
+# smoke-image.sh（工程纪律刀阶段 2 收编）source 本文件——KERNEL_MARKERS =
+# MARKERS 别名 + ECO_MARKERS 直用（原两处硬拷贝漂移面消亡）；bcts-run.sh
 # 活树自检态经本文件合成清单并做计数守卫（第四消费方——加标记须连
 # TIER1_FLOOR_LIVE 与冻结件滚新，justfile test-host 义务行在册）。
+# banner 形态正则唯一源 = 本文件 BANNER_FORM_RE（smoke.sh / smoke-smp.sh /
+# smoke-image.sh 各恰一次消费——哨兵↔消费者 1:1 映射由直跑自检腿机查）。
+# 自检腿：bash tools/markers.sh 直跑（source 时不做任何事——paths.sh 先例）
+# ——canon 四表两两互非子串机查（白名单叠对须带理由）+ 1:1 映射机查。
 
 # 裸相 32 标记（boot 全链；G4-1 起 +DPG ok——demand 闭环自证；刀1 起
 # +WAKESRC——per-source 唤醒记账 G1.5 单行，尾随 G1.5 ok；sim-S2 A2 起
@@ -61,9 +65,70 @@ ROOTFS_MARKERS=("ROOTFS ok src=" "ROOTFS vmo=" "rootfs hello" "ECO ok" "STD ok" 
 # A4② PM 微相（QMP system_powerdown 注入 PL061 无主 IRQ）。
 RX_MARKERS=("SIMBAT ok seq=" "BATT ok pct=" "PWRKEY unowned n=")
 
+# EFI 路生态 52（工程纪律刀阶段 2 自 smoke-image.sh 逐字迁入——收编第三
+# 消费方硬拷贝漂移面；历史沿革长注留在 smoke-image.sh 原地不随迁）。
+# 断言语义 = smoke-image.sh grep -cF 存在性 ≥1（健康 boot 各恰一次是日志
+# 观察面非断言面）；WM ok 与 LAUNCH 双为 EFI 专属（GUI-5/GUI-8 起）；无
+# virtio 面——VIRTIO/FAT/NET/DIR/CD 族不在断言面。加标记义务行同 rootfs
+# 面：连 smoke-image.sh 断言注释与 justfile spec 清单同批改齐。
+ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=10" "APPUI ok n=9" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok" "TAB ok" "INT ok" "POLL ok" "PS ok n=" "BC ok" "THR ok" "DPGP ok" "DPGS ok n=4" "DPGN ok n=4" "FROZEN ok n=1" "WAKE ok n=1" "TOMB ok n=1" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "CLI ok n=" "TERM ok n=" "FBW ok" "FBSERVE ok" "GFX ok" "GFXF ok n=" "WM ok" "LAUNCH ok" "PAGE ok n=" "CBOX ok n=" "gfx: k4a hz=" "gfx: k4t p99=" "gfx: k4s n=" "launcher: telem f=" "gfx: k6p n=4" "gfx: k6h hz=" "P5C ok latch=" "BANDC ok" "BANDR ok n=" "WMSUB ok")
+
+# banner 形态正则唯一源（工程纪律刀阶段 2 收编三处逐字拷贝：smoke.sh /
+# smoke-smp.sh / smoke-image.sh 的 grep -Eq 形态边）。语义 = 版本管理标准
+# §3 G-ver-2：`BerryOS boot <semver> (<ident>[ rustc<ver> dbg|rel])`。
+# 消费契约：每脚本恰一次 `grep -Eq "$BANNER_FORM_RE"`（1:1 映射自检机查
+# ——再复制正则字面量即红）；子串断言（MARKERS[0] "BerryOS boot"）归各
+# 消费脚本原样保留，本变量只管形态边。nogit 拒收与 ident 源
+# （kernel/build.rs git_ident()）不在此面。
+BANNER_FORM_RE='BerryOS boot [0-9]+\.[0-9]+\.[0-9]+ \([A-Za-z0-9.-]+( rustc[A-Za-z0-9.?]+ (dbg|rel))?\)'
+
 # 防假绿兜底：单源被误清空 = 轮询零等待恒过——非空断言 loud 拒（P6 A-5
 # 「基准重产义务要有机器守卫」族精神沿袭）。
-[ "${#MARKERS[@]}" -gt 0 ] && [ "${#ROOTFS_MARKERS[@]}" -gt 0 ] && [ "${#RX_MARKERS[@]}" -gt 0 ] || {
+[ "${#MARKERS[@]}" -gt 0 ] && [ "${#ROOTFS_MARKERS[@]}" -gt 0 ] && [ "${#RX_MARKERS[@]}" -gt 0 ] && [ "${#ECO_MARKERS[@]}" -gt 0 ] || {
   echo "markers.sh: 标记数组为空（单源被误清？）——拒跑防假绿" >&2
   exit 1
 }
+
+# —— main-guard 自检腿（直跑本文件即自检，等价 --selftest（实参忽略——
+# justfile 接线行形态统一）；source 时不做任何事——paths.sh 先例）。工程
+# 纪律刀阶段 2 立面（规则/16 §2）：canon 四表两两互非子串机查（白名单叠
+# 对须带理由——新增叠对先补白名单再入表）+ 哨兵↔消费者 1:1 映射机查。
+# 检测器变哑即红。
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  SELF_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  fail_self() { echo "markers.sh 自检 FAIL: $1" >&2; exit 1; }
+  # canon 白名单：既有叠对（新入表标记与现役互非子串是门槛，叠对必须在此占号并写理由）。
+  canon_allowed() {
+    case "$1|$2" in
+      "DEMO ok|AIDEMO ok") return 0 ;;      # 同链族：AIDEMO 自测与 demo 打印同链共存，弱化面历史在案接受
+      "DEMO ok|M3DEMO ok n=5") return 0 ;;  # 同上族跨表（rootfs 相）
+      "PIPE ok|PIPE ok n=") return 0 ;;     # 跨脚本异日志：rootfs 相（smoke.sh）与 EFI 路（smoke-image.sh）不同 LOG，无同日志混叠面
+    esac
+    return 1
+  }
+  all_markers=()
+  for v in "${MARKERS[@]}"; do all_markers+=("M|$v"); done
+  for v in "${ROOTFS_MARKERS[@]}"; do all_markers+=("R|$v"); done
+  for v in "${RX_MARKERS[@]}"; do all_markers+=("X|$v"); done
+  for v in "${ECO_MARKERS[@]}"; do all_markers+=("E|$v"); done
+  for a in "${all_markers[@]}"; do
+    for b in "${all_markers[@]}"; do
+      va=${a#*|}; vb=${b#*|}
+      [ "$va" = "$vb" ] && continue
+      case "$vb" in
+        *"$va"*) canon_allowed "$va" "$vb" || fail_self "canon 子串叠：'$va' ⊂ '$vb'——互非子串是入表门槛，确需叠对先补白名单并写理由" ;;
+      esac
+    done
+  done
+  for f in smoke.sh smoke-smp.sh smoke-image.sh; do
+    p="$SELF_DIR/$f"
+    [ -f "$p" ] || fail_self "消费脚本缺席：$f"
+    n=$(grep -c '\$BANNER_FORM_RE' "$p" || true)
+    [ "$n" -eq 1 ] || fail_self "$f 引用 \$BANNER_FORM_RE ${n} 次（哨兵↔消费者必须 1:1——复制正则字面量即红）"
+  done
+  dup=$(grep -l '^ECO_MARKERS=(' "$SELF_DIR"/*.sh 2>/dev/null | grep -v 'markers.sh$' || true)
+  [ -z "$dup" ] || fail_self "ECO_MARKERS 定义出 markers.sh 之外：$(echo $dup)"
+  hard=$(grep -l '^KERNEL_MARKERS=("[A-Za-z]' "$SELF_DIR"/*.sh 2>/dev/null || true)
+  [ -z "$hard" ] || fail_self "KERNEL_MARKERS 硬拷贝残存：$(echo $hard)（应改 markers.sh MARKERS 别名——别名形态以 \$ 开头，字母开头即字面量硬拷贝）"
+  echo "markers.sh 自检：PASS（裸相 ${#MARKERS[@]} / rootfs ${#ROOTFS_MARKERS[@]} / rx ${#RX_MARKERS[@]} / eco ${#ECO_MARKERS[@]}；banner 消费 3 脚本各恰一次；canon 零未白名单叠对）"
+fi

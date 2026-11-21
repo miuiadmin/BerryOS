@@ -350,8 +350,8 @@ poll_markers "$DEADLINE_BOOT" "裸相" 1 "${MARKERS[@]}"
 # 的 MARKERS[0] "BerryOS boot" 子串断言原样保留——本行只加形态边不松子串
 # 边；置轮询到齐后 = banner 行必已在席，断言零竞态。挂相 1 一处即足：八
 # 相同一 $KERNEL 同一 banner，逐相重断言零增量鉴别力。
-grep -m1 'BerryOS boot' "$LOG" | grep -Eq 'BerryOS boot [0-9]+\.[0-9]+\.[0-9]+ \([A-Za-z0-9.-]+( rustc[A-Za-z0-9.?]+ (dbg|rel))?\)' \
-  || fail "boot banner 形态缺：首匹配行应为 'BerryOS boot <semver> (<ident>[ rustc<ver> dbg|rel])'（版本管理标准 §3 G-ver-2）；实得：$(grep -m1 'BerryOS boot' "$LOG" || echo '（日志无 BerryOS boot 行）')"
+grep -m1 'BerryOS boot' "$LOG" | grep -Eq "$BANNER_FORM_RE" \
+  || fail "boot banner 形态缺：首匹配行应为 'BerryOS boot <semver> (<ident>[ rustc<ver> dbg|rel])'（版本管理标准 §3 G-ver-2；形态边单源 markers.sh BANNER_FORM_RE）；实得：$(grep -m1 'BerryOS boot' "$LOG" || echo '（日志无 BerryOS boot 行）')"
 # 标准 §6 执法化（审计洞②：原纯人律无机器门）：ident 非 nogit 拒——nogit
 # 标识产物不得对外发布（无归因能力的构建仅限本地调试），冒烟门是发布链
 # 前闸，nogit 构建过门即违规。门 = 首 banner 行含 nogit 即红（行内唯一可

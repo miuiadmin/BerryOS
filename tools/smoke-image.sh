@@ -88,6 +88,10 @@ set -u
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 cd "$SCRIPT_DIR/.."
 source "$SCRIPT_DIR/paths.sh"
+# 工程纪律刀阶段 2：判读词单源收编（规则/16 §2）——KERNEL_MARKERS 改
+# markers.sh MARKERS 别名、ECO_MARKERS 直用单源、banner 形态边改
+# BANNER_FORM_RE；本脚本自此零本地标记拷贝。
+source "$SCRIPT_DIR/markers.sh"
 KERNEL=$(berryos_kernel debug)
 
 IMAGE=${1:?用法: smoke-image.sh <镜像> <AAVMF_CODE> <AAVMF_VARS>}
@@ -182,13 +186,12 @@ EFI_ERE=(
 # ≤ 当前版，「接续恰一次」才是断言面。钉死 ver=1 曾致 54fc9b6 后 EFI 冒烟
 # 全线红（run 42864829668 实证：唯缺此标记，MMAP/ROOTFS 同伴均到齐）。
 CONT_MARKERS=("HANDOFF ok ver=" "MMAP ok segs=" "ROOTFS ok src=handoff")
-# 裸相 32（与 smoke.sh MARKERS 逐字同源——改那边同步这边，改漂移即两关卡
-# 各自失去「同内核零漂移」对照力；S-2 起 +BENCHXH ok 资源耗尽行为行；
-# G4-1 起 +DPG ok demand 闭环行——P2-3 补同步；刀1 起 +WAKESRC acct=
-# per-source 唤醒记账行；sim-S2 A2 起 +FRZCYC ok r=2 freeze/thaw 循环行；
-# sim-S3 起 +PSCI susp=0（EFI 路探测行带原因后缀——子串可 grep）+
-# PWRDEG ok d=1（ktest 在 EFI 路照跑，两行都在））。
-KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL ok" "TASK ok" "FP ok" "ASPACE ok" "VMO ok" "HANDLE ok" "POLICY ok" "ktest done" "BENCHXH ok" "BENCH ok n=8" "BENCHWAKE n=" "G1.5 ok" "WAKESRC acct=" "BLOCK ok" "WAIT ok" "CHAIN ok" "MANY ok" "PI ok" "INTENT ok" "FAST ok" "SVC ok" "AIDEMO ok" "DEMO ok" "DPG ok" "FRZCYC ok r=2" "PSCI susp=0" "PWRDEG ok d=1")
+# 裸相 32（工程纪律刀阶段 2 起单源别名——markers.sh MARKERS 逐字同源，
+# 「同内核零漂移」对照力由单源结构性保证，改清单只改 markers.sh 一处；
+# S-2 起 +BENCHXH ok / G4-1 起 +DPG ok / 刀1 起 +WAKESRC / sim-S2 A2 起
+# +FRZCYC / sim-S3 起 +PSCI susp=0（EFI 路探测行带原因后缀——子串可 grep）
+# +PWRDEG ok d=1——沿革详 markers.sh 原注）。
+KERNEL_MARKERS=("${MARKERS[@]}")
 # EFI 路生态 52（对抗审查保留日志逐标记普查实证——健康 boot 各恰一次为
 # 日志观察面，本脚本断言为 grep -cF 存在性 ≥1；除
 # WM ok 与 LAUNCH 双（GUI-5/GUI-8 起 EFI 专属）外与 smoke.sh rootfs 相断言
@@ -361,7 +364,9 @@ KERNEL_MARKERS=("BerryOS boot" "KVA ok" "GIC ok" "FRAME ok" "HEAP ok" "SYSCALL o
 # svcmgr 静默窗代发订阅的私有通道收到首个快照真值即打——one-shot latch
 # 恰一次，count=0 空表也算面活。WMSUB/BANDC/BANDR 词头在册唯一；rootfs 相
 # smoke.sh 不加——guifbd 不在其门内，规避 markers.sh 三处同步纪律。
-ECO_MARKERS=("rootfs hello" "ECO ok" "STD ok" "STD err ok" "FILE ok" "HEXYL ok" "BSH ok" "EXIT ok" "APP ok n=10" "APPUI ok n=9" "PIPE ok n=" "FS ok n=" "U1 ok" "U2 ok" "U3 ok" "B1 ok n=4" "U4 ok" "TAB ok" "INT ok" "POLL ok" "PS ok n=" "BC ok" "THR ok" "DPGP ok" "DPGS ok n=4" "DPGN ok n=4" "FROZEN ok n=1" "WAKE ok n=1" "TOMB ok n=1" "MMP ok n=9" "CLK ok n=6" "SIG ok n=6" "CLI ok n=" "TERM ok n=" "FBW ok" "FBSERVE ok" "GFX ok" "GFXF ok n=" "WM ok" "LAUNCH ok" "PAGE ok n=" "CBOX ok n=" "gfx: k4a hz=" "gfx: k4t p99=" "gfx: k4s n=" "launcher: telem f=" "gfx: k6p n=4" "gfx: k6h hz=" "P5C ok latch=" "BANDC ok" "BANDR ok n=" "WMSUB ok")
+# EFI 路生态 52 清单本体已迁 markers.sh ECO_MARKERS（工程纪律刀阶段 2
+# 单源收编——下方历史沿革长注原地保留，讲的是「为什么是这 52 个」，
+# 清单行本身以 markers.sh 为准；本脚本经头部 source 直用，零本地定义）。
 
 LOG=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")
 RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/berryos-smoke-image.XXXXXX")
@@ -452,6 +457,19 @@ python3 -c "import sys; sys.stdout.buffer.write(b'\xff'*(64<<20))" > "$RUN_DIR/v
 
 # FIFO stdin（smoke.sh RX 相同款）：holder 持写端防 EOF；帽 1200s 盖全流程
 # worst（360+120+60 + RX 注入段 + 余量 ~2x）。
+# —— 镜像新鲜度门（工程纪律刀阶段 2；规则/16 §2）：out/manifest.txt 是
+# just image 的侧产物账本，KERNEL.ELF/INITRD.BIN 哈希对不上现场 = 在拿旧
+# 镜像验新二进制。默认镜像（out/berryos.img）强制过门；传入其他路径时
+# manifest 不对该镜像负责，跳门并明示（不静默假装新鲜）。
+case "$(cd "$(dirname "$IMAGE")" 2>/dev/null && pwd)/$(basename "$IMAGE")" in
+  "$(pwd)/out/berryos.img")
+    bash "$SCRIPT_DIR/image-fresh.sh" || fail "镜像陈旧：先 just image（规则/16 §2——陈旧镜像得出的验证结论作废）"
+    ;;
+  *)
+    echo "smoke-image: 注：非默认镜像路径（$IMAGE），新鲜度门只对 out/berryos.img 负责——跳门"
+    ;;
+esac
+
 RX_FIFO=$(mktemp "${TMPDIR:-/tmp}/berryos-smoke-image-fifo.XXXXXX")
 rm -f "$RX_FIFO"
 mkfifo "$RX_FIFO" || fail "mkfifo 失败"
@@ -506,8 +524,8 @@ done
 # 上方轮询的 KERNEL_MARKERS "BerryOS boot" 子串断言原样保留——本行只加
 # 形态边不松子串边；置轮询到齐后 = banner 行必已在席，断言零竞态；先行
 # 于 SMOKE_PHASES=boot 早退 = 分层 CI 轻面同受 G-ver-2 护。
-grep -m1 'BerryOS boot' "$LOG" | grep -Eq 'BerryOS boot [0-9]+\.[0-9]+\.[0-9]+ \([A-Za-z0-9.-]+( rustc[A-Za-z0-9.?]+ (dbg|rel))?\)' \
-  || fail "boot banner 形态缺：首匹配行应为 'BerryOS boot <semver> (<ident>[ rustc<ver> dbg|rel])'（版本管理标准 §3 G-ver-2）；实得：$(grep -m1 'BerryOS boot' "$LOG" || echo '（日志无 BerryOS boot 行）')"
+grep -m1 'BerryOS boot' "$LOG" | grep -Eq "$BANNER_FORM_RE" \
+  || fail "boot banner 形态缺：首匹配行应为 'BerryOS boot <semver> (<ident>[ rustc<ver> dbg|rel])'（版本管理标准 §3 G-ver-2；形态边单源 markers.sh BANNER_FORM_RE）；实得：$(grep -m1 'BerryOS boot' "$LOG" || echo '（日志无 BerryOS boot 行）')"
 # 标准 §6 执法化（审计洞②：原纯人律无机器门）：ident 非 nogit 拒——nogit
 # 标识产物不得对外发布（无归因能力的构建仅限本地调试），冒烟门是发布链
 # 前闸，nogit 构建过门即违规。门 = 首 banner 行含 nogit 即红（行内唯一可

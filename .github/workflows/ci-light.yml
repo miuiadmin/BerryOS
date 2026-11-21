@@ -45,6 +45,11 @@ jobs:
       - name: docs-guard（AGENTS 注入预算 + 探针/锚点）
         run: python3 tools/docs_guard.py
 
+      # 工程纪律刀阶段 2：版本地板门进轻道（node>=18 是 check-docs 契约、
+      # python>=3.9 是 docs_guard 面——轻道自身就有版本依赖，此前零执法）。
+      - name: floor-check（工具版本地板）
+        run: bash tools/floor-check.sh
+
       - name: check-docs（Curia 文档面：头块/归属/断链）
         run: node .agents/tools/check-docs.mjs --strict
 

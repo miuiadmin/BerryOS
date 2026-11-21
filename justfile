@@ -1486,6 +1486,13 @@ test-host:
     # justfile test-host 面必跑（本行即自证）。
     python3 tools/selftest_guard.py --selftest
     python3 tools/selftest_guard.py
+    # 工程纪律刀阶段 2 接线：判据单源与新鲜度三门自检——markers（canon
+    # 互非子串 + 哨兵↔消费者 1:1 映射）、image-fresh（manifest 对拍夹具
+    # 四腿）、floor-check（版本地板三腿）。改 markers.sh 标记/banner 面、
+    # image-fresh.sh、floor-check.sh 必跑（selftest_guard 扫描自动执法）。
+    {{BASH}} tools/markers.sh --selftest
+    {{BASH}} tools/image-fresh.sh --selftest
+    {{BASH}} tools/floor-check.sh --selftest
 
 # 忙核 arm-to-nearest-deadline（oneshot 收紧律）host 钉板：律单源
 # sched/src/oneshot.rs（sched crate 本体 no_std + HAL 依赖不编 host），
@@ -1699,8 +1706,13 @@ smoke-image: image
 gui8-smoke:
     #!/bin/sh
     set -eu
-    if [ ! -f "{{IMAGE}}" ] || [ "${GUI8_REBUILD:-0}" = 1 ]; then
+    # 工程纪律刀阶段 2：镜像新鲜度门（规则/16 §2）——manifest 对拍陈旧即
+    # 重建（机器根治预烘旧镜像假结论坑）；GUI8_REBUILD=1 保留为「无条件
+    # 强制重建」档（原语义降级为冗余档而非唯一防线）。
+    if [ "${GUI8_REBUILD:-0}" = 1 ]; then
         just image
+    else
+        bash tools/image-fresh.sh --ensure
     fi
     set -- --image "{{IMAGE}}" --code "{{AAVMF_CODE}}" --vars "{{AAVMF_VARS}}"
     if [ "${GUI8_KEEP:-0}" = 1 ]; then
@@ -1716,8 +1728,11 @@ gui8-smoke:
 gui8-smoke-normal:
     #!/bin/sh
     set -eu
-    if [ ! -f "{{IMAGE}}" ] || [ "${GUI8_REBUILD:-0}" = 1 ]; then
+    # 工程纪律刀阶段 2：镜像新鲜度门（同 gui8-smoke——manifest 对拍陈旧即重建）。
+    if [ "${GUI8_REBUILD:-0}" = 1 ]; then
         just image
+    else
+        bash tools/image-fresh.sh --ensure
     fi
     set -- --image "{{IMAGE}}" --code "{{AAVMF_CODE}}" --vars "{{AAVMF_VARS}}" --normal-boot
     if [ "${GUI8_KEEP:-0}" = 1 ]; then

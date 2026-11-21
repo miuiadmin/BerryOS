@@ -99,6 +99,11 @@ jobs:
       # 不装 action；就位检查 fail-fast，缺件 = runner 机补装。
       - name: 工具链就位检查（runner 机预装面）
         run: |
+          # 工程纪律刀阶段 2：版本地板门先行（本地与 CI 同脚本单源——
+          # rust-toolchain.toml 单源 + qemu>=10/node>=18/python>=3.9/just
+          # presence；低版或解析不出即 fail-fast，此前「QEMU >= 10」只活在
+          # 注释里没有执法）。
+          bash tools/floor-check.sh
           rustc --version
           rustup target list --installed | grep -cE 'aarch64-unknown-none|aarch64-unknown-linux-musl|x86_64-unknown-none'
           qemu-system-aarch64 --version | head -1
