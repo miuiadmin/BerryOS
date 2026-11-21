@@ -171,6 +171,7 @@ name = "berry"
 version = "0.1.0"
 dependencies = [
  "berry-cbox",
+ "berry-dmface",
  "berry-fatfs",
  "bytemuck",
  "clap",
@@ -189,6 +190,10 @@ dependencies = [
 [[package]]
 name = "berry-cbox"
 version = "0.1.0"
+
+[[package]]
+name = "berry-dmface"
+version = "0.2.0"
 
 [[package]]
 name = "berry-fatfs"

@@ -19,6 +19,11 @@ gui = []
 
 [dependencies]
 berry-cbox = { path = "../../user/berry-cbox" }
+# display_mode 实几何解析单源（base 债清偿）：commands.rs :2057 消费
+# berry_dmface::parse_display_mode 但本表漏登 path 依赖——tools/berry 独立
+# 小工作区（跨 workspace path 依赖先例 = berry-cbox/berry-fatfs 同款）。
+# 纯 std crate 零传递依赖（Cargo.lock 恰加一行），host 工具面不进客机/ABI。
+berry-dmface = { path = "../../dmface" }
 # BSHRC 宿主写者（export 刀挂账 #3）：FAT12 就地写面走 berry-fatfs 纯编
 # 解码写基元（fat12_set/find_free_cluster/encode_file_entry 等）——客机
 # fsmgr 消费同 crate，「写读两端 FAT 实现对拍」按构造成立；跨 workspace
