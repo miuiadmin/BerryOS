@@ -8,8 +8,9 @@
 //! - **`TcpSeg` 是自定义输入视图**（seq/ack/flags/window/mss/payload 借用）——与
 //!   berry-netproto 的 parse_tcp（T-a）互不依赖（T-a ∥ T-b 并行的解耦点）；T-c 时
 //!   vnet 把 parse_tcp 输出翻译成 TcpSeg 喂进来。
-//! - 定值表（草案 §4 对账）：MSS=128（通告+收帽）/ 窗口恒 1024 / RTO 3s 起 ×2 退避
-//!   3 次帽 / TIME_WAIT 2s / 在途窗 [`TX_SLOTS`]=8 定槽环（多段在途 +
+//! - 定值表（草案 §4 对账）：MSS=1000（通告+收帽，P4 128→1000）/ 窗口恒
+//!   1024 / RTO 3s 起 ×2 退避 3 次帽 / TIME_WAIT 2s / 在途窗 [`TX_SLOTS`]=5
+//!   定槽环（多段在途 +
 //!   Go-Back-N 队头重发，二刀）/ 发送窗消费（`snd_wnd` 记账 + 零窗停发，二刀）/
 //!   乱序段丢弃回当前 ACK（靠对端重传）/ 收 RST 任意状态直转 Closed
 //!   （对陌生四元组回 RST = v2）。
@@ -30,18 +31,22 @@
 //!   仍采窗、重复段携缩窗可回缩）系有意为之——零窗重开需之，理由见 `on_seg_open`。
 #![no_std]
 
-/// 最大段长（通告 + 收取帽）：RX_BUF_SZ 256 − 帧开销 66 = 190 上限内留余量（草案 §5；
-/// 该定值安全由 vnet tcp.rs 消费侧 const assert 机器钉住——T-c 对抗审查 ③）。
-pub const MSS: u16 = 128;
-/// 在途环容量（槽，二刀 4、五刀③环扩 4→8）：K 窗多 op 在途 = K×2 段
-/// （250B op 拆 ceil(250/128)=2 段）+ close 排队 FIN 1 槽 + 余量 1 ⇒
-/// K=3 恰容 8；K=2 时半环（数据面 4 槽）。环容量 8×128 ≥ K×TCP_DATA_MAX
-/// 由 vnet tcp.rs 消费侧 const assert 机器钉住（单侧缩环/抬帽即编译期
-/// 炸响，与 MSS 钉同族）。
-pub const TX_SLOTS: usize = 8;
-/// 固定通告窗口（五刀③ 512→1024，与环容 TX_SLOTS×MSS=1024 同值对齐——
-/// K 窗在途 K×250=750 的双界之一，vnet tcp.rs const assert 机器钉；非目标
-/// 滑窗；本 crate 是**收侧**通告——发送窗消费见 `snd_wnd`）。
+/// 最大段长（通告 + 收取帽，P4 128→1000）：锚 = 以太 MTU 域单段 1460
+///（IP 1500−20−20）内留余量 + SLIRP SYN-ACK mss 1460 wire 实证（对端
+/// 收帽同域）+ 消费侧钉族（vnet tcp.rs const assert 机器钉住——T-c
+/// 对抗审查 ③）。旧锚「RX_BUF_SZ 256−66=190」双重过时（RX_BUF_SZ 已
+/// 1600、收帽按 MTU 域另钉）已删。
+pub const MSS: u16 = 1000;
+/// 在途环容量（槽，二刀 4、五刀③环扩 4→8、P4 随 MSS 128→1000 收 8→5）：
+/// K 窗多 op 在途 = K×1 段（250B op ≤ MSS 单段）+ close 排队 FIN 1 槽 +
+/// 余量 1 ⇒ 3×1+FIN+1=5 恰容；e VMO 块 2048 拆 ceil(2048/1000)=3 段 ≤ 环。
+/// 环容量 TX_SLOTS×MSS ≥ K×TCP_DATA_MAX 由 vnet tcp.rs 消费侧 const
+/// assert 机器钉住（单侧缩环/抬帽即编译期炸响，与 MSS 钉同族）。
+pub const TX_SLOTS: usize = 5;
+/// 固定通告窗口（五刀③ 512→1024；P4 起环容 TX_SLOTS×MSS=5000 与本值
+/// 不再同值对齐——双界各自钉：K 窗在途 K×250=750 ≤ 本值由 vnet
+/// tcp.rs const assert 机器钉；非目标滑窗；本 crate 是**收侧**通告——
+/// 发送窗消费见 `snd_wnd`）。
 pub const WINDOW: u16 = 1024;
 /// RTO 起始值（毫秒）：TCG 友好；SLIRP 本地几乎不丢——重传是防御面非主路径。
 pub const RTO_START_MS: u64 = 3_000;

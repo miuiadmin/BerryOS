@@ -75,7 +75,12 @@ pub(crate) const TX_FRAME_STEP: usize = berry_virtio::NET_HDR_SZ
     + SEG_BUF_SZ;
 /// 每批帧数帽 = TX_SLOTS（一个批 = 环内一次可压入的段数上界；ARP/ICMP/
 /// DNS 单帧路径不经批——main.rs tx_send batch-of-1 原样）。
-pub(crate) const TX_BATCH_MAX: usize = bt::TX_SLOTS;
+/// TX 批帽(P4 与环解耦):批=单 q 突发帧数上界,字面 3=ceil(VMO_CHUNK/MSS)
+/// 对齐(几何语义钉 :146 批布局把守)。**实况注(F168 修正)**:现行一切
+/// 发送路径每批至多 1 帧(send_data 逐片建批逐段 flush——e 臂 2048B=3
+/// 门铃非 1;enqueue 是唯一跨片合批点但 inline ≤250 恰 1 帧)——「一批
+/// 一量子」非现状,批合并属后续优化面(泵前 IOB 冲突约束,见 F168-bss)。
+pub(crate) const TX_BATCH_MAX: usize = 3;
 /// session-0 挂起 op 的回显收流幅（四刀 P6）：echod/SLIRP 可把 K 个在途
 /// op 的回显拼成单段（MTU 域内）——准入缓冲必须容 K×TCP_DATA_MAX，否则
 /// 拼段被首刀准入闸拒收 = 重传同形拒 = 死锁面（几何不变式：未收回显 ≤
@@ -89,7 +94,7 @@ const RX_SEG_MAX: usize = 1460;
 /// 会话入站收缓冲幅（首刀 512→2048）：容纳 1×1460 大段 + 常规段余量。
 /// 与 bt::WINDOW（五刀③通告 512→1024）解耦——本值只钉「实际能收」，
 /// WINDOW ≤ 本值由五刀③ const assert 机器钉（对端守约发满窗也容得下）；
-/// netdproto DRAIN 128B 拉模型天然多次拉取。表
+/// netdproto DRAIN TCP_DATA_MAX=250 拉模型天然多次拉取。表
 /// 8 槽静态段随之 +约 11KB（boot 冒烟面，见 TCPTABLE 注）。
 const RX_SESS_BUF: usize = 2048;
 
@@ -134,7 +139,7 @@ const _: () = assert!(crate::RX_BUF_SZ <= crate::IOB_SZ);
 // ② TX_SLOTS × MSS ≥ TCP_DATA_MAX（在途环容量钉——缩环/抬帽即炸，op 整
 // 批入环的容量不变式）。MSS 单侧改动另有 berry-tcp consts_pinned 字面
 // 128 钉板把守。
-const _: () = assert!(berry_netdproto::TCP_DATA_MAX > bt::MSS as usize);
+const _: () = assert!(bt::MSS as usize >= berry_netdproto::TCP_DATA_MAX); // P4 单段钉(旧多段钉反向):inline op 恒单段;生产多段面=e 臂 VMO 块(存在性钉在下)
 const _: () = assert!(bt::TX_SLOTS * bt::MSS as usize >= berry_netdproto::TCP_DATA_MAX);
 // 几何钉（四刀立、五刀③环扩换锚）：① K 窗在途 K×TCP_DATA_MAX ≤
 // TX_CAP=TX_SLOTS×MSS——四刀 K=2 恰满双界（500 ≤ 环容 512=通告窗 512），
@@ -151,7 +156,19 @@ const _: () = assert!(RT_ECHO_MAX == ndp::RT_PIPE_K * ndp::TCP_DATA_MAX);
 // 发满窗也装得下，rx 准入预检不越界）。
 const _: () = assert!(ndp::RT_PIPE_K * ndp::TCP_DATA_MAX <= bt::WINDOW as usize);
 const _: () = assert!(bt::WINDOW as usize <= RX_SESS_BUF);
-const _: () = assert!(ndp::RT_PIPE_K * 2 + 2 <= bt::TX_SLOTS); // 槽级钉:K op 各 ceil(250/128)=2 段+FIN 1+余量 1（K=3 恰容;K=4 结构性拒）
+const _: () = assert!(
+    ndp::RT_PIPE_K * ((berry_netdproto::TCP_DATA_MAX + bt::MSS as usize - 1) / bt::MSS as usize) + 2
+        <= bt::TX_SLOTS
+); // 槽级钉(P4 通用式):K op 各 ceil(TCP_DATA_MAX/MSS) 段+FIN 1+余量 1(MSS=1000:3+2=5 恰容;K=4 结构性拒)
+// P4 新钉族(MSS=1000):① e 臂 VMO 块单纪元(VMO_CHUNK ≤ TX_CAP=5000——缩环
+// 即炸);② 生产多段面存在性(VMO_CHUNK > MSS——e 臂恒拆 ≥2 段,MSS 抬过
+// 2048 或 VMO_CHUNK 缩 ≤1000 即炸,多段机制休眠警报);③ TX 页区钉(批帽×
+// 步长 ≤ DMA_LEN−TX_BUF_PAGE=4096——IOB 钉之外的第二把守);④ 批帽几何
+// (≥ ceil(VMO_CHUNK/MSS)——纯几何对齐语义,非「一批一量子」见 TX_BATCH_MAX 注)。
+const _: () = assert!(VMO_CHUNK <= TX_CAP);
+const _: () = assert!(VMO_CHUNK > bt::MSS as usize);
+const _: () = assert!(TX_BATCH_MAX * TX_FRAME_STEP <= (crate::DMA_LEN - crate::TX_BUF_PAGE) as usize);
+const _: () = assert!(TX_BATCH_MAX >= (VMO_CHUNK + bt::MSS as usize - 1) / bt::MSS as usize);
 
 /// 回显载荷 64B（ICMP 32B probe 同族确定性 pattern）。
 static PATTERN: &[u8; 64] = b"berryos-tcp-probe-0123456789012345678901234567890123456789abcdef";
@@ -231,9 +248,13 @@ fn stage_seg(
     payload: &[u8],
     slot: usize,
 ) -> usize {
-    let mut seg = [0u8; SEG_BUF_SZ];
+    // P4 栈溢出修(终验实抓):SEG_BUF_SZ 152→1024 后栈帧击穿 vnet 任务栈
+    // (NET ok 后 D-abort PC≈SP)——暂存 static 化(vnet 单线程,VMO_STAGE/
+    // IOB 同族家法;调用点串行无重入)。
+    static mut SEG_STAGE: [u8; SEG_BUF_SZ] = [0; SEG_BUF_SZ];
+    let seg: &mut [u8; SEG_BUF_SZ] = unsafe { &mut *core::ptr::addr_of_mut!(SEG_STAGE) };
     let tl = match np::encode_tcp(
-        &mut seg, OUR_IP, GW_IP, sport, dport, seq, ack, flags, bt::WINDOW, mss, payload,
+        seg.as_mut_slice(), OUR_IP, GW_IP, sport, dport, seq, ack, flags, bt::WINDOW, mss, payload,
     ) {
         Some(n) => n,
         None => trap(),
@@ -555,6 +576,7 @@ impl Sess {
                         } else {
                             self.act_q(d, regs, mac, gw_mac, ev.action, &[], q);
                         }
+                        crate::tx_flush_batch(d, regs, q); // F168 修②:泵前冲 staged 防表会话 RTO 帧覆写 IOB 槽 0(存量 P2 收口)
                         pump_timers(d, regs, mac, gw_mac, table);
                         return Ok(0);
                     }
@@ -563,10 +585,12 @@ impl Sess {
                     if t >= x {
                         self.conn.expire_timewait();
                         self.tw = None;
+                        crate::tx_flush_batch(d, regs, q); // F168 修②:泵前冲 staged 防表会话 RTO 帧覆写 IOB 槽 0(存量 P2 收口)
                         pump_timers(d, regs, mac, gw_mac, table);
                         return Ok(0);
                     }
                 }
+                crate::tx_flush_batch(d, regs, q); // F168 修②:泵前冲 staged 防表会话 RTO 帧覆写 IOB 槽 0(存量 P2 收口)
                 pump_timers(d, regs, mac, gw_mac, table);
                 if t >= cap {
                     return Err(()); // 相位帽
@@ -608,6 +632,7 @@ impl Sess {
         }
         // 挂臂对账 + TIME_WAIT 按状态重挂（模块头注）+ 表定时泵。
         self.post_account();
+        crate::tx_flush_batch(d, regs, q); // F168 修②:泵前冲 staged 防表会话 RTO 帧覆写 IOB 槽 0(存量 P2 收口)
         pump_timers(d, regs, mac, gw_mac, table);
         Ok(delivered)
     }
@@ -2086,8 +2111,10 @@ fn selftest_once(
             return Err(Transient);
         }
     };
-    let mut out = [0u8; bt::MSS as usize];
-    match sess.roundtrip(d, regs, mac, gw_mac, table, PATTERN, &mut out, now() + SELFTEST_CAP_NS) {
+    // P4 栈溢出修:同 SEG_STAGE 家法(MSS=1000 栈帧)。
+    static mut OUT_STAGE: [u8; bt::MSS as usize] = [0; bt::MSS as usize];
+    let out: &mut [u8; bt::MSS as usize] = unsafe { &mut *core::ptr::addr_of_mut!(OUT_STAGE) };
+    match sess.roundtrip(d, regs, mac, gw_mac, table, PATTERN, out.as_mut_slice(), now() + SELFTEST_CAP_NS) {
         RtRes::Ok(n) if n == PATTERN.len() && out[..n] == PATTERN[..] => {}
         RtRes::Ok(n) => {
             println!("vnet: tcp 回显对拍失败 got={}", n);

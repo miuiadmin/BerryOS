@@ -19,7 +19,7 @@
 //! **virtio-net 请求头**（12B mrg 变体，[`vio::NET_HDR_SZ`]——协商
 //! MRG_RXBUF 后收发同形，见 negotiate 注）：非 checksum/gso 驱动恒写全零，
 //! 帧本体紧随同缓冲——rx 单描述符即整收（设备写 12B 头再写帧进
-//! 同一 256B 缓冲（T-c TCP 扩容后仍单 desc：12+66+128=206 ≤ 256）；拆
+//! rx 单 desc：12+满 MTU 段 1530 ≤ RX_BUF_SZ=1600（tcp.rs const 钉把守）；拆
 //! hdr→frame 链式两 desc 需 32 个 > qsize 16 放不下，
 //! 单 desc 是几何结论）。
 //!
@@ -31,7 +31,7 @@
 //! 收紧回恰长执法**）。net 也吃 force-legacy=false（ver==2）。
 //!
 //! **DMA 面**（vblk 同款纯 VMO 机制——4 页从不进任何地址空间）：页 0 rx
-//! ring / 页 1 tx ring / 页 2 rx 缓冲 16×256B（恰满单页，§5）/ 页 3 tx
+//! ring / 页 1 tx ring / 页 2..3 rx 缓冲带 5×1600（F0-4 五页布局）/ 页 3 tx
 //! 缓冲。[`TXRING`]
 //! 暂存是 tx ring 的驱动侧权威副本（avail.idx 跨帧续用——vblk RING 同款；
 //! 整页写在门铃前、上一帧已 poll 完成后——同步单在途纪律下设备对 tx ring
@@ -73,8 +73,8 @@ static CRT0_SEED: unsafe extern "C" fn() = berry_libc::berry_crt0_anchor;
 /// 队列深（vblk 同档：2 的幂、整环落一页；QEMU virtio-net QueueNumMax
 /// 远大于此）。
 const QSIZE: u16 = 16;
-/// rx 缓冲数（= 每趟可挂收帧数；1ms 轮询泵每趟清空 used + 发送面停等
-/// 128B 段，5×1600B/泵并发收帧容量非瓶颈）。
+/// rx 缓冲数（= 每趟可挂收帧数；1ms 轮询泵每趟清空 used + 发送面单在途
+/// 批 ≤3×1070B（P4），5×1600B/泵并发收帧容量非瓶颈）。
 const RX_BUFS: usize = 5;
 /// rx 缓冲幅：12B net 头 + ≤1514B 满以太帧（首刀入站大段容忍抬升
 /// 256→1600：SLIRP 不读我方 MSS/WINDOW 通告、按 MTU 拼段，对端单写
@@ -88,12 +88,14 @@ pub(crate) const RX_BUF_SZ: usize = 1600;
 /// - 页 1 `[4096, 8192)`：tx ring；
 /// - 页 2..3 `[8192, 16384)`：rx 缓冲带（两整页连续物理帧 = 8192B ≥ `5 × 1600B = 8000B`，彻底根除
 ///   旧 16KiB 布局把偏移 8192 误当容量导致缓冲 2..4 越界写穿相邻物理页并踩踏 `TX_BUF_PAGE` 的致命破坏）；
-/// - 页 4 `[16384, 20480)`：tx 缓冲页（4096B）。
-const DMA_LEN: u64 = 20480;
+/// - 页 4 `[16384, 20480)`：tx 缓冲页（4096B ≥ P4 批几何 3×1070=3210B
+///   ——tcp.rs「批 ≤ TX 页区」const assert 机器钉，DMA_LEN/TX_BUF_PAGE
+///   标 pub(crate) 即该钉消费面）。
+pub(crate) const DMA_LEN: u64 = 20480;
 const RX_RING_PAGE: u64 = 0;
 const TX_RING_PAGE: u64 = 4096;
 const RX_BUF_PAGE: u64 = 8192;
-const TX_BUF_PAGE: u64 = 16384;
+pub(crate) const TX_BUF_PAGE: u64 = 16384;
 const _: () = assert!(RX_BUF_PAGE as usize + RX_BUFS * RX_BUF_SZ <= TX_BUF_PAGE as usize);
 const _: () = assert!(TX_BUF_PAGE + 4096 <= DMA_LEN);
 /// poll 帽：10s（SLIRP 应答在 ms 级——超帽 = 传输层/几何断了，loud）。
@@ -155,10 +157,11 @@ static mut TXRING: [u8; 4096] = [0; 4096];
 /// used 环设备拥有）。
 static mut RXSTAGE: [u8; 4096] = [0; 4096];
 /// 帧暂存尺寸常量（静态数组与 tcp.rs 消费侧 const assert 同源——T-c ③）。
-/// 首刀与 RX_BUF_SZ 同步抬升 512→1600：rx 收帧整帧读入（recv_frame 的
-/// vmo_read len ≤ RX_BUF_SZ 必须装下，tcp.rs const assert 钉住）；tx 面
-/// 最大 12+186B 远低此线。收发共用一张 IOB（单线程独占窗纪律）。
-pub(crate) const IOB_SZ: usize = 1600;
+/// 首刀 512→1600（rx 收帧整帧读入：recv_frame 的 vmo_read len ≤ RX_BUF_SZ
+/// 必须装下，tcp.rs const assert 钉住）；P4 1600→3210：tx 批几何
+/// 3×1070B 恰满（与 RX_BUF_SZ=1600 不再同值——双面各自钉，tcp.rs const
+/// assert）。收发共用一张 IOB（单线程独占窗纪律）。
+pub(crate) const IOB_SZ: usize = 3210;
 /// 帧暂存（tx 组 12B 头 + 帧 / rx 收帧——rx 整帧读入须 ≥ RX_BUF_SZ）。
 static mut IOB: [u8; IOB_SZ] = [0; IOB_SZ];
 
@@ -546,7 +549,7 @@ fn tx_send(d: &Dma, regs: *mut u32, frame_len: usize) {
     let total = vio::NET_HDR_SZ + frame_len;
     if total > iob.len() {
         println!("vnet: tx 帧超幅 {}B", total);
-        trap(); // 调用方帧幅由常量约束（TCP 段最大 total ≤198B）；防御面
+        trap(); // 调用方帧幅由常量约束（TCP 段最大 total ≤1070B）；防御面
     }
     iob[..vio::NET_HDR_SZ].fill(0); // 非 checksum/gso 驱动恒零头（规范 §5.1.6）
     if berry_vmo_write(d.vmo, iob.as_ptr(), TX_BUF_PAGE, total) != 0
