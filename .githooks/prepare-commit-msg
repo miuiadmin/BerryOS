@@ -1,0 +1,45 @@
+#!/bin/sh
+# BerryOS 印记闸（工程纪律刀阶段 3；docs/规则/16-工程纪律.md §1 分层第 2 层）——
+# 拒 --no-verify 绕过 pre-commit。
+# 机理：pre-commit 每次运行写 $GIT_DIR/berryos-gate.imprint（pid + epoch）；
+# 本钩子要求印记新鲜（<=900 秒）并消费即删。git --no-verify 跳过 pre-commit
+# 与 commit-msg，但不跳本钩子——无印记即拒。
+# 免检面（git 流程本就不跑 pre-commit，属合法无印记，impossible-os 同款五类）：
+#   $2 = merge（合并提交）| squash（压缩）；$2 = commit 且 sequencer 在场
+#   （rebase-merge / rebase-apply / CHERRY_PICK_HEAD / REVERT_HEAD——rebase 与
+#   续采的自动提交不经用户钩子链）。中途 --amend 同 sequencer 态一并免检
+#（已知残面：rebase 窗内手动 --no-verify 同获豁免——accept，rebase 场景
+# 本就是无 pre-commit 的流程）。
+# owner 逃生阀：BERRYOS_ALLOW_NOVERIFY=1（明示有意绕过，动作可 grep）。
+
+[ "$BERRYOS_ALLOW_NOVERIFY" = "1" ] && exit 0
+
+case "${2:-}" in
+  merge|squash) exit 0 ;;
+esac
+if [ "${2:-}" = "commit" ]; then
+  gd=$(git rev-parse --git-dir)
+  for f in rebase-merge rebase-apply CHERRY_PICK_HEAD REVERT_HEAD; do
+    [ -e "$gd/$f" ] && exit 0
+  done
+fi
+
+imprint=$(git rev-parse --git-path berryos-gate.imprint)
+if [ ! -f "$imprint" ]; then
+  cat >&2 <<'EOF'
+[berryos-guard] 拒绝：无 pre-commit 印记——本次提交疑似 --no-verify 绕过。
+门禁分层见 docs/规则/16-工程纪律.md：去掉 --no-verify 正常过门；owner 明示
+绕过用 BERRYOS_ALLOW_NOVERIFY=1（有意动作可 grep，不静默）。
+EOF
+  exit 1
+fi
+read -r pid at < "$imprint" || at=0
+now=$(date +%s)
+age=$(( now - at ))
+if [ "$age" -lt 0 ] || [ "$age" -gt 900 ]; then
+  echo "[berryos-guard] 拒绝：pre-commit 印记过期（${age}s > 900s）——重跑 git commit 走正常门" >&2
+  rm -f "$imprint"
+  exit 1
+fi
+rm -f "$imprint"
+exit 0

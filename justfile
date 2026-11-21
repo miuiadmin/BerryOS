@@ -1493,6 +1493,10 @@ test-host:
     {{BASH}} tools/markers.sh --selftest
     {{BASH}} tools/image-fresh.sh --selftest
     {{BASH}} tools/floor-check.sh --selftest
+    # 工程纪律刀阶段 3 接线：门禁链负例自检（合成 git 沙箱六腿——坏拒/
+    # 好过+印记耗/no-verify 拦/merge 免检/索引留毒拒/未跟踪不误伤）。
+    # 改 .githooks/* 或 check-docs 检查面必跑。
+    {{BASH}} tools/gate-selftest.sh
 
 # 忙核 arm-to-nearest-deadline（oneshot 收紧律）host 钉板：律单源
 # sched/src/oneshot.rs（sched crate 本体 no_std + HAL 依赖不编 host），
