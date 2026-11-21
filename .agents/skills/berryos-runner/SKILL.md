@@ -9,7 +9,7 @@ description: BerryOS 无人值守 runner 宪法（E 面）——每轮循环、d
 
 ## 每轮循环
 
-0. **开工包先行**：`python3 tools/pack-work.py`——punch-list 开放项、facts、git 状态一次到手，token 花在干活不花在重导状态。
+0. **开工包先行**：`python3 tools/pack-work.py`——punch-list 开放项、facts、git 状态一次到手，token 花在干活不花在重导状态；加 `--sweep` 附带三张 advisory 债网扫描（park 失效/搁浅/裁决已落——醒来即见死账清单）。
 1. `git status --short`：脏则先判断是否自己的 WIP；是→完成/提交；不是→LOG BLOCKED，停轮。
 2. `git fetch origin`；查自己的 open PR（label `hermes-auto`，head 前缀 `wip/auto-`）。有 findings/冲突→先修；无→等 reviewer，停轮。
 3. 无 open PR：`git checkout -B "wip/auto-$(date +%Y%m%d%H%M)" origin/wip/sched-1.1`（唯一新分支；不复用已合并 head）。

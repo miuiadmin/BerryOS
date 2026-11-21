@@ -83,10 +83,30 @@ def selftest() -> int:
     return rc
 
 
+def debt_sweep() -> dict:
+    """三张 advisory 债网（stale-parks/stranded-deferrals/answers-readback）——醒来即见死账清单。
+
+    rc 恒 0（advisory 立法）；单件超时 30s、失败记 error 不致命（fail-open：债网缺席不挡开工）。
+    """
+    out = {}
+    for name in ("stale-parks", "stranded-deferrals", "answers-readback"):
+        try:
+            r = subprocess.run([sys.executable, "-I", f"tools/{name}.py"],
+                               capture_output=True, text=True, timeout=30, cwd=str(ROOT))
+            lines = [ln for ln in (r.stdout or "").splitlines() if ln.strip()]
+            out[name] = lines[:10] if lines else []
+        except Exception as e:  # noqa: BLE001 —— advisory 面宽捕，缺席记档不致命
+            out[name] = [f"error: {e}"]
+    return out
+
+
 def main(argv: list[str]) -> int:
     if "--selftest" in argv:
         return selftest()
-    print(json.dumps(build_pack(), ensure_ascii=False, indent=1))
+    pack = build_pack()
+    if "--sweep" in argv:
+        pack["debt_sweep"] = debt_sweep()
+    print(json.dumps(pack, ensure_ascii=False, indent=1))
     return 0
 
 

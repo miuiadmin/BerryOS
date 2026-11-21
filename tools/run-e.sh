@@ -58,11 +58,32 @@ cmd_status() {
   [ -f "$STATE_DIR/run-health.json" ] && cat "$STATE_DIR/run-health.json"
 }
 
+cmd_install_launchd() {
+  ws=${1:?用法: run-e.sh install-launchd <工作区绝对路径>}
+  plist="$HOME/Library/LaunchAgents/com.berryos.e-run.plist"
+  cat > "$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.berryos.e-run</string>
+  <key>ProgramArguments</key><array>
+    <string>/bin/bash</string><string>${ws}/tools/run-e.sh</string><string>start</string>
+  </array>
+  <key>WorkingDirectory</key><string>${ws}</string>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>${ws}/out/e-run-launchd.log</string>
+  <key>StandardErrorPath</key><string>${ws}/out/e-run-launchd.log</string>
+</dict></plist>
+PLIST
+  echo "run-e: 已写 $plist——装载：launchctl load $plist（卸载用 unload；start 幂等：marker 在即拒双跑）"
+}
+
 case "${1:-}" in
   start) cmd_start ;;
   stop) cmd_stop ;;
   status) cmd_status ;;
   watch) tmux attach-session -t "=$RUN_NAME" -r 2>/dev/null || echo "run 会话不在——先 start"; ;;
   launch-session) cmd_launch-session ;;
-  *) echo "usage: run-e.sh {start|stop|status|watch|launch-session}" >&2; exit 2 ;;
+  install-launchd) cmd_install_launchd "$2" ;;
+  *) echo "usage: run-e.sh {start|stop|status|watch|launch-session|install-launchd <工作区绝对路径>}" >&2; exit 2 ;;
 esac

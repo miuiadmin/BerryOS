@@ -510,9 +510,11 @@ docs-guard:
     python3 tools/docs_guard.py
 
 # 计数事实制品对拍（工程纪律刀阶段 4；规则/16 §3）——数字自证面；
-# 刷新 = facts --update（动计数输入面的同一提交带刷）
+# 刷新 = facts --update（动计数输入面的同一提交带刷）。
+# 二期 P1 起走信封+回执双包裹（gate-wrap）：跑前跑后键一致才落回执，
+# 判决文件化——启动器退出码与工作判决分家。
 facts:
-    python3 tools/facts.py
+    bash tools/gate-wrap.sh facts facts --files tools/facts.py tools/facts.txt -- python3 tools/facts.py
 
 facts-update:
     python3 tools/facts.py --update
