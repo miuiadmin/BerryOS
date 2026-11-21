@@ -1433,6 +1433,15 @@ test-host:
     # 量化数学钉板 + 突变红 x3；字源 16MiB 恒不入库，零字源面设计
     # （PIL 烟测缺席 skip——bin sha256 互锁兜底）。
     python3 tools/gencjkfont.py --selftest
+    # W1 接线（tools 弱面清偿·PIL 渲染生成器族三件）：gen_android_nav_icons
+    # 门禁自检——AOSP SystemUI 导航 VectorDrawable 光栅化器（297 行，源
+    # XML+产物均入库）此前零守卫：源哈希互锁 x3（AOSP 资产篡改即红）+
+    # 结构律（NAV_ICON 六 id/九数组 5184 尺寸）+ ARGB 打包律（RGB 域恒为
+    # 配对墨色）+ 几何律零 PIL 全链（pathData 纯 stdlib 解析 → polygon
+    # bbox(72 网格) 与九数组重算 mask bbox 包络对账——CI 无 PIL 面可跑）+
+    # 掩码互异 + 突变红 x3；PIL 重产逐字节对拍缺席 skip（#644 判例：CI
+    # runner 无 PIL，import 惰性化）。
+    python3 tools/gen_android_nav_icons.py --selftest
     # K-3：size.py ADRP 解码器向量自检（--assert-flip 扩面的门禁自身坏 =
     # smoke/build-release 断言静默劣化，同 a-3 U4 纪律门禁化）。
     python3 tools/size.py --selftest
