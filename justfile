@@ -1424,6 +1424,15 @@ test-host:
     # 守卫同位（genfbfont --check 同族）。
     python3 tools/gen_splash_logo.py --selftest
     python3 tools/gen_splash_pct.py --selftest
+    # W1 接线（tools 弱面清偿·PIL 渲染生成器族二件）：gencjkfont 门禁
+    # 自检——CJK 3500 字 A2 分页字库（berry-gfx 运行期消费面）此前只有
+    # --check 漂移守卫零结构执法：常量互锁（.rs ↔ 本件 ↔ 数学关系）+
+    # A2 页流全链解码对账（zlib 分页 → 逐页几何 → 3500 形切分）+
+    # CJK_GOLDEN 19 条语义 golden 从解出 A2 字节重算（位打包/量化双律）+
+    # 码点表律（升序去重/CJK 区段/chars_sorted 排序律/标签十字）+
+    # 量化数学钉板 + 突变红 x3；字源 16MiB 恒不入库，零字源面设计
+    # （PIL 烟测缺席 skip——bin sha256 互锁兜底）。
+    python3 tools/gencjkfont.py --selftest
     # K-3：size.py ADRP 解码器向量自检（--assert-flip 扩面的门禁自身坏 =
     # smoke/build-release 断言静默劣化，同 a-3 U4 纪律门禁化）。
     python3 tools/size.py --selftest
