@@ -82,8 +82,9 @@ use berry_sys::{
 // 迁出，bsh 的 run 同链消费；行为逐字等价）。P6 A-1：cpio_find 供 fsmgr
 // 预走查（bsh gift[3] 依赖 fsmgr 先起，而 mkcpio 名序 bsh 首位）。
 use berry_exec::{
-    channel_pair, cpio_find, set_demand_hooks, spawn_rootfs_elf, ChildHandles, EagerGuard,
-    SpawnSpec, FB_VA, VIRTIO_MMIO_SLOTS, VIRTIO_MMIO_STRIDE, VIRTIO_MMIO_VA,
+    channel_pair, channel_pair_try, cpio_find, set_demand_hooks, spawn_nomem_take,
+    spawn_rootfs_elf, ChildHandles, EagerGuard, SpawnNomem, SpawnSpec, FB_VA, VIRTIO_MMIO_SLOTS,
+    VIRTIO_MMIO_STRIDE, VIRTIO_MMIO_VA,
 };
 // P6 A-4：vblk 块设备服务消费自验（BLKD ok）的协议面。
 use berry_blkproto::{encode_request, parse_reply, OP_READ, OP_WRITE, SECTOR_SZ, ST_OK};
@@ -7067,7 +7068,16 @@ fn app_launch(
     let stdout: Handle = if man.console {
         console
     } else {
-        let (s, c) = channel_pair();
+        // 约束②（2026-11-22 SETTINGS 尸检）：create 族 -12 降级不 trap——
+        // 此刻本表零已建对象（守卫纯读），eco nomem 行（5B ≤ 24B）+ 拒起
+        // 返 None（SPAWN 形 err=1 回执——「拒点击」而非全服务连灭）。
+        let (s, c) = match channel_pair_try() {
+            Some(p) => p,
+            None => {
+                eco_app(console, id, b"nomem");
+                return (false, uface, None);
+            }
+        };
         out_s = s;
         c
     };
@@ -7146,7 +7156,24 @@ fn app_launch(
     let mut gui_ph0: Handle = 0;
     let mut gui_ph1: Handle = 0;
     if wants_gui && wmd_src != 0 {
-        let (mut wm_srv, cli) = channel_pair();
+        // 约束②同 out 对站：wm 对 create -12 → fs dup（已建面）+ out 对
+        // best-effort 回收（`let _ =`——fs 半途失败关 rootfs_dup 同先例；
+        // 降级路零 trap）后 eco nomem 拒起。
+        let (mut wm_srv, cli) = match channel_pair_try() {
+            Some(p) => p,
+            None => {
+                if wants_fs {
+                    let _ = berry_handle_close(rootfs_dup);
+                    let _ = berry_handle_close(fs_dup);
+                }
+                eco_app(console, id, b"nomem");
+                if out_s != 0 {
+                    let _ = berry_handle_close(out_s);
+                    let _ = berry_handle_close(stdout);
+                }
+                return (false, uface, None);
+            }
+        };
         let mut bad = false;
         let mut attached = false;
         // ① cli 自留 dup（app_reap_tail 死亡面 DETACH 的发送/回收端——
@@ -7295,18 +7322,27 @@ fn app_launch(
         },
     ) {
         Err(()) => {
-            // spawn Err 全在 env send 前（berry-exec 契约）：本表零 take，
-            // fresh 私有对原值都在——关掉（vblk Err-path close 同款纪律）。
-            // SDK-1a §5.2 步骤 6：fs dup 未 take 也在表——先关两枚再关
-            // out 对（半途失败连带关的序一致化）。GUI 面（wm_det/wm_cli/
-            // 占位）同理未 take——attach 已成先 DETACH 回收 wmd 槽
-            // （best effort），非零全量回收防表槽泄漏。
-            if wants_fs {
+            // spawn Err 默认全在 env send 前（berry-exec 契约）：本表零
+            // take，fresh 私有对原值都在——关掉（vblk Err-path close 同款
+            // 纪律）。**约束②（2026-11-22 SETTINGS 尸检）nomem 例外形**：
+            // spawn 内 create 族 -12 降级 Err，gifts 收口义务两形分治
+            //（spawn_nomem_take 判别，读后即清）——Fresh（process_create
+            // 帽/env 对/stdin 对站，env send 前退场）gifts 原值都在表，
+            // 照旧全量显式关；Migrated（process_start 装配败站，env send
+            // 后退场）gifts 已随 channel_send 迁移进通道消息，本表旧值
+            // 失效（close = -EBADF 即 trap）——零收口。子面（hp/hv/ht/
+            // 窗/栈 VMO/env 对/in_s）两形都已在 spawn 内
+            // spawn_nomem_exit 全量 best-effort 回收。
+            let nomem = spawn_nomem_take();
+            let skip_gifts = nomem == Some(SpawnNomem::Migrated);
+            if !skip_gifts && wants_fs {
                 if berry_handle_close(rootfs_dup) != 0 || berry_handle_close(fs_dup) != 0 {
                     trap();
                 }
             }
             if wm_det != 0 {
+                // 两形共面：wm_det 未迁移恒在本表——DETACH 回收 wmd apps 槽
+                //（nomem 形 attach 已成，不收即每拒一次漏 1 帽位）+ close。
                 if !wm_detach_rpc(wm_det) {
                     eco_app(console, id, b"wm detach"); // 9B ≤ 24B
                 }
@@ -7314,27 +7350,29 @@ fn app_launch(
                     trap();
                 }
             }
-            if wm_cli != 0 && berry_handle_close(wm_cli) != 0 {
+            if !skip_gifts && wm_cli != 0 && berry_handle_close(wm_cli) != 0 {
                 trap();
             }
             // in_dup 恒 0（④ 撤 dup 后）——此分支不可达但保留清理面
             // 结构：重做刀回装 input dup 时此收口即复活，勿删。
-            if in_dup != 0 && berry_handle_close(in_dup) != 0 {
+            if !skip_gifts && in_dup != 0 && berry_handle_close(in_dup) != 0 {
                 trap();
             }
             // 占位别名收口（对抗审查 CONFIRMED：spawn Err 面零 take——
             // !wants_fs 形 [1]/[2] 的 dup(cli) 别名仍在本表，漏关即每次
-            // 失败泄漏 2 槽；GUI 块 bad 路六枚全量枚举的同款补齐）。
-            if gui_ph0 != 0 && berry_handle_close(gui_ph0) != 0 {
+            // 失败泄漏 2 槽；GUI 块 bad 路六枚全量枚举的同款补齐）。nomem
+            // Migrated 形已迁移——同上零收口。
+            if !skip_gifts && gui_ph0 != 0 && berry_handle_close(gui_ph0) != 0 {
                 trap();
             }
-            if gui_ph1 != 0 && berry_handle_close(gui_ph1) != 0 {
+            if !skip_gifts && gui_ph1 != 0 && berry_handle_close(gui_ph1) != 0 {
                 trap();
             }
             if ledger {
                 ps_reg(id, psp::STATE_SPAWNFAIL, 0);
             }
-            eco_app(console, id, b"elf bad");
+            // nomem 分诊行 5B / elf bad 7B，均 ≤ 24B eco 帽。
+            eco_app(console, id, if nomem.is_some() { b"nomem" } else { b"elf bad" });
             if out_s != 0
                 && (berry_handle_close(out_s) != 0 || berry_handle_close(stdout) != 0)
             {

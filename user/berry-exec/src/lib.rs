@@ -10,8 +10,12 @@
 //! 语义纪律（迁自 svcmgr，勿漂移）：
 //! - 解析/首窗读失败返 `Err`（调用方可见降级续走）；**syscall 面失败自陷**
 //!   （真 syscall 失败 = 系统级异常，标记缺失 loud 兜底）——例外：资源耗尽
-//!   （`process_create` -ENOMEM，PROCESS_MAX 出帽）= ABI 合法运行时条件，
-//!   Err 降级不杀调用方（P5 v0.5 对抗审查）；
+//!   = ABI 合法运行时条件，Err 降级不杀调用方（P5 v0.5：`process_create`
+//!   -ENOMEM，PROCESS_MAX 出帽；2026-11-22 SETTINGS 尸检约束②扩面：spawn
+//!   链 create 族 -12——env/stdin 两 `channel_pair` 站 + `process_start`
+//!   try_prepare_user 败——经 [`channel_pair_try`]/[`spawn_nomem_exit`]
+//!   全量回收后 Err，内核枯竭不再升格调用方全服务连灭；分诊旗
+//!   [`spawn_nomem_take`]）；
 //! - 段幅前置 `ELF_MAP_MAX`（复盘雷 8）：巨段在几何层即降级；
 //! - 栈与映像之间隔**保护页**（`stack_va = base + len + PAGE_SIZE`）——栈用
 //!   穿 = 干净 D-abort（hexyl 栈溢出实踩，d-3c）；
@@ -307,6 +311,63 @@ pub fn channel_pair() -> (Handle, Handle) {
     (a, b)
 }
 
+/// [`channel_pair`] 的可降级形（2026-11-22 SETTINGS 尸检约束②止血面）：
+/// `channel_create` 返 **-ENOMEM**（per-Process channel 配额帽 / 两端
+/// CHAN_DEPTH×Message ≈2.7KB 队列预储的内核堆分配败——帧池枯竭的第一
+/// 个可见死法）→ 返 `None`（调用方拒起新 app，**不 trap**——内核资源
+/// 枯竭不再升格 svcmgr 全服务连灭）；其余非 0 仍自陷（options=0 无
+/// EINVAL 面，表满/gen 尽属系统级异常，链断 loud 纪律不变）。
+pub fn channel_pair_try() -> Option<(Handle, Handle)> {
+    let mut a = 0 as Handle;
+    let mut b = 0 as Handle;
+    let s = berry_channel_create(0, &mut a, &mut b);
+    if s == BERRY_ERR_NO_MEMORY {
+        return None;
+    }
+    if s != 0 {
+        trap();
+    }
+    Some((a, b))
+}
+
+// —— spawn 链 NO_MEMORY 分诊旗（约束②配套；`Result<_, ()>` 不改签名——
+// ~30 调用面零扰动，分诊经 read-and-clear 侧口取出）——
+//
+// 两形分治（净增表判据——gifts 的收口义务随 env send 一分为二）：
+// - Fresh：env send **前**早退（process_create 帽/env 对/stdin 对三站）
+//   ——extra_gifts 原值都在调用方表，**照旧全量显式关**；
+// - Migrated：env send **后**退场（process_start 装配败）——gifts 已随
+//   channel_send 迁移进通道消息，调用方旧值失效（close = -EBADF），
+//   **零收口**。
+//
+/// spawn 末次 `Err` 的 NO_MEMORY 分诊编码（static 载体）：0 = 非 nomem、
+/// 1 = Fresh、2 = Migrated。spawn 入口恒清 0（陈值只可能来自本进程内
+/// 未被读走的旧次 set——svcmgr 其余 ~28 个 spawn 调用面不读，入口清即
+/// 作废）。单线程契约同 `spawn_rootfs_elf` SAFETY 头注（boot 后
+/// svcmgr/bsh 主循环顺序调用，Relaxed 足够——svcmgr A-8b 同判）。
+static SPAWN_NOMEM: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+/// [`spawn_nomem_take`] 的分诊值：gifts 收口义务两形（见上块）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpawnNomem {
+    /// env send 前早退——调用方 gifts 原值都在表，全量显式关。
+    Fresh,
+    /// env send 后退场——gifts 已随消息迁移，调用方零收口。
+    Migrated,
+}
+
+/// 读走 spawn 末次 `Err` 的 NO_MEMORY 分诊（take 语义：读后即清；None =
+/// 非 nomem 形 Err）。唯一消费面 = svcmgr `app_launch` 的 spawn `Err` 臂
+///（eco 分诊行 nomem/elf bad + gifts 收口义务判别）；bsh/berry-term 不
+/// 读零义务。
+pub fn spawn_nomem_take() -> Option<SpawnNomem> {
+    match SPAWN_NOMEM.swap(0, core::sync::atomic::Ordering::Relaxed) {
+        1 => Some(SpawnNomem::Fresh),
+        2 => Some(SpawnNomem::Migrated),
+        _ => None,
+    }
+}
+
 /// feeder 发送（P5 v0.5）：-EBUSY（对端满队）→ 阻塞等 WRITABLE 10s 重臂
 /// （libc `console_write` 同款契约——`recv` 腾位经 `wake_matching(对端,
 /// WRITABLE)` 唤醒，匹配键 = ObjRef 地址，跨 handle 别名互通）；其余非 0
@@ -438,6 +499,8 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
         force_eager,
         env,
     } = spec;
+    // 约束②分诊旗入口恒清（见 SPAWN_NOMEM 头注）：本次调用的 Err 面零陈值。
+    SPAWN_NOMEM.store(0, core::sync::atomic::Ordering::Relaxed);
     assert!(
         stdin_feed.is_none() || stdin_handle.is_none(),
         "spawn: stdin_feed/stdin_handle 互斥"
@@ -492,7 +555,10 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
         // 僵尸累积到帽后，trap 反杀 bsh = 交互 shell 死亡；出参在帽检前预清
         // 0，此刻零已建对象，直接返回零清理面）。其余站点（vmo/commit/map/
         // thread）的帧耗尽在 64 帽内不可达（64×~0.7MB ≈ 45MB ≪ 128M）仍
-        // trap——PROCESS_MAX 提高时（v2）须同步扩这条降级。
+        // trap——PROCESS_MAX 提高时（v2）须同步扩这条降级。约束②（2026-11-22
+        // SETTINGS 尸检）：本面同置分诊旗（Fresh——此刻零已建对象、gifts
+        // 未 send 原值都在调用方表）——调用方 eco 行按 nomem 分诊。
+        SPAWN_NOMEM.store(1, core::sync::atomic::Ordering::Relaxed);
         return Err(());
     }
     if s != 0 || hp == 0 || hv == 0 {
@@ -749,7 +815,18 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
     //    修法 = 自描述对前移固定位 [2]/[3]、extras 挪 [4..4+len]——每槽
     //    语义固定、nhandles 单调门控 presence，消费侧（libc io.rs boot）同
     //    步对偶。无 stdin 的老 spawn 面（svcmgr 无管道子）nhandles=1 不装。
-    let (env_s, env_c) = channel_pair();
+    // 约束②（2026-11-22 SETTINGS 尸检）：env 对的 channel_create 也是 create
+    // 族——帧池枯竭时 -12（两队列预储 ~5.4KB 内核堆）即 trap 连灭 svcmgr。
+    // 降级：全量 best-effort 回收已建子面对象后 Err（净增表 env 行「失败
+    // 路径尚未建」的补齐——`spawn_nomem_exit` 文件尾 inline(never)）。
+    let (env_s, env_c) = match channel_pair_try() {
+        Some(p) => p,
+        None => {
+            return spawn_nomem_exit(
+                hp, hv, ht, svmo, &wins, nwin, stack_va, stack_len, mmio_geo, 0, 0, None, false,
+            )
+        }
+    };
     // 8 槽（A2-3：[4] rootfs / [5] fs / [6] netd；GUI-4 段②：+ [7] input
     // ——svcmgr bsh arm 四 extras；bsh 内 uu_run 族仍 ≤2 消费同一面零漂移）。
     let mut gift = [0 as Handle; 8];
@@ -761,7 +838,20 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
     if berry_handle_duplicate(stdout, RIGHT_SEND | RIGHT_TRANSFER | RIGHT_DUPLICATE, &mut gift[0]) != 0 {
         trap();
     }
-    let stdin_pair = stdin_feed.map(|_| channel_pair());
+    // 约束②同上：stdin 对的 channel_create -12 同形降级（此刻 gift[0] 已
+    // dup 未 send——本表原值，先收再走子面回收；净增表 stdin/gift[0] 行的
+    // 失败路径补齐）。
+    let stdin_pair = match stdin_feed.map(|_| channel_pair_try()) {
+        Some(Some(p)) => Some(p),
+        Some(None) => {
+            let _ = berry_handle_close(gift[0]); // 已 dup 未迁移——本表面值回收
+            return spawn_nomem_exit(
+                hp, hv, ht, svmo, &wins, nwin, stack_va, stack_len, mmio_geo, env_s, env_c, None,
+                false,
+            )
+        }
+        None => None,
+    };
     let mut nhandles = if stdin_pair.is_some() { 2 } else { 1 };
     if let Some((_, in_c)) = stdin_pair {
         gift[1] = in_c; // stdin 读端随 env 块迁移（handle 数组按位语义）
@@ -840,7 +930,20 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
             trap();
         }
     }
-    if berry_process_start(hp, ht, h.entry as usize, saddr + stack_len as usize, env_c) != 0 {
+    // 约束②（2026-11-22 SETTINGS 尸检崩溃本尊）：process_start（NR 0x32）
+    // 返 -12 = try_prepare_user 装配败（Task Box + 16KiB 内核栈——内核堆/
+    // 帧池枯竭），ABI 合法运行时条件非链断——降级 Err 拒起不 trap。此刻
+    // env/gifts 已 send（句柄随消息迁移，由通道两端收口）、bootstrap 经
+    // 内核失败回滚「值可变语义存活」（close 或 -EBADF，best-effort 吞之
+    // ——残余账归内核刀实验设计）。其余非 0 错仍 trap（链断 loud 不变）。
+    let st = berry_process_start(hp, ht, h.entry as usize, saddr + stack_len as usize, env_c);
+    if st == BERRY_ERR_NO_MEMORY {
+        return spawn_nomem_exit(
+            hp, hv, ht, svmo, &wins, nwin, stack_va, stack_len, mmio_geo, env_s, env_c,
+            stdin_pair, true,
+        );
+    }
+    if st != 0 {
         trap();
     }
     if berry_handle_close(env_c) != BERRY_ERR_BAD_HANDLE {
@@ -969,4 +1072,83 @@ fn trap() -> ! {
     loop {
         core::hint::spin_loop();
     }
+}
+
+/// spawn 链 NO_MEMORY 降级收口（约束②止血面，2026-11-22 SETTINGS 尸检）：
+/// create 族（env/stdin 两 channel_pair 站、process_start）-12 早退形的
+/// **全量 best-effort 回收**后 `Err` 拒起——净增表「失败路径尚未建」三行
+///（env 对/stdin 对/gift[0]）与 ChildHandles 链的补齐。回收序 = `reap`
+/// 减 wait/read 两刀（子未 start 无退出面）：demand 槽注销 → unmap 窗/
+/// 栈/MMIO → close svmo/窗 VMO/ht/hv/hp → 通道面（env 两端 + in_s）。
+/// 全程 `let _ =`（demand 半途回滚同先例）：降级路上零 trap——再 trap 即
+/// 止血面自灭。`gifts_migrated`：gift[0..nhandles] 已 send 形随消息迁移
+/// （process_start 站），通道两端关闭即终结；未 send 形（env/stdin 站）
+/// gifts 原值仍在调用方表——由调用方按 Fresh 形收口。`env_c` 经
+/// process_start 失败回滚后内核「值可变，语义存活」（句柄值或变——close
+/// 或 -EBADF，吞之；残余账归内核刀实验设计）。置 `SPAWN_NOMEM`
+///（Fresh=1/Migrated=2）供调用方分诊（[`spawn_nomem_take`]）。
+///
+/// `#[inline(never)]` 文件尾（位置敏感纪律）：spawn 大函数增量钉在 match
+/// 臂级（<500B），回收体不进热路径。
+#[inline(never)]
+fn spawn_nomem_exit(
+    hp: Handle,
+    hv: Handle,
+    ht: Handle,
+    svmo: Handle,
+    wins: &[ChildWin],
+    nwin: usize,
+    stack_va: u64,
+    stack_len: u64,
+    mmio_geo: Option<(u64, u64)>,
+    env_s: Handle,
+    env_c: Handle,
+    stdin_pair: Option<(Handle, Handle)>,
+    gifts_migrated: bool,
+) -> Result<ChildHandles, ()> {
+    // demand 槽注销先于 unmap/close（reap:252 同序——防句柄值复用后 pager
+    // 误供新主）。SAFETY: 只读（boot 后无写者）。
+    if let Some(unreg) = demand_unreg_hook() {
+        for w in &wins[..nwin] {
+            if w.demand {
+                unreg(w.vmo);
+            }
+        }
+    }
+    // unmap（mapcnt 归零——Vmo::Drop 还帧判据）→ close 链（reap 序镜像）。
+    for w in &wins[..nwin] {
+        if w.vmo != 0 {
+            let _ = berry_vmar_unmap(hv, w.start as usize, w.len as usize);
+        }
+    }
+    let _ = berry_vmar_unmap(hv, stack_va as usize, stack_len as usize);
+    if let Some((base, len)) = mmio_geo {
+        let _ = berry_vmar_unmap(hv, base as usize, len as usize);
+    }
+    let _ = berry_handle_close(svmo);
+    for w in &wins[..nwin] {
+        if w.vmo != 0 {
+            let _ = berry_handle_close(w.vmo);
+        }
+    }
+    let _ = berry_handle_close(ht);
+    let _ = berry_handle_close(hv);
+    let _ = berry_handle_close(hp);
+    // 通道面：env_s 恒关（消息面终结）；env_c best-effort（回滚值变形吞
+    // EBADF）；in_s 关（in_c 已随 env 消息迁移）。0 = 该对象未建（env 站
+    // 早退形）。
+    if env_s != 0 {
+        let _ = berry_handle_close(env_s);
+    }
+    if env_c != 0 {
+        let _ = berry_handle_close(env_c);
+    }
+    if let Some((in_s, _)) = stdin_pair {
+        let _ = berry_handle_close(in_s);
+    }
+    SPAWN_NOMEM.store(
+        if gifts_migrated { 2 } else { 1 },
+        core::sync::atomic::Ordering::Relaxed,
+    );
+    Err(())
 }
