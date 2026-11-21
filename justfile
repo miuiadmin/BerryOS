@@ -1505,6 +1505,17 @@ test-host:
     # 好过+印记耗/no-verify 拦/merge 免检/索引留毒拒/未跟踪不误伤）。
     # 改 .githooks/* 或 check-docs 检查面必跑。
     {{BASH}} tools/gate-selftest.sh
+    # 自动化开发二期 P0 接线：E lane 六件自检——e-guard（punch oracle/
+    # FROZEN 自指/stop-hook 环境腿/四门拒写）、e-doctor（缺件红/全配过）、
+    # e-supervisor（机制分判/revert 通道/repair 判据）、pack-work（开工包
+    # 切分）、push-green（supersession/取消弱证据）、e-receipts（内容寻址）。
+    # 改 tools/e-*.py、run-e.sh、pack-work/push-green 必跑。
+    python3 tools/e-guard.py --selftest
+    python3 tools/e-doctor.py --selftest
+    python3 tools/e-supervisor.py --selftest
+    python3 tools/pack-work.py --selftest
+    python3 tools/push-green.py --selftest
+    python3 tools/e-receipts.py --selftest
     # 工程纪律刀阶段 4 接线：数字自证面——facts 对拍自检（合成仓 11 键/
     # 篡改红/幂等）+ check-docs 检测器自检（四组坏样例必触发——「a detector
     # that goes quiet is an ERROR」）。改 facts.py、check-docs 检查面必跑。

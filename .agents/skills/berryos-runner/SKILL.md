@@ -5,10 +5,11 @@ description: BerryOS 无人值守 runner 宪法（E 面）——每轮循环、d
 
 # BerryOS 无人值守 runner 宪法（E 面）
 
-本文件是无人值守会话的宪法唯一源（规则/16 §5）。cron/调度 prompt 只许一句指针「完整读取 .agents/skills/berryos-runner/SKILL.md 并严格执行」，禁承载规则本体。形态改造自已验证 693+ 轮的 W1 lane 宪法（`/Users/murongcheng/berryos-hermes/.hermes-loop/LOOP.md`），叠加 decide-then-report 与 park 制度。
+本文件是无人值守会话的宪法唯一源（规则/16 §5）。会话由 `tools/run-e.sh start` 拉起（tmux + claude 独立 session-id + `BERRYOS_E_RUN=1`），心跳判活、监督器兜底——拉起器语义见 RUNBOOK。cron/调度 prompt 只许一句指针「完整读取 .agents/skills/berryos-runner/SKILL.md 并严格执行」，禁承载规则本体。
 
 ## 每轮循环
 
+0. **开工包先行**：`python3 tools/pack-work.py`——punch-list 开放项、facts、git 状态一次到手，token 花在干活不花在重导状态。
 1. `git status --short`：脏则先判断是否自己的 WIP；是→完成/提交；不是→LOG BLOCKED，停轮。
 2. `git fetch origin`；查自己的 open PR（label `hermes-auto`，head 前缀 `wip/auto-`）。有 findings/冲突→先修；无→等 reviewer，停轮。
 3. 无 open PR：`git checkout -B "wip/auto-$(date +%Y%m%d%H%M)" origin/wip/sched-1.1`（唯一新分支；不复用已合并 head）。
@@ -18,8 +19,12 @@ description: BerryOS 无人值守 runner 宪法（E 面）——每轮循环、d
 7. 验证（真跑，隔离 target）：`RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WORKS=1 CARGO_TARGET_DIR=<工作区私有 target> just test-host` + `just docs-guard` + `python3 tools/facts.py`（动计数面同批 `--update`）；相关时按规则域加跑。
 8. 自审：`git diff --stat` + `git diff`；至少写 3 条风险检查（越界/测试/文档/秘密/仓规），有阻塞就修。
 9. commit（小步原子，显式路径）；新分支才 rebase（已 push 的 PR 分支只 merge-base 解冲突，不改写历史）；rebase 过则重跑第 7 步。
-10. push 当前分支（`wip/auto-*`——身份闸保证这是唯一合法面）；创建/更新 PR（base `wip/sched-1.1`，label `hermes-auto`，body 必含任务、改动、验证命令与结果、风险、本轮全部 `A:` 决策行）。**绝不 merge**。
+10. push 当前分支走 `python3 tools/push-green.py`（后台推送 + `@{u}..HEAD` 空为落地判据 + CI 三态判决：green 前进 / red 修 / note=基础设施无答记档不归责）；创建/更新 PR（base `wip/sched-1.1`，label `hermes-auto`，body 必含任务、改动、验证命令与结果、风险、本轮全部 `A:` 决策行）。**绝不 merge**。
 11. 更新 punch-list（勾完成项）与 LOG；park 项按下方 park 语义落账。
+
+## 停机语义（不许自愿停，停要过四门）
+
+无人会话被 Stop hook 扣住（`tools/e-guard.py stop-hook`）：marker 在且无 fixpoint 哨兵即 exit 2。唯一的自然停机路径：`python3 tools/e-guard.py fixpoint`——四门全过才写哨兵（树净、punch-list 无未 park 开放项、门禁套件绿、无 repair_needed）；被硬停类阻塞时 `--blocked` 记因收工。操作员停机：宿主 shell `bash tools/run-e.sh stop`（无人会话环境内拒执——run 不能停自己）。修复回路帽：同一对象修复两次仍红即回滚该轮改动并 park，不许无限重试。
 
 ## decide-then-report（决策不等人）
 
@@ -42,6 +47,7 @@ description: BerryOS 无人值守 runner 宪法（E 面）——每轮循环、d
 
 - 身份：`git config user.name berryos-hermes-bot` + 独立邮箱，且本克隆 `git config berryos.bot-email <该邮箱>`（pre-push 身份闸消费——bot 推非 `wip/auto-*`/`hermes/*` 分支直接拒）。
 - 只推 `wip/auto-*`；永不碰 main、永不 merge（reviewer 人审合入）、永不 force、永不 `reset --hard` 到非自己提交。
+- FROZEN 集（PreToolUse 拦截，规则/16 §5）：宪法 skill、`.claude/`、`.githooks/`、`tools/e-*.py`、`run-e.sh`、`pack-work.py`、`push-green.py`——无人会话不可写自己的宪法与闸；改它们 = attended 会话的活，诉求落 punch-list。
 - 工作区结构性隔离：独立克隆（不共享主仓/其他 lane 的工作树与索引）；多会话吞并类事故在隔离下结构性不存在。
 - 禁：新外部依赖、ABI 破冻、生产操作、秘密入库、`git fetch/pull` 本地路径、访问 `~/Documents`。
 

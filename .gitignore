@@ -88,6 +88,7 @@ __pycache__/
 # 父目录被排除时 git 不下钻，须用 .claude/* + ! 取反惯用法，单写 !.claude/skills 无效
 .claude/*
 !.claude/skills
+!.claude/settings.json
 
 # loopx MCP 注册（含本机绝对路径，机器绑定）
 /.mcp.json
