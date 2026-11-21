@@ -1,10 +1,14 @@
 #!/bin/sh
-# BerryOS main 线守门（push 层）——防线详见 .agents/notes/implemented/2026-11-16-跨根合并防线与判例.md
-# 职责：拒绝把跨根合并提交推进 refs/heads/main（GitHub 服务端装不了钩子，本地 push 是最后闸口）。
+# BerryOS main 线守门 + bot 身份闸（push 层）——防线详见 .agents/notes/implemented/2026-11-16-跨根合并防线与判例.md 与 docs/规则/16-工程纪律.md
+# 职责一：拒绝把跨根合并提交推进 refs/heads/main（GitHub 服务端装不了钩子，本地 push 是最后闸口）。
+# 职责二（工程纪律刀阶段 6）：berryos.bot-email 登记的 bot 身份新提交只准推
+# wip/auto-* 与 hermes/*（「runner 永不碰集成分支/永不自 merge」的机器面；
+# 未配置则本段静默跳过）。
 # lane 往 wip/* 或别的分支推不受影响；owner 逃生阀 BERRYOS_ALLOW_CROSSROOT=1。
 
 [ "$BERRYOS_ALLOW_CROSSROOT" = "1" ] && exit 0
 zero=0000000000000000000000000000000000000000
+bot_email=$(git config --get berryos.bot-email 2>/dev/null)
 
 # 全亲两两核（F92）：任一对无共同祖先 → 返 0（命中）。$@ = 全部亲 OID。
 crossroot_pair() {
@@ -19,6 +23,27 @@ crossroot_pair() {
 }
 
 while read -r lref lsha rref rsha; do
+  # ---- bot 身份闸（工程纪律刀阶段 6；规则/16 §5）----
+  # config 驱动（未配置 berryos.bot-email 则本段静默跳过——钩子保持通用）：
+  # 登记的 bot 邮箱作者的本地新提交只准推 wip/auto-* 与 hermes/*——推 main
+  # 或其他分支即拒（「runner 永不碰集成分支/永不自 merge」的机器面）。
+  if [ -n "$bot_email" ]; then
+    case "$lref" in
+      refs/heads/wip/auto-*|refs/heads/hermes/*) ;;
+      *)
+        botrange="$rsha..$lsha"
+        [ "$rsha" = "$zero" ] && botrange="$lsha"
+        if git rev-list "$botrange" --author="$bot_email" 2>/dev/null | head -1 | grep -q .; then
+          cat >&2 <<EOF
+[berryos-guard] 拒绝：bot 身份（$bot_email）的新提交只准推 wip/auto-* 或 hermes/* 分支，
+本次推送将把 bot 提交送上 $lref——runner 永不碰集成分支、永不自 merge（规则/16 §5）。
+bot 正确路径：推 wip/auto-* 开 PR（label hermes-auto），人审合入。
+EOF
+          exit 1
+        fi
+        ;;
+    esac
+  fi
   [ "$rref" = "refs/heads/main" ] || continue
   [ "$lsha" = "$zero" ] && continue
   if [ "$rsha" = "$zero" ]; then
