@@ -1442,6 +1442,14 @@ test-host:
     # 掩码互异 + 突变红 x3；PIL 重产逐字节对拍缺席 skip（#644 判例：CI
     # runner 无 PIL，import 惰性化）。
     python3 tools/gen_android_nav_icons.py --selftest
+    # W1 接线（tools 弱面清偿·串口判读契约族）：desktop-calib 门禁自检——
+    # Mac HVF 双臂标定件（不进 CI）的串口判读契约此前零机器执法：
+    # VGPUPERF/VGPUDMA 解析律（字段提取/坏值容忍/token==submits 契约）
+    # + 基线快照 + median/percentile 统计数学（numpy 线性插值口径）+
+    # snap240 滑窗闭窗恰界与达标阈值（round 非 ceil）+ move 数换算 +
+    # SerialTail 增量尾读（半行跨读/close 重开从头读契约）+ 突变红 x3。
+    # 改 desktop-calib 判读/统计面必跑。
+    python3 tools/desktop-calib.py --selftest
     # K-3：size.py ADRP 解码器向量自检（--assert-flip 扩面的门禁自身坏 =
     # smoke/build-release 断言静默劣化，同 a-3 U4 纪律门禁化）。
     python3 tools/size.py --selftest

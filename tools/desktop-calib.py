@@ -1058,7 +1058,138 @@ def main() -> int:
     return 0
 
 
+# ---------------------------------------------------------------- selftest
+# 门禁自检纪律同族（make_desktop_disk #639 / gen_android_nav_icons #645）：
+# 本件是 Mac HVF 双臂标定件（不进 CI），但串口判读契约——VGPUPERF/
+# VGPUDMA 行格式、基线快照、帧间隔统计、snap240 滑窗数学、SerialTail
+# 增量尾读——是 product-e2e/desktop 报告的数字根基；解析律或统计数学
+# 改坏 = 报告字段静默错值，此前零机器执法。自检全合成文本/临时文件，
+# 零 QEMU 零真镜像。
+def selftest() -> int:
+    import tempfile as _tf
+
+    fails: list[str] = []
+
+    def check(name: str, ok: bool) -> None:
+        if not ok:
+            fails.append(name)
+
+    # ① VGPUPERF/VGPUDMA 解析律：字段提取、缺 submits 行跳过、非整数
+    #    值容忍、token 属性（submits==token 契约——vgpud submit_seq 与
+    #    perf_submits 同起点同步 +1 的判读根基）。
+    sample = (
+        "[  12.345] bsh: hello\n"
+        "VGPUPERF submits=5 avg_us=1200 last_us=340 dma_us=800 reattaches=1"
+        " jitter_us=22 rects=3 area=409600 union=307200\n"
+        "noise without marker\n"
+        "VGPUPERF submits=6 avg_us=bad last_us=350 dma_us=810\n"
+        "VGPUDMA token=5 us=800\n"
+        "VGPUDMA token=6 us=810 extra=1\n"
+        "VGPUDMA token=7 us=nope\n"
+        "VGPUPERF avg_us=1 submits=7\n"  # 乱序键仍取到
+    )
+    frames = parse_perf_frames(sample)
+    check("解析: VGPUPERF 帧数", len(frames) == 3)
+    f0 = frames[0]
+    check("解析: 全字段提取",
+          (f0.submits, f0.avg_us, f0.last_us, f0.dma_us, f0.reattaches,
+           f0.jitter_us, f0.rects, f0.area, f0.union)
+          == (5, 1200, 340, 800, 1, 22, 3, 409600, 307200))
+    check("解析: 坏值容忍为默认", frames[1].avg_us == 0)
+    check("解析: token 契约", frames[0].token == 5 and frames[2].token == 7)
+    check("解析: raw 含前缀行", frames[0].raw.startswith("VGPUPERF submits="))
+    dmas = parse_dma_done(sample)
+    check("解析: VGPUDMA 双键门槛", len(dmas) == 2
+          and dmas[0].token == 5 and dmas[1].us == 810)
+    check("解析: 空文本零帧", parse_perf_frames("") == [] and parse_dma_done("") == [])
+
+    # ② 基线快照：两计数器同源同快照、空文本归零、乱序取 max。
+    base = snapshot_baseline(sample)
+    check("基线: submits/token max", (base.submits, base.token) == (7, 6))
+    check("基线: 空文本 (0,0)", snapshot_baseline("") == SerialBaseline(0, 0))
+
+    # ③ 统计数学钉板：median 奇偶/percentile 线性插值（numpy 默认口径）
+    #    /空表零值——报告 p95 与达标判定的数字根基。
+    check("median: 奇数中位", median([3.0, 1.0, 2.0]) == 2.0)
+    check("median: 偶数均值", median([4.0, 1.0, 3.0, 2.0]) == 2.5)
+    check("median: 空表 0.0", median([]) == 0.0)
+    check("percentile: q0/q1", (percentile([1.0, 2.0, 3.0, 4.0], 0.0),
+                                percentile([1.0, 2.0, 3.0, 4.0], 1.0))
+          == (1.0, 4.0))
+    check("percentile: 线性插值 q=0.5→2.5 / q=0.25→1.75",
+          (percentile([1.0, 2.0, 3.0, 4.0], 0.5),
+           percentile([1.0, 2.0, 3.0, 4.0], 0.25)) == (2.5, 1.75))
+    check("percentile: 单元素任意 q", percentile([7.0], 0.95) == 7.0)
+    check("percentile: 空表 0.0", percentile([], 0.95) == 0.0)
+
+    # ④ snap240 滑窗与达标数学：含首帧窗口（[t, t+w] 闭窗）+ 同刻多帧
+    #    各计 1（轮询量化不敏感）+ 理论值/达标阈值口径。
+    arrivals = [0.0, 0.016, 0.033, 0.050, 0.067, 0.083, 0.100, 0.117,
+                0.133, 0.150, 0.167, 0.183, 0.200, 0.216, 0.233, 0.250]
+    check("snap: 60Hz 240ms 密排 15 帧", snap_window_frames(arrivals, 0.24) == 15)
+    check("snap: 窗口漂移下界", snap_window_frames(
+        [0.0, 0.05, 0.10, 0.15, 0.20, 0.26, 0.31], 0.24) == 5)
+    check("snap: 同刻双帧各计 1", snap_window_frames([0.0, 0.0, 5.0], 0.24) == 2)
+    check("snap: 闭窗恰界（t+w 边缘帧计入）",
+          snap_window_frames([0.0, 0.24], 0.24) == 2
+          and snap_window_frames([0.0, 0.2401], 0.24) == 1)
+    check("snap: 空表 0", snap_window_frames([], 0.24) == 0)
+    check("snap: 理论 60Hz→14.4", snap240_theoretical_frames(60.0) == 14.4)
+    check("snap: 达标中位数阈值（round 非 ceil——50Hz 13 恒拒）",
+          fps_target_met([14, 15, 14], 60.0) is True
+          and fps_target_met([13, 13, 13], 60.0) is False
+          and fps_target_met([], 60.0) is False)
+
+    # ⑤ swipe_move_count：总跨度恒定换算 + 下限 2 + step 单位秒。
+    check("move: 45ms→5 / 12ms→19", (swipe_move_count(0.045), swipe_move_count(0.012))
+          == (5, 19))
+    check("move: 极端步长下限 2", swipe_move_count(10.0) >= 2)
+
+    # ⑥ SerialTail 增量尾读：半行跨读拼接、新行不重读、close 复用。
+    with _tf.NamedTemporaryFile(prefix="calib-tail.") as tf:
+        tail_path = Path(tf.name)
+        tail = SerialTail(tail_path)
+        check("tail: 缺席→空串首次不炸", tail.read_new_lines() == "")
+        tail_path.write_bytes(b"[ 1.0] VGPUDMA token=1 us=1")  # 半行
+        check("tail: 半行零输出", tail.read_new_lines() == "")
+        with tail_path.open("ab") as fh:
+            fh.write(b"00\nVGPUPERF submits=2 avg_us=3\npart")
+        got = tail.read_new_lines()
+        check("tail: 拼行完整", "token=1 us=100" in got and "submits=2" in got)
+        check("tail: 半行留待下次", got.endswith("submits=2 avg_us=3"))
+        with tail_path.open("ab") as fh:
+            fh.write(b"ial\n")
+        check("tail: 续读补全", tail.read_new_lines() == "partial")
+        tail.close()
+        tail.close()  # 幂等
+        # close 后重开 = 从头全量重读（无偏移记忆，非生产路径——close 只在
+        # teardown 调用）；如实钉板防误改成断点续读。
+        check("tail: close 后重开从头读",
+              tail.read_new_lines().splitlines() == [
+                  "[ 1.0] VGPUDMA token=1 us=100",
+                  "VGPUPERF submits=2 avg_us=3",
+                  "partial",
+              ])
+        tail.close()
+
+    # ⑦ 突变红：解析律被改坏（标记名漂移）时对应律必咬。
+    mut = sample.replace("VGPUPERF submits=5", "VGPUPERFX submits=5")
+    if len(parse_perf_frames(mut)) == len(parse_perf_frames(sample)):
+        fails.append("突变: 标记名漂移未咬解析律")
+
+    if fails:
+        for msg in fails:
+            print(f"desktop-calib selftest: FAIL {msg}", file=sys.stderr)
+        return 1
+    print("desktop-calib: selftest ok (VGPUPERF/VGPUDMA 解析律 + 基线快照 + "
+          "median/percentile 统计数学 + snap240 滑窗与达标口径 + move 数换算 + "
+          "SerialTail 增量尾读 + 突变红；全合成文本零 QEMU)")
+    return 0
+
+
 if __name__ == "__main__":
+    if "--selftest" in sys.argv[1:]:
+        raise SystemExit(selftest())
     try:
         raise SystemExit(main())
     except Exception as error:
