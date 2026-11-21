@@ -404,6 +404,40 @@ function checkArchivedHeader(rel, hdr, out) {
   else if (!DATE_RE.test(archF.value)) add(out, 1, rel, archF.idx + 1, `Archived 值 \`${archF.value}\` 非 yyyy-mm-dd`);
 }
 
+/** 组 1：规划双戳（工程纪律刀阶段 5；规则/16 §4）——`.agents/plans/<模块>/design.md` 已含戳行者受检（戳在场即 opt-in，存量未戳模块零回填）。反黑洞：盖戳节禁裸 `- [ ]`、戳计数须等于本节 checklist 实数、双戳齐才算 done；节内末条 Verified 为准（历史戳不执法）。 */
+function checkDesignStamps(rel, lines, out) {
+  if (!/^\.agents\/plans\/[^/]+\/design\.md$/.test(rel)) return;
+  const VERIFIED_RE = /^>\s*Verified:\s*(\d{4}-\d{2}-\d{2})\s*·\s*([0-9a-f]{7,40})\s*·\s*(\d+)\s*\/\s*(\d+)\s*·\s*tests\s+(\d+|-)\s*$/;
+  const QUALITY_RE = /^>\s*Quality reviewed:\s*\S/;
+  const CHECK_RE = /^\s*-\s+\[( |x|X)\]/;
+  // 分节扫描（自跟踪围栏，防代码块内 checklist 假计数）
+  let fenced = false;
+  const sections = [];
+  let cur = { checks: 0, unchecked: 0, verified: null, quality: false };
+  const seal = () => sections.push(cur);
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    if (/^\s*(```|~~~)/.test(raw)) { fenced = !fenced; continue; }
+    if (fenced) continue;
+    if (/^#{1,6}\s/.test(raw)) { seal(); cur = { checks: 0, unchecked: 0, verified: null, quality: false }; continue; }
+    const vm = VERIFIED_RE.exec(raw);
+    if (vm) { cur.verified = { line: i + 1, m: vm }; continue; }
+    if (QUALITY_RE.test(raw)) { cur.quality = true; continue; }
+    const cm = CHECK_RE.exec(raw);
+    if (cm) { if (cm[1] === ' ') cur.unchecked++; else cur.checks++; }
+  }
+  seal();
+  for (const s of sections) {
+    if (!s.verified) continue;
+    const { line, m } = s.verified;
+    const date = m[1], n1 = m[3], n2 = m[4];
+    if (!DATE_RE.test(date)) add(out, 1, rel, line, `Verified 戳日期 \`${date}\` 非 yyyy-mm-dd`);
+    if (s.unchecked > 0) add(out, 1, rel, line, `反黑洞：盖戳节内有 ${s.unchecked} 个裸 \`- [ ]\`——未验收项必须先撤戳重验（调度只读结构，裸项塞进盖戳节即隐形）`);
+    if (s.checks !== +n1 || s.checks !== +n2) add(out, 1, rel, line, `戳计数不符：\`${n1}/${n2}\` ≠ 本节 checklist 实数 ${s.checks} 项（已勾 ${s.checks}、裸 ${s.unchecked}）`);
+    if (!s.quality) add(out, 1, rel, line, '缺 `> Quality reviewed:` 行——双戳齐才算 done（规则/16 §4）');
+  }
+}
+
 /** 组 1/2：模块设计文档的固定形态——`plans/<模块>/design.md`，Type 为 spec、带 `Version` semver、标题含模块标识。 */
 function checkModuleDesign(rel, hdr, lines, out) {
   const parts = rel.split('/'), base = parts[parts.length - 1];
@@ -411,6 +445,7 @@ function checkModuleDesign(rel, hdr, lines, out) {
   // rel 相对工作区根：合法形态恰为 `.agents/plans/<模块>/design.md`
   const underAnchor = parts[0] === '.agents' ? parts.slice(1) : parts;
   if (underAnchor.length !== 3 || underAnchor[0] !== 'plans') { add(out, 2, rel, 1, '`design.md` 是模块设计文档的固定名，应放在 `.agents/plans/<模块>/design.md`'); return; }
+  checkDesignStamps(rel, lines, out);
   const slug = underAnchor[1];
   const typeF = hdr.fields.find((f) => f.key === 'Type');
   const verF = hdr.fields.find((f) => f.key === 'Version');
@@ -745,10 +780,13 @@ function runSelftest() {
   };
   const mkTree = (root) => {
     mkdirSync(join(root, '.agents/plans/mod1'), { recursive: true });
-    mkdirSync(join(root, '.agents/plans/mod2'), { recursive: true });
+    mkdirSync(join(root, '.agents/plans/mod5'), { recursive: true });
     mkdirSync(join(root, 'docs'), { recursive: true });
     writeFileSync(join(root, '.agents/plans/mod1/design.md'),
       '# mod1 总体设计\n\nType: spec\nStatus: active\nUpdated: 2026-11-21\nVersion: 1.0.0\n\n一句话说明：好样例。\n');
+    // 合法双戳样例（1/1 恰等、零裸项、Quality reviewed 在场）
+    writeFileSync(join(root, '.agents/plans/mod5/design.md'),
+      '# mod5 总体设计\n\nType: spec\nStatus: active\nUpdated: 2026-11-21\nVersion: 1.0.0\n\n## 验收标准\n\n- [x] 甲\n- [x] 乙\n\n> Verified: 2026-11-21 · abcdef123456 · 2/2 · tests 4\n> Quality reviewed: 对抗审查 2x 2026-11-21\n');
     writeFileSync(join(root, 'docs/free.md'), '# 自由\n\n一句话说明：自由知识无头块合法。\n');
   };
   const run = (args, cwd) => spawnSync(process.execPath, [self, ...args], { cwd, encoding: 'utf8' });
@@ -763,6 +801,7 @@ function runSelftest() {
   // 腿 2：坏样例各组必触发（组 0 编码 / 组 1 头块 / 组 2 家 / 组 3 链接）
   const bad = mkdtempSync(join(tmpdir(), 'cd-bad-'));
   mkTree(bad);
+  mkdirSync(join(bad, '.agents/plans/mod2'), { recursive: true });
   writeFileSync(join(bad, '.agents/plans/bin-bad.md'), '# 坏编码\n\n�\n'); // 组 0：内容含替换符
   writeFileSync(join(bad, '.agents/plans/mod2/design.md'),
     '# mod2 总体设计\n\nType: spec\nStatus: active\nUpdated: 2026-11-21\n'); // 缺 Version → 组 1
@@ -770,19 +809,30 @@ function runSelftest() {
     '# 走错家\n\nType: survey\nStatus: current\nUpdated: 2026-11-21\n\n正文。\n'); // survey 应在 research → 组 2
   writeFileSync(join(bad, '.agents/plans/mod1/断链.md'),
     '# 断链\n\nType: plan\nStatus: active\nUpdated: 2026-11-21\n\n看[不存在的目标](../nope.md)。\n'); // 组 3
+  // 双戳三坏样例（工程纪律刀阶段 5）
+  for (const s of ['s1', 's2', 's3']) mkdirSync(join(bad, '.agents/plans', s), { recursive: true });
+  writeFileSync(join(bad, '.agents/plans/s1/design.md'),
+    '# s1 总体设计\n\nType: spec\nStatus: active\nUpdated: 2026-11-21\nVersion: 1.0.0\n\n## 验收\n\n- [x] 甲\n- [ ] 乙\n\n> Verified: 2026-11-21 · abcdef123456 · 2/2 · tests 1\n> Quality reviewed: x 2026-11-21\n'); // 裸 checkbox → 反黑洞
+  writeFileSync(join(bad, '.agents/plans/s2/design.md'),
+    '# s2 总体设计\n\nType: spec\nStatus: active\nUpdated: 2026-11-21\nVersion: 1.0.0\n\n## 验收\n\n- [x] 甲\n\n> Verified: 2026-11-21 · abcdef123456 · 2/2 · tests 1\n> Quality reviewed: x 2026-11-21\n'); // 计数 2/2 ≠ 实数 1
+  writeFileSync(join(bad, '.agents/plans/s3/design.md'),
+    '# s3 总体设计\n\nType: spec\nStatus: active\nUpdated: 2026-11-21\nVersion: 1.0.0\n\n## 验收\n\n- [x] 甲\n\n> Verified: 2026-11-21 · abcdef123456 · 1/1 · tests 1\n'); // 缺 Quality reviewed
   r = run(['--strict'], bad);
   const out = r.stdout || '';
   ok = leg('坏样例退出 1', r.status === 1) && ok;
   for (const g of [0, 1, 2, 3]) ok = leg(`组 ${g} 坏样例触发`, out.includes(`组 ${g} ·`)) && ok;
+  ok = leg('反黑洞坏样例触发', out.includes('反黑洞')) && ok;
+  ok = leg('戳计数坏样例触发', out.includes('戳计数不符')) && ok;
+  ok = leg('缺 Quality reviewed 坏样例触发', out.includes('Quality reviewed')) && ok;
 
-  // 腿 3：facts 漂移必红（--verify-facts；mkTree 面 = 2 篇 .md）
+  // 腿 3：facts 漂移必红（--verify-facts；mkTree 面 = 3 篇 .md）
   const fdir = mkdtempSync(join(tmpdir(), 'cd-facts-'));
   mkTree(fdir);
   mkdirSync(join(fdir, 'tools'), { recursive: true });
-  writeFileSync(join(fdir, 'tools/facts.txt'), 'docs_md=3\ndesign_md=1\nstamped_designs=0\n');
+  writeFileSync(join(fdir, 'tools/facts.txt'), 'docs_md=4\ndesign_md=2\nstamped_designs=0\n');
   r = run(['--verify-facts'], fdir);
   ok = leg('facts 漂移红', r.status === 1) && ok;
-  writeFileSync(join(fdir, 'tools/facts.txt'), 'docs_md=2\ndesign_md=1\nstamped_designs=0\n');
+  writeFileSync(join(fdir, 'tools/facts.txt'), 'docs_md=3\ndesign_md=2\nstamped_designs=1\n');
   r = run(['--verify-facts'], fdir);
   ok = leg('facts 一致过', r.status === 0) && ok;
 
