@@ -28,6 +28,10 @@ path = "src/main.rs"
 # 单加载器纪律；gsi→mkcpio 先例同链，纯 std）。
 gensourceindex = { path = "../gensourceindex" }
 mkcpio = { path = "../mkcpio" }
+# 四刀第三片（kernel 锚现算）：SHA-256 = mkapp cpio::sha256_hex 单解释器
+# path 依赖（自持 FIPS 180-4——Python hashlib.sha256 的 Rust 对偶；经
+# gensourceindex 传递面已在依赖图上，此处显式声明的直接消费面）。
+mkapp = { path = "../mkapp" }
 
 # 独立小工作区标记（tools/mkfat 同款形态——根 workspace 自动上溯在此截断）
 [workspace]

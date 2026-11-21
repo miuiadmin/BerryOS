@@ -774,6 +774,10 @@ pub struct LiteProduct {
     pub params: BTreeMap<String, String>,
     pub kernel_name: String,
     pub kernel_sha: String,
+    /// G7：锚是否已对包内件现算对账（件缺 = false——四刀第三片
+    /// `measure_kernel_anchor` 消费面；Python `Product.kernel_measured`
+    /// 镜像）。
+    pub kernel_measured: bool,
     pub image_size_mib: u32,
     pub rootfs_split_mib: u32,
     pub min_power_atomicity: String,

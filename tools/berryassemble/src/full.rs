@@ -126,6 +126,12 @@ pub(crate) fn join_path(dir: &str, rel: &str) -> String {
     }
 }
 
+/// `join_path` 的 crate 内公开包装（anchor.rs G7 锚现算面复用——
+/// 路径拼接单源；与 resolve.rs 直用同链）。
+pub(crate) fn join_path_pub(dir: &str, rel: &str) -> String {
+    join_path(dir, rel)
+}
+
 // ---- gensourceindex parse_index 单源复用（path 依赖同 crate）----
 // Python 侧惰性 `import gensourceindex as gsi` 单解释器复用；Rust 侧
 // 等价物 = Cargo.toml path 依赖（mkapp→mkcpio path 依赖先例同款——
