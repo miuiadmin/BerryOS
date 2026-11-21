@@ -31,3 +31,8 @@ tools/stale-parks.py                        # 债网一：punch-list 停车理�
 tools/stranded-deferrals.py                 # 债网二：搁浅引用检测（等的东西已到；advisory）
 tools/answers-readback.py                   # 决策账本机器读回（A: 行对照 punch，advisory）
 tools/claude-audit.py                       # .claude 配置面登记审计（五向对拍）
+# 审计 2026-11-22 补员：登记面/检测器 oracle/门自检本体——改闸必过闸
+.claude/MANIFEST.md => python3 -I tools/claude-audit.py
+.agents/tools/ => node .agents/tools/check-docs.mjs --selftest
+tools/facts.py => python3 tools/facts.py --selftest
+tools/gate-selftest.sh => bash tools/gate-selftest.sh

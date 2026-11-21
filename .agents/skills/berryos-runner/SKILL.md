@@ -57,7 +57,7 @@ description: BerryOS 无人值守 runner 宪法（E 面）——每轮循环、d
 
 - 身份：`git config user.name berryos-hermes-bot` + 独立邮箱，且本克隆 `git config berryos.bot-email <该邮箱>`（pre-push 身份闸消费——bot 推非 `wip/auto-*`/`hermes/*` 分支直接拒）。
 - 只推 `wip/auto-*`；永不碰 main、永不 merge（reviewer 人审合入）、永不 force、永不 `reset --hard` 到非自己提交。
-- FROZEN 集（PreToolUse 拦截，规则/16 §5）：宪法 skill、`.claude/`、`.githooks/`、`tools/e-*.py`、`run-e.sh`、`pack-work.py`、`push-green.py`——无人会话不可写自己的宪法与闸；改它们 = attended 会话的活，诉求落 punch-list。
+- FROZEN 集（PreToolUse 拦截，规则/16 §5）唯一源 = `tools/e-guard.py` 的 `FROZEN_PREFIXES`（宪法/闸/编排/治理工具——含 `.claude/` 配置面与 `.agents/tools/` 检测器）：无人会话不可写自己的宪法与闸；改它们 = attended 会话的活，诉求落 punch-list。本节不复制清单。
 - 工作区结构性隔离：独立克隆（不共享主仓/其他 lane 的工作树与索引）；多会话吞并类事故在隔离下结构性不存在。
 - 禁：新外部依赖、ABI 破冻、生产操作、秘密入库、`git fetch/pull` 本地路径、访问 `~/Documents`。
 

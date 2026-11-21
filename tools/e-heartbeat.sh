@@ -19,8 +19,6 @@ last_restart=0
 run_alive() { tmux has-session -t "=$RUN_NAME" 2>/dev/null; }
 send_line() { tmux send-keys -t "=$RUN_NAME" "$1" Enter; }
 
-session_id_file() { git rev-parse --show-toplevel 2>/dev/null; }
-
 # 本 run 的 transcript：~/.claude/projects/<转义路径>/<session-id>.jsonl
 run_transcript() {
   root=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
@@ -39,9 +37,6 @@ while :; do
   [ -f "$marker" ] || { echo "e-heartbeat: marker 没了（操作员 stop）——收心跳"; exit 10; }
   [ -f "$sentinel" ] && { echo "e-heartbeat: fixpoint 哨兵在——干完了，收心跳"; exit 10; }
 
-  # supervisor 每拍一审（有界；它自身不许成为停 run 的原因）
-  python3 "$root/tools/e-supervisor.py" --tick >/dev/null 2>&1 || true
-
   now=$(date +%s)
   if run_alive; then
     tf=$(run_transcript) || tf=""
@@ -49,7 +44,14 @@ while :; do
     if [ -n "$tf" ] && [ -f "$tf" ]; then
       idle=$(( now - $(stat -f %m "$tf" 2>/dev/null || stat -c %Y "$tf" 2>/dev/null || echo "$now") ))
     fi
-    attached=$(tmux list-clients -t "=$RUN_NAME" 2>/dev/null | grep -vc 'client_readonly' || true)
+    # 只读观察者不算人（审计修正：原 grep -vc 匹配不到 tmux 输出——恒计入 attached 压制 nudge）
+    attached=$(tmux list-clients -t "=$RUN_NAME" -F '#{client_readonly}' 2>/dev/null | grep -cx 0 || true)
+    if [ "$idle" -ge "$IDLE_SECS" ] && [ "$attached" -eq 0 ]; then
+      # 闲且无人附着才传 --idle（machinery 整批回退的活路径；2400s 帽=supervisor 自身不许拖死心跳）
+      timeout 2400 python3 "$root/tools/e-supervisor.py" --tick --idle >/dev/null 2>&1 || true
+    else
+      timeout 2400 python3 "$root/tools/e-supervisor.py" --tick >/dev/null 2>&1 || true
+    fi
     if [ "$idle" -ge "$IDLE_SECS" ] && [ "$attached" -eq 0 ]; then
       if [ -f "$root/.claude/state/repair-needed" ]; then
         send_line "repair 模式：从 git log、门禁输出与 smoke 证物找 6 小时零 ship 的原因，在拥有它的层修，或记 punch-list 后换下一项"

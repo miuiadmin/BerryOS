@@ -72,6 +72,12 @@ fi
 # 文件时，目标必须与引用同批 staged/committed。
 # 触发面：任一 docs/ 或 .agents/ 路径进暂存（含删除/改名——纯删档也可能造成
 # 别档断链，统一过快照门）。
+# —— 控制面条件测试门（二期 P2；规则/16 §5）——对任何 staged 无条件先跑
+#（审计 2026-11-22 P0：原位在文档门早退之后，只改治理工具的提交整门不跑——
+# 旁路已堵）；staged 命中 tools/control-plane.txt 前缀即逐件跑其 --selftest，
+# 无命中零成本直通。清单自指：改本钩子也在清单里。
+bash "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/tools/control-plane-gate.sh" || exit 1
+
 staged=$(git diff --cached --name-only 2>/dev/null | grep -E '^(docs/|\.agents/)' | head -1)
 [ -z "$staged" ] && exit 0
 snap=$(mktemp -d "${TMPDIR:-/tmp}/berryos-gate.XXXXXX") || exit 1
@@ -90,8 +96,4 @@ EOF
   exit 1
 fi
 
-# —— 控制面条件测试门（自动化开发二期 P2；规则/16 §5）——staged 命中
-# tools/control-plane.txt 前缀（治理工具本身）即逐件跑其 --selftest；
-# 无命中零成本直通。清单自指：改本钩子也在清单里。
-bash "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/tools/control-plane-gate.sh" || exit 1
 exit 0

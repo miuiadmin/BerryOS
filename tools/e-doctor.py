@@ -17,12 +17,20 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-REQUIRED_TOOLS = ["tmux", "git", "python3", "node", "gh"]
+REQUIRED_TOOLS = ["tmux", "git", "python3", "node", "gh", "just", "cargo"]
 REQUIRED_FILES = [
     "tools/run-e.sh", "tools/e-heartbeat.sh", "tools/e-supervisor.py",
     "tools/e-guard.py", "tools/pack-work.py", "tools/push-green.py",
+    "tools/e-receipts.py", "tools/gate-wrap.sh", "tools/run-artifact.sh",
+    "tools/review-debt.py", "tools/control-plane-gate.sh", "tools/control-plane.txt",
     ".claude/settings.json", ".githooks/pre-commit", ".githooks/pre-push",
     ".agents/skills/berryos-runner/SKILL.md",
+]
+# 远程四件（P0-3 加固）：lane 首跑会 fetch origin 后从集成分支建工作分支——
+# origin 缺宪法/闸/清单即「发射先于推送」的红灯（审计 2026-11-22 楔死雷根治）。
+REMOTE_MUST_HAVE = [
+    ".agents/skills/berryos-runner/SKILL.md", "tools/e-guard.py",
+    ".githooks/pre-commit", "tools/control-plane.txt",
 ]
 
 
@@ -45,6 +53,13 @@ def check(root: Path, path_override: str | None = None) -> tuple[int, list[str]]
                        capture_output=True, text=True)
     if r.returncode != 0:
         fails.append("上游未设：git push -u origin <分支>")
+    else:
+        upstream = r.stdout.strip()
+        for f in REMOTE_MUST_HAVE:
+            rr = subprocess.run(["git", "-C", str(root), "cat-file", "-e", f"{upstream}:{f}"],
+                                capture_output=True)
+            if rr.returncode != 0:
+                fails.append(f"远程缺纪律件：{upstream} 无 {f}——先推纪律线再发射（lane 首跑 fetch 后建分支，旧基无宪法/闸即楔死）")
     r = subprocess.run(["git", "-C", str(root), "config", "--get", "core.hooksPath"],
                        capture_output=True, text=True)
     if "githooks" not in (r.stdout or ""):
@@ -78,6 +93,7 @@ def selftest() -> int:
             p.parent.mkdir(parents=True, exist_ok=True)
             if not p.exists():
                 p.write_text("x", encoding="utf-8")
+        subprocess.run(["git", "-C", str(g), "add", "-A", ":!fakehome"], capture_output=True)
         for cmd in (
             ["config", "berryos.bot-email", "bot@x"],
             ["config", "core.hooksPath", ".githooks"],
@@ -96,7 +112,22 @@ def selftest() -> int:
         subprocess.run(["git", "-C", str(g), "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"], capture_output=True)
         subprocess.run(["git", "-C", str(g), "config", f"branch.{br}.remote", "origin"], capture_output=True)
         subprocess.run(["git", "-C", str(g), "config", f"branch.{br}.merge", f"refs/heads/{br}"], capture_output=True)
-        n2, fails2 = check(g)
+        # 封闭化（审计 P0）：腿 2 不再用真 PATH——CI runner 无 tmux/claude/gh
+        # 时此处必红（selftest_guard --run 接线面）。stub PATH 让本腿验的是
+        # check() 的逻辑而非宿主舰队。
+        stub_bin = t / "bin"
+        stub_bin.mkdir()
+        for tool in ("tmux", "gh", "claude", "just", "cargo"):
+            (stub_bin / tool).write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            (stub_bin / tool).chmod(0o755)
+        (t / "fakehome").mkdir()
+        env2 = {**os.environ, "HOME": str(t / "fakehome")}
+        orig_environ = os.environ.copy()
+        os.environ.clear(); os.environ.update(env2)
+        try:
+            n2, fails2 = check(g, path_override=f"{stub_bin}:{os.environ.get('PATH', '')}")
+        finally:
+            os.environ.clear(); os.environ.update(orig_environ)
         ok2 = n2 == 0
         print(f"e-doctor 自检: {'腿绿' if ok2 else 'FAIL'} 合成全配仓必过（{'；'.join(fails2[:3])}）")
         rc = 0 if (ok1 and ok2) else 1

@@ -186,3 +186,6 @@ cargo-target/
 target-*/
 *.img
 screenshot.png
+
+# 构建缓存目录（bootloader 侧局部 cargo 缓存——审计 2026-11-22：未跟踪态污染 status/pack-work 脏计数）
+cargo-target-build/

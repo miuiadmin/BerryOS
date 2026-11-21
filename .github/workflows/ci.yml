@@ -120,6 +120,9 @@ jobs:
 
       # just 复用 justfile 单一入口（与本地同配方）——runner 机预装，安装步退役。
 
+      # 挂账（2026-11-22 审计）：重道不跑 just test-host——cargo test 半边无 CI 车道
+      # （host 单测由本地 test-host 承载）；自检半边（tools/*--selftest 全量真跑）由
+      # ci-light 的 selftest_guard --run 代跑。要补重道面时在此加一步 run: just test-host。
       # ---------- SEC-01 §4.5 件 23：供应链防线进 CI（fail-fast 位） ----------
       # cargo-deny：licenses（GPL 拒收 = 仓纪律执法，allowlist 见根 deny.toml——
       # 依据 = 全 workspace cargo metadata 实测 license 面）+ advisories（RustSec

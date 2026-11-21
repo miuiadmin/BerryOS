@@ -15,7 +15,14 @@ RUN_PROMPT='完整读取 .agents/skills/berryos-runner/SKILL.md 并严格执行�
 cmd_start() {
   python3 tools/e-doctor.py || exit 1
   mkdir -p "$STATE_DIR"
-  [ -f "$MARKER" ] && { echo "run-e: 已在跑（$MARKER 在）——先 stop"; exit 1; }
+  if [ -f "$MARKER" ]; then
+    if tmux has-session -t "=$RUN_NAME" 2>/dev/null; then
+      echo "run-e: 已在跑（marker+会话俱在）——先 stop"; exit 1
+    fi
+    echo "run-e: 陈旧 marker（run 会话不在——重启/tmux 全灭残态），清后继续"
+    rm -f "$MARKER"
+    [ -f "$STATE_DIR/e-fixpoint.sentinel" ] || true
+  fi
   date +%s > "$MARKER"
   cmd_launch-session
   tmux new-session -d -s "=$HB_NAME" "bash tools/e-heartbeat.sh $RUN_NAME"
@@ -52,10 +59,12 @@ cmd_stop() {
 
 cmd_status() {
   echo "marker: $([ -f "$MARKER" ] && echo 在 || echo 无)"
+  _st=0
   echo "sentinel: $([ -f "$STATE_DIR/e-fixpoint.sentinel" ] && echo 在 || echo 无)"
   echo "run 会话: $(tmux has-session -t "=$RUN_NAME" 2>/dev/null && echo 活 || echo 死)"
   echo "心跳会话: $(tmux has-session -t "=$HB_NAME" 2>/dev/null && echo 活 || echo 死)"
-  [ -f "$STATE_DIR/run-health.json" ] && cat "$STATE_DIR/run-health.json"
+  if [ -f "$STATE_DIR/run-health.json" ]; then cat "$STATE_DIR/run-health.json"; fi
+  return $_st
 }
 
 cmd_install_launchd() {

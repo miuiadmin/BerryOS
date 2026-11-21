@@ -14,7 +14,7 @@ SKILL.md 是 runner 宪法（给机器读）；本手册是 owner 接入/排查�
 | `berryos-hermes-w3` | 10m | `/Users/murongcheng/berryos-w3` | 第三工作 lane |
 | `berryos-hermes-review` | 3m | `/Users/murongcheng/berryos-review` | 评审 lane |
 
-四 lane 全部：model glm-5.3、provider newapi、PR label `hermes-auto`、base `wip/sched-1.1`、绝不 merge。W1 的 prompt 是「单指针 + 摘要」形态：`先完整读取 <克隆>/.hermes-loop/LOOP.md，严格照做` + 分支/PR 规则摘要——宪法单源模式已在产验证。
+四 lane 共同：model glm-5.3、PR label `hermes-auto`、base `wip/sched-1.1`、绝不 merge（provider 实测 2026-11-22：w1/w2=newapi、review=glm53-local、w3 无 provider 字段——以 jobs.json 现值为准，本表不锁）。W1 的 prompt 是「单指针 + 摘要」形态：`先完整读取 <克隆>/.hermes-loop/LOOP.md，严格照做` + 分支/PR 规则摘要——宪法单源模式已在产验证。
 
 ## cron 任务字段速查（jobs.json 实测形态）
 
@@ -36,7 +36,7 @@ SKILL.md 是 runner 宪法（给机器读）；本手册是 owner 接入/排查�
 
 ## punch-list 与 LOG 的家
 
-- punch-list（人机共享任务队列）：`/Users/murongcheng/Documents/code/berryos/.agents/plans/2026-11-22-e面运营.md` 的「未完成事项」节——runner 经 git 同步读写，owner 直接编辑同一文件；parked 条目格式见 SKILL.md。
+- punch-list（人机共享任务队列）：`/Users/murongcheng/Documents/code/berryos/.agents/plans/2026-11-22-e面运营.md` 的「未完成事项」节——owner 侧改动须 commit+push 后经 lane fetch 才可见（直接改本地文件 lane 看不到）；lane 侧改动经 PR 回流。parked 条目格式见 SKILL.md。
 - LOG（运行流水）：各 lane 克隆的 `.hermes-loop/LOG.md`（W1 先例形态）——过程真相归 runner 工作区，不进主仓。
 - 决策账本：`A:` 行住 PR body 固定节；触及仓规的升格主仓 notes/（SKILL.md §decide-then-report 第 3 条）。
 

@@ -47,6 +47,9 @@ FROZEN_PREFIXES = (
     "tools/review-pin-check.py", "tools/review-recv.py", "tools/review-debt.py",
     "tools/control-plane-gate.sh", "tools/control-plane.txt",
     "tools/run-artifact.sh", "tools/gate-wrap.sh",
+    "tools/claude-audit.py", "tools/stale-parks.py",
+    "tools/stranded-deferrals.py", "tools/answers-readback.py",
+    ".agents/tools/", "tools/facts.py", "tools/gate-selftest.sh",
 )
 
 PARKED_RE = re.compile(r"^- \[ \]\s*\[PARKED")
@@ -97,7 +100,7 @@ def write_sentinel(reason: str) -> bool:
     if PUNCH_PLAN.is_file():
         items = open_punch_items(PUNCH_PLAN.read_text(encoding="utf-8"))
     else:
-        items = []
+        items = ["<punch 载体缺席：.agents/plans/2026-11-22-e面运营.md 不在——归档/改名必须先改本常量，宁可拒停>"]
     checks.append(("punch-list 判空", not items, f"{len(items)} 条开放：{items[0][:80] if items else ''}"))
     ok, msg = gate_suite_green()
     checks.append(("门禁套件绿", ok, msg))
@@ -186,10 +189,8 @@ def selftest() -> int:
     except Exception:
         ok = False
     if ok and not before:
-        SENTINEL.unlink(missing_ok=True)  # 若活树恰净且全过——清掉，保持现场
-        check("哨兵写点带四门（活树全绿时可写，写后即清）", True)
-    else:
-        check("哨兵写点带四门（门不过不落盘）", not ok or before is False)
+        SENTINEL.unlink(missing_ok=True)  # 活树恰净且全过——写后即清，保持现场
+    check("哨兵写点带四门（门不过不落盘 / 全过可写）", (not ok and not SENTINEL.is_file()) or (ok and (before or SENTINEL.is_file())))
     print(f"e-guard 自检：{'PASS' if fails == 0 else f'FAIL（{fails} 腿红）'}（punch oracle/FROZEN 自指/stop-hook 环境腿/四门拒写）")
     return 0 if fails == 0 else 1
 

@@ -11,7 +11,9 @@ name: CI-light
 # 混入任何重道路径（kernel/ 等）→ 只触发重道（ci.yml paths-ignore 对称排除）。
 on:
   push:
-    branches: [main, wip/sched-1.1]
+    # wip/auto-*（审计 2026-11-22）：E lane 工作分支——push-green 等绿链的触发面，
+    # 缺席则 lane 每轮空等 45 分钟出 note（与 30 分钟轮预算直接冲突）。
+    branches: [main, wip/sched-1.1, 'wip/auto-*']
     paths: [docs/**, .agents/**, '**.md', tools/**, deny.toml]
   pull_request:
     paths: [docs/**, .agents/**, '**.md', tools/**, deny.toml]
