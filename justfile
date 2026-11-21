@@ -1405,6 +1405,15 @@ test-host:
     # 单源化 docstring/文案 128 残留同步清偿）/ sha256 分段读对拍 / 尺寸
     # 门恰界两侧 / 缺件 loud 退场 / berry-sign 发现序缺席分支 / run 双路。
     python3 tools/releng_pack.py --selftest
+    # W1 接线（releng_pack 同族·零自检清尾）：make_desktop_disk 门禁自检——
+    # 确定性桌面数据盘（product-e2e/desktop-calib 消费面）宣称「产物字节
+    # 确定性可重复重建」此前零机器执法：LAYOUT 常量契约（schema/页坐标
+    # 域/8.3 名形/印章常量）+ 真流双产 sha256 恒等（走真 mkfat 子进程 +
+    # gui8 Fat12Volume 注入）+ LBA0 印章前缀与 LBA16 卷签名（vol@LBA16
+    # 铁律——印章区不得伪造 BPB）+ LAYOUT.JSN 写读往返字节级对拍 + 缺席
+    # 件 None 容忍与重复 add_file 拒形 + cwd 无关确定性（子进程 cwd=ROOT
+    # 钉位）。三突变红分支实证（常量漂移/印章换字/注入内容截尾均咬）。
+    python3 tools/make_desktop_disk.py --selftest
     # K-3：size.py ADRP 解码器向量自检（--assert-flip 扩面的门禁自身坏 =
     # smoke/build-release 断言静默劣化，同 a-3 U4 纪律门禁化）。
     python3 tools/size.py --selftest
