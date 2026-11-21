@@ -1,9 +1,5 @@
-// 孤儿文件（不参与编译）——保留供历史参考，待归档
-// 云桌面多客户端架构刀（A 面 present 域单飞仲裁）终局否决、全量回退后
-// 留在树中的死文件：gui-wmd lib.rs 已无 mod presarb。完整实现存
-// git 8a0065f10 可取回；定谳见
-// .agents/notes/rejected/2026-11-20-云桌面多客户端架构根治.md。
-//! presarb —— present 域单飞仲裁（云桌面反复卡死根治刀 · 架构面 A）。
+//! presarb —— present 域单飞仲裁（云桌面反复卡死根治刀 · 架构面 A；
+//! 2026-11-21 重做——8a0065f10 原样取回 + HEAD 嫁接，差异见文末注记）。
 //!
 //! **缺陷本体**：guifbd 的 present 域是单客户端时代几何——`held` 别名表
 //! 全局单表（CREDITS=2）、pending/cb_park/rel_park 全单槽、新 P2 SUBMIT
@@ -41,20 +37,40 @@
 //!   信号面）时租约到点 = 下一个 SUBMIT 抢占（drain 清场后放行），桌面
 //!   最迟 5s 自愈而非永死。
 //! - **死亡收口**：app 通道 recv 错码摘表 / DETACH 时（main 侧
-//!   `table.app_alive` 对账），owner 属主失踪 → wmd 代发 RELEASE_WAIT
-//!   排空孤儿（`relay::drain_orphans`）——「死 app 永占 credits」面就此
+//!   apps 表在册对账），owner 属主失踪 → wmd 代发 RELEASE_WAIT
+//!   排空孤儿（[`drain_orphans`]）——「死 app 永占 credits」面就此
 //!   结构性消失。
 //!
 //! 不变量（仲裁成立后 guifbd 侧自然成立）：owner=None ⇒ guifbd 无在途
 //! 事务（pending 已 latch、held 只剩孤儿）⇒ drain 恰好只回收孤儿。
 //!
 //! 纯逻辑面（Port/RelayIo 缝外零 I/O）：host 单测全盖（真值表见 tests）。
+//!
+//! **重做嫁接注记（2026-11-21，相对 8a0065f10 的差异，勿照抄原刀）**：
+//! - 原刀随全量回退退役的近因 = svcmgr per-app input channel_pair() trap
+//!   杀 init——本刀**不动 svcmgr**（inputfeeder 归后续 B-infra 刀），只做
+//!   wmd 单侧。
+//! - [`drain_orphans`] 原住 relay.rs（8a0065f10），本刀纪律限三文件
+//!   （lib/main/presarb）迁入本模块；其清场帽到点的陈旧记账原置
+//!   RelayState 毒化标记（HEAD 的 `slot` 私有，跨模块无法置位），改挂
+//!   [`PresentArb`] 的 stale_release 位——效果面等价：present 域中继
+//!   一律快答封锁 + serve 顶 [`PresentArb::sweep_stale`] 非阻塞回收清位。
+//! - 死亡对账的在册查询原为 table::app_alive（随回退退役），main 侧改走
+//!   `apps_handles` 现有面（纪律不动 table.rs）。
 
+use berry_guiproto as gp;
 use berry_sys::Handle;
+use crate::relay::{ChRecv, ChSend, Domain, RelayIo, RelayState};
 
 /// 属主租约：last-activity 起 5s——合法事务上界（TCG 慢帧数百 ms）的
 /// 一个量级余量；帽外 = 挂死属主可被抢占（桌面自愈上界 = 本值 + 一帧）。
 pub const PRESENT_LEASE_NS: u64 = 5 * 1_000_000_000;
+
+/// 运行期孤儿清场帽（[`drain_orphans`]）：send/recv 两相各 35s——recv 相
+/// 容忍 pending 在途 park 至 latch（合法上界一个帧周期）+ TCG/vgpu 余量
+/// （RELAY_RECV_CAP_NS 30s 同源再放宽）；帽到点 = false 降级不 fail。
+/// （8a0065f10 原名迁入——值与两相语义原样。）
+pub const RELAY_DRAIN_CAP_NS: u64 = 35 * 1_000_000_000;
 
 /// 事务边界 op 分类（main 分发层按 op 字节折此三值；非边界 op 恒放行）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,17 +101,26 @@ pub struct PresentArb {
     owner: Option<Handle>,
     /// 属主最近活跃时刻（任意已放行 present op 的 on_sent 拍；租约起算点）。
     owner_last_ns: u64,
+    /// 陈旧清场应答在席（嫁接面）：drain_orphans recv 相帽到点置位——
+    /// 代发的 RELEASE_WAIT 应答在途未归，present 域中继一律快答封锁
+    /// （配对红线），serve 顶 [`PresentArb::sweep_stale`] 回收清位。
+    stale_release: bool,
 }
 
 impl PresentArb {
     /// 全清初始态（boot 后健康期）。
     pub const fn new() -> Self {
-        PresentArb { owner: None, owner_last_ns: 0 }
+        PresentArb { owner: None, owner_last_ns: 0, stale_release: false }
     }
 
     /// 事务属主查询（main 死亡对账面）。
     pub fn owner(&self) -> Option<Handle> {
         self.owner
+    }
+
+    /// 陈旧清场应答在席查询（main present 域中继前置闸——嫁接面）。
+    pub fn stale_release(&self) -> bool {
+        self.stale_release
     }
 
     /// 请求闸门（转发前裁决）。`now` = 单调钟现值；`ch` = 请求来源通道；
@@ -156,6 +181,39 @@ impl PresentArb {
             false
         }
     }
+
+    /// serve 顶陈旧清场应答非阻塞回收（嫁接面）：drain_orphans 帽到点遗留
+    /// 的迟到 RELEASE_WAIT 应答——非阻塞收帧（单飞下至多 1 条，belt 逐条
+    /// drain 到空）→ 随行关收 + 清位。返回 true = 本拍回收（present 域
+    /// 恢复放行）。guifbd 永不补发则永不清位 = 呈现面降级快失败（与
+    /// RelayState 毒化面同哲）。
+    pub fn sweep_stale<R: RelayIo>(&mut self, io: &mut R, cli: Handle) -> bool {
+        if !self.stale_release {
+            return false;
+        }
+        let mut rep = [0u8; 256];
+        let mut rhs = [0 as Handle; 8];
+        let mut stale = 0usize;
+        loop {
+            match io.recv_try(cli, &mut rep, &mut rhs) {
+                ChRecv::Frame(_, nh) => {
+                    io.close_all(&rhs[..nh.min(rhs.len())]);
+                    stale += 1;
+                }
+                ChRecv::Empty => break,
+                ChRecv::Err(s) => {
+                    io.diag("gui-wmd: presarb sweep 失败", s);
+                    io.fail();
+                }
+            }
+        }
+        if stale > 0 {
+            self.stale_release = false;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 impl Default for PresentArb {
@@ -164,9 +222,77 @@ impl Default for PresentArb {
     }
 }
 
+/// 运行期孤儿清场（presarb 配对面——DrainForward 抢占与属主通道死亡对账
+/// 共用）：代发一趟 RELEASE_WAIT，guifbd 应答 = held 全量 + parked 槽清空
+/// （pending 在途时 park 至 latch——合法上界一个帧周期；帽值
+/// [`RELAY_DRAIN_CAP_NS`]）。应答随行全量关收（孤儿别名/属主残留别名都
+/// 只是各客户端帧 VMO 的 dup——关 = 引用计数下降，原柄恒在各客户端）。
+///
+/// **毒化门（协议配对红线）双腿**：`rstate` 该域 poisoned（上一趟中继
+/// 应答未归）或 [`PresentArb`] 陈旧清场应答在席（上一趟清场帽到点遗留）
+/// 时**禁发**——本趟应答会与陈旧帧错配（reply mismatch = 协议腐化）；
+/// 返回 false 由 serve 顶既有 [`RelayState::drain`]/[`PresentArb::sweep_stale`]
+/// 清淤路自愈（guifbd 对 parked op 恒最终应答）。返回 false = 毒化在席/
+/// 帽到点（陈旧标记防后续错配）/发送失败——**不 fail 服务**，调用方
+/// loud 一行 + ST_BUSY 快答降级。
+pub fn drain_orphans<R: RelayIo>(
+    rstate: &mut RelayState,
+    arb: &mut PresentArb,
+    io: &mut R,
+    dom: Domain,
+    cli: Handle,
+) -> bool {
+    if rstate.poisoned(dom) || arb.stale_release {
+        return false;
+    }
+    let mut req = [0u8; 256];
+    let n = match gp::encode_present_req(&mut req, &gp::PresentReq::ReleaseWait) {
+        Some(n) => n,
+        None => return false, // 256B 窗恒容 4B 帧——防御面
+    };
+    let deadline = io.now_ns() + RELAY_DRAIN_CAP_NS;
+    loop {
+        match io.send_try(cli, &req[..n], &[]) {
+            ChSend::Sent => break,
+            ChSend::Busy => {
+                if !io.wait_writable(cli, deadline) {
+                    return false;
+                }
+            }
+            ChSend::Err(_) => return false, // 链断面归毒化/relay 既有防线
+        }
+    }
+    let mut rep = [0u8; 256];
+    let mut rhs = [0 as Handle; 8];
+    let deadline = io.now_ns() + RELAY_DRAIN_CAP_NS;
+    loop {
+        match io.recv_try(cli, &mut rep, &mut rhs) {
+            ChRecv::Frame(nb, nh) => {
+                // 毒化门已排除陈旧在途——本帧即本趟应答（帧形不细究：
+                // drain 语义 = 「排空到空」，随行关收即返）。
+                let _ = nb;
+                io.close_all(&rhs[..nh.min(rhs.len())]);
+                return true;
+            }
+            ChRecv::Empty => {
+                if !io.wait_readable(cli, deadline) {
+                    // 帽到点：本趟请求已交付 guifbd、应答未归——与中继
+                    // RecvCapPoisoned 同形，陈旧标记防后续错配（嫁接面：
+                    // 原刀此位置 RelayState 毒化位，效果等价）。
+                    arb.stale_release = true;
+                    return false;
+                }
+            }
+            ChRecv::Err(_) => return false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::relay::mock::{RelayIoMock, CH_WM, CLI};
+    use crate::relay::Domain;
 
     const A: Handle = 11;
     const B: Handle = 22;
@@ -251,5 +377,55 @@ mod tests {
         assert!(arb.forget(A)); // 属主失踪
         assert_eq!(arb.owner(), None);
         assert_eq!(arb.gate(T0 + 1, B, PresentOp::Submit), ArbGate::Forward);
+    }
+
+    /// 孤儿清场毒化门/帽（8a0065f10 relay.rs 同名测迁入，断言面按嫁接
+    /// 差异改陈旧位）：健康态清场 = 代发 RELEASE_WAIT + 应答随行关收 +
+    /// true；RelayState 毒化在席 = 禁发（零 send）+ false；清场帽到点 =
+    /// arb 陈旧标记 + false + 后续 drain 同禁发；迟到应答由 sweep_stale
+    /// 非阻塞回收清位。
+    #[test]
+    fn drain_orphans_poison_gate_and_cap() {
+        // 健康态：应答（随行 2 别名）5ms 后到达 → 关收 + true
+        //（`inflight_at` 首参 = 毫秒——mock 契约）。
+        let mut st = RelayState::new();
+        let mut arb = PresentArb::new();
+        let mut io = RelayIoMock::new(CLI);
+        io.inflight_at(5, &[gp::ST_OK, 0, 0], &[7, 8]);
+        assert!(drain_orphans(&mut st, &mut arb, &mut io, Domain::Present, CLI));
+        assert_eq!(io.sent.len(), 1, "代发恰一趟 RELEASE_WAIT");
+        assert!(io.closed.contains(&7) && io.closed.contains(&8), "应答随行关收");
+        assert!(!arb.stale_release(), "成功清场零陈旧遗留");
+
+        // 毒化在席（RelayState 面）：禁发（零 send）+ false。
+        let mut st2 = RelayState::new();
+        let mut io2 = RelayIoMock::new(CLI);
+        let _ = st2.relay(&mut io2, Domain::Present, CH_WM, CLI, &[gp::OP_GETINFO], &[]);
+        assert!(st2.poisoned(Domain::Present));
+        let mut arb2 = PresentArb::new();
+        let mut io3 = RelayIoMock::new(CLI);
+        assert!(!drain_orphans(&mut st2, &mut arb2, &mut io3, Domain::Present, CLI));
+        assert!(io3.sent.is_empty(), "毒化禁发");
+        assert!(!arb2.stale_release(), "毒化拒发不涉陈旧标记");
+
+        // 清场帽到点：本趟请求已交付、应答未归 → arb 陈旧标记 + false；
+        // 陈旧在席（第二道门）= 后续 drain 同禁发（零 send）。
+        let mut st3 = RelayState::new();
+        let mut arb3 = PresentArb::new();
+        let mut io4 = RelayIoMock::new(CLI);
+        assert!(!drain_orphans(&mut st3, &mut arb3, &mut io4, Domain::Present, CLI));
+        assert_eq!(io4.sent.len(), 1, "请求已交付");
+        assert!(arb3.stale_release(), "帽到点陈旧标记");
+        let mut io5 = RelayIoMock::new(CLI);
+        io5.inflight_at(1, &[gp::ST_OK], &[]);
+        assert!(!drain_orphans(&mut st3, &mut arb3, &mut io5, Domain::Present, CLI));
+        assert!(io5.sent.is_empty(), "陈旧在席禁发");
+
+        // 迟到应答回收：FIFO 空时 sweep 保持；到达后清位 + 随行关收。
+        assert!(!arb3.sweep_stale(&mut io4, CLI), "应答未归保持陈旧");
+        io4.arrive(&[gp::ST_OK, 1, 2], &[9]);
+        assert!(arb3.sweep_stale(&mut io4, CLI), "迟到应答回收");
+        assert!(io4.closed.contains(&9), "迟到应答随行关收");
+        assert!(!arb3.stale_release(), "回收清位");
     }
 }

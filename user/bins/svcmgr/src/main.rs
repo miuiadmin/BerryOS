@@ -906,8 +906,9 @@ static WMD_PRESENT_SRC: AtomicU32 = AtomicU32::new(0);
 static WMD_HDI_SRC: AtomicU32 = AtomicU32::new(0);
 
 /// SPAWN RPC 活子表帽（M-C）：GUI app 分钟级活期 × 4 槽 = 同时活 app 上
-/// 限；满表拒新不拒旧（洪泛面：launcher 端重复点击防抖归 launcher，本帽
-/// 兜服务侧结构性上限——防 APP_SPAWN 洪泛撑爆监督面）。帽值 = 桌面 4 页
+/// 限；满表驱逐最老让新（2026-11-21 真机场 4 槽满案：UI 泵循环永不自退的
+/// 结构性槽泄漏下「拒新」= 用户体感死锁——同 id 先回收再开、无同 id 驱逐
+/// spawn_ns 最老，洪泛点击自驱逐收敛不撑爆监督面）。帽值 = 桌面 4 页
 /// × 每页 1 点击并发面的宽余量（v1 demo 拓扑实活 ≤2）。
 const APP_SPAWN_LIVE_MAX: usize = 4;
 
@@ -7391,6 +7392,8 @@ fn app_launch(
                     // per-app wm 通道自留面（K1）：reap 死亡面 DETACH 用。
                     wm_det,
                     wm_srv_id,
+                    // 槽满驱逐最老的选老序源（入表时刻——见字段注）。
+                    spawn_ns: now(),
                 }),
             );
         }
@@ -8104,6 +8107,11 @@ struct AppSpawnTail {
     /// 已失活——u32=0 裁定见 wm_detach_rpc 头注，真机寻址真值在到达
     /// 通道。保留 = 记账 + 同命名空间 harness 的完备性面）。
     wm_srv_id: u32,
+    /// 拉起时刻（`now()` 同源 CLOCK_MONOTONIC ns）：槽满驱逐最老的选老
+    /// 序（2026-11-21 真机场 4 槽满案立法——槽序只反映首空槽扫描序，
+    /// 不可作入表序用；boot 批同步形同赋值，语义无害——boot 尾不入
+    /// APP_CHILDREN）。
+    spawn_ns: u64,
 }
 
 /// `AppSpawnTail` 兑现面（M-C γ-分下半）：collect_eof → 关对 → reap →
@@ -8111,7 +8119,7 @@ struct AppSpawnTail {
 /// 零漂义务）。返回 = 「退出码 0」谓词（原 `(true, uface)` 首值语义：
 /// true 仅当 reap Ok(0)）。
 fn app_reap_tail(console: Handle, t: AppSpawnTail) -> bool {
-    let AppSpawnTail { child, out_s, stdout_c, id, id_len, ledger, eof_seen, wm_det, wm_srv_id: _wm_srv_id } = t;
+    let AppSpawnTail { child, out_s, stdout_c, id, id_len, ledger, eof_seen, wm_det, wm_srv_id: _wm_srv_id, spawn_ns: _spawn_ns } = t;
     let id = &id[..id_len];
     if out_s != 0 && !eof_seen {
         // console=false：子表持的是 stdout 的 dup 别名（spawn 内 dup
@@ -8538,6 +8546,27 @@ fn app_serve_list(console: Handle, svc: Handle) {
     send_retry(svc, frame.as_ptr(), n);
 }
 
+/// SPAWN 槽回收共面（2026-11-21 真机场 4 槽满案立法——同 id 回收再开与
+/// 槽满驱逐最老共用形）：旧尾 take 出表即槽位释放（调用方以该槽入新尾——
+/// 与 `app_supervise` 的 take→回表续监督形相对，本路 take 后不复回表）→
+/// terminate 幂等面（返回 0 与 -37 同成功续回收——E 臂 X-5 判例：子先退撞
+/// terminate 是合法收割态非异常；他码只记账不 trap，真死活归 reap 帽内
+/// 裁决）→ `app_reap_tail` 既有收口面全量兑现（collect_eof/关对/reap/
+/// ps_exit/wm DETACH——零新清理面，本刀纪律）。eco 行先于 terminate（意图
+/// 可见——reap 侧自有 exit code 收尾行；7B/5B ≤ 24B eco 帽）。
+fn app_spawn_recycle(console: Handle, children: &mut [Option<AppSpawnTail>], slot: usize, why: &[u8]) {
+    let t = match children[slot].take() {
+        Some(t) => t,
+        None => return,
+    };
+    eco_app(console, &t.id[..t.id_len], why);
+    let rc = berry_process_terminate(t.child.hp, 9);
+    if rc != 0 && rc != BERRY_ERR_BAD_STATE {
+        eco_app(console, &t.id[..t.id_len], b"term");
+    }
+    app_reap_tail(console, t);
+}
+
 /// APP_SPAWN 处置（§5）：id → 记账表定位（boot 走查单源）→ **槽位预检** →
 /// `app_launch` 全守卫复用（bap_scan→manifest→compat→ui→fs 授能→spawn
 /// ——裁决二论据①「守卫单源」的字面落实）→ ACK 耦合律（ok=1 ⇒ err=0）。
@@ -8546,8 +8575,10 @@ fn app_serve_list(console: Handle, svc: Handle) {
 /// 60s + reap 30s 归稳态 `app_supervise` 异步兑现——回执不冻 echo/监督，
 /// §5「reap 异步收尾不阻塞回执」冻结款字面兑现；同步形的「ACK ≥90s 毒化
 /// 下轮请求」病灶随消）。ok=1 语义 = **拉起成立**（spawn 面），退出真码归
-/// eco: app 行 + ps 账本异步可见。err 值域：1 = 守卫/拉起败/槽满（细节归
-/// eco: app 行，槽满 = "app slots"）、2 = id 不在册。console 参数 = svcmgr
+/// eco: app 行 + ps 账本异步可见。err 值域：1 = 守卫/拉起败（细节归
+/// eco: app 行；满表不再拒新——同 id 回收再开、无同 id 驱逐最老〔2026-11-21
+/// 真机场 4 槽满案〕，"app slots" 拒新行退役为不可达防御兜底）、2 = id 不
+/// 在册。console 参数 = svcmgr
 /// console（manifest console=true 的 app 诊断直打串口；false 走私有对收集
 /// ——boot 批同语义，零新面）。
 fn app_serve_spawn(console: Handle, svc: Handle, id: &[u8]) {
@@ -8564,22 +8595,57 @@ fn app_serve_spawn(console: Handle, svc: Handle, id: &[u8]) {
             break;
         }
     }
-    // 槽位预检在 spawn 前（M-C）：满表先拒——不拉起即无收口尾，防占位
-    // 失败面；空槽序号此刻锁定（单线程独占，serve 期间无并发插槽）。
-    let free: Option<usize> = {
-        // SAFETY: 只读扫描面（同表读写皆单线程 serve/监督序）。
-        let children: &[Option<AppSpawnTail>] = unsafe {
-            core::slice::from_raw_parts(
-                core::ptr::addr_of!(APP_CHILDREN) as *const Option<AppSpawnTail>,
+    // 槽位预检在 spawn 前（M-C）：不拉起即无收口尾，防占位失败面；槽位序号
+    // 此刻锁定（单线程独占，serve 期间无并发插槽）。满表拒新退役（2026-11-21
+    // 真机场 4 槽满案：UI app 泵循环永不自退、销窗不销进程 = 结构性槽泄漏，
+    // 拒新即用户体感死锁）——改让路面三序：同 id 回收再开 → 空槽 → 槽满
+    // 驱逐最老，serve 恒有槽可入；洪泛点击自驱逐收敛，不再静默拒。
+    let free: Option<usize> = if hit.is_none() {
+        None // id 不在册：零回收零驱逐（err=2 路径原样）。
+    } else {
+        // SAFETY: 读写扫描面（同表读写皆单线程 serve/监督序——回收的
+        // take 与收口同 `app_supervise` 独占纪律）。
+        let children: &mut [Option<AppSpawnTail>] = unsafe {
+            core::slice::from_raw_parts_mut(
+                core::ptr::addr_of_mut!(APP_CHILDREN) as *mut Option<AppSpawnTail>,
                 APP_SPAWN_LIVE_MAX,
             )
         };
-        (0..APP_SPAWN_LIVE_MAX).find(|&i| children[i].is_none())
+        // ① 同 id 回收再开：表内同 id 活实例 = 销窗未退的泄漏形，回收旧
+        // 实例原槽让新（点同一图标 = 回收旧的开新的，永不重复占槽；泄漏
+        // 时代遗留的复数同 id 由 ② 驱逐最老逐拍收敛）。
+        let same = (0..APP_SPAWN_LIVE_MAX).find(|&i| {
+            children[i].as_ref().map_or(false, |t| &t.id[..t.id_len] == id)
+        });
+        if let Some(i) = same {
+            app_spawn_recycle(console, children, i, b"recycle");
+            Some(i)
+        } else {
+            match (0..APP_SPAWN_LIVE_MAX).find(|&i| children[i].is_none()) {
+                Some(i) => Some(i),
+                // ② 槽满驱逐最老：无同 id 且四槽全活，spawn_ns 最小者让路
+                // （FILES ×3 占槽形；None 形以 u64::MAX 退让——全满前提
+                // 下不可达防御面）。
+                None => {
+                    let mut old = 0usize;
+                    for i in 1..APP_SPAWN_LIVE_MAX {
+                        if children[i].as_ref().map_or(u64::MAX, |t| t.spawn_ns)
+                            < children[old].as_ref().map_or(u64::MAX, |t| t.spawn_ns)
+                        {
+                            old = i;
+                        }
+                    }
+                    app_spawn_recycle(console, children, old, b"evict");
+                    Some(old)
+                }
+            }
+        }
     };
     let (ok, err) = match (hit, free) {
         (None, _) => (false, 2), // id 不在册（launcher 注册表外的串号/伪造）
         (Some(_), None) => {
-            // 槽满：拒新不拒旧（表内活 app 照常监督）。9B ≤ 24B eco 帽。
+            // 不可达防御：hit=Some 路槽位获取恒 Some（回收/驱逐兜底），原
+            // 满表拒新面退役——行留兜底观测。9B ≤ 24B eco 帽。
             eco_app(console, id, b"app slots");
             (false, 1)
         }
