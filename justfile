@@ -1405,6 +1405,15 @@ test-host:
     # 单源化 docstring/文案 128 残留同步清偿）/ sha256 分段读对拍 / 尺寸
     # 门恰界两侧 / 缺件 loud 退场 / berry-sign 发现序缺席分支 / run 双路。
     python3 tools/releng_pack.py --selftest
+    # W1 接线（releng_pack 同族·零自检清尾）：make_desktop_disk 门禁自检——
+    # 确定性桌面数据盘（product-e2e/desktop-calib 消费面）宣称「产物字节
+    # 确定性可重复重建」此前零机器执法：LAYOUT 常量契约（schema/页坐标
+    # 域/8.3 名形/印章常量）+ 真流双产 sha256 恒等（走真 mkfat 子进程 +
+    # gui8 Fat12Volume 注入）+ LBA0 印章前缀与 LBA16 卷签名（vol@LBA16
+    # 铁律——印章区不得伪造 BPB）+ LAYOUT.JSN 写读往返字节级对拍 + 缺席
+    # 件 None 容忍与重复 add_file 拒形 + cwd 无关确定性（子进程 cwd=ROOT
+    # 钉位）。三突变红分支实证（常量漂移/印章换字/注入内容截尾均咬）。
+    python3 tools/make_desktop_disk.py --selftest
     # K-3：size.py ADRP 解码器向量自检（--assert-flip 扩面的门禁自身坏 =
     # smoke/build-release 断言静默劣化，同 a-3 U4 纪律门禁化）。
     python3 tools/size.py --selftest
@@ -1659,6 +1668,17 @@ test-host:
     # justfile test-host 面必跑（本行即自证）。
     python3 tools/selftest_guard.py --selftest
     python3 tools/selftest_guard.py
+    # W1 接线（tools 弱面扫描件）：sdk/design 两本 ledger 门禁自检——
+    # CI smoke 消费位（ci.yml sdk/design ledger 步）此前零自检：门禁
+    # 自身坏 = 静默劣化（a-3 U4 纪律同款）。sdk_ledger 6 腿（facade
+    # 提取三形/validate 拒面族 12 变异/双向对账 missing·stale/matrix
+    # 黄金形/doc 往返漂移红）；design_ledger 7 腿（WCAG 数学锚 21:1
+    # 极值与 448/451 门槛夹逼/parse_color 拒梯/enum 提取/36 对全谱
+    # matrix/validate 全链拒面 9 变异含 rogue widgets.rs 硬编码色与
+    # cfg(test) 豁免/doc 往返）。改两件门禁逻辑或 design_tokens/
+    # sdk_api 词表必跑。
+    python3 tools/sdk_ledger.py --selftest
+    python3 tools/design_ledger.py --selftest
 
 # 忙核 arm-to-nearest-deadline（oneshot 收紧律）host 钉板：律单源
 # sched/src/oneshot.rs（sched crate 本体 no_std + HAL 依赖不编 host），
