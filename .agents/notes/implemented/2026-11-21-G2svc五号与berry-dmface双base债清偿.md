@@ -1,7 +1,7 @@
 # G2 svc 注册表五号漏同步 + tools/berry dmface 依赖漏登（双 base 债清偿）
 
-Type: note
 Status: implemented
+Type: note
 
 ## 事实
 
