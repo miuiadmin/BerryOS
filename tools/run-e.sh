@@ -28,7 +28,7 @@ cmd_start() {
   date +%s > "$MARKER"
   cmd_launch-session
   tmux new-session -d -s "=$HB_NAME" "bash tools/e-heartbeat.sh $RUN_NAME"
-  echo "run-e: 已发射（run=$RUN_NAME hb=$HB_NAME）——bash tools/run-e.sh watch 观察"
+  echo "run-e: 已发射（run=$RUN_NAME hb=${HB_NAME}）——bash tools/run-e.sh watch 观察"
 }
 
 cmd_launch-session() {
@@ -86,7 +86,7 @@ cmd_install_launchd() {
   <key>StandardErrorPath</key><string>${ws}/out/e-run-launchd.log</string>
 </dict></plist>
 PLIST
-  echo "run-e: 已写 $plist——装载：launchctl load $plist（卸载用 unload；start 幂等：marker 在即拒双跑）"
+  echo "run-e: 已写 ${plist}——装载：launchctl load ${plist}（卸载用 unload；start 幂等：marker 在即拒双跑）"
 }
 
 cmd_selftest() {

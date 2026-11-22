@@ -52,25 +52,25 @@ log_line() {
 
 cmd_begin() {
   local label=$1 dir
-  label_ok "$label" || { echo "run-artifact: 非法 label「$label」（只许 [A-Za-z0-9][A-Za-z0-9._-]*——防路径逃逸）" >&2; return 2; }
+  label_ok "$label" || { echo "run-artifact: 非法 label「${label}」（只许 [A-Za-z0-9][A-Za-z0-9._-]*——防路径逃逸）" >&2; return 2; }
   dir=$ARTIFACTS_DIR/$label
-  mkdir -p "$dir" || { echo "run-artifact: 建信封失败（$dir）" >&2; return 1; }
+  mkdir -p "$dir" || { echo "run-artifact: 建信封失败（${dir}）" >&2; return 1; }
   # 重开同一 label = 有意重跑：清 complete/verdict（上一轮的账已在 artifacts.log
   # 永不丢失），running 以新 ts 覆写——check 立即回到「未完成」侧，旧判决不再
   # 被误读为本轮结论。
   rm -f "$dir/complete" "$dir/verdict"
-  printf 'started=%s\n' "$(now_iso)" > "$dir/running" || { echo "run-artifact: 写 running 失败（$dir）" >&2; return 1; }
+  printf 'started=%s\n' "$(now_iso)" > "$dir/running" || { echo "run-artifact: 写 running 失败（${dir}）" >&2; return 1; }
   log_line "begin $label" || return 1
-  echo "run-artifact: begin $label（$dir）"
+  echo "run-artifact: begin ${label}（${dir}）"
 }
 
 cmd_verdict() {
   local label=$1 rc=$2 dir
   shift 2
-  label_ok "$label" || { echo "run-artifact: 非法 label「$label」" >&2; return 2; }
-  [[ "$rc" =~ ^-?[0-9]+$ ]] || { echo "run-artifact: verdict 的 rc 须为整数，得「$rc」" >&2; return 2; }
+  label_ok "$label" || { echo "run-artifact: 非法 label「${label}」" >&2; return 2; }
+  [[ "$rc" =~ ^-?[0-9]+$ ]] || { echo "run-artifact: verdict 的 rc 须为整数，得「${rc}」" >&2; return 2; }
   dir=$ARTIFACTS_DIR/$label
-  [ -d "$dir" ] || { echo "run-artifact: 无信封 $label（先 begin 再 verdict——没有开始的判决是悬空证物）" >&2; return 2; }
+  [ -d "$dir" ] || { echo "run-artifact: 无信封 ${label}（先 begin 再 verdict——没有开始的判决是悬空证物）" >&2; return 2; }
   # 顺序立法：① 判决文件先落盘（rc+完成 ts+摘要）→ ② 删 running → ③ 加
   # complete。三步不可换序：①后被杀 → running 仍在 = check 2（未完成，真话）；
   # ②后被杀 → 无 running 无 complete = check 3（缺件，真话）；任何时序都不
@@ -90,7 +90,7 @@ cmd_verdict() {
 
 cmd_check() {
   local label=$1 dir rc
-  label_ok "$label" || { echo "run-artifact: 非法 label「$label」" >&2; return 2; }
+  label_ok "$label" || { echo "run-artifact: 非法 label「${label}」" >&2; return 2; }
   dir=$ARTIFACTS_DIR/$label
   if [ ! -d "$dir" ]; then
     echo "run-artifact: check $label 缺件（无信封——未 begin 或已被 rotate）" >&2
@@ -111,12 +111,12 @@ cmd_check() {
     return 3
   fi
   rc=$(sed -n 's/^rc=//p' "$dir/verdict" | head -n 1)
-  [[ "$rc" =~ ^-?[0-9]+$ ]] || { echo "run-artifact: check $label 缺件（判决 rc 行不可解析：得「$rc」）" >&2; return 3; }
+  [[ "$rc" =~ ^-?[0-9]+$ ]] || { echo "run-artifact: check $label 缺件（判决 rc 行不可解析：得「${rc}」）" >&2; return 3; }
   if [ "$rc" -eq 0 ]; then
     echo "run-artifact: check $label complete rc=0"
     return 0
   fi
-  echo "run-artifact: check $label complete rc=$rc（信封如实转述：门红）" >&2
+  echo "run-artifact: check $label complete rc=${rc}（信封如实转述：门红）" >&2
   return 1
 }
 

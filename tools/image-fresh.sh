@@ -29,10 +29,10 @@ manifest_sha() { # $1=manifest $2=条目（如 /KERNEL.ELF）→ 哈希或空
 # check_pair <manifest> <entry> <file> <label>：0 新鲜 / 1 陈旧 / 2 缺件
 check_pair() {
   local manifest=$1 ent=$2 file=$3 label=$4 want have
-  [ -f "$manifest" ] || { echo "image-fresh: manifest 缺席（$manifest）" >&2; return 2; }
+  [ -f "$manifest" ] || { echo "image-fresh: manifest 缺席（${manifest}）" >&2; return 2; }
   want=$(manifest_sha "$manifest" "$ent")
   [ -n "$want" ] || { echo "image-fresh: manifest 无条目 $ent" >&2; return 2; }
-  [ -f "$file" ] || { echo "image-fresh: $label 源文件缺席（$file）" >&2; return 2; }
+  [ -f "$file" ] || { echo "image-fresh: $label 源文件缺席（${file}）" >&2; return 2; }
   have=$(sha256_of "$file") || return 2
   if [ "$want" = "$have" ]; then return 0; fi
   echo "image-fresh: $label 陈旧——manifest $ent 与现场不符" >&2
