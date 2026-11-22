@@ -1048,11 +1048,27 @@ fn test_syscall() {
         );
 
         // 收尾：先逐区间 unmap（清叶 + untrack_map → mapcnt 归零）→ Vmar
-        // 放（Drop 注销登记 + 放 demand 钉）→ 表内 VMO close。unmap 前置
-        // 是硬需：④/⑤ 真供给过页而 Vmar::Drop 刻意不动 mapcnt（残留 PTE
-        // 政策的正交不对称），销毁性 close 的 any_mapped 拒面必 -EBUSY
-        //（E3d–f 无此坑 = 它们从不真供给）——先解除映射放映射钉，close
-        // 才走真销毁面过断言。
+        // 放（Drop 注销登记 + 帧归还刀起对残留 Region 兜底清账）→ 表内
+        // VMO close（真销毁 → Vmo::Drop 还帧）。unmap 前置自帧归还刀起
+        // 不再是硬需（Vmar::Drop 已清账 mapcnt，销毁性 close 不再 -EBUSY
+        // ）——保留显式 unmap 形态作路径覆盖（swap_remove/清叶的显式臂
+        // 与 Drop 兜底臂各有独立覆盖面）。
+        //
+        // **dpg 供给面记账与「demand 注销序先于还帧」证明**（帧归还刀件 C
+        // ——NR_PAGER_SUPPLY_MAPPED_TABLE 的 PTE 面）：④/⑤/⑥ 供给的页
+        // 全经 `Vmar::supply_page` 填叶，mapcnt 记账在 VMO ledger——
+        // **「Region 记账外」的真实面 = dpg 池侧引用**：armed EL0 槽只持
+        // far/asid 数字（不持 mapcnt/demand_pins 记账），属主解析全走
+        // `demand_root(asid)` 反查。故 teardown 序的安全性锚在**注销先行
+        // **：①unmap（清叶 + 双 untrack + swap_remove——显式臂）；②
+        // `Vmar::Drop` 首步 `deregister_demand_root`（KL 窗内切断反查——
+        // 此后任何 armed 槽的属主解析恒折 GC 臂〔demand_root miss〕或
+        // NoneForVd 让位，**零 VMO 解引用**，dpg.rs `el0_take_for` 注的三
+        // 路死臂即此语义）；③close VMO（mapcnt==0 且 demand 钉==0 → 真销
+        // 毁 → 还帧）。还池严格后于注销——「pager 窗仍持的页」还池后，
+        // 窗内后续动作对已注销 root 恒 miss，供给面不可能触达已易主 PA。
+        // 本用例 ⑥ 直取后 h 臂已消费（`el0_take_for` Supplied 拿走），
+        // 池无残留 armed 指着 g/h——teardown 时零在飞供给面。
         root_g
             .unmap(VA_G, PAGE_SIZE)
             .expect("SYSCALL：E3h unmap g");
@@ -1060,7 +1076,8 @@ fn test_syscall() {
             .unmap(VA_H, 2 * PAGE_SIZE)
             .expect("SYSCALL：E3h unmap h");
         // SAFETY: 指针全自 Box::leak 未动；from_raw → drop_in_place 原址
-        //（登记/Region 指针地址耦合面）。
+        //（登记/Region 指针地址耦合面）。regions 已被上方 unmap 清空——
+        // Drop 清账循环零迭代，注销登记 + free_asid（根）照常收口。
         drop(unsafe { alloc::boxed::Box::from_raw(root_g as *mut Vmar) });
         drop(unsafe { alloc::boxed::Box::from_raw(root_h as *mut Vmar) });
         assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hg as u64, 0, 0), 0, "SYSCALL：E3h close g");
@@ -1554,10 +1571,20 @@ fn test_syscall() {
     );
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hp2r as u64, 0, 0), 0, "SYSCALL：close 别名");
     // 成功终止（未 start——kill_all_tasks_by_pinned 扫不到任务，走 Process 侧收口）。
+    // 帧归还刀断言 ①（件 C：terminate 形水位对拍——负向臂）：未 start 进程
+    // 表出生为空（bootstrap 迁移在 start 才发生），`p.ht.drain()`（sys_terminate
+    // 未 start 收口臂）双相遍历零槽——水位前后恒等（drain 不误还帧面；
+    // kernel/src/syscall.rs `sys_process_terminate` 未 start 臂路径的走通证）。
+    let fr_before_term = crate::mm::allocated_pages();
     assert_eq!(
         svc4(crate::syscall::NR_PROCESS_TERMINATE as u64, hp2 as u64, 42, 0),
         0,
         "SYSCALL：terminate 未 start 进程须 0"
+    );
+    assert_eq!(
+        crate::mm::allocated_pages(),
+        fr_before_term,
+        "SYSCALL：terminate 未 start 空表 drain 须零帧差（帧归还刀断言①）"
     );
     // 退出面闭环 ①：wait TERMINATED poll 即中（Exited 单调置位）。
     // SAFETY: I_OBS 纪律同 F4b（预清 + 命中回填全满足集）。
@@ -1603,6 +1630,53 @@ fn test_syscall() {
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hv2 as u64, 0, 0), 0, "SYSCALL：close child vmar");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hp2 as u64, 0, 0), 0, "SYSCALL：close terminated process 2");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hv3 as u64, 0, 0), 0, "SYSCALL：close child vmar 2");
+
+    // F6. 帧归还刀断言 ②（件 C：drain 双相还帧——正向臂）：表内 root Vmar
+    //     （带 Mapped Region）+ VMO **不显式 unmap 直接 drain**——phase-1
+    //     Vmar::Drop 兜底清账（clear_leaves 先于 untrack_map → mapcnt 归零
+    //     ）→ phase-2 VMO 泄漏判据放行（any_mapped==false）→ 真销毁 →
+    //     Vmo::Drop 还帧。水位差 = VMO 数据页 2（表树帧不回收——v1 政策
+    //     ，clear_leaves 只清叶不还中间表）；asid 归还（root）与 Region
+    //     清账由断言①/② 的组合路径覆盖。此用例即 A 线主罪的微缩复现与
+    //     修复验证（旧语义此处 2 页全泄漏）。
+    let mut ht_fr = crate::handle::HandleTable::new();
+    let hfr_v = ht_fr
+        .insert(
+            KernelObj::Vmar(
+                Vmar::new_root(crate::mm::frames(), crate::aspace::alloc_asid())
+                    .expect("SYSCALL：帧归还刀建 root Vmar（可信语境）"),
+            ),
+            crate::handle::RIGHT_MAP,
+        )
+        .expect("SYSCALL：帧归还刀 insert Vmar");
+    let hfr_o = ht_fr
+        .insert(
+            KernelObj::Vmo(Vmo::create(2 * PAGE_SIZE).expect("SYSCALL：帧归还刀建 VMO")),
+            crate::handle::RIGHT_MAP | crate::handle::RIGHT_READ | crate::handle::RIGHT_WRITE,
+        )
+        .expect("SYSCALL：帧归还刀 insert VMO");
+    // 表内对象经 get_raw 取本体裸指针映射（E3h 同形态——Region.vmo 存对象
+    // 地址，表内对象地址稳定）。
+    let (ovr, _) = ht_fr.get_raw(hfr_v, ObjType::Vmar, 0).expect("SYSCALL：帧归还刀 get vmar");
+    let (ovo, _) = ht_fr.get_raw(hfr_o, ObjType::Vmo, 0).expect("SYSCALL：帧归还刀 get vmo");
+    // SAFETY: get_raw 门控后取本体；两对象互异（类型门控）无别名；ktest
+    // 单核 boot 屏蔽窗。
+    unsafe {
+        let vm = (*ovr.as_ptr()).obj.as_vmar_mut().unwrap();
+        let vo = (*ovo.as_ptr()).obj.as_vmo_mut().unwrap();
+        // commit 2 页（数据帧出池）后映射——mapcnt=2 页。
+        vo.commit(crate::mm::frames(), 0, 2 * PAGE_SIZE)
+            .expect("SYSCALL：帧归还刀 commit");
+        vm.map(crate::mm::frames(), vo, 0x5600_0000, 0, 2 * PAGE_SIZE, crate::vmar::Perm::UserRw)
+            .expect("SYSCALL：帧归还刀 map");
+    }
+    let fr_before_drain = crate::mm::allocated_pages();
+    ht_fr.drain();
+    assert_eq!(
+        fr_before_drain - crate::mm::allocated_pages(),
+        2,
+        "SYSCALL：drain 双相须还帧 2 页（phase-1 Vmar Drop 清账 + phase-2 Vmo Drop 还帧——帧归还刀断言②）"
+    );
 
     // G. 3-4a per-process 表拆分：两表隔离 + take/insert_ref 迁移原语 + 子进程
     //    出生自带空表（纯表对象面；EL0 派发链 + bootstrap 迁移的正向验收在

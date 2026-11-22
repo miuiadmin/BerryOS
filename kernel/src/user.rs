@@ -1757,8 +1757,9 @@ pub fn user_svcmgr_code() -> &'static [u8] {
 ///
 /// v1 对象常驻不回收（页表帧/栈帧均不退）；**拥有关系的 Vmo 以结构体泄漏持有**
 /// （3-2：Vmar Region 存 Vmo 对象指针——unmap 回调映射计数要求对象存活；
-/// 本结构 v1 永不销毁，指针恒有效）。good 的 root Vmar 由 boot `take()` 出去
-/// 进引导表（首能力）；rogue/abuser 的留结构体内泄漏。
+/// 本结构 v1 永不销毁，指针恒有效——`build` 返回**泄漏形** `&'static mut`，
+/// 2026-11-22 起为真保证而非注释契约）。good 的 root Vmar 由 boot `take()`
+/// 出去进引导表（首能力）；其余的留结构体内泄漏。
 pub struct UserProcess {
     pub ttbr0_pa: usize,
     pub asid: u16,
@@ -1768,7 +1769,13 @@ pub struct UserProcess {
     /// 地址空间根（good 的被 boot 取走进引导表；其余泄漏持有）。
     pub vmar: Option<Vmar>,
     /// code/data/stack 三 Vmo（Region 指针有效性依托；见结构体注释）。
-    _vmos: [Vmo; 3],
+    /// **Box 形（2026-11-22 帧归还刀 UAF 修）**：`Region.vmo` 存 map 时的
+    /// 对象地址——旧形栈局部映射后随 `Self` 构造/返回移动即悬空（同形实崩
+    /// 判例见 `aspace.rs` `MiniAspace._vmo` 注；本结构 v1 永不销毁故旧形
+    /// 未炸，但 `Vmar::Drop` 清账起解引用 = 任何未来 Drop 即 UAF——先修形
+    /// 防患）。Box 目标堆地址恒定；字段序 = Drop 序（声明序）：`vmar` 先落
+    /// （清账 untrack，此刻三 VMO 活）→ `_vmos` 后落（还帧）。
+    _vmos: [alloc::boxed::Box<Vmo>; 3],
 }
 
 impl UserProcess {
@@ -1777,6 +1784,15 @@ impl UserProcess {
     /// 全零（sp0 自顶向下）+ 其下一页**不映保护页**（svcmgr 双崩刀件 1——崩 A
     /// 机制 = 单页栈静默溢出腐化控制流，保护页化 + 4 页预算后下行溢出即干净
     /// D-abort 被杀；几何详注见 [`USER_STACK_PAGES`] 常量头注）。
+    ///
+    /// **返回泄漏形 `&'static mut Self`（2026-11-22 帧归还刀 UAF 修）**：
+    /// 结构契约「v1 永不销毁」旧形只是注释——调用点 `let up_x = build(..)`
+    /// 块尾 Drop 照跑。帧归还刀起 `Vmar::Drop` 清叶，boot 装配块的块尾
+    /// Drop 把 rogue/abuser/spawner 等**仍在跑的任务**的 AS PTE 整片抹掉
+    /// （任务经快照 `ttbr0_pa` 继续调度，入口即 I-abort——G1.5 全舰队击杀
+    /// 判例）；旧 Drop 只注销+放号不清叶故旧形未炸。泄漏形 = 契约真保证：
+    /// 对象与三 VMO 永生，`Region.vmo` 指针恒活，good 的 `vmar.take()` 走
+    /// 表路径不受影响。
     ///
     /// **D3（G-eco-b）多页代码**：code 区按页取整后，data/栈区顺次上移
     /// （`0x1000 + code_len` / data 一页 / 再上一页保护页不映 / 栈区 4 页）
@@ -1789,7 +1805,7 @@ impl UserProcess {
     /// 帽 160KiB（`USER_CODE_MAX`，A7-4 段② 64→128KiB 同步抬；CP-08
     /// 128→160KiB——PM 预拉 arm 扩容）：防调用方手滑传整段 ELF——flat
     /// 才是约定输入（elf2flat.py `--max` 同值执法）。
-    pub fn build(fa: &mut FrameAllocator, code: &[u8], data_magic: u64) -> Self {
+    pub fn build(fa: &mut FrameAllocator, code: &[u8], data_magic: u64) -> &'static mut Self {
         assert!(code.len() <= USER_CODE_MAX, "用户代码镜像超 160KiB 帽（flat 才是约定输入）");
         assert!(code.len() % 4 == 0, "用户代码模板须 4 字节对齐长度");
         let code_pages = (code.len() + PAGE_SIZE - 1) / PAGE_SIZE;
@@ -1802,16 +1818,28 @@ impl UserProcess {
         let asid = alloc_asid();
         let mut vmar = Vmar::new_root(fa, asid).expect("user: 建 root Vmar（boot 可信语境）");
 
-        let mut code_vmo = Vmo::create(code_len).expect("user: 装 code VMO（boot 可信语境）");
-        code_vmo.commit(fa, 0, code_len).expect("user: commit code");
-        code_vmo.write(0, code).expect("user: 拷代码");
+        // **先入堆再映射**（Region.vmo 地址恒定契约——栈局部映射后随下方
+        // `Self` 构造/返回移动即悬空；Box 形见 `_vmos` 字段注。dpg.rs init
+        // 「先泄漏后映射」同款正序，Box 形 = 保留 Drop 还帧面）。
+        let mut code_vmo = alloc::boxed::Box::new({
+            let mut v = Vmo::create(code_len).expect("user: 装 code VMO（boot 可信语境）");
+            v.commit(fa, 0, code_len).expect("user: commit code");
+            v.write(0, code).expect("user: 拷代码");
+            v
+        });
 
-        let mut data_vmo = Vmo::create(PAGE_SIZE).expect("user: 装 data VMO（boot 可信语境）");
-        data_vmo.commit(fa, 0, PAGE_SIZE).expect("user: commit data");
-        data_vmo.write(0, &data_magic.to_le_bytes()).expect("user: 数据页魔数");
+        let mut data_vmo = alloc::boxed::Box::new({
+            let mut v = Vmo::create(PAGE_SIZE).expect("user: 装 data VMO（boot 可信语境）");
+            v.commit(fa, 0, PAGE_SIZE).expect("user: commit data");
+            v.write(0, &data_magic.to_le_bytes()).expect("user: 数据页魔数");
+            v
+        });
 
-        let mut stack_vmo = Vmo::create(stack_len).expect("user: 装 stack VMO（boot 可信语境）");
-        stack_vmo.commit(fa, 0, stack_len).expect("user: commit stack");
+        let mut stack_vmo = alloc::boxed::Box::new({
+            let mut v = Vmo::create(stack_len).expect("user: 装 stack VMO（boot 可信语境）");
+            v.commit(fa, 0, stack_len).expect("user: commit stack");
+            v
+        });
 
         vmar.map(fa, &mut code_vmo, USER_CODE_VA, 0, code_len, Perm::UserRw)
             .expect("user: map code");
@@ -1825,14 +1853,16 @@ impl UserProcess {
         // VA 只读映射；全局单页 VMO 共享，见 vdso.rs 权衡裁决）。
         crate::vdso::map_into(fa, &mut vmar).expect("user: map vdso");
 
-        // 表树对页表走查可见（map 内 dsb ish）；三 Vmo 进结构体（见结构体注释）。
-        Self {
+        // 表树对页表走查可见（map 内 dsb ish）；三 Vmo 进结构体（见结构体注释）
+        // 。**泄漏形返回**（方法注：v1 永不销毁契约的真保证——块尾 Drop 的
+        // 清叶会抹掉仍在跑的任务的 AS）。
+        alloc::boxed::Box::leak(alloc::boxed::Box::new(Self {
             ttbr0_pa: vmar.ttbr0_pa(),
             asid,
             stack_top: stack_base + stack_len,
             vmar: Some(vmar),
             _vmos: [code_vmo, data_vmo, stack_vmo],
-        }
+        }))
     }
 }
 

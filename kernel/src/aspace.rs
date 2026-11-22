@@ -135,17 +135,30 @@ pub struct MiniAspace {
     pub asid: u16,
     /// 表树属主（`ttbr0_pa` 即其根）。
     vmar: Vmar,
-    /// 私有页后备所有权（页归 VMO；v1 对象不销毁故无读取点——查询接口留 2b-4+）。
-    _vmo: Vmo,
+    /// 私有页后备所有权（页归 VMO）。**Box 形（2026-11-22 帧归还刀 UAF 修）**
+    /// ：`Region.vmo` 存 map 时的对象地址——旧形把栈局部映射后随 `Self`
+    /// 构造/返回**移动两次**，`Vmar::Drop` 清账解引用即悬空（ktest
+    /// `test_aspace` 的 a/b 栈 Drop 实崩：untrack_map 读死帧垃圾当
+    /// `slots.ptr`，FAR=`MAGIC_A`=0x00A5_C0DE_0000_0001——test_aspace 常量
+    /// 溢写死栈位判例；同形先例 `dpg.rs` init「先泄漏后映射」注）。Box 目标
+    /// 堆地址恒定：指针跨构造移动、跨 Drop 存活。字段序 = Drop 序（声明序）
+    /// ：`vmar` 先落（清账 untrack——此刻 `_vmo` 活）→ `_vmo` 后落（mapcnt
+    /// 已归零 → `Vmo::Drop` 还帧）。
+    _vmo: alloc::boxed::Box<Vmo>,
 }
 
 impl MiniAspace {
     /// 建空间并在私有页首写 `magic`（任务体/测试用来自证「我在自己的空间里」）。
     pub fn new(fa: &mut FrameAllocator, asid: u16, magic: u64) -> Self {
         let mut vmar = Vmar::new_root(fa, asid).expect("MiniAspace: 建 root Vmar（boot 可信语境）");
-        let mut vmo = Vmo::create(PAGE_SIZE).expect("MiniAspace: 装 VMO（boot 可信语境）");
-        vmo.commit(fa, 0, PAGE_SIZE).expect("MiniAspace: commit 私有页");
-        vmo.write(0, &magic.to_le_bytes()).expect("MiniAspace: 写 magic");
+        // **先入堆再映射**（Region.vmo 地址恒定契约——栈局部映射后移动即
+        // 悬空，见字段注；dpg.rs init 同款正序，Box 形 = 保留 Drop 还帧面）。
+        let mut vmo = alloc::boxed::Box::new({
+            let mut v = Vmo::create(PAGE_SIZE).expect("MiniAspace: 装 VMO（boot 可信语境）");
+            v.commit(fa, 0, PAGE_SIZE).expect("MiniAspace: commit 私有页");
+            v.write(0, &magic.to_le_bytes()).expect("MiniAspace: 写 magic");
+            v
+        });
         vmar.map(fa, &mut vmo, USER_VA, 0, PAGE_SIZE, Perm::Rw)
             .expect("MiniAspace: map 私有页");
         Self { ttbr0_pa: vmar.ttbr0_pa(), asid: vmar.asid(), vmar, _vmo: vmo }
