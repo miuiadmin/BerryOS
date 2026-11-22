@@ -74,6 +74,20 @@ build-user:
         cargo build --release --manifest-path tools/elf2flat/Cargo.toml \
         --target "$HOST_TRIPLE"
     ELF2FLAT="$ROOT_ABS/tools/elf2flat/cargo-target/$HOST_TRIPLE/release/elf2flat"
+    # mkapp 换轨五刀（彻底 Rust 化轨道 b 层 #4 刀序第四位，§5 钉板五步第
+    # 5 步）：产链现役件 = tools/mkapp（Rust 独立小工作区，#522-#534 四刀
+    # 件）——先编后用，下方四处 .bap 打包位全走本 bin。Python 版
+    # mkapp.py 不退役（p3sim/gensourceindex/berry_assemble import 图根 +
+    # CLI 对拍 oracle + selftest 语义钉板——selftest_guard 零豁免契约不
+    # 动）。对拍背书：三组真实 staging（无 UI/全 UI/能力面）Rust↔Python
+    # 产物 sha256 恒等 + 摘要行全等 + Python --check 交叉复验（tests/
+    # build_parity.rs，cargo test test-host 前置跑）。mkcpio path 依赖 =
+    # 单编码器纪律（mkimage→mkfat 同款先例）。cd user 后相对路径失效——
+    # 一律走 $ROOT_ABS 绝对路径（mkcpio 块同坑纪律）。
+    CARGO_TARGET_DIR="$ROOT_ABS/tools/mkapp/cargo-target" \
+        cargo build --release --manifest-path "$ROOT_ABS/tools/mkapp/Cargo.toml" \
+        --target "$HOST_TRIPLE"
+    MKAPP="$ROOT_ABS/tools/mkapp/cargo-target/$HOST_TRIPLE/release/mkapp"
     # GUI-0（2026-10-29）：user 侧 none-target 家族（echo/talker/thrchild/svcmgr/
     # abuser/hello）**保留 NEON codegen**——EL0 任务 FP 态已由 TaskContext 全量保存
     # 兜底、GUI 光栅后续正要用 SIMD；根 .cargo/config.toml 的 -neon 旗只属内核
@@ -342,8 +356,8 @@ build-user:
     cp -R bins/appdemo/views userbins/app-stage/APPDEMO/
     cp bins/appquiet/manifest.toml userbins/app-stage/APPQUIET/
     cp cargo-target/aarch64-unknown-linux-musl/release/appquiet userbins/app-stage/APPQUIET/bin/
-    python3 ../tools/mkapp.py userbins/app/APPDEMO.bap userbins/app-stage/APPDEMO
-    python3 ../tools/mkapp.py userbins/app/APPQUIET.bap userbins/app-stage/APPQUIET
+    "$MKAPP" userbins/app/APPDEMO.bap userbins/app-stage/APPDEMO
+    "$MKAPP" userbins/app/APPQUIET.bap userbins/app-stage/APPQUIET
     # app-2 刀2：APPTOMB 迁 libc 路（docs/app-2实施设计草案-v1.0.md §4
     # 换链——musl target + berry-libc shim + berry-ld 剥 musl crt 同
     # stdhello 链；none target 全量 build 行不再产出〔user/ members 已摘
@@ -358,7 +372,7 @@ build-user:
     mkdir -p userbins/app-stage/APPTOMB/bin
     cp bins/apptomb/manifest.toml userbins/app-stage/APPTOMB/
     cp cargo-target/aarch64-unknown-linux-musl/release/apptomb userbins/app-stage/APPTOMB/bin/
-    python3 ../tools/mkapp.py userbins/app/APPTOMB.bap userbins/app-stage/APPTOMB
+    "$MKAPP" userbins/app/APPTOMB.bap userbins/app-stage/APPTOMB
     # 波 4 先行批（W4-RECON §5.4 改动点 1）+ 刀 A SETTINGS 接线：七应用
     # crate 接线——appstub 秒退壳退役，APPTOMB :315-327 食谱（musl +
     # berry-ld 绝对路径 RUSTFLAGS → staging → mkapp 五道门禁）。资产单源
@@ -395,7 +409,7 @@ build-user:
         else
             cp -R "bins/appstub/apps/$id/views" "userbins/app-stage/$id/"
         fi
-        python3 ../tools/mkapp.py "userbins/app/$id.bap" "userbins/app-stage/$id"
+        "$MKAPP" "userbins/app/$id.bap" "userbins/app-stage/$id"
     done
     # G-eco-c/d + app-0：rootfs.cpio（hello + stdhello + hexyl + bsh + fail + bench1 + fsmgr + vprobe + vblk + vnet ELF 本体——装载走
     # svcmgr 流式 cpio/ELF 链，非 include_bytes 内嵌；产物在仓库根 =
@@ -487,7 +501,17 @@ sign-user: build-user
         n=$((n + 1))
     done
     # 官方源静态实例两件套 → user/userbins/source/（gitignored 产物）。
-    python3 tools/gensourceindex.py --sign-key tools/testkeys/dev/dev.sk
+    # 五刀产链换轨（b 层 #5）：先编后用 + CARGO_TARGET_DIR 钉
+    # tools/gensourceindex/cargo-target（elf2flat/mkcpio/mkfat/mkimage/
+    # mkapp 同款纪律）；Python gensourceindex.py 不退役——CLI 对拍
+    # oracle（test-host 挂双侧，tools/gensourceindex cargo test 行）+
+    # berry_assemble import 面单源。
+    HOSTG=$(rustc -vV | sed -n 's/^host: //p')
+    CARGO_TARGET_DIR="$PWD/tools/gensourceindex/cargo-target" \
+        cargo build --release --manifest-path tools/gensourceindex/Cargo.toml \
+        --target "$HOSTG"
+    "$PWD/tools/gensourceindex/cargo-target/$HOSTG/release/gensourceindex" \
+        --sign-key tools/testkeys/dev/dev.sk \
         --rootfs-manifest tools/rootfs-manifest.toml \
         --user-dir user \
         --out-dir user/userbins/source \
@@ -715,7 +739,6 @@ test-host:
     # 本门禁防回归（smoke 本地复现的宿主断点收口）。
     python3 tools/shvarcheck.py --check
     cargo test -p berry-mm --target {{host}}
-    cargo test -p berry-asidface --target {{host}}
     # W3-Q2：berry-wqmatch（等待队列唤醒匹配纯函数面——b-1 广播不变量/
     # WAIT_ANY 哨兵/fastpath 单等待者资格三律钉板 + 两路语义对齐穷举，
     # host 9 测；谓词单源，sched wake_matching/find_single_waiter 消费）。
@@ -731,6 +754,11 @@ test-host:
     # 参数化注入 + irq_exit 值域执法；wsrcface 姊妹件——号归源/源分类
     # 进环两件合钉刀1 归因链〕）。
     cargo test -p berry-wakeface --target {{host}}
+    # W3-Q106：berry-vdsoface（vDSO 数据页布局与换算纯函数面——布局冻结
+    # 钉板/magic+freq 谓词四态/换算式与内核 sys_clock_read 逐位对拍含
+    # 非二次幂频率精确域，host 5 测；单源 crate，kernel/src/vdso.rs 建页
+    # + berry-sys fast path 双消费〔03 号审计机会三〕）。
+    cargo test -p berry-vdsoface --target {{host}}
     # W3-Q28：berry-wsrcface（唤醒源分类/白名单/钳位纯函数面——WSRC_F_*
     # 五常量 + M_* 九源冻结值镜像 + class_of/valid/slot_index 三谓词，
     # host 8 测（9 源两列全表/256 值全域扫描/钳位律/POWER_KEY 到达-only
@@ -780,7 +808,10 @@ test-host:
     cargo test -p berry-hdlface --target {{host}}
     # W3-Q9：berry-chanface（channel 队列资格判纯函数面——send 参数上限
     # 律/数组内无重复/容量门/READABLE·WRITABLE 派生位键律钉板，host 8 测；
-    # 判据单源，kernel syscall.rs/channel.rs 消费）。
+    # 判据单源，kernel syscall.rs/channel.rs 消费。W3-Q49 freeze 模块
+    # （mark/clear 资格 + 序守卫）+9。W3-Q95 ring 模块（02 号机会三刀 a
+    # 环形机械：不变量/槽映射/Vec 模型对拍〔全序列 + 全相位环绕 + 伪随机
+    # 500 步〕/容量门复用律）+6——chanface 23 测。
     cargo test -p berry-chanface --target {{host}}
     # W3-Q6：berry-itally（intent 档位计数/通胀计数遥测纯函数面——档位
     # 直方六槽/保留域收敛/borrowed==Σ借入不变量/tele: 行格式（纯 ASCII、
@@ -847,13 +878,20 @@ test-host:
     # 含尾 + 防呆帽〕+ 区序两族〔pinned 族 SLEEPQ 先/thread 族 RQ 先〕+
     # 幂等置位/清位律，host 12 测；判定律单源，sched.rs 六函数消费）。
     cargo test -p berry-frzface --target {{host}}
-    # W3-Q82：berry-balface（on_irq_tick 内嵌 SMP 门纯函数钉板——心跳/
-    # 卡扫折叠除法变档律〔500/2500 两周期独立折叠〕+ 高龄乘域判〔严格
-    # 大于 10s，与报告字段 div 形两数学独立〕+ 定时拉取近空闲联合门
-    # 〔mine<=1 ∧ theirs>=mine+2，反复迁移防线〕+ 偷取 victim 三值合取
-    # 〔spread ∧ ttbr0!=0 ∧ eligible〕，host 13 测；判定律单源，sched.rs
-    # 五点消费）。
+    # W3-Q82：berry-balface（on_irq_tick 内嵌 SMP 门纯函数钉板——定时
+    # 拉取近空闲联合门〔mine<=1 ∧ theirs>=mine+2，反复迁移防线〕+ 偷取
+    # victim 三值合取〔spread ∧ ttbr0!=0 ∧ eligible〕+ 金丝雀时间节流门
+    # 〔canary_due——探针族退役刀 2026-11-19 起，心跳/卡扫族随探针退役、
+    # soak_crossed 由 canary_due 继任〕，host 15 测；判定律单源，sched.rs
+    # 消费）。
     cargo test -p berry-balface --target {{host}}
+    # W3-Q36：berry-lkface（lockdep 检查面纯函数——rank 七类全序表/
+    # check_acquire 三检判序/check_release 两臂/check_irq_exit 配平判，
+    # host 13 测；判定律单源，HAL kern_lock.rs lockdep 面消费。
+    # 〔探针族退役刀 2026-11-19：kl_diag_gate/KL_SPIN_BARK_MASK 随
+    # spin_bark 族退役除册。#305 入库起未接线 test-host（base 预存缺
+    # 口），W3-Q103 随刀补线——「有 host 测零自动执法 = 静默腐烂」判例族。〕
+    cargo test -p berry-lkface --target {{host}}
 
     # W3-Q83：berry-numface（UART 整数格式化族纯面钉板——u64 十进制〔无前
     # 导/0 单位/20 位极值〕+ 固定 16 位小写 hex〔trap dump 形〕+ 8 位大写
@@ -861,6 +899,12 @@ test-host:
     # 序 + 敌意短缓冲安全律 + 数字表冻结锚，host 10 测；装配律单源，HAL
     # uart.rs·trap.rs·psci.rs 四消费点壳化）。
     cargo test -p berry-numface --target {{host}}
+    # W3-Q140：berry-bpface（boot-params 纯函数面——cpio newc 定址查找
+    # 状态机〔魔数双形/页垫 4096 契约/TRAILER 自终止/checked 防回卷〕+
+    # TOML 子集解析〔schema 门/三键值域/未知键宽严分工/行数帽〕host 钉
+    # 板 20 测；判定律单源外迁 kernel bootparams.rs，Vmo 物理臂与 eco 注
+    # 入留壳）。
+    cargo test -p berry-bpface --target {{host}}
     # W3-Q20：berry-polface（policy O(1) 快照查表数学 + SchedAttr 位选律
     # 纯函数面——散列锚点指纹/256 键桶覆盖摊平律/饱和窗全占+窗尽缺席/
     # 空槽早退缺席/桶 255 回绕落位/first-wins 不覆写/窗满拒收不入表/
@@ -1039,11 +1083,17 @@ test-host:
     # 批切分 + poll-first 收割到干 + 分段阻塞轮转 + LT/非阻塞/唤醒三免费
     # 语义，host 13 测）。
     cargo test --manifest-path user/Cargo.toml -p berry-poll --target {{host}}
-    # 作业控制 v2 刀：berry-jobs（bsh 后台作业纯函数面——`&` 尾缀剥离
-    # 全边缘（`&&` 尾停/`a&&&b` 恒不剥/裸 `&` 不剥/`a& &` 循环剥）+
-    # 最低空位编号与满帽 + %n 解析杂形全拒 + 四渲染行黄金字节，
-    # host 14 测）。
+    # 作业控制 v2 刀：berry-jobs 纯面（alloc_id/parse_job_ref/渲染行——
+    # host 14 测；strip_bg 自 v2.5 引号刀起 Superseded 保留导出——消费面
+    # 已整迁 berry-lex、边缘测随面同留；2026-11-19 愈合复通——活线合并曾
+    # 丢此线，随 free 刀同批复接）。
     cargo test --manifest-path user/Cargo.toml -p berry-jobs --target {{host}}
+    # bsh v2.5 引号与统一分词器刀：berry-lex 词法单源（单遍 Item 流/三视图
+    # render·fields·word_texts/strip_bg 引号感知版——host 72 测：引号三件
+    # 全分支＋render 对拍 expand 恒等律＋恒等金样族；bsh 解析层词边界/操作符
+    # 识别全经此单源，berry-jobs strip_bg 语料整迁退役——Superseded 保留
+    # 导出，berry-jobs 活跃面归纯作业数据面）。
+    cargo test --manifest-path user/Cargo.toml -p berry-lex --target {{host}}
     # GUI-1：berry-fbcon（自绘 8×16 字形 + 蜂格渲染核纯函数面——V-6 刀 2
     # 前置段产物，GUI-1 迁正 user/ members 随挂 host 测试：字形锚点/蜂格
     # 渲染/滚动/格式打包，host 28 测）。
@@ -1109,6 +1159,132 @@ test-host:
     # mkapp 门禁自检（a-3 U4：mkfat --check-fixture 同位前置——打包器门禁
     # 面此前只在 build-user 产物链上被动覆盖，门禁自身坏 = 产物链静默劣化）。
     python3 tools/mkapp.py --selftest
+    # W1（彻底 Rust 化轨道 b 层 #4 刀序第四位首刀）：mkapp Rust 件 lib 纯面
+    # 测试（canonical 规范形重发射——Python 现役件 M.canonical() 13 形黄金
+    # 向量字节级对拍：v0 旧形/词表/可选节组合/尾增节全谱/kitchen sink +
+    # 幂等律 + min_level 孤立不发射钉板 + 常量镜像对账）。独立小工作区，
+    # 须显式 --target {{host}}。产链现役件仍 Python mkapp.py（下方
+    # --selftest 行同挂），后续刀（check_manifest_text 门禁/BYI1/信封/
+    # 签名）依彻底Rust化计划 §4 刀序推进后再换轨。
+    cargo test --manifest-path tools/mkapp/Cargo.toml --target {{host}}
+    # W1（同上五刀·产链换轨后置注）：mkapp cargo test 现含 build 编排面
+    # 镜像测试 + tests/build_parity.rs oracle 对拍（三组真实 staging
+    # Rust↔Python 产物 sha256 恒等 + 摘要行全等 + --check 交叉复验 +
+    # 拒面同文案）——产链现役件已切本 bin（build-user 四处打包位），
+    # Python mkapp.py = 模块面 + oracle（--selftest 行同挂，语义钉板）。
+    # W1（同上六刀·--check）：tests/check_parity.rs——check_bap 五步
+    # Rust↔Python oracle 对拍（OK 行全等 + 拒面十族同 code）；CLI --check
+    # 臂实装（出口码同 Python），Python --check 仍为 CLI oracle 面。
+    # W1（同上七刀·--json）：src/json.rs 信封面 + tests/json_parity.rs
+    # oracle 对拍（正例双 op result 舱逐键全等 + 负例六类钉板族七舱全等
+    # + io 兜底 + 单行纪律 + 双读一致）；CLI --json 臂实装（build/check
+    # 两 op，拒因 exit 1/用法错 2 同 Python），其余形态仍走 Python 面。
+    # W1（同上八刀·--new）：src/new.rs 脚手架面 + tests/new_parity.rs
+    # oracle 对拍；CLI --new 臂实装（恰四参形同判）。
+    # W1（同上九刀·签名面）：src/sign.rs（_find_berry_sign 发现序镜像 +
+    # sign/verify 子进程封装）+ tests/sign_parity.rs；CLI --sign-key/
+    # --verify-key 旗标提取。
+    # W1（彻底 Rust 化轨道 b 层 #5 刀序第五位首刀）：gensourceindex
+    # Rust 件 lib 纯面测试（TLV 索引编码/解析 canonical 单形 + 源钥清单
+    # 冻结行格式 + 自持 SHA-512/256——Python 现役件 build_index/
+    # parse_index/build_keys_listing 五组黄金形字节恒等对拍 + 拒面文案
+    # 全等 + NIST 向量钉板）。二刀（berry-sign 面）：src/sign.rs 发现序/
+    # 子进程封装/sign_index 单点缝/verify_index_signature 三态 +
+    # tests/sign_parity.rs oracle 真流对拍（签名字节恒等 + 验签三态
+    # 双侧同构 + unsigned 降级注全等；berry-sign 缺席 skip 纯面兜底）。
+    # 独立小工作区，须显式 --target {{host}}。
+    # 三刀（CLI 消费半边）：src/main.rs --verify/--gen-keys 臂实装
+    # （Python do_verify/do_gen_keys 镜像）+ tests/cli_parity.rs oracle
+    # 真流对拍（--verify stdout 逐行全等/单调门/两件套对拍拒/gen-keys
+    # 真流/用法错族）。四刀（生成面库刀）：src/gen.rs rootfs-manifest 路
+    # （load_app_entries/build_entry/do_generate——依赖全走已 Rust 化件：
+    # mkcpio load_manifest 表加载 + mkapp gate/cpio manifest 语义与走查
+    # 单源复用）+ tests/gen_parity.rs oracle 真流对拍（两件套字节恒等 +
+    # stdout 逐行全等 + 单调门/[security]/pk 长度拒面同构；--preset 面
+    # berry_assemble Python 现役不镜像）。五刀（生成面 CLI 换轨）：
+    # src/main.rs 生成臂全旗标集（argparse 判序镜像：--verify 独占/
+    # --sign-key 同席门/生成双必选 + 让位面 --preset/--selftest 指回
+    # python3）+ tests/gen_cli_parity.rs CLI 级对拍（两件套字节恒等含
+    # --sign-key 真签腿〔BERRY_SIGN env 合同位注入〕+ stdout 逐行全等 +
+    # 拒面/用法错族 exit 码与 stderr 全等）。sign-user 产链位已切本
+    # bin（先编后用 + cargo-target 钉位）；Python 件不退役——CLI 对拍
+    # oracle + berry_assemble import 面单源（--preset 让位）。
+    cargo test --manifest-path tools/gensourceindex/Cargo.toml --target {{host}}
+    # W1（彻底 Rust 化轨道 b 层 #6 刀序第六位首刀）：berryassemble Rust 件
+    # lib 纯面测试——boot-params 词表执法+序列化（三键 v1/u32 恰界/intent
+    # 六档/越帽 32/schema=1 头+字典序键值行黄金形）/ kernel 锚形（name@
+    # sha256:<64hex> + 大写归一 + 拒梯）/ 装配反回滚门（u32 域界+PR≤level
+    # 两臂）/ platform level 单源读器。tests/parity.rs Python 现役件真跑
+    # oracle 对拍（serialize 字节恒等 + validate_platform_revision 拒面
+    # 文案全等 + ANCHOR_RE accept/拒梯 + abi.toml 真源同读 + 坏源分支）。
+    # 二刀第一段：toml_doc 解析器（product.toml 语面——嵌套节/多行数组/
+    # 行尾注释/引号键/重复键与表互覆拒；空节在场性经 parse_with_sections
+    # 清单保留——tomllib「节头出现 = table 在场」语义钉平）+ tomllib
+    # flatten oracle 对拍（acme 参照物 + SELFTEST 模板 + 合成语料逐行全等）。
+    # 二刀第二段第一片：lite.rs load_product(lite=True) 结构面镜像——
+    # 顶层键/schema=1/[product] 全节键集类型值域执法；parity oracle 真跑
+    # 文件面（42 拒面文案逐字对拍 + acme/SELFTEST 双正面过检视图对账）。
+    # 二刀第二段第二片：[platform] 全节执法（check_platform_section——
+    # 六键必填/三枚举词表/sideload bool+user 型收窄/boot 锚+params 词表
+    # 单源复用/storage 三键域界+atomicity 收窄；params/storage 域界执法
+    # 经 to_lib_val 转换桥复用 lib check_boot_params/need_u32 单源——零
+    # 第二套词表/域界文案；parity 21 拒面语料单点变异对拍逐字全等）。
+    # 二刀第三段：[product.defaults.locale] i18n 八键执法（languages
+    # BCP 47 手写段匹配器+1..=8 帽+大小写不敏感查重/timezone IANA 段形/
+    # region·regulatory_domain ISO 3166-1 alpha-2/calendar 等四枚举词表；
+    # parity 20 拒面语料 + BCP47 accept/拒梯分支对齐 + 八键全席正面）。
+    # 三刀·CLI 消费半边：src/main.rs --check-lite 臂换轨（Python main()
+    # 判序逐行镜像：旗标循环/互斥单模式/out-dir 值对/用法错 2/拒因 1；
+    # do_check(lite=True) OK 行逐字同构含 preset 计数与 locale·trust
+    # 开关位 + OSError 读失败文案镜像）+ tests/cli_parity.rs oracle 真跑
+    # 对拍（stdout 逐行全等剥路径段 + exit 码/stderr 全等 + 用法错族 +
+    # 让位臂五旗标指回 python3——--check/--dry-run/--emit/--selftest/
+    # --sample 现役单源不镜像）。
+    # 四刀第一片：full.rs 产物面对账（load_product(lite=False) 文件面四臂
+    # 镜像——override OEM 件/branding 资产在席 + source 两件套 + trust 锚
+    # 32B 恰长 + gensourceindex parse_index path 依赖单解释器复用）；
+    # tests/full_parity.rs oracle 真跑文件面对拍（gsi 两件套真产 + 7 拒腿
+    # 变异文案逐字全等 + 结构拒面前置）。
+    # 四刀第三片：anchor.rs kernel 锚现算对账（measure_kernel_anchor 三态
+    # 镜像——件缺=Ok(false) 只形校验过 / 件在且等=true 现算对账过 / 件在
+    # 不等=loud 拒「锚对账不等」；SHA-256 = mkapp cpio::sha256_hex 单解释
+    # 器 path 依赖）；tests/anchor_parity.rs oracle 真跑对拍（三态双侧
+    # 同构 + 拒面文案逐字全等 + 5MiB 大件分块读腿——摘要经独立 hashlib
+    # 管道自算防同错对拍）。
+    # 五刀收口：validate.rs --check 全量臂组合面（_validate_all :985 镜像
+    # ——check_full → resolve_entries → measure_kernel_anchor 聚合 + OK
+    # 行六段 format_check_ok :1012 逐字镜像）+ main.rs --check 臂换轨
+    # （读面 read_product_text 抽单源 + tools/ 目录发现 repo_tools_dir
+    # 〔gsi 同款 CWD/exe 双上溯——DEFAULT_BASE/DEFAULT_USER_DIR 等价物〕）
+    # + tests/validate_parity.rs CLI oracle 对拍（读失败/schema=0 结构拒/
+    # override 文件面拒/真源基座拒〔双侧同咬仓内 rootfs-manifest 构建树
+    # 缺席〕/坏 TOML 分支标识/用法错 2 六腿；OK 行正面 = lib 黄金形 +
+    # Python do_check 同现场模块级逐字对拍钉板）；cli_parity 让位臂族
+    # 滚新（--check 移出让位族）。
+    # 六刀：plan.rs --dry-run 计划面（Python build_plan :890 + do_dry_run
+    # :1020 逐字镜像——行面全分支 + 装配门两臂前置 + relpath user_disp）；
+    # main.rs --dry-run 臂换轨（pr 旗标解析收值 + abi.toml 单源读 + 组合
+    # 面聚合 + 逐行打印）+ tests/plan_parity.rs oracle 模块级对拍（合成
+    # 现场 7 腿行面逐行全等：全席基线/sideload 形/最小面/user_disp 变/
+    # params 双形/source 透传〔gsi 两件套真产〕/kernel_measured 真件态）
+    # + validate_parity CLI 腿补（真源基座拒/装配门域界与反回滚两臂/
+    # 用法错与坏 pr 值）；cli_parity 让位臂族滚新（--dry-run 移出让位族）。
+    # 七刀：plan.rs emit_boot_params 产件面（Python do_emit :1046 尾段
+    # 镜像——空 params 零产件零目录缺省零扰动行 / 非空 makedirs 实写
+    # <out>/etc/boot-params.toml + 产件行；params 串面存储 → 序列化键值
+    # 形转换 params_paramvals〔u32 parse 十进制串 + intent 经 INTENTS 找
+    # 回 static〕）；main.rs --emit 臂换轨（dry_run_core 共核拆分——
+    # 计划行打印 + emit 尾段；缺 --out-dir 判序前置不变）+ tests/
+    # emit_parity.rs oracle 模块级对拍（合成现场 5 腿：全席三键 params
+    # 产件字节 sha256 恒等 + 尾行剥段全等 / 空 params 零扰动双侧同构 /
+    # 深位 out-dir makedirs 递归 / 结构拒面前置 / IO 失败 out-dir 被占位
+    # 同构）+ validate_parity CLI 腿⑩（--emit 真源基座拒——双侧同咬仓内
+    # 真基座表，拒面剥仓根段逐字全等 + 拒路径零产件）；cli_parity 让位
+    # 臂族滚新（--emit 移出让位族——七刀后五模式全镜像，让位面余
+    # --selftest/--sample）。独立小工作区，须显式 --target {{host}}。
+    # Python 件不退役——CLI 对拍 oracle + gensourceindex --preset
+    # import 面单源。
+    cargo test --manifest-path tools/berryassemble/Cargo.toml --target {{host}}
     # W1 接线（SEC-02 A2 同款纪律）：berry_assemble 门禁自检——V13 组装器
     # （ADR #82「组装不 fork」product.toml 校验/dry-run 计划/装配反回滚门）
     # 落地时自称 51 腿绿但从未接线 test-host：有 selftest 零自动执法 =
@@ -1253,6 +1429,57 @@ test-host:
     # tools/mkimage）；Python 版不降格改名——模块面现役（gensourceindex
     # import）+ CLI 对拍 oracle，selftest 照跑守 Python 侧语义钉板。
     python3 tools/mkimage.py --selftest
+    # W1-Q4 续（a-3 U4 纪律同款）：releng_pack 门禁自检——G1 刀 6 发布
+    # 打包流水线（产物检查→尺寸门→mkimage 造盘→manifest）此前零守卫，
+    # 只在真发布链上被动覆盖：帽值不变量（G0 刀 1 双槽 256MiB——随刀
+    # 单源化 docstring/文案 128 残留同步清偿）/ sha256 分段读对拍 / 尺寸
+    # 门恰界两侧 / 缺件 loud 退场 / berry-sign 发现序缺席分支 / run 双路。
+    python3 tools/releng_pack.py --selftest
+    # W1 接线（releng_pack 同族·零自检清尾）：make_desktop_disk 门禁自检——
+    # 确定性桌面数据盘（product-e2e/desktop-calib 消费面）宣称「产物字节
+    # 确定性可重复重建」此前零机器执法：LAYOUT 常量契约（schema/页坐标
+    # 域/8.3 名形/印章常量）+ 真流双产 sha256 恒等（走真 mkfat 子进程 +
+    # gui8 Fat12Volume 注入）+ LBA0 印章前缀与 LBA16 卷签名（vol@LBA16
+    # 铁律——印章区不得伪造 BPB）+ LAYOUT.JSN 写读往返字节级对拍 + 缺席
+    # 件 None 容忍与重复 add_file 拒形 + cwd 无关确定性（子进程 cwd=ROOT
+    # 钉位）。三突变红分支实证（常量漂移/印章换字/注入内容截尾均咬）。
+    python3 tools/make_desktop_disk.py --selftest
+    # W1 接线（tools 弱面清偿·PIL 渲染生成器族首件）：gen_splash_logo /
+    # gen_splash_pct 门禁自检——splash HD 字模两生成器（kernel 消费面
+    # splash.rs）此前零守卫：结构律（常量↔行几何互锁/字形序恰 11 形/
+    # 类型行钉板）+ 位域律（尾包无效位区全零/值域 v<2^w/72 行恰容/
+    # 零填充段）+ 紧致 bbox 律（四缘有墨——getbbox 语义机器镜像）+
+    # 黄金哈希 ×2（字源/字号/阈值变更必漂移）+ 突变红 ×6 + PIL 重产
+    # 逐字节对拍（缺席 skip——CI Linux 面黄金哈希兜底）；--check 漂移
+    # 守卫同位（genfbfont --check 同族）。
+    python3 tools/gen_splash_logo.py --selftest
+    python3 tools/gen_splash_pct.py --selftest
+    # W1 接线（tools 弱面清偿·PIL 渲染生成器族二件）：gencjkfont 门禁
+    # 自检——CJK 3500 字 A2 分页字库（berry-gfx 运行期消费面）此前只有
+    # --check 漂移守卫零结构执法：常量互锁（.rs ↔ 本件 ↔ 数学关系）+
+    # A2 页流全链解码对账（zlib 分页 → 逐页几何 → 3500 形切分）+
+    # CJK_GOLDEN 19 条语义 golden 从解出 A2 字节重算（位打包/量化双律）+
+    # 码点表律（升序去重/CJK 区段/chars_sorted 排序律/标签十字）+
+    # 量化数学钉板 + 突变红 x3；字源 16MiB 恒不入库，零字源面设计
+    # （PIL 烟测缺席 skip——bin sha256 互锁兜底）。
+    python3 tools/gencjkfont.py --selftest
+    # W1 接线（tools 弱面清偿·PIL 渲染生成器族三件）：gen_android_nav_icons
+    # 门禁自检——AOSP SystemUI 导航 VectorDrawable 光栅化器（297 行，源
+    # XML+产物均入库）此前零守卫：源哈希互锁 x3（AOSP 资产篡改即红）+
+    # 结构律（NAV_ICON 六 id/九数组 5184 尺寸）+ ARGB 打包律（RGB 域恒为
+    # 配对墨色）+ 几何律零 PIL 全链（pathData 纯 stdlib 解析 → polygon
+    # bbox(72 网格) 与九数组重算 mask bbox 包络对账——CI 无 PIL 面可跑）+
+    # 掩码互异 + 突变红 x3；PIL 重产逐字节对拍缺席 skip（#644 判例：CI
+    # runner 无 PIL，import 惰性化）。
+    python3 tools/gen_android_nav_icons.py --selftest
+    # W1 接线（tools 弱面清偿·串口判读契约族）：desktop-calib 门禁自检——
+    # Mac HVF 双臂标定件（不进 CI）的串口判读契约此前零机器执法：
+    # VGPUPERF/VGPUDMA 解析律（字段提取/坏值容忍/token==submits 契约）
+    # + 基线快照 + median/percentile 统计数学（numpy 线性插值口径）+
+    # snap240 滑窗闭窗恰界与达标阈值（round 非 ceil）+ move 数换算 +
+    # SerialTail 增量尾读（半行跨读/close 重开从头读契约）+ 突变红 x3。
+    # 改 desktop-calib 判读/统计面必跑。
+    python3 tools/desktop-calib.py --selftest
     # K-3：size.py ADRP 解码器向量自检（--assert-flip 扩面的门禁自身坏 =
     # smoke/build-release 断言静默劣化，同 a-3 U4 纪律门禁化）。
     python3 tools/size.py --selftest
@@ -1421,6 +1648,17 @@ test-host:
     # （A/NXDOMAIN/压缩指针/畸形包）+ live UDP 闭环 13 腿；改 dns-stub.py
     # 或 bcts wrap 必跑。
     python3 tools/dns-stub.py --selftest
+    # W1 接线（2026-11-19；base fc99d2b79 GUI 合并批带入两件零接线实捕）：
+    # cpio_filter 门禁自检——mkcpio newc 归档确定性 marker 移除/追加（产品
+    # 桌面镜像与 GUI8 验证镜像共享 rootfs 条目的 probe.on/gpuhdi.on 分叉
+    # 面）；垫料解析/重复 remove/追加冲突 loud 拒面。改 cpio_filter.py 或
+    # 镜像 marker 分叉面必跑。
+    python3 tools/cpio_filter.py --selftest
+    # W1 接线（同批实捕）：gui_guard 门禁自检——F9 普通 app 边界静态守卫
+    # （wm=true 必依赖 berry-room/berry-ui、fs RPC 走 fsclient、源码禁
+    # syscall 面/WM RPC 解码/像素基元、nshfont 不得在场）；正样本 + 22 类
+    # 负样本 fail closed。改 gui_guard.py 或普通 app 授权面必跑。
+    python3 tools/gui_guard.py --self-test
     # W1 接线（#257 后继件；base 重写剥落重放）：bcts-parkprobe 门禁自检
     # ——berryos-smoke.* 串口日志 park 签名分类器（dns_park/churn_starve/
     # net_live/clean_boot 四分支钉板 + unreadable 负样本）；bcts 失败路径
@@ -1468,6 +1706,13 @@ test-host:
     # 沙箱：G-ver-3 对拍绿/不匹配红点名/无 version 红/git_ident 缺席红/
     # 段作用域防串号/零 tag 豁免/非 git 豁免）。发版门形态改坏可被咬合。
     {{BASH}} tools/ver-check.sh --selftest
+    # W1 接线（同族·G1 刀 4 密封构建包装器）：reproducible_build.sh——
+    # SOURCE_DATE_EPOCH/路径 remap/离线/umask/TZ/LC_ALL 六密封面 + git
+    # 缺席回退 epoch 0 + just 目标透传，此前零自检（密封面改坏 = 产物
+    # 不可复现静默漂移，无机器咬合）。selftest 5 腿（合成 git+just 垫片
+    # 沙箱：exec 落地视图逐项对账/非 git 回退/多目标透传/RUSTFLAGS 叠加
+    # 保留/just 缺席 loud 拒）。改密封面必跑。
+    {{BASH}} tools/reproducible_build.sh --selftest
     # W1 接线（D-审计 §4.3「从未跑过」面）：guifbd lib 单测 23 测
     # （B1-b/c vgpu 后端纯面——后端分派/INDIRECT 链/ATTACH 段/提交序）入
     # host 台账。独立小工作区（空 [workspace] escape），berry-libc
@@ -1479,6 +1724,43 @@ test-host:
     # §测试原只记手动咒语）入 host 台账。独立小工作区，host 纯面零
     # 交叉编译；此前手动 cargo test 从未接线 = 面改坏无机器咬合。
     cargo test --manifest-path tools/berry/Cargo.toml --target {{host}}
+    # W1 接线（R136 判例族·「有 host 测零自动执法 = 静默腐烂」）：
+    # user/widgets/ 四独立小工作区（G3 刀 11-14 落地，26 host 测）——
+    # berry-scene-ir（声明式小组件二进制序列化 16B header+24B 定长
+    # 节点四型 + 40 节点帽 + 全验证反序列化）、berry-widgetd（WidgetGrid
+    # 4×4 网格/TimelineScheduler 过期时间线/SmartStack 同格叠放轮换）、
+    # berry-island（Spring2D 临界阻尼弹簧 ζ=1 无超调 + 四态机合法转移
+    # 表）、berry-intentd（Intent 8 型 + 路由优先级 32 帽 + 意图链
+    # ≤8 步）。非 user workspace members（空 [workspace] escape，sysnr
+    # 先例形）此前零 just/CI 接线 = 语义面改坏无机器咬合。W2 布局树
+    # 移交注所点名（接线归 owner/G3 线——W1 代接线，先例 = lkface
+    # R136 建议件/guifbd D-审计接线）。
+    cargo test --manifest-path user/widgets/scene-ir/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/widgets/widgetd/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/widgets/island/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/widgets/intentd/Cargo.toml --target {{host}}
+    # W1 接线（R136 判例族同款）：user/nfc/ + user/accessories/ 四独立
+    # 小工作区（G4 刀 15-18 落地，18 host 测）——berry-nci（NCI 协议栈
+    # 纯面：MT/GID/OID 帧 + ISO 7816 APDU + SW1/SW2 + eSE 状态机）、
+    # berry-walletd（四卡型生命周期 + 优先级出卡 + Power Reserve 断电
+    # 策略 + 余额扣费）、berry-stylus（1D 卡尔曼滤波位置/速度双通道 +
+    # 240Hz 预测 ≤4ms）、berry-uwb（ToF 测距 + PDoA 方位角 + 三边定位
+    # Cramer 2×2 含 λ 修正）。同 widgets 形零接线 = 同款静默腐烂面；
+    # W2 布局树移交注点名件（dc4fb5601）。
+    cargo test --manifest-path user/nfc/nci/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/nfc/walletd/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/accessories/stylus/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/accessories/uwb/Cargo.toml --target {{host}}
+    # W1 接线（R136 判例族同款·G2 刀 8-10 兼容子系统三件）：user/compat/
+    # 三独立小工作区（15 host 测）——linux-runner（syscall 翻译守护：
+    # ELF64 头解析/优先级扫参序/未知 syscall loud 拒）、berry-vmm
+    # （MicroVM 管理器：vCPU 生命周期/客户机物理内存布局/中断注入
+    # 裁决）、compat-wayland-bridge（wl_surface/wl_shm → BerryOS
+    # SurfaceId/VMO 桥接：surface 映射能力面）。空 [workspace] escape
+    # 同 widgets/nfc 形，此前零 just/CI 接线 = 语义面改坏无机器咬合。
+    cargo test --manifest-path user/compat/linux_runner/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/compat/vmm/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/compat/wayland-bridge/Cargo.toml --target {{host}}
     # W1 接线（base 重写剥落重放，#304 面）：sync-public members 对账门——
     # 白名单 ⊇ workspace members 机器执法（#153/#171/#227 三连 REJECT
     # 判例族根因：新增顶层 crate 忘补白名单 = 公开仓 build 必炸）。本刀
@@ -1538,6 +1820,17 @@ test-host:
     # that goes quiet is an ERROR」）。改 facts.py、check-docs 检查面必跑。
     python3 tools/facts.py --selftest
     node .agents/tools/check-docs.mjs --selftest
+    # W1 接线（tools 弱面扫描件）：sdk/design 两本 ledger 门禁自检——
+    # CI smoke 消费位（ci.yml sdk/design ledger 步）此前零自检：门禁
+    # 自身坏 = 静默劣化（a-3 U4 纪律同款）。sdk_ledger 6 腿（facade
+    # 提取三形/validate 拒面族 12 变异/双向对账 missing·stale/matrix
+    # 黄金形/doc 往返漂移红）；design_ledger 7 腿（WCAG 数学锚 21:1
+    # 极值与 448/451 门槛夹逼/parse_color 拒梯/enum 提取/36 对全谱
+    # matrix/validate 全链拒面 9 变异含 rogue widgets.rs 硬编码色与
+    # cfg(test) 豁免/doc 往返）。改两件门禁逻辑或 design_tokens/
+    # sdk_api 词表必跑。
+    python3 tools/sdk_ledger.py --selftest
+    python3 tools/design_ledger.py --selftest
 
 # 忙核 arm-to-nearest-deadline（oneshot 收紧律）host 钉板：律单源
 # sched/src/oneshot.rs（sched crate 本体 no_std + HAL 依赖不编 host），
@@ -1578,7 +1871,7 @@ bench-rt: build
 # 定值 `-icount shift=1,sleep=off`——周期数变指令数代理（shift=1 虚拟时钟
 # ≈0.125 cyc/instr），与 TCG 实时基线**不可比、分文件**
 # tools/bench_baseline_icount.txt（跨机/跨 QEMU 版本亦不可比，CI 首跑自立）。
-# boot 时序全变 → 只跑 bench 收割（六行 BENCH 门禁面 + BENCHWAKE 观测行），
+# boot 时序全变 → 只跑 bench 收割（十行 BENCH 门禁面（icount 基线刀 2026-11-18 两项入册 + W3-Q98/Q102 再两项随迁） + BENCHWAKE 观测行），
 # 不用于功能面。L2 紧门禁形态（精确相等/±5%）由五跑证明烘焙为 bench.py
 # ICOUNT_TOL 常量；证明可重验：
 #   python3 tools/bench.py --icount --prove

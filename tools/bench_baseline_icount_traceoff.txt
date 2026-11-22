@@ -14,8 +14,10 @@
 # 史档/勘误记事 → tools/bench_baseline_icount.notes.md（on/off 家族共册）。
 cntvct_pair,4096,0
 frame_alloc4k,1024,37
-frame_alloc64k,256,37
+frame_alloc64k,256,180
 handle_evt,1024,288
-pick_scan,1024,108
-vmo_commit1p,256,396
+pick_scan,1024,131
+send_recv_pair,1024,1154
+svc_roundtrip,512,44
+vmo_commit1p,256,486
 vmo_rw4k,128,6945

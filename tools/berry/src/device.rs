@@ -214,6 +214,12 @@ impl Device {
         if let Endpoint::Unix(p) = &self.qmp_ep {
             let _ = std::fs::remove_file(p);
         }
+        // 注入专用 qmp-inject.sock 同清（路径推导单源 qemu::inject_sock_path）：
+        // 残留 socket 文件让重生的 QEMU 第二 QMP 服务端 bind 失败——原位
+        // 重生死链（S4 缺口定谳）。
+        if let Some(p) = qemu::inject_sock_path(&self.qmp_ep) {
+            let _ = std::fs::remove_file(p);
+        }
         // 串口 chardev socket 同清（console 刀件1）：残留 socket 文件会让
         // 重生的 QEMU bind 失败。serial.log 不用手截——logfile 缺省
         // logappend=off，QEMU 自己截断（qemu.rs machine_args 注记）。
@@ -438,7 +444,9 @@ fn boot_runtime(
         let qmp = Arc::new(Mutex::new(qmp));
         let source: Box<dyn ScreenSource> = if let Some(info) = fb {
             let input = VncInput::connect(vnc)?;
-            // 指针注入面退役（归档锚：.agents/research/证据快照/2026-11-20-VNC直通绝对坐标判例驳斥.md）：原生路改走 VncInput 的 RFB PointerEvent 直通——握手已补发 SetEncodings 置位 vs->absolute，宿主零几何知识。
+            // 指针注入面退役（归档锚：.agents/research/证据快照/2026-11-20-VNC直通绝对坐标判例驳斥.md）：
+            // 原生路改走 VncInput 的 RFB PointerEvent 直通——握手已补发 SetEncodings
+            // 置位 vs->absolute，宿主零几何知识。
             Box::new(RamSource::open(
                 ram_path.unwrap_or(std::path::Path::new("")),
                 info,
@@ -748,5 +756,178 @@ mod tests {
         assert!(!should_retry_bind_race(tcp, Some(&fixed)));
         assert!(!should_retry_bind_race("unrelated boot failure", Some(&auto)));
         assert!(!should_retry_bind_race(tcp, None));
+    }
+}
+
+// ---- W1-Q26 十六刀（device 连接编排面）：connect_qmp 三态、endpoints
+// ---- 残留 socket 清理、wait_endpoint Unix 有界等待——fake-QMP 先例复用
+// ----（qmp.rs scripted listener），boot_runtime 子件逐函数直测（此前
+// ---- 仅 vnc_event_line/bind_race 两纯面有测）。
+#[cfg(test)]
+mod connect_tests {
+    use super::*;
+    use serde_json::Value;
+    use std::io::{BufRead, BufReader, Write as _};
+
+    /// Scripted fake-QMP（control.rs dispatch_tests 同款先例）：greeting →
+    /// 逐行回显 id 的 return 应答；rx 收到每条服务端视角的请求行。
+    fn fake_qmp_listener() -> (u16, std::sync::mpsc::Receiver<String>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut s = match stream {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                if s
+                    .write_all(b"{\"QMP\":{\"version\":{\"qemu\":{\"micro\":3}},\"capabilities\":[]}}\n")
+                    .is_err()
+                {
+                    continue;
+                }
+                let mut r = BufReader::new(s.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    match r.read_line(&mut line) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                    let _ = tx.send(line.clone());
+                    let id = serde_json::from_str::<Value>(&line)
+                        .ok()
+                        .and_then(|v| v.get("id").cloned())
+                        .unwrap_or(Value::Null);
+                    let reply = format!(r#"{{"return":{{}},"id":{}}}"#, id);
+                    if s.write_all(reply.as_bytes()).is_err() || s.write_all(b"\n").is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        (port, rx)
+    }
+
+    /// 死端口：bind 后立刻 drop，connect 必拒。
+    fn dead_port() -> u16 {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    }
+
+    fn temp_run() -> std::path::PathBuf {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let d = std::env::temp_dir().join(format!(
+            "berry-dev-connect-{}-{}-{}",
+            std::process::id(),
+            seq,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// connect_qmp 首连即中（活 fake-QMP）：握手 + qmp_capabilities 完成，
+    /// 后续命令在活连接上正常路由。
+    #[test]
+    fn connect_qmp_first_try_live_endpoint() {
+        let (port, _rx) = fake_qmp_listener();
+        let ep = Endpoint::Tcp(format!("127.0.0.1:{port}"));
+        let mut q = connect_qmp(&ep, Duration::from_secs(5));
+        let mut q = match q {
+            Ok(q) => q,
+            Err(e) => panic!("live connect should succeed: {e}"),
+        };
+        // 能力协商后的命令在活连接上正常执行（id 回显路由验证）。
+        let v = q.execute("query-status", serde_json::json!({})).unwrap();
+        assert_eq!(v, serde_json::json!({}));
+    }
+
+    /// connect_qmp 死端口 + 极短预算：重试至预算耗尽后透传原始连接错
+    /// （非 panic、非死循环）；错误文案带 endpoint 揢写。
+    #[test]
+    fn connect_qmp_dead_endpoint_bounded_and_errors() {
+        let ep = Endpoint::Tcp(format!("127.0.0.1:{}", dead_port()));
+        let start = Instant::now();
+        let res = connect_qmp(&ep, Duration::from_millis(60));
+        let err = match res {
+            Err(e) => e,
+            Ok(_) => panic!("dead port must err"),
+        };
+        assert!(
+            start.elapsed() >= Duration::from_millis(50),
+            "预算 60ms 应重试后失败，实测 {:?}",
+            start.elapsed()
+        );
+        let msg = format!("{err}");
+        assert!(msg.contains("QMP connect"), "错误应带 QMP connect 上下文: {msg}");
+    }
+
+    /// connect_qmp 迟到端点：先证明「一窗内连接关掉后，重试窗内能再连
+    /// 上同一 listener」——QEMU QMP socket 就绪竞态的宿主侧重试行为钉板
+    /// （fake-QMP 逐请求接受，连接关闭后 listener 继续 incoming）。
+    #[test]
+    fn connect_qmp_late_endpoint_converges_within_budget() {
+        let (port, _rx) = fake_qmp_listener();
+        let ep = Endpoint::Tcp(format!("127.0.0.1:{port}"));
+        // 先占住连接使首连失败：shutdown 第一个 client 再重试窗内重连。
+        let first = connect_qmp(&ep, Duration::from_secs(2)).expect("baseline connect");
+        drop(first); // fake-QMP 逐请求接受，连接关闭后 listener 继续 incoming
+        let second = connect_qmp(&ep, Duration::from_secs(2));
+        assert!(second.is_ok(), "reconnect should succeed");
+        let mut second = second.unwrap();
+        let _ = second.execute("query-version", serde_json::json!({})).unwrap();
+    }
+
+    /// endpoints：Unix 平台产出 run 目录内 vnc.sock/qmp.sock，且清理已
+    /// 存在的残留 socket 文件（QEMU unix listen 对已存在路径不保证
+    /// unlink——serial.sock 注记同款竞态面）。
+    #[test]
+    #[cfg(unix)]
+    fn endpoints_removes_stale_sockets() {
+        let run_dir = temp_run();
+        let run = RunDir::new_at(&run_dir);
+        // 制造残留：两个 socket 路径都放占位文件。
+        let stale_vnc = run.file("vnc.sock");
+        let stale_qmp = run.file("qmp.sock");
+        std::fs::write(&stale_vnc, b"stale").unwrap();
+        std::fs::write(&stale_qmp, b"stale").unwrap();
+        assert!(stale_vnc.exists() && stale_qmp.exists());
+        let (vnc, qmp) = endpoints(&run);
+        assert!(!stale_vnc.exists(), "残留 vnc.sock 应被清理");
+        assert!(!stale_qmp.exists(), "残留 qmp.sock 应被清理");
+        match (vnc, qmp) {
+            (Endpoint::Unix(v), Endpoint::Unix(q)) => {
+                assert_eq!(v, stale_vnc);
+                assert_eq!(q, stale_qmp);
+            }
+            other => panic!("Unix 平台 endpoints 应产出 Unix socket: {other:?}"),
+        }
+    }
+
+    /// wait_endpoint Unix 路径：文件晚到有界等待命中；超时返回 Timeout 错
+    /// 且文案带路径。
+    #[test]
+    #[cfg(unix)]
+    fn wait_endpoint_unix_hit_and_timeout() {
+        let d = temp_run();
+        let f = d.join("late.sock");
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(80));
+            let _ = std::fs::write(&f, b"");
+        });
+        wait_endpoint(&Endpoint::Unix(d.join("late.sock")), Duration::from_secs(3))
+            .expect("late file within budget");
+        let missing = wait_endpoint(
+            &Endpoint::Unix(d.join("never.sock")),
+            Duration::from_millis(50),
+        );
+        assert!(missing.is_err(), "缺席文件超时应 Err");
+        let msg = format!("{}", missing.unwrap_err());
+        assert!(msg.contains("never.sock"), "超时文案带路径: {msg}");
     }
 }

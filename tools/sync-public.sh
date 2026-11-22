@@ -225,7 +225,7 @@ WHITELIST=(
   # w3 产线外迁 crate（2026-11-11 补账对齐 workspace members；本轮回放对齐
   # +lkface/trapface 两件（#292/#296 重放合入）——白名单漂移由 --check-members
   # 机器门执法（漏补 = 红且列差集），不再靠人工对账）
-  bandface chanface dtbface dpgface emface evface frzface hdlface
+  bandface bpface chanface dtbface dpgface emface evface frzface hdlface
   hdrface hofface intface iprofile itally piface polface ringface
   safeck schedface sliceface sysvface telface utrace
   vmoledger vslotface wqmatch wsrcface lkface trapface heapface
@@ -238,6 +238,10 @@ WHITELIST=(
   # merge 解冲突时白名单笔被剥，CI light sync-public --check-members 腿红
   # run 43809528251 实锤——判例固化：解 merge 冲突后必核白名单笔未剥）
   fwcfgface susface memface
+  # arch/aarch64 补账（2026-11-19 镜像同步实捕：51f6d8fdc 追平笔带入
+  # workspace members 而白名单笔未随刀——check-members 门红分支实捕定谳，
+  # fwcfgface/balface/psface 判例同款纪律）
+  arch/aarch64
   # balface 补账（2026-11-16 本刀重放接线实捕：W3-Q82 #273 首开件白名单
   # 笔未随刀——check-members 门红分支实捕定谳，同 fwcfgface 判例）
   balface
@@ -261,6 +265,10 @@ WHITELIST=(
   # 为 base 债清偿——base 848a0fb35 树内 aokface/ 在、justfile 已消费而
   # members/白名单双漏登，base tip test-host 必红，随刀一并清偿）
   dmface aokface
+  # asidface 补账（2026-11-20 本刀实捕：34 号件 F0-2 加 crate 时白名单笔
+  # 未随刀、35 号件平移带刀——CI-light sync-public --check-members 腿红
+  # 实锤，fwcfgface/balface/psface 判例同款纪律）
+  asidface
   # wsrcface 补账（2026-11-16 净增量重放随刀：W3-Q28 首开件白名单笔
   # 随刀补登——fwcfgface/dmface 同判例，先登防 check-members 红）
   wsrcface
@@ -340,6 +348,11 @@ for f in "${DOCS_EXCLUDE[@]}"; do rm -rf "$DEST/docs/$f"; done
 for f in "${TOOLS_EXCLUDE[@]}"; do rm -rf "$DEST/tools/$f"; done
 # tools 下内部笔记类：*.notes.md 全剔（门禁基线文本保留）
 find "$DEST/tools" -maxdepth 1 -name '*.notes.md' -delete 2>/dev/null || true
+
+# ---------- docs/ 出口脱敏（镜像复发面根治） ----------
+# 提案档头块引用内部流水线档案名（.hermes-loop/QUEUE.md 等）——同步重拷会
+# 覆盖镜像侧手改脱敏（2026-11-19 两轮实捕复发）。根治：同步时统一脱敏。
+find "$DEST/docs" -name '*.md' -exec perl -pi -e 's{`?\.hermes-loop/QUEUE\.md`?}{内部任务队列档案}g; s{`\.hermes-loop/`}{内部流水线目录}g' {} +
 # docs/规则/ 整目录剔（域铁律——设计思路本体，内部档）
 rm -rf "$DEST/docs/规则"
 
@@ -348,8 +361,12 @@ rm -rf "$DEST/docs/规则"
 # 预装 fail-fast、QEMU/just 全家无安装步）——换 ubuntu-latest 必红，门面仓挂
 # 永久红 CI 不如不挂。公开面保留 sdk-publish.yml（crates.io 发布链，本就
 # ubuntu-latest + workflow_dispatch 休眠态）。CI 住在开发主仓。
+# unsafe-ledger-autofix.yml 同律不入（2026-11-20 镜像同步出口安检实捕：
+# 内部 autofix 流水线——push 触发 wip/sched-1.1 + hermes-auto label +
+# 内部 runner PATH，随 .github 白名单 rsync 带入后安检 LEAK 拦截于提交前；
+# 形态剥除律：内部流水线 workflow 一律剥除，非形态适配——与 ci 双道同律）。
 WF_DIR="$DEST/.github/workflows"
-rm -f "$WF_DIR/ci.yml" "$WF_DIR/ci-light.yml"
+rm -f "$WF_DIR/ci.yml" "$WF_DIR/ci-light.yml" "$WF_DIR/unsafe-ledger-autofix.yml"
 for wf in "$WF_DIR"/*.yml; do
   [ -e "$wf" ] || continue
   # runner 面换公开形态（余量防御：任何残留 self-hosted 标签）

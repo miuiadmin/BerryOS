@@ -60,7 +60,6 @@
 mod cbox_io;
 mod desktop;
 mod frameloop;
-mod inputfeed;
 mod keynav;
 mod layout_io;
 mod settings_io;

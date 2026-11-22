@@ -233,7 +233,7 @@ trap.rs INTID 分流（:400 起）加 `0..=15 => SGI 段`：SGI_RESCHEDULE → �
 2. **recompute/for_each_sleeper 重入**：wake 钩子已在 SLEEPQ 锁内调 recompute（pi.rs:57-88），内层扫描不得重取同锁——需 `_locked` 分层；donor_edge 裸解引用窗（pi.rs:103）改述为「SLEEPQ 锁持有中」。
 3. **pi_probe klock 包络取序**（main.rs:1726）：klock_enter→for_each_sleeper 在锁窗收缩后成逆序边——boot `I PI ok` 面的代码改动点。
 
-**遥测聚合读 API（R6 定案）**：per-CPU 双环 + **每环 seqlock**（写钩只加 2 store，仍零分配——A37 合规）+ **聚合快照函数签名原样保留**（total=Σ 各环、check=逐核单调 + vct 一致、last/span 按 vct 归并——CNTVCT 全局单源是跨核归并的物理根基、wake_hist 逐桶相加）⇒ watchdog/tele_dump/ktest 三读者零改动；**不占锁序**（原子序读定案）+ 原始 per-core 访问器留给未来 trace 服务（对齐可观测性设计-v1.0.md:29-35「每核写自己的环/服务按核轮询」原案（行锚随 §3 前插行 26-33→29-35）——v1 消费面 = 内核聚合，S-3c 随刀在两处文档落同口径）。
+**遥测聚合读 API（R6 定案）**：per-CPU 双环 + **每环 seqlock**（写钩只加 2 store，仍零分配——A37 合规）+ **聚合快照函数签名原样保留**（total=Σ 各环、check=逐核单调 + vct 一致、last/span 按 vct 归并——CNTVCT 全局单源是跨核归并的物理根基、wake_hist 逐桶相加）⇒ watchdog/tele_dump/ktest 三读者零改动；**不占锁序**（原子序读定案）+ 原始 per-core 访问器留给未来 trace 服务（对齐可观测性设计-v1.2.md:29-35「每核写自己的环/服务按核轮询」原案（行锚随 §3 前插行 26-33→29-35）——v1 消费面 = 内核聚合，S-3c 随刀在两处文档落同口径）。
 
 ## §9 三镜对抗审查结果（2026-11-01 三路并行；全文报告 /tmp/s3_review_{lock,equiv,accept}.md——/tmp 易失，必修项与裁决已全量入册本节，LOW 项随实施刀顺手收）
 

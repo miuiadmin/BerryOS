@@ -36,7 +36,7 @@ pub use band::{
     state, throttle_all, unthrottle_all, BandBudget, BAND_SLOTS,
 };
 pub use class::{
-    class_fair_intent, class_of_task, Fair, FairBand, RoundRobin, SchedClass, TaskClass,
+    class_fair_intent, class_of_task, dl_grant, Fair, FairBand, RoundRobin, SchedClass, TaskClass,
     PRIO_DEADLINE,
 };
 pub use em::{
@@ -67,7 +67,7 @@ pub use util::{
 pub use sched::{
     block_current, current_pinned, current_tag, current_task_name, exit_current,
     exit_current_with, fast_wake_locked,
-    find_single_waiter, find_single_waiter_locked, for_each_runnable, for_each_sleeper, freeze_by_pinned,
+    find_single_waiter, find_single_waiter_locked, for_each_inflight_task, for_each_runnable, for_each_sleeper, freeze_by_pinned,
     freeze_by_thread, freeze_precheck_by_pinned, freeze_precheck_by_thread,
     current_thread_key, current_deadline_state, idle_loop, init,
     intent_settle_current,
@@ -80,11 +80,12 @@ pub use sched::{
     pi_recompute_needed,
     pi_rq_lock, pi_rq_unlock, preempt_checkpoint, preempt_checkpoint_hits, preempt_count, preempt_disable,
     preempt_enable, print_window_enter, print_window_exit,
-    nearest_deadline, refresh_effective, reap_drain, throttle_yield_due,
+    nearest_deadline, nearest_dl_throttle_wake, nearest_deadline_park, refresh_effective, reap_drain, throttle_yield_due,
     set_exit_hook, set_lb_match, set_reap_post_hook,
     set_klock_ops, set_sleepq_hook, sq_lock, sq_unlock,
     set_switch_hook, set_wake_hook, sleepq_insert,
-    sleepq_insertable, sleepq_unlink, rq_insert_kt, rq_unlink_kt, spawn, spawn_as, spawn_as_spread, spawn_intent, spawn_user, spawn_user_env, spawn_with,
+    sleepq_insertable, sleepq_unlink, rq_insert_kt, rq_unlink_kt,
+    density_reclass_kt, dens_on_ring_walk_kt, spawn, spawn_as, spawn_as_spread, spawn_intent, spawn_user, spawn_user_env, spawn_with,
     spawn_with_tag, switches, switches_tt, svc_window, thaw_by_pinned, thaw_by_thread, topo_smp_online,
     try_preempt, try_prepare_user, try_rq_lock, try_rq_unlock,
     enqueue_prepared_user, try_spawn_user,

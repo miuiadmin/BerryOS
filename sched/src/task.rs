@@ -4,6 +4,7 @@ use alloc::boxed::Box;
 use berry_hal_aarch64::task::TaskContext;
 use core::cell::Cell;
 use core::ptr::NonNull;
+use core::sync::atomic::AtomicU64;
 
 /// Fallible 装箱（3b3 审查 H2 try 化；与 `kernel/src/heap.rs` 的 `try_box` 同义
 /// ——本 crate 不依赖内核 crate，故本地一份）：`Box::new` OOM 即 abort，EL0
@@ -223,7 +224,11 @@ pub struct Task {
     /// 声明入口落地）。**u8 越小档越高**。
     pub intent_declared: u8,
     /// 有效档 = min(declared, 消息借来的)（**每消息重导**，`intent.rs::settle`
-    /// ——非单调累积，弱消息自然回落）。
+    /// ——非单调累积，弱消息自然回落）。在环直改本字段须配
+    /// [`crate::runqueue::Runqueue::density_reclass`] 重登（生产唯一在环
+    /// 写点 = settle 锁包臂）或 [`crate::runqueue::Runqueue::resync_density`]
+    /// 洗账（ktest 手搓面）——机会五③密度账本化 2026-11-19，漏登 =
+    /// `integrity_check` 双边等式响亮。
     pub intent_effective: u8,
     /// 当前借入 intent 的消息链跳数（借入时随消息头记录；转发快照 +1）。
     pub intent_hop: u8,
@@ -269,6 +274,25 @@ pub struct Task {
     /// 同键链下一个等待者（同上）。
     pub(crate) key_next: Cell<Option<NonNull<Task>>>,
 
+    // ---- 运行账第一真源（可观测性 §3 :35 ProcStatRec 家——进程账读口
+    // op4 刀）：调度器切点/醒点是运行账的唯一发生点 = 账本本体，本组字段
+    // 是其自然存放（memstat 裁决 5「聚合账 vs 明细账」镜像论证——非第二
+    // 记账源）。计数器族常开不随 trace_off（op3「观测计数 ≠ 环记录面」
+    // 判例直移）；全 Relaxed（统计信号无序角色）----
+    /// 累计在核 CNTVCT 周期（v1 诚实口径 = 墙钟在核时长含 IRQ 屏蔽窗；
+    /// 切出侧结算差，ns 换算归消费方——快照头 cntfrq 唯一源）。
+    pub cpu_ticks: AtomicU64,
+    /// 累计让出 CPU 次数（yield/抢占/睡眠/退出/park 五形全计——与全局
+    /// SWITCHES 13 位口径对齐非 SWITCHES_TT 窄口径）。
+    pub switches: AtomicU64,
+    /// 累计唤醒次数（Signaled+Timeout 双因合计——note_wake 无条件臂）。
+    pub wakes: AtomicU64,
+    /// 当前段切入戳（CNTVCT；0 = 无在途段〔含从未上核〕——内部瞬态不
+    /// 导出，ProcStatRec 面结构性缺席）。切出结算后清 0：park 派发路径
+    ///（dispatch_from_park_ctx 无 note_switch）不盖戳，残留旧戳会把
+    /// park+就绪时长记入 cpu_ticks（歪账）——清 0 使未盖戳段零结算
+    ///（诚实少计非虚计）。
+    pub run_since: AtomicU64,
 }
 
 impl Task {
@@ -419,6 +443,12 @@ impl Task {
             wake_vct: Cell::new(0),
             key_prev: Cell::new(None),
             key_next: Cell::new(None),
+            // 运行账第一真源四字段（op4 刀 R1）：计数三件零起步、run_since
+            // 0 = 无在途段。
+            cpu_ticks: AtomicU64::new(0),
+            switches: AtomicU64::new(0),
+            wakes: AtomicU64::new(0),
+            run_since: AtomicU64::new(0),
         })
     }
 }

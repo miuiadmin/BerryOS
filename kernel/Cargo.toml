@@ -13,6 +13,10 @@ berry-hal-aarch64 = { path = "../arch/aarch64" }
 # boot splash verbose 形字形单源（user/berry-fbcon：no_std 纯函数 crate——
 # 8×16 自绘点阵，guifbd 同源共享；跨工作区 path 依赖 = 仓内先例）。
 berry-fbcon = { path = "../user/berry-fbcon" }
+# W3-Q106：vDSO 数据页布局与换算单源（user/berry-vdsoface——先例同
+# berry-fbcon 跨工作区 path；消费 = 本 crate vdso.rs 建页 + berry-sys
+# fast path 同源镜像）。
+berry-vdsoface = { path = "../user/berry-vdsoface" }
 berry-mm = { path = "../mm" }
 berry-sched = { path = "../sched" }
 # 调度深水区收官·任务②（M4 首批 band 激活，2026-11-16）：IntentBand 带表
@@ -58,6 +62,10 @@ berry-vslotface = { path = "../vslotface" }
 # 数学单源在 berry-polface（host 可测钉板）；本 crate process.rs re-export
 # 消费（SchedAttr/SA_FLAG_* 既有路径零改动）。
 berry-polface = { path = "../polface" }
+# W3-Q140：boot-params 纯函数面单源（newc 定址查找状态机 + TOML 子集
+# 解析——host 钉板 bpface 20 测）；本 crate bootparams.rs 消费（薄壳
+# re-export + Src 的 ByteSource impl——Vmo 物理臂留 kernel）。
+berry-bpface = { path = "../bpface" }
 # W3-Q38：suspend 冻结深度判序单源（六门/七门 admission/thaw 键路由/
 # Drop 判定段）——本 crate syscall.rs/suspend.rs 消费（判定段换消费，
 # 物理臂留壳）。
