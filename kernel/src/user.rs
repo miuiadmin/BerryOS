@@ -1755,28 +1755,19 @@ pub fn user_svcmgr_code() -> &'static [u8] {
 
 /// 一个用户进程的装配结果：表根 + ASID（交给 `spawn_user`）+ 地址空间根。
 ///
-<<<<<<< HEAD
 /// v1 对象常驻不回收（页表帧/栈帧均不退）；**拥有关系的 Vmo 以结构体泄漏持有**
 /// （3-2：Vmar Region 存 Vmo 对象指针——unmap 回调映射计数要求对象存活；
 /// 本结构 v1 永不销毁，指针恒有效——`build` 返回**泄漏形** `&'static mut`，
 /// 2026-11-22 起为真保证而非注释契约）。good 的 root Vmar 由 boot `take()`
 /// 出去进引导表（首能力）；其余的留结构体内泄漏。
-=======
-/// v1 对象常驻不回收（页表帧/栈帧均不退）；**拥有关系的 Vmo 以 `Box::leak`
-/// 定堆、映射后恒活**（3-2：Vmar Region 存 Vmo 对象指针——unmap 回调映射
-/// 计数要求对象存活；先定堆再映射故指针恒有效，见 `_vmos` 字段注）。good
-/// 的 root Vmar 由 boot `take()` 出去进引导表（首能力）；rogue/abuser 的留
-/// 结构体内泄漏。
->>>>>>> private/wip
 pub struct UserProcess {
     pub ttbr0_pa: usize,
     pub asid: u16,
     /// sp0（16 对齐；多页镜像时 = 动态栈顶，见 `build`——单页程序恒
     /// `USER_STACK_TOP`，`spawn_user` 调用方从这取、别再读常量）。
     pub stack_top: usize,
-    /// 地址空间根（good 的被 boot 取走向引导表；其余泄漏持有）。
+    /// 地址空间根（good 的被 boot 取走进引导表；其余泄漏持有）。
     pub vmar: Option<Vmar>,
-<<<<<<< HEAD
     /// code/data/stack 三 Vmo（Region 指针有效性依托；见结构体注释）。
     /// **Box 形（2026-11-22 帧归还刀 UAF 修）**：`Region.vmo` 存 map 时的
     /// 对象地址——旧形栈局部映射后随 `Self` 构造/返回移动即悬空（同形实崩
@@ -1785,21 +1776,6 @@ pub struct UserProcess {
     /// 防患）。Box 目标堆地址恒定；字段序 = Drop 序（声明序）：`vmar` 先落
     /// （清账 untrack，此刻三 VMO 活）→ `_vmos` 后落（还帧）。
     _vmos: [alloc::boxed::Box<Vmo>; 3],
-=======
-    /// W3-38 F1 生命周期定谳（fix1 第二刀）：F1 树 `AddressSpace: Drop →
-    /// teardown()` 使「boot 局部变量随作用域 Drop」从无害（v1 无 Drop）
-    /// 变致命（页表拆帧 + ASID 归还 → 存活 EL0 任务取指 I-abort 连杀，
-    /// fix1.log @170890 实证 6 件 boot 手搭进程全灭）。修法 = `build` 尾
-    /// `Box::leak` 本体（MiniAspace/task_a/task_b 同款先例）——地址空间
-    /// 与全部 boot 手搭 EL0 任务同寿，v1「对象常驻」契约字面执行。字段
-    /// 仅存堆址墓碑做保活注记（零 deref 面）。
-    _leaked: usize,
-    /// code/data/stack 三 Vmo 的堆址墓碑（W3-38 F1-2 生命周期定谳）：
-    /// 区间树叶持 `*mut Vmo` 裸指针，故 `build` **先 `Box::leak` 定堆再映射**
-    /// （MiniAspace 同款先例）——叶捕获堆址、恒活；本字段仅存址不做所有权
-    /// 声明（泄漏持有 = v1「对象常驻」契约字面执行，teardown `untrack` 合法）。
-    _vmos: [*mut Vmo; 3],
->>>>>>> private/wip
 }
 
 impl UserProcess {
@@ -1842,7 +1818,6 @@ impl UserProcess {
         let asid = alloc_asid();
         let mut vmar = Vmar::new_root(fa, asid).expect("user: 建 root Vmar（boot 可信语境）");
 
-<<<<<<< HEAD
         // **先入堆再映射**（Region.vmo 地址恒定契约——栈局部映射后随下方
         // `Self` 构造/返回移动即悬空；Box 形见 `_vmos` 字段注。dpg.rs init
         // 「先泄漏后映射」同款正序，Box 形 = 保留 Drop 还帧面）。
@@ -1865,78 +1840,29 @@ impl UserProcess {
             v.commit(fa, 0, stack_len).expect("user: commit stack");
             v
         });
-=======
-        // F1-2 生命周期（W3-38）：区间树叶持 `*mut Vmo` 裸指针，故三 Vmo 须
-        // **先定堆再映射**（MiniAspace 同款先例）——映射时叶捕获的即堆址；
-        // build() 栈帧返回即回收，栈址叶 = teardown 排空时切已死内存
-        // （QEMU fatal：vmoledger slots 越界）。泄漏持有 = v1「对象常驻」
-        // 契约的字面执行，teardown 时 Vmo 恒活、`untrack` 合法。
-        let mut code_vmo = alloc::boxed::Box::leak(alloc::boxed::Box::new(
-            Vmo::create(code_len).expect("user: 装 code VMO（boot 可信语境）"),
-        ));
-        code_vmo.commit(fa, 0, code_len).expect("user: commit code");
-        code_vmo.write(0, code).expect("user: 拷代码");
 
-        let mut data_vmo = alloc::boxed::Box::leak(alloc::boxed::Box::new(
-            Vmo::create(PAGE_SIZE).expect("user: 装 data VMO（boot 可信语境）"),
-        ));
-        data_vmo.commit(fa, 0, PAGE_SIZE).expect("user: commit data");
-        data_vmo.write(0, &data_magic.to_le_bytes()).expect("user: 数据页魔数");
-
-        let mut stack_vmo = alloc::boxed::Box::leak(alloc::boxed::Box::new(
-            Vmo::create(stack_len).expect("user: 装 stack VMO（boot 可信语境）"),
-        ));
-        stack_vmo.commit(fa, 0, stack_len).expect("user: commit stack");
->>>>>>> private/wip
-
-        // W3-38 F0-2 W^X 矩阵适配：code 页改 `UserRwxCompat`（AP=01 EL0
-        // 读写 + PXN 禁 EL1 执行）。base v1 的 `Perm::UserRw` 在 F1 四态
-        // 矩阵下强制 `UXN`（严格 W^X 数据/栈页）——代码页沿旧权限 = 首取指
-        // level-3 permission fault（fix8.log e2=0x0060...f47 实证：PXN|UXN
-        // 双禁 + ISS=0xf；六件 boot 手搭任务连杀同指纹）。首修 UserRx 只读
-        // 仍炸（fix9.log svcmgr PC=0x1058 取指已通，D-abort ISS=0x4f 写
-        // fault @FAR=0x22e70 在 code 区内）——flat 镜像全局变量嵌在 code
-        // 段（无独立 .data），映射须可写；`UserRwxCompat`（AP=01|PXN）
-        // 即为此平铺镜像过渡态设计：EL0 读写执行 + SMEP 禁 EL1 ret2usr。
-        vmar.map(fa, code_vmo, USER_CODE_VA, 0, code_len, Perm::UserRwxCompat)
+        vmar.map(fa, &mut code_vmo, USER_CODE_VA, 0, code_len, Perm::UserRw)
             .expect("user: map code");
-        vmar.map(fa, data_vmo, data_va, 0, PAGE_SIZE, Perm::UserRw)
+        vmar.map(fa, &mut data_vmo, data_va, 0, PAGE_SIZE, Perm::UserRw)
             .expect("user: map data");
         // [data_va+PAGE_SIZE, stack_base) 一页刻意不映 = 栈保护页（下行栈
         // 溢出踩它 = 干净 D-abort 被杀，不再静默扎进 data 页腐化控制流）。
-        vmar.map(fa, stack_vmo, stack_base, 0, stack_len, Perm::UserRw)
+        vmar.map(fa, &mut stack_vmo, stack_base, 0, stack_len, Perm::UserRw)
             .expect("user: map stack");
         // W3-Q106：vDSO 数据页（clock_read MONOTONIC 零 syscall 化——固定
         // VA 只读映射；全局单页 VMO 共享，见 vdso.rs 权衡裁决）。
         crate::vdso::map_into(fa, &mut vmar).expect("user: map vdso");
-        crate::vmar::register_boot_aspace(asid, vmar.aspace_ptr());
 
-<<<<<<< HEAD
         // 表树对页表走查可见（map 内 dsb ish）；三 Vmo 进结构体（见结构体注释）
         // 。**泄漏形返回**（方法注：v1 永不销毁契约的真保证——块尾 Drop 的
         // 清叶会抹掉仍在跑的任务的 AS）。
         alloc::boxed::Box::leak(alloc::boxed::Box::new(Self {
-=======
-        // 表树对页表走查可见（map 内 dsb ish）；三 Vmo 已泄漏定堆（见上），
-        // 结构体仅持指针墓碑——地址空间树与 Vmo 生命周期自此解耦。
-        // W3-38 fix1 第二刀：本体亦 `Box::leak`（boot 手搭 8 件全块局部，
-        // F1 Drop→teardown 后局部 Drop = 拆页表杀存活任务——见 struct 注）。
-        // 返回值改 `&'static mut Self`，调用侧局部变量 = 静态借出，永不 Drop。
-        let up = alloc::boxed::Box::leak(alloc::boxed::Box::new(Self {
->>>>>>> private/wip
             ttbr0_pa: vmar.ttbr0_pa(),
             asid,
             stack_top: stack_base + stack_len,
             vmar: Some(vmar),
-<<<<<<< HEAD
             _vmos: [code_vmo, data_vmo, stack_vmo],
         }))
-=======
-            _leaked: 1,
-            _vmos: [code_vmo as *mut Vmo, data_vmo as *mut Vmo, stack_vmo as *mut Vmo],
-        }));
-        up
->>>>>>> private/wip
     }
 }
 

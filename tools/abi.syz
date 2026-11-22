@@ -50,7 +50,6 @@ type berry_time uint64
 #   SIGNAL_WRITABLE = 1 << 1  (0x2)
 #   SIGNAL_TERMINATED = 1 << 2  (0x4)
 #   SIGNAL_WAKE_PENDING = 1 << 3  (0x8)
-#   SIGNAL_PEER_CLOSED = 1 << 4  (0x10)
 #   SIGNAL_USER_MASK = 0xFFFF_FFFF_0000_0000  (0xffffffff00000000)
 # 错误码（berry_status_t = i32；posix-ish 负数）:
 #   BERRY_OK = 0

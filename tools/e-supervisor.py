@@ -126,6 +126,36 @@ def tick(idle: bool = False, now: float | None = None) -> dict:
         if done > st.get("last_done_count", -1):
             st["last_ship_ts"] = now
             st["last_done_count"] = done
+    # P0 产品面塌陷仪表（考古 2026-11-23：产品面 53%→17% 渐变不可见）
+    # product = 触及非 MACHINERY_PREFIXES 文件的提交；tooling = 纯机制文件
+    product_count = 0
+    tooling_count = 0
+    if log.returncode == 0:
+        cur_sha2 = ""
+        cur_files2: list[str] = []
+        commits2: list[tuple[str, list[str]]] = []
+        for ln in log.stdout.splitlines():
+            if re.fullmatch(r"[0-9a-f]{40}", ln.strip()):
+                if cur_sha2:
+                    commits2.append((cur_sha2, cur_files2))
+                cur_sha2, cur_files2 = ln.strip(), []
+            elif ln.strip():
+                cur_files2.append(ln.strip())
+        if cur_sha2:
+            commits2.append((cur_sha2, cur_files2))
+        for sha, files in commits2:
+            if is_machinery(files):
+                tooling_count += 1
+            else:
+                product_count += 1
+    ratio = f"{product_count}:{tooling_count}" if (product_count + tooling_count) > 0 else "0:0"
+    # 连续 3 轮 tooling > 2x product 且 product > 0 轮次无产品即红
+    if tooling_count > 0 and product_count == 0:
+        st["zero_product_rounds"] = st.get("zero_product_rounds", 0) + 1
+    else:
+        st["zero_product_rounds"] = 0
+    product_starved = st.get("zero_product_rounds", 0) >= 3
+
     repair = (now - st.get("last_ship_ts", now)) >= REPAIR_AFTER_SECS
     (STATE / "repair-needed").write_text("", encoding="utf-8") if repair else (STATE / "repair-needed").unlink(missing_ok=True)
     health = {
@@ -134,7 +164,16 @@ def tick(idle: bool = False, now: float | None = None) -> dict:
         "hours_since_ship": round((now - st.get("last_ship_ts", now)) / 3600, 2),
         "shipped_today": st.get("last_done_count", 0),
         "repair_needed": repair,
+        "product_commits": product_count,
+        "tooling_commits": tooling_count,
+        "product_ratio": ratio,
+        "product_starved": product_starved,
     }
+    if product_starved:
+        (STATE / "product-starved").write_text(
+            f"连续 {st['zero_product_rounds']} 轮零产品提交——工具自吞回路（考古 P0）", encoding="utf-8")
+    else:
+        (STATE / "product-starved").unlink(missing_ok=True)
     STATE.mkdir(parents=True, exist_ok=True)
     (STATE / "run-health.json").write_text(json.dumps(health, ensure_ascii=False), encoding="utf-8")
     save_state(st)

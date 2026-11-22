@@ -154,7 +154,6 @@ dependencies = [
  "berry-susface",
  "berry-telface",
  "berry-vdsoface",
- "berry-vmarface",
  "berry-vmoledger",
  "berry-vslotface",
  "berry-wqmatch",
