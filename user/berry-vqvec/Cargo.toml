@@ -1,0 +1,15 @@
+[package]
+name = "berry-vqvec"
+version.workspace = true
+edition = "2021"
+# ai-runtime §四.1 首刀（.agents/plans/ai-runtime/design.md 契约四.1
+# 「轻量分层可导航小世界图（HNSW 定点量化向量索引）」）：定点量化向量
+# 纯函数 crate——非对称量化（库向量 i8 + 每 vec 单 scale、查询侧保
+# f32）+ 整数域距离（内积/L2），HNSW 图结构与 FBE 加密归 berry-vault
+# 服务刀。「解析器即产品」家族纪律：零 unsafe、零依赖、零分配、
+# `cfg_attr(not(test), no_std)`；host 测试经 justfile test-host 显式
+# 行跑。
+description = "BerryOS vault scalar-quantized vector primitives: i8 per-vector-scale quantize + asymmetric int-domain distances (ai-runtime contract 4.1)"
+license = "Apache-2.0"
+
+[dependencies]

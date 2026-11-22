@@ -1,0 +1,17 @@
+[package]
+name = "berry-npuproto"
+version.workspace = true
+edition = "2021"
+# ai-runtime §二 Tier 1 客机侧首刀（.agents/plans/ai-runtime/design.md
+# 契约二.2 + 侦查件 .agents/research/2026-11-22-ai-runtime-tier1宿主直通
+# 可行性侦查.md）：virtio-compute wire 编解码纯函数 crate——设备 config
+# /命令描述符/blob 页帧表/完成环条目（berry-virtio gpu.rs 家族纪律：
+# wire 事实注释钉板、编不出即拒 None 不截断；virtio 无标准 compute 设备
+# ——本 crate 即 wire 契约单源）。算子语义单源在 berry-tensor（枚举值
+# 镜像对齐）；宿主侧 Metal 桥与共享页 DMA 归 tools/berry（边界外）。
+# 零 unsafe 零依赖零分配，cfg_attr(not(test), no_std)；host 测试经
+# justfile test-host 显式行跑。
+description = "BerryOS virtio-compute wire codec (guest side): config/op descriptors/blob table/completion ring (ai-runtime contract 2.2)"
+license = "Apache-2.0"
+
+[dependencies]
