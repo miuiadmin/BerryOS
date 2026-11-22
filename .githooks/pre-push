@@ -40,8 +40,9 @@ while read -r lref lsha rref rsha; do
   _range="$rsha..$lsha"
   [ "$rsha" = "$zero" ] && _range="$lsha"
   _bad_author=$(git log --format='%ae %ce' "$_range" 2>/dev/null | grep -ciE 'test|fixture|selftest|fake|dummy|example\.' || true)
-  if [ "$_bad_author" -gt 0 ]; then
-    echo "[berryos-guard] 拒绝：待推提交含 test/fixture/selftest 假身份（${_bad_author} 个）——考古 P0：674 提交三个月无人察觉" >&2
+  if [ "$_bad_author" -gt 0 ] && [ "$BERRYOS_ALLOW_FAKE_IDENTITY" != "1" ]; then
+    echo "[berryos-guard] 拒绝：待推提交含 test/fixture/selftest 假身份（${_bad_author} 个）——考古 P0" >&2
+    echo "owner 确认历史存量：BERRYOS_ALLOW_FAKE_IDENTITY=1 git push" >&2
     exit 1
   fi
 
