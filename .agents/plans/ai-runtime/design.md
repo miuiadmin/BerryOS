@@ -40,7 +40,7 @@ flowchart TD
 
 建造清单（DAG 节验收面——全勾才配双戳）：
 
-- [x] Tier 0 首刀量化算子核：`user/berry-tensor`（Q4_0/Q8_0 块布局单源〔llama.cpp 兼容字节形〕+ f16 位级解码含次正规域 + 去量化 + 量化×量化整数内积点积——块内 i32、scale 后乘、f32 顺序累积的确定性基线）——host 12 测绿（`just test-host` berry-tensor 腿，2026-11-22）；Q4_K_M/FP16/BF16 算子、SIMD（dotprod/i8mm/AVX2）、MatMul/RoPE/RMSNorm/FlashAttn 图算子随后续刀
+- [x] Tier 0 首刀量化算子核：`user/berry-tensor`（Q4_0/Q8_0 块布局单源〔llama.cpp 兼容字节形〕+ f16 位级解码含次正规域 + 去量化 + 量化×量化整数内积点积——块内 i32、scale 后乘、f32 顺序累积的确定性基线；第二片补 `matvec_q4_q8` GEMV 行基元与 `rmsnorm`〔纯 core inv_sqrt〕）——host 16 测绿（`just test-host` berry-tensor 腿，2026-11-22）；Q4_K_M/FP16/BF16 算子、SIMD（dotprod/i8mm/AVX2）、RoPE/FlashAttn 图算子随后续刀
 - [ ] Tier 1 `berry-paravirt-npu`（宿主 wgpu Compute 直通——`.bmod` 权重页零拷贝映射宿主 `wgpu::Buffer`）
 - [ ] Tier 2 真机 NPU/Vulkan Compute 子组驱动与 100ms 看门狗降级
 

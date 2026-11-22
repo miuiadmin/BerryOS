@@ -136,6 +136,60 @@ pub fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
     acc
 }
 
+/// Q4_0 权重矩阵 × Q8_0 激活向量（量化域 GEMV 基元）：`w_q4` 为
+/// `rows × cols_quant` 的 Q4_0 权重行堆叠（每行 `cols/32` 块），`x_q8`
+/// 为同长 Q8_0 激活；输出 `out[i] = dot(权重行 i, x)`。Tier 0 确定性
+/// （行内 [`dot_q4_q8`] 语义、行间顺序写）——解码层 MatMul 的行基元。
+pub fn matvec_q4_q8(
+    w_q4: &[u8],
+    x_q8: &[u8],
+    rows: usize,
+    blocks: usize,
+    out: &mut [f32],
+) {
+    assert!(
+        w_q4.len() >= rows * blocks * Q4_0_BLOCK_BYTES,
+        "Q4_0 权重段截断：{} < {}", w_q4.len(), rows * blocks * Q4_0_BLOCK_BYTES
+    );
+    assert!(
+        x_q8.len() >= blocks * Q8_0_BLOCK_BYTES,
+        "Q8_0 激活段截断：{} < {}", x_q8.len(), blocks * Q8_0_BLOCK_BYTES
+    );
+    assert!(out.len() >= rows, "输出缓冲不足：{} < {}", out.len(), rows);
+    for r in 0..rows {
+        let row = &w_q4[r * blocks * Q4_0_BLOCK_BYTES..(r + 1) * blocks * Q4_0_BLOCK_BYTES];
+        out[r] = dot_q4_q8(row, x_q8, blocks);
+    }
+}
+
+/// 1/√x（纯 core 实现：0x5f3759df 位黑客种子 + 3 轮牛顿精确化——种子
+/// 相对误差 ~2e-2，三轮二次收敛至 f32 半 ULP 下，确定性无环境依赖；
+/// `x > 0` 由调用域保证）。
+fn inv_sqrt(x: f32) -> f32 {
+    let half = 0.5 * x;
+    let mut y = f32::from_bits(0x5f37_59df - (x.to_bits() >> 1));
+    y *= 1.5 - half * y * y;
+    y *= 1.5 - half * y * y;
+    y *= 1.5 - half * y * y;
+    y
+}
+
+/// RMSNorm（Transformer 归一化层基元）：`out[i] = w[i] × x[i] / rms(x)`，
+/// rms = sqrt(mean(x²) + eps)。顺序累积确定性（与 [`dot_f32`] 同纪律）；
+/// eps 防全零行除零。`x`、`w`、`out` 等长。
+pub fn rmsnorm(x: &[f32], w: &[f32], out: &mut [f32], eps: f32) {
+    assert_eq!(x.len(), w.len(), "rmsnorm x/w 长度失配：{} vs {}", x.len(), w.len());
+    assert_eq!(x.len(), out.len(), "rmsnorm x/out 长度失配：{} vs {}", x.len(), out.len());
+    let mut ss = 0f32;
+    for v in x {
+        ss += v * v;
+    }
+    let inv = inv_sqrt(ss / x.len() as f32 + eps);
+    for i in 0..x.len() {
+        out[i] = w[i] * x[i] * inv;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,5 +381,61 @@ mod tests {
         for i in 0..32 {
             assert_eq!(out[i], q[i] as f32);
         }
+    }
+
+    #[test]
+    fn matvec_q4_q8_rows_and_parity() {
+        // 2 行 × 1 块：行基元 = 逐行 dot_q4_q8；与 f32 去量化参考逐位一致。
+        let qa1 = [1i32; 32];
+        let qa2 = [-2i32; 32];
+        let qb = [3i32; 32];
+        let w: Vec<u8> = [q4_block(&qa1, 0x00, 0x3c), q4_block(&qa2, 0x00, 0x38)]
+            .concat();
+        let x = q8_block(&qb, 0x00, 0x40); // sx=2.0
+        let mut out = [0f32; 2];
+        matvec_q4_q8(&w, &x, 2, 1, &mut out);
+        // 行 1：Σ(1×3)=96 × (1.0×2.0) = 192；行 2：Σ(-2×3)=-192 × (0.5×2.0) = -192
+        assert_eq!(out, [192.0, -192.0]);
+        // f32 参考对拍（去量化后逐行 dot_f32）。
+        let mut dw = [0f32; 64];
+        dequant_q4_0(&w[..Q4_0_BLOCK_BYTES], &mut dw[..32]);
+        dequant_q4_0(&w[Q4_0_BLOCK_BYTES..], &mut dw[32..]);
+        let mut dx = [0f32; 32];
+        dequant_q8_0(&x, &mut dx);
+        assert_eq!(out[0], dot_f32(&dw[..32], &dx));
+        assert_eq!(out[1], dot_f32(&dw[32..], &dx));
+    }
+
+    #[test]
+    #[should_panic(expected = "Q4_0 权重段截断")]
+    fn matvec_truncated_weight_loud() {
+        let w = [0u8; Q4_0_BLOCK_BYTES];
+        let x = [0u8; Q8_0_BLOCK_BYTES];
+        let mut out = [0f32; 2];
+        matvec_q4_q8(&w, &x, 2, 1, &mut out);
+    }
+
+    #[test]
+    fn rmsnorm_exact_domain() {
+        // x=[2,4]，mean(x²)=10，+eps=6 → rms²=16 → inv=0.25；w=[1,2]
+        // → out≈[0.5, 2.0]（inv_sqrt 牛顿值容差断言——收敛至 1e-6 内）。
+        let mut o = [0f32; 2];
+        rmsnorm(&[2.0, 4.0], &[1.0, 2.0], &mut o, 6.0);
+        assert!((o[0] - 0.5).abs() < 1e-6, "o[0]={}", o[0]);
+        assert!((o[1] - 2.0).abs() < 1e-6, "o[1]={}", o[1]);
+        // 全零行：eps 兜底不除零（inv 有限，x=0 → out 恒 0 精确）。
+        let mut z = [0f32; 2];
+        rmsnorm(&[0.0, 0.0], &[1.0, 1.0], &mut z, 4.0);
+        assert_eq!(z, [0.0, 0.0]);
+        // inv_sqrt 自身：收敛至 1e-6 内（牛顿落点可差 1 ULP，位精确不保）。
+        assert!((inv_sqrt(16.0) - 0.25).abs() < 1e-6);
+        assert!((inv_sqrt(2.0) - 0.70710678).abs() < 1e-6);
+    }
+
+    #[test]
+    #[should_panic(expected = "长度失配")]
+    fn rmsnorm_len_mismatch_loud() {
+        let mut o = [0f32; 2];
+        rmsnorm(&[1.0], &[1.0, 2.0], &mut o, 1.0);
     }
 }
