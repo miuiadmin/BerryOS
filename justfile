@@ -1192,6 +1192,11 @@ test-host:
     # 免压制冰封与深化、防抖窗双钉值 3s/0s，无触发即 None 禁默认动作，
     # host 8 测；执行机构归内核机制与 appd 接线刀）。
     cargo test --manifest-path user/Cargo.toml -p berry-amgrad --target {{host}}
+    # am §二.2 首刀：berry-wakeflood（唤醒风暴熔断核——每客户端分钟
+    # 桶计数〔环形零分配〕+ 12 次/分钟钉值熔断 + 冷却窗释放与再熔断
+    # 环〔释放纯时间驱动〕，host 7 测；计时器/退避投递/耗电台账归
+    # appd 与 power-thermal 接线刀）。
+    cargo test --manifest-path user/Cargo.toml -p berry-wakeflood --target {{host}}
     # mkapp 门禁自检（a-3 U4：mkfat --check-fixture 同位前置——打包器门禁
     # 面此前只在 build-user 产物链上被动覆盖，门禁自身坏 = 产物链静默劣化）。
     python3 tools/mkapp.py --selftest
