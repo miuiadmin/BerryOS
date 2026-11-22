@@ -1163,7 +1163,8 @@ test-host:
     # 正规/去量化/量化×量化整数内积点积〔块内 i32、scale 后乘、f32 顺
     # 序累积——Tier 0 确定性基线，SIMD/卸载后端对拍锚〕+ 第二片
     # matvec_q4_q8〔GEMV 行基元〕/rmsnorm〔inv_sqrt 位黑客种子 + 3 轮牛
-    # 顿纯 core〕，host 16 测；
+    # 顿纯 core〕+ 第三片 fp16/bf16 点积〔bf16=f32 高 16 位位域还原〕，
+    # host 19 测；
     # 消费 = airtd/berry-aiproto 张量段〔后续刀〕）。
     cargo test --manifest-path user/Cargo.toml -p berry-tensor --target {{host}}
     # ai-runtime §三.1 首刀：berry-kvpool（块级分页 KV-Cache 池语义——

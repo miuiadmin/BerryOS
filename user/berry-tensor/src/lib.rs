@@ -190,6 +190,32 @@ pub fn rmsnorm(x: &[f32], w: &[f32], out: &mut [f32], eps: f32) {
     }
 }
 
+/// FP16 向量点积（`a`/`b` 为 2B×n LE f16 流；逐对 f32 化后顺序累积
+/// ——复用 [`f16_to_f32`]，与 [`dot_f32`] 同确定性纪律）。
+pub fn dot_f16(a: &[u8], b: &[u8]) -> f32 {
+    assert_eq!(a.len(), b.len(), "dot_f16 长度失配：{} vs {}", a.len(), b.len());
+    assert!(a.len() % 2 == 0, "dot_f16 非偶字节流：{}", a.len());
+    let mut acc = 0f32;
+    for i in 0..a.len() / 2 {
+        acc += f16_to_f32(a[2 * i], a[2 * i + 1]) * f16_to_f32(b[2 * i], b[2 * i + 1]);
+    }
+    acc
+}
+
+/// BF16 向量点积（bf16 = f32 高 16 位截断形；`bits << 16` 位域还原
+/// ——尾数低位为零的 f32 子集，还原无精度损失）。
+pub fn dot_bf16(a: &[u8], b: &[u8]) -> f32 {
+    assert_eq!(a.len(), b.len(), "dot_bf16 长度失配：{} vs {}", a.len(), b.len());
+    assert!(a.len() % 2 == 0, "dot_bf16 非偶字节流：{}", a.len());
+    let mut acc = 0f32;
+    for i in 0..a.len() / 2 {
+        let x = f32::from_bits((u32::from(a[2 * i]) | u32::from(a[2 * i + 1]) << 8) << 16);
+        let y = f32::from_bits((u32::from(b[2 * i]) | u32::from(b[2 * i + 1]) << 8) << 16);
+        acc += x * y;
+    }
+    acc
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,3 +465,32 @@ mod tests {
         rmsnorm(&[1.0], &[1.0, 2.0], &mut o, 1.0);
     }
 }
+
+    #[test]
+    fn dot_f16_exact_domain() {
+        // [1.0, 2.0] · [3.0, -1.0] = 1（全精确域；0x4200=3.0/0xBC00=-1.0）。
+        let a: Vec<u8> = vec![0x00u8, 0x3c, 0x00, 0x40];
+        let b: Vec<u8> = vec![0x00u8, 0x42, 0x00, 0xbc];
+        assert_eq!(dot_f16(&a, &b), 1.0);
+        assert_eq!(dot_f16(&[], &[]), 0.0);
+    }
+
+    #[test]
+    fn dot_bf16_exact_domain_and_layout() {
+        // bf16 位形 = f32 高 16 位：1.0f32=0x3F800000 → 0x3F80，LE 字节 [0x80,0x3F]。
+        let one = [0x80u8, 0x3f];
+        let two = [0x00u8, 0x40];
+        let neg1 = [0x80u8, 0xbf];
+        assert_eq!(dot_bf16(&one, &two), 2.0);
+        assert_eq!(dot_bf16(&neg1, &two), -2.0);
+        // 与 f32 参考一致性：bf16 是 f32 尾数低 16 位为零的子集。
+        let a: Vec<u8> = [one, two].concat();
+        let b: Vec<u8> = [two, neg1].concat();
+        assert_eq!(dot_bf16(&a, &b), dot_f32(&[1.0, 2.0], &[2.0, -1.0]));
+    }
+
+    #[test]
+    #[should_panic(expected = "非偶字节流")]
+    fn dot_f16_odd_bytes_loud() {
+        let _ = dot_f16(&[0u8], &[0u8]);
+    }
