@@ -1208,8 +1208,9 @@ test-host:
     # ai-runtime §二 Tier 1 客机侧首刀：berry-npuproto（virtio-compute
     # wire 编解码——config/命令描述符〔virtio-gpu 控制头同形〕/blob 页
     # 帧表〔off 4096 对齐执法〕/完成环三态〔OK/Unsupported 降级依据/
-    # Watchdog 看门狗〕，畸形即 None 不截断，op 值镜像 berry-tensor，
-    # host 7 测；宿主 Metal 桥归 tools/berry 边界面）。
+    # Watchdog 看门狗〕，畸形即 None 不截断，op 值镜像 berry-tensor；
+    # R23 环面扩展（virtio 标准三表：描述符 16B/avail 头+槽环回/used
+    # 条目），host 10 测；宿主 Metal 桥归 tools/berry 边界面）。
     cargo test --manifest-path user/Cargo.toml -p berry-npuproto --target {{host}}
     # am §二.3 首刀：berry-anrwatch（ANR 判定核——指令类分阈〔前台
     # Launch/Resume 5s、PauseSave 2s 契约钉值〕+ 两段语义〔超时发取证→
