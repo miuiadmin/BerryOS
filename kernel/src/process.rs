@@ -99,9 +99,17 @@ pub enum ProcState {
 /// 进程 = 地址空间容器：共享 `Arc<AddressSpace>` + root Vmar 钉 + 供调度器用的表根快照。
 pub struct Process {
     /// 地址空间根（ObjRef 钉住——父进程的 vmar handle 关光后子空间仍存活）。
+<<<<<<< HEAD
+    /// **Option 形（帧归还刀件 B）**：HT_DRAINQ flush 的 vmar 钉**预放**（
+    /// [`Self::release_vmar_pin_early`]）take 置 None——drain phase-1 才能
+    /// 把表内 root Vmar 递减到零触发 `Vmar::Drop` 清账（mapcnt 归零 →
+    /// phase-2 VMO 还帧）；`Drop` 对 None 不再二次 release（防双放）。
+    vmar: Option<NonNull<ObjRef>>,
+=======
     vmar: NonNull<ObjRef>,
     /// F1-1：底层实体地址空间引用（直通 per-AddressSpace `pt_lock` 与 F1-2 `teardown`）。
     pub aspace: alloc::sync::Arc<crate::aspace::AddressSpace>,
+>>>>>>> private/wip
     /// L1 表 PA 快照（spawn 用；与 `vmar` 指向的 Vmar 一致）。
     pub ttbr0_pa: usize,
     /// ASID 快照。
@@ -177,8 +185,12 @@ impl Process {
         (*vmar_ref.as_ptr()).retain();
         PROCESS_LIVE.fetch_add(1, Ordering::Relaxed);
         Self {
+<<<<<<< HEAD
+            vmar: Some(vmar_ref),
+=======
             vmar: vmar_ref,
             aspace,
+>>>>>>> private/wip
             ttbr0_pa,
             asid,
             ht: HandleTable::new(),
@@ -192,6 +204,34 @@ impl Process {
             thread_freezes: 0,
             band_id: 0,
             wake_pending: false,
+        }
+    }
+
+    /// HT_DRAINQ flush 专用：**提前释放** root Vmar 钉住引用（帧归还刀件 B
+    /// ——drain 双相的配套序）。为什么必须预放：flush 语境表内 root Vmar
+    /// 的 refs = 表槽 1 + Process 钉 1；不预放则 drain phase-1 只递减表槽
+    /// （refs 1→0 差一脚）→ Vmar 不 Drop 不清账 → phase-2 的映射中 VMO
+    /// 全额走泄漏兜底 → 迟到的 `Process::Drop` → `Vmar::Drop` 清账后 VMO
+    /// 已是孤儿（令牌随死表泄漏）→ 帧永不还（A 线主罪在已 start 链的残形
+    /// ）。预放后 refs = 表槽 1 → phase-1 归零 Drop（清账 mapcnt 归零）→
+    /// phase-2 VMO 真销毁还帧——全链一个 drain 内闭合（**条件**：末柄在
+    /// 垂死进程自己表内；跨表长持 root-vmar 柄形态的子进程 VMO 永久泄漏
+    /// 为已知残形挂账 v2——审查 P2 记档，候选修法=Drop 清账后孤儿放行位
+    /// 或 drain 泄漏分支延迟重扫）。
+    ///
+    /// 安全性：调用语境 = 进程已死（Exited、任务全杀，HT_DRAINQ flush /
+    /// 溢出同步回退两路同构）——无任何执行流再触其 AS。常见形态：vmar 对象
+    /// 仍被表槽持有（refs ≥1，预放只减钉不减活）。**末持有者形态**（父已关
+    /// 己柄、子生存期内关掉 self-vmar 柄：refs = 钉 1）预放即归零——就地
+    /// drop Vmar（清账先于 drain phase-2，安全性论证同构成立，审查 P2 修正
+    /// 回写 2026-11-22）。跨表持有形态（vmar handle 经 channel 迁给活进程
+    /// ）：refs = 子表 + 钉 + 他表 ≥3 → 预放+phase-1 后仍 ≥1 → 不 Drop
+    /// 不清账——活持有者的映射无恙（保守正确）。
+    pub(crate) fn release_vmar_pin_early(&mut self) {
+        if let Some(v) = self.vmar.take() {
+            // SAFETY: 构造时 retain 过；末持有者形态下可归零就地 Drop
+            //（清账先于 phase-2，见方法注）；单核顺序（IRQ 屏蔽路径）。
+            unsafe { ObjRef::release(v) };
         }
     }
 
@@ -210,8 +250,13 @@ impl Process {
 
 impl Drop for Process {
     fn drop(&mut self) {
-        // SAFETY: 构造时 retain 过；单核顺序（对象仅在 IRQ 屏蔽路径销毁）。
-        unsafe { ObjRef::release(self.vmar) };
+        // Option 形（帧归还刀件 B）：flush 侧预放过的 vmar 钉为 None——不
+        // 二次 release（双放即堆腐化，drain 槽状态机同一防线）。
+        // SAFETY: 构造时 retain 过（Some 臂）；单核顺序（对象仅在 IRQ 屏蔽
+        // 路径销毁）。
+        if let Some(v) = self.vmar {
+            unsafe { ObjRef::release(v) };
+        }
         PROCESS_LIVE.fetch_sub(1, Ordering::Relaxed);
     }
 }
@@ -235,10 +280,11 @@ impl Drop for Process {
 //   的 retain）由队列独占持有——Process 在 flush 侧 drain→release 序完成前
 //   结构性存活；release 仍恒在 drain 后（旧钩子语义序原样，只是迟到）。
 // - **唤醒序**：join（thread_key TERMINATED）与 Process TERMINATED 唤醒仍
-//   在钩子内同步（mark_exited 之后——不变）；drain 的 Drop 链本就不唤醒
-//   任何人（`Vmo::Drop` 只还帧、`Vmar::Drop` 只注销 demand、
-//   `ChannelEnd::Drop` 只放互钉引用——全无 wake 面），drain 迟到不改变
-//   任何等待者的可见序。
+//   在钩子内同步（mark_exited 之后——不变）；drain 的 Drop 链**仍无任务
+//   唤醒面**（`Vmo::Drop` 只还帧、`ChannelEnd::Drop` 只放互钉引用、
+//   `Vmar::Drop` 帧归还刀起含 clear_leaves + `tlbshoot::broadcast`——
+//   广播是 SGI #2 失效通知**非 wake_matching**，不唤醒任何等待者，drain
+//   迟到不改变任何等待者的可见序；广播闩的回执收割见下方「TLB 回执」）。
 // - **互斥（SMP 参与态）**：push 点（退出钩子）恒 KL 在身（SVC 退出链 /
 //   EL0 fault kill 链 SVC_CLASS_ALL / kill_all 的 SVC 主体）；flush 点经
 //   [`ht_drain_flush`] 的 `kl_held` 门取 KL——队列访问与 Drop 链全在 KL
@@ -246,7 +292,21 @@ impl Drop for Process {
 //   由既有 KL 承担；flush 不持任何结构锁取 KL，无锁序倒置面）。
 // - **VMO Drop 链 / demand 注销**：drain 在 KL 窗内执行（同同步时代语境
 //   ——S-4 D23「分配器锁内」纪律维持；`Vmar::Drop` 的 kl_held 门自然退化
-//   为已持跳过）。
+//   为已持跳过；其 PT 锁嵌 KL 正序〔vmar.rs unmap 先例〕，clear_leaves 与
+//   他核供给/映射写者互斥）。
+// - **TLB 回执（帧归还刀件 A ⑤）**：`Vmar::Drop` 的 broadcast 置本核
+//   待等闩；本 flush 语境（idle/yield）**无 SVC 派发尾可等**——flush 尾
+//   KL 释放后显式调 `tlbshoot::sched_exit_check`（零锁自旋，§3.2 等待窗
+//   纪律满足：KL 已放、无结构锁）；yield 续行臂（KL 在身，flush 尾不放）
+//   闩留给返回后的 dispatch 尾 `exit_checks` 收割（既有面）。溢出同步
+//   回退（钩子内）同理——闩由本核下一个 dispatch 尾收割，挂闩期安全 =
+//   死 AS 无执行流 + ASID 复用另有防线（activate 按号失效 + 回卷 quiesce
+//   ，vmar.rs `Drop` 方法注「回执收割面」逐语境点名）。
+// - **vmar 钉预放（帧归还刀件 B）**：flush 对已死进程先
+//   `release_vmar_pin_early`（见方法注）再 drain——表内 root Vmar 在
+//   phase-1 可归零 Drop（清账 mapcnt 归零），phase-2 VMO 真销毁还帧；
+//   未 start 链（terminate 的 `p.ht.drain()`，表出生为空）与父表 close
+//   链不预放——Process 对象仍活，vmar 钉由 `Process::Drop` 终放。
 // - **观测滞后（有界）**：PROCESS_LIVE 减点与帧回收水位随 flush 滞后到下
 //   一排水点。收割链必经的 `wait TERMINATED` 阻塞必然途经 idle——churn
 //   循环每轮至少一次排水，滞后上界 = 一个收割周期；`PROCESS_MAX` 帽在最坏
@@ -296,8 +356,8 @@ fn flush_deferred_peer_wakes(local: &[usize]) {
 /// 环逐拍推进，32 条/拍在 churn 峰值（33-60）下 ≤2 拍清空。
 const HT_DRAINQ_CHUNK: usize = 32;
 
-/// drain 一个钉住的 Process 表（drain → release 序——flush 异步路与溢出
-/// 同步回退共用，语义 = 旧退出钩子尾两步原样）。
+/// drain 一个钉住的 Process 表（帧归还刀起三步序——vmar 钉预放 → drain →
+/// release；flush 异步路与溢出同步回退共用）。
 ///
 /// # Safety
 /// `pinned` 须为调用方独占持有的有效 Process ObjRef 引用（本函数消费它，
@@ -307,11 +367,24 @@ unsafe fn drain_pinned_process(pinned: NonNull<ObjRef>) {
     unsafe {
         let r = &mut *pinned.as_ptr();
         if let Some(proc) = r.obj.as_process_mut() {
+<<<<<<< HEAD
+            // ① vmar 钉预放（帧归还刀件 B，见 Process::release_vmar_pin_early
+            //    方法注）：表内 root Vmar 由此可在 drain phase-1 归零 Drop。
+            proc.release_vmar_pin_early();
+            // ② 双相 drain：phase-1 Vmar Drop 清账（mapcnt 归零）→ phase-2
+            //    VMO 真销毁还帧（不显式 unmap——死进程的映射整表收割）。
+            proc.ht.drain();
+        }
+        // ③ 消费钉住引用（drain 后原语义序）。类型不符 = 不可达防御面
+        //（移交面恒 Process ObjRef）——引用仍须放（本函数契约 = 消费），
+        // 不放即泄漏。
+=======
             // F1-2 两阶段确定性销毁：阶段一（幂等兜底）拆解地址空间并归还全部页表帧与 ASID；
             // 阶段二排空能力表（已彻底废除 leak = true 分支）。
             proc.aspace.teardown();
             proc.ht.drain();
         }
+>>>>>>> private/wip
         // SAFETY: 调用方契约（独占引用，此后不再使用）。
         ObjRef::release(pinned);
     }
@@ -398,8 +471,18 @@ pub fn ht_drain_flush() {
     if !held {
         berry_hal_aarch64::kern_lock::kern_release();
     }
+<<<<<<< HEAD
+    // TLB 回执收割（帧归还刀件 A ⑤）：idle 臂（KL 刚放）无 SVC 派发尾可等
+    // ——`Vmar::Drop` 的 broadcast 闩在此显式收割（零锁自旋点，§3.2 等待
+    // 窗纪律满足：KL 已放、无结构锁、IRQ 屏蔽窗内纯释放零分配）。yield
+    // 续行臂（held=true，flush 尾不放 KL）不经此处——闩留给返回后的
+    // dispatch 尾 `exit_checks`（既有面）。单核闩恒 0 零扰动。
+    if !held {
+        berry_hal_aarch64::tlbshoot::sched_exit_check();
+=======
     if wake_n > 0 {
         flush_deferred_peer_wakes(&wake_buf[..wake_n]);
+>>>>>>> private/wip
     }
 }
 

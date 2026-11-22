@@ -459,7 +459,11 @@ jobs:
         with:
           name: smoke-serial-logs
           retention-days: 3
-          path: ci-fail-logs/
+          # 存储配额面（2026-11-22 E lane 首跑 CI 红）：只传最近 3 个靴 + 关键 FAIL 行
+          # ——990 文件全传每跑 500MB+ 配额即穿（GitHub 免费面帽）
+          path: |
+            ci-fail-logs/*tail*
+            ci-fail-logs/*FAIL*
 
   # ---------- BCTS v0 全量回放挂 CI（ADR #84；BCTS 设计稿 v1.1 §4.2 五步） ----------
   # 独立关卡不并入 smoke job（规则/07 独立关卡纪律）：smoke job = 分层 CI 轻面

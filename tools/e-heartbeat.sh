@@ -74,10 +74,10 @@ while :; do
       cd "$root" || exit 1
       sid=$(cat .claude/state/e-run-session-id 2>/dev/null)
       if [ -n "$sid" ]; then
-        BERRYOS_E_RUN=1 CLAUDE_PROJECT_DIR="$root" tmux new-session -d -s "=$RUN_NAME" \
+        BERRYOS_E_RUN=1 CLAUDE_PROJECT_DIR="$root" tmux new-session -d -s "$RUN_NAME" \
           "claude --resume $sid --dangerously-skip-permissions '读盘上状态继续跑：git status、punch-list、tools/pack-work.py 的开工包'"
       else
-        BERRYOS_E_RUN=1 CLAUDE_PROJECT_DIR="$root" tmux new-session -d -s "=$RUN_NAME" \
+        BERRYOS_E_RUN=1 CLAUDE_PROJECT_DIR="$root" tmux new-session -d -s "$RUN_NAME" \
           "bash tools/run-e.sh launch-session"
       fi
     ) || echo "e-heartbeat: resume 失败——下拍重试"

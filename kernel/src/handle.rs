@@ -389,11 +389,70 @@ impl HandleTable {
         Ok(encode(slot as u32, gen))
     }
 
+<<<<<<< HEAD
+    /// **清空整表**（Plan B v0.5：进程退出钩子 drain 死亡进程的表）。逐槽走
+    /// [`Self::close`] 的释放语义（引用 -1、归零 drop Box、槽代号 +1），但
+    /// **不做销毁性拒检**——close 的 -EBUSY 拒面保护的是**活进程**的映射
+    /// 一致性；表主已死，映射清账由 `Vmar::Drop` 兜底（帧归还刀件 A：残留
+    /// Region 的 clear_leaves + untrack——mapcnt 归零后 VMO 可还帧）。
+    ///
+    /// **双相序（帧归还刀件 B）**：phase-1 先落全部 Vmar → phase-2 落其余
+    /// 对象。为什么必须分相：`Vmar::Drop` 清账要解引用 `Region.vmo`（untrack
+    /// 回调）——**要求表内 VMO 仍活**；`Vmo::Drop` 还帧要求 mapcnt==0——
+    /// **要求 Vmar 已清账**。单相遍历槽序不定（VMO 槽可能先于 Vmar 槽），
+    /// 双相强制「Vmar 全落 → VMO 才落」的因果序。
+    ///
+    /// **槽状态机（先审后写）**：phase-1 对 Vmar 槽递减 refs，归零即
+    /// `Box::from_raw` drop；**槽同步置 Free**——from_raw 已消费 Box 所有权
+    /// ，槽若仍持 Used 态指针，phase-2/后续遍历再 from_raw 同一指针 = 双
+    /// drop 堆腐化（前次实施 boot 崩二级候选①「drain 双相双放」即此形）
+    /// 。每槽处理点单出口统一置 Free，无中间态。
+    ///
+    /// phase-1 的 Vmar 递减后仍 ≥1（被 Process 钉住或跨表持有）= 不 drop
+    /// 不清账（对象活、属主另有其人——保守：flush 侧由
+    /// `drain_pinned_process` 的 vmar 钉预放保证表内 root Vmar 恒可归零，
+    /// 见 process.rs；跨表持有者〔channel 迁移〕的映射无恙）。
+    ///
+    /// **对象本体亦不销毁（VMO 泄漏兜底保留）**：`Region.vmo` 裸指针有效性
+    /// 依托「close 拒 -EBUSY 保对象存活」（vmar.rs Region 注释）——phase-2
+    /// 对 refs 将归零且仍被映射 **或 demand 登记中** 的 VMO 整档跳过递减
+    /// （令牌随死表泄漏、对象保活——迟到 Drop 的清账解引用仍安全；mapcnt
+    /// ==0 且 demand 钉==0 ⟺ 无 Region 指着它——两防线判据并集，精确）。
+    /// **仅 IRQ 屏蔽的退出路径调用**（对象释放窗口内不可被切走）。
+=======
     /// **排空整表**（F1-2 两阶段退出第二阶段）：在 `AddressSpace::teardown()` 完成之后逐槽
     /// 调用 `ObjRef::release` 归还句柄引用令牌，彻底废除旧版 `leak = true` 整对象泄漏分支。
     /// 若某 VMO 仍被另一存活子进程映射，`ObjRef` 高 32 位 `map_refs` 自动保活对象本体直至
     /// 该子进程 `teardown()` 完成最后一次 `release_map` 时零泄漏归还物理页。
+>>>>>>> private/wip
     pub fn drain(&mut self) {
+        // phase-1：先落全部 Vmar（mapcnt 归零）。槽审（类型判别）→ refs
+        // 递减 → 归零 from_raw drop → 槽置 Free（防双 drop，见方法注）。
+        for slot in self.slots.iter_mut() {
+            if let SlotState::Used { gen, obj, .. } = *slot {
+                // SAFETY: 指针在表；只读类型判别零解引用深度（match 对
+                // KernelObj 判 tag）。
+                let is_vmar =
+                    unsafe { matches!((*obj.as_ptr()).obj, KernelObj::Vmar(_)) };
+                if is_vmar {
+                    // SAFETY: 指针在表、refs ≥ 1；单核顺序（屏蔽窗内）。
+                    let refs = unsafe {
+                        let r = &mut *obj.as_ptr();
+                        r.refs -= 1;
+                        r.refs
+                    };
+                    if refs == 0 {
+                        // SAFETY: 引用归零、无别名——归还 Box（Vmar::Drop
+                        // 清账：clear_leaves + untrack，解引用的 VMO 全活
+                        // ——phase-2 才动 VMO 槽）。
+                        unsafe { drop(Box::from_raw(obj.as_ptr())) };
+                    }
+                    *slot = SlotState::Free { next_gen: gen + 1 };
+                }
+            }
+        }
+        // phase-2：其余对象真正递减 + 触发 Vmo::Drop 还帧（此刻 Vmar 已清
+        // 账，mapcnt 归零——VMO 的 droppable_pages 全量放行）。
         for slot in self.slots.iter_mut() {
             if let SlotState::Used { gen, obj, .. } = *slot {
                 *slot = SlotState::Free { next_gen: gen + 1 };
@@ -421,6 +480,19 @@ impl HandleTable {
                         KernelObj::Channel(_) | KernelObj::SuspendToken(_)
                     )
                 };
+<<<<<<< HEAD
+                if !leak {
+                    // SAFETY: 指针在表、refs ≥ 1；单核顺序（屏蔽窗内）。
+                    let refs = unsafe {
+                        let r = &mut *obj.as_ptr();
+                        r.refs -= 1;
+                        r.refs
+                    };
+                    if refs == 0 {
+                        // SAFETY: 引用归零、无别名——归还 Box（drop 对象本体；
+                        // Vmo::Drop 经 with_frames 还帧——F0-3 ALLOC_LOCK 面）。
+                        unsafe { drop(Box::from_raw(obj.as_ptr())) };
+=======
                 if is_ipc {
                     *slot = SlotState::Free { next_gen: gen + 1 };
                     // SAFETY: 摘槽后独占释放本槽引用。
@@ -429,6 +501,7 @@ impl HandleTable {
                             c.release_handle();
                         }
                         ObjRef::release(obj);
+>>>>>>> private/wip
                     }
                 }
             }

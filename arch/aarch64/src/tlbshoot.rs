@@ -153,6 +153,11 @@ pub fn broadcast() {
     PEND_SNAP[me].store(snap, Ordering::Relaxed);
     PENDING[me].store(true, Ordering::Release);
     latch_set(LATCH_TLB);
+    // F0-3 对飞自解接线（帧归还刀审查 P1 修复回写 2026-11-22：本刀令
+    // Vmar::Drop 在 idle/yield flush 与退出钩子溢出语境 broadcast——对飞
+    // （双核关中断互等）面扩大，此前「彻底根除」的注释在本树是死线）：
+    // 置位对核的 REQ_PENDING，wait_pending 循环内对飞态当场自服务放行。
+    REQ_PENDING[t].store(true, Ordering::Release);
     // 快照→发送不可重排（SeqCst 栅）：若发送先于快照可观，快照可能已含
     // 本轮回执 → 等待谓词（> 快照）永不满足 = 悬死。
     core::sync::atomic::fence(Ordering::SeqCst);
@@ -174,6 +179,15 @@ fn wait_pending(me: usize) {
     let snap = PEND_SNAP[me].load(Ordering::Relaxed);
     let mut spins: u32 = 0;
     while ACKS[t].load(Ordering::Acquire) <= snap {
+        // F0-3 对飞自解（帧归还刀审查 P1 修复回写 2026-11-22，移植自
+        // base-overhaul 同文件）：若对核同时在 PSTATE.I=1 下向本核发起了
+        // shootdown，本核当场完成本地全量 TLB 失效并推进 ACKS[me]，使
+        // 双方在首轮迭代内无死锁双双放行。
+        if REQ_PENDING[me].swap(false, Ordering::AcqRel) {
+            // SAFETY: 零锁上下文刷新本核本地 TLB，无任何共享可变状态借用。
+            unsafe { crate::mmu::flush_local_all() };
+            ACKS[me].fetch_add(1, Ordering::Release);
+        }
         spins = spins.wrapping_add(1);
         if spins >= 400_000_000 {
             panic!(
@@ -195,7 +209,10 @@ fn wait_pending(me: usize) {
 /// W3-Q108（03 号机会一 1b）：SVC 热路径经 [`exit_checks`] 单读分诊后进入，
 /// 此处保留直调自适应面（roll 驱动环内复调 / ktest·probe 直调）——镜像与
 /// 合并闩任一置位即等待（双写期两正字恒同步， belt-and-suspenders）。
-pub(crate) fn sched_exit_check() {
+/// 帧归还刀件 A ⑤ 起 **pub**：kernel 侧 HT_DRAINQ flush 尾（idle 语境——
+/// 无 SVC 派发尾可等）显式收割 `Vmar::Drop` 的 broadcast 闩（见
+/// kernel/src/process.rs `ht_drain_flush` 尾）；调用合同不变（零锁持有）。
+pub fn sched_exit_check() {
     let me = crate::smp::cpu_id();
     if PENDING[me].load(Ordering::Acquire) || exit_latch_read() & LATCH_TLB != 0 {
         wait_pending(me);
