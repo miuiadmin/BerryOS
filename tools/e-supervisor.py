@@ -152,7 +152,11 @@ def selftest() -> int:
     with tempfile.TemporaryDirectory() as td:
         t = Path(td)
         sh(["git", "init", "-q"], cwd=t)
-        sh(["git", "-C", str(t), "commit", "--allow-empty", "-m", "base"], cwd=t)
+        # CI 环境免疫（2026-11-22 run 45012692722 定谳）：actions/checkout 把
+        # HOME 换到 _temp 空目录，runner 用户无全局 user.name——首笔空提交
+        # fatal 128 → HEAD~1..HEAD 空 → IndexError。腿②同款 -c 注入。
+        sh(["git", "-C", str(t), "-c", "user.name=t", "-c", "user.email=t@l",
+            "commit", "--allow-empty", "-m", "base"], cwd=t)
         # 腿 ①：机制前缀判定
         check("机制/产品分判", is_machinery([".claude/settings.json"]) and not is_machinery(["kernel/main.rs"]) and not is_machinery([]))
         # 腿 ②：合成仓 undo——machinery 提交 seen 超时 + idle + 树净 → 整批撤一笔
