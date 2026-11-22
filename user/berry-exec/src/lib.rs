@@ -256,25 +256,10 @@ impl ChildHandles {
                 }
             }
         }
-        // 逐窗 unmap（X-5：窗表升序铺满映像幅——逐刀即全幅）+ 栈/MMIO。
-        // 任一失败记账不早退（后续 close 照走——比早退泄漏面更紧；失败
-        // 路径只影响死账可观测面，绿色路径零差）。
+        // F1-2：内核在子进程末线程退出唤醒 SIGNAL_TERMINATED 之前已完成阶段一
+        // `aspace.teardown()`（全量清叶、退还映射钉与按需钉、回收 L3/L2/L1 页表帧与 ASID），
+        // 父进程无须再手工逐窗调 `berry_vmar_unmap`，直接关闭栈/映像 VMO 及线程/Vmar/进程句柄即可。
         let mut ok = true;
-        for w in &self.wins[..self.nwin] {
-            if w.vmo != 0 && berry_vmar_unmap(self.hv, w.start as usize, w.len as usize) != 0 {
-                ok = false;
-            }
-        }
-        if berry_vmar_unmap(self.hv, self.stack_va as usize, self.stack_len as usize) != 0 {
-            ok = false;
-        }
-        if self.mmio_len != 0
-            && berry_vmar_unmap(self.hv, self.mmio_base as usize, self.mmio_len as usize) != 0
-        {
-            ok = false; // 设备窗口 unmap 失败 = 叶残留（AS 将销毁，只脏死表）
-        }
-        // close 链：栈 VMO → 各窗 VMO → thread/vmar/process（destroy-close
-        // 不再拒，Drop 还帧）。
         if berry_handle_close(self.svmo) != 0 {
             ok = false;
         }

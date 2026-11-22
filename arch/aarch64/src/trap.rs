@@ -463,6 +463,36 @@ pub extern "C" fn exception_sync_el0(tf: &mut TrapFrame) {
             // 不放。
             // cbox 黑匣子镜像先于取锁（零锁零分配——异常纪律不破锁序窗）。
             cbox_record(KIND_EL0, tf);
+            // W3-38 探针：I-abort 现场 TTBR0/ASID + L1→L2→L3 全走查直读
+            // （直映射基址 0xffffff8000000000，x05 现场可证）。
+            if ec == berry_trapface::EC_IABORT_LOWER {
+                let tt = crate::mmu::current_ttbr0_pa();
+                let asid = crate::current_asid() as usize;
+                uart_puts(b"[iab tt=");
+                uart_put_hex64(tt as u64);
+                uart_puts(b" asid=");
+                uart_put_hex64(asid as u64);
+                let dmap = 0xffffff80_00000000usize;
+                let far = tf.far as usize;
+                // SAFETY: 内核直映射只读三槽（诊断）。
+                let slot = |pa: usize, idx: usize| unsafe {
+                    core::ptr::read_volatile((((pa & 0xffff_ffff_f000) + dmap) as *const u64).add(idx))
+                };
+                let e0 = slot(tt, (far >> 30) & 0x1ff);
+                uart_puts(b" e0=");
+                uart_put_hex64(e0);
+                if e0 & 3 == 3 {
+                    let e1 = slot(e0 as usize, (far >> 21) & 0x1ff);
+                    uart_puts(b" e1=");
+                    uart_put_hex64(e1);
+                    if e1 & 3 == 3 {
+                        let e2 = slot(e1 as usize, (far >> 12) & 0x1ff);
+                        uart_puts(b" e2=");
+                        uart_put_hex64(e2);
+                    }
+                }
+                uart_puts(b"]\n");
+            }
             crate::kern_lock::svc_enter();
             dump_el0(tf, ec);
             uart_puts(b"  -> user fault (G1.5: kill current task)\n");

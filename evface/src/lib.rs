@@ -41,14 +41,19 @@ pub const SIGNAL_TERMINATED: u64 = 1 << 2;
 /// 冻结进程收讯挂起位（AM-1.5 内核派生位——SuspendToken wait 面唯一可
 /// 命中位）：目标进程冻结期间任一 send 成功入队即置位，全解冻清零。
 pub const SIGNAL_WAKE_PENDING: u64 = 1 << 3;
+/// Channel 对端已关闭（F1-3 内核派生位）：对端最后一枚句柄关闭时单调置位永不清。
+pub const SIGNAL_PEER_CLOSED: u64 = 1 << 4;
 /// 用户信号位掩码（Event `object_signal` 只收高 32 位用户位；低 32 位
 /// 保留给内核派生信号——位面冲突由内核执法拒绝）。
 pub const SIGNAL_USER_MASK: u64 = 0xFFFF_FFFF_0000_0000;
 
-/// 内核派生位全集（低 32 位在册四位的并集——READABLE|WRITABLE|
-/// TERMINATED|WAKE_PENDING）。
-pub const SIGNAL_DERIVED_MASK: u64 =
-    SIGNAL_READABLE | SIGNAL_WRITABLE | SIGNAL_TERMINATED | SIGNAL_WAKE_PENDING;
+/// 内核派生位全集（低 32 位在册五位的并集——READABLE|WRITABLE|
+/// TERMINATED|WAKE_PENDING|PEER_CLOSED）。
+pub const SIGNAL_DERIVED_MASK: u64 = SIGNAL_READABLE
+    | SIGNAL_WRITABLE
+    | SIGNAL_TERMINATED
+    | SIGNAL_WAKE_PENDING
+    | SIGNAL_PEER_CLOSED;
 
 /// `object_signal` 置/清位律：`signals = (signals & !clear) | set`
 /// （置/清一条原子——本函数为其纯值域投影；kernel Event::signal 的
@@ -98,6 +103,7 @@ mod tests {
         assert_eq!(SIGNAL_WRITABLE, 1 << 1);
         assert_eq!(SIGNAL_TERMINATED, 1 << 2);
         assert_eq!(SIGNAL_WAKE_PENDING, 1 << 3);
+        assert_eq!(SIGNAL_PEER_CLOSED, 1 << 4);
         assert_eq!(SIGNAL_USER_MASK, 0xFFFF_FFFF_0000_0000);
     }
 
@@ -105,12 +111,18 @@ mod tests {
 
     #[test]
     fn test_bit_space_partition() {
-        // 在册四位全落低 32；USER_MASK 恰为高 32 全集。
-        assert_eq!(SIGNAL_DERIVED_MASK, 0xF);
+        // 在册五位全落低 32；USER_MASK 恰为高 32 全集。
+        assert_eq!(SIGNAL_DERIVED_MASK, 0x1F);
         assert_eq!(SIGNAL_DERIVED_MASK & SIGNAL_USER_MASK, 0);
-        assert_eq!(SIGNAL_DERIVED_MASK | SIGNAL_USER_MASK, 0xFFFF_FFFF_0000_000F);
+        assert_eq!(SIGNAL_DERIVED_MASK | SIGNAL_USER_MASK, 0xFFFF_FFFF_0000_001F);
         // 每个派生位互不重叠（位域自洽）。
-        let bits = [SIGNAL_READABLE, SIGNAL_WRITABLE, SIGNAL_TERMINATED, SIGNAL_WAKE_PENDING];
+        let bits = [
+            SIGNAL_READABLE,
+            SIGNAL_WRITABLE,
+            SIGNAL_TERMINATED,
+            SIGNAL_WAKE_PENDING,
+            SIGNAL_PEER_CLOSED,
+        ];
         for i in 0..bits.len() {
             for j in (i + 1)..bits.len() {
                 assert_eq!(bits[i] & bits[j], 0, "derived bits {} {} overlap", i, j);
@@ -314,7 +326,13 @@ mod tests {
             assert_eq!(after & SIGNAL_DERIVED_MASK, 0, "user signal must not set derived bits");
         }
         // 反向：任何触及派生位的掩码过不了门。
-        for b in [SIGNAL_READABLE, SIGNAL_WRITABLE, SIGNAL_TERMINATED, SIGNAL_WAKE_PENDING] {
+        for b in [
+            SIGNAL_READABLE,
+            SIGNAL_WRITABLE,
+            SIGNAL_TERMINATED,
+            SIGNAL_WAKE_PENDING,
+            SIGNAL_PEER_CLOSED,
+        ] {
             assert!(!signal_masks_legal(0, b));
             assert!(!signal_masks_legal(b, 0));
         }

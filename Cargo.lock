@@ -146,6 +146,7 @@ dependencies = [
  "berry-susface",
  "berry-telface",
  "berry-vdsoface",
+ "berry-vmarface",
  "berry-vmoledger",
  "berry-vslotface",
  "berry-wqmatch",
@@ -260,6 +261,10 @@ dependencies = [
 
 [[package]]
 name = "berry-vdsoface"
+version = "0.2.0"
+
+[[package]]
+name = "berry-vmarface"
 version = "0.2.0"
 
 [[package]]

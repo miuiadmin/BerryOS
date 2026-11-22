@@ -33,6 +33,7 @@ members = [
     "trapface",
     "utrace",
     "vmoledger",
+    "vmarface",
     "vslotface",
     "wqmatch",
     "psface",
