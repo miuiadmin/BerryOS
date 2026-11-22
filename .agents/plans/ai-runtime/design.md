@@ -2,7 +2,7 @@
 
 Type: spec
 Status: active
-Updated: 2026-11-18
+Updated: 2026-11-22
 Version: 1.0.0
 
 一句话说明：`ai-runtime`（由系统推理守护进程 `airtd`、纯算子核 `berry-tensor`、协议库 `berry-aiproto` 与个人语义记忆库 `berry-vault` 组成）是 BerryOS 的端侧智能算力与长期记忆中枢——以「只读按需映射跨进程共享模型池 + 三阶异构张量硬件卸载 + 分页 KV-Cache + 能力门控不出端加密记忆库」让 AI 原生操作系统具备真正的本地大脑。
@@ -37,6 +37,12 @@ flowchart TD
 1. **Tier 0（确定性全平台量化软核）**：纯 Rust `no_std` 编写的无堆分配算子核，利用 ARMv8.2+ `SDOT`/`UDOT`、`SMMLA`（`i8mm`）与 `FMLAL` 指令实现 4-bit/8-bit 分组量化矩阵乘与 FlashAttention-2 分块在线 Softmax，确保无独立加速器的小型穿戴或基础虚拟机环境可用。
 2. **Tier 1（模拟器半虚拟化宿主算力直通 `berry-paravirt-npu`）**：在 `berry` 宿主模拟器下，通过共享物理页帧（`.bmod` 权重页零拷贝映射至宿主 `wgpu::Buffer`）将算子图卸载至宿主机 Apple Silicon Metal / 桌面级 GPU Compute Shader 执行，在开发机上获得百 Token/s 级原生端侧大模型实测速度。
 3. **Tier 2（真机 NPU / GPU Compute 硬件加速）**：面向移动端与 PC SoC，以持证用户态驱动封装专用 NPU 编译产物缓存与 Vulkan Compute Subgroup 管线，超时看门狗（单次算子批次 > 100ms）触发硬复位并透明降级至 Tier 0/1。
+
+建造清单（DAG 节验收面——全勾才配双戳）：
+
+- [x] Tier 0 首刀量化算子核：`user/berry-tensor`（Q4_0/Q8_0 块布局单源〔llama.cpp 兼容字节形〕+ f16 位级解码含次正规域 + 去量化 + 量化×量化整数内积点积——块内 i32、scale 后乘、f32 顺序累积的确定性基线）——host 12 测绿（`just test-host` berry-tensor 腿，2026-11-22）；Q4_K_M/FP16/BF16 算子、SIMD（dotprod/i8mm/AVX2）、MatMul/RoPE/RMSNorm/FlashAttn 图算子随后续刀
+- [ ] Tier 1 `berry-paravirt-npu`（宿主 wgpu Compute 直通——`.bmod` 权重页零拷贝映射宿主 `wgpu::Buffer`）
+- [ ] Tier 2 真机 NPU/Vulkan Compute 子组驱动与 100ms 看门狗降级
 
 ### 三、Paged KV-Cache、结构化约束解码与优先级抢占契约
 

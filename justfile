@@ -1158,6 +1158,12 @@ test-host:
     # 接线去重——#356 已带 workspace 形 -p berry-appshell 行（上方波3-件⑦
     # 段），manifest-path 重复行移除（appshell 33 测曾双跑，实测去重）。
     cargo test --manifest-path user/berry-softime/Cargo.toml --target {{host}}
+    # ai-runtime §二 Tier 0 首刀：berry-tensor（量化算子核纯函数面——
+    # Q4_0/Q8_0 块布局单源〔llama.cpp 兼容字节形〕+ f16 位级解码含次
+    # 正规/去量化/量化×量化整数内积点积〔块内 i32、scale 后乘、f32 顺
+    # 序累积——Tier 0 确定性基线，SIMD/卸载后端对拍锚〕，host 12 测；
+    # 消费 = airtd/berry-aiproto 张量段〔后续刀〕）。
+    cargo test --manifest-path user/Cargo.toml -p berry-tensor --target {{host}}
     # mkapp 门禁自检（a-3 U4：mkfat --check-fixture 同位前置——打包器门禁
     # 面此前只在 build-user 产物链上被动覆盖，门禁自身坏 = 产物链静默劣化）。
     python3 tools/mkapp.py --selftest

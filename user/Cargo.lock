@@ -232,6 +232,10 @@ name = "berry-telface"
 version = "0.2.0"
 
 [[package]]
+name = "berry-tensor"
+version = "0.2.0"
+
+[[package]]
 name = "berry-termio"
 version = "0.2.0"
 
