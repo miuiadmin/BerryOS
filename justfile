@@ -1275,6 +1275,18 @@ test-host:
     # Python 件不退役——CLI 对拍 oracle + gensourceindex --preset
     # import 面单源。
     cargo test --manifest-path tools/berryassemble/Cargo.toml --target {{host}}
+    # W1（彻底 Rust 化轨道 b 层 #7 刀序末档首刀）：bctsrun Rust 件——Tier 1
+    # 冻结件 schema 校验器镜像（现役单源 = tools/bcts/t1_check.py〔bcts-run.sh
+    # PYEOF①段机械抽出——heredoc→模块零行为变更〕）。lib：冻结件 TOML 子集
+    # 解析（顶层键 + [[marker]]/[[host_gate]] 数组节；点分节/数组值/内联表/
+    # hex/日期非目标形拒）+ 顶层八键执法 + marker/gate 值域全谱 + 空集守卫 +
+    # 文件名冗余自证 + META/MARK/GATE TSV 发射（拒面文案与 Python 逐字同源
+    # ——py_repr/True·False/单引号 list repr 形）。parity：仓内 bcts@0..6 七
+    # 件全量 TSV 逐行对拍 + 20 变异拒面逐字对拍 + TOML 语法面六语料双侧同拒
+    # （语法域文案各自实现——分支标识对齐）。后续刀：PYEOF②③（T2 面）/
+    # PYEOF④⑤（abi level/manifest PR 对账）/ 参数面与活树清单。独立小工作区，
+    # 须显式 --target {{host}}。Python 件不退役——CLI 对拍 oracle。
+    cargo test --manifest-path tools/bctsrun/Cargo.toml --target {{host}}
     # W1 接线（SEC-02 A2 同款纪律）：berry_assemble 门禁自检——V13 组装器
     # （ADR #82「组装不 fork」product.toml 校验/dry-run 计划/装配反回滚门）
     # 落地时自称 51 腿绿但从未接线 test-host：有 selftest 零自动执法 =
