@@ -27,6 +27,16 @@ while read -r lref lsha rref rsha; do
   # config 驱动（未配置 berryos.bot-email 则本段静默跳过——钩子保持通用）：
   # 登记的 bot 邮箱作者的本地新提交只准推 wip/auto-* 与 hermes/*——推 main
   # 或其他分支即拒（「runner 永不碰集成分支/永不自 merge」的机器面）。
+  # P0 身份闸（考古 2026-11-23：674 提交顶假身份上 main 三个月）
+  # 待推提交的 author/committer 不得含 test/fixture/bot-selftest 特征——单人仓
+  # 日常风险低但无人会话跑测试夹具同仓，同一污染面存在（成本一行）。
+  [ "$lsha" = "$zero" ] && continue
+  _bad_author=$(git log --format='%ae %ce' "$rsha..$lsha" 2>/dev/null | grep -ciE 'test|fixture|selftest|fake|dummy|example\.' || true)
+  if [ "$_bad_author" -gt 0 ]; then
+    echo "[berryos-guard] 拒绝：待推提交含 test/fixture/selftest 假身份（${_bad_author} 个）——考古 P0：674 提交三个月无人察觉" >&2
+    exit 1
+  fi
+
   if [ -n "$bot_email" ]; then
     # 审计 r2：判**远端落点** rref 而非本地 ref——显式 refspec（HEAD:main）旁路已堵；
     # 删除推（lsha=zero）无新提交，跳过。
