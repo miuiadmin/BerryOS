@@ -1373,8 +1373,17 @@ test-host:
     # 假绿面（真 bcts-run.sh 靠步② floor 91 兜底），镜像同形严拒早于发射〕
     # + parity live 三面（真源 markers.sh 92 行 stdout 逐字全等 + 计数
     # 32/56/3/91 钉板 + 绿语料族 + 拒面族〔空集守卫文案逐字/unbound 分支
-    # + 短路序/合成语料〕）。六刀候选：CLI 参数面镜像。独立小工作区，须
-    # 显式 --target {{host}}。
+    # + 短路序/合成语料〕）。六刀：src/args.rs（CLI 参数面镜像 =
+    # bcts-run.sh :117-221——参数 while/case 循环〔缺值/值域/未知/重复
+    # 后写覆盖〕+ BCTS_FROZEN 前缀识别 Tier〔bcts-t2@*/bcts@* 自动档 +
+    # 显式 --tier 冲突双向拒〕+ 工件在席 + 相对路径 REPO 前缀归一 +
+    # --manifest-name 守卫〔同席门 + 纯文件名五拒形〕+ --image 约束
+    # 〔tier2 冲突/selftest 互斥/归一在席〕+ T2 缺省工件 sort -t@ -k2 -n
+    # 数值序取尾〔@10>@9 字典序坑〕；绿腿产出 Resolved 快照〔缺省值/
+    # 显式位/路径归一〕；parity args（bash 真跑子进程 12 拒腿 stderr +
+    # 退码逐字 + 绿腿 Resolved 断言〔前缀自动识别/后写覆盖/T2 缺省解析〕
+    # ——manifest 缺席拒属装载段非参数段，钉界注记归后续刀；净增 +4 = lib
+    # 3 + parity 1。独立小工作区，须显式 --target {{host}}。
     # Python 件不退役——CLI 对拍 oracle。
     cargo test --manifest-path tools/bctsrun/Cargo.toml --target {{host}}
     # W1 接线（SEC-02 A2 同款纪律）：berry_assemble 门禁自检——V13 组装器
