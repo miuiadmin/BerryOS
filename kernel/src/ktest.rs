@@ -184,6 +184,12 @@ pub fn run() {
     // 复活，27 号刀②）。末位新号纪律——ktest done 前。
     test_f0_3();
     test_f0_4();
+    // F1-1：AddressSpace 解耦、vmarface 多层子 Vmar 嵌套与回收、连续子区间切分 unmap/protect 自检。
+    test_f1_1();
+    // F1-2：两阶段确定性拆页表、L3/L2/L1 页表帧全回收、废除 leak=true、2000 轮进程压测与创建侧内联排水自检。
+    test_f1_2();
+    // F1-3：无环 ChannelShared、在途句柄 Message::Drop 1000 轮压测、SIGNAL_PEER_CLOSED 即时唤醒与算术溢出防护自检。
+    test_f1_3();
     berry_hal_aarch64::uart_puts(b"ktest done\n");
     crate::splash::step(8, b"ktest done");
     // Step 6：异常向量 + TrapFrame save/restore/eret 全链路验证（放最后）。
@@ -566,46 +572,51 @@ fn test_syscall() {
             Vmar::new_root(crate::mm::frames(), asid)
                 .expect("SYSCALL：E3c 建 root Vmar（可信语境）"),
         ));
-        crate::vmar::register_demand_root(asid, p)
+        let ap = unsafe { (*p).aspace_ptr() };
+        crate::vmar::register_demand_aspace(asid, ap)
             .expect("SYSCALL：E3c 登记（Drop 回收槽——17 轮后仍有位）");
-        assert_eq!(crate::vmar::demand_root(asid), Some(p),
+        assert_eq!(crate::vmar::demand_aspace(asid), Some(ap),
             "SYSCALL：E3c 第 {} 轮反查验活", round);
-        // SAFETY: p 来自 into_raw 未动；from_raw → drop_in_place 在 p 原址
-        //（地址耦合保证面——kl_held 门 → 注销 + regions 零 demand 区间零钉放）。
+        // SAFETY: p 来自 into_raw 未动；最后一枚 Arc<AddressSpace> Drop 注销槽位。
         drop(unsafe { alloc::boxed::Box::from_raw(p) });
-        assert!(crate::vmar::demand_root(asid).is_none(),
+        assert!(crate::vmar::demand_aspace(asid).is_none(),
             "SYSCALL：E3c 第 {} 轮 Drop 注销后反查须空", round);
     }
-    // OwnerConflict 负面（G4-3 B 刀前件 ②）：同 asid 异根双登记 = 单 root
-    // 不变量破 → 防御拒；未遂者不落表不误清（demand_root 仍 p1；p2 Drop
-    // 双匹配 no-op）；同根幂等重登 Ok（回卷复用同号清后再登的快路径）。
-    // Box 形同上——登记 ptr 与 Vmar::Drop 须同址（地址耦合保证面）。
+    // OwnerConflict 负面（G4-3 B 刀前件 ②）：同 asid 异 AddressSpace 双登记 =
+    // 不变量破 → 防御拒；而同一 AddressSpace 的根/子 Vmar 共享同一 aspace_ptr，
+    // 注册天然幂等零冲突（F1-1 根治子 Vmar OwnerConflict）。
     let asid_oc = crate::aspace::alloc_asid();
     let p1 = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(
         Vmar::new_root(crate::mm::frames(), asid_oc)
             .expect("SYSCALL：E3c OwnerConflict 建 p1（可信语境）"),
     ));
-    crate::vmar::register_demand_root(asid_oc, p1)
-        .expect("SYSCALL：E3c OwnerConflict 首登记 Ok");
-    crate::vmar::register_demand_root(asid_oc, p1)
-        .expect("SYSCALL：E3c OwnerConflict 同根幂等重登 Ok（非冲突）");
+    let ap1 = unsafe { (*p1).aspace_ptr() };
+    let child_p1 = unsafe { (*p1).allocate(0x20_0000, PAGE_SIZE) }
+        .expect("SYSCALL：E3c p1 切分子 Vmar");
+    // F1-1：子 Vmar 先登记、根 Vmar 后登记（或反向）全幂等无冲突，且子 Vmar Drop 不误清根槽。
+    crate::vmar::register_demand_aspace(asid_oc, child_p1.aspace_ptr())
+        .expect("SYSCALL：E3c 子 Vmar 首登记 Ok");
+    crate::vmar::register_demand_aspace(asid_oc, ap1)
+        .expect("SYSCALL：E3c 根 Vmar 共享 AddressSpace 幂等重登 Ok（零冲突）");
+    drop(child_p1);
+    assert_eq!(crate::vmar::demand_aspace(asid_oc), Some(ap1),
+        "SYSCALL：E3c 子 Vmar Drop 不误清仍存活的 AddressSpace 登记");
     let p2 = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(
         Vmar::new_root(crate::mm::frames(), asid_oc)
             .expect("SYSCALL：E3c OwnerConflict 建 p2（异根同 asid）"),
     ));
-    assert_eq!(crate::vmar::register_demand_root(asid_oc, p2),
+    assert_eq!(crate::vmar::register_demand_aspace(asid_oc, unsafe { (*p2).aspace_ptr() }),
         Err(crate::vmar::DemandRootError::OwnerConflict),
-        "SYSCALL：E3c 同 asid 异根须 OwnerConflict 拒");
-    assert_eq!(crate::vmar::demand_root(asid_oc), Some(p1),
-        "SYSCALL：E3c 未遂双登记不落表（仍 p1）");
-    // SAFETY: p2 未登记（被拒）——from_raw 原址回收，Drop 双匹配 no-op
-    //（不误清 p1 槽——下方反查即证）。
+        "SYSCALL：E3c 同 asid 异 AddressSpace 须 OwnerConflict 拒");
+    assert_eq!(crate::vmar::demand_aspace(asid_oc), Some(ap1),
+        "SYSCALL：E3c 未遂双登记不落表（仍 ap1）");
+    // SAFETY: p2 未登记（被拒）——from_raw 原址回收，Drop 双匹配 no-op。
     drop(unsafe { alloc::boxed::Box::from_raw(p2) });
-    assert_eq!(crate::vmar::demand_root(asid_oc), Some(p1),
+    assert_eq!(crate::vmar::demand_aspace(asid_oc), Some(ap1),
         "SYSCALL：E3c 未遂者 Drop 后在席者仍在（不误清）");
     // SAFETY: p1 已登记——Drop 注销收尾。
     drop(unsafe { alloc::boxed::Box::from_raw(p1) });
-    assert!(crate::vmar::demand_root(asid_oc).is_none(),
+    assert!(crate::vmar::demand_aspace(asid_oc).is_none(),
         "SYSCALL：E3c OwnerConflict 收尾注销后反查须空");
     // 容量面（P3#10 前置件）：并发登记**动态填到满**（boot 面 dpg::init 常驻
     // 占 1 槽——不写死计数，满即停）→ 未登记者 Drop 后再验仍满（双匹配
@@ -617,7 +628,7 @@ fn test_syscall() {
             Vmar::new_root(crate::mm::frames(), asid)
                 .expect("SYSCALL：E3c 容量面建 Vmar（16 槽 + 页表帧预算内）"),
         ));
-        match crate::vmar::register_demand_root(asid, p) {
+        match crate::vmar::register_demand_aspace(asid, unsafe { (*p).aspace_ptr() }) {
             Ok(()) => live.push(p),
             Err(crate::vmar::DemandRootError::Full) => {
                 // SAFETY: 未登记即回收——Drop 注销双匹配 no-op，无残。
@@ -635,7 +646,7 @@ fn test_syscall() {
             .expect("SYSCALL：E3c 验满建 Vmar"),
     ));
     assert_eq!(
-        crate::vmar::register_demand_root(asid_chk, p_chk),
+        crate::vmar::register_demand_aspace(asid_chk, unsafe { (*p_chk).aspace_ptr() }),
         Err(crate::vmar::DemandRootError::Full),
         "SYSCALL：E3c 未登记者已 Drop，他人槽须仍在（满）"
     );
@@ -651,9 +662,10 @@ fn test_syscall() {
         Vmar::new_root(crate::mm::frames(), asid18)
             .expect("SYSCALL：E3c 回收后建 Vmar"),
     ));
-    crate::vmar::register_demand_root(asid18, p18)
+    let ap18 = unsafe { (*p18).aspace_ptr() };
+    crate::vmar::register_demand_aspace(asid18, ap18)
         .expect("SYSCALL：E3c 全注销后再登记 Ok（槽已回收非泄漏）");
-    assert_eq!(crate::vmar::demand_root(asid18), Some(p18),
+    assert_eq!(crate::vmar::demand_aspace(asid18), Some(ap18),
         "SYSCALL：E3c 回收槽反查验活");
     // SAFETY: 同上；Drop 注销收尾。
     drop(unsafe { alloc::boxed::Box::from_raw(p18) });
@@ -693,9 +705,9 @@ fn test_syscall() {
         root_b
             .map_demand(vmo_b, VA_B, 0, PAGE_SIZE, crate::vmar::Perm::UserRw)
             .expect("SYSCALL：E3d map_demand b");
-        crate::vmar::register_demand_root(asid_a, root_a as *mut Vmar)
+        crate::vmar::register_demand_aspace(asid_a, root_a.aspace_ptr())
             .expect("SYSCALL：E3d 登记 root a");
-        crate::vmar::register_demand_root(asid_b, root_b as *mut Vmar)
+        crate::vmar::register_demand_aspace(asid_b, root_b.aspace_ptr())
             .expect("SYSCALL：E3d 登记 root b");
         // 武装：b 先 a 后——b 占低位槽（跳过面的证明前提）。
         let slot_b = ktest_arm_el0(VA_B, asid_b);
@@ -775,7 +787,7 @@ fn test_syscall() {
         root_e
             .map_demand(vmo_e, VA_E, 0, PAGE_SIZE, crate::vmar::Perm::UserRw)
             .expect("SYSCALL：E3e map_demand e");
-        crate::vmar::register_demand_root(asid_e, root_e as *mut Vmar)
+        crate::vmar::register_demand_aspace(asid_e, root_e.aspace_ptr())
             .expect("SYSCALL：E3e 登记 root e");
         let asid_ghost = crate::aspace::alloc_asid(); // 永不登记——孤儿装配
         // 幽灵先臂占低位（GC 臂先于合法臂被扫到）。
@@ -833,7 +845,7 @@ fn test_syscall() {
         root_f
             .map_demand(vmo_f, VA_F, 0, PAGE_SIZE, crate::vmar::Perm::UserRw)
             .expect("SYSCALL：E3f map_demand f");
-        crate::vmar::register_demand_root(asid_f, root_f as *mut Vmar)
+        crate::vmar::register_demand_aspace(asid_f, root_f.aspace_ptr())
             .expect("SYSCALL：E3f 登记 root f");
         let k = crate::dpg::EREQ_SLOTS;
         let mut lowest = usize::MAX;
@@ -990,9 +1002,9 @@ fn test_syscall() {
                 .map_demand(&mut *ptr_h, VA_H, 0, 2 * PAGE_SIZE, crate::vmar::Perm::UserRw)
                 .expect("SYSCALL：E3h map_demand h");
         }
-        crate::vmar::register_demand_root(asid_g, root_g as *mut Vmar)
+        crate::vmar::register_demand_aspace(asid_g, root_g.aspace_ptr())
             .expect("SYSCALL：E3h 登记 root g");
-        crate::vmar::register_demand_root(asid_h, root_h as *mut Vmar)
+        crate::vmar::register_demand_aspace(asid_h, root_h.aspace_ptr())
             .expect("SYSCALL：E3h 登记 root h");
         let _slot_g = ktest_arm_el0(VA_G, asid_g);
         let _slot_h0 = ktest_arm_el0(VA_H, asid_h);
@@ -13964,3 +13976,722 @@ fn test_f0_4() {
     }
 }
 
+/// F1-1：`AddressSpace` 与 `Vmar` 正交解耦、`vmarface` 多层子区间嵌套回收、非精确切片 `protect/unmap`
+/// 以及 `DEMAND_ROOTS` 按 `AddressSpace` 幂等登记自检。
+fn test_f1_1() {
+    use crate::aspace::alloc_asid;
+    use crate::vmar::{demand_aspace, register_demand_aspace, Perm, Vmar, VmarError};
+    use crate::vmo::{Vmo, VmoError};
+    use berry_hal_aarch64 as hal;
+    use berry_mm::va::PAGE_SIZE;
+
+    let mut vmo = Vmo::create(PAGE_SIZE * 4).expect("F1-1: create vmo");
+    vmo.commit_global(0, PAGE_SIZE * 4).expect("F1-1: commit 4p");
+    for i in 0..4usize {
+        let tag = 0xF110_0000_0000_0000u64 | (i as u64);
+        vmo.write(i * PAGE_SIZE, &tag.to_le_bytes()).expect("F1-1: write tag");
+    }
+    let mut dvmo = Vmo::create_demand(PAGE_SIZE * 4).expect("F1-1: create demand vmo");
+
+    let asid = alloc_asid();
+    let mut root = Vmar::new_root_global(asid).expect("F1-1: new_root_global");
+    root.activate();
+
+    // 1. 连续 4 页映射上的非精确中段切片 protect 与 unmap。
+    const SBASE: usize = 0x10_0000;
+    root.map_global(&mut vmo, SBASE, 0, PAGE_SIZE * 4, Perm::Rw)
+        .expect("F1-1: map 4p");
+    // 仅将中间两页 [SBASE+4K, SBASE+12K) 降权为只读 Ro。
+    root.protect(SBASE + PAGE_SIZE, PAGE_SIZE * 2, Perm::Ro)
+        .expect("F1-1: slice protect mid 2p -> Ro");
+    // 首尾两页仍可写，中间两页写必触发 Permission fault。
+    unsafe {
+        core::ptr::write_volatile(SBASE as *mut u64, 0xAAAA_0000);
+        core::ptr::write_volatile((SBASE + 3 * PAGE_SIZE) as *mut u64, 0xAAAA_0003);
+    }
+    hal::trap::arm_expected_fault(SBASE + PAGE_SIZE);
+    unsafe { core::ptr::write_volatile((SBASE + PAGE_SIZE) as *mut u64, 0xDEAD) };
+    assert!(!hal::trap::fault_armed(), "F1-1: 中段切片降权页 1 写须 fault");
+    hal::trap::arm_expected_fault(SBASE + 2 * PAGE_SIZE);
+    unsafe { core::ptr::write_volatile((SBASE + 2 * PAGE_SIZE) as *mut u64, 0xDEAD) };
+    assert!(!hal::trap::fault_armed(), "F1-1: 中段切片降权页 2 写须 fault");
+
+    // 仅解除中间两页 [SBASE+4K, SBASE+12K) 的映射。
+    root.unmap(SBASE + PAGE_SIZE, PAGE_SIZE * 2)
+        .expect("F1-1: slice unmap mid 2p");
+    hal::trap::arm_expected_fault(SBASE + PAGE_SIZE);
+    let _ = unsafe { core::ptr::read_volatile((SBASE + PAGE_SIZE) as *const u64) };
+    assert!(!hal::trap::fault_armed(), "F1-1: 中段切片 unmap 后读须 fault");
+    assert_eq!(
+        unsafe { core::ptr::read_volatile(SBASE as *const u64) },
+        0xAAAA_0000,
+        "F1-1: 首段切片保留可读"
+    );
+    assert_eq!(
+        unsafe { core::ptr::read_volatile((SBASE + 3 * PAGE_SIZE) as *const u64) },
+        0xAAAA_0003,
+        "F1-1: 尾段切片保留可读"
+    );
+    // 验证 VMO 逐页 mapcnt 精确归账：中间两页已可 decommit，首尾页仍被映射钉住拒绝 decommit。
+    assert_eq!(
+        vmo.decommit_global(0, PAGE_SIZE),
+        Err(VmoError::Mapped),
+        "F1-1: 保留首段页 mapcnt=1 须拒 decommit"
+    );
+    vmo.decommit_global(PAGE_SIZE, PAGE_SIZE * 2)
+        .expect("F1-1: 已切片 unmap 的中间两页 mapcnt=0 须放行 decommit");
+    vmo.commit_global(PAGE_SIZE, PAGE_SIZE * 2)
+        .expect("F1-1: 重新 commit 中间两页");
+    root.unmap(SBASE, PAGE_SIZE).expect("F1-1: unmap left");
+    root.unmap(SBASE + 3 * PAGE_SIZE, PAGE_SIZE).expect("F1-1: unmap right");
+    assert!(!vmo.any_mapped(), "F1-1: 全段分片 unmap 后 VMO 映射计数归零");
+
+    // 2. 三层子 Vmar 嵌套（root -> child -> grandchild）、子先于根登记 Demand 零冲突、Drop 递归释放预留。
+    const CBASE: usize = 0x30_0000;
+    let mut child = root.allocate(CBASE, PAGE_SIZE * 8).expect("F1-1: alloc child");
+    assert_eq!(child.base(), CBASE, "F1-1: child base");
+    assert_eq!(child.len(), PAGE_SIZE * 8, "F1-1: child len");
+    assert_ne!(child.vmar_id(), root.vmar_id(), "F1-1: child vmar_id 独立于 root");
+    assert_eq!(
+        child.allocate(CBASE + 1, PAGE_SIZE).err(),
+        Some(VmarError::Unaligned),
+        "F1-1: Precedence Unaligned 优先"
+    );
+    assert_eq!(
+        child.allocate(CBASE + PAGE_SIZE * 6, PAGE_SIZE * 4).err(),
+        Some(VmarError::OutOfBounds),
+        "F1-1: Precedence OutOfBounds 次之"
+    );
+    let mut grandchild = child
+        .allocate(CBASE + PAGE_SIZE * 2, PAGE_SIZE * 4)
+        .expect("F1-1: alloc grandchild");
+    assert_eq!(
+        child.map_global(&mut vmo, CBASE + PAGE_SIZE * 2, 0, PAGE_SIZE, Perm::Rw),
+        Err(VmarError::Overlap),
+        "F1-1: 父 Vmar 不得侵入孙 Vmar 预留"
+    );
+    // 孙 Vmar 先行登记按需调页根，根 Vmar 后行登记——共享同一 AddressSpace 零 OwnerConflict。
+    register_demand_aspace(grandchild.asid(), grandchild.aspace_ptr())
+        .expect("F1-1: grandchild 先登记 demand aspace");
+    register_demand_aspace(root.asid(), root.aspace_ptr())
+        .expect("F1-1: root 幂等重登 demand aspace 零冲突");
+    grandchild
+        .map_demand(&mut dvmo, CBASE + PAGE_SIZE * 2, 0, PAGE_SIZE * 2, Perm::Rw)
+        .expect("F1-1: grandchild map_demand");
+    child
+        .map_global(&mut vmo, CBASE, 0, PAGE_SIZE, Perm::Rw)
+        .expect("F1-1: child map eager");
+    let ap = demand_aspace(asid).expect("F1-1: demand_aspace 命中");
+    assert_eq!(
+        unsafe { (*ap).demand_region_at(CBASE + PAGE_SIZE * 3) },
+        Some((&mut dvmo as *mut Vmo, 0, CBASE + PAGE_SIZE * 2)),
+        "F1-1: AddressSpace 全树 O(log N) 命中孙 Vmar Demand 区间"
+    );
+    assert_eq!(
+        root.demand_region_at(CBASE + PAGE_SIZE * 3),
+        Some((&mut dvmo as *mut Vmo, 0, CBASE + PAGE_SIZE * 2)),
+        "F1-1: Vmar 透传 demand_region_at"
+    );
+    assert!(
+        unsafe { (*ap).find_leaf_at(CBASE) }.is_some(),
+        "F1-1: find_leaf_at 命中 child eager 叶"
+    );
+    grandchild
+        .supply_page_init_global(CBASE + PAGE_SIZE * 2, |v, off| {
+            v.write(off, &0xCAFE_F111_u64.to_le_bytes()).expect("F1-1: write supplied");
+        })
+        .expect("F1-1: grandchild supply_page_init_global");
+    assert_eq!(
+        unsafe { core::ptr::read_volatile((CBASE + PAGE_SIZE * 2) as *const u64) },
+        0xCAFE_F111_u64,
+        "F1-1: 孙 Vmar 供给页经共享 L1 表根可读"
+    );
+
+    // 释放 grandchild 与 child 后，内部 eager/demand 映射与父级 SubVmar 占位全部自动解除，
+    // root 立即可在原 CBASE 区间重新映射，且 dvmo/vmo 引用计数完全归零。
+    drop(grandchild);
+    drop(child);
+    assert!(!dvmo.demand_mapped() && !dvmo.any_mapped(), "F1-1: 子树销毁后 demand 钉与 mapcnt 归零");
+    assert!(!vmo.any_mapped(), "F1-1: 子树销毁后 eager mapcnt 归零");
+    root.map_global(&mut vmo, CBASE, 0, PAGE_SIZE * 4, Perm::Rw)
+        .expect("F1-1: child Drop 后父 Vmar 预留区间立即恢复可映射");
+    root.unmap(CBASE, PAGE_SIZE * 4).expect("F1-1: cleanup CBASE");
+
+    hal::activate_aspace(0, 0);
+    drop(root);
+    assert!(demand_aspace(asid).is_none(), "F1-1: AddressSpace 释放后自动注销调页槽");
+}
+
+/// F1-2：进程退出两阶段自动拆页表、L3/L2/L1 页表帧全回收、废除 `leak = true`、
+/// 父先于子退出的 `ObjRef.map_refs` 保活守恒以及 2000 轮忙核创建内联助推排水零泄漏自检。
+fn test_f1_2() {
+    use crate::handle::{
+        HandleTable, KernelObj, ObjType, RIGHT_MANAGE, RIGHT_MAP, RIGHT_READ, RIGHT_WRITE,
+    };
+    use crate::process::{ht_drain_flush, process_live, Process};
+    use crate::syscall::{
+        bootstrap_table, ktest_simulate_last_thread_exit, NR_HANDLE_CLOSE, NR_PROCESS_CREATE,
+        NR_VMAR_MAP, NR_VMAR_PROTECT, NR_VMAR_UNMAP, NR_VMO_COMMIT, NR_VMO_CREATE,
+    };
+    use crate::vmar::{Perm, Vmar};
+    use crate::vmo::Vmo;
+    use berry_mm::va::PAGE_SIZE;
+
+    while process_live() > 0 {
+        ht_drain_flush();
+    }
+
+    // 1. 预热引导表槽容量，随后记录精确物理页基线。
+    let spawn_and_exit_once = |verify_guards: bool| {
+        let mut hp: u32 = 0;
+        let mut hv: u32 = 0;
+        assert_eq!(
+            svc6(
+                NR_PROCESS_CREATE as u64,
+                0,
+                0,
+                &raw mut hp as u64,
+                &raw mut hv as u64,
+                0,
+                0,
+            ),
+            0,
+            "F1-2: sys_process_create（含触顶 PROCESS_MAX 内联助推排水）须 100% 成功零 -ENOMEM"
+        );
+        // 父持栈 VMO（2 页）+ 子私有动态堆 VMO（2 页）+ 子私有按需 VMO（1 页），
+        // 分别映射在不同 L1/L2 索引区间以强制分配多级 L1/L2/L3 页表物理帧。
+        let mut h_stack: u32 = 0;
+        let mut h_heap: u32 = 0;
+        let mut h_dem: u32 = 0;
+        assert_eq!(
+            svc6(NR_VMO_CREATE as u64, (PAGE_SIZE * 2) as u64, 0, &raw mut h_stack as u64, 0, 0, 0),
+            0
+        );
+        assert_eq!(
+            svc6(NR_VMO_COMMIT as u64, h_stack as u64, 0, (PAGE_SIZE * 2) as u64, 0, 0, 0),
+            0
+        );
+        assert_eq!(
+            svc6(NR_VMO_CREATE as u64, (PAGE_SIZE * 2) as u64, 0, &raw mut h_heap as u64, 0, 0, 0),
+            0
+        );
+        assert_eq!(
+            svc6(NR_VMO_COMMIT as u64, h_heap as u64, 0, (PAGE_SIZE * 2) as u64, 0, 0, 0),
+            0
+        );
+        assert_eq!(
+            svc6(NR_VMO_CREATE as u64, PAGE_SIZE as u64, 1, &raw mut h_dem as u64, 0, 0, 0),
+            0
+        );
+
+        let mut va_stack: u64 = 0x0020_0000;
+        let mut va_heap: u64 = 0x4020_0000; // 跨 1GiB 边界建第二棵 L2/L3 页表子树
+        let mut va_dem: u64 = 0x8020_0000;  // 跨 2GiB 边界建第三棵 L2/L3 页表子树
+        assert_eq!(
+            svc6(
+                NR_VMAR_MAP as u64,
+                hv as u64,
+                h_stack as u64,
+                0,
+                &raw mut va_stack as u64,
+                (PAGE_SIZE * 2) as u64,
+                (RIGHT_READ | RIGHT_WRITE) as u64,
+            ),
+            0,
+            "F1-2: map stack"
+        );
+        assert_eq!(
+            svc6(
+                NR_VMAR_MAP as u64,
+                hv as u64,
+                h_heap as u64,
+                0,
+                &raw mut va_heap as u64,
+                (PAGE_SIZE * 2) as u64,
+                (RIGHT_READ | RIGHT_WRITE) as u64,
+            ),
+            0,
+            "F1-2: map private heap"
+        );
+        assert_eq!(
+            svc6(
+                NR_VMAR_MAP as u64,
+                hv as u64,
+                h_dem as u64,
+                0,
+                &raw mut va_dem as u64,
+                PAGE_SIZE as u64,
+                (RIGHT_READ | RIGHT_WRITE) as u64,
+            ),
+            0,
+            "F1-2: map demand"
+        );
+
+        // 将 h_heap 与 h_dem 移入子进程私有句柄表 proc.ht（模拟子进程自身 berry-mmap / pthread 私有映射，父不持有句柄）。
+        let bt = bootstrap_table();
+        let (heap_obj, heap_r) = bt.take(h_heap).expect("F1-2: take h_heap");
+        let (dem_obj, dem_r) = bt.take(h_dem).expect("F1-2: take h_dem");
+        let (pref, _) = bt.get_raw(hp, ObjType::Process, RIGHT_MANAGE).expect("F1-2: get hp");
+        unsafe {
+            let proc = (*pref.as_ptr()).obj.as_process_mut().unwrap();
+            proc.ht.insert_ref(heap_obj, heap_r).expect("F1-2: child insert heap");
+            proc.ht.insert_ref(dem_obj, dem_r).expect("F1-2: child insert dem");
+            // 触发真实末线程退场钩子：阶段一同步拆页表，阶段二压入 HT_DRAINQ（故意不调 ht_drain_flush，压测忙核积压！）。
+            ktest_simulate_last_thread_exit(pref, 0);
+        }
+
+        if verify_guards {
+            let (vref, _) = bootstrap_table()
+                .get_raw(hv, ObjType::Vmar, 0)
+                .expect("F1-2: get hv");
+            assert!(
+                unsafe { (*vref.as_ptr()).obj.as_vmar().unwrap().aspace().is_torn_down() },
+                "F1-2: 末线程退场后 AddressSpace 必已完成阶段一 teardown"
+            );
+            // 已拆解空间拒绝任何再映射或改权（防触碰已归还 Buddy 的 l1_pa），对旧式 unmap 幂等放行。
+            let mut try_va: u64 = 0x0010_0000;
+            assert_eq!(
+                svc6(
+                    NR_VMAR_MAP as u64,
+                    hv as u64,
+                    h_stack as u64,
+                    0,
+                    &raw mut try_va as u64,
+                    PAGE_SIZE as u64,
+                    (RIGHT_READ | RIGHT_WRITE) as u64,
+                ),
+                -2,
+                "F1-2: 已 teardown 空间严禁再写入页表"
+            );
+            assert_eq!(
+                svc6(
+                    NR_VMAR_PROTECT as u64,
+                    hv as u64,
+                    (RIGHT_READ | RIGHT_WRITE) as u64,
+                    0x0020_0000,
+                    PAGE_SIZE as u64,
+                    0,
+                    0,
+                ),
+                -2,
+                "F1-2: 已 teardown 空间严禁 protect"
+            );
+            assert_eq!(
+                svc6(NR_VMAR_UNMAP as u64, hv as u64, 0x0020_0000, (PAGE_SIZE * 2) as u64, 0, 0, 0),
+                0,
+                "F1-2: 已 teardown 空间对旧收割器 unmap 幂等返 0"
+            );
+        }
+
+        // 父进程零 vmar_unmap 直接关闭栈 VMO、根 Vmar 与 Process 句柄（绝不返 -EBUSY）。
+        assert_eq!(svc4(NR_HANDLE_CLOSE as u64, h_stack as u64, 0, 0), 0, "F1-2: close stack vmo 无须先 unmap");
+        assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hv as u64, 0, 0), 0, "F1-2: close hv");
+        assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hp as u64, 0, 0), 0, "F1-2: close hp");
+    };
+
+    // 预热一轮 PROCESS_MAX(64) 并发峰值使内核 Slab 空闲链表水位达稳态，排空后读取精确帧基线。
+    spawn_and_exit_once(true);
+    for _ in 1..crate::process::PROCESS_MAX {
+        spawn_and_exit_once(false);
+    }
+    while process_live() > 0 {
+        ht_drain_flush();
+    }
+    let base_pages = crate::mm::allocated_pages();
+
+    // 连续派生并退出 2000 个携带多级页表、私有动态堆 VMO 与按需 VMO 的子进程（期间零 idle 排水，全靠创建侧触顶内联助推！）。
+    for _ in 0..2000usize {
+        spawn_and_exit_once(false);
+    }
+    while process_live() > 0 {
+        ht_drain_flush();
+    }
+    assert_eq!(
+        crate::mm::allocated_pages(),
+        base_pages,
+        "F1-2: 连续 2000 轮多级页表 + 私有动态堆/按需 VMO 子进程生灭后物理页水位必须 0 净增（0 页泄漏）"
+    );
+
+    // 2. 反向生命周期验证：父进程先于子进程退出排空句柄表（refs: 1->0），子进程存活期间
+    // ObjRef.map_refs 保活 VMO 零 UAF，子进程随后退出 teardown 时 release_map 自动归零释放全量物理页。
+    {
+        let mut parent_ht = HandleTable::new();
+        let mut shared_vmo = Vmo::create(PAGE_SIZE * 3).expect("F1-2: create shared vmo");
+        shared_vmo.commit_global(0, PAGE_SIZE * 3).expect("F1-2: commit 3p");
+        let h_vmo = parent_ht
+            .insert(KernelObj::Vmo(shared_vmo), RIGHT_MAP | RIGHT_READ | RIGHT_WRITE)
+            .expect("F1-2: parent insert vmo");
+        let child_asid = crate::aspace::alloc_asid();
+        let child_vmar = Vmar::new_root_global(child_asid).expect("F1-2: child new_root");
+        let (ttbr0, asid) = (child_vmar.ttbr0_pa(), child_vmar.asid());
+        let h_cv = parent_ht
+            .insert(KernelObj::Vmar(child_vmar), RIGHT_MAP | RIGHT_MANAGE)
+            .expect("F1-2: parent insert child vmar");
+        let (vref, _) = parent_ht.get_raw(h_cv, ObjType::Vmar, 0).unwrap();
+        let child_proc = unsafe { Process::new(vref, ttbr0, asid) };
+        let child_aspace = child_proc.aspace.clone();
+        let h_cp = parent_ht
+            .insert(KernelObj::Process(child_proc), RIGHT_MANAGE)
+            .expect("F1-2: parent insert child proc");
+        let (cp_ref, _) = parent_ht.get_raw(h_cp, ObjType::Process, 0).unwrap();
+        let (vo_ref, _) = parent_ht.get_raw(h_vmo, ObjType::Vmo, 0).unwrap();
+        unsafe {
+            // 子进程运行钉住（模拟存活中的子进程），父将 h_vmo 映入子地址空间。
+            (*cp_ref.as_ptr()).retain();
+            let cv = (*vref.as_ptr()).obj.as_vmar_mut().unwrap();
+            let vm = (*vo_ref.as_ptr()).obj.as_vmo_mut().unwrap();
+            cv.map_obj_global(vo_ref, vm, 0x20_0000, 0, PAGE_SIZE * 3, Perm::UserRw)
+                .expect("F1-2: map parent vmo into child");
+        }
+        // 父进程先退出：排空并销毁整个 parent_ht！此时子进程仍存活。
+        parent_ht.drain();
+        drop(parent_ht);
+        assert!(
+            crate::mm::allocated_pages() >= base_pages + 4,
+            "F1-2: 父表排空后存活子进程映射的 3 页 VMO 与页表帧仍由 map_refs 安全保活"
+        );
+        // 随后子进程退出：阶段一 teardown 释放 map_refs 触发 VMO 物理页归还，阶段二释放钉住。
+        child_aspace.teardown();
+        drop(child_aspace);
+        unsafe { crate::handle::ObjRef::release(cp_ref) };
+    }
+    assert_eq!(
+        crate::mm::allocated_pages(),
+        base_pages,
+        "F1-2: 父先死、子后退场景完成后全部 VMO 页与页表帧 100% 归位零泄漏"
+    );
+}
+
+/// F1-3：无环 `ChannelShared`、`Message::Drop` 在途句柄释放（1000 轮 128MiB + 已提交页 + 嵌套通道）、
+/// `SIGNAL_PEER_CLOSED` 强杀即时唤醒（<1ms）与 `syscall.rs` 边界算术溢出防护自检。
+fn test_f1_3() {
+    use crate::handle::{
+        ObjType, RIGHT_DUPLICATE, RIGHT_MANAGE, RIGHT_READ, RIGHT_SIGNAL, RIGHT_TRANSFER,
+        RIGHT_WRITE, RIGHTS_SAME, SIGNAL_PEER_CLOSED, SIGNAL_READABLE, SIGNAL_WRITABLE,
+    };
+    use crate::process::{ht_drain_flush, process_live};
+    use crate::syscall::{
+        bootstrap_table, ktest_simulate_last_thread_exit, NR_CHANNEL_CREATE, NR_CHANNEL_RECV,
+        NR_CHANNEL_SEND, NR_EVENT_CREATE, NR_HANDLE_CLOSE, NR_HANDLE_DUPLICATE, NR_OBJECT_SIGNAL,
+        NR_OBJECT_WAIT_ONE, NR_PROCESS_CREATE, NR_VMO_COMMIT, NR_VMO_CREATE, NR_VMO_READ,
+        NR_VMO_WRITE,
+    };
+    use berry_mm::va::PAGE_SIZE;
+
+    while process_live() > 0 {
+        ht_drain_flush();
+    }
+
+    // 1. 预热 1 轮稳定 Slab 空闲链后，执行 1000 轮「建通道 -> 塞入 128MiB 大 VMO + 多页已提交 VMO + 嵌套子通道共 8 句柄 -> 不调 recv 直接关双端」。
+    let churn_once = || {
+        let (mut c0, mut c1) = (0u32, 0u32);
+        let (mut sub0, mut sub1) = (0u32, 0u32);
+        assert_eq!(
+            svc4(NR_CHANNEL_CREATE as u64, 0, &raw mut c0 as u64, &raw mut c1 as u64),
+            0
+        );
+        assert_eq!(
+            svc4(NR_CHANNEL_CREATE as u64, 0, &raw mut sub0 as u64, &raw mut sub1 as u64),
+            0
+        );
+        let mut big_vmo = 0u32;
+        assert_eq!(
+            svc6(
+                NR_VMO_CREATE as u64,
+                (128 * 1024 * 1024) as u64,
+                0,
+                &raw mut big_vmo as u64,
+                0,
+                0,
+                0,
+            ),
+            0,
+            "F1-3: create 128MiB VMO"
+        );
+        assert_eq!(
+            svc6(
+                NR_VMO_COMMIT as u64,
+                big_vmo as u64,
+                0,
+                (PAGE_SIZE * 4) as u64,
+                0,
+                0,
+                0,
+            ),
+            0,
+            "F1-3: commit 4p in 128MiB VMO"
+        );
+        let mut hnds = [0u32; 8];
+        hnds[0] = big_vmo;
+        hnds[1] = sub0;
+        hnds[2] = sub1;
+        for slot in &mut hnds[3..8] {
+            let mut hv = 0u32;
+            assert_eq!(
+                svc6(NR_VMO_CREATE as u64, (PAGE_SIZE * 2) as u64, 0, &raw mut hv as u64, 0, 0, 0),
+                0
+            );
+            assert_eq!(
+                svc6(NR_VMO_COMMIT as u64, hv as u64, 0, (PAGE_SIZE * 2) as u64, 0, 0, 0),
+                0
+            );
+            *slot = hv;
+        }
+        let payload = [0xA5u8; 16];
+        assert_eq!(
+            svc6(
+                NR_CHANNEL_SEND as u64,
+                c0 as u64,
+                payload.as_ptr() as u64,
+                payload.len() as u64,
+                hnds.as_ptr() as u64,
+                8,
+                0,
+            ),
+            0,
+            "F1-3: send 8 handles (incl. 128MiB VMO + nested channel)"
+        );
+        // 零 recv 直接关闭双端：无环 ChannelShared + Message::Drop 必须自动释放全部未读消息句柄与堆缓冲。
+        assert_eq!(svc4(NR_HANDLE_CLOSE as u64, c0 as u64, 0, 0), 0);
+        assert_eq!(svc4(NR_HANDLE_CLOSE as u64, c1 as u64, 0, 0), 0);
+    };
+
+    churn_once();
+    let base_pages = crate::mm::allocated_pages();
+    for _ in 0..1000usize {
+        churn_once();
+    }
+    assert_eq!(
+        crate::mm::allocated_pages(),
+        base_pages,
+        "F1-3: 1000 轮满载 128MiB VMO 与嵌套通道未读关闭后物理页水位必须严格归零（0 页泄漏）"
+    );
+
+    // 2. duplicate 句柄计数语义、对端关闭后未读消息排空与 -EBADSTATE 状态机验证。
+    let (mut a, mut b) = (0u32, 0u32);
+    assert_eq!(svc4(NR_CHANNEL_CREATE as u64, 0, &raw mut a as u64, &raw mut b as u64), 0);
+    let mut a_dup = 0u32;
+    assert_eq!(
+        svc4(NR_HANDLE_DUPLICATE as u64, a as u64, RIGHTS_SAME, &raw mut a_dup as u64),
+        0
+    );
+    let mut carry_vmo = 0u32;
+    assert_eq!(svc6(NR_VMO_CREATE as u64, PAGE_SIZE as u64, 0, &raw mut carry_vmo as u64, 0, 0, 0), 0);
+    let msg1 = *b"hello-1!";
+    let msg2 = *b"hello-2!";
+    assert_eq!(
+        svc6(NR_CHANNEL_SEND as u64, a as u64, msg1.as_ptr() as u64, 8, &raw const carry_vmo as u64, 1, 0),
+        0
+    );
+    assert_eq!(
+        svc6(NR_CHANNEL_SEND as u64, a_dup as u64, msg2.as_ptr() as u64, 8, 0, 0, 0),
+        0
+    );
+    // 关闭首枚 a：因 a_dup 仍在册，对端 b 尚不得观测到 PEER_CLOSED。
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, a as u64, 0, 0), 0);
+    let mut obs = 0u64;
+    assert_eq!(
+        svc5(NR_OBJECT_WAIT_ONE as u64, b as u64, SIGNAL_READABLE, 0, &raw mut obs as u64),
+        0
+    );
+    assert_eq!(obs, SIGNAL_READABLE | SIGNAL_WRITABLE, "F1-3: 尚余 duplicate 句柄时不得误置 PEER_CLOSED");
+    // 关闭最后一枚 a_dup：对端立即派生 SIGNAL_PEER_CLOSED 且撤除 WRITABLE，但既有 2 条消息仍可排空。
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, a_dup as u64, 0, 0), 0);
+    assert_eq!(
+        svc5(
+            NR_OBJECT_WAIT_ONE as u64,
+            b as u64,
+            SIGNAL_READABLE | SIGNAL_PEER_CLOSED,
+            0,
+            &raw mut obs as u64,
+        ),
+        0
+    );
+    assert_eq!(obs, SIGNAL_READABLE | SIGNAL_PEER_CLOSED, "F1-3: 对端全关后置 READABLE | PEER_CLOSED");
+
+    let mut rbuf = [0u8; 16];
+    let mut rnb = 16usize;
+    let mut rhnd = [0u32; 2];
+    let mut rnh = 2usize;
+    assert_eq!(
+        svc6(
+            NR_CHANNEL_RECV as u64,
+            b as u64,
+            rbuf.as_mut_ptr() as u64,
+            &raw mut rnb as u64,
+            rhnd.as_mut_ptr() as u64,
+            &raw mut rnh as u64,
+            0,
+        ),
+        0,
+        "F1-3: 对端关闭后首条残余消息正常排空"
+    );
+    assert_eq!(&rbuf[..rnb], &msg1);
+    assert_eq!(rnh, 1);
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, rhnd[0] as u64, 0, 0), 0, "F1-3: 迁入句柄有效可关");
+
+    rnb = 16;
+    rnh = 2;
+    assert_eq!(
+        svc6(
+            NR_CHANNEL_RECV as u64,
+            b as u64,
+            rbuf.as_mut_ptr() as u64,
+            &raw mut rnb as u64,
+            rhnd.as_mut_ptr() as u64,
+            &raw mut rnh as u64,
+            0,
+        ),
+        0,
+        "F1-3: 对端关闭后次条残余消息正常排空"
+    );
+    assert_eq!(&rbuf[..rnb], &msg2);
+
+    rnb = 16;
+    rnh = 2;
+    assert_eq!(
+        svc6(
+            NR_CHANNEL_RECV as u64,
+            b as u64,
+            rbuf.as_mut_ptr() as u64,
+            &raw mut rnb as u64,
+            rhnd.as_mut_ptr() as u64,
+            &raw mut rnh as u64,
+            0,
+        ),
+        -37,
+        "F1-3: 残余消息排空后再 recv 必须返 -EBADSTATE(-37)"
+    );
+
+    // 向对端已关的 b 执行 send：必须立即返 -EBADSTATE 且调用方拟随行句柄保持完好在表。
+    let mut keep_vmo = 0u32;
+    assert_eq!(svc6(NR_VMO_CREATE as u64, PAGE_SIZE as u64, 0, &raw mut keep_vmo as u64, 0, 0, 0), 0);
+    assert_eq!(
+        svc6(
+            NR_CHANNEL_SEND as u64,
+            b as u64,
+            msg1.as_ptr() as u64,
+            8,
+            &raw const keep_vmo as u64,
+            1,
+            0,
+        ),
+        -37,
+        "F1-3: 向已关对端 send 必须返 -EBADSTATE"
+    );
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, keep_vmo as u64, 0, 0), 0, "F1-3: 失败 send 不得夺走调用方句柄");
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, b as u64, 0, 0), 0);
+
+    // 3. 服务端进程崩溃/强杀时，阻塞在 READABLE | PEER_CLOSED 上的客户端在 <1ms 内立即被唤醒。
+    {
+        let (mut cli_h, mut srv_h) = (0u32, 0u32);
+        let (mut srv_p, mut srv_v) = (0u32, 0u32);
+        assert_eq!(svc4(NR_CHANNEL_CREATE as u64, 0, &raw mut cli_h as u64, &raw mut srv_h as u64), 0);
+        assert_eq!(
+            svc6(NR_PROCESS_CREATE as u64, 0, 0, &raw mut srv_p as u64, &raw mut srv_v as u64, 0, 0),
+            0
+        );
+        let bt = bootstrap_table();
+        let (srv_end_obj, srv_end_r) = bt.take(srv_h).expect("F1-3: take srv_h");
+        let (cli_end_obj, _) = bt.get_raw(cli_h, ObjType::Channel, 0).expect("F1-3: get cli_h");
+        let (pref, _) = bt.get_raw(srv_p, ObjType::Process, RIGHT_MANAGE).expect("F1-3: get srv_p");
+        unsafe {
+            (*pref.as_ptr())
+                .obj
+                .as_process_mut()
+                .unwrap()
+                .ht
+                .insert_ref(srv_end_obj, srv_end_r)
+                .expect("F1-3: move srv_h into server process");
+        }
+        // 构造真实挂在 SLEEPQ 上的客户端等待任务，监听 cli_h 的 READABLE | PEER_CLOSED。
+        extern "C" fn f13_dummy(_: usize) -> ! {
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+        let mut waiter = berry_sched::Task::new_kernel(f13_dummy, 0, b"f13_cli");
+        waiter.wait_obj = cli_end_obj.as_ptr() as usize;
+        waiter.wait_signals = SIGNAL_READABLE | SIGNAL_PEER_CLOSED;
+        waiter.wait_deadline = u64::MAX;
+        berry_sched::sleepq_insert(&mut waiter);
+        assert!(
+            berry_sched::find_single_waiter(cli_end_obj.as_ptr() as usize, SIGNAL_PEER_CLOSED).is_some(),
+            "F1-3: 客户端等待者已入 SLEEPQ"
+        );
+
+        let t0 = berry_hal_aarch64::timer::cntvct();
+        unsafe { ktest_simulate_last_thread_exit(pref, -9) };
+        let elapsed_ns = berry_hal_aarch64::timer::ticks_to_ns(berry_hal_aarch64::timer::cntvct() - t0);
+        assert!(
+            berry_sched::find_single_waiter(cli_end_obj.as_ptr() as usize, SIGNAL_PEER_CLOSED).is_none(),
+            "F1-3: 服务端崩溃退场必须同步将客户端从 SLEEPQ 唤醒摘队"
+        );
+        assert!(
+            elapsed_ns < 1_000_000,
+            "F1-3: 服务端强杀崩溃后 PEER_CLOSED 唤醒延迟必须 < 1ms（实测 {}ns）",
+            elapsed_ns
+        );
+        // 将被唤醒入环的测试假任务干净摘出运行队列释放。
+        berry_sched::rq_unlink_kt(&mut waiter);
+        drop(waiter);
+
+        let mut cobs = 0u64;
+        assert_eq!(
+            svc5(
+                NR_OBJECT_WAIT_ONE as u64,
+                cli_h as u64,
+                SIGNAL_READABLE | SIGNAL_PEER_CLOSED,
+                0,
+                &raw mut cobs as u64,
+            ),
+            0
+        );
+        assert_eq!(cobs, SIGNAL_PEER_CLOSED, "F1-3: 客户端立即读得 SIGNAL_PEER_CLOSED");
+        assert_eq!(svc4(NR_HANDLE_CLOSE as u64, cli_h as u64, 0, 0), 0);
+        assert_eq!(svc4(NR_HANDLE_CLOSE as u64, srv_v as u64, 0, 0), 0);
+        assert_eq!(svc4(NR_HANDLE_CLOSE as u64, srv_p as u64, 0, 0), 0);
+        while process_live() > 0 {
+            ht_drain_flush();
+        }
+    }
+
+    // 4. syscall 算术边界溢出防护：u64::MAX 邻域地址/偏移与 deadline=u64::MAX 均安全返错或饱和，零 Panic。
+    let (mut oa, mut ob) = (0u32, 0u32);
+    assert_eq!(svc4(NR_CHANNEL_CREATE as u64, 0, &raw mut oa as u64, &raw mut ob as u64), 0);
+    assert_eq!(
+        svc6(NR_CHANNEL_SEND as u64, oa as u64, u64::MAX - 4, 16, 0, 0, 0),
+        -14,
+        "F1-3: access_ok_window ptr+len 回卷必须返 -EFAULT"
+    );
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, oa as u64, 0, 0), 0);
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, ob as u64, 0, 0), 0);
+
+    let mut tvmo = 0u32;
+    assert_eq!(svc6(NR_VMO_CREATE as u64, PAGE_SIZE as u64, 0, &raw mut tvmo as u64, 0, 0, 0), 0);
+    assert_eq!(svc6(NR_VMO_COMMIT as u64, tvmo as u64, 0, PAGE_SIZE as u64, 0, 0, 0), 0);
+    let mut kbuf = [0u8; 32];
+    assert_eq!(
+        svc6(NR_VMO_READ as u64, tvmo as u64, kbuf.as_mut_ptr() as u64, u64::MAX - 4, 32, 0, 0),
+        -34,
+        "F1-3: vmo_read off+pos 溢出必须安全返 -ERANGE"
+    );
+    assert_eq!(
+        svc6(NR_VMO_WRITE as u64, tvmo as u64, kbuf.as_ptr() as u64, u64::MAX - 4, 32, 0, 0),
+        -34,
+        "F1-3: vmo_write off+pos 溢出必须安全返 -ERANGE"
+    );
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, tvmo as u64, 0, 0), 0);
+
+    let mut ev = 0u32;
+    assert_eq!(svc4(NR_EVENT_CREATE as u64, 0, &raw mut ev as u64, 0), 0);
+    assert_eq!(svc4(NR_OBJECT_SIGNAL as u64, ev as u64, 0, 1u64 << 32), 0);
+    let mut eobs = 0u64;
+    assert_eq!(
+        svc5(NR_OBJECT_WAIT_ONE as u64, ev as u64, 1u64 << 32, u64::MAX, &raw mut eobs as u64),
+        0,
+        "F1-3: ns_to_vct(u64::MAX) 128 位饱和换算零溢出"
+    );
+    assert_eq!(eobs, 1u64 << 32);
+    assert_eq!(svc4(NR_HANDLE_CLOSE as u64, ev as u64, 0, 0), 0);
+}
