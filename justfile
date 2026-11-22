@@ -1395,7 +1395,27 @@ test-host:
     # live 态 91 件全表 + bcts@0..6 七件 frozen 全表 + 镜像腿族〔live/frozen
     # 双锚 ok / PR 失配拒 / manifest 缺席拒 / --manifest-name 联动〕+ floor
     # 守卫拒〔frozen = REJECT 退 2 钉序〕+ 坏件拒〕+ 突变红 x3。净增 +11
-    # = lib 5 + parity 6〔+1 组〕。独立小工作区，须显式 --target {{host}}。
+    # = lib 5 + parity 6〔+1 组〕。八刀：src/gates.rs（步③ host 门禁段
+    # 镜像 = bcts-run.sh :631-647——GATE 行消费〔read -r 三域同形：cmd 取
+    # 行余量内嵌制表符保留〕+ 逐门 bash -c 发射双流重定向 gate-$gid.log +
+    # PASS 行/拒 stderr「FAIL …日志尾 5 行」+ tail -5〔不足 5 全发·空日志
+    # 零行〕+ GATE_SUMMARY 全角分号连接〔零门禁空串〕+ 任一拒总退 1·逐门
+    # 全跑非短路〕+ parity_gates oracle 对拍 +1 组〔bash 真跑循环体逐字
+    # 驱动：过/拒/混排/零门禁/真源 bcts@6 GATE 行接管——stdout·stderr·
+    # summary·总判定四面全等〕+ 突变红 x3。净增 +17 = lib 11 + parity 6。
+    # 九刀：src/markers.rs（步④标记对拍 + 对账循环 + 步⑤结果包文本面镜像 =
+    # bcts-run.sh :655-660 assert_marker + :756-776 对账循环 + :797-840 结果
+    # 包 echo 块——纯面拆分：QEMU 回放/文件 IO 不在此刀，assert_marker 输入
+    # = 已采语料；DEMO ok 前邻非 I/TAB ok 前邻非 G〔ERE (^|[^X]) 同形——行
+    # 首/非 ASCII 前邻按字符比较〕+ 固定串 grep -qF + 对账循环〔镜像腿 bare
+    # 子面 FACE_N=N_BARE·MISSING 空格连接首项无前导·多打不算 fail〕+
+    # verdict 判定式行双形态 + 结果包文本〔frozen 四键自 META/镜像腿五键/
+    # %02d ≥100 自然十进制〕+ 尾段两行〔missing = 无〔裸〕与结果包行（无）
+    # 不同形——首跑咬出〕+ 出口码映射〕+ parity_markers oracle 对拍 +1 组
+    # 〔bash 真跑段体逐字提取驱动：逐条判定矩阵 ≥160 断言 + 对账族 + 真源
+    # markers.sh 91 件全过/单缺失恰缺该 id + 空 expect 分歧钉板〕+ 突变红
+    # x3。净增 +23 = lib 15 + parity 8。
+    # 独立小工作区，须显式 --target {{host}}。
     # Python 件不退役——CLI 对拍 oracle。
     cargo test --manifest-path tools/bctsrun/Cargo.toml --target {{host}}
     # W1 接线（SEC-02 A2 同款纪律）：berry_assemble 门禁自检——V13 组装器
