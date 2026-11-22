@@ -340,3 +340,168 @@ fn t2_toml_syntax_parity() {
     eprintln!("t2 toml syntax parity: {n} cases OK（双侧拒 + 退 2；语法域文案各自实现）");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ---- 三刀·reconcile 面 parity（tools/bcts/reconcile_t2.py oracle 真跑对拍） ----
+
+use bctsrun::reconcile_t2 as rust_reconcile;
+
+/// Python 现役件真跑（reconcile_t2.py 同参 CLI 面：tsv + 仓库根）。
+fn py_reconcile(tsv_path: &str, repo: &str) -> (String, String, Option<i32>) {
+    let o = Command::new("python3")
+        .arg(repo_root().join("tools/bcts/reconcile_t2.py"))
+        .arg(tsv_path)
+        .arg(repo)
+        .output()
+        .expect("spawn python3");
+    (
+        String::from_utf8_lossy(&o.stdout).into_owned(),
+        String::from_utf8_lossy(&o.stderr).into_owned(),
+        o.status.code(),
+    )
+}
+
+/// 真源基座 TSV：check_t2 发射面真跑产（Rust 面）。
+fn t2_tsv_of(frozen: &str) -> String {
+    let text = std::fs::read_to_string(frozen).unwrap();
+    let doc = parse_frozen_toml_t2(&text).unwrap();
+    check_t2(&doc, frozen).unwrap().join("\n") + "\n"
+}
+
+#[test]
+fn reconcile_frozen_corpus_parity() {
+    if !py_ok() {
+        eprintln!("skip: python3 absent");
+        return;
+    }
+    let home = repo_root().join("tools/bcts/frozen");
+    let dir = std::env::temp_dir().join(format!("bctsrun-recparity-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut n = 0;
+    for i in 0..=1 {
+        let frozen = home.join(format!("bcts-t2@{i}.toml"));
+        let f_str = frozen.to_str().unwrap();
+        let tsv_path = dir.join(format!("entries-t2-{i}.tsv"));
+        std::fs::write(&tsv_path, t2_tsv_of(f_str)).unwrap();
+        let repo = repo_root().to_str().unwrap().to_string();
+        let (out, err, code) = py_reconcile(tsv_path.to_str().unwrap(), &repo);
+        assert_eq!(code, Some(0), "py 应绿：{err}");
+        assert!(err.is_empty());
+        let r = rust_reconcile(&std::fs::read_to_string(&tsv_path).unwrap(), &repo).unwrap();
+        assert_eq!(r.lines.join("\n"), out.trim_end_matches('\n'), "stdout 不等：{i}");
+        assert_eq!(r.exit_code(), 0);
+        n += 1;
+    }
+    eprintln!("reconcile frozen corpus parity: {n} files OK");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn reconcile_mutant_parity() {
+    if !py_ok() {
+        eprintln!("skip: python3 absent");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("bctsrun-recmut-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    let repo = dir.to_str().unwrap().to_string();
+    // 协议 crate 源基座（op 常量表真形）
+    let src_ok = "pub const OP_A: u8 = 1;\npub const OP_B: u8 = 0x10;\npub const OP_EXTRA: u8 = 7;\n";
+    std::fs::write(dir.join("src/svc.rs"), src_ok).unwrap();
+    // 基座 TSV：两合同（一绿一断链）
+    let base_tsv = "META\t0\t31\t2\t4\tx\ty\tz\n\
+                    CONTRACT\tc1\tt\tiface1\tsrc/svc.rs\t1\ts\tcase-a\tbsh\n\
+                    OP\tc1\t1\tA\tw\n\
+                    OP\tc1\t16\tB\tw\n\
+                    CASE\tc1\tcase-a\t1\tpos\tseq\tg\ti\te\n\
+                    CASE\tc1\tcase-b\t16\tneg\treject\tg\ti\te\n\
+                    CONTRACT\tc2\tt\tiface2\tsrc/gone.rs\t1\ts\tcase-c\tbsh\n\
+                    OP\tc2\t2\tC\tw\n";
+    // (标签, TSV 变换后的内容, 期待 exit 码)——变换族覆盖错号/缺席/断链/空表/多合同
+    let cases: Vec<(&str, String, i32, &str)> = vec![
+        ("green", base_tsv.replace("OP\tc1\t16\tB", "OP\tc1\t16\tB"), 1, "差集 0"), // C 缺席于 c2 断链 → exit 1
+        ("wrong-num", base_tsv.replacen("OP\tc1\t16\tB", "OP\tc1\t17\tB", 1), 1, "错号（合同 0x11 vs crate 0x10）"),
+        ("absent", base_tsv.replacen("OP\tc1\t16\tB\tw", "OP\tc1\t16\tZZ\tw", 1), 1, "OP_ZZ 缺席"),
+        ("broken-src", base_tsv.replace("src/gone.rs", "src/svc.rs"), 1, "OP_C 缺席"),
+        ("all-green", {
+            let mut t = base_tsv.replace("src/gone.rs", "src/svc.rs");
+            t = t.replace("OP\tc2\t2\tC", "OP\tc2\t7\tEXTRA");
+            t
+        }, 0, "T2 静态对账全绿"),
+        ("empty", String::new(), 0, "T2 静态对账全绿"),
+        ("dup-const", {
+            let mut t = base_tsv.replace("src/gone.rs", "src/svc.rs");
+            t = t.replace("OP\tc2\t2\tC", "OP\tc2\t1\tA");
+            t
+        }, 0, "crate 侧多 1 op（add-only 合法不拦：OP_EXTRA）"),
+    ];
+    let mut n = 0;
+    for (tag, tsv, want_code, kw) in cases {
+        let tsv_path = dir.join(format!("m-{tag}.tsv"));
+        std::fs::write(&tsv_path, &tsv).unwrap();
+        let (out, err, code) = py_reconcile(tsv_path.to_str().unwrap(), &repo);
+        assert_eq!(code, Some(want_code), "[{tag}] py exit 应 = {want_code}（stderr: {err}）");
+        let r = rust_reconcile(&tsv, &repo).unwrap();
+        assert_eq!(r.lines.join("\n"), out.trim_end_matches('\n'), "[{tag}] stdout 不等");
+        assert_eq!(r.exit_code(), want_code, "[{tag}] rust exit 应 = {want_code}");
+        assert!(out.contains(kw) || err.contains(kw), "[{tag}] 关键词缺失：{out}{err}");
+        n += 1;
+    }
+    // 同键后写覆盖（dict 语义）+ hex 混排 + 失败行 → 独立腿（py/rust 同构断言）
+    std::fs::write(dir.join("src/dup.rs"), "pub const OP_A: u8 = 1;\npub const OP_A: u8 = 2;\n").unwrap();
+    let t = "CONTRACT\tc1\tt\tiface\tsrc/dup.rs\t1\ts\tx\tb\nOP\tc1\t2\tA\tw\n".to_string();
+    let p = dir.join("m-dupwin.tsv");
+    std::fs::write(&p, &t).unwrap();
+    let (out, err, code) = py_reconcile(p.to_str().unwrap(), &repo);
+    assert_eq!(code, Some(0));
+    let r = rust_reconcile(&t, &repo).unwrap();
+    assert_eq!(r.lines.join("\n"), out.trim_end_matches('\n'));
+    assert!(out.contains("命中 1"));
+    assert!(err.is_empty());
+    n += 1;
+    eprintln!("reconcile mutant parity: {n} cases OK");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn reconcile_scanner_edge_parity() {
+    if !py_ok() {
+        eprintln!("skip: python3 absent");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("bctsrun-recedge-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    let repo = dir.to_str().unwrap().to_string();
+    // 正则边界族：无词界 xpub 前缀/紧凑形/跨行空白/回溯失败形（0x1G·尾缺分号·
+    // hex 不足位不命中）/前导零十进制。
+    let edge_full = "xpub const OP_F: u8 = 2;\n\
+               pub const OP_G:u8=5;\n\
+               pub  const\n  OP_D : u8 = 10 ;\n\
+               pub const OP_E: u8 = 0x1G;\n\
+               pub const OP_H: u8 = 7\n\
+               pub const OP_J: u8 = 0x;\n\
+               pub const OP_L: u8 = 010;\n";
+    let edge_sane = edge_full.replace("pub const OP_L: u8 = 010;\n", "");
+    let tsv = "CONTRACT\tc1\tt\ti\tsrc/edge.rs\t1\ts\tx\tb\n\
+             OP\tc1\t2\tF\tw\nOP\tc1\t5\tG\tw\nOP\tc1\t10\tD\tw\nOP\tc1\t10\tL\tw\n".to_string();
+    let p = dir.join("edge.tsv");
+    // 面①：源含 010 前导零——py int(x, 0) ValueError traceback 退 1（真实崩溃
+    // 面，分歧注①）；镜像诚实按十进制读 → 全绿。py 侧断言崩溃形态本身。
+    std::fs::write(dir.join("src/edge.rs"), edge_full).unwrap();
+    std::fs::write(&p, &tsv).unwrap();
+    let (out, err, code) = py_reconcile(p.to_str().unwrap(), &repo);
+    assert_eq!(code, Some(1), "py 崩溃面：{out}{err}");
+    assert!(err.contains("ValueError: invalid literal for int() with base 0: '010'"), "py 崩溃签：{err}");
+    let r = rust_reconcile(&tsv, &repo).unwrap();
+    assert!(r.lines.iter().any(|l| l.contains("[c1]（i）：合同 op 表 4 项，crate 命中 4")));
+    assert_eq!(r.exit_code(), 0, "镜像诚实读十进制不崩");
+    // 面②：源剥 010、TSV 保留 L 腿——L 缺席开放缺口（退 1）+ F/G/D 命中，双侧对拍逐字全等。
+    std::fs::write(dir.join("src/edge.rs"), &edge_sane).unwrap();
+    std::fs::write(&p, &tsv).unwrap();
+    let (out2, err2, code2) = py_reconcile(p.to_str().unwrap(), &repo);
+    assert_eq!(code2, Some(1), "py 应报缺口：{err2}");
+    let r2 = rust_reconcile(&tsv, &repo).unwrap();
+    assert_eq!(r2.lines.join("\n"), out2.trim_end_matches('\n'), "stdout 不等");
+    assert!(r2.lines.iter().any(|l| l.contains("OP_L 缺席（合同 op 10）")));
+    eprintln!("reconcile scanner edge parity: 2 faces OK（崩溃面 + 逐字面）");
+    std::fs::remove_dir_all(&dir).ok();
+}

@@ -1283,9 +1283,14 @@ test-host:
     # 文件名冗余自证 + META/MARK/GATE TSV 发射（拒面文案与 Python 逐字同源
     # ——py_repr/True·False/单引号 list repr 形）。parity：仓内 bcts@0..6 七
     # 件全量 TSV 逐行对拍 + 20 变异拒面逐字对拍 + TOML 语法面六语料双侧同拒
-    # （语法域文案各自实现——分支标识对齐）。后续刀：PYEOF②③（T2 面）/
-    # PYEOF④⑤（abi level/manifest PR 对账）/ 参数面与活树清单。独立小工作区，
-    # 须显式 --target {{host}}。Python 件不退役——CLI 对拍 oracle。
+    # （语法域文案各自实现——分支标识对齐）。二刀：src/t2.rs（T2 冻结件
+    # schema 校验镜像 = tools/bcts/t2_check.py）+ parity T2 三面（两冻结件
+    # 全量 + 26 变异 + 语法面八语料）。三刀：src/reconcile.rs（T2 静态对账
+    # 镜像 = tools/bcts/reconcile_t2.py——TSV 消费 + OP_* 常量扫描对账 + 五类
+    # 覆盖行；parity 真源两冻结件 stdout 逐字对拍 + 变异族 8 腿 + 扫描器边界
+    # 双面〔崩溃面诚实处理分歧注记〕）。后续刀：PYEOF④⑤（abi level/manifest
+    # PR 对账）/ 参数面与活树清单。独立小工作区，须显式 --target {{host}}。
+    # Python 件不退役——CLI 对拍 oracle。
     cargo test --manifest-path tools/bctsrun/Cargo.toml --target {{host}}
     # W1 接线（SEC-02 A2 同款纪律）：berry_assemble 门禁自检——V13 组装器
     # （ADR #82「组装不 fork」product.toml 校验/dry-run 计划/装配反回滚门）
