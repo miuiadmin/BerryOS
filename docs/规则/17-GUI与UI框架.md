@@ -1,4 +1,4 @@
-# 14-GUI 与 UI 框架
+# 17-GUI 与 UI 框架
 
 > 一句话定位：动 berry-gfx / berry-ui / berry-room / gui-wmd / guifbd / gui-inputd / berry-launcher、普通 GUI app、专业 CanvasSurface 客户端或游戏 immersive 客户端前先读本文。执行序单一事实源 = [../GUI框架地基路线-v1.20.md](../GUI框架地基路线-v1.20.md)。
 

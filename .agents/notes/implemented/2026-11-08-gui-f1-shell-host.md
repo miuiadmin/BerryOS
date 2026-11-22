@@ -23,4 +23,4 @@ GUI8 normal 现在在五个 Native Shell 后追加 UITEST 真实运行时：第�
 ## Related
 
 - [GUI框架地基路线-v1.20.md](../../../docs/GUI框架地基路线-v1.20.md)
-- [14-GUI与UI框架.md](../../../docs/规则/14-GUI与UI框架.md)
+- [14-GUI与UI框架.md](../../../docs/规则/17-GUI与UI框架.md)

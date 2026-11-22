@@ -248,7 +248,7 @@ Berry Room surface/input/IME/a11y 能力面
 
 ```text
 docs/应用开发指南.md
-docs/规则/14-GUI与UI框架.md
+docs/规则/17-GUI与UI框架.md
 docs/规则/07-测试与冒烟.md
 docs/命令速览.md
 tools/gui8-smoke.py

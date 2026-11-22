@@ -29,5 +29,5 @@ PLAN-G0 本身不引入代码、opcode、AST 字段、SDK facade 或运行时行
 
 - [GUI架构协议完善与Rust实施计划-v1.0.md](../../../docs/GUI架构协议完善与Rust实施计划-v1.0.md)
 - [GUI框架地基路线-v1.20.md](../../../docs/GUI框架地基路线-v1.20.md)
-- [规则/14-GUI与UI框架.md](../../../docs/规则/14-GUI与UI框架.md)
+- [规则/14-GUI与UI框架.md](../../../docs/规则/17-GUI与UI框架.md)
 - [架构决策.md](../../../docs/架构决策.md) ADR #84
