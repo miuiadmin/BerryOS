@@ -1177,6 +1177,11 @@ test-host:
     # 域距离〔内积/L2²〕，全零 vec 退化无除零，host 8 测；HNSW 图与
     # FBE/VaultQueryCap 门控归 berry-vault 服务刀〔后续〕）。
     cargo test --manifest-path user/Cargo.toml -p berry-vqvec --target {{host}}
+    # ai-runtime §四.1 第二片：berry-hnsw（HNSW 图骨架——splitmix 确定性
+    # 分层指派〔位级 log16〕+ 贪心下降 + 层 0 全展开束搜〔朴素 ef 形〕
+    # 距离闭包注入与量化距离解耦，tie-break 节点号升序确定性检索，
+    # host 6 测；ef-construction 束建与多样性剪枝随后续刀）。
+    cargo test --manifest-path user/Cargo.toml -p berry-hnsw --target {{host}}
     # mkapp 门禁自检（a-3 U4：mkfat --check-fixture 同位前置——打包器门禁
     # 面此前只在 build-user 产物链上被动覆盖，门禁自身坏 = 产物链静默劣化）。
     python3 tools/mkapp.py --selftest
