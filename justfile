@@ -1384,7 +1384,18 @@ test-host:
     # 显式位/路径归一〕；parity args（bash 真跑子进程 12 拒腿 stderr +
     # 退码逐字 + 绿腿 Resolved 断言〔前缀自动识别/后写覆盖/T2 缺省解析〕
     # ——manifest 缺席拒属装载段非参数段，钉界注记归后续刀；净增 +4 = lib
-    # 3 + parity 1。独立小工作区，须显式 --target {{host}}。
+    # 3 + parity 1。七刀：src/load.rs（装载/守卫段镜像 = bcts-run.sh
+    # :566-629——步①装载〔frozen → check_t1 TSV / live → build_live_tsv〕+
+    # 计数 + 步②空集守卫〔frozen floor = META 域；live = 在册 91——frozen
+    # 态 floor 守卫在 t1_check REJECT 面先发，步② FAIL 守卫对 frozen 结构
+    # 性不可达〕+ 镜像腿装载守卫〔bare 相 ≥32 + manifest 在席 G8 文案 +
+    # PR 锚双态〔frozen = META pr / live = abi.toml level〕+ img_pr_check
+    # 对账〕+ --dry 回显全行〔AWK printf %-9s/%-10s 对齐律 + 镜像腿行〕〕
+    # + parity load（bash 真跑子进程 --dry stdout 逐行全等 + 退码全等：
+    # live 态 91 件全表 + bcts@0..6 七件 frozen 全表 + 镜像腿族〔live/frozen
+    # 双锚 ok / PR 失配拒 / manifest 缺席拒 / --manifest-name 联动〕+ floor
+    # 守卫拒〔frozen = REJECT 退 2 钉序〕+ 坏件拒〕+ 突变红 x3。净增 +11
+    # = lib 5 + parity 6〔+1 组〕。独立小工作区，须显式 --target {{host}}。
     # Python 件不退役——CLI 对拍 oracle。
     cargo test --manifest-path tools/bctsrun/Cargo.toml --target {{host}}
     # W1 接线（SEC-02 A2 同款纪律）：berry_assemble 门禁自检——V13 组装器
