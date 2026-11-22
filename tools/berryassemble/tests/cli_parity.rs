@@ -202,12 +202,12 @@ fn cli_parity_check_lite() {
         }
     }
 
-    // 面 6：让位臂（--emit+out-dir/--selftest/--sample = Rust exit 2
-    // 让位指引；Python 正常执行——单源不镜像只拍码面）。五刀后 --check、
-    // 六刀后 --dry-run 已镜像——移出让位族（--dry-run 全量对拍归
-    // plan_parity.rs 模块级 + validate_parity.rs CLI 真源拒腿）。
+    // 面 6：让位臂（--selftest/--sample = Rust exit 2 让位指引；Python
+    // 正常执行——单源不镜像只拍码面）。五刀后 --check、六刀后 --dry-run、
+    // 七刀后 --emit 已镜像——移出让位族（--emit 全量对拍归
+    // emit_parity.rs 模块级；CLI 面拒腿 = 上文用法错族「emit 缺
+    // out-dir」/「out-dir 单席」）。
     for args in [
-        vec!["--emit", "x.toml", "--out-dir", "o"],
         vec!["--selftest"],
         vec!["--sample"],
     ] {

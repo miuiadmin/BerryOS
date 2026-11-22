@@ -231,5 +231,27 @@ fn validate_parity_check() {
         assert_eq!(r.err, p.err, "坏 pr 值拒面漂移");
     }
 
+    // 腿 ⑩（七刀）：--emit 真源基座拒腿 CLI 级（计划面前置的基座面
+    // 对拍——双侧同咬仓内真基座表构建树缺席，拒面剥仓根段逐字全等；
+    // 产件面全量对拍归 emit_parity.rs 模块级 + 产件字节恒等）
+    {
+        let pkg = tmp.join("pkg10");
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(pkg.join("product.toml"), good_product()).unwrap();
+        let path = pkg.join("product.toml").display().to_string();
+        let out = tmp.join("emit-out").display().to_string();
+        let r = run(&rust_bin(), &["--emit", &path, "--out-dir", &out]);
+        let p = run(&py, &["--emit", &path, "--out-dir", &out]);
+        assert_eq!(r.rc, 1, "rust emit 基座拒：{}", r.err);
+        assert_eq!(p.rc, 1, "py emit 基座拒：{}", p.err);
+        let root = repo_root().display().to_string();
+        let re = r.err.replace(&root, "<REPO>");
+        let pe = p.err.replace(&root, "<REPO>");
+        assert!(!re.is_empty() && re == pe, "emit 基座拒面漂移\nrust: {re}\npy:   {pe}");
+        assert!(re.contains("构建树缺席"), "拒面应为构建树缺席族：{re}");
+        // 拒路径零产件（out-dir 不被建）
+        assert!(!tmp.join("emit-out").exists(), "拒路径不应产件");
+    }
+
     fs::remove_dir_all(&tmp).ok();
 }

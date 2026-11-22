@@ -181,6 +181,56 @@ pub fn build_plan(
     lines
 }
 
+/// `do_emit` 尾段（Python berry_assemble.py :1060-1074 镜像——七刀产件
+/// 面）：空 params = 零产件零目录，返回缺省零扰动行；非空 =
+/// `makedirs(<out>/etc)` 实写 `etc/boot-params.toml`
+/// （serialize_boot_params 单源）+ 返回产件行（dest 路径形 = Python
+/// `os.path.join` 直映）。IO 失败 = Err 上浮（Python 裸炸 OSError
+/// exit 1 形——bin 面同码收口，文案 py_oserror_str 单行，不镜像堆栈）。
+pub fn emit_boot_params(
+    prod: &LiteProduct,
+    out_dir: &str,
+) -> Result<String, std::io::Error> {
+    if prod.params.is_empty() {
+        return Ok("berry-assemble: emit 空 params 零产件（缺省零扰动——不产 etc/boot-params.toml，内核侧静默缺省态）".to_string());
+    }
+    let dest = std::path::Path::new(out_dir).join(BOOT_PARAMS_ENTRY);
+    // Python makedirs(dirname(dest), exist_ok=True)——已存在非目录形 = OSError。
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let blob = crate::serialize_boot_params(&params_paramvals(prod));
+    std::fs::write(&dest, &blob)?;
+    let disp = dest.display().to_string();
+    Ok(format!(
+        "berry-assemble: 产件 {disp} {}B（G5 实件投放——mkcpio 条目形：{BOOT_PARAMS_ENTRY}={disp}；读者 = 内核 bootparams 消费端〔cpio 定址查找 → eco: bootparams …〕）",
+        blob.len()
+    ))
+}
+
+/// `LiteProduct.params`（串面存储——lite.rs 二刀转换桥）→ 序列化键值
+/// 形：u32 键 parse 十进制串（词表执法后恒可达）、intent 键经 INTENTS
+/// 找回 static（值域执法 ⊆ INTENTS——不达标形不可达，缺省首档兜底）。
+pub fn params_paramvals(
+    prod: &LiteProduct,
+) -> std::collections::BTreeMap<String, crate::ParamVal> {
+    let mut out = std::collections::BTreeMap::new();
+    for (k, v) in &prod.params {
+        let val = match crate::boot_params_spec(k).map(|s| s.0) {
+            Some("u32") => crate::ParamVal::U32(v.parse().unwrap_or(0)),
+            _ => crate::ParamVal::Intent(
+                crate::INTENTS
+                    .iter()
+                    .find(|s| **s == v.as_str())
+                    .copied()
+                    .unwrap_or(crate::INTENTS[0]),
+            ),
+        };
+        out.insert(k.clone(), val);
+    }
+    out
+}
+
 /// Python bool str 形（f"{x}" 镜像——True/False 非 true/false）。
 fn py_bool(b: bool) -> &'static str {
     if b { "True" } else { "False" }

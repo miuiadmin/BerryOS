@@ -1259,9 +1259,21 @@ test-host:
     # params 双形/source 透传〔gsi 两件套真产〕/kernel_measured 真件态）
     # + validate_parity CLI 腿补（真源基座拒/装配门域界与反回滚两臂/
     # 用法错与坏 pr 值）；cli_parity 让位臂族滚新（--dry-run 移出让位族）。
-    # 独立小工作区，须显式 --target {{host}}。Python 件不退役——CLI 对拍
-    # oracle + gensourceindex --preset import 面单源（--emit 产件面仍
-    # Python 单源）。
+    # 七刀：plan.rs emit_boot_params 产件面（Python do_emit :1046 尾段
+    # 镜像——空 params 零产件零目录缺省零扰动行 / 非空 makedirs 实写
+    # <out>/etc/boot-params.toml + 产件行；params 串面存储 → 序列化键值
+    # 形转换 params_paramvals〔u32 parse 十进制串 + intent 经 INTENTS 找
+    # 回 static〕）；main.rs --emit 臂换轨（dry_run_core 共核拆分——
+    # 计划行打印 + emit 尾段；缺 --out-dir 判序前置不变）+ tests/
+    # emit_parity.rs oracle 模块级对拍（合成现场 5 腿：全席三键 params
+    # 产件字节 sha256 恒等 + 尾行剥段全等 / 空 params 零扰动双侧同构 /
+    # 深位 out-dir makedirs 递归 / 结构拒面前置 / IO 失败 out-dir 被占位
+    # 同构）+ validate_parity CLI 腿⑩（--emit 真源基座拒——双侧同咬仓内
+    # 真基座表，拒面剥仓根段逐字全等 + 拒路径零产件）；cli_parity 让位
+    # 臂族滚新（--emit 移出让位族——七刀后五模式全镜像，让位面余
+    # --selftest/--sample）。独立小工作区，须显式 --target {{host}}。
+    # Python 件不退役——CLI 对拍 oracle + gensourceindex --preset
+    # import 面单源。
     cargo test --manifest-path tools/berryassemble/Cargo.toml --target {{host}}
     # W1 接线（SEC-02 A2 同款纪律）：berry_assemble 门禁自检——V13 组装器
     # （ADR #82「组装不 fork」product.toml 校验/dry-run 计划/装配反回滚门）
