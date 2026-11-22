@@ -18,3 +18,5 @@ Status: implemented
 
 - [ai-runtime 总体设计](../../plans/ai-runtime/design.md)（契约二.2 客机面兑现；宿主侧挂账入 owner 边界队列）
 - [Tier 1 宿主直通可行性侦查](../../research/2026-11-22-ai-runtime-tier1宿主直通可行性侦查.md)（本刀即其定向件）
+
+R23 增量（同日）：环面扩展——virtio 标准三表布局（描述符条目 16B：addr/len/flags/next + DESC_F_WRITE 方向旗；avail 头 flags+idx 与槽环回 push；used 条目 id+len 布局环回读），畸形即 None；host 10 测。客机环驱动（vring 协商/DMA）归驱动刀。
