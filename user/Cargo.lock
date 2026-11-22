@@ -187,6 +187,10 @@ name = "berry-netproto"
 version = "0.2.0"
 
 [[package]]
+name = "berry-npuproto"
+version = "0.2.0"
+
+[[package]]
 name = "berry-partition"
 version = "0.2.0"
 

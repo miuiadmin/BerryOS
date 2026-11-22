@@ -1197,6 +1197,12 @@ test-host:
     # 环〔释放纯时间驱动〕，host 7 测；计时器/退避投递/耗电台账归
     # appd 与 power-thermal 接线刀）。
     cargo test --manifest-path user/Cargo.toml -p berry-wakeflood --target {{host}}
+    # ai-runtime §二 Tier 1 客机侧首刀：berry-npuproto（virtio-compute
+    # wire 编解码——config/命令描述符〔virtio-gpu 控制头同形〕/blob 页
+    # 帧表〔off 4096 对齐执法〕/完成环三态〔OK/Unsupported 降级依据/
+    # Watchdog 看门狗〕，畸形即 None 不截断，op 值镜像 berry-tensor，
+    # host 7 测；宿主 Metal 桥归 tools/berry 边界面）。
+    cargo test --manifest-path user/Cargo.toml -p berry-npuproto --target {{host}}
     # mkapp 门禁自检（a-3 U4：mkfat --check-fixture 同位前置——打包器门禁
     # 面此前只在 build-user 产物链上被动覆盖，门禁自身坏 = 产物链静默劣化）。
     python3 tools/mkapp.py --selftest

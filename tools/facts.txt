@@ -6,11 +6,11 @@
 banner_consumers=4
 bcts_floor_live=91
 design_md=41
-docs_md=764
+docs_md=765
 smoke_bare=32
 smoke_eco=52
 smoke_gui8=39
 smoke_rootfs=56
 smoke_rx=3
 stamped_designs=1
-tests_rust=3467
+tests_rust=3474
