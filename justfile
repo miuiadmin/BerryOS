@@ -1714,6 +1714,33 @@ test-host:
     # §测试原只记手动咒语）入 host 台账。独立小工作区，host 纯面零
     # 交叉编译；此前手动 cargo test 从未接线 = 面改坏无机器咬合。
     cargo test --manifest-path tools/berry/Cargo.toml --target {{host}}
+    # W1 接线（R136 判例族·「有 host 测零自动执法 = 静默腐烂」）：
+    # user/widgets/ 四独立小工作区（G3 刀 11-14 落地，26 host 测）——
+    # berry-scene-ir（声明式小组件二进制序列化 16B header+24B 定长
+    # 节点四型 + 40 节点帽 + 全验证反序列化）、berry-widgetd（WidgetGrid
+    # 4×4 网格/TimelineScheduler 过期时间线/SmartStack 同格叠放轮换）、
+    # berry-island（Spring2D 临界阻尼弹簧 ζ=1 无超调 + 四态机合法转移
+    # 表）、berry-intentd（Intent 8 型 + 路由优先级 32 帽 + 意图链
+    # ≤8 步）。非 user workspace members（空 [workspace] escape，sysnr
+    # 先例形）此前零 just/CI 接线 = 语义面改坏无机器咬合。W2 布局树
+    # 移交注所点名（接线归 owner/G3 线——W1 代接线，先例 = lkface
+    # R136 建议件/guifbd D-审计接线）。
+    cargo test --manifest-path user/widgets/scene-ir/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/widgets/widgetd/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/widgets/island/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/widgets/intentd/Cargo.toml --target {{host}}
+    # W1 接线（R136 判例族同款）：user/nfc/ + user/accessories/ 四独立
+    # 小工作区（G4 刀 15-18 落地，18 host 测）——berry-nci（NCI 协议栈
+    # 纯面：MT/GID/OID 帧 + ISO 7816 APDU + SW1/SW2 + eSE 状态机）、
+    # berry-walletd（四卡型生命周期 + 优先级出卡 + Power Reserve 断电
+    # 策略 + 余额扣费）、berry-stylus（1D 卡尔曼滤波位置/速度双通道 +
+    # 240Hz 预测 ≤4ms）、berry-uwb（ToF 测距 + PDoA 方位角 + 三边定位
+    # Cramer 2×2 含 λ 修正）。同 widgets 形零接线 = 同款静默腐烂面；
+    # W2 布局树移交注点名件（dc4fb5601）。
+    cargo test --manifest-path user/nfc/nci/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/nfc/walletd/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/accessories/stylus/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/accessories/uwb/Cargo.toml --target {{host}}
     # W1 接线（base 重写剥落重放，#304 面）：sync-public members 对账门——
     # 白名单 ⊇ workspace members 机器执法（#153/#171/#227 三连 REJECT
     # 判例族根因：新增顶层 crate 忘补白名单 = 公开仓 build 必炸）。本刀
