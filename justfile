@@ -1288,8 +1288,14 @@ test-host:
     # 全量 + 26 变异 + 语法面八语料）。三刀：src/reconcile.rs（T2 静态对账
     # 镜像 = tools/bcts/reconcile_t2.py——TSV 消费 + OP_* 常量扫描对账 + 五类
     # 覆盖行；parity 真源两冻结件 stdout 逐字对拍 + 变异族 8 腿 + 扫描器边界
-    # 双面〔崩溃面诚实处理分歧注记〕）。后续刀：PYEOF④⑤（abi level/manifest
-    # PR 对账）/ 参数面与活树清单。独立小工作区，须显式 --target {{host}}。
+    # （崩溃面诚实处理分歧注记）。四刀：src/abipr.rs（PYEOF④⑤镜像 =
+    # tools/bcts/abi_level.py + img_pr_check.py——[platform].level 读器〔值域
+    # 拒面 repr 同源：串/bool/float/None + OS Errno py repr 形〕+ manifest v1
+    # platform_revision 对账〔`item .* platform_revision=(\d{10})$` 贪心最右
+    # 位 + universal newlines 归一 + set 去重 sorted〕）；parity abipr 三面
+    # （真源 abi.toml stdout 全等 + 值域/Errno/坏 TOML 变异族 + 正则边界族
+    # 〔贪心/紧贴/双空格/CRLF/11 位回溯失败〕）。后续刀：参数面与活树清单
+    # 合成。独立小工作区，须显式 --target {{host}}。
     # Python 件不退役——CLI 对拍 oracle。
     cargo test --manifest-path tools/bctsrun/Cargo.toml --target {{host}}
     # W1 接线（SEC-02 A2 同款纪律）：berry_assemble 门禁自检——V13 组装器
