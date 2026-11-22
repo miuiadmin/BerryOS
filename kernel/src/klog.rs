@@ -104,22 +104,3 @@ macro_rules! klog {
         $crate::klog::emit($crate::klog::Level::$lvl, format_args!($($arg)+))
     };
 }
-
-// ---- W3-38 debug trace helpers（临时探针，交付前删） ----
-#[allow(dead_code)]
-pub fn dbg_trace(s: &[u8]) {
-    berry_hal_aarch64::uart_puts(s);
-}
-#[allow(dead_code)]
-pub fn dbg_hex(v: usize) {
-    let mut buf = [0u8; 10];
-    buf[0] = b'0';
-    buf[1] = b'x';
-    let mut n = v;
-    for i in (0..8).rev() {
-        let d = (n & 0xF) as u8;
-        buf[2 + i] = if d < 10 { b'0' + d } else { b'a' + d - 10 };
-        n >>= 4;
-    }
-    berry_hal_aarch64::uart_puts(&buf);
-}

@@ -1572,12 +1572,10 @@ unsafe fn release_wins(
 ) {
     for v in vds.iter().flatten() {
         // SAFETY: 与整批 retain 成对（恰释放一次）。
-        crate::klog::dbg_trace(b"[rw1509-rel]\n");
         unsafe { ObjRef::release(*v) };
     }
     for s in svs.iter().flatten() {
         // SAFETY: 与整批 retain 成对（恰释放一次）。
-        crate::klog::dbg_trace(b"[rw1513-rel]\n");
         unsafe { ObjRef::release(*s) };
     }
 }
@@ -1623,7 +1621,6 @@ fn pager_supply_common(tf: &mut TrapFrame, vh: u32, sh: u32, sel: SrcOff) -> i64
         Some(v) => v as *mut Vmo,
         None => {
             // SAFETY: 与入口 retain 成对（防御臂收尾，同唯一出口）。
-            crate::klog::dbg_trace(b"[psc1558-rel]\n");
             unsafe { ObjRef::release(vd) };
             if let Some(s) = sv {
                 unsafe { ObjRef::release(s) };
@@ -1677,7 +1674,6 @@ fn pager_supply_common(tf: &mut TrapFrame, vh: u32, sh: u32, sel: SrcOff) -> i64
         }
     };
     // SAFETY: 与入口 retain 成对（唯一出口）。
-    crate::klog::dbg_trace(b"[psc1611-rel]\n");
     unsafe { ObjRef::release(vd) };
     if let Some(s) = sv {
         unsafe { ObjRef::release(s) };

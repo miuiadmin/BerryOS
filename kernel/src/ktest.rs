@@ -551,7 +551,6 @@ fn test_syscall() {
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hchild as u64, 0, 0), 0, "SYSCALL：close 子 vmar");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hvm as u64, 0, 0), 0, "SYSCALL：close root vmar");
 
-    crate::klog::dbg_trace(b"[seg E3c]\n");
     // E3c. 登记槽注销-复用满形（G4-2 修批 P0-1 面 b——API 级；f4 意见⑤满形）：
     //      17 轮「建 root Vmar → 登记 → 反查验活 → Drop（注销）→ 反查验空」
     //      + 第 18 轮登记过——修批前 16 槽只进不出（第 17 轮起终身 -ENOMEM
@@ -671,7 +670,6 @@ fn test_syscall() {
     // SAFETY: 同上；Drop 注销收尾。
     drop(unsafe { alloc::boxed::Box::from_raw(p18) });
 
-    crate::klog::dbg_trace(b"[seg E3d]\n");
     // E3d. EL0 槽池属主过滤取（X-5 错配消耗舞修刀，dpg::el0_take_for 三态）：
     //      双窗错位——vd_b 先臂（占**低位**槽）、vd_a 后臂，take_for(a) 须跳过
     //      b 槽只取 a 的（b 槽仍 armed；老形「全局取最低位」此局必先咬 b 槽 →
@@ -768,7 +766,6 @@ fn test_syscall() {
         drop(unsafe { alloc::boxed::Box::from_raw(vmo_c as *mut Vmo) });
     }
 
-    crate::klog::dbg_trace(b"[seg E3e]\n");
     // E3e. 孤儿槽 GC（X-5 三镜头可达面：跨窗 sys_vmar_unmap 摘区间 /
     //      Vmar::Drop 注销登记 / faulter 进程被杀——armed 不随亡，老形错配
     //      烧槽即它的意外 GC，过滤取后须自持）。装配：幽灵臂（asid 永不
@@ -828,7 +825,6 @@ fn test_syscall() {
         drop(unsafe { alloc::boxed::Box::from_raw(vmo_e as *mut Vmo) });
     }
 
-    crate::klog::dbg_trace(b"[seg E3f]\n");
     // E3f. 池容量边界（EREQ_SLOTS=32，X-5 扩池 8→32）：满装 K 臂全属 vd →
     //      take_for 收最低位 → 复臂回收同号（消费即放槽活证）→ 抽干 K 臂 →
     //      PoolEmpty。溢出 convoy 的 park/rescan 面（池满 faulter 睡
@@ -911,7 +907,6 @@ fn test_syscall() {
         "SYSCALL：E3g ktest 期停顿周期累计必零（同上）");
     assert_eq!(crate::telemetry::dpg_stall_max(), 0,
         "SYSCALL：E3g ktest 期停顿峰值必零（同上）");
-    crate::klog::dbg_trace(b"[seg E3h]\n");
     // E3h. 0x24 pager_supply_mapped_table 表批面（X-6 刀① count-wins 多窗
     //      一次收货——0x23 的批形）。全路径经 svc6 真派发（EL1 表 =
     //      bootstrap 表）。参数面（n 越界 / dv:0 门败探测形 / delta 非

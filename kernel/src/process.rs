@@ -211,7 +211,6 @@ impl Process {
 impl Drop for Process {
     fn drop(&mut self) {
         // SAFETY: 构造时 retain 过；单核顺序（对象仅在 IRQ 屏蔽路径销毁）。
-        crate::klog::dbg_trace(b"[pr214-rel]\n");
         unsafe { ObjRef::release(self.vmar) };
         PROCESS_LIVE.fetch_sub(1, Ordering::Relaxed);
     }
@@ -314,7 +313,6 @@ unsafe fn drain_pinned_process(pinned: NonNull<ObjRef>) {
             proc.ht.drain();
         }
         // SAFETY: 调用方契约（独占引用，此后不再使用）。
-        crate::klog::dbg_trace(b"[pr316-rel]\n");
         ObjRef::release(pinned);
     }
 }
@@ -458,7 +456,6 @@ impl Thread {
 impl Drop for Thread {
     fn drop(&mut self) {
         // SAFETY: 构造时 retain 过；单核顺序。
-        crate::klog::dbg_trace(b"[pr459-rel]\n");
         unsafe { ObjRef::release(self.proc) };
     }
 }

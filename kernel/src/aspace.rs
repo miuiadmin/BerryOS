@@ -125,14 +125,6 @@ unsafe impl Sync for VmoRegionMeta {}
 fn release_removed_span(span: &RemovedSpan<VmoRegionMeta>) {
     // SAFETY: Vmo 本体在句柄表路径由 ObjRef.map_refs 保活，在直构测试路径由声明序保活。
     unsafe {
-    // W3-38 probe: span 释放点（vmo 裸指针 + vmo_obj 保活柄）
-    crate::klog::dbg_trace(b"[rsp v=");
-    crate::klog::dbg_hex(span.meta.vmo as usize);
-    if let Some(vo) = span.meta.vmo_obj {
-        crate::klog::dbg_trace(b" vo=");
-        crate::klog::dbg_hex(vo.as_ptr() as usize);
-    }
-    crate::klog::dbg_trace(b"]\n");
     (*span.meta.vmo).untrack_map(span.meta.vmo_off, span.len);
         if span.kind == LeafKind::Demand {
             (*span.meta.vmo).untrack_demand(span.len);
@@ -348,14 +340,6 @@ impl AddressSpace {
         // SAFETY: 特权内存屏障。
         unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_flags)) };
         vmo.track_map(vmo_offset, len);
-        // W3-38 probe: 插叶点（map 直构形）
-        crate::klog::dbg_trace(b"[lf+m v=");
-        crate::klog::dbg_hex(vmo as *mut Vmo as usize);
-        crate::klog::dbg_trace(b" va=");
-        crate::klog::dbg_hex(vaddr);
-        crate::klog::dbg_trace(b" n=");
-        crate::klog::dbg_hex(len / PAGE_SIZE);
-        crate::klog::dbg_trace(b"]\n");
         self.tree
             .lock()
             .insert_leaf(
@@ -457,18 +441,6 @@ impl AddressSpace {
                 },
             )
             .map_err(tree_err)?;
-        // W3-38 probe: 插叶点（global 形）
-        crate::klog::dbg_trace(b"[lf+g v=");
-        crate::klog::dbg_hex(vmo as *mut Vmo as usize);
-        if let Some(vo) = vmo_obj {
-            crate::klog::dbg_trace(b" vo=");
-            crate::klog::dbg_hex(vo.as_ptr() as usize);
-        }
-        crate::klog::dbg_trace(b" va=");
-        crate::klog::dbg_hex(vaddr);
-        crate::klog::dbg_trace(b" n=");
-        crate::klog::dbg_hex(len / PAGE_SIZE);
-        crate::klog::dbg_trace(b"]\n");
         Ok(vaddr)
     }
 
@@ -521,18 +493,6 @@ impl AddressSpace {
             // SAFETY: 调用方已验证 vo 为活跃 Vmo ObjRef。
             unsafe { (*vo.as_ptr()).retain_map(len / PAGE_SIZE) };
         }
-        // W3-38 probe: 插叶点（demand 形）
-        crate::klog::dbg_trace(b"[lf+d v=");
-        crate::klog::dbg_hex(vmo as *mut Vmo as usize);
-        if let Some(vo) = vmo_obj {
-            crate::klog::dbg_trace(b" vo=");
-            crate::klog::dbg_hex(vo.as_ptr() as usize);
-        }
-        crate::klog::dbg_trace(b" va=");
-        crate::klog::dbg_hex(vaddr);
-        crate::klog::dbg_trace(b" n=");
-        crate::klog::dbg_hex(len / PAGE_SIZE);
-        crate::klog::dbg_trace(b"]\n");
         Ok(vaddr)
     }
 
@@ -765,13 +725,7 @@ impl AddressSpace {
             deregister_demand_aspace(asid, self as *const AddressSpace);
         }
         let removed = self.tree.lock().drain_all();
-        crate::klog::dbg_trace(b"[td-drain n=");
-        crate::klog::dbg_hex(removed.len());
-        crate::klog::dbg_trace(b"]\n");
         for span in &removed {
-            crate::klog::dbg_trace(b"[td-sp v=");
-            crate::klog::dbg_hex(span.meta.vmo as usize);
-            crate::klog::dbg_trace(b"]\n");
             self.clear_leaves(span.start, span.len / PAGE_SIZE);
             release_removed_span(span);
         }
@@ -786,8 +740,6 @@ impl AddressSpace {
             core::mem::take(&mut *pt)
         };
         for pa in frames {
-            crate::klog::dbg_trace(b"[td-fr pa="); crate::klog::dbg_hex(pa);
-            crate::klog::dbg_trace(b"]\n");
             let _ = crate::mm::with_frames(|fa| fa.free(pa >> berry_mm::va::PAGE_SHIFT, 0));
         }
 
@@ -973,8 +925,6 @@ pub fn try_alloc_asid() -> Option<u16> {
         if rolled {
             berry_hal_aarch64::tlbshoot::roll_quiesce_arm();
         }
-        crate::klog::dbg_trace(b"[aa n="); crate::klog::dbg_hex(asid as usize);
-        crate::klog::dbg_trace(b"]\n");
         Some(asid)
     } else {
         None
@@ -993,8 +943,6 @@ pub fn free_asid(asid: u16) {
     if asid == 0 {
         return;
     }
-    crate::klog::dbg_trace(b"[fa n="); crate::klog::dbg_hex(asid as usize);
-    crate::klog::dbg_trace(b"]\n");
     asid_lock();
     // SAFETY: ASID_LOCK 临界区（互斥）。
     unsafe {

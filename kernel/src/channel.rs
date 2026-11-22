@@ -86,7 +86,6 @@ impl Drop for Message {
                 if let KernelObj::Channel(c) = &(*obj.as_ptr()).obj {
                     c.release_handle();
                 }
-                crate::klog::dbg_trace(b"[ch89-rel]\n");
                 ObjRef::release(obj);
             }
         }
@@ -339,7 +338,6 @@ impl ChannelEnd {
         drop(unread);
         if let Some(owner) = frozen {
             // SAFETY: 配平 `mark_frozen` 的 `retain`。
-            crate::klog::dbg_trace(b"[ch341-rel]\n");
             unsafe { ObjRef::release(owner) };
         }
         notify_channel_wake(peer_key);
@@ -417,7 +415,6 @@ impl ChannelEnd {
             g.frozen_owner[self.side] = None;
         }
         // SAFETY: 配平 `mark_frozen` 的 `retain`。
-        crate::klog::dbg_trace(b"[ch420-rel]\n");
         unsafe { ObjRef::release(owner) };
         true
     }

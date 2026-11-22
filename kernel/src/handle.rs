@@ -217,9 +217,6 @@ impl ObjRef {
             .fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
         debug_assert!((prev & 0xFFFF_FFFF) >= 1, "ObjRef::release refs underflow");
         if prev == 1 {
-            crate::klog::dbg_trace(b"[rel-free ");
-            crate::klog::dbg_hex(ptr.as_ptr() as usize);
-            crate::klog::dbg_trace(b"]\n");
             drop(Box::from_raw(ptr.as_ptr()));
         }
     }
@@ -228,11 +225,6 @@ impl ObjRef {
     #[inline]
     pub fn retain_map(&self, npages: usize) {
         if npages > 0 {
-            crate::klog::dbg_trace(b"[rmap+ ");
-            crate::klog::dbg_hex(self as *const Self as usize);
-            crate::klog::dbg_trace(b" n=");
-            crate::klog::dbg_hex(npages);
-            crate::klog::dbg_trace(b"]\n");
             self.state.fetch_add(
                 (npages as u64) << 32,
                 core::sync::atomic::Ordering::Relaxed,
@@ -252,16 +244,8 @@ impl ObjRef {
         let prev = (*ptr.as_ptr())
             .state
             .fetch_sub(delta, core::sync::atomic::Ordering::AcqRel);
-        crate::klog::dbg_trace(b"[rmap- ");
-        crate::klog::dbg_hex(ptr.as_ptr() as usize);
-        crate::klog::dbg_trace(b" prev=");
-        crate::klog::dbg_hex(prev as usize);
-        crate::klog::dbg_trace(b"]\n");
         debug_assert!(prev >= delta, "ObjRef::release_map underflow");
         if prev == delta {
-            crate::klog::dbg_trace(b"[map-free ");
-            crate::klog::dbg_hex(ptr.as_ptr() as usize);
-            crate::klog::dbg_trace(b"]\n");
             drop(Box::from_raw(ptr.as_ptr()));
         }
     }
@@ -304,9 +288,6 @@ impl HandleTable {
         };
         // SAFETY: 刚 into_raw 的裸指针，非空。
         let obj = unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) };
-        crate::klog::dbg_trace(b"[ins ");
-        crate::klog::dbg_hex(obj.as_ptr() as usize);
-        crate::klog::dbg_trace(b"]\n");
         self.slots[slot] = SlotState::Used { gen, obj, rights };
         Ok(encode(slot as u32, gen))
     }
@@ -337,9 +318,6 @@ impl HandleTable {
 
     /// 关闭 handle：引用 -1，若整体计数（含地址空间 `map_refs`）归零则释放对象。
     pub fn close(&mut self, h: Handle) -> Result<(), i32> {
-        crate::klog::dbg_trace(b"[cl ");
-        crate::klog::dbg_hex(h as usize);
-        crate::klog::dbg_trace(b"]\n");
         let (slot, gen, obj, _) = self.lookup_at(h)?;
         // SAFETY: 指针在表、refs ≥ 1；只读探测（close 拒绝面——只拦销毁性 close）。
         unsafe {
@@ -614,9 +592,6 @@ impl HandleTable {
         ty: ObjType,
         need: Rights,
     ) -> Result<(NonNull<ObjRef>, Rights), i32> {
-        crate::klog::dbg_trace(b"[gr ");
-        crate::klog::dbg_hex(h as usize);
-        crate::klog::dbg_trace(b"]\n");
         let (obj, rights) = self.lookup(h)?;
         // SAFETY: 槽在表、gen 匹配 → 指针有效；类型/权限只读探测。
         let r = unsafe { &*obj.as_ptr() };

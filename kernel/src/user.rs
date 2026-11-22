@@ -1844,9 +1844,6 @@ impl UserProcess {
             _leaked: 1,
             _vmos: [code_vmo as *mut Vmo, data_vmo as *mut Vmo, stack_vmo as *mut Vmo],
         }));
-        crate::klog::dbg_trace(b"[bld asid="); crate::klog::dbg_hex(asid as usize);
-        crate::klog::dbg_trace(b" tt="); crate::klog::dbg_hex(up.ttbr0_pa);
-        crate::klog::dbg_trace(b"]\n");
         up
     }
 }
