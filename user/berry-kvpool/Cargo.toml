@@ -1,0 +1,16 @@
+[package]
+name = "berry-kvpool"
+version.workspace = true
+edition = "2021"
+# ai-runtime §三.1 首刀（.agents/plans/ai-runtime/design.md 契约三.1
+# 「块级分页 KV-Cache」）：16-Token KvBlock 定容池 + 前缀 Copy-on-Write
+# 共享纯函数 crate——系统提示词/工具定义前缀跨会话共享只读块（TTFT
+# 缩短契约的语义基线），分叉即 COW、引用计数归零即回收；定容静态槽
+# （const 泛型 CAP）零分配零依赖，「解析器即产品」家族纪律；
+# `cfg_attr(not(test), no_std)`。真消费者 = airtd Paged KV-Cache 运行时
+# （后续刀——注意力 score 面与缺页重装归彼）；本刀钉池语义。host 测试
+# 经 justfile test-host 显式行跑。
+description = "BerryOS paged KV-cache block pool: 16-token blocks with prefix COW sharing and refcounting (ai-runtime contract 3.1)"
+license = "Apache-2.0"
+
+[dependencies]

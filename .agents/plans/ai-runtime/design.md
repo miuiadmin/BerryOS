@@ -43,6 +43,13 @@ flowchart TD
 2. **Tier 1（模拟器半虚拟化宿主算力直通 `berry-paravirt-npu`）**：在 `berry` 宿主模拟器下，通过共享物理页帧（`.bmod` 权重页零拷贝映射至宿主 `wgpu::Buffer`）将算子图卸载至宿主机 Apple Silicon Metal / 桌面级 GPU Compute Shader 执行，在开发机上获得百 Token/s 级原生端侧大模型实测速度。
 3. **Tier 2（真机 NPU / GPU Compute 硬件加速）**：面向移动端与 PC SoC，以持证用户态驱动封装专用 NPU 编译产物缓存与 Vulkan Compute Subgroup 管线，超时看门狗（单次算子批次 > 100ms）触发硬复位并透明降级至 Tier 0/1。
 
+建造清单（DAG 节验收面——全勾才配双戳）：
+
+- [x] Tier 0 首刀量化算子核：`user/berry-tensor`（Q4_0/Q8_0 块布局单源〔llama.cpp 兼容字节形〕+ f16 位级解码含次正规域 + 去量化 + 量化×量化整数内积点积——块内 i32、scale 后乘、f32 顺序累积的确定性基线；第二片补 `matvec_q4_q8` GEMV 行基元与 `rmsnorm`〔纯 core inv_sqrt〕；第三片补 fp16/bf16 点积〔bf16 = f32 高 16 位位域还原〕——`.bmod` 五格式中三格式算子齐）——host 19 测绿（`just test-host` berry-tensor 腿，2026-11-22）；Q4_K_M 算子、SIMD（dotprod/i8mm/AVX2）、RoPE/FlashAttn 图算子随后续刀
+- [x] Tier 1 客机侧 wire 首刀：`user/berry-npuproto`（virtio-compute wire 编解码——config/命令描述符〔virtio-gpu 控制头同形〕/blob 页帧表〔off 4096 对齐执法〕/完成环三态〔`Unsupported`=客机降级 Tier 0 依据、`Watchdog`=看门狗复位〕；op 值镜像 berry-tensor 语义单源）——host 7 测绿（`just test-host` berry-npuproto 腿，2026-11-22）
+- [ ] Tier 1 `berry-paravirt-npu` 宿主侧（宿主 wgpu/Metal Compute 桥 + `.bmod` 权重页零拷贝映射宿主 `wgpu::Buffer`——涉 tools/berry 模拟器面，owner 边界声明队列；wire 契约首钉即单向门）
+- [ ] Tier 2 真机 NPU/Vulkan Compute 子组驱动与 100ms 看门狗降级
+
 ### 三、Paged KV-Cache、结构化约束解码与优先级抢占契约
 
 1. **块级分页 KV-Cache**：`airtd` 将上下文键值缓存划分为固定 16 Token 一块的 `KvBlock` 池；系统提示词（System Prompt）与常用工具定义前缀跨会话共享只读 `KvBlock`（Copy-on-Write 前缀缓存），将首次响应延迟（TTFT）缩短 70% 以上。
@@ -51,10 +58,22 @@ flowchart TD
    - 交互级请求（如无障碍 `a11yd` 实时读屏 TTS、输入法语音转写、用户主动唤起桌面助手）享有高优队列，可在单层边界立即抢占后台记忆索引构建任务；
    - 当 [sched-rt-gfx 总体设计](../sched-rt-gfx/design.md) 检测到连续两拍合成帧超时或热管理 `berry-thermal` 进入温控限流档时，`airtd` 自动缩减批大小并下调推理线程并发度，严禁抢占 GUI 主线程与实时音频线程。
 
+建造清单（DAG 节验收面——全勾才配双戳）：
+
+- [x] 条款 1 池语义首刀：`user/berry-kvpool`（16-Token KvBlock 定容池 + 前缀 Copy-on-Write 共享〔引用计数、物理恒一份〕+ 共享尾块禁原地写执法〔满尾滚新块不属 COW 面〕+ 显式回收口）——host 9 测绿（`just test-host` berry-kvpool 腿，2026-11-22）；注意力 score 面与缺页重装归 airtd 运行时刀
+- [x] 条款 2 约束解码首刀：`user/berry-jsonmask`（JSON 字节级掩蔽器——单源转移函数 [`Masker::step`] + 256 字节探测派生合法集 [`Masker::mask`]〔一事实一归属〕+ 拒绝不改态〔采样重选即 100% 合法〕+ `can_finish` 流式终判〔裸数字无自终止符〕；R12 升深度 N〔显式容器栈 ≤ 16 层，越帽拒〕）——host 10 测绿（`just test-host` berry-jsonmask 腿，2026-11-22）；Schema 驱动编译随后续刀
+- [ ] 条款 3 硬实时让路与分级抢占（`SCHED_INTENT_COMPUTE` 受控算力带 + 单层解码步抢占检查点 + 温控降并发——涉调度面，与 §一.2 同列 owner 边界声明队列）
+
 ### 四、能力门控个人语义记忆库（`berry-vault`）契约
 
 1. **不出端加密存储**：`berry-vault` 驻留于用户凭证级加密目录 `/data/user/<uid>/vault/`（受 [security 总体设计](../security/design.md) 的 FBE CE 密钥保护，锁屏态拒绝写入敏感明文查询），内部融合 `BerryFS` 事务表与轻量分层可导航小世界图（HNSW 定点量化向量索引）。
 2. **细粒度域能力隔离**：记忆条目按来源应用与数据域（`calendar`、`messages`、`notes`、`browsing`）打标；任何第三方应用或 AI 技能欲检索跨应用记忆，必须持有用户经由 [AI 同意面设计](../../../docs/AI同意面设计-v1.0.md) 授予的对应域带时效只读 `VaultQueryCap` 句柄，且每次检索命中记录自动写入不可篡改审计账本。
+
+建造清单（DAG 节验收面——全勾才配双戳）：
+
+- [x] 量化算术首刀：`user/berry-vqvec`（每 vec 单 scale 的 i8 标量量化 + 非对称整数域距离〔内积/L2²，重建域〕+ 全零 vec 无除零退化——HNSW 定点量化向量索引的算术底座）——host 8 测绿（`just test-host` berry-vqvec 腿，2026-11-22）；第二片 `user/berry-hnsw`（图骨架：splitmix 确定性分层指派 + 贪心下降 + 距离闭包注入解耦，host 7 测；R15 升格——有界 best-first 束搜〔终止律剪枝 + ef 帽〕与 ef-construction 建图，朴素直连形已替）；R16 补多样性启发式〔`diverse_filter` 纯函数 + `insert_heuristic` 双闭包通道，host 9 测——§四.1 纯算法面全闭〕
+- [ ] HNSW 建图启发式补全（ef-construction 束建 + 邻居多样性剪枝——朴素直连形在高维稀疏数据的召回升级）
+- [ ] FBE CE 加密目录集成 + 锁屏态拒写 + 域打标与 `VaultQueryCap` 门控 + 不可篡改审计账本（涉 security/svcmgr 面——owner 边界声明队列）
 
 ## 验收标准
 

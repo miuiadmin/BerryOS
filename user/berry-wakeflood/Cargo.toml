@@ -1,0 +1,14 @@
+[package]
+name = "berry-wakeflood"
+version.workspace = true
+edition = "2021"
+# am §二.2 首刀（.agents/plans/am/design.md 契约二.2「唤醒即解冻与
+# 风暴熔断」）：Wake-Flood 熔断核纯函数 crate——每客户端固定窗分钟
+# 计数（桶环形缓冲零分配）+ 超阈熔断判定（12 次/分钟钉值）+ 退避释
+# 放判定（熔断冷却窗）。appd 计时器与台账接线归服务刀；异常耗电
+# 台账登记归 power-thermal 面。零 unsafe 零依赖零分配，
+# cfg_attr(not(test), no_std)；host 测试经 justfile test-host 行跑。
+description = "BerryOS wake-flood circuit breaker core: per-client minute-bucket counting and backoff verdicts (am contract 2.2)"
+license = "Apache-2.0"
+
+[dependencies]
