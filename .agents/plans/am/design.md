@@ -2,7 +2,7 @@
 
 Type: spec
 Status: active
-Updated: 2026-11-18
+Updated: 2026-11-22
 Version: 2.0.0
 
 一句话说明：`am`（承载于用户态生命周期与资源监督中枢 `appd` 及协议库 `berry-amproto`）是 BerryOS 的多核应用生命周期与弹性内存总管——以「失焦 3 秒自动冰封 + 资源活跃度真凭实据豁免 + LZ4/Zstd 压缩匿名页换出 + `BerryFS` 加密持久化无限墓碑 + 无感归档瘦身」五级确定性梯度，让 128MiB–8GiB 设备跑出两倍物理内存的并发驻留体感。
@@ -27,6 +27,11 @@ Version: 2.0.0
 | **L2 多核原子冰封** | 窗口完全遮挡或退后台超自适应防抖窗（默认 **3s**，内存紧缺时 **0s**）且无实证后台租约 | 限时 200ms 投递 `OnBackground` 通知刷缓冲后，持 `SuspendToken` 冻结目标 `Job` 全线程（跨 16 核 IPI 同步停于安全点，定时器与后台 CPU 唤醒归 **0**） | 锁死内存不涨，CPU 功耗归 **0** | **`< 1ms`**（关闭 Token 瞬时满血续跑） |
 | **L3 杀进程 + 持久加密墓碑** | 重度内存压力（L0–L1 仍不足）或驻留应用超上限 | 采集合成器 `0.5x` 缩略帧与导航栈结构化状态（`StateVmo ≤ 256KiB`，CRC32C 校验）经 FBE CE 密钥加密落入 `/data/system_ce/<uid>/tombstones/<app_id>.tomb`（突破旧版 RAM 8 槽上限，支持百级历史任务跨重启与跨机克隆保留！），随即调用 `0x44 job_kill` 100% 回收进程全部页表与物理帧 | **100% 释放**进程全部 RAM | `< 120ms`（合成器先亮快照帧遮盖，新进程异步重放状态树无缝衔接） |
 | **L4 冷应用无感瘦身** | 90 天未启动且磁盘空间紧张 | 移交 [pkgmgr 总体设计](../pkgmgr/design.md) 执行 `App Offload`：清退只读包体与缓存，完整保留 `/app/data` 与 L3 墓碑档 | 释放磁盘包体空间 | 点击图标流式重拉包体后原地复活 |
+
+建造清单（DAG 节验收面——全勾才配双戳）：
+
+- [x] 梯度决策核首刀：`user/berry-amgrad`（五级表单源 [`choose`]——RAM 谱系 L0<L2<L1<L3 升格 + L4 磁盘正交；实证租约豁免压制冰封与深化〔契约二.1 联动〕；防抖窗双钉值 3s/0s；无触发即 `None` 禁默认动作；「刚切后台」窗宽占位常量归 appd 配置刀）——host 8 测绿（`just test-host` berry-amgrad 腿，2026-11-22）
+- [ ] 执行机构接线：L0 弃页（`VMO_OPT_DISCARDABLE` 标记面）/L1 pager 压缩换出（`0x22 PAGER_OP_EVICT`）/L2 `SuspendToken` 冻结/L3 `0x44 job_kill` + 墓碑/L4 pkgmgr offload（涉内核 mm/pager/job 面与 appd 服务——owner 边界声明队列）
 
 ### 二、零谎言「资源活跃度实证豁免」与 IPC 唤醒防风暴契约
 

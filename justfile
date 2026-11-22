@@ -1187,6 +1187,11 @@ test-host:
     # 拒绝不改态〔100% 合法输出机制〕+ can_finish 流式终判〔裸数字态〕，
     # 深度 1 首刀，host 9 测；嵌套栈与 Schema 编译随后续刀）。
     cargo test --manifest-path user/Cargo.toml -p berry-jsonmask --target {{host}}
+    # am §一首刀：berry-amgrad（终态五级弹性处置梯度决策核——五级表
+    # 单源 choose〔RAM 谱系 L0<L2<L1<L3 升格 + L4 磁盘正交〕、租约豁
+    # 免压制冰封与深化、防抖窗双钉值 3s/0s，无触发即 None 禁默认动作，
+    # host 8 测；执行机构归内核机制与 appd 接线刀）。
+    cargo test --manifest-path user/Cargo.toml -p berry-amgrad --target {{host}}
     # mkapp 门禁自检（a-3 U4：mkfat --check-fixture 同位前置——打包器门禁
     # 面此前只在 build-user 产物链上被动覆盖，门禁自身坏 = 产物链静默劣化）。
     python3 tools/mkapp.py --selftest
