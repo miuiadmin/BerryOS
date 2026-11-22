@@ -1268,7 +1268,12 @@ fn run_rootfs_child(console: Handle) {
                 data_off,
                 data_len,
                 stdout: console,
-                stack_pages: 8,
+                // svcmgr 双崩刀 B1 主修（2026-11-22）：TCP 自验泵链实测栈需求
+                // ≈38.6KB（外链 24.4KB + parse_gw_tcp 复合帧 14.2KB——崩点
+                // = 编译器栈冲突探针第三页踩守卫页，P4 期同款死状 tcp.rs:251
+                // 注在册），8 页 32KB 差 ~6.2KB 必穿；16 页 64KB（bsh/wmd 同
+                // 档先例）留 ~25KB 裕量覆盖 listen 第二轮与 serve 常驻。
+                stack_pages: 16,
                 stdin_feed: Some(&[]),
                 stdin_handle: None,
                 args: &[],

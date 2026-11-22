@@ -2013,7 +2013,10 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     }
 
     // D3（G-eco-b）：svcmgr 是首个多页镜像（编译产物内嵌 echo/talker 平像），
-    // data/stack 上移——sp 从 `stack_top` 取，不读单页常量。
+    // data/stack 上移——sp 从 `stack_top` 取，不读单页常量。svcmgr 双崩刀
+    // 件 1 起几何：栈 4 页 [0x2b000,0x2f000) + 保护页 [0x2a000,0x2b000)
+    // （sp0=0x2f000 动态字段自动同步——user.rs `USER_STACK_PAGES` 注；下行
+    // 溢出踩保护页 = 干净 D-abort 被杀，不再静默扎进 data 页腐化控制流）。
     // 06 号修窗件 1 后半：demo-face 门值经 x1 env 旗标随 spawn 递 svcmgr
     //（[`USER_ENV_DEMO_OFF`]——门关时 svcmgr 侧 talker/echo/echo2 演示链
     // 与 'v' 稳态环让位，06 号 §4-1 idle→~0% 的 svcmgr 半边闭合；ON 态
@@ -2432,6 +2435,9 @@ pub extern "C" fn rust_main(boot_x0: usize) -> ! {
     berry_hal_aarch64::set_user_fault_exit(berry_sched::user_fault_exit);
     // cbox 黑匣子镜像槽（同上 boot 单线程窗注册；fatal 路在杀链/halt 前回调）。
     berry_hal_aarch64::set_cbox_hook(cbox::on_fault);
+    // svcmgr 崩 B 取证仪表槽（自陷点名：EL0 杀链 FAR==0x4000_0000 时读用户
+    // 栈 [SP] 打 `selftrap retsite=...`——见 user.rs `selftrap_retsite` 头注）。
+    berry_hal_aarch64::set_selftrap_probe(user::selftrap_retsite);
     // G3-1b 落点①接线：syscall 返回边界检查点（SVC 派发尾空探；sched 侧
     // 自带 irqsave 包络）。零行为变更步——注册与否不改变现役行为（探峰恒空），
     // g3-1c 域解蔽后承重。

@@ -45,11 +45,23 @@ use berry_mm::va::PAGE_SIZE;
 
 /// 用户 VA 布局：**D3（G-eco-b）起按镜像长度动态**——code @0x1000 占
 /// `ceil(len/页)*页`，data/stack 顺次上移，sp 见 `UserProcess::stack_top`。
-/// 单页程序（现存全员除 svcmgr）布局与旧三页固定布局逐位相同：data @0x2000、
-/// stack @[0x3000,0x4000)。全 UserRw、可执行（无 NX——v2 批次开，见安全设计）。
+/// 单页程序（现存全员除 svcmgr）：data @0x2000、**保护页 @[0x3000,0x4000)
+/// （不映）**、stack @[0x4000,0x8000)。全 UserRw、可执行（无 NX——v2 批次
+/// 开，见安全设计）。
 pub const USER_CODE_VA: usize = 0x1000;
 /// 单页布局的 sp0（16 对齐；多页进程改读 `UserProcess::stack_top`）。
-pub const USER_STACK_TOP: usize = 0x4000;
+/// svcmgr 双崩刀件 1 起含保护页 + 4 页栈（原 0x4000——同值双改见
+/// [`USER_STACK_PAGES`]）。
+pub const USER_STACK_TOP: usize = 0x8000;
+/// boot 进程栈页数：4 页 16KiB（svcmgr 双崩刀件 1，2026-11-22）。崩 A 机制
+/// = 主任务 4KiB 单页栈**无保护页**，下行溢出静默扎进 data 页腐化控制流
+/// （PC=0/FP=2 死状）——修 = 栈 4 页 + 其下 1 页不映保护页（下行溢出即干净
+/// D-abort 被杀，dump SP/FAR 直指祸首，不再静默腐化）。`UserProcess::build`
+/// 的全部调用方（main.rs boot 舰队 good/rogue_ptr/abuser/spawner/waiter/
+/// pinger/ponger/svcmgr）同享本几何——asm 模板硬编槽位全在 data 页
+/// （≤0x3000）与模板私有子映射，sp 绝对值无消费者（spawner 模板经 syscall
+/// 自建子进程的 [0x1000,0x3000) 几何独立于 build，不受影响）。
+pub const USER_STACK_PAGES: usize = 4;
 
 /// TLB shootdown canary 双页 data VA（S-4 4-4）：page0 = 0x4800_0000 canary
 /// 写点（warm + unmap 后写回期望 fault）/ page1 = +0x1000（VMO off 0x1000:
@@ -134,8 +146,8 @@ core::arch::global_asm!(
     "    mov  x4, #8",                  // len = 8
     "    svc  #0",
     "    cbnz x0, 3f",
-    "    movz x5, #0x2010",             // vaddr 槽 ← 请求 VA 0x5000
-    "    movz x6, #0x5000",
+    "    movz x5, #0x2010",             // vaddr 槽 ← 请求 VA 0x9000（svcmgr 双崩刀
+    "    movz x6, #0x9000",   // 栈 [0x4000,0x8000) 上移后 0x5000 落栈区——改 0x9000（栈顶上一页垫）
     "    str  x6, [x5]",
     "    movz x0, #0x16",               // vmar_map(vmar, vmo, off, *vaddr, len, rights)
     "    mov  x1, x20",
@@ -146,7 +158,7 @@ core::arch::global_asm!(
     "    mov  x6, #3",                  // rights = READ|WRITE
     "    svc  #0",
     "    cbnz x0, 3f",
-    "    movz x4, #0x5000",             // 经映射 VA 读，应见 pattern（别名一致）
+    "    movz x4, #0x9000",             // 经映射 VA 读，应见 pattern（别名一致）
     "    ldr  x5, [x4]",
     "    movz x6, #0xBEEF",
     "    movk x6, #0xC0DE, lsl #16",
@@ -191,9 +203,9 @@ core::arch::global_asm!(
     "    mov  x1, x7",
     "    svc  #0",
     "    cbnz x0, 3f",
-    "    movz x0, #0x17",               // vmar_unmap(vmar, 0x5000, 1 页)
+    "    movz x0, #0x17",               // vmar_unmap(vmar, 0x9000, 1 页)
     "    mov  x1, x20",
-    "    movz x2, #0x5000",
+    "    movz x2, #0x9000",
     "    movz x3, #0x1000",
     "    svc  #0",
     "    cbnz x0, 3f",
@@ -1760,13 +1772,20 @@ pub struct UserProcess {
 }
 
 impl UserProcess {
-    /// 建一个用户进程：root Vmar + code（页取整，单程序常 1 页）+ data/stack
-    /// 各一页（全 `UserRw`）+ 拷代码 + 写数据页魔数。栈页全零（sp0 自顶向下）。
+    /// 建一个用户进程：root Vmar + code（页取整，单程序常 1 页）+ data 一页
+    /// （全 `UserRw`）+ 拷代码 + 写数据页魔数。栈区 [`USER_STACK_PAGES`] 页
+    /// 全零（sp0 自顶向下）+ 其下一页**不映保护页**（svcmgr 双崩刀件 1——崩 A
+    /// 机制 = 单页栈静默溢出腐化控制流，保护页化 + 4 页预算后下行溢出即干净
+    /// D-abort 被杀；几何详注见 [`USER_STACK_PAGES`] 常量头注）。
     ///
-    /// **D3（G-eco-b）多页代码**：code 区按页取整后，data/stack 顺次上移
-    /// （`0x1000 + code_len` / 再上一页）——单页程序布局与 2b-4 起逐位相同
-    /// （data@0x2000、stack@[0x3000,0x4000)），asm 模板的硬编槽位零扰动；
-    /// 多页（svcmgr 编译镜像，内嵌双子程序平像）由 `stack_top` 交给调用方。
+    /// **D3（G-eco-b）多页代码**：code 区按页取整后，data/栈区顺次上移
+    /// （`0x1000 + code_len` / data 一页 / 再上一页保护页不映 / 栈区 4 页）
+    /// ——单页程序：data@0x2000、保护页@[0x3000,0x4000)、栈@[0x4000,0x8000)
+    /// （asm 模板硬编槽位全在 data 页，零扰动；`USER_STACK_TOP` 同值双改）；
+    /// 多页（svcmgr 编译镜像，内嵌双子程序平像）：映像 [0x1000,0x29000)、
+    /// data [0x29000,0x2a000)、保护页 [0x2a000,0x2b000)、栈 [0x2b000,
+    /// 0x2f000)、sp0=0x2f000——pager 钉位（入口 0x28000/栈顶 0x29000）在
+    /// 映像内不受影响；`stack_top` 交给调用方。
     /// 帽 160KiB（`USER_CODE_MAX`，A7-4 段② 64→128KiB 同步抬；CP-08
     /// 128→160KiB——PM 预拉 arm 扩容）：防调用方手滑传整段 ELF——flat
     /// 才是约定输入（elf2flat.py `--max` 同值执法）。
@@ -1776,7 +1795,10 @@ impl UserProcess {
         let code_pages = (code.len() + PAGE_SIZE - 1) / PAGE_SIZE;
         let code_len = code_pages * PAGE_SIZE;
         let data_va = USER_CODE_VA + code_len;
-        let stack_base = data_va + PAGE_SIZE;
+        // svcmgr 双崩刀件 1 栈几何：data 页之上留一页**不映** = 栈保护页，
+        // 栈区再上 [`USER_STACK_PAGES`] 页（见常量头注——崩 A 机制与影响面）。
+        let stack_base = data_va + 2 * PAGE_SIZE;
+        let stack_len = USER_STACK_PAGES * PAGE_SIZE;
         let asid = alloc_asid();
         let mut vmar = Vmar::new_root(fa, asid).expect("user: 建 root Vmar（boot 可信语境）");
 
@@ -1788,14 +1810,16 @@ impl UserProcess {
         data_vmo.commit(fa, 0, PAGE_SIZE).expect("user: commit data");
         data_vmo.write(0, &data_magic.to_le_bytes()).expect("user: 数据页魔数");
 
-        let mut stack_vmo = Vmo::create(PAGE_SIZE).expect("user: 装 stack VMO（boot 可信语境）");
-        stack_vmo.commit(fa, 0, PAGE_SIZE).expect("user: commit stack");
+        let mut stack_vmo = Vmo::create(stack_len).expect("user: 装 stack VMO（boot 可信语境）");
+        stack_vmo.commit(fa, 0, stack_len).expect("user: commit stack");
 
         vmar.map(fa, &mut code_vmo, USER_CODE_VA, 0, code_len, Perm::UserRw)
             .expect("user: map code");
         vmar.map(fa, &mut data_vmo, data_va, 0, PAGE_SIZE, Perm::UserRw)
             .expect("user: map data");
-        vmar.map(fa, &mut stack_vmo, stack_base, 0, PAGE_SIZE, Perm::UserRw)
+        // [data_va+PAGE_SIZE, stack_base) 一页刻意不映 = 栈保护页（下行栈
+        // 溢出踩它 = 干净 D-abort 被杀，不再静默扎进 data 页腐化控制流）。
+        vmar.map(fa, &mut stack_vmo, stack_base, 0, stack_len, Perm::UserRw)
             .expect("user: map stack");
         // W3-Q106：vDSO 数据页（clock_read MONOTONIC 零 syscall 化——固定
         // VA 只读映射；全局单页 VMO 共享，见 vdso.rs 权衡裁决）。
@@ -1805,11 +1829,67 @@ impl UserProcess {
         Self {
             ttbr0_pa: vmar.ttbr0_pa(),
             asid,
-            stack_top: stack_base + PAGE_SIZE,
+            stack_top: stack_base + stack_len,
             vmar: Some(vmar),
             _vmos: [code_vmo, data_vmo, stack_vmo],
         }
     }
+}
+
+/// svcmgr 崩 B 取证仪表（crash 侦查建议，2026-11-22）：EL0 自陷点名回调
+/// （`set_selftrap_probe` 注册；trap.rs 杀链 D-abort 且 FAR==0x4000_0000 时
+/// 调）。读故障帧用户栈 [SP] 与 [SP+8] 两槽的 u64——svcmgr/berry-exec 的
+/// `trap()` 蹦床把真 panic/trap 调用点压在近 SP 槽（实测帧形不一：本构建
+/// 0x6b7c/0xe434 形 [SP]=保存 LR，中段调用点则常在 [SP+8] 等偏移——双槽
+/// 同打防单槽扑空烧掉复现；`x30` 交叉锚随行）。走查 = syscall.rs
+/// `access_ok` 同款两步（值域门 `el0_span_ok` + 逐页 `walk_leaf` 叶 AP 读判
+/// ），且**walk 与 read 同 per-AS PT 锁窗**（vmar.rs walk_leaf 读者纪律——
+/// 封死他核 unmap 撤页 TOCTOU；svc_enter KERN 窗内取 PT 与 syscall copy 链
+/// 同窗先例，锁序 KERN→PT 单向无反边；PT 先释再打印，不造 PT→PRINT 边）。
+/// 打印段包 `print_lock`（dump_hdr 先例——KERN→PRINT 单向嵌套合法）。
+/// 异常上下文 IRQ 屏蔽态且异常入口不换表（本任务 TTBR0 仍在）。走查失败
+/// 打 UNREADABLE 不 panic（仪表自身永不再造异常）。
+pub(crate) unsafe extern "C" fn selftrap_retsite(sp: usize, x30: usize) {
+    let sp = sp as u64;
+    let mut vals = [0u64; 2];
+    let readable = {
+        // 审查 P2-1（2026-11-22 修复回写）：walk+read 同 PT 锁窗。
+        let _pt = crate::vmar::pt_lock_current();
+        let ok = [sp, sp + 8].iter().enumerate().all(|(i, &va)| {
+            let page_ok = berry_aokface::el0_span_ok(va, 8)
+                && berry_aokface::span_pages(va, 8).all(|p| {
+                    let l1 = berry_hal_aarch64::current_ttbr0_pa();
+                    matches!(
+                        crate::vmar::walk_leaf(l1, p as usize),
+                        Some(d) if berry_aokface::leaf_admits(d, false)
+                    )
+                });
+            if page_ok {
+                // SAFETY: [va,va+8) 覆盖页均已走查过叶 AP（含 AP=11 EL0 专属
+                // 页拒）且在 PT 锁窗内；本任务表在 TTBR0 上，直接读安全。
+                vals[i] = unsafe { core::ptr::read_volatile(va as *const u64) };
+            }
+            page_ok
+        });
+        ok
+    };
+    // 审查 P2-3（2026-11-22 修复回写）：多段打印包 print_lock（SMP 取证行
+    // 不被腰斩；dump_hdr 同款）。
+    berry_hal_aarch64::kern_lock::print_lock();
+    berry_hal_aarch64::uart_puts(b"selftrap retsite=");
+    if readable {
+        for v in vals {
+            berry_hal_aarch64::uart_puts(b"0x");
+            berry_hal_aarch64::uart_put_hex64(v);
+            berry_hal_aarch64::uart_puts(b" ");
+        }
+    } else {
+        berry_hal_aarch64::uart_puts(b"UNREADABLE");
+    }
+    berry_hal_aarch64::uart_puts(b" x30=0x");
+    berry_hal_aarch64::uart_put_hex64(x30 as u64);
+    berry_hal_aarch64::uart_puts(b"\n");
+    berry_hal_aarch64::kern_lock::print_unlock();
 }
 
 /// R-0 私助：分位**桶界保守上界**——**单源 = berry-telface::

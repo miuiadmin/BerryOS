@@ -13,9 +13,10 @@
 //!   = ABI 合法运行时条件，Err 降级不杀调用方（P5 v0.5：`process_create`
 //!   -ENOMEM，PROCESS_MAX 出帽；2026-11-22 SETTINGS 尸检约束②扩面：spawn
 //!   链 create 族 -12——env/stdin 两 `channel_pair` 站 + `process_start`
-//!   try_prepare_user 败——经 [`channel_pair_try`]/[`spawn_nomem_exit`]
-//!   全量回收后 Err，内核枯竭不再升格调用方全服务连灭；分诊旗
-//!   [`spawn_nomem_take`]）；
+//!   try_prepare_user 败 + eager 栈三站（vmo_create/commit/vmar_map，崩 B
+//!   刀扩面二：帧泄漏耗干帧池后深链必达）——经 [`channel_pair_try`]/
+//!   [`spawn_nomem_exit`] 全量回收后 Err，内核枯竭不再升格调用方全服务
+//!   连灭；分诊旗 [`spawn_nomem_take`]）；
 //! - 段幅前置 `ELF_MAP_MAX`（复盘雷 8）：巨段在几何层即降级；
 //! - 栈与映像之间隔**保护页**（`stack_va = base + len + PAGE_SIZE`）——栈用
 //!   穿 = 干净 D-abort（hexyl 栈溢出实踩，d-3c）；
@@ -553,11 +554,12 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
         // 资源耗尽 = ABI 合法运行时条件（内核 PROCESS_MAX=64 出帽返 -ENOMEM），
         // 非系统级异常——Err 降级不杀调用方（P5 v0.5 对抗审查：管道不退出段
         // 僵尸累积到帽后，trap 反杀 bsh = 交互 shell 死亡；出参在帽检前预清
-        // 0，此刻零已建对象，直接返回零清理面）。其余站点（vmo/commit/map/
-        // thread）的帧耗尽在 64 帽内不可达（64×~0.7MB ≈ 45MB ≪ 128M）仍
-        // trap——PROCESS_MAX 提高时（v2）须同步扩这条降级。约束②（2026-11-22
-        // SETTINGS 尸检）：本面同置分诊旗（Fresh——此刻零已建对象、gifts
-        // 未 send 原值都在调用方表）——调用方 eco 行按 nomem 分诊。
+        // 0，此刻零已建对象，直接返回零清理面）。约束②（2026-11-22 SETTINGS
+        // 尸检）：本面同置分诊旗（Fresh——此刻零已建对象、gifts 未 send 原值
+        // 都在调用方表）——调用方 eco 行按 nomem 分诊。扩面二（svcmgr 崩 B
+        // 刀）：在册帧泄漏（per-child 约 1.75MB 不归还）耗干 45MB 帧池后，
+        // 下方 eager 栈三站深链必达 -12——同款降级（见该处注）；映像装载
+        // 各站与 thread 站仍 trap。
         SPAWN_NOMEM.store(1, core::sync::atomic::Ordering::Relaxed);
         return Err(());
     }
@@ -750,19 +752,50 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
     // UNDEFINED）。映幅尾 = ceil 页，+1 页即页对齐保护页。
     let stack_len = stack_pages * berry_loader::PAGE_SIZE;
     let stack_va = base + len + berry_loader::PAGE_SIZE;
+    // 约束②扩面二（svcmgr 崩 B 刀，2026-11-22）：eager 装载路的栈三站
+    // （vmo_create/vmo_commit/vmar_map）-ENOMEM 降级——在册帧泄漏（per-child
+    // 约 1.75MB 不归还）把 45MB 帧池耗干后深链必达 -12，原 trap = svcmgr
+    // 命中自家自陷块自杀（崩 B）。照 process_create 先例：`spawn_nomem_exit`
+    // 全量回收 + `Err`（Fresh 形——此刻 gifts 未 send 原值都在调用方表，
+    // ht=0（thread 未建）、通道面全 0（env 对未建），回收序按 0 值自然跳过）；
+    // 非 -ENOMEM 错仍 trap（链断 loud 不变）。映像装载各站（上方 eager 段）
+    // 不在本降级面。
     let mut svmo = 0 as Handle;
-    if berry_vmo_create(stack_len, 0, &mut svmo) != 0 || svmo == 0 {
+    let s = berry_vmo_create(stack_len, 0, &mut svmo);
+    if s == BERRY_ERR_NO_MEMORY {
+        return spawn_nomem_exit(
+            hp, hv, 0, 0, &wins, nwin, stack_va, stack_len, mmio_geo, 0, 0, None, false,
+        );
+    }
+    if s != 0 || svmo == 0 {
         trap();
     }
-    if berry_vmo_commit(svmo, 0, stack_len) != 0 {
+    let s = berry_vmo_commit(svmo, 0, stack_len);
+    if s == BERRY_ERR_NO_MEMORY {
+        return spawn_nomem_exit(
+            hp, hv, 0, svmo, &wins, nwin, stack_va, stack_len, mmio_geo, 0, 0, None, false,
+        );
+    }
+    if s != 0 {
         trap();
     }
     let mut saddr = stack_va as usize;
-    if berry_vmar_map(hv, 0, svmo, 0, &mut saddr, stack_len as usize, RIGHT_READ | RIGHT_WRITE)
-        != 0
-        || saddr != stack_va as usize
-    {
-        trap();
+    let s = berry_vmar_map(
+        hv,
+        0,
+        svmo,
+        0,
+        &mut saddr,
+        stack_len as usize,
+        RIGHT_READ | RIGHT_WRITE,
+    );
+    if s == BERRY_ERR_NO_MEMORY {
+        return spawn_nomem_exit(
+            hp, hv, 0, svmo, &wins, nwin, stack_va, stack_len, mmio_geo, 0, 0, None, false,
+        );
+    }
+    if s != 0 || saddr != stack_va as usize {
+        trap(); // v1 无重排：回写须 == 请求基址
     }
     // —— MMIO 物理窗口（P6 A-2；GUI-1 起 VA 参数化）：boot 授能的 MMIO VMO
     //    （virtio 窗 / fb 窗同字段面）映到 [`SpawnSpec::mmio_va`]（高带定值；
