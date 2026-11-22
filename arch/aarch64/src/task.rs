@@ -137,11 +137,14 @@ impl TaskContext {
     ///
     /// 首次 `switch` 进它时：`ret` 跳 [`user_entry_trampoline`]，后者设
     /// `ELR_EL1 = entry_va`、`SPSR_EL1 = EL0t`（0——DAIF 全解蔽，用户态可被 timer
-    /// 抢占）、`SP_EL0 = sp0_va`、`x0 = arg`、`x1 = arg1`，`eret` 降到 EL0 跳用户
+    /// 抢占）、`SP_EL0 = sp0_va`、`x0 = arg`、`x1 = arg1`、`x2..x5 = tls`，`eret` 降到 EL0 跳用户
     /// 入口。参向量同 [`TaskContext::new_kernel`] trick：`x19=entry_va`、
     /// `x20=arg`、`x21=sp0_va`、`x22=arg1`（06 号修窗件 1 后半：x1 = boot env
     /// 旗标面——`arg1` 经 r[3] 递入，trampoline `mov x1, x22` 落位；既有
-    /// 单参消费者〔EL0 process_start 等〕恒 0，零漂移）。
+    /// 单参消费者〔EL0 process_start 等〕恒 0，零漂移）、`x23..x26 = tls` 四元组
+    ///（appspawn TLS 寄存器协议刀 2026-11-22：装载侧 PT_TLS
+    /// 〔vaddr/filesz/memsz/align〕经 r[4..7] 递入 trampoline 落 x2..x5——crt0
+    /// 直读装配 TLS、`__ehdr_start` 走查退役；filesz==0 && memsz==0 = 无 TLS 哨兵）。
     ///
     /// EL0 运行期间 SP_EL1 恒留本任务内核栈（eret 前的栈位）——用户态异常/IRQ 入口
     /// （向量 0x400/0x480）硬件强制 SPsel=1，落到的正是该栈，`save_frame_el0` 直接可用。
@@ -154,6 +157,7 @@ impl TaskContext {
         entry_va: usize,
         arg: usize,
         arg1: usize,
+        tls: [usize; 4],
         sp0_va: usize,
         kstack_top: usize,
     ) -> TaskContext {
@@ -164,6 +168,10 @@ impl TaskContext {
         ctx.r[1] = arg as u64; // x20 = arg
         ctx.r[2] = sp0_va as u64; // x21 = 用户 sp_el0
         ctx.r[3] = arg1 as u64; // x22 = arg1（env 旗标——06 号修窗件 1 后半）
+        ctx.r[4] = tls[0] as u64; // x23 = TLS vaddr（装载侧协议）
+        ctx.r[5] = tls[1] as u64; // x24 = TLS filesz
+        ctx.r[6] = tls[2] as u64; // x25 = TLS memsz
+        ctx.r[7] = tls[3] as u64; // x26 = TLS align
         ctx.lr = user_entry_trampoline as *const () as usize as u64; // x30 = trampoline
         ctx.sp = kstack_top as u64;
         ctx.fp_needed = true; // P3-5：EL0 可能用 FP——出生即全量档
@@ -330,6 +338,10 @@ global_asm!(
     // 原子落地，窗口消灭。
     "    mov x0, x20",           // 用户入口第一参（eret 不动 GP 寄存器）
     "    mov x1, x22",           // 用户入口第二参（boot env 旗标——06 号修窗件 1 后半；单参消费者恒 0）
+    "    mov x2, x23",           // TLS vaddr（装载侧协议 2026-11-22——x2..x5 四元组）
+    "    mov x3, x24",           // TLS filesz（哨兵 = filesz==0 && memsz==0）
+    "    mov x4, x25",           // TLS memsz
+    "    mov x5, x26",           // TLS align
     "    msr sp_el0, x21",       // 用户栈顶
     "    msr elr_el1, x19",      // 用户入口 PC
     "    msr spsr_el1, xzr",     // EL0t、DAIF 全解蔽

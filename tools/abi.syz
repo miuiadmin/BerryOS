@@ -148,7 +148,7 @@ pager_supply_mapped_table(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 i
 # **进程 / 线程**
 # 0x31 process_create（v1）——建进程 + 出 root Vmar（双出参；job v1 恒 0）
 process_create(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
-# 0x32 process_start（v1）——启动首线程（entry/sp；bootstrap = 迁入子进程表的首能力 handle，子入口 x0 收到子表新值）
+# 0x32 process_start（v1）——启动首线程（entry/sp；bootstrap = 迁入子进程表的首能力 handle，子入口 x0 收到子表新值；第 6 参 tls_desc = 装载侧 TLS 四元组描述符指针（2026-11-22 add-only），null=缺席，经子入口 x2..x5 递 crt0）
 process_start(a1 int64, a2 int64, a3 int64, a4 int64, a5 int64, a6 int64)
 # 0x33 process_exit（v1）——退出
 #   note: Plan B v0.5 落地：真退出（不返——`exit_current_with` 经退出钩子 drain+回收）。

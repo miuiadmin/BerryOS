@@ -1065,7 +1065,7 @@ pub fn spawn_user(entry_va: usize, arg: usize, sp0_va: usize, name: &'static [u8
     // 折 -ENOMEM（3b3 H2——原 Task 装配内嵌 vec!/Box::new，OOM 直接 abort）。
     // 返回的任务指针 boot 手搭场景不消费（无 Process 钉住——UserProcess 裸表
     // 形态），丢弃即可。
-    try_spawn_user(entry_va, arg, 0, sp0_va, name, ttbr0, asid, proc_tag, 0, 0, false)
+    try_spawn_user(entry_va, arg, 0, [0; 4], sp0_va, name, ttbr0, asid, proc_tag, 0, 0, false)
         .expect("spawn_user：用户任务装配（boot 可信语境）");
 }
 
@@ -1075,7 +1075,7 @@ pub fn spawn_user(entry_va: usize, arg: usize, sp0_va: usize, name: &'static [u8
 /// crate（[`crate`] 边界外——语义层 `USER_ENV_*` 常量镜像）。
 pub fn spawn_user_env(entry_va: usize, arg: usize, env: usize, sp0_va: usize,
                       name: &'static [u8], ttbr0: usize, asid: u16, proc_tag: usize) {
-    try_spawn_user(entry_va, arg, env, sp0_va, name, ttbr0, asid, proc_tag, 0, 0, false)
+    try_spawn_user(entry_va, arg, env, [0; 4], sp0_va, name, ttbr0, asid, proc_tag, 0, 0, false)
         .expect("spawn_user_env：用户任务装配（boot 可信语境）");
 }
 
@@ -1088,10 +1088,10 @@ pub fn spawn_user_env(entry_va: usize, arg: usize, env: usize, sp0_va: usize,
 /// 钉住字段；crate 边界纪律同 `proc_tag`）。返回时**尚未入环**——入环
 /// 拆至 [`enqueue_prepared_user`]（F-E1/S-6：SMP 下入环后即可被对核偷取，
 /// 调用侧簿记须先完成）；指针即 `&'static mut Task` 的地址（Box::leak）。
-pub fn try_prepare_user(entry_va: usize, arg: usize, arg1: usize, sp0_va: usize,
+pub fn try_prepare_user(entry_va: usize, arg: usize, arg1: usize, tls: [usize; 4], sp0_va: usize,
                          name: &'static [u8], ttbr0: usize, asid: u16, proc_tag: usize,
                          pinned: usize, thread_key: usize, spread: bool) -> Option<usize> {
-    let task = Task::try_new_user_with_as(entry_va, arg, arg1, sp0_va, name, ttbr0, asid, proc_tag)?;
+    let task = Task::try_new_user_with_as(entry_va, arg, arg1, tls, sp0_va, name, ttbr0, asid, proc_tag)?;
     // SAFETY: CURRENT 已由 init 设好；allocator 已就绪；IRQ 屏蔽态。
     let task: &'static mut Task = alloc::boxed::Box::leak(task);
     // F-E1 / S-6 SMP：pinned/thread_key/spread 在 enqueue 前写入。SMP 下
@@ -1116,11 +1116,11 @@ pub unsafe fn enqueue_prepared_user(task_ptr: usize) {
     unsafe { enqueue_with_kick(&mut *task, cpu) };
 }
 
-pub fn try_spawn_user(entry_va: usize, arg: usize, arg1: usize, sp0_va: usize,
+pub fn try_spawn_user(entry_va: usize, arg: usize, arg1: usize, tls: [usize; 4], sp0_va: usize,
                       name: &'static [u8], ttbr0: usize, asid: u16, proc_tag: usize,
                       pinned: usize, thread_key: usize, spread: bool) -> Option<usize> {
     let task_ptr = try_prepare_user(
-        entry_va, arg, arg1, sp0_va, name, ttbr0, asid, proc_tag,
+        entry_va, arg, arg1, tls, sp0_va, name, ttbr0, asid, proc_tag,
         pinned, thread_key, spread,
     )?;
     // SAFETY: prepare 返回尚未入环；本 wrapper 无调用侧额外簿记。

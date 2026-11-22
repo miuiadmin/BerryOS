@@ -435,6 +435,20 @@ pub struct ElfHead {
     /// 文件侧下界 = max(file_off + filesz)：cpio 条目 data_len 须 ≥ 此值
     /// （泵送前一次性验明，不给截断留到半程）。
     pub file_len_min: u64,
+    /// 首 PT_TLS 四元组（appspawn TLS 寄存器协议刀 2026-11-22）：装载侧
+    /// 单源提取——`spawn_rootfs_elf` 经 `process_start` x6 描述符递内核、
+    /// 子入口 x2..x5 落值，crt0 直读装配（`__ehdr_start` 自走查退役——
+    /// X-4e 失败类灭绝）。`None` = 无 PT_TLS（等价哨兵缺席）。
+    pub tls: Option<TlsSeg>,
+}
+
+/// PT_TLS 模板四元组（字段序 = 描述符序 = 入口 x2..x5 序）。
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub struct TlsSeg {
+    pub vaddr: u64,
+    pub filesz: u64,
+    pub memsz: u64,
+    pub align: u64,
 }
 
 impl ElfHead {
@@ -493,8 +507,24 @@ pub fn elf_head(head: &[u8], file_len: u64) -> Result<ElfHead, LoadError> {
     let mut image_min = u64::MAX;
     let mut image_max_end = 0u64;
     let mut file_len_min = 0u64;
+    let mut tls: Option<TlsSeg> = None; // 首 PT_TLS 胜（appspawn TLS 寄存器协议刀）
     for i in 0..phnum {
         let p = &head[phoff + i * 56..phoff + (i + 1) * 56];
+        if rd_u32(p, 0) == 7 && tls.is_none() {
+            // PT_TLS（同 ELF64 phdr 布局：vaddr@16/filesz@32/memsz@40/align@48）。
+            // 界检镜像 PT_LOAD 口径（vaddr 顶界 + filesz ≤ memsz + 溢出拒）——
+            // 描述符把 crt0 模板拷贝引向野地址的面在装载端拦下。
+            let v = rd_u64(p, 16);
+            let fsz = rd_u64(p, 32);
+            let msz = rd_u64(p, 40);
+            let al = rd_u64(p, 48);
+            let vend = v.checked_add(msz).ok_or(LoadError::BadSegment)?;
+            if (fsz > msz) || vend > USER_TOP {
+                return Err(LoadError::BadSegment);
+            }
+            tls = Some(TlsSeg { vaddr: v, filesz: fsz, memsz: msz, align: al });
+            continue;
+        }
         if rd_u32(p, 0) != 1 {
             continue; // 非 PT_LOAD
         }
@@ -529,7 +559,7 @@ pub fn elf_head(head: &[u8], file_len: u64) -> Result<ElfHead, LoadError> {
     if entry < image_min || entry >= image_max_end {
         return Err(LoadError::BadField); // 入口在映像外 = 跳飞死，装载端拦
     }
-    Ok(ElfHead { entry, segs, count, image_min, image_span, file_len_min })
+    Ok(ElfHead { entry, segs, count, image_min, image_span, file_len_min, tls })
 }
 
 // ==================== ELF64 引导视图（V-0b 刀 2：BerryBoot 装载几何） ====================
@@ -1188,6 +1218,60 @@ mod tests {
         assert_eq!(h.segments()[0].memsz, p.segments()[0].memsz);
         assert_eq!(h.segments()[0].filesz as usize, p.segments()[0].data.len());
         assert_eq!(h.file_len_min as usize, f.len());
+    }
+
+    // ---- appspawn TLS 寄存器协议刀（2026-11-22）：elf_head 首 PT_TLS 提取 ----
+
+    /// PT_TLS phdr（56B 全字段——测试 helper `phdr` 不写 align，TLS 面要）。
+    fn phdr_tls(vaddr: u64, filesz: u64, memsz: u64, align: u64) -> Vec<u8> {
+        let mut p = phdr(7, 0, vaddr, filesz, memsz);
+        p[48..56].copy_from_slice(&align.to_le_bytes()); // p_align
+        p
+    }
+
+    #[test]
+    fn elf_head_extracts_first_ptls() {
+        // appdemo 真形态浓缩：LOAD@0x1000 + PT_TLS filesz=0/memsz=0x18。
+        let mut ph = phdr(1, 0x1000, 0x1000, 0x5000, 0x5000);
+        ph.extend_from_slice(&phdr_tls(0x6d640, 0, 0x18, 0x10));
+        ph.extend_from_slice(&phdr_tls(0x999000, 8, 8, 8)); // 第二段：首段胜
+        let mut head = ehdr(64, 3, &ph, 2, 183);
+        head[24..32].copy_from_slice(&0x1000u64.to_le_bytes()); // entry 入映像
+        let h = elf_head(&head, 0x6000).unwrap();
+        assert_eq!(
+            h.tls,
+            Some(TlsSeg { vaddr: 0x6d640, filesz: 0, memsz: 0x18, align: 0x10 })
+        );
+        // PT_TLS 不入段表/不扰装载几何。
+        assert_eq!(h.segments().len(), 1);
+        assert_eq!(h.image_min, 0x1000);
+    }
+
+    #[test]
+    fn elf_head_ptls_absent_is_none() {
+        // 无 PT_TLS（none 平像/裸族）：None = 缺席哨兵（x6 null 路径）。
+        let p = phdr(1, 0, 0x1000, 0x80, 0x3000);
+        let mut head = ehdr(64, 1, &p, 2, 183);
+        head[24..32].copy_from_slice(&0x1000u64.to_le_bytes());
+        let h = elf_head(&head, 0x80).unwrap();
+        assert_eq!(h.tls, None);
+    }
+
+    #[test]
+    fn elf_head_ptls_geometry_gate() {
+        // filesz > memsz / vaddr+memsz 越 USER_TOP：BadSegment（与 tlsscan
+        // F3 v2 对拍——python/rust 双份算术义务面）。
+        let mut ph = phdr(1, 0x1000, 0x1000, 0x5000, 0x5000);
+        ph.extend_from_slice(&phdr_tls(0x300000, 100, 50, 8));
+        let mut head = ehdr(64, 2, &ph, 2, 183);
+        head[24..32].copy_from_slice(&0x1000u64.to_le_bytes());
+        assert!(matches!(elf_head(&head, 0x6000), Err(LoadError::BadSegment)));
+
+        let mut ph = phdr(1, 0x1000, 0x1000, 0x5000, 0x5000);
+        ph.extend_from_slice(&phdr_tls(1 << 39, 0, 16, 8)); // vaddr 恰 USER_TOP
+        let mut head = ehdr(64, 2, &ph, 2, 183);
+        head[24..32].copy_from_slice(&0x1000u64.to_le_bytes());
+        assert!(matches!(elf_head(&head, 0x6000), Err(LoadError::BadSegment)));
     }
 
     #[test]

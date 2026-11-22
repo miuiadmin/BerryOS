@@ -936,7 +936,28 @@ pub fn spawn_rootfs_elf(h_rootfs: Handle, spec: &SpawnSpec) -> Result<ChildHandl
     // env/gifts 已 send（句柄随消息迁移，由通道两端收口）、bootstrap 经
     // 内核失败回滚「值可变语义存活」（close 或 -EBADF，best-effort 吞之
     // ——残余账归内核刀实验设计）。其余非 0 错仍 trap（链断 loud 不变）。
-    let st = berry_process_start(hp, ht, h.entry as usize, saddr + stack_len as usize, env_c);
+    //
+    // appspawn TLS 寄存器协议刀（2026-11-22）：`elf_head` 提取的首 PT_TLS
+    // 四元组经 x6 描述符递内核——子入口 x2..x5 落值、crt0 直读装配 TLS
+    //（`__ehdr_start` 自走查退役，X-4e 失败类灭绝）。`h.tls` 无（none
+    // 平像/无 PT_TLS 族）传 null = 缺席（内核 x2..x5 落 0 哨兵）。
+    let tls_desc: [u64; 4] = match h.tls {
+        Some(t) => [t.vaddr, t.filesz, t.memsz, t.align],
+        None => [0; 4],
+    };
+    let tls_ptr = if h.tls.is_some() {
+        tls_desc.as_ptr()
+    } else {
+        core::ptr::null()
+    };
+    let st = berry_process_start(
+        hp,
+        ht,
+        h.entry as usize,
+        saddr + stack_len as usize,
+        env_c,
+        tls_ptr,
+    );
     if st == BERRY_ERR_NO_MEMORY {
         return spawn_nomem_exit(
             hp, hv, ht, svmo, &wins, nwin, stack_va, stack_len, mmio_geo, env_s, env_c,

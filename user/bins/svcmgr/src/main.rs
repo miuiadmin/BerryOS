@@ -725,7 +725,7 @@ fn spawn_child(image: &[u8], bootstrap: Handle) {
     if berry_thread_create(hp, 0, &mut ht) != 0 || ht == 0 {
         trap();
     }
-    if berry_process_start(hp, ht, CHILD_ENTRY, CHILD_SP, bootstrap) != 0 {
+    if berry_process_start(hp, ht, CHILD_ENTRY, CHILD_SP, bootstrap, core::ptr::null()) != 0 {
         trap();
     }
     if berry_handle_close(bootstrap) != BERRY_ERR_BAD_HANDLE {
@@ -3664,7 +3664,7 @@ fn thr_selftest(console: Handle) {
         eco_note(console, b"thr dup");
         return;
     }
-    if berry_process_start(hp, ht, THR_ENTRY, THR_SP, boot) != 0 {
+    if berry_process_start(hp, ht, THR_ENTRY, THR_SP, boot, core::ptr::null()) != 0 {
         eco_note(console, b"thr start");
         return;
     }
@@ -3868,7 +3868,7 @@ fn dpg_selftest(console: Handle) {
     }
     // 零句柄形态：bootstrap=0（dpgp 不建线程不碰对象，x0=0）。**X-2 起
     // 本测走第二入口 dpgi_start（0x2000）**——_start 主径留给其余消费面。
-    if berry_process_start(hp, ht, DPGI_ENTRY, DPG_SP, 0) != 0 {
+    if berry_process_start(hp, ht, DPGI_ENTRY, DPG_SP, 0, core::ptr::null()) != 0 {
         eco_note(console, b"dpg start");
         return;
     }
@@ -4025,7 +4025,7 @@ fn dpg_storm(console: Handle) {
             eco_note(console, b"dpgs tc");
             return;
         }
-        if berry_process_start(hps[i], hts[i], DPG_ENTRY, DPG_SP, 0) != 0 {
+        if berry_process_start(hps[i], hts[i], DPG_ENTRY, DPG_SP, 0, core::ptr::null()) != 0 {
             eco_note(console, b"dpgs start");
             return;
         }
@@ -4112,7 +4112,7 @@ fn dpgn_spawn(iv: Handle, dv: Handle) -> Option<(Handle, Handle, Handle)> {
     if berry_thread_create(hp, 0, &mut ht) != 0 || ht == 0 {
         return None;
     }
-    if berry_process_start(hp, ht, DPG_ENTRY, DPG_SP, 0) != 0 {
+    if berry_process_start(hp, ht, DPG_ENTRY, DPG_SP, 0, core::ptr::null()) != 0 {
         return None;
     }
     Some((hp, hv, ht))
@@ -4484,7 +4484,7 @@ fn dpg_bench(console: Handle) {
         eco_note(console, b"dpgb tc");
         return;
     }
-    if berry_process_start(hp, ht, DPG_ENTRY, DPG_SP, hev) != 0 {
+    if berry_process_start(hp, ht, DPG_ENTRY, DPG_SP, hev, core::ptr::null()) != 0 {
         eco_note(console, b"dpgb ps");
         return;
     }
@@ -4623,7 +4623,7 @@ fn dpg_foot_spawn(
     if berry_thread_create(hp_hv.0, 0, &mut ht_htw.0) != 0 || ht_htw.0 == 0 {
         return false;
     }
-    if berry_process_start(hp_hv.0, ht_htw.0, DPG_ENTRY, DPG_SP, hev) != 0 {
+    if berry_process_start(hp_hv.0, ht_htw.0, DPG_ENTRY, DPG_SP, hev, core::ptr::null()) != 0 {
         return false;
     }
     if berry_thread_create(hp_hv.0, 0, &mut ht_htw.1) != 0 || ht_htw.1 == 0 {
@@ -5190,7 +5190,7 @@ fn dpgf_wave<const N: usize>(iv: Handle, sv: Handle, dv: Handle) -> Option<u8> {
             return Some(1);
         }
         if i % 2 == 0 {
-            if berry_process_start(hps[i], hts[i], DPG_ENTRY, DPG_SP, 0) != 0 {
+            if berry_process_start(hps[i], hts[i], DPG_ENTRY, DPG_SP, 0, core::ptr::null()) != 0 {
                 return Some(1);
             }
         } else {
@@ -5203,7 +5203,7 @@ fn dpgf_wave<const N: usize>(iv: Handle, sv: Handle, dv: Handle) -> Option<u8> {
             if berry_event_create(0, &mut hev) != 0 || hev == 0 {
                 return Some(1);
             }
-            if berry_process_start(hps[i], hts[i], DPG_ENTRY, DPG_SP, hev) != 0 {
+            if berry_process_start(hps[i], hts[i], DPG_ENTRY, DPG_SP, hev, core::ptr::null()) != 0 {
                 return Some(1);
             }
             if berry_thread_create(hps[i], 0, &mut hts2[i]) != 0 || hts2[i] == 0 {

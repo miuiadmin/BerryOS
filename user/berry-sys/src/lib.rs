@@ -391,6 +391,10 @@ pub extern "C" fn berry_process_create(
 
 /// bootstrap 非 0 时从调用者表 take 迁入子表（原值立即 -EBADF），子入口
 /// `x0` = 子表内新 handle 值。
+///
+/// `tls_desc`（appspawn TLS 寄存器协议刀 2026-11-22）：指向四 u64 TLS
+/// 描述符（vaddr/filesz/memsz/align——装载侧从 ELF 首 PT_TLS 解析）或
+/// null（缺席）。内核界检拷入后经子入口 x2..x5 递 crt0 装配 TLS。
 #[no_mangle]
 pub extern "C" fn berry_process_start(
     process: Handle,
@@ -398,6 +402,7 @@ pub extern "C" fn berry_process_start(
     entry: usize,
     sp: usize,
     bootstrap: Handle,
+    tls_desc: *const u64,
 ) -> Status {
     unsafe {
         sys(
@@ -407,7 +412,7 @@ pub extern "C" fn berry_process_start(
             entry,
             sp,
             bootstrap as usize,
-            0,
+            tls_desc as usize,
         )
     }
 }

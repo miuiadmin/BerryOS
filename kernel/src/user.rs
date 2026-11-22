@@ -418,12 +418,15 @@ core::arch::global_asm!(
     "    cbnz x0, 3f",
     "    ldr  x19, [x3]",               // ht
     "    cbz  x19, 3f",
-    "    movz x0, #0x32",               // process_start(hp, ht, entry=0x1000, sp=0x3000, end1)
+    "    movz x0, #0x32",               // process_start(hp, ht, entry=0x1000, sp=0x3000, end1, tls_desc=0)
     "    mov  x1, x16",
     "    mov  x2, x19",
     "    movz x3, #0x1000",             // 子入口 = 映进的代码页
     "    movz x4, #0x3000",             // 子 sp0 = 映射顶（栈向下长，首写 0x2FF8）
     "    mov  x5, x22",                 // bootstrap = end1（channel 端点迁入子表，子 x0 收到）
+    "    mov  x6, xzr",                 // x6 tls_desc = 0（appspawn TLS 寄存器协议刀 2026-11-22：
+                                       //  新参在此前未定义——垃圾值会被内核当指针界检拒；
+                                       //  本族 none 平像无 TLS，哨兵缺席即正解）
     "    svc  #0",
     "    cbnz x0, 3f",
     "    movz x0, #0x01",               // 迁移后发送方必须失去：close(x22) → -EBADF

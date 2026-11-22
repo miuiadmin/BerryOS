@@ -19,10 +19,14 @@ docs/T-1实施设计草案-v1.0.md；崩因背景见 docs/法证-TLS原位方案
      会被引爆——无任意阈值。
   F2 .tdata 文件字节含指向 TLS 窗 [p_vaddr, p_vaddr+memsz) 的 u64 自指针
      （实测零基线 0/38——拷贝式迁移后镜像原位指针即悬垂直址，出现即 FAIL）。
-  F3 ELF 头在映像内 = exec 族（链接基 ≥0x200000）须 ∃ PT_LOAD p_offset==0
-     （X-4e 判例：手写 PHDRS 缺 FILEHDR PHDRS → 头排出所有段 →
-     __ehdr_start=0 → find_ptls 胎死；0x1000 平像族豁免——装载不读
-     PT_LOAD 且无 crt0 解引用，首日三误伤面非真雷）。
+  F3 PT_TLS 装载侧可提取（appspawn TLS 寄存器协议刀 2026-11-22 改写）：
+     crt0 不再自走 ehdr（__ehdr_start 走查退役——X-4e 失败类灭绝），PT_TLS
+     四元组由 berry-loader elf_head 首窗单源提取经 process_start x6 递子
+     入口 x2..x5。镜像装载侧提取门（对拍 berry-loader elf_head 新面）：
+     ① phdr 表在装载首窗内（phoff+phnum*56 ≤ 4096——出窗 = elf_head
+     Truncated 拒载，或 PT_TLS 静默不可见）；② filesz ≤ memsz；③
+     vaddr+memsz 不溢出且 ≤ USER_TOP。旧「ELF 头在段内/exec 族/0x1000
+     平像豁免」条款整体退役——布局无关（任意链接布局下协议恒成立）。
 
 **python/rust 双份算术（义务注记）**：TLS_ARENA_CAP 与 tls_place 放置算术
 逐行镜像 `user/berry-tls/src/lib.rs`（消费方 = berry-libc crt0 的
@@ -96,6 +100,9 @@ class Elf:
             raise ValueError("ehdr 截断")
         (self.phoff,) = struct.unpack_from("<Q", blob, 0x20)
         (phentsize, phnum) = struct.unpack_from("<HH", blob, 0x36)
+        self.e_phoff = self.phoff
+        self.e_phnum = phnum
+        self.e_phentsize = phentsize
         self.phdrs = []
         for i in range(phnum):
             p = self.phoff + i * phentsize
@@ -143,21 +150,20 @@ def check_elf(name: str, blob: bytes) -> list:
     except ValueError as e:
         return [f"{name}: 非可解析 ELF64 LE（{e}）"]
     fails = []
-    # F3：ELF 头在映像内（X-4e 判例）——仅对 PT_LOAD 驱动的 exec 族（链接基
-    # ≥0x200000）生效。0x1000 = USER_CODE_VA 平像族（kernel/src/user.rs
-    # UserProcess::build 约定 flat 输入，装载不读 PT_LOAD；且裸族无 crt0/
-    # find_ptls 解引用链）双保险不踩杀链——F3 首日拦 hello/policydemo/
-    # SETTINGS!settings 三件即此族误伤，非真雷。手写 PHDRS 缺 FILEHDR
-    # PHDRS 时 lld 把头排出所有段 → __ehdr_start 解析为 0 → crt0 find_ptls
-    # 读 [0+0x20]（e_phoff）胎死——find_ptls 无论有无 PT_TLS 都先走头。
-    EXEC_LINK_BASE = 0x200000  # exec 族链接基（bsh/stdhello/dpgx 同值）
-    loads = [p for p in elf.phdrs if p["type"] == PT_LOAD]
-    if loads and min(p["vaddr"] for p in loads) >= EXEC_LINK_BASE and not any(
-        p["offset"] == 0 for p in loads
-    ):
+    # F3（v2——appspawn TLS 寄存器协议刀 2026-11-22）：PT_TLS 装载侧可提取。
+    # crt0 的 __ehdr_start 自走查已退役（X-4e 失败类灭绝——运行期 PT_TLS
+    # 唯一真源 = berry-loader elf_head 首窗提取，经 process_start x6 递
+    # 子入口 x2..x5）。本门镜像装载侧提取约束（对拍 elf_head 新面）：
+    # ① phdr 表在首窗（出窗 = elf_head Truncated 拒载 / PT_TLS 静默不可见
+    # → std bin 静默失去 TLS）；②③ 几何界检（filesz ≤ memsz、vaddr+memsz
+    # ≤ USER_TOP）。布局无关——旧 exec 族/0x1000 平像豁免条款退役。
+    LOADER_FIRST_WIN = 4096  # berry-exec spawn_rootfs_elf 的 ELF_WIN 首窗
+    USER_TOP = 1 << 39  # berry-loader 同值（对拍锚点）
+    phend = elf.e_phoff + elf.e_phnum * 56
+    if phend > LOADER_FIRST_WIN:
         fails.append(
-            f"{name}: F3 ELF 头不在任何 PT_LOAD（无 p_offset==0 段）——"
-            "__ehdr_start 将解析为 0，crt0 find_ptls 胎死（X-4e）"
+            f"{name}: F3 phdr 表出装载首窗（phend={phend} > {LOADER_FIRST_WIN}）——"
+            "elf_head Truncated 拒载或 PT_TLS 静默不可见（装载侧协议刀）"
         )
     tls = elf.ptls()
     if tls is None:
@@ -165,6 +171,11 @@ def check_elf(name: str, blob: bytes) -> list:
     vaddr, filesz, memsz, align = (
         tls["vaddr"], tls["filesz"], tls["memsz"], tls["align"],
     )
+    if filesz > memsz or vaddr + memsz > USER_TOP:
+        fails.append(
+            f"{name}: F3 PT_TLS 几何过界 filesz={filesz} memsz={memsz} "
+            f"vaddr={vaddr:#x}（装载侧 elf_head BadSegment 同口径）"
+        )
     # F1：放置可行性（python 镜像，base=0 = worst case，见模块头注）。
     if tls_place(0, TLS_ARENA_CAP, filesz, memsz, align) is None:
         fails.append(
@@ -367,20 +378,31 @@ def selftest() -> int:
     bad += expect("F1 align32 4065 溢 FAIL",
                   bool(check_elf("t", tls_elf(0x300000, 0, 4065, 32))), True)
     bad += expect("F1 无 PT_TLS 免疫", check_elf("t", mk_elf([mk_phdr(PT_LOAD, 0x1000, 0x100, 0x100, 0x1000)])), [])
-    # F3：ELF 头在映像内（X-4e——dpgx 断链脚本实雷同形：LOAD off=0x1000）。
-    bad += expect("F3 头段外 FAIL",
-                  bool(check_elf("t", mk_elf([mk_phdr(PT_LOAD, 0x200000, 0x100, 0x100,
-                                                       0x1000, offset=0x1000)]))),
-                  True)
-    bad += expect("F3 头段内过",
+    # F3 v2（装载侧协议刀 2026-11-22）：布局无关——无头 exec 形/0x1000 平像
+    # 形都不再拦（运行期不读 ehdr）；负例 = PT_TLS 几何过界 + phdr 出首窗。
+    bad += expect("F3 v2 无头无 TLS 过（协议族）",
+                  check_elf("t", mk_elf([mk_phdr(PT_LOAD, 0x200000, 0x100, 0x100,
+                                                       0x1000, offset=0x1000)])),
+                  [])
+    bad += expect("F3 v2 头段内过",
                   check_elf("t", mk_elf([mk_phdr(PT_LOAD, 0x200000, 0x100, 0x100,
                                                 0x1000, offset=0)])),
                   [])
-    # F3 平像族豁免：0x1000=USER_CODE_VA 族 off=0x1000 同形不拦（首日三误伤面）。
-    bad += expect("F3 平像族豁免",
+    bad += expect("F3 v2 平像形过",
                   check_elf("t", mk_elf([mk_phdr(PT_LOAD, 0x1000, 0x100, 0x100,
                                                 0x1000, offset=0x1000)])),
                   [])
+    bad += expect("F3 v2 filesz>memsz FAIL",
+                  bool(check_elf("t", tls_elf(0x300000, 100, 50, 8))),
+                  True)
+    bad += expect("F3 v2 vaddr+memsz 越 USER_TOP FAIL",
+                  bool(check_elf("t", tls_elf(1 << 39, 0, 16, 8))),
+                  True)
+    # phdr 表出装载首窗（64 + 73×56 = 4152 > 4096——装载侧 elf_head 首窗
+    # 只读 4KB，出窗 = Truncated 拒载/PT_TLS 静默不可见）。
+    wide = mk_elf([mk_phdr(PT_LOAD, 0x1000, 0x100, 0x100, 0x1000, offset=0)]
+                  + [mk_phdr(0x6ffffffb, 0, 0, 0, 0) for _ in range(72)])
+    bad += expect("F3 v2 phdr 出首窗 FAIL", bool(check_elf("t", wide)), True)
     # F2：.tdata 内嵌指向 TLS 窗的 u64 自指针（拷贝式下悬垂直址）。
     bad += expect("F2 自指针 FAIL",
                   bool(check_elf("t", tls_elf(0x300000, 16, 32, 8,

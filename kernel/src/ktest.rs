@@ -3274,11 +3274,27 @@ fn test_fp() {
         );
         // ①-b P3-5 分诊位出生档：内核构造点 false（test_switch 已消费其快路径）；
         // 用户构造点 true（EL0 可能用 FP——entry/sp0 只过 ctor 断言，不真切换）。
-        // x1 第二参（arg1）恒 0——本测只核 fp_needed 出生档（06 号修窗件 1
-        // 后半签名扩面，非行为面）。
+        // x1 第二参（arg1）与 TLS 四元组恒 0——本测只核 fp_needed 出生档
+        //（06 号修窗件 1 后半与 TLS 寄存器协议刀的签名扩面，非行为面）。
         assert!(!fresh.fp_needed, "FP：new_kernel 出生应 fp_needed=false");
-        let uctx = TaskContext::new_user(0x4000_0000, 0, 0, 0x8000_0000, stack_top);
+        let uctx = TaskContext::new_user(0x4000_0000, 0, 0, [0; 4], 0x8000_0000, stack_top);
         assert!(uctx.fp_needed, "FP：new_user 出生应 fp_needed=true");
+        // appspawn TLS 寄存器协议刀（2026-11-22）：TLS 四元组经 r[4..7]
+        //（x23..x26）递 trampoline 落子入口 x2..x5——非零向量逐位断言
+        //（哨兵位与真值位都不失真；trampoline 侧 asm 无测面，此为最近测点）。
+        let tctx = TaskContext::new_user(
+            0x4000_0000,
+            0x11,
+            0,
+            [0x6d640, 0x18, 0x30, 0x10],
+            0x8000_0000,
+            stack_top,
+        );
+        assert_eq!(
+            [tctx.r[4], tctx.r[5], tctx.r[6], tctx.r[7]],
+            [0x6d640, 0x18, 0x30, 0x10],
+            "TLS：new_user 四元组须逐位落 r[4..7]（x23..x26）"
+        );
         // P3-5：本测两侧都是显式 FP 消费者——手动置 true（GUI 渲染任务创建的
         // 同款路径），两跳乒乓走 switch_full 全量路径，②面核验才有对象。
         (*(&raw mut FP_CTX_MAIN)).fp_needed = true;
@@ -5520,7 +5536,7 @@ fn test_freeze() {
             // ——ktest 期唯一真 RQ 在席任务。entry/sp 伪 VA 不派发（装配
             // 只存帧不校验；断言后即杀）。
             let s2 = berry_sched::try_spawn_user(
-                0x1000, 0, 0, 0x2000, b"fzRQ".as_slice(), 0, 0, 0, p_key, t_key, false,
+                0x1000, 0, 0, [0; 4], 0x2000, b"fzRQ".as_slice(), 0, 0, 0, p_key, t_key, false,
             )
             .expect("FREEZE：F8 造 RQ 在席任务（可信语境）");
             let s2 = &mut *(s2 as *mut berry_sched::Task);

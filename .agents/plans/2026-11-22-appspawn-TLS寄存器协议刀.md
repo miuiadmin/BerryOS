@@ -2,7 +2,7 @@
 
 Type: spec
 Version: 1
-Status: active
+Status: done
 Updated: 2026-11-22
 
 一句话说明：根治 [appdemo X-4e 胎死](../research/2026-11-22-appdemo-X-4e-胎死诊断与修复三岔口.md)——owner 裁决（2026-11-22）「最彻底最优秀最先进、不计代价」，取案 D 升级形：**装载侧解析 + 寄存器协议**——svcmgr spawn 核心（自测/应用/rootfs 执行三路共单点）在 spawn 时从 ELF 字节解析首 PT_TLS 四元组，经 `process_start` 新增第 6 参（x6=调用方 32B 描述符指针）入内核，内核装配子任务上下文 x2..x5；crt0 `_start` 直读寄存器装配 TLS，`__ehdr_start` 走查整体退役——PT_TLS 段本体成为唯一事实源（一事实一归属），任何链接布局下成立，X-4e 失败类按设计灭绝。

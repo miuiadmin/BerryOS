@@ -342,18 +342,20 @@ impl Task {
     /// （3-4a：syscall 层映射为该进程的 handle 表指针；0 = 无表——内核任务）。
     /// **可信语境便捷包装**（boot 直构用户进程用；OOM 直接 expect）。
     /// `arg1` = 入口第二参（x1——boot env 旗标面，06 号修窗件 1 后半；
-    /// 既有单参消费者传 0）。
+    /// 既有单参消费者传 0）。`tls` = 入口 x2..x5 四元组
+    ///（appspawn TLS 寄存器协议刀 2026-11-22——boot 直构路恒 `[0;4]`）。
     pub fn new_user_with_as(
         entry_va: usize,
         arg: usize,
         arg1: usize,
+        tls: [usize; 4],
         sp0_va: usize,
         name: &'static [u8],
         ttbr0: usize,
         asid: u16,
         proc_tag: usize,
     ) -> Box<Task> {
-        Self::try_new_user_with_as(entry_va, arg, arg1, sp0_va, name, ttbr0, asid, proc_tag)
+        Self::try_new_user_with_as(entry_va, arg, arg1, tls, sp0_va, name, ttbr0, asid, proc_tag)
             .expect("用户线程装配（boot 可信语境）")
     }
 
@@ -364,6 +366,7 @@ impl Task {
         entry_va: usize,
         arg: usize,
         arg1: usize,
+        tls: [usize; 4],
         sp0_va: usize,
         name: &'static [u8],
         ttbr0: usize,
@@ -371,7 +374,7 @@ impl Task {
         proc_tag: usize,
     ) -> Option<Box<Task>> {
         let (kstack, stack_top) = Self::try_alloc_kstack()?;
-        let ctx = TaskContext::new_user(entry_va, arg, arg1, sp0_va, stack_top);
+        let ctx = TaskContext::new_user(entry_va, arg, arg1, tls, sp0_va, stack_top);
         Self::try_assemble(ctx, kstack, name, ttbr0, asid, proc_tag)
     }
 
