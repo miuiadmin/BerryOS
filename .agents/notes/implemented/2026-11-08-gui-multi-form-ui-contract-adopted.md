@@ -25,4 +25,4 @@ F4/F5 出口门不变。P0 必须冻结 Surface role/mode、input class、IME co
 
 - [GUI-12-复杂应用与游戏UI形态深研-2026-11.md](../../../research/GUI-12-复杂应用与游戏UI形态深研-2026-11.md)
 - [GUI框架地基路线-v1.20.md](../../../docs/GUI框架地基路线-v1.20.md)
-- [14-GUI与UI框架.md](../../../docs/规则/14-GUI与UI框架.md)
+- [14-GUI与UI框架.md](../../../docs/规则/17-GUI与UI框架.md)

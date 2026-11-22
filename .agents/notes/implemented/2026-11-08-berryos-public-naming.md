@@ -33,4 +33,4 @@ Berry Room / BerryUI / BUI / Berry SDK
 
 - [BerryOS命名体系-v1.1.md](../../../docs/BerryOS命名体系-v1.1.md)
 - [GUI框架地基路线-v1.20.md](../../../docs/GUI框架地基路线-v1.20.md)
-- [14-GUI与UI框架.md](../../../docs/规则/14-GUI与UI框架.md)
+- [14-GUI与UI框架.md](../../../docs/规则/17-GUI与UI框架.md)
