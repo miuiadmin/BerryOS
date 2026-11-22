@@ -1741,6 +1741,16 @@ test-host:
     cargo test --manifest-path user/nfc/walletd/Cargo.toml --target {{host}}
     cargo test --manifest-path user/accessories/stylus/Cargo.toml --target {{host}}
     cargo test --manifest-path user/accessories/uwb/Cargo.toml --target {{host}}
+    # W1 接线（R136 判例族同款·G2 刀 8-10 兼容子系统三件）：user/compat/
+    # 三独立小工作区（15 host 测）——linux-runner（syscall 翻译守护：
+    # ELF64 头解析/优先级扫参序/未知 syscall loud 拒）、berry-vmm
+    # （MicroVM 管理器：vCPU 生命周期/客户机物理内存布局/中断注入
+    # 裁决）、compat-wayland-bridge（wl_surface/wl_shm → BerryOS
+    # SurfaceId/VMO 桥接：surface 映射能力面）。空 [workspace] escape
+    # 同 widgets/nfc 形，此前零 just/CI 接线 = 语义面改坏无机器咬合。
+    cargo test --manifest-path user/compat/linux_runner/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/compat/vmm/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/compat/wayland-bridge/Cargo.toml --target {{host}}
     # W1 接线（base 重写剥落重放，#304 面）：sync-public members 对账门——
     # 白名单 ⊇ workspace members 机器执法（#153/#171/#227 三连 REJECT
     # 判例族根因：新增顶层 crate 忘补白名单 = 公开仓 build 必炸）。本刀
