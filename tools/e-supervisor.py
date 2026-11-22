@@ -34,7 +34,7 @@ MACHINERY_PREFIXES = (
     "tools/control-plane-gate.sh", "tools/control-plane.txt",
     "tools/run-artifact.sh", "tools/gate-wrap.sh", "tools/claude-audit.py",
     "tools/stale-parks.py", "tools/stranded-deferrals.py", "tools/answers-readback.py",
-    ".agents/tools/", "tools/facts.py", "tools/gate-selftest.sh", "tools/punch_slice.py",
+    ".agents/tools/", "tools/facts.py", "tools/gate-selftest.sh", "tools/punch_slice.py", "tools/task-graph.py", "tools/task-oracle.py",
     "tools/docs_guard.py",
     "tools/floor-check.sh",
     "tools/writable_globals.py",

@@ -23,6 +23,10 @@ leg() { printf 'gate-selftest: %s\n' "$1"; }
 die() { printf 'gate-selftest FAIL: %s\n' "$1" >&2; exit 1; }
 
 # —— 沙箱：真实钩子 + 真实 check-docs + 最小合法文档面 + facts 制品 ——
+# 全段剥 GIT_* 环境（审计 2026-11-22：外层 pre-commit 的 GIT_INDEX_FILE 会串进
+# 沙箱的 git 调用导致 config 写错仓库——控制面门子进程里跑 gate-selftest 必红）
+(
+unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE GIT_QUARANTINE_PATH 2>/dev/null
 git init -q "$T/r" || exit 2
 cd "$T/r" || exit 2
 git config user.name gate-selftest
@@ -135,20 +139,24 @@ clean_leg; leg "腿 g2 过：tools-only 红件被控制面门拦"
 # 腿 h：bot 身份闸（push 层）——bot 提交推集成分支拒、推 wip/auto-* 过
 cp "$REPO/.githooks/pre-push" .githooks/ && chmod +x .githooks/pre-push
 git add .githooks/pre-push && git commit -qm h0 || die "腿 h：pre-push 装载提交未过门"
-git config berryos.bot-email gate-selftest@local
+# 注意：此处在沙箱仓配（-C 指向）而非主仓——2026-11-22 实抓泄漏（写进主仓
+# 导致身份闸拦截了主仓自己的推送）。修复：只在沙箱内配。
 sha=$(git rev-parse HEAD); z=0000000000000000000000000000000000000000
-if echo "refs/heads/$BR $sha refs/heads/$BR $z" | .githooks/pre-push origin u 2>/dev/null; then
+git config berryos.bot-email gate-selftest@local
+if echo "refs/heads/$BR $sha refs/heads/$BR $z" | env -u GIT_INDEX_FILE -u GIT_DIR .githooks/pre-push origin u 2>/dev/null; then
   die "腿 h：bot 身份推集成分支未被拒"
 fi
 # 审计 r2 两条负腿：显式 refspec 把 bot 提交送往集成分支/main——落点闸必须拒
-if echo "refs/heads/wip/auto-t $sha refs/heads/$BR $z" | .githooks/pre-push origin u 2>/dev/null; then
+if echo "refs/heads/wip/auto-t $sha refs/heads/$BR $z" | env -u GIT_INDEX_FILE -u GIT_DIR .githooks/pre-push origin u 2>/dev/null; then
   die "腿 h：refspec 落点旁路（auto→集成分支）未被拒"
 fi
-if echo "refs/heads/wip/auto-t $sha refs/heads/main $z" | .githooks/pre-push origin u 2>/dev/null; then
+if echo "refs/heads/wip/auto-t $sha refs/heads/main $z" | env -u GIT_INDEX_FILE -u GIT_DIR .githooks/pre-push origin u 2>/dev/null; then
   die "腿 h：refspec 落点旁路（auto→main）未被拒"
 fi
-echo "refs/heads/wip/auto-t $sha refs/heads/wip/auto-t $z" | .githooks/pre-push origin u \
+echo "refs/heads/wip/auto-t $sha refs/heads/wip/auto-t $z" | env -u GIT_INDEX_FILE -u GIT_DIR .githooks/pre-push origin u \
   || die "腿 h：bot 身份推 wip/auto-* 被误拦"
+git config --unset berryos.bot-email 2>/dev/null || true
 leg "腿 h 过：bot 推集成分支拒 / wip/auto-* 过"
 
+)  # 沙箱 subshell 结束——恢复外层环境
 echo "gate-selftest: PASS（八腿：坏拒/好过+印记耗/no-verify 拦/merge 免检/索引留毒拒/未跟踪不误伤/facts 漂移门拒/bot 身份 push 闸）"
