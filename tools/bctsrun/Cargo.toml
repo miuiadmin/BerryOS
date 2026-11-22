@@ -1,0 +1,14 @@
+[package]
+name = "bctsrun"
+version = "0.1.0"
+edition = "2021"
+
+# 彻底 Rust 化轨道 b 层 #7 刀序末档（bcts-run）首刀：Tier 1 冻结件 schema
+# 校验器镜像（PYEOF①段 = tools/bcts/t1_check.py 现役单源）。独立小工作区
+# （mkcpio/mkfat/mkimage/mkapp/gensourceindex/berryassemble 同款形态），
+# 零外部依赖纯 std。
+
+[dependencies]
+
+# 独立小工作区（根 workspace 逃逸——mkcpio/mkapp/berryassemble 同款纪律）。
+[workspace]

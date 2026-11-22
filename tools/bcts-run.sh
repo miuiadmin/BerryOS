@@ -233,111 +233,9 @@ trap 'img_stop; rm -rf "$WORK"' EXIT
 #   GATE<TAB>id<TAB>cmd                （逐条）
 # 拒面 = stderr「bcts: REJECT: <理由>」+ 退 2。
 parse_frozen() {
-  python3 - "$1" <<'PYEOF'
-import os, re, sys, tomllib
-
-path = sys.argv[1]
-
-def reject(msg):
-    print(f"bcts: REJECT: {msg}", file=sys.stderr)
-    sys.exit(2)
-
-try:
-    with open(path, "rb") as f:
-        data = tomllib.load(f)
-except tomllib.TOMLDecodeError as e:
-    reject(f"TOML 解析失败：{e}")
-except OSError as e:
-    reject(f"读不了工件：{e}")
-
-TOP_KEYS = {"schema", "suite", "platform_revision", "frozen_at",
-            "abi_snapshot", "abi_snapshot_hash", "tier1_floor"}
-ARRAY_KEYS = {"marker", "host_gate"}   # 数组节键（[[…]]——tomllib 顶层展开，单列一档）
-MARKER_KEYS = {"id", "expect", "phase", "tier", "source"}
-GATE_KEYS = {"id", "cmd", "tier"}
-PHASES = {"bare", "rootfs", "rx"}
-
-unknown = set(data) - TOP_KEYS - ARRAY_KEYS
-if unknown:
-    reject(f"顶层未知键：{sorted(unknown)}（schema add-only、未知键硬拒——设计稿 §4.1）")
-missing = TOP_KEYS - set(data)
-if missing:
-    reject(f"顶层必填缺失：{sorted(missing)}")
-if data["schema"] != 1:
-    reject(f"schema 须 = 1，实得 {data['schema']!r}")
-if data["suite"] != "bcts":
-    reject(f"suite 须 = \"bcts\"，实得 {data['suite']!r}")
-pr = data["platform_revision"]
-if not isinstance(pr, int) or isinstance(pr, bool) or not 0 <= pr <= 2**32 - 1:
-    reject(f"platform_revision 须 u32 域 [0, 4294967295]（V9 同源词表，mkimage 同款），实得 {pr!r}")
-if not re.fullmatch(r"[0-9a-f]{40}", data["frozen_at"]):
-    reject(f"frozen_at 须 40 位小写 commit sha，实得 {data['frozen_at']!r}")
-if not data["abi_snapshot"]:
-    reject("abi_snapshot 不得为空")
-if not re.fullmatch(r"sha256:[0-9a-f]{64}", data["abi_snapshot_hash"]):
-    reject(f"abi_snapshot_hash 须 sha256:<64 小写 hex>，实得 {data['abi_snapshot_hash']!r}")
-floor = data["tier1_floor"]
-if not isinstance(floor, int) or isinstance(floor, bool) or floor < 1:
-    reject(f"tier1_floor 须 ≥1 整数，实得 {floor!r}")
-
-markers = data.get("marker", [])
-gates = data.get("host_gate", [])
-if not isinstance(markers, list) or not markers:
-    reject("[[marker]] 缺席或为空（marker 条目 = 冻结件最小单元，删除 = 破冻——设计稿 §4.1）")
-ids = set()
-for i, m in enumerate(markers, 1):
-    unknown = set(m) - MARKER_KEYS
-    if unknown:
-        reject(f"marker[{i}] 未知键：{sorted(unknown)}")
-    missing = MARKER_KEYS - set(m)
-    if missing:
-        reject(f"marker[{i}] 必填缺失：{sorted(missing)}")
-    if not m["id"] or m["id"] in ids:
-        reject(f"marker id 空或重复：{m['id']!r}")
-    ids.add(m["id"])
-    e = m["expect"]
-    if not isinstance(e, str) or not e or re.search(r'[)"\x27\t\n]', e):
-        reject(f"marker {m['id']} expect 违例（空/含引号/右括号/制表换行——markers.sh 单源约束沿袭）：{e!r}")
-    if m["phase"] not in PHASES:
-        reject(f"marker {m['id']} phase 须 ∈ {{bare, rootfs, rx}}，实得 {m['phase']!r}")
-    if m["tier"] != 1:
-        reject(f"marker {m['id']} tier 须 = 1（v0 只开通 Tier 1——设计稿 §3.2），实得 {m['tier']!r}")
-    if not m["source"]:
-        reject(f"marker {m['id']} source 不得为空")
-if not isinstance(gates, list) or not gates:
-    reject("[[host_gate]] 缺席或为空（Tier 1 host 门禁 = abi-check 起步——设计稿 §4.2-④）")
-gids = set()
-for i, g in enumerate(gates, 1):
-    unknown = set(g) - GATE_KEYS
-    if unknown:
-        reject(f"host_gate[{i}] 未知键：{sorted(unknown)}")
-    missing = GATE_KEYS - set(g)
-    if missing:
-        reject(f"host_gate[{i}] 必填缺失：{sorted(missing)}")
-    if not g["id"] or g["id"] in gids:
-        reject(f"host_gate id 空或重复：{g['id']!r}")
-    gids.add(g["id"])
-    if not g["cmd"]:
-        reject(f"host_gate {g['id']} cmd 不得为空")
-    if g["tier"] != 1:
-        reject(f"host_gate {g['id']} tier 须 = 1，实得 {g['tier']!r}")
-
-# 步②空集守卫（回放侧；冻结侧同式执法——守卫两层，设计稿 §4.4）。
-if len(markers) < floor:
-    reject(f"空集守卫：marker {len(markers)} 件 < tier1_floor {floor}——拒跑防假绿")
-
-# 文件名 ↔ 字段冗余自证（版本绑定的机器表达，设计稿 §2.4-1）。
-base = os.path.basename(path)
-if base != f"bcts@{pr}.toml":
-    reject(f"文件名 {base!r} 与 platform_revision={pr} 不符（bcts@<platform_revision>.toml 冗余自证）")
-
-print(f"META\t{pr}\t{floor}\t{len(markers)}\t{len(gates)}\t"
-      f"{data['frozen_at']}\t{data['abi_snapshot']}\t{data['abi_snapshot_hash']}")
-for x in markers:
-    print(f"MARK\t{x['phase']}\t{x['id']}\t{x['expect']}")
-for g in gates:
-    print(f"GATE\t{g['id']}\t{g['cmd']}")
-PYEOF
+  # PYEOF①段已抽出为模块（tools/bcts/t1_check.py——Rust 件 parity oracle 基座），
+  # 同参调用、文案/退码逐字节不变（mkcpio 模块面先例）。
+  python3 "$SCRIPT_DIR/bcts/t1_check.py" "$1"
 }
 
 # 活树清单合成（markers.sh 单源 → 同构 TSV；id 按相内序号机械生成——冻结
@@ -375,229 +273,9 @@ sha256_of() {
 #   SEM<TAB>cid<TAB>clause<TAB>facet<TAB>status<TAB>cases<TAB>value<TAB>note    （③→④映射行）
 # 拒面 = stderr「bcts: REJECT: <理由>」+ 退 2。
 parse_t2_frozen() {
-  python3 - "$1" <<'PYEOF2'
-import os, re, sys, tomllib
-
-path = sys.argv[1]
-
-def reject(msg):
-    print(f"bcts: REJECT: {msg}", file=sys.stderr)
-    sys.exit(2)
-
-try:
-    with open(path, "rb") as f:
-        data = tomllib.load(f)
-except tomllib.TOMLDecodeError as e:
-    reject(f"TOML 解析失败：{e}")
-except OSError as e:
-    reject(f"读不了工件：{e}")
-
-TOP_KEYS = {"schema", "suite", "tier", "platform_revision", "frozen_at",
-            "abi_snapshot", "abi_snapshot_hash", "tier2_floor", "contract_doc"}
-ARRAY_KEYS = {"contract"}
-CONTRACT_KEYS = {"id", "title", "interface", "interface_src", "ver_min",
-                 "consumers", "suite_id", "suite_cases"}
-CONTRACT_ARRAY_KEYS = {"op", "case", "semantics"}  # 嵌套数组节（tomllib 同档单列）
-OP_KEYS = {"num", "name", "wire"}
-CASE_KEYS = {"id", "op", "kind", "class", "input", "expect", "group"}
-SEM_KEYS = {"clause", "value", "facet", "cases", "status", "note"}
-KINDS = {"pos", "neg"}
-# 五类用例（设计稿 §3.2 注 a）：合法 op 序列/非法 op 拒绝/version 协商/错误域/
-# 超时失败隔离——v0 记账不拦（开通条件随 #83 落数），值域外拒。
-CLASSES = {"seq", "reject", "version", "error", "timeout"}
-FACETS = {"串行模型", "错误码", "帽执法", "挂载语义", "诚实义务", "档位声明",
-          "失败隔离", "时延", "协商", "生命周期", "呈现原子"}
-STATUS = {"frozen", "deferred"}
-
-def clean(v, what):
-    if not isinstance(v, str) or not v or re.search(r"[\t\n\r]", v):
-        reject(f"{what} 违例（空/含制表换行）：{v!r}")
-    return v
-
-def u8(v, what):
-    if not isinstance(v, int) or isinstance(v, bool) or not 0 <= v <= 255:
-        reject(f"{what} 须 u8 域 [0,255]，实得 {v!r}")
-    return v
-
-unknown = set(data) - TOP_KEYS - ARRAY_KEYS
-if unknown:
-    reject(f"顶层未知键：{sorted(unknown)}（schema add-only、未知键硬拒——设计稿 §4.1）")
-missing = TOP_KEYS - set(data)
-if missing:
-    reject(f"顶层必填缺失：{sorted(missing)}")
-if data["schema"] != 1:
-    reject(f"schema 须 = 1，实得 {data['schema']!r}")
-if data["suite"] != "bcts":
-    reject(f"suite 须 = \"bcts\"，实得 {data['suite']!r}")
-if data["tier"] != 2:
-    reject(f"tier 须 = 2（bcts-t2 工件），实得 {data['tier']!r}")
-pr = data["platform_revision"]
-if not isinstance(pr, int) or isinstance(pr, bool) or not 0 <= pr <= 2**32 - 1:
-    reject(f"platform_revision 须 u32 域 [0, 4294967295]（V9 同源词表），实得 {pr!r}")
-if not re.fullmatch(r"[0-9a-f]{40}", data["frozen_at"]):
-    reject(f"frozen_at 须 40 位小写 commit sha，实得 {data['frozen_at']!r}")
-if not data["abi_snapshot"]:
-    reject("abi_snapshot 不得为空")
-if not re.fullmatch(r"sha256:[0-9a-f]{64}", data["abi_snapshot_hash"]):
-    reject(f"abi_snapshot_hash 须 sha256:<64 小写 hex>，实得 {data['abi_snapshot_hash']!r}")
-floor = data["tier2_floor"]
-if not isinstance(floor, int) or isinstance(floor, bool) or floor < 1:
-    reject(f"tier2_floor 须 ≥1 整数，实得 {floor!r}")
-clean(data["contract_doc"], "contract_doc")
-
-contracts = data.get("contract", [])
-if not isinstance(contracts, list) or not contracts:
-    reject("[[contract]] 缺席或为空（每开放槽位 ≥ 合同④件全集——设计稿 §3.2）")
-cids = set()
-case_ids = set()
-n_cases = 0
-for i, c in enumerate(contracts, 1):
-    unknown = set(c) - CONTRACT_KEYS - CONTRACT_ARRAY_KEYS
-    if unknown:
-        reject(f"contract[{i}] 未知键：{sorted(unknown)}")
-    missing = CONTRACT_KEYS - set(c)
-    if missing:
-        reject(f"contract[{i}] 必填缺失：{sorted(missing)}")
-    cid = clean(c["id"], f"contract[{i}].id")
-    if cid in cids:
-        reject(f"contract id 重复：{cid!r}")
-    cids.add(cid)
-    if not re.fullmatch(r"[a-z][a-z0-9-]*", cid):
-        reject(f"contract id 须 <层>-<名> 连字符串（合同 §2.6 命名规范），实得 {cid!r}")
-    clean(c["title"], f"{cid}.title")
-    clean(c["interface"], f"{cid}.interface")
-    clean(c["interface_src"], f"{cid}.interface_src")
-    if not isinstance(c["ver_min"], int) or isinstance(c["ver_min"], bool) or c["ver_min"] < 1:
-        reject(f"{cid} ver_min 须 ≥1 整数，实得 {c['ver_min']!r}")
-    if not isinstance(c["consumers"], list) or not c["consumers"]:
-        reject(f"{cid} consumers 须非空列表")
-    for x in c["consumers"]:
-        clean(x, f"{cid}.consumers 元素")
-    clean(c["suite_id"], f"{cid}.suite_id")
-    if not isinstance(c["suite_cases"], list) or not c["suite_cases"]:
-        reject(f"{cid} suite_cases 须非空列表（合同④件骨架照录）")
-    sc_ids = set()
-    for x in c["suite_cases"]:
-        clean(x, f"{cid}.suite_cases 元素")
-        if x in sc_ids:
-            reject(f"{cid} suite_cases 重复：{x!r}")
-        sc_ids.add(x)
-
-    ops = c.get("op", [])
-    if not isinstance(ops, list) or not ops:
-        reject(f"{cid} [[contract.op]] 缺席或为空（②件 op 表 = 静态对账数据源）")
-    op_nums = {}
-    for j, o in enumerate(ops, 1):
-        unknown = set(o) - OP_KEYS
-        if unknown:
-            reject(f"{cid}.op[{j}] 未知键：{sorted(unknown)}")
-        missing = OP_KEYS - set(o)
-        if missing:
-            reject(f"{cid}.op[{j}] 必填缺失：{sorted(missing)}")
-        num = u8(o["num"], f"{cid}.op[{j}].num")
-        name = clean(o["name"], f"{cid}.op[{j}].name")
-        if not re.fullmatch(r"[A-Z][A-Z0-9_]*", name):
-            reject(f"{cid}.op[{j}] name 须协议 crate OP_ 常量后缀形，实得 {name!r}")
-        if num in op_nums:
-            reject(f"{cid}.op[{j}] op 号重复：{num}（{op_nums[num]} 已占）")
-        op_nums[num] = name
-        clean(o["wire"], f"{cid}.op[{j}].wire")
-
-    cases = c.get("case", [])
-    if not isinstance(cases, list) or not cases:
-        reject(f"{cid} [[contract.case]] 缺席或为空（④件用例集 = 冻结最小单元）")
-    # group 锚定域 = suite_cases ∪ ③条款键（预扫 semantics——映射表在后，锚定域在前）。
-    clause_keys = {s.get("clause") for s in c.get("semantics", []) if isinstance(s, dict)}
-    pos_ops, neg_ops = set(), set()
-    for j, x in enumerate(cases, 1):
-        unknown = set(x) - CASE_KEYS
-        if unknown:
-            reject(f"{cid}.case[{j}] 未知键：{sorted(unknown)}")
-        missing = CASE_KEYS - {"group"} - set(x)
-        if missing:
-            reject(f"{cid}.case[{j}] 必填缺失：{sorted(missing)}")
-        xid = clean(x["id"], f"{cid}.case[{j}].id")
-        if xid in case_ids:
-            reject(f"case id 全局重复：{xid!r}")
-        case_ids.add(xid)
-        u8(x["op"], f"{cid}.case[{j}] {xid} op")
-        if x["kind"] not in KINDS:
-            reject(f"{cid}.case[{j}] {xid} kind 须 ∈ {{pos, neg}}，实得 {x['kind']!r}")
-        if x["class"] not in CLASSES:
-            reject(f"{cid}.case[{j}] {xid} class 须五类之一（设计稿 §3.2 注 a），实得 {x['class']!r}")
-        clean(x["input"], f"{cid}.case[{j}] {xid} input")
-        clean(x["expect"], f"{cid}.case[{j}] {xid} expect")
-        if "group" in x:
-            g = clean(x["group"], f"{cid}.case[{j}] {xid} group")
-            if g not in sc_ids and g not in clause_keys:
-                reject(f"{cid}.case[{j}] {xid} group {g!r} 须 ∈ suite_cases ∪ semantics 条款键（未锚定）")
-        if x["kind"] == "pos":
-            pos_ops.add(x["op"])
-        else:
-            neg_ops.add(x["op"])
-    n_cases += len(cases)
-    # 逐 op 覆盖守卫（Tier 2 空集守卫的逐槽口径：每 op ≥1 正例 ≥1 负例）。
-    for num, name in sorted(op_nums.items()):
-        if num not in pos_ops:
-            reject(f"{cid} op {num}({name}) 无正例行（每 op ≥1 正例——空集守卫逐槽口径）")
-        if num not in neg_ops:
-            reject(f"{cid} op {num}({name}) 无负例行（每 op ≥1 负例——空集守卫逐槽口径）")
-
-    sems = c.get("semantics", [])
-    if not isinstance(sems, list) or not sems:
-        reject(f"{cid} [[contract.semantics]] 缺席或为空（③→④映射表 = 合同语义条款逐条）")
-    seen_clauses = set()
-    for j, s in enumerate(sems, 1):
-        unknown = set(s) - SEM_KEYS
-        if unknown:
-            reject(f"{cid}.semantics[{j}] 未知键：{sorted(unknown)}")
-        missing = SEM_KEYS - {"note"} - set(s)
-        if missing:
-            reject(f"{cid}.semantics[{j}] 必填缺失：{sorted(missing)}")
-        cl = clean(s["clause"], f"{cid}.semantics[{j}].clause")
-        if cl in seen_clauses:
-            reject(f"{cid}.semantics clause 重复：{cl!r}")
-        seen_clauses.add(cl)
-        clean(s["value"], f"{cid}.semantics[{j}] {cl} value")
-        if s["facet"] not in FACETS:
-            reject(f"{cid}.semantics[{j}] {cl} facet 值域外：{s['facet']!r}")
-        if s["status"] not in STATUS:
-            reject(f"{cid}.semantics[{j}] {cl} status 须 frozen|deferred，实得 {s['status']!r}")
-        if not isinstance(s["cases"], list):
-            reject(f"{cid}.semantics[{j}] {cl} cases 须列表")
-        c_ids = {x["id"] for x in cases}
-        for x in s["cases"]:
-            clean(x, f"{cid}.semantics[{j}] {cl} cases 元素")
-            if x not in c_ids and x not in sc_ids:
-                reject(f"{cid}.semantics[{j}] {cl} cases 引用未锚定用例：{x!r}")
-        if s["status"] == "frozen" and not s["cases"]:
-            reject(f"{cid}.semantics[{j}] {cl} status=frozen 但 cases 空（frozen 须映射已冻结 wire 行）")
-        if "note" in s:
-            clean(s["note"], f"{cid}.semantics[{j}] {cl} note")
-
-# 空集守卫（回放侧；冻结侧同式执法——守卫两层，设计稿 §4.4）。
-if n_cases < floor:
-    reject(f"空集守卫：case {n_cases} 行 < tier2_floor {floor}——拒跑防假绿")
-
-# 文件名 ↔ 字段冗余自证（版本绑定的机器表达，设计稿 §2.4-1）。
-base = os.path.basename(path)
-if base != f"bcts-t2@{pr}.toml":
-    reject(f"文件名 {base!r} 与 platform_revision={pr} 不符（bcts-t2@<platform_revision>.toml 冗余自证）")
-
-print(f"META\t{pr}\t{floor}\t{len(contracts)}\t{n_cases}\t"
-      f"{data['frozen_at']}\t{data['abi_snapshot']}\t{data['abi_snapshot_hash']}")
-for c in contracts:
-    print(f"CONTRACT\t{c['id']}\t{c['title']}\t{c['interface']}\t{c['interface_src']}\t"
-          f"{c['ver_min']}\t{c['suite_id']}\t{','.join(c['suite_cases'])}\t{','.join(c['consumers'])}")
-    for o in c.get("op", []):
-        print(f"OP\t{c['id']}\t{o['num']}\t{o['name']}\t{o['wire']}")
-    for x in c.get("case", []):
-        print(f"CASE\t{c['id']}\t{x['id']}\t{x['op']}\t{x['kind']}\t{x['class']}\t"
-              f"{x.get('group', '-')}\t{x['input']}\t{x['expect']}")
-    for s in c.get("semantics", []):
-        print(f"SEM\t{c['id']}\t{s['clause']}\t{s['facet']}\t{s['status']}\t"
-              f"{','.join(s['cases'])}\t{s['value']}\t{s.get('note', '')}")
-PYEOF2
+  # PYEOF②段已抽出为模块（tools/bcts/t2_check.py——bctsrun Rust 件二刀的
+  # parity oracle 基座，t1_check.py 同款先例），同参调用、文案/退码逐字节不变。
+  python3 "$SCRIPT_DIR/bcts/t2_check.py" "$1"
 }
 
 # 静态对账（v0 消费面核心）：实现侧协议 crate op 全集 ⊇ 合同②件 op 表。
@@ -605,73 +283,11 @@ PYEOF2
 # 差集（合同有 crate 无 / 错号）= 开放缺口 loud 报 + 退 1（不硬绿）；crate 侧
 # 多出 op = add-only 合法（L1 纪律），计行不拦。另报④件五类用例覆盖（缺口类
 # 如实记账不拦——Tier 2 开通条件随 #83 落数，设计稿 §3.2 注 a）。
+# PYEOF③段已抽出为模块（tools/bcts/reconcile_t2.py——bctsrun Rust 件三刀
+# 的 parity oracle 基座，t1/t2_check 同款先例）：段体逐字迁居 +2 缩进归位，
+# 调用位改 python3 模块直调同参（$2 = 仓库根），文案/退码逐字节不变。
 reconcile_t2() {
-  python3 - "$1" "$REPO" <<'PYEOF3'
-import os, re, sys
-
-tsv, repo = sys.argv[1], sys.argv[2]
-contracts = []  # (cid, interface, src, [(num, name)])
-cases = {}      # cid -> {"pos": n, "neg": n, "class": {c: n}}
-with open(tsv, encoding="utf-8") as f:
-    for line in f:
-        p = line.rstrip("\n").split("\t")
-        if p[0] == "CONTRACT":
-            contracts.append((p[1], p[3], p[4], []))
-            cases[p[1]] = {"pos": 0, "neg": 0, "class": {}}
-        elif p[0] == "OP":
-            for c in contracts:
-                if c[0] == p[1]:
-                    c[3].append((int(p[2]), p[3]))
-        elif p[0] == "CASE":
-            cases[p[1]][p[4]] += 1
-            cases[p[1]]["class"][p[5]] = cases[p[1]]["class"].get(p[5], 0) + 1
-
-CLASS_ZH = {"seq": "合法op序列", "reject": "非法op拒绝", "version": "version协商",
-            "error": "错误域", "timeout": "超时失败隔离"}
-def opn(n):  # 合同记数形：fs 1..10 十进制 / hdi 0x40.. 十六进制（<16 十进制）
-    return str(n) if n < 16 else f"0x{n:02x}"
-fail = 0
-total_gap = 0
-for cid, interface, src, ops in contracts:
-    if not os.path.isfile(os.path.join(repo, src)):
-        print(f"bcts: T2 对账 [{cid}]：interface_src 不可读：{src}——开放缺口（合同②件单源指向断链）")
-        fail = 1
-        total_gap += len(ops)
-        continue
-    with open(os.path.join(repo, src), encoding="utf-8") as f:
-        text = f.read()
-    found = {}
-    for m in re.finditer(r"pub\s+const\s+(OP_[A-Z0-9_]+)\s*:\s*u8\s*=\s*(0x[0-9A-Fa-f]+|\d+)\s*;", text):
-        found[m.group(1)] = int(m.group(2), 0)
-    gaps = []
-    for num, name in ops:
-        key = f"OP_{name}"
-        if key not in found:
-            gaps.append(f"{key} 缺席（合同 op {opn(num)}）")
-        elif found[key] != num:
-            gaps.append(f"{key} 错号（合同 {opn(num)} vs crate {opn(found[key])}）")
-    want = {f"OP_{n}" for _, n in ops}
-    extras = sorted(k for k in found if k not in want)
-    hit = len(ops) - len(gaps)
-    tail = f"；crate 侧多 {len(extras)} op（add-only 合法不拦：{','.join(extras) if extras else '无'}）"
-    if gaps:
-        for g in gaps:
-            print(f"bcts: T2 对账 [{cid}]（{interface}）：开放缺口——{g}")
-        print(f"bcts: T2 对账 [{cid}]：合同 op 表 {len(ops)} 项，crate 命中 {hit}，差集 {len(gaps)}{tail}")
-        fail = 1
-    else:
-        print(f"bcts: T2 对账 [{cid}]（{interface}）：合同 op 表 {len(ops)} 项，crate 命中 {hit}，差集 0（开放缺口 = 0）{tail}")
-    total_gap += len(gaps)
-    cv = cases[cid]
-    cls = " ".join(f"{k}={cv['class'].get(k, 0)}" for k in ("seq", "reject", "version", "error", "timeout"))
-    miss_cls = [CLASS_ZH[k] for k in ("seq", "reject", "version", "error", "timeout") if cv["class"].get(k, 0) == 0]
-    miss = f"——缺口类：{'、'.join(miss_cls)}（如实记账不拦：Tier 2 开通条件随 #83 落数）" if miss_cls else ""
-    print(f"bcts: T2 覆盖 [{cid}]：wire 用例 {cv['pos'] + cv['neg']} 行（pos {cv['pos']}/neg {cv['neg']}）；五类 {cls}{miss}")
-if fail:
-    print(f"bcts: FAIL: T2 静态对账开放缺口 {total_gap} 项（crate op 全集 ⊉ 合同表——如实报，不硬绿）")
-    sys.exit(1)
-print("bcts: T2 静态对账全绿（实现侧协议 crate op 全集 ⊇ 合同②件 op 表）")
-PYEOF3
+  python3 "$SCRIPT_DIR/bcts/reconcile_t2.py" "$1" "$REPO"
 }
 
 # Tier 2 装载/回显/执行壳（与 Tier 1 路径互不扰动；零 QEMU）。
@@ -724,20 +340,12 @@ IMG_CONT_MARKERS=("HANDOFF ok ver=" "MMAP ok segs=" "ROOTFS ok src=handoff")
 # 活树态 PR 锚：tools/abi.toml [platform].level（mkimage platform_level()
 # 同源同法——live 态无冻结件可携 pr，取树现值；tomllib 函数内导入，坏源
 # loud——mkimage 同纪律）。
+# PYEOF④段已抽出为模块（tools/bcts/abi_level.py——bctsrun Rust 件四刀的
+# parity oracle 基座，t1/t2_check/reconcile_t2 同款先例）：段体逐字迁居
+# 零缩进归位（段体本就顶格），调用位改 python3 模块直调同参（$1 =
+# abi.toml 路径），文案/退码逐字节不变。
 abi_level() {
-  python3 - "$SCRIPT_DIR/abi.toml" <<'PYEOF4'
-import sys, tomllib
-try:
-    with open(sys.argv[1], "rb") as f:
-        lv = tomllib.load(f).get("platform", {}).get("level")
-except Exception as e:
-    print(f"bcts: FAIL: 读 {sys.argv[1]} [platform].level 失败：{e}", file=sys.stderr)
-    sys.exit(1)
-if not isinstance(lv, int) or isinstance(lv, bool):
-    print(f"bcts: FAIL: {sys.argv[1]} [platform].level 非整数：{lv!r}", file=sys.stderr)
-    sys.exit(1)
-print(lv)
-PYEOF4
+  python3 "$SCRIPT_DIR/bcts/abi_level.py" "$SCRIPT_DIR/abi.toml"
 }
 
 # 版本声称位对账（v0 头注「镜像侧版本声称位对账」兑现，G3）：镜像侧
@@ -745,30 +353,12 @@ PYEOF4
 # 冻结件 platform_revision（认证语义：OEM 声称版本必须与回放冻结件同版，
 # 不等 loud 拒——38 号 G3 任务书）；live 态锚 = abi.toml level（树现值）。
 # 解析面 = smoke-image.sh 预检同款（缺行/条目混杂/失配如实报）。
+# PYEOF⑤段已抽出为模块（tools/bcts/img_pr_check.py——bctsrun Rust 件四刀的
+# parity oracle 基座，abi_level 同刀同款先例）：段体逐字迁居 +2 缩进归位
+# 外零变更，调用位改 python3 模块直调同参（$1=manifest $2=期望 pr $3=锚
+# 描述），文案/退码逐字节不变。
 img_pr_check() {  # $1=manifest 路径 $2=期望 pr $3=锚描述
-  python3 - "$1" "$2" "$3" <<'PYEOF5'
-import re, sys
-manifest, want, anchor = sys.argv[1], int(sys.argv[2]), sys.argv[3]
-def die(msg):
-    print(f"bcts: FAIL: {msg}", file=sys.stderr)
-    sys.exit(1)
-try:
-    with open(manifest, encoding="ascii") as f:
-        text = f.read()
-except OSError as e:
-    die(f"读 {manifest} 失败（mkimage 侧产物应与镜像同目录）：{e}")
-prs = re.findall(r"(?m)^item .* platform_revision=(\d{10})$", text)
-if not prs:
-    die(f"{manifest} 无 platform_revision 条目行（manifest v1 产物面断裂——镜像非 mkimage 产链？）")
-vals = sorted({int(p) for p in prs})
-if len(vals) > 1:
-    die(f"{manifest} platform_revision 条目混杂 {vals}（同盘同版断裂——mkimage 逐条目同源取值）")
-got = vals[0]
-if got != want:
-    die(f"镜像 manifest platform_revision={got} != 回放清单 pr={want}（对账锚：{anchor}）"
-        "——版本声称位对账断裂，不等 loud 拒（认证语义：镜像声称版本必须与回放冻结件同版）")
-print(f"bcts: 版本声称位对账 ok：manifest platform_revision={got} == {anchor}")
-PYEOF5
+  python3 "$SCRIPT_DIR/bcts/img_pr_check.py" "$1" "$2" "$3"
 }
 
 # ---------- --selftest（零 QEMU；berry_assemble --selftest 同款合成腿风格）----------

@@ -18,7 +18,11 @@
 //! 忙核 arm-to-nearest-deadline 起「授片处取 min」（Phase 4+ 留后项）落地——
 //! sched.rs 两臂（on_irq_tick expire 后 / block_current 忙核授片）经
 //! `berry_sched::oneshot::tighten_deadline` 收紧到 min(最近超时, 现臂)，片终点
-//! 仍是硬底（永不推迟，方向同 [`arm_slice`] 的 S-6 夹取）。
+//! 仍是硬底（永不推迟，方向同 [`arm_slice`] 的 S-6 夹取）。arm_slice 收紧刀
+//! （2026-11-22·深度优化）起片终点本身可帽——授片臂经 [`arm_slice_cap`] 帽到
+//! `min(cap, SLICE)`（DL-only：预算 deadline 片终点精确起爆；cap≥SLICE 或
+//! cap==0 回落满片 = [`arm_slice`] 逐位零漂移），满片 [`handle`] rearm 的
+//! 「最早 SLICE 内必一 tick」硬底不受影响。
 //!
 //! **热路径零分配**：本模块无堆、无锁（G0 单核）。
 
@@ -29,7 +33,7 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 // 本模块机械壳 re-export 消费（寄存器臂 mrs/msr、原子 static、static mut
 // 留壳——判定律零第二实现；编译期 const 钉板随迁单源侧）。
 pub use berry_tickface::{
-    arm_slice_clamp, ns_fast_path, ns_reciprocal_for, ns_slow_path, vct_delta,
+    arm_slice_clamp, ns_fast_path, ns_reciprocal_for, ns_slow_path, slice_cap, vct_delta,
     NS_FAST_DOMAIN_TICKS, NS_MUL_CAP,
 };
 
@@ -143,13 +147,40 @@ pub unsafe fn arm_at(deadline: u64) {
 /// 附带兑现「授片处取 min」（模块头 Phase 4+ 留后）：park 唤醒派发时若
 /// SLEEPQ 截止早于整片终点，保留之 = min(最早超时, 片终点) 的提前落地。
 ///
+/// 满片形（arm_slice 收紧刀 2026-11-22·深度优化）：本体退化为
+/// [`arm_slice_cap`] 的 `cap=SLICE` 同值调用（[`slice_cap`] 回落律 ⇒ want
+/// 逐位同旧——零漂移）；预算片收紧臂见 [`arm_slice_cap`]（两 API 互指，
+/// 非授片臂〔`handle` rearm/idle 探测/boot 首臂〕恒走本满片形）。
+///
 /// # Safety
 /// 读 CNTVCT/CVAL + 写 CNTV 系统寄存器；EL1。
 pub unsafe fn arm_slice() {
+    // SAFETY: 读 SLICE（单核顺序读；init 单写后恒定）；写 CNTV；EL1。
+    unsafe { arm_slice_cap(SLICE) }
+}
+
+/// 武装一个时间片、片长帽到 `cap`（arm_slice 收紧刀 2026-11-22·深度优化）：
+/// `want = now + slice_cap(cap, SLICE)`——帽律单源 berry-tickface
+/// [`slice_cap`]（`0 < cap < SLICE` 取 cap：预算片在耗点精确起爆——消费侧
+/// Fair::tick 当拍烧穿 slice_left 置 THROTTLE，执法检测延迟从「到下 tick
+/// 边界（相位 0..SLICE）」缩到 budget；否则回落 SLICE：cap==0 防御回落
+/// 〔want==now 立即起爆面不触〕、cap≥SLICE 同值退化 = [`arm_slice`] 满片
+/// 逐位零漂移）。夹取与写臂全同 [`arm_slice`]：S-6 单调夹取复用（只在
+/// 更早方向移动已编程截止——满片授片下 clamp 判定逐位同旧、收紧片只向
+/// 早；[`handle`] 入口满片 rearm 的「最早 SLICE 内必一 tick」硬底不受
+/// 影响）。消费面 = sched.rs `arm_after_grant` 单源（dl_grant 双门命中的
+/// 预算 deadline 授片臂——DL-only 裁决：Band 轴 quantum 轮转不连带锐化）。
+///
+/// # Safety
+/// 读 CNTVCT/CVAL + 写 CNTV 系统寄存器；EL1。
+pub unsafe fn arm_slice_cap(cap: u64) {
     let now = cntvct();
-    let want = now + SLICE;
+    // SAFETY: 单核顺序读；init 单写后恒定（init 前 SLICE=0 → 帽回落 0，
+    // want=now 形同旧 arm_slice 前置态）。
+    let slice = unsafe { SLICE };
+    let want = now + slice_cap(cap, slice);
     let cur = cval();
-    // W3-Q31 重放：S-6 deadline 单调夹取判定单源 berry-tickface（host
+    // W3-Q31 同款：S-6 deadline 单调夹取判定单源 berry-tickface（host
     // 钉板 arm_slice_clamp——只在「更早」方向移动已编程截止）。
     if let Some(w) = arm_slice_clamp(now, cur, want) {
         unsafe { arm_at(w) };

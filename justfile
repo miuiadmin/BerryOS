@@ -1285,6 +1285,29 @@ test-host:
     # Python 件不退役——CLI 对拍 oracle + gensourceindex --preset
     # import 面单源。
     cargo test --manifest-path tools/berryassemble/Cargo.toml --target {{host}}
+    # W1（彻底 Rust 化轨道 b 层 #7 刀序末档首刀）：bctsrun Rust 件——Tier 1
+    # 冻结件 schema 校验器镜像（现役单源 = tools/bcts/t1_check.py〔bcts-run.sh
+    # PYEOF①段机械抽出——heredoc→模块零行为变更〕）。lib：冻结件 TOML 子集
+    # 解析（顶层键 + [[marker]]/[[host_gate]] 数组节；点分节/数组值/内联表/
+    # hex/日期非目标形拒）+ 顶层八键执法 + marker/gate 值域全谱 + 空集守卫 +
+    # 文件名冗余自证 + META/MARK/GATE TSV 发射（拒面文案与 Python 逐字同源
+    # ——py_repr/True·False/单引号 list repr 形）。parity：仓内 bcts@0..6 七
+    # 件全量 TSV 逐行对拍 + 20 变异拒面逐字对拍 + TOML 语法面六语料双侧同拒
+    # （语法域文案各自实现——分支标识对齐）。二刀：src/t2.rs（T2 冻结件
+    # schema 校验镜像 = tools/bcts/t2_check.py）+ parity T2 三面（两冻结件
+    # 全量 + 26 变异 + 语法面八语料）。三刀：src/reconcile.rs（T2 静态对账
+    # 镜像 = tools/bcts/reconcile_t2.py——TSV 消费 + OP_* 常量扫描对账 + 五类
+    # 覆盖行；parity 真源两冻结件 stdout 逐字对拍 + 变异族 8 腿 + 扫描器边界
+    # （崩溃面诚实处理分歧注记）。四刀：src/abipr.rs（PYEOF④⑤镜像 =
+    # tools/bcts/abi_level.py + img_pr_check.py——[platform].level 读器〔值域
+    # 拒面 repr 同源：串/bool/float/None + OS Errno py repr 形〕+ manifest v1
+    # platform_revision 对账〔`item .* platform_revision=(\d{10})$` 贪心最右
+    # 位 + universal newlines 归一 + set 去重 sorted〕）；parity abipr 三面
+    # （真源 abi.toml stdout 全等 + 值域/Errno/坏 TOML 变异族 + 正则边界族
+    # 〔贪心/紧贴/双空格/CRLF/11 位回溯失败〕）。后续刀：参数面与活树清单
+    # 合成。独立小工作区，须显式 --target {{host}}。
+    # Python 件不退役——CLI 对拍 oracle。
+    cargo test --manifest-path tools/bctsrun/Cargo.toml --target {{host}}
     # W1 接线（SEC-02 A2 同款纪律）：berry_assemble 门禁自检——V13 组装器
     # （ADR #82「组装不 fork」product.toml 校验/dry-run 计划/装配反回滚门）
     # 落地时自称 51 腿绿但从未接线 test-host：有 selftest 零自动执法 =
@@ -1720,10 +1743,12 @@ test-host:
     # B1-b 落地时手动跑过，无 just/CI 接线 = 改坏无机器咬合。
     cargo test --manifest-path user/bins/guifbd/Cargo.toml --target {{host}}
     # W1 接线（D-审计 §4.2 尾「无 just/CI 接线」面）：tools/berry 设备壳
-    # host 单测 121 测（VNC/VeNCrypt/DES/QR/网页壳状态机等纯面——README
-    # §测试原只记手动咒语）入 host 台账。独立小工作区，host 纯面零
-    # 交叉编译；此前手动 cargo test 从未接线 = 面改坏无机器咬合。
-    cargo test --manifest-path tools/berry/Cargo.toml --target {{host}}
+    # host 单测（VNC/VeNCrypt/DES/QR/网页壳状态机等纯面——README §测试
+    # 原只记手动咒语）入 host 台账。独立小工作区，host 纯面零交叉编译；
+    # 此前手动 cargo test 从未接线 = 面改坏无机器咬合。2026-11-22 与上方
+    # cbox 刀 3 接线位去重——同 crate 双跑每轮白跑 369 测且 07 口径翻倍
+    # 计（沿革「链内 berry 双跑净增 X=N×2」注记即此债痕迹），本位注释
+    # 留档、执行归上位单跑。
     # W1 接线（R136 判例族·「有 host 测零自动执法 = 静默腐烂」）：
     # user/widgets/ 四独立小工作区（G3 刀 11-14 落地，26 host 测）——
     # berry-scene-ir（声明式小组件二进制序列化 16B header+24B 定长
@@ -1761,6 +1786,13 @@ test-host:
     cargo test --manifest-path user/compat/linux_runner/Cargo.toml --target {{host}}
     cargo test --manifest-path user/compat/vmm/Cargo.toml --target {{host}}
     cargo test --manifest-path user/compat/wayland-bridge/Cargo.toml --target {{host}}
+    # W1 接线（R136 判例族同款·终端刀 5 纯核两件，base 9cfb160ca 直推
+    # 零接线）：user/faces/utf8width（UTF-8 显示宽度：East Asian Wide/
+    # 全角锚/组合符零宽）+ user/ptyface（伪终端面：线路规程状态机/
+    # termios 域）。15 host 测，空 [workspace] escape 同 widgets/nfc/
+    # compat 形——零 just/CI 接线 = 语义面改坏无机器咬合。
+    cargo test --manifest-path user/faces/utf8width/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/ptyface/Cargo.toml --target {{host}}
     # W1 接线（base 重写剥落重放，#304 面）：sync-public members 对账门——
     # 白名单 ⊇ workspace members 机器执法（#153/#171/#227 三连 REJECT
     # 判例族根因：新增顶层 crate 忘补白名单 = 公开仓 build 必炸）。本刀

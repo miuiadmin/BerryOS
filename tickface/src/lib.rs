@@ -6,7 +6,7 @@
 //! `mrs`/`msr`、原子 static、`static mut` 留壳）。零依赖纯值域——
 //! host 可测钉板（`cfg_attr(not(test), no_std)` 双面）。
 //!
-//! 五面：
+//! 六面：
 //! 1. [`ns_reciprocal_for`]：tick→ns 倒数乘-移对预计算（最大 shift 精度
 //!    最优 + mul 上界无溢判，`const fn`——编译期可独立钉板）。
 //! 2. [`ns_fast_path`]/[`ns_slow_path`]：ticks→ns 快/慢双路（快路资格判
@@ -15,7 +15,9 @@
 //!    保留 `cur`——防块驱动快速切换的 deadline 跑步机饿死 tick）。
 //! 4. [`slice_budget`]：slice 预算再装数学（`freq / SLICE_HZ`；freq==0
 //!    → 0 防御）。
-//! 5. [`vct_delta`]：LAST_VCT 回绕窗增量（`last==0` 首读零增量 +
+//! 5. [`slice_cap`]：授片臂收紧律（`0 < grant < slice` 取 grant、否则回落
+//!    slice——arm_slice_cap 的片长帽，arm_slice 收紧刀 2026-11-22）。
+//! 6. [`vct_delta`]：LAST_VCT 回绕窗增量（`last==0` 首读零增量 +
 //!    `wrapping_sub` u64 回绕安全——计数器自然回绕下 delta 仍正确）。
 //!
 //! 纪律（自 timer.rs 逐字继承）：
@@ -114,6 +116,20 @@ pub fn arm_slice_clamp(now: u64, cur: u64, want: u64) -> Option<u64> {
         None
     } else {
         Some(want)
+    }
+}
+
+/// 授片臂收紧律（arm_slice 收紧刀 2026-11-22·深度优化）：`arm_slice_cap`
+/// 的片长帽——`grant ∈ (0, slice)` 时收紧到 `grant`（预算片在耗点精确
+/// 起爆），否则回落满片 `slice`（`grant == 0` 防御回落——`want == now`
+/// 立即起爆面不触；`grant >= slice` 同值退化 = 满片臂逐位零漂移）。纯值
+/// 律：`slice` 由调用侧给（freq 换算单源 timer.rs `init` 的 SLICE——本
+/// crate 零 freq 知识，与 [`slice_budget`] 分工同款）。
+pub fn slice_cap(grant: u64, slice: u64) -> u64 {
+    if grant > 0 && grant < slice {
+        grant
+    } else {
+        slice
     }
 }
 
@@ -386,6 +402,32 @@ mod tests {
         assert_eq!(arm_slice_clamp(now, want, want), Some(want));
         assert_eq!(arm_slice_clamp(now, 1, want), None);
         assert_eq!(arm_slice_clamp(now, want - 1, want), None);
+    }
+
+    // ---- slice_cap：授片臂收紧律（arm_slice 收紧刀 2026-11-22）----
+
+    #[test]
+    fn slice_cap_three_cases() {
+        // 三例钉板（slice=QEMU virt 实尺 6.25M cycles=100ms；S5-c 探针
+        // budget=2ms=125000 cycles 形）。
+        let slice = slice_budget(62_500_000);
+        // ① budget < slice → 收紧到 budget（预算片精确起爆）。
+        assert_eq!(slice_cap(125_000, slice), 125_000);
+        assert_eq!(slice_cap(1, slice), 1);
+        // ② budget >= slice → 回落满片（同值退化 = arm_slice 零漂移）。
+        assert_eq!(slice_cap(slice, slice), slice);
+        assert_eq!(slice_cap(slice + 1, slice), slice);
+        assert_eq!(slice_cap(u64::MAX, slice), slice);
+        // ③ budget == 0 → 回落满片（防御：want==now 立即起爆面不触）。
+        assert_eq!(slice_cap(0, slice), slice);
+    }
+
+    #[test]
+    fn slice_cap_pre_init_zero_slice() {
+        // init 前 SLICE==0（timer::init 前调用的防御面）：恒回落 0——与旧
+        // arm_slice 前置态（want=now+0）同形，不引入新行为。
+        assert_eq!(slice_cap(0, 0), 0);
+        assert_eq!(slice_cap(123, 0), 0);
     }
 
     // ---- slice_budget：预算再装数学 ----
