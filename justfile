@@ -1186,8 +1186,9 @@ test-host:
     # ai-runtime §四.1 第二片：berry-hnsw（HNSW 图骨架——splitmix 确定性
     # 分层指派〔位级 log16〕+ 贪心下降 + 有界 best-first 束搜〔R15
     # 升格：终止律剪枝 + ef 帽 + ef-construction 建图〕，距离闭包注入
-    # 与量化距离解耦，tie-break 节点号升序确定性检索，host 7 测；
-    # 多样性启发式随后续刀）。
+    # 与量化距离解耦，tie-break 节点号升序确定性检索 + 多样性启发式建图
+    # 〔diverse_filter 独立纯函数 + insert_heuristic 双闭包通道〕，
+    # host 9 测）。
     cargo test --manifest-path user/Cargo.toml -p berry-hnsw --target {{host}}
     # ai-runtime §三.2 首刀：berry-jsonmask（JSON 字节级约束解码掩蔽器
     # ——单源转移函数 step + 256 字节探测派生 mask〔合法集永不双写〕+

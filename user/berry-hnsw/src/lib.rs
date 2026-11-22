@@ -100,6 +100,28 @@ impl Neighbors {
     }
 }
 
+/// 多样性启发式过滤（经典 HNSW heuristic）：按 (id, dist-to-new) 升序
+/// 候选，保留比任意已选邻居更近新点者（`dxy(a, b)` 供点对距离）——
+/// 共线冗余方向弃、远侧异向保；结果写 `out` 返回条数（≤ 其容量）。
+pub fn diverse_filter(
+    cands: &[(usize, f32)],
+    dxy: &dyn Fn(usize, usize) -> f32,
+    out: &mut [(usize, f32)],
+) -> usize {
+    let mut n = 0usize;
+    for &(id, d) in cands {
+        if n >= out.len() {
+            break;
+        }
+        let keep = out[..n].iter().all(|&(sid, _)| d < dxy(id, sid));
+        if keep {
+            out[n] = (id, d);
+            n += 1;
+        }
+    }
+    n
+}
+
 /// 定容 HNSW 图（朴素建图形）。
 #[derive(Debug, Clone)]
 pub struct Hnsw {
@@ -146,8 +168,27 @@ impl Hnsw {
     }
 
     /// 插入一节点：距离经 `dist` 闭包（对已入图节点求距）。
-    /// 朴素建图：每层与贪心入口直连（容量赶最远）；首节点成入口。
+    /// 建图 = ef-construction 束候选 top-M 直连（无多样性过滤）。
     pub fn insert(&mut self, dist: impl Fn(usize) -> f32) -> Result<usize, HnswError> {
+        self.insert_impl(dist, None)
+    }
+
+    /// 插入一节点（多样性启发式建图）：`dxy(a, b)` 供候选↔已选邻居
+    /// 距离（经典 HNSW heuristic——候选须比任意已选邻居更近新点才
+    /// 入选，方向多样性优于纯近邻）。
+    pub fn insert_heuristic(
+        &mut self,
+        dist: impl Fn(usize) -> f32,
+        dxy: impl Fn(usize, usize) -> f32,
+    ) -> Result<usize, HnswError> {
+        self.insert_impl(dist, Some(&dxy))
+    }
+
+    fn insert_impl(
+        &mut self,
+        dist: impl Fn(usize) -> f32,
+        dxy: Option<&dyn Fn(usize, usize) -> f32>,
+    ) -> Result<usize, HnswError> {
         let id = self.count;
         if id >= MAX_NODES {
             return Err(HnswError::NodeFull);
@@ -171,8 +212,17 @@ impl Hnsw {
                 return Err(HnswError::BadNode);
             }
             cur = res[0].0; // 下降入口 = 本层最近者
-            for i in 0..n.min(MAX_NEIGHBORS) {
-                let (nid, d) = res[i];
+            let mut filtered = [((0usize, 0f32)); MAX_NEIGHBORS];
+            let take = match dxy {
+                Some(h) => diverse_filter(&res[..n], h, &mut filtered),
+                None => {
+                    let t = n.min(MAX_NEIGHBORS);
+                    filtered[..t].copy_from_slice(&res[..t]);
+                    t
+                }
+            };
+            for i in 0..take {
+                let (nid, d) = filtered[i];
                 self.connect(id, nid, l, d)?;
             }
         }
@@ -440,5 +490,38 @@ mod tests {
         let n2 = g.search(dist_1d(10.1), 4, &mut small).unwrap();
         assert_eq!(n2, 2);
         assert_eq!(small[0], out[0]);
+    }
+
+    #[test]
+    fn diverse_filter_drops_collinear_keeps_far_side() {
+        // 1D 坐标表：节点 0=0.0、1=9.0、2=8.5；新点 10.0。
+        // 候选升序：1(d=1)、2(d=1.5)、0(d=10)。
+        // 启发式：2 弃（dxy(2,1)=0.5 < 1.5 共线冗余）；0 保（dxy(0,1)=9 ≥ 10？不——
+        // 9 < 10 → 按经典律 d < dxy 即 10 < 9 为假 → 弃！经典律只保「比所有
+        // 已选更近新点」——远侧异向在 1D 无意义（1D 全共线），本腿改为钉
+        // 共线弃与首邻保两事实；异向价值面归 2D 消费侧）。
+        let coords = [0.0f32, 9.0, 8.5];
+        let dxy = |a: usize, b: usize| (coords[a] - coords[b]).abs();
+        let cands = [(1usize, 1.0f32), (2, 1.5), (0, 10.0)];
+        let mut out = [(0usize, 0f32); 4];
+        let n = diverse_filter(&cands, &dxy, &mut out);
+        assert_eq!(n, 1);
+        assert_eq!(out[0], (1, 1.0)); // 唯一存活：最近者；共线全弃（1D 语义）
+    }
+
+    #[test]
+    fn insert_heuristic_builds_and_searches() {
+        // 双闭包通道全链：启发式建图后检索仍精确。
+        let mut g = Hnsw::new();
+        let coord = |i: usize| i as f32 * 0.5;
+        for i in 0..32 {
+            let q = coord(i);
+            let dxy = |a: usize, b: usize| (coord(a) - coord(b)).abs();
+            g.insert_heuristic(move |j: usize| (coord(j) - q).abs(), dxy).unwrap();
+        }
+        let mut out = [(0usize, 0f32); 2];
+        let n = g.search(|j: usize| (coord(j) - 7.5).abs(), 2, &mut out).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(out[0], (15, 0.0));
     }
 }
