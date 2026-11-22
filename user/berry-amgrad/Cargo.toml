@@ -1,0 +1,14 @@
+[package]
+name = "berry-amgrad"
+version.workspace = true
+edition = "2021"
+# ai-runtime 同批的 am §一首刀（.agents/plans/am/design.md 契约一「终
+# 态五级弹性处置梯度」）：梯度决策核纯函数 crate——五级表单源化为
+# choose(facts) -> Tier（RAM 梯度 L0→L3 升格 + 磁盘梯度 L4 正交优先
+# 级），appd 策略与内核机制接线前的策略面钉板（表语义测试逐行钉）。
+# 「解析器即产品」家族纪律：零 unsafe 零依赖零分配，
+# `cfg_attr(not(test), no_std)`；host 测试经 justfile test-host 显式行跑。
+description = "BerryOS activity-manager disposal gradient decision core: five-tier escalation as pure choice (am contract 1)"
+license = "Apache-2.0"
+
+[dependencies]

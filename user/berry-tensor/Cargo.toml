@@ -1,0 +1,17 @@
+[package]
+name = "berry-tensor"
+version.workspace = true
+edition = "2021"
+# ai-runtime §二 Tier 0 首刀（.agents/plans/ai-runtime/design.md 契约二.1
+# 「确定性全平台量化软核」）：Q4_0/Q8_0 分组量化算子核纯函数 crate——
+# 块布局单源（llama.cpp 兼容字节形）+ f16 解码 + 去量化 + 量化×量化
+# 整数内积点积（scale 后乘，确定性顺序累积），「解析器即产品」家族
+# 形态：零 unsafe、零依赖、零分配、`cfg_attr(not(test), no_std)`（
+# workspace none-target 全量构建可编），test 构建放开 std 仅为测试
+# 挂具。SIMD（dotprod/i8mm/AVX2）与 MatMul/FlashAttn 图算子归后续刀，
+# 本刀钉语义基线（SIMD 改写以此对拍）。host 测试经 justfile test-host
+# 显式行跑。
+description = "BerryOS quantized tensor operator core (Tier 0): Q4_0/Q8_0 block layout, dequant and integer dot (ai-runtime contract 2.1)"
+license = "Apache-2.0"
+
+[dependencies]

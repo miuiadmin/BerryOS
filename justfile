@@ -1163,6 +1163,58 @@ test-host:
     # 接线去重——#356 已带 workspace 形 -p berry-appshell 行（上方波3-件⑦
     # 段），manifest-path 重复行移除（appshell 33 测曾双跑，实测去重）。
     cargo test --manifest-path user/berry-softime/Cargo.toml --target {{host}}
+    # ai-runtime §二 Tier 0 首刀：berry-tensor（量化算子核纯函数面——
+    # Q4_0/Q8_0 块布局单源〔llama.cpp 兼容字节形〕+ f16 位级解码含次
+    # 正规/去量化/量化×量化整数内积点积〔块内 i32、scale 后乘、f32 顺
+    # 序累积——Tier 0 确定性基线，SIMD/卸载后端对拍锚〕+ 第二片
+    # matvec_q4_q8〔GEMV 行基元〕/rmsnorm〔inv_sqrt 位黑客种子 + 3 轮牛
+    # 顿纯 core〕+ 第三片 fp16/bf16 点积〔bf16=f32 高 16 位位域还原〕，
+    # host 19 测；
+    # 消费 = airtd/berry-aiproto 张量段〔后续刀〕）。
+    cargo test --manifest-path user/Cargo.toml -p berry-tensor --target {{host}}
+    # ai-runtime §三.1 首刀：berry-kvpool（块级分页 KV-Cache 池语义——
+    # 16-Token KvBlock 定容池 + 前缀 Copy-on-Write 共享〔引用计数 +1 物
+    # 理恒一份〕+ 共享尾块禁原地写执法〔满尾滚新块不属 COW 面——fork
+    # 续写主路径〕+ 显式回收口，host 9 测；真消费
+    # = airtd Paged KV-Cache 运行时〔后续刀〕）。
+    cargo test --manifest-path user/Cargo.toml -p berry-kvpool --target {{host}}
+    # ai-runtime §四.1 首刀：berry-vqvec（vault 定点量化向量基元——每
+    # vec 单 scale 的 i8 标量量化〔round-half-away 手写〕+ 非对称整数
+    # 域距离〔内积/L2²〕，全零 vec 退化无除零，host 8 测；HNSW 图与
+    # FBE/VaultQueryCap 门控归 berry-vault 服务刀〔后续〕）。
+    cargo test --manifest-path user/Cargo.toml -p berry-vqvec --target {{host}}
+    # ai-runtime §四.1 第二片：berry-hnsw（HNSW 图骨架——splitmix 确定性
+    # 分层指派〔位级 log16〕+ 贪心下降 + 有界 best-first 束搜〔R15
+    # 升格：终止律剪枝 + ef 帽 + ef-construction 建图〕，距离闭包注入
+    # 与量化距离解耦，tie-break 节点号升序确定性检索 + 多样性启发式建图
+    # 〔diverse_filter 独立纯函数 + insert_heuristic 双闭包通道〕，
+    # host 9 测）。
+    cargo test --manifest-path user/Cargo.toml -p berry-hnsw --target {{host}}
+    # ai-runtime §三.2 首刀：berry-jsonmask（JSON 字节级约束解码掩蔽器
+    # ——单源转移函数 step + 256 字节探测派生 mask〔合法集永不双写〕+
+    # 拒绝不改态〔100% 合法输出机制〕+ can_finish 流式终判〔裸数字态〕，
+    # R12 深度 N〔显式容器栈 ≤16 层越帽拒〕，host 10 测；Schema 编译随后续刀）。
+    cargo test --manifest-path user/Cargo.toml -p berry-jsonmask --target {{host}}
+    # am §一首刀：berry-amgrad（终态五级弹性处置梯度决策核——五级表
+    # 单源 choose〔RAM 谱系 L0<L2<L1<L3 升格 + L4 磁盘正交〕、租约豁
+    # 免压制冰封与深化、防抖窗双钉值 3s/0s，无触发即 None 禁默认动作，
+    # host 8 测；执行机构归内核机制与 appd 接线刀）。
+    cargo test --manifest-path user/Cargo.toml -p berry-amgrad --target {{host}}
+    # am §二.2 首刀：berry-wakeflood（唤醒风暴熔断核——每客户端分钟
+    # 桶计数〔环形零分配〕+ 12 次/分钟钉值熔断 + 冷却窗释放与再熔断
+    # 环〔释放纯时间驱动〕，host 7 测；计时器/退避投递/耗电台账归
+    # appd 与 power-thermal 接线刀）。
+    cargo test --manifest-path user/Cargo.toml -p berry-wakeflood --target {{host}}
+    # ai-runtime §二 Tier 1 客机侧首刀：berry-npuproto（virtio-compute
+    # wire 编解码——config/命令描述符〔virtio-gpu 控制头同形〕/blob 页
+    # 帧表〔off 4096 对齐执法〕/完成环三态〔OK/Unsupported 降级依据/
+    # Watchdog 看门狗〕，畸形即 None 不截断，op 值镜像 berry-tensor，
+    # host 7 测；宿主 Metal 桥归 tools/berry 边界面）。
+    cargo test --manifest-path user/Cargo.toml -p berry-npuproto --target {{host}}
+    # am §二.3 首刀：berry-anrwatch（ANR 判定核——指令类分阈〔前台
+    # Launch/Resume 5s、PauseSave 2s 契约钉值〕+ 两段语义〔超时发取证→
+    # 宽限尽或证据在手即终止〕，host 5 测；cbox 抓栈与终止执行归服务刀）。
+    cargo test --manifest-path user/Cargo.toml -p berry-anrwatch --target {{host}}
     # mkapp 门禁自检（a-3 U4：mkfat --check-fixture 同位前置——打包器门禁
     # 面此前只在 build-user 产物链上被动覆盖，门禁自身坏 = 产物链静默劣化）。
     python3 tools/mkapp.py --selftest
