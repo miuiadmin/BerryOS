@@ -1751,6 +1751,13 @@ test-host:
     cargo test --manifest-path user/compat/linux_runner/Cargo.toml --target {{host}}
     cargo test --manifest-path user/compat/vmm/Cargo.toml --target {{host}}
     cargo test --manifest-path user/compat/wayland-bridge/Cargo.toml --target {{host}}
+    # W1 接线（R136 判例族同款·终端刀 5 纯核两件，base 9cfb160ca 直推
+    # 零接线）：user/faces/utf8width（UTF-8 显示宽度：East Asian Wide/
+    # 全角锚/组合符零宽）+ user/ptyface（伪终端面：线路规程状态机/
+    # termios 域）。15 host 测，空 [workspace] escape 同 widgets/nfc/
+    # compat 形——零 just/CI 接线 = 语义面改坏无机器咬合。
+    cargo test --manifest-path user/faces/utf8width/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/ptyface/Cargo.toml --target {{host}}
     # W1 接线（base 重写剥落重放，#304 面）：sync-public members 对账门——
     # 白名单 ⊇ workspace members 机器执法（#153/#171/#227 三连 REJECT
     # 判例族根因：新增顶层 crate 忘补白名单 = 公开仓 build 必炸）。本刀
