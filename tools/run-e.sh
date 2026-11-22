@@ -27,7 +27,7 @@ cmd_start() {
   fi
   date +%s > "$MARKER"
   cmd_launch-session
-  tmux new-session -d -s "=$HB_NAME" "bash tools/e-heartbeat.sh $RUN_NAME"
+  tmux new-session -d -s "$HB_NAME" "bash tools/e-heartbeat.sh $RUN_NAME"
   echo "run-e: 已发射（run=$RUN_NAME hb=${HB_NAME}）——bash tools/run-e.sh watch 观察"
 }
 
@@ -37,13 +37,13 @@ cmd_launch-session() {
   if [ -f "$sid_file" ] && [ -n "$(cat "$sid_file")" ]; then
     sid=$(cat "$sid_file")
     BERRYOS_E_RUN=1 CLAUDE_PROJECT_DIR="$(git rev-parse --show-toplevel)" \
-      tmux new-session -d -s "=$RUN_NAME" \
+      tmux new-session -d -s "$RUN_NAME" \
       "claude --resume $sid --dangerously-skip-permissions '读盘上状态继续跑：python3 tools/pack-work.py'"
   else
     sid=$(uuidgen | tr 'A-Z' 'a-z')
     printf '%s' "$sid" > "$sid_file"
     BERRYOS_E_RUN=1 CLAUDE_PROJECT_DIR="$(git rev-parse --show-toplevel)" \
-      tmux new-session -d -s "=$RUN_NAME" \
+      tmux new-session -d -s "$RUN_NAME" \
       "claude --session-id $sid --dangerously-skip-permissions '$RUN_PROMPT'"
   fi
 }
