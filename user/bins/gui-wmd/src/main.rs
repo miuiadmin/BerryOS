@@ -23,12 +23,11 @@
 //! ——本行永不进 MARKERS）转 serve。
 //!
 //! **serve poll-first（波3 事件通道 + K1 I1 per-app apps 面）**：每轮顶依次
-//! ⓪poisoned 中继通道非阻塞清淤（停摆根治刀 §1.2——清到即丢+解污染，
-//! 健康期 Clean fast path 零 I/O）→ ①返回兜底软定时到点检查（500ms 单槽
-//! ——无在途帽不动作）→ ②事件通道非阻塞收割（BACK_ACK/订阅端忽略帧）
-//! → ③wm_srv→push_srv→apps 通道段确定性轮询（各路至多一条：请求面严格
-//! 串行 RPC；apps 段 recv 错码 = close+摘表——坏 app 客户端不杀服务）→
-//! 全 EAGAIN 才 `berry_object_wait_many` 并等；wait 集 = wm_srv + push_srv + 事件通道
+//! ①返回兜底软定时到点检查（500ms 单槽——无在途帽不动作）→ ②事件通道
+//! 非阻塞收割（BACK_ACK/订阅端忽略帧）→ ③wm_srv→push_srv→apps 通道段
+//! 确定性轮询（各路至多一条：请求面严格串行 RPC；apps 段 recv 错码 =
+//! close+摘表——坏 app 客户端不杀服务）→ 全 EAGAIN 才
+//! `berry_object_wait_many` 并等；wait 集 = wm_srv + push_srv + 事件通道
 //! （属主+订阅者）+ apps（表序稳定）截 [`WAIT_SET_MAX`]=16（kernel
 //! `WAIT_MANY_MAX` 单源镜像）——**越窗判定走需求总数**
 //! `2 + wait_set_needed()`（不截断值——K1 I1 重造：旧 evt_handles 式拼装
@@ -47,10 +46,8 @@
 //! **K1 I1 起 per-app 多客户端成为常态**（launcher + 各 [ui] app 独占
 //! 通道）：中继阻塞期间对端可变更表 → TABLE_GET 应答快照与「请求到达
 //! 时」表态可能有出入（新鲜度窗口 = 一次中继时长）；某 app 的长 park
-//! 中继（RELEASE_WAIT 等）会顺延他人——**停摆根治刀（§1）起顺延上界
-//! = 分相帽**（send 10s / recv 2s，帽到点快答 ST_BUSY 返回 serve 不自
-//! 杀；毒化通道清淤恢复——见 `relay` 模块注），新鲜度窗口同此上界；
-//! 快照戳挂账后刀。
+//! 中继（RELEASE_WAIT 等）会顺延他人一帧处理时长——**接受为 v1 语义**
+//! （各客户端 RPC 帽 300s 同值不先炸；中继帽收紧/快照戳挂账后刀）。
 //! **波3 裁决（波3设计 §9）**：多客户端跟随面不走 TABLE_WAIT（冻结、
 //! 零新增驻留者——parked 单车位仍只归 inputd push 面），表跟随一律走
 //! 属主/订阅者事件通道 WM_EVENT_TABLE 通知 + TABLE_GET 快照（通知尽力
@@ -72,8 +69,6 @@ use berry_sys::{
 
 #[cfg(target_os = "linux")]
 use gui_wmd::{AppRecv, Port, SendEvtStatus};
-#[cfg(target_os = "linux")]
-use gui_wmd::relay::{self, Domain, RelayIo, RelayState};
 #[cfg(target_os = "linux")]
 use gui_wmd::table::WmTable;
 
@@ -312,8 +307,7 @@ impl Port for ChanPort {
 /// SUBSCRIBE 0x68 + K1 DETACH 0x6A；0x6B..=0x7F 未定形 → 1B ST_BAD）；
 /// **其余一切 op（含 0x20..=0x22 input 域错投、0x90..=0x9F 事件帧型
 /// 错投）→ 1B ST_BAD + close 随行**。`ch` = 帧来源通道（wm_srv 或 app
-/// 通道——应答参数化回它，多客户端隔离的结构基础）。中继臂过
-/// [`RelayState`]（毒化账跨轮驻留——serve 循环持单例）。
+/// 通道——应答参数化回它，多客户端隔离的结构基础）。
 #[cfg(target_os = "linux")]
 fn on_wm(table: &mut WmTable, rstate: &mut RelayState, present_cli: Handle, hdi_cli: Handle,
          ch: Handle, msg: &[u8], hs: &[Handle]) {
@@ -323,6 +317,17 @@ fn on_wm(table: &mut WmTable, rstate: &mut RelayState, present_cli: Handle, hdi_
         }
         Some(&op) if (gp::OP_REG_VBLANK..=gp::OP_VBLANK_TIMING).contains(&op) => {
             relay_dispatch(rstate, Domain::Hdi, ch, hdi_cli, msg, hs);
+        }
+        // 0x69 开口：恰 1B + 随行恰 1（畸形/随行数失配 = ST_BAD + close
+        // 随行——坏客户端不杀服务）。ack 走新通道（table::app_attach）。
+        Some(&op) if op == gp::OP_WM_ATTACH => {
+            if gp::parse_wm_attach_req(msg).is_some() && hs.len() == 1 {
+                let mut port = ChanPort;
+                table.app_attach(&mut port, hs[0]);
+            } else {
+                close_all(hs);
+                st_rep(ch, gp::ST_BAD);
+            }
         }
         // 0x69 开口：恰 1B + 随行恰 1（畸形/随行数失配 = ST_BAD + close
         // 随行——坏客户端不杀服务）。ack 走新通道（table::app_attach）。
@@ -458,8 +463,7 @@ fn main() {
     // —— 启动序⑤：诊断行转 serve（小写 wmd 前缀——永不进 MARKERS）。
     println!("gui-wmd: up");
 
-    // —— serve poll-first：每轮顶 = ⓪poisoned 通道非阻塞清淤（§1.2——
-    // 清到即丢+诊断行+解污染）+ 返回兜底软定时检查 + 事件通道收割
+    // —— serve poll-first：每轮顶 = 返回兜底软定时检查 + 事件通道收割
     // （BACK_ACK 至多迟一轮——请求面处理不饿死收割）；wm_srv→push_srv→
     // apps 通道段确定性轮询（各路至多一条）；全 EAGAIN 才 wait_many 并等
     // （deadline 进调用本身）。命中/到点皆回环顶重询（poll-first 无丢唤醒）。
@@ -488,7 +492,7 @@ fn main() {
         // apps 轮询段（K1 I1）：一路至多一帧（串行 RPC 纪律同上；命中帧
         // 同走 on_wm——应答参数化回该通道；病态通道在段内 close+摘表）。
         if let Some(f) = table.poll_apps(&mut port) {
-            on_wm(&mut table, &mut rstate, present_cli, hdi_cli, f.ch, &f.msg[..f.n], &f.hs[..f.nh]);
+            on_wm(&mut table, present_cli, hdi_cli, f.ch, &f.msg[..f.n], &f.hs[..f.nh]);
             continue;
         }
         // wait 集 = [wm_srv, push_srv] + 事件通道（属主+订阅者）+ apps，

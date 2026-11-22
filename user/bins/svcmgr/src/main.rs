@@ -876,35 +876,6 @@ static LAUNCHER_RESTARTED: AtomicU32 = AtomicU32::new(0);
 static LAUNCHER_WMCLI: AtomicU32 = AtomicU32::new(0);
 static LAUNCHER_WMSRV: AtomicU32 = AtomicU32::new(0);
 
-// ---- I2：wmd 监督一次重启（wmd 停摆根治刀 · SPEC §2）----
-
-/// wmd 监督子柄（I2）：wmd spawn Ok 留存（boot arm / 监督重启共用装配路
-/// `wmd_spawn` 落值），稳态 loop `wmd_supervise` 非阻塞探活用；None = 无
-/// wmd（rootfs 形/死亡收口后重启未成/帽尽）。旧形「常驻不 reap 句柄长存」
-/// 的孤儿 drop 改为显式留存——探活 + 死亡面 reap 收口的前提。
-/// SAFETY: svcmgr 单线程独占（LAUNCHER_CHILD 同纪律）。
-static mut WMD_CHILD: Option<ChildHandles> = None;
-
-/// wmd 一次重启帽（I2——launcher_supervise 先例「一次重启」语义复用：
-/// 循环重启风暴比不重启更伤稳态）：swap 惯取 1 = 帽已用；帽后再死 = eco
-/// 终报行不再试。
-static WMD_RESTARTED: AtomicU32 = AtomicU32::new(0);
-
-/// wmd 四常驻源（I2 重启装配面）：wm 服务端端 / push 服务端端 / present
-/// 客户端端 / hdi 客户端端各 dup 一枚留表——boot arm Ok 路一次性落值
-/// （dup 先于 extras take，原件随 spawn 迁入后本表唯一同端点句柄即此四
-/// 源）。监督重启 = 四源**现 dup** 重组 env 冻结 8/8 同形 extras（`wmd_
-/// spawn` 共用芯）——同通道对象续命（内核 v1 无对端关闭检测、两端互钉环
-/// 上端点恒活）⇒ 新 wmd 承接 WMD_CLI_DUP 控制面（新 spawn 的 [ui] app
-/// attach 续通）与 inputd/WMD_PUSH_B 推送面。掩码四权 = 常驻 dup 源惯用
-/// 形（WMD_CLI_DUP 同款：使命就是再 dup + 随行迁移，位须显式保位）。
-/// **留表即留命**（NET_A/WMD_CLI_DUP 同形）；0 = boot 未走过 wmd Ok 路
-/// （rootfs 形恒 0——重启路判零防御直退）。
-static WMD_WM_SRV_SRC: AtomicU32 = AtomicU32::new(0);
-static WMD_PUSH_SRV_SRC: AtomicU32 = AtomicU32::new(0);
-static WMD_PRESENT_SRC: AtomicU32 = AtomicU32::new(0);
-static WMD_HDI_SRC: AtomicU32 = AtomicU32::new(0);
-
 /// SPAWN RPC 活子表帽（M-C）：GUI app 分钟级活期 × 4 槽 = 同时活 app 上
 /// 限；满表拒新不拒旧（洪泛面：launcher 端重复点击防抖归 launcher，本帽
 /// 兜服务侧结构性上限——防 APP_SPAWN 洪泛撑爆监督面）。帽值 = 桌面 4 页
@@ -7119,8 +7090,8 @@ fn app_launch(
     //    （wm_attach_rpc：控制端临时 dup、ack 在 cli 端收 = 双向验证已
     //    通）→ cli 落 gifts 槽位。共享 WMD_CLI_DUP 单 FIFO 多读者应答
     //    互截（「submit ack bad」断链本尊）的缺陷面就此退役；input 端
-    //    已撤（④ 撤除记录——INPUT_A 同为多消费者单 FIFO 禁例形，同因
-    //    同判）。门 = [ui] ∧ WMD_CLI_DUP≠0：manifest type
+    //    仍 INPUT_A 常 dup（SEND|RECV|TRANSFER——TRANSFER = 随 env 块迁
+    //    移的 send 预检保位）。门 = [ui] ∧ WMD_CLI_DUP≠0：manifest type
     //    无 gui 分类（app/driver 两值域——ADR #82），[ui] 节 = 现行最近
     //    似的 GUI 判别位；rootfs 形/裸相 wmd 未起恒缺席（rootfs smoke
     //    现状零漂）。APPQUIET 无 [ui] 不入此面——其 lifecycle absent
@@ -7133,16 +7104,17 @@ fn app_launch(
     let wmd_src = WMD_CLI_DUP.load(Ordering::Relaxed);
     let inp_src = INPUT_A.load(Ordering::Relaxed);
     // slot 布局（前缀紧致律——berry-exec「零 0 洞」与 libc io.rs GIFT_H
-    // 按位落种的对偶）：wants_fs = [rootfs, fs, cli?]（cli 落 [2]
-    // 暂无 app 侧访问器 = 波 4 appshell 裁决 A 位）；!wants_fs = 恰
-    // [cli]（wm_cli_h() = [0]——settings 链 berry-launcher 镜像位）或
-    // 满前缀 [cli, 占位, 占位]（[1]/[2] = dup(cli) 自有别名）。input
-    // 固定位 [3] 已撤（④ 撤除记录）——app 侧 input_h()==0 静态页降级
-    //（与现稳定版桌面行为一致）。
+    // 按位落种的对偶）：wants_fs = [rootfs, fs, cli?, in?]（cli 落 [2]
+    // 暂无 app 侧访问器 = 波 4 appshell 裁决 A 位；input 固定位 [3] =
+    // `input_h()`——只随满前缀入列）；!wants_fs = 恰 [cli]（wm_cli_h()
+    // = [0]——settings 链 berry-launcher 镜像位）。K1 起占位双 dup 撤
+    // 除：gui_ph 占位本是撑满前缀到 [3] 的共享端点别名，per-app 后结构
+    // 性退役——!wants_fs 面 input 无满前缀恒缺席（app 侧 input_h()==0
+    // 静态页降级 = launcher input 缺席截断同款）。
     let mut wm_cli: Handle = 0;
     let mut wm_det: Handle = 0;
     let mut wm_srv_id: u32 = 0;
-    let in_dup: Handle = 0;
+    let mut in_dup: Handle = 0;
     let mut gui_ph0: Handle = 0;
     let mut gui_ph1: Handle = 0;
     if wants_gui && wmd_src != 0 {
@@ -7175,36 +7147,30 @@ fn app_launch(
         if ctl != 0 && berry_handle_close(ctl) != 0 {
             trap();
         }
-        // ④ input dup 撤除记录（2026-11-20 二度撤除）：INPUT_A 是共享
-        //    输入通道服务端，launcher 与各 [ui] app 并发持 dup 即多消费
-        //    者单 FIFO 应答互截——已定谳禁例形（判例：dup(WMD_CLI_DUP)
-        //    单 FIFO 应答互截两路实锤；首撤 = fix#2「应用内全冻与导航
-        //    三键零反应」刀，随全量回退复活后本刀再撤）。本刀起 inp_src
-        //    不再 dup（in_dup 恒 0）：input 位 [3] 恒不装，app 侧
-        //    input_h()==0 静态页降级（与现稳定版桌面行为一致）；私有
-        //    per-app 输入通道归后续 inputfeed 重做刀（重做门：
-        //    .agents/notes/rejected/2026-11-20-云桌面多客户端架构根治.md
-        //    ——armed 后放置十分钟以上的 aged 注入 live 门）。
-        //    占位 dup（[1]/[2] = dup(cli) 自有别名）保留——它服务于满
-        //    前缀语义：重做刀回装 input 时前缀面即位（K1 旧共享端点占位
-        //    的互截面不返）。**占位 dup 掩码必须保 RIGHT_TRANSFER**
-        //    （berry-exec env 块 send 预检律）：占位柄随 gifts[1]/[2]
-        //    进 channel_send 随行迁移，内核逐柄验 TRANSFER——去位即
-        //    -EACCES(-13) 反杀本进程（G1.5 全服务连灭，2026-11-19 云桌面
-        //    CONTACTS 点击实抓：x0=-13/nhandles=8/plen=13）。
+        // ④ input dup（满前缀面才装；INPUT_A==0 = 尾截断：app 侧
+        //    input_h()==0 静态页降级，wm 面照授）。!wants_fs 面
+        //    （CONTACTS/MMS 两枚）input 位 [3] 需满前缀——以 **dup(cli)
+        //    自有别名**占 [1]/[2]（主会话裁决修复 I2 风险项：旧占位是
+        //    WMD_CLI_DUP 共享端点别名〔互截面〕，自有通道别名永不消费
+        //    零共享面——槽位语义与 libc GIFT_H 按位落种对偶全保，app
+        //    内 input_h() 复活）。
         if !bad && inp_src != 0 {
             let pref_ok = if wants_fs {
                 true
             } else {
-                berry_handle_duplicate(cli, RIGHT_SEND | RIGHT_TRANSFER, &mut gui_ph0) == 0
-                    && berry_handle_duplicate(cli, RIGHT_SEND | RIGHT_TRANSFER, &mut gui_ph1) == 0
+                berry_handle_duplicate(cli, RIGHT_SEND, &mut gui_ph0) == 0
+                    && berry_handle_duplicate(cli, RIGHT_SEND, &mut gui_ph1) == 0
             };
-            if !pref_ok {
-                bad = true; // 占位 dup 败 = 满前缀不可达，loud 拒起（重做门前缀面必须完整）
+            if pref_ok {
+                if berry_handle_duplicate(inp_src, RIGHT_SEND | RIGHT_RECV | RIGHT_TRANSFER, &mut in_dup) != 0 {
+                    bad = true;
+                }
+            } else {
+                bad = true; // 占位 dup 败 = 满前缀不可达，同 input dup 败面
             }
         }
         if bad {
-            // 半途失败：已建面（对/det/占位）全量回收 + fs dup 连带
+            // 半途失败：已建面（对/det/input）全量回收 + fs dup 连带
             // （构建序反序——fs 半途失败关 rootfs_dup 同款）+ out 对
             // （console=false 已分岔面）。loud 拒起不拦系统：app 侧走
             // 「wm absent」park 自述（fs "fs dup" 路同形）。attach 已
@@ -7223,7 +7189,7 @@ fn app_launch(
                     trap();
                 }
             }
-            // 分诊行：attach 链败（含①②dup）vs attach 后的占位 dup 败。
+            // 分诊行：attach 链败（含①②dup）vs attach 后的 input dup 败。
             eco_app(console, id, if attached { b"gui dup" } else { b"wm attach" });
             if out_s != 0
                 && (berry_handle_close(out_s) != 0 || berry_handle_close(stdout) != 0)
@@ -7245,23 +7211,23 @@ fn app_launch(
         gifts[1] = fs_dup;
         if wm_cli != 0 {
             gifts[2] = wm_cli;
-            // input 位 [3] 恒不装（④ 撤除记录）——尾截断在 [cli]。
-            &gifts[..3]
+            if in_dup != 0 {
+                gifts[3] = in_dup;
+                &gifts[..4]
+            } else {
+                &gifts[..3]
+            }
         } else {
             &gifts[..2]
         }
     } else if wm_cli != 0 {
         gifts[0] = wm_cli;
-        if gui_ph0 != 0 {
-            // 满前缀形占位（[1]/[2] = cli 自有别名，服务于满前缀语义
-            // ——见 ④ 注；input 位 [3] 撤。gui_ph0≠0 ⟹ gui_ph1≠0
-            // 同批成对，零 0 洞保形）。占位别名落 env 位 [5]/[6] →
-            // libc GIFT_H[1]/[4]（fs_h/wm_present_h 同槽族）——
-            // !wants_fs app 禁读这两槽：读到的是 wm cli 别名非 0 假
-            // 在场，非 fs/present 端点（对抗审查 P3 钉板）。
+        if in_dup != 0 {
+            // 满前缀形（占位 [1]/[2] = cli 自有别名，input [3]——见 ④ 注）。
             gifts[1] = gui_ph0;
             gifts[2] = gui_ph1;
-            &gifts[..3]
+            gifts[3] = in_dup;
+            &gifts[..4]
         } else {
             &gifts[..1]
         }
@@ -7299,7 +7265,7 @@ fn app_launch(
             // fresh 私有对原值都在——关掉（vblk Err-path close 同款纪律）。
             // SDK-1a §5.2 步骤 6：fs dup 未 take 也在表——先关两枚再关
             // out 对（半途失败连带关的序一致化）。GUI 面（wm_det/wm_cli/
-            // 占位）同理未 take——attach 已成先 DETACH 回收 wmd 槽
+            // input）同理未 take——attach 已成先 DETACH 回收 wmd 槽
             // （best effort），非零全量回收防表槽泄漏。
             if wants_fs {
                 if berry_handle_close(rootfs_dup) != 0 || berry_handle_close(fs_dup) != 0 {
@@ -7317,8 +7283,6 @@ fn app_launch(
             if wm_cli != 0 && berry_handle_close(wm_cli) != 0 {
                 trap();
             }
-            // in_dup 恒 0（④ 撤 dup 后）——此分支不可达但保留清理面
-            // 结构：重做刀回装 input dup 时此收口即复活，勿删。
             if in_dup != 0 && berry_handle_close(in_dup) != 0 {
                 trap();
             }
@@ -7344,8 +7308,7 @@ fn app_launch(
         Ok(child) => {
             // SDK-1a §5.2 步骤 7：fs 两 dup 已被 take 随 env 块迁移（子表
             // 所有）——本表勿关（旧值已失效，关 = -EBADF；bsh arm 同款
-            // 注释义务）。GUI 面：wm_cli 与占位别名同律随 extras take
-            // 迁入（in_dup 恒零无迁移面）；
+            // 注释义务）。GUI 面：wm_cli/input 同律随 extras take 迁入；
             // wm_det（cli 自留 dup）+ wm_srv_id 留本表随尾账走 reap 面
             // DETACH。
             if ledger {

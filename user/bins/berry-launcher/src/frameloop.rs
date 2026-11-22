@@ -617,52 +617,6 @@ fn home_destroy_ids<'a>(
         .map(|e| e.id)
 }
 
-/// 覆盖面判据（纯谓词，测试面）：非自 ∧ LAYER_APP 的可见窗在场 = 桌面被
-/// 应用画面覆盖（v1 无合成器，像素共享 fb——应用帧盖在桌面像素之上，但
-/// 输入单订阅者模型下指针事件仍全投 launcher，桌面命中面在覆盖态不可
-/// 达）。焦点窗优先（wmd CREATE 接焦 = 覆盖者），无焦点回退表序首可见
-/// 窗。仅自窗/隐藏窗/SYSTEM 层 = None（桌面未覆盖）。
-fn covering_app_win(snap: &gp::WmSnapshot, self_wins: &[u16; 2]) -> Option<u16> {
-    let visible = |e: &gp::WmEntry| {
-        e.layer == gp::WM_LAYER_APP
-            && e.flags & gp::WM_WIN_F_VISIBLE != 0
-            && !self_wins.contains(&e.id)
-    };
-    let entries = &snap.entries[..snap.count];
-    entries
-        .iter()
-        .find(|e| visible(e) && e.flags & gp::WM_WIN_F_FOCUSED != 0)
-        .or_else(|| entries.iter().find(|e| visible(e)))
-        .map(|e| e.id)
-}
-
-/// 覆盖态点击处置（back 键「先收应用」支路的点击面同款）：查表见非自
-/// APP 窗在场 = 收盖——DESTROY 该窗 + wake（空脏集置 FULL 的正统重画路，
-/// 覆盖残留像素）后消费本次点击；无覆盖/查表失败 = false（回落原点击
-/// 面——fail-open，覆盖判据病态不连坐桌面常行为）。DESTROY 失败
-/// eprintln 诊断（窗口表与像素面失联的异常面），仍 wake 仍消费（防同拍
-/// 连击再落 spawn 面把失败面放大）。
-fn on_covered_tap(ui: &mut UiMain, wm_h: Handle, self_wins: &[u16; 2], t_now: u64) -> bool {
-    let mut req = [0u8; 256];
-    let mut rep = [0u8; 256];
-    let mut rhs = [0 as Handle; 8];
-    let m = gp::encode_wm_table_get_req(&mut req);
-    let (n, _) = rpc(wm_h, &req[..m], &[], &mut rep, &mut rhs);
-    let target = match gp::parse_wm_snapshot_rep(&rep[..n]) {
-        Some(Ok(snap)) => covering_app_win(&snap, self_wins),
-        _ => None,
-    };
-    let Some(wid) = target else { return false };
-    let m = gp::encode_wm_destroy_req(&mut req, wid);
-    let (n, _) = rpc(wm_h, &req[..m], &[], &mut rep, &mut rhs);
-    if rep[0] != 0 {
-        eprintln!("launcher: covered destroy id={} st={}", wid, rep[0]);
-    }
-    let _ = n;
-    ui.wake(t_now);
-    true
-}
-
 /// 导航五键命中 + 动作（刀 D，审计 02 号 §6.1 M2——走现役 `Msg::Click`
 /// 通道零新输入面）。返回 true = 已消费（不落槽 spawn）；false = 非导航
 /// 键（调用方续走 app 槽命中）。
@@ -1216,59 +1170,5 @@ mod tests {
             count: 0,
         };
         assert_eq!(home_destroy_ids(&snap, &SELF_WINS).count(), 0);
-    }
-
-    /// 覆盖面判据真值表（2026-11-20 事故刀）：焦点非自 APP 窗优先；
-    /// 无焦点回退表序首可见非自 APP 窗；仅自窗（桌面常态）/隐藏应用窗/
-    /// SYSTEM 层窗 = None（未覆盖，点击回落原 spawn 面）。
-    #[test]
-    fn covering_app_win_truth_table() {
-        // 焦点应用窗在场（wmd CREATE 接焦的覆盖常态）= 收它。
-        let mut e = [app_entry(0, 0); gp::WM_WINDOWS_MAX];
-        e[0] = app_entry(SELF_WINS[0], gp::WM_WIN_F_VISIBLE); // 状态栏自窗
-        e[1] = app_entry(SELF_WINS[1], gp::WM_WIN_F_VISIBLE); // 桌面自窗
-        e[2] = app_entry(3, gp::WM_WIN_F_VISIBLE | gp::WM_WIN_F_FOCUSED); // 覆盖者
-        let snap =
-            gp::WmSnapshot { version: 1, disp_w: 480, disp_h: 1000, entries: e, count: 3 };
-        assert_eq!(covering_app_win(&snap, &SELF_WINS), Some(3));
-
-        // 无焦点（wmd refocus 已落回桌面自窗）：回退表序首可见非自 APP 窗。
-        let mut e = [app_entry(0, 0); gp::WM_WINDOWS_MAX];
-        e[0] = app_entry(SELF_WINS[1], gp::WM_WIN_F_VISIBLE | gp::WM_WIN_F_FOCUSED);
-        e[1] = app_entry(4, gp::WM_WIN_F_VISIBLE);
-        e[2] = app_entry(5, gp::WM_WIN_F_VISIBLE);
-        let snap =
-            gp::WmSnapshot { version: 1, disp_w: 480, disp_h: 1000, entries: e, count: 3 };
-        assert_eq!(covering_app_win(&snap, &SELF_WINS), Some(4));
-
-        // 桌面常态（仅双自窗）= None——正常点击面零扰动（boot A 冒烟单击
-        // APPDEMO 前的表态即此形）。
-        let mut e = [app_entry(0, 0); gp::WM_WINDOWS_MAX];
-        e[0] = app_entry(SELF_WINS[0], gp::WM_WIN_F_VISIBLE);
-        e[1] = app_entry(SELF_WINS[1], gp::WM_WIN_F_VISIBLE | gp::WM_WIN_F_FOCUSED);
-        let snap =
-            gp::WmSnapshot { version: 1, disp_w: 480, disp_h: 1000, entries: e, count: 2 };
-        assert_eq!(covering_app_win(&snap, &SELF_WINS), None);
-
-        // 隐藏应用窗不算覆盖（不可见即不挡命中语义）。
-        let mut e = [app_entry(0, 0); gp::WM_WINDOWS_MAX];
-        e[0] = app_entry(SELF_WINS[1], gp::WM_WIN_F_VISIBLE | gp::WM_WIN_F_FOCUSED);
-        e[1] = app_entry(3, 0);
-        let snap =
-            gp::WmSnapshot { version: 1, disp_w: 480, disp_h: 1000, entries: e, count: 2 };
-        assert_eq!(covering_app_win(&snap, &SELF_WINS), None);
-
-        // SYSTEM 层窗不参与覆盖判定；count 截断外不读。
-        let mut e = [app_entry(0, 0); gp::WM_WINDOWS_MAX];
-        e[0] = app_entry(SELF_WINS[1], gp::WM_WIN_F_VISIBLE);
-        e[1] = gp::WmEntry {
-            layer: gp::WM_LAYER_SYSTEM,
-            flags: gp::WM_WIN_F_VISIBLE | gp::WM_WIN_F_FOCUSED,
-            ..app_entry(9, 0)
-        };
-        e[2] = app_entry(7, gp::WM_WIN_F_VISIBLE); // count 截断外
-        let snap =
-            gp::WmSnapshot { version: 1, disp_w: 480, disp_h: 1000, entries: e, count: 2 };
-        assert_eq!(covering_app_win(&snap, &SELF_WINS), None);
     }
 }
