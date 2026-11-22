@@ -1696,6 +1696,13 @@ test-host:
     # 沙箱：G-ver-3 对拍绿/不匹配红点名/无 version 红/git_ident 缺席红/
     # 段作用域防串号/零 tag 豁免/非 git 豁免）。发版门形态改坏可被咬合。
     {{BASH}} tools/ver-check.sh --selftest
+    # W1 接线（同族·G1 刀 4 密封构建包装器）：reproducible_build.sh——
+    # SOURCE_DATE_EPOCH/路径 remap/离线/umask/TZ/LC_ALL 六密封面 + git
+    # 缺席回退 epoch 0 + just 目标透传，此前零自检（密封面改坏 = 产物
+    # 不可复现静默漂移，无机器咬合）。selftest 5 腿（合成 git+just 垫片
+    # 沙箱：exec 落地视图逐项对账/非 git 回退/多目标透传/RUSTFLAGS 叠加
+    # 保留/just 缺席 loud 拒）。改密封面必跑。
+    {{BASH}} tools/reproducible_build.sh --selftest
     # W1 接线（D-审计 §4.3「从未跑过」面）：guifbd lib 单测 23 测
     # （B1-b/c vgpu 后端纯面——后端分派/INDIRECT 链/ATTACH 段/提交序）入
     # host 台账。独立小工作区（空 [workspace] escape），berry-libc
