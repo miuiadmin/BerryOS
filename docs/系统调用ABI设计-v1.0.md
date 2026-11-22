@@ -60,7 +60,7 @@ FS / 网络 / 驱动主体**不走 syscall**，走 IPC 到用户态服务（`/sv
 | 0x24 | `pager_supply_mapped_table` | 用户态 pager 批供：入参 tbl（PagerWindow{dv:u32, sv:u32, delta:i64} 16B/项 repr(C) 数组）+ n（∈[1,32]）——多窗一次收货，rc = count-wins：>0 = 供给成功页数（部分成功部分计、不回滚），0 供才报 errno | v1 | 2026-11-08 |
 | **进程 / 线程** |||||
 | 0x31 | `process_create` | 建进程 + 出 root Vmar（双出参；job v1 恒 0） | v1 | — |
-| 0x32 | `process_start` | 启动首线程（entry/sp；bootstrap = 迁入子进程表的首能力 handle，子入口 x0 收到子表新值） | v1 | 2026-10-15 |
+| 0x32 | `process_start` | 启动首线程（entry/sp；bootstrap = 迁入子进程表的首能力 handle，子入口 x0 收到子表新值；第 6 参 tls_desc = 装载侧 TLS 四元组描述符指针（2026-11-22 add-only），null=缺席，经子入口 x2..x5 递 crt0） | v1 | 2026-10-15 |
 | 0x33 | `process_exit` | 退出 | v1 | — |
 | 0x34 | `thread_create` | 建线程（未启动，入口随 process_start） | v1 | 2026-10-15 |
 | 0x35 | `thread_start` | 投入运行（非首线程——首线程随 process_start；T-1 扩参 entry/sp/arg，Zircon zx_thread_start 同形） | v1 | 2026-10-28 |
@@ -369,11 +369,18 @@ berry_status_t berry_process_create(berry_handle_t job, uint32_t options,
                                 berry_handle_t *process, berry_handle_t *vmar);
 berry_status_t berry_process_start(berry_handle_t process, berry_handle_t thread,
                                uintptr_t entry, uintptr_t sp,
-                               berry_handle_t bootstrap);  /* 3-4a 转正：非 0 时从
+                               berry_handle_t bootstrap,
+                               const uint64_t *tls_desc);  /* 3-4a 转正：非 0 时从
                                调用者表 take 出该 handle、insert 进子进程表——
                                子入口 x0 = 子表内新 handle 值（Zircon zx_process_start
                                同形）；迁移后调用者原值立即作废（-EBADF），
-                               坏 bootstrap → -EBADF */
+                               坏 bootstrap → -EBADF。tls_desc（appspawn TLS
+                               寄存器协议刀 2026-11-22，add-only）：null 或指向
+                               四 u64 TLS 描述符（vaddr/filesz/memsz/align——
+                               装载侧从 ELF 首 PT_TLS 单源解析），内核界检拷入
+                               后经子入口 x2..x5 递 crt0 装配 TLS；filesz==0&&
+                               memsz==0 或 null = 无 TLS 哨兵；坏指针 -EINVAL、
+                               vaddr ≥ USER_VA_END -EINVAL */
 berry_status_t berry_process_exit(int code);                    /* Plan B v0.5
                                已实现：真退出（不返）——内核经任务退出钩子
                                置 Process Exited + 唤醒 TERMINATED 等待者 +

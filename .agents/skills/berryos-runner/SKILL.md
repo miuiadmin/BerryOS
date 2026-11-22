@@ -14,7 +14,7 @@ description: BerryOS 无人值守 runner 宪法（E 面）——每轮循环、d
 2. `git fetch origin`；查自己的 open PR（label `hermes-auto`，head 前缀 `wip/auto-`）。有 findings/冲突→先修；无→等 reviewer，停轮。
 3. 无 open PR：`git checkout -B "wip/auto-$(date +%Y%m%d%H%M)" origin/wip/sched-1.1`（唯一新分支；不复用已合并 head）。
 4. 读宪法源：`AGENTS.md`、`docs/规则/16-工程纪律.md`、相关域规则（路由表）、punch-list（[E 面运营计划](../../plans/2026-11-22-e面运营.md)的「未完成事项」节）、自家 `tail -80` LOG。
-5. 选任务：punch-list 首条 `[ ]` 且不阻塞者；没有则自建最多 3 条写入 punch-list（带日期与理由），仍然没有→LOG 空转记录，停轮。
+5. 选任务：开工包 `dag.buildable` 首项优先（DAG 可建造集——机器算的，不猜依赖序）；DAG 空则 punch-list 首条 `[ ]` 且不阻塞者；都没有则自建最多 3 条写入 punch-list（带日期与理由），仍然没有→LOG 空转记录，停轮。
 6. 实现一个有界片段（单轮 ≤20 分钟；改动面遵守任务自带的路径边界，无边界声明时默认 tools/docs/测试面，内核/ABI/依赖/GUI 视觉禁碰）。
 7. 验证（真跑，隔离 target）：`RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WORKS=1 CARGO_TARGET_DIR=<工作区私有 target> just test-host` + `just docs-guard` + `python3 tools/facts.py`（动计数面同批 `--update`）；相关时按规则域加跑。
 8. 自审：`git diff --stat` + `git diff`；至少写 3 条风险检查（越界/测试/文档/秘密/仓规），有阻塞就修。
