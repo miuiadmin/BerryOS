@@ -158,6 +158,11 @@
 # VirtualClock 参考实现消费 alloc 面。与莓核 Wave 4 刀 4.1 的内核侧
 # berry-hal 同名异层。真消费面（vblk/vnet 接线）后续刀——host 测试经
 # justfile test-host 行跑）。
+# ai-runtime §一.1：berry-aiproto（.bmod 页对齐模型容器格式纯函数
+# crate，「解析器即产品」——Ed25519 签名头 + 有界 TLV 超参数表 + 4096B
+# 页对齐张量段的结构执法面，零拷贝零分配；.agents/plans/ai-runtime/
+# design.md 契约一.1；消费 = airtd 模型池（后续刀）；host 测试经
+# justfile test-host 显式行跑）。
 members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-winplan", "berry-argv", "berry-strmem", "berry-fsproto", "berry-fstree", "berry-fsclient", "berry-blkproto", "berry-gpuproto", "berry-vdsoface", "berry-partition",
     "berry-termio",
     "berry-tensor",
@@ -169,7 +174,7 @@ members = ["berry-sys", "berry-loader", "berry-libc", "berry-exec", "berry-winpl
     "berry-npuproto",
     "berry-vqvec",
     "berry-fatfs", "berry-netproto", "berry-netdproto", "berry-tcp", "berry-manifest", "berry-layout", "berry-psproto", "berry-complete", "berry-tls", "berry-mmap", "berry-signal", "berry-fbcon", "berry-gfx", "berry-poll",
-    "berry-jobs", "berry-lex", "berry-guiproto", "berry-ui", "berry-appshell", "berry-softime", "berry-appproto", "berry-cbox", "berry-pwproto", "berry-lifecycle", "berry-crypto", "berry-spawngeo", "berry-driver", "berry-hal", "berry-rtc", "berry-watchdog", "bins/abuser", "bins/berry-verify", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild", "bins/dpgp", "bins/policydemo"]
+    "berry-jobs", "berry-lex", "berry-guiproto", "berry-ui", "berry-appshell", "berry-softime", "berry-appproto", "berry-cbox", "berry-pwproto", "berry-lifecycle", "berry-crypto", "berry-spawngeo", "berry-driver", "berry-hal", "berry-rtc", "berry-watchdog", "berry-aiproto", "bins/abuser", "bins/berry-verify", "bins/echo", "bins/hello", "bins/talker", "bins/svcmgr", "bins/thrchild", "bins/dpgp", "bins/policydemo"]
 exclude = ["bins/stdhello", "bins/appdemo", "bins/appquiet", "bins/apptomb", "bins/devmgr"]
 
 # cbox 刀 2：berry-cbox（黑匣子账本纯函数 crate，「解析器即产品」——排液

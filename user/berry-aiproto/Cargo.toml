@@ -1,0 +1,17 @@
+[package]
+name = "berry-aiproto"
+version.workspace = true
+edition = "2021"
+# ai-runtime §一条款 1 首刀（.agents/plans/ai-runtime/design.md 契约一.1
+# 「零反序列化直接映射格式 .bmod」）：页对齐安全模型容器格式纯函数
+# crate，berry-fatfs/berry-partition「解析器即产品」同款形态——
+# `cfg_attr(not(test), no_std)`：库本体 no_std（workspace none-target
+# 全量构建可编），test 构建放开 std 仅为测试挂具。零依赖零 IO 零分配：
+# 整文件镜像经 `&[u8]` 借入，TLV 超参数与张量段全零拷贝切片返回；
+# 签名校验本体归消费侧（berry-crypto/airtd），本 crate 只钉布局与
+# 结构执法（loud 拒）。单消费 = airtd 模型池（后续刀接线，本刀纯
+# 新增不动消费面）。host 测试经 justfile test-host 显式行跑。
+description = "BerryOS .bmod page-aligned model container format: pure no_std zero-copy parser (ai-runtime contract 1.1)"
+license = "Apache-2.0"
+
+[dependencies]

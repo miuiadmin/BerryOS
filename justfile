@@ -1016,6 +1016,11 @@ test-host:
     # 拒 + display() 分区列表单行格式化〔教学可见性，vblk 手拼形状收口〕，
     # host 18 测；消费 = vblk 多分区暴露（下一刀接线））。
     cargo test --manifest-path user/Cargo.toml -p berry-partition --target {{host}}
+    # ai-runtime §一.1 首刀：berry-aiproto（.bmod 页对齐模型容器格式
+    # 纯函数面——BMOD v1 头/Ed25519 签名域/有界 TLV 超参数表/页对齐
+    # 张量段表结构执法，零拷贝零分配，截尾与畸形输入零 panic，host 19
+    # 测；消费 = airtd 模型池 VMO 映射〔契约一.2，后续刀〕）。
+    cargo test --manifest-path user/Cargo.toml -p berry-aiproto --target {{host}}
     # 驱动子系统研究报告 P1 框架件 + 波 2.2 先行刀：berry-driver（统一
     # Driver trait 生命周期框架——probe/start/stop 三口可循环 + registry
     # 全槽探测失败不炸，借 Linux probe 生命周期形状；virtio_example 钉
