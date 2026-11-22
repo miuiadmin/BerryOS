@@ -27,6 +27,8 @@ pub const MAX_NODES: usize = 256;
 pub const MAX_LAYERS: usize = 8;
 /// 单节点每层邻居帽。
 pub const MAX_NEIGHBORS: usize = 16;
+/// 建图束宽（ef-construction——R15 升格值；朴素直连形的召回升级）。
+pub const EF_CONSTRUCTION: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HnswError {
@@ -158,11 +160,21 @@ impl Hnsw {
             self.count = 1;
             return Ok(0);
         }
-        // 每层贪心下降到局部最小后直连（朴素 ef=1 建图）。
+        // ef-construction 建图：每层自入口束搜候选，连前 MAX_NEIGHBORS
+        // 近邻（朴素直连形的召回升格——R15）。
         let mut cur = self.entry;
         for l in (0..=layer.min(self.top_layer)).rev() {
-            cur = self.greedy_step(cur, l, &dist);
-            self.connect(id, cur, l, dist(cur))?;
+            let mut visited = [false; MAX_NODES];
+            let mut res = [(0usize, 0f32); MAX_NODES];
+            let n = self.beam(cur, l, EF_CONSTRUCTION, &dist, &mut visited, &mut res);
+            if n == 0 {
+                return Err(HnswError::BadNode);
+            }
+            cur = res[0].0; // 下降入口 = 本层最近者
+            for i in 0..n.min(MAX_NEIGHBORS) {
+                let (nid, d) = res[i];
+                self.connect(id, nid, l, d)?;
+            }
         }
         // 高于自身层的层不入（分层指派律：节点只住 [0, layer_of]）。
         self.layer_of[id] = layer as u8;
@@ -192,6 +204,66 @@ impl Hnsw {
                 return best;
             }
         }
+    }
+
+    /// 有界 best-first 束搜：`entry` 起、`ef` 宽度，结果 (id, dist) 升序
+    /// （tie-break 节点号）写 `res`，返回条数。终止律：最近候选劣于结果
+    /// 集第 ef 名且已满 → 无望剪枝；`visited` 由调用方供池（束搜前自清）。
+    fn beam(
+        &self,
+        entry: usize,
+        layer: usize,
+        ef: usize,
+        dist: &impl Fn(usize) -> f32,
+        visited: &mut [bool; MAX_NODES],
+        res: &mut [(usize, f32); MAX_NODES],
+    ) -> usize {
+        visited.fill(false);
+        let mut cand = [(0usize, f32::INFINITY); MAX_NODES];
+        let mut cand_n = 0usize;
+        let mut res_n = 0usize;
+        let better = |a: (usize, f32), b: (usize, f32)| {
+            a.1 < b.1 || (a.1 == b.1 && a.0 < b.0)
+        };
+        // 入口入候选。
+        visited[entry] = true;
+        cand[cand_n] = (entry, dist(entry));
+        cand_n += 1;
+        while cand_n > 0 {
+            let cur = cand[0];
+            // 弹出最近候选。
+            cand.copy_within(1..cand_n, 0);
+            cand_n -= 1;
+            // 终止律：结果已满 ef 且最近候选更劣 → 其余只会更劣。
+            if res_n >= ef && !better(cur, res[ef - 1]) {
+                break;
+            }
+            // 入结果（保序插入，可超 ef 后截）。
+            let mut pos = res_n;
+            while pos > 0 && better(cur, res[pos - 1]) {
+                res[pos] = res[pos - 1];
+                pos -= 1;
+            }
+            res[pos] = cur;
+            res_n += 1;
+            // 展开邻居入候选（保序插入）。
+            let nb = self.adj[layer][cur.0];
+            for j in 0..nb.len {
+                let nid = nb.ids[j];
+                if !visited[nid] {
+                    visited[nid] = true;
+                    let e = (nid, dist(nid));
+                    let mut pos = cand_n;
+                    while pos > 0 && better(e, cand[pos - 1]) {
+                        cand[pos] = cand[pos - 1];
+                        pos -= 1;
+                    }
+                    cand[pos] = e;
+                    cand_n += 1;
+                }
+            }
+        }
+        res_n.min(ef)
     }
 
     fn connect(
@@ -243,53 +315,12 @@ impl Hnsw {
         for l in (1..=self.top_layer).rev() {
             cur = self.greedy_step(cur, l, &dist);
         }
-        // 层 0 束搜：候选集 + 已访标记（定容；朴素 ef 形——候选全展开
-        // 一层，排序取前 ef）。
+        // 层 0 有界 best-first 束搜（R15：全展开升格——终止律见 beam）。
         let mut visited = [false; MAX_NODES];
-        visited[cur] = true;
-        let mut all = [(0usize, 0f32); MAX_NODES];
-        let mut all_n = 0usize;
-        all[all_n] = (cur, dist(cur));
-        all_n += 1;
-        let mut frontier = [cur; MAX_NODES];
-        let mut frontier_n = 1usize;
-        while frontier_n > 0 {
-            let mut next_n = 0usize;
-            for fi in 0..frontier_n {
-                let id = frontier[fi];
-                let nb = &self.adj[0][id];
-                for j in 0..nb.len {
-                    let nid = nb.ids[j];
-                    if !visited[nid] {
-                        visited[nid] = true;
-                        all[all_n] = (nid, dist(nid));
-                        all_n += 1;
-                        frontier[MAX_NODES - 1 - next_n] = nid; // 反向暂存防覆盖
-                        next_n += 1;
-                    }
-                }
-            }
-            // 暂存区搬回前段（BFS 层序展开——宽度受全展开约束）。
-            for k in 0..next_n {
-                frontier[k] = frontier[MAX_NODES - 1 - k];
-            }
-            frontier_n = next_n;
-        }
-        // 排序（插入序——确定性 tie-break 节点号）。
-        for i in 1..all_n {
-            let mut j = i;
-            while j > 0
-                && (all[j - 1].1 > all[j].1
-                    || (all[j - 1].1 == all[j].1 && all[j - 1].0 > all[j].0))
-            {
-                all.swap(j - 1, j);
-                j -= 1;
-            }
-        }
-        let take = ef.min(out.len()).min(all_n);
-        for i in 0..take {
-            out[i] = all[i];
-        }
+        let mut res = [(0usize, 0f32); MAX_NODES];
+        let n = self.beam(cur, 0, ef, &dist, &mut visited, &mut res);
+        let take = n.min(out.len());
+        out[..take].copy_from_slice(&res[..take]);
         Ok(take)
     }
 }
@@ -386,5 +417,28 @@ mod tests {
     fn bad_node_query_loud() {
         let g = Hnsw::new();
         assert_eq!(g.node_layer(0), Err(HnswError::BadNode));
+    }
+
+    #[test]
+    fn beam_ef_cap_and_recall() {
+        // 64 节点 1D 格点（束建图）：束搜召回精确最近邻，ef 帽生效。
+        let mut g = Hnsw::new();
+        for i in 0..64 {
+            let q = i as f32 * 0.5;
+            g.insert(dist_1d(q)).unwrap();
+        }
+        let mut out = [(0usize, 0f32); 4];
+        let n = g.search(dist_1d(10.1), 4, &mut out).unwrap();
+        assert_eq!(n, 4);
+        assert_eq!(out[0], (20, 10.1f32 - 10.0f32)); // 10.1f32−10.0 位精确
+        // 升序 + tie-break。
+        for w in out.windows(2) {
+            assert!(w[0].1 < w[1].1 || (w[0].1 == w[1].1 && w[0].0 < w[1].0));
+        }
+        // ef 帽 ≤ out.len。
+        let mut small = [(0usize, 0f32); 2];
+        let n2 = g.search(dist_1d(10.1), 4, &mut small).unwrap();
+        assert_eq!(n2, 2);
+        assert_eq!(small[0], out[0]);
     }
 }

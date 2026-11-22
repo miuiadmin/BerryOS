@@ -71,7 +71,7 @@ flowchart TD
 
 建造清单（DAG 节验收面——全勾才配双戳）：
 
-- [x] 量化算术首刀：`user/berry-vqvec`（每 vec 单 scale 的 i8 标量量化 + 非对称整数域距离〔内积/L2²，重建域〕+ 全零 vec 无除零退化——HNSW 定点量化向量索引的算术底座）——host 8 测绿（`just test-host` berry-vqvec 腿，2026-11-22）；第二片 `user/berry-hnsw`（图骨架：splitmix 确定性分层指派 + 贪心下降 + 层 0 束搜〔朴素 ef 形〕，距离闭包注入解耦，host 6 测）——ef-construction 束建与多样性剪枝随后续刀
+- [x] 量化算术首刀：`user/berry-vqvec`（每 vec 单 scale 的 i8 标量量化 + 非对称整数域距离〔内积/L2²，重建域〕+ 全零 vec 无除零退化——HNSW 定点量化向量索引的算术底座）——host 8 测绿（`just test-host` berry-vqvec 腿，2026-11-22）；第二片 `user/berry-hnsw`（图骨架：splitmix 确定性分层指派 + 贪心下降 + 距离闭包注入解耦，host 7 测；R15 升格——有界 best-first 束搜〔终止律剪枝 + ef 帽〕与 ef-construction 建图，朴素直连形已替）——多样性启发式随后续刀
 - [ ] HNSW 建图启发式补全（ef-construction 束建 + 邻居多样性剪枝——朴素直连形在高维稀疏数据的召回升级）
 - [ ] FBE CE 加密目录集成 + 锁屏态拒写 + 域打标与 `VaultQueryCap` 门控 + 不可篡改审计账本（涉 security/svcmgr 面——owner 边界声明队列）
 
