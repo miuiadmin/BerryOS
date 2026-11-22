@@ -3,10 +3,16 @@
 //! 职责（`_start`，经 `process_start` 进入，`x0` = bootstrap = **env 通道端**，
 //! d-3a 起协议见 io.rs `berry_libc_boot` 头注）：
 //! 1. 抢救 bootstrap handle 与初始栈顶；
-//! 2. `berry_tls_setup`（T-1 §1 **拷贝式 TLS**）：经 `__ehdr_start` 自走 phdr
-//!    表找 PT_TLS → 静态 arena 里 `tls_place` 放置 → **显式清零整窗 + 拷
-//!    模板** → `msr tpidr_el0`（TP = data−0x10，EL0 可写寄存器，零内核
-//!    seam）。原位 TP 方案已删——`.tbss` 零初始化契约三方共违约（lld 标准布局
+//! 2. `berry_tls_setup`（T-1 §1 **拷贝式 TLS**；appspawn TLS 寄存器协议刀
+//!    2026-11-22 改形）：**装载侧供参**——`process_start` x6 描述符（装载
+//!    侧 `berry-exec` 从 ELF 首 PT_TLS 单源解析）经内核子上下文 x2..x5
+//!    递入，`_start` 直传四参（vaddr/filesz/memsz/align），静态 arena 里
+//!    `tls_place` 放置 → **显式清零整窗 + 拷模板** → `msr tpidr_el0`
+//!    （TP = data−0x10，EL0 可写寄存器，零内核 seam）。原
+//!    `__ehdr_start` 自走 phdr 形退役——0x1000 无头平像布局下符号烘焙 0
+//!    的 X-4e 胎死失败类就此灭绝（诊断见
+//!    `.agents/research/2026-11-22-appdemo-X-4e-胎死诊断与修复三岔口.md`）。
+//!    原位 TP 方案已删——`.tbss` 零初始化契约三方共违约（lld 标准布局
 //!    + berry-exec 零 PT_TLS 感知 + 原位直用），TLS 胞元初值 = 活
 //!    `.data.rel.ro` 文件字节（vtable/函数指针），见
 //!    `docs/法证-TLS原位方案崩因归因.md`；
@@ -25,6 +31,9 @@
 //! → berry_channel_send 劫持自旋，首跑实测挂死；纯面独立 crate 后 host
 //! 测试零 libc 符号面）。**python/rust 双份算术义务注记**随纯面迁
 //! `user/berry-tls/src/lib.rs` 与 `tools/tlsscan.py` 两侧头注。
+//!（`find_ptls` 的 ehdr 走查本体保留在 berry-tls 供 tlsscan 对拍/host 测；
+//! crt0 运行期不再消费——装载侧 `berry-loader::elf_head` 是 PT_TLS 的
+//! 唯一运行期真源。）
 
 use core::arch::{asm, global_asm};
 
@@ -53,38 +62,38 @@ struct TlsArena([u8; TLS_ARENA_CAP]);
 
 static mut TLS_ARENA: TlsArena = TlsArena([0; TLS_ARENA_CAP]);
 
-extern "C" {
-    static __ehdr_start: u8;
-}
-
-/// 走自身 ELF 头装主线程 TLS（拷贝式，T-1 §1）。
+/// 按装载侧四元组装主线程 TLS（拷贝式，T-1 §1；appspawn TLS 寄存器
+/// 协议刀 2026-11-22 改形——参由 `_start` 从入口 x2..x5 直传）。
 ///
-/// 命中 PT_TLS → 写四模板全局 → `tls_place` 成功 → `memset_volatile`
-/// 显式清零整窗（memsz，**不信 .bss 零初值**——法证教训一级防御）→
-/// `memcpy_volatile` 拷模板（filesz）→ `msr tpidr_el0`（TP = data−0x10）；
-/// placement None → `brk #0x7C1`（boot 期唯一 loud 形态：此刻 CONSOLE_H
-/// 未落种、无打印 syscall 面；brk 走内核 EXCEPTION dump + user_fault_exit
-/// 串口 loud；tlsscan --check F1 门先拦使其实际不可达）；无 PT_TLS →
-/// 空操作返回（四全局保持 0 初值 = ALIGN 0 哨兵）。
+/// filesz==0 && memsz==0 = 无 TLS 哨兵（none 平像/无 PT_TLS 族——装载侧
+/// 缺席），空操作返回（四全局保持 0 初值 = ALIGN 0 哨兵，与原「无
+/// PT_TLS」形同观察面）。命中（filesz 或 memsz 非 0）→ 写四模板全局 →
+/// `tls_place` 成功 → `memset_volatile` 显式清零整窗（memsz，**不信
+/// .bss 零初值**——法证教训一级防御）→ `memcpy_volatile` 拷模板
+///（filesz）→ `msr tpidr_el0`（TP = data−0x10）；placement None →
+/// `brk #0x7C1`（boot 期唯一 loud 形态：此刻 CONSOLE_H 未落种、无打印
+/// syscall 面；brk 走内核 EXCEPTION dump + user_fault_exit 串口 loud；
+/// tlsscan --check F1 门先拦使其实际不可达）。
 ///
-/// 前置条件：`__ehdr_start`（链接器自供，附录 A 强面在册）；本函数在 TLS
-/// 就绪前运行，体内不得触碰任何 `#[thread_local]`。
+/// 前置条件：装载侧描述符（`process_start` x6——`berry-exec`
+/// `spawn_rootfs_elf` 从 ELF 首 PT_TLS 解析）已在内核侧界检（vaddr 顶界
+/// + filesz ≤ memsz）；本函数在 TLS 就绪前运行，体内不得触碰任何
+/// `#[thread_local]`。
 #[no_mangle]
-pub unsafe extern "C" fn berry_tls_setup() {
+pub unsafe extern "C" fn berry_tls_setup(vaddr: u64, filesz: u64, memsz: u64, align: u64) {
     unsafe {
-        let ehdr: *const u8 = core::ptr::addr_of!(__ehdr_start);
-        let Some((vaddr, filesz, memsz, align)) = find_ptls(ehdr) else {
-            return; // 无 PT_TLS：空操作（bin/hello 类）
-        };
-        BERRY_TLS_VADDR = vaddr;
-        BERRY_TLS_FILESZ = filesz;
-        BERRY_TLS_MEMSZ = memsz;
-        BERRY_TLS_ALIGN = align;
+        if filesz == 0 && memsz == 0 {
+            return; // 无 TLS 哨兵：空操作（装载侧缺席）
+        }
+        BERRY_TLS_VADDR = vaddr as usize;
+        BERRY_TLS_FILESZ = filesz as usize;
+        BERRY_TLS_MEMSZ = memsz as usize;
+        BERRY_TLS_ALIGN = align as usize;
         let base = core::ptr::addr_of_mut!(TLS_ARENA) as *mut u8 as usize;
-        match tls_place(base, TLS_ARENA_CAP, filesz, memsz, align) {
+        match tls_place(base, TLS_ARENA_CAP, filesz as usize, memsz as usize, align as usize) {
             Some(data) => {
-                crate::strmem::memset_volatile(data as *mut u8, 0, memsz);
-                crate::strmem::memcpy_volatile(data as *mut u8, vaddr as *const u8, filesz);
+                crate::strmem::memset_volatile(data as *mut u8, 0, memsz as usize);
+                crate::strmem::memcpy_volatile(data as *mut u8, vaddr as *const u8, filesz as usize);
                 let tp = (data - 0x10) as u64;
                 asm!("msr tpidr_el0, {}", in(reg) tp);
             }
@@ -98,6 +107,10 @@ global_asm!(
     "_start:",
     "    mov x19, x0",        // 抢救 bootstrap handle（env 通道端）
     "    mov x20, sp",        // 初始栈顶留档（attr 谎报面数据源）
+    "    mov x0, x2",         // TLS vaddr（装载侧协议 x2..x5——appspawn 刀 2026-11-22）
+    "    mov x1, x3",         // TLS filesz
+    "    mov x2, x4",         // TLS memsz
+    "    mov x3, x5",         // TLS align
     "    bl  berry_tls_setup",
     "    mov x0, x19",
     "    mov x1, x20",

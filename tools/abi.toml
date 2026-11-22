@@ -552,7 +552,7 @@ stage = "v1"
 [[group.syscall]]
 num = 0x32
 name = "process_start"
-desc = '启动首线程（entry/sp；bootstrap = 迁入子进程表的首能力 handle，子入口 x0 收到子表新值）'
+desc = '启动首线程（entry/sp；bootstrap = 迁入子进程表的首能力 handle，子入口 x0 收到子表新值；第 6 参 tls_desc = 装载侧 TLS 四元组描述符指针（2026-11-22 add-only），null=缺席，经子入口 x2..x5 递 crt0）'
 stage = "v1"
 enforced_since = 2026-10-15  # Process RIGHT_MANAGE 门（3-3，91fb5893）
 [[group.syscall]]

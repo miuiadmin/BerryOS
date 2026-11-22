@@ -334,6 +334,36 @@ pub unsafe fn cbox_hook() -> Option<CboxHook> {
     CBOX_HOOK
 }
 
+// ---- svcmgr 自陷点名仪表槽（HAL→内核取证面，同上反转模式）----
+//
+// svcmgr 崩 B 取证仪表（crash 侦查建议，2026-11-22）：EL0 致命故障杀链上
+// `exception_sync_el0` 见 FAR==0x4000_0000（svcmgr/berry-exec `trap()` 自陷
+// 块特征地址——读未映射 VA 自杀，panic 兜底同点）时经此槽回调内核：读用户
+// 栈 [SP] 槽（蹦床把真 panic/trap 调用点压在那）并点名打印——下一次复现
+// 直接钉住违约站点。零行为面：条件不命中或槽未装 = 杀链原样。
+
+/// 自陷点名回调类型：`sp` = 故障帧的用户 SP；实现侧走查页表读 [sp,sp+8)
+/// 的 u64 打 `selftrap retsite=...` 行（走查失败打 UNREADABLE，不 panic）。
+/// 同步异常上下文调用（PSTATE.I=1、svc_enter KERN 窗内）。
+pub type SelftrapProbe = unsafe extern "C" fn(sp: usize, x30: usize);
+
+static mut SELFTRAP_PROBE: Option<SelftrapProbe> = None;
+
+/// 注册自陷点名回调。须在**首个用户任务被调度之前**调用一次（boot 屏蔽窗）。
+pub fn set_selftrap_probe(f: SelftrapProbe) {
+    // SAFETY: 启动单线程、DAIF 屏蔽；无并发 IRQ、无竞态。
+    unsafe { SELFTRAP_PROBE = Some(f) };
+}
+
+/// 取已注册的自陷点名回调（trap.rs EL0 杀链用）。未注册时返回 `None`
+/// （boot 早期 fault 静默跳过——同 cbox 槽兜底语义）。
+///
+/// # Safety
+/// 读 `static mut`。仅同步异常上下文（单核顺序）调用；boot 后槽恒定只读。
+pub unsafe fn selftrap_probe() -> Option<SelftrapProbe> {
+    SELFTRAP_PROBE
+}
+
 // ---- G4-1 按需调页故障探针槽（HAL→内核 mm，同上反转模式）----
 //
 // D-abort（current-EL 0x25 / lower-EL 0x24）在杀链**之前**先问此槽：

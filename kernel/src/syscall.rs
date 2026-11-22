@@ -2107,6 +2107,7 @@ extern "C" fn sys_thread_start(tf: &mut TrapFrame) -> i64 {
         entry as usize,
         arg as usize,
         0, // x1 env 旗标：EL0 拉起的线程无 boot env 面（spawn_user_env 专属）
+        [0; 4], // x2..x5 TLS 四元组：非首线程恒哨兵（TLS 归首线程 crt0 一次性装配）
         sp as usize,
         b"user_thread",
         proc.ttbr0_pa,
@@ -2132,9 +2133,16 @@ extern "C" fn sys_thread_start(tf: &mut TrapFrame) -> i64 {
     0
 }
 
-/// `process_start(process, thread, entry, sp, bootstrap)`：启动首线程
+/// `process_start(process, thread, entry, sp, bootstrap, tls_desc)`：启动首线程
 /// （把 thread 的执行流放进 process 的地址空间）。门控：process 与 thread
 /// 各 **MANAGE**。
+///
+/// **第 6 参 `tls_desc`（x6——appspawn TLS 寄存器协议刀 2026-11-22）**：
+/// 调用方 32B TLS 描述符指针（四 u64：vaddr/filesz/memsz/align——装载侧
+/// 〔berry-exec `spawn_rootfs_elf`〕从 ELF 首 PT_TLS 解析递入），0 = 缺席。
+/// 内核界检拷入后经子任务初始上下文 x2..x5 递给入口（crt0 `_start` 直读
+/// 装配 TLS——`__ehdr_start` 自走查退役，X-4e 失败类灭绝）。filesz==0 &&
+/// memsz==0 = 无 TLS 哨兵；vaddr 非 0 须 < `USER_VA_END`；坏指针 -EINVAL。
 ///
 /// **bootstrap 迁移（3-4a 转正，v1 不再恒 0）**：非 0 时从**调用者表** `take`
 /// 出该 handle、`insert_ref` 进**子进程表**——子入口 x0 = 子表内的新 handle
@@ -2159,6 +2167,38 @@ extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
     );
     if entry == 0 || sp == 0 || sp % 16 != 0 {
         return ERR_INVALID_ARG as i64;
+    }
+    // appspawn TLS 寄存器协议刀（2026-11-22）：x6 = 调用方 32B TLS 描述符
+    // 指针（四 u64：vaddr/filesz/memsz/align——装载侧〔berry-exec〕从 ELF
+    // PT_TLS 解析后递入），0 = 缺席（none 平像/无 PT_TLS 族——x2..x5 落 0
+    // 哨兵）。旧调用方兼容面：berry-sys `sys()` 包装恒显式传 x6=0；内核
+    // 直调（user.rs 自测 asm）本刀同批清零——非零垃圾在此读为指针会被
+    // 界检拒，面即 loud。
+    let mut tls = [0usize; 4];
+    let tls_desc = tf.regs[6] as usize;
+    if tls_desc != 0 {
+        let el1 = caller_is_el1(tf);
+        let mut raw = [0u8; 32];
+        if copy_from_user(el1, tls_desc as u64, &mut raw).is_err() {
+            return ERR_INVALID_ARG as i64;
+        }
+        for i in 0..4 {
+            tls[i] = u64::from_le_bytes([
+                raw[i * 8],
+                raw[i * 8 + 1],
+                raw[i * 8 + 2],
+                raw[i * 8 + 3],
+                raw[i * 8 + 4],
+                raw[i * 8 + 5],
+                raw[i * 8 + 6],
+                raw[i * 8 + 7],
+            ]) as usize;
+        }
+        // 哨兵合法（等价缺席）；越界值拒——vaddr 顶界与 USER_VA_END 对拍
+        //（bad segment 同口径，防描述符把 crt0 的模板拷贝引向野地址）。
+        if tls[0] != 0 && tls[0] as u64 >= USER_VA_END {
+            return ERR_INVALID_ARG as i64;
+        }
     }
     let t = match caller_table(tf) {
         Ok(t) => t,
@@ -2229,6 +2269,7 @@ extern "C" fn sys_process_start(tf: &mut TrapFrame) -> i64 {
         entry as usize,
         child_x0,
         0, // x1 env 旗标：EL0 拉起的进程无 boot env 面（spawn_user_env 专属）
+        tls, // x2..x5 TLS 四元组（装载侧协议刀 2026-11-22——x6 描述符透传）
         sp as usize,
         b"user_child",
         proc.ttbr0_pa,
