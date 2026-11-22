@@ -49,7 +49,7 @@ FROZEN_PREFIXES = (
     "tools/run-artifact.sh", "tools/gate-wrap.sh",
     "tools/claude-audit.py", "tools/stale-parks.py",
     "tools/stranded-deferrals.py", "tools/answers-readback.py",
-    ".agents/tools/", "tools/facts.py", "tools/gate-selftest.sh",
+    ".agents/tools/", "tools/facts.py", "tools/gate-selftest.sh", "tools/punch_slice.py",
     "tools/docs_guard.py",
     "tools/floor-check.sh",
     "tools/writable_globals.py",

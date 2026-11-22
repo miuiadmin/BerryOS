@@ -44,3 +44,5 @@ tools/unsafe_audit.py
 tools/shvarcheck.py
 tools/selftest_guard.py
 .github/workflows/
+# 吸收挖掘补员：切分单源（门与包共依——改它=改「什么算 open」的语义）
+tools/punch_slice.py => python3 tools/punch_slice.py --selftest
