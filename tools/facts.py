@@ -46,8 +46,13 @@ KEY_ORDER = [
 
 
 def git_files(root: Path, *patterns: str) -> list[str]:
+    # core.quotepath=false 免疫（2026-11-22 run 45009343000 定谳）：CJK 路径在
+    # 默认 quotepath=true 下被引号八进制转义（行首 `"`），前缀/字面量过滤整面
+    # 漏数——CI runner git 2.30.2 无全局 false 兜底，749 个 .md 只数出 303。
+    # -c 逐调用注入不污染仓配置；本地已有 false 时幂等。
     r = subprocess.run(
-        ["git", "-C", str(root), "ls-files", "--", *patterns],
+        ["git", "-C", str(root), "-c", "core.quotepath=false",
+         "ls-files", "--", *patterns],
         capture_output=True, text=True,
     )
     if r.returncode != 0:
