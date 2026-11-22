@@ -1936,7 +1936,7 @@ mod tests {
     #[test]
     fn rt_pipe_k_geometry_pinned() {
         assert_eq!(RT_PIPE_K, 3);
-        assert!(RT_PIPE_K * TCP_DATA_MAX <= 8 * 128);
+        assert!(RT_PIPE_K * TCP_DATA_MAX <= 1024); // P4 滚新:真源 TX_CAP=5×1000=5000 与 WINDOW=1024 不再同值——本钉改执法 WINDOW 域(紧界);环容单源钉在 vnet tcp.rs(引 bt 真源)
         assert!(RT_PIPE_K < 256);
     }
 

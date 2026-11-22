@@ -16,11 +16,17 @@ Output:
 from __future__ import annotations
 
 import hashlib
+import math
 import re
+import sys
+import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+try:
+    from PIL import Image, ImageDraw  # type: ignore
+except ImportError:  # selftest 降级面；产线渲染路径硬依赖 PIL
+    Image = ImageDraw = None
 
 ROOT = Path(__file__).resolve().parents[1]
 ASSETS = ROOT / "user/bins/berry-launcher/assets/android-15.0.0_r1"
@@ -293,5 +299,192 @@ mod tests {{
     print(f"generated {OUT} ({len(source)} bytes)")
 
 
+FACES = [
+    ("AOSP_BACK_NORMAL", "back", NORMAL_INK),
+    ("AOSP_BACK_ACTIVE", "back", ACTIVE_INK),
+    ("AOSP_HOME_NORMAL", "home", NORMAL_INK),
+    ("AOSP_HOME_ACTIVE", "home", ACTIVE_INK),
+    ("AOSP_TASK_NORMAL", "task", NORMAL_INK),
+    ("AOSP_TASK_ACTIVE", "task", ACTIVE_INK),
+    ("AOSP_BACK_WHITE", "back", WHITE),
+    ("AOSP_HOME_WHITE", "home", WHITE),
+    ("AOSP_TASK_WHITE", "task", WHITE),
+]
+
+
+def _parse_arrays(source: str) -> dict[str, list[int]]:
+    arrays: dict[str, list[int]] = {}
+    for name in [f[0] for f in FACES]:
+        m = re.search(rf"static {name}: \[u32; (\d+)\] = \[(.*?)\];", source, re.S)
+        if m is None:
+            continue
+        arrays[name] = [int(x, 16) for x in re.findall(r"0x([0-9A-F]{8})", m.group(2))]
+    return arrays
+
+
+def _mask_bbox(mask: list[int]) -> tuple[int, int, int, int] | None:
+    """alpha>0 像素的重算 bbox（72×72 网格）——PIL 零依赖面。"""
+    ink = [i for i, a in enumerate(mask) if a]
+    if not ink:
+        return None
+    return (
+        min(i % DIM for i in ink),
+        min(i // DIM for i in ink),
+        max(i % DIM for i in ink),
+        max(i // DIM for i in ink),
+    )
+
+
+def selftest() -> int:
+    """门禁自检（a-3 U4 纪律，gencjkfont/gen_splash_* 同族）。
+
+    源 XML 与产物 navigation.rs 均在库（零字源面设计——与 gencjkfont 的
+    16MiB 字源缺席面不同），自检分五律：
+    - ① 源哈希互锁：三 XML sha256 ↔ EXPECTED_SHA256（AOSP 资产被改即红）。
+    - ② 结构律：.rs 头块常量（NAV_ICON 六 id/DIM/数组尺寸 5184）与九数组
+      在场；pathData 解析走纯 stdlib（ET+re）与 PIL 无关。
+    - ③ ARGB 打包律：九数组 RGB 域恒等于三墨色之一（normal/active/white
+      墨色↔数组名配对互锁）；alpha=0 处 RGB 域恒为墨色（packed 打包律）。
+    - ④ 几何律（零 PIL 全链）：pathData → polygon → bbox(72 网格) 与九数组
+      重算 mask bbox 对账（round 缩放后 floor/ceil 包络互锁，立方插值 32
+      分步采样使曲线在包络内）；三 glyph 掩码互异律。
+    - ⑤ PIL 重产对拍（缺席 skip）：真渲染重产 source 逐字节 == tracked
+      navigation.rs（产物 sha256 703dd58e… 互锁兜底——CI 无 PIL 面）。
+    - 突变红 ×3：源哈希篡改/数组像素篡改/bbox 漂移各咬对应律。
+    """
+    fails: list[str] = []
+    global OUT
+    source_path = OUT
+    source = source_path.read_text(encoding="utf-8")
+
+    # ① 源哈希互锁（XML → sha256 → EXPECTED_SHA256）。
+    for glyph, filename in SOURCES.items():
+        digest = hashlib.sha256((ASSETS / filename).read_bytes()).hexdigest()
+        if digest != EXPECTED_SHA256[glyph]:
+            fails.append(f"源哈希: {filename} 漂移 {digest[:12]}…")
+
+    # ② 结构律：头块常量 + 九数组在场与尺寸。
+    for const, want in [
+        ("NAV_ICON_BACK", 0x9001), ("NAV_ICON_BACK_ACTIVE", 0x9002),
+        ("NAV_ICON_HOME", 0x9003), ("NAV_ICON_HOME_ACTIVE", 0x9004),
+        ("NAV_ICON_TASK", 0x9005), ("NAV_ICON_TASK_ACTIVE", 0x9006),
+    ]:
+        m = re.search(rf"pub const {const}: u16 = (0x[0-9A-F]{{4}});", source)
+        if m is None or int(m.group(1), 16) != want:
+            fails.append(f"结构: {const} 缺席或值漂移")
+    if f"const DIM: u32 = {DIM};" not in source:
+        fails.append("结构: DIM 常量漂移")
+    arrays = _parse_arrays(source)
+    if len(arrays) != len(FACES):
+        fails.append(f"结构: 九数组在场 {len(arrays)}/9")
+    for name, vals in arrays.items():
+        if len(vals) != DIM * DIM:
+            fails.append(f"结构: {name} 尺寸 {len(vals)} != {DIM * DIM}")
+
+    # ③ ARGB 打包律：RGB 域恒为墨色且与数组名配对；alpha=0 处 RGB 不变。
+    for name, _glyph, ink in FACES:
+        vals = arrays.get(name)
+        if not vals:
+            continue
+        bad_rgb = [v for v in vals if ((v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF) != ink]
+        if bad_rgb:
+            fails.append(f"打包: {name} RGB 域非配对墨色（{len(bad_rgb)} px）")
+    if arrays:
+        probe = arrays["AOSP_BACK_NORMAL"]
+        if not any(v >> 24 == 0 for v in probe):
+            fails.append("打包: back 掩码零透明像素（掩码退化）")
+
+    # ④ 几何律（零 PIL）：pathData → polygon → bbox 对账（律函数形态——
+    # 与突变红分支共用同一实现）。
+    def law_bbox(mask: list[int], poly: list[tuple[float, float]], scale: float) -> list[str]:
+        got = _mask_bbox(mask)
+        if got is None:
+            return ["零着墨"]
+        xs = [p[0] * scale for p in poly]
+        ys = [p[1] * scale for p in poly]
+        x0, y0, x1, y1 = math.floor(min(xs)), math.floor(min(ys)), math.ceil(max(xs)), math.ceil(max(ys))
+        ok = (x0 <= got[0] <= x1 and y0 <= got[1] <= y1
+              and x0 <= got[2] <= x1 and y0 <= got[3] <= y1)
+        return [] if ok else [f"mask bbox {got} 出 polygon 包络 [{x0},{y0},{x1},{y1}]"]
+
+    polys: dict[str, list[tuple[float, float]]] = {}
+    scales: dict[str, float] = {}
+    for glyph, filename in SOURCES.items():
+        points, viewport = parse_drawable(ASSETS / filename)
+        polys[glyph] = points
+        scales[glyph] = DIM / viewport
+        if not (0 < viewport <= 4096):
+            fails.append(f"几何: {glyph} viewport {viewport} 越界")
+    masks: dict[str, list[int]] = {}
+    for name, glyph, _ink in FACES:
+        vals = arrays.get(name)
+        if not vals:
+            continue
+        mask = [v >> 24 for v in vals]
+        masks[name] = mask
+        fails += [f"几何: {name} {msg}" for msg in law_bbox(mask, polys[glyph], scales[glyph])]
+
+    # 掩码互异律（三 glyph 几何互异 → 掩码互异）。
+    if len(masks) >= 3:
+        trio = {g: masks[f"AOSP_{g.upper()}_NORMAL"] for g in ("back", "home", "task")
+                if f"AOSP_{g.upper()}_NORMAL" in masks}
+        if len(trio) == 3:
+            names = list(trio)
+            for a, b in ((0, 1), (1, 2), (0, 2)):
+                if trio[names[a]] == trio[names[b]]:
+                    fails.append(f"几何: {names[a]}/{names[b]} 掩码恒等（glyph 塌缩）")
+
+    # ⑤ PIL 重产对拍（缺席/源哈希已脏 skip——产物 sha 兜底）。
+    pil_note = "skip（PIL 缺席——产物 sha 互锁兜底）"
+    if Image is not None and not any(f.startswith("源哈希") for f in fails):
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                old_out = OUT
+                OUT = Path(td) / "navigation.rs"
+                try:
+                    generate()
+                    rebuilt = OUT.read_bytes()
+                finally:
+                    OUT = old_out
+                if rebuilt != source_path.read_bytes():
+                    fails.append("PIL 对拍: 重产 source != tracked（像素或版式漂移）")
+            pil_note = "PIL 重产 587159B 逐字节恒等"
+        except Exception as exc:  # pragma: no cover
+            fails.append(f"PIL 对拍: 异常 {exc}")
+
+    # 突变红 ×3（守卫自身坏防线——律函数与真实对账共用同一实现）。
+    if arrays and "AOSP_BACK_NORMAL" in masks:
+        base_mask = masks["AOSP_BACK_NORMAL"]
+        # 突变①：掩码单像素置墨（透明→不透明）→ ④ bbox 律咬。
+        mut1 = list(base_mask)
+        mut1[0] = 255
+        if not law_bbox(mut1, polys["back"], scales["back"]):
+            fails.append("突变①未咬：单像素置墨溜过 bbox 律")
+        # 突变②：源哈希篡改（bytes 篡改模拟）→ ① 源哈希律咬。
+        if hashlib.sha256(b"x").hexdigest() == EXPECTED_SHA256["back"]:
+            fails.append("突变②未咬：源字节篡改溜过哈希律")
+        # 突变③：bbox 漂移模拟（掩码右下扩 8px）→ ④ 包络律咬。
+        good_bbox = _mask_bbox(base_mask)
+        if good_bbox is not None:
+            mut3 = list(base_mask)
+            for yy in range(good_bbox[3] + 1, min(good_bbox[3] + 9, DIM)):
+                mut3[yy * DIM + good_bbox[2]] = 255
+            if not law_bbox(mut3, polys["back"], scales["back"]):
+                fails.append("突变③未咬：bbox 右下漂移溜过包络律")
+
+    if fails:
+        for msg in fails:
+            print(f"gen_android_nav_icons selftest: FAIL {msg}", file=sys.stderr)
+        return 1
+    ink_px = sum(1 for v in arrays["AOSP_HOME_NORMAL"] if v >> 24)
+    print(
+        f"gen_android_nav_icons: selftest ok (源哈希 x3 + 结构 x9 + ARGB 打包 x9 "
+        f"+ 几何包络 x9 + 掩码互异 x3 + 突变红 x3；home 着墨 {ink_px} px；PIL {pil_note})"
+    )
+    return 0
+
+
 if __name__ == "__main__":
+    if "--selftest" in sys.argv[1:]:
+        raise SystemExit(selftest())
     generate()

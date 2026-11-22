@@ -1216,37 +1216,12 @@ fn proxy_ws_plain(
     // 浏览器→上游方向=纯字节管道：RFB PointerEvent 随其余 ws 帧原样直通 QEMU VNC（well-formed 客户端发 SetEncodings 后绝对坐标直达客机）。
     // 输入拦截器（帧感知 is_ptr 分支+QMP 注入+哑化回退）与 ptr-evt 取证行已随判例驳斥退役——直通后点击路径无宿主日志面，属接受的观测损失；归档锚=.agents/research/证据快照/2026-11-20-VNC直通绝对坐标判例驳斥.md
     let pump_in = std::thread::spawn(move || {
-        // 拦截器未启用（qmp_sock 不在场）→ 纯字节管道（零开销路径）。
-        let mut injector = qmp_path.as_deref().and_then(|p| {
-            // 建连全程 2s 守护（QMP 楔死不得卡死代理泵线程）；失联哑化
-            // 后注入器自 ≥5s 节流重连——QMP 恢复后拦截输入自动复活。
-            let inj = QmpInjector::connect_guarded(p, Duration::from_secs(2));
-            if inj.is_some() {
-                eprintln!("berry: vnc web: lan /ws input interceptor on (qmp)");
-            }
-            inj
-        });
-        if injector.is_none() {
-            // 哑管道：与旧实现完全一致（直通、无帧解析、无缓冲）。
-            let mut buf = [0u8; 8192];
-            loop {
-                match b_rd.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        if u_wr.write_all(&buf[..n]).is_err() || u_wr.flush().is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-        } else {
-            // 帧感知拦截：RFB PointerEvent（6B/首字节 0x05）→ QMP，
-            // 其余帧原样转发。
-            let mut chunk = [0u8; 8192];
-            let mut pend: Vec<u8> = Vec::new();
-            'outer: loop {
-                loop {
-                    let Some((total, opcode, payload)) = parse_client_frame(&pend) else {
+        let mut buf = [0u8; 8192];
+        loop {
+            match b_rd.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if u_wr.write_all(&buf[..n]).is_err() || u_wr.flush().is_err() {
                         break;
                     }
                 }

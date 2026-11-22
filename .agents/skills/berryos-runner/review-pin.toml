@@ -1,0 +1,85 @@
+# review-pin.toml —— BerryOS 评审口径唯一事实源（自动化开发二期 P1；规则/16 §5）。
+#
+# 语义：评审 lane 用哪些镜头、按什么级别阻断、评审者是谁、评审 pass 花多少——一切
+# 评审策略只看本文件；REVIEW.md 与调度 prompt 只许指针引用，不许复制口径（一事实
+# 一归属）。机器面：tools/review-pin-check.py（校验 + --live 模型对账 + lenses 求解）、
+# tools/review-recv.py（按本文件判报告的镜头集合齐不齐）。
+#
+# 改本文件 = 改评审策略 = 显式可审提交：必须单独成 commit（标题带「评审口径」字样）、
+# 同批跑 review-pin-check --selftest 与 --live、PR 描述写明改哪条口径与为什么；禁止
+# 混进功能提交蒙混。无人会话对本文件零写权——.agents/skills/berryos-runner/ 整目录在
+# e-guard FROZEN 集（frozen-guard 拦截），放松评审的策略变更只能出自 attended 会话。
+
+[reviewer]
+# 评审者身份：Hermes 评审 lane（3m 节拍，工作区 /Users/murongcheng/berryos-review，
+# 见 RUNBOOK fleet 盘点）。
+lane = "berryos-hermes-review"
+# 模型名 2026-11-22 只读探测自 model_source（jobs[].name == lane 的 jobs[].model）。
+# --live 对账此字段：lane 换了模型而本文件没跟上 = 配置漂移 = 红；jobs.json 读不到
+# = 环境缺席 = 只警告（fail-direction：漂移红、缺席不红，防 CI 机假警报）。
+model = "glm-5.3"
+model_source = "~/.hermes/cron/jobs.json"
+
+[passes]
+# 四 pass 日程：一轮自动化开发里评审在四个时机上场，各一句职责。
+plan = "动工前审计划：任务边界、验证口径、回滚路径是否先想清，没想清不许动工。"
+round = "每节收工审实现：改动与该节声明的边界一致、验证真跑过、无越权路径。"
+performance = "合入前审性能：热路径计数与基线对得上、性能结论有回归证据支撑。"
+completion = "收口审完整性：punch-list 清零、文档同批、回执与账面对齐才许结。"
+
+[levels.L1]
+meaning = "致命：错误结果、数据丢失、安全或纪律红线——立即阻断。"
+blocking = true
+
+[levels.L2]
+meaning = "严重：功能或契约破损、测试缺口实质化——本轮阻断，修复后重审。"
+blocking = true
+
+[levels.L3]
+meaning = "提示：风格、命名、可读性与低风险观察——记录在案不拦合入。"
+blocking = false
+
+[lenses.adversarial]
+focus = "对抗实现意图：错误路径、边界条件、注入面——先找「写错了」的直接证据。"
+requires = []
+
+[lenses.integration]
+focus = "模块接缝：调用方/被调方契约、跨层约定与并置模块的连锁反应。"
+requires = ["adversarial"]
+
+[lenses.consistency]
+focus = "与本仓既有口径一致：规则引用、模式复用、文档与实现互相印证。"
+requires = ["adversarial"]
+
+[lenses.test-coverage]
+focus = "测试面等价：改动带同批测试、红腿真实覆盖新行为而非装饰。"
+requires = ["adversarial", "integration"]
+
+[lenses.perf]
+focus = "性能口径：热路径复杂度、计数器与基线面，无回归证据不动性能结论。"
+requires = []
+
+[lenses.concurrency]
+focus = "并发与时序：锁序、中断上下文、竞态窗口与内存序（内核系路径才上场）。"
+requires = ["integration"]
+
+[lenses.design]
+focus = "GUI 符合度：视觉资产口径、交互模式与移动端基准（GUI 路径才上场）。"
+requires = ["consistency"]
+
+[lens_rules]
+# 条件加载：基础五镜恒上场；load 按改动路径前缀（组件边界匹配，仓相对路径）附加镜头。
+always = ["adversarial", "integration", "consistency", "test-coverage", "perf"]
+
+[lens_rules.load]
+kernel = ["concurrency"]
+sched = ["concurrency"]
+mm = ["concurrency"]
+"user/berry-ui" = ["design"]
+"user/widgets" = ["design"]
+
+[cap]
+# 单 run 评审 pass 总帽（四 pass 日程 × 多评审对象合计）。触帽拒开新 pass、记档升级
+# owner——安全边是「停评审等 owner」不是「偷开评审」：防 token 无限燃烧与橡皮图章
+# 式重审刷通过。数值 33 承接二期配方；改数值 = 改评审策略 = 走显式可审提交。
+pass_cap = 33

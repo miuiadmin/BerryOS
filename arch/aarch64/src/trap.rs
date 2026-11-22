@@ -42,6 +42,12 @@ pub fn fault_armed() -> bool {
     EXPECTED_FAULT_FAR.load(Ordering::Acquire) != 0
 }
 
+/// svcmgr 自陷点名特征地址（svcmgr 崩 B 取证仪表，2026-11-22）：userland
+/// `trap()` 自陷块（svcmgr/berry-exec 的 panic 兜底）读未映射 0x4000_0000
+/// 自杀——EL0 杀链上 D-abort 且 FAR 命中本值时，蹦床把真调用点压在用户栈
+/// [SP]，经 `selftrap_probe` 槽点名打印（见 lib.rs 槽头注）。
+const SELFTRAP_FAR: usize = 0x4000_0000;
+
 // ---- S-4 4-4②：期望故障槽 SMP 化（canary 专用 per-核多槽 + 静默恢复）----
 //
 // 与上方单槽 [`EXPECTED_FAULT_FAR`]（EL1 ktest 直调族、swap 一次性消费）分立
@@ -463,9 +469,50 @@ pub extern "C" fn exception_sync_el0(tf: &mut TrapFrame) {
             // 不放。
             // cbox 黑匣子镜像先于取锁（零锁零分配——异常纪律不破锁序窗）。
             cbox_record(KIND_EL0, tf);
+            // W3-38 探针：I-abort 现场 TTBR0/ASID + L1→L2→L3 全走查直读
+            // （直映射基址 0xffffff8000000000，x05 现场可证）。
+            if ec == berry_trapface::EC_IABORT_LOWER {
+                let tt = crate::mmu::current_ttbr0_pa();
+                let asid = crate::current_asid() as usize;
+                uart_puts(b"[iab tt=");
+                uart_put_hex64(tt as u64);
+                uart_puts(b" asid=");
+                uart_put_hex64(asid as u64);
+                let dmap = 0xffffff80_00000000usize;
+                let far = tf.far as usize;
+                // SAFETY: 内核直映射只读三槽（诊断）。
+                let slot = |pa: usize, idx: usize| unsafe {
+                    core::ptr::read_volatile((((pa & 0xffff_ffff_f000) + dmap) as *const u64).add(idx))
+                };
+                let e0 = slot(tt, (far >> 30) & 0x1ff);
+                uart_puts(b" e0=");
+                uart_put_hex64(e0);
+                if e0 & 3 == 3 {
+                    let e1 = slot(e0 as usize, (far >> 21) & 0x1ff);
+                    uart_puts(b" e1=");
+                    uart_put_hex64(e1);
+                    if e1 & 3 == 3 {
+                        let e2 = slot(e1 as usize, (far >> 12) & 0x1ff);
+                        uart_puts(b" e2=");
+                        uart_put_hex64(e2);
+                    }
+                }
+                uart_puts(b"]\n");
+            }
             crate::kern_lock::svc_enter();
             dump_el0(tf, ec);
             uart_puts(b"  -> user fault (G1.5: kill current task)\n");
+            // svcmgr 崩 B 取证仪表（crash 侦查建议）：D-abort 且 FAR==
+            // [`SELFTRAP_FAR`] = userland `trap()` 自陷块特征——蹦床把真
+            // panic/trap 调用点压在用户栈 [SP]，经槽回调内核走查页表点名
+            // 打印（`selftrap retsite=...` / UNREADABLE）。仅 D-abort 查
+            // FAR（其余 EC 的 FAR 是保留值）；槽未装/未命中零行为面。
+            if ec == berry_trapface::EC_DABORT_LOWER && tf.far as usize == SELFTRAP_FAR {
+                if let Some(f) = unsafe { crate::selftrap_probe() } {
+                    // SAFETY: 同步异常上下文；槽 boot 屏蔽窗注册后恒定只读。
+                    unsafe { f(tf.sp as usize, tf.regs[30] as usize) }
+                }
+            }
         }
     }
     // 杀当前任务：切走永不回（被弃的是本故障帧所在的栈）。槽未注册（调度器没起，

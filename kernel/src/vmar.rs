@@ -166,6 +166,17 @@ struct Region {
     /// 退出清表）对同判据的 refs 将归零 VMO **整对象泄漏**不递减（handle.rs
     /// 对抗审查修——无拒面则用泄漏兜住本指针）；boot/ktest 直构对象由
     /// 调用方保证生存期（v1 泄漏持有——见 `user.rs`）。
+    ///
+    /// **第四条（地址恒定，2026-11-22 帧归还刀 UAF 判例立法）**：上述三
+    /// 条保「VMO 不先于 Region 死」，但 Rust 对 `Vmo` 无地址稳定保证——
+    /// 栈局部映射后随构造/返回**移动**，指针即悬空而对象仍活。旧 `Drop`
+    /// 不解引用 Mapped 区间故无害；帧归还刀起 `Drop` 清账解引用一切非
+    /// null `r.vmo`，悬空实崩（ktest `test_aspace` a/b 栈 Drop：
+    /// `untrack_map` 读死帧垃圾当 `slots.ptr`，FAR=测试常量 `MAGIC_A`）
+    /// 。故契约升格：**被映射的 Vmo 在区间生存期内不得移动地址**——handle
+    /// 表 Box / 属主 `Box<Vmo>`（`aspace.rs` MiniAspace、`user.rs`
+    /// UserProcess，2026-11-22 修形）/ `Box::leak`（dpg.rs init 先例）/
+    /// static（vdso）四形合法；「栈局部映射再移入结构体」禁形。
     /// `Reserved` 恒 null。
     vmo: *mut Vmo,
     /// `Mapped`：本区间对应 VMO 内偏移（unmap 回调映射计数用）。
@@ -231,6 +242,11 @@ pub struct Vmar {
     len: usize,
     /// 直接管辖的区间（线性表；重叠检查 O(n)，v1 区域个位数）。
     regions: Vec<Region>,
+    /// 表树属主标记（帧归还刀件 A ④）：`new_root` 置 true、`allocate` 切子
+    /// 置 false——子 Vmar 共享父 `l1_pa`/`asid`，**无条件 free_asid 会放掉
+    /// 活根的号**（子先死放号 → 根仍在用 → 同号新 AS 复用 = TLB 隔离击穿）
+    /// ，故 [`Drop`] 的 ASID 归还只由根执行。
+    is_root: bool,
 }
 
 impl Vmar {
@@ -246,6 +262,7 @@ impl Vmar {
             base: PAGE_SIZE,
             len: USER_VA_TOP - PAGE_SIZE,
             regions: Vec::new(),
+            is_root: true,
         })
     }
 
@@ -265,7 +282,8 @@ impl Vmar {
     }
 
     /// 切子 Vmar：预留 `[vaddr, vaddr+len)`（登记进父表防父越子映射），返回共享
-    /// 表根/ASID、管辖界收窄的新 Vmar。
+    /// 表根/ASID、管辖界收窄的新 Vmar。子**不拥有**表树/ASID（帧归还刀件 A ④
+    /// ：`is_root=false`，Drop 不 free_asid——号属根，见字段注）。
     pub fn allocate(&mut self, vaddr: usize, len: usize) -> Result<Vmar, VmarError> {
         self.check_slot(vaddr, len)?;
         // regions 预留先于 push（3b3 H2）：失败点落在纯校验后、零副作用。
@@ -283,6 +301,7 @@ impl Vmar {
             base: vaddr,
             len,
             regions: Vec::new(),
+            is_root: false,
         })
     }
 
@@ -290,7 +309,8 @@ impl Vmar {
     /// （`map 即填用户页表`——§5.1 第 4 步主交付）。v1 要求显式 vaddr（ASLR 留 v2）、
     /// 整页粒度、VMO 覆盖页已全部 commit。返回映射基 VA。成功后回调
     /// `vmo.track_map`（3-2 映射计数——decommit/销毁的悬空 PTE 防线），故收
-    /// `&mut Vmo`。
+    /// `&mut Vmo`；Region 存该对象裸指针——**调用方须保 Vmo 此后地址恒定**
+    /// （合法四形见 `Region.vmo` 注第四条；2026-11-22 UAF 判例）。
     ///
     /// 失败语义：中途建表失败（`NoFrames`）时已写叶全部回滚（清叶 + `dsb ish` +
     /// 按号失效），返回错误后无残留翻译；regions 未登记该区间，同 VA 重试 map
@@ -847,46 +867,107 @@ pub fn deregister_demand_root(asid: u16, root: *mut Vmar) {
 }
 
 impl Drop for Vmar {
-    /// 对象销毁收口（G4-2 修批 P0-1 面 b——**单点执法**，覆盖 handle 表
-    /// 三释放点 close/replace/drain 的 `drop(Box::from_raw)`）：①注销 asid
-    /// 反查槽（DEMAND_ROOTS 永不指已释放对象——探针 stale 命中由此消源）；
-    /// ②走查 regions 放 demand 钉（Demand 区间 untrack_demand——Region
-    /// 即死）。v1 不回收表树帧（模块头政策）故无表清理面。
+    /// 对象销毁收口（G4-2 修批 P0-1 面 b 单点执法 + 帧归还刀件 A 重写——
+    /// 「刻意的正交不对称」政策就此推翻：残留 Mapped/Demand 区间的 mapcnt
+    /// 在此一并清账〔clear_leaves + untrack〕，使关联 VMO 的 `Vmo::Drop`
+    /// 还帧判据可满足——A 线主罪〔自映射帧面 VMO 无人 unmap → mapcnt>0
+    /// 全额跳过还帧，~469 页/轮净失〕由此拔除）。步骤：
     ///
-    /// **mapcnt 不动（刻意的正交不对称）**：残留 PTE 政策在先——表树帧
-    /// v1 不回收、已供给页 PTE 仍指 PA，mapcnt 的职责 = 防「该页 PA 复用
-    /// 经残留 PTE 写坏新主人」，页-PA 关系不随 Region 死而消失
-    /// （[`crate::vmo::Vmo`] Drop 的 mapcnt==0 还帧判据继续有效）；demand
-    /// 钉的职责 = Region 裸指针存续期，Region 死即放。两者职责正交，
-    /// 不对称是正确的对称。
+    /// ① 注销 asid 反查槽（DEMAND_ROOTS 永不指已释放对象——探针 stale
+    /// 命中由此消源；**先于一切清账与还帧**：armed EL0 请求槽〔dpg 池〕
+    /// 的属主解析全走本反查，注销先行 ⇒ 注销后死臂恒折 GC 臂/让位，
+    /// 零 VMO 解引用——「demand 注销序先于还帧」的证明锚点）；
+    /// ② PT 锁窗内逐 Region 清账（同 `unmap` 的 531-539 先例：per-AS PT
+    /// 锁整段串行——本核/他核同 AS 写者〔map/unmap/protect/supply_page〕
+    /// 全走 pt_lock(asid) 嵌 KL 正序，Drop 清叶与供给填叶互斥）：
+    /// - `Reserved`（vmo == null）**跳过不解引用**（前次实施 boot 崩一级
+    ///   崩因：ktest/装配面对 Reserved 区间解引用 null——FAR=0x10 判例）；
+    /// - `clear_leaves` **先于** `untrack_map`（**防线分层**〔审查 P2 修正
+    ///   回写 2026-11-22〕：KL 全程串行是第一防线——本 Drop 与 Vmo::Drop
+    ///   销毁路径、unmap 的全部写者同被 KL 挡，任何次序下并发还帧面不存
+    ///   在；叶序（先 clear 后 untrack）是纵深防御——若 KL 假设未来松动
+    ///   （如 v2 细锁化），反序会造
+    ///   「mapcnt==0 而 PTE 活」的窗口——此刻若 Vmo::Drop 并发跑〔drain
+    ///   phase-2〕即还帧，残留 PTE 指已易主 PA = 静默腐败面；先清叶后
+    ///   放账，叶死在先，还帧在后，窗口闭合）；
+    /// - Demand 区间双记账同 `unmap`：untrack_map 收供给页（未供给页
+    ///   saturating_sub(0) 零动作）+ untrack_demand 收整区间钉；
+    /// ③ 收尾屏障 + 按号失效 + broadcast（锁窗内只发不待——回执收割点
+    /// 见下方「回执收割面」）；
+    /// ④ free_asid **限根**（`is_root`——子 Vmar 复制父 l1_pa/asid，
+    /// 无条件放号会放掉活根的号，件 A ④）。
     ///
-    /// 锁：注销 + 走查须 KL 窗（与登记、探针 stage-2 同锁域）。三释放点
-    /// 锁态不一——SVC 类（handle_close 0x2E、replace 0x36、drain 所属退出
-    /// 链）KL 在身；boot/ktest 直构对象的 Drop 在窗外——由 `kl_held()` 门
-    /// 吸收：未持才物理取放（kern_acquire 非计数锁，同核重入自旋死锁——
-    /// 门形 = kern_lock.rs 官方重入判据）。
+    /// **untrack_map 解引用安全性**（Region.vmo 裸指针活性， Region 注释
+    /// 三政策 + 地址恒定第四条在此 Drop 的重验）：handle 表路径 close/
+    /// replace 对「映射中或 demand 登记中」VMO 拒 -EBUSY（判据
+    /// `any_mapped() || demand_mapped()`）——销毁性 close 到不了带活
+    /// Region 的 VMO；drain 双相（handle.rs）phase-1 落 Vmar 时 VMO 槽全
+    /// 未动（phase-2 才递减），phase-2 的泄漏判据同上双分量——「有 Region
+    /// 指着的 VMO」永不先于 Vmar 销毁；boot/ktest 直构由调用方保证生存期
+    /// **与地址恒定**（2026-11-22 判例：MiniAspace 旧形栈局部映射后移动
+    /// 两次，本 Drop 解引用即悬空——修形 Box 见 `aspace.rs`/`user.rs`，
+    /// 契约全文 Region 注释第四条）。故清账点的 `(*r.vmo)` 解引用恒活。
+    ///
+    /// **回执收割面**（broadcast 只发不待，闩收割点逐语境点名）：
+    /// - SVC 类（handle_close 0x2E / replace 0x36 归零 drop）：SVC 派发尾
+    ///   `exit_checks`（W3-Q108）零锁自旋收割——既有面零改动；
+    /// - HT_DRAINQ flush（process.rs `ht_drain_flush`，idle/yield 语境——
+    ///   无 SVC 派发尾可等）：flush 尾 KL 释放后**显式收割点**（件 A ⑤
+    ///   接线——idle 臂永不等来 dispatch 尾，闩不得悬挂）；
+    /// - 溢出同步回退（退出钩子内 drain_pinned_process）：闩由本核下一个
+    ///   SVC dispatch 尾收割（钩子语境 IRQ 屏蔽 + KL 在身，不可就地等；
+    ///   挂闩期安全性 = 死 AS 无执行流 + ASID 复用另有防线〔activate 按
+    ///   号失效 + 回卷 quiesce〕）；
+    /// - ktest/boot 直构：单核（sched::init 前）broadcast 零发送零闩直返
+    ///   ——零扰动。
+    ///
+    /// 锁：注销 + 清账须 KL 窗（与登记、探针 stage-2 同锁域）。三释放点
+    /// 锁态不一——SVC 类 KL 在身；boot/ktest 直构对象的 Drop 在窗外——由
+    /// `kl_held()` 门吸收：未持才物理取放（kern_acquire 非计数锁，同核
+    /// 重入自旋死锁——门形 = kern_lock.rs 官方重入判据）。PT 锁嵌 KL 正序
+    /// （§3.1 单一向）。
     fn drop(&mut self) {
         let held = hal::kern_lock::kl_held();
         if !held {
             hal::kern_lock::kern_acquire();
         }
+        // ① 注销先行（KL 窗内；反查表原子臂无需 PT 锁）。
         deregister_demand_root(self.asid, self as *mut Vmar);
-        for r in self.regions.iter() {
-            if matches!(r.kind, RegionKind::Demand(_)) {
-                // SAFETY: 对象销毁中（Drop 后无任何读者经本对象到达
-                // regions）；与 unmap 的收 Demand 区间同款记账。
-                unsafe { (*r.vmo).untrack_demand(r.len) };
+        // ② PT 锁窗清账：写者串行同 unmap 先例；Reserved 跳过（null vmo
+        // 不解引用——一级崩因防线）。
+        {
+            let _pt = pt_lock(self.asid);
+            for r in self.regions.iter() {
+                if r.vmo.is_null() {
+                    continue; // Reserved：无叶无账（allocate 只登记不填叶）
+                }
+                // 先清叶（叶死在先——顺序硬约束见方法注②）。
+                self.clear_leaves(r.start, r.len / PAGE_SIZE);
+                // SAFETY: Region 的 vmo 指针有效性 = 方法注「untrack_map
+                // 解引用安全性」三政策重验；对象销毁中（Drop 后无任何读者
+                // 经本对象到达 regions）。
+                unsafe {
+                    (*r.vmo).untrack_map(r.vmo_off, r.len);
+                    if matches!(r.kind, RegionKind::Demand(_)) {
+                        (*r.vmo).untrack_demand(r.len);
+                    }
+                }
             }
+            // ③ 收尾（锁窗内）：清叶对走查可见 + 本核旧 TLB 项作废 + 他核
+            // 广播（单核 TX=0 零扰动；回执收割面见方法注）。
+            // SAFETY: 特权指令；EL1。
+            unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_flags)) };
+            hal::tlbi_aside1(self.asid);
+            hal::tlbshoot::broadcast();
         }
         if !held {
             hal::kern_lock::kern_release();
         }
-        // F0-2：分代位图归还——根空间销毁即还号（位图精确跟踪，回卷轮次
-        // 只复用已释放号；0 = 非根/已归还，空操作）。v1 不回收表树帧的
-        // 政策不变（模块头），ASID 是唯一随 Drop 归还的硬件资源。
-        let asid = self.asid;
-        if asid != 0 {
-            crate::aspace::free_asid(asid);
+        // ④ F0-2 分代位图归还——**限根**（件 A ④：子共享父号，无条件放会
+        // 放掉活根的号；根死即本树无人再用，还号安全）。v1 不回收表树帧
+        // 的政策不变（模块头），ASID 是唯一随 Drop 归还的硬件资源。
+        if self.is_root && self.asid != 0 {
+            crate::aspace::free_asid(self.asid);
             self.asid = 0;
         }
     }

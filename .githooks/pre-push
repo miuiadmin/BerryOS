@@ -1,0 +1,105 @@
+#!/bin/sh
+# P2 钩子变量红线（考古）：禁信 GIT_DIR/GIT_WORK_TREE 导出变量，一律发现式定位仓库
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE 2>/dev/null || true
+# BerryOS main 线守门 + bot 身份闸（push 层）——防线详见 .agents/notes/implemented/2026-11-16-跨根合并防线与判例.md 与 docs/规则/16-工程纪律.md
+# 职责一：拒绝把跨根合并提交推进 refs/heads/main（GitHub 服务端装不了钩子，本地 push 是最后闸口）。
+# 职责二（工程纪律刀阶段 6）：berryos.bot-email 登记的 bot 身份新提交只准推
+# wip/auto-* 与 hermes/*（「runner 永不碰集成分支/永不自 merge」的机器面；
+# 未配置则本段静默跳过）。
+# lane 往 wip/* 或别的分支推不受影响；owner 逃生阀 BERRYOS_ALLOW_CROSSROOT=1
+# 只豁免下方跨根 main 段（终审 P1 收域：新闸加在阀后不该随阀整体静默膨胀——
+# 身份闸与 bot 闸不认这个阀）。
+
+zero=0000000000000000000000000000000000000000
+bot_email=$(git config --get berryos.bot-email 2>/dev/null)
+
+# 全亲两两核（F92）：任一对无共同祖先 → 返 0（命中）。$@ = 全部亲 OID。
+crossroot_pair() {
+  while [ $# -ge 2 ]; do
+    p1=$1
+    shift
+    for p2 in "$@"; do
+      [ -z "$(git merge-base "$p1" "$p2" </dev/null 2>/dev/null)" ] && return 0
+    done
+  done
+  return 1
+}
+
+while read -r lref lsha rref rsha; do
+  # ---- bot 身份闸（工程纪律刀阶段 6；规则/16 §5）----
+  # config 驱动（未配置 berryos.bot-email 则本段静默跳过——钩子保持通用）：
+  # 登记的 bot 邮箱作者的本地新提交只准推 wip/auto-* 与 hermes/*——推 main
+  # 或其他分支即拒（「runner 永不碰集成分支/永不自 merge」的机器面）。
+  # P0 身份闸（考古 2026-11-23：674 提交顶假身份上 main 三个月）
+  # 待推提交的 author/committer 不得含 test/fixture/bot-selftest 特征——单人仓
+  # 日常风险低但无人会话跑测试夹具同仓，同一污染面存在（成本一行）。
+  [ "$lsha" = "$zero" ] && continue
+  # 新建远端分支（rsha=zero）时区间退化为 $lsha 全史——与 bot 段/跨根段同款
+  # 处理（终审 P1 补：旧形态 `git log $rsha..$lsha` 对 zero 端点 fatal 被吞，
+  # 假身份可经 `push origin HEAD:refs/heads/新分支` 全额上远端）。
+  _range="$rsha..$lsha"
+  [ "$rsha" = "$zero" ] && _range="$lsha"
+  _bad_author=$(git log --format='%ae %ce' "$_range" 2>/dev/null | grep -ciE 'test|fixture|selftest|fake|dummy|example\.' || true)
+  if [ "$_bad_author" -gt 0 ]; then
+    echo "[berryos-guard] 拒绝：待推提交含 test/fixture/selftest 假身份（${_bad_author} 个）——考古 P0：674 提交三个月无人察觉" >&2
+    exit 1
+  fi
+
+  if [ -n "$bot_email" ]; then
+    # 审计 r2：判**远端落点** rref 而非本地 ref——显式 refspec（HEAD:main）旁路已堵；
+    # 删除推（lsha=zero）无新提交，跳过。
+    [ "$lsha" = "$zero" ] && continue
+    case "$rref" in
+      refs/heads/wip/auto-*|refs/heads/hermes/*) ;;
+      *)
+        botrange="$rsha..$lsha"
+        [ "$rsha" = "$zero" ] && botrange="$lsha"
+        if git rev-list "$botrange" --author="$bot_email" 2>/dev/null | head -1 | grep -q .; then
+          cat >&2 <<EOF
+[berryos-guard] 拒绝：bot 身份（$bot_email）的新提交只准落 wip/auto-* 或 hermes/* 分支，
+本次推送的远端落点是 $rref——runner 永不碰集成分支、永不自 merge（规则/16 §5）。
+bot 正确路径：推 wip/auto-* 开 PR（label hermes-auto），人审合入。
+EOF
+          exit 1
+        fi
+        ;;
+    esac
+  fi
+  [ "$rref" = "refs/heads/main" ] || continue
+  [ "$lsha" = "$zero" ] && continue
+  # 逃生阀只豁免本段（跨根 main 守门——头注「收域」注记）：身份闸与 bot 闸在前，
+  # 不随阀膨胀。
+  [ "$BERRYOS_ALLOW_CROSSROOT" = "1" ] && continue
+  if [ "$rsha" = "$zero" ]; then
+    # 远端 main 新建（rsha=zero）：全史皆新落地——不设排除。--not --all 会把
+    # 本地已 ref 的可达（含被推 lref 自身）整体排除 → 闸空转（2026-11-17 二次
+    # 活测实抓补齐）。含 owner 授权跨根笔的线建 main 会命中拒——走逃生阀。
+    range="$lsha"
+  else
+    range="$rsha..$lsha"
+  fi
+  bad=$(
+    git rev-list --merges $range </dev/null 2>/dev/null | while read -r m; do
+      # 多亲提取必须用 rev-list --parents——rev-parse --verify "$m^@" 对多亲提交输出为空
+      pline=$(git rev-list --parents -n1 "$m" </dev/null 2>/dev/null)
+      [ -n "$pline" ] || continue
+      set -- $pline
+      shift
+      [ $# -ge 2 ] || continue
+      crossroot_pair "$@" && echo "$m"
+    done | head -3
+  )
+  if [ -n "$bad" ]; then
+    cat >&2 <<'EOF'
+[berryos-guard] 拒绝：本次推送将把跨根合并提交送上 refs/heads/main。
+
+main 与 wip/sched-1.1 曾为两棵不相关历史，2026-11-16 已由 owner 跨根收口合并（两线
+自此共史）；此后新的无共同祖先合并即异常动作，不经 local main 直推。
+lane 正确路径：工作推 wip/sched-1.1；跨线内容走净增量重放。
+owner 确要跨线收口：BERRYOS_ALLOW_CROSSROOT=1 git push
+判例：.agents/notes/implemented/2026-11-16-跨根合并防线与判例.md
+EOF
+    exit 1
+  fi
+done
+exit 0

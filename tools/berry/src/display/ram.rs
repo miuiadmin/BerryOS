@@ -196,16 +196,6 @@ impl RamScan {
     }
 }
 
-/// 原生指针注入通道状态（QMP 主路，惰性）。
-enum Inject {
-    /// 无注入面（非 unix 端点形态）。
-    Off,
-    /// QMP 注入器自管生命周期：首个指针事件才建连（2s 守护），失联哑
-    /// 化后 ≥5s 节流重连自愈——QMP 恢复后 QMP 主路自动复活；节流窗内
-    /// pointer=false，调用方走 RFB msg5 保底。
-    Qmp(QmpInjector),
-}
-
 pub struct RamSource {
     scan: RamScan,
     info: FbInfo,
@@ -233,24 +223,7 @@ impl RamSource {
             scan: RamScan::new(Box::new(file), offset, need as usize),
             info,
             vnc,
-            inject: match inject_sock {
-                Some(p) => Inject::Qmp(QmpInjector::lazy(p, Duration::from_secs(2))),
-                None => Inject::Off,
-            },
         })
-    }
-
-    /// QMP 注入一步（注入器自管建连/哑化/节流重连，见 Inject）：true =
-    /// 已走 QMP；false = 调用方走 RFB msg5 保底。缩放分母用 fb 实几何
-    /// （InputEvent 指针坐标即该域）。连接与写带 2s 守护超时——本调用
-    /// 在 UI 线程，QEMU 卡死不得冻结窗口。
-    fn qmp_pointer(&mut self, x: u16, y: u16, buttons: u8) -> bool {
-        match &mut self.inject {
-            Inject::Qmp(inj) => {
-                inj.pointer(x, y, buttons, self.info.width, self.info.height)
-            }
-            Inject::Off => false,
-        }
     }
 }
 

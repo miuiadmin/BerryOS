@@ -148,6 +148,41 @@ LAYOUT_CELLS_EXPECTED = (
 )
 if len(LAYOUT_CANONICAL) != 109:
     raise RuntimeError("LAYOUT canonical 字节数漂移（期望 109）")
+
+# —— 活体 app 回收时延回归门（2026-11-21 冻结案测试面补缺，--recycle-gate）——
+# gui8 全臂以 APPDEMO（console=true，out_s==0 结构性跳过 collect_eof）为
+# 载荷 = 回收烧帽类缺陷 CI 恒盲（真机场 SETTINGS/CONTACTS 两案全靠用户
+# 撞出）。本门换活体 console=false app：BROWSER（wants_fs，wm_present_h
+# 正轨 = 真开窗活泵实例；非 dock/test app = 紧凑档可入网格——CONTACTS/
+# PHOTOS/SETTINGS/TERMINAL 是 dock app，800x600 无 dock 不可点）。
+# 注入链 = 图标首击（spawn）→ 多任务键二击（recents 重拉 = 同 id 回收
+# 〔svcmgr app_spawn_recycle 外部击杀形〕）。判据三面：① eco 行序
+# it → recycle → killed → it（killed 短行 = 主修在位锚——修回退即缺行
+# FAIL）；② 全程零 no EOF/exit code 降级行（烧帽/真异常退场分诊面）；
+# ③ 二击时延帽 = 首击时延 + headroom（默认 40s < 60s 烧帽 = 回归必爆
+# 帽，正常毫秒级回收恒过；随机器自适应免 TCG 慢机假红）。
+GATE_APP = "BROWSER"
+LAYOUT_GATE = (
+    b'{"schema":1,"cells":[{"app":"BROWSER","page":0,"row":0,"col":0}]}'
+)
+LAYOUT_GATE_CELLS = (
+    ("BROWSER", 0, 0, 0),
+)
+if len(LAYOUT_GATE) != 65:
+    raise RuntimeError("LAYOUT_GATE 字节数漂移（期望 65）")
+MARK_GATE_DEFERRED = "app BROWSER gui deferred"
+ECO_GATE_ALIVE = "eco: app BROWSER alive"
+ECO_GATE_RECYCLE = "eco: app BROWSER recycle"
+ECO_GATE_KILLED = "eco: app BROWSER killed"
+ECO_GATE_NO_EOF = "eco: app BROWSER no EOF"
+ECO_GATE_EXIT_CODE = "eco: app BROWSER exit code"
+ECO_GATE_KILLED_NOTHING = "eco: app BROWSER killed for nothing"
+RE_GATE_IT = re.compile(r"eco: app BROWSER it [0-9A-Fa-f]{2}")
+# launcher 侧失败诊断（spawn 拒/重拉败——门内出现即 FAIL loud）。
+GATE_LAUNCHER_FAILS = (
+    "launcher: recents respawn failed",
+    "launcher: spawn BROWSER",
+)
 if len(LAYOUT_CELLS_EXPECTED) != 2:
     raise RuntimeError("LAYOUT canonical cell 数漂移（期望 2）")
 
@@ -838,19 +873,34 @@ def read_layout_canonical(path: Path) -> list:
     不再是「只数 cells」：长度/逐字节/语义三面全等才返回，任何偏差
     抛 SmokeError（fail closed）。
     """
+    return _read_layout_exact(
+        path, LAYOUT_CANONICAL, LAYOUT_CELLS_EXPECTED, "canonical"
+    )
+
+
+def read_layout_gate(path: Path) -> list:
+    """读回回收门盘 LAYOUT.JSN：恰 LAYOUT_GATE 65 bytes + BROWSER(0,0,0)。
+
+    与 canonical 同一 fail-closed 三面（长度/逐字节/cells）；官方 app
+    在席 → APPDEMO/APPQUIET 按桌面建树规则隐藏（本门零依赖）。
+    """
+    return _read_layout_exact(path, LAYOUT_GATE, LAYOUT_GATE_CELLS, "gate")
+
+
+def _read_layout_exact(
+    path: Path, payload: bytes, cells_expected: tuple, label: str
+) -> list:
     vol = Fat12Volume(path)
     blob = vol.read_file(LAYOUT_NAME11)
     if blob is None:
         raise SmokeError(f"LAYOUT.JSN 缺席（{path}）")
-    if len(blob) != len(LAYOUT_CANONICAL):
+    if len(blob) != len(payload):
         raise SmokeError(
-            f"LAYOUT.JSN 长度 {len(blob)} != canonical {len(LAYOUT_CANONICAL)}"
-            f"（{path}）"
+            f"LAYOUT.JSN[{label}] 长度 {len(blob)} != 期望 {len(payload)}"
         )
-    if blob != LAYOUT_CANONICAL:
+    if blob != payload:
         raise SmokeError(
-            f"LAYOUT.JSN 非 canonical 字节：{blob!r} != {LAYOUT_CANONICAL!r}"
-            f"（{path}）"
+            f"LAYOUT.JSN[{label}] 非精确字节：{blob!r} != {payload!r}"
         )
     try:
         obj = json.loads(blob.decode("utf-8"))
@@ -864,9 +914,9 @@ def read_layout_canonical(path: Path) -> list:
         if not isinstance(c, dict) or set(c) != {"app", "page", "row", "col"}:
             raise SmokeError(f"LAYOUT.JSN cell 形态非法：{c!r}（{path}）")
         got.append((c["app"], c["page"], c["row"], c["col"]))
-    if tuple(got) != LAYOUT_CELLS_EXPECTED:
+    if tuple(got) != cells_expected:
         raise SmokeError(
-            f"LAYOUT.JSN cells {got!r} != {LAYOUT_CELLS_EXPECTED!r}（{path}）"
+            f"LAYOUT.JSN[{label}] cells {got!r} != {cells_expected!r}"
         )
     return cells
 
@@ -877,6 +927,11 @@ def write_layout_for_selftest(
     """自检用：向无 LAYOUT 的盘注入指定 payload 并走 canonical 读回。"""
     Fat12Volume(path).add_file(LAYOUT_NAME11, payload)
     return read_layout_canonical(path)
+
+
+def write_layout_bytes(path: Path, payload: bytes) -> None:
+    """注入指定 LAYOUT payload（无读回——读回归各 verify 面）。"""
+    Fat12Volume(path).add_file(LAYOUT_NAME11, payload)
 
 
 # =====================================================================
@@ -890,6 +945,29 @@ def cell0_center(w: int, h: int) -> tuple[int, int]:
     cell_w = max(1, (w - (GRID_COLS - 1) * GRID_GAP) // GRID_COLS)
     cell_h = max(1, (grid_h - (GRID_ROWS - 1) * GRID_GAP) // GRID_ROWS)
     return cell_w // 2, STATUS_H + GRID_TOP + cell_h // 2
+
+# 回收门多任务键几何（desktop.rs 五键导航条镜像——紧凑档专用）：
+# 条 = content 列尾行（Row：back/home/recents 三键 44px + gap 76，总宽
+# 44*3+76*2=284，cross=Center 水平居中）；纵向 = status(44)+grid_top(8)
+# +pages_host(host_h)+nav(44)，条下 8px 底垫（host_h = h-44-8-0-44-8）。
+# recents = 第三键：中心 x = x0 + 2*(44+76) + 22 = x0+262；y = h-8-22。
+# big 档（OH 1080x1920 族）几何不同——本门 fw_cfg 恒 800x600 紧凑档，
+# big 档挂账不测。
+NAV_KEY_PX = 44
+NAV_GAP = 76
+NAV_BAR_W = NAV_KEY_PX * 3 + NAV_GAP * 2
+
+
+def recents_center(w: int, h: int) -> tuple[int, int]:
+    """多任务键（nav.recents）中心——回收门注入点之一（紧凑档）。"""
+    x0 = (w - NAV_BAR_W) // 2
+    return x0 + 2 * (NAV_KEY_PX + NAV_GAP) + NAV_KEY_PX // 2, h - 8 - NAV_KEY_PX // 2
+
+
+def back_center(w: int, h: int) -> tuple[int, int]:
+    """back 键（nav.back）中心——销窗不杀进程（真泄漏形载具）。"""
+    x0 = (w - NAV_BAR_W) // 2
+    return x0 + NAV_KEY_PX // 2, h - 8 - NAV_KEY_PX // 2
 
 
 RE_LAUNCH_GEOM = re.compile(r"LAUNCH v=\d+ wmax=\d+ (\d+)x(\d+)")
@@ -1051,6 +1129,47 @@ def verify_normal_boot(
     if text.rfind(MARK_APP_DEMO_UP) < snapshot_pos:
         raise SmokeError(
             f"normal boot: 新增 {MARK_APP_DEMO_UP!r} 不在注入前快照之后",
+            log_path,
+        )
+
+def verify_recycle_gate(text: str, log_path: Path | None = None) -> None:
+    """回收门精确断言（--recycle-gate；纯函数，--self-test 覆盖正负样本）。
+
+    期望全日志形态：boot 批 `app BROWSER gui deferred` 恰一 → 首击
+    it 行 → recycle → killed → 二击 it 行；it 恰二（两 spawn）、
+    recycle/killed 恰一、no EOF/exit code/killed for nothing 全零
+    （烧帽回归 = no EOF 行重现 + it 二击迟到；修回退 = killed 行缺席）。
+    行序锚：it[0] < recycle < killed < it[1]。
+    """
+    _require_exact_count(
+        text, MARK_GATE_DEFERRED, 1, "recycle gate", log_path
+    )
+    _require_exact_count(text, ECO_GATE_RECYCLE, 1, "recycle gate", log_path)
+    _require_exact_count(text, ECO_GATE_KILLED, 1, "recycle gate", log_path)
+    _require_exact_count(text, ECO_GATE_NO_EOF, 0, "recycle gate", log_path)
+    _require_exact_count(
+        text, ECO_GATE_EXIT_CODE, 0, "recycle gate", log_path
+    )
+    _require_exact_count(
+        text, ECO_GATE_KILLED_NOTHING, 0, "recycle gate", log_path
+    )
+    for bad in GATE_LAUNCHER_FAILS:
+        _require_exact_count(text, bad, 0, "recycle gate", log_path)
+    _require_exact_count(text, ECO_GATE_ALIVE, 1, "recycle gate", log_path)
+    its = list(RE_GATE_IT.finditer(text))
+    if len(its) != 2:
+        raise SmokeError(
+            f"recycle gate: BROWSER it 行 {len(its)} != 2"
+            f"（首击+回收再拉恰两 spawn；alive 路零新 it；多于 2 = 误多点/连环 spawn）",
+            log_path,
+        )
+    p_alive = text.rfind(ECO_GATE_ALIVE)
+    p_rec = text.rfind(ECO_GATE_RECYCLE)
+    p_kill = text.rfind(ECO_GATE_KILLED)
+    if not (its[0].end() <= p_alive < p_rec < p_kill < its[1].start()):
+        raise SmokeError(
+            "recycle gate: 行序破缺（期望 it → alive → recycle → killed → it；"
+            f"got it@{its[0].end()} alive@{p_alive} rec@{p_rec} kill@{p_kill} it@{its[1].start()}）",
             log_path,
         )
 
@@ -1653,6 +1772,154 @@ def run_normal_boot(args) -> int:
             log(f"  数据盘：{disk}")
             log(f"  命令：{run_dir}/boot-normal.cmd.txt")
 
+# =====================================================================
+# 活体 app 回收时延回归门（2026-11-21 冻结案测试面补缺）
+# =====================================================================
+
+
+def run_recycle_gate(args) -> int:
+    """单 boot 回收门：BROWSER 图标首击（spawn）→ 多任务键二击（同 id
+    回收）——时延帽 + eco 行序 + 零降级行三面断言。
+
+    选 BROWSER 不选 CONTACTS：CONTACTS/PHOTOS/SETTINGS/TERMINAL 是 dock
+    app（desktop.rs DOCK_IDS），紧凑档（800x600）无 dock 渲染不可点；
+    BROWSER 非 dock 非 test = 网格可点。二击走 nav.recents 重拉（导航键
+    覆盖态恒最先——app 窗在盖也不挡）而非再点图标（覆盖态点击门会先收
+    盖消费点击，窗起时序不可观测 = 不确定）。
+    """
+    preflight(args)
+    print_marker_status()
+    if args.only_a or args.normal_boot:
+        raise SmokeError("--recycle-gate 与 --only-a/--normal-boot 互斥")
+
+    run_dir = Path(args.work_dir) if args.work_dir else Path(
+        tempfile.mkdtemp(prefix="gui8-recycle.", dir=args.tmp_dir)
+    )
+    run_dir.mkdir(parents=True, exist_ok=True)
+    log(f"recycle-gate run dir：{run_dir}")
+
+    disk = Path(args.data_disk) if args.data_disk else run_dir / "recycle.img"
+    if disk.exists():
+        if not args.reuse_data_disk:
+            raise SmokeError(f"数据盘已存在：{disk}（覆盖请删或 --reuse-data-disk）")
+        verify_data_disk(disk, expect_smoke=False)
+        read_layout_gate(disk)
+        log(f"复用回收门盘：{disk}（无 GUI8.SMK，LAYOUT_GATE 精确读回）")
+    else:
+        disk.parent.mkdir(parents=True, exist_ok=True)
+        create_data_disk(disk, with_smoke=False)
+        # 单 cell BROWSER 布局：官方 app 在席 → APPDEMO/APPQUIET 按桌面
+        # 建树规则隐藏（本门零依赖）；BROWSER 落 (0,0,0) = 首击靶位。
+        write_layout_bytes(disk, LAYOUT_GATE)
+        read_layout_gate(disk)
+        log(
+            f"新回收门盘：{disk}（{disk.stat().st_size}B，"
+            f"sha256={sha256_file(disk)[:16]}…，LBA0 印章，零 GUI8.SMK）"
+        )
+
+    boot: Boot | None = None
+    success = False
+    try:
+        boot = Boot("recycle", args, run_dir, disk, "recycle")
+        boot.start()
+        _wait_boot_batch(boot, args.boot_a_timeout)
+        _warn_input_armed(boot)
+
+        boot.log.poll()
+        it0 = len(RE_GATE_IT.findall(boot.log.text))
+        if MARK_CLICK_READY in boot.log.text:
+            raise SmokeError(
+                f"recycle gate: 哨兵缺席却打印 {MARK_CLICK_READY!r}",
+                boot.log_path,
+            )
+
+        w, h, src = geometry_from_log(boot.log)
+        cx, cy = cell0_center(w, h)
+        rx, ry = recents_center(w, h)
+        log(
+            f"recycle-gate: display {w}x{h}（{src}）→ BROWSER cell(0,0) "
+            f"({cx},{cy})；recents 键 ({rx},{ry})"
+        )
+
+        boot.qmp_connect()
+
+        # 首击：图标 spawn（活体 console=false 实例入 APP_CHILDREN）。
+        t0 = time.monotonic()
+        log("recycle-gate: QMP 注入首击（BROWSER 图标）")
+        boot.qmp.click(cx, cy, w, h)
+        boot.log.wait_until(
+            boot.proc,
+            lambda t: len(RE_GATE_IT.findall(t)) > it0,
+            "新 eco: app BROWSER it 行（首击 spawn 活证）",
+            args.click_timeout,
+            "recycle gate",
+        )
+        first_latency = time.monotonic() - t0
+
+        # 二击（批3 后换载具）：同位重击 = already-alive 聚焦路（窗在场
+        # → err=3 → launcher 焦点 RPC，零 recycle 零新 it）。断言 alive 行。
+        t1 = time.monotonic()
+        log("recycle-gate: QMP 注入二击（同图标；already-alive 聚焦路）")
+        boot.qmp.click(cx, cy, w, h)
+        boot.log.wait_until(
+            boot.proc,
+            lambda t: ECO_GATE_ALIVE in t,
+            "二击后 eco: app BROWSER alive 行（聚焦不回收活证）",
+            args.click_timeout,
+            "recycle gate",
+        )
+        alive_latency = time.monotonic() - t1
+
+        # 三击前置：back 键销窗不杀进程（真泄漏形）——此后同 id 窗不在场，
+        # 三击才走回收（外部击杀形）。时延帽 = max(floor, 首击 + headroom)：
+        # 烧帽回归（+60s）必爆帽；headroom 默认 40s < 60s 且 >> 正常回收。
+        bx, by = back_center(w, h)
+        boot.qmp.click(bx, by, w, h)
+        time.sleep(2.0)  # 销窗 RPC 往返 + 表广播沉淀
+        boot.log.poll()
+        it1 = len(RE_GATE_IT.findall(boot.log.text))
+        budget = max(
+            args.recycle_budget_floor, first_latency + args.recycle_headroom
+        )
+        t2 = time.monotonic()
+        log(f"recycle-gate: QMP 注入三击（同图标；recycle 路；帽 {budget:.0f}s）")
+        boot.qmp.click(cx, cy, w, h)
+        boot.log.wait_until(
+            boot.proc,
+            lambda t: len(RE_GATE_IT.findall(t)) > it1,
+            f"三击后新 eco: app BROWSER it 行（回收→再拉起活证；帽 {budget:.0f}s）",
+            budget,
+            "recycle gate",
+        )
+        second_latency = time.monotonic() - t2
+
+        boot.log.poll()
+        verify_recycle_gate(boot.log.text, boot.log_path)
+        verify_data_disk(disk, expect_smoke=False)
+        read_layout_gate(disk)
+        log(
+            f"recycle-gate: 门过（首击 {first_latency:.1f}s / 二击 "
+            f"{second_latency:.1f}s ≤ 帽 {budget:.0f}s；"
+            "it → recycle → killed → it 行序成立，零 no EOF/exit code）"
+        )
+
+        success = True
+        log(
+            "PASS（--recycle-gate）：活体 console=false app 同 id 回收"
+            "恒时延帽内（EOF 烧帽回归面 CI 可见）"
+        )
+        return 0
+    finally:
+        if boot is not None:
+            boot.stop()
+        if success and not args.keep:
+            shutil.rmtree(run_dir, ignore_errors=True)
+        else:
+            log(f"artifacts 保留：{run_dir}")
+            log(f"  串口：{run_dir}/boot-recycle.log")
+            log(f"  数据盘：{disk}")
+            log(f"  命令：{run_dir}/boot-recycle.cmd.txt")
+
 
 # =====================================================================
 # dry-run
@@ -1662,6 +1929,8 @@ def run_normal_boot(args) -> int:
 def dry_run(args) -> int:
     preflight(args)
     print_marker_status()
+    if args.recycle_gate:
+        raise SmokeError("--dry-run 与 --recycle-gate 互斥（门无 dry-run 形——盘面/断言与 dual/normal 皆不同）")
     run_dir = Path(args.work_dir) if args.work_dir else Path(
         tempfile.mkdtemp(prefix="gui8-smoke-dry.", dir=args.tmp_dir)
     )
@@ -2185,6 +2454,70 @@ def self_test(args) -> int:
             "LAYOUT/click ready/APPQUIET 全零）"
         )
 
+        # 3c) 回收门（--recycle-gate）：LAYOUT_GATE 65B 精确读回 + 负样本、
+        #     recents 键几何、verify_recycle_gate 正负样本（killed 缺席 =
+        #     主修回退形态；no EOF 在席 = 烧帽回归形态）。
+        gate_disk = tmp / "gate.img"
+        create_data_disk(gate_disk, with_smoke=False)
+        write_layout_bytes(gate_disk, LAYOUT_GATE)
+        if read_layout_gate(gate_disk) != [dict(zip(("app", "page", "row", "col"), c)) for c in LAYOUT_GATE_CELLS]:
+            raise SmokeError("LAYOUT_GATE 读回 cells 漂移")
+        bad_gate = tmp / "bad-gate.img"
+        create_data_disk(bad_gate, with_smoke=False)
+        Fat12Volume(bad_gate).add_file(
+            LAYOUT_NAME11, LAYOUT_GATE.replace(b"BROWSER", b"CAMERAX")
+        )
+        expect_error("LAYOUT_GATE 错 app id", lambda: read_layout_gate(bad_gate))
+        if recents_center(800, 600) != (520, 570):
+            raise SmokeError(
+                f"recents_center 800x600 异常：{recents_center(800, 600)}（期望 (520,570)）"
+            )
+        fake_g = (
+            f"{MARK_GATE_DEFERRED}\n"
+            "eco: app BROWSER it 03\n"
+            f"{ECO_GATE_ALIVE}\n"
+            f"{ECO_GATE_RECYCLE}\n"
+            f"{ECO_GATE_KILLED}\n"
+            "eco: app BROWSER it 03\n"
+        )
+        verify_recycle_gate(fake_g)
+        expect_error(
+            "回收门 killed 缺席（主修回退）",
+            lambda: verify_recycle_gate(
+                fake_g.replace(ECO_GATE_KILLED + "\n", "")
+            ),
+        )
+        expect_error(
+            "回收门 no EOF 在席（烧帽回归）",
+            lambda: verify_recycle_gate(fake_g.replace(ECO_GATE_KILLED, ECO_GATE_NO_EOF)),
+        )
+        expect_error(
+            "回收门 exit code 在席（分诊面回退）",
+            lambda: verify_recycle_gate(
+                fake_g + ECO_GATE_EXIT_CODE + "\n"
+            ),
+        )
+        expect_error(
+            "回收门行序倒置（killed 先于 recycle）",
+            lambda: verify_recycle_gate(
+                fake_g.replace(
+                    f"{ECO_GATE_RECYCLE}\n{ECO_GATE_KILLED}\n",
+                    f"{ECO_GATE_KILLED}\n{ECO_GATE_RECYCLE}\n",
+                )
+            ),
+        )
+        expect_error(
+            "回收门 it 恰一（二击未达）",
+            lambda: verify_recycle_gate(
+                f"{MARK_GATE_DEFERRED}\neco: app BROWSER it 03\n"
+                f"{ECO_GATE_RECYCLE}\n{ECO_GATE_KILLED}\n"
+            ),
+        )
+        log(
+            "self-test: 回收门 ok（LAYOUT_GATE 65B；recents(520,570)；"
+            "正序通过；killed 缺席/no EOF/exit code/行序倒置/it 缺席均 FAIL）"
+        )
+
         # 4) QMP 协议 + no-device 广播 + 三批单击
         sock = tmp / "qmp.sock"
         mock = MockQmp(sock).start()
@@ -2237,7 +2570,7 @@ def self_test(args) -> int:
 
         log(
             "SELFTEST PASS（精确哨兵/canonical 109B/精确计数与顺序/"
-            "常态隔离/geometry/log/QMP/RFB 直通臂；零 QEMU）"
+            "常态隔离/回收门/geometry/log/QMP/RFB 直通臂；零 QEMU）"
         )
         return 0
     finally:
@@ -2325,6 +2658,30 @@ def parse_args(argv=None):
         action="store_true",
         help="常态隔离：不造 GUI8.SMK，点击后断言 spawn 仍发生且零标记",
     )
+    ap.add_argument(
+        "--recycle-gate",
+        action="store_true",
+        help="活体 app 回收时延回归门（2026-11-21 冻结案）：单 boot，"
+        "BROWSER 图标首击 + 多任务键二击（同 id 回收），断言 it → "
+        "recycle → killed → it 行序、零 no EOF/exit code、二击时延 ≤ "
+        "首击 + headroom（EOF 烧帽回归必爆帽）",
+    )
+    ap.add_argument(
+        "--recycle-budget-floor",
+        type=float,
+        default=20.0,
+        metavar="S",
+        help="回收门二击时延帽下限秒（默认 %(default)s——快机上首击极短时"
+        "仍留余量）",
+    )
+    ap.add_argument(
+        "--recycle-headroom",
+        type=float,
+        default=40.0,
+        metavar="S",
+        help="回收门二击时延帽 = 首击时延 + 本值（默认 %(default)s——必须 "
+        "< 60s EOF 烧帽，回归才必爆帽；>> 正常毫秒级回收与 TCG 抖动）",
+    )
     ap.add_argument("--only-a", action="store_true", help="只跑 Boot A（plumbing）")
     ap.add_argument("--dry-run", action="store_true", help="只建盘并打印 QEMU 命令")
     ap.add_argument("--self-test", action="store_true", help="无 QEMU 自检")
@@ -2358,6 +2715,12 @@ def main(argv=None) -> int:
             "（vnc 臂只立 dual boot A 注入面，该腿注入保持 QMP）",
             file=sys.stderr, flush=True)
         return 2
+    if args.input_path == "vnc" and args.recycle_gate:
+        print(
+            "gui8-smoke: FAIL: --input-path vnc 暂不支持 --recycle-gate 组合"
+            "（vnc 臂只立 dual boot A 注入面，该腿注入保持 QMP）",
+            file=sys.stderr, flush=True)
+        return 2
     try:
         if args.self_test:
             return self_test(args)
@@ -2366,6 +2729,8 @@ def main(argv=None) -> int:
         if args.normal_boot:
             return run_normal_boot(args)
         return run_dual_boot(args)
+        if args.recycle_gate:
+            return run_recycle_gate(args)
     except MissingMarkers as e:
         print(f"gui8-smoke: FAIL: {e}", file=sys.stderr, flush=True)
         print(

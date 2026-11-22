@@ -89,6 +89,8 @@ __pycache__/
 # 父目录被排除时 git 不下钻，须用 .claude/* + ! 取反惯用法，单写 !.claude/skills 无效
 .claude/*
 !.claude/skills
+!.claude/settings.json
+!.claude/MANIFEST.md
 
 # loopx MCP 注册（含本机绝对路径，机器绑定）
 /.mcp.json
@@ -177,6 +179,22 @@ smoke-wt-*/
 /user/berry-netdproto/target/
 /bootloader/berryboot/slot/cargo-target/
 
+# 工程卫生四模式（2026-11-20 防再犯收口）：隔离构建与临时产物从逐目录
+# 枚举升为任意深度通配。cargo-target/——compat 三 crate 产物 69 文件曾
+# 误入库（当刀已 rm --cached 清偿），widgets 四 crate 同族残部的清理建议
+# 见当日工程卫生笔记；target-*/——隔离 target 已下沉子目录（drivers/、
+# tools/berry/、user/berry-*/ 等漏网实抓，根锚定 /target-*/ 盖不到）；
+# *.img——临时盘镜像任意名（disk-qw1.img 判例：逐盘名枚举漏网）；
+# screenshot.png——临时截图，任意深度。零误伤验证：git ls-files 无
+# tracked 的 .img/screenshot.png/target-*；cargo-target/ 命中的 tracked
+# 仅历史误入库构建产物，不伤任何源文件。
+cargo-target/
+target-*/
+*.img
+screenshot.png
+
+# 构建缓存目录（bootloader 侧局部 cargo 缓存——审计 2026-11-22：未跟踪态污染 status/pack-work 脏计数）
+cargo-target-build/
 # W3 隔离构建面（五百八十八判例）：隔离 HOME 与 target 目录不进库
 .home-q110/
 .target-host-*/

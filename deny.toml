@@ -1,0 +1,88 @@
+# cargo-deny 配置（SEC-01 §4.5 件 23——供应链防线进 CI）
+#
+# 检查面：licenses（GPL 拒收 = 仓纪律执法，见 AGENTS.md「总闸」+ 规则/13 /ADR #37
+# Apache-2.0）+ advisories（RustSec 三连击教训，SEC-8 §3.4）。
+# bans/sources 维持告警档（多版本共存有既有先例：getrandom 0.2.17 双版本
+# 经 const-random-macro 共存，C-2c 挂账刀已实录）——不以此红 CI。
+#
+# 多 workspace 执行口 = ci.yml「cargo-deny（licenses+advisories）」step：
+# find 口径 27 个 manifest 命中（23 个真 workspace 根 + 4 个注释命中假根
+# vblk/vnet/vprobe/berry-tcp——`--manifest-path` 解析到所属父 workspace，
+# 检查面等价；SEC-02 时 26→27 = A5-1 netprobe 独立小工作区增补），逐一
+# `cargo deny --manifest-path` 检查（根/user/drivers/bootloader/x86_64/
+# user bins 全覆盖；find 排除 reference/ .claude/ target/ docs/——
+# docs/挂账-* 是死档部分树，manifest 断链）。
+#
+# 调用侧不带豁免旗（SEC-02 挂账 F1 清账刀 2026-10-30 撤除
+# `-A unlicensed -A no-license-field` 双旗）：全部本地 crate（78 个
+# [package] manifest）已补齐 `license = "Apache-2.0"`（ADR #37）——本地
+# 27 manifest 撤旗后 licenses+advisories 全绿实录，「缺 license 字段/
+# 无表达式」面恢复 FAIL 执法。
+# 历史注记（撤旗前的已知豁免面，对抗审查实抓后曾如实陈述——勿再声称
+# allowlist 兜得住该情形）：allowlist 只匹配「已解析出的 license 表达式」，
+# 无表达式（缺 license 字段）的 crate 根本不进匹配——双旗当时对缺字段
+# crate 整类静默放行，缺 license 字段的第三方依赖无自动执法（引入时依赖
+# 审查人工把关）；已解析表达式的执法面不受影响（self_cell/r-efi OR 分支
+# 照常过 allowlist 拒收）。该豁免面已随清账撤旗消除：本地 crate 补字段
+# 自证，第三方缺字段依赖自本刀起恢复 FAIL。
+#
+# allowlist 依据 = 2026-10-30 对全部 27 manifest（ci 同款 find 口径，23 真
+# workspace 根——净增 netprobe 无新增第三方 license 面）的 cargo metadata
+# 实测 license 面（非拍脑袋）：MIT OR Apache-2.0 / MIT / Unicode-3.0 / Zlib / ISC /
+# CC0-1.0 / 0BSD / Unlicense / Apache-2.0 WITH LLVM-exception——全部在册。
+# 两处 OR 分支含 GPL/LGPL 的既有依赖（OR 语义 = 任一分支满足即合法，选举
+# 非 GPL 分支）：
+#   - self_cell 1.3.0 = Apache-2.0 OR GPL-2.0-only（选举 Apache-2.0）
+#   - r-efi 6.0.0     = MIT OR Apache-2.0 OR LGPL-2.1-or-later
+# 若未来引入「GPL AND ...」或纯 GPL 依赖，本配置将拒之——预期行为。
+
+[graph]
+# 本地 crate 已全数带 license（F1 清账刀）——all-features 默认关（与 license 面无关）
+all-features = false
+
+[licenses]
+version = 2
+# GPL/AGPL/LGPL 不在 allow 列表 = 拒收（copyleft 进仓违反协议洁净纪律）
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "0BSD",
+    "Zlib",
+    "Unlicense",
+]
+private = { ignore = true }
+# allowlist = 全 27 manifest（23 真 workspace 根）依赖并集——单一 workspace 检查时必有「未遇到」项
+# （如根工作区无 Zlib crate、user 工作区有），此 lint 降为 allow 防 CI 红噪声
+unused-allowed-license = "allow"
+
+[advisories]
+version = 2
+# 漏洞公告（RustSec vulnerability）= 拒（v2 默认）；被 yank = 告警（Cargo.lock
+# 锁步下 yank 不自动影响构建，升级走显式刀）；弃维护/不健全 = 告警面（v2 语义
+# 为作用域：none = 只记不算失败，升级时人工过目 log）
+yanked = "warn"
+unmaintained = "none"
+unsound = "none"
+
+[bans]
+# 多版本共存 = 告警（getrandom 双版本先例）；重复依赖不拒
+multiple-versions = "warn"
+wildcards = "warn"
+highlight = "all"
+deny = [
+    # 黑名单按需追加（typosquat 防线——SEC-8 §3.4 TrapDoor/版本劫持事件）
+]
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

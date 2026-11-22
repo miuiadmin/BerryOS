@@ -10,7 +10,8 @@
 //! → loop {
 //!   hooks.on_head（时钟续摆/armed 复位等应用特化）
 //!   → input 泵（上轮 INPUT_POLL 应答收 + push_pointer/键盘帧 on_key
-//!     分流；再挂下一轮；在途超 60s stale-reset 自愈）
+//!     分流；再挂下一轮；在途超 60s stale-reset 自愈；通道错退避重探
+//!     ——1s/4s/16s 帽 60s 循环，永不永久断）
 //!   → ui.pump_input_at（C′/A′ 合规：当前时钟自算重采样目标 + 内建
 //!     wake 时序）→ hooks.on_msgs（Click/翻页分发）
 //!   → hooks.on_tick（snap 动画步进）
@@ -63,7 +64,7 @@ use berry_sys::Handle;
 #[cfg(not(test))]
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_handle_duplicate, berry_object_wait_many,
-    berry_object_wait_one, berry_vmar_map, berry_vmo_commit, berry_vmo_create,
+    berry_object_wait_one, berry_thread_sleep, berry_vmar_map, berry_vmo_commit, berry_vmo_create,
     BERRY_ERR_AGAIN, BERRY_ERR_BUSY, BERRY_ERR_TIMEDOUT, RIGHT_READ, RIGHT_TRANSFER, RIGHT_WRITE,
     SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
@@ -102,6 +103,27 @@ pub const INPUT_STALE_CAP_NS: u64 = 60 * 1_000_000_000;
 /// 输入 poll 应答采样打印周期：每第 100 个应答打一行 events/EAGAIN
 /// 诊断（一次性 input_logged 旗退役后的节拍；错误路径不受此门恒必打）。
 pub const INPUT_LOG_EVERY: u64 = 100;
+
+/// 输入通道断连退避步进表（P3 韧性刀）：recv 硬错/arm 失败后不再置
+/// hi=0 永久断（「一条 diag 即终审」旧面退役），改按连续失败次数退避
+/// 重探——1s/4s/16s；重探成功即复位步进表（下次失败从 1s 重新起算）。
+pub const INPUT_REARM_BACKOFF_STEPS_NS: [u64; 3] =
+    [1 * 1_000_000_000, 4 * 1_000_000_000, 16 * 1_000_000_000];
+
+/// 退避封顶（第 4 次连续失败起恒取此值循环重探）：真死通道以 60s 周期
+/// 恒探——永不放弃（瞬时抖动 1s 即愈）也永不自旋（60s 一发零 RPC）。
+pub const INPUT_REARM_BACKOFF_CAP_NS: u64 = 60 * 1_000_000_000;
+
+/// SUBMIT/FRAME_CALLBACK 1B ST_BUSY 拒答重试总帽（present 单飞仲裁面）：
+/// wmd presarb（gui-wmd 侧 ArbGate::Busy 分支——注释宣称「客户端 pump 侧
+/// 步进重试」即本面）对他客户端事务在途的 SUBMIT/RELEASE 快答 ST_BUSY
+///（属主租约 PRESENT_LEASE_NS=5s 内让位）；帽取 8s > 租约——到帽前属主
+/// 事务必已收口或被租约抢占，本端重试必过。到帽才 fail（真死链面——
+/// guifbd/wmd 双停摆形态）。
+pub const PRESENT_BUSY_RETRY_CAP_NS: u64 = 8 * 1_000_000_000;
+
+/// ST_BUSY 步进重试步进（100ms——步进睡让出 CPU，醒即重验）。
+pub const PRESENT_BUSY_RETRY_STEP_NS: u64 = 100 * 1_000_000;
 
 /// glyph scratch 容量（堆置；~30 短 label 富余——paint 对超容 run 截断
 /// 尾字形，视觉面非正确性面）。
@@ -145,6 +167,18 @@ pub fn wait_deadline(next_wakeup: Option<u64>, t_now: u64, extra: Option<u64>) -
         d = d.min(e);
     }
     d
+}
+
+/// 第 `consecutive_fails` 次连续失败后的下次重探延迟（纯函数，host
+/// 测试面）：1/4/16s 步进表索引，越表封顶 60s 循环。0 视同 1（调用面
+/// 恒传 ≥1，防御取首档）。改值须有意识地重估「瞬时抖动 1s 即愈 vs
+/// 真死通道探频」契约。
+pub fn input_rearm_backoff_ns(consecutive_fails: u64) -> u64 {
+    let idx = usize::try_from(consecutive_fails.saturating_sub(1)).unwrap_or(usize::MAX);
+    INPUT_REARM_BACKOFF_STEPS_NS
+        .get(idx)
+        .copied()
+        .unwrap_or(INPUT_REARM_BACKOFF_CAP_NS)
 }
 
 /// 应用特化回调面（帧循环骨架的消费侧注入点——launcher 形态：
@@ -336,6 +370,13 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
     let mut input_arm_ns: u64 = 0; // 最近一次 input_arm 成功时刻（在途超时基准）
     let mut input_polls: u64 = 0; // INPUT_POLL 应答计数（采样打印节拍）
     let mut input_stale_resets: u64 = 0; // stale-reset 复位计数（diag n= 面）
+    // —— 通道韧性面（P3）：hi 永不置 0，硬错/挂败进退避态到期重探 ——
+    let mut input_down = false; // 退避态旗（真 = 本拍不收不挂，到期重探）
+    let mut input_down_fails: u64 = 0; // 连续失败计数（退避步进表驱动；成功复位）
+    let mut input_down_total: u64 = 0; // 累计进退避次数（采样行计数面）
+    let mut input_rearm_oks: u64 = 0; // 退避后重探成功计数（恢复证据行/采样面）
+    let mut input_soft_errs: u64 = 0; // recv BUSY/TIMEOUT 软错计数（不进退避面）
+    let mut input_rearm_at: u64 = 0; // 下次重探时刻（input_down 时有效）
     let mut input_buf = [0u8; gp::INPUT_REP_MAX];
     let mut input_hs = [0 as Handle; 8];
 
@@ -376,8 +417,8 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
                 if s != 0 {
                     // AGAIN = 已排空即止；其他错 = 队首滞留或通道死——
                     // recv 向与 send 向是同一通道的两条独立 FIFO：滞留
-                    // 消息由下一轮主收路径的 recv err 分支 disable，通道
-                    // 死由 arm send 失败 disable（可能多挂一条必死 poll
+                    // 消息由下一轮主收路径的 recv err 分支进退避重探，
+                    // 通道死由 arm send 失败同面（可能多挂一条必死 poll
                     // 进服务端队列，一轮内收口）。
                     break;
                 }
@@ -423,7 +464,18 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
                 match gp::parse_input_events_rep(&input_buf[..nb]) {
                     Some(Ok(view)) => {
                         if sampled {
-                            diag(&format!("input events n={}", view.count()));
+                            // 计数面升级（P3 可观测）：重探/软错/stale 计数
+                            // 并入既有采样行——现场「画面活着点不动」类
+                            // 形态零猜面（前缀锚 input events n= 不动）。
+                            diag(&format!(
+                                "input events n={} polls={} stale={} down={} rearms={} soft={}",
+                                view.count(),
+                                input_polls,
+                                input_stale_resets,
+                                input_down_total,
+                                input_rearm_oks,
+                                input_soft_errs
+                            ));
                         }
                         for i in 0..view.count() {
                             if let Some(ev) = view.event(i) {
@@ -460,20 +512,78 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
                     }
                     Some(Err(gp::ST_EAGAIN)) => {
                         if sampled {
-                            diag("input poll EAGAIN");
+                            // 稳态落点行（无事件常态）——计数面与 events
+                            // 行同套（前缀锚 input poll EAGAIN 不动）。
+                            diag(&format!(
+                                "input poll EAGAIN polls={} stale={} down={} rearms={} soft={}",
+                                input_polls,
+                                input_stale_resets,
+                                input_down_total,
+                                input_rearm_oks,
+                                input_soft_errs
+                            ));
                         }
                     }
                     Some(Err(st)) => diag(&format!("input poll st={st}")),
                     None => diag(&format!("input poll rep bad len={nb}")),
                 }
+            } else if s == BERRY_ERR_BUSY || s == BERRY_ERR_TIMEDOUT {
+                // 可重试错误类（BUSY/TIMEOUT）不进退避：保持 in 途，
+                // 下一轮照常收；真楔死由 60s stale-reset 排空复位兜底
+                //（软错计数入采样行——首错与每第 INPUT_LOG_EVERY 错必打，
+                // 持续软错不刷屏）。
+                input_soft_errs += 1;
+                if input_soft_errs == 1 || input_soft_errs % INPUT_LOG_EVERY == 0 {
+                    diag(&format!("input recv soft err={s} n={}", input_soft_errs));
+                }
             } else if s != BERRY_ERR_AGAIN {
-                diag(&format!("input recv err={s}"));
-                hi = 0;
+                // 硬错：进退避重探态（P3 韧性——hi 不置 0，「一条 diag
+                // 即终审」的永久断退役；瞬时抖动 1s 即愈，真死通道 60s
+                // 周期恒探）。残余竞态同 stale-reset 注①：排空与重探间
+                // 迟到的旧应答由下一轮 recv 按新 poll 应答照常消费（至多
+                // 一条，自纠不楔死）。
                 input_pending = false;
+                input_down = true;
+                input_down_fails += 1;
+                input_down_total += 1;
+                let delay_ns = input_rearm_backoff_ns(input_down_fails);
+                input_rearm_at = now() + delay_ns;
+                diag(&format!(
+                    "input recv err={s} -- backoff fails={} retry_in_ms={} rearms={}",
+                    input_down_fails,
+                    delay_ns / 1_000_000,
+                    input_rearm_oks
+                ));
             }
         }
         if hi != 0 && !input_pending {
-            if input_arm(hi) {
+            if input_down {
+                // —— 退避重探（P3 韧性）：到期才试（窗内零 send 零 RPC）；
+                //    成功复位步进表并恒打恢复行（退避窗内自动恢复的
+                //    gate 证据——错误路径不受采样门），失败按表续退。
+                if now() >= input_rearm_at {
+                    if input_arm(hi) {
+                        input_down = false;
+                        input_down_fails = 0; // 成功复位步进表（下次失败从 1s 起算）
+                        input_rearm_oks += 1;
+                        input_pending = true;
+                        input_arm_ns = now();
+                        diag(&format!(
+                            "input rearm ok n={} polls={}",
+                            input_rearm_oks, input_polls
+                        ));
+                    } else {
+                        input_down_fails += 1;
+                        let delay_ns = input_rearm_backoff_ns(input_down_fails);
+                        input_rearm_at = now() + delay_ns;
+                        diag(&format!(
+                            "input rearm fail fails={} retry_in_ms={}",
+                            input_down_fails,
+                            delay_ns / 1_000_000
+                        ));
+                    }
+                }
+            } else if input_arm(hi) {
                 input_pending = true;
                 input_arm_ns = now();
                 // armed 行同走采样门（旗退役后无独立一次性节拍——与应答
@@ -483,8 +593,18 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
                     diag(&format!("input poll armed h={hi}"));
                 }
             } else {
-                diag("input poll arm failed -- disable");
-                hi = 0;
+                // 首败进退避（与 recv 硬错同面；BUSY 类瞬时拒已由
+                // input_arm 内部 WRITABLE 等待消化，至此即非瞬时面——
+                // 统一退避，无可重试类单独放行面）。
+                input_down = true;
+                input_down_fails = 1;
+                input_down_total += 1;
+                let delay_ns = input_rearm_backoff_ns(input_down_fails);
+                input_rearm_at = now() + delay_ns;
+                diag(&format!(
+                    "input poll arm failed -- backoff fails=1 retry_in_ms={}",
+                    delay_ns / 1_000_000
+                ));
             }
         }
 
@@ -545,12 +665,10 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
 
             // SUBMIT：fresh READ dup 别名随行（send 即 take——原 vmo 留表；
             // TRANSFER 保位——随行预检执法，dup 只紧不松须显式保位）。
-            let mut alias: Handle = 0;
-            if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias) != 0
-                || alias == 0
-            {
-                fail("dup alias");
-            }
+            // **ST_BUSY 步进重试**（present 单飞仲裁面）：wmd 对他客户端
+            // 事务在途的 SUBMIT 快答 ST_BUSY（随行别名已被关收——快答未
+            // 转发零孤儿）——每轮 fresh dup 重试至帽（8s > 属主租约 5s，
+            // 到帽前必过）。
             let (flags, rects, k) = if full {
                 (
                     gp::SUBMIT_F_DAMAGE_FULL,
@@ -570,24 +688,46 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
                 rect_count: k,
             };
             let m = enc_req(gp::encode_present_req(&mut req, &sreq));
-            let (n, _) = rpc(cfg.hw, &req[..m], &[alias], &mut rep, &mut rhs);
-            let token = match gp::parse_submit_ack(&rep[..n]) {
-                Some(t) => t,
-                None => fail(&format!("submit ack bad st={}", rep[0])),
+            let mut busy_dl = 0u64;
+            let token = loop {
+                let mut alias: Handle = 0;
+                if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias) != 0
+                    || alias == 0
+                {
+                    fail("dup alias");
+                }
+                let (n, _) = rpc(cfg.hw, &req[..m], &[alias], &mut rep, &mut rhs);
+                if let Some(t) = gp::parse_submit_ack(&rep[..n]) {
+                    break t;
+                }
+                if n == 1 && rep[0] == gp::ST_BUSY {
+                    busy_step("submit busy（present 单飞让位重试）", &mut busy_dl);
+                    continue;
+                }
+                fail(&format!("submit ack bad st={}", rep[0]));
             };
             ui.note_submitted();
 
             // FRAME_CALLBACK：blit-at-SUBMIT 形下帧已呈现（token 校验即
             // 答）——断 PRESENTED（DISCARDED = 呈现链破相 fail loud）。
-            // status/credits 单源仍在本应答（P3 回执无 credits 域）。
+            // status/credits 单源仍在本应答（P3 回执无 credits 域）。ST_BUSY
+            // 步进重试同 SUBMIT（wmd stale 清场封锁/中继毒化瞬态的快答
+            // ——本端帧已在途，重试无副作用）。
             let m = enc_req(gp::encode_present_req(
                 &mut req,
                 &gp::PresentReq::FrameCallback { frame_token: token },
             ));
-            let (n, _) = rpc(cfg.hw, &req[..m], &[], &mut rep, &mut rhs);
-            let done = match gp::parse_frame_done_rep(&rep[..n]) {
-                Some(d) => d,
-                None => fail(&format!("frame done bad st={}", rep[0])),
+            let mut cb_dl = 0u64;
+            let done = loop {
+                let (n, _) = rpc(cfg.hw, &req[..m], &[], &mut rep, &mut rhs);
+                if let Some(d) = gp::parse_frame_done_rep(&rep[..n]) {
+                    break d;
+                }
+                if n == 1 && rep[0] == gp::ST_BUSY {
+                    busy_step("frame callback busy（present 单飞让位重试）", &mut cb_dl);
+                    continue;
+                }
+                fail(&format!("frame done bad st={}", rep[0]));
             };
             if done.status != gp::FRAME_PRESENTED {
                 fail(&format!("frame status={}", done.status));
@@ -683,6 +823,11 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
         } else {
             wait_deadline(ui.next_wakeup(), now(), hooks.extra_deadline())
         };
+        // 退避到期准时醒（P3 韧性）：重探拍不迟滞——否则 Idle 相靠 10s
+        // IDLE 帽兜底醒，最大拖后一个整帽（60s 档最坏 +10s）。到期点已
+        // 过时 wait 立即 TIMEDOUT 醒，下一拍重探收口（无自旋：重探后
+        // pending 真 = 等 hi READABLE，假 = 新退避点在未来）。
+        let deadline = if input_down { deadline.min(input_rearm_at) } else { deadline };
         let mut hs = [cfg.hw, 0 as Handle];
         let ss = [SIGNAL_READABLE, SIGNAL_READABLE];
         let mut n = 1usize;
@@ -696,6 +841,25 @@ pub fn run(cfg: PumpCfg, ui: &'static mut UiMain, hooks: &mut dyn HostHooks) -> 
         if wst != 0 && wst != BERRY_ERR_TIMEDOUT {
             fail(&format!("wait err={wst}"));
         }
+    }
+}
+
+/// present 域 1B ST_BUSY 拒答的步进重试共尾（SUBMIT/FRAME_CALLBACK 面）：
+/// 100ms 步进让出 CPU，总帽 [`PRESENT_BUSY_RETRY_CAP_NS`]（`cap_dl` = 各
+/// 调用点局部帽位，0 = 首次起算）；到帽 fail（真死链面）。兑现 gui-wmd
+/// 侧 ArbGate::Busy 分支「客户端 pump 侧步进重试」的宣称——快答未转发 +
+/// 随行已关收，重发即安全（SUBMIT 面重发前须 fresh dup 别名）。
+#[cfg(not(test))]
+fn busy_step(what: &str, cap_dl: &mut u64) {
+    if *cap_dl == 0 {
+        *cap_dl = now() + PRESENT_BUSY_RETRY_CAP_NS;
+        diag(what);
+    }
+    if now() >= *cap_dl {
+        fail(&format!("{}: 帽到点", what));
+    }
+    if berry_thread_sleep(now() + PRESENT_BUSY_RETRY_STEP_NS) != 0 {
+        fail("busy retry sleep");
     }
 }
 
@@ -796,5 +960,52 @@ mod tests {
     #[test]
     fn input_stale_cap_is_two_server_caps() {
         assert_eq!(INPUT_STALE_CAP_NS, 2 * 30_000_000_000);
+    }
+
+    /// ST_BUSY 重试帽契约：8s > presarb 属主租约 5s（gui-wmd 侧
+    /// PRESENT_LEASE_NS——到帽前属主事务必已收口或被租约抢占，本端重试
+    /// 必过）；步进 100ms。改值须有意识地重估「帽盖住租约窗」契约。
+    #[test]
+    fn present_busy_retry_cap_covers_presarb_lease() {
+        const PRESENT_LEASE_NS: u64 = 5 * 1_000_000_000;
+        assert_eq!(PRESENT_BUSY_RETRY_CAP_NS, 8 * 1_000_000_000);
+        assert!(PRESENT_BUSY_RETRY_CAP_NS > PRESENT_LEASE_NS);
+        assert_eq!(PRESENT_BUSY_RETRY_STEP_NS, 100 * 1_000_000);
+    }
+
+    /// 退避真值表（P3 韧性）：1s/4s/16s 步进，越表封顶 60s 循环——瞬时
+    /// 抖动 1s 即愈、真死通道 60s 周期恒探永不放弃；单调不降。
+    #[test]
+    fn input_rearm_backoff_truth_table() {
+        assert_eq!(input_rearm_backoff_ns(1), 1 * 1_000_000_000);
+        assert_eq!(input_rearm_backoff_ns(2), 4 * 1_000_000_000);
+        assert_eq!(input_rearm_backoff_ns(3), 16 * 1_000_000_000);
+        assert_eq!(input_rearm_backoff_ns(4), 60 * 1_000_000_000);
+        assert_eq!(input_rearm_backoff_ns(5), 60 * 1_000_000_000);
+        assert_eq!(input_rearm_backoff_ns(u64::MAX), 60 * 1_000_000_000);
+        let mut prev = 0u64;
+        for f in 1..=8u64 {
+            let d = input_rearm_backoff_ns(f);
+            assert!(d >= prev, "backoff must be non-decreasing: fails={f} d={d} prev={prev}");
+            prev = d;
+        }
+    }
+
+    /// 步进几何契约：每档 ×4、帽 60s、表与纯函数单源对齐（表内逐档 ==
+    /// fn(i+1)，越表恒帽；0 防御取首档）。改值须有意识地重估契约。
+    #[test]
+    fn input_rearm_backoff_geometry() {
+        assert_eq!(INPUT_REARM_BACKOFF_STEPS_NS.len(), 3);
+        assert_eq!(INPUT_REARM_BACKOFF_STEPS_NS[0], 1_000_000_000);
+        for w in INPUT_REARM_BACKOFF_STEPS_NS.windows(2) {
+            assert_eq!(w[1], w[0] * 4);
+        }
+        assert_eq!(INPUT_REARM_BACKOFF_CAP_NS, 60 * 1_000_000_000);
+        for (i, &v) in INPUT_REARM_BACKOFF_STEPS_NS.iter().enumerate() {
+            assert_eq!(input_rearm_backoff_ns(i as u64 + 1), v);
+        }
+        let past = INPUT_REARM_BACKOFF_STEPS_NS.len() as u64 + 1;
+        assert_eq!(input_rearm_backoff_ns(past), INPUT_REARM_BACKOFF_CAP_NS);
+        assert_eq!(input_rearm_backoff_ns(0), INPUT_REARM_BACKOFF_STEPS_NS[0]);
     }
 }

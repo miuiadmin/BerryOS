@@ -18,6 +18,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod presarb;
 pub mod relay;
 pub mod table;
 
@@ -100,6 +101,7 @@ mod tests {
     //! wire 面共识一体钉板（C-4 FakeSrc 同法：确定性序列 + 状态谓词）。
 
     use crate::{AppRecv, Port, SendEvtStatus};
+    use crate::relay::{self, Domain, RelayOutcome};
     use crate::table::{WmTable, WMD_BACK_FALLBACK_NS, WM_APPS_MAX, WM_EVT_SUBS_MAX};
     use berry_guiproto as gp;
     use std::vec::Vec;
@@ -1043,5 +1045,42 @@ mod tests {
         assert!(p.closed.contains(&77), "随行 close");
         assert_eq!(t.wait_set_needed(), 0, "未入表");
         assert_eq!(re_st(&wm(&mut t, &mut p, CH_WM, &[gp::OP_WM_ATTACH])), gp::ST_BAD);
+    }
+
+    // —— 停摆根治刀 §4 (e)：全域停摆隔离（relay 芯 + 本表同刻对拍） ——
+
+    /// (e) present 域毒化不扰 wm 域本地面：中继 recv 帽到点毒化后，wm 域
+    /// CREATE/TABLE_GET 照常应答——「relay 长 park = 全服务停摆」降为
+    /// 「呈现面降级快失败，wm 域/推送/输入零影响」的钉板（两状态机同刻
+    /// 驱动：RelayIoMock 注入应答不归，MockPort 验本地面健康）。
+    #[test]
+    fn relay_poisoned_present_domain_isolated_from_wm_local() {
+        let (mut t, mut p) = mk_table();
+        let mut rs = relay::RelayState::new();
+        let mut rio = relay::mock::RelayIoMock::new(relay::mock::CLI);
+        // present 域 GETINFO 中继：应答不归 → 帽到点毒化 + ST_BUSY 快答。
+        let out = rs.relay(
+            &mut rio,
+            Domain::Present,
+            relay::mock::CH_WM,
+            relay::mock::CLI,
+            &[gp::OP_GETINFO],
+            &[],
+        );
+        assert_eq!(out, RelayOutcome::RecvCapPoisoned);
+        assert!(rs.poisoned(Domain::Present));
+        assert_eq!(
+            rio.replies,
+            vec![(relay::mock::CH_WM, vec![gp::ST_BUSY], vec![])]
+        );
+        // wm 域本地面照常：CREATE 应答 + TABLE_GET 快照不受呈现面停摆影响。
+        let (w1, _, _) = create_win(&mut t, &mut p, gp::WM_LAYER_APP, 0, 600, false);
+        let s = table_get(&mut t, &mut p);
+        assert_eq!(s.count, 1, "wm 域 CREATE 照常");
+        assert_eq!(entry(&s, w1).id, w1);
+        // 毒化持续（drain FIFO 空）期间本地面再动表仍正常。
+        assert_eq!(rs.drain(&mut rio, Domain::Present, relay::mock::CLI), relay::DrainStale::Still);
+        assert_eq!(destroy_req(&mut t, &mut p, w1), gp::ST_OK);
+        assert_eq!(table_get(&mut t, &mut p).count, 0);
     }
 }

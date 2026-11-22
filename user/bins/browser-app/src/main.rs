@@ -1,6 +1,10 @@
 //! browser-app —— BROWSER 官方应用真 UI（波4 批2；体验大改造六波方案
 //! 步骤 5——「预制应用全部优化」owner 投诉）。settings-app 同型（波4 首件
-//! 样板）：std musl 链 + CRT0_SEED 锚，wm 门控 → wm CREATE 全屏 APP 层
+//! 样板）：std musl 链 + CRT0_SEED 锚，wm 门控走 `wm_present_h()`
+//! （2026-11-22 换轨修正——本 app 带 fs 词 → gift 槽位 [rootfs, fs,
+//! wm]，wm 落 extras[2]=berry-libc io.rs GIFT_H[4]；旧 `wm_cli_h()`
+//! 的 [0] 位对 wants_fs 程序承载 rootfs VMO 非通道端——settings 先例
+//! 同款换轨）→ wm CREATE 全屏 APP 层
 //! 窗 → 帧 VMO commit+map → soft 渲浏览器页 → SUBMIT（surface_id=0
 //! 应用面——guifbd 波3-件② 带裁剪保状态栏常驻）→ 常驻 park。
 //!
@@ -19,7 +23,7 @@ use berry_gfx::pass::{PassDescriptor, StoreOp};
 use berry_gfx::queue::Queue;
 use berry_gfx::color::{TextureDesc, TextureFormat};
 use berry_guiproto as gp;
-use berry_libc::io::wm_cli_h;
+use berry_libc::io::wm_present_h;
 use berry_sys::{
     berry_handle_duplicate, berry_object_wait_many, berry_vmar_map, berry_vmo_commit,
     berry_vmo_create, Handle, RIGHT_READ, RIGHT_TRANSFER, RIGHT_WRITE, SIGNAL_READABLE,
@@ -91,11 +95,15 @@ fn berry_channel_send_wrap(ch: Handle, req: &[u8], attach: &[Handle]) -> i32 {
 }
 
 fn main() {
-    let hw = wm_cli_h();
+    // —— 降级门（2026-11-22 换轨修正，settings 先例）：wm 礼物取用改
+    //    `wm_present_h()`=GIFT_H[4]=wants_fs 族 extras[2] 位真通道——
+    //    本 app 带 fs 词，旧 `wm_cli_h()` 取 [0] 位 = rootfs VMO 非通道
+    //    端，首个 RPC 被内核 ObjType 门打回。未交付 → 一行诊断 + park
+    //    常驻（窗口义务语义不折衷成 exit(0) 秒退）。
+    let hw = wm_present_h();
     if hw == 0 {
-        // wmd 未起（rootfs 相/bsh 手跑）——非错误面静默退（netd 双门
-        // 先例同款）。
-        exit(0);
+        eprintln!("browser: wm absent (no gui gift)");
+        berry_libc::park();
     }
 
     let mut rep = [0u8; 256];

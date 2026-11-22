@@ -71,6 +71,14 @@ const FRAME_VA: usize = 0x5100_0000;
 /// 默认 vsync 周期（60Hz；present GETINFO 无周期域——S2 食谱默认）。
 const VSYNC_NS: u64 = 16_666_666;
 
+/// presarb ST_BUSY 步进重试帽（wmd 呈现域单飞仲裁宽容面）：他客户端
+/// 事务在途（属主租约窗内）时事务边界 op（SUBMIT/RELEASE_WAIT）得 1B
+/// ST_BUSY 快答不转发——按 vsync 拍步进重试；属主挂死时租约（wmd
+/// PRESENT_LEASE_NS 5s）到点后本端下一请求即抢占清场形放行，合法等待
+/// 上界 = 租约 + 一趟清场（秒级）——本帽取 wmd RELAY_DRAIN_CAP_NS 同值
+/// 35s 作一个量级余量；到点仍 BUSY = 呈现域结构性破相 fail loud。
+const BUSY_RETRY_CAP_NS: u64 = 35 * 1_000_000_000;
+
 /// IDLE 稳态等待帽（S1 判词：Idle 相撤定时器 → 10s 周期兜底醒）。
 const IDLE_CAP_NS: u64 = 10 * 1_000_000_000;
 
@@ -171,6 +179,47 @@ fn rpc(
 ) -> (usize, usize) {
     rpc_send(ch, req, attach);
     rpc_recv(ch, rep, rhs)
+}
+
+/// presarb ST_BUSY 步进等待（vsync 拍一步）：hw 通道无自发帧面（本端
+/// 未订阅事件推送），READABLE 短等到帽恒超时 = 睡满一拍；提前醒（异常
+/// 来帧）无害——重试侧 rpc 严格一问一答自对账。
+fn busy_step(hw: Handle) {
+    let mut obs = 0u64;
+    berry_object_wait_one(hw, SIGNAL_READABLE, now() + VSYNC_NS, &mut obs);
+}
+
+/// RELEASE_WAIT 一趟（presarb 宽容面——步进重试）：他客户端呈现事务
+/// 在途（wmd 单飞闸门租约窗内）时 RELEASE 边界 op 得 1B ST_BUSY 快答
+/// 不转发——步进重试至放行（boot 跨代清账与帧尾收口共用本面）；其余
+/// 畸形应答 = fail loud。成功形返回应答产物与随行 handle 数（count
+/// 语义面归调用方执法）。
+fn release_wait(
+    hw: Handle,
+    what: &str,
+    req: &mut [u8; 256],
+    rep: &mut [u8; 256],
+    rhs: &mut [Handle; 8],
+) -> (gp::ReleaseRep, usize) {
+    let mut waited = 0u64; // 步进累计（帽账）
+    loop {
+        let m = match gp::encode_present_req(req, &gp::PresentReq::ReleaseWait) {
+            Some(m) => m,
+            None => fail("release encode"),
+        };
+        let (n, nh) = rpc(hw, &req[..m], &[], rep, rhs);
+        if let Some(rel) = gp::parse_release_rep(&rep[..n]) {
+            return (rel, nh);
+        }
+        if gp::parse_status_rep(&rep[..n]) != Some(gp::ST_BUSY) {
+            fail(&format!("{what} bad st={}", rep[0]));
+        }
+        if waited >= BUSY_RETRY_CAP_NS {
+            fail(&format!("{what} busy cap"));
+        }
+        busy_step(hw);
+        waited += VSYNC_NS;
+    }
 }
 
 /// K 矩形并集包络（增量 pass 的 dirty 域；launcher/settings 同形——
@@ -339,15 +388,10 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, g: &mut Gallery) -> !
         ));
     }
 
-    // —— 跨代清账（前代实例孤儿别名全量排空）。
-    let m = match gp::encode_present_req(&mut req, &gp::PresentReq::ReleaseWait) {
-        Some(m) => m,
-        None => fail("release encode"),
-    };
-    let (n, nh) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
-    if gp::parse_release_rep(&rep[..n]).is_none() {
-        fail(&format!("boot release bad st={}", rep[0]));
-    }
+    // —— 跨代清账（前代实例孤儿别名全量排空；presarb 宽容面：拉起时点
+    //    桌面常在属主租约窗内，他客户端事务在途 = ST_BUSY 步进重试——
+    //    原 fail 形即「进应用即 park 永死」单发面之一）。
+    let (_, nh) = release_wait(hw, "boot release", &mut req, &mut rep, &mut rhs);
     for h in &rhs[..nh] {
         close_h(*h);
     }
@@ -544,9 +588,12 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, g: &mut Gallery) -> !
                         }
                     }
                 }
-                Msg::Press { .. } | Msg::Release { .. } => {
+                Msg::Press { .. } | Msg::Release { .. } | Msg::DoubleClick { .. }
+                | Msg::LongPress { .. } => {
                     // 按压视觉 = 引擎 press_map/PressedVis + widget_react
-                    // 面——app 零接线（行级 ItemState 换底无画廊行，缺席）。
+                    // 面——app 零接线（行级 ItemState 换底无画廊行，缺席）；
+                    // 双击/长按（总攻批 2 引擎扩域 add-only）同无消费面
+                    // ——Click 照产已覆盖既有行为。
                 }
             }
         }
@@ -641,14 +688,36 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, g: &mut Gallery) -> !
                 rects,
                 rect_count: k,
             };
-            let m = match gp::encode_present_req(&mut req, &sreq) {
-                Some(m) => m,
-                None => fail("submit encode"),
-            };
-            let (n, _) = rpc(hw, &req[..m], &[alias], &mut rep, &mut rhs);
-            let token = match gp::parse_submit_ack(&rep[..n]) {
-                Some(t) => t,
-                None => fail(&format!("submit ack bad st={}", rep[0])),
+            // SUBMIT + ST_BUSY 步进重试（presarb 宽容面）：他客户端呈现
+            // 事务在途（属主租约窗内）= 1B ST_BUSY 快答不转发，随行别名
+            // 已被 wmd 关收（send 即 take——零泄漏面）；帧缓冲是本端私有
+            // VMO，raster 内容不腐——重 dup 别名原样重发（buf_id 不进：
+            // 服务端未见本帧，代际零迁移；damage 已随 render_frame 排空，
+            // 弃帧跳拍 = 屏面永滞，故重试而非跳帧）。其余畸形 = fail loud。
+            let mut waited = 0u64; // 步进累计（帽账）
+            let token = loop {
+                let m = match gp::encode_present_req(&mut req, &sreq) {
+                    Some(m) => m,
+                    None => fail("submit encode"),
+                };
+                let (n, _) = rpc(hw, &req[..m], &[alias], &mut rep, &mut rhs);
+                match gp::parse_submit_ack(&rep[..n]) {
+                    Some(t) => break t,
+                    None if gp::parse_status_rep(&rep[..n]) == Some(gp::ST_BUSY) => {
+                        if waited >= BUSY_RETRY_CAP_NS {
+                            fail("submit busy cap");
+                        }
+                        busy_step(hw);
+                        waited += VSYNC_NS;
+                        if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias)
+                            != 0
+                            || alias == 0
+                        {
+                            fail("dup alias");
+                        }
+                    }
+                    None => fail(&format!("submit ack bad st={}", rep[0])),
+                }
             };
             ui.note_submitted();
 
@@ -679,17 +748,17 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, g: &mut Gallery) -> !
             );
 
             // RELEASE（归还别名即关——在途 ≤1 结构性背压；RETURN-ALL
-            // 语义：count≥1 断言 + 随行全量 close）。
-            let m = match gp::encode_present_req(&mut req, &gp::PresentReq::ReleaseWait) {
-                Some(m) => m,
-                None => fail("release encode"),
-            };
-            let (n, nh) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
-            let rel = match gp::parse_release_rep(&rep[..n]) {
-                Some(r) => r,
-                None => fail(&format!("release rep bad st={}", rep[0])),
-            };
-            if rel.count < 1 || nh != rel.count {
+            // 语义：count≥1 断言 + 随行全量 close；presarb 宽容面：他
+            // 客户端事务在途（本端事务被租约帽外抢占后）= ST_BUSY 步进
+            // 重试）。
+            let (rel, nh) = release_wait(hw, "release rep", &mut req, &mut rep, &mut rhs);
+            // 宽容 RELEASE（97a0edeb4 appshell pump 同义复原——appdemo
+            // 自管帧循环漏随刀面，presarb 仲裁下单发帧 park 永死实抓）：
+            // count==0 = 他客户端跨代清账已排空本端在途别名（别名 = 本端
+            // VMO 的 READ|TRANSFER dup，原柄在本表，对方 close = 纯引用
+            // 计数下降）；本帧 PRESENTED 已先断言——早归还良性。随行
+            // handle 不论归属全量 close；count≥1 时保持 nh==count 契约。
+            if rel.count != 0 && nh != rel.count {
                 fail(&format!("release count={} nh={}", rel.count, nh));
             }
             for h in &rhs[..nh] {

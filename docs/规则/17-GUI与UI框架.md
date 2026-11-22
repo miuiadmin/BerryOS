@@ -1,0 +1,83 @@
+# 17-GUI 与 UI 框架
+
+> 一句话定位：动 berry-gfx / berry-ui / berry-room / gui-wmd / guifbd / gui-inputd / berry-launcher、普通 GUI app、专业 CanvasSurface 客户端或游戏 immersive 客户端前先读本文。执行序单一事实源 = [../GUI框架地基路线-v1.20.md](../GUI框架地基路线-v1.20.md)。
+
+## 域铁律
+
+- **地基优先**：按 F0..F5、P0 Surface Mode、F6..F9、C1 嵌套裁剪、P1 Surface 生产接线、P2 Keyboard Input、P3 Click-to-Focus、P4 Window Policy Matrix、R1 Window/Surface Authority Hardening、R2 Occlusion Contract、R3 Config Event Architecture、C1 Component Focus Navigation、L1 Local Constraints & Adaptive Slot、L2 Flex Ratio Allocation、L3 Transposed Container Flex & ListDetail、SDK-S0 Control Spec & API Governance Baseline、GUI-T1 TextField Foundation Before IME、SEM-A1 Semantic Tree Sidecar、DESIGN-D2 Design Token Pair Contract、LAYOUT-L4 Box Constraints & Intrinsic Boundary、PLAN-G0、RUN-K1、LAYOUT-L5、LAYOUT-L6a、Berry Demo D1、LAYOUT-L6b、WM-R4、DESIGN-D3、SEM-A2、IME-1、NAV-1、WM-R5、GFX-F1、DOC-D3 顺序建设；上一出口门未过，不得为视觉效果或新 app 绕开下一层。Camera、MMS 等新 GUI app 必须直接走 BerryUI；普通 Retained 页面不得回到自建 WM/VMO/像素路径。
+- **P0 编号局部化**：GUI P0 只指 F5 与 F6 之间的 Surface Mode 协议门，不改变路线图、调点调度或 Berry 设备壳的同名阶段号。
+- **分层不越界**：`berry-gfx` 只做光栅；`berry-ui` 只做树、布局、状态、主题与组件；`berry-room` 只做应用运行室；Berry Session 服务只做窗口、呈现、输入、焦点、层序与帧率仲裁；app 只做业务语义或自有文档/引擎渲染。
+- **一个系统契约，多个 UI 形态**：BerryUI 是默认声明式工具包，不是特权或强制渲染器。普通应用走 BerryUI；专业应用走 BerryUI 外壳 + CanvasSurface + 应用文档渲染器；游戏/实时应用走 immersive surface 与自有 renderer。
+- **app 不私接系统机制**：任何 GUI app 不得直接调用 `berry_channel_*`、`berry_vmar_map`、`berry_vmo_*`，不得解析 WM RPC、计算 frame stride 或直写全局 framebuffer/display MMIO。普通 BerryUI app 还不得出现 `put_px/fill/round_rect/circle/glyph` 像素循环；专业/游戏 renderer 的像素算法只能写 P1 授权 CanvasSurface / immersive surface；授权必须来自 manifest `surface_escape` + svcmgr per-boot seed + Berry Room `surface_frame_mut`，不得自报或私藏 WM/VMO/stride。
+- **语义旁车不可降级**：专业 canvas 与游戏 immersive 可以绕过 BerryUI 控件，但不能绕过 Berry Room 的 input class、IME composition、a11y sidecar、safe area/scale factor、帧率意图、焦点与进程死亡清理。无生产者或服务的能力必须收到 `ST_UNSUPPORTED`，不得空授。
+- **视觉常量单源**：颜色、字号、间距、圆角、阴影、按压/禁用/选中态进主题 token；BerryUI 组件样式进 `berry-ui`。专业/游戏引擎内部艺术风格可自有资产，但宿主外壳不得散装复制系统 token。
+- **BUI 可选且单 AST**：BUI 只是 BerryUI 的可选声明式入口；F4/F5 先用 Rust `ViewSpec`/`DescBuilder` 与 AST TLV。`.bui` 现行仅是包资源占位，不解析、不执行、不构成 GUI app 必需文件；未来 BUI 不得承载业务流程、WM/VMO/syscall、像素绘制或命令式副作用。
+- **结构性裁剪单源**：普通 Retained 子树裁剪用 BerryUI `ViewKind::Clip`；BerryGFX 只提供 DisplayList Push/PopClip 光栅语义。普通 app 不得直录 Push/PopClip，专业 canvas/immersive 的裁剪仍归 P0 授权 surface。
+- **系统字体单源**：app 不得自带字体表。v1 映射恒 UserRw，字形 VMO 由系统按 app 私有供给，防跨 app 写穿；普通 BerryUI guest 启用 `guest-font-vmo` 并注入 FontSource，DisplayList 光栅化归 Berry Room。未来引入只读映射或字体服务时先改 GUI 地基路线。
+- **真链不降级**：任何 UI SDK、Surface Mode 或视觉改动不得削弱 APP_SPAWN、WM 所有权、owner-local 输入、composition、frame lifecycle、进程死亡清理与真实数据链。
+- **测试门齐全**：F4/F5 走 Host、离屏、Guest、迁移回归四层证据；P0 另须覆盖 Surface role/mode、input class、IME、a11y、metrics 的编解码、round-trip、拒面与不变量。
+- **预算先于美观**：每里程碑检查 rootfs 与 `.bap` 尺寸；超帽即停。不得降低壁纸或图标质量换空间，不得让每个 app 复制字体、图标解码或大图缓存。
+- **临时件已退役**：`berry-nshfont` 只存在于 F6..F8 迁移期；F9 后映射归 `berry-room`、绘制归 `berry-gfx`、文本消费归 `berry-ui`，该 crate 已删除，`just gui-boundary-guard` 禁止回潮。
+- **文本编辑先于 IME**：GUI-T1 只落 `TextState`、UTF-8 selection/caret、硬件编辑命令、change/submit/selection 事件与 text focus。焦点在 TextField 时，Enter/Space 先由文本状态机消费；Tab/Shift+Tab 仍走 C1 导航。input type 只能 add-only 映射 P0 IME purpose，键盘避让只能消费 R2 `insets::Ime`；软键盘、IME Host、FormMetrics、Route/Back、富文本、clipboard 与 autofill 不得提前入面。
+- **控件规格与 API 账本先行**：BerryUI 控件 API 变更必须先过 control spec 骨架（Right control/State/Focus/Keyboard/Text/IME/A11y/Token/API Notes/Tests），SDK 公开项必须登记 since/channel/capability/owner/stability/breaking history；无 successor 的弃用不得合入。
+- **后置不等于无主**：GUI-T1/SEM-A1/DESIGN-D2/LAYOUT-L4 等规格的“后置”项必须归入 PLAN-G0 ladder 的 owning phase，或写入明确拒绝/延后清单。协议类后置先过纯数据模型、host codec、旧流零漂与拒面；实现类后置不得顺手改 AST/wire；rootfs0 已无单卷余量，资产增长先过拆卷/迁出裁决。
+- **布局约束是代数不是全局猜测**：LAYOUT-L4 约束必须携带 min/max 四元组并可交、收缩、fit；L1 Viewport/Tight/Loose/Infinite 只是构造糖。净树约束切换仍是 no-op，测量走既有单遍缓存，damage 恒裁真实 viewport；不把 box constraints 塞进 AST/wire 或每个 Node。
+- **per-node box 是投影不是第二布局权威**：LAYOUT-L5 在一次后序 measure 中由父容器投影 incoming BoxConstraints，Pad/Panel/Grid 投影必须与 place 面真实 port/track 同口径；wrap Text 是 runtime-only 侧表，测量与绘制共用同一断行计划，父盒或 TextMetrics 换装必须触发重测，净树约束切换仍 no-op，density 阈值单源归 Theme。
+- **Berry Demo 是产品面与系统标准的可见放大器**：BERRYDEMO 独立 app 持续展示 BerryUI 控件、主题、密度、输入、列表能力，以及真实 APP_SPAWN/Berry Room 生命周期与 manifest/.bap/SDK/IconSource 应用开发标准；新协议刀不得只靠 UITEST 自证。扩控件、改视觉或改应用标准后必须先跑 Berry Demo 真实桌面链，再谈底层迁移。
+- **flex 是 place 期代数不是协议漂移**：LAYOUT-L6a 只允许 runtime-only `FlexSpec` 表达 grow/shrink/Px/Auto basis；grow 用 cumulative-prefix 精确填满，shrink 用 capped freeze loop 且不得产生负 slot 或改写 measured。`set_flex(weight)` 的 L2/L3 语义冻结，真实 guest 消费者与嵌套协商归 L6b。
+- **视觉 token 成对且对比度可证**：DESIGN-D2 新增视觉/状态 token 必须提供 background/foreground pair；light/dark/high-contrast scheme matrix 与交互状态全量进 host/design-ledger 对比度夹具，active 正文对 ≥4.5:1，Disabled 显式 inactive 豁免。Text scale 只能映射离散 FontSize 档并触发真实 relayout/damage，禁止线性乘字号；effective pixel 继续走 quarter-vp 四舍五入单源。
+- **语义旁车是导出面，不是第二权威**：SEM-A1 语义树从保留树与 a11y/C1/文本/Clip 侧表现场派生 role/label/value/state/actions/text range/bounds/parent；merge/clear 规则可预测，词表单源转发 P0 已知域，未知值 loud 拒。语义事件只镜像 C1 焦点与文本状态，不造第二焦点、命中或几何权威，不进 AST/wire，不启动 screen reader 服务，不外发订阅，不执行 action dispatch。
+
+## 开工清单
+
+- [ ] 当前改动落在 F0..F5、P0 Surface Mode 或 F6..F9 哪一门？上一门出口是否已过？
+- [ ] 普通 BerryUI app 是否只声明结构、状态、消息与授权数据能力？
+- [ ] 专业 canvas / 游戏 immersive 是否使用 P0 冻结的 Surface role/mode 与 P1 授权链，而非自造窗口或全局屏写？
+- [ ] 自绘路径是否保留 input class、IME composition、a11y sidecar、safe area/scale factor、帧率意图、焦点与死亡清理？无生产者能力是否 fail closed？Keyboard 是否经 wmd focus + Surface input_classes 授权？点击焦点是否只由 wmd 权威更新并推送快照？desktop miss、HIDE/SHOW、z-order 与 stale lock CANCEL 是否有真链矩阵？SYSTEM 身份/layer/全局 surface/damage 越窗是否有权威执法与真实正反例？AVOID_SYS 下 raw buffer stride、visible 裁剪、safe inset 与输入坐标是否同源？config event 是否有 serial、last-one-wins、精确 ACK 与未同步提交拒面？component focus 是否与 wmd window focus 分层、有 1D 顺序/激活/禁用与真键盘证据？局部自适应是否只吃显式本地基准，约束/damage 是否仍以真实 viewport 为裁剪域？flex 比例是否保持 measure/AST 零漂并有确定性和真链证据？容器 pane/ListDetail 是否仍无状态且选择/路由不进引擎？控件是否先过规格与 API 账本？TextField 是否保持 text focus 先于 C1 Enter/Space 激活、P0/R2 词表 add-only 且未提前引入 IME Host/FormMetrics？语义快照是否仍 runtime-only、词表单源、clip/merge 行为可测且未外发/派发动作？新增视觉/状态 token 是否成对、三 scheme 对比度达标、text scale 走离散档并真实 relayout？布局约束是否保持 min/max 代数、L1 兼容糖、净树 no-op、damage viewport 口径与 AST 零漂？per-node 投影是否与 place 面 Pad/Panel/Grid port 同口径，wrap 是否 runtime-only、测量绘制同计划且父盒/供件换装触发重测？flex spec 是否 runtime-only、L2 糖语义不变、grow/shrink 精确填满且不写 measured？控件、视觉或应用标准变化是否经过 Berry Demo 真实桌面 demo，而不只改 UITEST？keyed re-apply 是否保持 `(parent,key)` 身份、失败零半执行、侧表生命周期与 settle 上限？改动是否能在 PLAN-G0 ladder 中找到 owning phase；协议项是否有纯数据模型、host codec、旧流零漂与拒面？
+- [ ] 是否让 app 直接接触 syscall、WM RPC、VMO、stride、全局 framebuffer 或 display MMIO？
+- [ ] 视觉变化是否进入主题 token / BerryUI 组件 / `berry-gfx` 基元，而不是普通 app 私有代码？
+- [ ] 是否把 `.bui` 当成 GUI app 必需入口、第二事实源或副作用脚本？
+- [ ] 是否有 Host 单测、离屏 golden、Guest 真链、P0 协议拒面与迁移回归证据？
+- [ ] rootfs、`.bap` 尺寸与既有 GUI8/smoke-image 门是否全部复跑？
+- [ ] 分层、顺序或边界变化是否先更新 [../GUI框架地基路线-v1.20.md](../GUI框架地基路线-v1.20.md)？
+
+## 深读
+
+- [../GUI框架地基路线-v1.20.md](../GUI框架地基路线-v1.20.md) —— F0..F5、P0 Surface Mode、F6..F9 执行序、分层契约、App 禁止清单、测试门与预算纪律。
+- [../GUI架构协议完善与Rust实施计划-v1.0.md](../GUI架构协议完善与Rust实施计划-v1.0.md) —— PLAN-G0 后置项总账、协议/实现分类、Rust 分刀 ladder、预算策略与风险停止条件。
+- [../BerryOS命名体系-v1.1.md](../BerryOS命名体系-v1.1.md) —— 公共架构名与 BUI 可选入口/同一 AST 边界。
+- [../GUI里程碑规划-2026-10-v1.0.md](../GUI里程碑规划-2026-10-v1.0.md) —— M-GUI 目标形态、GUI-0..9 长期架构与既有 ADR 依据。
+- [../GUI-3实施设计草案-v1.1.md](../GUI-3实施设计草案-v1.1.md) —— `berry-ui` 保留树、脏区、帧循环与 impl 契约。
+- [../BerryUI-F2核心盘点-v1.0.md](../BerryUI-F2核心盘点-v1.0.md) —— berry-ui core 现状、布局/命中诊断与 SDK 最小冻结面。
+- [../BerryDesign-F3主题与基元-v1.0.md](../BerryDesign-F3主题与基元-v1.0.md) —— Berry Design token、密度换算、交互状态与 BerryGFX 表面基元单源。
+- [../BerryUI-F4组件第一版-v1.1.md](../BerryUI-F4组件第一版-v1.1.md) —— F4 组件 API、Panel 基元、状态/输入语义、离屏 golden 与预算。
+- [../BerryUI-F5系统验收-v1.0.md](../BerryUI-F5系统验收-v1.0.md) —— F5 真实 guest 消费者、系统 FontSource、Room DisplayList 光栅化、GUI8 真链验收与预算边界。
+- [../BerrySession-P0SurfaceMode协议-v1.0.md](../BerrySession-P0SurfaceMode协议-v1.0.md) —— P0 Surface role/mode、input class、IME composition、a11y sidecar、safe area/scale、WM 0x67 codec 与三路径不变量。
+- [../BerrySession-P1SurfaceMode生产接线-v1.0.md](../BerrySession-P1SurfaceMode生产接线-v1.0.md) —— P1 manifest escape、svcmgr token、Berry Room surface buffer、gui-wmd 0x67 fail-closed 策略与 Canvas/Immersive 真链。
+- [../BerrySession-P2KeyboardInput生产接线-v1.0.md](../BerrySession-P2KeyboardInput生产接线-v1.0.md) —— P2 virtio-keyboard、KeyEvent/KeyPump、wmd focus/input_classes 路由、Berry Room poll_keys 与 GUI8 QMP 真链。
+- [../BerrySession-P3ClickToFocus生产接线-v1.0.md](../BerrySession-P3ClickToFocus生产接线-v1.0.md) —— P3 pointer DOWN 权威接焦、快照 bump、双窗 Keyboard 队列跟随与 desktop miss/no-op 语义。
+- [../BerrySession-P4WindowPolicyMatrix生产接线-v1.0.md](../BerrySession-P4WindowPolicyMatrix生产接线-v1.0.md) —— P4 desktop miss 保焦、HIDE/SHOW refocus、z-order 命中、锁定窗销毁 CANCEL 的真实 QMP 矩阵。
+- [../BerrySession-R1WindowSurfaceAuthorityHardening-v1.0.md](../BerrySession-R1WindowSurfaceAuthorityHardening-v1.0.md) —— R1 per-boot SYSTEM seed、client-aware Surface role、layer/parent/global surface/damage 权限与 GUI8 正反例。
+- [../BerrySession-R2OcclusionContract-v1.0.md](../BerrySession-R2OcclusionContract-v1.0.md) —— R2 raw/visible 双几何、buffer stride、persistent occlusion、Room 快照、damage 裁剪与输入坐标合约。
+- [../BerrySession-R3ConfigEventArchitecture-v1.0.md](../BerrySession-R3ConfigEventArchitecture-v1.0.md) —— R3 config poll/ack、serial/coalescing、初始 CREATED pull-once、动态 raw/visible 事件与未同步提交拒面。
+- [../BerryUI-C1ComponentFocusNavigation-v1.0.md](../BerryUI-C1ComponentFocusNavigation-v1.0.md) —— C1 focusable 侧表、FocusIn/Out、树前序导航、keymap、Focused 视觉与 UITEST 真键链。
+- [../BerryUI-L1LocalConstraintsAdaptiveSlot-v1.0.md](../BerryUI-L1LocalConstraintsAdaptiveSlot-v1.0.md) —— L1 根播种约束、真实 viewport 裁剪不变量、显式本地 AdaptiveSlot 与 UITEST 1056/600 真链。
+- [../BerryUI-L2FlexRatioAllocation-v1.0.md](../BerryUI-L2FlexRatioAllocation-v1.0.md) —— L2 运行期 flex weight 侧表、固定主轴比例分配、AST 零漂与 348/696 真链。
+- [../BerryUI-L3TransposedContainerFlexListDetail-v1.0.md](../BerryUI-L3TransposedContainerFlexListDetail-v1.0.md) —— L3 transposed pane flex、无状态 ListDetail 双栏原语与 AST/runtime-only 合同。
+- [../BerryUI-SDKS0ControlSpecAPIGovernance-v1.0.md](../BerryUI-SDKS0ControlSpecAPIGovernance-v1.0.md) —— SDK-S0 控件规格模板、TextField 规格与 BerryUI API 账本。
+- [../BerryUIControl-TextField-v1.0.md](../BerryUIControl-TextField-v1.0.md) —— TextField 首个按模板落地的控件规格。
+- [../BerryUI-GUIT1TextFieldFoundationBeforeIME-v1.0.md](../BerryUI-GUIT1TextFieldFoundationBeforeIME-v1.0.md) —— GUI-T1 TextState、UTF-8 selection/caret、硬件编辑、事件、text focus 与 GUI8 真链。
+- [../BerryUI-SEMA1SemanticTreeSidecar-v1.0.md](../BerryUI-SEMA1SemanticTreeSidecar-v1.0.md) —— SEM-A1 runtime-only 语义快照、P0 A11yRegion 投影、clip/merge 与 GUI8 真链。
+- [../BerryDesign-D2TokenPairContract-v1.0.md](../BerryDesign-D2TokenPairContract-v1.0.md) —— DESIGN-D2 paired token、scheme matrix、对比度夹具、text-scale ladder 与主题切换 damage 合同。
+- [../BerryUI-LAYOUTL4BoxConstraintsIntrinsicBoundary-v1.0.md](../BerryUI-LAYOUTL4BoxConstraintsIntrinsicBoundary-v1.0.md) —— LAYOUT-L4 四元组约束、Root intrinsic clamp、L1 兼容糖、flex/pane 纯函数表达与 GUI8 零漂证据。
+- [../BerryDemo-D1-v1.0.md](../BerryDemo-D1-v1.0.md) —— Berry Demo D1：六页展示 BerryUI 控件、系统特性与应用开发标准，含 APP_SLOTS 10、GUI8 第七真实 BerryUI app 与桌面点击/状态/像素链。
+- [../../research/GUI-15-官方SDK与UI架构一手源深研-2026-11.md](../../research/GUI-15-官方SDK与UI架构一手源深研-2026-11.md) —— 官方 SDK/UI 一手源深研与 GUI-T1/SDK-S0 裁决依据。
+- [../BerrySettings-F6迁移-v1.0.md](../BerrySettings-F6迁移-v1.0.md) —— F6 首个 Native Shell 迁移：Berry Room + BerryUI、真实 WLAN/Bluetooth 状态重绘、GUI8 layout-driven 验收与两帽预算。
+- [../BerryFilesContacts-F7迁移-v1.0.md](../BerryFilesContacts-F7迁移-v1.0.md) —— F7 Files/Contacts 迁移、真实数据链、动态 layout 验收与并发 per-window destroy 语义。
+- [../BerryBrowserPhotos-F8迁移-v1.0.md](../BerryBrowserPhotos-F8迁移-v1.0.md) —— F8 Browser/Photos 迁移、图像 IconSource 链、诚实 Browser 壳、ReleaseWait RETURN-ALL 清账与回收帽修正。
+- [../BerryGUILanding-F9收口与守卫-v1.0.md](../BerryGUILanding-F9收口与守卫-v1.0.md) —— F9 nshfont 删除、普通 GUI app 静态守卫、SDK/文档收口与全量回归。
+- [../BerryUIClipping-C1嵌套视口-v1.0.md](../BerryUIClipping-C1嵌套视口-v1.0.md) —— C1 BerryGFX Push/PopClip、BerryUI 结构性 Clip、ScrollView/Swipe 裁剪、hit/damage 与 GUI8 真链验收。
+- [../../research/GUI-12-复杂应用与游戏UI形态深研-2026-11.md](../../research/GUI-12-复杂应用与游戏UI形态深研-2026-11.md) —— 专业软件、工业框架、游戏 UI 与 OS 分层证据；P0 Surface Mode 的裁决依据。
+- [../../research/GUI-13-多形态设备UI深研-2026-11.md](../../research/GUI-13-多形态设备UI深研-2026-11.md) —— 一轮形态矩阵与工业证据基线；执行排序已被 GUI-14 复核。
+- [../../research/GUI-14-多形态UI二轮对抗深研-2026-11.md](../../research/GUI-14-多形态UI二轮对抗深研-2026-11.md) —— 二轮反结论研究：SYSTEM/surface 权限、AVOID_SYS buffer 合约、typed insets、config event、焦点三层、局部 constraints、TextScaler、多窗容量与 R0..W1 候选切片。
+- [../GUI渲染调研-2026-10-v1.0.md](../GUI渲染调研-2026-10-v1.0.md) —— 渲染路线与自研光栅决策依据。

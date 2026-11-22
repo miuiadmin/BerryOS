@@ -1,0 +1,16 @@
+[package]
+name = "berry-hnsw"
+version.workspace = true
+edition = "2021"
+# ai-runtime §四.1 第二片（.agents/plans/ai-runtime/design.md 契约四.1
+# 「轻量分层可导航小世界图」）：HNSW 图骨架纯函数 crate——splitmix 定
+# 确定性分层指派 + 贪心下降 + 层 0 束搜（ef 候选集），距离经泛型闭包
+# 注入（图结构与 berry-vqvec 量化距离彻底解耦，测试可用任意度量）。
+# 建图邻居选择是朴素形（贪心候选直连 + 容量赶最远——ef-construction
+# 启发式与多样性剪枝随后续刀），本片钉可导航性与确定性。零 unsafe
+# 零依赖零分配（定容静态槽），`cfg_attr(not(test), no_std)`；host 测试
+# 经 justfile test-host 显式行跑。
+description = "BerryOS vault HNSW skeleton: deterministic layering, greedy descent, layer-0 beam search with injected metric (ai-runtime contract 4.1)"
+license = "Apache-2.0"
+
+[dependencies]

@@ -1729,7 +1729,9 @@ impl<const N: usize> Ui<N> {
                 }
             }
             Msg::Click { .. } | Msg::DragStart { .. } | Msg::DragMove { .. }
-            | Msg::DragEnd { .. } => {}
+            | Msg::DragEnd { .. } | Msg::DoubleClick { .. } | Msg::LongPress { .. } => {}
+            // 双击/长按（总攻批 2）：按压视觉面无反应——DoubleClick/
+            // LongPress 是附加语义（Click/Release 照产，还原链不断）。
         }
     }
 
@@ -2130,7 +2132,10 @@ impl<const N: usize> Ui<N> {
                     _ => {}
                 }
             }
-            Msg::Press { .. } | Msg::DragEnd { .. } | Msg::Cancel { .. } => {}
+            Msg::Press { .. } | Msg::DragEnd { .. } | Msg::Cancel { .. }
+            | Msg::DoubleClick { .. } | Msg::LongPress { .. } => {}
+            // 双击/长按（总攻批 2）：组件反应面不劫持——语义 Msg 原样交
+            // app 消费（Click/Release 各自臂照走）。
         }
     }
 

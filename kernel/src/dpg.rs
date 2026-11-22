@@ -806,16 +806,19 @@ fn press_svc_clear(h: u32, partial: u64, what: &str) {
 /// 静默门：dpg 计值流 n 一窗（win 周期）零增 = 供给面静默（boot 期 EL0
 /// 平像装载风暴退坡判据）。帽 `cap` 轮不静默也放行——静默只被反向臂的
 /// 「被判窗只含自证停顿」需要；前向臂对并发停顿不敏感（外来 Σ 只助跨阈）。
-fn press_quiesce(win: u64, cap: u32) {
+/// 返 bool 只交出已测得的净场信息：静默窗观察到 = true、帽轮耗尽仍不静默
+/// = false（放行行为不变——F7 反向臂断言第四软臂的判据源）。
+fn press_quiesce(win: u64, cap: u32) -> bool {
     let mut n0 = crate::telemetry::dpg_stall_n_total();
     for _ in 0..cap {
         press_sleep(win);
         let n1 = crate::telemetry::dpg_stall_n_total();
         if n1 == n0 {
-            return;
+            return true;
         }
         n0 = n1;
     }
+    false
 }
 
 /// 窗冲洗至净场：重复 [睡 ≥ 窗长 → 缺一页（其 note 必折卷，判当前窗残段
@@ -840,7 +843,7 @@ fn press_flush(win: u64, partial: u64, h: u32, page: &mut usize) -> bool {
 /// AM-2b 真链路自验任务（spawn 形参照 dpg_faulter；arg = 压力 Event 的
 /// bootstrap 表 handle——boot 插取，任务侧真 SVC 全链消费）。恒跑（同
 /// dpg_faulter 形——dpg::init 无条件 spawn）；全过打**非标记观测行**
-/// `DPGPRESS ok n= c= r= x=`（`DPG dm=` 族证据行——不进 markers.sh，
+/// `DPGPRESS ok n= c= r= x= w=`（`DPG dm=` 族证据行——不进 markers.sh，
 /// smoke canon 零漂移；n=前向臂缺页数 c=前向臂台账停顿周期 r=反向臂台账
 /// 停顿周期 x=外来混入软轮数——单核裸相静默场恒 x=0 全严格形态；SMP 形
 /// 共享管道排队延迟可合法计软轮 x>0，AM-2e，详 ⑤ 块注）。
@@ -988,10 +991,11 @@ extern "C" fn dpg_press(arg: usize) -> ! {
     //    SMP 形 wall 超阈与外来混入同走软路径（清位重冲 + x 记账），位
     //    语义与机制面（telemetry/θ_p/折卷）零改动。
     let mut rev_cyc = 0u64;
+    let mut wall = 0u64; // 末轮反向臂自证缺页墙钟（ok 行 w= 打印口径，每轮清零）
     for _ in 0..PRESS_REV_RETRIES {
-        press_quiesce(win, 4); // 净场复检（外来停顿退坡）
+        let quiet = press_quiesce(win, 4); // 净场复检（外来停顿退坡）；!quiet=供给面仍动
         let base = telemetry::dpg_stall_cyc_total();
-        let mut wall = 0u64;
+        wall = 0;
         for _ in 0..PRESS_REV_FAULTS {
             assert!(page < PRESS_PAGES, "dpg_press: 反向臂页预算耗尽");
             wall = wall.wrapping_add(press_touch(page));
@@ -1028,9 +1032,21 @@ extern "C" fn dpg_press(arg: usize) -> ! {
         // 停顿累计（打印口径/环境放大语义面）；两变量在带执法在飞时解耦
         //（回场 Burst 把停顿塞进折卷窗但自证页本身跑得快——实测 wall 3×
         // / rev_cyc 12× 同时发生）。判据跟打印同变量，环境性放大按 Σ 判。
+        // F7（2026-11-22，gui8-smoke 判例）第五形态降软：**服务 spawn 波
+        // onset**——gui8 相位反向臂测量窗恰被服务 spawn 波罩住，装载页风暴
+        // 把外来 EL0 停顿灌进折卷窗：同内核 rootfs 严格过（位不置、断言未
+        // 评估 r=0.16θ，out/logs/run-rootfs-1795340121.log:252），gui8 位被
+        // 外来置 + wall 3.7-3.8×θ 且 rev_cyc<10×θ（两 panic 日志
+        // /tmp/gui8-smoke.4iwpt2qu、p6l9upj6 boot-a.log:281 同签名；挂账行
+        // .agents/notes/implemented/2026-11-22-appspawn-TLS寄存器协议刀.md:34
+        // ）——量级带 2-10× 内假阳与真漂移原理不可分，F6b 断层线判据不可用
+        // ，唯一可分信号 = 结构性静默前提破：静默门帽轮耗尽仍不静默（
+        // !quiet）= 供给面仍在动。同文件先例 press_flush 827-828「净场不可
+        // 得不 panic」——走软路径（清位重冲 + x 记账），θ_p 语义与标定面零
+        // 改动。
         let slow_host = rev_cyc >= theta_w.saturating_mul(10);
         assert!(
-            wall < theta_w || hal::smp::par_enabled() || berry_sched::any_armed() || slow_host,
+            wall < theta_w || hal::smp::par_enabled() || berry_sched::any_armed() || slow_host || !quiet,
             "dpg_press: 反向臂自证缺页墙钟 Σ={} ≥ θ_p·W={}（单核独占形：少量缺页即达压——单页供给停顿标定漂移，θ_p 误报判据前提破）",
             wall,
             theta_w
@@ -1057,6 +1073,10 @@ extern "C" fn dpg_press(arg: usize) -> ! {
         hal::uart_put_dec(rev_cyc);
         hal::uart_puts(b" x=");
         hal::uart_put_dec(soft as u64);
+        // w= 末轮反向臂自证缺页墙钟（F6b「判据跟打印同变量」前馈——rootfs
+        // 基线靴可据此采真实反向臂 wall）。
+        hal::uart_puts(b" w=");
+        hal::uart_put_dec(wall);
         hal::uart_puts(b"\n");
     });
 

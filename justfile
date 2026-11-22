@@ -530,10 +530,18 @@ build-release: docs-guard abi-check build-user
     python3 tools/size.py --assert-flip {{KERNEL_RELEASE}}
 
 # 入口规则门禁（AGENTS 注入预算 + 探针/锚点/迁出目标）——build/check/CI 前置
-# 公开镜像形态：docs-guard 依赖 AGENTS.md（内部档不在镜像）——降级 no-op，
-# 构建/CI 前置门回到 cargo/just 本体（AGENTS 预算门是内部治理，不约束外部贡献者）
 docs-guard:
-    @echo "public mirror: docs-guard skipped (internal governance doc absent)" 
+    python3 tools/docs_guard.py
+
+# 计数事实制品对拍（工程纪律刀阶段 4；规则/16 §3）——数字自证面；
+# 刷新 = facts --update（动计数输入面的同一提交带刷）。
+# 二期 P1 起走信封+回执双包裹（gate-wrap）：跑前跑后键一致才落回执，
+# 判决文件化——启动器退出码与工作判决分家。
+facts:
+    bash tools/gate-wrap.sh facts facts --files tools/facts.py tools/facts.txt -- python3 tools/facts.py
+
+facts-update:
+    python3 tools/facts.py --update
 
 # 可写全局清单门禁（Ginux writable-globals 借法）：新增 static mut 必须入册
 writable-globals:
@@ -731,6 +739,8 @@ test-host:
     # 本门禁防回归（smoke 本地复现的宿主断点收口）。
     python3 tools/shvarcheck.py --check
     cargo test -p berry-mm --target {{host}}
+    cargo test -p berry-asidface --target {{host}}
+    cargo test -p berry-vmarface --target {{host}}
     # W3-Q2：berry-wqmatch（等待队列唤醒匹配纯函数面——b-1 广播不变量/
     # WAIT_ANY 哨兵/fastpath 单等待者资格三律钉板 + 两路语义对齐穷举，
     # host 9 测；谓词单源，sched wake_matching/find_single_waiter 消费）。
@@ -1006,6 +1016,11 @@ test-host:
     # 拒 + display() 分区列表单行格式化〔教学可见性，vblk 手拼形状收口〕，
     # host 18 测；消费 = vblk 多分区暴露（下一刀接线））。
     cargo test --manifest-path user/Cargo.toml -p berry-partition --target {{host}}
+    # ai-runtime §一.1 首刀：berry-aiproto（.bmod 页对齐模型容器格式
+    # 纯函数面——BMOD v1 头/Ed25519 签名域/有界 TLV 超参数表/页对齐
+    # 张量段表结构执法，零拷贝零分配，截尾与畸形输入零 panic，host 19
+    # 测；消费 = airtd 模型池 VMO 映射〔契约一.2，后续刀〕）。
+    cargo test --manifest-path user/Cargo.toml -p berry-aiproto --target {{host}}
     # 驱动子系统研究报告 P1 框架件 + 波 2.2 先行刀：berry-driver（统一
     # Driver trait 生命周期框架——probe/start/stop 三口可循环 + registry
     # 全槽探测失败不炸，借 Linux probe 生命周期形状；virtio_example 钉
@@ -1148,6 +1163,59 @@ test-host:
     # 接线去重——#356 已带 workspace 形 -p berry-appshell 行（上方波3-件⑦
     # 段），manifest-path 重复行移除（appshell 33 测曾双跑，实测去重）。
     cargo test --manifest-path user/berry-softime/Cargo.toml --target {{host}}
+    # ai-runtime §二 Tier 0 首刀：berry-tensor（量化算子核纯函数面——
+    # Q4_0/Q8_0 块布局单源〔llama.cpp 兼容字节形〕+ f16 位级解码含次
+    # 正规/去量化/量化×量化整数内积点积〔块内 i32、scale 后乘、f32 顺
+    # 序累积——Tier 0 确定性基线，SIMD/卸载后端对拍锚〕+ 第二片
+    # matvec_q4_q8〔GEMV 行基元〕/rmsnorm〔inv_sqrt 位黑客种子 + 3 轮牛
+    # 顿纯 core〕+ 第三片 fp16/bf16 点积〔bf16=f32 高 16 位位域还原〕，
+    # host 19 测；
+    # 消费 = airtd/berry-aiproto 张量段〔后续刀〕）。
+    cargo test --manifest-path user/Cargo.toml -p berry-tensor --target {{host}}
+    # ai-runtime §三.1 首刀：berry-kvpool（块级分页 KV-Cache 池语义——
+    # 16-Token KvBlock 定容池 + 前缀 Copy-on-Write 共享〔引用计数 +1 物
+    # 理恒一份〕+ 共享尾块禁原地写执法〔满尾滚新块不属 COW 面——fork
+    # 续写主路径〕+ 显式回收口，host 9 测；真消费
+    # = airtd Paged KV-Cache 运行时〔后续刀〕）。
+    cargo test --manifest-path user/Cargo.toml -p berry-kvpool --target {{host}}
+    # ai-runtime §四.1 首刀：berry-vqvec（vault 定点量化向量基元——每
+    # vec 单 scale 的 i8 标量量化〔round-half-away 手写〕+ 非对称整数
+    # 域距离〔内积/L2²〕，全零 vec 退化无除零，host 8 测；HNSW 图与
+    # FBE/VaultQueryCap 门控归 berry-vault 服务刀〔后续〕）。
+    cargo test --manifest-path user/Cargo.toml -p berry-vqvec --target {{host}}
+    # ai-runtime §四.1 第二片：berry-hnsw（HNSW 图骨架——splitmix 确定性
+    # 分层指派〔位级 log16〕+ 贪心下降 + 有界 best-first 束搜〔R15
+    # 升格：终止律剪枝 + ef 帽 + ef-construction 建图〕，距离闭包注入
+    # 与量化距离解耦，tie-break 节点号升序确定性检索 + 多样性启发式建图
+    # 〔diverse_filter 独立纯函数 + insert_heuristic 双闭包通道〕，
+    # host 9 测）。
+    cargo test --manifest-path user/Cargo.toml -p berry-hnsw --target {{host}}
+    # ai-runtime §三.2 首刀：berry-jsonmask（JSON 字节级约束解码掩蔽器
+    # ——单源转移函数 step + 256 字节探测派生 mask〔合法集永不双写〕+
+    # 拒绝不改态〔100% 合法输出机制〕+ can_finish 流式终判〔裸数字态〕，
+    # R12 深度 N〔显式容器栈 ≤16 层越帽拒〕，host 10 测；Schema 编译随后续刀）。
+    cargo test --manifest-path user/Cargo.toml -p berry-jsonmask --target {{host}}
+    # am §一首刀：berry-amgrad（终态五级弹性处置梯度决策核——五级表
+    # 单源 choose〔RAM 谱系 L0<L2<L1<L3 升格 + L4 磁盘正交〕、租约豁
+    # 免压制冰封与深化、防抖窗双钉值 3s/0s，无触发即 None 禁默认动作，
+    # host 8 测；执行机构归内核机制与 appd 接线刀）。
+    cargo test --manifest-path user/Cargo.toml -p berry-amgrad --target {{host}}
+    # am §二.2 首刀：berry-wakeflood（唤醒风暴熔断核——每客户端分钟
+    # 桶计数〔环形零分配〕+ 12 次/分钟钉值熔断 + 冷却窗释放与再熔断
+    # 环〔释放纯时间驱动〕，host 7 测；计时器/退避投递/耗电台账归
+    # appd 与 power-thermal 接线刀）。
+    cargo test --manifest-path user/Cargo.toml -p berry-wakeflood --target {{host}}
+    # ai-runtime §二 Tier 1 客机侧首刀：berry-npuproto（virtio-compute
+    # wire 编解码——config/命令描述符〔virtio-gpu 控制头同形〕/blob 页
+    # 帧表〔off 4096 对齐执法〕/完成环三态〔OK/Unsupported 降级依据/
+    # Watchdog 看门狗〕，畸形即 None 不截断，op 值镜像 berry-tensor；
+    # R23 环面扩展（virtio 标准三表：描述符 16B/avail 头+槽环回/used
+    # 条目），host 10 测；宿主 Metal 桥归 tools/berry 边界面）。
+    cargo test --manifest-path user/Cargo.toml -p berry-npuproto --target {{host}}
+    # am §二.3 首刀：berry-anrwatch（ANR 判定核——指令类分阈〔前台
+    # Launch/Resume 5s、PauseSave 2s 契约钉值〕+ 两段语义〔超时发取证→
+    # 宽限尽或证据在手即终止〕，host 5 测；cbox 抓栈与终止执行归服务刀）。
+    cargo test --manifest-path user/Cargo.toml -p berry-anrwatch --target {{host}}
     # mkapp 门禁自检（a-3 U4：mkfat --check-fixture 同位前置——打包器门禁
     # 面此前只在 build-user 产物链上被动覆盖，门禁自身坏 = 产物链静默劣化）。
     python3 tools/mkapp.py --selftest
@@ -1253,10 +1321,117 @@ test-host:
     # 缺席〕/坏 TOML 分支标识/用法错 2 六腿；OK 行正面 = lib 黄金形 +
     # Python do_check 同现场模块级逐字对拍钉板）；cli_parity 让位臂族
     # 滚新（--check 移出让位族）。
-    # 独立小工作区，须显式 --target {{host}}。Python 件不退役——CLI 对拍
-    # oracle + gensourceindex --preset import 面单源（--dry-run/--emit
-    # 计划/产件面仍 Python 单源）。
+    # 六刀：plan.rs --dry-run 计划面（Python build_plan :890 + do_dry_run
+    # :1020 逐字镜像——行面全分支 + 装配门两臂前置 + relpath user_disp）；
+    # main.rs --dry-run 臂换轨（pr 旗标解析收值 + abi.toml 单源读 + 组合
+    # 面聚合 + 逐行打印）+ tests/plan_parity.rs oracle 模块级对拍（合成
+    # 现场 7 腿行面逐行全等：全席基线/sideload 形/最小面/user_disp 变/
+    # params 双形/source 透传〔gsi 两件套真产〕/kernel_measured 真件态）
+    # + validate_parity CLI 腿补（真源基座拒/装配门域界与反回滚两臂/
+    # 用法错与坏 pr 值）；cli_parity 让位臂族滚新（--dry-run 移出让位族）。
+    # 七刀：plan.rs emit_boot_params 产件面（Python do_emit :1046 尾段
+    # 镜像——空 params 零产件零目录缺省零扰动行 / 非空 makedirs 实写
+    # <out>/etc/boot-params.toml + 产件行；params 串面存储 → 序列化键值
+    # 形转换 params_paramvals〔u32 parse 十进制串 + intent 经 INTENTS 找
+    # 回 static〕）；main.rs --emit 臂换轨（dry_run_core 共核拆分——
+    # 计划行打印 + emit 尾段；缺 --out-dir 判序前置不变）+ tests/
+    # emit_parity.rs oracle 模块级对拍（合成现场 5 腿：全席三键 params
+    # 产件字节 sha256 恒等 + 尾行剥段全等 / 空 params 零扰动双侧同构 /
+    # 深位 out-dir makedirs 递归 / 结构拒面前置 / IO 失败 out-dir 被占位
+    # 同构）+ validate_parity CLI 腿⑩（--emit 真源基座拒——双侧同咬仓内
+    # 真基座表，拒面剥仓根段逐字全等 + 拒路径零产件）；cli_parity 让位
+    # 臂族滚新（--emit 移出让位族——七刀后五模式全镜像，让位面余
+    # --selftest/--sample）。独立小工作区，须显式 --target {{host}}。
+    # Python 件不退役——CLI 对拍 oracle + gensourceindex --preset
+    # import 面单源。
     cargo test --manifest-path tools/berryassemble/Cargo.toml --target {{host}}
+    # W1（彻底 Rust 化轨道 b 层 #7 刀序末档首刀）：bctsrun Rust 件——Tier 1
+    # 冻结件 schema 校验器镜像（现役单源 = tools/bcts/t1_check.py〔bcts-run.sh
+    # PYEOF①段机械抽出——heredoc→模块零行为变更〕）。lib：冻结件 TOML 子集
+    # 解析（顶层键 + [[marker]]/[[host_gate]] 数组节；点分节/数组值/内联表/
+    # hex/日期非目标形拒）+ 顶层八键执法 + marker/gate 值域全谱 + 空集守卫 +
+    # 文件名冗余自证 + META/MARK/GATE TSV 发射（拒面文案与 Python 逐字同源
+    # ——py_repr/True·False/单引号 list repr 形）。parity：仓内 bcts@0..6 七
+    # 件全量 TSV 逐行对拍 + 20 变异拒面逐字对拍 + TOML 语法面六语料双侧同拒
+    # （语法域文案各自实现——分支标识对齐）。二刀：src/t2.rs（T2 冻结件
+    # schema 校验镜像 = tools/bcts/t2_check.py）+ parity T2 三面（两冻结件
+    # 全量 + 26 变异 + 语法面八语料）。三刀：src/reconcile.rs（T2 静态对账
+    # 镜像 = tools/bcts/reconcile_t2.py——TSV 消费 + OP_* 常量扫描对账 + 五类
+    # 覆盖行；parity 真源两冻结件 stdout 逐字对拍 + 变异族 8 腿 + 扫描器边界
+    # （崩溃面诚实处理分歧注记）。四刀：src/abipr.rs（PYEOF④⑤镜像 =
+    # tools/bcts/abi_level.py + img_pr_check.py——[platform].level 读器〔值域
+    # 拒面 repr 同源：串/bool/float/None + OS Errno py repr 形〕+ manifest v1
+    # platform_revision 对账〔`item .* platform_revision=(\d{10})$` 贪心最右
+    # 位 + universal newlines 归一 + set 去重 sorted〕）；parity abipr 三面
+    # （真源 abi.toml stdout 全等 + 值域/Errno/坏 TOML 变异族 + 正则边界族
+    # 〔贪心/紧贴/双空格/CRLF/11 位回溯失败〕）。五刀：src/live.rs（活树清单
+    # 合成镜像 = bcts-run.sh build_live_tsv heredoc 体——markers.sh 三数组
+    # + 尾随 GATE 恰一行；id 相内序 %02d；语面 = bash 数组赋量子集〔引号
+    # 元素/续行/体内注释/后写覆盖〕，非目标形〔非引号元素/转义/展开 glob〕
+    # 诚实拒；守卫序镜像真文件 && 链〔缺席 → unbound 崩文案 + 行号 = 守卫
+    # 行、空 → 空集守卫文案、短路序精确〕；bash 实测分歧注记钉板：unbound
+    # 在 && 链内不杀非交互壳 + unset 数组 "${X[@]}" bash 4.4+ 静默空扩 =
+    # 假绿面（真 bcts-run.sh 靠步② floor 91 兜底），镜像同形严拒早于发射〕
+    # + parity live 三面（真源 markers.sh 92 行 stdout 逐字全等 + 计数
+    # 32/56/3/91 钉板 + 绿语料族 + 拒面族〔空集守卫文案逐字/unbound 分支
+    # + 短路序/合成语料〕）。六刀：src/args.rs（CLI 参数面镜像 =
+    # bcts-run.sh :117-221——参数 while/case 循环〔缺值/值域/未知/重复
+    # 后写覆盖〕+ BCTS_FROZEN 前缀识别 Tier〔bcts-t2@*/bcts@* 自动档 +
+    # 显式 --tier 冲突双向拒〕+ 工件在席 + 相对路径 REPO 前缀归一 +
+    # --manifest-name 守卫〔同席门 + 纯文件名五拒形〕+ --image 约束
+    # 〔tier2 冲突/selftest 互斥/归一在席〕+ T2 缺省工件 sort -t@ -k2 -n
+    # 数值序取尾〔@10>@9 字典序坑〕；绿腿产出 Resolved 快照〔缺省值/
+    # 显式位/路径归一〕；parity args（bash 真跑子进程 12 拒腿 stderr +
+    # 退码逐字 + 绿腿 Resolved 断言〔前缀自动识别/后写覆盖/T2 缺省解析〕
+    # ——manifest 缺席拒属装载段非参数段，钉界注记归后续刀；净增 +4 = lib
+    # 3 + parity 1。七刀：src/load.rs（装载/守卫段镜像 = bcts-run.sh
+    # :566-629——步①装载〔frozen → check_t1 TSV / live → build_live_tsv〕+
+    # 计数 + 步②空集守卫〔frozen floor = META 域；live = 在册 91——frozen
+    # 态 floor 守卫在 t1_check REJECT 面先发，步② FAIL 守卫对 frozen 结构
+    # 性不可达〕+ 镜像腿装载守卫〔bare 相 ≥32 + manifest 在席 G8 文案 +
+    # PR 锚双态〔frozen = META pr / live = abi.toml level〕+ img_pr_check
+    # 对账〕+ --dry 回显全行〔AWK printf %-9s/%-10s 对齐律 + 镜像腿行〕〕
+    # + parity load（bash 真跑子进程 --dry stdout 逐行全等 + 退码全等：
+    # live 态 91 件全表 + bcts@0..6 七件 frozen 全表 + 镜像腿族〔live/frozen
+    # 双锚 ok / PR 失配拒 / manifest 缺席拒 / --manifest-name 联动〕+ floor
+    # 守卫拒〔frozen = REJECT 退 2 钉序〕+ 坏件拒〕+ 突变红 x3。净增 +11
+    # = lib 5 + parity 6〔+1 组〕。八刀：src/gates.rs（步③ host 门禁段
+    # 镜像 = bcts-run.sh :631-647——GATE 行消费〔read -r 三域同形：cmd 取
+    # 行余量内嵌制表符保留〕+ 逐门 bash -c 发射双流重定向 gate-$gid.log +
+    # PASS 行/拒 stderr「FAIL …日志尾 5 行」+ tail -5〔不足 5 全发·空日志
+    # 零行〕+ GATE_SUMMARY 全角分号连接〔零门禁空串〕+ 任一拒总退 1·逐门
+    # 全跑非短路〕+ parity_gates oracle 对拍 +1 组〔bash 真跑循环体逐字
+    # 驱动：过/拒/混排/零门禁/真源 bcts@6 GATE 行接管——stdout·stderr·
+    # summary·总判定四面全等〕+ 突变红 x3。净增 +17 = lib 11 + parity 6。
+    # 九刀：src/markers.rs（步④标记对拍 + 对账循环 + 步⑤结果包文本面镜像 =
+    # bcts-run.sh :655-660 assert_marker + :756-776 对账循环 + :797-840 结果
+    # 包 echo 块——纯面拆分：QEMU 回放/文件 IO 不在此刀，assert_marker 输入
+    # = 已采语料；DEMO ok 前邻非 I/TAB ok 前邻非 G〔ERE (^|[^X]) 同形——行
+    # 首/非 ASCII 前邻按字符比较〕+ 固定串 grep -qF + 对账循环〔镜像腿 bare
+    # 子面 FACE_N=N_BARE·MISSING 空格连接首项无前导·多打不算 fail〕+
+    # verdict 判定式行双形态 + 结果包文本〔frozen 四键自 META/镜像腿五键/
+    # %02d ≥100 自然十进制〕+ 尾段两行〔missing = 无〔裸〕与结果包行（无）
+    # 不同形——首跑咬出〕+ 出口码映射〕+ parity_markers oracle 对拍 +1 组
+    # 〔bash 真跑段体逐字提取驱动：逐条判定矩阵 ≥160 断言 + 对账族 + 真源
+    # markers.sh 91 件全过/单缺失恰缺该 id + 空 expect 分歧钉板〕+ 突变红
+    # x3。净增 +23 = lib 15 + parity 8。
+    # 十刀：src/efiboot.rs（镜像腿 QEMU 轮询段纯函数面 = bcts-run.sh :326-338
+    # EFI 三数组 + :704-723 轮询三段循环体 + :730-738 banner/ident 两门——
+    # poll_missing：固定串 4 + 接续 3 grep -qF 面〔缺原样追加〕+ ERE 六条
+    # 〔缺 ERE: 前缀形〕+ entries.tsv bare 相 MARK 行逐条 assert_marker〔缺
+    # mid〕，三段序逐字 + MISSING 空格连接首项无前导；ERE 手写判定器零 regex
+    # 〔[0-9]+/[0-9a-f]+ 字符类 + 贪心回溯，hex 小写锚〕；banner_gate：grep
+    # -m1 首命中 + 形态正则手写镜像〔三段数字 + (ident 可选 rustc 组)，无锚
+    # 各出现处逐一试〕+ nogit ident 拒〔形态门先于 ident 门〕，img_fail 完整
+    # stderr 行含 bcts: FAIL: 前缀〕+ tests/parity_efiboot.rs oracle 对拍 +1 组
+    # 〔bash 真跑轮询体逐字提取〔三数组区间整取 + CORPUS 前置 + sleep 桩单轮
+    # 驱动〕：全过/空日志全缺三段序/三类缺项并存/IDEMO 透传 MISSING 全等 ×4
+    # + banner 门矩阵 ×8 判定·文案逐字 + 形态正则边界语料 13 行〕+ 突变红
+    # x3〔hex 放宽 2 红/missing 恒前导空格 5 红/nogit 门删除 7 红〕。净增
+    # +20 = lib 13 + parity 7。
+    # 独立小工作区，须显式 --target {{host}}。
+    # Python 件不退役——CLI 对拍 oracle。
+    cargo test --manifest-path tools/bctsrun/Cargo.toml --target {{host}}
     # W1 接线（SEC-02 A2 同款纪律）：berry_assemble 门禁自检——V13 组装器
     # （ADR #82「组装不 fork」product.toml 校验/dry-run 计划/装配反回滚门）
     # 落地时自称 51 腿绿但从未接线 test-host：有 selftest 零自动执法 =
@@ -1407,6 +1582,51 @@ test-host:
     # 单源化 docstring/文案 128 残留同步清偿）/ sha256 分段读对拍 / 尺寸
     # 门恰界两侧 / 缺件 loud 退场 / berry-sign 发现序缺席分支 / run 双路。
     python3 tools/releng_pack.py --selftest
+    # W1 接线（releng_pack 同族·零自检清尾）：make_desktop_disk 门禁自检——
+    # 确定性桌面数据盘（product-e2e/desktop-calib 消费面）宣称「产物字节
+    # 确定性可重复重建」此前零机器执法：LAYOUT 常量契约（schema/页坐标
+    # 域/8.3 名形/印章常量）+ 真流双产 sha256 恒等（走真 mkfat 子进程 +
+    # gui8 Fat12Volume 注入）+ LBA0 印章前缀与 LBA16 卷签名（vol@LBA16
+    # 铁律——印章区不得伪造 BPB）+ LAYOUT.JSN 写读往返字节级对拍 + 缺席
+    # 件 None 容忍与重复 add_file 拒形 + cwd 无关确定性（子进程 cwd=ROOT
+    # 钉位）。三突变红分支实证（常量漂移/印章换字/注入内容截尾均咬）。
+    python3 tools/make_desktop_disk.py --selftest
+    # W1 接线（tools 弱面清偿·PIL 渲染生成器族首件）：gen_splash_logo /
+    # gen_splash_pct 门禁自检——splash HD 字模两生成器（kernel 消费面
+    # splash.rs）此前零守卫：结构律（常量↔行几何互锁/字形序恰 11 形/
+    # 类型行钉板）+ 位域律（尾包无效位区全零/值域 v<2^w/72 行恰容/
+    # 零填充段）+ 紧致 bbox 律（四缘有墨——getbbox 语义机器镜像）+
+    # 黄金哈希 ×2（字源/字号/阈值变更必漂移）+ 突变红 ×6 + PIL 重产
+    # 逐字节对拍（缺席 skip——CI Linux 面黄金哈希兜底）；--check 漂移
+    # 守卫同位（genfbfont --check 同族）。
+    python3 tools/gen_splash_logo.py --selftest
+    python3 tools/gen_splash_pct.py --selftest
+    # W1 接线（tools 弱面清偿·PIL 渲染生成器族二件）：gencjkfont 门禁
+    # 自检——CJK 3500 字 A2 分页字库（berry-gfx 运行期消费面）此前只有
+    # --check 漂移守卫零结构执法：常量互锁（.rs ↔ 本件 ↔ 数学关系）+
+    # A2 页流全链解码对账（zlib 分页 → 逐页几何 → 3500 形切分）+
+    # CJK_GOLDEN 19 条语义 golden 从解出 A2 字节重算（位打包/量化双律）+
+    # 码点表律（升序去重/CJK 区段/chars_sorted 排序律/标签十字）+
+    # 量化数学钉板 + 突变红 x3；字源 16MiB 恒不入库，零字源面设计
+    # （PIL 烟测缺席 skip——bin sha256 互锁兜底）。
+    python3 tools/gencjkfont.py --selftest
+    # W1 接线（tools 弱面清偿·PIL 渲染生成器族三件）：gen_android_nav_icons
+    # 门禁自检——AOSP SystemUI 导航 VectorDrawable 光栅化器（297 行，源
+    # XML+产物均入库）此前零守卫：源哈希互锁 x3（AOSP 资产篡改即红）+
+    # 结构律（NAV_ICON 六 id/九数组 5184 尺寸）+ ARGB 打包律（RGB 域恒为
+    # 配对墨色）+ 几何律零 PIL 全链（pathData 纯 stdlib 解析 → polygon
+    # bbox(72 网格) 与九数组重算 mask bbox 包络对账——CI 无 PIL 面可跑）+
+    # 掩码互异 + 突变红 x3；PIL 重产逐字节对拍缺席 skip（#644 判例：CI
+    # runner 无 PIL，import 惰性化）。
+    python3 tools/gen_android_nav_icons.py --selftest
+    # W1 接线（tools 弱面清偿·串口判读契约族）：desktop-calib 门禁自检——
+    # Mac HVF 双臂标定件（不进 CI）的串口判读契约此前零机器执法：
+    # VGPUPERF/VGPUDMA 解析律（字段提取/坏值容忍/token==submits 契约）
+    # + 基线快照 + median/percentile 统计数学（numpy 线性插值口径）+
+    # snap240 滑窗闭窗恰界与达标阈值（round 非 ceil）+ move 数换算 +
+    # SerialTail 增量尾读（半行跨读/close 重开从头读契约）+ 突变红 x3。
+    # 改 desktop-calib 判读/统计面必跑。
+    python3 tools/desktop-calib.py --selftest
     # K-3：size.py ADRP 解码器向量自检（--assert-flip 扩面的门禁自身坏 =
     # smoke/build-release 断言静默劣化，同 a-3 U4 纪律门禁化）。
     python3 tools/size.py --selftest
@@ -1633,6 +1853,13 @@ test-host:
     # 沙箱：G-ver-3 对拍绿/不匹配红点名/无 version 红/git_ident 缺席红/
     # 段作用域防串号/零 tag 豁免/非 git 豁免）。发版门形态改坏可被咬合。
     {{BASH}} tools/ver-check.sh --selftest
+    # W1 接线（同族·G1 刀 4 密封构建包装器）：reproducible_build.sh——
+    # SOURCE_DATE_EPOCH/路径 remap/离线/umask/TZ/LC_ALL 六密封面 + git
+    # 缺席回退 epoch 0 + just 目标透传，此前零自检（密封面改坏 = 产物
+    # 不可复现静默漂移，无机器咬合）。selftest 5 腿（合成 git+just 垫片
+    # 沙箱：exec 落地视图逐项对账/非 git 回退/多目标透传/RUSTFLAGS 叠加
+    # 保留/just 缺席 loud 拒）。改密封面必跑。
+    {{BASH}} tools/reproducible_build.sh --selftest
     # W1 接线（D-审计 §4.3「从未跑过」面）：guifbd lib 单测 23 测
     # （B1-b/c vgpu 后端纯面——后端分派/INDIRECT 链/ATTACH 段/提交序）入
     # host 台账。独立小工作区（空 [workspace] escape），berry-libc
@@ -1640,10 +1867,56 @@ test-host:
     # B1-b 落地时手动跑过，无 just/CI 接线 = 改坏无机器咬合。
     cargo test --manifest-path user/bins/guifbd/Cargo.toml --target {{host}}
     # W1 接线（D-审计 §4.2 尾「无 just/CI 接线」面）：tools/berry 设备壳
-    # host 单测 121 测（VNC/VeNCrypt/DES/QR/网页壳状态机等纯面——README
-    # §测试原只记手动咒语）入 host 台账。独立小工作区，host 纯面零
-    # 交叉编译；此前手动 cargo test 从未接线 = 面改坏无机器咬合。
-    cargo test --manifest-path tools/berry/Cargo.toml --target {{host}}
+    # host 单测（VNC/VeNCrypt/DES/QR/网页壳状态机等纯面——README §测试
+    # 原只记手动咒语）入 host 台账。独立小工作区，host 纯面零交叉编译；
+    # 此前手动 cargo test 从未接线 = 面改坏无机器咬合。2026-11-22 与上方
+    # cbox 刀 3 接线位去重——同 crate 双跑每轮白跑 369 测且 07 口径翻倍
+    # 计（沿革「链内 berry 双跑净增 X=N×2」注记即此债痕迹），本位注释
+    # 留档、执行归上位单跑。
+    # W1 接线（R136 判例族·「有 host 测零自动执法 = 静默腐烂」）：
+    # user/widgets/ 四独立小工作区（G3 刀 11-14 落地，26 host 测）——
+    # berry-scene-ir（声明式小组件二进制序列化 16B header+24B 定长
+    # 节点四型 + 40 节点帽 + 全验证反序列化）、berry-widgetd（WidgetGrid
+    # 4×4 网格/TimelineScheduler 过期时间线/SmartStack 同格叠放轮换）、
+    # berry-island（Spring2D 临界阻尼弹簧 ζ=1 无超调 + 四态机合法转移
+    # 表）、berry-intentd（Intent 8 型 + 路由优先级 32 帽 + 意图链
+    # ≤8 步）。非 user workspace members（空 [workspace] escape，sysnr
+    # 先例形）此前零 just/CI 接线 = 语义面改坏无机器咬合。W2 布局树
+    # 移交注所点名（接线归 owner/G3 线——W1 代接线，先例 = lkface
+    # R136 建议件/guifbd D-审计接线）。
+    cargo test --manifest-path user/widgets/scene-ir/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/widgets/widgetd/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/widgets/island/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/widgets/intentd/Cargo.toml --target {{host}}
+    # W1 接线（R136 判例族同款）：user/nfc/ + user/accessories/ 四独立
+    # 小工作区（G4 刀 15-18 落地，18 host 测）——berry-nci（NCI 协议栈
+    # 纯面：MT/GID/OID 帧 + ISO 7816 APDU + SW1/SW2 + eSE 状态机）、
+    # berry-walletd（四卡型生命周期 + 优先级出卡 + Power Reserve 断电
+    # 策略 + 余额扣费）、berry-stylus（1D 卡尔曼滤波位置/速度双通道 +
+    # 240Hz 预测 ≤4ms）、berry-uwb（ToF 测距 + PDoA 方位角 + 三边定位
+    # Cramer 2×2 含 λ 修正）。同 widgets 形零接线 = 同款静默腐烂面；
+    # W2 布局树移交注点名件（dc4fb5601）。
+    cargo test --manifest-path user/nfc/nci/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/nfc/walletd/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/accessories/stylus/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/accessories/uwb/Cargo.toml --target {{host}}
+    # W1 接线（R136 判例族同款·G2 刀 8-10 兼容子系统三件）：user/compat/
+    # 三独立小工作区（15 host 测）——linux-runner（syscall 翻译守护：
+    # ELF64 头解析/优先级扫参序/未知 syscall loud 拒）、berry-vmm
+    # （MicroVM 管理器：vCPU 生命周期/客户机物理内存布局/中断注入
+    # 裁决）、compat-wayland-bridge（wl_surface/wl_shm → BerryOS
+    # SurfaceId/VMO 桥接：surface 映射能力面）。空 [workspace] escape
+    # 同 widgets/nfc 形，此前零 just/CI 接线 = 语义面改坏无机器咬合。
+    cargo test --manifest-path user/compat/linux_runner/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/compat/vmm/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/compat/wayland-bridge/Cargo.toml --target {{host}}
+    # W1 接线（R136 判例族同款·终端刀 5 纯核两件，base 9cfb160ca 直推
+    # 零接线）：user/faces/utf8width（UTF-8 显示宽度：East Asian Wide/
+    # 全角锚/组合符零宽）+ user/ptyface（伪终端面：线路规程状态机/
+    # termios 域）。15 host 测，空 [workspace] escape 同 widgets/nfc/
+    # compat 形——零 just/CI 接线 = 语义面改坏无机器咬合。
+    cargo test --manifest-path user/faces/utf8width/Cargo.toml --target {{host}}
+    cargo test --manifest-path user/ptyface/Cargo.toml --target {{host}}
     # W1 接线（base 重写剥落重放，#304 面）：sync-public members 对账门——
     # 白名单 ⊇ workspace members 机器执法（#153/#171/#227 三连 REJECT
     # 判例族根因：新增顶层 crate 忘补白名单 = 公开仓 build 必炸）。本刀
@@ -1661,6 +1934,61 @@ test-host:
     # justfile test-host 面必跑（本行即自证）。
     python3 tools/selftest_guard.py --selftest
     python3 tools/selftest_guard.py
+    # 工程纪律刀阶段 2 接线：判据单源与新鲜度三门自检——markers（canon
+    # 互非子串 + 哨兵↔消费者 1:1 映射）、image-fresh（manifest 对拍夹具
+    # 四腿）、floor-check（版本地板三腿）。改 markers.sh 标记/banner 面、
+    # image-fresh.sh、floor-check.sh 必跑（selftest_guard 扫描自动执法）。
+    {{BASH}} tools/markers.sh --selftest
+    {{BASH}} tools/image-fresh.sh --selftest
+    {{BASH}} tools/floor-check.sh --selftest
+    # 工程纪律刀阶段 3 接线：门禁链负例自检（合成 git 沙箱六腿——坏拒/
+    # 好过+印记耗/no-verify 拦/merge 免检/索引留毒拒/未跟踪不误伤）。
+    # 改 .githooks/* 或 check-docs 检查面必跑。
+    {{BASH}} tools/gate-selftest.sh
+    # 自动化开发二期 P0 接线：E lane 六件自检——e-guard（punch oracle/
+    # FROZEN 自指/stop-hook 环境腿/四门拒写）、e-doctor（缺件红/全配过）、
+    # e-supervisor（机制分判/revert 通道/repair 判据）、pack-work（开工包
+    # 切分）、push-green（supersession/取消弱证据）、e-receipts（内容寻址）。
+    # 改 tools/e-*.py、run-e.sh、pack-work/push-green 必跑。
+    python3 tools/e-guard.py --selftest
+    python3 tools/e-doctor.py --selftest
+    python3 tools/e-supervisor.py --selftest
+    python3 tools/pack-work.py --selftest
+    python3 tools/push-green.py --selftest
+    python3 tools/e-receipts.py --selftest
+    # 自动化开发二期 P1/P2 接线：评审凭据三件（pin 校验/协议行回执验收/
+    # 欠账记账）+ 证物链两件（信封/包裹器）+ 治理四件（控制面门/两张债网/
+    # 决策读回/配置面审计）。改对应工具必跑。
+    python3 tools/review-pin-check.py --selftest
+    python3 tools/review-recv.py --selftest
+    python3 tools/review-debt.py --selftest
+    bash tools/run-artifact.sh --selftest
+    bash tools/gate-wrap.sh --selftest
+    bash tools/control-plane-gate.sh --selftest
+    bash tools/run-e.sh --selftest
+    python3 tools/punch_slice.py --selftest
+    python3 -I tools/task-graph.py --selftest
+    python3 tools/task-oracle.py --selftest
+    python3 -I tools/stale-parks.py --selftest
+    python3 -I tools/stranded-deferrals.py --selftest
+    python3 -I tools/answers-readback.py --selftest
+    python3 -I tools/claude-audit.py --selftest
+    # 工程纪律刀阶段 4 接线：数字自证面——facts 对拍自检（合成仓 11 键/
+    # 篡改红/幂等）+ check-docs 检测器自检（四组坏样例必触发——「a detector
+    # that goes quiet is an ERROR」）。改 facts.py、check-docs 检查面必跑。
+    python3 tools/facts.py --selftest
+    node .agents/tools/check-docs.mjs --selftest
+    # W1 接线（tools 弱面扫描件）：sdk/design 两本 ledger 门禁自检——
+    # CI smoke 消费位（ci.yml sdk/design ledger 步）此前零自检：门禁
+    # 自身坏 = 静默劣化（a-3 U4 纪律同款）。sdk_ledger 6 腿（facade
+    # 提取三形/validate 拒面族 12 变异/双向对账 missing·stale/matrix
+    # 黄金形/doc 往返漂移红）；design_ledger 7 腿（WCAG 数学锚 21:1
+    # 极值与 448/451 门槛夹逼/parse_color 拒梯/enum 提取/36 对全谱
+    # matrix/validate 全链拒面 9 变异含 rogue widgets.rs 硬编码色与
+    # cfg(test) 豁免/doc 往返）。改两件门禁逻辑或 design_tokens/
+    # sdk_api 词表必跑。
+    python3 tools/sdk_ledger.py --selftest
+    python3 tools/design_ledger.py --selftest
 
 # 忙核 arm-to-nearest-deadline（oneshot 收紧律）host 钉板：律单源
 # sched/src/oneshot.rs（sched crate 本体 no_std + HAL 依赖不编 host），
@@ -1874,8 +2202,13 @@ smoke-image: image
 gui8-smoke:
     #!/bin/sh
     set -eu
-    if [ ! -f "{{IMAGE}}" ] || [ "${GUI8_REBUILD:-0}" = 1 ]; then
+    # 工程纪律刀阶段 2：镜像新鲜度门（规则/16 §2）——manifest 对拍陈旧即
+    # 重建（机器根治预烘旧镜像假结论坑）；GUI8_REBUILD=1 保留为「无条件
+    # 强制重建」档（原语义降级为冗余档而非唯一防线）。
+    if [ "${GUI8_REBUILD:-0}" = 1 ]; then
         just image
+    else
+        bash tools/image-fresh.sh --ensure
     fi
     set -- --image "{{IMAGE}}" --code "{{AAVMF_CODE}}" --vars "{{AAVMF_VARS}}"
     if [ "${GUI8_KEEP:-0}" = 1 ]; then
@@ -1891,10 +2224,32 @@ gui8-smoke:
 gui8-smoke-normal:
     #!/bin/sh
     set -eu
+    # 工程纪律刀阶段 2：镜像新鲜度门（同 gui8-smoke——manifest 对拍陈旧即重建）。
+    if [ "${GUI8_REBUILD:-0}" = 1 ]; then
+        just image
+    else
+        bash tools/image-fresh.sh --ensure
+    fi
+    set -- --image "{{IMAGE}}" --code "{{AAVMF_CODE}}" --vars "{{AAVMF_VARS}}" --normal-boot
+    if [ "${GUI8_KEEP:-0}" = 1 ]; then
+        set -- "$@" --keep
+    fi
+    exec python3 tools/gui8-smoke.py "$@"
+
+# GUI-8 活体 app 回收时延回归门（2026-11-21 冻结案测试面补缺）：gui8
+# 全臂 APPDEMO 载荷 console=true（out_s==0 结构性跳过 collect_eof）=
+# 回收烧帽类缺陷 CI 恒盲。本门单 boot（无 GUI8.SMK）：BROWSER（活体
+# console=false 泵 app）图标首击 spawn → 多任务键二击同 id 回收；断言
+# eco 行序 it → recycle → killed → it、零 no EOF/exit code、二击时延 ≤
+# 首击 + 40s（EOF 烧帽回归 +60s 必爆帽；主修回退 = killed 行缺席 FAIL）。
+# gui8-recycle-gate：活体 console=false app 同 id 回收时延门。
+gui8-recycle-gate:
+    #!/bin/sh
+    set -eu
     if [ ! -f "{{IMAGE}}" ] || [ "${GUI8_REBUILD:-0}" = 1 ]; then
         just image
     fi
-    set -- --image "{{IMAGE}}" --code "{{AAVMF_CODE}}" --vars "{{AAVMF_VARS}}" --normal-boot
+    set -- --image "{{IMAGE}}" --code "{{AAVMF_CODE}}" --vars "{{AAVMF_VARS}}" --recycle-gate
     if [ "${GUI8_KEEP:-0}" = 1 ]; then
         set -- "$@" --keep
     fi

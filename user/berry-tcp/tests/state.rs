@@ -2,6 +2,8 @@
 //!
 //! 约定：我方 ISS=1000，对端 ISS=5000——握手后 Established 基线：
 //! snd_nxt=1001 / snd_una=1001 / rcv_nxt=5001 / inflight=None。
+//! P4 起 MSS=1000：双满段在途 2000 > 通告窗 1024，多段族用例走
+//! `established_wide`（对端窗 8192）——窗门控本身另有窄窗专项测把守。
 
 use berry_tcp::{
     rto_ms, Action, Conn, MSS, RTO_START_MS, SegFlags, State, TcpSeg, TIME_WAIT_MS, TX_SLOTS,
@@ -77,6 +79,16 @@ fn rst_seg() -> TcpSeg<'static> {
 fn established() -> Conn {
     let (mut c, _) = Conn::open(1000);
     let sa = syn_ack(5000, 1001, None);
+    c.on_seg(&sa);
+    c
+}
+
+/// 宽窗 Established 基线（P4 多段族）：对端通告 8192——MSS=1000 后双段
+/// 在途（如 1000+122）仍 ≤ 窗，多段排队/GBN/straddling 用例不触窗门。
+fn established_wide() -> Conn {
+    let (mut c, _) = Conn::open(1000);
+    let mut sa = syn_ack(5000, 1001, None);
+    sa.window = 8192;
     c.on_seg(&sa);
     c
 }
@@ -499,56 +511,57 @@ fn close_queues_fin_behind_data() {
 
 #[test]
 fn tx_ring_two_segments_and_snd_nxt() {
-    // 双段排队：一个 op 拆 128+122 两段连续入环（in-flight>1），snd_nxt 连续
-    // 推进；RTO 重发环头（GBN 队头）。
-    let mut c = established();
-    let o1 = c.send(128);
-    assert_eq!(o1.action, Action::Data { seq: 1001, len: 128 });
+    // 双段排队（P4 新几何：满段 1000 + 尾段——e VMO 块 2048 拆
+    // 1000+1000+48 形的前两段；多段面 P4 后休眠非退役，本族保覆盖）：
+    // 连续入环 in-flight>1，snd_nxt 连续推进；RTO 重发环头（GBN 队头）。
+    let mut c = established_wide();
+    let o1 = c.send(1000);
+    assert_eq!(o1.action, Action::Data { seq: 1001, len: 1000 });
     let o2 = c.send(122);
-    assert_eq!(o2.action, Action::Data { seq: 1129, len: 122 });
-    assert_eq!(c.snd_nxt, 1251);
+    assert_eq!(o2.action, Action::Data { seq: 2001, len: 122 });
+    assert_eq!(c.snd_nxt, 2123);
     assert_eq!(c.tx_inflight(), 2);
-    assert_eq!(c.on_rto().action, Action::Data { seq: 1001, len: 128 });
+    assert_eq!(c.on_rto().action, Action::Data { seq: 1001, len: 1000 });
 }
 
 #[test]
 fn cross_seg_ack_pops_multi_straddle_keeps() {
     // 部分 ACK 落在第一段中间：straddling 保槽 + snd_una 推进 + backoff 归零
-    // + RTO 仍从原 seq 全段重发（h14 语义在环上的延续）。
-    let mut c = established();
-    c.send(128); // [1001,1129)
-    c.send(122); // [1129,1251)
-    c.on_seg(&ack_seg(1050));
-    assert_eq!(c.snd_una, 1050);
+    // + RTO 仍从原 seq 全段重发（h14 语义在环上的延续；P4 满段 1000 形）。
+    let mut c = established_wide();
+    c.send(1000); // [1001,2001)
+    c.send(122); // [2001,2123)
+    c.on_seg(&ack_seg(1500));
+    assert_eq!(c.snd_una, 1500);
     assert_eq!(c.tx_inflight(), 2);
     assert_eq!(c.rto_backoff, 0);
-    assert_eq!(c.on_rto().action, Action::Data { seq: 1001, len: 128 });
+    assert_eq!(c.on_rto().action, Action::Data { seq: 1001, len: 1000 });
     // ACK 覆盖第一段尾（落在第二段中间）：第一段弹出、第二段 straddling 保留
     //——环头推进到第二段。
-    let mut c2 = established();
-    c2.send(128);
+    let mut c2 = established_wide();
+    c2.send(1000);
     c2.send(122);
-    c2.on_seg(&ack_seg(1200));
+    c2.on_seg(&ack_seg(2050));
     assert_eq!(c2.tx_inflight(), 1);
-    assert_eq!(c2.on_rto().action, Action::Data { seq: 1129, len: 122 });
+    assert_eq!(c2.on_rto().action, Action::Data { seq: 2001, len: 122 });
     // 跨段覆盖一次弹多头：ACK 覆盖两段尾 → 两槽一次弹尽、可续发。
-    c.on_seg(&ack_seg(1251));
+    c.on_seg(&ack_seg(2123));
     assert_eq!(c.tx_inflight(), 0);
     assert_eq!(c.on_rto().action, Action::None);
-    assert_eq!(c.send(10).action, Action::Data { seq: 1251, len: 10 });
+    assert_eq!(c.send(10).action, Action::Data { seq: 2123, len: 10 });
 }
 
 #[test]
 fn gbn_head_retransmit_and_cap_clears_ring() {
     // GBN 队头重发：RTO 恒重发环头最老段（后续段不随发），backoff 递增；
-    // 到帽放弃 → Closed 清环。
-    let mut c = established();
-    c.send(128);
+    // 到帽放弃 → Closed 清环（P4 满段 1000 形）。
+    let mut c = established_wide();
+    c.send(1000);
     c.send(122);
-    assert_eq!(c.on_rto().action, Action::Data { seq: 1001, len: 128 });
+    assert_eq!(c.on_rto().action, Action::Data { seq: 1001, len: 1000 });
     assert_eq!(c.rto_backoff, 1);
-    assert_eq!(c.on_rto().action, Action::Data { seq: 1001, len: 128 });
-    assert_eq!(c.on_rto().action, Action::Data { seq: 1001, len: 128 });
+    assert_eq!(c.on_rto().action, Action::Data { seq: 1001, len: 1000 });
+    assert_eq!(c.on_rto().action, Action::Data { seq: 1001, len: 1000 });
     let out = c.on_rto(); // 第 4 次：放弃
     assert_eq!(out.action, Action::None);
     assert_eq!(c.state, State::Closed);
@@ -623,21 +636,18 @@ fn window_shrink_limits_inflight() {
 
 #[test]
 fn send_ring_full_rejects() {
-    // 环满拒：宽窗（8192）下 TX_SLOTS×128（五刀③环扩 =8×128）恰满环，
-    // 第 9 段拒；弹槽腾位后续发。
-    let (mut c, _) = Conn::open(1000);
-    let mut sa = syn_ack(5000, 1001, None);
-    sa.window = 8192;
-    c.on_seg(&sa);
+    // 环满拒：宽窗（8192）下 TX_SLOTS×1000（P4 =5×1000）恰满环，第 6 段
+    // 拒；弹槽腾位后续发。
+    let mut c = established_wide();
     for i in 0..TX_SLOTS as u32 {
-        let seq = 1001 + 128 * i;
-        assert_eq!(c.send(128).action, Action::Data { seq, len: 128 });
+        let seq = 1001 + 1000 * i;
+        assert_eq!(c.send(1000).action, Action::Data { seq, len: 1000 });
     }
     assert_eq!(c.tx_inflight(), TX_SLOTS);
     assert_eq!(c.send(1).action, Action::None, "环满拒");
-    c.on_seg(&ack_seg_w(1129, 8192)); // 弹第一段
+    c.on_seg(&ack_seg_w(2001, 8192)); // 弹第一段（1000B）
     assert_eq!(c.tx_inflight(), TX_SLOTS - 1);
-    assert_eq!(c.send(1).action, Action::Data { seq: 1001 + 128 * TX_SLOTS as u32, len: 1 });
+    assert_eq!(c.send(1).action, Action::Data { seq: 1001 + 1000 * TX_SLOTS as u32, len: 1 });
 }
 
 #[test]
@@ -657,9 +667,10 @@ fn handshake_consumes_peer_window() {
 
 #[test]
 fn rst_clears_tx_ring() {
-    // RST 清环：多段在途态收 RST → Closed + 环空 + on_rto 无重发面。
-    let mut c = established();
-    c.send(128);
+    // RST 清环：多段在途态（满段 1000 + 尾段）收 RST → Closed + 环空 +
+    // on_rto 无重发面。
+    let mut c = established_wide();
+    c.send(1000);
     c.send(122);
     c.on_seg(&rst_seg());
     assert_eq!(c.state, State::Closed);
@@ -669,8 +680,8 @@ fn rst_clears_tx_ring() {
 
 #[test]
 fn consts_pinned() {
-    // §4 定值表钉板：MSS=128 / 窗口 1024（五刀③环扩联动）/ TIME_WAIT 2s。
-    assert_eq!(MSS, 128);
+    // §4 定值表钉板：MSS=1000（P4 128→1000）/ 窗口 1024 / TIME_WAIT 2s。
+    assert_eq!(MSS, 1000);
     assert_eq!(WINDOW, 1024);
     assert_eq!(TIME_WAIT_MS, 2_000);
     assert_eq!(RTO_START_MS, 3_000);
@@ -1000,14 +1011,15 @@ fn tx_retx_floor_empty_ring_returns_snd_nxt() {
 
 #[test]
 fn tx_retx_floor_follows_head_pop_to_second_seg() {
-    // ② 双段在途 + 首段整 ACK 弹槽 → floor 随环头推进到第二段段首。
-    let mut c = established();
-    c.send(128); // [1001,1129)
-    c.send(122); // [1129,1251)
+    // ② 双段在途 + 首段整 ACK 弹槽 → floor 随环头推进到第二段段首
+    //（P4 满段 1000 形）。
+    let mut c = established_wide();
+    c.send(1000); // [1001,2001)
+    c.send(122); // [2001,2123)
     assert_eq!(c.tx_retx_floor(), 1001);
-    c.on_seg(&ack_seg(1129)); // 恰覆盖首段尾 → 弹槽
+    c.on_seg(&ack_seg(2001)); // 恰覆盖首段尾 → 弹槽
     assert_eq!(c.tx_inflight(), 1);
-    assert_eq!(c.tx_retx_floor(), 1129);
+    assert_eq!(c.tx_retx_floor(), 2001);
 }
 
 #[test]
@@ -1015,17 +1027,17 @@ fn tx_retx_floor_straddling_pinned_to_head_seg_seq() {
     // ③ straddling 裁决臂（防「优化」回 snd_una 的判据臂，改错必炸）：
     // 双段在途 + 部分 ACK 只覆盖首段一部分 → 首段保槽、RTO 自段首整段重发
     // → floor = 首段段首 **≠ snd_una**——紧缩到 snd_una 会切掉仍需重发的
-    // 段前缀、击重发臂。
-    let mut c = established();
-    c.send(128); // [1001,1129)
-    c.send(122); // [1129,1251)
-    c.on_seg(&ack_seg(1050)); // 只确认首段前 49B：straddling 保槽
-    assert_eq!(c.snd_una, 1050);
+    // 段前缀、击重发臂（P4 满段 1000 形）。
+    let mut c = established_wide();
+    c.send(1000); // [1001,2001)
+    c.send(122); // [2001,2123)
+    c.on_seg(&ack_seg(1500)); // 只确认首段前 499B：straddling 保槽
+    assert_eq!(c.snd_una, 1500);
     assert_eq!(c.tx_inflight(), 2);
     assert_ne!(c.snd_una, 1001);
     assert_eq!(c.tx_retx_floor(), 1001, "floor=环头段首，非 snd_una");
     // 段首即重发引用源：on_rto 环头 Data 臂自 1001 整段重发。
-    assert_eq!(c.on_rto().action, Action::Data { seq: 1001, len: 128 });
+    assert_eq!(c.on_rto().action, Action::Data { seq: 1001, len: 1000 });
 }
 
 #[test]

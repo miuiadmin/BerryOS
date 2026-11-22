@@ -1048,11 +1048,27 @@ fn test_syscall() {
         );
 
         // 收尾：先逐区间 unmap（清叶 + untrack_map → mapcnt 归零）→ Vmar
-        // 放（Drop 注销登记 + 放 demand 钉）→ 表内 VMO close。unmap 前置
-        // 是硬需：④/⑤ 真供给过页而 Vmar::Drop 刻意不动 mapcnt（残留 PTE
-        // 政策的正交不对称），销毁性 close 的 any_mapped 拒面必 -EBUSY
-        //（E3d–f 无此坑 = 它们从不真供给）——先解除映射放映射钉，close
-        // 才走真销毁面过断言。
+        // 放（Drop 注销登记 + 帧归还刀起对残留 Region 兜底清账）→ 表内
+        // VMO close（真销毁 → Vmo::Drop 还帧）。unmap 前置自帧归还刀起
+        // 不再是硬需（Vmar::Drop 已清账 mapcnt，销毁性 close 不再 -EBUSY
+        // ）——保留显式 unmap 形态作路径覆盖（swap_remove/清叶的显式臂
+        // 与 Drop 兜底臂各有独立覆盖面）。
+        //
+        // **dpg 供给面记账与「demand 注销序先于还帧」证明**（帧归还刀件 C
+        // ——NR_PAGER_SUPPLY_MAPPED_TABLE 的 PTE 面）：④/⑤/⑥ 供给的页
+        // 全经 `Vmar::supply_page` 填叶，mapcnt 记账在 VMO ledger——
+        // **「Region 记账外」的真实面 = dpg 池侧引用**：armed EL0 槽只持
+        // far/asid 数字（不持 mapcnt/demand_pins 记账），属主解析全走
+        // `demand_root(asid)` 反查。故 teardown 序的安全性锚在**注销先行
+        // **：①unmap（清叶 + 双 untrack + swap_remove——显式臂）；②
+        // `Vmar::Drop` 首步 `deregister_demand_root`（KL 窗内切断反查——
+        // 此后任何 armed 槽的属主解析恒折 GC 臂〔demand_root miss〕或
+        // NoneForVd 让位，**零 VMO 解引用**，dpg.rs `el0_take_for` 注的三
+        // 路死臂即此语义）；③close VMO（mapcnt==0 且 demand 钉==0 → 真销
+        // 毁 → 还帧）。还池严格后于注销——「pager 窗仍持的页」还池后，
+        // 窗内后续动作对已注销 root 恒 miss，供给面不可能触达已易主 PA。
+        // 本用例 ⑥ 直取后 h 臂已消费（`el0_take_for` Supplied 拿走），
+        // 池无残留 armed 指着 g/h——teardown 时零在飞供给面。
         root_g
             .unmap(VA_G, PAGE_SIZE)
             .expect("SYSCALL：E3h unmap g");
@@ -1060,7 +1076,8 @@ fn test_syscall() {
             .unmap(VA_H, 2 * PAGE_SIZE)
             .expect("SYSCALL：E3h unmap h");
         // SAFETY: 指针全自 Box::leak 未动；from_raw → drop_in_place 原址
-        //（登记/Region 指针地址耦合面）。
+        //（登记/Region 指针地址耦合面）。regions 已被上方 unmap 清空——
+        // Drop 清账循环零迭代，注销登记 + free_asid（根）照常收口。
         drop(unsafe { alloc::boxed::Box::from_raw(root_g as *mut Vmar) });
         drop(unsafe { alloc::boxed::Box::from_raw(root_h as *mut Vmar) });
         assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hg as u64, 0, 0), 0, "SYSCALL：E3h close g");
@@ -1554,10 +1571,20 @@ fn test_syscall() {
     );
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hp2r as u64, 0, 0), 0, "SYSCALL：close 别名");
     // 成功终止（未 start——kill_all_tasks_by_pinned 扫不到任务，走 Process 侧收口）。
+    // 帧归还刀断言 ①（件 C：terminate 形水位对拍——负向臂）：未 start 进程
+    // 表出生为空（bootstrap 迁移在 start 才发生），`p.ht.drain()`（sys_terminate
+    // 未 start 收口臂）双相遍历零槽——水位前后恒等（drain 不误还帧面；
+    // kernel/src/syscall.rs `sys_process_terminate` 未 start 臂路径的走通证）。
+    let fr_before_term = crate::mm::allocated_pages();
     assert_eq!(
         svc4(crate::syscall::NR_PROCESS_TERMINATE as u64, hp2 as u64, 42, 0),
         0,
         "SYSCALL：terminate 未 start 进程须 0"
+    );
+    assert_eq!(
+        crate::mm::allocated_pages(),
+        fr_before_term,
+        "SYSCALL：terminate 未 start 空表 drain 须零帧差（帧归还刀断言①）"
     );
     // 退出面闭环 ①：wait TERMINATED poll 即中（Exited 单调置位）。
     // SAFETY: I_OBS 纪律同 F4b（预清 + 命中回填全满足集）。
@@ -1603,6 +1630,53 @@ fn test_syscall() {
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hv2 as u64, 0, 0), 0, "SYSCALL：close child vmar");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hp2 as u64, 0, 0), 0, "SYSCALL：close terminated process 2");
     assert_eq!(svc4(NR_HANDLE_CLOSE as u64, hv3 as u64, 0, 0), 0, "SYSCALL：close child vmar 2");
+
+    // F6. 帧归还刀断言 ②（件 C：drain 双相还帧——正向臂）：表内 root Vmar
+    //     （带 Mapped Region）+ VMO **不显式 unmap 直接 drain**——phase-1
+    //     Vmar::Drop 兜底清账（clear_leaves 先于 untrack_map → mapcnt 归零
+    //     ）→ phase-2 VMO 泄漏判据放行（any_mapped==false）→ 真销毁 →
+    //     Vmo::Drop 还帧。水位差 = VMO 数据页 2（表树帧不回收——v1 政策
+    //     ，clear_leaves 只清叶不还中间表）；asid 归还（root）与 Region
+    //     清账由断言①/② 的组合路径覆盖。此用例即 A 线主罪的微缩复现与
+    //     修复验证（旧语义此处 2 页全泄漏）。
+    let mut ht_fr = crate::handle::HandleTable::new();
+    let hfr_v = ht_fr
+        .insert(
+            KernelObj::Vmar(
+                Vmar::new_root(crate::mm::frames(), crate::aspace::alloc_asid())
+                    .expect("SYSCALL：帧归还刀建 root Vmar（可信语境）"),
+            ),
+            crate::handle::RIGHT_MAP,
+        )
+        .expect("SYSCALL：帧归还刀 insert Vmar");
+    let hfr_o = ht_fr
+        .insert(
+            KernelObj::Vmo(Vmo::create(2 * PAGE_SIZE).expect("SYSCALL：帧归还刀建 VMO")),
+            crate::handle::RIGHT_MAP | crate::handle::RIGHT_READ | crate::handle::RIGHT_WRITE,
+        )
+        .expect("SYSCALL：帧归还刀 insert VMO");
+    // 表内对象经 get_raw 取本体裸指针映射（E3h 同形态——Region.vmo 存对象
+    // 地址，表内对象地址稳定）。
+    let (ovr, _) = ht_fr.get_raw(hfr_v, ObjType::Vmar, 0).expect("SYSCALL：帧归还刀 get vmar");
+    let (ovo, _) = ht_fr.get_raw(hfr_o, ObjType::Vmo, 0).expect("SYSCALL：帧归还刀 get vmo");
+    // SAFETY: get_raw 门控后取本体；两对象互异（类型门控）无别名；ktest
+    // 单核 boot 屏蔽窗。
+    unsafe {
+        let vm = (*ovr.as_ptr()).obj.as_vmar_mut().unwrap();
+        let vo = (*ovo.as_ptr()).obj.as_vmo_mut().unwrap();
+        // commit 2 页（数据帧出池）后映射——mapcnt=2 页。
+        vo.commit(crate::mm::frames(), 0, 2 * PAGE_SIZE)
+            .expect("SYSCALL：帧归还刀 commit");
+        vm.map(crate::mm::frames(), vo, 0x5600_0000, 0, 2 * PAGE_SIZE, crate::vmar::Perm::UserRw)
+            .expect("SYSCALL：帧归还刀 map");
+    }
+    let fr_before_drain = crate::mm::allocated_pages();
+    ht_fr.drain();
+    assert_eq!(
+        fr_before_drain - crate::mm::allocated_pages(),
+        2,
+        "SYSCALL：drain 双相须还帧 2 页（phase-1 Vmar Drop 清账 + phase-2 Vmo Drop 还帧——帧归还刀断言②）"
+    );
 
     // G. 3-4a per-process 表拆分：两表隔离 + take/insert_ref 迁移原语 + 子进程
     //    出生自带空表（纯表对象面；EL0 派发链 + bootstrap 迁移的正向验收在
@@ -3274,11 +3348,27 @@ fn test_fp() {
         );
         // ①-b P3-5 分诊位出生档：内核构造点 false（test_switch 已消费其快路径）；
         // 用户构造点 true（EL0 可能用 FP——entry/sp0 只过 ctor 断言，不真切换）。
-        // x1 第二参（arg1）恒 0——本测只核 fp_needed 出生档（06 号修窗件 1
-        // 后半签名扩面，非行为面）。
+        // x1 第二参（arg1）与 TLS 四元组恒 0——本测只核 fp_needed 出生档
+        //（06 号修窗件 1 后半与 TLS 寄存器协议刀的签名扩面，非行为面）。
         assert!(!fresh.fp_needed, "FP：new_kernel 出生应 fp_needed=false");
-        let uctx = TaskContext::new_user(0x4000_0000, 0, 0, 0x8000_0000, stack_top);
+        let uctx = TaskContext::new_user(0x4000_0000, 0, 0, [0; 4], 0x8000_0000, stack_top);
         assert!(uctx.fp_needed, "FP：new_user 出生应 fp_needed=true");
+        // appspawn TLS 寄存器协议刀（2026-11-22）：TLS 四元组经 r[4..7]
+        //（x23..x26）递 trampoline 落子入口 x2..x5——非零向量逐位断言
+        //（哨兵位与真值位都不失真；trampoline 侧 asm 无测面，此为最近测点）。
+        let tctx = TaskContext::new_user(
+            0x4000_0000,
+            0x11,
+            0,
+            [0x6d640, 0x18, 0x30, 0x10],
+            0x8000_0000,
+            stack_top,
+        );
+        assert_eq!(
+            [tctx.r[4], tctx.r[5], tctx.r[6], tctx.r[7]],
+            [0x6d640, 0x18, 0x30, 0x10],
+            "TLS：new_user 四元组须逐位落 r[4..7]（x23..x26）"
+        );
         // P3-5：本测两侧都是显式 FP 消费者——手动置 true（GUI 渲染任务创建的
         // 同款路径），两跳乒乓走 switch_full 全量路径，②面核验才有对象。
         (*(&raw mut FP_CTX_MAIN)).fp_needed = true;
@@ -5520,7 +5610,7 @@ fn test_freeze() {
             // ——ktest 期唯一真 RQ 在席任务。entry/sp 伪 VA 不派发（装配
             // 只存帧不校验；断言后即杀）。
             let s2 = berry_sched::try_spawn_user(
-                0x1000, 0, 0, 0x2000, b"fzRQ".as_slice(), 0, 0, 0, p_key, t_key, false,
+                0x1000, 0, 0, [0; 4], 0x2000, b"fzRQ".as_slice(), 0, 0, 0, p_key, t_key, false,
             )
             .expect("FREEZE：F8 造 RQ 在席任务（可信语境）");
             let s2 = &mut *(s2 as *mut berry_sched::Task);
@@ -7080,8 +7170,12 @@ fn test_telemetry_open() {
         let n = snap_ps(120);
         assert_eq!(n, 120, "TELEMETRY：len=120 须返 120（头+两整行）");
         let b120 = pbuf(120);
-        assert_eq!(&b120[..24], &full[..24],
-            "TELEMETRY：len=120 前缀恒等（version..seen 域）");
+        assert_eq!(&b120[..12], &full[..12],
+            "TELEMETRY：len=120 前缀恒等（version..rec_size 域）");
+        assert_eq!(phdr(b120).rows, 2,
+            "TELEMETRY：len=120 rows==2（本帧行数自述——phdr 单源读）");
+        assert_eq!(&b120[16..24], &full[16..24],
+            "TELEMETRY：len=120 前缀恒等（seen 域——满载帧 seen 同值）");
         assert_eq!(&b120[24..32], &full[24..32],
             "TELEMETRY：len=120 cntfrq 恒等（常量域）");
         assert_eq!(&b120[40..120], &full[40..120],
@@ -8083,6 +8177,40 @@ fn test_deadline() {
         assert_eq!(class_of_task(&*tg).grant_cycles_of(&*tg),
                    class_of_task(&*tg).grant_cycles(),
                    "DL：B5 fair 授片须=class 面原值（零漂移）");
+    }
+
+    // B6（arm_slice 收紧刀 2026-11-22·深度优化）——授片臂帽律钉板：sched.rs
+    // 私有 arm_after_grant 的决策表纯值面（helper 本体写 CNTV 寄存器，ktest
+    // 不可直调——寄存器臂真收紧精度归 LOADGEN oneshot 探针形态）。DL+
+    // budget<SLICE → 帽=budget（arm_slice_cap 片终点精确起爆）；DL+budget
+    // ≥SLICE / budget==0 / fair（dl_grant 双门任一不中）→ 满片（arm_slice
+    // 同值零漂移；Band 轴 quantum<SLICE 不连带锐化 = DL-only 裁决面）。SLICE
+    // 实尺经 slice_cycles_for_hz 现算（ktest 先于 timer::init——
+    // slice_cycles()==0 不可用；CNTFRQ 直读无 init 依赖）。
+    {
+        use berry_hal_aarch64::timer::{slice_cap, slice_cycles_for_hz, SLICE_HZ};
+        use berry_sched::dl_grant;
+        let slice = slice_cycles_for_hz(SLICE_HZ);
+        assert!(slice > 77,
+                "DL：B6 前提守卫（SLICE 实尺须>budget 样例——CNTFRQ 已可读）");
+        // DL+budget<SLICE → 收紧到 budget（检测延迟 SLICE→budget 的律面）。
+        assert_eq!(dl_grant(PRIO_DEADLINE, 77), Some(77),
+                   "DL：B6 前提：dl_grant 带预算 deadline 须 Some(budget)");
+        assert_eq!(slice_cap(77, slice), 77,
+                   "DL：B6 DL+budget<SLICE 须收紧到片终点（精确起爆）");
+        // 满片回落三形：budget==SLICE / budget>SLICE / budget==0（防御）。
+        assert_eq!(slice_cap(slice, slice), slice,
+                   "DL：B6 budget==SLICE 须满片同值（零漂移）");
+        assert_eq!(slice_cap(slice + 1, slice), slice,
+                   "DL：B6 budget>SLICE 须满片回落");
+        assert_eq!(slice_cap(0, slice), slice,
+                   "DL：B6 budget==0 须回落满片（want==now 起爆面不触）");
+        // fair / 无预算 deadline（dl_grant None）→ 不入帽律恒满片——Band
+        // quantum<SLICE 轮转不受连带锐化（DL-only 裁决的排除面钉板）。
+        assert_eq!(dl_grant(0, 77), None,
+                   "DL：B6 fair 须 None（双门独立拒绝、不收紧）");
+        assert_eq!(dl_grant(PRIO_DEADLINE, 0), None,
+                   "DL：B6 零预算 deadline 须 None（不收紧）");
     }
 
     berry_hal_aarch64::uart_puts(b"DL-K ok\n");

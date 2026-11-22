@@ -11,6 +11,12 @@
 //!   → `DragStart` 此后 `DragMove`；UP→在拖 `DragEnd` / 不在
 //!   `Release`+`Click`；CANCEL 终止手势**不补 UP**（对齐条 14）——拖中
 //!   `DragEnd`+`Cancel` 双发、非拖仅 `Cancel`。
+//! - 双击/长按语义（总攻批 2，P2 缺陷 4/5）：双击 = 双击窗
+//!   （[`DOUBLE_TAP_WINDOW_NS`]）内同节点二次 Click 的 UP 追加
+//!   `DoubleClick`——Click 不抑制（add-only，快速连点零损失）；长按 =
+//!   DOWN 后 slop 内静止超 [`LONG_PRESS_NS`] 产 `LongPress`（事件时戳
+//!   驱动：静止期有事件流随流早发、零流由 UP 兜底），长按已消费的 UP
+//!   只产 `Release` 不再产 `Click`。
 //! - GUI-6 D15 referee v2：每指针位 8 样本速度环（96ms 窗首末差分 →
 //!   DragEnd.vx/vy，px/s 钳 ±32768）+ 锁轴（slop **保持欧氏判定**零漂；
 //!   触发时位移主轴 `|dx|>=|dy|`→X（tie 取 X），DragMove 只透传锁定轴
@@ -43,6 +49,19 @@ const VEL_WINDOW_NS: u64 = 96_000_000;
 /// DragEnd 速度钳（D15）：px/s，i32 域 ±32768（wire 面防溢出的立法值）。
 const VEL_CLAMP: i32 = 32_768;
 
+/// 双击窗（总攻批 2，P2 缺陷 4）：上一 Click 的 UP 时刻到下一**同节点**
+/// Click 的 UP 时刻 ≤ 此值 → 该次 UP 在 Click 后追加
+/// [`Msg::DoubleClick`]（首击二击 Click 照产——add-only，快速连点零损
+/// 失；Android ViewConfiguration DOUBLE_TAP_TIMEOUT=300ms 同值）。
+const DOUBLE_TAP_WINDOW_NS: u64 = 300_000_000;
+
+/// 长按阈（总攻批 2，P2 缺陷 5）：DOWN 后 slop 内静止（未出手势）超此
+/// 值 → [`Msg::LongPress`]（Android ViewConfiguration 域 400-500ms 取
+/// 中）。时序判据纯事件时戳驱动（referee 无定时面）：静止期有事件流
+/// （微抖 MOVE——未出手势即仍在按下点语义域）随流早发；零流场景由 UP
+/// 收尾兜底。长按消费后的 UP 只产 Release 不再产 Click。
+const LONG_PRESS_NS: u64 = 450_000_000;
+
 /// 速度环样本（原始指针位——resample 替换**前**的 (ts,x,y)；16B/条）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct VelSample {
@@ -64,6 +83,10 @@ struct PtrGesture {
     down_x: i32,
     down_y: i32,
     dragging: bool,
+    /// DOWN 事件时戳（ns，wire 自带）——长按时序判据的起算点（总攻批 2）。
+    down_ts: u64,
+    /// 本手势已产 LongPress（消费位，总攻批 2）：置位后 UP 不再产 Click。
+    long_press: bool,
     /// 锁轴（D15）：欧氏 slop 触发时裁定，DragStart 携出；默认 X 无义
     /// （未拖前不读）。
     axis: Axis,
@@ -84,6 +107,8 @@ const INACTIVE: PtrGesture = PtrGesture {
     down_x: 0,
     down_y: 0,
     dragging: false,
+    down_ts: 0,
+    long_press: false,
     axis: Axis::X,
     lock_x: 0,
     lock_y: 0,
@@ -141,11 +166,22 @@ pub(crate) struct Gesture {
     /// 0）。诊断计数面：写不读（同上）。
     #[allow(dead_code)]
     pub(crate) lost_events: u32,
+    /// 双击窗锚（总攻批 2）：上一 Click 的 UP 时戳与命中槽——同节点二次
+    /// Click 落窗内则追加 DoubleClick 并清锚（三连击不连判）；空白按压/
+    /// 拖拽不断链（DoubleClick 为附加语义，v1 不加严）。
+    last_click_ts: u64,
+    last_click_node: u32,
 }
 
 impl Gesture {
     pub(crate) const fn new() -> Self {
-        Self { slots: [INACTIVE; PTR_MAX], lost_msgs: 0, lost_events: 0 }
+        Self {
+            slots: [INACTIVE; PTR_MAX],
+            lost_msgs: 0,
+            lost_events: 0,
+            last_click_ts: 0,
+            last_click_node: NONE,
+        }
     }
 
     fn find(&self, pid: u16) -> Option<usize> {
@@ -357,6 +393,8 @@ pub(crate) fn dispatch(gesture: &mut Gesture, nodes: &[Option<Node>], root: u32,
             g.down_x = x;
             g.down_y = y;
             g.dragging = false;
+            g.down_ts = ev.ts_ns; // 长按起算点（总攻批 2）
+            g.long_press = false; // 手势重开：长按消费位复位
             g.ring_n = 0; // D15：DOWN 清环（跨手势样本不串速度）
             match hit {
                 Some(id) => {
@@ -402,16 +440,26 @@ pub(crate) fn dispatch(gesture: &mut Gesture, nodes: &[Option<Node>], root: u32,
                     g.lock_y = ev.y;
                     let (ax, mx, my) = (g.axis, ev.x, ev.y);
                     push_msg(gesture, out, Msg::DragStart { node, axis: ax, x: mx, y: my });
+                } else if !g.long_press
+                    && ev.ts_ns.saturating_sub(g.down_ts) > LONG_PRESS_NS
+                {
+                    // 长按早出面（总攻批 2）：slop 判据先行——本 MOVE 越
+                    // 圈即拖拽胜出（拖路径 UP 产 DragEnd 无 Click，长按语
+                    // 义自然失效）；未越圈且距 DOWN 超阈 = slop 内静止超时，
+                    // 随事件流即发（微抖 MOVE 也是静止证）。一次手势至多
+                    // 一发；零流场景由 UP 臂兜底。
+                    g.long_press = true;
+                    push_msg(gesture, out, Msg::LongPress { node });
                 }
             }
         }
         berry_guiproto::PHASE_UP => {
-            let (node, dragging, vx, vy) = match gesture.find(ev.pointer_id) {
+            let (node, dragging, down_ts, lp, vx, vy) = match gesture.find(ev.pointer_id) {
                 Some(i) if gesture.slots[i].active => {
                     let g = &mut gesture.slots[i];
                     // D15：收尾速度先于清环计算（UP 不入环——清环语义）
                     let v = if g.dragging { velocity_at_end(g) } else { (0, 0) };
-                    let r = (g.down_node, g.dragging, v.0, v.1);
+                    let r = (g.down_node, g.dragging, g.down_ts, g.long_press, v.0, v.1);
                     *g = INACTIVE; // 手势终止，槽释放（环随清）
                     r
                 }
@@ -425,7 +473,29 @@ pub(crate) fn dispatch(gesture: &mut Gesture, nodes: &[Option<Node>], root: u32,
                 push_msg(gesture, out, Msg::DragEnd { node, vx, vy });
             } else {
                 push_msg(gesture, out, Msg::Release { node, x: ev.x, y: ev.y });
-                push_msg(gesture, out, Msg::Click { node });
+                if lp || ev.ts_ns.saturating_sub(down_ts) > LONG_PRESS_NS {
+                    // 长按面（总攻批 2）：早出面已发（lp）或本 UP 兜底首发
+                    // （静止零事件流——held 超阈即证）——长按已消费，不再
+                    // 产 Click；Release 照产（按压视觉还原链不断）。
+                    if !lp {
+                        push_msg(gesture, out, Msg::LongPress { node });
+                    }
+                } else {
+                    push_msg(gesture, out, Msg::Click { node });
+                    // 双击窗（总攻批 2）：同节点两次 Click 的 UP 间隔 ≤ 窗
+                    // 值 → Click 后追加 DoubleClick（Click 不抑制——add-
+                    // only）；成对清锚，三连击 = 新窗首击。
+                    let dbl = gesture.last_click_node == node.0
+                        && ev.ts_ns >= gesture.last_click_ts
+                        && ev.ts_ns - gesture.last_click_ts <= DOUBLE_TAP_WINDOW_NS;
+                    if dbl {
+                        push_msg(gesture, out, Msg::DoubleClick { node });
+                        gesture.last_click_node = NONE;
+                    } else {
+                        gesture.last_click_node = node.0;
+                        gesture.last_click_ts = ev.ts_ns;
+                    }
+                }
             }
         }
         berry_guiproto::PHASE_CANCEL => {

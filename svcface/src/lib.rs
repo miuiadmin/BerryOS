@@ -98,7 +98,7 @@ pub const REGISTRY: &[(u8, u8)] = &[
     // —— SQ+RQ+TABLE（0x2E）：wait/send 族（wake→enqueue 双结构窗 + 表）——
     (0x01, SVC_CLASS_SQ_RQ_TABLE), // handle_close（close→block 潜在睡眠面）
     (0x02, SVC_CLASS_TABLE),       // handle_duplicate
-    (0x03, SVC_CLASS_TABLE),       // handle_replace
+    (0x03, SVC_CLASS_SQ_RQ_TABLE), // handle_replace（F1：内含 close 臂——release_handle 触 wake 面，与 0x01 同律升档）
     (0x04, SVC_CLASS_SQ_RQ_TABLE), // object_wait_one
     (0x05, SVC_CLASS_SQ_RQ_TABLE), // object_wait_many
     (0x06, SVC_CLASS_SQ_RQ_TABLE), // object_signal

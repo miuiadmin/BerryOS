@@ -1,0 +1,110 @@
+#!/bin/sh
+# P2 钩子变量红线（考古）：禁信 GIT_DIR/GIT_WORK_TREE 导出变量，一律发现式定位仓库
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE 2>/dev/null || true
+# BerryOS 跨根合并闸 + 暂存区快照文档门（commit 层）——防线详见
+# .agents/notes/implemented/2026-11-16-跨根合并防线与判例.md 与 docs/规则/16-工程纪律.md
+# 背景：main（根 f7eb5535）与 wip/sched-1.1（根 afd68392）曾为无共同祖先双线，2026-11-16 已由
+# owner 跨根收口合并（两线自此共史，AGENTS.md 本地追加第 11 条）——本闸拦此后任何新的无共同祖先合并。
+# 本闸：MERGE_HEAD 在场且亲集（HEAD + MERGE_HEAD 全行）中任两亲无共同祖先 → 拒绝提交。
+# owner 逃生阀 BERRYOS_ALLOW_CROSSROOT=1。
+# MERGE_HEAD 在八爪合并（3+ 亲）时一行一 OID——与 HEAD 合成一亲集全亲两两核（F92）；
+# 只逐行对 HEAD 核会漏「行间互不相关、各自与 HEAD 相关」形态——两原始根
+# f7eb5535/afd68392 在 2026-11-16 收口后即此形（2026-11-17 二次活测实抓补齐）。
+# 工程纪律刀阶段 3（2026-11-21）：升格为提交硬门槛——判暂存区快照不判工作树、
+# 门路径清 SKIP 类旁路变量、写印记供 prepare-commit-msg 拒 --no-verify 绕过。
+
+# 门路径防绕过：unset 环境继承的 SKIP 类旁路变量（「原则上可见不等于门禁」——
+# 2026-08-08 impossible-os 审计判例迁移；本钩子自身逻辑只认两个 owner 阀，
+# unset 是防御性纪律，防未来门逻辑误读旁路变量）。
+for v in $(env | sed -n -e 's/^\(SKIP[A-Za-z0-9_]*\)=.*/\1/p' -e 's/^\([A-Za-z0-9_]*_SKIP[A-Za-z0-9_]*\)=.*/\1/p'); do
+  unset "$v" 2>/dev/null
+done
+
+# 印记（规则/16 §1 分层第 2 层的供给端）：本钩子每次运行必写——prepare-commit-msg
+# 据此识别「pre-commit 真跑过」。写在最前：所有早退路径（含跨根拒、文档拒）
+# 都盖印；被拒的提交不会走到 prepare-commit-msg，陈印被 900s 新鲜窗 + 消费即删兜住。
+imprint=$(git rev-parse --git-path berryos-gate.imprint)
+printf '%s %s\n' $$ "$(date +%s)" > "$imprint" 2>/dev/null
+
+# 全亲两两核（F92）：任一对无共同祖先 → 返 0（命中）。$@ = 全部亲（OID 或 rev 名）。
+crossroot_pair() {
+  while [ $# -ge 2 ]; do
+    p1=$1
+    shift
+    for p2 in "$@"; do
+      [ -z "$(git merge-base "$p1" "$p2" </dev/null 2>/dev/null)" ] && return 0
+    done
+  done
+  return 1
+}
+
+mh=$(git rev-parse --git-path MERGE_HEAD)
+if [ -f "$mh" ] && [ "$BERRYOS_ALLOW_CROSSROOT" != "1" ]; then
+  # 亲集 = HEAD + MERGE_HEAD 全行。
+  # || [ -n "$m" ]：封无尾换行末行缝（read 填变量但返非零，循环体不执行——
+  # stock git 每亲一行必带尾换行不可达，手改 MERGE_HEAD 可构造；POSIX 通用写法）。
+  set --
+  while read -r m || [ -n "$m" ]; do
+    [ -n "$m" ] || continue
+    set -- "$@" "$m"
+  done < "$mh"
+  if [ $# -ge 1 ] && crossroot_pair HEAD "$@"; then
+    cat >&2 <<'EOF'
+[berryos-guard] 拒绝：这是无共同祖先合并（HEAD 与 MERGE_HEAD 亲集内存在两亲无共同祖先）。
+
+main 与 wip/sched-1.1 曾为两棵不相关历史，2026-11-16 已由 owner 跨根收口合并
+（两线自此共史）。此后任何新的无共同祖先合并都是异常动作，一律禁止。正确做法：
+  1. 立即回安全态：git merge --abort
+  2. lane 的职责是把工作推 wip/sched-1.1
+  3. 跨线内容走净增量重放（历史判例：冲突面 348→35）
+判例与数据：.agents/notes/implemented/2026-11-16-跨根合并防线与判例.md
+owner 确要跨线收口：BERRYOS_ALLOW_CROSSROOT=1 git commit
+EOF
+    exit 1
+  fi
+fi
+
+# ---- 文档关卡（暂存区快照版——工程纪律刀阶段 3 升格，规则/16 §1 分层第 1 层）----
+# 语义：只判本次提交将落的内容。兄弟会话的工作树半成品（已改未暂存、未跟踪）
+# 既不满足也不挡住本提交；「工作树修好、索引留毒」必须被拒。
+# 实现：checkout-index 全索引物化（实测 ~0.5s）→ 在快照根以 cwd 跑 check-docs
+#（家与命名检查是根相对路径，必须以快照为根，不能在仓内给仓外显式路径）；
+# check-docs 保持零依赖、不读 git 的 Curia 契约，git 物化归钩子（采用方分工）。
+# 有意收紧（规则/16 §1）：快照内未跟踪链接目标视为缺席——现行文档引用未提交
+# 文件时，目标必须与引用同批 staged/committed。
+# 触发面：任一 docs/ 或 .agents/ 路径进暂存（含删除/改名——纯删档也可能造成
+# 别档断链，统一过快照门）。
+# —— 控制面条件测试门（二期 P2；规则/16 §5）——对任何 staged 无条件先跑
+#（审计 2026-11-22 P0：原位在文档门早退之后，只改治理工具的提交整门不跑——
+# 旁路已堵）；staged 命中 tools/control-plane.txt 前缀即逐件跑其 --selftest，
+# 无命中零成本直通。清单自指：改本钩子也在清单里。
+bash "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/tools/control-plane-gate.sh" || exit 1
+
+# —— punch 重排闸（规则/16 §5 P2 加固包①接线；考古 2026-11-23 落函数、终审当日
+# 补接线——原实现零执法调用方）——staged 命中 .agents/plans/ 时对拍 HEAD 版与
+# 暂存版 punch 载体：编号只增不挪、已勾/park 行永不删、无编号行走整行指纹
+# fallback（tools/punch_slice.py validate_no_renumber 唯一实现；判暂存面不判
+# 工作树——快照语义，兄弟会话半成品不在此拦）。
+if git diff --cached --name-only 2>/dev/null | grep -q '^\.agents/plans/'; then
+  python3 "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/tools/punch_slice.py" --renumber-guard || exit 1
+fi
+
+staged=$(git diff --cached --name-only 2>/dev/null | grep -E '^(docs/|\.agents/)' | head -1)
+[ -z "$staged" ] && exit 0
+snap=$(mktemp -d "${TMPDIR:-/tmp}/berryos-gate.XXXXXX") || exit 1
+git checkout-index -a --prefix="$snap/"
+echo "[berryos-guard] 文档门（暂存快照）：$(git diff --cached --name-only | grep -cE '^(docs/|\.agents/)') 个 docs/.agents 路径受检——staged 清单可见（多会话对账面）"
+root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+( cd "$snap" && node "$root/.agents/tools/check-docs.mjs" --strict --verify-facts .agents docs )
+rc=$?
+rm -rf "$snap"
+if [ "$rc" -ne 0 ]; then
+  cat >&2 <<'EOF'
+[berryos-guard] 拒绝：暂存区快照未过 check-docs --strict。
+判定面 = 本次提交将落的内容（工作树修好/索引留毒、现行文档断链到未提交文件都在此拦）。
+本地全树复跑：node .agents/tools/check-docs.mjs --strict
+EOF
+  exit 1
+fi
+
+exit 0

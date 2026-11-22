@@ -502,8 +502,8 @@ done
 # §2 表），门只锚 semver 段 + 括号结构。上方轮询的
 # "BerryOS boot" 子串断言（markers.sh MARKERS[0]）原样保留——本行只加形态
 # 边不松子串边；置轮询到齐后 = banner 行必已在席，断言零竞态。
-grep -m1 'BerryOS boot' "$LOG" | grep -Eq 'BerryOS boot [0-9]+\.[0-9]+\.[0-9]+ \([A-Za-z0-9.-]+( rustc[A-Za-z0-9.?]+ (dbg|rel))?\)' \
-  || fail "boot banner 形态缺：首匹配行应为 'BerryOS boot <semver> (<ident>[ rustc<ver> dbg|rel])'（版本管理标准 §3 G-ver-2）；实得：$(grep -m1 'BerryOS boot' "$LOG" || echo '（日志无 BerryOS boot 行）')"
+grep -m1 'BerryOS boot' "$LOG" | grep -Eq "$BANNER_FORM_RE" \
+  || fail "boot banner 形态缺：首匹配行应为 'BerryOS boot <semver> (<ident>[ rustc<ver> dbg|rel])'（版本管理标准 §3 G-ver-2；形态边单源 markers.sh BANNER_FORM_RE）；实得：$(grep -m1 'BerryOS boot' "$LOG" || echo '（日志无 BerryOS boot 行）')"
 # 标准 §6 执法化（审计洞②：原纯人律无机器门）：ident 非 nogit 拒——nogit
 # 标识产物不得对外发布（无归因能力的构建仅限本地调试），冒烟门是发布链
 # 前闸，nogit 构建过门即违规。门 = 首 banner 行含 nogit 即红（行内唯一可
@@ -953,7 +953,7 @@ QEMU_PID=$!
 # SIG）；无拓扑降级门，失败即 park loud。"SIG ok" 与现役标记两两互非子串
 # （现役无 `XSIG ok` 形态在册——前邻特例不需要）。
 # 命令行体验刀：+ CLI ok n= / + TERM ok n=——bsh 六内建（clear/uname/
-# uptime/sleep/type/history）行为面 + 哑终端管道契约钉板（CLI 十三步：
+# uptime/sleep/type/history）行为面 + 哑终端管道契约钉板（CLI 十六步：
 # ⓪clear `\x1b[2J\x1b[H` 7B 逐字节对拍+带参照打幂等 ①uname 前缀+
 # 带参拒 ②uptime `up <N>s` 数值域+带参拒 ③sleep 1s 时钟差分 [1s,30s]
 # TCG 宽带+拒面四连（缺失/非数字/负数/超 60s 帽）+sleep 0 域内放行

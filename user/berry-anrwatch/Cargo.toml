@@ -1,0 +1,14 @@
+[package]
+name = "berry-anrwatch"
+version.workspace = true
+edition = "2021"
+# am §三.3 首刀（.agents/plans/am/design.md 契约二.3「生命周期死锁触发
+# ANR 取证」）：ANR 判定核纯函数 crate——指令类（Launch/Resume/
+# PauseSave）× 前后台 × 派发后未应答时长 → 判定（前台交互 5s、后台
+# 保存 2s 契约钉值），先取证后终止的两段语义态机。cbox 栈抓取与
+# 终止执行归服务刀（边界外）。零 unsafe 零依赖零分配，
+# cfg_attr(not(test), no_std)；host 测试经 justfile test-host 行跑。
+description = "BerryOS lifecycle ANR verdict core: command-class x foreground x elapsed with 5s/2s contract thresholds (am contract 2.3)"
+license = "Apache-2.0"
+
+[dependencies]

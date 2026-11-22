@@ -8,7 +8,7 @@
 //! 承载不变式（plan Bug 2）：`switch` 永不在 `PSTATE.I=0`（中断解蔽）时到达——
 //! `yield_now`/`exit_current` 均先 `disable_irq` 再切。
 
-use crate::class::{class_of_task, Fair, SchedClass, TaskClass};
+use crate::class::{class_of_task, dl_grant, Fair, SchedClass, TaskClass};
 use crate::runqueue::{Runqueue, Topo};
 use crate::spin::SpinLock;
 use crate::task::{
@@ -527,6 +527,39 @@ pub unsafe extern "C" fn svc_window(class: u8, enter: bool) {
         (*cur).held_locks |= class;
         (*cur).svc_mask = class;
     } else {
+        if (*cur).held_locks != class {
+            berry_hal_aarch64::uart_puts(b"[svm-x name=");
+            berry_hal_aarch64::uart_puts((*cur).name);
+            berry_hal_aarch64::uart_puts(b" held=");
+            let mut buf = [0u8; 10];
+            buf[0] = b'0'; buf[1] = b'x';
+            let mut n = (*cur).held_locks as usize;
+            for i in (0..8).rev() {
+                let d = (n & 0xF) as u8;
+                buf[2 + i] = if d < 10 { b'0' + d } else { b'a' + (d - 10) };
+                n >>= 4;
+            }
+            berry_hal_aarch64::uart_puts(&buf);
+            berry_hal_aarch64::uart_puts(b" class=");
+            let mut n = class as usize; let mut buf2 = [0u8; 10];
+            buf2[0] = b'0'; buf2[1] = b'x';
+            for i in (0..8).rev() {
+                let d = (n & 0xF) as u8;
+                buf2[2 + i] = if d < 10 { b'0' + d } else { b'a' + (d - 10) };
+                n >>= 4;
+            }
+            berry_hal_aarch64::uart_puts(&buf2);
+            berry_hal_aarch64::uart_puts(b" mask=");
+            let mut n = (*cur).svc_mask as usize; let mut buf3 = [0u8; 10];
+            buf3[0] = b'0'; buf3[1] = b'x';
+            for i in (0..8).rev() {
+                let d = (n & 0xF) as u8;
+                buf3[2 + i] = if d < 10 { b'0' + d } else { b'a' + (d - 10) };
+                n >>= 4;
+            }
+            berry_hal_aarch64::uart_puts(&buf3);
+            berry_hal_aarch64::uart_puts(b"]\n");
+        }
         debug_assert_eq!(
             (*cur).held_locks,
             class,
@@ -1065,7 +1098,7 @@ pub fn spawn_user(entry_va: usize, arg: usize, sp0_va: usize, name: &'static [u8
     // 折 -ENOMEM（3b3 H2——原 Task 装配内嵌 vec!/Box::new，OOM 直接 abort）。
     // 返回的任务指针 boot 手搭场景不消费（无 Process 钉住——UserProcess 裸表
     // 形态），丢弃即可。
-    try_spawn_user(entry_va, arg, 0, sp0_va, name, ttbr0, asid, proc_tag, 0, 0, false)
+    try_spawn_user(entry_va, arg, 0, [0; 4], sp0_va, name, ttbr0, asid, proc_tag, 0, 0, false)
         .expect("spawn_user：用户任务装配（boot 可信语境）");
 }
 
@@ -1075,7 +1108,7 @@ pub fn spawn_user(entry_va: usize, arg: usize, sp0_va: usize, name: &'static [u8
 /// crate（[`crate`] 边界外——语义层 `USER_ENV_*` 常量镜像）。
 pub fn spawn_user_env(entry_va: usize, arg: usize, env: usize, sp0_va: usize,
                       name: &'static [u8], ttbr0: usize, asid: u16, proc_tag: usize) {
-    try_spawn_user(entry_va, arg, env, sp0_va, name, ttbr0, asid, proc_tag, 0, 0, false)
+    try_spawn_user(entry_va, arg, env, [0; 4], sp0_va, name, ttbr0, asid, proc_tag, 0, 0, false)
         .expect("spawn_user_env：用户任务装配（boot 可信语境）");
 }
 
@@ -1088,10 +1121,10 @@ pub fn spawn_user_env(entry_va: usize, arg: usize, env: usize, sp0_va: usize,
 /// 钉住字段；crate 边界纪律同 `proc_tag`）。返回时**尚未入环**——入环
 /// 拆至 [`enqueue_prepared_user`]（F-E1/S-6：SMP 下入环后即可被对核偷取，
 /// 调用侧簿记须先完成）；指针即 `&'static mut Task` 的地址（Box::leak）。
-pub fn try_prepare_user(entry_va: usize, arg: usize, arg1: usize, sp0_va: usize,
+pub fn try_prepare_user(entry_va: usize, arg: usize, arg1: usize, tls: [usize; 4], sp0_va: usize,
                          name: &'static [u8], ttbr0: usize, asid: u16, proc_tag: usize,
                          pinned: usize, thread_key: usize, spread: bool) -> Option<usize> {
-    let task = Task::try_new_user_with_as(entry_va, arg, arg1, sp0_va, name, ttbr0, asid, proc_tag)?;
+    let task = Task::try_new_user_with_as(entry_va, arg, arg1, tls, sp0_va, name, ttbr0, asid, proc_tag)?;
     // SAFETY: CURRENT 已由 init 设好；allocator 已就绪；IRQ 屏蔽态。
     let task: &'static mut Task = alloc::boxed::Box::leak(task);
     // F-E1 / S-6 SMP：pinned/thread_key/spread 在 enqueue 前写入。SMP 下
@@ -1116,11 +1149,11 @@ pub unsafe fn enqueue_prepared_user(task_ptr: usize) {
     unsafe { enqueue_with_kick(&mut *task, cpu) };
 }
 
-pub fn try_spawn_user(entry_va: usize, arg: usize, arg1: usize, sp0_va: usize,
+pub fn try_spawn_user(entry_va: usize, arg: usize, arg1: usize, tls: [usize; 4], sp0_va: usize,
                       name: &'static [u8], ttbr0: usize, asid: u16, proc_tag: usize,
                       pinned: usize, thread_key: usize, spread: bool) -> Option<usize> {
     let task_ptr = try_prepare_user(
-        entry_va, arg, arg1, sp0_va, name, ttbr0, asid, proc_tag,
+        entry_va, arg, arg1, tls, sp0_va, name, ttbr0, asid, proc_tag,
         pinned, thread_key, spread,
     )?;
     // SAFETY: prepare 返回尚未入环；本 wrapper 无调用侧额外簿记。
@@ -1534,10 +1567,12 @@ fn yield_now_impl(enable_irq_at_end: bool) {
             if next_ptr != prev {
                 (*next_ptr).slice_left = class_of_task(&*next_ptr).grant_cycles_of(&*next_ptr); // 预算授片分派刀(2026-11-19):dl_grant 双门先行(带预算 deadline→preempt_threshold),余回落 class 面(Unit=全局 slice/Band=本带 quantum)
                 // 授片即重编（`调度器设计.md` §4.1 绝对截止时间纪律）：以授片时刻的
-                // CNTVCT 现读重算绝对截止——新任务从授片时刻起拿满片，不继承 prev
-                // 的残余倒计。
+                // CNTVCT 现读重算绝对截止——新任务从授片时刻起拿片，不继承 prev
+                // 的残余倒计；预算片（dl_grant 命中且<SLICE）收紧到片终点精确
+                // 起爆（arm_slice 收紧刀 2026-11-22·深度优化——臂单源
+                // arm_after_grant）。
                 // SAFETY: IRQ 已被 disable_irq 屏蔽；写 CNTV 系统寄存器；EL1。
-                hal::timer::arm_slice();
+                arm_after_grant(next_ptr);
                 set_current(next_ptr);
                 // S-6 ① 补数：直切臂（出选有货）旧不计 SWITCHES——SMP 稳态忙对
                 // 占双核时 park 切点结构性冷、本臂才是热路径，漏计=金丝雀盲区。
@@ -1718,9 +1753,11 @@ unsafe fn switch_away_forever_with(code: i32) -> ! {
     (*next_ptr).slice_left = class_of_task(&*next_ptr).grant_cycles_of(&*next_ptr); // 预算授片分派刀(2026-11-19):dl_grant 双门先行(带预算 deadline→preempt_threshold),余回落 class 面(Unit=全局 slice/Band=本带 quantum)
     // 授片即重编（同 yield_now；`调度器设计.md` §4.1 绝对截止时间纪律）——授片给
     // 真任务才 arm：切去 idle 不 arm（idle_loop 会 mask CNTV，arm 反引入一次空 tick）。
+    // 预算片收紧（arm_slice 收紧刀 2026-11-22·深度优化）同判：臂单源
+    // arm_after_grant（dl_grant 命中且 budget<SLICE → arm_slice_cap 精确起爆）。
     // SAFETY: IRQ 已屏蔽（disable_irq 或异常入口硬件屏蔽）；写 CNTV 系统寄存器；EL1。
     if next_ptr != addr_of_mut!(IDLE_TASK) {
-        hal::timer::arm_slice();
+        arm_after_grant(next_ptr);
     }
     set_current(next_ptr);
     // S-6 ① 补数：退出直切臂（含切 IDLE）旧不计——同 park 臂口径补齐。
@@ -2618,6 +2655,13 @@ pub fn sq_lock() -> bool {
     true
 }
 
+/// 查询当前任务/执行流是否已持有 SLEEPQ 锁（供跨层析构路径判别锁序）。
+#[inline]
+pub fn sq_is_held() -> bool {
+    // SAFETY: 只读当前任务 held_locks 位；CURRENT 空窗返 false。
+    unsafe { held_test(HELD_SQ) }
+}
+
 /// 放 SLEEPQ 锁（先清位后放——位与锁恒同窗；`phys=false` 退化窗不触——
 /// 配对 [`sq_lock`] 的返回值）。
 pub fn sq_unlock(phys: bool) {
@@ -2874,12 +2918,13 @@ pub fn block_current(obj: usize, signals: u64, deadline_vct: u64) -> WakeReason 
         // switch_away_forever：切去 idle 不 arm——idle_loop 自管 CNTV）。
         if next_ptr != addr_of_mut!(IDLE_TASK) {
             (*next_ptr).slice_left = class_of_task(&*next_ptr).grant_cycles_of(&*next_ptr); // 预算授片分派刀(2026-11-19):dl_grant 双门先行(带预算 deadline→preempt_threshold),余回落 class 面(Unit=全局 slice/Band=本带 quantum)
-            // SAFETY: IRQ 已屏蔽；写 CNTV 系统寄存器；EL1。
-            hal::timer::arm_slice();
+            // SAFETY: IRQ 已屏蔽；写 CNTV 系统寄存器；EL1。预算片收紧臂单源
+            // arm_after_grant（arm_slice 收紧刀 2026-11-22·深度优化）。
+            arm_after_grant(next_ptr);
             // 忙核 arm-to-nearest-deadline（本刀）·件三：授片处取 min（timer.rs
             // 模块头 Phase 4+ 留后项兑现）：本支 = 出选有货（忙核），新睡眠者
-            // 的 deadline 已在上方 insert_sorted 进 SLEEPQ——但 arm_slice 只夹
-            // 取（不推迟）不收紧，片内中途入睡的短睡者若无人臂到其截止，
+            // 的 deadline 已在上方 insert_sorted 进 SLEEPQ——但授片臂只夹
+            // 取（不推迟）不收紧 SLEEPQ 截止，片内中途入睡的短睡者若无人臂到其截止，
             // 唤醒粒度仍 1 slice（on_irq_tick 的 tick 臂只能看见「上 tick 时
             // 已在队」的截止）。SQ 窗（sq_phys）仍持——直接读队头（免
             // nearest_deadline 重锁的同核自死锁），收紧判同律单源
@@ -3271,9 +3316,10 @@ pub fn try_preempt() -> bool {
         if let Some(next_ptr) = go {
             (*next_ptr).slice_left = class_of_task(&*next_ptr).grant_cycles_of(&*next_ptr); // 预算授片分派刀(2026-11-19):dl_grant 双门先行(带预算 deadline→preempt_threshold),余回落 class 面(Unit=全局 slice/Band=本带 quantum)
             // 授片即重编（同 yield_now——`调度器设计.md` §4.1 绝对截止时间
-            // 纪律）：直切即授满片，以现读 CNTVCT 重算绝对截止。
+            // 纪律）：直切即授片，以现读 CNTVCT 重算绝对截止；预算片收紧臂
+            // 单源 arm_after_grant（arm_slice 收紧刀 2026-11-22·深度优化）。
             // SAFETY: IRQ 已屏蔽（调用方契约）；写 CNTV 系统寄存器；EL1。
-            hal::timer::arm_slice();
+            arm_after_grant(next_ptr);
             set_current(next_ptr);
             // S-6 ① 补数：try_preempt 直切臂（fastpath/send 授片切换）旧不计
             //——IPC ping-pong 最热切点，漏计=金丝雀对服务往返结构性失明。
@@ -4127,8 +4173,14 @@ pub unsafe extern "C" fn on_irq_tick(_tf: &mut hal::trap::TrapFrame) {
         rq_unlock(phys);
         if let Some(next_ptr) = go {
             (*next_ptr).slice_left = class_of_task(&*next_ptr).grant_cycles_of(&*next_ptr); // 预算授片分派刀(2026-11-19):dl_grant 双门先行(带预算 deadline→preempt_threshold),余回落 class 面(Unit=全局 slice/Band=本带 quantum)
-            // 授片重编已由 timer::handle 的 rearm-before-EOIR 在 IRQ 入口覆盖
-            // （同一中断上下文、微秒级差）——CVAL 已是满片终点，此处不再 arm。
+            // 授片臂补位（arm_slice 收紧刀 2026-11-22·深度优化）：timer::handle
+            // 的 rearm-before-EOIR 已在 IRQ 入口重编满片——满片授片下本臂经
+            // S-6 夹取是 no-op（cur∈(now, want) 保 cur），原「此处不再 arm」
+            // 零漂移论证以 clamp 形保持；预算片（budget<SLICE）则收紧到片
+            // 终点精确起爆——入口满片 rearm 是硬底非精确面，漏此臂 = 检测
+            // 延迟照旧到下 tick 边界（tick 派发形半失效）。
+            // SAFETY: PSTATE.I=1（IRQ 屏蔽）；写 CNTV 系统寄存器；EL1。
+            arm_after_grant(next_ptr);
             set_current(next_ptr);
             // S-6 ①：递增+打印迁共享 helper（全域口径，13 位位谱见
             // bump_switches 注——沿革九十四发现①
@@ -4280,9 +4332,10 @@ pub unsafe extern "C" fn on_sgi_resched(_tf: &mut hal::trap::TrapFrame) {
         (*next_ptr).slice_left = class_of_task(&*next_ptr).grant_cycles_of(&*next_ptr); // 预算授片分派刀(2026-11-19):dl_grant 双门先行(带预算 deadline→preempt_threshold),余回落 class 面(Unit=全局 slice/Band=本带 quantum)
         // 授片即重编（绝对截止时间纪律，同 try_preempt/park_recheck）：
         // SGI 入口无 timer::handle 的 rearm-before-EOIR，CVAL 不重编 =
-        // 授片无界——必须显式 arm。
+        // 授片无界——必须显式 arm。预算片收紧臂单源 arm_after_grant
+        // （arm_slice 收紧刀 2026-11-22·深度优化）。
         // SAFETY: IRQ 屏蔽窗内；写 CNTV 系统寄存器；EL1。
-        hal::timer::arm_slice();
+        arm_after_grant(next_ptr);
         set_current(next_ptr);
         // S-6 ① 补数：SGI resched 直切臂旧不计——跨核唤醒直切主干，同口径补齐。
         bump_switches();
@@ -4563,8 +4616,9 @@ unsafe fn try_steal_one() -> Option<*mut Task> {
 unsafe fn dispatch_from_park_ctx(next_ptr: *mut Task) {
     (*next_ptr).state = TaskState::Running;
     (*next_ptr).slice_left = class_of_task(&*next_ptr).grant_cycles_of(&*next_ptr); // 预算授片分派刀(2026-11-19):dl_grant 双门先行(带预算 deadline→preempt_threshold),余回落 class 面(Unit=全局 slice/Band=本带 quantum)
-    // SAFETY: 本核 CVAL 重臂；PSTATE.I=1。
-    unsafe { hal::timer::arm_slice() };
+    // SAFETY: 本核 CVAL 重臂；PSTATE.I=1。预算片收紧臂单源 arm_after_grant
+    // （arm_slice 收紧刀 2026-11-22·深度优化）。
+    unsafe { arm_after_grant(next_ptr) };
     set_current(next_ptr);
     bump_switches(); // S-6 ①：递增+打印共享 helper（A12 兑现）
     hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
@@ -4603,7 +4657,8 @@ unsafe fn dispatch_from_idle(next_ptr: *mut Task) {
     (*next_ptr).slice_left = class_of_task(&*next_ptr).grant_cycles_of(&*next_ptr); // 预算授片分派刀(2026-11-19):dl_grant 双门先行(带预算 deadline→preempt_threshold),余回落 class 面(Unit=全局 slice/Band=本带 quantum)
     // SAFETY: 本核 CVAL 重臂（授片侧显式 arm——同 dispatch_from_park_ctx，
     // idle 派发无 CNTV IRQ 先行：wfi 醒 / SGI 醒 / 环顶重查三种入口皆然）。
-    unsafe { hal::timer::arm_slice() };
+    // 预算片收紧臂单源 arm_after_grant（arm_slice 收紧刀 2026-11-22·深度优化）。
+    unsafe { arm_after_grant(next_ptr) };
     set_current(next_ptr);
     bump_switches(); // S-6 ①：递增+打印共享 helper（A12 兑现）
     hal::smp::note_switch_cpu(); // S-5a per-CPU 统计（本核独占写）
@@ -4614,6 +4669,32 @@ unsafe fn dispatch_from_idle(next_ptr: *mut Task) {
     unsafe {
         hal::task::context_switch(&raw mut (*idle).ctx, &raw const (*next_ptr).ctx)
     };
+}
+
+/// 授片臂单源（arm_slice 收紧刀 2026-11-22·深度优化）：`grant_cycles_of`
+/// 授片后的 CNTV 重编——dl_grant 双门命中（带预算 deadline，与
+/// throttle_admissible 前两门同集 = 协调律）且 budget < SLICE 时臂收紧到
+/// 片终点（`arm_slice_cap(budget)`：预算耗点精确起爆，Fair::tick 当拍
+/// 烧穿置 THROTTLE——执法检测延迟从「到下 tick 边界（相位 0..SLICE）」
+/// 缩到 budget）；否则满片 `arm_slice`（Unit/Band/IDLE/无预算 deadline
+/// 与 budget≥SLICE 同值零漂移——Band 轴 quantum<SLICE 的轮转锐化不触，
+/// DL-only 裁决）。budget 即新授片值（调用恒跟在授片行后——dl_grant 命中
+/// 时 slice_left==budget 恒等）。S-6 夹取两支全保：满片支 want 逐位同旧
+/// 臂；收紧支只向早——timer::handle 入口满片 rearm 的「最早 SLICE 内必
+/// 一 tick」硬底不受影响。九授片点单形消费（yield/exit/block/try_preempt/
+/// on_irq_tick 片燃尽 go 臂〔补臂〕/on_sgi_resched/dispatch_from_park_ctx/
+/// dispatch_from_idle；F5 idle 授片不臂——idle_loop 自管，idle 双零门
+/// 结构性免疫 dl_grant）。
+///
+/// # Safety
+/// 同 `arm_slice`：IRQ 屏蔽窗内调用；写 CNTV 系统寄存器；EL1。
+unsafe fn arm_after_grant(next: *mut Task) {
+    let t = &*next;
+    match dl_grant(t.prio_effective, t.preempt_threshold) {
+        // SAFETY: 调用窗契约由各调用点保证（同旧 arm_slice 位）。
+        Some(b) if b < hal::timer::slice_cycles() => unsafe { hal::timer::arm_slice_cap(b) },
+        _ => unsafe { hal::timer::arm_slice() },
+    }
 }
 
 /// S5-c 深 park 醒源刀（2026-11-18）：本核 runqueue 环上被限流 deadline

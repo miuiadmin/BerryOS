@@ -8,7 +8,7 @@
 //! ——virtio-keyboard）至多一台 → modern v2 协商（仅
 //! VERSION_1——virtio-input 设备特性位为零，规范 §5.8.3）→ config ABS_INFO
 //! 读 X/Y 校准域（**以设备自述为准**，勿硬编 32767——§4.2）→ eventq(q0)
-//! always-posted 预投 16×8B 读缓冲（QEMU 逐描述符一事件——`get_input_event`
+//! always-posted 预投 64×8B 读缓冲（QEMU 逐描述符一事件——`get_input_event`
 //! 恰 8B）→ DRIVER_OK → serve() 经 berry-guiproto input 域分发
 //! （INPUT_SUBSCRIBE / INPUT_POLL 严格串行 RPC）。
 //!
@@ -72,13 +72,22 @@ mod guest {
     #[used]
     static CRT0_SEED: unsafe extern "C" fn() = berry_libc::berry_crt0_anchor;
 
-    /// 队列深（vnet/vblk 同档：2 的幂、整环落一页）。
-    const QSIZE: u16 = 16;
+    /// 队列深（2 的幂、整环落一页）。**64 = 设备侧真上限**：QEMU
+    /// virtio-input 的 eventq 以 64 深建队（hw/input/virtio-input.c
+    /// `virtio_input_device_realize`：`virtio_add_queue(vdev, 64, ...)`），
+    /// QueueNumMax 恒报 64——超此 `setup_queue` 的 `QueueNumMax < QSIZE`
+    /// 执法即 trap（总攻审计拟 16→128，128 的分环几何虽仍在单页内但越
+    /// 设备真约束，核对上游源后落 64 = 合法最大档）。分环几何（对拍
+    /// `vio::RingLayout::new` 同算术）：desc 64×16B=1024 + avail 头 4 +
+    /// 环 2×64=128 + used_event 2 → 256 对齐垫至 used 基 1280 + used 头
+    /// 4 + 环 8×64=512 + avail_event 2 = **1798B ≤ 4KiB 页 0**；缓冲带
+    /// 64×8B=512B ≤ 页 1（DMA_LEN 8192 不动）。
+    const QSIZE: u16 = 64;
     /// eventq 读缓冲数（= qsize）：每缓冲一描述符恰容一事件（QEMU
     /// virtio_input_send 逐描述符取一元素——8B 恰长是最优投递形态）。
     const EVT_BUF_SZ: usize = vio::input::INPUT_EVENT_SZ;
-    /// DMA VMO 几何：页 0 event ring / 页 1 事件缓冲带（16×8B——结构分页
-    /// vnet 惯例；缓冲带只用页首 128B，清晰优先于字节节省）。
+    /// DMA VMO 几何：页 0 event ring / 页 1 事件缓冲带（64×8B——结构分页
+    /// vnet 惯例；缓冲带只用页首 512B，清晰优先于字节节省）。
     const DMA_LEN: u64 = 8192;
     const RING_PAGE: u64 = 0;
     const BUF_PAGE: u64 = 4096;
@@ -89,21 +98,25 @@ mod guest {
     /// INPUT_POLL 阻塞服务帽：30s（< client 侧会话帽 90s——「服务帽 <
     /// client 帽」纪律；到点 ST_EAGAIN 而非自陷）。
     const POLL_BLOCK_CAP_NS: u64 = 30_000_000_000;
-    /// serve 空闲心跳 tick：100ms（超时 = 心跳非死线——回环顶重查 used 环
+    /// serve 空闲心跳 tick：20ms（超时 = 心跳非死线——回环顶重查 used 环
     /// 后重臂续等；P6 A-3 echo 同款语义，段② 按消费节奏可调）。tick 同时是
-    /// **无消费窗口的设备层收割节奏**：eventq 预投 QSIZE=16 缓冲、QEMU
-    /// virtio_input_send 逐事件取描述符，耗尽即丢批尾——空闲期输入超过
-    /// 16 事件/tick 时尾部被设备静默丢弃（press 送达而 release 丢弃可致泵
-    /// 接触态滞留，至下次真实接触自愈）；100ms = 160 事件/s 窗口，覆盖
-    /// 注入/人工形态。离散转移零丢的结构性根治 = v2 IRQ 面（§5.2-5 注）。
-    const SVC_TICK_NS: u64 = 100_000_000;
+    /// **无消费窗口的设备层收割节奏**：eventq 预投 QSIZE=64 缓冲、QEMU
+    /// virtio_input_send 缓冲到 SYN_REPORT 再逐描述符取用，耗尽即整批丢弃
+    /// （virtqueue_pop 失败段全部 unpop 后 qindex 清零）——空闲期输入超过
+    /// 64 事件/tick 时尾部被设备静默丢弃（press 送达而 release 丢弃可致泵
+    /// 接触态滞留，至下次真实接触自愈）；64 缓冲 = 60Hz 指针流（每报 3-4
+    /// wire 事件）约 16 报 ≈ 267ms 无收割容忍（原 16 缓冲 ≈ 4 报 ≈ 67ms，
+    /// 4 倍），tick 自 100ms 收窄到 20ms 把无在途 poll 的收割缝再缩 5 倍
+    /// ——覆盖 1080P 软渲染帧窗与点击引发的同步 RPC 链停顿（总攻 input
+    /// 路 P1-①/② 扩容）。离散转移零丢的结构性根治 = v2 IRQ 面（§5.2-5 注）。
+    const SVC_TICK_NS: u64 = 20_000_000;
     /// 应答 send EBUSY 重臂帽：10s（vnet 同档）。
     const SEND_REARM_NS: u64 = 10_000_000_000;
     /// 观测面 tally 周期：60s（真机场放久后服务环疑似停转——收割停/转发
     /// 停，零日志零痕迹；每拍一行固定前缀「gui-inputd: tally 」的旁路心跳：
     /// 行缺席 = 环停转（卡在 wait/send/park 面），行在场而计数冻结 = 环转
     /// 但收割/应答停——两级定位面。第 10 拍附 wm 面一行。行可迟到：纯
-    /// poll 帽路径最坏 60+30+0.1 ≈ 90s；send_rep EBUSY 重臂每轮再 +10s
+    /// poll 帽路径最坏 60+30+0.02 ≈ 90s；send_rep EBUSY 重臂每轮再 +10s
     /// （迟到上界 90+10k s，「send EBUSY 计」行在卷即自愈形）——巡检
     /// 哨按缺席 ≥2× 周期（≥120s）立案，勿以 ~90s 假阳性。
     const TALLY_PERIOD_NS: u64 = 60_000_000_000;
@@ -522,7 +535,7 @@ mod guest {
     fn setup_dma() -> Dma {
         let lay = match vio::RingLayout::new(QSIZE as usize) {
             Some(l) => l,
-            None => trap(), // qsize=16 恒成立；防御面
+            None => trap(), // qsize=64 恒在单页承诺内（几何验算见 QSIZE 注）；防御面
         };
         let mut vmo = 0 as Handle;
         if berry_vmo_create(DMA_LEN, 0, &mut vmo) != 0 || vmo == 0 {
@@ -568,15 +581,15 @@ mod guest {
         }
     }
 
-    /// 挂 16 个事件读缓冲（页 1 逐 8B 一格，DESC_F_WRITE——设备写；QEMU
+    /// 挂 64 个事件读缓冲（页 1 逐 8B 一格，DESC_F_WRITE——设备写；QEMU
     /// virtio_input_send 逐描述符取一元素，8B 恰长 = 最优投递）：RINGSTAGE
     /// 零基组 desc 表 + avail 环 → 整页落盘（vnet post_rx 同形）。
     fn post_events(d: &mut Dma) {
         // SAFETY: 单线程独占窗；RINGSTAGE 首次使用即零基。
         let ring: &mut [u8; 4096] = unsafe { &mut *core::ptr::addr_of_mut!(RINGSTAGE) };
         // avail.idx 复位起点：RINGSTAGE 是两台设备共用的建制暂存页——首台
-        // 建制后 idx 残留 16，第二台若续跑（16→32），其首次 refill 会把
-        // idx 写回 17 = 自由运行计数倒退（设备面违约）。每次建制独立从 0
+        // 建制后 idx 残留 64，第二台若续跑（64→128），其首次 refill 会把
+        // idx 写回 65 = 自由运行计数倒退（设备面违约）。每次建制独立从 0
         // 起点记账（desc 表与 avail.ring 槽位随后全量重写，无需另复位）。
         ring[d.lay.avail_off + 2] = 0;
         ring[d.lay.avail_off + 3] = 0;
@@ -1028,6 +1041,12 @@ mod guest {
     /// 非 OK 应答——协议烘焙线）。k ≤ 3 ≤ INPUT_EVENTS_MAX 恒可编——
     /// encode None 结构性不可达（防御 trap）。
     ///
+    /// **应答批帽挂账（总攻 input 路 P1-③，本刀只记不改）**：
+    /// INPUT_EVENTS_MAX 3→8 须 berry-guiproto 同步抬 INPUT_REP_MAX（现
+    /// 3×80B=240B 恰顶满 244B 应答帽，8 事件需 ≥644B——协议域版本推进
+    /// +新旧端协商，guiproto 是本刀域外文件不越域），落库时本函数批帽
+    /// 语义零改动自然随抬（max_events 由请求侧带来，drain 已按余位截断）。
+    ///
     /// GUI-5：drain 后 to_wire 前逐事件命中旁注（`wm_annotate`——内存面
     /// 不改 wire）。**步进睡改形 R2 阻断①门控**：`push != 0` 时步进睡改
     /// wait_many([push]) 可读并等（快照应答到达即醒——收割/消费恒在 serve
@@ -1157,7 +1176,7 @@ mod guest {
         // 泵累计——两台泵各自的自由运行 u16 `harvested` 游标按回环顶快照
         // wrapping 对账推进量（serve 回环顶与 serve_poll 两处收割在回环顶
         // 统一收口；回环一拍内推进 < 65536 是速率假设非结构保证——环深
-        // 16 不封顶（收割即回挂、设备可边产边收），设备产率 × 30s 帽
+        // 64 不封顶（收割即回挂、设备可边产边收），设备产率 × 30s 帽
         // ≪ 65536 时 u16 回绕无损；宿主持续洪灌（≥ ~2185 事件/s × 30s）
         // 才会失真少计，纯观测面无控制流影响）；
         // polls_served = serve_poll 完成累计；e 字段读 [`SEND_EBUSY`]；q
@@ -1348,7 +1367,7 @@ mod guest {
             }
             // GUI-4 段②占位（无代码）：PM 交互脉冲——输入事件到达即向
             // PM 服务投交互 hint（提频投票）的缝留这里。候选点三（GUI-5
-            // §3 #10 口径）：serve 循环 100ms tick / EV_SYN 收批点 / wm
+            // §3 #10 口径）：serve 循环 20ms tick / EV_SYN 收批点 / wm
             // 快照到达点。**GUI 只投票不设频**（GUI 规划 GUI-4 行裁决：
             // PM 仍唯一决策者）；v1 无 PM 服务面，本刀零代码零标记——
             // GUI-6/+ 落地时回填。

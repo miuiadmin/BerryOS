@@ -13,7 +13,9 @@
 //!   Grid 5×4/常驻 Dock/五键导航条/波3-件⑤ TabBar 三系统页）——状态
 //!   栏整条/scrim/文本叶等底座走 appshell::scene。
 //! - [`frameloop`]：launcher 帧循环特化（自测状态机/点击 spawn/五键
-//!   导航/时钟续摆/关机 armed）——帧循环骨架（present 会话/帧 VMO/
+//!   导航/时钟续摆/关机 armed/状态栏双指示灯——加载灯〔spawn 请求 →
+//!   ack 常亮，延迟一拍真发保灯先行一帧〕与运行呼吸灯〔活应用窗在场
+//!   1Hz 脉动，表查近似〕）——帧循环骨架（present 会话/帧 VMO/
 //!   SUBMIT 链/输入泵/稳态等待）走 appshell::pump 的 HostHooks 回调。
 //! - [`wallcache`]：B1 壁纸预缩放缓存（boot 一次性双线性烘进 VMO 全尺
 //!   寸面，此后壁纸 Argb 平拷贝代逐帧 SmoothArgb 重算——失败自动降级）。

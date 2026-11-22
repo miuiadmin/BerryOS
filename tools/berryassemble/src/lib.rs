@@ -28,6 +28,7 @@ use std::collections::BTreeMap;
 pub mod toml_doc;
 pub mod lite;
 pub mod full;
+pub mod plan;
 pub mod resolve;
 pub mod anchor;
 pub mod validate;
