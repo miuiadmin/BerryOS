@@ -55,7 +55,9 @@ FROZEN_PREFIXES = (
     "tools/run-artifact.sh", "tools/gate-wrap.sh",
     "tools/claude-audit.py", "tools/stale-parks.py",
     "tools/stranded-deferrals.py", "tools/answers-readback.py",
-    ".agents/tools/", "tools/facts.py", "tools/gate-selftest.sh", "tools/punch_slice.py", "tools/task-graph.py", "tools/task-oracle.py",
+    ".agents/tools/", "tools/facts.py", "tools/gate-selftest.sh", "tools/punch_slice.py",
+    # P2 跨树 sweep 高危类（考古）：大规模路径/符号迁移须 owner 确认——列入冻结面
+    "tools/task-graph.py", "tools/task-oracle.py", "tools/task-graph.py", "tools/task-oracle.py",
     "tools/docs_guard.py",
     "tools/floor-check.sh",
     "tools/writable_globals.py",

@@ -51,6 +51,16 @@ def load(path: Path | None = None) -> str:
     return p.read_text(encoding="utf-8") if p.is_file() else ""
 
 
+def validate_no_renumber(old_text: str, new_text: str) -> list[str]:
+    """P2 加固（考古 2026-11-23）：punch 条目 ID 只增不挪——删了 T3 又新建 T3 = 重编号。
+    返回违规列表（空=合法）。已勾/已 park 行永不删（Curia 永不删除）。"""
+    old_ids = re.findall(r"- \[.\] (T\d+)", old_text)
+    new_ids = re.findall(r"- \[.\] (T\d+)", new_text)
+    # 旧文本有而新文本没有的 ID = 被删了
+    deleted = set(old_ids) - set(new_ids)
+    return [f"条目 {tid} 被删除——已勾/park 行永不删（Curia 永不删除），重编号用新 ID" for tid in sorted(deleted)]
+
+
 def selftest() -> int:
     sample = (
         "## 未完成事项（punch-list）\n\n"
@@ -67,7 +77,13 @@ def selftest() -> int:
     r2 = slice_punch("# 无该节的文档\n")
     ok2 = r2 == {"open": [], "parked": [], "done": [], "vehicle_present": False}
     print(f"punch_slice 自检: {'腿绿' if ok2 else 'FAIL'} 载体缺席判 vehicle_present=false")
-    rc = 0 if (ok1 and ok2) else 1
+    # P2 重编号检腿
+    v = validate_no_renumber("- [ ] T1 甲\n- [x] T2 乙\n", "- [ ] T1 甲\n- [ ] T2 乙重开\n")
+    ok3 = len(v) == 0  # 同 ID 在=合法
+    v2 = validate_no_renumber("- [ ] T1 甲\n- [x] T2 乙\n", "- [ ] T1 甲\n")  # T2 被删
+    ok4 = len(v2) == 1 and "T2" in v2[0]
+    print(f"punch_slice 自检: {'腿绿' if ok3 and ok4 else 'FAIL'} 重编号检（同 ID 合法/删 ID 红）")
+    rc = 0 if (ok1 and ok2 and ok3 and ok4) else 1
     print(f"punch_slice 自检：{'PASS' if rc == 0 else 'FAIL'}")
     return rc
 

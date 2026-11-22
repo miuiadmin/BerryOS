@@ -1,4 +1,6 @@
 #!/bin/sh
+# P2 钩子变量红线（考古）：禁信 GIT_DIR/GIT_WORK_TREE 导出变量，一律发现式定位仓库
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE 2>/dev/null || true
 # BerryOS main 线守门 + bot 身份闸（push 层）——防线详见 .agents/notes/implemented/2026-11-16-跨根合并防线与判例.md 与 docs/规则/16-工程纪律.md
 # 职责一：拒绝把跨根合并提交推进 refs/heads/main（GitHub 服务端装不了钩子，本地 push 是最后闸口）。
 # 职责二（工程纪律刀阶段 6）：berryos.bot-email 登记的 bot 身份新提交只准推

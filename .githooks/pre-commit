@@ -1,4 +1,6 @@
 #!/bin/sh
+# P2 钩子变量红线（考古）：禁信 GIT_DIR/GIT_WORK_TREE 导出变量，一律发现式定位仓库
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE 2>/dev/null || true
 # BerryOS 跨根合并闸 + 暂存区快照文档门（commit 层）——防线详见
 # .agents/notes/implemented/2026-11-16-跨根合并防线与判例.md 与 docs/规则/16-工程纪律.md
 # 背景：main（根 f7eb5535）与 wip/sched-1.1（根 afd68392）曾为无共同祖先双线，2026-11-16 已由

@@ -1,4 +1,6 @@
 #!/bin/sh
+# P2 钩子变量红线（考古）：禁信 GIT_DIR/GIT_WORK_TREE 导出变量，一律发现式定位仓库
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE 2>/dev/null || true
 # BerryOS 印记闸（工程纪律刀阶段 3；docs/规则/16-工程纪律.md §1 分层第 2 层）——
 # 拒 --no-verify 绕过 pre-commit。
 # 机理：pre-commit 每次运行写 $GIT_DIR/berryos-gate.imprint（pid + epoch）；
