@@ -376,9 +376,7 @@ fn donor_edge(t: &Task) -> Option<(NonNull<ObjRef>, Rights)> {
             // 无并发销毁。
             let obj: &ObjRef = unsafe { &*(raw as *const ObjRef) };
             match &obj.obj {
-                KernelObj::Channel(end) => {
-                    (ObjKind::Channel, end.peer().map(|p| p.as_ptr() as usize))
-                }
+                KernelObj::Channel(end) => (ObjKind::Channel, end.peer_wait_key()),
                 _ => (ObjKind::Other, None), // Event 等：无 peer 结构
             }
         }

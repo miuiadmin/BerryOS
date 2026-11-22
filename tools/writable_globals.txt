@@ -11,6 +11,7 @@ arch/aarch64/src/lib.rs::CBOX_HOOK	arch
 arch/aarch64/src/lib.rs::DEMAND_FAULT_PROBE	arch
 arch/aarch64/src/lib.rs::DEMAND_FAULT_PROBE_EL0	arch
 arch/aarch64/src/lib.rs::IRQ_DISPATCH	arch
+arch/aarch64/src/lib.rs::SELFTRAP_PROBE	arch
 arch/aarch64/src/lib.rs::SGI_DISPATCH	arch
 arch/aarch64/src/lib.rs::SVC_EXIT_CHECKPOINT	arch
 arch/aarch64/src/lib.rs::USER_FAULT_EXIT	arch

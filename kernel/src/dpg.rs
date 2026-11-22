@@ -139,22 +139,20 @@ unsafe extern "C" fn probe(esr: usize, far: usize) -> bool {
     // 面 b：注销面已落，锁外指针不保证仍活；本段零解引用零依赖——stale
     // 命中由第二段窗内重查吸收）。miss = 本 AS 无 demand 面，不付全谱窗。
     let asid = hal::current_asid();
-    if vmar::demand_root(asid).is_none() {
+    if vmar::demand_aspace(asid).is_none() {
         return false;
     }
     // 第二段（KL 窗）：根槽 **fresh 重查**（M-3 升格——窗内查得即窗内活：
     // 注销与对象释放都在 KL 窗内发生，他核注销须先取同把 KL）+ regions
     // 权威重验（变更方经 PT 锁嵌 KL 同序，锁外快查与入锁间的变更由本窗
     // 收口）。
-    hal::kern_lock::klock_enter();
-    let Some(root) = vmar::demand_root(asid) else {
-        hal::kern_lock::klock_exit();
-        return false; // stage-1 stale 命中折 None——原杀链
+    let _kl = hal::kern_lock::klock_enter_irqsave();
+    let Some(root) = vmar::demand_aspace(asid) else {
+        return false; // stage-1 stale 命中折 None——原杀链（_kl Drop 收口）
     };
     // SAFETY: root = 本 KL 窗内 fresh 查得（窗内活，见上）；region 查只读。
     if unsafe { (*root).demand_region_at(far).is_none() } {
-        hal::kern_lock::klock_exit();
-        return false;
+        return false; // _kl Drop 收口（RAII 单出口——F0-3）
     }
     // 命中 = 提交路径：入深（G4-3 深度帽——此后至 block 前的活跃窗计深度）。
     depth_enter();
@@ -194,8 +192,11 @@ unsafe extern "C" fn probe(esr: usize, far: usize) -> bool {
     // AM-2b：note 点惰性翻卷（裁决④——跨窗才付费；语境 = 内核任务探针路径）。
     crate::telemetry::dpg_stall_fold(stall_now);
     // 醒 = 活跃窗重开（收尾段计深度——此窗内嵌套异常同样响雷）。
+    // W3-38 修：手动 klock_exit 摘除——enter 已换 RAII（klock_enter_irqsave
+    // + KlockIrqSaveGuard），双出口 = 第一 exit 清 held 位、守卫 Drop 第二次
+    // svc_exit_class(ALL) 断言 held==0x3e 必炸（QEMU 实证 svm-x held=0）。
+    // KL 放锁与 DAIF 恢复统一交 _kl Drop（F0-3 单出口纪律，ktest :13518 同款）。
     depth_enter();
-    hal::kern_lock::klock_exit();
     assert!(
         matches!(r, berry_sched::WakeReason::Signaled),
         "dpg probe: 醒因非 Signaled（fault 键无超时/无他者——唤醒面破损）"
@@ -273,14 +274,13 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
     }
     let asid = hal::current_asid();
     // stage-1 hint-only（同 [`probe`]——零解引用零依赖，miss 零锁即拒）。
-    if vmar::demand_root(asid).is_none() {
+    if vmar::demand_aspace(asid).is_none() {
         return false; // KL 外零锁快拒（rogue fault 不付全谱窗）
     }
     hal::kern_lock::klock_enter();
     // stage-2 根槽 fresh 重查（同 [`probe`]——窗内查得即窗内活；stale
     // 命中折 None → 原杀链）。
-    let Some(root) = vmar::demand_root(asid) else {
-        hal::kern_lock::klock_exit();
+    let Some(root) = vmar::demand_aspace(asid) else {
         return false;
     };
     // SAFETY: root = 本 KL 窗内 fresh 查得（窗内活）；regions 权威重验在本窗。
@@ -416,7 +416,7 @@ unsafe extern "C" fn probe_el0(esr: usize, far: usize) -> bool {
             // KL 在身串行一切表写者（PT 恒嵌 KL 取放——vmar.rs `pt_lock`
             // 注），无 copy 链 walk+store TOCTOU 面，免 PT 锁直读；root
             // 窗内 fresh 重查（睡中注销 → None → 仍缺页同走挂死臂）。
-            let supplied = vmar::demand_root(asid).is_some_and(|root| {
+            let supplied = vmar::demand_aspace(asid).is_some_and(|root| {
                 // SAFETY: root = 本 KL 窗内 fresh 查得（窗内活）；只读
                 // l1_pa 字段，零解引用深度。
                 vmar::walk_leaf(unsafe { (*root).ttbr0_pa() }, va).is_some()
@@ -470,7 +470,7 @@ pub(crate) enum El0Take {
 /// 实现为其原子池投影（EREQ 直扫 + swap 消费——机械与判定同体故不整段
 /// 搬移，判定结构逐字对齐 dpgface 测试锚点）。
 ///
-/// 扫 `0..EREQ_SLOTS`：对每个武装槽解析属主（`vmar::demand_root(asid)` →
+/// 扫 `0..EREQ_SLOTS`：对每个武装槽解析属主（`vmar::demand_aspace(asid)` →
 /// `demand_region_at(far)` 得 rvmo，与 vd 指针比对——供给体身份验同口径：
 /// rvmo 经 demand 钉活、vd 经调用方 retain 活，双活对象同址即同体）；首个
 /// 匹配槽 swap(false, Acquire) 消费（latch 习语同 `dpg_pager`；消费即放槽
@@ -492,7 +492,7 @@ pub(crate) fn el0_take_for(vd: *mut Vmo) -> El0Take {
         }
         let far = s.far.load(Ordering::Relaxed) as usize;
         let asid = s.asid.load(Ordering::Relaxed);
-        let owner = match vmar::demand_root(asid) {
+        let owner = match vmar::demand_aspace(asid) {
             // SAFETY: root = KL 窗内查得（本函数 KL 契约——窗内查得即窗内
             // 活，注销与对象释放同窗互斥，0x21 供给窗同口径）；region 查只读。
             Some(root) => match unsafe { (*root).demand_region_at(far) } {
@@ -600,7 +600,7 @@ extern "C" fn dpg_pager(_arg: usize) -> ! {
         // expect 保留（G4-2 修批后改据）：本 pager 服务的 faulter AS = dpg::
         // init 的 boot 装配（Box::leak 永不 Drop → 该登记永不注销）；且本点
         // 在 KL 窗内 fresh 查——窗内查得即窗内活（注销/释放同窗互斥）。
-        let root = vmar::demand_root(asid)
+        let root = vmar::demand_aspace(asid)
             .expect("dpg_pager: asid 反查失败（boot 装配 AS 恒登记——Box::leak 永不 Drop）");
         let (vmo, vmo_off, base) = unsafe { (*root).demand_region_at(far) }
             .expect("dpg_pager: 请求 VA 已不在 demand 区间（unmap 竞窗）");
@@ -1108,7 +1108,7 @@ pub fn init() {
         ));
     vmar.map_demand(vmo, DEMAND_VA, 0, PAGE_SIZE, Perm::Rw)
         .expect("dpg: map_demand");
-    vmar::register_demand_root(asid, core::ptr::from_mut(vmar))
+    vmar::register_demand_aspace(asid, vmar.aspace_ptr())
         .expect("dpg: 登记 demand root（G4-2 Result 化——boot 面满表/冲突即响雷）");
     // 探针注册（boot DAIF 屏蔽窗——首个可能触 demand 访问的任务调度前）；
     // G4-2：EL0 臂第二槽（process demand 装载面由此臂服务）。
@@ -1142,7 +1142,7 @@ pub fn init() {
         vmar_p
             .map_demand(vmo_p, PRESS_VA, 0, PRESS_PAGES * PAGE_SIZE, Perm::Rw)
             .expect("dpg: 压力自验 map_demand");
-        vmar::register_demand_root(asid_p, core::ptr::from_mut(vmar_p))
+        vmar::register_demand_aspace(asid_p, vmar_p.aspace_ptr())
             .expect("dpg: 登记压力自验 demand root（满表即响雷）");
         let h_press = crate::am2b_pressure_ktest_handle();
         berry_sched::spawn_as(

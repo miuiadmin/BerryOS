@@ -16,11 +16,15 @@
 //! / manifest PR 对账）/ 参数面与活树清单合成。
 
 pub mod abipr;
+pub mod args;
 pub mod live;
+pub mod load;
 pub mod reconcile;
 pub mod t2;
 pub use abipr::{abi_level, img_pr_check};
+pub use args::{resolve_args, ArgsOutcome, Mode, Resolved};
 pub use live::build_live_tsv;
+pub use load::{dry_echo, load_entries, LoadOutcome};
 pub use reconcile::{reconcile_t2, ReconcileReport};
 pub use t2::{check_t2, parse_frozen_toml_t2, T2Contract, T2Doc, T2Val};
 

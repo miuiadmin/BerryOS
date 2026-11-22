@@ -739,6 +739,8 @@ test-host:
     # 本门禁防回归（smoke 本地复现的宿主断点收口）。
     python3 tools/shvarcheck.py --check
     cargo test -p berry-mm --target {{host}}
+    cargo test -p berry-asidface --target {{host}}
+    cargo test -p berry-vmarface --target {{host}}
     # W3-Q2：berry-wqmatch（等待队列唤醒匹配纯函数面——b-1 广播不变量/
     # WAIT_ANY 哨兵/fastpath 单等待者资格三律钉板 + 两路语义对齐穷举，
     # host 9 测；谓词单源，sched wake_matching/find_single_waiter 消费）。
@@ -1014,6 +1016,11 @@ test-host:
     # 拒 + display() 分区列表单行格式化〔教学可见性，vblk 手拼形状收口〕，
     # host 18 测；消费 = vblk 多分区暴露（下一刀接线））。
     cargo test --manifest-path user/Cargo.toml -p berry-partition --target {{host}}
+    # ai-runtime §一.1 首刀：berry-aiproto（.bmod 页对齐模型容器格式
+    # 纯函数面——BMOD v1 头/Ed25519 签名域/有界 TLV 超参数表/页对齐
+    # 张量段表结构执法，零拷贝零分配，截尾与畸形输入零 panic，host 19
+    # 测；消费 = airtd 模型池 VMO 映射〔契约一.2，后续刀〕）。
+    cargo test --manifest-path user/Cargo.toml -p berry-aiproto --target {{host}}
     # 驱动子系统研究报告 P1 框架件 + 波 2.2 先行刀：berry-driver（统一
     # Driver trait 生命周期框架——probe/start/stop 三口可循环 + registry
     # 全槽探测失败不炸，借 Linux probe 生命周期形状；virtio_example 钉
@@ -1156,6 +1163,59 @@ test-host:
     # 接线去重——#356 已带 workspace 形 -p berry-appshell 行（上方波3-件⑦
     # 段），manifest-path 重复行移除（appshell 33 测曾双跑，实测去重）。
     cargo test --manifest-path user/berry-softime/Cargo.toml --target {{host}}
+    # ai-runtime §二 Tier 0 首刀：berry-tensor（量化算子核纯函数面——
+    # Q4_0/Q8_0 块布局单源〔llama.cpp 兼容字节形〕+ f16 位级解码含次
+    # 正规/去量化/量化×量化整数内积点积〔块内 i32、scale 后乘、f32 顺
+    # 序累积——Tier 0 确定性基线，SIMD/卸载后端对拍锚〕+ 第二片
+    # matvec_q4_q8〔GEMV 行基元〕/rmsnorm〔inv_sqrt 位黑客种子 + 3 轮牛
+    # 顿纯 core〕+ 第三片 fp16/bf16 点积〔bf16=f32 高 16 位位域还原〕，
+    # host 19 测；
+    # 消费 = airtd/berry-aiproto 张量段〔后续刀〕）。
+    cargo test --manifest-path user/Cargo.toml -p berry-tensor --target {{host}}
+    # ai-runtime §三.1 首刀：berry-kvpool（块级分页 KV-Cache 池语义——
+    # 16-Token KvBlock 定容池 + 前缀 Copy-on-Write 共享〔引用计数 +1 物
+    # 理恒一份〕+ 共享尾块禁原地写执法〔满尾滚新块不属 COW 面——fork
+    # 续写主路径〕+ 显式回收口，host 9 测；真消费
+    # = airtd Paged KV-Cache 运行时〔后续刀〕）。
+    cargo test --manifest-path user/Cargo.toml -p berry-kvpool --target {{host}}
+    # ai-runtime §四.1 首刀：berry-vqvec（vault 定点量化向量基元——每
+    # vec 单 scale 的 i8 标量量化〔round-half-away 手写〕+ 非对称整数
+    # 域距离〔内积/L2²〕，全零 vec 退化无除零，host 8 测；HNSW 图与
+    # FBE/VaultQueryCap 门控归 berry-vault 服务刀〔后续〕）。
+    cargo test --manifest-path user/Cargo.toml -p berry-vqvec --target {{host}}
+    # ai-runtime §四.1 第二片：berry-hnsw（HNSW 图骨架——splitmix 确定性
+    # 分层指派〔位级 log16〕+ 贪心下降 + 有界 best-first 束搜〔R15
+    # 升格：终止律剪枝 + ef 帽 + ef-construction 建图〕，距离闭包注入
+    # 与量化距离解耦，tie-break 节点号升序确定性检索 + 多样性启发式建图
+    # 〔diverse_filter 独立纯函数 + insert_heuristic 双闭包通道〕，
+    # host 9 测）。
+    cargo test --manifest-path user/Cargo.toml -p berry-hnsw --target {{host}}
+    # ai-runtime §三.2 首刀：berry-jsonmask（JSON 字节级约束解码掩蔽器
+    # ——单源转移函数 step + 256 字节探测派生 mask〔合法集永不双写〕+
+    # 拒绝不改态〔100% 合法输出机制〕+ can_finish 流式终判〔裸数字态〕，
+    # R12 深度 N〔显式容器栈 ≤16 层越帽拒〕，host 10 测；Schema 编译随后续刀）。
+    cargo test --manifest-path user/Cargo.toml -p berry-jsonmask --target {{host}}
+    # am §一首刀：berry-amgrad（终态五级弹性处置梯度决策核——五级表
+    # 单源 choose〔RAM 谱系 L0<L2<L1<L3 升格 + L4 磁盘正交〕、租约豁
+    # 免压制冰封与深化、防抖窗双钉值 3s/0s，无触发即 None 禁默认动作，
+    # host 8 测；执行机构归内核机制与 appd 接线刀）。
+    cargo test --manifest-path user/Cargo.toml -p berry-amgrad --target {{host}}
+    # am §二.2 首刀：berry-wakeflood（唤醒风暴熔断核——每客户端分钟
+    # 桶计数〔环形零分配〕+ 12 次/分钟钉值熔断 + 冷却窗释放与再熔断
+    # 环〔释放纯时间驱动〕，host 7 测；计时器/退避投递/耗电台账归
+    # appd 与 power-thermal 接线刀）。
+    cargo test --manifest-path user/Cargo.toml -p berry-wakeflood --target {{host}}
+    # ai-runtime §二 Tier 1 客机侧首刀：berry-npuproto（virtio-compute
+    # wire 编解码——config/命令描述符〔virtio-gpu 控制头同形〕/blob 页
+    # 帧表〔off 4096 对齐执法〕/完成环三态〔OK/Unsupported 降级依据/
+    # Watchdog 看门狗〕，畸形即 None 不截断，op 值镜像 berry-tensor；
+    # R23 环面扩展（virtio 标准三表：描述符 16B/avail 头+槽环回/used
+    # 条目），host 10 测；宿主 Metal 桥归 tools/berry 边界面）。
+    cargo test --manifest-path user/Cargo.toml -p berry-npuproto --target {{host}}
+    # am §二.3 首刀：berry-anrwatch（ANR 判定核——指令类分阈〔前台
+    # Launch/Resume 5s、PauseSave 2s 契约钉值〕+ 两段语义〔超时发取证→
+    # 宽限尽或证据在手即终止〕，host 5 测；cbox 抓栈与终止执行归服务刀）。
+    cargo test --manifest-path user/Cargo.toml -p berry-anrwatch --target {{host}}
     # mkapp 门禁自检（a-3 U4：mkfat --check-fixture 同位前置——打包器门禁
     # 面此前只在 build-user 产物链上被动覆盖，门禁自身坏 = 产物链静默劣化）。
     python3 tools/mkapp.py --selftest
@@ -1314,8 +1374,28 @@ test-host:
     # 假绿面（真 bcts-run.sh 靠步② floor 91 兜底），镜像同形严拒早于发射〕
     # + parity live 三面（真源 markers.sh 92 行 stdout 逐字全等 + 计数
     # 32/56/3/91 钉板 + 绿语料族 + 拒面族〔空集守卫文案逐字/unbound 分支
-    # + 短路序/合成语料〕）。六刀候选：CLI 参数面镜像。独立小工作区，须
-    # 显式 --target {{host}}。
+    # + 短路序/合成语料〕）。六刀：src/args.rs（CLI 参数面镜像 =
+    # bcts-run.sh :117-221——参数 while/case 循环〔缺值/值域/未知/重复
+    # 后写覆盖〕+ BCTS_FROZEN 前缀识别 Tier〔bcts-t2@*/bcts@* 自动档 +
+    # 显式 --tier 冲突双向拒〕+ 工件在席 + 相对路径 REPO 前缀归一 +
+    # --manifest-name 守卫〔同席门 + 纯文件名五拒形〕+ --image 约束
+    # 〔tier2 冲突/selftest 互斥/归一在席〕+ T2 缺省工件 sort -t@ -k2 -n
+    # 数值序取尾〔@10>@9 字典序坑〕；绿腿产出 Resolved 快照〔缺省值/
+    # 显式位/路径归一〕；parity args（bash 真跑子进程 12 拒腿 stderr +
+    # 退码逐字 + 绿腿 Resolved 断言〔前缀自动识别/后写覆盖/T2 缺省解析〕
+    # ——manifest 缺席拒属装载段非参数段，钉界注记归后续刀；净增 +4 = lib
+    # 3 + parity 1。七刀：src/load.rs（装载/守卫段镜像 = bcts-run.sh
+    # :566-629——步①装载〔frozen → check_t1 TSV / live → build_live_tsv〕+
+    # 计数 + 步②空集守卫〔frozen floor = META 域；live = 在册 91——frozen
+    # 态 floor 守卫在 t1_check REJECT 面先发，步② FAIL 守卫对 frozen 结构
+    # 性不可达〕+ 镜像腿装载守卫〔bare 相 ≥32 + manifest 在席 G8 文案 +
+    # PR 锚双态〔frozen = META pr / live = abi.toml level〕+ img_pr_check
+    # 对账〕+ --dry 回显全行〔AWK printf %-9s/%-10s 对齐律 + 镜像腿行〕〕
+    # + parity load（bash 真跑子进程 --dry stdout 逐行全等 + 退码全等：
+    # live 态 91 件全表 + bcts@0..6 七件 frozen 全表 + 镜像腿族〔live/frozen
+    # 双锚 ok / PR 失配拒 / manifest 缺席拒 / --manifest-name 联动〕+ floor
+    # 守卫拒〔frozen = REJECT 退 2 钉序〕+ 坏件拒〕+ 突变红 x3。净增 +11
+    # = lib 5 + parity 6〔+1 组〕。独立小工作区，须显式 --target {{host}}。
     # Python 件不退役——CLI 对拍 oracle。
     cargo test --manifest-path tools/bctsrun/Cargo.toml --target {{host}}
     # W1 接线（SEC-02 A2 同款纪律）：berry_assemble 门禁自检——V13 组装器

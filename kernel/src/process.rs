@@ -96,14 +96,20 @@ pub enum ProcState {
     Exited,
 }
 
-/// 进程 = 地址空间容器：root Vmar（页表树 + ASID）+ 供调度器用的表根快照。
+/// 进程 = 地址空间容器：共享 `Arc<AddressSpace>` + root Vmar 钉 + 供调度器用的表根快照。
 pub struct Process {
     /// 地址空间根（ObjRef 钉住——父进程的 vmar handle 关光后子空间仍存活）。
+<<<<<<< HEAD
     /// **Option 形（帧归还刀件 B）**：HT_DRAINQ flush 的 vmar 钉**预放**（
     /// [`Self::release_vmar_pin_early`]）take 置 None——drain phase-1 才能
     /// 把表内 root Vmar 递减到零触发 `Vmar::Drop` 清账（mapcnt 归零 →
     /// phase-2 VMO 还帧）；`Drop` 对 None 不再二次 release（防双放）。
     vmar: Option<NonNull<ObjRef>>,
+=======
+    vmar: NonNull<ObjRef>,
+    /// F1-1：底层实体地址空间引用（直通 per-AddressSpace `pt_lock` 与 F1-2 `teardown`）。
+    pub aspace: alloc::sync::Arc<crate::aspace::AddressSpace>,
+>>>>>>> private/wip
     /// L1 表 PA 快照（spawn 用；与 `vmar` 指向的 Vmar 一致）。
     pub ttbr0_pa: usize,
     /// ASID 快照。
@@ -170,10 +176,21 @@ impl Process {
     /// `vmar_ref` 须为在表、类型 Vmar 的活对象；调用后本 Process 存活期间
     /// 其不可被销毁（已 retain 保证）。
     pub unsafe fn new(vmar_ref: NonNull<ObjRef>, ttbr0_pa: usize, asid: u16) -> Self {
+        let aspace = (*vmar_ref.as_ptr())
+            .obj
+            .as_vmar()
+            .expect("Process::new: vmar_ref 必为 Vmar")
+            .aspace()
+            .clone();
         (*vmar_ref.as_ptr()).retain();
         PROCESS_LIVE.fetch_add(1, Ordering::Relaxed);
         Self {
+<<<<<<< HEAD
             vmar: Some(vmar_ref),
+=======
+            vmar: vmar_ref,
+            aspace,
+>>>>>>> private/wip
             ttbr0_pa,
             asid,
             ht: HandleTable::new(),
@@ -304,6 +321,37 @@ static mut HT_DRAINQ_LEN: usize = 0;
 static mut HT_DRAINQ_WARNED: usize = 0;
 const HT_DRAINQ_CAP: usize = 256;
 
+const DEFERRED_PEER_WAKE_CAP: usize = 256;
+static DEFERRED_PEER_WAKES: [core::sync::atomic::AtomicUsize; DEFERRED_PEER_WAKE_CAP] =
+    [const { core::sync::atomic::AtomicUsize::new(0) }; DEFERRED_PEER_WAKE_CAP];
+static DEFERRED_PEER_WAKES_LEN: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
+/// F1-3 锁序守护：当 `ht_drain_flush` 在仅持 `KL(TABLE, rank 4)`、未持 `SQ(rank 1)` 的 `idle`
+/// 上下文中析构嵌套在途 `ChannelEnd` 时，暂存待唤醒对端键，待 `KL` 释放后正序调用 `wake_matching`。
+pub(crate) fn defer_peer_wake(wait_key: usize) {
+    use core::sync::atomic::Ordering;
+    if wait_key == 0 {
+        return;
+    }
+    let idx = DEFERRED_PEER_WAKES_LEN.load(Ordering::Relaxed);
+    if idx < DEFERRED_PEER_WAKE_CAP {
+        DEFERRED_PEER_WAKES[idx].store(wait_key, Ordering::Relaxed);
+        DEFERRED_PEER_WAKES_LEN.store(idx + 1, Ordering::Release);
+    }
+}
+
+fn flush_deferred_peer_wakes(local: &[usize]) {
+    let sigs = crate::handle::SIGNAL_PEER_CLOSED
+        | crate::handle::SIGNAL_READABLE
+        | crate::handle::SIGNAL_WRITABLE;
+    for &k in local {
+        if k != 0 {
+            berry_sched::wake_matching(k, sigs);
+        }
+    }
+}
+
 /// 单次 flush 的 drain 条数帽：摊平 KL 持有窗（SMP 下对核等锁面）——idle
 /// 环逐拍推进，32 条/拍在 churn 峰值（33-60）下 ≤2 拍清空。
 const HT_DRAINQ_CHUNK: usize = 32;
@@ -319,6 +367,7 @@ unsafe fn drain_pinned_process(pinned: NonNull<ObjRef>) {
     unsafe {
         let r = &mut *pinned.as_ptr();
         if let Some(proc) = r.obj.as_process_mut() {
+<<<<<<< HEAD
             // ① vmar 钉预放（帧归还刀件 B，见 Process::release_vmar_pin_early
             //    方法注）：表内 root Vmar 由此可在 drain phase-1 归零 Drop。
             proc.release_vmar_pin_early();
@@ -329,8 +378,32 @@ unsafe fn drain_pinned_process(pinned: NonNull<ObjRef>) {
         // ③ 消费钉住引用（drain 后原语义序）。类型不符 = 不可达防御面
         //（移交面恒 Process ObjRef）——引用仍须放（本函数契约 = 消费），
         // 不放即泄漏。
+=======
+            // F1-2 两阶段确定性销毁：阶段一（幂等兜底）拆解地址空间并归还全部页表帧与 ASID；
+            // 阶段二排空能力表（已彻底废除 leak = true 分支）。
+            proc.aspace.teardown();
+            proc.ht.drain();
+        }
+>>>>>>> private/wip
         // SAFETY: 调用方契约（独占引用，此后不再使用）。
         ObjRef::release(pinned);
+    }
+}
+
+/// F1-2 创建侧内联助推排水：当双核后台满载导致 `idle` 未能及时运行 `ht_drain_flush`、使
+/// `PROCESS_LIVE >= limit` 时，在 `sys_process_create` 持 KL 窗口内按需内联弹出并排空
+/// `HT_DRAINQ` 待回收进程，彻底根除忙核假性 `-ENOMEM`。
+pub fn ht_drain_assist_below(limit: usize) {
+    let _kl = berry_hal_aarch64::kern_lock::kern_acquire_irqsave_reentrant();
+    unsafe {
+        while process_live() >= limit && HT_DRAINQ_LEN > 0 {
+            HT_DRAINQ_LEN -= 1;
+            let p = HT_DRAINQ[HT_DRAINQ_LEN];
+            HT_DRAINQ[HT_DRAINQ_LEN] = 0;
+            if p != 0 {
+                drain_pinned_process(NonNull::new_unchecked(p as *mut ObjRef));
+            }
+        }
     }
 }
 
@@ -367,12 +440,12 @@ pub(crate) unsafe fn defer_ht_drain(pinned: NonNull<ObjRef>) {
 pub fn ht_drain_flush() {
     // KL 门：push 侧恒 KL 在身，队列互斥 + Drop 链（分配器/表/demand 面）
     // 都要求 KL 窗——不在身（idle 臂）物理取，在身（yield 续行臂）退化跳过。
-    // 取锁时不持任何结构锁（reap_drain 已放 REAPQ；idle/yield 点无 RQ/SQ），
-    // 无锁序倒置；持锁者零阻塞零切换（IRQ 屏蔽窗 + 纯释放零分配）。
     let held = berry_hal_aarch64::kern_lock::kl_held();
     if !held {
         berry_hal_aarch64::kern_lock::kern_acquire();
     }
+    let mut wake_buf = [0usize; DEFERRED_PEER_WAKE_CAP];
+    let mut wake_n = 0usize;
     unsafe {
         let mut n = 0;
         while HT_DRAINQ_LEN > 0 && n < HT_DRAINQ_CHUNK {
@@ -386,10 +459,19 @@ pub fn ht_drain_flush() {
             }
             n += 1;
         }
+        let pending = DEFERRED_PEER_WAKES_LEN.load(core::sync::atomic::Ordering::Acquire);
+        if (!held || berry_sched::sq_is_held()) && pending > 0 {
+            wake_n = pending.min(DEFERRED_PEER_WAKE_CAP);
+            for (i, dst) in wake_buf[..wake_n].iter_mut().enumerate() {
+                *dst = DEFERRED_PEER_WAKES[i].swap(0, core::sync::atomic::Ordering::Relaxed);
+            }
+            DEFERRED_PEER_WAKES_LEN.store(0, core::sync::atomic::Ordering::Release);
+        }
     }
     if !held {
         berry_hal_aarch64::kern_lock::kern_release();
     }
+<<<<<<< HEAD
     // TLB 回执收割（帧归还刀件 A ⑤）：idle 臂（KL 刚放）无 SVC 派发尾可等
     // ——`Vmar::Drop` 的 broadcast 闩在此显式收割（零锁自旋点，§3.2 等待
     // 窗纪律满足：KL 已放、无结构锁、IRQ 屏蔽窗内纯释放零分配）。yield
@@ -397,6 +479,10 @@ pub fn ht_drain_flush() {
     // dispatch 尾 `exit_checks`（既有面）。单核闩恒 0 零扰动。
     if !held {
         berry_hal_aarch64::tlbshoot::sched_exit_check();
+=======
+    if wake_n > 0 {
+        flush_deferred_peer_wakes(&wake_buf[..wake_n]);
+>>>>>>> private/wip
     }
 }
 

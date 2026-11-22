@@ -10,6 +10,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "berry-aiproto"
+version = "0.2.0"
+dependencies = [
+ "berry-crypto",
+]
+
+[[package]]
+name = "berry-amgrad"
+version = "0.2.0"
+
+[[package]]
+name = "berry-anrwatch"
+version = "0.2.0"
+
+[[package]]
 name = "berry-appproto"
 version = "0.2.0"
 
@@ -121,7 +136,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "berry-hnsw"
+version = "0.2.0"
+
+[[package]]
 name = "berry-jobs"
+version = "0.2.0"
+
+[[package]]
+name = "berry-jsonmask"
+version = "0.2.0"
+
+[[package]]
+name = "berry-kvpool"
 version = "0.2.0"
 
 [[package]]
@@ -168,6 +195,10 @@ version = "0.2.0"
 
 [[package]]
 name = "berry-netproto"
+version = "0.2.0"
+
+[[package]]
+name = "berry-npuproto"
 version = "0.2.0"
 
 [[package]]
@@ -232,6 +263,10 @@ name = "berry-telface"
 version = "0.2.0"
 
 [[package]]
+name = "berry-tensor"
+version = "0.2.0"
+
+[[package]]
 name = "berry-termio"
 version = "0.2.0"
 
@@ -267,6 +302,14 @@ version = "0.2.0"
 dependencies = [
  "berry-gpuproto",
 ]
+
+[[package]]
+name = "berry-vqvec"
+version = "0.2.0"
+
+[[package]]
+name = "berry-wakeflood"
+version = "0.2.0"
 
 [[package]]
 name = "berry-watchdog"
