@@ -860,6 +860,34 @@ pub extern "C" fn berry_channel_recv(
     }
 }
 
+/// 批量收（W3-Q97 排空式 0x57）：`ch` 的队列一次最多 `k_max` 条到
+/// `msgs` 槽位数组。槽距 = 304B：头 16B（nbytes/nhandles u64 出参）+
+/// 载荷 256B + handle 值 32B。成功返 0 且 `*n_recv` = 实收数（0=队空
+/// poll 语义同单发）；非 0 = 错误码（-EAGAIN 同单发）。
+///
+/// 性能面（TCP 泵化配套）：单发 recv 每条 1 syscall——K 窗客户端收
+/// K 条应答付 K syscall；recv_n 摊销为 1 syscall/批。TCG 域 ~1ms/syscall，
+/// K=3 省 2ms/管道周期 ≈ 11% 投影。
+#[no_mangle]
+pub extern "C" fn berry_channel_recv_n(
+    ch: Handle,
+    msgs: *mut u8,
+    k_max: usize,
+    n_recv: *mut usize,
+) -> Status {
+    unsafe {
+        sys(
+            nr::CHANNEL_RECV_N,
+            ch as usize,
+            msgs as usize,
+            k_max,
+            n_recv as usize,
+            0,
+            0,
+        )
+    }
+}
+
 /// v1：options 须 0（非 0 -EINVAL）；授 SIGNAL|DUPLICATE；出生信号全零。
 #[no_mangle]
 pub extern "C" fn berry_event_create(options: u32, out: *mut Handle) -> Status {
