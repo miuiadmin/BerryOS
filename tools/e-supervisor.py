@@ -35,7 +35,13 @@ MACHINERY_PREFIXES = (
     "tools/run-artifact.sh", "tools/gate-wrap.sh", "tools/claude-audit.py",
     "tools/stale-parks.py", "tools/stranded-deferrals.py", "tools/answers-readback.py",
     ".agents/tools/", "tools/facts.py", "tools/gate-selftest.sh",
-    "tools/review-pin.toml",
+    "tools/docs_guard.py",
+    "tools/floor-check.sh",
+    "tools/writable_globals.py",
+    "tools/unsafe_audit.py",
+    "tools/shvarcheck.py",
+    "tools/selftest_guard.py",
+    ".github/workflows/",
 )
 UNDO_AFTER_SECS = 3 * 3600
 REPAIR_AFTER_SECS = 6 * 3600

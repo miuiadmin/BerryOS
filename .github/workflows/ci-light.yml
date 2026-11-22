@@ -7,8 +7,8 @@ name: CI-light
 # 并行（无 QEMU 无抢核面），串行队列有效吞吐翻倍。
 # 触发面：docs/**、*.md、.agents/**、tools/*.py、tools/*.sh、deny.toml
 # ——这些步全部纯 host 面（python3/node），不动 Rust/QEMU。
-# 与重道互斥由 GitHub 原生 paths 语义保证：PR 只动这些路径 → 只触发轻道；
-# 混入任何重道路径（kernel/ 等）→ 只触发重道（ci.yml paths-ignore 对称排除）。
+# paths 语义（审计 r2 修正）：纯轻面只触发轻道；纯重面只触发重道；**混合改动双道齐触发**
+# （轻道并行冗余无害）——互斥只存在于两极。
 on:
   push:
     # wip/auto-*（审计 2026-11-22）：E lane 工作分支——push-green 等绿链的触发面，

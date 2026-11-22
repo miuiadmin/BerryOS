@@ -28,15 +28,18 @@ while read -r lref lsha rref rsha; do
   # 登记的 bot 邮箱作者的本地新提交只准推 wip/auto-* 与 hermes/*——推 main
   # 或其他分支即拒（「runner 永不碰集成分支/永不自 merge」的机器面）。
   if [ -n "$bot_email" ]; then
-    case "$lref" in
+    # 审计 r2：判**远端落点** rref 而非本地 ref——显式 refspec（HEAD:main）旁路已堵；
+    # 删除推（lsha=zero）无新提交，跳过。
+    [ "$lsha" = "$zero" ] && continue
+    case "$rref" in
       refs/heads/wip/auto-*|refs/heads/hermes/*) ;;
       *)
         botrange="$rsha..$lsha"
         [ "$rsha" = "$zero" ] && botrange="$lsha"
         if git rev-list "$botrange" --author="$bot_email" 2>/dev/null | head -1 | grep -q .; then
           cat >&2 <<EOF
-[berryos-guard] 拒绝：bot 身份（$bot_email）的新提交只准推 wip/auto-* 或 hermes/* 分支，
-本次推送将把 bot 提交送上 $lref——runner 永不碰集成分支、永不自 merge（规则/16 §5）。
+[berryos-guard] 拒绝：bot 身份（$bot_email）的新提交只准落 wip/auto-* 或 hermes/* 分支，
+本次推送的远端落点是 $rref——runner 永不碰集成分支、永不自 merge（规则/16 §5）。
 bot 正确路径：推 wip/auto-* 开 PR（label hermes-auto），人审合入。
 EOF
           exit 1

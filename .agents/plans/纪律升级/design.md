@@ -55,13 +55,13 @@ Version: 1.0.0
 
 - [x] 阶段 1 立法：`node .agents/tools/check-docs.mjs --strict` 绿；`python3 tools/docs_guard.py` 绿（G1/G6 在帽内）；AGENTS.md 规则 8 与 规则/16 互指成立
 - [x] 阶段 2 判据单源：`bash tools/markers.sh` 自检绿；`just smoke` 与 `just smoke-image` 判读词逐字不变（裸相 32/ROOTFS 56/ECO 52/bcts 91 稳）；伪造 manifest 哈希 image-fresh 退出 1；内核重编后 gui8 自动重建；floor-check 本地与 CI 双绿
-- [x] 阶段 3 门禁：gate-selftest 六腿全绿（含工作树修好/索引留毒攻击腿、兄弟半成品不误拦腿）；临时克隆装钩子后坏文档与 `--no-verify` 两绕过面均被拦；真实仓常规提交零扰动
+- [x] 阶段 3 门禁：gate-selftest 八腿全绿（含工作树修好/索引留毒攻击腿、兄弟半成品不误拦腿、facts 漂移门拒腿、bot 身份 push 闸腿——后续审计轮扩至 tools-only 控制面腿与 refspec 落点负腿）；临时克隆装钩子后坏文档与 `--no-verify` 两绕过面均被拦；真实仓常规提交零扰动
 - [x] 阶段 4 数字自证：facts 对拍绿且幂等（`--update` 后 `git diff` 为空）；删一个 `#[test]` 红并指认键名；check-docs `--selftest` 全夹具触发；selftest_guard 零漏接线（含 .mjs）
 - [x] 阶段 5 双戳：本文件试点盖双戳；`--selftest` 三腿坏样例（裸 checkbox/计数不符/缺 Quality reviewed）全触发；facts 显示 `stamped_designs >= 1`
 - [x] 阶段 6 E 面（仓内侧）：SKILL.md/RUNBOOK 过 `--strict`；身份闸腿绿（bot 推集成分支拒、推 wip/auto-* 过）；punch-list 载体落位（[E 面运营计划](../2026-11-22-e面运营.md)未完成事项节）——E lane 首跑（owner 机配置 + 监督轮 + 验收三件）挂 punch-list 前三条
 
-> Verified: 2026-11-22 · 147005ed1 + 收口笔 · 6/6 · tests 6
-> Quality reviewed: 主会话对抗自查——六检测器自检首跑共抓 8 处真伤（ver_le 实参反/macOS awk -v 拒 '='/快照根相对路径 82 假红/腿 f 无差异/facts 好坏夹具对调/RUNBOOK 无类型头/链接层级错/4 篇未同批刷 facts），快照门活体两咬立制者本人；E lane 首跑（owner 机配置）与 CI 首跑观察挂 punch-list 在案 · 2026-11-22
+> Verified: 2026-11-22 · 147005ed155d · 6/6 · tests 6
+> Quality reviewed: 主会话对抗自查+收口笔——六检测器自检首跑共抓 8 处真伤（ver_le 实参反/macOS awk -v 拒 '='/快照根相对路径 82 假红/腿 f 无差异/facts 好坏夹具对调/RUNBOOK 无类型头/链接层级错/4 篇未同批刷 facts），快照门活体两咬立制者本人；E lane 首跑（owner 机配置）与 CI 首跑观察挂 punch-list 在案 · 2026-11-22
 
 ## 适用边界
 

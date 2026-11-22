@@ -19,7 +19,7 @@ description: BerryOS 无人值守 runner 宪法（E 面）——每轮循环、d
 7. 验证（真跑，隔离 target）：`RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WORKS=1 CARGO_TARGET_DIR=<工作区私有 target> just test-host` + `just docs-guard` + `python3 tools/facts.py`（动计数面同批 `--update`）；相关时按规则域加跑。
 8. 自审：`git diff --stat` + `git diff`；至少写 3 条风险检查（越界/测试/文档/秘密/仓规），有阻塞就修。
 9. commit（小步原子，显式路径）；新分支才 rebase（已 push 的 PR 分支只 merge-base 解冲突，不改写历史）；rebase 过则重跑第 7 步。
-10. push 当前分支走 `python3 tools/push-green.py`（后台推送 + `@{u}..HEAD` 空为落地判据 + CI 三态判决：green 前进 / red 修 / note=基础设施无答记档不归责）；创建/更新 PR（base `wip/sched-1.1`，label `hermes-auto`，body 必含任务、改动、验证命令与结果、风险、本轮全部 `A:` 决策行）。**绝不 merge**。
+10. push 当前分支走 `python3 tools/push-green.py`（**PR 先建后等**：落地后自动建/续 open PR——pull_request 面是产品改动的唯一重道触发；headSha 精确 supersession + 混合轮轻道绿不判 green + CI 三态：green 前进 / red 修 / note=基础设施无答或触发面空记档不归责）；PR body 必含任务、改动、验证命令与结果、风险、本轮全部 `A:` 决策行。**绝不 merge**。
 11. 更新 punch-list（勾完成项）与 LOG；park 项按下方 park 语义落账。
 
 ## 停机语义（不许自愿停，停要过四门）

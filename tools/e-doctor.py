@@ -31,6 +31,7 @@ REQUIRED_FILES = [
 REMOTE_MUST_HAVE = [
     ".agents/skills/berryos-runner/SKILL.md", "tools/e-guard.py",
     ".githooks/pre-commit", "tools/control-plane.txt",
+    ".github/workflows/ci-light.yml",
 ]
 
 
@@ -59,7 +60,7 @@ def check(root: Path, path_override: str | None = None) -> tuple[int, list[str]]
             rr = subprocess.run(["git", "-C", str(root), "cat-file", "-e", f"{upstream}:{f}"],
                                 capture_output=True)
             if rr.returncode != 0:
-                fails.append(f"远程缺纪律件：{upstream} 无 {f}——先推纪律线再发射（lane 首跑 fetch 后建分支，旧基无宪法/闸即楔死）")
+                fails.append(f"远程缺纪律件：{upstream} 无 {f}——先推纪律线再发射（punch-list「纪律刀推送」条；lane 旧基无宪法/闸/触发面即楔死）")
     r = subprocess.run(["git", "-C", str(root), "config", "--get", "core.hooksPath"],
                        capture_output=True, text=True)
     if "githooks" not in (r.stdout or ""):
@@ -89,6 +90,11 @@ def selftest() -> int:
         for f in ("pre-commit", "pre-push"):
             (g / ".githooks" / f).write_text("#!/bin/sh\n", encoding="utf-8")
         for f in REQUIRED_FILES:
+            p = g / f
+            p.parent.mkdir(parents=True, exist_ok=True)
+            if not p.exists():
+                p.write_text("x", encoding="utf-8")
+        for f in REMOTE_MUST_HAVE:
             p = g / f
             p.parent.mkdir(parents=True, exist_ok=True)
             if not p.exists():

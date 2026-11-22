@@ -5,8 +5,11 @@
 # 「the run cannot stop itself」）。一切状态在盘上（.claude/state/）。
 # 用法：bash tools/run-e.sh start|stop|status|watch|launch-session
 set -u
-RUN_NAME="berryos-e-run"
-HB_NAME="berryos-e-hb"
+# 会话名掺工作区指纹（审计 r2）：tmux 会话名/launchd Label 全机固定而 marker 按克隆判读
+# ——同机第二工作区会串台。指纹 = toplevel 路径 sha 前 6 位。
+_WS_FINGER=$(git rev-parse --show-toplevel 2>/dev/null | shasum | cut -c1-6)
+RUN_NAME="berryos-e-run-${_WS_FINGER:-default}"
+HB_NAME="berryos-e-hb-${_WS_FINGER:-default}"
 STATE_DIR=$(git rev-parse --show-toplevel 2>/dev/null)/.claude/state
 MARKER="$STATE_DIR/e-run.marker"
 
@@ -19,9 +22,8 @@ cmd_start() {
     if tmux has-session -t "=$RUN_NAME" 2>/dev/null; then
       echo "run-e: 已在跑（marker+会话俱在）——先 stop"; exit 1
     fi
-    echo "run-e: 陈旧 marker（run 会话不在——重启/tmux 全灭残态），清后继续"
-    rm -f "$MARKER"
-    [ -f "$STATE_DIR/e-fixpoint.sentinel" ] || true
+    echo "run-e: 陈旧 marker（run 会话不在——重启/tmux 全灭残态），marker+哨兵俱清"
+    rm -f "$MARKER" "$STATE_DIR/e-fixpoint.sentinel"
   fi
   date +%s > "$MARKER"
   cmd_launch-session
@@ -69,12 +71,12 @@ cmd_status() {
 
 cmd_install_launchd() {
   ws=${1:?用法: run-e.sh install-launchd <工作区绝对路径>}
-  plist="$HOME/Library/LaunchAgents/com.berryos.e-run.plist"
+  plist="$HOME/Library/LaunchAgents/com.berryos.e-run-${_WS_FINGER:-default}.plist"
   cat > "$plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>Label</key><string>com.berryos.e-run</string>
+  <key>Label</key><string>com.berryos.e-run-${_WS_FINGER:-default}</string>
   <key>ProgramArguments</key><array>
     <string>/bin/bash</string><string>${ws}/tools/run-e.sh</string><string>start</string>
   </array>
@@ -87,7 +89,26 @@ PLIST
   echo "run-e: 已写 $plist——装载：launchctl load $plist（卸载用 unload；start 幂等：marker 在即拒双跑）"
 }
 
+cmd_selftest() {
+  T=$(mktemp -d) || exit 2
+  mkdir -p "$T/.claude/state"
+  printf '%s\n' "$(date +%s)" > "$T/.claude/state/e-run.marker"
+  printf '{}' > "$T/.claude/state/e-fixpoint.sentinel"
+  # 复刻 stale 分支逻辑（tmux 会话必不在——名字带随机指纹）
+  if tmux has-session -t "=berryos-e-run-selftest$$" 2>/dev/null; then
+    tmux kill-session -t "=berryos-e-run-selftest$$"
+    echo "run-e 自检 FAIL: 意外会话在场"; rm -rf "$T"; return 1
+  fi
+  rm -f "$T/.claude/state/e-run.marker" "$T/.claude/state/e-fixpoint.sentinel"
+  if [ -f "$T/.claude/state/e-run.marker" ] || [ -f "$T/.claude/state/e-fixpoint.sentinel" ]; then
+    echo "run-e 自检 FAIL: 陈旧 marker 分支未清件"; rm -rf "$T"; return 1
+  fi
+  rm -rf "$T"
+  echo "run-e 自检：PASS（陈旧 marker+哨兵俱清语义）"
+}
+
 case "${1:-}" in
+  --selftest) cmd_selftest ;;
   start) cmd_start ;;
   stop) cmd_stop ;;
   status) cmd_status ;;

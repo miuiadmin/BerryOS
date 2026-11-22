@@ -51,7 +51,7 @@ match_prefix() {
   _mp_path="$1"; _mp_best=""
   while IFS= read -r _mp_p; do
     case "$_mp_path" in
-      "$_mp_p"|"_mp_p"*)
+      "$_mp_p"|"$_mp_p"*)
         if [ "${#_mp_p}" -gt "${#_mp_best}" ]; then _mp_best="$_mp_p"; fi
         ;;
     esac
@@ -150,7 +150,7 @@ selftest() {
   }
   # 合成树：占位件全在临时目录，零真仓依赖、零 git index 接触。
   _st_td="$(mktemp -d "${TMPDIR:-/tmp}/cpgate-st.XXXXXX")" || return 2
-  mkdir -p "$_st_td/tools" "$_st_td/dirp"
+  mkdir -p "$_st_td/tools" "$_st_td/dirp" "$_st_td/dirp2"
   printf '#!/bin/bash\ncase "$1" in --selftest) exit 0;; esac\nexit 0\n' > "$_st_td/tools/yes.sh"
   printf 'import sys\nsys.exit(1)\n' > "$_st_td/tools/no.py"
   printf '#!/bin/bash\necho "plain helper, no selftest"\n' > "$_st_td/tools/plain.sh"
@@ -161,6 +161,7 @@ tools/yes.sh
 tools/no.py
 tools/plain.sh
 dirp/ => true
+dirp2/ => false
 EOM
   _st_run() { # _st_run <期望 rc> <腿名> <staged 清单>
     _sr_want="$1"; _sr_name="$2"; _sr_staged="$3"; _sr_got=1
@@ -175,7 +176,13 @@ EOM
     bash "$SELF" > "$_st_td/out.txt" 2>&1
   _st_got=$?; _sr_want=0
   if [ "$_st_got" -eq "$_sr_want" ] && grep -q "跳过" "$_st_td/out.txt"; then _st_check ".sh 无 selftest 跳过且列名（rc 0）" 0; else _st_check ".sh 无 selftest 跳过且列名（rc 0）" 1; fi
-  _st_run 0 "前缀级测试腿（=> true）" "dirp/x.txt"
+  # 前缀正腿带非空断言（审计 r2：无命中直通同为 rc 0——不 grep 命中面就是假绿）
+  CP_ROOT_OVERRIDE="$_st_td" CP_MANIFEST_OVERRIDE="$_st_td/cp.txt" CP_STAGED_OVERRIDE="dirp/x.txt" \
+    bash "$SELF" > "$_st_td/out.txt" 2>&1
+  _st_got=$?
+  if [ "$_st_got" -eq 0 ] && grep -q "dirp/" "$_st_td/out.txt"; then _st_check "前缀级测试腿（=> true，命中面可见）" 0; else _st_check "前缀级测试腿（=> true，命中面可见）" 1; fi
+  # 前缀负腿（=> false 必拒）：前缀匹配再哑掉（$ 又丢）此腿即红——假绿堵
+  _st_run 1 "前缀负腿（dirp2/ => false 必拒）" "dirp2/x.txt"
   CP_ROOT_OVERRIDE="$_st_td" CP_MANIFEST_OVERRIDE="$_st_td/absent.txt" CP_STAGED_OVERRIDE="tools/yes.sh" \
     bash "$SELF" > /dev/null 2>&1
   if [ $? -eq 1 ]; then _st_check "清单缺席红（default-conservative）" 0; else _st_check "清单缺席红（default-conservative）" 1; fi

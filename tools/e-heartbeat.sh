@@ -52,6 +52,7 @@ while :; do
     else
       timeout 2400 python3 "$root/tools/e-supervisor.py" --tick >/dev/null 2>&1 || true
     fi
+    # （同上条件，变量未变——supervisor 调用与 nudge 同一闲态分支，审计 r2 合并）
     if [ "$idle" -ge "$IDLE_SECS" ] && [ "$attached" -eq 0 ]; then
       if [ -f "$root/.claude/state/repair-needed" ]; then
         send_line "repair 模式：从 git log、门禁输出与 smoke 证物找 6 小时零 ship 的原因，在拥有它的层修，或记 punch-list 后换下一项"

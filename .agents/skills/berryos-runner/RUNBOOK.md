@@ -22,7 +22,8 @@ SKILL.md 是 runner 宪法（给机器读）；本手册是 owner 接入/排查�
 
 ## E lane 新建（Claude-Code-native，2026-11-22 二期 P0 形态；照此逐步，一次配完）
 
-1. 克隆：`git clone <BerryOS-private 远端> /Users/murongcheng/berryos-auto`。
+0. **前置（审计 r2，跳过必楔死）**：确认主仓 wip/sched-1.1 已 merge origin/wip 并把纪律刀全套推上 origin（punch-list「纪律刀推送」条）——e-doctor 的远程五件红灯会在缺失时拒发射并指向该条。
+1. 克隆：`git clone <BerryOS-private 远端> /Users/murongcheng/berryos-auto`（**从远端克隆**，不从主仓本地克隆——主仓曾浅、且未推提交不在 origin）。
 2. 身份与闸（该克隆内）：
    `git config user.name berryos-hermes-bot`
    `git config user.email <bot 邮箱>`

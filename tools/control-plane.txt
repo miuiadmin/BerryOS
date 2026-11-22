@@ -36,3 +36,11 @@ tools/claude-audit.py                       # .claude 配置面登记审计（�
 .agents/tools/ => node .agents/tools/check-docs.mjs --selftest
 tools/facts.py => python3 tools/facts.py --selftest
 tools/gate-selftest.sh => bash tools/gate-selftest.sh
+# 审计 r2 补员：CI 闸族六件 + workflow 面——无人会话改判自己的门=自裁口子
+tools/docs_guard.py
+tools/floor-check.sh
+tools/writable_globals.py
+tools/unsafe_audit.py
+tools/shvarcheck.py
+tools/selftest_guard.py
+.github/workflows/

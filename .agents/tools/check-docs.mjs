@@ -411,13 +411,14 @@ function checkDesignStamps(rel, lines, out) {
   // 分节扫描（自跟踪围栏，防代码块内 checklist 假计数）
   let fenced = false;
   const sections = [];
-  let cur = { checks: 0, unchecked: 0, verified: null, quality: false };
+  let cur = { checks: 0, unchecked: 0, verified: null, quality: false, rawVerified: [] };
   const seal = () => sections.push(cur);
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i];
     if (/^\s*(```|~~~)/.test(raw)) { fenced = !fenced; continue; }
     if (fenced) continue;
-    if (/^#{1,6}\s/.test(raw)) { seal(); cur = { checks: 0, unchecked: 0, verified: null, quality: false }; continue; }
+    if (/^#{1,6}\s/.test(raw)) { seal(); cur = { checks: 0, unchecked: 0, verified: null, quality: false, rawVerified: [] }; continue; }
+    if (/^>\s*Verified:/i.test(raw)) { cur.rawVerified.push({ line: i + 1, text: raw }); }
     const vm = VERIFIED_RE.exec(raw);
     if (vm) { cur.verified = { line: i + 1, m: vm }; continue; }
     if (QUALITY_RE.test(raw)) { cur.quality = true; continue; }
@@ -426,6 +427,11 @@ function checkDesignStamps(rel, lines, out) {
   }
   seal();
   for (const s of sections) {
+    // 第四红（审计 r2）：围栏外出现 > Verified: 行但不合机读语法——静默放过即
+    // 豁免反黑洞三红同时保留棘轮计数（「计数认它、执法不认它」的缝）。
+    for (const raw of s.rawVerified || []) {
+      if (!VERIFIED_RE.test(raw.text)) add(out, 1, rel, raw.line, 'Verified 戳行不合机读语法（规范「节级完成态」：<日期> · <commit 哈希 7-40 hex> · N/N · tests <N|->）——不合格式即报，不静默跳过');
+    }
     if (!s.verified) continue;
     const { line, m } = s.verified;
     const date = m[1], n1 = m[3], n2 = m[4];
@@ -808,13 +814,15 @@ function runSelftest() {
   writeFileSync(join(bad, '.agents/plans/mod1/断链.md'),
     '# 断链\n\nType: plan\nStatus: active\nUpdated: 2026-11-21\n\n看[不存在的目标](../nope.md)。\n'); // 组 3
   // 双戳三坏样例（2.6）
-  for (const s of ['s1', 's2', 's3']) mkdirSync(join(bad, '.agents/plans', s), { recursive: true });
+  for (const s of ['s1', 's2', 's3', 's4']) mkdirSync(join(bad, '.agents/plans', s), { recursive: true });
   writeFileSync(join(bad, '.agents/plans/s1/design.md'),
     '# s1 总体设计\n\nType: spec\nStatus: active\nUpdated: 2026-11-21\nVersion: 1.0.0\n\n## 验收\n\n- [x] 甲\n- [ ] 乙\n\n> Verified: 2026-11-21 · abcdef123456 · 2/2 · tests 1\n> Quality reviewed: x 2026-11-21\n'); // 裸 checkbox → 反黑洞
   writeFileSync(join(bad, '.agents/plans/s2/design.md'),
     '# s2 总体设计\n\nType: spec\nStatus: active\nUpdated: 2026-11-21\nVersion: 1.0.0\n\n## 验收\n\n- [x] 甲\n\n> Verified: 2026-11-21 · abcdef123456 · 2/2 · tests 1\n> Quality reviewed: x 2026-11-21\n'); // 计数 2/2 ≠ 实数 1
   writeFileSync(join(bad, '.agents/plans/s3/design.md'),
     '# s3 总体设计\n\nType: spec\nStatus: active\nUpdated: 2026-11-21\nVersion: 1.0.0\n\n## 验收\n\n- [x] 甲\n\n> Verified: 2026-11-21 · abcdef123456 · 1/1 · tests 1\n'); // 缺 Quality reviewed
+  writeFileSync(join(bad, '.agents/plans/s4/design.md'),
+    '# s4 总体设计\n\nType: spec\nStatus: active\nUpdated: 2026-11-21\nVersion: 1.0.0\n\n## 验收\n\n- [x] 甲\n\n> Verified: 2026-11-21 · abcdef123456 + 收口笔 · 1/1 · tests 1\n> Quality reviewed: x 2026-11-21\n'); // 戳行不合机读语法（带注记尾巴）
   r = run(['--strict'], bad);
   const out = r.stdout || '';
   ok = leg('坏样例退出 1', r.status === 1) && ok;
@@ -822,6 +830,7 @@ function runSelftest() {
   ok = leg('反黑洞坏样例触发', out.includes('反黑洞')) && ok;
   ok = leg('戳计数坏样例触发', out.includes('戳计数不符')) && ok;
   ok = leg('缺 Quality reviewed 坏样例触发', out.includes('Quality reviewed')) && ok;
+  ok = leg('不合语法 Verified 行报错（不静默跳过）', out.includes('不合机读语法')) && ok;
 
   rmSync(good, { recursive: true, force: true });
   rmSync(bad, { recursive: true, force: true });

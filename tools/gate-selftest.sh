@@ -33,9 +33,14 @@ cp "$REPO/.githooks/pre-commit" "$REPO/.githooks/prepare-commit-msg" .githooks/
 chmod +x .githooks/pre-commit .githooks/prepare-commit-msg
 git config core.hooksPath .githooks
 cp "$REPO/.agents/tools/check-docs.mjs" .agents/tools/
-# 控制面条件测试门依赖件（pre-commit 尾段调用；清单+门本体随沙箱走）
+# 控制面条件测试门依赖件（pre-commit 尾段调用；清单+门本体随沙箱走）。
+# gate-selftest.sh 本体用 exit-0 stub 替代（审计 r2）：真件进沙箱=自指无限递归
+# （沙箱 commit→门→前缀测试 gate-selftest→再造沙箱…）；stub 断递归且不缺件，
+# 沙箱内前缀级测试对 .githooks/ 空转可接受（真门已在外层真仓 staged 上跑过）。
 mkdir -p tools
 cp "$REPO/tools/control-plane-gate.sh" "$REPO/tools/control-plane.txt" tools/
+printf '#!/bin/sh\n# gate-selftest 沙箱 stub（防递归占位）\nexit 0\n' > tools/gate-selftest.sh
+chmod +x tools/gate-selftest.sh
 # docs/ 必须有被跟踪文件（空目录不进 git——checkout-index 不导出，显式面
 # 报「路径不存在」）：自由知识无头块形态合法。
 printf '# 沙箱自由知识\n\n一句话说明：gate-selftest 夹具。\n' > docs/free.md
@@ -56,7 +61,7 @@ set_facts() {
   git add tools/facts.txt
 }
 set_facts 2 1
-git add .agents .githooks docs tools/control-plane-gate.sh tools/control-plane.txt
+git add .agents .githooks docs tools/control-plane-gate.sh tools/control-plane.txt tools/gate-selftest.sh
 git commit -qm init || die "沙箱 init 提交未过门（最小合法面应过）"
 
 bad_doc() { mkdir -p .agents/plans/mod2; printf '# 断头\n\nType: spec\nStatus: active\n' > .agents/plans/mod2/design.md; }
@@ -111,6 +116,22 @@ set_facts 5 4
 git commit -qm g2 || die "腿 g：facts 刷新后同内容未过门"
 clean_leg; leg "腿 g 过：facts 漂移快照门拒 + 刷新后过"
 
+# 腿 g2：tools-only staged 的控制面门腿——清单内治理件（零 docs staged）提交，
+# 控制面门必须调起且其自检红即拒（审计 r2：上轮 P0-2 半修的补腿——前缀修复的
+# 端到端实证）。夹具：临时造 selftest exit 1 的假 e-guard.py 覆盖后还原。
+cp .agents/tools/check-docs.mjs /tmp/cd-mjs.bak 2>/dev/null || true
+mkdir -p tools
+printf 'import sys\nsys.exit(1)\n' > /tmp/fake-guard.py
+cp tools/e-guard.py /tmp/eg-bak.py
+cp /tmp/fake-guard.py tools/e-guard.py
+git add tools/e-guard.py
+if git commit -qm g2 2>/dev/null; then
+  cp /tmp/eg-bak.py tools/e-guard.py && git add tools/e-guard.py && git commit -qm g2-fix || true
+  die "腿 g2：tools-only 红件未被控制面门拦（半修复发）"
+fi
+cp /tmp/eg-bak.py tools/e-guard.py
+clean_leg; leg "腿 g2 过：tools-only 红件被控制面门拦"
+
 # 腿 h：bot 身份闸（push 层）——bot 提交推集成分支拒、推 wip/auto-* 过
 cp "$REPO/.githooks/pre-push" .githooks/ && chmod +x .githooks/pre-push
 git add .githooks/pre-push && git commit -qm h0 || die "腿 h：pre-push 装载提交未过门"
@@ -118,6 +139,13 @@ git config berryos.bot-email gate-selftest@local
 sha=$(git rev-parse HEAD); z=0000000000000000000000000000000000000000
 if echo "refs/heads/$BR $sha refs/heads/$BR $z" | .githooks/pre-push origin u 2>/dev/null; then
   die "腿 h：bot 身份推集成分支未被拒"
+fi
+# 审计 r2 两条负腿：显式 refspec 把 bot 提交送往集成分支/main——落点闸必须拒
+if echo "refs/heads/wip/auto-t $sha refs/heads/$BR $z" | .githooks/pre-push origin u 2>/dev/null; then
+  die "腿 h：refspec 落点旁路（auto→集成分支）未被拒"
+fi
+if echo "refs/heads/wip/auto-t $sha refs/heads/main $z" | .githooks/pre-push origin u 2>/dev/null; then
+  die "腿 h：refspec 落点旁路（auto→main）未被拒"
 fi
 echo "refs/heads/wip/auto-t $sha refs/heads/wip/auto-t $z" | .githooks/pre-push origin u \
   || die "腿 h：bot 身份推 wip/auto-* 被误拦"
