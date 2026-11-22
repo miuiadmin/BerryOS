@@ -340,20 +340,12 @@ IMG_CONT_MARKERS=("HANDOFF ok ver=" "MMAP ok segs=" "ROOTFS ok src=handoff")
 # 活树态 PR 锚：tools/abi.toml [platform].level（mkimage platform_level()
 # 同源同法——live 态无冻结件可携 pr，取树现值；tomllib 函数内导入，坏源
 # loud——mkimage 同纪律）。
+# PYEOF④段已抽出为模块（tools/bcts/abi_level.py——bctsrun Rust 件四刀的
+# parity oracle 基座，t1/t2_check/reconcile_t2 同款先例）：段体逐字迁居
+# 零缩进归位（段体本就顶格），调用位改 python3 模块直调同参（$1 =
+# abi.toml 路径），文案/退码逐字节不变。
 abi_level() {
-  python3 - "$SCRIPT_DIR/abi.toml" <<'PYEOF4'
-import sys, tomllib
-try:
-    with open(sys.argv[1], "rb") as f:
-        lv = tomllib.load(f).get("platform", {}).get("level")
-except Exception as e:
-    print(f"bcts: FAIL: 读 {sys.argv[1]} [platform].level 失败：{e}", file=sys.stderr)
-    sys.exit(1)
-if not isinstance(lv, int) or isinstance(lv, bool):
-    print(f"bcts: FAIL: {sys.argv[1]} [platform].level 非整数：{lv!r}", file=sys.stderr)
-    sys.exit(1)
-print(lv)
-PYEOF4
+  python3 "$SCRIPT_DIR/bcts/abi_level.py" "$SCRIPT_DIR/abi.toml"
 }
 
 # 版本声称位对账（v0 头注「镜像侧版本声称位对账」兑现，G3）：镜像侧
@@ -361,30 +353,12 @@ PYEOF4
 # 冻结件 platform_revision（认证语义：OEM 声称版本必须与回放冻结件同版，
 # 不等 loud 拒——38 号 G3 任务书）；live 态锚 = abi.toml level（树现值）。
 # 解析面 = smoke-image.sh 预检同款（缺行/条目混杂/失配如实报）。
+# PYEOF⑤段已抽出为模块（tools/bcts/img_pr_check.py——bctsrun Rust 件四刀的
+# parity oracle 基座，abi_level 同刀同款先例）：段体逐字迁居 +2 缩进归位
+# 外零变更，调用位改 python3 模块直调同参（$1=manifest $2=期望 pr $3=锚
+# 描述），文案/退码逐字节不变。
 img_pr_check() {  # $1=manifest 路径 $2=期望 pr $3=锚描述
-  python3 - "$1" "$2" "$3" <<'PYEOF5'
-import re, sys
-manifest, want, anchor = sys.argv[1], int(sys.argv[2]), sys.argv[3]
-def die(msg):
-    print(f"bcts: FAIL: {msg}", file=sys.stderr)
-    sys.exit(1)
-try:
-    with open(manifest, encoding="ascii") as f:
-        text = f.read()
-except OSError as e:
-    die(f"读 {manifest} 失败（mkimage 侧产物应与镜像同目录）：{e}")
-prs = re.findall(r"(?m)^item .* platform_revision=(\d{10})$", text)
-if not prs:
-    die(f"{manifest} 无 platform_revision 条目行（manifest v1 产物面断裂——镜像非 mkimage 产链？）")
-vals = sorted({int(p) for p in prs})
-if len(vals) > 1:
-    die(f"{manifest} platform_revision 条目混杂 {vals}（同盘同版断裂——mkimage 逐条目同源取值）")
-got = vals[0]
-if got != want:
-    die(f"镜像 manifest platform_revision={got} != 回放清单 pr={want}（对账锚：{anchor}）"
-        "——版本声称位对账断裂，不等 loud 拒（认证语义：镜像声称版本必须与回放冻结件同版）")
-print(f"bcts: 版本声称位对账 ok：manifest platform_revision={got} == {anchor}")
-PYEOF5
+  python3 "$SCRIPT_DIR/bcts/img_pr_check.py" "$1" "$2" "$3"
 }
 
 # ---------- --selftest（零 QEMU；berry_assemble --selftest 同款合成腿风格）----------
