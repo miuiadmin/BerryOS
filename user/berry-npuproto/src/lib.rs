@@ -291,6 +291,73 @@ pub fn encode_completion(fence: u64, st: CompletionStatus, out: &mut [u8]) -> Op
     Some(())
 }
 
+/// virtio 标准描述符表条目（16B：addr u64 + len u32 + flags u16 +
+/// next u16——链式描述符；compute 面常用旗：WRITE = 设备可写）。
+pub const DESC_SZ: usize = 16;
+/// 描述符旗：设备写（结果缓冲方向）。
+pub const DESC_F_WRITE: u16 = 1 << 1;
+/// avail 环头幅（flags + idx；ring 体按 queue_pow2 供电侧定容）。
+pub const AVAIL_HDR_SZ: usize = 4;
+/// used 环条目（8B：id u32 + len u32）。
+pub const USED_ENTRY_SZ: usize = 8;
+
+/// 描述符条目解码（畸形即 None）。
+pub fn parse_desc(buf: &[u8]) -> Option<(u64, u32, u16, u16)> {
+    if buf.len() < DESC_SZ {
+        return None;
+    }
+    Some((
+        le64(&buf[0..8]),
+        le32(&buf[8..12]),
+        le16(&buf[12..14]),
+        le16(&buf[14..16]),
+    ))
+}
+
+/// 描述符条目编码。
+pub fn encode_desc(out: &mut [u8], addr: u64, len: u32, flags: u16, next: u16) -> Option<()> {
+    if out.len() < DESC_SZ {
+        return None;
+    }
+    put64(&mut out[0..8], addr);
+    put32(&mut out[8..12], len);
+    put16(&mut out[12..14], flags);
+    put16(&mut out[14..16], next);
+    Some(())
+}
+
+/// avail 环头解码（flags, idx）。
+pub fn parse_avail_hdr(buf: &[u8]) -> Option<(u16, u16)> {
+    if buf.len() < AVAIL_HDR_SZ {
+        return None;
+    }
+    Some((le16(&buf[0..2]), le16(&buf[2..4])))
+}
+
+/// avail 环头编码 + ring 槽写入（`head` = 描述符链头号；`qsize` 幂2
+/// 容量——槽址 = hdr + idx % qsize）。
+pub fn avail_push(buf: &mut [u8], qsize_pow2: usize, head: u16) -> Option<u16> {
+    if buf.len() < AVAIL_HDR_SZ + qsize_pow2 * 2 {
+        return None;
+    }
+    let (_, idx) = parse_avail_hdr(buf)?;
+    let slot = idx as usize % qsize_pow2;
+    put16(&mut buf[AVAIL_HDR_SZ + slot * 2..], head);
+    let next = idx.wrapping_add(1);
+    put16(&mut buf[2..4], next);
+    Some(next)
+}
+
+/// used 环条目解码（idx 槽——设备侧完成写回）。
+pub fn used_entry(buf: &[u8], qsize_pow2: usize, idx: u16) -> Option<(u32, u32)> {
+    if buf.len() < AVAIL_HDR_SZ + qsize_pow2 as usize * USED_ENTRY_SZ {
+        return None;
+    }
+    let slot = idx as usize % qsize_pow2;
+    let e = &buf[AVAIL_HDR_SZ + slot * USED_ENTRY_SZ..];
+    Some((le32(&e[0..4]), le32(&e[4..8])))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -397,6 +464,39 @@ mod tests {
         encode_completion(1, CompletionStatus::Ok, &mut b2).unwrap();
         b2[12] = 1;
         assert_eq!(parse_completion(&b2), None);
+    }
+
+    #[test]
+    fn desc_roundtrip_and_write_flag() {
+        let mut buf = [0u8; DESC_SZ];
+        encode_desc(&mut buf, 0x5000, 4096, DESC_F_WRITE, 3).unwrap();
+        assert_eq!(parse_desc(&buf), Some((0x5000, 4096, DESC_F_WRITE, 3)));
+        assert_eq!(parse_desc(&buf[..DESC_SZ - 1]), None);
+        assert_eq!(encode_desc(&mut buf[..8], 0, 0, 0, 0), None);
+    }
+
+    #[test]
+    fn avail_push_wraps_and_increments() {
+        // qsize 4：连推 5 头——idx 0..5、槽环回。
+        let mut buf = [0u8; AVAIL_HDR_SZ + 4 * 2];
+        for i in 0..5u16 {
+            let idx = avail_push(&mut buf, 4, i * 10).unwrap();
+            assert_eq!(idx, i + 1);
+        }
+        assert_eq!(parse_avail_hdr(&buf), Some((0, 5)));
+        // 槽 0 被第 5 推覆写（idx 4 % 4 = 0 → head 40）。
+        assert_eq!(le16(&buf[AVAIL_HDR_SZ..AVAIL_HDR_SZ + 2]), 40);
+        assert!(avail_push(&mut buf[..6], 4, 0).is_none()); // 缓冲不足
+    }
+
+    #[test]
+    fn used_entry_layout() {
+        let mut buf = [0u8; AVAIL_HDR_SZ + 2 * USED_ENTRY_SZ];
+        put32(&mut buf[AVAIL_HDR_SZ..AVAIL_HDR_SZ + 4], 7);
+        put32(&mut buf[AVAIL_HDR_SZ + 4..AVAIL_HDR_SZ + 8], 128);
+        assert_eq!(used_entry(&buf, 2, 0), Some((7, 128)));
+        assert_eq!(used_entry(&buf, 2, 2), Some((7, 128))); // 环回同槽
+        assert!(used_entry(&buf[..8], 2, 0).is_none());
     }
 
     #[test]

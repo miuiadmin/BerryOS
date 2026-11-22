@@ -15,3 +15,7 @@ description = "BerryOS .bmod page-aligned model container format: pure no_std ze
 license = "Apache-2.0"
 
 [dependencies]
+# 签名校验面（R20）： berry-crypto 的 ed25519 原语（仓内 path 依赖非
+# 外部件——wycheproof 向量在册的真参考实现）；`.bmod` 覆盖域单源仍在本
+# crate 的 signed_span，校验只做胶接不复制偏移。
+berry-crypto = { path = "../berry-crypto" }

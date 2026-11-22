@@ -25,7 +25,7 @@ Version: 1.0.0
 
 建造清单（DAG 节验收面——全勾才配双戳）：
 
-- [x] 条款 1 `.bmod` 格式件：`user/berry-aiproto` 纯函数解析器（BMOD v1 二进制布局单源：Ed25519 签名域/页 0 闭合有界 TLV 超参数表/4096B 页对齐张量段表五量化格式枚举，全接口零拷贝、畸形输入零 panic、loud 拒十四律）——host 19 测绿（`just test-host` berry-aiproto 腿，2026-11-22）；airtd 消费接线随后续刀
+- [x] 条款 1 `.bmod` 格式件：`user/berry-aiproto` 纯函数解析器（BMOD v1 二进制布局单源：Ed25519 签名域/页 0 闭合有界 TLV 超参数表/4096B 页对齐张量段表五量化格式枚举，全接口零拷贝、畸形输入零 panic、loud 拒十四律）——host 19 测绿（`just test-host` berry-aiproto 腿，2026-11-22）；R20 补签名校验胶接面 [`Bmod::verify_signature`]（原语 = berry-crypto ed25519〔wycheproof 在册〕、覆盖域单源仍 signed_span，host 20 测）；R21 补写面 [`BmodBuilder`]（TLV/段表/签名落槽一次成件——读写单源镜像，build→parse→verify 全链 roundtrip，host 22 测）；airtd 消费接线随后续刀
 - [ ] 条款 2 全局单份驻留与冷层驱逐：`airtd` 按需调页 VMO 池 + `VMO_OP_DISCARDABLE_COLD` 标记 + am 紧缺信号回收联动（涉内核 mm/svcmgr 面——无人轮默认路径边界外，边界声明到位后继续）
 
 ### 二、三阶异构张量计算架构（`berry-tensor`）契约
@@ -46,7 +46,7 @@ flowchart TD
 建造清单（DAG 节验收面——全勾才配双戳）：
 
 - [x] Tier 0 首刀量化算子核：`user/berry-tensor`（Q4_0/Q8_0 块布局单源〔llama.cpp 兼容字节形〕+ f16 位级解码含次正规域 + 去量化 + 量化×量化整数内积点积——块内 i32、scale 后乘、f32 顺序累积的确定性基线；第二片补 `matvec_q4_q8` GEMV 行基元与 `rmsnorm`〔纯 core inv_sqrt〕；第三片补 fp16/bf16 点积〔bf16 = f32 高 16 位位域还原〕——`.bmod` 五格式中三格式算子齐）——host 19 测绿（`just test-host` berry-tensor 腿，2026-11-22）；Q4_K_M 算子、SIMD（dotprod/i8mm/AVX2）、RoPE/FlashAttn 图算子随后续刀
-- [x] Tier 1 客机侧 wire 首刀：`user/berry-npuproto`（virtio-compute wire 编解码——config/命令描述符〔virtio-gpu 控制头同形〕/blob 页帧表〔off 4096 对齐执法〕/完成环三态〔`Unsupported`=客机降级 Tier 0 依据、`Watchdog`=看门狗复位〕；op 值镜像 berry-tensor 语义单源）——host 7 测绿（`just test-host` berry-npuproto 腿，2026-11-22）
+- [x] Tier 1 客机侧 wire 首刀：`user/berry-npuproto`（virtio-compute wire 编解码——config/命令描述符〔virtio-gpu 控制头同形〕/blob 页帧表〔off 4096 对齐执法〕/完成环三态〔`Unsupported`=客机降级 Tier 0 依据、`Watchdog`=看门狗复位〕；op 值镜像 berry-tensor 语义单源）——host 7 测绿（`just test-host` berry-npuproto 腿，2026-11-22）；R23 环面扩展（virtio 标准三表：描述符表/avail 头+槽环回/used 条目，host 10 测）
 - [ ] Tier 1 `berry-paravirt-npu` 宿主侧（宿主 wgpu/Metal Compute 桥 + `.bmod` 权重页零拷贝映射宿主 `wgpu::Buffer`——涉 tools/berry 模拟器面，owner 边界声明队列；wire 契约首钉即单向门）
 - [ ] Tier 2 真机 NPU/Vulkan Compute 子组驱动与 100ms 看门狗降级
 
