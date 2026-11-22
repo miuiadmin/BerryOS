@@ -1710,10 +1710,12 @@ test-host:
     # B1-b 落地时手动跑过，无 just/CI 接线 = 改坏无机器咬合。
     cargo test --manifest-path user/bins/guifbd/Cargo.toml --target {{host}}
     # W1 接线（D-审计 §4.2 尾「无 just/CI 接线」面）：tools/berry 设备壳
-    # host 单测 121 测（VNC/VeNCrypt/DES/QR/网页壳状态机等纯面——README
-    # §测试原只记手动咒语）入 host 台账。独立小工作区，host 纯面零
-    # 交叉编译；此前手动 cargo test 从未接线 = 面改坏无机器咬合。
-    cargo test --manifest-path tools/berry/Cargo.toml --target {{host}}
+    # host 单测（VNC/VeNCrypt/DES/QR/网页壳状态机等纯面——README §测试
+    # 原只记手动咒语）入 host 台账。独立小工作区，host 纯面零交叉编译；
+    # 此前手动 cargo test 从未接线 = 面改坏无机器咬合。2026-11-22 与上方
+    # cbox 刀 3 接线位去重——同 crate 双跑每轮白跑 369 测且 07 口径翻倍
+    # 计（沿革「链内 berry 双跑净增 X=N×2」注记即此债痕迹），本位注释
+    # 留档、执行归上位单跑。
     # W1 接线（R136 判例族·「有 host 测零自动执法 = 静默腐烂」）：
     # user/widgets/ 四独立小工作区（G3 刀 11-14 落地，26 host 测）——
     # berry-scene-ir（声明式小组件二进制序列化 16B header+24B 定长
