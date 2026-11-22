@@ -24,6 +24,8 @@
 
 11.  分支拓扑纪律：main 与 wip/sched-1.1 曾为无共同祖先双线，2026-11-16 已跨根收口合并（见[收口笔记](.agents/notes/implemented/2026-11-16-跨根收口合并.md)）——此后两线共享历史，跨线改动走普通合并；`.githooks/` 机器闸保留（拦任何新的无共同祖先合并，owner 逃生阀 `BERRYOS_ALLOW_CROSSROOT=1`）；大歧文件合并用「真源重建 + 增量补丁 + 两向审计」，禁直接信任三方标记流。
 
+12. Bash 禁 `cd <项目目录> &&` 前缀——使命令脱离允许列表匹配、每次成新权限决定（实测 2026-11: 4729 次调用 3187 次带冗余 cd）；cd 只用于真正换目录。
+
 ## 桥
 
 `CLAUDE.md`、`.claude/skills`、`.codex/skills` 是指向 `AGENTS.md` / `.agents/skills/` 的符号链接（不是副本）；Claude Code、Codex 等 CLI 从这些入口读取本规则与技能。桥缺失时（被占用的路径先备份移开再重建），命令是：

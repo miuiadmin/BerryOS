@@ -65,6 +65,13 @@ def check(root: Path, path_override: str | None = None) -> tuple[int, list[str]]
                        capture_output=True, text=True)
     if "githooks" not in (r.stdout or ""):
         fails.append("钩子未装：bash .githooks/install.sh（快照门/身份闸都不在位）")
+    probe = root / ".claude" / "state" / ".doctor-probe"
+    try:
+        probe.parent.mkdir(parents=True, exist_ok=True)
+        probe.write_text("", encoding="utf-8")
+        probe.unlink()
+    except OSError:
+        fails.append("state 目录不可写：.claude/state/（回执/欠账/哨兵全落这里）")
     return len(fails), fails
 
 
@@ -144,6 +151,15 @@ def selftest() -> int:
 def main(argv: list[str]) -> int:
     if "--selftest" in argv:
         return selftest()
+    if "--full" in argv:
+        # 深检（吸收挖掘 P0）：串跑门链自检——发射前一键全绿确认
+        for cmd in (["bash", "tools/gate-selftest.sh"],
+                    ["bash", "tools/control-plane-gate.sh", "--selftest"]):
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            if r.returncode != 0:
+                print(f"e-doctor --full FAIL: {' '.join(cmd)} 红 " + (r.stdout or r.stderr)[-400:], file=sys.stderr)
+                return 1
+        print("e-doctor --full: 门链自检全绿")
     n, fails = check(ROOT)
     if n:
         for f in fails:

@@ -62,9 +62,12 @@ def load_state() -> dict:
     if p.is_file():
         try:
             return json.loads(p.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            pass
-    return {"pending": {}, "last_ship_ts": time.time()}
+        except (json.JSONDecodeError, OSError) as e:
+            # fail-loud（吸收挖掘 P0）：静默重置=待撤清单凭空清零+repair 钟重置——
+            # 账本损坏必须响，操作员修档后才能继续。
+            print(f"e-supervisor: 账本损坏（{e}）——拒静默重置；修复或删除 {p} 后重跑", file=sys.stderr)
+            raise SystemExit(2)
+    return {"pending": {}, "last_ship_ts": time.time(), "last_done_count": 0}
 
 
 def save_state(st: dict) -> None:
@@ -129,6 +132,7 @@ def tick(idle: bool = False, now: float | None = None) -> dict:
         "machinery_pending": len(st["pending"]),
         "machinery_reverts": len(undone),
         "hours_since_ship": round((now - st.get("last_ship_ts", now)) / 3600, 2),
+        "shipped_today": st.get("last_done_count", 0),
         "repair_needed": repair,
     }
     STATE.mkdir(parents=True, exist_ok=True)

@@ -59,8 +59,6 @@ FROZEN_PREFIXES = (
     ".github/workflows/",
 )
 
-PARKED_RE = re.compile(r"^- \[ \]\s*\[PARKED")
-OPEN_RE = re.compile(r"^- \[ \]")
 
 
 def sh(cmd: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
@@ -71,12 +69,18 @@ def is_headless() -> bool:
     return os.environ.get("BERRYOS_E_RUN") == "1"
 
 
+# 切分单源（吸收挖掘 P0）：本门与 pack-work 对「什么算 open」必须同源——各执一份
+# 正则就是控制面正确性隐患。实现唯一家 = tools/punch_slice.py。
+sys.path.insert(0, str(ROOT / "tools"))
+from punch_slice import slice_punch as _slice_punch  # noqa: E402
+
+
 def open_punch_items(text: str) -> list[str]:
     """活跃计划「未完成事项」节里未 park 的开放条目（机器读回 punch-list 的 oracle 面）。"""
-    m = re.search(r"## 未完成事项.*?\n(.*?)(?=\n## |\Z)", text, re.S)
-    if not m:
-        return []
-    return [ln for ln in m.group(1).splitlines() if OPEN_RE.match(ln) and not PARKED_RE.match(ln)]
+    r = _slice_punch(text)
+    if not r["vehicle_present"]:
+        return ["<punch 载体缺席：归档/改名必须先改 punch_slice.DEFAULT_PUNCH，宁可拒停>"]
+    return r["open"]
 
 
 def gate_suite_green() -> tuple[bool, str]:
@@ -171,7 +175,7 @@ def selftest() -> int:
     # ① open_punch_items：parked 不算开放、普通开放算
     sample = "## 未完成事项\n\n- [ ] 普通开放\n- [ ] [PARKED→人审: 等裁决] 挂账项\n- [x] 已完成\n\n## 验收标准\n- [ ] 别节的\n"
     items = open_punch_items(sample)
-    check("punch oracle（parked 不计/开放计/出节截止）", items == ["- [ ] 普通开放"])
+    check("punch oracle（parked 不计/开放计/出节截止；单源后 open 为去前缀文本）", items == ["普通开放"])
     # ② FROZEN 拦截语义
     frozen_hit = any("tools/e-guard.py" == p for p in FROZEN_PREFIXES)
     check("FROZEN 集含自身（闸即宪法）", frozen_hit)

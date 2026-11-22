@@ -1528,6 +1528,7 @@ test-host:
     bash tools/gate-wrap.sh --selftest
     bash tools/control-plane-gate.sh --selftest
     bash tools/run-e.sh --selftest
+    python3 tools/punch_slice.py --selftest
     python3 -I tools/stale-parks.py --selftest
     python3 -I tools/stranded-deferrals.py --selftest
     python3 -I tools/answers-readback.py --selftest
