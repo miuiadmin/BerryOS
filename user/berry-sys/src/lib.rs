@@ -241,6 +241,22 @@ pub extern "C" fn berry_vmo_get_phys(vmo: Handle, offset: u64, out: *mut u64) ->
     unsafe { sys(nr::VMO_GET_PHYS, vmo as usize, offset as usize, out as usize, 0, 0, 0) }
 }
 
+/// F0-4 DMA PoC 数据缓存维护（`VMO_CACHE_OP_CLEAN` / `INVALIDATE` / `CLEAN_INVALIDATE`）。
+#[no_mangle]
+pub extern "C" fn berry_vmo_cache_op(vmo: Handle, op: u32, offset: u64, len: u64) -> Status {
+    unsafe {
+        sys(
+            nr::VMO_CACHE_OP,
+            vmo as usize,
+            op as usize,
+            offset as usize,
+            len as usize,
+            0,
+            0,
+        )
+    }
+}
+
 /// v1 rights 须恰 READ|WRITE（UserRo 留 v2）；options 折叠（见段首注）。
 #[no_mangle]
 pub extern "C" fn berry_vmar_map(
