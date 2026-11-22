@@ -13,4 +13,4 @@ smoke_gui8=39
 smoke_rootfs=56
 smoke_rx=3
 stamped_designs=1
-tests_rust=3397
+tests_rust=3401
