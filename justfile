@@ -1185,7 +1185,7 @@ test-host:
     # ai-runtime §三.2 首刀：berry-jsonmask（JSON 字节级约束解码掩蔽器
     # ——单源转移函数 step + 256 字节探测派生 mask〔合法集永不双写〕+
     # 拒绝不改态〔100% 合法输出机制〕+ can_finish 流式终判〔裸数字态〕，
-    # 深度 1 首刀，host 9 测；嵌套栈与 Schema 编译随后续刀）。
+    # R12 深度 N〔显式容器栈 ≤16 层越帽拒〕，host 10 测；Schema 编译随后续刀）。
     cargo test --manifest-path user/Cargo.toml -p berry-jsonmask --target {{host}}
     # am §一首刀：berry-amgrad（终态五级弹性处置梯度决策核——五级表
     # 单源 choose〔RAM 谱系 L0<L2<L1<L3 升格 + L4 磁盘正交〕、租约豁

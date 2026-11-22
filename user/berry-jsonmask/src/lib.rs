@@ -7,12 +7,12 @@
 //! [`Masker::mask`] 由对 256 字节逐一探测 `step` 派生——合法集与转移
 //! 永不双写（掩蔽正确性 = 转移正确性，一事实一归属）。
 //!
-//! ## 首刀边界（深度 1，诚实注记）
+//! ## 边界（R12 起：深度 N + 显式容器栈）
 //!
-//! - 顶层恰一个值（标量或一层容器）——尾随内容含尾随空白即拒（流式
-//!   多值/尾随逗号是非法 JSON，首刀连尾随空白一并从严）。
-//! - 容器嵌套深度 1：一层数组/对象内的值只允许标量；`[`/`{` 在值位
-//!   拒绝。嵌套需显式栈（PDA），随后续刀。
+//! - 顶层恰一个值（标量或容器树）——尾随内容含尾随空白即拒（流式
+//!   多值/尾随逗号是非法 JSON，从严律）。
+//! - 容器嵌套深度 ≤ [`MAX_DEPTH`]（16）——越帽即拒（协议面深度爆炸
+//!   防护）；R11 深度 1 限制已由显式容器栈解除。
 //! - JSON Schema 驱动的按 schema 编译（字段名/类型约束）随后续刀——
 //! 本刀是语法层（RFC 8259 记法子集）。
 //!
@@ -76,6 +76,9 @@ enum Cont {
     Obj,
 }
 
+/// 容器嵌套深度帽（深栈 JSON 的界——协议面深度爆炸防护；越帽即拒）。
+pub const MAX_DEPTH: usize = 16;
+
 fn is_ws(b: u8) -> bool {
     b == b' ' || b == b'\t' || b == b'\n' || b == b'\r'
 }
@@ -88,12 +91,13 @@ fn is_hex(b: u8) -> bool {
     b.is_ascii_hexdigit()
 }
 
-/// JSON 字节级掩蔽器（深度 1 首刀）。零分配；`step`/`mask`/`finished`
-/// 三口即全部面。
+/// JSON 字节级掩蔽器（深度 N——显式容器栈）。零分配；`step`/`mask`/
+/// `finished` 三口即全部面。
 #[derive(Debug, Clone, Copy)]
 pub struct Masker {
     v: V,
-    cont: Option<Cont>,
+    stack: [Cont; MAX_DEPTH],
+    depth: usize,
 }
 
 impl Default for Masker {
@@ -104,7 +108,7 @@ impl Default for Masker {
 
 impl Masker {
     pub fn new() -> Self {
-        Self { v: V::Start, cont: None }
+        Self { v: V::Start, stack: [Cont::Arr; MAX_DEPTH], depth: 0 }
     }
 
     /// 顶层值已完成为真（硬终态——字面量/字符串/容器闭括路径）。
@@ -116,7 +120,7 @@ impl Masker {
     /// 自终止符，任意数字收尾处都可合法截止（采样停止判据）。
     pub fn can_finish(&self) -> bool {
         self.finished()
-            || (self.cont.is_none()
+            || (self.depth == 0
                 && matches!(self.v, V::NumZero | V::NumInt | V::NumFrac | V::NumExp))
     }
 
@@ -140,14 +144,16 @@ impl Masker {
                 b't' => { self.v = V::LitT1; true },
                 b'f' => { self.v = V::LitF1; true },
                 b'n' => { self.v = V::LitN1; true },
-                b'[' if self.cont.is_none() => {
-                    self.cont = Some(Cont::Arr);
-                    self.v = V::ArrVal { allow_close: true };
+                b'[' => {
+                    if !self.open(Cont::Arr) {
+                        return false; // 深度帽
+                    }
                     true
                 }
-                b'{' if self.cont.is_none() => {
-                    self.cont = Some(Cont::Obj);
-                    self.v = V::ObjKey { allow_close: true };
+                b'{' => {
+                    if !self.open(Cont::Obj) {
+                        return false; // 深度帽
+                    }
                     true
                 }
                 _ => false,
@@ -281,7 +287,8 @@ impl Masker {
                 b't' => { self.v = V::LitT1; true },
                 b'f' => { self.v = V::LitF1; true },
                 b'n' => { self.v = V::LitN1; true },
-                // 深度 1：值位容器拒（嵌套随后续刀加栈）。
+                b'[' => self.open(Cont::Arr),
+                b'{' => self.open(Cont::Obj),
                 _ => false,
             },
             V::ArrVal { allow_close } => match b {
@@ -294,9 +301,11 @@ impl Masker {
                 b't' => { self.v = V::LitT1; true },
                 b'f' => { self.v = V::LitF1; true },
                 b'n' => { self.v = V::LitN1; true },
+                b'[' => self.open(Cont::Arr),
+                b'{' => self.open(Cont::Obj),
                 _ => false,
             },
-            V::ValDone => match (b, self.cont) {
+            V::ValDone => match (b, self.stack.get(self.depth.wrapping_sub(1))) {
                 (b',', Some(Cont::Arr)) => {
                     self.v = V::ArrVal { allow_close: false };
                     true
@@ -322,15 +331,29 @@ impl Masker {
         }
     }
 
-    /// 标量值完成：容器内在 [`V::ValDone`] 等定界，顶层即终态。
+    /// 标量值完成：栈非空在 [`V::ValDone`] 等定界，空栈即终态。
     fn value_complete(&mut self) {
-        self.v = if self.cont.is_some() { V::ValDone } else { V::TopDone };
+        self.v = if self.depth > 0 { V::ValDone } else { V::TopDone };
     }
 
-    /// 闭容器：深度 1 ——容器即顶层值，闭合即终态。
+    /// 开容器（压栈——深度帽尽即拒返 false）。
+    fn open(&mut self, c: Cont) -> bool {
+        if self.depth >= MAX_DEPTH {
+            return false;
+        }
+        self.stack[self.depth] = c;
+        self.depth += 1;
+        self.v = match c {
+            Cont::Arr => V::ArrVal { allow_close: true },
+            Cont::Obj => V::ObjKey { allow_close: true },
+        };
+        true
+    }
+
+    /// 闭容器（弹栈）：弹空即终态，否则容器内值完成位。
     fn close_container(&mut self) -> bool {
-        self.cont = None;
-        self.v = V::TopDone;
+        self.depth -= 1;
+        self.value_complete();
         true
     }
 
@@ -413,7 +436,21 @@ mod tests {
         assert_eq!(run("[,]").0, false); // 首位逗号
         assert_eq!(run("[1,]").0, false); // 尾随逗号（逗号后不可闭）
         assert_eq!(run("[1 2]").0, false); // 缺逗号
-        assert_eq!(run("[[1]]").0, false); // 深度 1：嵌套拒（首刀边界）
+    }
+
+    #[test]
+    fn nesting_and_depth_cap() {
+        // R12 深度解锁：嵌套容器合法（显式栈）。
+        assert_eq!(run("[[1],[2,3]]"), (true, true));
+        assert_eq!(run("{\"k\":{\"j\":[1,{\"z\":null}]}}"), (true, true));
+        // 跨种失配仍拒。
+        assert_eq!(run("[[1]}").0, false);
+        assert_eq!(run("{\"k\":[1}}").0, false);
+        // 深度帽：MAX_DEPTH 层可过、+1 层拒。
+        let ok_depth = format!("{}1{}", "[".repeat(MAX_DEPTH), "]".repeat(MAX_DEPTH));
+        assert_eq!(run(&ok_depth), (true, true));
+        let over = format!("{}1{}", "[".repeat(MAX_DEPTH + 1), "]".repeat(MAX_DEPTH + 1));
+        assert_eq!(run(&over).0, false);
     }
 
     #[test]
@@ -426,7 +463,6 @@ mod tests {
         assert_eq!(run("{1:2}").0, false); // 键必须字符串
         assert_eq!(run("{\"k\" 1}").0, false); // 缺冒号
         assert_eq!(run("{\"k\":1,}").0, false); // 尾随逗号
-        assert_eq!(run("{\"k\":[]}").0, false); // 深度 1：值位容器拒
         assert_eq!(run("{\"k\":1]").0, false); // 闭括失配
     }
 

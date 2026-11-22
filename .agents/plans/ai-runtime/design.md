@@ -56,7 +56,7 @@ flowchart TD
 建造清单（DAG 节验收面——全勾才配双戳）：
 
 - [x] 条款 1 池语义首刀：`user/berry-kvpool`（16-Token KvBlock 定容池 + 前缀 Copy-on-Write 共享〔引用计数、物理恒一份〕+ 共享尾块禁原地写执法〔满尾滚新块不属 COW 面〕+ 显式回收口）——host 9 测绿（`just test-host` berry-kvpool 腿，2026-11-22）；注意力 score 面与缺页重装归 airtd 运行时刀
-- [x] 条款 2 约束解码首刀：`user/berry-jsonmask`（JSON 字节级掩蔽器——单源转移函数 [`Masker::step`] + 256 字节探测派生合法集 [`Masker::mask`]〔一事实一归属〕+ 拒绝不改态〔采样重选即 100% 合法〕+ `can_finish` 流式终判〔裸数字无自终止符〕）——host 9 测绿（`just test-host` berry-jsonmask 腿，2026-11-22）；深度 1 首刀（嵌套容器需显式栈）、Schema 驱动编译随后续刀
+- [x] 条款 2 约束解码首刀：`user/berry-jsonmask`（JSON 字节级掩蔽器——单源转移函数 [`Masker::step`] + 256 字节探测派生合法集 [`Masker::mask`]〔一事实一归属〕+ 拒绝不改态〔采样重选即 100% 合法〕+ `can_finish` 流式终判〔裸数字无自终止符〕；R12 升深度 N〔显式容器栈 ≤ 16 层，越帽拒〕）——host 10 测绿（`just test-host` berry-jsonmask 腿，2026-11-22）；Schema 驱动编译随后续刀
 - [ ] 条款 3 硬实时让路与分级抢占（`SCHED_INTENT_COMPUTE` 受控算力带 + 单层解码步抢占检查点 + 温控降并发——涉调度面，与 §一.2 同列 owner 边界声明队列）
 
 ### 四、能力门控个人语义记忆库（`berry-vault`）契约
