@@ -1006,7 +1006,13 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
                 // ——突发收帧 + ACK 暂存 + 完成收割）；泵毕立即 drain 完成队
                 // 列（完成即答不经等待窗）；CPU 让出由下方 wait_one 承担。
                 tcp::pump_serve(d, regs, mac, gw_mac, table, &mut sess, &mut rt);
-                drain_done(h, &mut rep);
+                let had_done = drain_done(h, &mut rep);
+                // RPC 即泵化（性能刀）：泵+应答毕且本步有完成 → 直回循环头
+                // 跳过 wait_one 系统调用（TCG 每 syscall ~1ms，echo 热路径
+                // 4 syscall/RPC 省 1 = 25% 投影）。无完成 → 保持等待窗。
+                if had_done {
+                    continue;
+                }
                 // 等待窗节拍（四刀 P9）：挂起 op / 完成 / RTO-TW 臂在席 →
                 // 短 tick；全闲 → 10s 心跳零漂移。量子刀 P1：表会话活跃
                 // （earliest_timer 在席=RTO 挂臂/TIME_WAIT 收口期）同样短
@@ -1304,14 +1310,17 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
 
 /// 完成队列 drain → 逐条应答（循环头与 EAGAIN 泵后两调用点——完成即答
 /// 不经等待窗）。
-fn drain_done(h: Handle, rep: &mut [u8; ndp::RT_SEQ_REP_MAX]) {
+fn drain_done(h: Handle, rep: &mut [u8; ndp::RT_SEQ_REP_MAX]) -> bool {
+    let mut had = false;
     while let Some(done) = tcp::rtpipe().pop_done() {
+        had = true;
         let rl = match ndp::encode_tcp_reply(rep, done.st, &done.echo[..done.len], done.seq) {
             Some(n) => n,
             None => trap(), // OK 恒 data ≤ TCP_DATA_MAX / 非 OK 恒空恒过；防御面
         };
         send_reply(h, &rep[..rl]);
     }
+    had
 }
 
 /// 应答发送（满队 -EBUSY 阻塞等 WRITABLE 重试——完成队列 drain 与分派
