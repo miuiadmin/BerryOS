@@ -964,11 +964,18 @@ fn serve(d: &mut Dma, regs: *mut u32, mac: &[u8; 6], gw_mac: &[u8; 6]) -> ! {
             if s == BERRY_ERR_AGAIN {
                 // 空闲窗泵（段③ hostfwd 入站 + 四刀 session-0 挂起 op 驱动
                 // ——突发收帧 + ACK 暂存 + 完成收割）；泵毕立即 drain 完成队
-                // 列（完成即答不经等待窗）；CPU 让出由下方 wait_one 承担。
+                // 列（完成即答不经等待窗）；CPU 让出由下方 wait_one 承担
+                // （had_done 即泵化轮除外——见下方跳泵注）。
                 tcp::pump_serve(d, regs, mac, gw_mac, table, &mut sess, &mut rt);
                 let had_done = drain_done(h, &mut rep);
                 // RPC 即泵化（性能刀）：泵+应答毕且本步有完成 → 直回循环头
                 // 跳过 wait_one 系统调用（TCG 每 syscall ~1ms，echo 热路径
+                // 4 syscall/RPC 省 1 = 25% 投影）。有界性不变量：RtPipe ops
+                // 环唯一生产者=enqueue（仅客户端 ROUNDTRIP 分派可达）——
+                // 通道静默则完成不可再生，自旋迭代数 ≤ 2×RT_PIPE_K。
+                // 终态错误完成（TIMEOUT/BAD）客户端 bail 不跟发——白跳
+                // 一轮后 had_done=false 落回等待窗（纯浪费无正确性影响）。
+                //
                 // 4 syscall/RPC 省 1 = 25% 投影）。无完成 → 保持等待窗。
                 if had_done {
                     continue;
