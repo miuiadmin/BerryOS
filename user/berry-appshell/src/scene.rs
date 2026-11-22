@@ -222,20 +222,32 @@ pub struct StatusBarArgs<'a> {
     pub utc_text: &'a [u8],
 }
 
+/// [`build_status_bar`] 产物：时钟文本节点（帧循环每分钟 set_text 等长
+/// 换文续摆）+ 右上角两枚指示灯 Text 节点（加载灯/运行呼吸灯——空文本
+/// 零宽 = 视觉缺席；翻字驱动归消费侧 frameloop，本模块只建槽）。
+pub struct StatusNodes {
+    /// 时钟文本节点（a11y ROLE_TEXT 真值面）。
+    pub clock: NodeId,
+    /// 加载指示灯（塞班式：spawn 请求 → ack 期间点亮——消费侧翻字）。
+    pub busy: NodeId,
+    /// 运行呼吸灯（塞班式：活应用在场期间 1Hz 脉动——消费侧翻字）。
+    pub breath: NodeId,
+}
+
 /// 状态栏整条装配（OH systemui phone：左 = signal/wifi（+SIM 模拟态
 /// 角标），右 = battery/clock（+UTC 角标）；StatusbarConfig
-/// LayoutGroups 1/3，clock rightmost）。返回时钟文本节点（帧循环每分钟
-/// set_text 等长换文 = 纯 PAINT；a11y label 同步 in-place 覆写）。
+/// LayoutGroups 1/3，clock rightmost）。返回 [`StatusNodes`]（时钟节点 +
+/// 加载/呼吸两枚右上角指示灯空槽——建树即空文本零宽，视觉缺席）。
 /// UTC 角标节点建树即定格，运行期无改笔——不入返回值。
 ///
 /// a11y 一件 ROLE_TEXT（仅 clock 真值；信号/WiFi/电池模拟值退位——GUI
-/// 实证 NodeFull 判例，32 帽让位给波3-件⑤ tabs 三键；SIM/UTC 角标不占
-/// a11y 槽）。
+/// 实证 NodeFull 判例，32 帽让位给波3-件⑤ tabs 三键；SIM/UTC 角标与
+/// 加载/呼吸灯不占 a11y 槽）。
 pub fn build_status_bar(
     ui: &mut UiMain,
     parent: NodeId,
     a: &StatusBarArgs<'_>,
-) -> Result<NodeId, UiError> {
+) -> Result<StatusNodes, UiError> {
     let status = ui.add(
         parent,
         ViewSpec {
@@ -281,6 +293,14 @@ pub fn build_status_bar(
         time_w,
         utc_w,
     );
+    // 右组宽预留加载/呼吸两枚指示灯位（各一角标字格 + 间距——建树即空
+    // 文本零宽，右组成员（battery/clock/UTC）位置恒稳；翻字只填预留槽，
+    // 永不外溢组界）。灯位从 flex 余量划扣——srow 总宽恒 = vp_w（尾 pad
+    // 不出屏；窄屏 flex 已饱和归零时 saturating 同旧律）。
+    let lamp_w = a.tag_size.cell_w() as u32;
+    let lamp_reserve = status_icon_gap + lamp_w + status_icon_gap + lamp_w;
+    let right_w = right_w + lamp_reserve;
+    let status_flex = status_flex.saturating_sub(lamp_reserve);
     let srow = ui.add(
         status,
         ViewSpec {
@@ -352,8 +372,12 @@ pub fn build_status_bar(
     // UTC 角标：仅 REALTIME 在场显字（空文本零宽——占位钟态不误导）；
     // 建树定格不入句柄（运行期无改笔）。
     ui.add(right_group, text_spec(a.utc_text, TEXT_FG, a.tag_size)?)?;
+    // 加载/呼吸两枚右上角指示灯空槽（空文本零宽 = 视觉缺席；驱动面归
+    // 消费侧 frameloop——launcher spawn 链。a11y 不入表）。
+    let busy = ui.add(right_group, text_spec(b"", TEXT_FG, a.tag_size)?)?;
+    let breath = ui.add(right_group, text_spec(b"", TEXT_FG, a.tag_size)?)?;
     add_status_spacer(ui, status_pad)?;
-    Ok(time_node)
+    Ok(StatusNodes { clock: time_node, busy, breath })
 }
 
 #[cfg(test)]
@@ -437,15 +461,15 @@ mod tests {
         assert!(text_spec(&exact, TEXT_FG, FontSize::S16x32).is_ok());
     }
 
-    /// 状态栏整条装配：返时钟节点 + 可等长换文（帧循环续摆面）；离屏
-    /// UiMain 1080×1920 大档。
+    /// 状态栏整条装配：返时钟节点 + 两枚指示灯空槽（空文本零宽可翻字——
+    /// frameloop 加载/呼吸灯驱动面）；离屏 UiMain 1080×1920 大档。
     #[test]
     fn build_status_bar_assembles_clock_node() {
         let mut ui = UiMain::new(1080, 1920);
         let root = ui.root();
         let sizes = status_sizes(true);
         let (clock_text, utc_text) = clock_texts(&None);
-        let clock = build_status_bar(
+        let nodes = build_status_bar(
             &mut ui,
             root,
             &StatusBarArgs {
@@ -460,6 +484,11 @@ mod tests {
         )
         .expect("status bar builds");
         // 时钟节点可 set_text（等长换文路径——帧循环续摆面）。
-        assert!(ui.set_text(clock, b"13:45").is_ok());
+        assert!(ui.set_text(nodes.clock, b"13:45").is_ok());
+        // 指示灯空槽：空文本 ↔ 单字翻转（加载/呼吸灯驱动路径）。
+        assert!(ui.set_text(nodes.busy, b"*").is_ok());
+        assert!(ui.set_text(nodes.busy, b"").is_ok());
+        assert!(ui.set_text(nodes.breath, b"o").is_ok());
+        assert!(ui.set_text(nodes.breath, b"").is_ok());
     }
 }

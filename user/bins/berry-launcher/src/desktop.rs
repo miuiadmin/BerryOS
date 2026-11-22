@@ -51,9 +51,9 @@
 //! 随 launcher 内容层整层被盖——02 号 §2.3 边界，SYSTEM 窗随 I1）。
 //!
 //! 树规模（最坏满图标）：1 Root + 壁纸 1 + scrim 1 + 内容列 1 + 状态栏
-//! 13（+SIM/UTC 两文本）+ grid top 1 + pager 10 + 4×(Grid+20 Pad+20 内
-//! Col+20 Icon+20 Text) + filler 1 + Dock 5 + 导航条 4（Row + 3 键 Icon）
-//! = **361 节点** < MAX_NODES=512。
+//! 15（+SIM/UTC/加载/呼吸四文本）+ grid top 1 + pager 10 + 4×(Grid+20
+//! Pad+20 内 Col+20 Icon+20 Text) + filler 1 + Dock 5 + 导航条 4（Row +
+//! 3 键 Icon）= **363 节点** < MAX_NODES=512。
 
 use berry_appshell as appshell;
 use berry_gfx::cmd::Color;
@@ -202,6 +202,12 @@ pub struct Desktop {
     /// UTC 角标节点建树即定格（在场显字/缺席空文本），运行期无改笔——
     /// 不入句柄。
     pub clock: NodeId,
+    /// 状态栏加载指示灯（塞班式——frameloop spawn 链驱动：点击置字
+    /// "*" 点亮、ack 归来清空熄灭；空文本零宽 = 视觉缺席）。
+    pub busy: NodeId,
+    /// 状态栏运行呼吸灯（塞班式——frameloop 1Hz 翻字脉动：活应用窗在
+    /// 场期间 "o"↔"" 交替；表查无活窗即熄）。
+    pub breath: NodeId,
     /// 三键导航（波一刀 D）：返回/桌面/关机 Icon 节点（frameloop
     /// `Msg::Click` 命中面 + 关机 armed 态 set_props 换 id 的锚）。
     pub nav: NavNodes,
@@ -373,12 +379,12 @@ pub fn build(
     )?;
 
     // 状态栏整条装配（appshell::scene——OH systemui phone：左 = signal/
-    // wifi（+SIM 模拟态角标），右 = battery/clock（+UTC 角标）；
-    // StatusbarConfig LayoutGroups 1/3，clock rightmost）。首摆时钟文本
-    // 对 = scene::clock_texts（真值或 12:00 占位回退）；返回时钟节点
-    //（UTC 角标建树定格不入句柄）。
+    // wifi（+SIM 模拟态角标），右 = battery/clock（+UTC 角标 + 加载/呼吸
+    // 两枚指示灯空槽）；StatusbarConfig LayoutGroups 1/3，clock
+    // rightmost）。首摆时钟文本对 = scene::clock_texts（真值或 12:00
+    // 占位回退）；返回时钟 + 两灯节点（UTC 角标建树定格不入句柄）。
     let (clock_text, utc_text) = scene::clock_texts(&clock);
-    let time_node = scene::build_status_bar(
+    let status_nodes = scene::build_status_bar(
         ui,
         content,
         &scene::StatusBarArgs {
@@ -765,7 +771,9 @@ pub fn build(
         pager,
         slots,
         dock,
-        clock: time_node,
+        clock: status_nodes.clock,
+        busy: status_nodes.busy,
+        breath: status_nodes.breath,
         nav: NavNodes {
             back,
             recents,

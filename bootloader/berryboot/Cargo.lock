@@ -22,10 +22,15 @@ name = "berry-manifest"
 version = "0.2.0"
 
 [[package]]
+name = "berry-slot"
+version = "0.1.0"
+
+[[package]]
 name = "berryboot"
 version = "0.2.0"
 dependencies = [
  "berry-crypto",
  "berry-efi",
  "berry-loader",
+ "berry-slot",
 ]
