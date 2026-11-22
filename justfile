@@ -1304,8 +1304,18 @@ test-host:
     # platform_revision 对账〔`item .* platform_revision=(\d{10})$` 贪心最右
     # 位 + universal newlines 归一 + set 去重 sorted〕）；parity abipr 三面
     # （真源 abi.toml stdout 全等 + 值域/Errno/坏 TOML 变异族 + 正则边界族
-    # 〔贪心/紧贴/双空格/CRLF/11 位回溯失败〕）。后续刀：参数面与活树清单
-    # 合成。独立小工作区，须显式 --target {{host}}。
+    # 〔贪心/紧贴/双空格/CRLF/11 位回溯失败〕）。五刀：src/live.rs（活树清单
+    # 合成镜像 = bcts-run.sh build_live_tsv heredoc 体——markers.sh 三数组
+    # + 尾随 GATE 恰一行；id 相内序 %02d；语面 = bash 数组赋量子集〔引号
+    # 元素/续行/体内注释/后写覆盖〕，非目标形〔非引号元素/转义/展开 glob〕
+    # 诚实拒；守卫序镜像真文件 && 链〔缺席 → unbound 崩文案 + 行号 = 守卫
+    # 行、空 → 空集守卫文案、短路序精确〕；bash 实测分歧注记钉板：unbound
+    # 在 && 链内不杀非交互壳 + unset 数组 "${X[@]}" bash 4.4+ 静默空扩 =
+    # 假绿面（真 bcts-run.sh 靠步② floor 91 兜底），镜像同形严拒早于发射〕
+    # + parity live 三面（真源 markers.sh 92 行 stdout 逐字全等 + 计数
+    # 32/56/3/91 钉板 + 绿语料族 + 拒面族〔空集守卫文案逐字/unbound 分支
+    # + 短路序/合成语料〕）。六刀候选：CLI 参数面镜像。独立小工作区，须
+    # 显式 --target {{host}}。
     # Python 件不退役——CLI 对拍 oracle。
     cargo test --manifest-path tools/bctsrun/Cargo.toml --target {{host}}
     # W1 接线（SEC-02 A2 同款纪律）：berry_assemble 门禁自检——V13 组装器

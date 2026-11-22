@@ -31,7 +31,7 @@ trap 'rm -rf "$TMPDIR_CP"' EXIT
 
 load_manifest() {
   if [ ! -f "$MANIFEST" ]; then
-    echo "control-plane-gate: 红——清单缺席 $MANIFEST（删清单=动控制面，default-conservative）" >&2
+    echo "control-plane-gate: 红——清单缺席 ${MANIFEST}（删清单=动控制面，default-conservative）" >&2
     return 1
   fi
   : > "$PREFIXES_F"; : > "$TESTS_F"
@@ -95,7 +95,7 @@ run_gate() {
         *" $_rg_p "*) ;;
         *)
           _rg_ran_prefix_tests="$_rg_ran_prefix_tests$_rg_p "
-          echo "control-plane-gate: 命中前缀 $_rg_p（$_rg_path）→ 前缀级测试：$_rg_tc"
+          echo "control-plane-gate: 命中前缀 ${_rg_p}（${_rg_path}）→ 前缀级测试：$_rg_tc"
           if ! (cd "$ROOT" && eval "$_rg_tc"); then
             echo "control-plane-gate: 红——前缀级测试失败：$_rg_tc" >&2
             _rg_red=1
@@ -128,7 +128,7 @@ run_gate() {
       *)
         # 配置/登记面（settings.json、清单自身、宪法 skill 散文）：无逐件自检，
         # 命中即打印（内容归快照门与人工评审管）。
-        echo "control-plane-gate: 命中（登记/配置面，无逐件自检）：$_rg_path（前缀 $_rg_p）"
+        echo "control-plane-gate: 命中（登记/配置面，无逐件自检）：${_rg_path}（前缀 ${_rg_p}）"
         ;;
     esac
   done <<EOF

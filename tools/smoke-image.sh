@@ -466,7 +466,7 @@ case "$(cd "$(dirname "$IMAGE")" 2>/dev/null && pwd)/$(basename "$IMAGE")" in
     bash "$SCRIPT_DIR/image-fresh.sh" || fail "镜像陈旧：先 just image（规则/16 §2——陈旧镜像得出的验证结论作废）"
     ;;
   *)
-    echo "smoke-image: 注：非默认镜像路径（$IMAGE），新鲜度门只对 out/berryos.img 负责——跳门"
+    echo "smoke-image: 注：非默认镜像路径（${IMAGE}），新鲜度门只对 out/berryos.img 负责——跳门"
     ;;
 esac
 

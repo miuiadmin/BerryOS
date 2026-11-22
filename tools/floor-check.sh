@@ -46,7 +46,7 @@ need_ver() {
     fails=$((fails + 1)); return
   fi
   if ver_le "$floor" "$got"; then
-    echo "floor-check: ok  $tool $got（地板 $floor）"
+    echo "floor-check: ok  $tool ${got}（地板 ${floor}）"
   else
     echo "floor-check FAIL: $tool $got 低于地板 $floor" >&2
     fails=$((fails + 1))
