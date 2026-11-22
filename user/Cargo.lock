@@ -12,6 +12,9 @@ dependencies = [
 [[package]]
 name = "berry-aiproto"
 version = "0.2.0"
+dependencies = [
+ "berry-crypto",
+]
 
 [[package]]
 name = "berry-appproto"

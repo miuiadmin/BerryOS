@@ -291,6 +291,12 @@ impl<'a> Bmod<'a> {
         &self.image[PREAMBLE as usize..]
     }
 
+    /// Ed25519 签名校验（R20）：覆盖域单源 [`Bmod::signed_span`]，原语
+    /// 走 berry-crypto（wycheproof 在册）；`pk` = 模型分发公钥。
+    pub fn verify_signature(&self, pk: &[u8; 32]) -> bool {
+        berry_crypto::ed25519::verify(pk, self.signature(), self.signed_span())
+    }
+
     /// 平铺超参数条目迭代（良构已执法；语义解释归消费侧）。
     pub fn hyperparams(&self) -> impl Iterator<Item = HyperParam<'a>> + '_ {
         let mut p = 0usize;
@@ -524,6 +530,33 @@ mod tests {
         let mut f = Fixture::new(&[], &[(1, 4096)]);
         f.buf[PREAMBLE as usize + 2] = 9;
         assert_eq!(Bmod::parse(&f.buf).unwrap_err(), Error::BadReserved);
+    }
+
+    #[test]
+    fn verify_signature_roundtrip_tamper_and_wrong_key() {
+        // 真密钥对（berry-crypto 原语自产）：签名覆盖域与校验胶接对拍。
+        let sk = [7u8; 32];
+        let pk = berry_crypto::ed25519::public_key(&sk);
+        let mut f = Fixture::new(&[(1, &42u32.to_le_bytes())], &[(1, 4096)]);
+        // 签名覆盖域 = signed_span；写回头部签名槽。
+        let span_start = PREAMBLE as usize;
+        let span = f.buf[span_start..].to_vec();
+        let sig = berry_crypto::ed25519::sign(&sk, &span);
+        f.buf[16..80].copy_from_slice(&sig);
+        let m = Bmod::parse(&f.buf).unwrap();
+        assert!(m.verify_signature(&pk));
+        // 篡改张量字节 → 拒。
+        let last = f.buf.len() - 1;
+        f.buf[last] ^= 0x01;
+        let m2 = Bmod::parse(&f.buf).unwrap();
+        assert!(!m2.verify_signature(&pk));
+        // 错公钥 → 拒。
+        let bad_pk = [9u8; 32];
+        assert!(!m2.verify_signature(&bad_pk));
+        // 恢复后原签名仍过（结构未变）。
+        f.buf[last] ^= 0x01;
+        let m3 = Bmod::parse(&f.buf).unwrap();
+        assert!(m3.verify_signature(&pk));
     }
 
     #[test]
