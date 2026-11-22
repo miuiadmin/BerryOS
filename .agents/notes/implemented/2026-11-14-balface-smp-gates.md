@@ -17,4 +17,4 @@ Status: implemented
 ## Related
 
 - [timer slack 纯面 berry-slackface](2026-11-13-timer-slack-face.md)（同系 HAL-face 纪律先例：判定律 host 钉板 + 物理臂留壳）
-- [调度器 API 参考 v1.16](../../../docs/调度器API参考-v1.19.md)（on_irq_tick 契约面）
+- [调度器 API 参考 v1.16](../../../docs/调度器API参考-v1.20.md)（on_irq_tick 契约面）
