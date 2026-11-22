@@ -1395,7 +1395,15 @@ test-host:
     # live 态 91 件全表 + bcts@0..6 七件 frozen 全表 + 镜像腿族〔live/frozen
     # 双锚 ok / PR 失配拒 / manifest 缺席拒 / --manifest-name 联动〕+ floor
     # 守卫拒〔frozen = REJECT 退 2 钉序〕+ 坏件拒〕+ 突变红 x3。净增 +11
-    # = lib 5 + parity 6〔+1 组〕。独立小工作区，须显式 --target {{host}}。
+    # = lib 5 + parity 6〔+1 组〕。八刀：src/gates.rs（步③ host 门禁段
+    # 镜像 = bcts-run.sh :631-647——GATE 行消费〔read -r 三域同形：cmd 取
+    # 行余量内嵌制表符保留〕+ 逐门 bash -c 发射双流重定向 gate-$gid.log +
+    # PASS 行/拒 stderr「FAIL …日志尾 5 行」+ tail -5〔不足 5 全发·空日志
+    # 零行〕+ GATE_SUMMARY 全角分号连接〔零门禁空串〕+ 任一拒总退 1·逐门
+    # 全跑非短路〕+ parity_gates oracle 对拍 +1 组〔bash 真跑循环体逐字
+    # 驱动：过/拒/混排/零门禁/真源 bcts@6 GATE 行接管——stdout·stderr·
+    # summary·总判定四面全等〕+ 突变红 x3。净增 +17 = lib 11 + parity 6。
+    # 独立小工作区，须显式 --target {{host}}。
     # Python 件不退役——CLI 对拍 oracle。
     cargo test --manifest-path tools/bctsrun/Cargo.toml --target {{host}}
     # W1 接线（SEC-02 A2 同款纪律）：berry_assemble 门禁自检——V13 组装器

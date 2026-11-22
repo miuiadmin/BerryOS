@@ -17,12 +17,14 @@
 
 pub mod abipr;
 pub mod args;
+pub mod gates;
 pub mod live;
 pub mod load;
 pub mod reconcile;
 pub mod t2;
 pub use abipr::{abi_level, img_pr_check};
 pub use args::{resolve_args, ArgsOutcome, Mode, Resolved};
+pub use gates::{gate_log_name, host_gates, GateOutcome};
 pub use live::build_live_tsv;
 pub use load::{dry_echo, load_entries, LoadOutcome};
 pub use reconcile::{reconcile_t2, ReconcileReport};
