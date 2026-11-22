@@ -44,6 +44,12 @@ pub const AP_USER_RW: u64 = 0b01 << 6;
 /// 页——可写 = 用户自改 freq 假钟，只读 = 换算参数只出自内核）。
 pub const AP_USER_RO: u64 = 0b11 << 6;
 
+/// Privileged Execute-Never（bit 53）：禁止 EL1 取指执行（SMEP + 内核直映数据防执行）。
+pub const PXN: u64 = 1 << 53;
+/// Unprivileged Execute-Never（bit 54）：禁止 EL0 取指执行。
+pub const UXN: u64 = 1 << 54;
+
+
 /// MAIR_EL1 取值：attr0=Device-nGnRnE、attr1=Normal WB RA+WA、attr2=Normal 非缓存。
 pub const MAIR_EL1: u64 = 0x00 | (0xFF << 8) | (0x44 << 16);
 

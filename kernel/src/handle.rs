@@ -42,9 +42,8 @@ pub use crate::abi_gen::{
     ERR_INVALID_ARG, ERR_NOT_FOUND, ERR_NOT_SUPPORTED, ERR_NO_MEMORY, ERR_OUT_OF_RANGE,
     ERR_TIMEDOUT, RIGHT_DUPLICATE, RIGHT_EXECUTE, RIGHT_INSPECT, RIGHT_MANAGE, RIGHT_MAP,
     RIGHT_READ, RIGHT_RECV, RIGHT_SEND, RIGHT_SET_POLICY, RIGHT_SIGNAL, RIGHTS_SAME,
-    RIGHT_TRANSFER, RIGHT_WRITE, SIGNAL_READABLE, SIGNAL_TERMINATED, SIGNAL_USER_MASK,
-    SIGNAL_WAKE_PENDING,
-    SIGNAL_WRITABLE,
+    RIGHT_TRANSFER, RIGHT_WRITE, SIGNAL_PEER_CLOSED, SIGNAL_READABLE, SIGNAL_TERMINATED,
+    SIGNAL_USER_MASK, SIGNAL_WAKE_PENDING, SIGNAL_WRITABLE,
 };
 
 // ---- handle 位域（决策 #28：低位槽位、中位代号、高位可选类型）----
@@ -118,6 +117,14 @@ impl KernelObj {
         }
     }
 
+    /// 只读取 Vmar 本体（Process 绑定底层 AddressSpace 等）。
+    pub fn as_vmar(&self) -> Option<&crate::vmar::Vmar> {
+        match self {
+            KernelObj::Vmar(v) => Some(v),
+            _ => None,
+        }
+    }
+
     /// 可变取 Vmar 本体（vmar_* syscall；同上防御性）。
     pub fn as_vmar_mut(&mut self) -> Option<&mut crate::vmar::Vmar> {
         match self {
@@ -176,33 +183,69 @@ impl KernelObj {
     }
 }
 
-/// 共享对象体：引用计数 + 对象本体。`Box` 进堆、槽持裸指针；引用计数归零
-/// 的 drop 是本模块唯一释放点（unsafe 收敛：指针有效性由表全程维护）。
+/// 共享对象体：引用计数 + 对象本体。`Box` 进堆、槽持裸指针；64 位组合原子态归零
+/// 是本模块唯一释放点。
+///
+/// F1-2：`state` 低 32 位为句柄与内部对象钉住计数（`refs`），高 32 位为活跃地址空间
+/// 页级映射保活计数（`map_refs`）。仅当 `state == 0`（`refs == 0 && map_refs == 0`）
+/// 时销毁 `Box<ObjRef>`，彻底删除 `HandleTable::drain()` 的 `leak = true` 分支并根除
+/// 父进程先于子进程退出或同表跨槽析构顺序导致的 `*mut Vmo` UAF。
 pub struct ObjRef {
-    /// 持有本对象的引用数（handle 计 + **内部钉住计**，见 [`ObjRef::retain`]）。
-    refs: usize,
+    state: core::sync::atomic::AtomicU64,
     pub obj: KernelObj,
 }
 
 impl ObjRef {
-    /// **内部钉住**（3-3）：对象间跨界引用（Thread→Process、Process→root
-    /// Vmar、运行中任务→Process）+1 引用——持有者 handle 关光后被引用对象
-    /// 仍存活。`retain`/`release` 成对，与 handle 计共用同一归零释放点。
-    pub fn retain(&mut self) {
-        self.refs += 1;
+    #[inline]
+    pub fn refs(&self) -> usize {
+        (self.state.load(core::sync::atomic::Ordering::Acquire) & 0xFFFF_FFFF) as usize
     }
 
-    /// 钉住释放：-1，归零则销毁（与 close 归零同路）。Drop 链安全：内部钉
-    /// 住的对象销毁时其 Drop 再 release 它钉住的对象（纯指针操作，不回表，
-    /// 无重入）。
+    #[inline]
+    pub fn retain(&self) {
+        self.state
+            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// 句柄/对象钉住释放：低 32 位 -1，若整体 64 位计数（含 `map_refs`）归零则立即销毁对象。
     ///
     /// # Safety
-    /// `ptr` 须来自一次成功的 `retain`（表内活对象），且此后不再使用。
+    /// `ptr` 须来自一次有效的句柄槽或 `retain`，且调用方此后不再持有该令牌。
     pub unsafe fn release(ptr: NonNull<Self>) {
-        // SAFETY: 调用方契约（retain 过、单核顺序——对象仅在 IRQ 屏蔽路径销毁）。
-        let r = &mut *ptr.as_ptr();
-        r.refs -= 1;
-        if r.refs == 0 {
+        let prev = (*ptr.as_ptr())
+            .state
+            .fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
+        debug_assert!((prev & 0xFFFF_FFFF) >= 1, "ObjRef::release refs underflow");
+        if prev == 1 {
+            drop(Box::from_raw(ptr.as_ptr()));
+        }
+    }
+
+    /// 地址空间映射保活 +`npages`（高 32 位计数，不影响 `close` 的 `refs == 1` `-EBUSY` 门控）。
+    #[inline]
+    pub fn retain_map(&self, npages: usize) {
+        if npages > 0 {
+            self.state.fetch_add(
+                (npages as u64) << 32,
+                core::sync::atomic::Ordering::Relaxed,
+            );
+        }
+    }
+
+    /// 地址空间映射保活 -`npages`：若句柄侧 `refs` 已先归零（如父进程先退出），本最后一次解映射即销毁 `ObjRef`。
+    ///
+    /// # Safety
+    /// `ptr` 须来自配对的 `retain_map(npages)`。
+    pub unsafe fn release_map(ptr: NonNull<Self>, npages: usize) {
+        if npages == 0 {
+            return;
+        }
+        let delta = (npages as u64) << 32;
+        let prev = (*ptr.as_ptr())
+            .state
+            .fetch_sub(delta, core::sync::atomic::Ordering::AcqRel);
+        debug_assert!(prev >= delta, "ObjRef::release_map underflow");
+        if prev == delta {
             drop(Box::from_raw(ptr.as_ptr()));
         }
     }
@@ -237,9 +280,10 @@ impl HandleTable {
     pub fn insert(&mut self, obj: KernelObj, rights: Rights) -> Result<Handle, i32> {
         let slot = self.alloc_slot()?;
         let gen = self.take_gen(slot)?;
-        // 装箱 try 化（3b3 H2）：失败时槽仍 Free 未写、gen 未发行——零副作用
-        // 返 -ENOMEM（原 Box::new OOM 直接 abort）。
-        let Some(boxed) = crate::heap::try_box(ObjRef { refs: 1, obj }) else {
+        let Some(boxed) = crate::heap::try_box(ObjRef {
+            state: core::sync::atomic::AtomicU64::new(1),
+            obj,
+        }) else {
             return Err(ERR_NO_MEMORY);
         };
         // SAFETY: 刚 into_raw 的裸指针，非空。
@@ -260,31 +304,25 @@ impl HandleTable {
         // 先占槽、后 +1 引用（3b3 审查 H3）：失败路径零副作用，无需回滚。
         let slot = self.alloc_slot()?;
         let gen = self.take_gen(slot)?;
-        // SAFETY: lookup 已验指针在表且 refs ≥ 1；单核顺序访问。
-        unsafe { (*obj.as_ptr()).refs += 1 };
+        // SAFETY: lookup 已验指针在表且 refs ≥ 1。
+        unsafe {
+            let r = &*obj.as_ptr();
+            r.retain();
+            if let KernelObj::Channel(c) = &r.obj {
+                c.retain_handle();
+            }
+        }
         self.slots[slot] = SlotState::Used { gen, obj, rights: new_rights };
         Ok(encode(slot as u32, gen))
     }
 
-    /// 关闭 handle：引用 -1，归零则释放对象。旧 handle 值此后必
-    /// [`ERR_BAD_HANDLE`]（槽 `next_gen` 已 +1）。
-    ///
-    /// 3-2/G4-2 拒绝面：**本次 close 会销毁独体（refs==1）且 VMO 映射未解除
-    /// 或 demand 区间仍登记 → 拒**（-EBUSY，判据 `any_mapped() ||
-    /// demand_mapped()`）——归零销毁 Vmo 有两个后患：Vmar Region 存着该对象
-    /// 裸指针（unmap 回调映射计数/供给链解引用）→ 悬空（demand 分量 = G4-2
-    /// 修批 P0-1 面 a/c：未供给页 mapcnt 恒 0 而指针已活，独立钉）；仍被映射
-    /// 的物理页若归还 → PA 复用经残留 PTE 静默腐败。**别名 close（refs≥2）
-    /// 放行**——对象不死，存活句柄继续钉住它；先 unmap（或先 close 别名）
-    /// 再 close 最后一个。Vmar 带 live 映射时 close 不拒（v1 政策维持——
-    /// G4-2 修批起由 `Vmar::Drop` 收口：注销 demand 登记槽 + 放 demand 钉，
-    /// 不产悬垂）。
+    /// 关闭 handle：引用 -1，若整体计数（含地址空间 `map_refs`）归零则释放对象。
     pub fn close(&mut self, h: Handle) -> Result<(), i32> {
         let (slot, gen, obj, _) = self.lookup_at(h)?;
         // SAFETY: 指针在表、refs ≥ 1；只读探测（close 拒绝面——只拦销毁性 close）。
         unsafe {
             let r = &*obj.as_ptr();
-            if r.refs == 1 {
+            if r.refs() == 1 {
                 if let KernelObj::Vmo(v) = &r.obj {
                     if v.any_mapped() || v.demand_mapped() {
                         return Err(ERR_BUSY);
@@ -292,17 +330,14 @@ impl HandleTable {
                 }
             }
         }
-        // SAFETY: 指针在表、refs ≥ 1；单核顺序访问。
-        let refs = unsafe {
-            let r = &mut *obj.as_ptr();
-            r.refs -= 1;
-            r.refs
-        };
-        if refs == 0 {
-            // SAFETY: 引用已归零、无别名——归还 Box（drop Vmo/Vmar 本体）。
-            unsafe { drop(Box::from_raw(obj.as_ptr())) };
-        }
         self.slots[slot] = SlotState::Free { next_gen: gen + 1 };
+        // SAFETY: 先腾空槽位再递减通道句柄计数并归还引用令牌，确保重入查表一致。
+        unsafe {
+            if let KernelObj::Channel(c) = &(*obj.as_ptr()).obj {
+                c.release_handle();
+            }
+            ObjRef::release(obj);
+        }
         Ok(())
     }
 
@@ -316,14 +351,10 @@ impl HandleTable {
         // 先验两值（原子性：任一无效则表不动）。
         let (_, _, hobj, _) = self.lookup_at(h)?;
         let (r_slot, r_gen, obj, rights) = self.lookup_at(repl)?;
-        // 同 close 拒绝面（含 demand 钉分量，G4-2 修批）：h 的对象**销毁性**
-        // （refs==1）且映射未解除/demand 仍登记时结尾的 close 段会拒——先拒，
-        // 保证「任一拒绝则表不动」的原子承诺（别名 replace 不销毁对象，放行；
-        // repl 对象只搬迁不销毁，无需查）。
         // SAFETY: 指针在表（lookup_at 过）；只读探测。
         unsafe {
             let r = &*hobj.as_ptr();
-            if r.refs == 1 {
+            if r.refs() == 1 {
                 if let KernelObj::Vmo(v) = &r.obj {
                     if v.any_mapped() || v.demand_mapped() {
                         return Err(ERR_BUSY);
@@ -343,10 +374,6 @@ impl HandleTable {
 
     /// **取出**（3-4a：handle 迁移原语）：把槽整体摘走——对象引用数**不变**
     /// （引用令牌随槽迁移，非销毁），槽位代号 +1（原 handle 值立即作废）。
-    /// 消费者：`process_start` 的 bootstrap 迁移（3-4a）、`channel_send` 的
-    /// handle 随消息迁移（3-4b）。取出后对象由调用方经 [`Self::insert_ref`]
-    /// 落进目标表（或暂挂消息里）。**不做销毁性检查**（refs 不减、无 drop——
-    /// 映射中 VMO 照样可迁：对象不死，EPTE 防线由最终 close 把守）。
     pub fn take(&mut self, h: Handle) -> Result<(NonNull<ObjRef>, Rights), i32> {
         let (slot, gen, obj, rights) = self.lookup_at(h)?;
         self.slots[slot] = SlotState::Free { next_gen: gen + 1 };
@@ -354,9 +381,7 @@ impl HandleTable {
     }
 
     /// **放入既有对象**（[`Self::take`] 的对侧）：已 Boxing 的 [`ObjRef`] 挂进
-    /// 新槽并授予 rights，返回新 handle。引用数**不变**——调用方移交的引用
-    /// 令牌由本槽接管（与 [`Self::insert`] 的差别：insert 新建对象 refs=1，
-    /// insert_ref 接管既有令牌）。
+    /// 新槽并授予 rights，返回新 handle。引用数**不变**。
     pub fn insert_ref(&mut self, obj: NonNull<ObjRef>, rights: Rights) -> Result<Handle, i32> {
         let slot = self.alloc_slot()?;
         let gen = self.take_gen(slot)?;
@@ -364,45 +389,48 @@ impl HandleTable {
         Ok(encode(slot as u32, gen))
     }
 
-    /// **清空整表**（Plan B v0.5：进程退出钩子 drain 死亡进程的表）。逐槽走
-    /// [`Self::close`] 的释放语义（引用 -1、归零 drop Box、槽代号 +1），但
-    /// **不做销毁性拒检**——close 的 -EBUSY 拒面保护的是**活进程**的映射
-    /// 一致性；表主已死，其表内映射中 VMO 的页由 `Vmo::Drop` 的「映射中页
-    /// 只泄漏」政策兜底（安全向：不还帧 = 无 PA 复用经残留 PTE 腐败）。
-    /// **对象本体亦不销毁**（对抗审查修）：`Region.vmo` 裸指针的有效性依托
-    /// 「close 拒 -EBUSY 保对象存活」（vmar.rs Region 注释）——drain 无拒
-    /// 面，照常 drop Box 会让存活 Vmar 的 unmap/protect 解引用悬空（UAF 写）
-    /// ；故 refs 将归零且仍被映射 **或 demand 登记中** 的 VMO 整档跳过递减
-    /// （令牌随死表泄漏、对象保活；mapcnt==0 且 demand 钉==0 ⟺ 无 Region
-    /// 指着它——两防线判据并集，精确；demand 分量 = G4-2 修批 P0-1）。Vmar
-    /// 对象照常 drop：其 `Drop` 注销 demand 登记槽 + 放自身 regions 的 demand
-    /// 钉（KL 窗外语境由 kl_held 门收口）。drop 链纯指针操作不回表（无重入）
-    /// ；**仅 IRQ 屏蔽的退出路径调用**（对象释放窗口内不可被切走）。
+    /// **排空整表**（F1-2 两阶段退出第二阶段）：在 `AddressSpace::teardown()` 完成之后逐槽
+    /// 调用 `ObjRef::release` 归还句柄引用令牌，彻底废除旧版 `leak = true` 整对象泄漏分支。
+    /// 若某 VMO 仍被另一存活子进程映射，`ObjRef` 高 32 位 `map_refs` 自动保活对象本体直至
+    /// 该子进程 `teardown()` 完成最后一次 `release_map` 时零泄漏归还物理页。
     pub fn drain(&mut self) {
         for slot in self.slots.iter_mut() {
             if let SlotState::Used { gen, obj, .. } = *slot {
-                // SAFETY: 指针在表；只读探测（any_mapped/demand_mapped 零分配）。
-                let leak = unsafe {
-                    let r = &*obj.as_ptr();
-                    r.refs == 1
-                        && match &r.obj {
-                            KernelObj::Vmo(v) => v.any_mapped() || v.demand_mapped(),
-                            _ => false,
-                        }
+                *slot = SlotState::Free { next_gen: gen + 1 };
+                // SAFETY: 槽内活跃引用令牌；Channel 同步递减句柄级开闭计数触发 PEER_CLOSED。
+                unsafe {
+                    if let KernelObj::Channel(c) = &(*obj.as_ptr()).obj {
+                        c.release_handle();
+                    }
+                    ObjRef::release(obj);
+                }
+            }
+        }
+    }
+
+    /// **退出即时 IPC 排水**（F1-3）：进程末线程退出或被 `process_terminate` 强杀时，在持全谱锁窗口内
+    /// 立即摘除并释放全部 `Channel` 与 `SuspendToken` 句柄槽，确保对端 `SIGNAL_PEER_CLOSED` 唤醒与
+    /// 自动解冻零延迟触发，不受 `HT_DRAINQ` 异步排队影响。
+    pub fn drain_ipc_on_exit(&mut self) {
+        for slot in self.slots.iter_mut() {
+            if let SlotState::Used { gen, obj, .. } = *slot {
+                // SAFETY: 槽内活跃对象只读判别类型。
+                let is_ipc = unsafe {
+                    matches!(
+                        &(*obj.as_ptr()).obj,
+                        KernelObj::Channel(_) | KernelObj::SuspendToken(_)
+                    )
                 };
-                if !leak {
-                    // SAFETY: 指针在表、refs ≥ 1；单核顺序（屏蔽窗内）。
-                    let refs = unsafe {
-                        let r = &mut *obj.as_ptr();
-                        r.refs -= 1;
-                        r.refs
-                    };
-                    if refs == 0 {
-                        // SAFETY: 引用归零、无别名——归还 Box（drop 对象本体）。
-                        unsafe { drop(Box::from_raw(obj.as_ptr())) };
+                if is_ipc {
+                    *slot = SlotState::Free { next_gen: gen + 1 };
+                    // SAFETY: 摘槽后独占释放本槽引用。
+                    unsafe {
+                        if let KernelObj::Channel(c) = &(*obj.as_ptr()).obj {
+                            c.release_handle();
+                        }
+                        ObjRef::release(obj);
                     }
                 }
-                *slot = SlotState::Free { next_gen: gen + 1 };
             }
         }
     }
@@ -543,7 +571,7 @@ impl HandleTable {
                     // SAFETY: 槽在表且 gen 在发行域内 → 按表不变量指针有效；
                     // 本走查职责恰是探测不变量破缺（refs==0 即 UAF 信号），
                     // 读面止于诊断取值（usize），无派生解引用。
-                    if unsafe { (*obj.as_ptr()).refs } == 0 {
+                    if unsafe { (*obj.as_ptr()).refs() } == 0 {
                         return Err("HT integrity: Used refs=0 (UAF)");
                     }
                     used += 1;

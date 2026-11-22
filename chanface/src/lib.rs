@@ -137,6 +137,22 @@ pub fn wait_signal_of(len_self: usize, len_peer: usize) -> (bool, bool) {
     (queue_readable(len_self), !queue_full_of(len_peer))
 }
 
+/// F1-3 内核派生位三元映射：`(readable, writable, peer_closed)`。
+/// 对端已关闭时：`readable` 仍按本端残余消息判定（允许排空），`writable` 恒 `false`，
+/// `peer_closed` 置 `true`。
+#[inline]
+pub fn wait_signal_peer_state(
+    len_self: usize,
+    len_peer: usize,
+    peer_open: bool,
+) -> (bool, bool, bool) {
+    (
+        queue_readable(len_self),
+        peer_open && !queue_full_of(len_peer),
+        !peer_open,
+    )
+}
+
 // ---- 表驱动测试（host 钉板——判据边界值/单调性/映射律逐条钉）----
 
 #[cfg(test)]
@@ -254,5 +270,8 @@ mod tests {
         assert_eq!(queue_admits(0), !queue_full_of(0));
         assert_eq!(send_args_legal(CHAN_MSG_MAX, CHAN_HND_MAX), true);
         assert_eq!(recv_capacity_legal(0, 0, 0, 0), true);
+        assert_eq!(wait_signal_peer_state(2, 0, false), (true, false, true));
+        assert_eq!(wait_signal_peer_state(0, 0, false), (false, false, true));
+        assert_eq!(wait_signal_peer_state(1, 0, true), (true, true, false));
     }
 }
