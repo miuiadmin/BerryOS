@@ -230,7 +230,7 @@ pub fn reset_virtio_mmio_window(pa_base: usize, size: usize) {
 // 共享——内核直映 MMIO 同款，见 mmu.rs）。
 pub use paging::{
     page_descriptor, table_descriptor, AP_RO, AP_USER_RO, AP_USER_RW, ATTR_DEVICE, ATTR_NORMAL,
-    SH_INNER, SH_NONE,
+    PXN, SH_INNER, SH_NONE, UXN,
 };
 
 // ---- IRQ 派发回调（HAL→上层，函数指针槽反转）----

@@ -1,0 +1,8 @@
+[package]
+name = "berry-vmarface"
+version.workspace = true
+edition.workspace = true
+license = "Apache-2.0"
+description = "层级 Vmar 有序区间树、子区间切分与子空间回收纯状态机（F1-1）"
+
+[dependencies]

@@ -527,6 +527,39 @@ pub unsafe extern "C" fn svc_window(class: u8, enter: bool) {
         (*cur).held_locks |= class;
         (*cur).svc_mask = class;
     } else {
+        if (*cur).held_locks != class {
+            berry_hal_aarch64::uart_puts(b"[svm-x name=");
+            berry_hal_aarch64::uart_puts((*cur).name);
+            berry_hal_aarch64::uart_puts(b" held=");
+            let mut buf = [0u8; 10];
+            buf[0] = b'0'; buf[1] = b'x';
+            let mut n = (*cur).held_locks as usize;
+            for i in (0..8).rev() {
+                let d = (n & 0xF) as u8;
+                buf[2 + i] = if d < 10 { b'0' + d } else { b'a' + (d - 10) };
+                n >>= 4;
+            }
+            berry_hal_aarch64::uart_puts(&buf);
+            berry_hal_aarch64::uart_puts(b" class=");
+            let mut n = class as usize; let mut buf2 = [0u8; 10];
+            buf2[0] = b'0'; buf2[1] = b'x';
+            for i in (0..8).rev() {
+                let d = (n & 0xF) as u8;
+                buf2[2 + i] = if d < 10 { b'0' + d } else { b'a' + (d - 10) };
+                n >>= 4;
+            }
+            berry_hal_aarch64::uart_puts(&buf2);
+            berry_hal_aarch64::uart_puts(b" mask=");
+            let mut n = (*cur).svc_mask as usize; let mut buf3 = [0u8; 10];
+            buf3[0] = b'0'; buf3[1] = b'x';
+            for i in (0..8).rev() {
+                let d = (n & 0xF) as u8;
+                buf3[2 + i] = if d < 10 { b'0' + d } else { b'a' + (d - 10) };
+                n >>= 4;
+            }
+            berry_hal_aarch64::uart_puts(&buf3);
+            berry_hal_aarch64::uart_puts(b"]\n");
+        }
         debug_assert_eq!(
             (*cur).held_locks,
             class,
@@ -2620,6 +2653,13 @@ pub fn sq_lock() -> bool {
     // SAFETY: 记账位写当前任务字段；CURRENT 空窗由 held_mark 自跳过。
     unsafe { held_mark(HELD_SQ, true) };
     true
+}
+
+/// 查询当前任务/执行流是否已持有 SLEEPQ 锁（供跨层析构路径判别锁序）。
+#[inline]
+pub fn sq_is_held() -> bool {
+    // SAFETY: 只读当前任务 held_locks 位；CURRENT 空窗返 false。
+    unsafe { held_test(HELD_SQ) }
 }
 
 /// 放 SLEEPQ 锁（先清位后放——位与锁恒同窗；`phys=false` 退化窗不触——
