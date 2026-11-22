@@ -334,6 +334,85 @@ impl<'a> Bmod<'a> {
     }
 }
 
+/// `.bmod` 构造器（R21 写面）：超参数 TLV + 张量段 + 签名一次成件——
+/// 读面 [`Bmod::parse`] 的镜像单源（布局常量共享，读写不双写）。输出
+/// 缓冲由调用方持（`buf.len() ≥ BmodBuilder::output_len()`）；签名槽
+/// 经 `signer` 闭包对 [`Bmod::signed_span`] 同一覆盖域计算（与校验面
+/// 对拍的单源保证）。
+pub struct BmodBuilder<'a> {
+    hyper: &'a [(u8, &'a [u8])],
+    tensors: &'a [(QuantFormat, &'a [u8])],
+}
+
+impl<'a> BmodBuilder<'a> {
+    /// 超参条目（tag, value）平铺序即写入序；每值长 ≤ 255。
+    pub fn new(hyper: &'a [(u8, &'a [u8])], tensors: &'a [(QuantFormat, &'a [u8])]) -> Self {
+        Self { hyper, tensors }
+    }
+
+    /// 输出幅（字节）——头页 + 各段页对齐占位。
+    pub fn output_len(&self) -> usize {
+        let mut off = PAGE as usize;
+        for (_, t) in self.tensors {
+            off += (t.len() + PAGE as usize - 1) / PAGE as usize * PAGE as usize;
+        }
+        off
+    }
+
+    /// 成件：写入 `buf`（幅足 [`Self::output_len`]），签名经 `signer`
+    /// 对覆盖域（偏移 [`PREAMBLE`]..EOF——与读面 signed_span 同律）计
+    /// 算后落槽。返回错误当且仅当结构律破坏（值超长/无张量段/缓冲不足）。
+    pub fn build(&self, buf: &mut [u8], signer: impl FnOnce(&[u8]) -> [u8; 64]) -> Result<(), Error> {
+        if self.tensors.is_empty() {
+            return Err(Error::BadSegCount);
+        }
+        for (_, v) in self.hyper {
+            if v.len() > 255 {
+                return Err(Error::TruncatedTlv); // 值域超长（u8 len 面）
+            }
+        }
+        if buf.len() < self.output_len() {
+            return Err(Error::SegOutOfBounds); // 缓冲不足复用界外错误族
+        }
+        let tlv_len: usize = self.hyper.iter().map(|(_, v)| 2 + v.len()).sum();
+        let seg_table_len = SEG_ENTRY as usize * self.tensors.len();
+        let header_len = PREAMBLE as usize + tlv_len + seg_table_len;
+        if header_len > PAGE as usize {
+            return Err(Error::BadHeaderLen);
+        }
+        buf.fill(0);
+        buf[0..4].copy_from_slice(MAGIC);
+        buf[4..6].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
+        buf[6..10].copy_from_slice(&0u32.to_le_bytes());
+        buf[10..12].copy_from_slice(&SIG_ALGO_ED25519.to_le_bytes());
+        buf[12..16].copy_from_slice(&(header_len as u32).to_le_bytes());
+        buf[80..84].copy_from_slice(&(tlv_len as u32).to_le_bytes());
+        buf[84..86].copy_from_slice(&(self.tensors.len() as u16).to_le_bytes());
+        buf[86..90].copy_from_slice(&(seg_table_len as u32).to_le_bytes());
+        let mut p = PREAMBLE as usize;
+        for (tag, v) in self.hyper {
+            buf[p] = *tag;
+            buf[p + 1] = v.len() as u8;
+            buf[p + 2..p + 2 + v.len()].copy_from_slice(v);
+            p += 2 + v.len();
+        }
+        let mut off = PAGE as u64;
+        for (i, (q, t)) in self.tensors.iter().enumerate() {
+            let e = PREAMBLE as usize + tlv_len + SEG_ENTRY as usize * i;
+            buf[e..e + 2].copy_from_slice(&q.tag().to_le_bytes());
+            buf[e + 8..e + 16].copy_from_slice(&off.to_le_bytes());
+            let len = t.len() as u64;
+            buf[e + 16..e + 24].copy_from_slice(&len.to_le_bytes());
+            buf[off as usize..off as usize + t.len()].copy_from_slice(t);
+            off += (t.len() as u64 + PAGE as u64 - 1) / PAGE as u64 * PAGE as u64;
+        }
+        // 签名覆盖域 = PREAMBLE..EOF（与读面 signed_span 同一常量单源）。
+        let sig = signer(&buf[PREAMBLE as usize..]);
+        buf[16..80].copy_from_slice(&sig);
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -557,6 +636,58 @@ mod tests {
         f.buf[last] ^= 0x01;
         let m3 = Bmod::parse(&f.buf).unwrap();
         assert!(m3.verify_signature(&pk));
+    }
+
+    #[test]
+    fn builder_roundtrip_with_signature() {
+        let sk = [3u8; 32];
+        let pk = berry_crypto::ed25519::public_key(&sk);
+        let t0 = [0xA5u8; 4096];
+        let t1 = [0x5Au8; 4100];
+        let ctx = 2048u32.to_le_bytes();
+        let hyper = [(1u8, &ctx[..]), (7u8, &b"bert"[..])];
+        let tensors = [(QuantFormat::Q4_0, &t0[..]), (QuantFormat::Bf16, &t1[..])];
+        let b = BmodBuilder::new(&hyper, &tensors);
+        let mut buf = vec![0u8; b.output_len()];
+        b.build(&mut buf, |span| berry_crypto::ed25519::sign(&sk, span)).unwrap();
+        let m = Bmod::parse(&buf).unwrap();
+        assert_eq!(m.seg_count(), 2);
+        assert_eq!(m.tensor(0), &t0[..]);
+        assert_eq!(m.tensor(1), &t1[..]);
+        assert_eq!(m.hyper(1), Some(&ctx[..]));
+        assert!(m.verify_signature(&pk));
+        // 篡改任一张量字节 → 验签拒（覆盖域含全部张量页）。
+        let last = buf.len() - 1;
+        buf[last] ^= 1;
+        assert!(!Bmod::parse(&buf).unwrap().verify_signature(&pk));
+    }
+
+    #[test]
+    fn builder_loud_rejects() {
+        // 无张量段拒；值超 255 拒；缓冲不足拒。
+        let b = BmodBuilder::new(&[], &[]);
+        let mut buf = vec![0u8; PAGE as usize];
+        assert_eq!(
+            b.build(&mut buf, |_| [0u8; 64]).unwrap_err(),
+            Error::BadSegCount
+        );
+        let long = [0u8; 256];
+        let t16 = [0u8; 16];
+        let hyper2 = [(1u8, &long[..])];
+        let tensors2 = [(QuantFormat::Q8_0, &t16[..])];
+        let b2 = BmodBuilder::new(&hyper2, &tensors2);
+        assert_eq!(
+            b2.build(&mut buf, |_| [0u8; 64]).unwrap_err(),
+            Error::TruncatedTlv
+        );
+        let t4096 = [1u8; 4096];
+        let tensors3 = [(QuantFormat::Q8_0, &t4096[..])];
+        let b3 = BmodBuilder::new(&[], &tensors3);
+        let mut small = vec![0u8; PAGE as usize];
+        assert_eq!(
+            b3.build(&mut small, |_| [0u8; 64]).unwrap_err(),
+            Error::SegOutOfBounds
+        );
     }
 
     #[test]

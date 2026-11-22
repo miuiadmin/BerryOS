@@ -25,7 +25,7 @@ Version: 1.0.0
 
 建造清单（DAG 节验收面——全勾才配双戳）：
 
-- [x] 条款 1 `.bmod` 格式件：`user/berry-aiproto` 纯函数解析器（BMOD v1 二进制布局单源：Ed25519 签名域/页 0 闭合有界 TLV 超参数表/4096B 页对齐张量段表五量化格式枚举，全接口零拷贝、畸形输入零 panic、loud 拒十四律）——host 19 测绿（`just test-host` berry-aiproto 腿，2026-11-22）；R20 补签名校验胶接面 [`Bmod::verify_signature`]（原语 = berry-crypto ed25519〔wycheproof 在册〕、覆盖域单源仍 signed_span，host 20 测）；airtd 消费接线随后续刀
+- [x] 条款 1 `.bmod` 格式件：`user/berry-aiproto` 纯函数解析器（BMOD v1 二进制布局单源：Ed25519 签名域/页 0 闭合有界 TLV 超参数表/4096B 页对齐张量段表五量化格式枚举，全接口零拷贝、畸形输入零 panic、loud 拒十四律）——host 19 测绿（`just test-host` berry-aiproto 腿，2026-11-22）；R20 补签名校验胶接面 [`Bmod::verify_signature`]（原语 = berry-crypto ed25519〔wycheproof 在册〕、覆盖域单源仍 signed_span，host 20 测）；R21 补写面 [`BmodBuilder`]（TLV/段表/签名落槽一次成件——读写单源镜像，build→parse→verify 全链 roundtrip，host 22 测）；airtd 消费接线随后续刀
 - [ ] 条款 2 全局单份驻留与冷层驱逐：`airtd` 按需调页 VMO 池 + `VMO_OP_DISCARDABLE_COLD` 标记 + am 紧缺信号回收联动（涉内核 mm/svcmgr 面——无人轮默认路径边界外，边界声明到位后继续）
 
 ### 二、三阶异构张量计算架构（`berry-tensor`）契约
