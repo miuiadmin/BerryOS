@@ -175,10 +175,10 @@ X6_HEXYL_PGS_FLOOR: float | None = 7.98
 # runner（TCG 慢 3-10x）仍有 6-20x。帽语义比 B-0 宽：done 标记 = boot 尾
 # BENCHWAKE（帽盖全程矩阵），不是 BENCH ok。若未来机器慢到触帽——那是发现
 # 帽按实测校准（2026-11-18 icount 基线刀）：120s 系 LOADGEN 入树前的体量——
-# 今日 ktest（LOADGEN 五相 wall≈3.5s 虚拟×62.5MHz/8instr/tick 级指令量+全
-# 套族）使 icount 全程到 BENCHWAKE 实测 ≈10 分钟级（双诊断靴：sbench 在/
-# 不在两形均完成，串口完整含 ktest done+BENCH 行+用户态推进）。1800s=3x
-# 余量——真挂死仍在帽内 loud（执法语义不变，仅体量校准）。
+# 静场实测 boot→BENCHWAKE 43-137s（骑旧帽线上，兄弟 QEMU 在场争用下分钟级
+# ~10 分钟——本仓常态），旧帽在两态皆随机截杀收割。1800s 覆盖争用态 prove
+# 全程（五跑×争用≈50 分钟内）——真挂死仍在帽内 loud（执法语义不变，仅体量
+# 与争用态校准；icount 通道数值对争用免疫、仅宿主墙钟受染）。
 BOOT_TIMEOUT_ICOUNT = 1800
 
 # B-2 定值参数（设计 §13）：shift=1 = 每指令 2ns 虚拟时钟（CNTVCT 折算
