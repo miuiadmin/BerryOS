@@ -1415,6 +1415,20 @@ test-host:
     # 〔bash 真跑段体逐字提取驱动：逐条判定矩阵 ≥160 断言 + 对账族 + 真源
     # markers.sh 91 件全过/单缺失恰缺该 id + 空 expect 分歧钉板〕+ 突变红
     # x3。净增 +23 = lib 15 + parity 8。
+    # 十刀：src/efiboot.rs（镜像腿 QEMU 轮询段纯函数面 = bcts-run.sh :326-338
+    # EFI 三数组 + :704-723 轮询三段循环体 + :730-738 banner/ident 两门——
+    # poll_missing：固定串 4 + 接续 3 grep -qF 面〔缺原样追加〕+ ERE 六条
+    # 〔缺 ERE: 前缀形〕+ entries.tsv bare 相 MARK 行逐条 assert_marker〔缺
+    # mid〕，三段序逐字 + MISSING 空格连接首项无前导；ERE 手写判定器零 regex
+    # 〔[0-9]+/[0-9a-f]+ 字符类 + 贪心回溯，hex 小写锚〕；banner_gate：grep
+    # -m1 首命中 + 形态正则手写镜像〔三段数字 + (ident 可选 rustc 组)，无锚
+    # 各出现处逐一试〕+ nogit ident 拒〔形态门先于 ident 门〕，img_fail 完整
+    # stderr 行含 bcts: FAIL: 前缀〕+ tests/parity_efiboot.rs oracle 对拍 +1 组
+    # 〔bash 真跑轮询体逐字提取〔三数组区间整取 + CORPUS 前置 + sleep 桩单轮
+    # 驱动〕：全过/空日志全缺三段序/三类缺项并存/IDEMO 透传 MISSING 全等 ×4
+    # + banner 门矩阵 ×8 判定·文案逐字 + 形态正则边界语料 13 行〕+ 突变红
+    # x3〔hex 放宽 2 红/missing 恒前导空格 5 红/nogit 门删除 7 红〕。净增
+    # +20 = lib 13 + parity 7。
     # 独立小工作区，须显式 --target {{host}}。
     # Python 件不退役——CLI 对拍 oracle。
     cargo test --manifest-path tools/bctsrun/Cargo.toml --target {{host}}

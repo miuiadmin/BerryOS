@@ -17,6 +17,7 @@
 
 pub mod abipr;
 pub mod args;
+pub mod efiboot;
 pub mod gates;
 pub mod live;
 pub mod load;
