@@ -2,7 +2,7 @@
 
 Type: spec
 Status: active
-Updated: 2026-11-18
+Updated: 2026-11-22
 Version: 1.0.0
 
 一句话说明：`ai-runtime`（由系统推理守护进程 `airtd`、纯算子核 `berry-tensor`、协议库 `berry-aiproto` 与个人语义记忆库 `berry-vault` 组成）是 BerryOS 的端侧智能算力与长期记忆中枢——以「只读按需映射跨进程共享模型池 + 三阶异构张量硬件卸载 + 分页 KV-Cache + 能力门控不出端加密记忆库」让 AI 原生操作系统具备真正的本地大脑。
@@ -22,6 +22,11 @@ Version: 1.0.0
 
 1. **零反序列化直接映射格式 `.bmod`**：模型文件存储在 [storage-image 总体设计](../storage-image/design.md) 的只读系统卷 `/system/models/` 或按需下载的加密扩展卷 `/data/models/`，文件头包含 Ed25519 模型签名、超参数有界 TLV 表（拒绝任意 Pickle/可执行脚本格式，根绝反序列化代码执行漏洞）及 4096B 页对齐的只读张量数据段（支持 `Q4_0`、`Q4_K_M`、`Q8_0`、`FP16`、`BF16`）。
 2. **全局唯一物理驻留与冷层驱逐**：`airtd` 通过 `BerryROFS` / `BerryFS` 按需调页 VMO 映射 `.bmod` 张量页并标记 `VMO_OP_DISCARDABLE_COLD`。无论多少个系统服务或第三方应用并发请求同一基础模型（如系统 1.5B/3B 语言模型、轻量 Whisper ASR、神经网络 TTS 或 384 维 Embedding 模型），物理内存中永远只驻留一份只读权重页；当 [am 总体设计](../am/design.md) 发出内存紧缺信号时，内核无需写盘即可直接回收未活跃模型页，下次推理自动按需缺页重装。
+
+建造清单（DAG 节验收面——全勾才配双戳）：
+
+- [x] 条款 1 `.bmod` 格式件：`user/berry-aiproto` 纯函数解析器（BMOD v1 二进制布局单源：Ed25519 签名域/页 0 闭合有界 TLV 超参数表/4096B 页对齐张量段表五量化格式枚举，全接口零拷贝、畸形输入零 panic、loud 拒十四律）——host 19 测绿（`just test-host` berry-aiproto 腿，2026-11-22）；airtd 消费接线随后续刀
+- [ ] 条款 2 全局单份驻留与冷层驱逐：`airtd` 按需调页 VMO 池 + `VMO_OP_DISCARDABLE_COLD` 标记 + am 紧缺信号回收联动（涉内核 mm/svcmgr 面——无人轮默认路径边界外，边界声明到位后继续）
 
 ### 二、三阶异构张量计算架构（`berry-tensor`）契约
 
