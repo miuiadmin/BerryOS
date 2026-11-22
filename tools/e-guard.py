@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -57,7 +58,8 @@ FROZEN_PREFIXES = (
     "tools/stranded-deferrals.py", "tools/answers-readback.py",
     ".agents/tools/", "tools/facts.py", "tools/gate-selftest.sh", "tools/punch_slice.py",
     # P2 跨树 sweep 高危类（考古）：大规模路径/符号迁移须 owner 确认——列入冻结面
-    "tools/task-graph.py", "tools/task-oracle.py", "tools/task-graph.py", "tools/task-oracle.py",
+    #（task-oracle.py 归下方 DAG 输入面行——每文件只登一次，终审 r3 清 dup）
+    "tools/task-graph.py",
     "tools/docs_guard.py",
     "tools/floor-check.sh",
     "tools/writable_globals.py",
@@ -68,6 +70,10 @@ FROZEN_PREFIXES = (
     # 任务 DAG 轨输入面（装配期双名占位：车道名 task-oracle、Study 名 task-plan）——
     # 它喂停机门第②门，无人会话改判停依据 = 自裁口子
     "tools/task-oracle.py", "tools/task-plan.py",
+    # 全道 CI 判定门五件（终审 r3 补员）：ci.yml 重道把它们的判定当门跑——
+    # 无人会话改判自己的 CI 要过的门 = 自裁口子（与 control-plane.txt r3 补员同批镜像）
+    "tools/gui_guard.py", "tools/sdk_ledger.py", "tools/design_ledger.py",
+    "tools/ver-check.sh", "tools/gui8-smoke.py",
 )
 
 # task-oracle 的子命令面是旗标式（非 positional）：summary 要 --json 才出机器面。
@@ -109,13 +115,41 @@ def is_headless() -> bool:
 
 # 切分单源（吸收挖掘 P0）：本门与 pack-work 对「什么算 open」必须同源——各执一份
 # 正则就是控制面正确性隐患。实现唯一家 = tools/punch_slice.py。
-sys.path.insert(0, str(ROOT / "tools"))
-from punch_slice import slice_punch as _slice_punch  # noqa: E402
+# 装载面（终审 P1）：本件同时挂 Stop 与 PreToolUse 两个钩子——模块级 import 时
+# punch_slice 缺席/损坏会让钩子进程带 traceback 崩 rc 1（Claude Code 只把 rc 2 当
+# 阻断）→ 停机保护与 FROZEN 封条双双 fail-open 且无报错面（跨 lane 重放丢件先例
+# f03ec3f3 在案）。故迟到装载 + 失败可判：装载不出 = 按「有活拒停」处置；frozen-guard
+# 不经此依赖（零 punch 面），模块级装载故障面整体不存在。
+_SLICE_CACHE: dict[str, object] = {}
 
 
-def open_punch_items(text: str) -> list[str]:
+def _slice_punch_fn(root: Path | None = None):
+    import importlib.util
+    key = str(root or ROOT)
+    if key in _SLICE_CACHE:
+        return _SLICE_CACHE[key]
+    p = (root or ROOT) / "tools" / "punch_slice.py"
+    fn = None
+    if p.is_file():
+        try:
+            spec = importlib.util.spec_from_file_location("berryos_punch_slice", p)
+            if spec is not None and spec.loader is not None:
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                fn = mod.slice_punch
+        except Exception as e:
+            print(f"e-guard: punch_slice 装载失败（{e}）——按缺席处置（宁可拒停）", file=sys.stderr)
+    if fn is not None:
+        _SLICE_CACHE[key] = fn  # 只缓存成功装载：失败/缺席每拍重探，修复后自动恢复
+    return fn
+
+
+def open_punch_items(text: str, root: Path | None = None) -> list[str]:
     """活跃计划「未完成事项」节里未 park 的开放条目（机器读回 punch-list 的 oracle 面）。"""
-    r = _slice_punch(text)
+    fn = _slice_punch_fn(root)
+    if fn is None:
+        return ["<punch 切分单源缺席/损坏（tools/punch_slice.py）——装载故障=拒停面，修复后本门自动恢复>"]
+    r = fn(text)
     if not r["vehicle_present"]:
         return ["<punch 载体缺席：归档/改名必须先改 punch_slice.DEFAULT_PUNCH，宁可拒停>"]
     return r["open"]
@@ -317,11 +351,26 @@ def selftest() -> int:
     sample = "## 未完成事项\n\n- [ ] 普通开放\n- [ ] [PARKED→人审: 等裁决] 挂账项\n- [x] 已完成\n\n## 验收标准\n- [ ] 别节的\n"
     items = open_punch_items(sample)
     check("punch oracle（parked 不计/开放计/出节截止；单源后 open 为去前缀文本）", items == ["普通开放"])
+    # ①b 切分单源迟到装载（终审 P1）：缺席/损坏 = 拒停哨兵（fail-closed），在位 = 同判
+    with tempfile.TemporaryDirectory() as td:
+        tr = Path(td)
+        absent = open_punch_items(sample, root=tr)
+        (tr / "tools").mkdir()
+        shutil.copy(ROOT / "tools" / "punch_slice.py", tr / "tools" / "punch_slice.py")
+        loaded = open_punch_items(sample, root=tr)
+    check("punch_slice 迟到装载（缺席=拒停哨兵/在位=同判）",
+          absent != [] and "缺席" in absent[0] and loaded == ["普通开放"])
     # ② FROZEN 拦截语义
     frozen_hit = any("tools/e-guard.py" == p for p in FROZEN_PREFIXES)
     check("FROZEN 集含自身（闸即宪法）", frozen_hit)
     check("FROZEN 集含 task-oracle/task-plan（停机门输入面，无人会话不可改判停依据）",
           "tools/task-oracle.py" in FROZEN_PREFIXES and "tools/task-plan.py" in FROZEN_PREFIXES)
+    check("FROZEN 集含全道 CI 闸族五件（gui_guard/sdk_ledger/design_ledger/ver-check/gui8-smoke）",
+          all(p in FROZEN_PREFIXES for p in (
+              "tools/gui_guard.py", "tools/sdk_ledger.py", "tools/design_ledger.py",
+              "tools/ver-check.sh", "tools/gui8-smoke.py")))
+    check("FROZEN 集无重复条目（终审 r3 清相邻 dup 对）",
+          len(FROZEN_PREFIXES) == len(set(FROZEN_PREFIXES)))
     # ③ 合成仓四门红腿：脏树拒写哨兵
     with tempfile.TemporaryDirectory() as td:
         t = Path(td)

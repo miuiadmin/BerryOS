@@ -20,16 +20,18 @@ ROOT = Path(__file__).resolve().parent.parent
 REQUIRED_TOOLS = ["tmux", "git", "python3", "node", "gh", "just", "cargo"]
 REQUIRED_FILES = [
     "tools/run-e.sh", "tools/e-heartbeat.sh", "tools/e-supervisor.py",
-    "tools/e-guard.py", "tools/pack-work.py", "tools/push-green.py",
+    "tools/e-guard.py", "tools/punch_slice.py", "tools/pack-work.py", "tools/push-green.py",
     "tools/e-receipts.py", "tools/gate-wrap.sh", "tools/run-artifact.sh",
     "tools/review-debt.py", "tools/control-plane-gate.sh", "tools/control-plane.txt",
     ".claude/settings.json", ".githooks/pre-commit", ".githooks/pre-push",
     ".agents/skills/berryos-runner/SKILL.md",
 ]
-# 远程四件（P0-3 加固）：lane 首跑会 fetch origin 后从集成分支建工作分支——
+# 远程纪律件（P0-3 加固；终审 P1 补 punch_slice——e-guard 停机门依赖件，跨 lane
+# 缺它即停机面 fail-open）：lane 首跑会 fetch origin 后从集成分支建工作分支——
 # origin 缺宪法/闸/清单即「发射先于推送」的红灯（审计 2026-11-22 楔死雷根治）。
 REMOTE_MUST_HAVE = [
     ".agents/skills/berryos-runner/SKILL.md", "tools/e-guard.py",
+    "tools/punch_slice.py",
     ".githooks/pre-commit", "tools/control-plane.txt",
     ".github/workflows/ci-light.yml",
 ]

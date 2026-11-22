@@ -24,7 +24,7 @@ description: BerryOS 无人值守 runner 宪法（E 面）——每轮循环、d
 
 ## 停机语义（不许自愿停，停要过四门）
 
-无人会话被 Stop hook 扣住（`tools/e-guard.py stop-hook`）：marker 在且无 fixpoint 哨兵即 exit 2。唯一的自然停机路径：`python3 tools/e-guard.py fixpoint`——四门全过才写哨兵（树净、punch-list 无未 park 开放项、门禁套件绿、无 repair_needed）；被硬停类阻塞时 `--blocked` 记因收工。操作员停机：宿主 shell `bash tools/run-e.sh stop`（无人会话环境内拒执——run 不能停自己）。修复回路帽：同一对象修复两次仍红即回滚该轮改动并 park，不许无限重试。
+无人会话被 Stop hook 扣住（`tools/e-guard.py stop-hook`）：marker 在且无 fixpoint 哨兵即 exit 2。唯一的自然停机路径：`python3 tools/e-guard.py fixpoint`——四门全过才写哨兵（树净、punch-list 与 DAG 双轨判空——两轨都清才准停，DAG 轨缺席时按 punch 单轨过渡、门禁套件绿、无 repair_needed）；被硬停类阻塞时 `--blocked` 记因收工。操作员停机：宿主 shell `bash tools/run-e.sh stop`（无人会话环境内拒执——run 不能停自己）。修复回路帽：同一对象修复两次仍红即回滚该轮改动并 park，不许无限重试。
 
 ## decide-then-report（决策不等人）
 

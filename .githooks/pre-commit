@@ -4,7 +4,7 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE 2>/dev/null || true
 # BerryOS 跨根合并闸 + 暂存区快照文档门（commit 层）——防线详见
 # .agents/notes/implemented/2026-11-16-跨根合并防线与判例.md 与 docs/规则/16-工程纪律.md
 # 背景：main（根 f7eb5535）与 wip/sched-1.1（根 afd68392）曾为无共同祖先双线，2026-11-16 已由
-# owner 跨根收口合并（两线自此共史，AGENTS.md 规则 10）——本闸拦此后任何新的无共同祖先合并。
+# owner 跨根收口合并（两线自此共史，AGENTS.md 本地追加第 11 条）——本闸拦此后任何新的无共同祖先合并。
 # 本闸：MERGE_HEAD 在场且亲集（HEAD + MERGE_HEAD 全行）中任两亲无共同祖先 → 拒绝提交。
 # owner 逃生阀 BERRYOS_ALLOW_CROSSROOT=1。
 # MERGE_HEAD 在八爪合并（3+ 亲）时一行一 OID——与 HEAD 合成一亲集全亲两两核（F92）；
@@ -79,6 +79,15 @@ fi
 # 旁路已堵）；staged 命中 tools/control-plane.txt 前缀即逐件跑其 --selftest，
 # 无命中零成本直通。清单自指：改本钩子也在清单里。
 bash "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/tools/control-plane-gate.sh" || exit 1
+
+# —— punch 重排闸（规则/16 §5 P2 加固包①接线；考古 2026-11-23 落函数、终审当日
+# 补接线——原实现零执法调用方）——staged 命中 .agents/plans/ 时对拍 HEAD 版与
+# 暂存版 punch 载体：编号只增不挪、已勾/park 行永不删、无编号行走整行指纹
+# fallback（tools/punch_slice.py validate_no_renumber 唯一实现；判暂存面不判
+# 工作树——快照语义，兄弟会话半成品不在此拦）。
+if git diff --cached --name-only 2>/dev/null | grep -q '^\.agents/plans/'; then
+  python3 "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/tools/punch_slice.py" --renumber-guard || exit 1
+fi
 
 staged=$(git diff --cached --name-only 2>/dev/null | grep -E '^(docs/|\.agents/)' | head -1)
 [ -z "$staged" ] && exit 0

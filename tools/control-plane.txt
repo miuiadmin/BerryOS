@@ -49,3 +49,12 @@ tools/punch_slice.py => python3 tools/punch_slice.py --selftest
 # DAG 三件（2026-11-22）：图构建器+三态 oracle——判定单源
 tools/task-graph.py => python3 -I tools/task-graph.py --selftest
 tools/task-oracle.py => python3 tools/task-oracle.py --selftest
+# 终审 r3 补员（P1 五件）：全道 CI 判定门——ci.yml 重道把它们的判定当门跑，
+# 提交/无人会话改判 CI 要过的门=自裁口子（gui_guard/gui8-smoke 的自检口是
+# --self-test 旗标形，显式 => 走对形态；ledger 双件与 ver-check 走默认
+# --selftest 面即可；与 e-guard FROZEN_PREFIXES 同批镜像）
+tools/gui_guard.py => python3 tools/gui_guard.py --self-test
+tools/sdk_ledger.py
+tools/design_ledger.py
+tools/ver-check.sh
+tools/gui8-smoke.py => python3 tools/gui8-smoke.py --self-test

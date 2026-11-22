@@ -1,6 +1,6 @@
 #!/bin/sh
 # BerryOS 钩子安装器（工程纪律刀阶段 3；docs/规则/16-工程纪律.md §1）——
-# 新克隆第一步：bash .githooks/install.sh（AGENTS.md 规则 8 指定动作）。
+# 新克隆第一步：bash .githooks/install.sh（AGENTS.md 本地追加第 10 条指定动作）。
 # 作用：core.hooksPath 钉 .githooks（相对路径，克隆搬迁不断链）+ 全件可执行 + 自验。
 # 注：core.hooksPath 是本机仓库配置（不随克隆走）——每台新机/新克隆各跑一次。
 set -e

@@ -47,15 +47,19 @@ while :; do
     # 只读观察者不算人（审计修正：原 grep -vc 匹配不到 tmux 输出——恒计入 attached 压制 nudge）
     attached=$(tmux list-clients -t "=$RUN_NAME" -F '#{client_readonly}' 2>/dev/null | grep -cx 0 || true)
     if [ "$idle" -ge "$IDLE_SECS" ] && [ "$attached" -eq 0 ]; then
-      # 闲且无人附着才传 --idle（machinery 整批回退的活路径；2400s 帽=supervisor 自身不许拖死心跳）
-      timeout 2400 python3 "$root/tools/e-supervisor.py" --tick --idle >/dev/null 2>&1 || true
+      # 闲且无人附着才传 --idle（machinery 整批回退的活路径；2400s 帽=supervisor 自身不许拖死心跳）。
+      # 输出落 last 态日志不丢弃（终审 P1：旧 >/dev/null 把回退失败/冲突诊断全吞——
+      # 整批放弃与提交失败只写 stderr，丢弃即无报警面）；|| true 维持——心跳自身永不因 supervisor 死。
+      timeout 2400 python3 "$root/tools/e-supervisor.py" --tick --idle >"$root/.claude/state/supervisor-last.log" 2>&1 || true
     else
-      timeout 2400 python3 "$root/tools/e-supervisor.py" --tick >/dev/null 2>&1 || true
+      timeout 2400 python3 "$root/tools/e-supervisor.py" --tick >"$root/.claude/state/supervisor-last.log" 2>&1 || true
     fi
     # （同上条件，变量未变——supervisor 调用与 nudge 同一闲态分支，审计 r2 合并）
     if [ "$idle" -ge "$IDLE_SECS" ] && [ "$attached" -eq 0 ]; then
       if [ -f "$root/.claude/state/repair-needed" ]; then
         send_line "repair 模式：从 git log、门禁输出与 smoke 证物找 6 小时零 ship 的原因，在拥有它的层修，或记 punch-list 后换下一项"
+      elif [ -f "$root/.claude/state/product-starved" ]; then
+        send_line "product-starved 模式：连续 3 轮产品面塌陷（零产品或 tooling>2x product，详见 .claude/state/run-health.json 与 supervisor-last.log）——优先捡 punch-list/DAG 里触及产品代码的任务，工具面自我服务停一停"
       else
         send_line "Continue the run."
       fi

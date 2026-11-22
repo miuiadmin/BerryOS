@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # gate-selftest.sh —— 门禁链负例自检（工程纪律刀阶段 3/4/6；规则/16 §1、§3、§5）。
 # 合成 git 沙箱装真实 .githooks 钩子（pre-commit + prepare-commit-msg + pre-push），
-# 八腿全触发才绿：
+# 腿全触发才绿：
 #   a 坏头块文档 staged → pre-commit 拒
 #   b 好文档 staged（facts 同批刷新）→ pre-commit + prepare-commit-msg 全链
 #     过（印记被消费）
@@ -13,6 +13,10 @@
 #     未跟踪内容对快照不可见，既不满足也不挡住本提交）
 #   g 好文档 staged 但 facts 制品未同批刷新 → 快照门拒（--verify-facts
 #     管道腿：计数漂移在提交点被拦，刷新后同内容过门）
+#   h bot 身份闸（push 层）——bot 提交推集成分支拒、推 wip/auto-* 过
+#   i 假身份闸（P0 考古；终审 P1 补腿）——test/fixture 夹具身份：有效区间拒、
+#     新建远端分支（rsha=zero）同样拒（旁路形态）、干净身份过
+#   j punch 重排闸（P2 加固包①接线）——staged 删已勾 T 行拒、合法演进过
 # 改 .githooks/* 或 check-docs 检查面必跑（挂 just test-host；直接执行即可，
 # 无参无旗标——selftest_guard 的 DECL 面不命中，接线行是纪律自觉位）。
 set -u
@@ -30,13 +34,20 @@ unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE GIT_QUARANTINE_PATH 2>/dev/null
 git init -q "$T/r" || exit 2
 cd "$T/r" || exit 2
 git config user.name gate-selftest
-git config user.email gate-selftest@local
+# 沙箱身份用中性邮箱（终审 P1）：旧 gate-selftest@local 命中假身份闸的
+# /selftest/ 模式——身份闸对 rsha=zero 的旁路修好后，bot 正腿（推 wip/auto-*
+# 必须过）会被自家夹具身份误杀（夹具把洞钉进契约的形态）。bot 面与身份面
+# 各持互不混淆的邮箱：bot=bot-sandbox@gate.local、干净身份=sandbox@gate.local。
+git config user.email sandbox@gate.local
 git config commit.gpgsign false
 mkdir -p .githooks .agents/tools .agents/plans/mod1 docs tools
 cp "$REPO/.githooks/pre-commit" "$REPO/.githooks/prepare-commit-msg" .githooks/
 chmod +x .githooks/pre-commit .githooks/prepare-commit-msg
 git config core.hooksPath .githooks
 cp "$REPO/.agents/tools/check-docs.mjs" .agents/tools/
+# pre-commit 的 punch 重排闸依赖件（staged 命中 .agents/plans/ 即调其
+# --renumber-guard——沙箱腿 a/b/e/f/g 全中此面，缺席=python 起不来误红）。
+cp "$REPO/tools/punch_slice.py" tools/
 # 控制面条件测试门依赖件（pre-commit 尾段调用；清单+门本体随沙箱走）。
 # gate-selftest.sh 本体用 exit-0 stub 替代（审计 r2）：真件进沙箱=自指无限递归
 # （沙箱 commit→门→前缀测试 gate-selftest→再造沙箱…）；stub 断递归且不缺件，
@@ -65,7 +76,7 @@ set_facts() {
   git add tools/facts.txt
 }
 set_facts 2 1
-git add .agents .githooks docs tools/control-plane-gate.sh tools/control-plane.txt tools/gate-selftest.sh
+git add .agents .githooks docs tools/control-plane-gate.sh tools/control-plane.txt tools/gate-selftest.sh tools/punch_slice.py
 git commit -qm init || die "沙箱 init 提交未过门（最小合法面应过）"
 
 bad_doc() { mkdir -p .agents/plans/mod2; printf '# 断头\n\nType: spec\nStatus: active\n' > .agents/plans/mod2/design.md; }
@@ -142,21 +153,80 @@ git add .githooks/pre-push && git commit -qm h0 || die "腿 h：pre-push 装载�
 # 注意：此处在沙箱仓配（-C 指向）而非主仓——2026-11-22 实抓泄漏（写进主仓
 # 导致身份闸拦截了主仓自己的推送）。修复：只在沙箱内配。
 sha=$(git rev-parse HEAD); z=0000000000000000000000000000000000000000
-git config berryos.bot-email gate-selftest@local
-if echo "refs/heads/$BR $sha refs/heads/$BR $z" | env -u GIT_INDEX_FILE -u GIT_DIR .githooks/pre-push origin u 2>/dev/null; then
+git config berryos.bot-email bot-sandbox@gate.local
+# 造一笔 bot 身份提交（邮箱中性——不含 test/fixture 特征，身份闸面干净，
+# 判定才唯一归 bot 闸）
+echo b > b.txt && git add b.txt
+GIT_AUTHOR_NAME=bot GIT_AUTHOR_EMAIL=bot-sandbox@gate.local \
+GIT_COMMITTER_NAME=bot GIT_COMMITTER_EMAIL=bot-sandbox@gate.local \
+  git commit -qm hbot
+botsha=$(git rev-parse HEAD)
+if echo "refs/heads/$BR $botsha refs/heads/$BR $z" | env -u GIT_INDEX_FILE -u GIT_DIR .githooks/pre-push origin u 2>/dev/null; then
   die "腿 h：bot 身份推集成分支未被拒"
 fi
 # 审计 r2 两条负腿：显式 refspec 把 bot 提交送往集成分支/main——落点闸必须拒
-if echo "refs/heads/wip/auto-t $sha refs/heads/$BR $z" | env -u GIT_INDEX_FILE -u GIT_DIR .githooks/pre-push origin u 2>/dev/null; then
+if echo "refs/heads/wip/auto-t $botsha refs/heads/$BR $z" | env -u GIT_INDEX_FILE -u GIT_DIR .githooks/pre-push origin u 2>/dev/null; then
   die "腿 h：refspec 落点旁路（auto→集成分支）未被拒"
 fi
-if echo "refs/heads/wip/auto-t $sha refs/heads/main $z" | env -u GIT_INDEX_FILE -u GIT_DIR .githooks/pre-push origin u 2>/dev/null; then
+if echo "refs/heads/wip/auto-t $botsha refs/heads/main $z" | env -u GIT_INDEX_FILE -u GIT_DIR .githooks/pre-push origin u 2>/dev/null; then
   die "腿 h：refspec 落点旁路（auto→main）未被拒"
 fi
-echo "refs/heads/wip/auto-t $sha refs/heads/wip/auto-t $z" | env -u GIT_INDEX_FILE -u GIT_DIR .githooks/pre-push origin u \
+echo "refs/heads/wip/auto-t $botsha refs/heads/wip/auto-t $z" | env -u GIT_INDEX_FILE -u GIT_DIR .githooks/pre-push origin u \
   || die "腿 h：bot 身份推 wip/auto-* 被误拦"
 git config --unset berryos.bot-email 2>/dev/null || true
 leg "腿 h 过：bot 推集成分支拒 / wip/auto-* 过"
 
+# 腿 i：假身份闸（P0 考古；终审 P1 补腿——此前零覆盖且腿 h 固化了 rsha=zero
+# 旁路）——夹具身份提交：有效区间拒、新建远端分支（rsha=zero）同样拒、
+# 干净身份过（三判定唯一归身份闸：rref 全走 wip/auto-*，bot 面不咬）。
+echo bad > bad.txt && git add bad.txt
+GIT_AUTHOR_NAME=fx GIT_AUTHOR_EMAIL=test-fixture@x \
+GIT_COMMITTER_NAME=fx GIT_COMMITTER_EMAIL=test-fixture@x \
+  git commit -qm badid
+badsha=$(git rev-parse HEAD)
+if echo "refs/heads/wip/auto-i $badsha refs/heads/wip/auto-i $sha" | env -u GIT_INDEX_FILE -u GIT_DIR .githooks/pre-push origin u 2>/dev/null; then
+  die "腿 i：假身份提交（有效区间 $sha..$badsha）未被拒"
+fi
+if echo "refs/heads/wip/auto-i $badsha refs/heads/wip/auto-i $z" | env -u GIT_INDEX_FILE -u GIT_DIR .githooks/pre-push origin u 2>/dev/null; then
+  die "腿 i：假身份提交经新建远端分支（rsha=zero）旁路未被拒"
+fi
+echo ok > ok.txt && git add ok.txt && git commit -qm okid
+oksha=$(git rev-parse HEAD)
+echo "refs/heads/wip/auto-i $oksha refs/heads/wip/auto-i $badsha" | env -u GIT_INDEX_FILE -u GIT_DIR .githooks/pre-push origin u \
+  || die "腿 i：干净身份（区间仅含干净提交）被误拦"
+leg "腿 i 过：假身份拒（有效区间/zero 旁路两形）/干净过"
+
+# 腿 j：punch 重排闸（P2 加固包①接线；规则/16 §5）——独立 mini 仓直调
+# tools/punch_slice.py --renumber-guard（pre-commit 的接线本体）：staged 删
+# 已勾 T 行 → rc 1 拒；恢复 + 加新条目（编号只增的合法演进）→ rc 0。
+git init -q "$T/pj" || exit 2
+(
+  cd "$T/pj" || exit 2
+  git config user.name gate-selftest
+  git config user.email sandbox@gate.local
+  git config commit.gpgsign false
+  mkdir -p .agents/plans tools
+  cp "$REPO/tools/punch_slice.py" tools/
+  printf '# P\n\nType: plan\nStatus: active\nUpdated: 2026-11-23\n\n一句话说明：夹具。\n\n## 未完成事项\n\n- [x] T1·甲：已交付\n- [ ] T2·乙：开放\n' > .agents/plans/2026-11-22-e面运营.md
+  git add . && git commit -qm base
+  printf '# P\n\nType: plan\nStatus: active\nUpdated: 2026-11-23\n\n一句话说明：夹具。\n\n## 未完成事项\n\n- [ ] T2·乙：开放\n' > .agents/plans/2026-11-22-e面运营.md
+  git add .agents/plans/2026-11-22-e面运营.md
+  if python3 tools/punch_slice.py --renumber-guard; then
+    echo "gate-selftest FAIL: 腿 j：删已勾 T1 未被重排闸拒" >&2
+    exit 1
+  fi
+  printf '# P\n\nType: plan\nStatus: active\nUpdated: 2026-11-23\n\n一句话说明：夹具。\n\n## 未完成事项\n\n- [x] T1·甲：已交付\n- [ ] T2·乙：开放\n- [ ] T3·丙：新条目\n' > .agents/plans/2026-11-22-e面运营.md
+  git add .agents/plans/2026-11-22-e面运营.md
+  python3 tools/punch_slice.py --renumber-guard || {
+    echo "gate-selftest FAIL: 腿 j：合法演进（加新条目）被重排闸误拒" >&2
+    exit 1
+  }
+) || die "腿 j：punch 重排闸腿红"
+leg "腿 j 过：punch 重排闸（删已勾拒/合法演进过）"
+
 )  # 沙箱 subshell 结束——恢复外层环境
-echo "gate-selftest: PASS（八腿：坏拒/好过+印记耗/no-verify 拦/merge 免检/索引留毒拒/未跟踪不误伤/facts 漂移门拒/bot 身份 push 闸）"
+# 沙箱腿的失败必须传导到脚本退出码（终审 P1 修复：旧形态 die 在 subshell 里
+# 只退 subshell，外层照印 PASS——全部腿对退出码而言是假绿）。
+sbx=$?
+[ "$sbx" -eq 0 ] || { printf 'gate-selftest FAIL: 沙箱腿红（rc=%s）\n' "$sbx" >&2; exit 1; }
+echo "gate-selftest: PASS（坏拒/好过+印记耗/no-verify 拦/merge 免检/索引留毒拒/未跟踪不误伤/facts 漂移门拒/bot 身份 push 闸/假身份闸/punch 重排闸）"

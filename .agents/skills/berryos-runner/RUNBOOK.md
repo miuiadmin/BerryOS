@@ -30,7 +30,7 @@ SKILL.md 是 runner 宪法（给机器读）；本手册是 owner 接入/排查�
    `git config berryos.bot-email <bot 邮箱>`（pre-push 身份闸——推非 `wip/auto-*` 即拒）
    `bash .githooks/install.sh`
 3. 发射：`bash tools/run-e.sh start`——e-doctor 先行（工具/身份/钩子/上游任一缺席即拒发射），marker 落盘，tmux 起 run + 心跳两会话。观察：`bash tools/run-e.sh watch`（只读附着不干扰判活）；状态：`status`。
-4. 停机：宿主 shell `bash tools/run-e.sh stop`（无人会话环境内拒执）。会话自己跑不动了会走 `e-guard.py fixpoint` 四门写哨兵后自然停。
+4. 停机：宿主 shell `bash tools/run-e.sh stop`（无人会话环境内拒执）。会话自己跑不动了会走 `e-guard.py fixpoint` 四门写哨兵后自然停（四门之② = punch-list 与 DAG 双轨判空——两轨都清才准停；DAG 轨缺席时按 punch 单轨过渡，与每轮循环第 5 步的 DAG 优先同向）。
 5. 监督首跑：验收三件（`wip/auto-*` 分支 + 带 `A:` 行 PR + punch-list 首批条目）；心跳/监督行为看 `.claude/state/run-health.json`。
 
 备选形态（Hermes cron）：沿用旧五步（克隆+身份+install+cron 单指针 prompt）仍可工作——但 Stop 守卫/FROZEN/心跳/监督是 Claude Code harness 面，Hermes 会话不经过它们；需要全套机器治理时用 run-e 形态。
