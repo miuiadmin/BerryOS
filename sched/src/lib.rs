@@ -82,7 +82,7 @@ pub use sched::{
     preempt_enable, print_window_enter, print_window_exit,
     nearest_deadline, nearest_dl_throttle_wake, nearest_deadline_park, refresh_effective, reap_drain, throttle_yield_due,
     set_exit_hook, set_lb_match, set_reap_post_hook,
-    set_klock_ops, set_sleepq_hook, sq_lock, sq_unlock,
+    set_klock_ops, set_sleepq_hook, sq_is_held, sq_lock, sq_unlock,
     set_switch_hook, set_wake_hook, sleepq_insert,
     sleepq_insertable, sleepq_unlink, rq_insert_kt, rq_unlink_kt,
     density_reclass_kt, dens_on_ring_walk_kt, spawn, spawn_as, spawn_as_spread, spawn_intent, spawn_user, spawn_user_env, spawn_with,

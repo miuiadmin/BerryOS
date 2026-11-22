@@ -19,8 +19,8 @@ use core::ptr;
 
 use berry_fsclient::AliasTable;
 use berry_sys::{berry_channel_recv, berry_channel_send, berry_clock_read,
-                berry_object_wait_one, BERRY_ERR_BUSY, CLOCK_MONOTONIC, SIGNAL_READABLE,
-                SIGNAL_WRITABLE};
+                berry_object_wait_one, BERRY_ERR_BAD_STATE, BERRY_ERR_BUSY, CLOCK_MONOTONIC,
+                SIGNAL_PEER_CLOSED, SIGNAL_READABLE, SIGNAL_WRITABLE};
 
 use crate::{c_char, c_int, c_long, c_void, size_t, ssize_t, FILE};
 
@@ -531,9 +531,13 @@ pub fn console_write(bytes: &[u8]) {
             if s == 0 {
                 break;
             }
+            if s == BERRY_ERR_BAD_STATE {
+                // 对端已关闭（断管）：直接返回，避免在已关对端上死循环自旋。
+                return;
+            }
             if s != BERRY_ERR_BUSY {
-                // -EAGAIN 对 send 不发生；其余错误码（handle 失效等）阻塞
-                // 等也无出路——原地重试（协议破缺面自有更 loud 的死法）。
+                // -EAGAIN 对 send 不发生；其余错误码（如 CONSOLE_H == 0 协议破缺 -EBADF）
+                // 保持原地重试的 loud 死法。
                 continue;
             }
             // -EBUSY（满）：阻塞等 WRITABLE（10s 帽，醒来/超时都重臂）——
@@ -775,8 +779,10 @@ fn read_inner(fd: c_int, buf: *mut c_void, n: size_t) -> ssize_t {
                 }
                 return c as ssize_t;
             }
-            // 空队：阻塞等 READABLE（10s 帽）。超时 = feeder 断供（协议破缺）
-            // → EOF 化返 0：调用方读短 → 断言炸 → 标记缺失兜底（loud）。
+            if s == BERRY_ERR_BAD_STATE {
+                return 0; // 对端已关闭且残余消息已排空 = 立即 EOF
+            }
+            // 空队：阻塞等 READABLE | PEER_CLOSED（10s 帽）。
             if deadline == 0 {
                 let mut now = 0u64;
                 if berry_clock_read(CLOCK_MONOTONIC, &mut now) != 0 {
@@ -786,7 +792,13 @@ fn read_inner(fd: c_int, buf: *mut c_void, n: size_t) -> ssize_t {
                 deadline = now + 10_000_000_000;
             }
             let mut obs = 0u64;
-            if berry_object_wait_one(h, SIGNAL_READABLE, deadline, &mut obs) != 0 {
+            if berry_object_wait_one(
+                h,
+                SIGNAL_READABLE | SIGNAL_PEER_CLOSED,
+                deadline,
+                &mut obs,
+            ) != 0
+            {
                 return 0;
             }
         }
