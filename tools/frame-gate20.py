@@ -29,12 +29,15 @@ svcmgr 对第 11 个 [ui] app 的注册有扫描竞态拒收（3/4 boot 拒收�
 allocated。判读主口径 Δfree：修后期望每轮 −4..−8 页（表树帧残余），
 修前对照 ~−469 页/轮。
 
-已知阻塞（2026-11-23 实测，非帧刀面）：app 真实呈现（appdemo:
-first frame）后 launcher 的 present 域 submit-busy 重试永久楔死
-（35s fail-loud 也不触发），round ≥2 的 back+reclick 全部无响应——
-历史 gui8 绿跑从未走到 app first frame（窗从未真开过），此路径属
-首测即撞的 pre-existing 面。证据：run 目录 boot-gate.log 的
-「launcher: submit busy（present 单飞让位重试）」行紧随 first frame。
+已知阻塞（2026-11-23 实测+同日定谳翻转，非帧刀面）：round ≥2 的
+back+reclick 全部无响应——初判「present 域 submit-busy 楔死」已被
+只读取证推翻（wf_6c5ec03c）：submit busy 是 presarb 5s 租约窗内的
+正常瞬态让位（launcher 100ms 步进重试即过，wmd/presarb 全程零诊断
+行）；真凶=QEMU→guest 输入事件投递死亡（两跑 inputd tally h 精确冻
+在 27——round-2 的全部 QMP 注入零成 virtio 事件，q=0/0 e=0；桌面侧
+健康：launcher 帧循环活、新 SUBMIT 仍过 wmd→guifbd）——与 2026-11-20
+云桌面输入死定谳（时变形、注入链面）同族。判别下一跑：qemu_argv 加
+gui8 GUI8_QEMU_TRACE 同款五枚输入 trace + 失败明细记 tally h。
 
 拓扑（零 ambient TCP 端口——与 run-rootfs 长链 18080-18083 无冲突）
 ------------------------------------------------------------------
