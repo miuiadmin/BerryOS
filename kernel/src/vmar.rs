@@ -1,170 +1,133 @@
-//! Vmar（地址区间句柄投影，`内存管理设计.md` §3；2b-3）。
+//! Vmar（地址区间，`内存管理设计.md` §3；2b-3）。
 //!
-//! F1-1 架构重构：实体硬件地址空间、物理页表树（`l1_pa`、每空间 `pt_lock`、中间表帧账本）
-//! 与层级区间树（`vmarface::VmarTree`）解耦至 [`crate::aspace::AddressSpace`]。
-//! 本文件中的 [`Vmar`] 降级为指向该地址空间的轻量句柄投影，包含 `Arc<AddressSpace>`、
-//! `vmar_id`、`base` 与 `len`。
+//! root Vmar 覆盖整个用户低半 VA `[0x1000, USER_VA_TOP)`（页 0 留 NULL 解引用
+//! 保卫）；`map` 即填用户页表（walk L1→L2→L3、缺中间表按需建帧），`unmap`/
+//! `protect` 改叶 + 按 ASID 失效（用户叶 nG=1，`tlbi aside1is` 可达）。
+//! `allocate` 切子 Vmar（共享表根/ASID，管辖界收窄——Zircon `zx_vmar_allocate`
+//! 语义；v1 用绝对 VA，Phase 3 syscall 层再折 offset 语义）。
 //!
-//! 子 `Vmar` 经由 `allocate` 创建，管辖界收窄，与父空间完全共享同一页表根与 ASID；子 `Vmar`
-//! 销毁（`Drop`）时通过 `vmarface::destroy_vmar` 递归清除子区间预留与叶映射，父空间对应
-//! 预留立即恢复可映射。按需调页根表（`DEMAND_ROOTS`）改按 `*const AddressSpace` 登记，
-//! 补齐 `Acquire/Release` 硬件内存序并彻底消除父子 `Vmar` `OwnerConflict`。
+//! 区间记账：本 Vmar 直接管辖的 `regions` 线性表（v1 区域个位数；子 Vmar 的
+//! 预留在父表登记，防父越子映射）。ASLR 随机化（§3）留 v2（需 RNG）。
+//! v1 不回收页表帧/解除预留（对象销毁统一在 Phase 3 能力层）。
+//!
+//! SMP（S-4 4-2）：写者（map/unmap/protect）全程持 per-AS PT 锁（键 =
+//! ASID，见 [`PT_LOCKS`]）；读者（syscall copy 链经 [`walk_leaf`]）由调用
+//! 方同窗持锁（walk+copy 同窗铁律，判例 §A113）。跨核改叶后 `broadcast()`
+//! 发 SGI #2 广播（非阻塞；回执等待在 SVC 派发尾，见 HAL `tlbshoot`）。
+//!
+//! 全 API 返回 `Result`（syscall 边界无 panic 纪律）。
 
-use alloc::sync::Arc;
+use crate::vmo::{zero_frame, Vmo};
+use alloc::vec::Vec;
 use berry_hal_aarch64 as hal;
 use berry_mm::frame::FrameAllocator;
 use berry_mm::va::{phys_to_virt, PAGE_SIZE};
+// W3-Q17：槽位/区间判定律单源迁 berry-vslotface（host 钉板）——本文件
+// check_slot/find_exact/find_mapped/demand_index 壳化消费。
 use berry_vslotface::droot;
-use berry_vmarface::{VmarId, ROOT_VMAR_ID};
+use berry_vslotface::{aligned_nonzero, bounds_end, overlaps, SlotError, SlotKind, SlotRegion, SlotView};
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
-
-use crate::aspace::AddressSpace;
-use crate::vmo::Vmo;
 
 /// 用户 VA 上界：T0SZ=25 → TTBR0 区 = `[0, 2^39)`。
 pub const USER_VA_TOP: usize = 1 << 39;
 
-// ---- per-AddressSpace 页表自旋锁守卫与当前任务快路径 ----
+/// 每级表项数（4KiB 表 / 8 字节）与索引掩码。
+const IDX_MASK: usize = 0x1ff;
+/// 表描述符 bit[1]（block 此位=0；用户树中间层只可能出现表描述符）。
+const TABLE_BIT: u64 = 1 << 1;
+/// 描述符里的输出地址掩码（bits[47:12]；PA < 4GiB 绰绰有余）。
+const ADDR_MASK: u64 = 0x0000_FFFF_FFFF_F000;
+/// AP 字段（bits[7:6]）掩码——protect 改权用。
+const AP_MASK: u64 = 0b11 << 6;
 
-/// PT 锁 RAII 守卫：跟随 [`AddressSpace`] 实例的 `pt_lock`（废除 64KiB 全局 `PT_LOCKS`）。
-pub struct PtGuard {
-    lock: *const AtomicBool,
-}
+// ---- per-AS 页表自旋锁（S-4 4-2；SMP-S4 草案 §2 4-2①④ + §3.1）----
 
-impl PtGuard {
-    #[inline]
-    pub(crate) const fn from_lock(lock: &AtomicBool) -> Self {
-        Self {
-            lock: lock as *const AtomicBool,
-        }
-    }
+/// 锁键 = ASID：写者（map/unmap/protect）持 `self.asid`，读者（syscall copy
+/// 链）持 `hal::current_asid()`（与 `current_ttbr0_pa` 同一 TTBR0 读点 = 同
+/// 窗一致键——walk_leaf 无对象句柄，键控解析闭合此缺口）。定长 64KiB BSS
+/// 换 O(1) 无注册解析：8 位硬件域只用前 256 槽、16 位域满用（余槽死重零
+/// 成本——BSS 清零不占镜像）。子 Vmar 经共享 asid 天然共享同锁（同树同
+/// 锁）。ASID 回卷后同号新 AS 复用同槽 = 仅过串行化（互斥语义不破；回卷
+/// 世代精确隔离 = 4-3 领地）。ASID 0（内核空表）永不取锁——空表无用户叶、
+/// 无写者。
+///
+/// 层位：KL/表之右、分配器之上（§3.1：写者 PT 嵌 KL 窗取放 = §A108 过渡
+/// 态合法；map 建中间表出帧 = PT 锁内摸分配器，帧分配器纯 KL 串行故锁序
+/// 一致）。**不进 HELD 位图、不绑 CURRENT**（§A113 三位说谎面）；TTAS
+/// 形 = kern_lock KERN_LOCK 同款（CAS(Acquire) 外环 + Relaxed 内环）。
+static PT_LOCKS: [AtomicBool; 0x1_0000] = [const { AtomicBool::new(false) }; 0x1_0000];
 
-    #[inline]
-    pub const fn noop() -> Self {
-        Self {
-            lock: core::ptr::null(),
-        }
-    }
+/// PT 锁 RAII 守卫：Drop 放锁。map 中途回滚臂等多出口路径零漏放（no_std
+/// 无 unwind、panic=halt，Drop 只走正常控制流）。
+pub(crate) struct PtGuard {
+    asid: u16,
 }
 
 impl Drop for PtGuard {
     fn drop(&mut self) {
-        if !self.lock.is_null() {
-            #[cfg(feature = "lockdep")]
-            hal::lockdep::release(hal::lockdep::CLASS_PT);
-            // SAFETY: 守卫存续期内目标 AddressSpace 由运行中任务或调用者引用保活。
-            unsafe { (*self.lock).store(false, Ordering::Release) };
-        }
+        // G3-3 lockdep（g3-3c）：物理放点记账——集中本 Drop 覆盖全树一切
+        // PT 放点（RAII 单出口）；feature 关 = 编译消除。
+        #[cfg(feature = "lockdep")]
+        hal::lockdep::release(hal::lockdep::CLASS_PT);
+        PT_LOCKS[self.asid as usize].store(false, Ordering::Release);
     }
 }
 
-/// 引导期裸 `UserProcess`（`current_pinned() == 0` 的常驻测试/守护任务，全树仅 8 例）反查表。
-const BOOT_ASPACE_SLOTS: usize = 16;
-static BOOT_ASPACES: [(AtomicU16, AtomicUsize); BOOT_ASPACE_SLOTS] =
-    [const { (AtomicU16::new(0), AtomicUsize::new(0)) }; BOOT_ASPACE_SLOTS];
-
-/// 登记引导期常驻 `UserProcess` 的 `AddressSpace`（供 `current_pinned() == 0` 时 `pt_lock_current` 定位）。
-pub fn register_boot_aspace(asid: u16, aspace: *const AddressSpace) {
-    if asid == 0 || aspace.is_null() {
-        return;
-    }
-    for (a, p) in &BOOT_ASPACES {
-        let cur = a.load(Ordering::Acquire);
-        if cur == asid {
-            p.store(aspace as usize, Ordering::Release);
-            return;
+/// 取本 AS PT 锁（TTAS）。无环论证（SMP-S4 草案 §3.2）：持有者**可被断但
+/// 有界**——SVC 多数号全程 IRQ 屏蔽（g3-1c-2 起唯 send/recv 拷贝窗局部解蔽：
+/// 持有者可被窗内 tick/RX/SGI 打断，但段计数 >0 禁切 + handler 体有界 →
+/// 断有界 → 等待者最终必得）；**铁律：窗内可达 IRQ handler 禁取 PT 锁**——
+/// 持有者被断期间同核自旋等不可运行者 = 硬死锁（今日零触达；新源先过审计，
+/// 雷册 §A126 追记二）。PT 恒在 KL 窗内取放（全系统单一嵌套向，无反转面）。
+/// boot/ktest 直调路径同样 DAIF 屏蔽。
+fn pt_lock(asid: u16) -> PtGuard {
+    // G3-3 lockdep（g3-3c）：物理取点记账——集中本函数 + PtGuard::drop 一对
+    // 位点即覆盖全树 6 物理取点（写者 map/unmap/protect 经 self.asid 直达 +
+    // 读者 copy 链三辅助经 pt_lock_current 汇聚于此）；feature 关 = 编译消除。
+    // 重入检粒度前提：v1 全树无「持 A 槽再取 B 槽」嵌套形态（穷举见
+    // lockdep.rs CLASS_PT 注）——单类号无假阳性面。
+    #[cfg(feature = "lockdep")]
+    hal::lockdep::acquire(hal::lockdep::CLASS_PT);
+    // TTAS（test-and-test-and-set）：CAS 外环避免每次写行争、Relaxed 内环
+    // 读自旋降总线流量——kern_lock KERN_LOCK 同款形态。
+    while PT_LOCKS[asid as usize]
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        while PT_LOCKS[asid as usize].load(Ordering::Relaxed) {
+            core::hint::spin_loop();
         }
-        if cur == 0 {
-            p.store(aspace as usize, Ordering::Release);
-            a.store(asid, Ordering::Release);
-            return;
-        }
     }
-    panic!("register_boot_aspace: 16 槽引导地址空间表溢出");
+    PtGuard { asid }
 }
 
-/// 读者侧入口（`syscall.rs` `copy_*` 链 EL0 路）：直接锁当前运行进程的 `AddressSpace.pt_lock`。
-pub fn pt_lock_current() -> PtGuard {
-    let pinned = berry_sched::current_pinned();
-    if pinned != 0 {
-        // SAFETY: current_pinned() 指向当前运行线程钉住的 Process ObjRef，全 syscall 窗有效。
-        let proc = unsafe {
-            (*(pinned as *const crate::handle::ObjRef))
-                .obj
-                .as_process()
-                .expect("current_pinned 必指向 Process")
-        };
-        return proc.aspace.lock_pt();
-    }
-    let asid = hal::current_asid();
-    if asid == 0 {
-        return PtGuard::noop();
-    }
-    for (a, p) in &BOOT_ASPACES {
-        if a.load(Ordering::Acquire) == asid {
-            let ptr = p.load(Ordering::Acquire) as *const AddressSpace;
-            if !ptr.is_null() {
-                // SAFETY: UserProcess 的根 Vmar 终身驻留不释放。
-                return unsafe { (*ptr).lock_pt() };
-            }
-        }
-    }
-    PtGuard::noop()
+/// 读者侧入口（syscall.rs copy_* 链 EL0 路）：锁**当前** AS——`access_ok`
+/// 走查与 copy store 同窗（§A113 walk+copy 同窗铁律）。EL1 路（ktest 静态
+/// 缓冲）不取：高半直映无用户表。
+pub(crate) fn pt_lock_current() -> PtGuard {
+    pt_lock(hal::current_asid())
 }
 
-/// 映射权限（F0-2 四态硬件 W^X + SMEP `PXN` 矩阵）：
-/// - `Rw` / `Ro`：仅 EL1 访问，强制 `PXN | UXN` 不可执行；
-/// - `UserRo`：`AP=11`（EL0 只读），强制 `PXN | UXN` 不可执行；
-/// - `UserRw`：`AP=01`（EL0 读写），强制 `PXN | UXN` 不可执行（严格 W^X 数据/栈页）；
-/// - `UserRx`：`AP=11`（EL0 只读可执行），强制 `PXN`（SMEP：禁 EL1 执行用户代码页）；
-/// - `UserRwxCompat`：过渡期平铺镜像兼容态（`AP=01 | PXN`），强制置 `PXN = 1` 阻断 EL1 ret2usr。
+/// 映射权限（v1 三档 + W3-Q106 vDSO 四档；AP 编码见 `paging.rs`——Rw=00 仅
+/// EL1 读写、Ro=10 只读、UserRw=01 EL0/EL1 读写、UserRo=11 EL0/EL1 只读
+/// ——原「留 v2 按需」由 vDSO 数据页兑现）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Perm {
-    Rw = 0,
-    Ro = 1,
-    UserRo = 2,
-    UserRw = 3,
-    UserRx = 4,
-    UserRwxCompat = 5,
-}
-
-impl From<Perm> for u8 {
-    fn from(p: Perm) -> u8 {
-        p as u8
-    }
-}
-
-impl TryFrom<u8> for Perm {
-    type Error = VmarError;
-    fn try_from(v: u8) -> Result<Self, Self::Error> {
-        match v {
-            0 => Ok(Perm::Rw),
-            1 => Ok(Perm::Ro),
-            2 => Ok(Perm::UserRo),
-            3 => Ok(Perm::UserRw),
-            4 => Ok(Perm::UserRx),
-            5 => Ok(Perm::UserRwxCompat),
-            _ => Err(VmarError::NotMapped),
-        }
-    }
+    Rw,
+    Ro,
+    UserRw,
+    UserRo,
 }
 
 impl Perm {
-    /// 合成页表叶描述符权限位（`AP[2:1] | PXN | UXN`）。
-    pub const fn pte_bits(self) -> u64 {
+    /// AP 位（OR 进 `page_descriptor`；默认 AP_EL1_RW=0 故 Rw 直接加 0）。
+    fn ap(self) -> u64 {
         match self {
-            Perm::Rw => hal::PXN | hal::UXN,
-            Perm::Ro => hal::AP_RO | hal::PXN | hal::UXN,
-            Perm::UserRo => hal::AP_USER_RO | hal::PXN | hal::UXN,
-            Perm::UserRw => hal::AP_USER_RW | hal::PXN | hal::UXN,
-            Perm::UserRx => hal::AP_USER_RO | hal::PXN,
-            Perm::UserRwxCompat => hal::AP_USER_RW | hal::PXN,
+            Perm::Rw => 0,
+            Perm::Ro => hal::AP_RO,
+            Perm::UserRw => hal::AP_USER_RW,
+            Perm::UserRo => hal::AP_USER_RO,
         }
-    }
-
-    /// 本权限是否允许 EL0 取指执行。
-    pub const fn allows_exec(self) -> bool {
-        matches!(self, Perm::UserRx | Perm::UserRwxCompat)
     }
 }
 
@@ -177,17 +140,19 @@ pub enum VmarError {
     OutOfBounds,
     /// 与已映射区间/子 Vmar 预留重叠。
     Overlap,
-    /// unmap/protect 找不到匹配的已映射区间。
+    /// unmap/protect 找不到精确匹配的已映射区间。
     NotMapped,
-    /// VMO 覆盖的页未全部 commit。
+    /// VMO 覆盖的页未全部 commit（eager 映射面先查后填；demand VMO 另走
+    /// map_demand 不经此门——G4-1 起）。
     VmoNotCommitted,
-    /// 帧分配器无空闲页。
+    /// 帧分配器无空闲页（建中间表/提交页）。
     NoFrames,
-    /// 堆 OOM。
+    /// regions Vec 预留失败（堆 OOM）。allocate/map 的 `regions.push` try 化
+    /// （3b3 审查 H2）：push 增长 OOM 曾是 abort 点（EL0 经 vmar_map/allocate
+    /// 可触发，违 ABI §8.0）；预留前置到一切副作用之前，失败时零残留。
     NoMem,
 }
 
-<<<<<<< HEAD
 /// 区间登记项。
 struct Region {
     start: usize,
@@ -282,104 +247,59 @@ pub struct Vmar {
     /// 活根的号**（子先死放号 → 根仍在用 → 同号新 AS 复用 = TLB 隔离击穿）
     /// ，故 [`Drop`] 的 ASID 归还只由根执行。
     is_root: bool,
-=======
-/// 地址区间句柄投影（F1-1：持有底层 `Arc<AddressSpace>` 引用）。
-pub struct Vmar {
-    pub(crate) aspace: Arc<AddressSpace>,
-    pub(crate) vmar_id: VmarId,
-    pub(crate) base: usize,
-    pub(crate) len: usize,
->>>>>>> private/wip
 }
 
 impl Vmar {
-    /// 建 root Vmar：创建底层 `AddressSpace` 并赋予根区间管辖权 `[0x1000, USER_VA_TOP)`。
+    /// 建 root Vmar：出一帧清零作 L1 表根。ASID 由调用方分配（`aspace::alloc_asid`）。
+    /// 帧耗尽返 [`VmarError::NoFrames`]——boot/ktest 可信调用方 `.expect`；EL0 路径
+    /// （`sys_process_create`）折 -ENOMEM（3b3 审查 H1：expect 曾是 EL0 可触发的
+    /// 内核停机点，违 ABI §8.0「永不 panic」）。
     pub fn new_root(fa: &mut FrameAllocator, asid: u16) -> Result<Self, VmarError> {
-        let aspace = AddressSpace::new(fa, asid)?;
+        let l1_pa = zero_frame(fa).map_err(|_| VmarError::NoFrames)?;
         Ok(Self {
-            aspace,
-            vmar_id: ROOT_VMAR_ID,
+            l1_pa,
+            asid,
             base: PAGE_SIZE,
             len: USER_VA_TOP - PAGE_SIZE,
-        })
-    }
-
-    /// 运行时安全建 root Vmar（`ALLOC_LOCK` 护住帧分配）。
-    pub fn new_root_global(asid: u16) -> Result<Self, VmarError> {
-        let aspace = AddressSpace::new_global(asid)?;
-        Ok(Self {
-            aspace,
-            vmar_id: ROOT_VMAR_ID,
-            base: PAGE_SIZE,
-            len: USER_VA_TOP - PAGE_SIZE,
-<<<<<<< HEAD
             regions: Vec::new(),
             is_root: true,
-=======
->>>>>>> private/wip
         })
     }
 
     /// 表根 PA（`Task::ttbr0` / 激活用）。
     pub fn ttbr0_pa(&self) -> usize {
-        self.aspace.ttbr0_pa()
+        self.l1_pa
     }
 
     /// ASID。
     pub fn asid(&self) -> u16 {
-        self.aspace.asid()
+        self.asid
     }
 
-    /// 本区间管辖起始基址。
-    pub const fn base(&self) -> usize {
-        self.base
-    }
-
-    /// 本区间管辖长度。
-    pub const fn len(&self) -> usize {
-        self.len
-    }
-
-    /// 区间树内部节点 ID。
-    pub const fn vmar_id(&self) -> VmarId {
-        self.vmar_id
-    }
-
-    /// 本 Vmar 是否为拥有完整用户低半 VA 的根区间。
-    pub const fn is_root(&self) -> bool {
-        self.vmar_id == ROOT_VMAR_ID
-    }
-
-    /// 获取底层地址空间共享引用。
-    pub fn aspace(&self) -> &Arc<AddressSpace> {
-        &self.aspace
-    }
-
-    /// 获取底层 `AddressSpace` 稳定堆地址（根与任意后代子 `Vmar` 恒同址）。
-    pub fn aspace_ptr(&self) -> *const AddressSpace {
-        Arc::as_ptr(&self.aspace)
-    }
-
-    /// 激活本 AS（TTBR0+CONTEXTIDR+按号失效）。
+    /// 激活本 AS（TTBR0+CONTEXTIDR+按号失效，见 HAL）。
     pub fn activate(&self) {
-        self.aspace.activate();
+        hal::activate_aspace(self.l1_pa, self.asid);
     }
 
-<<<<<<< HEAD
     /// 切子 Vmar：预留 `[vaddr, vaddr+len)`（登记进父表防父越子映射），返回共享
     /// 表根/ASID、管辖界收窄的新 Vmar。子**不拥有**表树/ASID（帧归还刀件 A ④
     /// ：`is_root=false`，Drop 不 free_asid——号属根，见字段注）。
-=======
-    /// 切子 Vmar：在区间树中分配 `[vaddr, vaddr+len)` 预留节点，返回共享同一地址空间的新 Vmar 句柄。
->>>>>>> private/wip
     pub fn allocate(&mut self, vaddr: usize, len: usize) -> Result<Vmar, VmarError> {
-        let child_id = self.aspace.allocate_child(self.vmar_id, vaddr, len)?;
+        self.check_slot(vaddr, len)?;
+        // regions 预留先于 push（3b3 H2）：失败点落在纯校验后、零副作用。
+        self.regions.try_reserve(1).map_err(|_| VmarError::NoMem)?;
+        self.regions.push(Region {
+            start: vaddr,
+            len,
+            kind: RegionKind::Reserved,
+            vmo: core::ptr::null_mut(),
+            vmo_off: 0,
+        });
         Ok(Vmar {
-            aspace: self.aspace.clone(),
-            vmar_id: child_id,
+            l1_pa: self.l1_pa,
+            asid: self.asid,
             base: vaddr,
             len,
-<<<<<<< HEAD
             regions: Vec::new(),
             is_root: false,
         })
@@ -397,12 +317,6 @@ impl Vmar {
     /// 可干净重建——中途新建的中间表帧被重试复用（`next_table` 见 TABLE_BIT
     /// 即用、不重复分配），即便不复用也只是 v1 已接受的「不回收页表帧」政策
     /// （见模块头）。
-=======
-        })
-    }
-
-    /// 把 VMO 的 `[vmo_offset, vmo_offset+len)` 映射到 `[vaddr, vaddr+len)`。
->>>>>>> private/wip
     pub fn map(
         &mut self,
         fa: &mut FrameAllocator,
@@ -412,52 +326,115 @@ impl Vmar {
         len: usize,
         perm: Perm,
     ) -> Result<usize, VmarError> {
-        self.aspace
-            .map(fa, self.vmar_id, vmo, vaddr, vmo_offset, len, perm)
-    }
-
-    /// 运行时安全映射（持 `pt_lock` 在外，按需经 `ALLOC_LOCK` 申请中间页表帧）。
-    pub fn map_global(
-        &mut self,
-        vmo: &mut Vmo,
-        vaddr: usize,
-        vmo_offset: usize,
-        len: usize,
-        perm: Perm,
-    ) -> Result<usize, VmarError> {
-        self.aspace.map_global_with_obj(
-            self.vmar_id,
-            None,
-            vmo,
-            vaddr,
-            vmo_offset,
+        // per-AS PT 锁（S-4 4-2①）：整方法串行——不止 PTE：同 Vmar 并发调
+        // 用的 regions Vec push/check_slot 竞态同窗关死。RAII：中途回滚臂
+        // `return Err` 亦放。
+        let _pt = pt_lock(self.asid);
+        self.check_slot(vaddr, len)?;
+        if vmo_offset % PAGE_SIZE != 0 {
+            return Err(VmarError::Unaligned);
+        }
+        // 先查后填：VMO 覆盖页须全部提交（eager 面；demand 区间走
+        // map_demand 不填叶）。
+        let npages = len / PAGE_SIZE;
+        let first_page = vmo_offset / PAGE_SIZE;
+        // regions 预留前置到一切副作用之前（3b3 H2）：若在收尾 push 时才失败，
+        // 叶已填 + track_map 已加——须整链回滚；前置后失败点全在纯校验区。
+        self.regions.try_reserve(1).map_err(|_| VmarError::NoMem)?;
+        // 内存属性按后备分派（P6 A-2）：MMIO 窗口 = Device-nGnRnE + 不共享
+        // （内核直映 MMIO 同款，`mmu.rs` 惯例——设备访问不可缓存不可推测，
+        // 无一致性与共享语义）；匿名页 = Normal WB + inner-shareable。
+        let (attr, sh) = if vmo.is_mmio() {
+            (hal::ATTR_DEVICE, hal::SH_NONE)
+        } else {
+            (hal::ATTR_NORMAL, hal::SH_INNER)
+        };
+        // 填叶（nG=1 内建于 page_descriptor；AP 按权限 OR 上）。filled 计已写
+        // 叶数：中途失败（建表 NoFrames / 首遇未提交页 VmoNotCommitted——
+        // W3-Q110 两遍 ledger 合一后由本循环承担提交验证）时 0..filled 页叶
+        // 已入表而 regions 未登记——残留 PTE 是查不到区间的有效翻译（unmap/
+        // protect 永远 NotMapped、同 VA 重 map 绕过重叠检测、已激活 AS 即刻
+        // 可见半填映射），须先回滚再报错。
+        //
+        // 段游标（W3-Q110，01 号审计机会 2）：同一 2MiB 段内 L3 表基恒定——
+        // 段首一走查（l3_span_walk），段内逐槽 base.add(slot+j) 线性推进，
+        // 跨段（(va>>21) 变化）才重走查；原「每页 l3_slot_create 全走查 +
+        // 预检/填叶两遍 page_pa」折叠为「每段一走 + 单遍 page_pa」。
+        let mut filled = 0;
+        let mut i = 0;
+        while i < npages {
+            let va = vaddr + i * PAGE_SIZE;
+            let (base, slot) = match self.l3_span_walk(fa, va) {
+                Ok(p) => p,
+                Err(e) => {
+                    // 回滚已写叶（这些页的中间表失败前已建好，peek 必得槽位）；
+                    // 本路径不分配帧、不可失败，filled==0 时空循环照走屏障无害。
+                    // 回滚后 regions 无此区间，同 VA 重试 map 可干净重建（语义
+                    // 见上文档注释）。
+                    self.clear_leaves(vaddr, filled);
+                    // SAFETY: 特权指令；EL1。回滚叶对走查可见 + 旧 TLB 项作废。
+                    unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_flags)) };
+                    hal::tlbi_aside1(self.asid);
+                    // S-4 4-2⑤：他核历史缓存项作废广播（锁窗内只发不待，
+                    // 回执等待在 SVC 派发尾；单核 TX=0 零扰动）。
+                    hal::tlbshoot::broadcast();
+                    return Err(e);
+                }
+            };
+            // 段尾（开区间 VA）：本段可填页数 = 段内余量与区间余量的小者。
+            let seg_end = ((va >> 21) + 1) << 21;
+            let seg_pages = ((seg_end - va) / PAGE_SIZE).min(npages - i);
+            for j in 0..seg_pages {
+                // 单遍合一：验证（提交态）与取 PA 一遍完成——首遇未提交页
+                // 即回滚已填叶报 VmoNotCommitted（错误集与旧预检面恒等，
+                // 副作用同为零残留；旧「先全量预检」两遍查由本臂收编）。
+                let pa = match vmo.page_pa(first_page + i + j) {
+                    Some(pa) => pa,
+                    None => {
+                        self.clear_leaves(vaddr, filled);
+                        // SAFETY: 特权指令；EL1。回滚叶对走查可见 + 旧 TLB 项作废。
+                        unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_flags)) };
+                        hal::tlbi_aside1(self.asid);
+                        // S-4 4-2⑤：他核历史缓存项作废广播（同 NoFrames 回滚臂）。
+                        hal::tlbshoot::broadcast();
+                        return Err(VmarError::VmoNotCommitted);
+                    }
+                };
+                // SAFETY: 槽位属本表树独占；volatile 防重排；段内 slot+j ≤ 511
+                //（seg_pages 以段尾为界）。
+                unsafe {
+                    base.add(slot + j)
+                        .write_volatile(hal::page_descriptor(pa, attr, sh) | perm.ap());
+                }
+                filled += 1;
+            }
+            i += seg_pages;
+        }
+        // SAFETY: 特权指令；EL1。表写入对页表走查可见。
+        unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_flags)) };
+        vmo.track_map(vmo_offset, len);
+        self.regions.push(Region {
+            start: vaddr,
             len,
-            perm,
-        )
+            kind: RegionKind::Mapped(perm),
+            vmo: vmo as *mut Vmo,
+            vmo_off: vmo_offset,
+        });
+        Ok(vaddr)
     }
 
-    /// 句柄表路径安全映射：附带 `ObjRef` 页级映射保活计数，使任意进程销毁序下零 UAF、零泄漏。
-    pub fn map_obj_global(
-        &mut self,
-        vmo_obj: core::ptr::NonNull<crate::handle::ObjRef>,
-        vmo: &mut Vmo,
-        vaddr: usize,
-        vmo_offset: usize,
-        len: usize,
-        perm: Perm,
-    ) -> Result<usize, VmarError> {
-        self.aspace.map_global_with_obj(
-            self.vmar_id,
-            Some(vmo_obj),
-            vmo,
-            vaddr,
-            vmo_offset,
-            len,
-            perm,
-        )
-    }
-
-    /// 按需映射：不填叶、零帧分配，仅登记 `Demand` 区间并钉住 VMO。
+    /// 按需映射（G4-1）：登记 `RegionKind::Demand` 区间——**不查 commit、不填
+    /// 叶、零帧分配**（中间表留待供给时按需建）。VMO 须 demand 后备
+    /// （[`crate::vmo::Vmo::is_demand`]——混投 eager VMO 显式拒
+    /// [`VmarError::VmoNotCommitted`]，语义 = 「此 VMO 不是按需后备」）。
+    /// 成功后**不** track_map（记账起点 = 供给填叶成功时，§5-⑥ 裁决）但
+    /// **track_demand**（G4-2 修批 P0-1：Region 裸指针存续期钉活 VMO——
+    /// 区间登记即取，未供给页同样算）。fault 语境的反查经
+    /// [`register_demand_root`] 全局登记表（本 AS 有 demand 区间方可被探针
+    /// 命中）。
+    ///
+    /// 返回映射基 VA。错误集 = 纯校验面（`Unaligned`/`OutOfBounds`/`Overlap`
+    /// /`NoMem`）——无副作用中途态，无回滚臂。
     pub fn map_demand(
         &mut self,
         vmo: &mut Vmo,
@@ -466,141 +443,430 @@ impl Vmar {
         len: usize,
         perm: Perm,
     ) -> Result<usize, VmarError> {
-        self.aspace.map_demand_with_obj(
-            self.vmar_id,
-            None,
-            vmo,
-            vaddr,
-            vmo_offset,
+        let _pt = pt_lock(self.asid);
+        self.check_slot(vaddr, len)?;
+        if vmo_offset % PAGE_SIZE != 0 {
+            return Err(VmarError::Unaligned);
+        }
+        if !vmo.is_demand() {
+            return Err(VmarError::VmoNotCommitted);
+        }
+        // mech-M-1（G4-1 三镜）：demand 后备 bounds 检查——`off+len` 超 VMO
+        // 容量即拒；checked 加法（溢出先行拒，不落 wrap——:512 check_slot
+        // 同款口径）。
+        if vmo_offset.checked_add(len).map_or(true, |end| end > vmo.size()) {
+            return Err(VmarError::OutOfBounds);
+        }
+        self.regions.try_reserve(1).map_err(|_| VmarError::NoMem)?;
+        self.regions.push(Region {
+            start: vaddr,
             len,
-            perm,
-        )
+            kind: RegionKind::Demand(perm),
+            vmo: vmo as *mut Vmo,
+            vmo_off: vmo_offset,
+        });
+        // 区间登记即钉（G4-2 修批 P0-1）：Region 裸指针已指 vmo——供给前
+        // close(vmo) 的销毁面由本钉拦下（handle 层判据第二分量）。
+        vmo.track_demand(len);
+        Ok(vaddr)
     }
 
-    /// 句柄表路径按需映射：附带 `ObjRef` 页级映射保活计数。
-    pub fn map_demand_obj(
-        &mut self,
-        vmo_obj: core::ptr::NonNull<crate::handle::ObjRef>,
-        vmo: &mut Vmo,
-        vaddr: usize,
-        vmo_offset: usize,
-        len: usize,
-        perm: Perm,
-    ) -> Result<usize, VmarError> {
-        self.aspace.map_demand_with_obj(
-            self.vmar_id,
-            Some(vmo_obj),
-            vmo,
-            vaddr,
-            vmo_offset,
-            len,
-            perm,
-        )
-    }
-
-    /// 供给一页（无预填）。
-    #[allow(dead_code)]
+    /// 供给一页（G4-1，pager 侧）：`vaddr` 所在 demand 区间内该页 commit +
+    /// 填叶 + 屏障失效——此后该 VA 翻译有效，fault 线程 eret 重试即命中。
+    /// **幂等**：叶已存在（并发供给/虚醒重供给）直接返回 Ok——重供给不是
+    /// 错误，页内容经 VMO 写路径保证一致。
+    ///
+    /// 错误：VA 不在任何 demand 区间 → `NotMapped`（探针命中后区间被 unmap
+    /// 的竞窗 = 供给方拿 `Err` 自理）；建表/出帧失败 → `NoFrames`（pager
+    /// fail loud 面）。
     pub fn supply_page(&mut self, fa: &mut FrameAllocator, vaddr: usize) -> Result<(), VmarError> {
-        self.aspace.supply_page(fa, vaddr)
+        // 页内对齐收口（探针传 FAR 原值时容页中偏移）。
+        let va = vaddr & !(PAGE_SIZE - 1);
+        let _pt = pt_lock(self.asid);
+        let idx = self.demand_index(va).ok_or(VmarError::NotMapped)?;
+        let (vmo, vmo_off) = {
+            // SAFETY: Region 的 vmo 指针有效性同 map 的两层政策（见 Region 注释）。
+            let r = &self.regions[idx];
+            (unsafe { &mut *r.vmo }, r.vmo_off)
+        };
+        // 幂等门：叶已在（前次供给）→ 零动作成功。
+        if let Some(slot) = self.l3_slot_peek(va) {
+            // SAFETY: 只读表项。
+            if unsafe { slot.read_volatile() } & 1 != 0 {
+                return Ok(());
+            }
+        }
+        let page_off = vmo_off + (va - self.regions[idx].start);
+        // commit 幂等（已提交页跳过）——两值页态复用，见 vmo 模块注释。
+        vmo.commit(fa, page_off, PAGE_SIZE).map_err(|e| match e {
+            crate::vmo::VmoError::NoFrames => VmarError::NoFrames,
+            crate::vmo::VmoError::NoMem => VmarError::NoMem,
+            _ => VmarError::NotMapped, // 区间/页参数已上验——不可达兜底
+        })?;
+        let pa = vmo.page_pa(page_off / PAGE_SIZE).expect("刚 commit 过");
+        let slot = self.l3_slot_create(fa, va)?;
+        // 供给叶 AP 位取区间登记权限（Demand 构造时定）。
+        let ap = match self.regions[idx].kind {
+            RegionKind::Demand(p) => p.ap(),
+            _ => unreachable!("demand_index 已验 kind"),
+        };
+        // SAFETY: 槽位属本表树独占；volatile 防重排。匿名 demand 页 = Normal
+        // WB + inner-shareable（eager map 同款——demand VMO 无 MMIO 后备）。
+        unsafe {
+            slot.write_volatile(hal::page_descriptor(pa, hal::ATTR_NORMAL, hal::SH_INNER) | ap);
+        }
+        // SAFETY: 特权指令；EL1。表写入对页表走查可见。
+        unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_flags)) };
+        hal::tlbi_aside1(self.asid);
+        // S-4 4-2⑤：他核历史缓存项作废——锁窗内只发不待（map/unmap 同款）。
+        hal::tlbshoot::broadcast();
+        // §5-⑥：mapcnt 记账起点 = 供给成功（unmap 的整体 untrack 对未供给
+        // 页 saturating_sub 天然零动作——防线对 demand 区间自洽）。
+        vmo.track_map(page_off, PAGE_SIZE);
+        Ok(())
     }
 
-    /// 运行时安全按需供给（无预填）。
-    #[allow(dead_code)]
-    pub fn supply_page_global(&mut self, vaddr: usize) -> Result<(), VmarError> {
-        self.aspace.supply_page_global(vaddr)
+    /// `va` 所在 demand 区间下标（只读查——fault 探针命中判定 + 供给定位）。
+    fn demand_index(&self, va: usize) -> Option<usize> {
+        // W3-Q17：探针命中律单源（闭开域 + Demand-only）。
+        berry_vslotface::demand_hit_at(&RegionSlots(&self.regions), va)
     }
 
-    /// 供给一页并在装入有效 PTE 之前执行帧内预填闭包。
-    pub fn supply_page_init(
-        &mut self,
-        fa: &mut FrameAllocator,
-        vaddr: usize,
-        init_before_pte: impl FnOnce(&mut Vmo, usize),
-    ) -> Result<(), VmarError> {
-        self.aspace.supply_page_init(fa, vaddr, init_before_pte)
-    }
-
-    /// 运行时安全按需供给并预填物理帧。
-    pub fn supply_page_init_global(
-        &mut self,
-        vaddr: usize,
-        init_before_pte: impl FnOnce(&mut Vmo, usize),
-    ) -> Result<(), VmarError> {
-        self.aspace.supply_page_init_global(vaddr, init_before_pte)
-    }
-
-    /// fault 探针面：O(log N) 查询 `far` 是否命中 `Demand` 区间。
+    /// fault 探针面（G4-1）：`far` 命中本 AS 的 demand 区间 → `(vmo 指针,
+    /// vmo_off, 区间基 VA)`——探针据此进 pager 协议；未命中（含 Mapped/
+    /// Reserved/界外）→ `None` = 原杀链不变量保持。**调用方均持 KL 窗**
+    ///（G4-1 三镜 P2-2/M-3 修后口径：探针两段式第二段权威重验 + pager
+    /// 供给链全程 KL——无锁外读者；「只读不锁」旧注安全性仅单核成立，
+    /// 已改口）。
     pub fn demand_region_at(&self, far: usize) -> Option<(*mut Vmo, usize, usize)> {
-        self.aspace.demand_region_at(far)
+        let idx = self.demand_index(far)?;
+        let r = &self.regions[idx];
+        Some((r.vmo, r.vmo_off, r.start))
     }
 
-    /// 解除映射（支持精确匹配与任意连续子区间切分；对已拆解进程空间幂等返回 `Ok(())`）。
+    /// 解除映射：清 L3 叶（此后访问该 VA 必 fault）+ 按号失效 + 回调 VMO 映射
+    /// 计数 -1（此后该页可 decommit/销毁）。**不退物理页**（页属 VMO；v1 也不
+    /// 回收中间表帧）。区间须与本 Vmar 登记的映射**精确匹配**（子区间解映射留 v2）。
     pub fn unmap(&mut self, vaddr: usize, len: usize) -> Result<(), VmarError> {
-        self.aspace
-            .unmap(self.vmar_id, self.base, self.len, vaddr, len)
+        // per-AS PT 锁（S-4 4-2①），整方法串行（同 map）。
+        let _pt = pt_lock(self.asid);
+        let idx = self.find_exact(vaddr, len)?;
+        // SAFETY: Region 的 vmo 指针经 map/map_demand 的 &mut 传入；有效性
+        // 依托 Region 注释三条政策（close/replace -EBUSY 拒面〔含 demand 钉〕
+        // + drain 同判据泄漏兜底 + 直构面生存期）。
+        // 并发面（S-4 4-2 起 SMP，原「单核 + IRQ 屏蔽」假设退役）：本方法
+        // 全程 PT 锁 + KL 双串行——同 AS 他核写者被 PT 锁挡；同 VMO 映两 AS
+        // 的跨核 untrack 被 KL 挡；对象销毁被 -EBUSY 挡在 PTE 外。
+        // demand 区间（G4-1 起）**双记账**（G4-2 修批 P0-1）：mapcnt 收供给
+        // 页（track_map 只在供给成功时 +1，§5-⑥——未供给页 saturating_sub(0)
+        // 零动作）；demand 钉收整区间（Region 即死，钉即放——部分供给区间
+        // 两者各收各的，正交）。
+        unsafe {
+            let r = &self.regions[idx];
+            (*r.vmo).untrack_map(r.vmo_off, r.len);
+            if matches!(r.kind, RegionKind::Demand(_)) {
+                (*r.vmo).untrack_demand(r.len);
+            }
+        }
+        self.clear_leaves(vaddr, len / PAGE_SIZE);
+        // SAFETY: 特权指令；EL1。改叶对走查可见 + 旧 TLB 项作废。
+        unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_flags)) };
+        hal::tlbi_aside1(self.asid);
+        // S-4 4-2⑤：清叶广播——本核 tlbi 管不到他核缓存项。锁窗内只发不
+        // 待（回执等待在 SVC 派发尾零锁自旋）；单核 TX=0 零扰动。
+        hal::tlbshoot::broadcast();
+        self.regions.swap_remove(idx);
+        Ok(())
     }
 
-    /// 改权限（支持精确匹配与任意连续子区间切分）。
+    /// 改权限：重写叶 AP 位 + 按号失效 + 更新区间登记。精确匹配语义同 unmap。
     pub fn protect(&mut self, vaddr: usize, len: usize, perm: Perm) -> Result<(), VmarError> {
-        self.aspace.protect(self.vmar_id, vaddr, len, perm)
+        // per-AS PT 锁（S-4 4-2①），整方法串行（同 map）。
+        let _pt = pt_lock(self.asid);
+        let idx = self.find_mapped(vaddr, len)?;
+        // W3-Q110 游标化：段内一 peek 得表基，段内线性推进改 AP；跨段重 peek
+        //（与 clear_leaves 同款；中间表缺失的页静默跳过——不建表面）。
+        let npages = len / PAGE_SIZE;
+        let mut i = 0;
+        while i < npages {
+            let va = vaddr + i * PAGE_SIZE;
+            let (base, slot) = match self.l3_span_peek(va) {
+                Some(p) => p,
+                None => {
+                    let seg_end = ((va >> 21) + 1) << 21;
+                    i += (seg_end - va) / PAGE_SIZE;
+                    continue;
+                }
+            };
+            let seg_end = ((va >> 21) + 1) << 21;
+            let seg_pages = ((seg_end - va) / PAGE_SIZE).min(npages - i);
+            for j in 0..seg_pages {
+                // SAFETY: 槽位属本表树独占。
+                unsafe {
+                    let leaf = base.add(slot + j);
+                    let e = leaf.read_volatile();
+                    leaf.write_volatile((e & !AP_MASK) | perm.ap());
+                }
+            }
+            i += seg_pages;
+        }
+        // SAFETY: 特权指令；EL1。
+        unsafe { core::arch::asm!("dsb ish", options(nostack, preserves_flags)) };
+        hal::tlbi_aside1(self.asid);
+        // S-4 4-2⑤：权限降级（如 Rw→Ro）后他核 stale 可写项是安全面——广播
+        // 作废（同 unmap，锁窗内只发不待）。
+        hal::tlbshoot::broadcast();
+        self.regions[idx].kind = RegionKind::Mapped(perm);
+        Ok(())
+    }
+
+    // ---- 内部：区间校验 / 走查 ----
+
+    /// 槽位三查：对齐、管辖界、与既有区间/预留不重叠。
+    fn check_slot(&self, vaddr: usize, len: usize) -> Result<(), VmarError> {
+        // W3-Q17：三查判序单源 = berry-vslotface（Unaligned → OutOfBounds →
+        // Overlap 逐字旧序；重叠谓词半开交集同旧 any 扫描）。
+        if !aligned_nonzero(vaddr, len) {
+            return Err(VmarError::Unaligned);
+        }
+        let end = match bounds_end(vaddr, len, self.base, self.len) {
+            Some(e) => e,
+            None => return Err(VmarError::OutOfBounds),
+        };
+        if self
+            .regions
+            .iter()
+            .any(|r| overlaps(vaddr, end, r.start, r.len))
+        {
+            return Err(VmarError::Overlap);
+        }
+        Ok(())
+    }
+
+    /// 找精确匹配的已登记区间（Mapped 或 Demand——G4-1 起 unmap 对 demand
+    /// 区间同收割），返回其下标。protect 仍走 [`Self::find_mapped`]
+    /// （Mapped-only——demand 区间 protect v1 拒）。
+    fn find_exact(&self, vaddr: usize, len: usize) -> Result<usize, VmarError> {
+        // W3-Q17：精确匹配判定律单源 = berry-vslotface（kind 收 Mapped|Demand
+        // ——G4-1 起 unmap 对 demand 区间同收割；position 首中语义同旧）。
+        berry_vslotface::find_exact_at(&RegionSlots(&self.regions), vaddr, len)
+            .map_err(slot_err)
+    }
+
+    /// 找精确匹配的已映射区间，返回其下标。
+    fn find_mapped(&self, vaddr: usize, len: usize) -> Result<usize, VmarError> {
+        // W3-Q17：Mapped-only 精确查找单源（demand 区间 protect v1 拒）。
+        berry_vslotface::find_mapped_at(&RegionSlots(&self.regions), vaddr, len)
+            .map_err(slot_err)
+    }
+
+    /// 表 PA → 经 direct map 的表基指针。
+    fn table_of(pa: usize) -> *mut u64 {
+        table_base(pa)
+    }
+
+    /// 读槽位；无效则建新表（清零帧）写入，返回下一级表 PA。SMP（S-4 4-2）：
+    /// 写者（map）全程持 per-AS PT 锁——跨核双建表竞态已闭，下方「非零非表」
+    /// 断言在 SMP 下同样成立（断言留作双保险）。
+    fn next_table(fa: &mut FrameAllocator, slot: *mut u64) -> Result<usize, VmarError> {
+        // SAFETY: 槽位属本表树独占；volatile 防重排。
+        let e = unsafe { slot.read_volatile() };
+        if e & TABLE_BIT != 0 {
+            Ok((e as usize) & ADDR_MASK as usize)
+        } else {
+            assert!(e == 0, "Vmar: 中间层出现非表描述符（用户树只可能由本路径写入）");
+            let pa = zero_frame(fa).map_err(|_| VmarError::NoFrames)?;
+            // SAFETY: 同上。
+            unsafe { slot.write_volatile(hal::table_descriptor(pa)) };
+            Ok(pa)
+        }
+    }
+
+    /// 取 `va` 的 L3 槽位指针（缺中间表则按需建）。VA 须在本 AS 管辖内。
+    fn l3_slot_create(&self, fa: &mut FrameAllocator, va: usize) -> Result<*mut u64, VmarError> {
+        let l2_pa = Self::next_table(fa, unsafe { Self::table_of(self.l1_pa).add((va >> 30) & IDX_MASK) })?;
+        let l3_pa = Self::next_table(fa, unsafe { Self::table_of(l2_pa).add((va >> 21) & IDX_MASK) })?;
+        Ok(unsafe { Self::table_of(l3_pa).add((va >> 12) & IDX_MASK) })
+    }
+
+    /// L3 游标走查（W3-Q110，01 号审计机会 2）：一次走查取 L3 表基指针与
+    /// `va` 段内槽号——同一 2MiB 段（`va>>21` 恒定）内走查结果恒定，段内
+    /// 逐槽 `base.add(i)` 线性推进即可，跨段才重走查。建表面（map 用）：
+    /// 缺中间表按需建（语义同 [`Self::l3_slot_create`]，只是把「每页全
+    /// 走查」折叠成「每段一走 + 段内指针算术」）。
+    fn l3_span_walk(
+        &self,
+        fa: &mut FrameAllocator,
+        va: usize,
+    ) -> Result<(*mut u64, usize), VmarError> {
+        let l2_pa = Self::next_table(fa, unsafe { Self::table_of(self.l1_pa).add((va >> 30) & IDX_MASK) })?;
+        let l3_pa = Self::next_table(fa, unsafe { Self::table_of(l2_pa).add((va >> 21) & IDX_MASK) })?;
+        Ok((
+            Self::table_of(l3_pa),
+            (va >> 12) & IDX_MASK,
+        ))
+    }
+
+    /// L3 游标只读走查（不建表）：中间层缺失 → `None`（unmap/protect 用）。
+    /// 与 [`Self::l3_span_walk`] 同构，零分配面。
+    fn l3_span_peek(&self, va: usize) -> Option<(*mut u64, usize)> {
+        let slot = self.l3_slot_peek(va)?;
+        // SAFETY: l3_slot_peek 返回的槽指针 = 段基 + 槽号偏移；减回槽号得段基。
+        let base = unsafe { slot.sub((va >> 12) & IDX_MASK) };
+        Some((base, (va >> 12) & IDX_MASK))
+    }
+
+    /// 只读走查（不建表）：中间层缺失/无效 → `None`。unmap/protect 用。
+    fn l3_slot_peek(&self, va: usize) -> Option<*mut u64> {
+        let l1 = Self::table_of(self.l1_pa);
+        // SAFETY: 只读表项。
+        let e0 = unsafe { l1.add((va >> 30) & IDX_MASK).read_volatile() };
+        if e0 & TABLE_BIT == 0 {
+            return None;
+        }
+        let l2 = Self::table_of((e0 as usize) & ADDR_MASK as usize);
+        // SAFETY: 只读表项。
+        let e1 = unsafe { l2.add((va >> 21) & IDX_MASK).read_volatile() };
+        if e1 & TABLE_BIT == 0 {
+            return None;
+        }
+        let l3 = Self::table_of((e1 as usize) & ADDR_MASK as usize);
+        Some(unsafe { l3.add((va >> 12) & IDX_MASK) })
+    }
+
+    /// 清一段区间的 L3 叶（逐槽写 0；不建表、不分配帧，中间表缺失的页静默
+    /// 跳过）。unmap 与 map 失败回滚共用；屏障/失效/区间记账由调用方收尾。
+    /// W3-Q110 游标化：段内一 peek 得表基，段内线性推进；跨段重 peek。
+    fn clear_leaves(&self, vaddr: usize, npages: usize) {
+        let mut i = 0;
+        while i < npages {
+            let va = vaddr + i * PAGE_SIZE;
+            let (base, slot) = match self.l3_span_peek(va) {
+                Some(p) => p,
+                None => {
+                    // 中间表缺失：本段全部页静默跳过（建表面不可用——本函数
+                    // 零分配契约），整段推进到段尾。
+                    let seg_end = ((va >> 21) + 1) << 21;
+                    i += (seg_end - va) / PAGE_SIZE;
+                    continue;
+                }
+            };
+            let seg_end = ((va >> 21) + 1) << 21;
+            let seg_pages = ((seg_end - va) / PAGE_SIZE).min(npages - i);
+            for j in 0..seg_pages {
+                // SAFETY: 槽位属本表树独占；volatile 防重排。
+                unsafe { base.add(slot + j).write_volatile(0) };
+            }
+            i += seg_pages;
+        }
     }
 }
 
-// ---- asid → AddressSpace 按需调页反查登记表（F1-1：Acquire/Release + 消解子 Vmar OwnerConflict）----
+// ---- asid → root Vmar 反查登记表（G4-1，草案 §5-④ 裁决：全局小表）----
+//
+// fault 语境（异常处理器）只有硬件现值——TTBR0_EL1 现读 ASID（`hal::
+// current_asid`，单一事实源）——到 root Vmar 对象的映射在本表。**为什么
+// 不是 task 字段**（§5-④ 备选）：TTBR0 现读已消掉 asid 来源面，登记面
+// 只剩「对象指针」一项；全局小表零 sched 改动、boot 直构/handle 表两语境
+// 同形（task 字段对 handle 表 Vmar 还要解决装/卸窗）。
+//
+// 形：16 槽定长线性扫（探针未命中 16 次原子载入 ≈ 数十周期——fault 快路径
+// 可受）。**注销面已落**（G4-2 修批 P0-1 面 b：[`Vmar::Drop`] 在 KL 窗清槽
+// ——槽生命周期 = 对象生命周期，16 槽可回收，无「系统终身 16 进程」帽）；
+// 登记面含会退出的进程/子 Vmar（dpg_selftest、process 组装）——安全性不
+// 依托「登记者不退出」，依托**钉住**（demand 区间存续期 Vmo 被
+// `demand_mapped` 钉活）+ **注销**（Drop 先于对象释放清槽，槽永指活对象；
+// 探针锁外读降 hint、窗内重查为权威）。ASID 0 = 空槽哨兵（分配器从 1 起）。
+//
+// C-4 闭案（G4-1 三镜立案「16 槽只进不出 × ASID 回卷」→ 修批结构性解除）：
+// 旧 AS 的 Vmar 销毁即注销（[`deregister_demand_root`] asid+ptr 双匹配），
+// 回卷复用同号时旧登记已清——同 asid 双活由 `OwnerConflict` 防御拒兜底。
 
+/// 登记槽数（boot/测试语境上界；满 = 后续登记失败 fail loud）。
+/// W3-Q60：判序单源 `berry_vslotface::droot`（host 钉板），此处 re-export
+/// 执法两形同值。
 pub use berry_vslotface::droot::DEMAND_ROOT_SLOTS;
 const _: () = assert!(DEMAND_ROOT_SLOTS == 16);
 
+/// 登记失败形（G4-2：SVC 面失败码化——boot 面调用方 expect 收口 fail
+/// loud，SVC 面 [`DemandRootError`] → -ENOMEM / -ENOTSUP 错误码出口）。
+/// W3-Q60：纯投影单源 `berry_vslotface::droot::DemandRootError`。
 pub use berry_vslotface::droot::DemandRootError;
 
 static DEMAND_ROOTS: [(AtomicU16, AtomicUsize); DEMAND_ROOT_SLOTS] =
     [const { (AtomicU16::new(0), AtomicUsize::new(0)) }; DEMAND_ROOT_SLOTS];
 
+/// 原子槽表 → droot [`RootSlots`] 适配器（W3-Q60：纯判序单源消费面——
+/// 原子对留壳，登记/反查/注销三步的判序全走 `berry_vslotface::droot`）。
 struct AtomicRootSlots;
 
 impl berry_vslotface::droot::RootSlots for AtomicRootSlots {
     fn slot(&self, i: usize) -> berry_vslotface::droot::RootSlot {
         let (a, p) = &DEMAND_ROOTS[i];
-        // F1-1：Acquire 加载先读 asid 再读 ptr，与 set() 的 Release 发布严格配对。
-        let asid = a.load(Ordering::Acquire);
-        let ptr = p.load(Ordering::Acquire);
-        berry_vslotface::droot::RootSlot { asid, ptr }
+        berry_vslotface::droot::RootSlot {
+            asid: a.load(Ordering::Relaxed),
+            ptr: p.load(Ordering::Relaxed),
+        }
     }
     fn set(&mut self, i: usize, s: berry_vslotface::droot::RootSlot) {
         let (a, p) = &DEMAND_ROOTS[i];
+        // 发布序（register）：ptr 先（Relaxed）asid 后（Release）——读者按
+        // asid 命中即见完整对；卫生序（deregister）：asid 先（Release）ptr
+        // 后（Relaxed）。两序对同一格的单次 set 只需「成对可见」，方向由
+        // 调用步语义（Ok(true) 新写 / true 清空）区分：本实现统一
+        // ptr 先写、asid 后写且 asid 用 Release——登记面读者（Acquire 读
+        // asid 命中再读 ptr）见完整对；注销面镜像序由 deregister 先行
+        // 判定 + 本 set 原子对落格承载（读者见 X+0 半态按 miss 处理）。
         if s.ptr != 0 {
-            p.store(s.ptr, Ordering::Release);
+            p.store(s.ptr, Ordering::Relaxed);
             a.store(s.asid, Ordering::Release);
         } else {
             a.store(0, Ordering::Release);
-            p.store(0, Ordering::Release);
+            p.store(0, Ordering::Relaxed);
         }
     }
 }
 
-/// 登记 `asid -> *const AddressSpace`（同一地址空间的根/子 `Vmar` 共享同一指针，天然幂等零冲突）。
-pub fn register_demand_aspace(
-    asid: u16,
-    aspace: *const AddressSpace,
-) -> Result<(), DemandRootError> {
+/// 登记 asid → root Vmar（map_demand 的调用方/对象属主；boot DAIF 屏蔽窗、
+/// PT 锁窗或 SVC KL 窗内调用——写者经全谱锁串行，读者〔探针第一段〕锁外
+/// append-only 读安全）。**幂等**：同 (asid, root) 再登记 Ok（同 AS 多次
+/// demand map 只占一槽）；满表 / 异 root 冲突 = Err——静默丢登记 = 探针
+/// 永不命中 = demand 页死循环杀链，宁拒可响。
+pub fn register_demand_root(asid: u16, root: *mut Vmar) -> Result<(), DemandRootError> {
+    // W3-Q60：判序单源 berry_vslotface::droot（幂等/冲突先于空槽扫描、
+    // 首空槽 first-wins、满表 Full——host 钉板）；此处原子臂留壳。
     let mut slots = AtomicRootSlots;
-    droot::register_step(&mut slots, asid, aspace as usize).map(|_| ())
+    droot::register_step(&mut slots, asid, root as usize).map(|_| ())
 }
 
-/// 反查 `asid -> *const AddressSpace`。
-pub fn demand_aspace(asid: u16) -> Option<*const AddressSpace> {
+/// 反查 asid → root Vmar（fault 探针用；未登记 → `None` = 探针不命中）。
+/// **stage-1 hint-only 口径**（G4-2 修批后）：注销面已存在（[`Vmar::Drop`]）
+/// ——锁外读得的指针不保证仍活，调用方只可当「值得入锁一查」的快路径
+/// hint 消费（miss 零锁即拒仍安全：注销先于对象释放）；**权威取值 = KL
+/// 窗内重查**（探针 stage-2 / 0x21 供给窗——窗内查得即窗内活，注销与释放
+/// 都在 KL 窗内发生，他核注销须先取同把 KL）。
+pub fn demand_root(asid: u16) -> Option<*mut Vmar> {
+    // W3-Q60：判序单源 berry_vslotface::droot（0 哨兵直达/线性扫/X+0 半态
+    // miss——host 钉板）；此处原子臂留壳。
     let slots = AtomicRootSlots;
-    droot::lookup_step(&slots, asid).map(|p| p as *const AddressSpace)
+    droot::lookup_step(&slots, asid).map(|p| p as *mut Vmar)
 }
 
-/// 注销 `asid -> *const AddressSpace`（`asid + ptr` 双匹配防误清复用槽）。
-pub fn deregister_demand_aspace(asid: u16, aspace: *const AddressSpace) {
+/// 注销 asid → root Vmar（G4-2 修批 P0-1 面 b——[`Vmar::Drop`] 收口调用，
+/// 登记槽不再指向已释放对象）。**asid+ptr 双匹配**才清（asid 复用后旧
+/// root 的注销不得误清新登记）；置零次序 = **asid 先清（Release）后 ptr**
+/// （卫生序——锁外读者要么见 asid 消失即止步，要么见 X+0 半态按 miss
+/// 处理，永不见「新 asid + 旧 ptr」）。调用方须持 KL 窗（与登记、探针
+/// stage-2 同锁域互斥——注销与对象释放在同窗内完成，探针窗内查得即
+/// 窗内活）。
+pub fn deregister_demand_root(asid: u16, root: *mut Vmar) {
+    // W3-Q60：判序单源 berry_vslotface::droot（asid+ptr 双匹配才清——
+    // host 钉板）；此处原子臂留壳（清序 = 适配器 set 卫生序）。
     let mut slots = AtomicRootSlots;
-    droot::deregister_step(&mut slots, asid, aspace as usize);
+    droot::deregister_step(&mut slots, asid, root as usize);
 }
 
 impl Drop for Vmar {
-<<<<<<< HEAD
     /// 对象销毁收口（G4-2 修批 P0-1 面 b 单点执法 + 帧归还刀件 A 重写——
     /// 「刻意的正交不对称」政策就此推翻：残留 Mapped/Demand 区间的 mapcnt
     /// 在此一并清账〔clear_leaves + untrack〕，使关联 VMO 的 `Vmo::Drop`
@@ -703,39 +969,39 @@ impl Drop for Vmar {
         if self.is_root && self.asid != 0 {
             crate::aspace::free_asid(self.asid);
             self.asid = 0;
-=======
-    fn drop(&mut self) {
-        if !self.is_root() {
-            // 子 Vmar 释放：解除其在父空间中的预留并回收内部残余叶映射。
-            // 根地址空间的调页根注销与 ASID 归还在最后一个 Arc<AddressSpace> Drop 时统一完成。
-            let _ = self.aspace.destroy_vmar(self.vmar_id);
->>>>>>> private/wip
         }
     }
 }
 
-/// 只读走查任意表树的 L3 叶描述符。
+/// 只读走查任意表树的 L3 叶描述符（3-2：syscall copy 路径的用户缓冲校验——
+/// 经**当前 TTBR0**（= 调用者自身表）逐页查 AP 位）。L1/L2 只可能是表描述符
+/// （bit1=1；用户树由 `next_table` 独家产出），L3 须页描述符（bit0=1）；任一层
+/// 缺失/形态不符 → `None`。AP 位 [7:6] 由调用方解读（00/01=EL1 可写、10=EL1
+/// 只读、11=EL0 专属）。
+///
+/// 读者窗纪律（S-4 4-2，判例 §A113 walk+copy 同窗铁律）：调用方（syscall
+/// copy 链）须在持本表树 AS 的 PT 锁窗内（[`pt_lock_current`]）走查并完成
+/// store——封死「走查通过后写者撤页」的 TOCTOU 窗。
 pub(crate) fn walk_leaf(l1_pa: usize, va: usize) -> Option<u64> {
+    /// L3 页描述符有效位（bit0）。
     const PAGE_VALID: u64 = 1;
     let l1 = table_base(l1_pa);
-    // SAFETY: 只读页表槽。
-    let e0 = unsafe { l1.add((va >> 30) & 0x1ff).read_volatile() };
-    if e0 & (1 << 1) == 0 {
+    let e0 = unsafe { l1.add((va >> 30) & IDX_MASK).read_volatile() };
+    if e0 & TABLE_BIT == 0 {
         return None;
     }
-    let l2 = table_base((e0 as usize) & 0x0000_FFFF_FFFF_F000);
-    // SAFETY: 只读页表槽。
-    let e1 = unsafe { l2.add((va >> 21) & 0x1ff).read_volatile() };
-    if e1 & (1 << 1) == 0 {
+    let l2 = table_base((e0 as usize) & ADDR_MASK as usize);
+    let e1 = unsafe { l2.add((va >> 21) & IDX_MASK).read_volatile() };
+    if e1 & TABLE_BIT == 0 {
         return None;
     }
-    let l3 = table_base((e1 as usize) & 0x0000_FFFF_FFFF_F000);
-    // SAFETY: 只读页表槽。
-    let leaf = unsafe { l3.add((va >> 12) & 0x1ff).read_volatile() };
+    let l3 = table_base((e1 as usize) & ADDR_MASK as usize);
+    let leaf = unsafe { l3.add((va >> 12) & IDX_MASK).read_volatile() };
     (leaf & PAGE_VALID != 0).then_some(leaf)
 }
 
-/// 表 PA → 经 direct map 的表基指针。
-pub fn table_base(pa: usize) -> *mut u64 {
+/// 表 PA → 经 direct map 的表基指针（walk_leaf 用——walk 不持 Vmar 对象，
+/// 不能走 `Vmar::table_of`）。
+fn table_base(pa: usize) -> *mut u64 {
     phys_to_virt(pa) as *mut u64
 }

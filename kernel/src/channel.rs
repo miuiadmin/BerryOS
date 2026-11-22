@@ -1,55 +1,88 @@
-//! Channel 无环端点对（3-4b 初版；F1-3 彻底重构为共享 [`ChannelShared`] + 在途句柄析构 + `SIGNAL_PEER_CLOSED`）。
+//! Channel 端点对（3-4b；`IPC设计.md` §2 同步端点、能力模型 §3）。
 //!
-//! 核心契约：
-//! - 双端通过 [`alloc::sync::Arc`] 共享单一 [`ChannelShared`]，彻底废除旧版 `ChannelEnd::pair` 双向
-//!   `ObjRef::retain` 自引用死环；两端句柄全部关闭后，`ChannelShared` 与双向队列堆缓冲 100% 释放。
-//! - [`Message`] 实现 [`Drop`]：任何滞留在未读队列或在回滚异常中丢弃的消息，自动对前 `nhandles` 枚
-//!   在途句柄递减通道开闭计数并调用 [`ObjRef::release`]，彻底根除「塞满 VMO 句柄后关通道」的物理内存泄漏；
-//!   `sys_channel_recv` 成功迁入接收方句柄表后调用 [`Message::disarm_handles`] 清零 `nhandles`。
-//! - 每端维护句柄级存活计数 `open_ends[side]` 与幂等关闭门闩 `closed_once[side]`：任意一端最后一枚句柄
-//!   关闭（含 `handle_close`、`handle_replace`、进程退出/崩溃 `drain_ipc_on_exit` 及未读在途句柄析构）时，
-//!   立即清空本端未读队列、释放本端 `frozen_owner` 钉住引用，并在对端派生置位 [`SIGNAL_PEER_CLOSED`]
-//!   （`1 << 4`）唤醒对端全部等待者。本端既有未读消息在对端关闭后仍可继续 `channel_recv` 排空；排空后再
-//!   `recv` 或向已关对端 `send` 立即返回 [`ERR_BAD_STATE`]（`-37`）。
+//! v1 语义 = **非阻塞有界队列**（syscall 主体经段级 preempt_disable 包络维持不可抢占（G3 全抢占后非天然性质）→ 无阻塞路径）：
+//! - `send`：门控 RIGHT_SEND，消息压**对端**队列；满 → -EBUSY；
+//! - `recv`：门控 RIGHT_RECV，从**本端**队列弹；空 → -EAGAIN；
+//!   ——send/recv 本身 v1 恒非阻塞；**阻塞等空/满走 `object_wait_one`**
+//!   （4-2 起支持 Channel：READABLE=本端队列非空 / WRITABLE=对端队列未满，
+//!   内核派生位——send 成功唤醒对端 READABLE 等待者、recv 成功唤醒对端
+//!   WRITABLE 等待者，见 syscall.rs 两唤醒点）；
+//! - 消息 = inline 字节（≤[`CHAN_MSG_MAX`]）+ handle 令牌（≤[`CHAN_HND_MAX`]，
+//!   发送方 `take` 出表、接收方 `insert_ref` 入表——能力随消息迁移，能力模型 §4）。
+//!
+//! **对端互钉**：两端各持对端 `NonNull<ObjRef>` 且构造即 `retain`（不钉 = 对端
+//! 先关后本端 send 走 peer = use-after-free）。互钉成环 → 两端 handle 全关也不
+//! 释放（安全方向的泄漏，v1 接受；v3 DEAD 检测 + Weak peer 收口）。消息中未
+//! 收割的 handle 令牌随队列一起泄漏（refs 不减、永不释放——同安全方向）。
+//!
+//! v1 裁剪：对端关闭检测不做（需 DEAD 检测，v3——诚实缺口：send/recv 对死端
+//! 表现如常，不报 -EBADSTATE）。PI 捐赠（4-3b `kernel/src/pi.rs`）与 send 侧
+//! fastpath/slowpath 分层（4-4 `sys_channel_send` 尾部 fork）已落地——本文件
+//! 只做端点/消息本体，分层决策在调用方。
 
-use alloc::sync::Arc;
-use alloc::vec::Vec;
-use core::cell::UnsafeCell;
+use crate::handle::{ObjRef, Rights};
+use alloc::boxed::Box;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
-use crate::handle::{
-    ERR_AGAIN, ERR_BAD_STATE, ERR_BUSY, KernelObj, ObjRef, Rights, SIGNAL_PEER_CLOSED,
-    SIGNAL_READABLE, SIGNAL_WRITABLE,
-};
-
+// W3-Q9：界常量与队列资格判单源迁 berry-chanface（判据纯函数面，host
+// 可测钉板）；本文件 re-export 保持 crate 内路径稳定（hdlface 同款纪律）。
+// W3-Q49：冻结面配对判与队列序守卫单源迁 freeze 模块（mark/clear 资格 +
+// push/pop/push_front 不变量）；物理 retain/release 与存储机械留壳。
+// W3-Q95：定容环形机械单源迁 ring 模块（槽映射/步进/不变量判），本文件
+// 消费同一函数组驱动 Box<[Message; DEPTH]> 存储（02 号机会三刀 a）。
 pub use berry_chanface::{
-    clear_frozen_ok, mark_frozen_ok, pop_ok, push_front_ok, push_ok, queue_full_of,
-    queue_readable, wait_signal_peer_state, CHAN_DEPTH, CHAN_HND_MAX, CHAN_MSG_MAX,
+    clear_frozen_ok, mark_frozen_ok, pop_ok, push_front_ok, push_ok,
+    queue_full_of, queue_readable, ring_next_head, ring_ok, ring_slot_of,
+    ring_tail_of, CHAN_DEPTH, CHAN_HND_MAX, CHAN_MSG_MAX,
 };
 
-/// 一条在途消息：定长内联字节（≤[`CHAN_MSG_MAX`]）+ 迁移中的句柄令牌（≤[`CHAN_HND_MAX`]）。
+/// 单条消息 inline 字节上限（IPC设计 §2：内联载荷 ≤256B；更大走共享 VMO）。
+/// **单源 = berry-chanface（W3-Q9 迁出）**——本文件 re-export（上方 pub use）
+/// 保 crate 内外路径稳定；沿革注记随源在 chanface。
+/// 单条消息随行 handle 上限（ABI §8.3 send/recv 数组界）。T-1：4→6——
+/// berry-exec env 块 gift 扩至 6 位；A2-3：6→8——bsh arm 三 extras
+/// （rootfs/fs/netd 端）+ base 2 + T-1 自描述对 2 = env 块 7 位（首跑实抓：
+/// nhandles=7 > 6 → send -EINVAL → spawn 链 trap 自陷 svcmgr）；libc
+/// `io.rs` 收窗与 ktest H3 超限样本同步 8/9 口径。
+/// 每端收件队列深度（有界性 = send -EBUSY 的来源）。
+
+/// 一条消息：inline 字节 + 迁移中的 handle 令牌（`take` 出表、未入新表——
+/// 引用计数随令牌走，`insert_ref` 不动 refs）。**定长内联**（3b3 审查 H2 try
+/// 化）：曾为双 `Box`（bytes/handles 各一分配且在 take **之后**构造——EL0 可
+/// 触发 OOM abort 于迁移中途）；内联后 send/recv 全链零分配（队列容量由
+/// [`ChannelEnd::try_unpaired`] 预储，push/push_front 不再增长）。多余槽位以
+/// dangling 占位，仅前 `nbytes`/`nhandles` 项有效。
 pub struct Message {
     pub bytes: [u8; CHAN_MSG_MAX],
     pub nbytes: usize,
     pub handles: [(NonNull<ObjRef>, Rights); CHAN_HND_MAX],
     pub nhandles: usize,
+    /// 4-3c intent 消息头（`IPC设计.md` §2：内核可见元数据槽，ADR #42）：
+    /// send 侧快照发送者 `intent_effective`、recv 侧结算——用户不可见不传参，
+    /// 纯内核随行数据（recv ABI 不回写）。
     pub meta: berry_sched::intent::MsgIntent,
+    /// 1.1/S4：受益者付费记账头（`docs/调点调度-v1.1.md` §7.5）——
+    /// send 侧快照发送者域 ID（= Process ObjRef 地址 = `Task.pinned`），
+    /// recv 侧可读（S4 只记不罚）。`charged_ns` 预留（S5 消费）。
     pub billing: MsgBilling,
 }
 
-/// 消息记账头（内核可见，用户不传参不回写）。
+/// 1.1/S4：消息记账头（内核可见，用户不传参不回写——同 MsgIntent 模式）。
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MsgBilling {
+    /// 发送者域 ID（= Process ObjRef 地址；0 = 内核任务/无归属）。
     pub domain_id: u64,
-    #[allow(dead_code)]
+    /// 本消息已记账 CPU 时长（ns；S5 起 server 侧填充——S4 恒 0）。
+    #[allow(dead_code)] // S5 起消费（server 侧 CPU 时长记域）
     pub charged_ns: u64,
+    /// v2 协议标签：0 = 未标注（默认——v1 全部计费，含 reply 误设已知局限）
+    /// / 1 = 请求（recv 侧设计费区间）/ 2 = 回复（recv 侧**跳过**计费——
+    /// 修 client recv reply 误设起点）。发送者经 `channel_send` flags 标注。
     pub msg_type: u8,
 }
 
-#[allow(dead_code)]
+/// `MsgBilling.msg_type` 值。
 pub const MSG_BILLING_UNSPECIFIED: u8 = 0;
-#[allow(dead_code)]
 pub const MSG_BILLING_REQUEST: u8 = 1;
 pub const MSG_BILLING_REPLY: u8 = 2;
 
@@ -65,476 +98,227 @@ impl Message {
             billing: MsgBilling::default(),
         }
     }
-
-    /// `sys_channel_recv` 将全部随行句柄成功迁入接收方句柄表且出参写回无误后调用：
-    /// 解除本消息对随行句柄的所有权，防止 `Message::Drop` 双重释放。
-    #[inline]
-    pub fn disarm_handles(&mut self) {
-        self.nhandles = 0;
-    }
 }
 
-impl Drop for Message {
-    fn drop(&mut self) {
-        let n = self.nhandles;
-        self.nhandles = 0;
-        for i in 0..n {
-            let obj = self.handles[i].0;
-            // SAFETY: 在途句柄在 `take` 出发送方表后由本 `Message` 独占持有 1 份引用计数；
-            // 若内含另一 `ChannelEnd`，先递减其句柄级开闭计数，再归还 `ObjRef` 本体引用。
-            unsafe {
-                if let KernelObj::Channel(c) = &(*obj.as_ptr()).obj {
-                    c.release_handle();
-                }
-                ObjRef::release(obj);
-            }
-        }
-    }
-}
-
-/// 叶级中断安全短自旋锁：仅保护 `ChannelInner` 队列指针与冻标读写，临界区内绝不分配、
-/// 绝不调用 `ObjRef::release` 或调度器唤醒，从根源消除嵌套通道自锁与锁序逆转。
-struct LeafIrqLock<T> {
-    locked: AtomicBool,
-    data: UnsafeCell<T>,
-}
-
-struct LeafIrqGuard<'a, T> {
-    lock: &'a LeafIrqLock<T>,
-    saved_daif: u64,
-}
-
-// SAFETY: `LeafIrqLock` 在屏蔽本地 IRQ 条件下以 Acquire/Release 原子自旋互斥跨核访问。
-unsafe impl<T: Send> Sync for LeafIrqLock<T> {}
-// SAFETY: 同上。
-unsafe impl<T: Send> Send for LeafIrqLock<T> {}
-
-impl<T> LeafIrqLock<T> {
-    const fn new(val: T) -> Self {
-        Self {
-            locked: AtomicBool::new(false),
-            data: UnsafeCell::new(val),
-        }
-    }
-
-    #[inline]
-    fn lock(&self) -> LeafIrqGuard<'_, T> {
-        let saved_daif = berry_hal_aarch64::irq_save();
-        berry_hal_aarch64::disable_irq();
-        while self
-            .locked
-            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            while self.locked.load(Ordering::Relaxed) {
-                core::hint::spin_loop();
-            }
-        }
-        LeafIrqGuard { lock: self, saved_daif }
-    }
-}
-
-impl<T> core::ops::Deref for LeafIrqGuard<'_, T> {
-    type Target = T;
-    #[inline]
-    fn deref(&self) -> &T {
-        // SAFETY: 持锁独占访问。
-        unsafe { &*self.lock.data.get() }
-    }
-}
-
-impl<T> core::ops::DerefMut for LeafIrqGuard<'_, T> {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut T {
-        // SAFETY: 持锁独占可变访问。
-        unsafe { &mut *self.lock.data.get() }
-    }
-}
-
-impl<T> Drop for LeafIrqGuard<'_, T> {
-    #[inline]
-    fn drop(&mut self) {
-        self.lock.locked.store(false, Ordering::Release);
-        berry_hal_aarch64::irq_restore(self.saved_daif);
-    }
-}
-
-struct ChannelInner {
-    /// `queues[side]` 为第 `side` 端的收件队列（对端 `1 - side` 发送时压入 `queues[side]`）。
-    queues: [Vec<Message>; 2],
-    /// 每端 AM-1.5 冻结属主标（`retain` 配平在锁外执行）。
-    frozen_owner: [Option<NonNull<ObjRef>>; 2],
-}
-
-/// 通道对共享内核体（双端各持一份 `Arc<ChannelShared>`，零 `ObjRef` 环）。
-pub struct ChannelShared {
-    /// 每端当前在册句柄数（含句柄表槽与在途消息槽；归零即触发该端关闭）。
-    open_ends: [AtomicU32; 2],
-    /// 每端关闭动作单次门闩（保证 `release_handle` 与 `ChannelEnd::Drop` 合流幂等）。
-    closed_once: [AtomicBool; 2],
-    /// 每端弱等待键（= 对应 `ObjRef` 地址，不增加 `ObjRef.refs`；该端关闭即清 `0`）。
-    end_objs: [AtomicUsize; 2],
-    no_intent: bool,
-    inner: LeafIrqLock<ChannelInner>,
-}
-
-/// 通道单侧端点（`side` ∈ {0, 1}）。
+/// channel 端点（`channel_create` 一次建一对，两端的 `peer` 互指）。
 pub struct ChannelEnd {
-    side: usize,
+    /// 对端对象（`pair` 配对时置 `Some` 并互钉 retain；出生 = `None`——**Drop 只
+    /// 在 Some 时 release**，未配对端点可安全销毁：create 第二端入表失败的回滚
+    /// close 走 None 分支，不碰任何指针）。
+    peer: Option<NonNull<ObjRef>>,
+    /// 本端收件队列（对端 send 压这里；本端 recv 从这里弹）。
+    ///
+    /// W3-Q95（02 号机会三刀 a）：`Vec<Message>` → 定容环形
+    /// `Box<[Message; CHAN_DEPTH]>` + head/len。旧形 pop `remove(0)`/
+    /// 回滚 `insert(0)` 是队首 O(n) memmove——3b3 H2 定长内联后 Message
+    /// ≈440B，满队 recv 一次搬 ~3.1KB；环形化后三机械全 O(1) 槽步进。
+    /// **序语义逐位等价**（chanface ring 模块 Vec 对拍钉板）：pop 头出、
+    /// push 尾进、push_front 复原名。容量/READABLE 判据（W3-Q9）与序
+    /// 守卫（W3-Q49）全吃 len，消费面零改动。tail 不另存（经
+    /// `ring_tail_of(head, len)` 导出）——可漂移状态少一份。
+    queue: Box<[Message; CHAN_DEPTH]>,
+    /// 环形头槽（pop 端；`ring_ok` 不变量：恒 < DEPTH）。
+    head: usize,
+    /// 在队元素数（容量门/READABLE/序守卫的单源计数）。
+    qlen: usize,
+    /// 4-3c opt-out（五件套之 4，QNX `_NTO_CHF_FIXED_PRIORITY` 等价）：
+    /// `channel_create` options bit0——置位端 recv **不结算 intent**（固定优先级
+    /// server 逃生门）。对称建对 API 下「通道级」语义 = 两端同置、双向皆不传播。
     no_intent: bool,
-    shared: Option<Arc<ChannelShared>>,
-    /// 仅用于兼容旧式 `try_unpaired` + `pair` 两步构造的预储队列槽（配对后即腾空移入 `ChannelShared`）。
-    pre_queue: Vec<Message>,
-}
-
-#[inline]
-fn notify_channel_wake(wait_key: usize) {
-    if wait_key == 0 {
-        return;
-    }
-    let sigs = SIGNAL_PEER_CLOSED | SIGNAL_READABLE | SIGNAL_WRITABLE;
-    if !berry_hal_aarch64::kern_lock::kl_held() || berry_sched::sq_is_held() {
-        berry_sched::wake_matching(wait_key, sigs);
-    } else {
-        crate::process::defer_peer_wake(wait_key);
-    }
+    /// AM-1.5 wake-pending 冻结属主标：持有本端（接收侧）handle 的进程被
+    /// `process_suspend` 全冻时指向该 Process ObjRef（**retain 配平**——freeze
+    /// 枚举打标时 +1，thaw 清标/端点 Drop 防御面 -1）。设计意图（AM 设计
+    /// 「IPC × 冻结」Q1 裁决）：send 热路径免**反查属主**——非冻结态恒 None，
+    /// send 只加一次本位测试分支（非冻结零额外成本）；置位后 send 照常入队
+    /// （消息不丢弃），另触发 wake-pending 通知（`sys_channel_send` 尾）。
+    /// 冻进程任务全冻 ⇒ 表不可变 ⇒ 冻端点不可能先于 thaw 销毁（Drop 防御面
+    /// 仅为 retain 配平纪律）。共享端点（dup/迁移跨表）归**首冻结主**——
+    /// v1 单主形，多冻结主共享端点的次主通知面是已知保守缺口（消息仍排队，
+    /// 只是次主 token 持有者不被这一跳唤醒）。
+    frozen_owner: Option<NonNull<ObjRef>>,
 }
 
 impl ChannelEnd {
-    /// 一次性创建已配对双端点（`sys_channel_create` 首选路径）：先于入表预储双端队列容量。
-    pub fn try_pair(no_intent: bool) -> Option<(Self, Self)> {
-        let mut q0 = Vec::new();
-        let mut q1 = Vec::new();
-        q0.try_reserve_exact(CHAN_DEPTH).ok()?;
-        q1.try_reserve_exact(CHAN_DEPTH).ok()?;
-        let shared = Arc::new(ChannelShared {
-            open_ends: [AtomicU32::new(1), AtomicU32::new(1)],
-            closed_once: [AtomicBool::new(false), AtomicBool::new(false)],
-            end_objs: [AtomicUsize::new(0), AtomicUsize::new(0)],
-            no_intent,
-            inner: LeafIrqLock::new(ChannelInner {
-                queues: [q0, q1],
-                frozen_owner: [None, None],
-            }),
-        });
-        let e0 = Self {
-            side: 0,
-            no_intent,
-            shared: Some(shared.clone()),
-            pre_queue: Vec::new(),
-        };
-        let e1 = Self {
-            side: 1,
-            no_intent,
-            shared: Some(shared),
-            pre_queue: Vec::new(),
-        };
-        Some((e0, e1))
-    }
-
-    /// 为 `try_pair` 产出的双端点登记各自的 `ObjRef` 弱等待键（**不调用 `ObjRef::retain`**，零引用环）。
+    /// 建未配对端点（peer 占位 None——**必须**随即经 [`Self::pair`] 完成互钉才
+    /// 可用；唯一调用方 `sys_channel_create` 建对后立刻配对，无中间观察窗口）。
+    /// **队列预储 [`CHAN_DEPTH`] 容量**（3b3 审查 H2 try 化：send 压队列/recv
+    /// 回滚 push_front 曾在 take 之后分配——OOM abort 于迁移中途；预储后运行
+    /// 期零增长）。预储失败返 None（调用方折 -ENOMEM，先于一切入表——零回滚
+    /// 面）。`no_intent` = opt-out 标志（见字段注）。
     ///
-    /// # Safety
-    /// `a` 与 `b` 须为刚插入表的两枚 `Channel` 对象指针。
-    pub unsafe fn bind_objs(a: NonNull<ObjRef>, b: NonNull<ObjRef>) {
-        // SAFETY: 调用方保证 `a`/`b` 为有效 `Channel` `ObjRef`。
-        let end_a = unsafe { (*a.as_ptr()).obj.as_channel().expect("bind_objs: a 非 Channel") };
-        if let Some(sh) = &end_a.shared {
-            sh.end_objs[0].store(a.as_ptr() as usize, Ordering::Release);
-            sh.end_objs[1].store(b.as_ptr() as usize, Ordering::Release);
-        }
-    }
-
-    /// 兼容内核自检两步构造：创建未配对单端并预储 `CHAN_DEPTH` 容量。
+    /// W3-Q95：预储形态 = `try_box(from_fn(|_| Message::new()))`——单次
+    /// 定容分配（等价旧 `try_reserve_exact(CHAN_DEPTH)` 的预储语义，尺寸
+    /// 恒 DEPTH×sizeof(Message)；`array::from_fn` 逐槽构造绕开 Message
+    /// 非 Copy（`[expr; N]` 数组语法要 Copy）；装箱走 [`crate::heap::try_box`]
+    /// fallible 面（3b3 H2 同款——`Box::new` 分配失败 abort 违 ABI §8.0
+    /// 永不 panic，try_box 失败折 None 同旧 try 语义）。
     pub fn try_unpaired(no_intent: bool) -> Option<Self> {
-        let mut pre_queue = Vec::new();
-        pre_queue.try_reserve_exact(CHAN_DEPTH).ok()?;
-        Some(Self {
-            side: 0,
-            no_intent,
-            shared: None,
-            pre_queue,
-        })
+        let queue = crate::heap::try_box(core::array::from_fn(|_| Message::new()))?;
+        Some(Self { peer: None, queue, head: 0, qlen: 0, no_intent, frozen_owner: None })
     }
 
-    /// 兼容内核自检两步构造：将两枚未配对端点组装进同一 `Arc<ChannelShared>`（零 `ObjRef::retain`）。
-    ///
-    /// # Safety
-    /// `a` 与 `b` 须为在表且尚未配对的两枚不同 `Channel` `ObjRef`。
-    pub unsafe fn pair(a: NonNull<ObjRef>, b: NonNull<ObjRef>) {
-        debug_assert_ne!(a.as_ptr(), b.as_ptr());
-        // SAFETY: `a != b` 且均为在表 `Channel` 对象。
-        unsafe {
-            let ea = (*a.as_ptr()).obj.as_channel_mut().expect("pair: a 非 Channel");
-            let eb = (*b.as_ptr()).obj.as_channel_mut().expect("pair: b 非 Channel");
-            let q0 = core::mem::take(&mut ea.pre_queue);
-            let q1 = core::mem::take(&mut eb.pre_queue);
-            let no_intent = ea.no_intent || eb.no_intent;
-            let shared = Arc::new(ChannelShared {
-                open_ends: [AtomicU32::new(1), AtomicU32::new(1)],
-                closed_once: [AtomicBool::new(false), AtomicBool::new(false)],
-                end_objs: [
-                    AtomicUsize::new(a.as_ptr() as usize),
-                    AtomicUsize::new(b.as_ptr() as usize),
-                ],
-                no_intent,
-                inner: LeafIrqLock::new(ChannelInner {
-                    queues: [q0, q1],
-                    frozen_owner: [None, None],
-                }),
-            });
-            ea.side = 0;
-            ea.no_intent = no_intent;
-            ea.shared = Some(shared.clone());
-            eb.side = 1;
-            eb.no_intent = no_intent;
-            eb.shared = Some(shared);
-        }
-    }
-
-    /// `HandleTable::duplicate` 复制本端句柄时递增句柄级开闭计数。
-    #[inline]
-    pub fn retain_handle(&self) {
-        if let Some(sh) = &self.shared {
-            sh.open_ends[self.side].fetch_add(1, Ordering::AcqRel);
-        }
-    }
-
-    /// 关闭或销毁一枚指向本端的句柄时递减开闭计数；归零瞬间立即清空本端未读队列并唤醒对端 `PEER_CLOSED`。
-    #[inline]
-    pub fn release_handle(&self) {
-        let Some(sh) = &self.shared else {
-            return;
-        };
-        let prev = sh.open_ends[self.side].fetch_update(
-            Ordering::AcqRel,
-            Ordering::Acquire,
-            |v| Some(v.saturating_sub(1)),
-        );
-        if prev == Ok(1) {
-            self.close_side_idempotent();
-        }
-    }
-
-    /// 幂等执行本端关闭收口：清空本端未读在途消息、归还冻标引用，并向对端与本端等待者广播关闭信号。
-    pub fn close_side_idempotent(&self) {
-        let Some(sh) = &self.shared else {
-            return;
-        };
-        if sh.closed_once[self.side].swap(true, Ordering::AcqRel) {
-            return;
-        }
-        sh.open_ends[self.side].store(0, Ordering::Release);
-        let self_key = sh.end_objs[self.side].swap(0, Ordering::AcqRel);
-        let peer_key = sh.end_objs[1 - self.side].load(Ordering::Acquire);
-        let (unread, frozen) = {
-            let mut g = sh.inner.lock();
-            (
-                core::mem::take(&mut g.queues[self.side]),
-                g.frozen_owner[self.side].take(),
-            )
-        };
-        // 锁外析构全部未读消息（触发 Message::Drop 释放所有在途 VMO/Channel 等句柄）。
-        drop(unread);
-        if let Some(owner) = frozen {
-            // SAFETY: 配平 `mark_frozen` 的 `retain`。
-            unsafe { ObjRef::release(owner) };
-        }
-        notify_channel_wake(peer_key);
-        notify_channel_wake(self_key);
-    }
-
-    #[inline]
-    pub fn no_intent(&self) -> bool {
-        self.shared.as_ref().map_or(self.no_intent, |s| s.no_intent)
-    }
-
-    #[inline]
-    pub fn is_open(&self) -> bool {
-        self.shared.as_ref().map_or(false, |s| {
-            !s.closed_once[self.side].load(Ordering::Acquire)
-                && s.open_ends[self.side].load(Ordering::Acquire) > 0
-        })
-    }
-
-    #[inline]
-    pub fn peer_is_open(&self) -> bool {
-        let peer = 1 - self.side;
-        self.shared.as_ref().map_or(false, |s| {
-            !s.closed_once[peer].load(Ordering::Acquire)
-                && s.open_ends[peer].load(Ordering::Acquire) > 0
-        })
-    }
-
-    /// 对端在表 `ObjRef` 弱等待键（对端已关或未配对返 `None`；供 `wake_matching` 与 `pi::donor_edge` 使用）。
-    #[inline]
-    pub fn peer_wait_key(&self) -> Option<usize> {
-        if !self.peer_is_open() {
-            return None;
-        }
-        let k = self.shared.as_ref()?.end_objs[1 - self.side].load(Ordering::Acquire);
-        if k == 0 { None } else { Some(k) }
-    }
-
-    /// AM-1.5：查询本端冻结属主标。
+    /// AM-1.5 冻结属主标（send 热路径唯一新增分支的测试位；`None` = 未冻结）。
     pub fn frozen_owner(&self) -> Option<NonNull<ObjRef>> {
-        let sh = self.shared.as_ref()?;
-        sh.inner.lock().frozen_owner[self.side]
+        self.frozen_owner
     }
 
-    /// AM-1.5：打本端冻结属主标（幂等；锁外 `retain`）。
+    /// AM-1.5：打冻结属主标。**幂等**——已标（他主或同主）返 `false` 不重复
+    /// retain（同表 duplicate 别名 / 跨进程共享端点归首冻结主，见字段注）。
+    /// 判据单源 = [`berry_chanface::mark_frozen_ok`]（W3-Q49——owner 以
+    /// 指针值投影，幂等/异主拒同臂钉板）。retain 配平点：[`Self::clear_frozen`]
+    /// 与本类型 Drop 防御面。
     pub fn mark_frozen(&mut self, owner: NonNull<ObjRef>) -> bool {
-        let Some(sh) = &self.shared else {
+        if !mark_frozen_ok(self.frozen_owner.map(|o| o.as_ptr() as u64)) {
             return false;
-        };
-        {
-            let mut g = sh.inner.lock();
-            if !mark_frozen_ok(g.frozen_owner[self.side].map(|o| o.as_ptr() as u64)) {
-                return false;
-            }
-            g.frozen_owner[self.side] = Some(owner);
         }
-        // SAFETY: 调用方持有在表存活的 `Process` `ObjRef`。
+        self.frozen_owner = Some(owner);
+        // SAFETY: owner = 调用方（freeze 枚举）持有的在表 Process ObjRef，
+        // 对象活；单核 IRQ 屏蔽串行。retain 本身是安全方法。
         unsafe { (*owner.as_ptr()).retain() };
         true
     }
 
-    /// AM-1.5：清本端冻结属主标（锁外 `release` 配平）。
+    /// AM-1.5：清由 `owner` 打的冻标（属主不符/未标返 `false` 不动——跨主
+    /// 安全）。真清时 release 配平 mark 的 retain。判据单源 =
+    /// [`berry_chanface::clear_frozen_ok`]（W3-Q49——属主精确匹配钉板）。
+    /// **调用方契约**：枚举清标场景（thaw 走查全表）须保证 `owner` 在整轮
+    /// 枚举期间存活（token Drop / suspend 回滚序此刻必持 ≥1 引用——release
+    /// 只退 mark 份额，归零销毁不落在枚举中途）。
     pub fn clear_frozen(&mut self, owner: NonNull<ObjRef>) -> bool {
-        let Some(sh) = &self.shared else {
+        if !clear_frozen_ok(self.frozen_owner.map(|o| o.as_ptr() as u64), owner.as_ptr() as u64) {
             return false;
-        };
-        {
-            let mut g = sh.inner.lock();
-            if !clear_frozen_ok(
-                g.frozen_owner[self.side].map(|o| o.as_ptr() as u64),
-                owner.as_ptr() as u64,
-            ) {
-                return false;
-            }
-            g.frozen_owner[self.side] = None;
         }
-        // SAFETY: 配平 `mark_frozen` 的 `retain`。
+        self.frozen_owner = None;
+        // SAFETY: 配平 mark_frozen 的 retain；此后本端点不再触 owner。
         unsafe { ObjRef::release(owner) };
         true
     }
 
-    /// 本端是否有未读消息。
+    /// opt-out 标志（recv 结算侧查询）。
+    pub fn no_intent(&self) -> bool {
+        self.no_intent
+    }
+
+    /// 把两个已入表的端点互指互钉（`channel_create` 的收尾步骤）。
+    ///
+    /// # Safety
+    /// `a`/`b` 须为**在表**且类型门控为 Channel 的两个端点对象（get_raw 过）；
+    /// 本调用即完成互钉 retain，此后两端方可使用。
+    pub unsafe fn pair(a: NonNull<ObjRef>, b: NonNull<ObjRef>) {
+        // SAFETY: 调用方契约：两指针各指在表的 ChannelEnd；互钉各 +1。
+        // unwrap 只在内核自违反契约时可达（用户不可达——get_raw 类型门控在前）。
+        unsafe {
+            (*a.as_ptr()).obj.as_channel_mut().unwrap().peer = Some(b);
+            (*b.as_ptr()).obj.as_channel_mut().unwrap().peer = Some(a);
+            (*a.as_ptr()).retain();
+            (*b.as_ptr()).retain();
+        }
+    }
+
+    /// 对端对象指针（send 的目的端；`None` = 未配对——v1 唯一调用方 create 即
+    /// 配对，运行期不可达的防御面）。
+    pub fn peer(&self) -> Option<NonNull<ObjRef>> {
+        self.peer
+    }
+
+    /// 队列是否已满（send 前置检查 → -EBUSY）。
+    pub fn queue_full(&self) -> bool {
+        queue_full_of(self.qlen)
+    }
+
+    /// 队列是否有消息（wait 面 READABLE 信号状态——4-2 内核派生位）。
     pub fn has_message(&self) -> bool {
-        let Some(sh) = &self.shared else {
-            return false;
-        };
-        queue_readable(sh.inner.lock().queues[self.side].len())
+        queue_readable(self.qlen)
     }
 
-    /// 计算本端当前派生信号三元组 `(readable, writable, peer_closed)`。
-    pub fn wait_signals(&self) -> (bool, bool, bool) {
-        let Some(sh) = &self.shared else {
-            return (false, false, true);
-        };
-        let peer = 1 - self.side;
-        let peer_open = self.peer_is_open();
-        let g = sh.inner.lock();
-        wait_signal_peer_state(g.queues[self.side].len(), g.queues[peer].len(), peer_open)
+    /// 在队元素数（W3-Q95：环形计数单源——判据/守卫/遍历全吃它）。
+    pub fn qlen(&self) -> usize {
+        self.qlen
     }
 
-    /// `sys_channel_send` 前置快照：校验对端存活与队列未满，返回 `(peer_wait_key, peer_empty, peer_frozen)`。
-    pub fn send_precheck(&self) -> Result<(usize, bool, Option<NonNull<ObjRef>>), i32> {
-        let Some(sh) = &self.shared else {
-            return Err(ERR_BAD_STATE);
-        };
-        if !self.peer_is_open() {
-            return Err(ERR_BAD_STATE);
-        }
-        let peer = 1 - self.side;
-        let peer_key = sh.end_objs[peer].load(Ordering::Acquire);
-        if peer_key == 0 {
-            return Err(ERR_BAD_STATE);
-        }
-        let g = sh.inner.lock();
-        if queue_full_of(g.queues[peer].len()) {
-            return Err(ERR_BUSY);
-        }
-        Ok((peer_key, g.queues[peer].is_empty(), g.frozen_owner[peer]))
+    /// 压一条消息进**本端**队列（send 侧实际调的是对端的这个方法）。
+    /// 守卫判据单源 = [`berry_chanface::push_ok`]（W3-Q49——容量不变量
+    /// 钉板；W3-Q95 环形化后同判据执法：满拒前置 `queue_full` 已挡，
+    /// 此处为不变量防御面）。机械 = tail 槽写入 + len +1（O(1)——旧
+    /// Vec push 同为 O(1)，本刀收益面在 pop/push_front 两条）。
+    pub fn push(&mut self, msg: Message) {
+        debug_assert!(push_ok(self.qlen) && ring_ok(self.head, self.qlen));
+        let tail = ring_tail_of(self.head, self.qlen);
+        self.queue[tail] = msg;
+        self.qlen += 1;
     }
 
-    /// 将消息压入对端队列；若并发窗口内对端已关或队列已满，原样退回 `Err((msg, errno))` 供调用方无损回滚。
-    pub fn push_to_peer(&self, msg: Message) -> Result<(), (Message, i32)> {
-        let Some(sh) = &self.shared else {
-            return Err((msg, ERR_BAD_STATE));
-        };
-        if !self.peer_is_open() {
-            return Err((msg, ERR_BAD_STATE));
+    /// 窥视队首消息（recv 先看后取：所有失败路径不破坏消息）。
+    /// W3-Q95：`Vec::first()` → 环形槽寻址（`ring_slot_of(head, 0)`）。
+    pub fn front(&self) -> Option<&Message> {
+        if pop_ok(self.qlen) {
+            Some(&self.queue[ring_slot_of(self.head, 0)])
+        } else {
+            None
         }
-        let peer = 1 - self.side;
-        let mut g = sh.inner.lock();
-        if !self.peer_is_open() {
-            return Err((msg, ERR_BAD_STATE));
-        }
-        if queue_full_of(g.queues[peer].len()) {
-            return Err((msg, ERR_BUSY));
-        }
-        debug_assert!(push_ok(g.queues[peer].len()));
-        g.queues[peer].push(msg);
-        Ok(())
     }
 
-    /// `sys_channel_recv` 弹出本端队首消息：若本端队列非空则优先返回消息（允许对端关闭后排空残余消息）；
-    /// 若队列已空且对端已关闭则返回 `Err(ERR_BAD_STATE)`，否则返回 `Err(ERR_AGAIN)`。
-    pub fn pop_or_peer_state(&self) -> Result<Message, i32> {
-        let Some(sh) = &self.shared else {
-            return Err(ERR_BAD_STATE);
-        };
-        let mut g = sh.inner.lock();
-        if !g.queues[self.side].is_empty() {
-            debug_assert!(pop_ok(g.queues[self.side].len()));
-            return Ok(g.queues[self.side].remove(0));
-        }
-        if !self.peer_is_open() {
-            return Err(ERR_BAD_STATE);
-        }
-        Err(ERR_AGAIN)
+    /// 弹出队首（recv 全部成功路径的收尾；令牌已被调用方收割）。
+    /// 守卫判据单源 = [`berry_chanface::pop_ok`]（W3-Q49——空拒律钉板；
+    /// 调用方契约已窥视非空）。W3-Q95：`Vec::remove(0)`（O(n) memmove，
+    /// 满队 ~3.1KB）→ 队首槽读出 + 置空 + head 步进（O(1) 槽步进——
+    /// 02 号机会三刀 a 的主收益点）；槽内置空防旧令牌 alias。
+    pub fn pop(&mut self) -> Message {
+        debug_assert!(pop_ok(self.qlen) && ring_ok(self.head, self.qlen));
+        let slot = ring_slot_of(self.head, 0);
+        let msg = core::mem::replace(&mut self.queue[slot], Message::new());
+        self.head = ring_next_head(self.head);
+        self.qlen -= 1;
+        msg
     }
 
-    /// 内核自检专用：向本端收件队列直接压入一条消息。
-    pub fn push(&self, msg: Message) {
-        let Some(sh) = &self.shared else {
-            return;
-        };
-        if !self.is_open() {
-            return;
-        }
-        let mut g = sh.inner.lock();
-        if !self.is_open() || queue_full_of(g.queues[self.side].len()) {
-            drop(g);
-            drop(msg);
-            return;
-        }
-        debug_assert!(push_ok(g.queues[self.side].len()));
-        g.queues[self.side].push(msg);
+    /// 消息压回**队首**（recv 失败回滚专用——消费路径的任一中途失败须保序
+    /// 复原，FIFO 语义下不能从队尾补回）。守卫判据单源 =
+    /// [`berry_chanface::push_front_ok`]（W3-Q49——回滚容量不变量钉板：刚
+    /// 弹出一条必腾一空位，压回不越界）。W3-Q95：`Vec::insert(0)`
+    /// （O(n) memmove）→ head 环形退一 + 槽写入（O(1)——回滚路径的
+    /// 同款收益）。
+    pub fn push_front(&mut self, msg: Message) {
+        debug_assert!(push_front_ok(self.qlen) && ring_ok(self.head, self.qlen));
+        self.head = (self.head + CHAN_DEPTH - 1) % CHAN_DEPTH; // 环形退一（head>0 保）
+        self.queue[ring_slot_of(self.head, 0)] = msg;
+        self.qlen += 1;
     }
 
-    /// `recv_rollback` 专用：将未完成拷出的消息保序压回本端队首；若本端已关闭则在锁外安全析构消息。
-    pub fn push_front(&self, msg: Message) {
-        let Some(sh) = &self.shared else {
-            return;
-        };
-        if !self.is_open() {
-            return;
-        }
-        let mut g = sh.inner.lock();
-        if !self.is_open() {
-            drop(g);
-            drop(msg);
-            return;
-        }
-        debug_assert!(push_front_ok(g.queues[self.side].len()));
-        g.queues[self.side].insert(0, msg);
+    /// W3-Q98（02 号机会三刀 b）：**预占尾槽**——满检过后的 send 侧专用面。
+    /// 返回尾槽的可变借用，调用方在其上直拷构造（user→槽位 bytes 单拷贝
+    /// 直达，bbuf 中转消）；失败路径不 commit 即自然回滚（槽内容丢弃、
+    /// qlen 不动 = 队列零变化——与旧形「bbuf 局部变量被丢」逐位等价）。
+    /// 守卫判据/槽寻址单源 = [`berry_chanface`] ring 模块（W3-Q95 同款）。
+    /// 调用方契约：成功路径须接 [`Self::push_tail_commit`]（len +1 收口）；
+    /// 预占与 commit 之间不得重入本端点任何队列方法（单核 IRQ 屏蔽窗内
+    /// 结构性成立——sys_channel_send 的 PreemptSpan 全程在持）。
+    pub fn tail_slot(&mut self) -> &mut Message {
+        debug_assert!(push_ok(self.qlen) && ring_ok(self.head, self.qlen));
+        &mut self.queue[ring_tail_of(self.head, self.qlen)]
+    }
+
+    /// W3-Q98：预占尾槽的**收尾提交**——仅 len +1（槽内容已由调用方写入）。
+    /// 守卫 = [`berry_chanface::push_ok`]（不变量防御面——满检前置已挡）。
+    pub fn push_tail_commit(&mut self) {
+        debug_assert!(push_ok(self.qlen) && ring_ok(self.head, self.qlen));
+        self.qlen += 1;
     }
 }
 
 impl Drop for ChannelEnd {
     fn drop(&mut self) {
-        self.close_side_idempotent();
+        // 仅配对端 release 互钉（成环 → 两端 handle 全关也泄漏——安全方向，
+        // 模块注政策；未配对 None 端点无钉可放，直接走 Vec drop）。
+        // SAFETY: pair 时 retain 过；单核顺序（对象仅在 IRQ 屏蔽路径销毁）。
+        if let Some(peer) = self.peer {
+            unsafe { ObjRef::release(peer) };
+        }
+        // AM-1.5 冻结属主标配平：正常序 thaw 清标先于端点销毁（冻进程任务
+        // 全冻 ⇒ 表不可变 ⇒ 此分支不可达）；万一到达（防御面）也保 retain
+        // 配平不泄漏。SAFETY: freeze 枚举打标时 retain 过；单核顺序同上。
+        if let Some(owner) = self.frozen_owner {
+            unsafe { ObjRef::release(owner) };
+        }
     }
 }

@@ -55,10 +55,10 @@ use crate::event::Event;
 use crate::handle::{
     HandleTable, KernelObj, ObjRef, ObjType, Rights, ERR_ACCESS_DENIED, ERR_AGAIN, ERR_BAD_HANDLE,
     ERR_BUSY, ERR_BAD_STATE, ERR_FAULT, ERR_INVALID_ARG, ERR_NOT_FOUND, ERR_NOT_SUPPORTED,
-    ERR_NO_MEMORY, ERR_OUT_OF_RANGE, ERR_TIMEDOUT, RIGHT_DUPLICATE, RIGHT_EXECUTE, RIGHT_MANAGE,
-    RIGHT_MAP, RIGHT_TRANSFER, RIGHT_INSPECT,
-    RIGHT_READ, RIGHT_RECV, RIGHT_SEND, RIGHT_SIGNAL, RIGHT_WRITE, SIGNAL_PEER_CLOSED,
-    SIGNAL_READABLE, SIGNAL_TERMINATED, SIGNAL_WRITABLE,
+    ERR_NO_MEMORY, ERR_OUT_OF_RANGE, ERR_TIMEDOUT, RIGHT_DUPLICATE, RIGHT_MANAGE, RIGHT_MAP,
+    RIGHT_TRANSFER, RIGHT_INSPECT,
+    RIGHT_READ, RIGHT_RECV, RIGHT_SEND, RIGHT_SIGNAL, RIGHT_WRITE, SIGNAL_READABLE,
+    SIGNAL_TERMINATED, SIGNAL_WRITABLE,
 };
 use crate::process::ProcState;
 use crate::vmar::{Perm, Vmar, VmarError};
@@ -228,16 +228,13 @@ fn access_ok_window(
     if len == 0 {
         return true;
     }
-    let Some(ptr_end) = ptr.checked_add(len) else {
-        return false;
-    };
     // W3-Q70：同页跳过律单源（berry-aokface::window_should_walk——
     // SAME_PAGE_NONE 哨兵首块必查；缓存只记最近页）。页序同源 span_pages。
     for va in berry_aokface::span_pages(ptr, len) {
         if berry_aokface::window_should_walk(va, &mut *last_page) {
             // 本块在本页内的字节段 [max(va, ptr), min(页尾, 块尾))。
             let start = va.max(ptr);
-            let end = va.saturating_add(PAGE_SIZE as u64).min(ptr_end);
+            let end = (va + PAGE_SIZE as u64).min(ptr + len);
             if !access_ok(caller_el1, start, end - start, write) {
                 return false;
             }
@@ -823,16 +820,16 @@ extern "C" fn sys_telemetry_open(tf: &mut TrapFrame) -> i64 {
     }
 }
 
-/// MONOTONIC 纳秒 → CNTVCT 周期（128 位宽中间乘除并饱和夹紧至 `u64::MAX`，
-/// 防止 `deadline_ns = u64::MAX` 在 >1GHz 计数器硬件上触发 `u64` 乘法溢出 Panic）。
+/// MONOTONIC 纳秒 → CNTVCT 周期（先商后余防中间溢出，与 [`sys_clock_read`]
+/// 对称——`deadline_ns × 62.5MHz` 直乘在 ~29 年处溢 u64，拆两项后安全）。
 /// `freq==0` → `None`（真机异常，调用方折 -ENOTSUP）。
 fn ns_to_vct(ns: u64) -> Option<u64> {
+    // SAFETY: 只读 CNTFRQ（timer::init 后恒有效）。
     let freq = berry_hal_aarch64::timer::cntfrq();
     if freq == 0 {
         return None;
     }
-    let ticks = (ns as u128 * freq as u128) / 1_000_000_000u128;
-    Some(ticks.min(u64::MAX as u128) as u64)
+    Some((ns / 1_000_000_000) * freq + ((ns % 1_000_000_000) * freq) / 1_000_000_000)
 }
 
 /// CNTVCT → MONOTONIC 纳秒（4-3c intent 两道时间帽 + S5-a 相对 deadline 的
@@ -1095,16 +1092,10 @@ extern "C" fn sys_vmo_read(tf: &mut TrapFrame) -> i64 {
     let mut last_page = SAME_PAGE_NONE;
     while pos < len {
         let n = core::cmp::min(COPY_CHUNK, len - pos);
-        let Some(voff) = off.checked_add(pos) else {
-            return ERR_OUT_OF_RANGE as i64;
-        };
-        let Some(ubuf) = buf.checked_add(pos as u64) else {
-            return ERR_FAULT as i64;
-        };
-        if let Err(e) = vmo.read(voff, &mut chunk[..n]) {
+        if let Err(e) = vmo.read(off + pos, &mut chunk[..n]) {
             return voe(e) as i64;
         }
-        if let Err(e) = copy_to_user_locked(el1, ubuf, &chunk[..n], &mut last_page) {
+        if let Err(e) = copy_to_user_locked(el1, buf + pos as u64, &chunk[..n], &mut last_page) {
             return e as i64;
         }
         pos += n;
@@ -1145,16 +1136,10 @@ extern "C" fn sys_vmo_write(tf: &mut TrapFrame) -> i64 {
     let mut last_page = SAME_PAGE_NONE;
     while pos < len {
         let n = core::cmp::min(COPY_CHUNK, len - pos);
-        let Some(ubuf) = buf.checked_add(pos as u64) else {
-            return ERR_FAULT as i64;
-        };
-        let Some(voff) = off.checked_add(pos) else {
-            return ERR_OUT_OF_RANGE as i64;
-        };
-        if let Err(e) = copy_from_user_locked(el1, ubuf, &mut chunk[..n], &mut last_page) {
+        if let Err(e) = copy_from_user_locked(el1, buf + pos as u64, &mut chunk[..n], &mut last_page) {
             return e as i64;
         }
-        if let Err(e) = vmo.write(voff, &chunk[..n]) {
+        if let Err(e) = vmo.write(off + pos, &chunk[..n]) {
             return voe(e) as i64;
         }
         pos += n;
@@ -1255,65 +1240,59 @@ extern "C" fn sys_vmar_map(tf: &mut TrapFrame) -> i64 {
         tf.regs[5] as usize,
         tf.regs[6] as Rights,
     );
-    if rights & !(RIGHT_READ | RIGHT_WRITE | RIGHT_EXECUTE) != 0 {
+    if rights & !(RIGHT_READ | RIGHT_WRITE) != 0 {
         return ERR_INVALID_ARG as i64;
     }
-    // F0-2 严格 W^X 铁律：严禁同时请求 WRITE 与 EXECUTE。
-    if (rights & (RIGHT_WRITE | RIGHT_EXECUTE)) == (RIGHT_WRITE | RIGHT_EXECUTE) {
-        return ERR_INVALID_ARG as i64;
-    }
-    let need_vmo_rights = if rights == RIGHT_READ {
-        RIGHT_MAP | RIGHT_READ
-    } else if rights == (RIGHT_READ | RIGHT_EXECUTE) {
-        RIGHT_MAP | RIGHT_READ | RIGHT_EXECUTE
-    } else if rights == (RIGHT_READ | RIGHT_WRITE) {
-        RIGHT_MAP | RIGHT_READ | RIGHT_WRITE
-    } else {
+    if rights != RIGHT_READ | RIGHT_WRITE {
         return ERR_NOT_SUPPORTED as i64;
-    };
+    }
     let el1 = caller_is_el1(tf);
     let req = match copy_in_u64(el1, vaddrp) {
         Ok(v) => v,
         Err(e) => return e as i64,
     };
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
+    // 双对象同借：两 get_raw 类型门控互异 → 必不同对象 → &mut 无别名（论证
+    // 见 HandleTable::get_raw 文档）。
     let vr = match t.get_raw(vh, ObjType::Vmar, RIGHT_MAP) {
         Ok((o, _)) => o,
         Err(e) => return e as i64,
     };
-    let vo = match t.get_raw(oh, ObjType::Vmo, need_vmo_rights) {
+    // VMO 门控逐位要求（3b3 M6）：映射产出可读 UserRw 叶 → READ 必须在句柄上，
+    // 否则 duplicate 合法收紧掉 READ 后仍能经映射读（READ 权逃逸）。v1 恒
+    // READ|WRITE 映射，故等价 MAP|READ|WRITE；UserRo 映射留 v2 再按权限拆。
+    let vo = match t.get_raw(oh, ObjType::Vmo, RIGHT_MAP | RIGHT_READ | RIGHT_WRITE) {
         Ok((o, _)) => o,
         Err(e) => return e as i64,
     };
-    // SAFETY: 指针经 get_raw 门控；类型互异保证对象互异；KL 窗串行。
+    // SAFETY: 指针经 get_raw 门控；类型互异保证对象互异；单核 IRQ 屏蔽。
     let pair = unsafe {
         ((*vr.as_ptr()).obj.as_vmar_mut(), (*vo.as_ptr()).obj.as_vmo_mut())
     };
     let (Some(vmar), Some(vmo)) = pair else {
-        return ERR_BAD_HANDLE as i64;
+        return ERR_BAD_HANDLE as i64; // 类型门控后不可达；防御面
     };
-    if vmo.is_mmio() && (rights & RIGHT_EXECUTE) != 0 {
-        return ERR_INVALID_ARG as i64;
-    }
-    let perm = if rights == RIGHT_READ {
-        Perm::UserRo
-    } else if rights == (RIGHT_READ | RIGHT_EXECUTE) {
-        Perm::UserRx
-    } else if vmo.is_mmio() {
-        Perm::UserRw
-    } else {
-        Perm::UserRwxCompat
-    };
+    // G4-2（§5-① 裁决）：demand VMO 对象级分流——登记 Demand 区间不填叶
+    //（首触缺页走 EL0 探针 → 0x21 供给）；eager VMO 原路径逐位不变（全
+    // 提交执法点在 `Vmar::map` 内）。perm 同为 UserRw（供给叶取区间登记权）。
+    // demand 分支另登记 asid 反查表（§5-④——探针第一段 TTBR0 现读 asid →
+    // root Vmar 的唯一来源）；**先登记后映射**：登记失败零副作用早返。映射
+    // 失败留幂等残项（同 (asid, root) 重试 map 复占同槽）——G4-2 修批后
+    // 语义改口（MECH-3 翻案）：残项**不再是终身占位**（`Vmar::Drop` 注销面
+    // 已落，槽随对象销毁可回收），stale 残项最坏 = 探针 stage-2 region 查
+    // miss → 原杀链。
     let r = if vmo.is_demand() {
-        match crate::vmar::register_demand_aspace(vmar.asid(), vmar.aspace_ptr()) {
-            Ok(()) => vmar.map_demand_obj(vo, vmo, req as usize, voff, len, perm),
+        match crate::vmar::register_demand_root(vmar.asid(), vmar as *mut Vmar) {
+            Ok(()) => vmar.map_demand(vmo, req as usize, voff, len, Perm::UserRw),
+            // 满表 = 供给面不可达（静默丢 = demand 页死循环杀链）→ 拒映射；
+            // 异 root 同 asid = 装配面不变量破（防御拒）。
             Err(crate::vmar::DemandRootError::Full) => return ERR_NO_MEMORY as i64,
             Err(crate::vmar::DemandRootError::OwnerConflict) => {
                 return ERR_NOT_SUPPORTED as i64
             }
         }
     } else {
-        vmar.map_obj_global(vo, vmo, req as usize, voff, len, perm)
+        vmar.map(crate::mm::frames(), vmo, req as usize, voff, len, Perm::UserRw)
     };
     match r {
         Ok(va) => match copy_out_u64(el1, vaddrp, va as u64) {
@@ -1691,7 +1670,7 @@ fn pager_supply_one(
     far: usize,
     asid: u16,
 ) -> i64 {
-    let Some(root) = crate::vmar::demand_aspace(asid) else {
+    let Some(root) = crate::vmar::demand_root(asid) else {
         return ERR_INVALID_ARG as i64;
     };
     // SAFETY: root 指针 = 本 KL 窗内 fresh 查得（本函数 KL 在身——SVC 入口
@@ -1881,11 +1860,6 @@ extern "C" fn sys_process_create(tf: &mut TrapFrame) -> i64 {
     }
     if let Err(e) = copy_out_u32(el1, v_out, 0) {
         return e as i64;
-    }
-    // F1-2：若后台双核满载使待异步回收的死进程积压在 HT_DRAINQ 触顶 PROCESS_MAX，
-    // 在获取调用方句柄表可变借用之前内联助推排水，根除忙核假性 -ENOMEM。
-    if crate::process::process_live() >= crate::process::PROCESS_MAX {
-        crate::process::ht_drain_assist_below(crate::process::PROCESS_MAX);
     }
     let Ok(t) = caller_table(tf) else { return ERR_BAD_HANDLE as i64 };
     // P3-3：per-parent spawn 配额——防进程炸弹（全局 64 帽前置的单父分账：
@@ -2352,35 +2326,26 @@ unsafe extern "C" fn task_exit_hook(pinned: usize, thread_key: usize, code: i32)
         let Some(proc) = r.obj.as_process_mut() else { return }; // 防御面（不可达）
         proc.live_threads -= 1;
         if proc.live_threads == 0 {
-            // F1-2 两阶段退出阶段一：在唤醒任何 SIGNAL_TERMINATED 等待者之前，立即切离
-            // 当前核 TTBR0、全量拆解子进程地址空间（清叶 + untrack_map/demand + release_map
-            // + 单次跨核刷 TLB + 100% 归还 L3/L2/L1 页表物理帧与 ASID），确保父进程醒来后无须
-            // 手工逐窗 vmar_unmap 即可直接关闭全部共享/栈 VMO 句柄而绝不撞 -EBUSY。
-            proc.aspace.teardown();
-            // F1-3：在全谱锁窗内同步关闭全部 Channel 与 SuspendToken 槽，确保客户端在 <1ms 内立即收获 SIGNAL_PEER_CLOSED。
-            proc.ht.drain_ipc_on_exit();
+            // 末线程：Process 收口（首因保码 + 唤醒——两步同步保留：join/
+            // TERMINATED 等待者不因异步化延迟醒来）。
             if proc.mark_exited() {
                 proc.exit_code = code;
+                // 唤醒等本 Process TERMINATED 的睡眠者（匹配键 = ObjRef 地址，
+                // 同 Event/Channel 面；SLEEPQ 钩子自动触发 PI 重推）。
                 berry_sched::wake_matching(pinned, SIGNAL_TERMINATED);
             }
-            // 阶段二：句柄表排空与 Process 钉住释放移交 HT_DRAINQ（满队或创建触顶时内联完成）。
+            // P2-2 退出异步化：drain 不在切换窗内做——运行钉住引用移交
+            // HT_DRAINQ（O(1)），O(表) drain + release 由 REAP 排水点异步
+            // 收口（`process.rs` HT_DRAINQ 块；满队同步回退 = 旧路径原样）。
+            // 安全序不变：drain 先于 Process Drop（队列持引用）；唤醒已在
+            // 上方同步完成。
+            // SAFETY: pinned 引用所有权移交（flush 侧 drain 后 release 成
+            // 对）；此后不再触 obj。
             crate::process::defer_ht_drain(NonNull::new_unchecked(obj));
         } else {
             // SAFETY: 与 process_start 的 retain 成对；此后不再触 obj。
             ObjRef::release(NonNull::new_unchecked(obj));
         }
-    }
-}
-
-/// ktest 专用：驱动真实 `task_exit_hook` 末线程退场路径（阶段一同步 `teardown` + 阶段二入队 `HT_DRAINQ`）。
-pub(crate) unsafe fn ktest_simulate_last_thread_exit(pref: NonNull<ObjRef>, code: i32) {
-    unsafe {
-        (*pref.as_ptr()).retain();
-        if let Some(proc) = (*pref.as_ptr()).obj.as_process_mut() {
-            proc.started = true;
-            proc.live_threads = 1;
-        }
-        task_exit_hook(pref.as_ptr() as usize, 0, code);
     }
 }
 
@@ -2523,11 +2488,7 @@ extern "C" fn sys_cbox_drain(tf: &mut TrapFrame) -> i64 {
             err = ERR_NO_MEMORY;
             return;
         }
-        let Some(dst) = buf.checked_add(off as u64) else {
-            err = ERR_FAULT;
-            return;
-        };
-        match copy_to_user(el1, dst, s) {
+        match copy_to_user(el1, buf + off as u64, s) {
             Ok(()) => off += s.len(),
             Err(e) => err = e,
         }
@@ -2623,10 +2584,11 @@ extern "C" fn sys_process_terminate(tf: &mut TrapFrame) -> i64 {
             }
             // None + started = 不可达防御面（任务必在场）——落未 start 收口向。
         }
-        // 未 start（或上述防御面）：两阶段拆解地址空间并排空句柄表。
-        p.aspace.teardown();
+        // 未 start（或上述防御面）：Process 侧收口，无 release（无运行钉住）。
         if p.mark_exited() {
             p.exit_code = code;
+            // 唤醒等本 Process TERMINATED 的睡眠者（ktest 期 SLEEPQ 恒空——
+            // wake_matching 空队安全返回；SLEEPQ 钩子自动触发 PI 重推）。
             berry_sched::wake_matching(obj.as_ptr() as usize, SIGNAL_TERMINATED);
         }
         p.ht.drain();
@@ -3559,7 +3521,9 @@ extern "C" fn sys_channel_create(tf: &mut TrapFrame) -> i64 {
     let rights = RIGHT_SEND | RIGHT_RECV | RIGHT_DUPLICATE | RIGHT_TRANSFER;
     // 端点装配 try 化（3b3 H2）：队列预储 CHAN_DEPTH × Message ≈ 2.7KB/端，
     // 失败先于一切入表——零回滚面，折 -ENOMEM。
-    let Some((end0, end1)) = ChannelEnd::try_pair(no_intent) else {
+    let (Some(end0), Some(end1)) =
+        (ChannelEnd::try_unpaired(no_intent), ChannelEnd::try_unpaired(no_intent))
+    else {
         return ERR_NO_MEMORY as i64;
     };
     let h0 = match t.insert(KernelObj::Channel(end0), rights) {
@@ -3574,8 +3538,8 @@ extern "C" fn sys_channel_create(tf: &mut TrapFrame) -> i64 {
             );
             match (p0, p1) {
                 (Some(a), Some(b)) => {
-                    // SAFETY: 两指针刚 get_raw 过（在表、类型 Channel）；零 ObjRef::retain 环。
-                    unsafe { ChannelEnd::bind_objs(a, b) };
+                    // SAFETY: 两指针刚 get_raw 过（在表、类型 Channel）。
+                    unsafe { ChannelEnd::pair(a, b) };
                     let r0 = copy_out_u32(el1, out0, h0);
                     let r1 = copy_out_u32(el1, out1, h1);
                     match (r0, r1) {
@@ -3583,10 +3547,12 @@ extern "C" fn sys_channel_create(tf: &mut TrapFrame) -> i64 {
                         (Err(e), _) | (_, Err(e)) => e as i64, // 两端已建——调用方重试态自理
                     }
                 }
-                _ => ERR_BAD_HANDLE as i64,
+                _ => ERR_BAD_HANDLE as i64, // 刚插入即取失败 = 不可达防御面；两端泄漏（安全向）
             }
         }
         Err(e) => {
+            // 第二端入表失败（表满/gen 尽——真实可达，敌意/失控进程可自刷本表）：
+            // 回滚第一端——未配对端点 Drop 走 None 分支不碰任何指针（channel.rs），安全。
             let _ = t.close(h0);
             e as i64
         }
@@ -3684,14 +3650,23 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
     // SAFETY: get_raw 已门控；对端由互钉保活（本端活 ⇒ 对端对象必在堆）；
     // 单核禁切无插队（g3-1c-2 段守卫；双核结构锁窗）。
     let _span = PreemptSpan::new();
-    let (peer_key, peer_empty, peer_frozen) = unsafe {
-        let Some(end) = (*self_ptr.as_ptr()).obj.as_channel() else {
+    let (peer_ptr, peer_empty, peer_frozen) = unsafe {
+        let Some(end) = (*self_ptr.as_ptr()).obj.as_channel_mut() else {
             return ERR_BAD_HANDLE as i64;
         };
-        match end.send_precheck() {
-            Ok(v) => v,
-            Err(e) => return e as i64,
+        let Some(peer) = end.peer() else {
+            return ERR_BAD_STATE as i64; // 未配对（v1 不可达——create 即配对）
+        };
+        let Some(peer_end) = (*peer.as_ptr()).obj.as_channel_mut() else {
+            return ERR_BAD_HANDLE as i64;
+        };
+        if peer_end.queue_full() {
+            return ERR_BUSY as i64; // 非阻塞：满即返（阻塞等空位 = wait_one WRITABLE，4-2）
         }
+        // AM-1.5：冻结属主标快照（freeze 时枚举属主表预打——send 热路径免
+        // 反查属主；非冻结态恒 None ⇒ 本快照即热路径唯一新增成本，一次
+        // Option 判空）。
+        (peer, !peer_end.has_message(), peer_end.frozen_owner())
     };
     // 随行 handle 值拷入 + 全量预检（无副作用——失败 = 表零变化）。拷贝窗
     // （g3-1c-2）：走查 + 拷入同窗解蔽，段计数保 §A113。
@@ -3733,9 +3708,22 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
     if !berry_chanface::handles_distinct(&hvals[..nhandles]) {
         return ERR_INVALID_ARG as i64;
     }
-    // bbuf 拷入（W3-Q92 同窗——原独立第二 PT 锁窗并掉，语句位/错误面不变）。
-    let mut bbuf = [0u8; CHAN_MSG_MAX];
-    if let Err(e) = irq_window(|| copy_from_user_locked(el1, bytes, &mut bbuf[..nbytes], &mut last_page)) {
+    // W3-Q98（02 号机会三刀 b）：载荷拷入**直达尾槽**——满检已过，尾槽此刻
+    // 必空且单核禁切窗内无插队（g3-1c-2 段守卫在持）；user→槽位 bytes 单拷贝
+    // 直达，bbuf 中转拷贝（copy_from_slice 第二跳）消除。语义逐位保持：
+    // 错误面同（源 fault = -EFAULT 早退，槽残句/qlen 不动 = 队列零变化——
+    // 残句仅本端点内部可见，用户无观察面：旧形 bbuf 是栈变量同样残句、
+    // 满检过后此槽必不被 recv 触达）；语句序不动（拷贝仍在 probe/distinct
+    // 之后、take 之前——原子序注全链保持）。W3-Q92 单 PT 锁窗纪律不动：
+    // 拷贝窗走查+直达拷出同窗解蔽。
+    // SAFETY: peer 互钉在活；满检（queue_full 拒）+ 禁切窗保尾槽空且稳定。
+    let slot = unsafe {
+        let Some(peer_end) = (*peer_ptr.as_ptr()).obj.as_channel_mut() else {
+            return ERR_BAD_HANDLE as i64; // 上面刚解包过——不可达防御面
+        };
+        peer_end.tail_slot()
+    };
+    if let Err(e) = irq_window(|| copy_from_user_locked(el1, bytes, &mut slot.bytes[..nbytes], &mut last_page)) {
         return e as i64;
     }
     drop(_pt); // W3-Q92 收窗：此后零用户内存触点——PT 锁不带进 take/push/唤醒链（锁序零新边）
@@ -3752,18 +3740,18 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
             }
         }
     }
-    // 定长内联消息（3b3 H2 try 化：曾在此双 Box 分配——take 之后 OOM 即 abort
-    // 于迁移中途；内联 + 队列预储后 send 全链零分配）。
-    let mut msg = Message::new();
-    msg.bytes[..nbytes].copy_from_slice(&bbuf[..nbytes]);
-    msg.nbytes = nbytes;
-    msg.handles[..nhandles].copy_from_slice(&toks[..nhandles]);
-    msg.nhandles = nhandles;
+    // W3-Q98（机会三刀 b 续）：消息构造**就地槽位**——nbytes/toks/meta/billing
+    // 直写预占尾槽（bytes 已在上方单拷贝直达；3b3 H2 零分配纪律不动——
+    // 槽位属队列预储容量）。旧形 Message::new + 双 copy_from_slice（bbuf→msg
+    // 中转 + msg→push 槽位 440B struct move 第三跳）全消。
+    slot.nbytes = nbytes;
+    slot.handles[..nhandles].copy_from_slice(&toks[..nhandles]);
+    slot.nhandles = nhandles;
     // 4-3c：消息头快照发送者 intent_effective（ADR #42 五件套——fastpath 增量
     // = 一次结构体填充；记账/帽判定全在 recv 结算 slowpath，「fastpath 零记账」）。
     // CURRENT 无效（ktest/init 前语境）→ 零值头（UNSPECIFIED 首手）照常发送。
     if let Some((meta, snap)) = berry_sched::intent_snapshot_current(vct_ns()) {
-        msg.meta = meta;
+        slot.meta = meta;
         if snap == berry_sched::SnapOut::Capped {
             // 每跳预算帽：降级为不传播（消息头已装自己的 declared）+ 计数 + trace。
             crate::telemetry::intent_budget_capped();
@@ -3772,7 +3760,7 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
     }
     // 1.1/S4：受益者付费——send 侧快照发送者域 ID（= Task.pinned）。
     // 零分配（纯填字段）；recv 侧可读（S4 只记不罚——telemetry 计数）。
-    msg.billing.domain_id = berry_sched::current_pinned() as u64;
+    slot.billing.domain_id = berry_sched::current_pinned() as u64;
     // 1.1/S4-b 区间计费终末：本任务是 server（此前 recv 设过区间起点）→
     // 算差 → 记 client 域账户 → 清起点。Wall-clock 近似（穿插任务混入
     // ——精确 per-task CPU 需 TCB 扩字段，S5-c 后再议）。
@@ -3812,7 +3800,8 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
     let mut sq_phys = false;
     let waiter = if peer_empty {
         sq_phys = berry_sched::sq_lock();
-        let w = berry_sched::find_single_waiter_locked(peer_key, SIGNAL_READABLE);
+        let w =
+            berry_sched::find_single_waiter_locked(peer_ptr.as_ptr() as usize, SIGNAL_READABLE);
         if w.is_none() {
             berry_sched::sq_unlock(sq_phys);
             sq_phys = false;
@@ -3821,34 +3810,28 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
     } else {
         None
     };
-    // SAFETY: self_ptr 为本表门控通过的 Channel 对象；push_to_peer 在共享锁内二次核验对端开闭与队列容量。
-    let push_res = unsafe {
-        match (*self_ptr.as_ptr()).obj.as_channel() {
-            Some(end) => end.push_to_peer(msg),
-            None => Err((msg, ERR_BAD_HANDLE)),
-        }
-    };
-    if let Err((mut failed_msg, e)) = push_res {
-        if waiter.is_some() {
-            berry_sched::sq_unlock(sq_phys);
-        }
-        for i in 0..failed_msg.nhandles {
-            let (obj, rights) = failed_msg.handles[i];
-            if t.insert_ref(obj, rights).is_err() {
-                unsafe {
-                    if let KernelObj::Channel(c) = &(*obj.as_ptr()).obj {
-                        c.release_handle();
-                    }
-                    ObjRef::release(obj);
-                }
+    // SAFETY: peer_ptr 互钉在活；队列有界（满检过——单核禁切无插队 g3-1c-2
+    // 段守卫；双核结构锁窗）。W3-Q98：尾槽已由上方 slot 直拷构造，此处仅
+    // commit（len +1）——旧形 440B struct move 的 push 全消。
+    unsafe {
+        let Some(peer_end) = (*peer_ptr.as_ptr()).obj.as_channel_mut() else {
+            // 上面刚解包过——不可达防御面（消息泄漏，安全向）。c-2a：若义务④
+            // 窗已开（waiter 命中 ⇔ SQ 在持）先闭窗再退——锁泄漏 = 全局死锁。
+            if waiter.is_some() {
+                berry_sched::sq_unlock(sq_phys);
             }
-        }
-        failed_msg.disarm_handles();
-        return e as i64;
+            return ERR_BAD_HANDLE as i64;
+        };
+        peer_end.push_tail_commit();
     }
     drop(_span); // g3-1c-2 段终点（push 毕）：原子段收口配平
     match waiter {
         Some(t) => {
+            // fastpath：定点唤醒（同一内部唤醒序列 + PI 收尾重推）→ **闭窗** →
+            // 直切判定（严格更高 eff 才切——切走后从 try_preempt 续行、IRQ 仍
+            // 屏蔽；try_preempt 可切换，不入 SQ 窗 = 终态「结构锁窗内禁切换」）。
+            // SAFETY: t 来自同一 SQ 窗内 find_single_waiter_locked（此刻仍在
+            // SLEEPQ 上）。
             unsafe { berry_sched::fast_wake_locked(t) };
             berry_sched::sq_unlock(sq_phys);
             crate::telemetry::ipc_fast_hit();
@@ -3857,8 +3840,13 @@ extern "C" fn sys_channel_send(tf: &mut TrapFrame) -> i64 {
             }
         }
         None => {
+            // slowpath：4-2 唤醒点——消息落对端队列 → 对端 READABLE 置位，唤醒
+            // 等「对端可读」的睡眠者（键 = 对端 ObjRef 地址；等价于 Zircon send
+            // 侧的可读信号；无等待者时本遍历近零开销）。S-3b b-1 定谳：纯广播
+            // ——公平/上限不进唤醒选择器（到达序内生闭环判词详
+            // `berry_sched::wake_matching` 文档），容量槽公平归放置/偷取面。
             crate::telemetry::ipc_fast_miss();
-            berry_sched::wake_matching(peer_key, SIGNAL_READABLE);
+            berry_sched::wake_matching(peer_ptr.as_ptr() as usize, SIGNAL_READABLE);
         }
     }
     // AM-1.5 wake-pending（IPC × 冻结，Q1 裁决「唤醒即解冻」机制面）：send
@@ -3984,10 +3972,6 @@ fn recv_consume_one(
         unsafe { recv_rollback(t, self_ptr, msg, &newvals[..n]) };
         return Err(e);
     }
-    // 随行令牌已全部成功迁入接收方句柄表且出参写回无误：解除 Message 对
-    // 句柄的所有权，防止 Drop 双重释放（单发 recv 内联面 :4061 同款——
-    // W3-Q97 抽共用体时本面漏迁，38 号件 QEMU 取证定谳）。
-    msg.disarm_handles();
     // SAFETY: 本端门控过；单核禁切（g3-1c-2 段守卫在持）。
     // W3-Q97 复审修（A 案摊销）：WRITABLE 唤醒自本结算面剥出——单发/
     // 批量同构：消费窗内恒免唤醒，调用方尾段 PT 锁窗外收尾一次
@@ -4072,13 +4056,13 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
     // SAFETY: get_raw 已门控；单核禁切（g3-1c-2 段守卫在持）。pop 消费，失败
     // 路径经回滚压回队首。
     let _span = PreemptSpan::new();
-    let mut msg = unsafe {
-        let Some(end) = (*self_ptr.as_ptr()).obj.as_channel() else {
+    let msg = unsafe {
+        let Some(end) = (*self_ptr.as_ptr()).obj.as_channel_mut() else {
             return ERR_BAD_HANDLE as i64;
         };
-        match end.pop_or_peer_state() {
-            Ok(m) => m,
-            Err(e) => return e as i64,
+        match end.front() {
+            Some(_) => end.pop(),
+            None => return ERR_AGAIN as i64, // 非阻塞：空即返（阻塞等消息 = wait_one READABLE，4-2）
         }
     };
     // W3-Q92（02 号 IPC 审计机会一）：recv 用户参数 I/O 合并单窗——容量
@@ -4133,81 +4117,22 @@ extern "C" fn sys_channel_recv(tf: &mut TrapFrame) -> i64 {
         return ERR_FAULT as i64;
     }
     // 载荷拷出随 W3-Q92 移入尾段同窗（原独立拷出窗退役）。
-    // 令牌入调用者表（新值收集；任一失败全量回滚——表里已入的 take 回）。
-    let mut newvals = [0u32; CHAN_HND_MAX];
-    for i in 0..msg.nhandles {
-        match t.insert_ref(msg.handles[i].0, msg.handles[i].1) {
-            Ok(nh) => newvals[i] = nh,
-            Err(e) => {
-                // SAFETY: 同上（msg 内令牌未动，回滚只需压回）。
-                unsafe { recv_rollback(t, self_ptr, msg, &[]) };
-                return e as i64;
-            }
-        }
-    }
-    let n = msg.nhandles;
-    let mut obuf = [0u8; CHAN_HND_MAX * 4];
-    for i in 0..n {
-        obuf[i * 4..i * 4 + 4].copy_from_slice(&newvals[i].to_le_bytes());
-    }
-    // W3-Q92 尾段：载荷/新值/双 u64 回写全走同窗 `_locked` 族（窗 = 上方
-    // 单一 PT 锁窗；错误码与回滚面逐位保持）。
-    let tail = irq_window(|| -> Result<(), i32> {
-        copy_to_user_locked(el1, bytes, &msg.bytes[..msg.nbytes], &mut lp_write)?;
-        copy_to_user_locked(el1, handles, &obuf[..n * 4], &mut lp_write)?;
-        copy_out_u64_locked(el1, nbytesp, msg.nbytes as u64, &mut lp_write)?;
-        copy_out_u64_locked(el1, nhandlesp, n as u64, &mut lp_write)?;
-        Ok(())
-    });
-    if let Err(e) = tail {
-        // SAFETY: 同上（回滚含 take 回已入表的 n 个令牌——位置号即条数）。
-        unsafe { recv_rollback(t, self_ptr, msg, &newvals[..n]) };
+    // W3-Q97：入表→回写→结算收进 `recv_consume_one`（与批量 recv_n 共用，
+    // 语义单源；错误码与回滚面逐位保持——Err 路径的回滚在函数内完成）。
+    if let Err(e) = recv_consume_one(t, self_ptr, msg, el1, &mut lp_write, bytes, handles, nbytesp, nhandlesp) {
         return e as i64;
     }
-    // 随行令牌已全部成功迁入接收方句柄表且出参写回无误：解除 Message 对句柄的所有权，防止 Drop 双重释放。
-    msg.disarm_handles();
+    // W3-Q97：msg 已随消费序移入 recv_consume_one（按值）——原显式
+    // drop(msg) 退役（Message 定长内联，自然 drop 同效：无堆动作不碰 refs）。
     drop(_pt); // W3-Q92 收窗：此后零用户内存触点——PT 锁不带进唤醒链（SQ/RQ 锁序零新边）
     drop(_span); // g3-1c-2 段终点（回滚链毕）：原子段收口配平
-    if let Some(peer_key) = (unsafe { (*self_ptr.as_ptr()).obj.as_channel() }).and_then(|e| e.peer_wait_key()) {
-        berry_sched::wake_matching(peer_key, SIGNAL_WRITABLE);
+    // W3-Q97 复审修（A 案摊销）：4-2 WRITABLE 唤醒收尾一次（消费窗内免
+    // 唤醒——唤醒自 recv_settle_one 剥出；成功路径无条件，时序/锁序与
+    // 剥出前基线逐位一致：PT 锁窗外、段收口后）。SAFETY: 本端门控过、
+    // 互钉在活；只读对端指针。
+    if let Some(peer) = unsafe { (*self_ptr.as_ptr()).obj.as_channel() }.and_then(|e| e.peer()) {
+        berry_sched::wake_matching(peer.as_ptr() as usize, SIGNAL_WRITABLE);
     }
-    // 4-3c slowpath 记账：dequeue 即结算 intent（每消息重导——借入/opt-out/
-    // 超帽的语义与遥测见 `berry_sched::intent`；CURRENT 无效则跳过不记）。
-    // SAFETY: 本端门控过；只读 no_intent 标志。
-    let opt_out = (unsafe { (*self_ptr.as_ptr()).obj.as_channel() }).map_or(false, |e| e.no_intent());
-    // 1.1/S4-b：recv 侧——记跨域计数 + 设区间计费起点（domain + CNTVCT 戳）。
-    // S4-a 计数 + S4-b 区间起点：send 侧（server 回复时）算差 → 记 client 域。
-    if msg.billing.domain_id != 0 {
-        crate::telemetry::billing_cross_domain();
-        // S4-b 区间起点：per-CPU 槽（v1 单核 0 号；SMP 需 per-CPU 数组）。
-        // v2 协议标签过滤：reply(msg_type=2) 不设计费区间——client recv
-        // server 回复不误归 server 域（v1 全部 msg_type=0 照设——已知局限）。
-        if msg.billing.msg_type != crate::channel::MSG_BILLING_REPLY {
-            let slot = crate::telemetry::billing_slot();
-            crate::telemetry::BILLING_RECV_DOMAIN[slot].store(msg.billing.domain_id, core::sync::atomic::Ordering::Relaxed);
-            crate::telemetry::BILLING_RECV_VCT[slot].store(berry_hal_aarch64::timer::cntvct(), core::sync::atomic::Ordering::Relaxed);
-        }
-    }
-    // W3-Q6：档位直方/通胀计数（Own/Borrowed 皆记——effective 档分布 +
-    // 借入档差；三帽计数器族同窗同纪律）。
-    if let Some((out, declared, effective)) =
-        berry_sched::intent_settle_current_ext(msg.meta, opt_out, vct_ns())
-    {
-        crate::telemetry::intent_settle_note(declared, effective);
-        match out {
-            berry_sched::SettleOut::Borrowed => crate::telemetry::intent_borrowed(),
-            berry_sched::SettleOut::CappedHop => {
-                crate::telemetry::intent_hop_capped_inc();
-                berry_hal_aarch64::uart_puts(b"intent: hop cap (recv)\n");
-            }
-            berry_sched::SettleOut::CappedBudget => {
-                crate::telemetry::intent_budget_capped();
-                berry_hal_aarch64::uart_puts(b"intent: chain budget cap (recv)\n");
-            }
-            berry_sched::SettleOut::Own => {}
-        }
-    }
-    drop(msg); // 消费：令牌已入表（Message 定长内联——drop 无堆动作，不碰 refs）
     // 段出口检查点（g3-1c-2，f4 裁决对称 = WRITABLE wake 链后、返回前）：
     // 拷贝窗内被双门挡下的切换诉求在唤醒链全毕后兑现（论据同 send 尾注）；
     // 探峰合法 ⇔ RQ 位在集（0x2E ✓，§A126 定谳）；段内错误路径早退由
@@ -4292,12 +4217,9 @@ extern "C" fn sys_channel_recv_n(tf: &mut TrapFrame) -> i64 {
                 ret = ERR_BAD_HANDLE as i64; // 不可达防御面（get_raw 过）
                 break;
             };
-            match end.has_message() {
-                true => match end.pop_or_peer_state() {
-                    Ok(msg) => msg,
-                    Err(_) => break, // 对端关闭等态：诚实断（poll 语义：实收 got 条）
-                },
-                false => break, // 队空即断（poll 语义：实收 got 条）
+            match end.front() {
+                Some(_) => end.pop(),
+                None => break, // 队空即断（poll 语义：实收 got 条）
             }
         };
         let slot = msgs + (i as u64) * (RECV_N_SLOT_STRIDE as u64);
@@ -4335,8 +4257,8 @@ extern "C" fn sys_channel_recv_n(tf: &mut TrapFrame) -> i64 {
     // got>0 也照发（前 got 条已消费腾槽，唤醒真实非虚假）。锁序 = 单发
     // 同构：PT 锁窗外、段收口后。SAFETY: 本端门控过、互钉在活；只读对端指针。
     if recv_n_wake_needed(got) {
-        if let Some(peer_key) = (unsafe { (*self_ptr.as_ptr()).obj.as_channel() }).and_then(|e| e.peer_wait_key()) {
-            berry_sched::wake_matching(peer_key, SIGNAL_WRITABLE);
+        if let Some(peer) = unsafe { (*self_ptr.as_ptr()).obj.as_channel() }.and_then(|e| e.peer()) {
+            berry_sched::wake_matching(peer.as_ptr() as usize, SIGNAL_WRITABLE);
         }
     }
     // 段出口检查点（g3-1c-2，f4 裁决同单发 recv：WRITABLE wake 链后、返回前）；
@@ -4390,16 +4312,13 @@ unsafe fn signal_state(obj: NonNull<ObjRef>) -> Option<u64> {
         match &(*obj.as_ptr()).obj {
             KernelObj::Event(e) => Some(e.load()),
             KernelObj::Channel(c) => {
-                let (readable, writable, peer_closed) = c.wait_signals();
-                let mut s = 0u64;
-                if readable {
-                    s |= SIGNAL_READABLE;
-                }
-                if writable {
-                    s |= SIGNAL_WRITABLE;
-                }
-                if peer_closed {
-                    s |= SIGNAL_PEER_CLOSED;
+                let mut s = if c.has_message() { SIGNAL_READABLE } else { 0 };
+                if let Some(peer) = c.peer() {
+                    if let KernelObj::Channel(pe) = &(*peer.as_ptr()).obj {
+                        if !pe.queue_full() {
+                            s |= SIGNAL_WRITABLE;
+                        }
+                    }
                 }
                 Some(s)
             }
@@ -4810,7 +4729,7 @@ pub fn install() {
     // —— SQ+RQ+TABLE（0x2E）：wait/send 族（wake→enqueue 双结构窗 + 表）——
     reg(NR_HANDLE_CLOSE, sys_handle_close, SVC_CLASS_SQ_RQ_TABLE);
     reg(NR_HANDLE_DUPLICATE, sys_handle_duplicate, SVC_CLASS_TABLE);
-    reg(NR_HANDLE_REPLACE, sys_handle_replace, SVC_CLASS_SQ_RQ_TABLE);
+    reg(NR_HANDLE_REPLACE, sys_handle_replace, SVC_CLASS_TABLE);
     reg(NR_OBJECT_WAIT_ONE, sys_object_wait_one, SVC_CLASS_SQ_RQ_TABLE);
     reg(NR_OBJECT_WAIT_MANY, sys_object_wait_many, SVC_CLASS_SQ_RQ_TABLE);
     reg(NR_OBJECT_SIGNAL, sys_object_signal, SVC_CLASS_SQ_RQ_TABLE);

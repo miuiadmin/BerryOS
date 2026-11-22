@@ -51,10 +51,8 @@ pub const SIGNAL_TERMINATED: u64 = 1 << 2;
 /// 消费形：object_wait_one(token, SIGNAL_WAKE_PENDING, deadline, &observed)——
 /// deadline=0 即 poll 探针；零新 syscall。
 pub const SIGNAL_WAKE_PENDING: u64 = 1 << 3;
-/// Channel 对端已关闭（F1-3 内核派生位）：对端最后一枚句柄关闭或所属进程终止时单调置位永不清，并立即唤醒本端等待者；本端队列内既有未读消息仍可继续 `channel_recv` 排空，排空后再 `recv` 或向已关对端 `channel_send` 返 `-EBADSTATE`。
-pub const SIGNAL_PEER_CLOSED: u64 = 1 << 4;
 /// 用户信号位掩码（Event `object_signal` 只收高 32 位用户位；低 32 位保留给
-/// 内核派生信号 READABLE/WRITABLE/TERMINATED/WAKE_PENDING/PEER_CLOSED——位面冲突由内核
+/// 内核派生信号 READABLE/WRITABLE/TERMINATED/WAKE_PENDING——位面冲突由内核
 /// 执法拒绝）。
 pub const SIGNAL_USER_MASK: u64 = 0xFFFF_FFFF_0000_0000;
 
