@@ -1164,6 +1164,12 @@ test-host:
     # 序累积——Tier 0 确定性基线，SIMD/卸载后端对拍锚〕，host 12 测；
     # 消费 = airtd/berry-aiproto 张量段〔后续刀〕）。
     cargo test --manifest-path user/Cargo.toml -p berry-tensor --target {{host}}
+    # ai-runtime §三.1 首刀：berry-kvpool（块级分页 KV-Cache 池语义——
+    # 16-Token KvBlock 定容池 + 前缀 Copy-on-Write 共享〔引用计数 +1 物
+    # 理恒一份〕+ 共享尾块禁原地写执法〔满尾滚新块不属 COW 面——fork
+    # 续写主路径〕+ 显式回收口，host 9 测；真消费
+    # = airtd Paged KV-Cache 运行时〔后续刀〕）。
+    cargo test --manifest-path user/Cargo.toml -p berry-kvpool --target {{host}}
     # mkapp 门禁自检（a-3 U4：mkfat --check-fixture 同位前置——打包器门禁
     # 面此前只在 build-user 产物链上被动覆盖，门禁自身坏 = 产物链静默劣化）。
     python3 tools/mkapp.py --selftest

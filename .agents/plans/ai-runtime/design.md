@@ -52,6 +52,12 @@ flowchart TD
    - 交互级请求（如无障碍 `a11yd` 实时读屏 TTS、输入法语音转写、用户主动唤起桌面助手）享有高优队列，可在单层边界立即抢占后台记忆索引构建任务；
    - 当 [sched-rt-gfx 总体设计](../sched-rt-gfx/design.md) 检测到连续两拍合成帧超时或热管理 `berry-thermal` 进入温控限流档时，`airtd` 自动缩减批大小并下调推理线程并发度，严禁抢占 GUI 主线程与实时音频线程。
 
+建造清单（DAG 节验收面——全勾才配双戳）：
+
+- [x] 条款 1 池语义首刀：`user/berry-kvpool`（16-Token KvBlock 定容池 + 前缀 Copy-on-Write 共享〔引用计数、物理恒一份〕+ 共享尾块禁原地写执法〔满尾滚新块不属 COW 面〕+ 显式回收口）——host 9 测绿（`just test-host` berry-kvpool 腿，2026-11-22）；注意力 score 面与缺页重装归 airtd 运行时刀
+- [ ] 条款 2 结构化约束解码（CFG / JSON Schema Masking 的字节级有限自动机编译与采样期掩蔽）
+- [ ] 条款 3 硬实时让路与分级抢占（`SCHED_INTENT_COMPUTE` 受控算力带 + 单层解码步抢占检查点 + 温控降并发——涉调度面，与 §一.2 同列 owner 边界声明队列）
+
 ### 四、能力门控个人语义记忆库（`berry-vault`）契约
 
 1. **不出端加密存储**：`berry-vault` 驻留于用户凭证级加密目录 `/data/user/<uid>/vault/`（受 [security 总体设计](../security/design.md) 的 FBE CE 密钥保护，锁屏态拒绝写入敏感明文查询），内部融合 `BerryFS` 事务表与轻量分层可导航小世界图（HNSW 定点量化向量索引）。

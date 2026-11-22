@@ -125,6 +125,10 @@ name = "berry-jobs"
 version = "0.2.0"
 
 [[package]]
+name = "berry-kvpool"
+version = "0.2.0"
+
+[[package]]
 name = "berry-layout"
 version = "0.2.0"
 
