@@ -1182,6 +1182,11 @@ test-host:
     # 距离闭包注入与量化距离解耦，tie-break 节点号升序确定性检索，
     # host 6 测；ef-construction 束建与多样性剪枝随后续刀）。
     cargo test --manifest-path user/Cargo.toml -p berry-hnsw --target {{host}}
+    # ai-runtime §三.2 首刀：berry-jsonmask（JSON 字节级约束解码掩蔽器
+    # ——单源转移函数 step + 256 字节探测派生 mask〔合法集永不双写〕+
+    # 拒绝不改态〔100% 合法输出机制〕+ can_finish 流式终判〔裸数字态〕，
+    # 深度 1 首刀，host 9 测；嵌套栈与 Schema 编译随后续刀）。
+    cargo test --manifest-path user/Cargo.toml -p berry-jsonmask --target {{host}}
     # mkapp 门禁自检（a-3 U4：mkfat --check-fixture 同位前置——打包器门禁
     # 面此前只在 build-user 产物链上被动覆盖，门禁自身坏 = 产物链静默劣化）。
     python3 tools/mkapp.py --selftest

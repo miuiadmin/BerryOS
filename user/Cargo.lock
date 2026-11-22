@@ -129,6 +129,10 @@ name = "berry-jobs"
 version = "0.2.0"
 
 [[package]]
+name = "berry-jsonmask"
+version = "0.2.0"
+
+[[package]]
 name = "berry-kvpool"
 version = "0.2.0"
 

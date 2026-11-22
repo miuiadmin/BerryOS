@@ -1,0 +1,15 @@
+[package]
+name = "berry-jsonmask"
+version.workspace = true
+edition = "2021"
+# ai-runtime §三.2 首刀（.agents/plans/ai-runtime/design.md 契约三.2
+# 「零语法错误有限状态机约束（CFG / JSON Schema Masking）」）：JSON
+# 字节级掩蔽器纯函数 crate——单源转移函数 step + 由其 256 字节探测派
+# 生的合法集 mask（无第二套合法集逻辑），拒绝不改态（采样器重选即
+# 可，数学上保证输出 100% 合法 JSON）；首刀深度 1（顶层单值/一层
+# 数组/一层对象，嵌套容器随后续刀加显式栈）。零 unsafe 零依赖零分配，
+# `cfg_attr(not(test), no_std)`；host 测试经 justfile test-host 显式行跑。
+description = "BerryOS JSON byte-level constrained-decoding masker: single-source transition fn with derived legality mask (ai-runtime contract 3.2)"
+license = "Apache-2.0"
+
+[dependencies]
