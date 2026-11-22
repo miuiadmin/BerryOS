@@ -25,6 +25,7 @@ berry-sched = { path = "../sched" }
 # 惯例同 berry-wqmatch）。
 berry-iprofile = { path = "../iprofile" }
 berry-vmoledger = { path = "../vmoledger" }
+berry-vmarface = { path = "../vmarface" }
 # W3-Q80：mem* 整数版语义模型单源（块切分/方向分治/首异定位/
 # 广播字——host 钉板；no_mangle 符号壳留本 crate）。
 berry-memface = { path = "../memface" }
