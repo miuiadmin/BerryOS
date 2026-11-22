@@ -588,9 +588,12 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, g: &mut Gallery) -> !
                         }
                     }
                 }
-                Msg::Press { .. } | Msg::Release { .. } => {
+                Msg::Press { .. } | Msg::Release { .. } | Msg::DoubleClick { .. }
+                | Msg::LongPress { .. } => {
                     // 按压视觉 = 引擎 press_map/PressedVis + widget_react
-                    // 面——app 零接线（行级 ItemState 换底无画廊行，缺席）。
+                    // 面——app 零接线（行级 ItemState 换底无画廊行，缺席）；
+                    // 双击/长按（总攻批 2 引擎扩域 add-only）同无消费面
+                    // ——Click 照产已覆盖既有行为。
                 }
             }
         }

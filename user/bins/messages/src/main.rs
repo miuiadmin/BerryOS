@@ -1563,6 +1563,10 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, a: &mut App) -> ! {
                         flash_hint(ui, a, b"Typing hangs on softime - pick a chip");
                     }
                 }
+                Msg::DoubleClick { .. } | Msg::LongPress { .. } => {
+                    // 双击/长按（总攻批 2 引擎扩域 add-only）：v1 消息页无
+                    // 消费面——Click 照产已覆盖既有行为，语义面忽略。
+                }
             }
         }
 

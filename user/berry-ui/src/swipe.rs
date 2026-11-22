@@ -341,7 +341,8 @@ impl SwipePager {
                 self.begin_snap(ui, self.page, 0);
                 true
             }
-            Msg::Press { .. } | Msg::Release { .. } | Msg::Click { .. } => false,
+            Msg::Press { .. } | Msg::Release { .. } | Msg::Click { .. }
+            | Msg::DoubleClick { .. } | Msg::LongPress { .. } => false,
         }
     }
 

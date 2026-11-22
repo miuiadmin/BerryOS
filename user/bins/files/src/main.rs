@@ -1278,6 +1278,11 @@ fn run(
                 berry_ui::desc::Msg::DragEnd { .. } => {
                     st.drag_y = None;
                 }
+                berry_ui::desc::Msg::DoubleClick { .. }
+                | berry_ui::desc::Msg::LongPress { .. } => {
+                    // 双击/长按（总攻批 2 引擎扩域 add-only）：v1 文件页无
+                    // 消费面——Click 照产已覆盖既有行为，语义面忽略。
+                }
             }
         }
 
