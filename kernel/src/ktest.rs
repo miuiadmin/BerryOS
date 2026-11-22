@@ -8089,6 +8089,40 @@ fn test_deadline() {
                    "DL：B5 fair 授片须=class 面原值（零漂移）");
     }
 
+    // B6（arm_slice 收紧刀 2026-11-22·深度优化）——授片臂帽律钉板：sched.rs
+    // 私有 arm_after_grant 的决策表纯值面（helper 本体写 CNTV 寄存器，ktest
+    // 不可直调——寄存器臂真收紧精度归 LOADGEN oneshot 探针形态）。DL+
+    // budget<SLICE → 帽=budget（arm_slice_cap 片终点精确起爆）；DL+budget
+    // ≥SLICE / budget==0 / fair（dl_grant 双门任一不中）→ 满片（arm_slice
+    // 同值零漂移；Band 轴 quantum<SLICE 不连带锐化 = DL-only 裁决面）。SLICE
+    // 实尺经 slice_cycles_for_hz 现算（ktest 先于 timer::init——
+    // slice_cycles()==0 不可用；CNTFRQ 直读无 init 依赖）。
+    {
+        use berry_hal_aarch64::timer::{slice_cap, slice_cycles_for_hz, SLICE_HZ};
+        use berry_sched::dl_grant;
+        let slice = slice_cycles_for_hz(SLICE_HZ);
+        assert!(slice > 77,
+                "DL：B6 前提守卫（SLICE 实尺须>budget 样例——CNTFRQ 已可读）");
+        // DL+budget<SLICE → 收紧到 budget（检测延迟 SLICE→budget 的律面）。
+        assert_eq!(dl_grant(PRIO_DEADLINE, 77), Some(77),
+                   "DL：B6 前提：dl_grant 带预算 deadline 须 Some(budget)");
+        assert_eq!(slice_cap(77, slice), 77,
+                   "DL：B6 DL+budget<SLICE 须收紧到片终点（精确起爆）");
+        // 满片回落三形：budget==SLICE / budget>SLICE / budget==0（防御）。
+        assert_eq!(slice_cap(slice, slice), slice,
+                   "DL：B6 budget==SLICE 须满片同值（零漂移）");
+        assert_eq!(slice_cap(slice + 1, slice), slice,
+                   "DL：B6 budget>SLICE 须满片回落");
+        assert_eq!(slice_cap(0, slice), slice,
+                   "DL：B6 budget==0 须回落满片（want==now 起爆面不触）");
+        // fair / 无预算 deadline（dl_grant None）→ 不入帽律恒满片——Band
+        // quantum<SLICE 轮转不受连带锐化（DL-only 裁决的排除面钉板）。
+        assert_eq!(dl_grant(0, 77), None,
+                   "DL：B6 fair 须 None（双门独立拒绝、不收紧）");
+        assert_eq!(dl_grant(PRIO_DEADLINE, 0), None,
+                   "DL：B6 零预算 deadline 须 None（不收紧）");
+    }
+
     berry_hal_aarch64::uart_puts(b"DL-K ok\n");
 }
 

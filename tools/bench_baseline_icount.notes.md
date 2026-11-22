@@ -150,3 +150,7 @@ trace-dual + lat + reject-trio + testhost（同目录 20261105-0930~0931 批）�
 ## [2026-11-20 合流后重烘] 六项漂移归因
 
 - e7ac476b1（launcher E0407 解堵+origin 21 笔合流窗：mkapp 五刀/gensourceindex/launcher GUI/ABI 42 号等）改指令流：buddy 族两项换轨（alloc4k 82→37 / alloc64k 37→180）+send_recv/svc/switch/vmo_commit 小真增量（GUI/工具链码变化）——确定性通道如实记变。--update 重烘（--qemu-wait 0 争用降级，icount 值免疫）。
+
+## [2026-11-22 arm_slice 收紧刀] 真成本+布局骰+占空比实证
+
+- 深度优化刀（DL-only 精确起爆：tickface slice_cap 律+arm_slice_cap+八授片臂 arm_after_grant 含 :4129 补臂）：**switch_pair 305→316（+11=cap 检查真成本）**/send_recv −1；alloc64k 骰（180→37）。**端到端实证：s5cprobe iters 255465→56632（4.5× 降）stalls=2 ok**——DL 每期实跑从下 tick 边界（相位 0..100ms）缩到 budget 量级，CBS 每期≈budget 落地。

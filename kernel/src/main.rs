@@ -5375,16 +5375,17 @@ const S5C_PROBE_NAME: &str = "opt/berry/s5cprobe";
 /// 探针不动 set_slice_hz）。
 const S5C_PERIOD_MS: u64 = 400;
 /// 每期预算（CBS 形：budget ≪ period）。口径注记（预算授片分派刀
-/// 2026-11-19 后）：解冻后的再分派走 sched.rs 授片习语
-/// （`slice_left = grant_cycles_of()`）——带预算 deadline 的每次重授帽已
-/// 从全局 slice（100ms @ 10Hz）缩到本值（2ms），占空比相位均值
-/// ≈25%→≈12.5%。诚实限定两条（账面真、物理仍 tick 量化——完全闭合归
-/// 后续刀）：① 执法检测延迟仍=到下 tick 边界——arm_slice 臂全局片不读
-/// slice_left，budget 在派发后首个 tick 被 delta 一次烧穿，每期实跑=
-/// 派发点至下 tick 的间隙（相位依赖 0..100ms）；后续刀候选 = arm_slice
-/// 收紧 min(slice_left, SLICE)（小预算执法延迟 100ms→budget）；② 抢占窗
-/// 再授片宽恕仍在——期内被抢占后再派发获整额 budget 重授、被抢前已耗
-/// 部分无人记账（帽已缩，闭合需 switch-out 记账）。stall 判读
+/// 2026-11-19 + arm_slice 收紧刀 2026-11-22·深度优化）：解冻后的再分派走
+/// sched.rs 授片习语（`slice_left = grant_cycles_of()`）——带预算 deadline
+/// 的每次重授帽已从全局 slice（100ms @ 10Hz）缩到本值（2ms）；执法检测
+/// 延迟已随收紧刀闭合（授片臂单源 sched.rs arm_after_grant：dl_grant 命中
+/// 且 budget<SLICE 时 CVAL 臂到 now+budget 片终点精确起爆——原「arm_slice
+/// 臂全局片不读 slice_left、budget 在派发后首个 tick 被 delta 一次烧穿、
+/// 每期实跑=派发点至下 tick 的间隙（相位依赖 0..100ms）」形态退役）。
+/// 残留仅一条：抢占窗再授片宽恕仍在——期内被抢占后再派发获整额 budget
+/// 重授、被抢前已耗部分无人记账（帽已缩，闭合需 switch-out 记账，另一
+/// 刀）。占空比硬数值（「每期≤budget」「0.5%」级）仍禁写——需实机
+/// S5C-DLP 复跑实测背书（TCG 假报面：复跑分辨，勿单跑定谳）。stall 判读
 /// （隙 > period/2）不受影响。
 const S5C_BUDGET_MS: u64 = 2;
 /// 开跑宽限（PILAT_GRACE_MS 同因：boot 验收对收尾——dl 改档与看门狗

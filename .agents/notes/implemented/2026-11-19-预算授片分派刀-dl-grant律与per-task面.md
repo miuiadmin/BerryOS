@@ -23,5 +23,5 @@ S5-c 刀 Consequences 挂账（最久语义债）+机会四笔记 CBS 口径限�
 
 - 生产 budget>0 deadline 任务每次重授=budget（帽 100ms→budget）；Band deadline 预算压过带 quantum；idle/fair/无预算 deadline 逐位零漂移。
 - 验证：**绿基独立验证法**——origin 线带 VMO 记账断言在途红（hermes PR#532 lane 债，纯 tip 实测同红定谳），故刀补丁落于已知绿基（376399d0e）独立验证：just build 绿+boot smoke **32/32（B5 随套过）**+sliceface host 8 测绿+**真预算探针实机通过**（S5C-DLP ok stalls=2 iters=255465——新授片语义下燃尽→限流→解冻→复活链成立）+prove 五跑（绿基留档；正式基线重烘待 origin 修红后——推送树 CI 面红纯系其 VMO 债，与本刀无关）。
-- 残留超卖面（本刀缩小非闭合）两条已入 s5c 注记+本档：tick 采样粒度/arm_slice 全局片（候选刀：收紧 min）；抢占窗再授片宽恕（候选刀：switch-out 记账）。
+- 残留超卖面（本刀缩小非闭合）两条已入 s5c 注记+本档：tick 采样粒度/arm_slice 全局片（候选刀：收紧 min）——〔2026-11-22 已闭：arm_slice 收紧刀（深度优化）落地 DL-only 形——tickface `slice_cap` 帽律+timer `arm_slice_cap`+sched `arm_after_grant` 单源九授片点换臂（含 on_irq_tick 片燃尽 go 臂补臂），s5c 注记同批随迁；占空比硬数值仍禁写、待实机复跑背书〕；抢占窗再授片宽恕（候选刀：switch-out 记账）——仍开。
 - S5-c 笔记挂账行/机会四笔记 CBS 限定段翻真+API 参考 v1.16→v1.17（grant_cycles 行+新行）——主线文档批随提交收。
