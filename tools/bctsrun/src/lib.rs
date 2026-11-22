@@ -12,8 +12,11 @@
 //! 步①出口协议）；META/MARK/GATE TSV 发射序 = Python 同构（markers 后
 //! gates、相内文件序）。
 //!
-//! 后续刀（依 §4 刀序）：PYEOF②（T2 冻结件校验器）/ PYEOF③（T2 静态对账）
-//! / PYEOF④⑤（abi level 读器 / manifest PR 对账）/ 参数面与活树清单合成。
+//! 后续刀（依 §4 刀序）：PYEOF③（T2 静态对账）/ PYEOF④⑤（abi level 读器
+//! / manifest PR 对账）/ 参数面与活树清单合成。
+
+pub mod t2;
+pub use t2::{check_t2, parse_frozen_toml_t2, T2Contract, T2Doc, T2Val};
 
 use std::collections::HashSet;
 

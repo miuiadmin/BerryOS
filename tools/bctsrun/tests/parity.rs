@@ -188,3 +188,155 @@ fn t1_toml_syntax_parity() {
     eprintln!("toml syntax parity: {n} cases OK（双侧拒 + 退 2；语法域文案各自实现）");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ---- 二刀·T2 面 parity（tools/bcts/t2_check.py oracle 真跑对拍） ----
+
+use bctsrun::{check_t2, parse_frozen_toml_t2};
+
+/// Python 现役件真跑（t2_check.py 同参 CLI 面）。
+fn py_t2(path: &str) -> (String, String, Option<i32>) {
+    let o = Command::new("python3")
+        .arg(repo_root().join("tools/bcts/t2_check.py"))
+        .arg(path)
+        .output()
+        .expect("spawn python3");
+    (
+        String::from_utf8_lossy(&o.stdout).into_owned(),
+        String::from_utf8_lossy(&o.stderr).into_owned(),
+        o.status.code(),
+    )
+}
+
+/// Rust 面：T2 解析 + 校验 + TSV 发射。
+fn rust_t2(path: &str) -> Result<Vec<String>, String> {
+    let text = std::fs::read_to_string(path).unwrap();
+    let doc = parse_frozen_toml_t2(&text).map_err(|e| e.0)?;
+    check_t2(&doc, path).map_err(|r| r.0)
+}
+
+#[test]
+fn t2_frozen_corpus_parity() {
+    if !py_ok() {
+        eprintln!("skip: python3 absent");
+        return;
+    }
+    let home = repo_root().join("tools/bcts/frozen");
+    let mut n = 0;
+    for i in 0..=1 {
+        let p = home.join(format!("bcts-t2@{i}.toml"));
+        let p_str = p.to_str().unwrap();
+        let (out, err, code) = py_t2(p_str);
+        assert_eq!(code, Some(0), "py 应过：{err}");
+        assert!(err.is_empty());
+        let rust = rust_t2(p_str).expect("rust 应过");
+        assert_eq!(rust.join("\n"), out.trim_end_matches('\n'), "TSV 不等：{p_str}");
+        n += 1;
+    }
+    eprintln!("t2 frozen corpus parity: {n} files OK");
+}
+
+/// T2 最小合法语料（覆盖守卫/锚定/发射面全活）——变异族挂在其上。
+fn t2_good() -> String {
+    std::fs::read_to_string(repo_root().join("tools/bcts/frozen/bcts-t2@0.toml")).unwrap()
+}
+
+#[test]
+fn t2_reject_corpus_parity() {
+    if !py_ok() {
+        eprintln!("skip: python3 absent");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("bctsrun-t2parity-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let good = t2_good();
+    // (标签, 变换, 期待拒面关键词)——变换 = (旧串, 新串) 单点替换
+    let mutants: Vec<(&str, &str, &str, &str)> = vec![
+        ("top-unknown", "tier2_floor = 31", "extra_key = \"x\"\ntier2_floor = 31", "顶层未知键：['extra_key']"),
+        // schema = true 面：py/rust 双侧都放行（True == 1——bool 是 int 子类
+        // 语义坑），非拒面族，lib 测试 t2_reject_messages 已钉板。
+        ("schema-2", "schema = 1", "schema = 2", "schema 须 = 1"),
+        ("tier-1", "tier = 2", "tier = 1", "tier 须 = 2"),
+        ("tier-bool", "tier = 2", "tier = true", "tier 须 = 2"),
+        ("pr-domain", "platform_revision = 0", "platform_revision = 4294967296", "platform_revision 须 u32"),
+        ("frozen-len", "bc93d446d5d9b03da7e62b16d84d470a0eb9b07d", "bc93d446d5d9b03da7e62b16d84d470a0eb9b07", "frozen_at 须 40 位"),
+        ("abi-empty", "abi_snapshot = \"tools/abi.toml\"", "abi_snapshot = \"\"", "abi_snapshot 不得为空"),
+        ("hash-bad", "sha256:438e5d538e913b51d07ea223e0d6242efe2a0ec91c3b937a02266f14f1a85e57", "sha256:XYZ", "abi_snapshot_hash 须 sha256"),
+        ("floor-0", "tier2_floor = 31", "tier2_floor = 0", "tier2_floor 须 ≥1"),
+        ("floor-guard", "tier2_floor = 31", "tier2_floor = 99", "空集守卫"),
+        ("cid-bad", "id = \"svc-fs\"", "id = \"Svc-fs\"", "contract id 须"),
+        ("cid-dup", "id = \"drv-display-backend\"", "id = \"svc-fs\"", "contract id 重复"),
+        ("vermin-0", "ver_min = 1", "ver_min = 0", "ver_min 须 ≥1"),
+        ("consumers-empty", "consumers = [\"bsh\", \"berry-fsclient\", \"appd(v2)\", \"launcher\"]", "consumers = []", "consumers 须非空列表"),
+        ("suite-cases-dup", "\"illegal-op-reject\",\n  \"cap-enforcement\",", "\"illegal-op-reject\",\n  \"illegal-op-reject\",", "suite_cases 重复"),
+        ("op-hex-domain", "num = 0x40", "num = 0x100", "num 须 u8"),
+        ("op-num-dup", "num = 0x41", "num = 0x40", "op 号重复"),
+        ("op-name-bad", "name = \"GET\"", "name = \"get\"", "name 须协议 crate OP_ 常量后缀形"),
+        ("kind-bad", "kind = \"pos\"", "kind = \"good\"", "kind 须 ∈ {pos, neg}"),
+        ("class-bad", "class = \"seq\"", "class = \"fast\"", "class 须五类之一"),
+        ("group-unanchored", "group = \"roundtrip-all-10-ops\"", "group = \"nope-group\"", "未锚定"),
+        ("facet-bad", "facet = \"错误码\"", "facet = \"非面\"", "facet 值域外"),
+        ("status-bad", "status = \"frozen\"", "status = \"live\"", "status 须 frozen|deferred"),
+        ("frozen-empty-cases", "cases = [\"fs-put-neg-chunk\", \"fs-put-neg-full\"]", "cases = []", "status=frozen 但 cases 空"),
+        ("cases-unanchored", "cases = [\"fs-put-neg-chunk\", \"fs-put-neg-full\"]", "cases = [\"nope-case\"]", "引用未锚定用例"),
+        ("name-mismatch", "", "", "冗余自证"),
+    ];
+    let mut n = 0;
+    for (tag, old, new, kw) in mutants {
+        let text = if tag == "name-mismatch" {
+            good.clone()
+        } else {
+            assert!(good.contains(old), "[{tag}] 锚串缺失", );
+            good.replacen(old, new, 1)
+        };
+        let fname = if tag == "name-mismatch" { "bcts-t2@9.toml" } else { "bcts-t2@0.toml" };
+        let path = dir.join(fname);
+        std::fs::write(&path, &text).unwrap();
+        let p_str = path.to_str().unwrap();
+        let (out, err, code) = py_t2(p_str);
+        assert_eq!(code, Some(2), "[{tag}] py 应拒（stderr: {err}）");
+        assert!(out.is_empty(), "[{tag}] py 拒时不应有 stdout");
+        let py_first = err.lines().next().unwrap_or("").to_string();
+        assert!(py_first.contains(kw), "[{tag}] py 拒面关键词缺失：{py_first}");
+        let rust = rust_t2(p_str);
+        let rust_err = rust.expect_err(&format!("[{tag}] rust 应拒"));
+        assert!(rust_err.contains(kw), "[{tag}] rust 拒面关键词缺失：{rust_err}");
+        assert_eq!(rust_err, py_first, "[{tag}] 拒面文案不等");
+        n += 1;
+    }
+    eprintln!("t2 reject corpus parity: {n} mutants OK");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn t2_toml_syntax_parity() {
+    if !py_ok() {
+        eprintln!("skip: python3 absent");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("bctsrun-t2syntax-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // 语法域拒（文案不同源——分支标识对齐：双侧同拒 + 退 2）。
+    let cases: Vec<(&str, &str)> = vec![
+        ("dot-section", "[contract.extra]\nx = 1\n"),
+        ("inline-table", "k = {a = 1}\n"),
+        ("float", "tier2_floor = 1.5\n"),
+        ("nested-array", "consumers = [[\"a\"]]\n"),
+        ("unclosed-array", "consumers = [\"a\",\n"),
+        ("dup-key", "schema = 1\nschema = 2\n"),
+        ("bare-fragment", "oops\n"),
+        ("bad-section", "[[nope]]\nid = \"x\"\n"),
+    ];
+    let mut n = 0;
+    for (tag, text) in cases {
+        let path = dir.join("bcts-t2@0.toml");
+        std::fs::write(&path, text).unwrap();
+        let (out, err, code) = py_t2(path.to_str().unwrap());
+        assert_eq!(code, Some(2), "[{tag}] py 应拒：{err}");
+        assert!(out.is_empty());
+        let rust = rust_t2(path.to_str().unwrap());
+        assert!(rust.is_err(), "[{tag}] rust 应拒");
+        n += 1;
+    }
+    eprintln!("t2 toml syntax parity: {n} cases OK（双侧拒 + 退 2；语法域文案各自实现）");
+    std::fs::remove_dir_all(&dir).ok();
+}
