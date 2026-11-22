@@ -1211,6 +1211,10 @@ test-host:
     # Watchdog 看门狗〕，畸形即 None 不截断，op 值镜像 berry-tensor，
     # host 7 测；宿主 Metal 桥归 tools/berry 边界面）。
     cargo test --manifest-path user/Cargo.toml -p berry-npuproto --target {{host}}
+    # am §二.3 首刀：berry-anrwatch（ANR 判定核——指令类分阈〔前台
+    # Launch/Resume 5s、PauseSave 2s 契约钉值〕+ 两段语义〔超时发取证→
+    # 宽限尽或证据在手即终止〕，host 5 测；cbox 抓栈与终止执行归服务刀）。
+    cargo test --manifest-path user/Cargo.toml -p berry-anrwatch --target {{host}}
     # mkapp 门禁自检（a-3 U4：mkfat --check-fixture 同位前置——打包器门禁
     # 面此前只在 build-user 产物链上被动覆盖，门禁自身坏 = 产物链静默劣化）。
     python3 tools/mkapp.py --selftest

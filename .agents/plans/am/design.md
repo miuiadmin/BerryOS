@@ -40,7 +40,7 @@ Version: 2.0.0
 - [x] 熔断判定核首刀：`user/berry-wakeflood`（Wake-Flood 每客户端分钟桶计数 + 12 次/分钟钉值熔断 + 冷却窗释放〔纯时间驱动〕与再熔断环——契约二.2 的判定面单源）——host 7 测绿（`just test-host` berry-wakeflood 腿，2026-11-22）；退避投递/计时器驱动/耗电台账登记归 appd 与 power-thermal 接线刀
 - [ ] 实证租约四源接线（audiod 静音撤证 5s/locationd/berry-link/workmgr 30s 窗——服务面，owner 边界声明队列）
 - [ ] `WAKE_PENDING` 解冻执行链与 `SIGNAL_WAKE_PENDING` 闭环升级（涉内核信号面——owner 边界声明队列）
-- [ ] ANR 取证决策（5s/2s 阈值 + cbox 栈抓取触发——涉 cbox/svcface 面，随后续刀）
+- [x] ANR 判定核首刀：`user/berry-anrwatch`（指令类分阈〔Launch/Resume 前台 5s、PauseSave 保存 2s 契约钉值〕+ 两段语义〔超时发取证 → 宽限尽或证据在手即终止〕——「绝不让假死进程挂住监督器」的判定面单源）——host 5 测绿（`just test-host` berry-anrwatch 腿，2026-11-22）；cbox 抓栈执行与 job 终止接线归服务刀（cbox/svcface 边界面）
 
 1. **废除口头自报保活，只认系统服务实证租约**：任何应用不能仅凭清单声明常驻后台——`appd` 仅接受来自四大权威服务的实时活跃度背书：
    - `audiod` 出具「非静音真实音频流正在输出/录音」租约（静音填零超 5 秒自动撤证！）；
