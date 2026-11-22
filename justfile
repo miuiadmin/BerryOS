@@ -1172,6 +1172,11 @@ test-host:
     # 续写主路径〕+ 显式回收口，host 9 测；真消费
     # = airtd Paged KV-Cache 运行时〔后续刀〕）。
     cargo test --manifest-path user/Cargo.toml -p berry-kvpool --target {{host}}
+    # ai-runtime §四.1 首刀：berry-vqvec（vault 定点量化向量基元——每
+    # vec 单 scale 的 i8 标量量化〔round-half-away 手写〕+ 非对称整数
+    # 域距离〔内积/L2²〕，全零 vec 退化无除零，host 8 测；HNSW 图与
+    # FBE/VaultQueryCap 门控归 berry-vault 服务刀〔后续〕）。
+    cargo test --manifest-path user/Cargo.toml -p berry-vqvec --target {{host}}
     # mkapp 门禁自检（a-3 U4：mkfat --check-fixture 同位前置——打包器门禁
     # 面此前只在 build-user 产物链上被动覆盖，门禁自身坏 = 产物链静默劣化）。
     python3 tools/mkapp.py --selftest

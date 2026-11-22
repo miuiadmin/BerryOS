@@ -63,6 +63,12 @@ flowchart TD
 1. **不出端加密存储**：`berry-vault` 驻留于用户凭证级加密目录 `/data/user/<uid>/vault/`（受 [security 总体设计](../security/design.md) 的 FBE CE 密钥保护，锁屏态拒绝写入敏感明文查询），内部融合 `BerryFS` 事务表与轻量分层可导航小世界图（HNSW 定点量化向量索引）。
 2. **细粒度域能力隔离**：记忆条目按来源应用与数据域（`calendar`、`messages`、`notes`、`browsing`）打标；任何第三方应用或 AI 技能欲检索跨应用记忆，必须持有用户经由 [AI 同意面设计](../../../docs/AI同意面设计-v1.0.md) 授予的对应域带时效只读 `VaultQueryCap` 句柄，且每次检索命中记录自动写入不可篡改审计账本。
 
+建造清单（DAG 节验收面——全勾才配双戳）：
+
+- [x] 量化算术首刀：`user/berry-vqvec`（每 vec 单 scale 的 i8 标量量化 + 非对称整数域距离〔内积/L2²，重建域〕+ 全零 vec 无除零退化——HNSW 定点量化向量索引的算术底座）——host 8 测绿（`just test-host` berry-vqvec 腿，2026-11-22）
+- [ ] HNSW 分层图结构与贪心导航（ berry-vault 内——消费 berry-vqvec）
+- [ ] FBE CE 加密目录集成 + 锁屏态拒写 + 域打标与 `VaultQueryCap` 门控 + 不可篡改审计账本（涉 security/svcmgr 面——owner 边界声明队列）
+
 ## 验收标准
 
 1. **零重复物理驻留验证**：在 QEMU / 模拟器中同时拉起 4 个并发调用同一 64MiB 测试模型的客户端进程，内核 VMO 物理账本证明权重物理占用恒定为单份（增量仅来自各会话独立 `KvBlock`），触发内存回收压力后冷模型页可被干净驱逐并在下次请求时无损重载。

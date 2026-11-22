@@ -277,6 +277,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "berry-vqvec"
+version = "0.2.0"
+
+[[package]]
 name = "berry-watchdog"
 version = "0.2.0"
 dependencies = [
