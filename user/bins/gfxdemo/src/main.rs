@@ -281,7 +281,7 @@ fn submit_full(hw: Handle, vmo: Handle, target_ns: u64) -> u32 {
     let mut rep = [0u8; 256];
     let mut rhs = [0 as Handle; 8];
     let mut alias: Handle = 0;
-    if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias) != 0 || alias == 0 {
+    if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias) != 0 || alias == 0 {
         fail("dup alias k6");
     }
     let sreq = gp::PresentReq::Submit {
@@ -937,7 +937,7 @@ fn main() {
     // 预告帧：FULL damage + rate_hint=120（密集 = 快于现档 30）。vote 与
     // submit 之间零拍点（30Hz 拍距 33ms ≫ RPC 对时——streak 面零污染）。
     let mut alias_h: Handle = 0;
-    if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias_h) != 0 || alias_h == 0 {
+    if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias_h) != 0 || alias_h == 0 {
         fail("dup alias hint");
     }
     let hreq = gp::PresentReq::Submit {
@@ -1046,7 +1046,7 @@ fn main() {
     for i in 0..K4M {
         parks[i] = vb_point(hw);
         let mut alias_i: Handle = 0;
-        if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias_i) != 0 || alias_i == 0 {
+        if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias_i) != 0 || alias_i == 0 {
             fail("dup alias loop");
         }
         let sreq = gp::PresentReq::Submit {
@@ -1203,7 +1203,7 @@ fn main() {
     // 会退化即时呈现——定点面走真挂起）；sleep 盖 latch + 唤醒尾（首版
     // sleep 5p 撞唤醒尾 → slot 被 drain 帧压弃、P5C 永缺）。
     let mut alias_p5: Handle = 0;
-    if berry_handle_duplicate(vmo, RIGHT_READ, &mut alias_p5) != 0 || alias_p5 == 0 {
+    if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias_p5) != 0 || alias_p5 == 0 {
         fail("dup alias k6p5");
     }
     let preq6 = gp::PrepareReq {
