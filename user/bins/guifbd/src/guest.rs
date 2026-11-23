@@ -2434,7 +2434,7 @@ impl Vgpu {
         {
             return None;
         }
-        let _ = vio::put_desc(
+        vio::put_desc(
             ring,
             &self.dma.lay,
             0,
@@ -2442,7 +2442,7 @@ impl Vgpu {
             n_ind as u32,
             vio::DESC_F_INDIRECT,
             0,
-        );
+        )?;
         let expect = {
             let old = vio::get_u16(ring, self.dma.lay.avail_off + 2)?;
             vio::publish(ring, &self.dma.lay, 0)?;
