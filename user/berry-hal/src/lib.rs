@@ -19,8 +19,9 @@
 //! 钉**硬件访问**契约——组合发生在消费侧：驱动实现方同时实现 Driver
 //! trait 并持有本 crate 的 trait 对象（driver 的示例模块即此组合形；
 //! vprobe、vblk 当前只持 HAL 半边、未实现 Driver trait——故 driver→hal
-//! 的 crate 依赖是可选的单向箭头，本 crate 永不反向依赖 driver）。生命周期契约不被硬件访问契约绑架（反之
-//! 亦然——两契约可各自独立测试）。缝合成铸件（DeviceCap：MMIO 窗
+//! 的 crate 依赖是可选的单向箭头，本 crate 永不反向依赖 driver）。
+//! 生命周期契约不被硬件访问契约绑架（反之亦然——两契约可各自独立
+//! 测试）。缝合成铸件（DeviceCap：MMIO 窗
 //! VMO + Interrupt + Bti）归波 2.2 后续刀。
 //!
 //! 形态 = berry-driver 族例：`cfg_attr(not(test), no_std)` 库本体 + alloc

@@ -206,7 +206,8 @@ pub fn used_ent(ring: &[u8], lay: &RingLayout, i: usize) -> Option<(u32, u32)> {
 
 /// virtio-mmio 传输层寄存器偏移（规范 §4.2.2，冻结值；LE 32 位访问，
 /// 队列三址各拆 LOW/HIGH 两寄存器——v2 专属，legacy 走 PFN@0x40 不在册）。
-/// volatile 读写在驱动本体——这里只单源偏移与鉴定值（magic/version/deviceID）。
+/// volatile 读写不在本 crate——在驱动本体，或经 berry-hal 的 `VirtioMmio`
+/// （vprobe、vblk 接法）；这里只单源偏移与鉴定值（magic/version/deviceID）。
 pub mod mmio {
     pub const MAGIC: usize = 0x00;
     pub const VERSION: usize = 0x04;

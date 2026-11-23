@@ -124,8 +124,9 @@ static mut CLI: [u8; SECTOR_SZ] = [0; SECTOR_SZ];
 fn find_device() -> usize {
     // 每槽授窗（vprobe 同款）：窗基 = VA + slot×STRIDE、窗长 = STRIDE（0x200）
     // ——逐字 volatile 与窗界检（4 对齐 + off+4 ≤ 窗长）收敛在 berry-hal 的
-    // VirtioMmio 内部，经 Mmio trait 契约面调用，纯安全。只读 ID 头四字 +
-    // 特性/队列寄存器（写面在协商序内，见 main）。
+    // VirtioMmio 内部，经 Mmio trait 契约面调用，纯安全。本函数只读
+    // MAGIC / DEVICE_ID / VERSION 三个鉴定寄存器、不写任何寄存器（特性
+    // 与队列寄存器的读写面在 main 的协商序内）。
     let mut occupied: Option<usize> = None;
     let mut n = 0usize;
     let mut n_occupied = 0usize;
@@ -180,10 +181,14 @@ fn mmio(slot: usize) -> VirtioMmio {
     }
 }
 
+/// 读薄层：字节偏移直通 HAL `read32`。保留本层（而非像 vprobe 直接
+/// `regs.read32(..)`）是为让 negotiate / setup_queue / blk_op / serve
+/// 的函数体与接 HAL 前逐字相同——只改签名。
 fn rd(regs: &VirtioMmio, off: usize) -> u32 {
     regs.read32(off)
 }
 
+/// 写薄层：同 [`rd`]——字节偏移直通 HAL `write32`。
 fn wr(regs: &mut VirtioMmio, off: usize, v: u32) {
     regs.write32(off, v)
 }

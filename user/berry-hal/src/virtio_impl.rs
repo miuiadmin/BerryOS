@@ -1,7 +1,8 @@
 //! [`Mmio`] trait 的 virtio-mmio 实现——把 volatile 读写包装为安全接口。
 //!
-//! berry-virtio 库只单源寄存器偏移表与鉴定值（「volatile 读写在驱动本体」
-//! ——其 mmio 模块注释自述），本模块补上统一 HAL 侧的包装：①窗界检
+//! berry-virtio 库只单源寄存器偏移表与鉴定值、自身不含 volatile 读写
+//! （在驱动本体，或经本模块——其 mmio 模块注释同述），本模块补上统一
+//! HAL 侧的包装：①窗界检
 //! （[`VirtioMmio::new`] 记窗长，越界/非对齐偏移读 0 写弃——值不炸，
 //! unsafe volatile 面完全收敛在实现内部，调用方零 unsafe）；②virtio
 //! 寄存器语义便捷面（[`magic`]/[`device_id`] 等——偏移全引
@@ -9,7 +10,7 @@
 //! 「引常量不复制」纪律）。
 //!
 //! LE 域说明：virtio-mmio 全域 LE（规范 §4.2.2），host 与目标 aarch64
-//! 均 LE，`read_volatile` 直读即 LE 序（消费面 vprobe 与 berry-driver
+//! 均 LE，`read_volatile` 直读即 LE 序（消费面 vprobe、vblk 与 berry-driver
 //! virtio_example 全经本实现走读写，不再各持 volatile 面）。
 //!
 //! [`magic`]: VirtioMmio::magic
