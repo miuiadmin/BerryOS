@@ -276,6 +276,11 @@ fn sleep_ns(ns: u64) {
 
 /// FULL submit 单趟（刀6 k6 段共用——fresh dup 别名随行）：返回 frame
 /// token（ST_BUSY/ST_FULL 等 1B 形 = fail loud）。
+///
+/// 随行规则：随消息发送的 VMO 别名必须以 RIGHT_READ 加 RIGHT_TRANSFER
+/// 复制——缺 TRANSFER 会被内核 send 随行预检（逐柄 rights_of →
+/// `hdlface::probe::probe_transfer_ok`）以 ERR_ACCESS_DENIED（-13）拒绝，
+/// 本趟落 `rpc send err=-13`；下方 dup 请求即按此补 TRANSFER（77354854）。
 fn submit_full(hw: Handle, vmo: Handle, target_ns: u64) -> u32 {
     let mut req = [0u8; 256];
     let mut rep = [0u8; 256];

@@ -155,7 +155,7 @@ pub struct AbsCal {
 /// 2^64` 恒不溢出。旧 i64 写法在极端三元组（i32::MIN/i32::MAX/u32::MAX）
 /// 下乘积约 1.8e19 超 i64::MAX——debug panic、release 静默回绕；真实路径
 /// screen_len 来自 u16 显示尺寸（乘积上限约 2.8e14）到不了，属防御面。
-/// 结果与旧式逐位相同：三因子非负，u64 截断除 = floor = 旧 i64 除。
+/// 在旧式不溢出的入参域内与旧式逐位相同：三因子非负，u64 截断除 = floor = 旧 i64 除。
 pub fn normalize_axis(value: i32, cal_min: i32, cal_max: i32, screen_len: u32) -> Option<u32> {
     if cal_max <= cal_min || screen_len == 0 {
         return None;
