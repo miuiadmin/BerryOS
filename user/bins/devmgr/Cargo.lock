@@ -31,6 +31,10 @@ name = "berry-fsproto"
 version = "0.2.0"
 
 [[package]]
+name = "berry-gpuproto"
+version = "0.2.0"
+
+[[package]]
 name = "berry-libc"
 version = "0.2.0"
 dependencies = [
@@ -100,6 +104,13 @@ name = "berry-vdsoface"
 version = "0.2.0"
 
 [[package]]
+name = "berry-virtio"
+version = "0.2.0"
+dependencies = [
+ "berry-gpuproto",
+]
+
+[[package]]
 name = "berry-winplan"
 version = "0.2.0"
 dependencies = [
@@ -114,4 +125,5 @@ dependencies = [
  "berry-libc",
  "berry-psproto",
  "berry-sys",
+ "berry-virtio",
 ]

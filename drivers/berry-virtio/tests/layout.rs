@@ -147,6 +147,22 @@ fn mmio_table_invariants() {
     assert_eq!(DEVICE_ID_GPU, berry_gpuproto::DEVICE_ID_GPU);
     assert_ne!(DEVICE_ID_GPU, DEVICE_ID_BLOCK);
     assert_ne!(DEVICE_ID_GPU, DEVICE_ID_INPUT);
+    // console/rng（devmgr 驱动表补全刀）：规范 §5.3 Console / §5.4 Entropy =
+    // uapi virtio_ids.h VIRTIO_ID_CONSOLE=3 / VIRTIO_ID_RNG=4（左 = crate
+    // 常量，右 = 规范字面值）。
+    assert_eq!(DEVICE_ID_CONSOLE, 3);
+    assert_eq!(DEVICE_ID_RNG, 4);
+    // 设备 ID 族六员两两互异（驱动按 did 分派——重号 = 错绑驱动）；GPU 行
+    // 跨 crate 单源在上面已钉，这里连它一起进族比对。
+    let ids = [
+        DEVICE_ID_NETWORK, DEVICE_ID_BLOCK, DEVICE_ID_CONSOLE, DEVICE_ID_RNG,
+        DEVICE_ID_GPU, DEVICE_ID_INPUT,
+    ];
+    for (i, &a) in ids.iter().enumerate() {
+        for &b in &ids[i + 1..] {
+            assert_ne!(a, b, "device id {a} 重号");
+        }
+    }
     // 表驱动不变量：全部偏移 4 对齐、互异、且落在规范寄存器空间 [0, 0x100)。
     let offs = [
         MAGIC, VERSION, DEVICE_ID, VENDOR_ID, DEV_FEAT, DEV_FEAT_SEL, DRV_FEAT,

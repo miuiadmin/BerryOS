@@ -122,21 +122,60 @@ impl Clock for VirtualClock {
 /// （64B）；**不回收复用**——`free_coherent` 只销账（池内指针 live 计数
 /// 减一），池外指针静默忽略（值不炸）；池尽 [`HalError::Oom`]，真回收面
 /// 归波 2.4 连续页 DMA VMO 刀。
+///
+/// # 配额语义（2026-11-24 记账修正：垫片不计配额）
+///
+/// `cap` 只计**交付给驱动的字节**（Σ size），[`Self::used`] 与之同尺
+/// （`capacity() - used()` = 配额余量）。按绝对地址对齐产生的垫片走另一
+/// 本账——由蓄水池自身物理长 `cap + DMA_ALIGN - 1` 兜底，两门各自独立：
+///
+/// - 配额门：`charged + size > cap` → `Oom`；
+/// - 物理门：`对齐后游标 + size > pool.len()` → `Oom`（垫片累积把物理池
+///   吃尽时触发——`used()` 可仍小于 `capacity()`，用 [`Self::pool_used`]
+///   分辨是哪一门）。
+///
+/// 由此得到的可兑现性保证（对任意堆基址残差）：单笔 `cap` 字节**必成**
+/// （基址垫片 ≤ 63 恰被物理长吸收）；size 全为 64 倍数时**配额恰可兑现**
+/// （零分配间垫片，物理门永不先于配额门——`Oom` ⟺ Σ size > cap）。
+/// size 非 64 倍数时，分配间垫片（每笔 ≤ 63 字节）累积可能先于配额把物理
+/// 池吃尽——最少两笔即可触发（如 cap=100 两笔 50 在基址残差 1..=14 时第二
+/// 笔触物理门）——此时仍返回 `Oom`，值不炸、`used()` 与实际交付一致。
+/// 任何路径都不越界写蓄水池、不改已分配指针（bump 单调、池 Vec 定长不
+/// 重分配）。
 pub struct BumpDmaAlloc {
-    /// 蓄水池（host 形态 = 普通堆分配；真机形态 = 一致性映射窗。物理长
-    /// `cap + DMA_ALIGN - 1`：多留对齐垫片——Vec 堆基址对齐只保 1，游标
-    /// 自下一 64 边界起，兑现 cacheline 对齐契约且保持零 unsafe 面）。
+    /// 蓄水池（host 形态 = 普通堆分配；真机形态 = 一致性映射窗）。物理长
+    /// `cap + DMA_ALIGN - 1`：多留对齐垫片——Vec 堆基址对齐只保 1，游标自
+    /// 下一 64 边界起，兑现 cacheline 对齐契约且保持零 unsafe 面。物理门
+    /// 按本长度执法（垫片的兜底账本）。
     pool: Vec<u8>,
-    /// 授额容量（Oom 门按此执法——垫片不计可用）。
+    /// 授额容量（`new` 入参；配额门按此执法——只计交付字节，垫片不计）。
     cap: usize,
-    /// bump 游标（池内字节偏移，起点 0；分配期按绝对地址对齐消化垫片）。
+    /// bump 物理游标（池内字节偏移，起点 0，含全部垫片；物理门的基点）。
     next: usize,
+    /// 配额已计字节（Σ 交付 size，不含垫片——`used()` 的源；单调）。
+    charged: usize,
     /// 在册分配数（诊断面：free 销账、alloc 记账）。
     live: usize,
 }
 
 /// DMA 一致性对齐（AArch64 cacheline = 64B）。
 pub const DMA_ALIGN: usize = 64;
+
+/// 对齐与物理门规划（纯函数——基址残差可穷举测试）：池基址绝对地址
+/// `base`、池内物理游标 `cursor`、请求 `size`、物理长 `pool_len`，返回
+/// `(对齐后池内起偏移, 结束池内偏移)`。按绝对地址推到下一 64 边界（只前进
+/// 不回退——`addr ≥ base` 恒成立，减法安全）；地址空间溢出或物理门不过走
+/// `Oom`（值不炸）。调用方先过配额门再调本函数。
+fn plan(base: usize, cursor: usize, size: usize, pool_len: usize) -> Result<(usize, usize), HalError> {
+    let addr = base.checked_add(cursor).ok_or(HalError::Oom)?;
+    let aligned_addr = addr.checked_add(DMA_ALIGN - 1).ok_or(HalError::Oom)? & !(DMA_ALIGN - 1);
+    let aligned = aligned_addr - base;
+    let end = aligned.checked_add(size).ok_or(HalError::Oom)?;
+    if end > pool_len {
+        return Err(HalError::Oom); // 蓄水池兜底：垫片把物理池吃尽
+    }
+    Ok((aligned, end))
+}
 
 impl BumpDmaAlloc {
     /// 预置 `cap` 字节蓄水池（零容量拒——`Invalid`：无池即全 Oom 的哑池
@@ -146,18 +185,32 @@ impl BumpDmaAlloc {
             return Err(HalError::Invalid);
         }
         // 零初始化：DMA 缓冲首读前本就该由驱动显式填装（零值面可预测）。
-        // 物理长 = cap + 63：垫片预算——分配期按绝对地址对齐到 64 边界
-        // 最多吃 63 字节，授额 cap 全程可兑现（Oom 门在 slice 索引前执法）。
-        Ok(Self { pool: alloc::vec![0u8; cap + DMA_ALIGN - 1], cap, next: 0, live: 0 })
+        // 物理长 = cap + 63：垫片预算——基址垫片最多 63 字节，恰被吸收，
+        // 故单笔 cap 字节必成（配额只计交付字节，见类型文档）。
+        Ok(Self {
+            pool: alloc::vec![0u8; cap + DMA_ALIGN - 1],
+            cap,
+            next: 0,
+            charged: 0,
+            live: 0,
+        })
     }
 
-    /// 授额容量（字节——`new` 的入参，垫片不计）。
+    /// 授额容量（字节——`new` 的入参，只计交付字节，垫片不计）。
     pub fn capacity(&self) -> usize {
         self.cap
     }
 
-    /// 已分配字节数（bump 游标现值，含基址垫片与分配间对齐垫片——单调）。
+    /// 配额已计字节（Σ 交付 size，不含垫片，单调——`free` 不退）。与
+    /// [`Self::capacity`] 同尺：`capacity() - used()` = 配额余量。
     pub fn used(&self) -> usize {
+        self.charged
+    }
+
+    /// 蓄水池物理已用（bump 游标现值，含基址垫片与分配间垫片，单调）。
+    /// 物理长 = `capacity() + DMA_ALIGN - 1`；`used()` 未满而本值已近物理
+    /// 长时，下一笔 `Oom` 来自物理门（垫片吃尽物理池）而非配额门。
+    pub fn pool_used(&self) -> usize {
         self.next
     }
 
@@ -179,29 +232,19 @@ impl DmaAlloc for BumpDmaAlloc {
         if size == 0 {
             return Err(HalError::Invalid);
         }
-        // 按绝对地址对齐：Vec<u8> 堆基址对齐只保 1，需把游标推到
-        // base + off ≡ 0 (mod 64) 的绝对 64 边界（对齐垫片由此消化，
-        // 只前进不回退——addr ≥ base 恒成立，减法安全）。
-        let base = self.pool.as_ptr() as usize;
-        let addr = match base.checked_add(self.next) {
-            Some(v) => v,
-            None => return Err(HalError::Oom),
+        // 配额门（先于物理门；失败路径零记账——两门都不动游标）。
+        let charged = match self.charged.checked_add(size) {
+            Some(v) if v <= self.cap => v,
+            _ => return Err(HalError::Oom),
         };
-        let aligned_addr = match addr.checked_add(DMA_ALIGN - 1) {
-            Some(v) => v & !(DMA_ALIGN - 1),
-            None => return Err(HalError::Oom),
-        };
-        let aligned = aligned_addr - base;
-        let end = match aligned.checked_add(size) {
-            Some(v) => v,
-            None => return Err(HalError::Oom),
-        };
-        if end > self.cap {
-            return Err(HalError::Oom); // 授额耗尽（垫片区不计可用）
-        }
-        // 双界安全切片取指针（end ≤ cap < 物理长，slice 索引自带界检）。
+        // 物理门 + 对齐规划（纯函数 `plan`：按绝对地址推到下一 64 边界，
+        // 垫片由蓄水池物理长兜底）。
+        let (aligned, end) = plan(self.pool.as_ptr() as usize, self.next, size, self.pool.len())?;
+        // 双界安全切片取指针（aligned < end ≤ pool.len()，slice 索引自带界检；
+        // 已分配指针落定后池 Vec 定长不重分配，值不变）。
         let ptr = self.pool[aligned..end].as_mut_ptr();
         self.next = end;
+        self.charged = charged;
         self.live += 1;
         Ok(ptr)
     }
@@ -211,6 +254,204 @@ impl DmaAlloc for BumpDmaAlloc {
         // free 面 void 无错误通道，误释放不炸库）。
         if self.in_pool(ptr) {
             self.live = self.live.saturating_sub(1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 纯规划面的序列镜像（两门序同 `alloc_coherent`：配额门先、`plan`
+    /// 物理门后；失败不记账）。只用于穷举基址残差——端到端面见
+    /// tests/traits.rs。
+    fn simulate(
+        base: usize,
+        cap: usize,
+        sizes: &[usize],
+    ) -> (Vec<Result<usize, HalError>>, usize, usize) {
+        let pool_len = cap + DMA_ALIGN - 1;
+        let (mut next, mut charged) = (0usize, 0usize);
+        let out = sizes
+            .iter()
+            .map(|&s| {
+                let c = charged + s;
+                if c > cap {
+                    return Err(HalError::Oom);
+                }
+                match plan(base, next, s, pool_len) {
+                    Ok((_, end)) => {
+                        next = end;
+                        charged = c;
+                        Ok(end)
+                    }
+                    Err(e) => Err(e),
+                }
+            })
+            .collect();
+        (out, charged, next)
+    }
+
+    /// 全部 64 种基址残差的代表基址（高址避开溢出面，残差 = 下标）。
+    fn bases() -> Vec<usize> {
+        (0..DMA_ALIGN).map(|r| 0x10_0000_0000 + r).collect()
+    }
+
+    #[test]
+    fn plan_aligns_every_base_residue_and_never_regresses() {
+        for base in bases() {
+            for cursor in 0..=4 * DMA_ALIGN {
+                let (aligned, end) = plan(base, cursor, 1, usize::MAX).unwrap();
+                assert_eq!((base + aligned) % DMA_ALIGN, 0, "base%64={} cursor={cursor}", base % 64);
+                assert!(cursor <= aligned && aligned - cursor < DMA_ALIGN);
+                assert_eq!(end, aligned + 1);
+            }
+        }
+    }
+
+    #[test]
+    fn plan_address_space_overflow_is_oom() {
+        assert_eq!(plan(usize::MAX, 1, 1, usize::MAX).err(), Some(HalError::Oom)); // base+cursor 溢出
+        assert_eq!(plan(usize::MAX - 10, 0, 1, usize::MAX).err(), Some(HalError::Oom)); // +63 溢出
+        assert_eq!(plan(0x1001, 0, usize::MAX, usize::MAX).err(), Some(HalError::Oom)); // aligned(63)+size 溢出
+    }
+
+    #[test]
+    fn single_alloc_of_cap_fits_physical_pool_for_every_base_residue() {
+        // 单笔 cap 必成：基址垫片 ≤ 63 恰被物理长 cap + 63 吸收。
+        for cap in [1usize, 7, 100, 4096, 1 << 20] {
+            for base in bases() {
+                let p0 = (DMA_ALIGN - base % DMA_ALIGN) % DMA_ALIGN;
+                let (out, charged, next) = simulate(base, cap, &[cap]);
+                assert_eq!(out, vec![Ok(cap + p0)], "cap={cap} base%64={}", base % 64);
+                assert_eq!((charged, next), (cap, cap + p0));
+            }
+        }
+    }
+
+    #[test]
+    fn two_allocs_of_half_cap_hit_two_gates_by_base_residue() {
+        // 回归钉板（基线缺陷形）：cap=100 两笔 50——基线按含垫片相对偏移
+        // 执法时第二笔恒 Oom（0..50 → 对齐到 64 → 64 + 50 = 114 > 100），
+        // 且 used()=50 < cap 自相矛盾。垫片不计配额后：残差 r=0 或 r≥15
+        // （基址垫片 p0 ≤ 49）两笔必成、第三笔由**配额门**拒；残差 r∈1..=14
+        // （p0 ≥ 50）第二笔由**物理门**拒（p0 + 64 + 50 > 163）——两门都
+        // 值不炸、不越界，charged 与交付一致。
+        for base in bases() {
+            let r = base % DMA_ALIGN;
+            let (out, charged, next) = simulate(base, 100, &[50, 50, 50]);
+            if r == 0 || r >= 15 {
+                assert!(out[0].is_ok() && out[1].is_ok(), "r={r}");
+                assert_eq!(out[2], Err(HalError::Oom));
+                assert_eq!(charged, 100);
+            } else {
+                assert!(out[0].is_ok(), "r={r}");
+                assert_eq!(out[1], Err(HalError::Oom), "r={r}");
+                assert_eq!(charged, 50);
+            }
+            assert!(next <= 100 + DMA_ALIGN - 1);
+        }
+    }
+
+    #[test]
+    fn cacheline_multiple_sizes_redeem_quota_exactly_for_every_base_residue() {
+        // size 全为 64 倍数：零分配间垫片，物理门永不先于配额门——64×64
+        // 恰兑满 cap=4096，第 65 笔由配额门拒（基线在残差 16 时第 64 笔即
+        // Oom——实抓于宿主首实例）。
+        for base in bases() {
+            let sizes = vec![64usize; 65];
+            let (out, charged, next) = simulate(base, 4096, &sizes);
+            assert!(out[..64].iter().all(Result::is_ok), "base%64={}", base % 64);
+            assert_eq!(out[64], Err(HalError::Oom));
+            assert_eq!((charged, next), (4096, 4096 + (64 - base % 64) % 64));
+        }
+    }
+
+    #[test]
+    fn sub_cacheline_sizes_may_hit_physical_gate_before_quota() {
+        // 1 字节 × N：每笔 63 字节分配间垫片累积——物理门先于配额门。
+        // 第 65 笔仅当基址残差为 1（基址垫片 63）时触物理门，否则成；
+        // 第 66 笔任何残差都触物理门；配额 charged 远小于 cap。
+        for base in bases() {
+            let sizes = vec![1usize; 66];
+            let (out, charged, next) = simulate(base, 4096, &sizes);
+            assert!(out[..64].iter().all(Result::is_ok), "base%64={}", base % 64);
+            assert_eq!(out[64].is_ok(), base % 64 != 1, "base%64={}", base % 64);
+            assert_eq!(out[65], Err(HalError::Oom));
+            let n = if base % 64 != 1 { 65 } else { 64 };
+            assert_eq!(charged, n);
+            assert!(next <= 4096 + 63);
+        }
+    }
+
+    #[test]
+    fn failed_alloc_mutates_no_state_on_either_gate() {
+        let mut d = BumpDmaAlloc::new(128).unwrap();
+        let p = d.alloc_coherent(64).unwrap();
+        let snap = (d.used(), d.pool_used(), d.live_count());
+        // 配额门拒（65 > 128 - 64）：零状态变化。
+        assert_eq!(d.alloc_coherent(65), Err(HalError::Oom));
+        assert_eq!((d.used(), d.pool_used(), d.live_count()), snap);
+        // Invalid 同理。
+        assert_eq!(d.alloc_coherent(0), Err(HalError::Invalid));
+        assert_eq!((d.used(), d.pool_used(), d.live_count()), snap);
+        // 成功一笔后：used 恰加 size、pool_used ≥ used、live +1。
+        let q = d.alloc_coherent(64).unwrap();
+        assert_eq!(d.used(), 128);
+        assert!(d.pool_used() >= d.used() && d.pool_used() <= 128 + DMA_ALIGN - 1);
+        assert_eq!(d.live_count(), 2);
+        assert!(q as usize > p as usize && q as usize % DMA_ALIGN == 0);
+        // 配额满后再拒。
+        assert_eq!(d.alloc_coherent(1), Err(HalError::Oom));
+        assert_eq!((d.used(), d.pool_used(), d.live_count()), (128, d.pool_used(), 2));
+    }
+
+    #[test]
+    fn pool_tail_untouched_and_prior_blocks_stable() {
+        // 不越界：垫片区与游标之后的池尾保持零；已分配块内容不被后续分配
+        // 改写（指针稳定 + 不重叠）。
+        let cap = 512;
+        let mut d = BumpDmaAlloc::new(cap).unwrap();
+        let base = d.pool.as_ptr() as usize;
+        let mut blocks: Vec<(usize, *mut u8)> = Vec::new();
+        for (i, s) in [1usize, 7, 64, 100, 33, 65, 200].iter().enumerate() {
+            match d.alloc_coherent(*s) {
+                Ok(p) => {
+                    assert_eq!(p as usize % DMA_ALIGN, 0);
+                    // 写入模式标记块。
+                    unsafe { core::ptr::write_bytes(p, 0xa0 + i as u8, *s) };
+                    blocks.push((*s, p));
+                }
+                Err(HalError::Oom) => break, // 配额或物理门拒——都合法
+                Err(e) => panic!("{e:?}"),
+            }
+        }
+        assert!(blocks.len() >= 6, "sequence should fit at least six blocks: got {}", blocks.len());
+        // 块两两不重叠且顺序单调。
+        for w in blocks.windows(2) {
+            let (s0, p0) = w[0];
+            let (_, p1) = w[1];
+            assert!((p0 as usize + s0) <= p1 as usize);
+        }
+        // 每块模式仍在（后续分配未改写）。
+        for (i, (s, p)) in blocks.iter().enumerate() {
+            let buf = unsafe { core::slice::from_raw_parts(*p, *s) };
+            assert!(buf.iter().all(|&b| b == 0xa0 + i as u8), "block {i} clobbered");
+        }
+        // 游标之后池尾全零；垫片区（块间空隙）全零。
+        let next = d.pool_used();
+        assert!(d.pool[next..].iter().all(|&b| b == 0));
+        let mut cursor = 0usize;
+        for (s, p) in &blocks {
+            let off = *p as usize - base;
+            assert!(d.pool[cursor..off].iter().all(|&b| b == 0), "gap before block not zero");
+            cursor = off + s;
+        }
+        assert!(d.pool[cursor..next].iter().all(|&b| b == 0));
+        // 所有块都在物理池内。
+        for (s, p) in &blocks {
+            let off = *p as usize - base;
+            assert!(off + s <= d.pool.len());
         }
     }
 }

@@ -210,12 +210,17 @@ fn bump_dma_alloc_alignment_and_oom() {
 
     // free 只销账不回收：live 减、used 不退（bump 单调契约）。
     let used_before = dma.used();
+    let pool_before = dma.pool_used();
+    assert_eq!(used_before, 100 + 28, "配额只计交付字节，垫片不入账");
+    assert!(pool_before >= used_before, "物理游标含垫片，≥ 配额已计");
     dma.free_coherent(p1);
     assert_eq!(dma.live_count(), 1);
-    assert_eq!(dma.used(), used_before);
+    assert_eq!((dma.used(), dma.pool_used()), (used_before, pool_before));
 
-    // 池尽 Oom：剩余不足即拒。
+    // 池尽 Oom：剩余不足即拒（配额门 128 + 1000 > 256）。
     assert_eq!(dma.alloc_coherent(1000), Err(HalError::Oom));
+    assert_eq!(dma.used(), used_before, "失败路径零记账");
+    assert_eq!(dma.live_count(), 1);
 
     // 零长分配 Invalid。
     assert_eq!(dma.alloc_coherent(0), Err(HalError::Invalid));
@@ -232,17 +237,145 @@ fn bump_dma_alloc_alignment_and_oom() {
 fn dma_alloc_impls_interchangeable() {
     // trait 的本质面：同一使用点换实现即换行为（驱动经 dyn DmaAlloc
     // 持有，平台差异不可见）。共同契约 = 零长 Invalid + 分配/耗尽走
-    // 错误值；耗尽门各按各的后备（配额计数 vs 蓄水池授额——授额需含
-    // 垫片余量：绝对 64 边界对齐最多吃 63 字节）。
+    // 错误值；耗尽门各按各的后备（配额计数 vs 蓄水池配额门——同 cap
+    // 同结果：垫片不计配额，由蓄水池物理长兜底）。
     let mut quota = QuotaDmaAlloc::new(128);
     assert!(quota.alloc_coherent(100).is_ok());
     assert_eq!(quota.alloc_coherent(100), Err(HalError::Oom));
     assert_eq!(quota.alloc_coherent(0), Err(HalError::Invalid));
 
-    let mut bump = BumpDmaAlloc::new(100 + 100 + 2 * berry_hal::DMA_ALIGN).unwrap();
+    let mut bump = BumpDmaAlloc::new(128).unwrap();
     assert!(bump.alloc_coherent(100).is_ok());
-    assert!(bump.alloc_coherent(100).is_ok()); // 两笔 + 双垫片 ≤ 授额
-    assert_eq!(bump.alloc_coherent(100), Err(HalError::Oom)); // 三笔必超
+    assert_eq!(bump.alloc_coherent(100), Err(HalError::Oom)); // 配额门 200 > 128
+    assert_eq!(bump.alloc_coherent(0), Err(HalError::Invalid));
+    assert_eq!(bump.used(), 100);
+
+    // 配额恰兑满：cap=128 两笔 64 必成（首笔 64 倍数 → 零分配间垫片，
+    // 任意残差下物理门 p0 + 128 ≤ 191 恒过），第三笔由配额门拒。
+    let mut bump = BumpDmaAlloc::new(128).unwrap();
+    assert!(bump.alloc_coherent(64).is_ok());
+    assert!(bump.alloc_coherent(64).is_ok());
+    assert_eq!(bump.used(), 128);
+    assert_eq!(bump.alloc_coherent(1), Err(HalError::Oom));
+    assert_eq!(bump.used(), 128);
+}
+
+// ---------- DmaAlloc：配额记账回归（2026-11-24 垫片不计配额） ----------
+
+#[test]
+fn bump_dma_single_alloc_of_cap_always_succeeds() {
+    // 基线缺陷面之一：Oom 门按含基址垫片的相对偏移执法时，堆基址非 64
+    // 对齐的池单笔 cap 字节即 Oom（最差少 63 字节）。修正后基址垫片由
+    // 物理长 cap + 63 吸收，单笔 cap 必成、配额恰满。
+    for cap in [1usize, 7, 100, 4096] {
+        let mut d = BumpDmaAlloc::new(cap).unwrap();
+        let p = d.alloc_coherent(cap).unwrap();
+        assert_eq!(p as usize % berry_hal::DMA_ALIGN, 0);
+        assert_eq!((d.used(), d.capacity(), d.live_count()), (cap, cap, 1));
+        assert!(d.pool_used() >= cap && d.pool_used() <= cap + berry_hal::DMA_ALIGN - 1);
+        assert_eq!(d.alloc_coherent(1), Err(HalError::Oom)); // 配额门
+        assert_eq!(d.used(), cap, "失败路径零记账");
+    }
+}
+
+#[test]
+fn bump_dma_two_half_allocs_quota_gate_not_padding() {
+    // 基线缺陷回归钉板：cap=100 两笔 50——基线第二笔恒 Oom（0..50 →
+    // 对齐到 64 → 64 + 50 = 114 > 100）且 used()=50 < cap 自相矛盾。
+    // 修正后配额只计交付字节：基址垫片 p0 ≤ 49 时两笔必成、第三笔由
+    // 配额门拒；p0 ≥ 50（仅 1 字节对齐分配器可致）时第二笔由物理门拒。
+    // p0 由首笔后的物理游标反推（A1 = p0，end = p0 + 50）。
+    let mut d = BumpDmaAlloc::new(100).unwrap();
+    let p1 = d.alloc_coherent(50).unwrap();
+    let p0 = d.pool_used() - 50;
+    assert_eq!(p1 as usize % berry_hal::DMA_ALIGN, 0);
+    assert_eq!(d.used(), 50);
+    match d.alloc_coherent(50) {
+        Ok(p2) => {
+            assert!(p0 <= 49, "p0={p0} 不该放下第二笔");
+            assert!(p2 as usize >= p1 as usize + 50, "不重叠");
+            assert_eq!(p2 as usize % berry_hal::DMA_ALIGN, 0);
+            assert_eq!(d.used(), 100);
+            assert_eq!(d.live_count(), 2);
+            assert_eq!(d.alloc_coherent(1), Err(HalError::Oom)); // 配额门恰满
+            assert_eq!(d.used(), 100);
+        }
+        Err(HalError::Oom) => {
+            assert!(p0 >= 50, "p0={p0} 本该放下第二笔");
+            assert_eq!((d.used(), d.live_count()), (50, 1), "物理门拒零记账");
+        }
+        Err(e) => panic!("unexpected {e:?}"),
+    }
+}
+
+#[test]
+fn bump_dma_cacheline_multiples_redeem_quota_exactly() {
+    // size 全为 64 倍数：零分配间垫片，Oom ⟺ Σ size > cap——64×64 恰兑满
+    // cap=4096（基线在宿主首实例实抓残差 16 时第 64 笔即 Oom，只兑 4032）。
+    let mut d = BumpDmaAlloc::new(4096).unwrap();
+    let mut prev = 0usize;
+    for i in 1..=64usize {
+        let p = d.alloc_coherent(64).unwrap();
+        assert_eq!(p as usize % berry_hal::DMA_ALIGN, 0, "第 {i} 笔");
+        assert!(p as usize >= prev + 64, "第 {i} 笔重叠或回退");
+        prev = p as usize;
+        assert_eq!(d.used(), 64 * i);
+    }
+    assert_eq!((d.used(), d.capacity()), (4096, 4096));
+    assert!(d.pool_used() <= 4096 + 63);
+    assert_eq!(d.alloc_coherent(64), Err(HalError::Oom));
+    assert_eq!(d.alloc_coherent(1), Err(HalError::Oom));
+    assert_eq!(d.used(), 4096);
+}
+
+#[test]
+fn bump_dma_sub_cacheline_runs_hit_physical_gate_pool_used_diagnoses() {
+    // 1 字节 × N：每笔 63 字节分配间垫片累积，物理门先于配额门——64 或
+    // 65 笔后 Oom（取决于基址残差），此时 used() 远小于 capacity()，但
+    // pool_used() 已 ≥ cap（物理池将尽）——两门可分辨。
+    let mut d = BumpDmaAlloc::new(4096).unwrap();
+    let mut n = 0usize;
+    while d.alloc_coherent(1).is_ok() {
+        n += 1;
+        assert!(n <= 65, "物理长 4159 最多容 65 笔 1 字节，已 {n}");
+    }
+    assert!(n == 64 || n == 65, "n={n}");
+    assert_eq!(d.used(), n);
+    assert_eq!(d.live_count(), n);
+    assert!(d.used() < d.capacity());
+    assert!(d.pool_used() >= d.capacity(), "pool_used={} cap={}", d.pool_used(), d.capacity());
+    assert!(d.pool_used() <= d.capacity() + berry_hal::DMA_ALIGN - 1);
+    // 再拒也零记账（配额门或物理门皆不动游标）。
+    let snap = (d.used(), d.pool_used(), d.live_count());
+    assert_eq!(d.alloc_coherent(1), Err(HalError::Oom));
+    assert_eq!((d.used(), d.pool_used(), d.live_count()), snap);
+}
+
+#[test]
+fn bump_dma_allocated_blocks_stable_across_later_allocs_and_frees() {
+    // 不改已分配指针：后续分配不重叠、不改写前块；free 不动内存。
+    let mut d = BumpDmaAlloc::new(4096).unwrap();
+    let sizes = [64usize, 1, 100, 7, 64];
+    let mut blocks = Vec::new();
+    for (i, &s) in sizes.iter().enumerate() {
+        let p = d.alloc_coherent(s).unwrap();
+        assert_eq!(p as usize % berry_hal::DMA_ALIGN, 0);
+        unsafe { core::ptr::write_bytes(p, 0xf0 + i as u8, s) };
+        blocks.push((s, p));
+    }
+    assert_eq!(d.used(), sizes.iter().sum::<usize>());
+    for w in blocks.windows(2) {
+        assert!(w[0].1 as usize + w[0].0 <= w[1].1 as usize, "块重叠");
+    }
+    d.free_coherent(blocks[0].1);
+    let _ = d.alloc_coherent(64).unwrap();
+    d.free_coherent(blocks[2].1);
+    for (i, &(s, p)) in blocks.iter().enumerate() {
+        let buf = unsafe { core::slice::from_raw_parts(p, s) };
+        assert!(buf.iter().all(|&b| b == 0xf0 + i as u8), "块 {i} 被改写");
+    }
+    assert_eq!(d.live_count(), 4);
+    assert_eq!(d.used(), sizes.iter().sum::<usize>() + 64, "free 不退配额");
 }
 
 // ---------- Clock：VirtualClock 虚拟推进 ----------

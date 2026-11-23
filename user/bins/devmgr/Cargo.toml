@@ -31,6 +31,11 @@ license = "Apache-2.0"
 # 协议纯函数 crate（零 syscall 面，host 测试同链）：ps 账本帧编解码。
 berry-psproto = { path = "../../berry-psproto" }
 
+# 设备 ID 单源（`mmio::DEVICE_ID_*`——DRIVER_TABLE 引常量不复制；纯 no_std
+# 面零 syscall）：guifbd 同款跨工作区 path 依赖（user/bins → drivers/），
+# host `cargo test --lib` 与 musl bin 双面同引。
+berry-virtio = { path = "../../../drivers/berry-virtio" }
+
 # guest 面依赖（musl/linux 侧才在场——guifbd/ps 同款门控）：窗几何常量
 # 单源（VIRTIO_MMIO_VA/SLOTS/STRIDE）、channel/wait syscall 面、crt0 锚
 # 与 gift2_h（host `cargo test --lib` 只建 lib 纯面，bin 不连这些）。

@@ -30,6 +30,10 @@ use alloc::vec::Vec;
 use core::fmt::Write as _;
 
 use berry_psproto::{STATE_ALIVE, STATE_EXITED, STATE_SPAWNFAIL};
+use berry_virtio::mmio::{
+    DEVICE_ID_BLOCK, DEVICE_ID_CONSOLE, DEVICE_ID_GPU, DEVICE_ID_INPUT, DEVICE_ID_NETWORK,
+    DEVICE_ID_RNG,
+};
 
 // ---- virtio-mmio 槽几何与规范常量（vprobe 四常量同款本地镜像） ----
 
@@ -132,8 +136,8 @@ pub fn enumerate(reader: &mut dyn SlotReader) -> Result<DeviceInventory, BadMagi
 /// （8B 帽内短名——gui-inputd 注册名是 `inputd`，svcmgr `ps_reg(b"inputd")`
 /// 实录）。两名字段分立：v2 `/svc` 注册面落成后 `driver` 升命名空间路径。
 pub struct DriverBinding {
-    /// virtio DeviceID（2=block / 1=net / 18=input / 16=gpu / 3=console /
-    /// 4=rng）。
+    /// virtio DeviceID（数值单源 berry-virtio `mmio::DEVICE_ID_*`：2=block /
+    /// 1=net / 18=input / 16=gpu / 3=console / 4=rng）。
     pub device_id: u32,
     /// 设备类短名（报告用："blk"/"net"/"input"/"gpu"/"console"/"rng"）。
     pub kind: &'static str,
@@ -149,16 +153,16 @@ pub struct DriverBinding {
 /// gui-inputd、gpu=16→guifbd）+ 驱动表补全刀两行（console=3、rng=4——
 /// 先行绑定：服务本体未落（rng = 报告交付 1.5 未动面），设备在而账本
 /// 无行时 devmgr 报 absent WARN，正是「缺谁」的正确观察面）。did 数值
-/// 与 vprobe 白名单 / berry-virtio `mmio::DEVICE_ID_GPU` 等值钉板互证
-/// （console/rng 暂无 vprobe 白名——挂即 vprobe trap，smoke 拓扑面归
+/// 单源 = berry-virtio `mmio::DEVICE_ID_*`（引常量不复制；与 vprobe 白名单
+/// 互证——console/rng 暂无 vprobe 白名，挂即 vprobe trap，smoke 拓扑面归
 /// 各自服务落地刀）。
 pub const DRIVER_TABLE: [DriverBinding; 6] = [
-    DriverBinding { device_id: 2, kind: "blk", driver: "vblk", ledger_name: "vblk" },
-    DriverBinding { device_id: 1, kind: "net", driver: "vnet", ledger_name: "vnet" },
-    DriverBinding { device_id: 18, kind: "input", driver: "gui-inputd", ledger_name: "inputd" },
-    DriverBinding { device_id: 16, kind: "gpu", driver: "guifbd", ledger_name: "guifbd" },
-    DriverBinding { device_id: 3, kind: "console", driver: "console", ledger_name: "console" },
-    DriverBinding { device_id: 4, kind: "rng", driver: "berry-rng", ledger_name: "rngd" },
+    DriverBinding { device_id: DEVICE_ID_BLOCK, kind: "blk", driver: "vblk", ledger_name: "vblk" },
+    DriverBinding { device_id: DEVICE_ID_NETWORK, kind: "net", driver: "vnet", ledger_name: "vnet" },
+    DriverBinding { device_id: DEVICE_ID_INPUT, kind: "input", driver: "gui-inputd", ledger_name: "inputd" },
+    DriverBinding { device_id: DEVICE_ID_GPU, kind: "gpu", driver: "guifbd", ledger_name: "guifbd" },
+    DriverBinding { device_id: DEVICE_ID_CONSOLE, kind: "console", driver: "console", ledger_name: "console" },
+    DriverBinding { device_id: DEVICE_ID_RNG, kind: "rng", driver: "berry-rng", ledger_name: "rngd" },
 ];
 
 /// 按设备 ID 查绑定（未知 did = None → 报告 WARN，管理器不死）。
@@ -380,6 +384,8 @@ mod tests {
     // 3. 驱动匹配表：六设备类全命中，名字域（driver 与 ledger_name）钉板；
     //    gui-inputd 的账本行名是 inputd（svcmgr ps_reg 实录）；console/rng
     //    是先行绑定（服务未落——rngd 行名按 gui-inputd→inputd 同款缩）。
+    //    查表键故意用规范字面值（不引 berry-virtio 常量）——表改引常量后
+    //    这里就是跨 crate 等值钉板：常量漂移即此处红。
     #[test]
     fn driver_table_bindings() {
         let blk = driver_for(2).unwrap();

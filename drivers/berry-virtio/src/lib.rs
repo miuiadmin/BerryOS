@@ -246,6 +246,14 @@ pub mod mmio {
     /// virtio-input 设备 ID（规范 §5.8；GUI-4 段①起 gui-inputd 扫窗按
     /// 设备类匹配——同窗多设备类各占一槽，勿假设槽号）。
     pub const DEVICE_ID_INPUT: u32 = 18;
+    /// virtio-console 设备 ID（规范 §5.3 Console Device；uapi `virtio_ids.h`
+    /// VIRTIO_ID_CONSOLE=3 同值）。消费面：devmgr 驱动匹配表
+    /// `DRIVER_TABLE`（先行绑定——console 服务本体未落）。
+    pub const DEVICE_ID_CONSOLE: u32 = 3;
+    /// virtio-rng 设备 ID（规范 §5.4 Entropy Device；uapi `virtio_ids.h`
+    /// VIRTIO_ID_RNG=4 同值）。消费面：devmgr 驱动匹配表 `DRIVER_TABLE`
+    /// 先行绑定 berry-rng（服务本体未落）。
+    pub const DEVICE_ID_RNG: u32 = 4;
     /// virtio-gpu 设备 ID（uapi `virtio_ids.h` VIRTIO_ID_GPU=16；02 号 §3.1
     /// 指定落点。数值单源 = berry-gpuproto `DEVICE_ID_GPU`（uapi 两源断言
     /// 冻结）——本行跨 crate 引常量不复制，消费面：guifbd vgpu 后端扫窗
