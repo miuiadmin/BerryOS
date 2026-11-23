@@ -6,7 +6,7 @@
 //!    u32）→ `RawInputEvent`（value 按 i32 解释——REL 轴语义可负）+ 驱动侧
 //!    dequeue 时刻 ts_ns（规范无设备时间戳，Linux evdev 同款打点）。
 //! 2. **归一化**（`normalize_axis`）：设备自述 ABS 域 `[cal_min, cal_max]` →
-//!    屏幕像素 `[0, screen_len-1]`（i64 定点、端点钉板；域退化/零屏宽拒 None）。
+//!    屏幕像素 `[0, screen_len-1]`（u64 定点、端点钉板；域退化/零屏宽拒 None）。
 //! 3. **泵**（`PointerPump`）：EV_SYN(SYN_REPORT) 关批，批内事件聚合为一个
 //!    `PumpEvent`（坐标取批内最新采样，history oldest→newest、header=newest
 //!    ——Android MotionSample 同序）；接触判据 = BTN_TOUCH 或 BTN_LEFT 任一
@@ -146,16 +146,23 @@ pub struct AbsCal {
     pub max_y: i32,
 }
 
-/// 绝对域 → 屏幕像素归一化：钳位后 i64 定点
+/// 绝对域 → 屏幕像素归一化：钳位后 u64 定点
 /// `(v-cl_min)*(len-1)/(cl_max-cl_min)`——端点钉板（min→0、max→len-1），
 /// 单调。拒绝 None：cal_max ≤ cal_min（域退化）/ screen_len == 0。
+///
+/// 中间量走 u64 而非 i64：钳位后三因子 `v-cl_min ≤ cal_max-cal_min ≤
+/// 2^32-1`、`len-1 ≤ 2^32-2` 全在 u32 域，乘积上限 `(2^32-1)(2^32-2) <
+/// 2^64` 恒不溢出。旧 i64 写法在极端三元组（i32::MIN/i32::MAX/u32::MAX）
+/// 下乘积约 1.8e19 超 i64::MAX——debug panic、release 静默回绕；真实路径
+/// screen_len 来自 u16 显示尺寸（乘积上限约 2.8e14）到不了，属防御面。
+/// 结果与旧式逐位相同：三因子非负，u64 截断除 = floor = 旧 i64 除。
 pub fn normalize_axis(value: i32, cal_min: i32, cal_max: i32, screen_len: u32) -> Option<u32> {
     if cal_max <= cal_min || screen_len == 0 {
         return None;
     }
     let v = value.clamp(cal_min, cal_max);
-    let num = (v as i64 - cal_min as i64) * (screen_len as i64 - 1);
-    let den = cal_max as i64 - cal_min as i64;
+    let num = (v as i64 - cal_min as i64) as u64 * (screen_len as u64 - 1);
+    let den = (cal_max as i64 - cal_min as i64) as u64;
     Some((num / den) as u32)
 }
 
@@ -1133,6 +1140,153 @@ mod tests {
         assert_eq!(normalize_axis(24576, 0, 32767, 800), Some(599));
         assert_eq!(normalize_axis(8192, 0, 32767, 600), Some(149));
         assert_eq!(normalize_axis(24576, 0, 32767, 600), Some(449));
+    }
+
+    /// 旧公式的无溢出参考实现（i128——仅测试侧；生产面用 u64 中间量，
+    /// 理由见 [`normalize_axis`] 文档）。与旧 i64 写法逐字同形，只是乘除
+    /// 域放宽到 i128。
+    fn normalize_axis_ref(value: i32, cal_min: i32, cal_max: i32, screen_len: u32) -> Option<u32> {
+        if cal_max <= cal_min || screen_len == 0 {
+            return None;
+        }
+        let v = value.clamp(cal_min, cal_max);
+        let num = (v as i128 - cal_min as i128) * (screen_len as i128 - 1);
+        let den = cal_max as i128 - cal_min as i128;
+        Some((num / den) as u32)
+    }
+
+    /// 测试侧简易 LCG（Numerical Recipes 64 位常数；取高 32 位——低位
+    /// 周期短不取；零外部 crate）。
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next_u32(&mut self) -> u32 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (self.0 >> 32) as u32
+        }
+
+        fn next_i32(&mut self) -> i32 {
+            self.next_u32() as i32
+        }
+
+        /// 约每 4 次抽 1 次边界值（提高边界密度），否则全随机。
+        fn pick_i32(&mut self, edges: &[i32]) -> i32 {
+            if self.next_u32() % 4 == 0 {
+                edges[(self.next_u32() as usize) % edges.len()]
+            } else {
+                self.next_i32()
+            }
+        }
+    }
+
+    #[test]
+    fn normalize_axis_extreme_triple_no_wrap() {
+        // 极端三元组（cal_min=i32::MIN、cal_max=i32::MAX、screen_len=u32::MAX）
+        // ——旧 i64 写法乘积 (2^32-1)(2^32-2) ≈ 1.8e19 超 i64::MAX：debug
+        // panic「attempt to multiply with overflow」、release 静默回绕成
+        // Some(4294967293)（修前实测）。u64 中间量下端点与中点逐位正确。
+        // 手算：den = 2^32-1 = 4294967295、len-1 = 2^32-2 = 4294967294。
+        const LO: i32 = i32::MIN;
+        const HI: i32 = i32::MAX;
+        const LEN: u32 = u32::MAX;
+        // 端点钉板：min→0；max→len-1（A=den，den·(len-1)/den = len-1）
+        assert_eq!(normalize_axis(LO, LO, HI, LEN), Some(0));
+        assert_eq!(normalize_axis(HI, LO, HI, LEN), Some(4_294_967_294));
+        // max-1：A·B = den·4294967293 + 1 → 4294967293（旧式回绕成 …292）
+        assert_eq!(normalize_axis(HI - 1, LO, HI, LEN), Some(4_294_967_293));
+        // 中点：域共 2^32 个值无单点中心，取相邻两值 -1/0
+        //   v=-1：A=2^31-1，A·B = den·2147483646 + 2147483648 → 2147483646
+        //   v= 0：A=2^31，  A·B = den·2147483647 + 2147483647 → 2147483647
+        assert_eq!(normalize_axis(-1, LO, HI, LEN), Some(2_147_483_646));
+        assert_eq!(normalize_axis(0, LO, HI, LEN), Some(2_147_483_647));
+        // 结果恒 < len（u32 域内单调阶梯：抽查四点非降）
+        let a = normalize_axis(-1, LO, HI, LEN).unwrap();
+        let b = normalize_axis(0, LO, HI, LEN).unwrap();
+        let c = normalize_axis(HI - 1, LO, HI, LEN).unwrap();
+        let d = normalize_axis(HI, LO, HI, LEN).unwrap();
+        assert!(a <= b && b <= c && c <= d && d < LEN);
+        // 反证本测非空洞：旧 i64 乘法在该入参下确实回绕出 …293（修前值）
+        let num = (HI as i64 - LO as i64).wrapping_mul(LEN as i64 - 1);
+        let den = HI as i64 - LO as i64;
+        assert_eq!((num / den) as u32, 4_294_967_293);
+    }
+
+    #[test]
+    fn normalize_axis_equivalent_to_i128_reference() {
+        // 等价性：生产 u64 实现 vs 旧公式 i128 参考实现，20 万组随机加边界
+        // 入参（含 None 面：域退化 / 零屏宽）逐位相同。
+        let mut rng = Lcg(0x5eed_1234_abcd_0001);
+        let edges_i32: [i32; 9] =
+            [i32::MIN, i32::MIN + 1, -32768, -1, 0, 1, 32767, i32::MAX - 1, i32::MAX];
+        let edges_u32: [u32; 8] =
+            [0, 1, 2, 0xffff, 0x1_0000, 0x7fff_ffff, u32::MAX - 1, u32::MAX];
+        let mut n_none = 0u64;
+        for _ in 0..200_000 {
+            let value = rng.pick_i32(&edges_i32);
+            let cal_min = rng.pick_i32(&edges_i32);
+            let cal_max = rng.pick_i32(&edges_i32);
+            // 屏宽：1/4 边界值、1/4 可达域（≤ 65536）、1/2 全随机
+            let screen_len = match rng.next_u32() % 4 {
+                0 => edges_u32[(rng.next_u32() as usize) % edges_u32.len()],
+                1 => rng.next_u32() % 65537,
+                _ => rng.next_u32(),
+            };
+            let got = normalize_axis(value, cal_min, cal_max, screen_len);
+            let want = normalize_axis_ref(value, cal_min, cal_max, screen_len);
+            assert_eq!(
+                got, want,
+                "value={value} cal_min={cal_min} cal_max={cal_max} screen_len={screen_len}"
+            );
+            if got.is_none() {
+                n_none += 1;
+            }
+        }
+        // 采样面自证：None 面确有命中（否则域退化分支没被随机覆盖到）
+        assert!(n_none > 10_000, "None 样本 {n_none}——域退化分支覆盖不足");
+    }
+
+    #[test]
+    fn normalize_axis_reachable_domain_spot_check() {
+        // 可达域抽查：screen_len ≤ 65536（真实路径来自 u16 显示尺寸，乘积
+        // 上限 (2^32-1)·65535 ≈ 2.8e14，本就不溢出——改前改后必须逐位同）
+        // × 典型校准域：对拍 i128 参考 + 界内 + 端点钉板 + 全域单调。
+        let lens: [u32; 10] = [1, 2, 480, 800, 600, 1080, 1920, 2160, 65535, 65536];
+        let doms: [(i32, i32); 5] =
+            [(0, 32767), (0, 4095), (-32768, 32767), (i32::MIN, i32::MAX), (100, 200)];
+        let mut rng = Lcg(0x5eed_1234_abcd_0002);
+        for &len in &lens {
+            for &(lo, hi) in &doms {
+                // 端点钉板（越域钳位仅在域端还有 i32 余量时断言——
+                // i32::MIN-1 / i32::MAX+1 不是合法 i32 入参）
+                assert_eq!(normalize_axis(lo, lo, hi, len), Some(0));
+                assert_eq!(normalize_axis(hi, lo, hi, len), Some(len - 1));
+                if lo > i32::MIN {
+                    assert_eq!(normalize_axis(lo - 1, lo, hi, len), Some(0));
+                }
+                if hi < i32::MAX {
+                    assert_eq!(normalize_axis(hi + 1, lo, hi, len), Some(len - 1));
+                }
+                // 随机 + 域内边界值对拍，结果恒在 [0, len-1]
+                let edge = [lo, hi, lo + 1, hi - 1, 0, -1, 1, lo / 2 + hi / 2];
+                for _ in 0..2000 {
+                    let v = rng.pick_i32(&edge);
+                    let r = normalize_axis(v, lo, hi, len).unwrap();
+                    assert_eq!(r, normalize_axis_ref(v, lo, hi, len).unwrap());
+                    assert!(r < len, "v={v} [{lo},{hi}] len={len} → {r}");
+                }
+            }
+            // 全域单调扫描（{0,32767} 域）：非降、恒 < len、尾值 = len-1
+            let mut prev = 0u32;
+            for v in 0..=32767i32 {
+                let n = normalize_axis(v, 0, 32767, len).unwrap();
+                assert!(n >= prev && n < len, "len={len} v={v} n={n} prev={prev}");
+                prev = n;
+            }
+            assert_eq!(prev, len - 1);
+        }
     }
 
     // ---- resample_to_vsync ----
