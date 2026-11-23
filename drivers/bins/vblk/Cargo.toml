@@ -36,3 +36,7 @@ berry-blkproto = { path = "../../../user/berry-blkproto" }
 # 解析结果打日志（教学可见性）；alloc 面走 berry-libc 静态堆（bsh 同链
 # 先例）。多分区按 RPC 暴露归 v2（协议 crate 冻结面不动）。
 berry-partition = { path = "../../../user/berry-partition" }
+# HAL 接线（berry-hal 的 Mmio trait + VirtioMmio 实现，vprobe 同款——HAL 的
+# 第三个真消费者）：MMIO volatile 读写与窗界检收敛在 HAL 实现内部，本 bin
+# 零 MMIO unsafe；寄存器偏移仍引 berry-virtio mmio 单源常量。
+berry-hal = { path = "../../../user/berry-hal" }

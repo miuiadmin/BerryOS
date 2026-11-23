@@ -6,7 +6,9 @@
 //! [`Clock`]）+ 统一错误面 [`HalError`]：驱动只写业务逻辑，平台差异沉到
 //! trait 实现侧（首个实现 = [`virtio_impl::VirtioMmio`]，berry-virtio 窗）。
 //! 对应报告 §4.3 波 2.2「DeviceCap 三铸件」的用户态半边（MMIO 窗 VMO +
-//! Interrupt + Bti 占位）——真接线归波 2.1/2.2 后续刀，本刀只钉契约。
+//! Interrupt + Bti 占位）——MMIO 面真接线已落 vprobe（2026-11-20）与 vblk
+//! （2026-11-23）两件消费者；Interrupt/Bti 面归波 2.1/2.2 后续刀，本刀只
+//! 钉契约。
 //!
 //! 与莓核 Wave 4 刀 4.1 的内核侧 berry-hal（CPU/MMU/IRQ/Timer/SMP 五窄口）
 //! 同名异层：那颗服务内核 arch 抽象，本颗服务用户态驱动进程，契约面互不
@@ -15,9 +17,9 @@
 //! 与 berry-driver 的关系（2026-11-20 债务清理刀定谳：**契约面正交组合**）：
 //! 那颗钉**生命周期**契约（probe 认领 → start 服役 → stop 退役），本颗
 //! 钉**硬件访问**契约——组合发生在消费侧：驱动实现方同时实现 Driver
-//! trait 并持有本 crate 的 trait 对象（vprobe 接线形态；driver 的示例
-//! 模块亦同款，故 driver→hal 的 crate 依赖是可选的单向箭头，本 crate
-//! 永不反向依赖 driver）。生命周期契约不被硬件访问契约绑架（反之
+//! trait 并持有本 crate 的 trait 对象（driver 的示例模块即此组合形；
+//! vprobe、vblk 当前只持 HAL 半边、未实现 Driver trait——故 driver→hal
+//! 的 crate 依赖是可选的单向箭头，本 crate 永不反向依赖 driver）。生命周期契约不被硬件访问契约绑架（反之
 //! 亦然——两契约可各自独立测试）。缝合成铸件（DeviceCap：MMIO 窗
 //! VMO + Interrupt + Bti）归波 2.2 后续刀。
 //!

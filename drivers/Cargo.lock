@@ -164,6 +164,7 @@ version = "0.2.0"
 dependencies = [
  "berry-blkproto",
  "berry-exec",
+ "berry-hal",
  "berry-libc",
  "berry-partition",
  "berry-sys",

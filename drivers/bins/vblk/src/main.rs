@@ -1,7 +1,10 @@
 //! vblk —— P6 A-4 常驻块设备驱动服务（A-3 真设备 IO 链的服务化收口）。
 //!
 //! vprobe 同链（musl target + berry-libc shim；MMIO 窗口经
-//! `SpawnSpec::mmio_vmo` 映到 [`VIRTIO_MMIO_VA`]，berry-exec 单源）。启动
+//! `SpawnSpec::mmio_vmo` 映到 [`VIRTIO_MMIO_VA`]，berry-exec 单源）。寄存器
+//! 读写经 berry-hal（[`Mmio`] trait + [`VirtioMmio`]——每槽 `VirtioMmio::new`
+//! 授 0x200 窗，volatile 与窗界检收敛在 HAL 实现内部，本文件零 MMIO
+//! unsafe；偏移引 `berry_virtio::mmio` 单源常量）。启动
 //! 序 = A-3 自验原样：modern v2 特性协商（收 `VIRTIO_F_VERSION_1`）→
 //! split virtqueue 建立（qsize=16 整环落一页）→ LBA0 读魔数验 + LBA1
 //! 写/读回对拍 → 自打 `VBLK ok cap=… slot=…`（rootfs 相第 13 标记）。
@@ -25,7 +28,7 @@
 //! 有 virtqueue——第二个**持窗**实例启动即杀本服务。v1 唯一持窗路径是
 //! svcmgr 走查拉起（单遍、恰一次）；bsh `run vblk` 的 SpawnSpec 恒
 //! `mmio_vmo: None`（窗口能力不出 svcmgr 表），无窗实例死在 find_device
-//! 首次 volatile 读的 D-abort、只死自己，到不了 negotiate()。真威胁 =
+//! 首次 MMIO 读（HAL 内 volatile）的 D-abort、只死自己，到不了 negotiate()。真威胁 =
 //! svcmgr 重复拉起或未来获窗服务；设备命名/独占执法随 v2。
 //!
 //! **服务纪律**（fsmgr 同款）：静默常驻（启动自验行外无输出）；空队
@@ -66,6 +69,9 @@ use berry_blkproto::{encode_reply, parse_request, Req, SECTOR_SZ, ST_BAD, ST_OK,
 use berry_libc::io::gift2_h;
 // P0-2 刀 2：分区表探测（GPT/MBR 解析纯函数——读盘经闭包注入 blk_op）。
 use berry_partition::PartitionKind;
+// HAL 接线（vprobe 同款）：MMIO 读写经 Mmio trait + VirtioMmio 实现——
+// volatile/窗界检收敛在 HAL 内部，本 bin 零 MMIO unsafe。
+use berry_hal::{Mmio, VirtioMmio};
 
 // 弹道不变量：协议扇区长度 == DMA 描述符长度（serve() 读向切片取 proto 侧
 // `SECTOR_SZ`、blk_op 的 desc 长度取 virtio 侧 `BLK_SECTOR_SZ`——两 crate 零
@@ -116,19 +122,20 @@ static mut CLI: [u8; SECTOR_SZ] = [0; SECTOR_SZ];
 /// did==block 恰一，其它占用槽不算；A-7 起同窗的 net 槽合法同席，未知 did
 /// 的 loud 面由 vprobe 全窗扫描兜）。细节见 vprobe 头注。
 fn find_device() -> usize {
-    // SAFETY: 窗口经 spawn 映射（Device-nGnRnE）；逐字 volatile；只读
-    // ID 头四字 + 特性/队列寄存器（写面在协商序内，见 main）。
-    let base = VIRTIO_MMIO_VA as *const u32;
+    // 每槽授窗（vprobe 同款）：窗基 = VA + slot×STRIDE、窗长 = STRIDE（0x200）
+    // ——逐字 volatile 与窗界检（4 对齐 + off+4 ≤ 窗长）收敛在 berry-hal 的
+    // VirtioMmio 内部，经 Mmio trait 契约面调用，纯安全。只读 ID 头四字 +
+    // 特性/队列寄存器（写面在协商序内，见 main）。
     let mut occupied: Option<usize> = None;
     let mut n = 0usize;
     let mut n_occupied = 0usize;
     for slot in 0..VIRTIO_MMIO_SLOTS {
-        let regs = unsafe { base.add(slot * (VIRTIO_MMIO_STRIDE / 4)) };
-        if unsafe { core::ptr::read_volatile(regs) } != vio::mmio::MAGIC_VAL {
+        let regs = mmio(slot);
+        if rd(&regs, vio::mmio::MAGIC) != vio::mmio::MAGIC_VAL {
             println!("vblk: slot {} bad magic", slot);
             trap();
         }
-        let did = unsafe { core::ptr::read_volatile(regs.add(2)) };
+        let did = rd(&regs, vio::mmio::DEVICE_ID);
         if did != 0 {
             n_occupied += 1;
             if did == vio::mmio::DEVICE_ID_BLOCK {
@@ -149,8 +156,8 @@ fn find_device() -> usize {
     };
     let regs = mmio(slot);
     let (ver, did) = (
-        unsafe { core::ptr::read_volatile(regs.add(vio::mmio::VERSION / 4)) },
-        unsafe { core::ptr::read_volatile(regs.add(vio::mmio::DEVICE_ID / 4)) },
+        rd(&regs, vio::mmio::VERSION),
+        rd(&regs, vio::mmio::DEVICE_ID),
     );
     if ver != vio::mmio::VERSION_MODERN || did != vio::mmio::DEVICE_ID_BLOCK {
         println!("vblk: slot {} ver={} did={}", slot, ver, did);
@@ -159,25 +166,32 @@ fn find_device() -> usize {
     slot
 }
 
-/// 占用槽的寄存器基（u32 字指针——偏移一律 `/4` 进字单位）。
-fn mmio(slot: usize) -> *mut u32 {
-    (VIRTIO_MMIO_VA + (slot * VIRTIO_MMIO_STRIDE) as u64) as *mut u32
+/// 占用槽的寄存器窗（berry-hal `VirtioMmio`——基址 = VA + slot×STRIDE，
+/// 窗长 = STRIDE；vblk 用到的全部偏移 ≤ CONFIG+4 = 0x104，全在 0x200 窗内）。
+fn mmio(slot: usize) -> VirtioMmio {
+    match VirtioMmio::new(
+        (VIRTIO_MMIO_VA as usize + slot * VIRTIO_MMIO_STRIDE) as *mut u8,
+        VIRTIO_MMIO_STRIDE,
+    ) {
+        Ok(w) => w,
+        // null/零长窗拒（VA 非 0、stride=0x200 常量——现几何下不可达；
+        // 防窗几何面未来漂移的 loud 兜底，vprobe 同款）。
+        Err(_) => trap(),
+    }
 }
 
-fn rd(regs: *mut u32, off: usize) -> u32 {
-    // SAFETY: 窗口已映射；对齐 u32 volatile 读。
-    unsafe { core::ptr::read_volatile((regs as *const u32).add(off / 4)) }
+fn rd(regs: &VirtioMmio, off: usize) -> u32 {
+    regs.read32(off)
 }
 
-fn wr(regs: *mut u32, off: usize, v: u32) {
-    // SAFETY: 同上；volatile 写（Device-nGnRnE，写不合并）。
-    unsafe { core::ptr::write_volatile(regs.add(off / 4), v) }
+fn wr(regs: &mut VirtioMmio, off: usize, v: u32) {
+    regs.write32(off, v)
 }
 
 /// modern 协商：复位 → ACK|DRIVER → 特性页读 → 只收 VERSION_1（页 1
 /// bit0 = 全局 bit32）→ FEATURES_OK 回读验。blk 特性页 0 一概不收
 /// （RO/EVENT_IDX/INDIRECT/MULTIQUEUE 全不需要——v1 最小面）。
-fn negotiate(regs: *mut u32) {
+fn negotiate(regs: &mut VirtioMmio) {
     // 规范复位序：写 0 后轮询读回 STATUS==0 再置 ACK|DRIVER（真机复位异
     // 步、未完成即置位可致状态机错乱——Linux virtio_mmio 同款回读等）。
     wr(regs, vio::mmio::STATUS, 0);
@@ -235,7 +249,7 @@ struct Dma {
 
 /// 建队列：VMO 自建两页 → get_phys 查后备 → Q_SEL/Q_NUM/三址 LOW+HIGH/
 /// Q_READY=1（modern 序；v2 专属拆址寄存器，legacy PFN 不在册）。
-fn setup_queue(regs: *mut u32) -> Dma {
+fn setup_queue(regs: &mut VirtioMmio) -> Dma {
     let lay = match vio::RingLayout::new(QSIZE as usize) {
         Some(l) => l,
         None => trap(), // qsize=16 恒成立；防御面（布局几何是编译期已知）
@@ -293,7 +307,7 @@ fn setup_queue(regs: *mut u32) -> Dma {
 /// status==0 → 读回数据面（`iob[16..528]`）。`out` 返数据切片视图由调用
 /// 方对拍（None = 写方向不回读）。同步单在途（v1 纪律：不记账在途数，
 /// publish 的 idx 单调即对账）。
-fn blk_op(d: &Dma, regs: *mut u32, typ: u32, sector: u64, wr_data: Option<&[u8]>) {
+fn blk_op(d: &Dma, regs: &mut VirtioMmio, typ: u32, sector: u64, wr_data: Option<&[u8]>) {
     // SAFETY: 单线程独占窗（同 fsmgr 惯例）。
     let ring: &mut [u8; 4096] = unsafe { &mut *core::ptr::addr_of_mut!(RING) };
     let iob: &mut [u8; 544] = unsafe { &mut *core::ptr::addr_of_mut!(IOB) };
@@ -379,23 +393,24 @@ fn blk_op(d: &Dma, regs: *mut u32, typ: u32, sector: u64, wr_data: Option<&[u8]>
 
 fn main() {
     let slot = find_device();
-    let regs = mmio(slot);
-    negotiate(regs);
-    let d = setup_queue(regs);
+    let mut regs = mmio(slot);
+    negotiate(&mut regs);
+    let d = setup_queue(&mut regs);
     // 盘容（config capacity u64 = 两寄存器拼）——smoke 造 1MiB 盘 = 2048 扇区。
-    let cap = (rd(regs, vio::mmio::CONFIG) as u64) | ((rd(regs, vio::mmio::CONFIG + 4) as u64) << 32);
+    let cap = (rd(&regs, vio::mmio::CONFIG) as u64)
+        | ((rd(&regs, vio::mmio::CONFIG + 4) as u64) << 32);
     if cap != EXPECT_SECTORS {
         println!("vblk: capacity={} 期 {}", cap, EXPECT_SECTORS);
         trap();
     }
     // 队制就绪——此后设备可消费 avail（规范序：DRIVER_OK 最后置）。
     wr(
-        regs,
+        &mut regs,
         vio::mmio::STATUS,
         vio::ST_ACKNOWLEDGE | vio::ST_DRIVER | vio::ST_FEATURES_OK | vio::ST_DRIVER_OK,
     );
     // ①读 LBA0：对拍 justfile/smoke 落盘印章。
-    blk_op(&d, regs, vio::BLK_T_IN, 0, None);
+    blk_op(&d, &mut regs, vio::BLK_T_IN, 0, None);
     // SAFETY: 单线程，读回数据在 IOB[16..]。
     let got: &[u8] = unsafe {
         let iob: &[u8; 544] = &*core::ptr::addr_of!(IOB);
@@ -406,8 +421,8 @@ fn main() {
         trap();
     }
     // ②写 LBA1 pattern → ③读回逐字节对拍（写读往返 = 块设备双向活证）。
-    blk_op(&d, regs, vio::BLK_T_OUT, 1, Some(&LBA1_PATTERN[..]));
-    blk_op(&d, regs, vio::BLK_T_IN, 1, None);
+    blk_op(&d, &mut regs, vio::BLK_T_OUT, 1, Some(&LBA1_PATTERN[..]));
+    blk_op(&d, &mut regs, vio::BLK_T_IN, 1, None);
     // SAFETY: 同上。
     let got: &[u8] = unsafe {
         let iob: &[u8; 544] = &*core::ptr::addr_of!(IOB);
@@ -427,7 +442,7 @@ fn main() {
             if lba >= cap {
                 return Err(berry_partition::Error::Reader);
             }
-            blk_op(&d, regs, vio::BLK_T_IN, lba, None);
+            blk_op(&d, &mut regs, vio::BLK_T_IN, lba, None);
             // SAFETY: 单线程独占窗；blk_op 已把数据读回 IOB[16..528]。
             let iob: &[u8; 544] = unsafe { &*core::ptr::addr_of!(IOB) };
             buf.copy_from_slice(&iob[vio::BLK_HDR_SZ..vio::BLK_HDR_SZ + buf.len()]);
@@ -468,13 +483,13 @@ fn main() {
     // A-4：自验毕即转常驻服务（A-3 的 main 返回 = exit(0) + svcmgr reap
     // 退役）——DMA VMO 不再 close（服务存续期间恒用；无映射零 unmap 面，
     // 表槽随服务生命周期常驻 = 有界）。
-    serve(&d, regs, cap);
+    serve(&d, &mut regs, cap);
 }
 
 /// 服务循环（常驻不归）：严格串行 RPC——recv（空队重臂）→ 解析 → VMO
 /// 数据面往返 → close 随行别名 → 应答。client 错误一律 ST_BAD/ST_RANGE
 /// 应答（服务不死）；设备面失败走 blk_op 内 trap（loud）。
-fn serve(d: &Dma, regs: *mut u32, cap: u64) -> ! {
+fn serve(d: &Dma, regs: &mut VirtioMmio, cap: u64) -> ! {
     let h = gift2_h();
     if h == 0 {
         // env 块无 gift[2] = svcmgr 没走 A-4 拓扑（旧归档）——服务无端可
