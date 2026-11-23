@@ -376,10 +376,11 @@ pub(crate) enum NavGlyph {
 pub(crate) fn nav_glyph_covers(g: NavGlyph, x: i32, y: i32) -> bool {
     let c = NAV_SRC_PX as i32 / 2; // 33
     match g {
-        // 细 chevron ‹（安卓 12 Material You 同形）：顶点 (38,c)，臂端
-        // x=20 上 (20,c-18) 下 (20,c+18)；命中 = 点到任一线段距离 ≤ 4
-        //（带宽 ~4px）。整数面（no_std 免浮点）：垂足在段内时
-        // d² ≤ 16 ⟺ ap2·ab2 − dot² ≤ 16·ab2，段外取端点距离平方。
+        // 细 chevron ‹（安卓 12 Material You 同形；沉浸规范 §5：开口朝
+        // 右、尖头朝左）：顶点 (24,c)，臂端 x=42 上 (42,c-18) 下 (42,c+18)
+        //——两臂关于 y=c 对称，x 包围盒 [20,46] 以 c 为中心。命中 = 点到
+        // 任一线段距离 ≤ 4（带宽 ~4px）。整数面（no_std 免浮点）：垂足在
+        // 段内时 d² ≤ 16 ⟺ ap2·ab2 − dot² ≤ 16·ab2，段外取端点距离平方。
         NavGlyph::Back => {
             let hit_seg = |ax: i32, ay: i32, bx: i32, by: i32| -> bool {
                 let (abx, aby) = (bx - ax, by - ay);
@@ -398,7 +399,7 @@ pub(crate) fn nav_glyph_covers(g: NavGlyph, x: i32, y: i32) -> bool {
                 let ap2 = (apx as i64) * (apx as i64) + (apy as i64) * (apy as i64);
                 ap2 * ab2 - dot * dot <= 16 * ab2
             };
-            hit_seg(38, c, 20, c - 18) || hit_seg(38, c, 20, c + 18)
+            hit_seg(24, c, 42, c - 18) || hit_seg(24, c, 42, c + 18)
         }
         // 实心圆 ●（安卓 12 Material You 同形）：中心 (c,c) r=14——
         // d² ≤ 196。
@@ -747,11 +748,15 @@ mod tests {
         // 圆角外 = 透明。
         assert_eq!(at(&back, 0, 0), 0);
         assert_eq!(at(&back, S - 1, S - 1), 0);
-        // 域内符号白（底块透明后非 0 即符号像素——(33,33) 在 chevron
-        // 顶点带宽内：到上臂线段距离²=12.5 ≤ 16）。
-        assert_ne!(at(&back, S / 2, S / 2), 0);
-        // Back = 细 chevron ‹：顶点 (38,33) 白，顶点右外底块透明。
-        assert_eq!(at(&back, 38, 33), NAV_GLYPH_FG);
+        // 域内符号白（底块透明后非 0 即符号像素）。
+        // Back = 细 chevron ‹（尖头朝左、开口朝右）：顶点 (24,33) 白、两臂端
+        // (42,33±18) 白；中心 (33,33) 落在开口内不画（到上臂垂足距离²=
+        // 40.5 > 16）；顶点左外（带宽 4 外 1px）与臂端右外底块透明。
+        assert_eq!(at(&back, S / 2, S / 2), 0);
+        assert_eq!(at(&back, 24, 33), NAV_GLYPH_FG);
+        assert_eq!(at(&back, 42, 33 - 18), NAV_GLYPH_FG);
+        assert_eq!(at(&back, 42, 33 + 18), NAV_GLYPH_FG);
+        assert_eq!(at(&back, 19, 33), 0);
         assert_eq!(at(&back, 60, 33), 0);
         // Home 实心圆：圆心白、外缘（r=16 > 14）底块透明。
         let home = nav_face(NavGlyph::Home, NAV_BASE_BG);
@@ -773,11 +778,14 @@ mod tests {
     #[test]
     fn nav_glyph_cover_probes() {
         let c = NAV_SRC_PX as i32 / 2;
-        // Back 细 chevron：顶点、上臂中点在；臂端左外、顶点右外在。
-        assert!(nav_glyph_covers(NavGlyph::Back, 38, c)); // 顶点 (38,c)
-        assert!(nav_glyph_covers(NavGlyph::Back, 29, c - 9)); // 上臂中点
-        assert!(!nav_glyph_covers(NavGlyph::Back, 13, c)); // 臂端 x=20 左外
-        assert!(!nav_glyph_covers(NavGlyph::Back, 45, c)); // 顶点右外
+        // Back 细 chevron ‹：顶点、上/下臂中点在；臂端右外、顶点左外、
+        // 开口内（c,c）不在。
+        assert!(nav_glyph_covers(NavGlyph::Back, 24, c)); // 顶点 (24,c)
+        assert!(nav_glyph_covers(NavGlyph::Back, 33, c - 9)); // 上臂中点
+        assert!(nav_glyph_covers(NavGlyph::Back, 33, c + 9)); // 下臂中点
+        assert!(!nav_glyph_covers(NavGlyph::Back, 49, c)); // 臂端 x=42 右外
+        assert!(!nav_glyph_covers(NavGlyph::Back, 17, c)); // 顶点左外
+        assert!(!nav_glyph_covers(NavGlyph::Back, c, c)); // 开口内
         // Home 实心圆：圆心、r=10 内在；r=15 出（196 < 225）。
         assert!(nav_glyph_covers(NavGlyph::Home, c, c));
         assert!(nav_glyph_covers(NavGlyph::Home, c + 10, c));
@@ -790,6 +798,60 @@ mod tests {
         assert!(nav_glyph_covers(NavGlyph::Power, c + 17, c + 4));
         assert!(!nav_glyph_covers(NavGlyph::Power, c, c + 4 - 18));
         assert!(nav_glyph_covers(NavGlyph::Power, c, c + 4 - 12));
+    }
+
+    /// Back chevron 方向与居中钉板（沉浸规范 §5：返回 = ‹——开口朝右、
+    /// 尖头朝左；关于 x=c 居中）。(a) 尖头在左：覆盖集 x 最小列的像素 y
+    /// 贴近 c（顶点带）、x 最大列的像素 y 远离 c 且分居 c-18 / c+18 附近
+    ///（两臂端）、(c,c) 在开口内不被覆盖；(b) 居中：覆盖集 x 包围盒中心
+    /// = c（±1）。回归面：旧几何顶点 (38,c)/臂端 x=20 是尖头朝右的 ›，
+    /// x 包围盒 [16,42] 中心偏左 4px。
+    #[test]
+    fn nav_back_chevron_faces_left_and_is_centered() {
+        let c = NAV_SRC_PX as i32 / 2;
+        let s = NAV_SRC_PX as i32;
+        let mut covered: Vec<(i32, i32)> = Vec::new();
+        for y in 0..s {
+            for x in 0..s {
+                if nav_glyph_covers(NavGlyph::Back, x, y) {
+                    covered.push((x, y));
+                }
+            }
+        }
+        assert!(!covered.is_empty());
+        let x_min = covered.iter().map(|p| p.0).min().unwrap();
+        let x_max = covered.iter().map(|p| p.0).max().unwrap();
+        // (a) 尖头朝左：x 最小列（顶点带）像素 y 贴近 c。
+        for &(x, y) in &covered {
+            if x == x_min {
+                assert!(
+                    (y - c).abs() <= 1,
+                    "x_min={x_min} 列像素 y={y} 应贴近中心行 c={c}"
+                );
+            }
+        }
+        // x 最大列（两臂端）像素 y 远离 c，分居 c-18 与 c+18 附近。
+        let y_max_col: Vec<i32> = covered.iter().filter(|p| p.0 == x_max).map(|p| p.1).collect();
+        assert!(
+            y_max_col.iter().any(|&y| (y - (c - 18)).abs() <= 1),
+            "x_max 列应有上臂端 c-18 附近像素：{y_max_col:?}"
+        );
+        assert!(
+            y_max_col.iter().any(|&y| (y - (c + 18)).abs() <= 1),
+            "x_max 列应有下臂端 c+18 附近像素：{y_max_col:?}"
+        );
+        assert!(
+            y_max_col.iter().all(|&y| (y - c).abs() >= 17),
+            "x_max 列像素应全部远离中心行：{y_max_col:?}"
+        );
+        // 开口内：(c,c) 不覆盖。
+        assert!(!nav_glyph_covers(NavGlyph::Back, c, c));
+        // (b) 居中：x 包围盒中心 = c（±1）。
+        let x_center = (x_min + x_max) / 2;
+        assert!(
+            (x_center - c).abs() <= 1,
+            "x 包围盒 [{x_min},{x_max}] 中心 {x_center} 应 = c={c}（±1）"
+        );
     }
 
     /// 通用 fallback 面：108×108、圆角外透明、白环带/石板底两色。
