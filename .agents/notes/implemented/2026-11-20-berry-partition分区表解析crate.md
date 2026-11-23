@@ -23,4 +23,4 @@ CRC32 校验入执法面（弃——教学镜像常由脚本手造，CRC 面会�
 
 ## Consequences
 
-`cargo test -p berry-partition --target aarch64-apple-darwin` 16 测全绿；none-target 构建（no_std 面）零警通过；user/Cargo.lock 随 member 入列增量 +18 行。消费面下一刀 = vblk 扫分区表暴露多分区（`Partition`/`PartitionKind` API 已冻结本形）；再下一刀 = fsmgr 按 `first_lba` 定卷替代 BPB 约定式探测（研究报 P0-2 第二断层）。Related：[驱动子系统综合研究报告](../../research/2026-11-18-驱动子系统综合研究报告.md)（P0-2 缺口定谳）。
+`cargo test -p berry-partition --target aarch64-apple-darwin` 16 测全绿（后续[收尾三小刀](2026-11-20-波2收尾三小刀-hal接线-分区display-驱动表补全.md)增 `display()` 2 测，现 18 测）；none-target 构建（no_std 面）零警通过；user/Cargo.lock 随 member 入列增量 +18 行。消费面下一刀 = vblk 扫分区表暴露多分区（`Partition`/`PartitionKind` API 已冻结本形）；再下一刀 = fsmgr 按 `first_lba` 定卷替代 BPB 约定式探测（研究报 P0-2 第二断层）。Related：[驱动子系统综合研究报告](../../research/2026-11-18-驱动子系统综合研究报告.md)（P0-2 缺口定谳）。
