@@ -5,9 +5,10 @@
 //! 读写经 berry-hal（[`Mmio`] trait + [`VirtioMmio`]——每槽 `VirtioMmio::new`
 //! 授 0x200 窗，volatile 与窗界检收敛在 HAL 实现内部，本文件零 MMIO
 //! unsafe；偏移引 `berry_virtio::mmio` 单源常量）。启动
-//! 序 = A-3 自验原样：modern v2 特性协商（收 `VIRTIO_F_VERSION_1`）→
-//! split virtqueue 建立（qsize=16 整环落一页）→ LBA0 读魔数验 + LBA1
-//! 写/读回对拍 → 自打 `VBLK ok cap=… slot=…`（rootfs 相第 13 标记）。
+//! 序（自 A-3 自验演进而来）：modern v2 特性协商（收 `VIRTIO_F_VERSION_1`）→
+//! split virtqueue 建立（qsize=16 整环落一页）→ 分区表探测（只读，先于
+//! 一切写）→ LBA0 读魔数验 → LBA1 写/读回对拍（仅 LBA0 无分区槽时）→
+//! 自打 `VBLK ok cap=… slot=…`（rootfs 相第 13 标记）。
 //! **此后不再退出**（A-3 的 main 返回 = exit(0) + svcmgr reap 退役）：进
 //! 服务循环常驻——svcmgr 消费自验打 `BLKD ok`（rootfs 相第 14 标记）。
 //!
@@ -428,6 +429,20 @@ fn blk_op(d: &Dma, regs: &mut VirtioMmio, typ: u32, sector: u64, wr_data: Option
     }
 }
 
+/// LBA0 是否带分区表——只看 LBA0 自身事实，不看 [`berry_partition::parse`]
+/// 的结论：尾签名 0x55AA 在且 4 个 MBR 槽任一 type 非零（含 0xEE 保护条）
+/// 即有表，返回首个非零槽的 type；否则 [`None`]（裸盘 / 整盘 FAT / 4 槽
+/// 全空的 MBR）。决定启动自验是否写 LBA1——解析失败 ≠ 无表（BLKD 自验
+/// 写 LBA5 落在 GPT 条目区，重启后解析报错但主头仍在 LBA1）。
+fn lba0_table_type(sector: &[u8]) -> Option<u8> {
+    if sector.len() < SECTOR_SZ || sector[510] != 0x55 || sector[511] != 0xAA {
+        return None;
+    }
+    (0..berry_partition::MBR_SLOTS)
+        .map(|s| sector[berry_partition::MBR_TABLE_OFF + s * 16 + 4])
+        .find(|&t| t != 0)
+}
+
 fn main() {
     let slot = find_device();
     // 认领落值（find_device 之后、negotiate 之前）：negotiate 的 STATUS=0 起
@@ -451,34 +466,26 @@ fn main() {
         vio::mmio::STATUS,
         vio::ST_ACKNOWLEDGE | vio::ST_DRIVER | vio::ST_FEATURES_OK | vio::ST_DRIVER_OK,
     );
-    // ①读 LBA0：对拍 justfile/smoke 落盘印章。
-    blk_op(&d, &mut regs, vio::BLK_T_IN, 0, None);
-    // SAFETY: 单线程，读回数据在 IOB[16..]。
-    let got: &[u8] = unsafe {
-        let iob: &[u8; 544] = &*core::ptr::addr_of!(IOB);
-        &iob[vio::BLK_HDR_SZ..vio::BLK_HDR_SZ + LBA0_MAGIC.len()]
-    };
-    if got != &LBA0_MAGIC[..] {
-        println!("vblk: LBA0 魔数不符（got={:?}）", &got[..4]);
-        trap();
-    }
-    // ②写 LBA1 pattern → ③读回逐字节对拍（写读往返 = 块设备双向活证）。
-    blk_op(&d, &mut regs, vio::BLK_T_OUT, 1, Some(&LBA1_PATTERN[..]));
-    blk_op(&d, &mut regs, vio::BLK_T_IN, 1, None);
-    // SAFETY: 同上。
-    let got: &[u8] = unsafe {
-        let iob: &[u8; 544] = &*core::ptr::addr_of!(IOB);
-        &iob[vio::BLK_HDR_SZ..vio::BLK_HDR_SZ + LBA1_PATTERN.len()]
-    };
-    if got != &LBA1_PATTERN[..] {
-        println!("vblk: LBA1 读回不符");
-        trap();
-    }
     // 存储栈 P0-2 刀 2：分区表探测（berry-partition::parse——读盘经闭包
     // 注入：blk_op 单扇区 IN + IOB bounce 拷出；LBA↔盘容对账归消费侧，
     // 表声称越盘容即 Reader 拒）。结果只打日志（教学可见性：vblk 从此
     // 看得见盘上的分区布局）；解析失败/空表**不杀服务**（印章盘 =
     // superfloppy 形合法面，按整盘服务继续；多分区按 RPC 暴露归 v2）。
+    //
+    // **探测必须先于一切写**（启动序顺序缺陷勘正）：GPT 主头在 LBA1、
+    // MBR 首分区可能自 LBA1 起——原序「写自验 LBA1 → 再探测」会把带分区
+    // 表的盘主头/首分区引导扇区整体覆盖（真机实测：GPT 盘打出「bad GPT
+    // signature at LBA1」、MBR 盘分区行虽对但首分区引导扇区已毁）。探测
+    // 只读、先行无害；有表即跳过下方 LBA1 自验写（双向活证让位给盘上
+    // 既有数据——之后读写由正常 IO 走）。
+    //
+    // **跳写判定只看 LBA0 自身事实，不看解析结论**：尾签名 0x55AA 在且
+    // MBR 槽任一 type 非零（含 0xEE 保护条）即视为有表。解析失败 ≠ 无表
+    // ——BLKD 自验恒写 LBA5（落在标准 GPT 条目区 LBA2..33），同一块盘
+    // 重启后解析报 BadEntrySpan 但 LBA1 主头仍在，若按解析项数判会把
+    // 主头盖掉；空 GPT（合法头 + 条目全零）解析为 Ok(空) 同理。只有无
+    // 0x55AA（smoke/mkfat 整盘 FAT 盘）或 0x55AA 且 4 槽全 0 才照旧写
+    // 自验。
     let parts = berry_partition::parse(
         |lba, buf| -> berry_partition::Result<()> {
             if lba >= cap {
@@ -492,6 +499,43 @@ fn main() {
         },
         SECTOR_SZ as u64,
     );
+    // ①读 LBA0：对拍 justfile/smoke 落盘印章（无条件——只读，对分区盘无害）。
+    blk_op(&d, &mut regs, vio::BLK_T_IN, 0, None);
+    // SAFETY: 单线程，读回数据在 IOB[16..]。
+    let got: &[u8] = unsafe {
+        let iob: &[u8; 544] = &*core::ptr::addr_of!(IOB);
+        &iob[vio::BLK_HDR_SZ..vio::BLK_HDR_SZ + LBA0_MAGIC.len()]
+    };
+    if got != &LBA0_MAGIC[..] {
+        println!("vblk: LBA0 魔数不符（got={:?}）", &got[..4]);
+        trap();
+    }
+    // 跳写判定只看 LBA0 事实（见上）：此刻 LBA0 全扇区仍在 IOB[16..528]。
+    // SAFETY: 单线程；上一步 blk_op 已把 LBA0 读回 IOB[16..528]。
+    let table_type = unsafe {
+        let iob: &[u8; 544] = &*core::ptr::addr_of!(IOB);
+        lba0_table_type(&iob[vio::BLK_HDR_SZ..vio::BLK_HDR_SZ + SECTOR_SZ])
+    };
+    if let Some(t) = table_type {
+        // 有表：LBA1（或任何扇区）都不写——见上「探测必须先于一切写」。
+        println!(
+            "vblk: LBA0 带 MBR 分区表（槽 type={:#04x}），跳过 LBA1 自验写",
+            t
+        );
+    } else {
+        // ②写 LBA1 pattern → ③读回逐字节对拍（写读往返 = 块设备双向活证）。
+        blk_op(&d, &mut regs, vio::BLK_T_OUT, 1, Some(&LBA1_PATTERN[..]));
+        blk_op(&d, &mut regs, vio::BLK_T_IN, 1, None);
+        // SAFETY: 同上。
+        let got: &[u8] = unsafe {
+            let iob: &[u8; 544] = &*core::ptr::addr_of!(IOB);
+            &iob[vio::BLK_HDR_SZ..vio::BLK_HDR_SZ + LBA1_PATTERN.len()]
+        };
+        if got != &LBA1_PATTERN[..] {
+            println!("vblk: LBA1 读回不符");
+            trap();
+        }
+    }
     match parts {
         // 非空表：格式化收口到 berry-partition `display`（单源——此前的
         // 手拼循环退役，单分区由「1 partitions」勘正为「1 partition」）；

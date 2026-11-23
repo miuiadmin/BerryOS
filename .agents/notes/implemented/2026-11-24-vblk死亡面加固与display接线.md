@@ -31,11 +31,12 @@ trap 里调 `mmio()` 重建窗（弃——其 Err 分支会再次 trap 成递归
 
 两台机与总审合并机的异常计数相同：`wm WAIT 在途悬挂` 2、`err=-13` 1、`wmd died` 0——前者是 inputd 安静表探测的设计内常态，后者是 gfxdemo 的 `RIGHT_TRANSFER` 缺失，均与 vblk 无关。
 
-未覆盖面：非空分区表的 `display()` 输出未经端到端验证（起机盘是 super floppy，只走 `BadMbrSignature` 降级路径），只有 host 对拍；复位「未确认」分支与「授窗拒」分支在现几何下不可达，未被真机几何触发；真机异步复位的毫秒级时序无验证路径（QEMU 写 STATUS 同步即 0）。vnet 与 vgpud 的 `trap()` 仍是修前形态，见研究报告 §3.4。
+未覆盖面：非空分区表的 `display()` 输出在本刀只有 host 对拍（起机盘是 super floppy，只走 `BadMbrSignature` 降级路径），端到端覆盖（MBR 与 GPT 各一台）由 [vblk 启动序笔记](2026-11-24-vblk启动序探测前移与有表跳过LBA1自验写.md)补齐；复位「未确认」分支与「授窗拒」分支在现几何下不可达，未被真机几何触发；真机异步复位的毫秒级时序无验证路径（QEMU 写 STATUS 同步即 0）。vnet 与 vgpud 的 `trap()` 仍是修前形态，见研究报告 §3.4。
 
 ## Related
 
 - [vblk 接线 berry-hal：HAL crate 的第二个真消费者](2026-11-23-vblk接线berry-hal.md)——前置刀，当时把 display() 切换留给本刀。
 - [vblk 接入 berry-partition 启动分区探测](2026-11-20-vblk接入berry-partition启动分区探测.md)——分区探测块本体，本刀只换打印。
+- [vblk 启动自检顺序缺陷：分区表探测前移到一切写之前，有表即跳过 LBA1 自验写](2026-11-24-vblk启动序探测前移与有表跳过LBA1自验写.md)——后续刀：探测块前移并决定是否写自验，非空分区表输出由此获端到端覆盖。
 - [F0-4：物理连续 DMA VMO 与 VirtIO 自动复位](2026-11-18-f0-4-物理连续dma与缓存维护及virtio自动复位.md)——内核侧防线：MMIO 窗 VMO 销毁时自动复位；本刀把停机提前到自陷之前、帧尚未回收的时刻，两道互补。
 - [驱动子系统综合研究报告](../../research/2026-11-18-驱动子系统综合研究报告.md)——§3.4 健壮性审计后续列同类遗留。
