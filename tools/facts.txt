@@ -6,7 +6,7 @@
 banner_consumers=4
 bcts_floor_live=91
 design_md=41
-docs_md=778
+docs_md=779
 smoke_bare=32
 smoke_eco=52
 smoke_gui8=39

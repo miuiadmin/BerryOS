@@ -37,7 +37,9 @@
 //! wait WRITABLE 重臂（严格串行下 client 恒在等应答，EBUSY 实战不可达）。
 //! client 错误（坏请求/缺 VMO/扇区越界/VMO 访问失败）一律 ST_BAD/ST_RANGE
 //! 应答——**服务不死**；设备面失败走 blk_op 内 trap（loud，标记缺失 =
-//! smoke FAIL 兜底）。
+//! smoke FAIL 兜底）。**死亡面**：认领槽后任一 trap 先 STATUS=0 复位设备
+//! 再自陷（进程死后内核回收 DMA 帧，设备不得仍在途写这些帧——见
+//! [`trap`] 文档；认领前 trap 行为不变）。
 //!
 //! **DMA 面 = 纯 VMO 机制**（微内核纪律的完整演示）：`vmo_create/commit`
 //! 自建 2 页缓冲 VMO——页 0 = virtqueue（desc/avail/used），页 1 = 请求
@@ -67,8 +69,8 @@ use berry_virtio as vio;
 // A-4：服务协议 + env 块 gift[2] 服务端端（fsmgr 同槽惯例）。
 use berry_blkproto::{encode_reply, parse_request, Req, SECTOR_SZ, ST_BAD, ST_OK, ST_RANGE};
 use berry_libc::io::gift2_h;
-// P0-2 刀 2：分区表探测（GPT/MBR 解析纯函数——读盘经闭包注入 blk_op）。
-use berry_partition::PartitionKind;
+// P0-2 刀 2：分区表探测（GPT/MBR 解析纯函数——读盘经闭包注入 blk_op；
+// 日志格式化走同 crate 的 `display`，非空表单源）。
 // HAL 接线（vprobe 同款）：MMIO 读写经 Mmio trait + VirtioMmio 实现——
 // volatile/窗界检收敛在 HAL 内部，本 bin 零 MMIO unsafe。
 use berry_hal::{Mmio, VirtioMmio};
@@ -105,6 +107,11 @@ const POLL_CAP_NS: u64 = 10_000_000_000;
 const POLL_STEP_NS: u64 = 1_000_000;
 /// STATUS 复位回读帽：1s（真机复位 ms 级；QEMU 同步即 0）。
 const RESET_CAP_NS: u64 = 1_000_000_000;
+/// trap 整洁面的复位回读帽：定次自旋（gui-inputd 同款 1e6）——不用
+/// clock/sleep（两者可能正是 trap 成因）。QEMU 同步即 0（1 次即确认）；
+/// 真机异步复位 ms 级，超帽只打「未确认」不拦死路（STATUS=0 写已发出，
+/// 回读仅诊断）。
+const TRAP_RESET_SPINS: u32 = 1_000_000;
 /// 服务空闲重臂帽：wait READABLE / WRITABLE 超时 = 重臂续睡（fsmgr 同款
 /// ——client 长空闲合法；真断链面 = recv/send 非 EAGAIN/BUSY 错码）。
 const SVC_IDLE_NS: u64 = 10_000_000_000;
@@ -117,6 +124,16 @@ static mut IOB: [u8; 544] = [0; 544];
 /// client 数据暂存（A-4 写方向 bounce-buffer：vmo_read 随行别名入此，
 /// `blk_op` 再拷进 IOB——独立缓冲，免同体别名拷贝）。
 static mut CLI: [u8; SECTOR_SZ] = [0; SECTOR_SZ];
+
+/// 已认领槽号（trap 整洁面用——gui-inputd `CLAIMED_REGS` 同款）：None =
+/// 尚未认领（find_device 面自陷时设备尚未到手，无队列可撤，trap 行为与
+/// 认领前逐字相同）；Some = main 在 find_device 返回后、negotiate 前落值，
+/// 此后任一 trap 点先复位设备再自陷（见 [`trap`] 文档）。
+///
+/// SAFETY: vblk 单线程（main 顺序流 + serve 循环，无第二线程、无信号/中断
+/// 上下文）；落值只在 main 发生一次，trap 只经 `ptr::read` 取值（Option<
+/// usize> 是 Copy，不取引用）——无并发读写面、无引用别名面。
+static mut CLAIMED_SLOT: Option<usize> = None;
 
 /// 扫 32 槽定位唯一 block 设备（vprobe 同款判据——**按设备类计数**：只认
 /// did==block 恰一，其它占用槽不算；A-7 起同窗的 net 槽合法同席，未知 did
@@ -170,15 +187,16 @@ fn find_device() -> usize {
 /// 占用槽的寄存器窗（berry-hal `VirtioMmio`——基址 = VA + slot×STRIDE，
 /// 窗长 = STRIDE；vblk 用到的全部偏移 ≤ CONFIG+4 = 0x104，全在 0x200 窗内）。
 fn mmio(slot: usize) -> VirtioMmio {
-    match VirtioMmio::new(
+    let Ok(regs) = VirtioMmio::new(
         (VIRTIO_MMIO_VA as usize + slot * VIRTIO_MMIO_STRIDE) as *mut u8,
         VIRTIO_MMIO_STRIDE,
-    ) {
-        Ok(w) => w,
+    ) else {
         // null/零长窗拒（VA 非 0、stride=0x200 常量——现几何下不可达；
         // 防窗几何面未来漂移的 loud 兜底，vprobe 同款）。
-        Err(_) => trap(),
-    }
+        println!("vblk: slot {} 授窗拒（窗基/窗长非法）", slot);
+        trap();
+    };
+    regs
 }
 
 /// 读薄层：字节偏移直通 HAL `read32`。保留本层（而非像 vprobe 直接
@@ -328,15 +346,29 @@ fn blk_op(d: &Dma, regs: &mut VirtioMmio, typ: u32, sector: u64, wr_data: Option
         trap();
     }
     // —— ring 页：三描述符链（hdr→data→status；读方向 data 置 WRITE）。
+    // 三处 None 一律 loud（与下方 publish 分支同款执法——此前 `let _` 静
+    // 默吞掉 = 描述符未落环仍 publish，设备读到陈旧 desc 行；几何恒在页
+    // 内，防御面）。
     let data_f = vio::DESC_F_NEXT
         | if typ == vio::BLK_T_IN {
             vio::DESC_F_WRITE
         } else {
             0
         };
-    let _ = vio::put_desc(ring, &d.lay, 0, d.hdr_pa, vio::BLK_HDR_SZ as u32, vio::DESC_F_NEXT, 1);
-    let _ = vio::put_desc(ring, &d.lay, 1, d.data_pa, vio::BLK_SECTOR_SZ as u32, data_f, 2);
-    let _ = vio::put_desc(ring, &d.lay, 2, d.status_pa, 1, vio::DESC_F_WRITE, 0);
+    if vio::put_desc(ring, &d.lay, 0, d.hdr_pa, vio::BLK_HDR_SZ as u32, vio::DESC_F_NEXT, 1)
+        .is_none()
+    {
+        println!("vblk: put_desc 拒 desc 0（hdr）");
+        trap();
+    }
+    if vio::put_desc(ring, &d.lay, 1, d.data_pa, vio::BLK_SECTOR_SZ as u32, data_f, 2).is_none() {
+        println!("vblk: put_desc 拒 desc 1（data）");
+        trap();
+    }
+    if vio::put_desc(ring, &d.lay, 2, d.status_pa, 1, vio::DESC_F_WRITE, 0).is_none() {
+        println!("vblk: put_desc 拒 desc 2（status）");
+        trap();
+    }
     let expect = {
         let old = vio::get_u16(ring, d.lay.avail_off + 2).unwrap_or(0);
         if vio::publish(ring, &d.lay, 0).is_none() {
@@ -398,6 +430,11 @@ fn blk_op(d: &Dma, regs: &mut VirtioMmio, typ: u32, sector: u64, wr_data: Option
 
 fn main() {
     let slot = find_device();
+    // 认领落值（find_device 之后、negotiate 之前）：negotiate 的 STATUS=0 起
+    // 设备进入驱动掌控、setup_queue 后持 DMA 帧——此后任一 trap 点先复位
+    // 再自陷（见 trap 文档）。认领之前的 trap 行为不变。
+    // SAFETY: 单线程独写（CLAIMED_SLOT 的 SAFETY 注释）。
+    unsafe { core::ptr::addr_of_mut!(CLAIMED_SLOT).write(Some(slot)) };
     let mut regs = mmio(slot);
     negotiate(&mut regs);
     let d = setup_queue(&mut regs);
@@ -456,31 +493,10 @@ fn main() {
         SECTOR_SZ as u64,
     );
     match parts {
-        Ok(ps) if !ps.is_empty() => {
-            // 同表恒同面（0xEE 即整面转 GPT）——首条判 scheme 即可。
-            let scheme = if matches!(ps[0].kind, PartitionKind::Gpt(_)) {
-                "GPT"
-            } else {
-                "MBR"
-            };
-            // index = 表内槽位号（GPT 条目号与 UEFI 工具显示对齐、MBR
-            // 1..=4）；LBA 域闭区间含端（库语义原样转述）。
-            print!("vblk: {} {} partitions:", scheme, ps.len());
-            for p in &ps {
-                match (&p.kind, p.name.as_deref()) {
-                    (PartitionKind::Gpt(_), Some(n)) => {
-                        print!(" [{}] {} {}-{}", p.index, n, p.first_lba, p.last_lba)
-                    }
-                    (PartitionKind::Gpt(_), None) => {
-                        print!(" [{}] {}-{}", p.index, p.first_lba, p.last_lba)
-                    }
-                    (PartitionKind::Mbr(t), _) => {
-                        print!(" [{}] type={:#04x} {}-{}", p.index, t, p.first_lba, p.last_lba)
-                    }
-                }
-            }
-            println!();
-        }
+        // 非空表：格式化收口到 berry-partition `display`（单源——此前的
+        // 手拼循环退役，单分区由「1 partitions」勘正为「1 partition」）；
+        // 前缀「vblk: 」与行终止归本处。
+        Ok(ps) if !ps.is_empty() => println!("vblk: {}", berry_partition::display(&ps)),
         Ok(_) => println!("vblk: no partitions（空表，按整盘服务）"),
         Err(e) => println!("vblk: 分区表解析 {}（按整盘服务）", e),
     }
@@ -600,8 +616,48 @@ fn now() -> u64 {
 
 /// 自陷：读未映射地址 → D-abort(lower) → `user_fault_exit` 只死自己
 /// （vprobe 同款——链断 loud，`VBLK ok` 缺失 = smoke FAIL 兜底）。
+///
+/// **整洁面先行**（gui-inputd `CLAIMED_REGS` 同款）：已认领槽（
+/// [`CLAIMED_SLOT`]）则先 STATUS=0 复位设备、有界回读，再自陷——trap 只死
+/// 自己，但 DRIVER_OK 下 avail 环仍指向 DMA VMO 帧时，设备仍可完成在途
+/// 请求、往这些帧里写（poll 超时 trap 即此场景：请求尚可能在飞）；进程
+/// 死后内核回收帧 = 设备写已回收帧、静默腐化无关进程。复位窗经
+/// `VirtioMmio::new` 原参重建（**不走 [`mmio`]**——其 Err 分支会再次 trap
+/// 成递归），授窗失败只打印原因并跳过复位；回读帽 = [`TRAP_RESET_SPINS`]
+/// 定次自旋（不依赖 clock/sleep——两者可能正是 trap 成因），未确认不拦
+/// 死路。认领前触发的 trap 行为不变（设备尚未到手，无队列可撤）。
 #[cold]
 fn trap() -> ! {
+    // SAFETY: 单线程进程；CLAIMED_SLOT 认领后恒定——取值（Option<usize>
+    // 是 Copy）不取引用。
+    let claimed = unsafe { core::ptr::read(core::ptr::addr_of!(CLAIMED_SLOT)) };
+    if let Some(slot) = claimed {
+        match VirtioMmio::new(
+            (VIRTIO_MMIO_VA as usize + slot * VIRTIO_MMIO_STRIDE) as *mut u8,
+            VIRTIO_MMIO_STRIDE,
+        ) {
+            Ok(mut regs) => {
+                wr(&mut regs, vio::mmio::STATUS, 0);
+                let mut confirmed = false;
+                for _ in 0..TRAP_RESET_SPINS {
+                    if rd(&regs, vio::mmio::STATUS) == 0 {
+                        confirmed = true;
+                        break;
+                    }
+                    core::hint::spin_loop();
+                }
+                println!(
+                    "vblk: trap 前 slot {} 复位 STATUS 回读{}",
+                    slot,
+                    if confirmed { "确认" } else { "未确认" }
+                );
+            }
+            Err(e) => println!(
+                "vblk: trap 前 slot {} 复位授窗拒 {:?}（跳过复位）",
+                slot, e
+            ),
+        }
+    }
     // SAFETY: 故意触发的未映射读（0x4000_0000 家族惯例值）。
     unsafe { core::ptr::read_volatile(0x4000_0000usize as *const u64) };
     loop {
