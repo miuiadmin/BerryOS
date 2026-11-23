@@ -1036,6 +1036,13 @@ test-host:
     cargo test --manifest-path user/Cargo.toml -p berry-hal --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-rtc --target {{host}}
     cargo test --manifest-path user/Cargo.toml -p berry-watchdog --target {{host}}
+    # devmgr v1 lib（驱动子系统研究报告 §4.2 交付 1.1 观察半边——MMIO 槽
+    # 枚举/驱动匹配表/ps 账本状态报告纯面，host `cargo test --lib` 11 测；
+    # bin 面 volatile 读 + psproto RPC 全在 cfg(target_os="linux") 依赖下，
+    # host 整测必 E0433——故 --lib 只建 lib（Cargo.toml 自述契约；gui-wmd/
+    # guifbd 是 main.rs 全文 cfg 门控才免 --lib，devmgr 不为此改源）。独立
+    # 小工作区 --manifest-path 直指 crate（berry-power/ksproto 先例形态）。
+    cargo test --lib --manifest-path user/bins/devmgr/Cargo.toml --target {{host}}
     # 刀 3 B1-a：berry-gpuproto（virtio-gpu 2D 协议纯函数面——九命令/头/
     # 响应/event/config 编解码 + uapi 常量两源钉板，02 号 §3.1/§3.2；
     # 传输接线归 B1-c）。

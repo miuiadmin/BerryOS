@@ -22,6 +22,8 @@ display 实现 `fmt::Display` trait（弃——列表头段+逐条拼装非单�
 
 2026-11-20 验收全绿：berry-driver host 7 测、berry-partition host 18 测（16+2 新）、devmgr host `cargo test --lib` 11 测（10+1 新）零败，berry-hal 回归 8 测零败；`just build-user` 全链通过（rootfs.cpio x64 条目，tlsscan 全过）。justfile 注释随批同步（partition 18 测、devmgr 11 测、匹配表六类）；研究报告 §4.2 交付 1.4/1.5 行与 §4.3 波 2.2 行状态标注同批更新。下一刀：vblk 换用 display() 收口手拼循环；vblk/vnet 按 berry-driver + berry-hal 全量接线（[波 2 三件套](2026-11-20-驱动波2三件套.md)已排）；console/rng 服务本体落地时随刀放行 vprobe 白名单与 ps 账本行。
 
+2026-11-23 尾账（总审复核补）：devmgr 的 host 测此前只在本篇与 justfile 注释自述，`test-host` 与 CI 零执法——`justfile` 驱动块末补 `cargo test --lib --manifest-path user/bins/devmgr/Cargo.toml --target {{host}}` 一行入闸；带 `--lib` 是因 bin 面 volatile 读与 psproto RPC 全在 `cfg(target_os = "linux")` 依赖下，host 整测必 E0433（devmgr Cargo.toml 自述契约；gui-wmd/guifbd 靠 main.rs 全文 cfg 门控才免 `--lib`，devmgr 不为此改源）。同批勘正研究报告 §4.2 交付 1.1 行的 host 测数——上批只同步了 1.4/1.5 与 §4.3 波 2.2 行，漏了 1.1 行（停在驱动表补全刀新增 1 测之前）。
+
 ## Related
 
 - [驱动子系统综合研究报告](../../research/2026-11-18-驱动子系统综合研究报告.md)——§4.2/§4.3 未动清单与先行件语境。
