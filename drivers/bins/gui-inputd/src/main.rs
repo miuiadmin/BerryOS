@@ -583,7 +583,10 @@ mod guest {
 
     /// 挂 64 个事件读缓冲（页 1 逐 8B 一格，DESC_F_WRITE——设备写；QEMU
     /// virtio_input_send 逐描述符取一元素，8B 恰长 = 最优投递）：RINGSTAGE
-    /// 零基组 desc 表 + avail 环 → 整页落盘（vnet post_rx 同形）。
+    /// 零基组 desc 表 + avail 环 → 整页落盘（vnet post_rx 同形）。put_desc
+    /// 与 publish 的 None 一律 loud（vblk 同款执法——此前 put_desc 的 `let _`
+    /// 静默吞 None = 描述符未落环仍 publish，设备读到陈旧 desc 行；几何恒在
+    /// 页内，防御面）。
     fn post_events(d: &mut Dma) {
         // SAFETY: 单线程独占窗；RINGSTAGE 首次使用即零基。
         let ring: &mut [u8; 4096] = unsafe { &mut *core::ptr::addr_of_mut!(RINGSTAGE) };
@@ -595,7 +598,7 @@ mod guest {
         ring[d.lay.avail_off + 3] = 0;
         for i in 0..QSIZE as usize {
             let addr = d.buf_pa + (i * EVT_BUF_SZ) as u64;
-            let _ = vio::put_desc(
+            if vio::put_desc(
                 ring,
                 &d.lay,
                 i,
@@ -603,7 +606,12 @@ mod guest {
                 EVT_BUF_SZ as u32,
                 vio::DESC_F_WRITE,
                 0,
-            );
+            )
+            .is_none()
+            {
+                println!("gui-inputd: put_desc q0 desc {} 失败（idx>=qsize 或环页越界）", i);
+                trap(); // 几何恒在页内，防御面
+            }
         }
         for i in 0..QSIZE as usize {
             if vio::publish(ring, &d.lay, i as u16).is_none() {
