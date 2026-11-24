@@ -8569,13 +8569,19 @@ fn launcher_assemble(console: Handle, fs_gift: Handle) -> bool {
             data_off,
             data_len,
             stdout: console,
-            // 64 页 = 256KB（R5 实测定值——段③ 首验仪器定谳：8 页 32KB 下
-            // main+0x1c 序言即穿保护页 D-abort——`UiMain::new` 构造中间体
-            // LTO 后仍部分落栈 ~29KB + pre-main std 运行时；帧循环另有
-            // CommandEncoder 18KB/帧（gfxdemo 16 页先例无 berry-ui 链——刀4
-            // k4 统计面自 8 抬，见上方 gfxdemo arm 注）。
-            // bsh 32 页先例之上；manifest 域检 1..=64 顶格）。
-            stack_pages: 64,
+            // 96 页 = 384KB。原 64 页 = 256KB 是 R5 实测定值（段③ 首验仪器
+            // 定谳：8 页 32KB 下 main+0x1c 序言即穿保护页 D-abort——
+            // `UiMain::new` 构造中间体 LTO 后仍部分落栈 ~29KB + pre-main std
+            // 运行时；帧循环另有 CommandEncoder 18KB/帧（gfxdemo 16 页先例无
+            // berry-ui 链——刀4 k4 统计面自 8 抬，见上方 gfxdemo arm 注）。
+            // 64→96：启动器前台态带内帧收口（frameloop.rs flush_band）多出
+            // 一处 ui.layout() 调用点，relayout 不再内联进 render_frame——
+            // 20KB 重排帧叠在 36KB 渲染帧上，首帧栈峰值高约 16KB 越过保护
+            // 页；64 页下启动器启动即栈溢出（整机起机实证，QEMU TCG：`launcher
+            // died` 两次、崩点为栈探针 `str xzr,[sp]`、`LAUNCH ok` 零次），96
+            // 页后零 died。本处直接填入派生规格 SpawnSpec，不经清单的页数域检
+            // （manifest 1..=64）。
+            stack_pages: 96,
             // 占位 dummy（空 feeder 立即 EOF；berry-exec assert：extras 非
             // 空须 stdin 槽在位——fsmgr/vnet 同款）。
             stdin_feed: Some(&[]),
