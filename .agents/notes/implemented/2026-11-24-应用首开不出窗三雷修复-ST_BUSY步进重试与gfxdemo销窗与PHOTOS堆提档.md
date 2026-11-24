@@ -1,0 +1,36 @@
+# 应用首开不出窗三雷修复——四应用 present 域 ST_BUSY 步进重试、gfxdemo 退场销窗、PHOTOS 堆提档 4 MiB
+
+Status: implemented
+
+## Problem
+
+desktop 机上 BROWSER / CONTACTS / PHOTOS / SETTINGS 点图标后 `eco: app <ID> it 03` 出现却长时间无窗、无退出行（诊断篇 boot1：BROWSER 181 s、CONTACTS 120 s），同一应用再点零动作；`console=true` 诊断镜像的串口直证是 `browser: boot release bad st=3`。三颗雷彼此独立。第一颗（根因在四应用自身）：browser / contacts / photos / settings 的 `main.rs` 里三处 present 域 rpc——boot 清账 RELEASE_WAIT、帧 SUBMIT、FRAME_CALLBACK——都是单趟，wmd 快答 1 字节 `ST_BUSY`（`=3`，[guiproto lib.rs](../../../user/berry-guiproto/src/lib.rs) 230）时解析器返 `None` 即 `fail` → `park`（进程常驻、永不出帧）；基线 `c5455e18` 的 browser 1331-1334（RELEASE_WAIT）、1626-1630（SUBMIT）、1641-1645（FRAME_CALLBACK）即此形，contacts / photos / settings 同形。BUSY 来源是 [gui-wmd presarb.rs](../../../user/bins/gui-wmd/src/presarb.rs) 134 的真值表 `Submit/Release | Some(他) ∧ 活跃 | Busy`（租约 `PRESENT_LEASE_NS` = 5 s，67）：应用拉起时 launcher 常有 busy 灯帧事务在途（SUBMIT → FRAME_CALLBACK → RELEASE，TCG 下超过 5 s 租约）。launcher 自身（[berry-appshell pump.rs](../../../user/berry-appshell/src/pump.rs) 853-864 的 `busy_step`）早已对同一快答做步进重试，四应用是漏改面。第二颗（根因在 gfxdemo）：gfxdemo 建全屏 APP 层窗（[gfxdemo main.rs](../../../user/bins/gfxdemo/src/main.rs) 442-457，`wid` 在 454）后退场时 `println!("GFX ok"); exit(0)`（基线 1588-1589）不 DESTROY；它走 wmd 的 wm_srv 而非 apps 通道，svcmgr 的 `destroy_owned` 死亡对账不覆盖，窗就常驻 wmd 表；launcher 的 `on_covered_tap`（[frameloop.rs](../../../user/bins/berry-launcher/src/frameloop.rs) 832-851）查到「非自身且 APP 层且可见」窗即 DESTROY 并吞掉本次点击——这就是「第二击零动作」与「第三击走 recycle 才出窗」的真相。第三颗（根因在 photos）：[photos main.rs](../../../user/bins/photos/src/main.rs) 175 `vec![0u32; PHOTO_N * PHOTO_PX]` = 12 × 240 × 240 × 4 = 2'764'800 B 超过 berry-libc 默认 `HEAP_SIZE` = 1 MiB（[alloc.rs](../../../user/berry-libc/src/alloc.rs) 20-26），分配失败 abort → `exit code`（boot1:993）；诊断镜像直证 `memory allocation of 2764800 bytes failed`（boot2:580）；基线 [photos Cargo.toml](../../../user/bins/photos/Cargo.toml) 29 未开 `heap-4m`，而 launcher（berry-launcher/Cargo.toml:30）与 guifbd（guifbd/Cargo.toml:50）早已开。
+
+## Decision
+
+四应用各加一个 `busy_step(what, cap_dl)`（browser 686-697、contacts 388-399、photos 548-559、settings 250-261）与两常量 `BUSY_RETRY_CAP_NS` = 8 s、`BUSY_RETRY_STEP_NS` = 100 ms（browser 93 / 96、contacts 84 / 87、photos 87 / 90、settings 93 / 96），与 pump.rs:123 / 126 同值同形。三处 rpc 点各包成有界环：boot RELEASE_WAIT（browser 1361-1370、contacts 1035-1044、photos 1113-1122、settings 730-739）、SUBMIT（browser 1662-1678、contacts 1371-1387、photos 1408-1422、settings 1002-1018）、FRAME_CALLBACK（browser 1692-1702、contacts 1401-1411、photos 1436-1446、settings 1033-1043）。环的判据严格 `n == 1 && rep[0] == gp::ST_BUSY`；非 BUSY 应答原样跳出，交下方原判逐字不变（`boot release bad st=` / `submit ack bad st=` / `frame done bad st=`）。帽是绝对期限：`cap_dl == 0` 时写 `now() + 8 s`，之后只做 `now() >= cap_dl` 比较；帽位在环外声明、跨轮不重置；到帽 `fail("…帽到点")` 与原 `fail` 同终态（`eprintln` + `park`）。SUBMIT 环把 `berry_handle_duplicate` 挪进环体、每轮 fresh dup 一枚新别名——wmd 快答 ST_BUSY 前已 `close_all(hs)`（[gui-wmd main.rs](../../../user/bins/gui-wmd/src/main.rs) 341-342、349-350、363-364），旧别名号不可复用也不泄漏。GETINFO、稳态 RELEASE、VOTE 三点不包：真值表 `Other` 恒 Forward，稳态 RELEASE 时本端即属主。与 pump.rs 的唯一覆盖差异是 boot RELEASE_WAIT 也包了（pump.rs:310-317 未包）——launcher 起机期 present 域无他客户端，而应用拉起时 launcher 常在途，`Release | Some(他) ∧ 活跃 → Busy` 使该点确有 BUSY 面；RELEASE_WAIT 零随行，重发安全。帽 8 s 大于租约 5 s：到帽前属主事务必已收口或被租约抢占，重试必过。
+
+gfxdemo 在 `GFX ok` 之前发 `encode_wm_destroy_req(wid)`（main.rs:1591-1592，`wid` 即 454 行本程序建窗所得），应答非 `ST_OK` 仅 `eprintln!("gfx: wm destroy id={} st={}")`（1593-1595），不拦 `GFX ok` + `exit(0)`（1599-1600）——销窗的协议级失败不让 smoke 判读词 `GFX ok` 缺席。
+
+photos/Cargo.toml:33 改为 `berry-libc = { path = "../../berry-libc", features = ["heap-4m"] }`。该 feature 只换 `HEAP_SIZE` 常量（alloc.rs:20-26），堆是 `.bss` 内的静态数组（alloc.rs:32-37），`.bss` 为 NOLOAD 不进 cpio；栈 VA 随映像尾自动上移，无固定地址冲突。
+
+## Alternatives considered
+
+PHOTOS 把 `PHOTO_N` / `PHOTO_SZ` 降到 1 MiB 以内（诊断篇所列的另一路）——弃：以改内容换容量，而 `heap-4m` 是 launcher / guifbd 已有先例的分档法，默认 1 MiB 面不受影响。gfxdemo 销窗用 `expect_ok`（诊断篇「最小修法」原文）——弃：销窗失败拦退场会让 `GFX ok` 缺席、smoke 判 FAIL，改为只打诊断行；复审另建议把 `GFX ok` 提到 DESTROY 之前或给销窗单独短帽，本刀未做（见 Consequences）。同批改 berry-term 的同形三处——弃：berry-term 属并行会话领地，且它在本基线的卡点是 fs gift dup（非 present 域），本补丁不含 berry-term。顺手把四应用稳态 RELEASE 的 `count < 1` 硬判（browser 1724、contacts 1433、photos 1463、settings 1068）对齐 pump.rs:777 的 `count != 0 &&` 宽容形——弃：补丁前存量、与三雷无因果，另刀处理。
+
+## Consequences
+
+编译门（worktree `/tmp/r7b-final`，基线 `c5455e18`）：`just build-user` exit 0，尾行 `tlsscan: rootfs.cpio x62 ELF 全过（F1 放置/F2 自指针/F3 头在段）`，0 error，198 条 warning 全在未改 crate、五个被改 crate 的 `-->` 0 行；musl `cargo check --release --target aarch64-unknown-linux-musl` 五 crate（browser / contacts / photos / settings / gfxdemo）全 exit 0、0 error，warning 仅依赖 berry-libc 3 条与 berry-ui 1 条既有。自建产物的 ELF 段表：PHOTOS `.bss` 4'210'376 B（4.02 MiB）对 BROWSER 1'064'648 B（1.02 MiB），PHOTOS 文件体积 444'240 B 不增。`tools/facts.txt` 的 `docs_md` 788 → 789（本篇）。
+
+端到端引用落地者的证据——引用条件成立：六文件与 `/tmp/r7b-fix-out/` 定稿 `cmp` 逐字节相同、基线同 `c5455e18`、两份 `just build-user` 的 `.berryver` 同为 `v0.2.0-1868-gc5455e18-dirty`；证据目录 `/tmp/r7b-fix-evidence/`，行号为各 run 的 `serial.log`。诊断镜像（五 manifest `console=true`，run `1795504956-079693000-86424-host`，658 行）：BROWSER `first frame` L464、CONTACTS `submit busy（present 单飞让位重试）` L483 → `first frame` L486——这是机制直证，补丁前该 ST_BUSY 即 `submit ack bad st=3` → park——PHOTOS `first frame` L510、SETTINGS `first frame` L540；四应用零 `exit code`、零 `帽到点`。生产镜像（run `1795505960-113456000-74886-host`，535 行）参考标记无回归：`VBLK ok cap=2048 slot=31` L119、`GFX ok` L201、`BLKD ok n=512` L202、`LAUNCH ok` L302、`err=-13` 0 行；PHOTOS L366 点击 → L372 `eco: app PHOTOS it 03`，`exit code` 0 行；BROWSER 第一击 L407 → L411 `eco: app BROWSER it 03`；第二击 L428 → L433 `TERM: killed 'user_child'`、L434 `eco: app BROWSER recycle`、L435 `killed`、L437 重拉 `it 03`，`launcher: covered destroy` 0 行——第二击不再被幽灵窗吞；`gfx: wm destroy` 0 行、`GFX ok` 恰 1 行。
+
+如实声明——本补丁不解决可见性：应用窗仍会被 launcher 整帧重绘盖掉，触发有三条（时钟分钟换字、spawn 后 busy 灯翻字、任意点击），都是 launcher 侧另一个已定位的问题（见诊断篇「窗口自消失是谁移除的」）。生产镜像上 BROWSER / CONTACTS / SETTINGS 的线索区变化比例是 0.0000，只有 PHOTOS 在 60 s 窗内可见；本篇的出窗判据是诊断镜像串口的 `first frame` 与生产镜像的 recycle 链路，不是屏幕可见。
+
+未覆盖面：boot RELEASE_WAIT 环与 FRAME_CALLBACK 环在落地者两台诊断机均零命中（`boot release busy` / `frame callback busy` 0 条），靠四应用代码对称与 presarb 真值表保证；8 s 到帽 fail 路未触发。复审建议未采纳项：gfxdemo 销窗的传输级失败（send 非 BUSY 错 / recv 帽到点）仍走 `rpc` 固有 `fail` → exit(1)，会扣住 `GFX ok`（DESTROY 落 wmd 本地即答，实际风险极低）；稳态 RELEASE `count < 1` 硬判与 pump.rs:777 不一致是存量；boot GETINFO 单趟在 `stale_release` 封锁瞬态会 park（与 pump.rs 同构，存量）。berry-term 的 fs gift dup 面、svcmgr 授柄掩码、launcher 整帧重绘均未动。
+
+## Related
+
+- [应用点开不出窗与窗口自消失诊断](../../research/2026-11-24-应用点开不出窗与窗口自消失诊断.md)——三雷的定谳篇，各项状态已同步为本篇已修。
+- [应用内全冻与导航三键零反应根治](2026-11-20-应用内全冻与导航三键零反应根治.md)——appshell pump `busy_step` 的来源刀，本篇把同形搬到四应用。
+- [回收路免 EOF 帽与 SETTINGS 换轨](2026-11-21-回收路免EOF帽与SETTINGS换轨.md)——presarb 上线后的回收路面，第二击 recycle 链的上下文。
+- [gfxdemo 四处 VMO 别名缺 RIGHT_TRANSFER](2026-11-24-gfxdemo-VMO别名TRANSFER缺失修复.md)——同文件上一刀。

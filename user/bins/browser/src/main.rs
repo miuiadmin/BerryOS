@@ -60,8 +60,8 @@ use berry_libc::io::{close, fs_h, input_h, read, self_vmar_h, wm_present_h, writ
 use berry_libc::{get_errno, park, EIO, ENOENT};
 use berry_sys::{
     berry_channel_recv, berry_channel_send, berry_clock_read, berry_handle_close,
-    berry_handle_duplicate, berry_object_wait_many, berry_object_wait_one, berry_vmar_map,
-    berry_vmo_commit, berry_vmo_create, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BUSY,
+    berry_handle_duplicate, berry_object_wait_many, berry_object_wait_one, berry_thread_sleep,
+    berry_vmar_map, berry_vmo_commit, berry_vmo_create, Handle, BERRY_ERR_AGAIN, BERRY_ERR_BUSY,
     BERRY_ERR_TIMEDOUT, CLOCK_MONOTONIC, RIGHT_READ, RIGHT_TRANSFER, RIGHT_WRITE,
     SIGNAL_READABLE, SIGNAL_WRITABLE,
 };
@@ -85,6 +85,15 @@ static CRT0_SEED: unsafe extern "C" fn() = berry_libc::berry_crt0_anchor;
 /// RPC 收侧 READABLE 帽（launcher/settings 同值 300s：app 拉起时点 =
 /// 用户点击，首 RPC 距 boot 稳态可远）。
 const RPC_CAP_NS: u64 = 300 * 1_000_000_000;
+
+/// present 域 1B ST_BUSY 拒答重试总帽（berry-appshell pump.rs
+/// PRESENT_BUSY_RETRY_CAP_NS 同值）：wmd presarb 对他客户端事务在途的
+/// SUBMIT/RELEASE 快答 ST_BUSY（属主租约 5s 内让位），帽 8s > 租约——到帽前
+/// 属主事务必已收口或被租约抢占，重试必过；到帽才 fail（真死链面）。
+const BUSY_RETRY_CAP_NS: u64 = 8 * 1_000_000_000;
+
+/// ST_BUSY 步进重试步进（100ms——步进睡让出 CPU，醒即重发）。
+const BUSY_RETRY_STEP_NS: u64 = 100 * 1_000_000;
 
 /// 帧缓冲映射 VA（launcher frameloop 同位：mmap VA 窗
 /// [0x5000_0000,0x6000_0000) 内固定位 +16MiB；页对齐）。
@@ -668,6 +677,23 @@ fn rpc(
 ) -> (usize, usize) {
     rpc_send(ch, req, attach);
     rpc_recv(ch, rep, rhs)
+}
+
+/// present 域 1B ST_BUSY 拒答的步进重试（berry-appshell pump.rs busy_step
+/// 同形）：100ms 步进让出 CPU，总帽 [`BUSY_RETRY_CAP_NS`]（`cap_dl` = 调用点
+/// 局部帽位，0 = 首次起算）；到帽 fail。快答未转发 + 随行已关收，重发安全
+///（RELEASE_WAIT 零随行——无别名重 dup 面）。
+fn busy_step(what: &str, cap_dl: &mut u64) {
+    if *cap_dl == 0 {
+        *cap_dl = now() + BUSY_RETRY_CAP_NS;
+        eprintln!("browser: {what}");
+    }
+    if now() >= *cap_dl {
+        fail(&format!("{what}: 帽到点"));
+    }
+    if berry_thread_sleep(now() + BUSY_RETRY_STEP_NS) != 0 {
+        fail("busy retry sleep");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1323,12 +1349,23 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, a: &mut App) -> ! {
         ));
     }
 
-    // —— 跨代清账（前代实例孤儿别名全量排空）。
+    // —— 跨代清账（前代实例孤儿别名全量排空）。ST_BUSY 步进重试环：本端
+    //    拉起时 launcher 常有在途 present 事务（busy 灯帧 SUBMIT→
+    //    FRAME_CALLBACK→RELEASE，TCG 下 >5s 租约），wmd presarb 快答
+    //    ST_BUSY——旧面单趟即 fail→park（首开不出窗根因）；BUSY 步进重发，
+    //    非 BUSY 应答原样跳出交下方原判。
     let m = match gp::encode_present_req(&mut req, &gp::PresentReq::ReleaseWait) {
         Some(m) => m,
         None => fail("release encode"),
     };
-    let (n, nh) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+    let mut busy_dl = 0u64;
+    let (n, nh) = loop {
+        let (n, nh) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+        if gp::parse_release_rep(&rep[..n]).is_some() || !(n == 1 && rep[0] == gp::ST_BUSY) {
+            break (n, nh);
+        }
+        busy_step("boot release busy（present 单飞让位重试）", &mut busy_dl);
+    };
     if gp::parse_release_rep(&rep[..n]).is_none() {
         fail(&format!("boot release bad st={}", rep[0]));
     }
@@ -1597,10 +1634,6 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, a: &mut App) -> ! {
             }
 
             // SUBMIT：fresh READ dup 别名随行（send 即 take；TRANSFER 保位）。
-            let mut alias: Handle = 0;
-            if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias) != 0 || alias == 0 {
-                fail("dup alias");
-            }
             let (flags, rects, k) = if full {
                 (
                     gp::SUBMIT_F_DAMAGE_FULL,
@@ -1623,14 +1656,32 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, a: &mut App) -> ! {
                 Some(m) => m,
                 None => fail("submit encode"),
             };
-            let (n, _) = rpc(hw, &req[..m], &[alias], &mut rep, &mut rhs);
-            let token = match gp::parse_submit_ack(&rep[..n]) {
-                Some(t) => t,
-                None => fail(&format!("submit ack bad st={}", rep[0])),
+            // ST_BUSY 步进重试环（berry-appshell pump.rs SUBMIT 面同形）：他
+            // 客户端（launcher 点击/分钟沿整帧）事务在途时 wmd presarb 快答
+            // ST_BUSY 并 close 随行别名——每轮重发前 fresh dup 一枚新别名。
+            let mut busy_dl = 0u64;
+            let token = loop {
+                let mut alias: Handle = 0;
+                if berry_handle_duplicate(vmo, RIGHT_READ | RIGHT_TRANSFER, &mut alias) != 0
+                    || alias == 0
+                {
+                    fail("dup alias");
+                }
+                let (n, _) = rpc(hw, &req[..m], &[alias], &mut rep, &mut rhs);
+                if let Some(t) = gp::parse_submit_ack(&rep[..n]) {
+                    break t;
+                }
+                if n == 1 && rep[0] == gp::ST_BUSY {
+                    busy_step("submit busy（present 单飞让位重试）", &mut busy_dl);
+                    continue;
+                }
+                fail(&format!("submit ack bad st={}", rep[0]));
             };
             ui.note_submitted();
 
-            // FRAME_CALLBACK：断 PRESENTED（呈现链破相 fail loud）。
+            // FRAME_CALLBACK：断 PRESENTED（呈现链破相 fail loud）。ST_BUSY
+            // 步进重试同 SUBMIT（pump.rs 同形——stale 清场封锁瞬态快答，本端
+            // 帧已在途，重试零副作用）。
             let m = match gp::encode_present_req(
                 &mut req,
                 &gp::PresentReq::FrameCallback { frame_token: token },
@@ -1638,10 +1689,17 @@ fn run(hw: Handle, hi_in: Handle, ui: &'static mut UiMain, a: &mut App) -> ! {
                 Some(m) => m,
                 None => fail("frame callback encode"),
             };
-            let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
-            let done = match gp::parse_frame_done_rep(&rep[..n]) {
-                Some(d) => d,
-                None => fail(&format!("frame done bad st={}", rep[0])),
+            let mut cb_dl = 0u64;
+            let done = loop {
+                let (n, _) = rpc(hw, &req[..m], &[], &mut rep, &mut rhs);
+                if let Some(d) = gp::parse_frame_done_rep(&rep[..n]) {
+                    break d;
+                }
+                if n == 1 && rep[0] == gp::ST_BUSY {
+                    busy_step("frame callback busy（present 单飞让位重试）", &mut cb_dl);
+                    continue;
+                }
+                fail(&format!("frame done bad st={}", rep[0]));
             };
             if done.status != gp::FRAME_PRESENTED {
                 fail(&format!("frame status={}", done.status));

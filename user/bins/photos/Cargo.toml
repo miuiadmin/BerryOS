@@ -26,7 +26,11 @@ license = "Apache-2.0"
 [workspace]
 
 [dependencies]
-berry-libc = { path = "../../berry-libc" }
+# heap-4m：样张 slab `vec![0u32; PHOTO_N*PHOTO_PX]` = 12×240×240×4 =
+# 2'764'800B，默认 1MiB 静态堆（berry-libc alloc.rs HEAP_SIZE）分配即 abort
+#（`memory allocation of 2764800 bytes failed`）；launcher 同款 feature 提档
+# 4MiB（slab 2.64MiB + UiMain 等仍 < 4MiB）。
+berry-libc = { path = "../../berry-libc", features = ["heap-4m"] }
 berry-sys = { path = "../../berry-sys" }
 berry-guiproto = { path = "../../berry-guiproto" }
 berry-ui = { path = "../../berry-ui" }
