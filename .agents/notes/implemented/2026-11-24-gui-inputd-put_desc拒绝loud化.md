@@ -32,3 +32,7 @@ Status: implemented
 - [gui-inputd `normalize_axis` 乘法溢出——中间量 i64 改 u64 并补等价性测试](2026-11-24-inputd-normalize_axis乘法溢出修复.md)——同文件 `lib.rs` 的上一刀；本刀同批以纯注释把其「结果与旧式逐位相同」限定到旧式不溢出的入参域内。
 - [inputd 在途 WAIT 悬挂强制重发（I3）](2026-11-19-inputd在途悬挂强制重发I3.md)——同文件泵面刀，本刀不触及泵面。
 - [驱动子系统综合研究报告](../../research/2026-11-18-驱动子系统综合研究报告.md)——§3.4 健壮性审计后续，同类 `let _` 吞拒绝面的登记处。
+
+## 跟进件复查（2026-11-24，R8 小补漏）
+
+Alternatives 所列「给紧邻的 `publish` 拒绝分支补诊断行」一件仍未做：`drivers/bins/gui-inputd/src/main.rs` 617-619 的 `publish` 分支仍是 `is_none() { trap(); }` 无诊断行，而 610-614 的 `put_desc` 分支带诊断行——不对称如旧。R8 小补漏路按「该文件 30 小时内有提交则跳过」的规则未改文件（`git log --since=30.hours --no-merges --oneline -- drivers/bins/gui-inputd/src/main.rs` 只命中本刀 `5e56c70e`，2026-11-24 04:52:55 +0800），缺口原样留给 gui-inputd owner。

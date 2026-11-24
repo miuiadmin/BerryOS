@@ -1583,6 +1583,11 @@ fn main() {
     }
     close_h(rhs[0]);
 
+    // 客户端全链断言过（服务端真值 GFXF ok n= 由 guifbd 首呈现时打出）
+    // ——结构性恰一次：svcmgr 单次预拉 + 阻塞 reap + 单 println。打在销窗
+    // 之前：销窗 RPC 传输失败走 rpc→fail 收口，不得连带扣住本标记。
+    println!("GFX ok");
+
     // —— DESTROY（wm 域四步之尾：本程序建的全屏 APP 层窗随进程退场显式
     //    销毁——本程序走 wm_srv 非 apps 通道，svcmgr 无 `destroy_owned` 死亡
     //    对账兜底；不销 = 幽灵窗常驻窗口表，launcher `on_covered_tap` 把此后
@@ -1593,9 +1598,5 @@ fn main() {
     if gp::parse_status_rep(&rep[..n]) != Some(gp::ST_OK) {
         eprintln!("gfx: wm destroy id={} st={}", wid, rep[0]);
     }
-
-    // 客户端全链断言过（服务端真值 GFXF ok n= 由 guifbd 首呈现时打出）
-    // ——结构性恰一次：svcmgr 单次预拉 + 阻塞 reap + 单 println。
-    println!("GFX ok");
     exit(0);
 }

@@ -41,3 +41,7 @@ desktop 机串口在 `gfx: arb3 hz=120` 之后紧接 `rpc send err=-13`，`gfx: 
 - [W3-Q91：IPC 探测链折叠——send 预检/wait_get 单查收口](2026-11-17-IPC探测链折叠收口.md)——本刀撞上的预检环即该刀折叠后的 `probe_transfer_ok` 单源判定。
 - [RIGHT_TRANSFER 全生态执法](../../../docs/阶段沿革.md)（安全修复 #2 节）——缺位即 -13 的执法面本体；gfxdemo 当年只补了三处。
 - [gfxdemo 部分包络模式——真 damage 帧源首落](2026-11-14-gfxdemo-partial-envelope.md)——gfxdemo 帧源与 SUBMIT 路径的前置刀。
+
+## 同文件后续：GFX ok 提到销窗之前（2026-11-24，R8 小补漏）
+
+`main.rs` 退场序其后由 R8 小补漏改为 `println!("GFX ok")`（1589）在 DESTROY 块（1591-1600）之前，销窗 RPC 传输级失败不再扣住该标记；该改动的事实本体、语义边界与验证数字只记在[三雷修复笔记](2026-11-24-应用首开不出窗三雷修复-ST_BUSY步进重试与gfxdemo销窗与PHOTOS堆提档.md)的 Consequences 末段。与本篇相关的只有一条：R8 总审 desktop 起机 `err=-13` 仍为 0 次、`gfx: k4a` 及后续各段在席，四处 TRANSFER 补位未回归。Alternatives 所列 `submit_full` 文档注释补「别名须 `READ|TRANSFER`」一件 R8 仍未做。

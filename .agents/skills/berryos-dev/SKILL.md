@@ -39,8 +39,8 @@ KERNEL=target-klog/aarch64-unknown-none/debug/berry-kernel   # 用实构建目�
 
 ### 三、分层验证链（快到慢）
 
-8. **秒级对拍**：`bash tools/fwcfg-check.sh`（fw_cfg 键表 21 键两侧一致）、`just abi-check`（ABI 五面）、`node .agents/tools/check-docs.mjs`（文档面）。
-9. **分钟级**：berry CLI 测试 `cd tools/berry && CARGO_TARGET_DIR=/tmp/berry-t cargo test --release --target <host>`（373 例基线——遗漏轮笔误 1373 勘正）；`just test-host`（host 单测，rootface 已接入）。
+8. **秒级对拍**：`bash tools/fwcfg-check.sh`（fw_cfg 键表 `tools/fwcfg-keys.toml` 与代码面两侧一致——键数以脚本自报行「对拍过（N 键两侧一致）」为准）、`just abi-check`（ABI 五面）、`node .agents/tools/check-docs.mjs`（文档面）。
+9. **分钟级**：berry CLI 测试 `cd tools/berry && CARGO_TARGET_DIR=/tmp/berry-t cargo test --release --target <host>`（例数以该命令各 `test result:` 行自报为准——lib、bin、集成测试与 doc-test 各一行，与上一轮同命令逐行对拍）；`just test-host`（host 单测，rootface 已接入）。
 10. **十分钟级**：`CARGO_TARGET_DIR=<同构建> SMOKE_PHASES=boot just smoke`（boot 相 32 标记，CI 轻面同款）；`just build` 全链（含 build-user/mkapp——manifest 注释必须纯 ASCII 且**禁任何注释**，mkapp 规范形门禁）。
 11. **长跑**：rootfs 相/全量 smoke 只在低载窗跑（echod 18080 端口被并行 lane 独占是常态——A-VERIFY「停段于 FAT 族」同族环境面）。
 
