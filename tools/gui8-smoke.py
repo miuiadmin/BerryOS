@@ -29,8 +29,9 @@ FS/U1/U2/U3/B1/U4/TAB/INT/POLL/MMP/CLK/SIG/PS/BC/THR/EXIT 均结构性缺席）�
     期等待，均零序锚（WMSUB 跨通道无协议序，纯恰一计数）；
   - `launcher: click ready` **强制在席恰一次**（缺席即 FAIL，不 sleep
     回退——这是注入前的状态谓词门）；
-  - 单击注入通路 --input-path：qmp（默认——QMP 三批 abs → btn down →
-    btn up）或 vnc（RFB PointerEvent 直通——QEMU 另挂 -vnc 127.0.0.1:0
+  - 单击注入通路 --input-path：qmp（默认——单条 input-send-event：
+    abs 定位 + btn down + btn up 同批投递，无固定睡）或 vnc（RFB
+    PointerEvent 直通——QEMU 另挂 -vnc 127.0.0.1:0
     自动分配口，内建最小 RFB 客户端带 SetEncodings；gui8 点击历来走
     QMP、用户手走的 VNC 人面路从未被测，正是「QEMU 11 VNC 丢绝对坐标」
     旧判例能长期立足的制度性原因，本臂给人面路立法测试面）；vnc 形
@@ -185,6 +186,30 @@ GATE_LAUNCHER_FAILS = (
 )
 if len(LAYOUT_CELLS_EXPECTED) != 2:
     raise RuntimeError("LAYOUT canonical cell 数漂移（期望 2）")
+
+# —— 启动器前台态握手行（frameloop.rs 常驻诊断，非冒烟态专属）——
+# `fg+ spawned`：flush_pending_spawn 的阻塞 APP_SPAWN 已返回且真拉起、
+# 前台态在席（每次真拉起恰一行）；`fg- <reason>`：leave_fg 清前台态
+#（每次收口恰一行，reason ∈ table/back/recents/home）。回收门拿它们
+# 做交接握手：等 `fg+` = 知道启动器已出阻塞 RPC；等 `fg- back` = 知道
+# 返回键真被消费、前台态已清，此后点图标才不被整击吞掉——替代原固定
+# sleep(2.0)。与 GATE_LAUNCHER_FAILS 两条、「launcher: click ready /
+# input poll armed」互不为子串（tools/ 与 justfile 内此前零命中）。
+MARK_FG_PLUS = "launcher: fg+ spawned"
+MARK_FG_MINUS_PREFIX = "launcher: fg- "
+MARK_FG_MINUS_BACK = MARK_FG_MINUS_PREFIX + "back"
+MARK_FG_MINUS_RECENTS = MARK_FG_MINUS_PREFIX + "recents"
+# 回收门每击「段一：等消费证据」的上限秒：零证据 = 该击未达启动器（零动作
+# 或丢失），重注一击（至多 GATE_MAX_RETRIES 次）；证据（新 it / 新 fg-）
+# 一出即转段二在途续等、不再重注（见 _gate_click_wait_spawn 头注）。实测
+# 绿轮首击/二击 3 到 12s 出 it，TCG 单核重载下阻塞 spawn 0.4 到 4.1s、
+# 单拍最长 5.8s——30s 留 5 倍余量；每击总帽另由 click_timeout 钉死。
+GATE_CLICK_STEP_TIMEOUT = 30.0
+# 返回键交接上限秒：点返回键后等 `launcher: fg- back` 的帽。二击的
+# `fg+` 已等过（启动器不在阻塞 RPC 内），返回键只需排进下一拍——TCG
+# 重载下单拍最长约 6s，10s 足够；超时重注，至多 GATE_MAX_RETRIES 次。
+GATE_BACK_STEP_TIMEOUT = 10.0
+GATE_MAX_RETRIES = 2
 
 # —— 桌面几何（launcher desktop.rs 常量镜像；仅用于算 cell(0,0) 中心，
 #    屏幕宽高从串口 LAUNCH/FB 行动态解析——裁决 D：不把 800x600 写死）——
@@ -454,24 +479,32 @@ class QmpClient:
         return self.execute("input-send-event", {"events": events})
 
     def click(self, x: float, y: float, w: int, h: int) -> None:
-        """三批单击：①abs 定位 ②btn down（带坐标）③btn up。"""
+        """单击：abs 定位 + btn down + btn up 同一条 input-send-event（单批）。
+
+        原三批形（①abs ②btn down+abs ③btn up，每批后 sleep 0.25s 让
+        guest 逐批消费）在 TCG 单核重载下有真实缺陷：gui-inputd 的 wire
+        时戳是**出队时刻**（main.rs harvest 逐事件 `ts = now()`），DOWN
+        取批 ② 的 ABS_Y 样本时戳、UP 取批 ③ 的 BTN_LEFT 时戳，两批各自
+        出队的调度抖动叠加宿主 0.25s 固定睡，把引擎看到的按压时长（UP.ts
+        − DOWN.ts）抖到 berry-ui hit.rs 的 450ms 长按阈之上——实抓
+        461/484ms 两例：referee 只产 Release+LongPress 不产 Click，启动器
+        零动作零诊断（r11-diag 报告 §3）。单批形下 QEMU 缓冲到一次
+        SYN_REPORT 投递，inputd close_batch 给同批 DOWN/UP 同一个
+        synth_ts（lib.rs「QMP 单命令 down+up 即 press+release 同批的标准
+        注入形态」+ 单测 pump_same_batch_tap_pairs_down_up），UP−DOWN 恒
+        0，与负载无关。宿主 berry CLI 的 tap_abs（tools/berry/src/qmp.rs）
+        即此形。批间不再有固定睡。
+        """
         ax = max(0, min(32767, int(round(x * 32768.0 / max(1, w)))))
         ay = max(0, min(32767, int(round(y * 32768.0 / max(1, h)))))
-        batches = [
+        self.input_send(
             [
                 {"type": "abs", "data": {"axis": "x", "value": ax}},
                 {"type": "abs", "data": {"axis": "y", "value": ay}},
-            ],
-            [
                 {"type": "btn", "data": {"down": True, "button": "left"}},
-                {"type": "abs", "data": {"axis": "x", "value": ax}},
-                {"type": "abs", "data": {"axis": "y", "value": ay}},
-            ],
-            [{"type": "btn", "data": {"down": False, "button": "left"}}],
-        ]
-        for batch in batches:
-            self.input_send(batch)
-            time.sleep(0.25)  # 让 guest 输入泵逐批消费（非时序断言）
+                {"type": "btn", "data": {"down": False, "button": "left"}},
+            ]
+        )
 
     def quit(self) -> None:
         try:
@@ -597,9 +630,10 @@ class RfbClient:
         self._send(struct.pack("!BBHH", 5, mask & 0xFF, x, y))
 
     def click(self, x: int, y: int) -> None:
-        # 三发单击：①move 定位 ②左键 down ③up——与 QMP 三批单击同拍
-        # （0.25s 间隔让 guest 输入泵逐发消费，非时序断言）。QEMU 对每个
-        # PointerEvent 发绝对 move + 按键差分 + sync，与 QMP 三批等效。
+        # 三发单击：①move 定位 ②左键 down ③up——RFB 人面路形（每发一次
+        # PointerEvent，QEMU 各自 sync）。0.25s 间隔让 guest 输入泵逐发
+        # 消费；QMP 臂已改单批同投（QmpClient.click 头注——慢点击在 TCG
+        # 重载下会被引擎判长按），本臂保留三发形不在此刀范围。
         self.pointer(0, x, y)
         time.sleep(0.25)
         self.pointer(1, x, y)
@@ -1135,17 +1169,34 @@ def verify_normal_boot(
 def verify_recycle_gate(text: str, log_path: Path | None = None) -> None:
     """回收门精确断言（--recycle-gate；纯函数，--self-test 覆盖正负样本）。
 
-    期望全日志形态：boot 批 `app BROWSER gui deferred` 恰一 → 首击
-    it 行 → recycle → killed → 二击 it 行；it 恰二（两 spawn）、
-    recycle/killed 恰一、no EOF/exit code/killed for nothing 全零
-    （烧帽回归 = no EOF 行重现 + it 二击迟到；修回退 = killed 行缺席）。
-    行序锚：it[0] < recycle < killed < it[1]。
+    期望全日志形态：boot 批 `app BROWSER gui deferred` 恰一 → 首击 it 行
+    → 二击（多任务键）recycle → killed → it 行 → back 键 → 三击 recycle →
+    killed → it 行；it 恰三（三 spawn）、recycle/killed 各恰二（两轮同 id
+    回收再开）、alive 零（BROWSER 走 surface-0 兼容档不建 wmd 窗，svcmgr
+    already-alive 判据恒假——同 id 重拉恒回收再开）、no EOF/exit code/
+    killed for nothing 全零（烧帽回归 = no EOF 行重现 + it 迟到；修回退 =
+    killed 行缺席）。
+    行序锚：it[0] < recycle < killed < it[1] < recycle < killed < it[2]。
+    握手行核数（r11）：`launcher: fg+ spawned` 恰三——每次真拉起进前台态
+    一行，与 it 恰三互证；`launcher: fg- recents` 恰一——多任务键被消费
+    恰一次（导航键消费两次 = 第二次会在前台态置位后再清一次，复审 M1
+    的假红形，不得放过）；`launcher: fg- back` 恰一——返回键交接握手行。
+    重注只在零消费证据时发生，故三条核数不受合法重注扰动。
     """
     _require_exact_count(
         text, MARK_GATE_DEFERRED, 1, "recycle gate", log_path
     )
-    _require_exact_count(text, ECO_GATE_RECYCLE, 1, "recycle gate", log_path)
-    _require_exact_count(text, ECO_GATE_KILLED, 1, "recycle gate", log_path)
+    _require_exact_count(text, ECO_GATE_RECYCLE, 2, "recycle gate", log_path)
+    _require_exact_count(text, ECO_GATE_KILLED, 2, "recycle gate", log_path)
+    _require_exact_count(
+        text, MARK_FG_PLUS + "\n", 3, "recycle gate", log_path
+    )
+    _require_exact_count(
+        text, MARK_FG_MINUS_RECENTS + "\n", 1, "recycle gate", log_path
+    )
+    _require_exact_count(
+        text, MARK_FG_MINUS_BACK + "\n", 1, "recycle gate", log_path
+    )
     _require_exact_count(text, ECO_GATE_NO_EOF, 0, "recycle gate", log_path)
     _require_exact_count(
         text, ECO_GATE_EXIT_CODE, 0, "recycle gate", log_path
@@ -1155,21 +1206,26 @@ def verify_recycle_gate(text: str, log_path: Path | None = None) -> None:
     )
     for bad in GATE_LAUNCHER_FAILS:
         _require_exact_count(text, bad, 0, "recycle gate", log_path)
-    _require_exact_count(text, ECO_GATE_ALIVE, 1, "recycle gate", log_path)
+    _require_exact_count(text, ECO_GATE_ALIVE, 0, "recycle gate", log_path)
     its = list(RE_GATE_IT.finditer(text))
-    if len(its) != 2:
+    recs = list(re.finditer(re.escape(ECO_GATE_RECYCLE) + r"\n", text))
+    kills = list(re.finditer(re.escape(ECO_GATE_KILLED) + r"\n", text))
+    if (len(its), len(recs), len(kills)) != (3, 2, 2):
         raise SmokeError(
-            f"recycle gate: BROWSER it 行 {len(its)} != 2"
-            f"（首击+回收再拉恰两 spawn；alive 路零新 it；多于 2 = 误多点/连环 spawn）",
+            f"recycle gate: BROWSER it/recycle/killed 行 "
+            f"{len(its)}/{len(recs)}/{len(kills)} != 3/2/2"
+            "（首击 + 二击回收再拉 + 三击回收再拉；多于期望 = 误多点/连环 spawn）",
             log_path,
         )
-    p_alive = text.rfind(ECO_GATE_ALIVE)
-    p_rec = text.rfind(ECO_GATE_RECYCLE)
-    p_kill = text.rfind(ECO_GATE_KILLED)
-    if not (its[0].end() <= p_alive < p_rec < p_kill < its[1].start()):
+    chain = [
+        its[0].end(), recs[0].start(), kills[0].start(), its[1].start(),
+        recs[1].start(), kills[1].start(), its[2].start(),
+    ]
+    if any(a >= b for a, b in zip(chain, chain[1:])):
         raise SmokeError(
-            "recycle gate: 行序破缺（期望 it → alive → recycle → killed → it；"
-            f"got it@{its[0].end()} alive@{p_alive} rec@{p_rec} kill@{p_kill} it@{its[1].start()}）",
+            "recycle gate: 行序破缺（期望 it → recycle → killed → it → "
+            "recycle → killed → it；got "
+            + " < ".join(str(p) for p in chain) + "）",
             log_path,
         )
 
@@ -1453,7 +1509,7 @@ def _aged_wait(label: str, minutes: float) -> None:
 
 
 def _inject_click(boot: "Boot", cx: int, cy: int, w: int, h: int) -> None:
-    """boot A 单击注入分派：--input-path qmp=QMP 三批；vnc=RFB PointerEvent 直通。"""
+    """boot A 单击注入分派：--input-path qmp=QMP 单批（abs+down+up 同投）；vnc=RFB PointerEvent 直通。"""
     if boot.args.input_path == "vnc":
         assert boot.qmp is not None
         port = vnc_port_from_qmp(boot.qmp)
@@ -1777,6 +1833,167 @@ def run_normal_boot(args) -> int:
 # =====================================================================
 
 
+def _gate_click_wait_spawn(
+    boot: Boot,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    label: str,
+    fail_fast: str | None = None,
+    consumed_mark: str | None = None,
+    step_timeout: float = GATE_CLICK_STEP_TIMEOUT,
+    total_timeout: float = 120.0,
+) -> tuple[float, int]:
+    """回收门「点击 → 等拉起握手」单元，两段式。返回（自首击起的墙钟
+    秒，重试次数）。
+
+    段一（消费证据）：发一击后等任一「该击已被启动器消费」的证据——新
+    `eco: app BROWSER it`（svcmgr 在阻塞 APP_SPAWN 内打 = RPC 在途）、新
+    `consumed_mark`（二击臂传 `launcher: fg- recents`：多任务键消费拍**先**
+    清前台态再入队，该行早于 RPC）、或新 `launcher: fg+ spawned`（已完成）。
+    step_timeout 内零证据 = 该击未达启动器（零动作 / 丢失）→ 重注一击，
+    至多 GATE_MAX_RETRIES 次。
+    段二（在途续等）：证据已出即该击已消费——只续等「新 it ∧ 新 fg+」，
+    **绝不重注**；帽 = total_timeout − 自首击已耗时（每击总帽有限）。
+
+    为什么证据后绝不重注（复审 M1）：多任务键是导航键，frameloop.rs
+    on_nav_click 的 recents 分支在 `app_fg.is_some()` 时先 leave_fg 再
+    take `recents_app`——RPC 在途时重注的那一击会在 RPC 归来、前台态置位
+    后的下一拍再清一次前台态（`recents_app` 已 take 取到 None 也不免），
+    返回键步此后永远等不到 `fg- back`、必红且文案错指返回键。图标步的
+    重注虽被前台态整击吞（无多拉起），但同样无必要——证据已出就是 RPC
+    在途，等就是；在途超总帽以明确文案红。
+
+    `fail_fast`（多任务键臂传 alive 行）：该行一出现立即 SmokeError，不等
+    满帽、不重试（已活路是判据性失败，重击无意义）。
+
+    零证据重注的安全性：证据缺席 = 启动器尚未处理该击（或已丢）。图标步
+    重击与首击同格——落同一 `pending_spawn` 单槽或被前台态吞，至多一次
+    拉起；二击/返回键若首击只是迟到（仍在队列里）会被消费两次——二击的
+    `fg- recents` 恰一核数把它判红并指向多任务键（不假绿），返回键的
+    leave_fg 以 `app_fg.is_some()` 为门、重击零动作。实测出队到处理最长
+    5.8s，step_timeout=30s 余量 5 倍。
+    """
+    boot.log.poll()
+    it0 = len(RE_GATE_IT.findall(boot.log.text))
+    fg0 = boot.log.text.count(MARK_FG_PLUS)
+    cm0 = boot.log.text.count(consumed_mark) if consumed_mark else 0
+
+    def _new_it(t: str) -> bool:
+        return len(RE_GATE_IT.findall(t)) > it0
+
+    def _done(t: str) -> bool:
+        return _new_it(t) and t.count(MARK_FG_PLUS) > fg0
+
+    def _evidence(t: str) -> bool:
+        if _new_it(t):
+            return True
+        return consumed_mark is not None and t.count(consumed_mark) > cm0
+
+    def _ff(t: str) -> bool:
+        return fail_fast is not None and fail_fast in t
+
+    evidence_desc = (
+        f"{label}已被消费的证据（新 eco: app BROWSER it 行"
+        + (f" / 新 {consumed_mark}" if consumed_mark else "")
+        + f" / 新 {MARK_FG_PLUS}）"
+    )
+    done_desc = (
+        f"{label}后新 eco: app BROWSER it 行 + 新 {MARK_FG_PLUS}（在途续等，不重注）"
+    )
+    t0 = time.monotonic()
+    retries = 0
+    while True:
+        boot.qmp.click(x, y, w, h)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: _evidence(t) or _ff(t),
+                evidence_desc,
+                step_timeout,
+                "recycle gate",
+            )
+            break
+        except MissingMarkers:
+            if retries >= GATE_MAX_RETRIES:
+                raise
+            retries += 1
+            log(
+                f"recycle-gate: {label} {step_timeout:.0f}s 内未见消费证据"
+                f"——重注（第 {retries}/{GATE_MAX_RETRIES} 次重试）"
+            )
+    if _ff(boot.log.text):
+        raise SmokeError(
+            f"recycle gate: {label}走了已活路——{fail_fast} 先于新 it"
+            "（BROWSER 无 wmd 窗应走回收路：载具换型或 alive 判据变化）",
+            boot.log_path,
+        )
+    remaining = total_timeout - (time.monotonic() - t0)
+    if remaining <= 0:
+        raise MissingMarkers(
+            "recycle gate", done_desc, total_timeout, boot.log_path
+        )
+    boot.log.wait_until(
+        boot.proc,
+        lambda t: _done(t) or _ff(t),
+        done_desc,
+        remaining,
+        "recycle gate",
+    )
+    if _ff(boot.log.text):
+        raise SmokeError(
+            f"recycle gate: {label}走了已活路——{fail_fast} 先于新 it"
+            "（BROWSER 无 wmd 窗应走回收路：载具换型或 alive 判据变化）",
+            boot.log_path,
+        )
+    return time.monotonic() - t0, retries
+
+
+def _gate_click_wait_back(
+    boot: Boot, x: int, y: int, w: int, h: int,
+    step_timeout: float = GATE_BACK_STEP_TIMEOUT,
+) -> int:
+    """回收门返回键交接：点返回键，等启动器打出 `launcher: fg- back`
+    （leave_fg 清前台态时随打的握手行）；GATE_BACK_STEP_TIMEOUT 内未到即
+    重注，至多 GATE_MAX_RETRIES 次。返回重试次数。
+
+    原动作为点返回键后固定 sleep(2.0) 再点图标：返回键点击若未被消费，
+    门不知道，随后的图标点击被前台态整击吞掉，只能等满帽才红。现以
+    握手行替代——`fg- back` 在席才点图标。
+
+    重注安全性（与二击不同，这里重注恒安全）：back 分支的 leave_fg 以
+    `app_fg.is_some()` 为门——首次已消费 → 前台态已清，重击走次级语义
+    （查表无焦点应用窗 / tab=0 / page=0 → 零动作、不打行）；首次未消费
+    → 重击即首击；首次只是迟到（仍在队列里）→ 两击先后消费、第二击零
+    动作。三形下 `fg- back` 恒恰一行（verify_recycle_gate 核数）。
+    """
+    boot.log.poll()
+    base = boot.log.text.count(MARK_FG_MINUS_BACK)
+    retries = 0
+    while True:
+        boot.qmp.click(x, y, w, h)
+        try:
+            boot.log.wait_until(
+                boot.proc,
+                lambda t: t.count(MARK_FG_MINUS_BACK) > base,
+                f"{MARK_FG_MINUS_BACK}（返回键已清前台态）",
+                step_timeout,
+                "recycle gate back",
+            )
+            break
+        except MissingMarkers:
+            if retries >= GATE_MAX_RETRIES:
+                raise
+            retries += 1
+            log(
+                f"recycle-gate: 返回键 {step_timeout:.0f}s 内未等到"
+                f"{MARK_FG_MINUS_BACK}——重注（第 {retries}/{GATE_MAX_RETRIES} "
+                "次重试）"
+            )
+    return retries
+
+
 def run_recycle_gate(args) -> int:
     """单 boot 回收门：BROWSER 图标首击（spawn）→ 多任务键二击（同 id
     回收）——时延帽 + eco 行序 + 零降级行三面断言。
@@ -1786,6 +2003,22 @@ def run_recycle_gate(args) -> int:
     BROWSER 非 dock 非 test = 网格可点。二击走 nav.recents 重拉（导航键
     覆盖态恒最先——app 窗在盖也不挡）而非再点图标（覆盖态点击门会先收
     盖消费点击，窗起时序不可观测 = 不确定）。
+
+    三段制（首击 it → 二击 recycle/killed/it → back 键 → 三击 recycle/
+    killed/it）。二击 = 多任务键：启动器 R8 调查刀修复后，自真拉起成功起
+    进前台态——非导航键点击整击吞掉（同图标再击到不了 spawn 面），返回/
+    主页/多任务三键照常；多任务键 = 回桌面 + 重拉上次应用，是前台态下重
+    拉应用的入口（走同一 spawn_by_id_inner → svcmgr 同 id 命中）。BROWSER
+    以 surface-0 兼容档 SUBMIT、不建 wmd 窗，svcmgr already-alive 判据
+    （可见 APP 窗在场）恒假——同 id 重拉恒走回收再开，故本门断言两轮
+    recycle → killed → it、alive 零（alive 路需建窗 app 作载具，不在本门）。
+
+    交接全走握手行（r11 修：原固定 sleep 与慢点击是红轮直接诱因）：
+    三次拉起各等「新 it ∧ 新 `launcher: fg+ spawned`」——it 是 svcmgr 在
+    阻塞 RPC 内打的，fg+ 才表示启动器已出 RPC；返回键等 `launcher: fg-
+    back`。每击只在「零消费证据」时重注（至多两次）：证据（新 it / 二击
+    的 `fg- recents`）一出即 RPC 在途、只续等不重注，每击总帽
+    click_timeout（安全性见 `_gate_click_wait_spawn` 头注）。
     """
     preflight(args)
     print_marker_status()
@@ -1826,7 +2059,6 @@ def run_recycle_gate(args) -> int:
         _warn_input_armed(boot)
 
         boot.log.poll()
-        it0 = len(RE_GATE_IT.findall(boot.log.text))
         if MARK_CLICK_READY in boot.log.text:
             raise SmokeError(
                 f"recycle gate: 哨兵缺席却打印 {MARK_CLICK_READY!r}",
@@ -1843,55 +2075,67 @@ def run_recycle_gate(args) -> int:
 
         boot.qmp_connect()
 
-        # 首击：图标 spawn（活体 console=false 实例入 APP_CHILDREN）。
-        t0 = time.monotonic()
+        # 首击：图标 spawn（活体 console=false 实例入 APP_CHILDREN）。原：
+        # 点一次、单等新 it 行 click_timeout=120s，超时即红；现：等「新 it
+        # ∧ 新 fg+」，30s 内零消费证据重注（至多两次）、证据一出只续等，
+        # 每击总帽仍 click_timeout。等价性：绿轮里 it 恒在数秒内到、fg+
+        # 紧随其后，首击一次即过；帽短不改变断言面（it 行仍是 svcmgr 打
+        # 的拉起活证），只把「该击零动作」从等满 120s 变成 30s 后补一击。
         log("recycle-gate: QMP 注入首击（BROWSER 图标）")
-        boot.qmp.click(cx, cy, w, h)
-        boot.log.wait_until(
-            boot.proc,
-            lambda t: len(RE_GATE_IT.findall(t)) > it0,
-            "新 eco: app BROWSER it 行（首击 spawn 活证）",
-            args.click_timeout,
-            "recycle gate",
+        first_latency, retry1 = _gate_click_wait_spawn(
+            boot, cx, cy, w, h, "首击", total_timeout=args.click_timeout
         )
-        first_latency = time.monotonic() - t0
 
-        # 二击（批3 后换载具）：同位重击 = already-alive 聚焦路（窗在场
-        # → err=3 → launcher 焦点 RPC，零 recycle 零新 it）。断言 alive 行。
-        t1 = time.monotonic()
-        log("recycle-gate: QMP 注入二击（同图标；already-alive 聚焦路）")
-        boot.qmp.click(cx, cy, w, h)
-        boot.log.wait_until(
-            boot.proc,
-            lambda t: ECO_GATE_ALIVE in t,
-            "二击后 eco: app BROWSER alive 行（聚焦不回收活证）",
-            args.click_timeout,
-            "recycle gate",
+        # 二击：多任务键 = 同 id 回收再开。启动器自真拉起成功起进前台态——
+        # 非导航键点击整击吞掉（同图标再击到不了 spawn 面，原「同位重击 =
+        # already-alive 聚焦路」在新语义下不成立）；导航键恒最先：多任务键 =
+        # 收前台态回桌面 + 重拉上次应用 → 同一 spawn_by_id_inner → svcmgr
+        # 同 id 命中；BROWSER 不建 wmd 窗，already-alive 判据恒假 → 回收再
+        # 开（recycle → killed → 新 it）。alive 行先到 = 走了聚焦路（载具
+        # 换型或判据变化），即败（不等满帽、不重试——fail_fast）。
+        # 重注边界（复审 M1）：recents 分支在 `app_fg.is_some()` 时**先**
+        # leave_fg("recents") 再 take `recents_app`——RPC 在途时重注会在
+        # 前台态置位后再清一次，返回键步必红。故本步以 `fg- recents` 作
+        # 消费证据：它一出即视为已消费、只续等不重注（图标步以 it 为证据，
+        # 同律）；`fg- recents` 恰一核数兜底。
+        log("recycle-gate: QMP 注入二击（多任务键；同 id 回收再开）")
+        recents_latency, retry2 = _gate_click_wait_spawn(
+            boot, rx, ry, w, h, "二击", fail_fast=ECO_GATE_ALIVE,
+            consumed_mark=MARK_FG_MINUS_RECENTS,
+            total_timeout=args.click_timeout,
         )
-        alive_latency = time.monotonic() - t1
 
         # 三击前置：back 键销窗不杀进程（真泄漏形）——此后同 id 窗不在场，
-        # 三击才走回收（外部击杀形）。时延帽 = max(floor, 首击 + headroom)：
-        # 烧帽回归（+60s）必爆帽；headroom 默认 40s < 60s 且 >> 正常回收。
+        # 三击才走回收（外部击杀形）。原：点返回键后固定 sleep(2.0)（销窗
+        # RPC 往返 + 表广播沉淀），点了就算；现：点返回键后等启动器的
+        # `launcher: fg- back`（leave_fg 清前台态的握手行），帽 10s 内未到
+        # 重注（至多两次；back 的 leave_fg 以 app_fg 为门，重注恒安全）。
+        # 等价性：绿轮里返回键一击即被消费、握手行当拍打出，等待时长
+        # ≪ 2s；红轮（返回键未被消费）原要等满三击帽才红，现在 30s 内
+        # 以明确文案红。
         bx, by = back_center(w, h)
-        boot.qmp.click(bx, by, w, h)
-        time.sleep(2.0)  # 销窗 RPC 往返 + 表广播沉淀
-        boot.log.poll()
-        it1 = len(RE_GATE_IT.findall(boot.log.text))
+        log("recycle-gate: QMP 注入返回键（清前台态）")
+        retry_back = _gate_click_wait_back(boot, bx, by, w, h)
+
+        # 三击：同图标 → recycle 路。时延帽 = max(floor, 首击 + headroom)：
+        # 烧帽回归（+60s）必爆帽；headroom 默认 40s < 60s 且 >> 正常回收。
+        # 原以帽本身作单等超时（到 = 过）；现零证据重注至多三次、每次
+        # 30s，之后显式比帽——自首击起算的墙钟时延 > 帽即 FAIL（烧帽回归
+        # 60s 的 it 迟到仍被此比抓住，重试不掩盖回归；重注本身也吃进时延，
+        # 一次重注即近爆帽）。
         budget = max(
             args.recycle_budget_floor, first_latency + args.recycle_headroom
         )
-        t2 = time.monotonic()
         log(f"recycle-gate: QMP 注入三击（同图标；recycle 路；帽 {budget:.0f}s）")
-        boot.qmp.click(cx, cy, w, h)
-        boot.log.wait_until(
-            boot.proc,
-            lambda t: len(RE_GATE_IT.findall(t)) > it1,
-            f"三击后新 eco: app BROWSER it 行（回收→再拉起活证；帽 {budget:.0f}s）",
-            budget,
-            "recycle gate",
+        third_latency, retry3 = _gate_click_wait_spawn(
+            boot, cx, cy, w, h, "三击", total_timeout=args.click_timeout
         )
-        second_latency = time.monotonic() - t2
+        if third_latency > budget:
+            raise SmokeError(
+                f"recycle gate: 三击回收时延 {third_latency:.1f}s > 帽 "
+                f"{budget:.0f}s（EOF 烧帽回归面；重试 {retry3} 次）",
+                boot.log_path,
+            )
 
         boot.log.poll()
         verify_recycle_gate(boot.log.text, boot.log_path)
@@ -1899,7 +2143,9 @@ def run_recycle_gate(args) -> int:
         read_layout_gate(disk)
         log(
             f"recycle-gate: 门过（首击 {first_latency:.1f}s / 二击 "
-            f"{second_latency:.1f}s ≤ 帽 {budget:.0f}s；"
+            f"{recents_latency:.1f}s / 三击 {third_latency:.1f}s ≤ 帽 "
+            f"{budget:.0f}s；重试 首击 {retry1} / 二击 {retry2} / 返回键 "
+            f"{retry_back} / 三击 {retry3}；"
             "it → recycle → killed → it 行序成立，零 no EOF/exit code）"
         )
 
@@ -2472,15 +2718,69 @@ def self_test(args) -> int:
             raise SmokeError(
                 f"recents_center 800x600 异常：{recents_center(800, 600)}（期望 (520,570)）"
             )
+        # 样本按现网时序：it 由 svcmgr 在阻塞 RPC 内打、`fg+ spawned` 在
+        # RPC 归来后打；`fg- recents` / `fg- back` 在导航键消费拍打。
         fake_g = (
             f"{MARK_GATE_DEFERRED}\n"
+            "PAGE ok n=2\n"
             "eco: app BROWSER it 03\n"
-            f"{ECO_GATE_ALIVE}\n"
+            f"{MARK_FG_PLUS}\n"
+            f"{MARK_FG_MINUS_PREFIX}recents\n"
+            f"{ECO_GATE_RECYCLE}\n"
+            f"{ECO_GATE_KILLED}\n"
+            "eco: app BROWSER wm detach\n"
+            "eco: app BROWSER it 03\n"
+            f"{MARK_FG_PLUS}\n"
+            f"{MARK_FG_MINUS_BACK}\n"
             f"{ECO_GATE_RECYCLE}\n"
             f"{ECO_GATE_KILLED}\n"
             "eco: app BROWSER it 03\n"
+            f"{MARK_FG_PLUS}\n"
         )
         verify_recycle_gate(fake_g)
+        # 多任务键被消费两次（复审 M1 假红形：RPC 在途时重注的那一击在
+        # 前台态置位后再清一次）——`fg- recents` 恰一核数必须 FAIL，不得
+        # 当合法重试形放过。
+        expect_error(
+            "回收门 fg- recents 重复（多任务键被消费两次）",
+            lambda: verify_recycle_gate(
+                fake_g.replace(
+                    MARK_FG_MINUS_RECENTS + "\n",
+                    MARK_FG_MINUS_RECENTS + "\n" + MARK_FG_MINUS_RECENTS + "\n",
+                    1,
+                )
+            ),
+        )
+        expect_error(
+            "回收门 fg- recents 缺席（二击未走多任务键路）",
+            lambda: verify_recycle_gate(
+                fake_g.replace(MARK_FG_MINUS_RECENTS + "\n", "")
+            ),
+        )
+        expect_error(
+            "回收门 fg+ 缺一（某次拉起未进前台态 / 握手行缺席）",
+            lambda: verify_recycle_gate(
+                fake_g.replace(MARK_FG_PLUS + "\n", "", 1)
+            ),
+        )
+        expect_error(
+            "回收门 fg- back 缺席（返回键交接无握手行）",
+            lambda: verify_recycle_gate(
+                fake_g.replace(MARK_FG_MINUS_BACK + "\n", "")
+            ),
+        )
+        expect_error(
+            "回收门 fg- back 重复",
+            lambda: verify_recycle_gate(
+                fake_g + MARK_FG_MINUS_BACK + "\n"
+            ),
+        )
+        expect_error(
+            "回收门清前台态的是 home 不是 back",
+            lambda: verify_recycle_gate(
+                fake_g.replace(MARK_FG_MINUS_BACK, MARK_FG_MINUS_PREFIX + "home")
+            ),
+        )
         expect_error(
             "回收门 killed 缺席（主修回退）",
             lambda: verify_recycle_gate(
@@ -2507,33 +2807,208 @@ def self_test(args) -> int:
             ),
         )
         expect_error(
-            "回收门 it 恰一（二击未达）",
+            "回收门 it 恰一（二击/三击未达）",
             lambda: verify_recycle_gate(
                 f"{MARK_GATE_DEFERRED}\neco: app BROWSER it 03\n"
                 f"{ECO_GATE_RECYCLE}\n{ECO_GATE_KILLED}\n"
             ),
         )
+        expect_error(
+            "回收门 alive 在席（BROWSER 无 wmd 窗不应走聚焦路）",
+            lambda: verify_recycle_gate(
+                fake_g.replace(ECO_GATE_RECYCLE, ECO_GATE_ALIVE, 1)
+            ),
+        )
         log(
             "self-test: 回收门 ok（LAYOUT_GATE 65B；recents(520,570)；"
-            "正序通过；killed 缺席/no EOF/exit code/行序倒置/it 缺席均 FAIL）"
+            "正序通过；fg+ 缺一/fg- recents 缺席或重复/fg- back 缺席或重复/"
+            "home 冒充/killed 缺席/no EOF/exit code/行序倒置/it 缺席/"
+            "alive 在席均 FAIL）"
         )
 
-        # 4) QMP 协议 + no-device 广播 + 三批单击
+        # 3d) 回收门握手重试单元（零 QEMU、零线程：伪 QMP 在第 N 次点击
+        #     时同步追加串口行；伪 proc 在首次 poll() 时追加串口行——模拟
+        #     「RPC 归来」这类点击之后才到的行。确定性复现「首击即过 / 首击
+        #     零动作重注 / 只 it 无 fg+ 续等 / 在途超总帽红 / 二击 fg-
+        #     recents 先到续等 / 全丢 / alive 先到 / 返回键三形」）。
+        class _ScriptedQmp:
+            def __init__(self, script):
+                self.script = list(script)  # 每项：None=零动作，str=追加到串口
+                self.clicks = 0
+
+            def click(self, x, y, w, h):
+                i = self.clicks
+                self.clicks += 1
+                act = self.script[i] if i < len(self.script) else None
+                if act:
+                    with lp_g.open("a", encoding="utf-8") as f:
+                        f.write(act)
+
+        class _LateAppendProc:
+            """首次 poll() 把 text 追加到串口文件（wait_until 每轮先读串口
+            再查谓词、谓词假才 poll proc——故首段若证据已齐根本不会 poll，
+            续等段首轮 poll 即追加、下轮读到）。"""
+
+            def __init__(self, path, text):
+                self.path = path
+                self.text = text
+                self.done = False
+
+            def poll(self):
+                if not self.done:
+                    self.done = True
+                    with self.path.open("a", encoding="utf-8") as f:
+                        f.write(self.text)
+                return None
+
+        class _FakeGateBoot:
+            def __init__(self, script, proc=None):
+                self.log = LogWatcher(lp_g)
+                self.proc = proc if proc is not None else DummyProc()
+                self.qmp = _ScriptedQmp(script)
+                self.log_path = lp_g
+
+        lp_g = tmp / "gate-fake.log"
+        it_line = "eco: app BROWSER it 03\n"
+        spawn_ok = it_line + MARK_FG_PLUS + "\n"
+        lp_g.write_text(MARK_GATE_DEFERRED + "\n", encoding="utf-8")
+        # 首击即过：一次点击、零重试。
+        b = _FakeGateBoot([spawn_ok])
+        lat, r = _gate_click_wait_spawn(
+            b, 1, 1, 8, 8, "首击", step_timeout=1.0, total_timeout=2.0
+        )
+        if r != 0 or b.qmp.clicks != 1 or lat < 0:
+            raise SmokeError(f"首击即过形异常：retries={r} clicks={b.qmp.clicks}")
+        # 首击零动作 → 重注一次即过（共两击、重试 1）。
+        b = _FakeGateBoot([None, spawn_ok])
+        lat, r = _gate_click_wait_spawn(
+            b, 1, 1, 8, 8, "三击", step_timeout=0.4, total_timeout=2.0
+        )
+        if r != 1 or b.qmp.clicks != 2:
+            raise SmokeError(f"重注一次形异常：retries={r} clicks={b.qmp.clicks}")
+        # 只来 it 不来 fg+（RPC 在途）→ 判已消费、续等、**零重击**；fg+ 由
+        # 伪 proc 在续等段补到 → 零重试过（复审 M1）。
+        b = _FakeGateBoot([it_line], proc=_LateAppendProc(lp_g, MARK_FG_PLUS + "\n"))
+        lat, r = _gate_click_wait_spawn(
+            b, 1, 1, 8, 8, "首击", step_timeout=0.4, total_timeout=2.0
+        )
+        if r != 0 or b.qmp.clicks != 1:
+            raise SmokeError(f"只 it 无 fg+ 形异常：retries={r} clicks={b.qmp.clicks}（应续等不重注）")
+        # 在途超总帽：证据已出、fg+ 永不来 → 总帽到 MissingMarkers，仍只一击。
+        b = _FakeGateBoot([it_line])
+        expect_error(
+            "在途超总帽应 MissingMarkers",
+            lambda: _gate_click_wait_spawn(
+                b, 1, 1, 8, 8, "首击", step_timeout=1.0, total_timeout=0.6
+            ),
+        )
+        if b.qmp.clicks != 1:
+            raise SmokeError(f"在途超总帽形点击数 {b.qmp.clicks} != 1（不应重注）")
+        # 二击：`fg- recents` 先出（RPC 尚未发）→ 以它为消费证据续等、零
+        # 重击；it + fg+ 随后由伪 proc 补到。
+        b = _FakeGateBoot(
+            [MARK_FG_MINUS_RECENTS + "\n"],
+            proc=_LateAppendProc(lp_g, spawn_ok),
+        )
+        lat, r = _gate_click_wait_spawn(
+            b, 1, 1, 8, 8, "二击", consumed_mark=MARK_FG_MINUS_RECENTS,
+            step_timeout=0.4, total_timeout=2.0,
+        )
+        if r != 0 or b.qmp.clicks != 1:
+            raise SmokeError(
+                f"二击 fg- recents 先到形异常：retries={r} clicks={b.qmp.clicks}（应续等不重注）"
+            )
+        # 二击：`fg- recents` 出了但 fg+ 永不来 → 超总帽红、仍只一击。
+        b = _FakeGateBoot([MARK_FG_MINUS_RECENTS + "\n"])
+        expect_error(
+            "二击在途超总帽应 MissingMarkers",
+            lambda: _gate_click_wait_spawn(
+                b, 1, 1, 8, 8, "二击", consumed_mark=MARK_FG_MINUS_RECENTS,
+                step_timeout=1.0, total_timeout=0.6,
+            ),
+        )
+        if b.qmp.clicks != 1:
+            raise SmokeError(f"二击在途超总帽形点击数 {b.qmp.clicks} != 1（不应重注）")
+        # 全丢：零证据重注两次后 MissingMarkers（帽到即红，不假绿）。
+        b = _FakeGateBoot([None, None, None, None])
+        expect_error(
+            "握手全丢应 MissingMarkers",
+            lambda: _gate_click_wait_spawn(
+                b, 1, 1, 8, 8, "首击", step_timeout=0.4, total_timeout=5.0
+            ),
+        )
+        if b.qmp.clicks != 3:
+            raise SmokeError(f"全丢形点击数 {b.qmp.clicks} != 3（1 + 2 重试）")
+        # alive 先到（证据段）：立即 SmokeError、不重试。
+        b = _FakeGateBoot([ECO_GATE_ALIVE + "\n", spawn_ok])
+        expect_error(
+            "alive 先到应 SmokeError",
+            lambda: _gate_click_wait_spawn(
+                b, 1, 1, 8, 8, "二击", fail_fast=ECO_GATE_ALIVE,
+                step_timeout=1.0, total_timeout=2.0,
+            ),
+        )
+        if b.qmp.clicks != 1:
+            raise SmokeError(f"alive 先到形点击数 {b.qmp.clicks} != 1（不应重试）")
+        # alive 在续等段到（it 已出、fg+ 未出）：同样 SmokeError、不重试。
+        # alive 判据是对全文的子串查（非相对计数）——前一形已把 alive 行写进
+        # 串口文件，这里重置为干净基线，免得证据段就被陈旧行触发。
+        lp_g.write_text(MARK_GATE_DEFERRED + "\n", encoding="utf-8")
+        b = _FakeGateBoot(
+            [it_line], proc=_LateAppendProc(lp_g, ECO_GATE_ALIVE + "\n")
+        )
+        expect_error(
+            "续等段 alive 到应 SmokeError",
+            lambda: _gate_click_wait_spawn(
+                b, 1, 1, 8, 8, "二击", fail_fast=ECO_GATE_ALIVE,
+                step_timeout=1.0, total_timeout=2.0,
+            ),
+        )
+        if b.qmp.clicks != 1:
+            raise SmokeError(f"续等段 alive 形点击数 {b.qmp.clicks} != 1（不应重试）")
+        # 返回键：一击即过 / 首击零动作重注 / 全丢。
+        back_ok = MARK_FG_MINUS_BACK + "\n"
+        b = _FakeGateBoot([back_ok])
+        r = _gate_click_wait_back(b, 1, 1, 8, 8, step_timeout=1.0)
+        if r != 0 or b.qmp.clicks != 1:
+            raise SmokeError(f"返回键即过形异常：retries={r} clicks={b.qmp.clicks}")
+        b = _FakeGateBoot([None, back_ok])
+        r = _gate_click_wait_back(b, 1, 1, 8, 8, step_timeout=0.4)
+        if r != 1 or b.qmp.clicks != 2:
+            raise SmokeError(f"返回键重注形异常：retries={r} clicks={b.qmp.clicks}")
+        b = _FakeGateBoot([None, None, None, None])
+        expect_error(
+            "返回键全丢应 MissingMarkers",
+            lambda: _gate_click_wait_back(b, 1, 1, 8, 8, step_timeout=0.4),
+        )
+        if b.qmp.clicks != 3:
+            raise SmokeError(f"返回键全丢形点击数 {b.qmp.clicks} != 3")
+        log(
+            "self-test: 回收门握手重试 ok（首击即过/零动作重注一次/只 it 无 fg+ "
+            "续等零重击/在途超总帽红不重注/二击 fg- recents 先到续等零重击/"
+            "二击在途超总帽红/全丢红/alive 证据段与续等段均即败不重试；"
+            "返回键即过/重注/全丢红）"
+        )
+
+        # 4) QMP 协议 + no-device 广播 + 单批单击（abs+abs+down+up 同一条
+        #    input-send-event——慢点击长按误判刀后的注入形）。
         sock = tmp / "qmp.sock"
         mock = MockQmp(sock).start()
         cli = QmpClient(sock, timeout=5.0)
         cli.click(95, 130, 800, 600)
         cli.quit()
         mock.join()
-        if len(mock.batches) != 3:
-            raise SmokeError(f"QMP 批数 {len(mock.batches)} != 3")
-        abs_events = [e for e in mock.batches[0] if e["type"] == "abs"]
+        if len(mock.batches) != 1:
+            raise SmokeError(f"QMP 批数 {len(mock.batches)} != 1（单批同投形）")
+        evs = mock.batches[0]
+        shape = [(e["type"], e["data"].get("axis") or e["data"].get("down")) for e in evs]
+        if shape != [("abs", "x"), ("abs", "y"), ("btn", True), ("btn", False)]:
+            raise SmokeError(f"QMP 单批事件序异常：{shape}")
+        abs_events = [e for e in evs if e["type"] == "abs"]
         got = {e["data"]["axis"]: e["data"]["value"] for e in abs_events}
         if got.get("x") != 3891 or got.get("y") != 7100:
             raise SmokeError(f"QMP 坐标异常：{got}（期望 x=3891 y=7100）")
-        if mock.batches[2][0]["data"]["down"] is not False:
-            raise SmokeError("QMP 第三批非 btn up")
-        log("self-test: QMP ok（no-device 广播 3 批，坐标 3891/7100）")
+        log("self-test: QMP ok（no-device 广播 1 批 abs+abs+down+up，坐标 3891/7100）")
 
         # 4b) VNC 直通注入臂：RFB 握手 + 字节级三铁律对拍（判例驳斥快照
         #     实验陷阱段：PointerEvent 恰 6B 无 pad / leftover 粘包读 /
@@ -2570,7 +3045,7 @@ def self_test(args) -> int:
 
         log(
             "SELFTEST PASS（精确哨兵/canonical 109B/精确计数与顺序/"
-            "常态隔离/回收门/geometry/log/QMP/RFB 直通臂；零 QEMU）"
+            "常态隔离/回收门+握手重试/geometry/log/QMP/RFB 直通臂；零 QEMU）"
         )
         return 0
     finally:
@@ -2640,7 +3115,7 @@ def parse_args(argv=None):
         "--input-path",
         choices=("qmp", "vnc"),
         default="qmp",
-        help="boot A 单击注入通路：qmp=QMP input-send-event 三批（默认，"
+        help="boot A 单击注入通路：qmp=QMP input-send-event 单批（默认，"
         "CI 零扰动）；vnc=RFB PointerEvent 直通（QEMU 加 -vnc 127.0.0.1:0，"
         "内建最小 RFB 客户端带 SetEncodings——给用户手走的 VNC 人面路立法"
         "测试面，断言面不变；--aged-minutes 与通路正交）",
@@ -2662,9 +3137,11 @@ def parse_args(argv=None):
         "--recycle-gate",
         action="store_true",
         help="活体 app 回收时延回归门（2026-11-21 冻结案）：单 boot，"
-        "BROWSER 图标首击 + 多任务键二击（同 id 回收），断言 it → "
-        "recycle → killed → it 行序、零 no EOF/exit code、二击时延 ≤ "
-        "首击 + headroom（EOF 烧帽回归必爆帽）",
+        "BROWSER 图标首击 + 多任务键二击 + 返回键 + 同图标三击（同 id "
+        "回收），断言 it → recycle → killed → it 两轮行序、零 no EOF/"
+        "exit code、三击回收时延 ≤ 首击 + headroom（EOF 烧帽回归必爆帽）；"
+        "交接全走启动器握手行（fg+ spawned / fg- recents / fg- back），每击"
+        "零消费证据 30s 才重注至多两次、证据一出只续等（总帽 --click-timeout）",
     )
     ap.add_argument(
         "--recycle-budget-floor",
@@ -2728,9 +3205,12 @@ def main(argv=None) -> int:
             return dry_run(args)
         if args.normal_boot:
             return run_normal_boot(args)
-        return run_dual_boot(args)
+        # 回收门分支原在下面无条件 return run_dual_boot 之后——自加入起
+        # 就是死码，导致 just gui8-recycle-gate 一直跑的是双 boot；挪到
+        # 无条件返回之前才可达。
         if args.recycle_gate:
             return run_recycle_gate(args)
+        return run_dual_boot(args)
     except MissingMarkers as e:
         print(f"gui8-smoke: FAIL: {e}", file=sys.stderr, flush=True)
         print(
